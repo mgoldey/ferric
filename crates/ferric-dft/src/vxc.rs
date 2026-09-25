@@ -23,7 +23,7 @@ use rayon::prelude::*;
 
 /// Below this density, libxc-returned v_ρ / v_σ may diverge; skip grid points
 /// to keep V_xc well-conditioned. Matches libxc's internal `dens_threshold` default.
-pub(crate) const DENSITY_FLOOR: f64 = 1e-10;
+pub const DENSITY_FLOOR: f64 = 1e-10;
 
 use crate::density_on_grid::{DensityGrid, UksDensityGrid};
 use crate::grid::GridPoint;
@@ -126,7 +126,7 @@ pub(crate) fn scale_columns_into(
 
 /// Per-point libxc outputs for a closed-shell (unpolarized) evaluation, each
 /// summed over the component functionals with their mixing weights.
-pub(crate) struct ClosedKernel {
+pub struct ClosedKernel {
     /// ε_xc per particle.
     pub exc: Array1<f64>,
     /// ∂(ρ ε_xc)/∂ρ.
@@ -145,11 +145,7 @@ pub(crate) struct ClosedKernel {
 /// `xc_batch.rs` share ONE kernel implementation. The point count is
 /// `dens.rho.len()`. Panics (a call-site programming error) when a meta-GGA
 /// component is present and `tau` is `None`.
-pub(crate) fn closed_kernel(
-    dens: &DensityGrid,
-    tau: Option<&Array1<f64>>,
-    xc: &XcDef,
-) -> ClosedKernel {
+pub fn closed_kernel(dens: &DensityGrid, tau: Option<&Array1<f64>>, xc: &XcDef) -> ClosedKernel {
     let npts = dens.rho.len();
     let has_mgga = xc
         .funcs
@@ -392,7 +388,7 @@ pub fn semilocal_vxc_closed_scratch(
 
 /// Per-point libxc outputs for a spin-polarized evaluation, each summed over
 /// the component functionals with their mixing weights.
-pub(crate) struct PolarizedKernel {
+pub struct PolarizedKernel {
     pub exc: Array1<f64>,
     pub vrho_a: Array1<f64>,
     pub vrho_b: Array1<f64>,
@@ -408,7 +404,7 @@ pub(crate) struct PolarizedKernel {
 /// reference and `xc_batch.rs` share one kernel. Point count is
 /// `dens.rho_a.len()`. Panics when a meta-GGA component is present and `tau`
 /// is `None`.
-pub(crate) fn polarized_kernel(
+pub fn polarized_kernel(
     dens: &UksDensityGrid,
     tau: Option<(&Array1<f64>, &Array1<f64>)>,
     xc: &XcDef,

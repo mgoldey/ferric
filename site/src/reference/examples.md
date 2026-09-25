@@ -1,6 +1,6 @@
 # Examples
 
-This page indexes every input file in `examples/`. There are 70 TOML files
+This page indexes every input file in `examples/`. There are 72 TOML files
 and no Python scripts. Run one from the repository root:
 
 ```bash
@@ -65,6 +65,9 @@ See [SCF and DFT](../methods/scf.md).
 | `water-pcm.toml` | H2O / STO-3G | `rhf` + `[pcm]` | — | IEF-PCM water (`solvent = "water"`, ε = 78.4). |
 | `water-rhf-smeared-charge.toml` | H2O / STO-3G | `rhf` + `[external_potential]` | — | One Gaussian-smeared charge (`width`, Bohr) and one point charge. |
 | `o2-uhf-stability-descent.toml` | O2 triplet / STO-3G | `uhf` | "the descent follows the downhill eigenvector to the UHF minimum (-147.63530 Ha)" | `[scf] stability_descent = true`. |
+| `h2-cell-rhf.toml` | H2 / STO-3G, 4 Bohr cubic cell | `rhf` + `[cell]`, Gamma point | — | Periodic, dense J/K, `exxdiv = "ewald"`. |
+| `h2-cell-kpts-rhf.toml` | H2 / STO-3G, 4 Bohr cubic cell | `rhf` + `[cell]`, 2×2×2 k-mesh | — | Periodic k-point RHF, dense J/K. |
+| `h2-cell-rks-opt.toml` | stretched H2 / STO-3G, 4 Å cubic cell | `ksdft` PBE + `[cell]` / optimize | — | Gamma-point atom relaxation at a fixed lattice, analytic periodic force, dense J/K. |
 
 ## MP2 family
 

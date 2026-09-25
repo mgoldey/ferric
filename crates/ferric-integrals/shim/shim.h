@@ -95,6 +95,14 @@ int  scf_engine_set_point_charges(scf_engine *eng,
 int scf_compute_1e_block(scf_engine *eng, const scf_basis *bs,
                            int sh1, int sh2, double *out);
 
+/* As scf_compute_1e_block, with shell sh2 translated by shift[3] (Bohr):
+ * <sh1 | op | sh2 moved to O_sh2 + shift>. shift = {0,0,0} is bitwise equal to
+ * scf_compute_1e_block. Returns n1*n2, SCF_EINVAL on a null pointer, an
+ * out-of-range shell or a non-finite shift, or SCF_EINTERNAL. */
+int scf_compute_1e_block_shifted(scf_engine *eng, const scf_basis *bs,
+                                   int sh1, int sh2, const double *shift,
+                                   double *out);
+
 /* Compute one shell-quartet (sh1 sh2 | sh3 sh4). Writes n1*n2*n3*n4 doubles
  * into out in row-major (i j k l). Returns n_written, 0 if libint screened,
  * or SCF_EINTERNAL. */
@@ -133,9 +141,27 @@ int scf_compute_eri3(scf_engine *eng, const scf_basis *obs,
                        const scf_basis *dfbs,
                        int shP, int sh1, int sh2, double *out);
 
+/* As scf_compute_eri3 with shells translated: (shP(r-sP) | sh1(r-s1) sh2(r-s2)),
+ * shifts = {sP[3], s1[3], s2[3]} (Bohr). All-zero shifts are bitwise equal to
+ * scf_compute_eri3. Returns nP*n1*n2, 0 if screened, SCF_EINVAL on a null
+ * pointer / out-of-range shell / non-finite shift, or SCF_EINTERNAL. */
+int scf_compute_eri3_shifted(scf_engine *eng, const scf_basis *obs,
+                               const scf_basis *dfbs,
+                               int shP, int sh1, int sh2,
+                               const double *shifts, double *out);
+
 /* Compute (shP | shQ) 2-center ERI. Returns nP*nQ. */
 int scf_compute_eri2(scf_engine *eng, const scf_basis *dfbs,
                        int shP, int shQ, double *out);
+
+/* As scf_compute_eri2 with the ket shell translated: (shP | shQ(r - sQ)),
+ * shiftQ = sQ[3] (Bohr). A zero shift is bitwise equal to scf_compute_eri2.
+ * Always writes nP*nQ values (zeros if screened). Returns nP*nQ, SCF_EINVAL
+ * on a null pointer / out-of-range shell / non-finite shift, or
+ * SCF_EINTERNAL. */
+int scf_compute_eri2_shifted(scf_engine *eng, const scf_basis *dfbs,
+                               int shP, int shQ, const double *shiftQ,
+                               double *out);
 
 /* --- 3-center and 2-center ERI derivative engines (deriv_order=1) --- */
 
@@ -150,10 +176,32 @@ int scf_compute_eri3_deriv(scf_engine *eng, const scf_basis *obs,
                              const scf_basis *dfbs,
                              int shP, int sh1, int sh2, double *out);
 
+/* As scf_compute_eri3_deriv with shells translated (shifts = {sP, s1, s2},
+ * 9 doubles, Bohr; layout [d/d(shP), d/d(sh1), d/d(sh2)] x [x, y, z]).
+ * out_len = capacity of out in doubles; a result that would not fit returns
+ * SCF_EINVAL before writing. Returns nderiv*nP*n1*n2, 0 if screened,
+ * SCF_EINVAL or SCF_EINTERNAL. */
+int scf_compute_eri3_deriv_shifted(scf_engine *eng, const scf_basis *obs,
+                                     const scf_basis *dfbs,
+                                     int shP, int sh1, int sh2,
+                                     const double *shifts, double *out,
+                                     int out_len);
+
 /* Compute first derivative of (shP | shQ) 2-center ERI. Writes 6 blocks
  * (2 centers × 3 coords) of nP*nQ doubles each. Returns 6*nP*nQ on success, 0 if screened. */
 int scf_compute_eri2_deriv(scf_engine *eng, const scf_basis *dfbs,
                              int shP, int shQ, double *out);
+
+/* As scf_compute_eri2_deriv with the ket shell translated:
+ * d/dR of (shP | shQ(r - sQ)), shiftQ = sQ[3] (Bohr), laid out
+ * [d/d(shP), d/d(shQ)] x [x, y, z], each block nP*nQ doubles. A zero shift is
+ * bitwise equal to scf_compute_eri2_deriv. out_len = capacity of out in
+ * doubles; a result that would not fit returns SCF_EINVAL before writing.
+ * Returns nderiv*nP*nQ, 0 if screened, SCF_EINVAL (null pointer /
+ * out-of-range shell / non-finite shift / short buffer) or SCF_EINTERNAL. */
+int scf_compute_eri2_deriv_shifted(scf_engine *eng, const scf_basis *dfbs,
+                                     int shP, int shQ, const double *shiftQ,
+                                     double *out, int out_len);
 
 /* --- Electric dipole integrals via emultipole1 --- */
 
@@ -180,6 +228,15 @@ int scf_compute_second_moment(const scf_basis *bs, const double *origin,
  * of n1*n2 doubles each into out (total 6*n1*n2). Returns 6*n1*n2 on success, 0 if screened. */
 int scf_compute_1e_deriv_block(scf_engine *eng, const scf_basis *bs,
                                  int sh1, int sh2, double *out);
+
+/* As scf_compute_1e_deriv_block with shell sh2 translated by shift[3]
+ * (Bohr). out_len = capacity of out in doubles; libint2's derivative count
+ * times n1*n2 must fit, else SCF_EINVAL before writing. Returns
+ * nderiv*n1*n2 (6*n1*n2 for overlap/kinetic), 0 if screened (zeros written),
+ * SCF_EINVAL or SCF_EINTERNAL. */
+int scf_compute_1e_deriv_block_shifted(scf_engine *eng, const scf_basis *bs,
+                                         int sh1, int sh2, const double *shift,
+                                         double *out, int out_len);
 
 /* Compute first derivative of a 2e shell quartet. Writes 12 blocks
  * (dx1,dy1,dz1,dx2,dy2,dz2,dx3,dy3,dz3,dx4,dy4,dz4) of n1*n2*n3*n4 doubles each.

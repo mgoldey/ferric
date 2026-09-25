@@ -75,6 +75,16 @@ extern "C" {
         sh2: c_int,
         out: *mut c_double,
     ) -> c_int;
+    /// `scf_compute_1e_block` with shell `sh2` translated by `shift` (3
+    /// doubles, Bohr). Returns n1*n2, `SCF_EINVAL` (-1) or `SCF_EINTERNAL` (-3).
+    pub fn scf_compute_1e_block_shifted(
+        eng: *mut c_void,
+        bs: *const c_void,
+        sh1: c_int,
+        sh2: c_int,
+        shift: *const c_double,
+        out: *mut c_double,
+    ) -> c_int;
     pub fn scf_compute_eri_quartet(
         eng: *mut c_void,
         bs: *const c_void,
@@ -116,6 +126,19 @@ extern "C" {
         sh2: c_int,
         out: *mut c_double,
     ) -> c_int;
+    /// `scf_compute_1e_deriv_block` with shell `sh2` translated by `shift`
+    /// (3 doubles, Bohr). `out_len` = capacity of `out` in doubles (checked by
+    /// the shim before writing). Returns nderiv*n1*n2, 0 if screened,
+    /// `SCF_EINVAL` (-1) or `SCF_EINTERNAL` (-3).
+    pub fn scf_compute_1e_deriv_block_shifted(
+        eng: *mut c_void,
+        bs: *const c_void,
+        sh1: c_int,
+        sh2: c_int,
+        shift: *const c_double,
+        out: *mut c_double,
+        out_len: c_int,
+    ) -> c_int;
     pub fn scf_compute_eri_deriv_quartet(
         eng: *mut c_void,
         bs: *const c_void,
@@ -148,11 +171,35 @@ extern "C" {
         sh2: c_int,
         out: *mut c_double,
     ) -> c_int;
+    /// `scf_compute_eri3` with the shells translated by `shifts` =
+    /// `[sP; s1; s2]` (9 doubles, Bohr). Returns nP*n1*n2, 0 if screened,
+    /// `SCF_EINVAL` (-1) or `SCF_EINTERNAL` (-3).
+    pub fn scf_compute_eri3_shifted(
+        eng: *mut c_void,
+        obs: *const c_void,
+        dfbs: *const c_void,
+        shP: c_int,
+        sh1: c_int,
+        sh2: c_int,
+        shifts: *const c_double,
+        out: *mut c_double,
+    ) -> c_int;
     pub fn scf_compute_eri2(
         eng: *mut c_void,
         dfbs: *const c_void,
         shP: c_int,
         shQ: c_int,
+        out: *mut c_double,
+    ) -> c_int;
+    /// `scf_compute_eri2` with the ket shell translated by `shift_q`
+    /// (3 doubles, Bohr): `(P | Q(r − s_Q))`. Returns nP*nQ (zeros written if
+    /// screened), `SCF_EINVAL` (-1) or `SCF_EINTERNAL` (-3).
+    pub fn scf_compute_eri2_shifted(
+        eng: *mut c_void,
+        dfbs: *const c_void,
+        shP: c_int,
+        shQ: c_int,
+        shift_q: *const c_double,
         out: *mut c_double,
     ) -> c_int;
     pub fn scf_engine_create_3center_deriv(
@@ -178,12 +225,41 @@ extern "C" {
         sh2: c_int,
         out: *mut c_double,
     ) -> c_int;
+    /// `scf_compute_eri3_deriv` with the shells translated by `shifts` =
+    /// `[sP; s1; s2]` (9 doubles, Bohr). `out_len` = capacity of `out` in
+    /// doubles. Returns nderiv*nP*n1*n2, 0 if screened, `SCF_EINVAL` (-1) or
+    /// `SCF_EINTERNAL` (-3).
+    pub fn scf_compute_eri3_deriv_shifted(
+        eng: *mut c_void,
+        obs: *const c_void,
+        dfbs: *const c_void,
+        shP: c_int,
+        sh1: c_int,
+        sh2: c_int,
+        shifts: *const c_double,
+        out: *mut c_double,
+        out_len: c_int,
+    ) -> c_int;
     pub fn scf_compute_eri2_deriv(
         eng: *mut c_void,
         dfbs: *const c_void,
         shP: c_int,
         shQ: c_int,
         out: *mut c_double,
+    ) -> c_int;
+    /// `scf_compute_eri2_deriv` with the ket shell translated by `shift_q`
+    /// (3 doubles, Bohr): derivatives of `(P | Q(r − s_Q))`, layout
+    /// `[d/dP, d/dQ] × [x, y, z]`. `out_len` = capacity of `out` in doubles.
+    /// Returns nderiv*nP*nQ, 0 if screened, `SCF_EINVAL` (-1) or
+    /// `SCF_EINTERNAL` (-3).
+    pub fn scf_compute_eri2_deriv_shifted(
+        eng: *mut c_void,
+        dfbs: *const c_void,
+        shP: c_int,
+        shQ: c_int,
+        shift_q: *const c_double,
+        out: *mut c_double,
+        out_len: c_int,
     ) -> c_int;
     // Exact terfc(r,r0)/r via 2D interpolation tables (Dutoi/Goldey). table_dir may be
     // null (falls back to FERRIC_TERF_TABLE_DIR). See shim.h / terf-tables/terf_plan.md.

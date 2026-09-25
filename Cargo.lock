@@ -445,6 +445,7 @@ dependencies = [
  "ferric-gw",
  "ferric-integrals",
  "ferric-mp2",
+ "ferric-pbc",
  "ferric-pcm",
  "ferric-rpa",
  "ferric-scf",
@@ -574,6 +575,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferric-pbc"
+version = "0.1.0"
+dependencies = [
+ "ferric-core",
+ "ferric-dft",
+ "ferric-integrals",
+ "ferric-mp2",
+ "ferric-rpa",
+ "ferric-scf",
+ "libc",
+ "ndarray",
+ "ndarray-linalg",
+ "num-complex",
+ "rayon",
+ "serde_json",
+]
+
+[[package]]
 name = "ferric-pcm"
 version = "0.1.0"
 dependencies = [
@@ -603,6 +622,7 @@ dependencies = [
  "ferric-integrals",
  "ferric-mm",
  "ferric-mp2",
+ "ferric-pbc",
  "ferric-pcm",
  "ferric-rpa",
  "ferric-scf",

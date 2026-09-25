@@ -343,3 +343,46 @@ charge is an error.
 | `field` | `[Ex, Ey, Ez]` | none | atomic units | Uniform electric field. |
 
 With both empty, the run is identical to a vacuum run.
+
+## `[cell]`
+
+A 3-D periodic system. When present, the run goes to the periodic drivers
+instead of the molecular ones. The `[molecule]` XYZ supplies the atoms of the
+reference cell (in Å, like every XYZ). Energies are Hartree per cell.
+
+`method.kind` must be `rhf`, `uhf`, `rohf`, `ksdft`, `rimp2` (periodic MP2)
+or `pdep-rpa` (periodic dRPA). `rhf`/`uhf`/`rohf` with `[dft] functional` run
+RKS/UKS/ROKS. Any other kind is an error. `task = "optimize"` works at the
+Gamma point for the SCF routes (RHF, UHF, ROHF, RKS, UKS, ROKS) with either
+`jk`: it moves the atoms at a fixed lattice using the analytic periodic
+force, and prints the final gradient (Hartree/Bohr per cell). It is an error
+with `kmesh` and for `rimp2`/`pdep-rpa`. `task = "frequencies"` is an error.
+
+The periodic run reads only `[cell]`, `[scf]` `max_iter`, `[scf]`
+`density_conv` (Gamma point) or `energy_conv` (k-point mesh), `[dft]`
+`functional`, `[memory]` (RS-GDF only) and `[optimize]`. Any other section
+or key is an error. A charged cell is an error.
+
+| Key | Type | Default | Allowed values | Notes |
+|---|---|---|---|---|
+| `lattice` | 3×3 float array | **required** | rows are the lattice vectors | In `unit`. |
+| `unit` | string | `"angstrom"` | `angstrom` `bohr` | Applies to `lattice`, `omega` (as its inverse) and `neighbour_cutoff`. |
+| `kmesh` | `[n1, n2, n3]` | none (Gamma point) | each ≥ 1 | Selects the k-point drivers: `rhf`, `uhf` (no functional), `rimp2`, `pdep-rpa` only. |
+| `centring` | string | `"gamma"` | `gamma` `mp` | Requires `kmesh`. |
+| `exxdiv` | string | `"ewald"` | `ewald` `none` | Exchange G = 0 treatment. |
+| `jk` | string | `"dense"` | `dense` `rsgdf` | `dense` is a toy-scale dense AFT tensor. |
+| `auxbasis` | string | none | bundled basis name | Required by `jk = "rsgdf"`; an error with `dense`. |
+| `omega` | float | √π / V^(1/3) | > 0, in `unit`⁻¹ | Nuclear-attraction Ewald split. |
+| `max_eri_gb` | float | `0.5` | > 0 | Dense tensor cap. An error with `rsgdf`. |
+| `ewald_start` | string | `"staged"` | `staged` `direct` | Open-shell SCF with `exxdiv = "ewald"` only. |
+| `denominators` | string | **required** for `rimp2`/`pdep-rpa` | `shifted` `unshifted` | An error on other kinds. |
+| `frozen_core` | integer | `0` | ≥ 0 | `rimp2`/`pdep-rpa` only. |
+| `quad_points` | integer | `40` | ≥ 1 | `pdep-rpa` only. Gamma point needs `jk = "rsgdf"`. |
+| `drpa_energy` | string | `"quadrature"` | `quadrature` `plasmon` `second-order` | `pdep-rpa` with `kmesh` only. |
+| `grad_conv` | float | `1e-9` | > 0 | k-point SCF orbital-gradient threshold. Requires `kmesh`. |
+| `n_radial` | integer | `75` | | Periodic XC grid. Kohn-Sham only. |
+| `n_angular` | integer | `302` | Lebedev order | Periodic XC grid. Kohn-Sham only. |
+| `neighbour_cutoff` | float | max(10 Bohr, covering-radius bound) | > 0, in `unit` | Periodic XC grid image cutoff. Kohn-Sham only. |
+
+Periodic `[scf]` defaults are `max_iter = 200`, `density_conv = 1e-10` and
+`energy_conv = 1e-12`, not the molecular ones.

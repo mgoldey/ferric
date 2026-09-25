@@ -1031,6 +1031,217 @@ pub fn run_pdep_rpa_from_intermediates(
     })
 }
 
+/// Full-rank closed-shell dRPA energy from caller-supplied parts: RI
+/// intermediates plus the ACTIVE occupied/virtual orbital energies, with no
+/// `Molecule`, orbital `PreparedBasis` or aux `PreparedBasis`.
+///
+/// Added for the periodic (Gamma-point) driver in `ferric-pbc`, whose
+/// `b_ov` comes from a lattice-summed, lindep-filtered RS-GDF tensor: there
+/// is no molecular aux basis whose `nbasis()` equals `inter.naux` (the
+/// filter drops metric eigenvectors), and the denominators carry a Madelung
+/// shift the caller applies itself, so neither `dfbs` nor `rhf.eps_r()` can be
+/// read here. [`run_pdep_rpa_from_intermediates`] is NOT modified and does
+/// not call this function; the molecular path is unchanged by construction.
+///
+/// # What it runs (the same calls as the molecular default path)
+///
+/// The `(Eigensolver::Lanczos, Chi0Sparsity::Dense)` arm of
+/// `run_pdep_rpa_eigensolve` (full-rank identity seed →
+/// [`lanczos::run_lanczos_full_rank_budgeted`], i.e. one dense `eigh` of
+/// `ε̃(0) = I + Π(0)`), the same `|λ − 1| > trunc_thresh` mode count, then
+/// the same frequency evaluators and energy integrators as
+/// [`run_pdep_rpa_from_intermediates`]. Fed the molecular `inter` and
+/// `rhf.eps_r()` slices with an admissible config, it returns the
+/// molecular energy bit for bit (`ferric-pbc/tests/pbc_drpa.rs`).
+///
+/// # Refused configurations (config honesty: errors, never silent)
+///
+/// * `trunc_thresh != 0` — PDEP truncation on this path is unmeasured, and
+///   the molecular atom seed it would select sizes itself from
+///   `dfbs.natoms()`, which does not exist here.
+/// * `chi0_sparsity` other than `Dense` — the Boys-screened path rebuilds a
+///   molecular 3-index tensor.
+/// * `chi0_backend` other than `Dense`, `eigensolver` other than `Lanczos` —
+///   not needed by any caller yet; refused rather than half-supported.
+/// * shape mismatches between `b_ov`, `naux`, `v_inv_sqrt`, `nocc`, `nvir`
+///   and the energy slices; any non-positive or non-finite `e_ia`.
+///
+/// `config.frozen_core` is ignored (it is baked into `inter` and the slices
+/// by the caller). The memory ceiling check is the molecular one
+/// ([`budget::estimate_peak_bytes`] with no resident AO tensor, `nao = 0`),
+/// without a pool reservation: the caller owns the `b_ov` it passes in.
+pub fn run_pdep_rpa_from_parts(
+    inter: &ferric_mp2::rimp2::RpaIntermediates,
+    eps_occ: &[f64],
+    eps_vir: &[f64],
+    config: &PdepRpaConfig,
+) -> Result<PdepRpaResult, FerricError> {
+    let (nocc, nvir, naux) = (inter.nocc, inter.nvir, inter.naux);
+    let b_ov = &inter.b_ov;
+    let err = |m: String| {
+        Err(FerricError::General(format!(
+            "run_pdep_rpa_from_parts: {m}"
+        )))
+    };
+    if config.trunc_thresh != 0.0 {
+        return err(format!(
+            "trunc_thresh must be 0 (full rank) on this path, got {}",
+            config.trunc_thresh
+        ));
+    }
+    if !matches!(config.chi0_sparsity, Chi0Sparsity::Dense) {
+        return err("chi0_sparsity must be Dense (Boys screening needs a molecule)".into());
+    }
+    if !matches!(config.chi0_backend, Chi0Backend::Dense) {
+        return err("chi0_backend must be Dense".into());
+    }
+    if !matches!(config.eigensolver, Eigensolver::Lanczos) {
+        return err("eigensolver must be Lanczos (full-rank dense eigh)".into());
+    }
+    if config.quadrature.n_points == 0 {
+        return err("quadrature.n_points must be > 0".into());
+    }
+    if naux == 0 || nocc == 0 || nvir == 0 {
+        return err(format!(
+            "empty space (naux {naux}, nocc {nocc}, nvir {nvir})"
+        ));
+    }
+    if b_ov.dim() != (naux, nocc * nvir) {
+        return err(format!(
+            "b_ov is {:?}, expected (naux, nocc·nvir) = ({naux}, {})",
+            b_ov.dim(),
+            nocc * nvir
+        ));
+    }
+    if inter.v_inv_sqrt.ncols() != naux {
+        return err(format!(
+            "v_inv_sqrt is {:?}, expected {naux} columns",
+            inter.v_inv_sqrt.dim()
+        ));
+    }
+    if eps_occ.len() != nocc || eps_vir.len() != nvir {
+        return err(format!(
+            "{} occupied / {} virtual energies for nocc {nocc}, nvir {nvir}",
+            eps_occ.len(),
+            eps_vir.len()
+        ));
+    }
+    let homo = eps_occ.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let lumo = eps_vir.iter().copied().fold(f64::INFINITY, f64::min);
+    if !(homo.is_finite() && lumo.is_finite() && lumo - homo > 0.0) {
+        return err(format!(
+            "every e_ia = ε_a − ε_i must be finite and > 0 (HOMO {homo}, LUMO {lumo}); the dRPA \
+             frequency integral is undefined otherwise"
+        ));
+    }
+
+    // Molecular-style ceiling check (no AO tensor on this path).
+    let n_workers = rayon::current_num_threads().max(1);
+    let est = budget::estimate_peak_bytes(budget::PeakEstimateShape {
+        naux,
+        nocc,
+        nvir,
+        n_quad: config.quadrature.n_points,
+        n_workers,
+        n_keep: naux,
+        grid: None,
+        nao: 0,
+        need_inv_dielectric: config.need_inv_dielectric_freq,
+    });
+    ferric_core::memory::check_alloc(
+        &format!(
+            "PDEP-RPA (from parts) preflight (naux={naux}, nocc={nocc}, nvir={nvir}, \
+             n_workers={n_workers})"
+        ),
+        est,
+        ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes),
+    )?;
+
+    // Eigensolve: the (Lanczos, Dense) full-rank arm, verbatim.
+    let nov = nocc * nvir;
+    let lz = lanczos::run_lanczos_full_rank_budgeted(
+        naux,
+        nov,
+        |v: &Array2<f64>| sternheimer::dielectric_apply(v, b_ov, eps_occ, eps_vir, 0.0),
+        naux,
+        config.memory_budget_bytes,
+    )?;
+    let n_keep = lz
+        .eigenvalues
+        .iter()
+        .filter(|&&lam| (lam - 1.0).abs() > config.trunc_thresh)
+        .count()
+        .max(1);
+    let eigenvalues_static: Vec<f64> = lz.eigenvalues[..n_keep].to_vec();
+    let eigenvectors = lz.eigenvectors.slice(ndarray::s![.., ..n_keep]).to_owned();
+    let eigenpotentials_aux = inter.v_inv_sqrt.dot(&eigenvectors);
+    let (quad_freqs, quad_weights) = quadrature::build_quadrature(&config.quadrature);
+
+    let logdet_ok = !config.need_eigenvalues_freq && !config.need_inv_dielectric_freq;
+    let (e_rpa, eigenvalues_freq) = if logdet_ok {
+        let s = energy::eval_trace_log_summands_budgeted(
+            &eigenvectors,
+            b_ov,
+            eps_occ,
+            eps_vir,
+            &quad_freqs,
+            config.memory_budget_bytes,
+        )?;
+        (
+            energy::rpa_correlation_energy_from_summands(&quad_weights, &s),
+            Array2::<f64>::zeros((0, 0)),
+        )
+    } else {
+        let ev = energy::eval_eigenvalues_at_frequencies_budgeted(
+            &eigenvectors,
+            b_ov,
+            eps_occ,
+            eps_vir,
+            &quad_freqs,
+            config.memory_budget_bytes,
+        )?;
+        (energy::rpa_correlation_energy(&quad_weights, &ev), ev)
+    };
+    let inv_dielectric_freq = if config.need_inv_dielectric_freq {
+        Some(energy::eval_inv_dielectric_matrices(
+            &eigenvectors,
+            b_ov,
+            eps_occ,
+            eps_vir,
+            &quad_freqs,
+        )?)
+    } else {
+        None
+    };
+    let e_rpa_dft_diag = if config.run_diagnostics {
+        Some(diagnostics::ri_drpa_energy(
+            b_ov,
+            eps_occ,
+            eps_vir,
+            &quad_freqs,
+            &quad_weights,
+        )?)
+    } else {
+        None
+    };
+    if !e_rpa.is_finite() {
+        return err(format!("non-finite dRPA energy {e_rpa}"));
+    }
+    Ok(PdepRpaResult {
+        e_rpa,
+        n_eigenpotentials: n_keep,
+        eigenvalues_static,
+        eigenpotentials: eigenpotentials_aux,
+        dressed_eigenvectors: eigenvectors,
+        quad_freqs,
+        quad_weights,
+        eigenvalues_freq,
+        inv_dielectric_freq,
+        e_rpa_dft_diag,
+        eigensolver_converged: lz.converged,
+    })
+}
+
 /// Open-shell PDEP-RPA energy (UHF or ROHF reference).
 ///
 /// Dispatches on `rhf.spin`:
@@ -1137,7 +1348,6 @@ pub fn run_u_pdep_rpa(
     };
     let inter_a = compute_rpa_intermediates_spin(mol, obs, dfbs, op, rhf, &mp2_cfg, true)?;
     let inter_b = compute_rpa_intermediates_spin(mol, obs, dfbs, op, rhf, &mp2_cfg, false)?;
-    let naux = inter_a.naux;
     debug_assert_eq!(inter_a.naux, inter_b.naux);
 
     let eps_occ_a: Vec<f64> =
@@ -1150,6 +1360,179 @@ pub fn run_u_pdep_rpa(
         eps_b_full[inter_b.first_occ..inter_b.first_occ + inter_b.nocc].to_vec();
     let eps_vir_b: Vec<f64> =
         eps_b_full[inter_b.nocc_total..inter_b.nocc_total + inter_b.nvir].to_vec();
+
+    // Everything below reads only the two intermediates, the four energy
+    // slices and `config` (no mol/obs/dfbs/rhf), so it is shared verbatim with
+    // `run_u_pdep_rpa_from_parts` — bit-identical by construction.
+    u_pdep_rpa_core(
+        &inter_a, &inter_b, &eps_occ_a, &eps_vir_a, &eps_occ_b, &eps_vir_b, config,
+    )
+}
+
+/// Open-shell full-rank dRPA energy from caller-supplied parts: the two
+/// per-spin RI intermediates (sharing ONE aux metric) plus each spin's ACTIVE
+/// occupied/virtual orbital energies, with no `Molecule`, orbital
+/// `PreparedBasis`, aux `PreparedBasis` or `ScfResult`.
+///
+/// The open-shell sibling of [`run_pdep_rpa_from_parts`], added for the
+/// periodic (Gamma-point) UHF driver in `ferric-pbc`, whose `b_ov` per spin is
+/// transformed from ONE lattice-summed, lindep-filtered RS-GDF tensor and
+/// whose occupied energies carry a per-spin Madelung shift the caller
+/// applies. It runs exactly the post-intermediate part of
+/// [`run_u_pdep_rpa`] (which calls the same private core): spin-summed
+/// `ε̃(0) = I + Π_α + Π_β` (per-spin χ₀ prefactor 2), full-rank eigensolve,
+/// the same frequency evaluator and energy integrator.
+///
+/// # Refused configurations (config honesty: errors, never silent)
+///
+/// * `trunc_thresh != 0`, `chi0_sparsity != Dense`, `chi0_backend != Dense`,
+///   `eigensolver != Lanczos` — as in the closed-shell parts path.
+/// * `inter_a.naux != inter_b.naux` — a typed error here (the molecular path
+///   only `debug_assert`s it): the spin-summed dielectric is meaningless
+///   unless both channels live in the SAME aux basis.
+/// * shape mismatches between each `b_ov`, `naux`, `v_inv_sqrt`, `nocc`,
+///   `nvir` and the energy slices; any non-positive or non-finite `e_ia` in a
+///   non-empty channel; both channels empty.
+///
+/// One EMPTY spin channel (`nocc = 0` or `nvir = 0`, e.g. a high-spin
+/// reference with no β electron) is accepted: it contributes nothing to Π.
+/// `config.frozen_core` is ignored (baked into `inter_*` and the slices by
+/// the caller). The memory ceiling check is the molecular one (sum of the
+/// per-spin [`budget::estimate_peak_bytes`], no resident AO tensor).
+pub fn run_u_pdep_rpa_from_parts(
+    inter_a: &ferric_mp2::rimp2::RpaIntermediates,
+    inter_b: &ferric_mp2::rimp2::RpaIntermediates,
+    eps_occ_a: &[f64],
+    eps_vir_a: &[f64],
+    eps_occ_b: &[f64],
+    eps_vir_b: &[f64],
+    config: &PdepRpaConfig,
+) -> Result<PdepRpaResult, FerricError> {
+    let err = |m: String| {
+        Err(FerricError::General(format!(
+            "run_u_pdep_rpa_from_parts: {m}"
+        )))
+    };
+    if config.trunc_thresh != 0.0 {
+        return err(format!(
+            "trunc_thresh must be 0 (full rank) on this path, got {}",
+            config.trunc_thresh
+        ));
+    }
+    if !matches!(config.chi0_sparsity, Chi0Sparsity::Dense) {
+        return err("chi0_sparsity must be Dense (Boys screening needs a molecule)".into());
+    }
+    if !matches!(config.chi0_backend, Chi0Backend::Dense) {
+        return err("chi0_backend must be Dense".into());
+    }
+    if !matches!(config.eigensolver, Eigensolver::Lanczos) {
+        return err("eigensolver must be Lanczos (full-rank dense eigh)".into());
+    }
+    if config.quadrature.n_points == 0 {
+        return err("quadrature.n_points must be > 0".into());
+    }
+    if inter_a.naux != inter_b.naux {
+        return err(format!(
+            "alpha and beta intermediates have different aux dimensions ({} vs {}); the \
+             spin-summed dielectric needs ONE shared aux basis",
+            inter_a.naux, inter_b.naux
+        ));
+    }
+    let naux = inter_a.naux;
+    if naux == 0 {
+        return err("empty aux space (naux = 0)".into());
+    }
+    let mut any_nonempty = false;
+    for (label, inter, eo, ev) in [
+        ("alpha", inter_a, eps_occ_a, eps_vir_a),
+        ("beta", inter_b, eps_occ_b, eps_vir_b),
+    ] {
+        let (nocc, nvir) = (inter.nocc, inter.nvir);
+        if inter.b_ov.dim() != (naux, nocc * nvir) {
+            return err(format!(
+                "{label} b_ov is {:?}, expected (naux, nocc·nvir) = ({naux}, {})",
+                inter.b_ov.dim(),
+                nocc * nvir
+            ));
+        }
+        if inter.v_inv_sqrt.ncols() != naux {
+            return err(format!(
+                "{label} v_inv_sqrt is {:?}, expected {naux} columns",
+                inter.v_inv_sqrt.dim()
+            ));
+        }
+        if eo.len() != nocc || ev.len() != nvir {
+            return err(format!(
+                "{label}: {} occupied / {} virtual energies for nocc {nocc}, nvir {nvir}",
+                eo.len(),
+                ev.len()
+            ));
+        }
+        if nocc == 0 || nvir == 0 {
+            continue;
+        }
+        any_nonempty = true;
+        let homo = eo.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let lumo = ev.iter().copied().fold(f64::INFINITY, f64::min);
+        if !(homo.is_finite() && lumo.is_finite() && lumo - homo > 0.0) {
+            return err(format!(
+                "{label}: every e_ia = ε_a − ε_i must be finite and > 0 (HOMO {homo}, LUMO \
+                 {lumo}); the dRPA frequency integral is undefined otherwise"
+            ));
+        }
+    }
+    if !any_nonempty {
+        return err("both spin channels are empty (no occupied-virtual pair)".into());
+    }
+
+    // Molecular-style ceiling check (per-spin sum, no AO tensor on this path).
+    let n_workers = rayon::current_num_threads().max(1);
+    let est = |nocc: usize, nvir: usize, need_inv: bool| {
+        budget::estimate_peak_bytes(budget::PeakEstimateShape {
+            naux,
+            nocc,
+            nvir,
+            n_quad: config.quadrature.n_points,
+            n_workers,
+            n_keep: naux,
+            grid: None,
+            nao: 0,
+            need_inv_dielectric: need_inv,
+        })
+    };
+    let total = est(inter_a.nocc, inter_a.nvir, config.need_inv_dielectric_freq)
+        .saturating_add(est(inter_b.nocc, inter_b.nvir, false));
+    ferric_core::memory::check_alloc(
+        &format!(
+            "U-PDEP-RPA (from parts) preflight (naux={naux}, nocc_a={}, nvir_a={}, nocc_b={}, \
+             nvir_b={}, n_workers={n_workers})",
+            inter_a.nocc, inter_a.nvir, inter_b.nocc, inter_b.nvir
+        ),
+        total,
+        ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes),
+    )?;
+
+    let r = u_pdep_rpa_core(
+        inter_a, inter_b, eps_occ_a, eps_vir_a, eps_occ_b, eps_vir_b, config,
+    )?;
+    if !r.e_rpa.is_finite() {
+        return err(format!("non-finite dRPA energy {}", r.e_rpa));
+    }
+    Ok(r)
+}
+
+/// The shared post-intermediate body of [`run_u_pdep_rpa`] and
+/// [`run_u_pdep_rpa_from_parts`] (moved verbatim out of `run_u_pdep_rpa`).
+fn u_pdep_rpa_core(
+    inter_a: &ferric_mp2::rimp2::RpaIntermediates,
+    inter_b: &ferric_mp2::rimp2::RpaIntermediates,
+    eps_occ_a: &[f64],
+    eps_vir_a: &[f64],
+    eps_occ_b: &[f64],
+    eps_vir_b: &[f64],
+    config: &PdepRpaConfig,
+) -> Result<PdepRpaResult, FerricError> {
+    let naux = inter_a.naux;
 
     let max_vecs = if config.eigensolver_max_vecs == 0 {
         // Budget-derived default, capped at the historical 3·naux (see the
@@ -1170,13 +1553,13 @@ pub fn run_u_pdep_rpa(
     )> = match config.chi0_backend {
         Chi0Backend::Dense => None,
         Chi0Backend::Laplace { n_quad } => {
-            let qa = laplace_chi0::build_laplace_for_gaps(&eps_occ_a, &eps_vir_a, n_quad)?;
+            let qa = laplace_chi0::build_laplace_for_gaps(eps_occ_a, eps_vir_a, n_quad)?;
             let qb = if eps_occ_b.is_empty() {
                 // Empty spin channel: build a degenerate quadrature; it
                 // never gets used in the per-spin accumulator (early-out).
                 qa.clone()
             } else {
-                laplace_chi0::build_laplace_for_gaps(&eps_occ_b, &eps_vir_b, n_quad)?
+                laplace_chi0::build_laplace_for_gaps(eps_occ_b, eps_vir_b, n_quad)?
             };
             Some((qa, qb))
         }
@@ -1212,10 +1595,10 @@ pub fn run_u_pdep_rpa(
     // buffers, so every number produced is bit-identical.
     let b_a = &inter_a.b_ov;
     let b_b = &inter_b.b_ov;
-    let ea_o = &eps_occ_a;
-    let ea_v = &eps_vir_a;
-    let eb_o = &eps_occ_b;
-    let eb_v = &eps_vir_b;
+    let ea_o = eps_occ_a;
+    let ea_v = eps_vir_a;
+    let eb_o = eps_occ_b;
+    let eb_v = eps_vir_b;
     let lap_for_solver = laplace_pair.clone();
 
     let davidson_result = match (config.eigensolver, lap_for_solver) {
@@ -1291,8 +1674,8 @@ pub fn run_u_pdep_rpa(
 
     let (quad_freqs, quad_weights) = quadrature::build_quadrature(&config.quadrature);
 
-    let freq_chan_a = channel::RpaChannel::new(&inter_a.b_ov, &eps_occ_a, &eps_vir_a);
-    let freq_chan_b = channel::RpaChannel::new(&inter_b.b_ov, &eps_occ_b, &eps_vir_b);
+    let freq_chan_a = channel::RpaChannel::new(&inter_a.b_ov, eps_occ_a, eps_vir_a);
+    let freq_chan_b = channel::RpaChannel::new(&inter_b.b_ov, eps_occ_b, eps_vir_b);
     let eigenvalues_freq = match laplace_pair.as_ref() {
         None => energy::eval_eigenvalues_at_frequencies_unrestricted(
             &eigenvectors,

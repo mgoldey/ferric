@@ -33,7 +33,7 @@ from pathlib import Path
 import pytest
 
 CRATE = Path(__file__).resolve().parents[1]
-SRC = CRATE / "src" / "lib.rs"
+SRC = CRATE / "src"
 PYI = CRATE / "ferric.pyi"
 
 # Top-level stub names that exist only for type checkers and are deliberately
@@ -73,7 +73,9 @@ def _balanced(text: str, open_idx: int) -> str:
 
 @pytest.fixture(scope="module")
 def src() -> str:
-    return SRC.read_text()
+    # Every source file: lib.rs registers most bindings, but submodules
+    # (pbc.rs's `register`) add their own `wrap_pyfunction!` / `add_class`.
+    return "\n".join(p.read_text() for p in sorted(SRC.rglob("*.rs")))
 
 
 @pytest.fixture(scope="module")
@@ -165,14 +167,14 @@ def test_every_registered_function_is_in_the_stub(src, stub):
     missing = [
         n for n in _exported_functions(src) if not re.search(rf"^def {n}\(", stub, re.M)
     ]
-    assert not missing, f"registered in lib.rs but absent from ferric.pyi: {missing}"
+    assert not missing, f"registered in src/ but absent from ferric.pyi: {missing}"
 
 
 def test_every_registered_class_is_in_the_stub(src, stub):
     missing = [
         c for c in _exported_classes(src) if not re.search(rf"^class {c}\b", stub, re.M)
     ]
-    assert not missing, f"registered in lib.rs but absent from ferric.pyi: {missing}"
+    assert not missing, f"registered in src/ but absent from ferric.pyi: {missing}"
 
 
 def test_stub_parameters_match_the_binding(src, stub):
@@ -196,7 +198,7 @@ def test_every_stub_function_is_registered(src, stub):
         for n in _stub_top_level(stub)["def"]
         if n not in registered and n not in STUB_ONLY
     ]
-    assert not stale, f"declared in ferric.pyi but not registered in lib.rs: {stale}"
+    assert not stale, f"declared in ferric.pyi but not registered in src/: {stale}"
 
 
 def test_every_stub_class_is_registered(src, stub):
@@ -206,7 +208,7 @@ def test_every_stub_class_is_registered(src, stub):
         for c in _stub_top_level(stub)["class"]
         if c not in registered and c not in STUB_ONLY
     ]
-    assert not stale, f"declared in ferric.pyi but not registered in lib.rs: {stale}"
+    assert not stale, f"declared in ferric.pyi but not registered in src/: {stale}"
 
 
 def test_every_stub_constant_is_registered(src, stub):
@@ -216,4 +218,4 @@ def test_every_stub_constant_is_registered(src, stub):
         for c in _stub_top_level(stub)["constant"]
         if c not in registered and c not in STUB_ONLY
     ]
-    assert not stale, f"declared in ferric.pyi but not registered in lib.rs: {stale}"
+    assert not stale, f"declared in ferric.pyi but not registered in src/: {stale}"

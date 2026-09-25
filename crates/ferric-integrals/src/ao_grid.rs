@@ -998,10 +998,15 @@ pub fn eval_basis_and_grad_on_points_unchecked(
     Ok((chi, dchi))
 }
 
-/// Per-shell evaluation of χ, ∇χ, and ∇∇χ (the Hessian) for s and p shells only.
+/// Per-shell evaluation of χ, ∇χ, and ∇∇χ (the Hessian).
 ///
 /// `hess_buf[a*3+b][i]` = ∂²χ_i/∂x_a ∂x_b for the i-th basis function.
-fn eval_shell_grad_hess(
+///
+/// Public so `ferric_pbc`'s periodic XC gradient can evaluate lattice-image
+/// shells one at a time (skipping shells beyond their extent), the
+/// `ValueGradHess` twin of [`eval_shell_and_grad`]. Callers zero
+/// `out`/`out_grad`/`out_hess` first, as the dense evaluator does.
+pub fn eval_shell_grad_hess(
     sh: &LocatedShell,
     dx: f64,
     dy: f64,

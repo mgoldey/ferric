@@ -88,18 +88,28 @@ pub(crate) fn prepare<'a>(
     prep: &PreparedBasis,
     config: &RhfConfig,
     k_mix: &ferric_dft::xc_trait::KMix,
+    pre: Option<(Array2<f64>, Array2<f64>, f64)>,
 ) -> Result<ScfEnv<'a>, FerricError> {
-    let s = oneelectron::overlap(prep);
-    let h = oneelectron::hcore_ecp_with_external(
-        prep,
-        mol,
-        prep.basis_set(),
-        config.external_potential.as_ref(),
-    )?;
-    let vnn = mol.nuclear_repulsion()
-        + config.external_potential.as_ref().map_or(0.0, |ext| {
-            ext.charge_nuclear_energy(mol) + ext.field_nuclear_energy(mol)
-        });
+    // `pre` = caller-supplied (S, h, V_nn) — the periodic injection path
+    // (`rhf::solve_rhf_injected`). `None` runs exactly the molecular build
+    // below, so every molecular caller is byte-identical.
+    let (s, h, vnn) = match pre {
+        Some(injected) => injected,
+        None => {
+            let s = oneelectron::overlap(prep);
+            let h = oneelectron::hcore_ecp_with_external(
+                prep,
+                mol,
+                prep.basis_set(),
+                config.external_potential.as_ref(),
+            )?;
+            let vnn = mol.nuclear_repulsion()
+                + config.external_potential.as_ref().map_or(0.0, |ext| {
+                    ext.charge_nuclear_energy(mol) + ext.field_nuclear_energy(mol)
+                });
+            (s, h, vnn)
+        }
+    };
     let cosmo_cavity = match config.cosmo.as_ref() {
         Some(cfg) => Some(crate::cosmo::CosmoCavity::build(mol, cfg)?),
         None => None,

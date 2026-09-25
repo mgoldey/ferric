@@ -443,6 +443,67 @@ impl Engine {
         &self.buf[..written as usize]
     }
 
+    /// [`Self::compute_1e_block`] with shell `sh2` translated by `shift`
+    /// (Bohr): `⟨sh1 | op | sh2(r − shift)⟩`, row-major `(n1, n2)`.
+    ///
+    /// The building block of periodic lattice sums, e.g.
+    /// `S_latt[μ,ν] = Σ_L ⟨μ_0|ν_L⟩`, without an image `PreparedBasis`.
+    /// Per-image blocks are NOT symmetric (`⟨μ_0|ν_L⟩ = ⟨ν_0|μ_{−L}⟩`), so
+    /// callers fill full blocks. For a nuclear-type engine the point charges
+    /// are whatever was last set (they do not move with the shell).
+    /// `shift = [0.0; 3]` is bitwise equal to `compute_1e_block`.
+    ///
+    /// Errors (instead of panicking) on out-of-range shells, a non-finite
+    /// shift, or a libint2 exception caught in the shim.
+    pub fn compute_1e_block_shifted(
+        &mut self,
+        prep: &PreparedBasis,
+        sh1: usize,
+        sh2: usize,
+        shift: [f64; 3],
+    ) -> Result<&[f64], FerricError> {
+        let dims = prep.shell_dims();
+        if sh1 >= dims.len() || sh2 >= dims.len() {
+            return Err(FerricError::Libint(format!(
+                "compute_1e_block_shifted: shell ({sh1},{sh2}) out of range (nshells {})",
+                dims.len()
+            )));
+        }
+        if !shift.iter().all(|v| v.is_finite()) {
+            return Err(FerricError::Libint(format!(
+                "compute_1e_block_shifted: non-finite shift {shift:?}"
+            )));
+        }
+        let n = dims[sh1] * dims[sh2];
+        if self.buf.len() < n {
+            self.buf.resize(n, 0.0);
+        }
+        // SAFETY: valid engine/basis handles; shells range-checked above;
+        // `shift` is 3 contiguous f64 alive for the call; `self.buf` holds >= n
+        // doubles. The shim catches every C++ exception (status < 0).
+        let written = unsafe {
+            ffi::scf_compute_1e_block_shifted(
+                self.handles[0].1,
+                prep.handle(),
+                sh1 as c_int,
+                sh2 as c_int,
+                shift.as_ptr(),
+                self.buf.as_mut_ptr(),
+            )
+        };
+        if written < 0 {
+            return Err(FerricError::Libint(format!(
+                "scf_compute_1e_block_shifted ({sh1},{sh2}) failed: status {written}"
+            )));
+        }
+        if written as usize != n {
+            return Err(FerricError::Libint(format!(
+                "scf_compute_1e_block_shifted ({sh1},{sh2}) wrote {written} values, expected {n}"
+            )));
+        }
+        Ok(&self.buf[..n])
+    }
+
     /// Create a first-derivative one-electron integral engine.
     pub fn new_1e_deriv(
         op_kind: c_int,
@@ -593,6 +654,85 @@ impl Engine {
         } else {
             Some(&self.buf[..written as usize])
         }
+    }
+
+    /// [`Self::compute_1e_deriv_block`] with shell `sh2` translated by
+    /// `shift` (Bohr): the 6 first-derivative blocks
+    /// `[dx_bra, dy_bra, dz_bra, dx_ket, dy_ket, dz_ket]` (each row-major
+    /// `(n1, n2)`) of `⟨sh1 | op | sh2(r − shift)⟩`, for an OVERLAP or
+    /// KINETIC derivative engine ([`Self::new_1e_deriv`]). The periodic
+    /// lattice-sum primitive of the Gamma-point gradient
+    /// (`ferric_pbc::grad`), with no image `PreparedBasis`.
+    ///
+    /// Buffer sizing is ENFORCED, not assumed (Reliability Conventions, "1e
+    /// deriv sizing"): the shim receives the buffer capacity (`6 n1 n2`) and
+    /// refuses a result that would not fit — a nuclear engine (which writes
+    /// `3(2 + n_charges)` blocks) therefore errors instead of overrunning.
+    /// `shift = [0.0; 3]` is bitwise equal to `compute_1e_deriv_block`.
+    ///
+    /// Returns `Ok(None)` if libint2 screened the pair; errors on an
+    /// out-of-range shell, a non-finite shift, a non-6-block result, or a
+    /// libint2 exception caught in the shim.
+    pub fn compute_1e_deriv_block_shifted(
+        &mut self,
+        prep: &PreparedBasis,
+        sh1: usize,
+        sh2: usize,
+        shift: [f64; 3],
+    ) -> Result<Option<&[f64]>, FerricError> {
+        let dims = prep.shell_dims();
+        if sh1 >= dims.len() || sh2 >= dims.len() {
+            return Err(FerricError::Libint(format!(
+                "compute_1e_deriv_block_shifted: shell ({sh1},{sh2}) out of range (nshells {})",
+                dims.len()
+            )));
+        }
+        if !shift.iter().all(|v| v.is_finite()) {
+            return Err(FerricError::Libint(format!(
+                "compute_1e_deriv_block_shifted: non-finite shift {shift:?}"
+            )));
+        }
+        let n = dims[sh1] * dims[sh2];
+        let total = 6 * n;
+        if self.buf.len() < total {
+            self.buf.resize(total, 0.0);
+        }
+        let cap = c_int::try_from(self.buf.len()).map_err(|_| {
+            FerricError::Libint("compute_1e_deriv_block_shifted: buffer exceeds c_int".into())
+        })?;
+        // SAFETY: valid engine/basis handles; shells range-checked above;
+        // `shift` is 3 contiguous f64 alive for the call; `self.buf` holds
+        // `cap` doubles and the shim writes at most `cap` (it checks
+        // nderiv*n <= cap before writing). The shim catches every C++
+        // exception (status < 0).
+        let written = unsafe {
+            ffi::scf_compute_1e_deriv_block_shifted(
+                self.handles[0].1,
+                prep.handle(),
+                sh1 as c_int,
+                sh2 as c_int,
+                shift.as_ptr(),
+                self.buf.as_mut_ptr(),
+                cap,
+            )
+        };
+        if written < 0 {
+            return Err(FerricError::Libint(format!(
+                "scf_compute_1e_deriv_block_shifted ({sh1},{sh2}) failed: status {written} \
+                 (SCF_EINVAL = -1 also means a non-overlap/kinetic engine whose result \
+                 would not fit 6 blocks)"
+            )));
+        }
+        if written == 0 {
+            return Ok(None);
+        }
+        if written as usize != total {
+            return Err(FerricError::Libint(format!(
+                "scf_compute_1e_deriv_block_shifted ({sh1},{sh2}) wrote {written} values, \
+                 expected 6 blocks = {total}"
+            )));
+        }
+        Ok(Some(&self.buf[..total]))
     }
 
     /// Create a 3-center integral engine for density fitting: (P|mu nu).
@@ -843,6 +983,105 @@ impl Engine {
         }
     }
 
+    /// [`Self::compute_eri3`] with every shell translated:
+    /// `(P(r − s_P) | μ(r − s_1) ν(r − s_2))`, `shifts = [s_P, s_1, s_2]`
+    /// (Bohr). Output layout is the same P-major `(nP, n1, n2)` block.
+    ///
+    /// The periodic lattice-sum primitive (stage1-design.md §4): e.g. the
+    /// Gaussian-nucleus short-range attraction `(g_{C,M} | μ_0 ν_L)` with
+    /// `s_P = M`, `s_1 = 0`, `s_2 = L`, without building image bases.
+    /// All-zero shifts are bitwise equal to `compute_eri3`.
+    ///
+    /// Returns `Ok(None)` if libint2 screened the triplet (as `compute_eri3`).
+    /// Errors (instead of panicking) on an out-of-range shell, a non-finite
+    /// shift, a terf/terfc table engine (no shifted variant), or a libint2
+    /// exception caught in the shim.
+    pub fn compute_eri3_shifted(
+        &mut self,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        sh_p: usize,
+        sh1: usize,
+        sh2: usize,
+        shifts: [[f64; 3]; 3],
+    ) -> Result<Option<&[f64]>, FerricError> {
+        if self.is_terfc {
+            return Err(FerricError::Libint(
+                "compute_eri3_shifted: terf/terfc table engines have no shifted variant".into(),
+            ));
+        }
+        let (odims, ddims) = (obs.shell_dims(), dfbs.shell_dims());
+        if sh_p >= ddims.len() || sh1 >= odims.len() || sh2 >= odims.len() {
+            return Err(FerricError::Libint(format!(
+                "compute_eri3_shifted: shells ({sh_p}|{sh1},{sh2}) out of range \
+                 (aux {}, obs {})",
+                ddims.len(),
+                odims.len()
+            )));
+        }
+        if !shifts.iter().flatten().all(|v| v.is_finite()) {
+            return Err(FerricError::Libint(format!(
+                "compute_eri3_shifted: non-finite shift {shifts:?}"
+            )));
+        }
+        let n = ddims[sh_p] * odims[sh1] * odims[sh2];
+        if self.buf.len() < n {
+            self.buf.resize(n, 0.0);
+        }
+        if self.scratch.len() < n {
+            self.scratch.resize(n, 0.0);
+        }
+        let flat: [f64; 9] = [
+            shifts[0][0],
+            shifts[0][1],
+            shifts[0][2],
+            shifts[1][0],
+            shifts[1][1],
+            shifts[1][2],
+            shifts[2][0],
+            shifts[2][1],
+            shifts[2][2],
+        ];
+        let mut any = false;
+        self.buf[..n].fill(0.0);
+        for &(coeff, h) in &self.handles {
+            // SAFETY: `h`, `obs.handle()`, `dfbs.handle()` are valid libint2
+            // handles; shells range-checked above; `flat` is 9 contiguous f64
+            // alive for the call; `self.scratch` holds >= n doubles. The shim
+            // catches every C++ exception (status < 0).
+            let written = unsafe {
+                ffi::scf_compute_eri3_shifted(
+                    h,
+                    obs.handle(),
+                    dfbs.handle(),
+                    sh_p as c_int,
+                    sh1 as c_int,
+                    sh2 as c_int,
+                    flat.as_ptr(),
+                    self.scratch.as_mut_ptr(),
+                )
+            };
+            if written < 0 {
+                return Err(FerricError::Libint(format!(
+                    "scf_compute_eri3_shifted ({sh_p}|{sh1},{sh2}) failed: status {written}"
+                )));
+            }
+            if written == 0 {
+                continue;
+            }
+            if written as usize != n {
+                return Err(FerricError::Libint(format!(
+                    "scf_compute_eri3_shifted ({sh_p}|{sh1},{sh2}) wrote {written} values, expected {n}"
+                )));
+            }
+            any = true;
+            for i in 0..n {
+                self.buf[i] += coeff * self.scratch[i];
+            }
+        }
+        Ok(if any { Some(&self.buf[..n]) } else { None })
+    }
+
     /// Compute a 2-center ERI shell pair (P|Q).
     pub fn compute_eri2(&mut self, dfbs: &PreparedBasis, sh_p: usize, sh_q: usize) -> &[f64] {
         let n = dfbs.shell_dims()[sh_p] * dfbs.shell_dims()[sh_q];
@@ -899,6 +1138,82 @@ impl Engine {
             }
         }
         &self.buf[..max_written]
+    }
+
+    /// [`Self::compute_eri2`] with the ket shell translated:
+    /// `(P | Q(r − s_Q))`, `shift_q = s_Q` (Bohr). Output layout is the same
+    /// row-major `(nP, nQ)` block; libint2-screened pairs come back as zeros
+    /// (as `compute_eri2`).
+    ///
+    /// The periodic aux-metric primitive (stage1-design.md §4): RS-GDF's
+    /// `Σ_T (P_0 | Q_T)_erfc` without building an image basis. A zero shift
+    /// is bitwise equal to `compute_eri2`.
+    ///
+    /// Errors (instead of panicking) on an out-of-range shell, a non-finite
+    /// shift, a terf/terfc table engine (no shifted variant), or a libint2
+    /// exception caught in the shim.
+    pub fn compute_eri2_shifted(
+        &mut self,
+        dfbs: &PreparedBasis,
+        sh_p: usize,
+        sh_q: usize,
+        shift_q: [f64; 3],
+    ) -> Result<&[f64], FerricError> {
+        if self.is_terfc {
+            return Err(FerricError::Libint(
+                "compute_eri2_shifted: terf/terfc table engines have no shifted variant".into(),
+            ));
+        }
+        let dims = dfbs.shell_dims();
+        if sh_p >= dims.len() || sh_q >= dims.len() {
+            return Err(FerricError::Libint(format!(
+                "compute_eri2_shifted: shells ({sh_p}|{sh_q}) out of range (aux {})",
+                dims.len()
+            )));
+        }
+        if !shift_q.iter().all(|v| v.is_finite()) {
+            return Err(FerricError::Libint(format!(
+                "compute_eri2_shifted: non-finite shift {shift_q:?}"
+            )));
+        }
+        let n = dims[sh_p] * dims[sh_q];
+        if self.buf.len() < n {
+            self.buf.resize(n, 0.0);
+        }
+        if self.scratch.len() < n {
+            self.scratch.resize(n, 0.0);
+        }
+        self.buf[..n].fill(0.0);
+        for &(coeff, h) in &self.handles {
+            // SAFETY: `h` and `dfbs.handle()` are valid libint2 handles;
+            // shells range-checked above; `shift_q` is 3 contiguous f64 alive
+            // for the call; `self.scratch` holds >= n doubles. The shim
+            // catches every C++ exception (status < 0).
+            let written = unsafe {
+                ffi::scf_compute_eri2_shifted(
+                    h,
+                    dfbs.handle(),
+                    sh_p as c_int,
+                    sh_q as c_int,
+                    shift_q.as_ptr(),
+                    self.scratch.as_mut_ptr(),
+                )
+            };
+            if written < 0 {
+                return Err(FerricError::Libint(format!(
+                    "scf_compute_eri2_shifted ({sh_p}|{sh_q}) failed: status {written}"
+                )));
+            }
+            if written as usize != n {
+                return Err(FerricError::Libint(format!(
+                    "scf_compute_eri2_shifted ({sh_p}|{sh_q}) wrote {written} values, expected {n}"
+                )));
+            }
+            for i in 0..n {
+                self.buf[i] += coeff * self.scratch[i];
+            }
+        }
+        Ok(&self.buf[..n])
     }
 
     /// Returns 12 blocks of n1*n2*n3*n4 doubles: [dx1..dz1, dx2..dz2, dx3..dz3, dx4..dz4].
@@ -1102,6 +1417,112 @@ impl Engine {
         }
     }
 
+    /// [`Self::compute_eri3_deriv`] with every shell translated, as
+    /// [`Self::compute_eri3_shifted`]: the 9 first-derivative blocks
+    /// `[d/d(P), d/d(sh1), d/d(sh2)] × [x, y, z]` (each `nP·n1·n2`) of
+    /// `(P(r − s_P) | μ(r − s_1) ν(r − s_2))`, `shifts = [s_P, s_1, s_2]`.
+    /// The Gaussian-nucleus SR attraction gradient of `ferric_pbc::grad`
+    /// (`s_P = M`, `s_1 = 0`, `s_2 = L`). All-zero shifts are bitwise equal
+    /// to `compute_eri3_deriv`. Composite operators are summed with their
+    /// coefficients.
+    ///
+    /// The shim receives the buffer capacity and refuses a result that would
+    /// not fit. Returns `Ok(None)` if every component was screened; errors on
+    /// an out-of-range shell, a non-finite shift, a terf/terfc table engine,
+    /// a result that is not 9 blocks, or a libint2 exception.
+    pub fn compute_eri3_deriv_shifted(
+        &mut self,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        sh_p: usize,
+        sh1: usize,
+        sh2: usize,
+        shifts: [[f64; 3]; 3],
+    ) -> Result<Option<&[f64]>, FerricError> {
+        if self.is_terfc || self.is_terf {
+            return Err(FerricError::Libint(
+                "compute_eri3_deriv_shifted: terf/terfc table engines have no shifted variant"
+                    .into(),
+            ));
+        }
+        let (odims, ddims) = (obs.shell_dims(), dfbs.shell_dims());
+        if sh_p >= ddims.len() || sh1 >= odims.len() || sh2 >= odims.len() {
+            return Err(FerricError::Libint(format!(
+                "compute_eri3_deriv_shifted: shells ({sh_p}|{sh1},{sh2}) out of range \
+                 (aux {}, obs {})",
+                ddims.len(),
+                odims.len()
+            )));
+        }
+        if !shifts.iter().flatten().all(|v| v.is_finite()) {
+            return Err(FerricError::Libint(format!(
+                "compute_eri3_deriv_shifted: non-finite shift {shifts:?}"
+            )));
+        }
+        let n = ddims[sh_p] * odims[sh1] * odims[sh2];
+        let total = 9 * n;
+        if self.buf.len() < total {
+            self.buf.resize(total, 0.0);
+        }
+        if self.scratch.len() < total {
+            self.scratch.resize(total, 0.0);
+        }
+        let cap = c_int::try_from(self.scratch.len()).map_err(|_| {
+            FerricError::Libint("compute_eri3_deriv_shifted: buffer exceeds c_int".into())
+        })?;
+        let flat: [f64; 9] = [
+            shifts[0][0],
+            shifts[0][1],
+            shifts[0][2],
+            shifts[1][0],
+            shifts[1][1],
+            shifts[1][2],
+            shifts[2][0],
+            shifts[2][1],
+            shifts[2][2],
+        ];
+        let mut any = false;
+        self.buf[..total].fill(0.0);
+        for &(coeff, h) in &self.handles {
+            // SAFETY: valid libint2 handles; shells range-checked above;
+            // `flat` is 9 contiguous f64 alive for the call; `self.scratch`
+            // holds `cap` doubles and the shim checks nderiv*n <= cap before
+            // writing. Every C++ exception is caught in the shim (status < 0).
+            let written = unsafe {
+                ffi::scf_compute_eri3_deriv_shifted(
+                    h,
+                    obs.handle(),
+                    dfbs.handle(),
+                    sh_p as c_int,
+                    sh1 as c_int,
+                    sh2 as c_int,
+                    flat.as_ptr(),
+                    self.scratch.as_mut_ptr(),
+                    cap,
+                )
+            };
+            if written < 0 {
+                return Err(FerricError::Libint(format!(
+                    "scf_compute_eri3_deriv_shifted ({sh_p}|{sh1},{sh2}) failed: status {written}"
+                )));
+            }
+            if written == 0 {
+                continue;
+            }
+            if written as usize != total {
+                return Err(FerricError::Libint(format!(
+                    "scf_compute_eri3_deriv_shifted ({sh_p}|{sh1},{sh2}) wrote {written} values, \
+                     expected 9 blocks = {total}"
+                )));
+            }
+            any = true;
+            for i in 0..total {
+                self.buf[i] += coeff * self.scratch[i];
+            }
+        }
+        Ok(if any { Some(&self.buf[..total]) } else { None })
+    }
+
     /// Compute 2-center ERI derivatives: 6 blocks (2 centers × 3 coords) of nP*nQ.
     pub fn compute_eri2_deriv(
         &mut self,
@@ -1150,6 +1571,97 @@ impl Engine {
         } else {
             Some(&self.buf[..max_written])
         }
+    }
+
+    /// [`Self::compute_eri2_deriv`] with the ket shell translated, as
+    /// [`Self::compute_eri2_shifted`]: the 6 first-derivative blocks
+    /// `[d/d(P), d/d(Q)] × [x, y, z]` (each `nP·nQ`, row-major `(P, Q)`) of
+    /// `(P | Q(r − s_Q))`, `shift_q = s_Q` (Bohr). The periodic aux-metric
+    /// derivative of the RS-GDF forces (`ferric_pbc::grad`,
+    /// `d/dC Σ_T (P_0 | Q_T)_erfc`). A zero shift is bitwise equal to
+    /// `compute_eri2_deriv`. Composite operators are summed with their
+    /// coefficients. For two centres `d/dQ = −d/dP` (translation
+    /// invariance); both blocks are returned as libint2 wrote them.
+    ///
+    /// The shim receives the buffer capacity and refuses a result that would
+    /// not fit. Returns `Ok(None)` if every component was screened; errors on
+    /// an out-of-range shell, a non-finite shift, a terf/terfc table engine,
+    /// a result that is not 6 blocks, or a libint2 exception.
+    pub fn compute_eri2_deriv_shifted(
+        &mut self,
+        dfbs: &PreparedBasis,
+        sh_p: usize,
+        sh_q: usize,
+        shift_q: [f64; 3],
+    ) -> Result<Option<&[f64]>, FerricError> {
+        if self.is_terfc || self.is_terf {
+            return Err(FerricError::Libint(
+                "compute_eri2_deriv_shifted: terf/terfc table engines have no shifted variant"
+                    .into(),
+            ));
+        }
+        let dims = dfbs.shell_dims();
+        if sh_p >= dims.len() || sh_q >= dims.len() {
+            return Err(FerricError::Libint(format!(
+                "compute_eri2_deriv_shifted: shells ({sh_p}|{sh_q}) out of range (aux {})",
+                dims.len()
+            )));
+        }
+        if !shift_q.iter().all(|v| v.is_finite()) {
+            return Err(FerricError::Libint(format!(
+                "compute_eri2_deriv_shifted: non-finite shift {shift_q:?}"
+            )));
+        }
+        let n = dims[sh_p] * dims[sh_q];
+        let total = 6 * n;
+        if self.buf.len() < total {
+            self.buf.resize(total, 0.0);
+        }
+        if self.scratch.len() < total {
+            self.scratch.resize(total, 0.0);
+        }
+        let cap = c_int::try_from(self.scratch.len()).map_err(|_| {
+            FerricError::Libint("compute_eri2_deriv_shifted: buffer exceeds c_int".into())
+        })?;
+        let mut any = false;
+        self.buf[..total].fill(0.0);
+        for &(coeff, h) in &self.handles {
+            // SAFETY: valid libint2 handles; shells range-checked above;
+            // `shift_q` is 3 contiguous f64 alive for the call;
+            // `self.scratch` holds `cap` doubles and the shim checks
+            // nderiv*n <= cap before writing. Every C++ exception is caught
+            // in the shim (status < 0).
+            let written = unsafe {
+                ffi::scf_compute_eri2_deriv_shifted(
+                    h,
+                    dfbs.handle(),
+                    sh_p as c_int,
+                    sh_q as c_int,
+                    shift_q.as_ptr(),
+                    self.scratch.as_mut_ptr(),
+                    cap,
+                )
+            };
+            if written < 0 {
+                return Err(FerricError::Libint(format!(
+                    "scf_compute_eri2_deriv_shifted ({sh_p}|{sh_q}) failed: status {written}"
+                )));
+            }
+            if written == 0 {
+                continue;
+            }
+            if written as usize != total {
+                return Err(FerricError::Libint(format!(
+                    "scf_compute_eri2_deriv_shifted ({sh_p}|{sh_q}) wrote {written} values, \
+                     expected 6 blocks = {total}"
+                )));
+            }
+            any = true;
+            for i in 0..total {
+                self.buf[i] += coeff * self.scratch[i];
+            }
+        }
+        Ok(if any { Some(&self.buf[..total]) } else { None })
     }
 }
 

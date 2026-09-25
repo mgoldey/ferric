@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Any, Sequence
 
 import numpy as np
 from numpy.typing import NDArray
@@ -293,6 +293,11 @@ class BasisSet:
     @staticmethod
     def bundled(name: str) -> BasisSet:
         """Load a bundled basis set by name (e.g. 'sto-3g', 'cc-pvdz-ri')."""
+        ...
+
+    @staticmethod
+    def from_bse_json(path: str) -> BasisSet:
+        """Load a Basis Set Exchange JSON file (contractions renormalised)."""
         ...
 
 class RhfResult:
@@ -1269,6 +1274,702 @@ class BoysResult:
         ...
 
 # ── Functions ──
+
+class GammaRhfResult:
+    """Result of run_rhf_gamma (closed-shell Gamma-point periodic RHF)."""
+
+    @property
+    def timings(self) -> dict[str, Any]:
+        """Stage timings and counters (observation only; energies are unaffected):
+        {"wall_s": float, "cpu_s": float | None, "unattributed_wall_s": float,
+        "stages": {name: {"wall_s": float, "cpu_s": float | None, "calls": int}},
+        "counters": {name: int}}. Stages are disjoint, in run order (hcore, J/K
+        build, SCF J/K/XC calls, correlation); counters include SR triplets,
+        G vectors, chunks and RS-GDF aux dropped."""
+        ...
+    @property
+    def energy(self) -> float:
+        """Total energy per cell (Hartree), incl. e_nuc and any Madelung shift."""
+        ...
+    @property
+    def converged(self) -> bool: ...
+    @property
+    def iterations(self) -> int: ...
+    @property
+    def e_nuc(self) -> float:
+        """Ewald nuclear repulsion per cell (Hartree)."""
+        ...
+    @property
+    def madelung(self) -> float:
+        """Gamma-point Madelung constant (a.u.); applied only for exxdiv='ewald'."""
+        ...
+    @property
+    def exxdiv(self) -> str: ...
+    @property
+    def omega(self) -> float:
+        """Nuclear-attraction Ewald split used, in 1/Angstrom."""
+        ...
+    @property
+    def nao(self) -> int: ...
+    @property
+    def n_g_half(self) -> int | None:
+        """Dense-AFT half-sphere G count; None for jk='rsgdf'."""
+        ...
+    @property
+    def jk(self) -> str:
+        """J/K builder used: 'dense' or 'rsgdf'."""
+        ...
+    @property
+    def auxbasis(self) -> str | None:
+        """RS-GDF aux basis name; None for jk='dense'."""
+        ...
+    @property
+    def naux(self) -> int | None: ...
+    @property
+    def naux_kept(self) -> int | None:
+        """Aux-metric eigenvectors kept (naux - n_dropped); None for dense."""
+        ...
+    @property
+    def n_dropped(self) -> int | None:
+        """Aux-metric eigenvalues <= 1e-10 dropped (lindep); None for dense."""
+        ...
+    def mo_energy(self) -> NDArray[np.float64]: ...
+    def mo_coeff(self) -> NDArray[np.float64]: ...
+    def density(self) -> NDArray[np.float64]: ...
+    def overlap(self) -> NDArray[np.float64]:
+        """Lattice-summed Gamma-point AO overlap."""
+        ...
+    def gradient(self) -> NDArray[np.float64] | None:
+        """Analytic nuclear gradient dE/dR (natoms x 3, Hartree/Bohr per cell) if
+        with_gradient=True, else None."""
+        ...
+    def stress(self) -> NDArray[np.float64] | None:
+        """Analytic stress sigma = (1/Omega) dE/deps (3 x 3, Hartree/Bohr^3; strain
+        of lattice rows AND atoms, pressure = -trace/3; not symmetrised) if
+        with_stress=True, else None."""
+        ...
+
+def run_rhf_gamma(
+    mol: Molecule,
+    lattice: Sequence[Sequence[float]],
+    basis_set: BasisSet,
+    exxdiv: str = "ewald",
+    omega: float | None = None,
+    max_eri_gb: float | None = None,
+    max_iter: int = 200,
+    density_conv: float = 1e-10,
+    jk: str = "dense",
+    auxbasis: BasisSet | str | None = None,
+    memory_budget_gb: float | None = None,
+    with_gradient: bool = False,
+    with_stress: bool = False,
+) -> GammaRhfResult:
+    """Closed-shell Gamma-point periodic RHF.
+
+    jk="dense" (default): the toy-scale dense pure-AFT nao^4 ERI oracle,
+    hard-capped by max_eri_gb (default 0.5 GiB). jk="rsgdf": range-separated
+    Gaussian density fitting; REQUIRES auxbasis (BasisSet or bundled name,
+    e.g. "cc-pvdz-ri"), bounded by memory_budget_gb (None = ferric's unified
+    budget). auxbasis/memory_budget_gb with "dense", or max_eri_gb with
+    "rsgdf", raise ValueError. lattice: 3x3 rows in Angstrom; omega in
+    1/Angstrom; exxdiv "ewald" | "none" and jk (strict). Charged cells, open
+    shells and odd (valence) electron counts raise ValueError. An ECP basis
+    (e.g. def2-* for Z > 36, *-pp) is applied to the cell's molecule as in
+    run_rhf, and the lattice-summed V_ECP enters the periodic hcore.
+
+    with_gradient / with_stress (default False) add the analytic nuclear
+    gradient (result.gradient(): natoms x 3, dE/dR in Hartree/Bohr) and stress
+    (result.stress(): 3 x 3 in Hartree/Bohr^3) of the reported energy, on the
+    SCF's own J/K (both jk values). The SCF must converge.
+    """
+    ...
+
+# ── Periodic drivers beyond run_rhf_gamma (src/pbc.rs) ──
+#
+# Shared contract: Molecule coordinates and lattice rows in Angstrom, omega
+# in 1/Angstrom, energies in Hartree per cell. jk="dense" (toy-scale AFT
+# oracle, capped by max_eri_gb) | "rsgdf" (REQUIRES auxbasis, bounded by
+# memory_budget_gb); a knob the chosen path ignores is a ValueError. Charged
+# cells raise ValueError. ECP bases are supported by every driver (ECP applied
+# to the cell's molecule as in run_rhf; lattice-summed V_ECP in the periodic
+# hcore; electron counts and frozen_core are valence counts); Rust-side
+# refusals raise ValueError with their message; numerical failures (incl. SCF
+# non-convergence) raise RuntimeError. The Gamma SCF drivers (UHF/ROHF/UKS/
+# ROKS/RKS) take with_gradient / with_stress (default False) exactly as
+# run_rhf_gamma, for both jk values, except ROHF/ROKS with_stress with
+# jk="rsgdf" (ValueError: that stress exists on dense AFT only).
+
+class GammaOpenShellResult:
+    """Result of run_uhf_gamma / run_rohf_gamma / run_uks_gamma / run_roks_gamma."""
+
+    @property
+    def timings(self) -> dict[str, Any]:
+        """Stage timings and counters (observation only; energies are unaffected):
+        {"wall_s": float, "cpu_s": float | None, "unattributed_wall_s": float,
+        "stages": {name: {"wall_s": float, "cpu_s": float | None, "calls": int}},
+        "counters": {name: int}}. Stages are disjoint, in run order (hcore, J/K
+        build, SCF J/K/XC calls, correlation); counters include SR triplets,
+        G vectors, chunks and RS-GDF aux dropped."""
+        ...
+    @property
+    def method(self) -> str:
+        """'uhf', 'rohf', 'uks' or 'roks'."""
+        ...
+    @property
+    def functional(self) -> str | None: ...
+    @property
+    def energy(self) -> float: ...
+    @property
+    def converged(self) -> bool: ...
+    @property
+    def iterations(self) -> int: ...
+    @property
+    def e_nuc(self) -> float: ...
+    @property
+    def madelung(self) -> float: ...
+    @property
+    def exxdiv(self) -> str: ...
+    @property
+    def ewald_start(self) -> str | None:
+        """'staged' | 'direct' for exxdiv='ewald'; None for 'none'."""
+        ...
+    @property
+    def none_stage_energy(self) -> float | None: ...
+    @property
+    def nalpha(self) -> int: ...
+    @property
+    def nbeta(self) -> int: ...
+    @property
+    def s2(self) -> float:
+        """<S^2> with the lattice overlap."""
+        ...
+    @property
+    def gap_alpha(self) -> float | None: ...
+    @property
+    def gap_beta(self) -> float | None: ...
+    @property
+    def gaps_satisfied(self) -> bool:
+        """Every per-spin gap >= the applied Madelung shift (Ewald-trap check)."""
+        ...
+    @property
+    def e_xc(self) -> float | None: ...
+    @property
+    def exact_exchange_fraction(self) -> float | None: ...
+    @property
+    def n_grid_points(self) -> int | None: ...
+    @property
+    def electrons_on_grid(self) -> float | None: ...
+    @property
+    def nao(self) -> int: ...
+    @property
+    def jk(self) -> str: ...
+    @property
+    def auxbasis(self) -> str | None: ...
+    def mo_energy_alpha(self) -> NDArray[np.float64]: ...
+    def mo_energy_beta(self) -> NDArray[np.float64] | None:
+        """None for ROHF/ROKS (one MO set)."""
+        ...
+    def density(self) -> NDArray[np.float64]: ...
+    def gradient(self) -> NDArray[np.float64] | None:
+        """Analytic nuclear gradient dE/dR (natoms x 3, Hartree/Bohr per cell) if
+        with_gradient=True, else None."""
+        ...
+    def stress(self) -> NDArray[np.float64] | None:
+        """Analytic stress sigma = (1/Omega) dE/deps (3 x 3, Hartree/Bohr^3; strain
+        of lattice rows AND atoms, pressure = -trace/3; not symmetrised) if
+        with_stress=True, else None."""
+        ...
+
+class GammaRksResult:
+    """Result of run_rks_gamma (closed-shell Gamma-point periodic RKS)."""
+
+    @property
+    def timings(self) -> dict[str, Any]:
+        """Stage timings and counters (observation only; energies are unaffected):
+        {"wall_s": float, "cpu_s": float | None, "unattributed_wall_s": float,
+        "stages": {name: {"wall_s": float, "cpu_s": float | None, "calls": int}},
+        "counters": {name: int}}. Stages are disjoint, in run order (hcore, J/K
+        build, SCF J/K/XC calls, correlation); counters include SR triplets,
+        G vectors, chunks and RS-GDF aux dropped."""
+        ...
+    @property
+    def functional(self) -> str: ...
+    @property
+    def energy(self) -> float: ...
+    @property
+    def converged(self) -> bool: ...
+    @property
+    def iterations(self) -> int: ...
+    @property
+    def e_nuc(self) -> float: ...
+    @property
+    def madelung(self) -> float: ...
+    @property
+    def exxdiv(self) -> str: ...
+    @property
+    def e_xc(self) -> float: ...
+    @property
+    def exact_exchange_fraction(self) -> float: ...
+    @property
+    def n_grid_points(self) -> int: ...
+    @property
+    def neighbour_cutoff(self) -> float:
+        """Neighbour cutoff used, Angstrom."""
+        ...
+    @property
+    def electrons_on_grid(self) -> float: ...
+    @property
+    def nao(self) -> int: ...
+    @property
+    def jk(self) -> str: ...
+    @property
+    def auxbasis(self) -> str | None: ...
+    def mo_energy(self) -> NDArray[np.float64]: ...
+    def density(self) -> NDArray[np.float64]: ...
+    def gradient(self) -> NDArray[np.float64] | None:
+        """Analytic nuclear gradient dE/dR (natoms x 3, Hartree/Bohr per cell) if
+        with_gradient=True, else None."""
+        ...
+    def stress(self) -> NDArray[np.float64] | None:
+        """Analytic stress sigma = (1/Omega) dE/deps (3 x 3, Hartree/Bohr^3; strain
+        of lattice rows AND atoms, pressure = -trace/3; not symmetrised) if
+        with_stress=True, else None."""
+        ...
+
+class GammaCorrelationResult:
+    """Result of run_mp2_gamma / run_drpa_gamma (Gamma RHF + correlation)."""
+
+    @property
+    def timings(self) -> dict[str, Any]:
+        """Stage timings and counters (observation only; energies are unaffected):
+        {"wall_s": float, "cpu_s": float | None, "unattributed_wall_s": float,
+        "stages": {name: {"wall_s": float, "cpu_s": float | None, "calls": int}},
+        "counters": {name: int}}. Stages are disjoint, in run order (hcore, J/K
+        build, SCF J/K/XC calls, correlation); counters include SR triplets,
+        G vectors, chunks and RS-GDF aux dropped."""
+        ...
+    @property
+    def method(self) -> str:
+        """'mp2' or 'drpa'."""
+        ...
+    @property
+    def energy(self) -> float:
+        """e_scf + correlation_energy."""
+        ...
+    @property
+    def e_scf(self) -> float: ...
+    @property
+    def correlation_energy(self) -> float: ...
+    @property
+    def e_os(self) -> float | None: ...
+    @property
+    def e_ss(self) -> float | None: ...
+    @property
+    def converged(self) -> bool: ...
+    @property
+    def iterations(self) -> int: ...
+    @property
+    def madelung(self) -> float: ...
+    @property
+    def occ_shift(self) -> float: ...
+    @property
+    def nocc_active(self) -> int: ...
+    @property
+    def nvir(self) -> int: ...
+    @property
+    def naux(self) -> int | None: ...
+    @property
+    def quad_points(self) -> int | None: ...
+    @property
+    def exxdiv(self) -> str: ...
+    @property
+    def denominators(self) -> str: ...
+    @property
+    def jk(self) -> str: ...
+    @property
+    def auxbasis(self) -> str | None: ...
+
+class KpointScfResult:
+    """Result of run_rhf_kpts / run_uhf_kpts (energies per cell)."""
+
+    @property
+    def timings(self) -> dict[str, Any]:
+        """Stage timings and counters (observation only; energies are unaffected):
+        {"wall_s": float, "cpu_s": float | None, "unattributed_wall_s": float,
+        "stages": {name: {"wall_s": float, "cpu_s": float | None, "calls": int}},
+        "counters": {name: int}}. Stages are disjoint, in run order (hcore, J/K
+        build, SCF J/K/XC calls, correlation); counters include SR triplets,
+        G vectors, chunks and RS-GDF aux dropped."""
+        ...
+    @property
+    def method(self) -> str: ...
+    @property
+    def energy(self) -> float: ...
+    @property
+    def converged(self) -> bool: ...
+    @property
+    def iterations(self) -> int: ...
+    @property
+    def e_nuc(self) -> float: ...
+    @property
+    def madelung(self) -> float:
+        """Mesh (supercell) Madelung constant."""
+        ...
+    @property
+    def exxdiv(self) -> str: ...
+    @property
+    def ewald_start(self) -> str | None: ...
+    @property
+    def none_stage_energy(self) -> float | None: ...
+    @property
+    def mesh(self) -> tuple[int, int, int]: ...
+    @property
+    def centring(self) -> str: ...
+    @property
+    def nk(self) -> int: ...
+    @property
+    def kpts(self) -> list[list[float]]:
+        """Cartesian k-points, 1/Angstrom."""
+        ...
+    @property
+    def mo_energy(self) -> list[list[float]]: ...
+    @property
+    def mo_energy_beta(self) -> list[list[float]] | None: ...
+    @property
+    def homo(self) -> float | None: ...
+    @property
+    def lumo(self) -> float | None: ...
+    @property
+    def nalpha(self) -> int | None: ...
+    @property
+    def nbeta(self) -> int | None: ...
+    @property
+    def s2(self) -> float | None:
+        """UHF: <S^2> of the giant (supercell) determinant, not per cell."""
+        ...
+    @property
+    def gap_alpha(self) -> float | None: ...
+    @property
+    def gap_beta(self) -> float | None: ...
+    @property
+    def lindep_threshold(self) -> float: ...
+    @property
+    def lindep_min_kept(self) -> int: ...
+    @property
+    def lindep_max_kept(self) -> int: ...
+    @property
+    def lindep_total_kept(self) -> int: ...
+    @property
+    def lindep_near_noise_floor(self) -> bool: ...
+    @property
+    def nao(self) -> int: ...
+    @property
+    def jk(self) -> str: ...
+    @property
+    def auxbasis(self) -> str | None: ...
+
+class KpointCorrelationResult:
+    """Result of run_mp2_kpts / run_drpa_kpts (k-point RHF + correlation)."""
+
+    @property
+    def timings(self) -> dict[str, Any]:
+        """Stage timings and counters (observation only; energies are unaffected):
+        {"wall_s": float, "cpu_s": float | None, "unattributed_wall_s": float,
+        "stages": {name: {"wall_s": float, "cpu_s": float | None, "calls": int}},
+        "counters": {name: int}}. Stages are disjoint, in run order (hcore, J/K
+        build, SCF J/K/XC calls, correlation); counters include SR triplets,
+        G vectors, chunks and RS-GDF aux dropped."""
+        ...
+    @property
+    def method(self) -> str: ...
+    @property
+    def energy(self) -> float: ...
+    @property
+    def e_scf(self) -> float: ...
+    @property
+    def correlation_energy(self) -> float: ...
+    @property
+    def e_os(self) -> float | None: ...
+    @property
+    def e_ss(self) -> float | None: ...
+    @property
+    def e_direct(self) -> float | None: ...
+    @property
+    def per_q(self) -> list[float] | None: ...
+    @property
+    def drpa_energy(self) -> str | None: ...
+    @property
+    def quad_points(self) -> int | None: ...
+    @property
+    def converged(self) -> bool: ...
+    @property
+    def iterations(self) -> int: ...
+    @property
+    def madelung(self) -> float: ...
+    @property
+    def occ_shift(self) -> float: ...
+    @property
+    def nocc_active(self) -> int: ...
+    @property
+    def nvir(self) -> list[int]: ...
+    @property
+    def naux(self) -> list[int] | None: ...
+    @property
+    def mesh(self) -> tuple[int, int, int]: ...
+    @property
+    def centring(self) -> str: ...
+    @property
+    def nk(self) -> int: ...
+    @property
+    def exxdiv(self) -> str: ...
+    @property
+    def denominators(self) -> str: ...
+    @property
+    def lindep_total_kept(self) -> int: ...
+    @property
+    def lindep_min_kept(self) -> int: ...
+    @property
+    def lindep_near_noise_floor(self) -> bool: ...
+    @property
+    def jk(self) -> str: ...
+    @property
+    def auxbasis(self) -> str | None: ...
+
+def run_uhf_gamma(
+    mol: Molecule,
+    lattice: Sequence[Sequence[float]],
+    basis_set: BasisSet,
+    exxdiv: str = "ewald",
+    ewald_start: str | None = None,
+    omega: float | None = None,
+    max_eri_gb: float | None = None,
+    max_iter: int = 200,
+    density_conv: float = 1e-10,
+    jk: str = "dense",
+    auxbasis: BasisSet | str | None = None,
+    memory_budget_gb: float | None = None,
+    with_gradient: bool = False,
+    with_stress: bool = False,
+) -> GammaOpenShellResult:
+    """Gamma-point periodic UHF. ewald_start "staged" (default) | "direct",
+    exxdiv="ewald" only (ValueError with "none")."""
+    ...
+
+def run_rohf_gamma(
+    mol: Molecule,
+    lattice: Sequence[Sequence[float]],
+    basis_set: BasisSet,
+    exxdiv: str = "ewald",
+    ewald_start: str | None = None,
+    omega: float | None = None,
+    max_eri_gb: float | None = None,
+    max_iter: int = 200,
+    density_conv: float = 1e-10,
+    jk: str = "dense",
+    auxbasis: BasisSet | str | None = None,
+    memory_budget_gb: float | None = None,
+    with_gradient: bool = False,
+    with_stress: bool = False,
+) -> GammaOpenShellResult:
+    """Gamma-point periodic ROHF. KNOWN LIMITATION: does not converge on the
+    triclinic 4H s+p triplet (non-convergence is an error, not a number)."""
+    ...
+
+def run_uks_gamma(
+    mol: Molecule,
+    lattice: Sequence[Sequence[float]],
+    basis_set: BasisSet,
+    functional: str,
+    exxdiv: str = "ewald",
+    ewald_start: str | None = None,
+    omega: float | None = None,
+    max_eri_gb: float | None = None,
+    max_iter: int = 200,
+    density_conv: float = 1e-10,
+    jk: str = "dense",
+    auxbasis: BasisSet | str | None = None,
+    memory_budget_gb: float | None = None,
+    n_radial: int = 75,
+    n_angular: int = 302,
+    neighbour_cutoff: float | None = None,
+    with_gradient: bool = False,
+    with_stress: bool = False,
+) -> GammaOpenShellResult:
+    """Gamma-point periodic UKS (LDA/GGA/global hybrids; RSH/meta-GGA/VV10
+    refused). neighbour_cutoff in Angstrom (None = max(10 Bohr, covering
+    bound))."""
+    ...
+
+def run_roks_gamma(
+    mol: Molecule,
+    lattice: Sequence[Sequence[float]],
+    basis_set: BasisSet,
+    functional: str,
+    exxdiv: str = "ewald",
+    ewald_start: str | None = None,
+    omega: float | None = None,
+    max_eri_gb: float | None = None,
+    max_iter: int | None = None,
+    density_conv: float = 1e-10,
+    jk: str = "dense",
+    auxbasis: BasisSet | str | None = None,
+    memory_budget_gb: float | None = None,
+    n_radial: int = 75,
+    n_angular: int = 302,
+    neighbour_cutoff: float | None = None,
+    with_gradient: bool = False,
+    with_stress: bool = False,
+) -> GammaOpenShellResult:
+    """Gamma-point periodic ROKS (functional/grid contract of run_uks_gamma).
+    max_iter=None: 600 with a 0.05 Ha ramped level shift for a hybrid (a > 0),
+    else 200 and no shift."""
+    ...
+
+def run_rks_gamma(
+    mol: Molecule,
+    lattice: Sequence[Sequence[float]],
+    basis_set: BasisSet,
+    functional: str,
+    exxdiv: str = "ewald",
+    omega: float | None = None,
+    max_eri_gb: float | None = None,
+    max_iter: int = 200,
+    density_conv: float = 1e-10,
+    jk: str = "dense",
+    auxbasis: BasisSet | str | None = None,
+    memory_budget_gb: float | None = None,
+    n_radial: int = 75,
+    n_angular: int = 302,
+    neighbour_cutoff: float | None = None,
+    with_gradient: bool = False,
+    with_stress: bool = False,
+) -> GammaRksResult:
+    """Closed-shell Gamma-point periodic RKS; open shells raise ValueError."""
+    ...
+
+def run_mp2_gamma(
+    mol: Molecule,
+    lattice: Sequence[Sequence[float]],
+    basis_set: BasisSet,
+    exxdiv: str,
+    denominators: str,
+    omega: float | None = None,
+    max_eri_gb: float | None = None,
+    max_iter: int = 200,
+    density_conv: float = 1e-10,
+    jk: str = "dense",
+    auxbasis: BasisSet | str | None = None,
+    memory_budget_gb: float | None = None,
+    frozen_core: int = 0,
+) -> GammaCorrelationResult:
+    """Gamma RHF + MP2 in one call. exxdiv (the reference's) and denominators
+    ("shifted" | "unshifted") are required."""
+    ...
+
+def run_drpa_gamma(
+    mol: Molecule,
+    lattice: Sequence[Sequence[float]],
+    basis_set: BasisSet,
+    exxdiv: str,
+    denominators: str,
+    omega: float | None = None,
+    max_eri_gb: float | None = None,
+    max_iter: int = 200,
+    density_conv: float = 1e-10,
+    jk: str = "dense",
+    auxbasis: BasisSet | str | None = None,
+    memory_budget_gb: float | None = None,
+    frozen_core: int = 0,
+    quad_points: int | None = None,
+) -> GammaCorrelationResult:
+    """Gamma RHF + dRPA in one call. jk="dense" is the exact plasmon formula
+    (quad_points there is a ValueError); jk="rsgdf" uses frequency quadrature
+    (quad_points, None = 40)."""
+    ...
+
+def run_rhf_kpts(
+    mol: Molecule,
+    lattice: Sequence[Sequence[float]],
+    basis_set: BasisSet,
+    mesh: tuple[int, int, int],
+    exxdiv: str = "ewald",
+    centring: str = "gamma",
+    omega: float | None = None,
+    max_eri_gb: float | None = None,
+    max_iter: int = 200,
+    energy_conv: float = 1e-12,
+    grad_conv: float = 1e-9,
+    jk: str = "dense",
+    auxbasis: BasisSet | str | None = None,
+    memory_budget_gb: float | None = None,
+) -> KpointScfResult:
+    """Closed-shell k-point RHF. centring "gamma" | "mp" (strict)."""
+    ...
+
+def run_uhf_kpts(
+    mol: Molecule,
+    lattice: Sequence[Sequence[float]],
+    basis_set: BasisSet,
+    mesh: tuple[int, int, int],
+    exxdiv: str = "ewald",
+    centring: str = "gamma",
+    ewald_start: str | None = None,
+    omega: float | None = None,
+    max_eri_gb: float | None = None,
+    max_iter: int = 200,
+    energy_conv: float = 1e-12,
+    grad_conv: float = 1e-9,
+    jk: str = "dense",
+    auxbasis: BasisSet | str | None = None,
+    memory_budget_gb: float | None = None,
+) -> KpointScfResult:
+    """k-point UHF; s2 is the giant (supercell) determinant's <S^2>."""
+    ...
+
+def run_mp2_kpts(
+    mol: Molecule,
+    lattice: Sequence[Sequence[float]],
+    basis_set: BasisSet,
+    mesh: tuple[int, int, int],
+    exxdiv: str,
+    denominators: str,
+    centring: str = "gamma",
+    omega: float | None = None,
+    max_eri_gb: float | None = None,
+    max_iter: int = 200,
+    energy_conv: float = 1e-12,
+    grad_conv: float = 1e-9,
+    jk: str = "dense",
+    auxbasis: BasisSet | str | None = None,
+    memory_budget_gb: float | None = None,
+    frozen_core: int = 0,
+) -> KpointCorrelationResult:
+    """k-point RHF + KMP2 in one call (exxdiv and denominators required)."""
+    ...
+
+def run_drpa_kpts(
+    mol: Molecule,
+    lattice: Sequence[Sequence[float]],
+    basis_set: BasisSet,
+    mesh: tuple[int, int, int],
+    exxdiv: str,
+    denominators: str,
+    centring: str = "gamma",
+    omega: float | None = None,
+    max_eri_gb: float | None = None,
+    max_iter: int = 200,
+    energy_conv: float = 1e-12,
+    grad_conv: float = 1e-9,
+    jk: str = "dense",
+    auxbasis: BasisSet | str | None = None,
+    memory_budget_gb: float | None = None,
+    frozen_core: int = 0,
+    energy: str = "quadrature",
+    quad_points: int | None = None,
+) -> KpointCorrelationResult:
+    """k-point RHF + k-dRPA. energy "quadrature" (default) | "plasmon" |
+    "second-order"; quad_points only with "quadrature"."""
+    ...
 
 def run_rhf(
     mol: Molecule,

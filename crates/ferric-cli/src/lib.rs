@@ -1,4 +1,5 @@
 mod config;
+mod periodic;
 
 use config::{load_config, Config};
 use ferric_cc::ccd::ccd;
@@ -367,6 +368,15 @@ pub fn run(args: Vec<String>) {
         // Explicitly poison the sink so a later library call cannot install
         // one the user asked not to have.
         None => ferric_scf::runlog::disable(),
+    }
+
+    // `[cell]`: a periodic system. `load_config` already resolved and
+    // validated the whole run into `cfg.periodic` (unsupported kinds, meshes
+    // and tasks, and every key the periodic path would ignore, are refused
+    // there), so it is handed over before any molecular setup.
+    if cfg.periodic.is_some() {
+        periodic::run_periodic(&cfg);
+        return;
     }
 
     let method = cfg.method.kind.as_str();

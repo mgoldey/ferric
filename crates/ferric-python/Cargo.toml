@@ -24,6 +24,10 @@ ferric-gw = { path = "../ferric-gw" }
 ferric-dft = { path = "../ferric-dft" }
 ferric-cc = { path = "../ferric-cc" }
 ferric-tddft = { path = "../ferric-tddft" }
+# Gamma-point periodic RHF (`run_rhf_gamma`): lattice hcore + the dense AFT
+# oracle J/K. Pure Rust on top of crates already linked here (core/integrals/
+# scf) plus num-complex -- no new native linkage.
+ferric-pbc = { path = "../ferric-pbc" }
 # The `ferric` console-script entry point (pyproject.toml [project.scripts]):
 # calls ferric_cli::main() from a #[pyfunction] compiled into THIS .so, so
 # `pip install ferric` gets a `ferric input.toml` command with no second

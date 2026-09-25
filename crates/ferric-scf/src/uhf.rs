@@ -9,7 +9,7 @@ use crate::direct_k::DirectK;
 use crate::fock::{JBuilder, KBuilder};
 use crate::guess::hcore_guess;
 use crate::result::{ScfExit, ScfResult, Spin};
-use crate::rhf::RhfConfig;
+use crate::rhf::{validate_injected, InjectedConfigError, PeriodicInjection, RhfConfig};
 use crate::screening::SchwarzBounds;
 
 use ferric_core::mol::Molecule;
@@ -66,6 +66,109 @@ pub fn solve_uhf_with_guess(
         bounds,
         config,
         initial_mos,
+    )?)
+}
+
+/// Reject every `UhfConfig` feature [`solve_uhf_injected`] cannot honour,
+/// naming the first offending field: everything [`validate_injected`] refuses
+/// for RHF (DF/pluggable K, XC, Newton/TRAH/AURORA, the MINAO guess without an
+/// explicit density, external potential, COSMO/PCM/polarizable,
+/// `check_stability`), plus the UHF-only `scf_stability_descent` (the descent
+/// re-runs the MOLECULAR solver from rotated MOs and needs the molecular
+/// stability Hessian). Checked after the RHF list, so a config that sets both
+/// reports the RHF field.
+pub fn validate_injected_uhf(config: &UhfConfig) -> Result<(), InjectedConfigError> {
+    validate_injected(config)?;
+    if config.scf_stability_descent {
+        return Err(InjectedConfigError {
+            field: "scf_stability_descent",
+            reason: "the descent re-solves with the molecular J/K and needs the molecular \
+                     stability Hessian (prep/bounds)",
+        });
+    }
+    Ok(())
+}
+
+/// Open-shell UHF on caller-supplied `(S, h, V_nn)` and J/K builders — the
+/// Gamma-point periodic entry, Stage 4 (`reference/pbc/FINDINGS.md`
+/// "Iteration 6"). Mirrors [`crate::rhf::solve_rhf_injected`]:
+///
+/// * `mol` supplies only the electron count, charge and multiplicity; `prep`
+///   only `nbasis`; `bounds` is never read for integrals on this path (it is
+///   required by the shared body's signature, like `solve_rhf_injected`'s).
+/// * J = `inj.j` on `D_α + D_β`; K_σ = the SAME `inj.k`, called per spin as
+///   `update_density(D_σ)` then `build(D_σ)` (the pluggable-K sequence of
+///   the molecular path). F_σ = h + J − K_σ. Any Madelung term lives in the
+///   K builder and is linear in D, so NO per-spin factor is applied here.
+///   `build_from_occ` is never called on this path.
+/// * Guess: `initial_mos` (per-spin MOs, as [`solve_uhf_with_guess`]) >
+///   `config.init_guess_density` (spin-summed; split `D/2` per spin and the
+///   guess Fock `h + J[D] − K[D/2]` is built with the INJECTED builders) >
+///   the core guess (diagonalize the injected `h`, exactly the molecular
+///   `use_sad_guess = false` path). The molecular `rhf::build_jk` / MINAO
+///   guess is never called. The closed-shell β HOMO/LUMO mixing (0.1 rad when
+///   `nocc_α == nocc_β`) is applied as on the molecular path.
+/// * Kohn-Sham (Stage 5, FINDINGS "Iteration 10"): with `inj.xc = Some(x)`
+///   (which must report [`crate::rhf::XcBuilder::supports_polarized`]) and
+///   `a = x.exact_exchange_fraction()` ∈ [0, 1],
+///
+///   ```text
+///   F_σ = h + J[D_α + D_β] − a·K_inj(D_σ) + V_σ,   (E_xc, V_α, V_β) = x.build_polarized(D_α, D_β)
+///   E   = ½ Σ_σ Tr[D_σ (h + F_σ − V_σ)] + E_xc + V_nn
+///   ```
+///
+///   — the molecular `UksXcContribution::add_xc_uks` convention. The injected
+///   K carries any Madelung term and is linear in D_σ, so it rides on the
+///   exact-exchange part only, with NO per-spin ½. For `a = 0` the injected K
+///   is never built. The injected guess Fock has no XC (it is a guess).
+///
+/// Errors (typed, by name) on any config field [`validate_injected_uhf`]
+/// refuses, on an `xc` builder without spin-polarized support or with `a`
+/// outside [0, 1], on wrong-shape `s`/`h` or non-finite `vnn`, and — like
+/// [`solve_uhf`] — when the SCF does not converge.
+///
+/// Exchange-divergence caveat (Ewald trap, FINDINGS Iteration 6): at Gamma
+/// `v_M S D_σ S` lowers every occupied level by `v_M`, so a state that is
+/// non-aufbau without the Madelung term can be self-consistent with it. This
+/// function does not know `v_M`; `ferric_pbc::uhf::gamma_uhf` reports the
+/// per-spin gap against it and offers the staged (none → ewald) start. With a
+/// hybrid the shift (and the trap window) is `a·v_M`; `ferric_pbc::dft::gamma_uks`
+/// checks the occupation-aware per-spin gap against it.
+pub fn solve_uhf_injected<'a>(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    config: &UhfConfig,
+    inj: PeriodicInjection<'a>,
+    initial_mos: Option<(&Array2<f64>, &Array2<f64>)>,
+) -> Result<ScfResult, FerricError> {
+    validate_injected_uhf(config).map_err(|e| {
+        FerricError::General(format!(
+            "solve_uhf_injected: RhfConfig.{} is not supported with injected S/h/J/K: {}",
+            e.field, e.reason
+        ))
+    })?;
+    crate::rhf::check_injection_shapes("solve_uhf_injected", &inj, prep.nbasis())?;
+    if let Some(x) = inj.xc.as_ref() {
+        if !x.supports_polarized() {
+            return Err(FerricError::General(
+                "solve_uhf_injected: PeriodicInjection.xc does not support spin-polarized \
+                 evaluation (XcBuilder::supports_polarized() is false): the injected UKS path \
+                 needs XcBuilder::build_polarized (e.g. ferric_pbc::dft::PeriodicXc)"
+                    .into(),
+            ));
+        }
+    }
+    err_if_unconverged(solve_uhf_impl(
+        ctx,
+        mol,
+        prep,
+        bounds,
+        config,
+        initial_mos,
+        None,
+        Some(inj),
     )?)
 }
 
@@ -366,8 +469,44 @@ pub fn solve_uhf_fockmod(
     initial_mos: Option<(&Array2<f64>, &Array2<f64>)>,
     fock_mod: Option<UhfFockMod>,
 ) -> Result<ScfResult, FerricError> {
+    solve_uhf_impl(ctx, mol, prep, bounds, config, initial_mos, fock_mod, None)
+}
+
+/// Shared body of [`solve_uhf_fockmod`] (`inj = None`: the molecular solver,
+/// byte-identical to the pre-injection code — every injected-path branch is
+/// gated on `inj_jk.is_some()`) and [`solve_uhf_injected`] (`inj = Some`,
+/// config already validated).
+#[allow(clippy::too_many_arguments)]
+fn solve_uhf_impl(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    config: &UhfConfig,
+    initial_mos: Option<(&Array2<f64>, &Array2<f64>)>,
+    fock_mod: Option<UhfFockMod>,
+    inj: Option<PeriodicInjection<'_>>,
+) -> Result<ScfResult, FerricError> {
     use ferric_dft::ks::KsXcUks;
     use ferric_dft::xc_trait::{KMix, UksXcContribution};
+
+    // Split the injection: (S, h, V_nn) go to the shared env builder, the J/K
+    // builders are driven in the iteration loop (as in rhf::solve_rhf_impl).
+    // Both `None` on the molecular path.
+    // `inj_xc` is the injected (periodic) spin-polarized XC; its
+    // `supports_polarized()` was checked by solve_uhf_injected.
+    let (pre_env, mut inj_jk, mut inj_xc) = match inj {
+        Some(PeriodicInjection {
+            s,
+            h,
+            vnn,
+            j,
+            k,
+            xc,
+        }) => (Some((s, h, vnn)), Some((j, k)), xc),
+        None => (None, None, None),
+    };
+    let injected = inj_jk.is_some();
 
     // Build UKS XC contribution once. None for pure UHF.
     let xc_contrib: Option<Box<dyn UksXcContribution>> = if let Some(name) = config.xc.as_deref() {
@@ -405,7 +544,27 @@ pub fn solve_uhf_fockmod(
         None
     };
 
-    let k_mix: KMix = xc_contrib.as_ref().map(|x| x.k_mix()).unwrap_or_default();
+    // Injected (periodic) UKS: a global hybrid scales the injected K by its
+    // exact-exchange fraction (validate_injected_uhf guarantees `xc_contrib`
+    // is None there, so the two sources never coexist). Molecular path:
+    // `inj_xc` is None and this is the historical expression.
+    let k_mix: KMix = match inj_xc.as_ref() {
+        Some(x) => {
+            let a = x.exact_exchange_fraction();
+            if !(a.is_finite() && (0.0..=1.0).contains(&a)) {
+                return Err(FerricError::General(format!(
+                    "solve_uhf_injected: XcBuilder exact-exchange fraction must be in [0, 1], \
+                     got {a}"
+                )));
+            }
+            KMix {
+                sr: a,
+                lr: a,
+                omega: 0.0,
+            }
+        }
+        None => xc_contrib.as_ref().map(|x| x.k_mix()).unwrap_or_default(),
+    };
 
     // Meta-GGA (SCAN / r2SCAN) UKS is stiffer than LDA/GGA and limit-cycles under
     // plain DIIS; apply the same modest default virtual-block level shift the
@@ -416,7 +575,13 @@ pub fn solve_uhf_fockmod(
 
     // K coefficient on the full Coulomb K, per-spin. For pure HF (no xc),
     // KMix::default() gives sr = 1.0, lr = 1.0 → c_k = 1.0 (original UHF behavior).
-    let c_k: f64 = if xc_contrib.is_some() { k_mix.sr } else { 1.0 };
+    // Injected UKS: c_k = a (need_k below is then false for a = 0, so the
+    // injected K is never built for a pure functional).
+    let c_k: f64 = if xc_contrib.is_some() || inj_xc.is_some() {
+        k_mix.sr
+    } else {
+        1.0
+    };
 
     // RSH path (ω > 0): build per-spin K from c_SR · K[erfc(ω)] + c_LR · K[erf(ω)]
     // via two DfK fitters. Each fitter's geometry-only B[P,μ,ν] tensor is built
@@ -435,7 +600,7 @@ pub fn solve_uhf_fockmod(
         polarizable_site_basis,
         mut dfk_sr,
         mut dfk_lr,
-    } = crate::driver::prepare(ctx, mol, prep, config, &k_mix)?;
+    } = crate::driver::prepare(ctx, mol, prep, config, &k_mix, pre_env)?;
     let n = prep.nbasis();
     let nelec = mol.nelec() as i64;
     let mult = mol.multiplicity as i64;
@@ -505,6 +670,18 @@ pub fn solve_uhf_fockmod(
             )));
         }
         (ca0.clone(), cb0.clone())
+    } else if let Some((ij, ik)) = inj_jk.as_mut() {
+        // Injected (periodic) path: never the molecular build_jk / MINAO.
+        // An explicit density builds the guess Fock from the INJECTED J/K;
+        // otherwise the core guess, identical to the molecular hcore branch.
+        match config.init_guess_density.as_ref() {
+            Some(d0) => injected_guess_mos(ij.as_mut(), ik.as_mut(), d0, &h, &x)?,
+            None => {
+                let _ = hcore_guess(&s, &h, nocc_a.max(1))?;
+                let (_, c) = diagonalize(&h, &x)?;
+                (c.clone(), c)
+            }
+        }
     } else if let Some((ga, gb)) = uhf_guess_mos(ctx, mol, prep, bounds, config, &h, &x)? {
         (ga, gb)
     } else {
@@ -718,6 +895,7 @@ pub fn solve_uhf_fockmod(
         && need_k
         && k_mix.omega == 0.0
         && pluggable_k.is_none()
+        && !injected
         && crate::direct_jk::combined_open_shell_jk_enabled();
     let mut direct_jk: Option<crate::direct_jk::DirectJK> = if combined_direct_jk {
         Some(crate::direct_jk::DirectJK::new(
@@ -730,7 +908,10 @@ pub fn solve_uhf_fockmod(
     } else {
         None
     };
-    let mut direct_j: Option<DirectJ> = if df_j.is_none() && !combined_direct_jk {
+    // No molecular direct builders on the injected path (J/K come from
+    // `inj_jk`); `!injected` is `true` on the molecular path, so the gates are
+    // unchanged there.
+    let mut direct_j: Option<DirectJ> = if df_j.is_none() && !combined_direct_jk && !injected {
         Some(DirectJ::new(
             ctx,
             prep,
@@ -746,6 +927,7 @@ pub fn solve_uhf_fockmod(
         && df_k.is_none()
         && !combined_direct_jk
         && pluggable_k.is_none()
+        && !injected
     {
         Some(DirectK::new(
             ctx,
@@ -808,8 +990,12 @@ pub fn solve_uhf_fockmod(
         }
 
         // Combined single-pass J + K_α + K_β when enabled; otherwise J alone
-        // here (DF-J or DirectJ) and K below, as before.
-        if let Some(djk) = direct_jk.as_mut() {
+        // here (DF-J or DirectJ) and K below, as before. An injected
+        // (periodic) J pre-empts all of them (validate_injected_uhf guarantees
+        // no DF/pluggable builder was requested alongside it).
+        if let Some((ij, _)) = inj_jk.as_mut() {
+            total_quartets += ij.build(&d_total, &mut j_buf)?;
+        } else if let Some(djk) = direct_jk.as_mut() {
             if direct_incremental {
                 let (da_prev, db_prev) = d_last_fock
                     .as_ref()
@@ -870,7 +1056,19 @@ pub fn solve_uhf_fockmod(
                 1.0,
             )?;
         } else if need_k {
-            if direct_jk.is_some() {
+            if let Some((_, ik)) = inj_jk.as_mut() {
+                // Injected K per spin: update_density(D_σ) + build(D_σ) from the
+                // one builder — the same sequence as the pluggable arm below.
+                // The builder's Madelung term (if any) is linear in D_σ, so no
+                // per-spin factor here (FINDINGS Iteration 6).
+                total_quartets += crate::fock_assembly::build_open_shell_pluggable_k(
+                    ik.as_mut(),
+                    &d_a,
+                    &d_b,
+                    &mut k_a_buf,
+                    &mut k_b_buf,
+                )?;
+            } else if direct_jk.is_some() {
                 // K_α/K_β already filled by the combined single-pass build above.
             } else if let Some(kb) = pluggable_k.as_mut() {
                 // Per-spin `update_density(D_σ)` + `build(D_σ)` from one shared
@@ -907,6 +1105,22 @@ pub fn solve_uhf_fockmod(
         let e_elec_no_xc: f64 = 0.5 * ((&(&h + &f_a) * &d_a).sum() + (&(&h + &f_b) * &d_b).sum());
         let e_xc = if let Some(x) = xc_contrib.as_ref() {
             x.add_xc_uks(&d_a, &d_b, &mut f_a, &mut f_b)
+        } else if let Some(ix) = inj_xc.as_mut() {
+            // Injected (periodic) UKS: V_σ added after the exchange term,
+            // E_xc outside the trace (the add_xc_uks convention above).
+            let (e, v_a, v_b) = ix.build_polarized(&d_a, &d_b)?;
+            if v_a.dim() != f_a.dim() || v_b.dim() != f_b.dim() {
+                return Err(FerricError::General(format!(
+                    "solve_uhf_injected: XcBuilder::build_polarized returned V_xc of shapes \
+                     {:?}/{:?}, expected {:?}",
+                    v_a.dim(),
+                    v_b.dim(),
+                    f_a.dim()
+                )));
+            }
+            f_a += &v_a;
+            f_b += &v_b;
+            e
         } else {
             0.0
         };
@@ -966,7 +1180,11 @@ pub fn solve_uhf_fockmod(
         if ctx.is_root() {
             if let Some(rl) = crate::runlog::log() {
                 rl.scf_iter(
-                    if xc_contrib.is_some() { "uks" } else { "uhf" },
+                    if xc_contrib.is_some() || inj_xc.is_some() {
+                        "uks"
+                    } else {
+                        "uhf"
+                    },
                     crate::runlog::current_rung(),
                     iter,
                     energy,
@@ -1804,6 +2022,37 @@ fn uhf_guess_mos(
             Ok(None)
         }
     }
+}
+
+/// Injected-path counterpart of [`uhf_guess_mos`] for an explicit
+/// spin-summed guess density: `D_α = D_β = D/2`, guess Fock
+/// `h + J[D] − K[D/2]` from the INJECTED builders (so any Madelung term is
+/// included consistently), diagonalized for the same starting MOs on both
+/// spins. Unlike the molecular helper, a failing build is an error, not a
+/// silent fallback: on the injected path the builders ARE the integrals.
+fn injected_guess_mos(
+    j: &mut dyn JBuilder,
+    k: &mut dyn KBuilder,
+    d_total: &Array2<f64>,
+    h: &Array2<f64>,
+    x: &Array2<f64>,
+) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
+    let n = h.nrows();
+    if d_total.dim() != (n, n) {
+        return Err(FerricError::General(format!(
+            "solve_uhf_injected: init_guess_density shape {:?} != ({n},{n})",
+            d_total.dim()
+        )));
+    }
+    let d_spin = d_total * 0.5;
+    let mut jm = Array2::<f64>::zeros((n, n));
+    j.build(d_total, &mut jm)?;
+    let mut k_spin = Array2::<f64>::zeros((n, n));
+    k.update_density(&d_spin);
+    k.build(&d_spin, &mut k_spin)?;
+    let f_guess = &(h + &jm) - &k_spin;
+    let (_, c) = diagonalize(&f_guess, x)?;
+    Ok((c.clone(), c))
 }
 
 /// ⟨S²⟩ for a UHF determinant:

@@ -66,6 +66,18 @@ pub struct Config {
     /// `[cosmo]` and `[external_potential]` follow.
     #[serde(default)]
     pub qmmm: Option<QmmmCfg>,
+    /// Optional `[cell]` section: a 3-D periodic system (lattice, k-mesh,
+    /// exchange-divergence treatment, J/K builder). Absent means the
+    /// molecular CLI, unchanged. Present, `run()` hands the whole run to the
+    /// `ferric-pbc` drivers (see [`PeriodicPlan`] and `crate::periodic`).
+    #[serde(default)]
+    pub cell: Option<CellCfg>,
+    /// The validated periodic plan, resolved by [`load_config`] from `[cell]`
+    /// plus the raw TOML (it needs to know which `[scf]` keys were WRITTEN,
+    /// since the periodic defaults differ from the molecular ones). Not a TOML
+    /// key; `None` whenever `[cell]` is absent.
+    #[serde(skip)]
+    pub periodic: Option<PeriodicPlan>,
 }
 
 impl Config {
@@ -3466,7 +3478,7 @@ mod compat_guard_tests {
 pub fn load_config(path: &str) -> Result<Config, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("cannot read config file {path:?}: {e}"))?;
-    let cfg: Config = toml::from_str(&text).map_err(|e| format!("{path}: {e}"))?;
+    let mut cfg: Config = toml::from_str(&text).map_err(|e| format!("{path}: {e}"))?;
     // Post-parse semantic validation. `deny_unknown_fields` already rejects a
     // typo'd KEY at parse time; this catches a typo'd VALUE whose silent
     // fall-through would be worse than an error. See `MemoryCfg::validate`.
@@ -3474,9 +3486,1024 @@ pub fn load_config(path: &str) -> Result<Config, String> {
     // Validating HERE rather than at the lib.rs use site means every entry
     // point is covered by construction — the CLI, and `ferric-batch`'s
     // per-child TOML rewriting, which does not go through lib.rs's checks.
-    cfg.validate_loaded_values()
-        .map_err(|e| format!("{path}: {e}"))?;
+    validate_loaded(&mut cfg, &text).map_err(|e| format!("{path}: {e}"))?;
     Ok(cfg)
+}
+
+/// The post-parse checks of [`load_config`], and the `[cell]` plan (which
+/// needs the raw TOML to see which keys were actually written).
+fn validate_loaded(cfg: &mut Config, text: &str) -> Result<(), String> {
+    cfg.validate_loaded_values()?;
+    if cfg.cell.is_some() {
+        let raw: toml::Value = toml::from_str(text).map_err(|e| e.to_string())?;
+        cfg.periodic = periodic_plan(cfg, &raw)?;
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// [cell]: periodic systems (the ferric-pbc drivers)
+// ---------------------------------------------------------------------------
+
+/// Ångström -> Bohr: the factor ferric-core's XYZ parser uses, so a lattice
+/// given in Å and the atoms read from the XYZ are converted identically.
+pub const ANGSTROM_TO_BOHR: f64 = 1.0 / 0.529_177_210_92;
+
+/// `[cell]` — a 3-D periodic system. The `[molecule]` XYZ supplies the atoms
+/// of the reference cell (Å, as every XYZ); this section supplies the lattice
+/// and the periodic knobs. Every knob mirrors a keyword of the Python
+/// periodic bindings (`run_rhf_gamma`, `run_uhf_gamma`, ..., `run_drpa_kpts`)
+/// and is STRICT: an unknown value, or a knob the selected route would
+/// ignore, is an error (see [`periodic_plan`]).
+#[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct CellCfg {
+    /// Lattice vectors as ROWS, `[[ax,ay,az],[bx,by,bz],[cx,cy,cz]]`, in `unit`.
+    pub lattice: [[f64; 3]; 3],
+    /// Unit of `lattice`, `omega` (its inverse) and `neighbour_cutoff`:
+    /// `"angstrom"` (default) or `"bohr"`.
+    pub unit: Option<String>,
+    /// k-point mesh `[n1, n2, n3]`. Absent = the Gamma point only (the Gamma
+    /// drivers). Present (even `[1, 1, 1]`) = the k-point drivers, which
+    /// exist for `rhf`, `uhf`, `rimp2` and `pdep-rpa` only.
+    pub kmesh: Option<[usize; 3]>,
+    /// Mesh centring (`kmesh` only): `"gamma"` (default) or `"mp"`.
+    pub centring: Option<String>,
+    /// Exchange G = 0 treatment: `"ewald"` (default) or `"none"`.
+    pub exxdiv: Option<String>,
+    /// J/K builder: `"dense"` (default; toy-scale dense AFT oracle) or
+    /// `"rsgdf"` (range-separated GDF; requires `auxbasis`).
+    pub jk: Option<String>,
+    /// RS-GDF auxiliary basis (bundled name); `jk = "rsgdf"` only.
+    pub auxbasis: Option<String>,
+    /// Nuclear-attraction Ewald split, in `unit`⁻¹ (> 0). Absent =
+    /// `sqrt(pi) / volume^(1/3)`.
+    pub omega: Option<f64>,
+    /// Cap on the dense AFT ERI tensor, GiB (> 0; default 0.5); `jk =
+    /// "dense"` only.
+    pub max_eri_gb: Option<f64>,
+    /// Open-shell SCF with `exxdiv = "ewald"` only: `"staged"` (default) or
+    /// `"direct"`.
+    pub ewald_start: Option<String>,
+    /// `rimp2` / `pdep-rpa` only, REQUIRED there: `"shifted"` or `"unshifted"`.
+    pub denominators: Option<String>,
+    /// Frozen core orbitals (`rimp2` / `pdep-rpa` only; default 0).
+    pub frozen_core: Option<usize>,
+    /// dRPA frequency points (`pdep-rpa` only; Gamma needs `jk = "rsgdf"`,
+    /// k-point needs `drpa_energy = "quadrature"`). Default 40.
+    pub quad_points: Option<usize>,
+    /// k-point dRPA energy construction: `"quadrature"` (default),
+    /// `"plasmon"` or `"second-order"`. `pdep-rpa` with `kmesh` only.
+    pub drpa_energy: Option<String>,
+    /// k-point SCF orbital-gradient threshold (`kmesh` only; default 1e-9).
+    pub grad_conv: Option<f64>,
+    /// Periodic XC grid radial points (Kohn-Sham routes only; default 75).
+    pub n_radial: Option<usize>,
+    /// Periodic XC grid Lebedev points (Kohn-Sham routes only; default 302).
+    pub n_angular: Option<usize>,
+    /// Periodic XC grid image cutoff in `unit` (Kohn-Sham routes only; absent
+    /// = max(10 Bohr, covering-radius bound)).
+    pub neighbour_cutoff: Option<f64>,
+}
+
+/// Which `ferric-pbc` driver a periodic run dispatches to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeriodicRoute {
+    Rhf,
+    Rks,
+    Uhf,
+    Uks,
+    Rohf,
+    Roks,
+    Mp2,
+    Drpa,
+}
+
+impl PeriodicRoute {
+    /// Printed label (`RHF`, `UKS`, `MP2`, ...).
+    pub fn label(self) -> &'static str {
+        match self {
+            PeriodicRoute::Rhf => "RHF",
+            PeriodicRoute::Rks => "RKS",
+            PeriodicRoute::Uhf => "UHF",
+            PeriodicRoute::Uks => "UKS",
+            PeriodicRoute::Rohf => "ROHF",
+            PeriodicRoute::Roks => "ROKS",
+            PeriodicRoute::Mp2 => "MP2",
+            PeriodicRoute::Drpa => "dRPA",
+        }
+    }
+    /// A multiplicity-1, even-electron route (RHF/RKS and the correlation
+    /// methods on top of RHF).
+    pub fn closed_shell(self) -> bool {
+        matches!(
+            self,
+            PeriodicRoute::Rhf | PeriodicRoute::Rks | PeriodicRoute::Mp2 | PeriodicRoute::Drpa
+        )
+    }
+    pub fn open_shell(self) -> bool {
+        !self.closed_shell()
+    }
+    pub fn kohn_sham(self) -> bool {
+        matches!(
+            self,
+            PeriodicRoute::Rks | PeriodicRoute::Uks | PeriodicRoute::Roks
+        )
+    }
+    pub fn correlated(self) -> bool {
+        matches!(self, PeriodicRoute::Mp2 | PeriodicRoute::Drpa)
+    }
+    /// Routes with a k-point driver in ferric-pbc.
+    pub fn has_kpoints(self) -> bool {
+        matches!(
+            self,
+            PeriodicRoute::Rhf | PeriodicRoute::Uhf | PeriodicRoute::Mp2 | PeriodicRoute::Drpa
+        )
+    }
+}
+
+/// The J/K builder of a periodic run.
+#[derive(Debug, Clone)]
+pub enum PeriodicJk {
+    /// Dense pure-AFT ERI, hard-capped at `max_eri_bytes`.
+    Dense { max_eri_bytes: usize },
+    /// RS-GDF with a bundled aux basis and an optional explicit budget
+    /// (`None` = ferric's unified budget chain).
+    RsGdf {
+        auxbasis: String,
+        budget_bytes: Option<usize>,
+    },
+}
+
+/// A fully validated periodic run: what `crate::periodic` executes. Every
+/// field is resolved (units converted to Bohr, strings parsed, the Python
+/// bindings' defaults filled in where a key was not written).
+#[derive(Debug, Clone)]
+pub struct PeriodicPlan {
+    pub route: PeriodicRoute,
+    /// XC functional (Kohn-Sham routes only).
+    pub functional: Option<String>,
+    pub lattice_bohr: [[f64; 3]; 3],
+    /// `true` when `[cell] unit = "bohr"` (for the printout only).
+    pub unit_bohr: bool,
+    pub omega_bohr: Option<f64>,
+    pub exxdiv: ferric_pbc::ExxDiv,
+    pub jk: PeriodicJk,
+    /// `Some` = k-point drivers.
+    pub kmesh: Option<([usize; 3], ferric_pbc::MeshCentring)>,
+    /// Open-shell routes: how an `exxdiv = "ewald"` SCF starts.
+    pub ewald_start: ferric_pbc::EwaldStart,
+    pub denominators: Option<ferric_pbc::Mp2Denominators>,
+    pub frozen_core: usize,
+    pub quad_points: Option<usize>,
+    pub drpa_energy: ferric_pbc::KDrpaEnergy,
+    pub max_iter: usize,
+    /// `[scf] max_iter` was written. When it was not, the ROKS route keeps
+    /// `GammaRoksConfig::new`'s own cap (600 for a hybrid, with its level
+    /// shift) instead of `max_iter` (200).
+    pub max_iter_explicit: bool,
+    /// Gamma SCF density threshold.
+    pub density_conv: f64,
+    /// k-point SCF energy threshold (per cell).
+    pub energy_conv: f64,
+    /// k-point SCF orbital-gradient threshold.
+    pub grad_conv: f64,
+    pub n_radial: usize,
+    pub n_angular: usize,
+    pub neighbour_cutoff_bohr: Option<f64>,
+    /// `method.task = "optimize"`: Gamma-point SCF routes (RHF/UHF/ROHF/RKS/
+    /// UKS/ROKS), either J/K, atoms only at a fixed lattice.
+    pub optimize: bool,
+}
+
+/// The method kinds `[cell]` accepts.
+pub const PERIODIC_METHOD_KINDS: &[&str] = &["rhf", "uhf", "rohf", "ksdft", "rimp2", "pdep-rpa"];
+
+/// `method.kind` (+ `[dft] functional`, multiplicity) -> periodic route,
+/// mirroring the molecular `Config::dispatch_kind`: `rhf`/`uhf`/`rohf` with a
+/// functional are RKS/UKS/ROKS, `ksdft` is RKS (UKS for an open shell),
+/// default functional LDA.
+fn periodic_route(
+    kind: &str,
+    functional: Option<&str>,
+    multiplicity: usize,
+) -> Result<(PeriodicRoute, Option<String>), String> {
+    let f = functional.map(str::to_string);
+    let route = match kind {
+        "rhf" if f.is_some() => PeriodicRoute::Rks,
+        "rhf" => PeriodicRoute::Rhf,
+        "uhf" if f.is_some() => PeriodicRoute::Uks,
+        "uhf" => PeriodicRoute::Uhf,
+        "rohf" if f.is_some() => PeriodicRoute::Roks,
+        "rohf" => PeriodicRoute::Rohf,
+        "ksdft" => {
+            let f = Some(f.unwrap_or_else(|| "LDA".into()));
+            let r = if multiplicity > 1 {
+                PeriodicRoute::Uks
+            } else {
+                PeriodicRoute::Rks
+            };
+            return Ok((r, f));
+        }
+        "rimp2" | "pdep-rpa" if f.is_some() => {
+            return Err(format!(
+                "[dft] functional is not read by periodic method.kind = \"{kind}\" (its \
+                 reference is periodic RHF); remove it"
+            ))
+        }
+        "rimp2" => PeriodicRoute::Mp2,
+        "pdep-rpa" => PeriodicRoute::Drpa,
+        other => {
+            return Err(format!(
+                "method.kind = \"{other}\" is not implemented for periodic systems ([cell] is \
+                 present). Periodic kinds: {}",
+                PERIODIC_METHOD_KINDS
+                    .iter()
+                    .map(|k| format!("\"{k}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        }
+    };
+    Ok((route, f))
+}
+
+/// The keys written in the raw TOML table `section` (empty if absent).
+fn raw_keys<'a>(raw: &'a toml::Value, section: &str) -> Vec<&'a str> {
+    raw.get(section)
+        .and_then(|v| v.as_table())
+        .map(|t| t.keys().map(String::as_str).collect())
+        .unwrap_or_default()
+}
+
+/// A finite, strictly positive float knob.
+fn cell_positive(name: &str, v: f64) -> Result<f64, String> {
+    if v.is_finite() && v > 0.0 {
+        Ok(v)
+    } else {
+        Err(format!("[cell] {name} must be finite and > 0, got {v}"))
+    }
+}
+
+/// Refuse every section and key the periodic path would not read. The
+/// periodic drivers take only the `[cell]` knobs, `[scf]` max_iter /
+/// density_conv (Gamma) / energy_conv (k-point), `[dft] functional` (Kohn-Sham
+/// routes), `[memory]` budget (RS-GDF) and `[optimize]` (task = "optimize");
+/// anything else would be a silent no-op.
+fn periodic_raw_key_check(
+    raw: &toml::Value,
+    route: PeriodicRoute,
+    kpoints: bool,
+    rsgdf: bool,
+    optimize: bool,
+) -> Result<(), String> {
+    let Some(top) = raw.as_table() else {
+        return Ok(());
+    };
+    for section in top.keys() {
+        match section.as_str() {
+            "molecule" | "basis" | "method" | "cell" | "output" => {}
+            "optimize" if optimize => {}
+            "scf" => {
+                for key in raw_keys(raw, "scf") {
+                    let ok = match key {
+                        "max_iter" => true,
+                        "density_conv" => !kpoints,
+                        "energy_conv" => kpoints,
+                        _ => false,
+                    };
+                    if !ok {
+                        return Err(format!(
+                            "[scf] {key} is not read by the periodic ([cell]) {} path. It \
+                             reads [scf] max_iter, density_conv (Gamma point) and \
+                             energy_conv (k-point mesh) only",
+                            if kpoints { "k-point" } else { "Gamma-point" }
+                        ));
+                    }
+                }
+            }
+            "dft" => {
+                for key in raw_keys(raw, "dft") {
+                    if key != "functional" || !route.kohn_sham() {
+                        return Err(format!(
+                            "[dft] {key} is not read by the periodic ([cell]) {} route; the \
+                             periodic path reads only [dft] functional, on a Kohn-Sham route",
+                            route.label()
+                        ));
+                    }
+                }
+            }
+            "memory" => {
+                if !rsgdf {
+                    return Err(
+                        "[memory] bounds RS-GDF and is ignored by the periodic [cell] jk = \
+                         \"dense\" path; bound the dense tensor with [cell] max_eri_gb instead"
+                            .into(),
+                    );
+                }
+            }
+            other => {
+                return Err(format!(
+                    "[{other}] is not read by the periodic ([cell]) path; remove it. \
+                     Periodic correlation knobs (denominators, frozen_core, quad_points, \
+                     drpa_energy) live in [cell]"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Validate `[cell]` against the rest of the config and resolve it into a
+/// [`PeriodicPlan`]. `Ok(None)` when there is no `[cell]`. `raw` is the same
+/// file as a plain TOML value: which `[scf]` keys were WRITTEN decides between
+/// the user's value and the periodic default (the Python bindings' 200
+/// iterations, density_conv 1e-10, energy_conv 1e-12), which differ from the
+/// molecular `[scf]` defaults.
+pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicPlan>, String> {
+    use ferric_pbc::{EwaldStart, ExxDiv, KDrpaEnergy, MeshCentring, Mp2Denominators};
+    let Some(c) = cfg.cell.as_ref() else {
+        return Ok(None);
+    };
+    let kind = cfg.method.kind.as_str();
+    let task = cfg.method.task.as_str();
+    let mult = cfg.molecule.multiplicity;
+    let (route, functional) = periodic_route(kind, cfg.dft.functional.as_deref(), mult)?;
+
+    // Molecule-level refusals shared by every periodic driver.
+    if cfg.molecule.charge != 0 {
+        return Err(format!(
+            "[cell]: charged cell (charge = {}) is not supported: a periodic charged cell \
+             needs a neutralising-background correction for the electrons that is not \
+             implemented. Use a neutral cell.",
+            cfg.molecule.charge
+        ));
+    }
+    if route.closed_shell() && mult != 1 {
+        return Err(format!(
+            "[cell]: multiplicity {mult} requested, but the periodic {} driver is \
+             closed-shell only; use method.kind = \"uhf\"/\"rohf\" (or \"ksdft\") for an \
+             open-shell cell",
+            route.label()
+        ));
+    }
+
+    // Units.
+    let unit_bohr = match c
+        .unit
+        .as_deref()
+        .unwrap_or("angstrom")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "angstrom" => false,
+        "bohr" => true,
+        other => {
+            return Err(format!(
+                "[cell] unit must be \"angstrom\" or \"bohr\", got {other:?}"
+            ))
+        }
+    };
+    let to_bohr = if unit_bohr { 1.0 } else { ANGSTROM_TO_BOHR };
+    let mut lattice_bohr = [[0.0_f64; 3]; 3];
+    for (i, row) in c.lattice.iter().enumerate() {
+        for (j, v) in row.iter().enumerate() {
+            if !v.is_finite() {
+                return Err(format!("[cell] lattice[{i}][{j}] = {v} is not finite"));
+            }
+            lattice_bohr[i][j] = v * to_bohr;
+        }
+    }
+    let omega_bohr = match c.omega {
+        None => None,
+        Some(w) => Some(cell_positive("omega", w)? / to_bohr),
+    };
+
+    let exxdiv = ExxDiv::parse_config_str(c.exxdiv.as_deref().unwrap_or("ewald"))
+        .map_err(|e| format!("[cell] {e}"))?;
+
+    // J/K builder, with the knobs only one of them reads.
+    let rsgdf = match c
+        .jk
+        .as_deref()
+        .unwrap_or("dense")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "dense" => false,
+        "rsgdf" => true,
+        other => {
+            return Err(format!(
+                "[cell] jk must be \"dense\" or \"rsgdf\", got {other:?}"
+            ))
+        }
+    };
+    let jk = if rsgdf {
+        if let Some(g) = c.max_eri_gb {
+            return Err(format!(
+                "[cell] max_eri_gb = {g} caps the dense AFT tensor and is ignored by jk = \
+                 \"rsgdf\"; bound RS-GDF with [memory] budget_gb instead"
+            ));
+        }
+        let Some(aux) = c.auxbasis.clone() else {
+            return Err(
+                "[cell] jk = \"rsgdf\" requires auxbasis (a bundled name such as \
+                 \"cc-pvdz-ri\" or \"def2-universal-jkfit\"); there is no default aux basis"
+                    .into(),
+            );
+        };
+        PeriodicJk::RsGdf {
+            auxbasis: aux,
+            budget_bytes: cfg.memory.budget_bytes(),
+        }
+    } else {
+        if c.auxbasis.is_some() {
+            return Err(
+                "[cell] auxbasis is only used by jk = \"rsgdf\"; jk = \"dense\" would ignore \
+                 it. Set jk = \"rsgdf\" or drop auxbasis."
+                    .into(),
+            );
+        }
+        let gb = match c.max_eri_gb {
+            None => 0.5,
+            Some(g) => cell_positive("max_eri_gb", g)?,
+        };
+        PeriodicJk::Dense {
+            max_eri_bytes: ferric_core::memory::gib_to_bytes(gb),
+        }
+    };
+
+    // k-point mesh.
+    let kmesh = match c.kmesh {
+        None => {
+            if let Some(ce) = &c.centring {
+                return Err(format!(
+                    "[cell] centring = {ce:?} only applies with kmesh; the Gamma-point run \
+                     would ignore it"
+                ));
+            }
+            None
+        }
+        Some(n) => {
+            if n.contains(&0) {
+                return Err(format!("[cell] kmesh = {n:?}: every entry must be >= 1"));
+            }
+            if !route.has_kpoints() {
+                return Err(format!(
+                    "[cell] kmesh is not supported for the periodic {} route: k-point meshes \
+                     are implemented for method.kind = \"rhf\", \"uhf\" (Hartree-Fock, no \
+                     [dft] functional), \"rimp2\" and \"pdep-rpa\" only. Remove kmesh for a \
+                     Gamma-point run.",
+                    route.label()
+                ));
+            }
+            let centring = match c
+                .centring
+                .as_deref()
+                .unwrap_or("gamma")
+                .to_ascii_lowercase()
+                .as_str()
+            {
+                "gamma" => MeshCentring::Gamma,
+                "mp" => MeshCentring::MonkhorstPack,
+                other => {
+                    return Err(format!(
+                        "[cell] centring must be \"gamma\" or \"mp\", got {other:?}"
+                    ))
+                }
+            };
+            Some((n, centring))
+        }
+    };
+    let kpoints = kmesh.is_some();
+
+    // Open-shell Ewald start.
+    let ewald_start = match (&c.ewald_start, route.open_shell(), exxdiv) {
+        (None, _, _) => EwaldStart::Staged,
+        (Some(v), false, _) => {
+            return Err(format!(
+                "[cell] ewald_start = {v:?} applies to the open-shell SCF routes only; the \
+                 {} route would ignore it",
+                route.label()
+            ))
+        }
+        (Some(v), true, ExxDiv::None) => {
+            return Err(format!(
+                "[cell] ewald_start = {v:?} only applies to exxdiv = \"ewald\"; exxdiv = \
+                 \"none\" would ignore it"
+            ))
+        }
+        (Some(v), true, ExxDiv::Ewald) => {
+            EwaldStart::parse_config_str(v).map_err(|e| format!("[cell] {e}"))?
+        }
+    };
+
+    // Correlation knobs.
+    let only_corr = |name: &str, given: bool| -> Result<(), String> {
+        if given && !route.correlated() {
+            Err(format!(
+                "[cell] {name} is read by periodic rimp2 / pdep-rpa only; the {} route would \
+                 ignore it",
+                route.label()
+            ))
+        } else {
+            Ok(())
+        }
+    };
+    only_corr("denominators", c.denominators.is_some())?;
+    only_corr("frozen_core", c.frozen_core.is_some())?;
+    let denominators = match (&c.denominators, route.correlated()) {
+        (Some(d), _) => {
+            Some(Mp2Denominators::parse_config_str(d).map_err(|e| format!("[cell] {e}"))?)
+        }
+        (None, true) => {
+            return Err(format!(
+                "[cell] denominators is REQUIRED for periodic {}: \"shifted\" (Madelung-shifted \
+                 occupied energies, the physical convention) or \"unshifted\". There is no \
+                 default convention.",
+                route.label()
+            ))
+        }
+        (None, false) => None,
+    };
+    if (c.quad_points.is_some() || c.drpa_energy.is_some()) && route != PeriodicRoute::Drpa {
+        return Err(format!(
+            "[cell] quad_points / drpa_energy are read by periodic pdep-rpa only; the {} \
+             route would ignore them",
+            route.label()
+        ));
+    }
+    if c.drpa_energy.is_some() && !kpoints {
+        return Err(
+            "[cell] drpa_energy selects the k-point dRPA energy construction and requires \
+             kmesh; the Gamma-point dRPA would ignore it"
+                .into(),
+        );
+    }
+    let drpa_energy = match c
+        .drpa_energy
+        .as_deref()
+        .unwrap_or("quadrature")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "quadrature" => KDrpaEnergy::Quadrature,
+        "plasmon" => KDrpaEnergy::Plasmon,
+        "second-order" => KDrpaEnergy::SecondOrder,
+        other => {
+            return Err(format!(
+                "[cell] drpa_energy must be \"quadrature\", \"plasmon\" or \"second-order\", \
+                 got {other:?}"
+            ))
+        }
+    };
+    if let Some(q) = c.quad_points {
+        if q == 0 {
+            return Err("[cell] quad_points must be >= 1".into());
+        }
+        if !kpoints && !rsgdf {
+            return Err(format!(
+                "[cell] quad_points = {q} is ignored by the Gamma-point jk = \"dense\" dRPA \
+                 (the exact plasmon formula has no frequency quadrature); drop it or use \
+                 jk = \"rsgdf\""
+            ));
+        }
+        if kpoints && drpa_energy != KDrpaEnergy::Quadrature {
+            return Err(format!(
+                "[cell] quad_points = {q} is only used by drpa_energy = \"quadrature\""
+            ));
+        }
+    }
+
+    // Kohn-Sham grid knobs.
+    if !route.kohn_sham()
+        && (c.n_radial.is_some() || c.n_angular.is_some() || c.neighbour_cutoff.is_some())
+    {
+        return Err(format!(
+            "[cell] n_radial / n_angular / neighbour_cutoff set the periodic XC grid and are \
+             read by Kohn-Sham routes only; the {} route would ignore them",
+            route.label()
+        ));
+    }
+    let neighbour_cutoff_bohr = match c.neighbour_cutoff {
+        None => None,
+        Some(d) => Some(cell_positive("neighbour_cutoff", d)? * to_bohr),
+    };
+
+    // SCF thresholds: the user's value where WRITTEN, else the periodic default.
+    if let Some(g) = c.grad_conv {
+        if !kpoints {
+            return Err(format!(
+                "[cell] grad_conv = {g} is a k-point SCF threshold; the Gamma-point SCF would \
+                 ignore it (it converges on [scf] density_conv)"
+            ));
+        }
+        cell_positive("grad_conv", g)?;
+    }
+    let optimize = match task {
+        "energy" => false,
+        "optimize" => {
+            if route.correlated() {
+                return Err(format!(
+                    "method.task = \"optimize\" with [cell] is implemented for the Gamma-point \
+                     SCF routes (rhf, uhf, rohf, ksdft; RHF/UHF/ROHF/RKS/UKS/ROKS) only: \
+                     periodic {} has no analytic gradient",
+                    route.label()
+                ));
+            }
+            if kpoints {
+                return Err(format!(
+                    "method.task = \"optimize\" with [cell] kmesh is not implemented: \
+                     k-point forces are not wired into the CLI. Remove kmesh to optimize \
+                     at the Gamma point (the {} route has analytic Gamma forces)",
+                    route.label()
+                ));
+            }
+            if let Some(s) = cfg.optimize.coordinates.as_deref() {
+                if parse_coord_system(s)? != ferric_scf::optimize::CoordSystem::Cartesian {
+                    return Err(
+                        "[optimize] coordinates: periodic optimization is Cartesian only \
+                         (internal coordinates are not periodic-aware)"
+                            .into(),
+                    );
+                }
+            }
+            true
+        }
+        other => {
+            return Err(format!(
+                "method.task = \"{other}\" is not implemented for periodic systems ([cell] is \
+                 present); use \"energy\" (or \"optimize\" for a Gamma-point SCF route)"
+            ))
+        }
+    };
+    periodic_raw_key_check(raw, route, kpoints, rsgdf, optimize)?;
+    let written = raw_keys(raw, "scf");
+    let max_iter_explicit = written.contains(&"max_iter");
+    let max_iter = if max_iter_explicit {
+        cfg.scf.max_iter
+    } else {
+        200
+    };
+    let density_conv = if written.contains(&"density_conv") {
+        cell_positive("density_conv ([scf])", cfg.scf.density_conv)?
+    } else {
+        1e-10
+    };
+    let energy_conv = if written.contains(&"energy_conv") {
+        cell_positive("energy_conv ([scf])", cfg.scf.energy_conv)?
+    } else {
+        1e-12
+    };
+
+    Ok(Some(PeriodicPlan {
+        route,
+        functional,
+        lattice_bohr,
+        unit_bohr,
+        omega_bohr,
+        exxdiv,
+        jk,
+        kmesh,
+        ewald_start,
+        denominators,
+        frozen_core: c.frozen_core.unwrap_or(0),
+        quad_points: c.quad_points,
+        drpa_energy,
+        max_iter,
+        max_iter_explicit,
+        density_conv,
+        energy_conv,
+        grad_conv: c.grad_conv.unwrap_or(1e-9),
+        n_radial: c.n_radial.unwrap_or(75),
+        n_angular: c.n_angular.unwrap_or(302),
+        neighbour_cutoff_bohr,
+        optimize,
+    }))
+}
+
+#[cfg(test)]
+mod cell_tests {
+    use super::*;
+
+    /// `load_config` minus the file read: typed parse, then the periodic plan.
+    fn plan(src: &str) -> Result<Option<PeriodicPlan>, String> {
+        let cfg: Config = toml::from_str(src).map_err(|e| e.to_string())?;
+        let raw: toml::Value = toml::from_str(src).map_err(|e| e.to_string())?;
+        periodic_plan(&cfg, &raw)
+    }
+
+    fn err(src: &str) -> String {
+        match plan(src) {
+            Ok(_) => panic!("config was accepted but must be refused:\n{src}"),
+            Err(e) => e,
+        }
+    }
+
+    fn ok(src: &str) -> PeriodicPlan {
+        match plan(src) {
+            Ok(Some(p)) => p,
+            Ok(None) => panic!("[cell] present but no plan resolved:\n{src}"),
+            Err(e) => panic!("config must be accepted, got: {e}\n{src}"),
+        }
+    }
+
+    /// H2 in a 4 Bohr cube, method kind and extra lines substituted.
+    fn h2(kind: &str, cell_extra: &str, extra: &str) -> String {
+        format!(
+            r#"
+[molecule]
+xyz = "testdata/molecules/h2.xyz"
+[basis]
+name = "sto-3g"
+[method]
+kind = "{kind}"
+[cell]
+unit = "bohr"
+lattice = [[4.0, 0.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 4.0]]
+{cell_extra}
+{extra}
+"#
+        )
+    }
+
+    #[test]
+    fn no_cell_section_means_no_plan() {
+        let src = r#"
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+[basis]
+name = "sto-3g"
+[method]
+kind = "ccsd"
+"#;
+        assert!(plan(src).unwrap().is_none());
+    }
+
+    #[test]
+    fn gamma_rhf_defaults_mirror_the_python_bindings() {
+        let p = ok(&h2("rhf", "", ""));
+        assert_eq!(p.route, PeriodicRoute::Rhf);
+        assert!(p.kmesh.is_none());
+        assert_eq!(p.exxdiv, ferric_pbc::ExxDiv::Ewald);
+        assert!(matches!(p.jk, PeriodicJk::Dense { .. }));
+        assert_eq!(p.lattice_bohr[0][0], 4.0);
+        assert_eq!((p.max_iter, p.density_conv), (200, 1e-10));
+    }
+
+    #[test]
+    fn angstrom_is_the_default_unit() {
+        let src = h2("rhf", "", "").replace("unit = \"bohr\"\n", "");
+        let p = ok(&src);
+        assert!((p.lattice_bohr[1][1] - 4.0 * ANGSTROM_TO_BOHR).abs() < 1e-12);
+        assert!(!p.unit_bohr);
+    }
+
+    #[test]
+    fn bad_unit_errors() {
+        let e = err(&h2("rhf", "", "").replace("\"bohr\"", "\"nm\""));
+        assert!(e.contains("unit"), "{e}");
+    }
+
+    #[test]
+    fn kmesh_rhf_resolves_the_mesh() {
+        let p = ok(&h2("rhf", "kmesh = [2, 2, 2]", ""));
+        let (n, c) = p.kmesh.expect("kmesh");
+        assert_eq!(n, [2, 2, 2]);
+        assert_eq!(c, ferric_pbc::MeshCentring::Gamma);
+        assert_eq!(p.energy_conv, 1e-12);
+    }
+
+    #[test]
+    fn unknown_cell_key_errors() {
+        let e = err(&h2("rhf", "exxdivv = \"ewald\"", ""));
+        assert!(e.contains("exxdivv"), "{e}");
+    }
+
+    #[test]
+    fn lattice_must_be_three_by_three() {
+        let src = h2("rhf", "", "").replace(
+            "lattice = [[4.0, 0.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 4.0]]",
+            "lattice = [[4.0, 0.0, 0.0], [0.0, 4.0, 0.0]]",
+        );
+        err(&src);
+    }
+
+    #[test]
+    fn bad_exxdiv_errors() {
+        let e = err(&h2("rhf", "exxdiv = \"madelung\"", ""));
+        assert!(e.contains("exxdiv"), "{e}");
+        assert_eq!(
+            ok(&h2("rhf", "exxdiv = \"none\"", "")).exxdiv,
+            ferric_pbc::ExxDiv::None
+        );
+    }
+
+    #[test]
+    fn kmesh_with_an_unsupported_method_errors() {
+        for (kind, extra) in [
+            ("ksdft", ""),
+            ("rohf", ""),
+            ("rhf", "[dft]\nfunctional = \"PBE\""),
+        ] {
+            let e = err(&h2(kind, "kmesh = [2, 2, 2]", extra));
+            assert!(e.contains("kmesh"), "{kind}: {e}");
+        }
+    }
+
+    #[test]
+    fn non_periodic_method_kinds_error_naming_the_method() {
+        for kind in ["ccsd", "gw", "lmp2", "scs-mp2"] {
+            let e = err(&h2(kind, "", ""));
+            assert!(
+                e.contains(&format!("\"{kind}\"")) && e.contains("not implemented for periodic"),
+                "{kind}: {e}"
+            );
+        }
+    }
+
+    #[test]
+    fn functional_promotes_to_kohn_sham_routes() {
+        let f = "[dft]\nfunctional = \"PBE\"";
+        assert_eq!(ok(&h2("rhf", "", f)).route, PeriodicRoute::Rks);
+        assert_eq!(ok(&h2("ksdft", "", "")).route, PeriodicRoute::Rks);
+        assert_eq!(ok(&h2("ksdft", "", "")).functional.as_deref(), Some("LDA"));
+    }
+
+    #[test]
+    fn correlation_requires_denominators_and_rejects_them_elsewhere() {
+        let e = err(&h2("rimp2", "", ""));
+        assert!(e.contains("denominators"), "{e}");
+        let p = ok(&h2("rimp2", "denominators = \"shifted\"", ""));
+        assert_eq!(p.route, PeriodicRoute::Mp2);
+        let e = err(&h2("rhf", "denominators = \"shifted\"", ""));
+        assert!(e.contains("denominators"), "{e}");
+        let e = err(&h2("rimp2", "denominators = \"shiftd\"", ""));
+        assert!(e.contains("shifted"), "{e}");
+    }
+
+    #[test]
+    fn molecular_correlation_sections_are_refused() {
+        let e = err(&h2(
+            "rimp2",
+            "denominators = \"shifted\"",
+            "[mp2]\nfrozen_core = 0",
+        ));
+        assert!(e.contains("[mp2]"), "{e}");
+    }
+
+    #[test]
+    fn scf_keys_the_path_ignores_are_refused() {
+        // Gamma reads density_conv, not energy_conv; k-point the reverse.
+        err(&h2("rhf", "", "[scf]\nenergy_conv = 1e-9"));
+        err(&h2(
+            "rhf",
+            "kmesh = [1, 1, 2]",
+            "[scf]\ndensity_conv = 1e-9",
+        ));
+        err(&h2("rhf", "", "[scf]\nk_builder = \"link\""));
+        let p = ok(&h2("rhf", "", "[scf]\nmax_iter = 50\ndensity_conv = 1e-8"));
+        assert_eq!((p.max_iter, p.density_conv), (50, 1e-8));
+    }
+
+    #[test]
+    fn jk_knobs_are_path_specific() {
+        err(&h2("rhf", "jk = \"rsgdf\"", ""));
+        err(&h2("rhf", "auxbasis = \"cc-pvdz-ri\"", ""));
+        err(&h2(
+            "rhf",
+            "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"\nmax_eri_gb = 1.0",
+            "",
+        ));
+        err(&h2("rhf", "", "[memory]\nbudget_gb = 2.0"));
+        err(&h2("rhf", "jk = \"fft\"", ""));
+        let p = ok(&h2(
+            "rhf",
+            "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"",
+            "[memory]\nbudget_gb = 2.0",
+        ));
+        assert!(matches!(p.jk, PeriodicJk::RsGdf { .. }));
+    }
+
+    #[test]
+    fn charged_and_open_shell_closed_routes_are_refused() {
+        let e = err(&h2("rhf", "", "").replace("xyz = ", "charge = 1\nxyz = "));
+        assert!(e.contains("charged"), "{e}");
+        let e = err(&h2("rhf", "", "").replace("xyz = ", "multiplicity = 3\nxyz = "));
+        assert!(e.contains("multiplicity"), "{e}");
+        let p = ok(&h2("ksdft", "", "").replace("xyz = ", "multiplicity = 3\nxyz = "));
+        assert_eq!(p.route, PeriodicRoute::Uks);
+    }
+
+    #[test]
+    fn ewald_start_is_open_shell_and_ewald_only() {
+        err(&h2("rhf", "ewald_start = \"direct\"", ""));
+        err(&h2(
+            "uhf",
+            "exxdiv = \"none\"\newald_start = \"direct\"",
+            "",
+        ));
+        err(&h2("uhf", "ewald_start = \"sideways\"", ""));
+        let p = ok(&h2("uhf", "ewald_start = \"direct\"", ""));
+        assert_eq!(p.ewald_start, ferric_pbc::EwaldStart::Direct);
+    }
+
+    #[test]
+    fn drpa_knobs_are_route_and_mesh_specific() {
+        let d = "denominators = \"shifted\"";
+        // Gamma dense dRPA has no quadrature.
+        err(&h2("pdep-rpa", &format!("{d}\nquad_points = 20"), ""));
+        // drpa_energy is the k-point construction.
+        err(&h2(
+            "pdep-rpa",
+            &format!("{d}\ndrpa_energy = \"plasmon\""),
+            "",
+        ));
+        err(&h2(
+            "pdep-rpa",
+            &format!("{d}\nkmesh = [1, 1, 2]\ndrpa_energy = \"plasmon\"\nquad_points = 20"),
+            "",
+        ));
+        let p = ok(&h2(
+            "pdep-rpa",
+            &format!("{d}\nkmesh = [1, 1, 2]\ndrpa_energy = \"plasmon\""),
+            "",
+        ));
+        assert_eq!(p.drpa_energy, ferric_pbc::KDrpaEnergy::Plasmon);
+    }
+
+    /// `h2` with `task = "optimize"`.
+    fn opt(kind: &str, cell: &str, extra: &str) -> String {
+        h2(kind, cell, extra).replace("kind = ", "task = \"optimize\"\nkind = ")
+    }
+
+    #[test]
+    fn optimize_is_accepted_for_every_gamma_scf_route_and_jk() {
+        let rsgdf = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"";
+        let pbe = "[dft]\nfunctional = \"PBE\"";
+        for (kind, extra, route) in [
+            ("rhf", "", PeriodicRoute::Rhf),
+            ("uhf", "", PeriodicRoute::Uhf),
+            ("rohf", "", PeriodicRoute::Rohf),
+            ("ksdft", "", PeriodicRoute::Rks),
+            ("rhf", pbe, PeriodicRoute::Rks),
+            ("uhf", pbe, PeriodicRoute::Uks),
+            ("rohf", pbe, PeriodicRoute::Roks),
+        ] {
+            for jk in ["", rsgdf] {
+                let p = ok(&opt(kind, jk, extra));
+                assert!(p.optimize, "{kind} {extra} {jk}");
+                assert_eq!(p.route, route, "{kind} {extra} {jk}");
+                assert!(p.kmesh.is_none());
+                assert_eq!(
+                    matches!(p.jk, PeriodicJk::RsGdf { .. }),
+                    !jk.is_empty(),
+                    "{kind} {extra} {jk}"
+                );
+            }
+        }
+        // ksdft picks UKS for an open shell (H2 triplet).
+        let triplet =
+            opt("ksdft", "", "").replace("[molecule]\n", "[molecule]\nmultiplicity = 3\n");
+        assert_eq!(ok(&triplet).route, PeriodicRoute::Uks);
+        // [optimize] is read on the optimize path.
+        assert!(ok(&opt("uhf", rsgdf, "[optimize]\nmax_steps = 5")).optimize);
+    }
+
+    #[test]
+    fn optimize_is_refused_with_a_kmesh_and_for_correlated_routes() {
+        for kind in ["rhf", "uhf"] {
+            let e = err(&opt(kind, "kmesh = [1, 1, 2]", ""));
+            assert!(e.contains("optimize") && e.contains("kmesh"), "{kind}: {e}");
+            assert!(e.contains("k-point forces"), "{kind}: {e}");
+        }
+        for kind in ["rimp2", "pdep-rpa"] {
+            let e = err(&opt(kind, "denominators = \"shifted\"", ""));
+            assert!(
+                e.contains("optimize") && e.contains("no analytic gradient"),
+                "{kind}: {e}"
+            );
+        }
+        let freq = h2("rhf", "", "").replace("kind = ", "task = \"frequencies\"\nkind = ");
+        assert!(err(&freq).contains("not implemented for periodic"));
+    }
+
+    #[test]
+    fn shipped_periodic_examples_resolve() {
+        let root = super::tests::runtime_workspace_root();
+        for name in ["h2-cell-rhf.toml", "h2-cell-kpts-rhf.toml"] {
+            let src = std::fs::read_to_string(root.join("examples").join(name))
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            let p = ok(&src);
+            assert_eq!(p.route, PeriodicRoute::Rhf, "{name}");
+        }
+        let name = "h2-cell-rks-opt.toml";
+        let src = std::fs::read_to_string(root.join("examples").join(name))
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        let p = ok(&src);
+        assert_eq!(p.route, PeriodicRoute::Rks, "{name}");
+        assert!(p.optimize && p.kmesh.is_none(), "{name}");
+    }
 }
 
 #[cfg(test)]
@@ -3638,7 +4665,7 @@ json = [1, 2]
     /// `all_shipped_examples_parse` from CC 6 to 13 and the complexity gate
     /// caught it -- correctly, since path-walking has nothing to do with what
     /// that test asserts.
-    fn runtime_workspace_root() -> std::path::PathBuf {
+    pub(super) fn runtime_workspace_root() -> std::path::PathBuf {
         let looks_like_root = |p: &std::path::Path| {
             p.join("Cargo.toml").is_file()
                 && p.join("examples").is_dir()
