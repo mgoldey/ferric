@@ -233,7 +233,7 @@ Read by `tda` and `tddft`. Also set `[mp2] auxbasis` (see above).
 | Key | Type | Default | Allowed values | Notes |
 |---|---|---|---|---|
 | `n_roots` | integer | `3` | | |
-| `xc` | string | none (HF reference: CIS or TDHF) | XC name | DFT references lack the f_xc kernel. |
+| `xc` | string | none (HF reference: CIS or TDHF) | XC name | Selects the reference functional and the f_xc kernel. Meta-GGA, VV10 and range-separated functionals are refused. |
 | `c_hf` | float | the functional's short-range exact-exchange fraction; `1.0` with no `xc` | | |
 
 ## `[optimize]`

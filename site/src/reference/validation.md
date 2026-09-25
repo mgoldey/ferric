@@ -35,7 +35,7 @@ with HF, LDA, PBE and B3LYP (see the anchor below). These print no warning.
 
 | `method.kind` | Grade | What is and is not checked |
 |---|---|---|
-| `gw` | Smoke | ~5 meV vs MOLGW on one H2O/cc-pVDZ case; most assertions are range bands. Treat results as ±0.3 eV. |
+| `gw` | Smoke | The committed H2O/cc-pVDZ tests compare against MOLGW and PySCF `gw_ac` at 0.2–0.3 eV bars and are `#[ignore]`d; most other assertions are range bands. Treat results as ±0.3 eV. |
 | `bse-tda` | Smoke | Only excitation ordering and a physicality gate; inherits the GW gap error. |
 | `tdhf-static-polarizability` | Smoke | Static α at a physical scissor (0.36 Ha) is 5.20 a.u. for water/cc-pVDZ against DOSD 9.64 (−46%); the same kernel gives C6 ~63% low. |
 | `rs-mp2-rpa` | Smoke | The ω→0 and ω→∞ limits reduce exactly to MP2 and MP2+dRPA; production ω is unproven on new systems. |
@@ -71,7 +71,7 @@ generated its reference data; a row with nothing to link is not graded Proven.
 | NPZ export (`[rpa] export_npz`) | water / STO-3G, CLI `pdep-rpa` | `numpy.load` of the CLI's file against the Python bindings | exact (keys, shapes, dtypes, C order, geometry); per-atom and molecular α origin-independent to 3.4e-13 rel. | exact; 1e-11 rel. under translation | [`test_validation_npz_export.py`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-python/tests/test_validation_npz_export.py) |
 | KS-DFT energies: open-shell UKS and second-row closed shell | UKS: NH2, CH3, HO2, O2 (triplet) × PBE, B3LYP, ωB97X-V / 6-31G, def2-SVP; RKS: H2S, HCl, SiH4 × PBE, B3LYP / def2-SVP, def2-TZVP | PySCF `UKS`/`RKS` + `stability()`, same grid and density fitting; for UKS ωB97X-V both codes use exact J and range-separated DF-K, whose fitting metrics differ, which sets that functional's larger bar | energy ≤3.1e-12 Ha (PBE, B3LYP), 6e-6 Ha (ωB97X-V); ⟨S²⟩ ≤4.6e-9 (PBE, B3LYP), 1.3e-7 (ωB97X-V) | energy 1e-10 Ha (PBE, B3LYP), 2e-5 Ha (ωB97X-V); ⟨S²⟩ 5e-8, 1e-6 | [`validation_ks_energies.rs`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-scf/tests/validation_ks_energies.rs), [`gen_ks_energies.py`](https://github.com/mgoldey/ferric/blob/main/scripts/validation/gen_ks_energies.py) |
 | Closed-shell (T) | H2O / cc-pVDZ | PySCF `ccsd_t()` | ~1e-6 Ha | 1e-4 Ha | [`ccsd_t_closed_shell.rs`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-cc/src/ccsd_t_closed_shell.rs) (`closed_shell_t_h2o_ccpvdz_matches_pyscf`) |
-| G0W0@HF | H2O / cc-pVDZ | MOLGW | ~5 meV | 0.30 eV | [`h2o_g0w0_cohsex.rs`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-gw/tests/h2o_g0w0_cohsex.rs) |
+| G0W0@HF | H2O / cc-pVDZ | Published MOLGW IP (11.97 eV); PySCF `gw_ac` (IP 12.160 eV) | — | 0.30 eV (IP); 0.20 eV (PySCF LUMO and gap) | [`h2o_g0w0_cohsex.rs`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-gw/tests/h2o_g0w0_cohsex.rs) |
 | TDA and Casida TDDFT excitation energies | water, formaldehyde, NH3 / 6-31G, aug-cc-pVDZ | PySCF `tddft.TDA`/`TDDFT`, same RI and grid | HF ≤ 2e-6 eV; LDA/PBE ≤ 2e-5 eV; B3LYP ≤ 6.5e-4 eV | 1e-3 eV | [`validation_tddft.rs`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-tddft/tests/validation_tddft.rs), [`gen_tddft_refs.py`](https://github.com/mgoldey/ferric/blob/main/scripts/validation/gen_tddft_refs.py) |
 | RI-MP2 analytic gradient (all electrons, exact-J/K RHF) | distorted H2O, bent HCN / cc-pVDZ (cc-pvdz-ri); distorted NH3 / def2-SVP (def2-svp-rifit) | ORCA `RI-MP2 NoRI NoFrozenCore EnGrad` with the same /C aux; PySCF `DFMP2` 5-point finite differences | ≤ 2.1e-9 Ha/Bohr (PySCF FD); ≤ 5.1e-8 Ha/Bohr (ORCA, its own floor); energies ≤ 1.3e-10 Ha | 2e-8 Ha/Bohr (FD), 2.5e-7 Ha/Bohr (ORCA); 1e-9 Ha | [`validation_rimp2_gradient.rs`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-mp2/tests/validation_rimp2_gradient.rs), [`gen_rimp2_gradient.py`](https://github.com/mgoldey/ferric/blob/main/scripts/validation/gen_rimp2_gradient.py) |
 | RI-MP2 size-extensivity | H2 dimer at large separation | 2 × monomer | 2e-12 Ha | 1e-7 Ha | [`rimp2_size_extensivity.rs`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-mp2/tests/rimp2_size_extensivity.rs) |
@@ -151,8 +151,8 @@ wrong:
 
 - a **non-converged SCF** returned as an ordinary result, because convergence is
   a flag rather than an error
-- a method missing a **physical term** it does not mention (TDDFT once
-  returned KS excitations without its f<sub>xc</sub> kernel)
+- a method missing a **physical term** it does not mention (for example, TDDFT
+  excitations computed without the f<sub>xc</sub> kernel)
 - a **fallback model** silently substituted for one atom in a molecule, changing
   a partitioning without changing the shape of the output
 - a **screening or truncation threshold** that happens to be safe for the test

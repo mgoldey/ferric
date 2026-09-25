@@ -90,18 +90,18 @@ optionally `xc` (`examples/water-tda.toml`, `examples/water-tddft-pbe.toml`); Py
 `ferric.run_tddft(mol, bs, aux, functional=..., method="tda")` or
 `method="casida"`.
 
-**Important limitation.** This path (the `ferric-tddft` crate) does **not**
-include the \\( (ia|f_{xc}|jb) \\) XC-kernel term. With a pure Hartree–Fock
-reference and no correlation functional that term is zero and the result is
-exactly CIS/TDHF. With a DFT reference the excitation energies omit it and are
-approximate; the code warns on stderr. Grade: Spike.
+**Scope.** Closed-shell references, singlet excitations. With a DFT
+reference the \\( (ia|f_{xc}|jb) \\) XC-kernel term is included; with no
+functional the result is CIS/TDHF. Meta-GGA, VV10 and range-separated
+functionals are refused. Grade: Proven (narrow, closed shell): water,
+formaldehyde and NH3 at 6-31G and aug-cc-pVDZ with HF, LDA, PBE and B3LYP match
+PySCF `TDA`/`TDDFT` to at most 6.5e-4 eV, test bar 1e-3 eV
+(`ferric-tddft/tests/validation_tddft.rs`).
 
-A separate, **library-only** TDA-DFT in `ferric-gw/src/tddft.rs` does include
-a GGA \\( f_{xc} \\) kernel. It covers closed-shell singlets with LDA, GGA and
-global hybrids (LDA, PBE and B3LYP are tested), is pinned against PySCF (`ferric-gw/tests/tda_dft_vs_pyscf.rs`),
-and rejects triplets, open shells, meta-GGAs, VV10 and range-separated hybrids.
-It is not wired into the CLI or Python, so the gap for users is wiring, not
-missing physics.
+A separate, **library-only** TDA-DFT in `ferric-gw/src/tddft.rs` uses the same
+kernel (`ferric_dft::lr_kernel`) and is pinned against PySCF
+(`ferric-gw/tests/tda_dft_vs_pyscf.rs`). The user-facing TDA reproduces it to
+1e-8 Ha for HF, PBE and B3LYP.
 
 ## Polarizabilities and dispersion coefficients
 

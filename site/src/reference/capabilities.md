@@ -36,58 +36,63 @@ Open-shell support is listed only where the dispatch code handles it (see
 
 | `method.kind` | Family | Reference (CLI) | Energy | `task = "optimize"` | `task = "frequencies"` | Python | Example | Grade | Caveat |
 |---|---|---|---|---|---|---|---|---|---|
-| `rhf` | [SCF](../methods/scf.md) | RHF | ✓ | ✓ analytic | FD | `run_rhf`, `run_optimize`, `run_frequencies` | `water-rhf.toml` | Proven | — |
-| `uhf` | [SCF](../methods/scf.md) | UHF | ✓ | ✓ analytic | FD | `run_uhf`, `run_frequencies(reference="uhf")` | `h_uhf.toml` | Proven | — |
-| `rohf` | [SCF](../methods/scf.md) | ROHF | ✓ | ✓ analytic | FD | `run_rohf`, `run_frequencies(reference="rohf")` | — | Proven | — |
-| `ksdft` | [SCF/DFT](../methods/scf.md) | RKS (closed shell) | ✓ | ✓ analytic (+ D3(BJ) gradient) | FD (refused with `[dft] dispersion` or `grid_prune`) | `run_dft` / `run_ksdft`, `run_frequencies(xc=...)` | `benzene-dfb3lyp.toml`, `h2-lda-opt.toml` | Proven | — |
-| `rimp2` | [MP2](../methods/mp2.md) | RHF | ✓ | ✓ analytic (Z-vector) | — | `run_rimp2` | `water-rimp2.toml` | Proven | — |
-| `lmp2` | [MP2](../methods/mp2.md) | RHF (errors on open shell) | ✓ | — | — | `run_lmp2` | `water-lmp2.toml` | not graded | ε = 0 reproduces `rimp2`. The canonical RI-MP2 reference and the error against it are opt-in (`[mp2] lmp2_reference = true`, `compute_reference=True`). |
-| `lmp2-direct` | [MP2](../methods/mp2.md) | RHF (errors on open shell) | ✓ | — | — | `run_lmp2_direct` | `alkane8-lmp2-direct.toml` | not graded | Same as `lmp2`. The opt-in reference forms the global 3-index tensor that this path otherwise avoids. |
+| `rhf` | [SCF](../methods/scf.md) | RHF; RKS with `[dft] functional` (refuses multiplicity > 1) | ✓ | ✓ analytic | FD | `run_rhf`, `run_optimize`, `run_frequencies` | `water-rhf.toml` | Proven | — |
+| `uhf` | [SCF](../methods/scf.md) | UHF; UKS with `[dft] functional` | ✓ | ✓ analytic | FD | `run_uhf`, `run_frequencies(reference="uhf", xc=...)` | `h_uhf.toml` | Proven | — |
+| `rohf` | [SCF](../methods/scf.md) | ROHF; ROKS with `[dft] functional` | ✓ | ✓ analytic | FD | `run_rohf`, `run_frequencies(reference="rohf", xc=...)` | — | Proven | — |
+| `ksdft` | [SCF/DFT](../methods/scf.md) | RKS; UKS when multiplicity > 1 | ✓ | ✓ analytic (+ D3(BJ) gradient, closed shell only) | FD (refused with `[dft] dispersion` or `grid_prune`) | `run_dft` / `run_ksdft`, `run_frequencies(xc=...)` | `benzene-dfb3lyp.toml`, `h2-lda-opt.toml` | Proven | — |
+| `rimp2` | [MP2](../methods/mp2.md) | RHF; UHF + unrestricted RI-MP2 when multiplicity > 1 (energy only) | ✓ | ✓ analytic (Z-vector; closed shell only) | — | `run_rimp2` (UHF + UMP2 when multiplicity > 1) | `water-rimp2.toml` | Proven | — |
+| `lmp2` | [MP2](../methods/mp2.md) | RHF (refuses multiplicity > 1) | ✓ | — | — | `run_lmp2` | `water-lmp2.toml` | not graded | ε = 0 reproduces `rimp2`. The canonical RI-MP2 reference and the error against it are opt-in (`[mp2] lmp2_reference = true`, `compute_reference=True`). |
+| `lmp2-direct` | [MP2](../methods/mp2.md) | RHF (refuses multiplicity > 1) | ✓ | — | — | `run_lmp2_direct` | `alkane8-lmp2-direct.toml` | not graded | Same as `lmp2`. The opt-in reference forms the global 3-index tensor that this path otherwise avoids. |
 | `mp3` | [MP2](../methods/mp2.md) | RHF | ✓ | — | — | `run_mp3` | `water-mp3.toml` | Proven | — |
-| `oo-rimp2` | [MP2](../methods/mp2.md) | RHF | ✓ | — | — | `run_oo_rimp2` | `water-oo-rimp2.toml` | Smoke | Internally self-consistent (stationary point, vanishing gradient). No external absolute-energy reference exists. |
+| `oo-rimp2` | [MP2](../methods/mp2.md) | RHF; UHF + unrestricted OO-RI-MP2 when multiplicity > 1 (energy only) | ✓ | — | — | `run_oo_rimp2` (closed shell only) | `water-oo-rimp2.toml` | Smoke | Internally self-consistent (stationary point, vanishing gradient). No external absolute-energy reference exists. |
 | `att-rimp2` | [MP2](../methods/mp2.md) | RHF | ✓ | — | — | `run_attenuated_rimp2` | `water-attmp2.toml` | Proven | — |
-| `mp2-v` | [MP2](../methods/mp2.md) | RHF; UHF when multiplicity > 1 | ✓ | — | — | `run_mp2_v` (closed shell only) | `water-mp2v.toml` | Smoke | No comparison to any published MP2-V number. The defaults are fitted for aug-cc-pVTZ with frozen core. Open shell is doubly unvalidated. |
+| `mp2-v` | [MP2](../methods/mp2.md) | RHF; UHF when multiplicity > 1 (energy only) | ✓ | — | — | `run_mp2_v` (closed shell only) | `water-mp2v.toml` | Smoke | No comparison to any published MP2-V number. The defaults are fitted for aug-cc-pVTZ with frozen core. Open shell is doubly unvalidated. |
 | `scs-mp2` | [MP2](../methods/mp2.md) | RHF | ✓ | — | — | `run_scs_mp2` | `water-scs-mp2.toml` | Proven | — |
 | `scs-mp2-2terfc` | [MP2](../methods/mp2.md) | RHF | ✓ | — | — | `run_scs_mp2_2terfc` | `water-scs-mp2-2terfc.toml` | Proven | Needs the terfc tables (`FERRIC_TERF_TABLE_DIR`). |
 | `laplace-mp2` | [MP2](../methods/mp2.md) | RHF | ✓ | — | — | `run_laplace_mp2` | `water-laplace-rimp2.toml` | Proven | — |
 | `laplace-sos-mp2` | [MP2](../methods/mp2.md) | RHF | ✓ | — | — | `run_laplace_sos_mp2` | `water-laplace-sos-mp2.toml` | not graded | With `c_os = 1.0` it reproduces the opposite-spin MP2 energy (internal reference). |
-| `pdep-rpa` | [RPA/GW](../methods/rpa-gw.md) | RHF, or RKS via `[rpa] xc`; UHF/UKS when multiplicity > 1 | ✓ | ✓ (RHF reference only, whatever `[rpa] xc` says; `xc` applies only to `task = "energy"`; analytic SCF + FD correlation) | — | `run_pdep_rpa` | `water-pdep-rpa.toml` | Proven | — |
+| `pdep-rpa` | [RPA/GW](../methods/rpa-gw.md) | RHF, or RKS via `[rpa] xc`; UHF/UKS when multiplicity > 1 (energy only) | ✓ | ✓ (closed-shell RHF reference only; `[rpa] xc` is refused; analytic SCF + FD correlation) | — | `run_pdep_rpa` | `water-pdep-rpa.toml` | Proven | — |
 | `rs-mp2-rpa` | [MP2](../methods/mp2.md) / [RPA](../methods/rpa-gw.md) | RHF | ✓ | — | — | `run_rs_mp2_rpa` | `water-rs-mp2-rpa.toml` | Smoke | The ω→0 and ω→∞ limits are Proven. At production ω it is only marginally benchmarked on one small subset. |
-| `gw` | [RPA/GW](../methods/rpa-gw.md) | RHF, or RKS via `[rpa] xc`; UHF/UKS when multiplicity > 1 | ✓ (QP energies) | — | — | `run_gw`, `run_u_gw` | `water-g0w0-pbe.toml`, `oh-ugw.toml` | Smoke | About 5 meV against MOLGW on a single H2O/cc-pVDZ case. Treat results as ±0.3 eV. |
+| `gw` | [RPA/GW](../methods/rpa-gw.md) | RHF, or RKS via `[rpa] xc`; UHF/UKS when multiplicity > 1 (energy only) | ✓ (QP energies) | — | — | `run_gw`, `run_u_gw` | `water-g0w0-pbe.toml`, `oh-ugw.toml` | Smoke | Closed-shell G0W0@HF matches PySCF `gw_ac` to 3.8 meV MAD on 17 GW100 molecules at aug-cc-pVTZ, in a benchmark harness (`benchmarks/harness/examples/gw_xcheck.rs`) that asserts nothing. The committed tests use 0.2–0.3 eV bars. Treat results as ±0.3 eV. |
 | `bse-tda` | [RPA/GW](../methods/rpa-gw.md) | RHF only (refuses multiplicity > 1) | ✓ (excitations) | — | — | `run_bse_tda` | `water-bse-tda.toml` | Smoke | Only excitation ordering and a physicality gate are checked. The gap error is inherited from GW. |
-| `tdhf-static-polarizability` | [RPA/GW](../methods/rpa-gw.md) | RKS only (`[rpa] xc` required) | ✓ (static α) | — | — | `run_tdhf_static_polarizability` | `water-tdhf-static-alpha.toml` (does not run as shipped: set `[gw] scissor`; see [examples](./examples.md)) | Smoke | Static α only, and not established (−46% against DOSD for water at a physical scissor). The same kernel gives C6 about 63% low. At `scissor = 0` it can hard-error on a negative α diagonal; set `[gw] scissor` to about 0.3–0.4 Ha. |
-| `ccsd` | [CC](../methods/cc.md) | RHF (spin-adapted solver) | ✓ | — | — | `run_ccsd` | `water-ccsd.toml` (**H2**, not water) | Proven | — |
-| `linlccd` | [CC](../methods/cc.md) | RHF only (refuses multiplicity > 1) | ✓ | — | — | none (`run_linlccd_amplitude` is the amplitude-threshold variant) | `water-linlccd.toml` | Proven (narrow, exact limits only) | No external reference for the LinLCCD(hh) energy. With the hole–hole ladder off it reduces exactly to RI-MP2, and with exact integrals its driver terms reproduce canonical MP2; size consistency is checked. |
-| `wb97x-l-v` | [CC § ωB97X-L-V](../methods/cc.md#linlccd-and-ωb97x-l-v) | Its own RKS (wB97X-L-V) reference | ✓ | — | — | none | `water-wb97xlv.toml` | Smoke | The pieces are checked separately. No reference value exists for the total energy. |
+| `tdhf-static-polarizability` | [RPA/GW](../methods/rpa-gw.md) | RKS only (`[rpa] xc` required) | ✓ (static α) | — | — | `run_tdhf_static_polarizability` | `water-tdhf-static-alpha.toml` | Smoke | Static α only, and not established (−46% against DOSD for water at a physical scissor). The same kernel gives C6 about 63% low. At `scissor = 0` it can hard-error on a negative α diagonal; set `[gw] scissor` to about 0.3–0.4 Ha. |
+| `ccsd` | [CC](../methods/cc.md) | RHF (spin-adapted solver) | ✓ | — | — | `run_ccsd` | `water-ccsd.toml` | Proven | — |
+| `linlccd` | [CC](../methods/cc.md) | RHF only (refuses multiplicity > 1; open-shell LinLCCD(hh) is library-only) | ✓ | — | — | none (`run_linlccd_amplitude` is the amplitude-threshold variant) | `water-linlccd.toml` | Proven (narrow, exact limits only) | No external reference for the LinLCCD(hh) energy. With the hole–hole ladder off it reduces exactly to RI-MP2, and with exact integrals its driver terms reproduce canonical MP2; size consistency is checked. |
+| `wb97x-l-v` | [CC § ωB97X-L-V](../methods/cc.md#linlccd-and-ωb97x-l-v) | Its own RKS (wB97X-L-V) reference (refuses multiplicity > 1; open shell is library-only) | ✓ | — | — | none | `water-wb97xlv.toml` | Smoke | The pieces are checked separately. No reference value exists for the total energy. |
 | `b2plyp` | [CC § double hybrids](../methods/cc.md#mp2-based-double-hybrids) | Its own RKS reference | ✓ | — | — | `run_double_hybrid(kind="b2plyp")` | `water-b2plyp.toml` | Spike | Weighted B88+LYP reference. Not compared with any reference code. |
 | `dsd-pbep86` | [CC § double hybrids](../methods/cc.md#mp2-based-double-hybrids) | Its own RKS reference | ✓ | — | — | `run_double_hybrid(kind="dsd-pbep86")` | — | Spike | Weighted PBE+P86 reference. Not compared with any reference code. |
-| `tda` | [RPA/GW § TDDFT](../methods/rpa-gw.md) | RHF (CIS), or RKS via `[tddft] xc` | ✓ (excitations) | — | — | `run_tddft(method="tda")` | `water-tda.toml` | Spike | CIS on HF is exact. DFT references lack the f_xc kernel. |
-| `tddft` | [RPA/GW § TDDFT](../methods/rpa-gw.md) | RHF (TDHF), or RKS via `[tddft] xc` | ✓ (excitations) | — | — | `run_tddft(method="casida")` | `water-tddft-pbe.toml` | Spike | Full Casida equations without f_xc for DFT references. |
+| `tda` | [RPA/GW § TDDFT](../methods/rpa-gw.md) | RHF (CIS), or RKS via `[tddft] xc` (refuses multiplicity > 1) | ✓ (excitations) | — | — | `run_tddft(method="tda")` | `water-tda.toml` | Proven (narrow, closed shell) | Matches PySCF `TDA` for water, formaldehyde and NH3 at 6-31G and aug-cc-pVDZ with HF, LDA, PBE and B3LYP: at most 6.5e-4 eV (B3LYP), test bar 1e-3 eV (see [anchors](./validation.md#anchors)). A `[tddft] xc` with no f_xc kernel (meta-GGA, VV10, range-separated) is refused before the SCF. |
+| `tddft` | [RPA/GW § TDDFT](../methods/rpa-gw.md) | RHF (TDHF), or RKS via `[tddft] xc` (refuses multiplicity > 1) | ✓ (excitations) | — | — | `run_tddft(method="casida")` | `water-tddft-pbe.toml` | Proven (narrow, closed shell) | Same comparison against PySCF `TDDFT`, same bar. Same functional refusals as `tda`. |
 
 `task = "optimize"` is accepted only for `rhf`, `ksdft`, `uhf`, `rohf`,
 `pdep-rpa` and `rimp2`. `task = "frequencies"` is accepted only for `rhf`,
-`ksdft`, `uhf` and `rohf`. Any other combination exits with an error before
-the SCF runs.
+`ksdft`, `uhf` and `rohf`. On an open-shell molecule both tasks are accepted
+only for `uhf`, `rohf` and `ksdft` (UHF/UKS, ROHF/ROKS). Both tasks refuse
+`[dft] grid_prune` and `[scf] k_builder = "cosx"`. `[dft] dispersion` is
+refused for `frequencies`, and for `optimize` on an open-shell reference. Any
+other combination exits with an error before the SCF runs.
 
 ### Open shells in the CLI
 
-- `uhf` and `rohf` read `[molecule] multiplicity` directly. `[dft] functional`
-  does **not** turn them into UKS/ROKS: the CLI sets an XC functional only
-  for `ksdft`.
-- `pdep-rpa`, `gw` and `mp2-v` re-solve with UHF (with MOM after 5
-  iterations) when `multiplicity > 1`. For `pdep-rpa` and `gw`, setting
-  `[rpa] xc` makes that reference UKS; `mp2-v` does not read `[rpa] xc` and
-  stays UHF.
-- `lmp2`, `lmp2-direct`, `linlccd`, `wb97x-l-v`, `b2plyp`, `dsd-pbep86`,
-  `tda`, `tddft`, `bse-tda` and `tdhf-static-polarizability` refuse an
-  open-shell input with an error.
-- Every other correlated kind (`rimp2`, `mp3`, `oo-rimp2`, `att-rimp2`,
-  `scs-mp2`, `scs-mp2-2terfc`, `laplace-mp2`, `laplace-sos-mp2`,
-  `rs-mp2-rpa`, `ccsd`) is closed-shell only. It is fed by the shared
-  closed-shell `solve_rhf`, which fails on an odd electron count. Give these
-  kinds `multiplicity = 1`.
-- `ksdft` is closed-shell (RKS) only. From the CLI, UKS/ROKS exist only as
-  the reference inside `pdep-rpa`/`gw`. From Python, see below.
+- `uhf` and `rohf` read `[molecule] multiplicity` directly. With
+  `[dft] functional` they run UKS and ROKS, for energies, optimizations and
+  frequencies.
+- `ksdft` with `multiplicity > 1` runs UKS (the `uhf` route with the
+  functional set). For ROKS use `rohf` with `[dft] functional`.
+- `rhf` refuses `multiplicity > 1` and points to `uhf`/`rohf`.
+- `rimp2` and `oo-rimp2` run on the same plain UHF that `kind = "uhf"` runs,
+  then take unrestricted RI-MP2 (UMP2, as PySCF `mp.MP2(uhf)`) and
+  unrestricted OO-RI-MP2. `[mp2] kappa` is refused on an open shell.
+  `task = "energy"` only: there is no unrestricted MP2 nuclear gradient.
+- `pdep-rpa`, `gw` and `mp2-v` solve UHF with MOM after 5 iterations when
+  `multiplicity > 1`, for `task = "energy"` only. For `pdep-rpa` and `gw`,
+  setting `[rpa] xc` makes that reference UKS; `mp2-v` does not read
+  `[rpa] xc` and stays UHF.
+- `linlccd` and `wb97x-l-v` refuse an open-shell molecule; their open-shell
+  versions are library-only (`ferric_cc::linlccd_u::u_linlccd`,
+  `ferric_cc::double_hybrid::u_solve_wb97x_l_v`).
+- Every other kind refuses `multiplicity > 1` with an error before any
+  integral is computed.
 
 ## Python-only capabilities
 
@@ -99,7 +104,7 @@ docstrings. None of them is in the CLI grade table.
 | CCD | `run_ccd` | RHF reference, RI integrals. |
 | CCSD(T) | `run_ccsd_t` | Closed shell. Spin-adapted CCSD amplitudes feed a spin-adapted (T). |
 | terfc-attenuated MP2 | `run_terfc_rimp2` | Closed shell. The CLI's `att-rimp2` is the erfc form only. |
-| Open-shell KS geometry/frequencies | `run_frequencies(reference="uhf"\|"rohf", xc=...)` | Setting `xc` promotes RHF/UHF/ROHF to RKS/UKS/ROKS. FD Hessian. |
+| Open-shell KS frequencies | `run_frequencies(reference="uhf"\|"rohf", xc=...)` | Setting `xc` promotes RHF/UHF/ROHF to RKS/UKS/ROKS. FD Hessian. |
 | Transition-state search | `run_saddle` | P-RFO. Closed shell only (refuses multiplicity ≠ 1). Raises if the start has no negative mode. Costs `2(6N+1) + (steps+1)` gradients. |
 | SCF stability descent | `run_uhf(stability_descent=True)` | Checks the converged UHF solution's internal stability and, at a saddle, follows the downhill mode and re-converges. The CLI's `[scf] check_stability` only reports a saddle. |
 | Reaction path | `run_irc` | Both IRC branches from a saddle's imaginary mode. Closed shell only. |

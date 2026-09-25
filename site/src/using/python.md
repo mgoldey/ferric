@@ -257,11 +257,12 @@ example `xc="pbe"`); by default it corrects HOMO−2 through LUMO+2. Check
 `gw.outer_converged` and `gw.qp_converged` before using the numbers.
 `run_u_gw` is the open-shell version.
 
-`run_tddft` warns on stderr when the reference is not pure Hartree–Fock: the
-`(ia|f_xc|jb)` exchange-correlation kernel is not implemented, so with a DFT
-reference (`functional=...`) the excitation energies leave out a physical term
-and are approximate. With no `functional`, it is CIS (`method="tda"`) or TDHF
-(`method="casida"`), which are exact within their methods.
+`run_tddft` is closed-shell only. With `functional=...` it includes the
+`(ia|f_xc|jb)` exchange-correlation kernel; meta-GGA, VV10 and range-separated
+functionals are refused because their kernel is not built. With no
+`functional`, it is CIS (`method="tda"`) or TDHF (`method="casida"`). Both
+methods match PySCF `TDA`/`TDDFT` to 1e-3 eV on the systems listed in
+[What is validated](../reference/validation.md#anchors).
 
 ## Properties and charges
 
@@ -498,7 +499,7 @@ reference.
 | `run_u_gw` | Open-shell GW variants on a UHF/UKS or ROHF reference. | `gw` with multiplicity > 1 |
 | `run_bse_tda` | BSE-TDA singlet excitation energies on a closed-shell RHF reference. | `bse-tda` |
 | `run_tdhf_static_polarizability` | RPAx@KS static (ω = 0) polarizability on a closed-shell KS reference. | `tdhf-static-polarizability` |
-| `run_tddft` | CIS/TDA or TDHF/Casida excitations; with a DFT reference, the f_xc kernel is missing. | `tda`, `tddft` |
+| `run_tddft` | TDA or Casida excitations on a closed-shell HF (CIS/TDHF) or KS reference, with the f_xc kernel. | `tda`, `tddft` |
 | `PdepRpaResult` | `total_energy`, `e_rpa`, `eigensolver_converged`, eigenvalues and quadrature grid. | |
 | `RsMp2RpaResult` | SR-MP2, LR-MP2 and dRPA pieces; which fields are set depends on `formulation`. | |
 | `GwResult` | `eps_qp`, `eps_mf`, `sigma_x`, `sigma_c`, `z_factor`, `outer_converged`, `qp_converged`. | |

@@ -129,10 +129,10 @@ either way. ferric's `run_rhf`, `run_uhf`, `run_rohf` and `run_qmmm` do the
 same, so check `.converged`. `run_dft` and every correlated driver raise
 instead when their SCF does not converge.
 
-**TDDFT has no exchange-correlation kernel.** PySCF's `TDDFT` on a DFT
-reference includes the f_xc response. ferric's `run_tddft` does not implement
-it, so on a DFT reference its excitation energies are approximate (it warns on
-stderr). On a Hartree–Fock reference (CIS/TDHF) it is exact within the method.
+**TDDFT refuses some functionals.** ferric's `run_tddft` includes the f_xc
+response and matches PySCF `TDA`/`TDDFT` to 1e-3 eV for HF, LDA, PBE and
+B3LYP on the tested systems. It refuses meta-GGA, VV10 and range-separated functionals, which
+PySCF accepts, and it runs closed-shell references only.
 
 **GW defaults to a Hartree–Fock reference.** PySCF's `gw.GW(mf)` runs on
 whatever `mf` you pass, usually a DFT one. `ferric.run_gw` runs its own HF
