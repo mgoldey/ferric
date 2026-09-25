@@ -2338,3 +2338,12 @@ energy/gradient mismatch; all V pieces match the prototype to ~1e-8. Fix: GammaG
 energy exponent: H2 FD 2.4e-9, triclinic s+p 1.85e-7 (test bar 5e-7 from this measured floor; ~1000x below typical
 optimisation thresholds). Open: a libint-free SR attraction derivative (raised/lowered angular momentum shells) would
 remove the floor.
+
+## Rebase onto main #172 (ROHF occupation guard) — 2026-09-25
+main's #172 added an ROHF occupation guard: a gradient guard, an unrelaxed single-swap aufbau witness, and a continuity
+lock that engages after 3 open-space swaps. On the injected periodic path the LOCK held a hole state. Tri ROKS LDA
+converged to −1.669918 (gap_alpha −0.040) instead of −1.694207, and tri ROHF appeared to converge only by locking a
+trapped state (−1.810607, negative gap margin). With rohf_occupation_guard = false the old pins came back to 1e-12.
+Fix: OccupationGuard::with_continuity_lock(!injected). The injected path keeps the gradient guard and the witness (both
+evaluated on the injected Hamiltonian) but never locks; the molecular path is unchanged. After it, the tri ROKS pins match
+to 1e-12, and tri ROHF is honestly NON-convergent again (the open item stands; the two tests stay #[ignore]d).

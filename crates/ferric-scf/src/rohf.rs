@@ -779,7 +779,10 @@ fn solve_rohf_impl(
         config.mom_after_iter == 0 && config.rohf_occupation_guard,
         nocc_double,
         nocc_open,
-    );
+    )
+    // Injected (periodic) path: no continuity lock (it can hold a periodic
+    // hole state the unrelaxed witness cannot refute); molecular path unchanged.
+    .with_continuity_lock(!injected);
 
     let mut iter = 0usize;
     loop {
