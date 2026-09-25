@@ -4657,11 +4657,13 @@ fn run_gw(
             });
         let vxc_diag = match cfg.rpa.xc.as_deref() {
             Some(xc_name) => {
-                let (diag_a, diag_b) = ferric_gw::vxc_mo::vxc_diagonal_mo(mol, bs, xc_name, &result_u)
-                    .unwrap_or_else(|e| {
-                        eprintln!("error: vxc_diagonal_mo failed: {e}");
-                        std::process::exit(1);
-                    });
+                let (diag_a, diag_b) = ferric_gw::vxc_mo::vxc_diagonal_mo(
+                    mol, bs, xc_name, &result_u,
+                )
+                .unwrap_or_else(|e| {
+                    eprintln!("error: vxc_diagonal_mo failed: {e}");
+                    std::process::exit(1);
+                });
                 Some((diag_a, diag_b))
             }
             None => None,

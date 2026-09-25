@@ -21,7 +21,9 @@ fn oh_radical() -> Molecule {
 /// The pre-fix treatment of a ROHF reference, rebuilt explicitly: the ROHF MOs and
 /// the Roothaan EFFECTIVE Fock's eigenvalues for BOTH spins, labelled Unrestricted so
 /// the correlated method uses them as given.
-fn legacy_effective_fock_view(rohf: &ferric_scf::result::ScfResult) -> ferric_scf::result::ScfResult {
+fn legacy_effective_fock_view(
+    rohf: &ferric_scf::result::ScfResult,
+) -> ferric_scf::result::ScfResult {
     let mut v = rohf.clone();
     v.spin = ferric_scf::result::Spin::Unrestricted;
     v.mos_beta = Some(rohf.mos_alpha.clone());

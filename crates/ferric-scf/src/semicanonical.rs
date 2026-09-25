@@ -564,9 +564,8 @@ mod tests {
     fn rohf_view_is_semicanonical_and_matches_the_rebuilt_fock_construction() {
         let mol = oh();
         let (prep, bounds, ctx) = setup(&mol);
-        let rohf =
-            crate::rohf::solve_rohf(&ctx, &mol, &prep, Operator::coulomb(), &bounds, &cfg())
-                .unwrap();
+        let rohf = crate::rohf::solve_rohf(&ctx, &mol, &prep, Operator::coulomb(), &bounds, &cfg())
+            .unwrap();
         assert!(rohf.converged);
         let view = unrestricted_reference(&mol, &rohf).unwrap();
         let u: &ScfResult = &view;
@@ -621,7 +620,10 @@ mod tests {
                 .iter()
                 .zip(b)
                 .fold(0.0f64, |m, (x, y)| m.max((x - y).abs()));
-            assert!(d < 1e-7, "stored-Fock vs rebuilt-Fock eps differ by {d:.2e}");
+            assert!(
+                d < 1e-7,
+                "stored-Fock vs rebuilt-Fock eps differ by {d:.2e}"
+            );
         }
 
         // Non-vacuity: the view's beta energies are NOT the ROHF effective-Fock
