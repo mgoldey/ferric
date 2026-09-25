@@ -1,8 +1,10 @@
 mod config;
 
 use config::{load_config, Config};
+use ferric_cc::ccd::ccd;
 use ferric_cc::ccsd::ccsd;
 use ferric_cc::ccsd_closed_shell::ccsd_closed_shell;
+use ferric_cc::ccsd_t_closed_shell::ccsd_t_closed_shell;
 use ferric_cc::double_hybrid::{run_wb97x_l_v, DoubleHybridConfig};
 use ferric_cc::linlccd::{linlccd, LadderVariant};
 use ferric_cc::CcConfig;
@@ -78,8 +80,11 @@ fn print_usage() {
 /// method's grade in VALIDATION.md changes (promoted to Proven, demoted to
 /// Stub, caveat text edited), update BOTH this table and the doc. Proven /
 /// Proven (narrow) methods (rhf, uhf, rohf, ksdft, rimp2, mp3, att-rimp2,
-/// scs-mp2, scs-mp2-2terfc, laplace-mp2, pdep-rpa, ccsd, linlccd) do not
-/// appear here and never print a warning.
+/// scs-mp2, scs-mp2-2terfc, laplace-mp2, pdep-rpa, ccsd, ccd, ccsd(t),
+/// linlccd, drpa, linlccd-amplitude) do not appear here and never print a
+/// warning. (`ccd` = the "RI-CCD" row, `ccsd(t)` = the "spin-adapted
+/// closed-shell (T)" row, `drpa`/`linlccd-amplitude` = the "Amplitude-threshold
+/// dRPA/LinLCCD" rows -- all Proven (narrow).)
 const EPISTEMIC_WARNINGS: &[(&str, &str)] = &[
     (
         "gw",
@@ -184,7 +189,11 @@ pub const SUPPORTED_METHOD_KINDS: &[&str] = &[
     "bse-tda",
     "tdhf-static-polarizability",
     "ccsd",
+    "ccd",
+    "ccsd(t)",
     "linlccd",
+    "linlccd-amplitude",
+    "drpa",
     "wb97x-l-v",
     "b2plyp",
     "dsd-pbep86",
@@ -1019,6 +1028,12 @@ pub fn run(args: Vec<String>) {
         "scs-mp2-2terfc" => run_scs_mp2_2terfc(&cfg, &mol, &bs, &prep, &result, budget_bytes),
         "ccsd" => run_ccsd(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "linlccd" => run_linlccd(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
+        "ccd" => run_ccd(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
+        "ccsd(t)" => run_ccsd_t(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
+        "drpa" => run_drpa(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
+        "linlccd-amplitude" => {
+            run_linlccd_amplitude(&cfg, &mol, &bs, &prep, op, &result, budget_bytes)
+        }
         "laplace-mp2" => run_laplace_mp2(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "laplace-sos-mp2" => run_laplace_sos_mp2(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "pdep-rpa" => run_pdep_rpa_arm(
@@ -1087,7 +1102,11 @@ pub fn run(args: Vec<String>) {
         "scs-mp2-2terfc",
         "mp3",
         "ccsd",
+        "ccd",
+        "ccsd(t)",
         "linlccd",
+        "linlccd-amplitude",
+        "drpa",
         "lmp2",
         "lmp2-direct",
         "mp2-v",
@@ -2740,6 +2759,343 @@ fn run_linlccd(
             result.energy + cc_result.correlation_energy,
             serde_json::json!({
                 "e_corr": cc_result.correlation_energy,
+                "e_scf_reference": result.energy,
+                "scf_converged": result.converged,
+            }),
+        );
+    }
+}
+
+/// The `[mp2] auxbasis` (default [`config::DEFAULT_CORRELATION_AUX`]) name and
+/// its prepared basis, exiting with the error on failure. Shared by the four
+/// arms below, which resolve their RI aux exactly as `run_ccsd` does.
+fn correlation_aux(cfg: &Config, mol: &Molecule) -> (String, PreparedBasis) {
+    let aux_name = cfg
+        .mp2
+        .auxbasis
+        .as_deref()
+        .unwrap_or(config::DEFAULT_CORRELATION_AUX)
+        .to_string();
+    let aux_bs = basis::bundled(&aux_name).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let dfbs = PreparedBasis::new(mol, &aux_bs).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    (aux_name, dfbs)
+}
+
+/// Refuse a non-restricted reference for a closed-shell-only arm with a clear
+/// message instead of letting an `eps_r()`/`mos_r()` assert fire as a panic.
+/// `Config::validate_multiplicity` already refuses multiplicity > 1 up front;
+/// this is the backstop.
+fn require_restricted(result: &ferric_scf::result::ScfResult, kind: &str) {
+    if !matches!(result.spin, ferric_scf::result::Spin::Restricted) {
+        eprintln!("error: method.kind = \"{kind}\" requires a closed-shell (RHF) reference");
+        std::process::exit(1);
+    }
+}
+
+/// `method.kind = "ccd"`. RI-CCD (`ferric_cc::ccd::ccd`, spin-orbital) on
+/// the converged closed-shell reference; aux and frozen core from `[mp2]`
+/// like `ccsd`. Same library call as Python `run_ccd`.
+fn run_ccd(
+    cfg: &Config,
+    mol: &Molecule,
+    bs: &BasisSet,
+    prep: &PreparedBasis,
+    op: Operator,
+    result: &ferric_scf::result::ScfResult,
+    budget_bytes: Option<usize>,
+) {
+    require_restricted(result, "ccd");
+    let (aux_name, dfbs) = correlation_aux(cfg, mol);
+    let cc_config = CcConfig {
+        frozen_core: cfg.mp2.frozen_core.resolve(mol),
+        memory_budget_bytes: budget_bytes,
+        ..Default::default()
+    };
+    let cc_result = ccd(mol, prep, &dfbs, op, result, &cc_config).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let total = result.energy + cc_result.correlation_energy;
+    println!(
+        "CCD/{} (aux: {}) on {}",
+        bs.name, aux_name, cfg.molecule.xyz
+    );
+    println!("  nbasis     = {}", prep.nbasis());
+    println!("  RHF energy = {:.10} Hartree", result.energy);
+    println!(
+        "  CCD corr   = {:.10} Hartree",
+        cc_result.correlation_energy
+    );
+    println!("  Total      = {total:.10} Hartree");
+    if let Some(rl) = ferric_scf::runlog::log() {
+        rl.result(
+            "ccd",
+            total,
+            serde_json::json!({
+                "e_corr": cc_result.correlation_energy,
+                "e_scf_reference": result.energy,
+                "scf_converged": result.converged,
+            }),
+        );
+    }
+}
+
+/// `method.kind = "ccsd(t)"`. Spin-adapted closed-shell CCSD
+/// (`ccsd_closed_shell`) whose SPATIAL amplitudes feed the spin-adapted (T)
+/// (`ccsd_t_closed_shell`) directly -- the same pair of calls as Python
+/// `run_ccsd_t`. Prints E_CCSD (correlation), E_(T) and the total
+/// `E_RHF + E_CCSD + E_(T)`.
+///
+/// The TOML spelling is `kind = "ccsd(t)"`: parentheses are ordinary
+/// characters inside a TOML string, and it is the name the method goes by.
+fn run_ccsd_t(
+    cfg: &Config,
+    mol: &Molecule,
+    bs: &BasisSet,
+    prep: &PreparedBasis,
+    op: Operator,
+    result: &ferric_scf::result::ScfResult,
+    budget_bytes: Option<usize>,
+) {
+    require_restricted(result, "ccsd(t)");
+    let (aux_name, dfbs) = correlation_aux(cfg, mol);
+    let cc_config = CcConfig {
+        frozen_core: cfg.mp2.frozen_core.resolve(mol),
+        memory_budget_bytes: budget_bytes,
+        ..Default::default()
+    };
+    let cc_result =
+        ccsd_closed_shell(mol, prep, &dfbs, op, result, &cc_config).unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
+    let e_t = ccsd_t_closed_shell(mol, prep, &dfbs, op, result, &cc_result, &cc_config)
+        .unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
+    let e_ccsd = cc_result.correlation_energy;
+    let total = result.energy + e_ccsd + e_t;
+    println!(
+        "CCSD(T)/{} (aux: {}, spin-adapted) on {}",
+        bs.name, aux_name, cfg.molecule.xyz
+    );
+    println!("  nbasis     = {}", prep.nbasis());
+    println!("  RHF energy = {:.10} Hartree", result.energy);
+    println!("  CCSD corr  = {e_ccsd:.10} Hartree");
+    println!("  (T) corr   = {e_t:.10} Hartree");
+    println!("  Total      = {total:.10} Hartree");
+    if let Some(rl) = ferric_scf::runlog::log() {
+        rl.result(
+            "ccsd(t)",
+            total,
+            serde_json::json!({
+                "e_corr": e_ccsd + e_t,
+                "e_ccsd_corr": e_ccsd,
+                "e_t": e_t,
+                "e_scf_reference": result.energy,
+                "scf_converged": result.converged,
+            }),
+        );
+    }
+}
+
+/// `method.kind = "drpa"`: amplitude-threshold direct RPA
+/// (`ferric_mp2::drpa_amplitude`, drCCD Riccati on localized orbitals;
+/// closed-shell). `[mp2] drpa_eps` (default 1e-4; 0 = the canonical plasmon
+/// dRPA), `drpa_reference` (opt-in canonical plasmon reference), and
+/// `drpa_eps_sweep` (several ε on ONE SCF and ONE ε-independent localized
+/// assembly via `amplitude_drpa_scan_timed`, the `r0_sweep` pattern).
+///
+/// The fixed-point accelerators match the Python binding's defaults (DIIS
+/// subspace 8, ε-linked stopping tolerance factor 0.1), so a CLI run and
+/// `run_drpa(...)` with default kwargs solve the same equations the same way.
+/// Both are no-ops for the ε = 0 anchor's stopping rule.
+fn run_drpa(
+    cfg: &Config,
+    mol: &Molecule,
+    bs: &BasisSet,
+    prep: &PreparedBasis,
+    op: Operator,
+    result: &ferric_scf::result::ScfResult,
+    budget_bytes: Option<usize>,
+) {
+    use ferric_mp2::drpa_amplitude::{
+        amplitude_drpa, amplitude_drpa_scan_timed, AmplitudeDrpaConfig,
+    };
+    require_restricted(result, "drpa");
+    let (points, is_sweep) = cfg.mp2.drpa_eps_points().unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    if is_sweep && cfg.mp2.drpa_eps.is_some() {
+        eprintln!("warning: [mp2] drpa_eps is ignored when drpa_eps_sweep is set");
+    }
+    let (aux_name, dfbs) = correlation_aux(cfg, mol);
+    let want_ref = cfg.mp2.drpa_reference();
+    let base = AmplitudeDrpaConfig {
+        eps: points[0],
+        frozen_core: cfg.mp2.frozen_core.resolve(mol),
+        eri3_budget_bytes: budget_bytes,
+        compute_reference: want_ref,
+        diis: Some(8),
+        eps_rtol_factor: Some(0.1),
+        ..Default::default()
+    };
+    let results = if is_sweep {
+        let (rs, prefix_wall_s, _) =
+            amplitude_drpa_scan_timed(mol, prep, bs, &dfbs, op, result, &base, &points)
+                .unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                });
+        eprintln!(
+            "[ferric] drpa_eps_sweep: {} points on one SCF + one localized assembly \
+             ({prefix_wall_s:.2} s shared)",
+            points.len()
+        );
+        rs
+    } else {
+        vec![
+            amplitude_drpa(mol, prep, bs, &dfbs, op, result, &base).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }),
+        ]
+    };
+    let n_points = points.len();
+    for (k, (r, eps)) in results.iter().zip(&points).enumerate() {
+        if n_points > 1 {
+            println!(
+                "\n===== drpa eps sweep point {}/{}: eps = {eps:.1e} =====",
+                k + 1,
+                n_points
+            );
+        }
+        println!("Amplitude-threshold dRPA (aux: {aux_name}, eps = {eps:.1e})");
+        println!("  RHF energy            = {:.10} Ha", result.energy);
+        println!("  E_corr(dRPA)          = {:.10} Ha", r.e_corr);
+        let e_ref = want_ref.then_some(r.e_corr_plasmon_canonical);
+        match e_ref {
+            Some(e_ref) => {
+                println!("  E_corr(canonical)     = {e_ref:.10} Ha");
+                println!(
+                    "  threshold error       = {:+.3e} Ha (~linear in eps; not variational)",
+                    r.e_corr - e_ref
+                );
+            }
+            None => println!(
+                "  E_corr(canonical)     = not computed (opt-in: set [mp2] drpa_reference = true)"
+            ),
+        }
+        println!("  total energy          = {:.10} Ha", r.e_total);
+        println!(
+            "  keep {:.4}  pairs {:.3}  iterations {}  relres {:.2e}  converged {}",
+            r.keep_fraction, r.pair_fraction, r.iterations, r.relres, r.converged
+        );
+        if !r.converged {
+            eprintln!(
+                "warning: drpa fixed point did not converge at eps = {eps:.1e} \
+                 (relres {:.2e} after {} iterations)",
+                r.relres, r.iterations
+            );
+        }
+        if let Some(rl) = ferric_scf::runlog::log() {
+            rl.result(
+                "drpa",
+                r.e_total,
+                serde_json::json!({
+                    "eps": eps,
+                    "e_corr": r.e_corr,
+                    // null when the opt-in reference was not computed
+                    "e_corr_plasmon_canonical": e_ref,
+                    "converged": r.converged,
+                    "e_scf_reference": result.energy,
+                    "scf_converged": result.converged,
+                }),
+            );
+        }
+    }
+}
+
+/// `method.kind = "linlccd-amplitude"`: amplitude-threshold LinLCCD
+/// (`ferric_cc::linlccd_amplitude`; closed-shell). `[mp2] linlccd_variant`
+/// (`hh` default, `drivers-only` = RI-MP2, `full`) and `linlccd_eps`
+/// (default 1e-4; 0 reproduces the canonical `linlccd` of that variant).
+/// Same library call as Python `run_linlccd_amplitude`.
+fn run_linlccd_amplitude(
+    cfg: &Config,
+    mol: &Molecule,
+    bs: &BasisSet,
+    prep: &PreparedBasis,
+    op: Operator,
+    result: &ferric_scf::result::ScfResult,
+    budget_bytes: Option<usize>,
+) {
+    use ferric_cc::linlccd_amplitude::{amplitude_linlccd, AmplitudeLinLccdConfig};
+    require_restricted(result, "linlccd-amplitude");
+    let variant = cfg.mp2.linlccd_variant().unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let eps = cfg.mp2.linlccd_eps().unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let variant_name = match variant {
+        LadderVariant::DriversOnly => "drivers-only",
+        LadderVariant::Hh => "hh",
+        LadderVariant::Full => "full",
+    };
+    let (aux_name, dfbs) = correlation_aux(cfg, mol);
+    let r = amplitude_linlccd(
+        mol,
+        prep,
+        bs,
+        &dfbs,
+        op,
+        result,
+        &AmplitudeLinLccdConfig {
+            eps,
+            frozen_core: cfg.mp2.frozen_core.resolve(mol),
+            eri3_budget_bytes: budget_bytes,
+            ..Default::default()
+        },
+        variant,
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    println!("Amplitude-threshold LinLCCD({variant_name}) (aux: {aux_name}, eps = {eps:.1e})");
+    println!("  RHF energy            = {:.10} Ha", result.energy);
+    println!("  E_corr(LinLCCD)       = {:.10} Ha", r.e_corr);
+    println!("  total energy          = {:.10} Ha", r.e_total);
+    println!(
+        "  keep {:.4}  cg {}  relres {:.2e}  converged {}",
+        r.keep_fraction, r.cg_iterations, r.cg_relres, r.cg_converged
+    );
+    if !r.cg_converged {
+        eprintln!(
+            "warning: linlccd-amplitude PCG did not converge (relres {:.2e} after {} iterations)",
+            r.cg_relres, r.cg_iterations
+        );
+    }
+    if let Some(rl) = ferric_scf::runlog::log() {
+        rl.result(
+            "linlccd-amplitude",
+            r.e_total,
+            serde_json::json!({
+                "variant": variant_name,
+                "eps": eps,
+                "e_corr": r.e_corr,
+                "converged": r.cg_converged,
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
             }),

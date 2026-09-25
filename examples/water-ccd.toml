@@ -1,0 +1,17 @@
+# RI-CCD (spin-orbital, closed-shell RHF reference). Aux basis and frozen core
+# come from [mp2], exactly as for kind = "ccsd". Same calculation as Python
+# ferric.run_ccd.
+#
+# Small basis so this runs in seconds; use cc-pvdz for a real number.
+
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "sto-3g"
+
+[method]
+kind = "ccd"
+
+[mp2]
+auxbasis = "cc-pvdz-ri"

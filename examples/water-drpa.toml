@@ -1,0 +1,24 @@
+# Amplitude-threshold direct RPA (drCCD Riccati on localized orbitals,
+# closed-shell). drpa_eps = 0 reproduces the canonical plasmon-formula dRPA;
+# a finite eps carries a one-sided error that is ~linear in eps (dRPA is not
+# variational). drpa_reference = true also computes that canonical reference
+# (a dense eigensolve, off by default) and prints the error against it.
+#
+# To scan several thresholds on ONE SCF, replace drpa_eps with e.g.
+#   drpa_eps_sweep = [0.0, 1e-4, 1e-3]
+# Same calculation as Python ferric.run_drpa / run_drpa_scan.
+
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "6-31g"
+
+[method]
+kind = "drpa"
+
+[mp2]
+auxbasis = "cc-pvdz-ri"
+frozen_core = 1
+drpa_eps = 1e-4
+drpa_reference = true

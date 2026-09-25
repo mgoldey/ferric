@@ -626,6 +626,33 @@ pub struct Mp2Cfg {
     /// computed and the run log's `e_corr_canonical_ri` is null. A bool:
     /// any other TOML type is a parse error.
     pub lmp2_reference: Option<bool>,
+    /// Amplitude-threshold direct RPA (`kind = "drpa"`): the threshold ε on
+    /// localized |B_iajb| = |2(ia|jb)|. Default 1e-4. `0` keeps every
+    /// amplitude and reproduces the canonical plasmon-formula dRPA (the
+    /// library's exactness anchor). dRPA is not variational, so the finite-ε
+    /// error is ~linear in ε with no Hylleraas protection. Must be finite and
+    /// ≥ 0. Ignored (with a warning) when `drpa_eps_sweep` is set.
+    pub drpa_eps: Option<f64>,
+    /// Amplitude-threshold dRPA (`kind = "drpa"`): also compute the canonical
+    /// plasmon-formula reference (a dense (no·nv)-dimensional eigensolve over
+    /// a global B) and print the threshold error against it. Default false
+    /// (OPT-IN), mirroring `lmp2_reference`. A bool.
+    pub drpa_reference: Option<bool>,
+    /// Amplitude-threshold dRPA (`kind = "drpa"`): evaluate several ε in ONE
+    /// job, reusing a single SCF and a single ε-independent localized
+    /// assembly (`amplitude_drpa_scan_timed`). Values are sorted and
+    /// de-duplicated; each must be finite and ≥ 0. Same pattern as
+    /// `r0_sweep`: one result block per point.
+    pub drpa_eps_sweep: Option<Vec<f64>>,
+    /// Amplitude-threshold LinLCCD (`kind = "linlccd-amplitude"`) ladder
+    /// variant: `"hh"` (default, LinLCCD(hh)), `"drivers-only"` (no ladder —
+    /// reproduces RI-MP2), or `"full"` (hh + pp ladders). Unknown values are
+    /// a hard error ([`Mp2Cfg::linlccd_variant`]).
+    pub linlccd_variant: Option<String>,
+    /// Amplitude-threshold LinLCCD (`kind = "linlccd-amplitude"`): the
+    /// threshold ε on localized |(ia|jb)|. Default 1e-4. `0` reproduces the
+    /// canonical `linlccd` of the same variant. Must be finite and ≥ 0.
+    pub linlccd_eps: Option<f64>,
     /// Integral-direct LMP2 (`kind = "lmp2-direct"`): aux fit-domain radius
     /// in Bohr (pair (i,j) fits in aux functions within this radius of
     /// either Boys centroid). Default 10.0 — the measured production value
@@ -835,6 +862,87 @@ impl Mp2Cfg {
     /// `[mp2] lmp2_reference`, default FALSE (opt-in — see the field doc).
     pub fn lmp2_reference(&self) -> bool {
         self.lmp2_reference.unwrap_or(false)
+    }
+
+    /// Whether `drpa` computes the canonical plasmon reference:
+    /// `[mp2] drpa_reference`, default FALSE (opt-in, like `lmp2_reference`).
+    pub fn drpa_reference(&self) -> bool {
+        self.drpa_reference.unwrap_or(false)
+    }
+
+    /// The ε points `kind = "drpa"` evaluates, and whether they came from
+    /// `drpa_eps_sweep` (`true`) or the single `drpa_eps` (`false`).
+    ///
+    /// A sweep is sorted and de-duplicated (NaN-tolerant sort, so a `nan`
+    /// literal reaches the finiteness check and gets its message rather than a
+    /// panic — the lesson `r0_sweep` learned). Every point must be finite and
+    /// ≥ 0: ε = 0 is the exactness anchor, a negative ε would keep everything
+    /// silently like 0 does.
+    pub fn drpa_eps_points(&self) -> Result<(Vec<f64>, bool), String> {
+        match &self.drpa_eps_sweep {
+            Some(v) => {
+                let mut s = v.clone();
+                s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                s.dedup();
+                if s.is_empty() {
+                    return Err("[mp2] drpa_eps_sweep is empty".to_string());
+                }
+                if s.iter().any(|x| !(x.is_finite() && *x >= 0.0)) {
+                    return Err(format!(
+                        "[mp2] drpa_eps_sweep values must be finite and >= 0 (got {s:?})"
+                    ));
+                }
+                Ok((s, true))
+            }
+            None => {
+                let eps = self.drpa_eps.unwrap_or(1e-4);
+                if !(eps.is_finite() && eps >= 0.0) {
+                    return Err(format!(
+                        "[mp2] drpa_eps must be finite and >= 0 (got {eps})"
+                    ));
+                }
+                Ok((vec![eps], false))
+            }
+        }
+    }
+
+    /// `[mp2] linlccd_variant` for `kind = "linlccd-amplitude"`, parsed
+    /// strictly: `"hh"` (default), `"drivers-only"`, `"full"`. Anything else
+    /// is an error listing the valid spellings, never a silent default.
+    pub fn linlccd_variant(&self) -> Result<ferric_cc::linlccd::LadderVariant, String> {
+        use ferric_cc::linlccd::LadderVariant;
+        match self.linlccd_variant.as_deref() {
+            None | Some("hh") => Ok(LadderVariant::Hh),
+            Some("drivers-only") => Ok(LadderVariant::DriversOnly),
+            Some("full") => Ok(LadderVariant::Full),
+            Some(other) => Err(format!(
+                "[mp2] linlccd_variant = {other:?} is not recognised; expected one of \
+                 'hh', 'drivers-only', 'full'"
+            )),
+        }
+    }
+
+    /// Strict-parse every `drpa`/`linlccd-amplitude` knob, whatever the kind,
+    /// so a typo'd VALUE (`linlccd_variant = "hhh"`, `drpa_eps = -1`) errors
+    /// at load time rather than after the SCF.
+    pub fn validate_amplitude_knobs(&self) -> Result<(), String> {
+        self.drpa_eps_points()?;
+        self.linlccd_variant()?;
+        self.linlccd_eps()?;
+        Ok(())
+    }
+
+    /// `[mp2] linlccd_eps` for `kind = "linlccd-amplitude"`: default 1e-4,
+    /// must be finite and ≥ 0.
+    pub fn linlccd_eps(&self) -> Result<f64, String> {
+        let eps = self.linlccd_eps.unwrap_or(1e-4);
+        if eps.is_finite() && eps >= 0.0 {
+            Ok(eps)
+        } else {
+            Err(format!(
+                "[mp2] linlccd_eps must be finite and >= 0 (got {eps})"
+            ))
+        }
     }
 
     /// Build the MP2-V (`method.kind = "mp2-v"`) library config from the
@@ -2021,6 +2129,13 @@ fn open_shell_kinds(task: &str) -> &'static [&'static str] {
     }
 }
 
+/// Correlated `method.kind`s with no nuclear gradient, refused up front by
+/// [`Config::validate_task_compat`] for `optimize`/`frequencies` so the run
+/// stops before the basis is even loaded. (`run_optimize`/`run_frequencies`
+/// also refuse every kind they do not handle, but only after the geometry,
+/// basis and memory pool are set up.)
+const ENERGY_ONLY_KINDS: &[&str] = &["ccd", "ccsd(t)", "drpa", "linlccd-amplitude"];
+
 /// `method.kind`s whose Kohn-Sham reference is chosen by `[rpa] xc` (the same
 /// list `run()` uses to turn `[rpa] xc` into the SCF functional).
 const RPA_XC_KINDS: &[&str] = &["pdep-rpa", "rpa", "gw", "tdhf-static-polarizability"];
@@ -2222,6 +2337,20 @@ impl Config {
             ),
             "linlccd" => "open-shell LinLCCD(hh) is library-only (ferric_cc::linlccd_u::u_linlccd)"
                 .to_string(),
+            "ccd" | "ccsd(t)" => format!(
+                "open-shell {} is library-only (the spin-orbital ferric_cc::{} on a UHF \
+                 reference); the CLI kind runs the closed-shell solver only",
+                if kind == "ccd" { "CCD" } else { "CCSD(T)" },
+                if kind == "ccd" {
+                    "ccd::ccd"
+                } else {
+                    "ccsd::ccsd + ccsd_t::ccsd_t"
+                }
+            ),
+            "drpa" | "linlccd-amplitude" => format!(
+                "the amplitude-threshold kind = \"{kind}\" is closed-shell only (it localizes \
+                 a single restricted occupied space); no open-shell variant exists"
+            ),
             "wb97x-l-v" => "open-shell wB97X-L-V is library-only \
                             (ferric_cc::double_hybrid::u_solve_wb97x_l_v)"
                 .to_string(),
@@ -2274,6 +2403,13 @@ impl Config {
                      RPA@{xc}."
                 ));
             }
+        }
+        if task != "energy" && ENERGY_ONLY_KINDS.contains(&kind) {
+            return Err(format!(
+                "method.kind = \"{kind}\" supports task = \"energy\" only (got \"{task}\"): \
+                 it has no nuclear gradient, and optimize/frequencies are built from analytic \
+                 gradients. Use task = \"energy\"."
+            ));
         }
         if task != "energy" && self.scf.k_builder.as_deref() == Some("cosx") {
             return Err(format!(
@@ -2496,6 +2632,10 @@ mod compat_guard_tests {
             "mp3",
             "scs-mp2",
             "ccsd",
+            "ccd",
+            "ccsd(t)",
+            "drpa",
+            "linlccd-amplitude",
             "linlccd",
             "laplace-sos-mp2",
             "bse-tda",
@@ -2640,6 +2780,86 @@ mod compat_guard_tests {
         );
     }
 
+    /// The CLI kinds with no nuclear gradient (`ccd`, `ccsd(t)`, `drpa`,
+    /// `linlccd-amplitude`) refuse `optimize`/`frequencies` in
+    /// `validate_task_compat`, before any integral. Removing the
+    /// `ENERGY_ONLY_KINDS` branch fails the `expect_err`s; the energy task and
+    /// a gradient-capable kind are the reachability anchors.
+    #[test]
+    fn energy_only_kinds_refuse_gradient_tasks() {
+        for kind in ["ccd", "ccsd(t)", "drpa", "linlccd-amplitude"] {
+            for task in ["optimize", "frequencies"] {
+                let e = cfg(kind, task, "").validate_task_compat().expect_err(kind);
+                assert!(
+                    e.contains(&format!("\"{kind}\"")) && e.contains(task),
+                    "{kind}/{task}: {e}"
+                );
+            }
+            assert_eq!(cfg(kind, "energy", "").validate_task_compat(), Ok(()));
+        }
+        assert_eq!(cfg("rimp2", "optimize", "").validate_task_compat(), Ok(()));
+    }
+
+    /// `[mp2] linlccd_variant` is strict, and the eps knobs reject negative
+    /// and non-finite values. Each accepted spelling is checked to map to its
+    /// own variant (a parser that returned `Hh` for everything would pass a
+    /// bare `is_ok`).
+    #[test]
+    fn amplitude_knobs_parse_strictly() {
+        use ferric_cc::linlccd::LadderVariant;
+        let mp2 = |extra: &str| cfg("linlccd-amplitude", "energy", &format!("[mp2]\n{extra}")).mp2;
+        assert_eq!(mp2("").linlccd_variant(), Ok(LadderVariant::Hh));
+        assert_eq!(
+            mp2("linlccd_variant = \"hh\"").linlccd_variant(),
+            Ok(LadderVariant::Hh)
+        );
+        assert_eq!(
+            mp2("linlccd_variant = \"drivers-only\"").linlccd_variant(),
+            Ok(LadderVariant::DriversOnly)
+        );
+        assert_eq!(
+            mp2("linlccd_variant = \"full\"").linlccd_variant(),
+            Ok(LadderVariant::Full)
+        );
+        for bad in ["HH", "drivers", "pp", ""] {
+            let e = mp2(&format!("linlccd_variant = {bad:?}"))
+                .validate_amplitude_knobs()
+                .expect_err(bad);
+            assert!(
+                e.contains("linlccd_variant") && e.contains("'drivers-only'"),
+                "{e}"
+            );
+        }
+        assert_eq!(mp2("").linlccd_eps(), Ok(1e-4));
+        assert_eq!(mp2("linlccd_eps = 0.0").linlccd_eps(), Ok(0.0));
+        assert!(mp2("linlccd_eps = -1e-4")
+            .validate_amplitude_knobs()
+            .is_err());
+        assert!(mp2("linlccd_eps = nan").validate_amplitude_knobs().is_err());
+
+        // dRPA: single point by default, sweep sorted + de-duplicated.
+        assert_eq!(mp2("").drpa_eps_points(), Ok((vec![1e-4], false)));
+        assert_eq!(
+            mp2("drpa_eps = 0.0").drpa_eps_points(),
+            Ok((vec![0.0], false))
+        );
+        assert_eq!(
+            mp2("drpa_eps_sweep = [1e-3, 0.0, 1e-3, 1e-4]").drpa_eps_points(),
+            Ok((vec![0.0, 1e-4, 1e-3], true))
+        );
+        for bad in [
+            "drpa_eps = -1.0",
+            "drpa_eps = inf",
+            "drpa_eps_sweep = []",
+            "drpa_eps_sweep = [1e-4, nan]",
+            "drpa_eps_sweep = [-1e-4]",
+        ] {
+            assert!(mp2(bad).validate_amplitude_knobs().is_err(), "{bad}");
+        }
+        assert!(!mp2("").drpa_reference());
+        assert!(mp2("drpa_reference = true").drpa_reference());
+    }
+
     /// Pre-fix, `k_builder = "cosx"` + optimize ran silently, pairing COSX
     /// energies with an exact-exchange gradient. Reverting the cosx branch of
     /// `validate_task_compat` fails the `expect_err`s; the `Ok` cases pin
@@ -2679,6 +2899,9 @@ pub fn load_config(path: &str) -> Result<Config, String> {
     // per-child TOML rewriting, which does not go through lib.rs's checks.
     cfg.memory.validate().map_err(|e| format!("{path}: {e}"))?;
     cfg.scf.validate().map_err(|e| format!("{path}: {e}"))?;
+    cfg.mp2
+        .validate_amplitude_knobs()
+        .map_err(|e| format!("{path}: {e}"))?;
     Ok(cfg)
 }
 

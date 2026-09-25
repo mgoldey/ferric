@@ -86,6 +86,8 @@ See [The MP2 family](../methods/mp2.md).
 | `water-rimp2-frozen-core.toml` | H2O / cc-pVDZ | `rimp2` | Expected log line: "`[ferric] frozen core: 1 orbital(s) frozen from [mp2] frozen_core = "auto"`" | |
 | `water-lmp2.toml` | H2O / 6-31G | `lmp2` | — | Sets `lmp2_reference = true`, so it also computes the canonical RI-MP2 reference and prints the error against it (off by default). |
 | `alkane8-lmp2-direct.toml` | octane / 6-31G | `lmp2-direct` | — | Every locality knob at its default. |
+| `water-drpa.toml` | H2O / 6-31G | `drpa` | — | Sets `drpa_reference = true`, so it also computes the canonical plasmon dRPA and prints the threshold error. A comment shows the `drpa_eps_sweep` form. |
+| `water-linlccd-amplitude.toml` | H2O / 6-31G | `linlccd-amplitude` | — | `linlccd_variant = "hh"`, `linlccd_eps = 1e-4`. |
 | `water-mp3.toml` | H2O / cc-pVDZ | `mp3` | — | |
 | `water-oo-rimp2.toml` | H2O / cc-pVDZ | `oo-rimp2` | — | Smoke grade. |
 | `water-attmp2.toml` | H2O / aug-cc-pVDZ | `att-rimp2` | — | ω = 0.420 Å⁻¹. |
@@ -105,6 +107,8 @@ See [Coupled cluster](../methods/cc.md) and
 |---|---|---|---|---|
 | `water-ccsd.toml` | **H2** / STO-3G | `ccsd` | "CCSD correlation energy = −0.02052453 Hartree (exact-integral numpy reference)" (checked by `test_ccsd_h2_sto3g` in `crates/ferric-cc/src/ccsd.rs`) | Misnamed. Aux `def2-qzvpp-rifit`. |
 | `water-linlccd.toml` | H2O / 6-31G | `linlccd` | — | |
+| `water-ccd.toml` | H2O / STO-3G | `ccd` | — | |
+| `water-ccsd-t.toml` | H2O / STO-3G | `ccsd(t)` | — | Prints the CCSD correlation energy, the (T) correction and the total. |
 | `water-wb97xlv.toml` | H2O / 6-31G | `wb97x-l-v` | — | λ = 0.6, ω = 0.1 Bohr⁻¹ (published values). Smoke grade. |
 | `water-b2plyp.toml` | H2O / cc-pVDZ | `b2plyp` | — | Spike grade. Aux `cc-pvdz-rifit` (an alias of `cc-pvdz-ri`). |
 

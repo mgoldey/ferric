@@ -63,7 +63,7 @@ same table: `cc-pvdz-ri`, `cc-pvtz-rifit`, `aug-cc-pv{d,t,q}z-rifit`,
 
 | Key | Type | Default | Allowed values | Notes |
 |---|---|---|---|---|
-| `kind` | string | **required** | `rhf` `uhf` `rohf` `ksdft` `rimp2` `lmp2` `lmp2-direct` `mp3` `oo-rimp2` `att-rimp2` `mp2-v` `scs-mp2` `scs-mp2-2terfc` `laplace-mp2` `laplace-sos-mp2` `pdep-rpa` `rs-mp2-rpa` `gw` `bse-tda` `tdhf-static-polarizability` `ccsd` `linlccd` `wb97x-l-v` `b2plyp` `dsd-pbep86` `tda` `tddft` | Any other value is an error. Smoke- and Spike-grade kinds print a `[warning]` grade line on stderr; Proven kinds and the ungraded `lmp2`, `lmp2-direct` and `laplace-sos-mp2` print none (see [What is validated](./validation.md#grades)). |
+| `kind` | string | **required** | `rhf` `uhf` `rohf` `ksdft` `rimp2` `lmp2` `lmp2-direct` `mp3` `oo-rimp2` `att-rimp2` `mp2-v` `scs-mp2` `scs-mp2-2terfc` `laplace-mp2` `laplace-sos-mp2` `pdep-rpa` `rs-mp2-rpa` `gw` `bse-tda` `tdhf-static-polarizability` `ccsd` `ccd` `ccsd(t)` `linlccd` `linlccd-amplitude` `drpa` `wb97x-l-v` `b2plyp` `dsd-pbep86` `tda` `tddft` | Any other value is an error. Smoke- and Spike-grade kinds print a `[warning]` grade line on stderr; Proven kinds and the ungraded `lmp2`, `lmp2-direct` and `laplace-sos-mp2` print none (see [What is validated](./validation.md#grades)). |
 | `task` | string | `"energy"` | `energy` `optimize` `frequencies` | `optimize`: `rhf` `ksdft` `uhf` `rohf` `rimp2` `pdep-rpa` only. `frequencies`: `rhf` `ksdft` `uhf` `rohf` only. |
 
 ## `[scf]`
@@ -129,9 +129,9 @@ as elsewhere.
 
 ## `[mp2]`
 
-This section is shared by the whole MP2 family, `ccsd`, `linlccd`, the double
-hybrids and `tda`/`tddft`, all of which read `auxbasis` and `frozen_core` from
-here.
+This section is shared by the whole MP2 family, `ccsd`, `ccd`, `ccsd(t)`,
+`linlccd`, `linlccd-amplitude`, `drpa`, the double hybrids and `tda`/`tddft`,
+all of which read `auxbasis` and `frozen_core` from here.
 
 | Key | Type | Default | Allowed values | Notes |
 |---|---|---|---|---|
@@ -152,6 +152,11 @@ here.
 | `r0_nonbonded` | float | `1.05` | Å, > `r0_bonded` | `scs-mp2-2terfc`. |
 | `lmp2_eps` | float | `1e-4` | | `lmp2`, `lmp2-direct`. `0` reproduces `rimp2`. |
 | `lmp2_reference` | bool | `false` | | `lmp2`, `lmp2-direct`. Also compute the canonical RI-MP2 reference and print the local error against it. Costs a full RI-MP2 and forms the global 3-index tensor. |
+| `drpa_eps` | float | `1e-4` | ≥ 0 | `drpa`. `0` reproduces the canonical plasmon-formula dRPA. Ignored with a warning when `drpa_eps_sweep` is set. |
+| `drpa_reference` | bool | `false` | | `drpa`. Also compute the canonical plasmon-formula dRPA (a dense eigensolve) and print the threshold error against it. |
+| `drpa_eps_sweep` | array of floats | none | each ≥ 0 | `drpa`. Several ε on one SCF and one localized assembly; sorted and de-duplicated, one result block per point. |
+| `linlccd_variant` | string | `"hh"` | `hh` `drivers-only` `full` | `linlccd-amplitude`. `drivers-only` equals RI-MP2. Any other value is an error. |
+| `linlccd_eps` | float | `1e-4` | ≥ 0 | `linlccd-amplitude`. `0` reproduces the canonical LinLCCD of the same variant. |
 | `direct_aux_radius` | float | `10.0` | Bohr | `lmp2-direct`. |
 | `direct_virt_radius` | float | `12.0` | Bohr | `lmp2-direct`. |
 | `direct_ao_tail` | float | `1e-3` | | `lmp2-direct`. `0.0` keeps every shell. |

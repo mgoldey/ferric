@@ -1,0 +1,18 @@
+# CCSD(T): spin-adapted closed-shell CCSD whose spatial amplitudes feed the
+# spin-adapted (T). Prints the CCSD correlation energy, the (T) correction and
+# the total separately. Same calculation as Python ferric.run_ccsd_t.
+#
+# The kind is spelled "ccsd(t)" (parentheses are ordinary characters inside a
+# TOML string). Closed shell only; energy only.
+
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "sto-3g"
+
+[method]
+kind = "ccsd(t)"
+
+[mp2]
+auxbasis = "cc-pvdz-ri"
