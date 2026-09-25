@@ -239,7 +239,10 @@ pub fn semicanonicalize(
     let d_total = d_a + d_b;
 
     let n = prep.nbasis();
-    let h = ferric_integrals::oneelectron::hcore(prep);
+    // V_ECP included, as the SCF's hcore has it (driver::prepare); an external
+    // potential is not available here, so an embedded reference must use
+    // `semicanonicalize_from_spin_focks`, which reuses the SCF's own F_σ.
+    let h = ferric_integrals::oneelectron::hcore_ecp(prep, mol, prep.basis_set());
 
     // Build the XC contribution first: its k_mix decides how exchange is assembled.
     let xc_contrib = match xc {
@@ -553,6 +556,42 @@ mod tests {
             matches!(view, std::borrow::Cow::Borrowed(p) if std::ptr::eq(p, &uhf)),
             "a UHF reference must be returned as-is"
         );
+    }
+
+    /// With an ECP, the rebuild path's hcore must carry V_ECP as the SCF's does:
+    /// the stored-Fock view and the rebuilt-Fock construction agree on HI+
+    /// (doublet, def2-SVP ECP on I). A bare T + V_nuc hcore misses by the size
+    /// of V_ECP's diagonal (Hartrees).
+    #[test]
+    fn rebuilt_fock_carries_the_ecp() {
+        let bs = ferric_core::basis::bundled("def2-svp").unwrap();
+        let mut mol = Molecule::parse_xyz("2\n\nH 0.0 0.0 0.0\nI 0.0 0.0 1.61\n", 1, 2).unwrap();
+        mol.apply_ecp(&bs);
+        assert!(
+            mol.atoms[1].n_core_ecp > 0,
+            "def2-SVP must carry an ECP for I"
+        );
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+        let ctx = ParallelContext::default();
+        let rohf = crate::rohf::solve_rohf(&ctx, &mol, &prep, Operator::coulomb(), &bounds, &cfg())
+            .unwrap();
+        assert!(rohf.converged);
+        let view = unrestricted_reference(&mol, &rohf).unwrap();
+        let rebuilt = semicanonicalize(&ctx, &mol, &prep, &bounds, &rohf, 1e-12, None).unwrap();
+        for (a, b) in [
+            (view.eps_a(), rebuilt.eps_alpha.as_slice()),
+            (view.eps_b(), rebuilt.eps_beta.as_slice()),
+        ] {
+            let d = a
+                .iter()
+                .zip(b)
+                .fold(0.0f64, |m, (x, y)| m.max((x - y).abs()));
+            assert!(
+                d < 1e-7,
+                "stored-Fock vs rebuilt-Fock eps differ by {d:.2e}"
+            );
+        }
     }
 
     /// On a ROHF reference the view is semi-canonical: each spin's Fock is diagonal
