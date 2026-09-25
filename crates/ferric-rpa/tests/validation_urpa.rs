@@ -322,19 +322,23 @@ fn uhf(sys: &Sys, e_ref: f64) -> ScfResult {
         tried.push(format!("{name}: E {:.10} |d| {d:.2e}", res.energy));
         if res.converged && d < TOL_E_SCF {
             eprintln!("{}: UHF state reached with {name}", sys.label);
-            if let Some(st) = res.stability.as_ref() {
-                // OH's degenerate π hole is an exact zero mode, reported
-                // MARGINAL by ferric; unstable or indeterminate still fails.
-                assert!(
-                    matches!(
-                        st.verdict(),
-                        StabilityVerdict::Stable | StabilityVerdict::Marginal
-                    ),
-                    "{}: ferric UHF state not stable: {}",
-                    sys.label,
-                    st.summary()
-                );
-            }
+            let st = res.stability.as_ref().unwrap_or_else(|| {
+                panic!(
+                    "{}: no stability analysis for the accepted UHF state",
+                    sys.label
+                )
+            });
+            // OH's degenerate π hole is an exact zero mode, reported
+            // MARGINAL by ferric; unstable or indeterminate still fails.
+            assert!(
+                matches!(
+                    st.verdict(),
+                    StabilityVerdict::Stable | StabilityVerdict::Marginal
+                ),
+                "{}: ferric UHF state not stable: {}",
+                sys.label,
+                st.summary()
+            );
             check_close(&sys.label, "E_UHF", res.energy, e_ref, TOL_E_SCF);
             return res;
         }

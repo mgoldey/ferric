@@ -1,0 +1,290 @@
+{
+  "basis": "cc-pvdz",
+  "aux": "cc-pvdz-ri",
+  "charge": 0,
+  "multiplicity": 2,
+  "nao": 19,
+  "naux": 70,
+  "nelectron": 9,
+  "nuclear_repulsion": 4.365698347282665,
+  "like_for_like": {
+    "nao": 19,
+    "replica_self_overlap_max_dev": 4.440892098500626e-16,
+    "pyscf_diag_max_dev": 4.440892098500626e-16,
+    "diag_checked": 19,
+    "diag_skipped_cartesian": 0
+  },
+  "uhf": {
+    "energy": -75.39384603347486,
+    "converged": true,
+    "s_squared": 0.7545996662103436,
+    "multiplicity_from_s2": 2.0045943891075257,
+    "nelec_alpha": 5,
+    "nelec_beta": 4,
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF UHF internal (real)",
+      "rounds": 0,
+      "selected_guess": "minao",
+      "lambda_min": 2.7067273478448268e-11
+    },
+    "guess_scan": [
+      {
+        "guess": "minao",
+        "energy": -75.39384603347486,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -75.39384603347486
+        ]
+      },
+      {
+        "guess": "atom",
+        "energy": -75.3938460334748,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -75.3938460334748
+        ]
+      },
+      {
+        "guess": "huckel",
+        "energy": -75.39384603347483,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -75.39384603347483
+        ]
+      }
+    ],
+    "multiple_stable_minima": false,
+    "homo_alpha": -0.5449976484727679,
+    "lumo_alpha": 0.18485965548197347,
+    "homo_beta": -0.49918842764787197,
+    "lumo_beta": 0.13768061668051823,
+    "somo_alpha": [
+      -0.5449976484727679
+    ]
+  },
+  "u_cohsex_uhf": {
+    "orbs": [
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+    ],
+    "nocc": [
+      5,
+      4
+    ],
+    "alpha": {
+      "eps_mf": [
+        -0.6665372663359785,
+        -0.6386172727705426,
+        -0.5449976484727679,
+        0.18485965548197347,
+        0.793599777964971,
+        1.1017448060294281
+      ],
+      "delta_sigma_sex": [
+        0.1720202110238871,
+        0.22383080484553575,
+        0.2025799365330146,
+        0.029599992430523994,
+        0.06516603630966546,
+        0.07548616956865827
+      ],
+      "sigma_coh": [
+        -0.18668086510134219,
+        -0.19172224468845708,
+        -0.190370077583539,
+        -0.04299421312088845,
+        -0.1098467709305337,
+        -0.10025030044746858
+      ],
+      "sigma_c": [
+        -0.014660654077455093,
+        0.032108560157078664,
+        0.0122098589494756,
+        -0.013394220690364455,
+        -0.044680734620868245,
+        -0.02476413087881031
+      ],
+      "sigma_x_df": [
+        -0.9751120978193583,
+        -1.0700688486188739,
+        -1.0379288782016671,
+        -0.09693422597285915,
+        -0.21288329725375993,
+        -0.27092678121755515
+      ],
+      "eps_qp": [
+        -0.6811979204134336,
+        -0.606508712613464,
+        -0.5327877895232923,
+        0.17146543479160903,
+        0.7489190433441028,
+        1.0769806751506177
+      ]
+    },
+    "beta": {
+      "eps_mf": [
+        -0.6236212975471629,
+        -0.49918842764787197,
+        0.13768061668051823,
+        0.19667724915755036,
+        0.8046882307582779,
+        1.1699394640928684
+      ],
+      "delta_sigma_sex": [
+        0.16045678013119355,
+        0.18876937790439546,
+        0.05330863938705103,
+        0.02857357891852179,
+        0.06422905551412118,
+        0.04863808812687081
+      ],
+      "sigma_coh": [
+        -0.18269343699608956,
+        -0.18620915379014646,
+        -0.14671068397163017,
+        -0.04371469545998553,
+        -0.11169024048748792,
+        -0.08421535696003563
+      ],
+      "sigma_c": [
+        -0.02223665686489601,
+        0.002560224114248999,
+        -0.09340204458457915,
+        -0.015141116541463738,
+        -0.04746118497336674,
+        -0.03557726883316482
+      ],
+      "sigma_x_df": [
+        -0.9257806327321637,
+        -0.9809362468126614,
+        -0.20756502891126857,
+        -0.09091670927773829,
+        -0.20632041866317272,
+        -0.18454812311460853
+      ],
+      "eps_qp": [
+        -0.6458579544120588,
+        -0.49662820353362297,
+        0.04427857209593908,
+        0.18153613261608664,
+        0.7572270457849112,
+        1.1343621952597036
+      ]
+    },
+    "dielectric_eig_min": 1.0000000492623298,
+    "dielectric_eig_max": 2.0236901209292673
+  },
+  "controls": {
+    "alpha_only_w": {
+      "what": "W from eps = I + Pi_alpha (beta polarizability dropped)",
+      "alpha_eps_qp": [
+        -0.6714120333760502,
+        -0.6206539974097607,
+        -0.5320316041401149,
+        0.17723208258021267,
+        0.767559237553203,
+        1.0896027613366612
+      ],
+      "beta_eps_qp": [
+        -0.6308211509328301,
+        -0.49033471692462827,
+        0.06574870826693034,
+        0.18779637590777387,
+        0.7768544802808934,
+        1.1463700396225927
+      ]
+    },
+    "closed_formula_per_spin": {
+      "what": "closed-shell COHSEX (Pi prefactor 4) on each spin's channel alone",
+      "alpha_eps_qp": [
+        -0.677462984081625,
+        -0.6157171186961421,
+        -0.5297735192638211,
+        0.17139581482003804,
+        0.7483127561966347,
+        1.0820059235991888
+      ],
+      "beta_eps_qp": [
+        -0.6522015977644213,
+        -0.5022286896169181,
+        0.06342182577049421,
+        0.18212864614970697,
+        0.7586098605617172,
+        1.1358674274167941
+      ]
+    }
+  },
+  "checks": {
+    "pi_vs_pyscf_get_rho_response_max_abs": 5.551115123125783e-17,
+    "w_inverse_vs_eigh_route_max_abs": 1.0685896612017132e-15
+  },
+  "provenance": {
+    "code": "numpy on PySCF DF integrals",
+    "version": "2.13.1",
+    "keywords": {
+      "method": "static COHSEX, spin-unrestricted, HF reference",
+      "w": "spin-summed static RPA W, eps = I + Pi_a + Pi_b (prefactor 2 per spin), full rank",
+      "qp": "eps_mf + dSEX + COH (Z = 1)",
+      "scf": "exact 4-index ERIs, conv_tol 1e-11, conv_tol_grad 1e-8",
+      "numpy": "1.26.4"
+    },
+    "grid": "none",
+    "aux_basis": "cc-pvdz-ri",
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-11,
+      "conv_tol_grad": 1e-08
+    },
+    "stability": {
+      "uhf": {
+        "internal_stable": true,
+        "kind": "PySCF UHF internal (real)",
+        "rounds": 0,
+        "selected_guess": "minao",
+        "lambda_min": 2.7067273478448268e-11
+      }
+    },
+    "basis": "cc-pvdz",
+    "basis_json": "crates/ferric-core/src/basis/bundled/cc-pvdz.json",
+    "basis_sha256": "ae48fcca0d533addd60dbd48490153130e697121767ba607e1d70f3b341eeef7",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/oh.xyz",
+    "geometry_xyz_sha256": "38d6013d3393d6c70dbae95d27def5f092e5a5f08c8754f2a5ec3a4536852739",
+    "geometry_bohr": [
+      [
+        "O",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "H",
+        0.0,
+        0.0,
+        1.8324674229907405
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_u_cohsex.py",
+    "git_head": "f6a0e6399aa9580218085a4a10dae18a926ffbaa",
+    "generated_utc": "2026-09-25T16:38:49+00:00",
+    "blocks": [
+      "uhf",
+      "u_cohsex_uhf",
+      "controls",
+      "checks"
+    ]
+  }
+}
