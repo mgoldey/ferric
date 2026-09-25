@@ -1,0 +1,307 @@
+{
+  "row": "Attenuated PDEP-RPA",
+  "system": "nh3",
+  "basis": "cc-pvdz",
+  "aux": "cc-pvdz-ri",
+  "charge": 0,
+  "multiplicity": 1,
+  "nao": 29,
+  "naux": 98,
+  "nelectron": 10,
+  "nuclear_repulsion": 11.904528974062835,
+  "like_for_like": {
+    "nao": 29,
+    "replica_self_overlap_max_dev": 2.220446049250313e-16,
+    "pyscf_diag_max_dev": 4.440892098500626e-16,
+    "diag_checked": 29,
+    "diag_skipped_cartesian": 0
+  },
+  "rhf": {
+    "energy": -56.19548575944359,
+    "internal_stable": true
+  },
+  "nw": 40,
+  "x0": 0.5,
+  "lindep": 1e-10,
+  "coulomb": {
+    "e_corr": -0.22518931491715016,
+    "e_corr_pyscf_rpa": -0.22518931491713687,
+    "numpy_vs_pyscf_abs_diff": 1.329492071988625e-14,
+    "metric": {
+      "metric_min_eigenvalue": 0.0006130327936993513,
+      "metric_max_eigenvalue": 184.01137230385098
+    }
+  },
+  "attenuated": [
+    {
+      "omega_bohr_inv": 0.2,
+      "omega_angstrom_inv": 0.37794519772,
+      "erf": {
+        "e_corr": -0.000220139970452257,
+        "metric": {
+          "metric_min_eigenvalue": -3.2665610823999436e-14,
+          "metric_max_eigenvalue": 91.27070210391705,
+          "metric_modes_dropped": 28,
+          "smallest_kept_eigenvalue": 1.0787438095750347e-10,
+          "nearest_mode_log10_distance_from_cut": 0.03291831650994759
+        },
+        "mixed_coulomb_metric": -8.831008286553266e-06,
+        "lindep_sensitivity": {
+          "1e-12": -4.300803962097033e-13,
+          "1e-08": 5.156332988625473e-12
+        }
+      },
+      "erfc": {
+        "e_corr": -0.21956348867187625,
+        "metric": {
+          "metric_min_eigenvalue": 0.0005988722848813227,
+          "metric_max_eigenvalue": 95.10199367916658
+        },
+        "mixed_coulomb_metric": -0.215120602979453
+      },
+      "non_additivity_info": 0.005405686274821658
+    },
+    {
+      "omega_bohr_inv": 0.2222544445775211,
+      "omega_angstrom_inv": 0.42,
+      "erf": {
+        "e_corr": -0.0003710694549463365,
+        "metric": {
+          "metric_min_eigenvalue": -5.2481665522375535e-15,
+          "metric_max_eigenvalue": 98.4699323204808,
+          "metric_modes_dropped": 22,
+          "smallest_kept_eigenvalue": 1.4801292547237996e-10,
+          "nearest_mode_log10_distance_from_cut": 0.17029964253158703
+        },
+        "mixed_coulomb_metric": -2.1087715771640197e-05,
+        "lindep_sensitivity": {
+          "1e-12": -1.056230406956682e-12,
+          "1e-08": 4.672575152318836e-12
+        }
+      },
+      "erfc": {
+        "e_corr": -0.21761921713060392,
+        "metric": {
+          "metric_min_eigenvalue": 0.0005957439406812379,
+          "metric_max_eigenvalue": 88.09743905343169
+        },
+        "mixed_coulomb_metric": -0.21191350030607917
+      },
+      "non_additivity_info": 0.00719902833159991
+    },
+    {
+      "omega_bohr_inv": 0.42,
+      "omega_angstrom_inv": 0.7936849152119999,
+      "erf": {
+        "e_corr": -0.005896541027560697,
+        "metric": {
+          "metric_min_eigenvalue": -1.5187740905809372e-15,
+          "metric_max_eigenvalue": 140.1515047135176,
+          "metric_modes_dropped": 7,
+          "smallest_kept_eigenvalue": 1.2259221036382633e-10,
+          "nearest_mode_log10_distance_from_cut": 0.08846287553734378
+        },
+        "mixed_coulomb_metric": -0.0012273162563426947,
+        "lindep_sensitivity": {
+          "1e-12": -7.982488628432982e-11,
+          "1e-08": 3.171878957403118e-09
+        }
+      },
+      "erfc": {
+        "e_corr": -0.18655334906358678,
+        "metric": {
+          "metric_min_eigenvalue": 0.0005601164525140326,
+          "metric_max_eigenvalue": 47.116346611029385
+        },
+        "mixed_coulomb_metric": -0.1654142643930365
+      },
+      "non_additivity_info": 0.03273942482600267
+    },
+    {
+      "omega_bohr_inv": 1.0,
+      "omega_angstrom_inv": 1.8897259886,
+      "erf": {
+        "e_corr": -0.06664029388062642,
+        "metric": {
+          "metric_min_eigenvalue": 1.309072083449262e-10,
+          "metric_max_eigenvalue": 172.70431756548115,
+          "metric_modes_dropped": 0,
+          "smallest_kept_eigenvalue": 1.3090754195550718e-10,
+          "nearest_mode_log10_distance_from_cut": 0.1169646682108354
+        },
+        "mixed_coulomb_metric": -0.031027635379699676,
+        "lindep_sensitivity": {
+          "1e-12": 0.0,
+          "1e-08": 1.0418292895053582e-08
+        }
+      },
+      "erfc": {
+        "e_corr": -0.0727309754705449,
+        "metric": {
+          "metric_min_eigenvalue": 0.00042764507225690536,
+          "metric_max_eigenvalue": 13.284289705334484
+        },
+        "mixed_coulomb_metric": -0.03597342850099762
+      },
+      "non_additivity_info": 0.08581804556597883
+    }
+  ],
+  "limits": {
+    "erfc": {
+      "0.01": {
+        "e_corr": -0.22518857534911843,
+        "minus_coulomb": 7.395680317323627e-07,
+        "metric": {
+          "metric_min_eigenvalue": 0.0006129200286741226,
+          "metric_max_eigenvalue": 178.80304614620496
+        }
+      },
+      "0.001": {
+        "e_corr": -0.22518931532301303,
+        "minus_coulomb": -4.058628710890133e-10,
+        "metric": {
+          "metric_min_eigenvalue": 0.0006130221990721986,
+          "metric_max_eigenvalue": 183.49003310798744
+        }
+      },
+      "0.0001": {
+        "e_corr": -0.2251893150317691,
+        "minus_coulomb": -1.1461892546194008e-10,
+        "metric": {
+          "metric_min_eigenvalue": 0.0006130317389243369,
+          "metric_max_eigenvalue": 183.9592353800557
+        }
+      },
+      "1e-05": {
+        "e_corr": -0.22518931492896202,
+        "minus_coulomb": -1.181185704801635e-11,
+        "metric": {
+          "metric_min_eigenvalue": 0.0006130326882595911,
+          "metric_max_eigenvalue": 184.00615858349596
+        }
+      }
+    },
+    "erf": {
+      "100": {
+        "e_corr": -0.22514631527639797,
+        "minus_coulomb": 4.2999640752189316e-05,
+        "metric": {
+          "metric_min_eigenvalue": 0.00061219798894561,
+          "metric_max_eigenvalue": 184.01007760972652,
+          "metric_modes_dropped": 0,
+          "smallest_kept_eigenvalue": 0.0006121979889468163,
+          "nearest_mode_log10_distance_from_cut": 6.786891898618495
+        }
+      },
+      "1000": {
+        "e_corr": -0.22518888478034943,
+        "minus_coulomb": 4.3013680073311633e-07,
+        "metric": {
+          "metric_min_eigenvalue": 0.0006130244467984291,
+          "metric_max_eigenvalue": 184.0113593566855,
+          "metric_modes_dropped": 0,
+          "smallest_kept_eigenvalue": 0.0006130244467968881,
+          "nearest_mode_log10_distance_from_cut": 6.787477794089844
+        }
+      },
+      "10000": {
+        "e_corr": -0.22518931061598743,
+        "minus_coulomb": 4.301162731534802e-09,
+        "metric": {
+          "metric_min_eigenvalue": 0.0006130327102348247,
+          "metric_max_eigenvalue": 184.01137217437923,
+          "metric_modes_dropped": 0,
+          "smallest_kept_eigenvalue": 0.0006130327102351999,
+          "nearest_mode_log10_distance_from_cut": 6.787483648247034
+        }
+      },
+      "100000": {
+        "e_corr": -0.22518931487447533,
+        "minus_coulomb": 4.2674835887268614e-11,
+        "metric": {
+          "metric_min_eigenvalue": 0.000613032792869464,
+          "metric_max_eigenvalue": 184.0113723025563,
+          "metric_modes_dropped": 0,
+          "smallest_kept_eigenvalue": 0.0006130327928711238,
+          "nearest_mode_log10_distance_from_cut": 6.787483706789299
+        }
+      }
+    }
+  },
+  "anchors": {
+    "erfc_omega": 1e-05,
+    "erfc_e_corr": -0.22518931492896202,
+    "erf_omega": 100000.0,
+    "erf_e_corr": -0.22518931487447533
+  },
+  "checks": {
+    "erf_plus_erfc_minus_coulomb_max_abs": 5.545647274729504e-12,
+    "numpy_coulomb_vs_pyscf_rpa_abs": 1.329492071988625e-14
+  },
+  "generator_seconds": 0.902310182020301,
+  "provenance": {
+    "code": "PySCF (integrals, RHF, Coulomb RPA anchor) + numpy (attenuated dRPA assembly)",
+    "version": "2.13.1",
+    "keywords": {
+      "rhf": "scf.RHF, exact 4-index Coulomb J/K, conv_tol 1e-11",
+      "operator": "Mole.with_range_coulomb(w) on mol AND auxmol: w>0 erf, w<0 erfc",
+      "attenuated_integrals": "int3c2e (mu nu|P) and int2c2e (P|Q) with the same kernel",
+      "metric_factor": "erf: symmetric eigh V^-1/2, drop eigenvalues < 1e-10; erfc/Coulomb: Cholesky L^-1 (ferric metric_inverse_sqrt)",
+      "rpa": "closed-shell dRPA, full rank, ln det(I+Pi) - tr Pi",
+      "nw": 40,
+      "x0": 0.5,
+      "frequency_grid": "Gauss-Legendre, w = x0 (1+x)/(1-x) (rpa._get_scaled_legendre_roots)",
+      "numpy": "1.26.4",
+      "scipy": "1.17.1"
+    },
+    "grid": "none",
+    "aux_basis": "cc-pvdz-ri",
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-11,
+      "conv_tol_grad": 1e-08
+    },
+    "stability": {
+      "rhf_internal_stable": true
+    },
+    "basis": "cc-pvdz",
+    "basis_json": "crates/ferric-core/src/basis/bundled/cc-pvdz.json",
+    "basis_sha256": "ae48fcca0d533addd60dbd48490153130e697121767ba607e1d70f3b341eeef7",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/nh3.xyz",
+    "geometry_xyz_sha256": "d63ecd59e33333106ad03c7f09a5cdb5215dac105e971698ab807dd1dddb7e51",
+    "geometry_bohr": [
+      [
+        "N",
+        0.0,
+        0.0,
+        0.22013230652445948
+      ],
+      [
+        "H",
+        0.0,
+        1.7758342207636502,
+        -0.5136426784657803
+      ],
+      [
+        "H",
+        1.5379177016809087,
+        -0.8879161655187627,
+        -0.5136426784657803
+      ],
+      [
+        "H",
+        -1.5379177016809087,
+        -0.8879161655187627,
+        -0.5136426784657803
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_attenuated_rpa.py",
+    "git_head": "f6a0e6399aa9580218085a4a10dae18a926ffbaa",
+    "generated_utc": "2026-09-25T17:05:40+00:00",
+    "aux_basis_json": "crates/ferric-core/src/basis/bundled/cc-pvdz-ri.json",
+    "aux_basis_sha256": "8221d2a31b5bbebd39218fc3f9244917e173a338ff9c56904038443a06e2a250"
+  }
+}
