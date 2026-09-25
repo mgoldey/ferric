@@ -4,12 +4,13 @@
 
 Read this page before trusting any result. It lists every CLI `method.kind`
 (which references it accepts, which tasks it supports, the matching Python
-function, an example input) and the Python-only capabilities, gives each one
-a grade, and shows how far each grade's numbers have been checked against an
+function, an example input) and the Python entry points. Each graded CLI
+`method.kind` gets a grade (three kinds are ungraded, and Python entry points
+are not graded individually), and the page shows how far each grade's numbers have been checked against an
 independent reference and where they are known to fail.
 
 How to read it: find the capability in the [matrix](#cli-methodkind-matrix)
-or the [Python-only table](#python-only-capabilities). Its Grade cell links
+or the [Python entry points](#python-entry-points). A matrix Grade cell links
 to the [Anchors](#anchors) table when a row there holds the evidence; the
 [Known limits](#known-limits-and-negatives) section records the measured
 negatives. Every matrix cell comes from the CLI dispatch in
@@ -66,7 +67,7 @@ Open-shell support is listed only where the dispatch code handles it (see
 | `laplace-sos-mp2` | [MP2](../methods/mp2.md) | RHF | ✓ | — | — | `run_laplace_sos_mp2` | `water-laplace-sos-mp2.toml` | not graded | With `c_os = 1.0` it reproduces the opposite-spin MP2 energy (internal reference). |
 | `pdep-rpa` | [RPA/GW](../methods/rpa-gw.md) | RHF, or RKS via `[rpa] xc`; UHF/UKS when multiplicity > 1 (energy only) | ✓ | ✓ (closed-shell RHF reference only; `[rpa] xc` is refused; analytic SCF + FD correlation) | — | `run_pdep_rpa` | `water-pdep-rpa.toml` | Proven | — |
 | `rs-mp2-rpa` | [MP2](../methods/mp2.md) / [RPA](../methods/rpa-gw.md) | RHF | ✓ | — | — | `run_rs_mp2_rpa` | `water-rs-mp2-rpa.toml` | Smoke | The ω→0 and ω→∞ limits reduce exactly to MP2 and MP2+dRPA and are Proven. At production ω it is only marginally benchmarked on one small subset and is unproven on new systems. |
-| `gw` | [RPA/GW](../methods/rpa-gw.md) | RHF, or RKS via `[rpa] xc`; UHF/UKS when multiplicity > 1 (energy only) | ✓ (QP energies) | — | — | `run_gw`, `run_u_gw` | `water-g0w0-pbe.toml`, `oh-ugw.toml` | [Smoke](#anchors) | Matches PySCF `gw_ac`/`ugw_ac` only at matched settings (G0W0@HF and @PBE ≤1.3e-7 Ha, evGW ≤5.7e-7, ECP ≤2.5e-6, U-G0W0 ≤7e-6 Ha) with `[rpa] n_quad = 100` and `trunc_thresh = 0`; the CLI defaults are coarser (the 20-point grid moves the H2O G0W0@PBE HOMO by 13 meV) and truncation is not validated. See the [G0W0 anchors](#anchors). |
+| `gw` | [RPA/GW](../methods/rpa-gw.md) | RHF, or RKS via `[rpa] xc`; UHF/UKS, or ROHF/ROKS with `[gw] reference = "rohf"`, when multiplicity > 1 (energy only) | ✓ (QP energies) | — | — | `run_gw`, `run_u_gw` | `water-g0w0-pbe.toml`, `oh-ugw.toml` | [Smoke](#anchors) | Matches PySCF `gw_ac`/`ugw_ac` only at matched settings (G0W0@HF and @PBE ≤1.3e-7 Ha, evGW ≤5.7e-7, ECP ≤2.5e-6, U-G0W0@UHF ≤7e-6 Ha; the ROHF/ROKS reference is not compared) with `[rpa] n_quad = 100` and `trunc_thresh = 0`; the CLI defaults are coarser (the 20-point grid moves the H2O G0W0@PBE HOMO by 13 meV) and truncation is not validated. See the [G0W0 anchors](#anchors). |
 | `bse-tda` | [RPA/GW](../methods/rpa-gw.md) | RHF only (refuses multiplicity > 1) | ✓ (excitations) | — | — | `run_bse_tda` | `water-bse-tda.toml` | Smoke | Only excitation ordering and a physicality gate are checked. The gap error is inherited from GW. |
 | `tdhf-static-polarizability` | [RPA/GW](../methods/rpa-gw.md) | RKS only (`[rpa] xc` required) | ✓ (static α) | — | — | `run_tdhf_static_polarizability` | `water-tdhf-static-alpha.toml` | Smoke | Static α only, and not established: at a physical scissor (0.36 Ha) it is 5.20 a.u. for water/cc-pVDZ against DOSD 9.64 (−46%). The same kernel gives C6 about 63% low. At `scissor = 0` it can hard-error on a negative α diagonal; set `[gw] scissor` to about 0.3–0.4 Ha. |
 | `ccsd` | [CC](../methods/cc.md) | RHF (spin-adapted solver) | ✓ | — | — | `run_ccsd` | `water-ccsd.toml` | [Proven](#anchors) | — |
@@ -103,7 +104,8 @@ other combination exits with an error before the SCF runs.
   `task = "energy"` only: there is no unrestricted MP2 nuclear gradient.
 - `pdep-rpa`, `gw` and `mp2-v` solve UHF with MOM after 5 iterations when
   `multiplicity > 1`, for `task = "energy"` only. For `pdep-rpa` and `gw`,
-  setting `[rpa] xc` makes that reference UKS; `mp2-v` does not read
+  setting `[rpa] xc` makes that reference UKS; `gw` with `[gw] reference =
+  "rohf"` uses ROHF (ROKS with `[rpa] xc`) instead. `mp2-v` does not read
   `[rpa] xc` and stays UHF.
 - `linlccd` and `wb97x-l-v` refuse an open-shell molecule; their open-shell
   versions are library-only (`ferric_cc::linlccd_u::u_linlccd`,
@@ -111,14 +113,16 @@ other combination exits with an error before the SCF runs.
 - Every other kind refuses `multiplicity > 1` with an error before any
   integral is computed.
 
-## Python-only capabilities
+## Python entry points
 
-These have no `method.kind`. Scope is taken from the binding code and its
-docstrings. None of them is in the CLI grade table.
+These are Python functions without a `method.kind` of their own; some rows
+also have a CLI route through a TOML section or task, noted in the row.
+Scope is taken from the binding code and its docstrings. They are not graded
+individually.
 
 | Capability | Python | Scope (verified in code) |
 |---|---|---|
-| Open-shell KS frequencies | `run_frequencies(reference="uhf"\|"rohf", xc=...)` | Setting `xc` promotes RHF/UHF/ROHF to RKS/UKS/ROKS. FD Hessian. |
+| Open-shell KS frequencies | `run_frequencies(reference="uhf"\|"rohf", xc=...)` | Setting `xc` promotes RHF/UHF/ROHF to RKS/UKS/ROKS. FD Hessian. | Also CLI: `kind = "uhf"`/`"rohf"` with `[dft] functional` and `task = "frequencies"`.
 | Transition-state search | `run_saddle` | P-RFO. Closed shell only (refuses multiplicity ≠ 1). Raises if the start has no negative mode. Costs `2(6N+1) + (steps+1)` gradients. |
 | Reaction path | `run_irc` | Both IRC branches from a saddle's imaginary mode. Closed shell only. |
 | Geometry optimization (Python) | `run_optimize` | RHF only (no `xc` argument). Accepts point charges and a field. |
