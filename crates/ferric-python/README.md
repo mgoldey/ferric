@@ -53,7 +53,7 @@ Returned by PDEP-RPA calculations.
 * **`eigenvalues_static`** *(numpy.ndarray)*:
   Static dielectric eigenvalues $\lambda_\alpha(0)$ as a 1D float64 `numpy` array of shape `(M,)` (sorted descending).
 * **`eigenpotentials`** *(numpy.ndarray)*:
-  Orthonormal PDEP eigenvectors in the auxiliary basis (shape `(naux, M)`).
+  PDEP eigenpotential coefficients in the auxiliary basis (shape `(naux, M)`): column $\alpha$ holds $c_\alpha^P$ with $V_\alpha(r) = \sum_P c_\alpha^P \chi_P(r)$. The columns are orthonormal in the auxiliary Coulomb metric $V_{PQ} = (P|Q)$ ($c^\top V c = I$), not in the plain dot product, and $c^\top (V + \Pi) c = \mathrm{diag}(\lambda_\alpha(0))$ with $\Pi$ the static polarizability in the auxiliary basis.
 * **`quad_freqs`** *(numpy.ndarray)*:
   Imaginary frequency points $\omega_k$ used in the integration.
 * **`quad_weights`** *(numpy.ndarray)*:

@@ -440,9 +440,9 @@ pub fn run_gw(
         gw_cfg.memory_budget_bytes,
     )?;
 
-    // 3. Re-dress the eigenpotentials from physical → V^{-1/2}-dressed.
-    //    eigenpotentials_phys = V^{-1/2} · V_dressed, so
-    //    V_dressed = inv(V^{-1/2}) · eigenpotentials_phys.
+    // 3. Re-dress the eigenpotentials from physical aux coefficients into
+    //    mo_b's dressed basis: with B̃ = F·(Q|mn), F = mo_b.v_inv_sqrt, the
+    //    dressed vector is V_dressed = F⁻ᵀ · eigenpotentials_phys.
     let (v_dressed, dress_dev) =
         w_pdep::redress_with_check(&mo_b.v_inv_sqrt, &pdep.eigenpotentials)?;
     eprintln!("ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = {dress_dev:.3e}");

@@ -163,13 +163,11 @@ pub fn electric_field_at_atoms_rpa(
 ///
 ///   α^{χ₀}_ij = 4 μ^i^T D^{-1} μ^j − 16 w^i^T w^j
 ///
-/// where V_α are the **dressed-basis** PDEP eigenvectors.  Since the
-/// physical-aux eigenpotentials returned by `run_pdep_rpa` are
-/// V^{-1/2}·V_α^dressed, we instead build w in the dressed basis directly
-/// (which is just `B_ov · diag(1/Δε) · μ` — no V^{1/2} or V^{-1/2} ever
-/// touches the working vectors) and dot with the **dressed** eigenvectors.
-/// We recover those by transforming back: V_α^dressed = V^{1/2} · V_α^phys.
-/// Simpler: redo the PDEP solve here and keep the dressed eigenvectors.
+/// where V_α are the **dressed-basis** PDEP eigenvectors (not the physical
+/// aux coefficients `PdepRpaResult::eigenpotentials`). w is built in the
+/// dressed basis directly (`B_ov · diag(1/Δε) · μ` — no metric factor ever
+/// touches the working vectors), and the dressed eigenvectors come from the
+/// PDEP solve run here.
 ///
 /// The spin factor of 4 (closed-shell) is consistent with ferric's χ₀
 /// convention (`scale = sqrt(4·e_ia/(ω²+e_ia²))`).

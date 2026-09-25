@@ -6238,7 +6238,8 @@ impl PyPdepRpaResult {
         PyArray1::from_slice(py, &self.eigenvalues_static)
     }
     /// PDEP eigenpotential coefficients in the RI auxiliary basis, shape (naux, M).
-    /// Column α gives c_α^P such that V_α(r) = Σ_P c_α^P χ_P(r).
+    /// Column α gives c_α^P such that V_α(r) = Σ_P c_α^P χ_P(r). Orthonormal in
+    /// the aux metric V = (P|Q) (cᵀVc = I), with cᵀ(V+Π)c = diag(λ_α(0)).
     #[getter]
     fn eigenpotentials<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         PyArray2::from_owned_array(py, self.eigenpotentials.clone())
