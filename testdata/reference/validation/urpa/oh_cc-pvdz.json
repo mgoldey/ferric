@@ -1,0 +1,237 @@
+{
+  "basis": "cc-pvdz",
+  "aux": "cc-pvdz-ri",
+  "charge": 0,
+  "multiplicity": 2,
+  "nao": 19,
+  "naux": 70,
+  "nelectron": 9,
+  "nuclear_repulsion": 4.365698347282665,
+  "like_for_like": {
+    "nao": 19,
+    "replica_self_overlap_max_dev": 4.440892098500626e-16,
+    "pyscf_diag_max_dev": 4.440892098500626e-16,
+    "diag_checked": 19,
+    "diag_skipped_cartesian": 0
+  },
+  "uhf": {
+    "energy": -75.39384603347489,
+    "converged": true,
+    "s_squared": 0.7545996662103418,
+    "multiplicity_from_s2": 2.004594389107524,
+    "nelec_alpha": 5,
+    "nelec_beta": 4,
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF UHF internal (real)",
+      "rounds": 0,
+      "selected_guess": "minao",
+      "lambda_min": 2.7069218477202083e-11
+    },
+    "guess_scan": [
+      {
+        "guess": "minao",
+        "energy": -75.39384603347489,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -75.39384603347489
+        ]
+      },
+      {
+        "guess": "atom",
+        "energy": -75.39384603347482,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -75.39384603347482
+        ]
+      },
+      {
+        "guess": "huckel",
+        "energy": -75.39384603347489,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -75.39384603347489
+        ]
+      }
+    ],
+    "multiple_stable_minima": false,
+    "homo_alpha": -0.5449976484727732,
+    "lumo_alpha": 0.18485965548197125,
+    "homo_beta": -0.49918842764787286,
+    "lumo_beta": 0.1376806166805209,
+    "somo_alpha": [
+      -0.5449976484727732
+    ]
+  },
+  "urpa": {
+    "method": "pyscf.gw.urpa.URPA",
+    "nw": 40,
+    "x0": 0.5,
+    "frozen": null,
+    "e_corr": -0.18450069582039863,
+    "e_corr_numpy": -0.18450069582043854,
+    "numpy_vs_pyscf_abs_diff": 3.991251773527438e-14,
+    "naux_full_rank": 70,
+    "nw_convergence": {
+      "20": -0.1845035176750297,
+      "40": -0.18450069582039863,
+      "80": -0.1845006966571531,
+      "160": -0.18450069665449664
+    },
+    "nw_convergence_note": "PySCF e_corr at each NW, x0 = 0.5; the comparison runs at NW = 40 on BOTH sides (same Gauss-Legendre map), so this only documents the quadrature error",
+    "truncated": {
+      "0.001": {
+        "trunc_thresh": 0.001,
+        "e_corr": -0.18449523844020493,
+        "n_keep": 43,
+        "nearest_mode_distance_from_cut": 0.00020068842149412094
+      },
+      "0.01": {
+        "trunc_thresh": 0.01,
+        "e_corr": -0.18398440656694146,
+        "n_keep": 30,
+        "nearest_mode_distance_from_cut": 0.0012664125128227875
+      },
+      "0.1": {
+        "trunc_thresh": 0.1,
+        "e_corr": -0.17416411265219026,
+        "n_keep": 11,
+        "nearest_mode_distance_from_cut": 0.004109474580830691
+      }
+    },
+    "truncated_note": "numpy emulation of ferric's PDEP truncation: eigh of eps(0), keep |lambda-1| > trunc_thresh, project eps(iw) at NW = 40",
+    "pyscf_kernel_seconds": 0.01599537397851236,
+    "e_corr_alpha_only": -0.05937769650946112,
+    "e_corr_beta_only": -0.04651564436260229,
+    "nov": [
+      70,
+      60
+    ]
+  },
+  "rohf": {
+    "energy": -75.39001038924458,
+    "converged": true,
+    "s_squared": 0.75,
+    "multiplicity_from_s2": 2.0,
+    "nelec_alpha": 5,
+    "nelec_beta": 4,
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF ROHF internal (real)",
+      "rounds": 0,
+      "selected_guess": "huckel"
+    },
+    "guess_scan": [
+      {
+        "guess": "minao",
+        "energy": -75.39001038924457,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -75.39001038924457
+        ]
+      },
+      {
+        "guess": "atom",
+        "energy": -75.39001038924454,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -75.39001038924454
+        ]
+      },
+      {
+        "guess": "huckel",
+        "energy": -75.39001038924458,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -75.39001038924458
+        ]
+      }
+    ],
+    "multiple_stable_minima": false,
+    "orbital_energy_convention": "PySCF ROHF Roothaan effective-Fock eigenvalues; convention-dependent, recorded for inspection, NOT comparable across codes",
+    "somo_roothaan": [
+      -0.2287087037723312
+    ],
+    "homo_docc_roothaan": -0.5225166535366084,
+    "lumo_roothaan": 0.19048237164045645
+  },
+  "generator_seconds": 1.1265094630070962,
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "rpa": "pyscf.gw.urpa.URPA / pyscf.gw.rpa.RPA (kernel = rpa.kernel)",
+      "nw": 40,
+      "x0": 0.5,
+      "frequency_grid": "Gauss-Legendre, w = x0 (1+x)/(1-x) (rpa._get_scaled_legendre_roots)",
+      "df": "df.DF(mol, auxbasis=ferric aux JSON), Cholesky-whitened metric",
+      "scf": "exact 4-index ERIs, conv_tol 1e-11, conv_tol_grad 1e-8",
+      "numpy": "1.26.4",
+      "scipy": "1.17.1"
+    },
+    "grid": "none",
+    "aux_basis": "cc-pvdz-ri",
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-11,
+      "conv_tol_grad": 1e-08
+    },
+    "stability": {
+      "uhf": {
+        "internal_stable": true,
+        "kind": "PySCF UHF internal (real)",
+        "rounds": 0,
+        "selected_guess": "minao",
+        "lambda_min": 2.7069218477202083e-11
+      },
+      "rohf": {
+        "internal_stable": true,
+        "kind": "PySCF ROHF internal (real)",
+        "rounds": 0,
+        "selected_guess": "huckel"
+      }
+    },
+    "basis": "cc-pvdz",
+    "basis_json": "crates/ferric-core/src/basis/bundled/cc-pvdz.json",
+    "basis_sha256": "ae48fcca0d533addd60dbd48490153130e697121767ba607e1d70f3b341eeef7",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/oh.xyz",
+    "geometry_xyz_sha256": "38d6013d3393d6c70dbae95d27def5f092e5a5f08c8754f2a5ec3a4536852739",
+    "geometry_bohr": [
+      [
+        "O",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "H",
+        0.0,
+        0.0,
+        1.8324674229907405
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_urpa.py",
+    "git_head": "10f4b60c91e31ad34af42d7be6cd700c3ede80e1",
+    "generated_utc": "2026-09-25T14:37:31+00:00",
+    "blocks": [
+      "uhf",
+      "urpa",
+      "rohf"
+    ]
+  }
+}
