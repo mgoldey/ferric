@@ -286,9 +286,18 @@ pub struct PdepRpaResult {
     pub n_eigenpotentials: usize,
     /// Static dielectric eigenvalues λ_α(0), length M.
     pub eigenvalues_static: Vec<f64>,
-    /// PDEP eigenpotentials V_α expanded in the RI auxiliary basis (physical coefficients,
-    /// after back-transforming from the V^{-1/2}-dressed Davidson basis).
-    /// Shape (naux, M). Column α gives the c_α^P such that V_α(r) = Σ_P c_α^P χ_P(r).
+    /// PDEP eigenpotentials V_α expanded in the RI auxiliary basis (physical
+    /// coefficients). Shape (naux, M). Column α gives the c_α^P such that
+    /// V_α(r) = Σ_P c_α^P χ_P(r).
+    ///
+    /// With the dressed tensor B̃ = F·(Q|ia) (F = `v_inv_sqrt`: the Cholesky
+    /// factor L⁻¹ for Coulomb/erfc, a symmetric eigh V^{-1/2} for erf/terf), a
+    /// dressed eigenvector u_α corresponds to the aux function
+    /// Σ_P (Fᵀu_α)_P χ_P, so c_α = Fᵀ·u_α. These satisfy c_αᵀ V c_β = δ_αβ and
+    /// c_αᵀ (V + Π) c_β = λ_α(0) δ_αβ with V the aux metric and Π the
+    /// physical-aux static polarizability (up to the null modes an erf eigh
+    /// factor drops). Consumers that need the dressed vectors back must invert
+    /// Fᵀ, not F — see `ferric_gw::w_pdep::redress_eigenpotentials`.
     pub eigenpotentials: Array2<f64>,
     /// Davidson eigenvectors in the V^{-1/2}-dressed RI basis, shape (naux, M).
     /// These are the raw Davidson/Lanczos output before back-transformation and
@@ -529,6 +538,8 @@ pub fn run_pdep_rpa(
 pub(crate) struct EigensolveStage {
     pub eigenvectors: Array2<f64>,
     pub eigenvalues_static: Vec<f64>,
+    /// Physical aux coefficients `v_inv_sqrtᵀ · eigenvectors` (becomes
+    /// `PdepRpaResult::eigenpotentials`).
     pub eigenpotentials_aux: Array2<f64>,
     pub n_keep: usize,
     pub quad_freqs: Vec<f64>,
@@ -840,9 +851,13 @@ pub(crate) fn run_pdep_rpa_eigensolve(
         .slice(ndarray::s![.., ..n_keep])
         .to_owned();
 
-    // Back-transform from V^{-1/2}-dressed basis to physical aux-basis coefficients:
-    // c_α (physical) = V^{-1/2} · V_α (dressed). Used for real-space cube export.
-    let eigenpotentials_aux = inter.v_inv_sqrt.dot(&eigenvectors);
+    // Back-transform from the dressed basis to physical aux-basis coefficients.
+    // B̃ = F·(Q|ia) with F = v_inv_sqrt, so a dressed vector u is the aux
+    // function Σ_P (Fᵀu)_P χ_P: c_α = Fᵀ · u_α. The TRANSPOSE matters: F is the
+    // lower-triangular Cholesky L⁻¹ on the Coulomb/erfc path (only the erf/terf
+    // eigh factor is symmetric), and L⁻¹·u satisfies none of cᵀVc = I /
+    // cᵀ(V+Π)c = diag(λ). Pinned by tests/pdep_eigenpotentials_are_physical.rs.
+    let eigenpotentials_aux = inter.v_inv_sqrt.t().dot(&eigenvectors);
 
     // Step 5: Build quadrature grid.
     let (quad_freqs, quad_weights) = quadrature::build_quadrature(&config.quadrature);
@@ -1287,7 +1302,9 @@ pub fn run_u_pdep_rpa(
         .slice(ndarray::s![.., ..n_keep])
         .to_owned();
 
-    let eigenpotentials_aux = inter_a.v_inv_sqrt.dot(&eigenvectors);
+    // Physical aux coefficients c_α = Fᵀ · u_α (see run_pdep_rpa_eigensolve).
+    // inter_a/inter_b share the aux metric, hence the same factor F.
+    let eigenpotentials_aux = inter_a.v_inv_sqrt.t().dot(&eigenvectors);
 
     let (quad_freqs, quad_weights) = quadrature::build_quadrature(&config.quadrature);
 

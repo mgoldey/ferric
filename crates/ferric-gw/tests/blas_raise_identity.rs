@@ -91,7 +91,7 @@ fn build_full_b_consistent_across_blas_thread_counts() {
 }
 
 /// FERRIC_BLAS_THREADS=2 must reproduce the exact same redressed
-/// eigenpotentials as the default (1 thread) — the wrapped inv() + GEMM in
+/// eigenpotentials as the default (1 thread) — the wrapped triangular solve in
 /// w_pdep::redress_eigenpotentials must be bit-identical regardless of BLAS
 /// thread count.
 #[test]

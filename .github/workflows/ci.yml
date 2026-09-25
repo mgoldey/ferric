@@ -1166,7 +1166,14 @@ jobs:
         with:
           tool: cargo-nextest
 
+      # validation_npz.rs reads the CLI's NPZ with numpy (the FOREIGN reader
+      # the row exists to test) and FAILS, rather than skips, without it.
+      - name: Install numpy for the NPZ foreign-reader test
+        run: python3 -m pip install --user numpy
+
       - name: Run validation tests
+        env:
+          FERRIC_VALIDATION_PYTHON: python3
         run: |
           set -euo pipefail
           shopt -s nullglob

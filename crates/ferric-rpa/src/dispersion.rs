@@ -454,28 +454,21 @@ pub fn pdep_dynamic_polarizability(
 ///   α_ij  = 4 μⁱ·g·μʲ − 16 wⁱ·yʲ
 /// ```
 ///
-/// In the PDEP-truncated path the M dominant eigenvectors V_α (from
-/// Davidson/Lanczos) diagonalise ε̃(0) to λ_α(0).  At frequency ω the
-/// dielectric projected into that subspace gives eigenvalues λ_α(ω) already
-/// stored in `rpa.eigenvalues_freq`.  The inverse is diagonal:
+/// In the PDEP-truncated path U = `rpa.dressed_eigenvectors` (naux × M, the
+/// Davidson/Lanczos eigenvectors of ε̃(0) in the same dressed basis as B̃) and
+/// every ω uses the M × M projection:
 /// ```text
-///   ε̃(ω)⁻¹ ≈ V [diag 1/λ_α(ω)] Vᵀ  +  (I − VVᵀ)   (identity on null space)
+///   ε̃_M(ω) = I_M + Uᵀ B̃ diag(4g(ω)) B̃ᵀ U
+///   w_M^d   = Uᵀ B̃ g(ω) μ^d
+///   α_ij    = 4 μⁱ·g·μʲ − 16 w_Mⁱ · ε̃_M(ω)⁻¹ w_Mʲ
 /// ```
-/// Substituting into the α formula and using Vᵀ B̃ g(ω) μ = p_α^d(ω):
-/// ```text
-///   α^A_ij(ω) ≈ 4 bare_ij(ω)
-///             − Σ_α (4/λ_α(ω) − 4) · p^{A,i}_α(ω) · p^j_α(ω)
-/// ```
-/// where `p^{A,i}_α(ω) = Vᵀ_α B̃ (g(ω) ⊙ μ^{A,i})` and
-///       `p^i_α(ω) = Vᵀ_α B̃ (g(ω) ⊙ μ^i)` (molecular sum).
-///
-/// The `(4/λ − 4)` factor is the correction relative to the bare (non-interacting)
-/// response.  Modes with λ_α → 1 contribute nothing (dielectric → identity on
-/// those modes); only the M modes with λ_α(0) > 1+trunc_thresh matter.
+/// This is exact whenever span(U) ⊇ range(B̃) (e.g. `trunc_thresh = 0`): then
+/// w ∈ span(U) and ε̃ is block-diagonal in (span U, its complement). Dropping
+/// modes with λ_α(0) ≈ 1 discards only their (small) coupling to w.
 ///
 /// # Arguments
-/// * `rpa` — already-computed `PdepRpaResult` (provides `eigenpotentials` and
-///   `eigenvalues_freq`).  Its quadrature grid is reused as-is.
+/// * `rpa` — already-computed `PdepRpaResult` (provides `dressed_eigenvectors`
+///   and the quadrature grid, which is reused as-is).
 /// * `mol`, `obs`, `obs_bs` — molecule + orbital basis (for the Becke grid).
 /// * `rhf` — SCF result (for MO coefficients; must match the one used for `rpa`).
 /// * `partition` — Becke (default) or Hirshfeld (falls back to Becke).
@@ -511,51 +504,10 @@ pub fn pdep_dynamic_polarizability_truncated(
     let nfreq = freqs.len();
     let natoms = mol.atoms.len();
 
-    // PDEP eigenvectors V: (naux, M).  These are the physical-basis vectors
-    // from `run_pdep_rpa` (back-transformed by V^{-1/2}).
-    // BUT: the α formula uses the *dressed* Davidson basis (V^{-1/2}-dressed),
-    // not the physical eigenpotentials.  `rpa.eigenpotentials` holds the physical
-    // coefficients c_α^P = (V^{-1/2})_PP' U_αP'.  We need the dressed eigenvectors
-    // U_α = V^{1/2} c_α.  Rather than reconstructing V^{1/2}, we re-derive
-    // b_ov and use the SMW identity directly in terms of:
-    //   p_α^d = Vᵀ_α w^d   where V_α is the dressed eigenvector and
-    //   w^d = B̃ (g ⊙ μ^d)  lives in the *dressed* aux space.
-    //
-    // The cleanest approach: recompute B̃ (the V^{-1/2}-dressed RI tensor)
-    // from the RI intermediates — that gives us the same dressed basis the
-    // Davidson used. Then Vᵀ B̃ uses the *dressed* eigenvectors from Davidson,
-    // which we recover as: dressed_V = V^{1/2} eigenpotentials
-    // = V^{-1/2}^{-1} · physical = inter.v_inv_sqrt^{-1} · eigenpotentials.
-    //
-    // Simpler: recompute the RI intermediates (cheap — it's just a Cholesky
-    // + transform) and use the dressed Davidson eigenvectors directly.
-    // `run_pdep_rpa` back-transforms via  eigenpotentials_aux = v_inv_sqrt · eigenvectors,
-    // so: dressed_U = v_inv_sqrt^{-1} · eigenpotentials_aux = eigenvectors (the Davidson output).
-    // We don't store eigenvectors from Davidson after run_pdep_rpa; we only have
-    // eigenpotentials (physical). Reconstruct dressed:
-    //   dressed_V = V^{1/2} · eigenpotentials
-    // where V^{1/2} = inv(v_inv_sqrt) — but we don't store v_inv_sqrt either.
-    //
-    // PRACTICAL WORKAROUND for the spike: recompute b_ov and use b_ov directly
-    // with the PHYSICAL eigenpotentials (c_α).  The projection c_α^T B̃^P_ia
-    // where B̃ = V^{-1/2} (P|ia) is what we need.  Since c_α = V^{-1/2} u_α,
-    // c_αᵀ B̃ = u_αᵀ V^{-1/2} V^{-1/2} (P|ia) = u_αᵀ V^{-1} (P|ia).
-    // That introduces V^{-1} which we also don't have.
-    //
-    // CLEANEST SPIKE: use the physical B_ov (without V^{-1/2} dressing) together
-    // with the physical eigenpotentials, which is equivalent to working in the
-    // un-dressed (original RI) basis.  The eigenpotentials c_α satisfy:
-    //   ε̃_phys V_α = λ_α V_α  (in the physical RI metric)
-    // where ε̃_phys = I + B_ov diag(4/Δε) B_ovᵀ  (un-dressed, using raw B_ov).
-    //
-    // In the physical basis the SMW inverse is:
-    //   ε̃_phys^{-1} ≈ Σ_α (1/λ_α) c_α c_αᵀ / (c_αᵀ c_α) + complement
-    // But c_α are normalised: c_αᵀ c_α = 1 (columns of eigenpotentials are
-    // orthonormal in the RI metric, not L2).
-    //
-    // For the spike we treat c_α as orthonormal (approximately true since B̃ ≈ B
-    // up to V^{1/2}). This gives a computable rank-M approximation we can
-    // time and compare to the full solve.
+    // The projection uses `rpa.dressed_eigenvectors` (U, the raw eigensolver
+    // output) against the dressed B̃ rebuilt below from the same operator and
+    // aux basis — the same basis the eigensolve ran in, so no metric factor
+    // enters. `rpa.eigenpotentials` (physical aux coefficients) is not used.
 
     let mp2_cfg = RiMp2Config {
         frozen_core: cfg.frozen_core,
@@ -563,7 +515,7 @@ pub fn pdep_dynamic_polarizability_truncated(
         ..Default::default()
     };
     let inter = ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
-    let b_ov = &inter.b_ov; // shape (naux, nov) — un-dressed raw RI
+    let b_ov = &inter.b_ov; // shape (naux, nov) — dressed B̃ = F·(Q|ia)
     let nocc = inter.nocc;
     let nvir = inter.nvir;
     let nocc_total = inter.nocc_total;
@@ -699,7 +651,7 @@ pub fn pdep_dynamic_polarizability_truncated(
     let evecs = &rpa.dressed_eigenvectors; // (naux, M) dressed
     let n_modes = evecs.ncols();
 
-    // Precompute c_αᵀ B̃_ov: (M, nov)  [B̃_ov is the dressed tensor from inter]
+    // Precompute Uᵀ B̃_ov: (M, nov)  [B̃_ov is the dressed tensor from inter]
     let ct_b: Array2<f64> = evecs.t().dot(b_ov); // (M, nov)
 
     // Frequency loop.
@@ -744,38 +696,38 @@ pub fn pdep_dynamic_polarizability_truncated(
                         g[ia] = e / (omega2 + e * e);
                     }
 
-                    // B̃_g = B̃ diag(g): (naux, nov) → scale columns.
-                    // We compute Uᵀ B̃_g = (Uᵀ B̃) diag(g) = ct_b * diag(g) efficiently
-                    // as a column-scaled product, refilled from ct_b each ω.
+                    // ε̃_M(ω) = I_M + Uᵀ B̃ diag(4g) B̃ᵀ U = I + S Sᵀ with
+                    // S = (Uᵀ B̃) diag(sqrt(4g)) — the same sqrt(4g) column
+                    // scaling as the full path (properties.rs), so ε̃_M is
+                    // exactly symmetric. (Scaling by g and multiplying by 4
+                    // would give diag(4g²), not diag(4g).)
                     ct_b_g.assign(&ct_b);
                     for ia in 0..nov {
-                        ct_b_g.column_mut(ia).mapv_inplace(|x| x * g[ia]);
+                        let s = (4.0 * g[ia]).sqrt();
+                        ct_b_g.column_mut(ia).mapv_inplace(|x| x * s);
                     }
-
-                    // ε̃_M(ω) = I_M + 4 (Uᵀ B̃_g) (Uᵀ B̃_g)ᵀ  [M×M SPD]
-                    // = I + 4 ct_b_g · ct_b_gᵀ
                     let mut eps_m: Array2<f64> = ct_b_g.dot(&ct_b_g.t());
-                    eps_m.mapv_inplace(|x| x * 4.0);
                     for alpha in 0..n_modes {
                         eps_m[(alpha, alpha)] += 1.0;
                     }
 
-                    // Molecular projected dipole: w_M^d = Uᵀ B̃_g μ^d = ct_b_g · μ^d
+                    // Molecular projected dipole: w_M^d = Uᵀ B̃ (g ⊙ μ^d)
+                    let mu_g: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| &mu_flat[d] * &g);
                     let w_mol_m: [ndarray::Array1<f64>; 3] =
-                        std::array::from_fn(|d| ct_b_g.dot(&mu_flat[d]));
+                        std::array::from_fn(|d| ct_b.dot(&mu_g[d]));
                     // Solve ε̃_M y_M^d = w_M^d  (M×M, small)
                     let y_mol_m = crate::properties::solve_dielectric_3(&eps_m, &w_mol_m)?;
 
                     let mut row: Vec<[[f64; 3]; 3]> = vec![[[0.0; 3]; 3]; natoms];
                     for a in 0..natoms {
-                        // Per-atom projected dipole: w_M^{A,d} = ct_b_g · μ^{A,d}
+                        // Per-atom projected dipole: w_M^{A,d} = Uᵀ B̃ (g ⊙ μ^{A,d})
                         let w_ai_m: [ndarray::Array1<f64>; 3] =
-                            std::array::from_fn(|d| ct_b_g.dot(&mu_ai_flat[a][d]));
+                            std::array::from_fn(|d| ct_b.dot(&(&mu_ai_flat[a][d] * &g)));
 
                         let mut tensor = [[0.0_f64; 3]; 3];
                         for d in 0..3 {
                             for j in 0..3 {
-                                let bare = mu_ai_flat[a][d].dot(&(&mu_flat[j] * &g));
+                                let bare = mu_ai_flat[a][d].dot(&mu_g[j]);
                                 let coupled = w_ai_m[d].dot(&y_mol_m[j]);
                                 tensor[d][j] = 4.0 * bare - 16.0 * coupled;
                             }
