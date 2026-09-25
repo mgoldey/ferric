@@ -1,0 +1,68 @@
+{
+  "row": "ECP gradients (ORCA cross-check)",
+  "system": "hbr",
+  "basis": "def2-svp",
+  "charge": 0,
+  "multiplicity": 1,
+  "method": "rhf",
+  "ecp_source": "ferric-json NewECP",
+  "nelectron": 36,
+  "ecp_core_electrons": [
+    0,
+    0
+  ],
+  "nuclear_repulsion": 12.34746825479823,
+  "energy": -2572.681060308618,
+  "s_squared": null,
+  "gradient": [
+    [
+      0.0,
+      0.0,
+      -0.041975791058
+    ],
+    [
+      -0.0,
+      -0.0,
+      0.041975791016
+    ]
+  ],
+  "gradient_units": "Hartree/Bohr, atoms in xyz order (ORCA .engrad)",
+  "max_abs_diff_vs_pyscf_gradient": 9.0510404934796e-09,
+  "provenance": {
+    "code": "ORCA",
+    "version": "6.1.1",
+    "keywords": "! RHF def2-SVP VeryTightSCF NoRI NoFrozenCore EnGrad Bohrs\n%pal nprocs 1 end\n%basis\n  NewGTO H\n    S 3\n        1 1.3010701000E+01 3.3485484813E-02\n        2 1.9622572000E+00 2.3472187088E-01\n        3 4.4453796000E-01 8.1377028526E-01\n    S 1\n        1 1.2194962000E-01 1.0000000000E+00\n    P 1\n        1 8.0000000000E-01 1.0000000000E+00\n  end\n  NewGTO Br\n    S 6\n        1 1.1328638776E+05 1.7059195509E-03\n        2 1.7009626303E+04 1.3078822297E-02\n        3 3.8701842567E+03 6.4998679261E-02\n        4 1.0930357227E+03 2.2750201074E-01\n        5 3.5639721797E+02 4.6609763303E-01\n        6 1.2312539643E+02 3.6803755399E-01\n    S 3\n        1 2.3674084007E+02 -1.1073269394E-01\n        2 2.8468661070E+01 6.3882925337E-01\n        3 1.1883443722E+01 4.3625720052E-01\n    S 3\n        1 2.1269633312E+01 -2.1858987771E-01\n        2 3.6129226841E+00 7.1268904872E-01\n        3 1.6626648969E+00 4.1206713870E-01\n    S 1\n        1 3.4823793232E-01 1.0000000000E+00\n    S 1\n        1 1.3019031394E-01 1.0000000000E+00\n    P 5\n        1 1.5602801881E+03 8.2285346263E-03\n        2 3.6847859205E+02 6.2534001825E-02\n        3 1.1722978849E+02 2.5011859444E-01\n        4 4.2648909248E+01 5.0824174178E-01\n        5 1.6087225096E+01 3.4530946639E-01\n    P 3\n        1 8.6352810058E+00 3.2434615308E-01\n        2 3.5613665502E+00 5.4454844135E-01\n        3 1.5292626609E+00 2.3041603396E-01\n    P 1\n        1 5.3064294848E-01 1.0000000000E+00\n    P 1\n        1 1.5702758965E-01 1.0000000000E+00\n    D 4\n        1 1.0485518642E+02 2.6692250997E-02\n        2 3.0281143688E+01 1.5856723863E-01\n        3 1.0651394267E+01 4.2983618186E-01\n        4 3.8699456233E+00 5.7796993289E-01\n    D 1\n        1 1.3240876762E+00 1.0000000000E+00\n    D 1\n        1 3.8900000000E-01 1.0000000000E+00\n  end\nend\n* xyz 0 1\n  H  0.000000000000 0.000000000000 0.000000000000\n  Br 0.000000000000 0.000000000000 2.834589186848\n*\n",
+    "grid": "none",
+    "aux_basis": "none",
+    "frozen_core": "NoFrozenCore",
+    "scf_convergence": "VeryTightSCF",
+    "stability": null,
+    "basis": "def2-svp",
+    "basis_json": "crates/ferric-core/src/basis/bundled/def2-svp.json",
+    "basis_sha256": "bfad5f58ceac74a9ac2766b39f510654cea29fb9408e966bb0dfcf14e1302d4f",
+    "ecp_json": "crates/ferric-core/src/basis/bundled/def2-svp.json",
+    "ecp_sha256": "bfad5f58ceac74a9ac2766b39f510654cea29fb9408e966bb0dfcf14e1302d4f",
+    "geometry_xyz": "testdata/molecules/validation/ecp/hbr.xyz",
+    "geometry_xyz_sha256": "f934a0eb9dd663549d02664f1619da2d1c3e591dacaa58e3b2b6c44d1e19edd9",
+    "geometry_bohr": [
+      [
+        "H",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "Br",
+        0.0,
+        0.0,
+        2.8345891868475928
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_ecp_gradient.py",
+    "git_head": "eb9d3226cb0444658d7a11064a0e7ca17356c3b9",
+    "generated_utc": "2026-09-25T18:27:20+00:00",
+    "orca_input": "scripts/validation/orca/ecp_gradient/hbr_def2-svp.inp",
+    "orca_binary": "/home/matt/Downloads/orca_6_1_1_linux_x86-64_shared_openmpi418_nodmrg/orca"
+  }
+}

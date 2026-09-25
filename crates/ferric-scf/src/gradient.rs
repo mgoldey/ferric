@@ -1696,11 +1696,25 @@ pub fn uhf_gradient(
         alpha: &result.density_alpha,
         beta: d_beta,
     };
-    if let Some(g) = fitted_hf_gradient(mol, prep, op, bounds, result, dens, &w, ext)? {
-        return Ok(g);
-    }
-    let mut grad = oneelectron_gradient(mol, prep, &d_total, &w, ext)?;
-    grad += &twoelectron_gradient_uhf(prep, op, bounds, &d_total, &result.density_alpha, d_beta)?;
+    let mut grad = match fitted_hf_gradient(mol, prep, op, bounds, result, dens, &w, ext)? {
+        Some(g) => g,
+        None => {
+            let mut g = oneelectron_gradient(mol, prep, &d_total, &w, ext)?;
+            g += &twoelectron_gradient_uhf(
+                prep,
+                op,
+                bounds,
+                &d_total,
+                &result.density_alpha,
+                d_beta,
+            )?;
+            g
+        }
+    };
+    // ECP term Σ D_total dV_ECP/dR (zero for an all-electron basis). The SCF
+    // folds V_ECP into hcore for every spin treatment (driver::prepare), so the
+    // open-shell gradient needs it exactly as rhf_gradient does.
+    grad += &ecp_gradient(mol, prep, &d_total)?;
     Ok(grad)
 }
 
@@ -1744,11 +1758,16 @@ pub fn rohf_gradient(
         alpha: d_alpha,
         beta: d_beta,
     };
-    if let Some(g) = fitted_hf_gradient(mol, prep, op, bounds, result, dens, &w, ext)? {
-        return Ok(g);
-    }
-    let mut grad = oneelectron_gradient(mol, prep, &d_total, &w, ext)?;
-    grad += &twoelectron_gradient_uhf(prep, op, bounds, &d_total, d_alpha, d_beta)?;
+    let mut grad = match fitted_hf_gradient(mol, prep, op, bounds, result, dens, &w, ext)? {
+        Some(g) => g,
+        None => {
+            let mut g = oneelectron_gradient(mol, prep, &d_total, &w, ext)?;
+            g += &twoelectron_gradient_uhf(prep, op, bounds, &d_total, d_alpha, d_beta)?;
+            g
+        }
+    };
+    // ECP term, as in uhf_gradient.
+    grad += &ecp_gradient(mol, prep, &d_total)?;
     Ok(grad)
 }
 

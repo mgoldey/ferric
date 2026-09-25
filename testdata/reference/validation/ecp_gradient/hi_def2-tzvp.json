@@ -1,0 +1,135 @@
+{
+  "row": "ECP gradients",
+  "system": "hi",
+  "basis": "def2-tzvp",
+  "charge": 0,
+  "multiplicity": 1,
+  "method": "rhf",
+  "nao": 56,
+  "nelectron": 26,
+  "ecp_core_electrons": [
+    0,
+    28
+  ],
+  "has_ecp": true,
+  "nuclear_repulsion": 7.559674441714287,
+  "rhf": {
+    "energy": -297.23441550312737,
+    "converged": true,
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF RHF internal (real)"
+    },
+    "gradient": [
+      [
+        7.742810603808633e-17,
+        -1.4580415498137318e-16,
+        -0.0474227208316802
+      ],
+      [
+        -7.742810603850945e-17,
+        1.4580415497910915e-16,
+        0.047422720831662435
+      ]
+    ],
+    "gradient_units": "Hartree/Bohr, atoms in xyz order",
+    "gradient_max_abs": 0.0474227208316802,
+    "gradient_sum": [
+      -4.231252680379202e-28,
+      -2.264030797984304e-27,
+      -1.7763568394002505e-14
+    ],
+    "gradient_ecp_term": [
+      [
+        -9.461067785962364e-17,
+        -1.3560385296182727e-16,
+        -0.01835549072441542
+      ],
+      [
+        9.461067785962364e-17,
+        1.3560385296182727e-16,
+        0.01835549072441542
+      ]
+    ],
+    "gradient_ecp_term_max_abs": 0.01835549072441542,
+    "gradient_ecp_term_fd_fixed_density_max_err": 1.4805906500825472e-11,
+    "gradient_without_ecp": [
+      [
+        1.7203878389770997e-16,
+        -1.020030201954591e-17,
+        -0.02906723010726478
+      ],
+      [
+        -1.720387838981331e-16,
+        1.020030201728188e-17,
+        0.029067230107247016
+      ]
+    ]
+  },
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "methods": [
+        "scf.RHF",
+        "nuc_grad_method() (analytic)"
+      ],
+      "ecp_term": "ECPscalar_ipnuc + ECPscalar_iprinv (grad.rhf.hcore_generator's ECP piece), FD-checked at fixed D",
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-08,
+      "ecp": "mol.ecp built by common.pyscf_ecp from the basis JSON's inline ecp_potentials",
+      "eri": "exact 4-index (no density fitting)",
+      "numpy": "1.26.4"
+    },
+    "grid": "none",
+    "aux_basis": "none",
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-08
+    },
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF RHF internal (real)"
+    },
+    "basis": "def2-tzvp",
+    "basis_json": "crates/ferric-core/src/basis/bundled/def2-tzvp.json",
+    "basis_sha256": "d3e390449abd92016eb4c97577ec04dbe61affc5bc870791ac771dbb1aa82111",
+    "ecp_json": "crates/ferric-core/src/basis/bundled/def2-tzvp.json",
+    "ecp_sha256": "d3e390449abd92016eb4c97577ec04dbe61affc5bc870791ac771dbb1aa82111",
+    "geometry_xyz": "testdata/molecules/validation/ecp/hi.xyz",
+    "geometry_xyz_sha256": "20aec50609f66afe6cf7628e6e9534421e883449a1922f9cc1a777fbb39f432e",
+    "geometry_bohr": [
+      [
+        "H",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "I",
+        0.0,
+        0.0,
+        3.307020717988858
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_ecp_gradient.py",
+    "git_head": "eb9d3226cb0444658d7a11064a0e7ca17356c3b9",
+    "generated_utc": "2026-09-25T18:22:35+00:00",
+    "basis_self_check": {
+      "nao": 56,
+      "replica_self_overlap_max_dev": 2.220446049250313e-16,
+      "pyscf_diag_max_dev": 5.551115123125783e-16,
+      "diag_checked": 56,
+      "diag_skipped_cartesian": 0
+    },
+    "ecp_self_check": {
+      "ecp_core_electrons": [
+        0,
+        28
+      ],
+      "nelectron": 26
+    }
+  }
+}
