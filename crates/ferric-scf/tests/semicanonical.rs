@@ -345,10 +345,9 @@ fn invalid_references_are_rejected() {
 
 /// The conversion to a UHF-shaped result must carry genuine per-spin data.
 ///
-/// This is the practical payoff: ferric's open-shell post-SCF code detects a ROHF
-/// result and falls back to alpha orbitals with the EFFECTIVE Fock's eigenvalues for
-/// both spins (`u_rimp2.rs:97`: "ROHF has no eps_beta -- fall back to eps_alpha").
-/// After conversion there is a real eps_beta, so that fallback no longer fires.
+/// This is the practical payoff: a ROHF result carries only the EFFECTIVE Fock's
+/// eigenvalues, which belong to neither spin; after conversion there is a genuine
+/// per-spin eps_beta.
 #[test]
 fn converts_to_a_usable_unrestricted_result() {
     let f = setup("sto-3g");

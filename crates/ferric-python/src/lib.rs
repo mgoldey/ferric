@@ -6876,6 +6876,12 @@ fn run_u_gw(
                 last_energy: scf.energy,
             }));
         }
+        // ROKS -> semi-canonical per-spin orbitals (what run_u_gw uses
+        // internally), so v_xc is diagonalized in the QP equation's own basis;
+        // UKS is unchanged.
+        let scf = ferric_scf::semicanonical::unrestricted_reference(&mol.inner, &scf)
+            .map_err(make_err)?
+            .into_owned();
         let (diag_a, diag_b) =
             vxc_diagonal_mo(&mol.inner, &basis_set.inner, xc_name, &scf).map_err(make_err)?;
         (scf, Some((diag_a, diag_b)))

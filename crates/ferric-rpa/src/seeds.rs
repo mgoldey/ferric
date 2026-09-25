@@ -42,7 +42,7 @@ pub enum BoysSeedMode {
 /// the resulting seed columns horizontally concatenated.
 ///
 /// `c_full_a` / `c_full_b` are the full MO coefficient matrices for α/β
-/// (per `compute_rpa_intermediates_spin`, ROHF reuses α MOs for β).
+/// (for a ROHF reference, its per-spin semi-canonical MOs).
 /// `inter_a` / `inter_b` are the per-spin RPA intermediates. Final seed
 /// has shape `(naux, n_seed_a + n_seed_b)` after QR.
 pub fn build_boys_seed_unrestricted(

@@ -607,15 +607,12 @@ pub fn att_mp2_vv10(
 ///
 /// # ROHF
 ///
-/// Accepted. [`u_ri_mp2`] supports ROHF by construction: ROHF stores a single
-/// MO set (`mos_alpha`) that both spin channels share, and
-/// `compute_rpa_intermediates_spin` falls back to it for the β request, with the
-/// α/β occupation split taken from `mol.multiplicity`. `eps_beta` is likewise
-/// absent for ROHF and falls back to `eps_alpha`. The resulting energy is
-/// therefore ROHF-MP2 in the "use the ROHF canonical orbitals as if they were
-/// UHF orbitals" (semicanonical-free) sense, which is what the rest of ferric's
-/// open-shell MP2 stack already does — not a Z-averaged or fully semicanonical
-/// ROHF-MP2.
+/// Accepted. [`u_ri_mp2`] semi-canonicalizes a ROHF reference on entry
+/// (`ferric_scf::semicanonical::unrestricted_reference`): each spin uses the
+/// occ–occ / virt–virt eigenvectors and eigenvalues of its own Fock `F_σ`. The MP2
+/// half is therefore the doubles-only UMP2 expression on semi-canonical ROHF
+/// orbitals (no ROMP2 single-excitation term), and the VV10 half sees the
+/// unchanged ROHF total density.
 pub fn u_att_mp2_vv10(
     mol: &Molecule,
     obs: &PreparedBasis,

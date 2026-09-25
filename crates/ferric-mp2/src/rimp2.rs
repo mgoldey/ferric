@@ -1546,9 +1546,11 @@ pub fn compute_rpa_intermediates_spin(
     } else {
         ((nelec_total as i32 - two_s) / 2) as usize
     };
-    // ROHF stores α MOs and uses them for both spin channels (the SOMO is
-    // just unoccupied in β); only mos_alpha is present. Fall back to it
-    // when caller requests β on a ROHF result.
+    // A raw ROHF result stores one MO set (mos_alpha); β falls back to it.
+    // The unrestricted drivers (u_ri_mp2, run_u_pdep_rpa, run_u_gw, the
+    // open-shell polarizabilities) never reach this fallback: they pass the
+    // per-spin semi-canonical view (`ferric_scf::semicanonical::
+    // unrestricted_reference`) instead.
     let c_full = if is_alpha || matches!(rhf.spin, Spin::RestrictedOpen) {
         rhf.mos_a()
     } else {

@@ -1756,10 +1756,8 @@ fn run_rimp2(
 /// (`ferric_mp2::u_rimp2::u_ri_mp2`, the UMP2 of PySCF's `mp.MP2(uhf)`) on
 /// the UHF reference. Validated against PySCF UMP2 on OH/cc-pVDZ
 /// (`u_rimp2_oh_cc_pvdz_matches_pyscf`) and against closed-shell RI-MP2 in
-/// the closed-shell limit. The ROHF-based variant is deliberately NOT the
-/// default: `u_ri_mp2` on a raw ROHF reference uses the effective Fock
-/// eigenvalues for both spins (measured 4-6 mEh off on OH/CH3, see
-/// ferric-cc/tests/semicanonical_mp2.rs).
+/// the closed-shell limit. (`u_ri_mp2` also accepts a ROHF reference, which it
+/// semi-canonicalizes per spin; the CLI runs it on UHF.)
 ///
 /// `[mp2] kappa` is refused: the regularizer is implemented for the
 /// closed-shell kernel only, and silently dropping it would print plain UMP2
@@ -4648,9 +4646,18 @@ fn run_gw(
         // shift post-hoc via UGwResult::apply_kohn_sham_correction (U-GW
         // doesn't thread vxc_diag through run_u_gw itself — see its doc).
         // None (HF reference) ⇒ no shift, matches run_u_gw's contract.
+        // A ROHF/ROKS reference is semi-canonicalized (run_u_gw would do it
+        // internally); doing it HERE lets the ROKS v_xc diagonal below be
+        // evaluated on the same per-spin orbitals the QP equation uses. UHF/UKS
+        // is borrowed unchanged.
+        let result_u = ferric_scf::semicanonical::unrestricted_reference(mol, result)
+            .unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
         let vxc_diag = match cfg.rpa.xc.as_deref() {
             Some(xc_name) => {
-                let (diag_a, diag_b) = ferric_gw::vxc_mo::vxc_diagonal_mo(mol, bs, xc_name, result)
+                let (diag_a, diag_b) = ferric_gw::vxc_mo::vxc_diagonal_mo(mol, bs, xc_name, &result_u)
                     .unwrap_or_else(|e| {
                         eprintln!("error: vxc_diagonal_mo failed: {e}");
                         std::process::exit(1);
@@ -4659,7 +4666,7 @@ fn run_gw(
             }
             None => None,
         };
-        let mut gw_result = ferric_gw::run_u_gw(mol, prep, &dfbs, op, result, &rpa_cfg, &gw_cfg)
+        let mut gw_result = ferric_gw::run_u_gw(mol, prep, &dfbs, op, &result_u, &rpa_cfg, &gw_cfg)
             .unwrap_or_else(|e| {
                 eprintln!("error: {e}");
                 std::process::exit(1);
