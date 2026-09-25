@@ -81,6 +81,23 @@ pub fn bondi_radius_bohr(z: i32) -> f64 {
     angstrom * BOHR_PER_ANGSTROM
 }
 
+/// Modified Bondi radius for atomic number `z`, in Bohr, unscaled: the PCM
+/// cavity's radii.
+///
+/// Bondi's table with two sourced corrections: hydrogen 1.10 Å (Rowland &
+/// Taylor, J. Phys. Chem. 1996, 100, 7384; Bondi's 1.20 Å is too large) and
+/// boron 1.92 Å (Mantina et al., J. Phys. Chem. A 2009, 113, 5806; Bondi did
+/// not tabulate B). This is PySCF's `pyscf.solvent.pcm.modified_Bondi`. Every
+/// other element, and the fallback, is [`bondi_radius_bohr`]. The ESP-fitting
+/// grids in `ferric-scf` keep Bondi's original values.
+pub fn modified_bondi_radius_bohr(z: i32) -> f64 {
+    match z {
+        1 => 1.10 * BOHR_PER_ANGSTROM,
+        5 => 1.92 * BOHR_PER_ANGSTROM,
+        _ => bondi_radius_bohr(z),
+    }
+}
+
 /// `true` if `z` has a literature Bondi radius (as opposed to the generic
 /// fallback).
 pub fn has_tabulated_radius(z: i32) -> bool {
@@ -96,6 +113,17 @@ mod tests {
         // 1.20 A * 1.8897259886 = 2.2676... Bohr
         let r = bondi_radius_bohr(1);
         assert!((r - 1.20 * BOHR_PER_ANGSTROM).abs() < 1e-10);
+    }
+
+    #[test]
+    fn modified_bondi_differs_from_bondi_only_for_h_and_b() {
+        assert!((modified_bondi_radius_bohr(1) - 1.10 * BOHR_PER_ANGSTROM).abs() < 1e-10);
+        assert!((modified_bondi_radius_bohr(5) - 1.92 * BOHR_PER_ANGSTROM).abs() < 1e-10);
+        for z in (2..=36).chain([53, 57]) {
+            if z != 5 {
+                assert_eq!(modified_bondi_radius_bohr(z), bondi_radius_bohr(z), "Z={z}");
+            }
+        }
     }
 
     #[test]

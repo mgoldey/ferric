@@ -108,7 +108,7 @@ pub struct Tessera {
 /// Cavity construction parameters (sphere radii scaling, grid resolution).
 #[derive(Debug, Clone)]
 pub struct CavityConfig {
-    /// Multiplicative scale factor applied to each atom's Bondi radius
+    /// Multiplicative scale factor applied to each atom's modified Bondi radius
     /// (standard practice: continuum electrostatics needs a cavity somewhat
     /// larger than the bare vdW surface so the dielectric doesn't intrude
     /// into the electron density's exponential tail). 1.2 is the widely used
@@ -163,7 +163,7 @@ pub fn build_cavity(mol: &Molecule, cfg: &CavityConfig) -> Result<Vec<Tessera>, 
     let radii: Vec<f64> = mol
         .atoms
         .iter()
-        .map(|a| crate::radii::bondi_radius_bohr(a.z) * cfg.vdw_scale)
+        .map(|a| crate::radii::modified_bondi_radius_bohr(a.z) * cfg.vdw_scale)
         .collect();
 
     // Per-atom switching-zone geometry (PySCF gen_surface / Lange & Herbert

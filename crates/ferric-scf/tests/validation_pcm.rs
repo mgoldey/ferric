@@ -27,10 +27,10 @@
 //!    (PySCF's Gaussian-charge probes), and the self-consistent solvated
 //!    total energy must match PySCF's.
 //! 3. **ferric's own cavity** (`native_cavity_*`): the default `PcmConfig`
-//!    (ferric's Bondi radii with H = 1.2 Å, 110 points per sphere, point
-//!    probes) against PySCF's solvation energy. With 1 and 2 passing, this
-//!    difference is the cavity (plus the ~1e-6 Ha probe convention), and it
-//!    is asserted only to lie in a stated band.
+//!    (modified-Bondi radii, 110 points per sphere, point probes) against
+//!    PySCF's solvation energy. With 1 and 2 passing, this difference is the
+//!    cavity discretization (plus the ~1e-6 Ha probe convention), asserted
+//!    to lie within ±2%.
 //!
 //! # Where ferric's own-cavity gap comes from
 //!
@@ -40,16 +40,11 @@
 //! | change from PySCF's setup | E_solv |
 //! |---|---:|
 //! | point probes instead of Gaussian | −3.8202 |
-//! | + 110 points per sphere instead of 302 | −3.7995 |
-//! | + Bondi H radius 1.2 Å instead of 1.1 Å (= ferric's default) | −3.3960 |
+//! | + 110 points per sphere instead of 302 (= ferric's default; ferric measures −3.7995) | −3.7995 |
+//! | + Bondi's original H radius, 1.20 Å | −3.3960 |
 //!
-//! The emulation is itself checked against ferric: with the transposed
-//! symmetrization `(Kᵀ)⁻¹ Rᵀ v` substituted in the solver, it reproduces
-//! ferric's default-config output for that variant to four decimals
-//! (water/STO-3G −3.5733, water/cc-pVDZ −5.7787, NH3/STO-3G −3.9744,
-//! methanol/STO-3G at ε = 20.7 −2.4738 kcal/mol). The hydrogen radius is
-//! ~90% of the cavity gap; that variant's ~5% overshoot had cancelled about
-//! half of it.
+//! The last line is why the cavity uses modified Bondi: the hydrogen radius
+//! alone moves E_solv by ~11%.
 //!
 //! # Physics hypothesis vs artifact hypothesis (per the Experimental Protocol)
 //!
@@ -67,8 +62,8 @@
 //! # TOLERANCES
 //!
 //! Each const records its measured maximum. On PySCF's cavity the solver
-//! agrees to 1e-17 and the SCF to 5e-12 Ha; ferric's own cavity is 8.5-11.8%
-//! weaker than PySCF's.
+//! agrees to 1e-17 and the SCF to 5e-12 Ha; ferric's own cavity is within
+//! 0.07-0.61% of PySCF's.
 //!
 //! # NEGATIVE CONTROLS (asserted inside the tests)
 //!
@@ -127,15 +122,13 @@ const TOL_E_SCF: f64 = 1e-10;
 /// An SCF-level result that must NOT be reproduced.
 const MUST_MISS_SCF: f64 = 100.0 * TOL_E_SCF;
 
-/// ferric's own cavity vs PySCF, relative error of E_solv. Measured: ferric
-/// WEAKER by 8.46% (NH3/STO-3G), 9.92% (NH3/cc-pVDZ), 11.08-11.16%
-/// (water/STO-3G, both ε) and 11.78% (water/cc-pVDZ). The cause is the cavity:
-/// ferric's hydrogen radius is Bondi's 1.20 Å, PySCF's is modified Bondi
-/// 1.10 Å. The lower edge fails if the cavity difference silently
-/// disappears (then this row should be re-graded, not the band widened); the
-/// upper edge fails on a regression.
-const NATIVE_GAP_MIN: f64 = 0.05;
-const NATIVE_GAP_MAX: f64 = 0.15;
+/// ferric's own cavity vs PySCF, relative error of E_solv (positive = ferric
+/// weaker). With modified-Bondi radii on both sides the measured gaps are
+/// 0.07% (NH3/cc-pVDZ) to 0.61% (water/STO-3G, both ε); what remains is
+/// ferric's 110-point Lebedev spheres against PySCF's 302. A regression in
+/// the cavity, radii or probe choice moves this by several percent.
+const NATIVE_GAP_MIN: f64 = -0.02;
+const NATIVE_GAP_MAX: f64 = 0.02;
 
 /// Workspace root, found by walking up from the CWD (nextest sets the CWD to
 /// the package dir); `CARGO_MANIFEST_DIR` is only a fallback because it is
