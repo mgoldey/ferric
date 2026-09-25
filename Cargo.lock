@@ -445,6 +445,7 @@ dependencies = [
  "ferric-gw",
  "ferric-integrals",
  "ferric-mp2",
+ "ferric-pbc",
  "ferric-pcm",
  "ferric-rpa",
  "ferric-scf",

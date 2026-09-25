@@ -1,0 +1,30 @@
+# Periodic Gamma-point RHF: H2 / STO-3G in a 4 Bohr simple-cubic cell.
+#
+# A [cell] section turns any supported method.kind into a periodic run through
+# the ferric-pbc drivers (the same assembly as the Python run_rhf_gamma):
+# lattice-summed hcore with an Ewald-split nuclear attraction, the dense
+# pure-AFT J/K (a toy-scale oracle: nao^4 tensor, capped by max_eri_gb), and
+# the Madelung-corrected exchange (exxdiv = "ewald"). Energies are Hartree
+# PER CELL. The [molecule] XYZ gives the atoms of the reference cell (Angstrom,
+# as every XYZ); the lattice unit is set by [cell] unit.
+#
+# Seconds to run:
+#   OPENBLAS_NUM_THREADS=1 cargo run --release --bin ferric -- examples/h2-cell-rhf.toml
+
+# PySCF 2.13 FFTDF pin (exxdiv='ewald', precision 1e-12): -1.6585175360 Ha/cell;
+# ferric agrees to 2e-10 (measured 2026-09-25).
+
+[molecule]
+xyz = "testdata/molecules/h2.xyz"
+
+[basis]
+name = "sto-3g"
+
+[method]
+kind = "rhf"
+
+[cell]
+unit = "bohr"
+lattice = [[4.0, 0.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 4.0]]
+exxdiv = "ewald"
+jk = "dense"
