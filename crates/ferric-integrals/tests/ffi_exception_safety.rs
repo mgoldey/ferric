@@ -13,10 +13,10 @@
 //! the `assert!(written >= 0)` in `Engine::compute_1e_block`) instead of UB / a
 //! process abort.
 //!
-//! Trigger: this libint2 build is compiled with `LIBINT_MAX_AM 6` (i functions;
-//! see $LIBINT2_PREFIX/include/libint2/config.h). Asking an engine to compute
-//! integrals over a shell with angular momentum L > 6 (here L = 7, a "k" shell)
-//! makes libint2 throw `Engine::lmax_exceeded` (a `std::logic_error` subclass;
+//! Trigger: every libint2 build has a compiled maximum angular momentum
+//! (one-body: 7 in conda-forge 2.13.1, 6 in the mpqc4 export; see
+//! $LIBINT2_PREFIX/include/libint2/config.h). Asking an engine to compute
+//! integrals over a shell above it (here L = 8) makes libint2 throw `Engine::lmax_exceeded` (a `std::logic_error` subclass;
 //! see engine.h:849 and the `throw Engine::lmax_exceeded(...)` in
 //! engine.impl.h:610). Pre-fix that throw was UB; post-fix the shim catches it
 //! and returns SCF_EINTERNAL, which the Rust wrapper turns into a panic.
@@ -118,12 +118,14 @@ fn over_max_am_shell_is_caught_not_ub() {
     let _serial = LIBINT_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     unsafe { ffi::scf_libint_init() };
     let mol = one_atom_mol();
-    let bs = single_shell_basis(1, 7); // L = 7 (k shell) > LIBINT_MAX_AM 6
+    // L = 8: above the one-body maximum of every libint2 ferric builds against
+    // (7 in conda-forge 2.13.1, 6 in the mpqc4 2.7.2 export).
+    let bs = single_shell_basis(1, 8);
 
     // PreparedBasis construction itself does not call libint2 compute; it should
     // succeed (it just records shell metadata).
     let prep =
-        PreparedBasis::new(&mol, &bs).expect("PreparedBasis::new should not fail on an L=7 shell");
+        PreparedBasis::new(&mol, &bs).expect("PreparedBasis::new should not fail on an L=8 shell");
 
     match Engine::new_1e(ffi::OP_OVERLAP, &prep, 1e-14) {
         Err(_) => {
@@ -139,7 +141,7 @@ fn over_max_am_shell_is_caught_not_ub() {
             }));
             assert!(
                 result.is_err(),
-                "compute over an L=7 shell must panic (caught libint2 throw \
+                "compute over an L=8 shell must panic (caught libint2 throw \
                  → SCF_EINTERNAL → assert), not return normally or abort"
             );
         }
