@@ -1,12 +1,17 @@
 //! Smoke + validation tests for G0W0 and COHSEX on water at cc-pVDZ.
 //!
-//! Reference (from MOLGW; van Setten et al. JCTC 11, 5665, 2015 Table 2,
-//! G0W0@HF / cc-pVDZ for H₂O):
-//!   IP (= −ε_HOMO^QP)  ≈  11.97 eV
-//!   EA (= −ε_LUMO^QP)  ≈  −2.50 eV   (i.e., LUMO QP ≈ +2.50 eV)
+//! References:
+//!   * 11.97 eV (IP, `g0w0_h2o_homo_ip` and the evGW₀ band): UNREPRODUCED.
+//!     It was attributed to MOLGW (van Setten et al. JCTC 11, 5665, 2015), but
+//!     no MOLGW input, basis or settings for it exist in the repository, and
+//!     that paper reports G0W0@PBE with def2 bases, not an HF-started
+//!     cc-pVDZ value. Do not cite it as an independent reference.
+//!   * 12.160 eV (IP) / 4.703 eV (LUMO), PySCF `gw_ac` on this geometry with
+//!     ferric's cc-pVDZ + cc-pvdz-ri: reproduced as 12.160022 / 4.703440 eV by
+//!     `scripts/validation/gen_gw.py`. The asserting, like-for-like comparison
+//!     at meV bars lives in `validation_gw.rs`.
 //!
-//! Spike tolerance: ±0.30 eV on IP. EA is checked qualitatively
-//! (sign + within 0.5 eV).
+//! Spike tolerance: ±0.30 eV on IP.
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;

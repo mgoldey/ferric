@@ -58,7 +58,7 @@ instead, or ROKS with `[rpa] xc` (`examples/oh-ugw-rohf.toml`).
 
 | Quantity | System / basis | Reference | Pinned by |
 |---|---|---|---|
-| G0W0@HF HOMO IP | H2O / cc-pVDZ | MOLGW 11.97 eV (van Setten et al. 2015); test tolerance ±0.30 eV | `ferric-gw/tests/h2o_g0w0_cohsex.rs` |
+| G0W0@HF, G0W0@PBE, U-G0W0@UHF, ECP, COHSEX, evGW₀, evGW quasiparticle energies (HOMO−2 to LUMO+2) | H2O, NH3, N2, OH, CH3, NH2, O2, CH2, I2, Xe, Ag2 / cc-pVDZ, aug-cc-pVDZ(-PP) | PySCF `gw_ac`/`ugw_ac` at matched settings (`[rpa] n_quad = 100`, `trunc_thresh = 0`); see [What is validated](../reference/validation.md) | `ferric-gw/tests/validation_gw.rs` |
 | G0W0@PBE HOMO IP | H2O / cc-pVDZ | PySCF `gw_ac`, 11.1714 eV; asserted to <0.1 eV | `ferric-gw/tests/g0w0_pbe_h2o.rs` |
 | U-G0W0@UHF α-HOMO IP | OH / cc-pVDZ | ~13–14 eV window, brackets experiment 13.02 eV | `ferric-gw/tests/oh_u_g0w0.rs` |
 

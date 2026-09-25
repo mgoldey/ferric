@@ -1,8 +1,8 @@
 //! GATE 1: BSE-TDA singlet excitation energies for H₂O / cc-pVDZ on G0W0@HF.
 //!
 //! Validates the W-screened BSE kernel + GW-energy wiring. The GW reference is
-//! G0W0@HF, already validated to ~5 meV vs MOLGW on this exact system
-//! (h2o_g0w0_cohsex.rs: IP 11.97 eV). So any BSE discrepancy isolates the
+//! G0W0@HF, which matches PySCF `gw_ac` on this system at matched settings
+//! (validation_gw.rs; HOMO -12.160 eV). So any BSE discrepancy isolates the
 //! screened (A) kernel, not the quasiparticle energies.
 //!
 //! Reference (BSE@G0W0@HF / cc-pVDZ, TDA, lowest singlet ¹B₁ of water): the

@@ -1,0 +1,267 @@
+{
+  "basis": "aug-cc-pvdz",
+  "aux": "aug-cc-pvdz-rifit",
+  "charge": 0,
+  "multiplicity": 2,
+  "nao": 41,
+  "naux": 118,
+  "nelectron": 9,
+  "nuclear_repulsion": 7.564094299642846,
+  "like_for_like": {
+    "nao": 41,
+    "replica_self_overlap_max_dev": 2.220446049250313e-16,
+    "pyscf_diag_max_dev": 4.440892098500626e-16,
+    "diag_checked": 41,
+    "diag_skipped_cartesian": 0
+  },
+  "uhf": {
+    "energy": -55.575090970358524,
+    "converged": true,
+    "s_squared": 0.7591281338800484,
+    "multiplicity_from_s2": 2.009107397706801,
+    "nelec_alpha": 5,
+    "nelec_beta": 4,
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF UHF internal (real)",
+      "rounds": 0,
+      "selected_guess": "minao",
+      "lambda_min": 0.07793801914835685
+    },
+    "guess_scan": [
+      {
+        "guess": "minao",
+        "energy": -55.575090970358524,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -55.575090970358524
+        ]
+      },
+      {
+        "guess": "atom",
+        "energy": -55.57509097035846,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -55.57509097035846
+        ]
+      },
+      {
+        "guess": "huckel",
+        "energy": -55.575090970358374,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -55.575090970358374
+        ]
+      }
+    ],
+    "multiple_stable_minima": false,
+    "homo_alpha": -0.5076475616917837,
+    "lumo_alpha": 0.03487163900731849,
+    "homo_beta": -0.4623718122799585,
+    "lumo_beta": 0.03651217031866727,
+    "somo_alpha": [
+      -0.5076475616917837
+    ]
+  },
+  "u_g0w0_uhf": {
+    "orbs": [
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+    ],
+    "ef_convention": "per-spin mid-gap, as ferric u_sigma.rs",
+    "alpha": {
+      "ef": -0.2363879613422326,
+      "eps_mf": [
+        -0.6479401198403512,
+        -0.5143700267446949,
+        -0.5076475616917837,
+        0.03487163900731849,
+        0.05799365906306342,
+        0.1531517623856316
+      ],
+      "eps_qp": [
+        -0.6308327887218144,
+        -0.4663031885197175,
+        -0.4757678942512832,
+        0.03073713242737396,
+        0.055945344208866175,
+        0.14885498473447392
+      ],
+      "eps_qp_pyscf_secant": [
+        -0.6308327887218161,
+        -0.4663031885205377,
+        -0.4757678942513905,
+        0.030737132427899102,
+        0.05594534420888722,
+        0.14885498473524428
+      ],
+      "sigma_c_at_qp": [
+        0.017107331118536077,
+        0.04806683822497983,
+        0.03187966744049982,
+        -0.004134506579948326,
+        -0.0020483148542299267,
+        -0.004296777651157462
+      ],
+      "sigma_x_df": [
+        -0.8213488951780731,
+        -0.872151535791585,
+        -0.833316415589519,
+        -0.01193813906785486,
+        -0.005609063449340683,
+        -0.028360447125717985
+      ],
+      "qp_residual_max": 5.898059818321144e-17,
+      "static_shift_max_abs": 3.2676986116975115e-14
+    },
+    "beta": {
+      "ef": -0.2129298209806456,
+      "eps_mf": [
+        -0.6231947930580986,
+        -0.4623718122799585,
+        0.03651217031866727,
+        0.05852890783429965,
+        0.0713103727649278,
+        0.15690662525933652
+      ],
+      "eps_qp": [
+        -0.6111948037874808,
+        -0.438763938335163,
+        0.03246023923994208,
+        0.056496258851899545,
+        0.03519687052777766,
+        0.15133011553360304
+      ],
+      "eps_qp_pyscf_secant": [
+        -0.6111948037874811,
+        -0.43876393833517824,
+        0.032460239240407356,
+        0.056496258851918765,
+        0.03519687052778027,
+        0.1513301155363881
+      ],
+      "sigma_c_at_qp": [
+        0.011999989270615017,
+        0.023607873944793696,
+        -0.00405193107873408,
+        -0.002032648982386647,
+        -0.03611350223715033,
+        -0.00557650972573377
+      ],
+      "sigma_x_df": [
+        -0.7843441974426686,
+        -0.7781961625855494,
+        -0.009865594561598983,
+        -0.005405589023360107,
+        -0.07476282335643492,
+        -0.026546505619065647
+      ],
+      "qp_residual_max": 5.724587470723463e-17,
+      "static_shift_max_abs": 1.345798472662807e-14
+    }
+  },
+  "diagnostics": {
+    "pyscf_native_common_ef": {
+      "ef": -0.21375008663632,
+      "alpha_eps_qp": [
+        -0.6308327852883892,
+        -0.4663031886750607,
+        -0.475767894552701,
+        0.0307371324013867,
+        0.05594534428431869,
+        0.14885498654916948
+      ],
+      "beta_eps_qp": [
+        -0.6111948038940258,
+        -0.43876393833670574,
+        0.03246023924150642,
+        0.0564962588534533,
+        0.03519687053788581,
+        0.15133011534287502
+      ]
+    }
+  },
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "gw": "pyscf.gw.gw_ac.GWAC / pyscf.gw.ugw_ac.UGWAC",
+      "nw": 100,
+      "x0": 0.5,
+      "ac_iw_cutoff": null,
+      "ac_pade_npts": 18,
+      "ac_pade_step_ratio": 0.6666666666666666,
+      "qp_root_tol": 1e-12,
+      "ev_tol": 1e-07,
+      "scf": "exact 4-index ERIs, conv_tol 1e-11, conv_tol_grad 1e-8",
+      "pbe_grid": "(75, 110) unpruned, Becke partition, Becke-1988 radii adjust",
+      "numpy": "1.26.4",
+      "scipy": "1.17.1"
+    },
+    "grid": [
+      75,
+      110
+    ],
+    "aux_basis": "aug-cc-pvdz-rifit",
+    "frozen_core": "none unless the block says frozen > 0",
+    "scf_convergence": {
+      "conv_tol": 1e-11,
+      "conv_tol_grad": 1e-08
+    },
+    "stability": {
+      "uhf": {
+        "internal_stable": true,
+        "kind": "PySCF UHF internal (real)",
+        "rounds": 0,
+        "selected_guess": "minao",
+        "lambda_min": 0.07793801914835685
+      }
+    },
+    "basis": "aug-cc-pvdz",
+    "basis_json": "crates/ferric-core/src/basis/bundled/aug-cc-pvdz.json",
+    "basis_sha256": "911303b754cd16032f762811f2193796eaf67070bdb40bcdc0c59d422f8c8dd1",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/nh2.xyz",
+    "geometry_xyz_sha256": "a93f4ddd65a01379beb9335bab6cbeb2165454f5784960ee705f49ec9c0d28e5",
+    "geometry_bohr": [
+      [
+        "N",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "H",
+        0.0,
+        1.5186047006878538,
+        -1.1993217336336612
+      ],
+      [
+        "H",
+        0.0,
+        -1.5186047006878538,
+        -1.1993217336336612
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_gw.py",
+    "git_head": "5c6769545661937d2a6819ab8ede21efeceac228",
+    "generated_utc": "2026-09-25T00:04:32+00:00",
+    "blocks": [
+      "uhf",
+      "u_g0w0_uhf",
+      "diagnostics"
+    ]
+  }
+}
