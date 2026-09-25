@@ -86,14 +86,13 @@ fn bse_tda_h2o_lowest_singlet() {
     }
     let lowest = res.lowest_ev();
     eprintln!("  --> lowest singlet = {lowest:.4} eV");
-    eprintln!("      (ferric 7.24; PySCF-integral BSE-ref on same kernel = 8.46 eV;");
-    eprintln!("       the 1.2 eV gap == ferric GW gap 15.64 vs PySCF 16.86 eV — GW-limited,");
-    eprintln!("       NOT a kernel bug: CIS cross-check matches PySCF to <1 meV.)");
+    eprintln!("      (validation_bse.rs: 8.4577 eV at [rpa] n_quad = 100, trunc 0, where the");
+    eprintln!("       kernel matches an independent numpy BSE-TDA to 2e-10 Ha)");
 
-    // Gate: positive + ordered (kernel sanity). The ABSOLUTE BSE number is
-    // GW-gap-limited — see cis_tda_h2o_assembly_xcheck (kernel proven exact) and
-    // the GW-gap decomposition in memory. Window kept wide; the kernel is
-    // validated by the CIS cross-check, not by this absolute number.
+    // Gate: positive + ordered (kernel sanity). The absolute numbers are pinned
+    // by crates/ferric-gw/tests/validation_bse.rs against an independent numpy
+    // BSE-TDA on the same quasiparticle energies; this smoke test only checks
+    // that the default-settings path runs and orders its roots.
     assert!(lowest > 0.0, "lowest excitation must be positive");
     assert!(
         res.omega.windows(2).all(|w| w[0] <= w[1] + 1e-12),

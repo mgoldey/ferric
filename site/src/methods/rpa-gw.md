@@ -76,10 +76,14 @@ approximation on top of G0W0@HF quasiparticle energies, closed shell.
 of `*-bse-tda-augdz.toml` examples for small organics); Python
 `ferric.run_bse_tda`.
 
-**Accuracy.** Smoke. Only excitation ordering and a physicality gate are
-checked, and the excitation energies inherit the GW gap error. The
-`water-bse-tda.toml` header records one measured lowest singlet (8.457 eV)
-against a PySCF-integral BSE cross-check (8.46 eV).
+**Accuracy.** Smoke. Given the same quasiparticle energies, the excitation
+energies match an independent numpy BSE-TDA (PySCF density-fitted integrals,
+static RPA W) to 1.8e-10 Ha and the oscillator strengths to 2.6e-9, for H2O,
+NH3 and CH2O. The quasiparticle energies come from the internal G0W0@HF,
+which matches PySCF only at `[rpa] n_quad = 100` and `trunc_thresh = 0`; the
+defaults are coarser. The core and high-virtual quasiparticle energies are
+ill-conditioned, which moves the lowest five excitations by at most
+2.2e-7 Ha.
 
 ## TDDFT and TDA
 
