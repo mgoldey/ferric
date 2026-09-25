@@ -759,15 +759,24 @@ fn run_u_g0w0_pbe(
         );
         return None;
     }
-    // Per-spin v_xc diagonals (absolute-MO-indexed) for the Σ_x − v_xc KS
-    // correction — run_u_gw does NOT auto-apply it (see its docstring).
+    // Per-spin v_xc diagonals (absolute-MO-indexed): run_u_gw puts the
+    // Σ_x − v_xc KS shift inside each spin's QP equation.
     let (vxc_a, vxc_b) = ferric_gw::vxc_mo::vxc_diagonal_mo(neutral, obs_bs, "pbe", &uks).ok()?;
     let gcfg = GwConfig {
         method: GwMethod::G0W0,
         ..Default::default()
     };
-    let mut res = ferric_gw::run_u_gw(neutral, obs_n, dfbs_n, op, &uks, pdep_cfg_gw, &gcfg).ok()?;
-    res.apply_kohn_sham_correction(&vxc_a, &vxc_b);
+    let res = ferric_gw::run_u_gw(
+        neutral,
+        obs_n,
+        dfbs_n,
+        op,
+        &uks,
+        pdep_cfg_gw,
+        &gcfg,
+        Some((&vxc_a, &vxc_b)),
+    )
+    .ok()?;
     // Singlet neutral: α-HOMO IP is the ionization energy (β is degenerate at a
     // symmetry-restored solution; for a genuinely spin-broken one the α-HOMO is
     // the correct highest-occupied α level).

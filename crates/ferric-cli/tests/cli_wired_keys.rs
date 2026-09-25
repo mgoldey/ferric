@@ -617,6 +617,7 @@ fn gw_rohf_reference_matches_the_library() {
         &scf,
         &pdep,
         &ferric_gw::GwConfig::default(),
+        None,
     )
     .unwrap();
     let nocc_a = (l.mol.nelec() as usize).div_ceil(2);

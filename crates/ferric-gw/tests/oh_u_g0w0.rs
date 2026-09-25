@@ -96,7 +96,7 @@ fn oh_u_g0w0_first_ip_runs() {
         method: GwMethod::G0W0,
         ..Default::default()
     };
-    let res = run_u_gw(&mol, &obs, &dfbs, op, &uhf, &pdep, &gcfg).expect("U-G0W0");
+    let res = run_u_gw(&mol, &obs, &dfbs, op, &uhf, &pdep, &gcfg, None).expect("U-G0W0");
 
     let idx_a = res
         .mo_indices
@@ -153,7 +153,7 @@ fn oh_u_cohsex_runs() {
         method: GwMethod::Cohsex,
         ..Default::default()
     };
-    let res = run_u_gw(&mol, &obs, &dfbs, op, &uhf, &pdep, &gcfg).expect("U-COHSEX");
+    let res = run_u_gw(&mol, &obs, &dfbs, op, &uhf, &pdep, &gcfg, None).expect("U-COHSEX");
     let two_s = (mol.multiplicity as i32) - 1;
     let nocc_a = ((mol.nelec() + two_s) / 2) as usize;
     let homo_a = nocc_a - 1;
@@ -179,7 +179,7 @@ fn oh_u_evgw0_converges() {
         ev_conv_thresh: 1e-4,
         ..Default::default()
     };
-    let res = run_u_gw(&mol, &obs, &dfbs, op, &uhf, &pdep, &gcfg).expect("U-evGW0");
+    let res = run_u_gw(&mol, &obs, &dfbs, op, &uhf, &pdep, &gcfg, None).expect("U-evGW0");
     println!("U-evGW0: {} outer iterations", res.n_ev_iter);
     assert!(res.n_ev_iter >= 1, "U-evGW0 did at least one outer step");
     for (idx, &mo_abs) in res.mo_indices.iter().enumerate() {

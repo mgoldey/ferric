@@ -12,6 +12,17 @@
 //!
 //! where M_σ_α^{mn} = Σ_P V_α^P B̃_σ^P_{mn} (per-spin projection of B̃ onto
 //! the shared eigenpotentials), and w_α(iω) = 1/λ_α(iω) − 1.
+//!
+//! KS reference (UKS): the per-spin QP equation carries the static shift
+//! Δ_σp = Σ_x,σp − v_xc,σp INSIDE the root search,
+//!
+//!   ω − ε_σp − Δ_σp − Re Σ_c,σp(ω) = 0,
+//!
+//! exactly as the closed-shell `sigma::run_g0w0(.., Some(vxc))` does. Δ is a
+//! property of the starting orbitals: computed once per state by
+//! `static_shifts` and held fixed across the U-evGW₀/U-evGW outer loops. With
+//! `vxc_diag = None` (UHF/ROHF reference) every Δ is exactly `0.0` (Σ_x is
+//! already in ε_mf for an HF reference).
 
 use crate::cohsex::{project_b_into_pdep, sigma_x_diag};
 use crate::mo_b::MoB;
@@ -23,7 +34,30 @@ use ferric_rpa::PdepRpaResult;
 use ndarray::Array1;
 use rayon::prelude::*;
 
+/// Per-state static shifts Σ_x − v_xc for one spin channel, aligned with
+/// `mo_indices` (absolute MO indices). `vxc_diag` is absolute-MO-indexed;
+/// `sigma_x_all` is active-MO-indexed (offset `first_act`). `None` (HF
+/// reference) ⇒ every shift is exactly `0.0`, i.e. the HF path solves the
+/// unshifted QP equation.
+pub(crate) fn static_shifts(
+    mo_indices: &[usize],
+    first_act: usize,
+    sigma_x_all: &Array1<f64>,
+    vxc_diag: Option<&Array1<f64>>,
+) -> Vec<f64> {
+    mo_indices
+        .iter()
+        .map(|&mo_abs| match vxc_diag {
+            Some(v) => sigma_x_all[mo_abs - first_act] - v[mo_abs],
+            None => 0.0,
+        })
+        .collect()
+}
+
 /// Run U-G0W0 given pre-built per-spin MoB and a shared U-PDEP-RPA result.
+/// `vxc_diag`: per-spin absolute-MO-indexed v_xc diagonals for a KS
+/// reference (Σ_x − v_xc then enters the QP equation — see the module doc);
+/// `None` ⇒ HF reference, no shift.
 pub fn run_u_g0w0(
     mo_b_a: &MoB,
     mo_b_b: &MoB,
@@ -31,6 +65,7 @@ pub fn run_u_g0w0(
     qp_range: std::ops::Range<usize>,
     gw_cfg: &GwConfig,
     v_dressed: &ndarray::Array2<f64>,
+    vxc_diag: Option<(&Array1<f64>, &Array1<f64>)>,
 ) -> Result<UGwResult, FerricError> {
     let m_modes = v_dressed.ncols();
     if pdep.eigenvalues_freq.ncols() != m_modes {
@@ -68,6 +103,7 @@ pub fn run_u_g0w0(
         &quad_freqs,
         &qp_range,
         gw_cfg,
+        vxc_diag.map(|(a, _)| a),
     )?;
     let (eps_qp_b, eps_mf_b, sx_b, sc_b, z_b, conv_b) = qp_per_spin_g0w0(
         mo_b_b,
@@ -78,6 +114,7 @@ pub fn run_u_g0w0(
         &quad_freqs,
         &qp_range,
         gw_cfg,
+        vxc_diag.map(|(_, b)| b),
     )?;
     let mo_indices: Vec<usize> = qp_range.collect();
     warn_if_unconverged("U-G0W0 (alpha)", &mo_indices, &conv_a);
@@ -103,7 +140,8 @@ pub fn run_u_g0w0(
     })
 }
 
-/// Helper: per-spin G0W0 QP loop.
+/// Helper: per-spin G0W0 QP loop. `vxc_diag` is this spin's absolute-MO-
+/// indexed v_xc diagonal (KS reference) or `None` (HF reference).
 #[allow(clippy::type_complexity)]
 fn qp_per_spin_g0w0(
     mo_b: &MoB,
@@ -114,6 +152,7 @@ fn qp_per_spin_g0w0(
     quad_freqs: &[f64],
     qp_range: &std::ops::Range<usize>,
     gw_cfg: &GwConfig,
+    vxc_diag: Option<&Array1<f64>>,
 ) -> Result<
     (
         Array1<f64>,
@@ -143,6 +182,12 @@ fn qp_per_spin_g0w0(
         }
         let m_loc = mo_abs - first_act;
         let eps_m = mo_b.eps_act[m_loc];
+        // KS reference: shift = Σ_x − v_xc INSIDE the QP equation (Σ_c is then
+        // evaluated at the shifted root). HF reference: exactly 0.0.
+        let shift = match vxc_diag {
+            Some(v) => sigma_x_all[m_loc] - v[mo_abs],
+            None => 0.0,
+        };
         let (eps_qp_m, sc_final, z_renorm, converged) = solve_qp_for_mo(
             m_loc,
             eps_m,
@@ -154,7 +199,7 @@ fn qp_per_spin_g0w0(
             gw_cfg.pade_npts,
             gw_cfg.qp_newton_damp,
             ef,
-            0.0,
+            shift,
         )?;
         Ok((
             eps_m,
@@ -198,6 +243,9 @@ fn qp_per_spin_g0w0(
 }
 
 /// U-evGW₀: per-spin eigenvalue self-consistency on G; W frozen at iter 0.
+/// `vxc_diag` as in [`run_u_g0w0`]; the per-state Σ_x − v_xc shift is computed
+/// once from the starting orbitals and held fixed across the outer loop (same
+/// treatment as the closed-shell `sigma::run_evgw0`).
 pub fn run_u_evgw0(
     mo_b_a: &MoB,
     mo_b_b: &MoB,
@@ -205,6 +253,7 @@ pub fn run_u_evgw0(
     qp_range: std::ops::Range<usize>,
     gw_cfg: &GwConfig,
     v_dressed: &ndarray::Array2<f64>,
+    vxc_diag: Option<(&Array1<f64>, &Array1<f64>)>,
 ) -> Result<UGwResult, FerricError> {
     let m_modes = v_dressed.ncols();
     if pdep.eigenvalues_freq.ncols() != m_modes {
@@ -256,6 +305,20 @@ pub fn run_u_evgw0(
         eps_qp_a[idx] = eps_mf_a[idx];
         eps_qp_b[idx] = eps_mf_b[idx];
     }
+    // KS static shifts Σ_x − v_xc per spin, computed ONCE from the starting
+    // orbitals and held fixed across the outer loop (all 0.0 for HF).
+    let shifts_a = static_shifts(
+        &mo_indices,
+        first_act_a,
+        &sigma_x_a_all,
+        vxc_diag.map(|(a, _)| a),
+    );
+    let shifts_b = static_shifts(
+        &mo_indices,
+        first_act_b,
+        &sigma_x_b_all,
+        vxc_diag.map(|(_, b)| b),
+    );
 
     let ef_a = fermi_level(&mo_b_a.eps_act, mo_b_a.n_occ_act);
     let ef_b = fermi_level(&mo_b_b.eps_act, mo_b_b.n_occ_act);
@@ -271,7 +334,7 @@ pub fn run_u_evgw0(
         }
         let mut max_dev = 0.0_f64;
         // Frozen per-iteration eps_prop snapshots ⇒ independent per-state solves.
-        let solve_one = |&mo_abs: &usize| {
+        let solve_one = |(idx, &mo_abs): (usize, &usize)| {
             let mla = mo_abs - first_act_a;
             let mlb = mo_abs - first_act_b;
             let ra = solve_qp_for_mo(
@@ -285,7 +348,7 @@ pub fn run_u_evgw0(
                 gw_cfg.pade_npts,
                 gw_cfg.qp_newton_damp,
                 ef_a,
-                0.0,
+                shifts_a[idx],
             )?;
             let rb = solve_qp_for_mo(
                 mlb,
@@ -298,7 +361,7 @@ pub fn run_u_evgw0(
                 gw_cfg.pade_npts,
                 gw_cfg.qp_newton_damp,
                 ef_b,
-                0.0,
+                shifts_b[idx],
             )?;
             Ok((ra, rb))
         };
@@ -319,10 +382,12 @@ pub fn run_u_evgw0(
             ) {
                 Some(_scratch) => mo_indices
                     .par_iter()
+                    .enumerate()
                     .map(solve_one)
                     .collect::<Result<Vec<_>, FerricError>>()?,
                 None => mo_indices
                     .iter()
+                    .enumerate()
                     .map(solve_one)
                     .collect::<Result<Vec<_>, FerricError>>()?,
             };
@@ -385,6 +450,7 @@ pub fn run_u_evgw0(
 }
 
 /// U-evGW: rebuild W every iteration with QP-shifted ε's per spin.
+/// `vxc_diag` as in [`run_u_evgw0`] (shift fixed from the starting orbitals).
 pub fn run_u_evgw(
     mol: &ferric_core::mol::Molecule,
     obs: &ferric_integrals::basis_bridge::PreparedBasis,
@@ -397,6 +463,7 @@ pub fn run_u_evgw(
     pdep0: PdepRpaResult,
     qp_range: std::ops::Range<usize>,
     gw_cfg: &GwConfig,
+    vxc_diag: Option<(&Array1<f64>, &Array1<f64>)>,
 ) -> Result<UGwResult, FerricError> {
     // UHF-shaped (a ROHF input is semi-canonicalized; `run_u_gw` already passes
     // the semi-canonical view, for which this is a plain clone). It MUST be
@@ -435,6 +502,20 @@ pub fn run_u_evgw(
         eps_qp_a[idx] = eps_mf_a[idx];
         eps_qp_b[idx] = eps_mf_b[idx];
     }
+    // KS static shifts Σ_x − v_xc per spin, computed ONCE from the starting
+    // orbitals and held fixed across the outer loop (all 0.0 for HF).
+    let shifts_a = static_shifts(
+        &mo_indices,
+        first_act_a,
+        &sigma_x_a_all,
+        vxc_diag.map(|(a, _)| a),
+    );
+    let shifts_b = static_shifts(
+        &mo_indices,
+        first_act_b,
+        &sigma_x_b_all,
+        vxc_diag.map(|(_, b)| b),
+    );
 
     let ef_a = fermi_level(&mo_b_a.eps_act, mo_b_a.n_occ_act);
     let ef_b = fermi_level(&mo_b_b.eps_act, mo_b_b.n_occ_act);
@@ -481,7 +562,7 @@ pub fn run_u_evgw(
         }
         let mut max_dev = 0.0_f64;
         // Frozen (m_proj, W, eps_prop) snapshot ⇒ independent per-state solves.
-        let solve_one = |&mo_abs: &usize| {
+        let solve_one = |(idx, &mo_abs): (usize, &usize)| {
             let mla = mo_abs - first_act_a;
             let mlb = mo_abs - first_act_b;
             let ra = solve_qp_for_mo(
@@ -495,7 +576,7 @@ pub fn run_u_evgw(
                 gw_cfg.pade_npts,
                 gw_cfg.qp_newton_damp,
                 ef_a,
-                0.0,
+                shifts_a[idx],
             )?;
             let rb = solve_qp_for_mo(
                 mlb,
@@ -508,7 +589,7 @@ pub fn run_u_evgw(
                 gw_cfg.pade_npts,
                 gw_cfg.qp_newton_damp,
                 ef_b,
-                0.0,
+                shifts_b[idx],
             )?;
             Ok((ra, rb))
         };
@@ -527,10 +608,12 @@ pub fn run_u_evgw(
             ) {
                 Some(_scratch) => mo_indices
                     .par_iter()
+                    .enumerate()
                     .map(solve_one)
                     .collect::<Result<Vec<_>, FerricError>>()?,
                 None => mo_indices
                     .iter()
+                    .enumerate()
                     .map(solve_one)
                     .collect::<Result<Vec<_>, FerricError>>()?,
             };

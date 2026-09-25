@@ -4,6 +4,10 @@
 //! Σ_SEX,σ(m) = − Σ_{i in σ} Σ_α [1/λ_α(0)] M_σ_α^{mi}²
 //! Σ_COH,σ(m) = +½ Σ_{p in σ} Σ_α  w_α(0)   M_σ_α^{mp}²
 //! ΔΣ_SEX,σ   = Σ_SEX,σ − Σ_x,σ = − Σ_{i in σ} Σ_α w_α(0) M_σ_α^{mi}²
+//!
+//! ε_QP,σ(m) = ε_σ(m) + ΔΣ_SEX,σ(m) + Σ_COH,σ(m) [+ Σ_x,σ(m) − v_xc,σ(m) for a
+//! KS reference]. The self-energy is static, so there is no QP root search and
+//! the KS shift is a plain additive term.
 
 use crate::cohsex::{cohsex_pieces, project_b_into_pdep, sigma_x_diag};
 use crate::mo_b::MoB;
@@ -14,6 +18,8 @@ use ferric_rpa::PdepRpaResult;
 use ndarray::{Array1, Array2};
 
 /// Unrestricted COHSEX (Coulomb-hole + screened-exchange) quasiparticle energies.
+/// `vxc_diag`: per-spin absolute-MO-indexed v_xc diagonals for a KS reference
+/// (adds Σ_x − v_xc to each QP energy); `None` ⇒ HF reference, no shift.
 pub fn run_u_cohsex(
     mo_b_a: &MoB,
     mo_b_b: &MoB,
@@ -21,6 +27,7 @@ pub fn run_u_cohsex(
     qp_range: std::ops::Range<usize>,
     gw_cfg: &GwConfig,
     v_dressed: &Array2<f64>,
+    vxc_diag: Option<(&Array1<f64>, &Array1<f64>)>,
 ) -> Result<UGwResult, FerricError> {
     let m_modes = v_dressed.ncols();
     let w_static = w_pdep::static_weights(&pdep.eigenvalues_static);
@@ -76,6 +83,12 @@ pub fn run_u_cohsex(
         sc_b[idx] = dsex_b[mlb] + scoh_b[mlb];
         eps_qp_a[idx] = eps_mf_a[idx] + sc_a[idx];
         eps_qp_b[idx] = eps_mf_b[idx] + sc_b[idx];
+        // KS reference: static Σ_x − v_xc. Skipped entirely (not "+ 0.0") for
+        // an HF reference so that path is untouched.
+        if let Some((va, vb)) = vxc_diag {
+            eps_qp_a[idx] += sx_a[idx] - va[mo_abs];
+            eps_qp_b[idx] += sx_b[idx] - vb[mo_abs];
+        }
     }
 
     let n_states = mo_indices.len();

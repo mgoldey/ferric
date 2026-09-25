@@ -4,7 +4,8 @@ Consumer: crates/ferric-gw/tests/validation_gw.rs.
 Output:   testdata/reference/validation/gw/<system>_<basis>.json
 
 Rows covered: "G0W0" (closed shell, @HF and @PBE), "G0W0@HF+ECP",
-"U-G0W0", "COHSEX/evGW0/evGW".
+"U-G0W0" (@UHF, and @UKS/PBE in block `u_g0w0_uks_pbe` -- see the comment
+above `UKS_CASES`), "COHSEX/evGW0/evGW".
 
 WHAT FERRIC COMPUTES (read from crates/ferric-gw/src/{sigma,cohsex,u_sigma}.rs,
 not from a doc) AND HOW THIS SCRIPT MATCHES IT
@@ -107,6 +108,8 @@ old loose bars):
 Run (light; about a minute per system):
     scripts/validation/run_slot.sh --light -- \\
         uv run --no-sync python scripts/validation/gen_gw.py [system ...]
+Only the U-G0W0@UKS/PBE block, leaving every other block untouched:
+    ... gen_gw.py --uks-only [oh ch3 nh2]
 """
 
 from __future__ import annotations
@@ -874,6 +877,331 @@ def u_spin_block(mf, gw, s, orbs):
     }
 
 
+# ---------------------------------------------------------------------------
+# U-G0W0@UKS/PBE (block `u_g0w0_uks_pbe`, OH/CH3/NH2 cc-pVDZ)
+# ---------------------------------------------------------------------------
+#
+# WHAT FERRIC DOES: the CLI (`method.kind = "gw"`, multiplicity > 1,
+# `[rpa] xc`) and the Python `run_u_gw(xc=...)` solve a UKS reference, build
+# the per-spin v_xc diagonal with `ferric_gw::vxc_mo::vxc_diagonal_mo`, and
+# pass it to `ferric_gw::run_u_gw(.., Some((v_xc_a, v_xc_b)))`, whose per-spin
+# QP solve carries Sigma_x - v_xc INSIDE the QP equation
+# (crates/ferric-gw/src/u_sigma.rs `qp_per_spin_g0w0` ->
+# `solve_qp_for_mo(.., ef, shift)`), as the closed-shell `run_gw(.., Some(vxc))`
+# does.
+#
+# This block stores BOTH:
+#   * `eps_qp` / `sigma_c_at_qp`: the textbook G0W0@KS -- the full root of
+#         w - eps_ks - (Sigma_x^DF - v_xc) - Re Sigma_c(w) = 0
+#     (PySCF ugw_ac's own QP equation). This is the physics reference ferric's
+#     U-G0W0@UKS is compared against.
+#   * `eps_qp_posthoc` / `sigma_c_at_qp_posthoc`: the post-hoc recipe on the
+#     same Sigma_c -- root w0 of w - eps_ks - Re Sigma_c(w) = 0, then
+#     eps = w0 + (Sigma_x^DF - v_xc). Kept as a negative control: it differs
+#     from the textbook root by 0.38-0.96 eV here, so a ferric result that
+#     lands on it means the shift is not reaching the QP equation.
+#   `posthoc_minus_textbook_max` records the size of the difference.
+#
+# Matched recipe (the closed-shell @PBE block's, per spin):
+#   * UKS/PBE, EXACT J (no density fitting), (75,110) unpruned Becke grid,
+#     Becke-1988 radii, stability-followed from 3 guesses (common.run_open_shell).
+#   * ferric's XC density floor, SPIN-POLARIZED form (ferric-dft vxc.rs
+#     `semilocal_vxc_polarized_scratch`): V^sigma is zeroed where
+#     rho_sigma <= 1e-10; the energy density is NOT floored there.
+#   * per-spin mid-gap ef (ferric u_sigma.rs), one UGWAC run per spin with ef
+#     overridden, as the U-G0W0@UHF block does.
+#   * Sigma_x: DF with the GW aux, -sum_{P,i} L_{P,pi}^2 from UGWAC's own Lpq.
+#     NOT `vhf_df = True`: PYSCF DEFECT (PySCF 2.13.1, pyscf/gw/ugw_ac.py
+#     `kernel`, the `if gw.vhf_df is True` branch) builds
+#     vk = einsum('Lpi,Liq->pq', ...) WITHOUT the minus sign that gw_ac.py's
+#     closed-shell branch has (`vk = -einsum(...)`), i.e. +|Sigma_x|. UGWAC is
+#     therefore run with its default exact vk (used only by PySCF's own QP
+#     solve, recorded as `eps_qp_pyscf_exact_sx`), and the QP equations above
+#     are solved here with the DF Sigma_x.
+#   * Pade: textbook Thiele fraction (`thiele_eval`) on PySCF's Sigma_c(ef+iw)
+#     at the 18 `_get_ac_idx` nodes, coefficients cross-checked against
+#     UGWAC's fit (`thiele_coeffs`).
+
+UKS_CASES = {("oh", "cc-pvdz"), ("ch3", "cc-pvdz"), ("nh2", "cc-pvdz")}
+
+
+def _apply_density_floor_polarized(mf, floor):
+    """ferric's spin-polarized XC floor: V^sigma = 0 where rho_sigma <= floor
+    (vxc.rs semilocal_vxc_polarized_scratch / xc_batch.rs), energy unfloored."""
+    ni = mf._numint
+    orig = ni.eval_xc_eff
+
+    def floored(
+        xc_code, rho, deriv=1, omega=None, xctype=None, verbose=None, spin=None
+    ):
+        exc, vxc, fxc, kxc = orig(xc_code, rho, deriv, omega, xctype, verbose, spin)
+        if spin == 1 or (hasattr(rho, "ndim") and rho.ndim == 3):
+            vxc = vxc.copy()
+            for s in range(2):
+                rs = rho[s][0] if rho[s].ndim > 1 else rho[s]
+                vxc[s][..., rs <= floor] = 0.0
+        return exc, vxc, fxc, kxc
+
+    ni.eval_xc_eff = floored
+
+
+def uks_pbe_factory(density_floor=FERRIC_DENSITY_FLOOR):
+    from pyscf import dft
+
+    def factory(mol):
+        mf = dft.UKS(mol, xc="PBE,PBE")
+        if density_floor is not None:
+            _apply_density_floor_polarized(mf, density_floor)
+        mf.grids.atom_grid = MAIN_GRID
+        mf.grids.prune = None
+        mf.grids.radii_adjust = dft.radi.becke_atomic_radii_adjust
+        return mf
+
+    return factory
+
+
+def ferric_qp_start(sc_re, e0, shift):
+    """ferric's QP root search (sigma.rs `solve_qp_for_mo`) on a real-axis
+    Sigma_c: linearized start with a 4-point FD slope (h = 0.05, Z clamped to
+    [0, 1.5]), then <= 30 undamped Newton steps with the same FD slope, stop
+    at |step| < 1e-7. Used as the START of the tight Newton, so that when the
+    QP equation has several roots (it does for some core-like states here) the
+    reference picks the root ferric's solver selects."""
+    h = 0.05
+
+    def d(x):
+        return (
+            -sc_re(x + 2 * h) + 8 * sc_re(x + h) - 8 * sc_re(x - h) + sc_re(x - 2 * h)
+        ) / (12 * h)
+
+    z = min(max(1.0 / (1.0 - d(e0)), 0.0), 1.5)
+    x = e0 + z * (sc_re(e0) + shift)
+    for _ in range(30):
+        fp = 1.0 - d(x)
+        if abs(fp) < 1e-3:
+            break
+        step = -(x - e0 - shift - sc_re(x)) / fp
+        x += step
+        if abs(step) < 1e-7:
+            break
+    return x
+
+
+def u_textbook_spin(gw, mf, s, orbs):
+    """Spin `s` of a UGWAC run (ef already overridden to that spin's mid-gap):
+    PySCF's Sigma_c(ef + iw) at the Pade nodes, textbook Thiele, and the two QP
+    equations of the block comment (shift inside vs the post-hoc recipe)."""
+    np = _np()
+    from pyscf.gw.ugw_ac import _mo_energy_without_core, get_sigma
+    from pyscf.gw.utils.ac_grid import _get_ac_idx, _get_scaled_legendre_roots
+
+    qf, qw = _get_scaled_legendre_roots(gw.nw, X0)
+    eval_f = np.concatenate(([0.0], gw.freqs))
+    e_frz = np.asarray(
+        _mo_energy_without_core(gw, np.asarray(mf.mo_energy)), dtype=float
+    )
+    orbs_frz = list(gw.orbs_frz)
+    sig, omega = get_sigma(
+        gw,
+        orbs_frz,
+        gw.Lpq,
+        qf,
+        qw,
+        gw.ef,
+        e_frz,
+        iw_cutoff=gw.ac_iw_cutoff,
+        eval_freqs=eval_f,
+    )
+    assert np.allclose(omega, gw.acobj.omega, rtol=0, atol=1e-14), (
+        "AC grid differs from UGWAC's"
+    )
+    idx = _get_ac_idx(
+        len(omega), npts=gw.ac_pade_npts, step_ratio=gw.ac_pade_step_ratio
+    )
+    zn = omega[idx]
+    fn = sig[s][:, idx].T  # (npts, norb)
+    a = thiele_coeffs(fn, zn)
+    coeff_py = np.asarray(gw.acobj.coeff)[:, s, :]
+    coeff_rel = float(np.max(np.abs(a - coeff_py) / np.maximum(np.abs(a), 1e-300)))
+    assert coeff_rel < 1e-8, (
+        f"Thiele coefficients differ from PySCF's: rel {coeff_rel:.2e}"
+    )
+    interp = float(
+        max(
+            abs(thiele_eval(z, zn, a[:, i]) - fn[k, i])
+            for i in range(len(orbs))
+            for k, z in enumerate(zn)
+        )
+    )
+    nocc_s = gw.nocc[s]
+    out = {
+        "ef": float(gw.ef),
+        "eps_mf": [],
+        "v_xc": [],
+        "sigma_x_df": [],
+        "sigma_x_exact": [],
+        "eps_qp": [],
+        "sigma_c_at_qp": [],
+        "eps_qp_posthoc": [],
+        "sigma_c_at_qp_posthoc": [],
+        "eps_qp_pyscf_exact_sx": [],
+    }
+    resid, nroots, nroots_ph = [], [], []
+    for ip, p in enumerate(orbs_frz):
+        pa = orbs[ip]
+        e0 = float(mf.mo_energy[s][pa])
+        sx = float(-np.sum(gw.Lpq[s][:, p, :nocc_s] ** 2))
+        vxc = float(gw.vxc[s, p, p])
+        shift = sx - vxc
+        ai = a[:, ip]
+
+        def f(w, ai=ai, e0=e0, shift=shift):
+            return w - e0 - (thiele_eval(w + 0.0j, zn, ai).real + shift)
+
+        def g(w, ai=ai, e0=e0):
+            return w - e0 - thiele_eval(w + 0.0j, zn, ai).real
+
+        def sc_re(w, ai=ai):
+            return thiele_eval(w + 0.0j, zn, ai).real
+
+        root = _refine(f, ferric_qp_start(sc_re, e0, shift))
+        w0 = _refine(g, ferric_qp_start(sc_re, e0, 0.0))
+        out["eps_mf"].append(e0)
+        out["v_xc"].append(vxc)
+        out["sigma_x_df"].append(sx)
+        out["sigma_x_exact"].append(float(gw.vk[s, p, p]))
+        out["eps_qp"].append(root)
+        out["sigma_c_at_qp"].append(float(thiele_eval(root + 0.0j, zn, ai).real))
+        out["eps_qp_posthoc"].append(w0 + shift)
+        out["sigma_c_at_qp_posthoc"].append(float(thiele_eval(w0 + 0.0j, zn, ai).real))
+        out["eps_qp_pyscf_exact_sx"].append(float(gw.mo_energy[s][pa]))
+        resid.append(max(abs(f(root)), abs(g(w0))))
+        nroots.append(len(_qp_roots_in_window(f, e0 + shift)))
+        nroots_ph.append(len(_qp_roots_in_window(g, e0)))
+    out["posthoc_minus_textbook_max"] = float(
+        max(abs(x - y) for x, y in zip(out["eps_qp_posthoc"], out["eps_qp"]))
+    )
+    out["qp_residual_max"] = float(max(resid))
+    out["ac"] = {
+        "continuation": "textbook Thiele continued fraction (ferric pade.rs), numpy on "
+        "PySCF ugw_ac Sigma_c(ef+iw); see gen_gw.thiele_eval",
+        "ac_nodes_omega": [float(x) for x in zn.imag],
+        "ac_nodes_index": [int(i) for i in idx],
+        "sigma_c_iw_nodes_re": [
+            [float(x) for x in fn[:, i].real] for i in range(len(orbs))
+        ],
+        "sigma_c_iw_nodes_im": [
+            [float(x) for x in fn[:, i].imag] for i in range(len(orbs))
+        ],
+        "thiele_coeff_max_rel_vs_pyscf": coeff_rel,
+        "node_interp_err_textbook": interp,
+        "qp_roots_within_1ha_textbook": nroots,
+        "qp_roots_within_1ha_posthoc": nroots_ph,
+        "root_selection": "tight Newton started from an emulation of ferric's "
+        "solve_qp_for_mo search (ferric_qp_start)",
+    }
+    return out
+
+
+def u_g0w0_uks_pbe_block(mol, aux, orbs):
+    uks, mf = common.run_open_shell(
+        mol,
+        "uks",
+        conv_tol=CONV_TOL,
+        conv_tol_grad=CONV_TOL_GRAD,
+        mf_factory=uks_pbe_factory(),
+        return_mf=True,
+    )
+    na, nb = mol.nelec
+    ea, eb = mf.mo_energy
+    ef = (0.5 * (ea[na - 1] + ea[na]), 0.5 * (eb[nb - 1] + eb[nb]))
+    spins = {}
+    for s, name in ((0, "alpha"), (1, "beta")):
+        gw = run_ugwac(mf, aux, orbs, ef_override=float(ef[s]))
+        spins[name] = u_textbook_spin(gw, mf, s, orbs)
+    # The unfloored UKS, for the record only (how much the floor moves eps_mf).
+    # Diagnostic: its failure to converge is recorded, not fatal (OH/cc-pVDZ
+    # unfloored does not reach conv_tol from any guess, measured 2026-09-25).
+    try:
+        raw = common.run_open_shell(
+            mol,
+            "uks",
+            conv_tol=CONV_TOL,
+            conv_tol_grad=CONV_TOL_GRAD,
+            mf_factory=uks_pbe_factory(density_floor=None),
+            return_mf=True,
+        )[1]
+        shift_max = float(
+            max(
+                abs(mf.mo_energy[s][p] - raw.mo_energy[s][p])
+                for s in range(2)
+                for p in orbs
+            )
+        )
+    except RuntimeError as e:
+        shift_max = f"not measured: unfloored UKS did not converge ({str(e)[:160]})"
+    return {
+        "orbs": orbs,
+        "xc": "PBE",
+        "j": "exact (no density fitting)",
+        "density_floor": FERRIC_DENSITY_FLOOR,
+        "density_floor_form": "spin-polarized: V^sigma zeroed where rho_sigma <= floor",
+        "density_floor_mo_energy_shift_max": shift_max,
+        "ef_convention": "per-spin mid-gap, as ferric u_sigma.rs",
+        "uks": uks,
+        "alpha": spins["alpha"],
+        "beta": spins["beta"],
+        "pyscf_defect_vhf_df_sign": (
+            "pyscf/gw/ugw_ac.py kernel: vhf_df=True builds vk = +einsum(Lpi,Liq) "
+            "(gw_ac.py has -einsum); not used here"
+        ),
+    }
+
+
+def gen_open_uks_only(system):
+    """Add/refresh ONLY the `u_g0w0_uks_pbe` block of an existing JSON, leaving
+    every other block byte-for-byte as it was."""
+    import json
+
+    xyz_rel, mult, bases = OPEN[system]
+    xyz = common.MOL_DIR / xyz_rel
+    for basis_name in bases:
+        if (system, basis_name) not in UKS_CASES:
+            continue
+        path = common.reference_path(ROW, system, basis_name)
+        payload = json.loads(path.read_text())
+        aux_name = AUX_FOR[basis_name]
+        mol, symbols, _coords, _ll = mol_and_prov_base(xyz, basis_name, mult=mult)
+        assert payload["nao"] == mol.nao_nr() and payload["aux"] == aux_name
+        aux = aux_dict(aux_name, symbols)
+        orbs = payload["u_g0w0_uhf"]["orbs"]
+        payload["u_g0w0_uks_pbe"] = u_g0w0_uks_pbe_block(mol, aux, orbs)
+        prov = payload.pop("provenance")
+        blocks = prov.setdefault("blocks", [])
+        if "u_g0w0_uks_pbe" not in blocks:
+            blocks.append("u_g0w0_uks_pbe")
+        prov["u_g0w0_uks_pbe_generated"] = {
+            "git_head": common.git_head(),
+            "mode": "gen_gw.py --uks-only (other blocks untouched)",
+        }
+        payload["provenance"] = prov
+        common.write_reference(ROW, system, basis_name, payload)
+        _print_uks(system, basis_name, payload)
+
+
+def _print_uks(system, basis_name, payload):
+    ha = 27.211386245988
+    blk = payload["u_g0w0_uks_pbe"]
+    for spin in ("alpha", "beta"):
+        b = blk[spin]
+        print(
+            f"{system}/{basis_name} UKS {spin}: E_UKS {blk['uks']['energy']:.10f} "
+            f"max|posthoc - textbook| {b['posthoc_minus_textbook_max'] * ha * 1e3:.1f} meV "
+            f"resid {b['qp_residual_max']:.1e} roots {b['ac']['qp_roots_within_1ha_textbook']}",
+            flush=True,
+        )
+
+
 def gen_open(system):
     xyz_rel, mult, bases = OPEN[system]
     xyz = common.MOL_DIR / xyz_rel
@@ -914,6 +1242,10 @@ def gen_open(system):
         }
         if basis_name == "cc-pvdz":
             payload["diagnostics"]["old_recipe"] = old_u_recipe(mol, aux, orbs)
+        blocks = ["uhf", "u_g0w0_uhf", "diagnostics"]
+        if (system, basis_name) in UKS_CASES:
+            payload["u_g0w0_uks_pbe"] = u_g0w0_uks_pbe_block(mol, aux, orbs)
+            blocks.append("u_g0w0_uks_pbe")
         payload["provenance"] = provenance(
             xyz,
             basis_name,
@@ -921,7 +1253,7 @@ def gen_open(system):
             coords,
             aux_name,
             {"uhf": uhf["stability"]},
-            {"blocks": ["uhf", "u_g0w0_uhf", "diagnostics"]},
+            {"blocks": blocks},
         )
         path = common.write_reference(ROW, system, basis_name, payload)
         ha = 27.211386245988
@@ -932,6 +1264,8 @@ def gen_open(system):
             f"b-HOMO {blk['beta']['eps_qp'][orbs.index(nb - 1)] * ha:.5f} eV"
             f" -> {path.relative_to(common.ROOT)}"
         )
+        if "u_g0w0_uks_pbe" in payload:
+            _print_uks(system, basis_name, payload)
 
 
 def old_u_recipe(mol, aux, orbs):
@@ -957,6 +1291,12 @@ def old_u_recipe(mol, aux, orbs):
 
 
 def main(argv):
+    if "--uks-only" in argv:
+        # Add/refresh only the U-G0W0@UKS/PBE block in the existing JSONs.
+        rest = [a for a in argv if a != "--uks-only"]
+        for s in rest or sorted({sys_ for sys_, _ in UKS_CASES}):
+            gen_open_uks_only(s)
+        return
     want = set(argv) or (set(CLOSED) | set(ECP) | set(OPEN))
     for s in CLOSED:
         if s in want:

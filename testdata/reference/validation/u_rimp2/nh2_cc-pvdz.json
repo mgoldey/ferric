@@ -1,0 +1,150 @@
+{
+  "row": "Unrestricted RI-MP2",
+  "system": "nh2",
+  "basis": "cc-pvdz",
+  "aux_basis": "cc-pvdz-ri",
+  "charge": 0,
+  "multiplicity": 2,
+  "nao": 24,
+  "naux": 84,
+  "nuclear_repulsion": 7.564094299642846,
+  "uhf": {
+    "energy": -55.56709059690501,
+    "converged": true,
+    "s_squared": 0.7578257880471826,
+    "multiplicity_from_s2": 2.0078105369254167,
+    "nelec_alpha": 5,
+    "nelec_beta": 4,
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF UHF internal (real)",
+      "rounds": 0,
+      "selected_guess": "huckel",
+      "lambda_min": 0.08147435704007609
+    },
+    "guess_scan": [
+      {
+        "guess": "minao",
+        "energy": -55.56709059690494,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -55.56709059690494
+        ]
+      },
+      {
+        "guess": "atom",
+        "energy": -55.56709059690499,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -55.56709059690499
+        ]
+      },
+      {
+        "guess": "huckel",
+        "energy": -55.56709059690501,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -55.56709059690501
+        ]
+      }
+    ],
+    "multiple_stable_minima": false,
+    "homo_alpha": -0.4959948679118429,
+    "lumo_alpha": 0.1827009985395498,
+    "homo_beta": -0.45241331215095126,
+    "lumo_beta": 0.1517432957911251,
+    "somo_alpha": [
+      -0.4959948679118429
+    ]
+  },
+  "ump2": {
+    "frozen_core": 0,
+    "e_corr": -0.145638158564885,
+    "e_corr_ss": -0.03258354342377752,
+    "e_corr_os": -0.11305461514110746,
+    "e_aa": -0.022694792629493303,
+    "e_bb": -0.00988875079428427,
+    "e_ab": -0.11305461514110746,
+    "e_total": -55.7127287554699,
+    "numpy_anchor_ss_diff": -5.551115123125783e-17,
+    "numpy_anchor_os_diff": 0.0,
+    "naux": 84
+  },
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "scf": "scf.UHF exact integrals, 3 guesses + stability loop (common.run_open_shell)",
+      "mp2": "pyscf.mp.dfump2.DFUMP2, with_df.auxmol from ferric's aux JSON",
+      "spin_components": "numpy int3c2e/int2c2e Cholesky-metric B, anchored to DFUMP2",
+      "numpy": "1.26.4"
+    },
+    "grid": "none",
+    "aux_basis": {
+      "name": "cc-pvdz-ri",
+      "json": "crates/ferric-core/src/basis/bundled/cc-pvdz-ri.json",
+      "sha256": "8221d2a31b5bbebd39218fc3f9244917e173a338ff9c56904038443a06e2a250",
+      "metric": "Coulomb"
+    },
+    "frozen_core": {
+      "ump2": 0
+    },
+    "scf_convergence": {
+      "conv_tol": 1e-11,
+      "conv_tol_grad": 1e-08
+    },
+    "stability": {
+      "uhf": {
+        "internal_stable": true,
+        "kind": "PySCF UHF internal (real)",
+        "rounds": 0,
+        "selected_guess": "huckel",
+        "lambda_min": 0.08147435704007609
+      }
+    },
+    "basis": "cc-pvdz",
+    "basis_json": "crates/ferric-core/src/basis/bundled/cc-pvdz.json",
+    "basis_sha256": "ae48fcca0d533addd60dbd48490153130e697121767ba607e1d70f3b341eeef7",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/nh2.xyz",
+    "geometry_xyz_sha256": "a93f4ddd65a01379beb9335bab6cbeb2165454f5784960ee705f49ec9c0d28e5",
+    "geometry_bohr": [
+      [
+        "N",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "H",
+        0.0,
+        1.5186047006878538,
+        -1.1993217336336612
+      ],
+      [
+        "H",
+        0.0,
+        -1.5186047006878538,
+        -1.1993217336336612
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_u_rimp2.py",
+    "git_head": "eb9d3226cb0444658d7a11064a0e7ca17356c3b9",
+    "generated_utc": "2026-09-25T19:11:32+00:00",
+    "basis_self_check": {
+      "nao": 24,
+      "replica_self_overlap_max_dev": 2.220446049250313e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 24,
+      "diag_skipped_cartesian": 0
+    }
+  }
+}

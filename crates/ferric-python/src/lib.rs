@@ -6790,9 +6790,8 @@ impl PyUGwResult {
 /// `reference`: "uhf" (default) | "rohf" (case-insensitive; unknown values
 /// are a hard `ValueError`). `method`/`xc`/`qp_mos`/... mirror `run_gw`'s
 /// kwarg shape exactly; `xc` set runs the open-shell KS-DFT ladder (UKS) and
-/// applies the Σx−vxc correction per spin channel via
-/// `UGwResult::apply_kohn_sham_correction` (run_u_gw itself doesn't thread
-/// vxc_diag through — see its doc in `ferric_gw::run_u_gw`).
+/// passes the per-spin v_xc diagonals to `ferric_gw::run_u_gw`, which puts
+/// Σx−vxc inside each spin channel's QP equation (same contract as `run_gw`).
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set, auxbasis,
@@ -6938,11 +6937,17 @@ fn run_u_gw(
         verbose: false,
     };
 
-    let mut r =
-        run_u_gw_inner(&mol.inner, &prep, &dfbs, op, &scf, &pdep_cfg, &gw_cfg).map_err(make_err)?;
-    if let Some((diag_a, diag_b)) = vxc_diag.as_ref() {
-        r.apply_kohn_sham_correction(diag_a, diag_b);
-    }
+    let r = run_u_gw_inner(
+        &mol.inner,
+        &prep,
+        &dfbs,
+        op,
+        &scf,
+        &pdep_cfg,
+        &gw_cfg,
+        vxc_diag.as_ref().map(|(a, b)| (a, b)),
+    )
+    .map_err(make_err)?;
     if !r.outer_converged {
         eprintln!(
             "warning: U-{:?} eigenvalue self-consistency did NOT converge in {} \

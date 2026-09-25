@@ -149,7 +149,7 @@ fn check_radical_basis(r: &RadicalRef, obs_name: &str, aux_name: &str) {
         method: GwMethod::G0W0,
         ..Default::default()
     };
-    let res = run_u_gw(&mol, &obs, &dfbs, op, &uhf, &pdep, &gcfg).expect("U-G0W0");
+    let res = run_u_gw(&mol, &obs, &dfbs, op, &uhf, &pdep, &gcfg, None).expect("U-G0W0");
 
     let idx_a = res
         .mo_indices
