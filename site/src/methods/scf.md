@@ -147,7 +147,7 @@ Butane, one thread; TZ is def2-TZVP (184 functions), QZ is def2-QZVP (528).
 | *(default)* | Schwarz-screened direct four-centre J + K | yes | all SCF types |
 | `k_builder = "link"` | LinK: pair-list-screened direct K | yes (== direct to 9e-12 Ha, butane/def2-SVP) | RHF, UHF, ROHF |
 | `df_j_aux` / `df_k_aux` | density-fitted J and K (RI-JK) | fitting error, grows with size (see *Kohn–Sham DFT* above) | all SCF types |
-| `k_builder = "cosx"` | seminumerical (COSX) K on a grid | grid error, see below | RHF/UHF/ROHF, Coulomb operator only; analytic gradient for RHF, RKS, UHF (see below) |
+| `k_builder = "cosx"` | seminumerical (COSX) K on a grid | grid-dependent error, see below | RHF/UHF/ROHF, Coulomb operator only; analytic gradient for RHF, RKS, UHF (see below) |
 
 **Time for one exchange build** (seconds, butane, one thread):
 
@@ -173,6 +173,7 @@ Butane, one thread; TZ is def2-TZVP (184 functions), QZ is def2-QZVP (528).
 |---|---|---:|
 | LinK | butane / def2-SVP | 9e-12 Ha |
 | COSX, default grid | water / cc-pVDZ | 5e-6 Ha |
+| COSX, default grid | butane / def2-SVP | 1.7e-4 Ha |
 | COSX, default grid | butane / def2-TZVP | 1.2e-4 Ha |
 | RI-JK | — | not measured on these systems |
 
@@ -216,14 +217,24 @@ AO lists (`cosx_half_transform = "sparse"`, the default). At def2-SVP the K
 build grows as N^1.29–N^1.32 between C20 and C48; that is one family of
 molecules in one basis.
 
-COSX's error is a grid error, and it is not µHa-small: 5e-6 Ha on water/cc-pVDZ
-and 1.2e-4 Ha on butane/def2-TZVP at the default grid. Reaction energies
-cancel most of it (0.02 kcal/mol on an isodesmic alkane reaction at the same
+COSX's energy error at the default grid is about 5e-6 Ha on water/cc-pVDZ
+(4.9e-6 in `cosx_k_anchors.rs`, 5.1e-6 in the ORCA comparison run),
+1.7e-4 Ha on butane/def2-SVP and 1.2e-4 Ha on butane/def2-TZVP (against exact
+exchange). ORCA 6.1.1's COSX at its own default grid gives 4.9e-6, 3.8e-5 and
+1.3e-5 Ha on the same systems and bases, although ferric's default grid has
+about twice as many points: ORCA evaluates its final energy once on a finer
+grid, and ferric does not. Refining ferric's grid converges water to 3.4e-8 Ha,
+but butane/def2-SVP stops at 3.4e-5 Ha at Lebedev-302, the finest angular grid
+ferric supports; that residual is not yet explained. Reaction energies cancel
+most of the error (0.02 kcal/mol on an isodesmic alkane reaction at the default
 grid); absolute energies do not. Four knobs, all optional:
 
 - `cosx_grid = { radial = 50, angular = 110 }` is the default and the coarsest
   grid that meets a 0.1 kcal/mol reaction-energy bar. Coarser grids fail it.
-  Finer grids reduce the error roughly tenfold per step and cost proportionally.
+  The angular order matters most: on butane/def2-TZVP the error falls from
+  1.2e-4 Ha at 110 points per shell to 4.0e-6 Ha at 302, while going from 50
+  to 100 radial shells changes it by 1e-6 or less. Cost grows with the number
+  of points.
 - `cosx_overlap_fit = true` (default) applies the Izsák–Neese overlap
   correction. At the default grid it helps; on coarser grids it makes things
   *worse*, and its benefit is strongly molecule-dependent — large on water,
