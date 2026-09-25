@@ -27,7 +27,7 @@ and int2c2e builds are both attenuated. Before any energy is written it checks:
   3. records the exact 4-index erfc MP2 (no RI) as information, so the RI
      error of the attenuated fit is visible next to the RI reference.
 
-omega grid (Bohr^-1): 0.2, 0.222234 (= 0.42 A^-1, ferric's default), 0.42, 1.0;
+omega grid (Bohr^-1): 0.2, 0.222254 (= 0.42 A^-1, ferric's default), 0.42, 1.0;
 plus omega = 0 (plain Coulomb RI-MP2) for the exactness anchor.
 
 Run (light step; well under a minute):
