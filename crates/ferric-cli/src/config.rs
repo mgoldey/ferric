@@ -3657,6 +3657,10 @@ pub struct PeriodicPlan {
     pub quad_points: Option<usize>,
     pub drpa_energy: ferric_pbc::KDrpaEnergy,
     pub max_iter: usize,
+    /// `[scf] max_iter` was written. When it was not, the ROKS route keeps
+    /// `GammaRoksConfig::new`'s own cap (600 for a hybrid, with its level
+    /// shift) instead of `max_iter` (200).
+    pub max_iter_explicit: bool,
     /// Gamma SCF density threshold.
     pub density_conv: f64,
     /// k-point SCF energy threshold (per cell).
@@ -4127,7 +4131,8 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
     };
     periodic_raw_key_check(raw, route, kpoints, rsgdf, optimize)?;
     let written = raw_keys(raw, "scf");
-    let max_iter = if written.contains(&"max_iter") {
+    let max_iter_explicit = written.contains(&"max_iter");
+    let max_iter = if max_iter_explicit {
         cfg.scf.max_iter
     } else {
         200
@@ -4158,6 +4163,7 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
         quad_points: c.quad_points,
         drpa_energy,
         max_iter,
+        max_iter_explicit,
         density_conv,
         energy_conv,
         grad_conv: c.grad_conv.unwrap_or(1e-9),

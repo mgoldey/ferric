@@ -1712,7 +1712,7 @@ def run_roks_gamma(
     ewald_start: str | None = None,
     omega: float | None = None,
     max_eri_gb: float | None = None,
-    max_iter: int = 200,
+    max_iter: int | None = None,
     density_conv: float = 1e-10,
     jk: str = "dense",
     auxbasis: BasisSet | str | None = None,
@@ -1721,7 +1721,9 @@ def run_roks_gamma(
     n_angular: int = 302,
     neighbour_cutoff: float | None = None,
 ) -> GammaOpenShellResult:
-    """Gamma-point periodic ROKS (functional/grid contract of run_uks_gamma)."""
+    """Gamma-point periodic ROKS (functional/grid contract of run_uks_gamma).
+    max_iter=None: 600 with a 0.05 Ha ramped level shift for a hybrid (a > 0),
+    else 200 and no shift."""
     ...
 
 def run_rks_gamma(

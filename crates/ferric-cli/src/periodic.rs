@@ -52,6 +52,20 @@ struct Outcome {
 }
 
 /// Entry point from `run()`: `cfg.periodic` must be `Some`.
+/// The SCF iteration cap a route actually runs with: `[scf] max_iter` when
+/// written; otherwise the ROKS route takes `GammaRoksConfig::new`'s default
+/// (600 for hybrids) and every other route the plan's.
+fn effective_max_iter(plan: &PeriodicPlan) -> usize {
+    match (plan.route, plan.max_iter_explicit) {
+        (PeriodicRoute::Roks, false) => {
+            GammaRoksConfig::new(plan.functional.as_deref().unwrap_or(""))
+                .scf
+                .max_iter
+        }
+        _ => plan.max_iter,
+    }
+}
+
 pub fn run_periodic(cfg: &Config) {
     let Some(plan) = cfg.periodic.as_ref() else {
         die("internal: run_periodic called without a periodic plan");
@@ -69,7 +83,7 @@ pub fn run_periodic(cfg: &Config) {
                 "kmesh": plan.kmesh.map(|(n, _)| n),
                 "exxdiv": exx_name(plan.exxdiv),
                 "jk": jk_name(plan),
-                "max_iter": plan.max_iter,
+                "max_iter": effective_max_iter(plan),
             }),
             serde_json::json!({
                 "path": cfg.molecule.xyz,
@@ -586,7 +600,14 @@ fn gamma_open_driver(plan: &PeriodicPlan, s: &Setup) -> Result<(OpenParts, f64),
             let mut c = GammaRoksConfig::new(&f);
             (c.grid, c.exxdiv, c.ewald_start) =
                 (periodic_grid(plan), plan.exxdiv, plan.ewald_start);
-            c.scf = scf;
+            // Keep GammaRoksConfig::new's hybrid level shift (and its 600
+            // cap unless [scf] max_iter was written): a DIIS robustness
+            // default that vanishes at convergence (see its doc).
+            c.scf = RhfConfig {
+                level_shift: c.scf.level_shift,
+                max_iter: effective_max_iter(plan),
+                ..scf
+            };
             let r = gamma_roks(&s.cell, &s.prep, &sys.hc, ints, &c)?;
             OpenParts {
                 gap_alpha: r.gaps.gap_alpha,
