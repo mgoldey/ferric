@@ -10,7 +10,7 @@ Model (Applequist-Thole induced point dipoles, matching
 
   E_i^QM(D)   field of the QM nuclei + electron density at site i
   E_i^perm    field of the other MM permanent point charges at site i
-  T_ij        Thole-damped dipole-dipole interaction tensor (damping a=2.1304,
+  T_ij        Thole-damped dipole field tensor (damping a=2.1304,
               u = r_ij / (alpha_i alpha_j)^(1/6); `damping=None` disables)
 
 Dense (3N)x(3N) linear solve for the induced dipoles at fixed D, done once per
@@ -203,14 +203,15 @@ def dipole_potential_integral(mol, point):
 
 
 def thole_tensor(ri, rj, alpha_i, alpha_j, thole_a):
-    """3x3 dipole-dipole interaction tensor T_ij (a.u.), Thole-damped if
-    `thole_a` is not None:
+    """3x3 dipole FIELD tensor T_ij (a.u.): the field at r_i of a unit point
+    dipole at r_j is T_ij mu_j. Thole-damped if `thole_a` is not None:
 
-        T_ij = lambda3 * I / r^3 - 3 * lambda5 * (r_hat (x) r_hat) / r^3
+        T_ij = 3 * lambda5 * (r_hat (x) r_hat) / r^3 - lambda3 * I / r^3
 
     with u = r / (alpha_i alpha_j)^(1/6),
-         lambda3 = 1 - exp(-a u^3),
-         lambda5 = 1 - (1 + a u^3) exp(-a u^3).
+         v = a u,
+         lambda3 = 1 - (1 + v + v^2/2) exp(-v),
+         lambda5 = lambda3 - v^3/6 exp(-v)   (Thole's exponential density).
 
     Undamped (`thole_a=None`): lambda3 = lambda5 = 1 (bare dipole tensor).
     """
@@ -223,13 +224,42 @@ def thole_tensor(ri, rj, alpha_i, alpha_j, thole_a):
     else:
         s = (alpha_i * alpha_j) ** (1.0 / 6.0)
         u = r / s
-        au3 = thole_a * u**3
-        expo = math.exp(-au3)
-        lam3 = 1.0 - expo
-        lam5 = 1.0 - (1.0 + au3) * expo
+        v = thole_a * u
+        expo = math.exp(-v)
+        lam3 = 1.0 - (1.0 + v + 0.5 * v * v) * expo
+        lam5 = lam3 - v**3 / 6.0 * expo
     eye = np.eye(3)
     outer = np.outer(rhat, rhat)
-    return (lam3 * eye - 3.0 * lam5 * outer) / r**3
+    return (3.0 * lam5 * outer - lam3 * eye) / r**3
+
+
+def _verify_tensor_sign(h=1e-5):
+    """The undamped T_ij must be the field of a point dipole: E(r) = -grad phi,
+    phi(r) = mu . (r - r_j) / |r - r_j|^3. Central FD of phi at r_i; returns
+    the max |T mu - E_fd| over a few random dipoles and separations."""
+    rng = np.random.default_rng(7)
+    worst = 0.0
+    for _ in range(5):
+        ri = rng.normal(size=3) * 3.0
+        rj = rng.normal(size=3) * 3.0
+        mu = rng.normal(size=3)
+
+        def phi(r):
+            d = np.asarray(r) - rj
+            return float(mu @ d) / np.linalg.norm(d) ** 3
+
+        e_fd = np.zeros(3)
+        for k in range(3):
+            rp = ri.copy()
+            rm = ri.copy()
+            rp[k] += h
+            rm[k] -= h
+            e_fd[k] = -(phi(rp) - phi(rm)) / (2 * h)
+        worst = max(
+            worst,
+            float(np.max(np.abs(thole_tensor(ri, rj, 1.0, 1.0, None) @ mu - e_fd))),
+        )
+    return worst
 
 
 def build_permanent_field(sites, mm_charges, exclusions):
@@ -581,26 +611,11 @@ def main():
     # ---- three_sites: three off-axis sites, damped (default a=2.1304).
     #
     # Sites 0 and 1 are DELIBERATELY placed 1.1 Bohr apart with alpha=0.5
-    # Bohr^3 each: a*u^3 = 5.67, exp(-a*u^3) = 0.0034 (lambda3 = 0.9966,
-    # lambda5 differs from 1 by a comparable margin), so Thole damping is a
-    # genuine, non-negligible correction to T_01 — at the ORIGINAL off-axis
-    # placement tried during development (all pairs >4 Bohr apart, alpha
-    # ~1-1.4 Bohr^3) every pairwise a*u^3 was >1900 (exp(-au^3) machine
-    # zero), making the damped and undamped energies agree to 1e-13
-    # (floating-point noise, not evidence the damping code path works: see
-    # "too clean is a stop condition" in CLAUDE.md's Experimental
-    # Protocol). A CLOSER/more-polarizable placement was also tried
-    # (r=1.22 Bohr, alpha=1.44/0.90) and hit the Thole/Applequist
-    # POLARIZATION CATASTROPHE: max|alpha*T_eigenvalue| = 1.26 > 1 makes
-    # the (I - alpha*T) induction matrix indefinite, and the dense solve
-    # returned E_pol = +1.98 Ha (unphysical positive, runaway feedback) —
-    # not a bug, a genuine instability of the undamped-enough Applequist
-    # model at short range/high polarizability. This case's r=1.1 Bohr,
-    # alpha=0.5 pair keeps max|alpha*T_eigenvalue| = 0.73 (a comfortable
-    # margin below the 1.0 catastrophe threshold) while still exercising a
-    # non-trivial lambda3/lambda5. Both sites 0/1 stay >=3.1 Bohr from
-    # every water atom (safely outside the link-atom/overpolarization
-    # danger zone).
+    # Bohr^3 each, so Thole damping is a large correction to T_01: the damped
+    # E_pol is -0.066 Ha against -0.213 Ha undamped (three_sites_nodamp).
+    # Well-separated sites (>4 Bohr, alpha ~1 Bohr^3) would make the damped and
+    # undamped energies agree to noise and leave the damping code path
+    # untested. Both sites 0/1 stay >=3.1 Bohr from every water atom.
     three_sites = [
         (3.0, -2.0, 4.0, 0.5, 0.5),
         (2.27725463, -1.59345573, 3.27725463, -0.3, 0.5),
@@ -656,6 +671,11 @@ def main():
     for ref in (ref_one, ref_three, ref_three_nodamp):
         assert ref["field_sign_check_max_err"] < 1e-6, "field sign check failed"
         assert ref["stationarity_check"]["rel_diff"] < 0.05, "FD has not converged"
+    tensor_err = _verify_tensor_sign()
+    print(
+        f"dipole field tensor vs FD of the dipole potential: max err {tensor_err:.2e}"
+    )
+    assert tensor_err < 1e-6, "T_ij is not the field of a point dipole"
     print("\nAll prototype self-checks passed.")
 
 
