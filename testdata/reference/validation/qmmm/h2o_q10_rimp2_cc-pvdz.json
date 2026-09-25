@@ -1,0 +1,242 @@
+{
+  "row": "External potential in MP2 gradients",
+  "system": "h2o_q10_rimp2",
+  "basis": "cc-pvdz",
+  "method": "rimp2",
+  "charge": 0,
+  "multiplicity": 1,
+  "nao": 24,
+  "nuclear_repulsion": 9.189193229309746,
+  "atoms": [
+    {
+      "symbol": "O",
+      "xyz_bohr": [
+        0.0,
+        0.0,
+        0.22259084021251865
+      ]
+    },
+    {
+      "symbol": "H",
+      "xyz_bohr": [
+        0.0,
+        1.4275992699810498,
+        -0.8903652505761991
+      ]
+    },
+    {
+      "symbol": "H",
+      "xyz_bohr": [
+        0.0,
+        -1.4275992699810498,
+        -0.8903652505761991
+      ]
+    }
+  ],
+  "mm_charges": [
+    {
+      "q": -0.834,
+      "xyz_bohr": [
+        0.0,
+        4.333767362953408,
+        -3.156013284966377
+      ]
+    },
+    {
+      "q": 0.417,
+      "xyz_bohr": [
+        -0.23152848626855246,
+        6.06087850507619,
+        -2.6708277957337567
+      ]
+    },
+    {
+      "q": 0.417,
+      "xyz_bohr": [
+        0.6914901615921268,
+        4.420412393245649,
+        -4.825221867291342
+      ]
+    },
+    {
+      "q": -0.834,
+      "xyz_bohr": [
+        2.2323034848984276,
+        0.4387095579591668,
+        5.183265251097913
+      ]
+    },
+    {
+      "q": 0.417,
+      "xyz_bohr": [
+        1.5121798601265353,
+        0.0,
+        3.582990529382597
+      ]
+    },
+    {
+      "q": 0.417,
+      "xyz_bohr": [
+        2.6359511479835303,
+        2.1954962366777884,
+        5.032625197582602
+      ]
+    },
+    {
+      "q": 1.0,
+      "xyz_bohr": [
+        5.480205761238679,
+        2.4566439619345806,
+        -3.0235617993040993
+      ]
+    },
+    {
+      "q": -1.0,
+      "xyz_bohr": [
+        -6.42506882352121,
+        -2.0786987370215684,
+        2.267671349478074
+      ]
+    },
+    {
+      "q": 0.3,
+      "xyz_bohr": [
+        3.212534411760605,
+        -8.692740172999283,
+        4.3463700864996415
+      ]
+    },
+    {
+      "q": -0.3,
+      "xyz_bohr": [
+        -4.157397474043137,
+        7.369931885803741,
+        -7.180959273347234
+      ]
+    }
+  ],
+  "units": "Bohr / Hartree / a.u.; gradients are dE/dR (ferric mm_forces returns the FORCE = -mm_gradient)",
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": "scf.RHF exact 4-index J/K (conv_tol 1e-12, conv_tol_grad 1e-9) wrapped by qmmm.mm_charge(unit='Bohr'); mp.dfmp2.DFMP2(frozen=None) with auxmol from ferric's cc-pvdz-ri JSON; gradient = 5-point central FD of E_total at h = 0.002 and 2h Bohr (must agree to 5e-08)",
+    "grid": "none",
+    "aux_basis": {
+      "correlation": "cc-pvdz-ri",
+      "correlation_json": "crates/ferric-core/src/basis/bundled/cc-pvdz-ri.json",
+      "correlation_sha256": "8221d2a31b5bbebd39218fc3f9244917e173a338ff9c56904038443a06e2a250",
+      "scf": "none (exact four-centre J/K)"
+    },
+    "frozen_core": "none (all electrons correlated)",
+    "scf_convergence": {
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-09
+    },
+    "stability": null,
+    "basis": "cc-pvdz",
+    "basis_json": "crates/ferric-core/src/basis/bundled/cc-pvdz.json",
+    "basis_sha256": "ae48fcca0d533addd60dbd48490153130e697121767ba607e1d70f3b341eeef7",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/h2o.xyz",
+    "geometry_xyz_sha256": "284b6da243e9abcf0aa2d6e13ad7204946feecb55d27b7819f12097095fdd6ae",
+    "geometry_bohr": [
+      [
+        "O",
+        0.0,
+        0.0,
+        0.22259084021251865
+      ],
+      [
+        "H",
+        0.0,
+        1.4275992699810498,
+        -0.8903652505761991
+      ],
+      [
+        "H",
+        0.0,
+        -1.4275992699810498,
+        -0.8903652505761991
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_qmmm.py",
+    "git_head": "dfeb5daa34f791a42da36135daba64c9e7f600cb",
+    "generated_utc": "2026-09-24T23:18:04+00:00",
+    "basis_check": {
+      "nao": 24,
+      "replica_self_overlap_max_dev": 4.440892098500626e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 24,
+      "diag_skipped_cartesian": 0
+    }
+  },
+  "aux_basis": "cc-pvdz-ri",
+  "naux": 84,
+  "e_rhf": -76.03855941519029,
+  "e_corr": -0.20372302305748707,
+  "energy": -76.24228243824778,
+  "energy_gas_phase": -76.23080145443075,
+  "shift": -0.011480983817037327,
+  "gradient_fd": [
+    [
+      -0.030440468458348136,
+      -0.0027662349562085353,
+      -0.011333037040373029
+    ],
+    [
+      0.015521953129926658,
+      -0.010320355712689633,
+      0.009620588797609742
+    ],
+    [
+      0.012336398125700754,
+      0.004650385740490037,
+      0.0012177326524920318
+    ]
+  ],
+  "gradient_fd_2h": [
+    [
+      -0.030440467657433246,
+      -0.0027662351285151487,
+      -0.011333038754335334
+    ],
+    [
+      0.015521951989505567,
+      -0.010320357091364585,
+      0.009620590266878892
+    ],
+    [
+      0.012336397262835419,
+      0.004650386588700428,
+      0.0012177337513907815
+    ]
+  ],
+  "fd": {
+    "stencil": "5-point central",
+    "step_bohr": 0.002,
+    "max_abs_diff_h_vs_2h": 1.7139623054163167e-09
+  },
+  "rhf_gradient": [
+    [
+      -0.03191506708647601,
+      -0.0028012239241228323,
+      0.015749736589266483
+    ],
+    [
+      0.01630093684447402,
+      0.0014456881098450225,
+      -0.003723410594278276
+    ],
+    [
+      0.012931742900916185,
+      -0.007449686987950788,
+      -0.012477277815662102
+    ]
+  ],
+  "control_scaled_101": {
+    "scale": 1.01,
+    "energy": -76.24242955694058
+  }
+}
