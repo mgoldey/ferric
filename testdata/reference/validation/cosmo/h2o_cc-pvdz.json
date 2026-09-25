@@ -1,0 +1,203 @@
+{
+  "row": "COSMO",
+  "system": "h2o",
+  "basis": "cc-pvdz",
+  "charge": 0,
+  "multiplicity": 1,
+  "method": "rhf",
+  "nao": 24,
+  "nuclear_repulsion": 9.189193229309746,
+  "radius_scale": 1.17,
+  "lebedev_points": 110,
+  "radii_angstrom_ferric": {
+    "1": 1.2,
+    "6": 1.7,
+    "7": 1.55,
+    "8": 1.52
+  },
+  "radii_angstrom_pyscf_modified_bondi": {
+    "1": 1.1,
+    "6": 1.7,
+    "7": 1.55,
+    "8": 1.52
+  },
+  "point_charge_integral_check_max_abs": 2.220446049250313e-16,
+  "vacuum": {
+    "energy": -76.02676799737642,
+    "stability": null
+  },
+  "solvated": {
+    "eps_4.7": {
+      "epsilon": 4.7,
+      "ferric_model": {
+        "energy": -76.03346649023169,
+        "e_solvent": -0.007174385744486977,
+        "n_segments": 228,
+        "total_area_bohr2": 166.6819083999987,
+        "sum_q": -0.0017311198227411007,
+        "f_epsilon": 0.7115384615384616,
+        "converged": true,
+        "stability": null,
+        "n_dropped_by_ferric_keep_criterion": 0
+      },
+      "ferric_model_h_radius_1p10": {
+        "energy": -76.03432954824252,
+        "e_solvent": -0.008134022935741324,
+        "n_segments": 224,
+        "total_area_bohr2": 157.72394968600548,
+        "sum_q": -0.002029961266655389,
+        "f_epsilon": 0.7115384615384616,
+        "converged": true,
+        "stability": null
+      },
+      "pyscf_cosmo_matched_radii": {
+        "energy": -76.03345181556172,
+        "e_solvent": -0.0071574589380366555,
+        "n_segments": 228,
+        "total_area_bohr2": 166.6819083999987,
+        "sum_q": -0.0019829599690315003,
+        "f_epsilon": 0.7115384615384616,
+        "converged": true,
+        "stability": null
+      },
+      "pyscf_cosmo_modified_bondi": {
+        "energy": -76.03431936255667,
+        "e_solvent": -0.00812140702375107,
+        "n_segments": 224,
+        "total_area_bohr2": 157.72394968600548,
+        "sum_q": -0.002334265258584989,
+        "f_epsilon": 0.7115384615384616,
+        "converged": true,
+        "stability": null
+      },
+      "pyscf_cosmo_default": {
+        "energy": -76.0338003289283,
+        "e_solvent": -0.007536423158648019,
+        "n_segments": 556,
+        "total_area_bohr2": 164.58528333818674,
+        "sum_q": -0.002001338325160973,
+        "f_epsilon": 0.7115384615384616,
+        "converged": true,
+        "stability": null,
+        "vdw_scale": 1.2,
+        "lebedev_order": 29
+      }
+    },
+    "eps_78.4": {
+      "epsilon": 78.4,
+      "ferric_model": {
+        "energy": -76.0362581403446,
+        "e_solvent": -0.010443041150162908,
+        "n_segments": 228,
+        "total_area_bohr2": 166.6819083999987,
+        "sum_q": -0.002298348546316109,
+        "f_epsilon": 0.9809885931558935,
+        "converged": true,
+        "stability": null,
+        "n_dropped_by_ferric_keep_criterion": 0
+      },
+      "ferric_model_h_radius_1p10": {
+        "energy": -76.03750036110569,
+        "e_solvent": -0.011882969389908848,
+        "n_segments": 224,
+        "total_area_bohr2": 157.72394968600548,
+        "sum_q": -0.0026595267224942543,
+        "f_epsilon": 0.9809885931558935,
+        "converged": true,
+        "stability": null
+      },
+      "pyscf_cosmo_matched_radii": {
+        "energy": -76.03623668790625,
+        "e_solvent": -0.010416976545407531,
+        "n_segments": 228,
+        "total_area_bohr2": 166.6819083999987,
+        "sum_q": -0.0026458766326129535,
+        "f_epsilon": 0.9809885931558935,
+        "converged": true,
+        "stability": null
+      },
+      "pyscf_cosmo_modified_bondi": {
+        "energy": -76.0374849931969,
+        "e_solvent": -0.011862565935213053,
+        "n_segments": 224,
+        "total_area_bohr2": 157.72394968600548,
+        "sum_q": -0.003079074811202509,
+        "f_epsilon": 0.9809885931558935,
+        "converged": true,
+        "stability": null
+      },
+      "pyscf_cosmo_default": {
+        "energy": -76.03673360035918,
+        "e_solvent": -0.010975635023474798,
+        "n_segments": 556,
+        "total_area_bohr2": 164.58528333818674,
+        "sum_q": -0.002653970756768431,
+        "f_epsilon": 0.9809885931558935,
+        "converged": true,
+        "stability": null,
+        "vdw_scale": 1.2,
+        "lebedev_order": 29
+      }
+    }
+  },
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "method": "scf.RHF + solvent.pcm.PCM(method='COSMO')",
+      "ferric_model": "FerricModelCOSMO: gen_surface(SWIG) with ferric radii, keep w*swf > 4*pi*1e-16, get_D_S S, K=S, R=-f(eps) I, POINT-charge v and V_reaction (fakemol_for_charges expnt 1e16)",
+      "f_epsilon": "(eps-1)/(eps+0.5)",
+      "eri": "exact 4-index (no density fitting)",
+      "numpy": "1.26.4"
+    },
+    "grid": "Lebedev 110 per sphere (cavity only)",
+    "aux_basis": "none",
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-08
+    },
+    "stability": {
+      "method": "rhf",
+      "vacuum": null
+    },
+    "basis": "cc-pvdz",
+    "basis_json": "crates/ferric-core/src/basis/bundled/cc-pvdz.json",
+    "basis_sha256": "ae48fcca0d533addd60dbd48490153130e697121767ba607e1d70f3b341eeef7",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/h2o.xyz",
+    "geometry_xyz_sha256": "284b6da243e9abcf0aa2d6e13ad7204946feecb55d27b7819f12097095fdd6ae",
+    "geometry_bohr": [
+      [
+        "O",
+        0.0,
+        0.0,
+        0.22259084021251865
+      ],
+      [
+        "H",
+        0.0,
+        1.4275992699810498,
+        -0.8903652505761991
+      ],
+      [
+        "H",
+        0.0,
+        -1.4275992699810498,
+        -0.8903652505761991
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_cosmo.py",
+    "git_head": "dfeb5daa34f791a42da36135daba64c9e7f600cb",
+    "generated_utc": "2026-09-24T23:25:29+00:00",
+    "basis_self_check": {
+      "nao": 24,
+      "replica_self_overlap_max_dev": 4.440892098500626e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 24,
+      "diag_skipped_cartesian": 0
+    }
+  }
+}
