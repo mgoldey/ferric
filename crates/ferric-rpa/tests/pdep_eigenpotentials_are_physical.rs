@@ -198,7 +198,7 @@ fn unrestricted_eigenpotentials_are_v_orthonormal_and_diagonalize_v_plus_pi() {
     assert!(res.eigensolver_converged, "U: eigensolver not converged");
 
     let nelec = mol.nelec() as usize;
-    let two_s = mol.multiplicity as usize - 1;
+    let two_s = mol.multiplicity - 1;
     let nocc_a = (nelec + two_s) / 2;
     let nocc_b = (nelec - two_s) / 2;
     let v = coulomb_metric_2c(op, &dfbs).unwrap();
