@@ -29,7 +29,8 @@
 //! `[50, 86, 86, 110, 86]`; at `n_ang = 302` it gives `[50, 86, 266, 302, 266]`.
 //!
 //! [`crate::lebedev::lebedev`] only implements the subset
-//! `{6, 14, 26, 50, 110, 302}` — it has no 74/86/146/170/194/230/266 rule. We
+//! `{6, 14, 26, 50, 110, 302, 434, 590}` — it has no
+//! 74/86/146/170/194/230/266/350 rule. We
 //! therefore SNAP each NWChem-requested order onto a supported one. The snap
 //! direction was **chosen from measurements, not from taste**:
 //!
@@ -56,7 +57,9 @@
 //!
 //! Concretely, at `n_ang = 110` ferric's region table is
 //! `[26, 110, 110, 110, 110]`, and at `n_ang = 302` it is
-//! `[26, 110, 302, 302, 302]`. Measured reductions at 75 radial shells:
+//! `[26, 110, 302, 302, 302]` (434 -> `[26, 110, 434, 434, 434]`, 590 ->
+//! `[26, 110, 434, 590, 434]`; point reductions not measured for those two).
+//! Measured reductions at 75 radial shells:
 //! H2O 23.4%, CH4 23.2%, benzene 22.9%; at 99x302, H2O 33.5%.
 //!
 //! # Weight correctness
@@ -79,12 +82,14 @@ type Result<T> = std::result::Result<T, FerricError>;
 
 /// Angular Lebedev orders this crate can actually generate, ascending.
 /// Mirrors the `match` arms in [`crate::lebedev::lebedev`].
-pub const SUPPORTED_LEBEDEV_ORDERS: [usize; 6] = [6, 14, 26, 50, 110, 302];
+pub const SUPPORTED_LEBEDEV_ORDERS: [usize; 8] = [6, 14, 26, 50, 110, 302, 434, 590];
 
-/// The full Lebedev-Laikov ladder PySCF indexes into (`LEBEDEV_NGRID[4:]`).
+/// The full Lebedev-Laikov ladder PySCF indexes into (`LEBEDEV_NGRID[4:18]`, through 590).
 /// Only used to reproduce NWChem's *requested* per-region orders before
 /// snapping them onto [`SUPPORTED_LEBEDEV_ORDERS`].
-const NWCHEM_LADDER: [usize; 11] = [38, 50, 74, 86, 110, 146, 170, 194, 230, 266, 302];
+const NWCHEM_LADDER: [usize; 14] = [
+    38, 50, 74, 86, 110, 146, 170, 194, 230, 266, 302, 350, 434, 590,
+];
 
 /// Lebedev order used in the innermost region (`r/R_bragg` below the first
 /// NWChem boundary). NWChem asks for 50 there; ferric drops to 26 because the
@@ -260,6 +265,15 @@ mod tests {
     }
 
     #[test]
+    fn region_table_at_434_and_590_snaps_onto_supported_orders() {
+        // NWChem wants [50, 86, 350, 434, 350]; 350 has no ferric rule and
+        // snaps UP to 434.
+        assert_eq!(region_orders(434).unwrap(), [26, 110, 434, 434, 434]);
+        // NWChem wants [50, 86, 434, 590, 434]; all of those are supported.
+        assert_eq!(region_orders(590).unwrap(), [26, 110, 434, 590, 434]);
+    }
+
+    #[test]
     fn unsupported_orders_are_hard_errors_not_silent_defaults() {
         // Not a ferric-supported Lebedev order at all.
         assert!(region_orders(86).is_err());
@@ -274,7 +288,7 @@ mod tests {
     fn every_pruned_order_is_generatable() {
         // The whole point of snapping: lebedev() must never be handed an
         // order it cannot build. Panics here would be a live bug.
-        for n_ang in [110, 302] {
+        for n_ang in [110, 302, 434, 590] {
             for z in [1, 6, 8, 16, 26] {
                 let (rs, _) = treutler_ahlrichs_m4(z, 75);
                 let orders =
@@ -311,7 +325,7 @@ mod tests {
     fn orders_are_monotone_within_the_core_and_never_exceed_full_order() {
         // No shell may ever be assigned a HIGHER order than the unpruned grid
         // would use -- pruning must only ever remove points.
-        for n_ang in [110, 302] {
+        for n_ang in [110, 302, 434, 590] {
             for z in [1, 8, 17] {
                 let (rs, _) = treutler_ahlrichs_m4(z, 75);
                 let orders =
