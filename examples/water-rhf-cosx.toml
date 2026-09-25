@@ -1,8 +1,8 @@
 # RHF with COSX seminumerical exchange (Neese 2009; Izsak-Neese 2011 overlap fit).
 #
 # k_builder = "cosx" replaces the direct 4-centre K by a grid-based
-# seminumerical K; J stays integral-direct. RHF only (UHF/ROHF ignore
-# k_builder). Ignored with a warning if DF-J/DF-K is active.
+# seminumerical K; J stays integral-direct. RHF, UHF and ROHF all honour
+# k_builder. Ignored with a warning if DF-J/DF-K is active.
 #
 # cosx_grid defaults to (50,110) — the measured operating point; coarser grids
 # fail the 0.1 kcal/mol isodesmic reaction-energy bar. angular must be one of

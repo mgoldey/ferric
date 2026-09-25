@@ -1,3 +1,16 @@
+# B3LYP / cc-pVDZ on benzene with RI-J and RI-K, meant to be run under MPI.
+#
+# The file itself is an ordinary ksdft input: MPI is selected at build and
+# launch time, not in the TOML. Build the MPI binary and launch it with, e.g.,
+#
+#   cargo build --release --workspace --features mpi
+#   mpirun -np 2 target/release/ferric examples/benzene-dfb3lyp-mpi.toml
+#
+# The same file runs serially with the normal binary. The MPI build splits the
+# DF-J/K work across ranks. crates/ferric-scf/tests/mpi_dfjk_banding.rs
+# asserts that the ranks agree with each other to within 1e-12 Ha. Its notes
+# (not an assertion) record the 2-rank energy differing from a separate serial
+# run by about 5e-6 Ha on benzene, a GEMM-shape effect.
 [molecule]
 xyz = "testdata/molecules/benzene.xyz"
 

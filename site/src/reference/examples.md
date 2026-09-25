@@ -29,27 +29,14 @@ verbatim from that file's comment block. **Nothing in CI re-checks it.** Where
 the header cites a Rust test as the real reference, that test is the check,
 not the example.
 
-## Files that do not run as shipped, or are misleading
+## Examples that need extra setup
 
-- **`water-ccsd.toml` runs H2/STO-3G, not water.** The file name does not
-  describe its contents.
-- **`water-tdhf-static-alpha.toml` fails** with `unphysical static
-  polarizability … alpha_xx = -2.682761e0 (negative)`. It leaves `[gw]
-  scissor` at 0, where the RPAx@PBE α tensor has a negative diagonal
-  component and the run is refused. Add `scissor = 0.36` (about 0.3–0.4 Ha)
-  to its `[gw]` section. Its header's "9.24 vs DOSD 9.64 a.u." is the
-  `scissor = 0` value; see
-  [RPA and GW](../methods/rpa-gw.md) for the α at a physical scissor.
-- **`benzene-dfb3lyp-mpi.toml` contains no MPI settings.** Only the file name
-  refers to MPI: the same input is meant to be launched under the MPI build
-  (`--features mpi`, which is not published).
-- **The `water-rhf-cosx.toml` header conflicts with the code.** It says
-  "RHF only (UHF/ROHF ignore k_builder)", but `solve_uhf` and the ROHF solver
-  both honour `[scf] k_builder`.
-- **Three kinds need `FERRIC_TERF_TABLE_DIR`:** `water-mp2v.toml`,
-  `water-scs-mp2-2terfc.toml`, and any `rs-mp2-rpa` run with
-  `attenuator = "terf"`. They need the tempered-erfc interpolation tables and
-  hard-error without them.
+- `water-mp2v.toml`, `water-scs-mp2-2terfc.toml` and any `rs-mp2-rpa` run
+  with `attenuator = "terf"` need the tempered-erfc interpolation tables:
+  point `FERRIC_TERF_TABLE_DIR` at them. Without it these runs stop with an
+  error.
+- `benzene-dfb3lyp-mpi.toml` is an ordinary input; its header gives the
+  `--features mpi` build and the `mpirun` launch line.
 
 ## SCF and DFT
 
@@ -64,12 +51,12 @@ See [SCF and DFT](../methods/scf.md).
 | `benzene-rhf-def2.toml` | benzene / def2-SVP | `rhf` | — | |
 | `benzene-rhf-def2-rijk.toml` | benzene / def2-SVP | `rhf` | — | RI-JK. |
 | `decane-rhf.toml` | decane / STO-3G | `rhf` | — | `k_builder = "link"`. |
-| `water-rhf-cosx.toml` | H2O / cc-pVDZ | `rhf` | "E(COSX) − E(direct) is reported in crates/ferric-scf/tests/cosx_scf.rs" | COSX exchange. See the header conflict above. |
+| `water-rhf-cosx.toml` | H2O / cc-pVDZ | `rhf` | "E(COSX) − E(direct) is reported in crates/ferric-scf/tests/cosx_scf.rs" | COSX exchange. |
 | `h_uhf.toml` | H atom / STO-3G, doublet | `uhf` | — | |
 | `h2_opt.toml` | stretched H2 / STO-3G | `rhf` / optimize | — | |
 | `water-frequencies.toml` | H2O / STO-3G | `rhf` / frequencies | — | FD Hessian. Check `Hessian asymmetry`. |
 | `benzene-dfb3lyp.toml` | benzene / def2-SVP | `ksdft` B3LYP | — | RI-JK is on automatically for `ksdft`. |
-| `benzene-dfb3lyp-mpi.toml` | benzene / cc-pVDZ | `ksdft` B3LYP | — | See above: no MPI settings in the file. |
+| `benzene-dfb3lyp-mpi.toml` | benzene / cc-pVDZ | `ksdft` B3LYP | — | Run under `mpirun` with the MPI build (see its header). |
 | `water-wb97xv.toml` | H2O / cc-pVDZ | `ksdft` wB97X-V | — | |
 | `water-pbe-d3bj.toml` | H2O / cc-pVDZ | `ksdft` PBE + D3(BJ) | — | Prints E(KS-DFT) and E(D3BJ) separately. |
 | `water-pbe-pruned-grid.toml` | H2O / cc-pVDZ | `ksdft` PBE / energy | "removes ~23% of the grid points" (at 75×110) | Validated in `crates/ferric-dft/tests/grid_prune_live_scf.rs`. |
@@ -103,7 +90,7 @@ See [Coupled cluster](../methods/cc.md) and
 
 | File | System / basis | `kind` | Reference in header | Notes |
 |---|---|---|---|---|
-| `water-ccsd.toml` | **H2** / STO-3G | `ccsd` | "CCSD correlation energy = −0.02052453 Hartree (exact-integral numpy reference)" (checked by `test_ccsd_h2_sto3g` in `crates/ferric-cc/src/ccsd.rs`) | Misnamed. Aux `def2-qzvpp-rifit`. |
+| `water-ccsd.toml` | H2O / cc-pVDZ | `ccsd` | "PySCF CCSD run on the same density-fitted integrals gives E_corr = -0.2135061893 Ha" | All electrons, aux `cc-pvdz-ri`. |
 | `water-linlccd.toml` | H2O / 6-31G | `linlccd` | — | |
 | `water-wb97xlv.toml` | H2O / 6-31G | `wb97x-l-v` | — | λ = 0.6, ω = 0.1 Bohr⁻¹ (published values). Smoke grade. |
 | `water-b2plyp.toml` | H2O / cc-pVDZ | `b2plyp` | — | Spike grade. Aux `cc-pvdz-rifit` (an alias of `cc-pvdz-ri`). |
@@ -121,7 +108,7 @@ See [RPA and GW](../methods/rpa-gw.md).
 | `benzene-rijk-pdep-rpa.toml` | benzene / cc-pVDZ | `pdep-rpa` | — | Full rank (`trunc_thresh = 0`). |
 | `water-c6-pdep.toml` | H2O / aug-cc-pVTZ | `pdep-rpa`, `c6_source = "pdep"` | "DOSD molecular reference (Meath/Toulouse): C6(H2O–H2O) = 45.3 a.u." | Compare the printed "molecular C6" line against it, not the sum of the NPZ `c6_iso` entries. Writes to `/tmp`. |
 | `argon-c6-rpa-pbe.toml` | Ar / aug-cc-pVTZ | `pdep-rpa` @PBE | "C6(Ar-Ar) = 56.4 a.u. vs DOSD 64.3 (-12%); the full He/Ne/Ar sweep gives mean \|err\| 8.9% at RPA@PBE — vs 39% at RPA@HF" | Writes to `/tmp`. |
-| `water-tdhf-static-alpha.toml` | H2O / cc-pVDZ | `tdhf-static-polarizability` @PBE | "measured 9.24 vs DOSD 9.64 a.u. at this same functional/basis via the underlying run_bse_c6_ks spike" | **Does not run as shipped** (`[gw] scissor` is 0; see above). Static α only. Executed by a test (for the warning only). |
+| `water-tdhf-static-alpha.toml` | H2O / cc-pVDZ | `tdhf-static-polarizability` @PBE | "alpha_iso = 5.20 a.u. … against the DOSD reference 9.64 a.u.: 46% LOW" | Sets `[gw] scissor = 0.36` Ha; at `scissor = 0` the run is refused (negative α diagonal). Static α only. Executed by a test (for the warning only). |
 
 ## GW and BSE
 
