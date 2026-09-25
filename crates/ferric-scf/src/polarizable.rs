@@ -14,10 +14,10 @@
 //! ([`crate::qmmm::electric_field_at_points`]); `E_i^perm` is the field of
 //! the OTHER MM permanent charges (point or Gaussian-smeared, from
 //! [`ferric_core::external_potential::ExternalPotential`]); `T_ij` is the
-//! Thole-damped dipole-dipole interaction tensor:
+//! Thole-damped dipole FIELD tensor (the field at `i` of a unit dipole at `j`):
 //!
 //! ```text
-//! T_ij = lambda3(u_ij) * I / r_ij^3  -  3 * lambda5(u_ij) * (r_hat (x) r_hat) / r_ij^3
+//! T_ij = 3 * lambda5(u_ij) * (r_hat (x) r_hat) / r_ij^3  -  lambda3(u_ij) * I / r_ij^3
 //! u_ij = r_ij / (alpha_i * alpha_j)^(1/6)
 //! lambda3 = 1 - exp(-a*u^3)
 //! lambda5 = 1 - (1 + a*u^3) * exp(-a*u^3)
@@ -246,8 +246,9 @@ pub struct InductionResult {
     pub v_induced: Array2<f64>,
 }
 
-/// Thole-damped dipole-dipole interaction tensor `T_ij` (3x3, a.u.).
-/// `thole_a: None` gives the bare (undamped) tensor.
+/// Thole-damped dipole field tensor `T_ij` (3x3, a.u.): the field at site
+/// `i` of a unit point dipole at `j` is `T_ij mu_j`, so head-to-tail dipoles
+/// reinforce each other. `thole_a: None` gives the bare (undamped) tensor.
 fn thole_tensor(
     ri: [f64; 3],
     rj: [f64; 3],
@@ -274,7 +275,7 @@ fn thole_tensor(
     for a in 0..3 {
         for b in 0..3 {
             let eye = if a == b { 1.0 } else { 0.0 };
-            t[a][b] = (lam3 * eye - 3.0 * lam5 * rhat[a] * rhat[b]) * inv_r3;
+            t[a][b] = (3.0 * lam5 * rhat[a] * rhat[b] - lam3 * eye) * inv_r3;
         }
     }
     t

@@ -10,7 +10,7 @@ Model (Applequist-Thole induced point dipoles, matching
 
   E_i^QM(D)   field of the QM nuclei + electron density at site i
   E_i^perm    field of the other MM permanent point charges at site i
-  T_ij        Thole-damped dipole-dipole interaction tensor (damping a=2.1304,
+  T_ij        Thole-damped dipole field tensor (damping a=2.1304,
               u = r_ij / (alpha_i alpha_j)^(1/6); `damping=None` disables)
 
 Dense (3N)x(3N) linear solve for the induced dipoles at fixed D, done once per
@@ -203,10 +203,10 @@ def dipole_potential_integral(mol, point):
 
 
 def thole_tensor(ri, rj, alpha_i, alpha_j, thole_a):
-    """3x3 dipole-dipole interaction tensor T_ij (a.u.), Thole-damped if
-    `thole_a` is not None:
+    """3x3 dipole FIELD tensor T_ij (a.u.): the field at r_i of a unit point
+    dipole at r_j is T_ij mu_j. Thole-damped if `thole_a` is not None:
 
-        T_ij = lambda3 * I / r^3 - 3 * lambda5 * (r_hat (x) r_hat) / r^3
+        T_ij = 3 * lambda5 * (r_hat (x) r_hat) / r^3 - lambda3 * I / r^3
 
     with u = r / (alpha_i alpha_j)^(1/6),
          lambda3 = 1 - exp(-a u^3),
@@ -229,7 +229,36 @@ def thole_tensor(ri, rj, alpha_i, alpha_j, thole_a):
         lam5 = 1.0 - (1.0 + au3) * expo
     eye = np.eye(3)
     outer = np.outer(rhat, rhat)
-    return (lam3 * eye - 3.0 * lam5 * outer) / r**3
+    return (3.0 * lam5 * outer - lam3 * eye) / r**3
+
+
+def _verify_tensor_sign(h=1e-5):
+    """The undamped T_ij must be the field of a point dipole: E(r) = -grad phi,
+    phi(r) = mu . (r - r_j) / |r - r_j|^3. Central FD of phi at r_i; returns
+    the max |T mu - E_fd| over a few random dipoles and separations."""
+    rng = np.random.default_rng(7)
+    worst = 0.0
+    for _ in range(5):
+        ri = rng.normal(size=3) * 3.0
+        rj = rng.normal(size=3) * 3.0
+        mu = rng.normal(size=3)
+
+        def phi(r):
+            d = np.asarray(r) - rj
+            return float(mu @ d) / np.linalg.norm(d) ** 3
+
+        e_fd = np.zeros(3)
+        for k in range(3):
+            rp = ri.copy()
+            rm = ri.copy()
+            rp[k] += h
+            rm[k] -= h
+            e_fd[k] = -(phi(rp) - phi(rm)) / (2 * h)
+        worst = max(
+            worst,
+            float(np.max(np.abs(thole_tensor(ri, rj, 1.0, 1.0, None) @ mu - e_fd))),
+        )
+    return worst
 
 
 def build_permanent_field(sites, mm_charges, exclusions):
@@ -656,6 +685,11 @@ def main():
     for ref in (ref_one, ref_three, ref_three_nodamp):
         assert ref["field_sign_check_max_err"] < 1e-6, "field sign check failed"
         assert ref["stationarity_check"]["rel_diff"] < 0.05, "FD has not converged"
+    tensor_err = _verify_tensor_sign()
+    print(
+        f"dipole field tensor vs FD of the dipole potential: max err {tensor_err:.2e}"
+    )
+    assert tensor_err < 1e-6, "T_ij is not the field of a point dipole"
     print("\nAll prototype self-checks passed.")
 
 

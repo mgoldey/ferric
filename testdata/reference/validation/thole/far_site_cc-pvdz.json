@@ -1,0 +1,281 @@
+{
+  "row": "Thole polarizable embedding",
+  "system": "far_site",
+  "basis": "cc-pvdz",
+  "method": "rhf",
+  "charge": 0,
+  "multiplicity": 1,
+  "nao": 24,
+  "nuclear_repulsion": 9.189193229309746,
+  "atoms": [
+    {
+      "symbol": "O",
+      "xyz_bohr": [
+        0.0,
+        0.0,
+        0.22259084021251865
+      ]
+    },
+    {
+      "symbol": "H",
+      "xyz_bohr": [
+        0.0,
+        1.4275992699810498,
+        -0.8903652505761991
+      ]
+    },
+    {
+      "symbol": "H",
+      "xyz_bohr": [
+        0.0,
+        -1.4275992699810498,
+        -0.8903652505761991
+      ]
+    }
+  ],
+  "mm_atoms": [
+    {
+      "symbol": "O",
+      "q": -0.834,
+      "xyz_bohr": [
+        0.0,
+        4.333767362953408,
+        -3.156013284966377
+      ],
+      "alpha_angstrom3": 0.0,
+      "alpha_bohr3": 0.0
+    },
+    {
+      "symbol": "H",
+      "q": 0.417,
+      "xyz_bohr": [
+        -0.13054832593447158,
+        6.07626630638598,
+        -2.6884901701448287
+      ],
+      "alpha_angstrom3": 0.0,
+      "alpha_bohr3": 0.0
+    },
+    {
+      "symbol": "H",
+      "q": 0.417,
+      "xyz_bohr": [
+        0.8026049804341828,
+        4.358005332190695,
+        -4.776865240695173
+      ],
+      "alpha_angstrom3": 0.0,
+      "alpha_bohr3": 0.0
+    },
+    {
+      "symbol": "O",
+      "q": -0.834,
+      "xyz_bohr": [
+        0.0,
+        -4.482801624131477,
+        -3.272200363653053
+      ],
+      "alpha_angstrom3": 0.0,
+      "alpha_bohr3": 0.0
+    },
+    {
+      "symbol": "H",
+      "q": 0.417,
+      "xyz_bohr": [
+        -1.6657205523817193,
+        -5.121382532880541,
+        -3.5713871957742644
+      ],
+      "alpha_angstrom3": 0.0,
+      "alpha_bohr3": 0.0
+    },
+    {
+      "symbol": "H",
+      "q": 0.417,
+      "xyz_bohr": [
+        1.1002515522250613,
+        -5.791286966903624,
+        -3.863162228528583
+      ],
+      "alpha_angstrom3": 0.0,
+      "alpha_bohr3": 0.0
+    },
+    {
+      "symbol": "O",
+      "q": -0.834,
+      "xyz_bohr": [
+        2.4508225225631337,
+        0.0,
+        5.124235885338786
+      ],
+      "alpha_angstrom3": 0.0,
+      "alpha_bohr3": 0.0
+    },
+    {
+      "symbol": "H",
+      "q": 0.417,
+      "xyz_bohr": [
+        2.1771272135285265,
+        1.6051035126059454,
+        5.9120536864786635
+      ],
+      "alpha_angstrom3": 0.0,
+      "alpha_bohr3": 0.0
+    },
+    {
+      "symbol": "H",
+      "q": 0.417,
+      "xyz_bohr": [
+        3.517936529442922,
+        -0.8954482554054698,
+        6.278083108489508
+      ],
+      "alpha_angstrom3": 0.0,
+      "alpha_bohr3": 0.0
+    },
+    {
+      "symbol": "O",
+      "q": -0.834,
+      "xyz_bohr": [
+        6.236096211064703,
+        3.0235617993040993,
+        3.96842486158663
+      ],
+      "alpha_angstrom3": 0.0,
+      "alpha_bohr3": 0.0
+    },
+    {
+      "symbol": "H",
+      "q": 0.417,
+      "xyz_bohr": [
+        4.802405536099416,
+        2.1411391104769883,
+        3.3067719745521416
+      ],
+      "alpha_angstrom3": 0.0,
+      "alpha_bohr3": 0.0
+    },
+    {
+      "symbol": "H",
+      "q": 0.417,
+      "xyz_bohr": [
+        6.08181995714722,
+        4.699967952572596,
+        3.3067719745521416
+      ],
+      "alpha_angstrom3": 0.0,
+      "alpha_bohr3": 0.0
+    },
+    {
+      "symbol": "Na",
+      "q": 1.0,
+      "xyz_bohr": [
+        -5.6691783736951855,
+        2.267671349478074,
+        4.913287923869161
+      ],
+      "alpha_angstrom3": 0.0,
+      "alpha_bohr3": 0.0
+    },
+    {
+      "symbol": "X",
+      "q": 0.0,
+      "xyz_bohr": [
+        34.11071433201569,
+        -28.425595276679744,
+        34.72835825610292
+      ],
+      "alpha_angstrom3": 10.0,
+      "alpha_bohr3": 67.48334493949994
+    }
+  ],
+  "exclusions": [],
+  "thole_a": 2.1304,
+  "tensor_convention": "reference: physical T = (3 l5 r^r^ - l3 I)/r^3, mu = alpha (E0 + T mu)",
+  "units": "Bohr / Hartree / a.u.; gradients are dE/dR; MM rows move charge AND site together",
+  "provenance": {
+    "code": "numpy Thole model on PySCF integrals + qmmm.mm_charge",
+    "version": "2.13.1",
+    "keywords": "RHF exact 4-index J/K, conv_tol 1e-12, conv_tol_grad 1e-09; qmmm.mm_charge(unit='Bohr'); polarization in patched get_veff/energy_elec (see generator docstring); field integrals int1e_iprinv + transpose (exact point dipole)",
+    "grid": "none",
+    "aux_basis": "none",
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-09
+    },
+    "stability": null,
+    "basis": "cc-pvdz",
+    "basis_json": "crates/ferric-core/src/basis/bundled/cc-pvdz.json",
+    "basis_sha256": "ae48fcca0d533addd60dbd48490153130e697121767ba607e1d70f3b341eeef7",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/h2o.xyz",
+    "geometry_xyz_sha256": "284b6da243e9abcf0aa2d6e13ad7204946feecb55d27b7819f12097095fdd6ae",
+    "geometry_bohr": [
+      [
+        "O",
+        0.0,
+        0.0,
+        0.22259084021251865
+      ],
+      [
+        "H",
+        0.0,
+        1.4275992699810498,
+        -0.8903652505761991
+      ],
+      [
+        "H",
+        0.0,
+        -1.4275992699810498,
+        -0.8903652505761991
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_thole.py",
+    "git_head": "f6a0e6399aa9580218085a4a10dae18a926ffbaa",
+    "generated_utc": "2026-09-25T17:37:58+00:00",
+    "basis_check": {
+      "nao": 24,
+      "replica_self_overlap_max_dev": 4.440892098500626e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 24,
+      "diag_skipped_cartesian": 0
+    },
+    "self_checks": {
+      "dipole_tensor": {
+        "check": "T_phys(undamped) . mu == -grad[mu.(r-Rj)/|r-Rj|^3] by central FD",
+        "max_abs_err": 6.329364116153258e-13,
+        "ferric_T_times_mu_over_physical_field": -0.9999999999825203
+      }
+    }
+  },
+  "energy": -76.05266004130293,
+  "e_pol": -2.5642002690626503e-06,
+  "energy_plain_embedding": -76.05265747710276,
+  "energy_difference_pol_minus_plain": -2.564200173083009e-06,
+  "induced_dipoles": [
+    [
+      0.01272066772930569,
+      -0.00962243055584989,
+      0.009574709667696142
+    ]
+  ],
+  "far_site": {
+    "distance_angstrom_from_qm_centroid": 30.0,
+    "alpha_bohr3": 67.48334493949994,
+    "e0_nonpolarized_at_site": [
+      0.00018850084020887145,
+      -0.00014258970511752672,
+      0.00014188255296963045
+    ],
+    "e_pol_classical_limit": -2.5642000729975983e-06,
+    "rel_diff_scf_e_pol_vs_classical": 7.64624625273882e-08,
+    "mu_classical": [
+      0.012720667221200832,
+      -0.009622430255267636,
+      0.009574709262946443
+    ]
+  }
+}
