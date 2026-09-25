@@ -348,6 +348,10 @@ fn check_vec(ctx: &str, what: &str, orbs: &[usize], got: &[f64], want: &[f64], t
     let mut worst = (0.0_f64, 0usize, 0.0_f64, 0.0_f64);
     for ((&p, &g), &w) in orbs.iter().zip(got).zip(want) {
         let d = (g - w).abs();
+        assert!(
+            d.is_finite(),
+            "{ctx}: {what}[{p}] is not finite: ferric {g} ref {w}"
+        );
         eprintln!(
             "{ctx}: {:<28} ferric {g:+.10} ref {w:+.10} |d| {d:.2e} ({:.4} meV)",
             format!("{what}[{p}]"),
@@ -522,20 +526,24 @@ fn uhf(sys: &Sys) -> ScfResult {
         tried.push(format!("{name}: E {:.10} |d| {d:.2e}", res.energy));
         if res.converged && d < TOL_E_SCF {
             eprintln!("{}: UHF state reached with {name}", sys.label);
-            if let Some(st) = res.stability.as_ref() {
-                // OH's degenerate pi hole gives an exact zero mode, which
-                // ferric reports as MARGINAL (lambda_min ~1e-11); that is the
-                // correct verdict. Unstable or indeterminate still fails.
-                assert!(
-                    matches!(
-                        st.verdict(),
-                        StabilityVerdict::Stable | StabilityVerdict::Marginal
-                    ),
-                    "{}: ferric UHF state not stable: {}",
-                    sys.label,
-                    st.summary()
-                );
-            }
+            let st = res.stability.as_ref().unwrap_or_else(|| {
+                panic!(
+                    "{}: no stability analysis for the accepted UHF state",
+                    sys.label
+                )
+            });
+            // OH's degenerate pi hole gives an exact zero mode, which
+            // ferric reports as MARGINAL (lambda_min ~1e-11); that is the
+            // correct verdict. Unstable or indeterminate still fails.
+            assert!(
+                matches!(
+                    st.verdict(),
+                    StabilityVerdict::Stable | StabilityVerdict::Marginal
+                ),
+                "{}: ferric UHF state not stable: {}",
+                sys.label,
+                st.summary()
+            );
             check_close(&sys.label, "E_UHF", res.energy, e_ref, TOL_E_SCF);
             return res;
         }
