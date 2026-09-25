@@ -135,7 +135,7 @@ use ferric_scf::ScfResult;
 #[derive(Debug, Clone)]
 pub struct AttenuatedMp2Config {
     /// Range-separation parameter omega in Bohr⁻¹.
-    /// Default: 0.222234 Bohr⁻¹ (= 0.420 Å⁻¹, dissertation erfc optimal).
+    /// Default: 0.222254 Bohr⁻¹ (= 0.420 Å⁻¹, dissertation erfc optimal).
     pub omega: f64,
     /// Optional scaling factor for the correlation energy.
     pub scaling: f64,

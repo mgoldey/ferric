@@ -1,0 +1,168 @@
+{
+  "row": "COSMO",
+  "system": "ho2",
+  "basis": "cc-pvdz",
+  "charge": 0,
+  "multiplicity": 2,
+  "method": "uhf",
+  "nao": 33,
+  "nuclear_repulsion": 32.117020563592035,
+  "radius_scale": 1.17,
+  "lebedev_points": 110,
+  "radii_angstrom_ferric": {
+    "1": 1.2,
+    "6": 1.7,
+    "7": 1.55,
+    "8": 1.52
+  },
+  "radii_angstrom_pyscf_modified_bondi": {
+    "1": 1.1,
+    "6": 1.7,
+    "7": 1.55,
+    "8": 1.52
+  },
+  "point_charge_integral_check_max_abs": 2.7755575615628914e-16,
+  "vacuum": {
+    "energy": -150.18740629736982,
+    "stability": {
+      "internal_stable": true,
+      "s_squared": 0.7591663653716729
+    }
+  },
+  "solvated": {
+    "eps_78.4": {
+      "epsilon": 78.4,
+      "ferric_model": {
+        "energy": -150.19455852326485,
+        "e_solvent": -0.007940520587357799,
+        "n_segments": 234,
+        "total_area_bohr2": 206.6850787050657,
+        "sum_q": -0.0022120914698649935,
+        "f_epsilon": 0.9809885931558935,
+        "converged": true,
+        "stability": {
+          "internal_stable": true,
+          "s_squared": 0.7593255390969302
+        },
+        "n_dropped_by_ferric_keep_criterion": 0
+      },
+      "ferric_model_h_radius_1p10": {
+        "energy": -150.19570417151314,
+        "e_solvent": -0.009314743972338418,
+        "n_segments": 233,
+        "total_area_bohr2": 202.59449732188412,
+        "sum_q": -0.0022844152569013315,
+        "f_epsilon": 0.9809885931558935,
+        "converged": true,
+        "stability": {
+          "internal_stable": true,
+          "s_squared": 0.75935116602124
+        }
+      },
+      "pyscf_cosmo_matched_radii": {
+        "energy": -150.19454460898115,
+        "e_solvent": -0.00792377261974679,
+        "n_segments": 234,
+        "total_area_bohr2": 206.6850787050657,
+        "sum_q": -0.0026356220265629365,
+        "f_epsilon": 0.9809885931558935,
+        "converged": true,
+        "stability": {
+          "internal_stable": true,
+          "s_squared": 0.7593254689352262
+        }
+      },
+      "pyscf_cosmo_modified_bondi": {
+        "energy": -150.19569479559092,
+        "e_solvent": -0.009302103922765545,
+        "n_segments": 233,
+        "total_area_bohr2": 202.59449732188412,
+        "sum_q": -0.002736577979611604,
+        "f_epsilon": 0.9809885931558935,
+        "converged": true,
+        "stability": {
+          "internal_stable": true,
+          "s_squared": 0.7593511452711539
+        }
+      },
+      "pyscf_cosmo_default": {
+        "energy": -150.19516714211758,
+        "e_solvent": -0.00867141251441196,
+        "n_segments": 571,
+        "total_area_bohr2": 211.10110578062805,
+        "sum_q": -0.0021243041481874003,
+        "f_epsilon": 0.9809885931558935,
+        "converged": true,
+        "stability": {
+          "internal_stable": true,
+          "s_squared": 0.7593434832804151
+        },
+        "vdw_scale": 1.2,
+        "lebedev_order": 29
+      }
+    }
+  },
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "method": "scf.UHF + solvent.pcm.PCM(method='COSMO')",
+      "ferric_model": "FerricModelCOSMO: gen_surface(SWIG) with ferric radii, keep w*swf > 4*pi*1e-16, get_D_S S, K=S, R=-f(eps) I, POINT-charge v and V_reaction (fakemol_for_charges expnt 1e16)",
+      "f_epsilon": "(eps-1)/(eps+0.5)",
+      "eri": "exact 4-index (no density fitting)",
+      "numpy": "1.26.4"
+    },
+    "grid": "Lebedev 110 per sphere (cavity only)",
+    "aux_basis": "none",
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-08
+    },
+    "stability": {
+      "method": "uhf",
+      "vacuum": {
+        "internal_stable": true,
+        "s_squared": 0.7591663653716729
+      }
+    },
+    "basis": "cc-pvdz",
+    "basis_json": "crates/ferric-core/src/basis/bundled/cc-pvdz.json",
+    "basis_sha256": "ae48fcca0d533addd60dbd48490153130e697121767ba607e1d70f3b341eeef7",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/ho2.xyz",
+    "geometry_xyz_sha256": "2a4bc751278a939167ae70420074117ac33a2e1bb19e61409f7999dfc3804f3a",
+    "geometry_bohr": [
+      [
+        "O",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "O",
+        2.5152254717960973,
+        0.0,
+        0.0
+      ],
+      [
+        "H",
+        -0.4529140995760551,
+        1.7781493620333773,
+        0.0
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_cosmo.py",
+    "git_head": "dfeb5daa34f791a42da36135daba64c9e7f600cb",
+    "generated_utc": "2026-09-24T23:31:29+00:00",
+    "basis_self_check": {
+      "nao": 33,
+      "replica_self_overlap_max_dev": 4.440892098500626e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 33,
+      "diag_skipped_cartesian": 0
+    }
+  }
+}

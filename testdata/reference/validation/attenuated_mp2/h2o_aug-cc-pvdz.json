@@ -1,0 +1,119 @@
+{
+  "row": "Attenuated RI-MP2",
+  "system": "h2o",
+  "basis": "aug-cc-pvdz",
+  "auxbasis": "aug-cc-pvdz-rifit",
+  "charge": 0,
+  "multiplicity": 1,
+  "nao": 41,
+  "naux": 118,
+  "nuclear_repulsion": 9.189193229309746,
+  "rhf_energy": -76.04136463771991,
+  "coulomb": {
+    "e_os": -0.16515182253423996,
+    "e_ss": -0.05675300921840086,
+    "e_corr": -0.2219048317526408
+  },
+  "attenuated": [
+    {
+      "omega_bohr_inv": 0.2,
+      "omega_angstrom_inv": 0.37794519772,
+      "e_corr": -0.21650698349828812,
+      "e_os": -0.1615315950597533,
+      "e_ss": -0.0549753884385348,
+      "exact_4index_e_corr_info": -0.21651629143324902,
+      "ri_error_info": 9.307934960900432e-06
+    },
+    {
+      "omega_bohr_inv": 0.2222544445775211,
+      "omega_angstrom_inv": 0.42,
+      "e_corr": -0.214612082947729,
+      "e_os": -0.16026871365727197,
+      "e_ss": -0.05434336929045701,
+      "exact_4index_e_corr_info": -0.2146216415702404,
+      "ri_error_info": 9.558622511424142e-06
+    },
+    {
+      "omega_bohr_inv": 0.42,
+      "omega_angstrom_inv": 0.7936849152119999,
+      "e_corr": -0.18355105023502205,
+      "e_os": -0.13959810326533598,
+      "e_ss": -0.04395294696968608,
+      "exact_4index_e_corr_info": -0.18356508860788223,
+      "ri_error_info": 1.403837286018117e-05
+    },
+    {
+      "omega_bohr_inv": 1.0,
+      "omega_angstrom_inv": 1.8897259886,
+      "e_corr": -0.06827186214414167,
+      "e_os": -0.05797124618225487,
+      "e_ss": -0.01030061596188681,
+      "exact_4index_e_corr_info": -0.06829677416354271,
+      "ri_error_info": 2.4912019401038266e-05
+    }
+  ],
+  "checks": {
+    "numpy_vs_pyscf_dfmp2_omega0_abs": 8.326672684688674e-17,
+    "erfc_plus_erf_minus_coulomb_max_abs": 9.245493259868454e-12
+  },
+  "provenance": {
+    "code": "PySCF (integrals, RHF, DFMP2 anchor) + numpy (attenuated RI-MP2 assembly)",
+    "version": "2.13.1",
+    "keywords": {
+      "rhf": "scf.RHF, exact Coulomb J/K",
+      "operator": "erfc(omega r)/r via Mole.with_range_coulomb(-omega) on mol AND auxmol",
+      "attenuated_integrals": "int3c2e (P|mu nu) and int2c2e (P|Q) both erfc",
+      "fit": "standard (non-robust), metric = same erfc kernel, Cholesky",
+      "energy": "E_os + E_ss, canonical denominators",
+      "numpy": "1.26.4"
+    },
+    "grid": "none",
+    "aux_basis": "aug-cc-pvdz-rifit",
+    "frozen_core": 0,
+    "scf_convergence": {
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-09
+    },
+    "stability": null,
+    "basis": "aug-cc-pvdz",
+    "basis_json": "crates/ferric-core/src/basis/bundled/aug-cc-pvdz.json",
+    "basis_sha256": "911303b754cd16032f762811f2193796eaf67070bdb40bcdc0c59d422f8c8dd1",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/h2o.xyz",
+    "geometry_xyz_sha256": "284b6da243e9abcf0aa2d6e13ad7204946feecb55d27b7819f12097095fdd6ae",
+    "geometry_bohr": [
+      [
+        "O",
+        0.0,
+        0.0,
+        0.22259084021251865
+      ],
+      [
+        "H",
+        0.0,
+        1.4275992699810498,
+        -0.8903652505761991
+      ],
+      [
+        "H",
+        0.0,
+        -1.4275992699810498,
+        -0.8903652505761991
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_attenuated_mp2.py",
+    "git_head": "dfeb5daa34f791a42da36135daba64c9e7f600cb",
+    "generated_utc": "2026-09-24T23:18:07+00:00",
+    "basis_self_check": {
+      "nao": 41,
+      "replica_self_overlap_max_dev": 4.440892098500626e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 41,
+      "diag_skipped_cartesian": 0
+    },
+    "aux_basis_json": "crates/ferric-core/src/basis/bundled/aug-cc-pvdz-rifit.json",
+    "aux_basis_sha256": "0b64c175a31c523d6ab7e66719b29671eca91a0390e6ecad9ba863ac5cad6ea8"
+  }
+}
