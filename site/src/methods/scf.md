@@ -110,11 +110,13 @@ analytic gradient. An unknown solvent name is an error, not a silent vacuum.
 
 **Gradients.** Analytic nuclear gradients for RHF, UHF, ROHF and KS-DFT
 (including meta-GGA, with grid response), checked against finite differences
-and, for DFT, against PySCF. RI-MP2 also has an analytic gradient.
+and, for DFT, against PySCF. RI-MP2 also has an analytic gradient, closed
+shell only (there is no unrestricted MP2 nuclear gradient).
 
 **Optimization.** `method.task = "optimize"` for `rhf`, `uhf`, `rohf`,
 `ksdft`, `rimp2` and `pdep-rpa` (`examples/h2_opt.toml`,
-`examples/h2-lda-opt.toml`). Python `ferric.run_optimize` is RHF.
+`examples/h2-lda-opt.toml`); on an open-shell molecule only `uhf`, `rohf` and
+`ksdft`. Python `ferric.run_optimize` is RHF.
 
 **Harmonic frequencies.** `method.task = "frequencies"` for `rhf`, `uhf`,
 `rohf` and `ksdft` (`examples/water-frequencies.toml`); Python

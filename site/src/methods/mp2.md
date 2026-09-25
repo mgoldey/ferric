@@ -9,17 +9,27 @@ transformation. Grades per `method.kind` are on
 
 ## RI-MP2
 
-**What it is.** Closed-shell second-order Møller–Plesset theory with
-3-centre/2-centre density fitting. Canonical (non-RI) MP2 is also implemented,
+**What it is.** Second-order Møller–Plesset theory on an RHF reference (UHF
+for an open shell, below) with 3-centre/2-centre density fitting. Canonical (non-RI) MP2 is also implemented,
 for cross-validation, not production.
 
-**Closed-shell only from the CLI and Python.** `rimp2`, `mp3`, `oo-rimp2`,
-`att-rimp2`, `scs-mp2`, `scs-mp2-2terfc`, `laplace-mp2`, `laplace-sos-mp2` and
-`rs-mp2-rpa`, and their Python drivers (`run_rimp2` and the rest), are
-closed-shell only. Do not give them an open-shell molecule: set
-`multiplicity = 1`. Open-shell (UHF-based) RI-MP2 exists in the Rust library
-only (`ferric_mp2::u_rimp2`). The one open-shell MP2-family kind is `mp2-v`,
-which switches to a UHF reference when `multiplicity > 1`.
+**Open shells.** `rimp2` and `oo-rimp2` accept an open-shell molecule
+(`multiplicity > 1`) from the CLI, for `task = "energy"` only: they solve the
+same plain UHF that `kind = "uhf"` runs, then take unrestricted RI-MP2 (UMP2,
+as PySCF `mp.MP2(uhf)`) or unrestricted OO-RI-MP2. There is no unrestricted
+MP2 nuclear gradient, and `[mp2] kappa` is refused on an open shell. From
+Python, `run_rimp2` does the same (UHF + UMP2 when `multiplicity > 1`;
+`result.reference` says which, and `kappa` raises); `run_oo_rimp2` is closed
+shell only. Both unrestricted methods are validated on the CH3 doublet at
+cc-pVDZ: U-RI-MP2 against ORCA `RI-MP2 NoRI`, U-OO-RI-MP2 against an
+independent numpy OO-RI-MP2 (see the
+[anchors](../reference/validation.md#anchors)).
+
+The other MP2-family kinds (`mp3`, `att-rimp2`, `scs-mp2`, `scs-mp2-2terfc`,
+`laplace-mp2`, `laplace-sos-mp2`, `rs-mp2-rpa`) and their Python drivers are
+closed shell only: set `multiplicity = 1`. `mp2-v` switches to a UHF reference
+when `multiplicity > 1` (CLI, energy only); Python `run_mp2_v` is closed shell
+only.
 
 **Run it.** `method.kind = "rimp2"` (`examples/water-rimp2.toml`,
 `examples/water-rimp2-frozen-core.toml`); Python `ferric.run_rimp2(mol, bs, aux)`.

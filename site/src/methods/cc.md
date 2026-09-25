@@ -15,16 +15,25 @@ implementations:
   is what both the CLI and Python run for an RHF reference. Its VVVV block is
   16× smaller than the spin-orbital one; measured about 8–10× faster than the
   spin-orbital CCSD at cc-pVDZ, and the (T) step 9.6–42× faster.
-- **Spin-orbital** (`ccsd`, `ccsd_t`): kept for non-restricted references and
-  as the cross-check. Its (T) streams one occupied triple at a time, so memory
-  is O(n<sub>o</sub>·n<sub>v</sub>³)-class rather than the dense six-index tensor.
+- **Spin-orbital** (`ccsd`, `ccsd_t`): built from the same RHF spatial
+  orbitals and kept as the cross-check of the spin-adapted solvers, so it is
+  closed shell only as well. Its (T) streams one occupied triple at a time, so
+  memory is O(n<sub>o</sub>·n<sub>v</sub>³)-class rather than the dense
+  six-index tensor.
+
+No open-shell CCD, CCSD or CCSD(T) exists in ferric: every CC solver reads
+restricted orbitals and refuses an unrestricted reference. The only open-shell
+coupled-cluster-type method is LinLCCD(hh), which is library-only
+(`ferric_cc::linlccd_u::u_linlccd`).
 
 **Run it.**
 
 - CCSD: `method.kind = "ccsd"` (`examples/water-ccsd.toml`, water/cc-pVDZ); Python
   `ferric.run_ccsd(mol, bs, aux)`.
-- CCSD(T) and CCD: **Python only**, `ferric.run_ccsd_t(mol, bs, aux)` and
-  `ferric.run_ccd(mol, bs, aux)`. Not wired into the CLI.
+- CCSD(T): `method.kind = "ccsd(t)"` (`examples/water-ccsd-t.toml`); Python
+  `ferric.run_ccsd_t(mol, bs, aux)`.
+- CCD: `method.kind = "ccd"` (`examples/water-ccd.toml`); Python `ferric.run_ccd(mol, bs, aux)`.
+- All three kinds are closed shell only and refuse `multiplicity > 1`.
 
 **Aux basis.** The RI error is not negligible at CC accuracy: on water /
 cc-pVDZ with `cc-pvdz-ri`, RI-CCSD differs from exact-integral CCSD by about

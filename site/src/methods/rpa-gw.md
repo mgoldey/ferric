@@ -32,15 +32,22 @@ on an imaginary-frequency quadrature.
 
 - **PDEP-RPA**, closed shell: `method.kind = "pdep-rpa"`
   (`examples/water-pdep-rpa.toml`); Python `ferric.run_pdep_rpa`. Proven.
-- **U-PDEP-RPA**, open shell over a spin-summed dielectric, from a UHF or ROHF
-  reference.
+- **U-PDEP-RPA**, open shell over a spin-summed dielectric. From the CLI, set
+  `method.kind = "pdep-rpa"` with `multiplicity > 1` and `task = "energy"`: the
+  CLI solves UHF (UKS with `[rpa] xc`) with MOM after 5 iterations and runs
+  U-PDEP-RPA on it. It is CLI-only: Python `run_pdep_rpa` is closed shell only.
+  The library (`ferric_rpa::run_u_pdep_rpa`) also accepts a ROHF reference,
+  using the ROHF orbital energies directly for both spins (no
+  semicanonicalization); only the UHF path is compared against PySCF `URPA`
+  (see the
+  [anchors](../reference/validation.md#anchors)).
 - **Attenuated RPA**: short-range correlation with an erfc operator.
 - **RS-MP2 + LR-RPA**: short-range MP2 plus long-range dRPA, on the
   [MP2 page](./mp2.md#rs-mp2--lr-rpa).
 
 The static eigensolve defaults to **Lanczos**, with a dense path for small
 problems. Geometry optimization with `pdep-rpa` is supported
-(`task = "optimize"`).
+(`task = "optimize"`) on a closed-shell RHF reference.
 
 ## GW
 
@@ -52,7 +59,9 @@ The starting point is HF by default or a KS functional (`[rpa] xc`).
 (`examples/water-g0w0-pbe.toml`, open shell `examples/oh-ugw.toml`); Python
 `ferric.run_gw`, `run_u_gw`. The open-shell reference is UHF by default;
 `[gw] reference = "rohf"` (Python `run_u_gw(reference="rohf")`) uses ROHF
-instead, or ROKS with `[rpa] xc` (`examples/oh-ugw-rohf.toml`).
+instead, or ROKS with `[rpa] xc` (`examples/oh-ugw-rohf.toml`). The
+ROHF-reference path is not compared against any reference, and it uses the
+ROHF/ROKS orbital energies directly for both spins (no semicanonicalization).
 
 **Accuracy.** Smoke; treat results as about ±0.3 eV.
 

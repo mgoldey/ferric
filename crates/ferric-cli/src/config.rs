@@ -2738,14 +2738,15 @@ impl Config {
             ),
             "linlccd" => "open-shell LinLCCD(hh) is library-only (ferric_cc::linlccd_u::u_linlccd)"
                 .to_string(),
-            "ccd" | "ccsd(t)" => format!(
-                "open-shell {} is library-only (the spin-orbital ferric_cc::{} on a UHF \
-                 reference); the CLI kind runs the closed-shell solver only",
-                if kind == "ccd" { "CCD" } else { "CCSD(T)" },
-                if kind == "ccd" {
-                    "ccd::ccd"
-                } else {
-                    "ccsd::ccsd + ccsd_t::ccsd_t"
+            "ccd" | "ccsd" | "ccsd(t)" => format!(
+                "no open-shell {} exists in ferric: every coupled-cluster solver, including \
+                 the spin-orbital ones, is built from restricted (RHF) orbitals; the only \
+                 open-shell coupled-cluster-type method is LinLCCD(hh), which is library-only \
+                 (ferric_cc::linlccd_u::u_linlccd)",
+                match kind {
+                    "ccd" => "CCD",
+                    "ccsd" => "CCSD",
+                    _ => "CCSD(T)",
                 }
             ),
             "drpa" | "linlccd-amplitude" => format!(

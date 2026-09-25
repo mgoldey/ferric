@@ -78,8 +78,10 @@ What to know before using it:
 - **The weight grid defaults to 99 × 302.** It must resolve populations below
   `lambda_tol`; 75 × 110 resolves them only to about 1e-4. Setting
   `grid_radial` or `grid_angular` uses that grid for the XC quadrature too.
-- **UKS-cDFT is smoke-level.** The tests validate the UHF path; a libxc
-  `functional=` runs UKS with no validated reference.
+- **The UKS path is the one compared against another code.** Constrained
+  UKS/PBE matches NWChem 7.2.2 (see Accuracy). The UHF path (`functional=None`
+  or `"HF"`) has only internal checks: NWChem cannot run Hartree–Fock cDFT,
+  because it builds the Becke weight operator only on its XC grid.
 - **One constraint is the tested case.** With several constraints the outer
   loop is a plain k × k Newton step, without the single-constraint bracket
   safeguard.
@@ -94,7 +96,13 @@ What to know before using it:
 
 ## Accuracy
 
-No external reference value is stated for these energies or couplings. The
+Constrained UKS/PBE energies and multipliers are compared against NWChem
+7.2.2 `cdft ... pop becke` on LiH, HF and H2O⁺ (charge and spin constraints)
+at 6-31G and def2-SVP (`ferric-scf/tests/validation_cdft.rs`): E(N) −
+E_unconstrained to 2.0e-7 Ha and λ to 1.1e-6 against NWChem's grid limit, and
+dE/dN = −λ to 2.3e-12 Ha; numbers are on
+[Capabilities and validation](../reference/validation.md#anchors). No external
+reference value is stated for UHF-cDFT energies or for the couplings. The
 tests check the coupling kernel on synthetic matrices and He₂⁺ identities
 (`ferric-scf/tests/cdft_coupling.rs`), probe HeNe⁺ over a distance series
 (`cdft_coupling_hene.rs`), and check exact identities on LiH/def2-SVP
@@ -102,7 +110,8 @@ tests check the coupling kernel on synthetic matrices and He₂⁺ identities
 the constraint composes with an external point charge. The Python tests
 (`crates/ferric-python/tests/test_cdft.py`) rerun those configurations
 through the bindings and check `cdft_coupling` against an independent
-transition-density construction. Treat results as unvalidated; see
+transition-density construction. Treat UHF-cDFT energies and the
+couplings as unvalidated against other codes; see
 [Capabilities and validation](../reference/validation.md#python-entry-points).
 
 ## The response connection
