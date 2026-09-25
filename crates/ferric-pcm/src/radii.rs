@@ -87,9 +87,13 @@ pub fn bondi_radius_bohr(z: i32) -> f64 {
 /// Bondi's table with two sourced corrections: hydrogen 1.10 Å (Rowland &
 /// Taylor, J. Phys. Chem. 1996, 100, 7384; Bondi's 1.20 Å is too large) and
 /// boron 1.92 Å (Mantina et al., J. Phys. Chem. A 2009, 113, 5806; Bondi did
-/// not tabulate B). This is PySCF's `pyscf.solvent.pcm.modified_Bondi`. Every
-/// other element, and the fallback, is [`bondi_radius_bohr`]. The ESP-fitting
-/// grids in `ferric-scf` keep Bondi's original values.
+/// not tabulate B). These are the H and B values of PySCF's
+/// `pyscf.solvent.pcm.modified_Bondi`. Every other element is
+/// [`bondi_radius_bohr`], so the two tables agree only where ferric tabulates
+/// the element: ferric's untabulated elements (Be, Al, Sc-Co, Rb-Rh and beyond)
+/// take the 2.0 Å fallback, where PySCF has, for example, Be 1.53 Å, Al 1.84 Å
+/// and Rb 3.03 Å. The ESP-fitting grids in `ferric-scf` keep Bondi's original
+/// values.
 pub fn modified_bondi_radius_bohr(z: i32) -> f64 {
     match z {
         1 => 1.10 * BOHR_PER_ANGSTROM,
