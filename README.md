@@ -90,7 +90,8 @@ getting that object right where standard methods get it wrong. See
 
 ```bash
 git clone https://github.com/mgoldey/ferric && cd ferric
-# libint2 first: see the Installation page (about 30 minutes)
+scripts/install-libint.sh ~/.local/libint2-2.13.1   # prebuilt libint2, seconds
+export LIBINT2_PREFIX=~/.local/libint2-2.13.1
 cargo build --release
 OPENBLAS_NUM_THREADS=1 ./target/release/ferric examples/water-rhf.toml
 OPENBLAS_NUM_THREADS=1 cargo test --workspace
