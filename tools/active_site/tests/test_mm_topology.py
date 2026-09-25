@@ -17,7 +17,7 @@ openmm = pytest.importorskip(
     reason="OpenMM not installed — see scripts/gen_openmm_mm_refs.py docstring",
 )
 
-from tools.active_site.mm_topology import topology_from_openmm
+from tools.active_site.mm_topology import topology_from_openmm, topology_from_system
 
 FIXTURE = Path(__file__).parent / "ala_ala.pdb"
 
@@ -116,3 +116,44 @@ def test_topology_from_openmm_feeds_ferric_mm_topology():
         torsions=result["torsions"],
     )
     assert top.n_atoms() == 23
+
+
+WATERS_PDB = (
+    Path(__file__).resolve().parents[3]
+    / "testdata/molecules/validation/mm/ace_phe_nme_3wat.pdb"
+)
+WATER_FF = ("amber14-all.xml", "amber14/tip3p.xml")
+
+
+def test_water_keeps_its_oh_bonds_so_their_pairs_are_excluded():
+    """A rigid water leaves its O-H bonds out of HarmonicBondForce; ferric-mm
+    derives exclusions from the bond list, so every water O-H pair would get
+    full Coulomb + LJ at 0.96 A. topology_from_openmm must build flexible water.
+    """
+    from openmm import app
+
+    pdb = app.PDBFile(str(WATERS_PDB))
+    waters = [r for r in pdb.topology.residues() if r.name == "HOH"]
+    assert len(waters) == 3
+    bonds = {
+        tuple(sorted(b[:2]))
+        for b in topology_from_openmm(WATERS_PDB, forcefield=WATER_FF)["bonds"]
+    }
+    for res in waters:
+        idx = {a.name: a.index for a in res.atoms()}
+        assert tuple(sorted((idx["O"], idx["H1"]))) in bonds
+        assert tuple(sorted((idx["O"], idx["H2"]))) in bonds
+
+
+def test_a_constrained_system_is_refused():
+    """The default createSystem makes water rigid (constraints > 0); the
+    extraction must refuse it rather than silently drop those bonds."""
+    from openmm import app
+
+    pdb = app.PDBFile(str(WATERS_PDB))
+    system = app.ForceField(*WATER_FF).createSystem(
+        pdb.topology, nonbondedMethod=app.NoCutoff
+    )
+    assert system.getNumConstraints() > 0
+    with pytest.raises(ValueError, match="constraints"):
+        topology_from_system(system)
