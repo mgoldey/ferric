@@ -13,10 +13,9 @@ its doc comments)
     DIFFERENCE of the TOTAL energy E(R) = E_RHF(R) + E_c^RPA(R), each point a
     fresh `solve_rhf` (RhfConfig::default() fitting fields = EXACT four-centre
     J/K, density_conv 1e-9) followed by a full `run_pdep_rpa` with the
-    caller's config (`rpa_correlation_energy` returns `rhf.energy + r.e_rpa`).
+    caller's config (`rpa_total_energy` returns `rhf.energy + r.e_rpa`).
 It is not an analytic gradient and does not hold any Ritz basis fixed across
-displacements; the module doc's "projection-fixed Hellmann-Feynman" text
-describes a scheme the code does not run. The reference orbitals are the RHF
+displacements. The reference orbitals are the RHF
 orbitals of the (displaced) geometry; frozen core is whatever
 `cfg.frozen_core` says (threaded into `RiMp2Config` by `run_pdep_rpa`); the
 quadrature is `cfg.quadrature`.
@@ -45,8 +44,8 @@ Gradients written (Ha/Bohr, atom-major (natm, 3)):
     truncation-error difference); fd3 vs fd5 is recorded as the truncation
     error of ferric's stencil.
   * controls: the PySCF analytic RHF gradient (the RPA gradient must MISS it);
-    the 5-point FD of E_c ALONE (what gradient.rs's docstring claims it
-    returns; the total gradient must MISS it); the 5-point FD at a COARSE
+    the 5-point FD of E_c ALONE (a correlation-only gradient; the total
+    gradient must MISS it); the 5-point FD at a COARSE
     quadrature (NW_COARSE points; ferric at NW_COARSE must MATCH it and ferric
     at 40 must MISS it); frozen-core (FC systems only).
 The energy at the reference geometry is also cross-checked by numpy on PySCF's
