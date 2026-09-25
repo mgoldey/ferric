@@ -6,8 +6,10 @@
 #   cargo build --release --workspace --features mpi
 #   mpirun -np 2 target/release/ferric examples/benzene-dfb3lyp-mpi.toml
 #
-# The same file runs serially with the normal binary; the MPI build splits the
-# DF-J/K work across ranks and gives the same energy.
+# The same file runs serially with the normal binary. The MPI build splits the
+# DF-J/K work across ranks; the ranks agree with each other exactly, and the
+# 2-rank energy differs from the serial one by about 5e-6 Ha on benzene (a
+# GEMM-shape effect; crates/ferric-scf/tests/mpi_dfjk_banding.rs).
 [molecule]
 xyz = "testdata/molecules/benzene.xyz"
 
