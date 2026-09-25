@@ -1146,20 +1146,25 @@ fn state_b_energy_is_multi_valued_across_guesses_at_the_integer_target() {
     // 2.7.2 it took 23) does not converge in 40 there, and `state A` DOES
     // converge at 2.13.1 where it never did at 2.7.2. Which of these
     // near-saddle loops finishes under the cap is last-bit arithmetic. What
-    // is required instead: at least two of the three saddle-reaching guesses
-    // converge (the "two independent guesses" of the claim), and every one
-    // that does lands on the measured level.
+    // is required instead: at least two of the three saddle-reaching RUN
+    // PATHS converge, and every one that does lands on the measured level.
+    // These are not independent guesses: driver default (guess None, which
+    // falls back to hcore because `use_sad_guess` is false) and the explicit
+    // hcore row start from the same orbitals through different entry points.
+    // Only SAD is an independent start, and it converges on some builds only
+    // (not on 2.7.2). Guess independence is shown by the LOWER level below,
+    // which three distinct starts (pi, natural target, post-descent) reach.
     const REQUIRED: [&str; 1] = ["driver default (None)"];
     const OPTIONAL: [&str; 2] = ["hcore (= driver default)", "SAD"];
-    let n_saddle_guesses = REQUIRED
+    let n_saddle_paths = REQUIRED
         .iter()
         .chain(OPTIONAL.iter())
         .filter(|g| integer_rows.iter().any(|r| r.guess == **g))
         .count();
     assert!(
-        n_saddle_guesses >= 2,
-        "only {n_saddle_guesses} of driver default / hcore / SAD converged at the \
-         integer target; the claim needs two independent guesses on one level"
+        n_saddle_paths >= 2,
+        "only {n_saddle_paths} of the driver default / hcore / SAD run paths \
+         converged at the integer target; at least two must land on the saddle"
     );
     for g in REQUIRED {
         let r = find(g);
