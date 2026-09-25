@@ -30,8 +30,8 @@ use ferric_pbc::{
     GammaRoksConfig, GammaUhfConfig, GammaUhfIntegrals, GammaUksConfig, KCorrIntegrals,
     KDenseAftConfig, KDenseAftEri, KDenseAftPairs, KDrpaConfig, KDrpaEnergy, KJkKind, KMp2Config,
     KPointInjection, KPointMesh, KRhfConfig, KRsGdf, KRsGdfConfig, KScfConfig, KScfResult,
-    KUhfConfig, MeshCentring, Mp2Denominators, PeriodicGridConfig, PeriodicHcore,
-    PeriodicHcoreConfig, RsGdf, RsGdfConfig,
+    KUhfConfig, MeshCentring, Mp2Denominators, PbcTimings, PeriodicGridConfig, PeriodicHcore,
+    PeriodicHcoreConfig, RsGdf, RsGdfConfig, StageClock,
 };
 use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::RhfConfig;
@@ -320,6 +320,86 @@ fn warn_unconverged(what: &str, iterations: usize) {
     );
 }
 
+// ─────────────────────────────────────────────────────── stage timings ──
+
+/// The RS-GDF aux-metric line (Gamma or k-point), when the run built one:
+/// the drop count decides whether two codes' energies are comparable
+/// (FINDINGS "Real-size benchmark plan").
+fn print_aux_counts(t: &PbcTimings) {
+    if let (Some(naux), Some(kept), Some(dropped)) = (
+        t.counter("rsgdf naux"),
+        t.counter("rsgdf naux kept"),
+        t.counter("rsgdf aux dropped"),
+    ) {
+        println!(
+            "  aux metric = naux {naux}, kept {kept}, dropped {dropped} (eigenvalue <= lindep)"
+        );
+    } else if let (Some(naux), Some(dropped)) = (
+        t.counter("k rsgdf naux"),
+        t.counter("k rsgdf aux dropped (max over q)"),
+    ) {
+        println!("  aux metric = naux {naux}, dropped {dropped} (max over q classes)");
+    }
+}
+
+/// The stage table (leaf stages, the unattributed remainder, the total) and
+/// the counters, on stdout and as a `periodic_timings` run-log record.
+/// Timings are observation only (`ferric_pbc::timing`).
+fn report_timings(t: &PbcTimings) {
+    println!("  stage timings (wall s, cpu s, calls):");
+    let fmt_cpu = |c: Option<f64>| c.map_or_else(|| "     n/a".to_string(), |v| format!("{v:8.3}"));
+    for st in &t.stages {
+        println!(
+            "    {:<44} {:10.3} {} {:>7}",
+            st.name,
+            st.wall_s,
+            fmt_cpu(st.cpu_s),
+            st.calls
+        );
+    }
+    let other = (t.wall_s - t.stage_wall_sum()).max(0.0);
+    println!(
+        "    {:<44} {:10.3}",
+        "other (SCF linear algebra, bookkeeping)", other
+    );
+    println!("    {:<44} {:10.3} {}", "total", t.wall_s, fmt_cpu(t.cpu_s));
+    if !t.counters.is_empty() {
+        println!("  counters:");
+        for (name, v) in &t.counters {
+            println!("    {name:<44} {v:>14}");
+        }
+    }
+    if let Some(rl) = ferric_scf::runlog::log() {
+        let stages: Vec<serde_json::Value> = t
+            .stages
+            .iter()
+            .map(|st| {
+                serde_json::json!({
+                    "name": st.name,
+                    "wall_s": st.wall_s,
+                    "cpu_s": st.cpu_s,
+                    "calls": st.calls,
+                })
+            })
+            .collect();
+        let counters: serde_json::Map<String, serde_json::Value> = t
+            .counters
+            .iter()
+            .map(|(n, v)| (n.to_string(), serde_json::Value::from(*v)))
+            .collect();
+        rl.note(
+            "periodic_timings",
+            serde_json::json!({
+                "wall_s": t.wall_s,
+                "cpu_s": t.cpu_s,
+                "unattributed_wall_s": other,
+                "stages": stages,
+                "counters": counters,
+            }),
+        );
+    }
+}
+
 // ─────────────────────────────────────────────────────── Gamma integrals ──
 
 fn gamma_scf_config(plan: &PeriodicPlan) -> RhfConfig {
@@ -361,6 +441,21 @@ impl GammaInts {
 struct GammaSystem {
     hc: PeriodicHcore,
     ints: GammaInts,
+}
+
+impl GammaSystem {
+    /// hcore + J/K build stages and the SCF J/K calls so far, plus `extra`
+    /// (driver stages), with the total measured from `total`.
+    fn timings(&self, extra: &[&PbcTimings], total: &StageClock) -> PbcTimings {
+        let mut t = PbcTimings::default();
+        t.absorb(&self.hc.timings);
+        t.absorb(&self.ints.scf().timings());
+        for x in extra {
+            t.absorb(x);
+        }
+        t.finish(total);
+        t
+    }
 }
 
 fn gamma_system(plan: &PeriodicPlan, s: &Setup) -> Result<GammaSystem, FerricError> {
@@ -438,24 +533,31 @@ fn gamma_rhf_scf(s: &Setup, sys: &GammaSystem, cfg: &RhfConfig) -> Result<ScfRes
 
 // ───────────────────────────────────────────────────────── Gamma SCF ──
 
-/// Gamma RHF: `(scf, E_nn, v_M)`.
-fn gamma_rhf_driver(plan: &PeriodicPlan, s: &Setup) -> Result<(ScfResult, f64, f64), FerricError> {
+/// Gamma RHF: `(scf, E_nn, v_M, stage timings)`.
+fn gamma_rhf_driver(
+    plan: &PeriodicPlan,
+    s: &Setup,
+) -> Result<(ScfResult, f64, f64, PbcTimings), FerricError> {
+    let total = StageClock::start();
     let sys = gamma_system(plan, s)?;
     let r = gamma_rhf_scf(s, &sys, &gamma_scf_config(plan))?;
     // Reported for both exxdiv settings (the builders only store it for
     // Ewald), as `run_rhf_gamma` does.
     let v_m = ferric_pbc::ewald::madelung_constant(&s.cell)?;
-    Ok((r, sys.hc.enn, v_m))
+    let t = sys.timings(&[], &total);
+    Ok((r, sys.hc.enn, v_m, t))
 }
 
 fn run_gamma_rhf(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
-    let (r, enn, v_m) = gamma_rhf_driver(plan, s).unwrap_or_else(|e| die(e));
+    let (r, enn, v_m, t) = gamma_rhf_driver(plan, s).unwrap_or_else(|e| die(e));
     print_header(cfg, plan, s);
+    print_aux_counts(&t);
     println!("  iterations = {}", r.iterations);
     println!("  converged  = {}", r.converged);
     println!("  e_nuc      = {:.10} Hartree/cell (Ewald)", enn);
     print_madelung(plan, v_m);
     println!("  energy     = {:.10} Hartree/cell", r.energy);
+    report_timings(&t);
     if !r.converged {
         warn_unconverged("RHF", r.iterations);
     }
@@ -473,22 +575,25 @@ fn periodic_grid(plan: &PeriodicPlan) -> PeriodicGridConfig {
     }
 }
 
-/// Gamma RKS: `(result, E_nn)`.
+/// Gamma RKS: `(result, E_nn, stage timings)`.
 fn gamma_rks_driver(
     plan: &PeriodicPlan,
     s: &Setup,
-) -> Result<(ferric_pbc::GammaRksResult, f64), FerricError> {
+) -> Result<(ferric_pbc::GammaRksResult, f64, PbcTimings), FerricError> {
+    let total = StageClock::start();
     let functional = plan.functional.as_deref().unwrap_or("LDA");
     let sys = gamma_system(plan, s)?;
     let mut c = GammaRksConfig::new(functional);
     (c.grid, c.exxdiv, c.scf) = (periodic_grid(plan), plan.exxdiv, gamma_scf_config(plan));
     let r = gamma_rks(&s.cell, &s.prep, &sys.hc, sys.ints.scf(), &c)?;
-    Ok((r, sys.hc.enn))
+    let t = sys.timings(&[&r.timings], &total);
+    Ok((r, sys.hc.enn, t))
 }
 
 fn run_gamma_rks(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
-    let (r, enn) = gamma_rks_driver(plan, s).unwrap_or_else(|e| die(e));
+    let (r, enn, t) = gamma_rks_driver(plan, s).unwrap_or_else(|e| die(e));
     print_header(cfg, plan, s);
+    print_aux_counts(&t);
     println!(
         "  grid       = {} points ({}x{}, neighbour cutoff {:.4} Bohr), {:.8} electrons",
         r.n_grid_points, plan.n_radial, plan.n_angular, r.neighbour_cutoff, r.electrons_on_grid
@@ -502,6 +607,7 @@ fn run_gamma_rks(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
         r.e_xc, r.exact_exchange_fraction
     );
     println!("  energy     = {:.10} Hartree/cell", r.scf.energy);
+    report_timings(&t);
     if !r.scf.converged {
         warn_unconverged("RKS", r.scf.iterations);
     }
@@ -524,9 +630,15 @@ struct OpenParts {
     gaps_satisfied: bool,
     /// KS only: (E_xc, a_x, grid points, electrons on grid).
     ks: Option<(f64, f64, Option<(usize, f64)>)>,
+    /// KS only: the driver's grid / AO-cache / XC stages (else empty).
+    ks_timings: PbcTimings,
 }
 
-fn gamma_open_driver(plan: &PeriodicPlan, s: &Setup) -> Result<(OpenParts, f64), FerricError> {
+fn gamma_open_driver(
+    plan: &PeriodicPlan,
+    s: &Setup,
+) -> Result<(OpenParts, f64, PbcTimings), FerricError> {
+    let total = StageClock::start();
     let sys = gamma_system(plan, s)?;
     let ints = sys.ints.scf();
     let scf = gamma_scf_config(plan);
@@ -550,6 +662,7 @@ fn gamma_open_driver(plan: &PeriodicPlan, s: &Setup) -> Result<(OpenParts, f64),
                 nocc: r.nocc,
                 s2: r.s2,
                 ks: None,
+                ks_timings: PbcTimings::default(),
             }
         }
         PeriodicRoute::Rohf => {
@@ -570,6 +683,7 @@ fn gamma_open_driver(plan: &PeriodicPlan, s: &Setup) -> Result<(OpenParts, f64),
                 nocc: r.nocc,
                 s2: r.s2,
                 ks: None,
+                ks_timings: PbcTimings::default(),
             }
         }
         PeriodicRoute::Uks => {
@@ -579,6 +693,7 @@ fn gamma_open_driver(plan: &PeriodicPlan, s: &Setup) -> Result<(OpenParts, f64),
             c.scf = scf;
             let r = gamma_uks(&s.cell, &s.prep, &sys.hc, ints, &c)?;
             OpenParts {
+                ks_timings: r.timings,
                 gap_alpha: r.gaps.gap_alpha,
                 gap_beta: r.gaps.gap_beta,
                 gaps_satisfied: r.gaps.satisfied(),
@@ -610,6 +725,7 @@ fn gamma_open_driver(plan: &PeriodicPlan, s: &Setup) -> Result<(OpenParts, f64),
             };
             let r = gamma_roks(&s.cell, &s.prep, &sys.hc, ints, &c)?;
             OpenParts {
+                ks_timings: r.timings,
                 gap_alpha: r.gaps.gap_alpha,
                 gap_beta: r.gaps.gap_beta,
                 gaps_satisfied: r.gaps.satisfied(),
@@ -634,7 +750,8 @@ fn gamma_open_driver(plan: &PeriodicPlan, s: &Setup) -> Result<(OpenParts, f64),
             )))
         }
     };
-    Ok((parts, sys.hc.enn))
+    let t = sys.timings(&[&parts.ks_timings], &total);
+    Ok((parts, sys.hc.enn, t))
 }
 
 fn fmt_gap(g: Option<f64>) -> String {
@@ -650,8 +767,9 @@ fn ewald_start_name(plan: &PeriodicPlan) -> &'static str {
 }
 
 fn run_gamma_open(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
-    let (p, enn) = gamma_open_driver(plan, s).unwrap_or_else(|e| die(e));
+    let (p, enn, t) = gamma_open_driver(plan, s).unwrap_or_else(|e| die(e));
     print_header(cfg, plan, s);
+    print_aux_counts(&t);
     println!(
         "  mult       = {} (nalpha={}, nbeta={} per cell)",
         cfg.molecule.multiplicity, p.nocc.0, p.nocc.1
@@ -688,6 +806,7 @@ fn run_gamma_open(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
             "a gap is BELOW the applied Madelung shift: possible Ewald-trap state"
         }
     );
+    report_timings(&t);
     if !p.gaps_satisfied {
         eprintln!(
             "warning: a per-spin HOMO-LUMO gap is below the applied Madelung shift (the Gamma \
@@ -734,7 +853,8 @@ struct CorrParts {
 fn gamma_corr_driver(
     plan: &PeriodicPlan,
     s: &Setup,
-) -> Result<(ScfResult, CorrParts), FerricError> {
+) -> Result<(ScfResult, CorrParts, PbcTimings), FerricError> {
+    let total = StageClock::start();
     let sys = gamma_system(plan, s)?;
     let rhf = gamma_rhf_scf(s, &sys, &gamma_scf_config(plan))?;
     if !rhf.converged {
@@ -744,6 +864,7 @@ fn gamma_corr_driver(
         )));
     }
     let den = denominators(plan);
+    let corr_clock = StageClock::start();
     let c = if plan.route == PeriodicRoute::Mp2 {
         let c = GammaMp2Config {
             frozen_core: plan.frozen_core,
@@ -784,13 +905,22 @@ fn gamma_corr_driver(
             quad_points: r.quad_points,
         }
     };
-    Ok((rhf, c))
+    let mut corr_t = PbcTimings::default();
+    let corr_stage = if plan.route == PeriodicRoute::Mp2 {
+        "gamma MP2"
+    } else {
+        "gamma dRPA"
+    };
+    corr_t.stop(corr_stage, &corr_clock);
+    let t = sys.timings(&[&corr_t], &total);
+    Ok((rhf, c, t))
 }
 
 fn run_gamma_corr(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
-    let (rhf, c) = gamma_corr_driver(plan, s).unwrap_or_else(|e| die(e));
+    let (rhf, c, t) = gamma_corr_driver(plan, s).unwrap_or_else(|e| die(e));
     let label = plan.route.label();
     print_header(cfg, plan, s);
+    print_aux_counts(&t);
     println!(
         "  denominators = {} (occupied shift {:.10})",
         den_name(denominators(plan)),
@@ -813,6 +943,7 @@ fn run_gamma_corr(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
     }
     println!("  {label} corr   = {:.10} Hartree/cell", c.corr);
     println!("  Total      = {:.10} Hartree/cell", c.total);
+    report_timings(&t);
     Outcome {
         energy: c.total,
         converged: rhf.converged,
@@ -897,6 +1028,7 @@ fn run_krhf(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
     let mesh = k_mesh(plan, s);
     let (r, v_m) = krhf_driver(plan, s, &mesh).unwrap_or_else(|e| die(e));
     print_header(cfg, plan, s);
+    print_aux_counts(&r.timings);
     print_lindep(&r.lindep);
     println!("  iterations = {}", r.iterations);
     println!("  converged  = {}", r.converged);
@@ -907,6 +1039,7 @@ fn run_krhf(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
         r.homo, r.lumo
     );
     println!("  energy     = {:.10} Hartree/cell", r.energy);
+    report_timings(&r.timings);
     if !r.converged {
         warn_unconverged("k-point RHF", r.iterations);
     }
@@ -940,6 +1073,7 @@ fn run_kuhf(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
         cfg.molecule.multiplicity, r.nocc.0, r.nocc.1
     );
     println!("  ewald_start= {}", ewald_start_name(plan));
+    print_aux_counts(&r.timings);
     print_lindep(&u.lindep);
     if let Some(ns) = &r.none_stage {
         println!(
@@ -961,6 +1095,7 @@ fn run_kuhf(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
         fmt_gap(r.gaps.gap_alpha),
         fmt_gap(r.gaps.gap_beta)
     );
+    report_timings(&r.timings);
     if !u.converged {
         warn_unconverged("k-point UHF", u.iterations);
     }
@@ -1000,44 +1135,59 @@ fn require_kscf_converged(r: &KScfResult) -> Result<(), FerricError> {
 
 /// k-point RHF whose integrals outlive the SCF (dense: the SCF kernels are
 /// dropped and the correlation pair tensors built; rsgdf: one object).
+/// `t` receives the coarse stages (`"k hcore"`, `"k J/K build"`, `"k SCF"`,
+/// dense: `"k correlation pair tensors"`) and the RS-GDF counters.
 fn krhf_with_ints(
     plan: &PeriodicPlan,
     s: &Setup,
     mesh: &KPointMesh,
+    t: &mut PbcTimings,
 ) -> Result<(KScfResult, KInts), FerricError> {
     let scf = kscf_config(plan);
+    let clock = StageClock::start();
     let hk = periodic_hcore_kpts(
         &s.cell,
         &s.prep,
         mesh,
         &PeriodicHcoreConfig::with_omega(s.omega_bohr),
     )?;
+    t.stop("k hcore", &clock);
+    let clock = StageClock::start();
     match &s.aux {
         None => {
             let kc = kdense_config(plan);
             let eri = KDenseAftEri::build(&s.cell, &s.prep, mesh, &hk.s, plan.exxdiv, &kc)?;
+            t.stop("k J/K build", &clock);
             let inj = KPointInjection {
                 s: hk.s,
                 h: hk.h,
                 vnn: hk.enn,
                 jk: Box::new(eri.jk_builder()),
             };
+            let clock = StageClock::start();
             let r = solve_krhf_injected(&s.cell, mesh, &scf, inj)?;
+            t.stop("k SCF", &clock);
             drop(eri);
             require_kscf_converged(&r)?;
+            let clock = StageClock::start();
             let pairs = KDenseAftPairs::build(&s.cell, &s.prep, mesh, &kc)?;
+            t.stop("k correlation pair tensors", &clock);
             Ok((r, KInts::Dense(Box::new(pairs))))
         }
         Some(aux) => {
             let gdf = KRsGdf::build(&s.cell, &s.prep, aux, mesh, &hk.s, &krsgdf_config(plan))?
                 .with_exxdiv(plan.exxdiv);
+            t.stop("k J/K build", &clock);
+            ferric_pbc::rsgdf::kpoint::record_stats(t, gdf.stats());
             let inj = KPointInjection {
                 s: hk.s,
                 h: hk.h,
                 vnn: hk.enn,
                 jk: Box::new(gdf.jk_builder()),
             };
+            let clock = StageClock::start();
             let r = solve_krhf_injected(&s.cell, mesh, &scf, inj)?;
+            t.stop("k SCF", &clock);
             require_kscf_converged(&r)?;
             Ok((r, KInts::RsGdf(Box::new(gdf))))
         }
@@ -1062,8 +1212,11 @@ fn kcorr_driver(
     s: &Setup,
     mesh: &KPointMesh,
     den: Mp2Denominators,
-) -> Result<(KScfResult, KCorrOut), FerricError> {
-    let (r, ints) = krhf_with_ints(plan, s, mesh)?;
+) -> Result<(KScfResult, KCorrOut, PbcTimings), FerricError> {
+    let total = StageClock::start();
+    let mut t = PbcTimings::default();
+    let (r, ints) = krhf_with_ints(plan, s, mesh, &mut t)?;
+    let corr_clock = StageClock::start();
     let out = if plan.route == PeriodicRoute::Mp2 {
         let c = KMp2Config {
             frozen_core: plan.frozen_core,
@@ -1116,15 +1269,23 @@ fn kcorr_driver(
             nvir: d.nvir,
         }
     };
-    Ok((r, out))
+    let corr_stage = if plan.route == PeriodicRoute::Mp2 {
+        "k MP2"
+    } else {
+        "k dRPA"
+    };
+    t.stop(corr_stage, &corr_clock);
+    t.finish(&total);
+    Ok((r, out, t))
 }
 
 fn run_kcorr(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
     let mesh = k_mesh(plan, s);
     let den = denominators(plan);
     let label = plan.route.label();
-    let (r, k) = kcorr_driver(plan, s, &mesh, den).unwrap_or_else(|e| die(e));
+    let (r, k, t) = kcorr_driver(plan, s, &mesh, den).unwrap_or_else(|e| die(e));
     print_header(cfg, plan, s);
+    print_aux_counts(&t);
     print_lindep(&r.lindep);
     println!(
         "  denominators = {} (occupied shift {:.10})",
@@ -1143,6 +1304,7 @@ fn run_kcorr(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
     }
     println!("  {label} corr   = {:.10} Hartree/cell", k.corr);
     println!("  Total      = {:.10} Hartree/cell", k.total);
+    report_timings(&t);
     Outcome {
         energy: k.total,
         converged: r.converged,

@@ -39,8 +39,7 @@
 use crate::dense_aft::ExxDiv;
 use crate::dft::{
     refuse_molecular_grid_knobs, resolve_periodic_functional, DynXcRef, GammaUksConfig,
-    GammaUksGridInfo, PeriodicDftError, PeriodicGrid, PeriodicGridConfig, PeriodicXc,
-    PeriodicXcConfig,
+    GammaUksGridInfo, PeriodicDftError, PeriodicGridConfig, PeriodicXcConfig,
 };
 use crate::ewald::madelung_constant;
 use crate::hcore::PeriodicHcore;
@@ -225,6 +224,9 @@ pub struct GammaRoksResult {
     pub e_xc: f64,
     /// Grid diagnostics ([`gamma_roks`] only).
     pub grid: Option<GammaUksGridInfo>,
+    /// Driver stages as [`crate::dft::GammaRksResult::timings`]
+    /// ([`gamma_roks`] only; empty from [`gamma_roks_with_xc`]).
+    pub timings: crate::timing::PbcTimings,
 }
 
 /// `⟨S²⟩` of a single-determinant ROHF result from its ONE MO set:
@@ -445,7 +447,7 @@ pub fn gamma_rohf(
     })
 }
 
-/// Gamma-point ROKS with [`PeriodicXc`] built from `cfg.functional` on
+/// Gamma-point ROKS with [`crate::dft::PeriodicXc`] built from `cfg.functional` on
 /// `cfg.grid` (spin-polarized evaluation, as [`crate::dft::gamma_uks`]).
 ///
 /// Errors (by name) on refused functionals (RSH / meta-GGA / VV10 / double
@@ -465,8 +467,9 @@ pub fn gamma_roks(
     nocc_ab(cell.mol())?;
     // Cheap name checks before the grid is built.
     resolve_periodic_functional(&cfg.functional)?;
-    let grid = PeriodicGrid::build(cell, &cfg.grid)?;
-    let mut pxc = PeriodicXc::new(cell, prep.basis_set(), &cfg.functional, &grid, &cfg.xc)?;
+    let total = crate::timing::StageClock::start();
+    let (grid, mut pxc, mut timings) =
+        crate::dft::ks_grid_and_xc(cell, prep, &cfg.functional, &cfg.grid, &cfg.xc)?;
     let mut out = gamma_roks_with_xc(cell, prep, hc, ints, &mut pxc, cfg)?;
     let electrons_on_grid = pxc.integrate_density(&out.scf.density_total)?;
     out.grid = Some(GammaUksGridInfo {
@@ -474,6 +477,9 @@ pub fn gamma_roks(
         neighbour_cutoff: grid.neighbour_cutoff(),
         electrons_on_grid,
     });
+    timings.add_stage(&pxc.eval_timing());
+    timings.finish(&total);
+    out.timings = timings;
     Ok(out)
 }
 
@@ -515,5 +521,6 @@ pub fn gamma_roks_with_xc(
         grid: None,
         none_stage: r.none_stage,
         scf: r.scf,
+        timings: crate::timing::PbcTimings::default(),
     })
 }

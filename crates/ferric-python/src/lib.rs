@@ -728,10 +728,21 @@ struct PyGammaRhfResult {
     n_dropped: Option<usize>,
     overlap_data: Array2<f64>,
     scf_data: ScfResult,
+    timings_data: ferric_pbc::PbcTimings,
 }
 
 #[pymethods]
 impl PyGammaRhfResult {
+    /// Stage timings and counters: hcore (setup, S/T, SR/LR attraction,
+    /// Ewald), the J/K build (RS-GDF: SR metric, SR 3-centre, LR pair FT,
+    /// LR GEMM, G = 0, metric eigh, B; dense: pair FT, GEMM), the SCF's
+    /// J/K calls, and counters (triplets, G vectors, chunks, aux dropped).
+    /// `{"wall_s", "cpu_s", "unattributed_wall_s", "stages": {name: {"wall_s",
+    /// "cpu_s", "calls"}}, "counters": {name: int}}`.
+    #[getter]
+    fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+        pbc::timings_dict(py, &self.timings_data)
+    }
     /// MO energies (Hartree), ascending, 1D numpy array.
     fn mo_energy<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         PyArray1::from_vec(py, self.scf_data.eps_alpha.clone())
@@ -826,6 +837,8 @@ struct GammaRun {
     n_g_half: Option<usize>,
     /// RS-GDF path only: `(naux, naux_kept, n_dropped)`.
     rsgdf_counts: Option<(usize, usize, usize)>,
+    /// hcore + J/K build + SCF J/K stage timings.
+    timings: ferric_pbc::PbcTimings,
 }
 
 /// Which periodic J/K builder `run_rhf_gamma` injects.
@@ -854,8 +867,11 @@ fn gamma_rhf_driver(
     use ferric_pbc::dense_aft::{DenseAftEri, DEFAULT_DENSE_AFT_PRECISION};
     use ferric_pbc::hcore::{periodic_hcore, PeriodicHcoreConfig};
     use ferric_pbc::rsgdf::{RsGdf, RsGdfConfig};
+    let total = ferric_pbc::StageClock::start();
     let w = omega_bohr.unwrap_or_else(|| ferric_pbc::ewald::default_ewald_omega(cell));
     let hc = periodic_hcore(cell, prep, &PeriodicHcoreConfig::with_omega(w))?;
+    let mut timings = ferric_pbc::PbcTimings::default();
+    timings.absorb(&hc.timings);
     let op = Operator::coulomb();
     // Never read on the injected path; required by the signature.
     let bounds = SchwarzBounds::compute(op, prep)?;
@@ -894,6 +910,7 @@ fn gamma_rhf_driver(
             )?;
             let (j, k) = (Box::new(eri.j_builder()), Box::new(eri.k_builder()));
             let scf = inject(&ctx, cell, prep, &bounds, config, &hc, j, k)?;
+            timings.absorb(&eri.timings());
             (scf, Some(eri.n_g_half()), None)
         }
         GammaJk::RsGdf { aux, budget_bytes } => {
@@ -907,11 +924,13 @@ fn gamma_rhf_driver(
             let counts = (st.naux, st.naux_kept, st.n_dropped);
             let (j, k) = (Box::new(gdf.j_builder()), Box::new(gdf.k_builder()));
             let scf = inject(&ctx, cell, prep, &bounds, config, &hc, j, k)?;
+            timings.absorb(&gdf.timings());
             (scf, None, Some(counts))
         }
     };
     // Reported for both exxdiv settings (the builders only store it for Ewald).
     let madelung = ferric_pbc::ewald::madelung_constant(cell)?;
+    timings.finish(&total);
     Ok(GammaRun {
         scf,
         s: hc.s,
@@ -920,6 +939,7 @@ fn gamma_rhf_driver(
         madelung,
         n_g_half,
         rsgdf_counts,
+        timings,
     })
 }
 
@@ -1203,6 +1223,7 @@ fn run_rhf_gamma(
         n_dropped,
         overlap_data: run.s,
         scf_data: run.scf,
+        timings_data: run.timings,
     })
 }
 

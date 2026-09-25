@@ -86,6 +86,7 @@ use crate::dense_aft::ExxDiv;
 use crate::ewald::madelung_constant;
 use crate::hcore::PeriodicHcore;
 use crate::lattice::Cell;
+use crate::timing::{CallClock, PbcTimings, StageClock, StageTiming};
 use crate::uhf::{
     nocc_ab, occupation_gaps, spin_square, EwaldStart, GammaUhfIntegrals, SpinGapReport,
 };
@@ -1297,6 +1298,9 @@ pub struct PeriodicXc {
     chunks: Vec<AoChunk>,
     nbf: usize,
     scratch: VxcScratch,
+    /// Accumulated [`PeriodicXc::eval`] / [`PeriodicXc::eval_polarized`]
+    /// calls ([`crate::timing`]).
+    clock: CallClock,
 }
 
 impl std::fmt::Debug for PeriodicXc {
@@ -1336,7 +1340,14 @@ impl PeriodicXc {
             chunks,
             nbf,
             scratch: VxcScratch::new(),
+            clock: CallClock::default(),
         })
+    }
+
+    /// Accumulated time of every [`PeriodicXc::eval`] /
+    /// [`PeriodicXc::eval_polarized`] call so far (stage `"scf XC eval"`).
+    pub fn eval_timing(&self) -> StageTiming {
+        self.clock.timing("scf XC eval")
     }
 
     /// The functional name as given.
@@ -1405,6 +1416,13 @@ impl PeriodicXc {
     /// `(E_xc, V_xc)` at `d` (chunk sums of ferric-dft's
     /// `semilocal_vxc_closed`, which also symmetrises each chunk's V).
     pub fn eval(&mut self, d: &Array2<f64>) -> Result<(f64, Array2<f64>), FerricError> {
+        let clock = StageClock::start();
+        let out = self.eval_untimed(d);
+        self.clock.record(&clock);
+        out
+    }
+
+    fn eval_untimed(&mut self, d: &Array2<f64>) -> Result<(f64, Array2<f64>), FerricError> {
         self.check_d(d)?;
         let mut e = 0.0;
         let mut v = Array2::<f64>::zeros((self.nbf, self.nbf));
@@ -1439,6 +1457,17 @@ impl PeriodicXc {
     /// term through `∇ρ_{σ'}`. Closed shell (`d_a = d_b = D/2`) reproduces
     /// [`PeriodicXc::eval`] up to the libxc polarized/unpolarized rounding.
     pub fn eval_polarized(
+        &mut self,
+        d_a: &Array2<f64>,
+        d_b: &Array2<f64>,
+    ) -> Result<(f64, Array2<f64>, Array2<f64>), FerricError> {
+        let clock = StageClock::start();
+        let out = self.eval_polarized_untimed(d_a, d_b);
+        self.clock.record(&clock);
+        out
+    }
+
+    fn eval_polarized_untimed(
         &mut self,
         d_a: &Array2<f64>,
         d_b: &Array2<f64>,
@@ -1606,6 +1635,11 @@ pub struct GammaRksResult {
     pub electrons_on_grid: f64,
     /// `E_xc` at the converged density.
     pub e_xc: f64,
+    /// Driver stages: `"xc grid build"`, `"xc AO cache"`, `"scf XC eval"`
+    /// (every XC call, including the one post-SCF `E_xc` evaluation) and the
+    /// grid-point counter; `wall_s` is the whole call. The SCF's J/K calls
+    /// are on the integral source (`GammaUhfIntegrals::timings`), not here.
+    pub timings: PbcTimings,
 }
 
 /// Gamma-point closed-shell KS-DFT of `cell` on the lattice one-electron
@@ -1654,8 +1688,9 @@ pub fn gamma_rks(
     }
     // Cheap name checks before the grid is built.
     resolve_periodic_functional(&cfg.functional)?;
-    let grid = PeriodicGrid::build(cell, &cfg.grid)?;
-    let mut pxc = PeriodicXc::new(cell, prep.basis_set(), &cfg.functional, &grid, &cfg.xc)?;
+    let total = StageClock::start();
+    let (grid, mut pxc, mut timings) =
+        ks_grid_and_xc(cell, prep, &cfg.functional, &cfg.grid, &cfg.xc)?;
     let v_m = madelung_constant(cell)?;
     let applied = match cfg.exxdiv {
         ExxDiv::None => 0.0,
@@ -1684,6 +1719,8 @@ pub fn gamma_rks(
     }
     let electrons_on_grid = pxc.integrate_density(&scf.density_total)?;
     let (e_xc, _) = pxc.eval(&scf.density_total)?;
+    timings.add_stage(&pxc.eval_timing());
+    timings.finish(&total);
     Ok(GammaRksResult {
         madelung: v_m,
         exact_exchange_fraction: pxc.exx,
@@ -1692,6 +1729,7 @@ pub fn gamma_rks(
         electrons_on_grid,
         e_xc,
         scf,
+        timings,
     })
 }
 
@@ -1775,6 +1813,30 @@ pub struct GammaUksResult {
     pub e_xc: f64,
     /// Grid diagnostics ([`gamma_uks`] only).
     pub grid: Option<GammaUksGridInfo>,
+    /// Driver stages as [`GammaRksResult::timings`] ([`gamma_uks`] only;
+    /// empty from [`gamma_uks_with_xc`], whose XC builder is the caller's).
+    pub timings: PbcTimings,
+}
+
+/// The periodic grid and the [`PeriodicXc`] AO cache of a KS driver, with
+/// their build stages (`"xc grid build"`, `"xc AO cache"`) and the grid-point
+/// counter.
+pub(crate) fn ks_grid_and_xc(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    functional: &str,
+    grid_cfg: &PeriodicGridConfig,
+    xc_cfg: &PeriodicXcConfig,
+) -> Result<(PeriodicGrid, PeriodicXc, PbcTimings), FerricError> {
+    let mut timings = PbcTimings::default();
+    let clock = StageClock::start();
+    let grid = PeriodicGrid::build(cell, grid_cfg)?;
+    timings.stop("xc grid build", &clock);
+    let clock = StageClock::start();
+    let pxc = PeriodicXc::new(cell, prep.basis_set(), functional, &grid, xc_cfg)?;
+    timings.stop("xc AO cache", &clock);
+    timings.set_counter("xc grid points", grid.len() as u64);
+    Ok((grid, pxc, timings))
 }
 
 /// Refuse the molecular-grid `RhfConfig` knobs the periodic KS paths never
@@ -1828,8 +1890,9 @@ pub fn gamma_uks(
     nocc_ab(cell.mol())?;
     // Cheap name checks before the grid is built.
     resolve_periodic_functional(&cfg.functional)?;
-    let grid = PeriodicGrid::build(cell, &cfg.grid)?;
-    let mut pxc = PeriodicXc::new(cell, prep.basis_set(), &cfg.functional, &grid, &cfg.xc)?;
+    let total = StageClock::start();
+    let (grid, mut pxc, mut timings) =
+        ks_grid_and_xc(cell, prep, &cfg.functional, &cfg.grid, &cfg.xc)?;
     let mut out = gamma_uks_with_xc(cell, prep, hc, ints, &mut pxc, cfg)?;
     let electrons_on_grid = pxc.integrate_density(&out.scf.density_total)?;
     out.grid = Some(GammaUksGridInfo {
@@ -1837,6 +1900,9 @@ pub fn gamma_uks(
         neighbour_cutoff: grid.neighbour_cutoff(),
         electrons_on_grid,
     });
+    timings.add_stage(&pxc.eval_timing());
+    timings.finish(&total);
+    out.timings = timings;
     Ok(out)
 }
 
@@ -1931,5 +1997,6 @@ pub fn gamma_uks_with_xc(
         grid: None,
         none_stage,
         scf,
+        timings: PbcTimings::default(),
     })
 }

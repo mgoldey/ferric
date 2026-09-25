@@ -283,6 +283,7 @@ fn kscf_from_gamma(g: &ScfResult, mesh: &KPointMesh, nocc: usize) -> KScfResult 
         max_error: 0.0,
         kpts: mesh.kpts().to_vec(),
         lindep: Default::default(),
+        timings: Default::default(),
     }
 }
 

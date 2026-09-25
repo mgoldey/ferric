@@ -161,6 +161,24 @@ pub struct KRsGdfStats {
     pub resident_bytes: usize,
 }
 
+/// Copy a k-point RS-GDF build's counts into `t` (the k-point drivers'
+/// coarse timings): SR triplets / pairs, pair images, LR chunks, q classes
+/// built, naux and the aux functions dropped (max over q classes).
+pub fn record_stats(t: &mut crate::timing::PbcTimings, st: &KRsGdfStats) {
+    let dropped_max = st.per_q.iter().map(|q| q.n_dropped).max().unwrap_or(0);
+    for (name, v) in [
+        ("k rsgdf pair images", st.n_pair_images),
+        ("k rsgdf SR2 pairs", st.n_sr2_pairs),
+        ("k rsgdf SR3 triplets", st.n_sr3_triplets),
+        ("k rsgdf LR chunks", st.n_lr_chunks),
+        ("k rsgdf q classes built", st.n_q_built),
+        ("k rsgdf naux", st.naux),
+        ("k rsgdf aux dropped (max over q)", dropped_max),
+    ] {
+        t.set_counter(name, v as u64);
+    }
+}
+
 /// One built q class: `b[k']` is `B(k'−q, k')`, `(naux_kept, nao²)`.
 #[derive(Debug, Clone)]
 struct QBlock {

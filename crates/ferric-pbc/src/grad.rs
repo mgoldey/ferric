@@ -131,12 +131,38 @@
 //! Aux centres that are functions of the atoms (ghost sites) fold through
 //! [`RsGdfGradSource::aux_jac`].
 //!
+//! # ROHF / ROKS (the `gamma_ro{hf,ks}_gradient*` entry points; FINDINGS "Iteration 20")
+//!
+//! No new term. The ROHF energy is the UHF/UKS functional `E_U[D_α, D_β]`
+//! restricted to ONE orthonormal orbital set `C = [C_c | C_o | C_v]`
+//! (`D_α = C_c C_cᵀ + C_o C_oᵀ`, `D_β = C_c C_cᵀ`), so the force is the
+//! unrestricted assembly above on `(D_α, D_β, F_α, F_β)` with the SPIN Focks
+//! `F_σ` rebuilt from `D_σ` (`unrestricted_focks`, plus the POLARIZED
+//! `V_σ` for ROKS — restricted orbitals do not make the density
+//! unpolarized) and the orthonormality-Lagrangian
+//!
+//! ```text
+//! W_RO = sym(D_α F_α D_α + D_α F_β D_β)          ([`rohf_lagrangian_w`])
+//! W_RO − Σ_σ D_σ F_σ D_σ = ½ [C_o (f_β)_oc C_cᵀ + h.c.],   f_σ = Cᵀ F_σ C
+//! ```
+//!
+//! The Lagrangian exists exactly when the three ROHF orbital-gradient blocks
+//! vanish — `(f_α+f_β)_cv`, `(f_α)_ov`, `(f_β)_co` — and then `W_RO` IS the
+//! UHF-form W (the difference is ½ × the closed–open β gradient; FINDINGS
+//! measured ≤ 2.4e-12 in W, ≤ 1.1e-12 in F). A UHF-form-W "mutant" is
+//! therefore an identity at convergence, not a defect
+//! ([`GradMutation::RoWUhfForm`]). What IS wrong: `W` from the Roothaan
+//! EFFECTIVE Fock's eigenpairs (`ScfResult::fock_alpha` IS `F_eff` for
+//! ROHF — never use it here) and any `W` without the `(f_α)_co` block.
+//! The force is first order in the orbital gradient, so an unconverged
+//! result is refused on it ([`RO_ORBITAL_GRADIENT_TOL`]), not on ΔP/ΔE.
+//!
 //! # Out of scope (documented, not implemented)
 //!
 //! * **Stress** — lives in [`crate::stress`] (FINDINGS "Iteration 19"); it
 //!   reuses this module's `SpinSet`, `JkSource` and input checks.
-//! * ECPs (`v_ecp`), ROHF/ROKS, meta-GGA, range-separated hybrids, VV10,
-//!   k-points: rejected or not provided.
+//! * ECPs (`v_ecp`), meta-GGA, range-separated hybrids, VV10, k-points:
+//!   rejected or not provided.
 
 use crate::budget::{bytes_of, Ledger};
 use crate::dense_aft::{DenseAftEri, ExxDiv};
@@ -153,6 +179,7 @@ use crate::hcore::{
 };
 use crate::lattice::Cell;
 use crate::pair_ft::pair_ft_deriv_chunked;
+use crate::rohf::GammaRoksConfig;
 use crate::rsgdf::deriv::{check_aux_map, fit_densities, fit_derivatives, fold_aux, FitDensities};
 use crate::rsgdf::{aux_ft, RsGdf, RsGdfFitDiagnostics};
 use ferric_core::FerricError;
@@ -222,6 +249,22 @@ pub enum GradMutation {
     /// RS-GDF: textbook metric term (kept–kept block only, no kept–dropped
     /// Loewner block). Blind when nothing is dropped.
     FitTextbookMetric,
+    /// ROHF/ROKS: `W` from the Roothaan EFFECTIVE Fock (`ScfResult::fock_alpha`)
+    /// as the RHF-style `C diag(2ε_c, ε_o) Cᵀ` (`= 2 D_β F_eff D_β +
+    /// P_o F_eff P_o`, `P_o = D_α − D_β`, at convergence).
+    RoWFeffEps,
+    /// ROHF/ROKS: `W_RO` without its closed–open `(f_α)_co` block
+    /// (`− D_β F_α P_o − h.c.`). Invisible iff `(f_α)_co = 0`.
+    RoWNoCo,
+    /// ROHF/ROKS: the XC force pieces (AO term + grid response) through the
+    /// RKS (unpolarized, total-density) path; the Focks keep the polarized
+    /// `V_σ`.
+    RoXcRksForm,
+    /// ROHF/ROKS: the UHF-form `W = Σ_σ D_σ F_σ D_σ` instead of `W_RO`.
+    /// NOT a defect: an IDENTITY at the ROHF stationary point (module doc,
+    /// "ROHF / ROKS"); its force change is ~ the SCF residual. Exists only so
+    /// a test can pin that identity. Never list it as a must-fail mutant.
+    RoWUhfForm,
 }
 
 /// Settings for the `gamma_*_gradient_with` entry points.
@@ -305,6 +348,8 @@ pub struct GammaGradient {
     pub parts: GammaGradParts,
     /// `max_σ max |F_σ D_σ S − S D_σ F_σ|` of the Fock matrices rebuilt from
     /// the SCF densities (a gradient is only meaningful at a stationary `D`).
+    /// ROHF/ROKS: the per-spin commutators do NOT vanish there, so this is
+    /// instead [`RohfOrbitalGradient::max`] (the gated quantity).
     pub commutator: f64,
     /// `v_M` used in `K` and `M` (0 for `exxdiv = none`).
     pub madelung: f64,
@@ -601,6 +646,7 @@ fn rhf_gradient(
         1.0,
         vm,
         None,
+        None,
         cfg,
         &mut ledger,
     )
@@ -714,6 +760,7 @@ fn uhf_gradient(
         &spins,
         1.0,
         vm,
+        None,
         None,
         cfg,
         &mut ledger,
@@ -857,6 +904,7 @@ fn rks_gradient(
         alpha,
         vm,
         Some(xg),
+        None,
         cfg,
         &mut ledger,
     )
@@ -988,9 +1036,477 @@ fn uks_gradient(
         alpha,
         vm,
         Some(xg),
+        None,
         cfg,
         &mut ledger,
     )
+}
+
+/// Refusal threshold on the ROHF orbital gradient ([`RohfOrbitalGradient::max`],
+/// Hartree) of the `gamma_ro*_gradient*` entry points.
+///
+/// Why this value: ferric's ROHF/ROKS stops on `ΔP_rms < density_conv` (and
+/// `ΔP_max < 10 density_conv`), not on the orbital gradient `g`. Near the
+/// solution one Roothaan step moves the orbitals by `~ g / Δε` (`Δε` the
+/// relevant level gap, 0.1..1 Ha on the cells measured), so `|g| ≈ Δε · ΔP`:
+/// ≲ 1e-9 at the Gamma drivers' default `density_conv = 1e-10`, and ≲ 1e-6
+/// even at a loose 1e-6. The force error is first order in `g` (~ `|g|` ×
+/// O(1) AO-derivative norms), so 1e-5 admits every result converged at
+/// `density_conv ≤ 1e-6` and caps the resulting force error near 1e-5
+/// Ha/Bohr (below geometry-optimizer thresholds, ~4.5e-4), while refusing
+/// max-iter snapshots and wrong-state results (the chaotic ROKS PBE0 wander
+/// of `crate::rohf` sits at `|g|` ≫ 1e-5). It is a refusal of a
+/// non-stationary state, NOT a precision guarantee: for FD-grade forces
+/// converge tightly (the tests run at `density_conv = 1e-10`).
+pub const RO_ORBITAL_GRADIENT_TOL: f64 = 1e-5;
+
+/// Occupation tolerance for classifying the ROHF MOs from `(D_α, D_β)`.
+const RO_OCC_TOL: f64 = 1e-6;
+
+/// The three ROHF orbital-gradient blocks (max |element|, MO basis,
+/// `f_σ = Cᵀ F_σ C` with the SPIN Focks) and the orbital classes they were
+/// taken over.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RohfOrbitalGradient {
+    /// `max |(f_β)_co|` (closed → open).
+    pub closed_open: f64,
+    /// `max |(f_α)_ov|` (open → virtual).
+    pub open_virtual: f64,
+    /// `max |(f_α + f_β)_cv|` (closed → virtual).
+    pub closed_virtual: f64,
+    /// `max |(f_α)_co|`: NOT a gradient block — the closed–open coupling
+    /// `W_RO` carries (the size of what [`GradMutation::RoWNoCo`] drops).
+    pub alpha_closed_open: f64,
+    /// Closed (doubly occupied) MOs.
+    pub n_closed: usize,
+    /// Open (α-only) MOs.
+    pub n_open: usize,
+}
+
+impl RohfOrbitalGradient {
+    /// Largest of the three gradient blocks.
+    pub fn max(&self) -> f64 {
+        self.closed_open
+            .max(self.open_virtual)
+            .max(self.closed_virtual)
+    }
+}
+
+/// ROHF orbital gradient of the MOs `c` (columns; all-zero columns are
+/// skipped) at the spin densities / SPIN Focks `(D_σ, F_σ)` in the metric
+/// `s`. Each MO is classified by its occupations `n_i^σ = c_iᵀ S D_σ S c_i`
+/// (closed (1, 1), open (1, 0), virtual (0, 0)); errors when an occupation
+/// is not 0/1 within 1e-6, a MO is β-only, or the class counts disagree with
+/// `tr(D_σ S)` — i.e. when `c` is not the orbital set of `(D_α, D_β)`.
+pub fn rohf_orbital_gradient(
+    c: &Array2<f64>,
+    s: &Array2<f64>,
+    da: &Array2<f64>,
+    db: &Array2<f64>,
+    fa: &Array2<f64>,
+    fb: &Array2<f64>,
+) -> Result<RohfOrbitalGradient, FerricError> {
+    let n = s.nrows();
+    if c.nrows() != n || [da, db, fa, fb].iter().any(|m| m.dim() != (n, n)) {
+        return Err(FerricError::General(format!(
+            "rohf_orbital_gradient: shape mismatch (S {:?}, C {:?})",
+            s.dim(),
+            c.dim()
+        )));
+    }
+    let occ = |d: &Array2<f64>| -> Vec<f64> {
+        let sc = s.dot(c);
+        let m = sc.t().dot(d).dot(&sc);
+        (0..c.ncols()).map(|i| m[(i, i)]).collect()
+    };
+    let (occ_a, occ_b) = (occ(da), occ(db));
+    let (mut closed, mut open, mut virt) = (Vec::new(), Vec::new(), Vec::new());
+    for i in 0..c.ncols() {
+        if c.column(i).iter().all(|v| *v == 0.0) {
+            continue;
+        }
+        let (na, nb) = (occ_a[i], occ_b[i]);
+        let (ra, rb) = (na.round(), nb.round());
+        let ok = |x: f64, r: f64| (x - r).abs() < RO_OCC_TOL && (r == 0.0 || r == 1.0);
+        if !ok(na, ra) || !ok(nb, rb) {
+            return Err(FerricError::General(format!(
+                "rohf_orbital_gradient: MO {i} has occupations (α {na:.3e}, β {nb:.3e}), not 0/1: \
+                 the MOs are not the orbital set of (D_α, D_β)"
+            )));
+        }
+        match (ra == 1.0, rb == 1.0) {
+            (true, true) => closed.push(i),
+            (true, false) => open.push(i),
+            (false, false) => virt.push(i),
+            (false, true) => {
+                return Err(FerricError::General(format!(
+                    "rohf_orbital_gradient: MO {i} is β-occupied but α-empty (not a ROHF state)"
+                )))
+            }
+        }
+    }
+    let ne_a = (da * s).sum();
+    let ne_b = (db * s).sum();
+    if (ne_a - (closed.len() + open.len()) as f64).abs() > 1e-6
+        || (ne_b - closed.len() as f64).abs() > 1e-6
+    {
+        return Err(FerricError::General(format!(
+            "rohf_orbital_gradient: {} closed + {} open MOs do not carry tr(D_α S) = {ne_a:.8}, \
+             tr(D_β S) = {ne_b:.8}",
+            closed.len(),
+            open.len()
+        )));
+    }
+    let fa_mo = c.t().dot(fa).dot(c);
+    let fb_mo = c.t().dot(fb).dot(c);
+    let block = |rows: &[usize], cols: &[usize], f: &dyn Fn(usize, usize) -> f64| {
+        // NaN-propagating max (f64::max would hide a NaN Fock).
+        let mut m = 0.0_f64;
+        for &p in rows {
+            for &q in cols {
+                let a = f(p, q).abs();
+                if a.is_nan() || a > m {
+                    m = a;
+                }
+            }
+        }
+        m
+    };
+    Ok(RohfOrbitalGradient {
+        closed_open: block(&closed, &open, &|p: usize, q: usize| fb_mo[(p, q)]),
+        open_virtual: block(&open, &virt, &|p: usize, q: usize| fa_mo[(p, q)]),
+        closed_virtual: block(&closed, &virt, &|p: usize, q: usize| {
+            fa_mo[(p, q)] + fb_mo[(p, q)]
+        }),
+        alpha_closed_open: block(&closed, &open, &|p: usize, q: usize| fa_mo[(p, q)]),
+        n_closed: closed.len(),
+        n_open: open.len(),
+    })
+}
+
+/// The ROHF orthonormality-Lagrangian energy-weighted matrix
+/// `W_RO = sym(D_α F_α D_α + D_α F_β D_β)` (SPIN Focks; module doc "ROHF /
+/// ROKS"; ferric-scf's molecular `rohf_energy_weighted_density`). Equal to
+/// `Σ_σ D_σ F_σ D_σ` up to ½ × the closed–open β orbital gradient.
+pub fn rohf_lagrangian_w(
+    da: &Array2<f64>,
+    db: &Array2<f64>,
+    fa: &Array2<f64>,
+    fb: &Array2<f64>,
+) -> Array2<f64> {
+    let w = da.dot(fa).dot(da) + da.dot(fb).dot(db);
+    0.5 * (&w + &w.t())
+}
+
+/// Gamma-point ROHF nuclear gradient `dE/dR` with default settings; see
+/// [`gamma_rohf_gradient_with`].
+pub fn gamma_rohf_gradient(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hcore_cfg: &PeriodicHcoreConfig,
+    hc: &PeriodicHcore,
+    eri: &DenseAftEri,
+    scf: &ScfResult,
+    exxdiv: ExxDiv,
+) -> Result<Array2<f64>, FerricError> {
+    Ok(gamma_rohf_gradient_with(
+        cell,
+        prep,
+        hcore_cfg,
+        hc,
+        eri,
+        scf,
+        exxdiv,
+        &GammaGradConfig::default(),
+    )?
+    .grad)
+}
+
+/// Gamma-point ROHF nuclear gradient (module doc, "ROHF / ROKS") of a
+/// converged restricted-open result (e.g. [`crate::rohf::gamma_rohf`]`.scf`
+/// on the dense-AFT J/K). `D_σ` from `density_alpha`/`density_beta`, the
+/// SPIN Focks `F_σ = h + J[D] − K[D_σ] − v_M S D_σ S` rebuilt from them
+/// (`scf.fock_alpha`, the Roothaan `F_eff`, is not read), `W = W_RO`.
+/// Refuses a result whose ROHF orbital gradient exceeds
+/// [`RO_ORBITAL_GRADIENT_TOL`]; `GammaGradient::commutator` reports it.
+/// Other arguments as [`gamma_uhf_gradient_with`].
+#[allow(clippy::too_many_arguments)]
+pub fn gamma_rohf_gradient_with(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hcore_cfg: &PeriodicHcoreConfig,
+    hc: &PeriodicHcore,
+    eri: &DenseAftEri,
+    scf: &ScfResult,
+    exxdiv: ExxDiv,
+    cfg: &GammaGradConfig,
+) -> Result<GammaGradient, FerricError> {
+    ro_gradient(
+        "gamma_rohf_gradient",
+        cell,
+        prep,
+        hcore_cfg,
+        hc,
+        JkSource::Dense(eri),
+        scf,
+        RoKind::Hf(exxdiv),
+        cfg,
+    )
+}
+
+/// Gamma-point ROHF nuclear gradient when J/K come from RS-GDF (`scf` from
+/// [`crate::rohf::gamma_rohf`] with `GammaUhfIntegrals::RsGdf(fit.gdf)`).
+/// Other arguments as [`gamma_rohf_gradient_with`].
+#[allow(clippy::too_many_arguments)]
+pub fn gamma_rohf_gradient_rsgdf(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hcore_cfg: &PeriodicHcoreConfig,
+    hc: &PeriodicHcore,
+    fit: &RsGdfGradSource<'_>,
+    scf: &ScfResult,
+    exxdiv: ExxDiv,
+    cfg: &GammaGradConfig,
+) -> Result<GammaGradient, FerricError> {
+    ro_gradient(
+        "gamma_rohf_gradient_rsgdf",
+        cell,
+        prep,
+        hcore_cfg,
+        hc,
+        JkSource::Fit(*fit),
+        scf,
+        RoKind::Hf(exxdiv),
+        cfg,
+    )
+}
+
+/// Gamma-point ROKS nuclear gradient `dE/dR` with default settings; see
+/// [`gamma_roks_gradient_with`].
+#[allow(clippy::too_many_arguments)]
+pub fn gamma_roks_gradient(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hcore_cfg: &PeriodicHcoreConfig,
+    hc: &PeriodicHcore,
+    eri: &DenseAftEri,
+    scf: &ScfResult,
+    dft: &GammaRoksConfig,
+) -> Result<Array2<f64>, FerricError> {
+    Ok(gamma_roks_gradient_with(
+        cell,
+        prep,
+        hcore_cfg,
+        hc,
+        eri,
+        scf,
+        dft,
+        &GammaGradConfig::default(),
+    )?
+    .grad)
+}
+
+/// Gamma-point ROKS nuclear gradient (LDA, GGA, global hybrids) with the
+/// full periodic grid response: `scf` the final stage of
+/// [`crate::rohf::gamma_roks`] on the dense-AFT J/K `eri`, `dft` the SAME
+/// config it ran with (functional, grid, AO threshold, exxdiv; see
+/// [`gamma_rks_gradient_with`]). The UKS assembly on the ROHF spin densities:
+/// POLARIZED XC kernel and response, `F_σ = h + J[D] − α (K[D_σ] +
+/// v_M S D_σ S) + V_σ`, `W = W_RO`. Refuses as [`gamma_rohf_gradient_with`].
+#[allow(clippy::too_many_arguments)]
+pub fn gamma_roks_gradient_with(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hcore_cfg: &PeriodicHcoreConfig,
+    hc: &PeriodicHcore,
+    eri: &DenseAftEri,
+    scf: &ScfResult,
+    dft: &GammaRoksConfig,
+    cfg: &GammaGradConfig,
+) -> Result<GammaGradient, FerricError> {
+    ro_gradient(
+        "gamma_roks_gradient",
+        cell,
+        prep,
+        hcore_cfg,
+        hc,
+        JkSource::Dense(eri),
+        scf,
+        RoKind::Ks(dft),
+        cfg,
+    )
+}
+
+/// Gamma-point ROKS nuclear gradient when J/K come from RS-GDF (`scf` from
+/// [`crate::rohf::gamma_roks`] with `GammaUhfIntegrals::RsGdf(fit.gdf)`).
+/// Other arguments as [`gamma_roks_gradient_with`].
+#[allow(clippy::too_many_arguments)]
+pub fn gamma_roks_gradient_rsgdf(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hcore_cfg: &PeriodicHcoreConfig,
+    hc: &PeriodicHcore,
+    fit: &RsGdfGradSource<'_>,
+    scf: &ScfResult,
+    dft: &GammaRoksConfig,
+    cfg: &GammaGradConfig,
+) -> Result<GammaGradient, FerricError> {
+    ro_gradient(
+        "gamma_roks_gradient_rsgdf",
+        cell,
+        prep,
+        hcore_cfg,
+        hc,
+        JkSource::Fit(*fit),
+        scf,
+        RoKind::Ks(dft),
+        cfg,
+    )
+}
+
+/// ROHF (`α = 1`, no XC) or ROKS (the config's functional).
+#[derive(Clone, Copy)]
+enum RoKind<'a> {
+    Hf(ExxDiv),
+    Ks(&'a GammaRoksConfig),
+}
+
+/// The ROHF orbital gradient of `scf.mos_alpha` at `(D_σ, F_σ)`, refused
+/// above [`RO_ORBITAL_GRADIENT_TOL`] (messages prefixed by `who`).
+pub(crate) fn ro_gate(
+    who: &str,
+    scf: &ScfResult,
+    s: &Array2<f64>,
+    da: &Array2<f64>,
+    db: &Array2<f64>,
+    fa: &Array2<f64>,
+    fb: &Array2<f64>,
+) -> Result<RohfOrbitalGradient, FerricError> {
+    let og = rohf_orbital_gradient(&scf.mos_alpha, s, da, db, fa, fb)
+        .map_err(|e| FerricError::General(format!("{who}: {e}")))?;
+    if og.max().is_nan() || og.max() > RO_ORBITAL_GRADIENT_TOL {
+        return Err(FerricError::General(format!(
+            "{who}: ROHF orbital gradient {:.3e} (co {:.3e}, ov {:.3e}, cv {:.3e}) exceeds \
+             {RO_ORBITAL_GRADIENT_TOL:.0e}: not a stationary ROHF state (the force is first \
+             order in it); converge the SCF tighter",
+            og.max(),
+            og.closed_open,
+            og.open_virtual,
+            og.closed_virtual
+        )));
+    }
+    Ok(og)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ro_gradient(
+    who: &str,
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hcore_cfg: &PeriodicHcoreConfig,
+    hc: &PeriodicHcore,
+    jk: JkSource<'_>,
+    scf: &ScfResult,
+    kind: RoKind<'_>,
+    cfg: &GammaGradConfig,
+) -> Result<GammaGradient, FerricError> {
+    check_inputs(
+        who,
+        cell,
+        prep,
+        hcore_cfg,
+        hc,
+        &jk,
+        scf,
+        Spin::RestrictedOpen,
+    )?;
+    let (alpha, exxdiv) = match kind {
+        RoKind::Hf(e) => (1.0, e),
+        RoKind::Ks(d) => (resolve_periodic_functional(&d.functional)?.1, d.exxdiv),
+    };
+    let mut ledger = open_ledger(cell, prep, cfg, true)?;
+    let (da, db) = spin_densities(who, scf)?;
+    let vm = madelung_for(cell, exxdiv)?;
+    let (xg, v_b) = match kind {
+        RoKind::Hf(_) => (None, None),
+        RoKind::Ks(dft) => {
+            let aoat = ao_atoms(prep);
+            let mut xg = xc_gradient(
+                cell,
+                prep,
+                &dft.functional,
+                &dft.grid,
+                dft.xc.ao_threshold,
+                XcDensity::Polarized(&da, &db),
+                &aoat,
+                cfg.mutation,
+                &mut ledger,
+            )?;
+            let v_b = xg.v_b.take().ok_or_else(|| {
+                FerricError::General(format!("{who}: the polarized XC pass returned no V_beta"))
+            })?;
+            if cfg.mutation == Some(GradMutation::RoXcRksForm) {
+                let dt = &da + &db;
+                let xr = xc_gradient(
+                    cell,
+                    prep,
+                    &dft.functional,
+                    &dft.grid,
+                    dft.xc.ao_threshold,
+                    XcDensity::Closed(&dt),
+                    &aoat,
+                    cfg.mutation,
+                    &mut ledger,
+                )?;
+                xg.ao = xr.ao;
+                xg.point = xr.point;
+                xg.weight = xr.weight;
+            }
+            (Some(xg), Some(v_b))
+        }
+    };
+    let v = match (&xg, &v_b) {
+        (Some(x), Some(vb)) => Some((&x.v_a, vb)),
+        _ => None,
+    };
+    let (fa, fb) = unrestricted_focks(hc, &jk, &da, &db, alpha, vm, v)?;
+    let og = ro_gate(who, scf, &hc.s, &da, &db, &fa, &fb)?;
+    let w = match cfg.mutation {
+        Some(GradMutation::RoWUhfForm) => None,
+        Some(GradMutation::RoWFeffEps) => {
+            let feff = &scf.fock_alpha;
+            if feff.dim() != da.dim() {
+                return Err(FerricError::General(format!(
+                    "{who}: RoWFeffEps needs the n×n Roothaan F_eff in scf.fock_alpha"
+                )));
+            }
+            let po = &da - &db;
+            Some(2.0 * db.dot(feff).dot(&db) + po.dot(feff).dot(&po))
+        }
+        Some(GradMutation::RoWNoCo) => {
+            let po = &da - &db;
+            let cpl = db.dot(&fa).dot(&po);
+            Some(rohf_lagrangian_w(&da, &db, &fa, &fb) - &cpl - cpl.t())
+        }
+        _ => Some(rohf_lagrangian_w(&da, &db, &fa, &fb)),
+    };
+    let spins = SpinSet::Unrestricted { da, db, fa, fb };
+    let mut out = assemble(
+        cell,
+        prep,
+        hcore_cfg,
+        hc,
+        &jk,
+        &spins,
+        alpha,
+        vm,
+        xg,
+        w,
+        cfg,
+        &mut ledger,
+    )?;
+    out.commutator = og.max();
+    Ok(out)
 }
 
 /// Shared argument checks (messages prefixed by `who`).
@@ -1020,7 +1536,8 @@ pub(crate) fn check_inputs(
     if scf.spin != spin {
         let want = match spin {
             Spin::Restricted => "a restricted closed-shell",
-            _ => "an unrestricted",
+            Spin::RestrictedOpen => "a restricted open-shell (ROHF/ROKS)",
+            Spin::Unrestricted => "an unrestricted",
         };
         return Err(FerricError::General(format!(
             "{who}: needs {want} result, got {:?}",
@@ -1192,6 +1709,8 @@ pub(crate) fn ao_atoms(prep: &PreparedBasis) -> Vec<usize> {
 
 /// Everything but the XC pass: one-electron, nuclear, two-electron and the
 /// overlap-coupled terms at the given per-spin `(D_σ, F_σ)` (module doc).
+/// `w`: the energy-weighted matrix when it is not `spins`' own
+/// `Σ_σ D_σ F_σ D_σ` (ROHF/ROKS: `W_RO`); `None` everywhere else.
 #[allow(clippy::too_many_arguments)]
 fn assemble(
     cell: &Cell,
@@ -1203,6 +1722,7 @@ fn assemble(
     alpha: f64,
     vm: f64,
     xc: Option<XcGradient>,
+    w: Option<Array2<f64>>,
     cfg: &GammaGradConfig,
     ledger: &mut Ledger,
 ) -> Result<GammaGradient, FerricError> {
@@ -1216,6 +1736,8 @@ fn assemble(
     let commutator = spins.commutator(s_mat);
     let w = if mutation == Some(GradMutation::WSpinSum) {
         spins.energy_weighted_spin_sum()
+    } else if let Some(w) = w {
+        w
     } else {
         spins.energy_weighted()
     };

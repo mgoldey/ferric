@@ -77,7 +77,14 @@
 //!
 //! # Scope
 //!
-//! Not covered (refused or not provided, as for the forces): ECPs, ROHF/ROKS,
+//! ROHF/ROKS (`gamma_rohf_stress` / `gamma_roks_stress`) run the UHF/UKS
+//! assembly on the ROHF spin densities and SPIN Focks, gated on the ROHF
+//! orbital gradient (`crate::grad::RO_ORBITAL_GRADIENT_TOL`). They use the
+//! UHF-form `W = Σ_σ D_σ F_σ D_σ`, which equals the ROHF Lagrangian `W_RO`
+//! up to ½ × the closed–open β orbital gradient (`crate::grad` module doc,
+//! "ROHF / ROKS"): exact at the stationary point, as for the forces.
+//!
+//! Not covered (refused or not provided, as for the forces): ECPs,
 //! meta-GGA, range-separated hybrids, VV10, k-points, the uniform KS grid
 //! (the energy path does not offer it), aux centres that do not strain
 //! homogeneously with the cell.
@@ -92,8 +99,8 @@ use crate::ewald::{
     default_ewald_omega, ewald_nuclear_strain, madelung_strain, DEFAULT_EWALD_PRECISION,
 };
 use crate::grad::{
-    check_inputs, madelung_for, spin_densities, unrestricted_focks, JkSource, RsGdfGradSource,
-    SpinSet, GRAD_NUCLEUS_EXPONENT,
+    check_inputs, madelung_for, ro_gate, spin_densities, unrestricted_focks, JkSource,
+    RsGdfGradSource, SpinSet, GRAD_NUCLEUS_EXPONENT,
 };
 use crate::hcore::{
     gvector_list_bytes, half_gvectors, hcore_pair_images, lr_gcut, sr_attraction_strain,
@@ -101,6 +108,7 @@ use crate::hcore::{
 };
 use crate::lattice::Cell;
 use crate::pair_ft::{pair_ft_strain_chunked, PairFtStrainTerms};
+use crate::rohf::GammaRoksConfig;
 use crate::rsgdf::deriv::fit_densities;
 use crate::rsgdf::strain::{fit_strain, FitStrainTerms};
 use crate::rsgdf::{aux_ft, RsGdfFitDiagnostics};
@@ -280,7 +288,8 @@ pub struct GammaStress {
     pub parts: GammaStressParts,
     /// Cell volume Ω (Bohr³).
     pub volume: f64,
-    /// `max_σ max |F_σ D_σ S − S D_σ F_σ|` of the rebuilt Fock matrices.
+    /// `max_σ max |F_σ D_σ S − S D_σ F_σ|` of the rebuilt Fock matrices
+    /// (NOT zero for ROHF/ROKS; their gate is the ROHF orbital gradient).
     pub commutator: f64,
     /// `v_M` used in `K` and `M` (0 for exxdiv = none).
     pub madelung: f64,
@@ -577,6 +586,61 @@ pub fn gamma_uks_stress_rsgdf(
     )
 }
 
+/// Gamma-point ROHF stress on the dense-AFT J/K (`scf` the final stage of
+/// `crate::rohf::gamma_rohf`; `exxdiv` its convention). Refuses a result
+/// whose ROHF orbital gradient exceeds `crate::grad::RO_ORBITAL_GRADIENT_TOL`.
+#[allow(clippy::too_many_arguments)]
+pub fn gamma_rohf_stress(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hcore_cfg: &PeriodicHcoreConfig,
+    hc: &PeriodicHcore,
+    eri: &DenseAftEri,
+    scf: &ScfResult,
+    exxdiv: ExxDiv,
+    cfg: &GammaStressConfig,
+) -> Result<GammaStress, FerricError> {
+    hf_stress(
+        "gamma_rohf_stress",
+        cell,
+        prep,
+        hcore_cfg,
+        hc,
+        JkSource::Dense(eri),
+        scf,
+        exxdiv,
+        Spin::RestrictedOpen,
+        cfg,
+    )
+}
+
+/// Gamma-point ROKS stress on the dense-AFT J/K (`scf` the final stage of
+/// `crate::rohf::gamma_roks`; `dft` its config). Refuses as
+/// [`gamma_rohf_stress`].
+#[allow(clippy::too_many_arguments)]
+pub fn gamma_roks_stress(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hcore_cfg: &PeriodicHcoreConfig,
+    hc: &PeriodicHcore,
+    eri: &DenseAftEri,
+    scf: &ScfResult,
+    dft: &GammaRoksConfig,
+    cfg: &GammaStressConfig,
+) -> Result<GammaStress, FerricError> {
+    ks_stress(
+        "gamma_roks_stress",
+        cell,
+        prep,
+        hcore_cfg,
+        hc,
+        JkSource::Dense(eri),
+        scf,
+        KsSpec::of_roks(dft),
+        cfg,
+    )
+}
+
 /// What the KS entries need from the SCF config.
 struct KsSpec<'a> {
     functional: &'a str,
@@ -606,6 +670,16 @@ impl<'a> KsSpec<'a> {
             spin: Spin::Unrestricted,
         }
     }
+
+    fn of_roks(d: &'a GammaRoksConfig) -> Self {
+        Self {
+            functional: &d.functional,
+            grid: &d.grid,
+            ao_threshold: d.xc.ao_threshold,
+            exxdiv: d.exxdiv,
+            spin: Spin::RestrictedOpen,
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -629,6 +703,9 @@ fn hf_stress(
     let spins = if unrestricted {
         let (da, db) = spin_densities(who, scf)?;
         let (fa, fb) = unrestricted_focks(hc, &jk, &da, &db, 1.0, vm, None)?;
+        if spin == Spin::RestrictedOpen {
+            ro_gate(who, scf, &hc.s, &da, &db, &fa, &fb)?;
+        }
         SpinSet::Unrestricted { da, db, fa, fb }
     } else {
         let d = scf.density_total.clone();
@@ -688,6 +765,9 @@ fn ks_stress(
             FerricError::General(format!("{who}: the polarized XC pass returned no V_beta"))
         })?;
         let (fa, fb) = unrestricted_focks(hc, &jk, &da, &db, alpha, vm, Some((&xs.v_a, &v_b)))?;
+        if ks.spin == Spin::RestrictedOpen {
+            ro_gate(who, scf, &hc.s, &da, &db, &fa, &fb)?;
+        }
         let spins = SpinSet::Unrestricted { da, db, fa, fb };
         assemble(
             cell,

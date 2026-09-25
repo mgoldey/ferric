@@ -108,6 +108,12 @@
 //!   eigenvalue, noise-floor flag) and the OPT-IN `exp_to_discard` basis
 //!   filter (`prepare_cell_basis`); FINDINGS "Iteration 15".
 //!
+//! * [`timing`] — stage timers (wall + process CPU) and counters on
+//!   `PeriodicHcore`, `RsGdf`, `DenseAftEri`, the KS results and the k-point
+//!   results, plus per-SCF-iteration J/K/XC call clocks ([`PbcTimings`]);
+//!   observation only, energies bit-identical (FINDINGS "Performance plan",
+//!   item 0).
+//!
 //! Units: Bohr and Hartree throughout; G vectors in Bohr⁻¹.
 //!
 //! Not wired into the CLI or the Python bindings yet — see
@@ -134,6 +140,7 @@ pub mod pair_ft;
 pub mod rohf;
 pub mod rsgdf;
 pub mod stress;
+pub mod timing;
 pub mod ucorr;
 pub mod uhf;
 
@@ -155,6 +162,11 @@ pub use grad::{
     gamma_uhf_gradient_rsgdf, gamma_uhf_gradient_with, gamma_uks_gradient,
     gamma_uks_gradient_rsgdf, gamma_uks_gradient_with, GammaGradConfig, GammaGradParts,
     GammaGradient, GammaRhfGradient, RsGdfGradSource,
+};
+pub use grad::{
+    gamma_rohf_gradient, gamma_rohf_gradient_rsgdf, gamma_rohf_gradient_with, gamma_roks_gradient,
+    gamma_roks_gradient_rsgdf, gamma_roks_gradient_with, rohf_lagrangian_w, rohf_orbital_gradient,
+    RohfOrbitalGradient, RO_ORBITAL_GRADIENT_TOL,
 };
 pub use hcore::kpoint::{periodic_hcore_kpts, PeriodicHcoreK};
 pub use hcore::{periodic_hcore, PeriodicHcore, PeriodicHcoreConfig};
@@ -195,6 +207,8 @@ pub use stress::{
     gamma_uhf_stress, gamma_uhf_stress_rsgdf, gamma_uks_stress, gamma_uks_stress_rsgdf,
     GammaStress, GammaStressConfig, GammaStressParts,
 };
+pub use stress::{gamma_rohf_stress, gamma_roks_stress};
+pub use timing::{CallClock, PbcTimings, StageClock, StageTiming};
 pub use ucorr::{gamma_ump2, gamma_urpa, GammaUmp2Result, GammaUrpaResult};
 pub use uhf::{
     gamma_uhf, occupation_gaps, EwaldStart, GammaUhfConfig, GammaUhfIntegrals, GammaUhfResult,

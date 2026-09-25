@@ -32,8 +32,8 @@ use ferric_pbc::{
     GammaUhfIntegrals, GammaUksConfig, GammaUksGridInfo, KCorrIntegrals, KDenseAftConfig,
     KDenseAftEri, KDenseAftPairs, KDrpaConfig, KDrpaEnergy, KJkKind, KMp2Config, KPointInjection,
     KPointMesh, KRhfConfig, KRsGdf, KRsGdfConfig, KScfConfig, KScfResult, KUhfConfig, LindepReport,
-    MeshCentring, Mp2Denominators, PeriodicGridConfig, PeriodicHcore, PeriodicHcoreConfig, RsGdf,
-    RsGdfConfig, SpinGapReport,
+    MeshCentring, Mp2Denominators, PbcTimings, PeriodicGridConfig, PeriodicHcore,
+    PeriodicHcoreConfig, RsGdf, RsGdfConfig, SpinGapReport, StageClock,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 
@@ -105,6 +105,38 @@ fn parse_kdrpa_energy(fname: &str, s: &str) -> PyResult<KDrpaEnergy> {
              got {other:?}"
         ))),
     }
+}
+
+/// The `timings` attribute of every periodic result: `{"wall_s": float,
+/// "cpu_s": float | None, "unattributed_wall_s": float, "stages": {name:
+/// {"wall_s", "cpu_s", "calls"}}, "counters": {name: int}}`. Stages are
+/// disjoint leaves (`ferric_pbc::timing`), in the order they first ran;
+/// `unattributed_wall_s` = total minus their sum (SCF linear algebra and
+/// bookkeeping). Observation only: timing never touches a number.
+pub(crate) fn timings_dict(py: Python<'_>, t: &PbcTimings) -> PyResult<Py<pyo3::types::PyDict>> {
+    use pyo3::types::PyDict;
+    let stages = PyDict::new(py);
+    for st in &t.stages {
+        let d = PyDict::new(py);
+        d.set_item("wall_s", st.wall_s)?;
+        d.set_item("cpu_s", st.cpu_s)?;
+        d.set_item("calls", st.calls)?;
+        stages.set_item(st.name, d)?;
+    }
+    let counters = PyDict::new(py);
+    for (name, v) in &t.counters {
+        counters.set_item(*name, *v)?;
+    }
+    let out = PyDict::new(py);
+    out.set_item("wall_s", t.wall_s)?;
+    out.set_item("cpu_s", t.cpu_s)?;
+    out.set_item(
+        "unattributed_wall_s",
+        (t.wall_s - t.stage_wall_sum()).max(0.0),
+    )?;
+    out.set_item("stages", stages)?;
+    out.set_item("counters", counters)?;
+    Ok(out.into())
 }
 
 fn kdrpa_energy_name(e: KDrpaEnergy) -> String {
@@ -312,6 +344,21 @@ struct GammaSystem {
     ints: GammaInts,
 }
 
+impl GammaSystem {
+    /// hcore + J/K build stages and the SCF J/K calls so far, plus `extra`
+    /// (driver stages), with the total measured from `total`.
+    fn timings(&self, extra: &[&PbcTimings], total: &StageClock) -> PbcTimings {
+        let mut t = PbcTimings::default();
+        t.absorb(&self.hc.timings);
+        t.absorb(&self.ints.scf().timings());
+        for x in extra {
+            t.absorb(x);
+        }
+        t.finish(total);
+        t
+    }
+}
+
 /// Refuse an oversize dense cell before any lattice sum (the Rust builder
 /// re-checks the same bound after hcore).
 fn gamma_dense_preflight(s: &PbcSetup) -> PyResult<()> {
@@ -481,10 +528,16 @@ struct PyGammaOpenShellResult {
     #[pyo3(get)]
     auxbasis: Option<String>,
     scf_data: ScfResult,
+    timings_data: PbcTimings,
 }
 
 #[pymethods]
 impl PyGammaOpenShellResult {
+    /// Stage timings and counters (see `timings_dict`).
+    #[getter]
+    fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+        timings_dict(py, &self.timings_data)
+    }
     /// Alpha MO energies (Hartree), ascending.
     fn mo_energy_alpha<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         PyArray1::from_vec(py, self.scf_data.eps_alpha.clone())
@@ -520,6 +573,8 @@ struct OpenParts {
     e_xc: Option<f64>,
     a_x: Option<f64>,
     grid: Option<GammaUksGridInfo>,
+    /// KS only: the driver's grid / AO-cache / XC stages (else empty).
+    ks_timings: PbcTimings,
 }
 
 enum OpenMethod {
@@ -562,6 +617,7 @@ fn run_open_ks(s: &PbcSetup, sys: &GammaSystem, o: &OpenOpts) -> Result<OpenPart
             cfg.scf = o.scf.clone();
             let r = gamma_uks(&s.cell, &s.prep, &sys.hc, ints, &cfg)?;
             Ok(OpenParts {
+                ks_timings: r.timings,
                 e_xc: Some(r.e_xc),
                 a_x: Some(r.exact_exchange_fraction),
                 grid: r.grid,
@@ -580,6 +636,7 @@ fn run_open_ks(s: &PbcSetup, sys: &GammaSystem, o: &OpenOpts) -> Result<OpenPart
             cfg.scf = o.scf.clone();
             let r = gamma_roks(&s.cell, &s.prep, &sys.hc, ints, &cfg)?;
             Ok(OpenParts {
+                ks_timings: r.timings,
                 e_xc: Some(r.e_xc),
                 a_x: Some(r.exact_exchange_fraction),
                 grid: r.grid,
@@ -628,16 +685,22 @@ fn run_open_hf(s: &PbcSetup, sys: &GammaSystem, o: &OpenOpts) -> Result<OpenPart
         e_xc: None,
         a_x: None,
         grid: None,
+        ks_timings: PbcTimings::default(),
     })
 }
 
-fn open_shell_driver(s: &PbcSetup, o: &OpenOpts) -> Result<(OpenParts, f64), FerricError> {
+fn open_shell_driver(
+    s: &PbcSetup,
+    o: &OpenOpts,
+) -> Result<(OpenParts, f64, PbcTimings), FerricError> {
+    let total = StageClock::start();
     let sys = gamma_system(s)?;
     let parts = match o.method {
         OpenMethod::Uhf | OpenMethod::Rohf => run_open_hf(s, &sys, o)?,
         OpenMethod::Uks(_) | OpenMethod::Roks(_) => run_open_ks(s, &sys, o)?,
     };
-    Ok((parts, sys.hc.enn))
+    let t = sys.timings(&[&parts.ks_timings], &total);
+    Ok((parts, sys.hc.enn, t))
 }
 
 /// Shared body of the four Gamma open-shell bindings.
@@ -648,7 +711,7 @@ fn run_open_shell(
     ewald_start: Option<String>,
 ) -> PyResult<PyGammaOpenShellResult> {
     gamma_dense_preflight(&s)?;
-    let (p, e_nuc) = py
+    let (p, e_nuc, timings_data) = py
         .allow_threads(|| open_shell_driver(&s, &o))
         .map_err(pbc_err(s.fname))?;
     Ok(PyGammaOpenShellResult {
@@ -676,6 +739,7 @@ fn run_open_shell(
         jk: s.jk_name(),
         auxbasis: s.aux_name.clone(),
         scf_data: p.scf,
+        timings_data,
     })
 }
 
@@ -964,10 +1028,16 @@ struct PyGammaRksResult {
     #[pyo3(get)]
     auxbasis: Option<String>,
     scf_data: ScfResult,
+    timings_data: PbcTimings,
 }
 
 #[pymethods]
 impl PyGammaRksResult {
+    /// Stage timings and counters (see `timings_dict`).
+    #[getter]
+    fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+        timings_dict(py, &self.timings_data)
+    }
     /// MO energies (Hartree), ascending.
     fn mo_energy<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         PyArray1::from_vec(py, self.scf_data.eps_alpha.clone())
@@ -989,12 +1059,14 @@ fn rks_driver(
     functional: &str,
     grid: PeriodicGridConfig,
     scf: RhfConfig,
-) -> Result<(ferric_pbc::GammaRksResult, f64), FerricError> {
+) -> Result<(ferric_pbc::GammaRksResult, f64, PbcTimings), FerricError> {
+    let total = StageClock::start();
     let sys = gamma_system(s)?;
     let mut cfg = GammaRksConfig::new(functional);
     (cfg.grid, cfg.exxdiv, cfg.scf) = (grid, s.exx, scf);
     let r = gamma_rks(&s.cell, &s.prep, &sys.hc, sys.ints.scf(), &cfg)?;
-    Ok((r, sys.hc.enn))
+    let t = sys.timings(&[&r.timings], &total);
+    Ok((r, sys.hc.enn, t))
 }
 
 /// Closed-shell Gamma-point periodic **RKS**. Functional and grid contract
@@ -1048,7 +1120,7 @@ fn run_rks_gamma(
     let grid = periodic_grid(fname, n_radial, n_angular, neighbour_cutoff)?;
     gamma_dense_preflight(&s)?;
     let scf = gamma_scf_config(max_iter, density_conv);
-    let (r, e_nuc) = py
+    let (r, e_nuc, timings_data) = py
         .allow_threads(|| rks_driver(&s, functional, grid, scf))
         .map_err(pbc_err(fname))?;
     Ok(PyGammaRksResult {
@@ -1068,6 +1140,7 @@ fn run_rks_gamma(
         jk: s.jk_name(),
         auxbasis: s.aux_name.clone(),
         scf_data: r.scf,
+        timings_data,
     })
 }
 
@@ -1125,10 +1198,17 @@ struct PyGammaCorrelationResult {
     jk: String,
     #[pyo3(get)]
     auxbasis: Option<String>,
+    timings_data: PbcTimings,
 }
 
 #[pymethods]
 impl PyGammaCorrelationResult {
+    /// Stage timings and counters (see `timings_dict`); the correlation
+    /// step is the `"gamma MP2"` / `"gamma dRPA"` stage.
+    #[getter]
+    fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+        timings_dict(py, &self.timings_data)
+    }
     fn __repr__(&self) -> String {
         format!(
             "GammaCorrelationResult(method={:?}, correlation_energy={:.10}, energy={:.10}, \
@@ -1213,11 +1293,24 @@ fn gamma_corr_step(
     }
 }
 
-fn gamma_corr_driver(s: &PbcSetup, o: &CorrOpts) -> Result<(ScfResult, CorrParts), FerricError> {
+fn gamma_corr_driver(
+    s: &PbcSetup,
+    o: &CorrOpts,
+) -> Result<(ScfResult, CorrParts, PbcTimings), FerricError> {
+    let total = StageClock::start();
     let sys = gamma_system(s)?;
     let rhf = gamma_rhf_reference(s, &sys, &o.scf)?;
+    let clock = StageClock::start();
     let c = gamma_corr_step(s, &sys, &rhf, o)?;
-    Ok((rhf, c))
+    let mut corr_t = PbcTimings::default();
+    let stage = if o.drpa_quad.is_some() {
+        "gamma dRPA"
+    } else {
+        "gamma MP2"
+    };
+    corr_t.stop(stage, &clock);
+    let t = sys.timings(&[&corr_t], &total);
+    Ok((rhf, c, t))
 }
 
 fn run_gamma_corr(
@@ -1227,7 +1320,7 @@ fn run_gamma_corr(
     denominators: &str,
 ) -> PyResult<PyGammaCorrelationResult> {
     gamma_dense_preflight(&s)?;
-    let (rhf, c) = py
+    let (rhf, c, timings_data) = py
         .allow_threads(|| gamma_corr_driver(&s, &o))
         .map_err(pbc_err(s.fname))?;
     Ok(PyGammaCorrelationResult {
@@ -1249,6 +1342,7 @@ fn run_gamma_corr(
         denominators: denominators.to_ascii_lowercase(),
         jk: s.jk_name(),
         auxbasis: s.aux_name.clone(),
+        timings_data,
     })
 }
 
@@ -1474,10 +1568,17 @@ struct PyKpointScfResult {
     jk: String,
     #[pyo3(get)]
     auxbasis: Option<String>,
+    timings_data: PbcTimings,
 }
 
 #[pymethods]
 impl PyKpointScfResult {
+    /// Coarse stage timings (`"k hcore"`, `"k J/K build"`, `"k SCF"`) and
+    /// the RS-GDF counters (see `timings_dict`).
+    #[getter]
+    fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+        timings_dict(py, &self.timings_data)
+    }
     fn __repr__(&self) -> String {
         format!(
             "KpointScfResult(method={:?}, energy={:.10}, mesh={:?}, exxdiv={:?}, \
@@ -1574,6 +1675,7 @@ fn kpoint_result_base(
         nao: s.prep.nbasis(),
         jk: s.jk_name(),
         auxbasis: s.aux_name.clone(),
+        timings_data: PbcTimings::default(),
     }
 }
 
@@ -1669,6 +1771,7 @@ fn run_rhf_kpts(
         lindep: (&r.lindep).into(),
     };
     let mut out = kpoint_result_base(&s, &m, "rhf", &like);
+    out.timings_data = r.timings;
     out.mo_energy = r.eps;
     (out.homo, out.lumo) = (Some(r.homo), Some(r.lumo));
     Ok(out)
@@ -1753,6 +1856,7 @@ fn run_uhf_kpts(
         lindep: (&u.lindep).into(),
     };
     let mut out = kpoint_result_base(&s, &m, "uhf", &like);
+    out.timings_data = r.timings.clone();
     out.ewald_start = start_name;
     out.none_stage_energy = r.none_stage.as_ref().map(|n| n.energy);
     (out.mo_energy, out.mo_energy_beta) = (u.eps_alpha.clone(), Some(u.eps_beta.clone()));
@@ -1829,10 +1933,18 @@ struct PyKpointCorrelationResult {
     jk: String,
     #[pyo3(get)]
     auxbasis: Option<String>,
+    timings_data: PbcTimings,
 }
 
 #[pymethods]
 impl PyKpointCorrelationResult {
+    /// Coarse stage timings (`"k hcore"`, `"k J/K build"`, `"k SCF"`,
+    /// dense: `"k correlation pair tensors"`, then `"k MP2"` / `"k dRPA"`)
+    /// and the RS-GDF counters (see `timings_dict`).
+    #[getter]
+    fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+        timings_dict(py, &self.timings_data)
+    }
     fn __repr__(&self) -> String {
         format!(
             "KpointCorrelationResult(method={:?}, correlation_energy={:.10}, mesh={:?}, \
@@ -1869,43 +1981,58 @@ fn require_kscf_converged(r: &KScfResult) -> Result<(), FerricError> {
 
 /// k-point RHF whose integrals outlive the SCF (dense: the SCF kernels are
 /// dropped and the correlation pair tensors built; rsgdf: one object).
+/// `t` receives the coarse stages (`"k hcore"`, `"k J/K build"`, `"k SCF"`,
+/// dense: `"k correlation pair tensors"`) and the RS-GDF counters.
 fn krhf_with_ints(
     s: &PbcSetup,
     mesh: &KPointMesh,
     scf: &KScfConfig,
+    t: &mut PbcTimings,
 ) -> Result<(KScfResult, KInts), FerricError> {
+    let clock = StageClock::start();
     let hk = periodic_hcore_kpts(
         &s.cell,
         &s.prep,
         mesh,
         &PeriodicHcoreConfig::with_omega(s.omega_bohr),
     )?;
+    t.stop("k hcore", &clock);
+    let clock = StageClock::start();
     match &s.aux {
         None => {
             let kc = kdense_config(s);
             let eri = KDenseAftEri::build(&s.cell, &s.prep, mesh, &hk.s, s.exx, &kc)?;
+            t.stop("k J/K build", &clock);
             let inj = KPointInjection {
                 s: hk.s,
                 h: hk.h,
                 vnn: hk.enn,
                 jk: Box::new(eri.jk_builder()),
             };
+            let clock = StageClock::start();
             let r = solve_krhf_injected(&s.cell, mesh, scf, inj)?;
+            t.stop("k SCF", &clock);
             drop(eri);
             require_kscf_converged(&r)?;
+            let clock = StageClock::start();
             let pairs = KDenseAftPairs::build(&s.cell, &s.prep, mesh, &kc)?;
+            t.stop("k correlation pair tensors", &clock);
             Ok((r, KInts::Dense(Box::new(pairs))))
         }
         Some(aux) => {
             let gdf = KRsGdf::build(&s.cell, &s.prep, aux, mesh, &hk.s, &krsgdf_config(s))?
                 .with_exxdiv(s.exx);
+            t.stop("k J/K build", &clock);
+            ferric_pbc::rsgdf::kpoint::record_stats(t, gdf.stats());
             let inj = KPointInjection {
                 s: hk.s,
                 h: hk.h,
                 vnn: hk.enn,
                 jk: Box::new(gdf.jk_builder()),
             };
+            let clock = StageClock::start();
             let r = solve_krhf_injected(&s.cell, mesh, scf, inj)?;
+            t.stop("k SCF", &clock);
             require_kscf_converged(&r)?;
             Ok((r, KInts::RsGdf(Box::new(gdf))))
         }
@@ -1925,8 +2052,11 @@ fn kcorr_driver(
     mesh: &KPointMesh,
     o: &KCorrOpts,
 ) -> Result<(KScfResult, PyKpointCorrelationResult), FerricError> {
-    let (r, ints) = krhf_with_ints(s, mesh, &o.scf)?;
+    let total = StageClock::start();
+    let mut t = PbcTimings::default();
+    let (r, ints) = krhf_with_ints(s, mesh, &o.scf, &mut t)?;
     let mut out = kcorr_result_base(s, mesh, &r, o);
+    let clock = StageClock::start();
     match o.drpa {
         None => {
             let cfg = KMp2Config {
@@ -1959,6 +2089,9 @@ fn kcorr_driver(
             (out.nocc_active, out.nvir) = (d.nocc_active, d.nvir);
         }
     }
+    t.stop(if o.drpa.is_some() { "k dRPA" } else { "k MP2" }, &clock);
+    t.finish(&total);
+    out.timings_data = t;
     Ok((r, out))
 }
 
@@ -2003,6 +2136,7 @@ fn kcorr_result_base(
         lindep_near_noise_floor: r.lindep.near_noise_floor,
         jk: s.jk_name(),
         auxbasis: s.aux_name.clone(),
+        timings_data: PbcTimings::default(),
     }
 }
 

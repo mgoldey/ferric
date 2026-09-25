@@ -47,6 +47,7 @@ use crate::kpts::KPointMesh;
 use crate::lattice::Cell;
 use crate::lindep::{overlap_abs_row_sum, KLindep, LindepReport};
 use crate::rsgdf::kpoint::{KRsGdf, KRsGdfConfig};
+use crate::timing::{PbcTimings, StageClock};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ndarray::{s, Array2};
@@ -143,6 +144,10 @@ pub struct KScfResult {
     /// Per-k canonical-cut diagnostics (kept counts, smallest / largest
     /// dropped eigenvalue of `S(k)`, noise-floor flag; [`crate::lindep`]).
     pub lindep: LindepReport,
+    /// Coarse stages from [`solve_krhf`] (`"k hcore"`, `"k J/K build"`,
+    /// `"k SCF"`) and the J/K build's counters; empty from
+    /// [`solve_krhf_injected`], whose caller owns the builds.
+    pub timings: PbcTimings,
 }
 
 /// Which J/K builder [`solve_krhf`] uses.
@@ -226,30 +231,47 @@ pub fn solve_krhf(
         }
         _ => {}
     }
+    let total = StageClock::start();
+    let mut timings = PbcTimings::default();
+    let clock = StageClock::start();
     let hk = periodic_hcore_kpts(cell, prep, mesh, &cfg.hcore)?;
-    match aux {
+    timings.stop("k hcore", &clock);
+    let clock = StageClock::start();
+    let mut r = match aux {
         None => {
             let eri = KDenseAftEri::build(cell, prep, mesh, &hk.s, cfg.exxdiv, &cfg.dense)?;
+            timings.stop("k J/K build", &clock);
             let inj = KPointInjection {
                 s: hk.s,
                 h: hk.h,
                 vnn: hk.enn,
                 jk: Box::new(eri.jk_builder()),
             };
-            solve_krhf_injected(cell, mesh, &cfg.scf, inj)
+            let clock = StageClock::start();
+            let r = solve_krhf_injected(cell, mesh, &cfg.scf, inj)?;
+            timings.stop("k SCF", &clock);
+            r
         }
         Some(aux) => {
             let gdf =
                 KRsGdf::build(cell, prep, aux, mesh, &hk.s, &cfg.rsgdf)?.with_exxdiv(cfg.exxdiv);
+            timings.stop("k J/K build", &clock);
+            crate::rsgdf::kpoint::record_stats(&mut timings, gdf.stats());
             let inj = KPointInjection {
                 s: hk.s,
                 h: hk.h,
                 vnn: hk.enn,
                 jk: Box::new(gdf.jk_builder()),
             };
-            solve_krhf_injected(cell, mesh, &cfg.scf, inj)
+            let clock = StageClock::start();
+            let r = solve_krhf_injected(cell, mesh, &cfg.scf, inj)?;
+            timings.stop("k SCF", &clock);
+            r
         }
-    }
+    };
+    timings.finish(&total);
+    r.timings = timings;
+    Ok(r)
 }
 
 pub(crate) fn herm_t(m: &Array2<Complex64>) -> Array2<Complex64> {
@@ -738,6 +760,7 @@ fn finish(
         max_error,
         kpts: mesh.kpts().to_vec(),
         lindep,
+        timings: PbcTimings::default(),
     }
 }
 

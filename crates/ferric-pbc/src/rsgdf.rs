@@ -103,6 +103,7 @@ use crate::ewald::madelung_constant;
 use crate::hcore::{gvector_list_bytes, half_gvectors, G_CHUNK_BYTES};
 use crate::lattice::Cell;
 use crate::pair_ft::pair_ft_chunked;
+use crate::timing::{CallClock, PbcTimings, StageClock};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::engine::Engine;
@@ -262,6 +263,12 @@ pub struct RsGdf {
     /// Retained only by [`RsGdf::build_for_gradient`] (the forces' metric
     /// eigen-data); `None` on every energy-only build.
     grad: Option<MetricGradParts>,
+    /// Build stage timings and counters ([`crate::timing`]).
+    timings: PbcTimings,
+    /// Accumulated [`RsGdfJ`] / [`RsGdfK`] build calls (every builder
+    /// borrowing this B, i.e. every SCF stage run on it).
+    j_clock: CallClock,
+    k_clock: CallClock,
 }
 
 /// The pre-solve pieces of an RS-GDF build ([`RsGdf::build_with_fit_parts`]),
@@ -910,14 +917,15 @@ impl Stage<'_> {
 
     /// LR `(2/Ω) Σ_{G∈half} 4π/G² e^{−G²/4ω²} Re[conj(A) X]` added into `j2`
     /// and `j3`; `pair_ft` G-chunked within `chunk_budget`. Returns the chunk
-    /// count.
+    /// count and the `(wall, CPU)` seconds spent in the per-chunk sink (aux
+    /// FT, packing and the four GEMMs); the rest of the call is the pair FT.
     fn lr_accumulate(
         &self,
         gv: &[[f64; 3]],
         j2: &mut Array2<f64>,
         j3: &mut Array2<f64>,
         chunk_budget: usize,
-    ) -> Result<usize, FerricError> {
+    ) -> Result<(usize, f64, Option<f64>), FerricError> {
         let n = self.obs.nbasis();
         let n2 = n * n;
         let naux = self.aux.nbasis();
@@ -930,8 +938,10 @@ impl Stage<'_> {
             .saturating_add(64);
         let pair_ft_thresh = (0.01 * self.thresh).min(crate::pair_ft::DEFAULT_PAIR_FT_THRESH);
         let aux_sh = &self.aux_sh;
+        let (mut sink_wall, mut sink_cpu) = (0.0_f64, None::<f64>);
         let sink =
             |_g0: usize, gs: &[[f64; 3]], pft: &Array3<Complex64>| -> Result<(), FerricError> {
+                let clock = StageClock::start();
                 let ng = gs.len();
                 let x = aux_ft_shells(aux_sh, naux, gs);
                 let mut pr = Array2::<f64>::zeros((n2, ng));
@@ -963,9 +973,14 @@ impl Stage<'_> {
                 general_mat_mul(1.0, &pim, &xi.t(), 1.0, &mut *j3);
                 general_mat_mul(1.0, &xrw, &xr.t(), 1.0, &mut *j2);
                 general_mat_mul(1.0, &xiw, &xi.t(), 1.0, &mut *j2);
+                let (w, c) = clock.elapsed();
+                sink_wall += w;
+                if let Some(c) = c {
+                    sink_cpu = Some(sink_cpu.unwrap_or(0.0) + c);
+                }
                 Ok(())
             };
-        pair_ft_chunked(
+        let n_chunks = pair_ft_chunked(
             self.cell,
             self.obs,
             gv,
@@ -973,7 +988,8 @@ impl Stage<'_> {
             chunk_budget,
             extra_per_g,
             sink,
-        )
+        )?;
+        Ok((n_chunks, sink_wall, sink_cpu))
     }
 }
 
@@ -1119,11 +1135,15 @@ fn fit_with_metric(
     j3: Array2<f64>,
     lindep: f64,
     grad_ledger: Option<&mut Ledger>,
+    timings: &mut PbcTimings,
 ) -> Result<MetricFit, FerricError> {
     let naux = j2.nrows();
+    let clock = StageClock::start();
     let (evals, evecs) = j2
         .eigh(UPLO::Upper)
         .map_err(|e| FerricError::Lapack(format!("RsGdf metric eigh: {e}")))?;
+    timings.stop("rsgdf metric eigh", &clock);
+    let clock = StageClock::start();
     let keep: Vec<usize> = (0..naux).filter(|&k| evals[k] > lindep).collect();
     if keep.is_empty() {
         return Err(FerricError::General(format!(
@@ -1143,6 +1163,7 @@ fn fit_with_metric(
     let grad = dropped_subspace_parts(&evals, &evecs, &keep, &j3, lindep, grad_ledger)?;
     drop(j3);
     let b = bt.t().as_standard_layout().into_owned(); // (nkeep, n²)
+    timings.stop("rsgdf B = (J3 W)^T", &clock);
     Ok((b, evals.to_vec(), w, grad))
 }
 
@@ -1255,6 +1276,9 @@ impl RsGdf {
             )));
         }
         check_obs_on_cell(cell, obs)?;
+        let total = StageClock::start();
+        let mut timings = PbcTimings::default();
+        let clock = StageClock::start();
         let st = Stage {
             cell,
             obs,
@@ -1308,11 +1332,36 @@ impl RsGdf {
         let gv = half_gvectors(cell, gcut)?;
         let resident_bytes = ledger.resident();
         let chunk_budget = ledger.remaining().min(G_CHUNK_BYTES);
+        timings.stop("rsgdf setup (shells, pair images, G list)", &clock);
 
         // --- SR (real space), LR (G ≠ 0), then the G = 0 term.
+        let clock = StageClock::start();
         let (mut j2, n_sr2) = st.sr_metric()?;
+        timings.stop("rsgdf SR metric (2-centre)", &clock);
+        let clock = StageClock::start();
         let (mut j3, n_sr3) = st.sr_three_index(&images)?;
-        let n_g_chunks = st.lr_accumulate(&gv, &mut j2, &mut j3, chunk_budget)?;
+        timings.stop("rsgdf SR 3-centre", &clock);
+        let clock = StageClock::start();
+        let (n_g_chunks, sink_wall, sink_cpu) =
+            st.lr_accumulate(&gv, &mut j2, &mut j3, chunk_budget)?;
+        let (lr_wall, lr_cpu) = clock.elapsed();
+        timings.add(
+            "rsgdf LR pair FT",
+            (lr_wall - sink_wall).max(0.0),
+            match (lr_cpu, sink_cpu) {
+                (Some(a), Some(b)) => Some((a - b).max(0.0)),
+                (a, None) => a,
+                (None, Some(_)) => None,
+            },
+            1,
+        );
+        timings.add(
+            "rsgdf LR aux FT + GEMM",
+            sink_wall,
+            sink_cpu.or(lr_cpu.map(|_| 0.0)),
+            n_g_chunks as u64,
+        );
+        let clock = StageClock::start();
         let q: Vec<f64> = aux_ft_shells(&st.aux_sh, naux, &[[0.0; 3]])
             .column(0)
             .iter()
@@ -1326,6 +1375,7 @@ impl RsGdf {
         let asym_j2 = max_abs_asym(&j2);
         let j2 = 0.5 * (&j2 + &j2.t());
         let asym_j3 = symmetrize_pairs(&mut j3, n);
+        timings.stop("rsgdf G=0 + symmetrise", &clock);
         let parts = if retain_parts {
             Some(PeriodicFitParts {
                 j2: j2.clone(),
@@ -1336,8 +1386,13 @@ impl RsGdf {
         } else {
             None
         };
-        let (b, evals, metric_inv_sqrt, grad_eig) =
-            fit_with_metric(&j2, j3, cfg.lindep, retain_grad.then_some(&mut ledger))?;
+        let (b, evals, metric_inv_sqrt, grad_eig) = fit_with_metric(
+            &j2,
+            j3,
+            cfg.lindep,
+            retain_grad.then_some(&mut ledger),
+            &mut timings,
+        )?;
         let nkeep = b.nrows();
         let grad = grad_eig.map(|(s_kept, s_drop, u_drop, jd)| MetricGradParts {
             s_kept,
@@ -1371,6 +1426,19 @@ impl RsGdf {
             budget_bytes: ledger.budget(),
             resident_bytes,
         };
+        for (name, v) in [
+            ("rsgdf pair images", stats.n_pair_images),
+            ("rsgdf SR2 pairs", stats.n_sr2_pairs),
+            ("rsgdf SR3 triplets", stats.n_sr3_triplets),
+            ("rsgdf LR half-G", stats.n_g_half),
+            ("rsgdf LR chunks", stats.n_g_chunks),
+            ("rsgdf naux", stats.naux),
+            ("rsgdf naux kept", stats.naux_kept),
+            ("rsgdf aux dropped", stats.n_dropped),
+        ] {
+            timings.set_counter(name, v as u64);
+        }
+        timings.finish(&total);
         Ok((
             Self {
                 nao: n,
@@ -1380,6 +1448,9 @@ impl RsGdf {
                 stats,
                 metric_inv_sqrt,
                 grad,
+                timings,
+                j_clock: CallClock::default(),
+                k_clock: CallClock::default(),
             },
             parts,
         ))
@@ -1415,6 +1486,17 @@ impl RsGdf {
     /// Build statistics (counts, conditioning, dropped eigenvalues).
     pub fn stats(&self) -> &RsGdfStats {
         &self.stats
+    }
+
+    /// Build stage timings and counters, plus the accumulated J and K build
+    /// calls of every builder borrowed from this B so far (`"scf J (rsgdf)"`,
+    /// `"scf K (rsgdf)"`). `wall_s` is the BUILD total; the J/K stages lie
+    /// outside it (they run later, in the SCF).
+    pub fn timings(&self) -> PbcTimings {
+        let mut t = self.timings.clone();
+        t.add_stage(&self.j_clock.timing("scf J (rsgdf)"));
+        t.add_stage(&self.k_clock.timing("scf K (rsgdf)"));
+        t
     }
 
     /// `v_M` applied in K (0 for [`ExxDiv::None`]).
@@ -1479,6 +1561,19 @@ pub struct RsGdfJ<'a> {
 
 impl JBuilder for RsGdfJ<'_> {
     fn build(&mut self, d: &Array2<f64>, j: &mut Array2<f64>) -> Result<usize, FerricError> {
+        let gdf = self.gdf;
+        gdf.j_clock.time(|| self.build_untimed(d, j))
+    }
+
+    fn reset(&mut self) {}
+}
+
+impl RsGdfJ<'_> {
+    fn build_untimed(
+        &mut self,
+        d: &Array2<f64>,
+        j: &mut Array2<f64>,
+    ) -> Result<usize, FerricError> {
         self.gdf.check(d, j, "RsGdfJ")?;
         let n = self.gdf.nao;
         let d_std = d.as_standard_layout();
@@ -1492,8 +1587,6 @@ impl JBuilder for RsGdfJ<'_> {
         }
         Ok(self.gdf.b.len())
     }
-
-    fn reset(&mut self) {}
 }
 
 /// [`KBuilder`] over an [`RsGdf`]: `K = Σ_k B_k D B_kᵀ + v_M S D S`.
@@ -1512,6 +1605,21 @@ pub struct RsGdfK<'a> {
 
 impl KBuilder for RsGdfK<'_> {
     fn build(&mut self, d: &Array2<f64>, k: &mut Array2<f64>) -> Result<usize, FerricError> {
+        let gdf = self.gdf;
+        gdf.k_clock.time(|| self.build_untimed(d, k))
+    }
+
+    fn update_density(&mut self, _d: &Array2<f64>) {}
+
+    fn reset(&mut self) {}
+}
+
+impl RsGdfK<'_> {
+    fn build_untimed(
+        &mut self,
+        d: &Array2<f64>,
+        k: &mut Array2<f64>,
+    ) -> Result<usize, FerricError> {
         self.gdf.check(d, k, "RsGdfK")?;
         let n = self.gdf.nao;
         k.fill(0.0);
@@ -1528,10 +1636,6 @@ impl KBuilder for RsGdfK<'_> {
         }
         Ok(self.gdf.b.len() * n)
     }
-
-    fn update_density(&mut self, _d: &Array2<f64>) {}
-
-    fn reset(&mut self) {}
 }
 
 #[cfg(test)]

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Any, Sequence
 
 import numpy as np
 from numpy.typing import NDArray
@@ -1284,6 +1284,15 @@ class GammaRhfResult:
     """Result of run_rhf_gamma (closed-shell Gamma-point periodic RHF)."""
 
     @property
+    def timings(self) -> dict[str, Any]:
+        """Stage timings and counters (observation only; energies are unaffected):
+        {"wall_s": float, "cpu_s": float | None, "unattributed_wall_s": float,
+        "stages": {name: {"wall_s": float, "cpu_s": float | None, "calls": int}},
+        "counters": {name: int}}. Stages are disjoint, in run order (hcore, J/K
+        build, SCF J/K/XC calls, correlation); counters include SR triplets,
+        G vectors, chunks and RS-GDF aux dropped."""
+        ...
+    @property
     def energy(self) -> float:
         """Total energy per cell (Hartree), incl. e_nuc and any Madelung shift."""
         ...
@@ -1380,6 +1389,15 @@ class GammaOpenShellResult:
     """Result of run_uhf_gamma / run_rohf_gamma / run_uks_gamma / run_roks_gamma."""
 
     @property
+    def timings(self) -> dict[str, Any]:
+        """Stage timings and counters (observation only; energies are unaffected):
+        {"wall_s": float, "cpu_s": float | None, "unattributed_wall_s": float,
+        "stages": {name: {"wall_s": float, "cpu_s": float | None, "calls": int}},
+        "counters": {name: int}}. Stages are disjoint, in run order (hcore, J/K
+        build, SCF J/K/XC calls, correlation); counters include SR triplets,
+        G vectors, chunks and RS-GDF aux dropped."""
+        ...
+    @property
     def method(self) -> str:
         """'uhf', 'rohf', 'uks' or 'roks'."""
         ...
@@ -1443,6 +1461,15 @@ class GammaRksResult:
     """Result of run_rks_gamma (closed-shell Gamma-point periodic RKS)."""
 
     @property
+    def timings(self) -> dict[str, Any]:
+        """Stage timings and counters (observation only; energies are unaffected):
+        {"wall_s": float, "cpu_s": float | None, "unattributed_wall_s": float,
+        "stages": {name: {"wall_s": float, "cpu_s": float | None, "calls": int}},
+        "counters": {name: int}}. Stages are disjoint, in run order (hcore, J/K
+        build, SCF J/K/XC calls, correlation); counters include SR triplets,
+        G vectors, chunks and RS-GDF aux dropped."""
+        ...
+    @property
     def functional(self) -> str: ...
     @property
     def energy(self) -> float: ...
@@ -1480,6 +1507,15 @@ class GammaRksResult:
 class GammaCorrelationResult:
     """Result of run_mp2_gamma / run_drpa_gamma (Gamma RHF + correlation)."""
 
+    @property
+    def timings(self) -> dict[str, Any]:
+        """Stage timings and counters (observation only; energies are unaffected):
+        {"wall_s": float, "cpu_s": float | None, "unattributed_wall_s": float,
+        "stages": {name: {"wall_s": float, "cpu_s": float | None, "calls": int}},
+        "counters": {name: int}}. Stages are disjoint, in run order (hcore, J/K
+        build, SCF J/K/XC calls, correlation); counters include SR triplets,
+        G vectors, chunks and RS-GDF aux dropped."""
+        ...
     @property
     def method(self) -> str:
         """'mp2' or 'drpa'."""
@@ -1524,6 +1560,15 @@ class GammaCorrelationResult:
 class KpointScfResult:
     """Result of run_rhf_kpts / run_uhf_kpts (energies per cell)."""
 
+    @property
+    def timings(self) -> dict[str, Any]:
+        """Stage timings and counters (observation only; energies are unaffected):
+        {"wall_s": float, "cpu_s": float | None, "unattributed_wall_s": float,
+        "stages": {name: {"wall_s": float, "cpu_s": float | None, "calls": int}},
+        "counters": {name: int}}. Stages are disjoint, in run order (hcore, J/K
+        build, SCF J/K/XC calls, correlation); counters include SR triplets,
+        G vectors, chunks and RS-GDF aux dropped."""
+        ...
     @property
     def method(self) -> str: ...
     @property
@@ -1594,6 +1639,15 @@ class KpointScfResult:
 class KpointCorrelationResult:
     """Result of run_mp2_kpts / run_drpa_kpts (k-point RHF + correlation)."""
 
+    @property
+    def timings(self) -> dict[str, Any]:
+        """Stage timings and counters (observation only; energies are unaffected):
+        {"wall_s": float, "cpu_s": float | None, "unattributed_wall_s": float,
+        "stages": {name: {"wall_s": float, "cpu_s": float | None, "calls": int}},
+        "counters": {name: int}}. Stages are disjoint, in run order (hcore, J/K
+        build, SCF J/K/XC calls, correlation); counters include SR triplets,
+        G vectors, chunks and RS-GDF aux dropped."""
+        ...
     @property
     def method(self) -> str: ...
     @property
