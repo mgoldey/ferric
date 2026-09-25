@@ -80,12 +80,16 @@
 //!   and the Bloch sum `V_ECP(k) = Σ_L e^{ik·L} V_L` over libecpint's
 //!   per-shell-pair kernel (`ferric_ecp_block`), added into `h` by
 //!   `periodic_hcore` / `periodic_hcore_kpts`; FINDINGS "Iteration 14".
-//! * [`grad`] — analytic nuclear gradients (forces) of the Gamma-point RHF
-//!   on the dense-AFT J/K (`gamma_rhf_gradient`): shifted 1e derivative
-//!   blocks, erfc Gaussian-nucleus 3-centre derivatives, the bra-centre
-//!   pair-FT derivative for `V_LR` and J/K, the Ewald `E_nn` gradient, and
-//!   the Madelung/G = 0 terms folded into the overlap-weighted matrix;
-//!   FINDINGS "Iteration 16". RS-GDF gradients and stress are out of scope.
+//! * [`grad`] — analytic nuclear gradients (forces) of the Gamma-point RHF,
+//!   UHF, RKS and UKS on the dense-AFT J/K (`gamma_rhf_gradient`,
+//!   `gamma_uhf_gradient`, `gamma_rks_gradient`, `gamma_uks_gradient`):
+//!   shifted 1e derivative blocks, erfc Gaussian-nucleus 3-centre
+//!   derivatives, the bra-centre pair-FT derivative for `V_LR` and J/K, the
+//!   Ewald `E_nn` gradient, the Madelung/G = 0 terms folded into the
+//!   overlap-weighted matrix (per spin), and for KS the XC AO term plus the
+//!   full periodic grid response (points riding on their home atom, analytic
+//!   SSF/Becke weight derivatives over image atoms); FINDINGS "Iterations 16,
+//!   17". RS-GDF gradients and stress are out of scope.
 //! * [`lindep`] — per-k canonical-cut diagnostics (`LindepReport` on
 //!   `KScfResult`/`KUScfResult`: kept counts, smallest / largest-dropped
 //!   eigenvalue, noise-floor flag) and the OPT-IN `exp_to_discard` basis
@@ -132,7 +136,9 @@ pub use ecp::{
 };
 pub use ewald::{ewald_nuclear_gradient, ewald_nuclear_repulsion, madelung_constant};
 pub use grad::{
-    gamma_rhf_gradient, gamma_rhf_gradient_with, GammaGradConfig, GammaGradParts, GammaRhfGradient,
+    gamma_rhf_gradient, gamma_rhf_gradient_with, gamma_rks_gradient, gamma_rks_gradient_with,
+    gamma_uhf_gradient, gamma_uhf_gradient_with, gamma_uks_gradient, gamma_uks_gradient_with,
+    GammaGradConfig, GammaGradParts, GammaGradient, GammaRhfGradient,
 };
 pub use hcore::kpoint::{periodic_hcore_kpts, PeriodicHcoreK};
 pub use hcore::{periodic_hcore, PeriodicHcore, PeriodicHcoreConfig};

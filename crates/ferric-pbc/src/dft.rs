@@ -75,8 +75,9 @@
 //! meta-GGA (not prototyped), VV10 / double hybrids, grid pruning, Newton /
 //! TRAH / stability (they rebuild molecular J/K and the f_xc kernel on the
 //! molecular grid — rejected by `validate_injected`), the molecular grid knobs
-//! `RhfConfig.{xc, xc_omega, dft_grid, nlc_grid}`. There is no periodic
-//! nuclear-gradient entry point (no grid response is implemented).
+//! `RhfConfig.{xc, xc_omega, dft_grid, nlc_grid}`. Nuclear gradients (with
+//! the full periodic grid response) live in `crate::grad`
+//! (`gamma_rks_gradient` / `gamma_uks_gradient`), on the dense-AFT J/K.
 //!
 //! Units: Bohr and Hartree.
 
@@ -91,7 +92,9 @@ use crate::uhf::{
 use ferric_core::basis::{num_functions, BasisSet};
 use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
-use ferric_dft::becke::{partition_weight_over, NeighbourAtom, PartitionScheme};
+use ferric_dft::becke::{
+    partition_weight_over, partition_weight_over_and_grad, NeighbourAtom, PartitionScheme,
+};
 use ferric_dft::density_on_grid::{eval_density_closed, eval_density_uks};
 use ferric_dft::grid::GridPoint;
 use ferric_dft::lebedev::lebedev;
@@ -99,7 +102,9 @@ use ferric_dft::libxc::{xc_def_from_name, xc_def_from_name_nspin, FunctionalFami
 use ferric_dft::prune::PruneScheme;
 use ferric_dft::radial::treutler_ahlrichs_m4;
 use ferric_dft::vxc::{semilocal_vxc_closed_scratch, semilocal_vxc_polarized_scratch, VxcScratch};
-use ferric_integrals::ao_grid::{collect_shells, eval_shell_and_grad, LocatedShell};
+use ferric_integrals::ao_grid::{
+    collect_shells, eval_shell_and_grad, eval_shell_grad_hess, LocatedShell,
+};
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::result::ScfResult;
@@ -108,7 +113,7 @@ use ferric_scf::rhf::{
 };
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf_injected;
-use ndarray::{Array2, Array3};
+use ndarray::{Array2, Array3, Array4};
 use rayon::prelude::*;
 
 /// Default radial shells (see the module doc's table).
@@ -394,92 +399,22 @@ impl PeriodicGrid {
     /// weight (SSF: outside the home atom's support) are dropped — exact.
     pub fn build(cell: &Cell, cfg: &PeriodicGridConfig) -> Result<Self, FerricError> {
         cfg.validate()?;
-        let (d_cut, bound) = resolve_neighbour_cutoff(cell, cfg.neighbour_cutoff)?;
-        let pos = cell.positions();
-        let zs: Vec<i32> = cell.mol().atoms.iter().map(|a| a.z).collect();
-        let (leb_pts, leb_w) = lebedev(cfg.n_angular);
-
-        // Upper bound on the point count before anything is generated.
-        let n_max = pos.len() * cfg.n_radial * leb_pts.len();
         let mut ledger = Ledger::new(crate::budget::resolve(cfg.budget_bytes));
-        ledger.reserve(
-            "periodic grid points",
-            bytes_of(n_max as u64, std::mem::size_of::<GridPoint>() + 8),
+        let gen = generate_points(
+            cell,
+            cfg,
+            &mut ledger,
+            0,
+            |nb, _cells, h, xyz, _home, _w_rl| {
+                (partition_weight_over(cfg.partition, nb, h, xyz), ())
+            },
         )?;
-
-        // Every image atom within 2D of a home atom can be within D of one of
-        // its (|offset| <= D) points; translations(2D) is a superset of the
-        // needed L (min atom–atom distance <= 2D).
-        let trans = cell.translations(2.0 * d_cut)?;
-        let mut points: Vec<GridPoint> = Vec::new();
-        let mut n_generated = 0usize;
-        let mut nb_total = 0usize;
-        for (home, r_a) in pos.iter().enumerate() {
-            let mut cands: Vec<NeighbourAtom> = Vec::new();
-            let mut home_c = usize::MAX;
-            for (li, l) in trans.iter().enumerate() {
-                for (b, r_b) in pos.iter().enumerate() {
-                    let xyz = [r_b[0] + l[0], r_b[1] + l[1], r_b[2] + l[2]];
-                    if dist3(&xyz, r_a) <= 2.0 * d_cut {
-                        if b == home && li == 0 {
-                            home_c = cands.len();
-                        }
-                        cands.push(NeighbourAtom { xyz, z: zs[b] });
-                    }
-                }
-            }
-            debug_assert!(home_c != usize::MAX, "translations()[0] is the zero vector");
-            let (rs, ws) = treutler_ahlrichs_m4(zs[home], cfg.n_radial);
-            let mut pre: Vec<([f64; 3], f64)> = Vec::new();
-            for (r, w_r) in rs.iter().zip(&ws) {
-                if *r > d_cut {
-                    continue; // home not within D: weight 0 by construction
-                }
-                for (u, w_l) in leb_pts.iter().zip(&leb_w) {
-                    pre.push((
-                        [r_a[0] + r * u[0], r_a[1] + r * u[1], r_a[2] + r * u[2]],
-                        w_r * w_l,
-                    ));
-                }
-            }
-            n_generated += pre.len();
-            let weighted: Vec<(GridPoint, usize)> = pre
-                .par_iter()
-                .map(|&(xyz, w_rl)| {
-                    let mut nb: Vec<NeighbourAtom> = Vec::new();
-                    let mut h = usize::MAX;
-                    for (ci, c) in cands.iter().enumerate() {
-                        if ci == home_c {
-                            h = nb.len();
-                            nb.push(*c);
-                        } else if dist3(&c.xyz, &xyz) <= d_cut {
-                            nb.push(*c);
-                        }
-                    }
-                    let w = partition_weight_over(cfg.partition, &nb, h, xyz);
-                    (
-                        GridPoint {
-                            xyz,
-                            weight: w_rl * w,
-                            home_atom: home,
-                        },
-                        nb.len(),
-                    )
-                })
-                .collect();
-            for (g, nn) in weighted {
-                nb_total += nn;
-                if g.weight != 0.0 {
-                    points.push(g);
-                }
-            }
-        }
         Ok(Self {
-            points,
-            neighbour_cutoff: d_cut,
-            covering_bound: bound,
-            n_generated,
-            mean_neighbours: nb_total as f64 / n_generated.max(1) as f64,
+            points: gen.points.into_iter().map(|(g, ())| g).collect(),
+            neighbour_cutoff: gen.d_cut,
+            covering_bound: gen.bound,
+            n_generated: gen.n_generated,
+            mean_neighbours: gen.nb_total as f64 / gen.n_generated.max(1) as f64,
         })
     }
 
@@ -570,6 +505,198 @@ impl PeriodicGrid {
     pub fn weight_sum(&self) -> f64 {
         self.points.iter().map(|g| g.weight).sum()
     }
+}
+
+/// Output of [`generate_points`]: the nonzero-weight points (with the
+/// per-point payload) and the construction statistics.
+struct GeneratedPoints<T> {
+    points: Vec<(GridPoint, T)>,
+    d_cut: f64,
+    bound: f64,
+    n_generated: usize,
+    nb_total: usize,
+}
+
+/// The A2 construction shared by [`PeriodicGrid::build`] and
+/// [`build_response_grid`] (one code path, so both produce the same points
+/// and weights). For every candidate point `per_point(nb, nb_cells, h, xyz,
+/// home, w_rl)` gets the image atoms within `D` (the home atom always
+/// included, at index `h`), the CELL atom each image belongs to, the point,
+/// its home cell atom and the radial × angular weight; it returns the
+/// partition weight `w` and a payload. The point's weight is `w_rl · w`, and
+/// exactly-zero weights are dropped. `extra_bytes_per_point` is added to the
+/// per-point reservation (payload storage).
+fn generate_points<T, F>(
+    cell: &Cell,
+    cfg: &PeriodicGridConfig,
+    ledger: &mut Ledger,
+    extra_bytes_per_point: usize,
+    per_point: F,
+) -> Result<GeneratedPoints<T>, FerricError>
+where
+    T: Send,
+    F: Fn(&[NeighbourAtom], &[usize], usize, [f64; 3], usize, f64) -> (f64, T) + Sync,
+{
+    let (d_cut, bound) = resolve_neighbour_cutoff(cell, cfg.neighbour_cutoff)?;
+    let pos = cell.positions();
+    let zs: Vec<i32> = cell.mol().atoms.iter().map(|a| a.z).collect();
+    let (leb_pts, leb_w) = lebedev(cfg.n_angular);
+
+    // Upper bound on the point count before anything is generated.
+    let n_max = pos.len() * cfg.n_radial * leb_pts.len();
+    ledger.reserve(
+        "periodic grid points",
+        bytes_of(
+            n_max as u64,
+            (std::mem::size_of::<GridPoint>() + 8).saturating_add(extra_bytes_per_point),
+        ),
+    )?;
+
+    // Every image atom within 2D of a home atom can be within D of one of
+    // its (|offset| <= D) points; translations(2D) is a superset of the
+    // needed L (min atom–atom distance <= 2D).
+    let trans = cell.translations(2.0 * d_cut)?;
+    let mut points: Vec<(GridPoint, T)> = Vec::new();
+    let mut n_generated = 0usize;
+    let mut nb_total = 0usize;
+    for (home, r_a) in pos.iter().enumerate() {
+        let mut cands: Vec<NeighbourAtom> = Vec::new();
+        let mut cand_cell: Vec<usize> = Vec::new();
+        let mut home_c = usize::MAX;
+        for (li, l) in trans.iter().enumerate() {
+            for (b, r_b) in pos.iter().enumerate() {
+                let xyz = [r_b[0] + l[0], r_b[1] + l[1], r_b[2] + l[2]];
+                if dist3(&xyz, r_a) <= 2.0 * d_cut {
+                    if b == home && li == 0 {
+                        home_c = cands.len();
+                    }
+                    cands.push(NeighbourAtom { xyz, z: zs[b] });
+                    cand_cell.push(b);
+                }
+            }
+        }
+        debug_assert!(home_c != usize::MAX, "translations()[0] is the zero vector");
+        let (rs, ws) = treutler_ahlrichs_m4(zs[home], cfg.n_radial);
+        let mut pre: Vec<([f64; 3], f64)> = Vec::new();
+        for (r, w_r) in rs.iter().zip(&ws) {
+            if *r > d_cut {
+                continue; // home not within D: weight 0 by construction
+            }
+            for (u, w_l) in leb_pts.iter().zip(&leb_w) {
+                pre.push((
+                    [r_a[0] + r * u[0], r_a[1] + r * u[1], r_a[2] + r * u[2]],
+                    w_r * w_l,
+                ));
+            }
+        }
+        n_generated += pre.len();
+        let weighted: Vec<(GridPoint, usize, T)> = pre
+            .par_iter()
+            .map(|&(xyz, w_rl)| {
+                let mut nb: Vec<NeighbourAtom> = Vec::new();
+                let mut nb_cell: Vec<usize> = Vec::new();
+                let mut h = usize::MAX;
+                for (ci, c) in cands.iter().enumerate() {
+                    if ci == home_c {
+                        h = nb.len();
+                        nb.push(*c);
+                        nb_cell.push(cand_cell[ci]);
+                    } else if dist3(&c.xyz, &xyz) <= d_cut {
+                        nb.push(*c);
+                        nb_cell.push(cand_cell[ci]);
+                    }
+                }
+                let (w, payload) = per_point(&nb, &nb_cell, h, xyz, home, w_rl);
+                (
+                    GridPoint {
+                        xyz,
+                        weight: w_rl * w,
+                        home_atom: home,
+                    },
+                    nb.len(),
+                    payload,
+                )
+            })
+            .collect();
+        for (g, nn, payload) in weighted {
+            nb_total += nn;
+            if g.weight != 0.0 {
+                points.push((g, payload));
+            }
+        }
+    }
+    Ok(GeneratedPoints {
+        points,
+        d_cut,
+        bound,
+        n_generated,
+        nb_total,
+    })
+}
+
+/// The [`PeriodicGrid`] points of a config together with the analytic
+/// derivative of every point's final weight with respect to every cell atom
+/// (the Gamma KS-DFT grid response, `crate::grad`).
+#[derive(Debug, Clone)]
+pub(crate) struct ResponseGrid {
+    /// Exactly the points and weights of [`PeriodicGrid::build`].
+    pub(crate) points: Vec<GridPoint>,
+    /// `dweight[g · natoms + A] = d(w_rl · w_g)/dR_A`: the TOTAL derivative —
+    /// every image of `A` moves, and when `A` is the point's home atom the
+    /// point moves with it (`∇_r w = −Σ_k ∂w/∂X_k`).
+    pub(crate) dweight: Vec<[f64; 3]>,
+    /// Cell atoms.
+    pub(crate) natoms: usize,
+}
+
+/// [`PeriodicGrid::build`]'s points plus the weight derivatives
+/// ([`ResponseGrid`]; `ferric_dft::becke::partition_weight_over_and_grad`
+/// folded from image atoms onto cell atoms). The derivative storage
+/// (`npts · natoms · 24` bytes) is reserved on `ledger` with the points.
+pub(crate) fn build_response_grid(
+    cell: &Cell,
+    cfg: &PeriodicGridConfig,
+    ledger: &mut Ledger,
+) -> Result<ResponseGrid, FerricError> {
+    cfg.validate()?;
+    let natoms = cell.positions().len();
+    let per_point_payload = natoms
+        .saturating_mul(std::mem::size_of::<[f64; 3]>())
+        .saturating_add(std::mem::size_of::<Vec<[f64; 3]>>());
+    let gen = generate_points(
+        cell,
+        cfg,
+        ledger,
+        per_point_payload,
+        |nb, nb_cell, h, xyz, home, w_rl| {
+            // The weight through the energy's own kernel (bit-identical grid).
+            let w = partition_weight_over(cfg.partition, nb, h, xyz);
+            let (_, dw) = partition_weight_over_and_grad(cfg.partition, nb, h, xyz);
+            let mut out = vec![[0.0_f64; 3]; natoms];
+            let mut tot = [0.0_f64; 3];
+            for (k, dk) in dw.iter().enumerate() {
+                for x in 0..3 {
+                    out[nb_cell[k]][x] += w_rl * dk[x];
+                    tot[x] += dk[x];
+                }
+            }
+            for x in 0..3 {
+                out[home][x] -= w_rl * tot[x];
+            }
+            (w, out)
+        },
+    )?;
+    let mut points = Vec::with_capacity(gen.points.len());
+    let mut dweight = Vec::with_capacity(gen.points.len() * natoms);
+    for (g, dw) in gen.points {
+        points.push(g);
+        dweight.extend_from_slice(&dw);
+    }
+    Ok(ResponseGrid {
+        points,
+        dweight,
+        natoms,
+    })
 }
 
 /// Radius beyond which a shell's value AND gradient are below `thresh`
@@ -749,6 +876,172 @@ fn lattice_ao_chunks(
         })
         .collect();
     Ok((chunks?, nbf))
+}
+
+/// Lattice-summed AO values, gradients AND Hessians on arbitrary point
+/// chunks (`χ^Γ`, `∇χ^Γ`, `∇∇χ^Γ` folded into cell AO indices) — the
+/// `ValueGradHess` analogue of the energy's AO cache, for the periodic XC
+/// gradient (`crate::grad`). The image-shell list and the per-shell extents
+/// are those of the energy path (value AND gradient below `thresh`); the
+/// Hessian of a skipped shell is below `thresh` times a modest factor and
+/// only ever multiplies `(D χ)`.
+pub(crate) struct LatticeAoHess<'a> {
+    shells: Vec<LocatedShell<'a>>,
+    offsets: Vec<usize>,
+    nbf: usize,
+    ext: Vec<f64>,
+    trans: Vec<[f64; 3]>,
+}
+
+impl<'a> LatticeAoHess<'a> {
+    /// Image translations covering every point of `pts` (the energy path's
+    /// rule).
+    pub(crate) fn new(
+        cell: &Cell,
+        bs: &'a BasisSet,
+        pts: &[GridPoint],
+        thresh: f64,
+        ledger: &Ledger,
+    ) -> Result<Self, FerricError> {
+        if !(thresh.is_finite() && thresh > 0.0 && thresh < 1.0) {
+            return Err(PeriodicDftError::InvalidGrid {
+                field: "ao_threshold",
+                reason: format!("must be in (0, 1), got {thresh}"),
+            }
+            .into());
+        }
+        let shells = collect_shells(cell.mol(), bs)?;
+        let mut offsets = Vec::with_capacity(shells.len());
+        let mut nbf = 0usize;
+        for sh in &shells {
+            if sh.l > 4 {
+                return Err(PeriodicDftError::Unsupported {
+                    feature: "basis angular momentum",
+                    reason: format!("l = {} (the AO evaluator supports s..g)", sh.l),
+                }
+                .into());
+            }
+            offsets.push(nbf);
+            nbf += num_functions(sh.l, sh.pure);
+        }
+        let ext: Vec<f64> = shells.iter().map(|s| shell_extent(s, thresh)).collect();
+        let r_ao = ext.iter().copied().fold(0.0, f64::max);
+        let pos = cell.positions();
+        let nat = pos.len() as f64;
+        let c0 = [
+            pos.iter().map(|p| p[0]).sum::<f64>() / nat,
+            pos.iter().map(|p| p[1]).sum::<f64>() / nat,
+            pos.iter().map(|p| p[2]).sum::<f64>() / nat,
+        ];
+        let rho = pts.iter().map(|g| dist3(&g.xyz, &c0)).fold(0.0, f64::max);
+        let spread = pos.iter().map(|p| dist3(p, &c0)).fold(0.0, f64::max);
+        let rcut_l = rho + r_ao + spread;
+        let n_l = cell.translation_count_bound(rcut_l + 2.0 * spread)?;
+        ledger.check(
+            "periodic XC gradient AO translation list",
+            bytes_of(n_l, std::mem::size_of::<[f64; 3]>()),
+        )?;
+        let trans: Vec<[f64; 3]> = cell
+            .translations(rcut_l + 2.0 * spread)?
+            .into_iter()
+            .filter(|l| dot3(l, l).sqrt() <= rcut_l + spread)
+            .collect();
+        Ok(Self {
+            shells,
+            offsets,
+            nbf,
+            ext,
+            trans,
+        })
+    }
+
+    /// Cell AO count.
+    pub(crate) fn nbf(&self) -> usize {
+        self.nbf
+    }
+
+    /// Spatially compact chunks of at most `chunk` point indices (the energy
+    /// path's sort box).
+    pub(crate) fn chunks(pts: &[GridPoint], chunk: usize) -> Vec<Vec<usize>> {
+        let mut order: Vec<usize> = (0..pts.len()).collect();
+        let key = |p: &[f64; 3]| {
+            [
+                (p[0] / SORT_BOX).floor() as i64,
+                (p[1] / SORT_BOX).floor() as i64,
+                (p[2] / SORT_BOX).floor() as i64,
+            ]
+        };
+        order.sort_by_key(|&i| key(&pts[i].xyz));
+        order.chunks(chunk.max(1)).map(|c| c.to_vec()).collect()
+    }
+
+    /// `(χ (nbf, np), ∇χ (3, nbf, np), ∇∇χ (3, 3, nbf, np))` at `pts`.
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn eval(
+        &self,
+        pts: &[[f64; 3]],
+    ) -> Result<(Array2<f64>, Array3<f64>, Array4<f64>), FerricError> {
+        let np = pts.len();
+        let nbf = self.nbf;
+        let mut chi = Array2::<f64>::zeros((nbf, np));
+        let mut dchi = Array3::<f64>::zeros((3, nbf, np));
+        let mut ddchi = Array4::<f64>::zeros((3, 3, nbf, np));
+        if np == 0 {
+            return Ok((chi, dchi, ddchi));
+        }
+        let m = np as f64;
+        let cen = [
+            pts.iter().map(|p| p[0]).sum::<f64>() / m,
+            pts.iter().map(|p| p[1]).sum::<f64>() / m,
+            pts.iter().map(|p| p[2]).sum::<f64>() / m,
+        ];
+        let rad = pts.iter().map(|p| dist3(p, &cen)).fold(0.0, f64::max);
+        let mut live: Vec<(usize, [f64; 3])> = Vec::new();
+        for l in &self.trans {
+            for (s, sh) in self.shells.iter().enumerate() {
+                let c = [
+                    sh.center[0] + l[0],
+                    sh.center[1] + l[1],
+                    sh.center[2] + l[2],
+                ];
+                if dist3(&c, &cen) <= rad + self.ext[s] {
+                    live.push((s, c));
+                }
+            }
+        }
+        let mut buf = [0.0_f64; 15];
+        let mut gbuf = [[0.0_f64; 15]; 3];
+        let mut hbuf = [[0.0_f64; 15]; 9];
+        for (g, p) in pts.iter().enumerate() {
+            for &(s, c) in &live {
+                let (dx, dy, dz) = (p[0] - c[0], p[1] - c[1], p[2] - c[2]);
+                if dx * dx + dy * dy + dz * dz > self.ext[s] * self.ext[s] {
+                    continue;
+                }
+                let sh = &self.shells[s];
+                let n = num_functions(sh.l, sh.pure);
+                buf.fill(0.0);
+                for row in gbuf.iter_mut() {
+                    row.fill(0.0);
+                }
+                for row in hbuf.iter_mut() {
+                    row.fill(0.0);
+                }
+                eval_shell_grad_hess(sh, dx, dy, dz, &mut buf[..n], &mut gbuf, &mut hbuf)?;
+                let o = self.offsets[s];
+                for i in 0..n {
+                    chi[(o + i, g)] += buf[i];
+                    for a in 0..3 {
+                        dchi[(a, o + i, g)] += gbuf[a][i];
+                        for b in 0..3 {
+                            ddchi[(a, b, o + i, g)] += hbuf[a * 3 + b][i];
+                        }
+                    }
+                }
+            }
+        }
+        Ok((chi, dchi, ddchi))
+    }
 }
 
 /// Resolve a functional name for the periodic path: `(XcDef, exact-exchange

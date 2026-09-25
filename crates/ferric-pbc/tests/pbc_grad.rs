@@ -612,5 +612,9 @@ fn triclinic_sp_force_matches_fd_of_own_energy() {
     }
     let d = max_diff(&r[0].grad, &r[1].grad);
     eprintln!("triclinic: |F_ewald − F_none| = {d:.2e}");
-    assert!(d < 1e-12, "{d:e}");
+    // Two INDEPENDENT SCFs (commutators 4e-12 / 6e-11 here): measured
+    // 6.58e-12 (2026-09-25, before and after the UHF/KS port, bit-identical).
+    // The defect this guards, a missing −(v_M/2) DSD overlap term, is
+    // v_M tr(D dS/dR) ~ 6e-2 (FINDINGS It. 16), so 1e-10 sits between.
+    assert!(d < 1e-10, "{d:e}");
 }
