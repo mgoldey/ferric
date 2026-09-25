@@ -1,7 +1,8 @@
 //! Complete spin-orbital CCSD (Stanton-Gauss-Bartlett-Lee-Schaefer 1991 form).
 //!
-//! Translated from a validated numpy reference (`/tmp/ccsd_canon_spec.py`) that
-//! reproduces H2/STO-3G = -0.02052453 (exact) and H2O/cc-pVDZ = -0.21332778.
+//! Matches PySCF CCSD on identical density-fitted integrals and ferric's
+//! spin-adapted `ccsd_closed_shell` (crates/ferric-cc/tests/validation_cc.rs).
+//! H2/STO-3G has T1 = 0 by symmetry, so it cannot test any T1 term.
 //! Uses the canonical-HF simplification `fov = fo = fv = 0` (off-diagonal Fock
 //! vanishes for RHF canonical orbitals; the orbital-energy diagonal enters only
 //! through the amplitude denominators).
@@ -372,15 +373,16 @@ pub fn ccsd(
         let t2_t = lbl4(t2.clone(), [O, O, V, V]);
 
         // --- taus and tau (Stanton Eq. 9, 10) ---
-        // taus = t2 + 0.5 (P(ij)P(ab)) t1 outer t1
-        //      = t2 + 0.5 ( t_ia t_jb - t_ib t_ja - t_ja t_ib + t_jb t_ia )
+        // taus = t2 + 0.5 ( t_ia t_jb - t_ib t_ja )
         // tau  = t2 +       ( t_ia t_jb - t_ib t_ja )
+        // p_ij(t_ia t_jb) = t_ia t_jb - t_ja t_ib is exactly that antisymmetric
+        // pair; P(ij)P(ab) would give TWICE it (four terms), i.e. tau, not taus.
         // t_ia t_jb. einsum! emits left-free (i,a) before right-free (j,b) as
         // (i,a,j,b); permute to the (i,j,a,b) layout the antisymmetrizers expect.
         let oo1_iajb: ArrayD<f64> = einsum!("ia,jb->iajb", &t1_t, &t1_t);
         let oo1: ArrayD<f64> =
             permute_to_owned(oo1_iajb.permuted_axes(IxDyn(&[0, 2, 1, 3])).view());
-        let taus = &t2 + &(0.5 * p_ij_ab(&oo1));
+        let taus = &t2 + &(0.5 * p_ij(&oo1));
         let tau = &t2 + &p_ij(&oo1); // P(ij) of (t_ia t_jb) == t_ia t_jb - t_ib t_ja... see note
                                      // NOTE: tau = t2 + t_ia t_jb - t_ib t_ja. p_ij(oo1) = oo1 - swap_ij(oo1).
                                      // swap_ij(t_ia t_jb) = t_ja t_ib (i<->j) -> that is the t_ib t_ja term? No:
@@ -389,25 +391,26 @@ pub fn ccsd(
         let taus_t = lbl4(taus.clone(), [O, O, V, V]);
         let tau_t = lbl4(tau.clone(), [O, O, V, V]);
 
-        // --- F intermediates (fov = fo = fv = 0) ---
-        // Fae = -0.5 sum_mnf taus_mnaf <mn||ef>  ->  einsum('mnaf,mnef->af') then [a,e]
-        // numpy: Fae[a,e] = -0.5 einsum('mnaf,mnef->ae', taus, oovv)
+        // --- F intermediates (Stanton-Gauss Eqs. 3-5) ---
+        // fov = fo = fv = 0 removes only the Fock terms; the T1-linear integral
+        // terms remain.
+        // Fae[a,e] = sum_mf t_mf <ma||fe> - 0.5 sum_mnf taus_mnaf <mn||ef>
         let fae: ArrayD<f64> = {
-            // contract m,n,f ; left-free a ; right-free e -> 'ae'
+            let y: ArrayD<f64> = einsum!("mf,mafe->ae", &t1_t, &ovvv);
             let x: ArrayD<f64> = einsum!("mnaf,mnef->ae", &taus_t, &oovv);
-            -0.5 * x
+            y - 0.5 * x
         };
         let fae_t = lbl2(fae.clone(), [V, V]);
-        // Fmi[m,i] = 0.5 einsum('inef,mnef->mi', taus, oovv)
-        // contract n,e,f ; left index i (from taus), right index m (from oovv)
-        // -> einsum('inef,mnef->im') gives [i,m]; we want [m,i] => permute.
+        // Fmi[m,i] = sum_ne t_ne <mn||ie> + 0.5 sum_nef taus_inef <mn||ef>
+        // einsum('inef,mnef->im') gives [i,m]; we want [m,i] => permute.
         let fmi: ArrayD<f64> = {
+            let mi: ArrayD<f64> = einsum!("ne,mnie->mi", &t1_t, &ooov);
             let im: ArrayD<f64> = einsum!("inef,mnef->im", &taus_t, &oovv);
-            0.5 * im
-                .view()
-                .permuted_axes(IxDyn(&[1, 0]))
-                .as_standard_layout()
-                .into_owned()
+            mi + 0.5
+                * im.view()
+                    .permuted_axes(IxDyn(&[1, 0]))
+                    .as_standard_layout()
+                    .into_owned()
         };
         let fmi_t = lbl2(fmi.clone(), [O, O]);
         // Fme[m,e] = einsum('nf,mnef->me', t1, oovv)
