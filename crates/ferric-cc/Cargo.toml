@@ -15,3 +15,6 @@ ferric-mp2 = { path = "../ferric-mp2" }
 ferric-tensors = { path = "../ferric-tensors" }
 ndarray = { workspace = true }
 rayon = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

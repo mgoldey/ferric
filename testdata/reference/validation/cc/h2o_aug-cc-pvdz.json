@@ -1,0 +1,130 @@
+{
+  "system": "h2o",
+  "basis": "aug-cc-pvdz",
+  "aux_basis": "aug-cc-pvdz-rifit",
+  "charge": 0,
+  "multiplicity": 1,
+  "methods": [
+    "ccsd",
+    "ccsd_t"
+  ],
+  "nao": 41,
+  "naux": 118,
+  "nocc": 5,
+  "nvir": 36,
+  "n_frozen_core_control": 1,
+  "nuclear_repulsion": 9.189193229309746,
+  "rhf": {
+    "energy": -76.04136463772001,
+    "homo": -0.5094993974583666,
+    "lumo": 0.035393519451091926
+  },
+  "df": {
+    "metric_min_eigenvalue": 0.00018281062685364502,
+    "metric_max_eigenvalue": 432.24663627079735,
+    "mp2_numpy_from_B": -0.22190483175263712,
+    "mp2_pyscf_density_fit": -0.22190483175263717,
+    "mp2_numpy_vs_pyscf_df": 5.551115123125783e-17
+  },
+  "all_electron": {
+    "frozen_core": 0,
+    "nocc_active": 5,
+    "nvir": 36,
+    "mp2_numpy": -0.22190483175263712,
+    "fock_offdiag_max": 7.076802612492682e-11,
+    "fock_diag_vs_mo_energy_max": 5.311873163549308e-11,
+    "ccsd": {
+      "e_corr": -0.2295561571834413,
+      "t1_norm": 0.03464641435938454,
+      "t1_diagnostic": 0.010956158213361869
+    },
+    "ccsd_t": {
+      "e_t": -0.0052453922631789905,
+      "e_corr_ccsd_t": -0.2348015494466203
+    }
+  },
+  "frozen_core": {
+    "frozen_core": 1,
+    "nocc_active": 4,
+    "nvir": 36,
+    "mp2_numpy": -0.21941522970988966,
+    "fock_offdiag_max": 7.077241429763978e-11,
+    "fock_diag_vs_mo_energy_max": 5.311695527865368e-11,
+    "ccsd": {
+      "e_corr": -0.2273187395963178,
+      "t1_norm": 0.03469163280787196,
+      "t1_diagnostic": 0.012265344404439984
+    },
+    "ccsd_t": {
+      "e_t": -0.005219148306255694,
+      "e_corr_ccsd_t": -0.2325378879025735
+    }
+  },
+  "conventional_exact_integrals": {
+    "ccsd_e_corr": -0.22942328183301625
+  },
+  "provenance": {
+    "code": "PySCF + numpy",
+    "version": "2.13.1",
+    "keywords": {
+      "reference": "scf.RHF, exact 4-index J/K (no density fitting)",
+      "scf_conv_tol": 1e-12,
+      "scf_conv_tol_grad": 1e-09,
+      "correlation_integrals": "DF: (pq|rs) = sum_P B^P_pq B^P_rs, B = L^-1 (P|mn), L = chol((P|Q)) (numpy on PySCF int3c2e/int2c2e)",
+      "fock": "diag(RHF mo_energy) (canonical, off-diagonal dropped)",
+      "ccd": "pyscf.cc.ccd.CCD on hand-built DF _ChemistsERIs",
+      "ccsd": "pyscf.cc.ccsd.CCSD on hand-built DF _ChemistsERIs",
+      "ccsd_t": "pyscf.cc.ccsd_t.kernel on the same eris",
+      "mp3": "numpy spin-orbital (Shavitt-Bartlett 10.12) == spatial via linear PySCF RCCSD residual",
+      "cc_conv_tol": 1e-12,
+      "cc_conv_tol_normt": 1e-10,
+      "numpy": "1.26.4",
+      "scipy": "1.17.1"
+    },
+    "grid": "none",
+    "aux_basis": "aug-cc-pvdz-rifit",
+    "frozen_core": "0 (all_electron block); n_frozen_core_control (frozen_core block)",
+    "scf_convergence": 1e-12,
+    "stability": null,
+    "basis": "aug-cc-pvdz",
+    "basis_json": "crates/ferric-core/src/basis/bundled/aug-cc-pvdz.json",
+    "basis_sha256": "911303b754cd16032f762811f2193796eaf67070bdb40bcdc0c59d422f8c8dd1",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/h2o.xyz",
+    "geometry_xyz_sha256": "284b6da243e9abcf0aa2d6e13ad7204946feecb55d27b7819f12097095fdd6ae",
+    "geometry_bohr": [
+      [
+        "O",
+        0.0,
+        0.0,
+        0.22259084021251865
+      ],
+      [
+        "H",
+        0.0,
+        1.4275992699810498,
+        -0.8903652505761991
+      ],
+      [
+        "H",
+        0.0,
+        -1.4275992699810498,
+        -0.8903652505761991
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_cc.py",
+    "git_head": "dfeb5daa34f791a42da36135daba64c9e7f600cb",
+    "generated_utc": "2026-09-24T23:17:06+00:00",
+    "aux_basis_json": "crates/ferric-core/src/basis/bundled/aug-cc-pvdz-rifit.json",
+    "aux_basis_sha256": "0b64c175a31c523d6ab7e66719b29671eca91a0390e6ecad9ba863ac5cad6ea8",
+    "basis_check": {
+      "nao": 41,
+      "replica_self_overlap_max_dev": 4.440892098500626e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 41,
+      "diag_skipped_cartesian": 0
+    }
+  }
+}

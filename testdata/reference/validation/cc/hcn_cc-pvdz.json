@@ -1,0 +1,130 @@
+{
+  "system": "hcn",
+  "basis": "cc-pvdz",
+  "aux_basis": "cc-pvdz-ri",
+  "charge": 0,
+  "multiplicity": 1,
+  "methods": [
+    "ccsd",
+    "ccsd_t"
+  ],
+  "nao": 33,
+  "naux": 126,
+  "nocc": 7,
+  "nvir": 26,
+  "n_frozen_core_control": 2,
+  "nuclear_repulsion": 23.922278784263682,
+  "rhf": {
+    "energy": -92.88325200982516,
+    "homo": -0.4920071333711572,
+    "lumo": 0.18147633332842217
+  },
+  "df": {
+    "metric_min_eigenvalue": 0.0004369473897309858,
+    "metric_max_eigenvalue": 195.4094776573687,
+    "mp2_numpy_from_B": -0.28875685704644694,
+    "mp2_pyscf_density_fit": -0.2887568570464477,
+    "mp2_numpy_vs_pyscf_df": 7.771561172376096e-16
+  },
+  "all_electron": {
+    "frozen_core": 0,
+    "nocc_active": 7,
+    "nvir": 26,
+    "mp2_numpy": -0.28875685704644694,
+    "fock_offdiag_max": 7.150831862455509e-11,
+    "fock_diag_vs_mo_energy_max": 4.3650416614582355e-11,
+    "ccsd": {
+      "e_corr": -0.29755010258697945,
+      "t1_norm": 0.04318856539690635,
+      "t1_diagnostic": 0.01154262962439315
+    },
+    "ccsd_t": {
+      "e_t": -0.011939660571889676,
+      "e_corr_ccsd_t": -0.3094897631588691
+    }
+  },
+  "frozen_core": {
+    "frozen_core": 2,
+    "nocc_active": 5,
+    "nvir": 26,
+    "mp2_numpy": -0.28422766692843393,
+    "fock_offdiag_max": 7.151474946132097e-11,
+    "fock_diag_vs_mo_energy_max": 4.373656992129327e-11,
+    "ccsd": {
+      "e_corr": -0.29344840346500556,
+      "t1_norm": 0.04317821363406743,
+      "t1_diagnostic": 0.013654150038098917
+    },
+    "ccsd_t": {
+      "e_t": -0.011853293659801492,
+      "e_corr_ccsd_t": -0.30530169712480704
+    }
+  },
+  "conventional_exact_integrals": {
+    "ccsd_e_corr": -0.29728502479788704
+  },
+  "provenance": {
+    "code": "PySCF + numpy",
+    "version": "2.13.1",
+    "keywords": {
+      "reference": "scf.RHF, exact 4-index J/K (no density fitting)",
+      "scf_conv_tol": 1e-12,
+      "scf_conv_tol_grad": 1e-09,
+      "correlation_integrals": "DF: (pq|rs) = sum_P B^P_pq B^P_rs, B = L^-1 (P|mn), L = chol((P|Q)) (numpy on PySCF int3c2e/int2c2e)",
+      "fock": "diag(RHF mo_energy) (canonical, off-diagonal dropped)",
+      "ccd": "pyscf.cc.ccd.CCD on hand-built DF _ChemistsERIs",
+      "ccsd": "pyscf.cc.ccsd.CCSD on hand-built DF _ChemistsERIs",
+      "ccsd_t": "pyscf.cc.ccsd_t.kernel on the same eris",
+      "mp3": "numpy spin-orbital (Shavitt-Bartlett 10.12) == spatial via linear PySCF RCCSD residual",
+      "cc_conv_tol": 1e-12,
+      "cc_conv_tol_normt": 1e-10,
+      "numpy": "1.26.4",
+      "scipy": "1.17.1"
+    },
+    "grid": "none",
+    "aux_basis": "cc-pvdz-ri",
+    "frozen_core": "0 (all_electron block); n_frozen_core_control (frozen_core block)",
+    "scf_convergence": 1e-12,
+    "stability": null,
+    "basis": "cc-pvdz",
+    "basis_json": "crates/ferric-core/src/basis/bundled/cc-pvdz.json",
+    "basis_sha256": "ae48fcca0d533addd60dbd48490153130e697121767ba607e1d70f3b341eeef7",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/hcn.xyz",
+    "geometry_xyz_sha256": "9446f26d6230539afdbec1794544042a71b921cc6416ce11c94ab10263af387b",
+    "geometry_bohr": [
+      [
+        "H",
+        0.0,
+        0.0,
+        -2.013503185724073
+      ],
+      [
+        "C",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "N",
+        0.0,
+        0.0,
+        2.179232166848429
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_cc.py",
+    "git_head": "dfeb5daa34f791a42da36135daba64c9e7f600cb",
+    "generated_utc": "2026-09-24T23:18:24+00:00",
+    "aux_basis_json": "crates/ferric-core/src/basis/bundled/cc-pvdz-ri.json",
+    "aux_basis_sha256": "8221d2a31b5bbebd39218fc3f9244917e173a338ff9c56904038443a06e2a250",
+    "basis_check": {
+      "nao": 33,
+      "replica_self_overlap_max_dev": 4.440892098500626e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 33,
+      "diag_skipped_cartesian": 0
+    }
+  }
+}
