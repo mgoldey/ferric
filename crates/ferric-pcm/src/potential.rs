@@ -9,12 +9,15 @@
 
 use std::os::raw::c_int;
 
-use ferric_core::external_potential::PointCharge;
+use ferric_core::external_potential::{PointCharge, SmearedCharge};
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::engine::Engine;
 use ferric_integrals::ffi::{self, CAtom};
+use ferric_integrals::oneelectron::smeared_attraction;
+use ferric_integrals::operator::Operator;
+use ferric_integrals::site_basis::SiteBasis;
 use ndarray::Array2;
 
 use crate::cavity::Tessera;
@@ -236,6 +239,170 @@ pub fn build_reaction_field_operator(
     Ok(out)
 }
 
+// libm's C99 `erf`, bound directly (same convention as `matrices.rs`).
+extern "C" {
+    fn erf(x: f64) -> f64;
+}
+
+/// [`solute_potential_at_tesserae`] with each tessera a normalized Gaussian
+/// charge of exponent `ξ_k²` (`ξ_k` = [`Tessera::charge_exp`]) instead of a
+/// point — [`crate::config::ProbeKind::GaussianSmeared`]:
+///
+/// ```text
+///     v_k = Σ_B Z_B erf(ξ_k |r_k − R_B|)/|r_k − R_B|
+///           − Σ_{μν} D_{μν} ⟨μ| erf(ξ_k |r − r_k|)/|r − r_k| |ν⟩
+/// ```
+///
+/// The electronic term is the 3-centre Coulomb integral `(μν|g_k)` against
+/// a unit-self-overlap s-Gaussian divided by its integral
+/// ([`ferric_integrals::site_basis::SiteBasis`], whose `ζ → ∞` limit is
+/// pinned against the point-charge path there).
+pub fn solute_potential_at_tesserae_smeared(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    density: &Array2<f64>,
+    tess: &[Tessera],
+) -> Result<Vec<f64>, FerricError> {
+    let nbas = prep.nbasis();
+    if density.shape() != [nbas, nbas] {
+        return Err(FerricError::General(format!(
+            "solute_potential_at_tesserae_smeared: density shape {:?} != ({nbas},{nbas})",
+            density.shape()
+        )));
+    }
+    let sites: Vec<[f64; 4]> = tess
+        .iter()
+        .map(|t| {
+            [
+                t.position[0],
+                t.position[1],
+                t.position[2],
+                t.charge_exp * t.charge_exp,
+            ]
+        })
+        .collect();
+    let site_basis = SiteBasis::new(&sites, 0)?;
+    let mut eng = Engine::new_3center(Operator::coulomb(), prep, &site_basis.prep, 1e-14)?;
+
+    let dims = prep.shell_dims();
+    let offs = prep.shell_offsets();
+    let nsh = prep.nshells();
+
+    let mut out = Vec::with_capacity(tess.len());
+    for (k, t) in tess.iter().enumerate() {
+        let sh_p = site_basis.site_shell[k];
+        let mut v_elec = 0.0_f64;
+        for s1 in 0..nsh {
+            for s2 in 0..=s1 {
+                let Some(block) = eng.compute_eri3(prep, &site_basis.prep, sh_p, s1, s2) else {
+                    continue;
+                };
+                let n1 = dims[s1];
+                let n2 = dims[s2];
+                let o1 = offs[s1];
+                let o2 = offs[s2];
+                let fac = if s1 == s2 { 1.0 } else { 2.0 };
+                let mut acc = 0.0_f64;
+                for i in 0..n1 {
+                    for j in 0..n2 {
+                        acc += density[(o1 + i, o2 + j)] * block[i * n2 + j];
+                    }
+                }
+                v_elec += fac * acc;
+            }
+        }
+        v_elec /= site_basis.norm_int[k];
+
+        let xi = t.charge_exp;
+        let mut v_nuc = 0.0_f64;
+        for atom in &mol.atoms {
+            if atom.ghost {
+                continue;
+            }
+            let dx = t.position[0] - atom.x;
+            let dy = t.position[1] - atom.y;
+            let dz = t.position[2] - atom.zpos;
+            let r = (dx * dx + dy * dy + dz * dz).sqrt();
+            if r < 1e-8 {
+                return Err(FerricError::General(
+                    "solute_potential_at_tesserae_smeared: tessera coincides with a nucleus \
+                     (degenerate cavity)"
+                        .into(),
+                ));
+            }
+            // SAFETY: erf is the C standard math library function; argument is finite.
+            v_nuc += atom.effective_z() as f64 * unsafe { erf(xi * r) } / r;
+        }
+
+        out.push(v_nuc - v_elec);
+    }
+    Ok(out)
+}
+
+/// [`build_reaction_field_operator`] with each tessera charge a normalized
+/// Gaussian of exponent `ξ_k²` — [`crate::config::ProbeKind::GaussianSmeared`]:
+///
+/// ```text
+///     V_pcm_{μν} = Σ_k q_k · ⟨μ| −erf(ξ_k |r − r_k|)/|r − r_k| |ν⟩
+/// ```
+///
+/// Delegates to [`ferric_integrals::oneelectron::smeared_attraction`] with
+/// `width = 1/ξ_k` (that function's `ζ = 1/width²`).
+pub fn build_reaction_field_operator_smeared(
+    prep: &PreparedBasis,
+    tess: &[Tessera],
+    q: &[f64],
+) -> Result<Array2<f64>, FerricError> {
+    if tess.len() != q.len() {
+        return Err(FerricError::General(format!(
+            "build_reaction_field_operator_smeared: {} tesserae but {} charges",
+            tess.len(),
+            q.len()
+        )));
+    }
+    let smeared: Vec<SmearedCharge> = tess
+        .iter()
+        .zip(q.iter())
+        .map(|(t, &qk)| SmearedCharge {
+            q: qk,
+            x: t.position[0],
+            y: t.position[1],
+            z: t.position[2],
+            width: 1.0 / t.charge_exp,
+        })
+        .collect();
+    smeared_attraction(prep, &smeared)
+}
+
+impl crate::config::ProbeKind {
+    /// Solute electrostatic potential at each tessera for this probe kind.
+    pub fn potential_at_tesserae(
+        self,
+        mol: &Molecule,
+        prep: &PreparedBasis,
+        density: &Array2<f64>,
+        tess: &[Tessera],
+    ) -> Result<Vec<f64>, FerricError> {
+        match self {
+            Self::Point => solute_potential_at_tesserae(mol, prep, density, tess),
+            Self::GaussianSmeared => solute_potential_at_tesserae_smeared(mol, prep, density, tess),
+        }
+    }
+
+    /// Reaction-field one-electron AO operator from the tessera charges `q`.
+    pub fn reaction_field_operator(
+        self,
+        prep: &PreparedBasis,
+        tess: &[Tessera],
+        q: &[f64],
+    ) -> Result<Array2<f64>, FerricError> {
+        match self {
+            Self::Point => build_reaction_field_operator(prep, tess, q),
+            Self::GaussianSmeared => build_reaction_field_operator_smeared(prep, tess, q),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,6 +459,55 @@ mod tests {
             }
         }
         assert!(vmat2.iter().any(|&x| x != 0.0));
+    }
+
+    /// Exactness anchor for the Gaussian-probe path: as `ξ → ∞` a normalized
+    /// Gaussian charge is a point charge, so both smeared functions must
+    /// reproduce the independent point-probe functions (which share no
+    /// integral code with them: 1e nuclear-attraction engine vs 3-centre
+    /// ERIs over a `SiteBasis`).
+    #[test]
+    fn smeared_probes_reduce_to_point_probes_for_tight_gaussians() {
+        let (mol, prep) = water_sto3g();
+        let mut tess = build_cavity(&mol, &CavityConfig::default()).unwrap();
+        for t in tess.iter_mut() {
+            t.charge_exp = 1.0e3;
+        }
+        let n = prep.nbasis();
+        let mut d = Array2::<f64>::zeros((n, n));
+        for i in 0..n {
+            d[(i, i)] = 0.5;
+            if i + 1 < n {
+                d[(i, i + 1)] = 0.1;
+                d[(i + 1, i)] = 0.1;
+            }
+        }
+        let vp = solute_potential_at_tesserae(&mol, &prep, &d, &tess).unwrap();
+        let vs = solute_potential_at_tesserae_smeared(&mol, &prep, &d, &tess).unwrap();
+        let max_dv = vp
+            .iter()
+            .zip(vs.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f64::max);
+        assert!(
+            max_dv < 1e-8,
+            "point vs tight-Gaussian ESP differ by {max_dv:e}"
+        );
+
+        let q: Vec<f64> = (0..tess.len())
+            .map(|k| 1e-3 * ((k % 7) as f64 - 3.0))
+            .collect();
+        let op = build_reaction_field_operator(&prep, &tess, &q).unwrap();
+        let os = build_reaction_field_operator_smeared(&prep, &tess, &q).unwrap();
+        let max_dm = (&op - &os).iter().fold(0.0_f64, |m, x| m.max(x.abs()));
+        assert!(
+            max_dm < 1e-8,
+            "point vs tight-Gaussian V_pcm differ by {max_dm:e}"
+        );
+        assert!(
+            op.iter().any(|&x| x.abs() > 1e-6),
+            "V_pcm is trivially zero"
+        );
     }
 
     #[test]

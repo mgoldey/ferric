@@ -18113,7 +18113,7 @@
   },
   "crates/ferric-pcm/src/config.rs::defaults_fill_in_when_omitted": {
     "cc": 1.0,
-    "mi": 112.36882615629489
+    "mi": 106.13543326362482
   },
   "crates/ferric-pcm/src/config.rs::deny_unknown_fields_rejects_typo": {
     "cc": 1.0,
@@ -18136,8 +18136,8 @@
     "mi": 134.05168511513583
   },
   "crates/ferric-pcm/src/lib.rs::impl:PcmContext::new": {
-    "cc": 3.0,
-    "mi": 110.86540771282822
+    "cc": 4.0,
+    "mi": 105.82377878468033
   },
   "crates/ferric-pcm/src/lib.rs::impl:PcmContext::tesserae": {
     "cc": 1.0,
@@ -18153,7 +18153,7 @@
   },
   "crates/ferric-pcm/src/lib.rs::pcm_step": {
     "cc": 4.0,
-    "mi": 97.51484578585658
+    "mi": 91.56201211107978
   },
   "crates/ferric-pcm/src/lib.rs::pcm_step_gives_stabilizing_energy_for_water": {
     "cc": 2.0,
