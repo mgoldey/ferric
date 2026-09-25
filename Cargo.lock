@@ -584,6 +584,7 @@ dependencies = [
  "ferric-mp2",
  "ferric-rpa",
  "ferric-scf",
+ "libc",
  "ndarray",
  "ndarray-linalg",
  "num-complex",

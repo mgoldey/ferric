@@ -65,6 +65,17 @@ pub enum GammaUhfIntegrals<'a> {
     DenseAft(&'a DenseAftEri),
 }
 
+impl GammaUhfIntegrals<'_> {
+    /// The source's build timings plus its accumulated SCF J/K calls
+    /// ([`RsGdf::timings`], [`DenseAftEri::timings`]).
+    pub fn timings(&self) -> crate::timing::PbcTimings {
+        match self {
+            GammaUhfIntegrals::RsGdf(g) => g.timings(),
+            GammaUhfIntegrals::DenseAft(e) => e.timings(),
+        }
+    }
+}
+
 /// How an `exxdiv = ewald` run is started (ignored for `exxdiv = none`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EwaldStart {

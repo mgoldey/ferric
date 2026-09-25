@@ -31,6 +31,9 @@ ndarray-linalg = { workspace = true }
 num-complex = "0.4"
 # Point-parallel partition weights and chunk-parallel lattice AO sums.
 rayon = { workspace = true }
+# Process CPU clock for the stage timers (`timing`); same spec as
+# ferric-integrals, already in the lockfile.
+libc = "0.2"
 
 [dev-dependencies]
 serde_json = { workspace = true }

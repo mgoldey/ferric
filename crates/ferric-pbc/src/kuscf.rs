@@ -64,6 +64,7 @@ use crate::kscf::{
 };
 use crate::lattice::Cell;
 use crate::rsgdf::kpoint::{KRsGdf, KRsGdfConfig};
+use crate::timing::{PbcTimings, StageClock};
 use crate::uhf::{nocc_ab, EwaldStart, SpinGapReport};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -214,6 +215,9 @@ pub struct KUhfResult {
     pub nocc: (usize, usize),
     /// Per-spin gaps (actual occupations) against the applied `v_M`.
     pub gaps: SpinGapReport,
+    /// Coarse stages (`"k hcore"`, `"k J/K build"`, `"k SCF"` over every
+    /// SCF stage) and the J/K build's counters.
+    pub timings: PbcTimings,
 }
 
 enum KInts {
@@ -257,7 +261,11 @@ pub fn solve_kuhf(
         _ => {}
     }
     let (na, nb) = nocc_ab(cell.mol())?;
+    let total = StageClock::start();
+    let mut timings = PbcTimings::default();
+    let clock = StageClock::start();
     let hk = periodic_hcore_kpts(cell, prep, mesh, &cfg.hcore)?;
+    timings.stop("k hcore", &clock);
     let v_m = mesh.madelung(cell)?;
     let applied = match cfg.exxdiv {
         ExxDiv::None => 0.0,
@@ -269,6 +277,7 @@ pub fn solve_kuhf(
     } else {
         applied
     };
+    let clock = StageClock::start();
     let ints = match aux {
         None => KInts::Dense(KDenseAftEri::build(
             cell,
@@ -280,6 +289,11 @@ pub fn solve_kuhf(
         )?),
         Some(aux) => KInts::RsGdf(KRsGdf::build(cell, prep, aux, mesh, &hk.s, &cfg.rsgdf)?),
     };
+    timings.stop("k J/K build", &clock);
+    if let KInts::RsGdf(g) = &ints {
+        crate::rsgdf::kpoint::record_stats(&mut timings, g.stats());
+    }
+    let clock = StageClock::start();
     let run = |vm: f64,
                guess: Option<(&[Array2<Complex64>], &[Array2<Complex64>])>|
      -> Result<KUScfResult, FerricError> {
@@ -320,6 +334,7 @@ pub fn solve_kuhf(
     } else {
         (run(k_madelung, None)?, None)
     };
+    timings.stop("k SCF", &clock);
     let gaps = kuhf_gap_report(&scf, applied);
     if !gaps.satisfied() {
         eprintln!(
@@ -330,12 +345,14 @@ pub fn solve_kuhf(
             gaps.gap_alpha, gaps.gap_beta, gaps.margin
         );
     }
+    timings.finish(&total);
     Ok(KUhfResult {
         scf,
         none_stage,
         madelung: v_m,
         nocc: (na, nb),
         gaps,
+        timings,
     })
 }
 

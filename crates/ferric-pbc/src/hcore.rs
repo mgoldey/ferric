@@ -77,6 +77,7 @@ use crate::budget::{bytes_of, Ledger};
 use crate::ewald::{default_ewald_omega, ewald_nuclear_repulsion};
 use crate::lattice::Cell;
 use crate::pair_ft::{pair_ft_bytes_per_g, pair_ft_chunked};
+use crate::timing::{PbcTimings, StageClock};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::engine::Engine;
@@ -227,6 +228,9 @@ pub struct PeriodicHcore {
     pub lr_bytes_per_g: usize,
     /// Number of `pair_ft` chunks the `V_LR` sum used.
     pub n_lr_chunks: usize,
+    /// Stage timings (setup, S/T, SR attraction, LR attraction, ECP, Ewald)
+    /// and counters ([`crate::timing`]; observation only).
+    pub timings: PbcTimings,
 }
 
 struct PrimShell {
@@ -680,6 +684,9 @@ fn sr_candidates(
 struct SrSum {
     v: Array2<f64>,
     n_triplets: usize,
+    /// Nucleus-candidate segment-distance tests performed (the screen's own
+    /// cost, FINDINGS "Performance plan" item 2).
+    n_segment_tests: usize,
     /// Per element: Σ over SKIPPED triplets of the bound's per-triplet
     /// prediction (only when tracked).
     predicted: Option<Array2<f64>>,
@@ -708,10 +715,12 @@ fn sr_attraction(
     let mut v = Array2::<f64>::zeros((n, n));
     let mut predicted = track.then(|| Array2::<f64>::zeros((n, n)));
     let mut n_triplets = 0usize;
+    let mut n_segment_tests = 0usize;
     if nuc.is_empty() {
         return Ok(SrSum {
             v,
             n_triplets,
+            n_segment_tests,
             predicted,
         });
     }
@@ -742,6 +751,7 @@ fn sr_attraction(
                 }
                 let pref = nucleus_prefactor(q, zmax, pmax);
                 let mut skipped = 0.0_f64;
+                n_segment_tests += cands.len();
                 for (k, m, x) in cands {
                     let d = segment_distance(*x, a.center, bc);
                     match rad {
@@ -781,6 +791,7 @@ fn sr_attraction(
     Ok(SrSum {
         v,
         n_triplets,
+        n_segment_tests,
         predicted,
     })
 }
@@ -795,6 +806,9 @@ pub fn periodic_hcore(
     cfg.validate()?;
     // Z_eff guard first: a bare Z is silent for every k-mesh anchor.
     crate::ecp::check_ecp_applied(cell, prep.basis_set())?;
+    let total = StageClock::start();
+    let mut timings = PbcTimings::default();
+    let clock = StageClock::start();
     let shells = prim_shells(cell, prep)?;
     let n = prep.nbasis();
     let omega = cfg.omega;
@@ -810,8 +824,10 @@ pub fn periodic_hcore(
 
     let images = pair_images(cell, &shells, pair_thresh, &mut ledger)?;
     let rpair = pair_radius(&shells, pair_thresh);
+    timings.stop("hcore setup (shells, pair images)", &clock);
 
     // --- S, T: every pair image.
+    let clock = StageClock::start();
     let mut eng_s = Engine::new_1e(ffi::OP_OVERLAP, prep, ONE_E_ENGINE_PRECISION)?;
     let mut eng_t = Engine::new_1e(ffi::OP_KINETIC, prep, ONE_E_ENGINE_PRECISION)?;
     let mut s = Array2::<f64>::zeros((n, n));
@@ -828,8 +844,10 @@ pub fn periodic_hcore(
     }
     let (s, _) = symmetrize(&s);
     let (t, _) = symmetrize(&t);
+    timings.stop("hcore S/T", &clock);
 
     // --- V_SR: Gaussian nuclei, erfc(ω), nucleus shifted by M, ν by L.
+    let clock = StageClock::start();
     let zs = cell.nuclear_charges();
     let (nuc, zmax) = nonzero_nuclei(cell);
     let mut v_sr = Array2::<f64>::zeros((n, n));
@@ -837,6 +855,7 @@ pub fn periodic_hcore(
     let mut sr_asymmetry = 0.0;
     if !nuc.is_empty() {
         let cands = sr_candidates(cell, &shells, &nuc, omega, zmax, thresh, rpair, &mut ledger)?;
+        timings.set_counter("hcore SR nucleus candidates", cands.len() as u64);
         let sr = sr_attraction(
             prep,
             &shells,
@@ -851,30 +870,48 @@ pub fn periodic_hcore(
             false,
         )?;
         n_sr_triplets = sr.n_triplets;
+        timings.set_counter("hcore SR segment tests", sr.n_segment_tests as u64);
         let (sym, asym) = symmetrize(&sr.v);
         v_sr = sym;
         sr_asymmetry = asym;
     }
+    timings.stop("hcore SR attraction", &clock);
 
     // --- V_LR (G ≠ 0) and the G = 0 correction.
+    let clock = StageClock::start();
     let gcut = lr_gcut(prep, omega, thresh);
     let lr = reciprocal_nuclear(cell, prep, Some(omega), gcut, pair_thresh, &mut ledger)?;
     let v_lr = lr.v;
     let ztot: f64 = zs.iter().sum();
     let c0 = PI / (omega * omega * cell.volume());
     let v_g0 = (c0 * ztot) * &s;
+    timings.stop("hcore LR attraction", &clock);
 
     let v = &(&v_sr + &v_lr) + &v_g0;
     // --- V_ECP (Gamma Bloch sum; `None` for an all-electron basis).
+    let clock = StageClock::start();
     let ecp = crate::ecp::periodic_ecp_images_on(cell, prep, &cfg.ecp_config(), &mut ledger)?;
     let n_ecp_triples = ecp.as_ref().map_or(0, |e| e.n_triples);
     let v_ecp = ecp.map(|e| e.gamma());
+    if v_ecp.is_some() {
+        timings.stop("hcore ECP", &clock);
+    }
     let mut h = &t + &v;
     if let Some(ve) = &v_ecp {
         h += ve;
     }
+    let clock = StageClock::start();
     let enn = ewald_nuclear_repulsion(cell, default_ewald_omega(cell))?;
+    timings.stop("hcore Ewald E_nn", &clock);
     ferric_core::memory::warn_if_rss_over("ferric-pbc periodic_hcore", ledger.budget(), 1.1);
+    timings.set_counter("hcore pair images", images.len() as u64);
+    timings.set_counter("hcore SR triplets", n_sr_triplets as u64);
+    timings.set_counter("hcore LR half-G", lr.n_g_half as u64);
+    timings.set_counter("hcore LR chunks", lr.n_chunks as u64);
+    if n_ecp_triples > 0 {
+        timings.set_counter("hcore ECP triples", n_ecp_triples as u64);
+    }
+    timings.finish(&total);
     Ok(PeriodicHcore {
         s,
         t,
@@ -895,6 +932,7 @@ pub fn periodic_hcore(
         lr_resident_bytes: lr.resident_bytes,
         lr_bytes_per_g: lr.bytes_per_g,
         n_lr_chunks: lr.n_chunks,
+        timings,
     })
 }
 

@@ -254,6 +254,25 @@ def test_rsgdf_accepts_a_basis_set_object(h2, basis):
     assert abs(by_obj.energy - by_name.energy) < 1e-12
 
 
+def test_stage_timings_are_reported(h2, basis, runs):
+    # Observation only (ferric_pbc::timing): stages are disjoint leaves, so
+    # their sum stays within the total; counters mirror the build's own.
+    r = ferric.run_rhf_gamma(
+        h2, _cubic_angstrom(A_BOHR), basis, jk="rsgdf", auxbasis="cc-pvdz-ri"
+    )
+    for res in (r, runs["ewald"]):
+        t = res.timings
+        stages = t["stages"]
+        assert t["wall_s"] > 0.0 and stages
+        assert sum(s["wall_s"] for s in stages.values()) <= t["wall_s"] + 1e-3
+        assert all(s["wall_s"] >= 0.0 and s["calls"] >= 0 for s in stages.values())
+        assert "hcore SR attraction" in stages
+    assert r.timings["stages"]["scf K (rsgdf)"]["calls"] >= 1
+    assert r.timings["counters"]["rsgdf aux dropped"] == r.n_dropped
+    assert r.timings["counters"]["rsgdf SR3 triplets"] > 0
+    assert runs["ewald"].timings["stages"]["scf J (dense AFT)"]["calls"] >= 1
+
+
 def _s_aux(tmp_path, exps, name):
     shells = [
         {

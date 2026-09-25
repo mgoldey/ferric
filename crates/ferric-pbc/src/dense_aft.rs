@@ -30,6 +30,7 @@ use crate::ewald::madelung_constant;
 use crate::hcore::{gvector_list_bytes, half_gvectors, G_CHUNK_BYTES};
 use crate::lattice::Cell;
 use crate::pair_ft::{pair_ft_bytes_per_g, pair_ft_chunked};
+use crate::timing::{CallClock, PbcTimings, StageClock};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_scf::fock::{JBuilder, KBuilder};
@@ -83,6 +84,11 @@ pub struct DenseAftEri {
     gcut: f64,
     /// `pair_ft` primitive screen used for the tensor.
     pair_thresh: f64,
+    /// Build stage timings and counters ([`crate::timing`]).
+    timings: PbcTimings,
+    /// Accumulated [`DenseAftJ`] / [`DenseAftK`] build calls.
+    j_clock: CallClock,
+    k_clock: CallClock,
 }
 
 impl DenseAftEri {
@@ -163,6 +169,8 @@ impl DenseAftEri {
             &format!("DenseAftEri G list (|G| <= {gcut:.3})"),
             gvector_list_bytes(cell, gcut)?,
         )?;
+        let total = StageClock::start();
+        let mut timings = PbcTimings::default();
         let gv = half_gvectors(cell, gcut)?;
         let vol = cell.volume();
         let mut eri = Array2::<f64>::zeros((n2, n2));
@@ -177,8 +185,10 @@ impl DenseAftEri {
             .max()
             .unwrap_or(0);
         let bytes_per_g = pair_ft_bytes_per_g(nao, lmax).saturating_add(staging_per_g);
+        let (mut sink_wall, mut sink_cpu) = (0.0_f64, None::<f64>);
         let accumulate =
             |_g0: usize, gs: &[[f64; 3]], p: &Array3<Complex64>| -> Result<(), FerricError> {
+                let clock = StageClock::start();
                 let ng = gs.len();
                 let mut a_re = Array2::<f64>::zeros((n2, ng));
                 let mut a_im = Array2::<f64>::zeros((n2, ng));
@@ -200,8 +210,14 @@ impl DenseAftEri {
                 }
                 eri += &b_re.dot(&a_re.t());
                 eri += &b_im.dot(&a_im.t());
+                let (w, c) = clock.elapsed();
+                sink_wall += w;
+                if let Some(c) = c {
+                    sink_cpu = Some(sink_cpu.unwrap_or(0.0) + c);
+                }
                 Ok(())
             };
+        let clock = StageClock::start();
         let n_g_chunks = pair_ft_chunked(
             cell,
             prep,
@@ -211,6 +227,23 @@ impl DenseAftEri {
             staging_per_g,
             accumulate,
         )?;
+        let (lr_wall, lr_cpu) = clock.elapsed();
+        timings.add(
+            "dense AFT pair FT",
+            (lr_wall - sink_wall).max(0.0),
+            match (lr_cpu, sink_cpu) {
+                (Some(a), Some(b)) => Some((a - b).max(0.0)),
+                (a, None) => a,
+                (None, Some(_)) => None,
+            },
+            1,
+        );
+        timings.add(
+            "dense AFT GEMM",
+            sink_wall,
+            sink_cpu.or(lr_cpu.map(|_| 0.0)),
+            n_g_chunks as u64,
+        );
         // Exactly symmetric in exact arithmetic; remove GEMM rounding.
         let eri = 0.5 * (&eri + &eri.t());
         let madelung = match exxdiv {
@@ -218,6 +251,9 @@ impl DenseAftEri {
             ExxDiv::Ewald => madelung_constant(cell)?,
         };
         ferric_core::memory::warn_if_rss_over("ferric-pbc DenseAftEri", ledger.budget(), 1.1);
+        timings.set_counter("dense AFT half-G", gv.len() as u64);
+        timings.set_counter("dense AFT chunks", n_g_chunks as u64);
+        timings.finish(&total);
         Ok(Self {
             nao,
             eri,
@@ -229,6 +265,9 @@ impl DenseAftEri {
             bytes_per_g,
             gcut,
             pair_thresh: 0.1 * precision,
+            timings,
+            j_clock: CallClock::default(),
+            k_clock: CallClock::default(),
         })
     }
 
@@ -287,6 +326,17 @@ impl DenseAftEri {
         self.bytes_per_g
     }
 
+    /// Build stage timings and counters (G list through symmetrisation),
+    /// plus the accumulated J and K build calls of every builder borrowed
+    /// from this tensor (`"scf J (dense AFT)"`, `"scf K (dense AFT)"`).
+    /// `wall_s` is the BUILD total.
+    pub fn timings(&self) -> PbcTimings {
+        let mut t = self.timings.clone();
+        t.add_stage(&self.j_clock.timing("scf J (dense AFT)"));
+        t.add_stage(&self.k_clock.timing("scf K (dense AFT)"));
+        t
+    }
+
     /// J builder borrowing this tensor.
     pub fn j_builder(&self) -> DenseAftJ<'_> {
         DenseAftJ { eri: self }
@@ -331,6 +381,19 @@ pub struct DenseAftJ<'a> {
 
 impl JBuilder for DenseAftJ<'_> {
     fn build(&mut self, d: &Array2<f64>, j: &mut Array2<f64>) -> Result<usize, FerricError> {
+        let eri = self.eri;
+        eri.j_clock.time(|| self.build_untimed(d, j))
+    }
+
+    fn reset(&mut self) {}
+}
+
+impl DenseAftJ<'_> {
+    fn build_untimed(
+        &mut self,
+        d: &Array2<f64>,
+        j: &mut Array2<f64>,
+    ) -> Result<usize, FerricError> {
         self.eri.check(d, j, "DenseAftJ")?;
         let n = self.eri.nao;
         let i = &self.eri.eri;
@@ -348,8 +411,6 @@ impl JBuilder for DenseAftJ<'_> {
         }
         Ok(n.pow(4))
     }
-
-    fn reset(&mut self) {}
 }
 
 /// [`KBuilder`] over a [`DenseAftEri`], including the Madelung shift.
@@ -367,6 +428,21 @@ pub struct DenseAftK<'a> {
 
 impl KBuilder for DenseAftK<'_> {
     fn build(&mut self, d: &Array2<f64>, k: &mut Array2<f64>) -> Result<usize, FerricError> {
+        let eri = self.eri;
+        eri.k_clock.time(|| self.build_untimed(d, k))
+    }
+
+    fn update_density(&mut self, _d: &Array2<f64>) {}
+
+    fn reset(&mut self) {}
+}
+
+impl DenseAftK<'_> {
+    fn build_untimed(
+        &mut self,
+        d: &Array2<f64>,
+        k: &mut Array2<f64>,
+    ) -> Result<usize, FerricError> {
         self.eri.check(d, k, "DenseAftK")?;
         let n = self.eri.nao;
         let i = &self.eri.eri;
@@ -388,8 +464,4 @@ impl KBuilder for DenseAftK<'_> {
         }
         Ok(n.pow(4))
     }
-
-    fn update_density(&mut self, _d: &Array2<f64>) {}
-
-    fn reset(&mut self) {}
 }
