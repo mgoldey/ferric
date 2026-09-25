@@ -71,8 +71,10 @@ through `[basis] path` as a Gaussian-94 file (orbital basis only).
 
 - **Analytic Hessians** are not implemented; frequencies are by finite
   differences.
-- **Open-shell coupled cluster, open-shell TS search and open-shell KS-DFT from
-  the CLI** are not available. See
+- **Open-shell coupled cluster and open-shell TS search** are not available
+  (the one open-shell CC-type method, LinLCCD(hh), is library-only). Open-shell
+  KS-DFT is available from the CLI: `ksdft` with `multiplicity > 1` runs UKS,
+  and `uhf`/`rohf` with `[dft] functional` run UKS/ROKS. See
   [Capabilities and validation: open shells in the CLI](../reference/validation.md#open-shells-in-the-cli).
 - **TDDFT with the XC kernel** exists only as a library-only spike; the CLI
   and Python TDDFT omit it. See

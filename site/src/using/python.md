@@ -156,8 +156,8 @@ the result then carries `e_scf`, `e_dispersion` and their sum in
 `total_energy`. `with_gradient=True` also returns the analytic nuclear gradient
 from `dft.gradient()`. There is no open-shell `run_dft`. Unrestricted
 Kohn–Sham is reachable from Python only inside other drivers:
-`run_frequencies(reference="uhf", xc=...)`, `run_u_gw(xc=...)` and
-`run_qmmm(method="uks")`.
+`run_frequencies(reference="uhf", xc=...)`, `run_u_gw(xc=...)`,
+`run_qmmm(method="uks")` and `run_cdft(functional=...)`.
 
 `run_rhf` also takes implicit solvent (`solvent=78.4` or `solvent="water"`,
 IEF-PCM), point charges and a uniform field. See its docstring
@@ -436,8 +436,8 @@ See [QM/MM](./qmmm.md) for a worked example.
 
 | Name | Purpose | CLI |
 |---|---|---|
-| `run_rimp2` | RI-MP2 on a closed-shell RHF reference. | `rimp2` |
-| `run_oo_rimp2` | Orbital-optimized RI-MP2 (level-shifted Newton + DIIS + Cayley rotation). | `oo-rimp2` |
+| `run_rimp2` | RI-MP2 on an RHF reference; UHF + unrestricted RI-MP2 when `multiplicity > 1` (`reference` says which). | `rimp2` |
+| `run_oo_rimp2` | Orbital-optimized RI-MP2 (level-shifted Newton + DIIS + Cayley rotation). Closed shell only; open-shell OO-RI-MP2 is CLI-only. | `oo-rimp2` |
 | `run_mp3` | MP3 on an RHF reference, with RI integrals. | `mp3` |
 | `run_attenuated_rimp2` | RI-MP2 with the erfc-attenuated operator; ω in Å⁻¹, default 0.420. | `att-rimp2` |
 | `run_terfc_rimp2` | RI-MP2 with the exact tempered-erfc operator at one cutoff `r0` (Å); needs the terfc tables. | — |
@@ -447,7 +447,7 @@ See [QM/MM](./qmmm.md) for a worked example.
 | `run_double_hybrid` | B2PLYP or DSD-PBEP86 double hybrid. | `b2plyp`, `dsd-pbep86` |
 | `run_laplace_mp2` | Laplace-transform RI-MP2 (default 7 quadrature points). | `laplace-mp2` |
 | `run_laplace_sos_mp2` | Laplace-transform SOS-MP2, `E = c_os · E_OS`; MO, AO or AO-sparse formulations. | `laplace-sos-mp2` |
-| `RiMp2Result` | Result of `run_rimp2` and `run_terfc_rimp2`: `total_energy`, `rhf_energy`, `mp2_corr`. | |
+| `RiMp2Result` | Result of `run_rimp2` and `run_terfc_rimp2`: `total_energy`, `rhf_energy` (the reference SCF energy, RHF or UHF), `mp2_corr`, `reference`. | |
 | `OoRiMp2Result` | Result of `run_oo_rimp2`, with `converged` and `grad_norm`. | |
 | `Mp3Result` | `e_hf`, `e_mp2`, `e_mp3`, `e_corr`, `e_total`. | |
 | `AttenuatedMp2Result` | Attenuated MP2 total, correlation and spin components. | |
@@ -494,7 +494,7 @@ reference.
 
 | Name | Purpose | CLI |
 |---|---|---|
-| `run_pdep_rpa` | Direct RPA correlation energy by PDEP (projective dielectric eigenpotentials); accepts point charges, field and solvent. | `pdep-rpa` |
+| `run_pdep_rpa` | Direct RPA correlation energy by PDEP (projective dielectric eigenpotentials); accepts point charges, field and solvent. Closed shell only; open-shell U-PDEP-RPA is CLI-only. | `pdep-rpa` |
 | `run_rs_mp2_rpa` | Range-separated SR-MP2 + LR-RPA (`formulation` = `"delta-lr"` or `"coupled-rings"`; ω in Å⁻¹). | `rs-mp2-rpa` |
 | `run_gw` | Closed-shell G0W0 / COHSEX / evGW0 / evGW on an RHF or RKS reference. | `gw` |
 | `run_u_gw` | Open-shell GW variants on a UHF/UKS or ROHF reference. | `gw` with multiplicity > 1 |
