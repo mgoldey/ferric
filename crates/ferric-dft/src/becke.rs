@@ -475,6 +475,178 @@ pub fn partition_weight_over(
     p_cell[home] / total
 }
 
+/// `(g(ν), dg/dν)` of the cell-function smoothing (`s = ½(1 − g)`).
+fn smoothing_and_slope(scheme: PartitionScheme, nu: f64) -> (f64, f64) {
+    match scheme {
+        PartitionScheme::Ssf => {
+            if nu <= -SSF_A || nu >= SSF_A {
+                return (ssf_smoothing(nu), 0.0);
+            }
+            let m = nu / SSF_A;
+            let one = 1.0 - m * m;
+            (ssf_smoothing(nu), 35.0 * one * one * one / (16.0 * SSF_A))
+        }
+        PartitionScheme::Becke => {
+            // Chain rule through the three iterates, f'(x) = 1.5 (1 − x²).
+            let mut x = nu;
+            let mut slope = 1.0;
+            for _ in 0..3 {
+                slope *= 1.5 * (1.0 - x * x);
+                x = 0.5 * x * (3.0 - x * x);
+            }
+            (x, slope)
+        }
+    }
+}
+
+/// [`partition_weight_over`] and its derivative with respect to the
+/// position of EVERY listed atom at FIXED `r`: `(w, dw)` with
+/// `dw[k][α] = ∂w/∂X_{k,α}` (lab-fixed point; the caller adds the point's own
+/// motion, `∇_r w = −Σ_k dw[k]` by translation invariance, and folds image
+/// atoms onto their cell atoms). `w` is bit-identical to
+/// [`partition_weight_over`] (same products in the same order).
+///
+/// With `μ_BC = (d_B − d_C)/R_BC`, `ν = μ + a_BC(1 − μ²)`,
+/// `s_BC = ½(1 − g(ν))`, `u_B = (r − X_B)/d_B`, `e_BC = (X_B − X_C)/R_BC`:
+///
+/// ```text
+/// ∂μ_BC/∂X_B = −(u_B + μ_BC e_BC)/R_BC,   ∂μ_BC/∂X_C = (u_C + μ_BC e_BC)/R_BC
+/// ∂s_BC/∂μ   = −½ g'(ν)(1 − 2 a_BC μ)
+/// ∂P_B/∂X    = Σ_C (∂s_BC/∂μ) (Π_{C'≠C} s_BC') ∂μ_BC/∂X
+/// ∂w/∂X      = (∂P_home/∂X − w Σ_B ∂P_B/∂X) / Σ_B P_B
+/// ```
+///
+/// The excluded products `Π_{C'≠C}` are prefix × suffix products, never
+/// `P_B / s_BC` — SSF cell functions have EXACT zeros. The `a_BC` size
+/// adjustment depends only on the atomic numbers, so it carries no
+/// derivative. Changes of the neighbour list itself (the caller's hard
+/// distance cutoff) are not differentiable and are ignored.
+///
+/// Returns `(0, zeros)` when `home` is out of range or every cell function
+/// vanishes, and `(1, zeros)` for a one-atom list.
+pub fn partition_weight_over_and_grad(
+    scheme: PartitionScheme,
+    atoms: &[NeighbourAtom],
+    home: usize,
+    r: [f64; 3],
+) -> (f64, Vec<[f64; 3]>) {
+    let n = atoms.len();
+    let mut dw = vec![[0.0_f64; 3]; n];
+    if home >= n {
+        return (0.0, dw);
+    }
+    if n == 1 {
+        return (1.0, dw);
+    }
+    let dist = |p: &[f64; 3], q: &[f64; 3]| {
+        let dx = p[0] - q[0];
+        let dy = p[1] - q[1];
+        let dz = p[2] - q[2];
+        (dx * dx + dy * dy + dz * dz).sqrt()
+    };
+    let r_d: Vec<f64> = atoms.iter().map(|a| dist(&r, &a.xyz)).collect();
+    let u: Vec<[f64; 3]> = atoms
+        .iter()
+        .zip(&r_d)
+        .map(|(a, &d)| {
+            let inv = if d > 0.0 { 1.0 / d } else { 0.0 };
+            [
+                (r[0] - a.xyz[0]) * inv,
+                (r[1] - a.xyz[1]) * inv,
+                (r[2] - a.xyz[2]) * inv,
+            ]
+        })
+        .collect();
+    let radii: Vec<f64> = atoms.iter().map(|a| bragg_slater_bohr(a.z)).collect();
+    let mut p_cell = vec![1.0_f64; n];
+    // Σ_B ∂P_B/∂X_D and ∂P_home/∂X_D.
+    let mut dsum = vec![[0.0_f64; 3]; n];
+    let mut dhome = vec![[0.0_f64; 3]; n];
+    // Per-B scratch over C.
+    let mut s = vec![1.0_f64; n];
+    let mut q = vec![0.0_f64; n];
+    let mut mu = vec![0.0_f64; n];
+    let mut rbc = vec![1.0_f64; n];
+    let mut pre = vec![1.0_f64; n];
+    for b in 0..n {
+        let mut pb = 1.0_f64;
+        let mut n_zero = 0usize;
+        for c in 0..n {
+            s[c] = 1.0;
+            q[c] = 0.0;
+            mu[c] = 0.0;
+            rbc[c] = 1.0;
+            if b == c {
+                continue;
+            }
+            let r_bc = dist(&atoms[b].xyz, &atoms[c].xyz);
+            if r_bc < 1e-12 {
+                continue; // degenerate; skip (as partition_weight_over)
+            }
+            let m = (r_d[b] - r_d[c]) / r_bc;
+            // Same operation order as partition_weight_over (bit-identity of w).
+            let chi = radii[b] / radii[c];
+            let uu = (chi - 1.0) / (chi + 1.0);
+            let a_corr = (uu / (uu * uu - 1.0)).clamp(-0.5, 0.5);
+            let nu = m + a_corr * (1.0 - m * m);
+            let (g, gp) = smoothing_and_slope(scheme, nu);
+            let sbc = 0.5 * (1.0 - g);
+            pb *= sbc;
+            s[c] = sbc;
+            q[c] = -0.5 * gp * (1.0 - 2.0 * a_corr * m);
+            mu[c] = m;
+            rbc[c] = r_bc;
+            if sbc == 0.0 {
+                n_zero += 1;
+            }
+        }
+        p_cell[b] = pb;
+        // Two or more exact zeros: every excluded product vanishes.
+        if n_zero >= 2 {
+            continue;
+        }
+        // Prefix products; the suffix is accumulated in the backward sweep.
+        let mut acc = 1.0_f64;
+        for c in 0..n {
+            pre[c] = acc;
+            acc *= s[c];
+        }
+        let mut suf = 1.0_f64;
+        for c in (0..n).rev() {
+            let excl = pre[c] * suf;
+            suf *= s[c];
+            if q[c] == 0.0 || excl == 0.0 {
+                continue;
+            }
+            let coef = q[c] * excl / rbc[c];
+            let inv = 1.0 / rbc[c];
+            for k in 0..3 {
+                let e = (atoms[b].xyz[k] - atoms[c].xyz[k]) * inv;
+                let me = mu[c] * e;
+                let d_b = -coef * (u[b][k] + me);
+                let d_c = coef * (u[c][k] + me);
+                dsum[b][k] += d_b;
+                dsum[c][k] += d_c;
+                if b == home {
+                    dhome[b][k] += d_b;
+                    dhome[c][k] += d_c;
+                }
+            }
+        }
+    }
+    let total: f64 = p_cell.iter().sum();
+    if total < 1e-30 {
+        return (0.0, dw);
+    }
+    let w = p_cell[home] / total;
+    for d in 0..n {
+        for k in 0..3 {
+            dw[d][k] = (dhome[d][k] - w * dsum[d][k]) / total;
+        }
+    }
+    (w, dw)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -791,6 +963,54 @@ mod partition_over_tests {
             partition_weight_over(PartitionScheme::Ssf, &nb, 7, [0.0; 3]),
             0.0
         );
+    }
+
+    /// `partition_weight_over_and_grad`: `w` bit-identical to
+    /// `partition_weight_over`; `dw` vs central FD of the atom positions
+    /// (both schemes, every home, points inside the SSF switching zone), and
+    /// `−Σ_k dw[k]` vs FD of the point position (translation invariance).
+    /// Mutation: dropping the `μ e_BC` term or the `(1 − 2aμ)` factor fails
+    /// the FD bound by orders (heteronuclear list: `a ≠ 0`).
+    #[test]
+    fn partition_weight_derivative_matches_fd() {
+        let nb = list(&lih_ch());
+        let h = 1e-5;
+        let mut worst = 0.0_f64;
+        let mut live = 0.0_f64;
+        for scheme in [PartitionScheme::Becke, PartitionScheme::Ssf] {
+            for r in [[0.9, 0.0, 1.4], [0.6, -0.1, 2.0], [1.2, -0.3, 1.0]] {
+                for home in 0..nb.len() {
+                    let (w, dw) = partition_weight_over_and_grad(scheme, &nb, home, r);
+                    assert_eq!(w, partition_weight_over(scheme, &nb, home, r));
+                    let mut dr = [0.0_f64; 3];
+                    for (k, dk) in dw.iter().enumerate() {
+                        for x in 0..3 {
+                            dr[x] -= dk[x];
+                            let (mut p, mut m) = (nb.clone(), nb.clone());
+                            p[k].xyz[x] += h;
+                            m[k].xyz[x] -= h;
+                            let fd = (partition_weight_over(scheme, &p, home, r)
+                                - partition_weight_over(scheme, &m, home, r))
+                                / (2.0 * h);
+                            worst = worst.max((fd - dk[x]).abs());
+                            live = live.max(fd.abs());
+                        }
+                    }
+                    for x in 0..3 {
+                        let (mut rp, mut rm) = (r, r);
+                        rp[x] += h;
+                        rm[x] -= h;
+                        let fd = (partition_weight_over(scheme, &nb, home, rp)
+                            - partition_weight_over(scheme, &nb, home, rm))
+                            / (2.0 * h);
+                        worst = worst.max((fd - dr[x]).abs());
+                    }
+                }
+            }
+        }
+        eprintln!("partition weight derivative vs FD: {worst:.2e} (max |dw| {live:.2e})");
+        assert!(live > 1e-2, "the probe points must lie in a switching zone");
+        assert!(worst < 1e-8, "{worst:e}");
     }
 
     #[test]
