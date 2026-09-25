@@ -1,0 +1,20 @@
+# Amplitude-threshold LinLCCD (closed-shell). linlccd_variant selects the
+# ladder terms: "hh" (default, LinLCCD(hh)), "drivers-only" (no ladder, equal
+# to RI-MP2) or "full" (hole-hole + particle-particle). linlccd_eps = 0
+# reproduces the canonical LinLCCD of the same variant. Same calculation as
+# Python ferric.run_linlccd_amplitude.
+
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "6-31g"
+
+[method]
+kind = "linlccd-amplitude"
+
+[mp2]
+auxbasis = "cc-pvdz-ri"
+frozen_core = 1
+linlccd_variant = "hh"
+linlccd_eps = 1e-4

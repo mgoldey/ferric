@@ -57,7 +57,11 @@ Open-shell support is listed only where the dispatch code handles it (see
 | `bse-tda` | [RPA/GW](../methods/rpa-gw.md) | RHF only (refuses multiplicity > 1) | ✓ (excitations) | — | — | `run_bse_tda` | `water-bse-tda.toml` | Smoke | Only excitation ordering and a physicality gate are checked. The gap error is inherited from GW. |
 | `tdhf-static-polarizability` | [RPA/GW](../methods/rpa-gw.md) | RKS only (`[rpa] xc` required) | ✓ (static α) | — | — | `run_tdhf_static_polarizability` | `water-tdhf-static-alpha.toml` | Smoke | Static α only, and not established (−46% against DOSD for water at a physical scissor). The same kernel gives C6 about 63% low. At `scissor = 0` it can hard-error on a negative α diagonal; set `[gw] scissor` to about 0.3–0.4 Ha. |
 | `ccsd` | [CC](../methods/cc.md) | RHF (spin-adapted solver) | ✓ | — | — | `run_ccsd` | `water-ccsd.toml` | Proven | — |
+| `ccd` | [CC](../methods/cc.md) | RHF only (refuses multiplicity > 1) | ✓ | — | — | `run_ccd` | `water-ccd.toml` | Proven (narrow) | RI-CCD, spin-orbital solver. |
+| `ccsd(t)` | [CC](../methods/cc.md) | RHF only (refuses multiplicity > 1) | ✓ | — | — | `run_ccsd_t` | `water-ccsd-t.toml` | Proven (narrow) | Spin-adapted CCSD + spin-adapted (T). Prints E_CCSD, E_(T) and the total. |
 | `linlccd` | [CC](../methods/cc.md) | RHF only (refuses multiplicity > 1; open-shell LinLCCD(hh) is library-only) | ✓ | — | — | none (`run_linlccd_amplitude` is the amplitude-threshold variant) | `water-linlccd.toml` | Proven (narrow, exact limits only) | No external reference for the LinLCCD(hh) energy. With the hole–hole ladder off it reduces exactly to RI-MP2, and with exact integrals its driver terms reproduce canonical MP2; size consistency is checked. |
+| `linlccd-amplitude` | [CC](../methods/cc.md) | RHF only (refuses multiplicity > 1) | ✓ | — | — | `run_linlccd_amplitude` | `water-linlccd-amplitude.toml` | Proven (narrow) | Amplitude-threshold LinLCCD; `[mp2] linlccd_variant`, `linlccd_eps`. ε = 0 reproduces the canonical LinLCCD of the same variant. |
+| `drpa` | [RPA/GW](../methods/rpa-gw.md) | RHF only (refuses multiplicity > 1) | ✓ | — | — | `run_drpa`, `run_drpa_scan` | `water-drpa.toml` | Proven (narrow) | Amplitude-threshold dRPA; `[mp2] drpa_eps`, `drpa_reference`, `drpa_eps_sweep`. ε = 0 reproduces the canonical plasmon dRPA; finite-ε error is ~linear in ε. |
 | `wb97x-l-v` | [CC § ωB97X-L-V](../methods/cc.md#linlccd-and-ωb97x-l-v) | Its own RKS (wB97X-L-V) reference (refuses multiplicity > 1; open shell is library-only) | ✓ | — | — | none | `water-wb97xlv.toml` | Smoke | The pieces are checked separately. No reference value exists for the total energy. |
 | `b2plyp` | [CC § double hybrids](../methods/cc.md#mp2-based-double-hybrids) | Its own RKS reference | ✓ | — | — | `run_double_hybrid(kind="b2plyp")` | `water-b2plyp.toml` | Spike | Weighted B88+LYP reference. Not compared with any reference code. |
 | `dsd-pbep86` | [CC § double hybrids](../methods/cc.md#mp2-based-double-hybrids) | Its own RKS reference | ✓ | — | — | `run_double_hybrid(kind="dsd-pbep86")` | — | Spike | Weighted PBE+P86 reference. Not compared with any reference code. |
@@ -101,8 +105,6 @@ docstrings. None of them is in the CLI grade table.
 
 | Capability | Python | Scope (verified in code) |
 |---|---|---|
-| CCD | `run_ccd` | RHF reference, RI integrals. |
-| CCSD(T) | `run_ccsd_t` | Closed shell. Spin-adapted CCSD amplitudes feed a spin-adapted (T). |
 | terfc-attenuated MP2 | `run_terfc_rimp2` | Closed shell. The CLI's `att-rimp2` is the erfc form only. |
 | Open-shell KS frequencies | `run_frequencies(reference="uhf"\|"rohf", xc=...)` | Setting `xc` promotes RHF/UHF/ROHF to RKS/UKS/ROKS. FD Hessian. |
 | Transition-state search | `run_saddle` | P-RFO. Closed shell only (refuses multiplicity ≠ 1). Raises if the start has no negative mode. Costs `2(6N+1) + (steps+1)` gradients. |
@@ -119,7 +121,6 @@ docstrings. None of them is in the CLI grade table.
 | Charges | `mulliken_charges`, `lowdin_charges`, `hirshfeld_charges`, `chelpg_charges`, `resp_charges` | Take an `RhfResult` or `DftResult`. Mulliken, Löwdin, CHELPG and RESP are documented closed-shell only. RESP is a single-stage restrained fit, not multi-conformer RESP. |
 | Electrostatic potential | `esp_at_atoms`, `esp_at_points` | Evaluated exactly from the density. `esp_at_points` takes (N, 3) points in **Bohr**. |
 | Polarizability / moments | `hirshfeld_polarizability`, `orbital_moments`, `density_second_moment` | — |
-| Local correlation research paths | `run_drpa`, `run_drpa_scan`, `run_linlccd_amplitude` | Amplitude-threshold methods. Closed shell. |
 | ω tuning | `tune_omega` | Range-separation ω for a named functional. |
 | Conformer statistics | `boltzmann_weights`, `weighted_stats*`, `ConformerEnsemble` | — |
 | Integrals | `compute_eri3`, `compute_eri3_mo`, `compute_metric_2c`, `boys_localize`, `shell_info` | Low-level access. |
