@@ -222,7 +222,7 @@ impl CosxHalfTransform {
 /// Lebedev orders ferric's quadrature tables provide. `ferric_quadrature::lebedev`
 /// PANICS on any other order, so a grid config is validated against this list
 /// up front and rejected with a typed error instead.
-pub const SUPPORTED_ANGULAR_ORDERS: [usize; 6] = [6, 14, 26, 50, 110, 302];
+pub const SUPPORTED_ANGULAR_ORDERS: [usize; 8] = [6, 14, 26, 50, 110, 302, 434, 590];
 
 /// Validate a COSX grid config: positive radial count and a tabulated Lebedev order.
 pub fn validate_grid(grid: &AtomicGridConfig) -> Result<(), FerricError> {

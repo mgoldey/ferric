@@ -84,7 +84,7 @@ Read by every kind, because every kind runs an SCF first.
 | `integral_thresh` | float | `1e-12` | | Integral screening threshold. |
 | `screening` | string | `"schwarz"` | `schwarz` `csb` `csam` | `csb` is rigorous and never looser than `schwarz`. `csam` is not a bound. It is refused for erfc (short-range) operators. See [SCF: screening](../methods/scf.md). |
 | `k_builder` | string | `"direct"` | `direct` `link` `cosx` | Exchange builder. Ignored with a warning when DF-K is active, for functionals with no exact exchange, or for range-separated functionals. See [SCF: choosing how exchange is built](../methods/scf.md). |
-| `cosx_grid` | inline table | `{ radial = 50, angular = 110 }` | `angular` ∈ 6/14/26/50/110/302 | Only with `k_builder = "cosx"`; otherwise it is an error. The inner table is strict. |
+| `cosx_grid` | inline table | `{ radial = 50, angular = 110 }` | `angular` ∈ 6/14/26/50/110/302/434/590 | Only with `k_builder = "cosx"`; otherwise it is an error. The inner table is strict. |
 | `cosx_overlap_fit` | bool | `true` | | Only with `cosx`; otherwise it is an error. |
 | `cosx_backend` | string | `"md3c1e"` | `md3c1e` `cosx-a` | Only with `cosx`; otherwise it is an error. `cosx-a` is the slower cross-check kernel. |
 | `cosx_screen_thresh` | float | `1e-7` | ≥ 0 | Only with `cosx` and `md3c1e`. `0` disables the screen. |
@@ -125,7 +125,7 @@ as elsewhere.
 | `functional` | string | `"LDA"` (for `ksdft`) | an XC name (`LDA`, `PBE`, `B3LYP`, `wB97X-V`, `SCAN`, `r2SCAN`, …) or a libxc name | Read by `ksdft`. `wb97x-l-v` ignores it with a warning. RPA/GW use `[rpa] xc` and TDDFT uses `[tddft] xc` instead. |
 | `grid_prune` | string | `"none"` | `none` `off` `flat`; `nwchem` `nwchem-like` `nwchem_like` | Prunes the main grid only. Accepted only with `task = "energy"`. |
 | `grid_radial` | integer | `75` | > 0 | Radial points per atom on the main grid. Only on a run with a Kohn–Sham grid, only with `task = "energy"` (the XC gradient uses the default grid), and not with `kind = "gw"`. Same as Python `grid_radial=`. |
-| `grid_angular` | integer | `110` | `6` `14` `26` `50` `110` `302` | Lebedev order on the main grid. Same scope as `grid_radial`. An unsupported order is an error. Same as Python `grid_angular=`. |
+| `grid_angular` | integer | `110` | `6` `14` `26` `50` `110` `302` `434` `590` | Lebedev order on the main grid. Same scope as `grid_radial`. An unsupported order is an error. Same as Python `grid_angular=`. |
 | `dispersion` | string | absent | `d3bj`, `d3(bj)`, `d3bj(<functional>)` | Only with `kind = "ksdft"`, and not with `task = "frequencies"`. There is no "off" value; omit the key instead. A functional with no published D3(BJ) fit is an error. |
 | `lambda` | float | `0.6` | | Only for `wb97x-l-v`. |
 | `omega` | float | `0.1` | Bohr⁻¹ | Only for `wb97x-l-v`. Note the unit differs from `[mp2] omega`. |

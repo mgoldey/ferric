@@ -226,8 +226,12 @@ exchange). ORCA 6.1.1's COSX at its own default grid gives 4.9e-6, 3.8e-5 and
 1.3e-5 Ha on the same systems and bases, although ferric's default grid has
 about twice as many points: ORCA evaluates its final energy once on a finer
 grid, and ferric does not. Refining ferric's grid converges water to 3.4e-8 Ha,
-but butane/def2-SVP stops at 3.4e-5 Ha at Lebedev-302, the finest angular grid
-ferric supports; that residual is not yet explained. Reaction energies cancel
+but butane/def2-SVP stays at 3.4e-5 Ha at Lebedev-302 for every radial grid.
+That residual is angular: an independent COSX (PySCF SGX, 75 radial shells) on
+the same system goes from 5.5e-5 Ha at 302 points per shell to -8.5e-6 at 434
+and 2.7e-6 at 590. ferric's COSX follows the same path at 75 radial shells:
+-3.4e-5 at 302, -5.6e-6 at 434 and +1.8e-6 at 590, for 1.8x and 2.2x the
+302-point wall time. Reaction energies cancel
 most of the error (0.02 kcal/mol on an isodesmic alkane reaction at the default
 grid); absolute energies do not. Four knobs, all optional:
 
@@ -236,7 +240,7 @@ grid); absolute energies do not. Four knobs, all optional:
   The angular order matters most: on butane/def2-TZVP the error falls from
   1.2e-4 Ha at 110 points per shell to 4.0e-6 Ha at 302, while going from 50
   to 100 radial shells changes it by 1e-6 or less. Cost grows with the number
-  of points.
+  of points. `angular` must be one of 6, 14, 26, 50, 110, 302, 434 or 590.
 - `cosx_overlap_fit = true` (default) applies the Izsák–Neese overlap
   correction. At the default grid it helps; on coarser grids it makes things
   *worse*, and its benefit is strongly molecule-dependent — large on water,

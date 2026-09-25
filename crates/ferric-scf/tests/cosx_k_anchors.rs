@@ -124,15 +124,22 @@ fn build_k(s: &Setup, ctx: &ParallelContext, cfg: CosxConfig, d: &Array2<f64>) -
 }
 
 /// Anchor (a): the grid limit. Both the plain and the overlap-fitted K must
-/// converge MONOTONICALLY to the analytic K and be below 1e-6 at (99,302).
+/// converge MONOTONICALLY to the analytic K through (99,302), (99,434) and
+/// (99,590). Measured at (99,590): max|dK| 1.7e-8 plain, 1.5e-9 fitted, and
+/// the two differ by 1.9e-8; bars 1e-7 / 1e-8 / 1e-7.
 /// The fit's own trivial limit is `Q -> I` on a dense grid, so both series
 /// must land on the SAME matrix.
 #[test]
 fn cosx_matches_direct_k_in_the_dense_grid_limit() {
     let s = setup();
     let ctx = ParallelContext::default();
-    // Lebedev orders available in ferric_quadrature: 6,14,26,50,110,302.
-    let grids = [(25usize, 50usize), (50, 110), (99, 302)];
+    let grids = [
+        (25usize, 50usize),
+        (50, 110),
+        (99, 302),
+        (99, 434),
+        (99, 590),
+    ];
 
     let k_norm = s.k_direct.mapv(f64::abs).fold(0.0_f64, |m, &v| m.max(v));
     assert!(
@@ -183,19 +190,19 @@ fn cosx_matches_direct_k_in_the_dense_grid_limit() {
     let fp = *plain.last().unwrap();
     let ff = *fitted.last().unwrap();
     assert!(
-        fp < 1e-6,
-        "plain COSX K at (99,302): max|dK| = {fp:.3e} >= 1e-6"
+        fp < 1e-7,
+        "plain COSX K at (99,590): max|dK| = {fp:.3e} >= 1e-7"
     );
     assert!(
-        ff < 1e-6,
-        "fitted COSX K at (99,302): max|dK| = {ff:.3e} >= 1e-6"
+        ff < 1e-8,
+        "fitted COSX K at (99,590): max|dK| = {ff:.3e} >= 1e-8"
     );
     // Fit trivial limit: Q -> I on the dense grid, both converge to the same K.
     let dpf = max_abs_diff(last_plain.as_ref().unwrap(), last_fit.as_ref().unwrap());
-    println!("(99,302): max|K_fit - K_plain| = {dpf:.3e}");
+    println!("(99,590): max|K_fit - K_plain| = {dpf:.3e}");
     assert!(
-        dpf < 1e-6,
-        "fitted and plain COSX K disagree at (99,302): {dpf:.3e}"
+        dpf < 1e-7,
+        "fitted and plain COSX K disagree at (99,590): {dpf:.3e}"
     );
     // Reachability: the fit must actually DO something on the coarse grid (it is
     // not an identity in disguise). Measured in the prototype: fitted beats plain.

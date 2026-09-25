@@ -1963,7 +1963,7 @@ pub struct ScfCfg {
     /// COSX exchange grid, `cosx_grid = { radial = 50, angular = 110 }`.
     /// Omitted = (50,110), the measured operating point (coarser grids fail the
     /// 0.1 kcal/mol isodesmic reaction-energy bar in the composed-budget audit).
-    /// `angular` must be a tabulated Lebedev order (6/14/26/50/110/302). Setting
+    /// `angular` must be a tabulated Lebedev order (6/14/26/50/110/302/434/590). Setting
     /// this with any `k_builder` other than "cosx" is a hard error.
     pub cosx_grid: Option<CosxGridCfg>,
     /// COSX overlap fit (Izsák–Neese). Omitted = `true`. At (50,110) the fit
