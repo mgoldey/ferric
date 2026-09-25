@@ -126,6 +126,19 @@ extern "C" {
         sh2: c_int,
         out: *mut c_double,
     ) -> c_int;
+    /// `scf_compute_1e_deriv_block` with shell `sh2` translated by `shift`
+    /// (3 doubles, Bohr). `out_len` = capacity of `out` in doubles (checked by
+    /// the shim before writing). Returns nderiv*n1*n2, 0 if screened,
+    /// `SCF_EINVAL` (-1) or `SCF_EINTERNAL` (-3).
+    pub fn scf_compute_1e_deriv_block_shifted(
+        eng: *mut c_void,
+        bs: *const c_void,
+        sh1: c_int,
+        sh2: c_int,
+        shift: *const c_double,
+        out: *mut c_double,
+        out_len: c_int,
+    ) -> c_int;
     pub fn scf_compute_eri_deriv_quartet(
         eng: *mut c_void,
         bs: *const c_void,
@@ -211,6 +224,21 @@ extern "C" {
         sh1: c_int,
         sh2: c_int,
         out: *mut c_double,
+    ) -> c_int;
+    /// `scf_compute_eri3_deriv` with the shells translated by `shifts` =
+    /// `[sP; s1; s2]` (9 doubles, Bohr). `out_len` = capacity of `out` in
+    /// doubles. Returns nderiv*nP*n1*n2, 0 if screened, `SCF_EINVAL` (-1) or
+    /// `SCF_EINTERNAL` (-3).
+    pub fn scf_compute_eri3_deriv_shifted(
+        eng: *mut c_void,
+        obs: *const c_void,
+        dfbs: *const c_void,
+        shP: c_int,
+        sh1: c_int,
+        sh2: c_int,
+        shifts: *const c_double,
+        out: *mut c_double,
+        out_len: c_int,
     ) -> c_int;
     pub fn scf_compute_eri2_deriv(
         eng: *mut c_void,

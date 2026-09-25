@@ -701,6 +701,66 @@ int scf_compute_1e_deriv_block(scf_engine *eng, const scf_basis *bs,
 #endif
 }
 
+/* scf_compute_1e_deriv_block with shell sh2 translated by `shift` (Bohr):
+ * first derivatives of <sh1 | op | sh2(r - shift)> with respect to the two
+ * shell centres (the lattice-image block of a periodic 1e gradient). Shells
+ * are COPIED and Shell::move()d (origin only), so shift = {0,0,0} is bitwise
+ * identical to scf_compute_1e_deriv_block and the immutable scf_basis is never
+ * touched. `out_len` is the caller's buffer capacity in doubles: libint2's
+ * derivative count (6 for overlap/kinetic, 3*(2+ncharges) for nuclear) times
+ * n1*n2 must fit, else SCF_EINVAL before anything is written (the 1e deriv
+ * sizing rule of the 2026-07-06 audit, enforced here instead of assumed).
+ * Returns nderiv*n1*n2, 0 if libint2 screened the pair (zeros written),
+ * SCF_EINVAL on a null pointer / out-of-range shell / non-finite shift /
+ * short buffer, SCF_EINTERNAL on any libint2 exception. */
+int scf_compute_1e_deriv_block_shifted(scf_engine *eng, const scf_basis *bs,
+                                         int sh1, int sh2, const double *shift,
+                                         double *out, int out_len) {
+#if LIBINT2_MAX_DERIV_ORDER >= 1
+    if (!eng || !bs || !shift || !out || out_len < 0) return SCF_EINVAL;
+    const int nsh = static_cast<int>(bs->bs.size());
+    if (sh1 < 0 || sh1 >= nsh || sh2 < 0 || sh2 >= nsh) return SCF_EINVAL;
+    if (!std::isfinite(shift[0]) || !std::isfinite(shift[1]) ||
+        !std::isfinite(shift[2])) {
+        return SCF_EINVAL;
+    }
+    try {
+        const auto &shells = bs->bs;
+        Shell moved = shells[sh2];
+        moved.move({moved.O[0] + shift[0], moved.O[1] + shift[1],
+                    moved.O[2] + shift[2]});
+        eng->engine.compute(shells[sh1], moved);
+        const auto &result = eng->engine.results();
+        const int n = bs->nfunc[sh1] * bs->nfunc[sh2];
+        const int nderiv = static_cast<int>(result.size());
+        if (static_cast<long long>(nderiv) * n > static_cast<long long>(out_len))
+            return SCF_EINVAL;
+        if (nderiv == 0 || result[0] == nullptr) {
+            for (int i = 0; i < nderiv * n; ++i) out[i] = 0.0;
+            return 0;
+        }
+        for (int d = 0; d < nderiv; ++d) {
+            const double *src = result[d];
+            double *dst = out + d * n;
+            if (src) {
+                for (int i = 0; i < n; ++i) dst[i] = src[i];
+            } else {
+                for (int i = 0; i < n; ++i) dst[i] = 0.0;
+            }
+        }
+        return nderiv * n;
+    } catch (const std::exception &ex) {
+        std::fprintf(stderr, "scf_compute_1e_deriv_block_shifted: %s\n", ex.what());
+        return SCF_EINTERNAL;
+    } catch (...) {
+        return SCF_EINTERNAL;
+    }
+#else
+    (void)eng; (void)bs; (void)sh1; (void)sh2; (void)shift; (void)out; (void)out_len;
+    return SCF_EINTERNAL;
+#endif
+}
+
 int scf_compute_eri_deriv_quartet(scf_engine *eng, const scf_basis *bs,
                                     int sh1, int sh2, int sh3, int sh4, double *out) {
 #if LIBINT2_MAX_DERIV_ORDER >= 1
@@ -1091,6 +1151,67 @@ int scf_compute_eri3_deriv(scf_engine *eng, const scf_basis *obs,
 #else
     (void)eng; (void)obs; (void)dfbs; (void)shP; (void)sh1; (void)sh2; (void)out;
     return 0;
+#endif
+}
+
+/* scf_compute_eri3_deriv with each shell translated, as
+ * scf_compute_eri3_shifted: first derivatives of
+ * (shP(r - sP) | sh1(r - s1) sh2(r - s2)), shifts = {sP, s1, s2} (9 doubles,
+ * Bohr), laid out [d/d(shP), d/d(sh1), d/d(sh2)] x [x, y, z], each block
+ * nP*n1*n2 doubles. Shells are COPIED and moved (origin only): all-zero
+ * shifts are bitwise identical to scf_compute_eri3_deriv. `out_len` is the
+ * caller's capacity in doubles; nderiv*nP*n1*n2 must fit, else SCF_EINVAL.
+ * Returns nderiv*nP*n1*n2, 0 if libint2 screened the triplet, SCF_EINVAL on
+ * a null pointer / out-of-range shell / non-finite shift / short buffer,
+ * SCF_EINTERNAL on any libint2 exception. */
+int scf_compute_eri3_deriv_shifted(scf_engine *eng, const scf_basis *obs,
+                                     const scf_basis *dfbs,
+                                     int shP, int sh1, int sh2,
+                                     const double *shifts, double *out,
+                                     int out_len) {
+#if LIBINT2_SUPPORT_ERI3 && LIBINT2_MAX_DERIV_ORDER >= 1
+    if (!eng || !obs || !dfbs || !shifts || !out || out_len < 0) return SCF_EINVAL;
+    const int nobs = static_cast<int>(obs->bs.size());
+    const int ndf = static_cast<int>(dfbs->bs.size());
+    if (shP < 0 || shP >= ndf || sh1 < 0 || sh1 >= nobs || sh2 < 0 || sh2 >= nobs)
+        return SCF_EINVAL;
+    for (int k = 0; k < 9; ++k) {
+        if (!std::isfinite(shifts[k])) return SCF_EINVAL;
+    }
+    try {
+        Shell p = dfbs->bs[shP];
+        Shell a = obs->bs[sh1];
+        Shell b = obs->bs[sh2];
+        p.move({p.O[0] + shifts[0], p.O[1] + shifts[1], p.O[2] + shifts[2]});
+        a.move({a.O[0] + shifts[3], a.O[1] + shifts[4], a.O[2] + shifts[5]});
+        b.move({b.O[0] + shifts[6], b.O[1] + shifts[7], b.O[2] + shifts[8]});
+        eng->engine.compute(p, a, b);
+        const auto &result = eng->engine.results();
+        if (result.empty() || result[0] == nullptr) return 0;
+        const int n = dfbs->nfunc[shP] * obs->nfunc[sh1] * obs->nfunc[sh2];
+        const int nderiv = static_cast<int>(result.size());
+        if (static_cast<long long>(nderiv) * n > static_cast<long long>(out_len))
+            return SCF_EINVAL;
+        for (int d = 0; d < nderiv; ++d) {
+            const double *src = result[d];
+            double *dst = out + d * n;
+            if (src) {
+                for (int i = 0; i < n; ++i) dst[i] = src[i];
+            } else {
+                for (int i = 0; i < n; ++i) dst[i] = 0.0;
+            }
+        }
+        return nderiv * n;
+    } catch (const std::exception &ex) {
+        std::fprintf(stderr, "scf_compute_eri3_deriv_shifted: %s\n", ex.what());
+        return SCF_EINTERNAL;
+    } catch (...) {
+        return SCF_EINTERNAL;
+    }
+#else
+    (void)eng; (void)obs; (void)dfbs; (void)shP; (void)sh1; (void)sh2;
+    (void)shifts; (void)out; (void)out_len;
+    return SCF_EINTERNAL;
 #endif
 }
 

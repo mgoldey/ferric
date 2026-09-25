@@ -194,3 +194,120 @@ pub fn ewald_point_charges(
     tot.add(e_g0);
     Ok(tot.value())
 }
+
+/// Real-space (SR, `erfc`) and reciprocal-space (LR) parts of the Ewald
+/// nuclear-repulsion gradient `dE_nn/dR_i` (`natoms × 3`, Hartree/Bohr),
+/// returned separately so a mutation test can drop one. The self and
+/// background terms are position-independent and contribute nothing.
+///
+/// ```text
+/// SR:  g_i += Σ'_{j,L} Z_i Z_j f'(d) (R_i − R_j − L)/d,
+///      f'(d) = −[erfc(ωd)/d² + (2ω/√π) e^{−ω²d²}/d]
+/// LR:  g_i += (4π/Ω) Σ_{G≠0} e^{−G²/4ω²}/G² Z_i G Re[S*(G) (−i) e^{−iG·R_i}]
+/// ```
+///
+/// Same cutoffs as [`ewald_point_charges`] at `precision`, Neumaier sums.
+/// Model: PySCF `pbc.grad.krhf.grad_nuc` (pinned in `tests/pbc_grad.rs`).
+pub fn ewald_nuclear_gradient_parts(
+    cell: &Cell,
+    omega: f64,
+    precision: f64,
+) -> Result<(Vec<[f64; 3]>, Vec<[f64; 3]>), FerricError> {
+    if !(omega > 0.0) || !omega.is_finite() {
+        return Err(FerricError::General(format!(
+            "ewald gradient: omega must be finite and > 0, got {omega}"
+        )));
+    }
+    if !(f64::MIN_POSITIVE..1.0).contains(&precision) {
+        return Err(FerricError::General(format!(
+            "ewald gradient: precision must lie in (0, 1), got {precision}"
+        )));
+    }
+    let charges = cell.nuclear_charges();
+    let positions = cell.positions();
+    let n = charges.len();
+    let s = (1.0 / precision).ln().sqrt() + 1.0;
+    let rcut = s / omega;
+    let gcut = 2.0 * omega * s;
+    let two_w_sqrtpi = 2.0 * omega / std::f64::consts::PI.sqrt();
+
+    let mut sr: Vec<[Neumaier; 3]> = (0..n).map(|_| Default::default()).collect();
+    for l in cell.translations_for(&positions, rcut)? {
+        for i in 0..n {
+            if charges[i] == 0.0 {
+                continue;
+            }
+            for j in 0..n {
+                if charges[j] == 0.0 {
+                    continue;
+                }
+                let dv = [
+                    positions[i][0] - positions[j][0] - l[0],
+                    positions[i][1] - positions[j][1] - l[1],
+                    positions[i][2] - positions[j][2] - l[2],
+                ];
+                let d = (dv[0] * dv[0] + dv[1] * dv[1] + dv[2] * dv[2]).sqrt();
+                if d < 1e-10 {
+                    if i == j && l == [0.0; 3] {
+                        continue;
+                    }
+                    return Err(FerricError::General(format!(
+                        "ewald gradient: charges {i} and {j} coincide (under translation {l:?})"
+                    )));
+                }
+                let fp = -(erfc(omega * d) / (d * d)
+                    + two_w_sqrtpi * (-(omega * d) * (omega * d)).exp() / d);
+                let f = charges[i] * charges[j] * fp / d;
+                for c in 0..3 {
+                    sr[i][c].add(f * dv[c]);
+                }
+            }
+        }
+    }
+
+    let vol = cell.volume();
+    let mut lr: Vec<[Neumaier; 3]> = (0..n).map(|_| Default::default()).collect();
+    for g in cell.gvectors(gcut)? {
+        let g2 = g[0] * g[0] + g[1] * g[1] + g[2] * g[2];
+        if g2 < 1e-24 {
+            continue;
+        }
+        let (mut sre, mut sim) = (0.0_f64, 0.0_f64);
+        for (z, r) in charges.iter().zip(&positions) {
+            let ph = g[0] * r[0] + g[1] * r[1] + g[2] * r[2];
+            sre += z * ph.cos();
+            sim -= z * ph.sin();
+        }
+        let k = 4.0 * std::f64::consts::PI / vol * (-g2 / (4.0 * omega * omega)).exp() / g2;
+        for i in 0..n {
+            if charges[i] == 0.0 {
+                continue;
+            }
+            let ph = g[0] * positions[i][0] + g[1] * positions[i][1] + g[2] * positions[i][2];
+            // Re[S* (−i) e^{−iφ}] = −S_re sin φ − S_im cos φ
+            let re = -sre * ph.sin() - sim * ph.cos();
+            let f = k * charges[i] * re;
+            for c in 0..3 {
+                lr[i][c].add(f * g[c]);
+            }
+        }
+    }
+    let fold = |v: Vec<[Neumaier; 3]>| -> Vec<[f64; 3]> {
+        v.iter()
+            .map(|a| [a[0].value(), a[1].value(), a[2].value()])
+            .collect()
+    };
+    Ok((fold(sr), fold(lr)))
+}
+
+/// Ewald nuclear-repulsion gradient `dE_nn/dR` (`natoms` rows of `[x, y, z]`,
+/// Hartree/Bohr): [`ewald_nuclear_gradient_parts`] summed, at
+/// [`DEFAULT_EWALD_PRECISION`]. Independent of `omega` up to truncation.
+pub fn ewald_nuclear_gradient(cell: &Cell, omega: f64) -> Result<Vec<[f64; 3]>, FerricError> {
+    let (sr, lr) = ewald_nuclear_gradient_parts(cell, omega, DEFAULT_EWALD_PRECISION)?;
+    Ok(sr
+        .iter()
+        .zip(&lr)
+        .map(|(a, b)| [a[0] + b[0], a[1] + b[1], a[2] + b[2]])
+        .collect())
+}

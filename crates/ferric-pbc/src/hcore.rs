@@ -105,10 +105,10 @@ pub const DEFAULT_HCORE_PRECISION: f64 = 1e-14;
 /// prefactors that the 1e16-exponent, 1e11-coefficient nucleus shell skews,
 /// so screening is effectively disabled (`ln` ≈ −708); our own distance
 /// screen (module doc) decides what is computed.
-const ERI3_ENGINE_PRECISION: f64 = f64::MIN_POSITIVE;
+pub(crate) const ERI3_ENGINE_PRECISION: f64 = f64::MIN_POSITIVE;
 /// Precision for the overlap/kinetic engines (value used by the passing
 /// `pbc_shifted_overlap` anchor, tightened).
-const ONE_E_ENGINE_PRECISION: f64 = 1e-16;
+pub(crate) const ONE_E_ENGINE_PRECISION: f64 = 1e-16;
 /// Extra Bohr on every derived real-space radius (polynomial prefactors of
 /// l > 0 pairs are not in the s-type bounds).
 const SR_MARGIN_BOHR: f64 = 2.0;
@@ -857,8 +857,7 @@ pub fn periodic_hcore(
     }
 
     // --- V_LR (G ≠ 0) and the G = 0 correction.
-    let smooth = (1.0 / thresh).ln().sqrt();
-    let gcut = (2.0 * omega).min(2.0 * max_pair_exponent(prep).sqrt()) * smooth;
+    let gcut = lr_gcut(prep, omega, thresh);
     let lr = reciprocal_nuclear(cell, prep, Some(omega), gcut, pair_thresh, &mut ledger)?;
     let v_lr = lr.v;
     let ztot: f64 = zs.iter().sum();
@@ -897,6 +896,159 @@ pub fn periodic_hcore(
         lr_bytes_per_g: lr.bytes_per_g,
         n_lr_chunks: lr.n_chunks,
     })
+}
+
+/// The `V_LR` G-sphere radius [`periodic_hcore`] uses:
+/// `min(2ω, 2√p_max) √ln(1/precision)` (module doc). Shared with the
+/// gradient (`crate::grad`) so both sum the same G set.
+pub(crate) fn lr_gcut(prep: &PreparedBasis, omega: f64, precision: f64) -> f64 {
+    (2.0 * omega).min(2.0 * max_pair_exponent(prep).sqrt()) * (1.0 / precision).ln().sqrt()
+}
+
+/// The pair images `L` [`periodic_hcore`] sums `S`/`T`/`V_SR` over at
+/// `precision` (pair threshold `precision/10`), reserved on `ledger`.
+pub(crate) fn hcore_pair_images(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    precision: f64,
+    ledger: &mut Ledger,
+) -> Result<Vec<[f64; 3]>, FerricError> {
+    let shells = prim_shells(cell, prep)?;
+    pair_images(cell, &shells, 0.1 * precision, ledger)
+}
+
+/// Gradient of the SR nuclear attraction, `Σ_{μν} D_μν ∂V_SR,μν/∂R_A`, over
+/// EXACTLY the pair images, nucleus candidates and per-triplet screen
+/// [`periodic_hcore`] uses at `cfg` (same `sr_attraction` loop structure,
+/// derivative engine in place of the energy engine). Every term
+/// `−Z_C (g_{C,M} | μ_0 ν_L)_erfc / ∫g` moves with three centres: the bra
+/// function's atom, the ket function's atom (all images together) and the
+/// nucleus `C` (all images `M` together). The nucleus derivative is taken
+/// from translation invariance of each 3-centre integral,
+/// `∂/∂C = −(∂/∂μ + ∂/∂ν)`, NOT from libint2's site block (the site is a
+/// ζ = 1e16 Gaussian; the prototype used the same route, `pbc_grad.py`).
+/// libint2's `erfc_nuclear` derivative operator is never used (FINDINGS
+/// "Iteration 2": the same libint 2.7.2 bug as the energy).
+///
+/// Returns `(basis part, nucleus part, n_triplets)`, each `natoms × 3`.
+pub(crate) fn sr_attraction_gradient(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    cfg: &PeriodicHcoreConfig,
+    d: &Array2<f64>,
+    ledger: &mut Ledger,
+) -> Result<(Array2<f64>, Array2<f64>, usize), FerricError> {
+    cfg.validate()?;
+    let natoms = cell.positions().len();
+    let mut g_basis = Array2::<f64>::zeros((natoms, 3));
+    let mut g_nuc = Array2::<f64>::zeros((natoms, 3));
+    let shells = prim_shells(cell, prep)?;
+    let thresh = cfg.precision;
+    let pair_thresh = 0.1 * thresh;
+    let images = pair_images(cell, &shells, pair_thresh, ledger)?;
+    let rpair = pair_radius(&shells, pair_thresh);
+    let (nuc, zmax) = nonzero_nuclei(cell);
+    if nuc.is_empty() {
+        return Ok((g_basis, g_nuc, 0));
+    }
+    // nonzero_nuclei keeps the cell order of the Z != 0 atoms.
+    let nuc_atom: Vec<usize> = cell
+        .nuclear_charges()
+        .iter()
+        .enumerate()
+        .filter(|(_, z)| **z != 0.0)
+        .map(|(i, _)| i)
+        .collect();
+    let omega = cfg.omega;
+    let cands = sr_candidates(cell, &shells, &nuc, omega, zmax, thresh, rpair, ledger)?;
+    let sites: Vec<[f64; 4]> = nuc
+        .iter()
+        .map(|(_, r)| [r[0], r[1], r[2], cfg.nucleus_exponent])
+        .collect();
+    let site = SiteBasis::new(&sites, 0)?;
+    let mut eng = Engine::new_3center_deriv(
+        Operator::erfc(omega),
+        prep,
+        &site.prep,
+        ERI3_ENGINE_PRECISION,
+    )?;
+    let sh2at = prep.shell_to_atom().to_vec();
+    let bound = SrBound::Derived;
+    let mut n_triplets = 0usize;
+    for l in &images {
+        for (i1, a) in shells.iter().enumerate() {
+            for (i2, b) in shells.iter().enumerate() {
+                let bc = [b.center[0] + l[0], b.center[1] + l[1], b.center[2] + l[2]];
+                let r2 = (a.center[0] - bc[0]).powi(2)
+                    + (a.center[1] - bc[1]).powi(2)
+                    + (a.center[2] - bc[2]).powi(2);
+                let (q, pmin, pmax) = pair_bound(a, b, r2);
+                let wp = bound.omega_p(omega, pmin);
+                let Some(rad) = nucleus_radius_m(q, zmax, pmax, wp, thresh, bound.margin()) else {
+                    continue;
+                };
+                let (at1, at2) = (sh2at[i1], sh2at[i2]);
+                for (k, m, x) in &cands {
+                    if segment_distance(*x, a.center, bc) > rad {
+                        continue;
+                    }
+                    n_triplets += 1;
+                    let f = -nuc[*k].0 / site.norm_int[*k];
+                    // libint2 builds the BRA (sh1) block of a 3-centre derivative
+                    // from translation invariance, -(site + sh2), and its site
+                    // derivative is wrong for the ~1e16 Gaussian nucleus. So only
+                    // DIRECTLY computed ket (sh2) blocks are used: the ket block of
+                    // (i1 | i2) gives d/dB, and the ket block of the swapped call
+                    // (i2 shifted by L | i1) gives d/dA. Measured: the sh1 block cost
+                    // -0.041 Ha/Bohr on H2 (FINDINGS "Iteration 16" Rust note).
+                    let Some(blk) = eng.compute_eri3_deriv_shifted(
+                        prep,
+                        &site.prep,
+                        site.site_shell[*k],
+                        i1,
+                        i2,
+                        [*m, [0.0; 3], *l],
+                    )?
+                    else {
+                        continue;
+                    };
+                    let bs = a.dim * b.dim;
+                    let ket_b: Vec<f64> = blk[6 * bs..9 * bs].to_vec();
+                    let Some(blk2) = eng.compute_eri3_deriv_shifted(
+                        prep,
+                        &site.prep,
+                        site.site_shell[*k],
+                        i2,
+                        i1,
+                        [*m, *l, [0.0; 3]],
+                    )?
+                    else {
+                        continue;
+                    };
+                    let ket_a: &[f64] = &blk2[6 * bs..9 * bs];
+                    let atc = nuc_atom[*k];
+                    for i in 0..a.dim {
+                        for j in 0..b.dim {
+                            let coeff = f * d[(a.off + i, b.off + j)];
+                            if coeff == 0.0 {
+                                continue;
+                            }
+                            let idx = i * b.dim + j;
+                            let idx_swapped = j * a.dim + i;
+                            for c in 0..3 {
+                                let d1 = coeff * ket_a[c * bs + idx_swapped];
+                                let d2 = coeff * ket_b[c * bs + idx];
+                                g_basis[(at1, c)] += d1;
+                                g_basis[(at2, c)] += d2;
+                                g_nuc[(atc, c)] -= d1 + d2;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok((g_basis, g_nuc, n_triplets))
 }
 
 fn pair_radius(shells: &[PrimShell], pair_thresh: f64) -> f64 {

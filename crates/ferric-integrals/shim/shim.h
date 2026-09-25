@@ -176,6 +176,17 @@ int scf_compute_eri3_deriv(scf_engine *eng, const scf_basis *obs,
                              const scf_basis *dfbs,
                              int shP, int sh1, int sh2, double *out);
 
+/* As scf_compute_eri3_deriv with shells translated (shifts = {sP, s1, s2},
+ * 9 doubles, Bohr; layout [d/d(shP), d/d(sh1), d/d(sh2)] x [x, y, z]).
+ * out_len = capacity of out in doubles; a result that would not fit returns
+ * SCF_EINVAL before writing. Returns nderiv*nP*n1*n2, 0 if screened,
+ * SCF_EINVAL or SCF_EINTERNAL. */
+int scf_compute_eri3_deriv_shifted(scf_engine *eng, const scf_basis *obs,
+                                     const scf_basis *dfbs,
+                                     int shP, int sh1, int sh2,
+                                     const double *shifts, double *out,
+                                     int out_len);
+
 /* Compute first derivative of (shP | shQ) 2-center ERI. Writes 6 blocks
  * (2 centers × 3 coords) of nP*nQ doubles each. Returns 6*nP*nQ on success, 0 if screened. */
 int scf_compute_eri2_deriv(scf_engine *eng, const scf_basis *dfbs,
@@ -206,6 +217,15 @@ int scf_compute_second_moment(const scf_basis *bs, const double *origin,
  * of n1*n2 doubles each into out (total 6*n1*n2). Returns 6*n1*n2 on success, 0 if screened. */
 int scf_compute_1e_deriv_block(scf_engine *eng, const scf_basis *bs,
                                  int sh1, int sh2, double *out);
+
+/* As scf_compute_1e_deriv_block with shell sh2 translated by shift[3]
+ * (Bohr). out_len = capacity of out in doubles; libint2's derivative count
+ * times n1*n2 must fit, else SCF_EINVAL before writing. Returns
+ * nderiv*n1*n2 (6*n1*n2 for overlap/kinetic), 0 if screened (zeros written),
+ * SCF_EINVAL or SCF_EINTERNAL. */
+int scf_compute_1e_deriv_block_shifted(scf_engine *eng, const scf_basis *bs,
+                                         int sh1, int sh2, const double *shift,
+                                         double *out, int out_len);
 
 /* Compute first derivative of a 2e shell quartet. Writes 12 blocks
  * (dx1,dy1,dz1,dx2,dy2,dz2,dx3,dy3,dz3,dx4,dy4,dz4) of n1*n2*n3*n4 doubles each.
