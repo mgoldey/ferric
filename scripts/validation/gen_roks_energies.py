@@ -65,7 +65,7 @@ CONTROLS written alongside (consumed by the Rust negative checks):
 
 Run (light):
     OPENBLAS_NUM_THREADS=1 scripts/validation/run_slot.sh --light -- \\
-        python scripts/validation/gen_roks_energies.py [system ...]
+        uv run --no-sync python scripts/validation/gen_roks_energies.py [system ...]
 """
 
 from __future__ import annotations
