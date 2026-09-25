@@ -19,7 +19,7 @@ use crate::matrices::SdKind;
 pub struct PcmConfig {
     /// Solvent dielectric constant (must be > 1.0; e.g. water = 78.4).
     pub epsilon: f64,
-    /// Scale factor applied to Bondi van der Waals radii when building the
+    /// Scale factor applied to modified Bondi van der Waals radii when building the
     /// cavity spheres. Default 1.2 (matches PySCF/Q-Chem convention).
     #[serde(default = "default_vdw_scale")]
     pub vdw_scale: f64,

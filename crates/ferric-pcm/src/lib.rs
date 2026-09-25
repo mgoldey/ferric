@@ -4,7 +4,7 @@
 //! # Overview
 //!
 //! Models the solvent as a dielectric continuum outside a molecular cavity
-//! built from atom-centered spheres (scaled Bondi van der Waals radii),
+//! built from atom-centered spheres (scaled modified Bondi van der Waals radii),
 //! tessellated into surface elements ("tesserae"). The solute's
 //! electrostatic potential at the cavity surface induces an apparent
 //! surface charge `q` (solved via the IEF-PCM boundary-integral equation),
@@ -35,7 +35,7 @@
 //! A parallel effort is implementing COSMO (the ε→∞ conductor-limit
 //! approximation to this same physics) in a separate worktree. The cavity
 //! representation here ([`cavity::Tessera`], [`cavity::CavityConfig`],
-//! [`cavity::build_cavity`], and the Bondi table in [`radii`]) is
+//! [`cavity::build_cavity`], and the modified Bondi radii in [`radii`]) is
 //! model-agnostic — COSMO needs exactly the same atom-sphere-tessellation
 //! geometry, differing only in the K/R operator ([`matrices::build_k_r`]
 //! would become a single `f(ε) = (ε−1)/ε` conductor-scaled `S` solve with no

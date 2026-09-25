@@ -98,7 +98,7 @@ when unset.
 
 | Model | What it is | How to run it | Anchor |
 |---|---|---|---|
-| **IEF-PCM** (`ferric-pcm`) | Integral-equation PCM; Bondi radii, atom-centred Lebedev spheres | Python only: `run_rhf(..., solvent=78.4)` or a solvent name; also `run_pdep_rpa`. No `[pcm]` TOML section yet. | see the IEF-PCM row in [What is validated](../reference/validation.md) |
+| **IEF-PCM** (`ferric-pcm`) | Integral-equation PCM; modified Bondi radii (H 1.10 Å), atom-centred Lebedev spheres | Python only: `run_rhf(..., solvent=78.4)` or a solvent name; also `run_pdep_rpa`. No `[pcm]` TOML section yet. | see the IEF-PCM row in [What is validated](../reference/validation.md) |
 | **COSMO** (`ferric_scf::cosmo`) | Conductor-like screening | CLI `[cosmo] epsilon = 78.39` | water / cc-pVDZ, ε = 78.39: −5.955 vs PySCF COSMO −5.94 kcal/mol (`ferric-scf/tests/cosmo_water.rs`) |
 
 Neither has cavitation, dispersion or repulsion terms, and neither has an
