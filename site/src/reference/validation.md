@@ -122,7 +122,7 @@ individually.
 
 | Capability | Python | Scope (verified in code) |
 |---|---|---|
-| Open-shell KS frequencies | `run_frequencies(reference="uhf"\|"rohf", xc=...)` | Setting `xc` promotes RHF/UHF/ROHF to RKS/UKS/ROKS. FD Hessian. | Also CLI: `kind = "uhf"`/`"rohf"` with `[dft] functional` and `task = "frequencies"`.
+| Open-shell KS frequencies | `run_frequencies(reference="uhf"\|"rohf", xc=...)` | Setting `xc` promotes RHF/UHF/ROHF to RKS/UKS/ROKS. FD Hessian. Also CLI: `kind = "uhf"`/`"rohf"` with `[dft] functional` and `task = "frequencies"`. |
 | Transition-state search | `run_saddle` | P-RFO. Closed shell only (refuses multiplicity ≠ 1). Raises if the start has no negative mode. Costs `2(6N+1) + (steps+1)` gradients. |
 | Reaction path | `run_irc` | Both IRC branches from a saddle's imaginary mode. Closed shell only. |
 | Geometry optimization (Python) | `run_optimize` | RHF only (no `xc` argument). Accepts point charges and a field. |
