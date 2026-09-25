@@ -7,7 +7,15 @@ fn main() {
         Err(_) => {
             let home = std::env::var("HOME")
                 .expect("$HOME must be set to locate libint2; set LIBINT2_PREFIX to override");
-            format!("{home}/.local")
+            // scripts/install-libint.sh's default prefix first, then ~/.local
+            // (a from-source libint2 install). Not the reverse: an old static
+            // libint2.a in ~/.local would otherwise shadow a newer install.
+            let installer = format!("{home}/.local/libint2-2.13.1");
+            if std::path::Path::new(&format!("{installer}/include/libint2.hpp")).exists() {
+                installer
+            } else {
+                format!("{home}/.local")
+            }
         }
     };
 
