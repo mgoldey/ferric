@@ -80,6 +80,12 @@
 //!   and the Bloch sum `V_ECP(k) = Σ_L e^{ik·L} V_L` over libecpint's
 //!   per-shell-pair kernel (`ferric_ecp_block`), added into `h` by
 //!   `periodic_hcore` / `periodic_hcore_kpts`; FINDINGS "Iteration 14".
+//! * [`grad`] — analytic nuclear gradients (forces) of the Gamma-point RHF
+//!   on the dense-AFT J/K (`gamma_rhf_gradient`): shifted 1e derivative
+//!   blocks, erfc Gaussian-nucleus 3-centre derivatives, the bra-centre
+//!   pair-FT derivative for `V_LR` and J/K, the Ewald `E_nn` gradient, and
+//!   the Madelung/G = 0 terms folded into the overlap-weighted matrix;
+//!   FINDINGS "Iteration 16". RS-GDF gradients and stress are out of scope.
 //! * [`lindep`] — per-k canonical-cut diagnostics (`LindepReport` on
 //!   `KScfResult`/`KUScfResult`: kept counts, smallest / largest-dropped
 //!   eigenvalue, noise-floor flag) and the OPT-IN `exp_to_discard` basis
@@ -96,6 +102,7 @@ pub mod dft;
 pub mod drpa;
 pub mod ecp;
 pub mod ewald;
+pub mod grad;
 pub mod hcore;
 pub mod kcorr;
 pub mod kdense_aft;
@@ -123,7 +130,10 @@ pub use ecp::{
     check_ecp_applied, periodic_ecp_images, EcpMutation, PeriodicEcpConfig, PeriodicEcpError,
     PeriodicEcpImages,
 };
-pub use ewald::{ewald_nuclear_repulsion, madelung_constant};
+pub use ewald::{ewald_nuclear_gradient, ewald_nuclear_repulsion, madelung_constant};
+pub use grad::{
+    gamma_rhf_gradient, gamma_rhf_gradient_with, GammaGradConfig, GammaGradParts, GammaRhfGradient,
+};
 pub use hcore::kpoint::{periodic_hcore_kpts, PeriodicHcoreK};
 pub use hcore::{periodic_hcore, PeriodicHcore, PeriodicHcoreConfig};
 pub use kcorr::{

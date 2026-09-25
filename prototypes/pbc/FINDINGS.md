@@ -2328,3 +2328,13 @@ on cargo's own exit status; stage Cargo.lock whenever a dependency changes; neve
 site+sh1+sh2 = 0, Σforces = 0) to validate a parameter or a single block — use FD or a closed form; libint2 2.7.2 has
 three traps (erf/erfc_nuclear, Cartesian l>1 aborts, reconstructed derivative blocks); ndarray-linalg complex eigh
 needs column-major.
+
+## Iteration 16 (Rust) — forces bug 2 resolved (2026-09-25)
+The triclinic s+p FD failure (8.25e-2) was libint2's 3-centre derivative losing precision for the 1e16 Gaussian nucleus
+with p shells. Measured FD error vs the nucleus exponent used in the SR attraction DERIVATIVE: 8.3e-2 (1e16), 4.3e-6
+(1e12), 1.85e-7 (1e10). The residual was the same 1.85e-7 with the energy also at 1e10, so it is libint precision, not an
+energy/gradient mismatch; all V pieces match the prototype to ~1e-8. Fix: GammaGradConfig.nucleus_exponent
+(default GRAD_NUCLEUS_EXPONENT = 1e10, never tighter than the energy's), and the energy keeps 1e16. With the production
+energy exponent: H2 FD 2.4e-9, triclinic s+p 1.85e-7 (test bar 5e-7 from this measured floor; ~1000x below typical
+optimisation thresholds). Open: a libint-free SR attraction derivative (raised/lowered angular momentum shells) would
+remove the floor.

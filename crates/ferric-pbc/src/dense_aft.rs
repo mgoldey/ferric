@@ -79,6 +79,10 @@ pub struct DenseAftEri {
     n_g_chunks: usize,
     resident_bytes: usize,
     bytes_per_g: usize,
+    /// G-sphere radius of the tensor (Bohr⁻¹).
+    gcut: f64,
+    /// `pair_ft` primitive screen used for the tensor.
+    pair_thresh: f64,
 }
 
 impl DenseAftEri {
@@ -223,6 +227,8 @@ impl DenseAftEri {
             n_g_chunks,
             resident_bytes,
             bytes_per_g,
+            gcut,
+            pair_thresh: 0.1 * precision,
         })
     }
 
@@ -250,6 +256,18 @@ impl DenseAftEri {
     /// Number of half-sphere G vectors summed.
     pub fn n_g_half(&self) -> usize {
         self.n_g_half
+    }
+
+    /// G-sphere radius `|G| <= gcut` (Bohr⁻¹) the tensor summed (half
+    /// sphere, `G ≠ 0`). The Gamma gradient (`crate::grad`) differentiates
+    /// over exactly this set.
+    pub fn gcut(&self) -> f64 {
+        self.gcut
+    }
+
+    /// Primitive-pair screening threshold handed to `pair_ft` for the tensor.
+    pub fn pair_thresh(&self) -> f64 {
+        self.pair_thresh
     }
 
     /// Number of `pair_ft` G chunks the build used.
