@@ -47,10 +47,13 @@ than mixing conventions.
 **LinLCCD(hh)** is linearized coupled-cluster doubles with the hole–hole ladder
 kept to all orders, closed shell only. The ladder keeps the correlation energy
 finite as the HOMO–LUMO gap closes, where MP2 diverges.
-`method.kind = "linlccd"` (`examples/water-linlccd.toml`). Proven (narrow,
-exact limits only): no external code has a reference for the LinLCCD(hh)
-energy; with the ladder off it reduces exactly to RI-MP2, and with exact
-integrals its driver terms reproduce canonical MP2.
+`method.kind = "linlccd"` (`examples/water-linlccd.toml`). Proven (narrow):
+no other quantum chemistry code implements LinLCCD(hh), so its energy is
+checked against an independent numpy solve of the same equations on PySCF
+density-fitted integrals (H2O and NH3 through the closed-shell path, and UHF
+OH through the library-only open-shell path; agreement ≤1.2e-12 Ha). With
+the ladder off it reduces exactly to RI-MP2, and with exact integrals its
+driver terms reproduce canonical MP2.
 
 **ωB97X-L-V** is a double-hybrid functional that uses short-range LinLCCD(hh)
 instead of MP2 for its correlation term. It converges its **own** ωB97X-L
