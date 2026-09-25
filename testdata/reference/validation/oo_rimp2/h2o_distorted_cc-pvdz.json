@@ -1,0 +1,143 @@
+{
+  "row": "OO-RI-MP2 energy; OO-MP2 orbital and nuclear gradients",
+  "system": "h2o_distorted",
+  "basis": "cc-pvdz",
+  "aux_basis": "cc-pvdz-ri",
+  "charge": 0,
+  "multiplicity": 1,
+  "nao": 24,
+  "naux": 84,
+  "nuclear_repulsion": 9.152765916310292,
+  "orca_oo": {
+    "e_total": -76.231169097656,
+    "e_reference": -76.024929727,
+    "e_doubles": -0.20623937,
+    "e_total_sd_not_ferric_functional": -76.231924465,
+    "e_singles_perturbative": -0.000755368,
+    "orbital_iterations": 20,
+    "final_orbital_gnorm": 2.926e-10,
+    "input": "scripts/validation/orca/oo_rimp2/h2o_distorted_cc-pvdz_oo.inp",
+    "gradient": [
+      [
+        -0.001085852405,
+        -0.030067589135,
+        -0.009325118249
+      ],
+      [
+        0.000394767375,
+        0.014326530056,
+        -0.007416347934
+      ],
+      [
+        0.00069108503,
+        0.015741059079,
+        0.016741466183
+      ]
+    ],
+    "gradient_fd": [
+      [
+        -0.0010860352896990833,
+        -0.030072516460588616,
+        -0.009327126501812444
+      ],
+      [
+        0.0003950307920774776,
+        0.014334531418302987,
+        -0.007416336208265761
+      ],
+      [
+        0.0006910042107399761,
+        0.01573798462572995,
+        0.01674346303826013
+      ]
+    ],
+    "fd": {
+      "stencil": "5-point central",
+      "step_bohr": 0.002
+    }
+  },
+  "orca_rimp2": {
+    "e_scf": -76.0258583842474,
+    "e_corr": -0.20439063747460295,
+    "e_total": -76.230249021722,
+    "s_squared_scf": null,
+    "input": "scripts/validation/orca/oo_rimp2/h2o_distorted_cc-pvdz_rimp2.inp"
+  },
+  "pyscf": {
+    "e_scf": -76.02585838435145,
+    "e_corr_dfmp2": -0.20439063742318395,
+    "orca_vs_pyscf_e_corr": 5.141900794036758e-11,
+    "orca_vs_pyscf_e_scf": 1.0405187822470907e-10
+  },
+  "cross_check": {
+    "orca_oo_minus_orca_rimp2_total": -0.0009200759339904607,
+    "orca_oo_analytic_vs_fd_gradient_max": 8.001362302986759e-06,
+    "orca_minus_numpy_total": 6.569506183495832e-08,
+    "orca_minus_numpy_reference": -1.5357487470168962e-05
+  },
+  "provenance": {
+    "code": "ORCA 6.1.1 + PySCF 2.13.1",
+    "version": "ORCA 6.1.1; PySCF 2.13.1",
+    "keywords": {
+      "orca_oo": "! OO-RI-MP2 NoRI NoFrozenCore ExtremeSCF EnGrad Bohrs\n%pal nprocs 1 end\n%scf TolE 1e-12 end\n%basis\n  NewGTO O\n    S 9\n        1 1.1720000000E+04 7.1000025027E-04\n        2 1.7590000000E+03 5.4700019281E-03\n        3 4.0080000000E+02 2.7837009812E-02\n        4 1.1370000000E+02 1.0480003694E-01\n        5 3.7030000000E+01 2.8306209978E-01\n        6 1.3270000000E+01 4.4871915817E-01\n        7 5.0250000000E+00 2.7095209551E-01\n        8 1.0130000000E+00 1.5458005449E-02\n        9 3.0230000000E-01 -2.5850009112E-03\n    S 9\n        1 1.1720000000E+04 -1.6000001538E-04\n        2 1.7590000000E+03 -1.2630001214E-03\n        3 4.0080000000E+02 -6.2670006024E-03\n        4 1.1370000000E+02 -2.5716002472E-02\n        5 3.7030000000E+01 -7.0924006817E-02\n        6 1.3270000000E+01 -1.6541101590E-01\n        7 5.0250000000E+00 -1.1695501124E-01\n        8 1.0130000000E+00 5.5736805358E-01\n        9 3.0230000000E-01 5.7275905506E-01\n    S 9\n        1 1.1720000000E+04 0.0000000000E+00\n        2 1.7590000000E+03 0.0000000000E+00\n        3 4.0080000000E+02 0.0000000000E+00\n        4 1.1370000000E+02 0.0000000000E+00\n        5 3.7030000000E+01 0.0000000000E+00\n        6 1.3270000000E+01 0.0000000000E+00\n        7 5.0250000000E+00 0.0000000000E+00\n        8 1.0130000000E+00 0.0000000000E+00\n        9 3.0230000000E-01 1.0000000000E+00\n    P 4\n        1 1.7700000000E+01 4.3017992421E-02\n        2 3.8540000000E+00 2.2891295967E-01\n        3 1.0460000000E+00 5.0872791037E-01\n        4 2.7530000000E-01 4.6053091886E-01\n    P 4\n        1 1.7700000000E+01 0.0000000000E+00\n        2 3.8540000000E+00 0.0000000000E+00\n        3 1.0460000000E+00 0.0000000000E+00\n        4 2.7530000000E-01 1.0000000000E+00\n    D 1\n        1 1.1850000000E+00 1.0000000000E+00\n  end\n  NewGTO H\n    S 4\n        1 1.3010000000E+01 1.9684989991E-02\n        2 1.9620000000E+00 1.3797692984E-01\n        3 4.4460000000E-01 4.7814775688E-01\n        4 1.2200000000E-01 5.0123974514E-01\n    S 4\n        1 1.3010000000E+01 0.0000000000E+00\n        2 1.9620000000E+00 0.0000000000E+00\n        3 4.4460000000E-01 0.0000000000E+00\n        4 1.2200000000E-01 1.0000000000E+00\n    P 1\n        1 7.2700000000E-01 1.0000000000E+00\n  end\n  NewAuxCGTO O\n    S 1\n        1 1.0946100000E+02 1.0000000000E+00\n    S 1\n        1 2.5578000000E+01 1.0000000000E+00\n    S 1\n        1 9.5514800000E+00 1.0000000000E+00\n    S 1\n        1 2.9396000000E+00 1.0000000000E+00\n    S 1\n        1 1.3963800000E+00 1.0000000000E+00\n    S 1\n        1 9.0506100000E-01 1.0000000000E+00\n    S 1\n        1 4.2137600000E-01 1.0000000000E+00\n    P 1\n        1 3.6129200000E+01 1.0000000000E+00\n    P 1\n        1 1.0881700000E+01 1.0000000000E+00\n    P 1\n        1 3.2059400000E+00 1.0000000000E+00\n    P 1\n        1 1.4038700000E+00 1.0000000000E+00\n    P 1\n        1 6.1276300000E-01 1.0000000000E+00\n    D 1\n        1 1.5251100000E+01 1.0000000000E+00\n    D 1\n        1 4.5208700000E+00 1.0000000000E+00\n    D 1\n        1 1.8122100000E+00 1.0000000000E+00\n    D 1\n        1 5.9220100000E-01 1.0000000000E+00\n    F 1\n        1 4.2219400000E+00 1.0000000000E+00\n    F 1\n        1 1.7902100000E+00 1.0000000000E+00\n  end\n  NewAuxCGTO H\n    S 1\n        1 5.1158895200E+00 1.0000000000E+00\n    S 1\n        1 1.1429652800E+00 1.0000000000E+00\n    S 1\n        1 2.9166153000E-01 1.0000000000E+00\n    P 1\n        1 1.9149640300E+00 1.0000000000E+00\n    P 1\n        1 9.8640124000E-01 1.0000000000E+00\n    D 1\n        1 1.1720834700E+00 1.0000000000E+00\n  end\nend\n* xyz 0 1\n  O  0.018897261246 -0.037794522491 0.226767134948\n  H  0.056691783737 1.455089115915 -0.869274017300\n  H  -0.037794522491 -1.398397332178 -0.925965801037\n*\n",
+      "orca_rimp2": "! RI-MP2 NoRI NoFrozenCore ExtremeSCF Bohrs\n%pal nprocs 1 end\n%basis\n  NewGTO O\n    S 9\n        1 1.1720000000E+04 7.1000025027E-04\n        2 1.7590000000E+03 5.4700019281E-03\n        3 4.0080000000E+02 2.7837009812E-02\n        4 1.1370000000E+02 1.0480003694E-01\n        5 3.7030000000E+01 2.8306209978E-01\n        6 1.3270000000E+01 4.4871915817E-01\n        7 5.0250000000E+00 2.7095209551E-01\n        8 1.0130000000E+00 1.5458005449E-02\n        9 3.0230000000E-01 -2.5850009112E-03\n    S 9\n        1 1.1720000000E+04 -1.6000001538E-04\n        2 1.7590000000E+03 -1.2630001214E-03\n        3 4.0080000000E+02 -6.2670006024E-03\n        4 1.1370000000E+02 -2.5716002472E-02\n        5 3.7030000000E+01 -7.0924006817E-02\n        6 1.3270000000E+01 -1.6541101590E-01\n        7 5.0250000000E+00 -1.1695501124E-01\n        8 1.0130000000E+00 5.5736805358E-01\n        9 3.0230000000E-01 5.7275905506E-01\n    S 9\n        1 1.1720000000E+04 0.0000000000E+00\n        2 1.7590000000E+03 0.0000000000E+00\n        3 4.0080000000E+02 0.0000000000E+00\n        4 1.1370000000E+02 0.0000000000E+00\n        5 3.7030000000E+01 0.0000000000E+00\n        6 1.3270000000E+01 0.0000000000E+00\n        7 5.0250000000E+00 0.0000000000E+00\n        8 1.0130000000E+00 0.0000000000E+00\n        9 3.0230000000E-01 1.0000000000E+00\n    P 4\n        1 1.7700000000E+01 4.3017992421E-02\n        2 3.8540000000E+00 2.2891295967E-01\n        3 1.0460000000E+00 5.0872791037E-01\n        4 2.7530000000E-01 4.6053091886E-01\n    P 4\n        1 1.7700000000E+01 0.0000000000E+00\n        2 3.8540000000E+00 0.0000000000E+00\n        3 1.0460000000E+00 0.0000000000E+00\n        4 2.7530000000E-01 1.0000000000E+00\n    D 1\n        1 1.1850000000E+00 1.0000000000E+00\n  end\n  NewGTO H\n    S 4\n        1 1.3010000000E+01 1.9684989991E-02\n        2 1.9620000000E+00 1.3797692984E-01\n        3 4.4460000000E-01 4.7814775688E-01\n        4 1.2200000000E-01 5.0123974514E-01\n    S 4\n        1 1.3010000000E+01 0.0000000000E+00\n        2 1.9620000000E+00 0.0000000000E+00\n        3 4.4460000000E-01 0.0000000000E+00\n        4 1.2200000000E-01 1.0000000000E+00\n    P 1\n        1 7.2700000000E-01 1.0000000000E+00\n  end\n  NewAuxCGTO O\n    S 1\n        1 1.0946100000E+02 1.0000000000E+00\n    S 1\n        1 2.5578000000E+01 1.0000000000E+00\n    S 1\n        1 9.5514800000E+00 1.0000000000E+00\n    S 1\n        1 2.9396000000E+00 1.0000000000E+00\n    S 1\n        1 1.3963800000E+00 1.0000000000E+00\n    S 1\n        1 9.0506100000E-01 1.0000000000E+00\n    S 1\n        1 4.2137600000E-01 1.0000000000E+00\n    P 1\n        1 3.6129200000E+01 1.0000000000E+00\n    P 1\n        1 1.0881700000E+01 1.0000000000E+00\n    P 1\n        1 3.2059400000E+00 1.0000000000E+00\n    P 1\n        1 1.4038700000E+00 1.0000000000E+00\n    P 1\n        1 6.1276300000E-01 1.0000000000E+00\n    D 1\n        1 1.5251100000E+01 1.0000000000E+00\n    D 1\n        1 4.5208700000E+00 1.0000000000E+00\n    D 1\n        1 1.8122100000E+00 1.0000000000E+00\n    D 1\n        1 5.9220100000E-01 1.0000000000E+00\n    F 1\n        1 4.2219400000E+00 1.0000000000E+00\n    F 1\n        1 1.7902100000E+00 1.0000000000E+00\n  end\n  NewAuxCGTO H\n    S 1\n        1 5.1158895200E+00 1.0000000000E+00\n    S 1\n        1 1.1429652800E+00 1.0000000000E+00\n    S 1\n        1 2.9166153000E-01 1.0000000000E+00\n    P 1\n        1 1.9149640300E+00 1.0000000000E+00\n    P 1\n        1 9.8640124000E-01 1.0000000000E+00\n    D 1\n        1 1.1720834700E+00 1.0000000000E+00\n  end\nend\n* xyz 0 1\n  O  0.018897261246 -0.037794522491 0.226767134948\n  H  0.056691783737 1.455089115915 -0.869274017300\n  H  -0.037794522491 -1.398397332178 -0.925965801037\n*\n",
+      "orca_fd": "orca_oo input without EnGrad at displaced geometries, 5-point central, h = 0.002 Bohr",
+      "pyscf": "scf.RHF exact J/K conv_tol 1e-12 + mp.dfmp2.DFMP2 with auxmol from ferric's aux JSON",
+      "numpy_oo": "numpy OO-RI-MP2 (RHF): E(kappa) = E_RHF(C) + E_MP2^RI(C), C = C_RHF expm(K), K antisymmetric vir-occ; exact four-centre J/K from PySCF int2e; doubles in the semicanonical frame with Coulomb-metric fitted B from PySCF int3c2e/int2c2e and ferric's aux; scipy BFGS on a 5-point central-difference gradient (h = 0.001); anchor at kappa = 0: PySCF scf.RHF + mp.dfmp2.DFMP2 with the same auxmol"
+    },
+    "grid": "none",
+    "aux_basis": {
+      "correlation": "cc-pvdz-ri",
+      "correlation_json": "crates/ferric-core/src/basis/bundled/cc-pvdz-ri.json",
+      "correlation_sha256": "8221d2a31b5bbebd39218fc3f9244917e173a338ff9c56904038443a06e2a250",
+      "scf_and_oo_fock": "none (exact four-centre J/K: ORCA NoRI, PySCF plain SCF)"
+    },
+    "frozen_core": "none (ORCA NoFrozenCore; PySCF frozen=None)",
+    "scf_convergence": "ORCA ExtremeSCF (TolG 1e-9) with OO inputs at %scf TolE 1e-12 (OO loop energy 1e-12, orbital gradient 1e-9); PySCF conv_tol 1e-12",
+    "stability": null,
+    "basis": "cc-pvdz",
+    "basis_json": "crates/ferric-core/src/basis/bundled/cc-pvdz.json",
+    "basis_sha256": "ae48fcca0d533addd60dbd48490153130e697121767ba607e1d70f3b341eeef7",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/h2o_distorted.xyz",
+    "geometry_xyz_sha256": "9defe113f6a56b0510911e233fbf8feb18849b2c11813428d86ab0a3cd5fe142",
+    "geometry_bohr": [
+      [
+        "O",
+        0.01889726124565062,
+        -0.03779452249130124,
+        0.22676713494780742
+      ],
+      [
+        "H",
+        0.056691783736951856,
+        1.4550891159150976,
+        -0.8692740172999285
+      ],
+      [
+        "H",
+        -0.03779452249130124,
+        -1.3983973321781458,
+        -0.9259658010368803
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_oo_rimp2.py",
+    "git_head": "19e21870ce8d2d3b9435a97e69709e0fbf635049",
+    "generated_utc": "2026-09-25T00:59:17+00:00",
+    "orca_binary": "/home/matt/Downloads/orca_6_1_1_linux_x86-64_shared_openmpi418_nodmrg/orca",
+    "orca_note": "ORCA switches SHARK to segmented contraction for MP2 (same contracted functions, printed nao unchanged)"
+  },
+  "numpy_oo": {
+    "e_total": -76.23116916335105,
+    "e_reference": -76.02491436951253,
+    "e_doubles": -0.20625479383852618,
+    "max_orbital_gradient": 8.763360407707903e-11,
+    "iterations": 68,
+    "optimizer_message": "scipy BFGS 54 it (Desired error not necessarily achieved due to precision loss.) + 14 gradient-only BFGS it",
+    "anchor_kappa0_diff": 8.526512829121202e-14,
+    "e_scf_start": -76.02585838435137,
+    "method": "numpy OO-RI-MP2 (RHF): E(kappa) = E_RHF(C) + E_MP2^RI(C), C = C_RHF expm(K), K antisymmetric vir-occ; exact four-centre J/K from PySCF int2e; doubles in the semicanonical frame with Coulomb-metric fitted B from PySCF int3c2e/int2c2e and ferric's aux; scipy BFGS on a 5-point central-difference gradient (h = 0.001); anchor at kappa = 0: PySCF scf.RHF + mp.dfmp2.DFMP2 with the same auxmol"
+  }
+}
