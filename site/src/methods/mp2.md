@@ -74,7 +74,7 @@ Running a fitted variant in another basis, with counterpoise, or with
 | Variant | `method.kind` | Example | Python |
 |---|---|---|---|
 | erfc | `att-rimp2` | `examples/water-attmp2.toml` | `run_attenuated_rimp2(..., omega=0.420)` (Å⁻¹) |
-| terfc | Python only | — | `run_terfc_rimp2(..., r0=...)` |
+| terfc | `att-rimp2` with `[mp2] att_operator = "terfc"`, `att_r0` (Å) | `examples/water-attmp2-terfc.toml` | `run_terfc_rimp2(..., r0=...)` |
 | SCS-MP2 (Grimme) | `scs-mp2` | `examples/water-scs-mp2.toml` | `run_scs_mp2(..., c_os=, c_ss=)` |
 | SCS-MP2(2terfc) | `scs-mp2-2terfc` | `examples/water-scs-mp2-2terfc.toml` | `run_scs_mp2_2terfc(...)` |
 | MP2-V | `mp2-v` | `examples/water-mp2v.toml` | `run_mp2_v(...)` |

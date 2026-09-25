@@ -50,6 +50,10 @@ ferric-gw = { path = "../ferric-gw" }
 ferric-export = { path = "../ferric-export" }
 ferric-cc = { path = "../ferric-cc" }
 ferric-tddft = { path = "../ferric-tddft" }
+# `[pcm]`: the solvent table and PcmConfig validation live in ferric-pcm
+# (`PcmConfig::for_solvent` / `with_epsilon` / `with_lebedev_order`), shared
+# with the Python `solvent=` kwarg.
+ferric-pcm = { path = "../ferric-pcm" }
 toml = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }

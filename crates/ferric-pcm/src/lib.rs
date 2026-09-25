@@ -67,7 +67,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ndarray::Array2;
 
 pub use cavity::{build_cavity, CavityConfig, Tessera};
-pub use config::{PcmConfig, ProbeKind};
+pub use config::{solvent_epsilon, PcmConfig, ProbeKind, NAMED_SOLVENTS, SUPPORTED_LEBEDEV_ORDERS};
 pub use solver::PcmChargeResult;
 
 /// Geometry-only PCM state built ONCE before the SCF loop (cavity + S/D/K/R

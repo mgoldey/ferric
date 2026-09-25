@@ -99,6 +99,7 @@ Read by every kind, because every kind runs an SCF first.
 | `df_increments` | bool | `false` | | DF-corrected incremental Fock SCF. Same scope as `df_guess`, and warned and ignored on `rhf`/`ksdft`. |
 | `df_increments_aux` | string | `def2-universal-jkfit` | aux basis name | It is an error when `df_increments` is off. |
 | `check_stability` | bool | `false` | | Diagnostic only: warns if the solution is a saddle point and never fails the run. It covers RHF/RKS and UHF/UKS. ROHF/ROKS, range-separated and meta-GGA are skipped with a printed reason. |
+| `stability_descent` | bool | `false` | | UHF state selection: at a saddle of the UHF orbital Hessian, follow the downhill eigenvector and re-converge, keeping the lowest state. Turns `check_stability` on as well. Same as Python `run_uhf(stability_descent=True)`. Only `kind = "uhf"` (or `ksdft` on an open-shell molecule) with `task = "energy"`; any other kind or task is an error. Costs one Davidson per converged solve plus one SCF per descent. See `examples/o2-uhf-stability-descent.toml`. |
 | `ladder` | array of tables | built-in ladder | see below | `[[scf.ladder]]` rungs. Read only by `rhf` and `ksdft`. |
 
 ### `[[scf.ladder]]` rungs
@@ -123,6 +124,8 @@ as elsewhere.
 |---|---|---|---|---|
 | `functional` | string | `"LDA"` (for `ksdft`) | an XC name (`LDA`, `PBE`, `B3LYP`, `wB97X-V`, `SCAN`, `r2SCAN`, …) or a libxc name | Read by `ksdft`. `wb97x-l-v` ignores it with a warning. RPA/GW use `[rpa] xc` and TDDFT uses `[tddft] xc` instead. |
 | `grid_prune` | string | `"none"` | `none` `off` `flat`; `nwchem` `nwchem-like` `nwchem_like` | Prunes the main grid only. Accepted only with `task = "energy"`. |
+| `grid_radial` | integer | `75` | > 0 | Radial points per atom on the main grid. Only on a run with a Kohn–Sham grid, only with `task = "energy"` (the XC gradient uses the default grid), and not with `kind = "gw"`. Same as Python `grid_radial=`. |
+| `grid_angular` | integer | `110` | `6` `14` `26` `50` `110` `302` | Lebedev order on the main grid. Same scope as `grid_radial`. An unsupported order is an error. Same as Python `grid_angular=`. |
 | `dispersion` | string | absent | `d3bj`, `d3(bj)`, `d3bj(<functional>)` | Only with `kind = "ksdft"`, and not with `task = "frequencies"`. There is no "off" value; omit the key instead. A functional with no published D3(BJ) fit is an error. |
 | `lambda` | float | `0.6` | | Only for `wb97x-l-v`. |
 | `omega` | float | `0.1` | Bohr⁻¹ | Only for `wb97x-l-v`. Note the unit differs from `[mp2] omega`. |
@@ -137,7 +140,7 @@ all of which read `auxbasis` and `frozen_core` from here.
 |---|---|---|---|---|
 | `auxbasis` | string | `"cc-pvdz-ri"`; `"cc-pvdz-rifit"` for `tda`/`tddft` | aux basis name | The two defaults name the same bundled set (`cc-pvdz-rifit` is an alias of `cc-pvdz-ri`). |
 | `frozen_core` | int, string or bool | `0` | integer ≥ 0, `"auto"`, `"none"`, `true` (= auto), `false` (= 0) | `"auto"` gives the standard small core for this molecule after the ECP is applied, and the run prints the resolved count. |
-| `omega` | float | `0.420` | Å⁻¹ | `att-rimp2`, `rs-mp2-rpa`. Ignored with a warning when `attenuator = "terf"`. |
+| `omega` | float | `0.420` | Å⁻¹ | `att-rimp2` (erfc), `rs-mp2-rpa`. Ignored with a warning when `attenuator = "terf"`. An error on `att-rimp2` with `att_operator = "terfc"`. |
 | `kappa` | float | none | κ > 0, Hartree⁻¹ | κ-regularized MP2 for `rimp2`. Absent = plain MP2. |
 | `c_os` | float | `1.2` (`scs-mp2`), `1.27` (`scs-mp2-2terfc`), `1.3` (`laplace-sos-mp2`) | | |
 | `c_ss` | float | `1/3` (`scs-mp2`), `4.05` (`scs-mp2-2terfc`) | | `laplace-sos-mp2` warns and ignores it. |
@@ -145,8 +148,11 @@ all of which read `auxbasis` and `frozen_core` from here.
 | `sos_formulation` | string | `"mo"` | `mo` `ao` `ao-sparse` | `laplace-sos-mp2`. `mo` and `ao` are exact and agree to round-off. `ao-sparse` is approximate and requires `domain_cutoff_bohr`. |
 | `domain_cutoff_bohr` | float | none | > 0, Bohr | Required by `ao-sparse`. An error with the other formulations. |
 | `formulation` | string | `"delta-lr"` | `delta-lr` `coupled-rings` | `rs-mp2-rpa`. |
-| `attenuator` | string | `"erf"` | `erf` `terf` | `rs-mp2-rpa`. `terf` needs `FERRIC_TERF_TABLE_DIR`. |
-| `r0` | float | `1.6828` (= 3.18 Bohr) | Å | `rs-mp2-rpa` with `terf` only. |
+| `attenuator` | string | `"erf"` | `erf` `terf` | `rs-mp2-rpa`. `terf` needs `FERRIC_TERF_TABLE_DIR`. An error on `att-rimp2` (use `att_operator`). |
+| `r0` | float | `1.6828` (= 3.18 Bohr) | Å | `rs-mp2-rpa` with `terf` only. An error on `att-rimp2` (use `att_r0`). |
+| `terf_omega` | float | linked, ω = 1/(r0√2) | Å⁻¹, > 0 | `rs-mp2-rpa` with `attenuator = "terf"` only (an error elsewhere). Sets the terf/terfc sharpness independently of `r0`. Same as Python `run_rs_mp2_rpa(terf_omega=)`. |
+| `att_operator` | string | `"erfc"` | `erfc` `terfc` (case-insensitive) | `att-rimp2` only (an error on any other kind). The short-range operator on the MP2 correlation; the SCF stays Coulomb. `terfc` is the Python `run_terfc_rimp2` and needs `FERRIC_TERF_TABLE_DIR`. |
+| `att_r0` | float | `1.05` | Å, > 0 | `att-rimp2` with `att_operator = "terfc"` only; an error with `erfc`. |
 | `r0_sweep` | array of floats | none | Å, > 0 | `rs-mp2-rpa` with `terf` only. Reuses one SCF for several r0 values. `r0` is then ignored with a warning. |
 | `r0_bonded` | float | `0.75` | Å | `scs-mp2-2terfc`. |
 | `r0_nonbonded` | float | `1.05` | Å, > `r0_bonded` | `scs-mp2-2terfc`. |
@@ -172,6 +178,10 @@ all of which read `auxbasis` and `frozen_core` from here.
 | `mp2v_vv10_damping` | string | `"terfc"` | `terfc` `none` | `mp2-v`. `none` double-counts short-range correlation. |
 | `mp2v_nlc_n_radial` | integer | `50` | > 0 | `mp2-v` VV10 grid. |
 | `mp2v_nlc_n_angular` | integer | `50` | > 0 | `mp2-v` VV10 grid (unpruned). |
+| `oo_max_iter` | integer | `100` | ≥ 1 | `oo-rimp2` only (closed and open shell). Orbital-optimization iterations. |
+| `oo_grad_conv` | float | `1e-4` | > 0 | `oo-rimp2` only. Convergence threshold on the orbital-gradient norm. |
+| `oo_level_shift` | float | `0.1` | Hartree, ≥ 0 | `oo-rimp2` only. Level shift on the approximate diagonal orbital Hessian. |
+| `oo_diis_size` | integer | `6` | ≥ 1 | `oo-rimp2` only. DIIS subspace for the orbital rotations. The four `oo_*` keys match Python `run_oo_rimp2(max_iter=, grad_conv=, level_shift=, diis_size=)`; on any other kind they are an error. |
 
 ## `[rpa]`
 
@@ -230,6 +240,7 @@ supplies the screened interaction.
 | `qp_newton_damp` | float | `1.0` | | |
 | `frozen_core` | int, string or bool | falls back to `[rpa] frozen_core` | as `[mp2]` | Also overrides the PDEP frozen core, so W and Σ agree. |
 | `scissor` | float | `0.0` | Hartree | `tdhf-static-polarizability` only. At `0.0` some molecules hit a negative α diagonal and the run errors. The remedy is about 0.3–0.4 Ha. |
+| `reference` | string | `"uhf"` | `uhf` `rohf` (case-insensitive) | `gw` on an open-shell molecule only: the reference is UHF or ROHF (UKS or ROKS with `[rpa] xc`). An error on a closed-shell molecule or another kind. Same as Python `run_u_gw(reference=)`. |
 
 ## `[tddft]`
 
@@ -289,13 +300,30 @@ cannot be combined with `[external_potential]`; doing so is an error.
 | `link_bonds` | array of `[qm, mm]` | `[]` | | Required when the cut crosses a covalent bond. |
 | `boundary_scheme` | string | `"delete-host"` | `keep` `delete-host` `rc` `rcd` | Setting a non-default value without `link_bonds` is an error. |
 
-See [QM/MM](../using/qmmm.md). Smeared charges, polarizable sites and MM force
-fields are Python only.
+See [QM/MM](../using/qmmm.md). Smeared PQR charges, polarizable sites and MM
+force fields are Python only. (Smeared charges outside QM/MM are available
+through `[external_potential]` with `width`.)
+
+## `[pcm]`
+
+IEF-PCM implicit solvent (`ferric-pcm`). Absent means vacuum. Honoured on
+`task = "energy"` by `rhf`, `uhf`, `rohf`, `ksdft` and `pdep-rpa` (for
+`pdep-rpa` the RPA correlation is evaluated on the solvated reference). Any
+other kind, a gradient task (no gradient has a PCM term), `[cosmo]` in the
+same file, or `pdep-rpa` with `[rpa] export_npz` is an error. The solvent
+table and checks are shared with Python `run_rhf(solvent=...)`. See
+`examples/water-pcm.toml`.
+
+| Key | Type | Default | Allowed values | Notes |
+|---|---|---|---|---|
+| `epsilon` | float | — | finite and > 1 | Dielectric constant. Give exactly one of `epsilon` and `solvent`. |
+| `solvent` | string | — | `water` (78.4) `dmso` (46.7) `methanol` (32.6) `ethanol` (24.9) `acetone` (20.7) `dichloromethane`/`dcm` (8.93) `thf` (7.43) `chloroform` (4.71) `toluene` (2.38) `hexane` (1.88), case-insensitive | Dielectric constants at 298 K. An unknown name is an error. |
+| `lebedev_order` | integer | `110` | `6` `14` `26` `50` `110` `302` | Tesserae per atomic sphere. |
 
 ## `[cosmo]`
 
-Conductor-like implicit solvent, applied to every SCF variant. There is no
-`[pcm]` section: IEF-PCM is Python only (`run_rhf(solvent=...)`).
+Conductor-like implicit solvent, applied to every SCF variant. It cannot be
+combined with `[pcm]`.
 
 | Key | Type | Default | Allowed values | Notes |
 |---|---|---|---|---|
@@ -311,7 +339,7 @@ charge is an error.
 
 | Key | Type | Default | Allowed values | Notes |
 |---|---|---|---|---|
-| `point_charges` | array of `{ q, x, y, z }` | `[]` | q in e; x, y, z in **Bohr** | Written as `[[external_potential.point_charges]]` tables. |
+| `point_charges` | array of `{ q, x, y, z, width }` | `[]` | q in e; x, y, z in **Bohr**; `width` in **Bohr**, finite and > 0 | Written as `[[external_potential.point_charges]]` tables. `width` is optional: with it the charge is Gaussian-smeared, density ∝ exp(−r²/width²) and potential q·erf(r/width)/r (the Python `smeared_charges=`); without it the charge is a point. See `examples/water-rhf-smeared-charge.toml`. |
 | `field` | `[Ex, Ey, Ez]` | none | atomic units | Uniform electric field. |
 
 With both empty, the run is identical to a vacuum run.

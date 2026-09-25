@@ -3,8 +3,42 @@
 
 use serde::{Deserialize, Serialize};
 
+use ferric_core::FerricError;
+
 use crate::cavity::{CavityConfig, Tessera};
 use crate::matrices::SdKind;
+
+/// Named solvents and their dielectric constants at 298 K, the ONE table
+/// behind [`PcmConfig::for_solvent`] (and so behind both the CLI's `[pcm]
+/// solvent` key and the Python `solvent=` kwarg). Names are matched
+/// case-insensitively. `"dcm"` is an alias of `"dichloromethane"`.
+pub const NAMED_SOLVENTS: &[(&str, f64)] = &[
+    ("water", 78.4),
+    ("dmso", 46.7),
+    ("methanol", 32.6),
+    ("ethanol", 24.9),
+    ("acetone", 20.7),
+    ("dichloromethane", 8.93),
+    ("dcm", 8.93),
+    ("thf", 7.43),
+    ("chloroform", 4.71),
+    ("toluene", 2.38),
+    ("hexane", 1.88),
+];
+
+/// Lebedev orders the PCM cavity (`cavity::build_cavity`) and the
+/// Gaussian-smeared S/D ξ table support.
+pub const SUPPORTED_LEBEDEV_ORDERS: [usize; 6] = [6, 14, 26, 50, 110, 302];
+
+/// Dielectric constant of a named solvent from [`NAMED_SOLVENTS`]
+/// (case-insensitive, surrounding whitespace ignored), or `None`.
+pub fn solvent_epsilon(name: &str) -> Option<f64> {
+    let key = name.trim().to_ascii_lowercase();
+    NAMED_SOLVENTS
+        .iter()
+        .find(|(n, _)| *n == key)
+        .map(|(_, eps)| *eps)
+}
 
 /// Configuration for an IEF-PCM implicit-solvent calculation.
 ///
@@ -111,6 +145,56 @@ impl PcmConfig {
         }
     }
 
+    /// IEF-PCM in the named solvent, every other knob at its default.
+    ///
+    /// The single solvent table shared by the CLI's `[pcm] solvent` key and
+    /// the Python `solvent=` kwarg ([`NAMED_SOLVENTS`], dielectric constants
+    /// at 298 K; case-insensitive). An unrecognised name is an ERROR, never a
+    /// silent fallback to vacuum or to water: either would look like a
+    /// successful solvated run of a different solvent.
+    pub fn for_solvent(name: &str) -> Result<Self, FerricError> {
+        let epsilon = solvent_epsilon(name).ok_or_else(|| {
+            let known: Vec<&str> = NAMED_SOLVENTS.iter().map(|(n, _)| *n).collect();
+            FerricError::General(format!(
+                "solvent '{name}' not recognised; known solvents: {}. Give a dielectric \
+                 constant directly instead for any other solvent",
+                known.join(", ")
+            ))
+        })?;
+        Self::with_epsilon(epsilon)
+    }
+
+    /// IEF-PCM at dielectric constant `epsilon`, every other knob at its
+    /// default. `epsilon` must be finite and `> 1.0` (1.0 is vacuum). NaN and
+    /// infinity are refused explicitly: `NaN <= 1.0` and `inf <= 1.0` are both
+    /// false, so a bare comparison would let them through to fail later inside
+    /// the cavity solve.
+    pub fn with_epsilon(epsilon: f64) -> Result<Self, FerricError> {
+        if !epsilon.is_finite() || epsilon <= 1.0 {
+            return Err(FerricError::General(format!(
+                "PCM dielectric must be > 1.0 and finite, got {epsilon} (vacuum is 1.0; \
+                 omit the solvent for no solvation)"
+            )));
+        }
+        Ok(Self {
+            epsilon,
+            ..Self::water()
+        })
+    }
+
+    /// Set the per-sphere Lebedev order, refusing any order outside
+    /// [`SUPPORTED_LEBEDEV_ORDERS`] (the set the cavity and Gaussian-ξ tables
+    /// support) up front rather than as an error from inside SCF setup.
+    pub fn with_lebedev_order(mut self, order: usize) -> Result<Self, FerricError> {
+        if !SUPPORTED_LEBEDEV_ORDERS.contains(&order) {
+            return Err(FerricError::General(format!(
+                "PCM lebedev_order must be one of {SUPPORTED_LEBEDEV_ORDERS:?}; got {order}"
+            )));
+        }
+        self.lebedev_order = order;
+        Ok(self)
+    }
+
     pub(crate) fn cavity_config(&self) -> CavityConfig {
         CavityConfig {
             vdw_scale: self.vdw_scale,
@@ -132,6 +216,57 @@ mod tests {
         "#;
         let result: Result<PcmConfig, _> = toml::from_str(toml_str);
         assert!(result.is_err(), "typo'd key 'vdwscale' should be rejected");
+    }
+
+    #[test]
+    fn for_solvent_matches_the_table_and_is_case_insensitive() {
+        assert_eq!(PcmConfig::for_solvent("water").unwrap().epsilon, 78.4);
+        assert_eq!(PcmConfig::for_solvent("  Water ").unwrap().epsilon, 78.4);
+        assert_eq!(
+            PcmConfig::for_solvent("DCM").unwrap().epsilon,
+            PcmConfig::for_solvent("dichloromethane").unwrap().epsilon
+        );
+        // Every other knob stays at the water() default.
+        let c = PcmConfig::for_solvent("toluene").unwrap();
+        let w = PcmConfig::water();
+        assert_eq!(c.epsilon, 2.38);
+        assert_eq!(c.vdw_scale, w.vdw_scale);
+        assert_eq!(c.lebedev_order, w.lebedev_order);
+        assert_eq!(c.inner_iters, w.inner_iters);
+    }
+
+    #[test]
+    fn unknown_solvent_is_an_error_naming_it() {
+        let e = PcmConfig::for_solvent("watr").unwrap_err().to_string();
+        assert!(e.contains("'watr' not recognised"), "{e}");
+        assert!(
+            e.contains("water"),
+            "the message must list the known names: {e}"
+        );
+    }
+
+    #[test]
+    fn with_epsilon_refuses_vacuum_and_non_finite() {
+        for eps in [1.0, 0.5, -3.0, f64::NAN, f64::INFINITY] {
+            assert!(PcmConfig::with_epsilon(eps).is_err(), "{eps} accepted");
+        }
+        assert_eq!(PcmConfig::with_epsilon(4.0).unwrap().epsilon, 4.0);
+    }
+
+    #[test]
+    fn with_lebedev_order_refuses_unsupported_orders() {
+        for order in [0, 7, 194] {
+            assert!(PcmConfig::water().with_lebedev_order(order).is_err());
+        }
+        for order in SUPPORTED_LEBEDEV_ORDERS {
+            assert_eq!(
+                PcmConfig::water()
+                    .with_lebedev_order(order)
+                    .unwrap()
+                    .lebedev_order,
+                order
+            );
+        }
     }
 
     #[test]
