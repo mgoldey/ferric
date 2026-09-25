@@ -59,7 +59,7 @@ LIKE-FOR-LIKE RECIPE
 
 Run (light; a few minutes, dominated by the ROKS FD sweep):
     scripts/validation/run_slot.sh --light -- \\
-        python scripts/validation/gen_mgga_gradients.py
+        uv run --no-sync python scripts/validation/gen_mgga_gradients.py
 Restrict to systems by name:  ... gen_mgga_gradients.py nh2
 """
 

@@ -63,7 +63,7 @@ NEGATIVE-CONTROL VARIANTS (stored under `controls`; ferric must MISS them)
 
 Run (light; seconds per system):
     OPENBLAS_NUM_THREADS=1 scripts/validation/run_slot.sh --light -- \\
-        .venv/bin/python scripts/validation/gen_u_cohsex.py [system ...]
+        uv run --no-sync python scripts/validation/gen_u_cohsex.py [system ...]
 """
 
 from __future__ import annotations

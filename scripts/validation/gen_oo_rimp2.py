@@ -76,7 +76,7 @@ Also generated, all as independent anchors/controls:
 
 Run (light: each ORCA job is ~5 s on 1 core; the FD is 36/48 jobs):
     scripts/validation/run_slot.sh --light -- \\
-        python scripts/validation/gen_oo_rimp2.py [system ...]
+        uv run --no-sync python scripts/validation/gen_oo_rimp2.py [system ...]
 `--write-only` regenerates the committed .inp files without running anything;
 `--no-fd` skips the ORCA finite difference (for a quick look; refuses to write).
 `--numpy-only` runs no ORCA: it loads each existing JSON, recomputes the

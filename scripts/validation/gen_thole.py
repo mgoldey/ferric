@@ -86,7 +86,7 @@ no_damping (thole_a None), no_mutual (T = 0), negated_tensor (ferric's sign).
 
 Run (light):
     scripts/validation/run_slot.sh --light -- \\
-        python scripts/validation/gen_thole.py [case ...]
+        uv run --no-sync python scripts/validation/gen_thole.py [case ...]
 """
 
 from __future__ import annotations

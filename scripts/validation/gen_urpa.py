@@ -61,7 +61,7 @@ converted to UHF; they must agree (PySCF's own consistency), and ferric's
 
 Run (light; seconds per system):
     OPENBLAS_NUM_THREADS=1 scripts/validation/run_slot.sh --light -- \\
-        .venv/bin/python scripts/validation/gen_urpa.py [system ...]
+        uv run --no-sync python scripts/validation/gen_urpa.py [system ...]
 """
 
 from __future__ import annotations

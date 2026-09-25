@@ -53,7 +53,7 @@ Cholesky tensors (gen_urpa.numpy_urpa); disagreement > 1e-10 refuses.
 
 Run (light; ~a second per displaced PySCF RHF+RPA):
     OPENBLAS_NUM_THREADS=1 scripts/validation/run_slot.sh --light -- \\
-        python scripts/validation/gen_rpa_gradient.py [system ...]
+        uv run --no-sync python scripts/validation/gen_rpa_gradient.py [system ...]
 """
 
 from __future__ import annotations

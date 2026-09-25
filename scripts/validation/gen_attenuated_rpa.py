@@ -63,7 +63,7 @@ CONTROL VALUES (numpy, recorded for the test to assert ferric MISSES them):
 
 Run (light; seconds per system):
     OPENBLAS_NUM_THREADS=1 scripts/validation/run_slot.sh --light -- \\
-        .venv/bin/python scripts/validation/gen_attenuated_rpa.py [system_basis ...]
+        uv run --no-sync python scripts/validation/gen_attenuated_rpa.py [system_basis ...]
 """
 
 from __future__ import annotations

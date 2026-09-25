@@ -69,7 +69,7 @@ CONTROLS recorded per case (the Rust tests assert ferric MISSES what it must):
 
 Run (light; the MP2 FDs are ~200 small DF-MP2 energies in total):
     scripts/validation/run_slot.sh --light -- \\
-        python scripts/validation/gen_qmmm.py [group ...]
+        uv run --no-sync python scripts/validation/gen_qmmm.py [group ...]
 groups: point smeared ks mp2 (default all)
 """
 
