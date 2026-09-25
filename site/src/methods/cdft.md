@@ -80,8 +80,10 @@ What to know before using it:
   `grid_radial` or `grid_angular` uses that grid for the XC quadrature too.
 - **The UKS path is the one compared against another code.** Constrained
   UKS/PBE matches NWChem 7.2.2 (see Accuracy). The UHF path (`functional=None`
-  or `"HF"`) has only internal checks: NWChem cannot run Hartree–Fock cDFT,
-  because it builds the Becke weight operator only on its XC grid.
+  or `"HF"`) has only internal checks: NWChem's standalone SCF (Hartree–Fock)
+  module has no cDFT, because the Becke weight operator is built on the XC
+  grid of its DFT module. A Hartree–Fock comparison through that DFT module
+  (`xc HFexch`) has not been made.
 - **One constraint is the tested case.** With several constraints the outer
   loop is a plain k × k Newton step, without the single-constraint bracket
   safeguard.
@@ -100,7 +102,8 @@ Constrained UKS/PBE energies and multipliers are compared against NWChem
 7.2.2 `cdft ... pop becke` on LiH, HF and H2O⁺ (charge and spin constraints)
 at 6-31G and def2-SVP (`ferric-scf/tests/validation_cdft.rs`): E(N) −
 E_unconstrained to 2.0e-7 Ha and λ to 1.1e-6 against NWChem's grid limit, and
-dE/dN = −λ to 2.3e-12 Ha; numbers are on
+dE/dN = −λ to 2.3e-12 Ha (this identity is checked at def2-SVP, on the
+first target of each constraint kind); numbers are on
 [Capabilities and validation](../reference/validation.md#anchors). No external
 reference value is stated for UHF-cDFT energies or for the couplings. The
 tests check the coupling kernel on synthetic matrices and He₂⁺ identities

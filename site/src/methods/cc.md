@@ -23,7 +23,8 @@ implementations:
 
 No open-shell CCD, CCSD or CCSD(T) exists in ferric: every CC solver reads
 restricted orbitals and refuses an unrestricted reference. The only open-shell
-coupled-cluster-type method is LinLCCD(hh), which is library-only
+coupled-cluster-type method is LinLCCD(hh): the CLI `linlccd` kind is
+closed shell, and its open-shell (UHF) version is library-only
 (`ferric_cc::linlccd_u::u_linlccd`).
 
 **Run it.**

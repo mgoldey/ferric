@@ -44,7 +44,7 @@ auxbasis = "cc-pvdz-ri"
 |---|---|---|---|---|
 | `xyz` | string | **required** | path | Standard XYZ in Å, relative to the working directory. Not read when `[qmmm]` is present (the PQR supplies the geometry). |
 | `charge` | integer | `0` | | With `[qmmm]`, applies to the QM region. |
-| `multiplicity` | integer | `1` | ≥ 1 | Read by `uhf`, `rohf` and `ksdft` (UKS) for every task, and for `task = "energy"` only by `rimp2`/`oo-rimp2` (UHF + unrestricted RI-MP2 / OO-RI-MP2) and the UHF fallback of `pdep-rpa`/`gw`/`mp2-v`. Every other kind refuses `> 1`. See [open shells](./validation.md#open-shells-in-the-cli). |
+| `multiplicity` | integer | `1` | ≥ 1 | Read by `uhf`, `rohf` and `ksdft` (UKS) for every task, and for `task = "energy"` only by `rimp2`/`oo-rimp2` (UHF + unrestricted RI-MP2 / OO-RI-MP2) and the open-shell path of `pdep-rpa`/`gw`/`mp2-v`: UHF, or UKS when `[rpa] xc` is set (`pdep-rpa`, `gw`), or ROHF/ROKS for `gw` with `[gw] reference = "rohf"`; `mp2-v` stays UHF. Every other kind refuses `> 1`. See [open shells](./validation.md#open-shells-in-the-cli). |
 
 ## `[basis]` (required)
 
