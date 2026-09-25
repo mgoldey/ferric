@@ -378,6 +378,7 @@ fn gw(sys: &Sys, scf: &ScfResult, orbs: &[usize]) -> UGwResult {
             frozen_core: 0,
             ..Default::default()
         },
+        None,
     )
     .unwrap_or_else(|e| panic!("{}: run_u_gw failed: {e:?}", sys.label));
     assert_eq!(res.mo_indices, orbs, "{}: QP window", sys.label);
