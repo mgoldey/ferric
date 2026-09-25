@@ -1,7 +1,8 @@
 //! RPA-driven geometry optimization (BFGS in Cartesian coordinates).
 //!
 //! Mirrors `ferric_scf::optimize::optimize_geometry` but uses
-//! `rpa_correlation_gradient` + `rhf_gradient` as the gradient driver.
+//! `total_rpa_gradient` (a finite difference of E_RHF + E_c^RPA) as the gradient
+//! driver.
 //!
 //! The BFGS update and trust-radius scaling are copied from the RHF
 //! optimizer; only the energy + gradient evaluation differs.  Keeping the
@@ -29,10 +30,10 @@ pub struct RpaOptimizeResult {
 }
 
 /// Optimize a molecular geometry on the RPA PES using
-/// `total_rpa_gradient` (analytic RHF gradient + projection-fixed
-/// finite-difference RPA correlation gradient).
+/// `total_rpa_gradient` (a central finite difference of the total RPA
+/// energy, with a fresh RHF + PDEP-RPA at every displaced point).
 ///
-/// `h_fd` controls the inner FD step for the correlation gradient (Bohr);
+/// `h_fd` is the finite-difference step (Bohr);
 /// `5e-4` is a sensible default.
 pub fn optimize_geometry_rpa(
     mol: &Molecule,
