@@ -853,7 +853,19 @@ pub fn run(args: Vec<String>) {
         // `Config::validate_multiplicity`, so its kind has an open-shell
         // route (rimp2/oo-rimp2/pdep-rpa/gw/mp2-v on task = "energy"); each
         // consumes a UHF reference. `solve_rhf` would refuse the molecule.
-        solve_open_shell_reference(method, &cfg, &ctx, &mol, &prep, &bounds, &rhf_config)
+        // GW picks its own reference (`[gw] reference = "uhf" | "rohf"`); it
+        // is solved once here and `run_gw` reuses it, so a UHF failure can
+        // never end a run that asked for ROHF.
+        if method == "gw" {
+            gw_open_shell_reference(&cfg, &ctx, &mol, &prep, op, &bounds, &rhf_config)
+                .map(|(r, _)| r)
+                .unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                })
+        } else {
+            solve_open_shell_reference(method, &cfg, &ctx, &mol, &prep, &bounds, &rhf_config)
+        }
     } else if cfg.scf.df_guess_enabled() {
         // Opt-in DF-guess two-stage SCF (see
         // `ferric_scf::ladder::solve_rhf_with_df_guess`). Closed-shell only:
@@ -1054,18 +1066,7 @@ pub fn run(args: Vec<String>) {
             &proatom_gs_mult,
             &proatom,
         ),
-        "gw" => run_gw(
-            &cfg,
-            &ctx,
-            &mol,
-            &bs,
-            &prep,
-            op,
-            &bounds,
-            &rhf_config,
-            &result,
-            budget_bytes,
-        ),
+        "gw" => run_gw(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "bse-tda" => run_bse_tda(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "tdhf-static-polarizability" => {
             run_tdhf_static_polarizability(&cfg, &mol, &bs, &prep, op, &result, budget_bytes)
@@ -4493,36 +4494,48 @@ fn gw_open_shell_reference(
     bounds: &SchwarzBounds,
     rhf_config: &RhfConfig,
 ) -> Result<(ferric_scf::result::ScfResult, &'static str), String> {
-    let reference = cfg.gw.parse_reference()?;
+    let label = gw_open_shell_reference_label(cfg)?;
     let mut scf_cfg = rhf_config.clone();
     // MOM after 5 DIIS iters prevents orbital reordering on open-shell atoms.
     scf_cfg.mom_after_iter = 5;
-    let ks = cfg.rpa.xc.is_some();
-    let (result, label) = match reference {
-        config::GwReference::Uhf => (
-            solve_uhf(ctx, mol, prep, bounds, &scf_cfg),
-            if ks { "UKS" } else { "UHF" },
-        ),
-        config::GwReference::Rohf => (
-            solve_rohf(ctx, mol, prep, op, bounds, &scf_cfg),
-            if ks { "ROKS" } else { "ROHF" },
-        ),
+    let result = match cfg.gw.parse_reference()? {
+        config::GwReference::Uhf => solve_uhf(ctx, mol, prep, bounds, &scf_cfg),
+        config::GwReference::Rohf => solve_rohf(ctx, mol, prep, op, bounds, &scf_cfg),
     };
     result
         .map(|r| (r, label))
         .map_err(|e| format!("({label} reference): {e}"))
 }
 
+/// The name of the open-shell GW reference `gw_open_shell_reference` solves:
+/// UHF/ROHF, or UKS/ROKS when `[rpa] xc` is set.
+fn gw_open_shell_reference_label(cfg: &Config) -> Result<&'static str, String> {
+    let ks = cfg.rpa.xc.is_some();
+    Ok(match cfg.gw.parse_reference()? {
+        config::GwReference::Uhf => {
+            if ks {
+                "UKS"
+            } else {
+                "UHF"
+            }
+        }
+        config::GwReference::Rohf => {
+            if ks {
+                "ROKS"
+            } else {
+                "ROHF"
+            }
+        }
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_gw(
     cfg: &Config,
-    ctx: &ParallelContext,
     mol: &Molecule,
     bs: &BasisSet,
     prep: &PreparedBasis,
     op: Operator,
-    bounds: &SchwarzBounds,
-    rhf_config: &RhfConfig,
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
 ) {
@@ -4597,17 +4610,11 @@ fn run_gw(
     };
     let ha_to_ev = 27.211_386_245_988_f64;
     if mol.multiplicity > 1 {
-        // Open-shell path: re-run with UHF + MOM (same precedent as the
-        // "pdep-rpa" arm's open-shell dispatch) so the reference is
-        // converged, then dispatch to run_u_gw. Shadow `result` so it
-        // carries the correct (possibly UKS) SCF density.
-        //
-        // `[gw] reference = "rohf"` swaps the UHF solve for ROHF (ROKS with
-        // `[rpa] xc`); see `gw_open_shell_reference`.
-        let (result, ref_label) = gw_open_shell_reference(
-            cfg, ctx, mol, prep, op, bounds, rhf_config,
-        )
-        .unwrap_or_else(|e| {
+        // Open-shell path: `run()` already solved the reference through
+        // `gw_open_shell_reference` (UHF, or ROHF for `[gw] reference =
+        // "rohf"`; UKS/ROKS with `[rpa] xc`, MOM after 5 iterations), so
+        // `result` is that reference; dispatch to run_u_gw.
+        let ref_label = gw_open_shell_reference_label(cfg).unwrap_or_else(|e| {
             eprintln!("error: {e}");
             std::process::exit(1);
         });
@@ -4618,18 +4625,16 @@ fn run_gw(
         // None (HF reference) ⇒ no shift, matches run_u_gw's contract.
         let vxc_diag = match cfg.rpa.xc.as_deref() {
             Some(xc_name) => {
-                let (diag_a, diag_b) = ferric_gw::vxc_mo::vxc_diagonal_mo(
-                    mol, bs, xc_name, &result,
-                )
-                .unwrap_or_else(|e| {
-                    eprintln!("error: vxc_diagonal_mo failed: {e}");
-                    std::process::exit(1);
-                });
+                let (diag_a, diag_b) = ferric_gw::vxc_mo::vxc_diagonal_mo(mol, bs, xc_name, result)
+                    .unwrap_or_else(|e| {
+                        eprintln!("error: vxc_diagonal_mo failed: {e}");
+                        std::process::exit(1);
+                    });
                 Some((diag_a, diag_b))
             }
             None => None,
         };
-        let mut gw_result = ferric_gw::run_u_gw(mol, prep, &dfbs, op, &result, &rpa_cfg, &gw_cfg)
+        let mut gw_result = ferric_gw::run_u_gw(mol, prep, &dfbs, op, result, &rpa_cfg, &gw_cfg)
             .unwrap_or_else(|e| {
                 eprintln!("error: {e}");
                 std::process::exit(1);

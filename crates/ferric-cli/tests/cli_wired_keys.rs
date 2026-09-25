@@ -76,9 +76,10 @@ fn terf_dir() -> Option<String> {
 /// parallel tests never share a file).
 fn run_toml(tag: &str, body: &str) -> std::process::Output {
     let root = workspace_root();
-    let path = root
-        .join("target")
-        .join(format!("cli_wired_keys_{tag}.toml"));
+    let dir = root.join("target");
+    // Absent under a custom CARGO_TARGET_DIR or a nextest archive.
+    std::fs::create_dir_all(&dir).expect("create target/ for the temp toml");
+    let path = dir.join(format!("cli_wired_keys_{tag}.toml"));
     std::fs::write(&path, body).expect("write temp toml");
     Command::new(ferric_cli_bin())
         .arg(&path)
