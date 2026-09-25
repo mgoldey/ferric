@@ -234,8 +234,8 @@
     ],
     "bohr_in_angstrom": 0.52917721092,
     "generator": "scripts/validation/gen_thole.py",
-    "git_head": "f6a0e6399aa9580218085a4a10dae18a926ffbaa",
-    "generated_utc": "2026-09-25T17:37:58+00:00",
+    "git_head": "89090feb9043b2c1bf323549bd9db07ff74c7e93",
+    "generated_utc": "2026-09-25T18:09:24+00:00",
     "basis_check": {
       "nao": 24,
       "replica_self_overlap_max_dev": 4.440892098500626e-16,
@@ -251,31 +251,31 @@
       }
     }
   },
-  "energy": -76.05266004130293,
-  "e_pol": -2.5642002690626503e-06,
-  "energy_plain_embedding": -76.05265747710276,
-  "energy_difference_pol_minus_plain": -2.564200173083009e-06,
+  "energy": -76.0526600413028,
+  "e_pol": -2.5642002690626567e-06,
+  "energy_plain_embedding": -76.0526574771027,
+  "energy_difference_pol_minus_plain": -2.5642001020287353e-06,
   "induced_dipoles": [
     [
       0.01272066772930569,
-      -0.00962243055584989,
-      0.009574709667696142
+      -0.00962243055584992,
+      0.009574709667696156
     ]
   ],
   "far_site": {
     "distance_angstrom_from_qm_centroid": 30.0,
     "alpha_bohr3": 67.48334493949994,
     "e0_nonpolarized_at_site": [
-      0.00018850084020887145,
-      -0.00014258970511752672,
-      0.00014188255296963045
+      0.00018850084020887752,
+      -0.00014258970511755252,
+      0.00014188255296965842
     ],
-    "e_pol_classical_limit": -2.5642000729975983e-06,
-    "rel_diff_scf_e_pol_vs_classical": 7.64624625273882e-08,
+    "e_pol_classical_limit": -2.5642000729981913e-06,
+    "rel_diff_scf_e_pol_vs_classical": 7.646223377364645e-08,
     "mu_classical": [
-      0.012720667221200832,
-      -0.009622430255267636,
-      0.009574709262946443
+      0.012720667221201243,
+      -0.009622430255269376,
+      0.00957470926294833
     ]
   }
 }

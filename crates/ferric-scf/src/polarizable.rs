@@ -19,8 +19,8 @@
 //! ```text
 //! T_ij = 3 * lambda5(u_ij) * (r_hat (x) r_hat) / r_ij^3  -  lambda3(u_ij) * I / r_ij^3
 //! u_ij = r_ij / (alpha_i * alpha_j)^(1/6)
-//! lambda3 = 1 - exp(-a*u^3)
-//! lambda5 = 1 - (1 + a*u^3) * exp(-a*u^3)
+//! lambda3 = 1 - (1 + a*u + (a*u)^2/2) * exp(-a*u)
+//! lambda5 = lambda3 - (a*u)^3/6 * exp(-a*u)
 //! ```
 //!
 //! with damping parameter `a` (default 2.1304, Thole 1981); `thole_a: None`
@@ -140,7 +140,10 @@ use ferric_integrals::site_basis::SiteBasis;
 use ndarray::Array2;
 use ndarray_linalg::Solve;
 
-/// Thole damping parameter default (Thole, Chem. Phys. 59, 341 (1981)).
+/// Thole damping parameter default for the exponential-density screening in
+/// `thole_screening` (Thole, Chem. Phys. 59, 341 (1981); van Duijnen &
+/// Swart, J. Phys. Chem. A 102, 2399 (1998)). It belongs to that `exp(-a u)`
+/// form, not to the cubic `exp(-a u^3)` form, whose constant is ~0.39.
 pub const DEFAULT_THOLE_A: f64 = 2.1304;
 
 /// Default Gaussian exponent (Bohr^-2) for the induced-dipole's p-shell site
@@ -246,6 +249,19 @@ pub struct InductionResult {
     pub v_induced: Array2<f64>,
 }
 
+/// Thole's exponential-density screening (Thole 1981; van Duijnen & Swart,
+/// J. Phys. Chem. A 102, 2399 (1998)), the form `DEFAULT_THOLE_A` belongs to:
+/// each induced dipole is smeared as `rho(u) ~ exp(-a u)`, `u = r/(alpha_i
+/// alpha_j)^(1/6)`. Returns `(lambda3, lambda5)` for `v = a u`:
+/// `lambda3 = 1 - (1 + v + v^2/2) e^-v`, `lambda5 = lambda3 - v^3/6 e^-v`.
+/// The pair satisfies `lambda5 = lambda3 - (u/3) d lambda3/du`, as any
+/// spherically smeared dipole must.
+fn thole_screening(v: f64) -> (f64, f64) {
+    let e = (-v).exp();
+    let lam3 = 1.0 - (1.0 + v + 0.5 * v * v) * e;
+    (lam3, lam3 - v * v * v / 6.0 * e)
+}
+
 /// Thole-damped dipole field tensor `T_ij` (3x3, a.u.): the field at site
 /// `i` of a unit point dipole at `j` is `T_ij mu_j`, so head-to-tail dipoles
 /// reinforce each other. `thole_a: None` gives the bare (undamped) tensor.
@@ -265,9 +281,7 @@ fn thole_tensor(
         Some(a) => {
             let s = (alpha_i * alpha_j).powf(1.0 / 6.0);
             let u = r / s;
-            let au3 = a * u * u * u;
-            let expo = (-au3).exp();
-            (1.0 - expo, 1.0 - (1.0 + au3) * expo)
+            thole_screening(a * u)
         }
     };
     let inv_r3 = 1.0 / (r2 * r);
@@ -1150,4 +1164,27 @@ fn point_charge_field_grad_wrt_site(
     }
     let g_charge = [-g_site[0], -g_site[1], -g_site[2]];
     (g_site, g_charge)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::thole_screening;
+
+    /// lambda5 = lambda3 - (u/3) d lambda3/du must hold for a spherically
+    /// smeared dipole; a mismatched (lambda3, lambda5) pair fails it.
+    #[test]
+    fn thole_screening_pair_is_consistent() {
+        for &v in &[0.05, 0.3, 1.0, 2.1304, 4.0, 9.0] {
+            let h = 1e-5;
+            let d3 = (thole_screening(v + h).0 - thole_screening(v - h).0) / (2.0 * h);
+            let (l3, l5) = thole_screening(v);
+            // d/du = a d/dv and u = v/a, so (u/3) d/du = (v/3) d/dv.
+            let rhs = l3 - v / 3.0 * d3;
+            assert!((l5 - rhs).abs() < 1e-9, "v={v}: lambda5 {l5} vs {rhs}");
+            assert!((0.0..=1.0).contains(&l3) && l5 <= l3, "v={v}: {l3} {l5}");
+        }
+        // Far apart the damping vanishes.
+        let (l3, l5) = thole_screening(60.0);
+        assert!((1.0 - l3).abs() < 1e-20 && (1.0 - l5).abs() < 1e-20);
+    }
 }

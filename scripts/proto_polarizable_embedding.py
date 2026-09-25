@@ -209,8 +209,9 @@ def thole_tensor(ri, rj, alpha_i, alpha_j, thole_a):
         T_ij = 3 * lambda5 * (r_hat (x) r_hat) / r^3 - lambda3 * I / r^3
 
     with u = r / (alpha_i alpha_j)^(1/6),
-         lambda3 = 1 - exp(-a u^3),
-         lambda5 = 1 - (1 + a u^3) exp(-a u^3).
+         v = a u,
+         lambda3 = 1 - (1 + v + v^2/2) exp(-v),
+         lambda5 = lambda3 - v^3/6 exp(-v)   (Thole's exponential density).
 
     Undamped (`thole_a=None`): lambda3 = lambda5 = 1 (bare dipole tensor).
     """
@@ -223,10 +224,10 @@ def thole_tensor(ri, rj, alpha_i, alpha_j, thole_a):
     else:
         s = (alpha_i * alpha_j) ** (1.0 / 6.0)
         u = r / s
-        au3 = thole_a * u**3
-        expo = math.exp(-au3)
-        lam3 = 1.0 - expo
-        lam5 = 1.0 - (1.0 + au3) * expo
+        v = thole_a * u
+        expo = math.exp(-v)
+        lam3 = 1.0 - (1.0 + v + 0.5 * v * v) * expo
+        lam5 = lam3 - v**3 / 6.0 * expo
     eye = np.eye(3)
     outer = np.outer(rhat, rhat)
     return (3.0 * lam5 * outer - lam3 * eye) / r**3
@@ -610,26 +611,11 @@ def main():
     # ---- three_sites: three off-axis sites, damped (default a=2.1304).
     #
     # Sites 0 and 1 are DELIBERATELY placed 1.1 Bohr apart with alpha=0.5
-    # Bohr^3 each: a*u^3 = 5.67, exp(-a*u^3) = 0.0034 (lambda3 = 0.9966,
-    # lambda5 differs from 1 by a comparable margin), so Thole damping is a
-    # genuine, non-negligible correction to T_01 — at the ORIGINAL off-axis
-    # placement tried during development (all pairs >4 Bohr apart, alpha
-    # ~1-1.4 Bohr^3) every pairwise a*u^3 was >1900 (exp(-au^3) machine
-    # zero), making the damped and undamped energies agree to 1e-13
-    # (floating-point noise, not evidence the damping code path works: see
-    # "too clean is a stop condition" in CLAUDE.md's Experimental
-    # Protocol). A CLOSER/more-polarizable placement was also tried
-    # (r=1.22 Bohr, alpha=1.44/0.90) and hit the Thole/Applequist
-    # POLARIZATION CATASTROPHE: max|alpha*T_eigenvalue| = 1.26 > 1 makes
-    # the (I - alpha*T) induction matrix indefinite, and the dense solve
-    # returned E_pol = +1.98 Ha (unphysical positive, runaway feedback) —
-    # not a bug, a genuine instability of the undamped-enough Applequist
-    # model at short range/high polarizability. This case's r=1.1 Bohr,
-    # alpha=0.5 pair keeps max|alpha*T_eigenvalue| = 0.73 (a comfortable
-    # margin below the 1.0 catastrophe threshold) while still exercising a
-    # non-trivial lambda3/lambda5. Both sites 0/1 stay >=3.1 Bohr from
-    # every water atom (safely outside the link-atom/overpolarization
-    # danger zone).
+    # Bohr^3 each, so Thole damping is a large correction to T_01: the damped
+    # E_pol is -0.066 Ha against -0.213 Ha undamped (three_sites_nodamp).
+    # Well-separated sites (>4 Bohr, alpha ~1 Bohr^3) would make the damped and
+    # undamped energies agree to noise and leave the damping code path
+    # untested. Both sites 0/1 stay >=3.1 Bohr from every water atom.
     three_sites = [
         (3.0, -2.0, 4.0, 0.5, 0.5),
         (2.27725463, -1.59345573, 3.27725463, -0.3, 0.5),

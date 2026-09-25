@@ -37,7 +37,8 @@
 //! `μ = B⁻¹ E0`, `B_ii = I/α_i`, `B_ij = −T_ij` (polarizable.rs:359-413);
 //! `E0 = E_QM(D) + E_perm`, permanent fields undamped, a site skips its own
 //! charge and the charges of excluded partner sites (polarizable.rs:285-354);
-//! exponential Thole `λ3 = 1 − e^{−a u³}`, `λ5 = 1 − (1 + a u³) e^{−a u³}`,
+//! Thole's exponential density, `v = a u`, `λ3 = 1 − (1 + v + v²/2) e^{−v}`,
+//! `λ5 = λ3 − v³/6 e^{−v}`,
 //! `u = r/(α_i α_j)^{1/6}`, `a = 2.1304` (polarizable.rs:144, 262-271);
 //! `E_pol = −½ Σ μ·E0` as a standalone energy term (polarizable.rs:556-562,
 //! rhf.rs:1498, uhf.rs:940); Fock term `V = −Σ μ·⟨(r−R)/|r−R|³⟩` with no ½,
@@ -91,11 +92,11 @@
 //!
 //! * `thole_tensor` back to `(λ3 I − 3λ5 r̂r̂)/r³` (the opposite sign): all
 //!   three `thole_*` tests, each landing on the `negated_tensor` control.
-//! * `(1.0 - expo, 1.0 - (1.0 + au3) * expo)` → `(1.0 - expo, 1.0 - expo)`
-//!   (wrong λ5): `thole_h2o_w4_noexcl_ccpvdz`, the case where damping is
-//!   resolvable.
+//! * `thole_screening` returning `(lam3, lam3)` (wrong λ5): all three.
+//! * `thole_screening` back to the cubic `1 − e^{−a u³}` form with the same
+//!   `a`: all three.
 //! * `let coeff = -mu[c] * norm_p;` → `mu[c] * norm_p` (wrong-sign Fock term):
-//!   all three `thole_*` tests.
+//!   all three.
 //! * `g[k] += -1.0 * d_dot_dr;` → `-0.5 * d_dot_dr` (tensor-derivative term):
 //!   the MM rows of both water tests.
 //!

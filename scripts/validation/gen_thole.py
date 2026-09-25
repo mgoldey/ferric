@@ -22,8 +22,9 @@ time of writing)
     from i (polarizable.rs:304-311, colocation by position). Permanent
     fields are NOT damped.
   * Thole damping (polarizable.rs:262-271): exponential Thole,
-    u = r/(alpha_i alpha_j)^(1/6), lambda3 = 1 - exp(-a u^3),
-    lambda5 = 1 - (1 + a u^3) exp(-a u^3), default a = 2.1304
+    u = r/(alpha_i alpha_j)^(1/6), v = a u (Thole's exponential density),
+    lambda3 = 1 - (1 + v + v^2/2) exp(-v), lambda5 = lambda3 - v^3/6 exp(-v),
+    default a = 2.1304
     (polarizable.rs:144), thole_a = None -> lambda3 = lambda5 = 1.
   * E_pol = -1/2 sum_i mu_i . E0_i (polarizable.rs:556-562), added to the
     SCF total energy as a standalone term (rhf.rs:1498, uhf.rs:940).
@@ -34,16 +35,14 @@ time of writing)
     p-shell Gaussian of width 0.01 Bohr; the reference uses exact
     point-dipole integrals.
 
-THE TENSOR SIGN (the one place the reference deliberately does NOT copy
-ferric). ferric's T_ij = (lambda3 I - 3 lambda5 r^ r^)/r^3 (polarizable.rs:277)
-enters mu = alpha (E0 + sum_j T_ij mu_j). The physical field of a point
-dipole mu_j at R_i is -grad phi, phi(r) = mu_j.(r - R_j)/|r - R_j|^3, which is
-(3 r^ r^ - I) mu_j / r^3 = -T_ij mu_j. The generator derives the tensor from
--grad phi by finite difference (`self_check_dipole_tensor`, refused if the
-closed form disagrees), so the REFERENCE uses T_phys = (3 lambda5 r^ r^ -
-lambda3 I)/r^3 (the Applequist/Thole convention). ferric's convention is kept
-as the diagnostic control `negated_tensor`: if ferric matches that control
-instead of the reference, the defect is the sign on polarizable.rs:277/392.
+THE TENSOR SIGN. Both ferric and this reference use the dipole field tensor
+T_ij = (3 lambda5 r^ r^ - lambda3 I)/r^3 in mu = alpha (E0 + sum_j T_ij mu_j):
+the field of a point dipole mu_j at R_i is -grad phi, phi(r) = mu_j.(r -
+R_j)/|r - R_j|^3. The generator derives the tensor from -grad phi by finite
+difference (`self_check_dipole_tensor`, refused if the closed form
+disagrees). The control `negated_tensor` (`sign=-1`) is the opposite sign, a
+diagnostic: a ferric energy that lands on it instead of on the reference
+means the tensor sign has regressed.
 
 TOTAL ENERGY (RHF; UHF identical with D = D_a + D_b):
   E = Tr(h_MM D) + 1/2 Tr(G[D] D) + E_nuc + E_nuc-MM + E_pol(D)
@@ -118,13 +117,13 @@ ALPHA_A3 = {"O": 0.837, "H": 0.496}
 Q_TIP3P = {"O": -0.834, "H": 0.417}
 FAR_ALPHA_A3 = 10.0
 FAR_DIST_A = 30.0
-# No-exclusion case: with exp(-a u^3) damping at a = 2.1304, the full
-# ALPHA_A3 values put every intramolecular O-H site pair in the polarization
-# catastrophe (B indefinite, min eigenvalue -0.094; the SCF then lands on a
-# saddle with an MM-only E_pol of +10 Ha). 0.3 x ALPHA_A3 is the largest
-# round scale with a comfortable positive-definite margin (min eig 0.32) at
-# which the damping still moves the MM-only E_pol (by 2.3e-4 Ha).
-ALPHA_SCALE_NOEXCL = 0.3
+# No-exclusion case: intramolecular O-H site pairs sit 1.8 Bohr apart. At
+# 0.5 x ALPHA_A3 the damped induction matrix B is comfortably positive
+# definite (min eigenvalue 0.287) AND so is the undamped one (0.028), so the
+# no-damping control is a physical state rather than a polarization
+# catastrophe. (At full ALPHA_A3 the damped B is still positive definite,
+# 0.123, but the undamped one is not, -0.200.)
+ALPHA_SCALE_NOEXCL = 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -249,9 +248,10 @@ def thole_tensor_phys(ri, rj, ai, aj, a, sign=1.0):
         l3 = l5 = 1.0
     else:
         u = r / (ai * aj) ** (1.0 / 6.0)
-        au3 = a * u**3
-        ex = np.exp(-au3)
-        l3, l5 = 1.0 - ex, 1.0 - (1.0 + au3) * ex
+        v = a * u
+        ex = np.exp(-v)
+        l3 = 1.0 - (1.0 + v + 0.5 * v * v) * ex
+        l5 = l3 - v**3 / 6.0 * ex
     return sign * (3.0 * l5 * np.outer(rh, rh) - l3 * np.eye(3)) / r**3
 
 
