@@ -36,7 +36,6 @@ with HF, LDA, PBE and B3LYP (see the anchor below). These print no warning.
 
 | `method.kind` | Grade | What is and is not checked |
 |---|---|---|
-| `gw` | Smoke | The committed H2O/cc-pVDZ tests compare against MOLGW and PySCF `gw_ac` at 0.2–0.3 eV bars and are `#[ignore]`d; most other assertions are range bands. Treat results as ±0.3 eV. |
 | `gw` | Smoke | Quasiparticle energies are compared with PySCF `gw_ac`/`ugw_ac` only at matched settings (`[rpa] n_quad = 100`, `trunc_thresh = 0`; see the G0W0 anchor below). The CLI defaults (`n_quad = 20`, `trunc_thresh = 1e-4`) are coarser: the 20-point frequency grid alone moves the H2O/cc-pVDZ G0W0@PBE HOMO by 13 meV, and truncation is not validated. |
 | `bse-tda` | Smoke | Only excitation ordering and a physicality gate; inherits the GW gap error. |
 | `tdhf-static-polarizability` | Smoke | Static α at a physical scissor (0.36 Ha) is 5.20 a.u. for water/cc-pVDZ against DOSD 9.64 (−46%); the same kernel gives C6 ~63% low. |
