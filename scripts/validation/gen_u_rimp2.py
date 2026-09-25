@@ -45,7 +45,7 @@ all electrons correlated; HO2 also with frozen core 2 (O, O 1s) in block
 
 Run (light; seconds per system):
     OPENBLAS_NUM_THREADS=1 scripts/validation/run_slot.sh --light -- \\
-        /home/matt/qc/ferric/.venv/bin/python scripts/validation/gen_u_rimp2.py [system ...]
+        python scripts/validation/gen_u_rimp2.py [system ...]
 """
 
 from __future__ import annotations

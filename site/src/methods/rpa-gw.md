@@ -71,7 +71,7 @@ per spin as for U-PDEP-RPA.
 |---|---|---|---|
 | G0W0@HF, G0W0@PBE, U-G0W0@UHF, ECP, COHSEX, evGW₀, evGW quasiparticle energies (HOMO−2 to LUMO+2) | H2O, NH3, N2, OH, CH3, NH2, O2, CH2, I2, Xe, Ag2 / cc-pVDZ, aug-cc-pVDZ(-PP) | PySCF `gw_ac`/`ugw_ac` at matched settings (`[rpa] n_quad = 100`, `trunc_thresh = 0`); see [What is validated](../reference/validation.md) | `ferric-gw/tests/validation_gw.rs` |
 | G0W0@PBE HOMO IP | H2O / cc-pVDZ | PySCF `gw_ac`, 11.1714 eV; asserted to <0.1 eV | `ferric-gw/tests/g0w0_pbe_h2o.rs` |
-| U-G0W0@UKS/PBE quasiparticle energies, Σx − v_xc inside each spin's equation | OH, CH3, NH2 / cc-pVDZ | PySCF `ugw_ac` Σc(ef + iω), quasiparticle equation solved in numpy; MEASURE | `ferric-gw/tests/validation_gw.rs` |
+| U-G0W0@UKS/PBE quasiparticle energies, Σx − v_xc inside each spin's equation | OH, CH3, NH2 / cc-pVDZ | PySCF `ugw_ac` Σc(ef + iω), quasiparticle equation solved in numpy: ≤2.6e-8 Ha on orbitals whose quasiparticle equation has a single root | `ferric-gw/tests/validation_gw.rs` |
 | Σx − v_xc placement in U-GW (inside the quasiparticle equation; none for a UHF reference) | OH / STO-3G | internal: shifted residual, bit-identity of the no-shift path | `ferric-gw/tests/u_gw_ks_shift.rs` |
 | U-G0W0@UHF α-HOMO IP | OH / cc-pVDZ | ~13–14 eV window, brackets experiment 13.02 eV | `ferric-gw/tests/oh_u_g0w0.rs` |
 
