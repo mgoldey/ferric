@@ -3474,6 +3474,7 @@ pub fn load_config(path: &str) -> Result<Config, String> {
         .validate_amplitude_knobs()
         .map_err(|e| format!("{path}: {e}"))?;
     cfg.validate_loaded_values()
+        .map_err(|e| format!("{path}: {e}"))?;
     Ok(cfg)
 }
 
