@@ -217,7 +217,8 @@ AO lists (`cosx_half_transform = "sparse"`, the default). At def2-SVP the K
 build grows as N^1.29–N^1.32 between C20 and C48; that is one family of
 molecules in one basis.
 
-COSX's energy error at the default grid is 5.1e-6 Ha on water/cc-pVDZ,
+COSX's energy error at the default grid is about 5e-6 Ha on water/cc-pVDZ
+(4.9e-6 in `cosx_k_anchors.rs`, 5.1e-6 in the ORCA comparison run),
 1.7e-4 Ha on butane/def2-SVP and 1.2e-4 Ha on butane/def2-TZVP (against exact
 exchange). ORCA 6.1.1's COSX at its own default grid gives 4.9e-6, 3.8e-5 and
 1.3e-5 Ha on the same systems and bases, although ferric's default grid has
