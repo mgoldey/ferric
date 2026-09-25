@@ -4,8 +4,7 @@ The largest method family here. Every variant is density-fitted (RI): each
 needs an orbital basis and a matching RI auxiliary basis (`[mp2] auxbasis`, or
 the `auxbasis` argument in Python). Formal cost is O(N⁵) for the RI-MP2
 transformation. Grades per `method.kind` are on
-[What is validated](../reference/validation.md) and
-[Capabilities](../reference/capabilities.md). The `[mp2]` keys are in
+[Capabilities and validation](../reference/validation.md). The `[mp2]` keys are in
 [Input file](../reference/input.md#mp2).
 
 ## RI-MP2
@@ -113,9 +112,11 @@ MP2 + dRPA; numbers at production ω are not established on new systems.
 
 **OO-RI-MP2** (`oo-rimp2`, `examples/water-oo-rimp2.toml`, `run_oo_rimp2`):
 orbitals optimized for the MP2 Lagrangian, with a level-shifted Newton step,
-orbital DIIS, Cayley rotations and backtracking. Smoke: stationarity and a
-vanishing orbital gradient are checked, but there is no external
-absolute-energy reference.
+orbital DIIS, Cayley rotations and backtracking. Proven (narrow): the energy
+matches an independent numpy OO-RI-MP2 to 7.5e-13 Ha (H2O, NH3, UHF CH3 at
+cc-pVDZ), and the closed-shell analytic gradient matches a finite difference of
+its own energy to 8e-9 Ha/Bohr. ORCA 6.1.1's OO-RI-MP2 stops 3.7e-8 to
+7.0e-8 Ha above the same minimum, so it is only a loose cross-check.
 
 **MP3** (`mp3`, `examples/water-mp3.toml`, `run_mp3`): spin-orbital
 third-order Møller–Plesset through the `einsum!` framework. Proven.

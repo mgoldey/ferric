@@ -2,9 +2,8 @@
 
 Start from what you want to compute. Each row names a method that ferric
 implements for that task, where to run it (CLI `method.kind` or Python only),
-how far it is validated, and a shipped example to copy. Grades are defined on
-[Capabilities](../reference/capabilities.md); the anchors behind them are on
-[What is validated](../reference/validation.md). Cost is given as formal scaling
+how far it is validated, and a shipped example to copy. Grades, and the anchors behind them, are on
+[Capabilities and validation](../reference/validation.md). Cost is given as formal scaling
 with system size N, not as timings.
 
 This page only recommends what the code and its tests support. Where ferric
@@ -16,7 +15,7 @@ has no validated option for a task, the row says so.
 |---|---|---|---|---|---|
 | Geometry optimization | KS-DFT (e.g. PBE, B3LYP) or RHF, `task = "optimize"` | CLI, Python (`run_optimize` is RHF) | Proven | N⁴ | `h2-lda-opt.toml`, `h2_opt.toml` |
 | Harmonic frequencies | KS-DFT or RHF/UHF/ROHF, `task = "frequencies"` (finite differences of the analytic gradient, 6N gradients) | CLI, Python `run_frequencies` | energies Proven; check the printed Hessian asymmetry | 6N × N⁴ | `water-frequencies.toml` |
-| Transition state | `run_saddle` (P-RFO), then `run_irc` to confirm which minima it connects | Python only, closed shell | see [Capabilities](../reference/capabilities.md#python-only-capabilities) | ~2(6N+1) gradients + steps | — |
+| Transition state | `run_saddle` (P-RFO), then `run_irc` to confirm which minima it connects | Python only, closed shell | see [Capabilities and validation](../reference/validation.md#python-only-capabilities) | ~2(6N+1) gradients + steps | — |
 | Conformer or reaction energies, routine | KS-DFT + D3(BJ) | CLI `ksdft` + `[dft] dispersion = "d3bj"`, Python `run_dft(dispersion=...)` | DFT Proven; D3(BJ) matches simple-dftd3 to <1e-12 Ha | N⁴ (DFT) | `water-pbe-d3bj.toml` |
 | Correlated energies, small to medium | RI-MP2 | CLI `rimp2`, Python `run_rimp2` | Proven | N⁵ | `water-rimp2.toml` |
 | Correlated energies, benchmark quality, small | CCSD(T) (closed shell) | Python `run_ccsd_t` only; CCSD also CLI `ccsd` | CCSD Proven; (T) matches PySCF ~1e-6 Ha on H2O/cc-pVDZ | N⁶ / N⁷ | `water-ccsd.toml` (H2) |
@@ -29,7 +28,7 @@ has no validated option for a task, the row says so.
 | Implicit solvation | IEF-PCM (CLI `[pcm]`, Python `solvent=`) or COSMO (CLI `[cosmo]`) | see [SCF and DFT](../methods/scf.md#implicit-solvation) | both cross-checked against PySCF on water | SCF cost | — |
 | Embedding in a protein or solvent | QM/MM | Python `run_qmmm`; CLI `[qmmm]` (point charges) | see [QM/MM](./qmmm.md) | SCF cost | `water-qmmm.toml` |
 | Electron-transfer coupling | constrained DFT + Wu–Van Voorhis \\( H_{ab} \\) | Python `run_cdft`, `cdft_coupling` (no CLI) | no external reference | SCF cost × outer λ loop | — |
-| Atomic charges, ESP | Löwdin, Hirshfeld, CHELPG, RESP; ESP at nuclei or on the surface | Python | see [Capabilities](../reference/capabilities.md#python-only-capabilities) | SCF cost | — |
+| Atomic charges, ESP | Löwdin, Hirshfeld, CHELPG, RESP; ESP at nuclei or on the surface | Python | see [Capabilities and validation](../reference/validation.md#python-only-capabilities) | SCF cost | — |
 
 Notes on the table:
 
@@ -74,7 +73,7 @@ through `[basis] path` as a Gaussian-94 file (orbital basis only).
   differences.
 - **Open-shell coupled cluster, open-shell TS search and open-shell KS-DFT from
   the CLI** are not available. See
-  [Capabilities: open shells in the CLI](../reference/capabilities.md#open-shells-in-the-cli).
+  [Capabilities and validation: open shells in the CLI](../reference/validation.md#open-shells-in-the-cli).
 - **TDDFT with the XC kernel** exists only as a library-only spike; the CLI
   and Python TDDFT omit it. See
   [RPA, GW and excited states](../methods/rpa-gw.md#tddft-and-tda).

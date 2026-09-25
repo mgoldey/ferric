@@ -5,7 +5,7 @@ energies, GW quasiparticle energies, BSE and TDDFT excitations, and
 polarizabilities and \\( C_6 \\) coefficients. All need an RI auxiliary basis
 (`[rpa] auxbasis`). The `[rpa]`, `[gw]` and `[tddft]` keys are in
 [Input file](../reference/input.md#rpa); grades are on
-[What is validated](../reference/validation.md).
+[Capabilities and validation](../reference/validation.md).
 
 ## What PDEP does in ferric
 

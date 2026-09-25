@@ -72,12 +72,11 @@ and the [Sharp bits](https://matthew.thegoldeys.com/ferric/using/sharp-bits.html
 
 Which of these run from the CLI, which are Python-only, and which support open
 shells or gradients is tabulated in
-[Capabilities](https://matthew.thegoldeys.com/ferric/reference/capabilities.html).
+[Capabilities and validation](https://matthew.thegoldeys.com/ferric/reference/validation.html).
 
 > **Implemented ≠ validated.** Working code is not a checked number. Each
 > capability is graded (Proven / Smoke / Spike) against independent references
-> in [What is validated](https://matthew.thegoldeys.com/ferric/reference/validation.html).
-> Read it before relying on a result.
+> on the same page. Read it before relying on a result.
 
 ## Why it exists
 

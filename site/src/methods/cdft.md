@@ -103,7 +103,7 @@ the constraint composes with an external point charge. The Python tests
 (`crates/ferric-python/tests/test_cdft.py`) rerun those configurations
 through the bindings and check `cdft_coupling` against an independent
 transition-density construction. Treat results as unvalidated; see
-[Capabilities](../reference/capabilities.md).
+[Capabilities and validation](../reference/validation.md#python-only-capabilities).
 
 ## The response connection
 

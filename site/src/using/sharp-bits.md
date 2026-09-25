@@ -137,7 +137,7 @@ build the basis themselves for each geometry, so they take its name.
 ## Not everything is on the CLI
 
 The CLI runs the `method.kind`s in the
-[capability matrix](../reference/capabilities.md), with `task` = `energy`,
+[capability matrix](../reference/validation.md#cli-methodkind-matrix), with `task` = `energy`,
 `optimize` or `frequencies`. It also has `[qmmm]`, `[cosmo]`,
 `[external_potential]` and `[dft] grid_prune`. These capabilities are
 Python-only:
@@ -208,5 +208,5 @@ its own cgroup, for example with `scripts/ferric-limited -- ferric input.toml`
 
 A method listed on these pages exists and runs. How closely its numbers have
 been checked against an independent reference differs a lot from method to
-method. Look up the grade in [What is validated](../reference/validation.md)
+method. Look up the grade in [Capabilities and validation](../reference/validation.md)
 before relying on a number.

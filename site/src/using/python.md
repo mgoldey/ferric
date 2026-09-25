@@ -263,7 +263,7 @@ example `xc="pbe"`); by default it corrects HOMO−2 through LUMO+2. Check
 functionals are refused because their kernel is not built. With no
 `functional`, it is CIS (`method="tda"`) or TDHF (`method="casida"`). Both
 methods match PySCF `TDA`/`TDDFT` to 1e-3 eV on the systems listed in
-[What is validated](../reference/validation.md#anchors).
+[Capabilities and validation](../reference/validation.md#anchors).
 
 ## Properties and charges
 
@@ -367,8 +367,8 @@ purpose line is condensed from that item's doc comment, or from its code where
 it has none. `help(ferric.<name>)` shows the full docstring and signature.
 
 "CLI" gives the matching `method.kind`, task or TOML section, or "—" when the
-capability is Python-only. How well each one is validated is in the
-[capability matrix](../reference/capabilities.md).
+capability is Python-only. How well each one is validated is on
+[Capabilities and validation](../reference/validation.md).
 
 ### Molecules and basis sets
 

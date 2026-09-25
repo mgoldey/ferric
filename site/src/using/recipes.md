@@ -122,7 +122,7 @@ name = "def2-svp"
 kind = "rhf"
 ```
 
-For every `method.kind`, see [Capabilities](../reference/capabilities.md). For
+For every `method.kind`, see [Capabilities and validation](../reference/validation.md). For
 every TOML key, see the [input reference](../reference/input.md).
 
 ---
@@ -220,7 +220,7 @@ functional = "B3LYP"
 max_steps = 30
 ```
 
-[Capabilities](../reference/capabilities.md) lists which methods have analytic
+[Capabilities and validation](../reference/validation.md) lists which methods have analytic
 gradients. Harmonic frequencies use `task = "frequencies"` (finite differences
 of the analytic gradient; see `examples/water-frequencies.toml`).
 

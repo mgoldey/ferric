@@ -17,7 +17,7 @@ commit `4b64e6ce`. Where a default is applied at the point of use rather than
 in `config.rs`, it was read from `crates/ferric-cli/src/lib.rs` at the same
 commit. If the code and this page disagree, the code wins. For which
 `method.kind` values exist and what each supports, see
-[Capabilities](./capabilities.md).
+[Capabilities and validation](./validation.md).
 
 Units follow the code: `[molecule]` geometries are Å (XYZ), point charges and
 cutoffs named `*_bohr` are Bohr, keys named `*_angstrom` or documented as Å are
@@ -44,7 +44,7 @@ auxbasis = "cc-pvdz-ri"
 |---|---|---|---|---|
 | `xyz` | string | **required** | path | Standard XYZ in Å, relative to the working directory. Not read when `[qmmm]` is present (the PQR supplies the geometry). |
 | `charge` | integer | `0` | | With `[qmmm]`, applies to the QM region. |
-| `multiplicity` | integer | `1` | ≥ 1 | Read by `uhf`, `rohf`, and the UHF fallback of `pdep-rpa`/`gw`/`mp2-v`. Several closed-shell kinds refuse `> 1`. See [open shells](./capabilities.md#open-shells-in-the-cli). |
+| `multiplicity` | integer | `1` | ≥ 1 | Read by `uhf`, `rohf`, and the UHF fallback of `pdep-rpa`/`gw`/`mp2-v`. Several closed-shell kinds refuse `> 1`. See [open shells](./validation.md#open-shells-in-the-cli). |
 
 ## `[basis]` (required)
 
@@ -63,7 +63,7 @@ same table: `cc-pvdz-ri`, `cc-pvtz-rifit`, `aug-cc-pv{d,t,q}z-rifit`,
 
 | Key | Type | Default | Allowed values | Notes |
 |---|---|---|---|---|
-| `kind` | string | **required** | `rhf` `uhf` `rohf` `ksdft` `rimp2` `lmp2` `lmp2-direct` `mp3` `oo-rimp2` `att-rimp2` `mp2-v` `scs-mp2` `scs-mp2-2terfc` `laplace-mp2` `laplace-sos-mp2` `pdep-rpa` `rs-mp2-rpa` `gw` `bse-tda` `tdhf-static-polarizability` `ccsd` `ccd` `ccsd(t)` `linlccd` `linlccd-amplitude` `drpa` `wb97x-l-v` `b2plyp` `dsd-pbep86` `tda` `tddft` | Any other value is an error. Smoke- and Spike-grade kinds print a `[warning]` grade line on stderr; Proven kinds and the ungraded `lmp2`, `lmp2-direct` and `laplace-sos-mp2` print none (see [What is validated](./validation.md#grades)). |
+| `kind` | string | **required** | `rhf` `uhf` `rohf` `ksdft` `rimp2` `lmp2` `lmp2-direct` `mp3` `oo-rimp2` `att-rimp2` `mp2-v` `scs-mp2` `scs-mp2-2terfc` `laplace-mp2` `laplace-sos-mp2` `pdep-rpa` `rs-mp2-rpa` `gw` `bse-tda` `tdhf-static-polarizability` `ccsd` `ccd` `ccsd(t)` `linlccd` `linlccd-amplitude` `drpa` `wb97x-l-v` `b2plyp` `dsd-pbep86` `tda` `tddft` | Any other value is an error. Smoke- and Spike-grade kinds print a `[warning]` grade line on stderr; Proven kinds and the ungraded `lmp2`, `lmp2-direct` and `laplace-sos-mp2` print none (see [Capabilities and validation](./validation.md#grades)). |
 | `task` | string | `"energy"` | `energy` `optimize` `frequencies` | `optimize`: `rhf` `ksdft` `uhf` `rohf` `rimp2` `pdep-rpa` only. `frequencies`: `rhf` `ksdft` `uhf` `rohf` only. |
 
 ## `[scf]`

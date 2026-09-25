@@ -329,7 +329,7 @@ rank anything.
 
 ## Before publishing any number
 
-Check the capability's grade in [Capabilities](../reference/capabilities.md)
-and [What is validated](../reference/validation.md). A method being available
+Check the capability's grade in
+[Capabilities and validation](../reference/validation.md). A method being available
 from the CLI doesn't mean its numbers are production-grade. The grades
 are Proven, Proven (narrow), Smoke and Spike; a few kinds are not graded.
