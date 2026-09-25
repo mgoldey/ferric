@@ -352,9 +352,11 @@ reference cell (in Å, like every XYZ). Energies are Hartree per cell.
 
 `method.kind` must be `rhf`, `uhf`, `rohf`, `ksdft`, `rimp2` (periodic MP2)
 or `pdep-rpa` (periodic dRPA). `rhf`/`uhf`/`rohf` with `[dft] functional` run
-RKS/UKS/ROKS. Any other kind is an error. `task = "optimize"` works for
-Gamma-point RHF with `jk = "dense"` only, at a fixed lattice.
-`task = "frequencies"` is an error.
+RKS/UKS/ROKS. Any other kind is an error. `task = "optimize"` works at the
+Gamma point for the SCF routes (RHF, UHF, ROHF, RKS, UKS, ROKS) with either
+`jk`: it moves the atoms at a fixed lattice using the analytic periodic
+force, and prints the final gradient (Hartree/Bohr per cell). It is an error
+with `kmesh` and for `rimp2`/`pdep-rpa`. `task = "frequencies"` is an error.
 
 The periodic run reads only `[cell]`, `[scf]` `max_iter`, `[scf]`
 `density_conv` (Gamma point) or `energy_conv` (k-point mesh), `[dft]`

@@ -23,15 +23,22 @@ use ferric_pbc::dense_aft::DEFAULT_DENSE_AFT_PRECISION;
 use ferric_pbc::drpa::DEFAULT_GAMMA_DRPA_QUAD_POINTS;
 use ferric_pbc::kcorr::DEFAULT_KDRPA_QUAD_POINTS;
 use ferric_pbc::{
-    gamma_drpa, gamma_mp2, gamma_rhf_gradient, gamma_rks, gamma_rohf, gamma_roks, gamma_uhf,
-    gamma_uks, kpoint_drpa, kpoint_mp2, periodic_hcore, periodic_hcore_kpts, solve_krhf,
-    solve_krhf_injected, solve_kuhf, Cell, DenseAftEri, ExxDiv, GammaDrpaConfig,
-    GammaDrpaIntegrals, GammaMp2Config, GammaMp2Integrals, GammaRksConfig, GammaRohfConfig,
-    GammaRoksConfig, GammaUhfConfig, GammaUhfIntegrals, GammaUksConfig, KCorrIntegrals,
-    KDenseAftConfig, KDenseAftEri, KDenseAftPairs, KDrpaConfig, KDrpaEnergy, KJkKind, KMp2Config,
-    KPointInjection, KPointMesh, KRhfConfig, KRsGdf, KRsGdfConfig, KScfConfig, KScfResult,
-    KUhfConfig, MeshCentring, Mp2Denominators, PbcTimings, PeriodicGridConfig, PeriodicHcore,
-    PeriodicHcoreConfig, RsGdf, RsGdfConfig, StageClock,
+    gamma_drpa, gamma_mp2, gamma_rks, gamma_rohf, gamma_roks, gamma_uhf, gamma_uks, kpoint_drpa,
+    kpoint_mp2, periodic_hcore, periodic_hcore_kpts, solve_krhf, solve_krhf_injected, solve_kuhf,
+    Cell, DenseAftEri, ExxDiv, GammaDrpaConfig, GammaDrpaIntegrals, GammaMp2Config,
+    GammaMp2Integrals, GammaRksConfig, GammaRohfConfig, GammaRoksConfig, GammaUhfConfig,
+    GammaUhfIntegrals, GammaUksConfig, KCorrIntegrals, KDenseAftConfig, KDenseAftEri,
+    KDenseAftPairs, KDrpaConfig, KDrpaEnergy, KJkKind, KMp2Config, KPointInjection, KPointMesh,
+    KRhfConfig, KRsGdf, KRsGdfConfig, KScfConfig, KScfResult, KUhfConfig, MeshCentring,
+    Mp2Denominators, PbcTimings, PeriodicGridConfig, PeriodicHcore, PeriodicHcoreConfig, RsGdf,
+    RsGdfConfig, StageClock,
+};
+use ferric_pbc::{
+    gamma_rhf_gradient_rsgdf, gamma_rhf_gradient_with, gamma_rks_gradient_rsgdf,
+    gamma_rks_gradient_with, gamma_rohf_gradient_rsgdf, gamma_rohf_gradient_with,
+    gamma_roks_gradient_rsgdf, gamma_roks_gradient_with, gamma_uhf_gradient_rsgdf,
+    gamma_uhf_gradient_with, gamma_uks_gradient_rsgdf, gamma_uks_gradient_with, GammaGradConfig,
+    RsGdfGradSource,
 };
 use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::RhfConfig;
@@ -96,7 +103,7 @@ pub fn run_periodic(cfg: &Config) {
         );
     }
     let out = if plan.optimize {
-        run_gamma_rhf_optimize(cfg, plan, &s)
+        run_gamma_optimize(cfg, plan, &s)
     } else if plan.kmesh.is_some() {
         match plan.route {
             PeriodicRoute::Rhf => run_krhf(cfg, plan, &s),
@@ -147,6 +154,9 @@ struct Setup {
     prep: PreparedBasis,
     /// RS-GDF aux basis on the cell's atoms; `None` = dense AFT.
     aux: Option<PreparedBasis>,
+    /// The aux basis set `aux` was prepared from (re-placed on the atoms at
+    /// every optimization step).
+    aux_bs: Option<BasisSet>,
     /// Nuclear-attraction Ewald split (Bohr⁻¹), resolved.
     omega_bohr: f64,
 }
@@ -185,7 +195,7 @@ fn setup(cfg: &Config, plan: &PeriodicPlan) -> Setup {
     }
     let cell = Cell::new(mol, plan.lattice_bohr).unwrap_or_else(|e| die(format!("[cell]: {e}")));
     let prep = PreparedBasis::new(cell.mol(), &bs).unwrap_or_else(|e| die(e));
-    let aux = match &plan.jk {
+    let (aux, aux_bs) = match &plan.jk {
         PeriodicJk::Dense { max_eri_bytes } => {
             // The Gamma dense tensor is refused before any lattice sum (the
             // Rust builder re-checks the same bound). The k-point builders
@@ -201,7 +211,7 @@ fn setup(cfg: &Config, plan: &PeriodicPlan) -> Setup {
                     ));
                 }
             }
-            None
+            (None, None)
         }
         PeriodicJk::RsGdf { auxbasis, .. } => {
             let a = basis::bundled(auxbasis).unwrap_or_else(|e| {
@@ -209,11 +219,12 @@ fn setup(cfg: &Config, plan: &PeriodicPlan) -> Setup {
                     "[cell] auxbasis {auxbasis:?} is not a bundled basis: {e}"
                 ))
             });
-            Some(PreparedBasis::new(cell.mol(), &a).unwrap_or_else(|e| {
+            let p = PreparedBasis::new(cell.mol(), &a).unwrap_or_else(|e| {
                 die(format!(
                     "[cell] auxbasis {auxbasis:?} cannot be placed on this cell: {e}"
                 ))
-            }))
+            });
+            (Some(p), Some(a))
         }
     };
     let omega_bohr = plan
@@ -224,6 +235,7 @@ fn setup(cfg: &Config, plan: &PeriodicPlan) -> Setup {
         cell,
         prep,
         aux,
+        aux_bs,
         omega_bohr,
     }
 }
@@ -439,6 +451,9 @@ impl GammaInts {
 }
 
 struct GammaSystem {
+    /// The hcore config `hc` was built with (a gradient rebuilds the SR/LR
+    /// truncation from it).
+    hcfg: PeriodicHcoreConfig,
     hc: PeriodicHcore,
     ints: GammaInts,
 }
@@ -458,12 +473,16 @@ impl GammaSystem {
     }
 }
 
-fn gamma_system(plan: &PeriodicPlan, s: &Setup) -> Result<GammaSystem, FerricError> {
-    let hc = periodic_hcore(
-        &s.cell,
-        &s.prep,
-        &PeriodicHcoreConfig::with_omega(s.omega_bohr),
-    )?;
+/// hcore + the Gamma J/K. `for_gradient`: build RS-GDF with
+/// `RsGdf::build_for_gradient` (bitwise the energy's B plus the metric pieces
+/// the RS-GDF forces need); no effect on the dense path.
+fn gamma_system(
+    plan: &PeriodicPlan,
+    s: &Setup,
+    for_gradient: bool,
+) -> Result<GammaSystem, FerricError> {
+    let hcfg = PeriodicHcoreConfig::with_omega(s.omega_bohr);
+    let hc = periodic_hcore(&s.cell, &s.prep, &hcfg)?;
     let ints = match &s.aux {
         None => GammaInts::Dense(Box::new(DenseAftEri::build(
             &s.cell,
@@ -479,10 +498,15 @@ fn gamma_system(plan: &PeriodicPlan, s: &Setup) -> Result<GammaSystem, FerricErr
                 budget_bytes: budget_bytes(plan),
                 ..Default::default()
             };
-            GammaInts::RsGdf(Box::new(RsGdf::build(&s.cell, &s.prep, aux, &hc.s, &cfg)?))
+            let gdf = if for_gradient {
+                RsGdf::build_for_gradient(&s.cell, &s.prep, aux, &hc.s, &cfg)?
+            } else {
+                RsGdf::build(&s.cell, &s.prep, aux, &hc.s, &cfg)?
+            };
+            GammaInts::RsGdf(Box::new(gdf))
         }
     };
-    Ok(GammaSystem { hc, ints })
+    Ok(GammaSystem { hcfg, hc, ints })
 }
 
 /// Closed-shell Gamma RHF on injected J/K (the `run_rhf_gamma` assembly).
@@ -539,7 +563,7 @@ fn gamma_rhf_driver(
     s: &Setup,
 ) -> Result<(ScfResult, f64, f64, PbcTimings), FerricError> {
     let total = StageClock::start();
-    let sys = gamma_system(plan, s)?;
+    let sys = gamma_system(plan, s, false)?;
     let r = gamma_rhf_scf(s, &sys, &gamma_scf_config(plan))?;
     // Reported for both exxdiv settings (the builders only store it for
     // Ewald), as `run_rhf_gamma` does.
@@ -575,16 +599,62 @@ fn periodic_grid(plan: &PeriodicPlan) -> PeriodicGridConfig {
     }
 }
 
+// Driver configs, shared by the energy and optimize paths (a gradient must
+// differentiate the SAME energy).
+
+fn rks_config(plan: &PeriodicPlan) -> GammaRksConfig {
+    let mut c = GammaRksConfig::new(plan.functional.as_deref().unwrap_or("LDA"));
+    (c.grid, c.exxdiv, c.scf) = (periodic_grid(plan), plan.exxdiv, gamma_scf_config(plan));
+    c
+}
+
+fn uhf_config(plan: &PeriodicPlan) -> GammaUhfConfig {
+    GammaUhfConfig {
+        exxdiv: plan.exxdiv,
+        ewald_start: plan.ewald_start,
+        scf: gamma_scf_config(plan),
+        initial_mos: None,
+    }
+}
+
+fn rohf_config(plan: &PeriodicPlan) -> GammaRohfConfig {
+    GammaRohfConfig {
+        exxdiv: plan.exxdiv,
+        ewald_start: plan.ewald_start,
+        scf: gamma_scf_config(plan),
+        initial_mos: None,
+    }
+}
+
+fn uks_config(plan: &PeriodicPlan) -> GammaUksConfig {
+    let mut c = GammaUksConfig::new(plan.functional.as_deref().unwrap_or_default());
+    (c.grid, c.exxdiv, c.ewald_start) = (periodic_grid(plan), plan.exxdiv, plan.ewald_start);
+    c.scf = gamma_scf_config(plan);
+    c
+}
+
+fn roks_config(plan: &PeriodicPlan) -> GammaRoksConfig {
+    let mut c = GammaRoksConfig::new(plan.functional.as_deref().unwrap_or_default());
+    (c.grid, c.exxdiv, c.ewald_start) = (periodic_grid(plan), plan.exxdiv, plan.ewald_start);
+    // Keep GammaRoksConfig::new's hybrid level shift (and its 600 cap unless
+    // [scf] max_iter was written): a DIIS robustness default that vanishes
+    // at convergence (see its doc).
+    c.scf = RhfConfig {
+        level_shift: c.scf.level_shift,
+        max_iter: effective_max_iter(plan),
+        ..gamma_scf_config(plan)
+    };
+    c
+}
+
 /// Gamma RKS: `(result, E_nn, stage timings)`.
 fn gamma_rks_driver(
     plan: &PeriodicPlan,
     s: &Setup,
 ) -> Result<(ferric_pbc::GammaRksResult, f64, PbcTimings), FerricError> {
     let total = StageClock::start();
-    let functional = plan.functional.as_deref().unwrap_or("LDA");
-    let sys = gamma_system(plan, s)?;
-    let mut c = GammaRksConfig::new(functional);
-    (c.grid, c.exxdiv, c.scf) = (periodic_grid(plan), plan.exxdiv, gamma_scf_config(plan));
+    let sys = gamma_system(plan, s, false)?;
+    let c = rks_config(plan);
     let r = gamma_rks(&s.cell, &s.prep, &sys.hc, sys.ints.scf(), &c)?;
     let t = sys.timings(&[&r.timings], &total);
     Ok((r, sys.hc.enn, t))
@@ -639,18 +709,11 @@ fn gamma_open_driver(
     s: &Setup,
 ) -> Result<(OpenParts, f64, PbcTimings), FerricError> {
     let total = StageClock::start();
-    let sys = gamma_system(plan, s)?;
+    let sys = gamma_system(plan, s, false)?;
     let ints = sys.ints.scf();
-    let scf = gamma_scf_config(plan);
-    let f = plan.functional.clone().unwrap_or_default();
     let parts = match plan.route {
         PeriodicRoute::Uhf => {
-            let c = GammaUhfConfig {
-                exxdiv: plan.exxdiv,
-                ewald_start: plan.ewald_start,
-                scf,
-                initial_mos: None,
-            };
+            let c = uhf_config(plan);
             let r = gamma_uhf(&s.cell, &s.prep, &sys.hc, ints, &c)?;
             OpenParts {
                 gap_alpha: r.gaps.gap_alpha,
@@ -666,12 +729,7 @@ fn gamma_open_driver(
             }
         }
         PeriodicRoute::Rohf => {
-            let c = GammaRohfConfig {
-                exxdiv: plan.exxdiv,
-                ewald_start: plan.ewald_start,
-                scf,
-                initial_mos: None,
-            };
+            let c = rohf_config(plan);
             let r = gamma_rohf(&s.cell, &s.prep, &sys.hc, ints, &c)?;
             OpenParts {
                 gap_alpha: r.gaps.gap_alpha,
@@ -687,10 +745,7 @@ fn gamma_open_driver(
             }
         }
         PeriodicRoute::Uks => {
-            let mut c = GammaUksConfig::new(&f);
-            (c.grid, c.exxdiv, c.ewald_start) =
-                (periodic_grid(plan), plan.exxdiv, plan.ewald_start);
-            c.scf = scf;
+            let c = uks_config(plan);
             let r = gamma_uks(&s.cell, &s.prep, &sys.hc, ints, &c)?;
             OpenParts {
                 ks_timings: r.timings,
@@ -712,17 +767,7 @@ fn gamma_open_driver(
             }
         }
         PeriodicRoute::Roks => {
-            let mut c = GammaRoksConfig::new(&f);
-            (c.grid, c.exxdiv, c.ewald_start) =
-                (periodic_grid(plan), plan.exxdiv, plan.ewald_start);
-            // Keep GammaRoksConfig::new's hybrid level shift (and its 600
-            // cap unless [scf] max_iter was written): a DIIS robustness
-            // default that vanishes at convergence (see its doc).
-            c.scf = RhfConfig {
-                level_shift: c.scf.level_shift,
-                max_iter: effective_max_iter(plan),
-                ..scf
-            };
+            let c = roks_config(plan);
             let r = gamma_roks(&s.cell, &s.prep, &sys.hc, ints, &c)?;
             OpenParts {
                 ks_timings: r.timings,
@@ -855,7 +900,7 @@ fn gamma_corr_driver(
     s: &Setup,
 ) -> Result<(ScfResult, CorrParts, PbcTimings), FerricError> {
     let total = StageClock::start();
-    let sys = gamma_system(plan, s)?;
+    let sys = gamma_system(plan, s, false)?;
     let rhf = gamma_rhf_scf(s, &sys, &gamma_scf_config(plan))?;
     if !rhf.converged {
         return Err(FerricError::Convergence(format!(
@@ -1312,15 +1357,180 @@ fn run_kcorr(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
     }
 }
 
-// ───────────────────────────────────────── Gamma RHF optimization ──
+// ───────────────────────────────────────────── Gamma optimization ──
 
-/// `task = "optimize"` for Gamma RHF on the dense-AFT J/K: the analytic
-/// periodic force (`ferric_pbc::gamma_rhf_gradient`) fed to ferric's
-/// Cartesian BFGS (`optimize_coordinates`) at a FIXED lattice. Each step
-/// rebuilds the cell, basis, hcore and dense tensor at the new positions and
-/// runs a fresh SCF, which must converge (a gradient is only meaningful at a
-/// stationary density). No stress / lattice relaxation.
-fn run_gamma_rhf_optimize(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
+/// The J/K a Gamma gradient differentiates: the SCF's own.
+enum GradJk<'a> {
+    Dense(&'a DenseAftEri),
+    Fit(RsGdfGradSource<'a>),
+}
+
+/// `s` rebuilt at `mol`'s positions: same lattice, basis, aux basis and Ewald
+/// split (the split is a numerical knob of the FIXED lattice; holding it
+/// keeps every step's energy and gradient on one hcore convention).
+fn setup_at(plan: &PeriodicPlan, s: &Setup, mol: Molecule) -> Result<Setup, FerricError> {
+    let cell = Cell::new(mol, plan.lattice_bohr)?;
+    let prep = PreparedBasis::new(cell.mol(), &s.bs)?;
+    let aux = match &s.aux_bs {
+        Some(a) => Some(PreparedBasis::new(cell.mol(), a)?),
+        None => None,
+    };
+    Ok(Setup {
+        bs: s.bs.clone(),
+        cell,
+        prep,
+        aux,
+        aux_bs: s.aux_bs.clone(),
+        omega_bohr: s.omega_bohr,
+    })
+}
+
+/// A converged SCF is required: a gradient is only meaningful at a stationary
+/// density (the Rust gradient re-checks it; this names the optimization).
+fn require_converged(plan: &PeriodicPlan, scf: &ScfResult) -> Result<(), FerricError> {
+    if scf.converged {
+        return Ok(());
+    }
+    Err(FerricError::Convergence(format!(
+        "the Gamma {} SCF did not converge in {} iterations during the optimization (last E = \
+         {}); a gradient at a non-stationary density is meaningless",
+        plan.route.label(),
+        scf.iterations,
+        scf.energy
+    )))
+}
+
+/// The route's Gamma SCF on `sys` (built with `for_gradient = true`) and its
+/// analytic nuclear gradient (`ferric_pbc::grad`, dense AFT or RS-GDF J/K):
+/// `(E per cell, dE/dR natoms x 3 in Hartree/Bohr)`. The driver configs are
+/// the energy path's own ([`rks_config`] etc.), so the gradient is the
+/// derivative of the energy `task = "energy"` reports.
+fn gamma_energy_and_gradient(
+    plan: &PeriodicPlan,
+    s: &Setup,
+    sys: &GammaSystem,
+) -> Result<(f64, ndarray::Array2<f64>), FerricError> {
+    let gcfg = GammaGradConfig {
+        budget_bytes: budget_bytes(plan),
+        ..Default::default()
+    };
+    let jk = match &sys.ints {
+        GammaInts::Dense(e) => GradJk::Dense(e),
+        GammaInts::RsGdf(g) => GradJk::Fit(RsGdfGradSource {
+            gdf: g,
+            aux: s.aux.as_ref().ok_or_else(|| {
+                FerricError::General("internal: RS-GDF J/K without an aux basis".into())
+            })?,
+            aux_jac: None,
+        }),
+    };
+    let (cell, prep, hcfg, hc) = (&s.cell, &s.prep, &sys.hcfg, &sys.hc);
+    let ints = sys.ints.scf();
+    let x = plan.exxdiv;
+    let (energy, g) = match plan.route {
+        PeriodicRoute::Rhf => {
+            let scf = gamma_rhf_scf(s, sys, &gamma_scf_config(plan))?;
+            require_converged(plan, &scf)?;
+            let g = match &jk {
+                GradJk::Dense(e) => {
+                    gamma_rhf_gradient_with(cell, prep, hcfg, hc, e, &scf, x, &gcfg)?
+                }
+                GradJk::Fit(f) => {
+                    gamma_rhf_gradient_rsgdf(cell, prep, hcfg, hc, f, &scf, x, &gcfg)?
+                }
+            };
+            (scf.energy, g)
+        }
+        PeriodicRoute::Uhf => {
+            let r = gamma_uhf(cell, prep, hc, ints, &uhf_config(plan))?;
+            require_converged(plan, &r.scf)?;
+            let scf = &r.scf;
+            let g = match &jk {
+                GradJk::Dense(e) => {
+                    gamma_uhf_gradient_with(cell, prep, hcfg, hc, e, scf, x, &gcfg)?
+                }
+                GradJk::Fit(f) => gamma_uhf_gradient_rsgdf(cell, prep, hcfg, hc, f, scf, x, &gcfg)?,
+            };
+            (scf.energy, g)
+        }
+        PeriodicRoute::Rohf => {
+            let r = gamma_rohf(cell, prep, hc, ints, &rohf_config(plan))?;
+            require_converged(plan, &r.scf)?;
+            let scf = &r.scf;
+            let g = match &jk {
+                GradJk::Dense(e) => {
+                    gamma_rohf_gradient_with(cell, prep, hcfg, hc, e, scf, x, &gcfg)?
+                }
+                GradJk::Fit(f) => {
+                    gamma_rohf_gradient_rsgdf(cell, prep, hcfg, hc, f, scf, x, &gcfg)?
+                }
+            };
+            (scf.energy, g)
+        }
+        PeriodicRoute::Rks => {
+            let c = rks_config(plan);
+            let r = gamma_rks(cell, prep, hc, ints, &c)?;
+            require_converged(plan, &r.scf)?;
+            let scf = &r.scf;
+            let g = match &jk {
+                GradJk::Dense(e) => {
+                    gamma_rks_gradient_with(cell, prep, hcfg, hc, e, scf, &c, &gcfg)?
+                }
+                GradJk::Fit(f) => {
+                    gamma_rks_gradient_rsgdf(cell, prep, hcfg, hc, f, scf, &c, &gcfg)?
+                }
+            };
+            (scf.energy, g)
+        }
+        PeriodicRoute::Uks => {
+            let c = uks_config(plan);
+            let r = gamma_uks(cell, prep, hc, ints, &c)?;
+            require_converged(plan, &r.scf)?;
+            let scf = &r.scf;
+            let g = match &jk {
+                GradJk::Dense(e) => {
+                    gamma_uks_gradient_with(cell, prep, hcfg, hc, e, scf, &c, &gcfg)?
+                }
+                GradJk::Fit(f) => {
+                    gamma_uks_gradient_rsgdf(cell, prep, hcfg, hc, f, scf, &c, &gcfg)?
+                }
+            };
+            (scf.energy, g)
+        }
+        PeriodicRoute::Roks => {
+            let c = roks_config(plan);
+            let r = gamma_roks(cell, prep, hc, ints, &c)?;
+            require_converged(plan, &r.scf)?;
+            let scf = &r.scf;
+            let g = match &jk {
+                GradJk::Dense(e) => {
+                    gamma_roks_gradient_with(cell, prep, hcfg, hc, e, scf, &c, &gcfg)?
+                }
+                GradJk::Fit(f) => {
+                    gamma_roks_gradient_rsgdf(cell, prep, hcfg, hc, f, scf, &c, &gcfg)?
+                }
+            };
+            (scf.energy, g)
+        }
+        // Refused by `periodic_plan`.
+        PeriodicRoute::Mp2 | PeriodicRoute::Drpa => {
+            return Err(FerricError::General(format!(
+                "internal: periodic {} has no analytic gradient",
+                plan.route.label()
+            )))
+        }
+    };
+    Ok((energy, g.grad))
+}
+
+/// `task = "optimize"` at the Gamma point: the analytic periodic force of the
+/// route (`ferric_pbc::grad`: RHF/UHF/ROHF/RKS/UKS/ROKS on dense-AFT or
+/// RS-GDF J/K) fed to ferric's Cartesian BFGS (`optimize_coordinates`) at a
+/// FIXED lattice (atoms only; no stress / lattice relaxation). Each step
+/// rebuilds the cell, basis, hcore and J/K at the new positions and runs a
+/// fresh SCF, which must converge. k-point meshes are refused by
+/// `periodic_plan` (k-point forces are not wired).
+fn run_gamma_optimize(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
     use ferric_scf::optimize::{optimize_coordinates, CoordSystem, OptimizeConfig};
     let opt_config = OptimizeConfig {
         max_steps: cfg.optimize.max_steps.unwrap_or(100),
@@ -1333,11 +1543,6 @@ fn run_gamma_rhf_optimize(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outco
     };
     let base = s.cell.mol().clone();
     let x0: Vec<f64> = base.atoms.iter().flat_map(|a| [a.x, a.y, a.zpos]).collect();
-    // The Ewald split is a numerical knob of the fixed lattice; hold it fixed
-    // so every step's energy and gradient share one hcore convention.
-    let omega = s.omega_bohr;
-    let scf_cfg = gamma_scf_config(plan);
-    let max_bytes = max_eri_bytes(plan);
     let at = |x: &[f64]| -> Molecule {
         let mut m = base.clone();
         for (i, a) in m.atoms.iter_mut().enumerate() {
@@ -1345,39 +1550,21 @@ fn run_gamma_rhf_optimize(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outco
         }
         m
     };
+    // Every evaluated (x, dE/dR), to print the gradient at the returned x.
+    let mut evaluated: Vec<(Vec<f64>, Vec<f64>)> = Vec::new();
     let energy_and_gradient = |x: &[f64]| -> Result<(f64, Vec<f64>), FerricError> {
-        let cell = Cell::new(at(x), plan.lattice_bohr)?;
-        let prep = PreparedBasis::new(cell.mol(), &s.bs)?;
-        let hcfg = PeriodicHcoreConfig::with_omega(omega);
-        let hc = periodic_hcore(&cell, &prep, &hcfg)?;
-        let eri = DenseAftEri::build(
-            &cell,
-            &prep,
-            &hc.s,
-            plan.exxdiv,
-            DEFAULT_DENSE_AFT_PRECISION,
-            max_bytes,
-        )?;
-        let scf = inject_rhf(
-            &cell,
-            &prep,
-            &hc,
-            &scf_cfg,
-            Box::new(eri.j_builder()),
-            Box::new(eri.k_builder()),
-        )?;
-        if !scf.converged {
-            return Err(FerricError::Convergence(format!(
-                "the Gamma RHF SCF did not converge in {} iterations during the optimization \
-                 (last E = {}); a gradient at a non-stationary density is meaningless",
-                scf.iterations, scf.energy
-            )));
-        }
-        let g = gamma_rhf_gradient(&cell, &prep, &hcfg, &hc, &eri, &scf, plan.exxdiv)?;
-        Ok((scf.energy, g.iter().copied().collect()))
+        let st = setup_at(plan, s, at(x))?;
+        let sys = gamma_system(plan, &st, true)?;
+        let (e, g) = gamma_energy_and_gradient(plan, &st, &sys)?;
+        let g: Vec<f64> = g.iter().copied().collect();
+        evaluated.push((x.to_vec(), g.clone()));
+        Ok((e, g))
     };
     print_header(cfg, plan, s);
-    println!("  task       = optimize (Cartesian BFGS, fixed lattice)");
+    println!(
+        "  task       = optimize (Cartesian BFGS, fixed lattice, analytic Gamma {} gradient)",
+        plan.route.label()
+    );
     let (x, energy, steps, converged) =
         optimize_coordinates(&x0, &opt_config, energy_and_gradient).unwrap_or_else(|e| die(e));
     let fin = at(&x);
@@ -1393,6 +1580,16 @@ fn run_gamma_rhf_optimize(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outco
             a.y / ANGSTROM_TO_BOHR,
             a.zpos / ANGSTROM_TO_BOHR
         );
+    }
+    if let Some((_, g)) = evaluated.iter().rev().find(|(xe, _)| *xe == x) {
+        let gmax = g.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+        println!("  final gradient dE/dR (Hartree/Bohr per cell), max |g| = {gmax:.3e}:");
+        for (a, row) in fin.atoms.iter().zip(g.chunks(3)) {
+            println!(
+                "    {:<3} {:14.8} {:14.8} {:14.8}",
+                a.symbol, row[0], row[1], row[2]
+            );
+        }
     }
     if !converged {
         eprintln!("warning: the periodic geometry optimization did not converge in {steps} steps");

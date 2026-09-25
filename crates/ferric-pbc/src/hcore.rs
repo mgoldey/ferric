@@ -1222,6 +1222,24 @@ where
     Ok(n_triplets)
 }
 
+/// The SR attraction derivative walk of [`sr_attraction_gradient`] with each
+/// triplet handed to `visit` (its image `L` included), for weights that
+/// depend on `L` — the k-point forces ([`crate::kgrad`]) weight each image by
+/// the Bloch-phase-folded density `(1/N_k) Σ_k e^{ik·L} D(k)`. Same pair
+/// images, nucleus candidates and screen as [`periodic_hcore`] at `cfg`.
+pub(crate) fn sr_attraction_deriv_visit<F>(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    cfg: &PeriodicHcoreConfig,
+    ledger: &mut Ledger,
+    visit: F,
+) -> Result<usize, FerricError>
+where
+    F: FnMut(&SrDerivTriplet<'_>),
+{
+    sr_attraction_deriv_walk(cell, prep, cfg, ledger, visit)
+}
+
 fn pair_radius(shells: &[PrimShell], pair_thresh: f64) -> f64 {
     let amin = shells
         .iter()

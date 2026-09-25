@@ -35,6 +35,15 @@ use ferric_pbc::{
     MeshCentring, Mp2Denominators, PbcTimings, PeriodicGridConfig, PeriodicHcore,
     PeriodicHcoreConfig, RsGdf, RsGdfConfig, SpinGapReport, StageClock,
 };
+use ferric_pbc::{
+    gamma_rhf_gradient_rsgdf, gamma_rhf_gradient_with, gamma_rhf_stress, gamma_rhf_stress_rsgdf,
+    gamma_rks_gradient_rsgdf, gamma_rks_gradient_with, gamma_rks_stress, gamma_rks_stress_rsgdf,
+    gamma_rohf_gradient_rsgdf, gamma_rohf_gradient_with, gamma_rohf_stress,
+    gamma_roks_gradient_rsgdf, gamma_roks_gradient_with, gamma_roks_stress,
+    gamma_uhf_gradient_rsgdf, gamma_uhf_gradient_with, gamma_uhf_stress, gamma_uhf_stress_rsgdf,
+    gamma_uks_gradient_rsgdf, gamma_uks_gradient_with, gamma_uks_stress, gamma_uks_stress_rsgdf,
+    GammaGradConfig, GammaStressConfig, RsGdfGradSource,
+};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 
 // ─────────────────────────────────────────────────────────────── helpers ──
@@ -245,6 +254,9 @@ struct PbcSetup {
     max_eri_bytes: usize,
     /// RS-GDF / correlation budget (`None` = ferric's unified budget).
     budget_bytes: Option<usize>,
+    /// Analytic derivatives requested (Gamma SCF bindings only; all-false
+    /// everywhere else).
+    derivs: DerivRequest,
 }
 
 impl PbcSetup {
@@ -304,6 +316,7 @@ fn pbc_setup(a: &PbcArgs<'_, '_>) -> PyResult<PbcSetup> {
             .map(ferric_core::memory::gib_to_bytes)
             .unwrap_or(DEFAULT_DENSE_AFT_MAX_BYTES),
         budget_bytes: budget_bytes_from_gb(a.memory_budget_gb),
+        derivs: DerivRequest::default(),
     })
 }
 
@@ -340,6 +353,9 @@ impl GammaInts {
 }
 
 struct GammaSystem {
+    /// The hcore config `hc` was built with (the derivatives rebuild the
+    /// SR/LR truncation from it).
+    hcfg: PeriodicHcoreConfig,
     hc: PeriodicHcore,
     ints: GammaInts,
 }
@@ -379,11 +395,8 @@ fn gamma_dense_preflight(s: &PbcSetup) -> PyResult<()> {
 }
 
 fn gamma_system(s: &PbcSetup) -> Result<GammaSystem, FerricError> {
-    let hc = periodic_hcore(
-        &s.cell,
-        &s.prep,
-        &PeriodicHcoreConfig::with_omega(s.omega_bohr),
-    )?;
+    let hcfg = PeriodicHcoreConfig::with_omega(s.omega_bohr);
+    let hc = periodic_hcore(&s.cell, &s.prep, &hcfg)?;
     let ints = match &s.aux {
         None => GammaInts::Dense(Box::new(DenseAftEri::build(
             &s.cell,
@@ -399,10 +412,191 @@ fn gamma_system(s: &PbcSetup) -> Result<GammaSystem, FerricError> {
                 budget_bytes: s.budget_bytes,
                 ..Default::default()
             };
-            GammaInts::RsGdf(Box::new(RsGdf::build(&s.cell, &s.prep, aux, &hc.s, &cfg)?))
+            // The gradient build is bitwise the energy's B plus the metric
+            // pieces the RS-GDF forces/stress need.
+            let gdf = if s.derivs.any() {
+                RsGdf::build_for_gradient(&s.cell, &s.prep, aux, &hc.s, &cfg)?
+            } else {
+                RsGdf::build(&s.cell, &s.prep, aux, &hc.s, &cfg)?
+            };
+            GammaInts::RsGdf(Box::new(gdf))
         }
     };
-    Ok(GammaSystem { hc, ints })
+    Ok(GammaSystem { hcfg, hc, ints })
+}
+
+// ─────────────────────────────────────────── Gamma forces / stress ──
+
+/// Which analytic derivatives a Gamma SCF binding computes after its SCF
+/// (`with_gradient` / `with_stress`).
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct DerivRequest {
+    pub(crate) gradient: bool,
+    pub(crate) stress: bool,
+}
+
+impl DerivRequest {
+    pub(crate) fn any(self) -> bool {
+        self.gradient || self.stress
+    }
+}
+
+/// The J/K the derivative differentiates: the SCF's own.
+#[derive(Clone, Copy)]
+pub(crate) enum DerivJk<'a> {
+    Dense(&'a DenseAftEri),
+    Fit(RsGdfGradSource<'a>),
+}
+
+/// The SCF being differentiated, with the config its energy used.
+#[derive(Clone, Copy)]
+pub(crate) enum DerivMethod<'a> {
+    Rhf(ExxDiv),
+    Uhf(ExxDiv),
+    Rohf(ExxDiv),
+    Rks(&'a GammaRksConfig),
+    Uks(&'a GammaUksConfig),
+    Roks(&'a GammaRoksConfig),
+}
+
+/// Everything the `ferric_pbc` derivative entry points share: the SAME cell,
+/// basis, hcore config/output, J/K and converged SCF the energy used.
+pub(crate) struct DerivCtx<'a> {
+    pub(crate) cell: &'a Cell,
+    pub(crate) prep: &'a PreparedBasis,
+    pub(crate) hcfg: &'a PeriodicHcoreConfig,
+    pub(crate) hc: &'a PeriodicHcore,
+    pub(crate) jk: DerivJk<'a>,
+    pub(crate) scf: &'a ScfResult,
+    /// Derivative memory budget (`None` = ferric's unified budget).
+    pub(crate) budget_bytes: Option<usize>,
+}
+
+/// `dE/dR` (natoms x 3, Hartree/Bohr per cell) and `σ = (1/Ω) dE/dε`
+/// (3 x 3, Hartree/Bohr³), each `None` unless requested.
+#[derive(Default)]
+pub(crate) struct Derivs {
+    pub(crate) gradient: Option<Array2<f64>>,
+    pub(crate) stress: Option<Array2<f64>>,
+}
+
+/// The refusal for the one missing Rust entry point: ROHF/ROKS stress on
+/// RS-GDF J/K (`ferric_pbc::stress` has dense-AFT ROHF/ROKS only).
+pub(crate) const RO_RSGDF_STRESS_MSG: &str =
+    "the ROHF/ROKS stress is implemented on the dense-AFT J/K only (no RS-GDF \
+     ROHF/ROKS stress entry point exists); use jk=\"dense\" or drop the stress request";
+
+/// Analytic Gamma-point forces / stress of a converged SCF (`ferric_pbc::grad`,
+/// `ferric_pbc::stress`). The Rust side refuses a non-converged or
+/// non-stationary SCF (a derivative is only meaningful at a stationary
+/// density), a mismatched hcore config, and an RS-GDF built without
+/// `build_for_gradient`.
+pub(crate) fn gamma_derivatives(
+    c: &DerivCtx<'_>,
+    m: DerivMethod<'_>,
+    want: DerivRequest,
+) -> Result<Derivs, FerricError> {
+    use DerivMethod as M;
+    let gcfg = GammaGradConfig {
+        budget_bytes: c.budget_bytes,
+        ..Default::default()
+    };
+    let scfg = GammaStressConfig {
+        budget_bytes: c.budget_bytes,
+        ..Default::default()
+    };
+    let (cell, prep, hcfg, hc, scf) = (c.cell, c.prep, c.hcfg, c.hc, c.scf);
+    let mut out = Derivs::default();
+    if want.gradient {
+        let g = match c.jk {
+            DerivJk::Dense(eri) => match m {
+                M::Rhf(x) => gamma_rhf_gradient_with(cell, prep, hcfg, hc, eri, scf, x, &gcfg)?,
+                M::Uhf(x) => gamma_uhf_gradient_with(cell, prep, hcfg, hc, eri, scf, x, &gcfg)?,
+                M::Rohf(x) => gamma_rohf_gradient_with(cell, prep, hcfg, hc, eri, scf, x, &gcfg)?,
+                M::Rks(d) => gamma_rks_gradient_with(cell, prep, hcfg, hc, eri, scf, d, &gcfg)?,
+                M::Uks(d) => gamma_uks_gradient_with(cell, prep, hcfg, hc, eri, scf, d, &gcfg)?,
+                M::Roks(d) => gamma_roks_gradient_with(cell, prep, hcfg, hc, eri, scf, d, &gcfg)?,
+            },
+            DerivJk::Fit(ref f) => match m {
+                M::Rhf(x) => gamma_rhf_gradient_rsgdf(cell, prep, hcfg, hc, f, scf, x, &gcfg)?,
+                M::Uhf(x) => gamma_uhf_gradient_rsgdf(cell, prep, hcfg, hc, f, scf, x, &gcfg)?,
+                M::Rohf(x) => gamma_rohf_gradient_rsgdf(cell, prep, hcfg, hc, f, scf, x, &gcfg)?,
+                M::Rks(d) => gamma_rks_gradient_rsgdf(cell, prep, hcfg, hc, f, scf, d, &gcfg)?,
+                M::Uks(d) => gamma_uks_gradient_rsgdf(cell, prep, hcfg, hc, f, scf, d, &gcfg)?,
+                M::Roks(d) => gamma_roks_gradient_rsgdf(cell, prep, hcfg, hc, f, scf, d, &gcfg)?,
+            },
+        };
+        out.gradient = Some(g.grad);
+    }
+    if want.stress {
+        let st = match c.jk {
+            DerivJk::Dense(eri) => match m {
+                M::Rhf(x) => gamma_rhf_stress(cell, prep, hcfg, hc, eri, scf, x, &scfg)?,
+                M::Uhf(x) => gamma_uhf_stress(cell, prep, hcfg, hc, eri, scf, x, &scfg)?,
+                M::Rohf(x) => gamma_rohf_stress(cell, prep, hcfg, hc, eri, scf, x, &scfg)?,
+                M::Rks(d) => gamma_rks_stress(cell, prep, hcfg, hc, eri, scf, d, &scfg)?,
+                M::Uks(d) => gamma_uks_stress(cell, prep, hcfg, hc, eri, scf, d, &scfg)?,
+                M::Roks(d) => gamma_roks_stress(cell, prep, hcfg, hc, eri, scf, d, &scfg)?,
+            },
+            DerivJk::Fit(ref f) => match m {
+                M::Rhf(x) => gamma_rhf_stress_rsgdf(cell, prep, hcfg, hc, f, scf, x, &scfg)?,
+                M::Uhf(x) => gamma_uhf_stress_rsgdf(cell, prep, hcfg, hc, f, scf, x, &scfg)?,
+                M::Rks(d) => gamma_rks_stress_rsgdf(cell, prep, hcfg, hc, f, scf, d, &scfg)?,
+                M::Uks(d) => gamma_uks_stress_rsgdf(cell, prep, hcfg, hc, f, scf, d, &scfg)?,
+                M::Rohf(_) | M::Roks(_) => {
+                    return Err(FerricError::General(RO_RSGDF_STRESS_MSG.into()))
+                }
+            },
+        };
+        out.stress = Some(Array2::from_shape_fn((3, 3), |(a, b)| st.sigma[a][b]));
+    }
+    Ok(out)
+}
+
+/// [`gamma_derivatives`] on a [`GammaSystem`] built by [`gamma_system`].
+fn system_derivatives(
+    s: &PbcSetup,
+    sys: &GammaSystem,
+    scf: &ScfResult,
+    m: DerivMethod<'_>,
+) -> Result<Derivs, FerricError> {
+    if !s.derivs.any() {
+        return Ok(Derivs::default());
+    }
+    let jk = match &sys.ints {
+        GammaInts::Dense(e) => DerivJk::Dense(e),
+        GammaInts::RsGdf(g) => DerivJk::Fit(RsGdfGradSource {
+            gdf: g,
+            aux: s.aux.as_ref().ok_or_else(|| {
+                FerricError::General("internal: RS-GDF J/K without an aux basis".into())
+            })?,
+            aux_jac: None,
+        }),
+    };
+    let ctx = DerivCtx {
+        cell: &s.cell,
+        prep: &s.prep,
+        hcfg: &sys.hcfg,
+        hc: &sys.hc,
+        jk,
+        scf,
+        budget_bytes: s.budget_bytes,
+    };
+    gamma_derivatives(&ctx, m, s.derivs)
+}
+
+/// Refuse, before any integral work, a derivative request no entry point
+/// serves (ROHF/ROKS stress on RS-GDF).
+fn check_deriv_request(s: &PbcSetup, restricted_open: bool) -> PyResult<()> {
+    if restricted_open && s.derivs.stress && s.aux.is_some() {
+        return Err(val_err(format!("{}: {RO_RSGDF_STRESS_MSG}", s.fname)));
+    }
+    Ok(())
+}
+
+/// numpy view of an optional derivative.
+fn opt_array<'py>(py: Python<'py>, a: &Option<Array2<f64>>) -> Option<Bound<'py, PyArray2<f64>>> {
+    a.as_ref().map(|m| PyArray2::from_array(py, m))
 }
 
 /// Closed-shell Gamma RHF on injected J/K (the `run_rhf_gamma` assembly).
@@ -529,10 +723,25 @@ struct PyGammaOpenShellResult {
     auxbasis: Option<String>,
     scf_data: ScfResult,
     timings_data: PbcTimings,
+    gradient_data: Option<Array2<f64>>,
+    stress_data: Option<Array2<f64>>,
 }
 
 #[pymethods]
 impl PyGammaOpenShellResult {
+    /// Analytic nuclear gradient `dE/dR` (natoms x 3, Hartree/Bohr per
+    /// cell, rows in the Molecule's atom order) of the final SCF stage;
+    /// `None` unless `with_gradient=True`.
+    fn gradient<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
+        opt_array(py, &self.gradient_data)
+    }
+    /// Analytic stress `σ_ab = (1/Ω) dE/dε_ab` (3 x 3, Hartree/Bohr³; strain
+    /// of the lattice rows AND the atoms, fixed fractional coordinates;
+    /// pressure = -tr(σ)/3). Not symmetrised (a KS grid leaves a grid-error
+    /// antisymmetric part). `None` unless `with_stress=True`.
+    fn stress<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
+        opt_array(py, &self.stress_data)
+    }
     /// Stage timings and counters (see `timings_dict`).
     #[getter]
     fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
@@ -575,6 +784,8 @@ struct OpenParts {
     grid: Option<GammaUksGridInfo>,
     /// KS only: the driver's grid / AO-cache / XC stages (else empty).
     ks_timings: PbcTimings,
+    /// Analytic forces / stress of the final SCF stage (when requested).
+    derivs: Derivs,
 }
 
 enum OpenMethod {
@@ -616,7 +827,9 @@ fn run_open_ks(s: &PbcSetup, sys: &GammaSystem, o: &OpenOpts) -> Result<OpenPart
             (cfg.grid, cfg.exxdiv, cfg.ewald_start) = (o.grid.clone(), s.exx, o.start);
             cfg.scf = o.scf.clone();
             let r = gamma_uks(&s.cell, &s.prep, &sys.hc, ints, &cfg)?;
+            let derivs = system_derivatives(s, sys, &r.scf, DerivMethod::Uks(&cfg))?;
             Ok(OpenParts {
+                derivs,
                 ks_timings: r.timings,
                 e_xc: Some(r.e_xc),
                 a_x: Some(r.exact_exchange_fraction),
@@ -635,7 +848,9 @@ fn run_open_ks(s: &PbcSetup, sys: &GammaSystem, o: &OpenOpts) -> Result<OpenPart
             (cfg.grid, cfg.exxdiv, cfg.ewald_start) = (o.grid.clone(), s.exx, o.start);
             cfg.scf = o.scf.clone();
             let r = gamma_roks(&s.cell, &s.prep, &sys.hc, ints, &cfg)?;
+            let derivs = system_derivatives(s, sys, &r.scf, DerivMethod::Roks(&cfg))?;
             Ok(OpenParts {
+                derivs,
                 ks_timings: r.timings,
                 e_xc: Some(r.e_xc),
                 a_x: Some(r.exact_exchange_fraction),
@@ -653,7 +868,7 @@ fn run_open_ks(s: &PbcSetup, sys: &GammaSystem, o: &OpenOpts) -> Result<OpenPart
 
 fn run_open_hf(s: &PbcSetup, sys: &GammaSystem, o: &OpenOpts) -> Result<OpenParts, FerricError> {
     let ints = sys.ints.scf();
-    let (scf, none_stage, madelung, nocc, s2, gaps) = match o.method {
+    let (scf, none_stage, madelung, nocc, s2, gaps, derivs) = match o.method {
         OpenMethod::Uhf => {
             let cfg = GammaUhfConfig {
                 exxdiv: s.exx,
@@ -662,7 +877,8 @@ fn run_open_hf(s: &PbcSetup, sys: &GammaSystem, o: &OpenOpts) -> Result<OpenPart
                 initial_mos: None,
             };
             let r = gamma_uhf(&s.cell, &s.prep, &sys.hc, ints, &cfg)?;
-            (r.scf, r.none_stage, r.madelung, r.nocc, r.s2, r.gaps)
+            let d = system_derivatives(s, sys, &r.scf, DerivMethod::Uhf(s.exx))?;
+            (r.scf, r.none_stage, r.madelung, r.nocc, r.s2, r.gaps, d)
         }
         _ => {
             let cfg = GammaRohfConfig {
@@ -672,7 +888,8 @@ fn run_open_hf(s: &PbcSetup, sys: &GammaSystem, o: &OpenOpts) -> Result<OpenPart
                 initial_mos: None,
             };
             let r = gamma_rohf(&s.cell, &s.prep, &sys.hc, ints, &cfg)?;
-            (r.scf, r.none_stage, r.madelung, r.nocc, r.s2, r.gaps)
+            let d = system_derivatives(s, sys, &r.scf, DerivMethod::Rohf(s.exx))?;
+            (r.scf, r.none_stage, r.madelung, r.nocc, r.s2, r.gaps, d)
         }
     };
     Ok(OpenParts {
@@ -686,6 +903,7 @@ fn run_open_hf(s: &PbcSetup, sys: &GammaSystem, o: &OpenOpts) -> Result<OpenPart
         a_x: None,
         grid: None,
         ks_timings: PbcTimings::default(),
+        derivs,
     })
 }
 
@@ -711,6 +929,10 @@ fn run_open_shell(
     ewald_start: Option<String>,
 ) -> PyResult<PyGammaOpenShellResult> {
     gamma_dense_preflight(&s)?;
+    check_deriv_request(
+        &s,
+        matches!(o.method, OpenMethod::Rohf | OpenMethod::Roks(_)),
+    )?;
     let (p, e_nuc, timings_data) = py
         .allow_threads(|| open_shell_driver(&s, &o))
         .map_err(pbc_err(s.fname))?;
@@ -740,6 +962,8 @@ fn run_open_shell(
         auxbasis: s.aux_name.clone(),
         scf_data: p.scf,
         timings_data,
+        gradient_data: p.derivs.gradient,
+        stress_data: p.derivs.stress,
     })
 }
 
@@ -758,6 +982,14 @@ fn run_open_shell(
 /// Hard errors (ValueError): charged cell, incompatible electron
 /// count / multiplicity, and every refusal of the Rust driver.
 ///
+/// `with_gradient` / `with_stress` (default False): after the SCF, compute
+/// the analytic Gamma-point nuclear gradient (`result.gradient()`, natoms x 3,
+/// dE/dR in Hartree/Bohr per cell, the molecular `gradient()` convention)
+/// and/or stress (`result.stress()`, 3 x 3 σ = (1/Ω) dE/dε in Hartree/Bohr³)
+/// of the energy the result reports, on the SAME J/K (dense AFT, or RS-GDF
+/// built with its gradient pieces). Each is `None` when not requested. The
+/// SCF must converge (a derivative at a non-stationary density is refused).
+///
 /// Validated (tests/test_pbc_bindings.py vs crates/ferric-pbc/tests/pbc_uhf.rs):
 /// H atom / STO-3G (PySCF digits), a = 4 Bohr cube, PySCF 2.13 pbc.scf.UHF
 /// AFTDF: E = -0.402177788224 (none) / -0.756839973159 (ewald), <S^2> 0.75.
@@ -765,7 +997,7 @@ fn run_open_shell(
 #[pyo3(signature = (
     mol, lattice, basis_set, exxdiv="ewald", ewald_start=None, omega=None,
     max_eri_gb=None, max_iter=200, density_conv=1e-10, jk="dense",
-    auxbasis=None, memory_budget_gb=None,
+    auxbasis=None, memory_budget_gb=None, with_gradient=false, with_stress=false,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_uhf_gamma(
@@ -782,9 +1014,11 @@ fn run_uhf_gamma(
     jk: &str,
     auxbasis: Option<&Bound<'_, PyAny>>,
     memory_budget_gb: Option<f64>,
+    with_gradient: bool,
+    with_stress: bool,
 ) -> PyResult<PyGammaOpenShellResult> {
     let fname = "run_uhf_gamma";
-    let s = pbc_setup(&PbcArgs {
+    let mut s = pbc_setup(&PbcArgs {
         fname,
         mol,
         lattice: &lattice,
@@ -797,6 +1031,10 @@ fn run_uhf_gamma(
         memory_budget_gb,
         closed_shell: false,
     })?;
+    s.derivs = DerivRequest {
+        gradient: with_gradient,
+        stress: with_stress,
+    };
     let (start, start_name) = parse_ewald_start(fname, s.exx, ewald_start)?;
     let o = OpenOpts {
         method: OpenMethod::Uhf,
@@ -809,7 +1047,9 @@ fn run_uhf_gamma(
 
 /// Gamma-point periodic **ROHF** (Guest-Saunders Roothaan coupling on one
 /// MO set). Same contract as `run_uhf_gamma` (ewald_start, jk, units,
-/// strictness).
+/// strictness, with_gradient/with_stress), except that `with_stress=True`
+/// with jk="rsgdf" is a ValueError (the ROHF/ROKS stress exists on the dense
+/// AFT J/K only).
 ///
 /// KNOWN LIMITATION: ferric's DIIS ROHF does not converge on the periodic
 /// triclinic 4H s+p triplet (the Rust suite's `pbc_rohf.rs` case is
@@ -823,7 +1063,7 @@ fn run_uhf_gamma(
 #[pyo3(signature = (
     mol, lattice, basis_set, exxdiv="ewald", ewald_start=None, omega=None,
     max_eri_gb=None, max_iter=200, density_conv=1e-10, jk="dense",
-    auxbasis=None, memory_budget_gb=None,
+    auxbasis=None, memory_budget_gb=None, with_gradient=false, with_stress=false,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_rohf_gamma(
@@ -840,9 +1080,11 @@ fn run_rohf_gamma(
     jk: &str,
     auxbasis: Option<&Bound<'_, PyAny>>,
     memory_budget_gb: Option<f64>,
+    with_gradient: bool,
+    with_stress: bool,
 ) -> PyResult<PyGammaOpenShellResult> {
     let fname = "run_rohf_gamma";
-    let s = pbc_setup(&PbcArgs {
+    let mut s = pbc_setup(&PbcArgs {
         fname,
         mol,
         lattice: &lattice,
@@ -855,6 +1097,10 @@ fn run_rohf_gamma(
         memory_budget_gb,
         closed_shell: false,
     })?;
+    s.derivs = DerivRequest {
+        gradient: with_gradient,
+        stress: with_stress,
+    };
     let (start, start_name) = parse_ewald_start(fname, s.exx, ewald_start)?;
     let o = OpenOpts {
         method: OpenMethod::Rohf,
@@ -879,7 +1125,7 @@ fn run_rohf_gamma(
     mol, lattice, basis_set, functional, exxdiv="ewald", ewald_start=None,
     omega=None, max_eri_gb=None, max_iter=200, density_conv=1e-10, jk="dense",
     auxbasis=None, memory_budget_gb=None, n_radial=75, n_angular=302,
-    neighbour_cutoff=None,
+    neighbour_cutoff=None, with_gradient=false, with_stress=false,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_uks_gamma(
@@ -900,9 +1146,11 @@ fn run_uks_gamma(
     n_radial: usize,
     n_angular: usize,
     neighbour_cutoff: Option<f64>,
+    with_gradient: bool,
+    with_stress: bool,
 ) -> PyResult<PyGammaOpenShellResult> {
     let fname = "run_uks_gamma";
-    let s = pbc_setup(&PbcArgs {
+    let mut s = pbc_setup(&PbcArgs {
         fname,
         mol,
         lattice: &lattice,
@@ -915,6 +1163,10 @@ fn run_uks_gamma(
         memory_budget_gb,
         closed_shell: false,
     })?;
+    s.derivs = DerivRequest {
+        gradient: with_gradient,
+        stress: with_stress,
+    };
     let (start, start_name) = parse_ewald_start(fname, s.exx, ewald_start)?;
     let o = OpenOpts {
         method: OpenMethod::Uks(functional.to_string()),
@@ -926,7 +1178,8 @@ fn run_uks_gamma(
 }
 
 /// Gamma-point periodic **ROKS** (spin-polarized XC, Roothaan coupling on
-/// one MO set). Same functional/grid contract as `run_uks_gamma`.
+/// one MO set). Same functional/grid contract as `run_uks_gamma`;
+/// `with_stress=True` with jk="rsgdf" is a ValueError, as for ROHF.
 ///
 /// KNOWN LIMITATION (shared with `run_rohf_gamma`): the zero-XC ROHF limit
 /// does not converge on the triclinic 4H s+p triplet; ROKS with a real
@@ -944,7 +1197,7 @@ fn run_uks_gamma(
     mol, lattice, basis_set, functional, exxdiv="ewald", ewald_start=None,
     omega=None, max_eri_gb=None, max_iter=None, density_conv=1e-10, jk="dense",
     auxbasis=None, memory_budget_gb=None, n_radial=75, n_angular=302,
-    neighbour_cutoff=None,
+    neighbour_cutoff=None, with_gradient=false, with_stress=false,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_roks_gamma(
@@ -965,9 +1218,11 @@ fn run_roks_gamma(
     n_radial: usize,
     n_angular: usize,
     neighbour_cutoff: Option<f64>,
+    with_gradient: bool,
+    with_stress: bool,
 ) -> PyResult<PyGammaOpenShellResult> {
     let fname = "run_roks_gamma";
-    let s = pbc_setup(&PbcArgs {
+    let mut s = pbc_setup(&PbcArgs {
         fname,
         mol,
         lattice: &lattice,
@@ -980,6 +1235,10 @@ fn run_roks_gamma(
         memory_budget_gb,
         closed_shell: false,
     })?;
+    s.derivs = DerivRequest {
+        gradient: with_gradient,
+        stress: with_stress,
+    };
     let (start, start_name) = parse_ewald_start(fname, s.exx, ewald_start)?;
     let o = OpenOpts {
         method: OpenMethod::Roks(functional.to_string()),
@@ -1029,10 +1288,22 @@ struct PyGammaRksResult {
     auxbasis: Option<String>,
     scf_data: ScfResult,
     timings_data: PbcTimings,
+    gradient_data: Option<Array2<f64>>,
+    stress_data: Option<Array2<f64>>,
 }
 
 #[pymethods]
 impl PyGammaRksResult {
+    /// Analytic nuclear gradient `dE/dR` (natoms x 3, Hartree/Bohr per
+    /// cell); `None` unless `with_gradient=True`.
+    fn gradient<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
+        opt_array(py, &self.gradient_data)
+    }
+    /// Analytic stress `σ = (1/Ω) dE/dε` (3 x 3, Hartree/Bohr³, not
+    /// symmetrised); `None` unless `with_stress=True`.
+    fn stress<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
+        opt_array(py, &self.stress_data)
+    }
     /// Stage timings and counters (see `timings_dict`).
     #[getter]
     fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
@@ -1059,20 +1330,29 @@ fn rks_driver(
     functional: &str,
     grid: PeriodicGridConfig,
     scf: RhfConfig,
-) -> Result<(ferric_pbc::GammaRksResult, f64, PbcTimings), FerricError> {
+) -> Result<(ferric_pbc::GammaRksResult, Derivs, f64, PbcTimings), FerricError> {
     let total = StageClock::start();
     let sys = gamma_system(s)?;
     let mut cfg = GammaRksConfig::new(functional);
     (cfg.grid, cfg.exxdiv, cfg.scf) = (grid, s.exx, scf);
     let r = gamma_rks(&s.cell, &s.prep, &sys.hc, sys.ints.scf(), &cfg)?;
+    let derivs = system_derivatives(s, &sys, &r.scf, DerivMethod::Rks(&cfg))?;
     let t = sys.timings(&[&r.timings], &total);
-    Ok((r, sys.hc.enn, t))
+    Ok((r, derivs, sys.hc.enn, t))
 }
 
 /// Closed-shell Gamma-point periodic **RKS**. Functional and grid contract
 /// as `run_uks_gamma` (no ewald_start: RKS runs one SCF in the requested
 /// exxdiv); cell/J-K/units/strictness as `run_rhf_gamma`. An open shell or
 /// odd electron count is a ValueError (use `run_uks_gamma`).
+///
+/// `with_gradient` / `with_stress` (default False): after the SCF, compute
+/// the analytic Gamma-point nuclear gradient (`result.gradient()`, natoms x 3,
+/// dE/dR in Hartree/Bohr per cell, the molecular `gradient()` convention)
+/// and/or stress (`result.stress()`, 3 x 3 σ = (1/Ω) dE/dε in Hartree/Bohr³)
+/// of the energy the result reports, on the SAME J/K (dense AFT, or RS-GDF
+/// built with its gradient pieces). Each is `None` when not requested. The
+/// SCF must converge (a derivative at a non-stationary density is refused).
 ///
 /// Validated vs crates/ferric-pbc/tests/pbc_rks.rs: H2 / STO-3G (PySCF
 /// digits), a = 4 Bohr, SSF 75x302 D = 10 Bohr, ewald: LDA -1.521871150768,
@@ -1082,7 +1362,7 @@ fn rks_driver(
     mol, lattice, basis_set, functional, exxdiv="ewald", omega=None,
     max_eri_gb=None, max_iter=200, density_conv=1e-10, jk="dense",
     auxbasis=None, memory_budget_gb=None, n_radial=75, n_angular=302,
-    neighbour_cutoff=None,
+    neighbour_cutoff=None, with_gradient=false, with_stress=false,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_rks_gamma(
@@ -1102,9 +1382,11 @@ fn run_rks_gamma(
     n_radial: usize,
     n_angular: usize,
     neighbour_cutoff: Option<f64>,
+    with_gradient: bool,
+    with_stress: bool,
 ) -> PyResult<PyGammaRksResult> {
     let fname = "run_rks_gamma";
-    let s = pbc_setup(&PbcArgs {
+    let mut s = pbc_setup(&PbcArgs {
         fname,
         mol,
         lattice: &lattice,
@@ -1117,10 +1399,14 @@ fn run_rks_gamma(
         memory_budget_gb,
         closed_shell: true,
     })?;
+    s.derivs = DerivRequest {
+        gradient: with_gradient,
+        stress: with_stress,
+    };
     let grid = periodic_grid(fname, n_radial, n_angular, neighbour_cutoff)?;
     gamma_dense_preflight(&s)?;
     let scf = gamma_scf_config(max_iter, density_conv);
-    let (r, e_nuc, timings_data) = py
+    let (r, derivs, e_nuc, timings_data) = py
         .allow_threads(|| rks_driver(&s, functional, grid, scf))
         .map_err(pbc_err(fname))?;
     Ok(PyGammaRksResult {
@@ -1141,6 +1427,8 @@ fn run_rks_gamma(
         auxbasis: s.aux_name.clone(),
         scf_data: r.scf,
         timings_data,
+        gradient_data: derivs.gradient,
+        stress_data: derivs.stress,
     })
 }
 

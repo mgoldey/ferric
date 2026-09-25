@@ -1339,6 +1339,15 @@ class GammaRhfResult:
     def overlap(self) -> NDArray[np.float64]:
         """Lattice-summed Gamma-point AO overlap."""
         ...
+    def gradient(self) -> NDArray[np.float64] | None:
+        """Analytic nuclear gradient dE/dR (natoms x 3, Hartree/Bohr per cell) if
+        with_gradient=True, else None."""
+        ...
+    def stress(self) -> NDArray[np.float64] | None:
+        """Analytic stress sigma = (1/Omega) dE/deps (3 x 3, Hartree/Bohr^3; strain
+        of lattice rows AND atoms, pressure = -trace/3; not symmetrised) if
+        with_stress=True, else None."""
+        ...
 
 def run_rhf_gamma(
     mol: Molecule,
@@ -1352,6 +1361,8 @@ def run_rhf_gamma(
     jk: str = "dense",
     auxbasis: BasisSet | str | None = None,
     memory_budget_gb: float | None = None,
+    with_gradient: bool = False,
+    with_stress: bool = False,
 ) -> GammaRhfResult:
     """Closed-shell Gamma-point periodic RHF.
 
@@ -1365,6 +1376,11 @@ def run_rhf_gamma(
     shells and odd (valence) electron counts raise ValueError. An ECP basis
     (e.g. def2-* for Z > 36, *-pp) is applied to the cell's molecule as in
     run_rhf, and the lattice-summed V_ECP enters the periodic hcore.
+
+    with_gradient / with_stress (default False) add the analytic nuclear
+    gradient (result.gradient(): natoms x 3, dE/dR in Hartree/Bohr) and stress
+    (result.stress(): 3 x 3 in Hartree/Bohr^3) of the reported energy, on the
+    SCF's own J/K (both jk values). The SCF must converge.
     """
     ...
 
@@ -1378,7 +1394,10 @@ def run_rhf_gamma(
 # to the cell's molecule as in run_rhf; lattice-summed V_ECP in the periodic
 # hcore; electron counts and frozen_core are valence counts); Rust-side
 # refusals raise ValueError with their message; numerical failures (incl. SCF
-# non-convergence) raise RuntimeError.
+# non-convergence) raise RuntimeError. The Gamma SCF drivers (UHF/ROHF/UKS/
+# ROKS/RKS) take with_gradient / with_stress (default False) exactly as
+# run_rhf_gamma, for both jk values, except ROHF/ROKS with_stress with
+# jk="rsgdf" (ValueError: that stress exists on dense AFT only).
 
 class GammaOpenShellResult:
     """Result of run_uhf_gamma / run_rohf_gamma / run_uks_gamma / run_roks_gamma."""
@@ -1451,6 +1470,15 @@ class GammaOpenShellResult:
         """None for ROHF/ROKS (one MO set)."""
         ...
     def density(self) -> NDArray[np.float64]: ...
+    def gradient(self) -> NDArray[np.float64] | None:
+        """Analytic nuclear gradient dE/dR (natoms x 3, Hartree/Bohr per cell) if
+        with_gradient=True, else None."""
+        ...
+    def stress(self) -> NDArray[np.float64] | None:
+        """Analytic stress sigma = (1/Omega) dE/deps (3 x 3, Hartree/Bohr^3; strain
+        of lattice rows AND atoms, pressure = -trace/3; not symmetrised) if
+        with_stress=True, else None."""
+        ...
 
 class GammaRksResult:
     """Result of run_rks_gamma (closed-shell Gamma-point periodic RKS)."""
@@ -1498,6 +1526,15 @@ class GammaRksResult:
     def auxbasis(self) -> str | None: ...
     def mo_energy(self) -> NDArray[np.float64]: ...
     def density(self) -> NDArray[np.float64]: ...
+    def gradient(self) -> NDArray[np.float64] | None:
+        """Analytic nuclear gradient dE/dR (natoms x 3, Hartree/Bohr per cell) if
+        with_gradient=True, else None."""
+        ...
+    def stress(self) -> NDArray[np.float64] | None:
+        """Analytic stress sigma = (1/Omega) dE/deps (3 x 3, Hartree/Bohr^3; strain
+        of lattice rows AND atoms, pressure = -trace/3; not symmetrised) if
+        with_stress=True, else None."""
+        ...
 
 class GammaCorrelationResult:
     """Result of run_mp2_gamma / run_drpa_gamma (Gamma RHF + correlation)."""
@@ -1711,6 +1748,8 @@ def run_uhf_gamma(
     jk: str = "dense",
     auxbasis: BasisSet | str | None = None,
     memory_budget_gb: float | None = None,
+    with_gradient: bool = False,
+    with_stress: bool = False,
 ) -> GammaOpenShellResult:
     """Gamma-point periodic UHF. ewald_start "staged" (default) | "direct",
     exxdiv="ewald" only (ValueError with "none")."""
@@ -1729,6 +1768,8 @@ def run_rohf_gamma(
     jk: str = "dense",
     auxbasis: BasisSet | str | None = None,
     memory_budget_gb: float | None = None,
+    with_gradient: bool = False,
+    with_stress: bool = False,
 ) -> GammaOpenShellResult:
     """Gamma-point periodic ROHF. KNOWN LIMITATION: does not converge on the
     triclinic 4H s+p triplet (non-convergence is an error, not a number)."""
@@ -1751,6 +1792,8 @@ def run_uks_gamma(
     n_radial: int = 75,
     n_angular: int = 302,
     neighbour_cutoff: float | None = None,
+    with_gradient: bool = False,
+    with_stress: bool = False,
 ) -> GammaOpenShellResult:
     """Gamma-point periodic UKS (LDA/GGA/global hybrids; RSH/meta-GGA/VV10
     refused). neighbour_cutoff in Angstrom (None = max(10 Bohr, covering
@@ -1774,6 +1817,8 @@ def run_roks_gamma(
     n_radial: int = 75,
     n_angular: int = 302,
     neighbour_cutoff: float | None = None,
+    with_gradient: bool = False,
+    with_stress: bool = False,
 ) -> GammaOpenShellResult:
     """Gamma-point periodic ROKS (functional/grid contract of run_uks_gamma).
     max_iter=None: 600 with a 0.05 Ha ramped level shift for a hybrid (a > 0),
@@ -1796,6 +1841,8 @@ def run_rks_gamma(
     n_radial: int = 75,
     n_angular: int = 302,
     neighbour_cutoff: float | None = None,
+    with_gradient: bool = False,
+    with_stress: bool = False,
 ) -> GammaRksResult:
     """Closed-shell Gamma-point periodic RKS; open shells raise ValueError."""
     ...

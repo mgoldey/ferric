@@ -1,0 +1,38 @@
+# Periodic Gamma-point RKS geometry optimization: stretched H2 / STO-3G
+# (1.0 Angstrom) in a 4 Angstrom simple-cubic cell, PBE.
+#
+# task = "optimize" with [cell] relaxes the ATOMS at a FIXED lattice with the
+# analytic Gamma-point force of the route (ferric_pbc::grad: RHF, UHF, ROHF,
+# RKS, UKS or ROKS, on jk = "dense" or "rsgdf") and ferric's Cartesian BFGS.
+# Every step rebuilds the lattice sums and J/K at the new positions and runs a
+# fresh SCF, which must converge. The run prints the final geometry and the
+# final gradient dE/dR (Hartree/Bohr per cell). k-point meshes are refused
+# (k-point forces are not wired into the CLI); there is no lattice relaxation.
+#
+# Seconds to run:
+#   OPENBLAS_NUM_THREADS=1 cargo run --release --bin ferric -- examples/h2-cell-rks-opt.toml
+
+[molecule]
+xyz = "testdata/molecules/h2_stretched.xyz"
+
+[basis]
+name = "sto-3g"
+
+[method]
+kind = "ksdft"
+task = "optimize"
+
+[dft]
+functional = "PBE"
+
+[cell]
+lattice = [[4.0, 0.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 4.0]]
+exxdiv = "ewald"
+jk = "dense"
+# A lighter periodic XC grid than the 75 x 302 default, to keep the example
+# fast; the force is the exact derivative of the energy on this grid.
+n_radial = 50
+n_angular = 110
+
+[optimize]
+max_steps = 30

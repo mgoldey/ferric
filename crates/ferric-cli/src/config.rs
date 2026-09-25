@@ -3670,7 +3670,8 @@ pub struct PeriodicPlan {
     pub n_radial: usize,
     pub n_angular: usize,
     pub neighbour_cutoff_bohr: Option<f64>,
-    /// `method.task = "optimize"` (Gamma RHF, dense J/K only).
+    /// `method.task = "optimize"`: Gamma-point SCF routes (RHF/UHF/ROHF/RKS/
+    /// UKS/ROKS), either J/K, atoms only at a fixed lattice.
     pub optimize: bool,
 }
 
@@ -4101,14 +4102,20 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
     let optimize = match task {
         "energy" => false,
         "optimize" => {
-            if route != PeriodicRoute::Rhf || kpoints || rsgdf {
+            if route.correlated() {
                 return Err(format!(
-                    "method.task = \"optimize\" with [cell] is implemented for Gamma-point RHF \
-                     with jk = \"dense\" only (the periodic analytic gradient is dense-AFT \
-                     RHF); got the {}{} route{}",
-                    if kpoints { "k-point " } else { "" },
-                    route.label(),
-                    if rsgdf { " with jk = \"rsgdf\"" } else { "" }
+                    "method.task = \"optimize\" with [cell] is implemented for the Gamma-point \
+                     SCF routes (rhf, uhf, rohf, ksdft; RHF/UHF/ROHF/RKS/UKS/ROKS) only: \
+                     periodic {} has no analytic gradient",
+                    route.label()
+                ));
+            }
+            if kpoints {
+                return Err(format!(
+                    "method.task = \"optimize\" with [cell] kmesh is not implemented: \
+                     k-point forces are not wired into the CLI. Remove kmesh to optimize \
+                     at the Gamma point (the {} route has analytic Gamma forces)",
+                    route.label()
                 ));
             }
             if let Some(s) = cfg.optimize.coordinates.as_deref() {
@@ -4125,7 +4132,7 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
         other => {
             return Err(format!(
                 "method.task = \"{other}\" is not implemented for periodic systems ([cell] is \
-                 present); use \"energy\" (or \"optimize\" for Gamma-point RHF)"
+                 present); use \"energy\" (or \"optimize\" for a Gamma-point SCF route)"
             ))
         }
     };
@@ -4424,20 +4431,57 @@ kind = "ccsd"
         assert_eq!(p.drpa_energy, ferric_pbc::KDrpaEnergy::Plasmon);
     }
 
+    /// `h2` with `task = "optimize"`.
+    fn opt(kind: &str, cell: &str, extra: &str) -> String {
+        h2(kind, cell, extra).replace("kind = ", "task = \"optimize\"\nkind = ")
+    }
+
     #[test]
-    fn optimize_is_gamma_dense_rhf_only() {
-        let opt = |kind: &str, cell: &str| {
-            h2(kind, cell, "").replace("kind = ", "task = \"optimize\"\nkind = ")
-        };
-        assert!(ok(&opt("rhf", "")).optimize);
-        for (kind, cell) in [
-            ("uhf", ""),
-            ("ksdft", ""),
-            ("rhf", "kmesh = [1, 1, 2]"),
-            ("rhf", "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\""),
+    fn optimize_is_accepted_for_every_gamma_scf_route_and_jk() {
+        let rsgdf = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"";
+        let pbe = "[dft]\nfunctional = \"PBE\"";
+        for (kind, extra, route) in [
+            ("rhf", "", PeriodicRoute::Rhf),
+            ("uhf", "", PeriodicRoute::Uhf),
+            ("rohf", "", PeriodicRoute::Rohf),
+            ("ksdft", "", PeriodicRoute::Rks),
+            ("rhf", pbe, PeriodicRoute::Rks),
+            ("uhf", pbe, PeriodicRoute::Uks),
+            ("rohf", pbe, PeriodicRoute::Roks),
         ] {
-            let e = err(&opt(kind, cell));
-            assert!(e.contains("optimize"), "{kind} {cell}: {e}");
+            for jk in ["", rsgdf] {
+                let p = ok(&opt(kind, jk, extra));
+                assert!(p.optimize, "{kind} {extra} {jk}");
+                assert_eq!(p.route, route, "{kind} {extra} {jk}");
+                assert!(p.kmesh.is_none());
+                assert_eq!(
+                    matches!(p.jk, PeriodicJk::RsGdf { .. }),
+                    !jk.is_empty(),
+                    "{kind} {extra} {jk}"
+                );
+            }
+        }
+        // ksdft picks UKS for an open shell (H2 triplet).
+        let triplet =
+            opt("ksdft", "", "").replace("[molecule]\n", "[molecule]\nmultiplicity = 3\n");
+        assert_eq!(ok(&triplet).route, PeriodicRoute::Uks);
+        // [optimize] is read on the optimize path.
+        assert!(ok(&opt("uhf", rsgdf, "[optimize]\nmax_steps = 5")).optimize);
+    }
+
+    #[test]
+    fn optimize_is_refused_with_a_kmesh_and_for_correlated_routes() {
+        for kind in ["rhf", "uhf"] {
+            let e = err(&opt(kind, "kmesh = [1, 1, 2]", ""));
+            assert!(e.contains("optimize") && e.contains("kmesh"), "{kind}: {e}");
+            assert!(e.contains("k-point forces"), "{kind}: {e}");
+        }
+        for kind in ["rimp2", "pdep-rpa"] {
+            let e = err(&opt(kind, "denominators = \"shifted\"", ""));
+            assert!(
+                e.contains("optimize") && e.contains("no analytic gradient"),
+                "{kind}: {e}"
+            );
         }
         let freq = h2("rhf", "", "").replace("kind = ", "task = \"frequencies\"\nkind = ");
         assert!(err(&freq).contains("not implemented for periodic"));
@@ -4452,6 +4496,12 @@ kind = "ccsd"
             let p = ok(&src);
             assert_eq!(p.route, PeriodicRoute::Rhf, "{name}");
         }
+        let name = "h2-cell-rks-opt.toml";
+        let src = std::fs::read_to_string(root.join("examples").join(name))
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        let p = ok(&src);
+        assert_eq!(p.route, PeriodicRoute::Rks, "{name}");
+        assert!(p.optimize && p.kmesh.is_none(), "{name}");
     }
 }
 
