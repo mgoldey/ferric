@@ -1572,6 +1572,97 @@ impl Engine {
             Some(&self.buf[..max_written])
         }
     }
+
+    /// [`Self::compute_eri2_deriv`] with the ket shell translated, as
+    /// [`Self::compute_eri2_shifted`]: the 6 first-derivative blocks
+    /// `[d/d(P), d/d(Q)] × [x, y, z]` (each `nP·nQ`, row-major `(P, Q)`) of
+    /// `(P | Q(r − s_Q))`, `shift_q = s_Q` (Bohr). The periodic aux-metric
+    /// derivative of the RS-GDF forces (`ferric_pbc::grad`,
+    /// `d/dC Σ_T (P_0 | Q_T)_erfc`). A zero shift is bitwise equal to
+    /// `compute_eri2_deriv`. Composite operators are summed with their
+    /// coefficients. For two centres `d/dQ = −d/dP` (translation
+    /// invariance); both blocks are returned as libint2 wrote them.
+    ///
+    /// The shim receives the buffer capacity and refuses a result that would
+    /// not fit. Returns `Ok(None)` if every component was screened; errors on
+    /// an out-of-range shell, a non-finite shift, a terf/terfc table engine,
+    /// a result that is not 6 blocks, or a libint2 exception.
+    pub fn compute_eri2_deriv_shifted(
+        &mut self,
+        dfbs: &PreparedBasis,
+        sh_p: usize,
+        sh_q: usize,
+        shift_q: [f64; 3],
+    ) -> Result<Option<&[f64]>, FerricError> {
+        if self.is_terfc || self.is_terf {
+            return Err(FerricError::Libint(
+                "compute_eri2_deriv_shifted: terf/terfc table engines have no shifted variant"
+                    .into(),
+            ));
+        }
+        let dims = dfbs.shell_dims();
+        if sh_p >= dims.len() || sh_q >= dims.len() {
+            return Err(FerricError::Libint(format!(
+                "compute_eri2_deriv_shifted: shells ({sh_p}|{sh_q}) out of range (aux {})",
+                dims.len()
+            )));
+        }
+        if !shift_q.iter().all(|v| v.is_finite()) {
+            return Err(FerricError::Libint(format!(
+                "compute_eri2_deriv_shifted: non-finite shift {shift_q:?}"
+            )));
+        }
+        let n = dims[sh_p] * dims[sh_q];
+        let total = 6 * n;
+        if self.buf.len() < total {
+            self.buf.resize(total, 0.0);
+        }
+        if self.scratch.len() < total {
+            self.scratch.resize(total, 0.0);
+        }
+        let cap = c_int::try_from(self.scratch.len()).map_err(|_| {
+            FerricError::Libint("compute_eri2_deriv_shifted: buffer exceeds c_int".into())
+        })?;
+        let mut any = false;
+        self.buf[..total].fill(0.0);
+        for &(coeff, h) in &self.handles {
+            // SAFETY: valid libint2 handles; shells range-checked above;
+            // `shift_q` is 3 contiguous f64 alive for the call;
+            // `self.scratch` holds `cap` doubles and the shim checks
+            // nderiv*n <= cap before writing. Every C++ exception is caught
+            // in the shim (status < 0).
+            let written = unsafe {
+                ffi::scf_compute_eri2_deriv_shifted(
+                    h,
+                    dfbs.handle(),
+                    sh_p as c_int,
+                    sh_q as c_int,
+                    shift_q.as_ptr(),
+                    self.scratch.as_mut_ptr(),
+                    cap,
+                )
+            };
+            if written < 0 {
+                return Err(FerricError::Libint(format!(
+                    "scf_compute_eri2_deriv_shifted ({sh_p}|{sh_q}) failed: status {written}"
+                )));
+            }
+            if written == 0 {
+                continue;
+            }
+            if written as usize != total {
+                return Err(FerricError::Libint(format!(
+                    "scf_compute_eri2_deriv_shifted ({sh_p}|{sh_q}) wrote {written} values, \
+                     expected 6 blocks = {total}"
+                )));
+            }
+            any = true;
+            for i in 0..total {
+                self.buf[i] += coeff * self.scratch[i];
+            }
+        }
+        Ok(if any { Some(&self.buf[..total]) } else { None })
+    }
 }
 
 impl Drop for Engine {

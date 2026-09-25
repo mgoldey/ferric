@@ -192,6 +192,17 @@ int scf_compute_eri3_deriv_shifted(scf_engine *eng, const scf_basis *obs,
 int scf_compute_eri2_deriv(scf_engine *eng, const scf_basis *dfbs,
                              int shP, int shQ, double *out);
 
+/* As scf_compute_eri2_deriv with the ket shell translated:
+ * d/dR of (shP | shQ(r - sQ)), shiftQ = sQ[3] (Bohr), laid out
+ * [d/d(shP), d/d(shQ)] x [x, y, z], each block nP*nQ doubles. A zero shift is
+ * bitwise equal to scf_compute_eri2_deriv. out_len = capacity of out in
+ * doubles; a result that would not fit returns SCF_EINVAL before writing.
+ * Returns nderiv*nP*nQ, 0 if screened, SCF_EINVAL (null pointer /
+ * out-of-range shell / non-finite shift / short buffer) or SCF_EINTERNAL. */
+int scf_compute_eri2_deriv_shifted(scf_engine *eng, const scf_basis *dfbs,
+                                     int shP, int shQ, const double *shiftQ,
+                                     double *out, int out_len);
+
 /* --- Electric dipole integrals via emultipole1 --- */
 
 /* Compute electric dipole integrals ⟨μ|(r - origin)|ν⟩ for all shell pairs.

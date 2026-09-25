@@ -1245,6 +1245,63 @@ int scf_compute_eri2_deriv(scf_engine *eng, const scf_basis *dfbs,
 #endif
 }
 
+/* scf_compute_eri2_deriv with the ket shell translated, as
+ * scf_compute_eri2_shifted: first derivatives of (shP | shQ(r - shiftQ)),
+ * shiftQ = 3 doubles (Bohr), laid out [d/d(shP), d/d(shQ)] x [x, y, z], each
+ * block nP*nQ doubles. The shell is COPIED and Shell::move()d (origin only;
+ * coefficients and max_ln_coeff copied verbatim), so a zero shift is bitwise
+ * identical to scf_compute_eri2_deriv and the immutable scf_basis is never
+ * touched. The periodic aux-metric derivative d/dC sum_T (P_0 | Q_T) of the
+ * RS-GDF forces (ferric_pbc::grad). `out_len` is the caller's capacity in
+ * doubles; nderiv*nP*nQ must fit, else SCF_EINVAL before writing. Returns
+ * nderiv*nP*nQ, 0 if libint2 screened the pair, SCF_EINVAL on a null
+ * pointer / out-of-range shell / non-finite shift / short buffer,
+ * SCF_EINTERNAL on any libint2 exception. */
+int scf_compute_eri2_deriv_shifted(scf_engine *eng, const scf_basis *dfbs,
+                                     int shP, int shQ, const double *shiftQ,
+                                     double *out, int out_len) {
+#if LIBINT2_SUPPORT_ERI2 && LIBINT2_MAX_DERIV_ORDER >= 1
+    if (!eng || !dfbs || !shiftQ || !out || out_len < 0) return SCF_EINVAL;
+    const int ndf = static_cast<int>(dfbs->bs.size());
+    if (shP < 0 || shP >= ndf || shQ < 0 || shQ >= ndf) return SCF_EINVAL;
+    if (!std::isfinite(shiftQ[0]) || !std::isfinite(shiftQ[1]) ||
+        !std::isfinite(shiftQ[2])) {
+        return SCF_EINVAL;
+    }
+    try {
+        Shell q = dfbs->bs[shQ];
+        q.move({q.O[0] + shiftQ[0], q.O[1] + shiftQ[1], q.O[2] + shiftQ[2]});
+        // BraKet::xs_xs rank=2: compute(aux_shell_P, aux_shell_Q)
+        eng->engine.compute(dfbs->bs[shP], q);
+        const auto &result = eng->engine.results();
+        if (result.empty() || result[0] == nullptr) return 0;
+        const int n = dfbs->nfunc[shP] * dfbs->nfunc[shQ];
+        const int nderiv = static_cast<int>(result.size());
+        if (static_cast<long long>(nderiv) * n > static_cast<long long>(out_len))
+            return SCF_EINVAL;
+        for (int d = 0; d < nderiv; ++d) {
+            const double *src = result[d];
+            double *dst = out + d * n;
+            if (src) {
+                for (int i = 0; i < n; ++i) dst[i] = src[i];
+            } else {
+                for (int i = 0; i < n; ++i) dst[i] = 0.0;
+            }
+        }
+        return nderiv * n;
+    } catch (const std::exception &ex) {
+        std::fprintf(stderr, "scf_compute_eri2_deriv_shifted: %s\n", ex.what());
+        return SCF_EINTERNAL;
+    } catch (...) {
+        return SCF_EINTERNAL;
+    }
+#else
+    (void)eng; (void)dfbs; (void)shP; (void)shQ; (void)shiftQ; (void)out;
+    (void)out_len;
+    return SCF_EINTERNAL;
+#endif
+}
+
 /* ==========================================================================
  *  terfc(r,r0)/r attenuated 3-center / 2-center integral engine
  *

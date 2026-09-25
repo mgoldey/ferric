@@ -85,6 +85,16 @@
 //! ferric-scf. Using ONE B for both J and K also keeps the fitted ERI a single
 //! positive-semidefinite `BᵀB`.
 //!
+//! # Forces
+//!
+//! [`RsGdf::build_for_gradient`] keeps the metric eigen-data the analytic
+//! forces need (the dropped eigenvectors and `J3` projected on them, for the
+//! kept–dropped Loewner term); the derivative contractions live in
+//! `deriv` and share this module's SR walks
+//! (`Stage::sr_three_index_walk` / `sr_metric_walk`), pair images and G
+//! sphere, so the force differentiates exactly the truncated energy built
+//! here. Formulas: `deriv`'s module doc and FINDINGS "Iteration 18".
+//!
 //! Units: Bohr and Hartree; ω in Bohr⁻¹.
 
 use crate::budget::{bytes_of, Ledger};
@@ -100,12 +110,15 @@ use ferric_integrals::md3c1e::{cart_components, e_table, ferric_cart2sph, prim_n
 use ferric_integrals::operator::Operator;
 use ferric_scf::fock::{JBuilder, KBuilder};
 use ndarray::linalg::general_mat_mul;
-use ndarray::{Array2, Array3, ArrayView1};
+use ndarray::{Array1, Array2, Array3, ArrayView1};
 use ndarray_linalg::{Eigh, UPLO};
 use num_complex::Complex64;
 use std::f64::consts::PI;
 
+pub(crate) mod deriv;
 pub mod kpoint;
+
+pub use deriv::RsGdfFitDiagnostics;
 
 /// Default Ewald split for the RS-GDF build (Bohr⁻¹; the prototype's `w=1`).
 pub const DEFAULT_RSGDF_OMEGA: f64 = 1.0;
@@ -245,6 +258,9 @@ pub struct RsGdf {
     /// `RpaIntermediates::v_inv_sqrt` (eigenpotential back-transform only;
     /// never part of an energy). Counted by the build ledger's metric line.
     metric_inv_sqrt: Array2<f64>,
+    /// Retained only by [`RsGdf::build_for_gradient`] (the forces' metric
+    /// eigen-data); `None` on every energy-only build.
+    grad: Option<MetricGradParts>,
 }
 
 /// The pre-solve pieces of an RS-GDF build ([`RsGdf::build_with_fit_parts`]),
@@ -678,6 +694,22 @@ impl Stage<'_> {
     where
         F: FnMut(&GShell, &GShell, [f64; 3], &[f64]),
     {
+        let mut eng = Engine::new_2center(Operator::erfc(self.omega), self.aux, ENGINE_PRECISION)?;
+        self.sr_metric_walk(|ip, iq, t| {
+            let blk = eng.compute_eri2_shifted(self.aux, ip, iq, t)?;
+            sink(&self.aux_sh[ip], &self.aux_sh[iq], t, blk);
+            Ok(())
+        })
+    }
+
+    /// The SR metric walk alone: `visit(P shell, Q shell, T)` for every
+    /// `(P_0 | Q_T)` the screen keeps, in the fixed order
+    /// [`Stage::sr_metric_each`] sums them (shared with the gradient's
+    /// derivative walk, [`deriv`]). Returns the count.
+    fn sr_metric_walk<F>(&self, mut visit: F) -> Result<usize, FerricError>
+    where
+        F: FnMut(usize, usize, [f64; 3]) -> Result<(), FerricError>,
+    {
         let mut count = 0usize;
         let global = if self.sr_screen {
             0.0
@@ -694,7 +726,6 @@ impl Stage<'_> {
             }
             r
         };
-        let mut eng = Engine::new_2center(Operator::erfc(self.omega), self.aux, ENGINE_PRECISION)?;
         for (ip, p) in self.aux_sh.iter().enumerate() {
             for (iq, q) in self.aux_sh.iter().enumerate() {
                 let rad = if self.sr_screen {
@@ -713,9 +744,7 @@ impl Stage<'_> {
                 ];
                 self.walker.visit(x0, rad, |t| {
                     count += 1;
-                    let blk = eng.compute_eri2_shifted(self.aux, ip, iq, t)?;
-                    sink(p, q, t, blk);
-                    Ok(())
+                    visit(ip, iq, t)
                 })?;
             }
         }
@@ -751,6 +780,42 @@ impl Stage<'_> {
     where
         F: FnMut(&GShell, &GShell, &GShell, [f64; 3], [f64; 3], &[f64]),
     {
+        let mut eng = Engine::new_3center(
+            Operator::erfc(self.omega),
+            self.obs,
+            self.aux,
+            ENGINE_PRECISION,
+        )?;
+        self.sr_three_index_walk(images, |i1, i2, ip, l, t| {
+            if let Some(blk) =
+                eng.compute_eri3_shifted(self.obs, self.aux, ip, i1, i2, [t, [0.0; 3], l])?
+            {
+                sink(
+                    &self.obs_sh[i1],
+                    &self.obs_sh[i2],
+                    &self.aux_sh[ip],
+                    l,
+                    t,
+                    blk,
+                );
+            }
+            Ok(())
+        })
+    }
+
+    /// The SR 3-centre walk alone: `visit(μ shell, ν shell, P shell, L, T)`
+    /// for every `(μ_0 ν_L | P_T)` the screen keeps, in the fixed order
+    /// [`Stage::sr_three_index_each`] sums them (shared with the gradient's
+    /// derivative walk, [`deriv`], so both see the same triplet set).
+    /// Returns the triplet count.
+    fn sr_three_index_walk<F>(
+        &self,
+        images: &[[f64; 3]],
+        mut visit: F,
+    ) -> Result<usize, FerricError>
+    where
+        F: FnMut(usize, usize, usize, [f64; 3], [f64; 3]) -> Result<(), FerricError>,
+    {
         let mut count = 0usize;
         let global = if self.sr_screen {
             0.0
@@ -769,12 +834,6 @@ impl Stage<'_> {
             }
             r
         };
-        let mut eng = Engine::new_3center(
-            Operator::erfc(self.omega),
-            self.obs,
-            self.aux,
-            ENGINE_PRECISION,
-        )?;
         for l in images {
             for (i1, a) in self.obs_sh.iter().enumerate() {
                 for (i2, b) in self.obs_sh.iter().enumerate() {
@@ -814,17 +873,7 @@ impl Stage<'_> {
                                 return Ok(());
                             }
                             count += 1;
-                            if let Some(blk) = eng.compute_eri3_shifted(
-                                self.obs,
-                                self.aux,
-                                ip,
-                                i1,
-                                i2,
-                                [t, [0.0; 3], *l],
-                            )? {
-                                sink(a, b, p, *l, t, blk);
-                            }
-                            Ok(())
+                            visit(i1, i2, ip, *l, t)
                         })?;
                     }
                 }
@@ -964,14 +1013,87 @@ fn symmetrize_pairs(j3: &mut Array2<f64>, n: usize) -> f64 {
     asym
 }
 
+/// What the RS-GDF FORCES need from the metric solve beyond `B` and `W`
+/// ([`RsGdf::build_for_gradient`]; FINDINGS "Iteration 18"): the kept and
+/// dropped eigenvalues, the dropped eigenvectors `U_d` and `J3` projected on
+/// them, `J_d = U_dᵀ J3ᵀ` — the pieces of the kept–dropped (Loewner /
+/// Daleckii–Krein) block of the metric derivative. Energies never read it.
+#[derive(Debug, Clone)]
+pub(crate) struct MetricGradParts {
+    /// Kept eigenvalues, in the column order of `W` (`> lindep`).
+    pub(crate) s_kept: Vec<f64>,
+    /// Dropped eigenvalues (`<= lindep`), in the column order of `u_drop`.
+    pub(crate) s_drop: Vec<f64>,
+    /// `(naux, n_dropped)` dropped eigenvectors.
+    pub(crate) u_drop: Array2<f64>,
+    /// `(n_dropped, nao²)` = `U_dᵀ J3ᵀ` (symmetrised J3, G = 0 removed).
+    pub(crate) jd: Array2<f64>,
+    /// The build's SR screen mode (the derivative walk must visit the same
+    /// triplets).
+    pub(crate) sr_screen: bool,
+    pub(crate) lindep: f64,
+}
+
+/// `(s_kept, s_drop, U_d, J_d)` of [`MetricGradParts`].
+type DroppedParts = (Vec<f64>, Vec<f64>, Array2<f64>, Array2<f64>);
+
+/// `(B, eigenvalues ascending, W, gradient parts)` of [`fit_with_metric`].
+type MetricFit = (Array2<f64>, Vec<f64>, Array2<f64>, Option<DroppedParts>);
+
+/// The dropped-subspace pieces of [`MetricGradParts`] from `J2 = U s Uᵀ`
+/// (`evals`, `evecs`) and the kept indices: `(s_kept, s_drop, U_d, J_d)`,
+/// reserved on `ledger` once the dropped count is known. `None` (energy-only
+/// build, no ledger) forms nothing.
+fn dropped_subspace_parts(
+    evals: &Array1<f64>,
+    evecs: &Array2<f64>,
+    keep: &[usize],
+    j3: &Array2<f64>,
+    lindep: f64,
+    ledger: Option<&mut Ledger>,
+) -> Result<Option<DroppedParts>, FerricError> {
+    let Some(ledger) = ledger else {
+        return Ok(None);
+    };
+    let naux = evecs.nrows();
+    let drop_idx: Vec<usize> = (0..naux).filter(|&k| !(evals[k] > lindep)).collect();
+    let nd = drop_idx.len();
+    ledger.reserve(
+        &format!(
+            "RsGdf gradient parts: dropped eigenvectors + projected J3 \
+             (n_dropped = {nd}, naux = {naux}, nao² = {})",
+            j3.nrows()
+        ),
+        bytes_of(
+            (nd as u64).saturating_mul((naux as u64).saturating_add(j3.nrows() as u64)),
+            8,
+        ),
+    )?;
+    let mut u_drop = Array2::<f64>::zeros((naux, nd));
+    for (c, &k) in drop_idx.iter().enumerate() {
+        for r in 0..naux {
+            u_drop[(r, c)] = evecs[(r, k)];
+        }
+    }
+    // J_d = U_dᵀ J3ᵀ = (J3 U_d)ᵀ, (nd, n²)
+    let jd = j3.dot(&u_drop).t().as_standard_layout().into_owned();
+    let s_kept: Vec<f64> = keep.iter().map(|&k| evals[k]).collect();
+    let s_drop: Vec<f64> = drop_idx.iter().map(|&k| evals[k]).collect();
+    Ok(Some((s_kept, s_drop, u_drop, jd)))
+}
+
 /// `B = (J3 W)ᵀ`, `W = U_keep s_keep^{-1/2}` from `J2 = U s Uᵀ` with the
-/// eigenvalues `<= lindep` dropped. Returns `(B, eigenvalues ascending, W)`
-/// (`W` is `(naux, naux_kept)`; B is computed from it exactly as before).
+/// eigenvalues `<= lindep` dropped. Returns `(B, eigenvalues ascending, W,
+/// gradient parts)` (`W` is `(naux, naux_kept)`; B is computed from it
+/// exactly as before). With `grad_ledger = Some(..)` the dropped-subspace
+/// pieces of [`MetricGradParts`] are also formed (reserved on that ledger
+/// once the dropped count is known); B is bitwise the same either way.
 fn fit_with_metric(
     j2: &Array2<f64>,
     j3: Array2<f64>,
     lindep: f64,
-) -> Result<(Array2<f64>, Vec<f64>, Array2<f64>), FerricError> {
+    grad_ledger: Option<&mut Ledger>,
+) -> Result<MetricFit, FerricError> {
     let naux = j2.nrows();
     let (evals, evecs) = j2
         .eigh(UPLO::Upper)
@@ -992,9 +1114,10 @@ fn fit_with_metric(
         }
     }
     let bt = j3.dot(&w); // (n², nkeep)
+    let grad = dropped_subspace_parts(&evals, &evecs, &keep, &j3, lindep, grad_ledger)?;
     drop(j3);
     let b = bt.t().as_standard_layout().into_owned(); // (nkeep, n²)
-    Ok((b, evals.to_vec(), w))
+    Ok((b, evals.to_vec(), w, grad))
 }
 
 /// libint2 (as built for ferric) assumes solid-harmonic shells for l > 1 in
@@ -1027,7 +1150,35 @@ impl RsGdf {
         s: &Array2<f64>,
         cfg: &RsGdfConfig,
     ) -> Result<Self, FerricError> {
-        Self::build_impl(cell, obs, aux, s, cfg, false).map(|(gdf, _)| gdf)
+        Self::build_impl(cell, obs, aux, s, cfg, false, false).map(|(gdf, _)| gdf)
+    }
+
+    /// [`RsGdf::build`] that also retains what the analytic RS-GDF forces
+    /// need from the metric solve ([`crate::grad`]'s `*_rsgdf` entry points;
+    /// FINDINGS "Iteration 18"): the kept/dropped eigenvalues, the dropped
+    /// eigenvectors `U_d` and `U_dᵀ J3ᵀ` (`n_dropped × nao²`, the kept–dropped
+    /// Loewner term). B, W, the stats and therefore every energy are bitwise
+    /// those of [`RsGdf::build`] (same code path; the extra pieces are copies
+    /// taken inside the metric solve, reserved on the build ledger once the
+    /// dropped count is known).
+    pub fn build_for_gradient(
+        cell: &Cell,
+        obs: &PreparedBasis,
+        aux: &PreparedBasis,
+        s: &Array2<f64>,
+        cfg: &RsGdfConfig,
+    ) -> Result<Self, FerricError> {
+        Self::build_impl(cell, obs, aux, s, cfg, false, true).map(|(gdf, _)| gdf)
+    }
+
+    /// Whether this B carries the gradient parts
+    /// ([`RsGdf::build_for_gradient`]).
+    pub fn has_gradient_parts(&self) -> bool {
+        self.grad.is_some()
+    }
+
+    pub(crate) fn gradient_parts(&self) -> Option<&MetricGradParts> {
+        self.grad.as_ref()
     }
 
     /// [`RsGdf::build`] that ALSO returns the symmetrised periodic metric
@@ -1045,7 +1196,7 @@ impl RsGdf {
         s: &Array2<f64>,
         cfg: &RsGdfConfig,
     ) -> Result<(Self, PeriodicFitParts), FerricError> {
-        let (gdf, parts) = Self::build_impl(cell, obs, aux, s, cfg, true)?;
+        let (gdf, parts) = Self::build_impl(cell, obs, aux, s, cfg, true, false)?;
         let parts = parts.ok_or_else(|| {
             FerricError::General("RsGdf::build_with_fit_parts: parts not retained".into())
         })?;
@@ -1059,6 +1210,7 @@ impl RsGdf {
         s: &Array2<f64>,
         cfg: &RsGdfConfig,
         retain_parts: bool,
+        retain_grad: bool,
     ) -> Result<(Self, Option<PeriodicFitParts>), FerricError> {
         cfg.validate()?;
         require_pure_aux(aux, "RsGdf")?;
@@ -1158,8 +1310,17 @@ impl RsGdf {
         } else {
             None
         };
-        let (b, evals, metric_inv_sqrt) = fit_with_metric(&j2, j3, cfg.lindep)?;
+        let (b, evals, metric_inv_sqrt, grad_eig) =
+            fit_with_metric(&j2, j3, cfg.lindep, retain_grad.then_some(&mut ledger))?;
         let nkeep = b.nrows();
+        let grad = grad_eig.map(|(s_kept, s_drop, u_drop, jd)| MetricGradParts {
+            s_kept,
+            s_drop,
+            u_drop,
+            jd,
+            sr_screen: cfg.sr_screen,
+            lindep: cfg.lindep,
+        });
 
         let madelung = match cfg.exxdiv {
             ExxDiv::None => 0.0,
@@ -1192,6 +1353,7 @@ impl RsGdf {
                 madelung,
                 stats,
                 metric_inv_sqrt,
+                grad,
             },
             parts,
         ))

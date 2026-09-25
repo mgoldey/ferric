@@ -247,6 +247,20 @@ extern "C" {
         shQ: c_int,
         out: *mut c_double,
     ) -> c_int;
+    /// `scf_compute_eri2_deriv` with the ket shell translated by `shift_q`
+    /// (3 doubles, Bohr): derivatives of `(P | Q(r − s_Q))`, layout
+    /// `[d/dP, d/dQ] × [x, y, z]`. `out_len` = capacity of `out` in doubles.
+    /// Returns nderiv*nP*nQ, 0 if screened, `SCF_EINVAL` (-1) or
+    /// `SCF_EINTERNAL` (-3).
+    pub fn scf_compute_eri2_deriv_shifted(
+        eng: *mut c_void,
+        dfbs: *const c_void,
+        shP: c_int,
+        shQ: c_int,
+        shift_q: *const c_double,
+        out: *mut c_double,
+        out_len: c_int,
+    ) -> c_int;
     // Exact terfc(r,r0)/r via 2D interpolation tables (Dutoi/Goldey). table_dir may be
     // null (falls back to FERRIC_TERF_TABLE_DIR). See shim.h / terf-tables/terf_plan.md.
     pub fn scf_engine_create_terfc_3center(
