@@ -3485,13 +3485,19 @@ pub fn load_config(path: &str) -> Result<Config, String> {
     // Validating HERE rather than at the lib.rs use site means every entry
     // point is covered by construction — the CLI, and `ferric-batch`'s
     // per-child TOML rewriting, which does not go through lib.rs's checks.
-    cfg.validate_loaded_values()
-        .map_err(|e| format!("{path}: {e}"))?;
-    if cfg.cell.is_some() {
-        let raw: toml::Value = toml::from_str(&text).map_err(|e| format!("{path}: {e}"))?;
-        cfg.periodic = periodic_plan(&cfg, &raw).map_err(|e| format!("{path}: {e}"))?;
-    }
+    validate_loaded(&mut cfg, &text).map_err(|e| format!("{path}: {e}"))?;
     Ok(cfg)
+}
+
+/// The post-parse checks of [`load_config`], and the `[cell]` plan (which
+/// needs the raw TOML to see which keys were actually written).
+fn validate_loaded(cfg: &mut Config, text: &str) -> Result<(), String> {
+    cfg.validate_loaded_values()?;
+    if cfg.cell.is_some() {
+        let raw: toml::Value = toml::from_str(text).map_err(|e| e.to_string())?;
+        cfg.periodic = periodic_plan(cfg, &raw)?;
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
