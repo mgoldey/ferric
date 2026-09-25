@@ -1,3 +1,13 @@
+# B3LYP / cc-pVDZ on benzene with RI-J and RI-K, meant to be run under MPI.
+#
+# The file itself is an ordinary ksdft input: MPI is selected at build and
+# launch time, not in the TOML. Build the MPI binary and launch it with, e.g.,
+#
+#   cargo build --release --workspace --features mpi
+#   mpirun -np 2 target/release/ferric examples/benzene-dfb3lyp-mpi.toml
+#
+# The same file runs serially with the normal binary; the MPI build splits the
+# DF-J/K work across ranks and gives the same energy.
 [molecule]
 xyz = "testdata/molecules/benzene.xyz"
 

@@ -21,16 +21,14 @@ implementations:
 
 **Run it.**
 
-- CCSD: `method.kind = "ccsd"` (`examples/water-ccsd.toml`, which despite its
-  name runs H2/STO-3G); Python
+- CCSD: `method.kind = "ccsd"` (`examples/water-ccsd.toml`, water/cc-pVDZ); Python
   `ferric.run_ccsd(mol, bs, aux)`.
 - CCSD(T) and CCD: **Python only**, `ferric.run_ccsd_t(mol, bs, aux)` and
   `ferric.run_ccd(mol, bs, aux)`. Not wired into the CLI.
 
-**Aux basis.** The RI error is not negligible at CC accuracy. The
-`water-ccsd.toml` example notes that on H2/STO-3G `def2-qzvpp-rifit` keeps it
-below 1e-6 Ha where `cc-pvdz-ri` leaves about 5e-6 Ha. Pick the aux for the
-accuracy you need, not by habit.
+**Aux basis.** The RI error is not negligible at CC accuracy: on water /
+cc-pVDZ with `cc-pvdz-ri`, RI-CCSD differs from exact-integral CCSD by about
+1.3e-4 Ha. Pick the aux for the accuracy you need, not by habit.
 
 **Accuracy.** `ccsd` is Proven.
 

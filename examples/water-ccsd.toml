@@ -1,20 +1,20 @@
-# CCSD on H2/STO-3G -- the smallest system with a committed correctness
-# reference (crates/ferric-cc/src/ccsd.rs test_ccsd_h2_sto3g): CCSD
-# correlation energy = -0.02052453 Hartree (exact-integral numpy reference).
-# CCSD is expensive (dense spin-orbital residuals), so keep the system tiny;
-# see crates/ferric-cc/src/ccsd.rs's own tests for larger validated cases
-# (H2O/cc-pVDZ) if you need a bigger sanity check.
+# Closed-shell RI-CCSD on water / cc-pVDZ (spin-adapted solver, all electrons).
+#
+# Every integral is built from the density-fitted three-index tensor with the
+# [mp2] auxbasis below; the RHF reference uses exact integrals. PySCF CCSD run
+# on the same density-fitted integrals gives E_corr = -0.2135061893 Ha for this
+# geometry, basis and aux (scripts/validation/gen_cc.py); this file prints
+# -0.2135061899 Ha at the default convergence. The density-fitting
+# error itself, against exact-integral CCSD, is about 1.3e-4 Ha here: choose
+# the aux for the accuracy you need.
 [molecule]
-xyz = "testdata/molecules/h2.xyz"
+xyz = "testdata/molecules/water.xyz"
 
 [basis]
-name = "sto-3g"
+name = "cc-pvdz"
 
 [method]
 kind = "ccsd"
 
 [mp2]
-# def2-qzvpp-rifit keeps the RI fitting error below 1e-6 Ha for this system
-# (cc-pvdz-ri would leave ~5e-6 Ha of RI error -- see the ccd.rs
-# ri_convergence_check_h2 comment).
-auxbasis = "def2-qzvpp-rifit"
+auxbasis = "cc-pvdz-ri"
