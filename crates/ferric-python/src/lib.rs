@@ -2685,6 +2685,10 @@ struct PyFrequencyResult {
     asymmetry: f64,
     #[pyo3(get)]
     n_gradient_evaluations: usize,
+    /// `"analytic"` or `"finite-difference"`: which construction produced
+    /// the Hessian.
+    #[pyo3(get)]
+    hessian_source: String,
     /// Electronic energy at the undisplaced geometry.
     #[pyo3(get)]
     energy: f64,
@@ -2724,9 +2728,14 @@ impl PyFrequencyResult {
     }
 }
 
-/// Harmonic vibrational frequencies, by finite difference of the ANALYTIC
-/// gradient (6N gradient evaluations), mass-weighted with translations and
+/// Harmonic vibrational frequencies, mass-weighted with translations and
 /// rotations projected out.
+///
+/// `hessian`: "auto" (default) uses the analytic RHF Hessian for closed-shell
+/// RHF with exact J/K, no ECP and a basis up to f functions (one SCF plus CPHF),
+/// and a finite difference of the ANALYTIC gradient (6N gradient evaluations)
+/// otherwise; "analytic" raises if the analytic Hessian does not apply; "fd"
+/// always differences gradients. `.hessian_source` says which ran.
 ///
 /// `reference` selects the SCF: "rhf" (default), "uhf", or "rohf". Setting
 /// `xc` promotes it to the matching KS variant (RKS/UKS/ROKS).
@@ -2738,8 +2747,9 @@ impl PyFrequencyResult {
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_name, reference=None, xc=None, delta=None, multiplicity=None,
-    point_charges=None, external_field=None,
+    point_charges=None, external_field=None, hessian="auto",
 ))]
+#[allow(clippy::too_many_arguments)]
 fn run_frequencies(
     mol: &PyMolecule,
     basis_name: &str,
@@ -2749,8 +2759,11 @@ fn run_frequencies(
     multiplicity: Option<u32>,
     point_charges: Option<Vec<(f64, f64, f64, f64)>>,
     external_field: Option<(f64, f64, f64)>,
+    hessian: &str,
 ) -> PyResult<PyFrequencyResult> {
-    use ferric_scf::frequencies::{harmonic_frequencies, FrequencyConfig, FrequencyReference};
+    use ferric_scf::frequencies::{
+        harmonic_frequencies, FrequencyConfig, FrequencyReference, HessianMethod,
+    };
 
     // Strict, like the CLI: an unrecognized reference must ERROR rather than
     // silently running RHF and handing back frequencies for the wrong system.
@@ -2788,6 +2801,8 @@ fn run_frequencies(
     };
     let mut fcfg = FrequencyConfig {
         reference: refr,
+        hessian: HessianMethod::parse_config_str(hessian)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?,
         ..Default::default()
     };
     if let Some(d) = delta {
@@ -2803,6 +2818,7 @@ fn run_frequencies(
         is_linear: r.is_linear,
         asymmetry: r.asymmetry,
         n_gradient_evaluations: r.n_gradient_evaluations,
+        hessian_source: r.hessian_source.label().to_string(),
         energy: r.energy,
         // Array2 -> Vec<Vec<f64>>, one row per mode. `.rows()` preserves the
         // (mode, 3N) layout the Rust field documents; collecting from the flat

@@ -1,9 +1,9 @@
 //! Harmonic vibrational frequencies from numerical differentiation of
-//! **analytic** nuclear gradients.
+//! **analytic** nuclear gradients, and (closed-shell RHF with exact J/K only)
+//! from the analytic Hessian.
 //!
-//! ferric has analytic gradients but no analytic second derivatives, so the
-//! Hessian here is built by central-differencing the analytic gradient with
-//! respect to each of the 3N nuclear coordinates:
+//! [`harmonic_frequencies`] builds the Hessian by central-differencing the
+//! analytic gradient with respect to each of the 3N nuclear coordinates:
 //!
 //! ```text
 //! H[a, b] = ( g_a(x_b + delta) - g_a(x_b - delta) ) / (2 * delta)
@@ -15,6 +15,12 @@
 //! numerically far better conditioned than differencing energies twice: the
 //! error is `O(delta^2)` truncation plus `O(eps_scf / delta)` noise, rather
 //! than `O(eps_scf / delta^2)`.
+//!
+//! [`harmonic_frequencies_analytic`] instead calls
+//! [`crate::hessian::rhf_hessian`] (one SCF, no displacements) and shares steps
+//! 3-5 of the pipeline below. It covers closed-shell RHF with exact four-centre
+//! J/K and refuses everything else with a typed error before the SCF, so the
+//! finite-difference path stays the general one.
 //!
 //! **Analytic gradients only.** There is deliberately no finite-difference-of-
 //! finite-difference fallback. A method without an analytic gradient produces a
@@ -135,7 +141,6 @@ pub enum FrequencyReference {
 }
 
 impl FrequencyReference {
-    #[allow(dead_code)] // diagnostic name used by callers-to-be; harmless to keep
     fn label(&self) -> &'static str {
         match self {
             FrequencyReference::Rhf => "RHF/RKS",
@@ -145,13 +150,65 @@ impl FrequencyReference {
     }
 }
 
+/// How [`harmonic_frequencies`] obtains the Cartesian Hessian.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HessianMethod {
+    /// The analytic RHF Hessian ([`crate::hessian`]) when
+    /// [`crate::hessian::analytic_hessian_available`] accepts the system,
+    /// otherwise central differences of the analytic gradient. An error inside
+    /// the analytic path is returned, never retried with finite differences.
+    #[default]
+    Auto,
+    /// The analytic Hessian; an unsupported configuration is an error.
+    Analytic,
+    /// Central differences of the analytic gradient (`6N` gradients).
+    FiniteDifference,
+}
+
+impl HessianMethod {
+    /// Strict parse of a config string: `auto`, `analytic`, or `fd` /
+    /// `finite-difference`. Anything else is an error.
+    pub fn parse_config_str(s: &str) -> Result<Self, FerricError> {
+        match s {
+            "auto" => Ok(Self::Auto),
+            "analytic" => Ok(Self::Analytic),
+            "fd" | "finite-difference" => Ok(Self::FiniteDifference),
+            other => Err(FerricError::General(format!(
+                "unknown Hessian method {other:?}: expected \"auto\", \"analytic\" or \"fd\""
+            ))),
+        }
+    }
+}
+
+/// Which construction produced a [`FrequencyResult`]'s Hessian.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HessianSource {
+    /// The analytic RHF Hessian.
+    Analytic,
+    /// Central differences of the analytic gradient.
+    FiniteDifference,
+}
+
+impl HessianSource {
+    /// `"analytic"` or `"finite-difference"`.
+    pub fn label(&self) -> &'static str {
+        match self {
+            HessianSource::Analytic => "analytic",
+            HessianSource::FiniteDifference => "finite-difference",
+        }
+    }
+}
+
 /// Configuration for a frequency calculation.
 #[derive(Debug, Clone)]
 pub struct FrequencyConfig {
-    /// Central-difference displacement in Bohr. See [`DEFAULT_DELTA`].
+    /// Central-difference displacement in Bohr. See [`DEFAULT_DELTA`]. Unused
+    /// when the Hessian is analytic.
     pub delta: f64,
     /// Which SCF reference to use.
     pub reference: FrequencyReference,
+    /// Analytic Hessian or finite differences. See [`HessianMethod`].
+    pub hessian: HessianMethod,
 }
 
 impl Default for FrequencyConfig {
@@ -159,6 +216,7 @@ impl Default for FrequencyConfig {
         Self {
             delta: DEFAULT_DELTA,
             reference: FrequencyReference::Rhf,
+            hessian: HessianMethod::Auto,
         }
     }
 }
@@ -191,8 +249,11 @@ pub struct FrequencyResult {
     /// numerical noise floor: it is zero in exact arithmetic, so a large value
     /// means the displacement or the SCF convergence is badly chosen.
     pub asymmetry: f64,
-    /// Number of analytic gradient evaluations performed (`6N`).
+    /// Number of analytic gradient evaluations performed (`6N`; 0 for an
+    /// analytic Hessian).
     pub n_gradient_evaluations: usize,
+    /// Which construction produced the Hessian.
+    pub hessian_source: HessianSource,
     /// Electronic energy at the *undisplaced* input geometry.
     pub energy: f64,
 }
@@ -219,10 +280,14 @@ impl FrequencyResult {
     }
 }
 
-/// Compute harmonic vibrational frequencies by central-differencing the
-/// analytic nuclear gradient.
+/// Compute harmonic vibrational frequencies.
 ///
-/// Performs `6N` SCF-plus-gradient evaluations. The input geometry should be a
+/// With `freq_config.hessian` = [`HessianMethod::Auto`] (the default) the
+/// Hessian is analytic for a closed-shell RHF system the analytic path supports
+/// ([`crate::hessian::analytic_hessian_available`]): one SCF plus CPHF. Every
+/// other case central-differences the analytic nuclear gradient, performing
+/// `6N` SCF-plus-gradient evaluations. `FrequencyResult::hessian_source` says
+/// which ran. The input geometry should be a
 /// converged stationary point; nothing here verifies that, and frequencies at
 /// a non-stationary geometry are not physically meaningful (the residual
 /// gradient contaminates the projection).
@@ -242,6 +307,9 @@ pub fn harmonic_frequencies(
         return Err(FerricError::General(format!(
             "harmonic frequencies require at least 2 atoms, got {natoms}"
         )));
+    }
+    if let Some(res) = analytic_if_selected(ctx, mol, basis_name, op, scf_config, freq_config)? {
+        return Ok(res);
     }
     if !(freq_config.delta.is_finite() && freq_config.delta > 0.0) {
         return Err(FerricError::General(format!(
@@ -323,6 +391,81 @@ pub fn harmonic_frequencies(
     result.n_gradient_evaluations = n_evals;
     result.energy = energy;
     Ok(result)
+}
+
+/// The analytic branch of [`harmonic_frequencies`]: `Some` when
+/// `freq_config.hessian` selects it and the system is supported, `None` to
+/// continue with finite differences, `Err` when `Analytic` was requested but
+/// the system is not supported (or the analytic path itself fails).
+fn analytic_if_selected(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    basis_name: &str,
+    op: Operator,
+    scf_config: &RhfConfig,
+    freq_config: &FrequencyConfig,
+) -> Result<Option<FrequencyResult>, FerricError> {
+    if freq_config.hessian == HessianMethod::FiniteDifference {
+        return Ok(None);
+    }
+    let available = analytic_available(mol, basis_name, op, scf_config, freq_config.reference);
+    match (available, freq_config.hessian) {
+        (Ok(()), _) => {
+            harmonic_frequencies_analytic(ctx, mol, basis_name, op, scf_config).map(Some)
+        }
+        (Err(e), HessianMethod::Analytic) => Err(e),
+        (Err(_), _) => Ok(None),
+    }
+}
+
+fn analytic_available(
+    mol: &Molecule,
+    basis_name: &str,
+    op: Operator,
+    scf_config: &RhfConfig,
+    reference: FrequencyReference,
+) -> Result<(), FerricError> {
+    if reference != FrequencyReference::Rhf {
+        return Err(FerricError::General(format!(
+            "analytic Hessian: only an RHF reference is supported, got {}",
+            reference.label()
+        )));
+    }
+    let bs = ferric_core::basis::bundled(basis_name)?;
+    let prep = PreparedBasis::new(mol, &bs)?;
+    crate::hessian::analytic_hessian_available(mol, &prep, op, scf_config)
+}
+
+/// Harmonic frequencies from the ANALYTIC RHF Hessian ([`crate::hessian`]).
+///
+/// One SCF at the input geometry, then [`crate::hessian::analytic_frequencies`]
+/// (same mass-weighting, projection and diagonalization as
+/// [`harmonic_frequencies`]). Supported only for closed-shell RHF with exact
+/// four-centre Coulomb J/K; any other configuration is refused by
+/// [`crate::hessian::rhf_hessian_preflight`] BEFORE the SCF runs, and a caller
+/// wanting a general method should use [`harmonic_frequencies`].
+/// `n_gradient_evaluations` is 0 and `asymmetry` is the analytic response
+/// term's pre-symmetrization asymmetry.
+pub fn harmonic_frequencies_analytic(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    basis_name: &str,
+    op: Operator,
+    scf_config: &RhfConfig,
+) -> Result<FrequencyResult, FerricError> {
+    let natoms = mol.atoms.len();
+    if natoms < 2 {
+        return Err(FerricError::General(format!(
+            "harmonic frequencies require at least 2 atoms, got {natoms}"
+        )));
+    }
+    crate::hessian::rhf_hessian_preflight(op, scf_config)?;
+    atom_masses(mol)?;
+    let bs = ferric_core::basis::bundled(basis_name)?;
+    let prep = PreparedBasis::new(mol, &bs)?;
+    let bounds = SchwarzBounds::compute(op, &prep)?;
+    let res = solve_rhf(ctx, mol, &prep, op, &bounds, scf_config)?;
+    crate::hessian::analytic_frequencies(ctx, mol, &prep, op, &bounds, &res, scf_config)
 }
 
 /// Mass-weight, project out translations/rotations, diagonalize, and convert to
@@ -480,6 +623,7 @@ pub fn frequencies_from_cartesian_hessian(
         cartesian_hessian: cartesian_hessian.clone(),
         asymmetry: 0.0,
         n_gradient_evaluations: 0,
+        hessian_source: HessianSource::FiniteDifference,
         energy: 0.0,
     })
 }
@@ -1025,7 +1169,13 @@ mod tests {
             energy_conv: 1e-11,
             ..Default::default()
         };
-        let fc = FrequencyConfig::default();
+        // This test pins the finite-difference path (it counts 6N gradients); the
+        // analytic Hessian has its own tests (rhf_hessian_fd.rs,
+        // validation_rhf_hessian.rs).
+        let fc = FrequencyConfig {
+            hessian: HessianMethod::FiniteDifference,
+            ..Default::default()
+        };
         let ctx = ParallelContext::default();
         let r = harmonic_frequencies(&ctx, &m, "sto-3g", Operator::coulomb(), &cfg, &fc).unwrap();
 
