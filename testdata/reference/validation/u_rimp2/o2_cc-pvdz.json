@@ -1,0 +1,145 @@
+{
+  "row": "Unrestricted RI-MP2",
+  "system": "o2",
+  "basis": "cc-pvdz",
+  "aux_basis": "cc-pvdz-ri",
+  "charge": 0,
+  "multiplicity": 3,
+  "nao": 28,
+  "naux": 112,
+  "nuclear_repulsion": 28.047487783751553,
+  "uhf": {
+    "energy": -149.62775750369545,
+    "converged": true,
+    "s_squared": 2.0330518052645186,
+    "multiplicity_from_s2": 3.021954205652044,
+    "nelec_alpha": 9,
+    "nelec_beta": 7,
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF UHF internal (real)",
+      "rounds": 0,
+      "selected_guess": "huckel",
+      "lambda_min": 0.022856072403162564
+    },
+    "guess_scan": [
+      {
+        "guess": "minao",
+        "energy": -149.62775750369542,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -149.62775750369542
+        ]
+      },
+      {
+        "guess": "atom",
+        "energy": -149.62775750369534,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -149.62775750369534
+        ]
+      },
+      {
+        "guess": "huckel",
+        "energy": -149.62775750369545,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -149.62775750369545
+        ]
+      }
+    ],
+    "multiple_stable_minima": false,
+    "homo_alpha": -0.5491723939679515,
+    "lumo_alpha": 0.42798972399789426,
+    "homo_beta": -0.5724606015989672,
+    "lumo_beta": 0.11503815762559842,
+    "somo_alpha": [
+      -0.5491723939679535,
+      -0.5491723939679515
+    ]
+  },
+  "ump2": {
+    "frozen_core": 0,
+    "e_corr": -0.3488013762336488,
+    "e_corr_ss": -0.10714579342954204,
+    "e_corr_os": -0.24165558280410676,
+    "e_aa": -0.045603556750890645,
+    "e_bb": -0.06154223667865158,
+    "e_ab": -0.24165558280410707,
+    "e_total": -149.9765588799291,
+    "numpy_anchor_ss_diff": -1.8041124150158794e-16,
+    "numpy_anchor_os_diff": -3.0531133177191805e-16,
+    "naux": 112
+  },
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "scf": "scf.UHF exact integrals, 3 guesses + stability loop (common.run_open_shell)",
+      "mp2": "pyscf.mp.dfump2.DFUMP2, with_df.auxmol from ferric's aux JSON",
+      "spin_components": "numpy int3c2e/int2c2e Cholesky-metric B, anchored to DFUMP2",
+      "numpy": "1.26.4"
+    },
+    "grid": "none",
+    "aux_basis": {
+      "name": "cc-pvdz-ri",
+      "json": "crates/ferric-core/src/basis/bundled/cc-pvdz-ri.json",
+      "sha256": "8221d2a31b5bbebd39218fc3f9244917e173a338ff9c56904038443a06e2a250",
+      "metric": "Coulomb"
+    },
+    "frozen_core": {
+      "ump2": 0
+    },
+    "scf_convergence": {
+      "conv_tol": 1e-11,
+      "conv_tol_grad": 1e-08
+    },
+    "stability": {
+      "uhf": {
+        "internal_stable": true,
+        "kind": "PySCF UHF internal (real)",
+        "rounds": 0,
+        "selected_guess": "huckel",
+        "lambda_min": 0.022856072403162564
+      }
+    },
+    "basis": "cc-pvdz",
+    "basis_json": "crates/ferric-core/src/basis/bundled/cc-pvdz.json",
+    "basis_sha256": "ae48fcca0d533addd60dbd48490153130e697121767ba607e1d70f3b341eeef7",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/o2.xyz",
+    "geometry_xyz_sha256": "4c45f5a29d19998e7ac59d07384a6ba1b34e8137f1e1f6bae897f403ea4a9dce",
+    "geometry_bohr": [
+      [
+        "O",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "O",
+        0.0,
+        0.0,
+        2.2818442954123124
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_u_rimp2.py",
+    "git_head": "eb9d3226cb0444658d7a11064a0e7ca17356c3b9",
+    "generated_utc": "2026-09-25T19:11:33+00:00",
+    "basis_self_check": {
+      "nao": 28,
+      "replica_self_overlap_max_dev": 4.440892098500626e-16,
+      "pyscf_diag_max_dev": 2.220446049250313e-16,
+      "diag_checked": 28,
+      "diag_skipped_cartesian": 0
+    }
+  }
+}

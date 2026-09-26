@@ -472,6 +472,7 @@ fn run_u_cohsex(
         scf,
         &pdep_cfg(n_quad),
         &gw_cfg(qp.clone()),
+        None,
     )
     .unwrap_or_else(|e| panic!("{}: run_u_gw(Cohsex) failed: {e:?}", sys.label));
     assert_eq!(

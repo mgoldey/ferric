@@ -1,0 +1,164 @@
+{
+  "row": "Unrestricted RI-MP2",
+  "system": "ho2",
+  "basis": "cc-pvdz",
+  "aux_basis": "cc-pvdz-ri",
+  "charge": 0,
+  "multiplicity": 2,
+  "nao": 33,
+  "naux": 126,
+  "nuclear_repulsion": 32.117020563592035,
+  "uhf": {
+    "energy": -150.18740629736985,
+    "converged": true,
+    "s_squared": 0.7591663653715557,
+    "multiplicity_from_s2": 2.009145455532332,
+    "nelec_alpha": 9,
+    "nelec_beta": 8,
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF UHF internal (real)",
+      "rounds": 0,
+      "selected_guess": "minao",
+      "lambda_min": 0.023122426460019167
+    },
+    "guess_scan": [
+      {
+        "guess": "minao",
+        "energy": -150.18740629736985,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -150.18740629736985
+        ]
+      },
+      {
+        "guess": "atom",
+        "energy": -150.18740629736973,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -150.18740629736973
+        ]
+      },
+      {
+        "guess": "huckel",
+        "energy": -150.1874062973694,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -150.1874062973694
+        ]
+      }
+    ],
+    "multiple_stable_minima": false,
+    "homo_alpha": -0.517007650224686,
+    "lumo_alpha": 0.17413715631033178,
+    "homo_beta": -0.4813041208177289,
+    "lumo_beta": 0.13830790927623937,
+    "somo_alpha": [
+      -0.517007650224686
+    ]
+  },
+  "ump2": {
+    "frozen_core": 0,
+    "e_corr": -0.3465591310216967,
+    "e_corr_ss": -0.09157209772826976,
+    "e_corr_os": -0.254987033293427,
+    "e_aa": -0.04821292993955952,
+    "e_bb": -0.043359167788710254,
+    "e_ab": -0.254987033293427,
+    "e_total": -150.53396542839155,
+    "numpy_anchor_ss_diff": -1.3877787807814457e-17,
+    "numpy_anchor_os_diff": 0.0,
+    "naux": 126
+  },
+  "ump2_fc2": {
+    "frozen_core": 2,
+    "e_corr": -0.3424527947056538,
+    "e_corr_ss": -0.09022533967515309,
+    "e_corr_os": -0.2522274550305007,
+    "e_aa": -0.047498502669782644,
+    "e_bb": -0.0427268370053705,
+    "e_ab": -0.2522274550305007,
+    "e_total": -150.5298590920755,
+    "numpy_anchor_ss_diff": -5.551115123125783e-17,
+    "numpy_anchor_os_diff": 0.0,
+    "naux": 126
+  },
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "scf": "scf.UHF exact integrals, 3 guesses + stability loop (common.run_open_shell)",
+      "mp2": "pyscf.mp.dfump2.DFUMP2, with_df.auxmol from ferric's aux JSON",
+      "spin_components": "numpy int3c2e/int2c2e Cholesky-metric B, anchored to DFUMP2",
+      "numpy": "1.26.4"
+    },
+    "grid": "none",
+    "aux_basis": {
+      "name": "cc-pvdz-ri",
+      "json": "crates/ferric-core/src/basis/bundled/cc-pvdz-ri.json",
+      "sha256": "8221d2a31b5bbebd39218fc3f9244917e173a338ff9c56904038443a06e2a250",
+      "metric": "Coulomb"
+    },
+    "frozen_core": {
+      "ump2": 0,
+      "ump2_fc2": 2
+    },
+    "scf_convergence": {
+      "conv_tol": 1e-11,
+      "conv_tol_grad": 1e-08
+    },
+    "stability": {
+      "uhf": {
+        "internal_stable": true,
+        "kind": "PySCF UHF internal (real)",
+        "rounds": 0,
+        "selected_guess": "minao",
+        "lambda_min": 0.023122426460019167
+      }
+    },
+    "basis": "cc-pvdz",
+    "basis_json": "crates/ferric-core/src/basis/bundled/cc-pvdz.json",
+    "basis_sha256": "ae48fcca0d533addd60dbd48490153130e697121767ba607e1d70f3b341eeef7",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/ho2.xyz",
+    "geometry_xyz_sha256": "2a4bc751278a939167ae70420074117ac33a2e1bb19e61409f7999dfc3804f3a",
+    "geometry_bohr": [
+      [
+        "O",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "O",
+        2.5152254717960973,
+        0.0,
+        0.0
+      ],
+      [
+        "H",
+        -0.4529140995760551,
+        1.7781493620333773,
+        0.0
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_u_rimp2.py",
+    "git_head": "eb9d3226cb0444658d7a11064a0e7ca17356c3b9",
+    "generated_utc": "2026-09-25T19:11:36+00:00",
+    "basis_self_check": {
+      "nao": 33,
+      "replica_self_overlap_max_dev": 4.440892098500626e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 33,
+      "diag_skipped_cartesian": 0
+    }
+  }
+}

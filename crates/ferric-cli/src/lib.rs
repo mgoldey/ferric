@@ -4642,10 +4642,9 @@ fn run_gw(
             std::process::exit(1);
         });
         // KS reference (RPA@PBE0-style): [rpa].xc set ⇒ `result` above is
-        // already the UKS solve; build vxc_diag_a/b and apply the Σx−vxc
-        // shift post-hoc via UGwResult::apply_kohn_sham_correction (U-GW
-        // doesn't thread vxc_diag through run_u_gw itself — see its doc).
-        // None (HF reference) ⇒ no shift, matches run_u_gw's contract.
+        // already the UKS/ROKS solve; build per-spin vxc_diag so Σx−vxc enters
+        // the per-spin QP equation inside run_u_gw. None (HF reference) ⇒ no
+        // shift, matches run_u_gw's documented contract.
         // A ROHF/ROKS reference is semi-canonicalized (run_u_gw would do it
         // internally); doing it HERE lets the ROKS v_xc diagonal below be
         // evaluated on the same per-spin orbitals the QP equation uses. UHF/UKS
@@ -4668,14 +4667,20 @@ fn run_gw(
             }
             None => None,
         };
-        let mut gw_result = ferric_gw::run_u_gw(mol, prep, &dfbs, op, &result_u, &rpa_cfg, &gw_cfg)
-            .unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
-        if let Some((diag_a, diag_b)) = vxc_diag.as_ref() {
-            gw_result.apply_kohn_sham_correction(diag_a, diag_b);
-        }
+        let gw_result = ferric_gw::run_u_gw(
+            mol,
+            prep,
+            &dfbs,
+            op,
+            &result_u,
+            &rpa_cfg,
+            &gw_cfg,
+            vxc_diag.as_ref().map(|(a, b)| (a, b)),
+        )
+        .unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
         println!(
             "U-GW[{:?}]/{} (aux: {}, ref: {ref_label}) on {}",
             gw_cfg.method, bs.name, aux_name, cfg.molecule.xyz

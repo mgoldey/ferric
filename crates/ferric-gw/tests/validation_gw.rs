@@ -22,6 +22,7 @@
 //! | G0W0@HF, frozen core 1 | H2O / cc-pVDZ | `gw_ac`, `frozen = 1` |
 //! | G0W0@HF + ECP | I2, Xe, Ag2 / aug-cc-pVDZ-PP (def2-tzvp-rifit) | `gw_ac`, same inline ECP |
 //! | U-G0W0@UHF | OH, CH3, NH2 / cc-pVDZ, aug-cc-pVDZ; O2 (³Σg⁻), CH2 (³B1) / aug-cc-pVDZ | `ugw_ac` on a stability-checked UHF |
+//! | U-G0W0@UKS/PBE | OH, CH3, NH2 / cc-pVDZ | `ugw_ac` Σc(iω) on a stability-checked exact-J UKS/PBE, textbook Thiele, QP solved in numpy with Σx − v_xc inside the QP equation (block `u_g0w0_uks_pbe`) |
 //! | COHSEX@HF | H2O, N2 / cc-pVDZ | numpy on PySCF's Lpq and Π(0) |
 //! | evGW₀@HF, evGW@HF | H2O / cc-pVDZ | PySCF `gw_ac.get_sigma` iterated as ferric iterates |
 //!
@@ -136,6 +137,9 @@
 //! | Σx (DF) | 4.9e-9 | `TOL_SX` 3e-8 |
 //! | Σx (DF), ECP | 4.6e-6 | `TOL_SX_ECP` 2e-5 |
 //! | Σc(ef + iω) at the Padé nodes (no continuation) | 8.6e-11 | `TOL_SIGMA_C_IW` 1e-9 |
+//! | U-G0W0@UKS: Σc(ef_σ + iω) at the Padé nodes | 8.7e-9 (OH β); CH3 3.0e-11 | `TOL_SIGMA_C_IW_UKS` 1e-7 |
+//! | U-G0W0@UKS: v_xc diagonal | 7.1e-10 | `TOL_VXC_UKS` 1e-8 |
+//! | U-G0W0@UKS: QP energies vs textbook (single-root orbitals) | 2.6e-8 | `TOL_QP_UKS` 3e-7 |
 //! | SCF energy | 4.7e-11 (ECP: 5.1e-8, Ag2) | `TOL_E_SCF` 1e-9, `TOL_E_SCF_ECP` 2.5e-7 |
 //! | ε_mf | 3.6e-9 | `TOL_EPS_MF` 3e-8 |
 //! | ε_mf, ECP | 2.9e-6 | `TOL_EPS_MF_ECP` 1e-5 |
@@ -157,11 +161,25 @@
 //! * Spin: ferric's α HOMO misses the reference β HOMO.
 //! * Self-consistency: evGW₀ misses G0W0 and evGW; COHSEX misses G0W0.
 //!
+//! * U-G0W0@UKS: the result must miss the @UHF reference (measured 0.80–1.79
+//!   eV apart) and the post-hoc-shift emulation (0.38–0.96 eV apart), so the
+//!   bar resolves both the starting point and where Σx − v_xc enters.
+//!
 //! MUTATIONS to run once and record here: (A) `STEP_RATIO` in
 //! `sigma::solve_qp_for_mo` from 2/3 to 5/6 — every @PBE case must fail;
 //! (B) drop the α or β Π in `run_u_pdep_rpa` — every U-G0W0 case must fail;
 //! (C) in `run_evgw0`, update `eps_prop` for all states instead of the window —
-//! the evGW₀ case must fail or this file must say it cannot see that choice.
+//! the evGW₀ case must fail or this file must say it cannot see that choice;
+//! (D) in `ferric_gw::vxc_mo::vxc_diagonal_mo`, return `(diag_b, diag_a)`
+//! (spins swapped) — every `u_g0w0_uks_pbe_*_sigma_c` case must fail on the
+//! v_xc anchor (the α and β v_xc diagonals differ by up to 0.12–0.14 Ha
+//! in these radicals, and by ≥ 7.8e-4 Ha on every window state);
+//! (E) in `u_sigma.rs` `qp_per_spin_g0w0`, pass `0.0` instead of `shift` to
+//! `solve_qp_for_mo` (Σx − v_xc dropped from the QP equation) — every
+//! `u_g0w0_uks_pbe_*_qp` case must fail (the shifted-residual check in
+//! `u_g0w0_uks_pbe_*_sigma_c` too). The cheap non-ignored twin is
+//! `u_gw_ks_shift.rs::g0w0_ks_shift_enters_the_qp_equation`.
+//! Outcome of (E), 2026-09-25: all six `u_g0w0_uks_pbe_*` tests fail.
 //!
 //! # Provenance of older numbers
 //!
@@ -1203,6 +1221,7 @@ fn u_g0w0_case(system: &str, basis_name: &str) -> Vec<f64> {
         &scf,
         &pdep_cfg(N_QUAD, 0),
         &gw_cfg(GwMethod::G0W0, window(&orbs, &sys.label), 0),
+        None,
     )
     .unwrap_or_else(|e| panic!("{}: run_u_gw failed: {e:?}", sys.label));
     assert_eq!(res.mo_indices, orbs, "{}: QP window", sys.label);
@@ -1266,6 +1285,397 @@ fn u_g0w0_nh2_vs_pyscf_ugw_ac() {
 fn u_g0w0_triplets_o2_ch2_vs_pyscf_ugw_ac() {
     u_g0w0_case("o2", "aug-cc-pvdz");
     u_g0w0_case("ch2_triplet", "aug-cc-pvdz");
+}
+
+// ---------------------------------------------------------------------------
+// U-G0W0@UKS/PBE
+// ---------------------------------------------------------------------------
+//
+// Reference block `u_g0w0_uks_pbe` (gen_gw.py, see the comment above its
+// `UKS_CASES`): UKS/PBE with exact J, stability-followed, ferric's spin-
+// polarized XC density floor, per-spin mid-gap ef, DF Σx with the GW aux,
+// textbook Thiele continuation. It stores the textbook G0W0@KS root
+// (`eps_qp`: Σx − v_xc INSIDE the QP equation, as PySCF `ugw_ac` solves it)
+// AND the root of the post-hoc recipe (`eps_qp_posthoc`: root of the
+// unshifted equation, Σx − v_xc added afterwards), plus Σc(ef_σ + iω) at the
+// 18 Padé nodes. The post-hoc and textbook roots differ by 379–956 meV over
+// the window (CH3 515/632, NH2 379/947, OH 671/956 meV, α/β), so the QP row
+// resolves where the shift enters.
+//
+// ferric runs this exactly as the CLI (`method.kind = "gw"`, multiplicity
+// > 1, `[rpa] xc`) and the Python `run_u_gw(xc=...)` do: per-spin
+// `vxc_diagonal_mo`, then `run_u_gw(.., Some((&v_xc_α, &v_xc_β)))`, which puts
+// the shift inside the per-spin QP solve (u_sigma.rs `qp_per_spin_g0w0`).
+//
+// `u_g0w0_uks_pbe_*_sigma_c` checks the pieces (SCF, v_xc, ε_mf, Σx, Σc on
+// the imaginary axis, the SHIFTED QP residual of ferric's own solve);
+// `u_g0w0_uks_pbe_*_qp` checks the QP energies against both roots.
+
+/// U-G0W0@UKS: Σc(ef_σ + iω) at the Padé nodes. Measured 3.0e-11 (CH3) to
+/// 8.7e-9 Ha (OH β, whose ε_mf also agrees least well, 1.0e-9).
+const TOL_SIGMA_C_IW_UKS: f64 = 1e-7;
+/// U-G0W0@UKS QP energies vs the textbook reference, single-root orbitals
+/// only (see `unique_root_orbs`). Measured ≤ 2.6e-8 Ha (CH3 β).
+const TOL_QP_UKS: f64 = 3e-7;
+/// v_xc diagonal (ferric `vxc_diagonal_mo` vs PySCF UGWAC `vxc`).
+/// Measured ≤ 7.1e-10 Ha (OH β).
+const TOL_VXC_UKS: f64 = 1e-8;
+
+/// Positions (into `orbs`) whose textbook QP equation has exactly one root
+/// within 1 Ha, as the generator counted (`ac/qp_roots_within_1ha_textbook`).
+/// Where it has several (NH2 α MOs 3 and 4 have three each: satellite
+/// structure of Σc near the QP energy), the root is a property of the solver's
+/// start, not of the method, so comparing it tests nothing about GW; ferric's
+/// Newton also reports those as unconverged. Every other quantity (ε_mf, v_xc,
+/// Σx, Σc on the imaginary axis) is still compared for all orbitals.
+fn unique_root_orbs(r: &Value, p: &str, ctx: &str) -> Vec<usize> {
+    let n = vec_usize(r, &format!("{p}/ac/qp_roots_within_1ha_textbook"), ctx);
+    let keep: Vec<usize> = (0..n.len()).filter(|&k| n[k] == 1).collect();
+    assert!(
+        !keep.is_empty(),
+        "{ctx}: no single-root orbital left to compare — the QP check would be vacuous"
+    );
+    if keep.len() < n.len() {
+        eprintln!("{ctx}: QP comparison skips multi-root positions (root counts {n:?})");
+    }
+    keep
+}
+
+fn uks_pbe_config() -> RhfConfig {
+    RhfConfig {
+        xc: Some("pbe".into()),
+        // Exact J, as the reference (an empty name is the explicit "no
+        // density fitting"; solve_uhf's build_df_jk filters it to None). The
+        // CLI's default for `gw` + `[rpa] xc` is RI-J/RI-K with the JK aux —
+        // that choice is the fitting error, not what this row measures.
+        df_j_aux: Some(String::new()),
+        df_k_aux: Some(String::new()),
+        ..uhf_config()
+    }
+}
+
+/// UKS/PBE on the reference's stable state (same fallback as `uhf`).
+fn uks_pbe(sys: &Sys) -> ScfResult {
+    let e_ref = num(&sys.r, "/u_g0w0_uks_pbe/uks/energy", &sys.label);
+    let steered = RhfConfig {
+        level_shift: 0.5,
+        mom_after_iter: 5,
+        ..uks_pbe_config()
+    };
+    let mut tried = Vec::new();
+    for (name, cfg) in [
+        ("stability-descent", uks_pbe_config()),
+        ("ls0.5+MOM5", steered),
+    ] {
+        let res = solve_uhf(&sys.ctx, &sys.mol, &sys.obs, &sys.bounds, &cfg)
+            .unwrap_or_else(|e| panic!("{}: UKS solve_uhf failed: {e:?}", sys.label));
+        let d = (res.energy - e_ref).abs();
+        tried.push(format!("{name}: E {:.10} |d| {d:.2e}", res.energy));
+        if res.converged && d < TOL_E_SCF {
+            eprintln!("{}: UKS/PBE state reached with {name}", sys.label);
+            if let Some(st) = res.stability.as_ref() {
+                assert!(
+                    matches!(
+                        st.verdict(),
+                        StabilityVerdict::Stable | StabilityVerdict::Marginal
+                    ),
+                    "{}: ferric UKS state not stable: {}",
+                    sys.label,
+                    st.summary()
+                );
+            }
+            check_close(&sys.label, "E_UKS", res.energy, e_ref, TOL_E_SCF);
+            return res;
+        }
+    }
+    panic!(
+        "{}: ferric did not reach the reference UKS/PBE state {e_ref:.10}: {tried:?}",
+        sys.label
+    );
+}
+
+/// ferric's open-shell G0W0@UKS exactly as the CLI's `run_gw` open-shell
+/// branch runs it: v_xc per spin, then `run_u_gw(.., Some((&v_xc_α,
+/// &v_xc_β)))` (shift inside the QP equation). KEEP IN STEP with
+/// crates/ferric-cli/src/lib.rs `run_gw` and the Python `run_u_gw`. Returns
+/// (the result, v_xc α, v_xc β).
+fn u_gw_at_uks(
+    sys: &Sys,
+    scf: &ScfResult,
+    orbs: &[usize],
+) -> (UGwResult, ndarray::Array1<f64>, ndarray::Array1<f64>) {
+    let (va, vb) = vxc_diagonal_mo(&sys.mol, &sys.obs_bs, "pbe", scf)
+        .unwrap_or_else(|e| panic!("{}: vxc_diagonal_mo: {e:?}", sys.label));
+    let res = run_u_gw(
+        &sys.mol,
+        &sys.obs,
+        &sys.dfbs,
+        Operator::coulomb(),
+        scf,
+        &pdep_cfg(N_QUAD, 0),
+        &gw_cfg(GwMethod::G0W0, window(orbs, &sys.label), 0),
+        Some((&va, &vb)),
+    )
+    .unwrap_or_else(|e| panic!("{}: run_u_gw failed: {e:?}", sys.label));
+    assert_eq!(res.mo_indices, orbs, "{}: QP window", sys.label);
+    (res, va, vb)
+}
+
+/// ferric Σc(ef_σ + iω) at the reference's Padé nodes for one spin, from
+/// the U-GW result's own PDEP (build_full_b_both_spins → redress with the α
+/// metric, as run_u_gw does → project → sigma_c_at_z). No continuation.
+fn ferric_u_sigma_c_iw(
+    sys: &Sys,
+    scf: &ScfResult,
+    res: &UGwResult,
+    spin: &str,
+    ctx: &str,
+) -> (Vec<Vec<f64>>, Vec<Vec<f64>>) {
+    let p = format!("/u_g0w0_uks_pbe/{spin}");
+    let orbs = vec_usize(&sys.r, "/u_g0w0_uks_pbe/orbs", ctx);
+    let omegas = vec_f64(&sys.r, &format!("{p}/ac/ac_nodes_omega"), ctx);
+    let node_idx = vec_usize(&sys.r, &format!("{p}/ac/ac_nodes_index"), ctx);
+    let ef_ref = num(&sys.r, &format!("{p}/ef"), ctx);
+    let (leg, _) = ferric_rpa::quadrature::gauss_legendre_nodes(100, 0.5);
+    for (&i, &w) in node_idx.iter().zip(&omegas) {
+        let mine = if i == 0 { 0.0 } else { leg[i - 1] };
+        assert!(
+            (mine - w).abs() <= 1e-12 * w.abs().max(1.0),
+            "{ctx}: AC node {i}: ferric grid {mine:.15e} vs reference {w:.15e}"
+        );
+    }
+    let (mo_a, mo_b) = ferric_gw::mo_b::build_full_b_both_spins(
+        &sys.mol,
+        &sys.obs,
+        &sys.dfbs,
+        Operator::coulomb(),
+        scf,
+        0,
+        None,
+    )
+    .unwrap_or_else(|e| panic!("{ctx}: build_full_b_both_spins: {e:?}"));
+    let (v_dressed, _) =
+        ferric_gw::w_pdep::redress_with_check(&mo_a.v_inv_sqrt, &res.pdep.eigenpotentials)
+            .unwrap_or_else(|e| panic!("{ctx}: redress: {e:?}"));
+    let mo_s = if spin == "alpha" { &mo_a } else { &mo_b };
+    let n_occ = mo_s.n_occ_act;
+    let ef_ferric = 0.5 * (mo_s.eps_act[n_occ - 1] + mo_s.eps_act[n_occ]);
+    check_close(ctx, "ef (per-spin mid-gap)", ef_ferric, ef_ref, TOL_EPS_MF);
+    let m_proj = ferric_gw::cohsex::project_b_into_pdep(mo_s, &v_dressed, None)
+        .unwrap_or_else(|e| panic!("{ctx}: project_b_into_pdep: {e:?}"));
+    let inv = res
+        .pdep
+        .inv_dielectric_freq
+        .as_ref()
+        .expect("GW keeps inv_dielectric_freq");
+    let mut re = Vec::with_capacity(orbs.len());
+    let mut im = Vec::with_capacity(orbs.len());
+    for &p in &orbs {
+        let m_loc = p - mo_s.first_act;
+        let vals: Vec<Complex64> = omegas
+            .iter()
+            .map(|&w| {
+                ferric_gw::sigma::sigma_c_at_z(
+                    m_loc,
+                    Complex64::new(ef_ref, w),
+                    &m_proj,
+                    inv,
+                    &res.pdep.quad_weights,
+                    &res.pdep.quad_freqs,
+                    &mo_s.eps_act,
+                )
+            })
+            .collect();
+        re.push(vals.iter().map(|z| z.re).collect());
+        im.push(vals.iter().map(|z| z.im).collect());
+    }
+    (re, im)
+}
+
+/// Everything in U-G0W0@UKS that does not depend on where Σx − v_xc enters
+/// the QP equation.
+fn u_g0w0_uks_sigma_c_case(system: &str) {
+    let sys = load_system(system, &format!("{system}.xyz"), "cc-pvdz", false);
+    let ctx = format!("{} U-G0W0@UKS/PBE", sys.label);
+    let scf = uks_pbe(&sys);
+    let orbs = vec_usize(&sys.r, "/u_g0w0_uks_pbe/orbs", &ctx);
+    let (res, va, vb) = u_gw_at_uks(&sys, &scf, &orbs);
+    for (spin, eps_mf, sx, vxc, eps_qp, sc, conv) in [
+        (
+            "alpha",
+            &res.eps_mf_a,
+            &res.sigma_x_a,
+            &va,
+            &res.eps_qp_a,
+            &res.sigma_c_a,
+            &res.qp_converged_a,
+        ),
+        (
+            "beta",
+            &res.eps_mf_b,
+            &res.sigma_x_b,
+            &vb,
+            &res.eps_qp_b,
+            &res.sigma_c_b,
+            &res.qp_converged_b,
+        ),
+    ] {
+        let c = format!("{ctx} {spin}");
+        let p = format!("/u_g0w0_uks_pbe/{spin}");
+        let keep = unique_root_orbs(&sys.r, &p, &c);
+        assert!(
+            keep.iter().all(|&k| conv[k]),
+            "{c}: QP Newton not converged on a single-root orbital"
+        );
+        check_vec(
+            &c,
+            "eps_mf",
+            &orbs,
+            eps_mf.as_slice().unwrap(),
+            &vec_f64(&sys.r, &format!("{p}/eps_mf"), &c),
+            TOL_EPS_MF,
+        );
+        let vxc_win: Vec<f64> = orbs.iter().map(|&q| vxc[q]).collect();
+        check_vec(
+            &c,
+            "v_xc",
+            &orbs,
+            &vxc_win,
+            &vec_f64(&sys.r, &format!("{p}/v_xc"), &c),
+            TOL_VXC_UKS,
+        );
+        check_vec(
+            &c,
+            "sigma_x(DF)",
+            &orbs,
+            sx.as_slice().unwrap(),
+            &vec_f64(&sys.r, &format!("{p}/sigma_x_df"), &c),
+            TOL_SX,
+        );
+        // ferric's own QP equation, with Σx − v_xc INSIDE it, is satisfied
+        // (Σc is reported at the root).
+        for &k in &keep {
+            let q = orbs[k];
+            let resid = eps_qp[k] - eps_mf[k] - (sx[k] - vxc[q]) - sc[k];
+            assert!(
+                resid.abs() < TOL_RESID,
+                "{c}: shifted QP residual {resid:.2e} Ha at MO {q}"
+            );
+        }
+        // Σc on the imaginary axis, no continuation.
+        let got = ferric_u_sigma_c_iw(&sys, &scf, &res, spin, &c);
+        let want = (
+            mat_f64(&sys.r, &format!("{p}/ac/sigma_c_iw_nodes_re"), &c),
+            mat_f64(&sys.r, &format!("{p}/ac/sigma_c_iw_nodes_im"), &c),
+        );
+        let worst = sigma_c_iw_worst(&c, &orbs, &got, &want);
+        eprintln!(
+            "{c}: Σc(ef+iω) worst |d| {worst:.3e} Ha ({:.6} meV)",
+            worst * HA_TO_EV * 1e3
+        );
+        assert!(
+            worst < TOL_SIGMA_C_IW_UKS,
+            "{c}: Σc(ef + iω) differs from PySCF by {worst:.2e} Ha (bar {TOL_SIGMA_C_IW_UKS:.0e})"
+        );
+    }
+}
+
+/// The headline U-G0W0@UKS QP energies vs the textbook reference (Σx − v_xc
+/// inside the QP equation); the failure message says whether ferric matched
+/// the post-hoc recipe instead.
+fn u_g0w0_uks_qp_case(system: &str) {
+    let sys = load_system(system, &format!("{system}.xyz"), "cc-pvdz", false);
+    let ctx = format!("{} U-G0W0@UKS/PBE", sys.label);
+    let scf = uks_pbe(&sys);
+    let orbs = vec_usize(&sys.r, "/u_g0w0_uks_pbe/orbs", &ctx);
+    let (res, _va, _vb) = u_gw_at_uks(&sys, &scf, &orbs);
+    for (spin, eps_qp) in [("alpha", &res.eps_qp_a), ("beta", &res.eps_qp_b)] {
+        let c = format!("{ctx} {spin}");
+        let p = format!("/u_g0w0_uks_pbe/{spin}");
+        let keep = unique_root_orbs(&sys.r, &p, &c);
+        let pick = |v: &[f64]| keep.iter().map(|&k| v[k]).collect::<Vec<f64>>();
+        let got_all = eps_qp.as_slice().unwrap();
+        let got = pick(got_all);
+        let got = got.as_slice();
+        let orbs: Vec<usize> = keep.iter().map(|&k| orbs[k]).collect();
+        let textbook = pick(&vec_f64(&sys.r, &format!("{p}/eps_qp"), &c));
+        let posthoc = pick(&vec_f64(&sys.r, &format!("{p}/eps_qp_posthoc"), &c));
+        let max_d = |want: &[f64]| {
+            got.iter()
+                .zip(want)
+                .map(|(g, w)| (g - w).abs())
+                .fold(0.0_f64, f64::max)
+        };
+        let (d_tb, d_ph) = (max_d(textbook.as_slice()), max_d(posthoc.as_slice()));
+        eprintln!(
+            "{c}: max |d| vs textbook (shift inside) {:.4} meV, vs post-hoc emulation {:.4} meV",
+            d_tb * HA_TO_EV * 1e3,
+            d_ph * HA_TO_EV * 1e3
+        );
+        assert!(
+            d_tb < TOL_QP_UKS,
+            "{c}: U-G0W0@UKS QP energies miss the textbook reference by {:.1} meV (post-hoc \
+             recipe: {:.4} meV away). If the post-hoc number is ~0, Σx − v_xc is not reaching \
+             the QP equation (u_sigma.rs qp_per_spin_g0w0 `shift`).",
+            d_tb * HA_TO_EV * 1e3,
+            d_ph * HA_TO_EV * 1e3
+        );
+        check_vec(&c, "eps_qp", &orbs, got, &textbook, TOL_QP_UKS);
+        // Control: where the shift goes is resolvable (post-hoc ≠ textbook).
+        assert_misses(
+            &c,
+            "eps_qp vs the post-hoc-shift emulation",
+            got,
+            &posthoc,
+            TOL_QP_UKS,
+            MUST_MISS_FACTOR,
+        );
+        // Control: the starting point matters — @UKS misses the @UHF reference.
+        assert_misses(
+            &c,
+            "@UKS vs the @UHF reference",
+            got,
+            &pick(&vec_f64(&sys.r, &format!("/u_g0w0_uhf/{spin}/eps_qp"), &c)),
+            TOL_QP_UKS,
+            MUST_MISS_FACTOR,
+        );
+    }
+}
+
+#[test]
+#[ignore = "validation: U-G0W0"]
+fn u_g0w0_uks_pbe_oh_sigma_c_vs_pyscf_ugw_ac() {
+    u_g0w0_uks_sigma_c_case("oh");
+}
+
+#[test]
+#[ignore = "validation: U-G0W0"]
+fn u_g0w0_uks_pbe_ch3_sigma_c_vs_pyscf_ugw_ac() {
+    u_g0w0_uks_sigma_c_case("ch3");
+}
+
+#[test]
+#[ignore = "validation: U-G0W0"]
+fn u_g0w0_uks_pbe_nh2_sigma_c_vs_pyscf_ugw_ac() {
+    u_g0w0_uks_sigma_c_case("nh2");
+}
+
+#[test]
+#[ignore = "validation: U-G0W0"]
+fn u_g0w0_uks_pbe_oh_qp_vs_pyscf_ugw_ac() {
+    u_g0w0_uks_qp_case("oh");
+}
+
+#[test]
+#[ignore = "validation: U-G0W0"]
+fn u_g0w0_uks_pbe_ch3_qp_vs_pyscf_ugw_ac() {
+    u_g0w0_uks_qp_case("ch3");
+}
+
+#[test]
+#[ignore = "validation: U-G0W0"]
+fn u_g0w0_uks_pbe_nh2_qp_vs_pyscf_ugw_ac() {
+    u_g0w0_uks_qp_case("nh2");
 }
 
 // ---------------------------------------------------------------------------

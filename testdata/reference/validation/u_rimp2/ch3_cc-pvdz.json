@@ -1,0 +1,156 @@
+{
+  "row": "Unrestricted RI-MP2",
+  "system": "ch3",
+  "basis": "cc-pvdz",
+  "aux_basis": "cc-pvdz-ri",
+  "charge": 0,
+  "multiplicity": 2,
+  "nao": 29,
+  "naux": 98,
+  "nuclear_repulsion": 9.677248948933595,
+  "uhf": {
+    "energy": -39.5638067672047,
+    "converged": true,
+    "s_squared": 0.7612063832025306,
+    "multiplicity_from_s2": 2.011175162140315,
+    "nelec_alpha": 5,
+    "nelec_beta": 4,
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF UHF internal (real)",
+      "rounds": 0,
+      "selected_guess": "minao",
+      "lambda_min": 0.27353196035659255
+    },
+    "guess_scan": [
+      {
+        "guess": "minao",
+        "energy": -39.5638067672047,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -39.5638067672047
+        ]
+      },
+      {
+        "guess": "atom",
+        "energy": -39.56380676720465,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -39.56380676720465
+        ]
+      },
+      {
+        "guess": "huckel",
+        "energy": -39.563806767204696,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -39.563806767204696
+        ]
+      }
+    ],
+    "multiple_stable_minima": false,
+    "homo_alpha": -0.38297169177611057,
+    "lumo_alpha": 0.19450643742032758,
+    "homo_beta": -0.5619161393059638,
+    "lumo_beta": 0.14308429738467598,
+    "somo_alpha": [
+      -0.38297169177611057
+    ]
+  },
+  "ump2": {
+    "frozen_core": 0,
+    "e_corr": -0.12905263472574702,
+    "e_corr_ss": -0.02525682743860834,
+    "e_corr_os": -0.10379580728713866,
+    "e_aa": -0.018615446082117258,
+    "e_bb": -0.006641381356491146,
+    "e_ab": -0.10379580728713905,
+    "e_total": -39.69285940193045,
+    "numpy_anchor_ss_diff": -6.245004513516506e-17,
+    "numpy_anchor_os_diff": -3.885780586188048e-16,
+    "naux": 98
+  },
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "scf": "scf.UHF exact integrals, 3 guesses + stability loop (common.run_open_shell)",
+      "mp2": "pyscf.mp.dfump2.DFUMP2, with_df.auxmol from ferric's aux JSON",
+      "spin_components": "numpy int3c2e/int2c2e Cholesky-metric B, anchored to DFUMP2",
+      "numpy": "1.26.4"
+    },
+    "grid": "none",
+    "aux_basis": {
+      "name": "cc-pvdz-ri",
+      "json": "crates/ferric-core/src/basis/bundled/cc-pvdz-ri.json",
+      "sha256": "8221d2a31b5bbebd39218fc3f9244917e173a338ff9c56904038443a06e2a250",
+      "metric": "Coulomb"
+    },
+    "frozen_core": {
+      "ump2": 0
+    },
+    "scf_convergence": {
+      "conv_tol": 1e-11,
+      "conv_tol_grad": 1e-08
+    },
+    "stability": {
+      "uhf": {
+        "internal_stable": true,
+        "kind": "PySCF UHF internal (real)",
+        "rounds": 0,
+        "selected_guess": "minao",
+        "lambda_min": 0.27353196035659255
+      }
+    },
+    "basis": "cc-pvdz",
+    "basis_json": "crates/ferric-core/src/basis/bundled/cc-pvdz.json",
+    "basis_sha256": "ae48fcca0d533addd60dbd48490153130e697121767ba607e1d70f3b341eeef7",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/ch3.xyz",
+    "geometry_xyz_sha256": "fc8c828780c55c04a8951156772d4336f64688ba91151b16777b4437c54abbcd",
+    "geometry_bohr": [
+      [
+        "C",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "H",
+        0.0,
+        2.0390144884057015,
+        0.0
+      ],
+      [
+        "H",
+        1.7658383443524122,
+        -1.0195072442028508,
+        0.0
+      ],
+      [
+        "H",
+        -1.7658383443524122,
+        -1.0195072442028508,
+        0.0
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_u_rimp2.py",
+    "git_head": "eb9d3226cb0444658d7a11064a0e7ca17356c3b9",
+    "generated_utc": "2026-09-25T19:11:31+00:00",
+    "basis_self_check": {
+      "nao": 29,
+      "replica_self_overlap_max_dev": 4.440892098500626e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 29,
+      "diag_skipped_cartesian": 0
+    }
+  }
+}

@@ -89,7 +89,7 @@ fn run_u_gw_rejects_out_of_range_qp_mos_instead_of_panicking() {
         qp_mos: Some(0..999),
         ..Default::default()
     };
-    let err = run_u_gw(&mol, &obs, &dfbs, op, &uhf, &pdep_cfg(), &gw_cfg).unwrap_err();
+    let err = run_u_gw(&mol, &obs, &dfbs, op, &uhf, &pdep_cfg(), &gw_cfg, None).unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("qp_mos") && msg.contains("exceeds"),

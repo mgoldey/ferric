@@ -162,6 +162,7 @@ fn gw(c: &Case, scf: &ScfResult) -> UGwResult {
         scf,
         &pdep_cfg(),
         &gw_cfg,
+        None,
     )
     .unwrap_or_else(|e| panic!("{}: run_u_gw: {e:?}", c.label))
 }

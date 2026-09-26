@@ -156,7 +156,7 @@ fn check_closed_shell_limit(method: GwMethod, tol_ha: f64, max_ev_iter: usize) {
 
     let res_closed = run_gw(&mol, &obs, &dfbs, op, &rhf, &pdep, &gcfg_closed, None)
         .unwrap_or_else(|e| panic!("closed-shell run_gw({method:?}) failed: {e}"));
-    let res_open = run_u_gw(&mol, &obs, &dfbs, op, &uhf, &pdep, &gcfg_open)
+    let res_open = run_u_gw(&mol, &obs, &dfbs, op, &uhf, &pdep, &gcfg_open, None)
         .unwrap_or_else(|e| panic!("open-shell run_u_gw({method:?}) failed: {e}"));
 
     assert_eq!(

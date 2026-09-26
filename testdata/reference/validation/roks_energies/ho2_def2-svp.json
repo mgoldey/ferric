@@ -1,0 +1,326 @@
+{
+  "row": "KS-DFT, ROKS",
+  "system": "ho2",
+  "basis": "def2-svp",
+  "charge": 0,
+  "multiplicity": 2,
+  "nao": 33,
+  "nuclear_repulsion": 32.117020563592035,
+  "roks_pbe": {
+    "energy": -150.63787622464662,
+    "converged": true,
+    "max_orbital_gradient": 3.582110882742462e-08,
+    "nelec_alpha": 9,
+    "nelec_beta": 8,
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF ROKS internal (real), rohf_internal",
+      "selected_start": {
+        "guess": "atom",
+        "level_shift": 0.5
+      }
+    },
+    "start_scan": [
+      {
+        "guess": "minao",
+        "level_shift": 0.0,
+        "diis_converged": true,
+        "energy_diis": -150.63787622464625,
+        "newton_converged": true,
+        "energy": -150.63787622464625,
+        "max_orbital_gradient": 1.9389139294112567e-08,
+        "accepted": true
+      },
+      {
+        "guess": "minao",
+        "level_shift": 0.5,
+        "diis_converged": true,
+        "energy_diis": -150.63787622464636,
+        "newton_converged": true,
+        "energy": -150.63787622464636,
+        "max_orbital_gradient": 2.848928310102139e-08,
+        "accepted": true
+      },
+      {
+        "guess": "atom",
+        "level_shift": 0.0,
+        "diis_converged": true,
+        "energy_diis": -150.6378762246462,
+        "newton_converged": false,
+        "energy": -150.63787622464628,
+        "max_orbital_gradient": 5.1511768333701094e-08,
+        "accepted": true
+      },
+      {
+        "guess": "atom",
+        "level_shift": 0.5,
+        "diis_converged": true,
+        "energy_diis": -150.63787622464662,
+        "newton_converged": true,
+        "energy": -150.63787622464662,
+        "max_orbital_gradient": 3.582110882742462e-08,
+        "accepted": true
+      },
+      {
+        "guess": "huckel",
+        "level_shift": 0.0,
+        "diis_converged": true,
+        "energy_diis": -150.6378762246463,
+        "newton_converged": true,
+        "energy": -150.6378762246463,
+        "max_orbital_gradient": 3.1718644953496015e-08,
+        "accepted": true
+      },
+      {
+        "guess": "huckel",
+        "level_shift": 0.5,
+        "diis_converged": true,
+        "energy_diis": -150.6378762246464,
+        "newton_converged": true,
+        "energy": -150.6378762246464,
+        "max_orbital_gradient": 1.976916742287005e-08,
+        "accepted": true
+      }
+    ],
+    "n_accepted": 6,
+    "accepted_spread": 3.694822225952521e-13,
+    "orbital_energy_convention": "PySCF ROKS Roothaan (Guest-Saunders) effective-Fock eigenvalues; recorded for inspection, NOT compared",
+    "somo_roothaan": [
+      -0.19596142525127744
+    ],
+    "homo_docc_roothaan": -0.2159138171111548,
+    "lumo_roothaan": 0.00881385421476596,
+    "xc": "PBE,PBE",
+    "jk": "RI-J (density_fit, aux fed from ferric JSON); K unused"
+  },
+  "uks_pbe_control": {
+    "energy": -150.6388430401086,
+    "s_squared": 0.7514043843510105,
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF UKS internal (real)",
+      "rounds": 0,
+      "selected_guess": "atom",
+      "lambda_min": 0.03739567546482655
+    },
+    "multiple_stable_minima": false,
+    "note": "stability-followed UKS, same recipe; ferric ROKS must lie ABOVE it"
+  },
+  "roks_b3lyp": {
+    "energy": -150.78380949714642,
+    "converged": true,
+    "max_orbital_gradient": 1.733889876901623e-08,
+    "nelec_alpha": 9,
+    "nelec_beta": 8,
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF ROKS internal (real), rohf_internal",
+      "selected_start": {
+        "guess": "atom",
+        "level_shift": 0.0
+      }
+    },
+    "start_scan": [
+      {
+        "guess": "minao",
+        "level_shift": 0.0,
+        "diis_converged": true,
+        "energy_diis": -150.78380949714622,
+        "newton_converged": false,
+        "energy": -150.78380949714622,
+        "max_orbital_gradient": 3.9615036224278574e-08,
+        "accepted": true
+      },
+      {
+        "guess": "minao",
+        "level_shift": 0.5,
+        "diis_converged": true,
+        "energy_diis": -150.78380949714622,
+        "newton_converged": true,
+        "energy": -150.78380949714622,
+        "max_orbital_gradient": 1.7003900558421048e-08,
+        "accepted": true
+      },
+      {
+        "guess": "atom",
+        "level_shift": 0.0,
+        "diis_converged": true,
+        "energy_diis": -150.78380949714642,
+        "newton_converged": true,
+        "energy": -150.78380949714642,
+        "max_orbital_gradient": 1.733889876901623e-08,
+        "accepted": true
+      },
+      {
+        "guess": "atom",
+        "level_shift": 0.5,
+        "diis_converged": true,
+        "energy_diis": -150.78380949714628,
+        "newton_converged": true,
+        "energy": -150.78380949714628,
+        "max_orbital_gradient": 1.9002026650088988e-08,
+        "accepted": true
+      },
+      {
+        "guess": "huckel",
+        "level_shift": 0.0,
+        "diis_converged": true,
+        "energy_diis": -150.78380949714582,
+        "newton_converged": true,
+        "energy": -150.78380949714582,
+        "max_orbital_gradient": 3.147168702163569e-08,
+        "accepted": true
+      },
+      {
+        "guess": "huckel",
+        "level_shift": 0.5,
+        "diis_converged": true,
+        "energy_diis": -150.7838094971461,
+        "newton_converged": true,
+        "energy": -150.7838094971461,
+        "max_orbital_gradient": 2.2421095414310033e-08,
+        "accepted": true
+      }
+    ],
+    "n_accepted": 6,
+    "accepted_spread": 5.968558980384842e-13,
+    "orbital_energy_convention": "PySCF ROKS Roothaan (Guest-Saunders) effective-Fock eigenvalues; recorded for inspection, NOT compared",
+    "somo_roothaan": [
+      -0.21119729669705353
+    ],
+    "homo_docc_roothaan": -0.2849904138347903,
+    "lumo_roothaan": 0.029730155789488722,
+    "xc": "B3LYP",
+    "jk": "RI-J + RI-K (density_fit)"
+  },
+  "uks_b3lyp_control": {
+    "energy": -150.78549711860413,
+    "s_squared": 0.7525805904685203,
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF UKS internal (real)",
+      "rounds": 0,
+      "selected_guess": "minao",
+      "lambda_min": 0.03471863819506314
+    },
+    "multiple_stable_minima": false,
+    "note": "stability-followed UKS, same recipe; ferric ROKS must lie ABOVE it"
+  },
+  "rohf_control": {
+    "energy": -150.04499067690386,
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF ROHF internal (real)",
+      "rounds": 0,
+      "selected_guess": "atom"
+    },
+    "note": "exact-integral ROHF; ferric ROKS must MISS this (functional applied)"
+  },
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "method": "dft.ROKS (+ dft.UKS and scf.ROHF controls)",
+      "xc": {
+        "pbe": "PBE,PBE",
+        "b3lyp": "B3LYP"
+      },
+      "jk": {
+        "pbe": "RI-J (density_fit, aux fed from ferric JSON); K unused",
+        "b3lyp": "RI-J + RI-K (density_fit)"
+      },
+      "starts": {
+        "init_guess": [
+          "minao",
+          "atom",
+          "huckel"
+        ],
+        "level_shift": [
+          0.0,
+          0.5
+        ]
+      },
+      "polish": "mf.newton(), conv_tol 1e-10, conv_tol_grad 1e-07",
+      "accept": "max |orbital gradient| <= 1e-05",
+      "numpy": "1.26.4"
+    },
+    "grid": {
+      "main": {
+        "atom_grid": [
+          75,
+          110
+        ],
+        "prune": null,
+        "partition": "Becke (original_becke)",
+        "radii_adjust": "becke_atomic_radii_adjust"
+      }
+    },
+    "aux_basis": {
+      "name": "def2-universal-jkfit",
+      "json": "crates/ferric-core/src/basis/bundled/def2-universal-jkfit.json",
+      "sha256": "a9fcb52ae8a74e80bd3a65c5e12e7a2d2f391fef62c3c81050ae816399b57671"
+    },
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-10,
+      "conv_tol_grad": 1e-07
+    },
+    "stability": {
+      "roks_pbe": {
+        "internal_stable": true,
+        "kind": "PySCF ROKS internal (real), rohf_internal",
+        "selected_start": {
+          "guess": "atom",
+          "level_shift": 0.5
+        }
+      },
+      "roks_b3lyp": {
+        "internal_stable": true,
+        "kind": "PySCF ROKS internal (real), rohf_internal",
+        "selected_start": {
+          "guess": "atom",
+          "level_shift": 0.0
+        }
+      }
+    },
+    "basis": "def2-svp",
+    "basis_json": "crates/ferric-core/src/basis/bundled/def2-svp.json",
+    "basis_sha256": "bfad5f58ceac74a9ac2766b39f510654cea29fb9408e966bb0dfcf14e1302d4f",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/ho2.xyz",
+    "geometry_xyz_sha256": "2a4bc751278a939167ae70420074117ac33a2e1bb19e61409f7999dfc3804f3a",
+    "geometry_bohr": [
+      [
+        "O",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "O",
+        2.5152254717960973,
+        0.0,
+        0.0
+      ],
+      [
+        "H",
+        -0.4529140995760551,
+        1.7781493620333773,
+        0.0
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_roks_energies.py",
+    "git_head": "eb9d3226cb0444658d7a11064a0e7ca17356c3b9",
+    "generated_utc": "2026-09-25T19:15:14+00:00",
+    "basis_self_check": {
+      "nao": 33,
+      "replica_self_overlap_max_dev": 0.0,
+      "pyscf_diag_max_dev": 8.881784197001252e-16,
+      "diag_checked": 33,
+      "diag_skipped_cartesian": 0,
+      "aux_nao": 172
+    }
+  }
+}
