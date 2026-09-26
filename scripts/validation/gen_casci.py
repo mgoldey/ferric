@@ -19,9 +19,8 @@ screening beyond libint2's 1e-14 precision), and
     e_total = e_core + lowest eigenvalue of the active CI Hamiltonian
 
 over the FULL Ms = (na - nb)/2 determinant space (every S with that Ms; no
-spin penalty, no root following). `CasCiResult::e_active` is equal to
-`e_total` (core included, see its doc comment), so the active-space energy is
-formed on the Rust side as `e_total - e_core`.
+spin penalty, no root following). `CasCiResult::e_active` is
+`e_total - e_core`, the active-space energy (PySCF `e_cas`).
 
 REFERENCE
 ---------
