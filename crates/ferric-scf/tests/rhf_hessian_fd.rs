@@ -56,9 +56,10 @@
 //! * 2e skeleton: in `perm_summed_gamma` pass `blk.sym34` where `blk.sym12`
 //!   goes → `skeleton_two_electron_matches_fd_*` misses (wrong permutation
 //!   weights on every s1 ≠ s2 quartet).
-//! * CPHF: in `solve_cphf_one` change `rhs -= &frame.c_vir.t().dot(&g_oo)...`
-//!   to `+=` → skeleton tests stay green, `full_hessian_matches_fd_*` misses
-//!   by ~1e-2 and `response_asymmetry` exceeds its bar.
+//! * CPHF: in `cphf_rhs` change `rhs -= &frame.vo(g_oo);` to `+=` → skeleton
+//!   tests stay green, `full_hessian_matches_fd_*` misses by ~1e-2 and
+//!   `response_asymmetry` exceeds its bar. (`cphf_rhs` is shared with the UHF
+//!   solve, so `uhf_hessian_fd.rs` goes red too.)
 //! * scatter: drop the `if i != j { h[(c, r)] += v; }` mirror in
 //!   `scatter_unique_pairs` → every skeleton test misses (half of each
 //!   off-diagonal second derivative lost).
