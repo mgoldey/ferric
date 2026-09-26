@@ -690,6 +690,129 @@ int scf_compute_eri_deriv_quartet(scf_engine *eng, const scf_basis *bs,
 #endif
 }
 
+/* --- Second derivative integrals --- *
+ *
+ * Result ordering (libint2 2.13, verified in the headers, not assumed):
+ * with ncoord differentiable coordinates (coordinate = 3*centre + xyz), the
+ * engine returns the ncoord*(ncoord+1)/2 unique (i <= j) blocks in row-major
+ * upper-triangle order, index(i,j) = i*(2*ncoord - i - 1)/2 + j:
+ *   - engine.impl.h `upper_triangle_index_ord` (the lambda in Engine::compute1,
+ *     deriv_order_ case 2), used to place every 1e nuclear block, including
+ *     the operator-centre blocks rebuilt by translational invariance;
+ *   - deriv_map.h `generate_multi_index_lookup` (combinations with repetition,
+ *     its comment tabulates 6 coordinates: combos[13] = (2,4)), which maps the
+ *     4-centre ERI blocks back to the caller's shell order after libint2's
+ *     internal canonical permutation (engine.impl.h, Engine::compute2,
+ *     `DerivMapGenerator::instance`).
+ * The Rust twin is `ferric_integrals::engine::deriv2_pair_index`. */
+
+int scf_libint_max_deriv_order(void) {
+#ifdef LIBINT2_MAX_DERIV_ORDER
+    return LIBINT2_MAX_DERIV_ORDER;
+#else
+    return 0;
+#endif
+}
+
+scf_engine *scf_engine_create_deriv2(int op_kind, double omega,
+                                       int max_nprim, int max_L, double precision) {
+#if LIBINT2_MAX_DERIV_ORDER >= 2
+    bool ok = false;
+    Operator op = op_for_kind(op_kind, &ok);
+    if (!ok) return nullptr;
+    std::lock_guard<std::mutex> lock(libint_ctor_mutex);
+    try {
+        Engine eng(op, max_nprim, max_L, 2, precision);
+        if (op_needs_scalar_param(op_kind)) {
+            eng.set_params(omega);
+        }
+        auto *out = new (std::nothrow) scf_engine{std::move(eng)};
+        return out;
+    } catch (...) {
+        return nullptr;
+    }
+#else
+    (void)op_kind; (void)omega; (void)max_nprim; (void)max_L; (void)precision;
+    return nullptr;
+#endif
+}
+
+int scf_compute_1e_deriv2_block(scf_engine *eng, const scf_basis *bs,
+                                  int sh1, int sh2, double *out, int out_len) {
+#if LIBINT2_MAX_DERIV_ORDER >= 2
+  try {
+    if (eng->engine.deriv_order() != 2) return SCF_EINVAL;
+    const auto &shells = bs->bs;
+    eng->engine.compute(shells[sh1], shells[sh2]);
+    const auto &result = eng->engine.results();
+    const long n = static_cast<long>(bs->nfunc[sh1]) * bs->nfunc[sh2];
+    const long nderiv = static_cast<long>(result.size());
+    // nderiv must be a triangular number ncoord*(ncoord+1)/2 with ncoord a
+    // multiple of 3 (whole centres); anything else means the result layout is
+    // not the one documented above.
+    long ncoord = 0;
+    while (ncoord * (ncoord + 1) / 2 < nderiv) ++ncoord;
+    if (ncoord * (ncoord + 1) / 2 != nderiv || ncoord % 3 != 0 || ncoord < 6) {
+        return SCF_EINTERNAL;
+    }
+    if (nderiv * n > static_cast<long>(out_len)) return SCF_EINVAL;
+    for (long d = 0; d < nderiv; ++d) {
+        const double *src = result[d];
+        double *dst = out + d * n;
+        if (src) {
+            for (long i = 0; i < n; ++i) dst[i] = src[i];
+        } else {
+            for (long i = 0; i < n; ++i) dst[i] = 0.0;
+        }
+    }
+    return static_cast<int>(nderiv * n);
+  } catch (...) {
+    return SCF_EINTERNAL;
+  }
+#else
+    (void)eng; (void)bs; (void)sh1; (void)sh2; (void)out; (void)out_len;
+    return SCF_EUNSUPPORTED;
+#endif
+}
+
+int scf_compute_eri_deriv2_quartet(scf_engine *eng, const scf_basis *bs,
+                                     int sh1, int sh2, int sh3, int sh4,
+                                     double *out, int out_len) {
+#if LIBINT2_MAX_DERIV_ORDER >= 2
+  try {
+    if (eng->engine.deriv_order() != 2) return SCF_EINVAL;
+    const auto &shells = bs->bs;
+    eng->engine.compute(shells[sh1], shells[sh2], shells[sh3], shells[sh4]);
+    const auto &result = eng->engine.results();
+    const long n = static_cast<long>(bs->nfunc[sh1]) * bs->nfunc[sh2] *
+                   bs->nfunc[sh3] * bs->nfunc[sh4];
+    // 4 centres x 3 coords = 12 coordinates -> 12*13/2 = 78 unique blocks.
+    const long nderiv = 78;
+    if (static_cast<long>(result.size()) != nderiv) return SCF_EINTERNAL;
+    if (result[0] == nullptr) {
+        return 0;
+    }
+    if (nderiv * n > static_cast<long>(out_len)) return SCF_EINVAL;
+    for (long d = 0; d < nderiv; ++d) {
+        const double *src = result[d];
+        double *dst = out + d * n;
+        if (src) {
+            for (long i = 0; i < n; ++i) dst[i] = src[i];
+        } else {
+            for (long i = 0; i < n; ++i) dst[i] = 0.0;
+        }
+    }
+    return static_cast<int>(nderiv * n);
+  } catch (...) {
+    return SCF_EINTERNAL;
+  }
+#else
+    (void)eng; (void)bs; (void)sh1; (void)sh2; (void)sh3; (void)sh4;
+    (void)out; (void)out_len;
+    return SCF_EUNSUPPORTED;
+#endif
+}
+
 /* --- Electric dipole integrals via emultipole1 --- */
 
 int scf_compute_dipole(const scf_basis *bs, const double *origin,

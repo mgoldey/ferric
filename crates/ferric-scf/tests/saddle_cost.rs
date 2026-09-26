@@ -199,7 +199,7 @@ fn prfo_cost_is_measured_in_gradient_and_hessian_calls() {
 fn a_finite_difference_hessian_costs_6n_plus_one_gradients() {
     use ferric_core::parallel::ParallelContext;
     use ferric_integrals::operator::Operator;
-    use ferric_scf::frequencies::{harmonic_frequencies, FrequencyConfig};
+    use ferric_scf::frequencies::{harmonic_frequencies, FrequencyConfig, HessianMethod};
     use ferric_scf::rhf::RhfConfig;
 
     let mol = h2(0.74);
@@ -212,7 +212,11 @@ fn a_finite_difference_hessian_costs_6n_plus_one_gradients() {
         "sto-3g",
         Operator::coulomb(),
         &RhfConfig::default(),
-        &FrequencyConfig::default(),
+        // The 6N count is a property of the finite-difference Hessian.
+        &FrequencyConfig {
+            hessian: HessianMethod::FiniteDifference,
+            ..Default::default()
+        },
     )
     .expect("H2/STO-3G harmonic frequencies");
 
@@ -343,6 +347,7 @@ fn physical_eigenvalues_stay_far_below_the_trans_rot_shift() {
         scf.max_iter = 300;
         let fc = FrequencyConfig {
             reference: FrequencyReference::Rhf,
+            hessian: ferric_scf::frequencies::HessianMethod::FiniteDifference,
             ..Default::default()
         };
         let fr = harmonic_frequencies(&ParallelContext::default(), &mol, "sto-3g", op, &scf, &fc)

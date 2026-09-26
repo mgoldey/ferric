@@ -17,10 +17,9 @@
 //!
 //! # Which Hessian, and why it is the expensive part
 //!
-//! [`crate::hessian::rhf_hessian`] is a documented stub that ALWAYS returns
-//! `Err` -- terms 2-5 need libint2 `deriv_order=2`, which this build does not
-//! have. The working Hessian is
-//! [`crate::frequencies::harmonic_frequencies`], which CENTRAL-DIFFERENCES the
+//! This driver uses [`crate::frequencies::harmonic_frequencies`] for every
+//! method; the analytic [`crate::hessian::rhf_hessian`] (closed-shell RHF with
+//! exact J/K only) is not wired in. The FD Hessian CENTRAL-DIFFERENCES the
 //! analytic gradient: **6N gradient evaluations** (MEASURED via the gradient
 //! counter: H2 = 12, water = 18 -- exactly 6N, not 6N+1).
 //!

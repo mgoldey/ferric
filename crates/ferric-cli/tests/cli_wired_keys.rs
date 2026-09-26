@@ -848,3 +848,45 @@ fn terf_keys_are_refused_off_their_kind() {
         &["att_operator", "\"att-rimp2\" only"],
     );
 }
+
+/// `[frequencies] hessian`: water/STO-3G frequencies with the analytic Hessian
+/// and with finite differences, each reporting which ran, agreeing to the FD
+/// step's truncation; an unknown value is refused. Negative control: the key
+/// changes the construction (the printed `Hessian` line and the gradient-count
+/// line differ), so a key the CLI ignored could not pass.
+#[test]
+fn frequencies_hessian_key_selects_the_construction() {
+    let toml = |hessian: &str| {
+        format!(
+            "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\n\n\
+             [basis]\nname = \"sto-3g\"\n\n\
+             [method]\nkind = \"rhf\"\ntask = \"frequencies\"\n\n\
+             [frequencies]\nhessian = \"{hessian}\"\n\n{TIGHT}"
+        )
+    };
+    let modes = |stdout: &str| -> Vec<f64> {
+        stdout
+            .lines()
+            .skip_while(|l| !l.contains("frequency (cm^-1)"))
+            .skip(1)
+            .map_while(|l| {
+                let mut it = l.split_whitespace();
+                it.next()?.parse::<usize>().ok()?;
+                it.next()?.parse::<f64>().ok()
+            })
+            .collect()
+    };
+    let an = run_ok("freq_analytic", &toml("analytic"));
+    let fd = run_ok("freq_fd", &toml("fd"));
+    assert!(an.contains("Hessian           = analytic"), "{an}");
+    assert!(fd.contains("Hessian           = finite-difference"), "{fd}");
+    assert_eq!(value(&an, "gradient evals"), 0.0);
+    assert_eq!(value(&fd, "gradient evals"), 18.0);
+    let (wa, wf) = (modes(&an), modes(&fd));
+    assert_eq!(wa.len(), 3, "{an}");
+    assert_eq!(wf.len(), 3, "{fd}");
+    for (a, f) in wa.iter().zip(&wf) {
+        assert!((a - f).abs() < 1.0, "analytic {a} vs FD {f} cm^-1");
+    }
+    assert_refused("freq_bad", &toml("numerical"), &["hessian", "numerical"]);
+}

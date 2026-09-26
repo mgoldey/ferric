@@ -5210,7 +5210,9 @@ fn run_frequencies(
     op: Operator,
     rhf_config: &RhfConfig,
 ) {
-    use ferric_scf::frequencies::{harmonic_frequencies, FrequencyConfig, FrequencyReference};
+    use ferric_scf::frequencies::{
+        harmonic_frequencies, FrequencyConfig, FrequencyReference, HessianMethod,
+    };
 
     let reference = match method {
         "rhf" | "ksdft" => FrequencyReference::Rhf,
@@ -5237,6 +5239,12 @@ fn run_frequencies(
         }
         fcfg.delta = d;
     }
+    if let Some(h) = cfg.frequencies.hessian.as_deref() {
+        fcfg.hessian = HessianMethod::parse_config_str(h).unwrap_or_else(|e| {
+            eprintln!("error: [frequencies] hessian: {e}");
+            std::process::exit(1);
+        });
+    }
 
     let res = harmonic_frequencies(ctx, mol, &bs.name, op, rhf_config, &fcfg).unwrap_or_else(|e| {
         eprintln!("error computing frequencies: {e}");
@@ -5245,6 +5253,7 @@ fn run_frequencies(
 
     println!("Harmonic frequencies/{} on {}", bs.name, cfg.molecule.xyz);
     println!("  energy            = {:.10} Hartree", res.energy);
+    println!("  Hessian           = {}", res.hessian_source.label());
     println!("  gradient evals    = {}", res.n_gradient_evaluations);
     println!("  linear molecule   = {}", res.is_linear);
     // The asymmetry is zero in exact arithmetic, so it is a direct read on

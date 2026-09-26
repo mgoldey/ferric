@@ -83,10 +83,22 @@ impl GradEnginePool {
 /// function of (nsh, bounds, max_d): group boundaries derived from it fix the
 /// floating-point association of the reduction, so it must never depend on
 /// the thread count.
-fn screened_quartets(
+pub(crate) fn screened_quartets(
     nsh: usize,
     bounds: &SchwarzBounds,
     max_d: f64,
+) -> Vec<(usize, usize, usize, usize)> {
+    screened_quartets_with(nsh, bounds, max_d, 1e-12)
+}
+
+/// [`screened_quartets`] with an explicit screen: a canonical quartet is kept
+/// unless `Q12·Q34·max_d < thresh` (`max_d` is whatever density weight the
+/// caller screens against, e.g. `max|D|²` for a second-derivative skeleton).
+pub(crate) fn screened_quartets_with(
+    nsh: usize,
+    bounds: &SchwarzBounds,
+    max_d: f64,
+    thresh: f64,
 ) -> Vec<(usize, usize, usize, usize)> {
     let mut quads = Vec::new();
     for s1 in 0..nsh {
@@ -96,7 +108,7 @@ fn screened_quartets(
                 let s4max = if s3 == s1 { s2 } else { s3 };
                 for s4 in 0..=s4max {
                     let b34 = bounds.q[(s3, s4)];
-                    if b12 * b34 * max_d < 1e-12 {
+                    if b12 * b34 * max_d < thresh {
                         continue;
                     }
                     quads.push((s1, s2, s3, s4));
@@ -1491,27 +1503,27 @@ pub fn twoelectron_gradient_bilinear(
 /// dimensions `n` and offsets `o` of the four shells, the atom each shell sits
 /// on, the derivative block size, and which index permutations are distinct.
 #[derive(Clone, Copy)]
-struct QuartetBlock {
+pub(crate) struct QuartetBlock {
     /// AO dimensions (n1,n2,n3,n4).
-    n: [usize; 4],
+    pub(crate) n: [usize; 4],
     /// AO offsets (o1,o2,o3,o4).
-    o: [usize; 4],
+    pub(crate) o: [usize; 4],
     /// Atom index for each of the four shells.
-    atoms: [usize; 4],
+    pub(crate) atoms: [usize; 4],
     /// Number of AO quartets in one derivative block (n1*n2*n3*n4).
-    block_sz: usize,
+    pub(crate) block_sz: usize,
     /// s1 != s2 — the (1,2) pair has a distinct transpose.
-    sym12: bool,
+    pub(crate) sym12: bool,
     /// s3 != s4 — the (3,4) pair has a distinct transpose.
-    sym34: bool,
+    pub(crate) sym34: bool,
     /// (s1,s2) != (s3,s4) — bra and ket are distinct.
-    sym1234: bool,
+    pub(crate) sym1234: bool,
 }
 
 impl QuartetBlock {
     /// Build the bundle for shell quartet (s1,s2,s3,s4) from the prepared-basis
     /// per-shell tables.
-    fn new(
+    pub(crate) fn new(
         dims: &[usize],
         offs: &[usize],
         sh2at: &[usize],
@@ -1571,29 +1583,7 @@ where
                     let sg = o4 + dd;
 
                     // Sum Γ over all equivalent permutations of (μ,ν,λ,σ).
-                    let mut g = gamma(mu, nu, la, sg);
-
-                    if sym12 {
-                        g += gamma(nu, mu, la, sg);
-                    }
-                    if sym34 {
-                        g += gamma(mu, nu, sg, la);
-                    }
-                    if sym12 && sym34 {
-                        g += gamma(nu, mu, sg, la);
-                    }
-                    if sym1234 {
-                        g += gamma(la, sg, mu, nu);
-                        if sym12 {
-                            g += gamma(la, sg, nu, mu);
-                        }
-                        if sym34 {
-                            g += gamma(sg, la, mu, nu);
-                        }
-                        if sym12 && sym34 {
-                            g += gamma(sg, la, nu, mu);
-                        }
-                    }
+                    let g = sum_equivalent_perms(gamma, mu, nu, la, sg, sym12, sym34, sym1234);
 
                     // Accumulate into gradient for each center
                     for center in 0..4 {
@@ -1609,6 +1599,51 @@ where
     }
 }
 
+/// `Σ Γ` over the index permutations of `(μν|λσ)` that a canonical shell
+/// quartet stands for (`sym12`: s1 ≠ s2, `sym34`: s3 ≠ s4, `sym1234`:
+/// (s1,s2) ≠ (s3,s4)). The addition order is fixed; the gradient and the
+/// Hessian skeleton share it.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+pub(crate) fn sum_equivalent_perms<G>(
+    gamma: &G,
+    mu: usize,
+    nu: usize,
+    la: usize,
+    sg: usize,
+    sym12: bool,
+    sym34: bool,
+    sym1234: bool,
+) -> f64
+where
+    G: Fn(usize, usize, usize, usize) -> f64,
+{
+    let mut g = gamma(mu, nu, la, sg);
+
+    if sym12 {
+        g += gamma(nu, mu, la, sg);
+    }
+    if sym34 {
+        g += gamma(mu, nu, sg, la);
+    }
+    if sym12 && sym34 {
+        g += gamma(nu, mu, sg, la);
+    }
+    if sym1234 {
+        g += gamma(la, sg, mu, nu);
+        if sym12 {
+            g += gamma(la, sg, nu, mu);
+        }
+        if sym34 {
+            g += gamma(sg, la, mu, nu);
+        }
+        if sym12 && sym34 {
+            g += gamma(sg, la, nu, mu);
+        }
+    }
+    g
+}
+
 /// RHF-Γ specialization of [`accum_2e_grad_gamma`], kept for the
 /// component-breakdown test harness.
 #[cfg(test)]
@@ -1618,7 +1653,7 @@ fn accum_2e_grad(grad: &mut Array2<f64>, d: &Array2<f64>, dq: &[f64], blk: &Quar
 
 /// Two-particle density matrix element: Γ_μνλσ = 0.5*D_μν*D_λσ - 0.25*D_μλ*D_νσ
 #[inline]
-fn gamma(d: &Array2<f64>, mu: usize, nu: usize, la: usize, sg: usize) -> f64 {
+pub(crate) fn gamma(d: &Array2<f64>, mu: usize, nu: usize, la: usize, sg: usize) -> f64 {
     0.5 * d[(mu, nu)] * d[(la, sg)] - 0.25 * d[(mu, la)] * d[(nu, sg)]
 }
 
