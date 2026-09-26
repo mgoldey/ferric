@@ -1,6 +1,6 @@
 //! Harmonic vibrational frequencies from numerical differentiation of
-//! **analytic** nuclear gradients, and (closed-shell RHF with exact J/K only)
-//! from the analytic Hessian.
+//! **analytic** nuclear gradients, and (RHF and UHF with exact J/K only) from
+//! the analytic Hessian.
 //!
 //! [`harmonic_frequencies`] builds the Hessian by central-differencing the
 //! analytic gradient with respect to each of the 3N nuclear coordinates:
@@ -18,9 +18,12 @@
 //!
 //! [`harmonic_frequencies_analytic`] instead calls
 //! [`crate::hessian::rhf_hessian`] (one SCF, no displacements) and shares steps
-//! 3-5 of the pipeline below. It covers closed-shell RHF with exact four-centre
-//! J/K and refuses everything else with a typed error before the SCF, so the
-//! finite-difference path stays the general one.
+//! 3-5 of the pipeline below; [`harmonic_frequencies_analytic_uhf`] does the
+//! same with [`crate::hessian::uhf_hessian`]. They cover closed-shell RHF and
+//! UHF (any multiplicity) with exact four-centre J/K and refuse everything
+//! else with a typed error before the SCF, so the finite-difference path stays
+//! the general one. ROHF has no analytic Hessian (nor does PySCF) and always
+//! uses finite differences.
 //!
 //! **Analytic gradients only.** There is deliberately no finite-difference-of-
 //! finite-difference fallback. A method without an analytic gradient produces a
@@ -153,10 +156,12 @@ impl FrequencyReference {
 /// How [`harmonic_frequencies`] obtains the Cartesian Hessian.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HessianMethod {
-    /// The analytic RHF Hessian ([`crate::hessian`]) when
-    /// [`crate::hessian::analytic_hessian_available`] accepts the system,
-    /// otherwise central differences of the analytic gradient. An error inside
-    /// the analytic path is returned, never retried with finite differences.
+    /// The analytic RHF or UHF Hessian ([`crate::hessian`]) when
+    /// [`crate::hessian::analytic_hessian_available`] (RHF) or
+    /// [`crate::hessian::analytic_uhf_hessian_available`] (UHF) accepts the
+    /// system, otherwise central differences of the analytic gradient (always
+    /// for ROHF). An error inside the analytic path is returned, never retried
+    /// with finite differences.
     #[default]
     Auto,
     /// The analytic Hessian; an unsupported configuration is an error.
@@ -183,7 +188,7 @@ impl HessianMethod {
 /// Which construction produced a [`FrequencyResult`]'s Hessian.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HessianSource {
-    /// The analytic RHF Hessian.
+    /// The analytic RHF or UHF Hessian.
     Analytic,
     /// Central differences of the analytic gradient.
     FiniteDifference,
@@ -283,8 +288,9 @@ impl FrequencyResult {
 /// Compute harmonic vibrational frequencies.
 ///
 /// With `freq_config.hessian` = [`HessianMethod::Auto`] (the default) the
-/// Hessian is analytic for a closed-shell RHF system the analytic path supports
-/// ([`crate::hessian::analytic_hessian_available`]): one SCF plus CPHF. Every
+/// Hessian is analytic for an RHF or UHF system the analytic path supports
+/// ([`crate::hessian::analytic_hessian_available`],
+/// [`crate::hessian::analytic_uhf_hessian_available`]): one SCF plus CPHF. Every
 /// other case central-differences the analytic nuclear gradient, performing
 /// `6N` SCF-plus-gradient evaluations. `FrequencyResult::hessian_source` says
 /// which ran. The input geometry should be a
@@ -410,9 +416,12 @@ fn analytic_if_selected(
     }
     let available = analytic_available(mol, basis_name, op, scf_config, freq_config.reference);
     match (available, freq_config.hessian) {
-        (Ok(()), _) => {
-            harmonic_frequencies_analytic(ctx, mol, basis_name, op, scf_config).map(Some)
-        }
+        (Ok(()), _) => match freq_config.reference {
+            FrequencyReference::Uhf => {
+                harmonic_frequencies_analytic_uhf(ctx, mol, basis_name, op, scf_config).map(Some)
+            }
+            _ => harmonic_frequencies_analytic(ctx, mol, basis_name, op, scf_config).map(Some),
+        },
         (Err(e), HessianMethod::Analytic) => Err(e),
         (Err(_), _) => Ok(None),
     }
@@ -425,14 +434,18 @@ fn analytic_available(
     scf_config: &RhfConfig,
     reference: FrequencyReference,
 ) -> Result<(), FerricError> {
-    if reference != FrequencyReference::Rhf {
+    if reference == FrequencyReference::Rohf {
         return Err(FerricError::General(format!(
-            "analytic Hessian: only an RHF reference is supported, got {}",
+            "analytic Hessian: no analytic {} Hessian is implemented (PySCF has none \
+             either); ROHF frequencies use finite differences of the analytic gradient",
             reference.label()
         )));
     }
     let bs = ferric_core::basis::bundled(basis_name)?;
     let prep = PreparedBasis::new(mol, &bs)?;
+    if reference == FrequencyReference::Uhf {
+        return crate::hessian::analytic_uhf_hessian_available(mol, &prep, op, scf_config);
+    }
     crate::hessian::analytic_hessian_available(mol, &prep, op, scf_config)
 }
 
@@ -466,6 +479,33 @@ pub fn harmonic_frequencies_analytic(
     let bounds = SchwarzBounds::compute(op, &prep)?;
     let res = solve_rhf(ctx, mol, &prep, op, &bounds, scf_config)?;
     crate::hessian::analytic_frequencies(ctx, mol, &prep, op, &bounds, &res, scf_config)
+}
+
+/// Harmonic frequencies from the ANALYTIC UHF Hessian
+/// ([`crate::hessian::uhf_hessian`]): [`harmonic_frequencies_analytic`] with
+/// one [`solve_uhf`] (any multiplicity) in place of the RHF SCF. Any
+/// configuration the UHF Hessian does not support is refused by
+/// [`crate::hessian::uhf_hessian_preflight`] BEFORE the SCF runs.
+pub fn harmonic_frequencies_analytic_uhf(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    basis_name: &str,
+    op: Operator,
+    scf_config: &RhfConfig,
+) -> Result<FrequencyResult, FerricError> {
+    let natoms = mol.atoms.len();
+    if natoms < 2 {
+        return Err(FerricError::General(format!(
+            "harmonic frequencies require at least 2 atoms, got {natoms}"
+        )));
+    }
+    crate::hessian::uhf_hessian_preflight(op, scf_config)?;
+    atom_masses(mol)?;
+    let bs = ferric_core::basis::bundled(basis_name)?;
+    let prep = PreparedBasis::new(mol, &bs)?;
+    let bounds = SchwarzBounds::compute(op, &prep)?;
+    let res = solve_uhf(ctx, mol, &prep, &bounds, scf_config)?;
+    crate::hessian::analytic_frequencies_uhf(ctx, mol, &prep, op, &bounds, &res, scf_config)
 }
 
 /// Mass-weight, project out translations/rotations, diagonalize, and convert to

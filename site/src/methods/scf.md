@@ -121,12 +121,14 @@ and, for DFT, against PySCF. RI-MP2 also has an analytic gradient.
 `ferric.run_frequencies(mol, basis_name, reference="rhf", xc=...)`. Mass-weighted,
 translations and rotations projected out. The Hessian is:
 
-- **Analytic** for closed-shell RHF with exact four-centre J/K, no ECP, no
-  external potential or solvent, and a basis up to f functions: one SCF plus a
-  coupled-perturbed HF solve per nuclear coordinate. This needs a libint2 with
-  second derivatives (the build `scripts/install-libint.sh` installs).
+- **Analytic** for closed-shell RHF, and for UHF of any multiplicity, with
+  exact four-centre J/K, no ECP, no external potential or solvent, and a basis
+  up to f functions: one SCF plus a coupled-perturbed HF solve per nuclear
+  coordinate (for UHF, one solve coupling the α and β orbital rotations). This
+  needs a libint2 with second derivatives (the build
+  `scripts/install-libint.sh` installs).
 - **Central finite differences of the analytic gradient** everywhere else
-  (UHF, ROHF, KS-DFT, RI J/K, ECPs, embedding, g functions): 6N gradient
+  (ROHF, KS-DFT, RI J/K, ECPs, embedding, g functions): 6N gradient
   evaluations. The displacement `[frequencies] delta` (default 5e-4 Bohr) is a
   real accuracy knob; the printed Hessian asymmetry, zero in exact arithmetic,
   is the check that it and the SCF thresholds suit the system.

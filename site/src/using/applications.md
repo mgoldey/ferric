@@ -234,9 +234,9 @@ the claim.
 
 * **Gas-phase cluster models.** There's no enzyme environment unless you add
   QM/MM (golden path B, and [QM/MM](qmmm.md)).
-* **Analytic Hessians for closed-shell RHF only.** RHF frequencies use the
-  analytic Hessian; KS-DFT, open-shell and embedded frequencies, and every TS
-  search, use finite differences of analytic gradients (Step 5). That costs 6N
+* **Analytic Hessians for RHF and UHF only.** RHF and UHF frequencies use the
+  analytic Hessian; ROHF, KS-DFT and embedded frequencies, and every TS search,
+  use finite differences of analytic gradients (Step 5). That costs 6N
   gradients per Hessian, so a C10 cation Hessian is hundreds of gradient
   evaluations. Without Step 5 you
   have intermediate energies, not barriers, and *kcat depends on barriers*.
