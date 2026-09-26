@@ -1660,7 +1660,7 @@ pub(crate) fn gamma(d: &Array2<f64>, mu: usize, nu: usize, la: usize, sg: usize)
 /// UHF two-particle density: Γ_μνλσ = 0.5*D_μν D_λσ − 0.5*(D_α,μλ D_α,νσ + D_β,μλ D_β,νσ)
 /// where D = D_α + D_β.
 #[inline]
-fn gamma_uhf(
+pub(crate) fn gamma_uhf(
     d: &Array2<f64>,
     da: &Array2<f64>,
     db: &Array2<f64>,

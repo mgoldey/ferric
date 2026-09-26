@@ -1,61 +1,76 @@
-//! VALIDATION tier — VALIDATION.md row "Analytic RHF Hessian".
+//! VALIDATION tier — VALIDATION.md row "Analytic UHF Hessian".
 //!
 //! Runs only in the weekly `validation` CI job (and on demand):
 //!
 //! ```text
-//! OPENBLAS_NUM_THREADS=1 cargo nextest run -p ferric-scf --test validation_rhf_hessian \
+//! OPENBLAS_NUM_THREADS=1 cargo nextest run -p ferric-scf --test validation_uhf_hessian \
 //!     --run-ignored only -E 'binary(/^validation_/)'
 //! ```
 //!
 //! # What ferric computes (read from `crates/ferric-scf/src/hessian.rs`)
 //!
-//! `rhf_hessian_parts` assembles the closed-shell RHF Hessian with exact
-//! four-centre J/K from libint2 second-derivative integrals, term by term as
-//! PySCF's `hessian/rhf.py` does: nuclear repulsion, `D·h''` (kinetic +
-//! nuclear attraction including the nuclear-centre derivatives), `−W·S''`,
-//! `Γ·ERI''` (the frozen-density "skeleton"), plus the CPHF orbital response
-//! solved by preconditioned conjugate gradient. `analytic_frequencies` feeds
-//! the total through the same mass-weighting/projection as the FD path.
+//! `uhf_hessian_parts` assembles the UHF Hessian with exact four-centre J/K
+//! from libint2 second-derivative integrals, term by term as PySCF's
+//! `hessian/uhf.py` does: nuclear repulsion, `D·h''` with `D = D_α + D_β`,
+//! `−W·S''` with the UHF `W`, `Γ·ERI''` with the UHF `Γ` (the frozen-density
+//! "skeleton"), plus the orbital response from ONE coupled α/β CPHF per
+//! nuclear coordinate, solved by preconditioned conjugate gradient.
 //!
-//! # References (`scripts/validation/gen_rhf_hessian.py` → `testdata/reference/validation/rhf_hessian/`)
+//! # References (`scripts/validation/gen_uhf_hessian.py` → `testdata/reference/validation/uhf_hessian/`)
 //!
-//! PySCF fed ferric's own basis JSON, Bohr geometry and masses:
+//! PySCF fed ferric's own basis JSON, Bohr geometry and masses, on the lowest
+//! internally STABLE UHF state (`common.run_open_shell`):
 //!
 //! * `hessian_analytic` — `mf.Hessian().kernel()`, CPHF tolerance 1e-12,
 //!   symmetrized (raw asymmetry recorded). The like-for-like reference.
-//! * `hessian_skeleton` — `partial_hess_elec + hess_nuc`: terms 1–4 alone, so
-//!   a miss can be localized to skeleton vs response.
-//! * `hessian_fd` — central FD (1e-3 Bohr) of PySCF's analytic gradient:
-//!   PySCF's own independent check of its analytic Hessian.
+//! * `hessian_skeleton` — `partial_hess_elec + hess_nuc`: terms 1–4 alone.
+//! * `hessian_fd` — central FD (1e-3 Bohr) of PySCF's analytic UHF gradient,
+//!   displaced SCFs seeded from the centre densities.
 //! * Frequencies: `harmonic_analysis(mass = ferric's masses)`.
 //!
-//! Systems: H2O, NH3, CH2O × cc-pVDZ; off-C2v H2O × def2-SVP.
+//! Systems: OH ²Π, NH₂ ²B₁, CH₂ ³B₁ × cc-pVDZ.
+//!
+//! # OH: a degenerate state
+//!
+//! The singly-occupied π orbital of linear ²Π OH may point at any angle about
+//! the bond (z) axis: rotating it is an exact zero mode of the UHF orbital
+//! Hessian (PySCF's λ_min is 5e-12 here), so ferric and PySCF may converge to
+//! the same state rotated by an arbitrary angle. The TOTAL Hessian is
+//! independent of that angle (PySCF's own xx and yy blocks agree to 3e-7), but
+//! the skeleton's perpendicular blocks are not (PySCF: −0.011 vs 0.052
+//! Ha/Bohr²). For OH the skeleton is therefore compared through quantities
+//! invariant under a rotation about z (per atom pair: `zz`, the trace, the
+//! antisymmetric part and the Frobenius norm of the xy sub-block, and the norms
+//! of the xz/yz and zx/zy pairs); the total and the frequencies are compared
+//! element by element as for the other systems. The reference records the
+//! α−β quadrupole (`beta_hole_quadrupole`) for a reviewer who wants the angle.
 //!
 //! # Physics hypothesis vs artifact hypothesis
 //!
 //! * If ferric is right: skeleton and total match PySCF's analytic Hessian at
-//!   the CPHF/SCF convergence floor (~1e-8 Ha/Bohr²), frequencies to ~1e-4
-//!   cm⁻¹; vs PySCF's FD Hessian at that FD's own gap (~5e-7).
-//! * Skeleton wrong (integral order, missing nuclear-centre derivatives, a
-//!   factor in Γ or W): `hessian_skeleton` misses; the total misses by the
-//!   same amount.
-//! * Response wrong: `hessian_skeleton` matches, the total misses.
+//!   the CPHF/SCF convergence floor (~1e-7 Ha/Bohr², OH set by PySCF's own
+//!   raw asymmetry 9.9e-8), frequencies to ~1e-3 cm⁻¹; vs PySCF's FD Hessian
+//!   at that FD's own gap (≤ 1.1e-6).
+//! * Skeleton wrong (Γ or W for D_α ≠ D_β): `hessian_skeleton` misses and the
+//!   total misses by the same amount.
+//! * Response wrong (spin coupling, occupations): the skeleton matches, the
+//!   total misses.
+//! * Different state (ferric on another UHF solution): the SCF energy check
+//!   fails first.
 //! * Harness wrong (geometry constant, basis, masses): nuclear repulsion, AO
-//!   count, SCF energy or the exact mass equality fails first.
+//!   count or the exact mass equality fails first.
 //!
 //! # TOLERANCES
 //!
 //! Each bar sits above ferric's measured maximum, written next to it.
-//! Reference-side floors (PySCF against
-//! itself, measured by the generator 2026-09-25). PySCF's raw analytic
-//! asymmetry is also 2.1e-9 for CH2O and 1.0e-7 for distorted H2O/def2-SVP;
-//! the latter is the floor under that case's 1.6e-7 agreement:
+//! Reference-side floors
+//! (PySCF against itself, generator run 2026-09-25):
 //!
-//! | quantity | h2o/cc-pVDZ | nh3/cc-pVDZ |
-//! |---|---:|---:|
-//! | raw analytic Hessian asymmetry | 8.5e-9 | 4.1e-9 Ha/Bohr² |
-//! | max abs(H_FD − H_analytic) | 3.4e-7 | 4.5e-7 Ha/Bohr² |
-//! | FD vs analytic frequencies | 2.4e-3 | 1.4e-3 cm⁻¹ |
+//! | quantity | oh | nh2 | ch2_triplet |
+//! |---|---:|---:|---:|
+//! | raw analytic Hessian asymmetry | 9.9e-8 | 1.8e-9 | 6.3e-9 Ha/Bohr² |
+//! | max abs(H_FD − H_analytic) | 1.1e-6 | 1.1e-6 | 6.2e-7 Ha/Bohr² |
+//! | FD vs analytic frequencies | 4e-3 | 2e-3 | 1e-3 cm⁻¹ |
 //!
 //! # NEGATIVE CONTROLS (asserted inside the tests)
 //!
@@ -67,10 +82,10 @@
 //!
 //! # MUTATION
 //!
-//! The per-term mutations in `tests/rhf_hessian_fd.rs` apply here too; the
-//! localization is: skeleton mutations fail `hessian_skeleton` AND the total,
-//! the CPHF mutation (`rhs -= &frame.vo(g_oo)` → `+=` in `cphf_rhs`) fails
-//! only the total.
+//! The per-term mutations in `tests/uhf_hessian_fd.rs` apply here too; the
+//! localization is: `gamma_uhf` → `gamma` and the doubled `W` fail
+//! `hessian_skeleton` AND the total; the spin-coupling mutation (cross-spin J
+//! dropped in `TwoElectronBuilder::g_uhf`) fails only the total.
 //!
 //! A missing reference JSON is a HARD failure (panic naming the path).
 
@@ -82,36 +97,37 @@ use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::frequencies::{atom_masses, frequencies_from_cartesian_hessian};
-use ferric_scf::hessian::rhf_hessian_parts;
-use ferric_scf::rhf::{solve_rhf, RhfConfig};
+use ferric_scf::hessian::uhf_hessian_parts;
+use ferric_scf::rhf::RhfConfig;
 use ferric_scf::screening::SchwarzBounds;
+use ferric_scf::uhf::solve_uhf;
 use ndarray::Array2;
 use serde_json::Value;
 
-const ROW_DIR: &str = "testdata/reference/validation/rhf_hessian";
+const ROW_DIR: &str = "testdata/reference/validation/uhf_hessian";
 const MOL_DIR: &str = "testdata/molecules/validation";
-const SYSTEMS: [(&str, &str); 4] = [
-    ("h2o", "cc-pvdz"),
-    ("nh3", "cc-pvdz"),
-    ("ch2o", "cc-pvdz"),
-    ("h2o_distorted", "def2-svp"),
+const SYSTEMS: [(&str, &str); 3] = [
+    ("oh", "cc-pvdz"),
+    ("nh2", "cc-pvdz"),
+    ("ch2_triplet", "cc-pvdz"),
 ];
 
 /// Nuclear repulsion, Ha: geometry/constant like-for-like.
 const TOL_ENUC: f64 = 1e-9;
-/// SCF energy vs reference, Ha (pins geometry, basis, exact J/K).
+/// SCF energy vs reference, Ha (pins geometry, basis, exact J/K AND the state).
 const TOL_ENERGY: f64 = 1e-8;
 /// Total Hessian vs PySCF's analytic Hessian, Ha/Bohr², elementwise.
-/// Measured ≤ 1.6e-7 (distorted H2O/def2-SVP), ≤ 8.2e-8 at cc-pVDZ.
-const TOL_HESS_ANALYTIC: f64 = 1e-6;
-/// Skeleton (terms 1–4) vs PySCF `partial_hess_elec + hess_nuc`, Ha/Bohr².
-/// Measured ≤ 5.9e-10.
+/// Measured ≤ 3.8e-7 (OH; PySCF's own CPHF converges to ~5.7e-7), ≤ 7.7e-8
+/// for NH2 and CH2.
+const TOL_HESS_ANALYTIC: f64 = 2e-6;
+/// Skeleton (terms 1–4) vs PySCF `partial_hess_elec + hess_nuc`, Ha/Bohr²
+/// (OH: rotation invariants). Measured ≤ 1.4e-10.
 const TOL_HESS_SKELETON: f64 = 1e-8;
-/// Total Hessian vs PySCF's FD Hessian, Ha/Bohr². Measured ≤ 1.6e-6 (CH2O), the
-/// reference FD's own floor.
+/// Total Hessian vs PySCF's FD Hessian, Ha/Bohr². Measured ≤ 1.1e-6; the
+/// reference FD's own floor is 1.1e-6.
 const TOL_HESS_FD: f64 = 5e-6;
-/// Frequencies vs PySCF's analytic-Hessian frequencies, cm⁻¹. Measured ≤ 6.9e-4.
-const TOL_FREQ: f64 = 1e-2;
+/// Frequencies vs PySCF's analytic-Hessian frequencies, cm⁻¹. Measured ≤ 1.4e-4.
+const TOL_FREQ: f64 = 2e-3;
 /// A reference ferric must MISS is missed by at least this multiple of the bar.
 const MUST_MISS_FACTOR: f64 = 100.0;
 
@@ -143,7 +159,7 @@ fn reference(system: &str, basis_name: &str) -> Value {
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
         panic!(
             "missing validation reference {} ({e}); regenerate with \
-             scripts/validation/gen_rhf_hessian.py — a missing reference is a failure, never a skip",
+             scripts/validation/gen_uhf_hessian.py — a missing reference is a failure, never a skip",
             path.display()
         )
     });
@@ -218,6 +234,32 @@ fn must_miss_hessian(ctx: &str, what: &str, got: &Array2<f64>, want: &Array2<f64
     );
 }
 
+/// Quantities of a Hessian invariant under one rotation about the z axis
+/// applied to every atom, per ordered atom pair (A, B) with 3×3 block `b`:
+/// `b_zz`, `tr M`, `M_xy − M_yx`, `‖M‖_F` (M = the xy sub-block),
+/// `‖(b_xz, b_yz)‖` and `‖(b_zx, b_zy)‖`, as a column (n_pairs · 6, 1).
+fn z_rotation_invariants(h: &Array2<f64>) -> Array2<f64> {
+    let natoms = h.nrows() / 3;
+    let mut out = Vec::with_capacity(natoms * natoms * 6);
+    for a in 0..natoms {
+        for b in 0..natoms {
+            let e = |i: usize, j: usize| h[(3 * a + i, 3 * b + j)];
+            let frob =
+                (e(0, 0).powi(2) + e(0, 1).powi(2) + e(1, 0).powi(2) + e(1, 1).powi(2)).sqrt();
+            out.extend([
+                e(2, 2),
+                e(0, 0) + e(1, 1),
+                e(0, 1) - e(1, 0),
+                frob,
+                e(0, 2).hypot(e(1, 2)),
+                e(2, 0).hypot(e(2, 1)),
+            ]);
+        }
+    }
+    let n = out.len();
+    Array2::from_shape_vec((n, 1), out).expect("column")
+}
+
 fn scf_config() -> RhfConfig {
     RhfConfig {
         max_iter: 500,
@@ -225,16 +267,23 @@ fn scf_config() -> RhfConfig {
         density_conv: 1e-10,
         df_j_aux: Some(String::new()),
         df_k_aux: Some(String::new()),
+        check_stability: true,
+        scf_stability_descent: true,
         ..Default::default()
     }
+}
+
+fn load_molecule(system: &str, mult: usize) -> Molecule {
+    let xyz = workspace_root().join(MOL_DIR).join(format!("{system}.xyz"));
+    Molecule::load_xyz_with_charge(xyz.to_str().unwrap(), 0, mult)
+        .unwrap_or_else(|e| panic!("{}: {e:?}", xyz.display()))
 }
 
 fn check_system(system: &str, basis_name: &str) {
     let r = reference(system, basis_name);
     let ctx = format!("{system}/{basis_name}");
-    let xyz = workspace_root().join(MOL_DIR).join(format!("{system}.xyz"));
-    let mol = Molecule::load_xyz_with_charge(xyz.to_str().unwrap(), 0, 1)
-        .unwrap_or_else(|e| panic!("{}: {e:?}", xyz.display()));
+    let mult = r["multiplicity"].as_u64().expect("multiplicity") as usize;
+    let mol = load_molecule(system, mult);
 
     // --- harness like-for-like ---------------------------------------------
     let enuc = mol.nuclear_repulsion();
@@ -257,22 +306,22 @@ fn check_system(system: &str, basis_name: &str) {
         "{ctx}: masses differ"
     );
 
-    // --- SCF ------------------------------------------------------------------
+    // --- SCF (same stable state as the reference) ---------------------------
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctxp = ParallelContext::default();
     let cfg = scf_config();
-    let rhf = solve_rhf(&ctxp, &mol, &prep, op, &bounds, &cfg).unwrap();
-    assert!(rhf.converged, "{ctx}: SCF did not converge");
+    let uhf = solve_uhf(&ctxp, &mol, &prep, &bounds, &cfg).unwrap();
+    assert!(uhf.converged, "{ctx}: SCF did not converge");
     let e_ref = num(&r, "/energy", &ctx);
     assert!(
-        (rhf.energy - e_ref).abs() < TOL_ENERGY,
-        "{ctx}: SCF energy {:.12} vs {e_ref:.12}",
-        rhf.energy
+        (uhf.energy - e_ref).abs() < TOL_ENERGY,
+        "{ctx}: SCF energy {:.12} vs {e_ref:.12} — a different UHF state",
+        uhf.energy
     );
 
     // --- Hessian ----------------------------------------------------------------
-    let parts = rhf_hessian_parts(&ctxp, &mol, &prep, op, &bounds, &rhf, &cfg).unwrap();
+    let parts = uhf_hessian_parts(&ctxp, &mol, &prep, op, &bounds, &uhf, &cfg).unwrap();
     eprintln!(
         "{ctx}: CPHF iterations {:?}, max residual {:.2e}, response asymmetry {:.2e}",
         parts.cphf_iterations, parts.cphf_max_residual, parts.response_asymmetry
@@ -280,13 +329,20 @@ fn check_system(system: &str, basis_name: &str) {
     let total = parts.total();
     let skeleton = parts.skeleton();
     let h_an = matrix(&r, "/hessian_analytic", &ctx);
-    check_hessian(
-        &ctx,
-        "skeleton",
-        &skeleton,
-        &matrix(&r, "/hessian_skeleton", &ctx),
-        TOL_HESS_SKELETON,
-    );
+    let skel_ref = matrix(&r, "/hessian_skeleton", &ctx);
+    if r.get("beta_hole_quadrupole").is_some() {
+        // Degenerate π hole (see the module doc): the skeleton is compared
+        // through its z-rotation invariants.
+        check_hessian(
+            &ctx,
+            "skeleton (z-rotation invariants)",
+            &z_rotation_invariants(&skeleton),
+            &z_rotation_invariants(&skel_ref),
+            TOL_HESS_SKELETON,
+        );
+    } else {
+        check_hessian(&ctx, "skeleton", &skeleton, &skel_ref, TOL_HESS_SKELETON);
+    }
     check_hessian(&ctx, "analytic", &total, &h_an, TOL_HESS_ANALYTIC);
     check_hessian(
         &ctx,
@@ -328,7 +384,7 @@ fn check_system(system: &str, basis_name: &str) {
 }
 
 #[test]
-#[ignore = "validation: RHF analytic Hessian vs PySCF"]
+#[ignore = "validation: UHF analytic Hessian vs PySCF"]
 fn all_reference_files_present() {
     for (system, basis_name) in SYSTEMS {
         let r = reference(system, basis_name);
@@ -338,25 +394,19 @@ fn all_reference_files_present() {
 }
 
 #[test]
-#[ignore = "validation: RHF analytic Hessian vs PySCF"]
-fn h2o_ccpvdz() {
-    check_system("h2o", "cc-pvdz");
+#[ignore = "validation: UHF analytic Hessian vs PySCF"]
+fn oh_ccpvdz() {
+    check_system("oh", "cc-pvdz");
 }
 
 #[test]
-#[ignore = "validation: RHF analytic Hessian vs PySCF"]
-fn nh3_ccpvdz() {
-    check_system("nh3", "cc-pvdz");
+#[ignore = "validation: UHF analytic Hessian vs PySCF"]
+fn nh2_ccpvdz() {
+    check_system("nh2", "cc-pvdz");
 }
 
 #[test]
-#[ignore = "validation: RHF analytic Hessian vs PySCF"]
-fn ch2o_ccpvdz() {
-    check_system("ch2o", "cc-pvdz");
-}
-
-#[test]
-#[ignore = "validation: RHF analytic Hessian vs PySCF"]
-fn h2o_distorted_def2svp() {
-    check_system("h2o_distorted", "def2-svp");
+#[ignore = "validation: UHF analytic Hessian vs PySCF"]
+fn ch2_triplet_ccpvdz() {
+    check_system("ch2_triplet", "cc-pvdz");
 }
