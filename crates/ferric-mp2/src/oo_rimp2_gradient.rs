@@ -67,7 +67,7 @@ use ferric_integrals::oneelectron;
 use ferric_integrals::operator::Operator;
 use ferric_integrals::threeindex;
 use ferric_scf::gradient::{
-    oneelectron_gradient, overlap_deriv_contract, twoelectron_gradient_bilinear,
+    ecp_gradient, oneelectron_gradient, overlap_deriv_contract, twoelectron_gradient_bilinear,
 };
 use ferric_scf::rhf::build_jk;
 use ferric_scf::screening::SchwarzBounds;
@@ -98,8 +98,16 @@ pub fn oo_ri_mp2_gradient(
     // The z = 0 formula below needs the SEMICANONICAL frame; see
     // `semicanonical_frame`.
     let ctx = ferric_core::parallel::ParallelContext::default();
-    let (f_ao, c_sc, eps_sc) =
-        semicanonical_frame(&ctx, obs, bounds, &result.mos, nocc_total, first_occ, ext)?;
+    let (f_ao, c_sc, eps_sc) = semicanonical_frame(
+        &ctx,
+        mol,
+        obs,
+        bounds,
+        &result.mos,
+        nocc_total,
+        first_occ,
+        ext,
+    )?;
     let c = &c_sc;
     let eps = &eps_sc;
 
@@ -184,6 +192,12 @@ pub fn oo_ri_mp2_gradient(
     // --- Assemble (same signs as plain RI-MP2's mp2_relaxed_lagrangian_gradient).
     let zero_w = Array2::<f64>::zeros((nmo, nmo));
     let mut grad = oneelectron_gradient(mol, obs, &dm1_total_ao, &zero_w, ext)?;
+    // ECP: V_ECP enters the energy as a plain one-electron operator (through
+    // `hcore_ecp_with_external` in `oo_ri_mp2`), so its derivative is
+    // Σ γ dV_ECP/dR with the same total (spin-summed, relaxed — z = 0 here)
+    // 1-PDM as the T/V_nuc terms; `oneelectron_gradient` does not include it.
+    // Returns zeros (zero work) for an all-electron basis.
+    grad += &ecp_gradient(mol, obs, &dm1_total_ao)?;
 
     let w_overlap = &im1 - &zeta_ao - &vhf_s1occ;
     grad += &overlap_deriv_contract(obs, &w_overlap)?;
@@ -230,6 +244,7 @@ pub fn oo_ri_mp2_gradient(
 /// well-formed input it is a no-op up to eigenvector phase.
 fn semicanonical_frame(
     ctx: &ferric_core::parallel::ParallelContext,
+    mol: &Molecule,
     obs: &PreparedBasis,
     bounds: &SchwarzBounds,
     mos: &Array2<f64>,
@@ -238,7 +253,9 @@ fn semicanonical_frame(
     ext: Option<&ExternalPotential>,
 ) -> Result<(Array2<f64>, Array2<f64>, Vec<f64>), FerricError> {
     let nmo = mos.nrows();
-    let h = oneelectron::hcore_with_external(obs, ext)?;
+    // Same hcore as `oo_ri_mp2` (V_ECP included for an ECP basis), so the
+    // Fock matrix here is the one the OO energy was stationary for.
+    let h = oneelectron::hcore_ecp_with_external(obs, mol, obs.basis_set(), ext)?;
     let c_occ = mos.slice(ndarray::s![.., ..nocc_total]);
     let d = c_occ.dot(&c_occ.t()) * 2.0;
     let (mut jv, mut kv) = (Array2::zeros((nmo, nmo)), Array2::zeros((nmo, nmo)));

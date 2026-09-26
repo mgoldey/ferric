@@ -656,7 +656,9 @@ pub fn u_oo_ri_mp2(
     // `oneelectron::hcore(obs)` call -- this was the SAME hcore bug fixed in
     // closed-shell `oo_rimp2::oo_ri_mp2`, present here too (open-shell was
     // named in spec section 3 but not fixed in the first pass).
-    let h = oneelectron::hcore_with_external(obs, ext)?;
+    // V_ECP is folded in for an ECP basis (a no-op, byte-identical, for an
+    // all-electron one) -- see the matching comment in `oo_rimp2::oo_ri_mp2`.
+    let h = oneelectron::hcore_ecp_with_external(obs, mol, obs.basis_set(), ext)?;
     // Classical constant threaded into every compute_uhf_energy call below --
     // see that function's doc comment for why this must be computed ONCE
     // here rather than recomputed from `mol` alone (the second, independent
