@@ -30,7 +30,7 @@ Basis/geometry like-for-like through common.py (ferric's own basis JSON,
 Bohr geometry with ferric's constant). J/K exact (no density fitting).
 
 Run (light; well under a minute):
-    OPENBLAS_NUM_THREADS=1 /home/matt/qc/ferric/.venv/bin/python \\
+    OPENBLAS_NUM_THREADS=1 uv run --no-sync python \\
         scripts/validation/gen_rhf_hessian.py
 Restrict to systems by name:  ... gen_rhf_hessian.py nh3
 """
