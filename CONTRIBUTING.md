@@ -5,13 +5,14 @@
 | Dependency | Version | Notes |
 |------------|---------|-------|
 | Rust       | 1.75+   | stable toolchain |
-| libint2    | 2.7+    | build from the [mpqc4 tarball](https://github.com/evaleev/libint/releases) |
+| libint2    | 2.13.1  | `scripts/install-libint.sh` (prebuilt conda-forge build with second derivatives); a from-source 2.7+ build also links |
 | OpenBLAS   | any     | with LAPACK support (`libopenblas-dev` on Debian/Ubuntu) |
 | libxc      | as packaged | `libxc-dev` on Debian/Ubuntu (CI builds against Ubuntu 22.04's) |
 | cmake      | 3.14+   | needed to build the vendored libecpint |
 | Python     | 3.10+   | matches `requires-python` in `pyproject.toml`; needed for `uv`, pytest, and the Python bindings |
 
-**Non-standard install locations.** If libint2 is not in `$HOME/.local` or
+**Non-standard install locations.** If libint2 is not in
+`$HOME/.local/libint2-2.13.1` (the installer's default), `$HOME/.local` or
 `/usr/local`, set `LIBINT2_PREFIX` before building. libxc is linked by name
 (`crates/ferric-dft/build.rs` emits only `rustc-link-lib=xc`), so a libxc
 outside the default linker path goes on `LIBRARY_PATH` (or

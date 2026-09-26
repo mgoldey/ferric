@@ -7,7 +7,15 @@ fn main() {
         Err(_) => {
             let home = std::env::var("HOME")
                 .expect("$HOME must be set to locate libint2; set LIBINT2_PREFIX to override");
-            format!("{home}/.local")
+            // scripts/install-libint.sh's default prefix first, then ~/.local
+            // (a from-source libint2 install). Not the reverse: an old static
+            // libint2.a in ~/.local would otherwise shadow a newer install.
+            let installer = format!("{home}/.local/libint2-2.13.1");
+            if std::path::Path::new(&format!("{installer}/include/libint2.hpp")).exists() {
+                installer
+            } else {
+                format!("{home}/.local")
+            }
         }
     };
 
@@ -58,7 +66,16 @@ fn main() {
     // libint2 + BLAS link
     println!("cargo:rustc-link-search=native={local_prefix}/lib");
     println!("cargo:rustc-link-search=native=/usr/local/lib");
-    println!("cargo:rustc-link-lib=static=int2");
+    // A prefix with libint2.a (a from-source build, e.g. the old mpqc4
+    // tarball) links statically. scripts/install-libint.sh installs the
+    // conda-forge 2.13.1 build, which ships libint2.so only; that script sets
+    // its SONAME to the absolute path, so binaries find it at run time without
+    // an rpath.
+    if std::path::Path::new(&format!("{local_prefix}/lib/libint2.a")).exists() {
+        println!("cargo:rustc-link-lib=static=int2");
+    } else {
+        println!("cargo:rustc-link-lib=dylib=int2");
+    }
     println!("cargo:rustc-link-lib=dylib=openblas");
     println!("cargo:rustc-link-lib=dylib=stdc++");
 
@@ -71,6 +88,7 @@ fn main() {
     println!("cargo:rustc-link-lib=static=Faddeeva");
 
     println!("cargo:rerun-if-env-changed=LIBINT2_PREFIX");
+    println!("cargo:rerun-if-changed={local_prefix}/include/libint2/config.h");
     println!("cargo:rerun-if-changed=shim/shim.h");
     println!("cargo:rerun-if-changed=shim/shim.cc");
     println!("cargo:rerun-if-changed=shim/ecp_shim.h");
