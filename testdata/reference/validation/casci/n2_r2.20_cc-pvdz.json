@@ -1,0 +1,144 @@
+{
+  "row": "CAS-CI",
+  "system": "n2_r2.20",
+  "basis": "cc-pvdz",
+  "charge": 0,
+  "multiplicity": 1,
+  "nao": 28,
+  "nelectron": 14,
+  "nuclear_repulsion": 11.786219697763636,
+  "rhf": {
+    "energy": -108.23268619692894,
+    "symmetry_adapted_energy": -108.23268619692901,
+    "point_group": "Dooh",
+    "irrep_nelec": {
+      "A1g": 6,
+      "E1gx": 0,
+      "E1gy": 0,
+      "A1u": 4,
+      "E1uy": 2,
+      "E1ux": 2,
+      "E2gx": 0,
+      "E2gy": 0,
+      "E2uy": 0,
+      "E2ux": 0
+    },
+    "internal_stable": false,
+    "symmetry_broken_rhf_energy": -108.42455060002933,
+    "note": "internally unstable toward a symmetry-broken RHF (energy recorded); the CAS-CI uses the symmetric RHF, which ferric and PySCF both reach from their default guesses"
+  },
+  "casci": {
+    "ncore": 4,
+    "active_start": 4,
+    "n_active": 6,
+    "n_elec_active": [
+      3,
+      3
+    ],
+    "n_determinants": 400,
+    "e_total": -108.73412785484932,
+    "e_active": -9.065020655720375,
+    "e_core": -99.66910719912897,
+    "e_corr_vs_rhf": -0.5014416579203811,
+    "s_squared": 2.0033122688087595e-27,
+    "window_mo_energies": [
+      -0.9820078992145729,
+      -0.4445472546567437,
+      -0.3802071673854807,
+      -0.3802071673854715,
+      -0.10507313835396258,
+      -0.10507313835396162,
+      -0.011530692815069798,
+      0.8705699128075065
+    ],
+    "lower_edge_gap": 0.5374606445578292,
+    "upper_edge_gap": 0.8821006056225763,
+    "dense_anchor_diff": -4.263256414560601e-14,
+    "max_abs_ci_coeff": 0.4660380820496996
+  },
+  "casci_shifted": {
+    "ncore": 3,
+    "active_start": 3,
+    "n_active": 6,
+    "n_elec_active": [
+      4,
+      4
+    ],
+    "n_determinants": 225,
+    "e_total": -108.60456406785286,
+    "e_active": -16.238811350052586,
+    "e_core": -92.3657527178003,
+    "e_corr_vs_rhf": -0.37187787092392455,
+    "s_squared": 1.887603721826811e-26,
+    "window_mo_energies": [
+      -1.0715530020717905,
+      -0.9820078992145729,
+      -0.4445472546567437,
+      -0.3802071673854807,
+      -0.3802071673854715,
+      -0.10507313835396258,
+      -0.10507313835396162,
+      -0.011530692815069798
+    ],
+    "lower_edge_gap": 0.08954510285721762,
+    "upper_edge_gap": 0.09354244553889182,
+    "dense_anchor_diff": -5.684341886080802e-14,
+    "max_abs_ci_coeff": 0.5478257741520018
+  },
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "scf": "scf.RHF exact integrals + stability(internal=True) loop",
+      "casci": "mcscf.CASCI(mf, ncas, nelecas), default window ncore=(N-nelecas)/2, fcisolver=fci.direct_spin1 (lowest Ms=0 root)",
+      "anchor": "dense fci.direct_spin1.pspace over all determinants + numpy eigvalsh",
+      "fci_conv_tol": 1e-12,
+      "numpy": "1.26.4"
+    },
+    "grid": "none",
+    "aux_basis": "none",
+    "frozen_core": {
+      "casci": "4 inactive doubly occupied (the CAS core)",
+      "casci_shifted": "3 inactive doubly occupied"
+    },
+    "scf_convergence": {
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-09
+    },
+    "stability": {
+      "rhf_internal_stable": false
+    },
+    "basis": "cc-pvdz",
+    "basis_json": "crates/ferric-core/src/basis/bundled/cc-pvdz.json",
+    "basis_sha256": "ae48fcca0d533addd60dbd48490153130e697121767ba607e1d70f3b341eeef7",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/n2_r2.20.xyz",
+    "geometry_xyz_sha256": "8fc2dd40165ce379117ffabefb331c1663c7af8f0744e898d2edfe217052e160",
+    "geometry_bohr": [
+      [
+        "N",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "N",
+        0.0,
+        0.0,
+        4.157397474043137
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_casci.py",
+    "git_head": "47c7ad2710b1196426104f5c65e7e8ba8480aa68",
+    "generated_utc": "2026-09-26T01:13:21+00:00",
+    "basis_self_check": {
+      "nao": 28,
+      "replica_self_overlap_max_dev": 2.220446049250313e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 28,
+      "diag_skipped_cartesian": 0
+    }
+  }
+}

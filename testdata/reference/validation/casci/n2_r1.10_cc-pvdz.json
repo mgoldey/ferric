@@ -1,0 +1,142 @@
+{
+  "row": "CAS-CI",
+  "system": "n2_r1.10",
+  "basis": "cc-pvdz",
+  "charge": 0,
+  "multiplicity": 1,
+  "nao": 28,
+  "nelectron": 14,
+  "nuclear_repulsion": 23.572439395527272,
+  "rhf": {
+    "energy": -108.95379624089101,
+    "symmetry_adapted_energy": -108.95379624089101,
+    "point_group": "Dooh",
+    "irrep_nelec": {
+      "A1g": 6,
+      "E1gx": 0,
+      "E1gy": 0,
+      "A1u": 4,
+      "E1uy": 2,
+      "E1ux": 2,
+      "E2gx": 0,
+      "E2gy": 0,
+      "E2uy": 0,
+      "E2ux": 0
+    },
+    "internal_stable": true
+  },
+  "casci": {
+    "ncore": 4,
+    "active_start": 4,
+    "n_active": 6,
+    "n_elec_active": [
+      3,
+      3
+    ],
+    "n_determinants": 400,
+    "e_total": -109.02190498631322,
+    "e_active": -11.46451057574815,
+    "e_core": -97.5573944105651,
+    "e_corr_vs_rhf": -0.06810874542220802,
+    "s_squared": 8.692877396986228e-30,
+    "window_mo_energies": [
+      -0.7748505265619894,
+      -0.6260264947996288,
+      -0.607175345124889,
+      -0.6071753451248869,
+      0.17442756632483308,
+      0.1744275663248361,
+      0.5938933321943596,
+      0.8209464313221679
+    ],
+    "lower_edge_gap": 0.1488240317623606,
+    "upper_edge_gap": 0.22705309912780836,
+    "dense_anchor_diff": -1.4210854715202004e-14,
+    "max_abs_ci_coeff": 0.9728384310876537
+  },
+  "casci_shifted": {
+    "ncore": 3,
+    "active_start": 3,
+    "n_active": 6,
+    "n_elec_active": [
+      4,
+      4
+    ],
+    "n_determinants": 225,
+    "e_total": -109.0266817757873,
+    "e_active": -19.070680121784306,
+    "e_core": -89.95600165400296,
+    "e_corr_vs_rhf": -0.07288553489628669,
+    "s_squared": 1.4033659995992454e-30,
+    "window_mo_energies": [
+      -1.4694965708304784,
+      -0.7748505265619894,
+      -0.6260264947996288,
+      -0.607175345124889,
+      -0.6071753451248869,
+      0.17442756632483308,
+      0.1744275663248361,
+      0.5938933321943596
+    ],
+    "lower_edge_gap": 0.694646044268489,
+    "upper_edge_gap": 0.41946576586952344,
+    "dense_anchor_diff": 0.0,
+    "max_abs_ci_coeff": 0.971563634259362
+  },
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "scf": "scf.RHF exact integrals + stability(internal=True) loop",
+      "casci": "mcscf.CASCI(mf, ncas, nelecas), default window ncore=(N-nelecas)/2, fcisolver=fci.direct_spin1 (lowest Ms=0 root)",
+      "anchor": "dense fci.direct_spin1.pspace over all determinants + numpy eigvalsh",
+      "fci_conv_tol": 1e-12,
+      "numpy": "1.26.4"
+    },
+    "grid": "none",
+    "aux_basis": "none",
+    "frozen_core": {
+      "casci": "4 inactive doubly occupied (the CAS core)",
+      "casci_shifted": "3 inactive doubly occupied"
+    },
+    "scf_convergence": {
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-09
+    },
+    "stability": {
+      "rhf_internal_stable": true
+    },
+    "basis": "cc-pvdz",
+    "basis_json": "crates/ferric-core/src/basis/bundled/cc-pvdz.json",
+    "basis_sha256": "ae48fcca0d533addd60dbd48490153130e697121767ba607e1d70f3b341eeef7",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/n2_r1.10.xyz",
+    "geometry_xyz_sha256": "3a358397c75a44bf7a4aba6a070419f7112d7c7f3067fbe3769ae67764e27c29",
+    "geometry_bohr": [
+      [
+        "N",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "N",
+        0.0,
+        0.0,
+        2.0786987370215684
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_casci.py",
+    "git_head": "47c7ad2710b1196426104f5c65e7e8ba8480aa68",
+    "generated_utc": "2026-09-26T01:13:20+00:00",
+    "basis_self_check": {
+      "nao": 28,
+      "replica_self_overlap_max_dev": 2.220446049250313e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 28,
+      "diag_skipped_cartesian": 0
+    }
+  }
+}

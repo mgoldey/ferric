@@ -15,3 +15,4 @@ ndarray = { workspace = true }
 ndarray-linalg = { workspace = true }
 
 [dev-dependencies]
+serde_json = { workspace = true }
