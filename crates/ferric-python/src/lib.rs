@@ -2731,10 +2731,11 @@ impl PyFrequencyResult {
 /// Harmonic vibrational frequencies, mass-weighted with translations and
 /// rotations projected out.
 ///
-/// `hessian`: "auto" (default) uses the analytic RHF Hessian for closed-shell
-/// RHF with exact J/K, no ECP and a basis up to f functions (one SCF plus CPHF),
-/// and a finite difference of the ANALYTIC gradient (6N gradient evaluations)
-/// otherwise; "analytic" raises if the analytic Hessian does not apply; "fd"
+/// `hessian`: "auto" (default) uses the analytic Hessian for closed-shell RHF
+/// or UHF (any multiplicity) with exact J/K, no ECP and a basis up to f
+/// functions (one SCF plus CPHF), and a finite difference of the ANALYTIC
+/// gradient (6N gradient evaluations) otherwise, including every ROHF and KS
+/// reference; "analytic" raises if the analytic Hessian does not apply; "fd"
 /// always differences gradients. `.hessian_source` says which ran.
 ///
 /// `reference` selects the SCF: "rhf" (default), "uhf", or "rohf". Setting

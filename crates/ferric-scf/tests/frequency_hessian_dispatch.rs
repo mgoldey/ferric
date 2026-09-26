@@ -1,8 +1,10 @@
 //! Which Hessian `harmonic_frequencies` builds (`FrequencyConfig::hessian`).
 //!
 //! `Auto` must take the analytic RHF Hessian exactly where
-//! `analytic_hessian_available` accepts the system and fall back to finite
-//! differences everywhere else; `Analytic` must refuse instead of falling back.
+//! `analytic_hessian_available` accepts the system, the analytic UHF Hessian
+//! for a UHF reference where `analytic_uhf_hessian_available` accepts it, and
+//! fall back to finite differences everywhere else (always for ROHF, which has
+//! no analytic Hessian); `Analytic` must refuse instead of falling back.
 //! The probe is checked on its own for the cases that need no SCF: an ECP
 //! molecule, and a basis with g functions (above the 4-centre second-derivative
 //! angular momentum of the conda-forge libint2 2.13.1 build, f).
@@ -127,22 +129,70 @@ fn auto_falls_back_for_unsupported_configurations() {
     }
 }
 
-#[test]
-fn analytic_refuses_an_open_shell_reference() {
-    let oh = Molecule::parse_xyz("2\nOH\nO 0 0 0\nH 0 0 0.97\n", 0, 2).unwrap();
-    let r = harmonic_frequencies(
+/// NH2 ²B1 at the CCCBDB experimental geometry.
+fn nh2() -> Molecule {
+    Molecule::parse_xyz(
+        "3\nNH2\nN 0.0 0.0 0.0\n\
+         H 0.0 0.803611 -0.634654\nH 0.0 -0.803611 -0.634654\n",
+        0,
+        2,
+    )
+    .unwrap()
+}
+
+fn open_shell(
+    reference: FrequencyReference,
+    hessian: HessianMethod,
+) -> Result<ferric_scf::frequencies::FrequencyResult, ferric_core::FerricError> {
+    harmonic_frequencies(
         &ParallelContext::default(),
-        &oh,
+        &nh2(),
         "sto-3g",
         Operator::coulomb(),
         &RhfConfig::default(),
         &FrequencyConfig {
-            reference: FrequencyReference::Uhf,
-            hessian: HessianMethod::Analytic,
+            reference,
+            hessian,
             ..Default::default()
         },
+    )
+}
+
+#[test]
+fn auto_is_analytic_for_a_uhf_doublet_and_matches_fd() {
+    if !has_deriv2() {
+        return;
+    }
+    let an = open_shell(FrequencyReference::Uhf, HessianMethod::Auto).expect("UHF auto");
+    assert_eq!(an.hessian_source, HessianSource::Analytic);
+    assert_eq!(an.n_gradient_evaluations, 0);
+    let fd = open_shell(FrequencyReference::Uhf, HessianMethod::FiniteDifference).expect("UHF FD");
+    assert_eq!(fd.hessian_source, HessianSource::FiniteDifference);
+    assert_eq!(fd.n_gradient_evaluations, 18);
+    let dev = an
+        .frequencies
+        .iter()
+        .zip(&fd.frequencies)
+        .fold(0.0f64, |m, (a, b)| m.max((a - b).abs()));
+    eprintln!("NH2/STO-3G UHF analytic vs FD frequencies: max |d| {dev:.3e} cm^-1");
+    assert!(
+        dev < 1.0,
+        "UHF analytic and FD frequencies differ by {dev} cm^-1"
     );
-    assert!(r.is_err(), "UHF with Analytic must be refused");
+}
+
+#[test]
+fn rohf_stays_finite_difference_and_analytic_refuses_it() {
+    let auto = open_shell(FrequencyReference::Rohf, HessianMethod::Auto).expect("ROHF auto");
+    assert_eq!(auto.hessian_source, HessianSource::FiniteDifference);
+    assert_eq!(auto.n_gradient_evaluations, 18);
+    let err = open_shell(FrequencyReference::Rohf, HessianMethod::Analytic)
+        .expect_err("ROHF with Analytic must be refused");
+    eprintln!("ROHF analytic refusal: {err}");
+    assert!(
+        err.to_string().contains("ROHF"),
+        "refusal does not name ROHF: {err}"
+    );
 }
 
 #[test]
