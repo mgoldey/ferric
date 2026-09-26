@@ -956,6 +956,188 @@ impl Engine {
         }
     }
 
+    /// Create a second-derivative (deriv_order = 2) one-electron engine for
+    /// `op_kind` (`ffi::OP_OVERLAP`, `OP_KINETIC`, `OP_NUCLEAR`). A nuclear
+    /// engine still needs its charges set ([`Self::set_point_charges`]).
+    ///
+    /// Errors (rather than returning a first-derivative engine) when the
+    /// linked libint2 was generated without second derivatives or when the
+    /// basis' max angular momentum exceeds libint2's second-derivative limit.
+    pub fn new_1e_deriv2(
+        op_kind: c_int,
+        prep: &PreparedBasis,
+        precision: f64,
+    ) -> Result<Self, FerricError> {
+        require_deriv2_support()?;
+        // SAFETY: FFI call with valid PreparedBasis metadata. Null-checked below.
+        let handle = unsafe {
+            ffi::scf_engine_create_deriv2(op_kind, 0.0, prep.max_nprim(), prep.max_l(), precision)
+        };
+        if handle.is_null() {
+            return Err(deriv2_engine_unavailable("1e", prep.max_l()));
+        }
+        Ok(Engine {
+            handles: vec![(1.0, handle)],
+            buf: Vec::new(),
+            scratch: Vec::new(),
+            is_terfc: false,
+            is_terf: false,
+        })
+    }
+
+    /// Create a second-derivative 4-center two-electron engine.
+    pub fn new_2e_deriv2(
+        op: Operator,
+        prep: &PreparedBasis,
+        precision: f64,
+    ) -> Result<Self, FerricError> {
+        require_deriv2_support()?;
+        let mut handles = Vec::new();
+        let n_comp = if op.is_composite {
+            op.num_components
+        } else {
+            1
+        };
+        for i in 0..n_comp {
+            let (coeff, kind, omega) = if op.is_composite {
+                (op.c_coeffs[i], op.c_kinds[i], op.c_omegas[i])
+            } else {
+                (1.0, op.kind, op.omega)
+            };
+            let op_kind = operator_kind_to_ffi(kind)?;
+            // SAFETY: FFI call with valid metadata. Null-checked below.
+            let h = unsafe {
+                ffi::scf_engine_create_deriv2(
+                    op_kind,
+                    omega,
+                    prep.max_nprim(),
+                    prep.max_l(),
+                    precision,
+                )
+            };
+            if h.is_null() {
+                // Handles created so far are released by Engine's Drop.
+                let _partial = Engine {
+                    handles,
+                    buf: Vec::new(),
+                    scratch: Vec::new(),
+                    is_terfc: false,
+                    is_terf: false,
+                };
+                return Err(deriv2_engine_unavailable("2e", prep.max_l()));
+            }
+            handles.push((coeff, h));
+        }
+        Ok(Engine {
+            handles,
+            buf: Vec::new(),
+            scratch: Vec::new(),
+            is_terfc: false,
+            is_terf: false,
+        })
+    }
+
+    /// Second derivatives of a 1e shell-pair block.
+    ///
+    /// Returns the `ncoord·(ncoord+1)/2` unique blocks of `n1·n2` doubles,
+    /// block `(i, j)` (i ≤ j) at [`deriv2_pair_index`]`(ncoord, i, j)`, where
+    /// `ncoord = 3·(2 + n_charges)`: coordinates `0..3` are the bra shell's
+    /// centre, `3..6` the ket shell's, `6 + 3·c ..` point charge `c` in the
+    /// order they were set. Pass `n_charges = 0` for overlap/kinetic engines;
+    /// a nuclear engine must be passed the exact number of charges it holds
+    /// (the shim refuses a result that does not fit the buffer sized from it).
+    pub fn compute_1e_deriv2_block(
+        &mut self,
+        prep: &PreparedBasis,
+        sh1: usize,
+        sh2: usize,
+        n_charges: usize,
+    ) -> &[f64] {
+        let n = prep.shell_dims()[sh1] * prep.shell_dims()[sh2];
+        let ncoord = 3 * (2 + n_charges);
+        let total = ncoord * (ncoord + 1) / 2 * n;
+        if self.buf.len() < total {
+            self.buf.resize(total, 0.0);
+        }
+        // SAFETY: valid handle and in-bounds shell indices; `self.buf` holds at
+        // least `total` doubles and that capacity is passed as `out_len`, which
+        // the shim checks before writing.
+        let written = unsafe {
+            ffi::scf_compute_1e_deriv2_block(
+                self.handles[0].1,
+                prep.handle(),
+                sh1 as c_int,
+                sh2 as c_int,
+                self.buf.as_mut_ptr(),
+                total as c_int,
+            )
+        };
+        assert!(
+            written as usize == total,
+            "libint2 1e deriv2 block ({sh1},{sh2}): status/length {written}, expected {total} \
+             (n_charges = {n_charges} must match the engine's point charges)"
+        );
+        &self.buf[..total]
+    }
+
+    /// Second derivatives of a 2e shell quartet: 78 unique blocks of
+    /// `n1·n2·n3·n4` doubles, block `(i, j)` at
+    /// [`deriv2_pair_index`]`(12, i, j)`, coordinate `3·k + xyz` belonging to
+    /// the centre of the `k`-th shell argument. `None` if libint2 screened the
+    /// quartet.
+    pub fn compute_eri_deriv2_quartet(
+        &mut self,
+        prep: &PreparedBasis,
+        sh1: usize,
+        sh2: usize,
+        sh3: usize,
+        sh4: usize,
+    ) -> Option<&[f64]> {
+        let dims = prep.shell_dims();
+        let n = dims[sh1] * dims[sh2] * dims[sh3] * dims[sh4];
+        let total = 78 * n;
+        if self.buf.len() < total {
+            self.buf.resize(total, 0.0);
+        }
+        if self.scratch.len() < total {
+            self.scratch.resize(total, 0.0);
+        }
+        self.buf[..total].fill(0.0);
+        let mut any = false;
+        for &(coeff, h) in &self.handles {
+            // SAFETY: valid handle and in-bounds shell indices; `self.scratch`
+            // holds at least `total` doubles, passed as `out_len`.
+            let written = unsafe {
+                ffi::scf_compute_eri_deriv2_quartet(
+                    h,
+                    prep.handle(),
+                    sh1 as c_int,
+                    sh2 as c_int,
+                    sh3 as c_int,
+                    sh4 as c_int,
+                    self.scratch.as_mut_ptr(),
+                    total as c_int,
+                )
+            };
+            assert!(
+                written == 0 || written as usize == total,
+                "libint2 eri deriv2 quartet ({sh1},{sh2},{sh3},{sh4}): status/length {written}, \
+                 expected {total}"
+            );
+            if written > 0 {
+                any = true;
+                for i in 0..total {
+                    self.buf[i] += coeff * self.scratch[i];
+                }
+            }
+        }
+        if any {
+            Some(&self.buf[..total])
+        } else {
+            None
+        }
+    }
+
     /// Create a 3-center derivative engine: d(P|mu nu)/dR.
     pub fn new_3center_deriv(
         op: Operator,
@@ -1151,6 +1333,69 @@ impl Engine {
             Some(&self.buf[..max_written])
         }
     }
+}
+
+/// `LIBINT2_MAX_DERIV_ORDER` of the linked libint2.
+pub fn libint_max_deriv_order() -> i32 {
+    // SAFETY: pure query of a compile-time constant, no arguments.
+    unsafe { ffi::scf_libint_max_deriv_order() }
+}
+
+fn require_deriv2_support() -> Result<(), FerricError> {
+    let order = libint_max_deriv_order();
+    if order < 2 {
+        return Err(FerricError::Libint(format!(
+            "second-derivative integrals need libint2 generated with \
+             LIBINT2_MAX_DERIV_ORDER >= 2; the linked library has {order}"
+        )));
+    }
+    Ok(())
+}
+
+fn deriv2_engine_unavailable(what: &str, max_l: i32) -> FerricError {
+    FerricError::Libint(format!(
+        "{what} second-derivative engine could not be created for max_l = {max_l}: the \
+         linked libint2's second-derivative angular-momentum limit is lower (conda-forge \
+         2.13.1: 3 for 4-centre ERIs and one-body integrals)"
+    ))
+}
+
+/// Index of the unique second-derivative block for the coordinate pair
+/// `(i, j)` among `ncoord` differentiable coordinates, in libint2's result
+/// order. Symmetric in `i`, `j`.
+///
+/// libint2 stores only `i ≤ j` and orders the pairs row-major over the upper
+/// triangle (diagonal included): `(0,0), (0,1), …, (0,n-1), (1,1), (1,2), …`,
+/// so `index(i, j) = i·(2n − i − 1)/2 + j` for `i ≤ j`. Source (libint2
+/// 2.13.1 headers under `$LIBINT2_PREFIX/include/libint2/`):
+/// * `engine.impl.h` lines 368-384: the `upper_triangle_index_ord` lambda
+///   `i * (n2 - i - 1) / 2 + j` with `n2 = 2·ncoord`, which places every 1e
+///   nuclear second-derivative block (lines 407-480 use it for the
+///   operator-centre blocks rebuilt by translational invariance);
+/// * `deriv_map.h` lines 140-170: `generate_multi_index_lookup` enumerates
+///   combinations with repetition in this order (its comment tabulates
+///   `ncoord = 6` and gives `combos[13] = (2,4)`), and `engine.impl.h` lines
+///   2040-2050 use that map to return 4-centre ERI blocks in the CALLER's shell
+///   order after libint2's internal canonical permutation.
+pub fn deriv2_pair_index(ncoord: usize, i: usize, j: usize) -> usize {
+    let (a, b) = if i <= j { (i, j) } else { (j, i) };
+    debug_assert!(
+        b < ncoord,
+        "coordinate {b} out of range for ncoord = {ncoord}"
+    );
+    a * (2 * ncoord - a - 1) / 2 + b
+}
+
+/// The coordinate pairs `(i, j)`, `i ≤ j`, in libint2's second-derivative
+/// block order; `deriv2_pairs(n)[deriv2_pair_index(n, i, j)] == (i, j)`.
+pub fn deriv2_pairs(ncoord: usize) -> Vec<(usize, usize)> {
+    let mut out = Vec::with_capacity(ncoord * (ncoord + 1) / 2);
+    for i in 0..ncoord {
+        for j in i..ncoord {
+            out.push((i, j));
+        }
+    }
+    out
 }
 
 impl Drop for Engine {
@@ -2184,5 +2429,267 @@ mod tests {
             !enabled,
             "FERRIC_SHELLPAIR_CACHE=off must disable the cache on a fresh engine"
         );
+    }
+
+    #[test]
+    fn deriv2_pair_index_matches_libint_upper_triangle_order() {
+        // libint2 deriv_map.h (generate_multi_index_lookup comment, ncoord = 6):
+        //   0  1  2  3  4  5
+        //      6  7  8  9 10
+        //        11 12 13 14
+        //           15 16 17
+        //              18 19
+        //                 20
+        let table: [[usize; 6]; 6] = [
+            [0, 1, 2, 3, 4, 5],
+            [1, 6, 7, 8, 9, 10],
+            [2, 7, 11, 12, 13, 14],
+            [3, 8, 12, 15, 16, 17],
+            [4, 9, 13, 16, 18, 19],
+            [5, 10, 14, 17, 19, 20],
+        ];
+        for (i, row) in table.iter().enumerate() {
+            for (j, &want) in row.iter().enumerate() {
+                assert_eq!(deriv2_pair_index(6, i, j), want, "({i},{j})");
+            }
+        }
+        // The same comment's worked example: combos[13] = (2, 4).
+        assert_eq!(deriv2_pairs(6)[13], (2, 4));
+        // Enumeration and index are inverse for the 1e (6), 1e-nuclear with
+        // three charges (15) and 4-centre ERI (12) coordinate counts.
+        for n in [6usize, 12, 15] {
+            let pairs = deriv2_pairs(n);
+            assert_eq!(pairs.len(), n * (n + 1) / 2);
+            for (k, &(i, j)) in pairs.iter().enumerate() {
+                assert_eq!(deriv2_pair_index(n, i, j), k);
+                assert_eq!(deriv2_pair_index(n, j, i), k);
+            }
+        }
+        assert_eq!(deriv2_pairs(12).len(), 78);
+    }
+
+    fn water_at(basis_name: &str, shift: Option<(usize, usize, f64)>) -> PreparedBasis {
+        let mut mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        if let Some((atom, coord, h)) = shift {
+            match coord {
+                0 => mol.atoms[atom].x += h,
+                1 => mol.atoms[atom].y += h,
+                _ => mol.atoms[atom].zpos += h,
+            }
+        }
+        let bs = basis::bundled(basis_name).unwrap();
+        PreparedBasis::new(&mol, &bs).unwrap()
+    }
+
+    /// Atom-summed second derivative `d²X/dR_{A,a} dR_{B,b}` from the unique
+    /// blocks, `centre_atoms[k]` being the atom of coordinate centre `k`.
+    fn atom_second_deriv(
+        d2: &[f64],
+        n: usize,
+        centre_atoms: &[usize],
+        (atom_a, a): (usize, usize),
+        (atom_b, b): (usize, usize),
+    ) -> Vec<f64> {
+        let ncoord = 3 * centre_atoms.len();
+        let mut out = vec![0.0; n];
+        for (k, &ak) in centre_atoms.iter().enumerate() {
+            for (l, &al) in centre_atoms.iter().enumerate() {
+                if ak != atom_a || al != atom_b {
+                    continue;
+                }
+                let blk = deriv2_pair_index(ncoord, 3 * k + a, 3 * l + b);
+                for (o, v) in out.iter_mut().zip(&d2[blk * n..(blk + 1) * n]) {
+                    *o += v;
+                }
+            }
+        }
+        out
+    }
+
+    /// Atom-summed first derivative `dX/dR_{A,a}` from first-derivative blocks.
+    fn atom_first_deriv(
+        d1: &[f64],
+        n: usize,
+        centre_atoms: &[usize],
+        atom: usize,
+        a: usize,
+    ) -> Vec<f64> {
+        let mut out = vec![0.0; n];
+        for (k, &ak) in centre_atoms.iter().enumerate() {
+            if ak == atom {
+                for (o, v) in out
+                    .iter_mut()
+                    .zip(&d1[(3 * k + a) * n..(3 * k + a + 1) * n])
+                {
+                    *o += v;
+                }
+            }
+        }
+        out
+    }
+
+    /// Second-derivative 1e blocks (overlap, kinetic, nuclear with its
+    /// operator-centre blocks) vs central differences of the first-derivative
+    /// blocks. An independent construction of the block ORDER: a wrong
+    /// pair-index convention mixes coordinates and misses by O(1).
+    #[test]
+    fn deriv2_1e_blocks_match_fd_of_deriv1() {
+        let h = 1e-4;
+        let prep0 = water_at("6-31g", None);
+        let natoms = prep0.atoms().len();
+        let dims = prep0.shell_dims().to_vec();
+        let sh2at = prep0.shell_to_atom().to_vec();
+        // A p shell on O against the first shell on H1: two centres, non-s bra.
+        let s1 = (0..dims.len())
+            .find(|&s| dims[s] == 3 && sh2at[s] == 0)
+            .unwrap();
+        let s2 = (0..dims.len()).find(|&s| sh2at[s] == 1).unwrap();
+        let n = dims[s1] * dims[s2];
+        for op_kind in [ffi::OP_OVERLAP, ffi::OP_KINETIC, ffi::OP_NUCLEAR] {
+            let nuclear = op_kind == ffi::OP_NUCLEAR;
+            let n_charges = if nuclear { natoms } else { 0 };
+            let mut centre_atoms = vec![sh2at[s1], sh2at[s2]];
+            if nuclear {
+                centre_atoms.extend(0..natoms);
+            }
+            let mut e2 = Engine::new_1e_deriv2(op_kind, &prep0, 1e-14).unwrap();
+            if nuclear {
+                e2.set_point_charges(&prep0).unwrap();
+            }
+            let d2 = e2
+                .compute_1e_deriv2_block(&prep0, s1, s2, n_charges)
+                .to_vec();
+            let first = |prep: &PreparedBasis| -> Vec<f64> {
+                let mut e1 = Engine::new_1e_deriv(op_kind, prep, 1e-14).unwrap();
+                if nuclear {
+                    e1.set_point_charges(prep).unwrap();
+                }
+                e1.compute_1e_deriv_block_n(prep, s1, s2, n_charges)
+                    .map(<[f64]>::to_vec)
+                    .unwrap_or_else(|| vec![0.0; 3 * (2 + n_charges) * n])
+            };
+            let mut worst = 0.0f64;
+            for atom_b in 0..natoms {
+                for b in 0..3 {
+                    let dp = first(&water_at("6-31g", Some((atom_b, b, h))));
+                    let dm = first(&water_at("6-31g", Some((atom_b, b, -h))));
+                    for atom_a in 0..natoms {
+                        for a in 0..3 {
+                            let gp = atom_first_deriv(&dp, n, &centre_atoms, atom_a, a);
+                            let gm = atom_first_deriv(&dm, n, &centre_atoms, atom_a, a);
+                            let an =
+                                atom_second_deriv(&d2, n, &centre_atoms, (atom_a, a), (atom_b, b));
+                            for k in 0..n {
+                                let fd = (gp[k] - gm[k]) / (2.0 * h);
+                                worst = worst.max((an[k] - fd).abs() / an[k].abs().max(1.0));
+                            }
+                        }
+                    }
+                }
+            }
+            // MEASURE: proposed 1e-6 (O(h^2) truncation at h = 1e-4 is ~1e-8).
+            assert!(
+                worst < 1e-6,
+                "op {op_kind}: deriv2 vs FD(deriv1) worst {worst:.3e}"
+            );
+        }
+    }
+
+    /// 4-centre ERI second derivatives vs central differences of the first
+    /// derivatives, on a quartet with a d shell and all three atoms.
+    #[test]
+    fn deriv2_eri_quartet_matches_fd_of_deriv1() {
+        let h = 1e-4;
+        let prep0 = water_at("cc-pvdz", None);
+        let natoms = prep0.atoms().len();
+        let dims = prep0.shell_dims().to_vec();
+        let sh2at = prep0.shell_to_atom().to_vec();
+        let d_o = (0..dims.len())
+            .find(|&s| dims[s] >= 5 && sh2at[s] == 0)
+            .unwrap();
+        let p_h1 = (0..dims.len())
+            .find(|&s| dims[s] == 3 && sh2at[s] == 1)
+            .unwrap();
+        let p_o = (0..dims.len())
+            .find(|&s| dims[s] == 3 && sh2at[s] == 0)
+            .unwrap();
+        let s_h2 = (0..dims.len())
+            .find(|&s| dims[s] == 1 && sh2at[s] == 2)
+            .unwrap();
+        let q = (d_o, p_h1, p_o, s_h2);
+        let centre_atoms = [sh2at[q.0], sh2at[q.1], sh2at[q.2], sh2at[q.3]];
+        let n = dims[q.0] * dims[q.1] * dims[q.2] * dims[q.3];
+        let op = Operator::coulomb();
+        let mut e2 = Engine::new_2e_deriv2(op, &prep0, 1e-14).unwrap();
+        let d2 = e2
+            .compute_eri_deriv2_quartet(&prep0, q.0, q.1, q.2, q.3)
+            .expect("quartet screened")
+            .to_vec();
+        let first = |prep: &PreparedBasis| -> Vec<f64> {
+            let mut e1 = Engine::new_2e_deriv(op, prep, 1e-14).unwrap();
+            e1.compute_eri_deriv_quartet(prep, q.0, q.1, q.2, q.3)
+                .expect("quartet screened")
+                .to_vec()
+        };
+        let mut worst = 0.0f64;
+        let mut largest = 0.0f64;
+        for atom_b in 0..natoms {
+            for b in 0..3 {
+                let dp = first(&water_at("cc-pvdz", Some((atom_b, b, h))));
+                let dm = first(&water_at("cc-pvdz", Some((atom_b, b, -h))));
+                for atom_a in 0..natoms {
+                    for a in 0..3 {
+                        let gp = atom_first_deriv(&dp, n, &centre_atoms, atom_a, a);
+                        let gm = atom_first_deriv(&dm, n, &centre_atoms, atom_a, a);
+                        let an = atom_second_deriv(&d2, n, &centre_atoms, (atom_a, a), (atom_b, b));
+                        for k in 0..n {
+                            let fd = (gp[k] - gm[k]) / (2.0 * h);
+                            largest = largest.max(an[k].abs());
+                            worst = worst.max((an[k] - fd).abs() / an[k].abs().max(1.0));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            largest > 1e-3,
+            "vacuous: largest second derivative {largest:.3e}"
+        );
+        // MEASURE: proposed 1e-6.
+        assert!(worst < 1e-6, "eri deriv2 vs FD(deriv1) worst {worst:.3e}");
+    }
+
+    /// Translational invariance of the 78 ERI blocks: for every coordinate
+    /// `i`, `Σ_centres d²/dx_i d(centre)_b = 0` per axis `b`.
+    #[test]
+    fn deriv2_eri_translational_invariance() {
+        let prep = water_at("6-31g", None);
+        let nsh = prep.nshells();
+        let dims = prep.shell_dims().to_vec();
+        let mut eng = Engine::new_2e_deriv2(Operator::coulomb(), &prep, 1e-14).unwrap();
+        let mut checked = 0usize;
+        for (s1, s2, s3, s4) in [(0, 1, 2, 3), (2, 2, 4, 1), (4, 3, 2, 0), (3, 3, 3, 3)] {
+            assert!(s1.max(s2).max(s3).max(s4) < nsh);
+            let n = dims[s1] * dims[s2] * dims[s3] * dims[s4];
+            let Some(d2) = eng.compute_eri_deriv2_quartet(&prep, s1, s2, s3, s4) else {
+                continue;
+            };
+            let d2 = d2.to_vec();
+            for i in 0..12 {
+                for b in 0..3 {
+                    for k in 0..n {
+                        let sum: f64 = (0..4)
+                            .map(|c| d2[deriv2_pair_index(12, i, 3 * c + b) * n + k])
+                            .sum();
+                        assert!(
+                            sum.abs() < 1e-8,
+                            "quartet ({s1},{s2},{s3},{s4}) i={i} b={b}: {sum:.3e}"
+                        );
+                    }
+                }
+            }
+            checked += 1;
+        }
+        assert!(checked >= 3, "too many quartets screened: {checked}");
     }
 }

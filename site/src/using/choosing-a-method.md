@@ -69,8 +69,9 @@ through `[basis] path` as a Gaussian-94 file (orbital basis only).
 
 ## When nothing here fits
 
-- **Analytic Hessians** are not implemented; frequencies are by finite
-  differences.
+- **Analytic Hessians** cover closed-shell RHF (exact J/K, no ECP, basis up to
+  f functions); other methods' frequencies are by finite differences of the
+  analytic gradient.
 - **Open-shell coupled cluster, open-shell TS search and open-shell KS-DFT from
   the CLI** are not available. See
   [Capabilities and validation: open shells in the CLI](../reference/validation.md#open-shells-in-the-cli).

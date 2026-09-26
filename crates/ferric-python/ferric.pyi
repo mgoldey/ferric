@@ -573,6 +573,11 @@ class FrequencyResult:
         ...
 
     @property
+    def hessian_source(self) -> str:
+        """\"analytic\" or \"finite-difference\": which construction produced the Hessian."""
+        ...
+
+    @property
     def energy(self) -> float:
         """Electronic energy at the undisplaced geometry."""
         ...
@@ -1424,8 +1429,14 @@ def run_frequencies(
     multiplicity: int | None = None,
     point_charges: list[tuple[float, float, float, float]] | None = None,
     external_field: tuple[float, float, float] | None = None,
+    hessian: str = "auto",
 ) -> FrequencyResult:
-    """Harmonic vibrational frequencies via finite-difference of analytic gradients.
+    """Harmonic vibrational frequencies.
+
+    `hessian="auto"` uses the analytic RHF Hessian for closed-shell RHF with
+    exact J/K, no ECP and a basis up to f functions, and a finite difference of
+    analytic gradients otherwise; `"analytic"` raises if it does not apply;
+    `"fd"` always differences gradients. `.hessian_source` says which ran.
 
     `point_charges` ((q, x, y, z) in Bohr) and `external_field` embed the QM
     region in an MM field, the same way `run_optimize` does.

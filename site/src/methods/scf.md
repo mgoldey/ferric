@@ -118,15 +118,23 @@ and, for DFT, against PySCF. RI-MP2 also has an analytic gradient.
 
 **Harmonic frequencies.** `method.task = "frequencies"` for `rhf`, `uhf`,
 `rohf` and `ksdft` (`examples/water-frequencies.toml`); Python
-`ferric.run_frequencies(mol, basis_name, reference="rhf", xc=...)`. Built by
-**central finite differences of the analytic gradient**: 6N gradient
-evaluations, mass-weighted, translations and rotations projected out. The
-displacement `[frequencies] delta` (default 5e-4 Bohr) is a real accuracy
-knob; the printed Hessian asymmetry, zero in exact arithmetic, is the check
-that it and the SCF thresholds suit the system.
+`ferric.run_frequencies(mol, basis_name, reference="rhf", xc=...)`. Mass-weighted,
+translations and rotations projected out. The Hessian is:
 
-**Analytic Hessians are not implemented.** The mpqc4 libint2 export has no
-second-derivative integrals.
+- **Analytic** for closed-shell RHF with exact four-centre J/K, no ECP, no
+  external potential or solvent, and a basis up to f functions: one SCF plus a
+  coupled-perturbed HF solve per nuclear coordinate. This needs a libint2 with
+  second derivatives (the build `scripts/install-libint.sh` installs).
+- **Central finite differences of the analytic gradient** everywhere else
+  (UHF, ROHF, KS-DFT, RI J/K, ECPs, embedding, g functions): 6N gradient
+  evaluations. The displacement `[frequencies] delta` (default 5e-4 Bohr) is a
+  real accuracy knob; the printed Hessian asymmetry, zero in exact arithmetic,
+  is the check that it and the SCF thresholds suit the system.
+
+`[frequencies] hessian` (Python `hessian=`) selects it: `"auto"` (default,
+analytic where it applies), `"analytic"` (an error where it does not) or
+`"fd"`. The output names the one that ran (`Hessian = analytic`; Python
+`.hessian_source`).
 
 **Transition states and IRC (Python only, closed shell).**
 `ferric.run_saddle(mol, basis_name, xc=...)` searches for a first-order saddle

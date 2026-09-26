@@ -26301,10 +26301,10 @@
   },
   "crates/ferric-scf/src/hessian.rs::analytic_frequencies": {
     "cc": 3.0,
-    "mi": 102.97022005043789
+    "mi": 91.2
   },
   "crates/ferric-scf/src/hessian.rs::cpks_response": {
-    "cc": 1.0,
+    "cc": 10.0,
     "mi": 70.47822735380717
   },
   "crates/ferric-scf/src/hessian.rs::h2": {
@@ -26336,8 +26336,8 @@
     "mi": 85.37407214710088
   },
   "crates/ferric-scf/src/hessian.rs::skeleton_hess_2e": {
-    "cc": 1.0,
-    "mi": 88.12643654318632
+    "cc": 6.0,
+    "mi": 73.3
   },
   "crates/ferric-scf/src/hessian.rs::skeleton_hess_overlap": {
     "cc": 1.0,

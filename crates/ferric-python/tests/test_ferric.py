@@ -406,23 +406,37 @@ def test_esp_at_points_rejects_bad_shape():
 def test_run_frequencies_water_matches_pyscf():
     """Harmonic frequencies through the Python surface, vs PySCF.
 
-    PySCF `hessian.rhf` on water/STO-3G gives [2043.11, 4488.05, 4790.30] cm^-1.
-    ferric uses FD of the ANALYTIC gradient, so a few cm^-1 of displacement
-    error is expected and is not a method difference -- the library test asserts
-    the same reference with the same tolerance.
+    PySCF `hessian.rhf` + `thermo.harmonic_analysis` (isotope-averaged masses)
+    on this file's geometry (testdata water.xyz), water/STO-3G, gives
+    [2049.4173, 4489.2416, 4788.0009] cm^-1.
+    The default (`hessian="auto"`) is ferric's analytic RHF Hessian, which must
+    match PySCF's analytic one closely; `hessian="fd"` differences analytic
+    gradients (6N of them), so a few cm^-1 of displacement error is expected
+    there and is not a method difference.
     """
     mol = ferric.Molecule.from_xyz(os.path.join(TESTDATA, "molecules", "water.xyz"))
-    r = ferric.run_frequencies(mol, "sto-3g")
+    pyscf = [2049.4173, 4489.2416, 4788.0009]
 
+    r = ferric.run_frequencies(mol, "sto-3g")
     assert not r.is_linear
     assert len(r.frequencies) == 3, "water has 3N-6 = 3 modes"
-    assert r.n_gradient_evaluations == 18, "6N analytic gradients"
-
-    pyscf = [2043.1061, 4488.0531, 4790.2952]
+    assert r.hessian_source == "analytic"
+    assert r.n_gradient_evaluations == 0
     dev = max(abs(a - b) for a, b in zip(r.frequencies, pyscf))
-    assert dev < 15.0, (
-        f"max deviation {dev:.2f} cm^-1 vs PySCF {pyscf}: {r.frequencies}"
+    assert dev < 0.01, (
+        f"analytic: max deviation {dev:.4f} cm^-1 vs PySCF {pyscf}: {r.frequencies}"
     )
+
+    fd = ferric.run_frequencies(mol, "sto-3g", hessian="fd")
+    assert fd.hessian_source == "finite-difference"
+    assert fd.n_gradient_evaluations == 18, "6N analytic gradients"
+    dev = max(abs(a - b) for a, b in zip(fd.frequencies, pyscf))
+    assert dev < 2.0, (
+        f"fd: max deviation {dev:.2f} cm^-1 vs PySCF {pyscf}: {fd.frequencies}"
+    )
+
+    with pytest.raises(ValueError):
+        ferric.run_frequencies(mol, "sto-3g", hessian="numerical")
 
     # The asymmetry is zero in exact arithmetic; a large value would mean the
     # displacement or SCF thresholds are wrong and would invalidate the

@@ -38,9 +38,9 @@ kinds and the three ungraded kinds print nothing. The warning text is the
 | **not graded** | Dispatched by the CLI but in neither its Proven list nor its warning table, so it prints no warning; treat it as unproven |
 
 Symbols: ✓ = supported. — = not supported (the CLI refuses it with an error).
-**FD** = finite differences. Frequencies always take finite differences of
-the *analytic* gradient (6N gradient evaluations). ferric has no analytic
-Hessians.
+**FD** = finite differences of the *analytic* gradient (6N gradient
+evaluations). The analytic Hessian covers closed-shell RHF with exact J/K, no
+ECP and a basis up to f functions; `rhf` frequencies use it there by default.
 
 ## CLI `method.kind` matrix
 
@@ -50,7 +50,7 @@ Open-shell support is listed only where the dispatch code handles it (see
 
 | `method.kind` | Family | Reference (CLI) | Energy | `task = "optimize"` | `task = "frequencies"` | Python | Example | Grade | Caveat |
 |---|---|---|---|---|---|---|---|---|---|
-| `rhf` | [SCF](../methods/scf.md) | RHF; RKS with `[dft] functional` (refuses multiplicity > 1) | ✓ | ✓ analytic | FD | `run_rhf`, `run_optimize`, `run_frequencies` | `water-rhf.toml` | [Proven](#anchors) | — |
+| `rhf` | [SCF](../methods/scf.md) | RHF; RKS with `[dft] functional` (refuses multiplicity > 1) | ✓ | ✓ analytic | analytic (RHF, exact J/K, no ECP, up to f); FD otherwise | `run_rhf`, `run_optimize`, `run_frequencies` | `water-rhf.toml` | [Proven](#anchors) | — |
 | `uhf` | [SCF](../methods/scf.md) | UHF; UKS with `[dft] functional` | ✓ | ✓ analytic | FD | `run_uhf`, `run_frequencies(reference="uhf", xc=...)` | `h_uhf.toml` | [Proven](#anchors) | — |
 | `rohf` | [SCF](../methods/scf.md) | ROHF; ROKS with `[dft] functional` | ✓ | ✓ analytic | FD | `run_rohf`, `run_frequencies(reference="rohf", xc=...)` | — | [Proven](#anchors) | — |
 | `ksdft` | [SCF/DFT](../methods/scf.md) | RKS; UKS when multiplicity > 1 | ✓ | ✓ analytic (+ D3(BJ) gradient, closed shell only) | FD (refused with `[dft] dispersion` or `grid_prune`) | `run_dft` / `run_ksdft`, `run_frequencies(xc=...)` | `benzene-dfb3lyp.toml`, `h2-lda-opt.toml` | [Proven](#anchors) | — |
@@ -201,6 +201,7 @@ demand (`cargo nextest run --run-ignored only -E 'binary(/^validation_/)'`).
 | Closed-shell RPA nuclear gradient (`total_rpa_gradient`: central finite difference of E_RHF + E_c^RPA, exact-J/K RHF reference, full rank; all electrons and one frozen core orbital) | distorted H2O, distorted NH3 / cc-pVDZ (cc-pvdz-ri) | finite differences of PySCF exact-integral `RHF` + `gw.rpa.RPA` with the same aux basis and the same 40-point Gauss–Legendre frequency grid (5-point stencil step-converged to 7.4e-10 Ha/Bohr, and the 3-point stencil at ferric's step); 5-point finite difference of ferric's own energy; controls: RHF gradient, E_c-only gradient, all-electron vs frozen core, 6- vs 40-point grid | E_c ≤ 1.5e-13 Ha; gradient ≤ 1.9e-9 Ha/Bohr vs PySCF at the same 3-point step, ≤ 5.7e-8 vs a converged 5-point FD (the 3-point truncation); sum over atoms ≤ 4.8e-9 | 1e-12 Ha (E_c); 2e-8 (same step), 2e-7 (5-point) Ha/Bohr | [`validation_rpa_gradient.rs`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-rpa/tests/validation_rpa_gradient.rs), [`gen_rpa_gradient.py`](https://github.com/mgoldey/ferric/blob/main/scripts/validation/gen_rpa_gradient.py) |
 | RI-MP2 size-extensivity | H2 dimer at large separation | 2 × monomer | 2e-12 Ha | 1e-7 Ha | [`rimp2_size_extensivity.rs`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-mp2/tests/rimp2_size_extensivity.rs) |
 | RHF/UHF/ROHF/KS gradients, including density-fitted J/K | water, OH, HO2 / cc-pVDZ, 6-31G | finite differences of the energy; PySCF `df.grad` | 1e-7 to 3e-7 Ha/Bohr (FD); ~1e-10 (PySCF) | 1e-6 Ha/Bohr | [`df_jk_gradient.rs`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-scf/tests/df_jk_gradient.rs) |
+| Analytic RHF Hessian (skeleton one- and two-electron, overlap/W and CPHF response terms) and its harmonic frequencies | H2O, NH3, CH2O / cc-pVDZ; distorted H2O / def2-SVP | PySCF `hessian.rhf` (analytic, and its skeleton `partial_hess_elec` + `hess_nuc`); PySCF finite differences of its analytic gradient; ferric's own gradient differenced | total Hessian ≤ 1.6e-7 Ha/Bohr² vs PySCF analytic (≤ 8.2e-8 at cc-pVDZ); skeleton ≤ 5.9e-10; frequencies ≤ 6.9e-4 cm⁻¹; each skeleton term vs a finite difference of its gradient piece ≤ 3.4e-8 | 1e-6 Ha/Bohr² (total), 1e-8 (skeleton), 1e-2 cm⁻¹ | [`validation_rhf_hessian.rs`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-scf/tests/validation_rhf_hessian.rs), [`rhf_hessian_fd.rs`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-scf/tests/rhf_hessian_fd.rs), [`gen_rhf_hessian.py`](https://github.com/mgoldey/ferric/blob/main/scripts/validation/gen_rhf_hessian.py) |
 | Harmonic frequencies (FD of analytic gradients; Cartesian Hessian and cm⁻¹) | H2O, NH3 × RHF, PBE, B3LYP / 6-31G, cc-pVDZ; UHF OH, CH3, HO2, UKS-PBE and ROHF CH3 / 6-31G | PySCF same-step FD of analytic gradients (KS with grid response); PySCF analytic `hessian.rhf/uhf/rks/uks`; `thermo.harmonic_analysis` with ferric's masses | same-step FD: 2.4e-7 Ha/Bohr², 7.5e-4 cm⁻¹; HF vs analytic 2.75e-5 Ha/Bohr², 0.10 cm⁻¹ (the 5e-3 Bohr step's truncation); KS vs PySCF's analytic Hessian differs by 5–35 cm⁻¹ because that Hessian has no grid response | 2e-6 Ha/Bohr², 5e-3 cm⁻¹ (same-step); 1e-4 Ha/Bohr², 0.5 cm⁻¹ (HF analytic) | [`validation_frequencies.rs`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-scf/tests/validation_frequencies.rs), [`gen_frequencies.py`](https://github.com/mgoldey/ferric/blob/main/scripts/validation/gen_frequencies.py) |
 | Meta-GGA gradient, closed shell (SCAN, r2SCAN) | H2O, NH3 / 6-31G, def2-SVP; RI-J (default) and exact J | PySCF `RKS` `grid_response=True`, same grid and density fitting; FD of ferric's own energy | ≤ 1.3e-9 Ha/Bohr (def2-SVP 5.0e-10); analytic vs own FD 1.0e-9 | 1e-8 Ha/Bohr | [`validation_mgga_gradients.rs`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-scf/tests/validation_mgga_gradients.rs), [`gen_mgga_gradients.py`](https://github.com/mgoldey/ferric/blob/main/scripts/validation/gen_mgga_gradients.py) |
 | Meta-GGA gradient, open shell (SCAN, r2SCAN) | UKS: HO2, NH2 / 6-31G; ROKS: NH2 / 6-31G | PySCF `UKS` `grid_response=True` + `stability()`; ROKS: central FD of PySCF `ROKS` energy; FD of ferric's own energy | UKS ≤ 6.2e-9 Ha/Bohr; ROKS 2.2e-10 vs the FD; energies ≤ 5.7e-13 Ha | 3e-8 Ha/Bohr (UKS); 1e-7 (ROKS) | [`validation_mgga_gradients.rs`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-scf/tests/validation_mgga_gradients.rs), [`gen_mgga_gradients.py`](https://github.com/mgoldey/ferric/blob/main/scripts/validation/gen_mgga_gradients.py) |
@@ -223,10 +224,9 @@ prevent.
 
 Reported rather than omitted:
 
-- **Analytic Hessians**: not implemented. The mpqc4 libint2 export has no
-  second-derivative integrals. Harmonic **frequencies are available** by
-  central finite differences of the analytic gradient (`task = "frequencies"`,
-  `ferric.run_frequencies`).
+- **Analytic Hessians**: closed-shell RHF only (exact J/K, no ECP, no
+  embedding or solvent, basis up to f functions). Every other method's
+  frequencies take central finite differences of the analytic gradient.
 - **Local MP2**: `lmp2-direct`'s correlation stage is measured at about
   N<sup>1.24</sup> (erfc) and N<sup>1.4</sup> (Coulomb) on n-alkanes C20–C48
   (6-31G / cc-pVDZ-RI, frozen carbon cores, a calibrated pair gate; fitted to

@@ -125,6 +125,39 @@ extern "C" {
         sh4: c_int,
         out: *mut c_double,
     ) -> c_int;
+    /// `LIBINT2_MAX_DERIV_ORDER` of the libint2 the shim was compiled against.
+    pub fn scf_libint_max_deriv_order() -> c_int;
+    /// deriv_order=2 engine; NULL without second-derivative support or when
+    /// `max_l` exceeds the linked library's second-derivative AM limit.
+    pub fn scf_engine_create_deriv2(
+        op_kind: c_int,
+        omega: c_double,
+        max_nprim: c_int,
+        max_l: c_int,
+        precision: c_double,
+    ) -> *mut c_void;
+    /// Unique second-derivative blocks of a 1e shell pair (see shim.h for the
+    /// ordering). `out_len` is the capacity of `out` in doubles.
+    pub fn scf_compute_1e_deriv2_block(
+        eng: *mut c_void,
+        bs: *const c_void,
+        sh1: c_int,
+        sh2: c_int,
+        out: *mut c_double,
+        out_len: c_int,
+    ) -> c_int;
+    /// The 78 unique second-derivative blocks of a 2e shell quartet.
+    #[allow(clippy::too_many_arguments)]
+    pub fn scf_compute_eri_deriv2_quartet(
+        eng: *mut c_void,
+        bs: *const c_void,
+        sh1: c_int,
+        sh2: c_int,
+        sh3: c_int,
+        sh4: c_int,
+        out: *mut c_double,
+        out_len: c_int,
+    ) -> c_int;
     pub fn scf_engine_create_3center(
         op_kind: c_int,
         omega: c_double,
@@ -382,3 +415,10 @@ pub const OP_CGTG: c_int = 200;
 pub const OP_CGTG_X_COULOMB: c_int = 201;
 /// |∇f12|² kinetic commutator integrand -- see `scf_engine_create_geminal`.
 pub const OP_DELCGTG2: c_int = 202;
+
+/// Shim status: invalid argument (e.g. an output buffer too small for the result).
+pub const SCF_EINVAL: c_int = -1;
+/// Shim status: libint2 threw; the call's output is undefined.
+pub const SCF_EINTERNAL: c_int = -3;
+/// Shim status: the linked libint2 lacks the requested derivative order.
+pub const SCF_EUNSUPPORTED: c_int = -4;

@@ -274,8 +274,12 @@ def test_an_mm_field_changes_the_saddle_energy():
 
 def test_an_mm_field_changes_the_frequencies():
     mol = _near_planar_ammonia()
-    vac = ferric.run_frequencies(mol, "sto-3g")
-    fld = ferric.run_frequencies(mol, "sto-3g", point_charges=_SYMMETRIC_CHARGES)
+    # Both finite-difference: the field run cannot use the analytic Hessian
+    # (external potential), so the vacuum run must match its construction.
+    vac = ferric.run_frequencies(mol, "sto-3g", hessian="fd")
+    fld = ferric.run_frequencies(
+        mol, "sto-3g", point_charges=_SYMMETRIC_CHARGES, hessian="fd"
+    )
     assert abs(vac.energy - fld.energy) > 1e-4, "point_charges= ignored"
     assert min(vac.frequencies) < 0 and min(fld.frequencies) < 0
     assert abs(min(vac.frequencies) - min(fld.frequencies)) > 1.0, (
@@ -365,8 +369,8 @@ def test_external_field_is_threaded_too_not_just_point_charges():
     mol = _near_planar_ammonia()
     field = (0.0, 0.0, 0.01)  # a.u., along the C3 axis
 
-    vac_f = ferric.run_frequencies(mol, "sto-3g")
-    fld_f = ferric.run_frequencies(mol, "sto-3g", external_field=field)
+    vac_f = ferric.run_frequencies(mol, "sto-3g", hessian="fd")
+    fld_f = ferric.run_frequencies(mol, "sto-3g", external_field=field, hessian="fd")
     assert abs(vac_f.energy - fld_f.energy) > 1e-6, (
         "run_frequencies: external_field= changed nothing, so it is being "
         "accepted and dropped"
