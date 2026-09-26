@@ -1,0 +1,108 @@
+{
+  "row": "OO-RI-MP2 with an ECP (energy; nuclear gradient via ferric self-FD)",
+  "system": "hi",
+  "basis": "def2-svp",
+  "aux_basis": "def2-svp-rifit",
+  "charge": 0,
+  "multiplicity": 1,
+  "nao": 31,
+  "naux": 128,
+  "nelectron": 26,
+  "ecp_core_electrons": [
+    0,
+    28
+  ],
+  "nuclear_repulsion": 7.559674441714287,
+  "pyscf": {
+    "e_scf": -297.2242887816045,
+    "e_corr_dfmp2": -0.14385908354053986,
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF RHF internal (real)"
+    }
+  },
+  "numpy_oo": {
+    "e_total": -297.36919788824565,
+    "e_reference": -297.22319743270066,
+    "e_doubles": -0.14600045554499513,
+    "max_orbital_gradient": 6.963318810448982e-10,
+    "max_preconditioned_gradient": 1.0894988614988202e-10,
+    "iterations": 25,
+    "optimizer_message": "scipy BFGS 8 it (Desired error not necessarily achieved due to precision loss.) + 17 gradient-only BFGS it",
+    "anchor_kappa0_diff": -5.684341886080802e-14,
+    "wall_s": 179.26203894615173,
+    "method": "numpy OO-RI-MP2 (RHF) on an ECP molecule: E(kappa) = E_RHF(C) + E_MP2^RI(C), C = C_RHF expm(K), K antisymmetric vir-occ; hcore = PySCF get_hcore() = T + V_nuc(Z - N_core) + V_ECP (ECP from ferric's basis JSON via common.pyscf_ecp); exact J/K from PySCF int2e (s8, scf.hf.dot_eri_dm); doubles in the semicanonical frame with Coulomb-metric fitted B from PySCF int3c2e/int2c2e and ferric's aux; scipy BFGS + gradient-only BFGS polish (gen_oo_rimp2._minimise) over y = s kappa, s = sqrt(max(4 (e_a - e_i), 0.1)) from the RHF orbital energies, on a 5-point central-difference gradient (h = 0.001 in y); max_orbital_gradient re-measured by FD in kappa; anchor at kappa = 0: PySCF scf.RHF + mp.dfmp2.DFMP2 with the same auxmol"
+  },
+  "ecp_effect": {
+    "tr_d_rhf_vecp": 50.46395239854462,
+    "kappa0_total_with_vecp": -297.3681478651451,
+    "kappa0_total_without_vecp": -347.77182812849884,
+    "note": "kappa = 0 (C_RHF) value of the same functional with V_ECP omitted from hcore (V_nuc(Z - N_core) and E_nn kept): what an OO-RI-MP2 whose hcore lacks V_ECP evaluates at its first point"
+  },
+  "provenance": {
+    "code": "PySCF + numpy",
+    "version": "PySCF 2.13.1",
+    "keywords": {
+      "pyscf": "scf.RHF exact J/K conv_tol 1e-12 conv_tol_grad 1e-10 + mp.dfmp2.DFMP2 with auxmol from ferric's aux JSON",
+      "ecp": "mol.ecp built by common.pyscf_ecp from the basis JSON's inline ecp_potentials",
+      "numpy_oo": "numpy OO-RI-MP2 (RHF) on an ECP molecule: E(kappa) = E_RHF(C) + E_MP2^RI(C), C = C_RHF expm(K), K antisymmetric vir-occ; hcore = PySCF get_hcore() = T + V_nuc(Z - N_core) + V_ECP (ECP from ferric's basis JSON via common.pyscf_ecp); exact J/K from PySCF int2e (s8, scf.hf.dot_eri_dm); doubles in the semicanonical frame with Coulomb-metric fitted B from PySCF int3c2e/int2c2e and ferric's aux; scipy BFGS + gradient-only BFGS polish (gen_oo_rimp2._minimise) over y = s kappa, s = sqrt(max(4 (e_a - e_i), 0.1)) from the RHF orbital energies, on a 5-point central-difference gradient (h = 0.001 in y); max_orbital_gradient re-measured by FD in kappa; anchor at kappa = 0: PySCF scf.RHF + mp.dfmp2.DFMP2 with the same auxmol",
+      "numpy": "1.26.4",
+      "scipy": "1.17.1"
+    },
+    "grid": "none",
+    "aux_basis": {
+      "correlation": "def2-svp-rifit",
+      "correlation_json": "crates/ferric-core/src/basis/bundled/def2-svp-rifit.json",
+      "correlation_sha256": "320fce340c3e53ae33e475139b21a1cd9b4730ff3946c9c7d9969344a0e3b296",
+      "scf_and_oo_fock": "none (exact four-centre J/K)"
+    },
+    "frozen_core": "none (all non-ECP electrons correlated)",
+    "scf_convergence": {
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-10
+    },
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF RHF internal (real)"
+    },
+    "basis": "def2-svp",
+    "basis_json": "crates/ferric-core/src/basis/bundled/def2-svp.json",
+    "basis_sha256": "bfad5f58ceac74a9ac2766b39f510654cea29fb9408e966bb0dfcf14e1302d4f",
+    "ecp_json": "crates/ferric-core/src/basis/bundled/def2-svp.json",
+    "ecp_sha256": "bfad5f58ceac74a9ac2766b39f510654cea29fb9408e966bb0dfcf14e1302d4f",
+    "geometry_xyz": "testdata/molecules/validation/ecp/hi.xyz",
+    "geometry_xyz_sha256": "20aec50609f66afe6cf7628e6e9534421e883449a1922f9cc1a777fbb39f432e",
+    "geometry_bohr": [
+      [
+        "H",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "I",
+        0.0,
+        0.0,
+        3.307020717988858
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_oo_rimp2_ecp.py",
+    "git_head": "d412820f54d9a8796300c976eb8a922cc7aa6998",
+    "generated_utc": "2026-09-26T00:35:43+00:00",
+    "basis_self_check": {
+      "nao": 31,
+      "replica_self_overlap_max_dev": 4.440892098500626e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 31,
+      "diag_skipped_cartesian": 0
+    },
+    "ecp_self_check": {
+      "ecp_core_electrons": [
+        0,
+        28
+      ],
+      "nelectron": 26
+    }
+  }
+}

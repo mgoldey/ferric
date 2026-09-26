@@ -1402,7 +1402,14 @@ pub fn oo_ri_mp2(
     // even though `rhf` (the starting-orbital SCF result passed in) was
     // itself solved WITH the potential. Every downstream `compute_hf_energy`
     // call in this function reuses this one `h`.
-    let h = oneelectron::hcore_with_external(obs, ext)?;
+    //
+    // ECP: `hcore_ecp_with_external` adds V_ECP (zero work, byte-identical
+    // result for an all-electron basis). With plain `hcore_with_external` an
+    // ECP molecule got V_nuc built from the ECP-REDUCED charges (and V_nn
+    // from the same charges) but no V_ECP, i.e. a different Hamiltonian from
+    // the one `rhf` was solved with: HI/def2-SVP started 50.46 Ha
+    // (= tr(D V_ECP)) below its own RHF energy at zero rotation.
+    let h = oneelectron::hcore_ecp_with_external(obs, mol, obs.basis_set(), ext)?;
     // Classical constant: plain nuclear repulsion in vacuum, or (with `ext`)
     // PLUS the charge-nuclear/field-nuclear terms — see `compute_hf_energy`'s
     // doc comment for why this must be threaded explicitly rather than
@@ -1699,8 +1706,9 @@ pub fn oo_ri_mp2(
 ///
 /// Takes initial MO coefficients, applies a Cayley rotation with the given kappa,
 /// rebuilds Fock / density, and returns E_HF + E_MP2 — the same textbook OMP2
-/// functional (semicanonical-frame MP2) `oo_ri_mp2` optimises. Vacuum only (bare
-/// hcore, plain nuclear repulsion).
+/// functional (semicanonical-frame MP2) `oo_ri_mp2` optimises. Vacuum only (no
+/// external potential; V_ECP is included when the basis carries ECPs, as in
+/// `oo_ri_mp2`).
 // System context (mol, two bases, operator, bounds) plus the rotation inputs
 // (c_init, kappa) and orbital partition — all distinct, nothing left to bundle.
 #[allow(clippy::too_many_arguments)]
@@ -1714,7 +1722,7 @@ pub fn energy_at_kappa(
     kappa: &Array2<f64>,
     orb: &OrbitalSpace,
 ) -> Result<f64, FerricError> {
-    let h = oneelectron::hcore(obs);
+    let h = oneelectron::hcore_ecp(obs, mol, obs.basis_set());
     let vnn = mol.nuclear_repulsion();
     let ao = OoRiMp2AoTensors::build(obs, dfbs, op)?;
     let u = cayley_rotation(kappa)?;
