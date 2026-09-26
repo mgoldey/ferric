@@ -69,8 +69,9 @@ through `[basis] path` as a Gaussian-94 file (orbital basis only).
 
 ## When nothing here fits
 
-- **Analytic Hessians** are not implemented; frequencies are by finite
-  differences.
+- **Analytic Hessians** cover closed-shell RHF (exact J/K, no ECP, basis up to
+  f functions); other methods' frequencies are by finite differences of the
+  analytic gradient.
 - **Open-shell coupled cluster and open-shell TS search** are not available
   (the one open-shell CC-type method, LinLCCD(hh), is library-only). Open-shell
   KS-DFT is available from the CLI: `ksdft` with `multiplicity > 1` runs UKS,
