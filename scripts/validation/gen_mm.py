@@ -88,7 +88,7 @@ UNITS
 
 Run:
     scripts/validation/run_slot.sh --light -- \\
-        /home/matt/qc/ferric/.venv/bin/python scripts/validation/gen_mm.py [build-inputs]
+        uv run --no-sync python scripts/validation/gen_mm.py [build-inputs]
     (no argument: write references from the committed inputs; `build-inputs`
     builds any MISSING input PDB from 7LCJ and never overwrites one:
     Modeller.addHydrogens is not deterministic, so the committed PDBs, pinned

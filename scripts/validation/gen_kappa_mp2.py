@@ -41,7 +41,7 @@ Anchors asserted HERE before anything is written:
 
 Run (light; seconds per system):
     scripts/validation/run_slot.sh --light -- \\
-        python scripts/validation/gen_kappa_mp2.py   # the reference env (PySCF)
+        uv run --no-sync python scripts/validation/gen_kappa_mp2.py   # the reference env (PySCF)
 """
 
 from __future__ import annotations

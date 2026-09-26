@@ -44,7 +44,7 @@ run through the same three recipes. The Rust test asserts ferric MISSES it.
 
 Run (light; a few seconds per system):
     OPENBLAS_NUM_THREADS=1 scripts/validation/run_slot.sh --light -- \\
-        .venv/bin/python scripts/validation/gen_rohf_semicanonical.py [system ...]
+        uv run --no-sync python scripts/validation/gen_rohf_semicanonical.py [system ...]
 """
 
 from __future__ import annotations

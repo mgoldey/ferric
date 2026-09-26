@@ -79,6 +79,14 @@ uv sync --extra dev --no-install-project --inexact
 list, and with `--no-install-project` that includes the `ferric` you installed
 or symlinked above.
 
+The validation reference generators (`scripts/validation/gen_*.py`) also need
+PySCF, which is in the `reference` extra:
+
+```bash
+uv sync --extra dev --extra reference --no-install-project --inexact
+uv run --no-sync python scripts/validation/gen_gw.py   # for example
+```
+
 ### The Python development loop
 
 ```bash

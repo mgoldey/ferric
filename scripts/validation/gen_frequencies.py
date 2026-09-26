@@ -61,7 +61,7 @@ that is unstable is REFUSED (RuntimeError), never written.
 
 Run (light; a few minutes, dominated by the cc-pVDZ B3LYP FD sweeps):
     scripts/validation/run_slot.sh --light -- \\
-        /home/matt/qc/ferric/.venv/bin/python scripts/validation/gen_frequencies.py
+        uv run --no-sync python scripts/validation/gen_frequencies.py
 Restrict to systems by name:  ... gen_frequencies.py ch3 oh
 """
 

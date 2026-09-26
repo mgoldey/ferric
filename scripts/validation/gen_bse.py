@@ -94,7 +94,7 @@ Stored spectra (lowest N states; N = 5 extended to close a degenerate group):
 
 Run (light; well under a minute per system):
     scripts/validation/run_slot.sh --light -- \\
-        /home/matt/qc/ferric/.venv/bin/python scripts/validation/gen_bse.py [system ...]
+        uv run --no-sync python scripts/validation/gen_bse.py [system ...]
 """
 
 from __future__ import annotations
