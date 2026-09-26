@@ -1,0 +1,220 @@
+{
+  "row": "SCAN/r2SCAN energy",
+  "system": "nh2",
+  "basis": "def2-svp",
+  "charge": 0,
+  "multiplicity": 2,
+  "nao": 24,
+  "nuclear_repulsion": 7.564094299642846,
+  "units": {
+    "energy": "Hartree"
+  },
+  "uks_scan_rij": {
+    "energy": -55.80638326547776,
+    "converged": true,
+    "s_squared": 0.7536071965133497,
+    "multiplicity_from_s2": 2.0036039494005293,
+    "nelec_alpha": 5,
+    "nelec_beta": 4,
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF UKS internal (real)",
+      "rounds": 0,
+      "selected_guess": "minao",
+      "lambda_min": 0.06525091654559427
+    },
+    "guess_scan": [
+      {
+        "guess": "minao",
+        "energy": -55.80638326547776,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0
+      },
+      {
+        "guess": "atom",
+        "energy": -55.80638326547765,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0
+      },
+      {
+        "guess": "huckel",
+        "energy": -55.806383265477706,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0
+      }
+    ],
+    "multiple_stable_minima": false,
+    "homo_alpha": -0.278229384201254,
+    "lumo_alpha": 0.07081251655739207,
+    "homo_beta": -0.25326738437311835,
+    "lumo_beta": -0.11342671783214131,
+    "somo_alpha": [
+      -0.278229384201254
+    ],
+    "xc": "SCAN",
+    "j": "RI-J: PySCF density_fit(aux from ferric JSON); ferric default (df_j_aux unset -> def2-universal-jkfit) closed shell / explicit Some(aux) open shell",
+    "density_floor_shift": 7.105427357601002e-15
+  },
+  "uks_r2scan_rij": {
+    "energy": -55.79824769171334,
+    "converged": true,
+    "s_squared": 0.7539920380743963,
+    "multiplicity_from_s2": 2.003988061914937,
+    "nelec_alpha": 5,
+    "nelec_beta": 4,
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF UKS internal (real)",
+      "rounds": 0,
+      "selected_guess": "huckel",
+      "lambda_min": 0.08095561903038272
+    },
+    "guess_scan": [
+      {
+        "guess": "minao",
+        "energy": -55.798247691713264,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0
+      },
+      {
+        "guess": "atom",
+        "energy": -55.79824769171326,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0
+      },
+      {
+        "guess": "huckel",
+        "energy": -55.79824769171334,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0
+      }
+    ],
+    "multiple_stable_minima": false,
+    "homo_alpha": -0.27864776361163124,
+    "lumo_alpha": 0.07123284146160636,
+    "homo_beta": -0.2524101392730431,
+    "lumo_beta": -0.10950624807836817,
+    "somo_alpha": [
+      -0.27864776361163124
+    ],
+    "xc": "R2SCAN",
+    "j": "RI-J: PySCF density_fit(aux from ferric JSON); ferric default (df_j_aux unset -> def2-universal-jkfit) closed shell / explicit Some(aux) open shell",
+    "density_floor_shift": -1.2079226507921703e-13
+  },
+  "uhf_control": {
+    "energy": -55.51745747442614,
+    "s_squared": 0.7577945077203214,
+    "note": "exact-integral UHF; ferric UKS must MISS this (functional applied)"
+  },
+  "separations": {
+    "uks_scan_vs_r2scan": 0.0081355737644202
+  },
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "method": "dft.UKS (+ scf.UHF control)",
+      "xc": {
+        "scan": "SCAN",
+        "r2scan": "R2SCAN"
+      },
+      "j": "RI-J: PySCF density_fit(aux from ferric JSON); ferric default (df_j_aux unset -> def2-universal-jkfit) closed shell / explicit Some(aux) open shell",
+      "init_guess_scan": [
+        "minao",
+        "atom",
+        "huckel"
+      ],
+      "stability": "internal=True external=False, restart from the unstable direction, max 10 rounds (common.run_open_shell)",
+      "numpy": "1.26.4"
+    },
+    "grid": {
+      "main": {
+        "atom_grid": [
+          75,
+          110
+        ],
+        "prune": null,
+        "partition": "Becke (original_becke)",
+        "radii_adjust": "becke_atomic_radii_adjust",
+        "radial": "PySCF default (treutler_ahlrichs)",
+        "small_rho_cutoff": 0.0
+      },
+      "xc_density_floor": {
+        "value": 1e-10,
+        "rule": "V_xc (v_rho, v_sigma, v_tau) zeroed where rho <= floor (RKS total rho; UKS per spin); E_xc unfloored (ferric vxc.rs/xc_batch.rs)"
+      }
+    },
+    "aux_basis": {
+      "name": "def2-universal-jkfit",
+      "json": "crates/ferric-core/src/basis/bundled/def2-universal-jkfit.json",
+      "sha256": "a9fcb52ae8a74e80bd3a65c5e12e7a2d2f391fef62c3c81050ae816399b57671",
+      "used_by": "the *_rij blocks only; *_exact blocks are four-centre J"
+    },
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-11,
+      "conv_tol_grad": 1e-08
+    },
+    "stability": {
+      "uks_scan_rij": {
+        "internal_stable": true,
+        "kind": "PySCF UKS internal (real)",
+        "rounds": 0,
+        "selected_guess": "minao",
+        "lambda_min": 0.06525091654559427
+      },
+      "uks_r2scan_rij": {
+        "internal_stable": true,
+        "kind": "PySCF UKS internal (real)",
+        "rounds": 0,
+        "selected_guess": "huckel",
+        "lambda_min": 0.08095561903038272
+      }
+    },
+    "basis": "def2-svp",
+    "basis_json": "crates/ferric-core/src/basis/bundled/def2-svp.json",
+    "basis_sha256": "bfad5f58ceac74a9ac2766b39f510654cea29fb9408e966bb0dfcf14e1302d4f",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/nh2.xyz",
+    "geometry_xyz_sha256": "a93f4ddd65a01379beb9335bab6cbeb2165454f5784960ee705f49ec9c0d28e5",
+    "geometry_bohr": [
+      [
+        "N",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "H",
+        0.0,
+        1.5186047006878538,
+        -1.1993217336336612
+      ],
+      [
+        "H",
+        0.0,
+        -1.5186047006878538,
+        -1.1993217336336612
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_mgga_energies.py",
+    "git_head": "47c7ad2710b1196426104f5c65e7e8ba8480aa68",
+    "generated_utc": "2026-09-26T01:12:55+00:00",
+    "basis_self_check": {
+      "nao": 24,
+      "replica_self_overlap_max_dev": 1.1102230246251565e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 24,
+      "diag_skipped_cartesian": 0,
+      "aux_nao": 113
+    }
+  }
+}

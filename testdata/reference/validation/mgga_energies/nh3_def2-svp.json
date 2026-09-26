@@ -1,0 +1,154 @@
+{
+  "row": "SCAN/r2SCAN energy",
+  "system": "nh3",
+  "basis": "def2-svp",
+  "charge": 0,
+  "multiplicity": 1,
+  "nao": 29,
+  "nuclear_repulsion": 11.904528974062835,
+  "units": {
+    "energy": "Hartree"
+  },
+  "rks_scan_rij": {
+    "xc": "SCAN",
+    "j": "RI-J: PySCF density_fit(aux from ferric JSON); ferric default (df_j_aux unset -> def2-universal-jkfit) closed shell / explicit Some(aux) open shell",
+    "energy": -56.47995152128747,
+    "converged": true,
+    "internal_stable": true,
+    "homo": -0.2139430033612597,
+    "lumo": 0.07214325783989928,
+    "density_floor_shift": -9.947598300641403e-14
+  },
+  "rks_scan_exact": {
+    "xc": "SCAN",
+    "j": "exact four-centre J: plain PySCF KS; ferric df_j_aux = Some(\"\")",
+    "energy": -56.479926041990744,
+    "converged": true,
+    "internal_stable": true,
+    "homo": -0.21394486913152777,
+    "lumo": 0.0721367007126652,
+    "density_floor_shift": -2.5579538487363607e-13
+  },
+  "rks_r2scan_rij": {
+    "xc": "R2SCAN",
+    "j": "RI-J: PySCF density_fit(aux from ferric JSON); ferric default (df_j_aux unset -> def2-universal-jkfit) closed shell / explicit Some(aux) open shell",
+    "energy": -56.47214167100409,
+    "converged": true,
+    "internal_stable": true,
+    "homo": -0.21375877065236093,
+    "lumo": 0.07358367149805556,
+    "density_floor_shift": 1.5631940186722204e-13
+  },
+  "rks_r2scan_exact": {
+    "xc": "R2SCAN",
+    "j": "exact four-centre J: plain PySCF KS; ferric df_j_aux = Some(\"\")",
+    "energy": -56.47211620678775,
+    "converged": true,
+    "internal_stable": true,
+    "homo": -0.2137610137741528,
+    "lumo": 0.07357716072872078,
+    "density_floor_shift": 9.947598300641403e-14
+  },
+  "rhf_control": {
+    "energy": -56.14857133677969,
+    "note": "exact-integral RHF; ferric RKS must MISS this (functional applied)"
+  },
+  "separations": {
+    "scan_vs_r2scan_rij": 0.00780985028337966,
+    "scan_vs_r2scan_exact": 0.007809835202991167,
+    "rij_vs_exact_scan": 2.5479296724029155e-05,
+    "rij_vs_exact_r2scan": 2.546421633553564e-05
+  },
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "method": "dft.RKS (+ scf.RHF control)",
+      "xc": {
+        "scan": "SCAN",
+        "r2scan": "R2SCAN"
+      },
+      "j": {
+        "rij": "RI-J: PySCF density_fit(aux from ferric JSON); ferric default (df_j_aux unset -> def2-universal-jkfit) closed shell / explicit Some(aux) open shell",
+        "exact": "exact four-centre J: plain PySCF KS; ferric df_j_aux = Some(\"\")"
+      },
+      "init_guess": "minao (PySCF default)",
+      "stability": "RKS internal (real) stability(), must be stable",
+      "numpy": "1.26.4"
+    },
+    "grid": {
+      "main": {
+        "atom_grid": [
+          75,
+          110
+        ],
+        "prune": null,
+        "partition": "Becke (original_becke)",
+        "radii_adjust": "becke_atomic_radii_adjust",
+        "radial": "PySCF default (treutler_ahlrichs)",
+        "small_rho_cutoff": 0.0
+      },
+      "xc_density_floor": {
+        "value": 1e-10,
+        "rule": "V_xc (v_rho, v_sigma, v_tau) zeroed where rho <= floor (RKS total rho; UKS per spin); E_xc unfloored (ferric vxc.rs/xc_batch.rs)"
+      }
+    },
+    "aux_basis": {
+      "name": "def2-universal-jkfit",
+      "json": "crates/ferric-core/src/basis/bundled/def2-universal-jkfit.json",
+      "sha256": "a9fcb52ae8a74e80bd3a65c5e12e7a2d2f391fef62c3c81050ae816399b57671",
+      "used_by": "the *_rij blocks only; *_exact blocks are four-centre J"
+    },
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-11,
+      "conv_tol_grad": 1e-08
+    },
+    "stability": null,
+    "basis": "def2-svp",
+    "basis_json": "crates/ferric-core/src/basis/bundled/def2-svp.json",
+    "basis_sha256": "bfad5f58ceac74a9ac2766b39f510654cea29fb9408e966bb0dfcf14e1302d4f",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/nh3.xyz",
+    "geometry_xyz_sha256": "d63ecd59e33333106ad03c7f09a5cdb5215dac105e971698ab807dd1dddb7e51",
+    "geometry_bohr": [
+      [
+        "N",
+        0.0,
+        0.0,
+        0.22013230652445948
+      ],
+      [
+        "H",
+        0.0,
+        1.7758342207636502,
+        -0.5136426784657803
+      ],
+      [
+        "H",
+        1.5379177016809087,
+        -0.8879161655187627,
+        -0.5136426784657803
+      ],
+      [
+        "H",
+        -1.5379177016809087,
+        -0.8879161655187627,
+        -0.5136426784657803
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_mgga_energies.py",
+    "git_head": "47c7ad2710b1196426104f5c65e7e8ba8480aa68",
+    "generated_utc": "2026-09-26T01:10:04+00:00",
+    "basis_self_check": {
+      "nao": 29,
+      "replica_self_overlap_max_dev": 1.1102230246251565e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 29,
+      "diag_skipped_cartesian": 0,
+      "aux_nao": 131
+    }
+  }
+}
