@@ -156,8 +156,9 @@ Hessians and properties. It isn't a protein-engineering tool, a docking
 program or an MD code. The `tools/` layer connects it to RDKit, xtb and
 docking for screening, but the QM is the product.
 
-It has no analytic Hessians, and no thermochemistry (entropy, enthalpy, free
-energy). Transition-state search and IRC are Python-only and closed-shell only
+Its analytic Hessian covers closed-shell RHF only (other frequencies are finite
+differences of the gradient), and it has no thermochemistry (entropy, enthalpy,
+free energy). Transition-state search and IRC are Python-only and closed-shell only
 ([Golden paths](applications.md) Step 5). If a task asks for something ferric
 can't do, such as designing mutations or predicting ΔΔG, say so instead of
 approximating it with something adjacent.
