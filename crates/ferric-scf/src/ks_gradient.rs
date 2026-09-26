@@ -160,6 +160,9 @@ pub fn ks_gradient_closed_with_exchange(
 
     // 1e + nuclear repulsion gradient — identical to HF.
     let mut grad = oneelectron_gradient(mol, prep, &d, &w, ext)?;
+    // ECP term Σ D dV_ECP/dR (zero for an all-electron basis): V_ECP is in
+    // the KS hcore (driver::prepare), so its derivative belongs here too.
+    grad += &crate::gradient::ecp_gradient(mol, prep, &d)?;
 
     // 2e gradient. When the SCF density-fitted J and/or K (RI-J is the
     // default for every functional; RSH exchange is ALWAYS fitted), the
@@ -401,6 +404,8 @@ pub fn ks_gradient_uks(
     // 1e + nn gradient.
     let w = build_energy_weighted_density_uhf(result, nocc_a, nocc_b);
     let mut grad = oneelectron_gradient(mol, prep, &d_total, &w, ext)?;
+    // ECP term (zero for an all-electron basis), as in ks_gradient_closed.
+    grad += &crate::gradient::ecp_gradient(mol, prep, &d_total)?;
 
     // 2e gradient:
     //   * ω = 0: single Γ = 0.5·D·D − 0.5·c_K·(D_α·D_α + D_β·D_β) at Coulomb
@@ -594,6 +599,8 @@ pub fn ks_gradient_roks(
     let w = crate::gradient::rohf_energy_weighted_density(result)?;
 
     let mut grad = oneelectron_gradient(mol, prep, &d_total, &w, ext)?;
+    // ECP term (zero for an all-electron basis), as in ks_gradient_closed.
+    grad += &crate::gradient::ecp_gradient(mol, prep, &d_total)?;
 
     // 2e gradient:
     //   * ω = 0: single Γ = 0.5·D·D − 0.5·c_K·(D_α·D_α + D_β·D_β) at Coulomb

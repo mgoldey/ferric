@@ -1,0 +1,68 @@
+{
+  "row": "ECP gradients (ORCA cross-check)",
+  "system": "hbr",
+  "basis": "def2-tzvp",
+  "charge": 0,
+  "multiplicity": 1,
+  "method": "rhf",
+  "ecp_source": "ferric-json NewECP",
+  "nelectron": 36,
+  "ecp_core_electrons": [
+    0,
+    0
+  ],
+  "nuclear_repulsion": 12.34746825479823,
+  "energy": -2572.997046868119,
+  "s_squared": null,
+  "gradient": [
+    [
+      0.0,
+      -0.0,
+      -0.040936553051
+    ],
+    [
+      -0.0,
+      0.0,
+      0.040936552841
+    ]
+  ],
+  "gradient_units": "Hartree/Bohr, atoms in xyz order (ORCA .engrad)",
+  "max_abs_diff_vs_pyscf_gradient": 4.7504898140204865e-09,
+  "provenance": {
+    "code": "ORCA",
+    "version": "6.1.1",
+    "keywords": "! RHF def2-TZVP VeryTightSCF NoRI NoFrozenCore EnGrad Bohrs\n%pal nprocs 1 end\n%basis\n  NewGTO H\n    S 3\n        1 3.4061341000E+01 2.5439307209E-02\n        2 5.1235746000E+00 1.9008594890E-01\n        3 1.1646626000E+00 8.5244113011E-01\n    S 1\n        1 3.2723041000E-01 1.0000000000E+00\n    S 1\n        1 1.0307241000E-01 1.0000000000E+00\n    P 1\n        1 8.0000000000E-01 1.0000000000E+00\n  end\n  NewGTO Br\n    S 8\n        1 5.6507325256E+05 2.3139967988E-04\n        2 8.4701723179E+04 1.7944808953E-03\n        3 1.9276271900E+04 9.3366328329E-03\n        4 5.4564284576E+03 3.8022141154E-02\n        5 1.7769503500E+03 1.2438608194E-01\n        6 6.3919398276E+02 2.9768265467E-01\n        7 2.4878823961E+02 4.3512478695E-01\n        8 9.8678305494E+01 2.3845432626E-01\n    S 4\n        1 6.0607824568E+02 -2.5802998114E-02\n        2 1.8845598484E+02 -1.2143770157E-01\n        3 3.1497144506E+01 5.4927154143E-01\n        4 1.3736008320E+01 5.4038674316E-01\n    S 2\n        1 2.1203212766E+01 -4.1897657066E-01\n        2 3.7616420178E+00 1.1962922020E+00\n    S 1\n        1 1.7735933962E+00 1.0000000000E+00\n    S 1\n        1 4.5197413664E-01 1.0000000000E+00\n    S 1\n        1 1.6613377099E-01 1.0000000000E+00\n    P 6\n        1 3.0196955723E+03 2.6978967199E-03\n        2 7.1535481126E+02 2.2061177049E-02\n        3 2.2998328751E+02 1.0468862971E-01\n        4 8.6167844615E+01 3.0309710156E-01\n        5 3.4667870802E+01 4.8193181911E-01\n        6 1.4113870307E+01 2.6372883359E-01\n    P 4\n        1 5.7085653082E+01 -1.9288187577E-02\n        2 8.8193845840E+00 2.8864459489E-01\n        3 3.9340302872E+00 5.1058063503E-01\n        4 1.7998830384E+00 2.9626874458E-01\n    P 1\n        1 6.6899410512E-01 1.0000000000E+00\n    P 1\n        1 2.7136238231E-01 1.0000000000E+00\n    P 1\n        1 1.0083790243E-01 1.0000000000E+00\n    D 5\n        1 1.6885370257E+02 9.8428277166E-03\n        2 4.9977949919E+01 6.8128377086E-02\n        3 1.8274913338E+01 2.3573801479E-01\n        4 7.2455694631E+00 4.4277954389E-01\n        5 2.8562315025E+00 4.6334555533E-01\n    D 1\n        1 1.0459621144E+00 1.0000000000E+00\n    D 1\n        1 5.6865655000E-01 1.0000000000E+00\n    D 1\n        1 2.2031490000E-01 1.0000000000E+00\n    F 1\n        1 5.7083312000E-01 1.0000000000E+00\n  end\nend\n* xyz 0 1\n  H  0.000000000000 0.000000000000 0.000000000000\n  Br 0.000000000000 0.000000000000 2.834589186848\n*\n",
+    "grid": "none",
+    "aux_basis": "none",
+    "frozen_core": "NoFrozenCore",
+    "scf_convergence": "VeryTightSCF",
+    "stability": null,
+    "basis": "def2-tzvp",
+    "basis_json": "crates/ferric-core/src/basis/bundled/def2-tzvp.json",
+    "basis_sha256": "d3e390449abd92016eb4c97577ec04dbe61affc5bc870791ac771dbb1aa82111",
+    "ecp_json": "crates/ferric-core/src/basis/bundled/def2-tzvp.json",
+    "ecp_sha256": "d3e390449abd92016eb4c97577ec04dbe61affc5bc870791ac771dbb1aa82111",
+    "geometry_xyz": "testdata/molecules/validation/ecp/hbr.xyz",
+    "geometry_xyz_sha256": "f934a0eb9dd663549d02664f1619da2d1c3e591dacaa58e3b2b6c44d1e19edd9",
+    "geometry_bohr": [
+      [
+        "H",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "Br",
+        0.0,
+        0.0,
+        2.8345891868475928
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_ecp_gradient.py",
+    "git_head": "eb9d3226cb0444658d7a11064a0e7ca17356c3b9",
+    "generated_utc": "2026-09-25T18:27:24+00:00",
+    "orca_input": "scripts/validation/orca/ecp_gradient/hbr_def2-tzvp.inp",
+    "orca_binary": "/home/matt/Downloads/orca_6_1_1_linux_x86-64_shared_openmpi418_nodmrg/orca"
+  }
+}
