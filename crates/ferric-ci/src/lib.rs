@@ -111,9 +111,9 @@ impl Default for CasCiConfig {
 pub struct CasCiResult {
     /// Total CAS-CI energy: `e_core + e_active`.
     pub e_total: f64,
-    /// Lowest eigenvalue of the active-space CI Hamiltonian (includes e_core,
-    /// since e_core is folded onto the Hamiltonian diagonal). Equal to
-    /// `e_total`; retained for clarity/debugging.
+    /// Active-space energy `e_total − e_core` (PySCF `CASCI.e_cas`). The CI
+    /// Hamiltonian carries `e_core` on its diagonal, so its lowest eigenvalue
+    /// is `e_total`; this field removes it.
     pub e_active: f64,
     /// Additive core (nuclear + inactive electronic) energy.
     pub e_core: f64,
@@ -249,7 +249,7 @@ pub fn run_cas_ci(
 
     Ok(CasCiResult {
         e_total: dav.eigenvalue,
-        e_active: dav.eigenvalue,
+        e_active: dav.eigenvalue - ints.e_core,
         e_core: ints.e_core,
         n_determinants: ndet,
         ci_vector: dav.eigenvector,

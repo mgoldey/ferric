@@ -431,6 +431,7 @@ dependencies = [
  "ferric-scf",
  "ndarray",
  "ndarray-linalg",
+ "serde_json",
 ]
 
 [[package]]
