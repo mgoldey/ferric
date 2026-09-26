@@ -10,6 +10,9 @@ extern "C" {
 #define SCF_EINVAL    -1
 #define SCF_ENOTIMPL  -2
 #define SCF_EINTERNAL -3
+/* The linked libint2 was generated without the requested derivative order
+ * (LIBINT2_MAX_DERIV_ORDER too small); the call did nothing. */
+#define SCF_EUNSUPPORTED -4
 
 /* Opaque handles. */
 typedef struct scf_engine scf_engine;
@@ -186,6 +189,42 @@ int scf_compute_1e_deriv_block(scf_engine *eng, const scf_basis *bs,
  * Returns 12*n1*n2*n3*n4 on success, 0 if screened. */
 int scf_compute_eri_deriv_quartet(scf_engine *eng, const scf_basis *bs,
                                     int sh1, int sh2, int sh3, int sh4, double *out);
+
+/* --- Second derivative integrals (requires LIBINT2_MAX_DERIV_ORDER >= 2) --- */
+
+/* LIBINT2_MAX_DERIV_ORDER of the libint2 this shim was compiled against. */
+int scf_libint_max_deriv_order(void);
+
+/* deriv_order=2 engine for the same op_kinds as scf_engine_create (1e: 100,
+ * 101, 102; 2e: 0-4). Returns NULL if libint2 was generated without second
+ * derivatives, or if max_L exceeds the second-derivative AM limit of the
+ * linked library (libint2 throws lmax_exceeded, caught here). */
+scf_engine *scf_engine_create_deriv2(int op_kind, double omega,
+                                       int max_nprim, int max_L, double precision);
+
+/* Second geometric derivatives of a 1e shell-pair block. The engine must come
+ * from scf_engine_create_deriv2. With ncoord = 3 * ncenters differentiable
+ * coordinates (ncenters = 2 for overlap/kinetic, 2 + ncharges for nuclear:
+ * the two basis-function centres, then every point-charge centre in the
+ * order passed to scf_engine_set_point_charges), libint2 returns the
+ * ncoord*(ncoord+1)/2 UNIQUE blocks (i <= j) in row-major upper-triangle
+ * order: block(i,j) = i*(2*ncoord - i - 1)/2 + j, coordinate index =
+ * 3*centre + xyz. Each block is n1*n2 doubles, row-major.
+ * `out_len` is the capacity of `out` in doubles; if the result does not fit,
+ * nothing is written and SCF_EINVAL is returned. Returns the number of
+ * doubles written, SCF_EUNSUPPORTED without second-derivative support, or
+ * SCF_EINTERNAL. */
+int scf_compute_1e_deriv2_block(scf_engine *eng, const scf_basis *bs,
+                                  int sh1, int sh2, double *out, int out_len);
+
+/* Second geometric derivatives of a 2e shell quartet (sh1 sh2|sh3 sh4): 12
+ * coordinates (3 per shell centre, in shell order), 78 unique blocks in the
+ * same row-major upper-triangle order as above, each n1*n2*n3*n4 doubles.
+ * Returns 78*n1*n2*n3*n4, 0 if libint2 screened the quartet, SCF_EINVAL if
+ * `out_len` is too small, SCF_EUNSUPPORTED, or SCF_EINTERNAL. */
+int scf_compute_eri_deriv2_quartet(scf_engine *eng, const scf_basis *bs,
+                                     int sh1, int sh2, int sh3, int sh4,
+                                     double *out, int out_len);
 
 /* --- terfc(r,r0)/r attenuated integrals via 2D interpolation tables --- *
  *

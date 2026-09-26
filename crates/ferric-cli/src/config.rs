@@ -632,12 +632,18 @@ pub fn parse_coord_system(s: &str) -> Result<ferric_scf::optimize::CoordSystem, 
     }
 }
 
-/// `[frequencies]` — harmonic vibrational frequencies via finite difference of
-/// the ANALYTIC gradient (`method.task = "frequencies"`).
+/// `[frequencies]` — harmonic vibrational frequencies (`method.task =
+/// "frequencies"`): the analytic RHF Hessian where it applies, otherwise a
+/// finite difference of the ANALYTIC gradient.
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct FrequenciesCfg {
-    /// Central-difference displacement in Bohr. Default `5e-4`.
+    /// `"auto"` (default): analytic Hessian for closed-shell RHF with exact J/K,
+    /// no ECP and a basis up to f functions, finite differences otherwise.
+    /// `"analytic"`: error if the analytic Hessian does not apply. `"fd"`:
+    /// always finite differences.
+    pub hessian: Option<String>,
+    /// Central-difference displacement in Bohr, finite-difference Hessians only.
     ///
     /// This is a genuine accuracy knob and the wrong value degrades silently:
     /// too large adds truncation error, too small amplifies SCF noise. The

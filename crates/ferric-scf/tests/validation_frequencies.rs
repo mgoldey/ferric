@@ -137,7 +137,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::frequencies::{
     atom_masses, frequencies_from_cartesian_hessian, harmonic_frequencies, FrequencyConfig,
-    FrequencyReference, FrequencyResult, DEFAULT_DELTA,
+    FrequencyReference, FrequencyResult, HessianMethod, DEFAULT_DELTA,
 };
 use ferric_scf::rhf::RhfConfig;
 use ndarray::Array2;
@@ -406,9 +406,13 @@ fn check_method(system: &str, basis_name: &str, method: &str) -> FrequencyResult
     );
 
     let (cfg, reference_kind) = scf_config(method);
+    // This row validates the finite-difference Hessian (same-step PySCF
+    // reference); the analytic RHF Hessian has its own row
+    // (validation_rhf_hessian.rs).
     let freq_cfg = FrequencyConfig {
         delta: DEFAULT_DELTA,
         reference: reference_kind,
+        hessian: HessianMethod::FiniteDifference,
     };
     let ctxp = ParallelContext::default();
     let res = harmonic_frequencies(
