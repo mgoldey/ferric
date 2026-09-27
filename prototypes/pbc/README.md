@@ -167,6 +167,26 @@ OPENBLAS_NUM_THREADS=1 python -m pytest -q test_prototype.py   # ~35 s; PBC_SLOW
   slip at `pbc/scf/hf.py:760`. The eigenvalues are right; the total energy is
   off by a constant.
 
+## Forces, stress and later work
+
+Read these after the energy prototypes; each has its own FINDINGS iteration.
+
+| File | FINDINGS | What it is |
+|---|---|---|
+| `pbc_grad.py` | Iteration 16 | Γ-point RHF forces, dense J/K |
+| `pbc_grad_open.py` | Iteration 17 | UHF, RKS and UKS forces, with grid response |
+| `pbc_grad_gdf.py` | Iteration 18 | RS-GDF forces, including the Loewner metric term |
+| `pbc_stress.py` | Iteration 19 | Γ-point stress tensor (frozen G/image index sets) |
+| `pbc_grad_ro.py` | Iteration 20 | ROHF/ROKS forces (W equals the UHF form at convergence) |
+| `pbc_kgrad.py`, `pbc_kgrad_gdf.py` | Iteration 21 | k-point RHF/UHF forces (force on one supercell copy) |
+| `pbc_grad_ecp.py` | Iteration 22 | periodic ECP force term (partial; PySCF ECP derivative defects) |
+| `roks_replica.py`, `run_roks_trap*.py` | ROKS PBE0 CI diagnosis | numpy replica of ferric's ROHF/ROKS loop |
+| `run_kcorr_head_anomaly.py` | q = 0 head investigation | why the head removed ~100% of MP2's finite-size term |
+| `pbc_lindep.py`, `pbc_ecp.py` | Iterations 13–14 | linear dependence; periodic ECPs |
+
+The `run_*` scripts are the anchors and oracles for each; their docstrings state
+the predictions made before running them.
+
 ## Where this went
 
 The Rust implementation is in `crates/ferric-pbc`. Its tests use the numbers

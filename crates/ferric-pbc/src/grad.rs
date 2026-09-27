@@ -281,15 +281,26 @@ pub struct GammaGradConfig {
     /// Gaussian-nucleus exponent used ONLY for the short-range attraction
     /// DERIVATIVE (`None` = [`GRAD_NUCLEUS_EXPONENT`], never tighter than the
     /// energy's `hcore_cfg.nucleus_exponent`). libint2's 3-centre derivative
-    /// loses precision for very tight Gaussians: measured on the triclinic
-    /// 4H s+p cell, the FD error was 8.3e-2 at 1e16, 4.3e-6 at 1e12 and 1.9e-7
-    /// at 1e10, while the smeared-vs-point potential error is ~3.6e-7 at 1e10.
+    /// loses precision for very tight Gaussians (the error grows ~10-30x per
+    /// decade above ~1e9), while below ~1e8 the mismatch with the energy's
+    /// nucleus takes over. Measured max|analytic − FD| (Ha/Bohr, 2026-09-25):
+    ///
+    /// | exponent | H tri s+p RHF | LiH 6-31G RS-GDF | CO cc-pVDZ/jkfit |
+    /// |---|---|---|---|
+    /// | 1e7  | 1.05e-7 | —      | —       |
+    /// | 1e8  | 7.2e-9  | 3.2e-9 | 1.35e-7 |
+    /// | 1e9  | 6.4e-9  | 2.3e-8 | 1.19e-7 |
+    /// | 1e10 | 1.85e-7 | 9.0e-8 | 8.85e-7 |
+    /// | 1e11 | —       | 1.4e-6 | 1.28e-5 |
+    ///
+    /// (The triclinic cell also gave 8.3e-2 at 1e16 and 4.3e-6 at 1e12.)
     pub nucleus_exponent: Option<f64>,
 }
 
 /// Default exponent for the SR attraction derivative (see
-/// [`GammaGradConfig::nucleus_exponent`]).
-pub const GRAD_NUCLEUS_EXPONENT: f64 = 1e10;
+/// [`GammaGradConfig::nucleus_exponent`]): the best single value for H and
+/// within 2x of the best for Li, C and O in the scan above.
+pub const GRAD_NUCLEUS_EXPONENT: f64 = 1e9;
 
 /// Points per chunk of the XC gradient (13 AO planes + per-spin
 /// intermediates live per chunk).

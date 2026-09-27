@@ -71,6 +71,9 @@ use ndarray::{Array1, Array2, Array3, ArrayView1};
 use num_complex::Complex64 as C64;
 use std::f64::consts::PI;
 
+/// k-point RS-GDF force pieces ([`crate::kgrad`]; FINDINGS "Iteration 21").
+pub(crate) mod kderiv;
+
 /// Default hard cap for [`KRsGdf::fitted_kernels`] (test/diagnostic
 /// `2 N_k² nao⁴` complex).
 pub const DEFAULT_K_FITTED_KERNELS_MAX_BYTES: usize = 512 << 20;

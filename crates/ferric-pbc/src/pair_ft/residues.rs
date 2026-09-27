@@ -23,6 +23,7 @@
 use super::{
     basis_lmax, build_shells, max_gnorm, pair_ft_bytes_per_g, validate_inputs, WINDOW_MARGIN,
 };
+use super::{pair_ft_deriv_bytes_per_g, scatter_shell_block};
 use crate::budget::{bytes_of, Ledger};
 use crate::kpts::lattice_coords;
 use crate::lattice::Cell;
@@ -307,6 +308,283 @@ fn residue_block(
         }
     }
     Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Residue-resolved bra-centre derivative (k-point forces, `crate::kgrad`).
+// ---------------------------------------------------------------------------
+
+/// One K chunk of [`pair_ft_deriv_residues_chunked`]: per residue `r`, the
+/// pair FT `P[r]` and the bra derivatives `Q[r][x]`.
+pub type ResidueDerivChunk = (Vec<Array3<Complex64>>, Vec<[Array3<Complex64>; 3]>);
+
+/// Residue-resolved pair FT AND its bra-centre derivative in K chunks — the
+/// derivative kernel of [`super::pair_ft_deriv_chunked`] (raised bra E table,
+/// same screening, image radius and G window) with every image `L` binned by
+/// its residue modulo `moduli` as [`pair_ft_residues_chunked`] does:
+///
+/// ```text
+/// P[r][m, n, g]    = Σ_{L ≡ r} ∫ φ_m(r) φ_n(r − L) e^{−i K_g · r} dr
+/// Q[r][x][m, n, g] = ∂P[r][m, n, g] / ∂A_{m,x}       (bra centre only)
+/// ```
+///
+/// The ket derivative follows from translation invariance at ANY `K`
+/// (`∂/∂A_m + ∂/∂A_n = −iK`): `∂P[r]_mn/∂A_n = −iK P[r]_mn − Q[r]_mn`. The
+/// Gamma shortcut `Q_nm` (from `P_mn = P_nm`) does NOT hold at `K = G + q`.
+///
+/// `sink(k0, ks, P, Q)` receives the chunk for `ks = kvecs[k0..]`, in
+/// order. Each chunk (`R ×` [`pair_ft_deriv_bytes_per_g`] plus
+/// `extra_bytes_per_g`, per K) fits in `chunk_budget_bytes`; one K that does
+/// not fails before allocating. Returns the chunk count. As for the other
+/// chunked kernels the K window uses `max |K|` over ALL of `kvecs`.
+#[allow(clippy::too_many_arguments)]
+pub fn pair_ft_deriv_residues_chunked<F>(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    kvecs: &[[f64; 3]],
+    moduli: [usize; 3],
+    thresh: f64,
+    chunk_budget_bytes: usize,
+    extra_bytes_per_g: usize,
+    mut sink: F,
+) -> Result<usize, FerricError>
+where
+    F: FnMut(
+        usize,
+        &[[f64; 3]],
+        &[Array3<Complex64>],
+        &[[Array3<Complex64>; 3]],
+    ) -> Result<(), FerricError>,
+{
+    validate_inputs(kvecs, thresh)?;
+    if moduli.contains(&0) {
+        return Err(FerricError::General(format!(
+            "pair_ft_deriv_residues: moduli must be >= 1, got {moduli:?}"
+        )));
+    }
+    if kvecs.is_empty() {
+        return Ok(0);
+    }
+    let nr = moduli[0] * moduli[1] * moduli[2];
+    let nao = prep.nbasis();
+    let lmax = basis_lmax(prep);
+    let per_g =
+        bytes_of(nr as u64, pair_ft_deriv_bytes_per_g(nao, lmax)).saturating_add(extra_bytes_per_g);
+    Ledger::new(chunk_budget_bytes).check(
+        &format!(
+            "pair_ft_deriv_residues chunk, one K vector (nao = {nao}, lmax = {lmax}, R = {nr})"
+        ),
+        per_g,
+    )?;
+    let chunk = (chunk_budget_bytes / per_g).max(1);
+    let gmax = max_gnorm(kvecs);
+    let mut n_chunks = 0usize;
+    for (c, ks) in kvecs.chunks(chunk).enumerate() {
+        let (p, q) = residue_deriv_block(cell, prep, ks, moduli, thresh, gmax)?;
+        sink(c * chunk, ks, &p, &q)?;
+        n_chunks += 1;
+    }
+    Ok(n_chunks)
+}
+
+/// Bucketed copy of `super::pair_ft_deriv_block`.
+fn residue_deriv_block(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    gvecs: &[[f64; 3]],
+    moduli: [usize; 3],
+    thresh: f64,
+    gmax_window: f64,
+) -> Result<ResidueDerivChunk, FerricError> {
+    let shells = build_shells(cell, prep)?;
+    let nbf = prep.nbasis();
+    let ng = gvecs.len();
+    let nr = moduli[0] * moduli[1] * moduli[2];
+    let zarr = || Array3::<Complex64>::zeros((nbf, nbf, ng));
+    let mut out: Vec<Array3<Complex64>> = (0..nr).map(|_| zarr()).collect();
+    let mut outq: Vec<[Array3<Complex64>; 3]> = (0..nr).map(|_| [zarr(), zarr(), zarr()]).collect();
+    if ng == 0 || shells.is_empty() {
+        return Ok((out, outq));
+    }
+    let amin = shells
+        .iter()
+        .flat_map(|s| s.exps.iter().copied())
+        .fold(f64::INFINITY, f64::min);
+    let amax = shells
+        .iter()
+        .flat_map(|s| s.exps.iter().copied())
+        .fold(0.0_f64, f64::max);
+    if !(amin > 0.0) {
+        return Err(FerricError::Basis(format!(
+            "pair_ft_deriv_residues: smallest exponent is {amin}; must be > 0"
+        )));
+    }
+    let rpair = (2.0 * (1e3 * (1.0 + 2.0 * amax) / thresh).ln() / amin).sqrt() + 2.0;
+    let images = cell.translations(rpair)?;
+    let b = cell.reciprocal();
+    let bucket: Vec<usize> = images
+        .iter()
+        .map(|l| residue_index(lattice_coords(&b, l), moduli))
+        .collect();
+
+    let norm2 = |g: &[f64; 3]| g[0] * g[0] + g[1] * g[1] + g[2] * g[2];
+    let mut order: Vec<usize> = (0..ng).collect();
+    order.sort_by(|&x, &y| norm2(&gvecs[x]).total_cmp(&norm2(&gvecs[y])));
+    let gsorted: Vec<[f64; 3]> = order.iter().map(|&i| gvecs[i]).collect();
+    let gvecs: &[[f64; 3]] = &gsorted;
+    let gmax = gmax_window;
+
+    let lmax = shells.iter().map(|s| s.l).max().unwrap_or(0);
+    let nt = 2 * lmax + 2;
+    let g2: Vec<f64> = gvecs.iter().map(norm2).collect();
+    let pw: Vec<Vec<Complex64>> = (0..3)
+        .map(|d| {
+            let mut v = vec![Complex64::new(0.0, 0.0); nt * ng];
+            for (g, gv) in gvecs.iter().enumerate() {
+                let step = Complex64::new(0.0, -gv[d]);
+                let mut acc = Complex64::new(1.0, 0.0);
+                for t in 0..nt {
+                    v[t * ng + g] = acc;
+                    acc *= step;
+                }
+            }
+            v
+        })
+        .collect();
+    let comps: Vec<Vec<[u8; 3]>> = (0..=lmax).map(cart_components).collect();
+    let c2s: Vec<Vec<f64>> = (0..=lmax).map(ferric_cart2sph).collect();
+
+    let zero = Complex64::new(0.0, 0.0);
+    let pi = std::f64::consts::PI;
+    let mut common = vec![zero; ng];
+    let mut ebuf: [Vec<f64>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    let mut fbuf: [Vec<Complex64>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+
+    for sa in &shells {
+        for sb in &shells {
+            let (la, lb) = (sa.l, sb.l);
+            let la1 = la + 1;
+            let (nca, ncb) = (sa.ncart, sb.ncart);
+            let st = la1 + lb + 1;
+            let nij = (la1 + 1) * (lb + 1);
+            for d in 0..3 {
+                ebuf[d].resize(nij * st, 0.0);
+                fbuf[d].resize(nij * ng, zero);
+            }
+            let blk = nca * ncb * ng;
+            let mut cart: Vec<Vec<Complex64>> = (0..nr).map(|_| vec![zero; blk]).collect();
+            let mut cartq: Vec<[Vec<Complex64>; 3]> = (0..nr)
+                .map(|_| [vec![zero; blk], vec![zero; blk], vec![zero; blk]])
+                .collect();
+            let ca_comps = &comps[la];
+            let cb_comps = &comps[lb];
+            let row = |i: usize, j: usize| (i * (lb + 1) + j) * ng;
+
+            for (il, l) in images.iter().enumerate() {
+                let rb = bucket[il];
+                let bc = [
+                    sb.center[0] + l[0],
+                    sb.center[1] + l[1],
+                    sb.center[2] + l[2],
+                ];
+                let ab = [
+                    sa.center[0] - bc[0],
+                    sa.center[1] - bc[1],
+                    sa.center[2] - bc[2],
+                ];
+                let r2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+                for (&a, &ca) in sa.exps.iter().zip(&sa.coefs) {
+                    for (&bb, &cb) in sb.exps.iter().zip(&sb.coefs) {
+                        let p = a + bb;
+                        let cc = ca * cb * (pi / p).powf(1.5);
+                        let mag = (cc * (-a * bb / p * r2).exp()).abs() * (1.0 + 2.0 * a);
+                        if mag < thresh {
+                            continue;
+                        }
+                        let g2max = 4.0
+                            * p
+                            * ((mag / thresh).ln().max(0.0)
+                                + WINDOW_MARGIN
+                                + (la + lb + 1) as f64 * gmax.max(1.0).ln());
+                        let ngp = g2.partition_point(|&x| x <= g2max);
+                        if ngp == 0 {
+                            continue;
+                        }
+                        let pc = [
+                            (a * sa.center[0] + bb * bc[0]) / p,
+                            (a * sa.center[1] + bb * bc[1]) / p,
+                            (a * sa.center[2] + bb * bc[2]) / p,
+                        ];
+                        for (g, gv) in gvecs.iter().enumerate().take(ngp) {
+                            let m = cc * (-g2[g] / (4.0 * p)).exp();
+                            let ph = gv[0] * pc[0] + gv[1] * pc[1] + gv[2] * pc[2];
+                            common[g] = Complex64::new(m * ph.cos(), -m * ph.sin());
+                        }
+                        for d in 0..3 {
+                            e_table(la1, lb, a, bb, ab[d], &mut ebuf[d]);
+                            let (e, f, w) = (&ebuf[d], &mut fbuf[d], &pw[d]);
+                            for ij in 0..nij {
+                                let frow = &mut f[ij * ng..ij * ng + ngp];
+                                frow.fill(zero);
+                                for t in 0..st {
+                                    let et = e[ij * st + t];
+                                    if et == 0.0 {
+                                        continue;
+                                    }
+                                    let wrow = &w[t * ng..t * ng + ngp];
+                                    for (x, wv) in frow.iter_mut().zip(wrow) {
+                                        *x += *wv * et;
+                                    }
+                                }
+                            }
+                        }
+                        let (fx, fy, fz) = (&fbuf[0], &fbuf[1], &fbuf[2]);
+                        let cr = &mut cart[rb];
+                        let cq = &mut cartq[rb];
+                        for (u, ac) in ca_comps.iter().enumerate() {
+                            let (ax, ay, az) = (ac[0] as usize, ac[1] as usize, ac[2] as usize);
+                            for (v, bcmp) in cb_comps.iter().enumerate() {
+                                let (bx, by, bz) =
+                                    (bcmp[0] as usize, bcmp[1] as usize, bcmp[2] as usize);
+                                let (ix, iy, iz) = (row(ax, bx), row(ay, by), row(az, bz));
+                                let (ixp, iyp, izp) =
+                                    (row(ax + 1, bx), row(ay + 1, by), row(az + 1, bz));
+                                let base = (u * ncb + v) * ng;
+                                for g in 0..ngp {
+                                    let c = common[g];
+                                    let (x, y, z) = (fx[ix + g], fy[iy + g], fz[iz + g]);
+                                    // 2a F[i+1] − i F[i−1] per direction.
+                                    let mut dx = fx[ixp + g] * (2.0 * a);
+                                    if ax > 0 {
+                                        dx -= fx[row(ax - 1, bx) + g] * ax as f64;
+                                    }
+                                    let mut dy = fy[iyp + g] * (2.0 * a);
+                                    if ay > 0 {
+                                        dy -= fy[row(ay - 1, by) + g] * ay as f64;
+                                    }
+                                    let mut dz = fz[izp + g] * (2.0 * a);
+                                    if az > 0 {
+                                        dz -= fz[row(az - 1, bz) + g] * az as f64;
+                                    }
+                                    cr[base + g] += c * x * y * z;
+                                    cq[0][base + g] += c * dx * y * z;
+                                    cq[1][base + g] += c * x * dy * z;
+                                    cq[2][base + g] += c * x * y * dz;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            for r in 0..nr {
+                scatter_shell_block(&mut out[r], &cart[r], sa, sb, &c2s, &order);
+                for d in 0..3 {
+                    scatter_shell_block(&mut outq[r][d], &cartq[r][d], sa, sb, &c2s, &order);
+                }
+            }
+        }
+    }
+    Ok((out, outq))
 }
 
 #[cfg(test)]

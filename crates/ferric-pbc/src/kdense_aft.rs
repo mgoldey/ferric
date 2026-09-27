@@ -104,6 +104,8 @@ pub struct KDenseAftEri {
     n_k_total: usize,
     n_q_passes: usize,
     gcut: f64,
+    /// Primitive-pair screen of the ERI pair FT (`0.1 · precision`).
+    pair_thresh: f64,
 }
 
 impl KDenseAftEri {
@@ -318,6 +320,7 @@ impl KDenseAftEri {
             n_k_total,
             n_q_passes,
             gcut,
+            pair_thresh: thresh,
         })
     }
 
@@ -358,6 +361,12 @@ impl KDenseAftEri {
     /// K-sphere radius (Bohr⁻¹).
     pub fn gcut(&self) -> f64 {
         self.gcut
+    }
+
+    /// Primitive-pair screen of the ERI pair FT (`0.1 · precision`); the
+    /// k-point forces ([`crate::kgrad`]) reuse it.
+    pub fn pair_thresh(&self) -> f64 {
+        self.pair_thresh
     }
 
     /// Coulomb kernel block `[k, k']`, `(nao², nao²)`.

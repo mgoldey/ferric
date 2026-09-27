@@ -94,6 +94,13 @@
 //!   3-centre derivatives (orbital and aux centre), Loewner-form metric
 //!   weight against the SR/LR metric derivative, J3's G = 0 term through
 //!   `dS`; FINDINGS "Iteration 18".
+//! * [`kgrad`] — analytic nuclear forces of the k-point RHF / UHF
+//!   (`kpoint_rhf_gradient`, `kpoint_uhf_gradient`) on the dense-AFT or
+//!   k-point RS-GDF J/K: the Gamma force terms with Bloch phases on every
+//!   image-resolved derivative block, the residue-resolved pair-FT
+//!   derivative (ket from `−iK p − Q_bra`), the mesh Madelung constant in the
+//!   overlap weight; equals the Gamma force on ONE copy of each atom in the
+//!   diag(N) supercell. FINDINGS "Iteration 21".
 //! * [`stress`] — the Gamma-point stress tensor `σ = (1/Ω) dE/dε` of the
 //!   same eight energies (`gamma_{rhf,uhf,rks,uks}_stress[_rsgdf]`): the
 //!   force derivative blocks contracted with image-resolved pair vectors,
@@ -129,6 +136,7 @@ pub mod grad;
 pub mod hcore;
 pub mod kcorr;
 pub mod kdense_aft;
+pub mod kgrad;
 pub mod kpts;
 pub mod kscf;
 pub mod kuscf;
@@ -175,6 +183,10 @@ pub use kcorr::{
     KMp2Config, KMp2Result,
 };
 pub use kdense_aft::{KDenseAftConfig, KDenseAftEri, KDenseAftJk};
+pub use kgrad::{
+    kpoint_rhf_gradient, kpoint_uhf_gradient, KGradConfig, KGradJk, KGradParts, KGradient,
+    KRsGdfGradSource,
+};
 pub use kpts::{KPointMesh, MeshCentring};
 pub use kscf::{
     complex_canonical_orthogonalizer, complex_canonical_orthogonalizer_with_stats, solve_krhf,

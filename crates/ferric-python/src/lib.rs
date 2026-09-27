@@ -729,10 +729,27 @@ struct PyGammaRhfResult {
     overlap_data: Array2<f64>,
     scf_data: ScfResult,
     timings_data: ferric_pbc::PbcTimings,
+    gradient_data: Option<Array2<f64>>,
+    stress_data: Option<Array2<f64>>,
 }
 
 #[pymethods]
 impl PyGammaRhfResult {
+    /// Analytic nuclear gradient `dE/dR` (natoms x 3, Hartree/Bohr per cell,
+    /// rows in the Molecule's atom order); `None` unless `with_gradient=True`.
+    fn gradient<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
+        self.gradient_data
+            .as_ref()
+            .map(|g| PyArray2::from_array(py, g))
+    }
+    /// Analytic stress `σ_ab = (1/Ω) dE/dε_ab` (3 x 3, Hartree/Bohr³; strain
+    /// of lattice rows AND atoms; pressure = -tr(σ)/3); `None` unless
+    /// `with_stress=True`.
+    fn stress<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
+        self.stress_data
+            .as_ref()
+            .map(|g| PyArray2::from_array(py, g))
+    }
     /// Stage timings and counters: hcore (setup, S/T, SR/LR attraction,
     /// Ewald), the J/K build (RS-GDF: SR metric, SR 3-centre, LR pair FT,
     /// LR GEMM, G = 0, metric eigh, B; dense: pair FT, GEMM), the SCF's
@@ -839,6 +856,8 @@ struct GammaRun {
     rsgdf_counts: Option<(usize, usize, usize)>,
     /// hcore + J/K build + SCF J/K stage timings.
     timings: ferric_pbc::PbcTimings,
+    /// Analytic forces / stress (when requested).
+    derivs: pbc::Derivs,
 }
 
 /// Which periodic J/K builder `run_rhf_gamma` injects.
@@ -863,13 +882,15 @@ fn gamma_rhf_driver(
     omega_bohr: Option<f64>,
     jk: &GammaJk,
     config: &RhfConfig,
+    want: pbc::DerivRequest,
 ) -> Result<GammaRun, ferric_core::FerricError> {
     use ferric_pbc::dense_aft::{DenseAftEri, DEFAULT_DENSE_AFT_PRECISION};
     use ferric_pbc::hcore::{periodic_hcore, PeriodicHcoreConfig};
     use ferric_pbc::rsgdf::{RsGdf, RsGdfConfig};
     let total = ferric_pbc::StageClock::start();
     let w = omega_bohr.unwrap_or_else(|| ferric_pbc::ewald::default_ewald_omega(cell));
-    let hc = periodic_hcore(cell, prep, &PeriodicHcoreConfig::with_omega(w))?;
+    let hcfg = PeriodicHcoreConfig::with_omega(w);
+    let hc = periodic_hcore(cell, prep, &hcfg)?;
     let mut timings = ferric_pbc::PbcTimings::default();
     timings.absorb(&hc.timings);
     let op = Operator::coulomb();
@@ -898,7 +919,25 @@ fn gamma_rhf_driver(
         let op = Operator::coulomb();
         ferric_scf::rhf::solve_rhf_injected(ctx, cell.mol(), prep, op, bounds, config, inj)
     }
-    let (scf, n_g_half, rsgdf_counts) = match jk {
+    let derivs_of = |scf: &ScfResult,
+                     jk: pbc::DerivJk<'_>,
+                     budget_bytes: Option<usize>|
+     -> Result<pbc::Derivs, ferric_core::FerricError> {
+        if !want.any() {
+            return Ok(pbc::Derivs::default());
+        }
+        let ctx = pbc::DerivCtx {
+            cell,
+            prep,
+            hcfg: &hcfg,
+            hc: &hc,
+            jk,
+            scf,
+            budget_bytes,
+        };
+        pbc::gamma_derivatives(&ctx, pbc::DerivMethod::Rhf(exx), want)
+    };
+    let (scf, n_g_half, rsgdf_counts, derivs) = match jk {
         GammaJk::Dense { max_bytes } => {
             let eri = DenseAftEri::build(
                 cell,
@@ -911,7 +950,8 @@ fn gamma_rhf_driver(
             let (j, k) = (Box::new(eri.j_builder()), Box::new(eri.k_builder()));
             let scf = inject(&ctx, cell, prep, &bounds, config, &hc, j, k)?;
             timings.absorb(&eri.timings());
-            (scf, Some(eri.n_g_half()), None)
+            let d = derivs_of(&scf, pbc::DerivJk::Dense(&eri), None)?;
+            (scf, Some(eri.n_g_half()), None, d)
         }
         GammaJk::RsGdf { aux, budget_bytes } => {
             let cfg = RsGdfConfig {
@@ -919,13 +959,25 @@ fn gamma_rhf_driver(
                 budget_bytes: *budget_bytes,
                 ..Default::default()
             };
-            let gdf = RsGdf::build(cell, prep, aux, &hc.s, &cfg)?;
+            // The gradient build is bitwise the energy's B plus the metric
+            // pieces the RS-GDF forces/stress need.
+            let gdf = if want.any() {
+                RsGdf::build_for_gradient(cell, prep, aux, &hc.s, &cfg)?
+            } else {
+                RsGdf::build(cell, prep, aux, &hc.s, &cfg)?
+            };
             let st = gdf.stats();
             let counts = (st.naux, st.naux_kept, st.n_dropped);
             let (j, k) = (Box::new(gdf.j_builder()), Box::new(gdf.k_builder()));
             let scf = inject(&ctx, cell, prep, &bounds, config, &hc, j, k)?;
             timings.absorb(&gdf.timings());
-            (scf, None, Some(counts))
+            let fit = ferric_pbc::RsGdfGradSource {
+                gdf: &gdf,
+                aux,
+                aux_jac: None,
+            };
+            let d = derivs_of(&scf, pbc::DerivJk::Fit(fit), *budget_bytes)?;
+            (scf, None, Some(counts), d)
         }
     };
     // Reported for both exxdiv settings (the builders only store it for Ewald).
@@ -940,6 +992,7 @@ fn gamma_rhf_driver(
         n_g_half,
         rsgdf_counts,
         timings,
+        derivs,
     })
 }
 
@@ -1107,6 +1160,15 @@ fn parse_gamma_options(
 ///   max_iter, density_conv   SCF controls (defaults 200, 1e-10). The guess
 ///                is the core-Hamiltonian guess on the lattice S/h (the
 ///                molecular SAD guess is not periodic).
+///   with_gradient  (default False) also compute the analytic nuclear
+///                gradient: `result.gradient()`, natoms x 3, dE/dR in
+///                Hartree/Bohr per cell (the molecular `gradient()`
+///                convention). `None` when not requested.
+///   with_stress  (default False) also compute the analytic stress:
+///                `result.stress()`, 3 x 3, σ = (1/Ω) dE/dε in Hartree/Bohr³
+///                (strain of lattice rows AND atoms). Both run on the SCF's
+///                own J/K (rsgdf: B built with its gradient pieces, bitwise
+///                the energy's) and need a converged SCF.
 ///
 /// Hard errors (ValueError): charged cell (charge != 0; no neutralising-
 /// background correction for electrons), multiplicity != 1 or an odd
@@ -1123,7 +1185,7 @@ fn parse_gamma_options(
 #[pyo3(signature = (
     mol, lattice, basis_set, exxdiv="ewald", omega=None, max_eri_gb=None,
     max_iter=200, density_conv=1e-10, jk="dense", auxbasis=None,
-    memory_budget_gb=None,
+    memory_budget_gb=None, with_gradient=false, with_stress=false,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_rhf_gamma(
@@ -1139,6 +1201,8 @@ fn run_rhf_gamma(
     jk: &str,
     auxbasis: Option<&Bound<'_, PyAny>>,
     memory_budget_gb: Option<f64>,
+    with_gradient: bool,
+    with_stress: bool,
 ) -> PyResult<PyGammaRhfResult> {
     let val_err = |m: String| pyo3::exceptions::PyValueError::new_err(m);
     let GammaOptions {
@@ -1196,8 +1260,14 @@ fn run_rhf_gamma(
         max_iter,
         ..Default::default()
     };
+    let want = pbc::DerivRequest {
+        gradient: with_gradient,
+        stress: with_stress,
+    };
     let run = py
-        .allow_threads(|| gamma_rhf_driver(&cell, &prep, exx, omega_bohr, &jk_choice, &config))
+        .allow_threads(|| {
+            gamma_rhf_driver(&cell, &prep, exx, omega_bohr, &jk_choice, &config, want)
+        })
         .map_err(make_err)?;
     let (naux, naux_kept, n_dropped) = match run.rsgdf_counts {
         Some((n, k, d)) => (Some(n), Some(k), Some(d)),
@@ -1224,6 +1294,8 @@ fn run_rhf_gamma(
         overlap_data: run.s,
         scf_data: run.scf,
         timings_data: run.timings,
+        gradient_data: run.derivs.gradient,
+        stress_data: run.derivs.stress,
     })
 }
 
