@@ -76,6 +76,7 @@
 use crate::budget::{bytes_of, Ledger};
 use crate::ewald::{default_ewald_omega, ewald_nuclear_repulsion};
 use crate::lattice::Cell;
+use crate::ordered::{ordered_units, window_budget, Stored};
 use crate::pair_ft::{pair_ft_bytes_per_g, pair_ft_chunked};
 use crate::timing::{PbcTimings, StageClock};
 use ferric_core::FerricError;
@@ -1116,17 +1117,20 @@ pub(crate) fn hcore_pair_images(
 /// "Iteration 2": the same libint 2.7.2 bug as the energy).
 ///
 /// Returns `(basis part, nucleus part, n_triplets)`, each `natoms × 3`.
+/// Ordered-parallel and bit-identical to the serial walk
+/// ([`sr_attraction_deriv_walk`]); `serial` runs the frozen oracle loop.
 pub(crate) fn sr_attraction_gradient(
     cell: &Cell,
     prep: &PreparedBasis,
     cfg: &PeriodicHcoreConfig,
     d: &Array2<f64>,
+    serial: bool,
     ledger: &mut Ledger,
 ) -> Result<(Array2<f64>, Array2<f64>, usize), FerricError> {
     let natoms = cell.positions().len();
     let mut g_basis = Array2::<f64>::zeros((natoms, 3));
     let mut g_nuc = Array2::<f64>::zeros((natoms, 3));
-    let n_triplets = sr_attraction_deriv_walk(cell, prep, cfg, ledger, |t| {
+    let n_triplets = sr_attraction_deriv_walk(cell, prep, cfg, ledger, serial, |t| {
         for i in 0..t.dim1 {
             for j in 0..t.dim2 {
                 let coeff = t.f * d[(t.off1 + i, t.off2 + j)];
@@ -1161,16 +1165,19 @@ pub(crate) fn sr_attraction_gradient(
 /// (the nucleus block is never used). Same images, candidates and screen as
 /// the energy. `drop_images` (TEST ONLY, mutation `NoSrImages`) uses the
 /// un-translated `B` and `R_C` in the pair vectors. Returns `(dE/dε, n_triplets)`.
+/// Ordered-parallel and bit-identical to the serial walk; `serial` runs the
+/// frozen oracle loop.
 pub(crate) fn sr_attraction_strain(
     cell: &Cell,
     prep: &PreparedBasis,
     cfg: &PeriodicHcoreConfig,
     d: &Array2<f64>,
     drop_images: bool,
+    serial: bool,
     ledger: &mut Ledger,
 ) -> Result<([[f64; 3]; 3], usize), FerricError> {
     let mut out = [[0.0_f64; 3]; 3];
-    let n_triplets = sr_attraction_deriv_walk(cell, prep, cfg, ledger, |t| {
+    let n_triplets = sr_attraction_deriv_walk(cell, prep, cfg, ledger, serial, |t| {
         let (bb, xx) = if drop_images {
             (
                 [
@@ -1246,26 +1253,31 @@ pub(crate) struct SrDerivTriplet<'a> {
     pub(crate) ket_b: &'a [f64],
 }
 
-/// The SR attraction derivative walk shared by [`sr_attraction_gradient`]
-/// and [`sr_attraction_strain`]: exactly [`periodic_hcore`]'s pair images,
-/// nucleus candidates and per-triplet screen at `cfg`, with libint2's two
-/// directly computed ket blocks per triplet (the bra block of a 3-centre
-/// derivative is built from translation invariance, `−(site + sh2)`, and its
-/// site derivative is wrong for the ~1e16 Gaussian nucleus; the ket block of
-/// `(i1 | i2)` gives `d/dB`, and the ket block of the swapped call
-/// `(i2 shifted by L | i1)` gives `d/dA`. Measured: the sh1 block cost
-/// −0.041 Ha/Bohr on H2, FINDINGS "Iteration 16" Rust note). Returns the
-/// triplet count.
-fn sr_attraction_deriv_walk<F>(
+/// The loop invariants of the SR attraction derivative walk: exactly
+/// [`periodic_hcore`]'s pair images, nucleus candidates and screen at `cfg`,
+/// with the derivative nucleus sites. Shared by the ordered-parallel walk and
+/// its frozen serial oracle.
+struct SrDerivSetup {
+    shells: Vec<PrimShell>,
+    images: Vec<[f64; 3]>,
+    nuc: Vec<(f64, [f64; 3])>,
+    zmax: f64,
+    /// Cell atom of each `nuc` entry.
+    nuc_atom: Vec<usize>,
+    cands: Vec<NucCand>,
+    site: SiteBasis,
+    sh2at: Vec<usize>,
+    thresh: f64,
+    omega: f64,
+}
+
+/// `Ok(None)` when the cell has no nonzero nuclear charge (no triplets).
+fn sr_deriv_setup(
     cell: &Cell,
     prep: &PreparedBasis,
     cfg: &PeriodicHcoreConfig,
     ledger: &mut Ledger,
-    mut visit: F,
-) -> Result<usize, FerricError>
-where
-    F: FnMut(&SrDerivTriplet<'_>),
-{
+) -> Result<Option<SrDerivSetup>, FerricError> {
     cfg.validate()?;
     let shells = prim_shells(cell, prep)?;
     let thresh = cfg.precision;
@@ -1274,7 +1286,7 @@ where
     let rpair = pair_radius(&shells, pair_thresh);
     let (nuc, zmax) = nonzero_nuclei(cell);
     if nuc.is_empty() {
-        return Ok(0);
+        return Ok(None);
     }
     // nonzero_nuclei keeps the cell order of the Z != 0 atoms.
     let nuc_atom: Vec<usize> = cell
@@ -1291,16 +1303,236 @@ where
         .map(|(_, r)| [r[0], r[1], r[2], cfg.nucleus_exponent])
         .collect();
     let site = SiteBasis::new(&sites, 0)?;
-    let mut eng = Engine::new_3center_deriv(
-        Operator::erfc(omega),
-        prep,
-        &site.prep,
-        ERI3_ENGINE_PRECISION,
-    )?;
-    let sh2at = prep.shell_to_atom().to_vec();
+    Ok(Some(SrDerivSetup {
+        shells,
+        images,
+        nuc,
+        zmax,
+        nuc_atom,
+        cands,
+        site,
+        sh2at: prep.shell_to_atom().to_vec(),
+        thresh,
+        omega,
+    }))
+}
+
+/// One `(L, i1, i2)` unit of the SR attraction derivative walk: the kept
+/// triplet count (screen passes, blocks libint reports empty included, as
+/// the serial count) and, per triplet with both blocks, its candidate index
+/// and `[ket_b (3 bs) | ket_a (3 bs)]`.
+#[derive(Default)]
+struct SrDerivUnit {
+    n_trip: usize,
+    cand: Vec<usize>,
+    data: Vec<f64>,
+}
+
+impl Stored for SrDerivUnit {
+    fn stored_bytes(&self) -> usize {
+        std::mem::size_of::<Self>() + 8 * (self.cand.len() + self.data.len())
+    }
+}
+
+impl SrDerivSetup {
+    fn engine(&self, prep: &PreparedBasis) -> Result<Engine, FerricError> {
+        Engine::new_3center_deriv(
+            Operator::erfc(self.omega),
+            prep,
+            &self.site.prep,
+            ERI3_ENGINE_PRECISION,
+        )
+    }
+
+    /// Unit `u` = `(L, i1, i2)` with `L` outermost (the serial nest order).
+    fn unit_indices(&self, u: usize) -> (usize, usize, usize) {
+        let nsh = self.shells.len();
+        (u / (nsh * nsh), (u / nsh) % nsh, u % nsh)
+    }
+
+    /// The PURE part of unit `(L, i1, i2)`: the screen and both derivative
+    /// blocks of every kept candidate, in candidate order (the serial
+    /// walk's per-unit body up to `visit`).
+    fn unit(
+        &self,
+        eng: &mut Engine,
+        prep: &PreparedBasis,
+        (li, i1, i2): (usize, usize, usize),
+    ) -> Result<SrDerivUnit, FerricError> {
+        let (a, b) = (&self.shells[i1], &self.shells[i2]);
+        let l = &self.images[li];
+        let bound = SrBound::Derived;
+        let bc = [b.center[0] + l[0], b.center[1] + l[1], b.center[2] + l[2]];
+        let r2 = (a.center[0] - bc[0]).powi(2)
+            + (a.center[1] - bc[1]).powi(2)
+            + (a.center[2] - bc[2]).powi(2);
+        let (q, pmin, pmax) = pair_bound(a, b, r2);
+        let wp = bound.omega_p(self.omega, pmin);
+        let mut unit = SrDerivUnit::default();
+        let Some(rad) = nucleus_radius_m(q, self.zmax, pmax, wp, self.thresh, bound.margin())
+        else {
+            return Ok(unit);
+        };
+        let bs = a.dim * b.dim;
+        let site = &self.site;
+        for (ci, (k, m, x)) in self.cands.iter().enumerate() {
+            if segment_distance(*x, a.center, bc) > rad {
+                continue;
+            }
+            unit.n_trip += 1;
+            let start = unit.data.len();
+            match eng.compute_eri3_deriv_shifted(
+                prep,
+                &site.prep,
+                site.site_shell[*k],
+                i1,
+                i2,
+                [*m, [0.0; 3], *l],
+            )? {
+                Some(blk) => unit.data.extend_from_slice(&blk[6 * bs..9 * bs]),
+                None => continue,
+            }
+            match eng.compute_eri3_deriv_shifted(
+                prep,
+                &site.prep,
+                site.site_shell[*k],
+                i2,
+                i1,
+                [*m, *l, [0.0; 3]],
+            )? {
+                Some(blk2) => unit.data.extend_from_slice(&blk2[6 * bs..9 * bs]),
+                None => {
+                    unit.data.truncate(start);
+                    continue;
+                }
+            }
+            unit.cand.push(ci);
+        }
+        Ok(unit)
+    }
+
+    /// The ordered-parallel walk: units `(L, i1, i2)` in serial order,
+    /// [`SrDerivSetup::unit`] in parallel (one derivative engine per rayon
+    /// worker), [`SrDerivSetup::visit_unit`] serially. Returns the triplet
+    /// count.
+    fn walk_ordered<F>(
+        &self,
+        prep: &PreparedBasis,
+        budget: usize,
+        mut visit: F,
+    ) -> Result<usize, FerricError>
+    where
+        F: FnMut(&SrDerivTriplet<'_>),
+    {
+        let pool = EnginePool::from_fn(|| self.engine(prep))?;
+        let nsh = self.shells.len();
+        let mut n_triplets = 0usize;
+        ordered_units(
+            self.images.len() * nsh * nsh,
+            budget,
+            0,
+            |u| pool.with(|eng| self.unit(eng, prep, self.unit_indices(u))),
+            |u, unit: SrDerivUnit| {
+                n_triplets += unit.n_trip;
+                self.visit_unit(self.unit_indices(u), &unit, &mut visit);
+                Ok(())
+            },
+        )?;
+        Ok(n_triplets)
+    }
+
+    /// The serial part of unit `(L, i1, i2)`: every stored triplet handed to
+    /// `visit` in candidate order, with the serial walk's exact fields.
+    fn visit_unit<F>(&self, (li, i1, i2): (usize, usize, usize), unit: &SrDerivUnit, visit: &mut F)
+    where
+        F: FnMut(&SrDerivTriplet<'_>),
+    {
+        let (a, b) = (&self.shells[i1], &self.shells[i2]);
+        let l = &self.images[li];
+        let bc = [b.center[0] + l[0], b.center[1] + l[1], b.center[2] + l[2]];
+        let bs = a.dim * b.dim;
+        for (t, &ci) in unit.cand.iter().enumerate() {
+            let (k, m, x) = &self.cands[ci];
+            let blk = &unit.data[6 * bs * t..6 * bs * (t + 1)];
+            visit(&SrDerivTriplet {
+                off1: a.off,
+                dim1: a.dim,
+                off2: b.off,
+                dim2: b.dim,
+                bs,
+                at1: self.sh2at[i1],
+                at2: self.sh2at[i2],
+                atc: self.nuc_atom[*k],
+                a_center: a.center,
+                b_image: bc,
+                nucleus: *x,
+                l: *l,
+                m: *m,
+                f: -self.nuc[*k].0 / self.site.norm_int[*k],
+                ket_a: &blk[3 * bs..],
+                ket_b: &blk[..3 * bs],
+            });
+        }
+    }
+}
+
+/// The SR attraction derivative walk shared by [`sr_attraction_gradient`]
+/// and [`sr_attraction_strain`]: exactly [`periodic_hcore`]'s pair images,
+/// nucleus candidates and per-triplet screen at `cfg`, with libint2's two
+/// directly computed ket blocks per triplet (the bra block of a 3-centre
+/// derivative is built from translation invariance, `−(site + sh2)`, and its
+/// site derivative is wrong for the ~1e16 Gaussian nucleus; the ket block of
+/// `(i1 | i2)` gives `d/dB`, and the ket block of the swapped call
+/// `(i2 shifted by L | i1)` gives `d/dA`. Measured: the sh1 block cost
+/// −0.041 Ha/Bohr on H2, FINDINGS "Iteration 16" Rust note). Returns the
+/// triplet count.
+///
+/// ORDERED-PARALLEL ([`crate::ordered`]): the screen and the two derivative
+/// calls of each `(L, i1, i2)` unit run in parallel over a window of units
+/// (one erfc 3-centre derivative engine per rayon worker); `visit` then runs
+/// SERIALLY, unit by unit in the serial `L → i1 → i2 → candidate` order,
+/// with the same blocks. Every visitor therefore sees exactly the serial
+/// sequence of triplets, and its outputs are BIT-IDENTICAL to the serial
+/// walk at any thread count — even though the visitors add each triplet
+/// into shared atom rows / the stress. `serial` runs the frozen pre-parallel
+/// loop instead (the oracle of `tests/pbc_parallel_bitwise.rs`).
+fn sr_attraction_deriv_walk<F>(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    cfg: &PeriodicHcoreConfig,
+    ledger: &mut Ledger,
+    serial: bool,
+    visit: F,
+) -> Result<usize, FerricError>
+where
+    F: FnMut(&SrDerivTriplet<'_>),
+{
+    let Some(s) = sr_deriv_setup(cell, prep, cfg, ledger)? else {
+        return Ok(0);
+    };
+    if serial {
+        return sr_attraction_deriv_walk_serial(&s, prep, visit);
+    }
+    s.walk_ordered(prep, window_budget(ledger.remaining()), visit)
+}
+
+/// FROZEN pre-parallel serial SR attraction derivative walk (the
+/// bit-identity oracle of [`sr_attraction_deriv_walk`]; do not "improve").
+fn sr_attraction_deriv_walk_serial<F>(
+    s: &SrDerivSetup,
+    prep: &PreparedBasis,
+    mut visit: F,
+) -> Result<usize, FerricError>
+where
+    F: FnMut(&SrDerivTriplet<'_>),
+{
+    let (shells, images, cands, nuc, site) = (&s.shells, &s.images, &s.cands, &s.nuc, &s.site);
+    let (zmax, thresh, omega) = (s.zmax, s.thresh, s.omega);
+    let mut eng = s.engine(prep)?;
+    let sh2at = &s.sh2at;
     let bound = SrBound::Derived;
     let mut n_triplets = 0usize;
-    for l in &images {
+    for l in images {
         for (i1, a) in shells.iter().enumerate() {
             for (i2, b) in shells.iter().enumerate() {
                 let bc = [b.center[0] + l[0], b.center[1] + l[1], b.center[2] + l[2]];
@@ -1313,7 +1545,7 @@ where
                     continue;
                 };
                 let (at1, at2) = (sh2at[i1], sh2at[i2]);
-                for (k, m, x) in &cands {
+                for (k, m, x) in cands {
                     if segment_distance(*x, a.center, bc) > rad {
                         continue;
                     }
@@ -1352,7 +1584,7 @@ where
                         bs,
                         at1,
                         at2,
-                        atc: nuc_atom[*k],
+                        atc: s.nuc_atom[*k],
                         a_center: a.center,
                         b_image: bc,
                         nucleus: *x,
@@ -1373,18 +1605,21 @@ where
 /// triplet handed to `visit` (its image `L` included), for weights that
 /// depend on `L` — the k-point forces ([`crate::kgrad`]) weight each image by
 /// the Bloch-phase-folded density `(1/N_k) Σ_k e^{ik·L} D(k)`. Same pair
-/// images, nucleus candidates and screen as [`periodic_hcore`] at `cfg`.
+/// images, nucleus candidates and screen as [`periodic_hcore`] at `cfg`;
+/// ordered-parallel, `visit` serial in walk order (`serial`: the frozen
+/// oracle loop).
 pub(crate) fn sr_attraction_deriv_visit<F>(
     cell: &Cell,
     prep: &PreparedBasis,
     cfg: &PeriodicHcoreConfig,
     ledger: &mut Ledger,
+    serial: bool,
     visit: F,
 ) -> Result<usize, FerricError>
 where
     F: FnMut(&SrDerivTriplet<'_>),
 {
-    sr_attraction_deriv_walk(cell, prep, cfg, ledger, visit)
+    sr_attraction_deriv_walk(cell, prep, cfg, ledger, serial, visit)
 }
 
 fn pair_radius(shells: &[PrimShell], pair_thresh: f64) -> f64 {

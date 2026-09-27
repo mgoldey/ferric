@@ -45,6 +45,7 @@ use super::{
 use crate::budget::{bytes_of, Ledger};
 use crate::hcore::{gvector_list_bytes, half_gvectors, G_CHUNK_BYTES};
 use crate::lattice::Cell;
+use crate::ordered::window_budget;
 use crate::pair_ft::{pair_ft_strain_chunked, PairFtStrainTerms, DEFAULT_PAIR_FT_THRESH};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -73,6 +74,9 @@ pub(crate) struct FitStrainTerms {
     /// Aux-FT strain in `J3` / in `J2`.
     pub(crate) aux_ft3: bool,
     pub(crate) aux_ft2: bool,
+    /// NOT a defect: the frozen serial SR walks (bit-identity oracle of the
+    /// ordered-parallel ones).
+    pub(crate) serial: bool,
 }
 
 /// The RS-GDF strain pieces (each `dE/dε`, Hartree).
@@ -149,92 +153,18 @@ pub(crate) fn fit_strain(
         bytes_of(cell.translation_count_bound(rpair)?, 24),
     )?;
     let images = cell.translations(rpair)?;
-    let mut j3_sr = [[0.0_f64; 3]; 3];
-    let mut eng3 = Engine::new_3center_deriv(Operator::erfc(st.omega), obs, aux, ENGINE_PRECISION)?;
-    let n_sr3 = st.sr_three_index_walk(&images, |i1, i2, ip, l, t| {
-        let blk = match eng3.compute_eri3_deriv_shifted(obs, aux, ip, i1, i2, [t, [0.0; 3], l])? {
-            Some(b) => b,
-            None => return Ok(()),
-        };
-        let (a, b, p) = (&st.obs_sh[i1], &st.obs_sh[i2], &st.aux_sh[ip]);
-        let nb = p.nfun * a.nfun * b.nfun;
-        let mut ga = [0.0_f64; 3];
-        let mut gb = [0.0_f64; 3];
-        for pp in 0..p.nfun {
-            let prow = p.off + pp;
-            for i in 0..a.nfun {
-                let r0 = (a.off + i) * n + b.off;
-                for j in 0..b.nfun {
-                    let yv = y[(prow, r0 + j)];
-                    if yv == 0.0 {
-                        continue;
-                    }
-                    let idx = (pp * a.nfun + i) * b.nfun + j;
-                    for x in 0..3 {
-                        ga[x] += yv * blk[(3 + x) * nb + idx];
-                        gb[x] += yv * blk[(6 + x) * nb + idx];
-                    }
-                }
-            }
-        }
-        let cp = [
-            p.center[0] + imgs * t[0],
-            p.center[1] + imgs * t[1],
-            p.center[2] + imgs * t[2],
-        ];
-        let bp = [
-            b.center[0] + imgs * l[0],
-            b.center[1] + imgs * l[1],
-            b.center[2] + imgs * l[2],
-        ];
-        let ra = [
-            a.center[0] - cp[0],
-            a.center[1] - cp[1],
-            a.center[2] - cp[2],
-        ];
-        let rb = [bp[0] - cp[0], bp[1] - cp[1], bp[2] - cp[2]];
-        for x in 0..3 {
-            for z in 0..3 {
-                j3_sr[x][z] += ga[x] * ra[z] + gb[x] * rb[z];
-            }
-        }
-        Ok(())
-    })?;
-
-    // --- SR metric: Σ_T ∂_P (P_0|Q_T) (C_P − C_Q − T).
-    let mut j2_sr = [[0.0_f64; 3]; 3];
-    let mut eng2 = Engine::new_2center_deriv(Operator::erfc(st.omega), aux, ENGINE_PRECISION)?;
-    let n_sr2 = st.sr_metric_walk(|ip, iq, t| {
-        let blk = match eng2.compute_eri2_deriv_shifted(aux, ip, iq, t)? {
-            Some(b) => b,
-            None => return Ok(()),
-        };
-        let (p, q) = (&st.aux_sh[ip], &st.aux_sh[iq]);
-        let nb = p.nfun * q.nfun;
-        let mut gp3 = [0.0_f64; 3];
-        for i in 0..p.nfun {
-            for j in 0..q.nfun {
-                let wv = wm[(p.off + i, q.off + j)];
-                if wv == 0.0 {
-                    continue;
-                }
-                for x in 0..3 {
-                    gp3[x] += wv * blk[x * nb + i * q.nfun + j];
-                }
-            }
-        }
-        let rel = [
-            p.center[0] - q.center[0] - imgs * t[0],
-            p.center[1] - q.center[1] - imgs * t[1],
-            p.center[2] - q.center[2] - imgs * t[2],
-        ];
-        for x in 0..3 {
-            for z in 0..3 {
-                j2_sr[x][z] += gp3[x] * rel[z];
-            }
-        }
-        Ok(())
-    })?;
+    let budget = window_budget(ledger.remaining());
+    let ((j3_sr, n_sr3), (j2_sr, n_sr2)) = if terms.serial {
+        (
+            sr3_strain_serial(&st, &images, y, imgs)?,
+            sr2_strain_serial(&st, wm, imgs)?,
+        )
+    } else {
+        (
+            sr3_strain(&st, &images, y, imgs, budget)?,
+            sr2_strain(&st, wm, imgs, budget)?,
+        )
+    };
 
     // --- LR: the energy's half G sphere.
     let omega = st.omega;
@@ -396,6 +326,284 @@ pub(crate) fn fit_strain(
         n_g_half: gv.len(),
         n_chunks,
     })
+}
+
+// ---------------------------------------------------------------------------
+// SR strain walks: ordered-parallel (production) and frozen serial (oracle).
+// ---------------------------------------------------------------------------
+
+/// SR 3-centre strain `Σ_{x,z} (∂_A,x (A − C_P')_z + ∂_B',x (B' − C_P')_z)`
+/// over the energy's triplets (`imgs` = 1: image translations in the pair
+/// vectors; 0: the `NoSrImages` mutant). ORDERED-PARALLEL ([`crate::ordered`]):
+/// per triplet, the derivative block, `ga`, `gb` (summed from zero in the
+/// serial order) and the serial body's addend `ga_x ra_z + gb_x rb_z` are
+/// formed in parallel; the 9 addends are added into the shared 3×3 serially
+/// in walk order — BIT-IDENTICAL to [`sr3_strain_serial`].
+fn sr3_strain(
+    st: &Stage<'_>,
+    images: &[[f64; 3]],
+    y: &Array2<f64>,
+    imgs: f64,
+    budget: usize,
+) -> Result<(Mat3, usize), FerricError> {
+    let mut j3_sr = [[0.0_f64; 3]; 3];
+    let pool = st.sr3_deriv_pool()?;
+    let count = st.sr_three_index_ordered(
+        images,
+        &pool,
+        budget,
+        |eng, i1, i2, ip, l, t| {
+            Ok(eng
+                .compute_eri3_deriv_shifted(st.obs, st.aux, ip, i1, i2, [t, [0.0; 3], l])?
+                .map(|blk| sr3_strain_addend(st, blk, (i1, i2, ip), l, t, y, imgs)))
+        },
+        |_, _, _, _, _, add: Mat3| {
+            add_mat3(&mut j3_sr, &add);
+            Ok(())
+        },
+    )?;
+    Ok((j3_sr, count))
+}
+
+/// `acc[x][z] += add[x][z]` (the serial bodies' single `+=` per element).
+fn add_mat3(acc: &mut Mat3, add: &Mat3) {
+    for x in 0..3 {
+        for z in 0..3 {
+            acc[x][z] += add[x][z];
+        }
+    }
+}
+
+/// One SR 3-centre triplet's strain addend, exactly the serial body's
+/// `ga[x] * ra[z] + gb[x] * rb[z]`.
+fn sr3_strain_addend(
+    st: &Stage<'_>,
+    blk: &[f64],
+    (i1, i2, ip): (usize, usize, usize),
+    l: [f64; 3],
+    t: [f64; 3],
+    y: &Array2<f64>,
+    imgs: f64,
+) -> Mat3 {
+    let n = st.obs.nbasis();
+    let (a, b, p) = (&st.obs_sh[i1], &st.obs_sh[i2], &st.aux_sh[ip]);
+    let nb = p.nfun * a.nfun * b.nfun;
+    let mut ga = [0.0_f64; 3];
+    let mut gb = [0.0_f64; 3];
+    for pp in 0..p.nfun {
+        let prow = p.off + pp;
+        for i in 0..a.nfun {
+            let r0 = (a.off + i) * n + b.off;
+            for j in 0..b.nfun {
+                let yv = y[(prow, r0 + j)];
+                if yv == 0.0 {
+                    continue;
+                }
+                let idx = (pp * a.nfun + i) * b.nfun + j;
+                for x in 0..3 {
+                    ga[x] += yv * blk[(3 + x) * nb + idx];
+                    gb[x] += yv * blk[(6 + x) * nb + idx];
+                }
+            }
+        }
+    }
+    let cp = [
+        p.center[0] + imgs * t[0],
+        p.center[1] + imgs * t[1],
+        p.center[2] + imgs * t[2],
+    ];
+    let bp = [
+        b.center[0] + imgs * l[0],
+        b.center[1] + imgs * l[1],
+        b.center[2] + imgs * l[2],
+    ];
+    let ra = [
+        a.center[0] - cp[0],
+        a.center[1] - cp[1],
+        a.center[2] - cp[2],
+    ];
+    let rb = [bp[0] - cp[0], bp[1] - cp[1], bp[2] - cp[2]];
+    let mut add = [[0.0_f64; 3]; 3];
+    for x in 0..3 {
+        for z in 0..3 {
+            add[x][z] = ga[x] * ra[z] + gb[x] * rb[z];
+        }
+    }
+    add
+}
+
+/// SR metric strain `Σ_T ∂_P (P_0|Q_T) (C_P − C_Q − T)`. ORDERED-PARALLEL:
+/// per pair image, `gp3` (from zero, serial order) and the serial addend
+/// `gp3_x rel_z` in parallel, added serially in walk order —
+/// BIT-IDENTICAL to [`sr2_strain_serial`].
+fn sr2_strain(
+    st: &Stage<'_>,
+    wm: &Array2<f64>,
+    imgs: f64,
+    budget: usize,
+) -> Result<(Mat3, usize), FerricError> {
+    let mut j2_sr = [[0.0_f64; 3]; 3];
+    let pool = st.sr2_deriv_pool()?;
+    let count = st.sr_metric_ordered(
+        &pool,
+        budget,
+        |eng, ip, iq, t| {
+            Ok(eng
+                .compute_eri2_deriv_shifted(st.aux, ip, iq, t)?
+                .map(|blk| sr2_strain_addend(st, blk, (ip, iq), t, wm, imgs)))
+        },
+        |_, _, _, add: Mat3| {
+            add_mat3(&mut j2_sr, &add);
+            Ok(())
+        },
+    )?;
+    Ok((j2_sr, count))
+}
+
+/// One SR metric pair image's strain addend, exactly the serial body's
+/// `gp3[x] * rel[z]`.
+fn sr2_strain_addend(
+    st: &Stage<'_>,
+    blk: &[f64],
+    (ip, iq): (usize, usize),
+    t: [f64; 3],
+    wm: &Array2<f64>,
+    imgs: f64,
+) -> Mat3 {
+    let (p, q) = (&st.aux_sh[ip], &st.aux_sh[iq]);
+    let nb = p.nfun * q.nfun;
+    let mut gp3 = [0.0_f64; 3];
+    for i in 0..p.nfun {
+        for j in 0..q.nfun {
+            let wv = wm[(p.off + i, q.off + j)];
+            if wv == 0.0 {
+                continue;
+            }
+            for x in 0..3 {
+                gp3[x] += wv * blk[x * nb + i * q.nfun + j];
+            }
+        }
+    }
+    let rel = [
+        p.center[0] - q.center[0] - imgs * t[0],
+        p.center[1] - q.center[1] - imgs * t[1],
+        p.center[2] - q.center[2] - imgs * t[2],
+    ];
+    let mut add = [[0.0_f64; 3]; 3];
+    for x in 0..3 {
+        for z in 0..3 {
+            add[x][z] = gp3[x] * rel[z];
+        }
+    }
+    add
+}
+
+/// FROZEN pre-parallel serial SR 3-centre strain walk (the bit-identity
+/// oracle of [`sr3_strain`]; do not "improve").
+fn sr3_strain_serial(
+    st: &Stage<'_>,
+    images: &[[f64; 3]],
+    y: &Array2<f64>,
+    imgs: f64,
+) -> Result<(Mat3, usize), FerricError> {
+    let (obs, aux) = (st.obs, st.aux);
+    let n = obs.nbasis();
+    let mut j3_sr = [[0.0_f64; 3]; 3];
+    let mut eng3 = Engine::new_3center_deriv(Operator::erfc(st.omega), obs, aux, ENGINE_PRECISION)?;
+    let n_sr3 = st.sr_three_index_walk(images, |i1, i2, ip, l, t| {
+        let blk = match eng3.compute_eri3_deriv_shifted(obs, aux, ip, i1, i2, [t, [0.0; 3], l])? {
+            Some(b) => b,
+            None => return Ok(()),
+        };
+        let (a, b, p) = (&st.obs_sh[i1], &st.obs_sh[i2], &st.aux_sh[ip]);
+        let nb = p.nfun * a.nfun * b.nfun;
+        let mut ga = [0.0_f64; 3];
+        let mut gb = [0.0_f64; 3];
+        for pp in 0..p.nfun {
+            let prow = p.off + pp;
+            for i in 0..a.nfun {
+                let r0 = (a.off + i) * n + b.off;
+                for j in 0..b.nfun {
+                    let yv = y[(prow, r0 + j)];
+                    if yv == 0.0 {
+                        continue;
+                    }
+                    let idx = (pp * a.nfun + i) * b.nfun + j;
+                    for x in 0..3 {
+                        ga[x] += yv * blk[(3 + x) * nb + idx];
+                        gb[x] += yv * blk[(6 + x) * nb + idx];
+                    }
+                }
+            }
+        }
+        let cp = [
+            p.center[0] + imgs * t[0],
+            p.center[1] + imgs * t[1],
+            p.center[2] + imgs * t[2],
+        ];
+        let bp = [
+            b.center[0] + imgs * l[0],
+            b.center[1] + imgs * l[1],
+            b.center[2] + imgs * l[2],
+        ];
+        let ra = [
+            a.center[0] - cp[0],
+            a.center[1] - cp[1],
+            a.center[2] - cp[2],
+        ];
+        let rb = [bp[0] - cp[0], bp[1] - cp[1], bp[2] - cp[2]];
+        for x in 0..3 {
+            for z in 0..3 {
+                j3_sr[x][z] += ga[x] * ra[z] + gb[x] * rb[z];
+            }
+        }
+        Ok(())
+    })?;
+    Ok((j3_sr, n_sr3))
+}
+
+/// FROZEN pre-parallel serial SR metric strain walk (the bit-identity
+/// oracle of [`sr2_strain`]; do not "improve").
+fn sr2_strain_serial(
+    st: &Stage<'_>,
+    wm: &Array2<f64>,
+    imgs: f64,
+) -> Result<(Mat3, usize), FerricError> {
+    let aux = st.aux;
+    let mut j2_sr = [[0.0_f64; 3]; 3];
+    let mut eng2 = Engine::new_2center_deriv(Operator::erfc(st.omega), aux, ENGINE_PRECISION)?;
+    let n_sr2 = st.sr_metric_walk(|ip, iq, t| {
+        let blk = match eng2.compute_eri2_deriv_shifted(aux, ip, iq, t)? {
+            Some(b) => b,
+            None => return Ok(()),
+        };
+        let (p, q) = (&st.aux_sh[ip], &st.aux_sh[iq]);
+        let nb = p.nfun * q.nfun;
+        let mut gp3 = [0.0_f64; 3];
+        for i in 0..p.nfun {
+            for j in 0..q.nfun {
+                let wv = wm[(p.off + i, q.off + j)];
+                if wv == 0.0 {
+                    continue;
+                }
+                for x in 0..3 {
+                    gp3[x] += wv * blk[x * nb + i * q.nfun + j];
+                }
+            }
+        }
+        let rel = [
+            p.center[0] - q.center[0] - imgs * t[0],
+            p.center[1] - q.center[1] - imgs * t[1],
+            p.center[2] - q.center[2] - imgs * t[2],
+        ];
+        for x in 0..3 {
+            for z in 0..3 {
+                j2_sr[x][z] += gp3[x] * rel[z];
+            }
+        }
+        Ok(())
+    })?;
+    Ok((j2_sr, n_sr2))
 }
 
 /// `(X, dX)`: `X[P, g]` the aux FT ([`super::aux_ft`]) and

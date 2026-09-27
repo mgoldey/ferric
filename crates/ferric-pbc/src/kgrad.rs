@@ -126,6 +126,12 @@ pub enum KGradMutation {
     FitNoMetric,
     /// RS-GDF: drop `J3`'s G = 0 term `M_g0`.
     FitNoG0,
+    /// NOT a defect: run the FROZEN pre-parallel serial SR derivative walks
+    /// (SR attraction, RS-GDF SR 3-centre and metric) instead of the
+    /// ordered-parallel ones ([`crate::ordered`]); the force must be
+    /// BIT-IDENTICAL either way (`tests/pbc_parallel_bitwise.rs`). Never list
+    /// it as a must-fail mutant.
+    SerialDerivWalks,
 }
 
 /// Settings for [`kpoint_rhf_gradient`] / [`kpoint_uhf_gradient`].
@@ -801,6 +807,7 @@ fn assemble(
                 aux_phase: mutation == Some(KGradMutation::FitAuxPhase),
                 no_metric: mutation == Some(KGradMutation::FitNoMetric),
                 no_g0: mutation == Some(KGradMutation::FitNoG0),
+                serial_sr: mutation == Some(KGradMutation::SerialDerivWalks),
             };
             Some(kpoint_fit_gradient(
                 src.gdf, src.cfg, cell, prep, src.aux, mesh, s_k, &dtot, &exch, fm, ledger,
@@ -859,7 +866,8 @@ fn assemble(
     };
     let mut g_vsr_basis = Array2::<f64>::zeros((natoms, 3));
     let mut g_vsr_nuc = Array2::<f64>::zeros((natoms, 3));
-    let n_sr_triplets = sr_attraction_deriv_visit(cell, prep, &sr_cfg, ledger, |t| {
+    let serial = mutation == Some(KGradMutation::SerialDerivWalks);
+    let n_sr_triplets = sr_attraction_deriv_visit(cell, prep, &sr_cfg, ledger, serial, |t| {
         let wd = &w_d[residue_index(lattice_coords(&b, &t.l), moduli)];
         for i in 0..t.dim1 {
             for j in 0..t.dim2 {

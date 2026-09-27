@@ -42,31 +42,72 @@
 //!
 //! Reachability: the J3/V systems have ≥ 64 ordered shell pairs (≥ 10 per
 //! thread at 6 threads, asserted), so the parallel split really binds.
-//! Not covered (still serial by design): the force/stress derivative walks,
-//! where every triplet adds into shared atom rows, so no output element
-//! belongs to one pair task.
+//!
+//! The force / stress DERIVATIVE walks add every triplet into SHARED rows
+//! (atom rows, aux rows, the 3×3 stress), so no element belongs to one pair
+//! task; they are ordered-parallel instead (`ferric_pbc::ordered`: the
+//! integrals and per-triplet from-zero subtotals in parallel over a window
+//! of units, every `+=` into a shared row replayed serially in the serial
+//! walk order). That is BIT-IDENTICAL to the serial walks, and these tests
+//! assert it against the FROZEN pre-parallel walks (the `SerialDerivWalks`
+//! / `SerialImages` test mutations), at 1/2/6 threads, with the serial
+//! oracle itself run at 1 and 6 threads:
+//!
+//! * `gamma_rhf_rsgdf_force_…` — SR attraction force visitor, RS-GDF SR
+//!   3-centre and SR metric force walks (triclinic 4 H s+p, cc-pvdz-ri).
+//! * `gamma_uks_rsgdf_force_…` — the same on an open-shell hybrid (H3 UKS
+//!   PBE0).
+//! * `gamma_rhf_rsgdf_stress_…` — SR attraction strain visitor, RS-GDF SR
+//!   3-centre and metric strain walks.
+//! * `kpoint_rhf_rsgdf_force_…` — the L-weighted SR attraction visitor and
+//!   the phase-folded k-point SR 3-centre / metric walks (H2 1×1×3).
+//! * `ecp_force_term_…` — the periodic-ECP image loop (compact H–I,
+//!   LANL2DZ), fixed density.
+//!
+//! A test of this kind only proves anything if the oracle and the parallel
+//! path are different code: the oracles are verbatim copies of the pre-
+//! parallel loops (`*_serial` functions), selected by the mutation.
 
 mod common;
 
 use common::*;
-use ferric_core::basis;
+use ferric_core::basis::{self, BasisSet, Shell};
+use ferric_core::ecp::{EcpDef, EcpShell, EcpTerm};
+use ferric_core::mol::{Atom, Molecule};
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_pbc::dense_aft::{
     DenseAftEri, ExxDiv, DEFAULT_DENSE_AFT_MAX_BYTES, DEFAULT_DENSE_AFT_PRECISION,
 };
+use ferric_pbc::dft::{gamma_uks, GammaUksConfig, PeriodicGridConfig};
+use ferric_pbc::ecp::{
+    periodic_ecp_gradient_with, EcpGradMutation, PeriodicEcpConfig, PeriodicEcpGradient,
+};
+use ferric_pbc::grad::{
+    gamma_rhf_gradient_rsgdf, gamma_uks_gradient_rsgdf, GammaGradConfig, GammaGradient,
+    GradMutation, RsGdfGradSource,
+};
 use ferric_pbc::hcore::kpoint::{periodic_hcore_kpts, sr_attraction_kpts_parallel_and_serial};
 use ferric_pbc::hcore::{
-    periodic_hcore, sr_attraction_parallel_and_serial, PeriodicHcoreConfig, SrAttractionParts,
-    SrBound, DEFAULT_HCORE_PRECISION,
+    periodic_hcore, sr_attraction_parallel_and_serial, PeriodicHcore, PeriodicHcoreConfig,
+    SrAttractionParts, SrBound, DEFAULT_HCORE_PRECISION,
+};
+use ferric_pbc::kgrad::{
+    kpoint_rhf_gradient, KGradConfig, KGradJk, KGradMutation, KGradient, KRsGdfGradSource,
 };
 use ferric_pbc::kpts::KPointMesh;
-use ferric_pbc::kscf::{solve_krhf, KJkKind, KRhfConfig, KScfConfig};
+use ferric_pbc::kscf::{
+    solve_krhf, solve_krhf_injected, KJkKind, KPointInjection, KRhfConfig, KScfConfig,
+};
+use ferric_pbc::lattice::Cell;
 use ferric_pbc::rsgdf::kpoint::{
     sr_bins_parallel_and_serial, sr_sums_gamma_and_single_bin, KRsGdf, KRsGdfConfig, SrBinsParts,
 };
 use ferric_pbc::rsgdf::{RsGdf, RsGdfConfig};
+use ferric_pbc::stress::{gamma_rhf_stress_rsgdf, GammaStress, GammaStressConfig, StressMutation};
+use ferric_pbc::uhf::GammaUhfIntegrals;
 use ndarray::Array2;
 use num_complex::Complex64;
+use std::collections::HashMap;
 
 const THREADS: [usize; 3] = [1, 2, 6];
 const HCORE_OMEGA: f64 = 0.8;
@@ -484,4 +525,573 @@ fn krsgdf_blocks_and_krhf_energy_are_bitwise_across_threads() {
             );
         }
     }
+}
+
+// ======================================================================
+// Force / stress derivative walks (ordered-parallel, `ferric_pbc::ordered`)
+// ======================================================================
+
+/// `pbc_grad_rsgdf.rs` TRI_MOVED (Bohr): the triclinic s+p cell its RHF
+/// force anchor converges on.
+const TRI_MOVED: [[f64; 3]; 4] = [
+    [0.13, 0.25, 0.31],
+    [0.02, 0.27, 1.66],
+    [2.47, 2.41, 2.25],
+    [3.52, 2.98, 2.71],
+];
+const H3_ATOMS: [[f64; 3]; 3] = [[0.3, 0.2, 0.1], [0.35, 0.12, 1.5], [1.6, 0.9, 0.7]];
+const GRAD_OMEGA: f64 = 0.8;
+const GRAD_HCORE_PRECISION: f64 = 1e-14;
+
+fn grad_hcore_cfg() -> PeriodicHcoreConfig {
+    PeriodicHcoreConfig {
+        precision: GRAD_HCORE_PRECISION,
+        ..PeriodicHcoreConfig::with_omega(GRAD_OMEGA)
+    }
+}
+
+fn cell_of(pos: &[[f64; 3]], lattice: [[f64; 3]; 3], mult: usize) -> Cell {
+    let mut mol = hydrogens(pos);
+    mol.multiplicity = mult;
+    Cell::new(mol, lattice).expect("cell")
+}
+
+fn assert_mat3_bitwise(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3], what: &str) {
+    for x in 0..3 {
+        for z in 0..3 {
+            assert_eq!(
+                a[x][z].to_bits(),
+                b[x][z].to_bits(),
+                "{what}: element ({x}, {z}) {:.17e} vs {:.17e}",
+                a[x][z],
+                b[x][z]
+            );
+        }
+    }
+}
+
+fn nonzero(a: &Array2<f64>) -> bool {
+    a.iter().any(|x| *x != 0.0)
+}
+
+/// A Gamma RS-GDF system: hcore, `build_for_gradient` fit and its aux.
+struct GdfSys {
+    cell: Cell,
+    prep: PreparedBasis,
+    hc: PeriodicHcore,
+    aux: PreparedBasis,
+    gdf: RsGdf,
+}
+
+fn gdf_sys(cell: Cell, bs: &BasisSet) -> GdfSys {
+    let prep = prep_for(&cell, bs);
+    let hc = periodic_hcore(&cell, &prep, &grad_hcore_cfg()).expect("hcore");
+    let aux = prep_for(&cell, &basis::bundled("cc-pvdz-ri").unwrap());
+    let gdf = RsGdf::build_for_gradient(&cell, &prep, &aux, &hc.s, &gdf_cfg())
+        .expect("RsGdf::build_for_gradient");
+    GdfSys {
+        cell,
+        prep,
+        hc,
+        aux,
+        gdf,
+    }
+}
+
+impl GdfSys {
+    fn src(&self) -> RsGdfGradSource<'_> {
+        RsGdfGradSource {
+            gdf: &self.gdf,
+            aux: &self.aux,
+            aux_jac: None,
+        }
+    }
+}
+
+fn ggcfg(m: Option<GradMutation>) -> GammaGradConfig {
+    GammaGradConfig {
+        budget_bytes: Some(AMPLE),
+        mutation: m,
+        ..Default::default()
+    }
+}
+
+/// `[1, 2, 6 threads, serial oracle at 1 thread, serial oracle at 6
+/// threads]` of `f(mutation)`.
+fn thread_runs<R: Send>(f: impl Fn(bool) -> R + Sync) -> (Vec<R>, [R; 2]) {
+    let par = THREADS.iter().map(|&n| in_pool(n, || f(false))).collect();
+    let ser = [in_pool(1, || f(true)), in_pool(6, || f(true))];
+    (par, ser)
+}
+
+/// Every piece of a Gamma force the ordered walks feed, bitwise.
+fn assert_gamma_grad_bitwise(a: &GammaGradient, b: &GammaGradient, what: &str) {
+    assert_bitwise(&a.grad, &b.grad, &format!("{what}: grad"));
+    let (p, q) = (&a.parts, &b.parts);
+    assert_bitwise(&p.vsr_basis, &q.vsr_basis, &format!("{what}: vsr_basis"));
+    assert_bitwise(&p.vsr_nuc, &q.vsr_nuc, &format!("{what}: vsr_nuc"));
+    assert_bitwise(&p.fit_orb_sr, &q.fit_orb_sr, &format!("{what}: fit_orb_sr"));
+    assert_bitwise(&p.fit_aux_sr, &q.fit_aux_sr, &format!("{what}: fit_aux_sr"));
+    assert_bitwise(
+        &p.fit_metric_sr,
+        &q.fit_metric_sr,
+        &format!("{what}: fit_metric_sr"),
+    );
+    assert_bitwise(&p.ecp, &q.ecp, &format!("{what}: ecp"));
+    assert_eq!(a.n_sr_triplets, b.n_sr_triplets, "{what}: SR triplets");
+    match (&a.fit, &b.fit) {
+        (Some(f), Some(g)) => {
+            assert_eq!(
+                (f.n_sr3_deriv, f.n_sr2_deriv),
+                (g.n_sr3_deriv, g.n_sr2_deriv),
+                "{what}: SR derivative counts"
+            );
+        }
+        (None, None) => {}
+        _ => panic!("{what}: fit diagnostics presence differs"),
+    }
+}
+
+/// Ordered-parallel derivative walks: the Gamma RHF RS-GDF force (SR
+/// attraction walk + fit SR 3-centre + SR metric) at 1/2/6 threads equals
+/// the FROZEN serial walks (`GradMutation::SerialDerivWalks`) BIT FOR BIT,
+/// and the serial oracle itself is thread-count independent. Every walk's
+/// output is non-zero (no vacuous comparison).
+#[test]
+fn gamma_rhf_rsgdf_force_is_bitwise_across_threads_and_vs_serial_walks() {
+    let sys = gdf_sys(cell_of(&TRI_MOVED, TRI_A, 1), &sp_basis_h());
+    assert_split_binds(&sys.prep);
+    let g = sys
+        .gdf
+        .clone()
+        .with_exxdiv(&sys.cell, ExxDiv::None)
+        .unwrap();
+    let scf = gamma_rhf_jk(
+        &sys.cell,
+        &sys.prep,
+        &sys.hc,
+        Box::new(g.j_builder()),
+        Box::new(g.k_builder()),
+    );
+    let run = |serial: bool| {
+        let m = serial.then_some(GradMutation::SerialDerivWalks);
+        gamma_rhf_gradient_rsgdf(
+            &sys.cell,
+            &sys.prep,
+            &grad_hcore_cfg(),
+            &sys.hc,
+            &sys.src(),
+            &scf,
+            ExxDiv::None,
+            &ggcfg(m),
+        )
+        .expect("gamma_rhf_gradient_rsgdf")
+    };
+    let (par, ser) = thread_runs(run);
+    let r = &ser[0];
+    assert!(nonzero(&r.parts.vsr_basis) && nonzero(&r.parts.vsr_nuc));
+    let p = &r.parts;
+    assert!(
+        nonzero(&p.fit_orb_sr) && nonzero(&p.fit_aux_sr) && nonzero(&p.fit_metric_sr),
+        "fit SR force vacuous"
+    );
+    let f = r.fit.as_ref().expect("fit diagnostics");
+    assert!(f.n_sr3_deriv > 0 && f.n_sr2_deriv > 0);
+    assert_gamma_grad_bitwise(&ser[1], r, "serial oracle at 6 vs 1 thread");
+    for (&n, g) in THREADS.iter().zip(&par) {
+        assert_gamma_grad_bitwise(g, r, &format!("RHF RS-GDF force at {n} threads vs serial"));
+    }
+}
+
+/// The same for an open-shell hybrid: H3 doublet UKS PBE0 on RS-GDF.
+#[test]
+fn gamma_uks_rsgdf_force_is_bitwise_across_threads_and_vs_serial_walks() {
+    let sys = gdf_sys(cell_of(&H3_ATOMS, cubic(4.5), 2), &pyscf_sto3g_h());
+    let dft = GammaUksConfig {
+        grid: PeriodicGridConfig {
+            neighbour_cutoff: Some(8.0),
+            ..PeriodicGridConfig::with_size(40, 50)
+        },
+        exxdiv: ExxDiv::None,
+        ..GammaUksConfig::new("PBE0")
+    };
+    let r = gamma_uks(
+        &sys.cell,
+        &sys.prep,
+        &sys.hc,
+        GammaUhfIntegrals::RsGdf(&sys.gdf),
+        &dft,
+    )
+    .expect("gamma_uks");
+    assert!(r.scf.converged);
+    let run = |serial: bool| {
+        let m = serial.then_some(GradMutation::SerialDerivWalks);
+        gamma_uks_gradient_rsgdf(
+            &sys.cell,
+            &sys.prep,
+            &grad_hcore_cfg(),
+            &sys.hc,
+            &sys.src(),
+            &r.scf,
+            &dft,
+            &ggcfg(m),
+        )
+        .expect("gamma_uks_gradient_rsgdf")
+    };
+    let (par, ser) = thread_runs(run);
+    assert!(nonzero(&ser[0].parts.vsr_basis) && nonzero(&ser[0].parts.fit_orb_sr));
+    assert_gamma_grad_bitwise(&ser[1], &ser[0], "serial oracle at 6 vs 1 thread");
+    for (&n, g) in THREADS.iter().zip(&par) {
+        assert_gamma_grad_bitwise(
+            g,
+            &ser[0],
+            &format!("UKS PBE0 RS-GDF force at {n} threads vs serial"),
+        );
+    }
+}
+
+/// The RS-GDF stress: SR attraction strain + fit SR 3-centre and metric
+/// strain walks, bitwise across threads and vs the serial walks.
+#[test]
+fn gamma_rhf_rsgdf_stress_is_bitwise_across_threads_and_vs_serial_walks() {
+    let sys = gdf_sys(cell_of(&TRI_MOVED, TRI_A, 1), &sp_basis_h());
+    let g = sys
+        .gdf
+        .clone()
+        .with_exxdiv(&sys.cell, ExxDiv::None)
+        .unwrap();
+    let scf = gamma_rhf_jk(
+        &sys.cell,
+        &sys.prep,
+        &sys.hc,
+        Box::new(g.j_builder()),
+        Box::new(g.k_builder()),
+    );
+    let run = |serial: bool| {
+        let cfg = GammaStressConfig {
+            budget_bytes: Some(AMPLE),
+            mutation: serial.then_some(StressMutation::SerialDerivWalks),
+            ..Default::default()
+        };
+        gamma_rhf_stress_rsgdf(
+            &sys.cell,
+            &sys.prep,
+            &grad_hcore_cfg(),
+            &sys.hc,
+            &sys.src(),
+            &scf,
+            ExxDiv::None,
+            &cfg,
+        )
+        .expect("gamma_rhf_stress_rsgdf")
+    };
+    let (par, ser) = thread_runs(run);
+    let r = &ser[0];
+    let nz = |m: &[[f64; 3]; 3]| m.iter().flatten().any(|x| *x != 0.0);
+    assert!(nz(&r.parts.vsr) && nz(&r.parts.fit_j3_sr) && nz(&r.parts.fit_j2_sr));
+    let check = |a: &GammaStress, what: &str| {
+        assert_mat3_bitwise(&a.de_deps, &r.de_deps, &format!("{what}: dE/dε"));
+        assert_mat3_bitwise(&a.parts.vsr, &r.parts.vsr, &format!("{what}: vsr"));
+        assert_mat3_bitwise(
+            &a.parts.fit_j3_sr,
+            &r.parts.fit_j3_sr,
+            &format!("{what}: j3_sr"),
+        );
+        assert_mat3_bitwise(
+            &a.parts.fit_j2_sr,
+            &r.parts.fit_j2_sr,
+            &format!("{what}: j2_sr"),
+        );
+    };
+    check(&ser[1], "serial oracle at 6 vs 1 thread");
+    for (&n, s) in THREADS.iter().zip(&par) {
+        check(s, &format!("RS-GDF stress at {n} threads vs serial"));
+    }
+}
+
+/// `pbc_kgrad.rs`'s even-tempered s+p aux on H.
+fn et_sp_aux() -> BasisSet {
+    let mut shells = Vec::new();
+    for a in [4.7, 1.9, 0.75, 0.3] {
+        shells.push(Shell {
+            l: 0,
+            pure: false,
+            exponents: vec![a],
+            coefficients: vec![1.0],
+        });
+    }
+    for a in [1.25, 0.5] {
+        shells.push(Shell {
+            l: 1,
+            pure: false,
+            exponents: vec![a],
+            coefficients: vec![1.0],
+        });
+    }
+    let mut m = HashMap::new();
+    m.insert(1, shells);
+    BasisSet {
+        name: "et-sp-aux-H".into(),
+        shells: m,
+        ecps: HashMap::new(),
+    }
+}
+
+/// k-point RS-GDF RHF forces (the L-weighted SR attraction visitor, the
+/// phase-folded SR 3-centre and metric walks) on H2 1×1×3: bitwise across
+/// threads and vs the serial walks (`KGradMutation::SerialDerivWalks`).
+#[test]
+fn kpoint_rhf_rsgdf_force_is_bitwise_across_threads_and_vs_serial_walks() {
+    let cell = cell_of(&[[0.3, 0.2, 0.1], [0.35, 0.12, 1.5]], cubic(4.0), 1);
+    let prep = prep_for(&cell, &pyscf_sto3g_h());
+    let aux = prep_for(&cell, &et_sp_aux());
+    let mesh = KPointMesh::gamma_centred(&cell, [1, 1, 3]).unwrap();
+    let hk = periodic_hcore_kpts(&cell, &prep, &mesh, &grad_hcore_cfg()).expect("hcore k");
+    let kcfg = KRsGdfConfig {
+        gdf: gdf_cfg(),
+        mutation: None,
+    };
+    let gdf = KRsGdf::build(&cell, &prep, &aux, &mesh, &hk.s, &kcfg).expect("KRsGdf");
+    let inj = KPointInjection {
+        s: hk.s.clone(),
+        h: hk.h.clone(),
+        vnn: hk.enn,
+        jk: Box::new(gdf.jk_builder_with_madelung(0.0)),
+    };
+    let scf_cfg = KScfConfig {
+        energy_conv: 1e-13,
+        grad_conv: 1e-10,
+        max_iter: 400,
+        ..Default::default()
+    };
+    let scf = solve_krhf_injected(&cell, &mesh, &scf_cfg, inj).expect("k-RHF");
+    assert!(scf.converged);
+    let src = KRsGdfGradSource {
+        gdf: &gdf,
+        cfg: &kcfg,
+        aux: &aux,
+    };
+    let run = |serial: bool| {
+        let cfg = KGradConfig {
+            budget_bytes: Some(AMPLE),
+            mutation: serial.then_some(KGradMutation::SerialDerivWalks),
+            ..Default::default()
+        };
+        kpoint_rhf_gradient(
+            &cell,
+            &prep,
+            &mesh,
+            &grad_hcore_cfg(),
+            &hk,
+            KGradJk::RsGdf(src),
+            &scf,
+            ExxDiv::None,
+            &cfg,
+        )
+        .expect("kpoint_rhf_gradient")
+    };
+    let (par, ser) = thread_runs(run);
+    let r = &ser[0];
+    assert!(nonzero(&r.parts.vsr_basis) && nonzero(&r.parts.vsr_nuc));
+    let check = |a: &KGradient, what: &str| {
+        assert_bitwise(&a.grad, &r.grad, &format!("{what}: grad"));
+        assert_bitwise(
+            &a.parts.vsr_basis,
+            &r.parts.vsr_basis,
+            &format!("{what}: vsr_basis"),
+        );
+        assert_bitwise(
+            &a.parts.vsr_nuc,
+            &r.parts.vsr_nuc,
+            &format!("{what}: vsr_nuc"),
+        );
+        assert_eq!(a.n_sr_triplets, r.n_sr_triplets, "{what}: SR triplets");
+    };
+    check(&ser[1], "serial oracle at 6 vs 1 thread");
+    for (&n, g) in THREADS.iter().zip(&par) {
+        check(g, &format!("k-point RS-GDF force at {n} threads vs serial"));
+    }
+}
+
+// ------------------------------------------------ periodic ECP force term
+
+/// `pbc_grad_ecp.rs` fixtures (compact H–I, LANL2DZ ECP on I).
+fn norm_shell(l: i32, exps: &[f64], coefs: &[f64]) -> Shell {
+    let lf = l as f64;
+    let mut s = 0.0;
+    for (a, ca) in exps.iter().zip(coefs) {
+        for (b, cb) in exps.iter().zip(coefs) {
+            s += ca * cb * (2.0 * (a * b).sqrt() / (a + b)).powf(lf + 1.5);
+        }
+    }
+    Shell {
+        l,
+        pure: false,
+        exponents: exps.to_vec(),
+        coefficients: coefs.iter().map(|c| c / s.sqrt()).collect(),
+    }
+}
+
+fn lanl2dz_i_ecp() -> EcpDef {
+    let ch = |l: i32, t: &[(i32, f64, f64)]| EcpShell {
+        angular_momentum: l,
+        terms: t
+            .iter()
+            .map(|&(n, z, d)| EcpTerm {
+                coef: d,
+                r_exp: n,
+                gexp: z,
+            })
+            .collect(),
+    };
+    EcpDef {
+        n_core: 46,
+        shells: vec![
+            ch(
+                3,
+                &[
+                    (0, 1.0715702, -0.0747621),
+                    (1, 44.1936028, -30.0811224),
+                    (2, 12.9367609, -75.3722721),
+                    (2, 3.1956412, -22.0563758),
+                    (2, 0.8589806, -1.6979585),
+                ],
+            ),
+            ch(
+                0,
+                &[
+                    (0, 127.9202670, 2.9380036),
+                    (1, 78.6211465, 41.2471267),
+                    (2, 36.5146237, 287.8680095),
+                    (2, 9.9065681, 114.3758506),
+                    (2, 1.9420086, 37.6547714),
+                ],
+            ),
+            ch(
+                1,
+                &[
+                    (0, 13.0035304, 2.2222630),
+                    (1, 76.0331404, 39.4090831),
+                    (2, 24.1961684, 177.4075002),
+                    (2, 6.4053433, 77.9889462),
+                    (2, 1.5851786, 25.7547641),
+                ],
+            ),
+            ch(
+                2,
+                &[
+                    (0, 40.4278108, 7.0524360),
+                    (1, 28.9084375, 33.3041635),
+                    (2, 15.6268936, 186.9453875),
+                    (2, 4.1442856, 71.9688361),
+                    (2, 0.9377235, 9.3630657),
+                ],
+            ),
+        ],
+    }
+}
+
+fn hi_compact_basis() -> BasisSet {
+    let mut shells = HashMap::new();
+    shells.insert(
+        1,
+        vec![norm_shell(
+            0,
+            &[3.42525091, 0.62391373, 0.1688554],
+            &[0.15432897, 0.53532814, 0.44463454],
+        )],
+    );
+    shells.insert(
+        53,
+        vec![
+            norm_shell(0, &[0.4653], &[1.0]),
+            norm_shell(1, &[0.32], &[1.0]),
+        ],
+    );
+    let mut ecps = HashMap::new();
+    ecps.insert(53, lanl2dz_i_ecp());
+    BasisSet {
+        name: "HI-compact".into(),
+        shells,
+        ecps,
+    }
+}
+
+fn hi_cell(bs: &BasisSet) -> Cell {
+    let atom = |symbol: &str, z: i32, r: [f64; 3]| Atom {
+        symbol: symbol.into(),
+        z,
+        x: r[0],
+        y: r[1],
+        zpos: r[2],
+        ghost: false,
+        n_core_ecp: 0,
+    };
+    let mut mol = Molecule {
+        atoms: vec![
+            atom("H", 1, [0.3, 0.2, 0.4]),
+            atom("I", 53, [0.9, -0.4, 3.3]),
+        ],
+        charge: 0,
+        multiplicity: 1,
+    };
+    mol.apply_ecp(bs);
+    let a = [[6.0, 0.0, 0.0], [0.0, 6.0, 0.0], [0.0, 0.0, 7.0]];
+    Cell::new(mol, a).expect("HI cell")
+}
+
+/// The periodic-ECP force term (one ECP derivative block per orbital image,
+/// every addend replayed serially): bitwise across threads and vs the
+/// frozen serial image loop (`EcpGradMutation::SerialImages`), on a fixed
+/// symmetric density.
+#[test]
+fn ecp_force_term_is_bitwise_across_threads_and_vs_serial_loop() {
+    let bs = hi_compact_basis();
+    let cell = hi_cell(&bs);
+    let prep = prep_for(&cell, &bs);
+    let n = prep.nbasis();
+    let d = Array2::from_shape_fn((n, n), |(i, j)| {
+        let (a, b) = (i as f64, j as f64);
+        0.3 * (1.1 * a + 0.7 * b).cos()
+            + 0.3 * (1.1 * b + 0.7 * a).cos()
+            + if i == j { 0.5 } else { 0.0 }
+    });
+    let ecfg = PeriodicEcpConfig::with_precision(GRAD_HCORE_PRECISION);
+    let run = |serial: bool| {
+        let m = serial.then_some(EcpGradMutation::SerialImages);
+        periodic_ecp_gradient_with(&cell, &prep, &ecfg, &d, m)
+            .expect("ECP gradient")
+            .expect("cell has an ECP")
+    };
+    let (par, ser) = thread_runs(run);
+    let r = &ser[0];
+    assert!(
+        r.n_calls > 1,
+        "only {} image(s): order is vacuous",
+        r.n_calls
+    );
+    assert!(nonzero(&r.bra) && nonzero(&r.ket) && nonzero(&r.centre));
+    let check = |a: &PeriodicEcpGradient, what: &str| {
+        assert_bitwise(&a.grad, &r.grad, &format!("{what}: grad"));
+        assert_bitwise(&a.bra, &r.bra, &format!("{what}: bra"));
+        assert_bitwise(&a.ket, &r.ket, &format!("{what}: ket"));
+        assert_bitwise(&a.centre, &r.centre, &format!("{what}: centre"));
+        assert_eq!(
+            (a.n_triples, a.n_triples_evaluated, a.n_calls),
+            (r.n_triples, r.n_triples_evaluated, r.n_calls),
+            "{what}: counts"
+        );
+    };
+    check(&ser[1], "serial oracle at 6 vs 1 thread");
+    for (&nt, g) in THREADS.iter().zip(&par) {
+        check(g, &format!("ECP force term at {nt} threads vs serial"));
+    }
+    // A mutant still flows through the parallel path (NoCentre drops it).
+    let nc = in_pool(6, || {
+        periodic_ecp_gradient_with(&cell, &prep, &ecfg, &d, Some(EcpGradMutation::NoCentre))
+            .unwrap()
+            .unwrap()
+    });
+    assert!(!nonzero(&nc.centre), "NoCentre: centre part not dropped");
+    assert_bitwise(&nc.bra, &r.bra, "NoCentre leaves bra untouched");
 }

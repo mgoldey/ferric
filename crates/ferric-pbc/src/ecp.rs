@@ -96,6 +96,7 @@
 use crate::budget::{bytes_of, Ledger};
 use crate::kpts::{lattice_coords, KPointMesh};
 use crate::lattice::Cell;
+use crate::ordered::{ordered_units, window_budget, Stored};
 use ferric_core::basis::BasisSet;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -837,6 +838,10 @@ pub enum EcpGradMutation {
     L0Only,
     /// Home ECP image `M = 0` only in the derivative.
     M0Only,
+    /// NOT a defect: the FROZEN pre-parallel serial image loop instead of
+    /// the ordered-parallel one ([`crate::ordered`]); the force must be
+    /// BIT-IDENTICAL either way. Never list it as a must-fail mutant.
+    SerialImages,
 }
 
 /// The periodic-ECP force term ([`periodic_ecp_gradient`]).
@@ -945,6 +950,243 @@ pub(crate) fn periodic_ecp_gradient_on(
         .map(|s| ((s.l + 1) * (s.l + 2) / 2) as usize)
         .sum();
 
+    let mut acc = EcpGradAcc {
+        g_bra: Array2::<f64>::zeros((natoms, 3)),
+        g_ket: Array2::<f64>::zeros((natoms, 3)),
+        g_cen: Array2::<f64>::zeros((natoms, 3)),
+        n_triples: 0,
+        n_eval: 0,
+        n_calls: 0,
+    };
+    if mutation == Some(EcpGradMutation::SerialImages) {
+        acc = ecp_gradient_serial(&plan, d, &aoat, nc, natoms, None, ledger)?;
+    } else {
+        let ledger_ro: &Ledger = ledger;
+        ordered_units(
+            plan.l_list.len(),
+            window_budget(ledger_ro.remaining()),
+            24 * n * n,
+            |li| ecp_image_part(&plan, li, d, nc, mutation, ledger_ro),
+            |_, part: EcpImagePart| {
+                acc.add(&part, &aoat);
+                Ok(())
+            },
+        )?;
+    }
+    let EcpGradAcc {
+        g_bra,
+        g_ket,
+        g_cen,
+        n_triples,
+        n_eval,
+        n_calls,
+    } = acc;
+    let grad = &(&g_bra + &g_ket) + &g_cen;
+    Ok(Some(PeriodicEcpGradient {
+        grad,
+        bra: g_bra,
+        ket: g_ket,
+        centre: g_cen,
+        n_triples,
+        n_triples_evaluated: n_eval,
+        n_calls,
+    }))
+}
+
+/// Running sums of the periodic-ECP force term.
+struct EcpGradAcc {
+    g_bra: Array2<f64>,
+    g_ket: Array2<f64>,
+    g_cen: Array2<f64>,
+    n_triples: usize,
+    n_eval: usize,
+    n_calls: usize,
+}
+
+/// One orbital image `L`'s force pieces, formed in parallel by
+/// [`ecp_image_part`]: every scalar the serial loop adds into a shared row,
+/// each computed exactly as the serial body computes it (products
+/// `D_μν ∂_B V`, the from-zero bra row sums, the signed centre traces), in
+/// the serial order. `ket` is `(3, n, n)`, `bra` `(3, n)`, `centre`
+/// `(3, ng)` against `centre_atom` (empty for `NoCentre`).
+struct EcpImagePart {
+    n_triples: usize,
+    n_eval: usize,
+    called: bool,
+    ket: Vec<f64>,
+    bra: Vec<f64>,
+    centre: Vec<f64>,
+    centre_atom: Vec<usize>,
+}
+
+impl Stored for EcpImagePart {
+    fn stored_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + 8 * (self.ket.len() + self.bra.len() + self.centre.len() + self.centre_atom.len())
+    }
+}
+
+impl EcpGradAcc {
+    /// The serial loop's accumulation of one image, in its exact per-row
+    /// order: for each `x`, `μ`, `ν`: `g_ket[atom ν] += D ∂_B`; then
+    /// `g_bra[atom μ] += Σ_ν D ∂_A`; then the centre traces per group.
+    fn add(&mut self, part: &EcpImagePart, aoat: &[usize]) {
+        self.n_triples += part.n_triples;
+        self.n_eval += part.n_eval;
+        if !part.called {
+            return;
+        }
+        self.n_calls += 1;
+        let n = aoat.len();
+        let ng = part.centre_atom.len();
+        for x in 0..3 {
+            for mu in 0..n {
+                let row = x * n * n + mu * n;
+                for nu in 0..n {
+                    self.g_ket[(aoat[nu], x)] += part.ket[row + nu];
+                }
+                self.g_bra[(aoat[mu], x)] += part.bra[x * n + mu];
+            }
+            for (g, &at) in part.centre_atom.iter().enumerate() {
+                self.g_cen[(at, x)] += part.centre[x * ng + g];
+            }
+        }
+    }
+}
+
+/// The PURE part of orbital image `plan.l_list[li]` (the serial loop body
+/// up to its `+=`): screen, mutation filter, compaction, the derivative
+/// block, and every addend. The transient derivative blocks are checked
+/// once per possible concurrent image (threads + 1), as the parallel SR
+/// walks check their scratch.
+fn ecp_image_part(
+    plan: &EcpPlan,
+    li: usize,
+    d: &Array2<f64>,
+    nc: usize,
+    mutation: Option<EcpGradMutation>,
+    ledger: &Ledger,
+) -> Result<EcpImagePart, FerricError> {
+    let n = plan.nbasis;
+    let l = &plan.l_list[li];
+    let ket = plan.ket_shells(l);
+    let kept = plan.kept(&ket);
+    let mut part = EcpImagePart {
+        n_triples: kept.len(),
+        n_eval: 0,
+        called: false,
+        ket: Vec::new(),
+        bra: Vec::new(),
+        centre: Vec::new(),
+        centre_atom: Vec::new(),
+    };
+    let l0 = l.iter().all(|v| v.abs() < 1e-9);
+    let kept: Vec<(usize, usize, usize)> = match mutation {
+        Some(EcpGradMutation::L0Only) if !l0 => Vec::new(),
+        Some(EcpGradMutation::M0Only) => kept
+            .into_iter()
+            .filter(|&(_, _, u)| plan.sites[u].home)
+            .collect(),
+        _ => kept,
+    };
+    if kept.is_empty() {
+        return Ok(part);
+    }
+    part.n_eval = kept.len();
+    let (centres, site_of, mask) = plan.compact(&kept);
+    let (groups, group_atom) = centre_groups(plan, &site_of);
+    let ng = group_atom.len();
+    let concurrent = rayon::current_num_threads().saturating_add(1);
+    ledger.check(
+        &format!(
+            "periodic ECP derivative blocks for one image ({ng} centre atoms) × {concurrent} \
+             concurrent images"
+        ),
+        bytes_of(((6 + 3 * ng) * (nc * nc + n * n)) as u64, 8).saturating_mul(concurrent),
+    )?;
+    let blk = ecp_block_deriv_spherical(
+        &plan.shells,
+        &ket,
+        &centres,
+        Some(mask.as_slice()),
+        &groups,
+        ng,
+    )?;
+    if blk.nrow != n || blk.ncol != n {
+        return Err(FerricError::Libint(format!(
+            "periodic ECP gradient: derivative block is {}×{}, expected {n}×{n}",
+            blk.nrow, blk.ncol
+        )));
+    }
+    part.called = true;
+    part.ket = vec![0.0; 3 * n * n];
+    part.bra = vec![0.0; 3 * n];
+    let no_centre = matches!(mutation, Some(EcpGradMutation::NoCentre));
+    let sign = if matches!(mutation, Some(EcpGradMutation::CentreSign)) {
+        -1.0
+    } else {
+        1.0
+    };
+    for x in 0..3 {
+        let (bx, kx) = (&blk.bra[x], &blk.ket[x]);
+        for mu in 0..n {
+            let row = mu * n;
+            let mut acc_b = 0.0;
+            for nu in 0..n {
+                let dmn = d[(mu, nu)];
+                acc_b += dmn * bx[row + nu];
+                part.ket[x * n * n + row + nu] = dmn * kx[row + nu];
+            }
+            part.bra[x * n + mu] = acc_b;
+        }
+        if no_centre {
+            continue;
+        }
+        for cxg in blk.centre.iter().take(ng) {
+            let cx = &cxg[x];
+            let s: f64 = d.iter().zip(cx.iter()).map(|(a, b)| a * b).sum();
+            part.centre.push(sign * s);
+        }
+    }
+    if !no_centre {
+        // `centre` was pushed x-major, group-minor: `[x · ng + g]`.
+        part.centre_atom = group_atom;
+    }
+    Ok(part)
+}
+
+/// Local centre groups of one image: the distinct cell atoms among its
+/// sites, in first-appearance order, and each local centre's group.
+fn centre_groups(plan: &EcpPlan, site_of: &[usize]) -> (Vec<usize>, Vec<usize>) {
+    let mut group_of_atom: HashMap<usize, usize> = HashMap::new();
+    let mut group_atom: Vec<usize> = Vec::new();
+    let groups: Vec<usize> = site_of
+        .iter()
+        .map(|&u| {
+            let at = plan.sites[u].atom;
+            *group_of_atom.entry(at).or_insert_with(|| {
+                group_atom.push(at);
+                group_atom.len() - 1
+            })
+        })
+        .collect();
+    (groups, group_atom)
+}
+
+/// FROZEN pre-parallel serial image loop of [`periodic_ecp_gradient_on`]
+/// (the bit-identity oracle of the ordered-parallel loop; do not
+/// "improve").
+#[allow(clippy::too_many_arguments)]
+fn ecp_gradient_serial(
+    plan: &EcpPlan,
+    d: &Array2<f64>,
+    aoat: &[usize],
+    nc: usize,
+    natoms: usize,
+    mutation: Option<EcpGradMutation>,
+    ledger: &Ledger,
+) -> Result<EcpGradAcc, FerricError> {
+    let n = plan.nbasis;
     let mut g_bra = Array2::<f64>::zeros((natoms, 3));
     let mut g_ket = Array2::<f64>::zeros((natoms, 3));
     let mut g_cen = Array2::<f64>::zeros((natoms, 3));
@@ -1030,14 +1272,12 @@ pub(crate) fn periodic_ecp_gradient_on(
             }
         }
     }
-    let grad = &(&g_bra + &g_ket) + &g_cen;
-    Ok(Some(PeriodicEcpGradient {
-        grad,
-        bra: g_bra,
-        ket: g_ket,
-        centre: g_cen,
+    Ok(EcpGradAcc {
+        g_bra,
+        g_ket,
+        g_cen,
         n_triples,
-        n_triples_evaluated: n_eval,
+        n_eval,
         n_calls,
-    }))
+    })
 }

@@ -189,6 +189,12 @@ pub enum StressMutation {
     NoJ3G0Vol,
     /// RS-GDF: drop the J3 G = 0 overlap term `Σ M_g0 dS`.
     NoG0,
+    /// NOT a defect: run the FROZEN pre-parallel serial SR derivative walks
+    /// (SR attraction, RS-GDF SR 3-centre and metric) instead of the
+    /// ordered-parallel ones ([`crate::ordered`]); the stress must be
+    /// BIT-IDENTICAL either way (`tests/pbc_parallel_bitwise.rs`). Never list
+    /// it as a must-fail mutant.
+    SerialDerivWalks,
 }
 
 /// Settings for the stress entry points.
@@ -953,7 +959,9 @@ fn assemble(
             .min(hcore_cfg.nucleus_exponent),
         ..*hcore_cfg
     };
-    let (vsr, n_sr_triplets) = sr_attraction_strain(cell, prep, &sr_cfg, &d, drop_images, ledger)?;
+    let serial = is(StressMutation::SerialDerivWalks);
+    let (vsr, n_sr_triplets) =
+        sr_attraction_strain(cell, prep, &sr_cfg, &d, drop_images, serial, ledger)?;
     parts.vsr = vsr;
 
     let ft_terms = PairFtStrainTerms {
@@ -1060,6 +1068,7 @@ fn assemble(
                 images: !drop_images,
                 aux_ft3: !is(StressMutation::NoAuxFt) && !is(StressMutation::NoAuxFt3),
                 aux_ft2: !is(StressMutation::NoAuxFt),
+                serial: is(StressMutation::SerialDerivWalks),
             };
             let fs = fit_strain(src.gdf, cell, prep, src.aux, &fd.y, &fd.wm, terms, ledger)?;
             parts.fit_j3_sr = fs.j3_sr;

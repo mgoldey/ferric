@@ -306,7 +306,7 @@ fn sr_three_index_binned_serial_oracle(
 
 /// The SR [`Stage`] of an RS-GDF build at `cfg` (test/diagnostic entry
 /// points), and its pair images.
-fn diagnostic_stage<'a>(
+pub(super) fn diagnostic_stage<'a>(
     cell: &'a Cell,
     obs: &'a PreparedBasis,
     aux: &'a PreparedBasis,
@@ -613,6 +613,14 @@ impl KRsGdf {
     ) -> Result<Self, FerricError> {
         let g = &cfg.gdf;
         g.validate()?;
+        if g.range_split.is_some() {
+            return Err(FerricError::General(
+                "KRsGdf: the RS-GDF range split (RsGdfConfig::range_split) is Gamma-only so far; \
+                 the k-point moved blocks (Bloch pair FT of the smooth pieces over K = G + q) are \
+                 not implemented — build with range_split = None"
+                    .into(),
+            ));
+        }
         super::require_pure_aux(aux, "KRsGdf")?;
         let n = obs.nbasis();
         let n2 = n * n;

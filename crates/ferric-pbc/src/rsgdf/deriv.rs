@@ -73,6 +73,7 @@ use super::{
 use crate::budget::{bytes_of, Ledger};
 use crate::hcore::{gvector_list_bytes, half_gvectors, G_CHUNK_BYTES};
 use crate::lattice::Cell;
+use crate::ordered::{window_budget, Stored};
 use crate::pair_ft::{pair_ft_deriv_chunked, DEFAULT_PAIR_FT_THRESH};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -282,7 +283,10 @@ pub(crate) struct FitDerivatives {
 
 /// Contract `Y` with `dJ3` and `Wm` with `dJ2` (module doc). `obs` must be
 /// the orbital basis B was built with (on `cell`'s atoms), `aux` its aux
-/// basis.
+/// basis. The SR walks are ordered-parallel and BIT-IDENTICAL to the serial
+/// walks ([`sr3_force`], [`sr2_force`]); `serial` runs the frozen serial
+/// oracles instead.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn fit_derivatives(
     gdf: &RsGdf,
     cell: &Cell,
@@ -290,6 +294,7 @@ pub(crate) fn fit_derivatives(
     aux: &PreparedBasis,
     y: &Array2<f64>,
     wm: &Array2<f64>,
+    serial: bool,
     ledger: &mut Ledger,
 ) -> Result<FitDerivatives, FerricError> {
     let gp = gdf
@@ -332,72 +337,19 @@ pub(crate) fn fit_derivatives(
         bytes_of(cell.translation_count_bound(rpair)?, 24),
     )?;
     let images = cell.translations(rpair)?;
-    let mut orb_sr = Array2::<f64>::zeros((natoms, 3));
-    let mut aux3_sr = Array2::<f64>::zeros((naux, 3));
-    let mut eng3 = Engine::new_3center_deriv(Operator::erfc(st.omega), obs, aux, ENGINE_PRECISION)?;
-    let n_sr3 = st.sr_three_index_walk(&images, |i1, i2, ip, l, t| {
-        let blk = match eng3.compute_eri3_deriv_shifted(obs, aux, ip, i1, i2, [t, [0.0; 3], l])? {
-            Some(b) => b,
-            None => return Ok(()),
-        };
-        let (a, b, p) = (&st.obs_sh[i1], &st.obs_sh[i2], &st.aux_sh[ip]);
-        let nb = p.nfun * a.nfun * b.nfun;
-        let mut ga = [0.0_f64; 3];
-        let mut gb = [0.0_f64; 3];
-        for pp in 0..p.nfun {
-            let prow = p.off + pp;
-            let mut gpx = [0.0_f64; 3];
-            for i in 0..a.nfun {
-                let r0 = (a.off + i) * n + b.off;
-                for j in 0..b.nfun {
-                    let yv = y[(prow, r0 + j)];
-                    if yv == 0.0 {
-                        continue;
-                    }
-                    let idx = (pp * a.nfun + i) * b.nfun + j;
-                    for x in 0..3 {
-                        gpx[x] += yv * blk[x * nb + idx];
-                        ga[x] += yv * blk[(3 + x) * nb + idx];
-                        gb[x] += yv * blk[(6 + x) * nb + idx];
-                    }
-                }
-            }
-            for x in 0..3 {
-                aux3_sr[(prow, x)] += gpx[x];
-            }
-        }
-        for x in 0..3 {
-            orb_sr[(sh2at[i1], x)] += ga[x];
-            orb_sr[(sh2at[i2], x)] += gb[x];
-        }
-        Ok(())
-    })?;
+    let budget = window_budget(ledger.remaining());
+    let (orb_sr, aux3_sr, n_sr3) = if serial {
+        sr3_force_serial(&st, &images, y, natoms)?
+    } else {
+        sr3_force(&st, &images, natoms, budget, |_, _| Y3::AuxMajor(y))?
+    };
 
     // --- SR metric: d/dQ = −d/dP.
-    let mut metric_sr = Array2::<f64>::zeros((naux, 3));
-    let mut eng2 = Engine::new_2center_deriv(Operator::erfc(st.omega), aux, ENGINE_PRECISION)?;
-    let n_sr2 = st.sr_metric_walk(|ip, iq, t| {
-        let blk = match eng2.compute_eri2_deriv_shifted(aux, ip, iq, t)? {
-            Some(b) => b,
-            None => return Ok(()),
-        };
-        let (p, q) = (&st.aux_sh[ip], &st.aux_sh[iq]);
-        let nb = p.nfun * q.nfun;
-        for i in 0..p.nfun {
-            for j in 0..q.nfun {
-                let wv = wm[(p.off + i, q.off + j)];
-                if wv == 0.0 {
-                    continue;
-                }
-                for x in 0..3 {
-                    let v = wv * blk[x * nb + i * q.nfun + j];
-                    metric_sr[(p.off + i, x)] += v;
-                    metric_sr[(q.off + j, x)] -= v;
-                }
-            }
-        }
-        Ok(())
-    })?;
+    let (metric_sr, n_sr2) = if serial {
+        sr2_force_serial(&st, wm)?
+    } else {
+        sr2_force(&st, budget, |_| wm)?
+    };
 
     // --- LR: the energy's half G sphere; P, Q, X per chunk.
     let omega = st.omega;
@@ -515,6 +467,287 @@ pub(crate) fn fit_derivatives(
         n_g_half: gv.len(),
         n_chunks,
     })
+}
+
+// ---------------------------------------------------------------------------
+// SR derivative walks: ordered-parallel (production) and frozen serial
+// (oracle). Shared with the k-point forces (`kpoint::kderiv`).
+// ---------------------------------------------------------------------------
+
+/// The fitted 3-index weight of one SR triplet's `(P, μν)` elements:
+/// Gamma `Y[P, μν]` (aux-major) or a k-point phase-folded bin `Z[μν, P]`
+/// (pair-major). Both return the element the serial bodies read.
+#[derive(Clone, Copy)]
+pub(super) enum Y3<'w> {
+    AuxMajor(&'w Array2<f64>),
+    PairMajor(&'w Array2<f64>),
+}
+
+impl Y3<'_> {
+    #[inline]
+    fn at(self, prow: usize, row: usize) -> f64 {
+        match self {
+            Y3::AuxMajor(y) => y[(prow, row)],
+            Y3::PairMajor(z) => z[(row, prow)],
+        }
+    }
+}
+
+/// One SR 3-centre triplet's force contributions, each summed FROM ZERO in
+/// the serial body's order: `gpx[pp]` (aux function `P.off + pp`), `ga`
+/// (bra atom), `gb` (ket atom). The serial walk adds each of them ONCE into
+/// its shared row, so forming them in parallel keeps every row's scalar
+/// sequence.
+pub(super) struct Sr3Contrib {
+    gpx: Vec<[f64; 3]>,
+    ga: [f64; 3],
+    gb: [f64; 3],
+}
+
+impl Stored for Sr3Contrib {
+    fn stored_bytes(&self) -> usize {
+        std::mem::size_of::<Self>() + 24 * self.gpx.len()
+    }
+}
+
+/// The serial body's contraction of one derivative block `blk`
+/// (`[d/dP, d/d(sh1), d/d(sh2)]`, each `(nP, n1, n2)`) with `y`.
+fn sr3_contract(
+    st: &Stage<'_>,
+    blk: &[f64],
+    (i1, i2, ip): (usize, usize, usize),
+    y: Y3<'_>,
+) -> Sr3Contrib {
+    let n = st.obs.nbasis();
+    let (a, b, p) = (&st.obs_sh[i1], &st.obs_sh[i2], &st.aux_sh[ip]);
+    let nb = p.nfun * a.nfun * b.nfun;
+    let mut ga = [0.0_f64; 3];
+    let mut gb = [0.0_f64; 3];
+    let mut gpxs = Vec::with_capacity(p.nfun);
+    for pp in 0..p.nfun {
+        let prow = p.off + pp;
+        let mut gpx = [0.0_f64; 3];
+        for i in 0..a.nfun {
+            let r0 = (a.off + i) * n + b.off;
+            for j in 0..b.nfun {
+                let yv = y.at(prow, r0 + j);
+                if yv == 0.0 {
+                    continue;
+                }
+                let idx = (pp * a.nfun + i) * b.nfun + j;
+                for x in 0..3 {
+                    gpx[x] += yv * blk[x * nb + idx];
+                    ga[x] += yv * blk[(3 + x) * nb + idx];
+                    gb[x] += yv * blk[(6 + x) * nb + idx];
+                }
+            }
+        }
+        gpxs.push(gpx);
+    }
+    Sr3Contrib { gpx: gpxs, ga, gb }
+}
+
+/// The serial body's accumulation of one triplet into the shared rows.
+fn sr3_add(
+    st: &Stage<'_>,
+    c: &Sr3Contrib,
+    (i1, i2, ip): (usize, usize, usize),
+    orb: &mut Array2<f64>,
+    auxg: &mut Array2<f64>,
+) {
+    let sh2at = st.obs.shell_to_atom();
+    let p = &st.aux_sh[ip];
+    for (pp, gpx) in c.gpx.iter().enumerate() {
+        for x in 0..3 {
+            auxg[(p.off + pp, x)] += gpx[x];
+        }
+    }
+    for x in 0..3 {
+        orb[(sh2at[i1], x)] += c.ga[x];
+        orb[(sh2at[i2], x)] += c.gb[x];
+    }
+}
+
+/// SR 3-centre force pieces `(orbital natoms × 3, aux naux × 3, count)`:
+/// `Σ y · d(μ_0 ν_L | P_T)` over the energy's triplets, `y` of each triplet
+/// from `weights(L, T)`. ORDERED-PARALLEL (module [`crate::ordered`]):
+/// derivative block + [`Sr3Contrib`] in parallel, [`sr3_add`] serially in
+/// the serial walk's order — BIT-IDENTICAL to [`sr3_force_serial`] (Gamma)
+/// and to the k-point oracle.
+pub(super) fn sr3_force<'w, W>(
+    st: &Stage<'_>,
+    images: &[[f64; 3]],
+    natoms: usize,
+    budget: usize,
+    weights: W,
+) -> Result<(Array2<f64>, Array2<f64>, usize), FerricError>
+where
+    W: Fn([f64; 3], [f64; 3]) -> Y3<'w> + Sync,
+{
+    let mut orb = Array2::<f64>::zeros((natoms, 3));
+    let mut auxg = Array2::<f64>::zeros((st.aux.nbasis(), 3));
+    let pool = st.sr3_deriv_pool()?;
+    let count = st.sr_three_index_ordered(
+        images,
+        &pool,
+        budget,
+        |eng, i1, i2, ip, l, t| {
+            Ok(eng
+                .compute_eri3_deriv_shifted(st.obs, st.aux, ip, i1, i2, [t, [0.0; 3], l])?
+                .map(|blk| sr3_contract(st, blk, (i1, i2, ip), weights(l, t))))
+        },
+        |i1, i2, ip, _, _, c: Sr3Contrib| {
+            sr3_add(st, &c, (i1, i2, ip), &mut orb, &mut auxg);
+            Ok(())
+        },
+    )?;
+    Ok((orb, auxg, count))
+}
+
+/// The serial body's metric accumulation of one `d/dP (P_0 | Q_T)` block
+/// (`blk`, `[x · nb + i nQ + j]`), `d/dQ = −d/dP`.
+fn sr2_add(
+    st: &Stage<'_>,
+    blk: &[f64],
+    (ip, iq): (usize, usize),
+    wm: &Array2<f64>,
+    metric: &mut Array2<f64>,
+) {
+    let (p, q) = (&st.aux_sh[ip], &st.aux_sh[iq]);
+    let nb = p.nfun * q.nfun;
+    for i in 0..p.nfun {
+        for j in 0..q.nfun {
+            let wv = wm[(p.off + i, q.off + j)];
+            if wv == 0.0 {
+                continue;
+            }
+            for x in 0..3 {
+                let v = wv * blk[x * nb + i * q.nfun + j];
+                metric[(p.off + i, x)] += v;
+                metric[(q.off + j, x)] -= v;
+            }
+        }
+    }
+}
+
+/// SR metric force piece `(naux × 3, count)`: `Σ Wm · d(P_0 | Q_T)` with
+/// `Wm` of each pair from `weights(T)`. ORDERED-PARALLEL: the derivative
+/// block (its `d/dP` third) is computed in parallel and STORED; the serial
+/// body [`sr2_add`] (a per-ELEMENT `+=`/`−=` into shared aux rows, so no
+/// per-pair subtotal is allowed) replays in walk order — BIT-IDENTICAL to
+/// [`sr2_force_serial`] and the k-point oracle.
+pub(super) fn sr2_force<'w, W>(
+    st: &Stage<'_>,
+    budget: usize,
+    weights: W,
+) -> Result<(Array2<f64>, usize), FerricError>
+where
+    W: Fn([f64; 3]) -> &'w Array2<f64>,
+{
+    let mut metric = Array2::<f64>::zeros((st.aux.nbasis(), 3));
+    let pool = st.sr2_deriv_pool()?;
+    let count = st.sr_metric_ordered(
+        &pool,
+        budget,
+        |eng, ip, iq, t| {
+            let nb3 = 3 * st.aux_sh[ip].nfun * st.aux_sh[iq].nfun;
+            Ok(eng
+                .compute_eri2_deriv_shifted(st.aux, ip, iq, t)?
+                .map(|blk| blk[..nb3].to_vec()))
+        },
+        |ip, iq, t, blk: Vec<f64>| {
+            sr2_add(st, &blk, (ip, iq), weights(t), &mut metric);
+            Ok(())
+        },
+    )?;
+    Ok((metric, count))
+}
+
+/// FROZEN pre-parallel serial SR 3-centre force walk (Gamma; the
+/// bit-identity oracle of [`sr3_force`]; do not "improve").
+fn sr3_force_serial(
+    st: &Stage<'_>,
+    images: &[[f64; 3]],
+    y: &Array2<f64>,
+    natoms: usize,
+) -> Result<(Array2<f64>, Array2<f64>, usize), FerricError> {
+    let (obs, aux) = (st.obs, st.aux);
+    let n = obs.nbasis();
+    let naux = aux.nbasis();
+    let sh2at = obs.shell_to_atom().to_vec();
+    let mut orb_sr = Array2::<f64>::zeros((natoms, 3));
+    let mut aux3_sr = Array2::<f64>::zeros((naux, 3));
+    let mut eng3 = Engine::new_3center_deriv(Operator::erfc(st.omega), obs, aux, ENGINE_PRECISION)?;
+    let n_sr3 = st.sr_three_index_walk(images, |i1, i2, ip, l, t| {
+        let blk = match eng3.compute_eri3_deriv_shifted(obs, aux, ip, i1, i2, [t, [0.0; 3], l])? {
+            Some(b) => b,
+            None => return Ok(()),
+        };
+        let (a, b, p) = (&st.obs_sh[i1], &st.obs_sh[i2], &st.aux_sh[ip]);
+        let nb = p.nfun * a.nfun * b.nfun;
+        let mut ga = [0.0_f64; 3];
+        let mut gb = [0.0_f64; 3];
+        for pp in 0..p.nfun {
+            let prow = p.off + pp;
+            let mut gpx = [0.0_f64; 3];
+            for i in 0..a.nfun {
+                let r0 = (a.off + i) * n + b.off;
+                for j in 0..b.nfun {
+                    let yv = y[(prow, r0 + j)];
+                    if yv == 0.0 {
+                        continue;
+                    }
+                    let idx = (pp * a.nfun + i) * b.nfun + j;
+                    for x in 0..3 {
+                        gpx[x] += yv * blk[x * nb + idx];
+                        ga[x] += yv * blk[(3 + x) * nb + idx];
+                        gb[x] += yv * blk[(6 + x) * nb + idx];
+                    }
+                }
+            }
+            for x in 0..3 {
+                aux3_sr[(prow, x)] += gpx[x];
+            }
+        }
+        for x in 0..3 {
+            orb_sr[(sh2at[i1], x)] += ga[x];
+            orb_sr[(sh2at[i2], x)] += gb[x];
+        }
+        Ok(())
+    })?;
+    Ok((orb_sr, aux3_sr, n_sr3))
+}
+
+/// FROZEN pre-parallel serial SR metric force walk (Gamma; the
+/// bit-identity oracle of [`sr2_force`]; do not "improve").
+fn sr2_force_serial(st: &Stage<'_>, wm: &Array2<f64>) -> Result<(Array2<f64>, usize), FerricError> {
+    let aux = st.aux;
+    let naux = aux.nbasis();
+    let mut metric_sr = Array2::<f64>::zeros((naux, 3));
+    let mut eng2 = Engine::new_2center_deriv(Operator::erfc(st.omega), aux, ENGINE_PRECISION)?;
+    let n_sr2 = st.sr_metric_walk(|ip, iq, t| {
+        let blk = match eng2.compute_eri2_deriv_shifted(aux, ip, iq, t)? {
+            Some(b) => b,
+            None => return Ok(()),
+        };
+        let (p, q) = (&st.aux_sh[ip], &st.aux_sh[iq]);
+        let nb = p.nfun * q.nfun;
+        for i in 0..p.nfun {
+            for j in 0..q.nfun {
+                let wv = wm[(p.off + i, q.off + j)];
+                if wv == 0.0 {
+                    continue;
+                }
+                for x in 0..3 {
+                    let v = wv * blk[x * nb + i * q.nfun + j];
+                    metric_sr[(p.off + i, x)] += v;
+                    metric_sr[(q.off + j, x)] -= v;
+                }
+            }
+        }
+        Ok(())
+    })?;
+    Ok((metric_sr, n_sr2))
 }
 
 /// Check how aux centres map onto cell atoms: `jac` is `dC_k/dR_A`

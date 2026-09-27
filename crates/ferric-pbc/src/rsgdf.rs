@@ -85,6 +85,17 @@
 //! ferric-scf. Using ONE B for both J and K also keeps the fitted ERI a single
 //! positive-semidefinite `BᵀB`.
 //!
+//! # Range split (opt-in, Gamma energy path)
+//!
+//! [`RsGdfConfig::range_split`] = `Some(`[`RangeSplit`]`)` splits every
+//! shell by primitive exponent and moves the blocks whose FT converges in
+//! the LR sphere (`(any pair | smooth aux)`, `(ss pair | compact aux)`,
+//! diffuse metric terms) from the SR real-space walks to G space; the
+//! G = 0 subtract gets the kept inputs (PySCF grouping). FINDINGS
+//! "Iteration 23"; details in the `split` module. `None` is today's
+//! construction bit for bit. Forces, stress and the k-point build refuse
+//! a split build ([`RsGdf::range_split`]).
+//!
 //! # Forces
 //!
 //! [`RsGdf::build_for_gradient`] keeps the metric eigen-data the analytic
@@ -103,6 +114,7 @@ use crate::ewald::madelung_constant;
 use crate::hcore::{gvector_list_bytes, half_gvectors, G_CHUNK_BYTES};
 use crate::kpts::lattice_coords;
 use crate::lattice::Cell;
+use crate::ordered::{ordered_units, Stored};
 use crate::pair_ft::pair_ft_chunked;
 use crate::pair_ft::residues::residue_index;
 use crate::timing::{CallClock, PbcTimings, StageClock};
@@ -123,7 +135,13 @@ use std::sync::Mutex;
 
 pub(crate) mod deriv;
 pub mod kpoint;
+mod split;
 pub(crate) mod strain;
+
+pub use split::{
+    sr_walk_counts, RangeSplit, RangeSplitMutant, SrWalkCounts, DEFAULT_RANGE_SPLIT_LAMBDA,
+    RANGE_SPLIT_NEG_EIG_GUARD,
+};
 
 pub use deriv::RsGdfFitDiagnostics;
 
@@ -178,6 +196,10 @@ pub struct RsGdfConfig {
     pub budget_bytes: Option<usize>,
     /// G = 0 handling — [`G0Handling::Consistent`] except in mutation tests.
     pub g0: G0Handling,
+    /// Opt-in primitive-level range split of the SR sums (`split` module
+    /// doc; Gamma energy path only). `None` = today's construction, bit for
+    /// bit. The k-point build and [`RsGdf::build_for_gradient`] refuse it.
+    pub range_split: Option<RangeSplit>,
 }
 
 impl Default for RsGdfConfig {
@@ -190,6 +212,7 @@ impl Default for RsGdfConfig {
             sr_screen: true,
             budget_bytes: None,
             g0: G0Handling::Consistent,
+            range_split: None,
         }
     }
 }
@@ -274,6 +297,9 @@ pub struct RsGdf {
     /// borrowing this B, i.e. every SCF stage run on it).
     j_clock: CallClock,
     k_clock: CallClock,
+    /// The build's [`RsGdfConfig::range_split`] (derivative callers refuse
+    /// `Some`: their walks do not follow the partition).
+    range_split: Option<RangeSplit>,
 }
 
 /// The pre-solve pieces of an RS-GDF build ([`RsGdf::build_with_fit_parts`]),
@@ -313,6 +339,7 @@ fn aux_function_centers(prep: &PreparedBasis) -> Vec<[f64; 3]> {
 // cart→sph for pure l >= 2 — the conventions of `pair_ft`).
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 struct GShell {
     l: usize,
     pure: bool,
@@ -1396,6 +1423,195 @@ impl Stage<'_> {
     }
 }
 
+/// One unit of an ordered SR derivative walk ([`Stage::sr_three_index_ordered`],
+/// [`Stage::sr_metric_ordered`]): the unit's screened count and, per kept
+/// entry with a contribution, its `(aux shell, T)` and value, in walk order.
+struct SrUnit<V> {
+    count: usize,
+    items: Vec<(usize, [f64; 3], V)>,
+}
+
+impl<V: Stored> Stored for SrUnit<V> {
+    fn stored_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self
+                .items
+                .iter()
+                .map(|(_, _, v)| 32 + v.stored_bytes())
+                .sum::<usize>()
+    }
+}
+
+/// The ordered-parallel SR derivative walks of the forces and the stress
+/// ([`deriv`], [`strain`], [`kpoint`]'s `kderiv`). See [`crate::ordered`]:
+/// the pure part (screen + derivative integrals + any per-triplet subtotal
+/// the serial code forms from zero) runs in parallel over a window of
+/// units; `apply` runs SERIALLY in exactly the serial walk's order, so every
+/// shared output (atom rows, aux rows, the stress) receives the serial
+/// scalar sequence: BIT-IDENTICAL to [`Stage::sr_three_index_walk`] /
+/// [`Stage::sr_metric_walk`] driving the same body, at any thread count.
+impl Stage<'_> {
+    /// One erfc 3-centre DERIVATIVE engine per rayon worker.
+    fn sr3_deriv_pool(&self) -> Result<EnginePool, FerricError> {
+        EnginePool::from_fn(|| {
+            Engine::new_3center_deriv(
+                Operator::erfc(self.omega),
+                self.obs,
+                self.aux,
+                ENGINE_PRECISION,
+            )
+        })
+    }
+
+    /// One erfc 2-centre DERIVATIVE engine per rayon worker.
+    fn sr2_deriv_pool(&self) -> Result<EnginePool, FerricError> {
+        EnginePool::from_fn(|| {
+            Engine::new_2center_deriv(Operator::erfc(self.omega), self.aux, ENGINE_PRECISION)
+        })
+    }
+
+    /// One `(L, i1, i2)` unit of [`Stage::sr_three_index_ordered`]: the
+    /// serial walk's own body [`Stage::sr3_pair_image`], collecting
+    /// `eval`'s values in walk order.
+    fn sr3_unit<V, E>(
+        &self,
+        eng: &mut Engine,
+        (l, i1, i2): ([f64; 3], usize, usize),
+        global: f64,
+        eval: &E,
+    ) -> Result<SrUnit<V>, FerricError>
+    where
+        E: Fn(
+            &mut Engine,
+            usize,
+            usize,
+            usize,
+            [f64; 3],
+            [f64; 3],
+        ) -> Result<Option<V>, FerricError>,
+    {
+        let mut count = 0usize;
+        let mut items = Vec::new();
+        let mut visit =
+            |_: usize, _: usize, ip: usize, _: [f64; 3], t: [f64; 3]| -> Result<(), FerricError> {
+                if let Some(v) = eval(eng, i1, i2, ip, l, t)? {
+                    items.push((ip, t, v));
+                }
+                Ok(())
+            };
+        self.sr3_pair_image(i1, i2, &l, global, &mut count, &mut visit)?;
+        Ok(SrUnit { count, items })
+    }
+
+    /// One `(P, Q)` unit of [`Stage::sr_metric_ordered`]: the serial walk's
+    /// own body [`Stage::sr2_pair`], collecting `eval`'s values in walk
+    /// order.
+    fn sr2_unit<V, E>(
+        &self,
+        eng: &mut Engine,
+        (ip, iq): (usize, usize),
+        global: f64,
+        eval: &E,
+    ) -> Result<SrUnit<V>, FerricError>
+    where
+        E: Fn(&mut Engine, usize, usize, [f64; 3]) -> Result<Option<V>, FerricError>,
+    {
+        let mut count = 0usize;
+        let mut items = Vec::new();
+        let mut visit = |_: usize, _: usize, t: [f64; 3]| -> Result<(), FerricError> {
+            if let Some(v) = eval(eng, ip, iq, t)? {
+                items.push((iq, t, v));
+            }
+            Ok(())
+        };
+        self.sr2_pair(ip, iq, global, &mut count, &mut visit)?;
+        Ok(SrUnit { count, items })
+    }
+
+    /// [`Stage::sr_three_index_walk`], ordered-parallel: units `(L, i1, i2)`
+    /// in `L → i1 → i2` order, each running [`Stage::sr3_pair_image`] (the
+    /// serial walk's own body) with `eval(engine, i1, i2, P, L, T)` (PURE;
+    /// `None` = no contribution) in parallel; then `apply(i1, i2, P, L, T,
+    /// value)` serially in walk order. Returns the triplet count.
+    fn sr_three_index_ordered<V, E, A>(
+        &self,
+        images: &[[f64; 3]],
+        pool: &EnginePool,
+        budget: usize,
+        eval: E,
+        mut apply: A,
+    ) -> Result<usize, FerricError>
+    where
+        V: Send + Stored,
+        E: Fn(
+                &mut Engine,
+                usize,
+                usize,
+                usize,
+                [f64; 3],
+                [f64; 3],
+            ) -> Result<Option<V>, FerricError>
+            + Sync,
+        A: FnMut(usize, usize, usize, [f64; 3], [f64; 3], V) -> Result<(), FerricError>,
+    {
+        let nsh = self.obs_sh.len();
+        let global = self.sr3_global_radius();
+        let unit_of = |u: usize| (images[u / (nsh * nsh)], (u / nsh) % nsh, u % nsh);
+        let mut count = 0usize;
+        ordered_units(
+            images.len() * nsh * nsh,
+            budget,
+            0,
+            |u| pool.with(|eng| self.sr3_unit(eng, unit_of(u), global, &eval)),
+            |u, unit: SrUnit<V>| {
+                let (l, i1, i2) = unit_of(u);
+                count += unit.count;
+                for (ip, t, v) in unit.items {
+                    apply(i1, i2, ip, l, t, v)?;
+                }
+                Ok(())
+            },
+        )?;
+        Ok(count)
+    }
+
+    /// [`Stage::sr_metric_walk`], ordered-parallel: units `(P, Q)` in
+    /// `P → Q` order, each running [`Stage::sr2_pair`] with `eval(engine, P,
+    /// Q, T)` (PURE) in parallel; then `apply(P, Q, T, value)` serially in
+    /// walk order. Returns the pair count.
+    fn sr_metric_ordered<V, E, A>(
+        &self,
+        pool: &EnginePool,
+        budget: usize,
+        eval: E,
+        mut apply: A,
+    ) -> Result<usize, FerricError>
+    where
+        V: Send + Stored,
+        E: Fn(&mut Engine, usize, usize, [f64; 3]) -> Result<Option<V>, FerricError> + Sync,
+        A: FnMut(usize, usize, [f64; 3], V) -> Result<(), FerricError>,
+    {
+        let nsh = self.aux_sh.len();
+        let global = self.sr2_global_radius();
+        let mut count = 0usize;
+        ordered_units(
+            nsh * nsh,
+            budget,
+            0,
+            |u| pool.with(|eng| self.sr2_unit(eng, (u / nsh, u % nsh), global, &eval)),
+            |u, unit: SrUnit<V>| {
+                let (ip, iq) = (u / nsh, u % nsh);
+                count += unit.count;
+                for (_, t, v) in unit.items {
+                    apply(ip, iq, t, v)?;
+                }
+                Ok(())
+            },
+        )?;
+        Ok(count)
+    }
+}
+
 /// Pair-image radius of the SR 3-centre sum: every pair whose charge bound
 /// times the largest aux charge and potential factor reaches `precision`
 /// (pair_ft's radius rule at the equivalent pair threshold). Shared by the
@@ -1611,6 +1827,10 @@ impl RsGdf {
     /// those of [`RsGdf::build`] (same code path; the extra pieces are copies
     /// taken inside the metric solve, reserved on the build ledger once the
     /// dropped count is known).
+    ///
+    /// Refuses [`RsGdfConfig::range_split`]: the derivative walks
+    /// (`deriv`, `strain`) do not follow the split partition yet, so the
+    /// force would not be the derivative of the split energy.
     pub fn build_for_gradient(
         cell: &Cell,
         obs: &PreparedBasis,
@@ -1618,6 +1838,7 @@ impl RsGdf {
         s: &Array2<f64>,
         cfg: &RsGdfConfig,
     ) -> Result<Self, FerricError> {
+        split::refuse_derivatives(cfg, "RsGdf::build_for_gradient")?;
         Self::build_impl(cell, obs, aux, s, cfg, false, true).map(|(gdf, _)| gdf)
     }
 
@@ -1625,6 +1846,13 @@ impl RsGdf {
     /// ([`RsGdf::build_for_gradient`]).
     pub fn has_gradient_parts(&self) -> bool {
         self.grad.is_some()
+    }
+
+    /// The range split B was built with (`None`: today's construction).
+    /// Every derivative consumer (forces, stress, k-point forces) must
+    /// refuse `Some` until its walks follow the same partition.
+    pub fn range_split(&self) -> Option<RangeSplit> {
+        self.range_split
     }
 
     pub(crate) fn gradient_parts(&self) -> Option<&MetricGradParts> {
@@ -1733,6 +1961,9 @@ impl RsGdf {
             gvector_list_bytes(cell, gcut)?,
         )?;
         let gv = half_gvectors(cell, gcut)?;
+        // Opt-in range split (`split`): `None` leaves every stage below as
+        // it was, bit for bit.
+        let plan = split::SplitPlan::maybe(&st, cfg, &images, &mut ledger)?;
         let resident_bytes = ledger.resident();
         let chunk_budget = ledger.remaining().min(G_CHUNK_BYTES);
         timings.stop("rsgdf setup (shells, pair images, G list)", &clock);
@@ -1744,14 +1975,14 @@ impl RsGdf {
         // width ever depends on the thread count.
         st.check_sr_scratch(&ledger, "RsGdf", SrBinning::GAMMA)?;
         let clock = StageClock::start();
-        let (mut j2, n_sr2) = st.sr_metric()?;
+        let (mut j2, n_sr2) = split::sr_metric(&st, plan.as_ref())?;
         timings.stop("rsgdf SR metric (2-centre)", &clock);
         let clock = StageClock::start();
-        let (mut j3, n_sr3) = st.sr_three_index(&images)?;
+        let (mut j3, n_sr3) = split::sr_three_index(&st, plan.as_ref(), &images)?;
         timings.stop("rsgdf SR 3-centre", &clock);
         let clock = StageClock::start();
         let (n_g_chunks, sink_wall, sink_cpu) =
-            st.lr_accumulate(&gv, &mut j2, &mut j3, chunk_budget)?;
+            split::lr_accumulate(&st, plan.as_ref(), &gv, &mut j2, &mut j3, chunk_budget)?;
         let (lr_wall, lr_cpu) = clock.elapsed();
         timings.add(
             "rsgdf LR pair FT",
@@ -1778,7 +2009,7 @@ impl RsGdf {
         let s_std = s.as_standard_layout();
         let s_flat = s_std.as_slice().expect("standard layout");
         let c0 = PI / (cfg.omega * cfg.omega * cell.volume());
-        subtract_g0(&mut j2, &mut j3, s_flat, &q, c0, cfg.g0);
+        split::subtract_g0_build(plan.as_ref(), &mut j2, &mut j3, s_flat, &q, c0, cfg.g0);
 
         let asym_j2 = max_abs_asym(&j2);
         let j2 = 0.5 * (&j2 + &j2.t());
@@ -1801,6 +2032,7 @@ impl RsGdf {
             retain_grad.then_some(&mut ledger),
             &mut timings,
         )?;
+        split::finish(plan.as_ref(), evals[0], &mut timings)?;
         let nkeep = b.nrows();
         let grad = grad_eig.map(|(s_kept, s_drop, u_drop, jd)| MetricGradParts {
             s_kept,
@@ -1859,6 +2091,7 @@ impl RsGdf {
                 timings,
                 j_clock: CallClock::default(),
                 k_clock: CallClock::default(),
+                range_split: cfg.range_split,
             },
             parts,
         ))

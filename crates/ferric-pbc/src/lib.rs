@@ -147,6 +147,7 @@ pub mod lattice;
 pub mod lindep;
 pub mod lmp2;
 pub mod mp2;
+mod ordered;
 pub mod pair_ft;
 pub mod rohf;
 pub mod rsgdf;
@@ -218,6 +219,7 @@ pub use rohf::{
 };
 pub use rsgdf::kpoint::{KRsGdf, KRsGdfConfig, KRsGdfJk, KRsGdfQStats, KRsGdfStats};
 pub use rsgdf::{PeriodicFitParts, RsGdf, RsGdfConfig, RsGdfFitDiagnostics};
+pub use rsgdf::{RangeSplit, RangeSplitMutant};
 pub use stress::{
     gamma_rhf_stress, gamma_rhf_stress_rsgdf, gamma_rks_stress, gamma_rks_stress_rsgdf,
     gamma_uhf_stress, gamma_uhf_stress_rsgdf, gamma_uks_stress, gamma_uks_stress_rsgdf,

@@ -58,8 +58,10 @@ use crate::hcore::{gvector_list_bytes, G_CHUNK_BYTES};
 use crate::kpts::{lattice_coords, unit_root, KPointMesh};
 use crate::kscf::eigh_herm;
 use crate::lattice::Cell;
+use crate::ordered::window_budget;
 use crate::pair_ft::residues::{pair_ft_deriv_residues_chunked, residue_coords, residue_index};
 use crate::pair_ft::DEFAULT_PAIR_FT_THRESH;
+use crate::rsgdf::deriv::{sr2_force, sr3_force, Y3};
 use crate::rsgdf::{
     aux_ft_shells, check_obs_on_cell, dot3, gshells, pair_image_radius, require_pure_aux,
     subtract_g0, G0Handling, LatticeWalker, Stage, ENGINE_PRECISION,
@@ -82,6 +84,9 @@ pub(crate) struct KFitMutation {
     pub(crate) no_metric: bool,
     /// Drop the `J3` G = 0 term `M_g0`.
     pub(crate) no_g0: bool,
+    /// NOT a defect: the frozen serial SR derivative walks (bit-identity
+    /// oracle of the ordered-parallel ones).
+    pub(crate) serial_sr: bool,
 }
 
 /// The fitted two-electron force pieces. Orbital parts per cell atom; aux
@@ -587,13 +592,109 @@ pub(crate) fn kpoint_fit_gradient(
         )?;
     }
 
-    // --- SR 3-centre derivative walk against the phase-folded Re Zbin.
-    let b = cell.reciprocal();
+    // --- SR 3-centre derivative walk against the phase-folded Re Zbin, and
+    // the SR metric derivative walk against Re Σ_q e^{iq·t_r} Wm(q)ᵀ:
+    // ordered-parallel, BIT-IDENTICAL to the frozen serial walks.
+    let bins = KSrBins {
+        recip: cell.reciprocal(),
+        mod_l,
+        mod_t,
+        zbin: &zbin,
+        wmbin: &wmbin,
+    };
+    let budget = window_budget(ledger.remaining());
+    let (orb_sr, aux_sr, n_sr3) = if mutation.serial_sr {
+        k_sr3_force_serial(&st, &images, &bins, natoms)?
+    } else {
+        sr3_force(&st, &images, natoms, budget, |l, t| {
+            Y3::PairMajor(bins.z(l, t))
+        })?
+    };
+    let (metric_sr, n_sr2) = if mutation.no_metric {
+        (Array2::<f64>::zeros((naux, 3)), 0)
+    } else if mutation.serial_sr {
+        k_sr2_force_serial(&st, &bins)?
+    } else {
+        sr2_force(&st, budget, |t| bins.wm(t))?
+    };
+
+    let mut orb_lr = Array2::<f64>::zeros((natoms, 3));
+    for (mu, gv) in orb_ao.iter().enumerate() {
+        for x in 0..3 {
+            orb_lr[(aoat[mu], x)] += gv[x];
+        }
+    }
+    let all = [&orb_sr, &orb_lr, &aux_sr, &aux_lr, &metric_sr, &metric_lr];
+    if all.iter().any(|a| a.iter().any(|v| !v.is_finite()))
+        || mg0
+            .iter()
+            .any(|m| m.iter().any(|z| !z.re.is_finite() || !z.im.is_finite()))
+    {
+        return Err(FerricError::General(format!(
+            "{who}: non-finite derivative contraction"
+        )));
+    }
+    Ok(KFitGrad {
+        orb_sr,
+        orb_lr,
+        aux_sr,
+        aux_lr,
+        metric_sr,
+        metric_lr,
+        mg0,
+        n_dropped_max,
+        b_norm_mismatch,
+        n_sr3,
+        n_sr2,
+        n_chunks,
+        n_k_lr,
+    })
+}
+
+/// The phase-folded SR derivative weights of [`kpoint_fit_gradient`]:
+/// `zbin[r_L R_T + r_T]` `(n², naux)` and `wmbin[r_T]` `(naux, naux)`,
+/// binned by the residues of `L` (mod `mod_l`) and `T` (mod `mod_t`).
+struct KSrBins<'a> {
+    recip: [[f64; 3]; 3],
+    mod_l: [usize; 3],
+    mod_t: [usize; 3],
+    zbin: &'a [Array2<f64>],
+    wmbin: &'a [Array2<f64>],
+}
+
+impl<'a> KSrBins<'a> {
+    fn rt(&self) -> usize {
+        self.mod_t.iter().product()
+    }
+
+    /// The `Z` bin of pair image `L`, aux image `T`.
+    fn z(&self, l: [f64; 3], t: [f64; 3]) -> &'a Array2<f64> {
+        &self.zbin[residue_index(lattice_coords(&self.recip, &l), self.mod_l) * self.rt()
+            + residue_index(lattice_coords(&self.recip, &t), self.mod_t)]
+    }
+
+    /// The `Wm` bin of aux image `T`.
+    fn wm(&self, t: [f64; 3]) -> &'a Array2<f64> {
+        &self.wmbin[residue_index(lattice_coords(&self.recip, &t), self.mod_t)]
+    }
+}
+
+/// FROZEN pre-parallel serial k-point SR 3-centre force walk (the
+/// bit-identity oracle of [`sr3_force`]; do not "improve").
+fn k_sr3_force_serial(
+    st: &Stage<'_>,
+    images: &[[f64; 3]],
+    kb: &KSrBins<'_>,
+    natoms: usize,
+) -> Result<(Array2<f64>, Array2<f64>, usize), FerricError> {
+    let (obs, aux) = (st.obs, st.aux);
+    let (n, naux) = (obs.nbasis(), aux.nbasis());
+    let (b, mod_l, mod_t, rt, zbin) = (kb.recip, kb.mod_l, kb.mod_t, kb.rt(), kb.zbin);
     let sh2at = obs.shell_to_atom().to_vec();
     let mut orb_sr = Array2::<f64>::zeros((natoms, 3));
     let mut aux_sr = Array2::<f64>::zeros((naux, 3));
     let mut eng3 = Engine::new_3center_deriv(Operator::erfc(st.omega), obs, aux, ENGINE_PRECISION)?;
-    let n_sr3 = st.sr_three_index_walk(&images, |i1, i2, ip, l, t| {
+    let n_sr3 = st.sr_three_index_walk(images, |i1, i2, ip, l, t| {
         let blk = match eng3.compute_eri3_deriv_shifted(obs, aux, ip, i1, i2, [t, [0.0; 3], l])? {
             Some(bk) => bk,
             None => return Ok(()),
@@ -632,66 +733,41 @@ pub(crate) fn kpoint_fit_gradient(
         }
         Ok(())
     })?;
+    Ok((orb_sr, aux_sr, n_sr3))
+}
 
-    // --- SR metric derivative walk against Re Σ_q e^{iq·t_r} Wm(q)ᵀ.
-    let mut metric_sr = Array2::<f64>::zeros((naux, 3));
-    let mut n_sr2 = 0usize;
-    if !mutation.no_metric {
-        let mut eng2 = Engine::new_2center_deriv(Operator::erfc(st.omega), aux, ENGINE_PRECISION)?;
-        n_sr2 = st.sr_metric_walk(|ip, iq, t| {
-            let blk = match eng2.compute_eri2_deriv_shifted(aux, ip, iq, t)? {
-                Some(bk) => bk,
-                None => return Ok(()),
-            };
-            let bin = &wmbin[residue_index(lattice_coords(&b, &t), mod_t)];
-            let (p, q) = (&st.aux_sh[ip], &st.aux_sh[iq]);
-            let nb = p.nfun * q.nfun;
-            for i in 0..p.nfun {
-                for j in 0..q.nfun {
-                    let wv = bin[(p.off + i, q.off + j)];
-                    if wv == 0.0 {
-                        continue;
-                    }
-                    for x in 0..3 {
-                        let v = wv * blk[x * nb + i * q.nfun + j];
-                        metric_sr[(p.off + i, x)] += v;
-                        metric_sr[(q.off + j, x)] -= v;
-                    }
+/// FROZEN pre-parallel serial k-point SR metric force walk (the
+/// bit-identity oracle of [`sr2_force`]; do not "improve").
+fn k_sr2_force_serial(
+    st: &Stage<'_>,
+    kb: &KSrBins<'_>,
+) -> Result<(Array2<f64>, usize), FerricError> {
+    let aux = st.aux;
+    let (b, mod_t, wmbin) = (kb.recip, kb.mod_t, kb.wmbin);
+    let mut metric_sr = Array2::<f64>::zeros((aux.nbasis(), 3));
+    let mut eng2 = Engine::new_2center_deriv(Operator::erfc(st.omega), aux, ENGINE_PRECISION)?;
+    let n_sr2 = st.sr_metric_walk(|ip, iq, t| {
+        let blk = match eng2.compute_eri2_deriv_shifted(aux, ip, iq, t)? {
+            Some(bk) => bk,
+            None => return Ok(()),
+        };
+        let bin = &wmbin[residue_index(lattice_coords(&b, &t), mod_t)];
+        let (p, q) = (&st.aux_sh[ip], &st.aux_sh[iq]);
+        let nb = p.nfun * q.nfun;
+        for i in 0..p.nfun {
+            for j in 0..q.nfun {
+                let wv = bin[(p.off + i, q.off + j)];
+                if wv == 0.0 {
+                    continue;
+                }
+                for x in 0..3 {
+                    let v = wv * blk[x * nb + i * q.nfun + j];
+                    metric_sr[(p.off + i, x)] += v;
+                    metric_sr[(q.off + j, x)] -= v;
                 }
             }
-            Ok(())
-        })?;
-    }
-
-    let mut orb_lr = Array2::<f64>::zeros((natoms, 3));
-    for (mu, gv) in orb_ao.iter().enumerate() {
-        for x in 0..3 {
-            orb_lr[(aoat[mu], x)] += gv[x];
         }
-    }
-    let all = [&orb_sr, &orb_lr, &aux_sr, &aux_lr, &metric_sr, &metric_lr];
-    if all.iter().any(|a| a.iter().any(|v| !v.is_finite()))
-        || mg0
-            .iter()
-            .any(|m| m.iter().any(|z| !z.re.is_finite() || !z.im.is_finite()))
-    {
-        return Err(FerricError::General(format!(
-            "{who}: non-finite derivative contraction"
-        )));
-    }
-    Ok(KFitGrad {
-        orb_sr,
-        orb_lr,
-        aux_sr,
-        aux_lr,
-        metric_sr,
-        metric_lr,
-        mg0,
-        n_dropped_max,
-        b_norm_mismatch,
-        n_sr3,
-        n_sr2,
-        n_chunks,
-        n_k_lr,
-    })
+        Ok(())
+    })?;
+    Ok((metric_sr, n_sr2))
 }

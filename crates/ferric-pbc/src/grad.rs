@@ -295,6 +295,12 @@ pub enum GradMutation {
     /// "ROHF / ROKS"); its force change is ~ the SCF residual. Exists only so
     /// a test can pin that identity. Never list it as a must-fail mutant.
     RoWUhfForm,
+    /// NOT a defect: run the FROZEN pre-parallel serial derivative walks
+    /// (SR attraction, RS-GDF SR 3-centre and metric, periodic ECP) instead
+    /// of the ordered-parallel ones ([`crate::ordered`]). The force must be
+    /// BIT-IDENTICAL either way (`tests/pbc_parallel_bitwise.rs`). Never list
+    /// it as a must-fail mutant.
+    SerialDerivWalks,
 }
 
 /// Settings for the `gamma_*_gradient_with` entry points.
@@ -1642,6 +1648,12 @@ fn check_rsgdf_inputs(
     f: &RsGdfGradSource<'_>,
     n: usize,
 ) -> Result<(), FerricError> {
+    if f.gdf.range_split().is_some() {
+        return Err(FerricError::General(format!(
+            "{who}: this RsGdf was built with a range split (RsGdfConfig::range_split); its \
+             forces/stress do not follow the partition yet — build with range_split = None"
+        )));
+    }
     if !f.gdf.has_gradient_parts() {
         return Err(FerricError::General(format!(
             "{who}: the RsGdf carries no gradient parts; build it with RsGdf::build_for_gradient"
@@ -1865,8 +1877,9 @@ fn assemble(
             .min(hcore_cfg.nucleus_exponent),
         ..*hcore_cfg
     };
+    let serial = mutation == Some(GradMutation::SerialDerivWalks);
     let (mut g_vsr_basis, g_vsr_nuc, n_sr_triplets) =
-        sr_attraction_gradient(cell, prep, &sr_cfg, &d, ledger)?;
+        sr_attraction_gradient(cell, prep, &sr_cfg, &d, serial, ledger)?;
 
     // --- V_ECP: the energy's own triples (same plan at the same config).
     let (g_ecp, n_ecp_triples) =
@@ -2082,6 +2095,7 @@ fn ecp_gradient_term(
         Some(GradMutation::EcpCentreSign) => Some(EcpGradMutation::CentreSign),
         Some(GradMutation::EcpL0Only) => Some(EcpGradMutation::L0Only),
         Some(GradMutation::EcpM0Only) => Some(EcpGradMutation::M0Only),
+        Some(GradMutation::SerialDerivWalks) => Some(EcpGradMutation::SerialImages),
         _ => None,
     };
     let ecp_cfg = hcore_cfg.ecp_config();
@@ -2272,7 +2286,8 @@ fn fit_two_electron(
             "gamma gradient: RS-GDF fitted densities missing (internal)".into(),
         ));
     };
-    let der = fit_derivatives(src.gdf, cell, prep, src.aux, &fd.y, &fd.wm, ledger)?;
+    let serial = mutation == Some(GradMutation::SerialDerivWalks);
+    let der = fit_derivatives(src.gdf, cell, prep, src.aux, &fd.y, &fd.wm, serial, ledger)?;
     let fold = |x: &Array2<f64>| fold_aux(x, src.aux, src.aux_jac, natoms);
     let orb_sr = der.orb_sr;
     let mut orb_lr = der.orb_lr;
