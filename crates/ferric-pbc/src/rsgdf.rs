@@ -101,8 +101,10 @@ use crate::budget::{bytes_of, Ledger};
 use crate::dense_aft::ExxDiv;
 use crate::ewald::madelung_constant;
 use crate::hcore::{gvector_list_bytes, half_gvectors, G_CHUNK_BYTES};
+use crate::kpts::lattice_coords;
 use crate::lattice::Cell;
 use crate::pair_ft::pair_ft_chunked;
+use crate::pair_ft::residues::residue_index;
 use crate::timing::{CallClock, PbcTimings, StageClock};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -712,30 +714,199 @@ fn sum_counts_in_pair_order(counts: Vec<Result<usize, FerricError>>) -> Result<u
     Ok(count)
 }
 
+/// Residue binning of the SR sums: pair images `L` by `n(L) mod mod_l`, aux
+/// images `T` by `n(T) mod mod_t` (`n` = integer lattice coordinates; the
+/// k-point RS-GDF, [`kpoint`]). Bin `(r_L, r_T)` is `r_L · R_T + r_T`. The
+/// Gamma build is the single bin [`SrBinning::GAMMA`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SrBinning {
+    pub(crate) mod_l: [usize; 3],
+    pub(crate) mod_t: [usize; 3],
+}
+
+impl SrBinning {
+    /// One bin: the Gamma sums.
+    pub(crate) const GAMMA: Self = Self {
+        mod_l: [1; 3],
+        mod_t: [1; 3],
+    };
+
+    /// `R_L`.
+    fn n_l(&self) -> usize {
+        self.mod_l.iter().product()
+    }
+
+    /// `R_T`.
+    fn n_t(&self) -> usize {
+        self.mod_t.iter().product()
+    }
+
+    /// Residue of lattice vector `x` modulo `moduli` (0 for a single bin,
+    /// without evaluating coordinates). The same function the serial binned
+    /// walks apply (`residue_index(lattice_coords(b, x), moduli)`).
+    fn residue(b: &[[f64; 3]; 3], x: &[f64; 3], moduli: [usize; 3]) -> usize {
+        if moduli == [1; 3] {
+            0
+        } else {
+            residue_index(lattice_coords(b, x), moduli)
+        }
+    }
+}
+
+/// The loop invariants of one [`Stage::sr_three_index_binned`] call.
+struct Sr3Ctx<'a> {
+    pool: &'a EnginePool,
+    images: &'a [[f64; 3]],
+    /// `r_L` of each image (same order as `images`).
+    l_bin: &'a [usize],
+    /// Reciprocal lattice (residue of `T`).
+    recip: [[f64; 3]; 3],
+    bins: SrBinning,
+    global: f64,
+    /// `R_L · R_T` zeroed `(nao², naux)` bins every task copies into.
+    out: &'a Mutex<Vec<Array2<f64>>>,
+}
+
+/// The loop invariants of one [`Stage::sr_metric_binned`] call.
+struct Sr2Ctx<'a> {
+    pool: &'a EnginePool,
+    recip: [[f64; 3]; 3],
+    mod_t: [usize; 3],
+    global: f64,
+    /// `R_T` zeroed `(naux, naux)` bins every task copies into.
+    out: &'a Mutex<Vec<Array2<f64>>>,
+}
+
 impl Stage<'_> {
     fn radius(&self, qa: f64, qb: f64, a: (f64, f64), b: (f64, f64)) -> Option<f64> {
         sr_radius(qa, qb, a.0, a.1, b.0, b.1, self.omega, self.thresh)
     }
 
-    /// SR metric `Σ_T (P_0 | Q_T)_erfc` (unsymmetrised) and the pair count.
+    /// SR metric `Σ_T (P_0 | Q_T)_erfc` (unsymmetrised) and the pair count:
+    /// the single bin of [`Stage::sr_metric_binned`].
     fn sr_metric(&self) -> Result<(Array2<f64>, usize), FerricError> {
+        let (mut bins, count) = self.sr_metric_binned(SrBinning::GAMMA.mod_t)?;
+        Ok((bins.swap_remove(0), count))
+    }
+
+    /// SR metric binned by the residue of `T` modulo `mod_t`: `bins[r]` =
+    /// `Σ_{T ≡ r} (P_0|Q_T)_erfc` (reals), and the pair count.
+    ///
+    /// PARALLEL over ordered aux shell pairs `(P, Q)`, BIT-IDENTICAL to the
+    /// serial `P → Q → T` walk ([`Stage::sr_metric_each`]) and across thread
+    /// counts: element `(r, p, q)` receives addends ONLY from the shell pair
+    /// owning `(p, q)`, in walker `T` order (the bin only filters). The
+    /// serial walk is already pair-outer, so each task runs exactly the
+    /// serial per-pair body ([`Stage::sr2_pair`]) into a zeroed per-pair
+    /// scratch `(R_T, nP, nQ)` and COPIES it into the zeroed bins. One erfc
+    /// 2-centre engine per rayon worker; counts are integer sums; errors are
+    /// returned in pair order.
+    fn sr_metric_binned(
+        &self,
+        mod_t: [usize; 3],
+    ) -> Result<(Vec<Array2<f64>>, usize), FerricError> {
         let naux = self.aux.nbasis();
-        let mut j2 = Array2::<f64>::zeros((naux, naux));
-        let count = self.sr_metric_each(|p, q, _t, blk| {
-            for i in 0..p.nfun {
-                for j in 0..q.nfun {
-                    j2[(p.off + i, q.off + j)] += blk[i * q.nfun + j];
+        let nsh = self.aux_sh.len();
+        let rt: usize = mod_t.iter().product();
+        let pool = EnginePool::from_fn(|| {
+            Engine::new_2center(Operator::erfc(self.omega), self.aux, ENGINE_PRECISION)
+        })?;
+        let out = Mutex::new(
+            (0..rt)
+                .map(|_| Array2::<f64>::zeros((naux, naux)))
+                .collect::<Vec<_>>(),
+        );
+        let ctx = Sr2Ctx {
+            pool: &pool,
+            recip: self.cell.reciprocal(),
+            mod_t,
+            global: self.sr2_global_radius(),
+            out: &out,
+        };
+        let counts: Vec<Result<usize, FerricError>> = (0..nsh * nsh)
+            .into_par_iter()
+            .map(|pair| self.sr2_pair_task(&ctx, (pair / nsh, pair % nsh)))
+            .collect();
+        let count = sum_counts_in_pair_order(counts)?;
+        Ok((out.into_inner().unwrap_or_else(|e| e.into_inner()), count))
+    }
+
+    /// One [`Stage::sr_metric_binned`] task: aux pair `(ip, iq)` over every
+    /// kept `T` into a zeroed `(R_T, nP, nQ)` scratch, then COPIED.
+    fn sr2_pair_task(
+        &self,
+        ctx: &Sr2Ctx<'_>,
+        (ip, iq): (usize, usize),
+    ) -> Result<usize, FerricError> {
+        let (p, q) = (&self.aux_sh[ip], &self.aux_sh[iq]);
+        let bl = p.nfun * q.nfun;
+        let rt: usize = ctx.mod_t.iter().product();
+        let mut acc = vec![0.0_f64; rt * bl];
+        let mut count = 0usize;
+        ctx.pool.with(|eng| -> Result<(), FerricError> {
+            let mut visit = |ip: usize, iq: usize, t: [f64; 3]| -> Result<(), FerricError> {
+                let blk = eng.compute_eri2_shifted(self.aux, ip, iq, t)?;
+                let r = SrBinning::residue(&ctx.recip, &t, ctx.mod_t);
+                // == j2[r][(p.off + i, q.off + j)] += blk[i nQ + j]
+                for (d, &s) in acc[r * bl..(r + 1) * bl].iter_mut().zip(&blk[..bl]) {
+                    *d += s;
+                }
+                Ok(())
+            };
+            self.sr2_pair(ip, iq, ctx.global, &mut count, &mut visit)
+        })?;
+        if count > 0 {
+            let mut bins = ctx.out.lock().unwrap_or_else(|e| e.into_inner());
+            for (r, j2) in bins.iter_mut().enumerate() {
+                for i in 0..p.nfun {
+                    for j in 0..q.nfun {
+                        j2[(p.off + i, q.off + j)] = acc[r * bl + i * q.nfun + j];
+                    }
                 }
             }
-        })?;
-        Ok((j2, count))
+        }
+        Ok(count)
+    }
+
+    /// Bytes of ONE parallel SR task's scratch under `bins`: the larger of
+    /// the 3-centre `R_T nfun_max² naux` and the metric `R_T nfun_aux,max²`
+    /// blocks (the two walks never run at the same time).
+    fn sr_scratch_bytes_per_task(&self, bins: SrBinning) -> usize {
+        let rt = bins.n_t() as u64;
+        let nf = self.obs_sh.iter().map(|s| s.nfun).max().unwrap_or(0) as u64;
+        let nq = self.aux_sh.iter().map(|s| s.nfun).max().unwrap_or(0) as u64;
+        let j3 = rt
+            .saturating_mul(nf.saturating_mul(nf))
+            .saturating_mul(self.aux.nbasis() as u64);
+        let j2 = rt.saturating_mul(nq.saturating_mul(nq));
+        bytes_of(j3.max(j2), 8)
+    }
+
+    /// CHECK (not reserve) the transient per-thread scratch of the parallel
+    /// SR walks: one task's scratch per possible concurrent task (threads +
+    /// the spare slot). Call it after every numerical width (LR chunk
+    /// budget) is fixed, so no width ever depends on the thread count.
+    fn check_sr_scratch(
+        &self,
+        ledger: &Ledger,
+        who: &str,
+        bins: SrBinning,
+    ) -> Result<(), FerricError> {
+        let threads = rayon::current_num_threads();
+        ledger.check(
+            &format!(
+                "{who} SR per-thread scratch ({threads} threads, R_T = {})",
+                bins.n_t()
+            ),
+            self.sr_scratch_bytes_per_task(bins)
+                .saturating_mul(threads.saturating_add(1)),
+        )
     }
 
     /// Every SR metric block `(P_0 | Q_T)_erfc` the screen keeps, in a fixed
     /// order: `sink(P shell, Q shell, T, block (nP, nQ))`. Returns the count.
-    /// [`Stage::sr_metric`] (Gamma) and the residue-binned k-point form
-    /// ([`kpoint`]) share this walk, so the Gamma sums are unchanged bit for
-    /// bit.
+    /// SERIAL: only the frozen serial oracles of [`kpoint`] use it (the
+    /// production sums are the parallel [`Stage::sr_metric_binned`]).
     fn sr_metric_each<F>(&self, mut sink: F) -> Result<usize, FerricError>
     where
         F: FnMut(&GShell, &GShell, [f64; 3], &[f64]),
@@ -757,99 +928,152 @@ impl Stage<'_> {
         F: FnMut(usize, usize, [f64; 3]) -> Result<(), FerricError>,
     {
         let mut count = 0usize;
-        let global = if self.sr_screen {
-            0.0
-        } else {
-            let mut r = 0.0_f64;
-            for p in &self.aux_sh {
-                for q in &self.aux_sh {
-                    if let Some(x) =
-                        self.radius(p.qbound, q.qbound, (p.amin, p.amax), (q.amin, q.amax))
-                    {
-                        r = r.max(x);
-                    }
-                }
-            }
-            r
-        };
-        for (ip, p) in self.aux_sh.iter().enumerate() {
-            for (iq, q) in self.aux_sh.iter().enumerate() {
-                let rad = if self.sr_screen {
-                    match self.radius(p.qbound, q.qbound, (p.amin, p.amax), (q.amin, q.amax)) {
-                        Some(r) => r,
-                        None => continue,
-                    }
-                } else {
-                    global
-                };
-                // |R_P − (R_Q + T)| <= rad.
-                let x0 = [
-                    p.center[0] - q.center[0],
-                    p.center[1] - q.center[1],
-                    p.center[2] - q.center[2],
-                ];
-                self.walker.visit(x0, rad, |t| {
-                    count += 1;
-                    visit(ip, iq, t)
-                })?;
+        let global = self.sr2_global_radius();
+        let nsh = self.aux_sh.len();
+        for ip in 0..nsh {
+            for iq in 0..nsh {
+                self.sr2_pair(ip, iq, global, &mut count, &mut visit)?;
             }
         }
         Ok(count)
     }
 
+    /// The unscreened (`sr_screen = false`) metric radius; 0 when screening.
+    fn sr2_global_radius(&self) -> f64 {
+        if self.sr_screen {
+            return 0.0;
+        }
+        let mut r = 0.0_f64;
+        for p in &self.aux_sh {
+            for q in &self.aux_sh {
+                if let Some(x) = self.radius(p.qbound, q.qbound, (p.amin, p.amax), (q.amin, q.amax))
+                {
+                    r = r.max(x);
+                }
+            }
+        }
+        r
+    }
+
+    /// One aux pair `(ip, iq)` of the SR metric walk: every kept `T` in
+    /// walker order. The single body of the serial [`Stage::sr_metric_walk`]
+    /// and the parallel [`Stage::sr_metric_binned`].
+    fn sr2_pair<F>(
+        &self,
+        ip: usize,
+        iq: usize,
+        global: f64,
+        count: &mut usize,
+        visit: &mut F,
+    ) -> Result<(), FerricError>
+    where
+        F: FnMut(usize, usize, [f64; 3]) -> Result<(), FerricError>,
+    {
+        let (p, q) = (&self.aux_sh[ip], &self.aux_sh[iq]);
+        let rad = if self.sr_screen {
+            match self.radius(p.qbound, q.qbound, (p.amin, p.amax), (q.amin, q.amax)) {
+                Some(r) => r,
+                None => return Ok(()),
+            }
+        } else {
+            global
+        };
+        // |R_P − (R_Q + T)| <= rad.
+        let x0 = [
+            p.center[0] - q.center[0],
+            p.center[1] - q.center[1],
+            p.center[2] - q.center[2],
+        ];
+        self.walker.visit(x0, rad, |t| {
+            *count += 1;
+            visit(ip, iq, t)
+        })
+    }
+
     /// SR 3-index `Σ_{L,T} (μ_0 ν_L | P_T)_erfc` over the pair `images`,
-    /// `(nao², naux)` (unsymmetrised), and the triplet count.
+    /// `(nao², naux)` (unsymmetrised), and the triplet count: the single bin
+    /// of [`Stage::sr_three_index_binned`].
+    fn sr_three_index(&self, images: &[[f64; 3]]) -> Result<(Array2<f64>, usize), FerricError> {
+        let (mut bins, count) = self.sr_three_index_binned(images, SrBinning::GAMMA)?;
+        Ok((bins.swap_remove(0), count))
+    }
+
+    /// SR 3-index binned by `(L mod mod_l, T mod mod_t)`: `bins[r_L R_T + r_T]`
+    /// = `Σ (μ_0 ν_L | P_T)_erfc`, `(nao², naux)` reals, and the triplet count.
     ///
-    /// PARALLEL over ordered shell pairs `(i1, i2)` (FINDINGS "Performance
-    /// plan", §3 Class A), BIT-IDENTICAL to the serial L-outer walk
-    /// ([`Stage::sr_three_index_each`]) and across thread counts:
+    /// PARALLEL over `(ordered shell pair (i1, i2), pair-image residue r_L)`
+    /// tasks (FINDINGS "Performance plan (research)", §3 Class A),
+    /// BIT-IDENTICAL to the serial `L → i1 → i2 → P → T` walk
+    /// ([`Stage::sr_three_index_each`], the frozen oracle of
+    /// [`kpoint::sr_bins_parallel_and_serial`]) and across thread counts:
     ///
-    /// * Element `(μν, P)` of J3 lives in row `μ n + ν` with `μ` in shell
-    ///   `i1` and `ν` in shell `i2` (shells partition the AO range), so it
-    ///   receives addends ONLY from pair `(i1, i2)` and aux shell `P`. In the
-    ///   serial walk (`L → i1 → i2 → P → T`) those addends arrive in the
-    ///   order "L ascending, then T in walker order"; the pair-outer nest
-    ///   `(i1, i2) → L → P → T` delivers exactly that sequence, because the
-    ///   visit decision and the block for `(i1, i2, P, L, T)` are pure
-    ///   functions of those indices ([`Stage::sr3_pair_image`] is the ONE
+    /// * Element `(bin (r_L, r_T), μν, P)` lives in row `μ n + ν` with `μ` in
+    ///   shell `i1` and `ν` in shell `i2` (shells partition the AO range), so
+    ///   it receives addends ONLY from pair `(i1, i2)`, aux shell `P`, images
+    ///   `L ≡ r_L` and aux images `T ≡ r_T`. In the serial walk those arrive
+    ///   in the order "L ascending (the `images` order), then T in walker
+    ///   order"; the task nest `(i1, i2, r_L) → L ≡ r_L ascending → P → T`
+    ///   delivers exactly that sequence (the bin only FILTERS the serial
+    ///   sequence; the visit decision and block for `(i1, i2, P, L, T)` are
+    ///   pure functions of those indices, [`Stage::sr3_pair_image`] is the ONE
     ///   body both walks run).
-    /// * Each task accumulates its pair's rows in a zero-initialised scratch
-    ///   block with that `+=` sequence (0.0 + x == x, so the first addend
-    ///   lands exactly as it does in the zeroed J3), then COPIES the block
-    ///   into J3 under a mutex. The copy is not an addition, so the order in
-    ///   which tasks finish cannot change a bit.
+    /// * Each task accumulates its `R_T` bins' rows of the pair in a
+    ///   zero-initialised scratch `(R_T, nμ nν, naux)` with that `+=`
+    ///   sequence (0.0 + x == x, so the first addend lands exactly as in the
+    ///   zeroed bins), then COPIES it into the bins under a mutex: no two
+    ///   tasks own the same element, and a copy is not an addition, so task
+    ///   finishing order cannot change a bit.
     /// * One libint engine per rayon worker ([`EnginePool::from_fn`]); every
     ///   `compute_eri3_shifted` call is stateless (the shim copies and moves
-    ///   the three shells per call).
-    /// * The count is an integer sum.
+    ///   the three shells per call). Counts are integer sums; errors are
+    ///   returned in task order.
     ///
-    /// Pinned by `tests/pbc_parallel_bitwise.rs` (1/2/6 threads) and by
-    /// [`kpoint::sr_sums_gamma_and_single_bin`], which compares this against
-    /// the serial walk bit for bit. Per-task scratch is
-    /// [`Stage::sr3_scratch_bytes_per_task`] (budget-checked by the caller).
-    fn sr_three_index(&self, images: &[[f64; 3]]) -> Result<(Array2<f64>, usize), FerricError> {
+    /// Per-task scratch is `R_T nfun_max² naux` reals
+    /// ([`Stage::check_sr_scratch`], checked by the caller), independent of
+    /// the thread count. Load balance: `nsh² R_L` tasks of uneven cost; a
+    /// finer `(pair, P)` split would not change any element's order either.
+    fn sr_three_index_binned(
+        &self,
+        images: &[[f64; 3]],
+        bins: SrBinning,
+    ) -> Result<(Vec<Array2<f64>>, usize), FerricError> {
         let n = self.obs.nbasis();
         let naux = self.aux.nbasis();
         let nsh = self.obs_sh.len();
-        let global = self.sr3_global_radius();
+        let rl = bins.n_l();
+        let recip = self.cell.reciprocal();
+        let l_bin: Vec<usize> = images
+            .iter()
+            .map(|l| SrBinning::residue(&recip, l, bins.mod_l))
+            .collect();
         let pool = self.sr3_engine_pool()?;
-        let j3 = Mutex::new(Array2::<f64>::zeros((n * n, naux)));
-        // Load balance: one task per ordered shell pair, whose cost is very
-        // uneven (e.g. 144 tasks on diamond_prim). If measurement shows
-        // imbalance, tasks can be split further into (pair, aux shell P)
-        // units without changing any element's summation order: element
-        // (μν, P) only ever receives addends from its own (i1, i2, P), in
-        // "L ascending, then T in walker order", so each (pair, P) unit can
-        // accumulate and copy its own columns independently.
-        let counts: Vec<Result<usize, FerricError>> = (0..nsh * nsh)
+        let out = Mutex::new(
+            (0..rl * bins.n_t())
+                .map(|_| Array2::<f64>::zeros((n * n, naux)))
+                .collect::<Vec<_>>(),
+        );
+        let ctx = Sr3Ctx {
+            pool: &pool,
+            images,
+            l_bin: &l_bin,
+            recip,
+            bins,
+            global: self.sr3_global_radius(),
+            out: &out,
+        };
+        let counts: Vec<Result<usize, FerricError>> = (0..nsh * nsh * rl)
             .into_par_iter()
-            .map(|pair| self.sr3_pair_task(&pool, images, global, (pair / nsh, pair % nsh), &j3))
+            .map(|task| {
+                let (pair, r_l) = (task / rl, task % rl);
+                self.sr3_pair_task(&ctx, r_l, (pair / nsh, pair % nsh))
+            })
             .collect();
         let count = sum_counts_in_pair_order(counts)?;
-        Ok((j3.into_inner().unwrap_or_else(|e| e.into_inner()), count))
+        Ok((out.into_inner().unwrap_or_else(|e| e.into_inner()), count))
     }
 
-    /// One erfc 3-centre engine per rayon worker for [`Stage::sr_three_index`].
+    /// One erfc 3-centre engine per rayon worker for
+    /// [`Stage::sr_three_index_binned`].
     fn sr3_engine_pool(&self) -> Result<EnginePool, FerricError> {
         EnginePool::from_fn(|| {
             Engine::new_3center(
@@ -861,24 +1085,24 @@ impl Stage<'_> {
         })
     }
 
-    /// One [`Stage::sr_three_index`] task: pair `(i1, i2)` over every image
-    /// `L` (via [`Stage::sr3_pair_image`], the serial walk's body) into a
-    /// zeroed scratch block, then COPIED into `j3` under the mutex. Returns
-    /// the pair's triplet count.
+    /// One [`Stage::sr_three_index_binned`] task: pair `(i1, i2)` over every
+    /// image `L ≡ r_L` in `images` order (via [`Stage::sr3_pair_image`], the
+    /// serial walk's body) into a zeroed `(R_T, nμ nν, naux)` scratch, then
+    /// COPIED into bins `(r_L, ·)` under the mutex. Returns the triplet count.
     fn sr3_pair_task(
         &self,
-        pool: &EnginePool,
-        images: &[[f64; 3]],
-        global: f64,
+        ctx: &Sr3Ctx<'_>,
+        r_l: usize,
         (i1, i2): (usize, usize),
-        j3: &Mutex<Array2<f64>>,
     ) -> Result<usize, FerricError> {
         let (a, b) = (&self.obs_sh[i1], &self.obs_sh[i2]);
         let (na, nb) = (a.nfun, b.nfun);
-        // scratch[(i nb + j) naux + P] == j3[(a.off+i) n + b.off + j, P]
-        let mut acc = vec![0.0_f64; na * nb * self.aux.nbasis()];
+        let bl = na * nb * self.aux.nbasis();
+        // scratch[r_T bl + (i nb + j) naux + P]
+        //   == bins[r_L R_T + r_T][(a.off+i) n + b.off + j, P]
+        let mut acc = vec![0.0_f64; ctx.bins.n_t() * bl];
         let mut count = 0usize;
-        pool.with(|eng| -> Result<(), FerricError> {
+        ctx.pool.with(|eng| -> Result<(), FerricError> {
             let mut visit = |i1: usize,
                              i2: usize,
                              ip: usize,
@@ -888,17 +1112,19 @@ impl Stage<'_> {
                 if let Some(blk) =
                     eng.compute_eri3_shifted(self.obs, self.aux, ip, i1, i2, [t, [0.0; 3], l])?
                 {
-                    self.sr3_accumulate_block(&mut acc, blk, ip, na, nb);
+                    let r_t = SrBinning::residue(&ctx.recip, &t, ctx.bins.mod_t);
+                    let dst = &mut acc[r_t * bl..(r_t + 1) * bl];
+                    self.sr3_accumulate_block(dst, blk, ip, na, nb);
                 }
                 Ok(())
             };
-            for l in images {
-                self.sr3_pair_image(i1, i2, l, global, &mut count, &mut visit)?;
+            for (l, _) in ctx.images.iter().zip(ctx.l_bin).filter(|(_, r)| **r == r_l) {
+                self.sr3_pair_image(i1, i2, l, ctx.global, &mut count, &mut visit)?;
             }
             Ok(())
         })?;
         if count > 0 {
-            self.sr3_copy_pair_rows(j3, &acc, a, b);
+            self.sr3_copy_pair_rows(ctx, r_l, &acc, a, b);
         }
         Ok(count)
     }
@@ -919,45 +1145,44 @@ impl Stage<'_> {
         }
     }
 
-    /// COPY (not add) pair `(a, b)`'s finished scratch rows into `j3` under
-    /// its mutex, so task finishing order cannot change a bit.
-    fn sr3_copy_pair_rows(&self, j3: &Mutex<Array2<f64>>, acc: &[f64], a: &GShell, b: &GShell) {
+    /// COPY (not add) pair `(a, b)`'s finished scratch rows of every `r_T`
+    /// into bin `(r_l, r_T)` under the mutex, so task finishing order cannot
+    /// change a bit.
+    fn sr3_copy_pair_rows(
+        &self,
+        ctx: &Sr3Ctx<'_>,
+        r_l: usize,
+        acc: &[f64],
+        a: &GShell,
+        b: &GShell,
+    ) {
         let n = self.obs.nbasis();
         let naux = self.aux.nbasis();
         let (na, nb) = (a.nfun, b.nfun);
-        let mut j3 = j3.lock().unwrap_or_else(|e| e.into_inner());
-        for i in 0..na {
-            for j in 0..nb {
-                let row = (a.off + i) * n + b.off + j;
-                let src = (i * nb + j) * naux;
-                j3.row_mut(row)
-                    .iter_mut()
-                    .zip(&acc[src..src + naux])
-                    .for_each(|(d, &s)| *d = s);
+        let rt = ctx.bins.n_t();
+        let bl = na * nb * naux;
+        let mut bins = ctx.out.lock().unwrap_or_else(|e| e.into_inner());
+        for r_t in 0..rt {
+            let j3 = &mut bins[r_l * rt + r_t];
+            for i in 0..na {
+                for j in 0..nb {
+                    let row = (a.off + i) * n + b.off + j;
+                    let src = r_t * bl + (i * nb + j) * naux;
+                    j3.row_mut(row)
+                        .iter_mut()
+                        .zip(&acc[src..src + naux])
+                        .for_each(|(d, &s)| *d = s);
+                }
             }
         }
     }
 
-    /// Bytes of ONE [`Stage::sr_three_index`] task's scratch (the largest
-    /// shell pair's `nfun² · naux` block). The caller checks it once per
-    /// possible concurrent task (memory may scale with threads; the numerics
-    /// never read the thread count).
-    fn sr3_scratch_bytes_per_task(&self) -> usize {
-        let nf = self.obs_sh.iter().map(|s| s.nfun).max().unwrap_or(0) as u64;
-        bytes_of(
-            nf.saturating_mul(nf)
-                .saturating_mul(self.aux.nbasis() as u64),
-            8,
-        )
-    }
-
     /// Every SR 3-centre block `(μ_0 ν_L | P_T)_erfc` the screen keeps, in a
     /// fixed order: `sink(μ shell, ν shell, P shell, L, T, block (nP, nμ, nν))`.
-    /// Returns the triplet count (as [`Stage::sr_metric_each`]: one walk
-    /// shared by the Gamma sum and the k-point residue bins). SERIAL: the
-    /// k-point residue bins use it; the Gamma sum is the parallel
-    /// [`Stage::sr_three_index`], which reproduces this walk's per-element
-    /// order.
+    /// Returns the triplet count. SERIAL: only the frozen serial oracles of
+    /// [`kpoint`] use it; the production Gamma and k-point sums are the
+    /// parallel [`Stage::sr_three_index_binned`], which reproduces this
+    /// walk's per-element order.
     fn sr_three_index_each<F>(&self, images: &[[f64; 3]], mut sink: F) -> Result<usize, FerricError>
     where
         F: FnMut(&GShell, &GShell, &GShell, [f64; 3], [f64; 3], &[f64]),
@@ -991,7 +1216,7 @@ impl Stage<'_> {
     /// derivative walk, [`deriv`], so both see the same triplet set).
     /// Returns the triplet count. SERIAL, `L → i1 → i2 → P → T`; the body
     /// per `(L, i1, i2)` is [`Stage::sr3_pair_image`], shared with the
-    /// parallel [`Stage::sr_three_index`].
+    /// parallel [`Stage::sr_three_index_binned`].
     fn sr_three_index_walk<F>(
         &self,
         images: &[[f64; 3]],
@@ -1035,8 +1260,8 @@ impl Stage<'_> {
     /// One `(pair (i1, i2), image L)` of the SR 3-centre walk: every aux
     /// shell `P` in order, then every kept `T` in walker order. The single
     /// body of both the serial [`Stage::sr_three_index_walk`] and the
-    /// parallel [`Stage::sr_three_index`] (so both see the same triplets in
-    /// the same per-pair order).
+    /// parallel [`Stage::sr_three_index_binned`] (so both see the same
+    /// triplets in the same per-pair order).
     fn sr3_pair_image<F>(
         &self,
         i1: usize,
@@ -1513,22 +1738,15 @@ impl RsGdf {
         timings.stop("rsgdf setup (shells, pair images, G list)", &clock);
 
         // --- SR (real space), LR (G ≠ 0), then the G = 0 term.
+        // Transient per-task scratch of the parallel SR walks: one block per
+        // possible concurrent task (threads + the spare slot). CHECKED, not
+        // reserved, and only after `chunk_budget` is fixed, so no numerical
+        // width ever depends on the thread count.
+        st.check_sr_scratch(&ledger, "RsGdf", SrBinning::GAMMA)?;
         let clock = StageClock::start();
         let (mut j2, n_sr2) = st.sr_metric()?;
         timings.stop("rsgdf SR metric (2-centre)", &clock);
         let clock = StageClock::start();
-        // Transient per-task scratch of the parallel SR 3-centre walk: one
-        // block per possible concurrent task (threads + the spare slot).
-        // CHECKED, not reserved, and only after `chunk_budget` is fixed, so
-        // no numerical width ever depends on the thread count.
-        ledger.check(
-            &format!(
-                "RsGdf SR 3-centre per-thread scratch ({} threads)",
-                rayon::current_num_threads()
-            ),
-            st.sr3_scratch_bytes_per_task()
-                .saturating_mul(rayon::current_num_threads().saturating_add(1)),
-        )?;
         let (mut j3, n_sr3) = st.sr_three_index(&images)?;
         timings.stop("rsgdf SR 3-centre", &clock);
         let clock = StageClock::start();

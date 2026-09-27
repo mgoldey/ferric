@@ -26,8 +26,9 @@
 
 use super::{
     gvector_list_bytes, max_pair_exponent, nonzero_nuclei, nucleus_radius_m, pair_bound,
-    pair_images, pair_radius, prim_shells, segment_distance, sr_candidates, PeriodicHcoreConfig,
-    SrBound, ERI3_ENGINE_PRECISION, G_CHUNK_BYTES, ONE_E_ENGINE_PRECISION,
+    pair_images, pair_radius, prim_shells, segment_distance, sr_candidates, sr_engine_pool,
+    NucCand, PeriodicHcoreConfig, PrimShell, SrBound, ERI3_ENGINE_PRECISION, G_CHUNK_BYTES,
+    ONE_E_ENGINE_PRECISION,
 };
 use crate::budget::{bytes_of, Ledger};
 use crate::ewald::{default_ewald_omega, ewald_nuclear_repulsion};
@@ -37,12 +38,15 @@ use crate::pair_ft::residues::{pair_ft_residues_chunked, residue_coords};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::engine::Engine;
+use ferric_integrals::engine_pool::EnginePool;
 use ferric_integrals::ffi;
 use ferric_integrals::operator::Operator;
 use ferric_integrals::site_basis::SiteBasis;
 use ndarray::{Array2, Array3};
 use num_complex::Complex64;
+use rayon::prelude::*;
 use std::f64::consts::PI;
+use std::sync::Mutex;
 
 /// Output of [`periodic_hcore_kpts`]: one `(nbasis, nbasis)` complex
 /// Hermitian matrix per mesh k-point (mesh order).
@@ -131,23 +135,7 @@ pub fn periodic_hcore_kpts(
         bytes_of((nk * n * n) as u64, 16 * 8),
     )?;
 
-    let images = pair_images(cell, &shells, pair_thresh, &mut ledger)?;
-    let rpair = pair_radius(&shells, pair_thresh);
-    ledger.reserve(
-        &format!(
-            "periodic_hcore_kpts image phases ({} images × {nk} k)",
-            images.len()
-        ),
-        bytes_of((images.len() * nk) as u64, 16),
-    )?;
-    let b = cell.reciprocal();
-    let ph: Vec<Vec<Complex64>> = images
-        .iter()
-        .map(|l| {
-            let nl = lattice_coords(&b, l);
-            (0..nk).map(|k| mesh.phase(k, nl)).collect()
-        })
-        .collect();
+    let (images, rpair, ph) = images_and_phases(cell, &shells, mesh, pair_thresh, &mut ledger)?;
 
     // --- S(k), T(k)
     let mut eng_s = Engine::new_1e(ffi::OP_OVERLAP, prep, ONE_E_ENGINE_PRECISION)?;
@@ -168,63 +156,23 @@ pub fn periodic_hcore_kpts(
     let t: Vec<Array2<Complex64>> = t.iter().map(hermitize).collect();
 
     // --- V_SR(k): the production SR loop of `sr_attraction` (Derived bound,
-    // no tracking), phase-weighted by the ν image L.
+    // no tracking), phase-weighted by the ν image L; parallel over shell
+    // pairs, bit-identical to the serial loop (`SrKCtx::parallel`).
     let zs = cell.nuclear_charges();
-    let (nuc, zmax) = nonzero_nuclei(cell);
-    let mut v_sr: Vec<Array2<Complex64>> = (0..nk).map(|_| czero(n)).collect();
-    let mut n_sr_triplets = 0usize;
-    if !nuc.is_empty() {
-        let cands = sr_candidates(cell, &shells, &nuc, omega, zmax, thresh, rpair, &mut ledger)?;
-        let sites: Vec<[f64; 4]> = nuc
-            .iter()
-            .map(|(_, r)| [r[0], r[1], r[2], cfg.nucleus_exponent])
-            .collect();
-        let site = SiteBasis::new(&sites, 0)?;
-        let mut eng = Engine::new_3center(
-            Operator::erfc(omega),
-            prep,
-            &site.prep,
-            ERI3_ENGINE_PRECISION,
-        )?;
-        let bound = SrBound::Derived;
-        for (il, l) in images.iter().enumerate() {
-            for (i1, a) in shells.iter().enumerate() {
-                for (i2, bsh) in shells.iter().enumerate() {
-                    let bc = [
-                        bsh.center[0] + l[0],
-                        bsh.center[1] + l[1],
-                        bsh.center[2] + l[2],
-                    ];
-                    let r2 = (a.center[0] - bc[0]).powi(2)
-                        + (a.center[1] - bc[1]).powi(2)
-                        + (a.center[2] - bc[2]).powi(2);
-                    let (q, pmin, pmax) = pair_bound(a, bsh, r2);
-                    let wp = bound.omega_p(omega, pmin);
-                    let Some(rad) = nucleus_radius_m(q, zmax, pmax, wp, thresh, bound.margin())
-                    else {
-                        continue;
-                    };
-                    for (kc, m, x) in &cands {
-                        if segment_distance(*x, a.center, bc) > rad {
-                            continue;
-                        }
-                        n_sr_triplets += 1;
-                        let f = -nuc[*kc].0 / site.norm_int[*kc];
-                        if let Some(blk) = eng.compute_eri3_shifted(
-                            prep,
-                            &site.prep,
-                            site.site_shell[*kc],
-                            i1,
-                            i2,
-                            [*m, [0.0; 3], *l],
-                        )? {
-                            add_block_k(&mut v_sr, &ph[il], blk, a.off, a.dim, bsh.off, bsh.dim, f);
-                        }
-                    }
-                }
-            }
-        }
-    }
+    let inp = SrKInputs {
+        cell,
+        prep,
+        cfg,
+        shells: &shells,
+        images: &images,
+        ph: &ph,
+        rpair,
+        nk: mesh.nk(),
+    };
+    let (v_sr, n_sr_triplets) = match SrKCtx::new(&inp, &mut ledger)? {
+        Some(ctx) => ctx.parallel(&ledger)?,
+        None => ((0..nk).map(|_| czero(n)).collect(), 0),
+    };
     let v_sr: Vec<Array2<Complex64>> = v_sr.iter().map(hermitize).collect();
 
     // --- V_LR(k): full G sphere, residue-resolved pair FT at q = 0.
@@ -325,4 +273,322 @@ pub fn periodic_hcore_kpts(
         n_g_lr: gv.len(),
         budget_bytes: ledger.budget(),
     })
+}
+
+/// Pair images `L`, `r_pair` and the Bloch phases `ph[il][k] = e^{ik·L}`
+/// (both lists reserved on `ledger`): what `S(k)`, `T(k)` and `V_SR(k)`
+/// share.
+#[allow(clippy::type_complexity)]
+fn images_and_phases(
+    cell: &Cell,
+    shells: &[PrimShell],
+    mesh: &KPointMesh,
+    pair_thresh: f64,
+    ledger: &mut Ledger,
+) -> Result<(Vec<[f64; 3]>, f64, Vec<Vec<Complex64>>), FerricError> {
+    let nk = mesh.nk();
+    let images = pair_images(cell, shells, pair_thresh, ledger)?;
+    let rpair = pair_radius(shells, pair_thresh);
+    ledger.reserve(
+        &format!(
+            "periodic_hcore_kpts image phases ({} images × {nk} k)",
+            images.len()
+        ),
+        bytes_of((images.len() * nk) as u64, 16),
+    )?;
+    let b = cell.reciprocal();
+    let ph: Vec<Vec<Complex64>> = images
+        .iter()
+        .map(|l| {
+            let nl = lattice_coords(&b, l);
+            (0..nk).map(|k| mesh.phase(k, nl)).collect()
+        })
+        .collect();
+    Ok((images, rpair, ph))
+}
+
+/// What the `V_SR(k)` walk shares with `S(k)`/`T(k)`.
+struct SrKInputs<'a> {
+    cell: &'a Cell,
+    prep: &'a PreparedBasis,
+    cfg: &'a PeriodicHcoreConfig,
+    shells: &'a [PrimShell],
+    images: &'a [[f64; 3]],
+    /// `ph[il][k] = e^{ik·L_il}`.
+    ph: &'a [Vec<Complex64>],
+    rpair: f64,
+    nk: usize,
+}
+
+/// The loop invariants of the `V_SR(k)` walk: nucleus candidates and sites.
+struct SrKCtx<'a> {
+    inp: &'a SrKInputs<'a>,
+    cands: Vec<NucCand>,
+    nuc: Vec<(f64, [f64; 3])>,
+    site: SiteBasis,
+    zmax: f64,
+}
+
+/// Unhermitised `V_SR(k)` (one per mesh point) and the triplet count.
+type SrK = (Vec<Array2<Complex64>>, usize);
+
+impl<'a> SrKCtx<'a> {
+    /// Candidates (reserved on `ledger`) and Gaussian-nucleus sites; `None`
+    /// when every nucleus has `Z = 0` (then `V_SR(k) = 0`).
+    fn new(inp: &'a SrKInputs<'a>, ledger: &mut Ledger) -> Result<Option<Self>, FerricError> {
+        let (nuc, zmax) = nonzero_nuclei(inp.cell);
+        if nuc.is_empty() {
+            return Ok(None);
+        }
+        let cfg = inp.cfg;
+        let cands = sr_candidates(
+            inp.cell,
+            inp.shells,
+            &nuc,
+            cfg.omega,
+            zmax,
+            cfg.precision,
+            inp.rpair,
+            ledger,
+        )?;
+        let sites: Vec<[f64; 4]> = nuc
+            .iter()
+            .map(|(_, r)| [r[0], r[1], r[2], cfg.nucleus_exponent])
+            .collect();
+        let site = SiteBasis::new(&sites, 0)?;
+        Ok(Some(Self {
+            inp,
+            cands,
+            nuc,
+            site,
+            zmax,
+        }))
+    }
+
+    fn nk(&self) -> usize {
+        self.inp.nk
+    }
+
+    /// PARALLEL over ordered shell pairs `(i1, i2)`, BIT-IDENTICAL to the
+    /// serial `L → i1 → i2 → candidate` loop ([`SrKCtx::serial_oracle`]) and
+    /// across thread counts: element `(k, μ, ν)` with `μ` in shell `i1` and
+    /// `ν` in shell `i2` receives addends `e^{ik·L} (f · block)` ONLY from
+    /// pair `(i1, i2)`, in the order "L ascending (the `images` order), then
+    /// candidate order" — the k index only selects the phase, it never
+    /// reorders. The pair-outer nest keeps that per-element sequence (every
+    /// screen decision and block is a pure function of `(i1, i2, L,
+    /// candidate)`); each task accumulates its `(N_k, dim_i1, dim_i2)` block
+    /// from zero with the same `+=` expression and COPIES it into the zeroed
+    /// output under a mutex, so task finishing order cannot change a bit.
+    /// One erfc 3-centre engine per rayon worker; the triplet count is an
+    /// integer sum and errors are returned in pair order. The per-thread
+    /// scratch is CHECKED on `ledger` (width independent of the thread
+    /// count).
+    fn parallel(&self, ledger: &Ledger) -> Result<SrK, FerricError> {
+        let inp = self.inp;
+        let (n, nk, nsh) = (inp.prep.nbasis(), self.nk(), inp.shells.len());
+        let dmax = inp.shells.iter().map(|s| s.dim).max().unwrap_or(0) as u64;
+        let threads = rayon::current_num_threads();
+        ledger.check(
+            &format!("periodic_hcore_kpts SR per-thread scratch ({threads} threads, N_k = {nk})"),
+            bytes_of((nk as u64).saturating_mul(dmax * dmax), 16)
+                .saturating_mul(threads.saturating_add(1)),
+        )?;
+        let pool = sr_engine_pool(inp.prep, &self.site, inp.cfg.omega)?;
+        let out = Mutex::new((0..nk).map(|_| czero(n)).collect::<Vec<_>>());
+        let counts: Vec<Result<usize, FerricError>> = (0..nsh * nsh)
+            .into_par_iter()
+            .map(|pair| self.pair_task(&pool, pair / nsh, pair % nsh, &out))
+            .collect();
+        let mut n_triplets = 0usize;
+        for c in counts {
+            n_triplets += c?;
+        }
+        Ok((
+            out.into_inner().unwrap_or_else(|e| e.into_inner()),
+            n_triplets,
+        ))
+    }
+
+    /// One [`SrKCtx::parallel`] task: pair `(i1, i2)` over every image `L`
+    /// ascending, then its finished `(N_k, dim_i1, dim_i2)` block COPIED
+    /// into `out`. Returns the triplet count.
+    fn pair_task(
+        &self,
+        pool: &EnginePool,
+        i1: usize,
+        i2: usize,
+        out: &Mutex<Vec<Array2<Complex64>>>,
+    ) -> Result<usize, FerricError> {
+        let (a, b) = (&self.inp.shells[i1], &self.inp.shells[i2]);
+        let bl = a.dim * b.dim;
+        let mut acc = vec![Complex64::new(0.0, 0.0); self.nk() * bl];
+        let mut count = 0usize;
+        pool.with(|eng| -> Result<(), FerricError> {
+            for il in 0..self.inp.images.len() {
+                self.pair_image(eng, (i1, i2), il, &mut acc, &mut count)?;
+            }
+            Ok(())
+        })?;
+        if count > 0 {
+            let mut vs = out.lock().unwrap_or_else(|e| e.into_inner());
+            for (k, v) in vs.iter_mut().enumerate() {
+                for i in 0..a.dim {
+                    for j in 0..b.dim {
+                        v[(a.off + i, b.off + j)] = acc[k * bl + i * b.dim + j];
+                    }
+                }
+            }
+        }
+        Ok(count)
+    }
+
+    /// Pair `(i1, i2)` at image `il`: screen, then every candidate in order,
+    /// each kept block added into `acc[k]` with its phase (the serial loop's
+    /// body, `add_block_k`'s expression).
+    fn pair_image(
+        &self,
+        eng: &mut Engine,
+        (i1, i2): (usize, usize),
+        il: usize,
+        acc: &mut [Complex64],
+        count: &mut usize,
+    ) -> Result<(), FerricError> {
+        let inp = self.inp;
+        let (a, bsh) = (&inp.shells[i1], &inp.shells[i2]);
+        let l = &inp.images[il];
+        let bound = SrBound::Derived;
+        let bc = [
+            bsh.center[0] + l[0],
+            bsh.center[1] + l[1],
+            bsh.center[2] + l[2],
+        ];
+        let r2 = (a.center[0] - bc[0]).powi(2)
+            + (a.center[1] - bc[1]).powi(2)
+            + (a.center[2] - bc[2]).powi(2);
+        let (q, pmin, pmax) = pair_bound(a, bsh, r2);
+        let wp = bound.omega_p(inp.cfg.omega, pmin);
+        let Some(rad) = nucleus_radius_m(q, self.zmax, pmax, wp, inp.cfg.precision, bound.margin())
+        else {
+            return Ok(());
+        };
+        let bl = a.dim * bsh.dim;
+        for (kc, m, x) in &self.cands {
+            if segment_distance(*x, a.center, bc) > rad {
+                continue;
+            }
+            *count += 1;
+            let f = -self.nuc[*kc].0 / self.site.norm_int[*kc];
+            if let Some(blk) = eng.compute_eri3_shifted(
+                inp.prep,
+                &self.site.prep,
+                self.site.site_shell[*kc],
+                i1,
+                i2,
+                [*m, [0.0; 3], *l],
+            )? {
+                // == add_block_k(v_sr, ph[il], blk, a.off, a.dim, b.off, b.dim, f)
+                for (k, p) in inp.ph[il].iter().enumerate() {
+                    let dst = &mut acc[k * bl..(k + 1) * bl];
+                    for i in 0..a.dim {
+                        for j in 0..bsh.dim {
+                            dst[i * bsh.dim + j] += *p * (f * blk[i * bsh.dim + j]);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The serial `V_SR(k)` loop as it was before the pair-parallel rewrite
+    /// (FROZEN; oracle only — do not "improve").
+    fn serial_oracle(&self) -> Result<SrK, FerricError> {
+        let inp = self.inp;
+        let (prep, images, ph, shells) = (inp.prep, inp.images, inp.ph, inp.shells);
+        let (omega, thresh, zmax) = (inp.cfg.omega, inp.cfg.precision, self.zmax);
+        let (nuc, site, cands) = (&self.nuc, &self.site, &self.cands);
+        let n = prep.nbasis();
+        let mut v_sr: Vec<Array2<Complex64>> = (0..self.nk()).map(|_| czero(n)).collect();
+        let mut n_sr_triplets = 0usize;
+        let mut eng = Engine::new_3center(
+            Operator::erfc(omega),
+            prep,
+            &site.prep,
+            ERI3_ENGINE_PRECISION,
+        )?;
+        let bound = SrBound::Derived;
+        for (il, l) in images.iter().enumerate() {
+            for (i1, a) in shells.iter().enumerate() {
+                for (i2, bsh) in shells.iter().enumerate() {
+                    let bc = [
+                        bsh.center[0] + l[0],
+                        bsh.center[1] + l[1],
+                        bsh.center[2] + l[2],
+                    ];
+                    let r2 = (a.center[0] - bc[0]).powi(2)
+                        + (a.center[1] - bc[1]).powi(2)
+                        + (a.center[2] - bc[2]).powi(2);
+                    let (q, pmin, pmax) = pair_bound(a, bsh, r2);
+                    let wp = bound.omega_p(omega, pmin);
+                    let Some(rad) = nucleus_radius_m(q, zmax, pmax, wp, thresh, bound.margin())
+                    else {
+                        continue;
+                    };
+                    for (kc, m, x) in cands {
+                        if segment_distance(*x, a.center, bc) > rad {
+                            continue;
+                        }
+                        n_sr_triplets += 1;
+                        let f = -nuc[*kc].0 / site.norm_int[*kc];
+                        if let Some(blk) = eng.compute_eri3_shifted(
+                            prep,
+                            &site.prep,
+                            site.site_shell[*kc],
+                            i1,
+                            i2,
+                            [*m, [0.0; 3], *l],
+                        )? {
+                            add_block_k(&mut v_sr, &ph[il], blk, a.off, a.dim, bsh.off, bsh.dim, f);
+                        }
+                    }
+                }
+            }
+        }
+        Ok((v_sr, n_sr_triplets))
+    }
+}
+
+/// TEST ORACLE for the parallel `V_SR(k)`: `[parallel, serial]`
+/// unhermitised `V_SR(k)` and triplet counts of [`periodic_hcore_kpts`] at
+/// `cfg` on `mesh` (same pair images, phases, nucleus candidates and
+/// screen). `serial` is the pre-parallel `L → i1 → i2 → candidate` loop,
+/// FROZEN verbatim; the two must agree BIT FOR BIT
+/// (`tests/pbc_parallel_bitwise.rs`).
+#[doc(hidden)]
+pub fn sr_attraction_kpts_parallel_and_serial(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    mesh: &KPointMesh,
+    cfg: &PeriodicHcoreConfig,
+) -> Result<[(Vec<Array2<Complex64>>, usize); 2], FerricError> {
+    cfg.validate()?;
+    let shells = prim_shells(cell, prep)?;
+    let mut ledger = Ledger::new(crate::budget::resolve(cfg.budget_bytes));
+    let (images, rpair, ph) =
+        images_and_phases(cell, &shells, mesh, 0.1 * cfg.precision, &mut ledger)?;
+    let inp = SrKInputs {
+        cell,
+        prep,
+        cfg,
+        shells: &shells,
+        images: &images,
+        ph: &ph,
+        rpair,
+        nk: mesh.nk(),
+    };
+    let ctx = SrKCtx::new(&inp, &mut ledger)?.ok_or_else(|| {
+        FerricError::General("sr_attraction_kpts_parallel_and_serial: no nuclei".into())
+    })?;
+    Ok([ctx.parallel(&ledger)?, ctx.serial_oracle()?])
 }

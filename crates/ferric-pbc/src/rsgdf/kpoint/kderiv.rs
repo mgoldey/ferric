@@ -252,8 +252,8 @@ pub(crate) fn kpoint_fit_gradient(
     )?;
 
     // --- The energy's SR bins (same walk, same order).
-    let (j2res, _) = sr_metric_binned(&st, mod_t)?;
-    let (j3res, _) = sr_three_index_binned(&st, &images, mod_l, mod_t)?;
+    let (j2res, _) = sr_metric_binned(&st, mod_t, ledger, who)?;
+    let (j3res, _) = sr_three_index_binned(&st, &images, mod_l, mod_t, ledger, who)?;
     let qv: Vec<f64> = aux_ft_shells(&st.aux_sh, naux, &[[0.0; 3]])
         .column(0)
         .iter()

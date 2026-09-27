@@ -55,7 +55,7 @@
 
 use super::{
     aux_ft_shells, check_obs_on_cell, dot3, gshells, pair_image_radius, subtract_g0, G0Handling,
-    LatticeWalker, RsGdfConfig, Stage,
+    LatticeWalker, RsGdfConfig, SrBinning, Stage,
 };
 use crate::budget::{bytes_of, Ledger};
 use crate::dense_aft::ExxDiv;
@@ -213,9 +213,46 @@ fn sat_prod(xs: &[usize]) -> u64 {
 }
 
 /// SR metric binned by the residue of `T` modulo `moduli`: `bins[r]` =
-/// `Σ_{T ≡ r} (P_0|Q_T)_erfc` (reals). Same walk and per-bin addition order as
-/// the Gamma `Stage::sr_metric`.
+/// `Σ_{T ≡ r} (P_0|Q_T)_erfc` (reals), and the pair count. PARALLEL
+/// ([`Stage::sr_metric_binned`]), bit-identical to
+/// [`sr_metric_binned_serial_oracle`]. The per-thread scratch is checked on
+/// `ledger` first.
 fn sr_metric_binned(
+    st: &Stage<'_>,
+    moduli: [usize; 3],
+    ledger: &Ledger,
+    who: &str,
+) -> Result<(Vec<Array2<f64>>, usize), FerricError> {
+    let bins = SrBinning {
+        mod_l: [1; 3],
+        mod_t: moduli,
+    };
+    st.check_sr_scratch(ledger, who, bins)?;
+    st.sr_metric_binned(moduli)
+}
+
+/// SR 3-index binned by `(L mod mod_l, T mod mod_t)`: `bins[rL * R_T + rT]`
+/// = `Σ (m_0 l_L|P_T)_erfc`, `(nao², naux)` reals, and the triplet count.
+/// PARALLEL ([`Stage::sr_three_index_binned`]), bit-identical to
+/// [`sr_three_index_binned_serial_oracle`]. The per-thread scratch is checked
+/// on `ledger` first.
+fn sr_three_index_binned(
+    st: &Stage<'_>,
+    images: &[[f64; 3]],
+    mod_l: [usize; 3],
+    mod_t: [usize; 3],
+    ledger: &Ledger,
+    who: &str,
+) -> Result<(Vec<Array2<f64>>, usize), FerricError> {
+    let bins = SrBinning { mod_l, mod_t };
+    st.check_sr_scratch(ledger, who, bins)?;
+    st.sr_three_index_binned(images, bins)
+}
+
+/// The serial binned SR metric as it was before the parallel rewrite
+/// (FROZEN; oracle only — do not "improve"): the serial `P → Q → T` walk,
+/// each block added into its `T` residue bin.
+fn sr_metric_binned_serial_oracle(
     st: &Stage<'_>,
     moduli: [usize; 3],
 ) -> Result<(Vec<Array2<f64>>, usize), FerricError> {
@@ -234,10 +271,11 @@ fn sr_metric_binned(
     Ok((bins, count))
 }
 
-/// SR 3-index binned by `(L mod mod_l, T mod mod_t)`: `bins[rL * R_T + rT]`
-/// = `Σ (m_0 l_L|P_T)_erfc`, `(nao², naux)` reals. Same walk as the Gamma
-/// `Stage::sr_three_index`.
-fn sr_three_index_binned(
+/// The serial binned SR 3-index as it was before the parallel rewrite
+/// (FROZEN; oracle only — do not "improve"): the serial
+/// `L → i1 → i2 → P → T` walk, each block added into its `(L, T)` residue
+/// bin.
+fn sr_three_index_binned_serial_oracle(
     st: &Stage<'_>,
     images: &[[f64; 3]],
     mod_l: [usize; 3],
@@ -266,18 +304,14 @@ fn sr_three_index_binned(
     Ok((bins, count))
 }
 
-/// TEST/DIAGNOSTIC: the Gamma SR sums (`(J2_SR, J3_SR)` of [`super::RsGdf`])
-/// and the SAME sums from the residue-binned k-point walk at a single bin
-/// (1×1×1). They must agree BIT FOR BIT: the binned mode visits the same
-/// blocks in the same order, and the Gamma sums are what `RsGdf::build`
-/// consumes (the refactor-safety pin for the Gamma path).
-#[doc(hidden)]
-pub fn sr_sums_gamma_and_single_bin(
-    cell: &Cell,
-    obs: &PreparedBasis,
-    aux: &PreparedBasis,
+/// The SR [`Stage`] of an RS-GDF build at `cfg` (test/diagnostic entry
+/// points), and its pair images.
+fn diagnostic_stage<'a>(
+    cell: &'a Cell,
+    obs: &'a PreparedBasis,
+    aux: &'a PreparedBasis,
     cfg: &RsGdfConfig,
-) -> Result<[(Array2<f64>, Array2<f64>); 2], FerricError> {
+) -> Result<(Stage<'a>, Vec<[f64; 3]>), FerricError> {
     cfg.validate()?;
     check_obs_on_cell(cell, obs)?;
     let st = Stage {
@@ -292,12 +326,59 @@ pub fn sr_sums_gamma_and_single_bin(
         walker: LatticeWalker::new(cell),
     };
     let images = cell.translations(pair_image_radius(&st, cfg.precision))?;
+    Ok((st, images))
+}
+
+/// TEST/DIAGNOSTIC: the Gamma SR sums (`(J2_SR, J3_SR)` of [`super::RsGdf`],
+/// the parallel walks) and the SAME sums from the FROZEN serial residue-binned
+/// walk at a single bin (1×1×1). They must agree BIT FOR BIT: the parallel
+/// walks keep every element's addend sequence, and the Gamma sums are what
+/// `RsGdf::build` consumes (the refactor-safety pin for the Gamma path).
+#[doc(hidden)]
+pub fn sr_sums_gamma_and_single_bin(
+    cell: &Cell,
+    obs: &PreparedBasis,
+    aux: &PreparedBasis,
+    cfg: &RsGdfConfig,
+) -> Result<[(Array2<f64>, Array2<f64>); 2], FerricError> {
+    let (st, images) = diagnostic_stage(cell, obs, aux, cfg)?;
     let (j2g, _) = st.sr_metric()?;
     let (j3g, _) = st.sr_three_index(&images)?;
     let one = [1usize; 3];
-    let (mut j2b, _) = sr_metric_binned(&st, one)?;
-    let (mut j3b, _) = sr_three_index_binned(&st, &images, one, one)?;
+    let (mut j2b, _) = sr_metric_binned_serial_oracle(&st, one)?;
+    let (mut j3b, _) = sr_three_index_binned_serial_oracle(&st, &images, one, one)?;
     Ok([(j2g, j3g), (j2b.remove(0), j3b.remove(0))])
+}
+
+/// One set of k-point SR residue bins: `(J2 bins (R_T), J3 bins (R_L R_T),
+/// metric pair count, 3-centre triplet count)`.
+pub type SrBinsParts = (Vec<Array2<f64>>, Vec<Array2<f64>>, usize, usize);
+
+/// TEST ORACLE for the parallel k-point SR walks: `[parallel, serial]` SR
+/// residue bins of [`KRsGdf::build`] for `mesh` (`L` by
+/// [`KPointMesh::residue_moduli`], `T` by the mesh size) at `cfg`. `serial`
+/// is the pre-parallel binned walk, FROZEN verbatim
+/// (`sr_*_binned_serial_oracle`); the two must agree BIT FOR BIT
+/// (`tests/pbc_parallel_bitwise.rs`), which is the proof that the
+/// `(pair, r_L)`-parallel nest kept every element's summation sequence,
+/// including the bin dimension.
+#[doc(hidden)]
+pub fn sr_bins_parallel_and_serial(
+    cell: &Cell,
+    obs: &PreparedBasis,
+    aux: &PreparedBasis,
+    mesh: &KPointMesh,
+    cfg: &RsGdfConfig,
+) -> Result<[SrBinsParts; 2], FerricError> {
+    let (st, images) = diagnostic_stage(cell, obs, aux, cfg)?;
+    let (mod_l, mod_t) = (mesh.residue_moduli(), mesh.n());
+    let ledger = Ledger::new(crate::budget::resolve(cfg.budget_bytes));
+    let (j2p, n2p) = sr_metric_binned(&st, mod_t, &ledger, "KRsGdf diagnostic")?;
+    let (j3p, n3p) =
+        sr_three_index_binned(&st, &images, mod_l, mod_t, &ledger, "KRsGdf diagnostic")?;
+    let (j2s, n2s) = sr_metric_binned_serial_oracle(&st, mod_t)?;
+    let (j3s, n3s) = sr_three_index_binned_serial_oracle(&st, &images, mod_l, mod_t)?;
+    Ok([(j2p, j3p, n2p, n3p), (j2s, j3s, n2s, n3s)])
 }
 
 /// LR K vectors of class `iq`: q = 0 → the Gamma half sphere (weight 2);
@@ -621,9 +702,10 @@ impl KRsGdf {
         let resident_bytes = ledger.resident();
         let chunk_budget = ledger.remaining().min(G_CHUNK_BYTES);
 
-        // --- SR, once for every q: residue bins.
-        let (j2res, n_sr2) = sr_metric_binned(&st, mod_t)?;
-        let (j3res, n_sr3) = sr_three_index_binned(&st, &images, mod_l, mod_t)?;
+        // --- SR, once for every q: residue bins (parallel; per-thread
+        // scratch checked after `chunk_budget` is fixed).
+        let (j2res, n_sr2) = sr_metric_binned(&st, mod_t, &ledger, "KRsGdf")?;
+        let (j3res, n_sr3) = sr_three_index_binned(&st, &images, mod_l, mod_t, &ledger, "KRsGdf")?;
 
         let qv: Vec<f64> = aux_ft_shells(&st.aux_sh, naux, &[[0.0; 3]])
             .column(0)
