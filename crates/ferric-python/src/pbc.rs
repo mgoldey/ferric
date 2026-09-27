@@ -24,6 +24,7 @@ use ferric_core::FerricError;
 use ferric_pbc::dense_aft::{DEFAULT_DENSE_AFT_MAX_BYTES, DEFAULT_DENSE_AFT_PRECISION};
 use ferric_pbc::drpa::DEFAULT_GAMMA_DRPA_QUAD_POINTS;
 use ferric_pbc::kcorr::DEFAULT_KDRPA_QUAD_POINTS;
+use ferric_pbc::rsgdf::DEFAULT_RANGE_SPLIT_LAMBDA;
 use ferric_pbc::{
     gamma_drpa, gamma_mp2, gamma_rks, gamma_rohf, gamma_roks, gamma_uhf, gamma_uks, kpoint_drpa,
     kpoint_mp2, periodic_hcore, periodic_hcore_kpts, solve_krhf, solve_krhf_injected, solve_kuhf,
@@ -33,7 +34,7 @@ use ferric_pbc::{
     KDenseAftEri, KDenseAftPairs, KDrpaConfig, KDrpaEnergy, KJkKind, KMp2Config, KPointInjection,
     KPointMesh, KRhfConfig, KRsGdf, KRsGdfConfig, KScfConfig, KScfResult, KUhfConfig, LindepReport,
     MeshCentring, Mp2Denominators, PbcTimings, PeriodicGridConfig, PeriodicHcore,
-    PeriodicHcoreConfig, RsGdf, RsGdfConfig, SpinGapReport, StageClock,
+    PeriodicHcoreConfig, RangeSplit, RsGdf, RsGdfConfig, SpinGapReport, StageClock,
 };
 use ferric_pbc::{
     gamma_rhf_gradient_rsgdf, gamma_rhf_gradient_with, gamma_rhf_stress, gamma_rhf_stress_rsgdf,
@@ -257,6 +258,9 @@ struct PbcSetup {
     /// Analytic derivatives requested (Gamma SCF bindings only; all-false
     /// everywhere else).
     derivs: DerivRequest,
+    /// Opt-in RS-GDF range split (Gamma energy bindings only, resolved by
+    /// [`parse_range_split`]; `None` everywhere else).
+    range_split: Option<RangeSplit>,
 }
 
 impl PbcSetup {
@@ -317,6 +321,7 @@ fn pbc_setup(a: &PbcArgs<'_, '_>) -> PyResult<PbcSetup> {
             .unwrap_or(DEFAULT_DENSE_AFT_MAX_BYTES),
         budget_bytes: budget_bytes_from_gb(a.memory_budget_gb),
         derivs: DerivRequest::default(),
+        range_split: None,
     })
 }
 
@@ -394,6 +399,50 @@ fn gamma_dense_preflight(s: &PbcSetup) -> PyResult<()> {
     Ok(())
 }
 
+/// The `range_split` kwarg of the Gamma RS-GDF energy bindings
+/// (`ferric_pbc::rsgdf::RangeSplit`): `None` / `False` = off (today's build
+/// bit for bit), `True` = λ = `DEFAULT_RANGE_SPLIT_LAMBDA` (1), a number
+/// > 0 = λ. Strict: a split with `jk="dense"` (nothing to split) or with
+/// `with_gradient` / `with_stress` (the RS-GDF forces and stress do not
+/// follow the partition yet) is a `ValueError`; a non-number is a
+/// `TypeError`.
+pub(crate) fn parse_range_split(
+    fname: &str,
+    v: Option<&Bound<'_, PyAny>>,
+    rsgdf: bool,
+    derivs: DerivRequest,
+) -> PyResult<Option<RangeSplit>> {
+    let Some(v) = v else {
+        return Ok(None);
+    };
+    // bool first: Python's bool is an int, so `extract::<f64>` accepts it.
+    let lambda = if let Ok(b) = v.downcast::<pyo3::types::PyBool>() {
+        if !b.is_true() {
+            return Ok(None);
+        }
+        DEFAULT_RANGE_SPLIT_LAMBDA
+    } else if let Ok(l) = v.extract::<f64>() {
+        positive(fname, "range_split", l)?
+    } else {
+        return Err(pyo3::exceptions::PyTypeError::new_err(format!(
+            "{fname}: range_split must be None, a bool or a number > 0 (the split's lambda)"
+        )));
+    };
+    if !rsgdf {
+        return Err(val_err(format!(
+            "{fname}: range_split partitions the RS-GDF short-range sums and requires \
+             jk=\"rsgdf\"; jk=\"dense\" would ignore it"
+        )));
+    }
+    if derivs.any() {
+        return Err(val_err(format!(
+            "{fname}: range_split is not supported with with_gradient / with_stress: the \
+             RS-GDF forces and stress do not follow the range-split partition yet"
+        )));
+    }
+    Ok(Some(RangeSplit::new(lambda)))
+}
+
 fn gamma_system(s: &PbcSetup) -> Result<GammaSystem, FerricError> {
     let hcfg = PeriodicHcoreConfig::with_omega(s.omega_bohr);
     let hc = periodic_hcore(&s.cell, &s.prep, &hcfg)?;
@@ -410,6 +459,7 @@ fn gamma_system(s: &PbcSetup) -> Result<GammaSystem, FerricError> {
             let cfg = RsGdfConfig {
                 exxdiv: s.exx,
                 budget_bytes: s.budget_bytes,
+                range_split: s.range_split,
                 ..Default::default()
             };
             // The gradient build is bitwise the energy's B plus the metric
@@ -971,7 +1021,11 @@ fn run_open_shell(
 /// Gamma-point periodic **UHF** (spin state from the Molecule's
 /// multiplicity). Same cell/J-K/units/strictness contract as
 /// `run_rhf_gamma` (lattice rows in Å, omega in Å⁻¹, jk "dense"|"rsgdf",
-/// auxbasis/memory_budget_gb only with rsgdf, max_eri_gb only with dense).
+/// auxbasis/memory_budget_gb only with rsgdf, max_eri_gb only with dense,
+/// `range_split` = the opt-in RS-GDF range split on an rsgdf ENERGY run:
+/// None/False off, True lambda 1, a number > 0 = lambda; a ValueError with
+/// jk="dense" or with_gradient/with_stress). Every Gamma binding below
+/// shares the `range_split` contract.
 ///
 /// `ewald_start` ("staged" | "direct"; exxdiv="ewald" only — passing it with
 /// "none" is a ValueError). Default "staged": converge with exxdiv="none",
@@ -999,6 +1053,7 @@ fn run_open_shell(
     mol, lattice, basis_set, exxdiv="ewald", ewald_start=None, omega=None,
     max_eri_gb=None, max_iter=200, density_conv=1e-10, jk="dense",
     auxbasis=None, memory_budget_gb=None, with_gradient=false, with_stress=false,
+    range_split=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_uhf_gamma(
@@ -1017,6 +1072,7 @@ fn run_uhf_gamma(
     memory_budget_gb: Option<f64>,
     with_gradient: bool,
     with_stress: bool,
+    range_split: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyGammaOpenShellResult> {
     let fname = "run_uhf_gamma";
     let mut s = pbc_setup(&PbcArgs {
@@ -1036,6 +1092,7 @@ fn run_uhf_gamma(
         gradient: with_gradient,
         stress: with_stress,
     };
+    s.range_split = parse_range_split(fname, range_split, s.aux.is_some(), s.derivs)?;
     let (start, start_name) = parse_ewald_start(fname, s.exx, ewald_start)?;
     let o = OpenOpts {
         method: OpenMethod::Uhf,
@@ -1065,6 +1122,7 @@ fn run_uhf_gamma(
     mol, lattice, basis_set, exxdiv="ewald", ewald_start=None, omega=None,
     max_eri_gb=None, max_iter=200, density_conv=1e-10, jk="dense",
     auxbasis=None, memory_budget_gb=None, with_gradient=false, with_stress=false,
+    range_split=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_rohf_gamma(
@@ -1083,6 +1141,7 @@ fn run_rohf_gamma(
     memory_budget_gb: Option<f64>,
     with_gradient: bool,
     with_stress: bool,
+    range_split: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyGammaOpenShellResult> {
     let fname = "run_rohf_gamma";
     let mut s = pbc_setup(&PbcArgs {
@@ -1102,6 +1161,7 @@ fn run_rohf_gamma(
         gradient: with_gradient,
         stress: with_stress,
     };
+    s.range_split = parse_range_split(fname, range_split, s.aux.is_some(), s.derivs)?;
     let (start, start_name) = parse_ewald_start(fname, s.exx, ewald_start)?;
     let o = OpenOpts {
         method: OpenMethod::Rohf,
@@ -1127,6 +1187,7 @@ fn run_rohf_gamma(
     omega=None, max_eri_gb=None, max_iter=200, density_conv=1e-10, jk="dense",
     auxbasis=None, memory_budget_gb=None, n_radial=75, n_angular=302,
     neighbour_cutoff=None, with_gradient=false, with_stress=false,
+    range_split=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_uks_gamma(
@@ -1149,6 +1210,7 @@ fn run_uks_gamma(
     neighbour_cutoff: Option<f64>,
     with_gradient: bool,
     with_stress: bool,
+    range_split: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyGammaOpenShellResult> {
     let fname = "run_uks_gamma";
     let mut s = pbc_setup(&PbcArgs {
@@ -1168,6 +1230,7 @@ fn run_uks_gamma(
         gradient: with_gradient,
         stress: with_stress,
     };
+    s.range_split = parse_range_split(fname, range_split, s.aux.is_some(), s.derivs)?;
     let (start, start_name) = parse_ewald_start(fname, s.exx, ewald_start)?;
     let o = OpenOpts {
         method: OpenMethod::Uks(functional.to_string()),
@@ -1199,6 +1262,7 @@ fn run_uks_gamma(
     omega=None, max_eri_gb=None, max_iter=None, density_conv=1e-10, jk="dense",
     auxbasis=None, memory_budget_gb=None, n_radial=75, n_angular=302,
     neighbour_cutoff=None, with_gradient=false, with_stress=false,
+    range_split=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_roks_gamma(
@@ -1221,6 +1285,7 @@ fn run_roks_gamma(
     neighbour_cutoff: Option<f64>,
     with_gradient: bool,
     with_stress: bool,
+    range_split: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyGammaOpenShellResult> {
     let fname = "run_roks_gamma";
     let mut s = pbc_setup(&PbcArgs {
@@ -1240,6 +1305,7 @@ fn run_roks_gamma(
         gradient: with_gradient,
         stress: with_stress,
     };
+    s.range_split = parse_range_split(fname, range_split, s.aux.is_some(), s.derivs)?;
     let (start, start_name) = parse_ewald_start(fname, s.exx, ewald_start)?;
     let o = OpenOpts {
         method: OpenMethod::Roks(functional.to_string()),
@@ -1364,6 +1430,7 @@ fn rks_driver(
     max_eri_gb=None, max_iter=200, density_conv=1e-10, jk="dense",
     auxbasis=None, memory_budget_gb=None, n_radial=75, n_angular=302,
     neighbour_cutoff=None, with_gradient=false, with_stress=false,
+    range_split=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_rks_gamma(
@@ -1385,6 +1452,7 @@ fn run_rks_gamma(
     neighbour_cutoff: Option<f64>,
     with_gradient: bool,
     with_stress: bool,
+    range_split: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyGammaRksResult> {
     let fname = "run_rks_gamma";
     let mut s = pbc_setup(&PbcArgs {
@@ -1404,6 +1472,7 @@ fn run_rks_gamma(
         gradient: with_gradient,
         stress: with_stress,
     };
+    s.range_split = parse_range_split(fname, range_split, s.aux.is_some(), s.derivs)?;
     let grid = periodic_grid(fname, n_radial, n_angular, neighbour_cutoff)?;
     gamma_dense_preflight(&s)?;
     let scf = gamma_scf_config(max_iter, density_conv);
@@ -1653,7 +1722,7 @@ fn run_gamma_corr(
 #[pyo3(signature = (
     mol, lattice, basis_set, exxdiv, denominators, omega=None, max_eri_gb=None,
     max_iter=200, density_conv=1e-10, jk="dense", auxbasis=None,
-    memory_budget_gb=None, frozen_core=0,
+    memory_budget_gb=None, frozen_core=0, range_split=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_mp2_gamma(
@@ -1671,9 +1740,10 @@ fn run_mp2_gamma(
     auxbasis: Option<&Bound<'_, PyAny>>,
     memory_budget_gb: Option<f64>,
     frozen_core: usize,
+    range_split: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyGammaCorrelationResult> {
     let fname = "run_mp2_gamma";
-    let s = pbc_setup(&PbcArgs {
+    let mut s = pbc_setup(&PbcArgs {
         fname,
         mol,
         lattice: &lattice,
@@ -1686,6 +1756,7 @@ fn run_mp2_gamma(
         memory_budget_gb,
         closed_shell: true,
     })?;
+    s.range_split = parse_range_split(fname, range_split, s.aux.is_some(), s.derivs)?;
     let o = CorrOpts {
         drpa_quad: None,
         den: parse_denominators(fname, denominators)?,
@@ -1709,7 +1780,7 @@ fn run_mp2_gamma(
 #[pyo3(signature = (
     mol, lattice, basis_set, exxdiv, denominators, omega=None, max_eri_gb=None,
     max_iter=200, density_conv=1e-10, jk="dense", auxbasis=None,
-    memory_budget_gb=None, frozen_core=0, quad_points=None,
+    memory_budget_gb=None, frozen_core=0, quad_points=None, range_split=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_drpa_gamma(
@@ -1728,9 +1799,10 @@ fn run_drpa_gamma(
     memory_budget_gb: Option<f64>,
     frozen_core: usize,
     quad_points: Option<usize>,
+    range_split: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyGammaCorrelationResult> {
     let fname = "run_drpa_gamma";
-    let s = pbc_setup(&PbcArgs {
+    let mut s = pbc_setup(&PbcArgs {
         fname,
         mol,
         lattice: &lattice,
@@ -1749,6 +1821,7 @@ fn run_drpa_gamma(
              formula has no frequency quadrature); drop it or use jk=\"rsgdf\""
         )));
     }
+    s.range_split = parse_range_split(fname, range_split, s.aux.is_some(), s.derivs)?;
     let o = CorrOpts {
         drpa_quad: Some(quad_points.unwrap_or(DEFAULT_GAMMA_DRPA_QUAD_POINTS)),
         den: parse_denominators(fname, denominators)?,

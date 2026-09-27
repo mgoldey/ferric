@@ -30,8 +30,8 @@ use ferric_pbc::{
     GammaUhfIntegrals, GammaUksConfig, KCorrIntegrals, KDenseAftConfig, KDenseAftEri,
     KDenseAftPairs, KDrpaConfig, KDrpaEnergy, KJkKind, KMp2Config, KPointInjection, KPointMesh,
     KRhfConfig, KRsGdf, KRsGdfConfig, KScfConfig, KScfResult, KUhfConfig, MeshCentring,
-    Mp2Denominators, PbcTimings, PeriodicGridConfig, PeriodicHcore, PeriodicHcoreConfig, RsGdf,
-    RsGdfConfig, StageClock,
+    Mp2Denominators, PbcTimings, PeriodicGridConfig, PeriodicHcore, PeriodicHcoreConfig,
+    RangeSplit, RsGdf, RsGdfConfig, StageClock,
 };
 use ferric_pbc::{
     gamma_rhf_gradient_rsgdf, gamma_rhf_gradient_with, gamma_rks_gradient_rsgdf,
@@ -90,6 +90,8 @@ pub fn run_periodic(cfg: &Config) {
                 "kmesh": plan.kmesh.map(|(n, _)| n),
                 "exxdiv": exx_name(plan.exxdiv),
                 "jk": jk_name(plan),
+                "range_split": range_split_lambda(plan).is_some(),
+                "range_split_lambda": range_split_lambda(plan),
                 "max_iter": effective_max_iter(plan),
             }),
             serde_json::json!({
@@ -254,6 +256,14 @@ fn jk_name(plan: &PeriodicPlan) -> String {
     }
 }
 
+/// The opt-in RS-GDF range split's λ (`None` = off, or dense J/K).
+fn range_split_lambda(plan: &PeriodicPlan) -> Option<f64> {
+    match &plan.jk {
+        PeriodicJk::Dense { .. } => None,
+        PeriodicJk::RsGdf { range_split, .. } => *range_split,
+    }
+}
+
 fn budget_bytes(plan: &PeriodicPlan) -> Option<usize> {
     match &plan.jk {
         PeriodicJk::Dense { .. } => None,
@@ -311,6 +321,12 @@ fn print_header(cfg: &Config, plan: &PeriodicPlan, s: &Setup) {
     }
     println!("  exxdiv     = {}", exx_name(plan.exxdiv));
     println!("  jk         = {}", jk_name(plan));
+    if matches!(plan.jk, PeriodicJk::RsGdf { .. }) {
+        match range_split_lambda(plan) {
+            Some(l) => println!("  range_split= on (lambda = {l})"),
+            None => println!("  range_split= off"),
+        }
+    }
     println!("  nbasis     = {}", s.prep.nbasis());
 }
 
@@ -493,9 +509,13 @@ fn gamma_system(
             max_eri_bytes(plan),
         )?)),
         Some(aux) => {
+            // The plan only carries a range split on a Gamma energy run
+            // (`periodic_plan` refuses it with task = "optimize"), and
+            // `build_for_gradient` refuses a split config itself.
             let cfg = RsGdfConfig {
                 exxdiv: plan.exxdiv,
                 budget_bytes: budget_bytes(plan),
+                range_split: range_split_lambda(plan).map(RangeSplit::new),
                 ..Default::default()
             };
             let gdf = if for_gradient {

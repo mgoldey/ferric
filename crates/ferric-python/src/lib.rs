@@ -864,11 +864,14 @@ struct GammaRun {
 enum GammaJk {
     /// Dense pure-AFT ERI, hard-capped at `max_bytes`.
     Dense { max_bytes: usize },
-    /// RS-GDF with `aux` (prepared on the cell's atoms) and an optional
-    /// explicit budget (`None` = ferric's unified budget chain).
+    /// RS-GDF with `aux` (prepared on the cell's atoms), an optional
+    /// explicit budget (`None` = ferric's unified budget chain) and the
+    /// opt-in range split (`None` = off; energy-only, see
+    /// `pbc::parse_range_split`).
     RsGdf {
         aux: Box<PreparedBasis>,
         budget_bytes: Option<usize>,
+        range_split: Option<ferric_pbc::RangeSplit>,
     },
 }
 
@@ -953,10 +956,15 @@ fn gamma_rhf_driver(
             let d = derivs_of(&scf, pbc::DerivJk::Dense(&eri), None)?;
             (scf, Some(eri.n_g_half()), None, d)
         }
-        GammaJk::RsGdf { aux, budget_bytes } => {
+        GammaJk::RsGdf {
+            aux,
+            budget_bytes,
+            range_split,
+        } => {
             let cfg = RsGdfConfig {
                 exxdiv: exx,
                 budget_bytes: *budget_bytes,
+                range_split: *range_split,
                 ..Default::default()
             };
             // The gradient build is bitwise the energy's B plus the metric
@@ -1169,6 +1177,16 @@ fn parse_gamma_options(
 ///                (strain of lattice rows AND atoms). Both run on the SCF's
 ///                own J/K (rsgdf: B built with its gradient pieces, bitwise
 ///                the energy's) and need a converged SCF.
+///   range_split  (default None) opt-in RS-GDF range split
+///                (`ferric_pbc::rsgdf::RangeSplit`): None/False = off (the
+///                unsplit build bit for bit), True = lambda 1 (the rigorous
+///                default), a number > 0 = lambda. Moves the SR blocks whose
+///                FT converges in the LR sphere (orbital primitive exponent
+///                <= lambda*omega_gdf^2/2, aux <= lambda*omega_gdf^2) to G
+///                space; lambda <= 1 adds no G vectors. The split's
+///                primitive counters appear in `timings["counters"]`
+///                ("rsgdf split ..."). rsgdf ENERGY only: with jk="dense" or
+///                with_gradient/with_stress it is a ValueError.
 ///
 /// Hard errors (ValueError): charged cell (charge != 0; no neutralising-
 /// background correction for electrons), multiplicity != 1 or an odd
@@ -1186,6 +1204,7 @@ fn parse_gamma_options(
     mol, lattice, basis_set, exxdiv="ewald", omega=None, max_eri_gb=None,
     max_iter=200, density_conv=1e-10, jk="dense", auxbasis=None,
     memory_budget_gb=None, with_gradient=false, with_stress=false,
+    range_split=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_rhf_gamma(
@@ -1203,6 +1222,7 @@ fn run_rhf_gamma(
     memory_budget_gb: Option<f64>,
     with_gradient: bool,
     with_stress: bool,
+    range_split: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyGammaRhfResult> {
     let val_err = |m: String| pyo3::exceptions::PyValueError::new_err(m);
     let GammaOptions {
@@ -1219,6 +1239,12 @@ fn run_rhf_gamma(
         &lattice,
         omega,
     )?;
+    let want = pbc::DerivRequest {
+        gradient: with_gradient,
+        stress: with_stress,
+    };
+    let range_split =
+        pbc::parse_range_split("run_rhf_gamma", range_split, auxbasis.is_some(), want)?;
     let emol = validate_gamma_cell("run_rhf_gamma", &mol.inner, &basis_set.inner)?;
     let cell = ferric_pbc::Cell::new(emol, a).map_err(|e| val_err(format!("{e}")))?;
     let prep = PreparedBasis::new(cell.mol(), &basis_set.inner).map_err(make_err)?;
@@ -1235,6 +1261,7 @@ fn run_rhf_gamma(
             let choice = GammaJk::RsGdf {
                 aux: Box::new(aux),
                 budget_bytes: budget_bytes_from_gb(memory_budget_gb),
+                range_split,
             };
             (choice, Some(aux_bs.name))
         }
@@ -1259,10 +1286,6 @@ fn run_rhf_gamma(
         density_conv,
         max_iter,
         ..Default::default()
-    };
-    let want = pbc::DerivRequest {
-        gradient: with_gradient,
-        stress: with_stress,
     };
     let run = py
         .allow_threads(|| {

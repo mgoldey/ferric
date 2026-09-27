@@ -1368,6 +1368,7 @@ def run_rhf_gamma(
     memory_budget_gb: float | None = None,
     with_gradient: bool = False,
     with_stress: bool = False,
+    range_split: float | bool | None = None,
 ) -> GammaRhfResult:
     """Closed-shell Gamma-point periodic RHF.
 
@@ -1386,6 +1387,13 @@ def run_rhf_gamma(
     gradient (result.gradient(): natoms x 3, dE/dR in Hartree/Bohr) and stress
     (result.stress(): 3 x 3 in Hartree/Bohr^3) of the reported energy, on the
     SCF's own J/K (both jk values). The SCF must converge.
+
+    range_split (default None): opt-in RS-GDF range split. None/False = off
+    (the unsplit build bit for bit), True = lambda 1, a number > 0 = lambda.
+    Moves the short-range blocks whose Fourier transform converges in the
+    long-range G sphere to G space (lambda <= 1 adds no G vectors). rsgdf
+    ENERGY only: ValueError with jk="dense" or with_gradient/with_stress.
+    Every Gamma binding below takes the same range_split.
     """
     ...
 
@@ -1755,6 +1763,7 @@ def run_uhf_gamma(
     memory_budget_gb: float | None = None,
     with_gradient: bool = False,
     with_stress: bool = False,
+    range_split: float | bool | None = None,
 ) -> GammaOpenShellResult:
     """Gamma-point periodic UHF. ewald_start "staged" (default) | "direct",
     exxdiv="ewald" only (ValueError with "none")."""
@@ -1775,6 +1784,7 @@ def run_rohf_gamma(
     memory_budget_gb: float | None = None,
     with_gradient: bool = False,
     with_stress: bool = False,
+    range_split: float | bool | None = None,
 ) -> GammaOpenShellResult:
     """Gamma-point periodic ROHF. KNOWN LIMITATION: does not converge on the
     triclinic 4H s+p triplet (non-convergence is an error, not a number)."""
@@ -1799,6 +1809,7 @@ def run_uks_gamma(
     neighbour_cutoff: float | None = None,
     with_gradient: bool = False,
     with_stress: bool = False,
+    range_split: float | bool | None = None,
 ) -> GammaOpenShellResult:
     """Gamma-point periodic UKS (LDA/GGA/global hybrids; RSH/meta-GGA/VV10
     refused). neighbour_cutoff in Angstrom (None = max(10 Bohr, covering
@@ -1824,6 +1835,7 @@ def run_roks_gamma(
     neighbour_cutoff: float | None = None,
     with_gradient: bool = False,
     with_stress: bool = False,
+    range_split: float | bool | None = None,
 ) -> GammaOpenShellResult:
     """Gamma-point periodic ROKS (functional/grid contract of run_uks_gamma).
     max_iter=None: 600 with a 0.05 Ha ramped level shift for a hybrid (a > 0),
@@ -1848,6 +1860,7 @@ def run_rks_gamma(
     neighbour_cutoff: float | None = None,
     with_gradient: bool = False,
     with_stress: bool = False,
+    range_split: float | bool | None = None,
 ) -> GammaRksResult:
     """Closed-shell Gamma-point periodic RKS; open shells raise ValueError."""
     ...
@@ -1866,6 +1879,7 @@ def run_mp2_gamma(
     auxbasis: BasisSet | str | None = None,
     memory_budget_gb: float | None = None,
     frozen_core: int = 0,
+    range_split: float | bool | None = None,
 ) -> GammaCorrelationResult:
     """Gamma RHF + MP2 in one call. exxdiv (the reference's) and denominators
     ("shifted" | "unshifted") are required."""
@@ -1886,6 +1900,7 @@ def run_drpa_gamma(
     memory_budget_gb: float | None = None,
     frozen_core: int = 0,
     quad_points: int | None = None,
+    range_split: float | bool | None = None,
 ) -> GammaCorrelationResult:
     """Gamma RHF + dRPA in one call. jk="dense" is the exact plasmon formula
     (quad_points there is a ValueError); jk="rsgdf" uses frequency quadrature

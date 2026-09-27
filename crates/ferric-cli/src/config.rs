@@ -3543,6 +3543,11 @@ pub struct CellCfg {
     pub jk: Option<String>,
     /// RS-GDF auxiliary basis (bundled name); `jk = "rsgdf"` only.
     pub auxbasis: Option<String>,
+    /// Opt-in RS-GDF range split (`ferric_pbc::rsgdf::RangeSplit`): `false`
+    /// (default, off), `true` (λ = `DEFAULT_RANGE_SPLIT_LAMBDA`) or a
+    /// positive number (λ). `jk = "rsgdf"` at the Gamma point with
+    /// `task = "energy"` only.
+    pub range_split: Option<RangeSplitKey>,
     /// Nuclear-attraction Ewald split, in `unit`⁻¹ (> 0). Absent =
     /// `sqrt(pi) / volume^(1/3)`.
     pub omega: Option<f64>,
@@ -3571,6 +3576,39 @@ pub struct CellCfg {
     /// Periodic XC grid image cutoff in `unit` (Kohn-Sham routes only; absent
     /// = max(10 Bohr, covering-radius bound)).
     pub neighbour_cutoff: Option<f64>,
+}
+
+/// The raw `[cell] range_split` value: a flag or an explicit λ. Resolved
+/// (and refused where the route cannot honour it) by [`periodic_plan`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RangeSplitKey {
+    Flag(bool),
+    Lambda(f64),
+}
+
+impl<'de> Deserialize<'de> for RangeSplitKey {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl serde::de::Visitor<'_> for V {
+            type Value = RangeSplitKey;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("false, true, or a positive number (the range-split lambda)")
+            }
+            fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<RangeSplitKey, E> {
+                Ok(RangeSplitKey::Flag(v))
+            }
+            fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<RangeSplitKey, E> {
+                Ok(RangeSplitKey::Lambda(v))
+            }
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<RangeSplitKey, E> {
+                Ok(RangeSplitKey::Lambda(v as f64))
+            }
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<RangeSplitKey, E> {
+                Ok(RangeSplitKey::Lambda(v as f64))
+            }
+        }
+        d.deserialize_any(V)
+    }
 }
 
 /// Which `ferric-pbc` driver a periodic run dispatches to.
@@ -3635,10 +3673,13 @@ pub enum PeriodicJk {
     /// Dense pure-AFT ERI, hard-capped at `max_eri_bytes`.
     Dense { max_eri_bytes: usize },
     /// RS-GDF with a bundled aux basis and an optional explicit budget
-    /// (`None` = ferric's unified budget chain).
+    /// (`None` = ferric's unified budget chain). `range_split`: the opt-in
+    /// split's λ (`None` = off, today's construction bit for bit); only ever
+    /// `Some` on a Gamma energy run.
     RsGdf {
         auxbasis: String,
         budget_bytes: Option<usize>,
+        range_split: Option<f64>,
     },
 }
 
@@ -3922,6 +3963,8 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
         PeriodicJk::RsGdf {
             auxbasis: aux,
             budget_bytes: cfg.memory.budget_bytes(),
+            // Resolved below, once the mesh and the task are known.
+            range_split: None,
         }
     } else {
         if c.auxbasis.is_some() {
@@ -4143,6 +4186,53 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
                  present); use \"energy\" (or \"optimize\" for a Gamma-point SCF route)"
             ))
         }
+    };
+    // Opt-in RS-GDF range split: Gamma energy runs on jk = "rsgdf" only.
+    // `false` is today's construction, which every route runs, so it is
+    // accepted anywhere.
+    let range_split = match c.range_split {
+        None | Some(RangeSplitKey::Flag(false)) => None,
+        Some(k) => {
+            let lambda = match k {
+                RangeSplitKey::Lambda(l) => cell_positive("range_split", l)?,
+                _ => ferric_pbc::rsgdf::DEFAULT_RANGE_SPLIT_LAMBDA,
+            };
+            if !rsgdf {
+                return Err(
+                    "[cell] range_split partitions the RS-GDF short-range sums and requires \
+                     jk = \"rsgdf\"; jk = \"dense\" would ignore it"
+                        .into(),
+                );
+            }
+            if kpoints {
+                return Err(
+                    "[cell] range_split is Gamma-point only: the k-point RS-GDF build does not \
+                     support the range split yet. Remove kmesh or range_split"
+                        .into(),
+                );
+            }
+            if optimize {
+                return Err(
+                    "[cell] range_split is not supported with method.task = \"optimize\": the \
+                     RS-GDF forces do not follow the range-split partition yet. Use \
+                     task = \"energy\" or remove range_split"
+                        .into(),
+                );
+            }
+            Some(lambda)
+        }
+    };
+    let jk = match jk {
+        PeriodicJk::RsGdf {
+            auxbasis,
+            budget_bytes,
+            ..
+        } => PeriodicJk::RsGdf {
+            auxbasis,
+            budget_bytes,
+            range_split,
+        },
+        dense => dense,
     };
     periodic_raw_key_check(raw, route, kpoints, rsgdf, optimize)?;
     let written = raw_keys(raw, "scf");
@@ -4510,6 +4600,101 @@ kind = "ccsd"
         let p = ok(&src);
         assert_eq!(p.route, PeriodicRoute::Rks, "{name}");
         assert!(p.optimize && p.kmesh.is_none(), "{name}");
+    }
+
+    /// The resolved RS-GDF range-split λ (`None` = off); panics on dense.
+    fn split_of(p: &PeriodicPlan) -> Option<f64> {
+        match p.jk {
+            PeriodicJk::RsGdf { range_split, .. } => range_split,
+            PeriodicJk::Dense { .. } => panic!("expected jk = rsgdf"),
+        }
+    }
+
+    const RSGDF: &str = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"";
+
+    #[test]
+    fn range_split_is_accepted_on_every_gamma_rsgdf_energy_route() {
+        let pbe = "[dft]\nfunctional = \"PBE\"";
+        let den = "denominators = \"shifted\"";
+        for (kind, cell, extra) in [
+            ("rhf", "", ""),
+            ("uhf", "", ""),
+            ("rohf", "", ""),
+            ("ksdft", "", ""),
+            ("uhf", "", pbe),
+            ("rimp2", den, ""),
+            ("pdep-rpa", den, ""),
+        ] {
+            let with = |v: &str| format!("{RSGDF}\n{cell}\nrange_split = {v}");
+            let p = ok(&h2(kind, &with("true"), extra));
+            assert_eq!(
+                split_of(&p),
+                Some(ferric_pbc::rsgdf::DEFAULT_RANGE_SPLIT_LAMBDA),
+                "{kind} {extra}"
+            );
+            assert_eq!(split_of(&ok(&h2(kind, &with("0.5"), extra))), Some(0.5));
+            // An integer λ is a number too.
+            assert_eq!(split_of(&ok(&h2(kind, &with("2"), extra))), Some(2.0));
+            assert_eq!(split_of(&ok(&h2(kind, &with("false"), extra))), None);
+            // Absent = off.
+            assert_eq!(
+                split_of(&ok(&h2(kind, &format!("{RSGDF}\n{cell}"), extra))),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn range_split_refuses_a_bad_value() {
+        for v in ["0", "0.0", "-1.0", "nan", "inf", "\"yes\"", "[1.0]"] {
+            let e = err(&h2("rhf", &format!("{RSGDF}\nrange_split = {v}"), ""));
+            assert!(
+                e.contains("range_split") || e.contains("lambda"),
+                "{v}: {e}"
+            );
+        }
+    }
+
+    #[test]
+    fn range_split_is_refused_where_the_split_is_not_implemented() {
+        // Dense J/K: nothing to split.
+        let e = err(&h2("rhf", "range_split = true", ""));
+        assert!(e.contains("range_split") && e.contains("rsgdf"), "{e}");
+        // k-point RS-GDF build refuses the split.
+        for (kind, extra) in [
+            ("rhf", ""),
+            ("uhf", ""),
+            ("rimp2", "\ndenominators = \"shifted\""),
+            ("pdep-rpa", "\ndenominators = \"shifted\""),
+        ] {
+            let e = err(&h2(
+                kind,
+                &format!("{RSGDF}\nkmesh = [1, 1, 2]\nrange_split = 1.0{extra}"),
+                "",
+            ));
+            assert!(
+                e.contains("range_split") && e.contains("k-point"),
+                "{kind}: {e}"
+            );
+        }
+        // The RS-GDF forces do not follow the partition.
+        for kind in ["rhf", "uhf", "rohf", "ksdft"] {
+            let e = err(&opt(kind, &format!("{RSGDF}\nrange_split = true"), ""));
+            assert!(
+                e.contains("range_split") && e.contains("optimize"),
+                "{kind}: {e}"
+            );
+        }
+        // `false` is the construction every route runs: accepted anywhere.
+        let p = ok(&h2("rhf", "range_split = false", ""));
+        assert!(matches!(p.jk, PeriodicJk::Dense { .. }));
+        let p = ok(&opt("rhf", &format!("{RSGDF}\nrange_split = false"), ""));
+        assert!(p.optimize && split_of(&p).is_none());
+        ok(&h2(
+            "rhf",
+            &format!("{RSGDF}\nkmesh = [1, 1, 2]\nrange_split = false"),
+            "",
+        ));
     }
 }
 
