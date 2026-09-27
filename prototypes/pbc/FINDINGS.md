@@ -4229,3 +4229,97 @@ energy: max|analytic − FD| = 1.49e-9 (none) / 1.50e-9 (ewald), ΣF ~1e-15, F(e
 E(none) = −v_M N/2 exactly. Mutants: no_centre 3.1e-1 (ΣF sees it), centre_sign 6.3e-1 (ΣF sees it), L0_only 1.6e-2 and
 M0_only 4.2e-3 (ΣF BLIND — only the FD anchor catches them). The ket := bra^T shortcut equals the direct ket (1.5e-9, at
 the FD floor) on this full symmetric image set. The ECP force term is anchored end to end; the `box` limit is still not run.
+
+## Parallel SR loops — quiet-box speed-up (measured 2026-09-27, diamond_prim cc-pVDZ / cc-pvdz-ri, load ~2-6)
+| threads | wall | CPU | SR 3-centre wall / CPU | hcore SR wall / CPU | E |
+|---|---|---|---|---|---|
+| 1 | 359.4 s | 359.2 s | 290.6 / 290.5 s | 61.7 / 61.7 s | −74.97570900695028 |
+| 6 | 156.3 s | 879.7 s | 117.2 / 694.0 s | 32.2 / 178.9 s | −74.97570900695028 (bitwise) |
+Speed-up 2.3x (SR 3-centre 2.5x, hcore SR 1.9x). NOT load imbalance: the SR 3-centre stage keeps ~5.9 cores busy
+(694 / 117), but CPU per integral call inflates ~2.4x in parallel — contention on a shared resource. Suspects (unmeasured):
+per-call heap allocation in the shim (shells copied/moved per call → allocator contention), a lock or shared table in
+libint2, memory bandwidth. Next: diagnose before tuning.
+
+## Parallel contention diagnosis (measured 2026-09-27, examples/pbc_parallel_contention.rs, load ~2-4)
+100k calls/thread, diamond_prim cc-pVDZ / cc-pvdz-ri, per-call ns at 1 and 6 threads (inflation = ns(6)/ns(1); cpu/wall
+= 1.000 everywhere, so nothing was preempted):
+| variant | pin none | pin phys | pin smt | after shim fix (none / phys) |
+|---|---|---|---|---|
+| sr3-pool (production) | 2.78x | 3.22x | 2.91x | 3.29x / 2.94x |
+| sr3-own (per-thread engine) | 2.79x | — | — | — |
+| sr3-zero-plain (no shim copies) | 3.40x | 3.92x | 3.35x | 3.76x / 3.31x |
+| hcore-pool | 3.32x | 3.82x | 3.12x | 4.02x / 3.63x |
+| ctl-fp (pure FP) | 1.05x (5.5x speed-up) | 1.11x | 1.08x | 1.05x / 1.06x |
+| ctl-alloc | 1.43x | — | — | — |
+| ctl-mem (32 KiB stream) | 1.37x | 1.42x | 2.04x | 1.31x / 1.38x |
+Ruled out: the machine (FP scales 5.1-5.5x), SMT (physical pinning does not help), false sharing through the pool (own ==
+pool), the allocator and the shim's per-call shell copies (plain compute_eri3 inflates as much). The shim fix
+(eri3_shift_slots: per-engine reusable shift slots) is bit-identical (checksums sr3 ea59bc1f7b8425ad, sr3-zero
+b4b7175c391cedaf, hcore 2814b1e9d483fc38 before == after) and cuts serial ns/call 6% (1948 → 1826), no parallel change.
+Interpretation (provisional): the ~3x per-call inflation is inside libint2's integral calls — most likely a per-call
+scratch working set (engine sized by max_nprim/max_l) that fits one thread's share of cache but not six (memory-bound in
+parallel). NOT yet measured: engine scratch size, ctl-mem with --mem-kb ≥ L2/L3, perf counters (cache misses).
+
+## ECP derivative clean-band discrepancy — 2026-09-27
+Trigger: the Rust per-triple test (`ferric-integrals/tests/ecp_deriv_block.rs`) found ferric's analytic ECP derivative
+(`ferric_ecp_block_deriv`, libecpint `left_shell_derivative`) disagreeing with Richardson FD (h = 1e-4) of ferric's own
+ECP VALUES (`ferric_ecp_block`, libecpint `compute_shell_pair`) by 1.89e-5 (2.3e-5 relative) with both shells ≥ 1 Bohr
+from the ECP centre, and 1.25e-2 (6.9e-3 relative) at 0.5–1 Bohr. The total HI SCF force still matched FD of the
+energy to 2.52e-7.
+
+Method (Python, no cargo): the BUILT shim (`libferric_ecp_shim.a` + `libecpint.a`) linked into a shared library and
+called by ctypes on the identical fixture (HI/LANL2DZ, bra H STO-3G at (0.3, 0.2, 0.4) + I shells at (0.9, −0.4, 3.3),
+ket = bra + (0.8, −0.6, 1.1), ECP centres at I0, I0 + L + (0.3, 0.2, −0.25), H0 + (−0.5, 0.4, 0.6),
+I0 + (1.5, −1.2, 0.8)); it reproduces the test's band numbers exactly (1.891e-5 / 1.247e-2). Oracles: PySCF 2.13
+`ECPscalar_sph` values (with the zero-weight 1e-3 screen-guard primitive) and an independent radial Gauss–Legendre ×
+Lebedev quadrature (semi-local projectors by the Legendre addition theorem, U = Σ d r^{n−2} e^{−ζr²}, local = l = 3).
+The quadrature is converged to ≤ 3e-15 (Lebedev 590..3074, radial 120..240 per segment) and agrees with PySCF VALUES to
+2e-15..3e-12. Scripts: `reference/pbc/ecp_accuracy/` (README there).
+
+Predictions stated first (by the coordinator): (A) analytic wrong → oracle ≈ ferric FD; (B) ferric VALUES wrong →
+oracle ≈ analytic; (C) both carry independent ~1e-5 errors → oracle in between.
+
+### Measured
+Derivative, three worst elements (oracle = Richardson FD of the quadrature, h = 1e-3; PySCF FD agrees with it to ≤ 1e-11):
+| element | libecpint analytic | libecpint FD (h 1e-4) | oracle | \|an − oracle\| | \|libFD − oracle\| |
+|---|---|---|---|---|---|
+| MID: centre x, bra I p(1)@I0, ket I p(1)@I0+L, U@I0+(1.5,−1.2,0.8), (px, pz) | −2.559660655e-2 | −3.806520136e-2 | −2.559759155e-2 | 9.9e-7 | 1.25e-2 |
+| CLEAN: ket x, bra I p(1)@I0, ket H s@H0+L, U@I0+L+(0.3,0.2,−0.25) | +4.956840207e-2 | +4.954949395e-2 | +4.956820746e-2 | 1.95e-7 | 1.87e-5 |
+| CLEAN: bra z, bra H s@H0, ket I p(1)@I0+L, U@I0 | −7.121610475e-2 | −7.120174374e-2 | −7.121584227e-2 | 2.6e-7 | 1.41e-5 |
+Over the 10 worst clean and 10 worst 0.5–1 Bohr checks, |analytic − PySCF FD| = 4e-10..1.6e-6 and |libFD − PySCF FD| =
+7e-6..1.25e-2. Values on the same elements: |libecpint − quadrature| = 2.2e-7, 4.4e-7, 7.0e-7 (PySCF − quadrature ≤ 3e-12).
+
+Where the libecpint VALUE error lives:
+- Smoothness scan (41 points over ±5e-4 Bohr, MID element, ECP centre moved): cubic-fit residual libecpint 6.9e-7,
+  PySCF 1.7e-16. The values are NON-SMOOTH at the 1e-7..1e-6 level; FD at h amplifies that by 1/h.
+- Engine knobs do not touch it: `ECPIntegral(thresh ∈ {1e-12, 1e-15, 1e-17}, grids 256/1024 or 1024/4096)` give the
+  identical 6.93e-7 jitter (grids 2048/8192 break outright: 8e-2 wrong).
+- By ECP channel (same scan, others zeroed): local l = 3 (type 1) 2.5e-16; s projector 4.5e-14; p projector 1.3e-10;
+  d projector 6.9e-7 on elements of size 2.5e-3. The jitter is the d-projector TYPE-2 path: both shells off-centre →
+  generated closed-form radial integrals (`radial_gen.cpp` `RadialIntegral::type2`, terms ∝ 1/(x^k y^m) with
+  x = aA, y = bB, i.e. heavy cancellation for diffuse primitives), not the adaptive quadrature.
+- With the d projector removed, analytic vs libecpint FD is h-INDEPENDENT at 2.9e-6 (clean) / 4.9e-6 (0.5–1 Bohr):
+  a SYSTEMATIC error, not FD noise. Refereed by quadrature (single channel): s projector, centre x, bra I p(2), ket
+  I s(2) at 0.97 Bohr: analytic 1.888195817, libFD 1.888192218, quadrature FD 1.888188085 (|an − q| 7.7e-6,
+  |libFD − q| 4.1e-6); VALUE 0.9914185891 (libecpint) vs 0.9914162848 (quadrature, PySCF identical to 2e-14):
+  2.3e-6 off. p projector, H s–H s at 0.88 Bohr: |an − q| 1.5e-6, |libFD − q| 2.1e-7, value off 4.5e-7.
+
+### Interpretation (provisional, 2026-09-27; HI/LANL2DZ, one fixture, 0.9–4 Bohr shell–centre distances)
+- Verdict: mostly (B), with a (C) floor. The analytic derivative is right to about libecpint's own value accuracy
+  (2e-7..8e-6 absolute on O(0.05..2) elements). The FD failures come from libecpint's VALUES. Those carry
+  (i) a non-smooth d-projector type-2 error up to ~7e-7 absolute that FD amplifies by 1/h (the whole 1e-5..1e-2
+  signal), and (ii) a systematic s/p-projector type-2 error of 1e-7..2e-6 absolute (1e-6 relative) that the
+  derivative (built from raised/lowered VALUE integrals) carries INDEPENDENTLY. That second error is the (C) part.
+- Consequence for the ENERGY: ferric's periodic AND molecular V_ECP (both libecpint) carry ~1e-7..1e-6 per-element
+  errors, and E(R) is non-smooth at that level. Plausible (NOT tested) explanations this offers: the unexplained
+  −2.9e-7 LANL2DZ 1×1×2 pin offset of Rust vs prototype ("Rust periodic ECP — measured", Iteration 22 (6) showed the
+  prototype's ranges are converged), the molecular `ecp_matrix_deriv.rs` 1.4e-7 h-independent plateau, and part of
+  the 2.52e-7 SCF-FD residual of the compact HI force anchor.
+- Not a knob fix: libecpint's thresh/grid parameters are inert here. Candidate real fixes, none implemented:
+  (1) patch the vendored `radial_gen.cpp` to fall back to `integrate_small` quadrature when x·y (or P2) is small, then
+  re-measure the scan; (2) route type-2 integrals (or all ECP integrals) through an in-house quadrature like the one
+  here, which reaches 1e-15; (3) accept ~1e-6 relative ECP accuracy and state it.
+- Test consequence (applied in `ecp_deriv_block.rs`): an FD of libecpint values cannot referee the derivative better
+  than ~1e-5 relative. The per-triple test now asserts only the ≥ 1 Bohr band at h = 1e-3, bar 1e-5 relative
+  (measured 3.6e-6); nearer bands are reported only. The derivative itself is refereed by the quadrature numbers
+  above, the per-atom fold (1.07e-14 vs libecpint molecular) and the SCF-FD force anchor.

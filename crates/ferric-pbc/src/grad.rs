@@ -21,6 +21,7 @@
 //!
 //! ```text
 //! dE/dR_A = Σ D dT/dR_A                          lattice-summed shifted 1e derivative blocks
+//!         + Σ D dV_ECP/dR_A  (bra, ket image, ECP image; ECP cells only — below)
 //!         + Σ D dV_SR/dR_A   (basis + nucleus)   erfc 3-centre derivative, Gaussian nuclei,
 //!                                                nucleus = −(bra + ket) by translation invariance
 //!         + Σ D dV_LR/dR_A   basis:   −(2/Ω) Σ_{G∈half} v_ω Re[ρ'_A* S(G)],  ρ'_A = 2 Σ_{μ∈A,ν} D_μν Q_μν
@@ -157,12 +158,32 @@
 //! The force is first order in the orbital gradient, so an unconverged
 //! result is refused on it ([`RO_ORBITAL_GRADIENT_TOL`]), not on ΔP/ΔE.
 //!
+//! # Periodic ECP (FINDINGS "Iteration 22")
+//!
+//! With an ECP basis `h` carries `V_ECP = sym(Σ_L V_L)` ([`crate::ecp`]), a
+//! plain one-electron term, so the force gains `Σ D dV_ECP/dR` and nothing
+//! else changes (`W` and the Pulay term see `V_ECP` through `F`; Z_eff is
+//! already in every Coulomb source):
+//!
+//! ```text
+//! Σ D dV_ECP/dR_A = Σ_L Σ_{(C,M)} Σ_μν D_μν [δ_{A,atom μ} ∂_{A_μ} + δ_{A,atom ν} ∂_{B_ν} + δ_{A,C} ∂_C]
+//!                   ⟨μ_0|U_C(r − R_C − M)|ν_L⟩,     ∂_C = −(∂_{A_μ} + ∂_{B_ν}) per triple
+//! ```
+//!
+//! over EXACTLY the energy's kept triples at `hcore_cfg.ecp_config()`
+//! ([`crate::ecp::periodic_ecp_gradient`]; the triple count is checked
+//! against `PeriodicHcore::n_ecp_triples`). The same term serves RHF, UHF,
+//! ROHF, RKS, UKS and ROKS (it takes the total density). Mutants
+//! `EcpNoCentre` / `EcpCentreSign` (ΣF sees them) and `EcpL0Only` /
+//! `EcpM0Only` (ΣF is BLIND: only the FD anchor catches them).
+//!
 //! # Out of scope (documented, not implemented)
 //!
 //! * **Stress** — lives in [`crate::stress`] (FINDINGS "Iteration 19"); it
-//!   reuses this module's `SpinSet`, `JkSource` and input checks.
-//! * ECPs (`v_ecp`), meta-GGA, range-separated hybrids, VV10, k-points:
-//!   rejected or not provided.
+//!   reuses this module's `SpinSet`, `JkSource` and input checks. Stress
+//!   with an ECP is refused there (`refuse_ecp`).
+//! * meta-GGA, range-separated hybrids, VV10, k-points (k-point forces with
+//!   an ECP are refused in [`crate::kgrad`]): rejected or not provided.
 
 use crate::budget::{bytes_of, Ledger};
 use crate::dense_aft::{DenseAftEri, ExxDiv};
@@ -170,6 +191,7 @@ use crate::dft::{
     build_response_grid, resolve_periodic_functional, GammaRksConfig, GammaUksConfig,
     LatticeAoHess, PeriodicGridConfig,
 };
+use crate::ecp::{periodic_ecp_gradient_on, EcpGradMutation};
 use crate::ewald::{
     default_ewald_omega, ewald_nuclear_gradient_parts, madelung_constant, DEFAULT_EWALD_PRECISION,
 };
@@ -260,6 +282,14 @@ pub enum GradMutation {
     /// RKS (unpolarized, total-density) path; the Focks keep the polarized
     /// `V_σ`.
     RoXcRksForm,
+    /// ECP: drop the ECP-centre derivative. ΣF sees it.
+    EcpNoCentre,
+    /// ECP: centre `= +(bra + ket)` instead of `−(bra + ket)`. ΣF sees it.
+    EcpCentreSign,
+    /// ECP: orbital image `L = 0` only in the ECP derivative. ΣF is BLIND.
+    EcpL0Only,
+    /// ECP: home ECP image `M = 0` only in the ECP derivative. ΣF is BLIND.
+    EcpM0Only,
     /// ROHF/ROKS: the UHF-form `W = Σ_σ D_σ F_σ D_σ` instead of `W_RO`.
     /// NOT a defect: an IDENTITY at the ROHF stationary point (module doc,
     /// "ROHF / ROKS"); its force change is ~ the SCF residual. Exists only so
@@ -313,6 +343,9 @@ pub struct GammaGradParts {
     pub overlap: Array2<f64>,
     /// `Σ D dT`.
     pub kinetic: Array2<f64>,
+    /// `Σ D dV_ECP` (bra + ket image + ECP image motion; zero without an
+    /// ECP).
+    pub ecp: Array2<f64>,
     /// `Σ D dV_SR`, basis-centre motion.
     pub vsr_basis: Array2<f64>,
     /// `Σ D dV_SR`, nucleus motion.
@@ -371,11 +404,14 @@ pub struct GammaGradient {
     /// XC grid points (0 for HF).
     pub n_grid_points: usize,
     /// `max_x |Σ_A dE/dR_{A,x}|`. SANITY ONLY: translation invariance is
-    /// blind to every non-XC mutation in [`GradMutation`] (prototype,
-    /// measured).
+    /// blind to every non-XC mutation in [`GradMutation`] except
+    /// `FitNoAux`, `EcpNoCentre` and `EcpCentreSign` (prototype, measured).
     pub net_force: f64,
     /// Shifted 3-centre derivative calls in the SR attraction.
     pub n_sr_triplets: usize,
+    /// (shell, shell, ECP image) triples differentiated in the ECP term
+    /// (the energy's `PeriodicHcore::n_ecp_triples`; 0 without an ECP).
+    pub n_ecp_triples: usize,
     /// Pair images summed for `dS`/`dT`.
     pub n_images: usize,
     /// Half-sphere G vectors in the `V_LR` derivative.
@@ -1539,11 +1575,6 @@ pub(crate) fn check_inputs(
             hc.omega, hcore_cfg.omega
         )));
     }
-    if hc.v_ecp.is_some() {
-        return Err(FerricError::General(format!(
-            "{who}: periodic ECP gradients are not implemented"
-        )));
-    }
     if scf.spin != spin {
         let want = match spin {
             Spin::Restricted => "a restricted closed-shell",
@@ -1577,6 +1608,18 @@ pub(crate) fn check_inputs(
     }
     if let JkSource::Fit(f) = jk {
         check_rsgdf_inputs(who, cell, hc, f, n)?;
+    }
+    Ok(())
+}
+
+/// Refusal for the callers that have no ECP term (the Gamma stress): the
+/// forces carry one ([`crate::ecp::periodic_ecp_gradient`]), the strain
+/// derivative of `V_ECP` is not implemented.
+pub(crate) fn refuse_ecp(who: &str, hc: &PeriodicHcore, what: &str) -> Result<(), FerricError> {
+    if hc.v_ecp.is_some() {
+        return Err(FerricError::General(format!(
+            "{who}: periodic ECP {what} is not implemented"
+        )));
     }
     Ok(())
 }
@@ -1825,6 +1868,10 @@ fn assemble(
     let (mut g_vsr_basis, g_vsr_nuc, n_sr_triplets) =
         sr_attraction_gradient(cell, prep, &sr_cfg, &d, ledger)?;
 
+    // --- V_ECP: the energy's own triples (same plan at the same config).
+    let (g_ecp, n_ecp_triples) =
+        ecp_gradient_term(cell, prep, hcore_cfg, hc, &d, mutation, ledger)?;
+
     let aoat = ao_atoms(prep);
     let pos = cell.positions();
 
@@ -1953,6 +2000,7 @@ fn assemble(
 
     let mut grad = &g_s
         + &g_t
+        + &g_ecp
         + &g_vsr_basis
         + &g_vsr_nuc
         + &g_vlr_basis
@@ -1979,6 +2027,7 @@ fn assemble(
         parts: GammaGradParts {
             overlap: g_s,
             kinetic: g_t,
+            ecp: g_ecp,
             vsr_basis: g_vsr_basis,
             vsr_nuc: g_vsr_nuc,
             vlr_basis: g_vlr_basis,
@@ -2004,6 +2053,7 @@ fn assemble(
         n_grid_points,
         net_force,
         n_sr_triplets,
+        n_ecp_triples,
         n_images: images.len(),
         n_g_lr: gv_lr.len(),
         n_g_eri,
@@ -2011,6 +2061,53 @@ fn assemble(
         budget_bytes: ledger.budget(),
         fit: fit_diag,
     })
+}
+
+/// The periodic-ECP force term of [`assemble`] (module doc, "Periodic ECP"):
+/// `(Σ D dV_ECP, triples differentiated)`, zeros for an all-electron cell.
+/// Errors when hcore's `V_ECP` and the force screen disagree (a different ECP
+/// config, geometry or basis).
+fn ecp_gradient_term(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hcore_cfg: &PeriodicHcoreConfig,
+    hc: &PeriodicHcore,
+    d: &Array2<f64>,
+    mutation: Option<GradMutation>,
+    ledger: &mut Ledger,
+) -> Result<(Array2<f64>, usize), FerricError> {
+    let natoms = cell.positions().len();
+    let ecp_mut = match mutation {
+        Some(GradMutation::EcpNoCentre) => Some(EcpGradMutation::NoCentre),
+        Some(GradMutation::EcpCentreSign) => Some(EcpGradMutation::CentreSign),
+        Some(GradMutation::EcpL0Only) => Some(EcpGradMutation::L0Only),
+        Some(GradMutation::EcpM0Only) => Some(EcpGradMutation::M0Only),
+        _ => None,
+    };
+    let ecp_cfg = hcore_cfg.ecp_config();
+    let ecp = periodic_ecp_gradient_on(cell, prep, &ecp_cfg, d, ecp_mut, ledger)?;
+    match (&hc.v_ecp, ecp) {
+        (Some(_), Some(e)) => {
+            if e.n_triples != hc.n_ecp_triples {
+                return Err(FerricError::General(format!(
+                    "gamma gradient: the ECP force screen keeps {} triples but hcore's V_ECP \
+                     kept {}; hcore was built with a different ECP precision/config than \
+                     hcore_cfg (or at another geometry)",
+                    e.n_triples, hc.n_ecp_triples
+                )));
+            }
+            Ok((e.grad, e.n_triples_evaluated))
+        }
+        (None, None) => Ok((Array2::<f64>::zeros((natoms, 3)), 0)),
+        (Some(_), None) => Err(FerricError::General(
+            "gamma gradient: hcore carries V_ECP but the basis/cell has no ECP centre".into(),
+        )),
+        (None, Some(_)) => Err(FerricError::General(
+            "gamma gradient: the basis carries an ECP for a cell atom but hcore has no V_ECP; \
+             build hcore from this PreparedBasis"
+                .into(),
+        )),
+    }
 }
 
 /// Dense pure-AFT two-electron term `Σ Γ dI` through the pair-FT derivative

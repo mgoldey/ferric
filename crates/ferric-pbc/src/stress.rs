@@ -84,8 +84,9 @@
 //! up to ½ × the closed–open β orbital gradient (`crate::grad` module doc,
 //! "ROHF / ROKS"): exact at the stationary point, as for the forces.
 //!
-//! Not covered (refused or not provided, as for the forces): ECPs,
-//! meta-GGA, range-separated hybrids, VV10, k-points, the uniform KS grid
+//! Not covered (refused or not provided): ECPs (refused here; the FORCES do
+//! carry the periodic-ECP term, the strain derivative of `V_ECP` is not
+//! implemented), meta-GGA, range-separated hybrids, VV10, k-points, the uniform KS grid
 //! (the energy path does not offer it), aux centres that do not strain
 //! homogeneously with the cell.
 
@@ -99,7 +100,7 @@ use crate::ewald::{
     default_ewald_omega, ewald_nuclear_strain, madelung_strain, DEFAULT_EWALD_PRECISION,
 };
 use crate::grad::{
-    check_inputs, madelung_for, ro_gate, spin_densities, unrestricted_focks, JkSource,
+    check_inputs, madelung_for, refuse_ecp, ro_gate, spin_densities, unrestricted_focks, JkSource,
     RsGdfGradSource, SpinSet, GRAD_NUCLEUS_EXPONENT,
 };
 use crate::hcore::{
@@ -696,6 +697,7 @@ fn hf_stress(
     cfg: &GammaStressConfig,
 ) -> Result<GammaStress, FerricError> {
     check_inputs(who, cell, prep, hcore_cfg, hc, &jk, scf, spin)?;
+    refuse_ecp(who, hc, "stress")?;
     let unrestricted = spin != Spin::Restricted;
     let mut ledger = open_ledger(prep, cfg, unrestricted)?;
     let vm = madelung_for(cell, exxdiv)?;
@@ -744,6 +746,7 @@ fn ks_stress(
     cfg: &GammaStressConfig,
 ) -> Result<GammaStress, FerricError> {
     check_inputs(who, cell, prep, hcore_cfg, hc, &jk, scf, ks.spin)?;
+    refuse_ecp(who, hc, "stress")?;
     let (_, alpha) = resolve_periodic_functional(ks.functional)?;
     let unrestricted = ks.spin != Spin::Restricted;
     let mut ledger = open_ledger(prep, cfg, unrestricted)?;

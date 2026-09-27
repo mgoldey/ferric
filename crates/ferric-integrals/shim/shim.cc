@@ -233,6 +233,16 @@ struct scf_engine {
     // -Wmissing-field-initializers on every one of them. This only silences
     // the warning; it changes no behavior.
     ShellPairCache                  shellpair_cache = {};
+    // Reusable translated-shell slots for scf_compute_eri3_shifted ({P, mu,
+    // nu}). A fresh `Shell p = bs[i]` per call heap-allocates whenever a shell
+    // has more than LIBINT2_SVECTOR_OPTIMIZED_RANK (6) primitives (cc-pVDZ C
+    // s shells carry 9: alpha, coeff and max_ln_coeff = 3 malloc/free pairs
+    // per copy). Copy-ASSIGNING into these slots reuses their capacity, so the
+    // steady state allocates nothing; the assigned values are identical to a
+    // fresh copy, so results are bit-identical. Per engine => thread-private
+    // (an Engine is never shared across threads). Trailing + `= {}` for the
+    // same aggregate-init reason as `shellpair_cache`.
+    Shell                           eri3_shift_slots[3] = {};
 };
 
 static std::atomic<int> libint_init_count{0};
@@ -1107,9 +1117,14 @@ int scf_compute_eri3_shifted(scf_engine *eng, const scf_basis *obs,
         if (!std::isfinite(shifts[k])) return SCF_EINVAL;
     }
     try {
-        Shell p = dfbs->bs[shP];
-        Shell a = obs->bs[sh1];
-        Shell b = obs->bs[sh2];
+        // Copy-assign into the engine's reusable slots (no steady-state heap
+        // allocation; the same values as a fresh copy — see scf_engine).
+        Shell &p = eng->eri3_shift_slots[0];
+        Shell &a = eng->eri3_shift_slots[1];
+        Shell &b = eng->eri3_shift_slots[2];
+        p = dfbs->bs[shP];
+        a = obs->bs[sh1];
+        b = obs->bs[sh2];
         p.move({p.O[0] + shifts[0], p.O[1] + shifts[1], p.O[2] + shifts[2]});
         a.move({a.O[0] + shifts[3], a.O[1] + shifts[4], a.O[2] + shifts[5]});
         b.move({b.O[0] + shifts[6], b.O[1] + shifts[7], b.O[2] + shifts[8]});

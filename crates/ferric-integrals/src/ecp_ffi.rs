@@ -113,6 +113,30 @@ extern "C" {
         out: *mut c_double,
         out_len: i64,
     ) -> c_int;
+
+    /// First derivatives of the [`ferric_ecp_block`] block with respect to
+    /// the bra-shell, ket-shell and ECP-centre positions, per enabled triple
+    /// (the TRUE partials, also for a shell sitting on the ECP centre — see
+    /// `ecp_shim.h`): `out_bra[3][ncb][nck]`, `out_ket[3][ncb][nck]`,
+    /// `out_centre[ngroup][3][ncb][nck]` accumulated under
+    /// `centre_group[u] ∈ [0, ngroup)` (checked), centre `= −(bra + ket)` per
+    /// triple. All outputs zeroed first; `out_len` must equal
+    /// `ncart(bra) * ncart(ket)` (checked). Returns 0 on success.
+    pub fn ferric_ecp_block_deriv(
+        bra: *const CEcpGShell,
+        nbra: c_int,
+        ket: *const CEcpGShell,
+        nket: c_int,
+        ecps: *const CEcpCenter,
+        necp: c_int,
+        mask: *const u8,
+        centre_group: *const c_int,
+        ngroup: c_int,
+        out_bra: *mut c_double,
+        out_ket: *mut c_double,
+        out_centre: *mut c_double,
+        out_len: i64,
+    ) -> c_int;
 }
 
 /// Success status code from the ECP C shim.

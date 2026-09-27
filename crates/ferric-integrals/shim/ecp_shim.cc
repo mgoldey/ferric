@@ -245,6 +245,74 @@ static libecpint::GaussianShell make_gshell(const ferric_ecp_gshell &s) {
     return g;
 }
 
+/* Validated libecpint inputs of a rectangular block call (shared by
+ * ferric_ecp_block and ferric_ecp_block_deriv so the two validate and build
+ * identically). Returns FERRIC_ECP_OK or FERRIC_ECP_EINVAL; never throws
+ * except on allocation failure (callers run it inside their try/catch). */
+struct BlockInputs {
+    std::vector<libecpint::GaussianShell> shells_a;
+    std::vector<libecpint::GaussianShell> shells_b;
+    std::vector<libecpint::ECP> us;
+    int max_lb = 0;
+    int max_lu = 0;
+    long long nc_bra = 0;
+    long long nc_ket = 0;
+};
+
+static int build_block_inputs(const ferric_ecp_gshell *bra, int nbra,
+                              const ferric_ecp_gshell *ket, int nket,
+                              const ferric_ecp_center *ecps, int necp,
+                              int deriv, const char *who, long long out_len,
+                              BlockInputs &in) {
+    in.max_lb = 0;
+    for (int a = 0; a < nbra; ++a) {
+        if (!valid_gshell(bra[a])) return FERRIC_ECP_EINVAL;
+        in.max_lb = std::max(in.max_lb, bra[a].l);
+    }
+    for (int b = 0; b < nket; ++b) {
+        if (!valid_gshell(ket[b])) return FERRIC_ECP_EINVAL;
+        in.max_lb = std::max(in.max_lb, ket[b].l);
+    }
+    for (int e = 0; e < necp; ++e) {
+        if (!valid_ecp_center(ecps[e])) return FERRIC_ECP_EINVAL;
+    }
+
+    in.nc_bra = ferric_ecp_ncart(bra, nbra);
+    in.nc_ket = ferric_ecp_ncart(ket, nket);
+    if (in.nc_bra * in.nc_ket != out_len) {
+        std::fprintf(stderr, "%s: out_len %lld != %lld x %lld\n", who, out_len,
+                     in.nc_bra, in.nc_ket);
+        return FERRIC_ECP_EINVAL;
+    }
+
+    in.shells_a.clear();
+    in.shells_b.clear();
+    in.us.clear();
+    in.shells_a.reserve(nbra);
+    in.shells_b.reserve(nket);
+    for (int a = 0; a < nbra; ++a) in.shells_a.push_back(make_gshell(bra[a]));
+    for (int b = 0; b < nket; ++b) in.shells_b.push_back(make_gshell(ket[b]));
+
+    in.us.reserve(necp);
+    in.max_lu = 0;
+    for (int e = 0; e < necp; ++e) {
+        const ferric_ecp_center &u = ecps[e];
+        const double c[3] = {u.x, u.y, u.z};
+        libecpint::ECP U(c);
+        for (int t = 0; t < u.nterm; ++t) {
+            U.addPrimitive(u.ns[t], u.ams[t], u.exponents[t], u.coefficients[t]);
+        }
+        U.sort();
+        in.max_lu = std::max(in.max_lu, U.getL());
+        in.us.push_back(U);
+    }
+    // ECPIntegral(max_lb, max_lu, deriv) asserts max_lb + deriv <= MAX_L.
+    if (in.max_lu > LIBECPINT_MAX_L || in.max_lb + deriv > LIBECPINT_MAX_L) {
+        return FERRIC_ECP_EINVAL;
+    }
+    return FERRIC_ECP_OK;
+}
+
 extern "C" int ferric_ecp_block(const ferric_ecp_gshell *bra, int nbra,
                                 const ferric_ecp_gshell *ket, int nket,
                                 const ferric_ecp_center *ecps, int necp,
@@ -255,54 +323,14 @@ extern "C" int ferric_ecp_block(const ferric_ecp_gshell *bra, int nbra,
         return FERRIC_ECP_EINVAL;
     }
     try {
-        int max_lb = 0;
-        for (int a = 0; a < nbra; ++a) {
-            if (!valid_gshell(bra[a])) return FERRIC_ECP_EINVAL;
-            max_lb = std::max(max_lb, bra[a].l);
-        }
-        for (int b = 0; b < nket; ++b) {
-            if (!valid_gshell(ket[b])) return FERRIC_ECP_EINVAL;
-            max_lb = std::max(max_lb, ket[b].l);
-        }
-        for (int e = 0; e < necp; ++e) {
-            if (!valid_ecp_center(ecps[e])) return FERRIC_ECP_EINVAL;
-        }
+        BlockInputs in;
+        const int st = build_block_inputs(bra, nbra, ket, nket, ecps, necp,
+                                          /*deriv=*/0, "ferric_ecp_block",
+                                          out_len, in);
+        if (st != FERRIC_ECP_OK) return st;
+        const long long nc_ket = in.nc_ket;
 
-        const long long nc_bra = ferric_ecp_ncart(bra, nbra);
-        const long long nc_ket = ferric_ecp_ncart(ket, nket);
-        if (nc_bra * nc_ket != out_len) {
-            std::fprintf(stderr,
-                "ferric_ecp_block: out_len %lld != %lld x %lld\n",
-                out_len, nc_bra, nc_ket);
-            return FERRIC_ECP_EINVAL;
-        }
-
-        std::vector<libecpint::GaussianShell> shells_a;
-        std::vector<libecpint::GaussianShell> shells_b;
-        shells_a.reserve(nbra);
-        shells_b.reserve(nket);
-        for (int a = 0; a < nbra; ++a) shells_a.push_back(make_gshell(bra[a]));
-        for (int b = 0; b < nket; ++b) shells_b.push_back(make_gshell(ket[b]));
-
-        std::vector<libecpint::ECP> us;
-        us.reserve(necp);
-        int max_lu = 0;
-        for (int e = 0; e < necp; ++e) {
-            const ferric_ecp_center &u = ecps[e];
-            const double c[3] = {u.x, u.y, u.z};
-            libecpint::ECP U(c);
-            for (int t = 0; t < u.nterm; ++t) {
-                U.addPrimitive(u.ns[t], u.ams[t], u.exponents[t], u.coefficients[t]);
-            }
-            U.sort();
-            max_lu = std::max(max_lu, U.getL());
-            us.push_back(U);
-        }
-        if (max_lu > LIBECPINT_MAX_L || max_lb > LIBECPINT_MAX_L) {
-            return FERRIC_ECP_EINVAL;
-        }
-
-        libecpint::ECPIntegral engine(max_lb, max_lu, /*deriv=*/0);
+        libecpint::ECPIntegral engine(in.max_lb, in.max_lu, /*deriv=*/0);
         libecpint::TwoIndex<double> tmp;
         for (long long i = 0; i < out_len; ++i) out[i] = 0.0;
 
@@ -317,7 +345,7 @@ extern "C" int ferric_ecp_block(const ferric_ecp_gshell *bra, int nbra,
                         mask[(static_cast<size_t>(a) * nket + b) * necp + e] == 0) {
                         continue;
                     }
-                    engine.compute_shell_pair(us[e], shells_a[a], shells_b[b], tmp);
+                    engine.compute_shell_pair(in.us[e], in.shells_a[a], in.shells_b[b], tmp);
                     if (tmp.dims[0] != nca || tmp.dims[1] != ncb ||
                         static_cast<long long>(tmp.data.size()) !=
                             static_cast<long long>(nca) * ncb) {
@@ -338,6 +366,114 @@ extern "C" int ferric_ecp_block(const ferric_ecp_gshell *bra, int nbra,
         return FERRIC_ECP_OK;
     } catch (const std::exception &ex) {
         std::fprintf(stderr, "ferric_ecp_block: %s\n", ex.what());
+        return FERRIC_ECP_EINTERNAL;
+    } catch (...) {
+        return FERRIC_ECP_EINTERNAL;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Derivative of the rectangular block (periodic-ECP forces). See ecp_shim.h,
+// in particular the ON-CENTRE note: both shell derivatives come from
+// left_shell_derivative UNCONDITIONALLY (compute_shell_pair_derivative skips
+// an on-centre shell and reports A = -B, C = 0, which is right only for
+// per-atom totals), and the centre is -(bra + ket) per triple.
+// ---------------------------------------------------------------------------
+
+extern "C" int ferric_ecp_block_deriv(const ferric_ecp_gshell *bra, int nbra,
+                                      const ferric_ecp_gshell *ket, int nket,
+                                      const ferric_ecp_center *ecps, int necp,
+                                      const unsigned char *mask,
+                                      const int *centre_group, int ngroup,
+                                      double *out_bra, double *out_ket,
+                                      double *out_centre, long long out_len) {
+    if (nbra <= 0 || nket <= 0 || necp <= 0 || ngroup <= 0 || bra == nullptr ||
+        ket == nullptr || ecps == nullptr || centre_group == nullptr ||
+        out_bra == nullptr || out_ket == nullptr || out_centre == nullptr ||
+        out_len <= 0) {
+        return FERRIC_ECP_EINVAL;
+    }
+    for (int e = 0; e < necp; ++e) {
+        if (centre_group[e] < 0 || centre_group[e] >= ngroup) {
+            std::fprintf(stderr,
+                "ferric_ecp_block_deriv: centre_group[%d] = %d outside [0, %d)\n",
+                e, centre_group[e], ngroup);
+            return FERRIC_ECP_EINVAL;
+        }
+    }
+    try {
+        BlockInputs in;
+        const int st = build_block_inputs(bra, nbra, ket, nket, ecps, necp,
+                                          /*deriv=*/1, "ferric_ecp_block_deriv",
+                                          out_len, in);
+        if (st != FERRIC_ECP_OK) return st;
+        const long long nc_ket = in.nc_ket;
+
+        // Zero everything before any libecpint call.
+        for (long long i = 0; i < 3 * out_len; ++i) {
+            out_bra[i] = 0.0;
+            out_ket[i] = 0.0;
+        }
+        const long long ncen = static_cast<long long>(ngroup) * 3 * out_len;
+        for (long long i = 0; i < ncen; ++i) out_centre[i] = 0.0;
+
+        libecpint::ECPIntegral engine(in.max_lb, in.max_lu, /*deriv=*/1);
+        std::array<libecpint::TwoIndex<double>, 3> qa;
+        std::array<libecpint::TwoIndex<double>, 3> qb;
+
+        long long off_a = 0;
+        for (int a = 0; a < nbra; ++a) {
+            const int nca = ncart_for_l(bra[a].l);
+            long long off_b = 0;
+            for (int b = 0; b < nket; ++b) {
+                const int ncb = ncart_for_l(ket[b].l);
+                for (int e = 0; e < necp; ++e) {
+                    if (mask != nullptr &&
+                        mask[(static_cast<size_t>(a) * nket + b) * necp + e] == 0) {
+                        continue;
+                    }
+                    // d/dA <a|U|b>  ([nca][ncb]) and d/dB <a|U|b> = (d/dB <b|U|a>)^T.
+                    engine.left_shell_derivative(in.us[e], in.shells_a[a], in.shells_b[b], qa);
+                    engine.left_shell_derivative(in.us[e], in.shells_b[b], in.shells_a[a], qb);
+                    for (int x = 0; x < 3; ++x) {
+                        if (qa[x].dims[0] != nca || qa[x].dims[1] != ncb ||
+                            static_cast<long long>(qa[x].data.size()) !=
+                                static_cast<long long>(nca) * ncb ||
+                            qb[x].dims[0] != ncb || qb[x].dims[1] != nca ||
+                            static_cast<long long>(qb[x].data.size()) !=
+                                static_cast<long long>(nca) * ncb) {
+                            std::fprintf(stderr,
+                                "ferric_ecp_block_deriv: shell derivative blocks %dx%d / %dx%d, "
+                                "expected %dx%d / %dx%d\n",
+                                qa[x].dims[0], qa[x].dims[1], qb[x].dims[0],
+                                qb[x].dims[1], nca, ncb, ncb, nca);
+                            return FERRIC_ECP_EINTERNAL;
+                        }
+                    }
+                    const long long g = centre_group[e];
+                    for (int x = 0; x < 3; ++x) {
+                        double *ob = out_bra + x * out_len;
+                        double *ok = out_ket + x * out_len;
+                        double *oc = out_centre + (g * 3 + x) * out_len;
+                        for (int i = 0; i < nca; ++i) {
+                            const long long row = (off_a + i) * nc_ket + off_b;
+                            for (int j = 0; j < ncb; ++j) {
+                                const double da = qa[x](i, j);
+                                const double db = qb[x](j, i);
+                                ob[row + j] += da;
+                                ok[row + j] += db;
+                                oc[row + j] -= da + db;
+                            }
+                        }
+                    }
+                }
+                off_b += ncb;
+            }
+            off_a += nca;
+        }
+        return FERRIC_ECP_OK;
+    } catch (const std::exception &ex) {
+        std::fprintf(stderr, "ferric_ecp_block_deriv: %s\n", ex.what());
         return FERRIC_ECP_EINTERNAL;
     } catch (...) {
         return FERRIC_ECP_EINTERNAL;

@@ -80,6 +80,9 @@
 //!   and the Bloch sum `V_ECP(k) = Σ_L e^{ik·L} V_L` over libecpint's
 //!   per-shell-pair kernel (`ferric_ecp_block`), added into `h` by
 //!   `periodic_hcore` / `periodic_hcore_kpts`; FINDINGS "Iteration 14".
+//!   The Gamma force term (`periodic_ecp_gradient`, the three moving centres
+//!   bra / ket image / ECP image over the energy's own triples) is added to
+//!   every Gamma force by [`grad`]; FINDINGS "Iteration 22".
 //! * [`grad`] — analytic nuclear gradients (forces) of the Gamma-point RHF,
 //!   UHF, RKS and UKS on the dense-AFT J/K (`gamma_rhf_gradient`,
 //!   `gamma_uhf_gradient`, `gamma_rks_gradient`, `gamma_uks_gradient`):
@@ -160,8 +163,8 @@ pub use dft::{
 };
 pub use drpa::{gamma_drpa, GammaDrpaConfig, GammaDrpaIntegrals, GammaDrpaResult};
 pub use ecp::{
-    check_ecp_applied, periodic_ecp_images, EcpMutation, PeriodicEcpConfig, PeriodicEcpError,
-    PeriodicEcpImages,
+    check_ecp_applied, periodic_ecp_gradient, periodic_ecp_images, EcpMutation, PeriodicEcpConfig,
+    PeriodicEcpError, PeriodicEcpGradient, PeriodicEcpImages,
 };
 pub use ewald::{ewald_nuclear_gradient, ewald_nuclear_repulsion, madelung_constant};
 pub use grad::{

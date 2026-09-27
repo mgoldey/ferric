@@ -17,8 +17,8 @@
 //! PySCF's spherical `ECPscalar` to ~1e-9 (see `tests/ecp_matrix.rs`).
 
 use crate::ecp_ffi::{
-    ferric_ecp_block, ferric_ecp_matrix, ferric_ecp_matrix_deriv, ferric_ecp_natoms, CEcpCenter,
-    CEcpGShell, FERRIC_ECP_OK,
+    ferric_ecp_block, ferric_ecp_block_deriv, ferric_ecp_matrix, ferric_ecp_matrix_deriv,
+    ferric_ecp_natoms, CEcpCenter, CEcpGShell, FERRIC_ECP_OK,
 };
 use ferric_core::FerricError;
 use std::os::raw::c_int;
@@ -425,45 +425,7 @@ pub fn ecp_block_spherical(
     ecps: &[EcpCenter],
     mask: Option<&[u8]>,
 ) -> Result<Vec<f64>, FerricError> {
-    if bra.is_empty() || ket.is_empty() || ecps.is_empty() {
-        return Err(FerricError::Libint(
-            "ecp_block_spherical: empty input".into(),
-        ));
-    }
-    for sh in bra.iter().chain(ket) {
-        if sh.l < 0 || sh.l > 4 {
-            return Err(FerricError::Libint(format!(
-                "ECP block: angular momentum l={} outside 0..=4 (cart2sph table)",
-                sh.l
-            )));
-        }
-        if sh.exponents.is_empty() || sh.exponents.len() != sh.coefficients.len() {
-            return Err(FerricError::Libint(format!(
-                "ECP block: shell has {} exponents and {} coefficients",
-                sh.exponents.len(),
-                sh.coefficients.len()
-            )));
-        }
-    }
-    for e in ecps {
-        let n = e.ams.len();
-        if n == 0 || e.ns.len() != n || e.exponents.len() != n || e.coefficients.len() != n {
-            return Err(FerricError::Libint(
-                "ECP block: ragged or empty ECP term lists".into(),
-            ));
-        }
-    }
-    if let Some(m) = mask {
-        if m.len() != bra.len() * ket.len() * ecps.len() {
-            return Err(FerricError::Libint(format!(
-                "ECP block: mask has {} entries, expected {} x {} x {}",
-                m.len(),
-                bra.len(),
-                ket.len(),
-                ecps.len()
-            )));
-        }
-    }
+    validate_block_inputs("ecp_block_spherical", bra, ket, ecps, mask)?;
     let (c_bra, c_ecps, _keep) = build_c_arrays(bra, ecps);
     let (c_ket, _, _keep_ket) = build_c_arrays(ket, &[]);
     let nc_bra: usize = bra.iter().map(|s| ncart(s.l)).sum();
@@ -493,6 +455,180 @@ pub fn ecp_block_spherical(
         )));
     }
     Ok(cart_to_sph_rect(bra, ket, &v_cart))
+}
+
+/// Shared Rust-side checks of the rectangular block kernels (the shim
+/// re-validates everything it dereferences): non-empty lists, `l ∈ 0..=4`
+/// (the cart2sph table), matching exponent/coefficient lengths, non-ragged
+/// ECP term lists and the mask length.
+fn validate_block_inputs(
+    who: &str,
+    bra: &[EcpGaussianShell],
+    ket: &[EcpGaussianShell],
+    ecps: &[EcpCenter],
+    mask: Option<&[u8]>,
+) -> Result<(), FerricError> {
+    if bra.is_empty() || ket.is_empty() || ecps.is_empty() {
+        return Err(FerricError::Libint(format!("{who}: empty input")));
+    }
+    for sh in bra.iter().chain(ket) {
+        if sh.l < 0 || sh.l > 4 {
+            return Err(FerricError::Libint(format!(
+                "{who}: angular momentum l={} outside 0..=4 (cart2sph table)",
+                sh.l
+            )));
+        }
+        if sh.exponents.is_empty() || sh.exponents.len() != sh.coefficients.len() {
+            return Err(FerricError::Libint(format!(
+                "{who}: shell has {} exponents and {} coefficients",
+                sh.exponents.len(),
+                sh.coefficients.len()
+            )));
+        }
+    }
+    for e in ecps {
+        let n = e.ams.len();
+        if n == 0 || e.ns.len() != n || e.exponents.len() != n || e.coefficients.len() != n {
+            return Err(FerricError::Libint(format!(
+                "{who}: ragged or empty ECP term lists"
+            )));
+        }
+    }
+    if let Some(m) = mask {
+        if m.len() != bra.len() * ket.len() * ecps.len() {
+            return Err(FerricError::Libint(format!(
+                "{who}: mask has {} entries, expected {} x {} x {}",
+                m.len(),
+                bra.len(),
+                ket.len(),
+                ecps.len()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// First derivatives of [`ecp_block_spherical`]'s block, split by which
+/// centre moves (all `nrow × ncol`, row-major, spherical, same AO order as
+/// [`ecp_block_spherical`]).
+#[derive(Debug, Clone)]
+pub struct EcpBlockDeriv {
+    /// Spherical rows (`Σ_bra 2l+1`).
+    pub nrow: usize,
+    /// Spherical columns (`Σ_ket 2l+1`).
+    pub ncol: usize,
+    /// `bra[x] = Σ_{(a,b,u) enabled} ∂⟨a|U_u|b⟩/∂A_x` — the bra shell's
+    /// centre moves.
+    pub bra: [Vec<f64>; 3],
+    /// `ket[x] = Σ ∂⟨a|U_u|b⟩/∂B_x` — the ket shell's centre moves.
+    pub ket: [Vec<f64>; 3],
+    /// `centre[g][x] = Σ_{u: group(u) = g} ∂⟨a|U_u|b⟩/∂C_x
+    /// = −(bra + ket)` restricted to that group's triples.
+    pub centre: Vec<[Vec<f64>; 3]>,
+}
+
+/// First derivatives of the rectangular spherical ECP block
+/// ([`ecp_block_spherical`]) with respect to the three moving centres of
+/// every enabled triple (bra shell at `A`, ket shell at `B`, ECP centre at
+/// `C`) — the periodic-ECP force kernel (`ferric_ecp_block_deriv`).
+///
+/// `centre_group[u] < ngroup` names the group (e.g. the cell atom of an ECP
+/// image) the centre derivative of ECP `u` is accumulated under; the caller
+/// folds `bra` rows by the bra shells' atoms and `ket` columns by the ket
+/// shells' atoms. No libecpint atom inference is involved.
+///
+/// The three slots are the TRUE partial derivatives for every triple,
+/// including a shell sitting ON its ECP centre: libecpint's
+/// `compute_shell_pair_derivative` reports `A = −B, C = 0` there (right only
+/// for per-atom totals); the shim instead evaluates both shell derivatives
+/// with `left_shell_derivative` unconditionally and sets the centre to
+/// `−(bra + ket)` (translation invariance per triple, so `bra + ket +
+/// Σ_g centre[g] = 0` element-wise to roundoff). Off-centre this is bitwise
+/// libecpint's own derivative.
+///
+/// Coefficients are bare-Cartesian (`gto_norm` folded in), as for
+/// [`ecp_block_spherical`]; `l ≤ 4` (and `l + 1 ≤ LIBECPINT_MAX_L`).
+pub fn ecp_block_deriv_spherical(
+    bra: &[EcpGaussianShell],
+    ket: &[EcpGaussianShell],
+    ecps: &[EcpCenter],
+    mask: Option<&[u8]>,
+    centre_group: &[usize],
+    ngroup: usize,
+) -> Result<EcpBlockDeriv, FerricError> {
+    validate_block_inputs("ecp_block_deriv_spherical", bra, ket, ecps, mask)?;
+    if ngroup == 0 || ngroup > c_int::MAX as usize {
+        return Err(FerricError::Libint(format!(
+            "ecp_block_deriv_spherical: ngroup = {ngroup} must lie in 1..=c_int::MAX"
+        )));
+    }
+    if centre_group.len() != ecps.len() {
+        return Err(FerricError::Libint(format!(
+            "ecp_block_deriv_spherical: {} centre groups for {} ECP centres",
+            centre_group.len(),
+            ecps.len()
+        )));
+    }
+    if let Some((u, &g)) = centre_group.iter().enumerate().find(|&(_, &g)| g >= ngroup) {
+        return Err(FerricError::Libint(format!(
+            "ecp_block_deriv_spherical: centre_group[{u}] = {g} outside 0..{ngroup}"
+        )));
+    }
+    let groups: Vec<c_int> = centre_group.iter().map(|&g| g as c_int).collect();
+    let (c_bra, c_ecps, _keep) = build_c_arrays(bra, ecps);
+    let (c_ket, _, _keep_ket) = build_c_arrays(ket, &[]);
+    let nc_bra: usize = bra.iter().map(|s| ncart(s.l)).sum();
+    let nc_ket: usize = ket.iter().map(|s| ncart(s.l)).sum();
+    let blk = nc_bra * nc_ket;
+    let mut d_bra = vec![0.0f64; 3 * blk];
+    let mut d_ket = vec![0.0f64; 3 * blk];
+    let mut d_cen = vec![0.0f64; ngroup * 3 * blk];
+    // SAFETY: c_bra/c_ket/c_ecps alias `bra`/`ket`/`ecps` and `_keep*`, all
+    // alive across the call; `mask` is null or nbra*nket*necp bytes and
+    // `groups` holds necp ints in 0..ngroup (both checked above); d_bra and
+    // d_ket hold 3*blk doubles, d_cen ngroup*3*blk, and blk is passed for the
+    // shim's cross-check. Status checked below.
+    let status = unsafe {
+        ferric_ecp_block_deriv(
+            c_bra.as_ptr(),
+            c_bra.len() as c_int,
+            c_ket.as_ptr(),
+            c_ket.len() as c_int,
+            c_ecps.as_ptr(),
+            c_ecps.len() as c_int,
+            mask.map_or(std::ptr::null(), |m| m.as_ptr()),
+            groups.as_ptr(),
+            ngroup as c_int,
+            d_bra.as_mut_ptr(),
+            d_ket.as_mut_ptr(),
+            d_cen.as_mut_ptr(),
+            blk as i64,
+        )
+    };
+    if status != FERRIC_ECP_OK {
+        return Err(FerricError::Libint(format!(
+            "ferric_ecp_block_deriv failed: {status}"
+        )));
+    }
+    let sph = |c: &[f64]| cart_to_sph_rect(bra, ket, c);
+    let three = |v: &[f64]| -> [Vec<f64>; 3] {
+        [
+            sph(&v[..blk]),
+            sph(&v[blk..2 * blk]),
+            sph(&v[2 * blk..3 * blk]),
+        ]
+    };
+    let nrow: usize = bra.iter().map(|s| nsph(s.l)).sum();
+    let ncol: usize = ket.iter().map(|s| nsph(s.l)).sum();
+    Ok(EcpBlockDeriv {
+        nrow,
+        ncol,
+        bra: three(&d_bra),
+        ket: three(&d_ket),
+        centre: (0..ngroup)
+            .map(|g| three(&d_cen[g * 3 * blk..(g + 1) * 3 * blk]))
+            .collect(),
+    })
 }
 
 /// Owns the `c_int` conversions and per-ECP vectors that the `CEcpCenter`

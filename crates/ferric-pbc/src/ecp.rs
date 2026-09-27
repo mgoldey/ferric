@@ -71,10 +71,27 @@
 //!
 //! # Scope
 //!
-//! Scalar (spin-free) ECPs, energies only. Ghost atoms carry no ECP (no
-//! nucleus); the molecular `ecp_potential` includes a ghost's ECP, which is
-//! a molecular-path quirk not reproduced here. Gradients/stress would need
-//! the same per-image blocks with `compute_shell_pair_derivative`.
+//! Scalar (spin-free) ECPs: energies (Gamma and k) and the Gamma force term
+//! ([`periodic_ecp_gradient`], FINDINGS "Iteration 22"; added to every Gamma
+//! force by `crate::grad`). Stress and k-point forces with an ECP are
+//! refused by their callers. Ghost atoms carry no ECP (no nucleus); the
+//! molecular `ecp_potential` includes a ghost's ECP, which is a
+//! molecular-path quirk not reproduced here.
+//!
+//! # Forces
+//!
+//! Each kept triple `⟨μ_0|U_C(r − R_C − M)|ν_L⟩` depends on three centres
+//! that all move with their atoms, in every image: the bra `R_A`, the ket
+//! image `R_B + L` and the ECP image `R_C + M`. The force differentiates
+//! exactly the energy's triples (one shared `EcpPlan` screen, the
+//! "frozen image set" of the prototype), with the centre derivative
+//! `−(∂_bra + ∂_ket)` per triple (translation invariance). The kernel is
+//! `ferric_ecp_block_deriv` (libecpint's raised/lowered VALUE-integral
+//! shell derivative, true partials also for a shell on its own ECP centre,
+//! where libecpint's `compute_shell_pair_derivative` would report
+//! `A = −B, C = 0`). Do not pin to PySCF 2.13's `ECPscalar_ipnuc`
+//! (1.1e-7 off on off-centre elements) or `pbc.gto.ecp.ecp_int` (FINDINGS
+//! Iterations 14 and 22).
 
 use crate::budget::{bytes_of, Ledger};
 use crate::kpts::{lattice_coords, KPointMesh};
@@ -82,7 +99,9 @@ use crate::lattice::Cell;
 use ferric_core::basis::BasisSet;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
-use ferric_integrals::ecp::{ecp_block_spherical, gto_norm, EcpCenter, EcpGaussianShell};
+use ferric_integrals::ecp::{
+    ecp_block_deriv_spherical, ecp_block_spherical, gto_norm, EcpCenter, EcpGaussianShell,
+};
 use ndarray::Array2;
 use num_complex::Complex64;
 use std::collections::HashMap;
@@ -365,6 +384,341 @@ fn dist2(a: [f64; 3], b: [f64; 3]) -> f64 {
     (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)
 }
 
+/// One ECP-centre image `R_C + M` that survives the candidate filter.
+#[derive(Debug, Clone, Copy)]
+struct Site {
+    /// Index into the plan's templates.
+    tmpl: usize,
+    /// `R_C + M` (Bohr).
+    pos: [f64; 3],
+    /// The cell atom `C` (whose motion moves this image).
+    atom: usize,
+    /// `M = 0`.
+    home: bool,
+}
+
+/// The screen shared by the energy ([`periodic_ecp_images`]) and the force
+/// ([`periodic_ecp_gradient`]): home shells, ECP templates, candidate
+/// centre images and orbital images, and the per-(shell, shell, centre)
+/// test. Both evaluators walk `l_list` and call [`EcpPlan::kept`] with the
+/// same arguments, so the force differentiates EXACTLY the energy's partial
+/// sum at this geometry (the "frozen image set" of FINDINGS Iteration 22).
+struct EcpPlan {
+    templates: Vec<EcpTemplate>,
+    /// Home shells in PreparedBasis order, `gto_norm` folded.
+    shells: Vec<EcpGaussianShell>,
+    /// Cell atom of each home shell.
+    shell_atom: Vec<usize>,
+    amin: Vec<f64>,
+    log_pref: Vec<f64>,
+    x_max: f64,
+    sites: Vec<Site>,
+    l_list: Vec<[f64; 3]>,
+    cap_ecp2: Option<f64>,
+    cap_pair2: Option<f64>,
+    r_ecp: f64,
+    r_pair: f64,
+    nbasis: usize,
+}
+
+impl EcpPlan {
+    /// Validates, builds the templates / shells / candidate lists (reserving
+    /// them and one image's screen mask on `ledger`). `Ok(None)` when no
+    /// non-ghost atom has an ECP in the basis.
+    fn build(
+        cell: &Cell,
+        prep: &PreparedBasis,
+        cfg: &PeriodicEcpConfig,
+        ledger: &mut Ledger,
+    ) -> Result<Option<Self>, FerricError> {
+        cfg.validate()?;
+        let bs = prep.basis_set();
+        check_ecp_applied(cell, bs)?;
+        if bs.ecps.is_empty() {
+            return Ok(None);
+        }
+        let pos = cell.positions();
+        if prep.natoms() != pos.len() {
+            return Err(FerricError::General(format!(
+                "periodic ECP: PreparedBasis has {} atoms but the cell has {}",
+                prep.natoms(),
+                pos.len()
+            )));
+        }
+        for (k, (a, p)) in prep.atoms().iter().zip(&pos).enumerate() {
+            let d = dist2([a.x, a.y, a.z], *p).sqrt();
+            if d > 1e-10 {
+                return Err(FerricError::General(format!(
+                    "periodic ECP: PreparedBasis atom {k} is {d:.3e} Bohr from the cell's \
+                     atom {k}; build the PreparedBasis from cell.mol()"
+                )));
+            }
+        }
+
+        // --- ECP templates and home centres (non-ghost atoms only).
+        let mut templates: Vec<EcpTemplate> = Vec::new();
+        let mut tmpl_of_z: HashMap<i32, usize> = HashMap::new();
+        let mut home_centres: Vec<(usize, usize, [f64; 3])> = Vec::new();
+        for (atom, (a, p)) in cell.mol().atoms.iter().zip(&pos).enumerate() {
+            if a.ghost {
+                continue;
+            }
+            let Some(def) = bs.ecp_for_element(a.z) else {
+                continue;
+            };
+            let it = match tmpl_of_z.get(&a.z) {
+                Some(&i) => i,
+                None => {
+                    let (mut ams, mut ns, mut exponents, mut coefficients) =
+                        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+                    for ch in &def.shells {
+                        for t in &ch.terms {
+                            ams.push(ch.angular_momentum);
+                            ns.push(t.r_exp);
+                            exponents.push(t.gexp);
+                            coefficients.push(t.coef);
+                        }
+                    }
+                    if exponents.is_empty() || exponents.iter().any(|&z| !(z > 0.0)) {
+                        return Err(FerricError::Basis(format!(
+                            "periodic ECP: ECP for Z = {} is empty or has a non-positive exponent",
+                            a.z
+                        )));
+                    }
+                    let zmin = exponents.iter().copied().fold(f64::INFINITY, f64::min);
+                    let dsum: f64 = coefficients.iter().map(|c: &f64| c.abs()).sum();
+                    let x = ((dsum.max(f64::MIN_POSITIVE) / cfg.precision).ln() + ECP_LOG_MARGIN)
+                        .max(0.0);
+                    templates.push(EcpTemplate {
+                        ams,
+                        ns,
+                        exponents,
+                        coefficients,
+                        zmin,
+                        x,
+                    });
+                    tmpl_of_z.insert(a.z, templates.len() - 1);
+                    templates.len() - 1
+                }
+            };
+            home_centres.push((it, atom, *p));
+        }
+        if home_centres.is_empty() {
+            return Ok(None);
+        }
+
+        // --- Home shells in PreparedBasis order, gto_norm folded (the
+        // molecular `oneelectron::ecp_potential` convention).
+        let located = prep.located_shells();
+        let dims = prep.shell_dims();
+        let sh2at = prep.shell_to_atom();
+        let mut shells: Vec<EcpGaussianShell> = Vec::with_capacity(located.len());
+        let mut amin: Vec<f64> = Vec::with_capacity(located.len());
+        for (s, sh) in located.iter().enumerate() {
+            if sh.l < 0 || (2 * sh.l + 1) as usize != dims[s] {
+                return Err(PeriodicEcpError::UnsupportedShell {
+                    shell: s,
+                    l: sh.l,
+                    prep_dim: dims[s],
+                }
+                .into());
+            }
+            if sh.exponents.is_empty() || sh.exponents.iter().any(|&a| !(a > 0.0)) {
+                return Err(FerricError::Basis(format!(
+                    "periodic ECP: shell {s} is empty or has a non-positive exponent"
+                )));
+            }
+            amin.push(sh.exponents.iter().copied().fold(f64::INFINITY, f64::min));
+            shells.push(EcpGaussianShell {
+                l: sh.l,
+                center: sh.center,
+                exponents: sh.exponents.to_vec(),
+                coefficients: sh
+                    .exponents
+                    .iter()
+                    .zip(sh.coefficients)
+                    .map(|(&a, &c)| c * gto_norm(sh.l, a))
+                    .collect(),
+            });
+        }
+        let shell_atom: Vec<usize> = (0..shells.len()).map(|s| sh2at[s]).collect();
+        let nsh = shells.len();
+
+        // Per-shell log prefactor. Each pair bound e^{-mu|X-Y|^2} drops the
+        // other two Gaussian factors pointwise; integrating what is left
+        // leaves the third function's volume factor (pi/alpha)^{3/2} and the
+        // contraction magnitudes. Omitting them under-estimated diffuse
+        // triples by >1e4 (precision sweep plateaued at 1.3e-6 for
+        // p = 1e-6..1e-10). This is the per-shell half, ln(sum|c|) + (3/4)
+        // ln(pi/alpha_min); a triple adds both shells' halves to its
+        // threshold.
+        let log_pref: Vec<f64> = shells
+            .iter()
+            .zip(&amin)
+            .map(|(sh, &am)| {
+                let csum: f64 = sh.coefficients.iter().map(|c| c.abs()).sum();
+                csum.max(f64::MIN_POSITIVE).ln() + 0.75 * (std::f64::consts::PI / am).ln()
+            })
+            .collect();
+        // The candidate radii must admit every triple the prefactor-widened
+        // screen keeps: widen by the largest pair prefactor.
+        let pref_max = 2.0 * log_pref.iter().copied().fold(0.0_f64, f64::max);
+        // --- Global candidate radii.
+        let x_max = templates.iter().map(|t| t.x).fold(0.0_f64, f64::max) + pref_max;
+        let a_lo = amin.iter().copied().fold(f64::INFINITY, f64::min);
+        let z_lo = templates
+            .iter()
+            .map(|t| t.zmin)
+            .fold(f64::INFINITY, f64::min);
+        let r_ecp = (x_max / mu(a_lo, z_lo)).sqrt();
+        let r_pair = (x_max / mu(a_lo, a_lo)).sqrt().min(2.0 * r_ecp);
+        let molecular = cfg.mutation == Some(EcpMutation::MolecularOnly);
+        let r_ecp_eff = cfg.ecp_radius_cap.map_or(r_ecp, |c| c.min(r_ecp));
+        let r_pair_eff = cfg
+            .pair_radius_cap
+            .map_or(r_pair, |c| c.min(r_pair))
+            .min(2.0 * r_ecp_eff);
+
+        // --- Candidate ECP-centre images: C + M within r_ecp_eff of a home
+        // atom.
+        let (m_list, l_list) = if molecular {
+            (vec![[0.0; 3]], vec![[0.0; 3]])
+        } else {
+            ledger.reserve(
+                &format!("periodic ECP centre-image translations (r_ecp = {r_ecp_eff:.2} Bohr)"),
+                bytes_of(cell.translation_count_bound(r_ecp_eff)?, 24),
+            )?;
+            let m_list = cell.translations(r_ecp_eff)?;
+            ledger.reserve(
+                &format!("periodic ECP orbital-image translations (r_pair = {r_pair_eff:.2} Bohr)"),
+                bytes_of(cell.translation_count_bound(r_pair_eff)?, 24),
+            )?;
+            let l_list = cell.translations(r_pair_eff)?;
+            (m_list, l_list)
+        };
+        ledger.reserve(
+            "periodic ECP centre-image list",
+            bytes_of((m_list.len() * home_centres.len()) as u64, 48),
+        )?;
+        let r2_ecp = r_ecp_eff * r_ecp_eff;
+        let mut sites: Vec<Site> = Vec::new();
+        for m in &m_list {
+            let home = m.iter().all(|v| v.abs() < 1e-9);
+            for &(it, atom, c) in &home_centres {
+                let cm = [c[0] + m[0], c[1] + m[1], c[2] + m[2]];
+                if molecular || pos.iter().any(|p| dist2(*p, cm) <= r2_ecp) {
+                    sites.push(Site {
+                        tmpl: it,
+                        pos: cm,
+                        atom,
+                        home,
+                    });
+                }
+            }
+        }
+        ledger.reserve(
+            "periodic ECP screen mask (one image)",
+            bytes_of((nsh * nsh * sites.len().max(1)) as u64, 1 + 8),
+        )?;
+
+        Ok(Some(Self {
+            templates,
+            shells,
+            shell_atom,
+            amin,
+            log_pref,
+            x_max,
+            sites,
+            l_list,
+            cap_ecp2: cfg.ecp_radius_cap.map(|c| c * c),
+            cap_pair2: cfg.pair_radius_cap.map(|c| c * c),
+            r_ecp,
+            r_pair,
+            nbasis: prep.nbasis(),
+        }))
+    }
+
+    /// The home shells translated by `l` (the ket of image `L`).
+    fn ket_shells(&self, l: &[f64; 3]) -> Vec<EcpGaussianShell> {
+        self.shells
+            .iter()
+            .map(|s| EcpGaussianShell {
+                l: s.l,
+                center: [s.center[0] + l[0], s.center[1] + l[1], s.center[2] + l[2]],
+                exponents: s.exponents.clone(),
+                coefficients: s.coefficients.clone(),
+            })
+            .collect()
+    }
+
+    /// Kept `(bra shell, ket shell, site)` triples of orbital image `ket`
+    /// (module doc, "Screening"). Deterministic in its inputs: the energy and
+    /// the force call it identically.
+    fn kept(&self, ket: &[EcpGaussianShell]) -> Vec<(usize, usize, usize)> {
+        let nsh = self.shells.len();
+        let mut kept = Vec::new();
+        for a in 0..nsh {
+            let ra = self.shells[a].center;
+            for b in 0..nsh {
+                let rb = ket[b].center;
+                let dab2 = dist2(ra, rb);
+                if self.cap_pair2.is_some_and(|c| dab2 > c) {
+                    continue;
+                }
+                let e_ab = mu(self.amin[a], self.amin[b]) * dab2;
+                if e_ab > self.x_max {
+                    continue;
+                }
+                for (u, site) in self.sites.iter().enumerate() {
+                    let t = &self.templates[site.tmpl];
+                    let dac2 = dist2(ra, site.pos);
+                    let dbc2 = dist2(rb, site.pos);
+                    if self.cap_ecp2.is_some_and(|c| dac2 > c || dbc2 > c) {
+                        continue;
+                    }
+                    let e = e_ab
+                        .max(mu(self.amin[a], t.zmin) * dac2)
+                        .max(mu(self.amin[b], t.zmin) * dbc2);
+                    if e <= t.x + (self.log_pref[a] + self.log_pref[b]).max(0.0) {
+                        kept.push((a, b, u));
+                    }
+                }
+            }
+        }
+        kept
+    }
+
+    /// Compact `kept` to the sites it uses: the shim's centre list, the
+    /// site index of each local centre, and the `(a, b, local)` mask.
+    fn compact(&self, kept: &[(usize, usize, usize)]) -> (Vec<EcpCenter>, Vec<usize>, Vec<u8>) {
+        let nsh = self.shells.len();
+        let mut local_of: HashMap<usize, usize> = HashMap::new();
+        let mut centres: Vec<EcpCenter> = Vec::new();
+        let mut site_of: Vec<usize> = Vec::new();
+        for &(_, _, u) in kept {
+            if let std::collections::hash_map::Entry::Vacant(e) = local_of.entry(u) {
+                let site = self.sites[u];
+                let t = &self.templates[site.tmpl];
+                e.insert(centres.len());
+                site_of.push(u);
+                centres.push(EcpCenter {
+                    center: site.pos,
+                    ams: t.ams.clone(),
+                    ns: t.ns.clone(),
+                    exponents: t.exponents.clone(),
+                    coefficients: t.coefficients.clone(),
+                });
+            }
+        }
+        let nu = centres.len();
+        let mut mask = vec![0u8; nsh * nsh * nu];
+        for &(a, b, u) in kept {
+            mask[(a * nsh + b) * nu + local_of[&u]] = 1;
+        }
+        (centres, site_of, mask)
+    }
+}
+
 /// Build the per-image blocks `V_L` for `cell` in the AO basis `prep` (built
 /// from `cell.mol()`, carrying the ECP in `prep.basis_set()`).
 ///
@@ -387,270 +741,36 @@ pub(crate) fn periodic_ecp_images_on(
     cfg: &PeriodicEcpConfig,
     ledger: &mut Ledger,
 ) -> Result<Option<PeriodicEcpImages>, FerricError> {
-    cfg.validate()?;
-    let bs = prep.basis_set();
-    check_ecp_applied(cell, bs)?;
-    if bs.ecps.is_empty() {
+    let Some(plan) = EcpPlan::build(cell, prep, cfg, ledger)? else {
         return Ok(None);
-    }
-    let pos = cell.positions();
-    if prep.natoms() != pos.len() {
-        return Err(FerricError::General(format!(
-            "periodic ECP: PreparedBasis has {} atoms but the cell has {}",
-            prep.natoms(),
-            pos.len()
-        )));
-    }
-    for (k, (a, p)) in prep.atoms().iter().zip(&pos).enumerate() {
-        let d = dist2([a.x, a.y, a.z], *p).sqrt();
-        if d > 1e-10 {
-            return Err(FerricError::General(format!(
-                "periodic ECP: PreparedBasis atom {k} is {d:.3e} Bohr from the cell's atom {k}; \
-                 build the PreparedBasis from cell.mol()"
-            )));
-        }
-    }
-
-    // --- ECP templates and home centres (non-ghost atoms only).
-    let mut templates: Vec<EcpTemplate> = Vec::new();
-    let mut tmpl_of_z: HashMap<i32, usize> = HashMap::new();
-    let mut home_centres: Vec<(usize, [f64; 3])> = Vec::new();
-    for (a, p) in cell.mol().atoms.iter().zip(&pos) {
-        if a.ghost {
-            continue;
-        }
-        let Some(def) = bs.ecp_for_element(a.z) else {
-            continue;
-        };
-        let it = match tmpl_of_z.get(&a.z) {
-            Some(&i) => i,
-            None => {
-                let (mut ams, mut ns, mut exponents, mut coefficients) =
-                    (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-                for ch in &def.shells {
-                    for t in &ch.terms {
-                        ams.push(ch.angular_momentum);
-                        ns.push(t.r_exp);
-                        exponents.push(t.gexp);
-                        coefficients.push(t.coef);
-                    }
-                }
-                if exponents.is_empty() || exponents.iter().any(|&z| !(z > 0.0)) {
-                    return Err(FerricError::Basis(format!(
-                        "periodic ECP: ECP for Z = {} is empty or has a non-positive exponent",
-                        a.z
-                    )));
-                }
-                let zmin = exponents.iter().copied().fold(f64::INFINITY, f64::min);
-                let dsum: f64 = coefficients.iter().map(|c: &f64| c.abs()).sum();
-                let x =
-                    ((dsum.max(f64::MIN_POSITIVE) / cfg.precision).ln() + ECP_LOG_MARGIN).max(0.0);
-                templates.push(EcpTemplate {
-                    ams,
-                    ns,
-                    exponents,
-                    coefficients,
-                    zmin,
-                    x,
-                });
-                tmpl_of_z.insert(a.z, templates.len() - 1);
-                templates.len() - 1
-            }
-        };
-        home_centres.push((it, *p));
-    }
-    if home_centres.is_empty() {
-        return Ok(None);
-    }
-
-    // --- Home shells in PreparedBasis order, gto_norm folded (the molecular
-    // `oneelectron::ecp_potential` convention).
-    let located = prep.located_shells();
-    let dims = prep.shell_dims();
-    let mut shells: Vec<EcpGaussianShell> = Vec::with_capacity(located.len());
-    let mut amin: Vec<f64> = Vec::with_capacity(located.len());
-    for (s, sh) in located.iter().enumerate() {
-        if sh.l < 0 || (2 * sh.l + 1) as usize != dims[s] {
-            return Err(PeriodicEcpError::UnsupportedShell {
-                shell: s,
-                l: sh.l,
-                prep_dim: dims[s],
-            }
-            .into());
-        }
-        if sh.exponents.is_empty() || sh.exponents.iter().any(|&a| !(a > 0.0)) {
-            return Err(FerricError::Basis(format!(
-                "periodic ECP: shell {s} is empty or has a non-positive exponent"
-            )));
-        }
-        amin.push(sh.exponents.iter().copied().fold(f64::INFINITY, f64::min));
-        shells.push(EcpGaussianShell {
-            l: sh.l,
-            center: sh.center,
-            exponents: sh.exponents.to_vec(),
-            coefficients: sh
-                .exponents
-                .iter()
-                .zip(sh.coefficients)
-                .map(|(&a, &c)| c * gto_norm(sh.l, a))
-                .collect(),
-        });
-    }
-    let nsh = shells.len();
-    let n = prep.nbasis();
-
-    // Per-shell log prefactor. Each pair bound e^{-mu|X-Y|^2} drops the other
-    // two Gaussian factors pointwise; integrating what is left leaves the
-    // third function's volume factor (pi/alpha)^{3/2} and the contraction
-    // magnitudes. Omitting them under-estimated diffuse triples by >1e4
-    // (precision sweep plateaued at 1.3e-6 for p = 1e-6..1e-10). This is the
-    // per-shell half, ln(sum|c|) + (3/4) ln(pi/alpha_min); a triple adds both
-    // shells' halves to its threshold.
-    let log_pref: Vec<f64> = shells
-        .iter()
-        .zip(&amin)
-        .map(|(sh, &am)| {
-            let csum: f64 = sh.coefficients.iter().map(|c| c.abs()).sum();
-            csum.max(f64::MIN_POSITIVE).ln() + 0.75 * (std::f64::consts::PI / am).ln()
-        })
-        .collect();
-    // The candidate radii must admit every triple the prefactor-widened
-    // screen keeps: widen by the largest pair prefactor.
-    let pref_max = 2.0 * log_pref.iter().copied().fold(0.0_f64, f64::max);
-    // --- Global candidate radii.
-    let x_max = templates.iter().map(|t| t.x).fold(0.0_f64, f64::max) + pref_max;
-    let a_lo = amin.iter().copied().fold(f64::INFINITY, f64::min);
-    let z_lo = templates
-        .iter()
-        .map(|t| t.zmin)
-        .fold(f64::INFINITY, f64::min);
-    let r_ecp = (x_max / mu(a_lo, z_lo)).sqrt();
-    let r_pair = (x_max / mu(a_lo, a_lo)).sqrt().min(2.0 * r_ecp);
-    let molecular = cfg.mutation == Some(EcpMutation::MolecularOnly);
-    let r_ecp_eff = cfg.ecp_radius_cap.map_or(r_ecp, |c| c.min(r_ecp));
-    let r_pair_eff = cfg
-        .pair_radius_cap
-        .map_or(r_pair, |c| c.min(r_pair))
-        .min(2.0 * r_ecp_eff);
-
-    // --- Candidate ECP-centre images: C + M within r_ecp_eff of a home atom.
-    let (m_list, l_list) = if molecular {
-        (vec![[0.0; 3]], vec![[0.0; 3]])
-    } else {
-        ledger.reserve(
-            &format!("periodic ECP centre-image translations (r_ecp = {r_ecp_eff:.2} Bohr)"),
-            bytes_of(cell.translation_count_bound(r_ecp_eff)?, 24),
-        )?;
-        let m_list = cell.translations(r_ecp_eff)?;
-        ledger.reserve(
-            &format!("periodic ECP orbital-image translations (r_pair = {r_pair_eff:.2} Bohr)"),
-            bytes_of(cell.translation_count_bound(r_pair_eff)?, 24),
-        )?;
-        let l_list = cell.translations(r_pair_eff)?;
-        (m_list, l_list)
     };
-    ledger.reserve(
-        "periodic ECP centre-image list",
-        bytes_of((m_list.len() * home_centres.len()) as u64, 40),
-    )?;
-    let r2_ecp = r_ecp_eff * r_ecp_eff;
-    let mut sites: Vec<(usize, [f64; 3])> = Vec::new();
-    for m in &m_list {
-        for (it, c) in &home_centres {
-            let cm = [c[0] + m[0], c[1] + m[1], c[2] + m[2]];
-            if molecular || pos.iter().any(|p| dist2(*p, cm) <= r2_ecp) {
-                sites.push((*it, cm));
-            }
-        }
-    }
+    let n = plan.nbasis;
 
     // Worst case every candidate L keeps a block.
     ledger.reserve(
         &format!(
             "periodic ECP per-image blocks ({} candidate L × n² with n = {n})",
-            l_list.len()
+            plan.l_list.len()
         ),
-        bytes_of((l_list.len() * n * n) as u64, 8),
-    )?;
-    ledger.reserve(
-        "periodic ECP screen mask (one image)",
-        bytes_of((nsh * nsh * sites.len().max(1)) as u64, 1 + 8),
+        bytes_of((plan.l_list.len() * n * n) as u64, 8),
     )?;
 
-    let cap_ecp2 = cfg.ecp_radius_cap.map(|c| c * c);
-    let cap_pair2 = cfg.pair_radius_cap.map(|c| c * c);
     let mut images = Vec::new();
     let mut blocks = Vec::new();
     let mut n_triples = 0usize;
-    let mut used_site = vec![false; sites.len()];
-    for l in &l_list {
-        let ket: Vec<EcpGaussianShell> = shells
-            .iter()
-            .map(|s| EcpGaussianShell {
-                l: s.l,
-                center: [s.center[0] + l[0], s.center[1] + l[1], s.center[2] + l[2]],
-                exponents: s.exponents.clone(),
-                coefficients: s.coefficients.clone(),
-            })
-            .collect();
-        // keep[(a*nsh + b)] -> list of site indices
-        let mut kept: Vec<(usize, usize, usize)> = Vec::new();
-        for a in 0..nsh {
-            let ra = shells[a].center;
-            for b in 0..nsh {
-                let rb = ket[b].center;
-                let dab2 = dist2(ra, rb);
-                if cap_pair2.is_some_and(|c| dab2 > c) {
-                    continue;
-                }
-                let e_ab = mu(amin[a], amin[b]) * dab2;
-                if e_ab > x_max {
-                    continue;
-                }
-                for (u, (it, rc)) in sites.iter().enumerate() {
-                    let t = &templates[*it];
-                    let dac2 = dist2(ra, *rc);
-                    let dbc2 = dist2(rb, *rc);
-                    if cap_ecp2.is_some_and(|c| dac2 > c || dbc2 > c) {
-                        continue;
-                    }
-                    let e = e_ab
-                        .max(mu(amin[a], t.zmin) * dac2)
-                        .max(mu(amin[b], t.zmin) * dbc2);
-                    if e <= t.x + (log_pref[a] + log_pref[b]).max(0.0) {
-                        kept.push((a, b, u));
-                    }
-                }
-            }
-        }
+    let mut used_site = vec![false; plan.sites.len()];
+    for l in &plan.l_list {
+        let ket = plan.ket_shells(l);
+        let kept = plan.kept(&ket);
         if kept.is_empty() {
             continue;
         }
-        // Compact the centre list to the sites this L uses.
-        let mut local_of: HashMap<usize, usize> = HashMap::new();
-        let mut centres: Vec<EcpCenter> = Vec::new();
-        for &(_, _, u) in &kept {
-            if let std::collections::hash_map::Entry::Vacant(e) = local_of.entry(u) {
-                let (it, rc) = sites[u];
-                let t = &templates[it];
-                e.insert(centres.len());
-                centres.push(EcpCenter {
-                    center: rc,
-                    ams: t.ams.clone(),
-                    ns: t.ns.clone(),
-                    exponents: t.exponents.clone(),
-                    coefficients: t.coefficients.clone(),
-                });
-                used_site[u] = true;
-            }
-        }
-        let nu = centres.len();
-        let mut mask = vec![0u8; nsh * nsh * nu];
-        for &(a, b, u) in &kept {
-            mask[(a * nsh + b) * nu + local_of[&u]] = 1;
+        let (centres, site_of, mask) = plan.compact(&kept);
+        for &u in &site_of {
+            used_site[u] = true;
         }
         n_triples += kept.len();
-        let flat = ecp_block_spherical(&shells, &ket, &centres, Some(mask.as_slice()))?;
+        let flat = ecp_block_spherical(&plan.shells, &ket, &centres, Some(mask.as_slice()))?;
         if flat.len() != n * n {
             return Err(FerricError::Libint(format!(
                 "periodic ECP: block has {} entries, expected {n}²",
@@ -691,8 +811,233 @@ pub(crate) fn periodic_ecp_images_on(
         blocks,
         n_triples,
         n_ecp_images: used_site.iter().filter(|&&u| u).count(),
-        r_ecp,
-        r_pair,
+        r_ecp: plan.r_ecp,
+        r_pair: plan.r_pair,
         asymmetry,
+    }))
+}
+
+// ============================================================ forces
+
+/// Deliberate defects of the ECP force term (test only; FINDINGS
+/// Iteration 22 `assemble_ecp_grad(mutant=...)`). Prototype magnitudes on
+/// HI/LANL2DZ (6×6×7, full frozen set, SCF-FD anchor): `NoCentre` 3.1e-1,
+/// `CentreSign` 6.3e-1 (ΣF sees both); `L0Only` 1.6e-2, `M0Only` 4.2e-3
+/// (ΣF is BLIND to both: every kept triple is still translation invariant,
+/// so only the FD anchor catches them).
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EcpGradMutation {
+    /// Drop the ECP-centre derivative.
+    NoCentre,
+    /// Centre `= +(bra + ket)` instead of `−(bra + ket)`.
+    CentreSign,
+    /// Orbital image `L = 0` only in the derivative (the ket images treated
+    /// as if they did not exist).
+    L0Only,
+    /// Home ECP image `M = 0` only in the derivative.
+    M0Only,
+}
+
+/// The periodic-ECP force term ([`periodic_ecp_gradient`]).
+#[derive(Debug, Clone)]
+pub struct PeriodicEcpGradient {
+    /// `dE_ECP/dR_A`, `natoms × 3` (Hartree/Bohr, per cell); `= bra + ket +
+    /// centre`.
+    pub grad: Array2<f64>,
+    /// Bra-shell motion, folded by the bra shell's atom.
+    pub bra: Array2<f64>,
+    /// Ket-image motion (every `L`), folded by the ket shell's atom.
+    pub ket: Array2<f64>,
+    /// ECP-image motion (every `M`), folded by the centre's cell atom.
+    pub centre: Array2<f64>,
+    /// Kept triples of the screen — the energy's count
+    /// (`PeriodicHcore::n_ecp_triples` / [`PeriodicEcpImages::n_triples`]
+    /// at the same geometry and config).
+    pub n_triples: usize,
+    /// Triples actually differentiated (`n_triples` unless a mutation drops
+    /// some).
+    pub n_triples_evaluated: usize,
+    /// `ferric_ecp_block_deriv` calls (one per kept `L`).
+    pub n_calls: usize,
+}
+
+/// The Gamma-point periodic-ECP force term (FINDINGS Iteration 22):
+///
+/// ```text
+/// dE_ECP/dR_A = Σ_L Σ_{(C, M)} Σ_μν D_μν [ δ_{A,atom μ} ∂_{A_μ} + δ_{A,atom ν} ∂_{B_ν}
+///                                         + δ_{A,C} ∂_C ] ⟨μ_0 | U_C(r − R_C − M) | ν_L⟩
+/// ∂_C = −(∂_{A_μ} + ∂_{B_ν})     per (bra, centre image, ket image) triple
+/// ```
+///
+/// The ket image `R_B + L` and the ECP image `R_C + M` move with their atoms
+/// for EVERY `L`, `M`. The triples are EXACTLY the energy's
+/// ([`periodic_ecp_images`] at the same `cfg`: both walk one `EcpPlan`),
+/// so this is the exact derivative of the energy's partial sum at this
+/// geometry; a finite difference of the energy additionally sees screen
+/// flips (triples entering or leaving the set under the displacement), each
+/// bounded by `cfg.precision` in the energy.
+///
+/// `d` is the TOTAL density (`D_α + D_β`; `E_ECP = Σ D V_ECP`, `V_ECP`
+/// symmetrised, `D` symmetric). The per-triple derivatives come from
+/// [`ecp_block_deriv_spherical`] — true partials also for shells on their
+/// own ECP centre (see there). PySCF 2.13's `ECPscalar_ipnuc` is NOT a
+/// reference for this (FINDINGS Iteration 22: 1.1e-7 off on an off-centre
+/// H1s–H1s(L) element).
+///
+/// `Ok(None)` when no non-ghost atom has an ECP in the basis.
+pub fn periodic_ecp_gradient(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    cfg: &PeriodicEcpConfig,
+    d: &Array2<f64>,
+) -> Result<Option<PeriodicEcpGradient>, FerricError> {
+    periodic_ecp_gradient_with(cell, prep, cfg, d, None)
+}
+
+/// [`periodic_ecp_gradient`] with a test-only [`EcpGradMutation`].
+#[doc(hidden)]
+pub fn periodic_ecp_gradient_with(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    cfg: &PeriodicEcpConfig,
+    d: &Array2<f64>,
+    mutation: Option<EcpGradMutation>,
+) -> Result<Option<PeriodicEcpGradient>, FerricError> {
+    let mut ledger = Ledger::new(crate::budget::resolve(cfg.budget_bytes));
+    periodic_ecp_gradient_on(cell, prep, cfg, d, mutation, &mut ledger)
+}
+
+/// [`periodic_ecp_gradient_with`] on the caller's ledger (the Gamma force
+/// assembly's).
+pub(crate) fn periodic_ecp_gradient_on(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    cfg: &PeriodicEcpConfig,
+    d: &Array2<f64>,
+    mutation: Option<EcpGradMutation>,
+    ledger: &mut Ledger,
+) -> Result<Option<PeriodicEcpGradient>, FerricError> {
+    let Some(plan) = EcpPlan::build(cell, prep, cfg, ledger)? else {
+        return Ok(None);
+    };
+    let n = plan.nbasis;
+    if d.dim() != (n, n) {
+        return Err(FerricError::General(format!(
+            "periodic ECP gradient: density is {:?}, expected ({n}, {n})",
+            d.dim()
+        )));
+    }
+    let natoms = cell.positions().len();
+    // AO -> cell atom (PreparedBasis order; the block rows/columns follow
+    // the same shells with 2l+1 functions each, checked in the plan).
+    let offs = prep.shell_offsets();
+    let dims = prep.shell_dims();
+    let mut aoat = vec![0usize; n];
+    for (s, &at) in plan.shell_atom.iter().enumerate() {
+        for k in 0..dims[s] {
+            aoat[offs[s] + k] = at;
+        }
+    }
+    let nc: usize = plan
+        .shells
+        .iter()
+        .map(|s| ((s.l + 1) * (s.l + 2) / 2) as usize)
+        .sum();
+
+    let mut g_bra = Array2::<f64>::zeros((natoms, 3));
+    let mut g_ket = Array2::<f64>::zeros((natoms, 3));
+    let mut g_cen = Array2::<f64>::zeros((natoms, 3));
+    let (mut n_triples, mut n_eval, mut n_calls) = (0usize, 0usize, 0usize);
+    for l in &plan.l_list {
+        let ket = plan.ket_shells(l);
+        let kept = plan.kept(&ket);
+        n_triples += kept.len();
+        let l0 = l.iter().all(|v| v.abs() < 1e-9);
+        let kept: Vec<(usize, usize, usize)> = match mutation {
+            Some(EcpGradMutation::L0Only) if !l0 => Vec::new(),
+            Some(EcpGradMutation::M0Only) => kept
+                .into_iter()
+                .filter(|&(_, _, u)| plan.sites[u].home)
+                .collect(),
+            _ => kept,
+        };
+        if kept.is_empty() {
+            continue;
+        }
+        n_eval += kept.len();
+        let (centres, site_of, mask) = plan.compact(&kept);
+        // Local centre groups: the distinct cell atoms among this L's sites.
+        let mut group_of_atom: HashMap<usize, usize> = HashMap::new();
+        let mut group_atom: Vec<usize> = Vec::new();
+        let groups: Vec<usize> = site_of
+            .iter()
+            .map(|&u| {
+                let at = plan.sites[u].atom;
+                *group_of_atom.entry(at).or_insert_with(|| {
+                    group_atom.push(at);
+                    group_atom.len() - 1
+                })
+            })
+            .collect();
+        let ng = group_atom.len();
+        // Transient: Cartesian (shim) + spherical (wrapper) blocks, 3 bra +
+        // 3 ket + 3 per group.
+        ledger.check(
+            &format!("periodic ECP derivative blocks for one image ({ng} centre atoms)"),
+            bytes_of(((6 + 3 * ng) * (nc * nc + n * n)) as u64, 8),
+        )?;
+        let blk = ecp_block_deriv_spherical(
+            &plan.shells,
+            &ket,
+            &centres,
+            Some(mask.as_slice()),
+            &groups,
+            ng,
+        )?;
+        if blk.nrow != n || blk.ncol != n {
+            return Err(FerricError::Libint(format!(
+                "periodic ECP gradient: derivative block is {}×{}, expected {n}×{n}",
+                blk.nrow, blk.ncol
+            )));
+        }
+        n_calls += 1;
+        for x in 0..3 {
+            let (bx, kx) = (&blk.bra[x], &blk.ket[x]);
+            for mu in 0..n {
+                let am = aoat[mu];
+                let row = mu * n;
+                let mut acc_b = 0.0;
+                for nu in 0..n {
+                    let dmn = d[(mu, nu)];
+                    acc_b += dmn * bx[row + nu];
+                    g_ket[(aoat[nu], x)] += dmn * kx[row + nu];
+                }
+                g_bra[(am, x)] += acc_b;
+            }
+            if matches!(mutation, Some(EcpGradMutation::NoCentre)) {
+                continue;
+            }
+            let sign = if matches!(mutation, Some(EcpGradMutation::CentreSign)) {
+                -1.0
+            } else {
+                1.0
+            };
+            for (g, &at) in group_atom.iter().enumerate() {
+                let cx = &blk.centre[g][x];
+                let s: f64 = d.iter().zip(cx.iter()).map(|(a, b)| a * b).sum();
+                g_cen[(at, x)] += sign * s;
+            }
+        }
+    }
+    let grad = &(&g_bra + &g_ket) + &g_cen;
+    Ok(Some(PeriodicEcpGradient {
+        grad,
+        bra: g_bra,
+        ket: g_ket,
+        centre: g_cen,
+        n_triples,
+        n_triples_evaluated: n_eval,
+        n_calls,
     }))
 }
