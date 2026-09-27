@@ -4123,3 +4123,109 @@ prototype in Python. The hourly loop (cron) was cancelled at the pause; restart 
 pyenv `ferric` (use the shim); a force/stress anchor at loose screening tests the screen, not the formula; the gradient
 nucleus exponent is an integral-precision knob (scan it before loosening a bar); `head -N` on test output can hide the
 result line; a mutation can be an identity on symmetric meshes (TRIM k-meshes) or at convergence (ROHF W).
+
+## Real-size benchmark — first measurements (2026-09-27, 1 thread, box load ~3-7 from other sessions: provisional)
+Microbenchmark (examples/pbc_triplet_bench.rs, diamond_prim STO-3G / cc-pvdz-ri): SR 3-centre shifted erfc eri3
+1.26 µs/call (the plan guessed 1-10 µs); SR metric 0.34 µs/call; hcore nucleus triplet 1.09 µs; LR pair FT ~700 µs/G.
+Preflight: STO-3G / cc-pvdz-ri ferric −74.0034040288 vs PySCF GDF p1e-12 −74.0034040291 (3e-10) PASS, ferric 21.9 s;
+STO-3G / def2-universal-jkfit ferric −74.0024787783 (drops 9/150 aux) vs PySCF eig −74.0023846489 (drops 21/150): 9.4e-5
+FAIL, under investigation (ferric is 3.8e-7 from PySCF's no-drop Cholesky energy). Real cells use cc-pvdz-ri until resolved.
+diamond_prim cc-pVDZ / cc-pvdz-ri, Gamma RHF, exxdiv ewald:
+| code | E (Ha/cell) | wall | peak RSS |
+|---|---|---|---|
+| ferric | −74.9757090070 | 355.9 s | 145 MB |
+| PySCF GDF p1e-12 (eig metric) | −74.9757090071 | 60.0 s | 175 MB |
+| PySCF GDF p1e-10 | −74.9757089915 | 35.9 s | 140 MB |
+ferric at matched accuracy (1e-10): 5.9x slower than PySCF p1e-12 (prediction 3-30x). ferric stages: RS-GDF SR 3-centre
+289.1 s (81%), hcore SR attraction 59.2 s (17%), LR pair FT 6.1 s, all else < 1.5 s (SCF 10 iters, ~0.9 ms/iter). Both big
+stages are serial; the performance plan's parallel-over-pairs (~5x) and range-split (~10x on SR 3-centre) items target them.
+
+## Benchmark preflight: jkfit aux drop-count mismatch — 2026-09-27
+Question: why does ferric drop 9/150 def2-universal-jkfit aux (E −74.0024787783) where PySCF GDF drops 21/150
+(E −74.0023846489) on diamond_prim / STO-3G / Gamma RHF / ewald, and which energy is the target? (Python only; scripts in
+the session scratchpad `jkfit/`: spec.py, recon.py, recon2.py, scale.py, comp.py, runE.py.)
+
+**Answer (provisional): same fitting space, different aux scaling. It is not a ferric bug.** PySCF GDF builds its auxcell
+with `pbc/df/df.py make_modrho_basis` (the `make_auxcell` alias, called by `GDF.build`), which rescales every aux function
+to unit *multipole* normalisation (`half_sph_norm / ∫r^{l+2} e^{-ar²}`), not unit L2 norm. So PySCF eigendecomposes
+`D J2 D` with `D_PP² = S_PP` (measured on the auxcell: 2.8e-6 … 16.8; s 3.2e-3…11.8, p 5.9e-5…16.8, d 2.8e-6…1.02,
+f 2.4e-4, g 1.4e-4). ferric's aux are unit L2 norm (`compute_metric_2c` = PySCF molecular `make_auxmol` metric, diag ratio
+1.000000, max diff 8.7e-13). The span is identical, but the ABSOLUTE 1e-10 cut on two differently scaled matrices drops
+different directions. Hypothesis (b) in its "differently scaled j2c" form. (a) is not the cause: both sides use `eig > 1e-10`
+absolute. (c) is not either: ferric's kept directions are not noise at ferric's scale (see below).
+
+Predictions, stated before measuring: if the scaling explains everything, then unit-normalising PySCF's j2c gives 9 drops,
+and PySCF run with unit-L2 aux gives 9 drops and ferric's energy. If ferric's J2 is wrong in the near-null subspace, then
+its drop count survives rescaling and matches no independent construction.
+
+**1. The G=0-dropped metric in PySCF's scaling (eigenvalue counts ≤ t):**
+| construction | ≤1e-14 | ≤1e-12 | ≤1e-11 | ≤1e-10 | ≤1e-9 | eigenvalues around the 1e-10 cut |
+|---|---|---|---|---|---|---|
+| PySCF _RSGDFBuilder p1e-8 / 1e-10 / 1e-12 (ω 0.447/0.420/0.398) | 12 | 18 | 18 | **21** | 23 | 3.05e-11 (×3) \| 3.06e-10, 6.34e-10 |
+| independent numpy Ewald split, libcint SR `pbc_intor` erfc + LR ft_ao sum − π/(ω²Ω) q qᵀ, ω = 1 (ferric's recipe) | 12 | 17 | 18 | **21** | 23 | same |
+| same, ω = 0.5 | 12 | 18 | 18 | 21 | 23 | same |
+| same, ω = 1, G cut at ferric's `2ω√ln(1/prec)` (1686 G = 2 × ferric's 843 half-G) | 12 | 17 | 18 | 21 | 23 | same; max\|ΔJ\| 3.6e-15 |
+The reconstruction matches PySCF's j2c to 5.7e-13 (ω = 1) / 4.8e-13 (ω = 0.5), so G=0 convention and G truncation are ruled
+out. The 21 near-null vectors are 100% diffuse s/p/d aux (min exponent < 0.3; no f/g weight).
+
+**2. The same matrices, unit-L2 normalised (`J / √S_PP √S_QQ`, ferric's scaling):**
+| source | eig_max | ≤1e-12 | ≤1e-11 | ≤1e-10 | ≤1e-9 | around the cut |
+|---|---|---|---|---|---|---|
+| PySCF j2c p1e-12 | 19.0875157011 | 6 | 7 | **9** | 13 | 1.84e-11 \| **1.41e-10**, 4.26e-10 (×3) |
+| numpy recon ω = 1 | 19.0875157011 | 1 | 1 | **9** | 13 | 3.30e-11 (×3) \| **2.81e-10**, 4.26e-10 (×3) |
+Rescaling alone reproduces ferric's 9 drops. Caveat: the 10th eigenvalue is only 1.4–2.8× above the cut and differs
+by 2× between two constructions that agree to 5e-13 absolute (dividing by S_PP down to 2.8e-6 amplifies absolute noise
+~4e5×). The count of 9 is therefore FRAGILE in the unit-L2 scaling; in PySCF's scaling 21 sits in a clean decade-wide gap
+(3.05e-11 → 3.06e-10).
+
+**3. Energies (PySCF 2.13 GDF p1e-12, eig metric, 1 thread; "unit" = `make_modrho_basis` wrapped to renormalise to unit
+L2, max|diag S − 1| 6.7e-16):**
+| aux scaling | cut | dropped | E (Ha/cell) | E − ferric |
+|---|---|---|---|---|
+| unit | 1e-14 | 1 | −74.0024828187 | −4.0e-6 |
+| unit | 1e-10 | **9** | **−74.0024790189** | **−2.4e-7** |
+| unit | 2e-10 | 10 | −74.0024782711 | +5.1e-7 |
+| modrho | 1e-16 | 8 | −74.0024747413 | +4.0e-6 |
+| modrho | 1e-12 | 18 | −74.0023847134 | +9.4e-5 |
+| modrho | 1e-10 | 21 | −74.0023846489 (bench) | +9.4e-5 |
+| modrho | 1e-9 | 23 | −74.0023932497 | +8.6e-5 |
+| modrho | Cholesky (no drop) | 0 | −74.0024791537 (bench) | −3.8e-7 |
+| **ferric** (unit, 1e-10) | | 9 | −74.0024787783 | 0 |
+With the scaling matched, PySCF reproduces ferric's drop count and gives 2.4e-7 from ferric's energy (was 9.4e-5). The
+residual is inside the cut's own sensitivity: dropping the single 10th direction (1.41e-10) moves E by 7.5e-7. The two
+codes' J2 differ at ~1e-12 absolute (compare 8.7e-13 on the molecular metric). After the 1/S_PP amplification that is
+enough to move that marginal direction's eigenvalue and energy weight. Not verified directly: ferric's J2 spectrum is not
+exposed to Python (bindings return only naux/naux_kept/n_dropped; RsGdfStats' metric_eig_min/max are not bound), and no
+aux-lindep knob is exposed, so ferric was not rerun at other cuts.
+
+**Which energy is the target.** Neither is "the" answer. On this cell the jkfit energy is a function of the
+regularisation, with a ~1e-4 Ha spread across reasonable cuts and scalings (keeping noise-level directions, unit/1e-14,
+goes 4e-6 BELOW the Cholesky value). The like-for-like target for ferric is PySCF GDF with unit-L2 aux at 1e-10:
+**−74.0024790189 (9 dropped)**. Agreement to that should be judged at ~1e-6, not 1e-9, because a 1e-10-marginal
+eigenvalue carries 7.5e-7. The bench's current PySCF number (−74.0023846489) compares a different regularisation and
+should not be used as a pass/fail target. For 1e-9-level energy agreement keep the preflight on an aux set with no
+near-null metric (cc-pvdz-ri: 0 dropped, 3e-10), as the real cells already do.
+
+**Follow-ups (not done):** (i) patch `pyscf_bench.py` to optionally renormalise the auxcell to unit L2 (the `runE.py`
+wrapper) so the recorded drop counts are comparable. (ii) Consider a scale-invariant ferric cut, i.e. an eigendecomposition of
+the Jacobi-scaled `D^-1/2 J2 D^-1/2` with `D = diag J2`, or a relative cut, so the drop count does not depend on the
+aux normalisation convention. This is a design choice, not a bug fix. (iii) Bind `metric_eig_min/max` (and optionally an
+aux lindep) in `run_*_gamma` so the next mismatch can be checked on ferric's own spectrum.
+
+## Slow suites under GRAD_NUCLEUS_EXPONENT = 1e9 (2026-09-27, partial; stopped by request)
+PASS: pbc_grad and pbc_grad_open (all slow, 2026-09-25), pbc_grad_rsgdf (slow tri, 852 s), pbc_grad_ro (slow H4 +
+H3 ROHF stress), pbc_stress (4 slow incl. tri Richardson and H3 UKS atom grid).
+FAIL: pbc_kgrad `triclinic_sp_1x1x3_force_is_the_supercell_force_on_one_copy` (slow, never run before; s+p shells) —
+panics at the supercell-anchor bar (pbc_kgrad.rs:725). Not yet diagnosed: likely the p-shell libint floor against the
+dense anchor's 1e-12 bar (the s-only cells reach 1e-14), or the SR screening mismatch at p shells — measure before
+changing the bar. NOT RUN: pbc_forces_heavy_atoms under 1e9 (d-shell bars still provisional).
+Policy (Matt, 2026-09-27): targeted tests only until the PR is feature-complete; the slow suites and the push gate run
+once at the ready point.
+
+## Iteration 22 addendum — ECP full-SCF FD anchor (measured 2026-09-27)
+`run_grad_ecp_anchor.py full` (HI box, frozen images r_ecp 15.5 / r_orb 36.4, nM 81, nL 911, rcut_1e 26.74, gcut 12,
+the fixed value-integral ECP derivative kernel): analytic total force vs central FD (h = 1e-4) of the prototype's own SCF
+energy: max|analytic − FD| = 1.49e-9 (none) / 1.50e-9 (ewald), ΣF ~1e-15, F(ewald) − F(none) = 4.3e-13, E(ewald) −
+E(none) = −v_M N/2 exactly. Mutants: no_centre 3.1e-1 (ΣF sees it), centre_sign 6.3e-1 (ΣF sees it), L0_only 1.6e-2 and
+M0_only 4.2e-3 (ΣF BLIND — only the FD anchor catches them). The ket := bra^T shortcut equals the direct ket (1.5e-9, at
+the FD floor) on this full symmetric image set. The ECP force term is anchored end to end; the `box` limit is still not run.

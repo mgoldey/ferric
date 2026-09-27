@@ -107,6 +107,7 @@ use crate::timing::{CallClock, PbcTimings, StageClock};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::engine::Engine;
+use ferric_integrals::engine_pool::EnginePool;
 use ferric_integrals::md3c1e::{cart_components, e_table, ferric_cart2sph, prim_norm, MAX_L};
 use ferric_integrals::operator::Operator;
 use ferric_scf::fock::{JBuilder, KBuilder};
@@ -114,7 +115,9 @@ use ndarray::linalg::general_mat_mul;
 use ndarray::{Array1, Array2, Array3, ArrayView1};
 use ndarray_linalg::{Eigh, UPLO};
 use num_complex::Complex64;
+use rayon::prelude::*;
 use std::f64::consts::PI;
+use std::sync::Mutex;
 
 pub(crate) mod deriv;
 pub mod kpoint;
@@ -699,6 +702,16 @@ struct Stage<'a> {
     walker: LatticeWalker,
 }
 
+/// Sum per-pair counts in pair order; the first error (in pair order, so
+/// deterministic) is returned instead.
+fn sum_counts_in_pair_order(counts: Vec<Result<usize, FerricError>>) -> Result<usize, FerricError> {
+    let mut count = 0usize;
+    for c in counts {
+        count += c?;
+    }
+    Ok(count)
+}
+
 impl Stage<'_> {
     fn radius(&self, qa: f64, qb: f64, a: (f64, f64), b: (f64, f64)) -> Option<f64> {
         sr_radius(qa, qb, a.0, a.1, b.0, b.1, self.omega, self.thresh)
@@ -786,29 +799,165 @@ impl Stage<'_> {
 
     /// SR 3-index `Σ_{L,T} (μ_0 ν_L | P_T)_erfc` over the pair `images`,
     /// `(nao², naux)` (unsymmetrised), and the triplet count.
+    ///
+    /// PARALLEL over ordered shell pairs `(i1, i2)` (FINDINGS "Performance
+    /// plan", §3 Class A), BIT-IDENTICAL to the serial L-outer walk
+    /// ([`Stage::sr_three_index_each`]) and across thread counts:
+    ///
+    /// * Element `(μν, P)` of J3 lives in row `μ n + ν` with `μ` in shell
+    ///   `i1` and `ν` in shell `i2` (shells partition the AO range), so it
+    ///   receives addends ONLY from pair `(i1, i2)` and aux shell `P`. In the
+    ///   serial walk (`L → i1 → i2 → P → T`) those addends arrive in the
+    ///   order "L ascending, then T in walker order"; the pair-outer nest
+    ///   `(i1, i2) → L → P → T` delivers exactly that sequence, because the
+    ///   visit decision and the block for `(i1, i2, P, L, T)` are pure
+    ///   functions of those indices ([`Stage::sr3_pair_image`] is the ONE
+    ///   body both walks run).
+    /// * Each task accumulates its pair's rows in a zero-initialised scratch
+    ///   block with that `+=` sequence (0.0 + x == x, so the first addend
+    ///   lands exactly as it does in the zeroed J3), then COPIES the block
+    ///   into J3 under a mutex. The copy is not an addition, so the order in
+    ///   which tasks finish cannot change a bit.
+    /// * One libint engine per rayon worker ([`EnginePool::from_fn`]); every
+    ///   `compute_eri3_shifted` call is stateless (the shim copies and moves
+    ///   the three shells per call).
+    /// * The count is an integer sum.
+    ///
+    /// Pinned by `tests/pbc_parallel_bitwise.rs` (1/2/6 threads) and by
+    /// [`kpoint::sr_sums_gamma_and_single_bin`], which compares this against
+    /// the serial walk bit for bit. Per-task scratch is
+    /// [`Stage::sr3_scratch_bytes_per_task`] (budget-checked by the caller).
     fn sr_three_index(&self, images: &[[f64; 3]]) -> Result<(Array2<f64>, usize), FerricError> {
         let n = self.obs.nbasis();
         let naux = self.aux.nbasis();
-        let mut j3 = Array2::<f64>::zeros((n * n, naux));
-        let count = self.sr_three_index_each(images, |a, b, p, _l, _t, blk| {
-            // block layout (nP, n1, n2)
-            for pp in 0..p.nfun {
-                for i in 0..a.nfun {
-                    let row0 = (a.off + i) * n + b.off;
-                    let src = (pp * a.nfun + i) * b.nfun;
-                    for j in 0..b.nfun {
-                        j3[(row0 + j, p.off + pp)] += blk[src + j];
-                    }
+        let nsh = self.obs_sh.len();
+        let global = self.sr3_global_radius();
+        let pool = self.sr3_engine_pool()?;
+        let j3 = Mutex::new(Array2::<f64>::zeros((n * n, naux)));
+        // Load balance: one task per ordered shell pair, whose cost is very
+        // uneven (e.g. 144 tasks on diamond_prim). If measurement shows
+        // imbalance, tasks can be split further into (pair, aux shell P)
+        // units without changing any element's summation order: element
+        // (μν, P) only ever receives addends from its own (i1, i2, P), in
+        // "L ascending, then T in walker order", so each (pair, P) unit can
+        // accumulate and copy its own columns independently.
+        let counts: Vec<Result<usize, FerricError>> = (0..nsh * nsh)
+            .into_par_iter()
+            .map(|pair| self.sr3_pair_task(&pool, images, global, (pair / nsh, pair % nsh), &j3))
+            .collect();
+        let count = sum_counts_in_pair_order(counts)?;
+        Ok((j3.into_inner().unwrap_or_else(|e| e.into_inner()), count))
+    }
+
+    /// One erfc 3-centre engine per rayon worker for [`Stage::sr_three_index`].
+    fn sr3_engine_pool(&self) -> Result<EnginePool, FerricError> {
+        EnginePool::from_fn(|| {
+            Engine::new_3center(
+                Operator::erfc(self.omega),
+                self.obs,
+                self.aux,
+                ENGINE_PRECISION,
+            )
+        })
+    }
+
+    /// One [`Stage::sr_three_index`] task: pair `(i1, i2)` over every image
+    /// `L` (via [`Stage::sr3_pair_image`], the serial walk's body) into a
+    /// zeroed scratch block, then COPIED into `j3` under the mutex. Returns
+    /// the pair's triplet count.
+    fn sr3_pair_task(
+        &self,
+        pool: &EnginePool,
+        images: &[[f64; 3]],
+        global: f64,
+        (i1, i2): (usize, usize),
+        j3: &Mutex<Array2<f64>>,
+    ) -> Result<usize, FerricError> {
+        let (a, b) = (&self.obs_sh[i1], &self.obs_sh[i2]);
+        let (na, nb) = (a.nfun, b.nfun);
+        // scratch[(i nb + j) naux + P] == j3[(a.off+i) n + b.off + j, P]
+        let mut acc = vec![0.0_f64; na * nb * self.aux.nbasis()];
+        let mut count = 0usize;
+        pool.with(|eng| -> Result<(), FerricError> {
+            let mut visit = |i1: usize,
+                             i2: usize,
+                             ip: usize,
+                             l: [f64; 3],
+                             t: [f64; 3]|
+             -> Result<(), FerricError> {
+                if let Some(blk) =
+                    eng.compute_eri3_shifted(self.obs, self.aux, ip, i1, i2, [t, [0.0; 3], l])?
+                {
+                    self.sr3_accumulate_block(&mut acc, blk, ip, na, nb);
+                }
+                Ok(())
+            };
+            for l in images {
+                self.sr3_pair_image(i1, i2, l, global, &mut count, &mut visit)?;
+            }
+            Ok(())
+        })?;
+        if count > 0 {
+            self.sr3_copy_pair_rows(j3, &acc, a, b);
+        }
+        Ok(count)
+    }
+
+    /// `acc[(i nb + j) naux + P] += blk[(pp na + i) nb + j]` for aux shell
+    /// `ip`'s functions; `blk` has layout `(nP, n1, n2)`, as
+    /// [`Stage::sr_three_index_each`]'s sinks.
+    fn sr3_accumulate_block(&self, acc: &mut [f64], blk: &[f64], ip: usize, na: usize, nb: usize) {
+        let naux = self.aux.nbasis();
+        let p = &self.aux_sh[ip];
+        for pp in 0..p.nfun {
+            for i in 0..na {
+                let src = (pp * na + i) * nb;
+                for j in 0..nb {
+                    acc[(i * nb + j) * naux + p.off + pp] += blk[src + j];
                 }
             }
-        })?;
-        Ok((j3, count))
+        }
+    }
+
+    /// COPY (not add) pair `(a, b)`'s finished scratch rows into `j3` under
+    /// its mutex, so task finishing order cannot change a bit.
+    fn sr3_copy_pair_rows(&self, j3: &Mutex<Array2<f64>>, acc: &[f64], a: &GShell, b: &GShell) {
+        let n = self.obs.nbasis();
+        let naux = self.aux.nbasis();
+        let (na, nb) = (a.nfun, b.nfun);
+        let mut j3 = j3.lock().unwrap_or_else(|e| e.into_inner());
+        for i in 0..na {
+            for j in 0..nb {
+                let row = (a.off + i) * n + b.off + j;
+                let src = (i * nb + j) * naux;
+                j3.row_mut(row)
+                    .iter_mut()
+                    .zip(&acc[src..src + naux])
+                    .for_each(|(d, &s)| *d = s);
+            }
+        }
+    }
+
+    /// Bytes of ONE [`Stage::sr_three_index`] task's scratch (the largest
+    /// shell pair's `nfun² · naux` block). The caller checks it once per
+    /// possible concurrent task (memory may scale with threads; the numerics
+    /// never read the thread count).
+    fn sr3_scratch_bytes_per_task(&self) -> usize {
+        let nf = self.obs_sh.iter().map(|s| s.nfun).max().unwrap_or(0) as u64;
+        bytes_of(
+            nf.saturating_mul(nf)
+                .saturating_mul(self.aux.nbasis() as u64),
+            8,
+        )
     }
 
     /// Every SR 3-centre block `(μ_0 ν_L | P_T)_erfc` the screen keeps, in a
     /// fixed order: `sink(μ shell, ν shell, P shell, L, T, block (nP, nμ, nν))`.
     /// Returns the triplet count (as [`Stage::sr_metric_each`]: one walk
-    /// shared by the Gamma sum and the k-point residue bins).
+    /// shared by the Gamma sum and the k-point residue bins). SERIAL: the
+    /// k-point residue bins use it; the Gamma sum is the parallel
+    /// [`Stage::sr_three_index`], which reproduces this walk's per-element
+    /// order.
     fn sr_three_index_each<F>(&self, images: &[[f64; 3]], mut sink: F) -> Result<usize, FerricError>
     where
         F: FnMut(&GShell, &GShell, &GShell, [f64; 3], [f64; 3], &[f64]),
@@ -840,7 +989,9 @@ impl Stage<'_> {
     /// for every `(μ_0 ν_L | P_T)` the screen keeps, in the fixed order
     /// [`Stage::sr_three_index_each`] sums them (shared with the gradient's
     /// derivative walk, [`deriv`], so both see the same triplet set).
-    /// Returns the triplet count.
+    /// Returns the triplet count. SERIAL, `L → i1 → i2 → P → T`; the body
+    /// per `(L, i1, i2)` is [`Stage::sr3_pair_image`], shared with the
+    /// parallel [`Stage::sr_three_index`].
     fn sr_three_index_walk<F>(
         &self,
         images: &[[f64; 3]],
@@ -850,69 +1001,96 @@ impl Stage<'_> {
         F: FnMut(usize, usize, usize, [f64; 3], [f64; 3]) -> Result<(), FerricError>,
     {
         let mut count = 0usize;
-        let global = if self.sr_screen {
-            0.0
-        } else {
-            let mut r = 0.0_f64;
-            for a in &self.obs_sh {
-                for b in &self.obs_sh {
-                    let (qab, pmin, pmax) = pair_bound(a, b, 0.0);
-                    for p in &self.aux_sh {
-                        if let Some(x) = self.radius(qab, p.qbound, (pmin, pmax), (p.amin, p.amax))
-                        {
-                            r = r.max(x);
-                        }
-                    }
-                }
-            }
-            r
-        };
+        let global = self.sr3_global_radius();
+        let nsh = self.obs_sh.len();
         for l in images {
-            for (i1, a) in self.obs_sh.iter().enumerate() {
-                for (i2, b) in self.obs_sh.iter().enumerate() {
-                    let bc = [b.center[0] + l[0], b.center[1] + l[1], b.center[2] + l[2]];
-                    let ab = [
-                        a.center[0] - bc[0],
-                        a.center[1] - bc[1],
-                        a.center[2] - bc[2],
-                    ];
-                    let r2 = dot3(&ab, &ab);
-                    let (qab, pmin, pmax) = pair_bound(a, b, r2);
-                    let mid = [
-                        0.5 * (a.center[0] + bc[0]),
-                        0.5 * (a.center[1] + bc[1]),
-                        0.5 * (a.center[2] + bc[2]),
-                    ];
-                    let half = 0.5 * r2.sqrt();
-                    for (ip, p) in self.aux_sh.iter().enumerate() {
-                        let rad = if self.sr_screen {
-                            match self.radius(qab, p.qbound, (pmin, pmax), (p.amin, p.amax)) {
-                                Some(r) => r,
-                                None => continue,
-                            }
-                        } else {
-                            global
-                        };
-                        // Every aux image within `rad` of the segment lies
-                        // within `rad + half` of its midpoint.
-                        let x0 = [
-                            mid[0] - p.center[0],
-                            mid[1] - p.center[1],
-                            mid[2] - p.center[2],
-                        ];
-                        self.walker.visit(x0, rad + half, |t| {
-                            let x = [p.center[0] + t[0], p.center[1] + t[1], p.center[2] + t[2]];
-                            if segment_distance(x, a.center, bc) > rad {
-                                return Ok(());
-                            }
-                            count += 1;
-                            visit(i1, i2, ip, *l, t)
-                        })?;
-                    }
+            for i1 in 0..nsh {
+                for i2 in 0..nsh {
+                    self.sr3_pair_image(i1, i2, l, global, &mut count, &mut visit)?;
                 }
             }
         }
         Ok(count)
+    }
+
+    /// The unscreened (`sr_screen = false`) global radius; 0 when screening.
+    fn sr3_global_radius(&self) -> f64 {
+        if self.sr_screen {
+            return 0.0;
+        }
+        let mut r = 0.0_f64;
+        for a in &self.obs_sh {
+            for b in &self.obs_sh {
+                let (qab, pmin, pmax) = pair_bound(a, b, 0.0);
+                for p in &self.aux_sh {
+                    if let Some(x) = self.radius(qab, p.qbound, (pmin, pmax), (p.amin, p.amax)) {
+                        r = r.max(x);
+                    }
+                }
+            }
+        }
+        r
+    }
+
+    /// One `(pair (i1, i2), image L)` of the SR 3-centre walk: every aux
+    /// shell `P` in order, then every kept `T` in walker order. The single
+    /// body of both the serial [`Stage::sr_three_index_walk`] and the
+    /// parallel [`Stage::sr_three_index`] (so both see the same triplets in
+    /// the same per-pair order).
+    fn sr3_pair_image<F>(
+        &self,
+        i1: usize,
+        i2: usize,
+        l: &[f64; 3],
+        global: f64,
+        count: &mut usize,
+        visit: &mut F,
+    ) -> Result<(), FerricError>
+    where
+        F: FnMut(usize, usize, usize, [f64; 3], [f64; 3]) -> Result<(), FerricError>,
+    {
+        let a = &self.obs_sh[i1];
+        let b = &self.obs_sh[i2];
+        let bc = [b.center[0] + l[0], b.center[1] + l[1], b.center[2] + l[2]];
+        let ab = [
+            a.center[0] - bc[0],
+            a.center[1] - bc[1],
+            a.center[2] - bc[2],
+        ];
+        let r2 = dot3(&ab, &ab);
+        let (qab, pmin, pmax) = pair_bound(a, b, r2);
+        let mid = [
+            0.5 * (a.center[0] + bc[0]),
+            0.5 * (a.center[1] + bc[1]),
+            0.5 * (a.center[2] + bc[2]),
+        ];
+        let half = 0.5 * r2.sqrt();
+        for (ip, p) in self.aux_sh.iter().enumerate() {
+            let rad = if self.sr_screen {
+                match self.radius(qab, p.qbound, (pmin, pmax), (p.amin, p.amax)) {
+                    Some(r) => r,
+                    None => continue,
+                }
+            } else {
+                global
+            };
+            // Every aux image within `rad` of the segment lies
+            // within `rad + half` of its midpoint.
+            let x0 = [
+                mid[0] - p.center[0],
+                mid[1] - p.center[1],
+                mid[2] - p.center[2],
+            ];
+            self.walker.visit(x0, rad + half, |t| {
+                let x = [p.center[0] + t[0], p.center[1] + t[1], p.center[2] + t[2]];
+                if segment_distance(x, a.center, bc) > rad {
+                    return Ok(());
+                }
+                *count += 1;
+                visit(i1, i2, ip, *l, t)
+            })?;
+        }
+        Ok(())
     }
 
     /// LR `(2/Ω) Σ_{G∈half} 4π/G² e^{−G²/4ω²} Re[conj(A) X]` added into `j2`
@@ -1339,6 +1517,18 @@ impl RsGdf {
         let (mut j2, n_sr2) = st.sr_metric()?;
         timings.stop("rsgdf SR metric (2-centre)", &clock);
         let clock = StageClock::start();
+        // Transient per-task scratch of the parallel SR 3-centre walk: one
+        // block per possible concurrent task (threads + the spare slot).
+        // CHECKED, not reserved, and only after `chunk_budget` is fixed, so
+        // no numerical width ever depends on the thread count.
+        ledger.check(
+            &format!(
+                "RsGdf SR 3-centre per-thread scratch ({} threads)",
+                rayon::current_num_threads()
+            ),
+            st.sr3_scratch_bytes_per_task()
+                .saturating_mul(rayon::current_num_threads().saturating_add(1)),
+        )?;
         let (mut j3, n_sr3) = st.sr_three_index(&images)?;
         timings.stop("rsgdf SR 3-centre", &clock);
         let clock = StageClock::start();

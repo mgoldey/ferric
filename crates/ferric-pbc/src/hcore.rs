@@ -81,13 +81,16 @@ use crate::timing::{PbcTimings, StageClock};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::engine::Engine;
+use ferric_integrals::engine_pool::EnginePool;
 use ferric_integrals::ffi;
 use ferric_integrals::md3c1e::prim_norm;
 use ferric_integrals::operator::Operator;
 use ferric_integrals::site_basis::SiteBasis;
 use ndarray::{Array2, Array3};
 use num_complex::Complex64;
+use rayon::prelude::*;
 use std::f64::consts::PI;
+use std::sync::Mutex;
 
 /// Stage 3: the same lattice sums, phase-weighted per k-point.
 pub mod kpoint;
@@ -714,86 +717,230 @@ fn sr_attraction(
     let n = prep.nbasis();
     let mut v = Array2::<f64>::zeros((n, n));
     let mut predicted = track.then(|| Array2::<f64>::zeros((n, n)));
-    let mut n_triplets = 0usize;
-    let mut n_segment_tests = 0usize;
     if nuc.is_empty() {
         return Ok(SrSum {
             v,
-            n_triplets,
-            n_segment_tests,
+            n_triplets: 0,
+            n_segment_tests: 0,
             predicted,
         });
     }
     let sites: Vec<[f64; 4]> = nuc.iter().map(|(_, r)| [r[0], r[1], r[2], zeta]).collect();
     let site = SiteBasis::new(&sites, 0)?;
-    let mut eng = Engine::new_3center(
-        Operator::erfc(omega),
+    // PARALLEL over ordered shell pairs, bit-identical to the serial
+    // `L → i1 → i2 → candidate` nest and across thread counts (FINDINGS
+    // "Performance plan" §3 Class A): element (μ, ν) with μ in shell i1 and
+    // ν in shell i2 receives addends ONLY from pair (i1, i2), in the order
+    // "L ascending, then candidate order"; the pair-outer nest below keeps
+    // that per-element sequence (every screen decision and block is a pure
+    // function of (i1, i2, L, candidate)). Each task accumulates its block
+    // (and its predicted-skip scalar, which today's loop adds uniformly to
+    // every element of the block) from zero with the same `+=` sequence and
+    // COPIES it into the zeroed output under a mutex, so the finishing order
+    // of tasks cannot change a bit. Counters are integer sums. One libint
+    // engine per rayon worker (`EnginePool::from_fn`); the shifted 3-centre
+    // call is stateless. Per-task scratch is one (dim_i1 × dim_i2) block.
+    let nsh = shells.len();
+    let pool = sr_engine_pool(prep, &site, omega)?;
+    let ctx = SrPairCtx {
         prep,
-        &site.prep,
-        ERI3_ENGINE_PRECISION,
-    )?;
-    for l in images {
-        for (i1, a) in shells.iter().enumerate() {
-            for (i2, b) in shells.iter().enumerate() {
-                let bc = [b.center[0] + l[0], b.center[1] + l[1], b.center[2] + l[2]];
-                let r2 = (a.center[0] - bc[0]).powi(2)
-                    + (a.center[1] - bc[1]).powi(2)
-                    + (a.center[2] - bc[2]).powi(2);
-                let (q, pmin, pmax) = pair_bound(a, b, r2);
-                let wp = bound.omega_p(omega, pmin);
-                let rad = if screen > 0.0 {
-                    nucleus_radius_m(q, zmax, pmax, wp, screen, bound.margin())
-                } else {
-                    Some(f64::INFINITY)
-                };
-                if rad.is_none() && !track {
-                    continue;
-                }
-                let pref = nucleus_prefactor(q, zmax, pmax);
-                let mut skipped = 0.0_f64;
-                n_segment_tests += cands.len();
-                for (k, m, x) in cands {
-                    let d = segment_distance(*x, a.center, bc);
-                    match rad {
-                        Some(r) if d <= r => {}
-                        _ => {
-                            if track {
-                                skipped += bound.triplet_bound(pref, wp, d);
-                            }
-                            continue;
-                        }
-                    }
-                    n_triplets += 1;
-                    let f = -nuc[*k].0 / site.norm_int[*k];
-                    if let Some(blk) = eng.compute_eri3_shifted(
-                        prep,
-                        &site.prep,
-                        site.site_shell[*k],
-                        i1,
-                        i2,
-                        [*m, [0.0; 3], *l],
-                    )? {
-                        add_block(&mut v, blk, a.off, a.dim, b.off, b.dim, f);
-                    }
-                }
-                if let Some(p) = predicted.as_mut() {
-                    if skipped > 0.0 {
-                        for i in 0..a.dim {
-                            for j in 0..b.dim {
-                                p[(a.off + i, b.off + j)] += skipped;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+        shells,
+        images,
+        cands,
+        nuc,
+        site: &site,
+        omega,
+        zmax,
+        screen,
+        bound,
+        track,
+    };
+    let out = Mutex::new((&mut v, predicted.as_mut()));
+    let per_pair: Vec<Result<(usize, usize), FerricError>> = (0..nsh * nsh)
+        .into_par_iter()
+        .map(|pair| ctx.pair_task(&pool, pair / nsh, pair % nsh, &out))
+        .collect();
+    let (n_triplets, n_segment_tests) = sum_pair_counts(per_pair)?;
     Ok(SrSum {
         v,
         n_triplets,
         n_segment_tests,
         predicted,
     })
+}
+
+/// One erfc 3-centre engine (AO pair | nucleus site) per rayon worker.
+fn sr_engine_pool(
+    prep: &PreparedBasis,
+    site: &SiteBasis,
+    omega: f64,
+) -> Result<EnginePool, FerricError> {
+    EnginePool::from_fn(|| {
+        Engine::new_3center(
+            Operator::erfc(omega),
+            prep,
+            &site.prep,
+            ERI3_ENGINE_PRECISION,
+        )
+    })
+}
+
+/// Sum per-pair `(triplets, segment tests)` in pair order; the first error
+/// (in pair order, so deterministic) is returned instead.
+fn sum_pair_counts(
+    per_pair: Vec<Result<(usize, usize), FerricError>>,
+) -> Result<(usize, usize), FerricError> {
+    let mut n_triplets = 0usize;
+    let mut n_segment_tests = 0usize;
+    for r in per_pair {
+        let (t, sg) = r?;
+        n_triplets += t;
+        n_segment_tests += sg;
+    }
+    Ok((n_triplets, n_segment_tests))
+}
+
+/// The zeroed `V` (and optional predicted-skip matrix) every
+/// [`sr_attraction`] task copies its finished block into.
+type SrOut<'a> = Mutex<(&'a mut Array2<f64>, Option<&'a mut Array2<f64>>)>;
+
+/// The loop invariants of one [`sr_attraction`] call.
+struct SrPairCtx<'a> {
+    prep: &'a PreparedBasis,
+    shells: &'a [PrimShell],
+    images: &'a [[f64; 3]],
+    cands: &'a [NucCand],
+    nuc: &'a [(f64, [f64; 3])],
+    site: &'a SiteBasis,
+    omega: f64,
+    zmax: f64,
+    screen: f64,
+    bound: SrBound,
+    track: bool,
+}
+
+/// One pair's running sums: the `(dim_i1 × dim_i2)` block, the
+/// predicted-skip scalar and the two counters.
+struct SrPairAcc {
+    acc: Vec<f64>,
+    pred_acc: f64,
+    n_trip: usize,
+    n_seg: usize,
+}
+
+impl SrPairCtx<'_> {
+    /// One task: pair `(i1, i2)` over every image `L` ascending, then its
+    /// finished block COPIED into `out`. Returns `(triplets, segment tests)`.
+    fn pair_task(
+        &self,
+        pool: &EnginePool,
+        i1: usize,
+        i2: usize,
+        out: &SrOut<'_>,
+    ) -> Result<(usize, usize), FerricError> {
+        let (a, b) = (&self.shells[i1], &self.shells[i2]);
+        let mut st = SrPairAcc {
+            acc: vec![0.0_f64; a.dim * b.dim],
+            pred_acc: 0.0,
+            n_trip: 0,
+            n_seg: 0,
+        };
+        pool.with(|eng| -> Result<(), FerricError> {
+            for l in self.images {
+                self.pair_image(eng, i1, i2, l, &mut st)?;
+            }
+            Ok(())
+        })?;
+        if st.n_trip > 0 || st.pred_acc != 0.0 {
+            write_sr_pair_block(out, a, b, &st);
+        }
+        Ok((st.n_trip, st.n_seg))
+    }
+
+    /// Pair `(i1, i2)` at image `L`: screen, then every candidate in order.
+    fn pair_image(
+        &self,
+        eng: &mut Engine,
+        i1: usize,
+        i2: usize,
+        l: &[f64; 3],
+        st: &mut SrPairAcc,
+    ) -> Result<(), FerricError> {
+        let (a, b) = (&self.shells[i1], &self.shells[i2]);
+        let bound = self.bound;
+        let bc = [b.center[0] + l[0], b.center[1] + l[1], b.center[2] + l[2]];
+        let r2 = (a.center[0] - bc[0]).powi(2)
+            + (a.center[1] - bc[1]).powi(2)
+            + (a.center[2] - bc[2]).powi(2);
+        let (q, pmin, pmax) = pair_bound(a, b, r2);
+        let wp = bound.omega_p(self.omega, pmin);
+        let rad = if self.screen > 0.0 {
+            nucleus_radius_m(q, self.zmax, pmax, wp, self.screen, bound.margin())
+        } else {
+            Some(f64::INFINITY)
+        };
+        if rad.is_none() && !self.track {
+            return Ok(());
+        }
+        let pref = nucleus_prefactor(q, self.zmax, pmax);
+        let mut skipped = 0.0_f64;
+        st.n_seg += self.cands.len();
+        for (k, m, x) in self.cands {
+            let d = segment_distance(*x, a.center, bc);
+            match rad {
+                Some(r) if d <= r => {}
+                _ => {
+                    if self.track {
+                        skipped += bound.triplet_bound(pref, wp, d);
+                    }
+                    continue;
+                }
+            }
+            st.n_trip += 1;
+            let f = -self.nuc[*k].0 / self.site.norm_int[*k];
+            if let Some(blk) = eng.compute_eri3_shifted(
+                self.prep,
+                &self.site.prep,
+                self.site.site_shell[*k],
+                i1,
+                i2,
+                [*m, [0.0; 3], *l],
+            )? {
+                // == add_block(v, blk, a.off, a.dim, b.off, b.dim, f)
+                for i in 0..a.dim {
+                    for j in 0..b.dim {
+                        st.acc[i * b.dim + j] += f * blk[i * b.dim + j];
+                    }
+                }
+            }
+        }
+        // == `p[(a.off+i, b.off+j)] += skipped` for every element
+        // of the block: the same scalar sequence for each.
+        if self.track && skipped > 0.0 {
+            st.pred_acc += skipped;
+        }
+        Ok(())
+    }
+}
+
+/// COPY (not add) pair `(a, b)`'s finished block (and its predicted-skip
+/// scalar, uniformly) into `out` under its mutex, so task finishing order
+/// cannot change a bit.
+fn write_sr_pair_block(out: &SrOut<'_>, a: &PrimShell, b: &PrimShell, st: &SrPairAcc) {
+    let mut guard = out.lock().unwrap_or_else(|e| e.into_inner());
+    let (v, p) = &mut *guard;
+    for i in 0..a.dim {
+        for j in 0..b.dim {
+            v[(a.off + i, b.off + j)] = st.acc[i * b.dim + j];
+        }
+    }
+    if let Some(p) = p.as_mut() {
+        for i in 0..a.dim {
+            for j in 0..b.dim {
+                p[(a.off + i, b.off + j)] = st.pred_acc;
+            }
+        }
+    }
 }
 
 /// Build `S`, `T`, `V`, `h = T + V` and `E_nn` for a Gamma-point cell (see
@@ -1267,6 +1414,151 @@ pub fn sr_attraction_matrix(
     let st = SrStudySetup::new(cell, prep, omega, cand_thresh, None)?;
     let sr = st.run(prep, screen_thresh, bound, false)?;
     Ok((sr.v, sr.n_triplets))
+}
+
+/// One SR-attraction result as `(V_SR unsymmetrised, n_triplets,
+/// n_segment_tests, predicted-skip matrix if tracked)`.
+pub type SrAttractionParts = (Array2<f64>, usize, usize, Option<Array2<f64>>);
+
+/// TEST ORACLE for the parallel SR attraction: `[parallel, serial]` over the
+/// SAME shells, pair images and nucleus candidates as
+/// [`sr_attraction_matrix`] (built at `cand_thresh`), screened at
+/// `screen_thresh` with `bound`, optionally tracking the predicted skip.
+/// `serial` is the pre-parallel `L → i1 → i2 → candidate` loop, FROZEN
+/// verbatim (`sr_attraction_serial_oracle`); the two must agree BIT FOR BIT
+/// (`tests/pbc_parallel_bitwise.rs`), which is the proof that the
+/// pair-outer parallel nest kept every element's summation sequence.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn sr_attraction_parallel_and_serial(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    omega: f64,
+    cand_thresh: f64,
+    screen_thresh: f64,
+    bound: SrBound,
+    track: bool,
+) -> Result<[SrAttractionParts; 2], FerricError> {
+    let st = SrStudySetup::new(cell, prep, omega, cand_thresh, None)?;
+    let par = st.run(prep, screen_thresh, bound, track)?;
+    let ser = sr_attraction_serial_oracle(
+        prep,
+        &st.shells,
+        &st.images,
+        &st.cands,
+        &st.nuc,
+        GAUSSIAN_NUCLEUS_EXPONENT,
+        st.omega,
+        st.zmax,
+        screen_thresh,
+        bound,
+        track,
+    )?;
+    Ok([
+        (par.v, par.n_triplets, par.n_segment_tests, par.predicted),
+        (ser.v, ser.n_triplets, ser.n_segment_tests, ser.predicted),
+    ])
+}
+
+/// The serial SR attraction loop as it was before the pair-parallel
+/// rewrite of [`sr_attraction`] (FROZEN; oracle only — do not "improve").
+#[allow(clippy::too_many_arguments)]
+fn sr_attraction_serial_oracle(
+    prep: &PreparedBasis,
+    shells: &[PrimShell],
+    images: &[[f64; 3]],
+    cands: &[NucCand],
+    nuc: &[(f64, [f64; 3])],
+    zeta: f64,
+    omega: f64,
+    zmax: f64,
+    screen: f64,
+    bound: SrBound,
+    track: bool,
+) -> Result<SrSum, FerricError> {
+    let n = prep.nbasis();
+    let mut v = Array2::<f64>::zeros((n, n));
+    let mut predicted = track.then(|| Array2::<f64>::zeros((n, n)));
+    let mut n_triplets = 0usize;
+    let mut n_segment_tests = 0usize;
+    if nuc.is_empty() {
+        return Ok(SrSum {
+            v,
+            n_triplets,
+            n_segment_tests,
+            predicted,
+        });
+    }
+    let sites: Vec<[f64; 4]> = nuc.iter().map(|(_, r)| [r[0], r[1], r[2], zeta]).collect();
+    let site = SiteBasis::new(&sites, 0)?;
+    let mut eng = Engine::new_3center(
+        Operator::erfc(omega),
+        prep,
+        &site.prep,
+        ERI3_ENGINE_PRECISION,
+    )?;
+    for l in images {
+        for (i1, a) in shells.iter().enumerate() {
+            for (i2, b) in shells.iter().enumerate() {
+                let bc = [b.center[0] + l[0], b.center[1] + l[1], b.center[2] + l[2]];
+                let r2 = (a.center[0] - bc[0]).powi(2)
+                    + (a.center[1] - bc[1]).powi(2)
+                    + (a.center[2] - bc[2]).powi(2);
+                let (q, pmin, pmax) = pair_bound(a, b, r2);
+                let wp = bound.omega_p(omega, pmin);
+                let rad = if screen > 0.0 {
+                    nucleus_radius_m(q, zmax, pmax, wp, screen, bound.margin())
+                } else {
+                    Some(f64::INFINITY)
+                };
+                if rad.is_none() && !track {
+                    continue;
+                }
+                let pref = nucleus_prefactor(q, zmax, pmax);
+                let mut skipped = 0.0_f64;
+                n_segment_tests += cands.len();
+                for (k, m, x) in cands {
+                    let d = segment_distance(*x, a.center, bc);
+                    match rad {
+                        Some(r) if d <= r => {}
+                        _ => {
+                            if track {
+                                skipped += bound.triplet_bound(pref, wp, d);
+                            }
+                            continue;
+                        }
+                    }
+                    n_triplets += 1;
+                    let f = -nuc[*k].0 / site.norm_int[*k];
+                    if let Some(blk) = eng.compute_eri3_shifted(
+                        prep,
+                        &site.prep,
+                        site.site_shell[*k],
+                        i1,
+                        i2,
+                        [*m, [0.0; 3], *l],
+                    )? {
+                        add_block(&mut v, blk, a.off, a.dim, b.off, b.dim, f);
+                    }
+                }
+                if let Some(p) = predicted.as_mut() {
+                    if skipped > 0.0 {
+                        for i in 0..a.dim {
+                            for j in 0..b.dim {
+                                p[(a.off + i, b.off + j)] += skipped;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(SrSum {
+        v,
+        n_triplets,
+        n_segment_tests,
+        predicted,
+    })
 }
 
 /// Shared setup of the step-8 measurement entry points.

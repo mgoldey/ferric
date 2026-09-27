@@ -1,4 +1,5 @@
-//! Per-thread 2e integral-engine pool.
+//! Per-thread integral-engine pool (2e via [`EnginePool::new`]; any engine
+//! kind via [`EnginePool::from_fn`]).
 //!
 //! Lives in `ferric-integrals` (next to [`crate::engine::Engine`]) rather than `ferric-scf` so
 //! that lower-level integral code — Schwarz bounds, 3-index drivers — can use it
@@ -62,6 +63,32 @@ impl EnginePool {
             engines.push(Mutex::new(Engine::new_2e(op, prep, precision)?));
         }
         Ok(EnginePool { engines })
+    }
+
+    /// A pool of engines of ANY kind (3-centre, 2-centre, 1e, ...): `make` is
+    /// called `num_threads + 1` times, serially, on the calling thread (the
+    /// same count and slot layout as [`EnginePool::new`]). Call it inside the
+    /// rayon pool the parallel loop will run in, so the slot count matches
+    /// that pool's `current_thread_index()` range.
+    pub fn from_fn(
+        mut make: impl FnMut() -> Result<Engine, FerricError>,
+    ) -> Result<Self, FerricError> {
+        let n = rayon::current_num_threads().max(1) + 1;
+        let mut engines = Vec::with_capacity(n);
+        for _ in 0..n {
+            engines.push(Mutex::new(make()?));
+        }
+        Ok(EnginePool { engines })
+    }
+
+    /// Number of engines in the pool (`num_threads + 1` at construction).
+    pub fn len(&self) -> usize {
+        self.engines.len()
+    }
+
+    /// Always false (a pool holds at least the spare slot).
+    pub fn is_empty(&self) -> bool {
+        self.engines.is_empty()
     }
 
     /// Run `f` with this thread's engine. Indexed by `current_thread_index()`;
