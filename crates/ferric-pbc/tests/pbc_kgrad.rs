@@ -18,7 +18,9 @@
 //!     prototyped at k — this anchor is what pins its derivative, since the
 //!     supercell side runs the Gamma `h` derivative of `crate::grad`.
 //!     Meshes: H2 1×1×3 and 2×2×2 RHF, H3 1×1×3 UHF (2,1), triclinic s+p
-//!     tri2 1×1×3 RHF (`#[ignore]`d, cost unmeasured).
+//!     tri2 1×1×3 RHF (`#[ignore]`d, cost unmeasured). tri2 runs at a
+//!     gradient nucleus exponent of 1e8 on both sides and the looser
+//!     `SC_BAR_P` (p-shell SR-derivative precision floor, see there).
 //! (3) Analytic vs central FD (h = 1e-4) of ferric's OWN k energy, H2 1×1×3,
 //!     both exxdiv (dense and RS-GDF). The prototype's floor is the h²
 //!     truncation (−2.99e-9 on (0,z), Richardson 3e-12) with a pure-AFT h;
@@ -92,6 +94,21 @@ const FD_BAR: f64 = 1e-7;
 const GAMMA_BAR: f64 = 1e-12;
 const GAMMA_BAR_GDF: f64 = 1e-12;
 const SC_BAR: f64 = 1e-12;
+/// Supercell-anchor bar for the p-shell triclinic tri2 1×1×3 case, run at
+/// `SC_P_NUCLEUS_EXPONENT` on BOTH sides (k `KGradConfig` and Gamma
+/// `GammaGradConfig`). With p shells the miss is libint2's SR
+/// attraction-derivative precision floor, not a formula error: the k-mesh
+/// and the supercell evaluate that derivative at different image offsets,
+/// so the integral-precision error does not cancel as it does for s-only
+/// cells (≤ 1e-14). Measured miss vs the gradient nucleus exponent
+/// (2026-09-27, tri2 1×1×3): 1.06e-9 at 1e8, 2.50e-8 at 1e9 (the default
+/// `GRAD_NUCLEUS_EXPONENT`), 1.97e-7 at 1e10 — it tracks the exponent. The
+/// bar sits between the 1e8 floor (1.06e-9) and the smallest mutant miss
+/// (≥ `MUTANT_BAR` = 1e-4).
+const SC_BAR_P: f64 = 5e-9;
+/// Gradient-only Gaussian nucleus exponent for the p-shell supercell anchor
+/// (the smallest measured exponent, hence the lowest measured floor).
+const SC_P_NUCLEUS_EXPONENT: f64 = 1e8;
 const SC_BAR_GDF: f64 = 1e-11;
 const NET_FORCE_BAR: f64 = 1e-10;
 const EWALD_NONE_BAR: f64 = 1e-11;
@@ -434,6 +451,18 @@ fn kg_rhf(
     exx: ExxDiv,
     m: Option<KGradMutation>,
 ) -> KGradient {
+    kg_rhf_nuc(ks, jk, scf, exx, m, None)
+}
+
+/// `kg_rhf` with an explicit gradient nucleus exponent (`None` = default).
+fn kg_rhf_nuc(
+    ks: &KSys,
+    jk: KGradJk<'_>,
+    scf: &KScfResult,
+    exx: ExxDiv,
+    m: Option<KGradMutation>,
+    nuc: Option<f64>,
+) -> KGradient {
     kpoint_rhf_gradient(
         &ks.cell,
         &ks.prep,
@@ -443,7 +472,10 @@ fn kg_rhf(
         jk,
         scf,
         exx,
-        &gcfg(m),
+        &KGradConfig {
+            nucleus_exponent: nuc,
+            ..gcfg(m)
+        },
     )
     .expect("kpoint_rhf_gradient")
 }
@@ -509,31 +541,22 @@ fn gsys(cell: Cell, bs: &BasisSet, precision: Option<f64>, aux: Option<&BasisSet
 }
 
 fn gamma_grad(g: &GSys, scf: &ScfResult, exx: ExxDiv) -> Array2<f64> {
+    gamma_grad_nuc(g, scf, exx, None)
+}
+
+/// `gamma_grad` with an explicit gradient nucleus exponent (`None` = default).
+fn gamma_grad_nuc(g: &GSys, scf: &ScfResult, exx: ExxDiv, nuc: Option<f64>) -> Array2<f64> {
     let restricted = scf.spin == Spin::Restricted;
+    let gc = GammaGradConfig {
+        nucleus_exponent: nuc,
+        ..gamma_gcfg()
+    };
     match (&g.eri, &g.gdf) {
         (Some(eri), _) => {
             if restricted {
-                gamma_rhf_gradient_with(
-                    &g.cell,
-                    &g.prep,
-                    &hcore_cfg(),
-                    &g.hc,
-                    eri,
-                    scf,
-                    exx,
-                    &gamma_gcfg(),
-                )
+                gamma_rhf_gradient_with(&g.cell, &g.prep, &hcore_cfg(), &g.hc, eri, scf, exx, &gc)
             } else {
-                gamma_uhf_gradient_with(
-                    &g.cell,
-                    &g.prep,
-                    &hcore_cfg(),
-                    &g.hc,
-                    eri,
-                    scf,
-                    exx,
-                    &gamma_gcfg(),
-                )
+                gamma_uhf_gradient_with(&g.cell, &g.prep, &hcore_cfg(), &g.hc, eri, scf, exx, &gc)
             }
         }
         (None, Some((auxp, gdf))) => {
@@ -543,27 +566,9 @@ fn gamma_grad(g: &GSys, scf: &ScfResult, exx: ExxDiv) -> Array2<f64> {
                 aux_jac: None,
             };
             if restricted {
-                gamma_rhf_gradient_rsgdf(
-                    &g.cell,
-                    &g.prep,
-                    &hcore_cfg(),
-                    &g.hc,
-                    &src,
-                    scf,
-                    exx,
-                    &gamma_gcfg(),
-                )
+                gamma_rhf_gradient_rsgdf(&g.cell, &g.prep, &hcore_cfg(), &g.hc, &src, scf, exx, &gc)
             } else {
-                gamma_uhf_gradient_rsgdf(
-                    &g.cell,
-                    &g.prep,
-                    &hcore_cfg(),
-                    &g.hc,
-                    &src,
-                    scf,
-                    exx,
-                    &gamma_gcfg(),
-                )
+                gamma_uhf_gradient_rsgdf(&g.cell, &g.prep, &hcore_cfg(), &g.hc, &src, scf, exx, &gc)
             }
         }
         _ => panic!("GSys without J/K"),
@@ -690,11 +695,16 @@ fn one_point_mesh_rsgdf_is_the_gamma_rsgdf_force() {
 /// Dense supercell anchor for an RHF system: k force vs every copy, both
 /// exxdiv, at the unfolded k density; ΣF; ewald ≡ none. Returns the setup,
 /// SCF and the supercell reference forces `[none, ewald]` for the mutants.
+/// `nuc` is the gradient nucleus exponent used on BOTH sides (`None` =
+/// default); `bar` is the supercell-miss bar (`SC_BAR`, or `SC_BAR_P` for
+/// the p-shell case). Pass the same `nuc`/`bar` to `assert_rhf_mutants_fail`.
 fn rhf_supercell_anchor(
     name: &str,
     cell: Cell,
     bs: &BasisSet,
     n: [usize; 3],
+    nuc: Option<f64>,
+    bar: f64,
 ) -> (KSys, KDenseAftEri, KScfResult, [Array2<f64>; 2]) {
     let ks = ksys(cell.clone(), bs, n);
     let eri = kdense(&ks, ANCHOR_PRECISION);
@@ -714,15 +724,18 @@ fn rhf_supercell_anchor(
     let mut refs: Vec<Array2<f64>> = Vec::new();
     let mut fks: Vec<Array2<f64>> = Vec::new();
     for exx in EXX {
-        let fk = kg_rhf(&ks, KGradJk::Dense(&eri), &scf, exx, None);
-        let fsc = gamma_grad(&g, &gscf, exx);
+        let fk = kg_rhf_nuc(&ks, KGradJk::Dense(&eri), &scf, exx, None, nuc);
+        let fsc = gamma_grad_nuc(&g, &gscf, exx, nuc);
         let miss = sc_miss(&fk.grad, &fsc);
         let nsum = max_diff(&copy_sum(&fsc, fk.grad.nrows()), &fk.grad);
         report(&format!("{name} {n:?} {exx:?}"), &fk);
         eprintln!(
             "  {name} {n:?} {exx:?}: max_c |F_k − F_sc(copy c)| {miss:.2e} (N× sum − F_k {nsum:.2e})"
         );
-        assert!(miss <= SC_BAR, "{name} {exx:?}: supercell miss {miss:e}");
+        assert!(
+            miss <= bar,
+            "{name} {exx:?}: supercell miss {miss:e} (bar {bar:e})"
+        );
         assert!(
             fk.net_force <= NET_FORCE_BAR,
             "{name}: ΣF {:e}",
@@ -740,17 +753,21 @@ fn rhf_supercell_anchor(
 }
 
 /// Each mesh mutant must miss the supercell anchor by > MUTANT_BAR (both
-/// exxdiv), GammaMadelung under ewald only (and be blind under none).
+/// exxdiv), GammaMadelung under ewald only (and be blind under none, i.e.
+/// within the case's supercell `bar`). `nuc` MUST be the exponent the
+/// `refs` were computed with in `rhf_supercell_anchor`.
 fn assert_rhf_mutants_fail(
     name: &str,
     ks: &KSys,
     eri: &KDenseAftEri,
     scf: &KScfResult,
     refs: &[Array2<f64>; 2],
+    nuc: Option<f64>,
+    bar: f64,
 ) {
     for m in MESH_MUTANTS {
         for (i, exx) in EXX.into_iter().enumerate() {
-            let f = kg_rhf(ks, KGradJk::Dense(eri), scf, exx, Some(m));
+            let f = kg_rhf_nuc(ks, KGradJk::Dense(eri), scf, exx, Some(m), nuc);
             let miss = sc_miss(&f.grad, &refs[i]);
             eprintln!(
                 "  {name} mutant {m:?} {exx:?}: miss {miss:.2e} (ΣF {:.1e})",
@@ -763,8 +780,8 @@ fn assert_rhf_mutants_fail(
         }
     }
     let m = KGradMutation::GammaMadelung;
-    let fe = kg_rhf(ks, KGradJk::Dense(eri), scf, ExxDiv::Ewald, Some(m));
-    let fn_ = kg_rhf(ks, KGradJk::Dense(eri), scf, ExxDiv::None, Some(m));
+    let fe = kg_rhf_nuc(ks, KGradJk::Dense(eri), scf, ExxDiv::Ewald, Some(m), nuc);
+    let fn_ = kg_rhf_nuc(ks, KGradJk::Dense(eri), scf, ExxDiv::None, Some(m), nuc);
     let (me, mn) = (sc_miss(&fe.grad, &refs[1]), sc_miss(&fn_.grad, &refs[0]));
     eprintln!("  {name} mutant {m:?}: ewald miss {me:.2e}, none miss {mn:.2e} (blind)");
     assert!(
@@ -772,20 +789,22 @@ fn assert_rhf_mutants_fail(
         "{name}: GammaMadelung (ewald) not caught ({me:e})"
     );
     assert!(
-        mn <= SC_BAR,
+        mn <= bar,
         "{name}: GammaMadelung must be blind under none ({mn:e})"
     );
 }
 
 #[test]
 fn h2_1x1x3_force_is_the_supercell_force_on_one_copy() {
-    let (ks, eri, scf, refs) = rhf_supercell_anchor("H2", h2_cell_g(), &pyscf_sto3g_h(), [1, 1, 3]);
-    assert_rhf_mutants_fail("H2 1x1x3", &ks, &eri, &scf, &refs);
+    let (ks, eri, scf, refs) =
+        rhf_supercell_anchor("H2", h2_cell_g(), &pyscf_sto3g_h(), [1, 1, 3], None, SC_BAR);
+    assert_rhf_mutants_fail("H2 1x1x3", &ks, &eri, &scf, &refs, None, SC_BAR);
 }
 
 #[test]
 fn h2_2x2x2_force_is_the_supercell_force_and_trim_mesh_is_blind_to_phase_mutants() {
-    let (ks, eri, scf, refs) = rhf_supercell_anchor("H2", h2_cell_g(), &pyscf_sto3g_h(), [2, 2, 2]);
+    let (ks, eri, scf, refs) =
+        rhf_supercell_anchor("H2", h2_cell_g(), &pyscf_sto3g_h(), [2, 2, 2], None, SC_BAR);
     // BLIND SPOT (FINDINGS Iteration 21): every n_i <= 2 ⇒ every k is a
     // TRIM, D(k) is real and q ≡ −q, so ConjD and WrongQ are algebraic
     // identities. A port validated on such meshes has NOT tested its phases;
@@ -814,9 +833,19 @@ fn h2_2x2x2_force_is_the_supercell_force_and_trim_mesh_is_blind_to_phase_mutants
 #[test]
 #[ignore = "slow (unmeasured): 6-atom s+p supercell SR sum at 1e-14; run with --ignored"]
 fn triclinic_sp_1x1x3_force_is_the_supercell_force_on_one_copy() {
-    let (ks, eri, scf, refs) =
-        rhf_supercell_anchor("tri2 s+p", tri2_cell(), &sp_basis_h(), [1, 1, 3]);
-    assert_rhf_mutants_fail("tri2 1x1x3", &ks, &eri, &scf, &refs);
+    // p shells: SR-derivative precision floor tracks the gradient nucleus
+    // exponent (see SC_BAR_P), so both sides run at 1e8 and the mutants are
+    // compared against references computed at that same exponent.
+    let nuc = Some(SC_P_NUCLEUS_EXPONENT);
+    let (ks, eri, scf, refs) = rhf_supercell_anchor(
+        "tri2 s+p",
+        tri2_cell(),
+        &sp_basis_h(),
+        [1, 1, 3],
+        nuc,
+        SC_BAR_P,
+    );
+    assert_rhf_mutants_fail("tri2 1x1x3", &ks, &eri, &scf, &refs, nuc, SC_BAR_P);
 }
 
 #[test]
