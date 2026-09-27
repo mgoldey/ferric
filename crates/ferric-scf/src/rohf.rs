@@ -52,7 +52,7 @@ static ROHF_TRACE: ferric_core::config::ConfigVar<bool> = ferric_core::config::C
 };
 
 /// Whether the per-iteration ROHF trace is on. Malformed value → warn + off.
-fn rohf_trace() -> bool {
+pub(crate) fn rohf_trace() -> bool {
     ROHF_TRACE.toggle()
 }
 
@@ -228,7 +228,9 @@ pub fn solve_rohf_best_effort(
 ///   `rohf_newton::RohfNewtonInputs { prep, bounds, .. }`) builds its orbital
 ///   Hessian response from MOLECULAR J/K integrals, which would be wrong for
 ///   the injected (periodic) operator. (`newton_trigger`, the other
-///   `rohf_newton` user, is already refused by [`validate_injected`].)
+///   `rohf_newton` user, is already refused by [`validate_injected`].) The
+///   injected path's second-order solver is
+///   [`crate::rohf_trah::solve_rohf_injected_second_order`] instead.
 ///
 /// Checked after the RHF list, so a config that sets both reports the RHF
 /// field.
@@ -1396,7 +1398,7 @@ fn gradient_block_maxima(
 /// Build ROHF α/β densities from MO coefficients:
 ///   D_β = Σ_{i<nocc_double} C_i C_i^T
 ///   D_α = D_β + Σ_{j∈open} C_j C_j^T
-fn build_rohf_densities(
+pub(crate) fn build_rohf_densities(
     c: &Array2<f64>,
     nocc_double: usize,
     nocc_open: usize,
@@ -1598,7 +1600,7 @@ fn rohf_guess_mos(
 /// not a silent hcore fallback: on the injected path the builders ARE the
 /// integrals.
 #[allow(clippy::too_many_arguments)]
-fn injected_rohf_guess_mos(
+pub(crate) fn injected_rohf_guess_mos(
     j: &mut dyn JBuilder,
     k: &mut dyn KBuilder,
     d_total: &Array2<f64>,
@@ -1632,7 +1634,7 @@ fn injected_rohf_guess_mos(
     Ok(c)
 }
 
-fn roothaan_fock(
+pub(crate) fn roothaan_fock(
     f_a: &Array2<f64>,
     f_b: &Array2<f64>,
     d_a: &Array2<f64>,

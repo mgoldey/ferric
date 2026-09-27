@@ -3604,6 +3604,8 @@ triplet, staged ewald start, core guess: level shift 0 / 0.05 / 0.1, max_iter 60
 −0.5729 / −0.5494 / −0.5532, both exxdiv; the none stage is where it fails). PySCF ROHF: −0.581222768976 (none). Unlike
 PBE0 (a = 0.25), the small shift does not rescue full exchange here. The open item stands; the remaining remedy is a
 second-order (AH/Newton) orbital step on the injected path (new code: the molecular ROHF Newton rebuilds molecular J/K).
+-> Python prototype 2026-09-27: Iteration 24 (TRAH on the exact injected-path Hessian converges it; root cause is the
+F_eff-aufbau occupation rule).
 
 ## Iteration 21 (Python, k-point RHF/UHF forces) — 2026-09-25
 
@@ -4323,3 +4325,450 @@ Where the libecpint VALUE error lives:
   than ~1e-5 relative. The per-triple test now asserts only the ≥ 1 Bohr band at h = 1e-3, bar 1e-5 relative
   (measured 3.6e-6); nearer bands are reported only. The derivative itself is refereed by the quadrature numbers
   above, the per-atom fold (1.07e-14 vs libecpint molecular) and the SCF-FD force anchor.
+
+## Real-size benchmark — diamond_prim 2x2x2 k-mesh (2026-09-27, 1 thread, serial k path, load ~2-7)
+cc-pVDZ / cc-pvdz-ri, k-RHF, exxdiv ewald:
+| code | E (Ha/cell) | wall | peak RSS |
+|---|---|---|---|
+| ferric (serial k path) | −75.6961792415 | 388.3 s | 313 MB |
+| PySCF KRHF GDF p1e-12 | −75.6961792418 | 109.1 s | 287 MB |
+Agreement 3e-10; ferric 3.6x slower (Gamma: 5.9x). ferric stages: k J/K build (KRsGdf) 326.9 s, k hcore 60.4 s,
+k SCF 1.0 s — both big stages serial; the k-point parallelisation (in progress) targets them.
+
+## Iteration 24 (Python, second-order ROHF on the injected path) — 2026-09-27
+Open items: "Gamma ROHF on the triclinic triplet does not converge" and "tri ROHF with the ROKS-hybrid level shift".
+All numbers below are Python (numpy replica level), not Rust.
+
+### Code
+- `pbc_rohf_newton.py`. `Injected` holds only what ferric's injected ROHF/ROKS path already has: S, h, E_nn, a, v_M,
+  `jk(D) -> (J, K)` for any symmetric AO density, and the polarized XC builder. The XC response is a central FD of the
+  XC builder (step 1e-4/max|δD|). `Point` computes the exact gradient and the exact Hessian-vector product of
+  E(C e^κ) at κ = 0 (derivation in the docstring). Packing and sign conventions are ferric's (`rohf_newton.rs`:
+  vc | vo | oc, κ[p,q] with p the less-occupied index, Cayley rotation). `trah` implements ferric `crate::trah`
+  semantics (radius0 0.4; Fletcher 0.7/1.2 at ρ 0.25/0.75; reject at ρ < 0; α search on log α in [1, 1000]).
+  Differences from `crate::trah`: one Davidson subspace is shared across all α and all re-solves of a macro
+  iteration, and a rejected step is re-solved at once from the same point with no extra J/K. `ferric_ah_mirror`
+  reproduces the molecular `rohf.rs` AH branch as written. `ferric_hvp` mirrors `rohf_newton::hessian_matvec`.
+- `run_rohf_newton.py {derivs|anchor|target|trapped|occ|mirror|diis|pbe0|all}`. Predictions P0–P3 and artifact
+  hypotheses A1–A5 are in its docstring and were written before any TRAH run. Systems: H3 doublet (cubic a = 4.5,
+  STO-3G, (nd, no) = (1, 1)) and tri 4H s+p triplet (16 AOs, (1, 2), 41 parameters), dense pure-AFT. Tri integrals
+  and the SSF (75, 302) grid come from `roks_replica.tri_setup()`. The full run takes about 1 min and `pbe0` about
+  3 min on 1 thread (OMP/OPENBLAS = 1).
+
+### Measured
+**P0 derivatives** (random non-stationary point, h = 1e-4). Every |FD − analytic| is at the FD floor:
+
+| system | g·x vs FD | true/packed gradient (vc, vo, oc) | yᵀHx vs 4-pt FD | H asym | max\|2·H_ferric x − H x\| |
+|---|---|---|---|---|---|
+| H3 ROHF ewald | 3.8e-9 | 1.9999993, 1.99999999, 1.99999999 | 4.5e-9 | 1e-16 | 4.1e-2 |
+| H3 ROKS PBE0 ewald | 5.5e-10 | 2.0000000, 1.99999996, 2.0000000 | 5.7e-6 | 3e-10 | 1.2e-1 |
+| tri ROHF ewald | 2.0e-9 | 1.99999998, 1.99999999, 1.99999999 | 3.0e-9 | 4e-16 | 3.9e-1 |
+| tri ROKS PBE0 none | 1.8e-10 | 2.00000002, 1.99999999, 1.99999998 | 4.6e-7 | 5e-11 | 1.6e-1 |
+
+The true orbital gradient is EXACTLY 2 × ferric's packed `gradient_blocks` in each of the three blocks. So
+`rohf_ah.rs`'s stated reason for keeping ROHF off `crate::trah` ("no single scalar exists for this three-block
+packing") is FALSE: the scalar is 2 in every block. ferric's diag-Fock Hessian differs from the exact one by
+O(off-diagonal f), not by a factor.
+
+**P1 anchors** (TRAH from the core guess vs the DIIS replica):
+
+| case | DIIS it | TRAH macro / Fock / hvp / jk calls | E − DIIS | overlaps (closed, open) | min eig H |
+|---|---|---|---|---|---|
+| H3 ROHF none | 8 | 4 / 4 / 9 / 26 | −6.7e-16 | (1, 1) | +0.4931 |
+| H3 ROHF ewald | 9 | 4 / 4 / 9 / 26 | 0 | (1, 1) | +0.4931 |
+| H3 ROKS PBE0 none | 9 | 4 / 4 / 9 / 26 | +2.2e-16 | (1, 1) | +0.4160 |
+| tri ROKS PBE0 none (DIIS ls 0.05) | 171 | 5 / 5 / 34 / 78 | +4.4e-16 | (1, 2) | +0.0693 |
+
+The tails are quadratic (H3: max|g| 5e-2 → 5.7e-4 → 1.4e-6 → 1e-12), and ρ → 1.000. For tri PBE0 none over the
+core start + 9 rotated starts (t = 1e-6/1e-2/1e-1 × 3 seeds), TRAH reached the pin 10/10 in 5–7 macro iterations
+(78–130 jk calls), E − pin = −1e-13. The DIIS replica needed 97–515 iterations with the 0.05 shift.
+
+**P2 target, tri ROHF (a = 1, zero XC).** DIIS replica baseline, 600 iterations: none of ls 0 / 0.05 / 0.1
+converges. Tail-50 E is [−0.5768, −0.5202] / [−0.5798, −0.5122] / [−0.5807, −0.5059] and err 1e-2..1.8e-1, which
+reproduces the Rust open item. TRAH, core guess:
+
+| run | conv | macro / Fock / hvp / jk | rejects | E | E − PySCF | labels (F_eff order) | gaps α, β (occ-aware) | min eig H |
+|---|---|---|---|---|---|---|---|---|
+| none, core | yes | 8 / 8 / 62 / 140 | 0 | −0.581222768977 | −1.26e-12 | D S **V S** V… | +0.0259, +0.6000 | +0.1231 |
+| ewald, staged from none | yes | 1 / 1 / 0 / 2 | 0 | −1.826096526950 | −1.01e-12 | D S S V… | +0.6483, +1.2223 | +0.1231 |
+| ewald, core direct | yes | 8 / 8 / 77 / 170 | 0 | −1.826096526950 | −1.01e-12 | D S S V… | | +0.1231 |
+
+None trace: max|g| 1.0e-1, 1.6e-2, 1.3e-2, 3.6e-2, 2.2e-3, 2.0e-4, 2.3e-7, 1.4e-12. Every accepted step has
+ρ 0.26–1.06, and the last three are 1.02, 1.0013, 1.0000. ewald − none = −1.244873757973 = −v_M N/2 to all digits
+shown. The second-lowest Hessian eigenvalue is 0.795. P2 HOLDS except for one detail: the "aufbau labels DSSV"
+prediction is wrong for none (see below).
+
+**Why DIIS cannot converge here (occ).** At the PySCF minimum (none), the Roothaan F_eff eigenvalues are:
+
+| # | label | ε(F_eff) | mo_ea | mo_eb |
+|---|---|---|---|---|
+| 0 | D | −0.185319 | −0.269107 | −0.101531 |
+| 1 | S | +0.381044 | +0.263755 | +0.498332 |
+| 2 | V | +0.966763 | +0.929061 | +1.004465 |
+| 3 | S | +1.049073 | +0.902965 | +1.195181 |
+
+A virtual lies BELOW the second open orbital in the Guest–Saunders F_eff spectrum. ferric fills by F_eff aufbau, so
+the minimum is not a fixed point of ferric's Roothaan map, and no DIIS or shift setting can converge to it.
+PySCF's `_fill_rohf_occ` fills the closed shell by ε(F_eff) but the open shell by the lowest **mo_ea = cᵀF_a c**
+among the rest (0.903 < 0.929). Applied to these eigenvectors, it reproduces the state: overlaps (1, 2) to 1e-12.
+That is why PySCF converges. With ewald, the Madelung term lowers both open levels (S at 0.070 / 0.738), so the
+state is aufbau.
+- ferric's DIIS replica with ONLY the occupation rule swapped for PySCF's (NOT ferric, a candidate fix), core + 9
+  rotated starts: none converges **10/10 to PySCF** in 34–158 iterations; ewald converges **10/10 to the trapped
+  −1.810787564982** in 15–18 iterations.
+- The same swap on tri ROKS PBE0 none (the Roothaan-repelling case): 4/10 reach the pin, 2/10 converge to the
+  −1.44347 hole state (+2.2e-2), and 4/10 hit MaxIter at 200. TRAH gets 10/10 there. So the occupation rule is a
+  cheap first-order fix for the ROHF none stage, but it does not cure the repelling map.
+
+**Local minima (A3; A1 partly).** TRAH from rotated starts: t = 1e-6 gives 3/3 at PySCF; t = 1e-2 gives 1/3 at
+PySCF and 2/3 at +1.5309e-2; t = 1e-1 gives 0/3 at PySCF and 3/3 at +1.5309e-2. All converged (6–8 macro,
+≤ 1 reject).
+
+| state | E none / ewald | max\|g\| | min eig H | gaps α, β | F_eff labels (none / ewald) |
+|---|---|---|---|---|---|
+| PySCF minimum | −0.581222768977 / −1.826096526950 | 1e-12 | +0.1231 | +0.026, +0.600 (none) | DSVS / DSSV |
+| second minimum | −0.565913807009 / −1.810787564982 | 2e-12 | +0.0297 | **−0.0093**, +0.570 (none) | DSVS / DSSV |
+
+The prototype's "trapped" ewald state −1.810787564982 is a GENUINE local minimum of the ROHF energy (H positive
+definite, g = 1e-12), not a solver artifact. The same density at exxdiv none is also a minimum, and its α
+occupation-aware gap is negative. A ROHF minimum need not be per-spin aufbau. That state is a fixed point of
+NEITHER occupation rule: the PySCF-filled Roothaan eigenvectors there are a different determinant, 3.6e-2 away.
+ferric's F6 witness at this state: the best unrelaxed swaps are +0.164 (α open→virtual 2↔3) and +0.649 (β
+closed→open) ABOVE the state, so the witness would certify it. TRAH relaxed from either swap reaches PySCF's
+minimum in 6 / 9 macro iterations. A1 (non-aufbau) and A2 (saddle) do not occur for the TRAH core-guess result. A5
+(below PySCF) does not occur either; the −1.3e-12 is the construction gap.
+
+**P3 mirror of the molecular AH branch** (DIIS, then from it > 3 and err_max < ah_trigger: diagonalize F_eff,
+aufbau, stale-Fock gradient in that basis, diag-Fock Hessian AH, clip 0.2, no energy test):
+
+| case | conv | AH steps | end state |
+|---|---|---|---|
+| tri ROHF none, ah_trigger 1e-2 | no, 300 it | 1 (err rarely < 1e-2) | tail-50 E [−0.5754, −0.5158], max\|g\| 1e-2..1.6e-1 |
+| tri ROHF none, ah_trigger 1.0 | no, 300 it | 297 | stuck at E ≈ −0.47, max\|g\| 0.23–0.24 |
+| H3 ROHF none, ah_trigger 1e-2 | yes, 19 it | 15 | −0.540157302635 |
+
+Lifting the injected-path refusal of the existing AH branch would NOT fix the open item. The branch re-enters
+through the F_eff diagonalization and aufbau fill on every iteration, and that step is what fails. The Hessian
+approximation is not the problem: at the minima, in the Roothaan-canonical basis, 2·H_ferric has lowest
+eigenvalue +0.1252 vs exact +0.1231 (tri ROHF), +0.0668 vs +0.0693 (tri PBE0) and +0.0344 vs +0.0297 (second
+minimum), with element errors 0.05–0.15.
+
+### Interpretation (provisional, 2026-09-27; Python only; H only, ≤ 16 AOs, one triclinic and one cubic cell, dense AFT, a = 1 and PBE0)
+- The tri ROHF open item is an OCCUPATION problem, not just a convergence-rate problem. PySCF's minimum is not
+  F_eff-aufbau at exxdiv none. The staged ewald start makes it worse: none is the stage that cannot converge, and
+  ewald from the core guess falls into a genuine second minimum 15.3 mHa up.
+- A second-order step on the exact injected-path gradient and Hessian, taken from the CURRENT orbitals with no
+  diagonalization or aufbau step, converges from the core guess to PySCF (−1.26e-12) in 8 macro iterations
+  (140 jk calls ≈ 70 Fock-equivalents). The result is a true minimum (λ_min 0.123), and the ewald stage follows in
+  1 iteration. It also fixes the ROKS PBE0 repelling case (10/10, 5–7 macro, vs 97–515 shifted-DIIS iterations).
+- TRAH is start-dependent between two minima; the energy is what decides between them. A certification witness
+  must RELAX its swap candidates: unrelaxed swaps sit above the trapped minimum, and relaxed ones descend below it.
+
+### For the Rust port (ferric-scf `rohf.rs` / `rohf_newton.rs` / `rohf_ah.rs` / `trah.rs`)
+1. **The one callback the injected ROHF needs.** A linear response closure, e.g.
+   `type OrbitalResponse<'a> = dyn Fn(&Array2<f64>, &Array2<f64>) -> Result<(Array2<f64>, Array2<f64>), FerricError> + Sync + 'a`,
+   mapping (δD_α, δD_β) → (δF_α, δF_β) with
+   δF_σ = J[δD_α + δD_β] − a (K[δD_σ] + v_M S δD_σ S) + δV_xc^σ.
+   - On the injected path, build it from the SAME `PeriodicInjection` J/K builder that makes the Fock matrix.
+     δD is symmetric but indefinite and not idempotent. The dense-AFT and RS-GDF contractions are linear, so they
+     accept it; check that no density-magnitude screen assumes a PSD D.
+   - The Madelung term acts on δD (exact-exchange part only, per spin).
+   - δV_xc can be a central FD of `XcBuilder::build_polarized` (2 XC builds per matvec; 1e-4/max|δD| gave H
+     symmetric to 1e-7..1e-10 and quadratic convergence) or a periodic f_xc kernel. The FD needs no new code.
+   - On the molecular path, the same closure wraps `build_jk_with_pool` + `FxcKernelStore`. `RohfNewtonInputs` then
+     drops `prep`/`bounds`/`thresh`/`ooc_budget` for `response: &OrbitalResponse`, and both paths share
+     `hessian_matvec`.
+2. **Take the step from the current C.** Use the orbitals whose density built F_α/F_β, not
+   `diagonalize(f_eff)` + `guard.relabel`. The mirror shows that pre-diagonalization re-imports the aufbau failure.
+   The C loop becomes: Fock at C → g → TRAH step → C·U → Fock (ρ from that energy). There is no F_eff and no
+   occupation choice after the guess.
+3. **Exact Hessian.** `hessian_matvec` keeps only the per-spin Fock diagonals. The exact form adds the full
+   `½[n,[f,X]] + ½[[X,n], f]` MO algebra (G2 in `pbc_rohf_newton.py`), which costs O(n³) per matvec and no J/K.
+   Measured: exact = 2 × (ferric 2e part) + Fock commutator terms. With it, g_true = 2·`gradient_blocks` and
+   H_true feed `crate::trah::solve_trust_region` unchanged. ρ is then a true energy ratio (measured
+   1.0013 → 1.0000 at the tail). Correct the `rohf_ah.rs` doc: the scalar is 2 in all three blocks.
+4. **Trigger.** TRAH from iteration 1 (core guess) worked on every case here. A conservative wiring is TRAH as the
+   injected-path fallback when DIIS has not reduced err_max within N iterations, or opt-in via `trah_trigger`
+   (currently refused by `validate_injected`). Iteration counts to pin: tri ROHF none 8 macro / 62 hvp,
+   tri PBE0 none 5 / 34, H3 4 / 9.
+5. **Occupation rule (independent, cheap).** Adopting PySCF's open-shell fill (lowest cᵀF_α c among the non-core
+   orbitals) in `rohf_occupation` makes plain DIIS converge the tri ROHF none stage (10/10, 34–158 it). It does not
+   fix PBE0 (4/10), and in ewald it converges to the second minimum (10/10). It is not a substitute for (1)–(4).
+6. **Witness.** The F6 swap witness compares UNRELAXED swapped determinants, and it would certify the second
+   minimum (swaps +0.16/+0.65 above it). A relaxed probe (a few TRAH macro iterations from each swap, accepted if
+   lower) escapes to PySCF's minimum in 6–9 macro iterations. If certification matters, the witness should relax
+   its candidates.
+7. **Regression tests to add** (Rust, after the port): tri ROHF none core guess → −0.581222768976 (≤ 1e-9); staged
+   ewald → −1.826096526949; λ_min(H) > 0 at the result. Mutation checks: pre-diagonalized basis (expect no
+   convergence); diag-only Hessian (expect a linear tail / ρ ≠ 1); packed g without the factor 2 (expect ρ ≈ 2 or
+   0.5 and rejections). Un-ignore the two tri ROHF tests in `pbc_rohf.rs`.
+- Raw logs are in the session scratchpad, not committed. Rerun with
+  `OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 python3 run_rohf_newton.py all` (about 1 min) + `pbe0` (about 3 min).
+k-point parallel (commit 49184b19), same cell, 6 threads, load 7.6-9.2 (other sessions — provisional): 193.2 s wall /
+918.9 s CPU (2.0x vs 388.3 s serial); k J/K build 160.2 s (327 → 160), k hcore 32.0 s (60 → 32); E −75.69617924150705
+bitwise equal to serial. Peak RSS 314 MB.
+
+## Iteration 23 (Python, RS-GDF range split) — 2026-09-27
+Prototype of the performance plan's item 8 (the range split, V4s). Python/NumPy/PySCF-molecular only, no cargo. Box
+load 1.5-3.5 from other sessions; every run was single-threaded (OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1); peak RSS
+≤ 1.4 GB. The Python wall times below are NOT cost claims.
+
+### Code
+- `pbc_gdf_split.py` (new, on top of `pbc_gdf.py`):
+  - `piece_mol(mol, keep)`: an exact, linear partition of a BUILT mol into primitive pieces. It uses the same
+    normalised libcint coefficients and keeps the AO layout, so a piece that keeps every primitive is bit-for-bit the
+    original shell.
+  - `Criterion(w, lam, a_orb, a_aux)`.
+  - `build_gdf_split(cell, aux, w, prec, lam|crit, split_metric, g0='B'|'A', reference, mutant, ref_cache)`. With
+    `reference=True` it also computes the UNSPLIT J2/J3/B in the same run, plus the per-block parts.
+  - `count_sr3_ferric(obs, aux, lat, w, prec, crit, mode='trim'|'twocall'|'pieces')`: EXACT enumeration of ferric's
+    SR 3-centre and SR 2-centre rule (rsgdf.rs `pair_bound` + `sr_radius` + segment test, zero-coefficient primitives
+    kept), for the unsplit and the split build.
+- `run_gdf_split_anchor.py {anchor0|span|tri [parts]|diamond <basis> [w]|neg <tri|dsto>|exactG <tri|dsto>|counts|wsweep}`.
+  PySCF pbc is used only for the diamond hcore and E_nn, which are common to both sides of every comparison.
+
+### Criterion (design)
+Split every shell exactly by primitive exponent: χ = χ^c + χ^s with χ^s the primitives a ≤ a_s = λω²/2, and
+X = X^c + X^s with X^s the primitives α ≤ α_s = λω². A pair then splits as χχ = [cc + cs + sc] + ss.
+- **Moved to G space:** (any pair | X^s) and (ss pair | X^c). At λ ≤ 1, every moved PRIMITIVE combination has
+  1/p + 1/α ≥ 1/ω², so its product FT decays at least as fast as e^{−G²/4ω²}, the LR kernel factor that already sets
+  ferric's gcut = 2ω√ln(1/prec). **No new G vectors.** Each of the two conditions is sufficient on its own. This is
+  PySCF's structure: `exclude_d_aux` + `fft_dd_block`, with `_RangeSeparatedCell` compact/smooth decontraction, and
+  only (C|CC), (C|CD), (C|DC) in real space.
+- **Kept in real space (SR erfc):** (cc + cs + sc | X^c), realised three ways (counted below):
+  - `trim`: one call per original (μ, ν, P) with the ss primitive pairs removed from the ket ShellPair.
+  - `twocall`: (χ, χ^c | X^c) + (χ^c, χ^s | X^c), two ordinary contracted calls with no libint change. This is
+    what `_sr3` computes.
+  - `pieces`: fully decontracted c/s shells.
+- **Formula:**
+  J3 = SR_real[kept] + (1/Ω)Σ_{G∈sphere, incl. 0} v_SR(G) Re[P̄ X_s + P̄_ss X_c] + (1/Ω)Σ_{G≠0} v_LR Re[P̄ X] − c0 S q,
+  with v_SR = 4π/G²(1 − e^{−G²/4ω²}) and v_SR(0) = π/ω².
+- **G = 0 (grouping B, the default):** the moved block carries its own SR G = 0 term c0 (S q_s + S_ss q_c), and the ONE
+  existing subtract (c0 S q) is unchanged. S_ss is the lattice overlap of the smooth pieces from the 1e integrals,
+  NOT the pair FT at G = 0 (P_ss(0) − S_ss = 5.9e-12 STO-3G, 1.5e-10 cc-pVDZ).
+- **G = 0 (grouping A, PySCF `gen_j3c_loader` vbar; recommended for Rust):** the moved blocks take the full 4π/G² at
+  G ≠ 0 and no G = 0 term. The one subtract gets the KEPT inputs: J3 −= c0 (S − S_ss) q_cᵀ and J2 −= c0 q_c q_cᵀ.
+  It is the same algebra: A − B measured 6.7e-16 (J2) / 2.5e-16 (J3). With nothing moved, S_ss = 0 and q_c = q, so
+  A is bit-identical to today.
+- **Metric (`split_metric=True`, PySCF `get_2c2e` does the same):** (P^c|Q^c) stays SR real space; the rest,
+  v_SR[X X^† − X_c X_c^†] incl. G = 0, goes to G space. Equivalently: full kernel on (X, X) minus v_SR on (X_c, X_c).
+
+### Predictions (written in run_gdf_split_anchor.py's docstring before the runs)
+Seen first:
+- H2 λ = 0 was bitwise; λ = 1 gave max|ΔJ3| 5.5e-12.
+- The counter reproduced ferric's STO-3G counters exactly.
+
+Predictions:
+- P1: λ = 0 bitwise.
+- P2: λ = 1 gives |ΔJ3|, |ΔJ2| ≤ 1e-10 and |ΔE| ≤ 1e-9.
+- P3: the residual shrinks with prec.
+- P4: flat for λ ≤ 1, then rising like prec^{1/λ}: λ = 2 ~ 1e-7, λ = 4 ~ 1e-4..1e-3.
+- P5: ω-independent to ≤ 1e-9.
+- P6: the exact-span anchor is ≤ 1e-10 with nothing moved and with everything moved.
+- P7: every mutant misses by ≥ 1e-6 (no_g0 ~ 1e-2..1).
+- P8: diamond |ΔE| ≤ 1e-9.
+- P9: counts: λ = 0 equals unsplit exactly; ratio 0.10–0.15 at ω = 1; 0.01–0.02 at ω = 2; pieces > trim.
+
+Artifact hypothesis: a partition error is O(block), does not shrink with prec and moves with ω. A correct split
+leaves a residual that shrinks with prec and is flat in λ ≤ 1.
+
+### Measured (raw)
+Δ = split − unsplit, both from the same run, same ranges, same G sphere. "blk" = |(R_full − R_kept) − moved3|: the
+moved block's real-space sum against its G-space evaluation. prec 1e-13, lindep 1e-10, spherical aux, cartesian orbitals.
+
+**Anchors.** λ = 0 (grouping B and A) vs `pbc_gdf.build_gdf`: J2, J3, B BITWISE equal on H2/STO-3G and tri s+p with
+cc-pvdz-ri (P1). The exact-span anchor is H2 with one s primitive (a = 0.5) and the 24 pair-product aux (α = 1).
+Fitted ERI and E vs the pure-AFT exact I:
+
+| ω | moved | max\|ΔI\| | ΔE |
+|---|---|---|---|
+| 0.8 | nothing | 8.7e-13 | −6.1e-13 |
+| 1.0 | everything | 6.1e-16 | 1.1e-16 |
+| 1.2 | everything | 2.5e-16 | 0 |
+| 1.0 MUTANT no_g0 (moved blocks lose their SR G = 0 term) | | 7.4e-4 | −5.7e-4 |
+| 1.0 MUTANT both (moved block also left in real space) | | 5.7 | 4.5 |
+| 1.2 MUTANT no_g0 / both | | 7.4e-4 / 2.9 | −5.7e-4 / 2.3 |
+
+The no_g0 miss is the SAME at ω = 1 and 1.2 although c0 ∝ 1/ω². The mutant's J2 has one large NEGATIVE eigenvalue
+(−18.3 at ω = 1, −12.7 at ω = 1.2, along ~q). The absolute lindep cut silently DROPS it (24 → 23 kept), which makes
+the miss c0-independent. double_ss_s equals both here by construction: everything is smooth.
+
+**tri s+p (H s 3.43/0.62/0.169 + p 0.8, cc-pvdz-ri, 16 AO / 56 aux), ω = 1 unless noted:**
+
+| case | moved aux shells /24 | smooth orb prims /16 | max\|ΔJ3\| | max\|ΔJ2\| | max\|ΔERI\| | ΔE (Ha) |
+|---|---|---|---|---|---|---|
+| λ = 0.5 | 4 | 4 | 1.35e-12 | 6.29e-12 | 1.57e-12 | −2.3e-14 |
+| λ = 1 | 8 | 4 | 1.35e-12 | 6.29e-12 | 1.56e-12 | −1.9e-14 |
+| λ = 1.5 | 16 | 8 | 1.35e-12 | 6.29e-12 | 1.61e-12 | −8.7e-15 |
+| λ = 2, 3, 4 (identical moved sets) | 20 | 12 | 5.14e-11 | 1.23e-10 | 1.13e-11 | −1.7e-13 |
+| NEG orbital all (aux λ = 1) | 8 | 16 | 3.88e-7 | 6.29e-12 | 8.6e-8 | −5.4e-8 |
+| NEG aux all / everything | 24 | 4 / 16 | 3.88e-7 | 3.20e-6 | 5.1e-8 | −2.6e-8 |
+| prec 1e-11 | 8 | 4 | 7.94e-11 | 6.29e-12 | 2.6e-11 | −9.4e-13 |
+| prec 1e-15 | 8 | 4 | 8.96e-13 | 6.29e-12 | 1.56e-12 | −4.1e-14 |
+| ω = 0.7 / 1.4 | 4 / 20 | 4 / 12 | 1.43e-12 / 1.34e-12 | 4.27e-12 / 4.01e-12 | 6.2e-13 / 7.7e-13 | 1.5e-14 / −7.3e-15 |
+| metric unsplit (J3 split only) | 8 | 4 | 1.35e-12 | 0 | 3.8e-13 | 1.6e-15 |
+| MUTANT no_g0 | | | 0.478 | 3.31 | 2.5e-2 | +3.4e-3 (55/56 kept) |
+| MUTANT both | | | 0.726 | 6.3e-12 | 183 | +402.1 |
+| MUTANT double_ss_s (ss × X^s in both G terms) | | | 0.178 | 6.3e-12 | 18.4 | SCF does not converge |
+
+E_split(ω = 0.7 / 1.0 / 1.4) = −1.0784382254157978 / …7934 / …7792: spread 1.9e-14. blk is within 1.0–1.3× of
+ΔJ3 in every row (e.g. 1.48e-12 at λ = 1, 9.3e-11 at prec 1e-11).
+
+**Independent construction for the moved rows/columns** (`exactG`). J2[P_s, :] and J3[:, P_s] as pure-G sums of the
+G = 0-dropped kernel on |G| ≤ 17, where the tail is ≤ e^{−72}. Neither build is the reference:
+
+| cell | J2 rows: split / unsplit | J3 cols: split / unsplit |
+|---|---|---|
+| tri s+p | 3.6e-15 / 6.29e-12 | 5.6e-16 / 1.35e-12 |
+| diamond_prim STO-3G | 4.0e-14 / 1.15e-10 | 4.8e-14 / 4.0e-12 |
+
+The whole Δ is the UNSPLIT side. Its metric error is SR-radius independent: a single diffuse s aux (α 0.2068, q 12.9)
+per C on diamond gives 3.2e-11 vs pure G at R = 20 / 26 / 32 / 40 Bohr (561…3943 images). libcint's erfc (s|s) vs the
+closed form q²(erf(ηd) − erf(νd))/d differs by up to 6.5e-13 on values ≤ 2.9, i.e. ~2e-13 relative per integral. So
+it is an integral-accuracy floor summed over the lattice, not truncation.
+
+**diamond_prim, cc-pvdz-ri, ω = 1** (h, E_nn from PySCF pbc cart, common to both):
+
+| basis (cart) | pair images / aux images | moved aux shells /36, smooth orb prims | max\|ΔJ3\| | max\|ΔJ2\| | blk | ΔE (exxdiv none) | hybrid ΔE: split J3 + unsplit J2 / unsplit J3 + split J2 | E ewald split / unsplit |
+|---|---|---|---|---|---|---|---|---|
+| STO-3G (10 AO) | 411 / 345 | 16, 4 | 1.73e-12 | 3.20e-11 | 4.0e-12 | 2.62e-10 | −1.2e-11 / +2.73e-10 | −74.0034040288 / −74.0034040291 |
+| cc-pVDZ (30 AO) | 665 / 387 | 16, 10 | 6.67e-11 | 3.20e-11 | 8.3e-11 | 2.73e-10 | not run | −74.9764942389 / −74.9764942391 |
+
+- Reference numbers for the ewald column: ferric (libint, unsplit) STO-3G −74.0034040288; PySCF GDF p1e-12
+  −74.0034040291 (benchmark preflight). ferric cc-pVDZ −74.9757090070 is a SPHERICAL basis, so it is not comparable
+  (7.9e-4 = 6d vs 5d).
+- ΔJ2 is identical in both rows: it depends on the aux basis only.
+- Build times (split + unsplit reference): 163 s and 1553 s.
+
+**Negative controls, diamond_prim STO-3G** (`neg dsto`; moved aux / smooth orb prims):
+
+| case | max\|ΔJ3\| | max\|ΔJ2\| | ΔE |
+|---|---|---|---|
+| λ = 1 (16/4) | 1.7e-12 | 3.2e-11 | 2.6e-10 |
+| λ = 2 (20/8) | 9.6e-10 | 1.03e-8 | 1.3e-9 |
+| λ = 4 (24/8) | 4.9e-6 | 1.0e-5 | −8.1e-8 |
+| orbital all (aux λ = 1) | 6.7e-2 | 3.2e-11 | −0.314 |
+| aux all / everything | 6.7e-2 | 3.4e-2 | −0.266 |
+
+**SR triplet counts, ferric's exact rule** (`count_sr3_ferric`; diamond_prim):
+- Calibration against ferric's own counters, EXACT:
+  - STO-3G/cc-pvdz-ri: SR3 16023080, SR2 159064.
+  - STO-3G/def2-universal-jkfit: SR3 29870042, SR2 634162.
+  - cc-pVDZ/cc-pvdz-ri: SR3 197033528.
+- λ = 0 equals unsplit exactly in all 8 (basis, aux, ω) cases.
+- Ratios below are vs the unsplit at the SAME ω.
+
+| orbital / aux | ω | unsplit SR3 | trim | twocall | pieces | SR2 unsplit → split |
+|---|---|---|---|---|---|---|
+| STO-3G / cc-pvdz-ri | 1 | 16,023,080 | 2,835,560 (0.177) | 4,805,176 (0.300) | 5,379,356 (0.336) | 159,064 → 17,288 (0.109) |
+| | 2 | 13,044,272 | 474,412 (0.036) | 695,452 (0.053) | 700,012 (0.054) | 119,084 → 1,824 |
+| STO-3G / jkfit | 1 | 29,870,042 | 3,933,122 (0.132) | 6,630,874 (0.222) | 7,417,758 (0.248) | 634,162 → 35,166 (0.055) |
+| | 2 | 25,562,366 | 499,580 (0.020) | 731,644 (0.029) | 738,164 (0.029) | 541,978 → 2,028 |
+| cc-pVDZ / cc-pvdz-ri | 1 | 197,033,528 | 28,866,504 (0.147) | 35,921,128 (0.182) | 37,877,816 (0.192) | 159,064 → 17,288 |
+| | 2 | 167,683,664 | 2,757,244 (0.016) | 3,495,540 (0.021) | 3,501,412 (0.021) | 119,084 → 1,824 |
+| cc-pVDZ / jkfit | 1 | 346,322,792 | 39,414,528 (0.114) | 49,073,648 (0.142) | 51,799,312 (0.150) | 634,162 → 35,166 |
+| | 2 | 303,748,168 | 2,878,820 (0.0095) | 3,649,276 (0.012) | 3,652,040 (0.012) | 541,978 → 2,028 |
+
+Against the performance plan's estimates (cc-pVDZ/jkfit):
+- V0 3.46e8 measured 3.463e8.
+- V4s 3.29e7 (0.095) vs trim 3.94e7 (0.114), i.e. 1.20× the estimate. The estimate also carried the V3 envelope (0.80×).
+- ω = 2: 2.57e6 vs 2.88e6 (1.12×).
+- Within the plan's 30% surprise bar.
+
+ω sweep, cc-pVDZ/cc-pvdz-ri, ratios vs the ω = 1 unsplit:
+
+| ω | half-G (gcut 2ω√ln 1e13) | unsplit | trim | twocall |
+|---|---|---|---|---|
+| 0.7 | 280 | 1.213 | 0.308 | 0.385 |
+| 1.0 | 843 | 1.000 | 0.147 | 0.182 |
+| 1.4 | 2322 | 0.903 | 0.026 | 0.033 |
+| 2.0 | 6769 | 0.851 | 0.014 | 0.018 |
+
+### Interpretation (provisional, 2026-09-27; two toy cells + diamond_prim, Gamma only, one aux family per run)
+- **Accuracy.** The split is at least as accurate as today's construction, on every measured cell.
+  - Against unsplit: ΔE ≤ 2.7e-10 on diamond and ~1e-14 on tri (P2, P8).
+  - Against an INDEPENDENT pure-G construction of the moved rows/columns, the split's error is 1e-16..5e-14. The
+    unsplit carries 1e-12..1.1e-10, SR-radius independent (a real-space erfc integral-accuracy floor on diffuse
+    charged aux, libcint ~2e-13 relative per integral).
+  - The split therefore REMOVES that floor instead of adding error. The diamond STO-3G ewald energies fit this:
+    split = ferric (libint) −74.0034040288 to all 10 digits, and unsplit = PySCF GDF −74.0034040291. That libint
+    lacks libcint's floor is NOT tested directly.
+  - The artifact flag on ΔJ2 (flat 6.29e-12 in prec and λ, P3 partly failed) is explained by this: it is the
+    reference's error, not the split's.
+- **The G = 0 convention holds.** It is ω-independent to 1.9e-14 (P5). Grouping A = grouping B to 6.7e-16, and A is
+  bitwise at λ = 0. Dropping the moved blocks' G = 0 term fails by 7.4e-4 (span) … 0.48 (tri J3).
+- **A G = 0 error in the metric is partly HIDDEN by the lindep cut.** It shows up as one large negative metric
+  eigenvalue (−18.3), which the absolute cut discards. The miss then depends on nothing about c0.
+- **Negative controls.** "Moving a block whose FT does not converge" fails STRONGLY only when a genuinely compact
+  combination is moved: diamond, C 1s, −0.27..−0.31 Ha.
+  - On the soft tri basis, even moving EVERYTHING misses by only 3.9e-7 (J3) / 3.2e-6 (J2) / 2.6e-8 Ha (P7 partly
+    failed there). A fixed 1e-6 bar is the wrong gate; use a cell with a compact core.
+  - λ = 2 and λ = 4 rise monotonically on diamond (1e-8 → 1e-5 in J2), but 20–100× below the prec^{1/λ} guess (P4
+    magnitude wrong). The rule has slack, because each of its two conditions alone suffices and the real smooth
+    exponents sit below the thresholds. Do not spend that slack: λ = 1 is the rigorous choice.
+- **Counts.** ω = 1: 0.147 (cc-pvdz-ri) / 0.114 (jkfit) of today's SR3 triplets with a trimmed ShellPair; 0.18 / 0.14
+  with two plain calls. SR2 drops to 0.11 / 0.055.
+- **ω becomes a real knob.** ω = 1.4 gives 0.026–0.033 at 2.75× the half-G. PREDICTED, not measured, and it assumes
+  per-triplet cost is unchanged:
+  - SR3 at ω = 1 (trim): 290 s → ~42 s at 1 thread.
+  - ω = 1.4: ~8–10 s SR3, plus LR growing with half-G (6.1 s pair FT today → ~17 s unless the plan's LR restructure,
+    item 3, lands first).
+- **Not addressed.** The hcore SR attraction (17%, plan item 9) is untouched.
+- **Not measured:** ferric timings, per-call cost of trimmed or piece calls, k-points, forces/stress, spherical
+  orbital basis, cells beyond diamond_prim, other ω for the energies (only tri), the cc-pVDZ hybrid attribution.
+
+### For the Rust port
+1. **Pieces.** Per shell, split its primitives by exponent: orbital a ≤ ω²/2, aux α ≤ ω². Zero-coefficient
+   primitives follow their exponent; they contribute 0 but enter ferric's p_min/p_max, as today. cc-pvdz-ri is all
+   single-primitive, so aux shells move whole.
+   - **SR3.** Start with `twocall`: (χ_i, χ_j^c | P^c) + (χ_i^c, χ_j^s | P^c). Each call gets its own `pair_bound`
+     over its primitive pairs and the aux bound over P's compact primitives. It needs no libint change.
+     `trim` saves a further 20–40% of calls: erase the ss entries of the libint2 `ShellPair::primpairs` and pass the
+     ket ShellPair to `compute2`. That is a shim change, so gate it on plan item 0's µs/call.
+   - **SR2.** Walk only (P^c|Q^c).
+2. **LR GEMM.** Move the weight to the aux side, per aux column:
+   - weight (2/Ω)·4π/G² for smooth P (v_LR + v_SR), and (2/Ω)v_LR for compact P;
+   - ONE extra GEMM, P_ss(rows = AO pairs with smooth primitives on both sides) × (2/Ω)v_SR X_c;
+   - J2: full kernel on (X, X) minus v_SR on (X_c, X_c);
+   - P_ss comes from `pair_ft` on the smooth pieces only (small G windows);
+   - no new G vectors.
+3. **G = 0.** Use grouping A: `subtract_g0(j2, j3, S − S_ss, q_c, c0)`, the same ONE function with the kept inputs.
+   S_ss is the lattice overlap of the smooth pieces from the 1e code, not pair_ft(0). Nothing moved means S_ss = 0 and
+   q_c = q, bit-identical to today.
+   - Add a guard: metric_eig_min < −(a few × the metric noise, ~1e-8) is an ERROR. G = 0 bookkeeping mistakes in
+     J2 produce a large negative eigenvalue that the lindep cut otherwise swallows.
+4. **Tests.**
+   - λ = 0: J2/J3/B bitwise vs today, and n_sr3/n_sr2 equal.
+   - exact-span H2 at ω = 0.8 (nothing moves) and 1.2 (everything moves) vs dense AFT: ≤ 1e-10 (measured 9e-13 and
+     2.5e-16).
+   - split vs unsplit ≤ 1e-9 on the STO-3G preflight; E_ewald = −74.0034040288 ± 1e-9.
+   - mutants: no_g0 (≥ 7e-4 even on span), both (≥ 0.7 J3), double_ss_s (≥ 0.18 J3), move-all on a cell with a C 1s
+     (≥ 1e-2 J3). Not tri, where move-all is only 3.9e-7.
+   - counts vs `count_sr3_ferric` (0.1465 × 197033528 = 28866504 trim; 35921128 twocall).
+5. **Forces** (design only; `deriv.rs` terms that change). All derivatives must walk the same partition, so the force
+   is still the derivative of the split energy.
+   - (a) SR J3 derivative walk: kept calls only, with the same pieces and bounds as the energy
+     (`compute_eri3_deriv_shifted` on the piece shells). The orbital blocks go to atoms and the aux block to the aux
+     centre, as today.
+   - (b) SR J2 derivative walk: (P^c|Q^c) only.
+   - (c) LR J3: the existing orbital (`pair_ft_deriv`) and aux (−iG X) contractions with the per-aux-column weight of
+     item 2, plus the NEW (P_ss, X_c) term with v_SR: `pair_ft_deriv` on the smooth pieces and −iG X_c.
+   - (d) LR J2: 2 Re[(−iG X_R)^* (Wm X)_R] with the full kernel, minus the same with v_SR on X_c.
+   - (e) G = 0: M_g0 becomes −c0 Σ_P Y_P q_c,P contracted with d(S − S_ss). NEW: the overlap derivative of the smooth
+     pieces. J2's G = 0 term stays position-free.
+   - FD of the split energy at the FD floor. Mutants: drop dS_ss; use q instead of q_c.
+6. **Stress** (`strain.rs`).
+   - SR walks: the kept partition.
+   - G-space moved terms: dv/dε with v_SR′(G²) = d/dG²[4π/G²(1 − e^{−G²/4ω²})] and v′ = −4π/G⁴ for the full-kernel
+     columns. The −δ_ab E volume term covers every G-space term, and `pair_ft_strain` is needed on the smooth pieces.
+   - G = 0 volume terms, with the kept inputs: `j3_g0_volume` = δ c0 Σ(Y q_c)·(S − S_ss) and `j2_g0_volume` =
+     δ c0 q_cᵀ Wm q_c. The overlap virial of S_ss is NEW.
+   - The existing test that dropping the J2 G = 0 volume term shifts the stress by 3–9e-2 must be redone with q_c.
+7. **k-points** (`kpoint.rs`).
+   - The residue-binned SR walks share the Gamma walk, so they take the kept partition unchanged.
+   - Moved blocks at q go over K = G + q with v_SR(|K|), using the Bloch pair FT of the smooth pieces
+     (`pair_ft_residues` on piece shells) and X_s / X_c.
+   - K = 0 exists only at q = 0: grouping A's subtract happens only there, with S(k) − S_ss(k) and q_c. At q ≠ 0,
+     v_SR(|q|) is finite and nothing special is needed.
+   - Time reversal and q = 0 hermitisation are unchanged.
+   - k-point forces: items 5(a)–(e) per q.

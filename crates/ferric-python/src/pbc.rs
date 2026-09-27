@@ -886,6 +886,7 @@ fn run_open_hf(s: &PbcSetup, sys: &GammaSystem, o: &OpenOpts) -> Result<OpenPart
                 ewald_start: o.start,
                 scf: o.scf.clone(),
                 initial_mos: None,
+                solver: Default::default(),
             };
             let r = gamma_rohf(&s.cell, &s.prep, &sys.hc, ints, &cfg)?;
             let d = system_derivatives(s, sys, &r.scf, DerivMethod::Rohf(s.exx))?;

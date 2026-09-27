@@ -213,7 +213,8 @@ pub use mp2::{gamma_mp2, GammaMp2Config, GammaMp2Integrals, GammaMp2Result, Mp2D
 pub use pair_ft::pair_ft;
 pub use rohf::{
     gamma_rohf, gamma_roks, gamma_roks_with_xc, rohf_occupation_gaps, GammaRohfConfig,
-    GammaRohfResult, GammaRoksConfig, GammaRoksResult,
+    GammaRohfResult, GammaRoksConfig, GammaRoksResult, RohfSecondOrderInfo, RohfSolver,
+    RohfTrahConfig,
 };
 pub use rsgdf::kpoint::{KRsGdf, KRsGdfConfig, KRsGdfJk, KRsGdfQStats, KRsGdfStats};
 pub use rsgdf::{PeriodicFitParts, RsGdf, RsGdfConfig, RsGdfFitDiagnostics};

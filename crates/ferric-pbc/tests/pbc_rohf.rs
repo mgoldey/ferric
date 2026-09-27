@@ -44,6 +44,25 @@
 //! * `rohf_occupation_gaps`: classify by sorted index / use `F_eff` → (2)
 //!   gap identity (β open orbital is unoccupied for β).
 //! * `gamma_roks_with_xc` not passing `xc` (ROHF run) → (3), (1) ROKS.
+//!
+//! # (5) Second-order solver (`RohfSolver::SecondOrder`, FINDINGS "Iteration
+//! 24 (Python, second-order ROHF on the injected path) — 2026-09-27")
+//!
+//! * Exactness anchor: where DIIS converges (H3 doublet ROHF none/ewald, tri
+//!   ROKS PBE0 none) the trust-region AH solver reaches the DIIS energy to
+//!   1e-10 and the same per-spin densities, at a true minimum (lowest exact
+//!   orbital-Hessian eigenvalue > 0).
+//! * Target: tri ROHF triplet `exxdiv = none` from the core guess reaches
+//!   PySCF's −0.581222768976 (1e-8) with λ_min in the prototype's +0.123
+//!   basin (the second, trapped minimum has +0.030), and the staged ewald
+//!   stage reaches −1.826096526949. The root cause is asserted directly: at
+//!   that minimum a virtual lies BELOW the second open orbital in the
+//!   Roothaan `F_eff` spectrum (prototype: 0.966763 < 1.049073).
+//! * Negative control: DIIS alone does NOT reach it (the known failure).
+//! * Artifact hypotheses (prototype A1–A5): a converged state ABOVE PySCF
+//!   (second minimum, λ_min ≈ 0.03) or a saddle (λ_min < 0) would fail the
+//!   λ_min window; a packed-scale gradient or a diagonal-Fock Hessian shows
+//!   up as ρ ≠ 1 at the tail and in `ferric_scf::rohf_trah`'s FD unit tests.
 
 mod common;
 
@@ -63,8 +82,8 @@ use ferric_pbc::hcore::{periodic_hcore, PeriodicHcore, PeriodicHcoreConfig};
 use ferric_pbc::lattice::Cell;
 use ferric_pbc::rohf::{
     gamma_rohf, gamma_roks, gamma_roks_with_xc, rohf_occupation_gaps, GammaRohfConfig,
-    GammaRohfResult, GammaRoksConfig, GammaRoksResult, ROKS_HYBRID_LEVEL_SHIFT,
-    ROKS_HYBRID_MAX_ITER,
+    GammaRohfResult, GammaRoksConfig, GammaRoksResult, RohfSolver, RohfTrahConfig,
+    ROKS_HYBRID_LEVEL_SHIFT, ROKS_HYBRID_MAX_ITER,
 };
 use ferric_pbc::uhf::{gamma_uhf, EwaldStart, GammaUhfConfig, GammaUhfIntegrals};
 use ferric_scf::rhf::{RhfConfig, XcBuilder};
@@ -109,6 +128,15 @@ const TRI_SSF_NPTS: usize = 70784;
 /// construction; asserted to the construction gap, as in pbc_uks.rs).
 const TRI_ROKS_PYSCF_E: [f64; 3] = [-1.694361887534, -1.731308266751, -1.776801906487];
 const GRID_CONSTRUCTION_GAP: f64 = 1.1e-3;
+
+/// `run_grad_ro_anchor.py` H3 doublet (Bohr), cubic a = 4.5, STO-3G:
+/// (nd, no) = (1, 1), the prototype's P1 anchor system.
+const H3_ATOMS: [[f64; 3]; 3] = [[0.3, 0.2, 0.1], [0.35, 0.12, 1.5], [1.6, 0.9, 0.7]];
+const H3_A: f64 = 4.5;
+/// Iteration 24 lowest exact orbital-Hessian eigenvalue at PySCF's tri ROHF
+/// minimum (+0.1231, none and ewald alike) and at the second, trapped
+/// minimum (+0.0297); the window below separates them.
+const TRI_ROHF_LAMBDA_MIN_WINDOW: (f64, f64) = (0.08, 0.2);
 
 struct Setup {
     cell: Cell,
@@ -158,6 +186,44 @@ fn rohf(su: &Setup, exx: ExxDiv, start: EwaldStart) -> GammaRohfResult {
     assert!(r.scf.converged);
     assert!(r.scf.mos_beta.is_none(), "ROHF has one MO set");
     r
+}
+
+/// [`RohfSolver::SecondOrder`] with the default controls, optionally
+/// reporting the lowest exact orbital-Hessian eigenvalue.
+fn second_order(check_minimum: bool) -> RohfSolver {
+    RohfSolver::SecondOrder(RohfTrahConfig {
+        check_minimum,
+        ..Default::default()
+    })
+}
+
+/// [`rohf`] on the second-order solver (λ_min reported).
+fn rohf_so(su: &Setup, exx: ExxDiv, start: EwaldStart) -> GammaRohfResult {
+    let cfg = GammaRohfConfig {
+        exxdiv: exx,
+        ewald_start: start,
+        solver: second_order(true),
+        ..Default::default()
+    };
+    let r = gamma_rohf(&su.cell, &su.prep, &su.hc, ints(su), &cfg)
+        .unwrap_or_else(|e| panic!("gamma_rohf second order {exx:?} {start:?}: {e}"));
+    assert!(r.scf.converged);
+    assert!(r.scf.mos_beta.is_none(), "ROHF has one MO set");
+    let info = r.second_order.as_ref().expect("second-order diagnostics");
+    assert!(info.converged, "{info:?}");
+    eprintln!("  second order {exx:?} {start:?}: {info:?}");
+    r
+}
+
+/// Same state: per-spin densities agree.
+fn same_state(a: &ferric_scf::result::ScfResult, b: &ferric_scf::result::ScfResult, what: &str) {
+    let da = max_abs_diff(&a.density_alpha, &b.density_alpha);
+    let db = max_abs_diff(
+        a.density_beta.as_ref().expect("beta density"),
+        b.density_beta.as_ref().expect("beta density"),
+    );
+    eprintln!("  {what}: max|dD_a| {da:.2e} max|dD_b| {db:.2e}");
+    assert!(da < 1e-6 && db < 1e-6, "{what}: different state");
 }
 
 fn ssf_grid(n_rad: usize, n_ang: usize, d: f64) -> PeriodicGridConfig {
@@ -422,17 +488,21 @@ fn high_spin_rohf_bounds_uhf_and_is_spin_pure() {
 }
 
 /// The ROHF Ewald trap: a single-stage ewald run from the core guess may land
-/// in a hole state (the prototype does, at `TRI_ROHF_EWALD_TRAPPED`). Whether
-/// ferric's core-guess trajectory reaches it depends on its DIIS, so the
-/// assertion is conditional: a Direct run that lands ABOVE the staged state
-/// must be flagged by the occupation-aware gap (its none-convention β/α gap
-/// is negative), and the staged run is never flagged.
+/// in a hole state (the DIIS prototype does, at `TRI_ROHF_EWALD_TRAPPED`,
+/// which Iteration 24 showed is a genuine second minimum, λ_min +0.030,
+/// α occupation-aware gap −0.0093 at none). Run on the SECOND-ORDER solver:
+/// ferric's DIIS ROHF does not converge this system at all (FINDINGS
+/// Iteration 24: PySCF's minimum is not an `F_eff`-aufbau fixed point; see
+/// `diis_alone_does_not_converge_tri_rohf_none`). Whether the Direct
+/// trajectory reaches the trapped minimum depends on the solver path (the
+/// prototype's TRAH reached PySCF's), so the assertion is conditional: a
+/// Direct run ABOVE the staged state must be flagged by the
+/// occupation-aware gap, and the staged run is never flagged.
 #[test]
-#[ignore = "known limitation (2026-09-29): ferric's DIIS ROHF does not converge on the periodic triclinic 4H s+p triplet at any exact-exchange fraction with zero XC (a = 0.25..1, level shift 0.5 and a UHF-orbital seed did not help); the Python prototype's ROHF stalls there too, while PySCF ROHF converges (-0.581222768976) and ferric's molecular ROHF converges on the same geometry. ROKS PBE0 through the same injected path matches its pins, so the injection is not the suspect. Open item in FINDINGS"]
 fn rohf_ewald_trap_is_flagged_when_hit() {
     let su = setup(cell_mult(&TRI_ATOMS, TRI_A, 3), sp_basis_h());
-    let staged = rohf(&su, ExxDiv::Ewald, EwaldStart::Staged);
-    let direct = rohf(&su, ExxDiv::Ewald, EwaldStart::Direct);
+    let staged = rohf_so(&su, ExxDiv::Ewald, EwaldStart::Staged);
+    let direct = rohf_so(&su, ExxDiv::Ewald, EwaldStart::Direct);
     let de = direct.scf.energy - staged.scf.energy;
     eprintln!(
         "tri ROHF ewald: staged {:.12} gaps {:?} | direct {:.12} (dE {de:.3e}) gaps {:?}",
@@ -692,14 +762,18 @@ fn roks_pbe0_tri_none_stage_perturbed_starts_fail_without_the_shift() {
 // (4) a = 1, zero XC ≡ gamma_rohf.
 // ===========================================================================
 
+/// Both sides on the second-order solver (ferric's DIIS ROHF does not
+/// converge the tri triplet: FINDINGS Iteration 24). With `a = 1` and a zero
+/// XC builder the second-order trajectory is the ROHF one operation for
+/// operation (the FD XC response adds exact zeros), hence 1e-12.
 #[test]
-#[ignore = "known limitation (2026-09-29): ferric's DIIS ROHF does not converge on the periodic triclinic 4H s+p triplet at any exact-exchange fraction with zero XC (a = 0.25..1, level shift 0.5 and a UHF-orbital seed did not help); the Python prototype's ROHF stalls there too, while PySCF ROHF converges (-0.581222768976) and ferric's molecular ROHF converges on the same geometry. ROKS PBE0 through the same injected path matches its pins, so the injection is not the suspect. Open item in FINDINGS"]
 fn roks_with_an_hf_equivalent_builder_is_gamma_rohf() {
     let su = setup(cell_mult(&TRI_ATOMS, TRI_A, 3), sp_basis_h());
     for exx in EXX {
-        let h = rohf(&su, exx, EwaldStart::Staged);
+        let h = rohf_so(&su, exx, EwaldStart::Staged);
         let cfg = GammaRoksConfig {
             exxdiv: exx,
+            solver: second_order(false),
             ..GammaRoksConfig::new("unused")
         };
         let k = gamma_roks_with_xc(
@@ -719,6 +793,213 @@ fn roks_with_an_hf_equivalent_builder_is_gamma_rohf() {
         );
         assert_eq!(k.e_xc, 0.0);
         assert_eq!(k.none_stage.is_some(), h.none_stage.is_some());
+        assert!(k.second_order.as_ref().is_some_and(|i| i.converged));
+    }
+}
+
+// ===========================================================================
+// (5) Second-order solver (RohfSolver::SecondOrder).
+// ===========================================================================
+
+/// DIIS stays the default everywhere, and a DIIS run reports no
+/// second-order diagnostics.
+#[test]
+fn diis_is_the_default_rohf_solver() {
+    assert_eq!(GammaRohfConfig::default().solver, RohfSolver::Diis);
+    for name in ["PBE0", "PBE", "LDA", "unused"] {
+        assert_eq!(
+            GammaRoksConfig::new(name).solver,
+            RohfSolver::Diis,
+            "{name}"
+        );
+    }
+    let su = setup(cell_mult(&H3_ATOMS, cubic(H3_A), 2), pyscf_sto3g_h());
+    assert!(rohf(&su, ExxDiv::None, EwaldStart::Staged)
+        .second_order
+        .is_none());
+}
+
+/// EXACTNESS ANCHOR (H3 doublet ROHF, where DIIS converges): the
+/// second-order solver from the same core guess reaches the DIIS energy to
+/// 1e-10, the same per-spin densities, and a true minimum (prototype λ_min
+/// +0.4931 for none and ewald).
+#[test]
+fn second_order_reaches_the_diis_state_on_h3_rohf() {
+    let su = setup(cell_mult(&H3_ATOMS, cubic(H3_A), 2), pyscf_sto3g_h());
+    let vm = madelung_constant(&su.cell).unwrap();
+    for exx in EXX {
+        let d = rohf(&su, exx, EwaldStart::Staged);
+        let s = rohf_so(&su, exx, EwaldStart::Staged);
+        close(
+            s.scf.energy,
+            d.scf.energy,
+            1e-10,
+            &format!("H3 ROHF {exx:?} second order vs DIIS"),
+        );
+        same_state(&s.scf, &d.scf, &format!("H3 ROHF {exx:?}"));
+        let info = s.second_order.as_ref().unwrap();
+        let lam = info.lowest_hessian_eigenvalue.expect("lambda_min reported");
+        assert!(lam > 0.0, "H3 {exx:?}: not a minimum, lambda_min {lam:e}");
+        close(s.s2, 0.75, 1e-12, "H3 <S2>");
+        assert_eq!(s.none_stage.is_some(), d.none_stage.is_some());
+        if let Some(none) = s.none_stage.as_ref() {
+            close(
+                s.scf.energy - none.energy,
+                -vm * 3.0 / 2.0,
+                1e-10,
+                "H3 second order ewald - none (= -v_M N/2)",
+            );
+        }
+    }
+}
+
+/// EXACTNESS ANCHOR (tri 4H s+p triplet ROKS PBE0, `exxdiv = none`, the
+/// case whose minimum repels the Roothaan map): DIIS with the hybrid shift
+/// and the second-order solver (FD XC response) reach the same state, the
+/// prototype pin, and a true minimum (prototype λ_min +0.0693).
+#[test]
+fn second_order_reaches_the_diis_state_on_tri_roks_pbe0_none() {
+    let su = setup(cell_mult(&TRI_ATOMS, TRI_A, 3), sp_basis_h());
+    let gcfg = ssf_grid(75, 302, 10.0);
+    let grid = PeriodicGrid::build(&su.cell, &gcfg).expect("grid");
+    assert_eq!(grid.len(), TRI_SSF_NPTS);
+    let mut pxc = PeriodicXc::new(
+        &su.cell,
+        su.prep.basis_set(),
+        "PBE0",
+        &grid,
+        &PeriodicXcConfig::default(),
+    )
+    .expect("PeriodicXc PBE0");
+    let base = GammaRoksConfig {
+        exxdiv: ExxDiv::None,
+        ..GammaRoksConfig::new("PBE0")
+    };
+    let d = gamma_roks_with_xc(&su.cell, &su.prep, &su.hc, ints(&su), &mut pxc, &base)
+        .expect("DIIS PBE0 none");
+    let so_cfg = GammaRoksConfig {
+        solver: second_order(true),
+        ..base.clone()
+    };
+    let s = gamma_roks_with_xc(&su.cell, &su.prep, &su.hc, ints(&su), &mut pxc, &so_cfg)
+        .expect("second-order PBE0 none");
+    let info = s.second_order.as_ref().expect("second-order diagnostics");
+    eprintln!("  tri PBE0 none second order: {info:?}");
+    assert!(info.converged);
+    close(
+        s.scf.energy,
+        d.scf.energy,
+        1e-10,
+        "tri PBE0 none SO vs DIIS",
+    );
+    close(
+        s.scf.energy,
+        TRI_ROKS_PBE0_NONE,
+        1e-8,
+        "tri PBE0 none SO vs pin",
+    );
+    same_state(&s.scf, &d.scf, "tri PBE0 none");
+    let lam = info.lowest_hessian_eigenvalue.expect("lambda_min reported");
+    assert!(
+        lam > 0.0,
+        "tri PBE0 none: not a minimum, lambda_min {lam:e}"
+    );
+    close(s.s2, 2.0, 1e-12, "tri PBE0 <S2>");
+}
+
+/// TARGET (the open item): tri ROHF triplet `exxdiv = none` from the core
+/// guess reaches PySCF, at the prototype's minimum (λ_min window), with a
+/// virtual BELOW the second open orbital in the `F_eff` spectrum — the reason
+/// the aufbau DIIS loop cannot hold it. Then the staged ewald run reaches
+/// PySCF's ewald energy in a few macro iterations, `−v_M N/2` below.
+#[test]
+fn second_order_converges_tri_rohf_to_pyscf() {
+    let su = setup(cell_mult(&TRI_ATOMS, TRI_A, 3), sp_basis_h());
+    let vm = madelung_constant(&su.cell).unwrap();
+    let none = rohf_so(&su, ExxDiv::None, EwaldStart::Direct);
+    close(
+        none.scf.energy,
+        TRI_ROHF_PYSCF_E[0],
+        1e-8,
+        "tri ROHF none (core guess) vs PySCF",
+    );
+    let info = none.second_order.as_ref().unwrap();
+    let lam = info.lowest_hessian_eigenvalue.expect("lambda_min reported");
+    eprintln!("  tri ROHF none lambda_min {lam:.6} (prototype +0.1231)");
+    assert!(
+        lam > TRI_ROHF_LAMBDA_MIN_WINDOW.0 && lam < TRI_ROHF_LAMBDA_MIN_WINDOW.1,
+        "tri ROHF none: lambda_min {lam} outside {TRI_ROHF_LAMBDA_MIN_WINDOW:?}"
+    );
+    let rho = info.last_rho.expect("at least one step");
+    assert!((rho - 1.0).abs() < 0.2, "tail rho {rho} is not ~1");
+    close(none.s2, 2.0, 1e-12, "tri ROHF <S2>");
+    assert!(none.gaps.satisfied(), "{:?}", none.gaps);
+    // eps_alpha: closed | open | virtual (semicanonical F_eff per block).
+    let eps = &none.scf.eps_alpha;
+    let open_max = eps[1].max(eps[2]);
+    let virt_min = eps[3..].iter().copied().fold(f64::INFINITY, f64::min);
+    eprintln!("  F_eff: open max {open_max:.6}, virtual min {virt_min:.6}");
+    assert!(
+        virt_min < open_max,
+        "expected a virtual below the second open orbital in F_eff at PySCF's none minimum          (prototype 0.966763 < 1.049073), got {virt_min} vs {open_max}"
+    );
+
+    let ew = rohf_so(&su, ExxDiv::Ewald, EwaldStart::Staged);
+    close(
+        ew.scf.energy,
+        TRI_ROHF_PYSCF_E[1],
+        1e-8,
+        "tri ROHF ewald (staged) vs PySCF",
+    );
+    let stage0 = ew.none_stage.as_ref().expect("staged");
+    close(stage0.energy, none.scf.energy, 1e-10, "staged none stage");
+    close(
+        ew.scf.energy - stage0.energy,
+        -vm * 4.0 / 2.0,
+        1e-10,
+        "tri ROHF ewald - none (= -v_M N/2)",
+    );
+    let einfo = ew.second_order.as_ref().unwrap();
+    assert!(
+        einfo.macro_iterations <= 5,
+        "ewald stage from the none MOs took {} macro iterations (prototype 1)",
+        einfo.macro_iterations
+    );
+    let lam = einfo
+        .lowest_hessian_eigenvalue
+        .expect("lambda_min reported");
+    assert!(
+        lam > TRI_ROHF_LAMBDA_MIN_WINDOW.0 && lam < TRI_ROHF_LAMBDA_MIN_WINDOW.1,
+        "tri ROHF ewald: lambda_min {lam}"
+    );
+    assert!(ew.gaps.satisfied(), "{:?}", ew.gaps);
+}
+
+/// NEGATIVE CONTROL for the target: ferric's DIIS loop (defaults) does NOT
+/// reach PySCF's tri ROHF none minimum — it errors (not converged) or lands
+/// elsewhere. If this ever passes by converging to PySCF, the target test no
+/// longer isolates the second-order solver.
+#[test]
+fn diis_alone_does_not_converge_tri_rohf_none() {
+    let su = setup(cell_mult(&TRI_ATOMS, TRI_A, 3), sp_basis_h());
+    let cfg = GammaRohfConfig {
+        exxdiv: ExxDiv::None,
+        ..Default::default()
+    };
+    assert_eq!(cfg.solver, RohfSolver::Diis);
+    match gamma_rohf(&su.cell, &su.prep, &su.hc, ints(&su), &cfg) {
+        Err(e) => eprintln!("  DIIS tri ROHF none: {e}"),
+        Ok(r) => {
+            let de = r.scf.energy - TRI_ROHF_PYSCF_E[0];
+            eprintln!(
+                "  DIIS tri ROHF none: converged {} E {:.12} (E - PySCF {de:+.3e})",
+                r.scf.converged, r.scf.energy
+            );
+            assert!(
+                !r.scf.converged || de.abs() > 1e-6,
+                "DIIS reached PySCF's tri ROHF none minimum: the negative control is void"
+            );
+        }
     }
 }
 

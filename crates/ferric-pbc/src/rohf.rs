@@ -52,8 +52,50 @@ use ferric_integrals::operator::Operator;
 use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::{PeriodicInjection, RhfConfig, XcBuilder};
 use ferric_scf::rohf::{solve_rohf_injected, validate_injected_rohf};
+use ferric_scf::rohf_trah::solve_rohf_injected_second_order;
+pub use ferric_scf::rohf_trah::{RohfSecondOrderInfo, RohfTrahConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::Array2;
+
+/// Which SCF solver the injected ROHF/ROKS stages run.
+///
+/// * [`RohfSolver::Diis`] (default): `ferric_scf::rohf::solve_rohf_injected`,
+///   the Roothaan `F_eff` diagonalization + aufbau + DIIS loop. Unchanged.
+/// * [`RohfSolver::SecondOrder`]:
+///   `ferric_scf::rohf_trah::solve_rohf_injected_second_order`, a
+///   trust-region augmented-Hessian step on the EXACT orbital gradient and
+///   Hessian, taken from the current orbitals (no `F_eff` diagonalization or
+///   occupation choice after the guess), from the first iteration. Same
+///   energy functional, guess and config refusals; the DIIS-only `scf`
+///   fields (`max_iter`, `density_conv`, `energy_conv`, `diis_size`,
+///   `level_shift` — including [`ROKS_HYBRID_LEVEL_SHIFT`] — `mom_after_iter`,
+///   `rohf_occupation_guard`) are not used; convergence is
+///   [`RohfTrahConfig::grad_tol`] on the packed orbital gradient.
+///
+/// Why (FINDINGS "Iteration 24 (Python, second-order ROHF on the injected
+/// path) — 2026-09-27"): on the triclinic 4H s+p ROHF triplet at
+/// `exxdiv = none`, PySCF's minimum has a virtual BELOW the second open
+/// orbital in the Roothaan `F_eff` order, so it is not a fixed point of the
+/// DIIS loop's aufbau fill and DIIS cannot converge there at any shift; the
+/// second-order step reached it (−0.581222768977) from the core guess in 8
+/// macro iterations in the prototype, and the ewald stage in 1. It also
+/// converges the PBE0 case whose minimum repels the Roothaan map (5–7 macro
+/// iterations vs 97–515 shifted DIIS iterations).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum RohfSolver {
+    /// Roothaan-diagonalization DIIS loop (default).
+    #[default]
+    Diis,
+    /// Trust-region AH on the exact gradient/Hessian, with these controls.
+    SecondOrder(RohfTrahConfig),
+}
+
+impl RohfSolver {
+    /// [`RohfSolver::SecondOrder`] with the default [`RohfTrahConfig`].
+    pub fn second_order() -> Self {
+        RohfSolver::SecondOrder(RohfTrahConfig::default())
+    }
+}
 
 /// Configuration for [`gamma_rohf`].
 #[derive(Debug, Clone)]
@@ -67,6 +109,8 @@ pub struct GammaRohfConfig {
     /// Optional starting MOs, one `(nao, nao)` set (the first
     /// `N_β + 2S` columns occupied). Used by the first stage only.
     pub initial_mos: Option<Array2<f64>>,
+    /// SCF solver for every stage ([`RohfSolver`]; default DIIS).
+    pub solver: RohfSolver,
 }
 
 impl Default for GammaRohfConfig {
@@ -81,6 +125,7 @@ impl Default for GammaRohfConfig {
                 ..Default::default()
             },
             initial_mos: None,
+            solver: RohfSolver::Diis,
         }
     }
 }
@@ -103,6 +148,9 @@ pub struct GammaRohfResult {
     /// Occupation-aware per-spin gaps against `v_M_applied`
     /// ([`rohf_occupation_gaps`]).
     pub gaps: SpinGapReport,
+    /// Second-order diagnostics of the FINAL stage (`None` under
+    /// [`RohfSolver::Diis`]).
+    pub second_order: Option<RohfSecondOrderInfo>,
 }
 
 /// Configuration for [`gamma_roks`] / [`gamma_roks_with_xc`] (the
@@ -130,6 +178,9 @@ pub struct GammaRoksConfig {
     pub scf: RhfConfig,
     /// Optional starting MOs, one `(nao, nao)` set; first stage only.
     pub initial_mos: Option<Array2<f64>>,
+    /// SCF solver for every stage ([`RohfSolver`]; [`GammaRoksConfig::new`]
+    /// sets DIIS).
+    pub solver: RohfSolver,
 }
 
 /// Default `scf.level_shift` (Hartree) that [`GammaRoksConfig::new`] sets for
@@ -177,9 +228,9 @@ impl GammaRoksConfig {
     /// and cannot move the converged state: in the replica LDA/PBE/PBE0 (none
     /// and staged ewald) reproduce their pins to 1e-13 with it. The replica
     /// is not bit-identical to ferric, so the rates above are estimates;
-    /// only one cell and one hybrid (PBE0) were measured. A second-order
-    /// injected step would be the real cure; this is the robustness default
-    /// until then.
+    /// only one cell and one hybrid (PBE0) were measured. The second-order
+    /// solver ([`RohfSolver::SecondOrder`], opt-in via `solver`) does not
+    /// use the shift; DIIS with the shift stays the default.
     pub fn new(functional: &str) -> Self {
         let u = GammaUksConfig::new(functional);
         let mut scf = u.scf;
@@ -198,6 +249,7 @@ impl GammaRoksConfig {
             xc: u.xc,
             scf,
             initial_mos: None,
+            solver: RohfSolver::Diis,
         }
     }
 }
@@ -227,6 +279,9 @@ pub struct GammaRoksResult {
     /// Driver stages as [`crate::dft::GammaRksResult::timings`]
     /// ([`gamma_roks`] only; empty from [`gamma_roks_with_xc`]).
     pub timings: crate::timing::PbcTimings,
+    /// Second-order diagnostics of the FINAL stage (`None` under
+    /// [`RohfSolver::Diis`]).
+    pub second_order: Option<RohfSecondOrderInfo>,
 }
 
 /// `⟨S²⟩` of a single-determinant ROHF result from its ONE MO set:
@@ -304,6 +359,7 @@ struct Staged {
     nocc: (usize, usize),
     s2: f64,
     gaps: SpinGapReport,
+    second_order: Option<RohfSecondOrderInfo>,
 }
 
 /// Shared body of [`gamma_rohf`] (`xc = None`, `a = 1`) and
@@ -321,6 +377,7 @@ fn run_staged(
     ewald_start: EwaldStart,
     scf_cfg: &RhfConfig,
     initial_mos: Option<&Array2<f64>>,
+    solver: &RohfSolver,
 ) -> Result<Staged, FerricError> {
     validate_injected_rohf(scf_cfg).map_err(FerricError::from)?;
     let mol = cell.mol();
@@ -366,20 +423,27 @@ fn run_staged(
                 None => None,
             },
         };
-        solve_rohf_injected(
-            &ctx,
-            mol,
-            prep,
-            Operator::coulomb(),
-            &bounds,
-            scf_cfg,
-            inj,
-            init,
-        )
+        match solver {
+            RohfSolver::Diis => solve_rohf_injected(
+                &ctx,
+                mol,
+                prep,
+                Operator::coulomb(),
+                &bounds,
+                scf_cfg,
+                inj,
+                init,
+            )
+            .map(|r| (r, None)),
+            RohfSolver::SecondOrder(t) => {
+                solve_rohf_injected_second_order(&ctx, mol, prep, scf_cfg, inj, init, t)
+                    .map(|(r, info)| (r, Some(info)))
+            }
+        }
     };
     let staged = exxdiv == ExxDiv::Ewald && ewald_start == EwaldStart::Staged && a > 0.0;
-    let (scf, none_stage) = if staged {
-        let first = run(0.0, initial_mos)?;
+    let ((scf, second_order), none_stage) = if staged {
+        let (first, _) = run(0.0, initial_mos)?;
         let c0 = first.mos_alpha.clone();
         let second = run(applied, Some(&c0))?;
         (second, Some(first))
@@ -406,6 +470,7 @@ fn run_staged(
         nocc: (na, nb),
         s2,
         gaps,
+        second_order,
     })
 }
 
@@ -436,6 +501,7 @@ pub fn gamma_rohf(
         cfg.ewald_start,
         &cfg.scf,
         cfg.initial_mos.as_ref(),
+        &cfg.solver,
     )?;
     Ok(GammaRohfResult {
         scf: r.scf,
@@ -444,6 +510,7 @@ pub fn gamma_rohf(
         nocc: r.nocc,
         s2: r.s2,
         gaps: r.gaps,
+        second_order: r.second_order,
     })
 }
 
@@ -506,6 +573,7 @@ pub fn gamma_roks_with_xc(
         cfg.ewald_start,
         &cfg.scf,
         cfg.initial_mos.as_ref(),
+        &cfg.solver,
     )?;
     let d_b = r.scf.density_beta.as_ref().ok_or_else(|| {
         FerricError::General("gamma_roks: the SCF returned no beta density".into())
@@ -520,6 +588,7 @@ pub fn gamma_roks_with_xc(
         e_xc,
         grid: None,
         none_stage: r.none_stage,
+        second_order: r.second_order,
         scf: r.scf,
         timings: crate::timing::PbcTimings::default(),
     })

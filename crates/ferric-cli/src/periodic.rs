@@ -623,6 +623,7 @@ fn rohf_config(plan: &PeriodicPlan) -> GammaRohfConfig {
         ewald_start: plan.ewald_start,
         scf: gamma_scf_config(plan),
         initial_mos: None,
+        solver: Default::default(),
     }
 }
 
