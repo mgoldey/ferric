@@ -3793,6 +3793,62 @@ fn cell_positive(name: &str, v: f64) -> Result<f64, String> {
     }
 }
 
+/// Resolve the opt-in `[cell] range_split` key. Gamma energy runs on
+/// jk = "rsgdf" only. `false` is today's construction, which every route
+/// runs, so it is accepted anywhere. An explicit λ must be finite and > 0.
+fn resolve_range_split(
+    key: Option<RangeSplitKey>,
+    rsgdf: bool,
+    kpoints: bool,
+    optimize: bool,
+) -> Result<Option<f64>, String> {
+    let lambda = match key {
+        None | Some(RangeSplitKey::Flag(false)) => return Ok(None),
+        Some(RangeSplitKey::Lambda(l)) => cell_positive("range_split", l)?,
+        Some(RangeSplitKey::Flag(true)) => ferric_pbc::rsgdf::DEFAULT_RANGE_SPLIT_LAMBDA,
+    };
+    if !rsgdf {
+        return Err(
+            "[cell] range_split partitions the RS-GDF short-range sums and requires \
+             jk = \"rsgdf\"; jk = \"dense\" would ignore it"
+                .into(),
+        );
+    }
+    if kpoints {
+        return Err(
+            "[cell] range_split is Gamma-point only: the k-point RS-GDF build does not \
+             support the range split yet. Remove kmesh or range_split"
+                .into(),
+        );
+    }
+    if optimize {
+        return Err(
+            "[cell] range_split is not supported with method.task = \"optimize\": the \
+             RS-GDF forces do not follow the range-split partition yet. Use \
+             task = \"energy\" or remove range_split"
+                .into(),
+        );
+    }
+    Ok(Some(lambda))
+}
+
+/// Install the resolved range split into an RS-GDF J/K choice; the dense
+/// builder has no range split and passes through unchanged.
+fn jk_with_range_split(jk: PeriodicJk, range_split: Option<f64>) -> PeriodicJk {
+    match jk {
+        PeriodicJk::RsGdf {
+            auxbasis,
+            budget_bytes,
+            ..
+        } => PeriodicJk::RsGdf {
+            auxbasis,
+            budget_bytes,
+            range_split,
+        },
+        dense => dense,
+    }
+}
+
 /// Refuse every section and key the periodic path would not read. The
 /// periodic drivers take only the `[cell]` knobs, `[scf]` max_iter /
 /// density_conv (Gamma) / energy_conv (k-point), `[dft] functional` (Kohn-Sham
@@ -4187,53 +4243,8 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
             ))
         }
     };
-    // Opt-in RS-GDF range split: Gamma energy runs on jk = "rsgdf" only.
-    // `false` is today's construction, which every route runs, so it is
-    // accepted anywhere.
-    let range_split = match c.range_split {
-        None | Some(RangeSplitKey::Flag(false)) => None,
-        Some(k) => {
-            let lambda = match k {
-                RangeSplitKey::Lambda(l) => cell_positive("range_split", l)?,
-                _ => ferric_pbc::rsgdf::DEFAULT_RANGE_SPLIT_LAMBDA,
-            };
-            if !rsgdf {
-                return Err(
-                    "[cell] range_split partitions the RS-GDF short-range sums and requires \
-                     jk = \"rsgdf\"; jk = \"dense\" would ignore it"
-                        .into(),
-                );
-            }
-            if kpoints {
-                return Err(
-                    "[cell] range_split is Gamma-point only: the k-point RS-GDF build does not \
-                     support the range split yet. Remove kmesh or range_split"
-                        .into(),
-                );
-            }
-            if optimize {
-                return Err(
-                    "[cell] range_split is not supported with method.task = \"optimize\": the \
-                     RS-GDF forces do not follow the range-split partition yet. Use \
-                     task = \"energy\" or remove range_split"
-                        .into(),
-                );
-            }
-            Some(lambda)
-        }
-    };
-    let jk = match jk {
-        PeriodicJk::RsGdf {
-            auxbasis,
-            budget_bytes,
-            ..
-        } => PeriodicJk::RsGdf {
-            auxbasis,
-            budget_bytes,
-            range_split,
-        },
-        dense => dense,
-    };
+    let range_split = resolve_range_split(c.range_split, rsgdf, kpoints, optimize)?;
+    let jk = jk_with_range_split(jk, range_split);
     periodic_raw_key_check(raw, route, kpoints, rsgdf, optimize)?;
     let written = raw_keys(raw, "scf");
     let max_iter_explicit = written.contains(&"max_iter");

@@ -45,6 +45,7 @@ use crate::ewald::madelung_constant;
 use crate::hcore::PeriodicHcore;
 use crate::lattice::Cell;
 use crate::uhf::{nocc_ab, EwaldStart, GammaUhfIntegrals, SpinGapReport};
+use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -362,6 +363,39 @@ struct Staged {
     second_order: Option<RohfSecondOrderInfo>,
 }
 
+/// One SCF stage of [`run_staged`] on the selected [`RohfSolver`]:
+/// `solve_rohf_injected` (DIIS, no second-order info) or
+/// `solve_rohf_injected_second_order`.
+#[allow(clippy::too_many_arguments)]
+fn solve_stage(
+    solver: &RohfSolver,
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    scf_cfg: &RhfConfig,
+    inj: PeriodicInjection<'_>,
+    init: Option<&Array2<f64>>,
+) -> Result<(ScfResult, Option<RohfSecondOrderInfo>), FerricError> {
+    match solver {
+        RohfSolver::Diis => solve_rohf_injected(
+            ctx,
+            mol,
+            prep,
+            Operator::coulomb(),
+            bounds,
+            scf_cfg,
+            inj,
+            init,
+        )
+        .map(|r| (r, None)),
+        RohfSolver::SecondOrder(t) => {
+            solve_rohf_injected_second_order(ctx, mol, prep, scf_cfg, inj, init, t)
+                .map(|(r, info)| (r, Some(info)))
+        }
+    }
+}
+
 /// Shared body of [`gamma_rohf`] (`xc = None`, `a = 1`) and
 /// [`gamma_roks_with_xc`]: the injected ROHF/ROKS, staged for ewald when
 /// `a > 0`, then `⟨S²⟩` and the occupation-aware gap check.
@@ -423,23 +457,7 @@ fn run_staged(
                 None => None,
             },
         };
-        match solver {
-            RohfSolver::Diis => solve_rohf_injected(
-                &ctx,
-                mol,
-                prep,
-                Operator::coulomb(),
-                &bounds,
-                scf_cfg,
-                inj,
-                init,
-            )
-            .map(|r| (r, None)),
-            RohfSolver::SecondOrder(t) => {
-                solve_rohf_injected_second_order(&ctx, mol, prep, scf_cfg, inj, init, t)
-                    .map(|(r, info)| (r, Some(info)))
-            }
-        }
+        solve_stage(solver, &ctx, mol, prep, &bounds, scf_cfg, inj, init)
     };
     let staged = exxdiv == ExxDiv::Ewald && ewald_start == EwaldStart::Staged && a > 0.0;
     let ((scf, second_order), none_stage) = if staged {
