@@ -5402,3 +5402,23 @@ Residual sweep, ours only (max\|d eps\| vs the 1e-12 reference, and max\|d eps\|
   PySCF ewald SCF rows (stopped for box load; the same-density and ours-only ewald rows cover it).
 - Recommendation: nothing to fix in the integrals; any k-point eigenvalue pin vs PySCF must converge both SCFs to
   commutator <= 1e-10 (then bar 1e-10, measured floor ~2e-12), and the "4e-9" open item is closed.
+
+## ECP periodic force big-box limit (measured 2026-09-28)
+HI, H STO-3G + I LANL2DZ (+ECP), cubic boxes a = 12..48 Bohr, exxdiv ewald, dense AFT, Gamma RHF analytic force vs ferric's
+own MOLECULAR gradient (Richardson FD of run_rhf energies, h = 2e-3/1e-3; PySCF's molecular ECP gradient is not a clean oracle:
+its ipnuc screening bug). Scripts: scratchpad ecpbox/ (run_box.py, fit2.py); predictions: c3 = −70.956 (energy), c3' = +9.7008
+(force, H z), both from PySCF molecular moments; an ECP-term error would appear as an a-independent c0.
+| | libecpint (old build) | quadrature (default) |
+|---|---|---|
+| molecular g(H z) | −4.41709267e-3 (PySCF −4.41729383e-3: 2.0e-7 off) | −4.41729375e-3 (8e-11 from PySCF) |
+| a³·Δg(H z) at a = 40 / 44 / 48 | — | 9.792 / 9.752 / 9.719 → 9.70 |
+| force fit, c3' fixed, a ≥ 24: c0 (models [0,5] / [0,5,7] / [0,3,5]) | −3.6e-7 / −4.3e-7 / −6.1e-7 | −4.4e-7 / −5.1e-7 / −6.9e-7 |
+| force fit max residual | 4.2e-7 | 4.2e-7 |
+| energy fit a ≥ 24 [0,5,7]: c0, max residual | 2.0e-8, 5.9e-9 | 2.0e-8, 5.9e-9 |
+Interpretation (provisional): the energy extrapolates to the molecular value to 2e-8 on both backends (no a-independent
+energy offset). The box FORCES carry a ~4e-7 scatter that does not shrink with a and is IDENTICAL on both backends, so it is
+not an ECP-integral effect — most likely the libint p/d-shell nucleus-exponent floor for iodine (CO: 1.2e-7 at the default
+1e9), NOT yet verified by an exponent scan. So the ECP force term shows no a-independent error down to that ~5e-7 force floor.
+The backend matters sharply for the molecular reference: quadrature brings ferric's molecular ECP gradient to PySCF's analytic
+value within 8e-11 (libecpint: 2e-7). Transverse forces 8.3e-9 (symmetry-zero) at every a; ΣF ~1e-12. The ECP big-box open
+item is closed at the ~5e-7 level; tightening it needs the iodine nucleus-exponent scan.
