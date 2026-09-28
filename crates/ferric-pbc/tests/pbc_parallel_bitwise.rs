@@ -100,17 +100,18 @@ use ferric_pbc::kscf::{
 };
 use ferric_pbc::lattice::Cell;
 use ferric_pbc::pair_ft::residues::{
-    pair_ft_residues_chunked, pair_ft_residues_chunked_serial_oracle,
+    pair_ft_residues_chunked_serial_oracle, pair_ft_residues_chunked_timed,
 };
 use ferric_pbc::pair_ft::{
-    pair_ft_bytes_per_g, pair_ft_chunked, pair_ft_chunked_serial_oracle, pair_ft_with_thresh,
-    DEFAULT_PAIR_FT_THRESH,
+    pair_ft_bytes_per_g, pair_ft_chunked_serial_oracle, pair_ft_chunked_timed, pair_ft_with_thresh,
+    CTR_PARTIAL_WINDOW, DEFAULT_PAIR_FT_THRESH,
 };
 use ferric_pbc::rsgdf::kpoint::{
     sr_bins_parallel_and_serial, sr_sums_gamma_and_single_bin, KRsGdf, KRsGdfConfig, SrBinsParts,
 };
 use ferric_pbc::rsgdf::{lr_sums_parallel_and_serial, RangeSplit, RsGdf, RsGdfConfig};
 use ferric_pbc::stress::{gamma_rhf_stress_rsgdf, GammaStress, GammaStressConfig, StressMutation};
+use ferric_pbc::timing::PbcTimings;
 use ferric_pbc::uhf::GammaUhfIntegrals;
 use ndarray::{Array2, Array3};
 use num_complex::Complex64;
@@ -1123,7 +1124,16 @@ fn ecp_force_term_is_bitwise_across_threads_and_vs_serial_loop() {
 //   window evaluated per chunk instead of over the whole set, a dropped
 //   survivor that reached some G, a bucket mix-up, a pair-task race or a
 //   missed write into a reused buffer (the chunks shrink from 7 G to 6 G, so
-//   the last reuses a longer buffer's stale values) each break it.
+//   the last reuses a longer buffer's stale values) each break it. Its G
+//   list ends (|G| <= 5.3) far inside every pair's window, so it never
+//   takes the partial-window path (`0 < n_used < n_G`).
+// * `pair_ft_kernels_are_bitwise_vs_frozen_serial_kernels_in_partial_windows`
+//   — the same comparison on the same G directions scaled ×6 (|G| <= 31.6 /
+//   35.4), where the p/d pairs' windows (|G| ≈ 17.5–20.8) and the s–p/d ones
+//   (≈ 27.3–29.5) end INSIDE most chunks while the s–s ones (≈ 32–33.4)
+//   stay full; asserts via `pair FT partial-window pair-chunks` that both
+//   kernels really took that path. A nonzero written beyond a partial window
+//   (the oracle has +0.0 there) breaks it.
 // * `rsgdf_lr_sums_are_bitwise_vs_frozen_serial_across_threads` — the whole
 //   RS-GDF LR stage (pair FT + aux FT + reused-buffer packing + the
 //   row-blocked parallel J3 GEMMs, both terms per block, beside the J2
@@ -1207,8 +1217,18 @@ fn assert_chunks_bitwise(a: &Chunks, b: &Chunks, what: &str) {
     }
 }
 
-#[test]
-fn pair_ft_kernels_are_bitwise_vs_frozen_serial_kernels_across_threads() {
+/// `v` with every component multiplied by `s` (`s = 1` is exact).
+fn scaled(v: Vec<[f64; 3]>, s: f64) -> Vec<[f64; 3]> {
+    v.into_iter()
+        .map(|g| [g[0] * s, g[1] * s, g[2] * s])
+        .collect()
+}
+
+/// Production chunked pair FT (Gamma and residue kernels) vs the FROZEN
+/// serial oracles, bit for bit at 1/2/6 threads, on `scrambled_gvecs` scaled
+/// by `g_scale`. Returns the production runs' [`CTR_PARTIAL_WINDOW`] count
+/// (Gamma, residue), asserted equal at every thread count.
+fn pair_ft_bitwise_case(g_scale: f64) -> (u64, u64) {
     let cell = triclinic_cell();
     let prep = prep_for(&cell, &spd_basis_h());
     assert_split_binds(&prep);
@@ -1218,10 +1238,11 @@ fn pair_ft_kernels_are_bitwise_vs_frozen_serial_kernels_across_threads() {
     let budget = 7 * pair_ft_bytes_per_g(n, 2);
 
     // --- Gamma kernel.
-    let gv = scrambled_gvecs(&cell, [0.0; 3]);
+    let gv = scaled(scrambled_gvecs(&cell, [0.0; 3]), g_scale);
     assert!(gv.contains(&[0.0; 3]), "G = 0 missing");
-    let gamma = |oracle: bool| -> Chunks {
+    let gamma = |oracle: bool| -> (Chunks, PbcTimings) {
         let mut out: Chunks = Vec::new();
+        let mut t = PbcTimings::default();
         let sink = |g0: usize, _: &[[f64; 3]], p: &Array3<Complex64>| {
             out.push((g0, vec![p.clone()]));
             Ok(())
@@ -1229,13 +1250,13 @@ fn pair_ft_kernels_are_bitwise_vs_frozen_serial_kernels_across_threads() {
         let nc = if oracle {
             pair_ft_chunked_serial_oracle(&cell, &prep, &gv, thresh, budget, 0, sink)
         } else {
-            pair_ft_chunked(&cell, &prep, &gv, thresh, budget, 0, sink)
+            pair_ft_chunked_timed(&cell, &prep, &gv, thresh, budget, 0, &mut t, sink)
         }
         .expect("pair FT");
         assert_eq!(nc, out.len());
-        out
+        (out, t)
     };
-    let oracle = in_pool(1, || gamma(true));
+    let oracle = in_pool(1, || gamma(true)).0;
     assert!(oracle.len() >= 3, "only {} G chunk(s)", oracle.len());
     assert!(
         oracle
@@ -1243,13 +1264,15 @@ fn pair_ft_kernels_are_bitwise_vs_frozen_serial_kernels_across_threads() {
             .all(|(_, p)| p[0].iter().any(|z| z.re != 0.0 || z.im != 0.0)),
         "a vacuous chunk"
     );
+    let mut partial_gamma = Vec::new();
     for &nt in &THREADS {
-        let par = in_pool(nt, || gamma(false));
+        let (par, t) = in_pool(nt, || gamma(false));
         assert_chunks_bitwise(
             &par,
             &oracle,
             &format!("Gamma pair FT at {nt} threads vs serial"),
         );
+        partial_gamma.push(t.counter(CTR_PARTIAL_WINDOW).expect("window counter"));
     }
     // The unchunked entry point is the same kernel over one chunk.
     let whole = in_pool(6, || {
@@ -1272,11 +1295,12 @@ fn pair_ft_kernels_are_bitwise_vs_frozen_serial_kernels_across_threads() {
         0.3 * b[0][1] + 0.5 * b[2][1],
         0.3 * b[0][2] + 0.5 * b[2][2],
     ];
-    let kv = scrambled_gvecs(&cell, q);
+    let kv = scaled(scrambled_gvecs(&cell, q), g_scale);
     let moduli = [2, 1, 3];
     let kbudget = 7 * 6 * pair_ft_bytes_per_g(n, 2);
-    let resid = |oracle: bool| -> Chunks {
+    let resid = |oracle: bool| -> (Chunks, PbcTimings) {
         let mut out: Chunks = Vec::new();
+        let mut t = PbcTimings::default();
         let sink = |g0: usize, _: &[[f64; 3]], p: &[Array3<Complex64>]| {
             out.push((g0, p.to_vec()));
             Ok(())
@@ -1286,13 +1310,15 @@ fn pair_ft_kernels_are_bitwise_vs_frozen_serial_kernels_across_threads() {
                 &cell, &prep, &kv, moduli, thresh, kbudget, 0, sink,
             )
         } else {
-            pair_ft_residues_chunked(&cell, &prep, &kv, moduli, thresh, kbudget, 0, sink)
+            pair_ft_residues_chunked_timed(
+                &cell, &prep, &kv, moduli, thresh, kbudget, 0, &mut t, sink,
+            )
         }
         .expect("residue pair FT");
         assert_eq!(nc, out.len());
-        out
+        (out, t)
     };
-    let roracle = in_pool(1, || resid(true));
+    let roracle = in_pool(1, || resid(true)).0;
     assert!(roracle.len() >= 3, "only {} K chunk(s)", roracle.len());
     let live = roracle[0]
         .1
@@ -1303,14 +1329,68 @@ fn pair_ft_kernels_are_bitwise_vs_frozen_serial_kernels_across_threads() {
         live >= 2,
         "only {live} live residue bucket(s): binning is vacuous"
     );
+    let mut partial_resid = Vec::new();
     for &nt in &THREADS {
-        let par = in_pool(nt, || resid(false));
+        let (par, t) = in_pool(nt, || resid(false));
         assert_chunks_bitwise(
             &par,
             &roracle,
             &format!("residue pair FT at {nt} threads vs serial"),
         );
+        partial_resid.push(t.counter(CTR_PARTIAL_WINDOW).expect("window counter"));
     }
+    // The window of a (pair, chunk) does not depend on the thread count.
+    for (what, v) in [("Gamma", &partial_gamma), ("residue", &partial_resid)] {
+        assert!(
+            v.iter().all(|&x| x == v[0]),
+            "{what}: partial-window counts differ across threads: {v:?}"
+        );
+    }
+    (partial_gamma[0], partial_resid[0])
+}
+
+#[test]
+fn pair_ft_kernels_are_bitwise_vs_frozen_serial_kernels_across_threads() {
+    pair_ft_bitwise_case(1.0);
+}
+
+/// G scale of the partial-window test (see below).
+const PARTIAL_WINDOW_G_SCALE: f64 = 6.0;
+
+/// The same bitwise comparison where the per-pair G window ends INSIDE the
+/// chunks, so production accumulates `0..n_used` and writes `+0.0` beyond it
+/// (`plan.rs` module doc) — the path the unscaled test never takes.
+///
+/// Expectation from the screen (`g2max = 4p [ln(|cc| e^{−ab r²/p} / thresh)
+/// + 10 + (la + lb) ln |G|max]`, largest at a pair's nearest image; thresh
+/// 1e-15; `cc = c_a c_b (π/p)^{3/2}` with unit-normalised primitives):
+///
+/// * one-atom p–p (0.8 + 0.8): p = 1.6, cc = 2p = 3.2, ln(3.2e15) = 35.7;
+///   at |G|max = 31.6, g2max = 6.4 (35.7 + 10 + 2 ln 31.6) ≈ 337, |G| ≈ 18.3.
+/// * one-atom d–d (0.9 + 0.9): p = 1.8, cc = 4p²/3 = 4.32;
+///   g2max = 7.2 (36.0 + 10 + 4 ln 31.6) ≈ 431, |G| ≈ 20.8.
+/// * pairs with the contracted STO-3G s: the tight 3.425 primitive sets the
+///   window, |G| ≈ 27.3–29.5 against p/d, ≈ 32–33.4 for s–s (p = 6.85).
+///
+/// Unscaled, |G|max = 5.3 (5.9 for K = G + q) and every window is full. Scaled
+/// ×6 the G run to 31.6 (35.4), so every pair involving only p/d shells and
+/// the s–p/d pairs end inside the range while the s–s pairs stay full; the
+/// scrambled order (index `37 i mod 125`) mixes small and large |G| in each
+/// 7-G chunk, so the windows fall INSIDE chunks (not only between them). A
+/// replay of the screen over the 18 chunks × 144 shell pairs predicts 1816
+/// (Gamma) and 1960 (residue) partial pair-chunks; the test only requires
+/// > 0 for each kernel.
+#[test]
+fn pair_ft_kernels_are_bitwise_vs_frozen_serial_kernels_in_partial_windows() {
+    let (gamma, resid) = pair_ft_bitwise_case(PARTIAL_WINDOW_G_SCALE);
+    assert!(
+        gamma > 0,
+        "Gamma kernel: no (pair, chunk) with 0 < n_used < n_G; the partial-window path is unreached"
+    );
+    assert!(
+        resid > 0,
+        "residue kernel: no (pair, chunk) with 0 < n_used < n_G; the partial-window path is unreached"
+    );
 }
 
 /// `RsGdfConfig` of the LR tests: ω = 1, exxdiv none, `split` optional.

@@ -5470,3 +5470,32 @@ Dryice stage walls, after (1 thread / 6 threads, s):
 Next levers at 6 threads: the pair FT is still the biggest single stage (30 s), followed by
 hcore SR (13.7), aux FT + GEMM (10.8) and SR3 (9.1). At 1 thread the pair FT is 54% of the
 wall. Not yet measured: diamond_conv, dryice PBE, and a repeat to size the run-to-run scatter.
+
+## Pair FT per-pair tasks: sub-stage measurement (2026-09-28)
+
+Commit fe02524b changed the LR pair-FT kernel (`pair_ft/plan.rs`) from one rayon task per bra
+shell (72 tasks per chunk) to one per shell pair (5184 per chunk; 277 chunks, 1,309,248 tasks
+run). Dry ice, cc-pVDZ, Gamma RHF, range split, 6 physical cores.
+
+- 1 thread: pair FT 138.9 s (fcd41dc2, per bra shell) → kernel 154.9 s, stage 157.0 s
+  (fe02524b). Reproduced twice (loads 4.7 and 1.15); every other stage unchanged within 1%.
+  That is ~16-18 s of added serial work, ~12-14 µs per task.
+- 6 threads: kernel wall 28.3 s, busy sum 167.2 s ⇒ 98.5% utilisation; per-task inflation
+  6 vs 1 thread is only 8%.
+- Counters: cost total 871224, max pair task 1188, max bra shell 31908
+  (cost = survivors × ncart_a × ncart_b); longest task 1.8-6 ms.
+
+Dry ice totals after fe02524b (energy −750.8211184382436 identical in every run):
+
+| | 6 threads (s) | was (fcd41dc2) | 1 thread (s) | was (fcd41dc2) |
+|---|---|---|---|---|
+| total | 76.1 | 77.6 | 276.1 / 276.4 | 258.7 |
+| LR pair FT | 28.7 | 30.1 | 157.0 | 138.9 |
+| LR aux FT + GEMM | 8.2 | 10.8 | 35.1 | 38.6 |
+
+The 6-thread LR GEMMs take 6.87 s, 4.7× the 1-thread time, with a busy-sum inflation of 16%,
+which points to memory bandwidth.
+
+Interpretation (provisional): at 6 threads the pair FT is compute-saturated (98.5% busy), so
+further gains have to cut serial work. The per-pair split made the serial time worse. A fix is in
+progress: tasks of a bra shell plus a contiguous ket range, formed once per plan.

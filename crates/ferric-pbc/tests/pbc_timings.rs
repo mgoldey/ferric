@@ -143,8 +143,8 @@ fn hcore_and_rsgdf_timings_are_populated_and_disjoint() {
         "one GEMM sink call per pair-FT chunk"
     );
     // The LR breakdown: sub-stages inside their parent stage, one kernel and
-    // one sink GEMM call per chunk, and every chunk ran one task per shell
-    // pair (the pair-granular split really ran).
+    // one sink GEMM call per chunk, and every chunk visited every shell pair
+    // exactly once through its (bra shell, ket range) tasks.
     fn sub_of<'a>(t: &'a PbcTimings, name: &str) -> &'a ferric_pbc::timing::StageTiming {
         t.substage(name)
             .unwrap_or_else(|| panic!("sub-stage {name:?} missing: {:?}", t.substages))
@@ -171,17 +171,32 @@ fn hcore_and_rsgdf_timings_are_populated_and_disjoint() {
     assert_eq!(sub("pair FT: chunk kernel (parallel)").calls, chunks);
     assert_eq!(sub("LR sink: J3 + J2 GEMMs").calls, chunks);
     let shells = gt.counter("pair FT shells").expect("shell counter");
-    assert_eq!(gt.counter("pair FT tasks per chunk"), Some(shells * shells));
-    assert_eq!(
-        gt.counter("pair FT tasks run"),
-        Some(chunks * shells * shells),
-        "not one task per shell pair per chunk"
+    let tasks = gt.counter("pair FT tasks per chunk").expect("task counter");
+    assert!(
+        (shells..=shells * shells).contains(&tasks),
+        "{tasks} tasks per chunk for {shells} shells (each bra shell has 1..=shells)"
     );
-    let (cmax, ctot) = (
-        gt.counter("pair FT cost max pair task").unwrap(),
+    assert_eq!(
+        gt.counter("pair FT shell pairs visited"),
+        Some(chunks * shells * shells),
+        "the tasks did not cover every shell pair once per chunk"
+    );
+    let ran = gt.counter("pair FT tasks run").expect("tasks-run counter");
+    assert!(
+        ran >= chunks && ran <= chunks * tasks,
+        "{ran} tasks run over {chunks} chunks of at most {tasks}"
+    );
+    let (ctask, cpair, ctot) = (
+        gt.counter("pair FT cost max task").unwrap(),
+        gt.counter("pair FT cost max pair").unwrap(),
         gt.counter("pair FT cost total").unwrap(),
     );
-    assert!(cmax > 0 && cmax <= gt.counter("pair FT cost max bra shell").unwrap() && ctot >= cmax);
+    assert!(
+        cpair > 0
+            && cpair <= ctask
+            && ctask <= gt.counter("pair FT cost max bra shell").unwrap()
+            && ctot >= ctask
+    );
 
     // Numbers do not move: a second build is bitwise the first, two SCFs on
     // it agree bit for bit, and the energy keeps its pinned fitting error.

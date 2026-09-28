@@ -20,7 +20,7 @@
 //! same Cartesian→AO transform), kept separate so the Gamma kernel stays
 //! byte-identical.
 
-use super::plan::{min_gnorm2, recycle, PairFtPlan};
+use super::plan::{min_gnorm2, recycle, PairFtPlan, SUB_PLAN};
 use super::{
     basis_lmax, build_shells, max_gnorm, pair_ft_bytes_per_g, validate_inputs, WINDOW_MARGIN,
 };
@@ -28,7 +28,7 @@ use super::{pair_ft_deriv_bytes_per_g, scatter_shell_block};
 use crate::budget::{bytes_of, Ledger};
 use crate::kpts::lattice_coords;
 use crate::lattice::Cell;
-use crate::timing::PbcTimings;
+use crate::timing::{PbcTimings, StageClock};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::md3c1e::{cart_components, e_table, ferric_cart2sph};
@@ -74,6 +74,40 @@ pub fn pair_ft_residues_chunked<F>(
     thresh: f64,
     chunk_budget_bytes: usize,
     extra_bytes_per_g: usize,
+    sink: F,
+) -> Result<usize, FerricError>
+where
+    F: FnMut(usize, &[[f64; 3]], &[Array3<Complex64>]) -> Result<(), FerricError>,
+{
+    pair_ft_residues_chunked_timed(
+        cell,
+        prep,
+        kvecs,
+        moduli,
+        thresh,
+        chunk_budget_bytes,
+        extra_bytes_per_g,
+        &mut PbcTimings::default(),
+        sink,
+    )
+}
+
+/// [`pair_ft_residues_chunked`] recording its sub-stages, load-balance
+/// counters and window counters ([`super::CTR_PARTIAL_WINDOW`],
+/// [`super::CTR_EMPTY_WINDOW`]) into `t` (observation only), as
+/// [`super::pair_ft_chunked_timed`]. Public for the reachability assertions
+/// of `tests/pbc_parallel_bitwise.rs`.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn pair_ft_residues_chunked_timed<F>(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    kvecs: &[[f64; 3]],
+    moduli: [usize; 3],
+    thresh: f64,
+    chunk_budget_bytes: usize,
+    extra_bytes_per_g: usize,
+    t: &mut PbcTimings,
     mut sink: F,
 ) -> Result<usize, FerricError>
 where
@@ -100,6 +134,7 @@ where
         per_g,
     )?;
     let chunk = (chunk_budget_bytes / per_g).max(1);
+    let clock = StageClock::start();
     let plan = PairFtPlan::new(
         cell,
         prep,
@@ -109,10 +144,12 @@ where
         Some(moduli),
         "pair_ft_residues",
     )?;
-    let (mut pool, mut t) = (Vec::new(), PbcTimings::default());
+    t.stop_sub(SUB_PLAN, &clock);
+    plan.record_stats(t);
+    let mut pool = Vec::new();
     let mut n_chunks = 0usize;
     for (c, ks) in kvecs.chunks(chunk).enumerate() {
-        let q = plan.block_timed(ks, &mut pool, &mut t);
+        let q = plan.block_timed(ks, &mut pool, t);
         sink(c * chunk, ks, &q)?;
         recycle(&mut pool, q);
         n_chunks += 1;

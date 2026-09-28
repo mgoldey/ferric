@@ -30,20 +30,36 @@
 //!   the serial kernel's expressions. A survivor whose window reaches no G of
 //!   the whole set (`g2max < min |G|²`) contributed zero to every chunk in the
 //!   serial kernel (`ngp == 0`) and is dropped.
-//! * The parallel split is over SHELL PAIRS `(bra, ket)`: a task owns the
-//!   `nfun(bra)` row segments of its pair (columns of the ket shell) in every
-//!   `P[r]` and writes each of their elements exactly once, from a Cartesian
-//!   accumulator it zeroes itself. No element is shared between tasks, and
-//!   the split does not depend on the thread count. (Pair granularity, not
-//!   bra-shell rows: with few shells a heavy contracted bra row is a tail at
-//!   every per-chunk barrier; the `pair FT cost max *` counters of
-//!   [`PairFtPlan::record_stats`] measure it.)
-//! * Every element of every `P[r]` is written (the pairs tile the matrix,
-//!   `check_contiguous`, and the scatter covers every `(i, j, g)`), so the
-//!   output buffers are REUSED across chunks without zeroing
-//!   ([`PairFtPlan::block_timed`]): a stale value is always overwritten. The
-//!   multi-chunk bitwise tests would see a missed write, since the oracle
-//!   starts every chunk from zero.
+//! * The parallel split is over TASKS `(bra shell, contiguous ket-shell
+//!   range)`, formed once per plan ([`PairFtPlan::new`], deterministic
+//!   greedy on a per-pair work weight, [`PAIR_FT_TASK_SPLIT`]): a task owns
+//!   the `nfun(bra)` row segments of its ket range (the columns of those ket
+//!   shells) in every `P[r]`, walks its ket shells in order and writes each
+//!   of their elements exactly once, each pair from a Cartesian accumulator
+//!   it zeroes itself. No element is shared between tasks, and neither the
+//!   split nor any element's term order depends on the thread count. (Finer
+//!   than bra-shell rows: with few shells a heavy contracted bra row is a
+//!   tail at every per-chunk barrier. Coarser than single pairs, whose split
+//!   measurably raised the serial kernel time: FINDINGS "Pair FT per-pair
+//!   tasks: sub-stage measurement (2026-09-28)". The `pair FT cost max *`
+//!   counters of [`PairFtPlan::record_stats`] measure the balance.)
+//! * Beyond a pair's window (`g >= n_used`, the largest `ngp` of its
+//!   survivors, `n_used = 0` for a pair without survivors) no term reaches
+//!   the Cartesian accumulator, which therefore stays exactly `+0.0`, and
+//!   the serial transform of `+0.0` is `+0.0` (`+0.0 + (±0.0) = +0.0`, the
+//!   pure-shell accumulators start at `+0.0`). The kernel writes that `+0.0`
+//!   directly there instead of zeroing, transforming and scattering it.
+//!   Both shortcuts are counted ([`CTR_PARTIAL_WINDOW`]: `0 < n_used <
+//!   n_G`; [`CTR_EMPTY_WINDOW`]: `n_used = 0`), and the bitwise test
+//!   `pair_ft_kernels_are_bitwise_vs_frozen_serial_kernels_in_partial_windows`
+//!   asserts the partial one is reached by both kernels.
+//! * Every element of every `P[r]` is written (the tasks tile the matrix:
+//!   `check_contiguous`, asserted again per chunk by
+//!   [`PairFtPlan::segments`]; the scatter covers every `(i, j, g)`, the
+//!   `+0.0` beyond the window included), so the output buffers are REUSED
+//!   across chunks without zeroing ([`PairFtPlan::block_timed`]): a stale
+//!   value is always overwritten. The multi-chunk bitwise tests would see a
+//!   missed write, since the oracle starts every chunk from zero.
 //!
 //! Hence every element carries the serial scalar sequence: the output is BIT
 //! FOR BIT the frozen serial kernel's, at any thread count and any G
@@ -52,10 +68,10 @@
 //! # Memory
 //!
 //! The survivor lists ([`SURVIVOR_BYTES`] each) are counted before they are
-//! allocated and checked against ferric's unified budget. Each rayon task
-//! holds one shell pair's scratch (`R` Cartesian blocks, the F rows and the
-//! pure half-transform, all `× n_G(chunk)`), which is the per-G scratch
-//! [`super::pair_ft_bytes_per_g`] already charges once per G; with `T`
+//! allocated and checked against ferric's unified budget. Each rayon worker
+//! holds one shell pair's scratch at a time (`R` Cartesian blocks, the F
+//! rows and the pure half-transform, all `× n_G(chunk)`), which is the per-G
+//! scratch [`super::pair_ft_bytes_per_g`] already charges once per G; with `T`
 //! threads `T` such sets are live (a few KiB per G per thread against the
 //! `16 nao²` bytes per G of the output itself).
 
@@ -80,6 +96,23 @@ pub(crate) const SUB_PLAN: &str = "pair FT: plan (screen walk, survivor lists)";
 pub(crate) const SUB_SETUP: &str = "pair FT: chunk setup (serial)";
 /// Sub-stage: the parallel per-chunk kernel.
 pub(crate) const SUB_KERNEL: &str = "pair FT: chunk kernel (parallel)";
+
+/// Counter: (shell pair, G chunk) combinations whose window ends INSIDE the
+/// chunk (`0 < n_used < n_G`), i.e. that took the accumulate-then-`+0.0`-tail
+/// path of the per-pair kernel. Summed over chunks and calls.
+pub const CTR_PARTIAL_WINDOW: &str = "pair FT partial-window pair-chunks";
+/// Counter: (shell pair, G chunk) combinations with `n_used == 0` (no
+/// survivor reaches any G of the chunk; written as `+0.0` directly).
+pub const CTR_EMPTY_WINDOW: &str = "pair FT empty-window pair-chunks";
+
+/// Task granularity: a task's work weight is capped at
+/// `max(ceil(W / PAIR_FT_TASK_SPLIT), heaviest pair)`, `W` the plan's total
+/// weight (a pair weighs `(survivors + 1) × ncart(bra) × ncart(ket)`, the
+/// `+ 1` standing for its transform and scatter, which run for every pair).
+/// About `PAIR_FT_TASK_SPLIT + nshells` tasks per chunk. A constant, NOT a
+/// function of the thread count: the split (hence every element's term
+/// order, which it does not touch anyway) is the same on any pool.
+pub(crate) const PAIR_FT_TASK_SPLIT: u64 = 256;
 
 /// One screened primitive pair of a shell pair: the image and primitive
 /// indices, and the two screen scalars (`cc = c_a c_b (π/p)^{3/2}` and the G
@@ -108,6 +141,12 @@ pub(crate) struct PairFtPlan {
     lmax: usize,
     /// `survivors[ia * nshells + ib]`, in serial walk order.
     survivors: Vec<Vec<Survivor>>,
+    /// Largest survivor window `g2max` of each shell pair (`−∞` without
+    /// survivors): `n_used` of a chunk is its `partition_point`.
+    g2max_pair: Vec<f64>,
+    /// The per-chunk tasks, ordered by bra shell then ket range; the ket
+    /// ranges of a bra shell tile `0..nshells` in order.
+    tasks: Vec<PairTaskSpec>,
     comps: Vec<Vec<[u8; 3]>>,
     c2s: Vec<Vec<f64>>,
     who: &'static str,
@@ -141,6 +180,8 @@ impl PairFtPlan {
             nbf: prep.nbasis(),
             lmax,
             survivors: Vec::new(),
+            g2max_pair: Vec::new(),
+            tasks: Vec::new(),
             comps: (0..=lmax).map(cart_components).collect(),
             c2s: (0..=lmax).map(ferric_cart2sph).collect(),
             shells,
@@ -212,39 +253,114 @@ impl PairFtPlan {
                 v
             })
             .collect();
+        plan.g2max_pair = plan
+            .survivors
+            .iter()
+            .map(|v| v.iter().map(|s| s.g2max).fold(f64::NEG_INFINITY, f64::max))
+            .collect();
+        plan.tasks = plan.build_tasks();
         Ok(plan)
+    }
+
+    /// Work weight of shell pair `(ia, ib)` for the task split (not a
+    /// numerical input): `(survivors + 1) × ncart(ia) × ncart(ib)`.
+    fn pair_weight(&self, ia: usize, ib: usize) -> u64 {
+        let ns = self.shells.len();
+        let n = self.survivors[ia * ns + ib].len() as u64 + 1;
+        n * (self.shells[ia].ncart * self.shells[ib].ncart) as u64
+    }
+
+    /// The deterministic greedy split ([`PAIR_FT_TASK_SPLIT`]): per bra
+    /// shell, ket shells in order, a range is closed before the pair that
+    /// would push it past the cap. Every shell pair lands in exactly one
+    /// task; each bra shell has at least one.
+    fn build_tasks(&self) -> Vec<PairTaskSpec> {
+        let ns = self.shells.len();
+        let (mut total, mut heaviest) = (0u64, 0u64);
+        for ia in 0..ns {
+            for ib in 0..ns {
+                let w = self.pair_weight(ia, ib);
+                total += w;
+                heaviest = heaviest.max(w);
+            }
+        }
+        let cap = total.div_ceil(PAIR_FT_TASK_SPLIT).max(heaviest);
+        let col = |kb: usize| {
+            if kb < ns {
+                self.shells[kb].off
+            } else {
+                self.nbf
+            }
+        };
+        let mut tasks = Vec::new();
+        for ia in 0..ns {
+            let (mut kb0, mut acc) = (0usize, 0u64);
+            for ib in 0..ns {
+                let w = self.pair_weight(ia, ib);
+                if ib > kb0 && acc + w > cap {
+                    tasks.push(PairTaskSpec {
+                        ia,
+                        kb0,
+                        kb1: ib,
+                        c0: col(kb0),
+                        c1: col(ib),
+                    });
+                    (kb0, acc) = (ib, 0);
+                }
+                acc += w;
+            }
+            tasks.push(PairTaskSpec {
+                ia,
+                kb0,
+                kb1: ns,
+                c0: col(kb0),
+                c1: col(ns),
+            });
+        }
+        tasks
     }
 
     /// Load-balance counters of this plan (max over the plans of a call
     /// sequence, e.g. the main and smooth LR passes): tasks per chunk, and
     /// the work proxy `survivors × ncart(bra) × ncart(ket)` summed, of the
-    /// largest pair task, and of the largest bra-shell row (the previous
-    /// task granularity). `max / (total / tasks)` is the imbalance factor.
+    /// largest task, of the largest single pair and of the largest bra-shell
+    /// row (the pre-pair task granularity). `max task / (total / tasks)` is
+    /// the imbalance factor.
     pub(crate) fn record_stats(&self, t: &mut PbcTimings) {
         let ns = self.shells.len();
+        let cost = |ia: usize, ib: usize| {
+            self.survivors[ia * ns + ib].len() as u64
+                * (self.shells[ia].ncart * self.shells[ib].ncart) as u64
+        };
         let (mut total, mut max_pair, mut max_bra, mut nsurv) = (0u64, 0u64, 0u64, 0u64);
-        for (ia, sa) in self.shells.iter().enumerate() {
+        for ia in 0..ns {
             let mut bra = 0u64;
-            for (ib, sb) in self.shells.iter().enumerate() {
-                let n = self.survivors[ia * ns + ib].len() as u64;
-                let c = n * (sa.ncart * sb.ncart) as u64;
-                nsurv += n;
+            for ib in 0..ns {
+                let c = cost(ia, ib);
+                nsurv += self.survivors[ia * ns + ib].len() as u64;
                 bra += c;
                 max_pair = max_pair.max(c);
             }
             total += bra;
             max_bra = max_bra.max(bra);
         }
+        let max_task = self
+            .tasks
+            .iter()
+            .map(|k| (k.kb0..k.kb1).map(|ib| cost(k.ia, ib)).sum::<u64>())
+            .max()
+            .unwrap_or(0);
         t.add_counter("pair FT survivors (sum over plans)", nsurv);
         t.max_counter("pair FT shells", ns as u64);
-        t.max_counter("pair FT tasks per chunk", (ns * ns) as u64);
+        t.max_counter("pair FT tasks per chunk", self.tasks.len() as u64);
         t.max_counter("pair FT cost total", total);
-        t.max_counter("pair FT cost max pair task", max_pair);
+        t.max_counter("pair FT cost max task", max_task);
+        t.max_counter("pair FT cost max pair", max_pair);
         t.max_counter("pair FT cost max bra shell", max_bra);
     }
 
-    /// Shells must tile `0..nbf` in order (the pair tasks' row segments
-    /// tile every `P[r]`).
+    /// Shells must tile `0..nbf` in order (the tasks' row segments tile
+    /// every `P[r]`).
     fn check_contiguous(&self) -> Result<(), FerricError> {
         let mut next = 0usize;
         for (s, sh) in self.shells.iter().enumerate() {
@@ -350,23 +466,44 @@ impl PairFtPlan {
             return out;
         }
         let chunk = ChunkG::new(gvecs, self.lmax);
-        let tasks = self.pair_tasks(&mut out, ng);
-        let n_tasks = tasks.len() as u64;
+        let mut segs = self.segments(&mut out, ng);
+        // Task `k` owns `segs[seg(k)..seg(k) + nr * nfun(bra)]`: the tasks
+        // take consecutive runs of the task-major segment list.
+        let mut rest: &mut [&mut [Complex64]] = &mut segs;
+        let views: Vec<(&PairTaskSpec, &mut [&mut [Complex64]])> = self
+            .tasks
+            .iter()
+            .map(|k| {
+                let n = self.nr * self.shells[k.ia].nfun;
+                let (mine, tail) = std::mem::take(&mut rest).split_at_mut(n);
+                rest = tail;
+                (k, mine)
+            })
+            .collect();
+        assert!(rest.is_empty(), "{}: task segments left over", self.who);
+        let n_tasks = views.len() as u64;
         t.stop_sub(SUB_SETUP, &clock);
 
         let clock = StageClock::start();
-        let (busy, longest) = (AtomicU64::new(0), AtomicU64::new(0));
-        tasks
+        let (busy, longest, pairs) = (AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0));
+        let (partial, empty) = (AtomicU64::new(0), AtomicU64::new(0));
+        views
             .into_par_iter()
-            .for_each_init(PairScratch::default, |scr, mut task| {
+            .for_each_init(PairScratch::default, |scr, (k, dst)| {
                 let t0 = Instant::now();
-                self.pair_block(&mut task, scr, &chunk);
+                let w = self.task_block(k, dst, scr, &chunk);
                 let ns = u64::try_from(t0.elapsed().as_nanos()).unwrap_or(u64::MAX);
                 busy.fetch_add(ns, Ordering::Relaxed);
                 longest.fetch_max(ns, Ordering::Relaxed);
+                pairs.fetch_add((k.kb1 - k.kb0) as u64, Ordering::Relaxed);
+                partial.fetch_add(w.partial, Ordering::Relaxed);
+                empty.fetch_add(w.empty, Ordering::Relaxed);
             });
         t.stop_sub(SUB_KERNEL, &clock);
         t.add_counter("pair FT tasks run", n_tasks);
+        t.add_counter("pair FT shell pairs visited", pairs.into_inner());
+        t.add_counter(CTR_PARTIAL_WINDOW, partial.into_inner());
+        t.add_counter(CTR_EMPTY_WINDOW, empty.into_inner());
         t.add_counter(
             "pair FT kernel busy us (sum of task walls)",
             busy.into_inner() / 1000,
@@ -375,51 +512,108 @@ impl PairFtPlan {
         out
     }
 
-    /// One task per shell pair `(ia, ib)` (index `ia * ns + ib`), holding
-    /// its row segments of every `P[r]`: `dst[r * nfun(ia) + i]` is row
-    /// `off(ia) + i`, columns `off(ib)..off(ib) + nfun(ib)`, all `ng` G.
-    fn pair_tasks<'a>(&self, out: &'a mut [Array3<Complex64>], ng: usize) -> Vec<PairTask<'a>> {
-        let ns = self.shells.len();
+    /// Every task's row segments of every `P[r]`, TASK-major: task `k`'s
+    /// run is `r * nfun(bra) + i` -> row `off(bra) + i` of `P[r]`, columns
+    /// `c0(k)..c1(k)`, all `ng` G. Three allocations per chunk (rows,
+    /// segments, and the caller's task views), none per task. Asserts that
+    /// the tasks consumed every row whole (they tile each `P[r]`).
+    fn segments<'a>(
+        &self,
+        out: &'a mut [Array3<Complex64>],
+        ng: usize,
+    ) -> Vec<&'a mut [Complex64]> {
         let nbf = self.nbf;
-        let mut tasks: Vec<PairTask<'a>> = (0..ns * ns)
-            .map(|p| PairTask {
-                ia: p / ns,
-                ib: p % ns,
-                dst: Vec::with_capacity(self.nr * self.shells[p / ns].nfun),
-            })
-            .collect();
+        let mut rows: Vec<&'a mut [Complex64]> = Vec::with_capacity(self.nr * nbf);
         for arr in out.iter_mut() {
-            let mut rest = arr.as_slice_mut().expect("standard-layout block");
-            for (ia, sa) in self.shells.iter().enumerate() {
-                for _ in 0..sa.nfun {
-                    let (mut row, tail) = std::mem::take(&mut rest).split_at_mut(nbf * ng);
-                    rest = tail;
-                    for (ib, sb) in self.shells.iter().enumerate() {
-                        let (head, tail) = std::mem::take(&mut row).split_at_mut(sb.nfun * ng);
-                        tasks[ia * ns + ib].dst.push(head);
-                        row = tail;
-                    }
+            let s = arr.as_slice_mut().expect("standard-layout block");
+            rows.extend(s.chunks_mut(nbf * ng));
+        }
+        let nseg: usize = self
+            .tasks
+            .iter()
+            .map(|k| self.nr * self.shells[k.ia].nfun)
+            .sum();
+        let mut segs = Vec::with_capacity(nseg);
+        for k in &self.tasks {
+            let sa = &self.shells[k.ia];
+            let width = (k.c1 - k.c0) * ng;
+            for r in 0..self.nr {
+                for i in 0..sa.nfun {
+                    let row = &mut rows[r * nbf + sa.off + i];
+                    let (head, tail) = std::mem::take(row).split_at_mut(width);
+                    *row = tail;
+                    segs.push(head);
                 }
             }
         }
-        tasks
+        assert!(
+            rows.iter().all(|r| r.is_empty()),
+            "{}: the tasks do not tile the output rows",
+            self.who
+        );
+        segs
     }
 
-    /// Shell pair `(ia, ib)` into its row segments: the serial kernels'
-    /// inner loop over the cached survivors, then the Cartesian→AO scatter.
-    fn pair_block(&self, task: &mut PairTask<'_>, scr: &mut PairScratch, ch: &ChunkG) {
+    /// Task `k`: its ket shells in order, each pair into its columns of the
+    /// task's row segments (`dst[r * nfun(bra) + i]`, local column
+    /// `off(ket) − c0(k) + j`). Returns the task's window tallies (counted
+    /// locally, added to the shared counters once per task).
+    fn task_block(
+        &self,
+        k: &PairTaskSpec,
+        dst: &mut [&mut [Complex64]],
+        scr: &mut PairScratch,
+        ch: &ChunkG,
+    ) -> WindowTally {
+        let mut w = WindowTally::default();
+        for ib in k.kb0..k.kb1 {
+            let col0 = self.shells[ib].off - k.c0;
+            let n_used = self.pair_block(k.ia, ib, dst, col0, scr, ch);
+            if n_used == 0 {
+                w.empty += 1;
+            } else if n_used < ch.ng {
+                w.partial += 1;
+            }
+        }
+        w
+    }
+
+    /// Shell pair `(ia, ib)` into its columns (from local column `col0`) of
+    /// the row segments `dst`: the serial kernels' inner loop over the
+    /// cached survivors, then the Cartesian→AO scatter. Returns the pair's
+    /// window `n_used` in this chunk (observation only).
+    fn pair_block(
+        &self,
+        ia: usize,
+        ib: usize,
+        dst: &mut [&mut [Complex64]],
+        col0: usize,
+        scr: &mut PairScratch,
+        ch: &ChunkG,
+    ) -> usize {
         let zero = Complex64::new(0.0, 0.0);
         let (ng, gvecs, g2, pw) = (ch.ng, &ch.gsorted, &ch.g2, &ch.pw);
         let ns = self.shells.len();
-        let (sa, sb) = (&self.shells[task.ia], &self.shells[task.ib]);
+        let (sa, sb) = (&self.shells[ia], &self.shells[ib]);
         let (la, lb) = (sa.l, sb.l);
         let (nca, ncb) = (sa.ncart, sb.ncart);
         let st = la + lb + 1;
         let nij = (la + 1) * (lb + 1);
+        let nfa = sa.nfun;
+        // No survivor reaches g >= n_used (module doc): only 0..n_used of
+        // the Cartesian accumulators is zeroed, accumulated and transformed.
+        let n_used = g2.partition_point(|&x| x <= self.g2max_pair[ia * ns + ib]);
+        if n_used == 0 {
+            for rows in dst.chunks_mut(nfa) {
+                self.scatter(rows, col0, &[], 0, &mut scr.tmp, sa, sb, &ch.order);
+            }
+            return 0;
+        }
         // Stale scratch is never read: `common` and the F rows are written
         // for g < ngp before being read there, `e_table` zeroes its range,
-        // and the Cartesian accumulators restart from +0.0 (as the serial
-        // kernel's fresh `vec![zero; ..]`).
+        // the Cartesian accumulators restart from +0.0 on 0..n_used (as the
+        // serial kernel's fresh `vec![zero; ..]`) and nothing reads them
+        // beyond it.
         scr.common.resize(ng, zero);
         for d in 0..3 {
             scr.ebuf[d].resize(nij * st, 0.0);
@@ -427,8 +621,10 @@ impl PairFtPlan {
         }
         scr.cart.resize_with(self.nr, Vec::new);
         for c in scr.cart.iter_mut() {
-            c.clear();
             c.resize(nca * ncb * ng, zero);
+            for row in c.chunks_mut(ng) {
+                row[..n_used].fill(zero);
+            }
         }
         let ca_comps = &self.comps[la];
         let cb_comps = &self.comps[lb];
@@ -440,7 +636,7 @@ impl PairFtPlan {
             tmp,
         } = scr;
 
-        for s in &self.survivors[task.ia * ns + task.ib] {
+        for s in &self.survivors[ia * ns + ib] {
             let ngp = g2.partition_point(|&x| x <= s.g2max);
             if ngp == 0 {
                 continue;
@@ -503,20 +699,25 @@ impl PairFtPlan {
                 }
             }
         }
-        let nfa = sa.nfun;
-        for (r, rows) in task.dst.chunks_mut(nfa).enumerate() {
-            self.scatter(rows, &cart[r], tmp, sa, sb, &ch.order);
+        for (rows, cart) in dst.chunks_mut(nfa).zip(cart.iter()) {
+            self.scatter(rows, col0, cart, n_used, tmp, sa, sb, &ch.order);
         }
+        n_used
     }
 
-    /// Cartesian `[nca][ncb][ng]` -> the pair's AO row segments (`rows[i]`,
-    /// local column `j`), G scattered back through `order`: the serial
-    /// kernels' transform, expression for expression. `tmp` is scratch for
-    /// the pure half-transform (restarted from +0.0).
+    /// Cartesian `[nca][ncb][ng]` -> the pair's AO elements (`rows[i]`,
+    /// local column `col0 + j`), G scattered back through `order`: the
+    /// serial kernels' transform, expression for expression, for
+    /// `g < n_used`; `+0.0` (its value there, module doc) for the rest.
+    /// `cart` is read on `0..n_used` of each row only; `tmp` is scratch for
+    /// the pure half-transform (restarted from +0.0 on that range).
+    #[allow(clippy::too_many_arguments)]
     fn scatter(
         &self,
         rows: &mut [&mut [Complex64]],
+        col0: usize,
         cart: &[Complex64],
+        n_used: usize,
         tmp: &mut Vec<Complex64>,
         sa: &FtShell,
         sb: &FtShell,
@@ -527,10 +728,12 @@ impl PairFtPlan {
         let (la, lb) = (sa.l, sb.l);
         let (nca, ncb) = (sa.ncart, sb.ncart);
         let (nfa, nfb) = (sa.nfun, sb.nfun);
-        let right: &[Complex64] = if sb.pure {
+        let right: &[Complex64] = if n_used > 0 && sb.pure {
             let cbm = &self.c2s[lb];
-            tmp.clear();
             tmp.resize(nca * nfb * ng, zero);
+            for row in tmp.chunks_mut(ng) {
+                row[..n_used].fill(zero);
+            }
             for m in 0..nca {
                 for j in 0..nfb {
                     for n in 0..ncb {
@@ -538,7 +741,7 @@ impl PairFtPlan {
                         if c == 0.0 {
                             continue;
                         }
-                        for g in 0..ng {
+                        for g in 0..n_used {
                             tmp[(m * nfb + j) * ng + g] += cart[(m * ncb + n) * ng + g] * c;
                         }
                     }
@@ -550,8 +753,8 @@ impl PairFtPlan {
         };
         for (i, dst) in rows.iter_mut().enumerate().take(nfa) {
             for j in 0..nfb {
-                let base = j * ng;
-                for g in 0..ng {
+                let base = (col0 + j) * ng;
+                for g in 0..n_used {
                     let val = if sa.pure {
                         let cam = &self.c2s[la];
                         let mut acc = zero;
@@ -567,21 +770,36 @@ impl PairFtPlan {
                     };
                     dst[base + order[g]] = val;
                 }
+                for &o in &order[n_used..] {
+                    dst[base + o] = zero;
+                }
             }
         }
     }
 }
 
-/// One shell-pair task of a chunk: its row segments of every `P[r]`
-/// ([`PairFtPlan::pair_tasks`]).
-struct PairTask<'a> {
+/// One task of every chunk: bra shell `ia`, ket shells `kb0..kb1`, whose
+/// AO columns are `c0..c1` ([`PairFtPlan::build_tasks`]).
+struct PairTaskSpec {
     ia: usize,
-    ib: usize,
-    dst: Vec<&'a mut [Complex64]>,
+    kb0: usize,
+    kb1: usize,
+    c0: usize,
+    c1: usize,
 }
 
-/// Per-worker scratch of [`PairFtPlan::pair_block`], reused across tasks
-/// (never read stale; see there).
+/// Per-task tallies of the (shell pair, G chunk) windows: `partial` counts
+/// `0 < n_used < n_G(chunk)` (accumulated on `0..n_used`, `+0.0` written
+/// beyond), `empty` counts `n_used == 0` (the early all-`+0.0` branch).
+/// Pairs with `n_used == n_G(chunk)` are not counted.
+#[derive(Default)]
+struct WindowTally {
+    partial: u64,
+    empty: u64,
+}
+
+/// Per-worker scratch of [`PairFtPlan::pair_block`], reused across pairs
+/// and tasks (never read stale; see there).
 #[derive(Default)]
 struct PairScratch {
     common: Vec<Complex64>,

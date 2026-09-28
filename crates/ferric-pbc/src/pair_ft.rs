@@ -80,6 +80,7 @@ mod plan;
 pub mod residues;
 
 use plan::{min_gnorm2, recycle, PairFtPlan};
+pub use plan::{CTR_EMPTY_WINDOW, CTR_PARTIAL_WINDOW};
 
 /// Default primitive-pair screening threshold for [`pair_ft`].
 pub const DEFAULT_PAIR_FT_THRESH: f64 = 1e-15;
@@ -338,12 +339,15 @@ where
 }
 
 /// [`pair_ft_chunked`] recording its sub-stages (`plan::SUB_PLAN`,
-/// `SUB_SETUP`, `SUB_KERNEL`) and load-balance counters into `t`
-/// (observation only). The chunk's output buffer is reused for the next
-/// chunk after the sink returns (`plan` module doc: every element is
-/// overwritten, so reuse cannot change a bit).
+/// `SUB_SETUP`, `SUB_KERNEL`), load-balance counters and the window counters
+/// ([`CTR_PARTIAL_WINDOW`], [`CTR_EMPTY_WINDOW`]) into `t` (observation
+/// only). The chunk's output buffer is reused for the next chunk after the
+/// sink returns (`plan` module doc: every element is overwritten, so reuse
+/// cannot change a bit). Public for the reachability assertions of
+/// `tests/pbc_parallel_bitwise.rs`.
+#[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn pair_ft_chunked_timed<F>(
+pub fn pair_ft_chunked_timed<F>(
     cell: &Cell,
     prep: &PreparedBasis,
     gvecs: &[[f64; 3]],
