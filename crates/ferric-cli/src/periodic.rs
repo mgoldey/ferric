@@ -509,9 +509,10 @@ fn gamma_system(
             max_eri_bytes(plan),
         )?)),
         Some(aux) => {
-            // The plan only carries a range split on a Gamma energy run
+            // The plan only carries a range split on an energy run
             // (`periodic_plan` refuses it with task = "optimize"; the library
             // Gamma forces/stress do follow the split, the CLI is not wired).
+            // The k-point build takes it through `krsgdf_config`.
             let cfg = RsGdfConfig {
                 exxdiv: plan.exxdiv,
                 budget_bytes: budget_bytes(plan),
@@ -1046,6 +1047,7 @@ fn krsgdf_config(plan: &PeriodicPlan) -> KRsGdfConfig {
     KRsGdfConfig {
         gdf: RsGdfConfig {
             budget_bytes: budget_bytes(plan),
+            range_split: range_split_lambda(plan).map(RangeSplit::new),
             ..Default::default()
         },
         ..Default::default()

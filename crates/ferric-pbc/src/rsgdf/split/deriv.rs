@@ -57,6 +57,7 @@ use crate::hcore::ONE_E_ENGINE_PRECISION;
 use crate::lattice::Cell;
 use crate::ordered::{ordered_units, Stored};
 use crate::pair_ft::{pair_ft_deriv_chunked, pair_ft_strain_chunked, DEFAULT_PAIR_FT_THRESH};
+use crate::rsgdf::deriv::Y3;
 use crate::rsgdf::strain::{aux_ft_strain_shells, FitStrainTerms};
 use crate::rsgdf::{
     aux_ft_shells, check_obs_on_cell, dot3, gshells, pair_image_radius, require_pure_aux,
@@ -345,13 +346,14 @@ impl SplitPlan {
     /// `(ga, gb, gpx)` of one kept-call derivative block (layout
     /// `[d/dP, d/d(bra), d/d(ket)]`, each `(nP, n1, n2)`), every `Y` element
     /// scaled by the pieces' libint factors (`1` exactly for parents, so an
-    /// unmoved triplet is bitwise the unsplit contraction).
+    /// unmoved triplet is bitwise the unsplit contraction). `y` is the Gamma
+    /// `Y[P, μν]` or a k-point phase-folded bin `Z[μν, P]`.
     fn sr3_contract(
         &self,
         blk: &[f64],
         (x1, x2, xp): (usize, usize, usize),
         n: usize,
-        y: &Array2<f64>,
+        y: Y3<'_>,
     ) -> Sr3Contrib {
         let (a, b, p) = (&self.obs.xsh[x1], &self.obs.xsh[x2], &self.aux.xsh[xp]);
         let sc = self.obs.scale[x1] * self.obs.scale[x2] * self.aux.scale[xp];
@@ -365,7 +367,7 @@ impl SplitPlan {
             for i in 0..a.nfun {
                 let r0 = (a.off + i) * n + b.off;
                 for j in 0..b.nfun {
-                    let yv = sc * y[(prow, r0 + j)];
+                    let yv = sc * y.at(prow, r0 + j);
                     if yv == 0.0 {
                         continue;
                     }
@@ -392,6 +394,23 @@ impl SplitPlan {
         natoms: usize,
         budget: usize,
     ) -> Result<(Array2<f64>, Array2<f64>, usize), FerricError> {
+        self.sr3_force_with(st, images, natoms, budget, |_, _| Y3::AuxMajor(y))
+    }
+
+    /// [`SplitPlan::sr3_force`] with the weight of each triplet from
+    /// `weights(L, T)` (the k-point forces: the phase-folded residue bin of
+    /// `(L, T)`, pair-major).
+    pub(in crate::rsgdf) fn sr3_force_with<'w, W>(
+        &self,
+        st: &Stage<'_>,
+        images: &[[f64; 3]],
+        natoms: usize,
+        budget: usize,
+        weights: W,
+    ) -> Result<(Array2<f64>, Array2<f64>, usize), FerricError>
+    where
+        W: Fn([f64; 3], [f64; 3]) -> Y3<'w> + Sync,
+    {
         let n = st.obs.nbasis();
         let sh2at = st.obs.shell_to_atom();
         let mut orb = Array2::<f64>::zeros((natoms, 3));
@@ -412,7 +431,7 @@ impl SplitPlan {
                         x2,
                         [t, [0.0; 3], l],
                     )?
-                    .map(|blk| self.sr3_contract(blk, (x1, x2, xp), n, y)))
+                    .map(|blk| self.sr3_contract(blk, (x1, x2, xp), n, weights(l, t))))
             },
             |i1, i2, ip, _, _, c: Sr3Contrib| {
                 let p = &st.aux_sh[ip];
@@ -462,7 +481,7 @@ impl SplitPlan {
                 else {
                     return Ok(None);
                 };
-                let c = self.sr3_contract(blk, (x1, x2, xp), n, y);
+                let c = self.sr3_contract(blk, (x1, x2, xp), n, Y3::AuxMajor(y));
                 let (a, b, p) = (&self.obs.xsh[x1], &self.obs.xsh[x2], &self.aux.xsh[xp]);
                 let cp: [f64; 3] = std::array::from_fn(|k| p.center[k] + imgs * t[k]);
                 let ra: [f64; 3] = std::array::from_fn(|k| a.center[k] - cp[k]);
@@ -508,6 +527,21 @@ impl SplitPlan {
         wm: &Array2<f64>,
         budget: usize,
     ) -> Result<(Array2<f64>, usize), FerricError> {
+        self.sr2_force_with(st, budget, |_| wm)
+    }
+
+    /// [`SplitPlan::sr2_force`] with the weight of each pair image from
+    /// `weights(T)` (the k-point forces: `Re Σ_q e^{iq·T} Wm(q)ᵀ` binned by
+    /// the residue of `T`).
+    pub(in crate::rsgdf) fn sr2_force_with<'w, W>(
+        &self,
+        st: &Stage<'_>,
+        budget: usize,
+        weights: W,
+    ) -> Result<(Array2<f64>, usize), FerricError>
+    where
+        W: Fn([f64; 3]) -> &'w Array2<f64>,
+    {
         let mut metric = Array2::<f64>::zeros((st.aux.nbasis(), 3));
         let pool = self.sr2_deriv_pool(st)?;
         let count = self.sr2_ordered(
@@ -515,9 +549,10 @@ impl SplitPlan {
             &pool,
             budget,
             |eng, xpq, t| self.sr2_block(eng, xpq, t),
-            |ip, iq, _, blk: Vec<f64>| {
+            |ip, iq, t, blk: Vec<f64>| {
                 let (p, q) = (&st.aux_sh[ip], &st.aux_sh[iq]);
                 let nb = p.nfun * q.nfun;
+                let wm = weights(t);
                 for i in 0..p.nfun {
                     for j in 0..q.nfun {
                         let wv = wm[(p.off + i, q.off + j)];
@@ -1202,12 +1237,20 @@ pub(crate) fn split_g0(
     let Some(plan) = SplitPlan::for_derivatives(&st, gdf, &images, ledger)? else {
         return Ok(None);
     };
-    let q_c = plan.compact_charges(aux.nbasis());
-    Ok(Some(SplitG0 {
-        q_c,
-        smooth: plan.smooth_obs,
-        images,
-    }))
+    Ok(Some(plan.into_split_g0(aux.nbasis(), images)))
+}
+
+impl SplitPlan {
+    /// The [`SplitG0`] of this plan over the pair `images` the plan's `S_ss`
+    /// is defined on (the k-point forces' image-resolved smooth-overlap
+    /// derivative uses the same pieces).
+    pub(in crate::rsgdf) fn into_split_g0(self, naux: usize, images: Vec<[f64; 3]>) -> SplitG0 {
+        SplitG0 {
+            q_c: self.compact_charges(naux),
+            smooth: self.smooth_obs,
+            images,
+        }
+    }
 }
 
 impl SplitG0 {
@@ -1245,13 +1288,28 @@ impl SplitG0 {
         w: &Array2<f64>,
         natoms: usize,
     ) -> Result<Array2<f64>, FerricError> {
+        self.overlap_force_by(|_| w, natoms)
+    }
+
+    /// `Σ_L Σ_mn w(L)_mn d⟨χ^s_m,0 | χ^s_n,L⟩/dR_A` with the weight of image
+    /// `L` from `weight(L)` (parent AO order, row = bra at the origin; the
+    /// k-point forces pass the phase-folded weight of `L`'s residue).
+    pub(crate) fn overlap_force_by<'w, F>(
+        &self,
+        weight: F,
+        natoms: usize,
+    ) -> Result<Array2<f64>, FerricError>
+    where
+        F: Fn([f64; 3]) -> &'w Array2<f64>,
+    {
         let mut g = Array2::<f64>::zeros((natoms, 3));
         let Some(sm) = &self.smooth else {
             return Ok(g);
         };
         let (dims, offs) = (sm.prep.shell_dims(), sm.prep.shell_offsets());
         let sh2at = sm.prep.shell_to_atom();
-        self.each_block(sm, |s1, s2, _, f, blk| {
+        self.each_block(sm, |s1, s2, l, f, blk| {
+            let w = weight(l);
             let (n1, n2) = (dims[s1], dims[s2]);
             let bs = n1 * n2;
             let (a1, a2) = (sh2at[s1], sh2at[s2]);

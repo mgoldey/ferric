@@ -399,13 +399,13 @@ fn gamma_dense_preflight(s: &PbcSetup) -> PyResult<()> {
     Ok(())
 }
 
-/// The `range_split` kwarg of the Gamma RS-GDF energy bindings
-/// (`ferric_pbc::rsgdf::RangeSplit`): `None` / `False` = off (today's build
-/// bit for bit), `True` = λ = `DEFAULT_RANGE_SPLIT_LAMBDA` (1), a number
-/// > 0 = λ. Strict: a split with `jk="dense"` (nothing to split) or with
-/// `with_gradient` / `with_stress` (the RS-GDF forces and stress do not
-/// follow the partition yet) is a `ValueError`; a non-number is a
-/// `TypeError`.
+/// The `range_split` kwarg of the RS-GDF energy bindings (Gamma, and the
+/// k-point `run_rhf_kpts` / `run_uhf_kpts`; `ferric_pbc::rsgdf::RangeSplit`):
+/// `None` / `False` = off (today's build bit for bit), `True` = λ =
+/// `DEFAULT_RANGE_SPLIT_LAMBDA` (1), a number > 0 = λ. Strict: a split with
+/// `jk="dense"` (nothing to split) or with `with_gradient` / `with_stress`
+/// (the bindings do not wire the range-split RS-GDF derivatives) is a
+/// `ValueError`; a non-number is a `TypeError`.
 pub(crate) fn parse_range_split(
     fname: &str,
     v: Option<&Bound<'_, PyAny>>,
@@ -437,7 +437,7 @@ pub(crate) fn parse_range_split(
     if derivs.any() {
         return Err(val_err(format!(
             "{fname}: range_split is not supported with with_gradient / with_stress: the \
-             RS-GDF forces and stress do not follow the range-split partition yet"
+             bindings do not wire the range-split RS-GDF forces and stress"
         )));
     }
     Ok(Some(RangeSplit::new(lambda)))
@@ -1974,6 +1974,7 @@ fn krsgdf_config(s: &PbcSetup) -> KRsGdfConfig {
     KRsGdfConfig {
         gdf: RsGdfConfig {
             budget_bytes: s.budget_bytes,
+            range_split: s.range_split,
             ..Default::default()
         },
         ..Default::default()
@@ -2077,6 +2078,10 @@ fn krhf_driver(
 /// cell/units/strictness contract as `run_rhf_gamma`; SCF convergence by
 /// `energy_conv` (|dE| per cell) AND `grad_conv` (max orbital gradient).
 ///
+/// `range_split` (jk="rsgdf" only): the opt-in RS-GDF range split, the
+/// Gamma bindings' contract (None/False off, True lambda 1, a number > 0 =
+/// lambda; ValueError with jk="dense").
+///
 /// Validated vs crates/ferric-pbc/tests/pbc_krhf.rs (PySCF 2.13 KRHF,
 /// AFTDF): H2 / STO-3G (PySCF digits), a = 4 Bohr, Gamma-centred 1x1x2:
 /// -0.902683427348 (none) / -1.354143879961 (ewald).
@@ -2084,7 +2089,7 @@ fn krhf_driver(
 #[pyo3(signature = (
     mol, lattice, basis_set, mesh, exxdiv="ewald", centring="gamma", omega=None,
     max_eri_gb=None, max_iter=200, energy_conv=1e-12, grad_conv=1e-9,
-    jk="dense", auxbasis=None, memory_budget_gb=None,
+    jk="dense", auxbasis=None, memory_budget_gb=None, range_split=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_rhf_kpts(
@@ -2103,9 +2108,10 @@ fn run_rhf_kpts(
     jk: &str,
     auxbasis: Option<&Bound<'_, PyAny>>,
     memory_budget_gb: Option<f64>,
+    range_split: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyKpointScfResult> {
     let fname = "run_rhf_kpts";
-    let s = pbc_setup(&PbcArgs {
+    let mut s = pbc_setup(&PbcArgs {
         fname,
         mol,
         lattice: &lattice,
@@ -2118,6 +2124,7 @@ fn run_rhf_kpts(
         memory_budget_gb,
         closed_shell: true,
     })?;
+    s.range_split = parse_range_split(fname, range_split, s.aux.is_some(), s.derivs)?;
     let m = k_mesh(&s, mesh, centring)?;
     let scf = kscf_config(fname, max_iter, energy_conv, grad_conv)?;
     let (r, madelung) = py
@@ -2158,6 +2165,8 @@ fn kuhf_driver(
 /// `run_uhf_gamma` (exxdiv="ewald" only; default "staged"). `s2` is
 /// `<S^2>` of the giant (supercell) determinant, NOT per cell.
 ///
+/// `range_split` as `run_rhf_kpts`.
+///
 /// Validated vs crates/ferric-pbc/tests/pbc_kuhf.rs (PySCF 2.13 KUHF,
 /// AFTDF): H atom / STO-3G (PySCF digits), a = 4 Bohr, Gamma-centred 1x1x2:
 /// -0.399399818915 (none) / -0.625130045222 (ewald), giant <S^2> = 2.
@@ -2166,7 +2175,7 @@ fn kuhf_driver(
     mol, lattice, basis_set, mesh, exxdiv="ewald", centring="gamma",
     ewald_start=None, omega=None, max_eri_gb=None, max_iter=200,
     energy_conv=1e-12, grad_conv=1e-9, jk="dense", auxbasis=None,
-    memory_budget_gb=None,
+    memory_budget_gb=None, range_split=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_uhf_kpts(
@@ -2186,9 +2195,10 @@ fn run_uhf_kpts(
     jk: &str,
     auxbasis: Option<&Bound<'_, PyAny>>,
     memory_budget_gb: Option<f64>,
+    range_split: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyKpointScfResult> {
     let fname = "run_uhf_kpts";
-    let s = pbc_setup(&PbcArgs {
+    let mut s = pbc_setup(&PbcArgs {
         fname,
         mol,
         lattice: &lattice,
@@ -2201,6 +2211,7 @@ fn run_uhf_kpts(
         memory_budget_gb,
         closed_shell: false,
     })?;
+    s.range_split = parse_range_split(fname, range_split, s.aux.is_some(), s.derivs)?;
     let m = k_mesh(&s, mesh, centring)?;
     let (start, start_name) = parse_ewald_start(fname, s.exx, ewald_start)?;
     let scf = kscf_config(fname, max_iter, energy_conv, grad_conv)?;

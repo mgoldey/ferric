@@ -45,6 +45,17 @@
 //! metric in q with the same eigenvalues, so the same lindep cut): no fitting
 //! error of its own (prototype 4.7e-15).
 //!
+//! # Range split ([`RsGdfConfig::range_split`])
+//!
+//! The Gamma partition (`split`, FINDINGS "Iteration 23"/"Iteration 26"):
+//! the SR bins walk the two kept calls on the piece shells and the compact
+//! aux pairs (the same parallel bit-identical binned walk); the moved blocks
+//! are evaluated per q on `K = G + q` with `v_SR(|G + q|)` and the residue
+//! pair FT of the smooth pieces; J2 in the non-cancelling grouping; the
+//! G = 0 subtract ONLY at q = 0 with the kept `(S(k) − S_ss(k), q_c)`
+//! (`split`'s `ksplit`). A split that moves nothing is bitwise today's
+//! build. The metric guard of the Gamma split applies per q.
+//!
 //! # Memory
 //!
 //! Every big buffer is reserved on a [`crate::budget`] ledger first: S(k)
@@ -53,6 +64,7 @@
 //! cut), the per-q working set, the pair-image and K lists; the LR pair FT
 //! is K-chunked within what remains.
 
+use super::split::{check_metric_guard, SplitPlan};
 use super::{
     aux_ft_shells, check_obs_on_cell, dot3, gshells, pair_image_radius, subtract_g0, G0Handling,
     LatticeWalker, RsGdfConfig, SrBinning, Stage,
@@ -94,6 +106,10 @@ pub enum KRsGdfMutation {
     /// NOT a defect: build every q class explicitly (the reference for the
     /// time-reversal fill).
     NoTimeReversal,
+    /// Range split: the moved blocks with the Gamma kernel `v_SR(|K − q|)`
+    /// instead of `v_SR(|K|)` (the FTs still at `K = G + q`). An identity at
+    /// q = 0, so BLIND at 1×1×1; prototype +1.05e-3 Ha (H2 1×1×3).
+    SplitGammaKernel,
 }
 
 /// Settings for [`KRsGdf::build`]: the Gamma [`RsGdfConfig`] (ω, precision,
@@ -162,6 +178,9 @@ pub struct KRsGdfStats {
     pub b_elements: usize,
     pub budget_bytes: usize,
     pub resident_bytes: usize,
+    /// The range split's partition counters (the Gamma build's names);
+    /// empty without a split.
+    pub split_counters: Vec<(&'static str, usize)>,
 }
 
 /// Copy a k-point RS-GDF build's counts into `t` (the k-point drivers'
@@ -178,6 +197,9 @@ pub fn record_stats(t: &mut crate::timing::PbcTimings, st: &KRsGdfStats) {
         ("k rsgdf naux", st.naux),
         ("k rsgdf aux dropped (max over q)", dropped_max),
     ] {
+        t.set_counter(name, v as u64);
+    }
+    for &(name, v) in &st.split_counters {
         t.set_counter(name, v as u64);
     }
 }
@@ -247,6 +269,85 @@ fn sr_three_index_binned(
     let bins = SrBinning { mod_l, mod_t };
     st.check_sr_scratch(ledger, who, bins)?;
     st.sr_three_index_binned(images, bins)
+}
+
+/// The SR residue bins of a build (`(J2 bins, J3 bins, metric pairs,
+/// triplets)`): the unsplit walks, or the range split's kept calls / compact
+/// pairs on the same bins. The per-thread scratch is checked on `ledger`.
+fn sr_bins_of(
+    st: &Stage<'_>,
+    plan: Option<&SplitPlan>,
+    images: &[[f64; 3]],
+    (mod_l, mod_t): ([usize; 3], [usize; 3]),
+    ledger: &Ledger,
+    who: &str,
+) -> Result<SrBinsParts, FerricError> {
+    let Some(p) = plan else {
+        let (j2, n2) = sr_metric_binned(st, mod_t, ledger, who)?;
+        let (j3, n3) = sr_three_index_binned(st, images, mod_l, mod_t, ledger, who)?;
+        return Ok((j2, j3, n2, n3));
+    };
+    let bins = SrBinning { mod_l, mod_t };
+    st.check_sr_scratch(ledger, who, bins)?;
+    let (j2, n2) = p.sr_metric_binned(st, mod_t)?;
+    let (j3, n3) = p.sr_three_index_binned(st, images, bins)?;
+    Ok((j2, j3, n2, n3))
+}
+
+/// Every aux function's charge `q_P = X_P(0)`.
+fn aux_charges(st: &Stage<'_>) -> Vec<f64> {
+    aux_ft_shells(&st.aux_sh, st.aux.nbasis(), &[[0.0; 3]])
+        .column(0)
+        .iter()
+        .map(|z| z.re)
+        .collect()
+}
+
+/// The G = 0 inputs of the q = 0 class: the charges and, with a range split
+/// that moved orbital primitives, `S(k) − S_ss(k)` (`None`: use `S(k)`
+/// itself). Unsplit: every aux charge; split: the compact `q_c` (bitwise `q`
+/// when no aux primitive moved).
+fn g0_inputs(
+    st: &Stage<'_>,
+    plan: Option<&SplitPlan>,
+    images: &[[f64; 3]],
+    mesh: &KPointMesh,
+    s_k: &[Array2<C64>],
+) -> Result<(Vec<f64>, Option<Vec<Array2<C64>>>), FerricError> {
+    match plan {
+        None => Ok((aux_charges(st), None)),
+        Some(p) => Ok((
+            p.compact_charges(st.aux.nbasis()),
+            p.kept_overlaps(st, images, mesh, s_k)?,
+        )),
+    }
+}
+
+/// The LR (K ≠ 0) terms of one q class: [`lr_accumulate_q`] when no aux
+/// primitive moved, else the split's moved-aux form; plus the moved
+/// `(ss pair | X_c)` block when there is one. `gamma_kernel`: the
+/// [`KRsGdfMutation::SplitGammaKernel`] mutant. Returns the chunk count.
+#[allow(clippy::too_many_arguments)]
+fn lr_accumulate_q_any(
+    st: &Stage<'_>,
+    plan: Option<&SplitPlan>,
+    (kv, half, q): (&[[f64; 3]], bool, [f64; 3]),
+    moduli: [usize; 3],
+    j2: &mut Array2<C64>,
+    acc: &mut [Array2<C64>],
+    chunk_budget: usize,
+    gamma_kernel: bool,
+) -> Result<usize, FerricError> {
+    let mut n = match plan.filter(|p| p.moves_aux()) {
+        Some(p) => {
+            p.k_lr_moved_aux(st, kv, half, q, moduli, j2, acc, chunk_budget, gamma_kernel)?
+        }
+        None => lr_accumulate_q(st, kv, half, moduli, j2, acc, chunk_budget)?,
+    };
+    if let Some(p) = plan {
+        n += p.k_lr_smooth_pairs(st, kv, half, q, moduli, acc, chunk_budget, gamma_kernel)?;
+    }
+    Ok(n)
 }
 
 /// The serial binned SR metric as it was before the parallel rewrite
@@ -602,7 +703,8 @@ impl KRsGdf {
     /// Build the per-q fitted tensors for `mesh` on `cell`: orbital basis
     /// `obs` (built from `cell.mol()`), aux `aux` (any centres, as
     /// [`super::RsGdf::build`]), `s_k` = `S(k)` per mesh point (G = 0 term
-    /// and Madelung shift). See the module doc.
+    /// and Madelung shift). See the module doc (also for the opt-in range
+    /// split, `RangeSplitMutant::Production` only).
     pub fn build(
         cell: &Cell,
         obs: &PreparedBasis,
@@ -613,14 +715,6 @@ impl KRsGdf {
     ) -> Result<Self, FerricError> {
         let g = &cfg.gdf;
         g.validate()?;
-        if g.range_split.is_some() {
-            return Err(FerricError::General(
-                "KRsGdf: the RS-GDF range split (RsGdfConfig::range_split) is Gamma-only so far; \
-                 the k-point moved blocks (Bloch pair FT of the smooth pieces over K = G + q) are \
-                 not implemented — build with range_split = None"
-                    .into(),
-            ));
-        }
         super::require_pure_aux(aux, "KRsGdf")?;
         let n = obs.nbasis();
         let n2 = n * n;
@@ -696,6 +790,7 @@ impl KRsGdf {
             bytes_of(cell.translation_count_bound(rpair)?, 24),
         )?;
         let images = cell.translations(rpair)?;
+        let plan = SplitPlan::for_kpoint(&st, g, &images, (rl, nk), &mut ledger)?;
         let gcut = 2.0 * g.omega * (1.0 / g.precision).ln().sqrt();
         let qmax = (0..nk)
             .map(|iq| {
@@ -712,14 +807,13 @@ impl KRsGdf {
 
         // --- SR, once for every q: residue bins (parallel; per-thread
         // scratch checked after `chunk_budget` is fixed).
-        let (j2res, n_sr2) = sr_metric_binned(&st, mod_t, &ledger, "KRsGdf")?;
-        let (j3res, n_sr3) = sr_three_index_binned(&st, &images, mod_l, mod_t, &ledger, "KRsGdf")?;
+        let plan = plan.as_ref();
+        let (j2res, j3res, n_sr2, n_sr3) =
+            sr_bins_of(&st, plan, &images, (mod_l, mod_t), &ledger, "KRsGdf")?;
 
-        let qv: Vec<f64> = aux_ft_shells(&st.aux_sh, naux, &[[0.0; 3]])
-            .column(0)
-            .iter()
-            .map(|z| z.re)
-            .collect();
+        let (qv, s_kept) = g0_inputs(&st, plan, &images, mesh, s_k)?;
+        let s_g0 = s_kept.as_deref().unwrap_or(s_k);
+        let gamma_kernel = cfg.mutation == Some(KRsGdfMutation::SplitGammaKernel);
         let c0 = PI / (g.omega * g.omega * cell.volume());
         let phk: Vec<Vec<C64>> = (0..nk)
             .map(|k| {
@@ -769,7 +863,16 @@ impl KRsGdf {
 
             // LR on K = G + q.
             let (kv, half) = lr_kvectors(cell, mesh, iq, trim, gcut)?;
-            n_lr_chunks += lr_accumulate_q(&st, &kv, half, mod_l, &mut j2, &mut acc, chunk_budget)?;
+            n_lr_chunks += lr_accumulate_q_any(
+                &st,
+                plan,
+                (&kv, half, q),
+                mod_l,
+                &mut j2,
+                &mut acc,
+                chunk_budget,
+                gamma_kernel,
+            )?;
 
             // G = 0: q = 0 only (the mutant: every q).
             let g0_here = mq == [0, 0, 0] || cfg.mutation == Some(KRsGdfMutation::G0AllQ);
@@ -796,6 +899,7 @@ impl KRsGdf {
                 FerricError::Lapack(format!("KRsGdf metric eigh at q class {iq}: {e}"))
             })?;
             drop(j2h);
+            check_metric_guard(plan.is_some(), evals[0], iq)?;
             let keep: Vec<usize> = (0..naux).filter(|&k| evals[k] > g.lindep).collect();
             if keep.is_empty() {
                 return Err(FerricError::General(format!(
@@ -824,7 +928,7 @@ impl KRsGdf {
                 }
                 if g0_here {
                     // q = 0: k = k', a_ml(0) = S_ml(k').
-                    subtract_g0_three_index(&mut j3, &s_k[j], &qv, c0, g.g0);
+                    subtract_g0_three_index(&mut j3, &s_g0[j], &qv, c0, g.g0);
                 }
                 if mq == [0, 0, 0] {
                     asym_j3 = asym_j3.max(pair_herm_asym(&j3, n));
@@ -916,6 +1020,7 @@ impl KRsGdf {
             b_elements,
             budget_bytes: ledger.budget(),
             resident_bytes,
+            split_counters: plan.map(SplitPlan::counters).unwrap_or_default(),
         };
         Ok(Self {
             nao: n,

@@ -14,6 +14,11 @@ split is not implemented:
   and agrees with the unsplit energy to 1e-9 (Rust: max|dI| < 1e-10 on the
   same system);
 * True == lambda 1, False == None;
+* the k-point bindings (run_rhf_kpts / run_uhf_kpts, 1x1x2) thread the
+  kwarg the same way: a lambda below every exponent is bitwise the unsplit
+  k energy (the split counters prove the split ran), lambda = 1 moves
+  primitives and agrees with the unsplit k energy to 1e-9 (Rust,
+  crates/ferric-pbc/tests/pbc_krsgdf_split.rs, owns the physics);
 * refusals (jk="dense", with_gradient / with_stress, lambda <= 0) raise
   ValueError, a non-number raises TypeError.
 """
@@ -163,3 +168,57 @@ def test_nonpositive_lambda_is_refused(h2, basis, bad):
 def test_non_number_is_a_type_error(h2, basis):
     with pytest.raises(TypeError, match="range_split"):
         _rhf(h2, basis, range_split="yes")
+
+
+KMESH = (1, 1, 2)
+
+
+def _krhf(h2, basis, **kw):
+    return ferric.run_rhf_kpts(
+        h2, _lattice(), basis, KMESH, jk="rsgdf", auxbasis=AUX, **kw
+    )
+
+
+@pytest.fixture(scope="module")
+def k_unsplit(h2, basis):
+    return _krhf(h2, basis)
+
+
+def test_kpoint_split_that_moves_nothing_is_bitwise_the_unsplit_energy(
+    h2, basis, k_unsplit
+):
+    assert k_unsplit.converged
+    for name in SPLIT_COUNTERS:
+        assert name not in _counters(k_unsplit), name
+    r = _krhf(h2, basis, range_split=1e-12)
+    c = _counters(r)
+    assert c["rsgdf split orbital prims"] > 0 and c["rsgdf split aux prims"] > 0, c
+    assert c["rsgdf split orbital prims smooth"] == 0, c
+    assert c["rsgdf split aux prims smooth"] == 0, c
+    assert r.energy == k_unsplit.energy
+
+
+def test_kpoint_lambda_one_moves_blocks_and_matches_the_unsplit_energy(
+    h2, basis, k_unsplit
+):
+    r = _krhf(h2, basis, range_split=1.0)
+    c = _counters(r)
+    assert r.converged
+    assert c["rsgdf split orbital prims smooth"] > 0, c
+    assert c["rsgdf split aux prims smooth"] > 0, c
+    assert abs(r.energy - k_unsplit.energy) <= 1e-9, r.energy - k_unsplit.energy
+
+
+def test_kpoint_uhf_threads_the_split(h2, basis):
+    kw = dict(jk="rsgdf", auxbasis=AUX)
+    e0 = ferric.run_uhf_kpts(h2, _lattice(), basis, KMESH, **kw)
+    e1 = ferric.run_uhf_kpts(h2, _lattice(), basis, KMESH, range_split=1e-12, **kw)
+    assert "rsgdf split orbital prims" in e1.timings["counters"]
+    assert e1.energy == e0.energy
+
+
+def test_kpoint_dense_jk_refuses_a_split(h2, basis):
+    with pytest.raises(ValueError, match="range_split"):
+        ferric.run_rhf_kpts(h2, _lattice(), basis, KMESH, range_split=True)
+    with pytest.raises(ValueError, match="range_split"):
+        ferric.run_uhf_kpts(h2, _lattice(), basis, KMESH, range_split=1.0)

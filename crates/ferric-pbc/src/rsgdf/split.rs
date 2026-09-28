@@ -68,14 +68,17 @@
 //! # Scope
 //!
 //! Gamma energy, forces and stress (the derivative walks follow the same
-//! partition: the child module `deriv`, FINDINGS "Iteration 26"). The
-//! k-point build ([`super::kpoint::KRsGdf`]) refuses a config with a range
-//! split. A derivative of a build made with a [`RangeSplitMutant`] other
-//! than `Production` is refused (the mutants exist for the energy anchors).
+//! partition: the child module `deriv`, FINDINGS "Iteration 26"), and the
+//! k-point energy and forces ([`super::kpoint::KRsGdf`] and its `kderiv`;
+//! the moved blocks at `K = G + q` with `v_SR(|G + q|)`: the child module
+//! `ksplit`). No k-point stress. A derivative of a build made with a
+//! [`RangeSplitMutant`] other than `Production` is refused (the mutants
+//! exist for the Gamma energy anchors), and the k-point build takes
+//! `Production` only.
 
 use super::{
     aux_ft_shells, dot3, pair_bound, segment_distance, subtract_g0, sum_counts_in_pair_order,
-    G0Handling, GShell, RsGdfConfig, Stage, ENGINE_PRECISION,
+    G0Handling, GShell, RsGdfConfig, SrBinning, Stage, ENGINE_PRECISION,
 };
 use crate::budget::{bytes_of, Ledger};
 use crate::hcore::ONE_E_ENGINE_PRECISION;
@@ -100,8 +103,10 @@ use std::f64::consts::PI;
 use std::sync::Mutex;
 
 mod deriv;
+mod ksplit;
 pub(crate) use deriv::{split_g0, SplitG0};
 pub(super) use deriv::{LrForce, LrStrain};
+pub(super) use ksplit::check_metric_guard;
 
 /// The rigorous criterion (FINDINGS "Iteration 23": each of the two
 /// conditions alone suffices at λ ≤ 1; do not spend the measured slack).
@@ -541,15 +546,24 @@ pub(super) struct SplitPlan {
 struct Sr3Ctx<'a> {
     pool: &'a EnginePool,
     images: &'a [[f64; 3]],
+    /// `r_L` of each image (same order as `images`).
+    l_bin: &'a [usize],
+    /// Reciprocal lattice (residue of `T`).
+    recip: [[f64; 3]; 3],
+    bins: SrBinning,
     global: f64,
-    out: &'a Mutex<Array2<f64>>,
+    /// `R_L · R_T` zeroed `(nao², naux)` bins every task copies into.
+    out: &'a Mutex<Vec<Array2<f64>>>,
 }
 
 /// The loop invariants of the parallel split SR metric.
 struct Sr2Ctx<'a> {
     pool: &'a EnginePool,
+    recip: [[f64; 3]; 3],
+    mod_t: [usize; 3],
     global: f64,
-    out: &'a Mutex<Array2<f64>>,
+    /// `R_T` zeroed `(naux, naux)` bins every task copies into.
+    out: &'a Mutex<Vec<Array2<f64>>>,
 }
 
 impl SplitPlan {
@@ -638,7 +652,7 @@ impl SplitPlan {
 
     /// `q_c`: the charges of the compact aux pieces (`X_c` at G = 0), exactly
     /// the vector the build's G = 0 subtract uses.
-    fn compact_charges(&self, naux: usize) -> Vec<f64> {
+    pub(in crate::rsgdf) fn compact_charges(&self, naux: usize) -> Vec<f64> {
         aux_ft_shells(&self.aux.c_sh, naux, &[[0.0; 3]])
             .column(0)
             .iter()
@@ -764,19 +778,43 @@ impl SplitPlan {
     }
 
     /// Kept SR 3-index sum `Σ_{L,T} (χ_i χ_j − χ_i^s χ_j^s | X^c_T)_erfc`,
-    /// `(nao², naux)` unsymmetrised, and the triplet count.
-    ///
-    /// PARALLEL over ordered parent shell pairs, BIT-IDENTICAL across thread
-    /// counts by the construction of [`Stage::sr_three_index_binned`]: row
-    /// `μν` receives addends only from its parent pair's task, in the fixed
-    /// order `L → call → P → T`, into a zeroed scratch that is then COPIED.
+    /// `(nao², naux)` unsymmetrised, and the triplet count: the single bin
+    /// of [`SplitPlan::sr_three_index_binned`].
     fn sr_three_index(
         &self,
         st: &Stage<'_>,
         images: &[[f64; 3]],
     ) -> Result<(Array2<f64>, usize), FerricError> {
+        let (mut bins, count) = self.sr_three_index_binned(st, images, SrBinning::GAMMA)?;
+        Ok((bins.swap_remove(0), count))
+    }
+
+    /// The kept SR 3-index sum binned by `(L mod mod_l, T mod mod_t)` (the
+    /// k-point build; [`Stage::sr_three_index_binned`]'s layout and bins),
+    /// and the triplet count.
+    ///
+    /// PARALLEL over `(ordered parent shell pair, r_L)` tasks, BIT-IDENTICAL
+    /// across thread counts by the construction of
+    /// [`Stage::sr_three_index_binned`]: row `μν` of every bin receives
+    /// addends only from its parent pair's tasks, in the fixed order
+    /// `L ≡ r_L (images order) → call → P → T`, into a zeroed scratch that is
+    /// then COPIED. A split that moves nothing visits exactly the unsplit
+    /// walk's triplets in its order with every factor exactly 1, so its bins
+    /// are bitwise the unsplit ones.
+    pub(in crate::rsgdf) fn sr_three_index_binned(
+        &self,
+        st: &Stage<'_>,
+        images: &[[f64; 3]],
+        bins: SrBinning,
+    ) -> Result<(Vec<Array2<f64>>, usize), FerricError> {
         let n = st.obs.nbasis();
         let nsh = st.obs_sh.len();
+        let rl = bins.n_l();
+        let recip = st.cell.reciprocal();
+        let l_bin: Vec<usize> = images
+            .iter()
+            .map(|l| SrBinning::residue(&recip, l, bins.mod_l))
+            .collect();
         let pool = EnginePool::from_fn(|| {
             Engine::new_3center(
                 Operator::erfc(st.omega),
@@ -785,37 +823,51 @@ impl SplitPlan {
                 ENGINE_PRECISION,
             )
         })?;
-        let out = Mutex::new(Array2::<f64>::zeros((n * n, st.aux.nbasis())));
+        let out = Mutex::new(
+            (0..rl * bins.n_t())
+                .map(|_| Array2::<f64>::zeros((n * n, st.aux.nbasis())))
+                .collect::<Vec<_>>(),
+        );
         let ctx = Sr3Ctx {
             pool: &pool,
             images,
+            l_bin: &l_bin,
+            recip,
+            bins,
             global: self.sr3_global_radius(st),
             out: &out,
         };
-        let counts: Vec<Result<usize, FerricError>> = (0..nsh * nsh)
+        let counts: Vec<Result<usize, FerricError>> = (0..nsh * nsh * rl)
             .into_par_iter()
-            .map(|pair| self.sr3_task(st, &ctx, (pair / nsh, pair % nsh)))
+            .map(|task| {
+                let (pair, r_l) = (task / rl, task % rl);
+                self.sr3_task(st, &ctx, r_l, (pair / nsh, pair % nsh))
+            })
             .collect();
         let count = sum_counts_in_pair_order(counts)?;
         Ok((out.into_inner().unwrap_or_else(|e| e.into_inner()), count))
     }
 
-    /// One parent pair of [`SplitPlan::sr_three_index`].
+    /// One `(parent pair, r_L)` task of [`SplitPlan::sr_three_index_binned`].
     fn sr3_task(
         &self,
         st: &Stage<'_>,
         ctx: &Sr3Ctx<'_>,
+        r_l: usize,
         (i1, i2): (usize, usize),
     ) -> Result<usize, FerricError> {
         let (a, b) = (&st.obs_sh[i1], &st.obs_sh[i2]);
         let (na, nb) = (a.nfun, b.nfun);
         let naux = st.aux.nbasis();
-        // acc[(i nb + j) naux + P] == j3[(a.off+i) n + b.off + j, P]
-        let mut acc = vec![0.0_f64; na * nb * naux];
+        let bl = na * nb * naux;
+        // acc[r_T bl + (i nb + j) naux + P]
+        //   == bins[r_L R_T + r_T][(a.off+i) n + b.off + j, P]
+        let mut acc = vec![0.0_f64; ctx.bins.n_t() * bl];
         let mut count = 0usize;
         let calls = self.calls(i1, i2);
         ctx.pool.with(|eng| -> Result<(), FerricError> {
-            for l in ctx.images {
+            let images = ctx.images.iter().zip(ctx.l_bin).filter(|(_, r)| **r == r_l);
+            for (l, _) in images {
                 for &(x1, x2) in calls.iter().flatten() {
                     let s12 = self.obs.scale[x1] * self.obs.scale[x2];
                     let mut visit =
@@ -829,12 +881,14 @@ impl SplitPlan {
                                 [t, [0.0; 3], *l],
                             )? {
                                 let sc = s12 * self.aux.scale[xp];
+                                let r_t = SrBinning::residue(&ctx.recip, &t, ctx.bins.mod_t);
+                                let dst = &mut acc[r_t * bl..(r_t + 1) * bl];
                                 let p = &st.aux_sh[ip];
                                 for pp in 0..p.nfun {
                                     for i in 0..na {
                                         let src = (pp * na + i) * nb;
                                         for j in 0..nb {
-                                            acc[(i * nb + j) * naux + p.off + pp] +=
+                                            dst[(i * nb + j) * naux + p.off + pp] +=
                                                 sc * blk[src + j];
                                         }
                                     }
@@ -849,15 +903,19 @@ impl SplitPlan {
         })?;
         if count > 0 {
             let n = st.obs.nbasis();
-            let mut j3 = ctx.out.lock().unwrap_or_else(|e| e.into_inner());
-            for i in 0..na {
-                for j in 0..nb {
-                    let row = (a.off + i) * n + b.off + j;
-                    let src = (i * nb + j) * naux;
-                    j3.row_mut(row)
-                        .iter_mut()
-                        .zip(&acc[src..src + naux])
-                        .for_each(|(d, &s)| *d = s);
+            let rt = ctx.bins.n_t();
+            let mut out = ctx.out.lock().unwrap_or_else(|e| e.into_inner());
+            for r_t in 0..rt {
+                let j3 = &mut out[r_l * rt + r_t];
+                for i in 0..na {
+                    for j in 0..nb {
+                        let row = (a.off + i) * n + b.off + j;
+                        let src = r_t * bl + (i * nb + j) * naux;
+                        j3.row_mut(row)
+                            .iter_mut()
+                            .zip(&acc[src..src + naux])
+                            .for_each(|(d, &s)| *d = s);
+                    }
                 }
             }
         }
@@ -865,17 +923,36 @@ impl SplitPlan {
     }
 
     /// Kept SR metric `Σ_T (P^c_0 | Q^c_T)_erfc` (unsymmetrised) and the pair
+    /// count: the single bin of [`SplitPlan::sr_metric_binned`].
+    fn sr_metric(&self, st: &Stage<'_>) -> Result<(Array2<f64>, usize), FerricError> {
+        let (mut bins, count) = self.sr_metric_binned(st, SrBinning::GAMMA.mod_t)?;
+        Ok((bins.swap_remove(0), count))
+    }
+
+    /// The kept SR metric binned by the residue of `T` modulo `mod_t` (the
+    /// k-point build; [`Stage::sr_metric_binned`]'s layout), and the pair
     /// count; parallel over parent aux pairs, bit-identical across thread
     /// counts (as [`Stage::sr_metric_binned`]).
-    fn sr_metric(&self, st: &Stage<'_>) -> Result<(Array2<f64>, usize), FerricError> {
+    pub(in crate::rsgdf) fn sr_metric_binned(
+        &self,
+        st: &Stage<'_>,
+        mod_t: [usize; 3],
+    ) -> Result<(Vec<Array2<f64>>, usize), FerricError> {
         let naux = st.aux.nbasis();
         let nsh = st.aux_sh.len();
+        let rt: usize = mod_t.iter().product();
         let pool = EnginePool::from_fn(|| {
             Engine::new_2center(Operator::erfc(st.omega), &self.aux.x, ENGINE_PRECISION)
         })?;
-        let out = Mutex::new(Array2::<f64>::zeros((naux, naux)));
+        let out = Mutex::new(
+            (0..rt)
+                .map(|_| Array2::<f64>::zeros((naux, naux)))
+                .collect::<Vec<_>>(),
+        );
         let ctx = Sr2Ctx {
             pool: &pool,
+            recip: st.cell.reciprocal(),
+            mod_t,
             global: self.sr2_global_radius(st),
             out: &out,
         };
@@ -888,7 +965,7 @@ impl SplitPlan {
     }
 
     /// One parent aux pair `(ip, iq)` of the kept metric: computed into
-    /// `ctx`, or only COUNTED when `ctx` is `None`.
+    /// `ctx`'s residue bins, or only COUNTED when `ctx` is `None`.
     fn sr2_task(
         &self,
         st: &Stage<'_>,
@@ -922,23 +999,27 @@ impl SplitPlan {
             return Ok(count);
         };
         let bl = p.nfun * q.nfun;
+        let rt: usize = ctx.mod_t.iter().product();
         let sc = self.aux.scale[xp] * self.aux.scale[xq];
-        let mut acc = vec![0.0_f64; bl];
+        let mut acc = vec![0.0_f64; rt * bl];
         ctx.pool.with(|eng| {
             st.walker.visit(x0, rad, |t| {
                 count += 1;
                 let blk = eng.compute_eri2_shifted(&self.aux.x, xp, xq, t)?;
-                for (d, &s) in acc.iter_mut().zip(&blk[..bl]) {
+                let r = SrBinning::residue(&ctx.recip, &t, ctx.mod_t);
+                for (d, &s) in acc[r * bl..(r + 1) * bl].iter_mut().zip(&blk[..bl]) {
                     *d += sc * s;
                 }
                 Ok(())
             })
         })?;
         if count > 0 {
-            let mut j2 = ctx.out.lock().unwrap_or_else(|e| e.into_inner());
-            for i in 0..p.nfun {
-                for j in 0..q.nfun {
-                    j2[(p.off + i, q.off + j)] = acc[i * q.nfun + j];
+            let mut out = ctx.out.lock().unwrap_or_else(|e| e.into_inner());
+            for (r, j2) in out.iter_mut().enumerate() {
+                for i in 0..p.nfun {
+                    for j in 0..q.nfun {
+                        j2[(p.off + i, q.off + j)] = acc[r * bl + i * q.nfun + j];
+                    }
                 }
             }
         }
@@ -1296,16 +1377,7 @@ pub(super) fn finish(
              would silently drop it; refusing the fit"
         )));
     }
-    for (name, v) in [
-        ("rsgdf split orbital prims", p.obs.n_prims),
-        ("rsgdf split orbital prims smooth", p.obs.n_smooth_prims),
-        ("rsgdf split aux prims", p.aux.n_prims),
-        ("rsgdf split aux prims smooth", p.aux.n_smooth_prims),
-        (
-            "rsgdf split smooth AOs",
-            p.smooth_obs.as_ref().map_or(0, |s| s.prep.nbasis()),
-        ),
-    ] {
+    for (name, v) in p.counters() {
         t.set_counter(name, v as u64);
     }
     Ok(())

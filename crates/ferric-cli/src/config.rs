@@ -3545,8 +3545,8 @@ pub struct CellCfg {
     pub auxbasis: Option<String>,
     /// Opt-in RS-GDF range split (`ferric_pbc::rsgdf::RangeSplit`): `false`
     /// (default, off), `true` (λ = `DEFAULT_RANGE_SPLIT_LAMBDA`) or a
-    /// positive number (λ). `jk = "rsgdf"` at the Gamma point with
-    /// `task = "energy"` only.
+    /// positive number (λ). `jk = "rsgdf"` with `task = "energy"` only
+    /// (Gamma point or `kmesh`).
     pub range_split: Option<RangeSplitKey>,
     /// Nuclear-attraction Ewald split, in `unit`⁻¹ (> 0). Absent =
     /// `sqrt(pi) / volume^(1/3)`.
@@ -3793,13 +3793,13 @@ fn cell_positive(name: &str, v: f64) -> Result<f64, String> {
     }
 }
 
-/// Resolve the opt-in `[cell] range_split` key. Gamma energy runs on
-/// jk = "rsgdf" only. `false` is today's construction, which every route
-/// runs, so it is accepted anywhere. An explicit λ must be finite and > 0.
+/// Resolve the opt-in `[cell] range_split` key. Energy runs (Gamma or
+/// kmesh) on jk = "rsgdf" only. `false` is today's construction, which every
+/// route runs, so it is accepted anywhere. An explicit λ must be finite and
+/// > 0.
 fn resolve_range_split(
     key: Option<RangeSplitKey>,
     rsgdf: bool,
-    kpoints: bool,
     optimize: bool,
 ) -> Result<Option<f64>, String> {
     let lambda = match key {
@@ -3814,17 +3814,10 @@ fn resolve_range_split(
                 .into(),
         );
     }
-    if kpoints {
-        return Err(
-            "[cell] range_split is Gamma-point only: the k-point RS-GDF build does not \
-             support the range split yet. Remove kmesh or range_split"
-                .into(),
-        );
-    }
     if optimize {
         return Err(
             "[cell] range_split is not supported with method.task = \"optimize\": the \
-             RS-GDF forces do not follow the range-split partition yet. Use \
+             CLI optimizer is not wired to the range-split RS-GDF forces. Use \
              task = \"energy\" or remove range_split"
                 .into(),
         );
@@ -4243,7 +4236,7 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
             ))
         }
     };
-    let range_split = resolve_range_split(c.range_split, rsgdf, kpoints, optimize)?;
+    let range_split = resolve_range_split(c.range_split, rsgdf, optimize)?;
     let jk = jk_with_range_split(jk, range_split);
     periodic_raw_key_check(raw, route, kpoints, rsgdf, optimize)?;
     let written = raw_keys(raw, "scf");
@@ -4667,28 +4660,41 @@ kind = "ccsd"
     }
 
     #[test]
-    fn range_split_is_refused_where_the_split_is_not_implemented() {
-        // Dense J/K: nothing to split.
-        let e = err(&h2("rhf", "range_split = true", ""));
-        assert!(e.contains("range_split") && e.contains("rsgdf"), "{e}");
-        // k-point RS-GDF build refuses the split.
+    fn range_split_is_accepted_on_every_kmesh_rsgdf_energy_route() {
         for (kind, extra) in [
             ("rhf", ""),
             ("uhf", ""),
             ("rimp2", "\ndenominators = \"shifted\""),
             ("pdep-rpa", "\ndenominators = \"shifted\""),
         ] {
-            let e = err(&h2(
+            let p = ok(&h2(
                 kind,
                 &format!("{RSGDF}\nkmesh = [1, 1, 2]\nrange_split = 1.0{extra}"),
                 "",
             ));
-            assert!(
-                e.contains("range_split") && e.contains("k-point"),
-                "{kind}: {e}"
+            assert!(p.kmesh.is_some(), "{kind}");
+            assert_eq!(split_of(&p), Some(1.0), "{kind}");
+            let p = ok(&h2(
+                kind,
+                &format!("{RSGDF}\nkmesh = [1, 1, 2]\nrange_split = true{extra}"),
+                "",
+            ));
+            assert_eq!(
+                split_of(&p),
+                Some(ferric_pbc::rsgdf::DEFAULT_RANGE_SPLIT_LAMBDA),
+                "{kind}"
             );
         }
-        // The RS-GDF forces do not follow the partition.
+    }
+
+    #[test]
+    fn range_split_is_refused_where_the_split_is_not_implemented() {
+        // Dense J/K: nothing to split (Gamma and kmesh).
+        let e = err(&h2("rhf", "range_split = true", ""));
+        assert!(e.contains("range_split") && e.contains("rsgdf"), "{e}");
+        let e = err(&h2("rhf", "kmesh = [1, 1, 2]\nrange_split = true", ""));
+        assert!(e.contains("range_split") && e.contains("rsgdf"), "{e}");
+        // The RS-GDF forces are not wired to the CLI optimizer with a split.
         for kind in ["rhf", "uhf", "rohf", "ksdft"] {
             let e = err(&opt(kind, &format!("{RSGDF}\nrange_split = true"), ""));
             assert!(

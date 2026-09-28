@@ -65,6 +65,11 @@
 //! test the phases. `ΣF` is blind to every mutant here except (sometimes)
 //! `NoPhase`.
 //!
+//! A range-split RS-GDF build ([`crate::rsgdf::RsGdfConfig::range_split`])
+//! is differentiated along its partition (`kderiv`'s module doc); its `J3`
+//! G = 0 term enters through `d(S − S_ss)`, the smooth-piece part over the
+//! build's pair images (`smooth_g0_force`).
+//!
 //! # Scope
 //!
 //! HF only (no KS-DFT / ROHF at k), no ECPs, RS-GDF aux on the cell's atoms
@@ -90,7 +95,7 @@ use crate::kuscf::KUScfResult;
 use crate::lattice::Cell;
 use crate::pair_ft::residues::{pair_ft_deriv_residues_chunked, residue_coords, residue_index};
 use crate::rsgdf::deriv::{check_aux_map, fold_aux};
-use crate::rsgdf::kpoint::kderiv::{kpoint_fit_gradient, KFitMutation};
+use crate::rsgdf::kpoint::kderiv::{kpoint_fit_gradient, KFitGrad, KFitMutation};
 use crate::rsgdf::kpoint::{KRsGdf, KRsGdfConfig};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -130,8 +135,19 @@ pub enum KGradMutation {
     /// (SR attraction, RS-GDF SR 3-centre and metric) instead of the
     /// ordered-parallel ones ([`crate::ordered`]); the force must be
     /// BIT-IDENTICAL either way (`tests/pbc_parallel_bitwise.rs`). Never list
-    /// it as a must-fail mutant.
+    /// it as a must-fail mutant. (Unsplit RS-GDF only: the range-split walks
+    /// have no serial oracle.)
     SerialDerivWalks,
+    /// RS-GDF range split: the moved blocks' derivative weights with the
+    /// Gamma kernel `v_SR(|K − q|)` (BLIND at 1×1×1; prototype 1.1e-3 at
+    /// H2 1×1×3).
+    SplitGammaKernel,
+    /// RS-GDF range split: drop the image-resolved smooth-piece overlap
+    /// derivative of `J3`'s G = 0 term (`d(S − S_ss)` → `dS`).
+    SplitNoSmoothOverlap,
+    /// RS-GDF range split: the unsplit G = 0 term in the derivative (every
+    /// aux charge `q` and `dS`, not `(q_c, d(S − S_ss))`).
+    SplitFullG0,
 }
 
 /// Settings for [`kpoint_rhf_gradient`] / [`kpoint_uhf_gradient`].
@@ -808,6 +824,8 @@ fn assemble(
                 no_metric: mutation == Some(KGradMutation::FitNoMetric),
                 no_g0: mutation == Some(KGradMutation::FitNoG0),
                 serial_sr: mutation == Some(KGradMutation::SerialDerivWalks),
+                split_gamma_kernel: mutation == Some(KGradMutation::SplitGammaKernel),
+                split_full_g0: mutation == Some(KGradMutation::SplitFullG0),
             };
             Some(kpoint_fit_gradient(
                 src.gdf, src.cfg, cell, prep, src.aux, mesh, s_k, &dtot, &exch, fm, ledger,
@@ -855,6 +873,7 @@ fn assemble(
             }
         }
     }
+    g_fit_g0 -= &smooth_g0_force(fit.as_ref(), w_g0.as_deref(), cell, moduli, mutation)?;
 
     // --- V_SR: the Gamma walk, each image weighted by Re Δ(L).
     let sr_cfg = PeriodicHcoreConfig {
@@ -1059,6 +1078,37 @@ fn assemble(
         fit_dropped_max,
         fit_checks,
     })
+}
+
+/// The range split's `J3` G = 0 term through `d S_ss`: the image-resolved
+/// smooth-piece overlap derivative (over the build's pair images, the set
+/// `S_ss` is defined on) contracted with the phase-folded `M_g0` weight of
+/// each image's residue; the caller SUBTRACTS it (`J3 −= c0 (S − S_ss) q_c`).
+/// Zeros unsplit and under the `SplitNoSmoothOverlap` / `SplitFullG0`
+/// mutants.
+fn smooth_g0_force(
+    fit: Option<&KFitGrad>,
+    w_g0: Option<&[Array2<f64>]>,
+    cell: &Cell,
+    moduli: [usize; 3],
+    mutation: Option<KGradMutation>,
+) -> Result<Array2<f64>, FerricError> {
+    let natoms = cell.positions().len();
+    let dropped = matches!(
+        mutation,
+        Some(KGradMutation::SplitNoSmoothOverlap | KGradMutation::SplitFullG0)
+    );
+    let (Some(sg), Some(w)) = (fit.and_then(|f| f.smooth_g0.as_ref()), w_g0) else {
+        return Ok(Array2::zeros((natoms, 3)));
+    };
+    if dropped {
+        return Ok(Array2::zeros((natoms, 3)));
+    }
+    let b = cell.reciprocal();
+    sg.overlap_force_by(
+        |l| &w[residue_index(lattice_coords(&b, &l), moduli)],
+        natoms,
+    )
 }
 
 /// AO-resolved Coulomb and exchange forces of the dense pure-AFT kernels,

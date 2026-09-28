@@ -51,12 +51,13 @@ use ferric_pbc::ewald::default_ewald_omega;
 use ferric_pbc::hcore::{periodic_hcore, PeriodicHcore, PeriodicHcoreConfig};
 use ferric_pbc::kpts::KPointMesh;
 use ferric_pbc::lattice::Cell;
-use ferric_pbc::rsgdf::kpoint::{KRsGdf, KRsGdfConfig};
+use ferric_pbc::rsgdf::kpoint::{KRsGdf, KRsGdfConfig, DEFAULT_K_FITTED_KERNELS_MAX_BYTES};
 use ferric_pbc::rsgdf::{
     sr_walk_counts, PeriodicFitParts, RangeSplit, RangeSplitMutant, RsGdf, RsGdfConfig,
     DEFAULT_FITTED_ERI_MAX_BYTES, RANGE_SPLIT_NEG_EIG_GUARD,
 };
 use ndarray::Array2;
+use num_complex::Complex64;
 
 const HCORE_OMEGA: f64 = 0.8;
 const ANCHOR_ALPHA: f64 = 0.5;
@@ -322,11 +323,14 @@ fn metric_guard_refuses_a_wrong_g0_metric() {
     }
 }
 
-/// The Gamma gradient build now ACCEPTS a split (its forces/stress follow
-/// the partition: `tests/pbc_grad_rsgdf_split.rs`); the k-point build still
-/// refuses one.
+/// The Gamma gradient build ACCEPTS a split (its forces/stress follow the
+/// partition: `tests/pbc_grad_rsgdf_split.rs`). The k-point build accepts
+/// the production split (`tests/pbc_krsgdf_split.rs` owns its physics) and
+/// REFUSES the split mutants (they are Gamma energy anchors). With
+/// everything moved on the exact span, its 1x1x1 fitted kernels are the
+/// Gamma split's fitted ERI (and hence the dense AFT one).
 #[test]
-fn kpoint_build_refuses_a_range_split_and_the_gradient_build_accepts_it() {
+fn kpoint_build_takes_the_production_split_only_and_the_gradient_build_accepts_it() {
     let an = anchor();
     let c = cfg(1.2, Some(RangeSplit::default()));
     let g = RsGdf::build_for_gradient(&an.cell, &an.prep, &an.site.prep, &an.hc.s, &c)
@@ -334,14 +338,49 @@ fn kpoint_build_refuses_a_range_split_and_the_gradient_build_accepts_it() {
     assert!(g.has_gradient_parts());
     assert_eq!(g.range_split(), Some(RangeSplit::default()));
     let mesh = KPointMesh::gamma_centred(&an.cell, [1, 1, 1]).unwrap();
+    let s_k = vec![an.hc.s.mapv(|x| Complex64::new(x, 0.0))];
     let kc = KRsGdfConfig {
         gdf: c,
         ..Default::default()
     };
-    let msg = KRsGdf::build(&an.cell, &an.prep, &an.site.prep, &mesh, &[], &kc)
-        .expect_err("k-point build accepted a range split")
-        .to_string();
-    assert!(msg.contains("range split"), "{msg}");
+    let kg = KRsGdf::build(&an.cell, &an.prep, &an.site.prep, &mesh, &s_k, &kc)
+        .expect("the k-point build must accept the production range split");
+    let names: Vec<&str> = kg.stats().split_counters.iter().map(|(n, _)| *n).collect();
+    assert!(
+        names.contains(&"rsgdf split aux prims smooth"),
+        "split counters missing: {names:?}"
+    );
+    let (jf, _) = kg
+        .fitted_kernels(DEFAULT_K_FITTED_KERNELS_MAX_BYTES)
+        .unwrap();
+    let eri = g.fitted_eri(DEFAULT_FITTED_ERI_MAX_BYTES).unwrap();
+    let d = jf[0].iter().zip(eri.iter()).fold(0.0_f64, |m, (x, y)| {
+        m.max((x - Complex64::new(*y, 0.0)).norm())
+    });
+    let dd = jf[0]
+        .iter()
+        .zip(an.eri.eri().iter())
+        .fold(0.0_f64, |m, (x, y)| {
+            m.max((x - Complex64::new(*y, 0.0)).norm())
+        });
+    eprintln!("span ω=1.2 split, 1x1x1 k vs Gamma split: {d:.2e}; vs dense AFT {dd:.2e}");
+    assert!(d < 1e-12, "k 1x1x1 split vs Gamma split {d:.3e}");
+    assert!(dd < 1e-12, "k 1x1x1 split vs dense AFT {dd:.3e}");
+    for m in [
+        RangeSplitMutant::ThreeIndexFullG0,
+        RangeSplitMutant::MetricFullG0,
+        RangeSplitMutant::DoubleCount,
+        RangeSplitMutant::AllOrbitalSmooth,
+    ] {
+        let kc = KRsGdfConfig {
+            gdf: cfg(1.2, mutant(m)),
+            ..Default::default()
+        };
+        let msg = KRsGdf::build(&an.cell, &an.prep, &an.site.prep, &mesh, &s_k, &kc)
+            .expect_err("k-point build accepted a range-split mutant")
+            .to_string();
+        assert!(msg.contains("Production"), "{m:?}: {msg}");
+    }
     assert!(an.build(&cfg(1.2, Some(RangeSplit::new(-1.0)))).is_err());
     assert!(an
         .build(&cfg(1.2, Some(RangeSplit::new(f64::NAN))))

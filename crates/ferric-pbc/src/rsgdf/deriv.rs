@@ -553,7 +553,7 @@ pub(super) enum Y3<'w> {
 
 impl Y3<'_> {
     #[inline]
-    fn at(self, prow: usize, row: usize) -> f64 {
+    pub(in crate::rsgdf) fn at(self, prow: usize, row: usize) -> f64 {
         match self {
             Y3::AuxMajor(y) => y[(prow, row)],
             Y3::PairMajor(z) => z[(row, prow)],

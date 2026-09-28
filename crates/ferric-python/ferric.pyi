@@ -1922,8 +1922,10 @@ def run_rhf_kpts(
     jk: str = "dense",
     auxbasis: BasisSet | str | None = None,
     memory_budget_gb: float | None = None,
+    range_split: float | bool | None = None,
 ) -> KpointScfResult:
-    """Closed-shell k-point RHF. centring "gamma" | "mp" (strict)."""
+    """Closed-shell k-point RHF. centring "gamma" | "mp" (strict).
+    range_split: the Gamma bindings' opt-in RS-GDF range split (jk="rsgdf")."""
     ...
 
 def run_uhf_kpts(
@@ -1942,8 +1944,10 @@ def run_uhf_kpts(
     jk: str = "dense",
     auxbasis: BasisSet | str | None = None,
     memory_budget_gb: float | None = None,
+    range_split: float | bool | None = None,
 ) -> KpointScfResult:
-    """k-point UHF; s2 is the giant (supercell) determinant's <S^2>."""
+    """k-point UHF; s2 is the giant (supercell) determinant's <S^2>.
+    range_split as run_rhf_kpts."""
     ...
 
 def run_mp2_kpts(
