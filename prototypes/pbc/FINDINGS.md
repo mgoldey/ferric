@@ -4772,3 +4772,215 @@ Against the performance plan's estimates (cc-pVDZ/jkfit):
      v_SR(|q|) is finite and nothing special is needed.
    - Time reversal and q = 0 hermitisation are unchanged.
    - k-point forces: items 5(a)–(e) per q.
+
+## Iteration 25 (Python, ferric-owned semi-local ECP quadrature) — 2026-09-27
+Decision (Matt, 2026-09-27): ferric must not depend on PySCF code for core functionality, and libecpint's projector
+values are rough ("ECP derivative clean-band discrepancy — 2026-09-27"). The vendored-PySCF backend was rejected. Option
+(2) of that section was chosen: a ferric-owned quadrature. Prototype: `reference/pbc/ecp_quadrature/` (README there).
+PySCF appears only in `oracle.py` and the tests.
+
+### Formula
+ECP centre C, a = A − C, bare-Cartesian primitive χ = (x−A_x)^i(y−A_y)^j(z−A_z)^k e^{−α|r−A|²}, U = Σ d r^{n−2} e^{−ζr²}.
+- Type 2 (semi-local, every am except the max): ⟨A|U_l P_l|B⟩ = Σ_m ∫₀^∞ r² U_l F^A_lm F^B_lm dr with the angular
+  projection ANALYTIC:
+  F_lm(r) = ∫Y_lm χ(C + rΩ) dΩ = 4π e^{−α(r−|a|)²} Σ_{N,λ} T[c,m,N,λ] r^N k̃_λ(2α|a|r).
+  - k̃_n(z) = e^{−z} i_n(z) is bounded, all its arithmetic is positive-term or stable-direction recurrence, and k̃_n(0) = δ_n0.
+    So there is no cancellation at any distance, and the on-centre case is exact rather than a limit.
+  - T[c,m,N,λ] = Σ_{p+q+s=N} C(i,p)C(j,q)C(k,s)(−a_x)^{i−p}(−a_y)^{j−q}(−a_z)^{k−s} Σ_μ Y_λμ(â) ∫Y_lm Y_λμ Ω_x^p Ω_y^q Ω_z^s dΩ.
+    It depends only on (shell l, centre offset, l), not on exponents.
+  - Production form: all primitive/term/node work goes into one radial tensor per (shell pair, centre, l),
+    R[N+N′, λ, λ′] = Σ_{αβ} c_α c_β Σ_terms d ∫ (4π)² r^{n+N+N′} e^{−p(r−r0)²−K} k̃_λ(2α|a|r) k̃_λ′(2β|b|r) dr,
+    with p = α+β+ζ, r0 = (α|a|+β|b|)/p and K = α|a|²+β|b|²−p r0² ≥ 0 (never overflows).
+  - Then one angular contraction: V = Σ T^A T^B R.
+- Type 1 (local, max am): χ_Aχ_B = e^{−(α+β)r² + 2k·r − α|a|² − β|b|²} × polynomial (k = αa + βb). Its angular integral
+  uses the same k̃_λ(2|k|r) against monomial tables. The envelope is e^{−p(r−|k|/p)² − K₁}.
+- Derivatives: raised/lowered shells (∂χ/∂A_x = 2α χ(i+1) − i χ(i−1), with coefficients 2αc and c), centre =
+  −(bra + ket) per triple.
+- Spherical output: libcint cart2sph built from our own real harmonics (Helgaker Eq. 6.4.47). A test parses
+  C2S0..C2S4 out of `ecp.rs`: identical to 1e-14.
+
+### Choices
+- Angular: analytic (the standard type-2 route), not Lebedev. It has no angular-grid error, is exact on-centre, and T is
+  hoisted out of every primitive/node loop.
+- Bessel k̃_n (n ≤ 12), four regimes:
+  - z = 0: δ_n0.
+  - 0 < z < 1e-8: a two-term expansion (this avoids the z^n underflow that would poison the recurrence).
+  - 1e-8 ≤ z < max(16, 4 n_max): power series for n_max and n_max+1 only, then downward recurrence (i_n is the minimal
+    solution in n).
+  - z ≥ max(16, 4 n_max): upward recurrence from the closed forms of k̃_0 and k̃_1.
+  - Measured vs mpmath (40 digits): ≤ 2.3e-15 relative over z ∈ {0} ∪ [1e-300, 1e5]. Rejected: upward-only above
+    z = 16 (2.7e-13 at n = 12, z = 16.3).
+- Radial rule, per (primitive pair, ECP term) window:
+  - Interior windows (r0√p ≥ 6.5): Gauss–Hermite with 20 nodes, r = r0 + x/√p. Every node is at r > 0, and the neglected
+    mass below r = 0 is ≤ e^{−42}.
+  - All other windows: Gauss–Legendre on [max(0, r0 − 6/√p), r_pk + 6/√p], where r_pk is the argmax of
+    r^{n+la+lb} e^{−p(r−r0)²}. The node count is clamp(⌈3.4·(hi−lo)·√p⌉, 16, 40).
+  - Why: a fixed GL rule wastes nodes on a ±T/√p box, and Gauss–Hermite handles only the 6–15% of windows that are
+    interior. Most windows touch r = 0 because the ECP exponents pull r0 toward the centre.
+- Screening per (primitive pair, term): a bound e^{−K}√(π/p)·|c c d|·(4π)²·poly·1e3 < 1e-16 skips the window. On the
+  fixtures screening changes values by ≤ 8.6e-24 (test asserts < 1e-20). On triiodobenzene it skips 81% of
+  (primitive pair, term) items.
+- Local channel: implement it too (recommended). It reuses the same k̃ and radial windows, and it matches PySCF inside
+  every full-ECP comparison below. That removes the libecpint C++/Faddeeva dependency and its LIBECPINT_MAX_L asserts,
+  and puts all channels on one accuracy/smoothness footing. Keep libecpint only as a cross-check backend during the
+  transition.
+
+### Measured (final rule; OPENBLAS=1; PySCF 2.13.1 with the 1e-3 zero-weight guard; fixtures as in "clean-band")
+Values:
+| comparison | result |
+|---|---|
+| HI/LANL2DZ, 100 triples / 324 elements (4 ECP positions incl. off-both), vs PySCF | max 4.3e-14 (elements up to 1.5) |
+| AuH/def2-SVP + def2-ECP (f shells, on- and off-centre), 675 triples / 4107 elements, vs PySCF | elements > 1e-6: 1.4e-13 abs; all: 7.3e-13 |
+| ↳ the 7.3e-13: Au s(tight)–Au d_L around an ECP at the H end, elements ~2e-12 | ours − Lebedev 9.0e-18 (2030×240), 1.6e-19 (3074×300); PySCF − Lebedev 4.5e-13 (PySCF's floor, not ours) |
+| 6 selected triples vs Lebedev 2030×240 (HI MID, H s–I p_L, I p on-centre, Au f on-centre–f_L, Au f_L–d off both, the tiny one) | 9e-18..1.5e-14 (PySCF − Lebedev 3e-16..7.6e-15, and 4.5e-13 on the tiny one) |
+| triiodobenzene molecular matrix vs libecpint (`ferric_ecp_matrix`) | max 2.07e-7, 42 of 31329 elements > 1e-8 (libecpint's known roughness) |
+| radial-tensor form vs explicit F^A_lm F^B_lm at every node (independent contraction) | ≤ 1.9e-13 relative |
+
+Smoothness: 41 points over ±5e-4 Bohr, cubic-fit residual.
+| element | ours | libecpint (2026-09-27) |
+|---|---|---|
+| HI MID: centre x, I p(1)–I p(1)_L, U@I0+(1.5,−1.2,0.8), (0,2), \|V\| 0.11 | 1.8e-16 | 6.9e-7 |
+| same, d projector only (\|V\| 6.9e-4) | 2.6e-18 | 6.9e-7 |
+| bra I p(2) moving THROUGH its ECP centre (HI) | 2.6e-16 | (not computable: non-smooth band) |
+| AuH f–f_L, centre y, U@Au+L+(.3,.2,−.25) (\|V\| 2.1e-2) | 2.1e-14 | – |
+| Au d moving through its centre (ket, with H p) | 4.7e-17 | – |
+
+Derivatives (analytic vs Richardson FD of OWN values, h = 1e-3, every slot of every HI triple and every 3rd AuH triple):
+| band | slot-blocks | max \|an − FD\| (all) | max rel (blocks with max\|dV\| > 1e-6) |
+|---|---|---|---|
+| HI ON centre | 180 | 5.1e-11 | 9.7e-10 |
+| HI < 1 Bohr | 405 | 6.4e-11 | 4.1e-10 |
+| HI ≥ 1 Bohr | 315 | 2.2e-12 | 9.2e-11 |
+| AuH ON centre | 1620 | 3.3e-11 | 4.9e-10 |
+| AuH ≥ 1 Bohr | 405 | 4.5e-13 | 3.2e-10 |
+- These are the FD floor, not the derivative. `deriv_hscan.py` shows no h-trend on the worst blocks (h = 4e-3 … 1.25e-4).
+  Blocks below 1e-6 carry ~1e-17 absolute roundoff. On a 2e-2 centre-slot block the adaptive and fixed GL-40 rules give
+  the same 2e-12..4e-11 absolute across h (value roundoff through cancelling ECP coefficients of O(10²)).
+- libecpint, same fixture: 1e-5 (clean) and 1e-2 (0.5–1 Bohr) relative.
+- Quadrature target ∂/∂B_z⟨H1s|U_I|H1s_L⟩, L = (0,0,7): analytic −6.658296235565e-3 vs target −6.658296236e-3 is 4.4e-13;
+  own FD differs by 1.9e-15. libecpint is 1.8e-8 off, PySCF ipnuc 1.1e-7.
+- On-centre (shell ON its ECP centre, off-centre partner):
+  - Values vs PySCF: HI I p(2)–H s_L 8.2e-15, HI I s(2)–I p(1)_L 2.8e-15, Au d–Au f_L 6.3e-16, Au f–H p 9.9e-17.
+  - Bra derivative vs FD through the centre: 5.3e-13, 1.0e-11, 1.7e-12, 8.7e-13 relative.
+  - V(δ) − V(0) is linear in δ down to δ = 1e-12.
+  - The shim's "on-centre quirk" handling is not needed.
+
+Radial convergence (fixture triples; reference GL-120, T = 10):
+- Fixed GL-N, T = 7, max abs: N 12 1.9e-2 · 16 2.7e-4 · 20 5.0e-7 · 24 3.3e-9 · 28 8.8e-11 · 32 1.5e-12 · 40 3.6e-13.
+- Per window over 42.8k windows (fixtures + every 7th triiodobenzene window), max relative error on blocks with
+  |R| > 1e-12:
+
+| rule | GL(32, T 6) | GL(40, 6) | hybrid 2.6/σ | 3.0/σ | **3.4/σ (chosen)** | 3.8/σ |
+|---|---|---|---|---|---|---|
+| max rel | 2.8e-10 | 1.35e-14 | 4.7e-9 | 2.4e-11 | **5.2e-14** | 3.3e-14 |
+| mean nodes/window | 32 | 40 | 21.7 | 24.7 | **27.7** | 30.4 |
+
+- The Gauss–Hermite part alone is ≤ 9.5e-15 at 20 nodes (1.1e-14 at 16).
+- For 1e-12: ~25 nodes/window mean (3.0/σ). For 1e-13: 27.7.
+
+Negative controls (each test asserted to FAIL on a broken construction):
+- λ > l terms of the plane-wave expansion dropped: PySCF miss > 1e-3.
+- r^{n−1} instead of r^{n−2}: miss > 1e-3.
+- GL-16 / GH-8: miss > 1e-10.
+- `test_ecpq.py`: 19 passed (~4.5 min).
+
+### Cost (1,3,5-triiodobenzene / def2-SVP + def2-ECP from ferric's bundled JSON)
+The system has 75 shells, 177 AOs, 3 I centres (4 local + 25 semi-local terms each), 2850 shell pairs and 8550 triples.
+Box load was ~2–5 during the timings. Provisional, one system.
+- libecpint `ferric_ecp_matrix` (ctypes, 1 thread): 1.645 s (best of 3).
+- Prototype work counts:
+  - Type 2: 195,030 windows after screening, 5.35M nodes (27.5 per window), 14,847 angular contractions (18.3 Mflop total).
+  - Type 1: 29,163 windows, 0.81M nodes, 37,287 primitive pairs (13.3 Mflop of angular build and contraction).
+- Measured hot loop (`radial_kernel.cc`, g++ -O2, a C++ stand-in for the Rust loop; checksum identical between rules):
+  - Type-2 windows: 0.52–0.54 s (97–101 ns/node). Fixed GL-40 takes 0.73 s.
+  - Per node: two Bessel sets, one exp, the R outer product.
+  - The first cut used divisions in the series and pow: 150–270 ns/node. Reciprocal tables fixed that.
+- Rust estimate for the whole matrix: ~0.55 s type 2 + ~0.08 s type-1 nodes + ~0.03 s angular ≈ 0.65 s, i.e. ~2.5×
+  faster than libecpint, 1 thread. This is an estimate: type 1 and angular are costed at ~100 ns/node and 1 Gflop/s.
+- Not yet applied: share nodes and Bessel sets across channels with equal ζ. def2-ECPs repeat the −U_L exponents in
+  every channel, and this cuts triiodobenzene's windows to 47% (91k unique). Only the R outer products stay per channel.
+  Estimated ~0.4 s total.
+- The rejected vendored-PySCF backend measured 0.71 s vs libecpint 3.2 s on the diagnosis's 59-shell/3-ECP system.
+  That is a different system, so do not form a ratio against the numbers above.
+
+### Interpretation (provisional, 2026-09-27; two fixtures + one 75-shell molecule)
+- The analytic-angular / windowed-radial design meets every bar set for it:
+  - Values: ≤ 1.4e-13 abs vs PySCF on non-tiny elements, 1e-17 vs Lebedev where PySCF itself is off.
+  - Smoothness: scatter ≤ 2.1e-14 (bar 1e-12).
+  - Derivatives: FD ≤ 9.7e-10 relative, i.e. the FD floor (bar 1e-9).
+  - Target: 4.4e-13.
+  - On-centre: exact.
+- It costs less than libecpint. libecpint's d-projector jitter (6.9e-7) and s-projector bias (2e-6 relative) do not
+  occur, because no closed-form 1/(x^k y^m) radial formulas are used.
+- The adaptive node count makes values piecewise-smooth at the ≤ 5e-14 relative level. Every smoothness scan shows
+  ≤ 2.1e-14, and FD is not affected above its roundoff floor.
+- Predictions to test after the Rust switch (each would further confirm libecpint as the cause):
+  - The −2.9e-7 LANL2DZ 1×1×2 pin offset (Rust vs prototype) drops to ≤ 1e-10.
+  - The molecular `ecp_matrix_deriv.rs` 1.4e-7 h-independent plateau collapses to the FD floor.
+  - The compact HI SCF-force FD residual (2.52e-7) shrinks.
+  If any does not move, libecpint was not (the whole) cause.
+
+### For the Rust port
+Module layout: `crates/ferric-integrals/src/ecp_quad/` (pure Rust, no FFI).
+- `mod.rs`: `pub(crate) fn block_cart(bra, ket, ecps, mask) -> Vec<f64>` and
+  `block_deriv_cart(bra, ket, ecps, mask, centre_group, ngroup) -> (bra[3], ket[3], centre[g][3])`.
+  Both are Cartesian, bare-Cartesian coefficients, CCA order: exactly what the libecpint shim returns today, so
+  `ecp.rs`'s cart→sph code is reused unchanged.
+- `harmonics.rs`:
+  - Real Y_lm monomial coefficients (Helgaker 6.4.47, λ ≤ 12) and `sphere_monomial`.
+  - Angular tables Q(l, λ, pqs) (type 2) and mono_ylm(λ, PQS) (type 1), built once in `OnceLock`s.
+  - `y_values(λmax, û)`.
+- `bessel.rs`: `ktil(nmax, z, out: &mut [f64])` with the four regimes above, `RECIP[n][k] = 1/(k(2n+2k+1))` and
+  `IDF[n] = 1/(2n+1)!!` tables (no divisions in the series).
+- `radial.rs`: GL tables for n = 16..40 and GH-20, computed once. `nodes(p, r0, deg) -> (r[], w[])` exactly as
+  `ecpq.radial_nodes` (τ = 6.5, T = 6, 3.4/σ, clamp 16..40). Constants live in one place.
+- `type2.rs`:
+  - `proj_tensor(l_shell, l, a) -> T[c][m][N][λ]`, cached per (shell, ECP centre, l) inside a block call.
+  - `radial_tensor(...) -> R[K][λ][λ′]`: loop primitive pairs × distinct ζ (sharing nodes and k̃ across channels
+    and n) × nodes, accumulate per channel.
+  - `contract(T^A, T^B, R)`.
+  - Screening bound as in `ecpq._prim_screen_bound`.
+- `type1.rs`: per primitive pair W[ia][ib][N][λ] (k̂ depends on the pair) and R1[N][λ] accumulated over terms × nodes,
+  then contract.
+
+Backend:
+- `pub enum EcpBackend { Libecpint, Quadrature }`, a `ConfigVar` knob (e.g. `FERRIC_ECP_BACKEND=libecpint|quadrature`,
+  strict parser, unknown value → error).
+- `ecp_block_spherical`, `ecp_block_deriv_spherical`, `ecp_matrix_spherical` and `ecp_matrix_deriv_spherical` dispatch on
+  it with identical signatures.
+- For `Quadrature`, `ecp_matrix_deriv_spherical` = the per-atom fold of `block_deriv` (bra = ket = shells, groups =
+  atoms). That fold is what `ecp_deriv_block.rs` (a) already proves equal to libecpint's molecular derivative. Keep the
+  `(derivs, natoms)` / `ecp_deriv_atom_ids` contract so `oneelectron::ecp_potential_deriv` is untouched.
+- Rayon over shell pairs (each writes its own block); `with_blas_threads` is not needed (no BLAS).
+- Default `Libecpint` until the parity tests pass, then flip; drop libecpint after one release.
+- Supports any l_shell ≤ 4 (raised 5) and any ECP l with λ ≤ 12; no LIBECPINT_MAX_L.
+
+Tests (Rust):
+1. `bessel`: literal mpmath table (n ≤ 12, the regime edges 0, 1e-8, 16, 4n) ≤ 5e-15 relative.
+2. `harmonics`: orthonormality l ≤ 9 < 1e-13; generated cart2sph == `C2S0..4`.
+3. Radial-tensor vs explicit F contraction (debug helper) ≤ 1e-12 relative.
+4. Values vs committed references generated by this prototype and PySCF (`testdata/reference/ecp_quadrature_*.json`,
+   HI + AuH fixture triples, plus the Lebedev value of the tiny element): bar 1e-13 abs (tiny element 1e-15).
+5. Smoothness (41 points ±5e-4, cubic residual) < 1e-13 on the MID / d-only / AuH f–f elements.
+6. Replace the ≥ 1 Bohr-only bar in `ecp_deriv_block.rs` (b) with ALL bands incl. on-centre: relative ≤ 1e-9 on blocks
+   > 1e-6, absolute ≤ 1e-11 below.
+7. (d) target: tighten ACCURACY_BAR 5e-8 → 5e-12 (measured 4.4e-13).
+8. Screening on/off ≤ 1e-20.
+9. Backend parity vs libecpint ≤ 5e-7 abs (guards gross errors; documents libecpint's floor).
+10. The three predictions above as before/after measurements. Molecular HI/I2 SCF energies with both backends are
+    expected to differ by ≤ 1e-6.
+11. Mutation checks: the three negative controls above must fail tests 4/5.
+Not yet synced to `prototypes/pbc/` (the snapshot needs the ruff@0.15.8 format pass).
+
+## Range split — measured speed-up (2026-09-27, diamond_prim cc-pVDZ / cc-pvdz-ri, Gamma RHF, 1 thread, load 3-7)
+| | unsplit | split (lambda = 1) |
+|---|---|---|
+| E (Ha/cell) | −74.97570900695028 | −74.97570900686674 (8.4e-11 above) |
+| RS-GDF SR 3-centre | 262.3 s, 197,033,528 triplets | 48.9 s, 35,921,128 triplets (0.182x — exactly the prototype's two-call prediction) |
+| RS-GDF SR2 pairs | 159,064 | 17,288 (0.109x) |
+| hcore SR attraction | 58.5 s | 58.8 s (unchanged; now ~51% of the build) |
+| LR pair FT | 4.8 s | 5.6 s |
+| total wall | 327.0 s | 114.8 s (2.85x) |
+vs PySCF GDF p1e-12 (60.0 s, 1 thread): 5.9x slower → 1.9x slower. Next lever: hcore SR attraction (performance plan
+"hcore omega": ~2.3x fewer SR nucleus triplets on diamond_prim), then the parallel speed-up on top (not yet measured
+together with the split).

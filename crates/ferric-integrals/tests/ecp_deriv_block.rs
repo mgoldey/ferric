@@ -46,12 +46,22 @@
 //! accuracy, not by the derivative (see (b)); `ecp_matrix_deriv.rs` saw the
 //! same effect molecularly (an h-independent 1.4e-7 / 2.2e-7 relative
 //! plateau on I2/def2-SVP).
+//!
+//! Every libecpint check above runs on `EcpBackend::Libecpint` explicitly
+//! with its bars unchanged. The ferric-owned quadrature backend
+//! (`EcpBackend::Quadrature`, FINDINGS "Iteration 25") has smooth, exact
+//! on-centre values, so its versions of (b), (d), (e) and (f) are TIGHTER:
+//! (b) asserts EVERY band including on-centre (relative 1e-8 on blocks with
+//! max |dV| > 1e-6, absolute 1e-11 below; prototype 9.7e-10), (d) asserts
+//! the quadrature target to 5e-12 (prototype 4.4e-13). (a) runs on the
+//! process backend (`FERRIC_ECP_BACKEND`), the one `ecp_potential_deriv`
+//! uses, so it checks "fold ≡ molecular derivative" for whichever is active.
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_integrals::ecp::{
-    ecp_block_deriv_spherical, ecp_block_spherical, gto_norm, EcpBlockDeriv, EcpCenter,
-    EcpGaussianShell,
+    ecp_backend, ecp_block_deriv_spherical_with_backend, ecp_block_spherical_with_backend,
+    gto_norm, EcpBackend, EcpBlockDeriv, EcpCenter, EcpGaussianShell,
 };
 use ferric_integrals::oneelectron::ecp_potential_deriv;
 
@@ -284,7 +294,12 @@ fn zero_shift_block_deriv_folds_to_the_molecular_matrix_deriv() {
         }
     }
     let natoms = mol.atoms.len();
-    let d = ecp_block_deriv_spherical(&shells, &shells, &centres, None, &groups, natoms).unwrap();
+    // The backend `ecp_potential_deriv` used (FERRIC_ECP_BACKEND).
+    let backend = ecp_backend().unwrap();
+    let d = ecp_block_deriv_spherical_with_backend(
+        backend, &shells, &shells, &centres, None, &groups, natoms,
+    )
+    .unwrap();
     let n = d.nrow;
     assert_eq!(d.ncol, n);
     let mut worst = 0.0_f64;
@@ -313,7 +328,9 @@ fn zero_shift_block_deriv_folds_to_the_molecular_matrix_deriv() {
             scale = scale.max(s);
         }
     }
-    eprintln!("zero shift fold vs molecular dV_ECP/dR: max |Δ| {worst:.2e} (max |dV| {scale:.3})");
+    eprintln!(
+        "[{backend}] zero shift fold vs molecular dV_ECP/dR: max |Δ| {worst:.2e} (max |dV| {scale:.3})"
+    );
     assert!(scale > 0.1, "vacuous: dV_ECP ~ 0");
     assert!(worst < 1e-10 * scale.max(1.0), "{worst:e}");
 }
@@ -341,6 +358,90 @@ type Row = (f64, f64, f64, String);
 
 fn dist(a: [f64; 3], b: [f64; 3]) -> f64 {
     (0..3).map(|k| (a[k] - b[k]).powi(2)).sum::<f64>().sqrt()
+}
+
+/// Per-triple slot rows `(d_min, |an − FD|, max |an|, label)` of the HI
+/// fixture below, for one backend.
+fn per_triple_rows(backend: EcpBackend) -> Vec<Row> {
+    let l_vec = [0.8, -0.6, 1.1];
+    let mut bra = h_sto3g(H0);
+    bra.extend(i_lanl2dz(I0));
+    let bra_name = ["H s", "I s(2)", "I s(1)", "I p(2)", "I p(1)"];
+    let ket: Vec<EcpGaussianShell> = bra
+        .iter()
+        .map(|s| EcpGaussianShell {
+            center: add(s.center, l_vec),
+            ..s.clone()
+        })
+        .collect();
+    let cs = [
+        I0,
+        add(add(I0, l_vec), [0.3, 0.2, -0.25]),
+        add(H0, [-0.5, 0.4, 0.6]),
+        add(I0, [1.5, -1.2, 0.8]),
+    ];
+    let ecps: Vec<EcpCenter> = cs.iter().map(|c| i_lanl2dz_ecp(*c)).collect();
+    let h = TRIPLE_FD_H;
+    let mut rows: Vec<Row> = Vec::new();
+    for (ia, sa) in bra.iter().enumerate() {
+        for (ib, sb) in ket.iter().enumerate() {
+            for (iu, eu) in ecps.iter().enumerate() {
+                let (ba, kb, uc) = (
+                    std::slice::from_ref(sa),
+                    std::slice::from_ref(sb),
+                    std::slice::from_ref(eu),
+                );
+                let an = ecp_block_deriv_spherical_with_backend(backend, ba, kb, uc, None, &[0], 1)
+                    .unwrap();
+                let (dac, dbc) = (dist(sa.center, eu.center), dist(sb.center, eu.center));
+                let dmin = dac.min(dbc);
+                for x in 0..3 {
+                    let fb = |d: f64| {
+                        ecp_block_spherical_with_backend(
+                            backend,
+                            &moved(ba, &[0], x, d),
+                            kb,
+                            uc,
+                            None,
+                        )
+                        .unwrap()
+                    };
+                    let fk = |d: f64| {
+                        ecp_block_spherical_with_backend(
+                            backend,
+                            ba,
+                            &moved(kb, &[0], x, d),
+                            uc,
+                            None,
+                        )
+                        .unwrap()
+                    };
+                    let fc = |d: f64| {
+                        let mut e = eu.clone();
+                        e.center[x] += d;
+                        ecp_block_spherical_with_backend(backend, ba, kb, &[e], None).unwrap()
+                    };
+                    for (slot, f, a) in [
+                        ("bra", &fb as &dyn Fn(f64) -> Vec<f64>, &an.bra[x]),
+                        ("ket", &fk, &an.ket[x]),
+                        ("centre", &fc, &an.centre[0][x]),
+                    ] {
+                        let (dd, sc) = cmp(a, &richardson(f, h));
+                        rows.push((
+                            dmin,
+                            dd,
+                            sc,
+                            format!(
+                                "{slot:6} x{x} bra {} ket {} U{iu} (|A−C| {dac:.2}, |B−C| {dbc:.2})",
+                                bra_name[ia], bra_name[ib]
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    rows
 }
 
 /// Per-TRIPLE slot checks: for every (bra shell a, ket shell b, ECP centre
@@ -377,67 +478,8 @@ fn dist(a: [f64; 3], b: [f64; 3]) -> f64 {
 /// `ferric-pbc/tests/pbc_grad_ecp.rs`. On-centre shells: module doc (c).
 #[test]
 fn shifted_block_deriv_matches_richardson_fd_per_triple_away_from_centres() {
-    let l_vec = [0.8, -0.6, 1.1];
-    let mut bra = h_sto3g(H0);
-    bra.extend(i_lanl2dz(I0));
-    let bra_name = ["H s", "I s(2)", "I s(1)", "I p(2)", "I p(1)"];
-    let ket: Vec<EcpGaussianShell> = bra
-        .iter()
-        .map(|s| EcpGaussianShell {
-            center: add(s.center, l_vec),
-            ..s.clone()
-        })
-        .collect();
-    let cs = [
-        I0,
-        add(add(I0, l_vec), [0.3, 0.2, -0.25]),
-        add(H0, [-0.5, 0.4, 0.6]),
-        add(I0, [1.5, -1.2, 0.8]),
-    ];
-    let ecps: Vec<EcpCenter> = cs.iter().map(|c| i_lanl2dz_ecp(*c)).collect();
     let h = TRIPLE_FD_H;
-    let mut rows: Vec<Row> = Vec::new();
-    for (ia, sa) in bra.iter().enumerate() {
-        for (ib, sb) in ket.iter().enumerate() {
-            for (iu, eu) in ecps.iter().enumerate() {
-                let (ba, kb, uc) = (
-                    std::slice::from_ref(sa),
-                    std::slice::from_ref(sb),
-                    std::slice::from_ref(eu),
-                );
-                let an = ecp_block_deriv_spherical(ba, kb, uc, None, &[0], 1).unwrap();
-                let (dac, dbc) = (dist(sa.center, eu.center), dist(sb.center, eu.center));
-                let dmin = dac.min(dbc);
-                for x in 0..3 {
-                    let fb =
-                        |d: f64| ecp_block_spherical(&moved(ba, &[0], x, d), kb, uc, None).unwrap();
-                    let fk =
-                        |d: f64| ecp_block_spherical(ba, &moved(kb, &[0], x, d), uc, None).unwrap();
-                    let fc = |d: f64| {
-                        let mut e = eu.clone();
-                        e.center[x] += d;
-                        ecp_block_spherical(ba, kb, &[e], None).unwrap()
-                    };
-                    for (slot, f, a) in [
-                        ("bra", &fb as &dyn Fn(f64) -> Vec<f64>, &an.bra[x]),
-                        ("ket", &fk, &an.ket[x]),
-                        ("centre", &fc, &an.centre[0][x]),
-                    ] {
-                        let (dd, sc) = cmp(a, &richardson(f, h));
-                        rows.push((
-                            dmin,
-                            dd,
-                            sc,
-                            format!(
-                                "{slot:6} x{x} bra {} ket {} U{iu} (|A−C| {dac:.2}, |B−C| {dbc:.2})",
-                                bra_name[ia], bra_name[ib]
-                            ),
-                        ));
-                    }
-                }
-            }
-        }
-    }
+    let rows = per_triple_rows(EcpBackend::Libecpint);
     let band =
         |lo: f64, hi: f64| -> Vec<&Row> { rows.iter().filter(|r| r.0 >= lo && r.0 < hi).collect() };
     let summarize = |name: &str, rs: &[&Row]| -> (f64, f64) {
@@ -482,6 +524,46 @@ fn shifted_block_deriv_matches_richardson_fd_per_triple_away_from_centres() {
     );
 }
 
+/// (b) for the ferric-owned quadrature backend: the SAME fixture and FD
+/// referee, asserted in EVERY band including the on-centre and < 0.5 Bohr
+/// ones libecpint cannot pass (its values are non-smooth there): blocks with
+/// max |dV| > 1e-6 relative ≤ 1e-8 (prototype 9.7e-10 worst, the FD floor),
+/// smaller blocks absolute ≤ 1e-11.
+#[test]
+fn shifted_block_deriv_matches_richardson_fd_in_every_band_quadrature() {
+    let rows = per_triple_rows(EcpBackend::Quadrature);
+    let mut worst = [(0.0_f64, 0.0_f64, 0usize); 3];
+    for r in &rows {
+        let band = if r.0 < FD_MIN_DIST {
+            0
+        } else if r.0 < CLEAN_DIST {
+            1
+        } else {
+            2
+        };
+        let w = &mut worst[band];
+        w.2 += 1;
+        if r.2 > 1e-6 {
+            w.0 = w.0.max(r.1 / r.2);
+        } else {
+            w.1 = w.1.max(r.1);
+        }
+    }
+    for (name, w) in ["d < 0.5", "0.5 <= d < 1", "d >= 1"].iter().zip(&worst) {
+        eprintln!(
+            "[quadrature] {name:13}: {:4} slot-blocks, worst rel {:.2e}, worst abs (small blocks) {:.2e}",
+            w.2, w.0, w.1
+        );
+    }
+    let on_centre = rows.iter().filter(|r| r.0 < 1e-9).count();
+    assert!(on_centre >= 9, "no on-centre triples: {on_centre}");
+    assert!(worst.iter().all(|w| w.2 >= 9), "{worst:?}");
+    for w in &worst {
+        assert!(w.0 < 1e-8, "{worst:?}");
+        assert!(w.1 < 1e-11, "{worst:?}");
+    }
+}
+
 // ============================================================ (d) quadrature target
 
 /// FINDINGS Iteration 22 (2b): ∂/∂B_z ⟨H1s|U_I|H1s_L⟩ at L = (0, 0, 7), one
@@ -503,14 +585,7 @@ fn off_centre_element_matches_the_quadrature_target() {
     const PYSCF_IPNUC: f64 = -6.658184541e-3;
     const CONSISTENCY_BAR: f64 = 1e-8;
     const ACCURACY_BAR: f64 = 5e-8;
-    let bra = h_sto3g(H0);
-    let ket = h_sto3g(add(H0, [0.0, 0.0, 7.0]));
-    let ecps = vec![i_lanl2dz_ecp(I0)];
-    let an = ecp_block_deriv_spherical(&bra, &ket, &ecps, None, &[0], 1).unwrap();
-    assert_eq!((an.nrow, an.ncol), (1, 1));
-    let dz = an.ket[2][0];
-    let f = |d: f64| ecp_block_spherical(&bra, &moved(&ket, &[0], 2, d), &ecps, None).unwrap();
-    let fd = richardson(&f, 1e-4)[0];
+    let (dz, fd) = target_element(EcpBackend::Libecpint);
     eprintln!(
         "dB_z <H1s|U_I|H1s_L>: analytic {dz:.12e}, FD(own values) {fd:.12e} (|Δ| {:.1e}), \
          target {TARGET:.12e} (|an − target| {:.1e}, |FD − target| {:.1e}, \
@@ -534,12 +609,58 @@ fn off_centre_element_matches_the_quadrature_target() {
     );
 }
 
+/// `(analytic ∂/∂B_z, Richardson FD (h = 1e-4) of the backend's own values)`
+/// of the (d) element.
+fn target_element(backend: EcpBackend) -> (f64, f64) {
+    let bra = h_sto3g(H0);
+    let ket = h_sto3g(add(H0, [0.0, 0.0, 7.0]));
+    let ecps = vec![i_lanl2dz_ecp(I0)];
+    let an =
+        ecp_block_deriv_spherical_with_backend(backend, &bra, &ket, &ecps, None, &[0], 1).unwrap();
+    assert_eq!((an.nrow, an.ncol), (1, 1));
+    let f = |d: f64| {
+        ecp_block_spherical_with_backend(backend, &bra, &moved(&ket, &[0], 2, d), &ecps, None)
+            .unwrap()
+    };
+    (an.ket[2][0], richardson(&f, 1e-4)[0])
+}
+
+/// (d) for the quadrature backend: the target to 5e-12 (prototype 4.4e-13 —
+/// libecpint's 1.8e-8 is its radial quadrature) and its own FD to 1e-10.
+#[test]
+fn off_centre_element_matches_the_quadrature_target_quadrature() {
+    const TARGET: f64 = -6.658296236e-3;
+    const CONSISTENCY_BAR: f64 = 1e-10;
+    const ACCURACY_BAR: f64 = 5e-12;
+    let (dz, fd) = target_element(EcpBackend::Quadrature);
+    eprintln!(
+        "[quadrature] dB_z <H1s|U_I|H1s_L>: analytic {dz:.12e}, FD {fd:.12e} (|Δ| {:.1e}), \
+         |an − target| {:.1e}",
+        (dz - fd).abs(),
+        (dz - TARGET).abs()
+    );
+    assert!(
+        (dz - fd).abs() < CONSISTENCY_BAR,
+        "analytic {dz:e} vs own FD {fd:e}"
+    );
+    assert!(
+        (dz - TARGET).abs() < ACCURACY_BAR,
+        "analytic {dz:e} vs target {TARGET:e}"
+    );
+}
+
 // ============================================================ (e) invariance
 
 /// bra + ket + Σ_g centre = 0 element-wise (per-triple translation
-/// invariance), over a multi-group, masked call.
+/// invariance), over a multi-group, masked call — both backends.
 #[test]
 fn bra_ket_centre_sum_to_zero_per_element() {
+    for backend in [EcpBackend::Libecpint, EcpBackend::Quadrature] {
+        bra_ket_centre_sum_to_zero(backend);
+    }
+}
+
+fn bra_ket_centre_sum_to_zero(backend: EcpBackend) {
     let mut bra = h_sto3g(H0);
     bra.extend(i_lanl2dz(I0));
     let ket: Vec<EcpGaussianShell> = bra
@@ -556,8 +677,16 @@ fn bra_ket_centre_sum_to_zero_per_element() {
     // A mask that drops every third triple, and two ECPs sharing a group.
     let nt = bra.len() * ket.len() * ecps.len();
     let mask: Vec<u8> = (0..nt).map(|k| u8::from(k % 3 != 0)).collect();
-    let d: EcpBlockDeriv =
-        ecp_block_deriv_spherical(&bra, &ket, &ecps, Some(mask.as_slice()), &[0, 1, 0], 2).unwrap();
+    let d: EcpBlockDeriv = ecp_block_deriv_spherical_with_backend(
+        backend,
+        &bra,
+        &ket,
+        &ecps,
+        Some(mask.as_slice()),
+        &[0, 1, 0],
+        2,
+    )
+    .unwrap();
     let mut worst = 0.0_f64;
     let mut scale = 0.0_f64;
     for x in 0..3 {
@@ -567,13 +696,21 @@ fn bra_ket_centre_sum_to_zero_per_element() {
             scale = scale.max(d.bra[x][k].abs());
         }
     }
-    eprintln!("bra + ket + centre: max {worst:.1e} (max |bra| {scale:.2e})");
+    eprintln!("[{backend}] bra + ket + centre: max {worst:.1e} (max |bra| {scale:.2e})");
     assert!(scale > 1e-3, "vacuous");
     assert!(worst < 1e-13 * scale.max(1.0), "{worst:e}");
     // The mask is honoured by the derivative kernel as by the value kernel.
     let zero = vec![0u8; nt];
-    let z =
-        ecp_block_deriv_spherical(&bra, &ket, &ecps, Some(zero.as_slice()), &[0, 1, 0], 2).unwrap();
+    let z = ecp_block_deriv_spherical_with_backend(
+        backend,
+        &bra,
+        &ket,
+        &ecps,
+        Some(zero.as_slice()),
+        &[0, 1, 0],
+        2,
+    )
+    .unwrap();
     assert!(z
         .bra
         .iter()
@@ -592,9 +729,12 @@ fn block_deriv_rejects_bad_groups_and_masks() {
     let bra = h_sto3g(H0);
     let ket = h_sto3g(add(H0, [0.0, 0.0, 7.0]));
     let ecps = vec![i_lanl2dz_ecp(I0)];
-    assert!(ecp_block_deriv_spherical(&bra, &ket, &ecps, None, &[1], 1).is_err());
-    assert!(ecp_block_deriv_spherical(&bra, &ket, &ecps, None, &[0], 0).is_err());
-    assert!(ecp_block_deriv_spherical(&bra, &ket, &ecps, None, &[0, 0], 1).is_err());
-    assert!(ecp_block_deriv_spherical(&bra, &ket, &ecps, Some(&[1u8, 1][..]), &[0], 1).is_err());
-    assert!(ecp_block_deriv_spherical(&bra, &ket, &[], None, &[], 1).is_err());
+    for b in [EcpBackend::Libecpint, EcpBackend::Quadrature] {
+        let f = ecp_block_deriv_spherical_with_backend;
+        assert!(f(b, &bra, &ket, &ecps, None, &[1], 1).is_err());
+        assert!(f(b, &bra, &ket, &ecps, None, &[0], 0).is_err());
+        assert!(f(b, &bra, &ket, &ecps, None, &[0, 0], 1).is_err());
+        assert!(f(b, &bra, &ket, &ecps, Some(&[1u8, 1][..]), &[0], 1).is_err());
+        assert!(f(b, &bra, &ket, &[], None, &[], 1).is_err());
+    }
 }
