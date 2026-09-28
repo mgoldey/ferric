@@ -5523,3 +5523,77 @@ commits (1 thread, 13:39-13:58) put the serial pair-FT regression at `fe02524b`:
   + GEMM 8.1, LR pair FT 7.2, scf K 5.6 (serial), hcore S/T 3.1 (serial).
 - **Diamond_prim at 6 threads:** 34.1 s (32.4 s before; the pair FT is 0.3 s there, so the
   difference is scatter). SR 3-centre (19.1 s) and hcore SR (13.9 s) dominate.
+
+## HANDOFF — 2026-09-28 (paused by request)
+
+**Branch state.** `spike/pbc-prototype`, head `e61cf7f5`, all pushed. PR #150 is a DRAFT; its
+checklist was rewritten today and is current except for the performance table (numbers below
+are newer). Every commit since the last gate run was pushed with `--no-verify`. The push gate
+and the slow suites have NOT run on these commits; that is deliberate (they run once, at the
+ready point). No uncommitted work in `crates/`. Nothing is running; the hourly cron is deleted.
+
+**Verified on every perf commit today** (release, `OPENBLAS_NUM_THREADS=1`):
+- `pbc_parallel_bitwise` pair-FT and LR tests, plus `pbc_timings`.
+- The suites of every pair-FT caller: `pbc_hcore`, `pbc_rsgdf`, `pbc_krsgdf`,
+  `pbc_rsgdf_split`, `pbc_krsgdf_split`, `pbc_dense_aft_scf`, `pbc_krhf`, `pbc_lmp2`, and the
+  pair-FT identity tests in `pbc_grad` / `pbc_stress`.
+- CLI periodic tests; 113 Python `test_pbc_*.py` via the PYTHONPATH shim; complexity gate.
+- Mutants: every new path had a deliberate break that its test catches. That includes 4 for the
+  shell grouping and 10 for the phase split. Two tests that never reached their path were found
+  that way and fixed (the partial-window tail; the general-contraction sharing).
+
+**NOT run since the hcore ω / pair-FT changes:**
+- the force/stress suites beyond the two identity tests (`pbc_grad*`, `pbc_stress`, `pbc_kgrad`);
+- the heavy-atom suite at the 1e9 nucleus exponent;
+- any `#[ignore]`d slow test;
+- the full CLI and Python suites.
+
+The derivative/strain pair-FT kernels were NOT restructured and still use the direct phase.
+They are compared against the new kernel at 1e-13 in `pbc_grad`/`pbc_stress`, and both pass.
+
+**The pair-FT kernel is no longer bit-identical to the frozen serial oracles** (commit
+`5f46bc49`, value-changing by explicit request).
+- It is bitwise across thread counts and G chunkings.
+- It stays within 1e-11 per element of the oracle (worst correct bound 2.6e-12, smallest mutant
+  2.3e-4; derivation in `prototypes/pbc/pair_ft_kernel/split_tolerance.py`).
+- Energy moved −1e-13 Ha/cell on dry ice and +3e-14 on diamond.
+- The phase split falls back to the exact direct phase for any G list that is not
+  reciprocal-lattice points plus one common offset, e.g. strained cells with a reference G list.
+
+**Measured today** (dry ice Γ RHF, cc-pVDZ / cc-pvdz-ri, range split; tables above):
+- 6 threads: 474 s this morning → 50.7 s now; PySCF GDF 22.9 s.
+- 1 thread: 576 s → 143.6 s; PySCF 108.6 s.
+- The serial pair-FT regression at `fe02524b` was superseded by the grouping rewrite. Its cause
+  was never isolated: per-pair tasks were ruled out, buffer reuse and scratch handling were not.
+
+**Next, in order:**
+1. **Dry ice at 6 threads.** Stage walls: hcore SR attraction 13.9 s, SR 3-centre 10.2, LR aux
+   FT + GEMM 8.1, LR pair FT 7.2, scf K 5.6 (SERIAL), hcore S/T 3.1 (SERIAL).
+   - The cheapest wins are parallelising scf K and S/T, bit-identically.
+   - hcore SR and SR3 are libint-bound, so they sit behind the open libint per-call-inflation
+     question (~3× at 6 threads).
+2. Diamond is dominated by SR3 (19 s) and hcore SR (14 s) at 6 threads, not the pair FT.
+3. Pair-FT options prototyped but not implemented, both value-changing: vectorisable sin/cos
+   (V5), and a larger fixed G super-chunk for the J3 GEMM (it changes the k-blocking, so the
+   bits).
+4. Remaining benchmark cells: diamond_conv, dry ice PBE, larger cells, and repeats for the
+   run-to-run scatter. The current tables are one sample per cell.
+5. Open correctness items (PR "Open items"):
+   - the iodine ECP force floor (nucleus-exponent scan);
+   - re-running the ECP screening floor under the quadrature engine;
+   - the k-MP2 q=0 3-5% residual.
+6. Housekeeping: stale header comments in the bench TOMLs (they state the old hcore ω), and
+   `examples/pbc_triplet_bench.rs` / `pbc_parallel_contention.rs` still set the old ω.
+7. At the ready point: the full slow suites (heavy atoms at 1e9), the full push gate, the final
+   PR description, then mark #150 ready.
+
+**Gotchas hit today:**
+- `run_ferric_bench.sh` refuses a binary older than the last commit under `crates/`. Build →
+  commit → `touch target/release/ferric`. My series script had hidden that refusal with
+  `2>/dev/null`, so an old log was nearly read as a result.
+- Gate every timing run on load; the box's desktop (chrome, flatpak) lifts it to 3-5. Other
+  stages moving together (+8%) is the tell of contamination.
+- Writer agents may run CPU-heavy Python prototypes during benchmarks unless told not to.
+- The bench scripts live in the session scratchpad (`bench3.sh`); the harness is
+  `reference/pbc/bench/run_ferric_bench.sh`, and previous logs are kept under
+  `reference/pbc/bench/out/prev_0928*`.
