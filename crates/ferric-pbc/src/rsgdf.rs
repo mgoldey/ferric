@@ -117,7 +117,7 @@ use crate::kpts::lattice_coords;
 use crate::lattice::Cell;
 use crate::ordered::{ordered_units, Stored};
 use crate::pair_ft::residues::residue_index;
-use crate::pair_ft::{pair_ft_chunked, pair_ft_chunked_serial_oracle};
+use crate::pair_ft::{pair_ft_chunked_serial_oracle, pair_ft_chunked_timed};
 use crate::timing::{CallClock, PbcTimings, StageClock};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -127,12 +127,14 @@ use ferric_integrals::md3c1e::{cart_components, e_table, ferric_cart2sph, prim_n
 use ferric_integrals::operator::Operator;
 use ferric_scf::fock::{JBuilder, KBuilder};
 use ndarray::linalg::general_mat_mul;
-use ndarray::{Array1, Array2, Array3, ArrayView1, Axis};
+use ndarray::{s, Array1, Array2, Array3, ArrayView1, ArrayView2, Axis};
 use ndarray_linalg::{Eigh, UPLO};
 use num_complex::Complex64;
 use rayon::prelude::*;
 use std::f64::consts::PI;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::time::Instant;
 
 pub(crate) mod deriv;
 pub mod kpoint;
@@ -1368,6 +1370,7 @@ impl Stage<'_> {
     /// count and the `(wall, CPU)` seconds spent in the per-chunk sink (aux
     /// FT, packing and the four GEMMs); the rest of the call is the pair FT.
     /// `kernel` selects production or the FROZEN serial path ([`LrKernel`]).
+    /// Sub-stages and counters of both parts go to `sub` (observation only).
     fn lr_accumulate(
         &self,
         gv: &[[f64; 3]],
@@ -1375,6 +1378,7 @@ impl Stage<'_> {
         j3: &mut Array2<f64>,
         chunk_budget: usize,
         kernel: LrKernel,
+        sub: &mut PbcTimings,
     ) -> Result<(usize, f64, Option<f64>), FerricError> {
         let n = self.obs.nbasis();
         let n2 = n * n;
@@ -1389,11 +1393,16 @@ impl Stage<'_> {
         let pair_ft_thresh = (0.01 * self.thresh).min(crate::pair_ft::DEFAULT_PAIR_FT_THRESH);
         let aux_sh = &self.aux_sh;
         let (mut sink_wall, mut sink_cpu) = (0.0_f64, None::<f64>);
+        let mut sink_t = PbcTimings::default();
+        let mut bufs = PackBufs::default();
         let sink =
             |_g0: usize, gs: &[[f64; 3]], pft: &Array3<Complex64>| -> Result<(), FerricError> {
                 let clock = StageClock::start();
                 let ng = gs.len();
+                let c = StageClock::start();
                 let x = aux_ft_shells(aux_sh, naux, gs);
+                sink_t.stop_sub(SUB_AUX_FT, &c);
+                let c = StageClock::start();
                 let w: Vec<f64> = gs
                     .iter()
                     .map(|gvec| {
@@ -1401,7 +1410,9 @@ impl Stage<'_> {
                         2.0 / vol * 4.0 * PI / g2 * (-g2 / (4.0 * omega * omega)).exp()
                     })
                     .collect();
-                let (pr, pim) = pack_pair_ft(pft, Some(w.as_slice()), kernel);
+                let (pr, pim) = pack_pair_ft(pft, Some(w.as_slice()), kernel, &mut bufs);
+                sink_t.stop_sub(SUB_P_PACK, &c);
+                let c = StageClock::start();
                 let mut xr = Array2::<f64>::zeros((naux, ng));
                 let mut xi = Array2::<f64>::zeros((naux, ng));
                 let mut xrw = Array2::<f64>::zeros((naux, ng));
@@ -1415,11 +1426,16 @@ impl Stage<'_> {
                         xiw[(p, g)] = w * z.im;
                     }
                 }
+                sink_t.stop_sub(SUB_XY_PACK, &c);
                 // Re[conj(A) X] = A.re X.re + A.im X.im
-                lr_gemm_acc(&pr, &xr, j3, kernel);
-                lr_gemm_acc(&pim, &xi, j3, kernel);
-                general_mat_mul(1.0, &xrw, &xr.t(), 1.0, &mut *j2);
-                general_mat_mul(1.0, &xiw, &xi.t(), 1.0, &mut *j2);
+                let j2_terms: [(&Array2<f64>, &Array2<f64>); 2] = [(&xrw, &xr), (&xiw, &xi)];
+                lr_gemms(
+                    j3,
+                    &[(pr, &xr), (pim, &xi)],
+                    Some((&mut *j2, &j2_terms[..])),
+                    kernel,
+                    &mut sink_t,
+                );
                 let (w, c) = clock.elapsed();
                 sink_wall += w;
                 if let Some(c) = c {
@@ -1435,8 +1451,10 @@ impl Stage<'_> {
             pair_ft_thresh,
             chunk_budget,
             extra_per_g,
+            sub,
             sink,
         )?;
+        sub.accumulate(&sink_t);
         Ok((n_chunks, sink_wall, sink_cpu))
     }
 }
@@ -1446,8 +1464,9 @@ impl Stage<'_> {
 // ---------------------------------------------------------------------------
 
 /// Which kernels the LR stage runs. Production: the survivor-cached,
-/// shell-parallel pair FT ([`pair_ft_chunked`]), the per-row parallel
-/// packing and the row-blocked parallel J3 GEMMs ([`lr_gemm_acc`]).
+/// shell-pair-parallel pair FT ([`crate::pair_ft::pair_ft_chunked`]), the
+/// per-row parallel packing into reused buffers, the row-blocked parallel J3
+/// GEMMs ([`lr_gemm_acc`]) with the J2 GEMMs run beside them ([`lr_gemms`]).
 /// `SerialOracle`: the FROZEN pre-parallel path (serial pair FT that re-walks
 /// the screen per chunk, serial packing, one GEMM per chunk), used only by
 /// [`lr_sums_parallel_and_serial`]. Both use the SAME G chunks, so every J2/J3
@@ -1463,80 +1482,172 @@ pub(crate) enum LrKernel {
 /// GEMM call a J3 row belongs to, never the k-summation of an element).
 const LR_GEMM_ROW_BLOCK: usize = 512;
 
-/// `c += a · bᵀ` (`a`: `(m, k)`, `b`: `(q, k)`, `c`: `(m, q)`).
+/// Sub-stage: the aux FTs of one LR chunk (inside "rsgdf LR aux FT + GEMM").
+pub(crate) const SUB_AUX_FT: &str = "LR sink: aux FT";
+/// Sub-stage: the pair FT's (re, im) packing, weights included.
+pub(crate) const SUB_P_PACK: &str = "LR sink: P pack (re/im)";
+/// Sub-stage: the aux-side real rows (X, Y, weighted copies).
+pub(crate) const SUB_XY_PACK: &str = "LR sink: X/Y pack + weights";
+/// Sub-stage: the J3 (row-blocked, parallel) and J2 GEMMs, run concurrently.
+pub(crate) const SUB_GEMM: &str = "LR sink: J3 + J2 GEMMs";
+
+/// `c += Σ_t a_t · b_tᵀ` in term order (`a_t`: `(m, k)`, `b_t`: `(q, k)`,
+/// `c`: `(m, q)`); returns the summed wall of its GEMM tasks (ns).
 ///
-/// Production: `c`'s and `a`'s rows in fixed blocks of [`LR_GEMM_ROW_BLOCK`],
-/// one single-threaded BLAS GEMM per block, blocks on rayon. Every element of
-/// `c` still gets exactly one `+=` of one GEMM's length-`k` dot product over
-/// the same k range (the G chunk) as the unsplit GEMM; only the row range of
-/// the call it belongs to changes. The oracle is the unsplit call.
-fn lr_gemm_acc(a: &Array2<f64>, b: &Array2<f64>, c: &mut Array2<f64>, kernel: LrKernel) {
+/// Production: `c`'s and every `a_t`'s rows in fixed blocks of
+/// [`LR_GEMM_ROW_BLOCK`]; ONE rayon task per block runs the single-threaded
+/// BLAS GEMMs of all terms on that block, in term order (so the block stays
+/// in cache between terms). Every element of `c` still gets, per term,
+/// exactly one `+=` of one GEMM's length-`k` dot product over the same k
+/// range (the G chunk) and with the same call shape as the unsplit-by-term
+/// row-blocked loop, in the same term order; only which task runs it
+/// changes. The oracle is one unsplit call per term.
+fn lr_gemm_acc(
+    terms: &[(ArrayView2<'_, f64>, &Array2<f64>)],
+    c: &mut Array2<f64>,
+    kernel: LrKernel,
+) -> u64 {
+    let elapsed_ns = |t0: Instant| u64::try_from(t0.elapsed().as_nanos()).unwrap_or(u64::MAX);
     if kernel == LrKernel::SerialOracle || c.nrows() <= LR_GEMM_ROW_BLOCK {
-        general_mat_mul(1.0, a, &b.t(), 1.0, c);
-        return;
+        let t0 = Instant::now();
+        for (a, b) in terms {
+            general_mat_mul(1.0, a, &b.t(), 1.0, c);
+        }
+        return elapsed_ns(t0);
     }
+    let busy = AtomicU64::new(0);
     let cs: Vec<_> = c.axis_chunks_iter_mut(Axis(0), LR_GEMM_ROW_BLOCK).collect();
-    let as_: Vec<_> = a.axis_chunks_iter(Axis(0), LR_GEMM_ROW_BLOCK).collect();
-    cs.into_par_iter()
-        .zip(as_.into_par_iter())
-        .for_each(|(mut cb, ab)| general_mat_mul(1.0, &ab, &b.t(), 1.0, &mut cb));
+    cs.into_par_iter().enumerate().for_each(|(blk, mut cb)| {
+        let t0 = Instant::now();
+        let r0 = blk * LR_GEMM_ROW_BLOCK;
+        let r1 = r0 + cb.nrows();
+        for (a, b) in terms {
+            general_mat_mul(1.0, &a.slice(s![r0..r1, ..]), &b.t(), 1.0, &mut cb);
+        }
+        busy.fetch_add(elapsed_ns(t0), Ordering::Relaxed);
+    });
+    busy.into_inner()
+}
+
+/// The GEMMs of one LR chunk: `c += Σ a_t b_tᵀ` ([`lr_gemm_acc`]) and, if
+/// given, `j2 += Σ x_t y_tᵀ` (one unsplit GEMM per term, in order).
+/// Production runs the J2 terms CONCURRENTLY with the J3 row blocks
+/// (`rayon::join`: disjoint outputs, each keeps its own call sequence, so
+/// no element changes); the oracle runs them one after the other. Timed
+/// into `t` ([`SUB_GEMM`] wall; busy thread-µs as counters).
+#[allow(clippy::type_complexity)]
+fn lr_gemms(
+    c: &mut Array2<f64>,
+    terms: &[(ArrayView2<'_, f64>, &Array2<f64>)],
+    j2: Option<(&mut Array2<f64>, &[(&Array2<f64>, &Array2<f64>)])>,
+    kernel: LrKernel,
+    t: &mut PbcTimings,
+) {
+    let clock = StageClock::start();
+    let j2_part = move || -> u64 {
+        let t0 = Instant::now();
+        if let Some((j2, jt)) = j2 {
+            for (x, y) in jt {
+                general_mat_mul(1.0, *x, &y.t(), 1.0, &mut *j2);
+            }
+        }
+        u64::try_from(t0.elapsed().as_nanos()).unwrap_or(u64::MAX)
+    };
+    let (j3_ns, j2_ns) = if kernel == LrKernel::SerialOracle {
+        let a = lr_gemm_acc(terms, c, kernel);
+        (a, j2_part())
+    } else {
+        rayon::join(|| lr_gemm_acc(terms, c, kernel), j2_part)
+    };
+    t.stop_sub(SUB_GEMM, &clock);
+    t.add_counter("LR J3 GEMM busy us (sum of task walls)", j3_ns / 1000);
+    t.add_counter("LR J2 GEMM busy us", j2_ns / 1000);
+}
+
+/// Reusable `(re, im)` buffers of [`pack_pair_ft`] (one per LR pass).
+#[derive(Default)]
+struct PackBufs {
+    re: Vec<f64>,
+    im: Vec<f64>,
+}
+
+/// `buf` at exactly `len` elements. Production reuse: existing elements are
+/// left STALE (every one is overwritten by [`pack_pair_ft`]); growth is
+/// zero-filled in parallel. `fresh`: all `+0.0` (the oracle's fresh array).
+fn size_buffer(buf: &mut Vec<f64>, len: usize, fresh: bool) {
+    if fresh {
+        buf.clear();
+        buf.resize(len, 0.0);
+    } else if buf.len() >= len {
+        buf.truncate(len);
+    } else {
+        let grow = len - buf.len();
+        buf.reserve_exact(grow);
+        buf.par_extend(rayon::iter::repeat_n(0.0_f64, grow));
+    }
 }
 
 /// `(re, im)` of a pair FT chunk `P[m, k, g]` as `(n², ng)` real matrices,
-/// row `m·n + k`, each scaled by `w[g]` (`w[g] * z.re`) or copied (`None`).
-/// Production fills the rows in parallel; every element is the same single
-/// expression either way.
-fn pack_pair_ft(
+/// row `m·n + k`, each scaled by `w[g]` (`w[g] * z.re`) or copied (`None`),
+/// in `bufs`. Production fills the rows in parallel into reused buffers
+/// (every element written, so stale values never survive); the oracle
+/// starts from zeros and runs the frozen serial loop. Every element is the
+/// same single expression either way.
+fn pack_pair_ft<'b>(
     pft: &Array3<Complex64>,
     w: Option<&[f64]>,
     kernel: LrKernel,
-) -> (Array2<f64>, Array2<f64>) {
+    bufs: &'b mut PackBufs,
+) -> (ArrayView2<'b, f64>, ArrayView2<'b, f64>) {
     let (n, n1, ng) = pft.dim();
     let n2 = n * n1;
-    let mut pr = Array2::<f64>::zeros((n2, ng));
-    let mut pim = Array2::<f64>::zeros((n2, ng));
-    if ng == 0 || n2 == 0 {
-        return (pr, pim);
-    }
-    if kernel == LrKernel::SerialOracle {
-        for g in 0..ng {
-            for m in 0..n {
-                for k in 0..n1 {
-                    let z = pft[[m, k, g]];
-                    let (re, im) = match w {
-                        Some(w) => (w[g] * z.re, w[g] * z.im),
-                        None => (z.re, z.im),
-                    };
-                    pr[(m * n1 + k, g)] = re;
-                    pim[(m * n1 + k, g)] = im;
+    let oracle = kernel == LrKernel::SerialOracle;
+    let PackBufs { re, im } = bufs;
+    size_buffer(re, n2 * ng, oracle);
+    size_buffer(im, n2 * ng, oracle);
+    if ng > 0 && n2 > 0 {
+        if oracle {
+            for g in 0..ng {
+                for m in 0..n {
+                    for k in 0..n1 {
+                        let z = pft[[m, k, g]];
+                        let (zr, zi) = match w {
+                            Some(w) => (w[g] * z.re, w[g] * z.im),
+                            None => (z.re, z.im),
+                        };
+                        re[(m * n1 + k) * ng + g] = zr;
+                        im[(m * n1 + k) * ng + g] = zi;
+                    }
                 }
             }
+        } else {
+            let src = pft.as_standard_layout();
+            let src = src.as_slice().expect("standard layout");
+            re.par_chunks_mut(ng)
+                .zip(im.par_chunks_mut(ng))
+                .zip(src.par_chunks(ng))
+                .for_each(|((r, i), z)| {
+                    for g in 0..ng {
+                        let (zr, zi) = match w {
+                            Some(w) => (w[g] * z[g].re, w[g] * z[g].im),
+                            None => (z[g].re, z[g].im),
+                        };
+                        r[g] = zr;
+                        i[g] = zi;
+                    }
+                });
         }
-        return (pr, pim);
     }
-    let src = pft.as_standard_layout();
-    let src = src.as_slice().expect("standard layout");
-    let (rs, is) = (
-        pr.as_slice_mut().expect("fresh array"),
-        pim.as_slice_mut().expect("fresh array"),
-    );
-    rs.par_chunks_mut(ng)
-        .zip(is.par_chunks_mut(ng))
-        .zip(src.par_chunks(ng))
-        .for_each(|((r, i), z)| {
-            for g in 0..ng {
-                let (re, im) = match w {
-                    Some(w) => (w[g] * z[g].re, w[g] * z[g].im),
-                    None => (z[g].re, z[g].im),
-                };
-                r[g] = re;
-                i[g] = im;
-            }
-        });
-    (pr, pim)
+    let re: &'b [f64] = re;
+    let im: &'b [f64] = im;
+    (
+        ArrayView2::from_shape((n2, ng), re).expect("packed length"),
+        ArrayView2::from_shape((n2, ng), im).expect("packed length"),
+    )
 }
 
-/// [`pair_ft_chunked`] (production) or its frozen serial oracle.
+/// [`pair_ft_chunked_timed`] (production, sub-stages into `sub`) or its
+/// frozen serial oracle.
 #[allow(clippy::too_many_arguments)]
 fn lr_pair_ft_chunked<F>(
     kernel: LrKernel,
@@ -1546,19 +1657,21 @@ fn lr_pair_ft_chunked<F>(
     thresh: f64,
     chunk_budget_bytes: usize,
     extra_bytes_per_g: usize,
+    sub: &mut PbcTimings,
     sink: F,
 ) -> Result<usize, FerricError>
 where
     F: FnMut(usize, &[[f64; 3]], &Array3<Complex64>) -> Result<(), FerricError>,
 {
     match kernel {
-        LrKernel::Production => pair_ft_chunked(
+        LrKernel::Production => pair_ft_chunked_timed(
             cell,
             prep,
             gvecs,
             thresh,
             chunk_budget_bytes,
             extra_bytes_per_g,
+            sub,
             sink,
         ),
         LrKernel::SerialOracle => pair_ft_chunked_serial_oracle(
@@ -1581,7 +1694,7 @@ pub type LrSums = (Array2<f64>, Array2<f64>, usize);
 /// build runs), accumulated from zero at an EXPLICIT `chunk_budget` (so a
 /// test can force several G chunks), as `[production, frozen serial]`. The
 /// two must agree BIT FOR BIT (`tests/pbc_parallel_bitwise.rs`): the proof
-/// that the survivor-cached, shell-parallel pair FT and the parallel sink
+/// that the survivor-cached, shell-pair-parallel pair FT and the parallel sink
 /// kept every J2/J3 element's summation sequence.
 #[doc(hidden)]
 pub fn lr_sums_parallel_and_serial(
@@ -1609,6 +1722,7 @@ pub fn lr_sums_parallel_and_serial(
             &mut j3,
             chunk_budget,
             kernel,
+            &mut PbcTimings::default(),
         )?;
         Ok((j2, j3, chunks))
     };
@@ -2173,6 +2287,7 @@ impl RsGdf {
         let (mut j3, n_sr3) = split::sr_three_index(&st, plan.as_ref(), &images)?;
         timings.stop("rsgdf SR 3-centre", &clock);
         let clock = StageClock::start();
+        let mut lr_sub = PbcTimings::default();
         let (n_g_chunks, sink_wall, sink_cpu) = split::lr_accumulate(
             &st,
             plan.as_ref(),
@@ -2181,6 +2296,7 @@ impl RsGdf {
             &mut j3,
             chunk_budget,
             LrKernel::Production,
+            &mut lr_sub,
         )?;
         let (lr_wall, lr_cpu) = clock.elapsed();
         timings.add(
@@ -2199,6 +2315,8 @@ impl RsGdf {
             sink_cpu.or(lr_cpu.map(|_| 0.0)),
             n_g_chunks as u64,
         );
+        // Breakdown of the two LR stages (sub-stages, not leaves) + counters.
+        timings.absorb(&lr_sub);
         let clock = StageClock::start();
         let q: Vec<f64> = aux_ft_shells(&st.aux_sh, naux, &[[0.0; 3]])
             .column(0)

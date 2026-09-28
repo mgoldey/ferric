@@ -77,9 +77,9 @@
 //! `Production` only.
 
 use super::{
-    aux_ft_shells, dot3, lr_gemm_acc, lr_pair_ft_chunked, pack_pair_ft, pair_bound,
-    segment_distance, subtract_g0, sum_counts_in_pair_order, G0Handling, GShell, LrKernel,
-    RsGdfConfig, SrBinning, Stage, ENGINE_PRECISION,
+    aux_ft_shells, dot3, lr_gemms, lr_pair_ft_chunked, pack_pair_ft, pair_bound, segment_distance,
+    subtract_g0, sum_counts_in_pair_order, G0Handling, GShell, LrKernel, PackBufs, RsGdfConfig,
+    SrBinning, Stage, ENGINE_PRECISION, LR_GEMM_ROW_BLOCK, SUB_AUX_FT, SUB_P_PACK, SUB_XY_PACK,
 };
 use crate::budget::{bytes_of, Ledger};
 use crate::hcore::ONE_E_ENGINE_PRECISION;
@@ -95,7 +95,6 @@ use ferric_integrals::engine::Engine;
 use ferric_integrals::engine_pool::EnginePool;
 use ferric_integrals::ffi;
 use ferric_integrals::operator::Operator;
-use ndarray::linalg::general_mat_mul;
 use ndarray::{Array2, Array3};
 use num_complex::Complex64;
 use rayon::prelude::*;
@@ -1061,6 +1060,7 @@ impl SplitPlan {
 
     /// Moved-aux LR: `J3 += Re[P̄ Y]`, `J2 += Re[Ȳ X] + v_SR Re[X̄_c X_s]`
     /// with `Y = v_LR X + v_SR X_s` (weights on the AUX side; module doc).
+    #[allow(clippy::too_many_arguments)]
     fn lr_moved_aux(
         &self,
         st: &Stage<'_>,
@@ -1069,6 +1069,7 @@ impl SplitPlan {
         j3: &mut Array2<f64>,
         chunk_budget: usize,
         kernel: LrKernel,
+        sub: &mut PbcTimings,
     ) -> Result<(usize, f64, Option<f64>), FerricError> {
         let n = st.obs.nbasis();
         let n2 = n * n;
@@ -1082,14 +1083,21 @@ impl SplitPlan {
             .saturating_add(64);
         let pair_ft_thresh = (0.01 * st.thresh).min(DEFAULT_PAIR_FT_THRESH);
         let (mut sink_wall, mut sink_cpu) = (0.0_f64, None::<f64>);
+        let mut sink_t = PbcTimings::default();
+        let mut bufs = PackBufs::default();
         let sink =
             |_g0: usize, gs: &[[f64; 3]], pft: &Array3<Complex64>| -> Result<(), FerricError> {
                 let clock = StageClock::start();
                 let ng = gs.len();
+                let c = StageClock::start();
                 let x = aux_ft_shells(&st.aux_sh, naux, gs);
                 let xs = aux_ft_shells(&self.aux.s_sh, naux, gs);
                 let xc = aux_ft_shells(&self.aux.c_sh, naux, gs);
-                let (pr, pim) = pack_pair_ft(pft, None, kernel);
+                sink_t.stop_sub(SUB_AUX_FT, &c);
+                let c = StageClock::start();
+                let (pr, pim) = pack_pair_ft(pft, None, kernel, &mut bufs);
+                sink_t.stop_sub(SUB_P_PACK, &c);
+                let c = StageClock::start();
                 let z = || Array2::<f64>::zeros((naux, ng));
                 let (mut xr, mut xi, mut yr, mut yi) = (z(), z(), z(), z());
                 let (mut xsr, mut xsi, mut xcwr, mut xcwi) = (z(), z(), z(), z());
@@ -1107,13 +1115,17 @@ impl SplitPlan {
                         xcwi[(p, g)] = w_sr * vc.im;
                     }
                 }
+                sink_t.stop_sub(SUB_XY_PACK, &c);
                 // Re[conj(A) B] = A.re B.re + A.im B.im
-                lr_gemm_acc(&pr, &yr, j3, kernel);
-                lr_gemm_acc(&pim, &yi, j3, kernel);
-                general_mat_mul(1.0, &yr, &xr.t(), 1.0, &mut *j2);
-                general_mat_mul(1.0, &yi, &xi.t(), 1.0, &mut *j2);
-                general_mat_mul(1.0, &xcwr, &xsr.t(), 1.0, &mut *j2);
-                general_mat_mul(1.0, &xcwi, &xsi.t(), 1.0, &mut *j2);
+                let j2_terms: [(&Array2<f64>, &Array2<f64>); 4] =
+                    [(&yr, &xr), (&yi, &xi), (&xcwr, &xsr), (&xcwi, &xsi)];
+                lr_gemms(
+                    j3,
+                    &[(pr, &yr), (pim, &yi)],
+                    Some((&mut *j2, &j2_terms[..])),
+                    kernel,
+                    &mut sink_t,
+                );
                 add_clock(&mut sink_wall, &mut sink_cpu, clock.elapsed());
                 Ok(())
             };
@@ -1125,14 +1137,17 @@ impl SplitPlan {
             pair_ft_thresh,
             chunk_budget,
             extra_per_g,
+            sub,
             sink,
         )?;
+        sub.accumulate(&sink_t);
         Ok((n_chunks, sink_wall, sink_cpu))
     }
 
     /// The moved `(ss pair | X^c)` block: `J3 += (2/Ω) Σ_G v_SR Re[P̄_ss X_c]`
     /// with the lattice pair FT of the smooth orbital pieces, accumulated in
     /// the smooth AO basis and scattered into J3's parent rows at the end.
+    #[allow(clippy::too_many_arguments)]
     fn lr_smooth_pairs(
         &self,
         st: &Stage<'_>,
@@ -1141,6 +1156,7 @@ impl SplitPlan {
         j3: &mut Array2<f64>,
         chunk_budget: usize,
         kernel: LrKernel,
+        sub: &mut PbcTimings,
     ) -> Result<(usize, f64, Option<f64>), FerricError> {
         let n = st.obs.nbasis();
         let ns = sm.prep.nbasis();
@@ -1154,12 +1170,19 @@ impl SplitPlan {
         let pair_ft_thresh = (0.01 * st.thresh).min(DEFAULT_PAIR_FT_THRESH);
         let mut acc = Array2::<f64>::zeros((ns2, naux));
         let (mut sink_wall, mut sink_cpu) = (0.0_f64, None::<f64>);
+        let mut sink_t = PbcTimings::default();
+        let mut bufs = PackBufs::default();
         let sink =
             |_g0: usize, gs: &[[f64; 3]], pft: &Array3<Complex64>| -> Result<(), FerricError> {
                 let clock = StageClock::start();
                 let ng = gs.len();
+                let c = StageClock::start();
                 let xc = aux_ft_shells(&self.aux.c_sh, naux, gs);
-                let (pr, pim) = pack_pair_ft(pft, None, kernel);
+                sink_t.stop_sub(SUB_AUX_FT, &c);
+                let c = StageClock::start();
+                let (pr, pim) = pack_pair_ft(pft, None, kernel, &mut bufs);
+                sink_t.stop_sub(SUB_P_PACK, &c);
+                let c = StageClock::start();
                 let mut xcwr = Array2::<f64>::zeros((naux, ng));
                 let mut xcwi = Array2::<f64>::zeros((naux, ng));
                 for (g, gvec) in gs.iter().enumerate() {
@@ -1170,8 +1193,14 @@ impl SplitPlan {
                         xcwi[(p, g)] = w_sr * v.im;
                     }
                 }
-                lr_gemm_acc(&pr, &xcwr, &mut acc, kernel);
-                lr_gemm_acc(&pim, &xcwi, &mut acc, kernel);
+                sink_t.stop_sub(SUB_XY_PACK, &c);
+                lr_gemms(
+                    &mut acc,
+                    &[(pr, &xcwr), (pim, &xcwi)],
+                    None,
+                    kernel,
+                    &mut sink_t,
+                );
                 add_clock(&mut sink_wall, &mut sink_cpu, clock.elapsed());
                 Ok(())
             };
@@ -1183,8 +1212,10 @@ impl SplitPlan {
             pair_ft_thresh,
             chunk_budget,
             extra_per_g,
+            sub,
             sink,
         )?;
+        sub.accumulate(&sink_t);
         for a in 0..ns {
             for b in 0..ns {
                 let row = sm.ao_map[a] * n + sm.ao_map[b];
@@ -1288,7 +1319,9 @@ pub(super) fn sr_three_index(
 /// LR (G ≠ 0) terms of the build: [`Stage::lr_accumulate`] when no aux
 /// primitive moved, else the aux-side-weighted form; plus the moved
 /// `(ss | X^c)` block when orbital primitives moved. Returns
-/// `(chunks, sink wall, sink CPU)` as [`Stage::lr_accumulate`] does.
+/// `(chunks, sink wall, sink CPU)` as [`Stage::lr_accumulate`] does;
+/// sub-stages and counters into `sub`.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn lr_accumulate(
     st: &Stage<'_>,
     plan: Option<&SplitPlan>,
@@ -1297,17 +1330,22 @@ pub(super) fn lr_accumulate(
     j3: &mut Array2<f64>,
     chunk_budget: usize,
     kernel: LrKernel,
+    sub: &mut PbcTimings,
 ) -> Result<(usize, f64, Option<f64>), FerricError> {
+    sub.max_counter(
+        "LR J3 GEMM row blocks per call",
+        j3.nrows().div_ceil(LR_GEMM_ROW_BLOCK) as u64,
+    );
     let Some(p) = plan else {
-        return st.lr_accumulate(gv, j2, j3, chunk_budget, kernel);
+        return st.lr_accumulate(gv, j2, j3, chunk_budget, kernel, sub);
     };
     let (mut chunks, mut wall, mut cpu) = if p.aux.s_sh.is_empty() {
-        st.lr_accumulate(gv, j2, j3, chunk_budget, kernel)?
+        st.lr_accumulate(gv, j2, j3, chunk_budget, kernel, sub)?
     } else {
-        p.lr_moved_aux(st, gv, j2, j3, chunk_budget, kernel)?
+        p.lr_moved_aux(st, gv, j2, j3, chunk_budget, kernel, sub)?
     };
     if let Some(sm) = p.smooth_obs.as_ref().filter(|_| !p.aux.c_sh.is_empty()) {
-        let (c, w, u) = p.lr_smooth_pairs(st, sm, gv, j3, chunk_budget, kernel)?;
+        let (c, w, u) = p.lr_smooth_pairs(st, sm, gv, j3, chunk_budget, kernel, sub)?;
         chunks += c;
         add_clock(&mut wall, &mut cpu, (w, u));
     }

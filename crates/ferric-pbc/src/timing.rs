@@ -15,6 +15,10 @@
 //!   another, so `Σ stages <= wall_s` holds by construction), the component's
 //!   own total `wall_s`/`cpu_s`, and counters (triplets, pairs, G vectors,
 //!   chunks, aux dropped) copied from what the builds already count.
+//! * [`PbcTimings::substages`] — an optional BREAKDOWN of leaf stages (e.g.
+//!   the LR pair FT into plan / per-chunk setup / parallel kernel). They are
+//!   NOT leaves: each lies inside one stage, so they are excluded from
+//!   [`PbcTimings::stage_wall_sum`] and reported separately.
 //! * [`CallClock`] — an accumulator for the per-SCF-iteration builders
 //!   (J, K, XC), which only get `&self`/`&mut self` of a borrowed source:
 //!   atomics, so the source can stay `Clone` and `Sync`.
@@ -107,23 +111,67 @@ pub struct PbcTimings {
     pub stages: Vec<StageTiming>,
     /// Counters in first-recorded order.
     pub counters: Vec<(&'static str, u64)>,
+    /// Sub-stages in first-recorded order: a breakdown of (parts of) the
+    /// leaf `stages`, each inside one of them. NOT counted in
+    /// [`PbcTimings::stage_wall_sum`].
+    pub substages: Vec<StageTiming>,
+}
+
+/// `add` on a named-stage list (created on first use).
+fn add_named(list: &mut Vec<StageTiming>, s: StageTiming) {
+    if let Some(e) = list.iter_mut().find(|e| e.name == s.name) {
+        e.wall_s += s.wall_s;
+        e.cpu_s = add_opt(e.cpu_s, s.cpu_s);
+        e.calls += s.calls;
+    } else {
+        list.push(s);
+    }
 }
 
 impl PbcTimings {
     /// Add `(wall, cpu, calls)` to stage `name` (created on first use).
     pub fn add(&mut self, name: &'static str, wall_s: f64, cpu_s: Option<f64>, calls: u64) {
-        if let Some(s) = self.stages.iter_mut().find(|s| s.name == name) {
-            s.wall_s += wall_s;
-            s.cpu_s = add_opt(s.cpu_s, cpu_s);
-            s.calls += calls;
-        } else {
-            self.stages.push(StageTiming {
+        add_named(
+            &mut self.stages,
+            StageTiming {
                 name,
                 wall_s,
                 cpu_s,
                 calls,
-            });
-        }
+            },
+        );
+    }
+
+    /// Close SUB-stage `name` started with `clock` (one call); see
+    /// [`PbcTimings::substages`].
+    pub fn stop_sub(&mut self, name: &'static str, clock: &StageClock) {
+        let (wall_s, cpu_s) = clock.elapsed();
+        add_named(
+            &mut self.substages,
+            StageTiming {
+                name,
+                wall_s,
+                cpu_s,
+                calls: 1,
+            },
+        );
+    }
+
+    /// Sub-stage `name`, if recorded.
+    pub fn substage(&self, name: &str) -> Option<&StageTiming> {
+        self.substages.iter().find(|s| s.name == name)
+    }
+
+    /// Add `v` to counter `name` (created at 0).
+    pub fn add_counter(&mut self, name: &'static str, v: u64) {
+        let cur = self.counter(name).unwrap_or(0);
+        self.set_counter(name, cur.saturating_add(v));
+    }
+
+    /// Raise counter `name` to at least `v` (created at `v`).
+    pub fn max_counter(&mut self, name: &'static str, v: u64) {
+        let cur = self.counter(name).unwrap_or(0);
+        self.set_counter(name, cur.max(v));
     }
 
     /// Close a stage started with `clock` (one call).
@@ -153,15 +201,32 @@ impl PbcTimings {
         self.cpu_s = c;
     }
 
-    /// Append `other`'s stages (summed by name) and counters (overwritten
-    /// by name). Totals are NOT merged: the absorbing record's
-    /// [`PbcTimings::finish`] measures its own span.
-    pub fn absorb(&mut self, other: &PbcTimings) {
+    /// Add `other`'s stages and sub-stages to this record's, by name.
+    fn merge_stages(&mut self, other: &PbcTimings) {
         for s in &other.stages {
             self.add_stage(s);
         }
+        for s in &other.substages {
+            add_named(&mut self.substages, s.clone());
+        }
+    }
+
+    /// Append `other`'s stages and sub-stages (summed by name) and counters
+    /// (overwritten by name). Totals are NOT merged: the absorbing record's
+    /// [`PbcTimings::finish`] measures its own span.
+    pub fn absorb(&mut self, other: &PbcTimings) {
+        self.merge_stages(other);
         for &(n, v) in &other.counters {
             self.set_counter(n, v);
+        }
+    }
+
+    /// Like [`PbcTimings::absorb`], but counters are ADDED by name (for
+    /// merging additive per-pass tallies; not for max- or copied counters).
+    pub fn accumulate(&mut self, other: &PbcTimings) {
+        self.merge_stages(other);
+        for &(n, v) in &other.counters {
+            self.add_counter(n, v);
         }
     }
 
@@ -262,5 +327,27 @@ mod tests {
         let v = clock.time(|| 7);
         assert_eq!((v, clock.calls()), (7, 1));
         assert!(clock.timing("x").wall_s >= 0.0);
+    }
+
+    #[test]
+    fn substages_stay_outside_the_stage_sum_and_counters_merge() {
+        let mut t = PbcTimings::default();
+        let c = StageClock::start();
+        t.stop("a", &c);
+        // Sub-stages are a breakdown, not leaves: outside the stage sum.
+        t.stop_sub("a/part", &c);
+        t.stop_sub("a/part", &c);
+        assert_eq!(t.substage("a/part").unwrap().calls, 2);
+        assert_eq!(t.stage_wall_sum(), t.stage("a").unwrap().wall_s);
+        t.add_counter("m", 2);
+        t.add_counter("m", 3);
+        t.max_counter("x", 4);
+        t.max_counter("x", 1);
+        assert_eq!((t.counter("m"), t.counter("x")), (Some(5), Some(4)));
+        let mut u = PbcTimings::default();
+        u.absorb(&t);
+        u.accumulate(&t);
+        assert_eq!(u.substage("a/part").unwrap().calls, 4);
+        assert_eq!(u.counter("m"), Some(10));
     }
 }

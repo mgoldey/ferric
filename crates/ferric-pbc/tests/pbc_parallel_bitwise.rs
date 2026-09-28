@@ -1104,13 +1104,14 @@ fn ecp_force_term_is_bitwise_across_threads_and_vs_serial_loop() {
 }
 
 // ---------------------------------------------------------------------------
-// LR pair FT: survivor-cached, shell-parallel kernel (FINDINGS "Performance
-// plan (research) — 2026-09-25" §5, "Pair-FT re-walk").
+// LR pair FT: survivor-cached, shell-pair-parallel kernel (FINDINGS
+// "Performance plan (research) — 2026-09-25" §5, "Pair-FT re-walk").
 //
 // Construction under test: the primitive-pair screen is walked ONCE per
 // call and cached per shell pair in walk order; every G chunk then runs in
-// parallel over BRA shells, each task owning its rows of P. Every element
-// keeps the serial addend sequence, so production must equal the FROZEN
+// parallel over SHELL PAIRS, each task owning its pair's row segments of P,
+// written into output buffers REUSED (not re-zeroed) across chunks. Every
+// element keeps the serial addend sequence, so production must equal the FROZEN
 // pre-parallel kernels (`*_serial_oracle`, which re-walk the screen per
 // chunk) BIT FOR BIT, at every thread count and with SEVERAL G chunks. What
 // each test guards:
@@ -1120,11 +1121,13 @@ fn ecp_force_term_is_bitwise_across_threads_and_vs_serial_loop() {
 //   (the cart→sph path), an unsorted G list with G = 0 (the |G| sort and
 //   the scatter back), ≥ 3 chunks. A survivor list out of walk order, a
 //   window evaluated per chunk instead of over the whole set, a dropped
-//   survivor that reached some G, a bucket mix-up or a row-block race each
-//   break it.
+//   survivor that reached some G, a bucket mix-up, a pair-task race or a
+//   missed write into a reused buffer (the chunks shrink from 7 G to 6 G, so
+//   the last reuses a longer buffer's stale values) each break it.
 // * `rsgdf_lr_sums_are_bitwise_vs_frozen_serial_across_threads` — the whole
-//   RS-GDF LR stage (pair FT + aux FT + packing + the row-blocked parallel
-//   J3 GEMMs) against the FROZEN serial stage at the SAME G chunks, with and
+//   RS-GDF LR stage (pair FT + aux FT + reused-buffer packing + the
+//   row-blocked parallel J3 GEMMs, both terms per block, beside the J2
+//   GEMMs) against the FROZEN serial stage at the SAME G chunks, with and
 //   without the range split (moved-aux and smooth-pair LR passes).
 // * `rsgdf_b_and_energy_are_bitwise_across_threads_with_several_lr_chunks` —
 //   `RsGdf::build` under a budget that forces ≥ 3 LR chunks: J2 (via the fit

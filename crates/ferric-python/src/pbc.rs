@@ -117,22 +117,33 @@ fn parse_kdrpa_energy(fname: &str, s: &str) -> PyResult<KDrpaEnergy> {
     }
 }
 
-/// The `timings` attribute of every periodic result: `{"wall_s": float,
-/// "cpu_s": float | None, "unattributed_wall_s": float, "stages": {name:
-/// {"wall_s", "cpu_s", "calls"}}, "counters": {name: int}}`. Stages are
-/// disjoint leaves (`ferric_pbc::timing`), in the order they first ran;
-/// `unattributed_wall_s` = total minus their sum (SCF linear algebra and
-/// bookkeeping). Observation only: timing never touches a number.
-pub(crate) fn timings_dict(py: Python<'_>, t: &PbcTimings) -> PyResult<Py<pyo3::types::PyDict>> {
-    use pyo3::types::PyDict;
-    let stages = PyDict::new(py);
-    for st in &t.stages {
-        let d = PyDict::new(py);
+/// `{name: {"wall_s", "cpu_s", "calls"}}` of a stage list.
+fn stage_dict<'py>(
+    py: Python<'py>,
+    list: &[ferric_pbc::timing::StageTiming],
+) -> PyResult<pyo3::Bound<'py, pyo3::types::PyDict>> {
+    let out = pyo3::types::PyDict::new(py);
+    for st in list {
+        let d = pyo3::types::PyDict::new(py);
         d.set_item("wall_s", st.wall_s)?;
         d.set_item("cpu_s", st.cpu_s)?;
         d.set_item("calls", st.calls)?;
-        stages.set_item(st.name, d)?;
+        out.set_item(st.name, d)?;
     }
+    Ok(out)
+}
+
+/// The `timings` attribute of every periodic result: `{"wall_s": float,
+/// "cpu_s": float | None, "unattributed_wall_s": float, "stages": {name:
+/// {"wall_s", "cpu_s", "calls"}}, "substages": {same form}, "counters":
+/// {name: int}}`. Stages are disjoint leaves (`ferric_pbc::timing`), in the
+/// order they first ran; substages break some of them down (not leaves);
+/// `unattributed_wall_s` = total minus the stages' sum (SCF linear algebra and
+/// bookkeeping). Observation only: timing never touches a number.
+pub(crate) fn timings_dict(py: Python<'_>, t: &PbcTimings) -> PyResult<Py<pyo3::types::PyDict>> {
+    use pyo3::types::PyDict;
+    let stages = stage_dict(py, &t.stages)?;
+    let substages = stage_dict(py, &t.substages)?;
     let counters = PyDict::new(py);
     for (name, v) in &t.counters {
         counters.set_item(*name, *v)?;
@@ -145,6 +156,7 @@ pub(crate) fn timings_dict(py: Python<'_>, t: &PbcTimings) -> PyResult<Py<pyo3::
         (t.wall_s - t.stage_wall_sum()).max(0.0),
     )?;
     out.set_item("stages", stages)?;
+    out.set_item("substages", substages)?;
     out.set_item("counters", counters)?;
     Ok(out.into())
 }

@@ -20,7 +20,7 @@
 //! same Cartesian→AO transform), kept separate so the Gamma kernel stays
 //! byte-identical.
 
-use super::plan::{min_gnorm2, PairFtPlan};
+use super::plan::{min_gnorm2, recycle, PairFtPlan};
 use super::{
     basis_lmax, build_shells, max_gnorm, pair_ft_bytes_per_g, validate_inputs, WINDOW_MARGIN,
 };
@@ -28,6 +28,7 @@ use super::{pair_ft_deriv_bytes_per_g, scatter_shell_block};
 use crate::budget::{bytes_of, Ledger};
 use crate::kpts::lattice_coords;
 use crate::lattice::Cell;
+use crate::timing::PbcTimings;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::md3c1e::{cart_components, e_table, ferric_cart2sph};
@@ -61,7 +62,7 @@ pub fn residue_coords(r: usize, moduli: [usize; 3]) -> [i64; 3] {
 /// chunking does not change a bit (as [`super::pair_ft_chunked`]).
 ///
 /// Like [`super::pair_ft_chunked`], the screen is walked once per call and
-/// each chunk runs in parallel over bra shells, bit for bit the FROZEN serial
+/// each chunk runs in parallel over shell pairs, bit for bit the FROZEN serial
 /// kernel ([`pair_ft_residues_chunked_serial_oracle`]) at any thread count;
 /// the `sink` runs serially in chunk order.
 #[allow(clippy::too_many_arguments)]
@@ -108,10 +109,12 @@ where
         Some(moduli),
         "pair_ft_residues",
     )?;
+    let (mut pool, mut t) = (Vec::new(), PbcTimings::default());
     let mut n_chunks = 0usize;
     for (c, ks) in kvecs.chunks(chunk).enumerate() {
-        let q = plan.block(ks);
+        let q = plan.block_timed(ks, &mut pool, &mut t);
         sink(c * chunk, ks, &q)?;
+        recycle(&mut pool, q);
         n_chunks += 1;
     }
     Ok(n_chunks)

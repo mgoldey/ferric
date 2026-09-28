@@ -370,13 +370,13 @@ fn print_aux_counts(t: &PbcTimings) {
     }
 }
 
-/// The stage table (leaf stages, the unattributed remainder, the total) and
-/// the counters, on stdout and as a `periodic_timings` run-log record.
-/// Timings are observation only (`ferric_pbc::timing`).
-fn report_timings(t: &PbcTimings) {
-    println!("  stage timings (wall s, cpu s, calls):");
-    let fmt_cpu = |c: Option<f64>| c.map_or_else(|| "     n/a".to_string(), |v| format!("{v:8.3}"));
-    for st in &t.stages {
+fn fmt_cpu(c: Option<f64>) -> String {
+    c.map_or_else(|| "     n/a".to_string(), |v| format!("{v:8.3}"))
+}
+
+/// One table row per stage: name, wall s, cpu s, calls.
+fn print_stage_rows(list: &[ferric_pbc::timing::StageTiming]) {
+    for st in list {
         println!(
             "    {:<44} {:10.3} {} {:>7}",
             st.name,
@@ -385,12 +385,39 @@ fn report_timings(t: &PbcTimings) {
             st.calls
         );
     }
+}
+
+/// The run-log form of a stage list.
+fn stages_json(list: &[ferric_pbc::timing::StageTiming]) -> Vec<serde_json::Value> {
+    list.iter()
+        .map(|st| {
+            serde_json::json!({
+                "name": st.name,
+                "wall_s": st.wall_s,
+                "cpu_s": st.cpu_s,
+                "calls": st.calls,
+            })
+        })
+        .collect()
+}
+
+/// The stage table (leaf stages, the unattributed remainder, the total), the
+/// sub-stage breakdown and the counters, on stdout and as a
+/// `periodic_timings` run-log record. Timings are observation only
+/// (`ferric_pbc::timing`).
+fn report_timings(t: &PbcTimings) {
+    println!("  stage timings (wall s, cpu s, calls):");
+    print_stage_rows(&t.stages);
     let other = (t.wall_s - t.stage_wall_sum()).max(0.0);
     println!(
         "    {:<44} {:10.3}",
         "other (SCF linear algebra, bookkeeping)", other
     );
     println!("    {:<44} {:10.3} {}", "total", t.wall_s, fmt_cpu(t.cpu_s));
+    if !t.substages.is_empty() {
+        println!("  sub-stages (breakdown inside the stages above; not in the total):");
+        print_stage_rows(&t.substages);
+    }
     if !t.counters.is_empty() {
         println!("  counters:");
         for (name, v) in &t.counters {
@@ -398,18 +425,8 @@ fn report_timings(t: &PbcTimings) {
         }
     }
     if let Some(rl) = ferric_scf::runlog::log() {
-        let stages: Vec<serde_json::Value> = t
-            .stages
-            .iter()
-            .map(|st| {
-                serde_json::json!({
-                    "name": st.name,
-                    "wall_s": st.wall_s,
-                    "cpu_s": st.cpu_s,
-                    "calls": st.calls,
-                })
-            })
-            .collect();
+        let stages = stages_json(&t.stages);
+        let substages = stages_json(&t.substages);
         let counters: serde_json::Map<String, serde_json::Value> = t
             .counters
             .iter()
@@ -422,6 +439,7 @@ fn report_timings(t: &PbcTimings) {
                 "cpu_s": t.cpu_s,
                 "unattributed_wall_s": other,
                 "stages": stages,
+                "substages": substages,
                 "counters": counters,
             }),
         );

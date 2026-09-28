@@ -1,5 +1,5 @@
 //! The production pair-FT kernel: the primitive-pair screen walked ONCE per
-//! call, then every G chunk evaluated shell-row-parallel from the cached
+//! call, then every G chunk evaluated shell-pair-parallel from the cached
 //! survivor lists (FINDINGS "Performance plan (research) — 2026-09-25" §5,
 //! "Pair-FT re-walk").
 //!
@@ -30,10 +30,20 @@
 //!   the serial kernel's expressions. A survivor whose window reaches no G of
 //!   the whole set (`g2max < min |G|²`) contributed zero to every chunk in the
 //!   serial kernel (`ngp == 0`) and is dropped.
-//! * The parallel split is over BRA SHELLS: a task owns the output rows of
-//!   its bra shell (a contiguous block of every `P[r]`), walks the ket shells
-//!   in order and writes each element exactly once. No element is shared
-//!   between tasks, and the split does not depend on the thread count.
+//! * The parallel split is over SHELL PAIRS `(bra, ket)`: a task owns the
+//!   `nfun(bra)` row segments of its pair (columns of the ket shell) in every
+//!   `P[r]` and writes each of their elements exactly once, from a Cartesian
+//!   accumulator it zeroes itself. No element is shared between tasks, and
+//!   the split does not depend on the thread count. (Pair granularity, not
+//!   bra-shell rows: with few shells a heavy contracted bra row is a tail at
+//!   every per-chunk barrier; the `pair FT cost max *` counters of
+//!   [`PairFtPlan::record_stats`] measure it.)
+//! * Every element of every `P[r]` is written (the pairs tile the matrix,
+//!   `check_contiguous`, and the scatter covers every `(i, j, g)`), so the
+//!   output buffers are REUSED across chunks without zeroing
+//!   ([`PairFtPlan::block_timed`]): a stale value is always overwritten. The
+//!   multi-chunk bitwise tests would see a missed write, since the oracle
+//!   starts every chunk from zero.
 //!
 //! Hence every element carries the serial scalar sequence: the output is BIT
 //! FOR BIT the frozen serial kernel's, at any thread count and any G
@@ -54,12 +64,22 @@ use crate::budget::{bytes_of, Ledger};
 use crate::kpts::lattice_coords;
 use crate::lattice::Cell;
 use crate::pair_ft::residues::residue_index;
+use crate::timing::{PbcTimings, StageClock};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::md3c1e::{cart_components, e_table, ferric_cart2sph};
 use ndarray::Array3;
 use num_complex::Complex64;
 use rayon::prelude::*;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
+
+/// Sub-stage: the once-per-call screen walk ([`PairFtPlan::new`]).
+pub(crate) const SUB_PLAN: &str = "pair FT: plan (screen walk, survivor lists)";
+/// Sub-stage: the serial per-chunk setup (G sort, buffers, task slices).
+pub(crate) const SUB_SETUP: &str = "pair FT: chunk setup (serial)";
+/// Sub-stage: the parallel per-chunk kernel.
+pub(crate) const SUB_KERNEL: &str = "pair FT: chunk kernel (parallel)";
 
 /// One screened primitive pair of a shell pair: the image and primitive
 /// indices, and the two screen scalars (`cc = c_a c_b (π/p)^{3/2}` and the G
@@ -166,16 +186,14 @@ impl PairFtPlan {
         };
 
         // Count, check, then fill (so the lists are never allocated past the
-        // budget). Both passes are parallel over bra shells and collected in
-        // shell order: the lists do not depend on the thread count.
+        // budget). Both passes are parallel over SHELL PAIRS and collected in
+        // pair order: the lists do not depend on the thread count.
         let ns = plan.shells.len();
-        let counts: Vec<usize> = (0..ns)
+        let counts: Vec<usize> = (0..ns * ns)
             .into_par_iter()
-            .map(|ia| {
+            .map(|pair| {
                 let mut c = 0usize;
-                for ib in 0..ns {
-                    plan.walk(ia, ib, thresh, gmax_window, g2min, |_| c += 1);
-                }
+                plan.walk(pair / ns, pair % ns, thresh, gmax_window, g2min, |_| c += 1);
                 c
             })
             .collect();
@@ -184,25 +202,49 @@ impl PairFtPlan {
             &format!("{who} cached primitive-pair survivors ({total})"),
             bytes_of(total as u64, SURVIVOR_BYTES),
         )?;
-        let rows: Vec<Vec<Vec<Survivor>>> = (0..ns)
+        plan.survivors = (0..ns * ns)
             .into_par_iter()
-            .map(|ia| {
-                (0..ns)
-                    .map(|ib| {
-                        let mut v = Vec::new();
-                        plan.walk(ia, ib, thresh, gmax_window, g2min, |s| v.push(s));
-                        v.shrink_to_fit();
-                        v
-                    })
-                    .collect()
+            .map(|pair| {
+                let mut v = Vec::with_capacity(counts[pair]);
+                plan.walk(pair / ns, pair % ns, thresh, gmax_window, g2min, |s| {
+                    v.push(s)
+                });
+                v
             })
             .collect();
-        plan.survivors = rows.into_iter().flatten().collect();
         Ok(plan)
     }
 
-    /// Shells must tile `0..nbf` in order (each task owns a contiguous row
-    /// block).
+    /// Load-balance counters of this plan (max over the plans of a call
+    /// sequence, e.g. the main and smooth LR passes): tasks per chunk, and
+    /// the work proxy `survivors × ncart(bra) × ncart(ket)` summed, of the
+    /// largest pair task, and of the largest bra-shell row (the previous
+    /// task granularity). `max / (total / tasks)` is the imbalance factor.
+    pub(crate) fn record_stats(&self, t: &mut PbcTimings) {
+        let ns = self.shells.len();
+        let (mut total, mut max_pair, mut max_bra, mut nsurv) = (0u64, 0u64, 0u64, 0u64);
+        for (ia, sa) in self.shells.iter().enumerate() {
+            let mut bra = 0u64;
+            for (ib, sb) in self.shells.iter().enumerate() {
+                let n = self.survivors[ia * ns + ib].len() as u64;
+                let c = n * (sa.ncart * sb.ncart) as u64;
+                nsurv += n;
+                bra += c;
+                max_pair = max_pair.max(c);
+            }
+            total += bra;
+            max_bra = max_bra.max(bra);
+        }
+        t.add_counter("pair FT survivors (sum over plans)", nsurv);
+        t.max_counter("pair FT shells", ns as u64);
+        t.max_counter("pair FT tasks per chunk", (ns * ns) as u64);
+        t.max_counter("pair FT cost total", total);
+        t.max_counter("pair FT cost max pair task", max_pair);
+        t.max_counter("pair FT cost max bra shell", max_bra);
+    }
+
+    /// Shells must tile `0..nbf` in order (the pair tasks' row segments
+    /// tile every `P[r]`).
     fn check_contiguous(&self) -> Result<(), FerricError> {
         let mut next = 0usize;
         for (s, sh) in self.shells.iter().enumerate() {
@@ -278,149 +320,217 @@ impl PairFtPlan {
         }
     }
 
-    /// `P[r]` (each `(nbf, nbf, gvecs.len())`) for one G chunk; bit for bit
-    /// the serial kernel's output for the same chunk (module doc).
+    /// `P[r]` (each `(nbf, nbf, gvecs.len())`) for one G chunk in fresh
+    /// buffers; bit for bit the serial kernel's output (module doc).
     pub(crate) fn block(&self, gvecs: &[[f64; 3]]) -> Vec<Array3<Complex64>> {
+        self.block_timed(gvecs, &mut Vec::new(), &mut PbcTimings::default())
+    }
+
+    /// [`PairFtPlan::block`] into buffers taken from `pool` (return them with
+    /// [`recycle`] after the sink), with sub-stage timers and task counters
+    /// in `t`. A reused buffer is NOT zeroed: every element is overwritten
+    /// (module doc), so the values are the fresh-buffer ones bit for bit.
+    pub(crate) fn block_timed(
+        &self,
+        gvecs: &[[f64; 3]],
+        pool: &mut Vec<Vec<Complex64>>,
+        t: &mut PbcTimings,
+    ) -> Vec<Array3<Complex64>> {
+        let clock = StageClock::start();
         let (nbf, ng, nr) = (self.nbf, gvecs.len(), self.nr);
         let mut out: Vec<Array3<Complex64>> = (0..nr)
-            .map(|_| Array3::<Complex64>::zeros((nbf, nbf, ng)))
+            .map(|_| {
+                let v = take_buffer(pool, nbf * nbf * ng);
+                Array3::from_shape_vec((nbf, nbf, ng), v).expect("buffer of the block's length")
+            })
             .collect();
         if ng == 0 || self.shells.is_empty() {
+            // Zero elements (nbf = 0 without shells): nothing stale.
+            t.stop_sub(SUB_SETUP, &clock);
             return out;
         }
         let chunk = ChunkG::new(gvecs, self.lmax);
+        let tasks = self.pair_tasks(&mut out, ng);
+        let n_tasks = tasks.len() as u64;
+        t.stop_sub(SUB_SETUP, &clock);
 
-        // Per bra shell, its row block of every P[r].
-        let ns = self.shells.len();
-        let mut rows: Vec<Vec<&mut [Complex64]>> =
-            (0..ns).map(|_| Vec::with_capacity(nr)).collect();
-        for arr in out.iter_mut() {
-            let mut rest = arr.as_slice_mut().expect("fresh standard-layout array");
-            for (sh, row) in self.shells.iter().zip(rows.iter_mut()) {
-                let (head, tail) = std::mem::take(&mut rest).split_at_mut(sh.nfun * nbf * ng);
-                row.push(head);
-                rest = tail;
-            }
-        }
-        rows.into_par_iter()
-            .enumerate()
-            .for_each(|(ia, mut dst)| self.row_block(ia, &mut dst, &chunk));
+        let clock = StageClock::start();
+        let (busy, longest) = (AtomicU64::new(0), AtomicU64::new(0));
+        tasks
+            .into_par_iter()
+            .for_each_init(PairScratch::default, |scr, mut task| {
+                let t0 = Instant::now();
+                self.pair_block(&mut task, scr, &chunk);
+                let ns = u64::try_from(t0.elapsed().as_nanos()).unwrap_or(u64::MAX);
+                busy.fetch_add(ns, Ordering::Relaxed);
+                longest.fetch_max(ns, Ordering::Relaxed);
+            });
+        t.stop_sub(SUB_KERNEL, &clock);
+        t.add_counter("pair FT tasks run", n_tasks);
+        t.add_counter(
+            "pair FT kernel busy us (sum of task walls)",
+            busy.into_inner() / 1000,
+        );
+        t.max_counter("pair FT longest task us", longest.into_inner() / 1000);
         out
     }
 
-    /// Every ket shell of bra shell `ia`, in order, into `dst[r]` (the rows
-    /// of shell `ia` in `P[r]`). The body is the serial kernels' inner loop
-    /// over the cached survivors.
-    fn row_block(&self, ia: usize, dst: &mut [&mut [Complex64]], ch: &ChunkG) {
+    /// One task per shell pair `(ia, ib)` (index `ia * ns + ib`), holding
+    /// its row segments of every `P[r]`: `dst[r * nfun(ia) + i]` is row
+    /// `off(ia) + i`, columns `off(ib)..off(ib) + nfun(ib)`, all `ng` G.
+    fn pair_tasks<'a>(&self, out: &'a mut [Array3<Complex64>], ng: usize) -> Vec<PairTask<'a>> {
+        let ns = self.shells.len();
+        let nbf = self.nbf;
+        let mut tasks: Vec<PairTask<'a>> = (0..ns * ns)
+            .map(|p| PairTask {
+                ia: p / ns,
+                ib: p % ns,
+                dst: Vec::with_capacity(self.nr * self.shells[p / ns].nfun),
+            })
+            .collect();
+        for arr in out.iter_mut() {
+            let mut rest = arr.as_slice_mut().expect("standard-layout block");
+            for (ia, sa) in self.shells.iter().enumerate() {
+                for _ in 0..sa.nfun {
+                    let (mut row, tail) = std::mem::take(&mut rest).split_at_mut(nbf * ng);
+                    rest = tail;
+                    for (ib, sb) in self.shells.iter().enumerate() {
+                        let (head, tail) = std::mem::take(&mut row).split_at_mut(sb.nfun * ng);
+                        tasks[ia * ns + ib].dst.push(head);
+                        row = tail;
+                    }
+                }
+            }
+        }
+        tasks
+    }
+
+    /// Shell pair `(ia, ib)` into its row segments: the serial kernels'
+    /// inner loop over the cached survivors, then the Cartesian→AO scatter.
+    fn pair_block(&self, task: &mut PairTask<'_>, scr: &mut PairScratch, ch: &ChunkG) {
         let zero = Complex64::new(0.0, 0.0);
         let (ng, gvecs, g2, pw) = (ch.ng, &ch.gsorted, &ch.g2, &ch.pw);
-        let sa = &self.shells[ia];
         let ns = self.shells.len();
-        let mut common = vec![zero; ng];
-        let mut ebuf: [Vec<f64>; 3] = [Vec::new(), Vec::new(), Vec::new()];
-        let mut fbuf: [Vec<Complex64>; 3] = [Vec::new(), Vec::new(), Vec::new()];
-        for (ib, sb) in self.shells.iter().enumerate() {
-            let (la, lb) = (sa.l, sb.l);
-            let (nca, ncb) = (sa.ncart, sb.ncart);
-            let st = la + lb + 1;
-            let nij = (la + 1) * (lb + 1);
-            for d in 0..3 {
-                ebuf[d].resize(nij * st, 0.0);
-                fbuf[d].resize(nij * ng, zero);
-            }
-            let mut cart: Vec<Vec<Complex64>> =
-                (0..self.nr).map(|_| vec![zero; nca * ncb * ng]).collect();
-            let ca_comps = &self.comps[la];
-            let cb_comps = &self.comps[lb];
+        let (sa, sb) = (&self.shells[task.ia], &self.shells[task.ib]);
+        let (la, lb) = (sa.l, sb.l);
+        let (nca, ncb) = (sa.ncart, sb.ncart);
+        let st = la + lb + 1;
+        let nij = (la + 1) * (lb + 1);
+        // Stale scratch is never read: `common` and the F rows are written
+        // for g < ngp before being read there, `e_table` zeroes its range,
+        // and the Cartesian accumulators restart from +0.0 (as the serial
+        // kernel's fresh `vec![zero; ..]`).
+        scr.common.resize(ng, zero);
+        for d in 0..3 {
+            scr.ebuf[d].resize(nij * st, 0.0);
+            scr.fbuf[d].resize(nij * ng, zero);
+        }
+        scr.cart.resize_with(self.nr, Vec::new);
+        for c in scr.cart.iter_mut() {
+            c.clear();
+            c.resize(nca * ncb * ng, zero);
+        }
+        let ca_comps = &self.comps[la];
+        let cb_comps = &self.comps[lb];
+        let PairScratch {
+            common,
+            ebuf,
+            fbuf,
+            cart,
+            tmp,
+        } = scr;
 
-            for s in &self.survivors[ia * ns + ib] {
-                let ngp = g2.partition_point(|&x| x <= s.g2max);
-                if ngp == 0 {
-                    continue;
-                }
-                let l = &self.images[s.image as usize];
-                let cart = &mut cart[self.bucket[s.image as usize]];
-                let bc = [
-                    sb.center[0] + l[0],
-                    sb.center[1] + l[1],
-                    sb.center[2] + l[2],
-                ];
-                let ab = [
-                    sa.center[0] - bc[0],
-                    sa.center[1] - bc[1],
-                    sa.center[2] - bc[2],
-                ];
-                let a = sa.exps[s.ia as usize];
-                let b = sb.exps[s.ib as usize];
-                let p = a + b;
-                let cc = s.cc;
-                let pc = [
-                    (a * sa.center[0] + b * bc[0]) / p,
-                    (a * sa.center[1] + b * bc[1]) / p,
-                    (a * sa.center[2] + b * bc[2]) / p,
-                ];
-                for (g, gv) in gvecs.iter().enumerate().take(ngp) {
-                    let mag = cc * (-g2[g] / (4.0 * p)).exp();
-                    let ph = gv[0] * pc[0] + gv[1] * pc[1] + gv[2] * pc[2];
-                    // e^{−iG·P}
-                    common[g] = Complex64::new(mag * ph.cos(), -mag * ph.sin());
-                }
-                for d in 0..3 {
-                    e_table(la, lb, a, b, ab[d], &mut ebuf[d]);
-                    let (e, f, w) = (&ebuf[d], &mut fbuf[d], &pw[d]);
-                    for ij in 0..nij {
-                        let frow = &mut f[ij * ng..ij * ng + ngp];
-                        frow.fill(zero);
-                        for t in 0..st {
-                            let et = e[ij * st + t];
-                            if et == 0.0 {
-                                continue;
-                            }
-                            let wrow = &w[t * ng..t * ng + ngp];
-                            for (x, wv) in frow.iter_mut().zip(wrow) {
-                                *x += *wv * et;
-                            }
+        for s in &self.survivors[task.ia * ns + task.ib] {
+            let ngp = g2.partition_point(|&x| x <= s.g2max);
+            if ngp == 0 {
+                continue;
+            }
+            let l = &self.images[s.image as usize];
+            let cart = &mut cart[self.bucket[s.image as usize]];
+            let bc = [
+                sb.center[0] + l[0],
+                sb.center[1] + l[1],
+                sb.center[2] + l[2],
+            ];
+            let ab = [
+                sa.center[0] - bc[0],
+                sa.center[1] - bc[1],
+                sa.center[2] - bc[2],
+            ];
+            let a = sa.exps[s.ia as usize];
+            let b = sb.exps[s.ib as usize];
+            let p = a + b;
+            let cc = s.cc;
+            let pc = [
+                (a * sa.center[0] + b * bc[0]) / p,
+                (a * sa.center[1] + b * bc[1]) / p,
+                (a * sa.center[2] + b * bc[2]) / p,
+            ];
+            for (g, gv) in gvecs.iter().enumerate().take(ngp) {
+                let mag = cc * (-g2[g] / (4.0 * p)).exp();
+                let ph = gv[0] * pc[0] + gv[1] * pc[1] + gv[2] * pc[2];
+                // e^{−iG·P}
+                common[g] = Complex64::new(mag * ph.cos(), -mag * ph.sin());
+            }
+            for d in 0..3 {
+                e_table(la, lb, a, b, ab[d], &mut ebuf[d]);
+                let (e, f, w) = (&ebuf[d], &mut fbuf[d], &pw[d]);
+                for ij in 0..nij {
+                    let frow = &mut f[ij * ng..ij * ng + ngp];
+                    frow.fill(zero);
+                    for t in 0..st {
+                        let et = e[ij * st + t];
+                        if et == 0.0 {
+                            continue;
                         }
-                    }
-                }
-                let (fx, fy, fz) = (&fbuf[0], &fbuf[1], &fbuf[2]);
-                for (u, ac) in ca_comps.iter().enumerate() {
-                    for (v, bcmp) in cb_comps.iter().enumerate() {
-                        let ix = (ac[0] as usize * (lb + 1) + bcmp[0] as usize) * ng;
-                        let iy = (ac[1] as usize * (lb + 1) + bcmp[1] as usize) * ng;
-                        let iz = (ac[2] as usize * (lb + 1) + bcmp[2] as usize) * ng;
-                        let dst = &mut cart[(u * ncb + v) * ng..(u * ncb + v) * ng + ngp];
-                        for g in 0..ngp {
-                            dst[g] += common[g] * fx[ix + g] * fy[iy + g] * fz[iz + g];
+                        let wrow = &w[t * ng..t * ng + ngp];
+                        for (x, wv) in frow.iter_mut().zip(wrow) {
+                            *x += *wv * et;
                         }
                     }
                 }
             }
-            for (r, cart) in cart.into_iter().enumerate() {
-                self.scatter(&mut *dst[r], cart, sa, sb, &ch.order);
+            let (fx, fy, fz) = (&fbuf[0], &fbuf[1], &fbuf[2]);
+            for (u, ac) in ca_comps.iter().enumerate() {
+                for (v, bcmp) in cb_comps.iter().enumerate() {
+                    let ix = (ac[0] as usize * (lb + 1) + bcmp[0] as usize) * ng;
+                    let iy = (ac[1] as usize * (lb + 1) + bcmp[1] as usize) * ng;
+                    let iz = (ac[2] as usize * (lb + 1) + bcmp[2] as usize) * ng;
+                    let dst = &mut cart[(u * ncb + v) * ng..(u * ncb + v) * ng + ngp];
+                    for g in 0..ngp {
+                        dst[g] += common[g] * fx[ix + g] * fy[iy + g] * fz[iz + g];
+                    }
+                }
             }
+        }
+        let nfa = sa.nfun;
+        for (r, rows) in task.dst.chunks_mut(nfa).enumerate() {
+            self.scatter(rows, &cart[r], tmp, sa, sb, &ch.order);
         }
     }
 
-    /// Cartesian `[nca][ncb][ng]` -> AO rows of `sa` (local row index) at
-    /// columns `sb.off..`, G scattered back through `order`: the serial
-    /// kernels' transform, expression for expression.
+    /// Cartesian `[nca][ncb][ng]` -> the pair's AO row segments (`rows[i]`,
+    /// local column `j`), G scattered back through `order`: the serial
+    /// kernels' transform, expression for expression. `tmp` is scratch for
+    /// the pure half-transform (restarted from +0.0).
     fn scatter(
         &self,
-        dst: &mut [Complex64],
-        cart: Vec<Complex64>,
+        rows: &mut [&mut [Complex64]],
+        cart: &[Complex64],
+        tmp: &mut Vec<Complex64>,
         sa: &FtShell,
         sb: &FtShell,
         order: &[usize],
     ) {
         let zero = Complex64::new(0.0, 0.0);
-        let (nbf, ng) = (self.nbf, order.len());
+        let ng = order.len();
         let (la, lb) = (sa.l, sb.l);
         let (nca, ncb) = (sa.ncart, sb.ncart);
         let (nfa, nfb) = (sa.nfun, sb.nfun);
-        let right: Vec<Complex64> = if sb.pure {
+        let right: &[Complex64] = if sb.pure {
             let cbm = &self.c2s[lb];
-            let mut tmp = vec![zero; nca * nfb * ng];
+            tmp.clear();
+            tmp.resize(nca * nfb * ng, zero);
             for m in 0..nca {
                 for j in 0..nfb {
                     for n in 0..ncb {
@@ -434,13 +544,13 @@ impl PairFtPlan {
                     }
                 }
             }
-            tmp
+            &tmp[..]
         } else {
             cart
         };
-        for i in 0..nfa {
+        for (i, dst) in rows.iter_mut().enumerate().take(nfa) {
             for j in 0..nfb {
-                let base = (i * nbf + sb.off + j) * ng;
+                let base = j * ng;
                 for g in 0..ng {
                     let val = if sa.pure {
                         let cam = &self.c2s[la];
@@ -458,6 +568,50 @@ impl PairFtPlan {
                     dst[base + order[g]] = val;
                 }
             }
+        }
+    }
+}
+
+/// One shell-pair task of a chunk: its row segments of every `P[r]`
+/// ([`PairFtPlan::pair_tasks`]).
+struct PairTask<'a> {
+    ia: usize,
+    ib: usize,
+    dst: Vec<&'a mut [Complex64]>,
+}
+
+/// Per-worker scratch of [`PairFtPlan::pair_block`], reused across tasks
+/// (never read stale; see there).
+#[derive(Default)]
+struct PairScratch {
+    common: Vec<Complex64>,
+    ebuf: [Vec<f64>; 3],
+    fbuf: [Vec<Complex64>; 3],
+    cart: Vec<Vec<Complex64>>,
+    tmp: Vec<Complex64>,
+}
+
+/// A buffer of exactly `n` elements from `pool` (or new). Existing elements
+/// keep their (stale) values; growth is zero-filled in parallel, so a first
+/// chunk faults its pages in on every worker instead of one.
+fn take_buffer(pool: &mut Vec<Vec<Complex64>>, n: usize) -> Vec<Complex64> {
+    let mut v = pool.pop().unwrap_or_default();
+    if v.len() >= n {
+        v.truncate(n);
+    } else {
+        let grow = n - v.len();
+        v.reserve_exact(grow);
+        v.par_extend(rayon::iter::repeat_n(Complex64::new(0.0, 0.0), grow));
+    }
+    v
+}
+
+/// Return a chunk's blocks to `pool` for the next [`PairFtPlan::block_timed`].
+pub(crate) fn recycle(pool: &mut Vec<Vec<Complex64>>, blocks: Vec<Array3<Complex64>>) {
+    for b in blocks {
+        let (v, offset) = b.into_raw_vec_and_offset();
+        if offset.unwrap_or(0) == 0 {
+            pool.push(v);
         }
     }
 }

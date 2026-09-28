@@ -67,18 +67,19 @@
 
 use crate::budget::{bytes_of, Ledger};
 use crate::lattice::Cell;
+use crate::timing::{PbcTimings, StageClock};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::md3c1e::{cart_components, e_table, ferric_cart2sph, prim_norm, MAX_L};
 use ndarray::Array3;
 use num_complex::Complex64;
 
-/// The production kernel: screen walked once, shell-row-parallel chunks.
+/// The production kernel: screen walked once, shell-pair-parallel chunks.
 mod plan;
 /// Stage 3: residue-resolved (k-mesh) variant of the kernel below.
 pub mod residues;
 
-use plan::{min_gnorm2, PairFtPlan};
+use plan::{min_gnorm2, recycle, PairFtPlan};
 
 /// Default primitive-pair screening threshold for [`pair_ft`].
 pub const DEFAULT_PAIR_FT_THRESH: f64 = 1e-15;
@@ -307,7 +308,7 @@ fn take_one(mut v: Vec<Array3<Complex64>>) -> Array3<Complex64> {
 /// `pair_ft_with_thresh(cell, prep, gvecs, thresh)`.
 ///
 /// The primitive-pair screen is walked ONCE per call (not once per chunk)
-/// and each chunk is evaluated in parallel over bra shells; every element
+/// and each chunk is evaluated in parallel over shell pairs; every element
 /// keeps the serial kernel's addend sequence, so the output is bit for bit
 /// the frozen serial kernel's ([`pair_ft_chunked_serial_oracle`]) at any
 /// thread count (the `plan` module doc). The `sink` runs serially, in
@@ -319,6 +320,37 @@ pub fn pair_ft_chunked<F>(
     thresh: f64,
     chunk_budget_bytes: usize,
     extra_bytes_per_g: usize,
+    sink: F,
+) -> Result<usize, FerricError>
+where
+    F: FnMut(usize, &[[f64; 3]], &Array3<Complex64>) -> Result<(), FerricError>,
+{
+    pair_ft_chunked_timed(
+        cell,
+        prep,
+        gvecs,
+        thresh,
+        chunk_budget_bytes,
+        extra_bytes_per_g,
+        &mut PbcTimings::default(),
+        sink,
+    )
+}
+
+/// [`pair_ft_chunked`] recording its sub-stages (`plan::SUB_PLAN`,
+/// `SUB_SETUP`, `SUB_KERNEL`) and load-balance counters into `t`
+/// (observation only). The chunk's output buffer is reused for the next
+/// chunk after the sink returns (`plan` module doc: every element is
+/// overwritten, so reuse cannot change a bit).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn pair_ft_chunked_timed<F>(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    gvecs: &[[f64; 3]],
+    thresh: f64,
+    chunk_budget_bytes: usize,
+    extra_bytes_per_g: usize,
+    t: &mut PbcTimings,
     mut sink: F,
 ) -> Result<usize, FerricError>
 where
@@ -336,11 +368,16 @@ where
         per_g,
     )?;
     let chunk = (chunk_budget_bytes / per_g).max(1);
+    let clock = StageClock::start();
     let plan = gamma_plan(cell, prep, gvecs, thresh)?;
+    t.stop_sub(plan::SUB_PLAN, &clock);
+    plan.record_stats(t);
+    let mut pool = Vec::new();
     let mut n_chunks = 0usize;
     for (c, gs) in gvecs.chunks(chunk).enumerate() {
-        let p = take_one(plan.block(gs));
-        sink(c * chunk, gs, &p)?;
+        let p = plan.block_timed(gs, &mut pool, t);
+        sink(c * chunk, gs, &p[0])?;
+        recycle(&mut pool, p);
         n_chunks += 1;
     }
     Ok(n_chunks)
