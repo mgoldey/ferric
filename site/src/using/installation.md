@@ -51,6 +51,22 @@ ferric examples/water-rhf.toml
 The CLI resolves `[molecule] xyz = "..."` relative to the **current directory**,
 so run example files from the repository root.
 
+## conda
+
+The conda package is built and tested in CI; it is not yet published to a
+public channel. Once it is, the install command will be:
+
+```bash
+conda install -c conda-forge ferric
+```
+
+It links conda-forge's full libint2 2.13.1 as a shared dependency instead of
+bundling one. The PyPI wheel bundles a smaller libint2 to stay under PyPI's
+file-size limit; both carry the second derivatives analytic Hessians need, and
+[What the libint2 build carries](#what-the-libint2-build-carries) lists where
+they differ. To build the package yourself, see `conda/README.md` in the
+repository.
+
 ## Building from source
 
 Build from source if you are changing ferric, need the MPI build, or are on a
@@ -144,21 +160,23 @@ stale build keeps getting imported.
 ### What the libint2 build carries
 
 Integral classes, derivative orders and angular-momentum limits are fixed when
-libint2's source is *generated*, so no build flag changes them. The build
-`scripts/install-libint.sh` installs (conda-forge 2.13.1) carries:
+libint2's source is *generated*, so no build flag changes them. Highest angular
+momentum for energy / 1st / 2nd derivatives (– = not generated):
 
-| Integrals | Highest angular momentum for energy / 1st / 2nd derivatives | Needed for |
-|---|---|---|
-| 4-centre ERI | 7 / 6 / 3 | SCF, gradients, analytic Hessians |
-| One-electron (overlap, kinetic, nuclear) | 7 / 6 / 3 | the same |
-| 3- and 2-centre ERI | 7 / 7 / 4 | RI-MP2, RPA, GW and their gradients |
-| G12 geminal | 4 (energy only) | F12 / geminal integrals |
+| Integrals | conda package and `scripts/install-libint.sh` (conda-forge 2.13.1) | PyPI wheel (ferric's libint2 2.7.2 export) | Needed for |
+|---|---|---|---|
+| 4-centre ERI | 7 / 6 / 3 | 6 / 6 / 3 | SCF, gradients, analytic Hessians |
+| One-electron (overlap, kinetic, nuclear) | 7 / 6 / 3 | 6 / 4 / 3 | the same |
+| 3- and 2-centre ERI | 7 / 7 / 4 | 6 / 6 / – | RI-MP2, RPA, GW and their gradients |
+| G12 geminal | 4 / – / – | – | F12 / geminal integrals |
 
-Analytic Hessians therefore cover orbital bases up to f functions; a basis with
-g or higher functions uses finite differences of the analytic gradient. The
-upstream mpqc4 tarball (libint2 2.7.2) has no second derivatives and no G12
-class: built against it, ferric uses finite-difference Hessians and the G12
-tests skip with an explicit message.
+With either build, analytic Hessians cover orbital bases up to f functions; a
+basis with g or higher functions uses finite differences of the analytic
+gradient. The wheel has no G12 class, so F12 methods need the conda package or
+a source build. `scripts/generate-libint-small.sh` regenerates the wheel's
+export. The upstream mpqc4 tarball (libint2 2.7.2) has no second derivatives
+and no G12 class: built against it, ferric uses finite-difference Hessians and
+the G12 tests skip with an explicit message.
 
 ## MPI
 
