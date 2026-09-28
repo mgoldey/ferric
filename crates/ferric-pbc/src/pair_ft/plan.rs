@@ -15,51 +15,102 @@
 //! series — quiet box").
 //!
 //! Per (surviving primitive pair, G) the serial kernels then evaluate one
-//! `exp` (`e^{−G²/4p}`), one `cos` and one `sin` (`e^{−iG·P}`). Neither
-//! depends on the contraction coefficients, and the `exp` does not depend on
-//! the centres either, so this kernel evaluates each of them ONCE and reuses
-//! the value (same expression, same inputs, hence the same bits):
+//! `exp` (`e^{−G²/4p}`), one `cos` and one `sin` (`e^{−iG·P}`), and per
+//! Cartesian element three complex products. Neither transcendental depends
+//! on the contraction coefficients, the `exp` does not depend on the
+//! centres, and most of the phase does not depend on the image, so this
+//! kernel evaluates each of them as rarely as it can:
 //!
 //! * `e^{−G²/4p}` depends only on the exponent pair `(a, b)`: one table row
 //!   per distinct exponent pair (`slot`) and chunk ([`ChunkG::etab`]), shared
-//!   by every image, shell pair and atom pair.
-//! * `cos(G·P)`, `sin(G·P)` and the E tables depend on `(A, B + L, a, b, la,
+//!   by every image, shell pair and atom pair (same expression as serial).
+//! * The E tables and `F = E·(−iG)^t` rows depend on `(A, B + L, a, b, la,
 //!   lb)` only. The columns of a general contraction (cc-pVDZ C/O: three `s`
 //!   shells on the same 9 exponents, two `p` shells on the same 4) are
 //!   separate shells with identical centre, `l` and exponents: a SHELL GROUP
-//!   (a maximal run of consecutive such shells). Each `(image, bra primitive,
-//!   ket primitive)` of a GROUP pair is a SITE; the trig values and the
-//!   `F = E·(−iG)^t` rows are evaluated once per site and used by every
-//!   member shell pair `(i, j)` of the group pair that has a survivor there
-//!   (an ENTRY: the member, its `cc` and its window).
+//!   (a maximal run of consecutive such shells). Each `(bra primitive, ket
+//!   primitive, image)` of a GROUP pair is a SITE; the phase, E tables and F
+//!   rows are evaluated once per site and used by every member shell pair
+//!   `(i, j)` of the group pair that has a survivor there (an ENTRY: the
+//!   member, its `cc` and its window).
 //!
-//! # Bit-identity (per element, by construction)
+//! # Phase (V2: image split)
 //!
-//! An output element `P[r][m, n, g]` is the sum, in serial walk order
-//! (image ascending, then bra primitive, then ket primitive), of the terms of
-//! the primitive pairs of `(shell(m), shell(n))` that pass
-//! `mag >= thresh` AND whose window reaches `g` (`|G_g|² <= g2max`), followed
-//! by the same Cartesian→AO transform. Nothing couples different G columns
-//! or different shell pairs. So:
+//! `P_c = (a A + b (B + L)) / p = P0 + (b/p) L` with `P0 = (a A + b B)/p`,
+//! so `e^{−iG·P_c} = e^{−iG·P0} · e^{−i (b/p) G·L}`. When every G of the
+//! call is `Σ_d (m_d + f_d) b_d` with INTEGER `m` and one common offset `f`
+//! (reciprocal-lattice vectors: `f = 0`; `K = G + q` of the residue kernel:
+//! `f` = `q`'s fractional Miller coordinates) and `L = Σ_d n_d a_d`
+//! (`Cell::translation_indices`), `G·L = 2π (m·n + f·n)` exactly, and
 //!
-//! * The sites of a group pair are in walk order and, within a site, one
-//!   entry per member that passes the screen, with the screen's own `cc` and
-//!   `g2max` (computed with the serial kernel's expressions from the member's
-//!   own coefficients). A member's entries therefore appear in its serial
-//!   walk order, and it accumulates into its OWN Cartesian block, so its
-//!   addend sequence is the serial one. An entry whose window reaches no G
-//!   of the whole set (`g2max < min |G|²`) contributed zero to every chunk
-//!   in the serial kernel (`ngp == 0`) and is dropped.
-//! * Every scalar of a term is the serial kernel's expression on bitwise the
-//!   serial inputs: the site's `B + L`, `A − B′`, `p`, `P_c`, `G·P_c`, `cos`,
-//!   `sin` and E tables are computed from the group's first shell, whose
-//!   centre, `l` and exponents are bitwise every member's (the group key);
-//!   the table value `e^{−G²/4p}` is `(−G² / (4 p)).exp()` with `p = a + b`
-//!   of the same two exponent bit patterns; a member's term is then
-//!   `mag = cc · e`, `(mag cos, −mag sin) · Fx · Fy · Fz` exactly as serial.
-//!   The shared values are computed up to the LARGEST window of the site's
-//!   entries (resp. the slot's); a member reads only its own window, and a
-//!   value at `g` does not depend on how far past `g` it was computed.
+//! ```text
+//! e^{−iG·P_c} = e^{−iG·P0} · e^{−2πi (b/p) m·n} · e^{−2πi (b/p) f·n}
+//! ```
+//!
+//! The HOME row `e^{−iG·P0}` depends on the primitive pair, not the image:
+//! the sites are ordered (bra prim, ket prim, image), so one row per
+//! primitive pair is evaluated and reused by all its images. The image
+//! factor depends on G only through the integer `k = m·n`: a table over the
+//! site's `k` range (one `sin_cos` per `k`, argument reduced to one turn,
+//! [`turn_phase`]) when that range is shorter than the window, else per G
+//! (the same expression, hence the same bits). The last factor is one
+//! constant per site (skipped when `f = 0`).
+//!
+//! DETECTION ([`PhaseSplit::detect`]) runs on the WHOLE G set of the call
+//! (the plan's), not per chunk: `x_d = G·a_d / 2π` must equal `f_d + m_d`
+//! within [`MILLER_TOL_EPS`] rounding units for every G, `f_d` read off the
+//! G with the smallest dot-product scale. Otherwise (a G set that is not
+//! lattice points plus one offset: a strained cell with the reference G, a
+//! scaled G list such as `× 1.5`, several `q` mixed) EVERY site uses the
+//! DIRECT phase `G·P_c` of the serial kernel. The two paths are counted per
+//! (site, chunk) ([`CTR_PHASE_SPLIT_SITES`], [`CTR_PHASE_DIRECT_SITES`]).
+//! Callers: RS-GDF Γ and range-split LR passes, hcore `V_LR` and dense AFT
+//! pass reciprocal-lattice sets (`Cell::gvectors`, half spheres; split);
+//! KRsGdf / ksplit / k-point hcore / kcorr pass `K = G + q` for one `q` per
+//! call (split with offset); LMP2 and test lists vary (detected either way).
+//!
+//! # Term (V6: premultiplied F rows)
+//!
+//! Per site the unit factor `U = e^{−G²/4p} e^{−iG·P_c}` is folded into the
+//! x F rows once (`X′ = U · Fx`). A site with one live entry then adds
+//! `((X′ · Fy) · Fz) · cc` per Cartesian element; with several (shell
+//! groups) the products `(X′ · Fy) · Fz` are formed once per site and each
+//! entry adds `· cc` (one real × complex multiply per element and G). Both
+//! routes evaluate the same expression (same bits).
+//!
+//! # Values: error bound, determinism
+//!
+//! The output is NOT bit-identical to the frozen serial kernels any more.
+//! Differences per term: the phase is rounded as `G·P0` plus `2π frac((b/p)
+//! k)` instead of `G·P_c` (same order: `ε |G| |P|`), the Miller residual
+//! admitted by the detection (≤ [`MILLER_TOL_EPS`] times that, ~2× realised
+//! on lattice lists), the V6 re-association (5.2e-16 relative per term,
+//! `prototypes/pbc/pair_ft_kernel/phase_options.py`), and the site order
+//! within an element's sum (primitive pair before image). DERIVED on the
+//! test cells of `tests/pbc_parallel_bitwise.rs` by an operation-for-
+//! operation f64 replay (`prototypes/pbc/pair_ft_kernel/split_tolerance.py`):
+//! `Σ_terms |term| (|ΔU| + 8ε) ≤ 4.9e-15` per Cartesian element (max |P|
+//! 2.4; the realised coherent phase change is ≤ 4.2e-16), plus the WORST
+//! CASE of the re-ordered sum, `(n − 1) ε Σ|terms| ≤ 6.4e-13` (n ≤ 1045
+//! terms per element); the smallest phase MUTANT (image factor conjugated,
+//! `a/p` for `b/p`, the factor dropped, a Miller index off by one) moves an
+//! element by ≥ 2.3e-4, and the split forced onto a non-lattice list by
+//! 0.31. The tests' 1e-11 sits 15× above the first and 2e7× below the
+//! second.
+//!
+//! Every element is still a fixed function of `(G, site list, term order)`:
+//!
+//! * The sites of a group pair are in a fixed order ((bra prim, ket prim,
+//!   image)) and, within a site, one entry per member that passes the screen,
+//!   with the screen's own `cc` and `g2max` (the serial kernel's expressions
+//!   from the member's own coefficients), accumulated into the member's OWN
+//!   Cartesian block. An entry whose window reaches no G of the whole set
+//!   (`g2max < min |G|²`) contributed zero to every chunk in the serial
+//!   kernel (`ngp == 0`) and is dropped.
+//! * Every per-(site, G) value (home row, image factor, `U`, F rows, the
+//!   shared products) depends only on that G and the site, never on the
+//!   chunk, the window it was evaluated up to, whether a table or the per-G
+//!   route produced it, or the thread; the split decision is per call.
 //! * The parallel split is over TASKS `(bra shell group, contiguous ket-group
 //!   range)`, formed once per plan ([`PairFtPlan::new`], deterministic greedy
 //!   on a per-group-pair work weight, [`PAIR_FT_TASK_SPLIT`]): a task owns
@@ -78,24 +129,25 @@
 //!   Cartesian accumulator, which therefore stays exactly `+0.0`, and the
 //!   serial transform of `+0.0` is `+0.0` (`+0.0 + (±0.0) = +0.0`, the
 //!   pure-shell accumulators start at `+0.0`). The kernel writes that `+0.0`
-//!   directly there instead of zeroing, transforming and scattering it.
-//!   Both shortcuts are counted ([`CTR_PARTIAL_WINDOW`]: `0 < n_used <
-//!   n_G`; [`CTR_EMPTY_WINDOW`]: `n_used = 0`), and the bitwise test
-//!   `pair_ft_kernels_are_bitwise_vs_frozen_serial_kernels_in_partial_windows`
+//!   directly there instead of zeroing, transforming and scattering it —
+//!   the oracle's value there, bit for bit. Both shortcuts are counted
+//!   ([`CTR_PARTIAL_WINDOW`]: `0 < n_used < n_G`; [`CTR_EMPTY_WINDOW`]:
+//!   `n_used = 0`), and
+//!   `pair_ft_kernels_match_frozen_serial_kernels_in_partial_windows`
 //!   asserts the partial one is reached by both kernels.
 //! * Every element of every `P[r]` is written (the tasks tile the matrix:
 //!   `check_contiguous`, asserted again per chunk by
 //!   [`PairFtPlan::segments`]; the scatter covers every `(i, j, g)`, the
 //!   `+0.0` beyond the window included), so the output buffers are REUSED
 //!   across chunks without zeroing ([`PairFtPlan::block_timed`]): a stale
-//!   value is always overwritten. The multi-chunk bitwise tests would see a
-//!   missed write, since the oracle starts every chunk from zero.
+//!   value is always overwritten. The multi-chunk tests would see a missed
+//!   write (a stale O(1) value against a 1e-11 tolerance).
 //!
-//! Hence every element carries the serial scalar sequence: the output is BIT
-//! FOR BIT the frozen serial kernel's, at any thread count and any G
-//! chunking (`tests/pbc_parallel_bitwise.rs`; the shared-site path, i.e.
-//! groups of more than one shell, by
-//! `pair_ft_kernels_are_bitwise_vs_frozen_serial_kernels_with_general_contraction`,
+//! Hence the output is BIT FOR BIT the same at any thread count and any G
+//! chunking (the unchunked entry point included), and within the bound
+//! above of the frozen serial kernels (`tests/pbc_parallel_bitwise.rs`: both
+//! phase paths, the shared-site path of groups of more than one shell by
+//! `pair_ft_kernels_match_frozen_serial_kernels_with_general_contraction`,
 //! which asserts [`CTR_SITES`] `<` survivors).
 //!
 //! # Memory
@@ -103,8 +155,10 @@
 //! The site and entry lists ([`SITE_BYTES`], [`SURVIVOR_BYTES`] each) are
 //! counted before they are allocated and checked against ferric's unified
 //! budget. Each rayon worker holds one group pair's scratch at a time
-//! (`members × R` Cartesian blocks, the F rows, the trig row and the pure
-//! half-transform, all `× n_G(chunk)`); with `T` threads `T` such sets are
+//! (`members × R` Cartesian blocks, the F rows, the unit and home rows, the
+//! image indices, the shared site products `ncart(bra) × ncart(ket)` and
+//! the pure half-transform, all `× n_G(chunk)`; the image-factor table is
+//! at most `n_G(chunk)` long); with `T` threads `T` such sets are
 //! live (a few KiB per G per member per thread against the `16 nao²` bytes
 //! per G of the output itself). The per-chunk exp table is `8 × slots` bytes
 //! per G (`slots` ≤ distinct exponent pairs).
@@ -147,6 +201,116 @@ pub const CTR_SURVIVORS: &str = "pair FT survivors (sum over plans)";
 pub const CTR_SITES: &str = "pair FT sites (sum over plans)";
 /// Counter: shells in the largest shell group (max over plans).
 pub const CTR_LARGEST_GROUP: &str = "pair FT largest shell group";
+/// Counter: (site, G chunk) evaluations whose phase took the IMAGE SPLIT
+/// `e^{−iG·P0} · e^{−2πi (b/p)(m·n + f·n)}` (module doc, "Phase"), summed
+/// over chunks and calls.
+pub const CTR_PHASE_SPLIT_SITES: &str = "pair FT phase-split sites";
+/// Counter: (site, G chunk) evaluations with the DIRECT phase
+/// `e^{−iG·P_c}` (the G set is not reciprocal-lattice points plus one
+/// common offset), summed over chunks and calls.
+pub const CTR_PHASE_DIRECT_SITES: &str = "pair FT direct-phase sites";
+
+/// Acceptance of a Miller decomposition `x_d = m_d + f_d` of a G vector
+/// ([`PhaseSplit::miller`]): `|x_d − f_d − m_d| <= MILLER_TOL_EPS · ε ·
+/// (2 + S_d(G) + S_d(G*))`, `S_d(G) = Σ_k |G_k a_{d,k}| / 2π` the scale of
+/// the dot product `x_d = G·a_d / 2π` (and `G*` the vector `f_d` was read
+/// from). A reciprocal-lattice list built as `Σ m_i b_i` (optionally `+ q`,
+/// optionally scaled by an integer) sits at ≤ 1.71 of these units on the
+/// test cells (`prototypes/pbc/pair_ft_kernel/split_tolerance.py`); a
+/// non-lattice list (G × 1.5) at 6e14. An accepted residual moves a phase by
+/// at most `2π (b/p) Σ_d |Δx_d| |n_d|`, i.e. `MILLER_TOL_EPS` times the
+/// rounding of the direct phase `G·P_c` itself; lattice lists realise ~2×.
+const MILLER_TOL_EPS: f64 = 64.0;
+/// Largest `|m_d|` the split accepts (`k = m·n` stays exact in f64 and i64).
+const MILLER_MAX: f64 = (1u64 << 30) as f64;
+
+const TAU: f64 = 2.0 * std::f64::consts::PI;
+
+/// The image split of the phase (module doc, "Phase"): every G of the
+/// plan's G set is `Σ_d (m_d + f_d) b_d` with integer `m` and ONE common
+/// fractional offset `f` (zero for reciprocal-lattice vectors; `K = G + q`
+/// gives `f = q`'s fractional Miller coordinates). Detected from the whole
+/// G set at plan construction, so the choice is the same for every chunk.
+#[derive(Clone, Copy)]
+struct PhaseSplit {
+    /// Lattice vectors `a_d` (rows) of the cell the images are built from.
+    lat: [[f64; 3]; 3],
+    frac: [f64; 3],
+    /// `S_d(G*)` of the vector `frac[d]` was read from.
+    sstar: [f64; 3],
+    has_frac: bool,
+}
+
+/// Miller coordinates `x_d = G·a_d / 2π` and their scales
+/// `S_d = Σ_k |G_k a_{d,k}| / 2π`.
+fn miller_coords(lat: &[[f64; 3]; 3], g: &[f64; 3]) -> ([f64; 3], [f64; 3]) {
+    let (mut x, mut s) = ([0.0; 3], [0.0; 3]);
+    for d in 0..3 {
+        let a = &lat[d];
+        x[d] = (g[0] * a[0] + g[1] * a[1] + g[2] * a[2]) / TAU;
+        s[d] = ((g[0] * a[0]).abs() + (g[1] * a[1]).abs() + (g[2] * a[2]).abs()) / TAU;
+    }
+    (x, s)
+}
+
+impl PhaseSplit {
+    /// The split of `gvecs` on lattice `lat`, or `None` (direct phase) when
+    /// some G is not `m + f` within [`MILLER_TOL_EPS`]. `f_d` is read from
+    /// the G with the smallest `S_d` (first on ties): the most exact `x_d`.
+    fn detect(lat: &[[f64; 3]; 3], gvecs: &[[f64; 3]]) -> Option<Self> {
+        if gvecs.is_empty() {
+            return None;
+        }
+        let (mut xstar, mut sstar) = ([0.0; 3], [f64::INFINITY; 3]);
+        for g in gvecs {
+            let (x, s) = miller_coords(lat, g);
+            for d in 0..3 {
+                if s[d] < sstar[d] {
+                    (xstar[d], sstar[d]) = (x[d], s[d]);
+                }
+            }
+        }
+        let mut frac = [0.0; 3];
+        for d in 0..3 {
+            let f = xstar[d] - xstar[d].round();
+            let tol = MILLER_TOL_EPS * f64::EPSILON * (2.0 + 2.0 * sstar[d]);
+            frac[d] = if f.abs() <= tol { 0.0 } else { f };
+        }
+        let sp = Self {
+            lat: *lat,
+            frac,
+            sstar,
+            has_frac: frac.iter().any(|&f| f != 0.0),
+        };
+        gvecs.iter().all(|g| sp.miller(g).is_some()).then_some(sp)
+    }
+
+    /// The integer Miller index `m` of `g` (`x = m + f`), or `None`.
+    fn miller(&self, g: &[f64; 3]) -> Option<[i64; 3]> {
+        let (x, s) = miller_coords(&self.lat, g);
+        let mut m = [0i64; 3];
+        for d in 0..3 {
+            let y = x[d] - self.frac[d];
+            let r = y.round();
+            let tol = MILLER_TOL_EPS * f64::EPSILON * (2.0 + s[d] + self.sstar[d]);
+            let accepted = r.abs() <= MILLER_MAX && (y - r).abs() <= tol;
+            if !accepted {
+                return None;
+            }
+            m[d] = r as i64;
+        }
+        Some(m)
+    }
+}
+
+/// `e^{−2πi β x}`, the argument reduced to `β x − round(β x)` (one turn)
+/// before `sin_cos`. The value depends only on `(β, x)`: a table entry and
+/// a per-G evaluation of the same `x` are the same bits.
+fn turn_phase(beta: f64, x: f64) -> Complex64 {
+    let t = beta * x;
+    let (s, c) = (TAU * (t - t.round())).sin_cos();
+    Complex64::new(c, -s)
+}
 
 /// Task granularity: a task's work weight is capped at
 /// `max(ceil(W / PAIR_FT_TASK_SPLIT), heaviest group pair)`, `W` the plan's
@@ -233,12 +397,17 @@ pub(crate) struct PairFtPlan {
     shells: Vec<FtShell>,
     groups: Vec<ShellGroup>,
     images: Vec<[f64; 3]>,
+    /// Integer lattice coordinates `n` of each image (`L = Σ n_d a_d`).
+    image_n: Vec<[i64; 3]>,
+    /// The image split of the phase, when the plan's G set admits it.
+    split: Option<PhaseSplit>,
     /// Residue bucket of each image (all 0 for the Gamma kernel).
     bucket: Vec<usize>,
     nr: usize,
     nbf: usize,
     lmax: usize,
-    /// `lists[ga * ngroups + gb]`, sites in serial walk order.
+    /// `lists[ga * ngroups + gb]`, sites ordered by (bra primitive, ket
+    /// primitive, image).
     lists: Vec<GroupPairList>,
     /// `p = a + b` of each exp-table slot (distinct exponent pair in use).
     slot_p: Vec<f64>,
@@ -313,24 +482,27 @@ struct ListCount {
 
 impl PairFtPlan {
     /// Walk the screen of `super::pair_ft_block` (`moduli = None`) or of
-    /// `super::residues::residue_block` (`Some(moduli)`) once for a G set
-    /// whose `max |G|` is `gmax_window` and whose smallest `|G|²` is `g2min`.
+    /// `super::residues::residue_block` (`Some(moduli)`) once for the WHOLE
+    /// G set `gvecs` of the call (the window at its `max |G|`, survivors
+    /// reaching its smallest `|G|`, the phase split detected on it).
     /// `who` names the kernel in error messages (the serial kernels' names).
     pub(crate) fn new(
         cell: &Cell,
         prep: &PreparedBasis,
         thresh: f64,
-        gmax_window: f64,
-        g2min: f64,
+        gvecs: &[[f64; 3]],
         moduli: Option<[usize; 3]>,
         who: &'static str,
     ) -> Result<Self, FerricError> {
+        let (gmax_window, g2min) = (super::max_gnorm(gvecs), min_gnorm2(gvecs));
         let shells = build_shells(cell, prep)?;
         let nr = moduli.map_or(1, |m| m[0] * m[1] * m[2]);
         let lmax = shells.iter().map(|s| s.l).max().unwrap_or(0);
         let mut plan = Self {
             groups: build_groups(&shells),
             images: Vec::new(),
+            image_n: Vec::new(),
+            split: PhaseSplit::detect(cell.lattice(), gvecs),
             bucket: Vec::new(),
             nr,
             nbf: prep.nbasis(),
@@ -362,6 +534,14 @@ impl PairFtPlan {
         }
         let rpair = (2.0 * (1e3 / thresh).ln() / amin).sqrt() + 2.0;
         plan.images = cell.translations(rpair)?;
+        plan.image_n = cell.translation_indices(rpair)?;
+        if plan.image_n.len() != plan.images.len() {
+            return Err(FerricError::General(format!(
+                "{who}: {} translations but {} translation indices",
+                plan.images.len(),
+                plan.image_n.len()
+            )));
+        }
         plan.check_index_widths()?;
         plan.bucket = match moduli {
             None => vec![0; plan.images.len()],
@@ -459,6 +639,11 @@ impl PairFtPlan {
                         ea[usize::from(key.1)] as usize * nu + eb[usize::from(key.2)] as usize;
                     v.push(key, raw as u32, e);
                 });
+                // (bra prim, ket prim)-major: the images of one primitive
+                // pair are consecutive, so the kernel keeps ONE home phase
+                // row `e^{−iG·P0}` live per group pair (module doc, "Phase").
+                // The keys are distinct, so the order is total.
+                v.sites.sort_unstable_by_key(|s| (s.ia, s.ib, s.image));
                 v
             })
             .collect();
@@ -747,7 +932,13 @@ impl PairFtPlan {
             t.stop_sub(SUB_SETUP, &clock);
             return out;
         }
-        let chunk = ChunkG::new(gvecs, self.lmax, &self.slot_p, &self.slot_g2max);
+        let chunk = ChunkG::new(
+            gvecs,
+            self.lmax,
+            &self.slot_p,
+            &self.slot_g2max,
+            self.split.as_ref(),
+        );
         let mut segs = self.segments(&mut out, ng);
         // Task `k` owns `segs[seg(k)..seg(k) + nr * nrows(k)]`: the tasks
         // take consecutive runs of the task-major segment list.
@@ -768,6 +959,7 @@ impl PairFtPlan {
         let clock = StageClock::start();
         let (busy, longest, pairs) = (AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0));
         let (partial, empty) = (AtomicU64::new(0), AtomicU64::new(0));
+        let (split_sites, direct_sites) = (AtomicU64::new(0), AtomicU64::new(0));
         views
             .into_par_iter()
             .for_each_init(PairScratch::default, |scr, (k, dst)| {
@@ -779,12 +971,16 @@ impl PairFtPlan {
                 pairs.fetch_add(w.pairs, Ordering::Relaxed);
                 partial.fetch_add(w.partial, Ordering::Relaxed);
                 empty.fetch_add(w.empty, Ordering::Relaxed);
+                split_sites.fetch_add(w.split_sites, Ordering::Relaxed);
+                direct_sites.fetch_add(w.direct_sites, Ordering::Relaxed);
             });
         t.stop_sub(SUB_KERNEL, &clock);
         t.add_counter("pair FT tasks run", n_tasks);
         t.add_counter("pair FT shell pairs visited", pairs.into_inner());
         t.add_counter(CTR_PARTIAL_WINDOW, partial.into_inner());
         t.add_counter(CTR_EMPTY_WINDOW, empty.into_inner());
+        t.add_counter(CTR_PHASE_SPLIT_SITES, split_sites.into_inner());
+        t.add_counter(CTR_PHASE_DIRECT_SITES, direct_sites.into_inner());
         t.add_counter(
             "pair FT kernel busy us (sum of task walls)",
             busy.into_inner() / 1000,
@@ -879,7 +1075,7 @@ impl PairFtPlan {
             let list = &self.lists[k.ga * self.groups.len() + gb];
             for site in &list.sites {
                 let entries = &list.entries[site.e0 as usize..site.e1 as usize];
-                self.site_terms(site, entries, sa, sb, scr, ch);
+                self.site_terms(site, entries, sa, sb, scr, ch, w);
             }
         }
         for (m, (i, j)) in (gra.s0..gra.s1)
@@ -897,10 +1093,13 @@ impl PairFtPlan {
         }
     }
 
-    /// One site: its entries' windows; the shared `G·P` trig row, E tables
-    /// and F rows up to the largest window; then each entry's term into its
-    /// member's accumulator (bucket of the site's image) — the serial
-    /// kernel's inner loop body, expression for expression.
+    /// One site: its entries' windows; the site's unit factor
+    /// `e^{−G²/4p} e^{−iG·P_c}` (image-split or direct phase, module doc
+    /// "Phase"), E tables and F rows up to the largest window; the unit
+    /// folded into the x rows; then each entry's `cc ×` the shared
+    /// Cartesian products into its member's accumulator (bucket of the
+    /// site's image; module doc "Term").
+    #[allow(clippy::too_many_arguments)]
     fn site_terms(
         &self,
         site: &Site,
@@ -909,15 +1108,20 @@ impl PairFtPlan {
         sb: &FtShell,
         scr: &mut PairScratch,
         ch: &ChunkG,
+        w: &mut WindowTally,
     ) {
         let PairScratch {
             common,
-            cs,
-            sn,
             ngp,
             ebuf,
             fbuf,
             cart,
+            home,
+            home_key,
+            home_len,
+            kbuf,
+            ttab,
+            prod,
             ..
         } = scr;
         ngp.clear();
@@ -945,35 +1149,107 @@ impl PairFtPlan {
         let a = sa.exps[usize::from(site.ia)];
         let b = sb.exps[usize::from(site.ib)];
         let p = a + b;
-        let pc = [
-            (a * sa.center[0] + b * bc[0]) / p,
-            (a * sa.center[1] + b * bc[1]) / p,
-            (a * sa.center[2] + b * bc[2]) / p,
-        ];
-        for ((c, s), gv) in cs[..nmax]
-            .iter_mut()
-            .zip(&mut sn[..nmax])
-            .zip(&ch.gsorted[..nmax])
-        {
-            let ph = gv[0] * pc[0] + gv[1] * pc[1] + gv[2] * pc[2];
-            *c = ph.cos();
-            *s = ph.sin();
+        let et = &ch.etab[site.slot as usize * ch.ng..site.slot as usize * ch.ng + nmax];
+        let unit = &mut common[..nmax];
+        match (&self.split, &ch.miller) {
+            (Some(sp), Some(mil)) => {
+                w.split_sites += 1;
+                // Home row e^{−iG·P0}, P0 = (a A + b B) / p: shared by the
+                // images of this primitive pair (consecutive sites), extended
+                // lazily; a value at g does not depend on when it was made.
+                if *home_key != Some((site.ia, site.ib)) {
+                    *home_key = Some((site.ia, site.ib));
+                    *home_len = 0;
+                }
+                if *home_len < nmax {
+                    let p0 = [
+                        (a * sa.center[0] + b * sb.center[0]) / p,
+                        (a * sa.center[1] + b * sb.center[1]) / p,
+                        (a * sa.center[2] + b * sb.center[2]) / p,
+                    ];
+                    for (h, gv) in home[*home_len..nmax]
+                        .iter_mut()
+                        .zip(&ch.gsorted[*home_len..nmax])
+                    {
+                        let ph = gv[0] * p0[0] + gv[1] * p0[1] + gv[2] * p0[2];
+                        *h = Complex64::new(ph.cos(), -ph.sin());
+                    }
+                    *home_len = nmax;
+                }
+                // Image factor e^{−2πi β (m·n + f·n)}, β = b/p: G·L = 2π (m + f)·n.
+                let n = self.image_n[site.image as usize];
+                let beta = b / p;
+                let offset = sp.has_frac.then(|| {
+                    let fnn = sp.frac[0] * n[0] as f64
+                        + sp.frac[1] * n[1] as f64
+                        + sp.frac[2] * n[2] as f64;
+                    turn_phase(beta, fnn)
+                });
+                let factor = |k: i64| {
+                    let t = turn_phase(beta, k as f64);
+                    match offset {
+                        Some(c) => t * c,
+                        None => t,
+                    }
+                };
+                let (mut kmin, mut kmax) = (i64::MAX, i64::MIN);
+                for (k, m) in kbuf[..nmax].iter_mut().zip(&mil[..nmax]) {
+                    *k = m[0] * n[0] + m[1] * n[1] + m[2] * n[2];
+                    kmin = kmin.min(*k);
+                    kmax = kmax.max(*k);
+                }
+                let (home, kbuf) = (&home[..nmax], &kbuf[..nmax]);
+                // A table over the k range when it is shorter than the window
+                // (same expression per k either way: same bits).
+                if kmax.abs_diff(kmin) < nmax as u64 {
+                    ttab.clear();
+                    ttab.extend((kmin..=kmax).map(factor));
+                    for (((u, &k), h), &x) in unit.iter_mut().zip(kbuf).zip(home).zip(et) {
+                        *u = (*h * ttab[(k - kmin) as usize]) * x;
+                    }
+                } else {
+                    for (((u, &k), h), &x) in unit.iter_mut().zip(kbuf).zip(home).zip(et) {
+                        *u = (*h * factor(k)) * x;
+                    }
+                }
+            }
+            _ => {
+                w.direct_sites += 1;
+                let pc = [
+                    (a * sa.center[0] + b * bc[0]) / p,
+                    (a * sa.center[1] + b * bc[1]) / p,
+                    (a * sa.center[2] + b * bc[2]) / p,
+                ];
+                for ((u, gv), &x) in unit.iter_mut().zip(&ch.gsorted[..nmax]).zip(et) {
+                    let ph = gv[0] * pc[0] + gv[1] * pc[1] + gv[2] * pc[2];
+                    // e^{−iG·P}
+                    *u = Complex64::new(x * ph.cos(), -x * ph.sin());
+                }
+            }
         }
         f_rows(sa.l, sb.l, a, b, ab, nmax, ch, ebuf, fbuf);
-        let et = &ch.etab[site.slot as usize * ch.ng..site.slot as usize * ch.ng + nmax];
+        // V6: the unit factor folded into the x rows, once per site.
+        let unit = &common[..nmax];
+        for row in fbuf[0].chunks_mut(ch.ng).take((sa.l + 1) * (sb.l + 1)) {
+            for (f, &u) in row[..nmax].iter_mut().zip(unit) {
+                *f *= u;
+            }
+        }
         let (ca, cb) = (&self.comps[sa.l], &self.comps[sb.l]);
+        let live = ngp.iter().filter(|&&n| n > 0).count();
+        if live > 1 {
+            site_products(prod, nmax, fbuf, ca, cb, sb.l, ch.ng);
+        }
         for (e, &n) in entries.iter().zip(ngp.iter()) {
             if n == 0 {
                 continue;
             }
-            let cc = e.cc;
-            for (((o, &c), &s), &x) in common[..n].iter_mut().zip(&cs[..n]).zip(&sn[..n]).zip(et) {
-                let mag = cc * x;
-                // e^{−iG·P}
-                *o = Complex64::new(mag * c, -mag * s);
-            }
             let acc = &mut cart[usize::from(e.member) * self.nr + bucket];
-            accumulate(acc, &common[..n], fbuf, ca, cb, sb.l, ch.ng);
+            if live > 1 {
+                add_scaled(acc, &prod[..], e.cc, n, ca.len() * cb.len(), ch.ng);
+            } else {
+                accumulate_fused(acc, e.cc, n, fbuf, ca, cb, sb.l, ch.ng);
+            }
         }
     }
 
@@ -1085,35 +1361,81 @@ fn f_rows(
     }
 }
 
-/// `cart[(u, v)][g] += common[g] · Fx · Fy · Fz` for `g < common.len()`
-/// (the serial kernel's accumulate, same product order).
-fn accumulate(
+/// Offsets of the x, y, z F rows of Cartesian pair `(ac, bc)`.
+fn f_row_offsets(ac: &[u8; 3], bc: &[u8; 3], lb: usize, ng: usize) -> [usize; 3] {
+    [0, 1, 2].map(|d| (ac[d] as usize * (lb + 1) + bc[d] as usize) * ng)
+}
+
+/// V6, one entry at the site: `cart[(u, v)][g] += ((X′ · Fy) · Fz) · cc`
+/// for `g < n`, `X′` the unit-premultiplied x rows. The same expression as
+/// [`site_products`] followed by [`add_scaled`] (same bits either way).
+#[allow(clippy::too_many_arguments)]
+fn accumulate_fused(
     cart: &mut [Complex64],
-    common: &[Complex64],
+    cc: f64,
+    n: usize,
     fbuf: &[Vec<Complex64>; 3],
     ca: &[[u8; 3]],
     cb: &[[u8; 3]],
     lb: usize,
     ng: usize,
 ) {
-    let n = common.len();
     let ncb = cb.len();
     let (fx, fy, fz) = (&fbuf[0], &fbuf[1], &fbuf[2]);
     for (u, ac) in ca.iter().enumerate() {
         for (v, bcmp) in cb.iter().enumerate() {
-            let ix = (ac[0] as usize * (lb + 1) + bcmp[0] as usize) * ng;
-            let iy = (ac[1] as usize * (lb + 1) + bcmp[1] as usize) * ng;
-            let iz = (ac[2] as usize * (lb + 1) + bcmp[2] as usize) * ng;
+            let [ix, iy, iz] = f_row_offsets(ac, bcmp, lb, ng);
             let dst = &mut cart[(u * ncb + v) * ng..(u * ncb + v) * ng + n];
-            for ((((d, c), x), y), z) in dst
+            for (((d, x), y), z) in dst
                 .iter_mut()
-                .zip(common)
                 .zip(&fx[ix..ix + n])
                 .zip(&fy[iy..iy + n])
                 .zip(&fz[iz..iz + n])
             {
-                *d += *c * *x * *y * *z;
+                *d += (*x * *y * *z) * cc;
             }
+        }
+    }
+}
+
+/// V6, several entries at the site: the shared Cartesian products
+/// `prod[(u, v)][g] = (X′ · Fy) · Fz` for `g < n` (the site's largest
+/// window), each entry then adding `prod · cc` over its own window.
+#[allow(clippy::too_many_arguments)]
+fn site_products(
+    prod: &mut Vec<Complex64>,
+    n: usize,
+    fbuf: &[Vec<Complex64>; 3],
+    ca: &[[u8; 3]],
+    cb: &[[u8; 3]],
+    lb: usize,
+    ng: usize,
+) {
+    let ncb = cb.len();
+    prod.resize(ca.len() * ncb * ng, Complex64::new(0.0, 0.0));
+    let (fx, fy, fz) = (&fbuf[0], &fbuf[1], &fbuf[2]);
+    for (u, ac) in ca.iter().enumerate() {
+        for (v, bcmp) in cb.iter().enumerate() {
+            let [ix, iy, iz] = f_row_offsets(ac, bcmp, lb, ng);
+            let dst = &mut prod[(u * ncb + v) * ng..(u * ncb + v) * ng + n];
+            for (((d, x), y), z) in dst
+                .iter_mut()
+                .zip(&fx[ix..ix + n])
+                .zip(&fy[iy..iy + n])
+                .zip(&fz[iz..iz + n])
+            {
+                *d = *x * *y * *z;
+            }
+        }
+    }
+}
+
+/// `cart[c][g] += prod[c][g] · cc` for the `nc` Cartesian rows, `g < n`.
+fn add_scaled(cart: &mut [Complex64], prod: &[Complex64], cc: f64, n: usize, nc: usize, ng: usize) {
+    for c in 0..nc {
+        let (dst, src) = (&mut cart[c * ng..c * ng + n], &prod[c * ng..c * ng + n]);
+        for (d, &s) in dst.iter_mut().zip(src) {
+            *d += s * cc;
         }
     }
 }
@@ -1140,6 +1462,9 @@ struct WindowTally {
     pairs: u64,
     partial: u64,
     empty: u64,
+    /// Sites evaluated with the image-split / direct phase.
+    split_sites: u64,
+    direct_sites: u64,
 }
 
 impl WindowTally {
@@ -1154,34 +1479,47 @@ impl WindowTally {
 }
 
 /// Per-worker scratch of [`PairFtPlan::group_pair_block`], reused across
-/// group pairs and tasks (never read stale: `cs`/`sn`, `common` and the F
-/// rows are written for `g <` the window before being read there,
-/// `e_table` zeroes its range, the Cartesian accumulators restart from
-/// +0.0 on `0..n_used` (as the serial kernel's fresh `vec![zero; ..]`) and
-/// nothing reads them beyond it).
+/// group pairs and tasks (never read stale: the unit row `common`, the
+/// image indices `kbuf`, the F rows and the products `prod` are written for
+/// `g <` the site's window before being read there, the home row for
+/// `g < home_len` of the CURRENT `home_key` (reset per group pair and per
+/// primitive pair), `e_table` zeroes its range, the Cartesian accumulators
+/// restart from +0.0 on `0..n_used` (as the serial kernel's fresh
+/// `vec![zero; ..]`) and nothing reads them beyond it).
 #[derive(Default)]
 struct PairScratch {
+    /// The site's unit factor `e^{−G²/4p} e^{−iG·P_c}`.
     common: Vec<Complex64>,
-    cs: Vec<f64>,
-    sn: Vec<f64>,
     ngp: Vec<usize>,
     n_used: Vec<usize>,
     ebuf: [Vec<f64>; 3],
     fbuf: [Vec<Complex64>; 3],
     cart: Vec<Vec<Complex64>>,
     tmp: Vec<Complex64>,
+    /// `e^{−iG·P0}` of primitive pair `home_key` on `0..home_len`.
+    home: Vec<Complex64>,
+    home_key: Option<(u16, u16)>,
+    home_len: usize,
+    /// `k = m·n` per G of the site.
+    kbuf: Vec<i64>,
+    /// Image factor per `k` in the site's k range.
+    ttab: Vec<Complex64>,
+    /// Shared Cartesian products of a site with several live entries.
+    prod: Vec<Complex64>,
 }
 
 impl PairScratch {
     /// Size the buffers for a group pair of `sa`-like and `sb`-like shells
-    /// with `n_used.len()` members, and zero each member's accumulators on
-    /// its `0..n_used`.
+    /// with `n_used.len()` members, zero each member's accumulators on its
+    /// `0..n_used`, and invalidate the home row.
     fn prepare(&mut self, sa: &FtShell, sb: &FtShell, nr: usize, ng: usize) {
         let zero = Complex64::new(0.0, 0.0);
         let (st, nij) = (sa.l + sb.l + 1, (sa.l + 1) * (sb.l + 1));
         self.common.resize(ng, zero);
-        self.cs.resize(ng, 0.0);
-        self.sn.resize(ng, 0.0);
+        self.home.resize(ng, zero);
+        self.kbuf.resize(ng, 0);
+        self.home_key = None;
+        self.home_len = 0;
         for d in 0..3 {
             self.ebuf[d].resize(nij * st, 0.0);
             self.fbuf[d].resize(nij * ng, zero);
@@ -1235,10 +1573,21 @@ struct ChunkG {
     /// `etab[slot * ng + g] = (−|G_g|² / (4 p_slot)).exp()` for `g` inside
     /// the slot's largest window (never read beyond it).
     etab: Vec<f64>,
+    /// Integer Miller index `m` of each sorted G under the plan's
+    /// [`PhaseSplit`]; `None` (direct phase) without one, or if some G of
+    /// this chunk does not decompose (only possible for a G list other than
+    /// the one the plan was built for).
+    miller: Option<Vec<[i64; 3]>>,
 }
 
 impl ChunkG {
-    fn new(gvecs: &[[f64; 3]], lmax: usize, slot_p: &[f64], slot_g2max: &[f64]) -> Self {
+    fn new(
+        gvecs: &[[f64; 3]],
+        lmax: usize,
+        slot_p: &[f64],
+        slot_g2max: &[f64],
+        split: Option<&PhaseSplit>,
+    ) -> Self {
         let ng = gvecs.len();
         let mut order: Vec<usize> = (0..ng).collect();
         order.sort_by(|&x, &y| norm2(&gvecs[x]).total_cmp(&norm2(&gvecs[y])));
@@ -1271,6 +1620,7 @@ impl ChunkG {
                     }
                 });
         }
+        let miller = split.and_then(|sp| gsorted.iter().map(|g| sp.miller(g)).collect());
         Self {
             ng,
             order,
@@ -1278,12 +1628,13 @@ impl ChunkG {
             g2,
             pw,
             etab,
+            miller,
         }
     }
 }
 
 /// Smallest `|G|²` of a G set (the serial kernels' expression); `+∞` for an
 /// empty set.
-pub(crate) fn min_gnorm2(gvecs: &[[f64; 3]]) -> f64 {
+fn min_gnorm2(gvecs: &[[f64; 3]]) -> f64 {
     gvecs.iter().map(norm2).fold(f64::INFINITY, f64::min)
 }

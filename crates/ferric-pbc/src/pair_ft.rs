@@ -79,8 +79,11 @@ mod plan;
 /// Stage 3: residue-resolved (k-mesh) variant of the kernel below.
 pub mod residues;
 
-use plan::{min_gnorm2, recycle, PairFtPlan};
-pub use plan::{CTR_EMPTY_WINDOW, CTR_LARGEST_GROUP, CTR_PARTIAL_WINDOW, CTR_SITES, CTR_SURVIVORS};
+use plan::{recycle, PairFtPlan};
+pub use plan::{
+    CTR_EMPTY_WINDOW, CTR_LARGEST_GROUP, CTR_PARTIAL_WINDOW, CTR_PHASE_DIRECT_SITES,
+    CTR_PHASE_SPLIT_SITES, CTR_SITES, CTR_SURVIVORS,
+};
 
 /// Default primitive-pair screening threshold for [`pair_ft`].
 pub const DEFAULT_PAIR_FT_THRESH: f64 = 1e-15;
@@ -280,15 +283,7 @@ fn gamma_plan(
     gvecs: &[[f64; 3]],
     thresh: f64,
 ) -> Result<PairFtPlan, FerricError> {
-    PairFtPlan::new(
-        cell,
-        prep,
-        thresh,
-        max_gnorm(gvecs),
-        min_gnorm2(gvecs),
-        None,
-        "pair_ft",
-    )
+    PairFtPlan::new(cell, prep, thresh, gvecs, None, "pair_ft")
 }
 
 /// The single `P` of a Gamma (one-bucket) plan block.
@@ -304,16 +299,18 @@ fn take_one(mut v: Vec<Array3<Complex64>>) -> Array3<Complex64> {
 /// number of chunks.
 ///
 /// Chunking does not change a single bit of `P`: the per-primitive-pair G
-/// window uses `max |G|` over ALL of `gvecs` (not the chunk's), and every G
-/// column is computed independently, so the chunks concatenate to exactly
+/// window uses `max |G|` over ALL of `gvecs` (not the chunk's), the phase
+/// split is decided on ALL of `gvecs`, and every G column is computed
+/// independently, so the chunks concatenate to exactly
 /// `pair_ft_with_thresh(cell, prep, gvecs, thresh)`.
 ///
 /// The primitive-pair screen is walked ONCE per call (not once per chunk)
-/// and each chunk is evaluated in parallel over shell pairs; every element
-/// keeps the serial kernel's addend sequence, so the output is bit for bit
-/// the frozen serial kernel's ([`pair_ft_chunked_serial_oracle`]) at any
-/// thread count (the `plan` module doc). The `sink` runs serially, in
-/// chunk order.
+/// and each chunk is evaluated in parallel over shell-group pairs, with the
+/// image-split phase when `gvecs` are reciprocal-lattice points plus one
+/// common offset (the `plan` module doc). The output is bit for bit the
+/// same at any thread count, and agrees with the frozen serial kernel
+/// ([`pair_ft_chunked_serial_oracle`]) to round-off (the `plan` module
+/// doc's derived bound). The `sink` runs serially, in chunk order.
 pub fn pair_ft_chunked<F>(
     cell: &Cell,
     prep: &PreparedBasis,
@@ -390,7 +387,8 @@ where
 /// TEST ORACLE: [`pair_ft_chunked`] on the FROZEN pre-parallel serial kernel
 /// (`pair_ft_block`, which re-walks the whole primitive-pair screen for every
 /// chunk). Same arguments, same chunking, same sink contract; it must agree
-/// with [`pair_ft_chunked`] BIT FOR BIT (`tests/pbc_parallel_bitwise.rs`).
+/// with [`pair_ft_chunked`] within the derived round-off tolerance of
+/// `tests/pbc_parallel_bitwise.rs` (the `plan` module doc).
 #[doc(hidden)]
 pub fn pair_ft_chunked_serial_oracle<F>(
     cell: &Cell,

@@ -104,7 +104,8 @@ use ferric_pbc::pair_ft::residues::{
 };
 use ferric_pbc::pair_ft::{
     pair_ft_bytes_per_g, pair_ft_chunked_serial_oracle, pair_ft_chunked_timed, pair_ft_with_thresh,
-    CTR_LARGEST_GROUP, CTR_PARTIAL_WINDOW, CTR_SITES, CTR_SURVIVORS, DEFAULT_PAIR_FT_THRESH,
+    CTR_LARGEST_GROUP, CTR_PARTIAL_WINDOW, CTR_PHASE_DIRECT_SITES, CTR_PHASE_SPLIT_SITES,
+    CTR_SITES, CTR_SURVIVORS, DEFAULT_PAIR_FT_THRESH,
 };
 use ferric_pbc::rsgdf::kpoint::{
     sr_bins_parallel_and_serial, sr_sums_gamma_and_single_bin, KRsGdf, KRsGdfConfig, SrBinsParts,
@@ -1106,52 +1107,66 @@ fn ecp_force_term_is_bitwise_across_threads_and_vs_serial_loop() {
 
 // ---------------------------------------------------------------------------
 // LR pair FT: survivor-cached, shell-pair-parallel kernel (FINDINGS
-// "Performance plan (research) — 2026-09-25" §5, "Pair-FT re-walk").
+// "Performance plan (research) — 2026-09-25" §5, "Pair-FT re-walk"), with
+// the image-split phase (V2) and the per-site premultiplied F rows (V6).
 //
 // Construction under test: the primitive-pair screen is walked ONCE per
-// call and cached per shell pair in walk order; every G chunk then runs in
-// parallel over SHELL PAIRS, each task owning its pair's row segments of P,
-// written into output buffers REUSED (not re-zeroed) across chunks. Every
-// element keeps the serial addend sequence, so production must equal the FROZEN
-// pre-parallel kernels (`*_serial_oracle`, which re-walk the screen per
-// chunk) BIT FOR BIT, at every thread count and with SEVERAL G chunks. What
+// call and cached per shell-group pair; every G chunk then runs in
+// parallel over TASKS, each owning its pairs' row segments of P, written
+// into output buffers REUSED (not re-zeroed) across chunks. Every element
+// is a fixed function of (G, site list, term order), so production is BIT
+// FOR BIT the same at 1/2/6 threads and chunked vs unchunked. It is NOT bit
+// for bit the FROZEN pre-parallel kernels (`*_serial_oracle`, which re-walk
+// the screen per chunk and evaluate e^{−iG·P_c} directly): it must agree
+// with them elementwise within PAIR_FT_ORACLE_TOL (derivation there). What
 // each test guards:
 //
-// * `pair_ft_kernels_are_bitwise_vs_frozen_serial_kernels_across_threads` —
-//   the Gamma and the residue-binned kernels, s + Cartesian p + PURE d
-//   (the cart→sph path), an unsorted G list with G = 0 (the |G| sort and
-//   the scatter back), ≥ 3 chunks. A survivor list out of walk order, a
-//   window evaluated per chunk instead of over the whole set, a dropped
-//   survivor that reached some G, a bucket mix-up, a pair-task race or a
-//   missed write into a reused buffer (the chunks shrink from 7 G to 6 G, so
-//   the last reuses a longer buffer's stale values) each break it. Its G
-//   list ends (|G| <= 5.3) far inside every pair's window, so it never
-//   takes the partial-window path (`0 < n_used < n_G`).
-// * `pair_ft_kernels_are_bitwise_vs_frozen_serial_kernels_in_partial_windows`
+// * `pair_ft_kernels_match_frozen_serial_kernels_across_threads` — the
+//   Gamma and the residue-binned kernels, s + Cartesian p + PURE d (the
+//   cart→sph path), an unsorted G list with G = 0 (the |G| sort and the
+//   scatter back), ≥ 3 chunks, on the IMAGE-SPLIT phase path (lattice G;
+//   K = G + q with a common offset q), asserted via
+//   `pair FT phase-split sites` > 0 and no direct-phase site. A survivor
+//   list out of order, a window evaluated per chunk instead of over the
+//   whole set, a dropped survivor that reached some G, a bucket mix-up, a
+//   wrong image factor (sign, b/p, Miller index, the q offset), a pair-task
+//   race or a missed write into a reused buffer (the chunks shrink from 7 G
+//   to 6 G, so the last reuses a longer buffer's stale values) each break
+//   it. Its G list ends (|G| <= 5.3) far inside every pair's window, so it
+//   never takes the partial-window path (`0 < n_used < n_G`).
+// * `pair_ft_kernels_match_frozen_serial_kernels_in_partial_windows`
 //   — the same comparison on the same G directions scaled ×6 (|G| <= 31.6 /
-//   35.4), where the p/d pairs' windows (|G| ≈ 17.5–20.8) and the s–p/d ones
-//   (≈ 27.3–29.5) end INSIDE most chunks while the s–s ones (≈ 32–33.4)
-//   stay full; asserts via `pair FT partial-window pair-chunks` that both
-//   kernels really took that path. A nonzero written beyond a partial window
-//   (the oracle has +0.0 there) breaks it. Both spd tests also assert that
-//   every shell group is one shell (sites == survivors): they never share a
-//   site.
-// * `pair_ft_kernels_are_bitwise_vs_frozen_serial_kernels_with_general_contraction`
+//   35.4; still lattice points, Miller indices ×6, offset 6q), where the
+//   p/d pairs' windows (|G| ≈ 17.5–20.8) and the s–p/d ones (≈ 27.3–29.5)
+//   end INSIDE most chunks while the s–s ones (≈ 32–33.4) stay full;
+//   asserts via `pair FT partial-window pair-chunks` that both kernels
+//   really took that path. A nonzero written beyond a partial window (the
+//   oracle has +0.0 there) breaks it. Both spd tests also assert that every
+//   shell group is one shell (sites == survivors): they never share a site.
+// * `pair_ft_kernels_match_frozen_serial_kernels_on_the_direct_phase` — the
+//   G directions scaled ×1.5: NOT reciprocal-lattice points plus one offset
+//   (half-integer Miller indices on odd rows), so the kernel must detect it
+//   and take the DIRECT phase for every site (`pair FT direct-phase sites`
+//   > 0, no split site). A detection that accepted this list (rounding the
+//   Miller indices) moves elements by 0.31 (split_tolerance.py, M5).
+// * `pair_ft_kernels_match_frozen_serial_kernels_with_general_contraction`
 //   — the same comparison (G ×6, partial windows) on a GENERALLY CONTRACTED
 //   basis: three s columns on one exponent set (one with zero coefficients,
 //   as cc-pVDZ's third s) and two p columns on another, so the production
-//   kernel groups shells, shares each site's trig/E/F values between the
-//   member shell pairs (whose coefficients, screens and windows differ) and
-//   runs tasks over multi-shell bra groups. Asserts survivors > sites and a
-//   group of 3 shells for both kernels. A site value taken from the wrong
-//   member, an entry accumulated past its OWN window (the site's is larger),
-//   a member mapped to the wrong accumulator or AO rows/columns, or a wrong
-//   exp-table slot each break it.
-// * `rsgdf_lr_sums_are_bitwise_vs_frozen_serial_across_threads` — the whole
+//   kernel groups shells, shares each site's phase/E/F values and the V6
+//   products between the member shell pairs (whose coefficients, screens
+//   and windows differ) and runs tasks over multi-shell bra groups. Asserts
+//   survivors > sites and a group of 3 shells for both kernels. A site
+//   value taken from the wrong member, an entry accumulated past its OWN
+//   window (the site's is larger), a member mapped to the wrong accumulator
+//   or AO rows/columns, or a wrong exp-table slot each break it.
+// * `rsgdf_lr_sums_match_frozen_serial_across_threads` — the whole
 //   RS-GDF LR stage (pair FT + aux FT + reused-buffer packing + the
 //   row-blocked parallel J3 GEMMs, both terms per block, beside the J2
 //   GEMMs) against the FROZEN serial stage at the SAME G chunks, with and
-//   without the range split (moved-aux and smooth-pair LR passes).
+//   without the range split (moved-aux and smooth-pair LR passes): J2 (aux
+//   only) bit for bit, J3 within LR_J3_REL_TOL, and both bit for bit across
+//   threads.
 // * `rsgdf_b_and_energy_are_bitwise_across_threads_with_several_lr_chunks` —
 //   `RsGdf::build` under a budget that forces ≥ 3 LR chunks: J2 (via the fit
 //   parts), B and the RHF energy at 1/2/6 threads, with and without split.
@@ -1242,6 +1257,56 @@ fn c3bit_diffs(a: &Array3<Complex64>, b: &Array3<Complex64>) -> usize {
 /// Chunks of one chunked call: `(g0, [P_r])` in sink order.
 type Chunks = Vec<(usize, Vec<Array3<Complex64>>)>;
 
+/// Elementwise production-vs-FROZEN-oracle tolerance of the pair FT
+/// (absolute; the test elements are O(1), max |P| = 2.44). DERIVED by an
+/// operation-for-operation f64 replay of both kernels on exactly these
+/// cells, bases and G lists (`prototypes/pbc/pair_ft_kernel/
+/// split_tolerance.py`):
+///
+/// * CORRECT side: `Σ_terms |term| (|ΔU| + 8ε) ≤ 4.9e-15` per Cartesian
+///   element (phase rounding of the split vs direct phase plus V6's
+///   re-association; the realised coherent phase change is ≤ 4.2e-16), and
+///   the WORST-CASE bound of the re-ordered sum `(n − 1) ε Σ|terms| ≤
+///   6.4e-13` (≤ 1045 terms per element); ×4 for the pure-d transform on
+///   both sides: ≤ 2.6e-12.
+/// * MUTANT side (coherent element change, the smallest over the cases):
+///   image factor conjugated 3.3e-4, `b/p` dropped 2.3e-4, `a/p` for `b/p`
+///   3.3e-4, Miller index `m_0 + 1` 1.7e-2 (0.86 on the Gamma lists), the
+///   split forced on the ×1.5 list 0.31.
+///
+/// 1e-11 sits ≥ 3.8× above the (pessimistic) correct bound and ≥ 2e7×
+/// below every mutant.
+const PAIR_FT_ORACLE_TOL: f64 = 1e-11;
+
+/// `max_{r,m,n,g} max(|Δre|, |Δim|)` over two chunked calls, asserting the
+/// same chunking and every difference finite.
+fn chunks_max_diff(a: &Chunks, b: &Chunks, what: &str) -> f64 {
+    assert_eq!(a.len(), b.len(), "{what}: chunk counts");
+    let mut worst = 0.0_f64;
+    for ((g0a, pa), (g0b, pb)) in a.iter().zip(b) {
+        assert_eq!(g0a, g0b, "{what}: chunk offsets");
+        assert_eq!(pa.len(), pb.len(), "{what}: bucket counts");
+        for (x, y) in pa.iter().zip(pb) {
+            assert_eq!(x.dim(), y.dim(), "{what}: chunk shapes");
+            for (u, v) in x.iter().zip(y.iter()) {
+                let d = (u.re - v.re).abs().max((u.im - v.im).abs());
+                assert!(d.is_finite(), "{what}: non-finite difference {u} vs {v}");
+                worst = worst.max(d);
+            }
+        }
+    }
+    worst
+}
+
+fn assert_chunks_close(a: &Chunks, b: &Chunks, what: &str) {
+    let d = chunks_max_diff(a, b, what);
+    assert!(
+        d <= PAIR_FT_ORACLE_TOL,
+        "{what}: max |production − oracle| = {d:.3e} > {PAIR_FT_ORACLE_TOL:.0e}"
+    );
+    eprintln!("{what}: max |production − oracle| = {d:.3e}");
+}
+
 fn assert_chunks_bitwise(a: &Chunks, b: &Chunks, what: &str) {
     assert_eq!(a.len(), b.len(), "{what}: chunk counts");
     for ((g0a, pa), (g0b, pb)) in a.iter().zip(b) {
@@ -1266,12 +1331,13 @@ fn scaled(v: Vec<[f64; 3]>, s: f64) -> Vec<[f64; 3]> {
         .collect()
 }
 
-/// Production chunked pair FT (Gamma and residue kernels) vs the FROZEN
-/// serial oracles, bit for bit at 1/2/6 threads, on `scrambled_gvecs` scaled
-/// by `g_scale`, in basis `bs`. Returns the production runs' timings
-/// (Gamma, residue) at 1 thread; their [`CTR_PARTIAL_WINDOW`] count is
-/// asserted equal at every thread count.
-fn pair_ft_bitwise_case(bs: &BasisSet, g_scale: f64) -> (PbcTimings, PbcTimings) {
+/// Production chunked pair FT (Gamma and residue kernels): bit for bit at
+/// 1/2/6 threads (and the unchunked entry point), and within
+/// [`PAIR_FT_ORACLE_TOL`] of the FROZEN serial oracles, on `scrambled_gvecs`
+/// scaled by `g_scale`, in basis `bs`. Returns the production runs' timings
+/// (Gamma, residue) at 1 thread; their [`CTR_PARTIAL_WINDOW`] and phase-path
+/// counts are asserted equal at every thread count.
+fn pair_ft_case(bs: &BasisSet, g_scale: f64) -> (PbcTimings, PbcTimings) {
     let cell = triclinic_cell();
     let prep = prep_for(&cell, bs);
     assert_split_binds(&prep);
@@ -1309,22 +1375,26 @@ fn pair_ft_bitwise_case(bs: &BasisSet, g_scale: f64) -> (PbcTimings, PbcTimings)
     );
     let mut partial_gamma = Vec::new();
     let mut t_gamma = None;
+    let mut prod_gamma: Option<Chunks> = None;
     for &nt in &THREADS {
         let (par, t) = in_pool(nt, || gamma(false));
-        assert_chunks_bitwise(
-            &par,
-            &oracle,
-            &format!("Gamma pair FT at {nt} threads vs serial"),
-        );
-        partial_gamma.push(t.counter(CTR_PARTIAL_WINDOW).expect("window counter"));
+        match &prod_gamma {
+            None => assert_chunks_close(&par, &oracle, "Gamma pair FT vs frozen serial"),
+            Some(p1) => {
+                assert_chunks_bitwise(&par, p1, &format!("Gamma pair FT at {nt} vs 1 thread"))
+            }
+        }
+        partial_gamma.push(counts(&t));
         t_gamma.get_or_insert(t);
+        prod_gamma.get_or_insert(par);
     }
+    let prod_gamma = prod_gamma.expect("a Gamma run");
     // The unchunked entry point is the same kernel over one chunk.
     let whole = in_pool(6, || {
         pair_ft_with_thresh(&cell, &prep, &gv, thresh).unwrap()
     });
     let mut g = 0usize;
-    for (g0, p) in &oracle {
+    for (g0, p) in &prod_gamma {
         assert_eq!(*g0, g);
         let ng = p[0].dim().2;
         let slice = whole.slice(ndarray::s![.., .., g..g + ng]).to_owned();
@@ -1376,27 +1446,55 @@ fn pair_ft_bitwise_case(bs: &BasisSet, g_scale: f64) -> (PbcTimings, PbcTimings)
     );
     let mut partial_resid = Vec::new();
     let mut t_resid = None;
+    let mut prod_resid: Option<Chunks> = None;
     for &nt in &THREADS {
         let (par, t) = in_pool(nt, || resid(false));
-        assert_chunks_bitwise(
-            &par,
-            &roracle,
-            &format!("residue pair FT at {nt} threads vs serial"),
-        );
-        partial_resid.push(t.counter(CTR_PARTIAL_WINDOW).expect("window counter"));
+        match &prod_resid {
+            None => assert_chunks_close(&par, &roracle, "residue pair FT vs frozen serial"),
+            Some(p1) => {
+                assert_chunks_bitwise(&par, p1, &format!("residue pair FT at {nt} vs 1 thread"))
+            }
+        }
+        partial_resid.push(counts(&t));
         t_resid.get_or_insert(t);
+        prod_resid.get_or_insert(par);
     }
-    // The window of a (pair, chunk) does not depend on the thread count.
+    // The window of a (pair, chunk) and the phase path of a site do not
+    // depend on the thread count.
     for (what, v) in [("Gamma", &partial_gamma), ("residue", &partial_resid)] {
         assert!(
             v.iter().all(|&x| x == v[0]),
-            "{what}: partial-window counts differ across threads: {v:?}"
+            "{what}: (partial-window, split, direct) counts differ across threads: {v:?}"
         );
     }
     (
         t_gamma.expect("a Gamma run"),
         t_resid.expect("a residue run"),
     )
+}
+
+/// `(partial windows, phase-split sites, direct-phase sites)` of a
+/// production run.
+fn counts(t: &PbcTimings) -> (u64, u64, u64) {
+    (
+        t.counter(CTR_PARTIAL_WINDOW).expect("window counter"),
+        t.counter(CTR_PHASE_SPLIT_SITES).expect("split counter"),
+        t.counter(CTR_PHASE_DIRECT_SITES).expect("direct counter"),
+    )
+}
+
+/// Every site of both kernels took the image-split phase (`split`) or the
+/// direct phase (`!split`), and at least one site was evaluated.
+fn assert_phase_path(g: &PbcTimings, r: &PbcTimings, split: bool) {
+    for (what, t) in [("Gamma", g), ("residue", r)] {
+        let (_, ns, nd) = counts(t);
+        let (reached, other) = if split { (ns, nd) } else { (nd, ns) };
+        assert!(
+            reached > 0 && other == 0,
+            "{what}: {ns} phase-split and {nd} direct-phase sites; expected only {}",
+            if split { "split" } else { "direct" }
+        );
+    }
 }
 
 /// `(survivors, sites, largest shell group)` of a production run.
@@ -1418,16 +1516,32 @@ fn assert_no_sharing(t: &PbcTimings, what: &str) {
 }
 
 #[test]
-fn pair_ft_kernels_are_bitwise_vs_frozen_serial_kernels_across_threads() {
-    let (g, r) = pair_ft_bitwise_case(&spd_basis_h(), 1.0);
+fn pair_ft_kernels_match_frozen_serial_kernels_across_threads() {
+    let (g, r) = pair_ft_case(&spd_basis_h(), 1.0);
     assert_no_sharing(&g, "Gamma");
     assert_no_sharing(&r, "residue");
+    assert_phase_path(&g, &r, true);
+}
+
+/// G scale of the direct-phase test: `1.5 Σ m_i b_i` has half-integer
+/// Miller indices on odd rows (and `1.5 (G + q)` no common offset), so the
+/// image split does not apply (Miller residual 6.4e14 of the acceptance
+/// unit, `split_tolerance.py`).
+const DIRECT_PHASE_G_SCALE: f64 = 1.5;
+
+/// The comparison on a G list that is NOT reciprocal-lattice points plus
+/// one offset: the kernel must detect it and evaluate every site with the
+/// direct phase `e^{−iG·P_c}` (`plan.rs` module doc, "Phase").
+#[test]
+fn pair_ft_kernels_match_frozen_serial_kernels_on_the_direct_phase() {
+    let (g, r) = pair_ft_case(&spd_basis_h(), DIRECT_PHASE_G_SCALE);
+    assert_phase_path(&g, &r, false);
 }
 
 /// G scale of the partial-window test (see below).
 const PARTIAL_WINDOW_G_SCALE: f64 = 6.0;
 
-/// The same bitwise comparison where the per-pair G window ends INSIDE the
+/// The same comparison where the per-pair G window ends INSIDE the
 /// chunks, so production accumulates `0..n_used` and writes `+0.0` beyond it
 /// (`plan.rs` module doc) — the path the unscaled test never takes.
 ///
@@ -1451,10 +1565,12 @@ const PARTIAL_WINDOW_G_SCALE: f64 = 6.0;
 /// (Gamma) and 1960 (residue) partial pair-chunks; the test only requires
 /// > 0 for each kernel.
 #[test]
-fn pair_ft_kernels_are_bitwise_vs_frozen_serial_kernels_in_partial_windows() {
-    let (g, r) = pair_ft_bitwise_case(&spd_basis_h(), PARTIAL_WINDOW_G_SCALE);
+fn pair_ft_kernels_match_frozen_serial_kernels_in_partial_windows() {
+    let (g, r) = pair_ft_case(&spd_basis_h(), PARTIAL_WINDOW_G_SCALE);
     assert_no_sharing(&g, "Gamma");
     assert_no_sharing(&r, "residue");
+    // ×6 keeps lattice points (Miller ×6, offset 6q): still the split.
+    assert_phase_path(&g, &r, true);
     let partial = |t: &PbcTimings| t.counter(CTR_PARTIAL_WINDOW).expect("window counter");
     let (gamma, resid) = (partial(&g), partial(&r));
     assert!(
@@ -1467,14 +1583,15 @@ fn pair_ft_kernels_are_bitwise_vs_frozen_serial_kernels_in_partial_windows() {
     );
 }
 
-/// The bitwise comparison on the generally contracted [`gc_basis_h`] with
+/// The comparison on the generally contracted [`gc_basis_h`] with
 /// the partial-window G scale: the production kernel's shared-site path
 /// (shell groups of 3 s and 2 p columns; entries of one site with different
 /// coefficients and windows, some of them zero; multi-shell bra-group tasks),
 /// which the spd tests never reach (they assert sites == survivors).
 #[test]
-fn pair_ft_kernels_are_bitwise_vs_frozen_serial_kernels_with_general_contraction() {
-    let (g, r) = pair_ft_bitwise_case(&gc_basis_h(), PARTIAL_WINDOW_G_SCALE);
+fn pair_ft_kernels_match_frozen_serial_kernels_with_general_contraction() {
+    let (g, r) = pair_ft_case(&gc_basis_h(), PARTIAL_WINDOW_G_SCALE);
+    assert_phase_path(&g, &r, true);
     for (what, t) in [("Gamma", &g), ("residue", &r)] {
         let (surv, sites, largest) = sharing(t);
         assert!(
@@ -1505,8 +1622,22 @@ fn lr_per_g_bound(prep: &PreparedBasis, aux: &PreparedBasis, lmax: usize) -> usi
     pair_ft_bytes_per_g(n, lmax) + 16 * n * n + 112 * aux.nbasis() + 64
 }
 
+/// Production-vs-FROZEN-oracle tolerance of `J3_LR`, relative to
+/// `max |J3_LR|`. `J3_LR[mn, P] = Σ_G w(G) Re P_mn(G) A_P(G)*` (positive LR
+/// Coulomb weights), so `|ΔJ3| ≤ max|ΔP| Σ_G w |A_P|`: with the pair FT's
+/// elementwise bound (PAIR_FT_ORACLE_TOL's derivation: ≤ 2.6e-12 absolute
+/// against max |P| 1.45 on this cell and basis, i.e. 1.8e-12 relative) the
+/// relative change of J3 exceeds 1e-10 only if the G sum cancels by more
+/// than 50× (`Σ_G w |P| |A| > 50 |J3|`). The phase mutants move image-
+/// dependent P elements by 0.2–0.6 of max |P| at |G| ≤ 5.3 on this cell
+/// (`split_tolerance.py` ×1 rows), i.e. J3 by O(1e-1) relative unless the
+/// same 50×-plus cancellation hides them. Order-of-magnitude derived (the
+/// aux side is not replayed); the elementwise pair-FT tests above carry the
+/// tight bound.
+const LR_J3_REL_TOL: f64 = 1e-10;
+
 #[test]
-fn rsgdf_lr_sums_are_bitwise_vs_frozen_serial_across_threads() {
+fn rsgdf_lr_sums_match_frozen_serial_across_threads() {
     // The triclinic cell of `pbc_rsgdf_split.rs` (the split moves the
     // STO-3G 0.169 primitive and 8/24 aux shells there) with a pure d added:
     // nao = 36, so J3 has 1296 rows and the row-blocked LR GEMM
@@ -1534,16 +1665,24 @@ fn rsgdf_lr_sums_are_bitwise_vs_frozen_serial_across_threads() {
                 })
             })
             .collect();
-        let [_, (j2s, j3s, cs)] = &runs[0];
+        let [(_, j3p1, _), (j2s, j3s, cs)] = &runs[0];
         assert!(*cs >= 4, "{tag}: only {cs} LR chunk(s)");
         assert!(nonzero(j2s) && nonzero(j3s), "{tag}: vacuous LR sums");
+        let j3max = j3s.iter().fold(0.0_f64, |m, x| m.max(x.abs()));
+        let d = max_abs_diff(j3p1, j3s);
+        eprintln!("{tag}: max |J3_LR production − oracle| = {d:.3e} (max |J3| {j3max:.3e})");
+        assert!(
+            d <= LR_J3_REL_TOL * j3max,
+            "{tag}: J3_LR production vs frozen serial differ by {d:.3e} > {LR_J3_REL_TOL:.0e} × {j3max:.3e}"
+        );
         for (&nt, [(j2p, j3p, cp), (j2o, j3o, co)]) in THREADS.iter().zip(&runs) {
             assert_eq!((cp, co), (cs, cs), "{tag}: chunk counts at {nt} threads");
             assert_bitwise(
                 j3p,
-                j3o,
-                &format!("{tag}: J3_LR parallel vs serial ({nt} threads)"),
+                j3p1,
+                &format!("{tag}: production J3_LR at {nt} vs 1 thread"),
             );
+            // J2_LR is aux × aux: no pair FT in it, still bit for bit.
             assert_bitwise(
                 j2p,
                 j2o,

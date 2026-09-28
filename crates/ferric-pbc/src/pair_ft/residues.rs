@@ -20,7 +20,7 @@
 //! same Cartesian→AO transform), kept separate so the Gamma kernel stays
 //! byte-identical.
 
-use super::plan::{min_gnorm2, recycle, PairFtPlan, SUB_PLAN};
+use super::plan::{recycle, PairFtPlan, SUB_PLAN};
 use super::{
     basis_lmax, build_shells, max_gnorm, pair_ft_bytes_per_g, validate_inputs, WINDOW_MARGIN,
 };
@@ -62,9 +62,11 @@ pub fn residue_coords(r: usize, moduli: [usize; 3]) -> [i64; 3] {
 /// chunking does not change a bit (as [`super::pair_ft_chunked`]).
 ///
 /// Like [`super::pair_ft_chunked`], the screen is walked once per call and
-/// each chunk runs in parallel over shell pairs, bit for bit the FROZEN serial
-/// kernel ([`pair_ft_residues_chunked_serial_oracle`]) at any thread count;
-/// the `sink` runs serially in chunk order.
+/// each chunk runs in parallel over shell-group pairs (image-split phase
+/// when `kvecs` are `G + q` for one `q`), bit for bit the same at any thread
+/// count and within round-off of the FROZEN serial kernel
+/// ([`pair_ft_residues_chunked_serial_oracle`]; the `plan` module doc); the
+/// `sink` runs serially in chunk order.
 #[allow(clippy::too_many_arguments)]
 pub fn pair_ft_residues_chunked<F>(
     cell: &Cell,
@@ -135,15 +137,7 @@ where
     )?;
     let chunk = (chunk_budget_bytes / per_g).max(1);
     let clock = StageClock::start();
-    let plan = PairFtPlan::new(
-        cell,
-        prep,
-        thresh,
-        max_gnorm(kvecs),
-        min_gnorm2(kvecs),
-        Some(moduli),
-        "pair_ft_residues",
-    )?;
+    let plan = PairFtPlan::new(cell, prep, thresh, kvecs, Some(moduli), "pair_ft_residues")?;
     t.stop_sub(SUB_PLAN, &clock);
     plan.record_stats(t);
     let mut pool = Vec::new();
@@ -159,7 +153,8 @@ where
 
 /// TEST ORACLE: [`pair_ft_residues_chunked`] on the FROZEN pre-parallel
 /// serial kernel (`residue_block`). Same arguments, chunking and sink
-/// contract; it must agree BIT FOR BIT (`tests/pbc_parallel_bitwise.rs`).
+/// contract; it must agree within the derived round-off tolerance of
+/// `tests/pbc_parallel_bitwise.rs`.
 #[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
 pub fn pair_ft_residues_chunked_serial_oracle<F>(

@@ -1692,10 +1692,11 @@ pub type LrSums = (Array2<f64>, Array2<f64>, usize);
 /// TEST ORACLE for the LR stage of [`RsGdf::build`]: the LR (G ≠ 0)
 /// contributions for `cfg` (range split included, exactly the dispatch the
 /// build runs), accumulated from zero at an EXPLICIT `chunk_budget` (so a
-/// test can force several G chunks), as `[production, frozen serial]`. The
-/// two must agree BIT FOR BIT (`tests/pbc_parallel_bitwise.rs`): the proof
-/// that the survivor-cached, shell-pair-parallel pair FT and the parallel sink
-/// kept every J2/J3 element's summation sequence.
+/// test can force several G chunks), as `[production, frozen serial]`.
+/// J2 (aux only) must agree BIT FOR BIT and J3 within the derived round-off
+/// tolerance of the production pair FT (its image-split phase and
+/// premultiplied F rows are not the serial kernel's bits;
+/// `tests/pbc_parallel_bitwise.rs`, `pair_ft::plan` module doc).
 #[doc(hidden)]
 pub fn lr_sums_parallel_and_serial(
     cell: &Cell,
