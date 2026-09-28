@@ -63,7 +63,11 @@
 //!    fold onto cell atoms).
 //! 9. RS-GDF: `Σ Y dJ3/dε + Σ Wm dJ2/dε` with the forces' `Y`, `Wm` (Loewner
 //!    form) unchanged ([`crate::rsgdf`]'s `strain` module), and J3's G = 0
-//!    term through `dS` as the forces' `M_g0 = −c0′ Σ_P Y_P q_P`.
+//!    term through `dS` as the forces' `M_g0 = −c0′ Σ_P Y_P q_P`. A
+//!    range-split build (FINDINGS "Iteration 26") adds the SR kernel-weight
+//!    strain `dv_SR/dG² = −4π/G⁴ + v_LR(1/G² + 1/4ω²)`, the smooth-piece
+//!    pair-FT and piece aux-FT strains, `q_c` / `S − S_ss` in both G = 0
+//!    volume terms and the smooth-piece overlap virial (subtracted).
 //!
 //! # Rotational invariance
 //!
@@ -100,8 +104,8 @@ use crate::ewald::{
     default_ewald_omega, ewald_nuclear_strain, madelung_strain, DEFAULT_EWALD_PRECISION,
 };
 use crate::grad::{
-    check_inputs, madelung_for, refuse_ecp, ro_gate, spin_densities, unrestricted_focks, JkSource,
-    RsGdfGradSource, SpinSet, GRAD_NUCLEUS_EXPONENT,
+    check_inputs, fit_g0_charges, madelung_for, refuse_ecp, ro_gate, spin_densities,
+    unrestricted_focks, JkSource, RsGdfGradSource, SpinSet, GRAD_NUCLEUS_EXPONENT,
 };
 use crate::hcore::{
     gvector_list_bytes, half_gvectors, hcore_pair_images, lr_gcut, sr_attraction_strain,
@@ -110,9 +114,9 @@ use crate::hcore::{
 use crate::lattice::Cell;
 use crate::pair_ft::{pair_ft_strain_chunked, PairFtStrainTerms};
 use crate::rohf::GammaRoksConfig;
-use crate::rsgdf::deriv::fit_densities;
+use crate::rsgdf::deriv::{fit_densities, FitDensities};
 use crate::rsgdf::strain::{fit_strain, FitStrainTerms};
-use crate::rsgdf::{aux_ft, RsGdfFitDiagnostics};
+use crate::rsgdf::{split_g0, RsGdfFitDiagnostics, SplitG0};
 use ferric_core::FerricError;
 use ferric_dft::density_on_grid::{eval_density_closed, eval_density_uks};
 use ferric_dft::grid::GridPoint;
@@ -195,6 +199,20 @@ pub enum StressMutation {
     /// BIT-IDENTICAL either way (`tests/pbc_parallel_bitwise.rs`). Never list
     /// it as a must-fail mutant.
     SerialDerivWalks,
+    /// RS-GDF range split: omit the smooth-piece overlap virial `dS_ss/dε`
+    /// from the J3 G = 0 overlap term (`M_g0` with `q_c` on `dS` only).
+    /// DIAGONAL-only on a cubic cell (FINDINGS "Iteration 26": H2 off-
+    /// diagonal 7.3e-9) — check all nine components.
+    SplitNoSmoothOverlap,
+    /// RS-GDF range split: the unsplit G = 0 inputs `(q, S)` in the overlap
+    /// term AND both volume terms.
+    SplitFullG0,
+    /// RS-GDF range split: drop the SR kernel-weight strain `dv_SR/dε` of the
+    /// moved G-space blocks.
+    SplitNoSrKernelStrain,
+    /// RS-GDF range split: drop the smooth-pair `dP̄_ss` / `dX_c` strain
+    /// terms.
+    SplitNoSmoothPair,
 }
 
 /// Settings for the stress entry points.
@@ -887,20 +905,9 @@ fn assemble(
         m.scaled_add(-alpha * vm, &dsd);
     }
 
-    // --- RS-GDF: fitted densities and J3's G = 0 overlap weight M_g0.
-    let fit = match jk {
-        JkSource::Dense(_) => None,
-        JkSource::Fit(src) => {
-            let exch = spins.exch_terms();
-            let fd = fit_densities(src.gdf, &d, &exch, alpha, false, ledger)?;
-            let omega_f = src.gdf.stats().omega;
-            let c0f = PI / (omega_f * omega_f * vol);
-            let q: ndarray::Array1<f64> = aux_ft(src.aux, &[[0.0; 3]])?.column(0).mapv(|z| z.re);
-            let yq = fd.y.t().dot(&q);
-            let m_g0 = Array2::from_shape_fn((n, n), |(a, b)| -c0f * yq[a * n + b]);
-            Some((*src, fd, m_g0))
-        }
-    };
+    // --- RS-GDF: fitted densities and J3's G = 0 overlap weight M_g0 (a
+    // range split: q_c, contracted with d(S − S_ss)).
+    let fit = fit_prelude(cell, prep, jk, spins, &d, alpha, mutation, ledger)?;
 
     // --- dS, dT: per-image derivative blocks weighted by the pair vector.
     let images = hcore_pair_images(cell, prep, hcore_cfg.precision, ledger)?;
@@ -924,7 +931,7 @@ fn assemble(
                     ];
                     if let Some(blk) = eng_s.compute_1e_deriv_block_shifted(prep, s1, s2, *l)? {
                         add_pair_virial(&mut parts.overlap, blk, &m, &dims, &offs, s1, s2, rel);
-                        if let Some((_, _, mg)) = fit.as_ref() {
+                        if let Some((_, _, mg, _)) = fit.as_ref() {
                             add_pair_virial(
                                 &mut parts.fit_g0_overlap,
                                 blk,
@@ -943,6 +950,10 @@ fn assemble(
                 }
             }
         }
+    }
+    if let Some((_, _, mg, Some(sg))) = fit.as_ref() {
+        let v = sg.overlap_virial(mg, drop_images)?;
+        add_into(&mut parts.fit_g0_overlap, &v, -1.0);
     }
     if is(StressMutation::NoPulay) {
         parts.overlap = ZERO3;
@@ -1060,7 +1071,7 @@ fn assemble(
             n_g_eri = r.n_g;
             n_chunks += r.n_chunks;
         }
-        (JkSource::Fit(_), Some((src, fd, _))) => {
+        (JkSource::Fit(_), Some((src, fd, _, _))) => {
             let terms = FitStrainTerms {
                 pair: ft_terms,
                 g_shape,
@@ -1069,6 +1080,9 @@ fn assemble(
                 aux_ft3: !is(StressMutation::NoAuxFt) && !is(StressMutation::NoAuxFt3),
                 aux_ft2: !is(StressMutation::NoAuxFt),
                 serial: is(StressMutation::SerialDerivWalks),
+                sr_kernel: !is(StressMutation::SplitNoSrKernelStrain),
+                smooth_pair: !is(StressMutation::SplitNoSmoothPair),
+                kept_g0: !is(StressMutation::SplitFullG0),
             };
             let fs = fit_strain(src.gdf, cell, prep, src.aux, &fd.y, &fd.wm, terms, ledger)?;
             parts.fit_j3_sr = fs.j3_sr;
@@ -1161,6 +1175,47 @@ fn assemble(
         budget_bytes: ledger.budget(),
         fit: fit_diag,
     })
+}
+
+/// The stress's RS-GDF state from before the dS/dT pass: the source, its
+/// fitted densities, `M_g0 = −c0′ Σ_P Y_P q_P` and, for a range-split build
+/// (`q = q_c`, contracted with `d(S − S_ss)`), the smooth-piece overlap
+/// virial pass (`None` under the two split G = 0 mutants).
+type StressFit<'a> = (
+    RsGdfGradSource<'a>,
+    FitDensities,
+    Array2<f64>,
+    Option<SplitG0>,
+);
+
+#[allow(clippy::too_many_arguments)]
+fn fit_prelude<'a>(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    jk: &JkSource<'a>,
+    spins: &SpinSet,
+    d: &Array2<f64>,
+    alpha: f64,
+    mutation: Option<StressMutation>,
+    ledger: &mut Ledger,
+) -> Result<Option<StressFit<'a>>, FerricError> {
+    let src = match jk {
+        JkSource::Dense(_) => return Ok(None),
+        JkSource::Fit(src) => *src,
+    };
+    let n = d.nrows();
+    let exch = spins.exch_terms();
+    let fd = fit_densities(src.gdf, d, &exch, alpha, false, ledger)?;
+    let omega_f = src.gdf.stats().omega;
+    let c0f = PI / (omega_f * omega_f * cell.volume());
+    let split = split_g0(src.gdf, cell, prep, src.aux, ledger)?;
+    let full = mutation == Some(StressMutation::SplitFullG0);
+    let q = fit_g0_charges(&src, split.as_ref(), full)?;
+    let yq = fd.y.t().dot(&q);
+    let m_g0 = Array2::from_shape_fn((n, n), |(a, b)| -c0f * yq[a * n + b]);
+    let keep_smooth = !full && mutation != Some(StressMutation::SplitNoSmoothOverlap);
+    let smooth = if keep_smooth { split } else { None };
+    Ok(Some((src, fd, m_g0, smooth)))
 }
 
 /// `out[a][b] += Σ_mn w_mn ½(∂_bra − ∂_ket)_a ⟨m|op|n_L⟩ · rel_b` for one

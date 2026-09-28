@@ -67,9 +67,11 @@
 //!
 //! # Scope
 //!
-//! Gamma ENERGY path only. The k-point build ([`super::kpoint::KRsGdf`])
-//! and [`super::RsGdf::build_for_gradient`] refuse a config with a range
-//! split: the derivative walks do not follow the partition yet.
+//! Gamma energy, forces and stress (the derivative walks follow the same
+//! partition: the child module `deriv`, FINDINGS "Iteration 26"). The
+//! k-point build ([`super::kpoint::KRsGdf`]) refuses a config with a range
+//! split. A derivative of a build made with a [`RangeSplitMutant`] other
+//! than `Production` is refused (the mutants exist for the energy anchors).
 
 use super::{
     aux_ft_shells, dot3, pair_bound, segment_distance, subtract_g0, sum_counts_in_pair_order,
@@ -96,6 +98,10 @@ use rayon::prelude::*;
 use std::collections::HashMap;
 use std::f64::consts::PI;
 use std::sync::Mutex;
+
+mod deriv;
+pub(crate) use deriv::{split_g0, SplitG0};
+pub(super) use deriv::{LrForce, LrStrain};
 
 /// The rigorous criterion (FINDINGS "Iteration 23": each of the two
 /// conditions alone suffices at λ ≤ 1; do not spend the measured slack).
@@ -557,9 +563,44 @@ impl SplitPlan {
         images: &[[f64; 3]],
         ledger: &mut Ledger,
     ) -> Result<Option<Self>, FerricError> {
-        let Some(rs) = cfg.range_split else {
+        match cfg.range_split {
+            None => Ok(None),
+            Some(rs) => Self::new(st, rs, images, ledger).map(Some),
+        }
+    }
+
+    /// The plan a DERIVATIVE of `gdf` walks (forces, stress): the build's
+    /// own [`RangeSplit`] on the build's stage and pair `images`, so every
+    /// piece, factor and screen is the energy's. `None` for an unsplit
+    /// build; an error for a build made with a [`RangeSplitMutant`] (its
+    /// energy is deliberately wrong and has no derivative here).
+    pub(super) fn for_derivatives(
+        st: &Stage<'_>,
+        gdf: &super::RsGdf,
+        images: &[[f64; 3]],
+        ledger: &mut Ledger,
+    ) -> Result<Option<Self>, FerricError> {
+        let Some(rs) = gdf.range_split() else {
             return Ok(None);
         };
+        if rs.mutant != RangeSplitMutant::Production {
+            return Err(FerricError::General(format!(
+                "RS-GDF derivatives: the RsGdf was built with the range-split mutant {:?}; \
+                 forces/stress exist only for RangeSplitMutant::Production",
+                rs.mutant
+            )));
+        }
+        Self::new(st, rs, images, ledger).map(Some)
+    }
+
+    /// The plan of `rs` with its resident buffers reserved on `ledger` and
+    /// `S_ss` formed over the pair `images`.
+    fn new(
+        st: &Stage<'_>,
+        rs: RangeSplit,
+        images: &[[f64; 3]],
+        ledger: &mut Ledger,
+    ) -> Result<Self, FerricError> {
         rs.validate()?;
         let obs = Side::new(st.obs, &st.obs_sh, rs.orbital_threshold(st.omega))?;
         let aux = Side::new(st.aux, &st.aux_sh, rs.aux_threshold(st.omega))?;
@@ -586,13 +627,23 @@ impl SplitPlan {
             None => None,
             Some(sm) => Some(Self::smooth_overlap(sm, images, st.obs.nbasis())?),
         };
-        Ok(Some(Self {
+        Ok(Self {
             rs,
             obs,
             aux,
             smooth_obs,
             s_ss,
-        }))
+        })
+    }
+
+    /// `q_c`: the charges of the compact aux pieces (`X_c` at G = 0), exactly
+    /// the vector the build's G = 0 subtract uses.
+    fn compact_charges(&self, naux: usize) -> Vec<f64> {
+        aux_ft_shells(&self.aux.c_sh, naux, &[[0.0; 3]])
+            .column(0)
+            .iter()
+            .map(|z| z.re)
+            .collect()
     }
 
     /// The (at most two) kept SR calls of parent pair `(i1, i2)`, as
@@ -1212,11 +1263,7 @@ pub(super) fn subtract_g0_build(
         None => s_flat.to_vec(),
         Some(s_ss) => s_flat.iter().zip(s_ss.iter()).map(|(a, b)| a - b).collect(),
     };
-    let q_c: Vec<f64> = aux_ft_shells(&p.aux.c_sh, q.len(), &[[0.0; 3]])
-        .column(0)
-        .iter()
-        .map(|z| z.re)
-        .collect();
+    let q_c = p.compact_charges(q.len());
     match p.rs.mutant {
         RangeSplitMutant::ThreeIndexFullG0 => {
             subtract_g0(j2, j3, &s_eff, &q_c, c0, G0Handling::MetricOnlyMutant);
@@ -1262,19 +1309,6 @@ pub(super) fn finish(
         t.set_counter(name, v as u64);
     }
     Ok(())
-}
-
-/// The refusal of every derivative build (forces, stress) of a config
-/// with a range split: their walks do not follow the partition yet, so
-/// they would not differentiate the split energy.
-pub(super) fn refuse_derivatives(cfg: &RsGdfConfig, who: &str) -> Result<(), FerricError> {
-    if cfg.range_split.is_none() {
-        return Ok(());
-    }
-    Err(FerricError::General(format!(
-        "{who}: the RS-GDF range split has no analytic forces/stress yet (the derivative \
-         walks do not follow the partition); build with range_split = None"
-    )))
 }
 
 /// TEST/DIAGNOSTIC: the SR walk counts an [`super::RsGdf::build`] at `cfg`

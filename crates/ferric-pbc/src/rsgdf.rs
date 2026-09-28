@@ -93,8 +93,9 @@
 //! diffuse metric terms) from the SR real-space walks to G space; the
 //! G = 0 subtract gets the kept inputs (PySCF grouping). FINDINGS
 //! "Iteration 23"; details in the `split` module. `None` is today's
-//! construction bit for bit. Forces, stress and the k-point build refuse
-//! a split build ([`RsGdf::range_split`]).
+//! construction bit for bit. The Gamma forces and stress differentiate the
+//! split energy (FINDINGS "Iteration 26"); the k-point build refuses a
+//! split config ([`RsGdf::range_split`]).
 //!
 //! # Forces
 //!
@@ -144,6 +145,7 @@ pub use split::{
 };
 
 pub use deriv::RsGdfFitDiagnostics;
+pub(crate) use split::{split_g0, SplitG0};
 
 /// Default Ewald split for the RS-GDF build (Bohr⁻¹; the prototype's `w=1`).
 pub const DEFAULT_RSGDF_OMEGA: f64 = 1.0;
@@ -197,8 +199,8 @@ pub struct RsGdfConfig {
     /// G = 0 handling — [`G0Handling::Consistent`] except in mutation tests.
     pub g0: G0Handling,
     /// Opt-in primitive-level range split of the SR sums (`split` module
-    /// doc; Gamma energy path only). `None` = today's construction, bit for
-    /// bit. The k-point build and [`RsGdf::build_for_gradient`] refuse it.
+    /// doc; Gamma energy, forces and stress). `None` = today's construction,
+    /// bit for bit. The k-point build refuses it.
     pub range_split: Option<RangeSplit>,
 }
 
@@ -297,8 +299,8 @@ pub struct RsGdf {
     /// borrowing this B, i.e. every SCF stage run on it).
     j_clock: CallClock,
     k_clock: CallClock,
-    /// The build's [`RsGdfConfig::range_split`] (derivative callers refuse
-    /// `Some`: their walks do not follow the partition).
+    /// The build's [`RsGdfConfig::range_split`] (the derivative walks
+    /// rebuild the same partition from it).
     range_split: Option<RangeSplit>,
 }
 
@@ -1828,9 +1830,10 @@ impl RsGdf {
     /// taken inside the metric solve, reserved on the build ledger once the
     /// dropped count is known).
     ///
-    /// Refuses [`RsGdfConfig::range_split`]: the derivative walks
-    /// (`deriv`, `strain`) do not follow the split partition yet, so the
-    /// force would not be the derivative of the split energy.
+    /// A [`RsGdfConfig::range_split`] is accepted (Gamma forces and stress
+    /// walk the same partition, FINDINGS "Iteration 26"); the derivative of
+    /// a build made with a [`RangeSplitMutant`] other than `Production` is
+    /// refused by the derivative consumers.
     pub fn build_for_gradient(
         cell: &Cell,
         obs: &PreparedBasis,
@@ -1838,7 +1841,6 @@ impl RsGdf {
         s: &Array2<f64>,
         cfg: &RsGdfConfig,
     ) -> Result<Self, FerricError> {
-        split::refuse_derivatives(cfg, "RsGdf::build_for_gradient")?;
         Self::build_impl(cell, obs, aux, s, cfg, false, true).map(|(gdf, _)| gdf)
     }
 
@@ -1849,8 +1851,8 @@ impl RsGdf {
     }
 
     /// The range split B was built with (`None`: today's construction).
-    /// Every derivative consumer (forces, stress, k-point forces) must
-    /// refuse `Some` until its walks follow the same partition.
+    /// The Gamma forces and stress follow it (`split`'s `deriv`); the
+    /// k-point build refuses a split config.
     pub fn range_split(&self) -> Option<RangeSplit> {
         self.range_split
     }

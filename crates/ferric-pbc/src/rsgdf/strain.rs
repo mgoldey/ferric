@@ -38,6 +38,7 @@
 //! Every sum uses the build's ω, precision, SR screen mode, pair images, G
 //! sphere and pair-FT threshold (the energy's truncation).
 
+use super::split::{LrStrain, SplitPlan};
 use super::{
     check_obs_on_cell, gshells, pair_image_radius, require_pure_aux, GShell, LatticeWalker, RsGdf,
     Stage, ENGINE_PRECISION,
@@ -75,8 +76,17 @@ pub(crate) struct FitStrainTerms {
     pub(crate) aux_ft3: bool,
     pub(crate) aux_ft2: bool,
     /// NOT a defect: the frozen serial SR walks (bit-identity oracle of the
-    /// ordered-parallel ones).
+    /// ordered-parallel ones; unsplit builds only).
     pub(crate) serial: bool,
+    /// Range split: the SR kernel-weight strain `dv_SR/dε` of the moved
+    /// G-space blocks (`false`: the `SplitNoSrKernelStrain` mutant).
+    pub(crate) sr_kernel: bool,
+    /// Range split: the smooth-pair `dP̄_ss` / `dX_c` strain terms (`false`:
+    /// the `SplitNoSmoothPair` mutant).
+    pub(crate) smooth_pair: bool,
+    /// Range split: the G = 0 volume terms with the KEPT inputs `(q_c, S −
+    /// S_ss)` (`false`: the full `(q, S)`, the `SplitFullG0` mutant).
+    pub(crate) kept_g0: bool,
 }
 
 /// The RS-GDF strain pieces (each `dE/dε`, Hartree).
@@ -153,27 +163,130 @@ pub(crate) fn fit_strain(
         bytes_of(cell.translation_count_bound(rpair)?, 24),
     )?;
     let images = cell.translations(rpair)?;
+    // A range-split build: the same partition (`split`'s `deriv`).
+    let plan = SplitPlan::for_derivatives(&st, gdf, &images, ledger)?;
     let budget = window_budget(ledger.remaining());
-    let ((j3_sr, n_sr3), (j2_sr, n_sr2)) = if terms.serial {
-        (
+    let ((j3_sr, n_sr3), (j2_sr, n_sr2)) = match (plan.as_ref(), terms.serial) {
+        (Some(p), _) => (
+            p.sr3_strain(&st, &images, y, imgs, budget)?,
+            p.sr2_strain(&st, wm, imgs, budget)?,
+        ),
+        (None, true) => (
             sr3_strain_serial(&st, &images, y, imgs)?,
             sr2_strain_serial(&st, wm, imgs)?,
-        )
-    } else {
-        (
+        ),
+        (None, false) => (
             sr3_strain(&st, &images, y, imgs, budget)?,
             sr2_strain(&st, wm, imgs, budget)?,
-        )
+        ),
     };
 
     // --- LR: the energy's half G sphere.
-    let omega = st.omega;
-    let gcut = 2.0 * omega * (1.0 / st.thresh).ln().sqrt();
+    let gcut = 2.0 * st.omega * (1.0 / st.thresh).ln().sqrt();
     ledger.reserve(
         &format!("RS-GDF stress LR G list (|G| <= {gcut:.3})"),
         gvector_list_bytes(cell, gcut)?,
     )?;
     let gv = half_gvectors(cell, gcut)?;
+    let chunk_budget = ledger.remaining().min(G_CHUNK_BYTES);
+    let mut lr = match plan.as_ref().filter(|p| p.moves_aux()) {
+        Some(p) => p.lr_strain(&st, &gv, y, wm, &terms, chunk_budget)?,
+        None => lr_strain_unsplit(&st, &gv, y, wm, &terms, chunk_budget)?,
+    };
+    if let Some(p) = &plan {
+        p.lr_smooth_pair_strain(&st, &gv, y, &terms, chunk_budget, &mut lr)?;
+    }
+    let (mut j3_lr, mut j2_lr, n_chunks) = (lr.s3, lr.s2, lr.n_chunks);
+    if terms.volume {
+        for a in 0..3 {
+            j3_lr[a][a] -= lr.e3;
+            j2_lr[a][a] -= lr.e2;
+        }
+    }
+
+    // --- G = 0 volume terms (split: the kept `(q_c, S − S_ss)`).
+    let (q, s_eff) = match &plan {
+        Some(p) => p.g0_volume_inputs(&st, gdf.overlap(), terms.kept_g0),
+        None => {
+            let q: Vec<f64> = super::aux_ft_shells(&st.aux_sh, naux, &[[0.0; 3]])
+                .column(0)
+                .iter()
+                .map(|z| z.re)
+                .collect();
+            (q, gdf.overlap().clone())
+        }
+    };
+    let c0 = PI / (st.omega * st.omega * cell.volume());
+    let (ysq, qwq) = g0_volume_contractions(y, wm, &q, &s_eff);
+    let all = [&j3_sr, &j3_lr, &j2_sr, &j2_lr];
+    if all
+        .iter()
+        .any(|m| m.iter().flatten().any(|v| !v.is_finite()))
+    {
+        return Err(FerricError::General(
+            "RS-GDF stress: non-finite strain contraction".into(),
+        ));
+    }
+    Ok(FitStrain {
+        j3_sr,
+        j3_lr,
+        j2_sr,
+        j2_lr,
+        j3_g0_volume: diag(c0 * ysq),
+        j2_g0_volume: diag(c0 * qwq),
+        n_sr3,
+        n_sr2,
+        n_g_half: gv.len(),
+        n_chunks,
+    })
+}
+
+/// `(Σ_P q_P Σ_μν Y[P,μν] S_μν, qᵀ Wm q)` of the two G = 0 volume terms.
+fn g0_volume_contractions(
+    y: &Array2<f64>,
+    wm: &Array2<f64>,
+    q: &[f64],
+    s_mat: &Array2<f64>,
+) -> (f64, f64) {
+    let n = s_mat.nrows();
+    let mut ysq = 0.0_f64;
+    for (pp, qp) in q.iter().enumerate() {
+        if *qp == 0.0 {
+            continue;
+        }
+        let row = y.row(pp);
+        let mut acc = 0.0_f64;
+        for m in 0..n {
+            for nu in 0..n {
+                acc += row[m * n + nu] * s_mat[(m, nu)];
+            }
+        }
+        ysq += qp * acc;
+    }
+    let mut qwq = 0.0_f64;
+    for (pp, qp) in q.iter().enumerate() {
+        for (rr, qr) in q.iter().enumerate() {
+            qwq += qp * wm[(pp, rr)] * qr;
+        }
+    }
+    (ysq, qwq)
+}
+
+/// The unsplit LR strain pass (Iteration 19): `(2/Ω) Σ_G [dv Φ + v dΦ]` of
+/// J3 / J2 WITHOUT the volume terms, and the LR energies.
+fn lr_strain_unsplit(
+    st: &Stage<'_>,
+    gv: &[[f64; 3]],
+    y: &Array2<f64>,
+    wm: &Array2<f64>,
+    terms: &FitStrainTerms,
+    chunk_budget: usize,
+) -> Result<LrStrain, FerricError> {
+    let (cell, obs) = (st.cell, st.obs);
+    let n = obs.nbasis();
+    let n2 = n * n;
+    let naux = st.aux.nbasis();
+    let omega = st.omega;
     let vol = cell.volume();
     let pair_thresh = (0.01 * st.thresh).min(DEFAULT_PAIR_FT_THRESH);
     // Per G: P re/im + Σ_P Y X re/im (4 × 8 n²); X and the nine dX (10 × 16
@@ -182,7 +295,6 @@ pub(crate) fn fit_strain(
         .saturating_mul(32)
         .saturating_add(naux.saturating_mul(192))
         .saturating_add(64);
-    let chunk_budget = ledger.remaining().min(G_CHUNK_BYTES);
     let aux_sh = &st.aux_sh;
     let (mut e3, mut e2) = (0.0_f64, 0.0_f64);
     let mut s3 = [[0.0_f64; 3]; 3];
@@ -190,7 +302,7 @@ pub(crate) fn fit_strain(
     let n_chunks = pair_ft_strain_chunked(
         cell,
         obs,
-        &gv,
+        gv,
         pair_thresh,
         chunk_budget,
         extra_per_g,
@@ -268,62 +380,11 @@ pub(crate) fn fit_strain(
             Ok(())
         },
     )?;
-    let mut j3_lr = s3;
-    let mut j2_lr = s2;
-    if terms.volume {
-        for a in 0..3 {
-            j3_lr[a][a] -= e3;
-            j2_lr[a][a] -= e2;
-        }
-    }
-
-    // --- G = 0 volume terms.
-    let q: Vec<f64> = super::aux_ft_shells(&st.aux_sh, naux, &[[0.0; 3]])
-        .column(0)
-        .iter()
-        .map(|z| z.re)
-        .collect();
-    let c0 = PI / (omega * omega * vol);
-    let s_mat = gdf.overlap();
-    let mut ysq = 0.0_f64;
-    for (pp, qp) in q.iter().enumerate() {
-        if *qp == 0.0 {
-            continue;
-        }
-        let row = y.row(pp);
-        let mut acc = 0.0_f64;
-        for m in 0..n {
-            for nu in 0..n {
-                acc += row[m * n + nu] * s_mat[(m, nu)];
-            }
-        }
-        ysq += qp * acc;
-    }
-    let mut qwq = 0.0_f64;
-    for (pp, qp) in q.iter().enumerate() {
-        for (rr, qr) in q.iter().enumerate() {
-            qwq += qp * wm[(pp, rr)] * qr;
-        }
-    }
-    let all = [&j3_sr, &j3_lr, &j2_sr, &j2_lr];
-    if all
-        .iter()
-        .any(|m| m.iter().flatten().any(|v| !v.is_finite()))
-    {
-        return Err(FerricError::General(
-            "RS-GDF stress: non-finite strain contraction".into(),
-        ));
-    }
-    Ok(FitStrain {
-        j3_sr,
-        j3_lr,
-        j2_sr,
-        j2_lr,
-        j3_g0_volume: diag(c0 * ysq),
-        j2_g0_volume: diag(c0 * qwq),
-        n_sr3,
-        n_sr2,
-        n_g_half: gv.len(),
+    Ok(LrStrain {
+        s3,
+        s2,
+        e3,
+        e2,
         n_chunks,
     })
 }
@@ -615,7 +676,7 @@ fn sr2_strain_serial(
 /// ```
 ///
 /// `g_shape = false` (mutation seam) returns `dX = 0`.
-fn aux_ft_strain_shells(
+pub(super) fn aux_ft_strain_shells(
     shells: &[GShell],
     naux: usize,
     gvecs: &[[f64; 3]],

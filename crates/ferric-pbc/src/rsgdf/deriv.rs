@@ -66,6 +66,7 @@
 //! chunk's `P`, three `Q`, `X` and the per-G GEMM outputs are bounded by the
 //! chunk budget.
 
+use super::split::{LrForce, SplitPlan};
 use super::{
     aux_ft_shells, check_obs_on_cell, gshells, pair_image_radius, require_pure_aux, LatticeWalker,
     RsGdf, Stage, ENGINE_PRECISION,
@@ -285,7 +286,9 @@ pub(crate) struct FitDerivatives {
 /// the orbital basis B was built with (on `cell`'s atoms), `aux` its aux
 /// basis. The SR walks are ordered-parallel and BIT-IDENTICAL to the serial
 /// walks ([`sr3_force`], [`sr2_force`]); `serial` runs the frozen serial
-/// oracles instead.
+/// oracles instead (unsplit builds only). A range-split build walks the
+/// split partition (`split`'s `deriv`, FINDINGS "Iteration 26");
+/// `drop_smooth_pair` (TEST mutant) omits its smooth-pair LR pass.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn fit_derivatives(
     gdf: &RsGdf,
@@ -295,6 +298,7 @@ pub(crate) fn fit_derivatives(
     y: &Array2<f64>,
     wm: &Array2<f64>,
     serial: bool,
+    drop_smooth_pair: bool,
     ledger: &mut Ledger,
 ) -> Result<FitDerivatives, FerricError> {
     let gp = gdf
@@ -328,7 +332,6 @@ pub(crate) fn fit_derivatives(
         )));
     }
     let natoms = cell.positions().len();
-    let sh2at = obs.shell_to_atom().to_vec();
 
     // --- SR 3-centre: the energy's pair images and triplet screen.
     let rpair = pair_image_radius(&st, st.thresh);
@@ -337,28 +340,111 @@ pub(crate) fn fit_derivatives(
         bytes_of(cell.translation_count_bound(rpair)?, 24),
     )?;
     let images = cell.translations(rpair)?;
+    // A range-split build: the same partition (`split`'s `deriv`).
+    let plan = SplitPlan::for_derivatives(&st, gdf, &images, ledger)?;
     let budget = window_budget(ledger.remaining());
-    let (orb_sr, aux3_sr, n_sr3) = if serial {
-        sr3_force_serial(&st, &images, y, natoms)?
-    } else {
-        sr3_force(&st, &images, natoms, budget, |_, _| Y3::AuxMajor(y))?
-    };
-
-    // --- SR metric: d/dQ = −d/dP.
-    let (metric_sr, n_sr2) = if serial {
-        sr2_force_serial(&st, wm)?
-    } else {
-        sr2_force(&st, budget, |_| wm)?
-    };
+    let sr = sr_force_parts(&st, plan.as_ref(), &images, y, wm, natoms, budget, serial)?;
 
     // --- LR: the energy's half G sphere; P, Q, X per chunk.
-    let omega = st.omega;
-    let gcut = 2.0 * omega * (1.0 / st.thresh).ln().sqrt();
+    let gcut = 2.0 * st.omega * (1.0 / st.thresh).ln().sqrt();
     ledger.reserve(
         &format!("RS-GDF force LR G list (|G| <= {gcut:.3})"),
         gvector_list_bytes(cell, gcut)?,
     )?;
     let gv = half_gvectors(cell, gcut)?;
+    let chunk_budget = ledger.remaining().min(G_CHUNK_BYTES);
+    let mut lr = match plan.as_ref().filter(|p| p.moves_aux()) {
+        Some(p) => p.lr_force(&st, &gv, y, wm, natoms, chunk_budget)?,
+        None => lr_force_unsplit(&st, &gv, y, wm, natoms, chunk_budget)?,
+    };
+    if let Some(p) = plan.as_ref().filter(|_| !drop_smooth_pair) {
+        p.lr_smooth_pair_force(&st, &gv, y, chunk_budget, &mut lr)?;
+    }
+    let (orb_sr, aux3_sr, metric_sr) = (sr.orb, sr.aux3, sr.metric);
+    let (orb_lr, aux3_lr, metric_lr, n_chunks) = (lr.orb, lr.aux3, lr.metric, lr.n_chunks);
+    let (n_sr3, n_sr2) = (sr.n_sr3, sr.n_sr2);
+
+    let all = [&orb_sr, &orb_lr, &aux3_sr, &aux3_lr, &metric_sr, &metric_lr];
+    if all.iter().any(|a| a.iter().any(|v| !v.is_finite())) {
+        return Err(FerricError::General(
+            "RS-GDF forces: non-finite derivative contraction".into(),
+        ));
+    }
+    Ok(FitDerivatives {
+        orb_sr,
+        orb_lr,
+        aux3_sr,
+        aux3_lr,
+        metric_sr,
+        metric_lr,
+        n_sr3,
+        n_sr2,
+        n_g_half: gv.len(),
+        n_chunks,
+    })
+}
+
+/// SR force pieces of [`fit_derivatives`].
+struct SrForce {
+    orb: Array2<f64>,
+    aux3: Array2<f64>,
+    metric: Array2<f64>,
+    n_sr3: usize,
+    n_sr2: usize,
+}
+
+/// The SR 3-centre and metric force pieces: the split partition's kept
+/// calls / compact pairs with a plan, else the unsplit walks (the frozen
+/// serial oracles when `serial`).
+#[allow(clippy::too_many_arguments)]
+fn sr_force_parts(
+    st: &Stage<'_>,
+    plan: Option<&SplitPlan>,
+    images: &[[f64; 3]],
+    y: &Array2<f64>,
+    wm: &Array2<f64>,
+    natoms: usize,
+    budget: usize,
+    serial: bool,
+) -> Result<SrForce, FerricError> {
+    let ((orb, aux3, n_sr3), (metric, n_sr2)) = match (plan, serial) {
+        (Some(p), _) => (
+            p.sr3_force(st, images, y, natoms, budget)?,
+            p.sr2_force(st, wm, budget)?,
+        ),
+        (None, true) => (
+            sr3_force_serial(st, images, y, natoms)?,
+            sr2_force_serial(st, wm)?,
+        ),
+        (None, false) => (
+            sr3_force(st, images, natoms, budget, |_, _| Y3::AuxMajor(y))?,
+            sr2_force(st, budget, |_| wm)?,
+        ),
+    };
+    Ok(SrForce {
+        orb,
+        aux3,
+        metric,
+        n_sr3,
+        n_sr2,
+    })
+}
+
+/// The unsplit LR force pass (Iteration 18): orbital `2 w Re[Q* (Y X)]`,
+/// aux `w Re[(Y P)* (−iG X)]`, metric `2 w Re[(−iG X)* (Wm X)]`.
+fn lr_force_unsplit(
+    st: &Stage<'_>,
+    gv: &[[f64; 3]],
+    y: &Array2<f64>,
+    wm: &Array2<f64>,
+    natoms: usize,
+    chunk_budget: usize,
+) -> Result<LrForce, FerricError> {
+    let (cell, obs) = (st.cell, st.obs);
+    let n = obs.nbasis();
+    let n2 = n * n;
+    let naux = st.aux.nbasis();
+    let omega = st.omega;
     let vol = cell.volume();
     let pair_thresh = (0.01 * st.thresh).min(DEFAULT_PAIR_FT_THRESH);
     // Per G: P re/im + Σ_P Y X re/im (4 × 8 n²); X (16 naux) + its re/im,
@@ -367,7 +453,7 @@ pub(crate) fn fit_derivatives(
         .saturating_mul(32)
         .saturating_add(naux.saturating_mul(64))
         .saturating_add(64);
-    let chunk_budget = ledger.remaining().min(G_CHUNK_BYTES);
+    let sh2at = obs.shell_to_atom().to_vec();
     let mut aoat = vec![0usize; n];
     {
         let dims = obs.shell_dims();
@@ -378,14 +464,13 @@ pub(crate) fn fit_derivatives(
             }
         }
     }
-    let mut orb_lr = Array2::<f64>::zeros((natoms, 3));
-    let mut aux3_lr = Array2::<f64>::zeros((naux, 3));
-    let mut metric_lr = Array2::<f64>::zeros((naux, 3));
+    let mut out = LrForce::zeros(natoms, naux);
+    let (orb_lr, aux3_lr, metric_lr) = (&mut out.orb, &mut out.aux3, &mut out.metric);
     let aux_sh = &st.aux_sh;
     let n_chunks = pair_ft_deriv_chunked(
         cell,
         obs,
-        &gv,
+        gv,
         pair_thresh,
         chunk_budget,
         extra_per_g,
@@ -448,25 +533,8 @@ pub(crate) fn fit_derivatives(
             Ok(())
         },
     )?;
-
-    let all = [&orb_sr, &orb_lr, &aux3_sr, &aux3_lr, &metric_sr, &metric_lr];
-    if all.iter().any(|a| a.iter().any(|v| !v.is_finite())) {
-        return Err(FerricError::General(
-            "RS-GDF forces: non-finite derivative contraction".into(),
-        ));
-    }
-    Ok(FitDerivatives {
-        orb_sr,
-        orb_lr,
-        aux3_sr,
-        aux3_lr,
-        metric_sr,
-        metric_lr,
-        n_sr3,
-        n_sr2,
-        n_g_half: gv.len(),
-        n_chunks,
-    })
+    out.n_chunks = n_chunks;
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------

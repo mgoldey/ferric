@@ -132,6 +132,15 @@
 //! Aux centres that are functions of the atoms (ghost sites) fold through
 //! [`RsGdfGradSource::aux_jac`].
 //!
+//! A range-split build (`RsGdfConfig::range_split`, FINDINGS "Iteration
+//! 26") is differentiated on its own partition (`rsgdf::split`'s `deriv`):
+//! the kept SR calls, the moved G-space blocks with `v_SR` (plus the
+//! smooth-pair pass), and the G = 0 term with the KEPT inputs,
+//! `M_g0 = −c0' Σ_P Y_P q^c_P` contracted with `d(S − S_ss)` — the smooth-
+//! piece overlap derivative over the build's pair images is subtracted from
+//! the `dS` pass. Mutants `SplitNoSmoothOverlap`, `SplitFullG0`,
+//! `SplitNoSmoothPair`.
+//!
 //! # ROHF / ROKS (the `gamma_ro{hf,ks}_gradient*` entry points; FINDINGS "Iteration 20")
 //!
 //! No new term. The ROHF energy is the UHF/UKS functional `E_U[D_α, D_β]`
@@ -203,7 +212,7 @@ use crate::lattice::Cell;
 use crate::pair_ft::pair_ft_deriv_chunked;
 use crate::rohf::GammaRoksConfig;
 use crate::rsgdf::deriv::{check_aux_map, fit_densities, fit_derivatives, fold_aux, FitDensities};
-use crate::rsgdf::{aux_ft, RsGdf, RsGdfFitDiagnostics};
+use crate::rsgdf::{aux_ft, split_g0, RsGdf, RsGdfFitDiagnostics, SplitG0};
 use ferric_core::FerricError;
 use ferric_dft::density_on_grid::{eval_density_closed, eval_density_uks};
 use ferric_dft::grid::GridPoint;
@@ -299,8 +308,20 @@ pub enum GradMutation {
     /// (SR attraction, RS-GDF SR 3-centre and metric, periodic ECP) instead
     /// of the ordered-parallel ones ([`crate::ordered`]). The force must be
     /// BIT-IDENTICAL either way (`tests/pbc_parallel_bitwise.rs`). Never list
-    /// it as a must-fail mutant.
+    /// it as a must-fail mutant. (A range-split build has no serial oracle;
+    /// its split walks run either way.)
     SerialDerivWalks,
+    /// RS-GDF range split: contract `M_g0` (with `q_c`) with `dS` only, i.e.
+    /// omit the smooth-piece overlap derivative `dS_ss`. Blind when no
+    /// orbital primitive is smooth and in the everything-moved span limit
+    /// (`q_c = 0`); weak on H2 at Gamma (FINDINGS "Iteration 26" 4.7e-6).
+    SplitNoSmoothOverlap,
+    /// RS-GDF range split: the unsplit G = 0 term (`M_g0` from the FULL `q`,
+    /// on `dS` only).
+    SplitFullG0,
+    /// RS-GDF range split: drop the smooth-pair LR derivative (`(P_ss|X_c)`,
+    /// orbital and aux). Blind when `X_c = 0` (everything-moved span).
+    SplitNoSmoothPair,
 }
 
 /// Settings for the `gamma_*_gradient_with` entry points.
@@ -1648,12 +1669,6 @@ fn check_rsgdf_inputs(
     f: &RsGdfGradSource<'_>,
     n: usize,
 ) -> Result<(), FerricError> {
-    if f.gdf.range_split().is_some() {
-        return Err(FerricError::General(format!(
-            "{who}: this RsGdf was built with a range split (RsGdfConfig::range_split); its \
-             forces/stress do not follow the partition yet — build with range_split = None"
-        )));
-    }
     if !f.gdf.has_gradient_parts() {
         return Err(FerricError::General(format!(
             "{who}: the RsGdf carries no gradient parts; build it with RsGdf::build_for_gradient"
@@ -1833,10 +1848,11 @@ fn assemble(
     }
 
     // --- RS-GDF: the fitted densities Y, Wm first — J3's G = 0 term enters
-    // only through dS, as M_g0 = −c0' Σ_P Y_P q_P (c0' at the GDF's ω).
-    let fit = fit_prelude(jk, spins, &d, s_mat, alpha, vol, mutation, ledger)?;
+    // only through dS, as M_g0 = −c0' Σ_P Y_P q_P (c0' at the GDF's ω; a
+    // range split: q_c on d(S − S_ss)).
+    let fit = fit_prelude(cell, prep, jk, spins, &d, s_mat, alpha, mutation, ledger)?;
     let m_g0 = match &fit {
-        Some((_, _, Some(mg))) => Some(mg),
+        Some((_, _, Some(mg), _)) => Some(mg),
         _ => None,
     };
 
@@ -1867,6 +1883,9 @@ fn assemble(
                 }
             }
         }
+    }
+    if let Some((_, _, Some(mg), Some(sg))) = &fit {
+        g_fit_g0 -= &sg.overlap_force(mg, natoms)?;
     }
 
     // --- V_SR: Gaussian nuclei, erfc(ω), the energy's image/screen sets.
@@ -2204,21 +2223,28 @@ fn dense_eri_gradient(
 }
 
 /// `assemble`'s RS-GDF state from before the dS/dT pass: the source, its
-/// fitted densities and J3's G = 0 overlap weight `M_g0` (`None` under
-/// [`GradMutation::FitNoG0`]).
-type FitPrelude<'a> = (RsGdfGradSource<'a>, FitDensities, Option<Array2<f64>>);
+/// fitted densities, J3's G = 0 overlap weight `M_g0` (`None` under
+/// [`GradMutation::FitNoG0`]) and, for a range-split build whose `M_g0` is
+/// contracted with `d(S − S_ss)`, the smooth-piece overlap pass.
+type FitPrelude<'a> = (
+    RsGdfGradSource<'a>,
+    FitDensities,
+    Option<Array2<f64>>,
+    Option<SplitG0>,
+);
 
 /// RS-GDF: the fitted densities `Y`, `Wm` and `M_g0 = −c0' Σ_P Y_P q_P`
 /// (`c0'` at the GDF's ω; MUTANT FitG0Dense: the Iteration-16 dense-ERI
 /// form). `None` for dense-AFT J/K.
 #[allow(clippy::too_many_arguments)]
 fn fit_prelude<'a>(
+    cell: &Cell,
+    prep: &PreparedBasis,
     jk: &JkSource<'a>,
     spins: &SpinSet,
     d: &Array2<f64>,
     s_mat: &Array2<f64>,
     alpha: f64,
-    vol: f64,
     mutation: Option<GradMutation>,
     ledger: &mut Ledger,
 ) -> Result<Option<FitPrelude<'a>>, FerricError> {
@@ -2226,6 +2252,7 @@ fn fit_prelude<'a>(
         JkSource::Dense(_) => return Ok(None),
         JkSource::Fit(src) => *src,
     };
+    let vol = cell.volume();
     let n = d.nrows();
     let exch = spins.exch_terms();
     let fd = fit_densities(
@@ -2238,6 +2265,8 @@ fn fit_prelude<'a>(
     )?;
     let omega_f = src.gdf.stats().omega;
     let c0f = PI / (omega_f * omega_f * vol);
+    let split = split_g0(src.gdf, cell, prep, src.aux, ledger)?;
+    let full_g0 = mutation == Some(GradMutation::SplitFullG0);
     let m_g0 = match mutation {
         Some(GradMutation::FitNoG0) => None,
         Some(GradMutation::FitG0Dense) => {
@@ -2249,12 +2278,30 @@ fn fit_prelude<'a>(
             Some(mg)
         }
         _ => {
-            let q: ndarray::Array1<f64> = aux_ft(src.aux, &[[0.0; 3]])?.column(0).mapv(|z| z.re);
+            let q = fit_g0_charges(&src, split.as_ref(), full_g0)?;
             let v = fd.y.t().dot(&q); // (n²)
             Some(Array2::from_shape_fn((n, n), |(a, b)| -c0f * v[a * n + b]))
         }
     };
-    Ok(Some((src, fd, m_g0)))
+    // d(S − S_ss): the smooth-piece pass, except for the two split G = 0
+    // mutants (and without a split).
+    let keep_smooth = !full_g0 && mutation != Some(GradMutation::SplitNoSmoothOverlap);
+    let smooth = if keep_smooth { split } else { None };
+    Ok(Some((src, fd, m_g0, smooth)))
+}
+
+/// The aux charges J3's G = 0 weight contracts: the compact-piece `q_c` of
+/// a range-split build (unless `full`, the `SplitFullG0`-type mutants), else
+/// every aux function's `q = X_P(0)`.
+pub(crate) fn fit_g0_charges(
+    src: &RsGdfGradSource<'_>,
+    split: Option<&SplitG0>,
+    full: bool,
+) -> Result<ndarray::Array1<f64>, FerricError> {
+    match split.filter(|_| !full) {
+        Some(sg) => Ok(ndarray::Array1::from(sg.compact_charges().to_vec())),
+        None => Ok(aux_ft(src.aux, &[[0.0; 3]])?.column(0).mapv(|z| z.re)),
+    }
 }
 
 /// The RS-GDF two-electron force parts `assemble` adds (aux-centre and
@@ -2281,13 +2328,24 @@ fn fit_two_electron(
     mutation: Option<GradMutation>,
     ledger: &mut Ledger,
 ) -> Result<FitTwoElectron, FerricError> {
-    let Some((src, fd, _)) = fit else {
+    let Some((src, fd, _, _)) = fit else {
         return Err(FerricError::General(
             "gamma gradient: RS-GDF fitted densities missing (internal)".into(),
         ));
     };
     let serial = mutation == Some(GradMutation::SerialDerivWalks);
-    let der = fit_derivatives(src.gdf, cell, prep, src.aux, &fd.y, &fd.wm, serial, ledger)?;
+    let drop_smooth_pair = mutation == Some(GradMutation::SplitNoSmoothPair);
+    let der = fit_derivatives(
+        src.gdf,
+        cell,
+        prep,
+        src.aux,
+        &fd.y,
+        &fd.wm,
+        serial,
+        drop_smooth_pair,
+        ledger,
+    )?;
     let fold = |x: &Array2<f64>| fold_aux(x, src.aux, src.aux_jac, natoms);
     let orb_sr = der.orb_sr;
     let mut orb_lr = der.orb_lr;

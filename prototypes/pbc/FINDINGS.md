@@ -2321,7 +2321,8 @@ performance data); performance work (the screening bound is ~1000x loose, the SR
 3. The LANL2DZ ECP pin is off by −2.9e-7 vs the prototype (one-electron; the prototype's 22-Bohr range is suspected).
 4. k-point MP2: restoring the q = 0 head removes ~99% of the finite-size term vs 78% predicted (holds at n = 3, 4, 5; the
    n = 6 run was KILLED at the pause — restart with `reference/pbc/run_kcorr_convergence.py 6 6`, several hours).
-5. Triclinic k-point eigenvalues differ from PySCF by up to 4e-9 (energies agree to 1e-12).
+5. Triclinic k-point eigenvalues differ from PySCF by up to 4e-9 (energies agree to 1e-12). [EXPLAINED 2026-09-27: the
+   oracle's loose SCF stop, not the build — see "Triclinic k-point eigenvalue gap (investigation)".]
 
 **Lessons to keep (also in memory):** run EVERY test target of a touched crate before pushing, and gate the push with `&&`
 on cargo's own exit status; stage Cargo.lock whenever a dependency changes; never trust a sum rule (erf+erfc,
@@ -4996,3 +4997,408 @@ With FERRIC_ECP_BACKEND defaulting to `quadrature` (ferric's own engine, Iterati
 All three predicted drops happened, so libecpint's rough value integrals were their cause. The LANL2DZ open item is CLOSED.
 Molecular V_ECP vs PySCF 1.4e-13; mutants unchanged (NoCentre 0.31-0.50, CentreSign 0.62-0.99, L0Only 1.6e-2..2.5e-2,
 M0Only 4.2e-3..2.4e-2).
+
+## Iteration 26 (Python, range-split forces/stress/k-point) — 2026-09-27
+Prototype of the derivative side of Iteration 23's range split (grouping A, `twocall`, split metric). It covers Gamma
+RS-GDF forces, the Gamma stress, and the k-point RS-GDF energy and forces. Python/NumPy/PySCF-molecular only, no cargo.
+Box load was 3–19 from other sessions (a cargo ECP test used 5.5 cores for most of it). Every run was single-threaded
+(OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1); peak RSS ≤ 1.3 GB (k H3 1x1x3). Python wall times are not cost claims.
+
+### Code
+- `pbc_grad_gdf_split.py` (new):
+  - `Pieces`: compact/smooth piece mols, the full aux calibration, q and q^c, and the two kept calls.
+  - `split_gdf`: `build_gdf_split(g0='A')` plus its ranges.
+  - Forces: `deriv_ints_split` and `gamma_gdf_split_grad` (`ket='sym'|'explicit'`).
+  - Stress: `aux_ft_strain_n` (piece aux FT strain with an external calibration), `split_stress_2e` and
+    `stress_analytic` (the non-2e pieces come from `pbc_stress.gamma_stress(eri=False)`); `solve` / `fd_stress`.
+  - Y and Wm come from `pbc_grad_gdf.fit_densities` unchanged; only dJ3 and dJ2 are new. Wm is symmetrised before use
+    (item (e)).
+  - `_MUTANT`: no_dSss, vol_full_S, no_Sss, g0_full, no_ss_pair, moved_lr, no_sr_kstrain. Two further settings are
+    probes, not defects: asym_wm and cancel_metric.
+- `pbc_kgrad_gdf_split.py` (new), on top of `pbc_kgrad_gdf`:
+  - `build`: the split k energy, every q explicit, with `mutant='gamma_kernel'` for the energy-level check.
+  - `grad`: the k forces.
+  - `_MUTANT`: gamma_kernel, no_dSss, g0_full, no_ss_pair.
+- `run_grad_gdf_split_anchor.py {anchor0|h2|h3|tri|span|s_h2|s_h3|s_tri|s_mut|sc_ket|k_anchor0|k_gamma|k <case> [sc] [fd]}`.
+  The predictions are in its docstring.
+- No existing file was edited. reference/pbc/ecp_quadrature/ was not touched.
+
+### What is differentiated
+Grouping A, with χ = χ^c + χ^s and X = X^c + X^s split by exponent, λ = 1:
+
+    J3 = K + (1/Ω)Σ_{G≠0} Re[ P̄ (v_LR X + v_SR X^s) + v_SR P̄_ss X^c ] − c0 (S − S_ss) q^cᵀ
+    K  = Σ_{L,T} (μ_0 ν^c_L | P^c_T)_erfc + Σ_{L,T} (μ^c_0 ν^s_L | P^c_T)_erfc          (the two kept calls)
+    J2 = Σ_T (P^c_0|Q^c_T)_erfc + (1/Ω)Σ_{G≠0} Re[ v_LR XᴴX + v_SR (X^sᴴX + X^cᴴX^s) ] − c0 q^c q^cᵀ
+
+`v_SR (X^sᴴX + X^cᴴX^s)` equals `v_SR (XᴴX − X^cᴴX^c)` without the cancellation; it is the form rsgdf/split.rs builds.
+dE_2e = Σ Y dJ3 + Σ Wm dJ2, with Iteration 18's Y and Loewner Wm. Per term:
+- **SR K.**
+  - Bra −ip1 and aux −ip2 on the two kept calls.
+  - Ket, two exact ways: `sym` takes 2 × bra; `explicit` takes ip1 + ip2 per call. `sym` works because K is
+    symmetric in (μ,ν) as a function (cc + cs + sc), so Iteration 18's relabelling holds for the sum of the two calls.
+  - Stress: 2 Σ Y (−ip1)(A_μ − C_P − T) over the two calls.
+  - SR J2: (P^c|Q^c) only.
+- **G-space J3.**
+  - Full-pair bra derivative (pbc_grad.pair_ft_deriv), weighted per aux column by v_LR X + v_SR X^s.
+  - NEW: the smooth-pair bra derivative (pair_ft_deriv on the smooth pieces), weight v_SR X^c.
+  - Aux: −iG on X and X^s (with the full P) and on X^c (with P_ss).
+  - Stress, three NEW pieces:
+    - dv_SR/dG² = −4π/G⁴ + v_LR(1/G² + 1/4ω²);
+    - pair_ft_strain on the smooth pieces;
+    - the aux FT strain of X^s / X^c, with the FULL calibration.
+- **G-space J2.** 2 v_LR Re[(iG) X̄_R (Wm X)_R] + v_SR × the derivative of (X^s,X) + (X^c,X^s), each factor −iG.
+- **G = 0.**
+  - Force: M_g0 = −c0 Σ_P Y_P q^c_P contracted with d(S − S_ss). The smooth-piece overlap derivative is NEW.
+  - Stress: −c0 d(S − S_ss):(Y q^c) + δ c0 Σ (Y q^c)(S − S_ss) + δ c0 q^cᵀ Wm q^c. The smooth-piece overlap VIRIAL
+    is NEW.
+- **k-point** (per q, K = G + q, K ≠ 0).
+  - Energy:
+    - SR bins from the kept calls, with the energy's phases.
+    - Moved blocks with v_SR(|K|) and the Bloch pair FT of the smooth pieces (pair_ft_residues on a smooth-piece
+      supercell); J2 as above, on K.
+    - The G = 0 subtraction ONLY at q = 0, with (S(k) − S_ss(k), q^c) and c0 q^c q^cᵀ.
+  - Forces: Iteration 21b's per-q Z and Wm, plus
+    - the residue-binned kept derivatives;
+    - weight conj(v_LR X + v_SR X^s) on the full-pair residue derivatives, and conj(v_SR X^c) on the NEW smooth-pair
+      residue derivatives;
+    - M_g0(k) = −c0 Σ q^c Z^k on the image-resolved d(S − S_ss). The image-resolved smooth-piece overlap derivative
+      is NEW.
+
+### Predictions (run_grad_gdf_split_anchor.py docstring, written after smoke runs of the correct code only)
+Seen first: H2 λ = 0 split force vs Iteration 18 3.5e-18; λ = 1 FD −2.42e-9 / 1.3e-10; stress λ = 0 vs Iteration 19
+2.8e-17, and at λ = 1 three components ≤ 9.3e-10.
+- Q1: λ = 0 ≡ Iterations 18 / 19 / 21b to ≤ 1e-14.
+- Q2: at λ = 1, analytic − FD sits at the Iteration 18/19/21b floors to ~2 digits.
+- Q3: exact span, F_split ≡ F_dense to ≤ 1e-11, both with nothing moved (ω = 0.8) and with everything moved (ω = 1.2).
+- Q4 (k): 1x1x1 ≡ Gamma split to ≤ 1e-12; 1x1x3 ≡ supercell to ≤ 1e-11; FD at 21b's floor; E_k split − unsplit ≤ 1e-9.
+- Q5: F_split − F_unsplit, each at its own D, ≤ 1e-10.
+- Mutants:
+  - no_dSss 1e-3..1e-2;
+  - g0_full 1e-3..1e-2, and NOT blind in the everything-moved span;
+  - no_ss_pair 1e-3..1e-2 (blind if no orbital primitive is smooth);
+  - moved_lr O(1e-2);
+  - no_sr_kstrain O(0.1);
+  - gamma_kernel blind at 1x1x1, 1e-4..1e-2 at 1x1x3.
+- Artifact hypotheses:
+  - A partition error in a derivative is O(block) and does not shrink with h. An FD residual equal to the unsplit
+    iteration's to 2–3 digits is truncation of the same energy.
+  - F_split ≡ F_unsplit to ~1e-12 (Q5), so a split force that was secretly the unsplit force would ALSO pass FD. Two
+    things exclude this. Structurally, the split derivative never evaluates a moved block in real space. And the
+    no_ss_pair / moved_lr mutants delete or mis-weight only the NEW moved terms.
+
+### Measured
+Setup follows Iterations 18/19/21b:
+- Central FD with h = 1e-4 of the prototype's OWN split energy. The split GDF is rebuilt at every displacement or
+  strain, with the same geometry-independent ranges and criterion; stress uses FixedCells.
+- Pure-AFT h at gcut 12 (H2, H3) and 10 (tri, k).
+- ω = 1, λ = 1 (a_orb = 0.5, a_aux = 1.0), prec 1e-13, lindep 1e-10 (0 for ET-40).
+- SCF to max|Xᵀ[F,D]X| < 1e-11.
+
+Moved sets (aux shells moved / orbital primitives moved):
+- H2 ET-40: 8/10 aux shells, 2 orbital primitives.
+- H3 cc-pvdz-ri: 6/12, 3.
+- tri cc-pvdz-ri: 8/24, 4.
+- k ET-sp: 6/12 per H, plus the STO-3G 0.1689 primitive.
+
+(a) Exactness anchors at λ = 0 (nothing moved), same D. "Before (e)" is the code without the Wm symmetrisation that
+Iterations 18/19 also lack; "final" symmetrises Wm, so the remaining difference is that roundoff.
+
+| check | before (e) | final |
+|---|---|---|
+| J2 / J3 vs build_gdf (H2 ET-40, H3 cc-pvdz-ri, tri cc-pvdz-ri) | 0 / 0 (bitwise) | 0 / 0 |
+| split force vs Iteration 18, `sym` ket: H2 / H3 / tri | 3.5e-18 / 3.3e-16 / 1.1e-15 | 6.3e-14 / 8.4e-15 / 3.3e-14 |
+| same, `explicit` ket (ip1 + ip2) | 2.2e-14 / 6.0e-14 / 3.4e-14 | 4.1e-14 / 5.9e-14 / 4.5e-14 |
+| split stress vs Iteration 19 (H2 ET-40, \|dE/dε\| 0.228) | 2.8e-17 | 2.3e-14 |
+| k H2 1x1x3: J2 / J3 per q vs pbc_kgrad_gdf.build; force vs Iteration 21b | 0 / 0; 6.9e-18 | (k code unchanged by (e)) |
+
+The first k run grouped J2 as `v (X,X) − v_SR (X^c,X^c)`. At λ = 0 that J2 differed by 2.8e-14 and the force by
+2.2e-13 / 4.9e-13. The grouping `v_LR (X,X) + v_SR [(X^s,X) + (X^c,X^s)]` is exactly Iteration 21b at λ = 0, because
+X^s ≡ 0 there.
+
+(b) Gamma forces at λ = 1, analytic − FD with h = 1e-4. The Iteration 18 column is the same cell, unsplit.
+
+| system / case | components | an − FD | Iteration 18 | \|ΣF\| | F(ewald) − F(none) | E_split − E_unsplit / \|F_split − F_unsplit\| |
+|---|---|---|---|---|---|---|
+| H2/STO-3G a=4, ET-40, RHF = UHF(1,1), none / ewald | (0,x) (0,z) (1,y) | +8.3e-11, −2.43e-9, +1.3e-10 | 8.4e-11, −2.42e-9, 1.3e-10 | 9e-16 | 2.6e-12 | +1.8e-13 / 1.7e-12 (4.4e-12 ewald) |
+| H3/STO-3G a=4.5, cc-pvdz-ri, UHF(2,1), none / ewald | (0,x) (2,y) | +2.74e-9, −1.61e-9 | 2.7e-9, 1.6e-9 | 3e-15 | 2.8e-13 | +3.1e-14 / 6.6e-13 |
+| tri 4H s+p TRI_MOVED, cc-pvdz-ri, RHF | (2,y) (0,z) | +4.8e-10, −2.72e-9 | 4.8e-10, 2.7e-9 | 4.5e-12 † | – | +7.1e-14 / 3.5e-12 |
+| same, UHF(3,1) none / ewald | (2,y) (0,z) | +8.8e-10, −6.5e-10 / −6.3e-10 | 8.8e-10, 6.5e-10 | 8.3e-12 / 1.3e-12 † | 5.8e-12 | −8.5e-14 / 4.9e-11 (none), 2.3e-12 (ewald) |
+
+† The tri rows ran before Wm was symmetrised (item (e)); their ΣF is that roundoff. Every other row is the final code.
+The largest G-space 2e force part (the size of what moved): 4.9e-2 (H2), 0.27 (H3), 0.37 (tri UHF).
+
+Mutants, max|analytic − FD| in Ha/Bohr (none and ewald agree to 2 digits):
+
+| mutant | H2 | H3 | tri RHF | tri UHF |
+|---|---|---|---|---|
+| no_dSss (M_g0 on dS only) | 4.7e-6 | 2.8e-4 | 4.8e-4 | 5.2e-4 |
+| g0_full (dS and q: the unsplit G = 0 term) | 2.9e-3 | 1.8e-2 | 8.8e-4 | 3.1e-3 |
+| no_ss_pair (drop the NEW (P_ss\|X^c) derivative) | 2.8e-4 | 5.8e-3 | 3.4e-3 | 6.0e-3 |
+| moved_lr (moved blocks differentiated with v_LR) | 2.3e-4 | 5.6e-4 | 1.5e-3 | 4.6e-3 |
+
+Every mutant exceeds the FD floor by ≥ 1900×; the weakest is no_dSss on H2. ΣF does not see any of them.
+
+(c) Exact aux span: H2 with one s(0.5) per H and 24 ghost pair-product aux that move with both atoms. Compared with
+pbc_grad_open dense AFT on the same h / S / E_nn.
+
+| ω | moved | E − E_dense | max\|F − F_dense\| | mutants vs F_dense |
+|---|---|---|---|---|
+| 0.8 | nothing | −6.3e-13 | 6.8e-13 | all 6.8e-13 (nothing to break) |
+| 1.2 | everything (the kept SR walks are exact zeros) | 0.0 | 3.1e-13 | g0_full 7.1e-3, moved_lr 1.0e-2; **no_dSss and no_ss_pair 3.1e-13 (blind)** |
+
+FD at ω = 1.2: (0,x) +8.6e-11, (1,z) +2.91e-9. The blindness is structural and was NOT predicted for no_ss_pair. With
+every aux primitive smooth, X^c ≡ 0 and q^c ≡ 0, so both the (P_ss|X^c) term and M_g0 vanish identically. The span
+limit cannot test either term; the H2 / H3 / tri rows do.
+
+(d) Gamma stress at λ = 1 (dE/dε in Ha; FixedCell, all index sets frozen). The Iteration 19 column is the same cell,
+unsplit.
+
+| system / case | components | max\|an − FD\| | Iteration 19 | \|an − anᵀ\| | \|dE/dε split − unsplit\| |
+|---|---|---|---|---|---|
+| H2 ET-40 RHF none | all 9 | 6.73e-9 ((2,2)); off-diagonal ≤ 3.6e-10 | 6.7e-9 | 2.3e-14 | 6.3e-12 |
+| H3 cc-pvdz-ri UHF(2,1) ewald | 6 | 5.17e-8 ((0,0)); off-diagonal ≤ 3.2e-9 | 5.2e-8 | 9.3e-14 | 3.6e-12 |
+| tri cc-pvdz-ri UHF(3,1) ewald | (0,0) (2,2) (0,1) (1,2) | 2.09e-7 ((2,2)); (0,0) +2.03e-8, (0,1) +1.11e-8, (1,2) −1.8e-9 — Iteration 19's tri pattern to 3 digits ((0,0) 2.03e-8, (0,1) 1.12e-8, (2,2) 2.1e-7; h² there) | 2.1e-7 | 1.1e-12 | 5.2e-12 |
+
+Stress mutants, max|mutant − FD| as diagonal / off-diagonal max:
+
+| mutant | H2 | H3 | tri |
+|---|---|---|---|
+| no_dSss (drop the smooth-piece overlap virial) | 5.5e-3 / 7.3e-9 | 4.0e-2 / 1.4e-5 | 6.6e-2 / 1.6e-3 |
+| vol_full_S (J3 G = 0 volume term with S, not S − S_ss) | 5.5e-3 / 3.5e-10 | 4.2e-2 / 3.2e-9 | 7.4e-2 / 1.1e-8 |
+| no_Sss (S_ss dropped from both stress terms) | 1.1e-2 / 7.3e-9 | – | – |
+| g0_full | 1.1e-1 / 1.9e-4 | 1.1e-1 / 1.4e-2 | 1.0e-1 / 1.9e-2 |
+| no_ss_pair | 2.0e-3 / 1.0e-5 | 1.4e-2 / 1.8e-3 | 4.2e-3 / 4.3e-3 |
+| moved_lr | 1.1e-2 / 8.3e-5 | 1.8e-2 / 4.4e-3 | 4.6e-2 / 5.3e-3 |
+| no_sr_kstrain (drop dv_SR/dε) | 2.5e-3 / 1.5e-5 | 1.5e-3 / 3.8e-4 | 6.8e-3 / 3.8e-4 |
+
+- The two S_ss stress terms ADD: 5.46e-3 + 5.49e-3 = 1.09e-2 on H2.
+- no_dSss is diagonal-only on the cubic H2 cell (off-diagonal 7.3e-9, blind there). Off-diagonal it is 1.4e-5 on H3
+  and 1.6e-3 on the triclinic cell.
+- The stress rows were run before the Wm symmetrisation of item (e). A rerun of H2 with the final J2 form reproduced
+  every analytic component to 12 digits.
+
+(e) Translation invariance and Wm symmetry. This is the one real finding beyond the anchors.
+- The Gamma split force on the H2 1x1x3 SUPERCELL (6 atoms, its own SCF) first gave |ΣF| 2.2e-11 and a copy spread of
+  2.2e-11. The unsplit Iteration 18 force on the same cell has a spread of 2.7e-12.
+- Per-part |Σ_A part|: SR3 4.5e-17, G-space J3 1.4e-15, SR J2 1.7e-18, J3 G = 0 3.4e-18, **G-space J2 2.2e-11**. The
+  unsplit LR J2 is 2.6e-13.
+- Σ_R of the J2 G-space derivative is Re[iG Xᴴ(Wm − Wmᵀ)X], which is zero for a symmetric Wm. `fit_densities` does not
+  symmetrise Wm. The v_SR weight at large G, where the unsplit carried only v_LR, amplifies its roundoff asymmetry.
+
+Measured on the same supercell:
+
+| variant | copy spread | \|ΣF\| | \|Σ_A J2_G\| |
+|---|---|---|---|
+| Wm symmetrised (final code; rsgdf/deriv.rs:237 already does `wm = ½(wm + wmᵀ)`) | 3.3e-12 | 9.9e-16 | 2.2e-16 |
+| Wm as fit_densities returns it (`asym_wm`) | 2.2e-11 | 2.2e-11 | 2.2e-11 |
+| symmetrised, cancelling J2 form v_SR[(X,X) − (X^c,X^c)] (`cancel_metric`) | 3.3e-12 | 9.8e-16 | 2.1e-16 |
+| symmetrised, `explicit` ket instead of `sym` | 3.3e-12 | 9.4e-16 | 2.2e-16 |
+
+The cancelling vs non-cancelling J2 form does not matter for the force. The Wm symmetrisation does. My first
+hypothesis was roundoff in the cancelling form; the `cancel_metric` row refuted it.
+
+(f) k-point RS-GDF energy and forces. ET-sp aux as in Iteration 21b, λ = 1. H2 = STO-3G a=4 RHF; H3 = a=4.5 UHF(2,1).
+
+| check | H2 1x1x3 | H3 1x1x3 |
+|---|---|---|
+| 1x1x1 k ≡ Gamma split at the same D: E / max\|ΔF\| none, ewald | −7.8e-16 / 1.5e-13, 2.2e-13 | −4.6e-15 / 4.4e-13, 6.7e-13 |
+| E_k(split) − E_k(unsplit), each at its own D; \|F_split − F_unsplit\| | +1.9e-13; 1.0e-12 | −7.9e-14; 3.3e-12 |
+| E_k − E_sc/N (supercell Gamma split build at the unfolded D) | −3.8e-14 | −4.2e-13 |
+| max_c \|F_k − F_sc(c)\|, none / ewald (supercell copy spread in brackets) | 7.0e-12 / 3.0e-12 (3.1e-12 / 2.0e-12) | 6.9e-12 / 5.4e-12 (4.4e-12 / 2.2e-12) |
+| an − FD (h = 1e-4), none; ewald the same to ±4e-12 | (0,x) +6.8e-11, (0,z) −2.99e-9, (1,y) +9.7e-11 | (0,x) −5.0e-10, (2,y) −3.4e-10 |
+| Iteration 21b FD on the same components | +6.8e-11, −2.99e-9, +9.5e-11 | −5.05e-10, −3.5e-10 |
+| ΣF; F(ewald) − F(none) | 6.9e-17; 2.7e-13 | 2.4e-15; 2.0e-12 |
+
+Mutants, max miss vs FD / vs the supercell force (none = ewald):
+
+| mutant | H2 1x1x3 | H3 1x1x3 |
+|---|---|---|
+| gamma_kernel (v_SR(\|G\|) instead of v_SR(\|G+q\|) on the moved blocks) | 1.1e-3 / 1.1e-3 | 5.4e-4 / 1.1e-3 |
+| the same mistake in the ENERGY (build, same D): E_mut − E | +1.05e-3 Ha | −8.3e-4 Ha |
+| gamma_kernel at 1x1x1 (k_gamma) | 0 (blind, as predicted: q = 0 only) | 0 |
+| no_dSss | 1.1e-3 / 1.1e-3 | 9.2e-5 / 2.5e-3 |
+| g0_full | 2.4e-2 / 2.4e-2 | 1.2e-2 / 4.8e-2 |
+| no_ss_pair | 2.8e-4 / 2.8e-4 | 1.7e-3 / 8.3e-3 |
+
+The first supercell comparison, before item (e), gave 1.9e-11..7.2e-11 with a supercell copy spread of 7e-12..2.4e-11.
+After symmetrising Wm in the Gamma reference it is ≤ 7e-12. The k force did not change; the reference was the noisy
+side.
+
+### Against the predictions
+- Q1 held. λ = 0 is bitwise, or ≤ 1.1e-15 (`sym`) before (e). `explicit` gives 2–6e-14; it is a different, equally
+  exact formula, not an error. The final code carries the Wm-symmetrisation roundoff (≤ 6.3e-14).
+- Q2 held. Every FD residual reproduces the unsplit iteration's residual to 2–3 digits:
+  - forces: H2 −2.43e-9 vs −2.42e-9; H3 2.74e-9 vs 2.7e-9; tri 2.72e-9 vs 2.7e-9;
+  - stress: H2 6.73e-9 vs 6.7e-9; H3 5.17e-8 vs 5.2e-8; tri 2.09e-7 vs 2.1e-7;
+  - k: H2 −2.99e-9 in both.
+- Q3 held: 3.1e-13 with everything moved, 6.8e-13 with nothing moved.
+- Q4 held after item (e): 1x1x1 ≤ 6.7e-13 and supercell ≤ 7e-12. Before (e) it MISSED at 1.9e-11..7.2e-11; the miss was
+  traced to the supercell reference.
+- Q5 held: ≤ 4.4e-12 at Gamma and ≤ 3.3e-12 at k. The tri UHF-none row is 4.9e-11; that SCF took 60 iterations, and
+  its E agrees to 8.5e-14.
+- Mutant magnitudes:
+  - no_dSss on H2 was 4.7e-6, 2e-3..0.3 × the prediction. q^c is small there because the smooth ET-40 aux carry most
+    of the charge.
+  - no_sr_kstrain was 1.5–2.5e-3, not O(0.1).
+  - Every mutant still missed by ≥ 1900× the floor on some system.
+- Two blind spots were NOT predicted: no_ss_pair in the everything-moved span (X^c ≡ 0), and no_dSss off the diagonal
+  on a cubic cell.
+
+### Interpretation (provisional, 2026-09-27)
+Scope: H only, s and s+p orbitals, ≤ 16 AOs, aux ≤ l = 2, ω = 1, λ = 1, cubic cells and one triclinic cell, meshes
+1x1x1 / 1x1x3, no eigenvalue dropped, HF only.
+- The split derivative is the unsplit one with the same partition applied to every integral it differentiates: the
+  kept SR walks, the moved G-space terms with v_SR, and the G = 0 term with the kept inputs.
+  - Nothing else changes. Y, Wm and the 1e, Ewald, Madelung and V_LR pieces are untouched.
+  - The FD residuals are the unsplit ones to 2–3 digits.
+- Three derivative pieces are genuinely new, and a mutant killed each one alone:
+  - the smooth-pair FT derivative, and its strain;
+  - the smooth-piece overlap derivative in the G = 0 term, and its virial;
+  - the v_SR kernel strain.
+- At k, the moved blocks must use v_SR(|G + q|). The Gamma kernel is invisible at 1x1x1 and costs ~1e-3 in both energy
+  and force at 1x1x3.
+- Wm must be symmetrised before the G-space metric derivative; Rust already does this. With the v_SR-weighted terms,
+  an unsymmetrised Wm's roundoff shows up at 2e-11 in ΣF.
+- Not covered:
+  - XC: the XC pieces do not touch the fit, but no KS case was run;
+  - dropped metric eigenvalues with a split;
+  - d orbitals, non-H atoms;
+  - λ ≠ 1, and ω ≠ 1 except the span's 0.8 / 1.2;
+  - k stress, meshes beyond 1x1x3, cost.
+
+### For the Rust port
+Every derivative walk must follow the energy's partition: split.rs's `twocall` pieces, their libint normalisation
+factors f, and each call's own screens. f is geometry-independent, so a piece derivative is f × the libint
+derivative. The force is then the derivative of the split energy. Remove the current refusals only together with the
+tests in item 6.
+1. **rsgdf/deriv.rs `fit_derivatives` (Gamma forces).**
+   - **SR3** (`sr3_force` / `sr3_force_serial`): walk the two kept calls (χ_i, χ_j^c | P^c) and (χ_i^c, χ_j^s | P^c),
+     with `compute_eri3_deriv_shifted` on the piece shells.
+     - Route the [d/dP, d/d(sh1), d/d(sh2)] blocks to the PARENT aux function and atoms, scaled by the pieces' f.
+     - Use each call's own pair_bound and the compact-aux bound.
+     - The explicit bra/ket blocks Rust already computes are exact: `sym` and `explicit` agree to 2–6e-14, and the
+       supercell spread is identical.
+   - **SR2** (`sr2_force`): (P^c|Q^c) pairs only.
+   - **LR J3.** In the per-chunk GEMMs, replace X by the per-aux-column weight (v_LR X + v_SR X_s), for both the
+     orbital `Σ_P Y X` term and the aux `(Σ Y P)* (−iG)` term.
+   - **LR J3, NEW second pass:** `pair_ft_deriv_chunked` on the SMOOTH orbital pieces (raw coefficients, the same half
+     sphere and pair threshold).
+     - Orbital term: weight v_SR X_c.
+     - Aux term: v_SR Re[(Σ Y P_ss)* (−iG) X_c].
+   - **LR J2:** 2 w_LR Re[(−iG X)*(Wm X)] + v_SR × the derivative of Re[X_sᴴ Wm X + X_cᴴ Wm X_s] (four terms, each
+     factor −iG). The cancelling form is equivalent (2e-16).
+   - Keep `wm = ½(wm + wmᵀ)` (deriv.rs:237) before this contraction. Without it, ΣF is 2.2e-11 (item (e)).
+2. **grad.rs (G = 0).**
+   - M_g0 = −c0′ Σ_P Y_P q^c_P, using the compact aux charges (split.rs's q_c).
+   - Contract it with the existing `compute_1e_deriv_block_shifted` overlap pass, MINUS a NEW pass over the smooth-piece
+     prep: `SmoothObs` shells with `compute_1e_deriv_block_shifted`, f_i f_j scaling, and `ao_map` to parent AOs.
+   - Use the image set of `smooth_overlap` (the build's pair images), not `hcore_pair_images`: S_ss is only defined on
+     the former.
+3. **rsgdf/strain.rs `fit_strain` + stress.rs.**
+   - `sr3_strain` / `sr2_strain`: the kept calls / compact pairs, with the same translation-invariance origin as today.
+   - **LR J3.** Split Φ into two parts:
+     - Φ_LR = Re Σ P̄ Y X, with v_LR and dv_LR;
+     - Φ_SR = Re Σ [P̄ Y X_s + P̄_ss Y X_c], with v_SR and dv_SR/dG² = −4π/G⁴ + v_LR(1/G² + 1/4ω²).
+   - NEW: `pair_ft_strain_chunked` on the smooth pieces, and `aux_ft_strain_shells` on the X_s / X_c pieces. The Rust
+     FTs use raw coefficients, so there is no calibration issue.
+   - **LR J2:** v_LR Φ_A + v_SR Φ_M, with Φ_M = Re[X_sᴴWmX + X_cᴴWmX_s]; dΦ_M has four dX terms.
+   - **G = 0:**
+     - `j3_g0_volume` = δ c0 Σ (Y q_c)·(S − S_ss);
+     - `j2_g0_volume` = δ c0 q_cᵀ Wm q_c;
+     - `fit_g0_overlap`: M_g0 with q_c on the overlap virial, MINUS the NEW smooth-piece overlap virial
+       (`compute_1e_deriv_block_shifted` on SmoothObs, pair vector A − B − L as today).
+   - Redo the existing "drop the J2 G = 0 volume term" test with q_c.
+4. **rsgdf/kpoint.rs `KRsGdf::build` (k energy).**
+   - Drop the refusal. `sr_three_index_binned` / `sr_metric_binned` walk the kept calls / compact pairs; the residue
+     bins are shared with Gamma.
+   - `lr_accumulate_q`:
+     - moved blocks on K = G + q with v_SR(|K|), the residue Bloch pair FT of the smooth pieces (`pair_ft_residues` on
+       SmoothObs), X_s and X_c;
+     - J2 as v_LR XᴴX + v_SR(X_sᴴX + X_cᴴX_s). This grouping is bitwise at λ = 0; the grouping `v XᴴX − v_SR X_cᴴX_c`
+       is not (2.8e-14 in J2).
+   - `subtract_g0_three_index` and J2's c0 q qᵀ run only at q = 0, with (S(k) − S_ss(k), q_c). S_ss(k) is the
+     phase-folded image-resolved smooth overlap. Nothing is subtracted at q ≠ 0.
+5. **rsgdf/kpoint/kderiv.rs `kpoint_fit_gradient` + kgrad.rs.**
+   - `k_sr3_force` / `k_sr2_force`: the kept calls / compact pairs.
+   - LR per q:
+     - the full-pair `pair_ft_deriv_residues_chunked` pass, with weight conj(v_LR X + v_SR X_s);
+     - a NEW smooth-piece pass, with weight conj(v_SR X_c); the ket is −iK p − Qb, as today;
+     - aux −iK on X, X_s and X_c;
+     - the metric as in item 4.
+   - `mg0` = −c0 Σ q_c Z^k. kgrad.rs's phase-weighted dS pass subtracts the NEW image-resolved smooth-piece overlap
+     derivative.
+6. **Tests and bars** (measured values in brackets).
+   - λ = 0: bitwise J2/J3, and force/stress ≤ 1e-13 vs today (Gamma ≤ 6.3e-14 with Wm symmetrised; k 6.9e-18; stress
+     2.3e-14).
+   - FD of the split energy at today's floors:
+     - forces: H2 ≤ 5e-9 (2.43e-9), H3 ≤ 5e-9 (2.74e-9);
+     - stress: H2 ≤ 1e-8 (6.7e-9), H3 ≤ 1e-7 (5.2e-8), tri ≤ 5e-7 (2.1e-7; or Richardson).
+   - Exact span at ω = 1.2 (everything moved) vs dense AFT: ≤ 1e-11 (3.1e-13).
+   - k: 1x1x1 ≡ Gamma split ≤ 1e-12 (6.7e-13); 1x1x3 ≡ supercell ≤ 2e-11 (7e-12); ΣF ≤ 1e-13 on a split supercell
+     (9.9e-16).
+   - Mutants, each ≥ 1e-4 on at least one listed system:
+     - drop the smooth overlap derivative: H3 2.8e-4, k H2 1.1e-3. NOT on H2 Gamma (4.7e-6) and NOT in the span;
+     - full G = 0 inputs: ≥ 1.8e-2 on H3;
+     - drop the smooth-pair FT derivative: 5.8e-3 on H3; blind in the span;
+     - moved blocks with v_LR: 5.6e-4 on H3;
+     - stress, drop dv_SR/dε: 1.5e-3 on H3, 2.5e-3 on H2;
+     - stress, drop the smooth overlap virial: 4.0e-2 on H3, 6.6e-2 on tri (1.6e-3 off-diagonal); diagonal only on
+       cubic H2;
+     - k, Gamma kernel on the moved blocks: 1.1e-3 at 1x1x3; blind at 1x1x1 by construction.
+   - Wm symmetry: a split-supercell ΣF test (6-atom H2 x3) catches a missing symmetrisation (2.2e-11 vs 1e-15).
+
+Not measured: any ferric timing, and the per-call cost of the piece derivative calls; KS/XC with the split; dropped
+metric eigenvalues with the split; k-point stress.
+
+## Triclinic k-point eigenvalue gap (investigation) — 2026-09-27
+Open item: tri 4H s+p k-RHF eigenvalues differed from PySCF KRHF/AFTDF by 2.2e-9 (1x1x2) and 5.1e-10 / 4.1e-9
+(2x2x2 none / ewald; Iteration 9 oracle table) while E agreed to ~1e-12. Drivers: `run_kpts_eps_gap.py` (same-density
+Fock comparison + PySCF SCFs at two tolerances), `run_kpts_eps_gap_ours.py` (ours only: residual sweep vs a 1e-12
+reference). Python only, 1 thread, box load ~14. Dense builds cached outside the repo (1x1x2 201 s, 2x2x2 1002 s).
+
+Hypotheses and predictions (written in the driver docstring before any run):
+(a) near-degenerate levels, gauge-dependent individual eps -> gap concentrated where spacing is < ~1e-6;
+(b) SCF convergence: eps are first order in the density error, E second order. The oracle stopped ours at
+    max|FDS-SDF| < 1e-7 (krhf's hard-coded emax) and reported eps of the DIIS-EXTRAPOLATED F; PySCF used conv_tol 1e-11
+    (conv_tol_grad = sqrt -> 3e-6). -> at the SAME density the two Fock builds give eps equal to ~1e-12, and the gap
+    tracks the residual and closes when the SCF is tightened;
+(c) exxdiv shift applied differently to occ vs virt -> same-density gap in the ewald run only;
+(d) PySCF Fock at finite mesh/precision -> same-density Fock difference ~1e-9 (Iteration 9 already saw the gap not
+    move from 41^3 to 61^3);
+(e) complex generalized eigensolver -> gap at an identical F.
+Artifact check built in: tightening only ONE side must not close a (b) gap unless that side was the loose one.
+
+### Measured
+| check (tri 4H s+p) | 1x1x2 none | 1x1x2 ewald | 2x2x2 none | 2x2x2 ewald |
+|---|---|---|---|---|
+| (a) min level spacing per k (tight SCF) | 5.1e-2 / 7.3e-2 | same | – | – |
+| same density (ours at 1e-11): max\|dS\| / \|dh\| / \|dJ\| / \|dK\| | 4.0e-15 / 2.3e-13 / 1.6e-13 / 7.5e-13 | 4.0e-15 / 2.3e-13 / 1.6e-13 / 7.7e-13 | – | – |
+| same density: max\|d eps\| (PySCF F vs ours F) | 1.4e-12 | 1.5e-12 | – | – |
+| (e) same F: scipy eigh(F,S) vs X-orthogonalised eigh | 7.3e-14 | 6.2e-14 | – | – |
+| ours, pbc_kpts.krhf exactly as the oracle called it, vs ours at resid 1e-12 | 2.2e-9 | 2.2e-9 | 5.2e-10 | 4.2e-9 |
+| Iteration 9 oracle gap (ours krhf vs PySCF) | 2.2e-9 | 2.2e-9 | 5.1e-10 | 4.1e-9 |
+| PySCF conv_tol 1e-11 from our dm at resid 7e-8 / at 1e-11 | 4.3e-10 / 1.4e-12 | not run | – | – |
+| PySCF conv_tol 1e-14, grad 1e-10, from our dm at 7e-8 (13 cycles) / at 1e-11 | 2.4e-12 / 1.4e-12 | not run | – | – |
+dE in every row above <= 1e-12 (PySCF - ours -9.7e-13 throughout, the known build offset).
+Residual sweep, ours only (max\|d eps\| vs the 1e-12 reference, and max\|d eps\| / residual):
+| resid (1x1x2 none) | 5.9e-7 | 6.6e-8 | 4.2e-9 | 2.1e-10 | 7.8e-11 |
+|---|---|---|---|---|---|
+| max\|d eps\| (ratio) | 6.0e-8 (0.10) | 2.4e-9 (0.04) | 1.7e-10 (0.04) | 1.2e-11 (0.06) | 5.1e-12 (0.07) |
+| **resid (2x2x2 ewald)** | 7.3e-7 | 8.6e-8 | 5.5e-9 | 5.4e-10 | 9.2e-11 |
+| max\|d eps\| (ratio) | 7.1e-8 (0.10) | 6.1e-9 (0.07) | 3.4e-10 (0.06) | 3.0e-11 (0.06) | 3.9e-12 (0.04) |
+(1x1x2 ewald and 2x2x2 none: same picture, ratios 0.04-0.18.) dE over the same sweeps: <= 5e-13, i.e. quadratic.
+
+### Conclusion (provisional, scoped: tri 4H s+p, 1x1x2 and 2x2x2, pure AFT, Python prototype; 2026-09-27)
+- EXPLAINED as (b): the gap is the prototype oracle's loose SCF stop (commutator < 1e-7, eps from the DIIS-extrapolated
+  F), not a Fock-build difference. Ours-vs-ours reproduces the four oracle numbers (2.2e-9, 2.2e-9, 5.2e-10, 4.2e-9 vs
+  2.2e-9, 2.2e-9, 5.1e-10, 4.1e-9) with PySCF absent; d eps scales linearly with the residual (ratio 0.04-0.18 over
+  four decades) while dE stays <= 5e-13; tightened on both sides the gap is 1.4e-12 - 2.4e-12. Why the H2 rows showed
+  1e-13 was not measured (presumably its final residual lands far below the 1e-7 stop).
+- REFUTED: (a) spacing >= 5e-2, no near-degeneracy; (c) same-density gap is identical none vs ewald (1.4e-12 / 1.5e-12);
+  (d) same-density Fock agrees to 7.7e-13 with the residual in h (lattice-sum/precision level, first-order eps effect
+  1.9e-12); (e) two eigensolvers agree to 7e-14.
+- Not measured: the Rust kscf eigenvalues (the Rust PySCF pins compare energies only; kscf reports eps of the
+  un-extrapolated F(D) at grad_conv 1e-9 default / 1e-10 in pbc_krhf.rs, so the same law predicts <= ~1e-11 there);
+  PySCF ewald SCF rows (stopped for box load; the same-density and ours-only ewald rows cover it).
+- Recommendation: nothing to fix in the integrals; any k-point eigenvalue pin vs PySCF must converge both SCFs to
+  commutator <= 1e-10 (then bar 1e-10, measured floor ~2e-12), and the "4e-9" open item is closed.

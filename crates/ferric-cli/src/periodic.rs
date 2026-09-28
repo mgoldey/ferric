@@ -510,8 +510,8 @@ fn gamma_system(
         )?)),
         Some(aux) => {
             // The plan only carries a range split on a Gamma energy run
-            // (`periodic_plan` refuses it with task = "optimize"), and
-            // `build_for_gradient` refuses a split config itself.
+            // (`periodic_plan` refuses it with task = "optimize"; the library
+            // Gamma forces/stress do follow the split, the CLI is not wired).
             let cfg = RsGdfConfig {
                 exxdiv: plan.exxdiv,
                 budget_bytes: budget_bytes(plan),

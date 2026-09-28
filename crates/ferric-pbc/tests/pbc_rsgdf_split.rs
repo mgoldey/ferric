@@ -322,14 +322,17 @@ fn metric_guard_refuses_a_wrong_g0_metric() {
     }
 }
 
+/// The Gamma gradient build now ACCEPTS a split (its forces/stress follow
+/// the partition: `tests/pbc_grad_rsgdf_split.rs`); the k-point build still
+/// refuses one.
 #[test]
-fn derivative_and_kpoint_builds_refuse_a_range_split() {
+fn kpoint_build_refuses_a_range_split_and_the_gradient_build_accepts_it() {
     let an = anchor();
     let c = cfg(1.2, Some(RangeSplit::default()));
-    let msg = RsGdf::build_for_gradient(&an.cell, &an.prep, &an.site.prep, &an.hc.s, &c)
-        .expect_err("gradient build accepted a range split")
-        .to_string();
-    assert!(msg.contains("range split"), "{msg}");
+    let g = RsGdf::build_for_gradient(&an.cell, &an.prep, &an.site.prep, &an.hc.s, &c)
+        .expect("the gradient build must accept a range split");
+    assert!(g.has_gradient_parts());
+    assert_eq!(g.range_split(), Some(RangeSplit::default()));
     let mesh = KPointMesh::gamma_centred(&an.cell, [1, 1, 1]).unwrap();
     let kc = KRsGdfConfig {
         gdf: c,
