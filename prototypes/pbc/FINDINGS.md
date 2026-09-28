@@ -5437,3 +5437,36 @@ parallelised), hcore SR 90.9, SR3 10.2. Interpretation (provisional): (1) the LR
 on a molecular crystal — the performance plan's "pair-FT re-walk" item (every shell pair re-walked per G chunk) plus
 parallelising it is the next lever; (2) raising the hcore omega is a cheap default win (1.32x diamond; the plan predicted
 18x fewer SR nucleus triplets on dry ice); (3) ferric is 5.6x leaner in memory than PySCF on dry ice.
+
+## Parallel pair FT + cell-derived hcore omega (measured 2026-09-28 12:10-12:20, commit fcd41dc2)
+
+Same TOMLs, binary, box and harness as the series above; runs one at a time, no tests running
+alongside. Load at each run's start was 2.5-5.4, mostly the previous run's decay; one sample per
+cell. All runs use the range split. The hcore ω default is now `PeriodicHcoreConfig::for_cell`
+(ω_h = 0.9636 diamond_prim, 0.417 dryice).
+
+| run | threads | before (s) | after (s) | E after − E before (Ha/cell) |
+|---|---|---|---|---|
+| diamond_prim | 1 | 106.5 | 79.6 | +3e-12 |
+| diamond_prim | 6 | 54.6 | 32.4 | +3e-12 |
+| diamond_prim k222 | 6 | 99.6 | 48.7 | −6e-13 |
+| dryice | 1 | 576.1 | 258.7 | −1.4e-11 |
+| dryice | 6 | 473.6 | 77.6 | −1.4e-11 |
+
+Energies agree across 1 and 6 threads to the last bit. The before→after differences come from
+the ω change (hcore) only. PySCF dryice is 108.6 s (1 thread) and 22.9 s (6 threads), so ferric
+is now 2.4× slower at 1 thread and 3.4× at 6 (was 5.3× and 20.7×).
+
+Dryice stage walls, after (1 thread / 6 threads, s):
+- LR pair FT: 138.9 / 30.1 (was 326.8 / 319.6). The serial gain of 2.4× is the survivor cache
+  (the screen is no longer re-walked per G chunk); 4.6× parallel on 6 physical cores.
+- hcore SR attraction: 27.9 / 13.7 (was 168.1 / 90.9); this is the ω change.
+- hcore LR attraction: 14.6 / 3.1 (was 1.8 / 1.8). Lower ω means more G, and this is the cost
+  the ω rule trades against SR.
+- LR aux FT + GEMM: 38.6 / 10.8 (was 40.1 / 40.1).
+- SR 3-centre: 27.9 / 9.1.
+- scf K: 5.9 / 5.9 (serial).
+
+Next levers at 6 threads: the pair FT is still the biggest single stage (30 s), followed by
+hcore SR (13.7), aux FT + GEMM (10.8) and SR3 (9.1). At 1 thread the pair FT is 54% of the
+wall. Not yet measured: diamond_conv, dryice PBE, and a repeat to size the run-to-run scatter.
