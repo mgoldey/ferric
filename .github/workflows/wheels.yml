@@ -154,7 +154,10 @@ jobs:
   # ONLY writer, so the old 4-way race this section describes cannot recur.
   build-native-deps:
     runs-on: ubuntu-22.04
-    timeout-minutes: 150
+    # A cold libint2 build (ferric's export: ~16,800 generated sources) took
+    # 96 min on 6 local cores; the 4-core runner needs more. 330 of the
+    # hosted runner's 360-minute ceiling. Warm runs restore from the cache.
+    timeout-minutes: 330
     env:
       # Bump to invalidate every cache entry at once (e.g. after a CMake-flag
       # or dnf-package-list change in build-native-deps.sh that doesn't touch
@@ -743,9 +746,18 @@ jobs:
         run: |
           set -euo pipefail
           ls -lh dist/
+          # PyPI refuses files over 100 MiB (warehouse MAX_FILESIZE) unless
+          # the project has an increase. Fail here, not at upload on tag day.
+          limit=$((100 * 1024 * 1024))
           for whl in dist/*.whl; do
             echo "--- $whl ---"
             python3 -m zipfile -l "$whl" | grep -iE '\.so$|openblas|libxc' || true
+            size=$(stat -c %s "$whl")
+            echo "size: $size bytes ($((size * 100 / limit))% of PyPI's limit)"
+            if [ "$size" -ge "$limit" ]; then
+              echo "::error::$whl is $size bytes, over PyPI's $limit-byte limit"
+              exit 1
+            fi
           done
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
