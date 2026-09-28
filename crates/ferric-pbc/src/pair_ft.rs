@@ -80,7 +80,7 @@ mod plan;
 pub mod residues;
 
 use plan::{min_gnorm2, recycle, PairFtPlan};
-pub use plan::{CTR_EMPTY_WINDOW, CTR_PARTIAL_WINDOW};
+pub use plan::{CTR_EMPTY_WINDOW, CTR_LARGEST_GROUP, CTR_PARTIAL_WINDOW, CTR_SITES, CTR_SURVIVORS};
 
 /// Default primitive-pair screening threshold for [`pair_ft`].
 pub const DEFAULT_PAIR_FT_THRESH: f64 = 1e-15;

@@ -104,7 +104,7 @@ use ferric_pbc::pair_ft::residues::{
 };
 use ferric_pbc::pair_ft::{
     pair_ft_bytes_per_g, pair_ft_chunked_serial_oracle, pair_ft_chunked_timed, pair_ft_with_thresh,
-    CTR_PARTIAL_WINDOW, DEFAULT_PAIR_FT_THRESH,
+    CTR_LARGEST_GROUP, CTR_PARTIAL_WINDOW, CTR_SITES, CTR_SURVIVORS, DEFAULT_PAIR_FT_THRESH,
 };
 use ferric_pbc::rsgdf::kpoint::{
     sr_bins_parallel_and_serial, sr_sums_gamma_and_single_bin, KRsGdf, KRsGdfConfig, SrBinsParts,
@@ -1133,7 +1133,20 @@ fn ecp_force_term_is_bitwise_across_threads_and_vs_serial_loop() {
 //   (≈ 27.3–29.5) end INSIDE most chunks while the s–s ones (≈ 32–33.4)
 //   stay full; asserts via `pair FT partial-window pair-chunks` that both
 //   kernels really took that path. A nonzero written beyond a partial window
-//   (the oracle has +0.0 there) breaks it.
+//   (the oracle has +0.0 there) breaks it. Both spd tests also assert that
+//   every shell group is one shell (sites == survivors): they never share a
+//   site.
+// * `pair_ft_kernels_are_bitwise_vs_frozen_serial_kernels_with_general_contraction`
+//   — the same comparison (G ×6, partial windows) on a GENERALLY CONTRACTED
+//   basis: three s columns on one exponent set (one with zero coefficients,
+//   as cc-pVDZ's third s) and two p columns on another, so the production
+//   kernel groups shells, shares each site's trig/E/F values between the
+//   member shell pairs (whose coefficients, screens and windows differ) and
+//   runs tasks over multi-shell bra groups. Asserts survivors > sites and a
+//   group of 3 shells for both kernels. A site value taken from the wrong
+//   member, an entry accumulated past its OWN window (the site's is larger),
+//   a member mapped to the wrong accumulator or AO rows/columns, or a wrong
+//   exp-table slot each break it.
 // * `rsgdf_lr_sums_are_bitwise_vs_frozen_serial_across_threads` — the whole
 //   RS-GDF LR stage (pair FT + aux FT + reused-buffer packing + the
 //   row-blocked parallel J3 GEMMs, both terms per block, beside the J2
@@ -1162,6 +1175,35 @@ fn spd_basis_h() -> BasisSet {
                 &[0.15432897, 0.53532814, 0.44463454],
             ),
             norm_shell(1, &[0.8], &[1.0]),
+            d,
+        ],
+    );
+    s
+}
+
+/// H, generally contracted: three s columns on the STO-3G exponents (the
+/// STO-3G contraction, a sign-changing one, and the diffuse primitive alone
+/// with zero coefficients elsewhere, like cc-pVDZ's third s), two Cartesian p
+/// columns on {1.2, 0.35} (the second the diffuse primitive alone) and a PURE
+/// d (0.9): 6 shells, 3 shell groups per atom.
+fn gc_basis_h() -> BasisSet {
+    let mut s = BasisSet {
+        name: "pbc-bitwise-gc-H".into(),
+        shells: HashMap::new(),
+        ecps: HashMap::new(),
+    };
+    let se = [3.42525091, 0.62391373, 0.1688554];
+    let pe = [1.2, 0.35];
+    let mut d = norm_shell(2, &[0.9], &[1.0]);
+    d.pure = true;
+    s.shells.insert(
+        1,
+        vec![
+            norm_shell(0, &se, &[0.15432897, 0.53532814, 0.44463454]),
+            norm_shell(0, &se, &[-0.3, 0.2, 1.0]),
+            norm_shell(0, &se, &[0.0, 0.0, 1.0]),
+            norm_shell(1, &pe, &[0.6, 0.5]),
+            norm_shell(1, &pe, &[0.0, 1.0]),
             d,
         ],
     );
@@ -1226,11 +1268,12 @@ fn scaled(v: Vec<[f64; 3]>, s: f64) -> Vec<[f64; 3]> {
 
 /// Production chunked pair FT (Gamma and residue kernels) vs the FROZEN
 /// serial oracles, bit for bit at 1/2/6 threads, on `scrambled_gvecs` scaled
-/// by `g_scale`. Returns the production runs' [`CTR_PARTIAL_WINDOW`] count
-/// (Gamma, residue), asserted equal at every thread count.
-fn pair_ft_bitwise_case(g_scale: f64) -> (u64, u64) {
+/// by `g_scale`, in basis `bs`. Returns the production runs' timings
+/// (Gamma, residue) at 1 thread; their [`CTR_PARTIAL_WINDOW`] count is
+/// asserted equal at every thread count.
+fn pair_ft_bitwise_case(bs: &BasisSet, g_scale: f64) -> (PbcTimings, PbcTimings) {
     let cell = triclinic_cell();
-    let prep = prep_for(&cell, &spd_basis_h());
+    let prep = prep_for(&cell, bs);
     assert_split_binds(&prep);
     let n = prep.nbasis();
     let thresh = DEFAULT_PAIR_FT_THRESH;
@@ -1265,6 +1308,7 @@ fn pair_ft_bitwise_case(g_scale: f64) -> (u64, u64) {
         "a vacuous chunk"
     );
     let mut partial_gamma = Vec::new();
+    let mut t_gamma = None;
     for &nt in &THREADS {
         let (par, t) = in_pool(nt, || gamma(false));
         assert_chunks_bitwise(
@@ -1273,6 +1317,7 @@ fn pair_ft_bitwise_case(g_scale: f64) -> (u64, u64) {
             &format!("Gamma pair FT at {nt} threads vs serial"),
         );
         partial_gamma.push(t.counter(CTR_PARTIAL_WINDOW).expect("window counter"));
+        t_gamma.get_or_insert(t);
     }
     // The unchunked entry point is the same kernel over one chunk.
     let whole = in_pool(6, || {
@@ -1330,6 +1375,7 @@ fn pair_ft_bitwise_case(g_scale: f64) -> (u64, u64) {
         "only {live} live residue bucket(s): binning is vacuous"
     );
     let mut partial_resid = Vec::new();
+    let mut t_resid = None;
     for &nt in &THREADS {
         let (par, t) = in_pool(nt, || resid(false));
         assert_chunks_bitwise(
@@ -1338,6 +1384,7 @@ fn pair_ft_bitwise_case(g_scale: f64) -> (u64, u64) {
             &format!("residue pair FT at {nt} threads vs serial"),
         );
         partial_resid.push(t.counter(CTR_PARTIAL_WINDOW).expect("window counter"));
+        t_resid.get_or_insert(t);
     }
     // The window of a (pair, chunk) does not depend on the thread count.
     for (what, v) in [("Gamma", &partial_gamma), ("residue", &partial_resid)] {
@@ -1346,12 +1393,35 @@ fn pair_ft_bitwise_case(g_scale: f64) -> (u64, u64) {
             "{what}: partial-window counts differ across threads: {v:?}"
         );
     }
-    (partial_gamma[0], partial_resid[0])
+    (
+        t_gamma.expect("a Gamma run"),
+        t_resid.expect("a residue run"),
+    )
+}
+
+/// `(survivors, sites, largest shell group)` of a production run.
+fn sharing(t: &PbcTimings) -> (u64, u64, u64) {
+    (
+        t.counter(CTR_SURVIVORS).expect("survivor counter"),
+        t.counter(CTR_SITES).expect("site counter"),
+        t.counter(CTR_LARGEST_GROUP).expect("group counter"),
+    )
+}
+
+/// The spd basis has one shell per group: no site is shared.
+fn assert_no_sharing(t: &PbcTimings, what: &str) {
+    let (surv, sites, largest) = sharing(t);
+    assert!(
+        surv > 0 && surv == sites && largest == 1,
+        "{what}: {surv} survivors, {sites} sites, largest group {largest}"
+    );
 }
 
 #[test]
 fn pair_ft_kernels_are_bitwise_vs_frozen_serial_kernels_across_threads() {
-    pair_ft_bitwise_case(1.0);
+    let (g, r) = pair_ft_bitwise_case(&spd_basis_h(), 1.0);
+    assert_no_sharing(&g, "Gamma");
+    assert_no_sharing(&r, "residue");
 }
 
 /// G scale of the partial-window test (see below).
@@ -1382,7 +1452,11 @@ const PARTIAL_WINDOW_G_SCALE: f64 = 6.0;
 /// > 0 for each kernel.
 #[test]
 fn pair_ft_kernels_are_bitwise_vs_frozen_serial_kernels_in_partial_windows() {
-    let (gamma, resid) = pair_ft_bitwise_case(PARTIAL_WINDOW_G_SCALE);
+    let (g, r) = pair_ft_bitwise_case(&spd_basis_h(), PARTIAL_WINDOW_G_SCALE);
+    assert_no_sharing(&g, "Gamma");
+    assert_no_sharing(&r, "residue");
+    let partial = |t: &PbcTimings| t.counter(CTR_PARTIAL_WINDOW).expect("window counter");
+    let (gamma, resid) = (partial(&g), partial(&r));
     assert!(
         gamma > 0,
         "Gamma kernel: no (pair, chunk) with 0 < n_used < n_G; the partial-window path is unreached"
@@ -1391,6 +1465,28 @@ fn pair_ft_kernels_are_bitwise_vs_frozen_serial_kernels_in_partial_windows() {
         resid > 0,
         "residue kernel: no (pair, chunk) with 0 < n_used < n_G; the partial-window path is unreached"
     );
+}
+
+/// The bitwise comparison on the generally contracted [`gc_basis_h`] with
+/// the partial-window G scale: the production kernel's shared-site path
+/// (shell groups of 3 s and 2 p columns; entries of one site with different
+/// coefficients and windows, some of them zero; multi-shell bra-group tasks),
+/// which the spd tests never reach (they assert sites == survivors).
+#[test]
+fn pair_ft_kernels_are_bitwise_vs_frozen_serial_kernels_with_general_contraction() {
+    let (g, r) = pair_ft_bitwise_case(&gc_basis_h(), PARTIAL_WINDOW_G_SCALE);
+    for (what, t) in [("Gamma", &g), ("residue", &r)] {
+        let (surv, sites, largest) = sharing(t);
+        assert!(
+            sites > 0 && surv > sites,
+            "{what}: {surv} survivors in {sites} sites: no site is shared, the grouped path is unreached"
+        );
+        assert_eq!(largest, 3, "{what}: the three s columns are not one group");
+        assert!(
+            t.counter(CTR_PARTIAL_WINDOW).expect("window counter") > 0,
+            "{what}: no partial window"
+        );
+    }
 }
 
 /// `RsGdfConfig` of the LR tests: ω = 1, exxdiv none, `split` optional.
