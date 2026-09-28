@@ -1,0 +1,115 @@
+# rattler-build recipe (format v1) for the conda package of ferric.
+#
+#   rattler-build build --recipe conda/recipe.yaml -c conda-forge
+#
+# Links conda-forge's libint 2.13.1 (second derivatives), so analytic
+# Hessians are available here with the full angular-momentum range that build
+# carries. variants.yaml (next to this file, picked up automatically) sets the
+# Python versions and the C standard library baseline.
+
+context:
+  name: ferric
+  # Keep in step with [project].version in pyproject.toml.
+  version: "0.1.0"
+
+package:
+  name: ${{ name }}
+  version: ${{ version }}
+
+source:
+  # The repository root. .gitignore is honoured, so target/ and other build
+  # output are not copied into the work directory.
+  path: ..
+
+build:
+  number: 0
+  skip:
+    - not linux
+  script:
+    # crates/ferric-integrals/build.rs reads LIBINT2_PREFIX for libint2's
+    # headers and library and for Eigen ($PREFIX/include/eigen3); every other
+    # native library (libxc, OpenBLAS) is found through the same -L$PREFIX/lib.
+    - export LIBINT2_PREFIX="$PREFIX"
+    - export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+    - export OPENBLAS_NUM_THREADS=1
+    # Bounds peak memory of the release build (the libint2 shim and the
+    # workspace are large); CARGO_BUILD_JOBS from the caller wins.
+    - export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}"
+    - $PYTHON -m pip install . -vv --no-deps --no-build-isolation
+
+requirements:
+  build:
+    - ${{ compiler('c') }}
+    - ${{ stdlib('c') }}
+    - ${{ compiler('cxx') }}
+    - ${{ compiler('rust') }}
+    # The vendored libecpint (crates/ferric-integrals/shim/libecpint) is
+    # configured and built with CMake from build.rs.
+    - cmake
+    - make
+    - pkg-config
+  host:
+    - python
+    - pip
+    - maturin >=1.0,<2.0
+    # The exact build scripts/install-libint.sh pins; its SONAME is
+    # unversioned (libint2.so), so the run pin below is exact as well.
+    - libint ==2.13.1
+    # C-only libxc, CPU build. ferric's FFI (crates/ferric-dft/src/libxc.rs)
+    # uses opaque handles and accessor functions only, so any libxc >=5 links.
+    # Pinned to 7.x, the version the KS-DFT validation suite was run against
+    # (it reproduces the libxc 5 results: PBE/B3LYP/SCAN <= 3e-12 Ha vs PySCF).
+    - libxc-c 7.* cpu_*
+    # openblas carries the libopenblas.so link and openblas.pc; libopenblas
+    # carries the run_exports. ferric links -lopenblas directly (BLAS and
+    # LAPACK), not the libblas/liblapack switchable interface.
+    - openblas
+    - libopenblas
+    # Header-only; libint2's engine.impl.h includes both.
+    - eigen >=3.4,<5
+    - libboost-headers
+  run:
+    - python
+    - numpy >=2.0
+    - gemmi >=0.7
+    - libint ==2.13.1
+
+tests:
+  - python:
+      imports:
+        - ferric
+      pip_check: true
+  - script:
+      interpreter: python
+      env:
+        OPENBLAS_NUM_THREADS: "1"
+      content: |
+        import ferric
+
+        water = """3
+        water
+        O   0.000000   0.000000   0.117790
+        H   0.000000   0.755453  -0.471161
+        H   0.000000  -0.755453  -0.471161
+        """
+        mol = ferric.Molecule.from_xyz_string(water, 0, 1)
+        r = ferric.run_frequencies(mol, "sto-3g")
+        # The point of this package: a libint2 with second derivatives, so the
+        # default ("auto") Hessian is analytic rather than finite-difference.
+        assert r.hessian_source == "analytic", r.hessian_source
+        assert len(r.frequencies) == 3, r.frequencies
+        print(r)
+  - script:
+      # The console script (pyproject.toml [project.scripts]) runs the CLI
+      # from the extension module; --help must exit 0.
+      - ferric --help
+
+about:
+  homepage: https://github.com/mgoldey/ferric
+  repository: https://github.com/mgoldey/ferric
+  summary: Rust-native quantum chemistry engine with Python bindings
+  license: MIT OR Apache-2.0
+  license_file:
+    - LICENSE-MIT
+    - LICENSE-APACHE
+    - crates/ferric-integrals/shim/libecpint/LICENSE

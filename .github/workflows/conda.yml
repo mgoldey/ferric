@@ -1,0 +1,52 @@
+name: conda
+
+# Builds and tests the conda package (conda/recipe.yaml) against conda-forge's
+# libint 2.13.1. Uploads the built package as a workflow artifact; publishing
+# to a channel is not done here.
+#
+# Same docs-only skip as ci.yml: these paths cannot change the package.
+on:
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'site/**'
+      - 'LICENSE-*'
+      - '.gitignore'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # The build and host environments (Rust toolchain, compilers, libint's
+      # headers) plus a release cargo target/ need more than the ~14 GB the
+      # runner has free; drop the unused toolchains as ci.yml does.
+      - name: Free runner disk space
+        run: |
+          echo "--- before"; df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/share/swift \
+            "$AGENT_TOOLSDIRECTORY/CodeQL" 2>/dev/null || true
+          sudo docker image prune --all --force > /dev/null 2>&1 || true
+          echo "--- after"; df -h / | tail -1
+
+      # Builds one Python variant on pull requests; the recipe's tests run as
+      # part of the build. The action uploads output/ as the `conda-package`
+      # artifact.
+      - uses: prefix-dev/rattler-build-action@1ca5f45832f419a46d1326ccc5861d7e14d67c44 # v0.2.39
+        with:
+          recipe-path: conda/recipe.yaml
+          build-args: -c conda-forge --variant python=3.12
+          artifact-name: conda-package
