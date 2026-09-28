@@ -20,7 +20,7 @@
 //! quadrature backend to ~1e-13 (`tests/ecp_quadrature.rs`).
 //!
 //! Backend selection: every public function reads `FERRIC_ECP_BACKEND`
-//! (`libecpint` — the default — or `quadrature`; anything else is an error,
+//! (`quadrature` — the default — or `libecpint`; anything else is an error,
 //! never a silent default); the `*_with_backend` variants take it explicitly.
 
 use crate::ecp_ffi::{
@@ -35,12 +35,13 @@ use std::os::raw::c_int;
 /// Which engine evaluates the ECP integrals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EcpBackend {
-    /// The libecpint C++ library via `shim/ecp_shim.cc` (default during the
-    /// transition; its projector values carry ~1e-7..1e-6 non-smooth error —
-    /// FINDINGS "ECP derivative clean-band discrepancy — 2026-09-27").
+    /// The libecpint C++ library via `shim/ecp_shim.cc`, kept as a
+    /// cross-check backend: its projector values carry ~1e-7..3.5e-5
+    /// non-smooth error (FINDINGS "ECP derivative clean-band discrepancy —
+    /// 2026-09-27"; tests/ecp_quadrature.rs parity).
     Libecpint,
     /// ferric's own analytic-angular / windowed-radial quadrature
-    /// ([`crate::ecp_quad`], FINDINGS "Iteration 25").
+    /// ([`crate::ecp_quad`], FINDINGS "Iteration 25"). The default.
     Quadrature,
 }
 
@@ -75,7 +76,7 @@ impl std::fmt::Display for EcpBackend {
 /// `FERRIC_ECP_BACKEND`: result-affecting, so a malformed value is an error.
 static ECP_BACKEND: ConfigVar<EcpBackend> = ConfigVar {
     env_name: "FERRIC_ECP_BACKEND",
-    default: EcpBackend::Libecpint,
+    default: EcpBackend::Quadrature,
     parse: EcpBackend::parse_config_str,
     validate: accept_any,
 };
@@ -91,7 +92,7 @@ pub fn resolve_ecp_backend(
         .map_err(|e| FerricError::General(format!("FERRIC_ECP_BACKEND: {e}")))
 }
 
-/// The process-wide ECP backend (`FERRIC_ECP_BACKEND`, default libecpint).
+/// The process-wide ECP backend (`FERRIC_ECP_BACKEND`, default quadrature).
 pub fn ecp_backend() -> Result<EcpBackend, FerricError> {
     resolve_ecp_backend(None, ferric_core::config::env_lookup).map(|r| r.value)
 }
@@ -1206,7 +1207,7 @@ mod tests {
     use super::*;
 
     /// Strict backend knob: exact spellings only, unknown -> error (never a
-    /// silent default), absent -> libecpint, explicit beats env.
+    /// silent default), absent -> quadrature, explicit beats env.
     #[test]
     fn ecp_backend_knob_is_strict() {
         let env =
@@ -1214,7 +1215,7 @@ mod tests {
         let none = |_: &str| None::<String>;
         assert_eq!(
             resolve_ecp_backend(None, none).unwrap().value,
-            EcpBackend::Libecpint
+            EcpBackend::Quadrature
         );
         assert_eq!(
             resolve_ecp_backend(None, env("quadrature")).unwrap().value,

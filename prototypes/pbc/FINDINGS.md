@@ -4984,3 +4984,15 @@ Not yet synced to `prototypes/pbc/` (the snapshot needs the ruff@0.15.8 format p
 vs PySCF GDF p1e-12 (60.0 s, 1 thread): 5.9x slower → 1.9x slower. Next lever: hcore SR attraction (performance plan
 "hcore omega": ~2.3x fewer SR nucleus triplets on diamond_prim), then the parallel speed-up on top (not yet measured
 together with the split).
+
+## ECP quadrature is the default — the three predictions (measured 2026-09-27)
+With FERRIC_ECP_BACKEND defaulting to `quadrature` (ferric's own engine, Iteration 25; libecpint kept as a cross-check):
+| residual | libecpint | quadrature |
+|---|---|---|
+| LANL2DZ 1x1x2 pin, ferric − prototype (none / ewald) | −2.9e-7 / −2.9e-7 | −2.0e-10 / −2.0e-10 |
+| molecular dV_ECP/dR vs FD (h = 1e-4), I2 / HI def2-SVP | 1.4e-7 plateau | 1.5e-9 / 7.3e-9 (FD floor) |
+| HI compact SCF force vs FD (none / ewald) | 2.52e-7 | 1.40e-9 / 1.41e-9 |
+| HI/LANL2DZ SCF force vs FD | (not passable) | 1.31e-8 |
+All three predicted drops happened, so libecpint's rough value integrals were their cause. The LANL2DZ open item is CLOSED.
+Molecular V_ECP vs PySCF 1.4e-13; mutants unchanged (NoCentre 0.31-0.50, CentreSign 0.62-0.99, L0Only 1.6e-2..2.5e-2,
+M0Only 4.2e-3..2.4e-2).
