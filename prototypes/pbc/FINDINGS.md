@@ -5447,8 +5447,8 @@ cell. All runs use the range split. The hcore ω default is now `PeriodicHcoreCo
 
 | run | threads | before (s) | after (s) | E after − E before (Ha/cell) |
 |---|---|---|---|---|
-| diamond_prim | 1 | 106.5 | 79.6 | +3e-12 |
-| diamond_prim | 6 | 54.6 | 32.4 | +3e-12 |
+| diamond_prim | 1 | 106.5 | 79.6 | −9.7e-12 |
+| diamond_prim | 6 | 54.6 | 32.4 | −9.7e-12 |
 | diamond_prim k222 | 6 | 99.6 | 48.7 | −6e-13 |
 | dryice | 1 | 576.1 | 258.7 | −1.4e-11 |
 | dryice | 6 | 473.6 | 77.6 | −1.4e-11 |
