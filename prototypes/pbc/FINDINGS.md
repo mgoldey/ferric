@@ -5499,3 +5499,27 @@ which points to memory bandwidth.
 Interpretation (provisional): at 6 threads the pair FT is compute-saturated (98.5% busy), so
 further gains have to cut serial work. The per-pair split made the serial time worse. A fix is in
 progress: tasks of a bra shell plus a contiguous ket range, formed once per plan.
+
+## Pair-FT serial kernel: grouping, phase split, premultiplied F rows (measured 2026-09-28)
+
+Dry ice, cc-pVDZ / cc-pvdz-ri, Γ RHF, range split. Runs were one at a time, each gated on a
+1-minute load below 1.5. One sample per cell. The same-conditions timing of the three earlier
+commits (1 thread, 13:39-13:58) put the serial pair-FT regression at `fe02524b`: 141.5 s, then
+158.9 s, then 161.1 s at `2c262e66`. The other stages matched within 3%.
+
+| commit | change | 1 thr total | 1 thr pair FT | 6 thr total | 6 thr pair FT | E (Ha/cell) |
+|---|---|---|---|---|---|---|
+| 2c262e66 | baseline | 276 s | 161.1 s | 76-80 s | 28.7-30.9 s | −750.8211184382436 |
+| 89929c1b | shell groups share sin/cos, E, F; exp table (bitwise) | 167.3 s | 56.8 s | 55.8 s | 10.7 s | −750.8211184382436 |
+| 5f46bc49 | image phase split + premultiplied F rows (value-changing) | 143.6 s | 38.9 s | 50.7 s | 7.2 s | −750.8211184382437 |
+
+- **Energy change from the value-changing kernel:** −1e-13 Ha/cell on dry ice and +3e-14 on
+  diamond_prim. The SCF took 19 iterations instead of 20 on dry ice.
+- **hcore LR attraction also uses this kernel:** 16.8 → 3.7 s at 1 thread.
+- **Serial pair-FT kernel, cumulative:** 161 → 38.9 s (4.1×).
+- **Dry ice at 6 threads:** 50.7 s against PySCF GDF 22.9 s, so 2.2× slower (was 20.7× this
+  morning).
+- **Dry ice 6-thread stage walls now:** hcore SR attraction 13.9, SR 3-centre 10.2, LR aux FT
+  + GEMM 8.1, LR pair FT 7.2, scf K 5.6 (serial), hcore S/T 3.1 (serial).
+- **Diamond_prim at 6 threads:** 34.1 s (32.4 s before; the pair FT is 0.3 s there, so the
+  difference is scatter). SR 3-centre (19.1 s) and hcore SR (13.9 s) dominate.
