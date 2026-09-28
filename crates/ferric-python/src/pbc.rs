@@ -306,7 +306,7 @@ fn pbc_setup(a: &PbcArgs<'_, '_>) -> PyResult<PbcSetup> {
             (Some(p), Some(bs.name))
         }
     };
-    let omega_bohr = omega_bohr.unwrap_or_else(|| ferric_pbc::ewald::default_ewald_omega(&cell));
+    let omega_bohr = omega_bohr.unwrap_or_else(|| PeriodicHcoreConfig::for_cell(&cell).omega);
     Ok(PbcSetup {
         fname: a.fname,
         cell,

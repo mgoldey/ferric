@@ -99,13 +99,20 @@ use ferric_pbc::kscf::{
     solve_krhf, solve_krhf_injected, KJkKind, KPointInjection, KRhfConfig, KScfConfig,
 };
 use ferric_pbc::lattice::Cell;
+use ferric_pbc::pair_ft::residues::{
+    pair_ft_residues_chunked, pair_ft_residues_chunked_serial_oracle,
+};
+use ferric_pbc::pair_ft::{
+    pair_ft_bytes_per_g, pair_ft_chunked, pair_ft_chunked_serial_oracle, pair_ft_with_thresh,
+    DEFAULT_PAIR_FT_THRESH,
+};
 use ferric_pbc::rsgdf::kpoint::{
     sr_bins_parallel_and_serial, sr_sums_gamma_and_single_bin, KRsGdf, KRsGdfConfig, SrBinsParts,
 };
-use ferric_pbc::rsgdf::{RsGdf, RsGdfConfig};
+use ferric_pbc::rsgdf::{lr_sums_parallel_and_serial, RangeSplit, RsGdf, RsGdfConfig};
 use ferric_pbc::stress::{gamma_rhf_stress_rsgdf, GammaStress, GammaStressConfig, StressMutation};
 use ferric_pbc::uhf::GammaUhfIntegrals;
-use ndarray::Array2;
+use ndarray::{Array2, Array3};
 use num_complex::Complex64;
 use std::collections::HashMap;
 
@@ -1094,4 +1101,365 @@ fn ecp_force_term_is_bitwise_across_threads_and_vs_serial_loop() {
     });
     assert!(!nonzero(&nc.centre), "NoCentre: centre part not dropped");
     assert_bitwise(&nc.bra, &r.bra, "NoCentre leaves bra untouched");
+}
+
+// ---------------------------------------------------------------------------
+// LR pair FT: survivor-cached, shell-parallel kernel (FINDINGS "Performance
+// plan (research) — 2026-09-25" §5, "Pair-FT re-walk").
+//
+// Construction under test: the primitive-pair screen is walked ONCE per
+// call and cached per shell pair in walk order; every G chunk then runs in
+// parallel over BRA shells, each task owning its rows of P. Every element
+// keeps the serial addend sequence, so production must equal the FROZEN
+// pre-parallel kernels (`*_serial_oracle`, which re-walk the screen per
+// chunk) BIT FOR BIT, at every thread count and with SEVERAL G chunks. What
+// each test guards:
+//
+// * `pair_ft_kernels_are_bitwise_vs_frozen_serial_kernels_across_threads` —
+//   the Gamma and the residue-binned kernels, s + Cartesian p + PURE d
+//   (the cart→sph path), an unsorted G list with G = 0 (the |G| sort and
+//   the scatter back), ≥ 3 chunks. A survivor list out of walk order, a
+//   window evaluated per chunk instead of over the whole set, a dropped
+//   survivor that reached some G, a bucket mix-up or a row-block race each
+//   break it.
+// * `rsgdf_lr_sums_are_bitwise_vs_frozen_serial_across_threads` — the whole
+//   RS-GDF LR stage (pair FT + aux FT + packing + the row-blocked parallel
+//   J3 GEMMs) against the FROZEN serial stage at the SAME G chunks, with and
+//   without the range split (moved-aux and smooth-pair LR passes).
+// * `rsgdf_b_and_energy_are_bitwise_across_threads_with_several_lr_chunks` —
+//   `RsGdf::build` under a budget that forces ≥ 3 LR chunks: J2 (via the fit
+//   parts), B and the RHF energy at 1/2/6 threads, with and without split.
+// ---------------------------------------------------------------------------
+
+/// H: STO-3G s, Cartesian p (0.8) and a PURE d (0.9) — 3 shells per atom.
+fn spd_basis_h() -> BasisSet {
+    let mut s = BasisSet {
+        name: "pbc-bitwise-spd-H".into(),
+        shells: HashMap::new(),
+        ecps: HashMap::new(),
+    };
+    let mut d = norm_shell(2, &[0.9], &[1.0]);
+    d.pure = true;
+    s.shells.insert(
+        1,
+        vec![
+            norm_shell(
+                0,
+                &[3.42525091, 0.62391373, 0.1688554],
+                &[0.15432897, 0.53532814, 0.44463454],
+            ),
+            norm_shell(1, &[0.8], &[1.0]),
+            d,
+        ],
+    );
+    s
+}
+
+/// `Σ m_i b_i` for `m ∈ {−2..=2}³` plus `shift`, in a deterministic
+/// NON-|G|-sorted order (index permutation `i → 37 i mod 125`), G = 0 kept.
+fn scrambled_gvecs(cell: &Cell, shift: [f64; 3]) -> Vec<[f64; 3]> {
+    let b = cell.reciprocal();
+    let mut all = Vec::new();
+    for i in -2i32..=2 {
+        for j in -2i32..=2 {
+            for k in -2i32..=2 {
+                let (i, j, k) = (i as f64, j as f64, k as f64);
+                all.push([
+                    i * b[0][0] + j * b[1][0] + k * b[2][0] + shift[0],
+                    i * b[0][1] + j * b[1][1] + k * b[2][1] + shift[1],
+                    i * b[0][2] + j * b[1][2] + k * b[2][2] + shift[2],
+                ]);
+            }
+        }
+    }
+    let n = all.len();
+    (0..n).map(|i| all[(37 * i) % n]).collect()
+}
+
+fn c3bit_diffs(a: &Array3<Complex64>, b: &Array3<Complex64>) -> usize {
+    assert_eq!(a.dim(), b.dim());
+    a.iter()
+        .zip(b.iter())
+        .filter(|(x, y)| x.re.to_bits() != y.re.to_bits() || x.im.to_bits() != y.im.to_bits())
+        .count()
+}
+
+/// Chunks of one chunked call: `(g0, [P_r])` in sink order.
+type Chunks = Vec<(usize, Vec<Array3<Complex64>>)>;
+
+fn assert_chunks_bitwise(a: &Chunks, b: &Chunks, what: &str) {
+    assert_eq!(a.len(), b.len(), "{what}: chunk counts");
+    for ((g0a, pa), (g0b, pb)) in a.iter().zip(b) {
+        assert_eq!(g0a, g0b, "{what}: chunk offsets");
+        assert_eq!(pa.len(), pb.len(), "{what}: bucket counts");
+        for (r, (x, y)) in pa.iter().zip(pb).enumerate() {
+            let d = c3bit_diffs(x, y);
+            assert_eq!(
+                d,
+                0,
+                "{what}: chunk g0 = {g0a}, bucket {r}: {d} of {} elements differ in bits",
+                x.len()
+            );
+        }
+    }
+}
+
+#[test]
+fn pair_ft_kernels_are_bitwise_vs_frozen_serial_kernels_across_threads() {
+    let cell = triclinic_cell();
+    let prep = prep_for(&cell, &spd_basis_h());
+    assert_split_binds(&prep);
+    let n = prep.nbasis();
+    let thresh = DEFAULT_PAIR_FT_THRESH;
+    // 7 G per chunk: 125 G -> 18 chunks.
+    let budget = 7 * pair_ft_bytes_per_g(n, 2);
+
+    // --- Gamma kernel.
+    let gv = scrambled_gvecs(&cell, [0.0; 3]);
+    assert!(gv.contains(&[0.0; 3]), "G = 0 missing");
+    let gamma = |oracle: bool| -> Chunks {
+        let mut out: Chunks = Vec::new();
+        let sink = |g0: usize, _: &[[f64; 3]], p: &Array3<Complex64>| {
+            out.push((g0, vec![p.clone()]));
+            Ok(())
+        };
+        let nc = if oracle {
+            pair_ft_chunked_serial_oracle(&cell, &prep, &gv, thresh, budget, 0, sink)
+        } else {
+            pair_ft_chunked(&cell, &prep, &gv, thresh, budget, 0, sink)
+        }
+        .expect("pair FT");
+        assert_eq!(nc, out.len());
+        out
+    };
+    let oracle = in_pool(1, || gamma(true));
+    assert!(oracle.len() >= 3, "only {} G chunk(s)", oracle.len());
+    assert!(
+        oracle
+            .iter()
+            .all(|(_, p)| p[0].iter().any(|z| z.re != 0.0 || z.im != 0.0)),
+        "a vacuous chunk"
+    );
+    for &nt in &THREADS {
+        let par = in_pool(nt, || gamma(false));
+        assert_chunks_bitwise(
+            &par,
+            &oracle,
+            &format!("Gamma pair FT at {nt} threads vs serial"),
+        );
+    }
+    // The unchunked entry point is the same kernel over one chunk.
+    let whole = in_pool(6, || {
+        pair_ft_with_thresh(&cell, &prep, &gv, thresh).unwrap()
+    });
+    let mut g = 0usize;
+    for (g0, p) in &oracle {
+        assert_eq!(*g0, g);
+        let ng = p[0].dim().2;
+        let slice = whole.slice(ndarray::s![.., .., g..g + ng]).to_owned();
+        assert_eq!(c3bit_diffs(&slice, &p[0]), 0, "unchunked vs chunk at {g0}");
+        g += ng;
+    }
+
+    // --- Residue-binned kernel at K = G + q (moduli differ per axis, so a
+    // bucket mix-up in any dimension fails).
+    let b = cell.reciprocal();
+    let q = [
+        0.3 * b[0][0] + 0.5 * b[2][0],
+        0.3 * b[0][1] + 0.5 * b[2][1],
+        0.3 * b[0][2] + 0.5 * b[2][2],
+    ];
+    let kv = scrambled_gvecs(&cell, q);
+    let moduli = [2, 1, 3];
+    let kbudget = 7 * 6 * pair_ft_bytes_per_g(n, 2);
+    let resid = |oracle: bool| -> Chunks {
+        let mut out: Chunks = Vec::new();
+        let sink = |g0: usize, _: &[[f64; 3]], p: &[Array3<Complex64>]| {
+            out.push((g0, p.to_vec()));
+            Ok(())
+        };
+        let nc = if oracle {
+            pair_ft_residues_chunked_serial_oracle(
+                &cell, &prep, &kv, moduli, thresh, kbudget, 0, sink,
+            )
+        } else {
+            pair_ft_residues_chunked(&cell, &prep, &kv, moduli, thresh, kbudget, 0, sink)
+        }
+        .expect("residue pair FT");
+        assert_eq!(nc, out.len());
+        out
+    };
+    let roracle = in_pool(1, || resid(true));
+    assert!(roracle.len() >= 3, "only {} K chunk(s)", roracle.len());
+    let live = roracle[0]
+        .1
+        .iter()
+        .filter(|p| p.iter().any(|z| z.re != 0.0 || z.im != 0.0))
+        .count();
+    assert!(
+        live >= 2,
+        "only {live} live residue bucket(s): binning is vacuous"
+    );
+    for &nt in &THREADS {
+        let par = in_pool(nt, || resid(false));
+        assert_chunks_bitwise(
+            &par,
+            &roracle,
+            &format!("residue pair FT at {nt} threads vs serial"),
+        );
+    }
+}
+
+/// `RsGdfConfig` of the LR tests: ω = 1, exxdiv none, `split` optional.
+fn lr_cfg(split: Option<RangeSplit>, budget: usize) -> RsGdfConfig {
+    RsGdfConfig {
+        range_split: split,
+        budget_bytes: Some(budget),
+        ..gdf_cfg()
+    }
+}
+
+/// Upper bound on the per-G bytes of every LR pass (`pair_ft` scratch plus
+/// the moved-aux sink's, the largest of the three sinks).
+fn lr_per_g_bound(prep: &PreparedBasis, aux: &PreparedBasis, lmax: usize) -> usize {
+    let n = prep.nbasis();
+    pair_ft_bytes_per_g(n, lmax) + 16 * n * n + 112 * aux.nbasis() + 64
+}
+
+#[test]
+fn rsgdf_lr_sums_are_bitwise_vs_frozen_serial_across_threads() {
+    // The triclinic cell of `pbc_rsgdf_split.rs` (the split moves the
+    // STO-3G 0.169 primitive and 8/24 aux shells there) with a pure d added:
+    // nao = 36, so J3 has 1296 rows and the row-blocked LR GEMM
+    // (`LR_GEMM_ROW_BLOCK` = 512) really splits.
+    let cell = triclinic_cell();
+    let prep = prep_for(&cell, &spd_basis_h());
+    assert!(prep.nbasis().pow(2) > 2 * 512, "J3 GEMM would not split");
+    let aux = prep_for(&cell, &basis::bundled("cc-pvdz-ri").unwrap());
+    assert_split_binds(&prep);
+    let n_g = RsGdf::build(&cell, &prep, &aux, &Array2::eye(prep.nbasis()), &gdf_cfg())
+        .expect("rsgdf")
+        .stats()
+        .n_g_half;
+    // At most n_g / 8 G per chunk of the main pass.
+    let budget = lr_per_g_bound(&prep, &aux, 2) * (n_g / 8).max(1);
+    let mut j3_by_split = Vec::new();
+    for split in [None, Some(RangeSplit::default())] {
+        let tag = format!("split {}", split.is_some());
+        let cfg = lr_cfg(split, AMPLE);
+        let runs: Vec<[(Array2<f64>, Array2<f64>, usize); 2]> = THREADS
+            .iter()
+            .map(|&nt| {
+                in_pool(nt, || {
+                    lr_sums_parallel_and_serial(&cell, &prep, &aux, &cfg, budget).expect("LR")
+                })
+            })
+            .collect();
+        let [_, (j2s, j3s, cs)] = &runs[0];
+        assert!(*cs >= 4, "{tag}: only {cs} LR chunk(s)");
+        assert!(nonzero(j2s) && nonzero(j3s), "{tag}: vacuous LR sums");
+        for (&nt, [(j2p, j3p, cp), (j2o, j3o, co)]) in THREADS.iter().zip(&runs) {
+            assert_eq!((cp, co), (cs, cs), "{tag}: chunk counts at {nt} threads");
+            assert_bitwise(
+                j3p,
+                j3o,
+                &format!("{tag}: J3_LR parallel vs serial ({nt} threads)"),
+            );
+            assert_bitwise(
+                j2p,
+                j2o,
+                &format!("{tag}: J2_LR parallel vs serial ({nt} threads)"),
+            );
+            assert_bitwise(
+                j3o,
+                j3s,
+                &format!("{tag}: serial J3_LR at {nt} vs 1 thread"),
+            );
+            assert_bitwise(
+                j2o,
+                j2s,
+                &format!("{tag}: serial J2_LR at {nt} vs 1 thread"),
+            );
+        }
+        j3_by_split.push(j3s.clone());
+    }
+    // The split really took the other LR passes.
+    assert!(
+        bit_diffs(&j3_by_split[0], &j3_by_split[1]) > 0,
+        "split and unsplit LR J3 are identical: the split LR passes did not run"
+    );
+}
+
+#[test]
+fn rsgdf_b_and_energy_are_bitwise_across_threads_with_several_lr_chunks() {
+    let cell = triclinic_cell();
+    let prep = prep_for(&cell, &spd_basis_h());
+    let aux = prep_for(&cell, &basis::bundled("cc-pvdz-ri").unwrap());
+    let hc =
+        periodic_hcore(&cell, &prep, &PeriodicHcoreConfig::with_omega(HCORE_OMEGA)).expect("hcore");
+    for split in [None, Some(RangeSplit::default())] {
+        let tag = format!("split {}", split.is_some());
+        // Reference build at an ample budget: the resident bytes before the
+        // LR chunks and the half-G count fix a budget with ≥ 3 LR chunks.
+        // (build_with_fit_parts, like the runs below: its retained parts are
+        // reserved before the snapshot.)
+        let (ample, _) =
+            RsGdf::build_with_fit_parts(&cell, &prep, &aux, &hc.s, &lr_cfg(split, AMPLE))
+                .expect("rsgdf");
+        let st = ample.stats();
+        let budget = st.resident_bytes + lr_per_g_bound(&prep, &aux, 2) * (st.n_g_half / 4).max(1);
+        let runs: Vec<(Array2<f64>, Array2<f64>, f64, usize)> = THREADS
+            .iter()
+            .map(|&nt| {
+                in_pool(nt, || {
+                    let (gdf, parts) = RsGdf::build_with_fit_parts(
+                        &cell,
+                        &prep,
+                        &aux,
+                        &hc.s,
+                        &lr_cfg(split, budget),
+                    )
+                    .expect("rsgdf (tight budget)");
+                    let e = gamma_rhf_jk(
+                        &cell,
+                        &prep,
+                        &hc,
+                        Box::new(gdf.j_builder()),
+                        Box::new(gdf.k_builder()),
+                    )
+                    .energy;
+                    (parts.j2, gdf.b().clone(), e, gdf.stats().n_g_chunks)
+                })
+            })
+            .collect();
+        let (j2_1, b1, e1, c1) = &runs[0];
+        assert!(
+            *c1 >= 3,
+            "{tag}: only {c1} LR chunk(s) under the tight budget"
+        );
+        for (&nt, (j2, b, e, c)) in THREADS.iter().zip(&runs) {
+            assert_eq!(c, c1, "{tag}: chunk count at {nt} threads");
+            assert_bitwise(j2, j2_1, &format!("{tag}: J2 at {nt} vs 1 thread"));
+            assert_bitwise(b, b1, &format!("{tag}: B at {nt} vs 1 thread"));
+            assert_eq!(
+                e.to_bits(),
+                e1.to_bits(),
+                "{tag}: RHF energy at {nt} threads {e:.17e} vs 1 thread {e1:.17e}"
+            );
+        }
+        // Chunking only re-blocks the LR GEMM k-sums: the energy moves at
+        // round-off level, not more.
+        let e_ample = gamma_rhf_jk(
+            &cell,
+            &prep,
+            &hc,
+            Box::new(ample.j_builder()),
+            Box::new(ample.k_builder()),
+        )
+        .energy;
+        assert!(
+            (e1 - e_ample).abs() <= 1e-11,
+            "{tag}: tight-budget energy {e1:.15} vs ample {e_ample:.15}"
+        );
+    }
 }

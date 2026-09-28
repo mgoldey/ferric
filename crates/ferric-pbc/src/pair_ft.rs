@@ -73,8 +73,12 @@ use ferric_integrals::md3c1e::{cart_components, e_table, ferric_cart2sph, prim_n
 use ndarray::Array3;
 use num_complex::Complex64;
 
+/// The production kernel: screen walked once, shell-row-parallel chunks.
+mod plan;
 /// Stage 3: residue-resolved (k-mesh) variant of the kernel below.
 pub mod residues;
+
+use plan::{min_gnorm2, PairFtPlan};
 
 /// Default primitive-pair screening threshold for [`pair_ft`].
 pub const DEFAULT_PAIR_FT_THRESH: f64 = 1e-15;
@@ -246,7 +250,48 @@ pub fn pair_ft_with_thresh(
         ),
         bytes,
     )?;
-    pair_ft_block(cell, prep, gvecs, thresh, max_gnorm(gvecs))
+    pair_ft_all(cell, prep, gvecs, thresh)
+}
+
+/// `P` for all of `gvecs` in one plan block (inputs validated and gated).
+fn pair_ft_all(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    gvecs: &[[f64; 3]],
+    thresh: f64,
+) -> Result<Array3<Complex64>, FerricError> {
+    if gvecs.is_empty() {
+        build_shells(cell, prep)?;
+        let nao = prep.nbasis();
+        return Ok(Array3::<Complex64>::zeros((nao, nao, 0)));
+    }
+    Ok(take_one(
+        gamma_plan(cell, prep, gvecs, thresh)?.block(gvecs),
+    ))
+}
+
+/// The Gamma plan for the WHOLE G set `gvecs` (non-empty): the window at
+/// its `max |G|`, survivors reaching its smallest `|G|`.
+fn gamma_plan(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    gvecs: &[[f64; 3]],
+    thresh: f64,
+) -> Result<PairFtPlan, FerricError> {
+    PairFtPlan::new(
+        cell,
+        prep,
+        thresh,
+        max_gnorm(gvecs),
+        min_gnorm2(gvecs),
+        None,
+        "pair_ft",
+    )
+}
+
+/// The single `P` of a Gamma (one-bucket) plan block.
+fn take_one(mut v: Vec<Array3<Complex64>>) -> Array3<Complex64> {
+    v.pop().expect("a Gamma plan has one bucket")
 }
 
 /// [`pair_ft_with_thresh`] in G chunks: `sink(g0, gs, P)` receives
@@ -260,7 +305,53 @@ pub fn pair_ft_with_thresh(
 /// window uses `max |G|` over ALL of `gvecs` (not the chunk's), and every G
 /// column is computed independently, so the chunks concatenate to exactly
 /// `pair_ft_with_thresh(cell, prep, gvecs, thresh)`.
+///
+/// The primitive-pair screen is walked ONCE per call (not once per chunk)
+/// and each chunk is evaluated in parallel over bra shells; every element
+/// keeps the serial kernel's addend sequence, so the output is bit for bit
+/// the frozen serial kernel's ([`pair_ft_chunked_serial_oracle`]) at any
+/// thread count (the `plan` module doc). The `sink` runs serially, in
+/// chunk order.
 pub fn pair_ft_chunked<F>(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    gvecs: &[[f64; 3]],
+    thresh: f64,
+    chunk_budget_bytes: usize,
+    extra_bytes_per_g: usize,
+    mut sink: F,
+) -> Result<usize, FerricError>
+where
+    F: FnMut(usize, &[[f64; 3]], &Array3<Complex64>) -> Result<(), FerricError>,
+{
+    validate_inputs(gvecs, thresh)?;
+    if gvecs.is_empty() {
+        return Ok(0);
+    }
+    let nao = prep.nbasis();
+    let lmax = basis_lmax(prep);
+    let per_g = pair_ft_bytes_per_g(nao, lmax).saturating_add(extra_bytes_per_g);
+    Ledger::new(chunk_budget_bytes).check(
+        &format!("pair_ft chunk, one G vector (nao = {nao}, lmax = {lmax})"),
+        per_g,
+    )?;
+    let chunk = (chunk_budget_bytes / per_g).max(1);
+    let plan = gamma_plan(cell, prep, gvecs, thresh)?;
+    let mut n_chunks = 0usize;
+    for (c, gs) in gvecs.chunks(chunk).enumerate() {
+        let p = take_one(plan.block(gs));
+        sink(c * chunk, gs, &p)?;
+        n_chunks += 1;
+    }
+    Ok(n_chunks)
+}
+
+/// TEST ORACLE: [`pair_ft_chunked`] on the FROZEN pre-parallel serial kernel
+/// (`pair_ft_block`, which re-walks the whole primitive-pair screen for every
+/// chunk). Same arguments, same chunking, same sink contract; it must agree
+/// with [`pair_ft_chunked`] BIT FOR BIT (`tests/pbc_parallel_bitwise.rs`).
+#[doc(hidden)]
+pub fn pair_ft_chunked_serial_oracle<F>(
     cell: &Cell,
     prep: &PreparedBasis,
     gvecs: &[[f64; 3]],
@@ -294,8 +385,10 @@ where
     Ok(n_chunks)
 }
 
-/// The kernel: `P` for `gvecs` with the G window evaluated at `gmax_window`
+/// FROZEN pre-parallel serial kernel (the oracle of [`pair_ft_chunked`]):
+/// `P` for `gvecs` with the G window evaluated at `gmax_window`
 /// (`>= max |G|` of `gvecs`). Inputs already validated; no memory gate.
+/// Production uses `plan::PairFtPlan`; do not edit this loop.
 fn pair_ft_block(
     cell: &Cell,
     prep: &PreparedBasis,

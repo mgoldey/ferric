@@ -3549,7 +3549,9 @@ pub struct CellCfg {
     /// (Gamma point or `kmesh`).
     pub range_split: Option<RangeSplitKey>,
     /// Nuclear-attraction Ewald split, in `unit`⁻¹ (> 0). Absent =
-    /// `sqrt(pi) / volume^(1/3)`.
+    /// `ferric_pbc::hcore::default_hcore_omega`:
+    /// `min(2.5 sqrt(pi) / volume^(1/3), 0.9636 Bohr⁻¹)` (the cap puts the
+    /// hcore G sphere on the default RS-GDF one). A given value is used as is.
     pub omega: Option<f64>,
     /// Cap on the dense AFT ERI tensor, GiB (> 0; default 0.5); `jk =
     /// "dense"` only.

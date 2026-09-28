@@ -20,6 +20,7 @@
 //! same Cartesian→AO transform), kept separate so the Gamma kernel stays
 //! byte-identical.
 
+use super::plan::{min_gnorm2, PairFtPlan};
 use super::{
     basis_lmax, build_shells, max_gnorm, pair_ft_bytes_per_g, validate_inputs, WINDOW_MARGIN,
 };
@@ -58,6 +59,11 @@ pub fn residue_coords(r: usize, moduli: [usize; 3]) -> [i64; 3] {
 /// does not, the call fails before allocating. Returns the chunk count.
 /// The per-primitive-pair K window uses `max |K|` over ALL of `kvecs`, so
 /// chunking does not change a bit (as [`super::pair_ft_chunked`]).
+///
+/// Like [`super::pair_ft_chunked`], the screen is walked once per call and
+/// each chunk runs in parallel over bra shells, bit for bit the FROZEN serial
+/// kernel ([`pair_ft_residues_chunked_serial_oracle`]) at any thread count;
+/// the `sink` runs serially in chunk order.
 #[allow(clippy::too_many_arguments)]
 pub fn pair_ft_residues_chunked<F>(
     cell: &Cell,
@@ -93,6 +99,61 @@ where
         per_g,
     )?;
     let chunk = (chunk_budget_bytes / per_g).max(1);
+    let plan = PairFtPlan::new(
+        cell,
+        prep,
+        thresh,
+        max_gnorm(kvecs),
+        min_gnorm2(kvecs),
+        Some(moduli),
+        "pair_ft_residues",
+    )?;
+    let mut n_chunks = 0usize;
+    for (c, ks) in kvecs.chunks(chunk).enumerate() {
+        let q = plan.block(ks);
+        sink(c * chunk, ks, &q)?;
+        n_chunks += 1;
+    }
+    Ok(n_chunks)
+}
+
+/// TEST ORACLE: [`pair_ft_residues_chunked`] on the FROZEN pre-parallel
+/// serial kernel (`residue_block`). Same arguments, chunking and sink
+/// contract; it must agree BIT FOR BIT (`tests/pbc_parallel_bitwise.rs`).
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn pair_ft_residues_chunked_serial_oracle<F>(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    kvecs: &[[f64; 3]],
+    moduli: [usize; 3],
+    thresh: f64,
+    chunk_budget_bytes: usize,
+    extra_bytes_per_g: usize,
+    mut sink: F,
+) -> Result<usize, FerricError>
+where
+    F: FnMut(usize, &[[f64; 3]], &[Array3<Complex64>]) -> Result<(), FerricError>,
+{
+    validate_inputs(kvecs, thresh)?;
+    if moduli.contains(&0) {
+        return Err(FerricError::General(format!(
+            "pair_ft_residues: moduli must be >= 1, got {moduli:?}"
+        )));
+    }
+    if kvecs.is_empty() {
+        return Ok(0);
+    }
+    let nr = moduli[0] * moduli[1] * moduli[2];
+    let nao = prep.nbasis();
+    let lmax = basis_lmax(prep);
+    let per_g =
+        bytes_of(nr as u64, pair_ft_bytes_per_g(nao, lmax)).saturating_add(extra_bytes_per_g);
+    Ledger::new(chunk_budget_bytes).check(
+        &format!("pair_ft_residues chunk, one K vector (nao = {nao}, lmax = {lmax}, R = {nr})"),
+        per_g,
+    )?;
+    let chunk = (chunk_budget_bytes / per_g).max(1);
     let gmax = max_gnorm(kvecs);
     let mut n_chunks = 0usize;
     for (c, ks) in kvecs.chunks(chunk).enumerate() {
@@ -103,7 +164,9 @@ where
     Ok(n_chunks)
 }
 
-/// Bucketed copy of `super::pair_ft_block`.
+/// FROZEN pre-parallel serial kernel (the oracle of
+/// [`pair_ft_residues_chunked`]): bucketed copy of `super::pair_ft_block`.
+/// Production uses `super::plan::PairFtPlan`; do not edit this loop.
 fn residue_block(
     cell: &Cell,
     prep: &PreparedBasis,

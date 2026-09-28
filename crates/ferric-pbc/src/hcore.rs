@@ -55,6 +55,63 @@
 //! * LR: G on the half sphere (P(−G) = P(G)* for real AOs; weight 2) with
 //!   `|G| ≤ min(2ω, 2√p_max) √ln(1/precision)`.
 //!
+//! # Default ω ([`default_hcore_omega`])
+//!
+//! ```text
+//! ω_h = min( 2.5 · √π / Ω^{1/3} ,  ω_cap(precision) )
+//! ω_cap(precision) = ω_gdf √( ln(1/p_gdf) / ln(1/precision) )     (0.9636 at 1e-14)
+//! ```
+//!
+//! with `ω_gdf = 1`, `p_gdf = 1e-13` the RS-GDF defaults
+//! ([`crate::rsgdf::DEFAULT_RSGDF_OMEGA`], [`crate::rsgdf::DEFAULT_RSGDF_PRECISION`]).
+//! A function of the cell volume and `precision` only: never of the thread
+//! count, the budget or the basis. Any ω gives the same `V` up to truncation;
+//! the rule only moves cost.
+//!
+//! * **Why a multiple of the Ewald ω.** Per pair image, the SR nucleus
+//!   triplets go as `(N_at/Ω) r(ω)³` with `r ∝ √ln(1/precision)/ω` and the LR
+//!   G count as `Ω (ω √ln(1/precision))³`. `ω = c √π/Ω^{1/3}` fixes the LR
+//!   half-sphere at `(2/3) c³ ln^{3/2}(1/precision)/√π` vectors whatever the
+//!   cell (≈ 1076 at `c = 2.5`, 1e-14), and both sides scale as
+//!   `ln^{3/2}(1/precision)`, so the optimal `c` does not move with precision.
+//! * **Why 2.5.** MODELLED 1-thread CPU of hcore SR + LR
+//!   (`reference/pbc/bench/perf_hcore_omega_cost.py`: the capsule estimator
+//!   of `perf_hcore_omega.py`, which reproduces ferric's SR triplet counter
+//!   to 0.2% on diamond_prim, times per-triplet / per-segment-test /
+//!   per-pair-FT-evaluation costs fitted on the measured diamond_prim runs at
+//!   ω = 0.417 and 0.96; unfitted check: dry ice at its old default, SR 157 s
+//!   modelled vs 168 s measured, LR 1.3 vs 1.85 s). cc-pVDZ:
+//!
+//!   | cell | old ω (√π/Ω^{1/3}) | SR+LR old | new ω | SR+LR new | best grid ω (cost) |
+//!   |---|---|---|---|---|---|
+//!   | diamond_prim (2 C) | 0.417 | 56.3 s | 0.964 (cap) | 30.7 s | 0.94 (30.5 s) |
+//!   | diamond_conv (8 C) | 0.263 | 483 s | 0.657 | 169.0 s | 0.70 (168.6 s) |
+//!   | dry ice (12 atoms) | 0.167 | 159 s | 0.417 | 44.3 s | 0.375 (43.7 s) |
+//!
+//!   `c = 2.5` is within 1.4% of each cell's best grid point (0.5%, 0.3%,
+//!   1.4%); `c = 2.25` costs +3% on diamond_conv and `c = 2.75` +9% on dry
+//!   ice. MEASURED on diamond_prim at 0.96 (reference/pbc/FINDINGS.md,
+//!   "Benchmark series", 2026-09-28): hcore SR 56.1 → 26.5 s, LR 0.8 →
+//!   4.7 s, total run 106.5 → 80.6 s, energy moved 1.5e-11. The diamond_conv
+//!   and dry-ice rows are not measured.
+//! * **Why the cap.** A ω at which the hcore LR sphere `2ω√ln(1/precision)`
+//!   equals the default RS-GDF sphere `2 ω_gdf √ln(1/p_gdf)` (10.942 Bohr⁻¹)
+//!   keeps every hcore G vector inside the sphere RS-GDF already walks (the
+//!   precondition for fusing the two, performance plan item 9), and stops
+//!   small cells (uncapped `c√π/Ω^{1/3}` > 1) from paying LR for SR savings
+//!   that saturate once `ω² ≫ p_min` (`ω_p → √p_min`). diamond_prim is capped.
+//! * **What it is NOT.** A constant 0.96 (the plan's "G sphere = RS-GDF's"
+//!   alone) is right for diamond_prim but loses on larger cells while V_LR is
+//!   a separate pair-FT pass: the modelled dry-ice LR at 0.96 is 206 s (13372
+//!   half-G) against 11 s of SR, total 217 s vs 159 s today.
+//! * **k-points.** [`kpoint`] uses the same rule. Its LR runs over the FULL
+//!   sphere (2× the Gamma half-sphere), which moves the Gamma-calibrated
+//!   optimum `c` down by ~2^{1/6} (≈ 11%, inside the flat region); the
+//!   k-point SR/LR split has not been measured.
+//! * **Not the nuclear-repulsion Ewald.** `E_nn`, its gradient/stress and the
+//!   Madelung constant keep [`default_ewald_omega`] (point charges; a
+//!   different cost balance).
+//!
 //! # Memory (Stage 1 step 10)
 //!
 //! Every buffer that grows with the lattice or the G sphere is reserved on a
@@ -122,12 +179,40 @@ const SR_MARGIN_BOHR: f64 = 2.0;
 /// the way of the resident matrices.
 pub(crate) const G_CHUNK_BYTES: usize = 64 << 20;
 
+/// Multiple `c` of the balanced nuclear-repulsion Ewald split
+/// ([`default_ewald_omega`], `√π/Ω^{1/3}`) that [`default_hcore_omega`]
+/// uses before the cap (module doc, "Default ω").
+pub const HCORE_OMEGA_EWALD_FACTOR: f64 = 2.5;
+
+/// Upper bound of the default hcore split at `precision`: the ω whose LR
+/// sphere `2ω√ln(1/precision)` equals the DEFAULT RS-GDF LR sphere
+/// `2 ω_gdf √ln(1/p_gdf)` ([`crate::rsgdf::DEFAULT_RSGDF_OMEGA`] = 1,
+/// [`crate::rsgdf::DEFAULT_RSGDF_PRECISION`] = 1e-13; 0.9636 Bohr⁻¹ at
+/// [`DEFAULT_HCORE_PRECISION`]). Fixed constants, not the RS-GDF config of
+/// any particular run.
+pub fn hcore_omega_cap(precision: f64) -> f64 {
+    let gdf = (1.0 / crate::rsgdf::DEFAULT_RSGDF_PRECISION).ln();
+    crate::rsgdf::DEFAULT_RSGDF_OMEGA * (gdf / (1.0 / precision).ln()).sqrt()
+}
+
+/// The default nuclear-attraction split (Bohr⁻¹) for `cell` at hcore
+/// truncation `precision`:
+/// `min(HCORE_OMEGA_EWALD_FACTOR · √π/Ω^{1/3}, hcore_omega_cap(precision))`.
+/// Deterministic in the cell volume and `precision` (no thread count, budget
+/// or basis). Derivation and the measured/modelled costs: module doc,
+/// "Default ω". An explicit ω ([`PeriodicHcoreConfig::with_omega`]) is never
+/// replaced by this.
+pub fn default_hcore_omega(cell: &Cell, precision: f64) -> f64 {
+    (HCORE_OMEGA_EWALD_FACTOR * default_ewald_omega(cell)).min(hcore_omega_cap(precision))
+}
+
 /// Settings for [`periodic_hcore`].
 #[derive(Debug, Clone, Copy)]
 pub struct PeriodicHcoreConfig {
     /// Ewald splitting parameter for the nuclear attraction (Bohr⁻¹). Any
     /// `ω > 0` gives the same `V` up to truncation; larger ω moves work
-    /// from the real-space SR sum to reciprocal space.
+    /// from the real-space SR sum to reciprocal space. Default
+    /// ([`PeriodicHcoreConfig::for_cell`]): [`default_hcore_omega`].
     pub omega: f64,
     /// Truncation target, in `(0, 1)`.
     pub precision: f64,
@@ -151,6 +236,12 @@ impl PeriodicHcoreConfig {
             nucleus_exponent: GAUSSIAN_NUCLEUS_EXPONENT,
             budget_bytes: None,
         }
+    }
+
+    /// Defaults with the default split of `cell`:
+    /// [`default_hcore_omega`]`(cell, DEFAULT_HCORE_PRECISION)`.
+    pub fn for_cell(cell: &Cell) -> Self {
+        Self::with_omega(default_hcore_omega(cell, DEFAULT_HCORE_PRECISION))
     }
 
     /// The periodic-ECP settings `periodic_hcore` uses: the same precision and

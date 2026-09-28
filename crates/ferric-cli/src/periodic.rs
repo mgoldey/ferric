@@ -231,7 +231,7 @@ fn setup(cfg: &Config, plan: &PeriodicPlan) -> Setup {
     };
     let omega_bohr = plan
         .omega_bohr
-        .unwrap_or_else(|| ferric_pbc::ewald::default_ewald_omega(&cell));
+        .unwrap_or_else(|| ferric_pbc::hcore::PeriodicHcoreConfig::for_cell(&cell).omega);
     Setup {
         bs,
         cell,

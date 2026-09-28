@@ -374,7 +374,7 @@ or key is an error. A charged cell is an error.
 | `jk` | string | `"dense"` | `dense` `rsgdf` | `dense` is a toy-scale dense AFT tensor. |
 | `auxbasis` | string | none | bundled basis name | Required by `jk = "rsgdf"`; an error with `dense`. |
 | `range_split` | bool or float | `false` | `false`, `true` (λ = 1), or a number > 0 (λ) | Opt-in RS-GDF range split: moves the short-range blocks whose Fourier transform converges in the long-range G sphere into G space. Orbital primitives with exponent ≤ λω²/2 and aux primitives with exponent ≤ λω² count as smooth, where ω is the fixed RS-GDF split (1 Bohr⁻¹, not the `omega` key). λ ≤ 1 adds no G vectors; the energy matches the unsplit build to fitting precision. Requires `jk = "rsgdf"` and `task = "energy"` (Gamma point or `kmesh`). An error with `task = "optimize"`: the optimizer is not wired to the range-split forces. |
-| `omega` | float | √π / V^(1/3) | > 0, in `unit`⁻¹ | Nuclear-attraction Ewald split. |
+| `omega` | float | min(2.5 √π / V^(1/3), 0.9636 Bohr⁻¹) | > 0, in `unit`⁻¹ | Nuclear-attraction Ewald split. Any value gives the same energy to truncation (~1e-11 Ha); the default balances the real- and reciprocal-space nuclear-attraction cost, and its cap keeps the reciprocal-space sphere inside the RS-GDF one. |
 | `max_eri_gb` | float | `0.5` | > 0 | Dense tensor cap. An error with `rsgdf`. |
 | `ewald_start` | string | `"staged"` | `staged` `direct` | Open-shell SCF with `exxdiv = "ewald"` only. |
 | `denominators` | string | **required** for `rimp2`/`pdep-rpa` | `shifted` `unshifted` | An error on other kinds. |

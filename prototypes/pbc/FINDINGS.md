@@ -5422,3 +5422,18 @@ not an ECP-integral effect — most likely the libint p/d-shell nucleus-exponent
 The backend matters sharply for the molecular reference: quadrature brings ferric's molecular ECP gradient to PySCF's analytic
 value within 8e-11 (libecpint: 2e-7). Transverse forces 8.3e-9 (symmetry-zero) at every a; ΣF ~1e-12. The ECP big-box open
 item is closed at the ~5e-7 level; tightening it needs the iodine nucleus-exponent scan.
+
+## Benchmark series — quiet box (measured 2026-09-28, load ~1.5-5), cc-pVDZ / cc-pvdz-ri, Gamma RHF unless noted
+| cell | ferric 1t | ferric 6t | PySCF GDF 1t | PySCF 6t | ΔE vs PySCF | peak RSS ferric / PySCF |
+|---|---|---|---|---|---|---|
+| diamond_prim, split | 106.5 s | 54.6 s | 60.0 s | 12.7 s | 1e-10 | 0.15 / 0.26 GB |
+| diamond_prim, split + hcore omega 0.96 | 80.6 s | — | — | — | 1e-10 (1.5e-11 vs default omega) | 0.15 GB |
+| diamond_prim 2x2x2 k, split | — | 99.6 s | 109 s | — | 1e-11 | 0.32 / 0.29 GB |
+| dryice (12 atoms, 168 AO), split | 576 s | 474 s | 108.6 s | 22.9 s | 4e-10 | 0.50 / 2.8 GB |
+ferric stages: diamond 1t hcore SR 56.1, SR3 44.0, LR pair FT 5.0; 6t 29.0 / 19.4 / 4.8 (1.95x overall). omega 0.96: hcore SR
+56.1 → 26.5, hcore LR 0.8 → 4.7, total 1.32x. k 2x2x2 6t: k hcore 34.0, k J/K 64.6 (serial unsplit was 388 s).
+DRY ICE 1t: LR pair FT 326.8 s (57%), hcore SR 168.1, LR aux FT+GEMM 40.1, SR3 28.2; 6t: LR pair FT 319.6 (SERIAL — not
+parallelised), hcore SR 90.9, SR3 10.2. Interpretation (provisional): (1) the LR pair FT is now the dominant, serial stage
+on a molecular crystal — the performance plan's "pair-FT re-walk" item (every shell pair re-walked per G chunk) plus
+parallelising it is the next lever; (2) raising the hcore omega is a cheap default win (1.32x diamond; the plan predicted
+18x fewer SR nucleus triplets on dry ice); (3) ferric is 5.6x leaner in memory than PySCF on dry ice.

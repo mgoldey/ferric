@@ -53,7 +53,6 @@
 
 use crate::budget::{bytes_of, Ledger};
 use crate::dense_aft::ExxDiv;
-use crate::ewald::default_ewald_omega;
 use crate::hcore::kpoint::{hermitize, periodic_hcore_kpts};
 use crate::hcore::PeriodicHcoreConfig;
 use crate::kdense_aft::{KDenseAftConfig, KDenseAftEri};
@@ -184,14 +183,14 @@ pub struct KUhfConfig {
 }
 
 impl KUhfConfig {
-    /// Defaults (dense J/K, staged ewald start) with the balanced Ewald ω of
-    /// `cell` for the nuclear split.
+    /// Defaults (dense J/K, staged ewald start) with the default hcore split
+    /// of `cell` ([`PeriodicHcoreConfig::for_cell`]).
     pub fn for_cell(cell: &Cell, exxdiv: ExxDiv) -> Self {
         Self {
             scf: KScfConfig::default(),
             exxdiv,
             ewald_start: EwaldStart::Staged,
-            hcore: PeriodicHcoreConfig::with_omega(default_ewald_omega(cell)),
+            hcore: PeriodicHcoreConfig::for_cell(cell),
             jk: KJkKind::Dense,
             dense: KDenseAftConfig::default(),
             rsgdf: KRsGdfConfig::default(),

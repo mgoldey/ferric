@@ -77,13 +77,14 @@
 //! `Production` only.
 
 use super::{
-    aux_ft_shells, dot3, pair_bound, segment_distance, subtract_g0, sum_counts_in_pair_order,
-    G0Handling, GShell, RsGdfConfig, SrBinning, Stage, ENGINE_PRECISION,
+    aux_ft_shells, dot3, lr_gemm_acc, lr_pair_ft_chunked, pack_pair_ft, pair_bound,
+    segment_distance, subtract_g0, sum_counts_in_pair_order, G0Handling, GShell, LrKernel,
+    RsGdfConfig, SrBinning, Stage, ENGINE_PRECISION,
 };
 use crate::budget::{bytes_of, Ledger};
 use crate::hcore::ONE_E_ENGINE_PRECISION;
 use crate::lattice::Cell;
-use crate::pair_ft::{pair_ft_chunked, DEFAULT_PAIR_FT_THRESH};
+use crate::pair_ft::DEFAULT_PAIR_FT_THRESH;
 use crate::timing::{PbcTimings, StageClock};
 use ferric_core::basis::{BasisSet, Shell};
 use ferric_core::mol::{Atom, Molecule};
@@ -1067,6 +1068,7 @@ impl SplitPlan {
         j2: &mut Array2<f64>,
         j3: &mut Array2<f64>,
         chunk_budget: usize,
+        kernel: LrKernel,
     ) -> Result<(usize, f64, Option<f64>), FerricError> {
         let n = st.obs.nbasis();
         let n2 = n * n;
@@ -1087,20 +1089,12 @@ impl SplitPlan {
                 let x = aux_ft_shells(&st.aux_sh, naux, gs);
                 let xs = aux_ft_shells(&self.aux.s_sh, naux, gs);
                 let xc = aux_ft_shells(&self.aux.c_sh, naux, gs);
-                let mut pr = Array2::<f64>::zeros((n2, ng));
-                let mut pim = Array2::<f64>::zeros((n2, ng));
+                let (pr, pim) = pack_pair_ft(pft, None, kernel);
                 let z = || Array2::<f64>::zeros((naux, ng));
                 let (mut xr, mut xi, mut yr, mut yi) = (z(), z(), z(), z());
                 let (mut xsr, mut xsi, mut xcwr, mut xcwi) = (z(), z(), z(), z());
                 for (g, gvec) in gs.iter().enumerate() {
                     let (w_lr, w_sr) = kernel_weights(gvec, vol, omega);
-                    for m in 0..n {
-                        for k in 0..n {
-                            let v = pft[[m, k, g]];
-                            pr[(m * n + k, g)] = v.re;
-                            pim[(m * n + k, g)] = v.im;
-                        }
-                    }
                     for p in 0..naux {
                         let (v, vs, vc) = (x[(p, g)], xs[(p, g)], xc[(p, g)]);
                         xr[(p, g)] = v.re;
@@ -1114,8 +1108,8 @@ impl SplitPlan {
                     }
                 }
                 // Re[conj(A) B] = A.re B.re + A.im B.im
-                general_mat_mul(1.0, &pr, &yr.t(), 1.0, &mut *j3);
-                general_mat_mul(1.0, &pim, &yi.t(), 1.0, &mut *j3);
+                lr_gemm_acc(&pr, &yr, j3, kernel);
+                lr_gemm_acc(&pim, &yi, j3, kernel);
                 general_mat_mul(1.0, &yr, &xr.t(), 1.0, &mut *j2);
                 general_mat_mul(1.0, &yi, &xi.t(), 1.0, &mut *j2);
                 general_mat_mul(1.0, &xcwr, &xsr.t(), 1.0, &mut *j2);
@@ -1123,7 +1117,8 @@ impl SplitPlan {
                 add_clock(&mut sink_wall, &mut sink_cpu, clock.elapsed());
                 Ok(())
             };
-        let n_chunks = pair_ft_chunked(
+        let n_chunks = lr_pair_ft_chunked(
+            kernel,
             st.cell,
             st.obs,
             gv,
@@ -1145,6 +1140,7 @@ impl SplitPlan {
         gv: &[[f64; 3]],
         j3: &mut Array2<f64>,
         chunk_budget: usize,
+        kernel: LrKernel,
     ) -> Result<(usize, f64, Option<f64>), FerricError> {
         let n = st.obs.nbasis();
         let ns = sm.prep.nbasis();
@@ -1163,31 +1159,24 @@ impl SplitPlan {
                 let clock = StageClock::start();
                 let ng = gs.len();
                 let xc = aux_ft_shells(&self.aux.c_sh, naux, gs);
-                let mut pr = Array2::<f64>::zeros((ns2, ng));
-                let mut pim = Array2::<f64>::zeros((ns2, ng));
+                let (pr, pim) = pack_pair_ft(pft, None, kernel);
                 let mut xcwr = Array2::<f64>::zeros((naux, ng));
                 let mut xcwi = Array2::<f64>::zeros((naux, ng));
                 for (g, gvec) in gs.iter().enumerate() {
                     let (_, w_sr) = kernel_weights(gvec, vol, omega);
-                    for m in 0..ns {
-                        for k in 0..ns {
-                            let v = pft[[m, k, g]];
-                            pr[(m * ns + k, g)] = v.re;
-                            pim[(m * ns + k, g)] = v.im;
-                        }
-                    }
                     for p in 0..naux {
                         let v = xc[(p, g)];
                         xcwr[(p, g)] = w_sr * v.re;
                         xcwi[(p, g)] = w_sr * v.im;
                     }
                 }
-                general_mat_mul(1.0, &pr, &xcwr.t(), 1.0, &mut acc);
-                general_mat_mul(1.0, &pim, &xcwi.t(), 1.0, &mut acc);
+                lr_gemm_acc(&pr, &xcwr, &mut acc, kernel);
+                lr_gemm_acc(&pim, &xcwi, &mut acc, kernel);
                 add_clock(&mut sink_wall, &mut sink_cpu, clock.elapsed());
                 Ok(())
             };
-        let n_chunks = pair_ft_chunked(
+        let n_chunks = lr_pair_ft_chunked(
+            kernel,
             st.cell,
             &sm.prep,
             gv,
@@ -1307,17 +1296,18 @@ pub(super) fn lr_accumulate(
     j2: &mut Array2<f64>,
     j3: &mut Array2<f64>,
     chunk_budget: usize,
+    kernel: LrKernel,
 ) -> Result<(usize, f64, Option<f64>), FerricError> {
     let Some(p) = plan else {
-        return st.lr_accumulate(gv, j2, j3, chunk_budget);
+        return st.lr_accumulate(gv, j2, j3, chunk_budget, kernel);
     };
     let (mut chunks, mut wall, mut cpu) = if p.aux.s_sh.is_empty() {
-        st.lr_accumulate(gv, j2, j3, chunk_budget)?
+        st.lr_accumulate(gv, j2, j3, chunk_budget, kernel)?
     } else {
-        p.lr_moved_aux(st, gv, j2, j3, chunk_budget)?
+        p.lr_moved_aux(st, gv, j2, j3, chunk_budget, kernel)?
     };
     if let Some(sm) = p.smooth_obs.as_ref().filter(|_| !p.aux.c_sh.is_empty()) {
-        let (c, w, u) = p.lr_smooth_pairs(st, sm, gv, j3, chunk_budget)?;
+        let (c, w, u) = p.lr_smooth_pairs(st, sm, gv, j3, chunk_budget, kernel)?;
         chunks += c;
         add_clock(&mut wall, &mut cpu, (w, u));
     }

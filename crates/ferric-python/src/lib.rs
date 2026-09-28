@@ -891,7 +891,7 @@ fn gamma_rhf_driver(
     use ferric_pbc::hcore::{periodic_hcore, PeriodicHcoreConfig};
     use ferric_pbc::rsgdf::{RsGdf, RsGdfConfig};
     let total = ferric_pbc::StageClock::start();
-    let w = omega_bohr.unwrap_or_else(|| ferric_pbc::ewald::default_ewald_omega(cell));
+    let w = omega_bohr.unwrap_or_else(|| PeriodicHcoreConfig::for_cell(cell).omega);
     let hcfg = PeriodicHcoreConfig::with_omega(w);
     let hc = periodic_hcore(cell, prep, &hcfg)?;
     let mut timings = ferric_pbc::PbcTimings::default();
@@ -1152,7 +1152,9 @@ fn parse_gamma_options(
 ///             the same factor the XYZ parser uses.
 ///   omega     nuclear-attraction Ewald split in **Å⁻¹** (numerical knob;
 ///             any value > 0 gives the same energy to ~1e-9 Ha). None =
-///             `sqrt(pi) / volume^(1/3)`. (Not the RS-GDF split, which is
+///             `min(2.5 sqrt(pi) / volume^(1/3), 0.9636 Bohr^-1)`
+///             (`ferric_pbc::hcore::default_hcore_omega`, converted to
+///             Å⁻¹ in `result.omega`). (Not the RS-GDF split, which is
 ///             fixed at its default.)
 ///   energies  Hartree per cell.
 ///

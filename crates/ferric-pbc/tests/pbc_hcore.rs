@@ -18,6 +18,10 @@
 //!    vs the pure reciprocal-space `pure_aft_nuclear` (independent: no
 //!    libint2, no SR sum, no G = 0 bookkeeping), s+p triclinic 4H; plus the
 //!    negative control that the G = 0 term is visible at this tolerance.
+//! 5. `default_hcore_omega_*` — the default split rule
+//!    (`min(2.5 √π/Ω^{1/3}, ω_cap)`) on diamond_prim / diamond_conv / dry ice
+//!    and its wiring into every default config; diamond_prim STO-3G hcore
+//!    and (ignored, slow) SCF energy at the old vs new default within 1e-9.
 //!
 //! Artifact hypotheses: a G = 0 bookkeeping error is `c·Z_tot·S/(ω²Ω)`-shaped
 //! and ω-DEPENDENT, so it fails 3 and 4 at ω ≠ 1 (tests avoid ω = 1, where
@@ -311,4 +315,197 @@ fn periodic_hcore_rejects_l_above_max_l() {
     let err = periodic_hcore(&cell, &prep, &PeriodicHcoreConfig::with_omega(1.0))
         .expect_err("l=5 must be rejected");
     assert!(err.to_string().contains("l=5"), "{err}");
+}
+
+// ------------------------------------------------------- default hcore ω --
+//
+// The default split (hcore.rs module doc, "Default ω"):
+// ω_h = min(2.5 √π/Ω^{1/3}, ω_cap(precision)), ω_cap = √(ln 1e13 / ln(1/precision))
+// (the hcore LR sphere on the default RS-GDF one). Artifact hypotheses: a
+// wrong factor or a cap applied the wrong way round (max for min) moves the
+// three expected values below; a default that leaked the old √π/Ω^{1/3} into
+// a caller fails the wiring asserts; a split that changes V (not just its
+// cost) fails the diamond energy test at 1e-9.
+
+/// Bench cells (reference/pbc/bench/*.lattice, Bohr). Only the volume enters
+/// the rule, so each carries the two diamond_prim C atoms.
+const DIAMOND_PRIM_XYZ: &str = "2\ndiamond_prim\nC 0.0 0.0 0.0\nC 0.89175 0.89175 0.89175\n";
+const DIAMOND_PRIM_LATTICE: [[f64; 3]; 3] = [
+    [0.0, 3.3703265431617879, 3.3703265431617879],
+    [3.3703265431617879, 0.0, 3.3703265431617879],
+    [3.3703265431617879, 3.3703265431617879, 0.0],
+];
+const DIAMOND_CONV_A: f64 = 6.7406530863235758;
+const DRYICE_A: f64 = 10.627819724553907;
+
+fn diamond_cell(lattice: [[f64; 3]; 3]) -> ferric_pbc::lattice::Cell {
+    let mol = Molecule::parse_xyz(DIAMOND_PRIM_XYZ, 0, 1).unwrap();
+    ferric_pbc::lattice::Cell::new(mol, lattice).unwrap()
+}
+
+#[test]
+fn default_hcore_omega_follows_the_rule_on_three_cells() {
+    use ferric_pbc::ewald::default_ewald_omega;
+    use ferric_pbc::hcore::{default_hcore_omega, hcore_omega_cap, HCORE_OMEGA_EWALD_FACTOR};
+    use ferric_pbc::rsgdf::{DEFAULT_RSGDF_OMEGA, DEFAULT_RSGDF_PRECISION};
+    use ferric_pbc::{ExxDiv, KRhfConfig, KUhfConfig};
+
+    assert_eq!(HCORE_OMEGA_EWALD_FACTOR, 2.5);
+    // The cap puts the hcore LR sphere 2ω√ln(1/precision) exactly on the
+    // default RS-GDF sphere 2ω_gdf√ln(1/p_gdf) = 10.9423 Bohr⁻¹.
+    let cap = hcore_omega_cap(DEFAULT_HCORE_PRECISION);
+    assert!((cap - 0.963_624_111_659_431_5).abs() < 1e-12, "cap {cap}");
+    let g_hcore = 2.0 * cap * (1.0 / DEFAULT_HCORE_PRECISION).ln().sqrt();
+    let g_gdf = 2.0 * DEFAULT_RSGDF_OMEGA * (1.0 / DEFAULT_RSGDF_PRECISION).ln().sqrt();
+    assert!((g_hcore - g_gdf).abs() < 1e-12, "{g_hcore} vs {g_gdf}");
+    // A looser hcore precision raises the cap (same sphere).
+    assert!((hcore_omega_cap(1e-10) - 1.140_175_425_099_138).abs() < 1e-12);
+
+    // (cell, expected ω_h, capped?) — expected values computed off-line from
+    // the bench lattices: 2.5·√π/Ω^{1/3} = 1.04352 (diamond_prim, capped),
+    // 0.657375 (diamond_conv), 0.416937 (dry ice).
+    let cases = [
+        (
+            "diamond_prim",
+            diamond_cell(DIAMOND_PRIM_LATTICE),
+            0.963_624_111_659_431_5,
+            true,
+        ),
+        (
+            "diamond_conv",
+            diamond_cell(cubic(DIAMOND_CONV_A)),
+            0.657_374_674_310_761_6,
+            false,
+        ),
+        (
+            "dryice",
+            diamond_cell(cubic(DRYICE_A)),
+            0.416_937_315_659_048_1,
+            false,
+        ),
+    ];
+    for (name, cell, want, capped) in cases {
+        let w = default_hcore_omega(&cell, DEFAULT_HCORE_PRECISION);
+        let old = default_ewald_omega(&cell);
+        eprintln!(
+            "{name}: V = {:.3}, old ω {old:.6}, default ω_h {w:.6}",
+            cell.volume()
+        );
+        assert!((w - want).abs() < 1e-12, "{name}: ω_h {w} vs {want}");
+        assert_eq!(w == cap, capped, "{name}: cap applied = {}", w == cap);
+        assert!(
+            w > 2.3 * old,
+            "{name}: the default did not move off √π/Ω^(1/3)"
+        );
+        // Deterministic and wired into every default config.
+        assert_eq!(
+            w.to_bits(),
+            default_hcore_omega(&cell, DEFAULT_HCORE_PRECISION).to_bits()
+        );
+        assert_eq!(
+            PeriodicHcoreConfig::for_cell(&cell).omega.to_bits(),
+            w.to_bits()
+        );
+        assert_eq!(
+            PeriodicHcoreConfig::for_cell(&cell).precision,
+            DEFAULT_HCORE_PRECISION
+        );
+        assert_eq!(
+            KRhfConfig::for_cell(&cell, ExxDiv::Ewald)
+                .hcore
+                .omega
+                .to_bits(),
+            w.to_bits()
+        );
+        assert_eq!(
+            KUhfConfig::for_cell(&cell, ExxDiv::Ewald)
+                .hcore
+                .omega
+                .to_bits(),
+            w.to_bits()
+        );
+    }
+    // An explicit ω is never replaced.
+    assert_eq!(PeriodicHcoreConfig::with_omega(0.417).omega, 0.417);
+}
+
+/// diamond_prim STO-3G: the hcore at the OLD default split (√π/Ω^{1/3} =
+/// 0.417) and at the new one (0.964) is the same matrix to truncation, and
+/// the new split really moved the work (fewer SR triplets, more G).
+#[test]
+fn default_hcore_omega_changes_cost_not_the_diamond_sto3g_hcore() {
+    use ferric_pbc::ewald::default_ewald_omega;
+    let cell = diamond_cell(DIAMOND_PRIM_LATTICE);
+    let prep = PreparedBasis::new(cell.mol(), &bundled("sto-3g").unwrap()).unwrap();
+    let old = periodic_hcore(
+        &cell,
+        &prep,
+        &PeriodicHcoreConfig::with_omega(default_ewald_omega(&cell)),
+    )
+    .unwrap();
+    let new = periodic_hcore(&cell, &prep, &PeriodicHcoreConfig::for_cell(&cell)).unwrap();
+    let (dv, dh) = (max_abs_diff(&new.v, &old.v), max_abs_diff(&new.h, &old.h));
+    let dsr = max_abs_diff(&new.v_sr, &old.v_sr);
+    eprintln!(
+        "diamond_prim STO-3G: ω {:.4} → {:.4}; SR triplets {} → {}, half-G {} → {}; \
+         max|ΔV| {dv:.2e} max|Δh| {dh:.2e}; max|ΔV_SR| {dsr:.2e} (split moved)",
+        old.omega, new.omega, old.n_sr_triplets, new.n_sr_triplets, old.n_g_half, new.n_g_half
+    );
+    // S, T and E_nn do not see the nuclear-attraction split.
+    assert!(max_abs_diff(&new.s, &old.s) == 0.0 && max_abs_diff(&new.t, &old.t) == 0.0);
+    assert_eq!(new.enn.to_bits(), old.enn.to_bits());
+    assert!(dh <= 1e-9, "max|Δh| {dh:.3e}");
+    // Non-vacuity: the pieces moved by far more than the sum did.
+    assert!(
+        dsr > 1e-3,
+        "V_SR barely moved ({dsr:.3e}): not a different split"
+    );
+    assert!(new.n_sr_triplets < old.n_sr_triplets && new.n_g_half > old.n_g_half);
+}
+
+/// The SCF energy at the old and new default split on diamond_prim STO-3G
+/// (RS-GDF J/K built ONCE — they do not depend on the nuclear split — so
+/// the only difference is the hcore). Measured on cc-pVDZ at 0.96: 1.5e-11.
+#[test]
+#[ignore = "slow: diamond_prim STO-3G hcore at the old split (~3 s SR in release at 1 thread), \
+            one range-split RS-GDF build and two SCFs; run with --release -- --ignored"]
+fn default_hcore_omega_moves_the_diamond_sto3g_energy_below_1e9() {
+    use ferric_pbc::ewald::default_ewald_omega;
+    use ferric_pbc::rsgdf::{RangeSplit, RsGdf, RsGdfConfig};
+    use ferric_pbc::ExxDiv;
+    let cell = diamond_cell(DIAMOND_PRIM_LATTICE);
+    let prep = PreparedBasis::new(cell.mol(), &bundled("sto-3g").unwrap()).unwrap();
+    let aux = PreparedBasis::new(cell.mol(), &bundled("cc-pvdz-ri").unwrap()).unwrap();
+    let old = periodic_hcore(
+        &cell,
+        &prep,
+        &PeriodicHcoreConfig::with_omega(default_ewald_omega(&cell)),
+    )
+    .unwrap();
+    let new = periodic_hcore(&cell, &prep, &PeriodicHcoreConfig::for_cell(&cell)).unwrap();
+    let gcfg = RsGdfConfig {
+        exxdiv: ExxDiv::Ewald,
+        range_split: Some(RangeSplit::default()),
+        ..Default::default()
+    };
+    let gdf = RsGdf::build(&cell, &prep, &aux, &new.s, &gcfg).expect("RsGdf build");
+    let e = |hc: &ferric_pbc::hcore::PeriodicHcore| {
+        gamma_rhf_jk(
+            &cell,
+            &prep,
+            hc,
+            Box::new(gdf.j_builder()),
+            Box::new(gdf.k_builder()),
+        )
+        .energy
+    };
+    let (e_old, e_new) = (e(&old), e(&new));
+    eprintln!(
+        "diamond_prim STO-3G RS-GDF (split): E(ω {:.4}) {e_old:.12}, E(ω {:.4}) {e_new:.12}, \
+         ΔE {:.2e} (ferric unsplit bench -74.0034040288)",
+        old.omega,
+        new.omega,
+        e_new - e_old
+    );
+    assert!((e_new - e_old).abs() <= 1e-9, "ΔE {:.3e}", e_new - e_old);
 }

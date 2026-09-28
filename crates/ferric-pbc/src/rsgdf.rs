@@ -116,8 +116,8 @@ use crate::hcore::{gvector_list_bytes, half_gvectors, G_CHUNK_BYTES};
 use crate::kpts::lattice_coords;
 use crate::lattice::Cell;
 use crate::ordered::{ordered_units, Stored};
-use crate::pair_ft::pair_ft_chunked;
 use crate::pair_ft::residues::residue_index;
+use crate::pair_ft::{pair_ft_chunked, pair_ft_chunked_serial_oracle};
 use crate::timing::{CallClock, PbcTimings, StageClock};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -127,7 +127,7 @@ use ferric_integrals::md3c1e::{cart_components, e_table, ferric_cart2sph, prim_n
 use ferric_integrals::operator::Operator;
 use ferric_scf::fock::{JBuilder, KBuilder};
 use ndarray::linalg::general_mat_mul;
-use ndarray::{Array1, Array2, Array3, ArrayView1};
+use ndarray::{Array1, Array2, Array3, ArrayView1, Axis};
 use ndarray_linalg::{Eigh, UPLO};
 use num_complex::Complex64;
 use rayon::prelude::*;
@@ -464,69 +464,85 @@ pub fn aux_ft(aux: &PreparedBasis, gvecs: &[[f64; 3]]) -> Result<Array2<Complex6
     Ok(aux_ft_shells(&shells, aux.nbasis(), gvecs))
 }
 
+/// [`aux_ft`] on prepared shells, parallel over aux SHELLS: each shell's
+/// rows are computed from zero by [`aux_ft_shell_rows`] (no element depends on
+/// another shell) and copied in shell order, so the result is bit for bit the
+/// serial shell loop's at any thread count.
 fn aux_ft_shells(shells: &[GShell], naux: usize, gvecs: &[[f64; 3]]) -> Array2<Complex64> {
     let ng = gvecs.len();
-    let zero = Complex64::new(0.0, 0.0);
-    let one = Complex64::new(1.0, 0.0);
+    let rows: Vec<Vec<Complex64>> = shells
+        .par_iter()
+        .map(|sh| aux_ft_shell_rows(sh, gvecs))
+        .collect();
     let mut out = Array2::<Complex64>::zeros((naux, ng));
-    let mut ebuf = vec![0.0_f64; (MAX_L + 1) * (MAX_L + 1)];
-    for sh in shells {
-        let l = sh.l;
-        let comps = cart_components(l);
-        let ncart = comps.len();
-        let mut cart = vec![zero; ncart * ng];
-        for (&a, &c) in sh.exps.iter().zip(&sh.coefs) {
-            // E^{i0}_t at index i*(l+1) + t (lb = 0).
-            e_table(l, 0, a, 0.0, 0.0, &mut ebuf);
-            let pref = c * (PI / a).powf(1.5);
-            for (g, gv) in gvecs.iter().enumerate() {
-                let mag = pref * (-dot3(gv, gv) / (4.0 * a)).exp();
-                let ph = dot3(gv, &sh.center);
-                // e^{−iG·A}
-                let common = Complex64::new(mag * ph.cos(), -mag * ph.sin());
-                let mut f = [[zero; MAX_L + 1]; 3];
-                for (d, fd) in f.iter_mut().enumerate() {
-                    let step = Complex64::new(0.0, -gv[d]);
-                    for (i, fdi) in fd.iter_mut().enumerate().take(l + 1) {
-                        let mut acc = zero;
-                        let mut pw = one;
-                        for t in 0..=i {
-                            acc += pw * ebuf[i * (l + 1) + t];
-                            pw *= step;
-                        }
-                        *fdi = acc;
-                    }
-                }
-                for (u, lc) in comps.iter().enumerate() {
-                    cart[u * ng + g] +=
-                        common * f[0][lc[0] as usize] * f[1][lc[1] as usize] * f[2][lc[2] as usize];
-                }
-            }
-        }
-        if sh.pure {
-            let c2s = ferric_cart2sph(l);
-            let nf = sh.nfun;
-            for j in 0..nf {
-                for g in 0..ng {
-                    let mut acc = zero;
-                    for m in 0..ncart {
-                        let cm = c2s[m * nf + j];
-                        if cm != 0.0 {
-                            acc += cart[m * ng + g] * cm;
-                        }
-                    }
-                    out[[sh.off + j, g]] = acc;
-                }
-            }
-        } else {
-            for u in 0..ncart {
-                for g in 0..ng {
-                    out[[sh.off + u, g]] = cart[u * ng + g];
-                }
+    for (sh, rows) in shells.iter().zip(&rows) {
+        for j in 0..sh.nfun {
+            for g in 0..ng {
+                out[[sh.off + j, g]] = rows[j * ng + g];
             }
         }
     }
     out
+}
+
+/// Rows `(nfun, ng)` (row-major) of one aux shell's FT (the body of the
+/// pre-parallel serial shell loop, expression for expression).
+fn aux_ft_shell_rows(sh: &GShell, gvecs: &[[f64; 3]]) -> Vec<Complex64> {
+    let ng = gvecs.len();
+    let zero = Complex64::new(0.0, 0.0);
+    let one = Complex64::new(1.0, 0.0);
+    let mut ebuf = vec![0.0_f64; (MAX_L + 1) * (MAX_L + 1)];
+    let l = sh.l;
+    let comps = cart_components(l);
+    let ncart = comps.len();
+    let mut cart = vec![zero; ncart * ng];
+    for (&a, &c) in sh.exps.iter().zip(&sh.coefs) {
+        // E^{i0}_t at index i*(l+1) + t (lb = 0).
+        e_table(l, 0, a, 0.0, 0.0, &mut ebuf);
+        let pref = c * (PI / a).powf(1.5);
+        for (g, gv) in gvecs.iter().enumerate() {
+            let mag = pref * (-dot3(gv, gv) / (4.0 * a)).exp();
+            let ph = dot3(gv, &sh.center);
+            // e^{−iG·A}
+            let common = Complex64::new(mag * ph.cos(), -mag * ph.sin());
+            let mut f = [[zero; MAX_L + 1]; 3];
+            for (d, fd) in f.iter_mut().enumerate() {
+                let step = Complex64::new(0.0, -gv[d]);
+                for (i, fdi) in fd.iter_mut().enumerate().take(l + 1) {
+                    let mut acc = zero;
+                    let mut pw = one;
+                    for t in 0..=i {
+                        acc += pw * ebuf[i * (l + 1) + t];
+                        pw *= step;
+                    }
+                    *fdi = acc;
+                }
+            }
+            for (u, lc) in comps.iter().enumerate() {
+                cart[u * ng + g] +=
+                    common * f[0][lc[0] as usize] * f[1][lc[1] as usize] * f[2][lc[2] as usize];
+            }
+        }
+    }
+    if !sh.pure {
+        return cart;
+    }
+    let c2s = ferric_cart2sph(l);
+    let nf = sh.nfun;
+    let mut rows = vec![zero; nf * ng];
+    for j in 0..nf {
+        for g in 0..ng {
+            let mut acc = zero;
+            for m in 0..ncart {
+                let cm = c2s[m * nf + j];
+                if cm != 0.0 {
+                    acc += cart[m * ng + g] * cm;
+                }
+            }
+            rows[j * ng + g] = acc;
+        }
+    }
+    rows
 }
 
 // ---------------------------------------------------------------------------
@@ -1351,12 +1367,14 @@ impl Stage<'_> {
     /// and `j3`; `pair_ft` G-chunked within `chunk_budget`. Returns the chunk
     /// count and the `(wall, CPU)` seconds spent in the per-chunk sink (aux
     /// FT, packing and the four GEMMs); the rest of the call is the pair FT.
+    /// `kernel` selects production or the FROZEN serial path ([`LrKernel`]).
     fn lr_accumulate(
         &self,
         gv: &[[f64; 3]],
         j2: &mut Array2<f64>,
         j3: &mut Array2<f64>,
         chunk_budget: usize,
+        kernel: LrKernel,
     ) -> Result<(usize, f64, Option<f64>), FerricError> {
         let n = self.obs.nbasis();
         let n2 = n * n;
@@ -1376,22 +1394,19 @@ impl Stage<'_> {
                 let clock = StageClock::start();
                 let ng = gs.len();
                 let x = aux_ft_shells(aux_sh, naux, gs);
-                let mut pr = Array2::<f64>::zeros((n2, ng));
-                let mut pim = Array2::<f64>::zeros((n2, ng));
+                let w: Vec<f64> = gs
+                    .iter()
+                    .map(|gvec| {
+                        let g2 = dot3(gvec, gvec);
+                        2.0 / vol * 4.0 * PI / g2 * (-g2 / (4.0 * omega * omega)).exp()
+                    })
+                    .collect();
+                let (pr, pim) = pack_pair_ft(pft, Some(w.as_slice()), kernel);
                 let mut xr = Array2::<f64>::zeros((naux, ng));
                 let mut xi = Array2::<f64>::zeros((naux, ng));
                 let mut xrw = Array2::<f64>::zeros((naux, ng));
                 let mut xiw = Array2::<f64>::zeros((naux, ng));
-                for (g, gvec) in gs.iter().enumerate() {
-                    let g2 = dot3(gvec, gvec);
-                    let w = 2.0 / vol * 4.0 * PI / g2 * (-g2 / (4.0 * omega * omega)).exp();
-                    for m in 0..n {
-                        for k in 0..n {
-                            let z = pft[[m, k, g]];
-                            pr[(m * n + k, g)] = w * z.re;
-                            pim[(m * n + k, g)] = w * z.im;
-                        }
-                    }
+                for (g, &w) in w.iter().enumerate() {
                     for p in 0..naux {
                         let z = x[(p, g)];
                         xr[(p, g)] = z.re;
@@ -1401,8 +1416,8 @@ impl Stage<'_> {
                     }
                 }
                 // Re[conj(A) X] = A.re X.re + A.im X.im
-                general_mat_mul(1.0, &pr, &xr.t(), 1.0, &mut *j3);
-                general_mat_mul(1.0, &pim, &xi.t(), 1.0, &mut *j3);
+                lr_gemm_acc(&pr, &xr, j3, kernel);
+                lr_gemm_acc(&pim, &xi, j3, kernel);
                 general_mat_mul(1.0, &xrw, &xr.t(), 1.0, &mut *j2);
                 general_mat_mul(1.0, &xiw, &xi.t(), 1.0, &mut *j2);
                 let (w, c) = clock.elapsed();
@@ -1412,7 +1427,8 @@ impl Stage<'_> {
                 }
                 Ok(())
             };
-        let n_chunks = pair_ft_chunked(
+        let n_chunks = lr_pair_ft_chunked(
+            kernel,
             self.cell,
             self.obs,
             gv,
@@ -1423,6 +1439,180 @@ impl Stage<'_> {
         )?;
         Ok((n_chunks, sink_wall, sink_cpu))
     }
+}
+
+// ---------------------------------------------------------------------------
+// LR (G ≠ 0) kernels shared by the Gamma build and its range split
+// ---------------------------------------------------------------------------
+
+/// Which kernels the LR stage runs. Production: the survivor-cached,
+/// shell-parallel pair FT ([`pair_ft_chunked`]), the per-row parallel
+/// packing and the row-blocked parallel J3 GEMMs ([`lr_gemm_acc`]).
+/// `SerialOracle`: the FROZEN pre-parallel path (serial pair FT that re-walks
+/// the screen per chunk, serial packing, one GEMM per chunk), used only by
+/// [`lr_sums_parallel_and_serial`]. Both use the SAME G chunks, so every J2/J3
+/// element receives the same GEMM k-ranges in the same order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LrKernel {
+    Production,
+    SerialOracle,
+}
+
+/// Rows of J3 per task of the parallel LR accumulation GEMMs. A CONSTANT: it
+/// must never depend on the thread count or the budget (it decides which
+/// GEMM call a J3 row belongs to, never the k-summation of an element).
+const LR_GEMM_ROW_BLOCK: usize = 512;
+
+/// `c += a · bᵀ` (`a`: `(m, k)`, `b`: `(q, k)`, `c`: `(m, q)`).
+///
+/// Production: `c`'s and `a`'s rows in fixed blocks of [`LR_GEMM_ROW_BLOCK`],
+/// one single-threaded BLAS GEMM per block, blocks on rayon. Every element of
+/// `c` still gets exactly one `+=` of one GEMM's length-`k` dot product over
+/// the same k range (the G chunk) as the unsplit GEMM; only the row range of
+/// the call it belongs to changes. The oracle is the unsplit call.
+fn lr_gemm_acc(a: &Array2<f64>, b: &Array2<f64>, c: &mut Array2<f64>, kernel: LrKernel) {
+    if kernel == LrKernel::SerialOracle || c.nrows() <= LR_GEMM_ROW_BLOCK {
+        general_mat_mul(1.0, a, &b.t(), 1.0, c);
+        return;
+    }
+    let cs: Vec<_> = c.axis_chunks_iter_mut(Axis(0), LR_GEMM_ROW_BLOCK).collect();
+    let as_: Vec<_> = a.axis_chunks_iter(Axis(0), LR_GEMM_ROW_BLOCK).collect();
+    cs.into_par_iter()
+        .zip(as_.into_par_iter())
+        .for_each(|(mut cb, ab)| general_mat_mul(1.0, &ab, &b.t(), 1.0, &mut cb));
+}
+
+/// `(re, im)` of a pair FT chunk `P[m, k, g]` as `(n², ng)` real matrices,
+/// row `m·n + k`, each scaled by `w[g]` (`w[g] * z.re`) or copied (`None`).
+/// Production fills the rows in parallel; every element is the same single
+/// expression either way.
+fn pack_pair_ft(
+    pft: &Array3<Complex64>,
+    w: Option<&[f64]>,
+    kernel: LrKernel,
+) -> (Array2<f64>, Array2<f64>) {
+    let (n, n1, ng) = pft.dim();
+    let n2 = n * n1;
+    let mut pr = Array2::<f64>::zeros((n2, ng));
+    let mut pim = Array2::<f64>::zeros((n2, ng));
+    if ng == 0 || n2 == 0 {
+        return (pr, pim);
+    }
+    if kernel == LrKernel::SerialOracle {
+        for g in 0..ng {
+            for m in 0..n {
+                for k in 0..n1 {
+                    let z = pft[[m, k, g]];
+                    let (re, im) = match w {
+                        Some(w) => (w[g] * z.re, w[g] * z.im),
+                        None => (z.re, z.im),
+                    };
+                    pr[(m * n1 + k, g)] = re;
+                    pim[(m * n1 + k, g)] = im;
+                }
+            }
+        }
+        return (pr, pim);
+    }
+    let src = pft.as_standard_layout();
+    let src = src.as_slice().expect("standard layout");
+    let (rs, is) = (
+        pr.as_slice_mut().expect("fresh array"),
+        pim.as_slice_mut().expect("fresh array"),
+    );
+    rs.par_chunks_mut(ng)
+        .zip(is.par_chunks_mut(ng))
+        .zip(src.par_chunks(ng))
+        .for_each(|((r, i), z)| {
+            for g in 0..ng {
+                let (re, im) = match w {
+                    Some(w) => (w[g] * z[g].re, w[g] * z[g].im),
+                    None => (z[g].re, z[g].im),
+                };
+                r[g] = re;
+                i[g] = im;
+            }
+        });
+    (pr, pim)
+}
+
+/// [`pair_ft_chunked`] (production) or its frozen serial oracle.
+#[allow(clippy::too_many_arguments)]
+fn lr_pair_ft_chunked<F>(
+    kernel: LrKernel,
+    cell: &Cell,
+    prep: &PreparedBasis,
+    gvecs: &[[f64; 3]],
+    thresh: f64,
+    chunk_budget_bytes: usize,
+    extra_bytes_per_g: usize,
+    sink: F,
+) -> Result<usize, FerricError>
+where
+    F: FnMut(usize, &[[f64; 3]], &Array3<Complex64>) -> Result<(), FerricError>,
+{
+    match kernel {
+        LrKernel::Production => pair_ft_chunked(
+            cell,
+            prep,
+            gvecs,
+            thresh,
+            chunk_budget_bytes,
+            extra_bytes_per_g,
+            sink,
+        ),
+        LrKernel::SerialOracle => pair_ft_chunked_serial_oracle(
+            cell,
+            prep,
+            gvecs,
+            thresh,
+            chunk_budget_bytes,
+            extra_bytes_per_g,
+            sink,
+        ),
+    }
+}
+
+/// `(J2_LR, J3_LR, G chunks)` of one LR kernel.
+pub type LrSums = (Array2<f64>, Array2<f64>, usize);
+
+/// TEST ORACLE for the LR stage of [`RsGdf::build`]: the LR (G ≠ 0)
+/// contributions for `cfg` (range split included, exactly the dispatch the
+/// build runs), accumulated from zero at an EXPLICIT `chunk_budget` (so a
+/// test can force several G chunks), as `[production, frozen serial]`. The
+/// two must agree BIT FOR BIT (`tests/pbc_parallel_bitwise.rs`): the proof
+/// that the survivor-cached, shell-parallel pair FT and the parallel sink
+/// kept every J2/J3 element's summation sequence.
+#[doc(hidden)]
+pub fn lr_sums_parallel_and_serial(
+    cell: &Cell,
+    obs: &PreparedBasis,
+    aux: &PreparedBasis,
+    cfg: &RsGdfConfig,
+    chunk_budget: usize,
+) -> Result<[LrSums; 2], FerricError> {
+    require_pure_aux(aux, "RsGdf")?;
+    let (st, images) = kpoint::diagnostic_stage(cell, obs, aux, cfg)?;
+    let mut ledger = Ledger::new(crate::budget::resolve(cfg.budget_bytes));
+    let plan = split::SplitPlan::maybe(&st, cfg, &images, &mut ledger)?;
+    let gcut = 2.0 * cfg.omega * (1.0 / cfg.precision).ln().sqrt();
+    let gv = half_gvectors(cell, gcut)?;
+    let (n2, naux) = (obs.nbasis() * obs.nbasis(), aux.nbasis());
+    let run = |kernel: LrKernel| -> Result<LrSums, FerricError> {
+        let mut j2 = Array2::<f64>::zeros((naux, naux));
+        let mut j3 = Array2::<f64>::zeros((n2, naux));
+        let (chunks, _, _) = split::lr_accumulate(
+            &st,
+            plan.as_ref(),
+            &gv,
+            &mut j2,
+            &mut j3,
+            chunk_budget,
+            kernel,
+        )?;
+        Ok((j2, j3, chunks))
+    };
+    Ok([run(LrKernel::Production)?, run(LrKernel::SerialOracle)?])
 }
 
 /// One unit of an ordered SR derivative walk ([`Stage::sr_three_index_ordered`],
@@ -1983,8 +2173,15 @@ impl RsGdf {
         let (mut j3, n_sr3) = split::sr_three_index(&st, plan.as_ref(), &images)?;
         timings.stop("rsgdf SR 3-centre", &clock);
         let clock = StageClock::start();
-        let (n_g_chunks, sink_wall, sink_cpu) =
-            split::lr_accumulate(&st, plan.as_ref(), &gv, &mut j2, &mut j3, chunk_budget)?;
+        let (n_g_chunks, sink_wall, sink_cpu) = split::lr_accumulate(
+            &st,
+            plan.as_ref(),
+            &gv,
+            &mut j2,
+            &mut j3,
+            chunk_budget,
+            LrKernel::Production,
+        )?;
         let (lr_wall, lr_cpu) = clock.elapsed();
         timings.add(
             "rsgdf LR pair FT",
