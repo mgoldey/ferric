@@ -125,7 +125,9 @@ def _frequencies(mol, h, masses):
 
     natm = mol.natm
     h4 = h.reshape(natm, 3, natm, 3).transpose(0, 2, 1, 3)
-    res = thermo.harmonic_analysis(mol, h4, mass=np.asarray(masses), imaginary_freq=False)
+    res = thermo.harmonic_analysis(
+        mol, h4, mass=np.asarray(masses), imaginary_freq=False
+    )
     return sorted(float(v) for v in np.asarray(res["freq_wavenumber"]).real)
 
 
@@ -183,7 +185,11 @@ def _run(system: str, basis_name: str) -> Path:
         "freq_analytic_cm": f_an,
         "hessian_fd": h_fd.tolist(),
         "freq_fd_cm": f_fd,
-        "fd": {"fd_step_bohr": FD_STEP, "fd_asymmetry_max": fd_asym, "fd_n_gradients": 6 * mol.natm},
+        "fd": {
+            "fd_step_bohr": FD_STEP,
+            "fd_asymmetry_max": fd_asym,
+            "fd_n_gradients": 6 * mol.natm,
+        },
         "pyscf_fd_vs_analytic_hessian_max_abs": gap_h,
         "pyscf_fd_vs_analytic_freq_max_abs_cm": gap_f,
         "provenance": common.provenance(

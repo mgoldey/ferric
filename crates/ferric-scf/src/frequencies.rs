@@ -16,7 +16,7 @@
 //! error is `O(delta^2)` truncation plus `O(eps_scf / delta)` noise, rather
 //! than `O(eps_scf / delta^2)`.
 //!
-//! [`harmonic_frequencies_analytic`] instead calls
+//! [`harmonic_frequencies_analytic`](crate::frequencies::harmonic_frequencies_analytic) instead calls
 //! [`crate::hessian::rhf_hessian`] (one SCF, no displacements) and shares steps
 //! 3-5 of the pipeline below. It covers closed-shell RHF with exact four-centre
 //! J/K and refuses everything else with a typed error before the SCF, so the
