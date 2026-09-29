@@ -33,7 +33,7 @@
 //!
 //! # UHF
 //!
-//! [`uhf_hessian`] is the same five terms with per-spin quantities, following
+//! [`uhf_hessian`](crate::hessian::uhf_hessian) is the same five terms with per-spin quantities, following
 //! PySCF `hessian/uhf.py` (`_partial_hess_ejk`, `make_h1`, `solve_mo1` →
 //! `ucphf.solve`, `hess_elec`). With `D = D_α + D_β`,
 //! `W = Σ_σ Σ_i ε_σi C_σi C_σiᵀ` and unit occupations:

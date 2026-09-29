@@ -18,7 +18,7 @@
 //!
 //! [`harmonic_frequencies_analytic`](crate::frequencies::harmonic_frequencies_analytic) instead calls
 //! [`crate::hessian::rhf_hessian`] (one SCF, no displacements) and shares steps
-//! 3-5 of the pipeline below; [`harmonic_frequencies_analytic_uhf`] does the
+//! 3-5 of the pipeline below; [`harmonic_frequencies_analytic_uhf`](crate::frequencies::harmonic_frequencies_analytic_uhf) does the
 //! same with [`crate::hessian::uhf_hessian`]. They cover closed-shell RHF and
 //! UHF (any multiplicity) with exact four-centre J/K and refuse everything
 //! else with a typed error before the SCF, so the finite-difference path stays
