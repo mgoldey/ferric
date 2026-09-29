@@ -35,26 +35,48 @@
 //!
 //! # Screening (all derived from `precision`)
 //!
-//! For a triple (shell a at A, shell b at B + L, centre u at C + M) with most
-//! diffuse exponents `α_a`, `α_b`, `ζ_u`, the integrand is a product of three
-//! Gaussians, bounded pointwise by each PAIR product: `e^{−α|r−A|²}
-//! e^{−ζ|r−C|²} ≤ e^{−μ(α,ζ)|A−C|²}`, `μ(x, y) = xy/(x+y)`. So
+//! For a triple (shell a at A, shell b at B + L, centre u at C + M; `R_A =
+//! |A − C − M|`, `R_B = |B + L − C − M|`) every element of the block obeys
+//! the RIGOROUS bound (FINDINGS "ECP screen: the antipodal triple")
 //!
 //! ```text
-//! E = max( μ(α_a,ζ_u)|A−C−M|², μ(α_b,ζ_u)|B+L−C−M|², μ(α_a,α_b)|A−B−L|² )
-//! keep the triple iff E <= ln(D_u / precision) + ECP_LOG_MARGIN
+//! |⟨a|U_u|b⟩| <= P_a P_b Σ_k w_k √(π/p_k) e^{−K_k}
+//! K_k = (α'β'(R_A − R_B)² + α'ζ'_k R_A² + β'ζ'_k R_B²) / p_k,  p_k = α' + β' + ζ'_k
+//! keep the triple iff that bound >= precision
 //! ```
 //!
-//! with `D_u = Σ_t |d_t|` (the ECP's coefficient sum) and a margin `e^3` for
-//! the polynomial prefactors of `l > 0` functions (as `SR_MARGIN_BOHR` in
-//! `hcore`). `μ` is increasing in both exponents, so the most diffuse
-//! primitive gives the slowest decay (conservative). The screen is a
-//! SYMMETRIC function of the three distances, so the transposed triple
-//! (b at B, a at A − L, centre at C + M − L) is kept exactly when the triple
-//! is: `V_{−L} = V_Lᵀ` holds by construction, and the residual
-//! ([`PeriodicEcpImages::asymmetry`]) is reported. The global radii
-//! `r_ecp = √(X_max/μ_min(α, ζ))` and `r_pair = min(√(X_max/μ_min(α, α)),
-//! 2 r_ecp)` only enumerate candidates.
+//! Derivation: in polar coordinates about the ECP centre every term,
+//! semi-local `d r^{n−2} e^{−ζr²} Σ_m |lm⟩⟨lm|` AND local, is `∫ r^n e^{−ζr²}
+//! (angular part) dr`; the angular part is bounded by `4π sup_Ω|φ_a(rΩ)|
+//! sup_Ω|φ_b(rΩ)|` (Cauchy–Schwarz over `m` plus Bessel's inequality for the
+//! projector; the plain sphere integral for the local term). On the sphere
+//! `|rΩ − A| >= |r − R_A|`, and a libcint-normalised pure shell is at most
+//! `κ_l Σ_i |c_i N_i| s^l e^{−α_i s²}` with `κ_l = √((2l+1)/4π)` (addition
+//! theorem). Polynomials are absorbed as `s^l e^{−εαs²} <= (l/(2eεα))^{l/2}`
+//! (`ε` = [`ECP_POLY_EPS`], applied only when `l > 0` resp. `n > 0`), leaving
+//! a 1-D Gaussian in `r` whose integral over `r >= 0` is `<= e^{−K} √(π/p)`.
+//! So `P = κ_l Σ_i |c_i N_i| Q_l(α_i)`, `α' = (1 − ε)α_min` (`α_min` for
+//! `l = 0`), `w_k = 4π |d_k| Q_{n_k}(ζ_k)`, `ζ'_k` likewise. `K` is
+//! increasing in every exponent, so the most diffuse primitive is
+//! conservative.
+//!
+//! What the bound deliberately does NOT contain is `|A − B − L|`: after the
+//! projector, the bra and ket only meet through the radius `r`, so a triple
+//! with `A` and `B + L` on OPPOSITE sides of the centre (`R_A = R_B`,
+//! `|A − B − L| = 2R`) decays like `e^{−K}`, not like the pair product
+//! `e^{−μ(α,β)|A−B−L|²}`. The former screen used that pair term and dropped
+//! exactly these antipodal triples (HI/LANL2DZ: exact 6.9e-10 vs its implied
+//! 8e-13 — the 1.4e-9 precision floor).
+//!
+//! The bound is a SYMMETRIC function of `(R_A, R_B)`, so the transposed
+//! triple (b at B, a at A − L, centre at C + M − L) is kept exactly when the
+//! triple is: `V_{−L} = V_Lᵀ` holds by construction, and the residual
+//! ([`PeriodicEcpImages::asymmetry`]) is reported. Since `K >= μ(α',ζ')R_A²`
+//! (drop the `β'` term), the global radii `r_ecp = √(X_max/μ(α'_min,
+//! ζ'_min))`, `X_max = ln(max_ab P_a P_b · max_u Σ_k w_k √(π/ζ'_k) /
+//! precision)`, and `r_pair = 2 r_ecp` (both orbitals within `r_ecp` of one
+//! centre) only enumerate candidates; per triple a one-exponential
+//! pre-test (`ζ'_min`, `√(π/ζ'_k)`) runs before the term sum.
 //!
 //! The optional caps ([`PeriodicEcpConfig::ecp_radius_cap`],
 //! [`PeriodicEcpConfig::pair_radius_cap`]) truncate the SAME symmetric
@@ -108,14 +130,14 @@ use num_complex::Complex64;
 use std::collections::HashMap;
 use std::fmt;
 
-/// Default truncation target of the ECP lattice sum (Hartree per neglected
-/// triple, before the prefactor margin) — `periodic_hcore`'s default.
+/// Default truncation target of the ECP lattice sum (Hartree: a triple is
+/// dropped when its rigorous bound, module doc "Screening", is below it) —
+/// `periodic_hcore`'s default.
 pub const DEFAULT_ECP_PRECISION: f64 = 1e-14;
 
-/// Extra log-magnitude on every screen (`e^3 ≈ 20`): polynomial prefactors of
-/// `l > 0` shells and the `r^{n−2}` radial powers are not in the s-type
-/// Gaussian-product bound.
-pub const ECP_LOG_MARGIN: f64 = 3.0;
+/// Share `ε` of a Gaussian's exponent spent on absorbing its polynomial
+/// (`s^l e^{−εαs²} <= (l/(2eεα))^{l/2}`) in the screen's bound (module doc).
+pub const ECP_POLY_EPS: f64 = 0.1;
 
 /// Typed failure of the periodic-ECP consistency guard ([`check_ecp_applied`]).
 #[derive(Debug, Clone, PartialEq)]
@@ -370,9 +392,40 @@ struct EcpTemplate {
     ns: Vec<i32>,
     exponents: Vec<f64>,
     coefficients: Vec<f64>,
+    /// Screen terms `(w_k, ζ'_k)` (module doc "Screening").
+    screen_terms: Vec<(f64, f64)>,
+    /// `min_k ζ'_k`.
     zmin: f64,
-    /// `ln(D_u / precision) + ECP_LOG_MARGIN`, clamped at 0.
-    x: f64,
+    /// `ln Σ_k w_k √(π/ζ'_k)`: the pre-test's ECP factor.
+    ln_wsum: f64,
+}
+
+/// `sup_{s>=0} s^n e^{−ε a s²} = (n/(2eεa))^{n/2}` (1 for `n = 0`).
+#[inline]
+fn poly_absorb(n: i32, a: f64) -> f64 {
+    if n <= 0 {
+        1.0
+    } else {
+        let nf = n as f64;
+        (nf / (2.0 * std::f64::consts::E * ECP_POLY_EPS * a)).powf(0.5 * nf)
+    }
+}
+
+/// The exponent left after [`poly_absorb`] (unchanged when there is no
+/// polynomial).
+#[inline]
+fn shrunk(n: i32, a: f64) -> f64 {
+    if n <= 0 {
+        a
+    } else {
+        (1.0 - ECP_POLY_EPS) * a
+    }
+}
+
+/// `K = min_r ζr² + α(r − R_A)² + β(r − R_B)²` (module doc).
+#[inline]
+fn radial_k(al: f64, be: f64, ze: f64, ra: f64, rb: f64) -> f64 {
+    (al * be * (ra - rb) * (ra - rb) + al * ze * ra * ra + be * ze * rb * rb) / (al + be + ze)
 }
 
 #[inline]
@@ -410,9 +463,16 @@ struct EcpPlan {
     shells: Vec<EcpGaussianShell>,
     /// Cell atom of each home shell.
     shell_atom: Vec<usize>,
-    amin: Vec<f64>,
-    log_pref: Vec<f64>,
-    x_max: f64,
+    /// `α'` of each home shell (module doc "Screening").
+    ap: Vec<f64>,
+    /// `ln P` of each home shell.
+    ln_p: Vec<f64>,
+    /// `ln precision`.
+    ln_prec: f64,
+    /// `max_u` of the templates' `ln_wsum`.
+    ln_wsum_max: f64,
+    /// `min_u` of the templates' `ζ'_min`.
+    z_lo: f64,
     sites: Vec<Site>,
     l_list: Vec<[f64; 3]>,
     cap_ecp2: Option<f64>,
@@ -486,17 +546,41 @@ impl EcpPlan {
                             a.z
                         )));
                     }
-                    let zmin = exponents.iter().copied().fold(f64::INFINITY, f64::min);
-                    let dsum: f64 = coefficients.iter().map(|c: &f64| c.abs()).sum();
-                    let x = ((dsum.max(f64::MIN_POSITIVE) / cfg.precision).ln() + ECP_LOG_MARGIN)
-                        .max(0.0);
+                    if let Some(&n) = ns.iter().find(|&&n| n < 0) {
+                        return Err(FerricError::Basis(format!(
+                            "periodic ECP: ECP for Z = {} has a radial power r^{{n-2}} with n = {n} \
+                             < 0 (r^n under the r² Jacobian is not integrable at the centre)",
+                            a.z
+                        )));
+                    }
+                    // Screen terms (module doc "Screening").
+                    let screen_terms: Vec<(f64, f64)> = ns
+                        .iter()
+                        .zip(&exponents)
+                        .zip(&coefficients)
+                        .map(|((&n, &z), &d)| {
+                            (
+                                4.0 * std::f64::consts::PI * d.abs() * poly_absorb(n, z),
+                                shrunk(n, z),
+                            )
+                        })
+                        .collect();
+                    let zmin = screen_terms
+                        .iter()
+                        .map(|t| t.1)
+                        .fold(f64::INFINITY, f64::min);
+                    let wsum: f64 = screen_terms
+                        .iter()
+                        .map(|&(w, z)| w * (std::f64::consts::PI / z).sqrt())
+                        .sum();
                     templates.push(EcpTemplate {
                         ams,
                         ns,
                         exponents,
                         coefficients,
+                        screen_terms,
                         zmin,
-                        x,
+                        ln_wsum: wsum.max(f64::MIN_POSITIVE).ln(),
                     });
                     tmpl_of_z.insert(a.z, templates.len() - 1);
                     templates.len() - 1
@@ -545,34 +629,42 @@ impl EcpPlan {
         let shell_atom: Vec<usize> = (0..shells.len()).map(|s| sh2at[s]).collect();
         let nsh = shells.len();
 
-        // Per-shell log prefactor. Each pair bound e^{-mu|X-Y|^2} drops the
-        // other two Gaussian factors pointwise; integrating what is left
-        // leaves the third function's volume factor (pi/alpha)^{3/2} and the
-        // contraction magnitudes. Omitting them under-estimated diffuse
-        // triples by >1e4 (precision sweep plateaued at 1.3e-6 for
-        // p = 1e-6..1e-10). This is the per-shell half, ln(sum|c|) + (3/4)
-        // ln(pi/alpha_min); a triple adds both shells' halves to its
-        // threshold.
-        let log_pref: Vec<f64> = shells
+        // Per-shell screen factors (module doc "Screening"): alpha' and
+        // ln P = ln(kappa_l sum_i |c_i N_i| Q_l(alpha_i)).
+        let ap: Vec<f64> = shells
             .iter()
             .zip(&amin)
-            .map(|(sh, &am)| {
-                let csum: f64 = sh.coefficients.iter().map(|c| c.abs()).sum();
-                csum.max(f64::MIN_POSITIVE).ln() + 0.75 * (std::f64::consts::PI / am).ln()
+            .map(|(sh, &am)| shrunk(sh.l, am))
+            .collect();
+        let ln_p: Vec<f64> = shells
+            .iter()
+            .map(|sh| {
+                let kappa = ((2 * sh.l + 1) as f64 / (4.0 * std::f64::consts::PI)).sqrt();
+                let s: f64 = sh
+                    .exponents
+                    .iter()
+                    .zip(&sh.coefficients)
+                    .map(|(&a, c)| c.abs() * poly_absorb(sh.l, a))
+                    .sum();
+                (kappa * s).max(f64::MIN_POSITIVE).ln()
             })
             .collect();
-        // The candidate radii must admit every triple the prefactor-widened
-        // screen keeps: widen by the largest pair prefactor.
-        let pref_max = 2.0 * log_pref.iter().copied().fold(0.0_f64, f64::max);
-        // --- Global candidate radii.
-        let x_max = templates.iter().map(|t| t.x).fold(0.0_f64, f64::max) + pref_max;
-        let a_lo = amin.iter().copied().fold(f64::INFINITY, f64::min);
+        let ln_prec = cfg.precision.ln();
+        let ln_wsum_max = templates
+            .iter()
+            .map(|t| t.ln_wsum)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let lnp_max = ln_p.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        // --- Global candidate radii: K >= mu(alpha', zeta') R_A^2, and both
+        // orbitals of a kept triple lie within r_ecp of its centre.
+        let x_max = (2.0 * lnp_max + ln_wsum_max - ln_prec).max(0.0);
+        let a_lo = ap.iter().copied().fold(f64::INFINITY, f64::min);
         let z_lo = templates
             .iter()
             .map(|t| t.zmin)
             .fold(f64::INFINITY, f64::min);
         let r_ecp = (x_max / mu(a_lo, z_lo)).sqrt();
-        let r_pair = (x_max / mu(a_lo, a_lo)).sqrt().min(2.0 * r_ecp);
+        let r_pair = 2.0 * r_ecp;
         let molecular = cfg.mutation == Some(EcpMutation::MolecularOnly);
         let r_ecp_eff = cfg.ecp_radius_cap.map_or(r_ecp, |c| c.min(r_ecp));
         let r_pair_eff = cfg
@@ -626,9 +718,11 @@ impl EcpPlan {
             templates,
             shells,
             shell_atom,
-            amin,
-            log_pref,
-            x_max,
+            ap,
+            ln_p,
+            ln_prec,
+            ln_wsum_max,
+            z_lo,
             sites,
             l_list,
             cap_ecp2: cfg.ecp_radius_cap.map(|c| c * c),
@@ -666,10 +760,20 @@ impl EcpPlan {
                 if self.cap_pair2.is_some_and(|c| dab2 > c) {
                     continue;
                 }
-                let e_ab = mu(self.amin[a], self.amin[b]) * dab2;
-                if e_ab > self.x_max {
+                let (al, be) = (self.ap[a], self.ap[b]);
+                let ln_ab = self.ln_p[a] + self.ln_p[b] - self.ln_prec;
+                // Pair pre-test: a kept centre is within sqrt(X/mu) of both.
+                let x_pair = ln_ab + self.ln_wsum_max;
+                if x_pair < 0.0 {
                     continue;
                 }
+                let reach =
+                    (x_pair / mu(al, self.z_lo)).sqrt() + (x_pair / mu(be, self.z_lo)).sqrt();
+                if dab2 > reach * reach {
+                    continue;
+                }
+                // Keep iff sum_k w_k sqrt(pi/p_k) e^{-K_k} >= precision / (P_a P_b).
+                let need = (-ln_ab).exp();
                 for (u, site) in self.sites.iter().enumerate() {
                     let t = &self.templates[site.tmpl];
                     let dac2 = dist2(ra, site.pos);
@@ -677,10 +781,23 @@ impl EcpPlan {
                     if self.cap_ecp2.is_some_and(|c| dac2 > c || dbc2 > c) {
                         continue;
                     }
-                    let e = e_ab
-                        .max(mu(self.amin[a], t.zmin) * dac2)
-                        .max(mu(self.amin[b], t.zmin) * dbc2);
-                    if e <= t.x + (self.log_pref[a] + self.log_pref[b]).max(0.0) {
+                    let x = ln_ab + t.ln_wsum;
+                    if mu(al, t.zmin) * dac2 > x || mu(be, t.zmin) * dbc2 > x {
+                        continue;
+                    }
+                    let (ra_c, rb_c) = (dac2.sqrt(), dbc2.sqrt());
+                    if radial_k(al, be, t.zmin, ra_c, rb_c) > x {
+                        continue;
+                    }
+                    let bound: f64 = t
+                        .screen_terms
+                        .iter()
+                        .map(|&(w, z)| {
+                            w * (std::f64::consts::PI / (al + be + z)).sqrt()
+                                * (-radial_k(al, be, z, ra_c, rb_c)).exp()
+                        })
+                        .sum();
+                    if bound >= need {
                         kept.push((a, b, u));
                     }
                 }

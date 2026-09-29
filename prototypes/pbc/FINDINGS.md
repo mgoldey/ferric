@@ -5619,3 +5619,63 @@ Each run was gated on a 1-minute load below 1.5.
 - **Dry ice 6-thread stage walls now:** hcore SR attraction 13.8, SR 3-centre 9.6, LR aux FT +
   GEMM 8.1, LR pair FT 7.2, scf K 2.4, hcore LR 1.0, S/T 0.5. PySCF GDF takes 22.9 s, so ferric
   is 1.95× slower.
+
+## ECP screen: the antipodal triple (prototype 2026-09-29, prototypes/pbc/ecp_screen)
+
+HI / LANL2DZ in the `tests/pbc_ecp.rs` cell (6 × 6 × 7 Bohr). The exact per-triple block max-abs comes from the
+ferric-owned quadrature engine (`ecp_quadrature/ecpq.py`, engine screen off). The screen is a Python replica of
+`EcpPlan::kept`.
+
+**Measurement: the old screen.** It kept a triple iff `max(μ(α_a,ζ)R_A², μ(α_b,ζ)R_B², μ(α_a,α_b)|A−B−L|²) <=
+ln(ΣD/p) + 3 + ln-prefactors`. This defines an implied bound `B_old`.
+- In a log-stratified sample of 360 triples, the worst ratio exact/B_old is e^20. In a random 720-triple sample,
+  all 4 violators have the pair term `|A−B−L|` as the dominant one, and all 4 are semi-local.
+- The plateau suspects are triples the old screen drops at 1e-12 while the new bound says they are ≥ 1e-12
+  (770 triples). The largest is the I s(1)–I s(1) triple with R_A = R_B = 7.00 Bohr and |A−B−L| = 14.00. Here the
+  bra and the ket image sit on opposite sides of an I image, collinear along c. Its exact value is e^-21.09 =
+  6.9e-10 and its old bound is e^-27.84 = 8e-13, so the old bound is 850× too low. Two copies give 1.38e-9, which
+  matches the measured Rust plateau (1.39e-9 at p = 1e-12, 1.50e-9 at 1e-8/1e-10).
+- The engine is not the cause (it has no precision input, and libecpint gives the same plateau).
+
+**Missing factor (interpretation).** After the `|lm⟩⟨lm|` projector, the bra and the ket meet only through the
+radius r about the centre. Their decay is `K = (αβ(R_A−R_B)² + αζR_A² + βζR_B²)/(α+β+ζ)`. That is the 1-D product
+in r, and it involves `|R_A − R_B|`, not `|A − B − L|`. The pair-product term `μ(α,β)|A−B−L|²` is valid only for
+a pointwise (local) operator, and it overestimates the decay by the most when the bra and ket are antipodal. The
+r^n powers and the high-l projector factors were NOT the problem.
+
+**New bound (Rust `ecp.rs` "Screening"; rigorous for semi-local and local terms with n ≥ 0):**
+`|⟨a|U|b⟩| <= P_a P_b Σ_k 4π|d_k| Q_{n_k}(ζ_k) √(π/p_k) e^{−K_k}`
+- `P = κ_l Σ_i |c_i N_i| Q_l(α_i)`, with `κ_l = √((2l+1)/4π)`. By the addition theorem this is the sup of a
+  libcint-normalised pure harmonic; measured 0.282/0.489/0.631/0.746/0.846 for l = 0..4.
+- `Q_n(a) = (n/(2eεa))^{n/2}`, and the exponents are shrunk by (1−ε) only where a polynomial exists (ε = 0.1).
+- Rigour check: over 750 exact triples, max ln(exact/bound) = −4.85 (never violated). The median slack is e^8.8.
+
+**Kept triples and predicted error (all candidates, 1685–1975 L images):**
+
+| p | kept old | kept new | new-only | predicted err (new) vs 1e-14 ref |
+|---|---|---|---|---|
+| 1e-6 | 45 653 | 8 173 | – | ≤ 0.16 p (sampled band) + ≤ 0.26 p (a-priori tail) |
+| 1e-8 | 60 734 | 15 249 | 136 | ≤ 0.31 p + ≤ 0.39 p |
+| 1e-10 | 86 764 | 27 244 | 422 | ≤ 0.22 p + ≤ 0.88 p |
+| 1e-12 | 126 089 | 42 640 | 770 | ≤ 0.36 p + ≤ 0.55 p |
+| 1e-14 | 177 292 | 62 528 | 1 452 | (reference) |
+
+- "Sampled band" is a Horvitz–Thompson Σ|exact| over the triples dropped with bound in [1e-3 p, p), taken as the
+  max over shell pairs from 300 samples. "A-priori tail" is Σ bound below 1e-3 p. The new bound is tighter than
+  the old one almost everywhere, so it keeps 2.8× FEWER triples. The exception is the antipodal geometry.
+- **Default (p = 1e-14) shift:** the new-only triples sum to ≤ 1.17e-12 per shell pair; the largest single one is
+  2.87e-13, and each was missing from the old default. The old-only triples it drops are ≤ 5.2e-12 a-priori.
+  Expected default V_ECP change on HI: O(1e-12). The main agent should measure it with cargo.
+- **Screen work at 1e-14:** L walked goes from 561 to 1685 (r_pair = 2 r_ecp, 45.2 vs 30.8 Bohr), and inner site
+  checks go from 1.36M to 3.46M (2.6×). These checks are cheap rejects. Quadrature triples drop 2.8×, and the
+  number of kept L (block calls) goes from 413 to 457. CAVEAT: `periodic_ecp_images` reserves `n_L_candidates ×
+  n² × 8` bytes before screening. With 3× more candidate L that worst-case reservation triples, which may trip
+  tight budgets on large cells. Reserving after `kept()` (only the kept L) would fix it; this is not done here.
+
+**Artifact hypothesis.** If the bound is right, `ecp_lattice_sum_converges_like_a_gaussian_in_the_cutoff` shows
+err ≤ ~1.3 p (predicted), monotone, from 1e-6 down to 1e-12. If the floor has another cause (engine, enumeration
+radii), a plateau near 1e-9 persists at 1e-10/1e-12. The test now asserts `err <= 3 p` and monotone. The
+reverted (old) screen gives 15 p at 1e-10 and 1390 p at 1e-12, so it must fail. Use that revert as the mutant.
+Replacing `(R_A−R_B)²` with `|A−B−L|²` in `radial_k` is NOT a usable mutant on this fixture: the bound's e^8.5
+slack on the antipodal triple still keeps it at 1e-10. That is an anchor blind spot, recorded here. Provisional
+until the Rust run confirms it.

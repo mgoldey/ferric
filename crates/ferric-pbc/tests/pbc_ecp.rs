@@ -507,22 +507,31 @@ fn ecp_lattice_sum_converges_like_a_gaussian_in_the_cutoff() {
         eprintln!("precision {prec:.0e}: max|dV| {e:.2e}");
         perrs.push((prec, e));
     }
-    // Measured 2026-09-29 (LANL2DZ HI): with the per-shell prefactor
-    // (contraction magnitude x (pi/alpha)^{3/2}) in the screen, err(1e-8) =
-    // 1.5e-9 (it was 1.3e-6 without it). Below that the error plateaus at
-    // ~1.4e-9: the bound still under-estimates some triples (likely the r^n
-    // radial terms / high-l projector factors the fixed e^3 margin covers only
-    // roughly). The production default (1e-14) IS the reference here, so default
-    // runs are unaffected; the floor is an OPEN item in FINDINGS.
+    // The screen drops a triple when its RIGOROUS bound (ecp.rs module doc
+    // "Screening") is below p. Prototype (prototypes/pbc/ecp_screen,
+    // FINDINGS "ECP screen: the antipodal triple"): predicted error vs the
+    // 1e-14 reference <= 0.4 p (sampled exact sum over the dropped band
+    // [1e-3 p, p)) + <= 0.9 p (a-priori bound below 1e-3 p), i.e. <= 1.3 p
+    // at p = 1e-6 .. 1e-12. The former pair-product screen measured
+    // 1.5e-9 / 1.5e-9 / 1.39e-9 at 1e-8 / 1e-10 / 1e-12 (15 p and 1390 p at
+    // the two tighter ones): two antipodal I s(1) triples (A and B + L on
+    // opposite sides of the centre, R_A = R_B = 7 Bohr) of 6.9e-10 each.
+    // C = 3 separates the two (mutant: restore the former EcpPlan::kept /
+    // prefactors → 15 p at p = 1e-10, fails. NOT a usable mutant: putting
+    // |A − B − L|² in place of (R_A − R_B)² in radial_k — the bound's e^8.5
+    // slack on the antipodal triple still keeps it at 1e-10).
+    const C: f64 = 3.0;
+    let mut prev = f64::INFINITY;
     for (prec, e) in perrs {
-        if prec >= 1e-8 {
-            assert!(e <= 100.0 * prec, "precision {prec:e}: error {e:e} > 100 p");
-        } else {
-            assert!(
-                e <= 2e-9,
-                "precision {prec:e}: error {e:e} above the measured 1.4e-9 floor"
-            );
-        }
+        assert!(
+            e <= C * prec,
+            "precision {prec:e}: error {e:e} > {C} p (the screen under-estimates a triple)"
+        );
+        assert!(
+            e <= prev,
+            "precision {prec:e}: error {e:e} grew as p tightened (previous {prev:e})"
+        );
+        prev = e;
     }
 }
 
