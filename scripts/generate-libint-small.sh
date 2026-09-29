@@ -27,6 +27,14 @@ cd "$WORK"
 if [ ! -d libint-2.7.2 ]; then
   git clone --depth 1 --branch "$TAG" https://github.com/evaleev/libint.git libint-2.7.2
 fi
+# A reused tree must be exactly $TAG with no edits to tracked files, or the
+# export would not be reproducible. Untracked files are allowed: this script
+# itself creates them (autogen.sh output, gen-small/) on every run.
+if [ "$(git -C libint-2.7.2 describe --tags --exact-match 2>/dev/null || true)" != "$TAG" ] ||
+  [ -n "$(git -C libint-2.7.2 status --porcelain --untracked-files=no)" ]; then
+  echo "libint-2.7.2 is not a clean checkout of $TAG; remove it and rerun" >&2
+  exit 1
+fi
 cd libint-2.7.2
 [ -x configure ] || ./autogen.sh
 mkdir -p gen-small
