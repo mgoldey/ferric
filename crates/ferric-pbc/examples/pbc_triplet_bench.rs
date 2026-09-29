@@ -41,8 +41,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::engine::Engine;
 use ferric_integrals::operator::Operator;
 use ferric_integrals::site_basis::SiteBasis;
-use ferric_pbc::ewald::default_ewald_omega;
-use ferric_pbc::hcore::GAUSSIAN_NUCLEUS_EXPONENT;
+use ferric_pbc::hcore::{PeriodicHcoreConfig, GAUSSIAN_NUCLEUS_EXPONENT};
 use ferric_pbc::pair_ft::{pair_ft_bytes_per_g, pair_ft_with_thresh, DEFAULT_PAIR_FT_THRESH};
 use ferric_pbc::rsgdf::{DEFAULT_RSGDF_OMEGA, DEFAULT_RSGDF_PRECISION};
 use ferric_pbc::Cell;
@@ -286,7 +285,9 @@ fn main() -> Res<()> {
     );
 
     // --- 3. hcore SR attraction (μ ν | Gaussian nucleus)_erfc(ω_h)
-    let omega_h = default_ewald_omega(&cell);
+    // The production default split (hcore.rs `default_hcore_omega`). The
+    // 2026-09-27 FINDINGS µs/triplet was taken at the older √π/Ω^{1/3}.
+    let omega_h = PeriodicHcoreConfig::for_cell(&cell).omega;
     let sites: Vec<[f64; 4]> = cell
         .positions()
         .iter()

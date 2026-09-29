@@ -1035,6 +1035,129 @@ fn write_sr_pair_block(out: &SrOut<'_>, a: &PrimShell, b: &PrimShell, st: &SrPai
     }
 }
 
+/// One overlap and one kinetic 1e engine per rayon worker.
+pub(crate) fn st_engine_pools(prep: &PreparedBasis) -> Result<[EnginePool; 2], FerricError> {
+    Ok([
+        EnginePool::from_fn(|| Engine::new_1e(ffi::OP_OVERLAP, prep, ONE_E_ENGINE_PRECISION))?,
+        EnginePool::from_fn(|| Engine::new_1e(ffi::OP_KINETIC, prep, ONE_E_ENGINE_PRECISION))?,
+    ])
+}
+
+/// Unsymmetrised lattice-summed `S = Σ_L (μ_0|ν_L)` and `T` over `images`.
+///
+/// PARALLEL over ordered shell pairs, BIT-IDENTICAL to the serial
+/// `L → i1 → i2` loop it replaced ([`overlap_kinetic_serial_oracle`]) and
+/// across thread counts: element `(μ, ν)` with `μ` in shell `i1`, `ν` in
+/// shell `i2` receives addends `1.0 · block` (= `block` exactly) ONLY from
+/// pair `(i1, i2)`, in `images` order (the loop's other indices never touch
+/// it). Each task sums
+/// its two blocks from `+0.0` over `L` ascending with the serial `+=`
+/// expression and COPIES them into the zeroed outputs under a mutex, so
+/// task finishing order cannot change a bit (the same construction as
+/// [`sr_attraction`]). `compute_1e_block_shifted` is stateless (it moves a
+/// copy of shell `i2` per call), and every pooled engine is built exactly
+/// like the serial one. Errors are returned in pair order.
+fn overlap_kinetic(
+    prep: &PreparedBasis,
+    shells: &[PrimShell],
+    images: &[[f64; 3]],
+) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
+    let n = prep.nbasis();
+    let nsh = shells.len();
+    let [pool_s, pool_t] = st_engine_pools(prep)?;
+    let mut s = Array2::<f64>::zeros((n, n));
+    let mut t = Array2::<f64>::zeros((n, n));
+    let out = Mutex::new((&mut s, &mut t));
+    let per_pair: Vec<Result<(), FerricError>> = (0..nsh * nsh)
+        .into_par_iter()
+        .map(|pair| {
+            let (i1, i2) = (pair / nsh, pair % nsh);
+            let (a, b) = (&shells[i1], &shells[i2]);
+            let bl = a.dim * b.dim;
+            let (mut acc_s, mut acc_t) = (vec![0.0_f64; bl], vec![0.0_f64; bl]);
+            pool_s.with(|es| {
+                pool_t.with(|et| -> Result<(), FerricError> {
+                    for l in images {
+                        let blk = es.compute_1e_block_shifted(prep, i1, i2, *l)?;
+                        // == add_block(s, blk, a.off, a.dim, b.off, b.dim, 1.0)
+                        // (`1.0 * y` is `y` exactly).
+                        for (x, y) in acc_s.iter_mut().zip(&blk[..bl]) {
+                            *x += *y;
+                        }
+                        let blk = et.compute_1e_block_shifted(prep, i1, i2, *l)?;
+                        for (x, y) in acc_t.iter_mut().zip(&blk[..bl]) {
+                            *x += *y;
+                        }
+                    }
+                    Ok(())
+                })
+            })?;
+            let mut guard = out.lock().unwrap_or_else(|e| e.into_inner());
+            let (s, t) = &mut *guard;
+            for i in 0..a.dim {
+                for j in 0..b.dim {
+                    s[(a.off + i, b.off + j)] = acc_s[i * b.dim + j];
+                    t[(a.off + i, b.off + j)] = acc_t[i * b.dim + j];
+                }
+            }
+            Ok(())
+        })
+        .collect();
+    for r in per_pair {
+        r?;
+    }
+    Ok((s, t))
+}
+
+/// The serial `S`/`T` loop as it was before the pair-parallel rewrite of
+/// [`overlap_kinetic`] (FROZEN; oracle only — do not "improve").
+fn overlap_kinetic_serial_oracle(
+    prep: &PreparedBasis,
+    shells: &[PrimShell],
+    images: &[[f64; 3]],
+) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
+    let n = prep.nbasis();
+    let mut eng_s = Engine::new_1e(ffi::OP_OVERLAP, prep, ONE_E_ENGINE_PRECISION)?;
+    let mut eng_t = Engine::new_1e(ffi::OP_KINETIC, prep, ONE_E_ENGINE_PRECISION)?;
+    let mut s = Array2::<f64>::zeros((n, n));
+    let mut t = Array2::<f64>::zeros((n, n));
+    for l in images {
+        for (i1, a) in shells.iter().enumerate() {
+            for (i2, b) in shells.iter().enumerate() {
+                let blk = eng_s.compute_1e_block_shifted(prep, i1, i2, *l)?;
+                add_block(&mut s, blk, a.off, a.dim, b.off, b.dim, 1.0);
+                let blk = eng_t.compute_1e_block_shifted(prep, i1, i2, *l)?;
+                add_block(&mut t, blk, a.off, a.dim, b.off, b.dim, 1.0);
+            }
+        }
+    }
+    Ok((s, t))
+}
+
+/// TEST ORACLE for the parallel `S`/`T`: `[parallel, serial]` unsymmetrised
+/// `(S, T)` over the pair images [`periodic_hcore`] uses at `cfg`, plus the
+/// image count. `serial` is the pre-parallel `L → i1 → i2` loop, FROZEN
+/// verbatim; the two must agree BIT FOR BIT (`tests/pbc_parallel_bitwise.rs`).
+#[doc(hidden)]
+#[allow(clippy::type_complexity)]
+pub fn overlap_kinetic_parallel_and_serial(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    cfg: &PeriodicHcoreConfig,
+) -> Result<([(Array2<f64>, Array2<f64>); 2], usize), FerricError> {
+    cfg.validate()?;
+    let shells = prim_shells(cell, prep)?;
+    let mut ledger = Ledger::new(crate::budget::resolve(cfg.budget_bytes));
+    let images = pair_images(cell, &shells, 0.1 * cfg.precision, &mut ledger)?;
+    Ok((
+        [
+            overlap_kinetic(prep, &shells, &images)?,
+            overlap_kinetic_serial_oracle(prep, &shells, &images)?,
+        ],
+        images.len(),
+    ))
+}
+
 /// Build `S`, `T`, `V`, `h = T + V` and `E_nn` for a Gamma-point cell (see
 /// the module doc). `prep` must be built from `cell.mol()`.
 pub fn periodic_hcore(
@@ -1065,22 +1188,10 @@ pub fn periodic_hcore(
     let rpair = pair_radius(&shells, pair_thresh);
     timings.stop("hcore setup (shells, pair images)", &clock);
 
-    // --- S, T: every pair image.
+    // --- S, T: every pair image (parallel over shell pairs, bit-identical
+    // to the serial `L → i1 → i2` loop: `overlap_kinetic`).
     let clock = StageClock::start();
-    let mut eng_s = Engine::new_1e(ffi::OP_OVERLAP, prep, ONE_E_ENGINE_PRECISION)?;
-    let mut eng_t = Engine::new_1e(ffi::OP_KINETIC, prep, ONE_E_ENGINE_PRECISION)?;
-    let mut s = Array2::<f64>::zeros((n, n));
-    let mut t = Array2::<f64>::zeros((n, n));
-    for l in &images {
-        for (i1, a) in shells.iter().enumerate() {
-            for (i2, b) in shells.iter().enumerate() {
-                let blk = eng_s.compute_1e_block_shifted(prep, i1, i2, *l)?;
-                add_block(&mut s, blk, a.off, a.dim, b.off, b.dim, 1.0);
-                let blk = eng_t.compute_1e_block_shifted(prep, i1, i2, *l)?;
-                add_block(&mut t, blk, a.off, a.dim, b.off, b.dim, 1.0);
-            }
-        }
-    }
+    let (s, t) = overlap_kinetic(prep, &shells, &images)?;
     let (s, _) = symmetrize(&s);
     let (t, _) = symmetrize(&t);
     timings.stop("hcore S/T", &clock);

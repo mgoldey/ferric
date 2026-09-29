@@ -27,8 +27,8 @@
 use super::{
     gvector_list_bytes, max_pair_exponent, nonzero_nuclei, nucleus_radius_m, pair_bound,
     pair_images, pair_radius, prim_shells, segment_distance, sr_candidates, sr_engine_pool,
-    NucCand, PeriodicHcoreConfig, PrimShell, SrBound, ERI3_ENGINE_PRECISION, G_CHUNK_BYTES,
-    ONE_E_ENGINE_PRECISION,
+    st_engine_pools, NucCand, PeriodicHcoreConfig, PrimShell, SrBound, ERI3_ENGINE_PRECISION,
+    G_CHUNK_BYTES, ONE_E_ENGINE_PRECISION,
 };
 use crate::budget::{bytes_of, Ledger};
 use crate::ewald::{default_ewald_omega, ewald_nuclear_repulsion};
@@ -137,21 +137,9 @@ pub fn periodic_hcore_kpts(
 
     let (images, rpair, ph) = images_and_phases(cell, &shells, mesh, pair_thresh, &mut ledger)?;
 
-    // --- S(k), T(k)
-    let mut eng_s = Engine::new_1e(ffi::OP_OVERLAP, prep, ONE_E_ENGINE_PRECISION)?;
-    let mut eng_t = Engine::new_1e(ffi::OP_KINETIC, prep, ONE_E_ENGINE_PRECISION)?;
-    let mut s: Vec<Array2<Complex64>> = (0..nk).map(|_| czero(n)).collect();
-    let mut t: Vec<Array2<Complex64>> = (0..nk).map(|_| czero(n)).collect();
-    for (il, l) in images.iter().enumerate() {
-        for (i1, a) in shells.iter().enumerate() {
-            for (i2, bsh) in shells.iter().enumerate() {
-                let blk = eng_s.compute_1e_block_shifted(prep, i1, i2, *l)?;
-                add_block_k(&mut s, &ph[il], blk, a.off, a.dim, bsh.off, bsh.dim, 1.0);
-                let blk = eng_t.compute_1e_block_shifted(prep, i1, i2, *l)?;
-                add_block_k(&mut t, &ph[il], blk, a.off, a.dim, bsh.off, bsh.dim, 1.0);
-            }
-        }
-    }
+    // --- S(k), T(k) (parallel over shell pairs, bit-identical to the serial
+    // `L → i1 → i2` loop: `overlap_kinetic_kpts`).
+    let (s, t) = overlap_kinetic_kpts(prep, &shells, &images, &ph, nk)?;
     let s: Vec<Array2<Complex64>> = s.iter().map(hermitize).collect();
     let t: Vec<Array2<Complex64>> = t.iter().map(hermitize).collect();
 
@@ -273,6 +261,141 @@ pub fn periodic_hcore_kpts(
         n_g_lr: gv.len(),
         budget_bytes: ledger.budget(),
     })
+}
+
+/// Unhermitised `S(k)`, `T(k)` (one per mesh point).
+type StK = (Vec<Array2<Complex64>>, Vec<Array2<Complex64>>);
+
+/// Unhermitised `S(k) = Σ_L e^{ik·L} (μ_0|ν_L)` and `T(k)` over `images`
+/// (`ph[il][k] = e^{ik·L_il}`).
+///
+/// PARALLEL over ordered shell pairs, BIT-IDENTICAL to the serial
+/// `L → i1 → i2` loop ([`overlap_kinetic_kpts_serial_oracle`]) and across
+/// thread counts: element `(k, μ, ν)` with `μ` in shell `i1`, `ν` in shell
+/// `i2` receives `e^{ik·L} (1.0 · block)` ONLY from pair `(i1, i2)`, in
+/// `images` order (k only selects the phase). Each task sums its two
+/// `(N_k, dim_i1, dim_i2)` blocks from zero with `add_block_k`'s expression
+/// and COPIES them into the zeroed outputs under a mutex (task finishing
+/// order cannot change a bit). One overlap + one kinetic engine per rayon
+/// worker; errors are returned in pair order.
+fn overlap_kinetic_kpts(
+    prep: &PreparedBasis,
+    shells: &[PrimShell],
+    images: &[[f64; 3]],
+    ph: &[Vec<Complex64>],
+    nk: usize,
+) -> Result<StK, FerricError> {
+    let n = prep.nbasis();
+    let nsh = shells.len();
+    let [pool_s, pool_t] = st_engine_pools(prep)?;
+    let zero = Complex64::new(0.0, 0.0);
+    let out = Mutex::new((
+        (0..nk).map(|_| czero(n)).collect::<Vec<_>>(),
+        (0..nk).map(|_| czero(n)).collect::<Vec<_>>(),
+    ));
+    let per_pair: Vec<Result<(), FerricError>> = (0..nsh * nsh)
+        .into_par_iter()
+        .map(|pair| {
+            let (i1, i2) = (pair / nsh, pair % nsh);
+            let (a, b) = (&shells[i1], &shells[i2]);
+            let bl = a.dim * b.dim;
+            let (mut acc_s, mut acc_t) = (vec![zero; nk * bl], vec![zero; nk * bl]);
+            pool_s.with(|es| {
+                pool_t.with(|et| -> Result<(), FerricError> {
+                    for (il, l) in images.iter().enumerate() {
+                        let blk = es.compute_1e_block_shifted(prep, i1, i2, *l)?;
+                        add_phased(&mut acc_s, &ph[il], &blk[..bl]);
+                        let blk = et.compute_1e_block_shifted(prep, i1, i2, *l)?;
+                        add_phased(&mut acc_t, &ph[il], &blk[..bl]);
+                    }
+                    Ok(())
+                })
+            })?;
+            let mut guard = out.lock().unwrap_or_else(|e| e.into_inner());
+            let (s, t) = &mut *guard;
+            for k in 0..nk {
+                for i in 0..a.dim {
+                    for j in 0..b.dim {
+                        let x = k * bl + i * b.dim + j;
+                        s[k][(a.off + i, b.off + j)] = acc_s[x];
+                        t[k][(a.off + i, b.off + j)] = acc_t[x];
+                    }
+                }
+            }
+            Ok(())
+        })
+        .collect();
+    for r in per_pair {
+        r?;
+    }
+    Ok(out.into_inner().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// `acc[k] += ph[k] · (1.0 · blk)` for every k: `add_block_k`'s expression
+/// (f = 1, and `1.0 · y` is `y` exactly) on one pair's `(N_k, bl)` running
+/// block.
+fn add_phased(acc: &mut [Complex64], ph: &[Complex64], blk: &[f64]) {
+    let bl = blk.len();
+    for (k, p) in ph.iter().enumerate() {
+        for (x, y) in acc[k * bl..(k + 1) * bl].iter_mut().zip(blk) {
+            *x += *p * *y;
+        }
+    }
+}
+
+/// The serial `S(k)`/`T(k)` loop as it was before the pair-parallel
+/// rewrite of [`overlap_kinetic_kpts`] (FROZEN; oracle only — do not
+/// "improve").
+fn overlap_kinetic_kpts_serial_oracle(
+    prep: &PreparedBasis,
+    shells: &[PrimShell],
+    images: &[[f64; 3]],
+    ph: &[Vec<Complex64>],
+    nk: usize,
+) -> Result<StK, FerricError> {
+    let n = prep.nbasis();
+    let mut eng_s = Engine::new_1e(ffi::OP_OVERLAP, prep, ONE_E_ENGINE_PRECISION)?;
+    let mut eng_t = Engine::new_1e(ffi::OP_KINETIC, prep, ONE_E_ENGINE_PRECISION)?;
+    let mut s: Vec<Array2<Complex64>> = (0..nk).map(|_| czero(n)).collect();
+    let mut t: Vec<Array2<Complex64>> = (0..nk).map(|_| czero(n)).collect();
+    for (il, l) in images.iter().enumerate() {
+        for (i1, a) in shells.iter().enumerate() {
+            for (i2, bsh) in shells.iter().enumerate() {
+                let blk = eng_s.compute_1e_block_shifted(prep, i1, i2, *l)?;
+                add_block_k(&mut s, &ph[il], blk, a.off, a.dim, bsh.off, bsh.dim, 1.0);
+                let blk = eng_t.compute_1e_block_shifted(prep, i1, i2, *l)?;
+                add_block_k(&mut t, &ph[il], blk, a.off, a.dim, bsh.off, bsh.dim, 1.0);
+            }
+        }
+    }
+    Ok((s, t))
+}
+
+/// TEST ORACLE for the parallel `S(k)`/`T(k)`: `[parallel, serial]`
+/// unhermitised `(S(k), T(k))` over the pair images and phases
+/// [`periodic_hcore_kpts`] uses at `cfg` on `mesh`, plus the image count.
+/// `serial` is the pre-parallel loop, FROZEN verbatim; the two must agree
+/// BIT FOR BIT (`tests/pbc_parallel_bitwise.rs`).
+#[doc(hidden)]
+#[allow(clippy::type_complexity)]
+pub fn overlap_kinetic_kpts_parallel_and_serial(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    mesh: &KPointMesh,
+    cfg: &PeriodicHcoreConfig,
+) -> Result<([(Vec<Array2<Complex64>>, Vec<Array2<Complex64>>); 2], usize), FerricError> {
+    cfg.validate()?;
+    let shells = prim_shells(cell, prep)?;
+    let mut ledger = Ledger::new(crate::budget::resolve(cfg.budget_bytes));
+    let (images, _, ph) = images_and_phases(cell, &shells, mesh, 0.1 * cfg.precision, &mut ledger)?;
+    let nk = mesh.nk();
+    Ok((
+        [
+            overlap_kinetic_kpts(prep, &shells, &images, &ph, nk)?,
+            overlap_kinetic_kpts_serial_oracle(prep, &shells, &images, &ph, nk)?,
+        ],
+        images.len(),
+    ))
 }
 
 /// Pair images `L`, `r_pair` and the Bloch phases `ph[il][k] = e^{ik·L}`

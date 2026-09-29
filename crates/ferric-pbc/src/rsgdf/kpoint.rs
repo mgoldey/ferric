@@ -66,8 +66,9 @@
 
 use super::split::{check_metric_guard, SplitPlan};
 use super::{
-    aux_ft_shells, check_obs_on_cell, dot3, gshells, pair_image_radius, subtract_g0, G0Handling,
-    LatticeWalker, RsGdfConfig, SrBinning, Stage,
+    aux_ft_shells, check_obs_on_cell, dot3, exchange_row_blocks, gshells, pair_image_radius,
+    split_rows, subtract_g0, G0Handling, LatticeWalker, RsGdfConfig, SrBinning, Stage,
+    EXCHANGE_AUX_CHUNK,
 };
 use crate::budget::{bytes_of, Ledger};
 use crate::dense_aft::ExxDiv;
@@ -79,8 +80,9 @@ use crate::pair_ft::residues::{pair_ft_residues_chunked, residue_coords, residue
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ndarray::linalg::general_mat_mul;
-use ndarray::{Array1, Array2, Array3, ArrayView1};
+use ndarray::{s, Array1, Array2, Array3, ArrayView1};
 use num_complex::Complex64 as C64;
+use rayon::prelude::*;
 use std::f64::consts::PI;
 
 /// k-point RS-GDF force pieces ([`crate::kgrad`]; FINDINGS "Iteration 21").
@@ -1197,9 +1199,96 @@ impl KRsGdf {
     }
 }
 
+/// Bytes of prepared `(B_a, B_a^H)` factors one exchange round may hold
+/// (the round width only orders whole aux rows; it never changes a bit).
+const EXCHANGE_PREP_BYTES: usize = 64 << 20;
+
 /// `out += scale Σ_a B_a D B_a^H` (`B_a` the `(n, n)` row a of `b`, or its
 /// conjugate when `conj`).
+///
+/// Production: `out`'s rows in fixed blocks ([`exchange_row_blocks`], the
+/// Gamma build's blocking); per round of aux rows, the factors `B_a` and
+/// `B_a^H` are formed in parallel with the serial loop's exact expressions
+/// (element-wise copies/conjugations, so their bits and layouts are the
+/// serial ones), then one rayon task per row block runs, for every aux row
+/// of the round in ascending order, `tmp = B_a[rows, :] · D` and
+/// `out[rows, :] += scale · tmp · B_a^H` — the serial calls restricted to
+/// the block's rows. Every element still receives one `+=` per aux row, in
+/// aux order. The fixed blocks make the result BITWISE identical at any
+/// thread count, but NOT bitwise equal to [`add_exchange_serial_oracle`]:
+/// OpenBLAS's single-threaded zgemm tiles M differently for a block than
+/// for the whole matrix (measured on Broadwell: rows 12-15 of each 16-row
+/// block differ, max relative 7.0e-16). `tests/pbc_parallel_bitwise.rs`
+/// checks cross-thread bits and |parallel − oracle| <= 1e-13 max|K|. One
+/// block: the oracle itself runs.
 fn add_exchange(
+    b: &Array2<C64>,
+    d: &Array2<C64>,
+    conj: bool,
+    n: usize,
+    scale: f64,
+    out: &mut Array2<C64>,
+) -> Result<(), FerricError> {
+    let ranges = exchange_row_blocks(n);
+    if ranges.len() <= 1 {
+        return add_exchange_serial_oracle(b, d, conj, n, scale, out);
+    }
+    let naux = b.nrows();
+    let chunk = (EXCHANGE_PREP_BYTES / (32 * n * n).max(1)).clamp(1, EXCHANGE_AUX_CHUNK);
+    let mut parts = split_rows(out.view_mut(), &ranges);
+    for c0 in (0..naux).step_by(chunk) {
+        let factors = (c0..(c0 + chunk).min(naux))
+            .into_par_iter()
+            .map(|a| exchange_factors(b.row(a), conj, n))
+            .collect::<Result<Vec<_>, FerricError>>()?;
+        exchange_round(&mut parts, &ranges, &factors, d, scale);
+    }
+    Ok(())
+}
+
+/// One round of [`add_exchange`]: one rayon task per row block, every aux
+/// row's `out[rows, :] += scale · (B_a[rows, :] · D) · B_a^H` in order.
+fn exchange_round(
+    parts: &mut [ndarray::ArrayViewMut2<'_, C64>],
+    ranges: &[std::ops::Range<usize>],
+    factors: &[(Array2<C64>, Array2<C64>)],
+    d: &Array2<C64>,
+    scale: f64,
+) {
+    let sc = C64::new(scale, 0.0);
+    let one = C64::new(1.0, 0.0);
+    parts
+        .par_iter_mut()
+        .zip(ranges.par_iter())
+        .for_each(|(ob, r)| {
+            for (ba, bh) in factors {
+                let tmp = ba.slice(s![r.clone(), ..]).dot(d);
+                general_mat_mul(sc, &tmp, bh, one, ob);
+            }
+        });
+}
+
+/// `(B_a, B_a^H)` of one aux row, exactly as the serial loop forms them.
+fn exchange_factors(
+    row: ArrayView1<'_, C64>,
+    conj: bool,
+    n: usize,
+) -> Result<(Array2<C64>, Array2<C64>), FerricError> {
+    let ba = row
+        .into_shape_with_order((n, n))
+        .map_err(|e| FerricError::General(format!("KRsGdfJk: B row reshape: {e}")))?;
+    let ba = if conj {
+        ba.mapv(|z| z.conj())
+    } else {
+        ba.to_owned()
+    };
+    let bh = ba.t().mapv(|z| z.conj());
+    Ok((ba, bh))
+}
+
+/// The serial k-point exchange loop as it was before the row-blocked
+/// rewrite of [`add_exchange`] (FROZEN; oracle only — do not "improve").
+fn add_exchange_serial_oracle(
     b: &Array2<C64>,
     d: &Array2<C64>,
     conj: bool,
@@ -1223,6 +1312,34 @@ fn add_exchange(
         general_mat_mul(sc, &tmp, &bh, one, out);
     }
     Ok(())
+}
+
+/// TEST ORACLE for the row-blocked k-point exchange: `[parallel, serial]`
+/// `out0 + scale Σ_a B_a D B_a^H` (`B_a` conjugated when `conj`), `b`
+/// `(naux, n²)`, `d` and `out0` `(n, n)`. They agree to rounding, not bit
+/// for bit (see [`add_exchange`]).
+#[doc(hidden)]
+pub fn add_exchange_parallel_and_serial(
+    b: &Array2<C64>,
+    d: &Array2<C64>,
+    conj: bool,
+    scale: f64,
+    out0: &Array2<C64>,
+) -> Result<[Array2<C64>; 2], FerricError> {
+    let n = d.nrows();
+    if d.dim() != (n, n) || out0.dim() != (n, n) || b.ncols() != n * n {
+        return Err(FerricError::General(format!(
+            "add_exchange_parallel_and_serial: B {:?} / D {:?} / out {:?}",
+            b.dim(),
+            d.dim(),
+            out0.dim()
+        )));
+    }
+    let mut par = out0.clone();
+    let mut ser = out0.clone();
+    add_exchange(b, d, conj, n, scale, &mut par)?;
+    add_exchange_serial_oracle(b, d, conj, n, scale, &mut ser)?;
+    Ok([par, ser])
 }
 
 /// [`KPointJk`] over a [`KRsGdf`], including the Madelung shift.

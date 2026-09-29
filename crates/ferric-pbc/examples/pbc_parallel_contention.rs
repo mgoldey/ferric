@@ -65,8 +65,7 @@ use ferric_integrals::engine::Engine;
 use ferric_integrals::engine_pool::EnginePool;
 use ferric_integrals::operator::Operator;
 use ferric_integrals::site_basis::SiteBasis;
-use ferric_pbc::ewald::default_ewald_omega;
-use ferric_pbc::hcore::GAUSSIAN_NUCLEUS_EXPONENT;
+use ferric_pbc::hcore::{PeriodicHcoreConfig, GAUSSIAN_NUCLEUS_EXPONENT};
 use ferric_pbc::rsgdf::DEFAULT_RSGDF_OMEGA;
 use ferric_pbc::Cell;
 use std::collections::BTreeMap;
@@ -561,7 +560,10 @@ fn build_ctx(args: &Args) -> Res<Ctx> {
     let aux_bs = basis::bundled(&args.aux)?;
     let obs = PreparedBasis::new(cell.mol(), &bs)?;
     let aux = PreparedBasis::new(cell.mol(), &aux_bs)?;
-    let omega_h = default_ewald_omega(&cell);
+    // The production default split (hcore.rs `default_hcore_omega`). The
+    // hcore checksum depends on it: the 2026-09-27 FINDINGS checksums were
+    // taken at the older √π/Ω^{1/3}, so compare checksums at one ω_h only.
+    let omega_h = PeriodicHcoreConfig::for_cell(&cell).omega;
     let sites: Vec<[f64; 4]> = cell
         .positions()
         .iter()

@@ -86,10 +86,13 @@ use ferric_pbc::grad::{
     gamma_rhf_gradient_rsgdf, gamma_uks_gradient_rsgdf, GammaGradConfig, GammaGradient,
     GradMutation, RsGdfGradSource,
 };
-use ferric_pbc::hcore::kpoint::{periodic_hcore_kpts, sr_attraction_kpts_parallel_and_serial};
+use ferric_pbc::hcore::kpoint::{
+    overlap_kinetic_kpts_parallel_and_serial, periodic_hcore_kpts,
+    sr_attraction_kpts_parallel_and_serial,
+};
 use ferric_pbc::hcore::{
-    periodic_hcore, sr_attraction_parallel_and_serial, PeriodicHcore, PeriodicHcoreConfig,
-    SrAttractionParts, SrBound, DEFAULT_HCORE_PRECISION,
+    overlap_kinetic_parallel_and_serial, periodic_hcore, sr_attraction_parallel_and_serial,
+    PeriodicHcore, PeriodicHcoreConfig, SrAttractionParts, SrBound, DEFAULT_HCORE_PRECISION,
 };
 use ferric_pbc::kgrad::{
     kpoint_rhf_gradient, KGradConfig, KGradJk, KGradMutation, KGradient, KRsGdfGradSource,
@@ -108,13 +111,18 @@ use ferric_pbc::pair_ft::{
     CTR_SITES, CTR_SURVIVORS, DEFAULT_PAIR_FT_THRESH,
 };
 use ferric_pbc::rsgdf::kpoint::{
-    sr_bins_parallel_and_serial, sr_sums_gamma_and_single_bin, KRsGdf, KRsGdfConfig, SrBinsParts,
+    add_exchange_parallel_and_serial, sr_bins_parallel_and_serial, sr_sums_gamma_and_single_bin,
+    KRsGdf, KRsGdfConfig, SrBinsParts,
 };
-use ferric_pbc::rsgdf::{lr_sums_parallel_and_serial, RangeSplit, RsGdf, RsGdfConfig};
+use ferric_pbc::rsgdf::{
+    exchange_parallel_and_serial, exchange_row_blocks, lr_sums_parallel_and_serial, RangeSplit,
+    RsGdf, RsGdfConfig, EXCHANGE_ROW_BLOCK,
+};
 use ferric_pbc::stress::{gamma_rhf_stress_rsgdf, GammaStress, GammaStressConfig, StressMutation};
 use ferric_pbc::timing::PbcTimings;
 use ferric_pbc::uhf::GammaUhfIntegrals;
-use ndarray::{Array2, Array3};
+use ferric_scf::fock::KBuilder;
+use ndarray::{Array2, Array3, ShapeBuilder};
 use num_complex::Complex64;
 use std::collections::HashMap;
 
@@ -1779,5 +1787,294 @@ fn rsgdf_b_and_energy_are_bitwise_across_threads_with_several_lr_chunks() {
             (e1 - e_ample).abs() <= 1e-11,
             "{tag}: tight-budget energy {e1:.15} vs ample {e_ample:.15}"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// hcore S/T (pair-parallel) and the RS-GDF exchange builds (row-blocked).
+//
+// * `hcore_overlap_kinetic_is_bitwise_across_threads_and_vs_serial` — the
+//   Gamma `S`/`T` lattice sums (parallel over ordered shell pairs, each
+//   pair's block summed from zero over L ascending and COPIED) against the
+//   FROZEN serial `L → i1 → i2` loop, at 1/2/6 threads, and the symmetrised
+//   `periodic_hcore` S/T against the symmetrised oracle (wiring).
+//   Mutants that must fail: `images.iter().rev()` in the pair task of
+//   `hcore::overlap_kinetic` (per-element L order), or `if pair == 1 {
+//   return Ok(()); }` at the top of its task (a skipped pair).
+// * `hcore_kpts_overlap_kinetic_is_bitwise_across_threads_and_vs_serial` —
+//   the same for `S(k)`/`T(k)` (`hcore::kpoint::overlap_kinetic_kpts`,
+//   same mutants), on a mesh with complex phases.
+// * `rsgdf_exchange_is_bitwise_across_threads_and_vs_serial` — the
+//   row-blocked `K = Σ_a B_a D B_aᵀ` against the FROZEN serial per-aux-row
+//   loop on synthetic B/D at n = 45 (blocks 16/16/13), n = 50 (a 2-row tail
+//   merged: 16/16/18) and n = 70 (6-row tail kept), naux = 37 (a full and a
+//   partial 32-row round), D in C and F layout. Mutants: `bks.iter().rev()`
+//   in `rsgdf::exchange_row_blocked` (aux order), `ranges.par_iter().rev()`
+//   in its zip (blocks written to the wrong rows), `EXCHANGE_MIN_TAIL = 1`
+//   is NOT expected to fail on this box (a 1-row GEMM is only a risk on a
+//   GEMV-forwarding OpenBLAS; n = 49 would exercise it).
+// * `krsgdf_exchange_is_bitwise_across_threads_and_vs_serial` — the complex
+//   k-point `out += s Σ_a B_a D B_a^H` (`rsgdf::kpoint::add_exchange`), plain
+//   and conjugated, onto a non-zero `out`. Mutants: `factors.iter().rev()`,
+//   or `ranges.par_iter().rev()`, in `add_exchange`.
+// * `rsgdf_k_builder_is_bitwise_vs_serial_on_a_real_b` — the production
+//   `RsGdfK` (a real B, nao = 36: blocks 16/16/4) equals the serial oracle
+//   bit for bit at 1/2/6 threads (wiring of the row-blocked path).
+// ---------------------------------------------------------------------------
+
+/// Deterministic, sign-varying, magnitude-varying values (bits depend on
+/// summation order).
+fn synth(i: usize, salt: f64) -> f64 {
+    let x = (i as f64) * 0.618_033_988_749 + salt;
+    x.sin() * (1.0 + (i % 7) as f64) * 10f64.powi((i % 5) as i32 - 2)
+}
+
+fn synth_b(naux: usize, n: usize, salt: f64) -> Array2<f64> {
+    Array2::from_shape_fn((naux, n * n), |(a, x)| synth(a * n * n + x, salt))
+}
+
+fn synth_d(n: usize, salt: f64) -> Array2<f64> {
+    // Symmetric, like a density.
+    Array2::from_shape_fn((n, n), |(i, j)| synth(i.min(j) * n + i.max(j), salt))
+}
+
+fn csynth(a: &Array2<f64>, b: &Array2<f64>) -> Array2<Complex64> {
+    Array2::from_shape_fn(a.dim(), |ij| Complex64::new(a[ij], b[ij]))
+}
+
+#[test]
+fn exchange_row_blocks_are_fixed_and_merge_short_tails() {
+    assert_eq!(EXCHANGE_ROW_BLOCK, 16);
+    assert_eq!(exchange_row_blocks(16), vec![0..16]);
+    assert_eq!(exchange_row_blocks(19), vec![0..19]);
+    assert_eq!(exchange_row_blocks(20), vec![0..16, 16..20]);
+    assert_eq!(exchange_row_blocks(45), vec![0..16, 16..32, 32..45]);
+    assert_eq!(exchange_row_blocks(50), vec![0..16, 16..32, 32..50]);
+    assert_eq!(
+        exchange_row_blocks(168).len(),
+        11,
+        "dry ice: 10 × 16 + 8 rows"
+    );
+}
+
+#[test]
+fn hcore_overlap_kinetic_is_bitwise_across_threads_and_vs_serial() {
+    let cell = triclinic_cell();
+    let prep = prep_for(&cell, &sp_basis_h());
+    assert_split_binds(&prep);
+    let cfg = PeriodicHcoreConfig::with_omega(HCORE_OMEGA);
+    type StRuns = ([(Array2<f64>, Array2<f64>); 2], usize);
+    let runs: Vec<StRuns> = THREADS
+        .iter()
+        .map(|&n| {
+            in_pool(n, || {
+                overlap_kinetic_parallel_and_serial(&cell, &prep, &cfg).expect("S/T")
+            })
+        })
+        .collect();
+    let ([(s1, t1), _], n_img) = &runs[0];
+    assert!(
+        *n_img > 1,
+        "only {n_img} pair image(s): the L order is vacuous"
+    );
+    assert!(nonzero(s1) && nonzero(t1), "S/T vacuous");
+    for (&n, ([(sp, tp), (ss, ts)], ni)) in THREADS.iter().zip(&runs) {
+        assert_eq!(ni, n_img);
+        assert_bitwise(sp, ss, &format!("S parallel vs serial ({n} threads)"));
+        assert_bitwise(tp, ts, &format!("T parallel vs serial ({n} threads)"));
+        assert_bitwise(sp, s1, &format!("S at {n} vs 1 thread"));
+        assert_bitwise(tp, t1, &format!("T at {n} vs 1 thread"));
+    }
+    // Wiring: periodic_hcore's S/T are the symmetrised oracle, bit for bit.
+    let ([_, (ss, ts)], _) = &runs[0];
+    for &n in &THREADS {
+        let hc = in_pool(n, || periodic_hcore(&cell, &prep, &cfg).expect("hcore"));
+        assert_bitwise(
+            &hc.s,
+            &(0.5 * (ss + &ss.t())),
+            &format!("hcore S ({n} threads)"),
+        );
+        assert_bitwise(
+            &hc.t,
+            &(0.5 * (ts + &ts.t())),
+            &format!("hcore T ({n} threads)"),
+        );
+    }
+}
+
+/// `½(X + X^H)`, `hcore::kpoint::hermitize`'s expression.
+fn herm(m: &Array2<Complex64>) -> Array2<Complex64> {
+    let n = m.nrows();
+    Array2::from_shape_fn((n, n), |(i, j)| 0.5 * (m[(i, j)] + m[(j, i)].conj()))
+}
+
+#[test]
+fn hcore_kpts_overlap_kinetic_is_bitwise_across_threads_and_vs_serial() {
+    let cell = triclinic_cell();
+    let prep = prep_for(&cell, &sp_basis_h());
+    assert_split_binds(&prep);
+    let mesh = KPointMesh::monkhorst_pack(&cell, [1, 2, 2]).unwrap();
+    let cfg = PeriodicHcoreConfig::with_omega(HCORE_OMEGA);
+    type StK = (Vec<Array2<Complex64>>, Vec<Array2<Complex64>>);
+    let runs: Vec<([StK; 2], usize)> = THREADS
+        .iter()
+        .map(|&n| {
+            in_pool(n, || {
+                overlap_kinetic_kpts_parallel_and_serial(&cell, &prep, &mesh, &cfg)
+                    .expect("S(k)/T(k)")
+            })
+        })
+        .collect();
+    let ([(s1, t1), _], n_img) = &runs[0];
+    assert!(*n_img > 1, "only {n_img} pair image(s)");
+    assert_eq!(s1.len(), 4);
+    assert!(
+        s1.iter().any(|m| m.iter().any(|z| z.im != 0.0)),
+        "S(k): no imaginary part, so the phases are vacuous"
+    );
+    for (&n, ([(sp, tp), (ss, ts)], _)) in THREADS.iter().zip(&runs) {
+        assert_cbitwise(sp, ss, &format!("S(k) parallel vs serial ({n} threads)"));
+        assert_cbitwise(tp, ts, &format!("T(k) parallel vs serial ({n} threads)"));
+        assert_cbitwise(sp, s1, &format!("S(k) at {n} vs 1 thread"));
+        assert_cbitwise(tp, t1, &format!("T(k) at {n} vs 1 thread"));
+    }
+    let ([_, (ss, ts)], _) = &runs[0];
+    let (sh, th): (Vec<_>, Vec<_>) = (ss.iter().map(herm).collect(), ts.iter().map(herm).collect());
+    for &n in &THREADS {
+        let hk = in_pool(n, || {
+            periodic_hcore_kpts(&cell, &prep, &mesh, &cfg).expect("hcore k")
+        });
+        assert_cbitwise(&hk.s, &sh, &format!("hcore S(k) ({n} threads)"));
+        assert_cbitwise(&hk.t, &th, &format!("hcore T(k) ({n} threads)"));
+    }
+}
+
+#[test]
+fn rsgdf_exchange_is_bitwise_across_threads_and_vs_serial() {
+    let naux = 37;
+    for n in [45usize, 50, 70] {
+        assert!(
+            exchange_row_blocks(n).len() >= 3,
+            "n = {n}: split does not bind"
+        );
+        let b = synth_b(naux, n, 0.3);
+        let dc = synth_d(n, 1.7);
+        let mut df = Array2::<f64>::zeros((n, n).f());
+        df.assign(&dc);
+        for (layout, d) in [("C", &dc), ("F", &df)] {
+            let tag = format!("n = {n}, D {layout}");
+            let runs: Vec<[Array2<f64>; 2]> = THREADS
+                .iter()
+                .map(|&nt| in_pool(nt, || exchange_parallel_and_serial(&b, d).expect("K")))
+                .collect();
+            let [_, k_ser1] = &runs[0];
+            assert!(nonzero(k_ser1), "{tag}: K vacuous");
+            for (&nt, [kp, ks]) in THREADS.iter().zip(&runs) {
+                assert_bitwise(
+                    kp,
+                    ks,
+                    &format!("{tag}: K parallel vs serial ({nt} threads)"),
+                );
+                assert_bitwise(kp, k_ser1, &format!("{tag}: K at {nt} vs 1 thread"));
+            }
+        }
+    }
+}
+
+#[test]
+fn krsgdf_exchange_is_bitwise_across_threads_and_matches_serial() {
+    let (naux, n) = (37usize, 45usize);
+    assert!(exchange_row_blocks(n).len() >= 3);
+    let b = csynth(&synth_b(naux, n, 0.3), &synth_b(naux, n, 2.9));
+    // Hermitian density.
+    let dre = synth_d(n, 1.7);
+    let dim = Array2::from_shape_fn((n, n), |(i, j)| {
+        let v = synth(i.min(j) * n + i.max(j), 4.1);
+        match i.cmp(&j) {
+            std::cmp::Ordering::Less => v,
+            std::cmp::Ordering::Greater => -v,
+            std::cmp::Ordering::Equal => 0.0,
+        }
+    });
+    let d = csynth(&dre, &dim);
+    let out0 = csynth(&synth_d(n, 5.3), &synth_d(n, 6.1));
+    for conj in [false, true] {
+        let tag = format!("conj {conj}");
+        let runs: Vec<[Array2<Complex64>; 2]> = THREADS
+            .iter()
+            .map(|&nt| {
+                in_pool(nt, || {
+                    add_exchange_parallel_and_serial(&b, &d, conj, 0.25, &out0).expect("K(k)")
+                })
+            })
+            .collect();
+        let [_, s1] = &runs[0];
+        assert!(cbit_diffs(s1, &out0) > 0, "{tag}: nothing added");
+        let [p1, _] = &runs[0];
+        for (&nt, [kp, ks]) in THREADS.iter().zip(&runs) {
+            // Parallel vs the frozen serial loop: NOT bitwise. OpenBLAS's
+            // single-threaded zgemm tiles M differently for a 16-row block
+            // than for the full matrix (measured 2026-09-29: rows 12-15 of
+            // each 16-row block differ, max relative 7.0e-16), so the fixed
+            // row blocking changes rounding once, deterministically. Bound:
+            // 1e-13 x max|K| is ~150x the measured change and ~1e10x below a
+            // dropped block or aux row (O(max|K|)).
+            let scale = ks.iter().map(|z| z.norm()).fold(0.0, f64::max);
+            let err = kp
+                .iter()
+                .zip(ks.iter())
+                .map(|(x, y)| (x - y).norm())
+                .fold(0.0, f64::max);
+            assert!(
+                err <= 1e-13 * scale,
+                "{tag}: K(k) parallel vs serial ({nt} threads): {err:e} > 1e-13 x {scale:e}"
+            );
+            // Thread-count independence: bitwise.
+            assert_cbitwise(
+                std::slice::from_ref(kp),
+                std::slice::from_ref(p1),
+                &format!("{tag}: K(k) parallel at {nt} vs 1 thread"),
+            );
+            assert_cbitwise(
+                std::slice::from_ref(ks),
+                std::slice::from_ref(s1),
+                &format!("{tag}: K(k) serial at {nt} vs 1 thread"),
+            );
+        }
+    }
+}
+
+#[test]
+fn rsgdf_k_builder_is_bitwise_vs_serial_on_a_real_b() {
+    let cell = triclinic_cell();
+    let prep = prep_for(&cell, &spd_basis_h());
+    let n = prep.nbasis();
+    assert!(
+        exchange_row_blocks(n).len() >= 2,
+        "nao = {n}: split does not bind"
+    );
+    let aux = prep_for(&cell, &basis::bundled("cc-pvdz-ri").unwrap());
+    let hc =
+        periodic_hcore(&cell, &prep, &PeriodicHcoreConfig::with_omega(HCORE_OMEGA)).expect("hcore");
+    let gdf = RsGdf::build(&cell, &prep, &aux, &hc.s, &gdf_cfg()).expect("rsgdf");
+    assert_eq!(
+        gdf.madelung(),
+        0.0,
+        "exxdiv none: K is the B contraction alone"
+    );
+    let d = synth_d(n, 0.9);
+    for &nt in &THREADS {
+        let (k_prod, [kp, ks]) = in_pool(nt, || {
+            let mut k = Array2::<f64>::zeros((n, n));
+            gdf.k_builder().build(&d, &mut k).expect("RsGdfK");
+            (k, exchange_parallel_and_serial(gdf.b(), &d).expect("K"))
+        });
+        assert!(nonzero(&ks));
+        assert_bitwise(
+            &k_prod,
+            &ks,
+            &format!("RsGdfK vs serial oracle ({nt} threads)"),
+        );
+        assert_bitwise(&kp, &ks, &format!("row-blocked vs serial ({nt} threads)"));
     }
 }
