@@ -271,8 +271,8 @@ Read when `task = "frequencies"`.
 
 | Key | Type | Default | Allowed values | Notes |
 |---|---|---|---|---|
-| `hessian` | string | `"auto"` | `auto`; `analytic`; `fd` `finite-difference` | `auto` uses the analytic Hessian for closed-shell RHF with exact J/K, no ECP and a basis up to f functions, and finite differences otherwise. `analytic` is an error where it does not apply. The output prints `Hessian = analytic` or `finite-difference`. |
-| `delta` | float | `5e-4` | Bohr, finite and > 0 | Central-difference step, finite-difference Hessians only. Check the printed `Hessian asymmetry`: it is zero in exact arithmetic. |
+| `hessian` | string | `"auto"` | `auto`; `analytic`; `fd` `finite-difference` | `auto` uses the analytic Hessian for closed-shell RHF with the Coulomb operator and exact four-centre J/K (no RI or COSX), a basis up to f functions and a libint2 with second derivatives; no ECP, external potential, implicit solvent, polarizable embedding, fractional occupations or constraints. Anything else uses finite differences. `analytic` is an error where it does not apply. The output prints `Hessian = analytic` or `finite-difference`. |
+| `delta` | float | `5e-3` | Bohr, finite and > 0 | Central-difference step, finite-difference Hessians only. Check the printed `Hessian asymmetry`: it is zero in exact arithmetic. |
 
 ## `[memory]`
 

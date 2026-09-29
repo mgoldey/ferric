@@ -129,7 +129,7 @@ translations and rotations projected out. The Hessian is:
   second derivatives (the build `scripts/install-libint.sh` installs).
 - **Central finite differences of the analytic gradient** everywhere else
   (UHF, ROHF, KS-DFT, RI J/K, ECPs, embedding, g functions): 6N gradient
-  evaluations. The displacement `[frequencies] delta` (default 5e-4 Bohr) is a
+  evaluations. The displacement `[frequencies] delta` (default 5e-3 Bohr) is a
   real accuracy knob; the printed Hessian asymmetry, zero in exact arithmetic,
   is the check that it and the SCF thresholds suit the system.
 

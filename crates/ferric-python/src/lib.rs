@@ -2740,7 +2740,7 @@ impl PyFrequencyResult {
 /// `reference` selects the SCF: "rhf" (default), "uhf", or "rohf". Setting
 /// `xc` promotes it to the matching KS variant (RKS/UKS/ROKS).
 ///
-/// `delta` is the central-difference displacement in Bohr (default 5e-4). It is
+/// `delta` is the central-difference displacement in Bohr (default 5e-3). It is
 /// a real accuracy knob that degrades silently -- too large adds truncation
 /// error, too small amplifies SCF noise. Check `.asymmetry` rather than
 /// assuming.
@@ -7914,7 +7914,9 @@ fn run_saddle(
     point_charges: Option<Vec<(f64, f64, f64, f64)>>,
     external_field: Option<(f64, f64, f64)>,
 ) -> PyResult<PySaddleResult> {
-    use ferric_scf::frequencies::{harmonic_frequencies, FrequencyConfig, FrequencyReference};
+    use ferric_scf::frequencies::{
+        harmonic_frequencies, FrequencyConfig, FrequencyReference, HessianMethod,
+    };
     use ferric_scf::gradient::rhf_gradient;
     use ferric_scf::rhf::solve_rhf;
     use ferric_scf::saddle::{find_saddle, SaddleConfig};
@@ -8041,8 +8043,12 @@ fn run_saddle(
         // So this one variant covers both, and the Hessian follows `xc`
         // automatically. (The GRADIENT callback above is not so lucky: it has
         // to pick between rhf_gradient and ks_gradient_closed by hand.)
+        // Pinned to finite differences: the saddle search is documented (and
+        // `delta=` is honoured) as FD for every method. `Auto` would silently
+        // switch closed-shell RHF to the analytic Hessian and ignore `delta`.
         let mut fc = FrequencyConfig {
             reference: FrequencyReference::Rhf,
+            hessian: HessianMethod::FiniteDifference,
             ..Default::default()
         };
         if let Some(d) = delta {
