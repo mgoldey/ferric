@@ -5679,3 +5679,41 @@ reverted (old) screen gives 15 p at 1e-10 and 1390 p at 1e-12, so it must fail. 
 Replacing `(R_A−R_B)²` with `|A−B−L|²` in `radial_k` is NOT a usable mutant on this fixture: the bound's e^8.5
 slack on the antipodal triple still keeps it at 1e-10. That is an anchor blind spot, recorded here. Provisional
 until the Rust run confirms it.
+
+## Aux-group exchange + ECP screen (measured 2026-09-29 19:03, head 44b01b41)
+
+The exchange block size was measured with `examples/exchange_block_bench.rs` (n 168, naux 672,
+OPENBLAS_NUM_THREADS=1). Speed-up vs the serial loop:
+
+| scheme | 1 thread | 6 threads | bits vs serial |
+|---|---|---|---|
+| row blocks of 16 | 0.36× | 2.24× | equal |
+| row blocks of 32 | 0.60× | 3.38× | equal |
+| 2-D tiles 84×56 | 0.72× | 3.03× | equal |
+| 24 aux groups | 1.00× | 5.45× | max rel 2.9e-15 |
+
+Row blocks need ≥ 6 blocks for parallelism, which forces blocks ≤ 28 rows at n = 168 and makes
+each GEMM 2-3× less efficient. Aux groups keep the serial full-size GEMMs; only the association
+of the aux sum changes. The result is deterministic and bitwise identical across thread counts.
+
+Dry ice Γ RHF, one sample per cell, each run gated on a 1-minute load below 1.5:
+
+| run | before (b6883124) | after | scf K | E after |
+|---|---|---|---|---|
+| 6 thr | 44.7 s | 42.6 s | 2.43 → 1.17 s | −750.8211184382429 |
+| 1 thr | 149.3 s | 144.5 s | 10.36 → 6.04 s | −750.8211184382429 |
+
+- **Energy:** moved −8e-13 Ha/cell from the aux-sum association (was −750.8211184382437); the
+  SCF took 20 iterations instead of 19.
+- **Against PySCF GDF:** 42.6 vs 22.9 s at 6 threads (1.86×) and 144.5 vs 108.6 s at 1 thread
+  (1.33×).
+- **Where the gap sits** (PySCF's own timers split only hcore and scf; its density-fitting build
+  is total minus both):
+  - hcore is equal at 1 thread (ferric 34.9 s, PySCF 36.2) but scales 2.3× in ferric against
+    5.0× in PySCF.
+  - The density-fitting build is about 2× slower in ferric even at 1 thread (about 101 vs 53
+    s), dominated by the LR pair FT (38.7) and aux FT + GEMM (35.2).
+  - The SCF is faster in ferric.
+- **Hypotheses, not measured:** the hcore scaling is the libint per-call inflation under threads;
+  the LR cost is ferric's fixed ω = 1 and 13372 half-G against PySCF's adaptive ω/mesh. PySCF's
+  ω and G count for dry ice have not been checked.
