@@ -87,9 +87,13 @@
 //!
 //! # Memory
 //!
-//! The per-image blocks (`n_L × n² × 8` bytes), the translation lists and the
-//! centre list are reserved on the [`crate::budget`] ledger BEFORE they are
-//! allocated.
+//! The per-image blocks, the translation lists and the centre list are
+//! reserved on the [`crate::budget`] ledger BEFORE they are allocated. The
+//! blocks are reserved for the images the screen KEEPS (`n_kept × n² × 8`
+//! bytes), counted by a screen-only pass first, not for every candidate
+//! within `r_pair` (HI/LANL2DZ: `r_pair` 45.2 Bohr, 1685 candidate `L`; a
+//! candidate-sized reservation refused runs whose stored blocks fit). The
+//! force streams its images (`crate::ordered`) and stores no blocks.
 //!
 //! # Scope
 //!
@@ -859,30 +863,93 @@ pub(crate) fn periodic_ecp_images_on(
     cfg: &PeriodicEcpConfig,
     ledger: &mut Ledger,
 ) -> Result<Option<PeriodicEcpImages>, FerricError> {
+    Ok(images_reporting(cell, prep, cfg, ledger)?.map(|(images, _)| images))
+}
+
+/// What [`periodic_ecp_images`] reserved on its ledger (test-only
+/// observability of the "Memory" contract in the module doc).
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EcpImagesReservation {
+    /// Candidate orbital images `L` (the plan's `l_list`, within `r_pair`).
+    pub n_candidate_images: usize,
+    /// Images with at least one kept triple (`= images.len()`).
+    pub n_kept_images: usize,
+    /// AO dimension `n`.
+    pub nbasis: usize,
+    /// Ledger bytes resident just before the per-image blocks were reserved
+    /// (the plan's lists, the kept-image index list, and whatever the
+    /// caller's ledger already held).
+    pub resident_before_blocks: usize,
+    /// The per-image-block reservation (`n_kept_images × n² × 8`).
+    pub block_bytes: usize,
+    /// Ledger bytes resident on return.
+    pub resident_bytes: usize,
+}
+
+/// [`periodic_ecp_images`] plus its [`EcpImagesReservation`] (test only).
+#[doc(hidden)]
+pub fn periodic_ecp_images_reservation(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    cfg: &PeriodicEcpConfig,
+) -> Result<Option<(PeriodicEcpImages, EcpImagesReservation)>, FerricError> {
+    let mut ledger = Ledger::new(crate::budget::resolve(cfg.budget_bytes));
+    images_reporting(cell, prep, cfg, &mut ledger)
+}
+
+/// The body of [`periodic_ecp_images_on`], reporting its reservations.
+///
+/// Two passes over the candidate images: the screen alone first (no
+/// integrals) to find the images that keep a triple, then — after reserving
+/// the blocks of exactly THOSE images — the blocks, re-screening only the
+/// kept images. The screen is deterministic in its inputs, so the second
+/// pass's triples, block order and accumulation are those of a single pass.
+fn images_reporting(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    cfg: &PeriodicEcpConfig,
+    ledger: &mut Ledger,
+) -> Result<Option<(PeriodicEcpImages, EcpImagesReservation)>, FerricError> {
     let Some(plan) = EcpPlan::build(cell, prep, cfg, ledger)? else {
         return Ok(None);
     };
     let n = plan.nbasis;
 
-    // Worst case every candidate L keeps a block.
+    // --- Pass 1: the screen only. Indices of the candidate L that keep at
+    // least one triple (at most one index per candidate).
     ledger.reserve(
         &format!(
-            "periodic ECP per-image blocks ({} candidate L × n² with n = {n})",
+            "periodic ECP kept-image index list ({} candidate L)",
             plan.l_list.len()
         ),
-        bytes_of((plan.l_list.len() * n * n) as u64, 8),
+        bytes_of(plan.l_list.len() as u64, std::mem::size_of::<usize>()),
+    )?;
+    let kept_l: Vec<usize> = (0..plan.l_list.len())
+        .filter(|&li| !plan.kept(&plan.ket_shells(&plan.l_list[li])).is_empty())
+        .collect();
+
+    // --- The resident blocks: one per KEPT image, not per candidate.
+    let resident_before_blocks = ledger.resident();
+    let block_bytes = bytes_of((kept_l.len() * n * n) as u64, 8);
+    ledger.reserve(
+        &format!(
+            "periodic ECP per-image blocks ({} kept of {} candidate L × n² with n = {n})",
+            kept_l.len(),
+            plan.l_list.len()
+        ),
+        block_bytes,
     )?;
 
-    let mut images = Vec::new();
-    let mut blocks = Vec::new();
+    // --- Pass 2: the blocks of the kept images, in candidate order.
+    let mut images = Vec::with_capacity(kept_l.len());
+    let mut blocks = Vec::with_capacity(kept_l.len());
     let mut n_triples = 0usize;
     let mut used_site = vec![false; plan.sites.len()];
-    for l in &plan.l_list {
+    for &li in &kept_l {
+        let l = &plan.l_list[li];
         let ket = plan.ket_shells(l);
         let kept = plan.kept(&ket);
-        if kept.is_empty() {
-            continue;
-        }
         let (centres, site_of, mask) = plan.compact(&kept);
         for &u in &site_of {
             used_site[u] = true;
@@ -901,6 +968,14 @@ pub(crate) fn periodic_ecp_images_on(
                 .map_err(|e| FerricError::General(format!("periodic ECP block shape: {e}")))?,
         );
     }
+    let report = EcpImagesReservation {
+        n_candidate_images: plan.l_list.len(),
+        n_kept_images: images.len(),
+        nbasis: n,
+        resident_before_blocks,
+        block_bytes,
+        resident_bytes: ledger.resident(),
+    };
 
     // --- Exact Hermiticity of the lattice sum: V_{-L} = V_Lᵀ.
     let b = cell.reciprocal();
@@ -922,17 +997,20 @@ pub(crate) fn periodic_ecp_images_on(
         asymmetry = asymmetry.max(d);
     }
 
-    Ok(Some(PeriodicEcpImages {
-        nbasis: n,
-        n_calls: images.len(),
-        images,
-        blocks,
-        n_triples,
-        n_ecp_images: used_site.iter().filter(|&&u| u).count(),
-        r_ecp: plan.r_ecp,
-        r_pair: plan.r_pair,
-        asymmetry,
-    }))
+    Ok(Some((
+        PeriodicEcpImages {
+            nbasis: n,
+            n_calls: images.len(),
+            images,
+            blocks,
+            n_triples,
+            n_ecp_images: used_site.iter().filter(|&&u| u).count(),
+            r_ecp: plan.r_ecp,
+            r_pair: plan.r_pair,
+            asymmetry,
+        },
+        report,
+    )))
 }
 
 // ============================================================ forces

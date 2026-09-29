@@ -59,7 +59,8 @@ use ferric_integrals::oneelectron::{dipole, ecp_potential, r2_moment};
 use ferric_integrals::operator::Operator;
 use ferric_pbc::dense_aft::{DenseAftEri, ExxDiv, DEFAULT_DENSE_AFT_MAX_BYTES};
 use ferric_pbc::ecp::{
-    check_ecp_applied, periodic_ecp_images, EcpMutation, PeriodicEcpConfig, PeriodicEcpError,
+    check_ecp_applied, periodic_ecp_images, periodic_ecp_images_reservation, EcpMutation,
+    PeriodicEcpConfig, PeriodicEcpError,
 };
 use ferric_pbc::hcore::kpoint::{periodic_hcore_kpts, PeriodicHcoreK};
 use ferric_pbc::hcore::{periodic_hcore, PeriodicHcore, PeriodicHcoreConfig};
@@ -436,6 +437,81 @@ fn big_box_periodic_ecp_is_the_molecular_ecp() {
     let d = max_abs_diff(&v_per, &v_mol);
     eprintln!("40-Bohr box: |V_per - V_mol| {d:.2e}");
     assert!(d < 1e-11, "{d:e}");
+}
+
+/// Memory contract (ecp.rs module doc "Memory"): the per-image blocks are
+/// reserved for the images the screen KEEPS, not for every candidate within
+/// `r_pair`. The rigorous screen's `r_pair` grew ~1.5× (HI/LANL2DZ 45.2 vs
+/// 30.8 Bohr: 1685 vs 561 candidate L), so a candidate-sized reservation
+/// refused runs whose resident blocks fit.
+///
+/// Pass condition: a budget of exactly `resident_before_blocks + kept × n² ×
+/// 8` builds (bit-identical to the ample-budget run) and one byte less is
+/// refused at the block reservation. Reachability: `candidates > kept` is
+/// asserted, so the former `candidates × n² × 8` reservation exceeds that
+/// budget. Mutant: reserve `plan.l_list.len() × n² × 8` in
+/// `ecp::images_reporting` → `block_bytes`/`resident_bytes` equalities fail
+/// and the exact budget is refused ("per-image blocks").
+#[test]
+fn per_image_blocks_are_reserved_for_kept_images_not_candidates() {
+    let bs = hi_basis(false);
+    let cell = hi_cell(&bs);
+    let p = prep(&cell, &bs);
+    let cfg = PeriodicEcpConfig::default();
+    let (full, r) = periodic_ecp_images_reservation(&cell, &p, &cfg)
+        .expect("periodic ECP")
+        .expect("the basis carries an ECP");
+    let per_image = r.nbasis * r.nbasis * 8;
+    eprintln!(
+        "reservation: {} kept of {} candidate L, n = {}, {} B before blocks, \
+         {} B blocks, {} B resident",
+        r.n_kept_images,
+        r.n_candidate_images,
+        r.nbasis,
+        r.resident_before_blocks,
+        r.block_bytes,
+        r.resident_bytes
+    );
+    assert_eq!(r.nbasis, full.nbasis);
+    assert_eq!(r.n_kept_images, full.images.len());
+    assert!(r.n_kept_images > 0, "vacuous: no image kept");
+    assert!(
+        r.n_candidate_images > r.n_kept_images,
+        "unreachable: every candidate L is kept ({})",
+        r.n_candidate_images
+    );
+    assert_eq!(r.block_bytes, r.n_kept_images * per_image);
+    assert_eq!(r.resident_bytes, r.resident_before_blocks + r.block_bytes);
+
+    // The exact budget for the kept blocks; the former candidate-sized
+    // reservation would not fit it.
+    let exact = r.resident_before_blocks + r.n_kept_images * per_image;
+    assert!(r.resident_before_blocks + r.n_candidate_images * per_image > exact);
+    let tight = PeriodicEcpConfig {
+        budget_bytes: Some(exact),
+        ..cfg
+    };
+    let t = periodic_ecp_images(&cell, &p, &tight)
+        .expect("the kept blocks fit the exact budget")
+        .expect("the basis carries an ECP");
+    assert_eq!(t.images, full.images);
+    assert_eq!(t.n_triples, full.n_triples);
+    assert_eq!(t.blocks.len(), full.blocks.len());
+    for (a, b) in t.blocks.iter().zip(&full.blocks) {
+        assert!(a
+            .iter()
+            .zip(b.iter())
+            .all(|(x, y)| x.to_bits() == y.to_bits()));
+    }
+
+    let under = PeriodicEcpConfig {
+        budget_bytes: Some(exact - 1),
+        ..cfg
+    };
+    let err = periodic_ecp_images(&cell, &p, &under)
+        .expect_err("one byte under the kept blocks must be refused")
+        .to_string();
+    assert!(err.contains("per-image blocks"), "{err}");
 }
 
 // ============================================================ (a) cutoff study
