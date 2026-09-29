@@ -1433,7 +1433,7 @@ def run_frequencies(
 ) -> FrequencyResult:
     """Harmonic vibrational frequencies.
 
-    `hessian="auto"` uses the analytic Hessian for closed-shell RHF or UHF
+    `hessian="auto"` uses the analytic Hessian for RHF (closed shell) or UHF
     (any multiplicity) with exact J/K, no ECP and a basis up to f functions,
     and a finite difference of analytic gradients otherwise (always for ROHF
     and KS); `"analytic"` raises if it does not apply;

@@ -530,6 +530,13 @@ fn config_refusal(config: &RhfConfig) -> Result<Option<&'static str>, FerricErro
             "fractional occupations",
         ),
         (!config.constraints.is_empty(), "constrained DFT"),
+        // MOM can land on a non-aufbau state, which the post-SCF occupation
+        // check refuses. Refusing it here, before the SCF, lets `Auto` fall
+        // back to finite differences instead of erroring after the SCF.
+        (
+            config.mom_after_iter > 0,
+            "maximum-overlap (MOM) occupations",
+        ),
     ];
     Ok(checks.iter().find(|(bad, _)| *bad).map(|(_, what)| *what))
 }

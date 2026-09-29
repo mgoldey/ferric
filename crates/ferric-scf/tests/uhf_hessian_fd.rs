@@ -672,6 +672,17 @@ fn wrong_references_and_unsupported_configurations_are_refused() {
     let (oh_prep, _) = prep_for(&oh(), "sto-3g");
     analytic_uhf_hessian_available(&oh(), &oh_prep, op, &cfg)
         .expect("the UHF probe accepts an odd electron count");
+    // MOM is refused BEFORE the SCF (the probe), so `Auto` falls back to
+    // finite differences rather than failing the post-SCF occupation check.
+    // Same triplet and config the probe accepted just above, plus MOM.
+    let mom = RhfConfig {
+        mom_after_iter: 5,
+        ..scf_config()
+    };
+    assert!(
+        analytic_uhf_hessian_available(&s.mol, &s.prep, op, &mom).is_err(),
+        "the UHF probe must refuse a MOM configuration"
+    );
 
     // Negative control: the supported configuration is NOT refused.
     uhf_hessian(&ctx, &s.mol, &s.prep, op, &s.bounds, &s.uhf, &cfg)
