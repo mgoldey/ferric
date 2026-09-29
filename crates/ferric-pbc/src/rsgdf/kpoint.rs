@@ -66,9 +66,9 @@
 
 use super::split::{check_metric_guard, SplitPlan};
 use super::{
-    aux_ft_shells, check_obs_on_cell, dot3, exchange_row_blocks, gshells, pair_image_radius,
-    split_rows, subtract_g0, G0Handling, LatticeWalker, RsGdfConfig, SrBinning, Stage,
-    EXCHANGE_AUX_CHUNK,
+    aux_ft_shells, check_obs_on_cell, dot3, exchange_aux_groups, exchange_group_scratch_bytes,
+    gshells, pair_image_radius, subtract_g0, G0Handling, LatticeWalker, RsGdfConfig, SrBinning,
+    Stage,
 };
 use crate::budget::{bytes_of, Ledger};
 use crate::dense_aft::ExxDiv;
@@ -80,7 +80,7 @@ use crate::pair_ft::residues::{pair_ft_residues_chunked, residue_coords, residue
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ndarray::linalg::general_mat_mul;
-use ndarray::{s, Array1, Array2, Array3, ArrayView1};
+use ndarray::{Array1, Array2, Array3, ArrayView1};
 use num_complex::Complex64 as C64;
 use rayon::prelude::*;
 use std::f64::consts::PI;
@@ -1126,6 +1126,42 @@ impl KRsGdf {
         }
     }
 
+    /// Gate the aux-group scratch of one `add_exchange` call (the calls run
+    /// one after another; the widest q class sets the group count) on the
+    /// build's resolved budget ([`KRsGdfStats::budget_bytes`]), after what
+    /// stays resident during the SCF: every q class's B
+    /// ([`KRsGdfStats::b_elements`]) and the `S(k)` copies. Over budget is
+    /// the typed `check_alloc` refusal; there is deliberately NO fallback
+    /// to fewer groups or to the serial loop, since either would make K's
+    /// bits depend on the budget.
+    fn check_exchange_scratch(&self) -> Result<(), FerricError> {
+        let (n, nk) = (self.nao, self.nk);
+        let naux = self
+            .blocks
+            .iter()
+            .flat_map(|blk| blk.b.iter().map(|b| b.nrows()))
+            .max()
+            .unwrap_or(0);
+        let mut ledger = Ledger::new(self.stats.budget_bytes);
+        ledger.reserve(
+            &format!(
+                "KRsGdfJk resident B + S(k) ({} B elements, nao = {n}, N_k = {nk})",
+                self.stats.b_elements
+            ),
+            bytes_of(
+                (self.stats.b_elements as u64).saturating_add(sat_prod(&[nk, n, n])),
+                16,
+            ),
+        )?;
+        ledger.check(
+            &format!(
+                "KRsGdfJk exchange aux-group scratch ({} groups x 4 nao² matrices, nao = {n})",
+                exchange_aux_groups(naux).len()
+            ),
+            exchange_group_scratch_bytes(naux, n, 4, 16),
+        )
+    }
+
     /// `J(k)`, `K(k)` (K including `v_M S D S`) for densities `dm` (one per
     /// mesh point). J from the q = 0 block; K one q block at a time.
     /// Overwrites `j`, `k`.
@@ -1179,6 +1215,7 @@ impl KRsGdf {
         for kx in k.iter_mut() {
             kx.fill(zero);
         }
+        self.check_exchange_scratch()?;
         for blk in &self.blocks {
             for (jj, &kk) in blk.kof.iter().enumerate() {
                 add_exchange(&blk.b[jj], &dm[jj], false, n, inv, &mut k[kk])?;
@@ -1199,28 +1236,24 @@ impl KRsGdf {
     }
 }
 
-/// Bytes of prepared `(B_a, B_a^H)` factors one exchange round may hold
-/// (the round width only orders whole aux rows; it never changes a bit).
-const EXCHANGE_PREP_BYTES: usize = 64 << 20;
-
 /// `out += scale Σ_a B_a D B_a^H` (`B_a` the `(n, n)` row a of `b`, or its
 /// conjugate when `conj`).
 ///
-/// Production: `out`'s rows in fixed blocks ([`exchange_row_blocks`], the
-/// Gamma build's blocking); per round of aux rows, the factors `B_a` and
-/// `B_a^H` are formed in parallel with the serial loop's exact expressions
-/// (element-wise copies/conjugations, so their bits and layouts are the
-/// serial ones), then one rayon task per row block runs, for every aux row
-/// of the round in ascending order, `tmp = B_a[rows, :] · D` and
-/// `out[rows, :] += scale · tmp · B_a^H` — the serial calls restricted to
-/// the block's rows. Every element still receives one `+=` per aux row, in
-/// aux order. The fixed blocks make the result BITWISE identical at any
-/// thread count, but NOT bitwise equal to [`add_exchange_serial_oracle`]:
-/// OpenBLAS's single-threaded zgemm tiles M differently for a block than
-/// for the whole matrix (measured on Broadwell: rows 12-15 of each 16-row
-/// block differ, max relative 7.0e-16). `tests/pbc_parallel_bitwise.rs`
-/// checks cross-thread bits and |parallel − oracle| <= 1e-13 max|K|. One
-/// block: the oracle itself runs.
+/// Production: the aux rows in the fixed groups of [`exchange_aux_groups`]
+/// (the Gamma build's grouping); one rayon task per group accumulates its
+/// own zeroed `(n, n)` partial with exactly the serial loop's per-aux-row
+/// body (`B_a` copied or conjugated, `tmp = B_a · D`, `B_a^H`, and
+/// `P_g += scale · tmp · B_a^H` with `scale` as the GEMM's alpha, aux
+/// ascending within the group); the partials are then added onto `out` in
+/// ascending group order. Each aux row's scaled GEMM product is the serial
+/// loop's; only the association of the sum onto `out` changes, so the
+/// result differs from [`add_exchange_serial_oracle`] at rounding level
+/// (value-changing, not bitwise) while being deterministic and independent
+/// of the thread count by construction (the grouping depends on `naux`
+/// alone). `tests/pbc_parallel_bitwise.rs` checks bits across thread
+/// counts and the per-element rounding bound against the serial loop.
+/// Scratch: [`exchange_group_scratch_bytes`] (four `n × n` matrices per
+/// group), gated by [`KRsGdf::contract`].
 fn add_exchange(
     b: &Array2<C64>,
     d: &Array2<C64>,
@@ -1229,65 +1262,49 @@ fn add_exchange(
     scale: f64,
     out: &mut Array2<C64>,
 ) -> Result<(), FerricError> {
-    let ranges = exchange_row_blocks(n);
-    if ranges.len() <= 1 {
-        return add_exchange_serial_oracle(b, d, conj, n, scale, out);
-    }
-    let naux = b.nrows();
-    let chunk = (EXCHANGE_PREP_BYTES / (32 * n * n).max(1)).clamp(1, EXCHANGE_AUX_CHUNK);
-    let mut parts = split_rows(out.view_mut(), &ranges);
-    for c0 in (0..naux).step_by(chunk) {
-        let factors = (c0..(c0 + chunk).min(naux))
-            .into_par_iter()
-            .map(|a| exchange_factors(b.row(a), conj, n))
-            .collect::<Result<Vec<_>, FerricError>>()?;
-        exchange_round(&mut parts, &ranges, &factors, d, scale);
+    let partials = exchange_aux_groups(b.nrows())
+        .into_par_iter()
+        .map(|g| exchange_group_partial(b, g, d, conj, n, scale))
+        .collect::<Result<Vec<_>, FerricError>>()?;
+    for pg in &partials {
+        *out += pg;
     }
     Ok(())
 }
 
-/// One round of [`add_exchange`]: one rayon task per row block, every aux
-/// row's `out[rows, :] += scale · (B_a[rows, :] · D) · B_a^H` in order.
-fn exchange_round(
-    parts: &mut [ndarray::ArrayViewMut2<'_, C64>],
-    ranges: &[std::ops::Range<usize>],
-    factors: &[(Array2<C64>, Array2<C64>)],
+/// One aux group's partial of [`add_exchange`]: `Σ_{a ∈ g} scale · B_a D
+/// B_a^H` from zero, aux ascending, with the serial loop's exact per-row
+/// body ([`add_exchange_serial_oracle`]).
+fn exchange_group_partial(
+    b: &Array2<C64>,
+    g: std::ops::Range<usize>,
     d: &Array2<C64>,
-    scale: f64,
-) {
-    let sc = C64::new(scale, 0.0);
-    let one = C64::new(1.0, 0.0);
-    parts
-        .par_iter_mut()
-        .zip(ranges.par_iter())
-        .for_each(|(ob, r)| {
-            for (ba, bh) in factors {
-                let tmp = ba.slice(s![r.clone(), ..]).dot(d);
-                general_mat_mul(sc, &tmp, bh, one, ob);
-            }
-        });
-}
-
-/// `(B_a, B_a^H)` of one aux row, exactly as the serial loop forms them.
-fn exchange_factors(
-    row: ArrayView1<'_, C64>,
     conj: bool,
     n: usize,
-) -> Result<(Array2<C64>, Array2<C64>), FerricError> {
-    let ba = row
-        .into_shape_with_order((n, n))
-        .map_err(|e| FerricError::General(format!("KRsGdfJk: B row reshape: {e}")))?;
-    let ba = if conj {
-        ba.mapv(|z| z.conj())
-    } else {
-        ba.to_owned()
-    };
-    let bh = ba.t().mapv(|z| z.conj());
-    Ok((ba, bh))
+    scale: f64,
+) -> Result<Array2<C64>, FerricError> {
+    let sc = C64::new(scale, 0.0);
+    let one = C64::new(1.0, 0.0);
+    let mut pg = Array2::<C64>::zeros((n, n));
+    for a in g {
+        let ba = b
+            .row(a)
+            .into_shape_with_order((n, n))
+            .map_err(|e| FerricError::General(format!("KRsGdfJk: B row reshape: {e}")))?;
+        let ba = if conj {
+            ba.mapv(|z| z.conj())
+        } else {
+            ba.to_owned()
+        };
+        let tmp = ba.dot(d);
+        let bh = ba.t().mapv(|z| z.conj());
+        general_mat_mul(sc, &tmp, &bh, one, &mut pg);
+    }
+    Ok(pg)
 }
 
-/// The serial k-point exchange loop as it was before the row-blocked
-/// rewrite of [`add_exchange`] (FROZEN; oracle only — do not "improve").
+/// The serial k-point exchange loop: one running sum onto `out` over the
+/// aux rows (FROZEN; oracle only — do not "improve").
 fn add_exchange_serial_oracle(
     b: &Array2<C64>,
     d: &Array2<C64>,
@@ -1314,12 +1331,12 @@ fn add_exchange_serial_oracle(
     Ok(())
 }
 
-/// TEST ORACLE for the row-blocked k-point exchange: `[parallel, serial]`
+/// TEST ORACLE for the aux-grouped k-point exchange: `[grouped, serial]`
 /// `out0 + scale Σ_a B_a D B_a^H` (`B_a` conjugated when `conj`), `b`
-/// `(naux, n²)`, `d` and `out0` `(n, n)`. They agree to rounding, not bit
-/// for bit (see [`add_exchange`]).
+/// `(naux, n²)`, `d` and `out0` `(n, n)` (no budget gate). They agree to
+/// rounding, not bit for bit (see [`add_exchange`]).
 #[doc(hidden)]
-pub fn add_exchange_parallel_and_serial(
+pub fn add_exchange_grouped_and_serial(
     b: &Array2<C64>,
     d: &Array2<C64>,
     conj: bool,
@@ -1329,7 +1346,7 @@ pub fn add_exchange_parallel_and_serial(
     let n = d.nrows();
     if d.dim() != (n, n) || out0.dim() != (n, n) || b.ncols() != n * n {
         return Err(FerricError::General(format!(
-            "add_exchange_parallel_and_serial: B {:?} / D {:?} / out {:?}",
+            "add_exchange_grouped_and_serial: B {:?} / D {:?} / out {:?}",
             b.dim(),
             d.dim(),
             out0.dim()

@@ -127,7 +127,7 @@ use ferric_integrals::md3c1e::{cart_components, e_table, ferric_cart2sph, prim_n
 use ferric_integrals::operator::Operator;
 use ferric_scf::fock::{JBuilder, KBuilder};
 use ndarray::linalg::general_mat_mul;
-use ndarray::{s, Array1, Array2, Array3, ArrayView1, ArrayView2, ArrayViewMut2, Axis};
+use ndarray::{s, Array1, Array2, Array3, ArrayView1, ArrayView2, Axis};
 use ndarray_linalg::{Eigh, UPLO};
 use num_complex::Complex64;
 use rayon::prelude::*;
@@ -2500,6 +2500,33 @@ impl RsGdf {
         }
     }
 
+    /// Gate the aux-group scratch of [`exchange_aux_grouped`] on the build's
+    /// resolved budget ([`RsGdfStats::budget_bytes`]), after the tensor
+    /// resident during the SCF (B itself; the build's J3 / metric
+    /// temporaries are freed by then). Over budget is the typed
+    /// `check_alloc` refusal. There is deliberately NO fallback to fewer
+    /// groups or to the serial loop: either would make K's bits depend on
+    /// the budget. With the build's own budget this gate cannot refuse: B
+    /// plus `2 min(EXCHANGE_AUX_GROUPS, naux_kept)` scratch matrices is at
+    /// most `3 naux_kept nao²` reals, within the build's J3 + B + transpose
+    /// reservation.
+    fn check_exchange_scratch(&self) -> Result<(), FerricError> {
+        let n = self.nao;
+        let naux = self.b.nrows();
+        let mut ledger = Ledger::new(self.stats.budget_bytes);
+        ledger.reserve(
+            &format!("RsGdfK resident B (naux_kept = {naux}, nao = {n})"),
+            bytes_of(self.b.len() as u64, 8),
+        )?;
+        ledger.check(
+            &format!(
+                "RsGdfK exchange aux-group scratch ({} groups x 2 nao² matrices, nao = {n})",
+                exchange_aux_groups(naux).len()
+            ),
+            exchange_group_scratch_bytes(naux, n, 2, 8),
+        )
+    }
+
     fn check(&self, d: &Array2<f64>, out: &Array2<f64>, who: &str) -> Result<(), FerricError> {
         let n = self.nao;
         if d.dim() != (n, n) || out.dim() != (n, n) {
@@ -2581,7 +2608,8 @@ impl RsGdfK<'_> {
     ) -> Result<usize, FerricError> {
         self.gdf.check(d, k, "RsGdfK")?;
         let n = self.gdf.nao;
-        exchange_row_blocked(&self.gdf.b, d, n, k)?;
+        self.gdf.check_exchange_scratch()?;
+        exchange_aux_grouped(&self.gdf.b, d, n, k)?;
         if self.madelung != 0.0 {
             let sds = self.gdf.s.dot(d).dot(&self.gdf.s);
             k.scaled_add(self.madelung, &sds);
@@ -2590,107 +2618,102 @@ impl RsGdfK<'_> {
     }
 }
 
-/// Output rows per rayon task of the RS-GDF exchange builds
-/// ([`exchange_row_blocked`], `kpoint::add_exchange`). FIXED (never derived
-/// from the thread count). A multiple of every OpenBLAS x86-64 micro-tile
-/// width along the row axis (the column-major `N` of a row-major call:
-/// Haswell/Zen dgemm 8, zgemm 2; SkylakeX dgemm 2/8), so a block boundary
-/// never cuts a micro-tile the unsplit call would have formed.
-pub const EXCHANGE_ROW_BLOCK: usize = 16;
-/// A trailing row block shorter than this is merged into the previous one
-/// (a 1-row GEMM may be forwarded to GEMV, which reduces differently).
-const EXCHANGE_MIN_TAIL: usize = 4;
-/// Aux rows per parallel round of the exchange builds: every task of a
-/// round reads the same `EXCHANGE_AUX_CHUNK` rows of B (shared cache).
-/// The round boundary only orders whole aux rows, so it never changes a
-/// bit.
-pub(crate) const EXCHANGE_AUX_CHUNK: usize = 32;
+/// Number of fixed aux groups of the RS-GDF exchange builds
+/// ([`exchange_aux_grouped`], `kpoint::add_exchange`). A CONSTANT: it never
+/// depends on the thread count or the budget, so the grouping (and hence
+/// every bit of K) is a pure function of `naux`.
+pub const EXCHANGE_AUX_GROUPS: usize = 24;
 
-/// Row ranges `[0, n)` in blocks of [`EXCHANGE_ROW_BLOCK`], a tail shorter
-/// than [`EXCHANGE_MIN_TAIL`] merged into the block before it.
+/// The aux groups of an `naux`-row B: contiguous ranges of
+/// `ceil(naux / EXCHANGE_AUX_GROUPS)` rows, ascending, the last one shorter
+/// when the size does not divide `naux`. There are
+/// `ceil(naux / size) <= EXCHANGE_AUX_GROUPS` of them (never an empty one;
+/// `naux < EXCHANGE_AUX_GROUPS` gives `naux` groups of one row; `naux = 0`
+/// none).
 #[doc(hidden)]
-pub fn exchange_row_blocks(n: usize) -> Vec<std::ops::Range<usize>> {
-    let mut r: Vec<std::ops::Range<usize>> = (0..n)
-        .step_by(EXCHANGE_ROW_BLOCK)
-        .map(|r0| r0..(r0 + EXCHANGE_ROW_BLOCK).min(n))
-        .collect();
-    if r.len() >= 2 && r[r.len() - 1].len() < EXCHANGE_MIN_TAIL {
-        let tail = r.pop().expect("len >= 2");
-        let last = r.last_mut().expect("len >= 1");
-        last.end = tail.end;
+pub fn exchange_aux_groups(naux: usize) -> Vec<std::ops::Range<usize>> {
+    if naux == 0 {
+        return Vec::new();
     }
-    r
+    let size = naux.div_ceil(EXCHANGE_AUX_GROUPS);
+    (0..naux)
+        .step_by(size)
+        .map(|a0| a0..(a0 + size).min(naux))
+        .collect()
 }
 
-/// `k` split into the mutable row blocks `ranges` (contiguous, ascending,
-/// covering every row).
-pub(crate) fn split_rows<'a, A>(
-    k: ArrayViewMut2<'a, A>,
-    ranges: &[std::ops::Range<usize>],
-) -> Vec<ArrayViewMut2<'a, A>> {
-    let mut parts = Vec::with_capacity(ranges.len());
-    let mut rest = k;
-    for r in ranges {
-        let (head, tail) = rest.split_at(Axis(0), r.len());
-        parts.push(head);
-        rest = tail;
-    }
-    parts
+/// Bytes of the aux-group scratch of one exchange call: one `n × n`
+/// partial plus `per_task_mats − 1` per-aux-row temporaries per group, all
+/// counted as live at once (the thread count is not read, so the gate
+/// decision is a pure function of the shapes and the budget).
+pub(crate) fn exchange_group_scratch_bytes(
+    naux: usize,
+    n: usize,
+    per_task_mats: usize,
+    elem_bytes: usize,
+) -> usize {
+    let groups = exchange_aux_groups(naux).len() as u64;
+    bytes_of(
+        groups
+            .saturating_mul(per_task_mats as u64)
+            .saturating_mul((n as u64).saturating_mul(n as u64)),
+        elem_bytes,
+    )
 }
 
 /// `K = Σ_a B_a D B_aᵀ` (`B_a` the `(n, n)` row a of `b`), OVERWRITING `k`.
 ///
-/// Production: `K`'s rows in fixed blocks ([`exchange_row_blocks`]); one
-/// rayon task per block runs, for every aux row `a` in ascending order,
-/// `tmp = B_a[rows, :] · D` and `K[rows, :] += tmp · B_aᵀ` with the SAME
-/// ndarray calls (hence the same BLAS entry points, transposes and
-/// operand layouts) as the serial loop ([`exchange_serial_oracle`]), whose
-/// calls are the full-row versions. Aux rows go in rounds of
-/// [`EXCHANGE_AUX_CHUNK`] (a barrier between rounds), so every element of
-/// `K` still receives one `+=` per aux row, in aux order, of a length-n
-/// GEMM dot product over the same k range. Bits are unchanged because a
-/// single-threaded GEMM computes each output element from its own row of A
-/// and column of B only (per-element k order fixed by the K blocking, which
-/// depends on n, not on the row count), and the row block is a multiple of
-/// the micro-tile width (see [`EXCHANGE_ROW_BLOCK`]) — the same assumption
-/// the LR row-blocked GEMMs (`lr_gemm_acc`) rely on, CHECKED bitwise
-/// against the oracle in `tests/pbc_parallel_bitwise.rs` rather than
-/// assumed. One block (`n` ≤ 16 + 3): the oracle itself runs.
-fn exchange_row_blocked(
+/// Production: the aux rows are split into the fixed contiguous groups of
+/// [`exchange_aux_groups`]; one rayon task per group accumulates its own
+/// zeroed `(n, n)` partial `K_g` with exactly the serial loop's full-size
+/// calls (`tmp = B_a · D`, `K_g += tmp · B_aᵀ`, aux ascending within the
+/// group); then `K` is set to zero and the partials are added onto it in
+/// ascending group order. Each aux row's GEMM product is the serial
+/// loop's; only the association of the aux sum changes, from one running
+/// sum to a sum of per-group running sums. The result is therefore NOT
+/// bitwise equal to the serial loop ([`exchange_serial_oracle`]) but
+/// differs from it at rounding level (measured on dry ice, n = 168, naux =
+/// 672: ~25.7k of 28.2k elements differ, max relative 2.9e-15). It is
+/// deterministic and independent of the thread count by construction: the
+/// grouping depends on `naux` alone, each partial is one task's in-order
+/// sum, and the partials are combined in a fixed order.
+/// `tests/pbc_parallel_bitwise.rs` checks bits across thread counts and
+/// the per-element rounding bound against the serial loop.
+///
+/// Measured speed-up over the serial loop (dry ice, n = 168, naux = 672,
+/// OPENBLAS_NUM_THREADS=1, 6 physical cores): 1.00x at 1 thread, 5.45x at
+/// 6 threads. Scratch: [`exchange_group_scratch_bytes`] (two `n × n`
+/// matrices per group), gated by the caller.
+fn exchange_aux_grouped(
     b: &Array2<f64>,
     d: &Array2<f64>,
     n: usize,
     k: &mut Array2<f64>,
 ) -> Result<(), FerricError> {
-    let ranges = exchange_row_blocks(n);
-    if ranges.len() <= 1 {
-        return exchange_serial_oracle(b, d, n, k);
-    }
+    let partials = exchange_aux_groups(b.nrows())
+        .into_par_iter()
+        .map(|g| {
+            let mut kg = Array2::<f64>::zeros((n, n));
+            for a in g {
+                let bk = b
+                    .row(a)
+                    .into_shape_with_order((n, n))
+                    .map_err(|e| FerricError::General(format!("RsGdfK: B row reshape: {e}")))?;
+                let tmp = bk.dot(d);
+                general_mat_mul(1.0, &tmp, &bk.t(), 1.0, &mut kg);
+            }
+            Ok(kg)
+        })
+        .collect::<Result<Vec<_>, FerricError>>()?;
     k.fill(0.0);
-    let mut parts = split_rows(k.view_mut(), &ranges);
-    let naux = b.nrows();
-    for c0 in (0..naux).step_by(EXCHANGE_AUX_CHUNK) {
-        let c1 = (c0 + EXCHANGE_AUX_CHUNK).min(naux);
-        let bks = (c0..c1)
-            .map(|a| b.row(a).into_shape_with_order((n, n)))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| FerricError::General(format!("RsGdfK: B row reshape: {e}")))?;
-        parts
-            .par_iter_mut()
-            .zip(ranges.par_iter())
-            .for_each(|(kb, r)| {
-                for bk in &bks {
-                    let tmp = bk.slice(s![r.clone(), ..]).dot(d);
-                    general_mat_mul(1.0, &tmp, &bk.t(), 1.0, kb);
-                }
-            });
+    for kg in &partials {
+        *k += kg;
     }
     Ok(())
 }
 
-/// The serial RS-GDF exchange loop as it was before the row-blocked
-/// rewrite of [`exchange_row_blocked`] (FROZEN; oracle only — do not
-/// "improve"). Overwrites `k`.
+/// The serial RS-GDF exchange loop: one running sum over the aux rows
+/// (FROZEN; oracle only — do not "improve"). Overwrites `k`.
 fn exchange_serial_oracle(
     b: &Array2<f64>,
     d: &Array2<f64>,
@@ -2708,25 +2731,26 @@ fn exchange_serial_oracle(
     Ok(())
 }
 
-/// TEST ORACLE for the row-blocked exchange: `[parallel, serial]`
+/// TEST ORACLE for the aux-grouped exchange: `[grouped, serial]`
 /// `K = Σ_a B_a D B_aᵀ` for `b` `(naux, n²)` and `d` `(n, n)` (no Madelung
-/// term). The two must agree BIT FOR BIT (`tests/pbc_parallel_bitwise.rs`).
+/// term, no budget gate). They agree to rounding, not bit for bit (see
+/// [`exchange_aux_grouped`]).
 #[doc(hidden)]
-pub fn exchange_parallel_and_serial(
+pub fn exchange_grouped_and_serial(
     b: &Array2<f64>,
     d: &Array2<f64>,
 ) -> Result<[Array2<f64>; 2], FerricError> {
     let n = d.nrows();
     if d.dim() != (n, n) || b.ncols() != n * n {
         return Err(FerricError::General(format!(
-            "exchange_parallel_and_serial: B {:?} / D {:?}",
+            "exchange_grouped_and_serial: B {:?} / D {:?}",
             b.dim(),
             d.dim()
         )));
     }
     let mut kp = Array2::<f64>::zeros((n, n));
     let mut ks = Array2::<f64>::zeros((n, n));
-    exchange_row_blocked(b, d, n, &mut kp)?;
+    exchange_aux_grouped(b, d, n, &mut kp)?;
     exchange_serial_oracle(b, d, n, &mut ks)?;
     Ok([kp, ks])
 }

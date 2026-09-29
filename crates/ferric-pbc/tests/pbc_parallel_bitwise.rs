@@ -111,12 +111,12 @@ use ferric_pbc::pair_ft::{
     CTR_SITES, CTR_SURVIVORS, DEFAULT_PAIR_FT_THRESH,
 };
 use ferric_pbc::rsgdf::kpoint::{
-    add_exchange_parallel_and_serial, sr_bins_parallel_and_serial, sr_sums_gamma_and_single_bin,
+    add_exchange_grouped_and_serial, sr_bins_parallel_and_serial, sr_sums_gamma_and_single_bin,
     KRsGdf, KRsGdfConfig, SrBinsParts,
 };
 use ferric_pbc::rsgdf::{
-    exchange_parallel_and_serial, exchange_row_blocks, lr_sums_parallel_and_serial, RangeSplit,
-    RsGdf, RsGdfConfig, EXCHANGE_ROW_BLOCK,
+    exchange_aux_groups, exchange_grouped_and_serial, lr_sums_parallel_and_serial, RangeSplit,
+    RsGdf, RsGdfConfig, EXCHANGE_AUX_GROUPS,
 };
 use ferric_pbc::stress::{gamma_rhf_stress_rsgdf, GammaStress, GammaStressConfig, StressMutation};
 use ferric_pbc::timing::PbcTimings;
@@ -1791,7 +1791,7 @@ fn rsgdf_b_and_energy_are_bitwise_across_threads_with_several_lr_chunks() {
 }
 
 // ---------------------------------------------------------------------------
-// hcore S/T (pair-parallel) and the RS-GDF exchange builds (row-blocked).
+// hcore S/T (pair-parallel) and the RS-GDF exchange builds (aux groups).
 //
 // * `hcore_overlap_kinetic_is_bitwise_across_threads_and_vs_serial` — the
 //   Gamma `S`/`T` lattice sums (parallel over ordered shell pairs, each
@@ -1804,22 +1804,38 @@ fn rsgdf_b_and_energy_are_bitwise_across_threads_with_several_lr_chunks() {
 // * `hcore_kpts_overlap_kinetic_is_bitwise_across_threads_and_vs_serial` —
 //   the same for `S(k)`/`T(k)` (`hcore::kpoint::overlap_kinetic_kpts`,
 //   same mutants), on a mesh with complex phases.
-// * `rsgdf_exchange_is_bitwise_across_threads_and_vs_serial` — the
-//   row-blocked `K = Σ_a B_a D B_aᵀ` against the FROZEN serial per-aux-row
-//   loop on synthetic B/D at n = 45 (blocks 16/16/13), n = 50 (a 2-row tail
-//   merged: 16/16/18) and n = 70 (6-row tail kept), naux = 37 (a full and a
-//   partial 32-row round), D in C and F layout. Mutants: `bks.iter().rev()`
-//   in `rsgdf::exchange_row_blocked` (aux order), `ranges.par_iter().rev()`
-//   in its zip (blocks written to the wrong rows), `EXCHANGE_MIN_TAIL = 1`
-//   is NOT expected to fail on this box (a 1-row GEMM is only a risk on a
-//   GEMV-forwarding OpenBLAS; n = 49 would exercise it).
-// * `krsgdf_exchange_is_bitwise_across_threads_and_vs_serial` — the complex
-//   k-point `out += s Σ_a B_a D B_a^H` (`rsgdf::kpoint::add_exchange`), plain
-//   and conjugated, onto a non-zero `out`. Mutants: `factors.iter().rev()`,
-//   or `ranges.par_iter().rev()`, in `add_exchange`.
-// * `rsgdf_k_builder_is_bitwise_vs_serial_on_a_real_b` — the production
-//   `RsGdfK` (a real B, nao = 36: blocks 16/16/4) equals the serial oracle
-//   bit for bit at 1/2/6 threads (wiring of the row-blocked path).
+// * `exchange_aux_groups_are_fixed_contiguous_and_cover_every_row` — the
+//   aux grouping is a pure function of naux (never the thread count),
+//   contiguous, covering, non-empty, at most `EXCHANGE_AUX_GROUPS` groups,
+//   with the test sizes spelled out (naux = 37: 18 groups of 2 and a last
+//   group of 1; naux = 10: 10 groups of 1).
+// * `rsgdf_exchange_is_bitwise_across_threads_and_within_rounding_of_serial`
+//   — the aux-grouped `K = Σ_a B_a D B_aᵀ` on synthetic B/D (n = 45, 70; D in
+//   C and F layout) is bit-identical at 1/2/6 threads and within the derived
+//   reassociation bound of the FROZEN serial loop
+//   (`assert_within_reorder_bound`). At naux = 37 it must differ from the
+//   serial loop in some bit (the grouping is live); at naux = 10 (single-row
+//   groups: each partial is an exact `0 + x_a`, added in aux order) it must
+//   EQUAL the serial running sum bit for bit.
+// * `krsgdf_exchange_is_bitwise_across_threads_and_within_rounding_of_serial`
+//   — the same for the complex k-point `out += s Σ_a B_a D B_a^H`
+//   (`rsgdf::kpoint::add_exchange`), plain and conjugated, onto a non-zero
+//   `out`.
+// * `rsgdf_k_builder_is_the_grouped_exchange_on_a_real_b` — the production
+//   `RsGdfK` (a real B, nao = 36) equals the grouped exchange bit for bit
+//   (wiring, budget gate included), is bit-identical at 1/2/6 threads, and is
+//   within the reassociation bound of the serial loop.
+//
+// Mutants that must fail (in `rsgdf::exchange_aux_grouped` and the k-point
+// `rsgdf::kpoint::add_exchange` / `exchange_group_partial` unless noted): skip group 0's partial in the
+// final sum (`partials.iter().skip(1)`; bound); size the groups from
+// `rayon::current_num_threads()` instead of `EXCHANGE_AUX_GROUPS` in
+// `rsgdf::exchange_aux_groups` (cross-thread bits, the naux = 10 bitwise
+// check, and the grouping test); drop the last aux row of each group
+// (`g.start..g.end - 1`; bound); k-point only, the wrong conjugation
+// (`if !conj` for `B_a`, or `B_a^H` formed without `conj`; bound). Summing
+// the partials in reverse group order is deterministic and stays within the
+// bound, so it is NOT a mutant this suite can or should kill.
 // ---------------------------------------------------------------------------
 
 /// Deterministic, sign-varying, magnitude-varying values (bits depend on
@@ -1840,21 +1856,6 @@ fn synth_d(n: usize, salt: f64) -> Array2<f64> {
 
 fn csynth(a: &Array2<f64>, b: &Array2<f64>) -> Array2<Complex64> {
     Array2::from_shape_fn(a.dim(), |ij| Complex64::new(a[ij], b[ij]))
-}
-
-#[test]
-fn exchange_row_blocks_are_fixed_and_merge_short_tails() {
-    assert_eq!(EXCHANGE_ROW_BLOCK, 16);
-    assert_eq!(exchange_row_blocks(16), vec![0..16]);
-    assert_eq!(exchange_row_blocks(19), vec![0..19]);
-    assert_eq!(exchange_row_blocks(20), vec![0..16, 16..20]);
-    assert_eq!(exchange_row_blocks(45), vec![0..16, 16..32, 32..45]);
-    assert_eq!(exchange_row_blocks(50), vec![0..16, 16..32, 32..50]);
-    assert_eq!(
-        exchange_row_blocks(168).len(),
-        11,
-        "dry ice: 10 × 16 + 8 rows"
-    );
 }
 
 #[test]
@@ -1949,43 +1950,206 @@ fn hcore_kpts_overlap_kinetic_is_bitwise_across_threads_and_vs_serial() {
     }
 }
 
-#[test]
-fn rsgdf_exchange_is_bitwise_across_threads_and_vs_serial() {
-    let naux = 37;
-    for n in [45usize, 50, 70] {
+/// Safety factor over the reassociation bound of
+/// [`assert_within_reorder_bound`].
+const REORDER_SAFETY: f64 = 2.0;
+
+/// `|grouped − serial| ≤ REORDER_SAFETY · m ε · S` element-wise, where `S` is
+/// the sum of the magnitudes of the `m` summands of each element (`√2 ×` for
+/// complex elements).
+///
+/// Derivation: the grouped and serial exchanges add the SAME rounded
+/// per-aux-row GEMM products (identical calls: one length-n dot per element,
+/// n below the BLAS k-block, alpha exact) and differ only in how those `m`
+/// summands are bracketed (serial: one running sum; grouped: per-group
+/// running sums from zero, then added in group order). Any bracketing of `m`
+/// floating-point summands errs by at most `γ_{m−1} Σ|x|` (Higham, Accuracy
+/// and Stability, §4.2), so two bracketings differ by at most
+/// `2 γ_{m−1} Σ|x| < m ε Σ|x|` (`ε` = `f64::EPSILON` = 2u); complex adds do
+/// that per component. `S` is recomputed here from B and D (its own rounding
+/// is ~nε relative, absorbed by the safety factor).
+///
+/// Measured (grouped vs serial, n = 168, naux = 672, dry ice): max relative
+/// to max|K| 2.9e-15 against a bound of order naux ε (Σ|x| / max|K|) ≈
+/// 1.5e-13 × (Σ|x| / max|K|). A mutant that drops a group or an aux row
+/// removes a whole summand `x_a`, i.e. ~`S / m` per element, which is
+/// `1 / (2 m² ε)` ≈ 1.6e12 times this bound at m = 37: the tolerance cannot
+/// mask it.
+/// Returns (max |Δ|, max |Δ| / bound).
+fn assert_within_reorder_bound<T>(
+    grouped: &Array2<T>,
+    serial: &Array2<T>,
+    s: &Array2<f64>,
+    m: usize,
+    abs: impl Fn(&T, &T) -> f64,
+    component_factor: f64,
+    what: &str,
+) -> (f64, f64) {
+    assert_eq!(grouped.dim(), serial.dim());
+    assert_eq!(grouped.dim(), s.dim());
+    let c = REORDER_SAFETY * m as f64 * f64::EPSILON * component_factor;
+    let (mut max_err, mut max_ratio) = (0.0_f64, 0.0_f64);
+    for ((ij, x), y) in grouped.indexed_iter().zip(serial.iter()) {
+        let err = abs(x, y);
+        let bound = c * s[ij];
         assert!(
-            exchange_row_blocks(n).len() >= 3,
-            "n = {n}: split does not bind"
+            err <= bound,
+            "{what}: element {ij:?}: |grouped − serial| = {err:e} > {bound:e} \
+             ({REORDER_SAFETY} × {m} ε × Σ|x| = {:e})",
+            s[ij]
         );
-        let b = synth_b(naux, n, 0.3);
-        let dc = synth_d(n, 1.7);
-        let mut df = Array2::<f64>::zeros((n, n).f());
-        df.assign(&dc);
-        for (layout, d) in [("C", &dc), ("F", &df)] {
-            let tag = format!("n = {n}, D {layout}");
-            let runs: Vec<[Array2<f64>; 2]> = THREADS
-                .iter()
-                .map(|&nt| in_pool(nt, || exchange_parallel_and_serial(&b, d).expect("K")))
-                .collect();
-            let [_, k_ser1] = &runs[0];
-            assert!(nonzero(k_ser1), "{tag}: K vacuous");
-            for (&nt, [kp, ks]) in THREADS.iter().zip(&runs) {
-                assert_bitwise(
-                    kp,
-                    ks,
-                    &format!("{tag}: K parallel vs serial ({nt} threads)"),
+        max_err = max_err.max(err);
+        if bound > 0.0 {
+            max_ratio = max_ratio.max(err / bound);
+        }
+    }
+    (max_err, max_ratio)
+}
+
+/// `Σ_a |B_a D B_aᵀ|` element-wise (the summand magnitudes of K).
+fn exchange_abs_terms(b: &Array2<f64>, d: &Array2<f64>) -> Array2<f64> {
+    let n = d.nrows();
+    let mut s = Array2::<f64>::zeros((n, n));
+    for row in b.rows() {
+        let bk = row.into_shape_with_order((n, n)).expect("B row");
+        s += &bk.dot(d).dot(&bk.t()).mapv(f64::abs);
+    }
+    s
+}
+
+/// `|out0| + Σ_a |scale B_a D B_a^H|` element-wise (`B_a` conjugated when
+/// `conj`): the summand magnitudes of the k-point exchange onto `out0`.
+fn kexchange_abs_terms(
+    b: &Array2<Complex64>,
+    d: &Array2<Complex64>,
+    conj: bool,
+    scale: f64,
+    out0: &Array2<Complex64>,
+) -> Array2<f64> {
+    let n = d.nrows();
+    let mut s = out0.mapv(|z| z.norm());
+    for row in b.rows() {
+        let ba = row.into_shape_with_order((n, n)).expect("B row");
+        let ba = if conj {
+            ba.mapv(|z| z.conj())
+        } else {
+            ba.to_owned()
+        };
+        let bh = ba.t().mapv(|z| z.conj());
+        s += &ba.dot(d).dot(&bh).mapv(|z| scale * z.norm());
+    }
+    s
+}
+
+#[test]
+fn exchange_aux_groups_are_fixed_contiguous_and_cover_every_row() {
+    assert_eq!(EXCHANGE_AUX_GROUPS, 24);
+    assert!(exchange_aux_groups(0).is_empty());
+    assert_eq!(
+        exchange_aux_groups(10),
+        (0..10).map(|a| a..a + 1).collect::<Vec<_>>(),
+        "naux < groups: one row per group"
+    );
+    // The synthetic tests' size: ceil(37 / 24) = 2 rows per group, so
+    // ceil(37 / 2) = 19 groups, the last one a single row.
+    let g37 = exchange_aux_groups(37);
+    assert_eq!(g37.len(), 19);
+    assert!(g37[..18].iter().all(|r| r.len() == 2));
+    assert_eq!(g37[18], 36..37);
+    // Fewer than EXCHANGE_AUX_GROUPS groups when the size does not divide:
+    // ceil(49 / 24) = 3, ceil(49 / 3) = 17.
+    let g49 = exchange_aux_groups(49);
+    assert_eq!(g49.len(), 17);
+    assert_eq!(g49[16], 48..49);
+    assert_eq!(exchange_aux_groups(48).len(), 24);
+    // Dry ice (the measured speed-ups): 24 groups of 28.
+    let g672 = exchange_aux_groups(672);
+    assert_eq!(g672.len(), 24);
+    assert!(g672.iter().all(|r| r.len() == 28));
+    for naux in 0..=300 {
+        let g = exchange_aux_groups(naux);
+        assert!(g.len() <= EXCHANGE_AUX_GROUPS, "naux = {naux}");
+        if naux <= EXCHANGE_AUX_GROUPS {
+            assert_eq!(g.len(), naux, "naux = {naux}: one row per group");
+        }
+        let mut next = 0;
+        for (i, r) in g.iter().enumerate() {
+            assert_eq!(r.start, next, "naux = {naux}: group {i} not contiguous");
+            assert!(!r.is_empty(), "naux = {naux}: group {i} empty");
+            if i + 1 < g.len() {
+                assert_eq!(r.len(), g[0].len(), "naux = {naux}: group {i} size");
+            } else {
+                assert!(r.len() <= g[0].len(), "naux = {naux}: last group size");
+            }
+            next = r.end;
+        }
+        assert_eq!(next, naux, "naux = {naux}: rows not covered");
+    }
+    // Thread-count independence of the grouping itself.
+    for &nt in &THREADS {
+        assert_eq!(in_pool(nt, || exchange_aux_groups(37)), g37, "{nt} threads");
+    }
+}
+
+#[test]
+fn rsgdf_exchange_is_bitwise_across_threads_and_within_rounding_of_serial() {
+    for naux in [37usize, 10] {
+        let groups = exchange_aux_groups(naux).len();
+        assert!(groups > 1, "naux = {naux}: one group, grouping vacuous");
+        for n in [45usize, 70] {
+            let b = synth_b(naux, n, 0.3);
+            let dc = synth_d(n, 1.7);
+            let mut df = Array2::<f64>::zeros((n, n).f());
+            df.assign(&dc);
+            let s = exchange_abs_terms(&b, &dc);
+            for (layout, d) in [("C", &dc), ("F", &df)] {
+                let tag = format!("naux = {naux} ({groups} groups), n = {n}, D {layout}");
+                let runs: Vec<[Array2<f64>; 2]> = THREADS
+                    .iter()
+                    .map(|&nt| in_pool(nt, || exchange_grouped_and_serial(&b, d).expect("K")))
+                    .collect();
+                let [k_grp1, k_ser1] = &runs[0];
+                assert!(nonzero(k_ser1), "{tag}: K vacuous");
+                for (&nt, [kg, ks]) in THREADS.iter().zip(&runs) {
+                    assert_bitwise(kg, k_grp1, &format!("{tag}: grouped at {nt} vs 1 thread"));
+                    assert_bitwise(ks, k_ser1, &format!("{tag}: serial at {nt} vs 1 thread"));
+                }
+                let (err, ratio) = assert_within_reorder_bound(
+                    k_grp1,
+                    k_ser1,
+                    &s,
+                    naux,
+                    |x, y| (x - y).abs(),
+                    1.0,
+                    &format!("{tag}: grouped vs serial"),
                 );
-                assert_bitwise(kp, k_ser1, &format!("{tag}: K at {nt} vs 1 thread"));
+                let kmax = k_ser1.iter().fold(0.0_f64, |m, x| m.max(x.abs()));
+                let diffs = bit_diffs(k_grp1, k_ser1);
+                eprintln!(
+                    "{tag}: grouped vs serial: {diffs} of {} elements differ, max |Δ| = \
+                     {err:e} = {:e} max|K|, max |Δ| / bound = {ratio:e}",
+                    k_ser1.len(),
+                    err / kmax
+                );
+                if groups < naux {
+                    // Multi-row groups re-bracket the aux sum: the grouping
+                    // must be live, i.e. change some bit.
+                    assert!(diffs > 0, "{tag}: grouped == serial bit for bit");
+                } else {
+                    // Single-row groups: every partial is one exact `0 + x_a`
+                    // and they are added in aux order, i.e. exactly the
+                    // serial running sum.
+                    assert_eq!(diffs, 0, "{tag}: single-row groups vs serial");
+                }
             }
         }
     }
 }
 
 #[test]
-fn krsgdf_exchange_is_bitwise_across_threads_and_matches_serial() {
-    let (naux, n) = (37usize, 45usize);
-    assert!(exchange_row_blocks(n).len() >= 3);
-    let b = csynth(&synth_b(naux, n, 0.3), &synth_b(naux, n, 2.9));
+fn krsgdf_exchange_is_bitwise_across_threads_and_within_rounding_of_serial() {
+    let n = 45usize;
+    let scale = 0.25;
     // Hermitian density.
     let dre = synth_d(n, 1.7);
     let dim = Array2::from_shape_fn((n, n), |(i, j)| {
@@ -1998,61 +2162,67 @@ fn krsgdf_exchange_is_bitwise_across_threads_and_matches_serial() {
     });
     let d = csynth(&dre, &dim);
     let out0 = csynth(&synth_d(n, 5.3), &synth_d(n, 6.1));
-    for conj in [false, true] {
-        let tag = format!("conj {conj}");
-        let runs: Vec<[Array2<Complex64>; 2]> = THREADS
-            .iter()
-            .map(|&nt| {
-                in_pool(nt, || {
-                    add_exchange_parallel_and_serial(&b, &d, conj, 0.25, &out0).expect("K(k)")
-                })
-            })
-            .collect();
-        let [_, s1] = &runs[0];
-        assert!(cbit_diffs(s1, &out0) > 0, "{tag}: nothing added");
-        let [p1, _] = &runs[0];
-        for (&nt, [kp, ks]) in THREADS.iter().zip(&runs) {
-            // Parallel vs the frozen serial loop: NOT bitwise. OpenBLAS's
-            // single-threaded zgemm tiles M differently for a 16-row block
-            // than for the full matrix (measured 2026-09-29: rows 12-15 of
-            // each 16-row block differ, max relative 7.0e-16), so the fixed
-            // row blocking changes rounding once, deterministically. Bound:
-            // 1e-13 x max|K| is ~150x the measured change and ~1e10x below a
-            // dropped block or aux row (O(max|K|)).
-            let scale = ks.iter().map(|z| z.norm()).fold(0.0, f64::max);
-            let err = kp
+    for naux in [37usize, 10] {
+        let groups = exchange_aux_groups(naux).len();
+        assert!(groups > 1, "naux = {naux}: one group, grouping vacuous");
+        let b = csynth(&synth_b(naux, n, 0.3), &synth_b(naux, n, 2.9));
+        for conj in [false, true] {
+            let tag = format!("naux = {naux} ({groups} groups), conj {conj}");
+            let runs: Vec<[Array2<Complex64>; 2]> = THREADS
                 .iter()
-                .zip(ks.iter())
-                .map(|(x, y)| (x - y).norm())
-                .fold(0.0, f64::max);
-            assert!(
-                err <= 1e-13 * scale,
-                "{tag}: K(k) parallel vs serial ({nt} threads): {err:e} > 1e-13 x {scale:e}"
+                .map(|&nt| {
+                    in_pool(nt, || {
+                        add_exchange_grouped_and_serial(&b, &d, conj, scale, &out0).expect("K(k)")
+                    })
+                })
+                .collect();
+            let [g1, s1] = &runs[0];
+            assert!(cbit_diffs(s1, &out0) > 0, "{tag}: nothing added");
+            for (&nt, [kg, ks]) in THREADS.iter().zip(&runs) {
+                assert_cbitwise(
+                    std::slice::from_ref(kg),
+                    std::slice::from_ref(g1),
+                    &format!("{tag}: K(k) grouped at {nt} vs 1 thread"),
+                );
+                assert_cbitwise(
+                    std::slice::from_ref(ks),
+                    std::slice::from_ref(s1),
+                    &format!("{tag}: K(k) serial at {nt} vs 1 thread"),
+                );
+            }
+            // naux + 1 summands per element: out0 and one per aux row.
+            let s = kexchange_abs_terms(&b, &d, conj, scale, &out0);
+            let (err, ratio) = assert_within_reorder_bound(
+                g1,
+                s1,
+                &s,
+                naux + 1,
+                |x, y| (x - y).norm(),
+                std::f64::consts::SQRT_2,
+                &format!("{tag}: K(k) grouped vs serial"),
             );
-            // Thread-count independence: bitwise.
-            assert_cbitwise(
-                std::slice::from_ref(kp),
-                std::slice::from_ref(p1),
-                &format!("{tag}: K(k) parallel at {nt} vs 1 thread"),
+            let kmax = s1.iter().fold(0.0_f64, |m, z| m.max(z.norm()));
+            let diffs = cbit_diffs(g1, s1);
+            eprintln!(
+                "{tag}: grouped vs serial: {diffs} of {} elements differ, max |Δ| = {err:e} \
+                 = {:e} max|K|, max |Δ| / bound = {ratio:e}",
+                s1.len(),
+                err / kmax
             );
-            assert_cbitwise(
-                std::slice::from_ref(ks),
-                std::slice::from_ref(s1),
-                &format!("{tag}: K(k) serial at {nt} vs 1 thread"),
-            );
+            if groups < naux {
+                assert!(diffs > 0, "{tag}: grouped == serial bit for bit");
+            } else {
+                assert_eq!(diffs, 0, "{tag}: single-row groups vs serial");
+            }
         }
     }
 }
 
 #[test]
-fn rsgdf_k_builder_is_bitwise_vs_serial_on_a_real_b() {
+fn rsgdf_k_builder_is_the_grouped_exchange_on_a_real_b() {
     let cell = triclinic_cell();
     let prep = prep_for(&cell, &spd_basis_h());
     let n = prep.nbasis();
-    assert!(
-        exchange_row_blocks(n).len() >= 2,
-        "nao = {n}: split does not bind"
-    );
     let aux = prep_for(&cell, &basis::bundled("cc-pvdz-ri").unwrap());
     let hc =
         periodic_hcore(&cell, &prep, &PeriodicHcoreConfig::with_omega(HCORE_OMEGA)).expect("hcore");
@@ -2062,19 +2232,45 @@ fn rsgdf_k_builder_is_bitwise_vs_serial_on_a_real_b() {
         0.0,
         "exxdiv none: K is the B contraction alone"
     );
+    let naux = gdf.b().nrows();
+    let groups = exchange_aux_groups(naux).len();
+    assert!(
+        groups > 1 && groups < naux,
+        "naux_kept = {naux}: {groups} groups, need multi-row groups"
+    );
     let d = synth_d(n, 0.9);
-    for &nt in &THREADS {
-        let (k_prod, [kp, ks]) = in_pool(nt, || {
-            let mut k = Array2::<f64>::zeros((n, n));
-            gdf.k_builder().build(&d, &mut k).expect("RsGdfK");
-            (k, exchange_parallel_and_serial(gdf.b(), &d).expect("K"))
-        });
-        assert!(nonzero(&ks));
+    let s = exchange_abs_terms(gdf.b(), &d);
+    let runs: Vec<(Array2<f64>, [Array2<f64>; 2])> = THREADS
+        .iter()
+        .map(|&nt| {
+            in_pool(nt, || {
+                let mut k = Array2::<f64>::zeros((n, n));
+                gdf.k_builder().build(&d, &mut k).expect("RsGdfK");
+                (k, exchange_grouped_and_serial(gdf.b(), &d).expect("K"))
+            })
+        })
+        .collect();
+    let (k_prod1, [_, ks1]) = &runs[0];
+    assert!(nonzero(ks1));
+    for (&nt, (k_prod, [kg, _])) in THREADS.iter().zip(&runs) {
         assert_bitwise(
-            &k_prod,
-            &ks,
-            &format!("RsGdfK vs serial oracle ({nt} threads)"),
+            k_prod,
+            kg,
+            &format!("RsGdfK vs grouped exchange ({nt} threads)"),
         );
-        assert_bitwise(&kp, &ks, &format!("row-blocked vs serial ({nt} threads)"));
+        assert_bitwise(k_prod, k_prod1, &format!("RsGdfK at {nt} vs 1 thread"));
     }
+    let (err, ratio) = assert_within_reorder_bound(
+        k_prod1,
+        ks1,
+        &s,
+        naux,
+        |x, y| (x - y).abs(),
+        1.0,
+        &format!("RsGdfK (naux_kept = {naux}, {groups} groups) vs serial"),
+    );
+    eprintln!(
+        "RsGdfK real B (nao = {n}, naux_kept = {naux}, {groups} groups): max |Δ| vs serial = \
+         {err:e}, max |Δ| / bound = {ratio:e}"
+    );
 }
