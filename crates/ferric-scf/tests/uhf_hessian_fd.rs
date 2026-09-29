@@ -153,6 +153,18 @@ O      0.010000    -0.020000     0.120000\n\
 H      0.030000     0.770000    -0.460000\n\
 H     -0.020000    -0.740000    -0.490000\n";
 
+/// Every test here except the non-aufbau refusal needs libint2
+/// second-derivative engines (the refusal test also asserts plain UHF is
+/// ACCEPTED). A first-derivative build (the upstream mpqc4 export) skips them
+/// rather than panicking.
+fn has_deriv2() -> bool {
+    let order = ferric_integrals::engine::libint_max_deriv_order();
+    if order < 2 {
+        eprintln!("SKIP: libint2 generated with derivative order {order}; no analytic Hessian");
+    }
+    order >= 2
+}
+
 fn oh() -> Molecule {
     Molecule::parse_xyz(OH_TILTED, 0, 2).unwrap()
 }
@@ -343,6 +355,9 @@ fn rhf_setup(basis_name: &str) -> (Molecule, PreparedBasis, SchwarzBounds, ScfRe
 
 #[test]
 fn closed_shell_uhf_equals_rhf_term_by_term() {
+    if !has_deriv2() {
+        return;
+    }
     let (mol, prep, bounds, rhf) = rhf_setup("6-31g");
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
@@ -384,6 +399,9 @@ fn closed_shell_uhf_equals_rhf_term_by_term() {
 
 #[test]
 fn closed_shell_solve_uhf_hessian_equals_rhf_hessian() {
+    if !has_deriv2() {
+        return;
+    }
     let (mol, prep, bounds, rhf) = rhf_setup("sto-3g");
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
@@ -405,6 +423,9 @@ fn closed_shell_solve_uhf_hessian_equals_rhf_hessian() {
 // ---------------------------------------------------------------------------
 
 fn check_skeleton_one_electron(mol: &Molecule, basis_name: &str) {
+    if !has_deriv2() {
+        return;
+    }
     let s = setup(mol, basis_name);
     let p = parts(&s);
     let d = &s.uhf.density_alpha + &beta_density(&s.uhf);
@@ -423,6 +444,9 @@ fn check_skeleton_one_electron(mol: &Molecule, basis_name: &str) {
 }
 
 fn check_skeleton_overlap(mol: &Molecule, basis_name: &str) {
+    if !has_deriv2() {
+        return;
+    }
     let s = setup(mol, basis_name);
     let p = parts(&s);
     let (na, nb) = nocc(&s.mol);
@@ -443,6 +467,9 @@ fn check_skeleton_overlap(mol: &Molecule, basis_name: &str) {
 }
 
 fn check_skeleton_two_electron(mol: &Molecule, basis_name: &str) {
+    if !has_deriv2() {
+        return;
+    }
     let s = setup(mol, basis_name);
     let p = parts(&s);
     let da = s.uhf.density_alpha.clone();
@@ -521,6 +548,9 @@ fn fd_full(s: &Setup) -> Array2<f64> {
 }
 
 fn check_full(mol: &Molecule, basis_name: &str) {
+    if !has_deriv2() {
+        return;
+    }
     let s = setup(mol, basis_name);
     let p = parts(&s);
     let fd = fd_full(&s);
@@ -574,6 +604,9 @@ fn full_hessian_matches_fd_ch2_631g() {
 
 #[test]
 fn hessian_is_symmetric_and_translationally_invariant() {
+    if !has_deriv2() {
+        return;
+    }
     let s = setup(&ch2(), "6-31g");
     let p = parts(&s);
     let total = p.total();
@@ -605,6 +638,9 @@ fn hessian_is_symmetric_and_translationally_invariant() {
 
 #[test]
 fn wrong_references_and_unsupported_configurations_are_refused() {
+    if !has_deriv2() {
+        return;
+    }
     let s = setup(&ch2(), "sto-3g");
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();

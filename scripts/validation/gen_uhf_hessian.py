@@ -140,7 +140,9 @@ def _frequencies(mol, h, masses):
 
     natm = mol.natm
     h4 = h.reshape(natm, 3, natm, 3).transpose(0, 2, 1, 3)
-    res = thermo.harmonic_analysis(mol, h4, mass=np.asarray(masses), imaginary_freq=False)
+    res = thermo.harmonic_analysis(
+        mol, h4, mass=np.asarray(masses), imaginary_freq=False
+    )
     return sorted(float(v) for v in np.asarray(res["freq_wavenumber"]).real)
 
 
