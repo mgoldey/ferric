@@ -5,7 +5,7 @@
 # Why a custom export: the wheel needs second derivatives (analytic RHF
 # Hessian) and must stay under PyPI's 100 MB per-file limit. The stock mpqc4
 # export has first derivatives only; conda-forge's full build is ~97 MB zipped
-# by itself. The conda package links conda-forge's full libint (conda/).
+# by itself. Source builds use conda-forge's full build (scripts/install-libint.sh).
 #
 # Contents, per integral class (max angular momentum per derivative order):
 #   4-centre ERI     deriv 0,1,2 : l <= 6,6,3  (second derivatives up to f)

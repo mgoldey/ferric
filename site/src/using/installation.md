@@ -10,9 +10,11 @@ There are two ways in. Most people want the first.
 ## Fastest: the prebuilt wheel
 
 Wheels are published to PyPI for **Linux x86_64** (`manylinux_2_28`),
-CPython 3.10–3.13. libint2 is statically linked into the extension, and libxc
-and OpenBLAS ship inside the wheel as bundled shared libraries, so nothing
-needs compiling.
+CPython 3.10–3.13. libint2 and libxc are statically linked into the extension,
+and OpenBLAS ships inside the wheel as a bundled shared library, so nothing
+needs compiling. The wheel's libint2 carries second derivatives, so analytic
+Hessians work from a plain `pip install`; see
+[What the libint2 build carries](#what-the-libint2-build-carries).
 
 ```bash
 pip install ferric        # or: uv pip install ferric
@@ -50,22 +52,6 @@ ferric examples/water-rhf.toml
 
 The CLI resolves `[molecule] xyz = "..."` relative to the **current directory**,
 so run example files from the repository root.
-
-## conda
-
-The conda package is built and tested in CI; it is not yet published to a
-public channel. Once it is, the install command will be:
-
-```bash
-conda install -c conda-forge ferric
-```
-
-It links conda-forge's full libint2 2.13.1 as a shared dependency instead of
-bundling one. The PyPI wheel bundles a smaller libint2 to stay under PyPI's
-file-size limit; both carry the second derivatives analytic Hessians need, and
-[What the libint2 build carries](#what-the-libint2-build-carries) lists where
-they differ. To build the package yourself, see `conda/README.md` in the
-repository.
 
 ## Building from source
 
@@ -163,7 +149,7 @@ Integral classes, derivative orders and angular-momentum limits are fixed when
 libint2's source is *generated*, so no build flag changes them. Highest angular
 momentum for energy / 1st / 2nd derivatives (– = not generated):
 
-| Integrals | conda package and `scripts/install-libint.sh` (conda-forge 2.13.1) | PyPI wheel (ferric's libint2 2.7.2 export) | Needed for |
+| Integrals | Source build with `scripts/install-libint.sh` (conda-forge 2.13.1) | PyPI wheel (ferric's libint2 2.7.2 export) | Needed for |
 |---|---|---|---|
 | 4-centre ERI | 7 / 6 / 3 | 6 / 6 / 3 | SCF, gradients, analytic Hessians |
 | One-electron (overlap, kinetic, nuclear) | 7 / 6 / 3 | 6 / 4 / 3 | the same |
@@ -172,11 +158,11 @@ momentum for energy / 1st / 2nd derivatives (– = not generated):
 
 With either build, analytic Hessians cover orbital bases up to f functions; a
 basis with g or higher functions uses finite differences of the analytic
-gradient. The wheel has no G12 class, so F12 methods need the conda package or
-a source build. `scripts/generate-libint-small.sh` regenerates the wheel's
-export. The upstream mpqc4 tarball (libint2 2.7.2) has no second derivatives
-and no G12 class: built against it, ferric uses finite-difference Hessians and
-the G12 tests skip with an explicit message.
+gradient. The wheel has no G12 class, so F12 methods need a source build.
+`scripts/generate-libint-small.sh` regenerates the wheel's export. The upstream
+mpqc4 tarball (libint2 2.7.2) has no second derivatives and no G12 class: built
+against it, ferric uses finite-difference Hessians and the G12 tests skip with
+an explicit message.
 
 ## MPI
 
