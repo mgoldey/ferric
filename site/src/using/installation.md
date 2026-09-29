@@ -10,9 +10,11 @@ There are two ways in. Most people want the first.
 ## Fastest: the prebuilt wheel
 
 Wheels are published to PyPI for **Linux x86_64** (`manylinux_2_28`),
-CPython 3.10–3.13. libint2 is statically linked into the extension, and libxc
-and OpenBLAS ship inside the wheel as bundled shared libraries, so nothing
-needs compiling.
+CPython 3.10–3.13. libint2 and libxc are statically linked into the extension,
+and OpenBLAS ships inside the wheel as a bundled shared library, so nothing
+needs compiling. The wheel's libint2 carries second derivatives, so analytic
+Hessians work from a plain `pip install`; see
+[What the libint2 build carries](#what-the-libint2-build-carries).
 
 ```bash
 pip install ferric        # or: uv pip install ferric
@@ -144,21 +146,23 @@ stale build keeps getting imported.
 ### What the libint2 build carries
 
 Integral classes, derivative orders and angular-momentum limits are fixed when
-libint2's source is *generated*, so no build flag changes them. The build
-`scripts/install-libint.sh` installs (conda-forge 2.13.1) carries:
+libint2's source is *generated*, so no build flag changes them. Highest angular
+momentum for energy / 1st / 2nd derivatives (– = not generated):
 
-| Integrals | Highest angular momentum for energy / 1st / 2nd derivatives | Needed for |
-|---|---|---|
-| 4-centre ERI | 7 / 6 / 3 | SCF, gradients, analytic Hessians |
-| One-electron (overlap, kinetic, nuclear) | 7 / 6 / 3 | the same |
-| 3- and 2-centre ERI | 7 / 7 / 4 | RI-MP2, RPA, GW and their gradients |
-| G12 geminal | 4 (energy only) | F12 / geminal integrals |
+| Integrals | Source build with `scripts/install-libint.sh` (conda-forge 2.13.1) | PyPI wheel (ferric's libint2 2.7.2 export) | Needed for |
+|---|---|---|---|
+| 4-centre ERI | 7 / 6 / 3 | 6 / 6 / 3 | SCF, gradients, analytic Hessians |
+| One-electron (overlap, kinetic, nuclear) | 7 / 6 / 3 | 6 / 4 / 3 | the same |
+| 3- and 2-centre ERI | 7 / 7 / 4 | 6 / 6 / – | RI-MP2, RPA, GW and their gradients |
+| G12 geminal | 4 / – / – | – | F12 / geminal integrals |
 
-Analytic Hessians therefore cover orbital bases up to f functions; a basis with
-g or higher functions uses finite differences of the analytic gradient. The
-upstream mpqc4 tarball (libint2 2.7.2) has no second derivatives and no G12
-class: built against it, ferric uses finite-difference Hessians and the G12
-tests skip with an explicit message.
+With either build, analytic Hessians cover orbital bases up to f functions; a
+basis with g or higher functions uses finite differences of the analytic
+gradient. The wheel has no G12 class, so F12 methods need a source build.
+`scripts/generate-libint-small.sh` regenerates the wheel's export. The upstream
+mpqc4 tarball (libint2 2.7.2) has no second derivatives and no G12 class: built
+against it, ferric uses finite-difference Hessians and the G12 tests skip with
+an explicit message.
 
 ## MPI
 

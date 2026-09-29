@@ -19,6 +19,15 @@ fn main() {
         }
     };
 
+    // ONE libint2 root for headers AND library. Stacking a second libint2
+    // include directory behind the prefix let a missing or incomplete prefix
+    // fall through silently to another version's headers: a conda build
+    // compiled the shim against /usr/local's 2.7.2 headers
+    // (LIBINT2_MAX_DERIV_ORDER undefined) and linked conda's 2.13.1 library,
+    // and every SCF segfaulted.
+    let libint_root = libint_root(&local_prefix);
+    println!("cargo:warning=libint2 headers and library from {libint_root}");
+
     // --- libecpint: configure + build the vendored static library via CMake ---
     let (ecpint_lib_dir, ecpint_include_dirs) = build_libecpint();
 
@@ -26,10 +35,13 @@ fn main() {
     cc::Build::new()
         .cpp(true)
         .file("shim/shim.cc")
-        .include(format!("{local_prefix}/include"))
-        .include(format!("{local_prefix}/include/libint2"))
-        .include("/usr/local/include")
-        .include("/usr/local/include/libint2")
+        .include(format!("{libint_root}/include"))
+        .include(format!("{libint_root}/include/libint2"))
+        // Eigen under the libint2 prefix: a conda build (conda/recipe.yaml)
+        // sets LIBINT2_PREFIX=$PREFIX, and conda-forge's `eigen` installs to
+        // $PREFIX/include/eigen3. Listed before the system path so the
+        // environment's Eigen wins over any system copy.
+        .include(format!("{libint_root}/include/eigen3"))
         .include("/usr/include/eigen3")
         // STEP 4: opt in to the libint2-native terf operator. Requires a
         // libint2 patched with Operator::terf (see
@@ -64,14 +76,13 @@ fn main() {
     ecp_build.compile("ferric_ecp_shim");
 
     // libint2 + BLAS link
-    println!("cargo:rustc-link-search=native={local_prefix}/lib");
-    println!("cargo:rustc-link-search=native=/usr/local/lib");
+    println!("cargo:rustc-link-search=native={libint_root}/lib");
     // A prefix with libint2.a (a from-source build, e.g. the old mpqc4
     // tarball) links statically. scripts/install-libint.sh installs the
     // conda-forge 2.13.1 build, which ships libint2.so only; that script sets
     // its SONAME to the absolute path, so binaries find it at run time without
     // an rpath.
-    if std::path::Path::new(&format!("{local_prefix}/lib/libint2.a")).exists() {
+    if std::path::Path::new(&format!("{libint_root}/lib/libint2.a")).exists() {
         println!("cargo:rustc-link-lib=static=int2");
     } else {
         println!("cargo:rustc-link-lib=dylib=int2");
@@ -88,7 +99,7 @@ fn main() {
     println!("cargo:rustc-link-lib=static=Faddeeva");
 
     println!("cargo:rerun-if-env-changed=LIBINT2_PREFIX");
-    println!("cargo:rerun-if-changed={local_prefix}/include/libint2/config.h");
+    println!("cargo:rerun-if-changed={libint_root}/include/libint2/config.h");
     println!("cargo:rerun-if-changed=shim/shim.h");
     println!("cargo:rerun-if-changed=shim/shim.cc");
     println!("cargo:rerun-if-changed=shim/ecp_shim.h");
@@ -100,6 +111,30 @@ fn main() {
 
 /// Configure and build the vendored libecpint static library with CMake.
 /// Returns (directory containing libecpint.a + libFaddeeva.a, include dirs for the shim).
+/// The single libint2 install the shim compiles and links against: the
+/// configured prefix if it has libint2 headers, else `/usr/local` if it does.
+/// Panics otherwise, naming both, so a missing install fails the build instead
+/// of picking up a different version.
+fn libint_root(prefix: &str) -> String {
+    let has_headers =
+        |root: &str| std::path::Path::new(&format!("{root}/include/libint2.hpp")).exists();
+    if has_headers(prefix) {
+        return prefix.to_string();
+    }
+    if std::env::var("LIBINT2_PREFIX").is_err() && has_headers("/usr/local") {
+        return "/usr/local".to_string();
+    }
+    panic!(
+        "libint2 headers not found: no {prefix}/include/libint2.hpp{}. \
+         Set LIBINT2_PREFIX to a libint2 install (scripts/install-libint.sh).",
+        if std::env::var("LIBINT2_PREFIX").is_err() {
+            " and no /usr/local/include/libint2.hpp"
+        } else {
+            ""
+        }
+    );
+}
+
 fn build_libecpint() -> (PathBuf, Vec<PathBuf>) {
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let src_dir = manifest_dir.join("shim/libecpint");
