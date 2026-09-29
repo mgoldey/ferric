@@ -5597,3 +5597,25 @@ They are compared against the new kernel at 1e-13 in `pbc_grad`/`pbc_stress`, an
 - The bench scripts live in the session scratchpad (`bench3.sh`); the harness is
   `reference/pbc/bench/run_ferric_bench.sh`, and previous logs are kept under
   `reference/pbc/bench/out/prev_0928*`.
+
+## Parallel exchange and S/T (measured 2026-09-29 18:00, commit b6883124)
+
+Dry ice Γ RHF and diamond_prim k 2×2×2, cc-pVDZ / cc-pvdz-ri, range split. One sample per cell.
+Each run was gated on a 1-minute load below 1.5.
+
+| run | before (5f46bc49) | after | E after |
+|---|---|---|---|
+| dry ice 6 thr | 50.7 s | 44.7 s | −750.8211184382437 (bit-identical) |
+| dry ice 1 thr | 143.6 s | 149.3 s | −750.8211184382437 |
+| diamond k222 6 thr | 48.7 s | 40.7 s | −75.6961792414975 (5e-15 from −75.69617924149755; the complex exchange blocking) |
+
+- **scf K (rsgdf), dry ice, 19 builds:** 5.6 s serial → 2.43 s at 6 threads (2.3×), but 10.36 s
+  at 1 thread. The 16-row blocked GEMMs are ~1.85× less efficient per flop than the 168-row
+  serial call, so the single-thread run lost 5.7 s. Next: a larger fixed block, or a
+  formulation with wider GEMMs. Either needs the bit-identity question re-checked, since a
+  different block size changes the zgemm tiling (see the complex exchange note in the commit).
+- **hcore S/T:** 3.1 → 0.54 s at 6 threads (5.6×).
+- **k222 J/K build:** 30.1 → 23.4 s; k hcore 17.5 → 15.0 s.
+- **Dry ice 6-thread stage walls now:** hcore SR attraction 13.8, SR 3-centre 9.6, LR aux FT +
+  GEMM 8.1, LR pair FT 7.2, scf K 2.4, hcore LR 1.0, S/T 0.5. PySCF GDF takes 22.9 s, so ferric
+  is 1.95× slower.
