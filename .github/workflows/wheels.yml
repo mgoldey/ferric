@@ -1232,7 +1232,16 @@ jobs:
             quay.io/pypa/manylinux_2_28_x86_64@sha256:${{ env.MANYLINUX_DIGEST }} \
             bash -euo pipefail -c '
               dnf install -y openmpi >/dev/null
-              export LD_LIBRARY_PATH=/usr/lib64/openmpi/lib:${LD_LIBRARY_PATH:-}
+              # The native prefix (OpenBLAS/libxc/libint2) must be on the
+              # loader path too, exactly as build-wheels exports it before
+              # maturin repairs in-process. This is a FRESH container: the
+              # LD_LIBRARY_PATH exported in the build step died with the
+              # maturin-action container, so without these two dirs
+              # auditwheel cannot locate libopenblas.so.0 and refuses to
+              # repair. lib64 mirrors build-wheels; the prefix installs to
+              # lib today.
+              NATIVE_PREFIX=/io/native-deps-cache
+              export LD_LIBRARY_PATH="$NATIVE_PREFIX/lib:$NATIVE_PREFIX/lib64:/usr/lib64/openmpi/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
               # Sonames READ OFF THE CONTAINER, not guessed. Verified by
               # `readelf -d /usr/lib64/openmpi/lib/libmpi.so.40` after
               # `dnf install -y openmpi` in this exact image (AlmaLinux 8.10,
