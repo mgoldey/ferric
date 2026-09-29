@@ -992,7 +992,16 @@ impl Engine {
         precision: f64,
     ) -> Result<Self, FerricError> {
         require_deriv2_support()?;
-        let mut handles = Vec::new();
+        // Owned by an Engine from the start, so its Drop releases every handle
+        // created so far on ANY early return: an unsupported later component
+        // (operator_kind_to_ffi) as well as a null handle.
+        let mut eng = Engine {
+            handles: Vec::new(),
+            buf: Vec::new(),
+            scratch: Vec::new(),
+            is_terfc: false,
+            is_terf: false,
+        };
         let n_comp = if op.is_composite {
             op.num_components
         } else {
@@ -1016,25 +1025,11 @@ impl Engine {
                 )
             };
             if h.is_null() {
-                // Handles created so far are released by Engine's Drop.
-                let _partial = Engine {
-                    handles,
-                    buf: Vec::new(),
-                    scratch: Vec::new(),
-                    is_terfc: false,
-                    is_terf: false,
-                };
                 return Err(deriv2_engine_unavailable("2e", prep.max_l()));
             }
-            handles.push((coeff, h));
+            eng.handles.push((coeff, h));
         }
-        Ok(Engine {
-            handles,
-            buf: Vec::new(),
-            scratch: Vec::new(),
-            is_terfc: false,
-            is_terf: false,
-        })
+        Ok(eng)
     }
 
     /// Second derivatives of a 1e shell-pair block.
@@ -2534,6 +2529,10 @@ mod tests {
     /// pair-index convention mixes coordinates and misses by O(1).
     #[test]
     fn deriv2_1e_blocks_match_fd_of_deriv1() {
+        if libint_max_deriv_order() < 2 {
+            eprintln!("SKIP: libint2 generated without second derivatives");
+            return;
+        }
         let h = 1e-4;
         let prep0 = water_at("6-31g", None);
         let natoms = prep0.atoms().len();
@@ -2599,6 +2598,10 @@ mod tests {
     /// derivatives, on a quartet with a d shell and all three atoms.
     #[test]
     fn deriv2_eri_quartet_matches_fd_of_deriv1() {
+        if libint_max_deriv_order() < 2 {
+            eprintln!("SKIP: libint2 generated without second derivatives");
+            return;
+        }
         let h = 1e-4;
         let prep0 = water_at("cc-pvdz", None);
         let natoms = prep0.atoms().len();
@@ -2663,6 +2666,10 @@ mod tests {
     /// `i`, `Σ_centres d²/dx_i d(centre)_b = 0` per axis `b`.
     #[test]
     fn deriv2_eri_translational_invariance() {
+        if libint_max_deriv_order() < 2 {
+            eprintln!("SKIP: libint2 generated without second derivatives");
+            return;
+        }
         let prep = water_at("6-31g", None);
         let nsh = prep.nshells();
         let dims = prep.shell_dims().to_vec();

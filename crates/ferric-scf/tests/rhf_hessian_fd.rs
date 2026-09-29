@@ -117,6 +117,17 @@ O      0.010000    -0.020000     0.120000\n\
 H      0.030000     0.770000    -0.460000\n\
 H     -0.020000    -0.740000    -0.490000\n";
 
+/// Every test here except the V_nn and refusal checks needs libint2
+/// second-derivative engines. A first-derivative build (the upstream mpqc4
+/// export) skips them rather than panicking.
+fn has_deriv2() -> bool {
+    let order = ferric_integrals::engine::libint_max_deriv_order();
+    if order < 2 {
+        eprintln!("SKIP: libint2 generated with derivative order {order}; no analytic Hessian");
+    }
+    order >= 2
+}
+
 fn water() -> Molecule {
     Molecule::parse_xyz(WATER_DISTORTED, 0, 1).unwrap()
 }
@@ -275,6 +286,9 @@ fn second_difference_vnn(mol: &Molecule, h: f64) -> Array2<f64> {
 // ---------------------------------------------------------------------------
 
 fn check_skeleton_one_electron(basis_name: &str) {
+    if !has_deriv2() {
+        return;
+    }
     let s = setup(&water(), basis_name);
     let p = parts(&s);
     let d = s.rhf.density_r().clone();
@@ -293,6 +307,9 @@ fn check_skeleton_one_electron(basis_name: &str) {
 }
 
 fn check_skeleton_overlap(basis_name: &str) {
+    if !has_deriv2() {
+        return;
+    }
     let s = setup(&water(), basis_name);
     let p = parts(&s);
     let nocc = (s.mol.nelec() / 2) as usize;
@@ -313,6 +330,9 @@ fn check_skeleton_overlap(basis_name: &str) {
 }
 
 fn check_skeleton_two_electron(basis_name: &str) {
+    if !has_deriv2() {
+        return;
+    }
     let s = setup(&water(), basis_name);
     let p = parts(&s);
     let d = s.rhf.density_r().clone();
@@ -367,6 +387,9 @@ fn skeleton_two_electron_matches_fd_ccpvdz() {
 // ---------------------------------------------------------------------------
 
 fn check_full(basis_name: &str) {
+    if !has_deriv2() {
+        return;
+    }
     let s = setup(&water(), basis_name);
     let p = parts(&s);
     let total = p.total();
@@ -420,6 +443,9 @@ fn full_hessian_matches_fd_ccpvdz() {
 
 #[test]
 fn hessian_is_symmetric_and_translationally_invariant() {
+    if !has_deriv2() {
+        return;
+    }
     let s = setup(&water(), "6-31g");
     let p = parts(&s);
     let total = p.total();
