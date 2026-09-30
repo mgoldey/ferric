@@ -91,39 +91,26 @@
 //! | 0.25 < ρ ≤ 0.75 | accepted | unchanged |
 //! | ρ > 0.75     | accepted | Δ ← 1.2 Δ  |
 //!
-//! # KNOWN DEFECT: the rejection loop can stall (measured, not fixed)
+//! # Null steps once the gradient has converged
 //!
-//! On RKS/PBE water/cc-pVDZ, TRAH enters a repeating cycle after its first
-//! rejection. Traced with `FERRIC_SCF_TRACE=1`:
+//! TRAH arms when `err_max < trah_trigger`, a bound with no lower limit, so it
+//! can be asked to step after the orbital gradient has already converged. The
+//! quadratic model then predicts a change below what the energy can resolve,
+//! and ρ is floating-point noise over a vanishing denominator. Measured on
+//! RKS/PBE water/cc-pVDZ with `FERRIC_SCF_TRACE=1`: |g_ov| = 2.7e-8,
+//! predicted = −1.4e-15, actual = +2.7e-9, ρ = −1.9e6. The step is rejected,
+//! the orbitals are restored to where they already were, and the next
+//! iteration recomputes the identical step, so ρ repeats to the last digit
+//! while the radius contracts until [`crate::trah::TrahState::collapsed`] and
+//! the run falls back to DIIS (123 iterations / 98 s against DIIS's 69 / 1.5 s).
 //!
-//! ```text
-//!   iter  6: rho= 1.001722  Accepted  Delta=4.800e-1
-//!   iter  7: rho=-60.519638 Rejected  Delta=3.360e-1  (restore)
-//!   iter  9: rho=-60.519638 Rejected  Delta=2.352e-1  (restore)
-//!   iter 11: rho=-60.519638 Rejected  Delta=1.646e-1  (restore)
-//!   ... radius contracts 0.7x per cycle until it collapses ...
-//! ```
-//!
-//! ρ is IDENTICAL to six decimals every cycle. A repeated exact value is a
-//! fingerprint of arithmetic, not of measurement: the restore returns to the
-//! same point, the same step is recomputed, and only the radius changes — but
-//! the radius is not yet binding (the step is interior, α = α_min), so
-//! contracting it does not change the step either. The cycle therefore burns
-//! two Fock builds per iteration until the radius collapses and the run falls
-//! back to DIIS.
-//!
-//! This is why TRAH is a REGRESSION on that case: 123 iterations / 98 s versus
-//! DIIS's 69 / 1.5 s. It is also why the radius floor and
-//! [`crate::trah::TrahState::collapsed`] exist — without them the cycle would not terminate.
-//!
-//! The likely cause is that ρ is being formed across a Fock rebuild rather than
-//! at a fixed reference point, so a large negative ρ reflects the DIIS-era
-//! energy change rather than the step's. The fix is to re-step immediately at
-//! the contracted radius from the restored point (as Helmich-Paris specifies:
-//! "the micro iterations are repeated from the previous set of orbitals")
-//! instead of yielding to the next macro iteration. That restructuring is not
-//! done here; TRAH is opt-in and off by default, so the defect is inert unless
-//! deliberately enabled.
+//! The closed-shell loop in `rhf.rs` skips any step whose |predicted change|
+//! is below [`crate::trah::TrahConfig::predicted_min`] (default 1e-12 Ha) and
+//! defers to DIIS. The UHF/UKS loop in `uhf.rs` has no such guard, and whether
+//! it reaches the same cycle has not been measured. No test asserts an RKS
+//! iteration count: the RKS case in `trah_converges.rs` only caps the run at
+//! `max_iter: 200`, and the measured cycle finished in 123 iterations through
+//! the DIIS fallback, so a return of the cycle would still pass.
 //!
 //! # Scope
 //!
@@ -238,7 +225,7 @@ pub struct TrahConfig {
     pub radius_max: f64,
     /// Smallest |predicted energy change| worth stepping for. Default 1e-12 Ha.
     ///
-    /// # Why this exists (added 2026-09-18, fixes the RKS stall)
+    /// # Why this exists (the RKS null-step cycle)
     ///
     /// TRAH's arming condition is `err_max < trah_trigger` -- an UPPER bound
     /// with no lower one. Once the orbital gradient is converged there is
@@ -259,14 +246,9 @@ pub struct TrahConfig {
     /// to the last digit -- a fingerprint of arithmetic, not of measurement --
     /// burning two Fock builds per iteration until the radius floor collapses
     /// and the run falls back to DIIS. That cost 123 iterations / 98 s versus
-    /// DIIS's 69 / 1.5 s.
-    ///
-    /// NOTE this REFUTES the mechanism originally recorded here, which
-    /// supposed ρ was formed across a Fock rebuild and prescribed re-running
-    /// micro-iterations from the restored orbitals. The trace shows the ρ
-    /// bookkeeping is correct; the defect is that TRAH steps at all when the
-    /// predicted gain is below what the energy can resolve. Re-stepping would
-    /// not have helped -- it would have recomputed the same null step faster.
+    /// DIIS's 69 / 1.5 s. The ρ bookkeeping itself is correct; the defect is
+    /// stepping at all when the predicted gain is below what the energy can
+    /// resolve. Only the closed-shell loop applies this bound.
     ///
     /// 1e-12 Ha sits well above f64 noise on a total energy of order 1e2 Ha
     /// (~1e-14 relative) and far below any convergence threshold anyone would
