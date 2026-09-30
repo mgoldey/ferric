@@ -107,9 +107,10 @@
 //! The closed-shell loop in `rhf.rs` skips any step whose |predicted change|
 //! is below [`crate::trah::TrahConfig::predicted_min`] (default 1e-12 Ha) and
 //! defers to DIIS. The UHF/UKS loop in `uhf.rs` has no such guard, and whether
-//! it reaches the same cycle has not been measured. No test bounds the RKS
-//! iteration count, so a return of the cycle would still converge (through
-//! the DIIS fallback) and pass `trah_converges.rs`.
+//! it reaches the same cycle has not been measured. No test asserts an RKS
+//! iteration count: the RKS case in `trah_converges.rs` only caps the run at
+//! `max_iter: 200`, and the measured cycle finished in 123 iterations through
+//! the DIIS fallback, so a return of the cycle would still pass.
 //!
 //! # Scope
 //!
