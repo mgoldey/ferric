@@ -867,12 +867,25 @@ enum GammaJk {
     /// RS-GDF with `aux` (prepared on the cell's atoms), an optional
     /// explicit budget (`None` = ferric's unified budget chain) and the
     /// opt-in range split (`None` = off; energy-only, see
-    /// `pbc::parse_range_split`).
+    /// `pbc::parse_range_split`). `gdf_omega_bohr`: the RS-GDF Ewald split
+    /// (Bohr⁻¹; `None` = `DEFAULT_RSGDF_OMEGA`, bit for bit).
     RsGdf {
         aux: Box<PreparedBasis>,
         budget_bytes: Option<usize>,
         range_split: Option<ferric_pbc::RangeSplit>,
+        gdf_omega_bohr: Option<f64>,
     },
+}
+
+impl GammaJk {
+    /// The explicit RS-GDF Ewald split (Bohr⁻¹; `None` = the default, or
+    /// dense AFT).
+    fn gdf_omega_bohr(&self) -> Option<f64> {
+        match self {
+            GammaJk::Dense { .. } => None,
+            GammaJk::RsGdf { gdf_omega_bohr, .. } => *gdf_omega_bohr,
+        }
+    }
 }
 
 /// Periodic hcore -> injected J/K (dense AFT or RS-GDF) ->
@@ -891,7 +904,12 @@ fn gamma_rhf_driver(
     use ferric_pbc::hcore::{periodic_hcore, PeriodicHcoreConfig};
     use ferric_pbc::rsgdf::{RsGdf, RsGdfConfig};
     let total = ferric_pbc::StageClock::start();
-    let w = omega_bohr.unwrap_or_else(|| PeriodicHcoreConfig::for_cell(cell).omega);
+    // The default hcore split is capped by the RS-GDF LR sphere, so it
+    // follows an explicit gdf_omega (absent: `for_cell`, bit for bit).
+    let w = match omega_bohr {
+        Some(w) => w,
+        None => PeriodicHcoreConfig::for_cell_and_gdf_omega(cell, jk.gdf_omega_bohr()).omega,
+    };
     let hcfg = PeriodicHcoreConfig::with_omega(w);
     let hc = periodic_hcore(cell, prep, &hcfg)?;
     let mut timings = ferric_pbc::PbcTimings::default();
@@ -960,8 +978,10 @@ fn gamma_rhf_driver(
             aux,
             budget_bytes,
             range_split,
+            gdf_omega_bohr,
         } => {
             let cfg = RsGdfConfig {
+                omega: gdf_omega_bohr.unwrap_or(ferric_pbc::rsgdf::DEFAULT_RSGDF_OMEGA),
                 exxdiv: exx,
                 budget_bytes: *budget_bytes,
                 range_split: *range_split,
@@ -1131,7 +1151,8 @@ fn parse_gamma_options(
 ///            0.5 GiB, i.e. nao <= ~90). An oversize cell is a `ValueError`
 ///            raised before any integral work. Exact to the AFT precision.
 ///   "rsgdf"  Range-separated Gaussian density fitting (`ferric_pbc::rsgdf`,
-///            PySCF RSGDF convention, omega_gdf = 1 Bohr⁻¹, lindep 1e-10).
+///            PySCF RSGDF convention, omega_gdf = 1 Bohr⁻¹ unless
+///            `gdf_omega` is given, lindep 1e-10).
 ///            REQUIRES `auxbasis`: a `BasisSet` or a bundled name (e.g.
 ///            `"cc-pvdz-ri"`, `"def2-universal-jkfit"`). There is no default
 ///            aux basis: the fitting error depends on the aux/orbital pairing
@@ -1154,8 +1175,9 @@ fn parse_gamma_options(
 ///             any value > 0 gives the same energy to ~1e-9 Ha). None =
 ///             `min(2.5 sqrt(pi) / volume^(1/3), 0.9636 Bohr^-1)`
 ///             (`ferric_pbc::hcore::default_hcore_omega`, converted to
-///             Å⁻¹ in `result.omega`). (Not the RS-GDF split, which is
-///             fixed at its default.)
+///             Å⁻¹ in `result.omega`; with `gdf_omega` given, the cap
+///             follows it: `ferric_pbc::hcore::default_hcore_omega_for_gdf`).
+///             Not the RS-GDF split, which is `gdf_omega`.
 ///   energies  Hartree per cell.
 ///
 /// Arguments:
@@ -1189,6 +1211,16 @@ fn parse_gamma_options(
 ///                primitive counters appear in `timings["counters"]`
 ///                ("rsgdf split ..."). rsgdf ENERGY only: with jk="dense" or
 ///                with_gradient/with_stress it is a ValueError.
+///   gdf_omega    (default None) the RS-GDF Ewald split omega_gdf in **Å⁻¹**
+///                (like `omega`; finite, > 0). None = 1 Bohr⁻¹
+///                (`ferric_pbc::rsgdf::DEFAULT_RSGDF_OMEGA`), the default
+///                build bit for bit. Any value gives the same energy up to the
+///                fit's truncation; it moves work between the SR lattice sums
+///                (radii ~ 1/omega_gdf) and the LR G sphere (|G| <=
+///                2 omega_gdf sqrt(ln(1/1e-13)); `timings["counters"]["rsgdf
+///                LR half-G"]`). The range split's thresholds and the
+///                gradient/stress follow it. rsgdf only: with jk="dense" it is
+///                a ValueError. Every periodic binding takes the same kwarg.
 ///
 /// Hard errors (ValueError): charged cell (charge != 0; no neutralising-
 /// background correction for electrons), multiplicity != 1 or an odd
@@ -1206,7 +1238,7 @@ fn parse_gamma_options(
     mol, lattice, basis_set, exxdiv="ewald", omega=None, max_eri_gb=None,
     max_iter=200, density_conv=1e-10, jk="dense", auxbasis=None,
     memory_budget_gb=None, with_gradient=false, with_stress=false,
-    range_split=None,
+    range_split=None, gdf_omega=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_rhf_gamma(
@@ -1225,6 +1257,7 @@ fn run_rhf_gamma(
     with_gradient: bool,
     with_stress: bool,
     range_split: Option<&Bound<'_, PyAny>>,
+    gdf_omega: Option<f64>,
 ) -> PyResult<PyGammaRhfResult> {
     let val_err = |m: String| pyo3::exceptions::PyValueError::new_err(m);
     let GammaOptions {
@@ -1247,6 +1280,7 @@ fn run_rhf_gamma(
     };
     let range_split =
         pbc::parse_range_split("run_rhf_gamma", range_split, auxbasis.is_some(), want)?;
+    let gdf_omega_bohr = pbc::parse_gdf_omega("run_rhf_gamma", gdf_omega, auxbasis.is_some())?;
     let emol = validate_gamma_cell("run_rhf_gamma", &mol.inner, &basis_set.inner)?;
     let cell = ferric_pbc::Cell::new(emol, a).map_err(|e| val_err(format!("{e}")))?;
     let prep = PreparedBasis::new(cell.mol(), &basis_set.inner).map_err(make_err)?;
@@ -1264,6 +1298,7 @@ fn run_rhf_gamma(
                 aux: Box::new(aux),
                 budget_bytes: budget_bytes_from_gb(memory_budget_gb),
                 range_split,
+                gdf_omega_bohr,
             };
             (choice, Some(aux_bs.name))
         }

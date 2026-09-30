@@ -367,14 +367,15 @@ or key is an error. A charged cell is an error.
 | Key | Type | Default | Allowed values | Notes |
 |---|---|---|---|---|
 | `lattice` | 3×3 float array | **required** | rows are the lattice vectors | In `unit`. |
-| `unit` | string | `"angstrom"` | `angstrom` `bohr` | Applies to `lattice`, `omega` (as its inverse) and `neighbour_cutoff`. |
+| `unit` | string | `"angstrom"` | `angstrom` `bohr` | Applies to `lattice`, `omega` and `gdf_omega` (as their inverse) and `neighbour_cutoff`. |
 | `kmesh` | `[n1, n2, n3]` | none (Gamma point) | each ≥ 1 | Selects the k-point drivers: `rhf`, `uhf` (no functional), `rimp2`, `pdep-rpa` only. |
 | `centring` | string | `"gamma"` | `gamma` `mp` | Requires `kmesh`. |
 | `exxdiv` | string | `"ewald"` | `ewald` `none` | Exchange G = 0 treatment. |
 | `jk` | string | `"dense"` | `dense` `rsgdf` | `dense` is a toy-scale dense AFT tensor. |
 | `auxbasis` | string | none | bundled basis name | Required by `jk = "rsgdf"`; an error with `dense`. |
-| `range_split` | bool or float | `false` | `false`, `true` (λ = 1), or a number > 0 (λ) | Opt-in RS-GDF range split: moves the short-range blocks whose Fourier transform converges in the long-range G sphere into G space. Orbital primitives with exponent ≤ λω²/2 and aux primitives with exponent ≤ λω² count as smooth, where ω is the fixed RS-GDF split (1 Bohr⁻¹, not the `omega` key). λ ≤ 1 adds no G vectors; the energy matches the unsplit build to fitting precision. Requires `jk = "rsgdf"` and `task = "energy"` (Gamma point or `kmesh`). An error with `task = "optimize"`: the optimizer is not wired to the range-split forces. |
-| `omega` | float | min(2.5 √π / V^(1/3), 0.9636 Bohr⁻¹) | > 0, in `unit`⁻¹ | Nuclear-attraction Ewald split. Any value gives the same energy to truncation (~1e-11 Ha); the default balances the real- and reciprocal-space nuclear-attraction cost, and its cap keeps the reciprocal-space sphere inside the RS-GDF one. |
+| `range_split` | bool or float | `false` | `false`, `true` (λ = 1), or a number > 0 (λ) | Opt-in RS-GDF range split: moves the short-range blocks whose Fourier transform converges in the long-range G sphere into G space. Orbital primitives with exponent ≤ λω²/2 and aux primitives with exponent ≤ λω² count as smooth, where ω is the RS-GDF split (`gdf_omega`, default 1 Bohr⁻¹; not the `omega` key). λ ≤ 1 adds no G vectors; the energy matches the unsplit build to fitting precision. Requires `jk = "rsgdf"` and `task = "energy"` (Gamma point or `kmesh`). An error with `task = "optimize"`: the optimizer is not wired to the range-split forces. |
+| `omega` | float | min(2.5 √π / V^(1/3), 0.9636 × ω_gdf), ω_gdf = `gdf_omega` in Bohr⁻¹ | > 0, in `unit`⁻¹ | Nuclear-attraction Ewald split. Any value gives the same energy to truncation (~1e-11 Ha); the default balances the real- and reciprocal-space nuclear-attraction cost, and its cap keeps the reciprocal-space sphere inside the RS-GDF one (so the cap scales with `gdf_omega`). |
+| `gdf_omega` | float | 1 Bohr⁻¹ | finite, > 0, in `unit`⁻¹ | RS-GDF Ewald split ω. Any value gives the same energy to the fitting precision; it moves work between the short-range lattice sums (radii ∝ 1/ω) and the long-range G sphere (\|G\| ≤ 2ω √ln(10¹³)). The `range_split` thresholds and the RS-GDF forces follow it. Requires `jk = "rsgdf"` (an error with `dense`). Same as Python `gdf_omega=` (Å⁻¹). |
 | `max_eri_gb` | float | `0.5` | > 0 | Dense tensor cap. An error with `rsgdf`. |
 | `ewald_start` | string | `"staged"` | `staged` `direct` | Open-shell SCF with `exxdiv = "ewald"` only. |
 | `denominators` | string | **required** for `rimp2`/`pdep-rpa` | `shifted` `unshifted` | An error on other kinds. |

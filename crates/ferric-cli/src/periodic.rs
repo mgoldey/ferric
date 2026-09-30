@@ -22,6 +22,7 @@ use ferric_integrals::operator::Operator;
 use ferric_pbc::dense_aft::DEFAULT_DENSE_AFT_PRECISION;
 use ferric_pbc::drpa::DEFAULT_GAMMA_DRPA_QUAD_POINTS;
 use ferric_pbc::kcorr::DEFAULT_KDRPA_QUAD_POINTS;
+use ferric_pbc::rsgdf::DEFAULT_RSGDF_OMEGA;
 use ferric_pbc::{
     gamma_drpa, gamma_mp2, gamma_rks, gamma_rohf, gamma_roks, gamma_uhf, gamma_uks, kpoint_drpa,
     kpoint_mp2, periodic_hcore, periodic_hcore_kpts, solve_krhf, solve_krhf_injected, solve_kuhf,
@@ -92,6 +93,7 @@ pub fn run_periodic(cfg: &Config) {
                 "jk": jk_name(plan),
                 "range_split": range_split_lambda(plan).is_some(),
                 "range_split_lambda": range_split_lambda(plan),
+                "gdf_omega_bohr": s.aux.as_ref().map(|_| rsgdf_omega(plan)),
                 "max_iter": effective_max_iter(plan),
             }),
             serde_json::json!({
@@ -229,9 +231,12 @@ fn setup(cfg: &Config, plan: &PeriodicPlan) -> Setup {
             (Some(p), Some(a))
         }
     };
-    let omega_bohr = plan
-        .omega_bohr
-        .unwrap_or_else(|| ferric_pbc::hcore::PeriodicHcoreConfig::for_cell(&cell).omega);
+    // The default hcore split is capped by the RS-GDF LR sphere, so it
+    // follows an explicit gdf_omega (absent: `for_cell`, bit for bit).
+    let omega_bohr = match plan.omega_bohr {
+        Some(w) => w,
+        None => PeriodicHcoreConfig::for_cell_and_gdf_omega(&cell, gdf_omega_bohr(plan)).omega,
+    };
     Setup {
         bs,
         cell,
@@ -262,6 +267,20 @@ fn range_split_lambda(plan: &PeriodicPlan) -> Option<f64> {
         PeriodicJk::Dense { .. } => None,
         PeriodicJk::RsGdf { range_split, .. } => *range_split,
     }
+}
+
+/// The explicit RS-GDF Ewald split (Bohr⁻¹; `None` = the library default,
+/// or dense J/K).
+fn gdf_omega_bohr(plan: &PeriodicPlan) -> Option<f64> {
+    match &plan.jk {
+        PeriodicJk::Dense { .. } => None,
+        PeriodicJk::RsGdf { gdf_omega_bohr, .. } => *gdf_omega_bohr,
+    }
+}
+
+/// The RS-GDF Ewald split every build of this run uses (Bohr⁻¹).
+fn rsgdf_omega(plan: &PeriodicPlan) -> f64 {
+    gdf_omega_bohr(plan).unwrap_or(DEFAULT_RSGDF_OMEGA)
 }
 
 fn budget_bytes(plan: &PeriodicPlan) -> Option<usize> {
@@ -322,12 +341,22 @@ fn print_header(cfg: &Config, plan: &PeriodicPlan, s: &Setup) {
     println!("  exxdiv     = {}", exx_name(plan.exxdiv));
     println!("  jk         = {}", jk_name(plan));
     if matches!(plan.jk, PeriodicJk::RsGdf { .. }) {
-        match range_split_lambda(plan) {
-            Some(l) => println!("  range_split= on (lambda = {l})"),
-            None => println!("  range_split= off"),
-        }
+        print_rsgdf_knobs(plan);
     }
     println!("  nbasis     = {}", s.prep.nbasis());
+}
+
+/// The RS-GDF knobs of the header (range split, Ewald split).
+fn print_rsgdf_knobs(plan: &PeriodicPlan) {
+    match range_split_lambda(plan) {
+        Some(l) => println!("  range_split= on (lambda = {l})"),
+        None => println!("  range_split= off"),
+    }
+    let note = match gdf_omega_bohr(plan) {
+        Some(_) => "",
+        None => " (default)",
+    };
+    println!("  gdf_omega  = {} Bohr^-1{note}", rsgdf_omega(plan));
 }
 
 fn print_madelung(plan: &PeriodicPlan, v_m: f64) {
@@ -533,9 +562,7 @@ fn gamma_system(
             // The k-point build takes it through `krsgdf_config`.
             let cfg = RsGdfConfig {
                 exxdiv: plan.exxdiv,
-                budget_bytes: budget_bytes(plan),
-                range_split: range_split_lambda(plan).map(RangeSplit::new),
-                ..Default::default()
+                ..rsgdf_config(plan)
             };
             let gdf = if for_gradient {
                 RsGdf::build_for_gradient(&s.cell, &s.prep, aux, &hc.s, &cfg)?
@@ -1061,13 +1088,21 @@ fn kdense_config(plan: &PeriodicPlan) -> KDenseAftConfig {
     }
 }
 
+/// The RS-GDF build settings shared by the Gamma and k-point builds: the
+/// Ewald split, the budget and the range split (exxdiv: the library default;
+/// the Gamma build sets its own).
+fn rsgdf_config(plan: &PeriodicPlan) -> RsGdfConfig {
+    RsGdfConfig {
+        omega: rsgdf_omega(plan),
+        budget_bytes: budget_bytes(plan),
+        range_split: range_split_lambda(plan).map(RangeSplit::new),
+        ..Default::default()
+    }
+}
+
 fn krsgdf_config(plan: &PeriodicPlan) -> KRsGdfConfig {
     KRsGdfConfig {
-        gdf: RsGdfConfig {
-            budget_bytes: budget_bytes(plan),
-            range_split: range_split_lambda(plan).map(RangeSplit::new),
-            ..Default::default()
-        },
+        gdf: rsgdf_config(plan),
         ..Default::default()
     }
 }

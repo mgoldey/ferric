@@ -3551,8 +3551,17 @@ pub struct CellCfg {
     /// Nuclear-attraction Ewald split, in `unit`⁻¹ (> 0). Absent =
     /// `ferric_pbc::hcore::default_hcore_omega`:
     /// `min(2.5 sqrt(pi) / volume^(1/3), 0.9636 Bohr⁻¹)` (the cap puts the
-    /// hcore G sphere on the default RS-GDF one). A given value is used as is.
+    /// hcore G sphere on the RS-GDF one, so with `gdf_omega` set it is
+    /// `0.9636 · gdf_omega`). A given value is used as is.
     pub omega: Option<f64>,
+    /// RS-GDF Ewald split ω_gdf, in `unit`⁻¹ like `omega` (finite, > 0);
+    /// `jk = "rsgdf"` only. Absent = `ferric_pbc::rsgdf::DEFAULT_RSGDF_OMEGA`
+    /// (1 Bohr⁻¹), today's build bit for bit. Any value gives the same
+    /// energy up to the fit's truncation; it moves work between the SR
+    /// lattice sums (radii ∝ 1/ω) and the LR G sphere (|G| ≤ 2ω√ln(1/p)).
+    /// With `omega` absent, the default hcore split's cap follows it
+    /// (`ferric_pbc::hcore::default_hcore_omega_for_gdf`).
+    pub gdf_omega: Option<f64>,
     /// Cap on the dense AFT ERI tensor, GiB (> 0; default 0.5); `jk =
     /// "dense"` only.
     pub max_eri_gb: Option<f64>,
@@ -3677,11 +3686,13 @@ pub enum PeriodicJk {
     /// RS-GDF with a bundled aux basis and an optional explicit budget
     /// (`None` = ferric's unified budget chain). `range_split`: the opt-in
     /// split's λ (`None` = off, today's construction bit for bit); only ever
-    /// `Some` on a Gamma energy run.
+    /// `Some` on an energy run. `gdf_omega_bohr`: the RS-GDF Ewald split
+    /// (Bohr⁻¹; `None` = `DEFAULT_RSGDF_OMEGA`, bit for bit).
     RsGdf {
         auxbasis: String,
         budget_bytes: Option<usize>,
         range_split: Option<f64>,
+        gdf_omega_bohr: Option<f64>,
     },
 }
 
@@ -3795,6 +3806,23 @@ fn cell_positive(name: &str, v: f64) -> Result<f64, String> {
     }
 }
 
+/// Resolve `[cell] gdf_omega` (in `unit`⁻¹) to Bohr⁻¹. RS-GDF only: the
+/// dense J/K has no RS-GDF split, so a value there is refused by name
+/// (checked before the value, which that path never reads).
+fn resolve_gdf_omega(key: Option<f64>, rsgdf: bool, to_bohr: f64) -> Result<Option<f64>, String> {
+    let Some(w) = key else {
+        return Ok(None);
+    };
+    if !rsgdf {
+        return Err(format!(
+            "[cell] gdf_omega = {w} is the RS-GDF Ewald split and is ignored by jk = \
+             \"dense\"; set jk = \"rsgdf\" (with an auxbasis) or drop gdf_omega. The \
+             nuclear-attraction split is [cell] omega"
+        ));
+    }
+    Ok(Some(cell_positive("gdf_omega", w)? / to_bohr))
+}
+
 /// Resolve the opt-in `[cell] range_split` key. Energy runs (Gamma or
 /// kmesh) on jk = "rsgdf" only. `false` is today's construction, which every
 /// route runs, so it is accepted anywhere. An explicit λ must be finite and
@@ -3834,11 +3862,13 @@ fn jk_with_range_split(jk: PeriodicJk, range_split: Option<f64>) -> PeriodicJk {
         PeriodicJk::RsGdf {
             auxbasis,
             budget_bytes,
+            gdf_omega_bohr,
             ..
         } => PeriodicJk::RsGdf {
             auxbasis,
             budget_bytes,
             range_split,
+            gdf_omega_bohr,
         },
         dense => dense,
     }
@@ -4016,8 +4046,10 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
             budget_bytes: cfg.memory.budget_bytes(),
             // Resolved below, once the mesh and the task are known.
             range_split: None,
+            gdf_omega_bohr: resolve_gdf_omega(c.gdf_omega, rsgdf, to_bohr)?,
         }
     } else {
+        resolve_gdf_omega(c.gdf_omega, rsgdf, to_bohr)?;
         if c.auxbasis.is_some() {
             return Err(
                 "[cell] auxbasis is only used by jk = \"rsgdf\"; jk = \"dense\" would ignore \
@@ -4714,6 +4746,91 @@ kind = "ccsd"
             &format!("{RSGDF}\nkmesh = [1, 1, 2]\nrange_split = false"),
             "",
         ));
+    }
+
+    /// The resolved RS-GDF ω (Bohr⁻¹; `None` = the default); panics on dense.
+    fn gdf_omega_of(p: &PeriodicPlan) -> Option<f64> {
+        match p.jk {
+            PeriodicJk::RsGdf { gdf_omega_bohr, .. } => gdf_omega_bohr,
+            PeriodicJk::Dense { .. } => panic!("expected jk = rsgdf"),
+        }
+    }
+
+    #[test]
+    fn gdf_omega_is_parsed_in_the_cell_unit_on_every_rsgdf_route() {
+        let den = "denominators = \"shifted\"";
+        for (kind, cell) in [
+            ("rhf", ""),
+            ("uhf", ""),
+            ("rohf", ""),
+            ("ksdft", ""),
+            ("rimp2", den),
+            ("pdep-rpa", den),
+        ] {
+            // h2() writes unit = "bohr": the value is Bohr⁻¹ as given.
+            let p = ok(&h2(kind, &format!("{RSGDF}\n{cell}\ngdf_omega = 0.5"), ""));
+            assert_eq!(gdf_omega_of(&p), Some(0.5), "{kind}");
+            // An integer is a number too.
+            let p = ok(&h2(kind, &format!("{RSGDF}\n{cell}\ngdf_omega = 2"), ""));
+            assert_eq!(gdf_omega_of(&p), Some(2.0), "{kind}");
+            // Absent = the library default (None; today's build bit for bit).
+            let p = ok(&h2(kind, &format!("{RSGDF}\n{cell}"), ""));
+            assert_eq!(gdf_omega_of(&p), None, "{kind}");
+        }
+        // k-point energy and Gamma optimize carry it too.
+        let p = ok(&h2(
+            "rhf",
+            &format!("{RSGDF}\nkmesh = [1, 1, 2]\ngdf_omega = 0.5"),
+            "",
+        ));
+        assert!(p.kmesh.is_some());
+        assert_eq!(gdf_omega_of(&p), Some(0.5));
+        let p = ok(&opt("rhf", &format!("{RSGDF}\ngdf_omega = 0.5"), ""));
+        assert!(p.optimize);
+        assert_eq!(gdf_omega_of(&p), Some(0.5));
+        // unit = "angstrom" (the default): Å⁻¹, converted like [cell] omega.
+        let ang =
+            h2("rhf", &format!("{RSGDF}\ngdf_omega = 1.0"), "").replace("unit = \"bohr\"\n", "");
+        let p = ok(&ang);
+        assert!(!p.unit_bohr);
+        let want = 1.0 / ANGSTROM_TO_BOHR;
+        assert_eq!(gdf_omega_of(&p), Some(want));
+        assert!((want - 0.529_177_210_92).abs() < 1e-12);
+    }
+
+    #[test]
+    fn gdf_omega_refuses_a_bad_value() {
+        for v in ["0", "0.0", "-1.0", "nan", "inf", "-inf"] {
+            let e = err(&h2("rhf", &format!("{RSGDF}\ngdf_omega = {v}"), ""));
+            assert!(
+                e.contains("gdf_omega") && e.contains("finite and > 0"),
+                "{v}: {e}"
+            );
+        }
+        // A string is a type error from the typed parse.
+        let e = err(&h2("rhf", &format!("{RSGDF}\ngdf_omega = \"1.0\""), ""));
+        assert!(e.contains("gdf_omega") || e.contains("invalid type"), "{e}");
+    }
+
+    #[test]
+    fn gdf_omega_is_refused_by_the_dense_jk() {
+        for cell in [
+            "gdf_omega = 1.0",
+            "jk = \"dense\"\ngdf_omega = 1.0",
+            "kmesh = [1, 1, 2]\ngdf_omega = 1.0",
+        ] {
+            let e = err(&h2("rhf", cell, ""));
+            assert!(
+                e.contains("gdf_omega") && e.contains("dense") && e.contains("rsgdf"),
+                "{cell}: {e}"
+            );
+        }
+        // Even a bad value names the dense refusal (it is never read there).
+        let e = err(&h2("rhf", "gdf_omega = -1.0", ""));
+        assert!(e.contains("dense"), "{e}");
+        // The hcore split `omega` is a different knob and stays accepted.
+        let p = ok(&h2("rhf", "omega = 1.0", ""));
+        assert_eq!(p.omega_bohr, Some(1.0));
     }
 }
 

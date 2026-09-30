@@ -385,6 +385,68 @@ fn fitted_eri_is_omega_independent() {
     assert!(d < 1e-9, "{d:.3e}");
 }
 
+/// The user knob (`[cell] gdf_omega`, Python `gdf_omega=`) is
+/// `RsGdfConfig::omega`. Two claims, each with its artifact hypothesis:
+///
+/// * The RHF energy does not depend on ω_gdf beyond the fit's truncation
+///   (`PROTO_DE_TOL`, the bar the prototype comparison uses; the prototype's
+///   own ω scatter is ≤ 5e-11). If the SR/LR split were inconsistent at
+///   ω ≠ 1 (e.g. a hard-coded 1 in one kernel), dE would move by far more.
+/// * The knob REACHES the build: the recorded ω is the configured one, and
+///   the LR half-sphere (|G| ≤ 2ω√ln(1/p), so ∝ ω³ in count) shrinks at
+///   ω = 0.5 while the SR work (radii ∝ 1/ω) does not. A knob that was
+///   dropped would give identical counters and pass the energy check
+///   vacuously, so the counters are asserted first.
+#[test]
+fn rhf_energy_is_rsgdf_omega_independent_and_the_build_follows_omega() {
+    let cell = h2_cell(4.0);
+    let obs = prep_for(&cell, &pyscf_sto3g_h());
+    let hc = hcore(&cell, &obs);
+    let aux = PreparedBasis::new(cell.mol(), &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+    let runs: Vec<(f64, RsGdf, f64)> = [0.5, 1.0]
+        .iter()
+        .map(|&w| {
+            let gdf = RsGdf::build(&cell, &obs, &aux, &hc.s, &cfg(w)).unwrap();
+            let e = gamma_rhf_jk(
+                &cell,
+                &obs,
+                &hc,
+                Box::new(gdf.j_builder()),
+                Box::new(gdf.k_builder()),
+            )
+            .energy;
+            (w, gdf, e)
+        })
+        .collect();
+    for (w, gdf, e) in &runs {
+        let st = gdf.stats();
+        eprintln!(
+            "ω_gdf = {w}: E = {e:.12}, {} half-G, {} SR3 triplets, {} SR2 pairs, {} pair images",
+            st.n_g_half, st.n_sr3_triplets, st.n_sr2_pairs, st.n_pair_images
+        );
+        assert_eq!(st.omega, *w, "the build did not record the configured ω");
+    }
+    let (lo, hi) = (runs[0].1.stats(), runs[1].1.stats());
+    assert!(
+        lo.n_g_half < hi.n_g_half,
+        "LR half-G did not shrink with ω: {} (ω = 0.5) vs {} (ω = 1)",
+        lo.n_g_half,
+        hi.n_g_half
+    );
+    assert!(
+        lo.n_sr3_triplets >= hi.n_sr3_triplets,
+        "SR3 triplets fell with ω: {} (ω = 0.5) vs {} (ω = 1)",
+        lo.n_sr3_triplets,
+        hi.n_sr3_triplets
+    );
+    let de = runs[0].2 - runs[1].2;
+    eprintln!("E(ω = 0.5) − E(ω = 1) = {de:.3e}");
+    assert!(
+        de.abs() < PROTO_DE_TOL,
+        "RS-GDF energy moved with ω: {de:.3e}"
+    );
+}
+
 #[test]
 fn rsgdf_memory_gates_name_the_quantity_and_bytes() {
     let an = anchor();

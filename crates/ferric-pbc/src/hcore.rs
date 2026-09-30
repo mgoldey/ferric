@@ -64,6 +64,9 @@
 //!
 //! with `ω_gdf = 1`, `p_gdf = 1e-13` the RS-GDF defaults
 //! ([`crate::rsgdf::DEFAULT_RSGDF_OMEGA`], [`crate::rsgdf::DEFAULT_RSGDF_PRECISION`]).
+//! A run that sets its own RS-GDF ω (CLI `[cell] gdf_omega`, Python
+//! `gdf_omega=`) caps with that ω instead ([`default_hcore_omega_for_gdf`]);
+//! the cap is linear in `ω_gdf`.
 //! A function of the cell volume and `precision` only: never of the thread
 //! count, the budget or the basis. Any ω gives the same `V` up to truncation;
 //! the rule only moves cost.
@@ -188,11 +191,24 @@ pub const HCORE_OMEGA_EWALD_FACTOR: f64 = 2.5;
 /// sphere `2ω√ln(1/precision)` equals the DEFAULT RS-GDF LR sphere
 /// `2 ω_gdf √ln(1/p_gdf)` ([`crate::rsgdf::DEFAULT_RSGDF_OMEGA`] = 1,
 /// [`crate::rsgdf::DEFAULT_RSGDF_PRECISION`] = 1e-13; 0.9636 Bohr⁻¹ at
-/// [`DEFAULT_HCORE_PRECISION`]). Fixed constants, not the RS-GDF config of
-/// any particular run.
+/// [`DEFAULT_HCORE_PRECISION`]). A run that sets its own RS-GDF ω uses
+/// [`hcore_omega_cap_for_gdf`] instead.
 pub fn hcore_omega_cap(precision: f64) -> f64 {
-    let gdf = (1.0 / crate::rsgdf::DEFAULT_RSGDF_PRECISION).ln();
-    crate::rsgdf::DEFAULT_RSGDF_OMEGA * (gdf / (1.0 / precision).ln()).sqrt()
+    hcore_omega_cap_for_gdf(
+        precision,
+        crate::rsgdf::DEFAULT_RSGDF_OMEGA,
+        crate::rsgdf::DEFAULT_RSGDF_PRECISION,
+    )
+}
+
+/// [`hcore_omega_cap`] for an RS-GDF build at `(gdf_omega, gdf_precision)`:
+/// the ω whose hcore LR sphere `2ω√ln(1/precision)` equals that build's LR
+/// sphere `2 gdf_omega √ln(1/gdf_precision)`. Linear in `gdf_omega`;
+/// `hcore_omega_cap_for_gdf(p, DEFAULT_RSGDF_OMEGA, DEFAULT_RSGDF_PRECISION)`
+/// is [`hcore_omega_cap`]`(p)` bit for bit.
+pub fn hcore_omega_cap_for_gdf(precision: f64, gdf_omega: f64, gdf_precision: f64) -> f64 {
+    let gdf = (1.0 / gdf_precision).ln();
+    gdf_omega * (gdf / (1.0 / precision).ln()).sqrt()
 }
 
 /// The default nuclear-attraction split (Bohr⁻¹) for `cell` at hcore
@@ -204,6 +220,17 @@ pub fn hcore_omega_cap(precision: f64) -> f64 {
 /// replaced by this.
 pub fn default_hcore_omega(cell: &Cell, precision: f64) -> f64 {
     (HCORE_OMEGA_EWALD_FACTOR * default_ewald_omega(cell)).min(hcore_omega_cap(precision))
+}
+
+/// [`default_hcore_omega`] with the cap taken from an RS-GDF build at
+/// `gdf_omega` (and [`crate::rsgdf::DEFAULT_RSGDF_PRECISION`]):
+/// `min(HCORE_OMEGA_EWALD_FACTOR · √π/Ω^{1/3},
+/// hcore_omega_cap_for_gdf(precision, gdf_omega, DEFAULT_RSGDF_PRECISION))`,
+/// so the hcore G sphere stays inside the sphere that build walks. At
+/// `gdf_omega = DEFAULT_RSGDF_OMEGA` it is [`default_hcore_omega`] bit for bit.
+pub fn default_hcore_omega_for_gdf(cell: &Cell, precision: f64, gdf_omega: f64) -> f64 {
+    let cap = hcore_omega_cap_for_gdf(precision, gdf_omega, crate::rsgdf::DEFAULT_RSGDF_PRECISION);
+    (HCORE_OMEGA_EWALD_FACTOR * default_ewald_omega(cell)).min(cap)
 }
 
 /// Settings for [`periodic_hcore`].
@@ -242,6 +269,22 @@ impl PeriodicHcoreConfig {
     /// [`default_hcore_omega`]`(cell, DEFAULT_HCORE_PRECISION)`.
     pub fn for_cell(cell: &Cell) -> Self {
         Self::with_omega(default_hcore_omega(cell, DEFAULT_HCORE_PRECISION))
+    }
+
+    /// [`PeriodicHcoreConfig::for_cell`] for a run whose RS-GDF build uses
+    /// `gdf_omega` (Bohr⁻¹): the default split capped by that build's LR
+    /// sphere ([`default_hcore_omega_for_gdf`]). `None` (the RS-GDF default,
+    /// or no RS-GDF) is `for_cell`; so is `Some(DEFAULT_RSGDF_OMEGA)`, bit
+    /// for bit.
+    pub fn for_cell_and_gdf_omega(cell: &Cell, gdf_omega: Option<f64>) -> Self {
+        match gdf_omega {
+            None => Self::for_cell(cell),
+            Some(w) => Self::with_omega(default_hcore_omega_for_gdf(
+                cell,
+                DEFAULT_HCORE_PRECISION,
+                w,
+            )),
+        }
     }
 
     /// The periodic-ECP settings `periodic_hcore` uses: the same precision and

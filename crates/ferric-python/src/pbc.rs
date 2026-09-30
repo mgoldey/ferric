@@ -5,7 +5,8 @@
 //!
 //! Conventions (shared with `run_rhf_gamma`, whose helpers this module
 //! reuses): `Molecule` coordinates and `lattice` rows in Ångström, every
-//! `omega` in Å⁻¹, energies in Hartree per cell. Strict parsing: an unknown
+//! `omega` in Å⁻¹ (the hcore `omega` and the RS-GDF `gdf_omega`, which
+//! `jk="dense"` refuses), energies in Hartree per cell. Strict parsing: an unknown
 //! string knob, or a knob the chosen path would ignore, is a `ValueError`.
 //! A refusal from the Rust side (`FerricError::General`, which is how every
 //! `ferric-pbc` config/shape/budget check reports) is a `ValueError` carrying
@@ -24,7 +25,7 @@ use ferric_core::FerricError;
 use ferric_pbc::dense_aft::{DEFAULT_DENSE_AFT_MAX_BYTES, DEFAULT_DENSE_AFT_PRECISION};
 use ferric_pbc::drpa::DEFAULT_GAMMA_DRPA_QUAD_POINTS;
 use ferric_pbc::kcorr::DEFAULT_KDRPA_QUAD_POINTS;
-use ferric_pbc::rsgdf::DEFAULT_RANGE_SPLIT_LAMBDA;
+use ferric_pbc::rsgdf::{DEFAULT_RANGE_SPLIT_LAMBDA, DEFAULT_RSGDF_OMEGA};
 use ferric_pbc::{
     gamma_drpa, gamma_mp2, gamma_rks, gamma_rohf, gamma_roks, gamma_uhf, gamma_uks, kpoint_drpa,
     kpoint_mp2, periodic_hcore, periodic_hcore_kpts, solve_krhf, solve_krhf_injected, solve_kuhf,
@@ -244,6 +245,8 @@ struct PbcArgs<'a, 'py> {
     basis: &'a PyBasisSet,
     exxdiv: &'a str,
     omega: Option<f64>,
+    /// RS-GDF Ewald split, Å⁻¹ (`None` = `DEFAULT_RSGDF_OMEGA`); rsgdf only.
+    gdf_omega: Option<f64>,
     jk: &'a str,
     auxbasis: Option<&'a Bound<'py, PyAny>>,
     max_eri_gb: Option<f64>,
@@ -260,6 +263,9 @@ struct PbcSetup {
     exx: ExxDiv,
     /// Nuclear-attraction Ewald split (Bohr⁻¹), resolved.
     omega_bohr: f64,
+    /// Explicit RS-GDF Ewald split (Bohr⁻¹); `None` = `DEFAULT_RSGDF_OMEGA`
+    /// (bit for bit) or dense AFT. Read through [`PbcSetup::rsgdf_omega`].
+    gdf_omega_bohr: Option<f64>,
     /// RS-GDF aux basis on the cell's atoms; `None` = dense AFT.
     aux: Option<PreparedBasis>,
     aux_name: Option<String>,
@@ -279,6 +285,32 @@ impl PbcSetup {
     fn jk_name(&self) -> String {
         if self.aux.is_some() { "rsgdf" } else { "dense" }.into()
     }
+
+    /// The RS-GDF Ewald split every build of this call uses (Bohr⁻¹).
+    fn rsgdf_omega(&self) -> f64 {
+        self.gdf_omega_bohr.unwrap_or(DEFAULT_RSGDF_OMEGA)
+    }
+}
+
+/// The `gdf_omega` kwarg (Å⁻¹, like `omega`) -> Bohr⁻¹. Strict: with
+/// jk="dense" (which has no RS-GDF split) it is a `ValueError`, as is a
+/// non-finite or non-positive value.
+pub(crate) fn parse_gdf_omega(
+    fname: &str,
+    gdf_omega: Option<f64>,
+    rsgdf: bool,
+) -> PyResult<Option<f64>> {
+    let Some(w) = gdf_omega else {
+        return Ok(None);
+    };
+    if !rsgdf {
+        return Err(val_err(format!(
+            "{fname}: gdf_omega={w} is the RS-GDF Ewald split and is ignored by \
+             jk=\"dense\"; pass jk=\"rsgdf\" (with auxbasis) or drop gdf_omega. The \
+             nuclear-attraction split is omega"
+        )));
+    }
+    Ok(Some(positive(fname, "gdf_omega", w)? / ANGSTROM_TO_BOHR))
 }
 
 fn pbc_setup(a: &PbcArgs<'_, '_>) -> PyResult<PbcSetup> {
@@ -296,6 +328,8 @@ fn pbc_setup(a: &PbcArgs<'_, '_>) -> PyResult<PbcSetup> {
         a.lattice,
         a.omega,
     )?;
+    // parse_gamma_options made auxbasis <=> jk="rsgdf".
+    let gdf_omega_bohr = parse_gdf_omega(a.fname, a.gdf_omega, a.auxbasis.is_some())?;
     // The ECP (if the basis carries one) is applied here, before the Cell is
     // built; `periodic_hcore(_kpts)` adds V_ECP and re-checks it.
     let emol = if a.closed_shell {
@@ -318,13 +352,19 @@ fn pbc_setup(a: &PbcArgs<'_, '_>) -> PyResult<PbcSetup> {
             (Some(p), Some(bs.name))
         }
     };
-    let omega_bohr = omega_bohr.unwrap_or_else(|| PeriodicHcoreConfig::for_cell(&cell).omega);
+    // The default hcore split is capped by the RS-GDF LR sphere, so it
+    // follows an explicit gdf_omega (absent: `for_cell`, bit for bit).
+    let omega_bohr = match omega_bohr {
+        Some(w) => w,
+        None => PeriodicHcoreConfig::for_cell_and_gdf_omega(&cell, gdf_omega_bohr).omega,
+    };
     Ok(PbcSetup {
         fname: a.fname,
         cell,
         prep,
         exx,
         omega_bohr,
+        gdf_omega_bohr,
         aux,
         aux_name,
         max_eri_bytes: a
@@ -469,6 +509,7 @@ fn gamma_system(s: &PbcSetup) -> Result<GammaSystem, FerricError> {
         )?)),
         Some(aux) => {
             let cfg = RsGdfConfig {
+                omega: s.rsgdf_omega(),
                 exxdiv: s.exx,
                 budget_bytes: s.budget_bytes,
                 range_split: s.range_split,
@@ -1066,6 +1107,7 @@ fn run_open_shell(
     max_eri_gb=None, max_iter=200, density_conv=1e-10, jk="dense",
     auxbasis=None, memory_budget_gb=None, with_gradient=false, with_stress=false,
     range_split=None,
+    gdf_omega=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_uhf_gamma(
@@ -1085,6 +1127,7 @@ fn run_uhf_gamma(
     with_gradient: bool,
     with_stress: bool,
     range_split: Option<&Bound<'_, PyAny>>,
+    gdf_omega: Option<f64>,
 ) -> PyResult<PyGammaOpenShellResult> {
     let fname = "run_uhf_gamma";
     let mut s = pbc_setup(&PbcArgs {
@@ -1094,6 +1137,7 @@ fn run_uhf_gamma(
         basis: basis_set,
         exxdiv,
         omega,
+        gdf_omega,
         jk,
         auxbasis,
         max_eri_gb,
@@ -1135,6 +1179,7 @@ fn run_uhf_gamma(
     max_eri_gb=None, max_iter=200, density_conv=1e-10, jk="dense",
     auxbasis=None, memory_budget_gb=None, with_gradient=false, with_stress=false,
     range_split=None,
+    gdf_omega=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_rohf_gamma(
@@ -1154,6 +1199,7 @@ fn run_rohf_gamma(
     with_gradient: bool,
     with_stress: bool,
     range_split: Option<&Bound<'_, PyAny>>,
+    gdf_omega: Option<f64>,
 ) -> PyResult<PyGammaOpenShellResult> {
     let fname = "run_rohf_gamma";
     let mut s = pbc_setup(&PbcArgs {
@@ -1163,6 +1209,7 @@ fn run_rohf_gamma(
         basis: basis_set,
         exxdiv,
         omega,
+        gdf_omega,
         jk,
         auxbasis,
         max_eri_gb,
@@ -1200,6 +1247,7 @@ fn run_rohf_gamma(
     auxbasis=None, memory_budget_gb=None, n_radial=75, n_angular=302,
     neighbour_cutoff=None, with_gradient=false, with_stress=false,
     range_split=None,
+    gdf_omega=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_uks_gamma(
@@ -1223,6 +1271,7 @@ fn run_uks_gamma(
     with_gradient: bool,
     with_stress: bool,
     range_split: Option<&Bound<'_, PyAny>>,
+    gdf_omega: Option<f64>,
 ) -> PyResult<PyGammaOpenShellResult> {
     let fname = "run_uks_gamma";
     let mut s = pbc_setup(&PbcArgs {
@@ -1232,6 +1281,7 @@ fn run_uks_gamma(
         basis: basis_set,
         exxdiv,
         omega,
+        gdf_omega,
         jk,
         auxbasis,
         max_eri_gb,
@@ -1275,6 +1325,7 @@ fn run_uks_gamma(
     auxbasis=None, memory_budget_gb=None, n_radial=75, n_angular=302,
     neighbour_cutoff=None, with_gradient=false, with_stress=false,
     range_split=None,
+    gdf_omega=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_roks_gamma(
@@ -1298,6 +1349,7 @@ fn run_roks_gamma(
     with_gradient: bool,
     with_stress: bool,
     range_split: Option<&Bound<'_, PyAny>>,
+    gdf_omega: Option<f64>,
 ) -> PyResult<PyGammaOpenShellResult> {
     let fname = "run_roks_gamma";
     let mut s = pbc_setup(&PbcArgs {
@@ -1307,6 +1359,7 @@ fn run_roks_gamma(
         basis: basis_set,
         exxdiv,
         omega,
+        gdf_omega,
         jk,
         auxbasis,
         max_eri_gb,
@@ -1443,6 +1496,7 @@ fn rks_driver(
     auxbasis=None, memory_budget_gb=None, n_radial=75, n_angular=302,
     neighbour_cutoff=None, with_gradient=false, with_stress=false,
     range_split=None,
+    gdf_omega=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_rks_gamma(
@@ -1465,6 +1519,7 @@ fn run_rks_gamma(
     with_gradient: bool,
     with_stress: bool,
     range_split: Option<&Bound<'_, PyAny>>,
+    gdf_omega: Option<f64>,
 ) -> PyResult<PyGammaRksResult> {
     let fname = "run_rks_gamma";
     let mut s = pbc_setup(&PbcArgs {
@@ -1474,6 +1529,7 @@ fn run_rks_gamma(
         basis: basis_set,
         exxdiv,
         omega,
+        gdf_omega,
         jk,
         auxbasis,
         max_eri_gb,
@@ -1735,6 +1791,7 @@ fn run_gamma_corr(
     mol, lattice, basis_set, exxdiv, denominators, omega=None, max_eri_gb=None,
     max_iter=200, density_conv=1e-10, jk="dense", auxbasis=None,
     memory_budget_gb=None, frozen_core=0, range_split=None,
+    gdf_omega=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_mp2_gamma(
@@ -1753,6 +1810,7 @@ fn run_mp2_gamma(
     memory_budget_gb: Option<f64>,
     frozen_core: usize,
     range_split: Option<&Bound<'_, PyAny>>,
+    gdf_omega: Option<f64>,
 ) -> PyResult<PyGammaCorrelationResult> {
     let fname = "run_mp2_gamma";
     let mut s = pbc_setup(&PbcArgs {
@@ -1762,6 +1820,7 @@ fn run_mp2_gamma(
         basis: basis_set,
         exxdiv,
         omega,
+        gdf_omega,
         jk,
         auxbasis,
         max_eri_gb,
@@ -1793,6 +1852,7 @@ fn run_mp2_gamma(
     mol, lattice, basis_set, exxdiv, denominators, omega=None, max_eri_gb=None,
     max_iter=200, density_conv=1e-10, jk="dense", auxbasis=None,
     memory_budget_gb=None, frozen_core=0, quad_points=None, range_split=None,
+    gdf_omega=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_drpa_gamma(
@@ -1812,6 +1872,7 @@ fn run_drpa_gamma(
     frozen_core: usize,
     quad_points: Option<usize>,
     range_split: Option<&Bound<'_, PyAny>>,
+    gdf_omega: Option<f64>,
 ) -> PyResult<PyGammaCorrelationResult> {
     let fname = "run_drpa_gamma";
     let mut s = pbc_setup(&PbcArgs {
@@ -1821,6 +1882,7 @@ fn run_drpa_gamma(
         basis: basis_set,
         exxdiv,
         omega,
+        gdf_omega,
         jk,
         auxbasis,
         max_eri_gb,
@@ -1985,6 +2047,7 @@ fn kdense_config(s: &PbcSetup) -> KDenseAftConfig {
 fn krsgdf_config(s: &PbcSetup) -> KRsGdfConfig {
     KRsGdfConfig {
         gdf: RsGdfConfig {
+            omega: s.rsgdf_omega(),
             budget_bytes: s.budget_bytes,
             range_split: s.range_split,
             ..Default::default()
@@ -2102,6 +2165,7 @@ fn krhf_driver(
     mol, lattice, basis_set, mesh, exxdiv="ewald", centring="gamma", omega=None,
     max_eri_gb=None, max_iter=200, energy_conv=1e-12, grad_conv=1e-9,
     jk="dense", auxbasis=None, memory_budget_gb=None, range_split=None,
+    gdf_omega=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_rhf_kpts(
@@ -2121,6 +2185,7 @@ fn run_rhf_kpts(
     auxbasis: Option<&Bound<'_, PyAny>>,
     memory_budget_gb: Option<f64>,
     range_split: Option<&Bound<'_, PyAny>>,
+    gdf_omega: Option<f64>,
 ) -> PyResult<PyKpointScfResult> {
     let fname = "run_rhf_kpts";
     let mut s = pbc_setup(&PbcArgs {
@@ -2130,6 +2195,7 @@ fn run_rhf_kpts(
         basis: basis_set,
         exxdiv,
         omega,
+        gdf_omega,
         jk,
         auxbasis,
         max_eri_gb,
@@ -2188,6 +2254,7 @@ fn kuhf_driver(
     ewald_start=None, omega=None, max_eri_gb=None, max_iter=200,
     energy_conv=1e-12, grad_conv=1e-9, jk="dense", auxbasis=None,
     memory_budget_gb=None, range_split=None,
+    gdf_omega=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_uhf_kpts(
@@ -2208,6 +2275,7 @@ fn run_uhf_kpts(
     auxbasis: Option<&Bound<'_, PyAny>>,
     memory_budget_gb: Option<f64>,
     range_split: Option<&Bound<'_, PyAny>>,
+    gdf_omega: Option<f64>,
 ) -> PyResult<PyKpointScfResult> {
     let fname = "run_uhf_kpts";
     let mut s = pbc_setup(&PbcArgs {
@@ -2217,6 +2285,7 @@ fn run_uhf_kpts(
         basis: basis_set,
         exxdiv,
         omega,
+        gdf_omega,
         jk,
         auxbasis,
         max_eri_gb,
@@ -2553,6 +2622,7 @@ fn run_kcorr(
     omega=None, max_eri_gb=None, max_iter=200, energy_conv=1e-12,
     grad_conv=1e-9, jk="dense", auxbasis=None, memory_budget_gb=None,
     frozen_core=0,
+    gdf_omega=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_mp2_kpts(
@@ -2573,6 +2643,7 @@ fn run_mp2_kpts(
     auxbasis: Option<&Bound<'_, PyAny>>,
     memory_budget_gb: Option<f64>,
     frozen_core: usize,
+    gdf_omega: Option<f64>,
 ) -> PyResult<PyKpointCorrelationResult> {
     let fname = "run_mp2_kpts";
     let s = pbc_setup(&PbcArgs {
@@ -2582,6 +2653,7 @@ fn run_mp2_kpts(
         basis: basis_set,
         exxdiv,
         omega,
+        gdf_omega,
         jk,
         auxbasis,
         max_eri_gb,
@@ -2614,6 +2686,7 @@ fn run_mp2_kpts(
     omega=None, max_eri_gb=None, max_iter=200, energy_conv=1e-12,
     grad_conv=1e-9, jk="dense", auxbasis=None, memory_budget_gb=None,
     frozen_core=0, energy="quadrature", quad_points=None,
+    gdf_omega=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_drpa_kpts(
@@ -2636,6 +2709,7 @@ fn run_drpa_kpts(
     frozen_core: usize,
     energy: &str,
     quad_points: Option<usize>,
+    gdf_omega: Option<f64>,
 ) -> PyResult<PyKpointCorrelationResult> {
     let fname = "run_drpa_kpts";
     let s = pbc_setup(&PbcArgs {
@@ -2645,6 +2719,7 @@ fn run_drpa_kpts(
         basis: basis_set,
         exxdiv,
         omega,
+        gdf_omega,
         jk,
         auxbasis,
         max_eri_gb,

@@ -429,6 +429,71 @@ fn default_hcore_omega_follows_the_rule_on_three_cells() {
     assert_eq!(PeriodicHcoreConfig::with_omega(0.417).omega, 0.417);
 }
 
+/// The default split's cap follows an explicit RS-GDF ω (`[cell] gdf_omega`,
+/// Python `gdf_omega=`): the gdf-aware functions are the plain ones BIT FOR
+/// BIT at `DEFAULT_RSGDF_OMEGA` (an omitted knob changes nothing), the cap is
+/// linear in ω_gdf and keeps the hcore LR sphere on that build's sphere, and
+/// only a capped cell (diamond_prim) moves.
+#[test]
+fn default_hcore_omega_cap_follows_the_rsgdf_omega() {
+    use ferric_pbc::hcore::{
+        default_hcore_omega, default_hcore_omega_for_gdf, hcore_omega_cap, hcore_omega_cap_for_gdf,
+    };
+    use ferric_pbc::rsgdf::{DEFAULT_RSGDF_OMEGA, DEFAULT_RSGDF_PRECISION};
+
+    let p = DEFAULT_HCORE_PRECISION;
+    let cap1 = hcore_omega_cap(p);
+    assert_eq!(
+        hcore_omega_cap_for_gdf(p, DEFAULT_RSGDF_OMEGA, DEFAULT_RSGDF_PRECISION).to_bits(),
+        cap1.to_bits()
+    );
+    for w in [0.5, 2.0] {
+        let cap = hcore_omega_cap_for_gdf(p, w, DEFAULT_RSGDF_PRECISION);
+        assert!((cap - w * cap1).abs() < 1e-15, "ω_gdf = {w}: cap {cap}");
+        let g_hcore = 2.0 * cap * (1.0 / p).ln().sqrt();
+        let g_gdf = 2.0 * w * (1.0 / DEFAULT_RSGDF_PRECISION).ln().sqrt();
+        assert!((g_hcore - g_gdf).abs() < 1e-12, "{g_hcore} vs {g_gdf}");
+    }
+
+    let prim = diamond_cell(DIAMOND_PRIM_LATTICE);
+    let conv = diamond_cell(cubic(DIAMOND_CONV_A));
+    for cell in [&prim, &conv] {
+        let w = default_hcore_omega(cell, p);
+        assert_eq!(
+            default_hcore_omega_for_gdf(cell, p, DEFAULT_RSGDF_OMEGA).to_bits(),
+            w.to_bits()
+        );
+        assert_eq!(
+            PeriodicHcoreConfig::for_cell_and_gdf_omega(cell, Some(DEFAULT_RSGDF_OMEGA))
+                .omega
+                .to_bits(),
+            PeriodicHcoreConfig::for_cell(cell).omega.to_bits()
+        );
+        assert_eq!(
+            PeriodicHcoreConfig::for_cell_and_gdf_omega(cell, None)
+                .omega
+                .to_bits(),
+            PeriodicHcoreConfig::for_cell(cell).omega.to_bits()
+        );
+    }
+    // diamond_prim is capped (uncapped 1.0435 > 0.9636): a smaller ω_gdf
+    // lowers the cap and with it the default split.
+    let w_half = default_hcore_omega_for_gdf(&prim, p, 0.5);
+    assert!((w_half - 0.5 * cap1).abs() < 1e-15, "{w_half}");
+    assert_eq!(
+        PeriodicHcoreConfig::for_cell_and_gdf_omega(&prim, Some(0.5)).omega,
+        w_half
+    );
+    // diamond_conv sits below the cap (0.657): a larger ω_gdf leaves it alone,
+    // ω_gdf = 0.5 (cap 0.482) caps it.
+    let w_conv = default_hcore_omega(&conv, p);
+    assert_eq!(
+        default_hcore_omega_for_gdf(&conv, p, 2.0).to_bits(),
+        w_conv.to_bits()
+    );
+    assert!(default_hcore_omega_for_gdf(&conv, p, 0.5) < w_conv);
+}
+
 /// diamond_prim STO-3G: the hcore at the OLD default split (√π/Ω^{1/3} =
 /// 0.417) and at the new one (0.964) is the same matrix to truncation, and
 /// the new split really moved the work (fewer SR triplets, more G).
