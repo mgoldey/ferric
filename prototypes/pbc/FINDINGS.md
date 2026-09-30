@@ -5717,3 +5717,63 @@ Dry ice Γ RHF, one sample per cell, each run gated on a 1-minute load below 1.5
 - **Hypotheses, not measured:** the hcore scaling is the libint per-call inflation under threads;
   the LR cost is ferric's fixed ω = 1 and 13372 half-G against PySCF's adaptive ω/mesh. PySCF's
   ω and G count for dry ice have not been checked.
+
+## Why PySCF is faster: RS-GDF ω sweep, PySCF SR triplet count, libint threading (measured 2026-09-29 evening)
+
+**ferric gdf_omega sweep** (dry ice Γ RHF, cc-pVDZ / cc-pvdz-ri, range split, 6 threads, head
+b82a45f3, one sample per point, each run gated on a 1-minute load below 1.5):
+
+| ω (Bohr⁻¹) | total | SR 3-centre | SR3 triplets | LR pair FT + aux FT/GEMM | LR half-G | E − E(ω=1) |
+|---|---|---|---|---|---|---|
+| 1.0 | 43.0 s | 9.3 s | 19.1 M | 15.4 s | 13372 | 0 |
+| 0.7 | 55.0 s | 31.9 s | 69.2 M | 4.9 s | 4522 | +1.7e-11 |
+| 0.5 | 99.5 s | 77.1 s | 126.7 M | 2.3 s | 1643 | +5.2e-11 |
+| 0.3 | 204.5 s | 172.6 s | 292.8 M | 0.6 s | 369 | +1.5e-10 |
+
+hcore SR attraction also grows at ω = 0.3 (26.1 s), because its ω cap follows gdf_omega. In
+ferric, ω = 1 is the fastest point.
+
+**PySCF 2.13 GDF on the same cell** (`reference/pbc/bench/pyscf_sr3_count.py`, 6 threads,
+cell.precision 1e-12):
+- ω = 0.321 with a 15³ LR mesh. The mesh stays at 15³ for precisions 1e-10 to 1e-14; only ω
+  moves.
+- DF build 14.4 s wall: SR libcint 7.86 s wall / 45.6 s CPU, LR pair FT 2.8 s, j2c 1.4 s, LR
+  GEMM 0.9 s.
+- SR count: 46.8 M libcint calls over unique (s2) orbital pairs, 91.3 M over ordered (s1) pairs.
+  In contraction-column units, ferric's counter unit, that is 238 M (s2) and 463 M (s1).
+- The count replicates PySCF's own C screen, validated equal to a C-callback count on toy cells.
+
+**CPU per contraction-column SR triplet:**
+
+| code | cost |
+|---|---|
+| PySCF, 6 threads | 0.19 µs |
+| ferric ω = 1, 1 thread | 1.45 µs |
+| ferric ω = 1, 6 threads | 2.9 µs |
+| ferric ω = 0.3, 6 threads | 3.5 µs |
+
+**Three causes, provisional:**
+1. **Generally contracted shells are not batched.** One libcint call covers ~5 column triplets
+   that share primitives; ferric calls libint once per column.
+2. **Ordered pairs.** PySCF computes unique orbital pairs (s2). ferric's counter is over ordered
+   pairs; whether ferric also *computes* both orders is to be checked.
+3. **libint threading defect.** See below.
+
+Causes 1 and 2 are why a small ω does not pay off in ferric; cause 3 is why it scales ~3× rather
+than ~5×.
+
+**libint threading** (`examples/pbc_parallel_contention.rs`, 20000 calls, best of 3). Per-call
+inflation at 6:
+
+| variant | 6 threads in one process | 6 separate 1-thread processes |
+|---|---|---|
+| sr3-own (erfc 3-centre) | 3.28× | 1.05-1.07× |
+| hcore-pool (erfc Gaussian nucleus) | 4.07× | 1.00-1.08× |
+| ctl-fp (register FP control) | 1.13× | 1.00-1.02× |
+
+The cost is state shared inside one process, not the hardware. This matches the diagnosis in
+`reference/pbc/libint-threading-research.md`: libint2 `GenericGmEval::eval` copies the erfc/erf
+evaluator for every primitive quartet (heap scratch plus a shared_ptr copy of the process-wide
+Boys table, i.e. malloc/free and an atomic refcount on one shared cache line). The copy is
+present in ferric's compiled shim.o. A header patch that keeps the arithmetic bit-identical is
+being written.
