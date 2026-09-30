@@ -410,7 +410,8 @@ def _write(system, payload, xyz, symbols, coords, basis_check, t0) -> Path:
             "stability": "cation: internal=True, restart from the unstable direction, "
             f"max {MAX_STAB_ROUNDS} rounds; PySCF KS response omits the VV10 kernel",
             "neutral_rij_shift": "E_neutral(RI-J, same aux) - E_neutral(exact J): the "
-            "shift ferric's DEFAULT OmegaTuneConfig puts into IP (recorded, not compared)",
+            "IP error a mixed RI-J neutral / exact-J cation would carry; tune_omega "
+            "resolves unset df_j_aux to exact J (recorded, not compared)",
             "root_finder": f"scipy.optimize.brentq on signed J, xtol {XTOL}",
             "numpy": numpy.__version__,
         },

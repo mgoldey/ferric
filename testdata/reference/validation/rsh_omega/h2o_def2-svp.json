@@ -176,7 +176,7 @@
         "huckel"
       ],
       "stability": "cation: internal=True, restart from the unstable direction, max 10 rounds; PySCF KS response omits the VV10 kernel",
-      "neutral_rij_shift": "E_neutral(RI-J, same aux) - E_neutral(exact J): the shift ferric's DEFAULT OmegaTuneConfig puts into IP (recorded, not compared)",
+      "neutral_rij_shift": "E_neutral(RI-J, same aux) - E_neutral(exact J): the IP error a mixed RI-J neutral / exact-J cation would carry; tune_omega resolves unset df_j_aux to exact J (recorded, not compared)",
       "root_finder": "scipy.optimize.brentq on signed J, xtol 1e-07",
       "numpy": "1.26.4"
     },
