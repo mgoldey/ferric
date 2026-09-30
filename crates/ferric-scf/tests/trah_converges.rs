@@ -165,8 +165,11 @@ fn rks_pbe_trah_matches_diis_and_engages_the_gga_kernel() {
 /// energy moved by exactly 0, ρ = 0 rejected the step, and the identical step
 /// was recomputed 28 times — 74 iterations, 28 rejections. With the guard:
 /// 15 iterations, 0 rejections, the same energy. The iteration bar (30) sits
-/// between the two with headroom above the fixed side; the energy is compared
-/// with the unguarded run's endpoint, which the guard must not change.
+/// between the two with headroom above the fixed side, and is what detects the
+/// defect. The energy check is only a sanity bound: OH is a near-degenerate
+/// radical whose endpoint depends on the arithmetic — the CI runner lands
+/// 4.9e-7 Ha above the local −75.6449107465 (16 iterations), and DIIS lands
+/// 1.1e-6 above it — so a 1e-8 bar against one machine's number is not portable.
 #[test]
 fn uks_trah_defers_to_diis_instead_of_cycling_null_steps() {
     let mol = oh_doublet();
@@ -203,9 +206,11 @@ fn uks_trah_defers_to_diis_instead_of_cycling_null_steps() {
         "{} iterations: the null-step cycle is back (unguarded: 74; guarded: 15)",
         r.iterations
     );
-    // The endpoint both the guarded and unguarded runs reach (1e-12 apart).
+    // Sanity bound on the endpoint, not a precision check (see the doc comment):
+    // measured spread across machines and solvers is ≤ 1.1e-6 Ha, while a wrong
+    // state or a broken step is off by mHa.
     assert!(
-        (r.energy - (-75.6449107465)).abs() < 1e-8,
+        (r.energy - (-75.6449107465)).abs() < 1e-5,
         "energy {:.10} moved from the TRAH endpoint -75.6449107465",
         r.energy
     );
