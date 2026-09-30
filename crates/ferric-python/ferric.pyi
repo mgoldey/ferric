@@ -2095,8 +2095,16 @@ def hirshfeld_charges(
     mol: Molecule,
     basis_set: BasisSet,
     result: RhfResult | DftResult,
+    proatom: str = "scf",
 ) -> list[float]:
-    """Hirshfeld partial charges (units of e)."""
+    """Hirshfeld partial charges (units of e).
+
+    proatom="scf" (default): free-atom SCF densities in the molecule's basis,
+    solved with the same SCF settings as `result` -- the proatom the CLI's
+    `[rpa] compute_hirshfeld_charges` uses. proatom="slater": a
+    single-exponential Slater proatom (qualitative; warns). Any other value
+    raises ValueError.
+    """
     ...
 
 def lowdin_charges(

@@ -23,8 +23,9 @@ What this test does, end to end:
    uses by default, and the same convergence thresholds):
    * coords / atomic_numbers: EXACT (both parse the same xyz; a transposed or
      reordered write fails here because coords is not symmetric);
-   * density, orbital energies, ESP at nuclei, Loewdin/Mulliken/CHELPG/RESP
-     charges, orbital centroids and spreads, density second moment: at the
+   * density, orbital energies, ESP at nuclei, Loewdin/Mulliken/Hirshfeld/
+     CHELPG/RESP charges (Hirshfeld: the binding's default free-atom SCF
+     proatom, the CLI's provider), orbital centroids and spreads, density second moment: at the
      SCF-reproducibility bar (two separate SCF runs; not bit-identical by
      construction -- see TOLERANCES);
    * electric_field: against a central difference of the binding's
@@ -82,6 +83,10 @@ DENSITY_CONV = 1e-8
 TOL_DENSITY = 1e-12
 TOL_EPS = 1e-12
 TOL_PROP = 5e-12
+# Hirshfeld charges: both sides build free-atom SCF proatoms with the same
+# settings via ferric_scf::properties::scf_proatom_provider. Measured
+# 2026-09-30: 4.3e-14 e.
+TOL_HIRSHFELD = 1e-10
 TOL_FIELD_FD = 2e-7
 FD_H = 1e-4  # Bohr
 TOL_DIPOLE = 1e-13
@@ -292,6 +297,12 @@ def test_scf_quantities_match_bindings(bundle, python_side):
             bundle["lowdin_charges"],
             ferric.lowdin_charges(mol, bs, rhf),
             TOL_PROP,
+        ),
+        (
+            "hirshfeld_charges",
+            bundle["hirshfeld_charges"],
+            ferric.hirshfeld_charges(mol, bs, rhf),
+            TOL_HIRSHFELD,
         ),
         (
             "mulliken_charges",

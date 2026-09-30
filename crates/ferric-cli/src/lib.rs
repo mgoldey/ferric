@@ -967,72 +967,12 @@ pub fn run(args: Vec<String>) {
         })
     };
 
-    // Ad-hoc same-basis Hirshfeld proatom: neutral free-atom densities computed
-    // in the molecule's OWN basis (basis-consistent partition; fixes the legacy
-    // single-Slater H-starvation). Built lazily via atomic SCF; shared by all
-    // Hirshfeld consumers (charges, effective volumes, per-atom polarizability).
-    let proatom_radii: Vec<f64> = (1..=600).map(|k| k as f64 * 0.05).collect(); // 0.05..30 Bohr
-    let proatom_gs_mult = |z: i32| -> usize {
-        match z {
-            // Doublets: H, Li, B, F, Na, Al, Cl, Ga, Br (one unpaired p/s e⁻)
-            1 | 3 | 5 | 9 | 11 | 13 | 17 | 31 | 35 | 53 => 2,
-            // ²S alkali-like heavy atoms + coinage metals (single ns valence e⁻):
-            // K, Cu, Rb, Ag. Kept in sync with guess::atom_ground_state_mult —
-            // without these an odd-electron atom hits `_ => 1` and its closed-shell
-            // proatom RHF fails at iter 0 (breaks the Hirshfeld/TS proatom for any
-            // Cu/K/Rb/Ag-containing molecule).
-            19 | 29 | 37 | 47 => 2,
-            // Triplets (³P): C, O, Si, S, Ge, Se
-            6 | 8 | 14 | 16 | 32 | 34 => 3,
-            // Quartets (⁴S): N, P, As
-            7 | 15 | 33 => 4,
-            // Odd electron count can never be a singlet: default odd Z to a doublet.
-            _ if z % 2 == 1 => 2,
-            _ => 1,
-        }
-    };
-    let proatom = |z: i32, qi: i32| -> Option<ferric_rpa::properties::RadialProatom> {
-        if qi != 0 || z - qi <= 0 {
-            return None; // neutral only; ions via fallback
-        }
-        let sym = ferric_core::elements::z_to_symbol(z).unwrap_or("X");
-        let axyz = format!("1\n{sym}\n{sym} 0 0 0\n");
-        let amol = Molecule::parse_xyz(&axyz, 0, proatom_gs_mult(z)).ok()?;
-        let aobs = PreparedBasis::new(&amol, &bs).ok()?;
-        let abounds = SchwarzBounds::compute(op, &aobs).ok()?;
-        let mut acfg = rhf_config.clone();
-        // Run the single-atom SCF on a 1-thread pool — see run_serial.
-        let adens = run_serial(|| {
-            if proatom_gs_mult(z) == 1 {
-                // `.filter(|r| r.converged)`: solve_rhf returns Ok even when it
-                // hits max_iter (see rhf.rs), so a bare `.ok()` accepts a
-                // NON-CONVERGED free-atom density exactly like a converged one
-                // and silently blends it into the Hirshfeld charges. Reject it
-                // here so this atom falls to the documented fallback instead.
-                solve_rhf(&ctx, &amol, &aobs, op, &abounds, &acfg)
-                    .ok()
-                    .filter(|r| r.converged)
-                    .map(|r| r.density_r().to_owned())
-            } else {
-                acfg.mom_after_iter = 5;
-                // KS-DFT free-atom solve: fractional/ensemble occupation spreads
-                // the open-shell electrons equally over degenerate frontier
-                // orbitals (e.g. Br 4p⁵ ²P, O/S 2p³ ³P), restoring spherical
-                // symmetry so the GGA XC potential doesn't oscillate. Pure HF
-                // free-atom solves don't suffer this (K is orbital-invariant in
-                // the degenerate subspace), so only enable when xc is set.
-                if acfg.xc.is_some() {
-                    acfg.fractional_occ = true;
-                }
-                // Same convergence gate as the closed-shell branch above.
-                solve_uhf(&ctx, &amol, &aobs, &abounds, &acfg)
-                    .ok()
-                    .filter(|r| r.converged)
-                    .map(|r| r.density_total().to_owned())
-            }
-        })?;
-        ferric_rpa::properties::spherically_averaged_proatom(z, &bs, &adens, &proatom_radii).ok()
-    };
+    // Same-basis Hirshfeld proatom: neutral free-atom SCF densities in the
+    // molecule's OWN basis and SCF settings, built lazily per call. Shared by
+    // all Hirshfeld consumers (charges, effective volumes, per-atom
+    // polarizability) and by the Python `ferric.hirshfeld_charges` default.
+    let proatom_gs_mult = ferric_scf::properties::proatom_ground_state_mult;
+    let proatom = ferric_scf::properties::scf_proatom_provider(&ctx, &bs, op, &rhf_config);
 
     // Snapshot the scalars the terminal log record needs BEFORE the dispatch:
     // one arm (`run_pdep_rpa_arm`) takes `result` by value. Three `Copy`
@@ -4238,10 +4178,15 @@ fn run_pdep_rpa_arm(
                                     })
                                 });
                                 if let Some(d) = free_density {
-                                    // Single free atom: Hirshfeld weight = 1
-                                    // everywhere (one proatom), so the
-                                    // reference volume is partition-independent
-                                    // — None (legacy path) is exact here.
+                                    // Single free atom: the Hirshfeld weight is
+                                    // ρ⁰/(ρ⁰ + 1e-12), with ρ⁰ the Slater proatom
+                                    // (None), so it is 1 except where ρ⁰ falls
+                                    // below ~1e-12. The r³-weighted tail there is
+                                    // dropped: measured 8.5e-4 of the free-H
+                                    // volume, ≤3.5e-10 for free C and O
+                                    // (cc-pVDZ, def2-SVP; validation_hirshfeld.rs).
+                                    // The molecular volumes carry the same
+                                    // 1e-12 floor, with the SCF proatom.
                                     if let Ok(fv) =
                                         atomic_effective_volumes_hirshfeld(&free_mol, bs, &d, None)
                                     {

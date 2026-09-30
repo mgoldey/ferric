@@ -292,8 +292,11 @@ print(np.round(ferric.esp_at_points(water, bs, rhf, pts), 6))
 
 The charge family is `mulliken_charges`, `lowdin_charges`,
 `hirshfeld_charges`, `chelpg_charges` and `resp_charges`, all returning one
-charge per atom in units of e. `resp_charges` is a single-stage restrained fit,
-not the multi-stage, multi-conformer RESP procedure. `esp_at_atoms` gives the
+charge per atom in units of e. `hirshfeld_charges` builds its proatoms from
+free-atom SCF densities in the molecule's basis, as the CLI does;
+`proatom="slater"` selects the single-exponential Slater proatom instead, which
+is 0.23–0.72 e away on H2O, CO and CH3OH. `resp_charges` is a single-stage
+restrained fit, not the multi-stage, multi-conformer RESP procedure. `esp_at_atoms` gives the
 potential at each nucleus. `hirshfeld_polarizability` returns per-atom 3×3
 polarizability tensors (Bohr³) and needs an RI basis.
 
@@ -521,7 +524,7 @@ Each takes `(mol, basis_set, result)` with a converged closed-shell
 | `esp_at_points` | Electrostatic potential at arbitrary points given in Bohr. | `[rpa] compute_esp_surface` (vdW-surface points only) |
 | `mulliken_charges` | Mulliken population charges. | `[rpa] compute_mulliken_charges` |
 | `lowdin_charges` | Löwdin (symmetric-orthogonalization) charges. | `[rpa] compute_lowdin_charges` |
-| `hirshfeld_charges` | Hirshfeld charges with a single-exponential Slater proatom. | `[rpa] compute_hirshfeld_charges` |
+| `hirshfeld_charges` | Hirshfeld charges. The default `proatom="scf"` uses free-atom SCF densities in the molecule's basis, solved with the result's own SCF settings, as the CLI does; `proatom="slater"` uses a single-exponential Slater proatom. | `[rpa] compute_hirshfeld_charges` |
 | `chelpg_charges` | CHELPG charges fitted to the ESP on a grid. | `[rpa] compute_chelpg_charges` |
 | `resp_charges` | Single-stage RESP (restrained ESP-fit) charges. | `[rpa] compute_resp_charges` |
 | `hirshfeld_polarizability` | Per-atom Hirshfeld-partitioned static polarizability tensors (Bohr³) from PDEP-RPA. | — |

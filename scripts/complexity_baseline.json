@@ -18445,7 +18445,7 @@
   },
   "crates/ferric-python/src/lib.rs::hirshfeld_charges": {
     "cc": 1.0,
-    "mi": 110.7425291322161
+    "mi": 101.3
   },
   "crates/ferric-python/src/lib.rs::hirshfeld_polarizability": {
     "cc": 7.0,

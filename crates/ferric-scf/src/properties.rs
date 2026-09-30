@@ -22,14 +22,18 @@
 //! `ferric-rpa` calls back into these via `ferric_scf::properties::*`
 //! instead of duplicating them.
 //!
-//! Three otherwise-pure functions — `atomic_effective_volumes_hirshfeld`,
-//! `hirshfeld_i_charges`, and `hirshfeld_charges` — were NOT moved here:
-//! they depend on `ferric_export::cube::GridSpec` /
-//! `ferric_export::gto_eval::eval_basis_on_grid`, and `ferric-export`
-//! itself depends on `ferric-scf`, so moving them would create a Cargo
-//! dependency cycle (`ferric-scf` → `ferric-export` → `ferric-scf`). They
-//! remain defined in `ferric-rpa::properties` alongside the RPA-dependent
-//! functions, even though they have no RPA dependency of their own.
+//! Three RPA-independent Hirshfeld routines — `atomic_effective_volumes_hirshfeld`,
+//! `hirshfeld_i_charges` and `hirshfeld_charges` — are defined in
+//! `ferric-rpa::properties`, not here. The first two integrate on the uniform
+//! Cartesian lattice of `ferric_integrals::ao_grid::GridSpec`; `hirshfeld_charges`
+//! integrates on the atom-centred Becke–Lebedev grid of `ferric_dft::grid`. The
+//! proatom machinery they consume —
+//! [`RadialProatom`](crate::properties::RadialProatom),
+//! [`ProatomProvider`](crate::properties::ProatomProvider),
+//! [`spherically_averaged_proatom`](crate::properties::spherically_averaged_proatom),
+//! [`slater_xi_for_z`](crate::properties::slater_xi_for_z) and the free-atom SCF
+//! provider [`scf_proatom_provider`](crate::properties::scf_proatom_provider) —
+//! lives here.
 
 use std::os::raw::c_int;
 
@@ -450,18 +454,6 @@ pub fn electric_field_at_atoms(
     Ok(out)
 }
 
-/// Becke atomic charges via fuzzy partitioning of the molecular density.
-///
-/// `q_A = Z_A − ∫ w^A_Becke(r) ρ(r) dV` evaluated on the Becke-Lebedev
-/// grid. Becke partition is geometry-only (no proatom density model),
-/// fixing the C-O charge-inversion bug of single-exp Slater Hirshfeld
-/// (memory [[lowdin-over-single-exp-hirshfeld]]).
-///
-/// Sum-rule renormalization: rescales so `Σ_A (Z_A − q_A) = N_e` exactly
-/// (compensates ~0.003 e grid quadrature noise on H2O).
-///
-/// Closed-shell: pass `density = D_total` (= 2·D_α in restricted).
-/// Open-shell: pass `D_α + D_β`.
 /// Per-atom effective volume via Becke partitioning:
 /// ```text
 ///   v_A = ∫ w^A_Becke(r) ρ(r) |r − R_A|³ dr
@@ -574,7 +566,18 @@ pub fn atomic_effective_volumes_becke_chunked(
     Ok(vol)
 }
 
-/// Compute Becke-partitioned atomic charges from the density matrix.
+/// Becke atomic charges via fuzzy partitioning of the molecular density.
+///
+/// `q_A = Z_A − ∫ w^A_Becke(r) ρ(r) dV` evaluated on the Becke-Lebedev
+/// grid. Becke partition is geometry-only (no proatom density model),
+/// fixing the C-O charge-inversion bug of single-exp Slater Hirshfeld
+/// (memory [[lowdin-over-single-exp-hirshfeld]]).
+///
+/// Sum-rule renormalization: rescales so `Σ_A (Z_A − q_A) = N_e` exactly
+/// (compensates ~0.003 e grid quadrature noise on H2O).
+///
+/// Closed-shell: pass `density = D_total` (= 2·D_α in restricted).
+/// Open-shell: pass `D_α + D_β`.
 pub fn becke_charges(
     mol: &Molecule,
     _prep: &PreparedBasis,
@@ -680,31 +683,12 @@ pub fn becke_charges_chunked(
         .collect())
 }
 
-/// Hirshfeld atomic charges q_A = Z_A − ∫ ρ(r) w^A(r) dr.
+/// A spherically averaged free-atom radial density ρ⁰(r), tabulated on a
+/// radial grid, for use as a Hirshfeld proatom.
 ///
-/// Uses the same Slater-proatom Hirshfeld weights as
-/// `pdep_polarizability_hirshfeld` and a regular real-space grid, so
-/// charge magnitudes and signs are directly comparable to the per-atom
-/// polarizability tensors exported alongside.
-///
-/// # Known limitation: single-exponential proatom
-///
-/// The proatom density is a Slater monoexponential with ξ derived from
-/// Slater's rules for the *outermost* shell. This is fine for the additive
-/// partitioning needed by `pdep_polarizability_hirshfeld` (where the sum
-/// rule is enforced numerically and individual α^A magnitudes are within
-/// ~50% of literature). For *charges*, however, the proatom shape directly
-/// sets sign and magnitude — and a single-exponential model has no core
-/// peak, so it badly mis-allocates valence density for systems where
-/// proatoms of similar ξ compete (e.g. C–O bonds). Until proper
-/// Roothaan-Hartree-Fock spherical proatom densities (Bunge 1993) are
-/// wired in, the absolute charge values exported here should be treated
-/// as a *baseline for downstream CM5 correction* on small molecules only,
-/// not as production-quality population analysis.
-/// A spherically-averaged free-atom radial density ρ_free(r), tabulated on a
-/// shared radial grid, for use as a Hirshfeld proatom. Built from an atomic SCF
-/// density in the *molecule's own basis* (basis-consistent Hirshfeld weights).
-/// Tabulated free-atom radial density for Hirshfeld partitioning.
+/// Built by [`spherically_averaged_proatom`] from a free-atom SCF density in the
+/// molecule's own basis (so the Hirshfeld weight ratio is basis-consistent with
+/// the molecular density); [`scf_proatom_provider`] builds one per element.
 #[derive(Debug, Clone)]
 pub struct RadialProatom {
     /// Radii (Bohr), ascending. Shared across all atoms.
@@ -800,6 +784,112 @@ pub fn spherically_averaged_proatom(
 /// `z` and integer charge state `q`, returns the radial proatom (or `None` if
 /// unavailable). Built by the caller from atomic SCF in the molecule's basis.
 pub type ProatomProvider<'a> = dyn Fn(i32, i32) -> Option<RadialProatom> + 'a;
+
+/// Spin multiplicity of the neutral free-atom SCF behind [`scf_proatom_provider`]
+/// (and ferric-cli's TS free-atom volumes).
+pub fn proatom_ground_state_mult(z: i32) -> usize {
+    match z {
+        // Doublets: H, Li, B, F, Na, Al, Cl, Ga, Br (one unpaired p/s e⁻)
+        1 | 3 | 5 | 9 | 11 | 13 | 17 | 31 | 35 | 53 => 2,
+        // ²S alkali-like heavy atoms + coinage metals (single ns valence e⁻):
+        // K, Cu, Rb, Ag. Without these an odd-electron atom hits `_ => 1` and
+        // its closed-shell proatom RHF fails at iter 0.
+        19 | 29 | 37 | 47 => 2,
+        // Triplets (³P): C, O, Si, S, Ge, Se
+        6 | 8 | 14 | 16 | 32 | 34 => 3,
+        // Quartets (⁴S): N, P, As
+        7 | 15 | 33 => 4,
+        // Odd electron count can never be a singlet: default odd Z to a doublet.
+        _ if z % 2 == 1 => 2,
+        _ => 1,
+    }
+}
+
+/// Radii (Bohr) on which [`scf_proatom_provider`] tabulates each proatom:
+/// 0.05 to 30 Bohr in 0.05 Bohr steps (600 points).
+pub fn scf_proatom_radii() -> Vec<f64> {
+    (1..=600).map(|k| k as f64 * 0.05).collect()
+}
+
+/// Hirshfeld proatom provider built from free-atom SCF densities in the
+/// molecule's own basis — the proatom ferric-cli and the Python
+/// `ferric.hirshfeld_charges` pass by default.
+///
+/// For a neutral atom (`q == 0`) of element `z`, the returned closure solves the
+/// isolated atom at the origin in `bs` with multiplicity
+/// [`proatom_ground_state_mult`], using `config` (the molecule's own SCF
+/// settings: method, functional, density fitting, thresholds):
+///
+/// * singlet → `solve_rhf`;
+/// * otherwise → `solve_uhf` with MOM armed after iteration 5, and, when
+///   `config.xc` is set, fractional (ensemble) occupation of the degenerate
+///   frontier orbitals so the open-shell GGA atom stays spherical and converges.
+///
+/// The total density is spherically averaged by [`spherically_averaged_proatom`]
+/// onto [`scf_proatom_radii`]. It returns `None` — so the Hirshfeld routine
+/// falls back to the Slater proatom of [`slater_xi_for_z`] for that atom — for a
+/// charged state (`q != 0`), for `z - q <= 0`, and when the free-atom SCF errors
+/// or does not converge (`solve_rhf`/`solve_uhf` return `Ok` at `max_iter`, so
+/// convergence is checked explicitly). Each free-atom SCF runs on a one-thread
+/// rayon pool. Nothing is cached: every call re-solves the atom.
+pub fn scf_proatom_provider<'a>(
+    ctx: &'a ferric_core::parallel::ParallelContext,
+    bs: &'a ferric_core::basis::BasisSet,
+    op: ferric_integrals::operator::Operator,
+    config: &'a crate::rhf::RhfConfig,
+) -> impl Fn(i32, i32) -> Option<RadialProatom> + 'a {
+    let radii = scf_proatom_radii();
+    move |z: i32, qi: i32| -> Option<RadialProatom> {
+        if qi != 0 || z - qi <= 0 {
+            return None;
+        }
+        let mult = proatom_ground_state_mult(z);
+        let sym = ferric_core::elements::z_to_symbol(z).unwrap_or("X");
+        let axyz = format!("1\n{sym}\n{sym} 0 0 0\n");
+        let amol = Molecule::parse_xyz(&axyz, 0, mult).ok()?;
+        let aobs = PreparedBasis::new(&amol, bs).ok()?;
+        let abounds = crate::screening::SchwarzBounds::compute(op, &aobs).ok()?;
+        let mut acfg = config.clone();
+        // A proatom is the ISOLATED free atom: the molecule's environment
+        // (point charges/field, implicit solvent, polarizable sites, cDFT
+        // constraints) is not applied to it.
+        acfg.external_potential = None;
+        acfg.cosmo = None;
+        acfg.pcm = None;
+        acfg.polarizable = None;
+        acfg.constraints.clear();
+        if mult != 1 {
+            acfg.mom_after_iter = 5;
+            // Pure HF free atoms do not need this (K is orbital-invariant in
+            // the degenerate subspace), so only enable it when xc is set.
+            if acfg.xc.is_some() {
+                acfg.fractional_occ = true;
+            }
+        }
+        let solve = || {
+            if mult == 1 {
+                crate::rhf::solve_rhf(ctx, &amol, &aobs, op, &abounds, &acfg)
+                    .ok()
+                    .filter(|r| r.converged)
+                    .map(|r| r.density_r().to_owned())
+            } else {
+                crate::uhf::solve_uhf(ctx, &amol, &aobs, &abounds, &acfg)
+                    .ok()
+                    .filter(|r| r.converged)
+                    .map(|r| r.density_total().to_owned())
+            }
+        };
+        // One-thread pool (inline if it cannot be built): on the global pool
+        // rayon's coordination overhead dwarfs a one-atom Fock build — a single
+        // S atom at aug-cc-pVDZ took 179 s with RAYON_NUM_THREADS=8 vs 9.6 s
+        // with 1.
+        let adens = match rayon::ThreadPoolBuilder::new().num_threads(1).build() {
+            Ok(pool) => pool.install(solve),
+            Err(_) => solve(),
+        }?;
+        spherically_averaged_proatom(z, bs, &adens, &radii).ok()
+    }
+}
 
 /// Löwdin atomic charges from symmetrically orthogonalized AOs.
 ///
@@ -1612,24 +1702,23 @@ fn solve_resp_restrained(
 /// Slater single-exponential proatom exponent ξ (Bohr⁻¹) for element Z.
 ///
 /// Derived from Bragg-Slater empirical atomic radii R_BS:
-///     ξ = 1 / (R_BS in Bohr).
+///     ξ = 1 / (R_BS in Bohr),
+/// giving the proatom ρ⁰(r) = Z ξ³/π · exp(−2ξr) (normalized to Z electrons).
+/// Elements beyond Z = 18 all get R_BS = 1.00 Å.
 ///
-/// The Hirshfeld partition is robust to the precise proatom radial shape;
-/// the sum rule inside `pdep_polarizability_hirshfeld` is the gate.
+/// This is the fallback proatom of the Hirshfeld routines in
+/// `ferric-rpa::properties`: they use it for any atom their proatom provider
+/// returns `None` for, and for every atom when no provider is passed. A single
+/// exponential has no core peak, so Hirshfeld *charges* built on it are
+/// qualitative: on H2O, CO and CH3OH they differ from the free-atom SCF
+/// proatom charges by 0.23–0.72 e and flip the sign of the CH3OH carbon
+/// (`crates/ferric-rpa/tests/validation_hirshfeld.rs`).
+/// [`scf_proatom_provider`] supplies the free-atom SCF proatoms. The additive per-atom
+/// polarizability partition in `pdep_polarizability_hirshfeld` is less
+/// sensitive to the proatom shape, since its sum rule is enforced numerically.
 pub fn slater_xi_for_z(z: i32) -> f64 {
-    // Bragg-Slater radii in Bohr (1 Å = 1.8897259886 Bohr).
+    // Bragg-Slater radii in Angstrom (1 Å = 1.8897259886 Bohr).
     // Values from Slater J. Chem. Phys. 41, 3199 (1964) for Z=1..18.
-    //
-    // This is the legacy single-exponential ξ. New code should call
-    // [`proatom_density_two_exp`] instead — it splits the density into a
-    // tight 1s core + a diffuse Slater valence with proper Slater's-rules
-    // screening per shell, which fixes the C-O charge inversion that
-    // afflicts the single-exponential form (see
-    // [[lowdin-over-single-exp-hirshfeld]] memory).
-    //
-    // Kept here for back-compat with [`pdep_polarizability_hirshfeld`]
-    // which uses the renormalized additive partition and is more tolerant
-    // of proatom shape errors than absolute charge analysis.
     let r_bs_ang: f64 = match z {
         1 => 0.25,
         2 => 0.30,
