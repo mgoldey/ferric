@@ -50,6 +50,28 @@ no sharing, 20000 calls per thread, best of 3:
 The same work in separate processes does not slow down, so the cost comes from state shared within a process, not
 from the hardware (frequency, caches, memory bandwidth).
 
+## Standalone reproducer (libint only)
+
+`mwe.cc` (attached; in ferric at `reference/pbc/libint-gmeval-mwe/`) builds three contracted
+carbon-like s (9 primitives) and p (4 primitives) shells, and every thread runs the same 1296 shell
+quartets through its OWN `Engine` (one engine per thread, as documented). Build:
+`g++ -std=c++17 -O2 -pthread -I/usr/include/eigen3 -I$PREFIX/include mwe.cc -L$PREFIX/lib -lint2`.
+Measured 2026-09-30, libint 2.7.2, g++ -O2, i7-6800K (6 cores), mean ns per call:
+
+| operator | 1 thread | 6 threads | 6 separate 1-thread processes | threads / 1 | processes / 1 |
+|---|---|---|---|---|---|
+| coulomb | 77,009 | 96,529 | ~100,700 | 1.25x | 1.31x |
+| erf (stock) | 91,742 | 518,823 | ~118,000 | 5.66x | 1.29x |
+| erfc (stock) | 131,619 | 587,367 | ~160,700 | 4.46x | 1.22x |
+| erf (patched) | 80,648 | 102,164 | ~103,000 | 1.27x | 1.28x |
+| erfc (patched) | 100,696 | 123,964 | ~127,000 | 1.23x | 1.26x |
+
+Integral checksums are identical between stock and patched for every operator. The ~1.25x that
+remains with the patch is also seen for Coulomb and for separate processes (all-core hardware
+cost), so after the patch erf/erfc scale like Coulomb. Stock erf, which copies only the
+shared_ptr (no scratch allocation), is hit harder than erfc, which suggests the atomic refcount
+on the shared Boys table dominates.
+
 ## Proposed fix (arithmetic unchanged)
 
 1. Make the evaluators' call operators `const` and keep their scratch on the stack.
