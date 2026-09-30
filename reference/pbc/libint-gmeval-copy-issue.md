@@ -1,3 +1,4 @@
+<!-- Filed as https://github.com/evaleev/libint/issues/431 on 2026-09-30 -->
 **Title:** Per-call evaluator copy in GenericGmEval::eval limits erf/erfc thread scaling
 
 ---
@@ -250,16 +251,21 @@ shells with a 1-primitive auxiliary shell): 3.28x per-call slowdown at 6 threads
 
 ## Results on 2.13.1
 
-> **PLACEHOLDER: to be filled in before filing.** Same reproducer and machine, built against libint 2.13.1. In 2.13.x,
-> `erfc_coulomb` uses `erfx_coulomb_gm_eval`, which has the vector scratch.
+Same reproducer and machine, built against conda-forge libint 2.13.1 (`libint2.so`), mean ns per call. In 2.13.x,
+`erfc_coulomb` uses `erfx_coulomb_gm_eval`, which has the vector scratch. Measured 2026-09-30 with some desktop load
+on the machine, so the 6-thread and 6-process columns carry about ±25% noise; the 1-thread column is steady.
 
 | operator | 1 thread | 6 threads | 6 separate 1-thread processes | threads / 1 | processes / 1 |
 |---|---|---|---|---|---|
-| coulomb | | | | | |
-| erf (stock) | | | | | |
-| erfc (stock) | | | | | |
-| erf (patched) | | | | | |
-| erfc (patched) | | | | | |
+| coulomb | 79,289 | 97,338 | 100,657 | 1.23x | 1.27x |
+| erf (stock) | 94,364 | 510,193 | 119,953 | 5.41x | 1.27x |
+| erfc (stock) | 135,760 | 581,771 | 162,311 | 4.28x | 1.20x |
+| erf (patched) | 85,009 | 108,640 | 107,311 | 1.28x | 1.26x |
+| erfc (patched) | 100,709 | 120,698 | 126,131 | 1.20x | 1.25x |
+
+Checksums of all integrals are identical between stock and patched for every operator. The same session re-measured
+2.7.2 at the same load: erf 5.61x / erfc 4.37x stock, 1.36x / 1.21x patched, and single-thread times within 2% of
+2.13.1 for every operator.
 
 ## Proposed fix
 
