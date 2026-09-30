@@ -38,6 +38,29 @@ use crate::operator::Operator;
 use ferric_core::FerricError;
 use std::sync::Mutex;
 
+/// libint2 engine precision for the two-electron integrals that build SCF
+/// energies and Fock matrices (J, K, LinK, CFMM, Newton/stability response).
+///
+/// libint2 drops primitive products whose estimated contribution falls below
+/// this value, and the dropped mass accumulates over contracted core shells.
+/// Measured on one full J/K build at a fixed converged density (cc-pVDZ),
+/// against precision 0 (no primitive screening):
+///
+/// | precision | worst E_J error | worst Σ D·K error | build cost vs 1e-14 |
+/// |---|---:|---:|---|
+/// | 1e-14 | 7.0e-10 (CCl4) | 1.5e-9 (CCl4) | 1 |
+/// | 1e-16 | 4.6e-13 | 1.4e-10 (CCl4) | 0.99–1.16 |
+/// | 1e-18 | 2.3e-13 | 1.7e-13 | 1.12–1.29 |
+/// | 1e-20 | 0 | 0 | 1.09–1.40 |
+/// | 0 | – | – | 1.8–5.7 |
+///
+/// (benzene, CS2, CCl4; the high end of each cost range is CCl4.) On free atoms
+/// in aug-cc-pVDZ, 1e-14 put E_J off by up to 6.0e-9 Ha (Al; Na 5.3e-9) against
+/// PySCF's unscreened integrals, and 1e-18 still left Na at 3e-11; 1e-20 matches
+/// to ≤1e-13. 1e-20 is the loosest value that reaches double precision on every
+/// system measured.
+pub const ERI_PRECISION: f64 = 1e-20;
+
 /// A pool of 2e engines, one slot per rayon worker thread (plus one spare for
 /// the calling thread / non-rayon contexts at index `len-1`).
 pub struct EnginePool {

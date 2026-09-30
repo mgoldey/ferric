@@ -1268,7 +1268,11 @@ impl CfmmJ {
         let pair_lists: Vec<Vec<usize>> = leaves.iter().map(|l| l.pair_indices.clone()).collect();
 
         if self.engine.is_none() {
-            self.engine = Some(Engine::new_2e(Operator::coulomb(), &self.prep, 1e-14)?);
+            self.engine = Some(Engine::new_2e(
+                Operator::coulomb(),
+                &self.prep,
+                ferric_integrals::engine_pool::ERI_PRECISION,
+            )?);
         }
 
         let dims = self.prep.shell_dims().to_vec();

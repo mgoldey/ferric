@@ -82,7 +82,11 @@ pub fn rhf_newton_step(
     // instead of build_jk constructing a fresh pool per call. Reduction order
     // (grouped_deterministic_sum, inside build_jk_with_pool) is unchanged, so
     // results stay bit-identical across thread counts.
-    let pool = EnginePool::new(inp.bounds.op, inp.prep, 1e-14)?;
+    let pool = EnginePool::new(
+        inp.bounds.op,
+        inp.prep,
+        ferric_integrals::engine_pool::ERI_PRECISION,
+    )?;
 
     // Gradient g_{ai} = F_{ai}  (rows = virt, cols = occ).
     let g = occ_virt_block(inp.f_mo, no, n);

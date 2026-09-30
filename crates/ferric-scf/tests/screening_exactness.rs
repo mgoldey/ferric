@@ -1429,21 +1429,17 @@ fn link_k_qqr_matches_schwarz_at_production_thresh() {
 /// loose enough threshold will show a nonzero shift, correctly.
 ///
 /// What it means here is narrower and is the actual point: at 1e-14 on systems
-/// of this size, everything the screen discards is genuinely below double
-/// precision, so the two builds agree bit-for-bit. Before the fix the screen
-/// was additionally discarding quartets it had no license to discard — pairs
-/// whose bound had been recorded as an invalid 0.0 — and THAT is what produced
-/// the 1.8e-4. The prior sign observation (both shifts negative, making ferric's
-/// alkane_8 total sit 1.46e-4 Ha under PySCF's and superficially resemble a
-/// better variational solution) is moot now that the magnitude is zero, and was
-/// only ever reported as measured on two systems, never as a general expectation.
+/// of this size, everything the screen discards is at the level of the last
+/// bits of the total energy (2 ulp on alkane_8). Before the invalid-bound fix
+/// the screen was additionally discarding quartets it had no license to
+/// discard — pairs whose bound had been recorded as an invalid 0.0 — and THAT
+/// is what produced the 1.8e-4.
 ///
-/// The assertion is therefore an equality-to-zero on the SHIFT, not a tolerance:
-/// a tolerance would quietly absorb a returning defect, whereas any nonzero
-/// shift at this threshold and size is now a real signal worth looking at.
-/// Should a future change make a genuinely-negligible nonzero shift appear here
-/// (a different basis, a looser production threshold), the right response is to
-/// re-derive what the screen is allowed to drop — not to widen the bar.
+/// The bar sits between the measured shift with correct bounds and the shift
+/// the invalid-bound defect produced (see the assertion). Should the measured
+/// shift grow toward it (a different basis, a looser production threshold), the
+/// right response is to re-derive what the screen is allowed to drop -- not to
+/// widen the bar.
 ///
 /// Mechanism, for the defect this guards against returning (see
 /// `link_k_matches_dense_in_the_trivial_limit`): Q entries stored as exactly
@@ -1512,23 +1508,27 @@ fn screening_does_not_shift_the_energy_at_production_thresh() {
     let (_, s4) = shifts[0];
     let (_, s8) = shifts[1];
 
-    // Equality to zero, not a tolerance — see the note above on why widening
-    // this bar would be the wrong response to it firing. Both systems measured
-    // bit-identical (0.000e0) after the invalid-bound fix; before it they gave
-    // 5.0e-9 and 1.8e-4.
-    assert_eq!(
-        s4, 0.0,
-        "alkane_4: screening at the production threshold moved the energy by {s4:.3e} Ha; it was \
-         bit-identical (0.0) when this invariant was written. At 1e-14 on a system this size the \
-         screen should discard nothing that is above double precision."
+    // Bar between the two measured sides. With ERI_PRECISION = 1e-20 libint
+    // keeps integrals below 1e-14 that the Schwarz screen then drops, so the
+    // screen's shift is real but sub-picohartree: 0 (alkane_4) and 1.1e-13
+    // (alkane_8, ~2 ulp of E) measured 2026-09-30. At the old ERI_PRECISION of
+    // 1e-14 libint already discarded the same mass and the shift was exactly 0,
+    // which is why this was once an equality. The defect this guards against
+    // (invalid Q == 0.0 bounds) gave 5.0e-9 and 1.8e-4; 1e-11 sits 90x above
+    // the first side and 500x below the second.
+    const MAX_SHIFT: f64 = 1e-11;
+    assert!(
+        s4 < MAX_SHIFT,
+        "alkane_4: screening at the production threshold moved the energy by {s4:.3e} Ha \
+         (bar {MAX_SHIFT:.0e}; measured 0 with ERI_PRECISION 1e-20)."
     );
-    assert_eq!(
-        s8, 0.0,
-        "alkane_8: screening at the production threshold moved the energy by {s8:.3e} Ha; it was \
-         bit-identical (0.0) when this invariant was written. The predecessor defect \
-         (invalid Q == 0.0 bounds, see link_k_matches_dense_in_the_trivial_limit) produced \
-         1.8e-4 Ha here and grew with system size — check SCHWARZ_TABLE_PRECISION and \
-         SCHWARZ_Q_FLOOR in crates/ferric-integrals/src/schwarz.rs before widening this bar."
+    assert!(
+        s8 < MAX_SHIFT,
+        "alkane_8: screening at the production threshold moved the energy by {s8:.3e} Ha \
+         (bar {MAX_SHIFT:.0e}; measured 1.1e-13). The predecessor defect (invalid Q == 0.0 \
+         bounds, see link_k_matches_dense_in_the_trivial_limit) produced 1.8e-4 Ha here and \
+         grew with system size -- check SCHWARZ_TABLE_PRECISION and SCHWARZ_Q_FLOOR in \
+         crates/ferric-integrals/src/schwarz.rs before widening this bar."
     );
 }
 

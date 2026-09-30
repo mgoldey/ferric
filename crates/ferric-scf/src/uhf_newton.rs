@@ -84,7 +84,11 @@ pub fn uhf_newton_step(
     // (3 build_jk calls per matvec), instead of each call constructing its
     // own pool. Reduction order is unchanged, so results stay bit-identical
     // across thread counts.
-    let pool = EnginePool::new(inp.bounds.op, inp.prep, 1e-14)?;
+    let pool = EnginePool::new(
+        inp.bounds.op,
+        inp.prep,
+        ferric_integrals::engine_pool::ERI_PRECISION,
+    )?;
 
     // Gradient blocks g^σ_{ai} = F^σ_{ai}  (rows = virt, cols = occ).
     let g_a = occ_virt_block(inp.f_a_mo, na, n);

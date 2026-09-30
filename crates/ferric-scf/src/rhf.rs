@@ -2195,7 +2195,11 @@ pub fn build_jk(
     j: &mut Array2<f64>,
     k: &mut Array2<f64>,
 ) -> Result<usize, FerricError> {
-    let pool = crate::engine_pool::EnginePool::new(bounds.op, prep, 1e-14)?;
+    let pool = crate::engine_pool::EnginePool::new(
+        bounds.op,
+        prep,
+        ferric_integrals::engine_pool::ERI_PRECISION,
+    )?;
     build_jk_with_pool(
         ctx,
         prep,

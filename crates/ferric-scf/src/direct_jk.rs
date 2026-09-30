@@ -197,7 +197,7 @@ impl<'a> DirectJK<'a> {
             self.pool = Some(crate::engine_pool::EnginePool::new(
                 self.bounds.op,
                 self.prep,
-                1e-14,
+                ferric_integrals::engine_pool::ERI_PRECISION,
             )?);
         }
         Ok(shell_pairs)

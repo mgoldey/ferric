@@ -708,24 +708,33 @@ fn augmented_hessian_equals_plain_hessian_at_fixed_lambda() {
     let ka = mk(&mut rng, sys.nocc_a);
     let kb = mk(&mut rng, sys.nocc_b);
 
+    // Central difference, Richardson-extrapolated over steps eps and eps/2 to
+    // cancel the O(eps^2) truncation term. A single step of 1e-4 carries a
+    // truncation error of ~1.5e-6 relative on this point (measured; 4.3e-7 at
+    // 5e-5, ratio 3.4 ~ the expected 4), which sat next to the 1e-6 bar and
+    // depended on which constrained state the SCF reached. Extrapolated:
+    // 8.5e-8. Smaller single steps run into roundoff (2.5e-5 gave 3.6e-6).
+    let central = |eps: f64| -> f64 {
+        let e_p = augmented_energy(
+            &sys,
+            &h,
+            &rotate(&d_a, &ka, sys.nocc_a, eps),
+            &rotate(&d_b, &kb, sys.nocc_b, eps),
+            lam,
+            &w,
+        );
+        let e_m = augmented_energy(
+            &sys,
+            &h,
+            &rotate(&d_a, &ka, sys.nocc_a, -eps),
+            &rotate(&d_b, &kb, sys.nocc_b, -eps),
+            lam,
+            &w,
+        );
+        (e_p - e_m) / (2.0 * eps)
+    };
     let eps_e = 1e-4;
-    let e_p = augmented_energy(
-        &sys,
-        &h,
-        &rotate(&d_a, &ka, sys.nocc_a, eps_e),
-        &rotate(&d_b, &kb, sys.nocc_b, eps_e),
-        lam,
-        &w,
-    );
-    let e_m = augmented_energy(
-        &sys,
-        &h,
-        &rotate(&d_a, &ka, sys.nocc_a, -eps_e),
-        &rotate(&d_b, &kb, sys.nocc_b, -eps_e),
-        lam,
-        &w,
-    );
-    let de_fd = (e_p - e_m) / (2.0 * eps_e);
+    let de_fd = (4.0 * central(eps_e / 2.0) - central(eps_e)) / 3.0;
     let (g_a, g_b) = augmented_gradient(&sys, &h, &d_a, &d_b, Some(&lam_w));
     let de_analytic = 2.0
         * (g_a.iter().zip(ka.iter()).map(|(x, y)| x * y).sum::<f64>()

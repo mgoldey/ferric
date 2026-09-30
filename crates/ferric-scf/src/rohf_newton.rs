@@ -75,7 +75,11 @@ pub fn rohf_newton_step(
     // (3 build_jk calls per matvec), instead of each call constructing its
     // own pool. Reduction order is unchanged, so results stay bit-identical
     // across thread counts.
-    let pool = EnginePool::new(inp.bounds.op, inp.prep, 1e-14)?;
+    let pool = EnginePool::new(
+        inp.bounds.op,
+        inp.prep,
+        ferric_integrals::engine_pool::ERI_PRECISION,
+    )?;
 
     // Pack RHS −g in MO basis from the three blocks.
     //   g[v,c] = f_α[v,c] + f_β[v,c]

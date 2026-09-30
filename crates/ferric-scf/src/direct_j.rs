@@ -103,7 +103,11 @@ impl<'a> JBuilder for DirectJ<'a> {
         // One engine per rayon thread (see engine_pool) — avoids the per-chunk
         // libint2-ctor-mutex storm that made heavy-element bases 10×+ slower.
         if self.pool.is_none() {
-            self.pool = Some(crate::engine_pool::EnginePool::new(op, prep, 1e-14)?);
+            self.pool = Some(crate::engine_pool::EnginePool::new(
+                op,
+                prep,
+                ferric_integrals::engine_pool::ERI_PRECISION,
+            )?);
         }
         let pool = self.pool.as_ref().expect("pool initialized above");
 

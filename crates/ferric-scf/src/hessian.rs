@@ -1194,7 +1194,11 @@ impl<'a> TwoElectronBuilder<'a> {
         prep: &'a PreparedBasis,
         bounds: &'a SchwarzBounds,
     ) -> Result<Self, FerricError> {
-        let pool = EnginePool::new(bounds.op, prep, 1e-14)?;
+        let pool = EnginePool::new(
+            bounds.op,
+            prep,
+            ferric_integrals::engine_pool::ERI_PRECISION,
+        )?;
         Ok(TwoElectronBuilder {
             ctx,
             prep,

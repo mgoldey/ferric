@@ -393,7 +393,11 @@ pub fn uhf_internal_stability(
 
     // EnginePool is geometry/basis-only — build once, reuse for every matvec
     // (mirrors uhf_newton_step, which does the same for its PCG loop).
-    let pool = EnginePool::new(inp.bounds.op, inp.prep, 1e-14)?;
+    let pool = EnginePool::new(
+        inp.bounds.op,
+        inp.prep,
+        ferric_integrals::engine_pool::ERI_PRECISION,
+    )?;
 
     // Diagonal preconditioner: the orbital-energy gap (F_aa - F_ii) per spin.
     // This is the dominant part of the Hessian diagonal — the reason Davidson
@@ -477,7 +481,11 @@ pub fn rhf_internal_stability(
         ));
     }
 
-    let pool = EnginePool::new(inp.bounds.op, inp.prep, 1e-14)?;
+    let pool = EnginePool::new(
+        inp.bounds.op,
+        inp.prep,
+        ferric_integrals::engine_pool::ERI_PRECISION,
+    )?;
 
     let f_diag: Vec<f64> = (0..n).map(|i| inp.f_mo[(i, i)]).collect();
     let mut diag = Vec::with_capacity(dim);
