@@ -5777,3 +5777,26 @@ evaluator for every primitive quartet (heap scratch plus a shared_ptr copy of th
 Boys table, i.e. malloc/free and an atomic refcount on one shared cache line). The copy is
 present in ferric's compiled shim.o. A header patch that keeps the arithmetic bit-identical is
 being written.
+
+## libint GmEval patch: end-to-end benchmark + attenuated-MP2 check (measured 2026-09-30 09:23, head 7426d0d9)
+
+- **Attenuated RI-MP2 validation vs PySCF** (`validation_attenuated_mp2`, including the ignored tests) passes with the
+  patched header. Energies match to ≤ 6e-12 (tol 1e-10), and the ω→0 anchor reproduces Coulomb RI-MP2 to 1e-15.
+  `att_vv10` passes 30 of 30.
+- **Timings** (one sample per cell, each run gated on a 1-minute load below 1.5):
+
+| run | before (45d53f55) | after | SR 3-centre | hcore SR | PySCF GDF | E |
+|---|---|---|---|---|---|---|
+| dry ice 6 thr | 42.6 s | 29.1 s | 9.1 → 4.4 s | 13.7 → 4.7 s | 22.9 s | −750.8211184382429 (unchanged) |
+| dry ice 1 thr | 144.5 s | 145.5 s | 27.8 → 27.2 s | 28.2 → 25.4 s | 108.6 s | unchanged |
+| diamond_prim 6 thr | 32.4-34.1 s | 11.7 s | 19.1 → 6.7 s | 13.9 → 4.2 s | 12.7 s | −74.97570900687647 |
+
+- **Scaling.** At 6 threads the SR stages now scale 5.4-6.2× over 1 thread (SR3 27.2/4.4, hcore SR 25.4/4.7); before
+  the patch it was 2.0-3.0×.
+- **Single thread.** The 1-thread times did not measurably improve end to end (−2%), unlike the microbenchmark's
+  16-23% per call.
+- **Diamond at 6 threads is now faster than PySCF GDF** (11.7 vs 12.7 s). Dry ice is 1.27× PySCF (was 1.86×).
+- **Dry ice's remaining 6-thread cost is the long-range part.** LR pair FT 7.2 s + aux FT/GEMM 8.1 s = 15.3 of
+  29.1 s. PySCF's LR runs on a 15³ mesh at ω ≈ 0.32; ferric runs 13372 half-G at ω = 1.
+- **libint vs libcint per SR triplet at 6 threads:** 26.4 s CPU / 19.1 M = 1.38 µs per column triplet, against
+  PySCF's 0.19 µs. The pair symmetry (2×, estimated) and the column rotation (~2.2×, estimated) would leave ~1.6×.
