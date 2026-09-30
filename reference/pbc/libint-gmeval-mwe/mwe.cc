@@ -4,7 +4,7 @@
 // process-wide Boys table => malloc/free + atomic refcount on a shared cache
 // line). Plain Coulomb calls the table by reference and scales normally.
 //
-// NOT YET COMPILED OR RUN. Written from the libint 2.7.2 headers
+// Built and run against libint 2.7.2 and 2.13.1 (see run.sh). Written from the libint 2.7.2 headers
 // (~/.local/include/libint2); build/run lines are in run.sh.
 //
 // Each worker thread owns its own Engine (the documented libint2 usage) and

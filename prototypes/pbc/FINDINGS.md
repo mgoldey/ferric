@@ -5800,3 +5800,30 @@ being written.
   29.1 s. PySCF's LR runs on a 15³ mesh at ω ≈ 0.32; ferric runs 13372 half-G at ω = 1.
 - **libint vs libcint per SR triplet at 6 threads:** 26.4 s CPU / 19.1 M = 1.38 µs per column triplet, against
   PySCF's 0.19 µs. The pair symmetry (2×, estimated) and the column rotation (~2.2×, estimated) would leave ~1.6×.
+
+## Iodine ECP force floor: it is the gradient nucleus exponent in V_SR (measured 2026-09-30, head 63605cfa, libint 2.13.1)
+
+`tests/pbc_grad_ecp_nucleus_scan.rs`, both tests `#[ignore]`d.
+
+Setup:
+- HI: H STO-3G + I LANL2DZ with ECP, 24 Bohr box, Ewald exchange, dense AFT, Γ RHF.
+- Control: the same shells with Z = 7 and no ECP.
+- Residual = analytic − Richardson FD of ferric's own box energy, max over the iodine components; each term is taken
+  at the fixed reference density. Every term except V_SR is flat to 1e-13 across ζ (asserted).
+
+| ζ (gradient nucleus exponent) | HI TOTAL | HI V_SR | HI V_ECP | control TOTAL | control V_SR |
+|---|---|---|---|---|---|
+| 1e7 | 5.90e-9 | 5.86e-9 | 1.6e-13 | 3.27e-8 | 3.25e-8 |
+| 1e8 | 6.87e-9 | 6.83e-9 | 1.6e-13 | 1.37e-9 | 1.22e-9 |
+| 1e9 (default) | 8.50e-8 | 8.50e-8 | 1.6e-13 | 3.72e-8 | 3.71e-8 |
+| 1e10 | 3.57e-7 | 3.57e-7 | 1.6e-13 | 9.96e-7 | 9.96e-7 |
+| 1e11 | 6.75e-6 | 6.75e-6 | 1.6e-13 | 6.21e-6 | 6.21e-6 |
+
+- **Diagnosis:** the "~4e-7 iodine ECP force floor" is the V_SR (Gaussian-nucleus erfc) derivative's libint precision
+  floor at the gradient nucleus exponent. It is ~3.6e-7 at 1e10, the default when it was measured. It is not the ECP:
+  V_ECP is exact to 1.6e-13 at every ζ. The ECP-free control shows the same U-shape.
+- **Exponent choice:** at the current 1e9 the floor is 8.5e-8 (HI) and 3.7e-8 (control); 1e8 is 12× and 27× better
+  here. The earlier scan on H triclinic / CO / LiH chose 1e9, so the optimum is system-dependent. Re-tune on all
+  fixtures before changing the default. Provisional.
+- **box−mol:** moves by ≤ 1e-6 across ζ ≥ 1e10 and ≤ 1e-9 below. It carries the physical finite-size term, so read
+  only its change across ζ.
