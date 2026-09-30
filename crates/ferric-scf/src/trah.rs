@@ -104,13 +104,14 @@
 //! while the radius contracts until [`crate::trah::TrahState::collapsed`] and
 //! the run falls back to DIIS (123 iterations / 98 s against DIIS's 69 / 1.5 s).
 //!
-//! The closed-shell loop in `rhf.rs` skips any step whose |predicted change|
-//! is below [`crate::trah::TrahConfig::predicted_min`] (default 1e-12 Ha) and
-//! defers to DIIS. The UHF/UKS loop in `uhf.rs` has no such guard, and whether
-//! it reaches the same cycle has not been measured. No test asserts an RKS
-//! iteration count: the RKS case in `trah_converges.rs` only caps the run at
-//! `max_iter: 200`, and the measured cycle finished in 123 iterations through
-//! the DIIS fallback, so a return of the cycle would still pass.
+//! Both SCF loops (`rhf.rs` and `uhf.rs`) skip any step whose |predicted
+//! change| is below [`crate::trah::TrahConfig::predicted_min`] (default
+//! 1e-12 Ha) and defer to DIIS. The open-shell loop hits the same cycle: on
+//! UKS/PBE OH/cc-pVDZ without the guard, the identical step (predicted
+//! −6.0e-15, actual 0) was rejected 28 times, 74 iterations against DIIS's 33;
+//! with it, 15 iterations. `trah_converges.rs` pins that case at ≤30
+//! iterations. The RKS water case no longer reaches the cycle with or without
+//! the guard (8 iterations either way), so it carries no iteration bound.
 //!
 //! # Scope
 //!
@@ -248,7 +249,7 @@ pub struct TrahConfig {
     /// and the run falls back to DIIS. That cost 123 iterations / 98 s versus
     /// DIIS's 69 / 1.5 s. The ρ bookkeeping itself is correct; the defect is
     /// stepping at all when the predicted gain is below what the energy can
-    /// resolve. Only the closed-shell loop applies this bound.
+    /// resolve. Both the closed- and open-shell loops apply this bound.
     ///
     /// 1e-12 Ha sits well above f64 noise on a total energy of order 1e2 Ha
     /// (~1e-14 relative) and far below any convergence threshold anyone would
