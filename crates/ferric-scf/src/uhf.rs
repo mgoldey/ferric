@@ -1158,6 +1158,9 @@ pub fn solve_uhf_fockmod(
             // The pending assessment was consumed by `assess` above, so the
             // skipped iteration records nothing and the next ρ is formed from a
             // matched (energy_before, predicted) pair — not from a stale one.
+            // Set when the step is declined as worthless (see the
+            // `predicted_min` check below); the loop then falls through to DIIS.
+            let mut declined = false;
             if verdict != Some(crate::trah::TrahVerdict::Rejected) {
                 let f_a_mo = c_a.t().dot(&f_a).dot(&c_a);
                 let f_b_mo = c_b.t().dot(&f_b).dot(&c_b);
@@ -1210,35 +1213,59 @@ pub fn solve_uhf_fockmod(
                 let (ca_new, cb_new, step) =
                     crate::trah::uhf_trah_step(ctx, &inputs, radius, &config.trah)?;
 
-                if crate::rhf::scf_trace() {
-                    eprintln!(
-                        "TRAH iter={iter}: ‖κ‖={:.3e} Δ={:.3e} μ={:.3e} α={:.1} \
+                // Decline a step the model says is worthless, as the RHF loop
+                // does (`TrahConfig::predicted_min`). Measured on UKS/PBE
+                // OH/cc-pVDZ: from iteration 17 the model predicted -6.0e-15,
+                // the energy moved by exactly 0, rho = 0 rejected it, and the
+                // identical step was recomputed 28 times (74 iterations against
+                // DIIS's 33). Declining falls through to DIIS, and recording a
+                // zero density change lets the normal convergence test end the run.
+                if step.predicted.abs() < config.trah.predicted_min {
+                    if crate::rhf::scf_trace() {
+                        eprintln!(
+                            "TRAH iter={iter}: predicted |{:.3e}| < {:.0e}, \
+                             nothing left to gain -- deferring to DIIS",
+                            step.predicted, config.trah.predicted_min
+                        );
+                    }
+                    if let Some(st) = trah_state.as_mut() {
+                        st.clear_pending();
+                    }
+                    trah_undo = None;
+                    let d_tot = &d_a + &d_b;
+                    mon.record_density_change(&d_tot, &d_tot);
+                    declined = true;
+                } else {
+                    if crate::rhf::scf_trace() {
+                        eprintln!(
+                            "TRAH iter={iter}: ‖κ‖={:.3e} Δ={:.3e} μ={:.3e} α={:.1} \
                          ΔE_pred={:.3e} solves={} boundary={}",
-                        step.norm,
-                        radius,
-                        step.level_shift,
-                        step.alpha,
-                        step.predicted,
-                        step.shift_iterations,
-                        step.on_boundary
-                    );
-                }
+                            step.norm,
+                            radius,
+                            step.level_shift,
+                            step.alpha,
+                            step.predicted,
+                            step.shift_iterations,
+                            step.on_boundary
+                        );
+                    }
 
-                trah_undo = Some((c_a.clone(), c_b.clone()));
-                if let Some(st) = trah_state.as_mut() {
-                    st.record_step(energy, &step);
-                }
-                crate::trah::note_trah_step();
+                    trah_undo = Some((c_a.clone(), c_b.clone()));
+                    if let Some(st) = trah_state.as_mut() {
+                        st.record_step(energy, &step);
+                    }
+                    crate::trah::note_trah_step();
 
-                c_a = ca_new;
-                c_b = cb_new;
-                let d_tot_old = &d_a + &d_b;
-                d_a = density(&c_a, nocc_a);
-                d_b = density(&c_b, nocc_b);
-                let d_tot_new = &d_a + &d_b;
-                mon.record_density_change(&d_tot_new, &d_tot_old);
+                    c_a = ca_new;
+                    c_b = cb_new;
+                    let d_tot_old = &d_a + &d_b;
+                    d_a = density(&c_a, nocc_a);
+                    d_b = density(&c_b, nocc_b);
+                    let d_tot_new = &d_a + &d_b;
+                    mon.record_density_change(&d_tot_new, &d_tot_old);
+                }
             }
-            trah_took_step = true;
+            trah_took_step = !declined;
         }
         if trah_took_step {
             continue;
