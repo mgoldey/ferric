@@ -11,15 +11,17 @@
 //! * `rsgdf_sr_sums_are_bitwise_across_threads_and_vs_serial` — J3 (and J2)
 //!   at 1/2/6 threads agree bit for bit, AND the parallel Gamma J3 equals the
 //!   SERIAL `L → i1 → i2 → P → T` walk (the k-point residue-binned walk at one
-//!   bin, which still runs the old serial nest) bit for bit. A pair-outer nest
+//!   bin, which still runs the old serial nest over ORDERED pairs) bit for
+//!   bit on its `μ ≤ ν` rows, mirrored (the Gamma walk is s2: `rsgdf` module
+//!   doc "Orbital-pair symmetry"; J2 is compared as is). A pair-outer nest
 //!   that reordered an element's addends (e.g. P-outer over L, or a per-thread
 //!   partial sum folded at the end) fails the serial comparison even at one
 //!   thread; a shared-accumulation race or a thread-count-dependent split
 //!   fails the cross-thread one.
 //! * `hcore_sr_attraction_is_bitwise_across_threads_and_vs_serial` — the same
-//!   for `V_SR` against a FROZEN copy of the pre-parallel serial loop, both
-//!   production-screened and with the predicted-skip tracking of the SR
-//!   screening study.
+//!   for `V_SR` (s2, mirrored) against a FROZEN copy of the pre-parallel
+//!   serial ordered loop, both production-screened and with the
+//!   predicted-skip tracking of the SR screening study.
 //! * `rsgdf_rhf_energy_is_bitwise_across_threads` — `h`, B and the RS-GDF RHF
 //!   energy at 1/2/6 threads agree bit for bit, and the energy keeps the
 //!   pinned RS-GDF − dense-AFT fitting error of `pbc_rsgdf.rs`
@@ -229,12 +231,14 @@ fn rsgdf_sr_sums_are_bitwise_across_threads_and_vs_serial() {
         .collect();
     let [(j2_ref, j3_ref), _] = &runs[0];
     assert!(j3_ref.iter().any(|x| *x != 0.0), "J3: vacuous");
+    let nao = prep.nbasis();
     for (&n, [(j2g, j3g), (j2b, j3b)]) in THREADS.iter().zip(&runs) {
-        // Parallel Gamma J3 vs the serial L-outer walk, same thread count.
+        // Parallel Gamma J3 (s2) vs the serial L-outer ordered walk, same
+        // thread count: the serial μ ≤ ν rows, mirrored.
         assert_bitwise(
             j3g,
-            j3b,
-            &format!("J3 parallel vs serial walk ({n} threads)"),
+            &mirror_upper_pair_rows(j3b, nao),
+            &format!("J3 parallel (s2) vs serial walk mirrored ({n} threads)"),
         );
         assert_bitwise(j2g, j2b, &format!("J2 vs binned walk ({n} threads)"));
         // Across thread counts.
@@ -286,10 +290,13 @@ fn hcore_sr_attraction_is_bitwise_across_threads_and_vs_serial() {
         for (&n, [par, ser]) in THREADS.iter().zip(&runs) {
             let (v, nt, ns, pred) = par;
             let (vs, nts, nss, preds) = ser;
+            // s2 (hcore module doc "Orbital-pair symmetry"): the serial
+            // ordered loop's μ ≤ ν elements, mirrored; the parallel counts
+            // are in ordered-pair units.
             assert_bitwise(
                 v,
-                vs,
-                &format!("{tag}: V_SR parallel vs serial ({n} threads)"),
+                &mirror_upper(vs),
+                &format!("{tag}: V_SR parallel (s2) vs serial mirrored ({n} threads)"),
             );
             assert_bitwise(v, v_ref, &format!("{tag}: V_SR at {n} vs 1 thread"));
             assert_eq!((nt, ns), (nts, nss), "{tag}: counters vs serial");
@@ -297,7 +304,11 @@ fn hcore_sr_attraction_is_bitwise_across_threads_and_vs_serial() {
             match (pred, preds, p_ref) {
                 (None, None, None) => assert!(!track),
                 (Some(p), Some(ps), Some(p1)) => {
-                    assert_bitwise(p, ps, &format!("{tag}: predicted vs serial ({n} threads)"));
+                    assert_bitwise(
+                        p,
+                        &mirror_upper(ps),
+                        &format!("{tag}: predicted vs serial mirrored ({n} threads)"),
+                    );
                     assert_bitwise(p, p1, &format!("{tag}: predicted at {n} vs 1 thread"));
                 }
                 _ => panic!("{tag}: predicted presence differs"),
@@ -1881,25 +1892,27 @@ fn hcore_overlap_kinetic_is_bitwise_across_threads_and_vs_serial() {
     assert!(nonzero(s1) && nonzero(t1), "S/T vacuous");
     for (&n, ([(sp, tp), (ss, ts)], ni)) in THREADS.iter().zip(&runs) {
         assert_eq!(ni, n_img);
-        assert_bitwise(sp, ss, &format!("S parallel vs serial ({n} threads)"));
-        assert_bitwise(tp, ts, &format!("T parallel vs serial ({n} threads)"));
+        // s2: the serial ordered loop's μ ≤ ν elements, mirrored.
+        assert_bitwise(
+            sp,
+            &mirror_upper(ss),
+            &format!("S parallel (s2) vs serial mirrored ({n} threads)"),
+        );
+        assert_bitwise(
+            tp,
+            &mirror_upper(ts),
+            &format!("T parallel (s2) vs serial mirrored ({n} threads)"),
+        );
         assert_bitwise(sp, s1, &format!("S at {n} vs 1 thread"));
         assert_bitwise(tp, t1, &format!("T at {n} vs 1 thread"));
     }
-    // Wiring: periodic_hcore's S/T are the symmetrised oracle, bit for bit.
+    // Wiring: periodic_hcore's S/T are the mirrored oracle, bit for bit
+    // (s2 output is exactly symmetric, so its `symmetrize` is the identity).
     let ([_, (ss, ts)], _) = &runs[0];
     for &n in &THREADS {
         let hc = in_pool(n, || periodic_hcore(&cell, &prep, &cfg).expect("hcore"));
-        assert_bitwise(
-            &hc.s,
-            &(0.5 * (ss + &ss.t())),
-            &format!("hcore S ({n} threads)"),
-        );
-        assert_bitwise(
-            &hc.t,
-            &(0.5 * (ts + &ts.t())),
-            &format!("hcore T ({n} threads)"),
-        );
+        assert_bitwise(&hc.s, &mirror_upper(ss), &format!("hcore S ({n} threads)"));
+        assert_bitwise(&hc.t, &mirror_upper(ts), &format!("hcore T ({n} threads)"));
     }
 }
 

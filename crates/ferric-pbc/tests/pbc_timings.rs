@@ -87,6 +87,20 @@ fn hcore_and_rsgdf_timings_are_populated_and_disjoint() {
         ht.counter("hcore SR triplets"),
         Some(hc.n_sr_triplets as u64)
     );
+    // s2: each unordered pair computed once; the ordered-equivalent weights
+    // off-diagonal pairs 2, so it lies in (n, 2n] (hcore module doc
+    // "Orbital-pair symmetry").
+    assert_eq!(
+        ht.counter("hcore SR triplets (ordered-equivalent)"),
+        Some(hc.n_sr_triplets_ordered as u64)
+    );
+    assert!(
+        hc.n_sr_triplets < hc.n_sr_triplets_ordered
+            && hc.n_sr_triplets_ordered <= 2 * hc.n_sr_triplets,
+        "SR triplets {} vs ordered-equivalent {}",
+        hc.n_sr_triplets,
+        hc.n_sr_triplets_ordered
+    );
     assert_eq!(ht.counter("hcore pair images"), Some(hc.n_images as u64));
     assert_eq!(ht.counter("hcore LR half-G"), Some(hc.n_g_half as u64));
     assert_eq!(ht.counter("hcore LR chunks"), Some(hc.n_lr_chunks as u64));
@@ -131,6 +145,17 @@ fn hcore_and_rsgdf_timings_are_populated_and_disjoint() {
     assert_eq!(
         gt.counter("rsgdf SR3 triplets"),
         Some(st.n_sr3_triplets as u64)
+    );
+    assert_eq!(
+        gt.counter("rsgdf SR3 triplets (ordered-equivalent)"),
+        Some(st.n_sr3_triplets_ordered as u64)
+    );
+    assert!(
+        st.n_sr3_triplets < st.n_sr3_triplets_ordered
+            && st.n_sr3_triplets_ordered <= 2 * st.n_sr3_triplets,
+        "SR3 triplets {} vs ordered-equivalent {}",
+        st.n_sr3_triplets,
+        st.n_sr3_triplets_ordered
     );
     assert_eq!(gt.counter("rsgdf SR2 pairs"), Some(st.n_sr2_pairs as u64));
     assert_eq!(gt.counter("rsgdf LR half-G"), Some(st.n_g_half as u64));

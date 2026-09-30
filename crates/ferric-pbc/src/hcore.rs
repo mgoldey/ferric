@@ -132,12 +132,36 @@
 //! threshold decoupled from the candidate set, and reports what the screen
 //! skipped against the bound's own prediction. It shares the production loop
 //! (`sr_attraction`), so it measures the code `periodic_hcore` runs.
+//!
+//! # Orbital-pair symmetry (Gamma s2)
+//!
+//! `(μ_0|O|ν_L) = (ν_0|O|μ_{−L})` for the translation-invariant `O` = S, T
+//! and the SR attraction (nuclei at every lattice image; the candidate and
+//! pair-image sets are closed under the map), so at Gamma the S, T and `V_SR`
+//! lattice sums are symmetric. [`periodic_hcore`] therefore evaluates each
+//! UNORDERED shell pair `i1 ≤ i2` once over every pair image `L`, with the
+//! ordered loop's per-pair body and per-element addend sequence, and ONE task
+//! copies the finished block into both `(μ, ν)` and `(ν, μ)`. A diagonal
+//! pair also runs over every `L` and writes its `i ≤ j` elements into both
+//! places (an `L = 0` + half-space scheme would save only `~1/(2 nsh)` of the
+//! work and needs an `L ↔ −L` image map). The matrices are EXACTLY symmetric,
+//! every element is bitwise the ordered loop's `(μ ≤ ν)` value, and each
+//! element is still written by exactly one task (bitwise across thread
+//! counts). The trailing `symmetrize` is then the identity (`½(x + x) = x`
+//! exactly) and `sr_asymmetry` is 0. `n_sr_triplets` counts the triplets
+//! COMPUTED; `n_sr_triplets_ordered` (off-diagonal × 2) is the pre-s2
+//! ordered count to compare benchmarks on. [`periodic_hcore_pair_s1_oracle`]
+//! is the pre-s2 build (the FROZEN serial ordered loops + averaging), bit for
+//! bit. The k-point sums (`kpoint`) keep the ordered loops (`h(k)` is
+//! Hermitian, not symmetric: s2 there needs the `e^{ik·L}` ↔ `e^{−ik·L}`
+//! pairing), and so do the force/strain derivative walks (their own loops).
 
 use crate::budget::{bytes_of, Ledger};
 use crate::ewald::{default_ewald_omega, ewald_nuclear_repulsion};
 use crate::lattice::Cell;
 use crate::ordered::{ordered_units, window_budget, Stored};
 use crate::pair_ft::{pair_ft_bytes_per_g, pair_ft_chunked};
+use crate::rsgdf::unordered_pairs;
 use crate::timing::{PbcTimings, StageClock};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -347,15 +371,22 @@ pub struct PeriodicHcore {
     pub omega: f64,
     /// Number of pair images summed for S/T.
     pub n_images: usize,
-    /// Number of shifted 3-centre calls in the SR attraction.
+    /// Number of shifted 3-centre calls in the SR attraction (each unordered
+    /// shell pair once; module doc "Orbital-pair symmetry").
     pub n_sr_triplets: usize,
+    /// `n_sr_triplets` in ordered-pair units (off-diagonal pairs × 2): the
+    /// pre-s2 count, the number to compare benchmarks on.
+    pub n_sr_triplets_ordered: usize,
     /// Kept (shell, shell, ECP-image) triples in `v_ecp` (0 without ECP).
     pub n_ecp_triples: usize,
     /// Number of half-sphere G vectors in the LR attraction.
     pub n_g_half: usize,
     /// max |V_SR − V_SRᵀ| before symmetrisation (a lattice sum over an
     /// image set closed under L → −L is symmetric; a large value flags a
-    /// truncation or image-set defect).
+    /// truncation or image-set defect). The s2 walk writes `V_SR` exactly
+    /// symmetric, so this is 0 unless the construction breaks; the
+    /// pre-s2 ordered loop ([`periodic_hcore_pair_s1_oracle`]) reports its
+    /// round-off asymmetry here.
     pub sr_asymmetry: f64,
     /// The resolved memory budget (bytes).
     pub budget_bytes: usize,
@@ -822,9 +853,14 @@ fn sr_candidates(
 struct SrSum {
     v: Array2<f64>,
     n_triplets: usize,
+    /// `n_triplets` in ordered-pair units (off-diagonal pairs × 2; the
+    /// ordered loop's count). Equal to `n_triplets` for the ordered oracle.
+    n_triplets_ordered: usize,
     /// Nucleus-candidate segment-distance tests performed (the screen's own
     /// cost, FINDINGS "Performance plan" item 2).
     n_segment_tests: usize,
+    /// `n_segment_tests` in ordered-pair units.
+    n_segment_tests_ordered: usize,
     /// Per element: Σ over SKIPPED triplets of the bound's per-triplet
     /// prediction (only when tracked).
     predicted: Option<Array2<f64>>,
@@ -856,25 +892,29 @@ fn sr_attraction(
         return Ok(SrSum {
             v,
             n_triplets: 0,
+            n_triplets_ordered: 0,
             n_segment_tests: 0,
+            n_segment_tests_ordered: 0,
             predicted,
         });
     }
     let sites: Vec<[f64; 4]> = nuc.iter().map(|(_, r)| [r[0], r[1], r[2], zeta]).collect();
     let site = SiteBasis::new(&sites, 0)?;
-    // PARALLEL over ordered shell pairs, bit-identical to the serial
-    // `L → i1 → i2 → candidate` nest and across thread counts (FINDINGS
-    // "Performance plan" §3 Class A): element (μ, ν) with μ in shell i1 and
-    // ν in shell i2 receives addends ONLY from pair (i1, i2), in the order
-    // "L ascending, then candidate order"; the pair-outer nest below keeps
-    // that per-element sequence (every screen decision and block is a pure
-    // function of (i1, i2, L, candidate)). Each task accumulates its block
-    // (and its predicted-skip scalar, which today's loop adds uniformly to
-    // every element of the block) from zero with the same `+=` sequence and
-    // COPIES it into the zeroed output under a mutex, so the finishing order
-    // of tasks cannot change a bit. Counters are integer sums. One libint
-    // engine per rayon worker (`EnginePool::from_fn`); the shifted 3-centre
-    // call is stateless. Per-task scratch is one (dim_i1 × dim_i2) block.
+    // PARALLEL over UNORDERED shell pairs i1 <= i2 (module doc "Orbital-pair
+    // symmetry"): element (μ, ν), μ in shell i1 <= ν's shell i2, receives
+    // addends ONLY from pair (i1, i2), in the order "L ascending, then
+    // candidate order" — the serial `L → i1 → i2 → candidate` nest's
+    // per-element sequence (every screen decision and block is a pure
+    // function of (i1, i2, L, candidate)), so row μ ≤ ν is BITWISE the
+    // ordered loop's (`sr_attraction_serial_oracle`). Each task accumulates
+    // its block (and its predicted-skip scalar, which the ordered loop adds
+    // uniformly to every element of the block) from zero with the same `+=`
+    // sequence and COPIES it into BOTH (μ, ν) and (ν, μ) of the zeroed
+    // output under a mutex; distinct unordered pairs own disjoint elements,
+    // so the finishing order of tasks cannot change a bit. Counters are
+    // integer sums. One libint engine per rayon worker
+    // (`EnginePool::from_fn`); the shifted 3-centre call is stateless.
+    // Per-task scratch is one (dim_i1 × dim_i2) block.
     let nsh = shells.len();
     let pool = sr_engine_pool(prep, &site, omega)?;
     let ctx = SrPairCtx {
@@ -891,15 +931,19 @@ fn sr_attraction(
         track,
     };
     let out = Mutex::new((&mut v, predicted.as_mut()));
-    let per_pair: Vec<Result<(usize, usize), FerricError>> = (0..nsh * nsh)
-        .into_par_iter()
-        .map(|pair| ctx.pair_task(&pool, pair / nsh, pair % nsh, &out))
+    let pairs = unordered_pairs(nsh);
+    let per_pair: Vec<Result<(usize, usize), FerricError>> = pairs
+        .par_iter()
+        .map(|&(i1, i2)| ctx.pair_task(&pool, i1, i2, &out))
         .collect();
-    let (n_triplets, n_segment_tests) = sum_pair_counts(per_pair)?;
+    let [n_triplets, n_triplets_ordered, n_segment_tests, n_segment_tests_ordered] =
+        sum_pair_counts(&pairs, per_pair)?;
     Ok(SrSum {
         v,
         n_triplets,
+        n_triplets_ordered,
         n_segment_tests,
+        n_segment_tests_ordered,
         predicted,
     })
 }
@@ -920,19 +964,24 @@ fn sr_engine_pool(
     })
 }
 
-/// Sum per-pair `(triplets, segment tests)` in pair order; the first error
-/// (in pair order, so deterministic) is returned instead.
+/// Sum per-unordered-pair `(triplets, segment tests)` in pair order into
+/// `[triplets, triplets ordered-equivalent, segment tests, segment tests
+/// ordered-equivalent]` (off-diagonal pairs weighted 2); the first error (in
+/// pair order, so deterministic) is returned instead.
 fn sum_pair_counts(
+    pairs: &[(usize, usize)],
     per_pair: Vec<Result<(usize, usize), FerricError>>,
-) -> Result<(usize, usize), FerricError> {
-    let mut n_triplets = 0usize;
-    let mut n_segment_tests = 0usize;
-    for r in per_pair {
+) -> Result<[usize; 4], FerricError> {
+    let mut c = [0usize; 4];
+    for (&(i1, i2), r) in pairs.iter().zip(per_pair) {
         let (t, sg) = r?;
-        n_triplets += t;
-        n_segment_tests += sg;
+        let w = if i1 == i2 { 1 } else { 2 };
+        c[0] += t;
+        c[1] += w * t;
+        c[2] += sg;
+        c[3] += w * sg;
     }
-    Ok((n_triplets, n_segment_tests))
+    Ok(c)
 }
 
 /// The zeroed `V` (and optional predicted-skip matrix) every
@@ -964,8 +1013,9 @@ struct SrPairAcc {
 }
 
 impl SrPairCtx<'_> {
-    /// One task: pair `(i1, i2)` over every image `L` ascending, then its
-    /// finished block COPIED into `out`. Returns `(triplets, segment tests)`.
+    /// One task: unordered pair `(i1 <= i2)` over every image `L` ascending,
+    /// then its finished block COPIED into `out` at `(μ, ν)` and `(ν, μ)`
+    /// ([`write_sr_pair_block`]). Returns `(triplets, segment tests)`.
     fn pair_task(
         &self,
         pool: &EnginePool,
@@ -987,7 +1037,7 @@ impl SrPairCtx<'_> {
             Ok(())
         })?;
         if st.n_trip > 0 || st.pred_acc != 0.0 {
-            write_sr_pair_block(out, a, b, &st);
+            write_sr_pair_block(out, a, b, i1 == i2, &st);
         }
         Ok((st.n_trip, st.n_seg))
     }
@@ -1058,22 +1108,35 @@ impl SrPairCtx<'_> {
     }
 }
 
-/// COPY (not add) pair `(a, b)`'s finished block (and its predicted-skip
-/// scalar, uniformly) into `out` under its mutex, so task finishing order
+/// COPY (not add) unordered pair `(a, b)`'s finished block (and its
+/// predicted-skip scalar, uniformly) into `out` under its mutex, at both
+/// `(μ, ν)` and `(ν, μ)` ([`copy_block_mirrored`]), so task finishing order
 /// cannot change a bit.
-fn write_sr_pair_block(out: &SrOut<'_>, a: &PrimShell, b: &PrimShell, st: &SrPairAcc) {
+fn write_sr_pair_block(out: &SrOut<'_>, a: &PrimShell, b: &PrimShell, same: bool, st: &SrPairAcc) {
     let mut guard = out.lock().unwrap_or_else(|e| e.into_inner());
     let (v, p) = &mut *guard;
+    copy_block_mirrored(v, a, b, same, |i, j| st.acc[i * b.dim + j]);
+    if let Some(p) = p.as_mut() {
+        copy_block_mirrored(p, a, b, same, |_, _| st.pred_acc);
+    }
+}
+
+/// Write `val(i, j)` of unordered shell pair `(a, b)` into BOTH `m[(a.off +
+/// i, b.off + j)]` and `m[(b.off + j, a.off + i)]` (module doc "Orbital-pair
+/// symmetry"). A diagonal pair (`same`) writes only `i <= j`, so every
+/// element receives exactly one value.
+fn copy_block_mirrored<F>(m: &mut Array2<f64>, a: &PrimShell, b: &PrimShell, same: bool, val: F)
+where
+    F: Fn(usize, usize) -> f64,
+{
     for i in 0..a.dim {
         for j in 0..b.dim {
-            v[(a.off + i, b.off + j)] = st.acc[i * b.dim + j];
-        }
-    }
-    if let Some(p) = p.as_mut() {
-        for i in 0..a.dim {
-            for j in 0..b.dim {
-                p[(a.off + i, b.off + j)] = st.pred_acc;
+            if same && i > j {
+                continue;
             }
+            let x = val(i, j);
+            m[(a.off + i, b.off + j)] = x;
+            m[(b.off + j, a.off + i)] = x;
         }
     }
 }
@@ -1086,17 +1149,18 @@ pub(crate) fn st_engine_pools(prep: &PreparedBasis) -> Result<[EnginePool; 2], F
     ])
 }
 
-/// Unsymmetrised lattice-summed `S = Σ_L (μ_0|ν_L)` and `T` over `images`.
+/// Lattice-summed `S = Σ_L (μ_0|ν_L)` and `T` over `images`, EXACTLY
+/// symmetric (module doc "Orbital-pair symmetry").
 ///
-/// PARALLEL over ordered shell pairs, BIT-IDENTICAL to the serial
-/// `L → i1 → i2` loop it replaced ([`overlap_kinetic_serial_oracle`]) and
-/// across thread counts: element `(μ, ν)` with `μ` in shell `i1`, `ν` in
-/// shell `i2` receives addends `1.0 · block` (= `block` exactly) ONLY from
-/// pair `(i1, i2)`, in `images` order (the loop's other indices never touch
-/// it). Each task sums
-/// its two blocks from `+0.0` over `L` ascending with the serial `+=`
-/// expression and COPIES them into the zeroed outputs under a mutex, so
-/// task finishing order cannot change a bit (the same construction as
+/// PARALLEL over UNORDERED shell pairs `i1 <= i2`: element `(μ, ν)` with `μ`
+/// in shell `i1 <= ν`'s shell `i2` receives addends `1.0 · block` (= `block`
+/// exactly) ONLY from pair `(i1, i2)`, in `images` order, so it is BITWISE
+/// the serial ordered `L → i1 → i2` loop's element
+/// ([`overlap_kinetic_serial_oracle`]); `(ν, μ)` receives a copy of it. Each
+/// task sums its two blocks from `+0.0` over `L` ascending with the serial
+/// `+=` expression and COPIES them into both places of the zeroed outputs
+/// under a mutex; distinct unordered pairs own disjoint elements, so task
+/// finishing order cannot change a bit (the construction of
 /// [`sr_attraction`]). `compute_1e_block_shifted` is stateless (it moves a
 /// copy of shell `i2` per call), and every pooled engine is built exactly
 /// like the serial one. Errors are returned in pair order.
@@ -1111,10 +1175,9 @@ fn overlap_kinetic(
     let mut s = Array2::<f64>::zeros((n, n));
     let mut t = Array2::<f64>::zeros((n, n));
     let out = Mutex::new((&mut s, &mut t));
-    let per_pair: Vec<Result<(), FerricError>> = (0..nsh * nsh)
+    let per_pair: Vec<Result<(), FerricError>> = unordered_pairs(nsh)
         .into_par_iter()
-        .map(|pair| {
-            let (i1, i2) = (pair / nsh, pair % nsh);
+        .map(|(i1, i2)| {
             let (a, b) = (&shells[i1], &shells[i2]);
             let bl = a.dim * b.dim;
             let (mut acc_s, mut acc_t) = (vec![0.0_f64; bl], vec![0.0_f64; bl]);
@@ -1137,12 +1200,8 @@ fn overlap_kinetic(
             })?;
             let mut guard = out.lock().unwrap_or_else(|e| e.into_inner());
             let (s, t) = &mut *guard;
-            for i in 0..a.dim {
-                for j in 0..b.dim {
-                    s[(a.off + i, b.off + j)] = acc_s[i * b.dim + j];
-                    t[(a.off + i, b.off + j)] = acc_t[i * b.dim + j];
-                }
-            }
+            copy_block_mirrored(s, a, b, i1 == i2, |i, j| acc_s[i * b.dim + j]);
+            copy_block_mirrored(t, a, b, i1 == i2, |i, j| acc_t[i * b.dim + j]);
             Ok(())
         })
         .collect();
@@ -1177,10 +1236,12 @@ fn overlap_kinetic_serial_oracle(
     Ok((s, t))
 }
 
-/// TEST ORACLE for the parallel `S`/`T`: `[parallel, serial]` unsymmetrised
-/// `(S, T)` over the pair images [`periodic_hcore`] uses at `cfg`, plus the
-/// image count. `serial` is the pre-parallel `L → i1 → i2` loop, FROZEN
-/// verbatim; the two must agree BIT FOR BIT (`tests/pbc_parallel_bitwise.rs`).
+/// TEST ORACLE for the parallel `S`/`T`: `[parallel, serial]` `(S, T)`
+/// before `symmetrize`, over the pair images [`periodic_hcore`] uses at
+/// `cfg`, plus the image count. `serial` is the pre-parallel ordered
+/// `L → i1 → i2` loop, FROZEN verbatim; `parallel` is the s2 walk, whose
+/// `(μ, ν)` must be BITWISE `serial[(min, max)]` (module doc "Orbital-pair
+/// symmetry"; `tests/pbc_parallel_bitwise.rs`).
 #[doc(hidden)]
 #[allow(clippy::type_complexity)]
 pub fn overlap_kinetic_parallel_and_serial(
@@ -1208,6 +1269,30 @@ pub fn periodic_hcore(
     prep: &PreparedBasis,
     cfg: &PeriodicHcoreConfig,
 ) -> Result<PeriodicHcore, FerricError> {
+    periodic_hcore_impl(cell, prep, cfg, false)
+}
+
+/// TEST ORACLE (FROZEN; do not "improve"): [`periodic_hcore`] with the
+/// pre-s2 S/T and SR attraction — the FROZEN serial ORDERED loops
+/// (`overlap_kinetic_serial_oracle`, `sr_attraction_serial_oracle`, bitwise
+/// the pre-s2 parallel production) followed by the μ↔ν average. Bit for bit
+/// the build before s2 (its `n_sr_triplets` = `n_sr_triplets_ordered` = the
+/// ordered count). Serial: small test cells only.
+#[doc(hidden)]
+pub fn periodic_hcore_pair_s1_oracle(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    cfg: &PeriodicHcoreConfig,
+) -> Result<PeriodicHcore, FerricError> {
+    periodic_hcore_impl(cell, prep, cfg, true)
+}
+
+fn periodic_hcore_impl(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    cfg: &PeriodicHcoreConfig,
+    s1_oracle: bool,
+) -> Result<PeriodicHcore, FerricError> {
     cfg.validate()?;
     // Z_eff guard first: a bare Z is silent for every k-mesh anchor.
     crate::ecp::check_ecp_applied(cell, prep.basis_set())?;
@@ -1231,10 +1316,15 @@ pub fn periodic_hcore(
     let rpair = pair_radius(&shells, pair_thresh);
     timings.stop("hcore setup (shells, pair images)", &clock);
 
-    // --- S, T: every pair image (parallel over shell pairs, bit-identical
-    // to the serial `L → i1 → i2` loop: `overlap_kinetic`).
+    // --- S, T: every pair image (parallel over unordered shell pairs, each
+    // element bitwise the serial ordered loop's μ ≤ ν value: `overlap_kinetic`;
+    // `symmetrize` is then the identity).
     let clock = StageClock::start();
-    let (s, t) = overlap_kinetic(prep, &shells, &images)?;
+    let (s, t) = if s1_oracle {
+        overlap_kinetic_serial_oracle(prep, &shells, &images)?
+    } else {
+        overlap_kinetic(prep, &shells, &images)?
+    };
     let (s, _) = symmetrize(&s);
     let (t, _) = symmetrize(&t);
     timings.stop("hcore S/T", &clock);
@@ -1245,11 +1335,17 @@ pub fn periodic_hcore(
     let (nuc, zmax) = nonzero_nuclei(cell);
     let mut v_sr = Array2::<f64>::zeros((n, n));
     let mut n_sr_triplets = 0usize;
+    let mut n_sr_triplets_ordered = 0usize;
     let mut sr_asymmetry = 0.0;
     if !nuc.is_empty() {
         let cands = sr_candidates(cell, &shells, &nuc, omega, zmax, thresh, rpair, &mut ledger)?;
         timings.set_counter("hcore SR nucleus candidates", cands.len() as u64);
-        let sr = sr_attraction(
+        let sr_loop = if s1_oracle {
+            sr_attraction_serial_oracle
+        } else {
+            sr_attraction
+        };
+        let sr = sr_loop(
             prep,
             &shells,
             &images,
@@ -1263,6 +1359,7 @@ pub fn periodic_hcore(
             false,
         )?;
         n_sr_triplets = sr.n_triplets;
+        n_sr_triplets_ordered = sr.n_triplets_ordered;
         timings.set_counter("hcore SR segment tests", sr.n_segment_tests as u64);
         let (sym, asym) = symmetrize(&sr.v);
         v_sr = sym;
@@ -1299,6 +1396,10 @@ pub fn periodic_hcore(
     ferric_core::memory::warn_if_rss_over("ferric-pbc periodic_hcore", ledger.budget(), 1.1);
     timings.set_counter("hcore pair images", images.len() as u64);
     timings.set_counter("hcore SR triplets", n_sr_triplets as u64);
+    timings.set_counter(
+        "hcore SR triplets (ordered-equivalent)",
+        n_sr_triplets_ordered as u64,
+    );
     timings.set_counter("hcore LR half-G", lr.n_g_half as u64);
     timings.set_counter("hcore LR chunks", lr.n_chunks as u64);
     if n_ecp_triples > 0 {
@@ -1318,6 +1419,7 @@ pub fn periodic_hcore(
         omega,
         n_images: images.len(),
         n_sr_triplets,
+        n_sr_triplets_ordered,
         n_ecp_triples,
         n_g_half: lr.n_g_half,
         sr_asymmetry,
@@ -1880,9 +1982,10 @@ fn pair_radius(shells: &[PrimShell], pair_thresh: f64) -> f64 {
 /// built at `cand_thresh` (exactly as `periodic_hcore` builds them at
 /// `precision = cand_thresh`) and the per-triplet screen applied at
 /// `screen_thresh` with `bound` (`0` = unscreened: every candidate triplet).
-/// Returns `(V_SR, n_triplets)`. At `cand_thresh = screen_thresh =
-/// precision` and [`SrBound::Derived`], its symmetrisation IS
-/// `periodic_hcore(..).v_sr` (anchored in `tests/pbc_sr_screening.rs`).
+/// Returns `(V_SR, n_triplets computed)`; `V_SR` is the s2 walk's, exactly
+/// symmetric (module doc "Orbital-pair symmetry"). At `cand_thresh =
+/// screen_thresh = precision` and [`SrBound::Derived`], its symmetrisation
+/// IS `periodic_hcore(..).v_sr` (anchored in `tests/pbc_sr_screening.rs`).
 pub fn sr_attraction_matrix(
     cell: &Cell,
     prep: &PreparedBasis,
@@ -1904,10 +2007,14 @@ pub type SrAttractionParts = (Array2<f64>, usize, usize, Option<Array2<f64>>);
 /// SAME shells, pair images and nucleus candidates as
 /// [`sr_attraction_matrix`] (built at `cand_thresh`), screened at
 /// `screen_thresh` with `bound`, optionally tracking the predicted skip.
-/// `serial` is the pre-parallel `L → i1 → i2 → candidate` loop, FROZEN
-/// verbatim (`sr_attraction_serial_oracle`); the two must agree BIT FOR BIT
-/// (`tests/pbc_parallel_bitwise.rs`), which is the proof that the
-/// pair-outer parallel nest kept every element's summation sequence.
+/// `serial` is the pre-parallel ordered `L → i1 → i2 → candidate` loop,
+/// FROZEN verbatim (`sr_attraction_serial_oracle`); `parallel` is the
+/// production s2 walk (module doc "Orbital-pair symmetry"), whose `(μ, ν)`
+/// (and predicted-skip) elements must be BITWISE `serial[(min, max)]`
+/// (`tests/pbc_parallel_bitwise.rs`), the proof that the pair-outer nest kept
+/// every element's summation sequence. The parallel counts are reported in
+/// ORDERED-pair units (off-diagonal pairs × 2) so they compare 1:1 with the
+/// serial loop's.
 #[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
 pub fn sr_attraction_parallel_and_serial(
@@ -1934,8 +2041,15 @@ pub fn sr_attraction_parallel_and_serial(
         bound,
         track,
     )?;
+    // The s2 counts in ordered-pair units, so they compare 1:1 with the
+    // ordered loop's.
     Ok([
-        (par.v, par.n_triplets, par.n_segment_tests, par.predicted),
+        (
+            par.v,
+            par.n_triplets_ordered,
+            par.n_segment_tests_ordered,
+            par.predicted,
+        ),
         (ser.v, ser.n_triplets, ser.n_segment_tests, ser.predicted),
     ])
 }
@@ -1965,7 +2079,9 @@ fn sr_attraction_serial_oracle(
         return Ok(SrSum {
             v,
             n_triplets,
+            n_triplets_ordered: n_triplets,
             n_segment_tests,
+            n_segment_tests_ordered: n_segment_tests,
             predicted,
         });
     }
@@ -2036,7 +2152,9 @@ fn sr_attraction_serial_oracle(
     Ok(SrSum {
         v,
         n_triplets,
+        n_triplets_ordered: n_triplets,
         n_segment_tests,
+        n_segment_tests_ordered: n_segment_tests,
         predicted,
     })
 }

@@ -97,6 +97,50 @@
 //! split energy (FINDINGS "Iteration 26"); the k-point build refuses a
 //! split config ([`RsGdf::range_split`]).
 //!
+//! # Orbital-pair symmetry of the Gamma SR 3-centre sum (s2)
+//!
+//! By lattice translation, `(ν_0 μ_L | P_T) = (μ_0 ν_{−L} | P_{T−L})`, and the
+//! pair-image set, the aux walk around the segment and every screen radius
+//! are closed under that map, so at Gamma `J3_SR[νμ] = J3_SR[μν]` exactly in
+//! exact arithmetic. The Gamma build therefore evaluates each UNORDERED shell
+//! pair `i1 ≤ i2` once over EVERY pair image `L` (the same per-pair body and
+//! per-element addend sequence as the ordered walk) and one task COPIES the
+//! finished block into both row `μν` and row `νμ`. Diagonal pairs
+//! (`i1 == i2`) also run over every `L` (not `L = 0` plus a half-space) and
+//! write the function pair `i ≤ j` of the block into both `(i, j)` and
+//! `(j, i)`: a half-space would save only the diagonal pairs' share of the
+//! work (`~1/(2 nsh)` of the total) and needs an `L ↔ −L` map of the image
+//! list, including the strained frozen-index frame. Consequences:
+//!
+//! * `J3_SR` is EXACTLY symmetric, and every element is bitwise one of the
+//!   two ordered evaluations the old walk averaged (unsplit: the one with
+//!   `μ ≤ ν`). `|new − old| ≤ ½|x − y| + ½ ulp` per element, where `x, y` are
+//!   the two ordered sums (round-off only; `RsGdfStats::asym_j3` of the old
+//!   build). The remaining `symmetrize_pairs` averages only the LR and G = 0
+//!   parts' asymmetry.
+//! * Every output element is still owned by exactly one task (a copy, not an
+//!   addition), so the build stays bitwise identical across thread counts.
+//! * Range split: the kept part `χ_iχ_j − χ_i^sχ_j^s` is symmetric per
+//!   unordered pair, so either orientation's calls give both rows; the task
+//!   evaluates the orientation with FEWER kept calls (compact × split shell:
+//!   1 call instead of 2), ties in index order, so a split that moves nothing
+//!   is still bitwise the unsplit build.
+//! * Counters: `RsGdfStats::n_sr3_triplets` counts the triplets COMPUTED;
+//!   `n_sr3_triplets_ordered` weights them 2 (off-diagonal) / 1 (diagonal),
+//!   which for the unsplit walk is the pre-s2 ordered count (compare
+//!   benchmarks on it). For the range split the pre-s2 counter also paid the
+//!   costlier orientation; [`sr_walk_counts`] reports it as
+//!   `n_sr3_triplets_s1`.
+//! * Frozen oracle: [`RsGdf::build_pair_s1_oracle`] is the pre-s2 build
+//!   (ordered walk + averaging), bit for bit.
+//! * k-points keep the ordered walk: `(ν μ)` lands in residue bin
+//!   `(−r_L, r_T − r_L)`, so s2 there needs that residue map and a
+//!   non-TRIM-mesh test first. The SR metric `J2` (aux pairs) also keeps the
+//!   ordered walk: it is ~0.1% of the SR3 calls (diamond cc-pVDZ: 159 k
+//!   pairs vs 197 M triplets). The force/stress derivative walks
+//!   (`deriv`, `strain`, `split`'s `deriv`) have their own ordered loops and
+//!   are unchanged.
+//!
 //! # Forces
 //!
 //! [`RsGdf::build_for_gradient`] keeps the metric eigen-data the analytic
@@ -262,15 +306,23 @@ pub struct RsGdfStats {
     pub precision: f64,
     /// Pair images `L` visited.
     pub n_pair_images: usize,
-    /// Shifted 3-centre shell triplets computed (SR).
+    /// Shifted 3-centre shell triplets computed (SR; each unordered shell
+    /// pair once at Gamma, module doc "Orbital-pair symmetry").
     pub n_sr3_triplets: usize,
+    /// `n_sr3_triplets` in ordered-pair units: off-diagonal pairs weighted
+    /// 2, diagonal 1. Unsplit, this is the pre-s2 ordered-walk count (the
+    /// number to compare benchmarks on); with a range split see
+    /// [`SrWalkCounts::n_sr3_triplets_s1`].
+    pub n_sr3_triplets_ordered: usize,
     /// Shifted 2-centre shell pairs computed (SR metric).
     pub n_sr2_pairs: usize,
     /// Half-sphere G vectors (LR) and the `pair_ft` chunks they used.
     pub n_g_half: usize,
     pub n_g_chunks: usize,
     /// max |J2 − J2ᵀ| and max |J3\[μν\] − J3\[νμ\]| before symmetrisation
-    /// (truncation / image-set defects show up here).
+    /// (truncation / image-set defects show up here). The Gamma SR 3-centre
+    /// part is exactly symmetric by construction (s2), so `asym_j3` measures
+    /// the LR and G = 0 parts only.
     pub asym_j2: f64,
     pub asym_j3: f64,
     /// Resolved budget and the bytes reserved before the LR chunks.
@@ -761,6 +813,73 @@ fn sum_counts_in_pair_order(counts: Vec<Result<usize, FerricError>>) -> Result<u
     Ok(count)
 }
 
+/// Which Gamma SR 3-centre walk a build runs (module doc "Orbital-pair
+/// symmetry"). Production is ALWAYS [`PairSym::S2`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PairSym {
+    /// Each unordered shell pair once, both rows written (production).
+    S2,
+    /// FROZEN pre-s2 construction: every ordered pair, averaged afterwards
+    /// by `symmetrize_pairs` ([`RsGdf::build_pair_s1_oracle`] only).
+    S1Oracle,
+}
+
+/// Unordered shell pairs `(i1, i2)`, `i1 <= i2`, row-major: the Gamma s2
+/// task list (module doc "Orbital-pair symmetry").
+pub(crate) fn unordered_pairs(nsh: usize) -> Vec<(usize, usize)> {
+    (0..nsh)
+        .flat_map(|i| (i..nsh).map(move |j| (i, j)))
+        .collect()
+}
+
+/// Sum s2 per-pair counts in pair order: `(computed, ordered-equivalent)`,
+/// the latter weighting an off-diagonal pair 2 (it stands for both
+/// orders) and a diagonal pair 1. The first error in pair order is
+/// returned instead.
+fn sum_s2_counts(
+    pairs: &[(usize, usize)],
+    counts: Vec<Result<usize, FerricError>>,
+) -> Result<(usize, usize), FerricError> {
+    let (mut n, mut n_ordered) = (0usize, 0usize);
+    for (&(i1, i2), c) in pairs.iter().zip(counts) {
+        let c = c?;
+        n += c;
+        n_ordered += if i1 == i2 { c } else { 2 * c };
+    }
+    Ok((n, n_ordered))
+}
+
+/// COPY one unordered pair's finished Gamma block into BOTH row `μν` and row
+/// `νμ` of `j3` (`(nao², naux)`, `n` = nao; s2, module doc). `acc[(i nb + j)
+/// naux + P]` belongs to `μ = a.off + i`, `ν = b.off + j`. A diagonal pair
+/// (`same`) writes only its function pairs `i <= j` (each into both rows), so
+/// every output row receives exactly one value from exactly one task.
+fn copy_pair_rows_mirrored(
+    j3: &mut Array2<f64>,
+    n: usize,
+    acc: &[f64],
+    a: &GShell,
+    b: &GShell,
+    same: bool,
+) {
+    let naux = j3.ncols();
+    let (na, nb) = (a.nfun, b.nfun);
+    for i in 0..na {
+        for j in 0..nb {
+            if same && i > j {
+                continue;
+            }
+            let src = &acc[(i * nb + j) * naux..(i * nb + j + 1) * naux];
+            for row in [(a.off + i) * n + b.off + j, (b.off + j) * n + a.off + i] {
+                j3.row_mut(row)
+                    .iter_mut()
+                    .zip(src)
+                    .for_each(|(d, &s)| *d = s);
+            }
+        }
+    }
+}
+
 /// Residue binning of the SR sums: pair images `L` by `n(L) mod mod_l`, aux
 /// images `T` by `n(T) mod mod_t` (`n` = integer lattice coordinates; the
 /// k-point RS-GDF, [`kpoint`]). Bin `(r_L, r_T)` is `r_L · R_T + r_T`. The
@@ -1039,10 +1158,68 @@ impl Stage<'_> {
 
     /// SR 3-index `Σ_{L,T} (μ_0 ν_L | P_T)_erfc` over the pair `images`,
     /// `(nao², naux)` (unsymmetrised), and the triplet count: the single bin
-    /// of [`Stage::sr_three_index_binned`].
+    /// of [`Stage::sr_three_index_binned`], i.e. the ORDERED (pre-s2) walk.
+    /// Production Gamma builds use [`Stage::sr_three_index_s2`]; this one
+    /// serves the frozen oracles.
     fn sr_three_index(&self, images: &[[f64; 3]]) -> Result<(Array2<f64>, usize), FerricError> {
         let (mut bins, count) = self.sr_three_index_binned(images, SrBinning::GAMMA)?;
         Ok((bins.swap_remove(0), count))
+    }
+
+    /// Gamma SR 3-index sum over UNORDERED shell pairs (s2, module doc
+    /// "Orbital-pair symmetry"): `(J3_SR (nao², naux), computed triplets,
+    /// ordered-equivalent triplets)`. `J3_SR` is EXACTLY symmetric in
+    /// `μ ↔ ν`; row `μν` with `μ ≤ ν` is BITWISE row `μν` of the ordered walk
+    /// [`Stage::sr_three_index`] (the same task body,
+    /// [`Stage::sr3_pair_acc`], with the same single-bin context), and row
+    /// `νμ` is a copy of it.
+    ///
+    /// PARALLEL over pairs `i1 ≤ i2`; each task COPIES its finished block into
+    /// both rows under the mutex ([`copy_pair_rows_mirrored`]). The row sets
+    /// of distinct unordered pairs are disjoint, so every element is written
+    /// by exactly one task and the result is bitwise identical across thread
+    /// counts. Per-task scratch is that of the ordered walk (`nfun_max² naux`).
+    fn sr_three_index_s2(
+        &self,
+        images: &[[f64; 3]],
+    ) -> Result<(Array2<f64>, usize, usize), FerricError> {
+        let n = self.obs.nbasis();
+        let pool = self.sr3_engine_pool()?;
+        let out = Mutex::new(vec![Array2::<f64>::zeros((n * n, self.aux.nbasis()))]);
+        // Gamma: every image is residue 0, exactly as the single-bin walk
+        // computes it (`SrBinning::residue` returns 0 for unit moduli).
+        let l_bin = vec![0usize; images.len()];
+        let ctx = Sr3Ctx {
+            pool: &pool,
+            images,
+            l_bin: &l_bin,
+            recip: self.cell.reciprocal(),
+            bins: SrBinning::GAMMA,
+            global: self.sr3_global_radius(),
+            out: &out,
+        };
+        let pairs = unordered_pairs(self.obs_sh.len());
+        let counts: Vec<Result<usize, FerricError>> = pairs
+            .par_iter()
+            .map(|&(i1, i2)| {
+                let (acc, count) = self.sr3_pair_acc(&ctx, 0, (i1, i2))?;
+                if count > 0 {
+                    let mut bins = ctx.out.lock().unwrap_or_else(|e| e.into_inner());
+                    copy_pair_rows_mirrored(
+                        &mut bins[0],
+                        n,
+                        &acc,
+                        &self.obs_sh[i1],
+                        &self.obs_sh[i2],
+                        i1 == i2,
+                    );
+                }
+                Ok(count)
+            })
+            .collect();
+        let (count, ordered) = sum_s2_counts(&pairs, counts)?;
+        let mut bins = out.into_inner().unwrap_or_else(|e| e.into_inner());
+        Ok((bins.swap_remove(0), count, ordered))
     }
 
     /// SR 3-index binned by `(L mod mod_l, T mod mod_t)`: `bins[r_L R_T + r_T]`
@@ -1142,6 +1319,23 @@ impl Stage<'_> {
         r_l: usize,
         (i1, i2): (usize, usize),
     ) -> Result<usize, FerricError> {
+        let (acc, count) = self.sr3_pair_acc(ctx, r_l, (i1, i2))?;
+        if count > 0 {
+            self.sr3_copy_pair_rows(ctx, r_l, &acc, &self.obs_sh[i1], &self.obs_sh[i2]);
+        }
+        Ok(count)
+    }
+
+    /// The accumulation of one [`Stage::sr3_pair_task`] (shared with the
+    /// Gamma s2 walk [`Stage::sr_three_index_s2`]): pair `(i1, i2)` over every
+    /// image `L ≡ r_L` in `images` order into a zeroed `(R_T, nμ nν, naux)`
+    /// scratch. Returns `(scratch, triplet count)`.
+    fn sr3_pair_acc(
+        &self,
+        ctx: &Sr3Ctx<'_>,
+        r_l: usize,
+        (i1, i2): (usize, usize),
+    ) -> Result<(Vec<f64>, usize), FerricError> {
         let (a, b) = (&self.obs_sh[i1], &self.obs_sh[i2]);
         let (na, nb) = (a.nfun, b.nfun);
         let bl = na * nb * self.aux.nbasis();
@@ -1170,10 +1364,7 @@ impl Stage<'_> {
             }
             Ok(())
         })?;
-        if count > 0 {
-            self.sr3_copy_pair_rows(ctx, r_l, &acc, a, b);
-        }
-        Ok(count)
+        Ok((acc, count))
     }
 
     /// `acc[(i nb + j) naux + P] += blk[(pp na + i) nb + j]` for aux shell
@@ -1730,6 +1921,36 @@ pub fn lr_sums_parallel_and_serial(
     Ok([run(LrKernel::Production)?, run(LrKernel::SerialOracle)?])
 }
 
+/// One Gamma SR 3-centre result of [`sr3_gamma_s2_and_s1`]: `(J3_SR
+/// unsymmetrised (nao², naux), triplets computed, ordered-equivalent
+/// triplets)`.
+pub type Sr3Parts = (Array2<f64>, usize, usize);
+
+/// TEST ORACLE for the Gamma s2 SR 3-centre walk (module doc "Orbital-pair
+/// symmetry"): `[s2, s1]` = the SR `J3` [`RsGdf::build`] computes at `cfg`
+/// (range split honoured) and the FROZEN ordered walk
+/// [`RsGdf::build_pair_s1_oracle`] computes, both before the LR and G = 0
+/// terms and before any symmetrisation. Expected: `s2` exactly symmetric;
+/// each `s2[μν]` bitwise equal to `s1[μν]` or `s1[νμ]` (unsplit: `s1[μν]`
+/// for `μ ≤ ν`); the unsplit ordered-equivalent count equal to `s1`'s count
+/// (`tests/pbc_pair_symmetry.rs`).
+#[doc(hidden)]
+pub fn sr3_gamma_s2_and_s1(
+    cell: &Cell,
+    obs: &PreparedBasis,
+    aux: &PreparedBasis,
+    cfg: &RsGdfConfig,
+) -> Result<[Sr3Parts; 2], FerricError> {
+    require_pure_aux(aux, "RsGdf")?;
+    let (st, images) = kpoint::diagnostic_stage(cell, obs, aux, cfg)?;
+    let mut ledger = Ledger::new(crate::budget::resolve(cfg.budget_bytes));
+    let plan = split::SplitPlan::maybe(&st, cfg, &images, &mut ledger)?;
+    Ok([
+        split::sr_three_index(&st, plan.as_ref(), &images)?,
+        split::sr_three_index_s1(&st, plan.as_ref(), &images)?,
+    ])
+}
+
 /// One unit of an ordered SR derivative walk ([`Stage::sr_three_index_ordered`],
 /// [`Stage::sr_metric_ordered`]): the unit's screened count and, per kept
 /// entry with a contribution, its `(aux shell, T)` and value, in walk order.
@@ -1962,6 +2183,20 @@ fn check_obs_on_cell(cell: &Cell, obs: &PreparedBasis) -> Result<(), FerricError
     Ok(())
 }
 
+/// The Gamma build's SR 3-index sum under `pair_sym`: `(J3_SR, computed,
+/// ordered-equivalent)` (module doc "Orbital-pair symmetry").
+fn gamma_sr_three_index(
+    pair_sym: PairSym,
+    st: &Stage<'_>,
+    plan: Option<&split::SplitPlan>,
+    images: &[[f64; 3]],
+) -> Result<(Array2<f64>, usize, usize), FerricError> {
+    match pair_sym {
+        PairSym::S2 => split::sr_three_index(st, plan, images),
+        PairSym::S1Oracle => split::sr_three_index_s1(st, plan, images),
+    }
+}
+
 /// Symmetrise `j3` over μ↔ν in place; returns the largest asymmetry seen.
 fn symmetrize_pairs(j3: &mut Array2<f64>, n: usize) -> f64 {
     let naux = j3.ncols();
@@ -2123,7 +2358,7 @@ impl RsGdf {
         s: &Array2<f64>,
         cfg: &RsGdfConfig,
     ) -> Result<Self, FerricError> {
-        Self::build_impl(cell, obs, aux, s, cfg, false, false).map(|(gdf, _)| gdf)
+        Self::build_impl(cell, obs, aux, s, cfg, false, false, PairSym::S2).map(|(gdf, _)| gdf)
     }
 
     /// [`RsGdf::build`] that also retains what the analytic RS-GDF forces
@@ -2146,7 +2381,7 @@ impl RsGdf {
         s: &Array2<f64>,
         cfg: &RsGdfConfig,
     ) -> Result<Self, FerricError> {
-        Self::build_impl(cell, obs, aux, s, cfg, false, true).map(|(gdf, _)| gdf)
+        Self::build_impl(cell, obs, aux, s, cfg, false, true, PairSym::S2).map(|(gdf, _)| gdf)
     }
 
     /// Whether this B carries the gradient parts
@@ -2181,13 +2416,33 @@ impl RsGdf {
         s: &Array2<f64>,
         cfg: &RsGdfConfig,
     ) -> Result<(Self, PeriodicFitParts), FerricError> {
-        let (gdf, parts) = Self::build_impl(cell, obs, aux, s, cfg, true, false)?;
+        let (gdf, parts) = Self::build_impl(cell, obs, aux, s, cfg, true, false, PairSym::S2)?;
         let parts = parts.ok_or_else(|| {
             FerricError::General("RsGdf::build_with_fit_parts: parts not retained".into())
         })?;
         Ok((gdf, parts))
     }
 
+    /// TEST ORACLE (FROZEN; do not "improve"): [`RsGdf::build`] with the
+    /// pre-s2 Gamma SR 3-centre walk — every ORDERED shell pair, then the μ↔ν
+    /// average of `symmetrize_pairs` (module doc "Orbital-pair symmetry").
+    /// Bit for bit the build before s2, including its counters (computed =
+    /// ordered-equivalent = the ordered count). The production build differs
+    /// from it only by `≤ ½|x − y|` per J3 element, `x, y` the two ordered
+    /// evaluations (round-off).
+    #[doc(hidden)]
+    pub fn build_pair_s1_oracle(
+        cell: &Cell,
+        obs: &PreparedBasis,
+        aux: &PreparedBasis,
+        s: &Array2<f64>,
+        cfg: &RsGdfConfig,
+    ) -> Result<Self, FerricError> {
+        Self::build_impl(cell, obs, aux, s, cfg, false, false, PairSym::S1Oracle)
+            .map(|(gdf, _)| gdf)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn build_impl(
         cell: &Cell,
         obs: &PreparedBasis,
@@ -2196,6 +2451,7 @@ impl RsGdf {
         cfg: &RsGdfConfig,
         retain_parts: bool,
         retain_grad: bool,
+        pair_sym: PairSym,
     ) -> Result<(Self, Option<PeriodicFitParts>), FerricError> {
         cfg.validate()?;
         require_pure_aux(aux, "RsGdf")?;
@@ -2285,7 +2541,8 @@ impl RsGdf {
         let (mut j2, n_sr2) = split::sr_metric(&st, plan.as_ref())?;
         timings.stop("rsgdf SR metric (2-centre)", &clock);
         let clock = StageClock::start();
-        let (mut j3, n_sr3) = split::sr_three_index(&st, plan.as_ref(), &images)?;
+        let (mut j3, n_sr3, n_sr3_ordered) =
+            gamma_sr_three_index(pair_sym, &st, plan.as_ref(), &images)?;
         timings.stop("rsgdf SR 3-centre", &clock);
         let clock = StageClock::start();
         let mut lr_sub = PbcTimings::default();
@@ -2376,6 +2633,7 @@ impl RsGdf {
             precision: cfg.precision,
             n_pair_images: images.len(),
             n_sr3_triplets: n_sr3,
+            n_sr3_triplets_ordered: n_sr3_ordered,
             n_sr2_pairs: n_sr2,
             n_g_half: gv.len(),
             n_g_chunks,
@@ -2388,6 +2646,10 @@ impl RsGdf {
             ("rsgdf pair images", stats.n_pair_images),
             ("rsgdf SR2 pairs", stats.n_sr2_pairs),
             ("rsgdf SR3 triplets", stats.n_sr3_triplets),
+            (
+                "rsgdf SR3 triplets (ordered-equivalent)",
+                stats.n_sr3_triplets_ordered,
+            ),
             ("rsgdf LR half-G", stats.n_g_half),
             ("rsgdf LR chunks", stats.n_g_chunks),
             ("rsgdf naux", stats.naux),

@@ -662,6 +662,9 @@ fn gamma_sr_sums_are_bitwise_the_single_bin_walk() {
     // cc-pvdz-ri shells is a much larger walk and adds nothing here.
     let [(j2g, j3g), (j2b, j3b)] =
         sr_sums_gamma_and_single_bin(&cell, &prep, &aux, &gdf_cfg(1.0)).unwrap();
+    // The Gamma J3 walk is s2 (rsgdf module doc "Orbital-pair symmetry"):
+    // the single-bin ORDERED walk's μ ≤ ν rows, mirrored.
+    let j3b = mirror_upper_pair_rows(&j3b, prep.nbasis());
     for (a, b, what) in [(&j2g, &j2b, "J2"), (&j3g, &j3b, "J3")] {
         assert_eq!(a.dim(), b.dim());
         assert!(a.iter().any(|x| *x != 0.0), "{what}: vacuous");

@@ -432,11 +432,14 @@ pub(super) fn diagnostic_stage<'a>(
     Ok((st, images))
 }
 
-/// TEST/DIAGNOSTIC: the Gamma SR sums (`(J2_SR, J3_SR)` of [`super::RsGdf`],
-/// the parallel walks) and the SAME sums from the FROZEN serial residue-binned
-/// walk at a single bin (1×1×1). They must agree BIT FOR BIT: the parallel
-/// walks keep every element's addend sequence, and the Gamma sums are what
-/// `RsGdf::build` consumes (the refactor-safety pin for the Gamma path).
+/// TEST/DIAGNOSTIC: the Gamma SR sums (`(J2_SR, J3_SR)` that
+/// [`super::RsGdf::build`] consumes without a range split: the parallel
+/// metric walk and the s2 3-centre walk) and the SAME sums from the FROZEN
+/// serial residue-binned walk at a single bin (1×1×1, ORDERED pairs). J2
+/// must agree BIT FOR BIT; J3 must be bitwise the serial walk's `μ ≤ ν`
+/// rows mirrored onto `μ > ν` (the s2 walk runs the ordered walk's per-pair
+/// body over unordered pairs; `super` module doc "Orbital-pair symmetry").
+/// The refactor-safety pin for the Gamma path.
 #[doc(hidden)]
 pub fn sr_sums_gamma_and_single_bin(
     cell: &Cell,
@@ -446,7 +449,7 @@ pub fn sr_sums_gamma_and_single_bin(
 ) -> Result<[(Array2<f64>, Array2<f64>); 2], FerricError> {
     let (st, images) = diagnostic_stage(cell, obs, aux, cfg)?;
     let (j2g, _) = st.sr_metric()?;
-    let (j3g, _) = st.sr_three_index(&images)?;
+    let (j3g, _, _) = st.sr_three_index_s2(&images)?;
     let one = [1usize; 3];
     let (mut j2b, _) = sr_metric_binned_serial_oracle(&st, one)?;
     let (mut j3b, _) = sr_three_index_binned_serial_oracle(&st, &images, one, one)?;

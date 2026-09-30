@@ -467,6 +467,7 @@ fn split_matches_unsplit_on_the_triclinic_cell() {
     for (c, s) in [(&c0, s0), (&c1, s1)] {
         let n = sr_walk_counts(&cell, &obs, &aux, c).unwrap();
         assert_eq!(n.n_sr3_triplets, s.n_sr3_triplets);
+        assert_eq!(n.n_sr3_triplets_ordered, s.n_sr3_triplets_ordered);
         assert_eq!(n.n_sr2_pairs, s.n_sr2_pairs);
     }
 }
@@ -520,8 +521,10 @@ fn diamond_sto3g_split_matches_ferric_and_moving_the_core_misses() {
         s0.n_sr2_pairs,
         s1.n_sr2_pairs
     );
-    // Today's build is the benchmark's (counters and energy).
-    assert_eq!(s0.n_sr3_triplets, 16_023_080);
+    // Today's build is the benchmark's (counters and energy). The pin is
+    // the pre-s2 ORDERED count; the s2 build reports it as the
+    // ordered-equivalent (rsgdf module doc "Orbital-pair symmetry").
+    assert_eq!(s0.n_sr3_triplets_ordered, 16_023_080);
     assert_eq!(s0.n_sr2_pairs, 159_064);
     assert!((e0 - DIAMOND_STO3G_E).abs() <= 1e-9, "unsplit {e0:.12}");
     // Prototype: 4 smooth orbital prims (the 0.222 C 2sp), ΔE 2.6e-10.
@@ -562,15 +565,21 @@ fn diamond_ccpvdz_split_visits_under_a_quarter_of_the_sr3_triplets() {
     let (cell, obs, aux) = diamond("cc-pvdz");
     let un = sr_walk_counts(&cell, &obs, &aux, &cfg(1.0, None)).unwrap();
     let sp = sr_walk_counts(&cell, &obs, &aux, &cfg(1.0, Some(RangeSplit::default()))).unwrap();
-    let r3 = sp.n_sr3_triplets as f64 / un.n_sr3_triplets as f64;
+    // Ordered-walk (s1) units: the prototype counters' unit.
+    let r3 = sp.n_sr3_triplets_s1 as f64 / un.n_sr3_triplets_s1 as f64;
     let r2 = sp.n_sr2_pairs as f64 / un.n_sr2_pairs as f64;
     eprintln!(
         "diamond cc-pVDZ/cc-pvdz-ri ω=1: SR3 {} → {} ({r3:.4}x; prototype twocall 35,921,128 = \
          0.182x, trim 0.147x); SR2 {} → {} ({r2:.4}x; prototype 17,288)",
-        un.n_sr3_triplets, sp.n_sr3_triplets, un.n_sr2_pairs, sp.n_sr2_pairs
+        un.n_sr3_triplets_s1, sp.n_sr3_triplets_s1, un.n_sr2_pairs, sp.n_sr2_pairs
+    );
+    eprintln!(
+        "  s2 (computed / ordered-equivalent): unsplit {} / {}, split {} / {}",
+        un.n_sr3_triplets, un.n_sr3_triplets_ordered, sp.n_sr3_triplets, sp.n_sr3_triplets_ordered
     );
     // ferric's own counter (FINDINGS "Iteration 23" calibration, exact).
-    assert_eq!(un.n_sr3_triplets, 197_033_528);
+    assert_eq!(un.n_sr3_triplets_s1, 197_033_528);
+    assert_eq!(un.n_sr3_triplets_ordered, un.n_sr3_triplets_s1);
     assert_eq!(un.n_sr2_pairs, 159_064);
     assert!(r3 < 0.25, "SR3 ratio {r3:.4}");
     assert!(r2 < 0.25, "SR2 ratio {r2:.4}");

@@ -153,6 +153,29 @@ pub fn max_abs_diff(a: &ndarray::Array2<f64>, b: &ndarray::Array2<f64>) -> f64 {
     })
 }
 
+/// `m` with its `μ ≤ ν` half copied onto `μ > ν`: what the Gamma s2 walks
+/// (module docs "Orbital-pair symmetry" of `hcore` / `rsgdf`) produce from
+/// the ordered loop's elements.
+pub fn mirror_upper(m: &ndarray::Array2<f64>) -> ndarray::Array2<f64> {
+    assert_eq!(m.nrows(), m.ncols());
+    ndarray::Array2::from_shape_fn(m.dim(), |(i, j)| m[(i.min(j), i.max(j))])
+}
+
+/// [`mirror_upper`] for a pair-row tensor `(n², naux)` (row `μ n + ν`).
+pub fn mirror_upper_pair_rows(j3: &ndarray::Array2<f64>, n: usize) -> ndarray::Array2<f64> {
+    assert_eq!(j3.nrows(), n * n);
+    ndarray::Array2::from_shape_fn(j3.dim(), |(r, p)| {
+        let (m, k) = (r / n, r % n);
+        j3[(m.min(k) * n + m.max(k), p)]
+    })
+}
+
+/// Row `μ n + ν` ↔ `ν n + μ` of a pair-row tensor `(n², naux)`.
+pub fn transpose_pair_rows(j3: &ndarray::Array2<f64>, n: usize) -> ndarray::Array2<f64> {
+    assert_eq!(j3.nrows(), n * n);
+    ndarray::Array2::from_shape_fn(j3.dim(), |(r, p)| j3[((r % n) * n + r / n, p)])
+}
+
 pub fn array2(rows: &[&[f64]]) -> ndarray::Array2<f64> {
     let n = rows.len();
     let m = rows[0].len();

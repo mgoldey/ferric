@@ -77,9 +77,10 @@
 //! `Production` only.
 
 use super::{
-    aux_ft_shells, dot3, lr_gemms, lr_pair_ft_chunked, pack_pair_ft, pair_bound, segment_distance,
-    subtract_g0, sum_counts_in_pair_order, G0Handling, GShell, LrKernel, PackBufs, RsGdfConfig,
-    SrBinning, Stage, ENGINE_PRECISION, LR_GEMM_ROW_BLOCK, SUB_AUX_FT, SUB_P_PACK, SUB_XY_PACK,
+    aux_ft_shells, copy_pair_rows_mirrored, dot3, lr_gemms, lr_pair_ft_chunked, pack_pair_ft,
+    pair_bound, segment_distance, subtract_g0, sum_counts_in_pair_order, sum_s2_counts,
+    unordered_pairs, G0Handling, GShell, LrKernel, PackBufs, RsGdfConfig, SrBinning, Stage,
+    ENGINE_PRECISION, LR_GEMM_ROW_BLOCK, SUB_AUX_FT, SUB_P_PACK, SUB_XY_PACK,
 };
 use crate::budget::{bytes_of, Ledger};
 use crate::hcore::ONE_E_ENGINE_PRECISION;
@@ -197,8 +198,19 @@ impl Default for RangeSplit {
 /// SR walk counts of one RS-GDF configuration ([`sr_walk_counts`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SrWalkCounts {
-    /// Shifted 3-centre calls (= `RsGdfStats::n_sr3_triplets` of the build).
+    /// Shifted 3-centre calls the Gamma build makes (s2: each unordered shell
+    /// pair once; = `RsGdfStats::n_sr3_triplets` of the build).
     pub n_sr3_triplets: usize,
+    /// `n_sr3_triplets` in ordered-pair units (off-diagonal pairs × 2;
+    /// = `RsGdfStats::n_sr3_triplets_ordered`).
+    pub n_sr3_triplets_ordered: usize,
+    /// The ORDERED walk's calls (every ordered pair in its own orientation):
+    /// the pre-s2 `n_sr3_triplets`, and the unit of the Python prototype
+    /// counters (`count_sr3_ferric`, `gc_count.py`). Unsplit it equals
+    /// `n_sr3_triplets_ordered` whenever the screen decides `(i1, i2, L, T)`
+    /// and `(i2, i1, −L, T − L)` alike (round-off at the radius aside); with
+    /// a range split it also counts the costlier orientation.
+    pub n_sr3_triplets_s1: usize,
     /// Shifted 2-centre calls (= `RsGdfStats::n_sr2_pairs`).
     pub n_sr2_pairs: usize,
 }
@@ -856,6 +868,42 @@ impl SplitPlan {
         r_l: usize,
         (i1, i2): (usize, usize),
     ) -> Result<usize, FerricError> {
+        let (acc, count) = self.sr3_acc(st, ctx, r_l, (i1, i2))?;
+        if count > 0 {
+            let (a, b) = (&st.obs_sh[i1], &st.obs_sh[i2]);
+            let (n, naux) = (st.obs.nbasis(), st.aux.nbasis());
+            let (na, nb) = (a.nfun, b.nfun);
+            let bl = na * nb * naux;
+            let rt = ctx.bins.n_t();
+            let mut out = ctx.out.lock().unwrap_or_else(|e| e.into_inner());
+            for r_t in 0..rt {
+                let j3 = &mut out[r_l * rt + r_t];
+                for i in 0..na {
+                    for j in 0..nb {
+                        let row = (a.off + i) * n + b.off + j;
+                        let src = r_t * bl + (i * nb + j) * naux;
+                        j3.row_mut(row)
+                            .iter_mut()
+                            .zip(&acc[src..src + naux])
+                            .for_each(|(d, &s)| *d = s);
+                    }
+                }
+            }
+        }
+        Ok(count)
+    }
+
+    /// The accumulation of one [`SplitPlan::sr3_task`] (shared with the Gamma
+    /// s2 walk [`SplitPlan::sr_three_index_s2`]): parent pair `(i1, i2)`'s
+    /// kept calls over every image `L ≡ r_L` into a zeroed `(R_T, nμ nν,
+    /// naux)` scratch. Returns `(scratch, triplet count)`.
+    fn sr3_acc(
+        &self,
+        st: &Stage<'_>,
+        ctx: &Sr3Ctx<'_>,
+        r_l: usize,
+        (i1, i2): (usize, usize),
+    ) -> Result<(Vec<f64>, usize), FerricError> {
         let (a, b) = (&st.obs_sh[i1], &st.obs_sh[i2]);
         let (na, nb) = (a.nfun, b.nfun);
         let naux = st.aux.nbasis();
@@ -901,25 +949,83 @@ impl SplitPlan {
             }
             Ok(())
         })?;
-        if count > 0 {
-            let n = st.obs.nbasis();
-            let rt = ctx.bins.n_t();
-            let mut out = ctx.out.lock().unwrap_or_else(|e| e.into_inner());
-            for r_t in 0..rt {
-                let j3 = &mut out[r_l * rt + r_t];
-                for i in 0..na {
-                    for j in 0..nb {
-                        let row = (a.off + i) * n + b.off + j;
-                        let src = r_t * bl + (i * nb + j) * naux;
-                        j3.row_mut(row)
-                            .iter_mut()
-                            .zip(&acc[src..src + naux])
-                            .for_each(|(d, &s)| *d = s);
-                    }
-                }
-            }
+        Ok((acc, count))
+    }
+
+    /// The orientation the Gamma s2 walk evaluates unordered parent pair
+    /// `lo <= hi` in: `(hi, lo)` iff it has FEWER kept calls ([`Self::calls`];
+    /// a compact-only × split pair needs 1 call as `(split, compact)` and 2 as
+    /// `(compact, split)`), else `(lo, hi)`. The kept part is symmetric per
+    /// unordered pair (module doc), so either orientation gives both rows.
+    /// Ties (every pair of a split that moves nothing) keep index order, so
+    /// such a split stays bitwise the unsplit s2 walk.
+    fn orient(&self, lo: usize, hi: usize) -> (usize, usize) {
+        let n_calls = |i1: usize, i2: usize| self.calls(i1, i2).iter().flatten().count();
+        if n_calls(hi, lo) < n_calls(lo, hi) {
+            (hi, lo)
+        } else {
+            (lo, hi)
         }
-        Ok(count)
+    }
+
+    /// Gamma kept SR 3-index sum over UNORDERED parent pairs (s2, `super`
+    /// module doc "Orbital-pair symmetry"): `(J3_SR, computed triplets,
+    /// ordered-equivalent triplets)`, EXACTLY symmetric in `μ ↔ ν`. Each
+    /// pair `lo <= hi` runs the ordered walk's task body
+    /// ([`SplitPlan::sr3_acc`], single Gamma bin) in the orientation
+    /// [`SplitPlan::orient`] picks, and COPIES the block into both rows, so
+    /// every element is bitwise the ordered walk's value of that
+    /// orientation's row and is written by exactly one task (bitwise across
+    /// thread counts).
+    fn sr_three_index_s2(
+        &self,
+        st: &Stage<'_>,
+        images: &[[f64; 3]],
+    ) -> Result<(Array2<f64>, usize, usize), FerricError> {
+        let n = st.obs.nbasis();
+        let pool = EnginePool::from_fn(|| {
+            Engine::new_3center(
+                Operator::erfc(st.omega),
+                &self.obs.x,
+                &self.aux.x,
+                ENGINE_PRECISION,
+            )
+        })?;
+        let out = Mutex::new(vec![Array2::<f64>::zeros((n * n, st.aux.nbasis()))]);
+        // Gamma: every image is residue 0 (as the single-bin walk has it).
+        let l_bin = vec![0usize; images.len()];
+        let ctx = Sr3Ctx {
+            pool: &pool,
+            images,
+            l_bin: &l_bin,
+            recip: st.cell.reciprocal(),
+            bins: SrBinning::GAMMA,
+            global: self.sr3_global_radius(st),
+            out: &out,
+        };
+        let pairs = unordered_pairs(st.obs_sh.len());
+        let counts: Vec<Result<usize, FerricError>> = pairs
+            .par_iter()
+            .map(|&(lo, hi)| {
+                let (p, q) = self.orient(lo, hi);
+                let (acc, count) = self.sr3_acc(st, &ctx, 0, (p, q))?;
+                if count > 0 {
+                    let mut bins = ctx.out.lock().unwrap_or_else(|e| e.into_inner());
+                    copy_pair_rows_mirrored(
+                        &mut bins[0],
+                        n,
+                        &acc,
+                        &st.obs_sh[p],
+                        &st.obs_sh[q],
+                        lo == hi,
+                    );
+                }
+                Ok(count)
+            })
+            .collect();
+        let (count, ordered) = sum_s2_counts(&pairs, counts)?;
+        let mut bins = out.into_inner().unwrap_or_else(|e| e.into_inner());
+        Ok((bins.swap_remove(0), count, ordered))
     }
 
     /// Kept SR metric `Σ_T (P^c_0 | Q^c_T)_erfc` (unsymmetrised) and the pair
@@ -1048,8 +1154,13 @@ impl SplitPlan {
             .into_par_iter()
             .map(|pair| self.sr2_task(st, None, (pair / na, pair % na)))
             .collect();
+        let per_pair = collect_pair_counts(n3)?;
+        let (n_sr3_triplets, n_sr3_triplets_ordered) =
+            s2_counts_from_ordered(&per_pair, nsh, |lo, hi| self.orient(lo, hi));
         Ok(SrWalkCounts {
-            n_sr3_triplets: sum_counts_in_pair_order(n3)?,
+            n_sr3_triplets,
+            n_sr3_triplets_ordered,
+            n_sr3_triplets_s1: per_pair.iter().sum(),
             n_sr2_pairs: sum_counts_in_pair_order(n2)?,
         })
     }
@@ -1304,16 +1415,34 @@ pub(super) fn sr_metric(
     }
 }
 
-/// SR 3-index sum of the build: [`Stage::sr_three_index`] or the kept part.
+/// Gamma SR 3-index sum of the build over unordered shell pairs (s2,
+/// `super` module doc "Orbital-pair symmetry"): [`Stage::sr_three_index_s2`]
+/// or the kept part's [`SplitPlan::sr_three_index_s2`]. Returns `(J3_SR,
+/// computed triplets, ordered-equivalent triplets)`.
 pub(super) fn sr_three_index(
     st: &Stage<'_>,
     plan: Option<&SplitPlan>,
     images: &[[f64; 3]],
-) -> Result<(Array2<f64>, usize), FerricError> {
+) -> Result<(Array2<f64>, usize, usize), FerricError> {
     match split_walks(plan) {
-        None => st.sr_three_index(images),
-        Some(p) => p.sr_three_index(st, images),
+        None => st.sr_three_index_s2(images),
+        Some(p) => p.sr_three_index_s2(st, images),
     }
+}
+
+/// FROZEN pre-s2 Gamma SR 3-index sum (ordered pairs; the frozen oracle
+/// [`super::RsGdf::build_pair_s1_oracle`]): [`Stage::sr_three_index`] or the
+/// kept part, as `(J3_SR, count, count)`.
+pub(super) fn sr_three_index_s1(
+    st: &Stage<'_>,
+    plan: Option<&SplitPlan>,
+    images: &[[f64; 3]],
+) -> Result<(Array2<f64>, usize, usize), FerricError> {
+    let (j3, count) = match split_walks(plan) {
+        None => st.sr_three_index(images)?,
+        Some(p) => p.sr_three_index(st, images)?,
+    };
+    Ok((j3, count, count))
 }
 
 /// LR (G ≠ 0) terms of the build: [`Stage::lr_accumulate`] when no aux
@@ -1412,9 +1541,12 @@ pub(super) fn finish(
 }
 
 /// TEST/DIAGNOSTIC: the SR walk counts an [`super::RsGdf::build`] at `cfg`
-/// would report (`n_sr3_triplets`, `n_sr2_pairs`), from the SAME walks with
-/// every integral skipped — the cost statement of the range split without
-/// its integrals (FINDINGS "Iteration 23", `count_sr3_ferric`).
+/// would report (`n_sr3_triplets`, `n_sr3_triplets_ordered`,
+/// `n_sr2_pairs`), from the SAME walks with every integral skipped — the
+/// cost statement of the range split without its integrals (FINDINGS
+/// "Iteration 23", `count_sr3_ferric`) — plus the pre-s2 ordered-walk count
+/// `n_sr3_triplets_s1` (the walk visits every ordered pair once and derives
+/// the s2 counts from those per-pair counts).
 pub fn sr_walk_counts(
     cell: &Cell,
     obs: &PreparedBasis,
@@ -1447,8 +1579,36 @@ pub fn sr_walk_counts(
         })
         .collect();
     let n_sr2_pairs = st.sr_metric_walk(|_, _, _| Ok(()))?;
+    let per_pair = collect_pair_counts(n3)?;
+    let (n_sr3_triplets, n_sr3_triplets_ordered) =
+        s2_counts_from_ordered(&per_pair, nsh, |lo, hi| (lo, hi));
     Ok(SrWalkCounts {
-        n_sr3_triplets: sum_counts_in_pair_order(n3)?,
+        n_sr3_triplets,
+        n_sr3_triplets_ordered,
+        n_sr3_triplets_s1: per_pair.iter().sum(),
         n_sr2_pairs,
     })
+}
+
+/// Per-ordered-pair counts `c[i1 nsh + i2]`; the first error in pair order.
+fn collect_pair_counts(counts: Vec<Result<usize, FerricError>>) -> Result<Vec<usize>, FerricError> {
+    counts.into_iter().collect()
+}
+
+/// The Gamma s2 walk's `(computed, ordered-equivalent)` counts from the
+/// ordered walk's per-pair counts `c` (`nsh²`, row-major): unordered pair
+/// `lo <= hi` costs `c` of the orientation `orient(lo, hi)` the s2 walk
+/// evaluates (the same body on the same inputs, so the same count).
+fn s2_counts_from_ordered<O>(c: &[usize], nsh: usize, orient: O) -> (usize, usize)
+where
+    O: Fn(usize, usize) -> (usize, usize),
+{
+    let (mut n, mut n_ordered) = (0usize, 0usize);
+    for (lo, hi) in unordered_pairs(nsh) {
+        let (p, q) = orient(lo, hi);
+        let x = c[p * nsh + q];
+        n += x;
+        n_ordered += if lo == hi { x } else { 2 * x };
+    }
+    (n, n_ordered)
 }
