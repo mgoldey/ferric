@@ -1,0 +1,255 @@
+{
+  "row": "RSH omega tuning",
+  "system": "h2o",
+  "basis": "def2-svp",
+  "charge": 0,
+  "multiplicity": 1,
+  "cation_charge": 1,
+  "cation_multiplicity": 2,
+  "nao": 24,
+  "nuclear_repulsion": 9.189193229309746,
+  "functional": "wB97X-V",
+  "objective": "J(w) = eps_HOMO(N;w) + E(N-1;w) - E(N;w), signed, Hartree; omega* = root of J (== argmin |J|); omega in Bohr^-1",
+  "points": [
+    {
+      "omega": 0.2,
+      "eps_homo": -0.36368627282621846,
+      "e_neutral": -76.32743057746433,
+      "e_cation": -75.87608201308308,
+      "ip": 0.4513485643812487,
+      "j": 0.08766229155503025,
+      "cation_s_squared": 0.752170114313977,
+      "cation_lambda_min": 0.08067566153536768,
+      "cation_selected_guess": "atom",
+      "cation_multiple_stable_minima": false,
+      "cation_guess_energies": [
+        -75.87608201308296,
+        -75.87608201308308,
+        -75.87608201308308
+      ],
+      "neutral_rij_shift": -2.768140791431506e-05
+    },
+    {
+      "omega": 0.3,
+      "eps_homo": -0.4021757689401606,
+      "e_neutral": -76.3289702795067,
+      "e_cation": -75.87419346356353,
+      "ip": 0.45477681594317687,
+      "j": 0.052601047003016266,
+      "cation_s_squared": 0.7521576076222516,
+      "cation_lambda_min": 0.08007205736038725,
+      "cation_selected_guess": "huckel",
+      "cation_multiple_stable_minima": false,
+      "cation_guess_energies": [
+        -75.87419346356344,
+        -75.8741934635634,
+        -75.87419346356353
+      ],
+      "neutral_rij_shift": -2.7644228765666412e-05
+    },
+    {
+      "omega": 0.4,
+      "eps_homo": -0.432900766939063,
+      "e_neutral": -76.33569695360933,
+      "e_cation": -75.87884846676737,
+      "ip": 0.4568484868419631,
+      "j": 0.023947719902900122,
+      "cation_s_squared": 0.7521868489519168,
+      "cation_lambda_min": 0.07963215053414646,
+      "cation_selected_guess": "huckel",
+      "cation_multiple_stable_minima": false,
+      "cation_guess_energies": [
+        -75.87884846676735,
+        -75.87884846676735,
+        -75.87884846676737
+      ],
+      "neutral_rij_shift": -2.77624902196294e-05
+    },
+    {
+      "omega": 0.5,
+      "eps_homo": -0.45665958418622843,
+      "e_neutral": -76.34226006743766,
+      "e_cation": -75.88459879745658,
+      "ip": 0.457661269981088,
+      "j": 0.001001685794859597,
+      "cation_s_squared": 0.752257428277666,
+      "cation_lambda_min": 0.07941690084055521,
+      "cation_selected_guess": "atom",
+      "cation_multiple_stable_minima": false,
+      "cation_guess_energies": [
+        -75.8845987974565,
+        -75.88459879745658,
+        -75.88459879745642
+      ],
+      "neutral_rij_shift": -2.7960235897239727e-05
+    },
+    {
+      "omega": 0.6,
+      "eps_homo": -0.4747549370552733,
+      "e_neutral": -76.34659429935694,
+      "e_cation": -75.88904875741443,
+      "ip": 0.4575455419425083,
+      "j": -0.01720939511276498,
+      "cation_s_squared": 0.7523633759333475,
+      "cation_lambda_min": 0.07940111699025938,
+      "cation_selected_guess": "minao",
+      "cation_multiple_stable_minima": false,
+      "cation_guess_energies": [
+        -75.88904875741443,
+        -75.88904875741434,
+        -75.88904875741436
+      ],
+      "neutral_rij_shift": -2.818646792945856e-05
+    }
+  ],
+  "omega_override_anchor": {
+    "published_omega": 0.3,
+    "abs_e_override_at_published_minus_default": 0.0,
+    "abs_e_override_plus_0p1_minus_default": 0.006726674102623065
+  },
+  "omega_star": 0.5049350467092586,
+  "at_omega_star": {
+    "omega": 0.5049350467092586,
+    "eps_homo": -0.457674462730429,
+    "e_neutral": -76.34253420698876,
+    "e_cation": -75.88485974425468,
+    "ip": 0.45767446273407586,
+    "j": 3.646860591288714e-12,
+    "cation_s_squared": 0.7522618980345817,
+    "cation_lambda_min": 0.07941189457100356,
+    "cation_selected_guess": "huckel",
+    "cation_multiple_stable_minima": false,
+    "cation_guess_energies": [
+      -75.8848597442545,
+      -75.88485974425447,
+      -75.88485974425468
+    ]
+  },
+  "brentq_trace": [
+    {
+      "omega": 0.5,
+      "j": 0.0010016857949164404
+    },
+    {
+      "omega": 0.6,
+      "j": -0.017209395112850245
+    },
+    {
+      "omega": 0.505500419222723,
+      "j": -0.00011402651346692494
+    },
+    {
+      "omega": 0.5049382728505257,
+      "j": -6.510811436655217e-07
+    },
+    {
+      "omega": 0.5049350467092586,
+      "j": 3.5473846082823e-12
+    },
+    {
+      "omega": 0.5049350967092588,
+      "j": -1.657497161744459e-08
+    }
+  ],
+  "floors": {
+    "j_change_conv_tol_x0p1_at_first_omega": -8.526512829121202e-14,
+    "eps_homo_change_conv_tol_x0p1_at_first_omega": 0.0,
+    "brentq_xtol": 1e-07,
+    "brentq_bracket": [
+      0.5,
+      0.6
+    ],
+    "j_at_omega_star": 3.646860591288714e-12,
+    "dj_domega_at_omega_star": -0.20181310788380813,
+    "omega_star_uncertainty_from_j_at_root": 1.8070484268981962e-11
+  },
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "method": "dft.RKS neutral + dft.UKS doublet cation, mf.omega override",
+      "xc": "wB97X_V",
+      "jk": "EXACT J (4-index) for neutral and cation + density-fitted K in the attenuated metric; full-range K served as K_SR^DF[erfc] + K_LR^DF[erf] (== ferric's c_SR K_SR + c_LR K_LR)",
+      "cation_init_guess_scan": [
+        "minao",
+        "atom",
+        "huckel"
+      ],
+      "stability": "cation: internal=True, restart from the unstable direction, max 10 rounds; PySCF KS response omits the VV10 kernel",
+      "neutral_rij_shift": "E_neutral(RI-J, same aux) - E_neutral(exact J): the shift ferric's DEFAULT OmegaTuneConfig puts into IP (recorded, not compared)",
+      "root_finder": "scipy.optimize.brentq on signed J, xtol 1e-07",
+      "numpy": "1.26.4"
+    },
+    "grid": {
+      "main": {
+        "atom_grid": [
+          75,
+          110
+        ],
+        "prune": null,
+        "partition": "Becke (original_becke)",
+        "radii_adjust": "becke_atomic_radii_adjust"
+      },
+      "nlc_vv10": {
+        "atom_grid": [
+          50,
+          50
+        ],
+        "prune": null
+      }
+    },
+    "aux_basis": {
+      "name": "def2-universal-jkfit",
+      "json": "crates/ferric-core/src/basis/bundled/def2-universal-jkfit.json",
+      "sha256": "a9fcb52ae8a74e80bd3a65c5e12e7a2d2f391fef62c3c81050ae816399b57671"
+    },
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-10,
+      "conv_tol_grad": 1e-07
+    },
+    "stability": {
+      "cation": "stability-followed per point (see points[*])"
+    },
+    "basis": "def2-svp",
+    "basis_json": "crates/ferric-core/src/basis/bundled/def2-svp.json",
+    "basis_sha256": "bfad5f58ceac74a9ac2766b39f510654cea29fb9408e966bb0dfcf14e1302d4f",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/h2o.xyz",
+    "geometry_xyz_sha256": "284b6da243e9abcf0aa2d6e13ad7204946feecb55d27b7819f12097095fdd6ae",
+    "geometry_bohr": [
+      [
+        "O",
+        0.0,
+        0.0,
+        0.22259084021251865
+      ],
+      [
+        "H",
+        0.0,
+        1.4275992699810498,
+        -0.8903652505761991
+      ],
+      [
+        "H",
+        0.0,
+        -1.4275992699810498,
+        -0.8903652505761991
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_rsh_omega.py",
+    "git_head": "47c7ad2710b1196426104f5c65e7e8ba8480aa68",
+    "generated_utc": "2026-09-26T01:30:47+00:00",
+    "basis_self_check": {
+      "nao": 24,
+      "replica_self_overlap_max_dev": 0.0,
+      "pyscf_diag_max_dev": 8.881784197001252e-16,
+      "diag_checked": 24,
+      "diag_skipped_cartesian": 0,
+      "aux_nao": 113
+    },
+    "runtime_s": 242.4
+  }
+}

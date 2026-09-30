@@ -89,7 +89,12 @@ impl std::fmt::Display for OmegaTuneResult {
     }
 }
 
-fn eval_j(
+/// One evaluation of the tuning objective at a fixed ω (Bohr⁻¹): converged
+/// RKS neutral and UKS doublet cation with `xc = cfg.functional`,
+/// `xc_omega = omega` and every other setting from `cfg.scf`. Returns
+/// J = ε_HOMO(N) + E(N−1) − E(N) (signed). [`tune_omega`] calls this at
+/// every golden-section point; it is public so J(ω) can be checked on its own.
+pub fn eval_j(
     ctx: &ParallelContext,
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -97,11 +102,7 @@ fn eval_j(
     cfg: &OmegaTuneConfig,
     omega: f64,
 ) -> Result<OmegaEval, FerricError> {
-    let scf_cfg = RhfConfig {
-        xc: Some(cfg.functional.clone()),
-        xc_omega: Some(omega),
-        ..cfg.scf.clone()
-    };
+    let scf_cfg = state_scf_config(cfg, omega)?;
     let op = Operator::coulomb();
     let neutral = solve_rhf(ctx, mol, prep, op, bounds, &scf_cfg)?;
     if !neutral.converged {
@@ -130,6 +131,36 @@ fn eval_j(
         ip_delta_scf: ip,
         j: eps_homo + ip,
     })
+}
+
+/// The SCF configuration both states of [`eval_j`] run with.
+///
+/// Both states must build J the same way, or the IP (and ω*) inherits the
+/// difference: measured 2.3e-5 to 2.8e-5 Ha in the IP for ωB97X-V/def2-SVP
+/// H2O, ≈1.4e-4 Bohr⁻¹ in ω*. The cation is range-separated UKS, and
+/// `solve_uhf` never density-fits J when ω > 0: it uses exact J whatever
+/// `df_j_aux` says. `solve_rhf`, by contrast, auto-selects RI-J for a
+/// functional when `df_j_aux` is unset. So the only treatment both states can
+/// share is exact J: an unset `df_j_aux` resolves to exact J (`Some("")`), and
+/// a named aux basis is refused rather than applied to the neutral alone.
+pub fn state_scf_config(cfg: &OmegaTuneConfig, omega: f64) -> Result<RhfConfig, FerricError> {
+    let mut scf = RhfConfig {
+        xc: Some(cfg.functional.clone()),
+        xc_omega: Some(omega),
+        ..cfg.scf.clone()
+    };
+    match scf.df_j_aux.as_deref() {
+        None => scf.df_j_aux = Some(String::new()),
+        Some("") => {}
+        Some(aux) => {
+            return Err(FerricError::General(format!(
+                "tune_omega: df_j_aux = {aux:?} cannot be honoured: the range-separated \
+                 UKS cation always uses exact J, so the neutral must too. Leave df_j_aux \
+                 unset or set it to \"\" (exact J)."
+            )))
+        }
+    }
+    Ok(scf)
 }
 
 /// Golden-section minimization of |J(ω)| over the bracket.
