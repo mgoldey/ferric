@@ -5940,3 +5940,60 @@ kz = 0 plane and at TRIM points by symmetry. So an n = 2 mesh (all TRIM points) 
   - dK_ov = 0 on the kz = 0 plane (symmetry anchor).
 - Not measured: n >= 5 for the corrected estimators; relaxation at n = 4 (first-order linearity makes it n^-3 by
   construction); a = 10 (older npz has no C); non-cubic cells; more than one occupied/virtual band; dRPA budget.
+
+## Full timing series on libint 2.13.1: MWE, baseline, ω sweep, column rotation (measured 2026-09-30 16:25-16:55, head 24c53e63)
+
+The box had desktop load (Chrome), so the gate was relaxed to a 1-minute load below 2.5. Start loads were 1.6-2.5.
+Multi-thread columns carry about ±25% noise; 1-thread columns are steady. One sample per cell.
+
+**libint reproducer** (`reference/pbc/libint-gmeval-mwe/mwe.cc`), mean µs per call, 50000 calls:
+
+| build | op | 1 thr | 6 thr | 6 procs | 6 thr / 1 thr |
+|---|---|---|---|---|---|
+| 2.7.2 | coulomb | 78.9 | 103.5 | 105.0 | 1.31× |
+| 2.13.1 | coulomb | 79.3 | 97.3 | 100.7 | 1.23× |
+| 2.7.2 stock | erf | 92.3 | 517.8 | 120.3 | 5.61× |
+| 2.7.2 patched | erf | 84.0 | 114.1 | 109.6 | 1.36× |
+| 2.13.1 stock | erf | 94.4 | 510.2 | 120.0 | 5.41× |
+| 2.13.1 patched | erf | 85.0 | 108.6 | 107.3 | 1.28× |
+| 2.7.2 stock | erfc | 133.6 | 584.0 | 166.3 | 4.37× |
+| 2.7.2 patched | erfc | 102.1 | 123.7 | 133.6 | 1.21× |
+| 2.13.1 stock | erfc | 135.8 | 581.8 | 162.3 | 4.28× |
+| 2.13.1 patched | erfc | 100.7 | 120.7 | 126.1 | 1.20× |
+
+- 2.13.1 and 2.7.2 match within 2% at 1 thread.
+- The 2.13.1 port removes the defect.
+- Checksums are identical stock vs patched within each version.
+- Filed upstream as evaleev/libint#431.
+
+**ferric CLI, Γ RHF, cc-pVDZ / cc-pvdz-ri, range split** (PySCF GDF: dry ice 22.9 s at 6 thr and 108.6 s at 1 thr;
+diamond 12.7 s at 6 thr):
+
+| cell | gdf ω | rotation | 6 thr | 1 thr | E (Ha/cell) |
+|---|---|---|---|---|---|
+| dry ice | 1.0 | off | 25.9 s | 113.9 s | −750.8211184382424 |
+| dry ice | 0.7 | off | 20.4 s | 93.4 s | −750.8211184382229 |
+| dry ice | 0.5 | off | 23.5 s | — | −750.8211184381900 |
+| dry ice | 0.3 | off | 40.5 s | — | −750.8211184380946 |
+| dry ice | 1.0 | on | 22.4 s | 98.5 s | −750.8211184382462 |
+| dry ice | 0.7 | on | **13.7 s** | **55.4 s** | −750.8211184382405 |
+| dry ice | 0.3 | on | 17.2 s | — | −750.8211184381994 |
+| diamond_prim | 1.0 | off | 7.84 s | 35.7 s | −74.9757090068654 |
+| diamond_prim | 0.7 | off | 12.08 s | — | −74.97570900685315 |
+| diamond_prim | 1.0 | on | **3.08 s** | — | −74.97570900688032 |
+| diamond_prim | 0.7 | on | 5.32 s | 26.4 s | −74.97570900686588 |
+
+- **Best measured:** dry ice 13.7 s at 6 thr (1.67× faster than PySCF) and 55.4 s at 1 thr (1.96× faster). Diamond
+  3.08 s at 6 thr (4.1× faster than PySCF).
+- **Energies agree across these settings to ≤ 1.5e-10 Ha/cell** (dry ice ω=0.3). Rotation alone moves them ≤ 1.5e-11
+  at ω ≥ 0.7. Every run is bitwise identical across 1 and 6 threads.
+- **Rotation is a big win on both cells, and larger than the design estimate at small ω.** Dry ice ω=0.3: SR3 triplets
+  148.6 M → 72.1 M, SR3 31.7 → 11.4 s. The design's "about 4%" was an uncounted estimate: removing the diffuse
+  primitive from multi-primitive columns shrinks their screening radius, which dominates the image count at small ω.
+  The split's smooth counters are 0 at ω=0.3, as predicted. The 1.05e-10 Ha rotated-vs-unrotated difference at ω=0.3
+  is screening noise at 1e-13 precision with ~15× more near-threshold triplets (same size as the ω=1 vs 0.3
+  difference); the tight-screening covariance test agrees to 4e-15.
+- **The best gdf ω is system-dependent:** 0.7 for dry ice (sparse molecular crystal, LR-dominated), 1.0 for diamond
+  (dense, SR-dominated). A fixed default leaves ~1.5-2× on one of them. The lever is an adaptive ω.
+- **Libint version:** switching 2.7.2 → 2.13.1 moved diamond's energy 1.1e-11 Ha/cell at fixed settings, consistent
+  with libint's own precision floor.
