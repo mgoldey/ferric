@@ -14,7 +14,11 @@ dsum = sum(abs(c) for c in s.e["coefficients"])
 rows = []
 L = translations(2 * s.r_ecp)
 M = translations(s.r_ecp)
-sites = [POS[1] + m for m in M if np.min(np.linalg.norm(POS - (POS[1] + m), axis=1)) <= s.r_ecp]
+sites = [
+    POS[1] + m
+    for m in M
+    if np.min(np.linalg.norm(POS - (POS[1] + m), axis=1)) <= s.r_ecp
+]
 for lv in L:
     for a in range(5):
         ra = np.asarray(sh[a]["center"])
@@ -49,8 +53,20 @@ for i in pick:
     vs = triple_value(sh[a], shifted(sh[b], lv), rc, "semi")
     vl = triple_value(sh[a], shifted(sh[b], lv), rc, "local")
     RA, RB = np.linalg.norm(ra - rc), np.linalg.norm(rb - rc)
-    out.append((a, b, w, lb, math.log(max(v, 1e-300)), math.log(max(vs, 1e-300)),
-                math.log(max(vl, 1e-300)), RA, RB, np.linalg.norm(ra - rb)))
+    out.append(
+        (
+            a,
+            b,
+            w,
+            lb,
+            math.log(max(v, 1e-300)),
+            math.log(max(vs, 1e-300)),
+            math.log(max(vl, 1e-300)),
+            RA,
+            RB,
+            np.linalg.norm(ra - rb),
+        )
+    )
 out = np.array(out)
 np.save("sample.npy", out)
 viol = out[out[:, 4] > out[:, 3]]

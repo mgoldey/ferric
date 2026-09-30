@@ -22,6 +22,12 @@ for i in add:
     est[a, b] += v
     big = max(big, v)
 drop = ko & ~kn
-db = max(float(np.sum(d["new"][drop & (d["a"] == a) & (d["b"] == b)])) for a in range(5) for b in range(5))
-print(f"new-only triples {len(add)}: max per-pair sum|exact| {est.max():.2e}, largest single {big:.2e}")
+db = max(
+    float(np.sum(d["new"][drop & (d["a"] == a) & (d["b"] == b)]))
+    for a in range(5)
+    for b in range(5)
+)
+print(
+    f"new-only triples {len(add)}: max per-pair sum|exact| {est.max():.2e}, largest single {big:.2e}"
+)
 print(f"old-only triples {int(drop.sum())}: per-pair a-priori bound sum <= {db:.2e}")

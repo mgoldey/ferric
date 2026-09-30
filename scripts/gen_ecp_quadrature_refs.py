@@ -22,6 +22,7 @@ convention.
 Run (the PySCF venv; ~2-4 min):
   OPENBLAS_NUM_THREADS=1 /home/matt/qc/ferric/.venv/bin/python scripts/gen_ecp_quadrature_refs.py
 """
+
 import json
 import os
 import sys
@@ -44,13 +45,22 @@ COMMAND = "OPENBLAS_NUM_THREADS=1 /home/matt/qc/ferric/.venv/bin/python scripts/
 
 
 def shell_json(s):
-    return dict(l=int(s["l"]), center=[float(x) for x in s["center"]], exps=[float(x) for x in s["exponents"]],
-                coefs=[float(x) for x in s["coefficients"]])
+    return dict(
+        l=int(s["l"]),
+        center=[float(x) for x in s["center"]],
+        exps=[float(x) for x in s["exponents"]],
+        coefs=[float(x) for x in s["coefficients"]],
+    )
 
 
 def ecp_json(e):
-    return dict(center=[float(x) for x in e["center"]], ams=[int(x) for x in e["ams"]], ns=[int(x) for x in e["ns"]],
-                exps=[float(x) for x in e["exponents"]], coefs=[float(x) for x in e["coefficients"]])
+    return dict(
+        center=[float(x) for x in e["center"]],
+        ams=[int(x) for x in e["ams"]],
+        ns=[int(x) for x in e["ns"]],
+        exps=[float(x) for x in e["exponents"]],
+        coefs=[float(x) for x in e["coefficients"]],
+    )
 
 
 def proto_val(sa, sb, e):
@@ -66,10 +76,18 @@ def fixture(bra, ket, ecps, label):
                 pys.append(O.pyscf_value(sa, sb, e).ravel().tolist())
                 pro.append(proto_val(sa, sb, e).ravel().tolist())
     d = max(np.abs(np.array(a) - np.array(b)).max() for a, b in zip(pys, pro))
-    print(f"{label}: {len(pys)} triples, max |prototype - PySCF| {d:.2e} ({time.time() - t0:.0f} s)", flush=True)
-    return dict(bra=[shell_json(s) for s in bra], ket=[shell_json(s) for s in ket], ecps=[ecp_json(e) for e in ecps],
-                order="triples in (bra a, ket b, ecp u) order, u fastest; each a row-major (2la+1) x (2lb+1) block",
-                pyscf=pys, proto=pro)
+    print(
+        f"{label}: {len(pys)} triples, max |prototype - PySCF| {d:.2e} ({time.time() - t0:.0f} s)",
+        flush=True,
+    )
+    return dict(
+        bra=[shell_json(s) for s in bra],
+        ket=[shell_json(s) for s in ket],
+        ecps=[ecp_json(e) for e in ecps],
+        order="triples in (bra a, ket b, ecp u) order, u fastest; each a row-major (2la+1) x (2lb+1) block",
+        pyscf=pys,
+        proto=pro,
+    )
 
 
 def bessel_table():
@@ -87,29 +105,53 @@ def bessel_table():
                 row.append(float(n == 0))
             else:
                 zz = mp.mpf(z)
-                row.append(float(mp.exp(-zz) * mp.sqrt(mp.pi / (2 * zz)) * mp.besseli(n + mp.mpf(1) / 2, zz)))
+                row.append(
+                    float(
+                        mp.exp(-zz)
+                        * mp.sqrt(mp.pi / (2 * zz))
+                        * mp.besseli(n + mp.mpf(1) / 2, zz)
+                    )
+                )
         vals.append(row)
     return dict(z=zs, nmax=16, values=vals)
 
 
 def main():
     import pyscf
-    out = dict(command=COMMAND, pyscf_version=pyscf.__version__,
-               note="PySCF ECPscalar_sph with the 1e-3 zero-weight screen-guard primitive; prototype = "
-                    "reference/pbc/ecp_quadrature/ecpq.py")
-    out["hi"] = fixture(F.hi_shells(F.H0, F.I0), F.hi_shells(F.H0 + F.LV, F.I0 + F.LV),
-                        [F.ecp_i(c) for c in HI_CS], "HI/LANL2DZ")
+
+    out = dict(
+        command=COMMAND,
+        pyscf_version=pyscf.__version__,
+        note="PySCF ECPscalar_sph with the 1e-3 zero-weight screen-guard primitive; prototype = "
+        "reference/pbc/ecp_quadrature/ecpq.py",
+    )
+    out["hi"] = fixture(
+        F.hi_shells(F.H0, F.I0),
+        F.hi_shells(F.H0 + F.LV, F.I0 + F.LV),
+        [F.ecp_i(c) for c in HI_CS],
+        "HI/LANL2DZ",
+    )
     aub = F.auh_shells(F.AU0, F.H_AU)
     auk = F.auh_shells(F.AU0 + AU_L, F.H_AU + AU_L)
     out["auh"] = fixture(aub, auk, [F.ecp_au(c) for c in AU_CS], "AuH/def2-SVP")
     t0 = time.time()
     e = F.ecp_au(AU_CS[2])
     leb = O.lebedev_value(aub[0], auk[9], e, 1202, 200)
-    out["tiny"] = dict(bra=shell_json(aub[0]), ket=shell_json(auk[9]), ecp=ecp_json(e),
-                       lebedev=leb.ravel().tolist(), pyscf=O.pyscf_value(aub[0], auk[9], e).ravel().tolist(),
-                       proto=proto_val(aub[0], auk[9], e).ravel().tolist(), nang=1202, nper=200)
-    print(f"tiny: max |proto - Lebedev| {np.abs(proto_val(aub[0], auk[9], e) - leb).max():.2e} "
-          f"({time.time() - t0:.0f} s)", flush=True)
+    out["tiny"] = dict(
+        bra=shell_json(aub[0]),
+        ket=shell_json(auk[9]),
+        ecp=ecp_json(e),
+        lebedev=leb.ravel().tolist(),
+        pyscf=O.pyscf_value(aub[0], auk[9], e).ravel().tolist(),
+        proto=proto_val(aub[0], auk[9], e).ravel().tolist(),
+        nang=1202,
+        nper=200,
+    )
+    print(
+        f"tiny: max |proto - Lebedev| {np.abs(proto_val(aub[0], auk[9], e) - leb).max():.2e} "
+        f"({time.time() - t0:.0f} s)",
+        flush=True,
+    )
     out["bessel"] = bessel_table()
     with open(OUT, "w") as f:
         json.dump(out, f)

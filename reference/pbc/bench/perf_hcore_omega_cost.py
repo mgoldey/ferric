@@ -45,7 +45,13 @@ def counts(cell, w):
     A = np.array([s["c"] for s in obs])
     pref0 = np.max(C, axis=2) * zmax * (1 + 2 * np.sqrt(pmax / math.pi))
     wp0 = w * np.sqrt(pmin / (pmin + w * w))
-    rnm = np.nanmax(np.where(pref0 > PREC, np.sqrt(np.log(np.maximum(pref0, PREC) / PREC)) / wp0 + 2.0, np.nan))
+    rnm = np.nanmax(
+        np.where(
+            pref0 > PREC,
+            np.sqrt(np.log(np.maximum(pref0, PREC) / PREC)) / wp0 + 2.0,
+            np.nan,
+        )
+    )
     ncand = len(cf.lattice_points(lat, rnm + rpair)) * len(sym)
     n3, nlab = 0.0, 0
     for L in images:
@@ -56,13 +62,21 @@ def counts(cell, w):
         ok = pref > PREC
         rad = np.sqrt(np.log(np.maximum(pref, PREC) / PREC)) / wp0 + 2.0
         seg = np.sqrt(r2)
-        n3 += np.sum(((math.pi * rad**2 * seg + 4.0 / 3.0 * math.pi * rad**3) / vol)[ok]) * len(sym)
+        n3 += np.sum(
+            ((math.pi * rad**2 * seg + 4.0 / 3.0 * math.pi * rad**3) / vol)[ok]
+        ) * len(sym)
         nlab += int(ok.sum())
     gcut = min(2 * w, 2 * math.sqrt(pmax_all)) * math.sqrt(math.log(1 / PREC))
     ng = cf.count_g_half(lat, gcut)
     lr = cf.lr_pairft_predict(obs, lat, nao, 0, gcut, thresh=0.1 * PREC)
-    return dict(tri=n3, seg=nlab * ncand, ng=ng, ev=lr["prim_pair_G_evals"], ch=lr["n_chunks"],
-                rewalk=lr["per_chunk_prim_pair_image_tests"])
+    return dict(
+        tri=n3,
+        seg=nlab * ncand,
+        ng=ng,
+        ev=lr["prim_pair_G_evals"],
+        ch=lr["n_chunks"],
+        rewalk=lr["per_chunk_prim_pair_image_tests"],
+    )
 
 
 def main():
@@ -74,8 +88,11 @@ def main():
         k = counts(cell, w)
         sr = T_TRIPLET * k["tri"] + T_SEGMENT * k["seg"]
         lr = T_EVAL * k["ev"] + T_REWALK * k["rewalk"] * k["ch"]
-        print(f"{cell} c={c:.3f} w={w:.4f} triplets={k['tri']:.4e} nG_half={k['ng']} "
-              f"SR={sr:8.2f}s LR={lr:8.2f}s total={sr + lr:8.2f}s", flush=True)
+        print(
+            f"{cell} c={c:.3f} w={w:.4f} triplets={k['tri']:.4e} nG_half={k['ng']} "
+            f"SR={sr:8.2f}s LR={lr:8.2f}s total={sr + lr:8.2f}s",
+            flush=True,
+        )
 
 
 if __name__ == "__main__":

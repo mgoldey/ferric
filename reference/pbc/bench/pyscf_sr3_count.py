@@ -86,17 +86,39 @@ import time
 
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("cell", nargs="?", default="dryice", help="basename of <cell>.xyz/.lattice here, or an absolute path prefix")
+    ap.add_argument(
+        "cell",
+        nargs="?",
+        default="dryice",
+        help="basename of <cell>.xyz/.lattice here, or an absolute path prefix",
+    )
     ap.add_argument("--basis", default="cc-pvdz")
-    ap.add_argument("--aux", default="cc-pvdz-ri", help="recorded dry-ice PySCF timings used cc-pvdz-ri")
+    ap.add_argument(
+        "--aux",
+        default="cc-pvdz-ri",
+        help="recorded dry-ice PySCF timings used cc-pvdz-ri",
+    )
     ap.add_argument("--basis-repr", choices=["general", "segmented"], default="general")
     ap.add_argument("--threads", type=int, default=1)
-    ap.add_argument("--precision", type=float, default=1e-12, help="cell.precision (recorded PySCF timings: 1e-12)")
+    ap.add_argument(
+        "--precision",
+        type=float,
+        default=1e-12,
+        help="cell.precision (recorded PySCF timings: 1e-12)",
+    )
     ap.add_argument("--lindep-aux", type=float, default=1e-10)
     ap.add_argument("--max-memory", type=int, default=8000, help="PySCF max_memory, MB")
-    ap.add_argument("--count", choices=["replica", "callback", "both", "none"], default="replica")
-    ap.add_argument("--no-build", action="store_true", help="skip the j3c/j2c build: builder setup + count only")
-    ap.add_argument("--selftest", action="store_true", help="run the toy-cell validation and exit")
+    ap.add_argument(
+        "--count", choices=["replica", "callback", "both", "none"], default="replica"
+    )
+    ap.add_argument(
+        "--no-build",
+        action="store_true",
+        help="skip the j3c/j2c build: builder setup + count only",
+    )
+    ap.add_argument(
+        "--selftest", action="store_true", help="run the toy-cell validation and exit"
+    )
     ap.add_argument("--verbose", type=int, default=0)
     ap.add_argument("--out", default=None)
     return ap.parse_args(argv)
@@ -174,7 +196,11 @@ def install_timers():
     def gen3_timed(self, *a, **k):
         w0, c0 = time.perf_counter(), time.process_time()
         kern = gen3(self, *a, **k)
-        _acc("SR int3c init (q_cond, cintopt)", time.perf_counter() - w0, time.process_time() - c0)
+        _acc(
+            "SR int3c init (q_cond, cintopt)",
+            time.perf_counter() - w0,
+            time.process_time() - c0,
+        )
         return _timed_fn(kern, "SR int3c libcint (PBCfill_nr3c)")
 
     incore.Int3cBuilder.gen_int3c_kernel = gen3_timed
@@ -210,9 +236,19 @@ class Sr3Setup:
         self.nbasp = cell.nbas
         ovlp_mask = self.sindex > self.log_cutoff
         bvk = lib.condense("np.any", ovlp_mask, supmol.sh_loc)
-        self.cell0_mask = bvk.reshape(1, self.nbasp, 1, self.nbasp).any(axis=2).any(axis=0).astype(np.int8)
+        self.cell0_mask = (
+            bvk.reshape(1, self.nbasp, 1, self.nbasp)
+            .any(axis=2)
+            .any(axis=0)
+            .astype(np.int8)
+        )
         self.atm, self.bas, self.env = gto.conc_env(
-            supmol._atm, supmol._bas, supmol._env, self.rs_aux._atm, self.rs_aux._bas, self.rs_aux._env
+            supmol._atm,
+            supmol._bas,
+            supmol._env,
+            self.rs_aux._atm,
+            self.rs_aux._bas,
+            self.rs_aux._env,
         )
         self.cell0_ao_loc = incore._conc_locs(cell.ao_loc, b.auxcell.ao_loc)
         self.seg_loc = incore._conc_locs(supmol.seg_loc, self.rs_aux.sh_loc)
@@ -275,7 +311,9 @@ def count_replica(s: Sr3Setup, aosym="s2", keep_triples=False):
     tally = _new_tally()
     triples = [] if keep_triples else None
     nbasp = s.nbasp
-    loose = f32(ij_cut.min()) + f32(np.log(f32(1e-30)) * LOG_ADJUST)  # smallest possible LHS
+    loose = f32(ij_cut.min()) + f32(
+        np.log(f32(1e-30)) * LOG_ADJUST
+    )  # smallest possible LHS
     for ish in range(nbasp):
         for jsh in range(nbasp if aosym == "s1" else ish + 1):
             if not s.cell0_mask[ish, jsh]:
@@ -293,21 +331,34 @@ def count_replica(s: Sr3Setup, aosym="s2", keep_triples=False):
                     aij = f32(ai + aj)
                     ci, cj = f32(ai / aij), f32(aj / aij)
                     S = sindex[np.ix_(sh_i, sh_j)].astype(f32)
-                    ii, jj = np.nonzero(S > loose)  # can pass for SOME k (exact pre-filter)
+                    ii, jj = np.nonzero(
+                        S > loose
+                    )  # can pass for SOME k (exact pre-filter)
                     if ii.size == 0:
                         continue
                     Sp = S[ii, jj]
                     # C: xcond = (float)(ci * x_i) + cj * x_j
-                    ctr = (ci * s.xyz[sh_i[ii]]).astype(f32) + cj * s.xyz[sh_j[jj]].astype(f32)
+                    ctr = (ci * s.xyz[sh_i[ii]]).astype(f32) + cj * s.xyz[
+                        sh_j[jj]
+                    ].astype(f32)
                     theta = theta_k * aij / (theta_k + aij)  # (nk,)
                     ok = np.empty((ks.size, ii.size), dtype=bool)
-                    step = max(1, (1 << 22) // ks.size)  # (nk, step) float32 temporaries
+                    step = max(
+                        1, (1 << 22) // ks.size
+                    )  # (nk, step) float32 temporaries
                     for p0 in range(0, ii.size, step):
                         c = ctr[p0 : p0 + step]
                         d = rk[:, None, :] - c[None, :, :]
-                        r2 = d[..., 0] * d[..., 0] + d[..., 1] * d[..., 1] + d[..., 2] * d[..., 2]
+                        r2 = (
+                            d[..., 0] * d[..., 0]
+                            + d[..., 1] * d[..., 1]
+                            + d[..., 2] * d[..., 2]
+                        )
                         tr2 = theta[:, None] * r2 + np.log(r2 + f32(1e-30))
-                        ok[:, p0 : p0 + step] = tr2 * f32(LOG_ADJUST) + ij_cut[:, None] < Sp[None, p0 : p0 + step]
+                        ok[:, p0 : p0 + step] = (
+                            tr2 * f32(LOG_ADJUST) + ij_cut[:, None]
+                            < Sp[None, p0 : p0 + step]
+                        )
                     nk_per_pair = ok.sum(axis=0)
                     kk, pp = np.nonzero(ok)
                     if kk.size == 0:
@@ -376,10 +427,18 @@ def count_callback(s: Sr3Setup, aosym="s2", keep_triples=False):
     cintopt = _vhf.make_cintopt(s.atm, s.bas, s.env, s.intor)
     dims = s.cell0_ao_loc[1:] - s.cell0_ao_loc[:-1]
     dijk = int(dims[: s.nbasp].max()) ** 2 * int(dims[s.nbasp :].max())
-    cache_size = max(incore._get_cache_size(cell, s.intor), incore._get_cache_size(s.rs_aux, s.intor)) + 3 * dijk
+    cache_size = (
+        max(
+            incore._get_cache_size(cell, s.intor),
+            incore._get_cache_size(s.rs_aux, s.intor),
+        )
+        + 3 * dijk
+    )
     expLk = np.ones((s.supmol.bvkmesh_Ls.shape[0], 1))
     reindex_k = np.zeros(1, dtype=np.int32)
-    shls_slice = (ctypes.c_int * 6)(0, s.nbasp, 0, s.nbasp, s.nbasp, s.nbasp + s.b.auxcell.nbas)
+    shls_slice = (ctypes.c_int * 6)(
+        0, s.nbasp, 0, s.nbasp, s.nbasp, s.nbasp + s.b.auxcell.nbas
+    )
     nimgs = s.supmol.bas_mask.shape[2]
     libpbc = incore.libpbc
     libpbc.PBCfill_nr3c_drv(
@@ -425,18 +484,32 @@ def brute_force_size(s: Sr3Setup, aosym="s2"):
         for jsh in range(s.nbasp if aosym == "s1" else ish + 1):
             if not s.cell0_mask[ish, jsh]:
                 continue
-            ni = sum(s.seg2sh[g + 1] - s.seg2sh[g] for g in range(s.seg_loc[ish], s.seg_loc[ish + 1]))
-            nj = sum(s.seg2sh[g + 1] - s.seg2sh[g] for g in range(s.seg_loc[jsh], s.seg_loc[jsh + 1]))
+            ni = sum(
+                s.seg2sh[g + 1] - s.seg2sh[g]
+                for g in range(s.seg_loc[ish], s.seg_loc[ish + 1])
+            )
+            nj = sum(
+                s.seg2sh[g + 1] - s.seg2sh[g]
+                for g in range(s.seg_loc[jsh], s.seg_loc[jsh + 1])
+            )
             tot += int(ni) * int(nj) * nk
     return tot
 
 
 def run_counts(b, how):
     s = Sr3Setup(b)
-    res = dict(log_cutoff=s.log_cutoff, direct_scf_tol=s.cutoff, n_aux_pieces=int(s.aux_segments().size),
-               supmol_nbas=int(s.supmol.nbas), supmol_nimgs=int(s.supmol.bas_mask.shape[2]),
-               rs_cell_nbas=int(b.rs_cell.nbas), cell_nbas=int(s.nbasp), aux_nbas=int(b.auxcell.nbas),
-               cell0_pairs_s2=int(np.tril(s.cell0_mask).sum()), cell0_pairs_s1=int(s.cell0_mask.sum()))
+    res = dict(
+        log_cutoff=s.log_cutoff,
+        direct_scf_tol=s.cutoff,
+        n_aux_pieces=int(s.aux_segments().size),
+        supmol_nbas=int(s.supmol.nbas),
+        supmol_nimgs=int(s.supmol.bas_mask.shape[2]),
+        rs_cell_nbas=int(b.rs_cell.nbas),
+        cell_nbas=int(s.nbasp),
+        aux_nbas=int(b.auxcell.nbas),
+        cell0_pairs_s2=int(np.tril(s.cell0_mask).sum()),
+        cell0_pairs_s1=int(s.cell0_mask.sum()),
+    )
     res["unscreened_s2"] = brute_force_size(s, "s2")
     res["unscreened_s1"] = brute_force_size(s, "s1")
     for aosym in ("s2", "s1"):
@@ -486,7 +559,14 @@ def run(a, cell_atoms=None):
     TIMES.clear()
     CAPTURED.clear()
     load0 = os.getloadavg()
-    cell = build_cell(atoms, lat, ferric_basis_pyscf(a.basis, symbols, a.basis_repr), a.precision, a.max_memory, a.verbose)
+    cell = build_cell(
+        atoms,
+        lat,
+        ferric_basis_pyscf(a.basis, symbols, a.basis_repr),
+        a.precision,
+        a.max_memory,
+        a.verbose,
+    )
     auxbasis = ferric_basis_pyscf(a.aux, symbols, "general")
     df = make_df(cell, auxbasis, a.lindep_aux)
     w0, c0 = time.perf_counter(), time.process_time()
@@ -500,18 +580,42 @@ def run(a, cell_atoms=None):
     else:
         df.build()
         b = CAPTURED["builder"]
-    _acc("df_build total" if not a.no_build else "setup only (no build)", time.perf_counter() - w0, time.process_time() - c0)
-    top = ["setup (omega, rs_cell, supmol)", "SR j3c total (pass 1)", "j2c (get_2c2e)", "j2c decompose",
-           "LR pair FT (ft kernel)", "LR aux FT (weighted_ft_ao)", "LR GEMM (add_ft_j3c)", "solve_cderi"]
+    _acc(
+        "df_build total" if not a.no_build else "setup only (no build)",
+        time.perf_counter() - w0,
+        time.process_time() - c0,
+    )
+    top = [
+        "setup (omega, rs_cell, supmol)",
+        "SR j3c total (pass 1)",
+        "j2c (get_2c2e)",
+        "j2c decompose",
+        "LR pair FT (ft kernel)",
+        "LR aux FT (weighted_ft_ao)",
+        "LR GEMM (add_ft_j3c)",
+        "solve_cderi",
+    ]
     if "df_build total" in TIMES:
         TIMES["rest (df_build - listed top-level)"] = [
             TIMES["df_build total"][0] - sum(TIMES[k][0] for k in top if k in TIMES),
-            TIMES["df_build total"][1] - sum(TIMES[k][1] for k in top if k in TIMES), 1]
-    sr = [k for k in ("SR int3c init (q_cond, cintopt)", "SR int3c libcint (PBCfill_nr3c)", "SR dd block (FFT)") if k in TIMES]
+            TIMES["df_build total"][1] - sum(TIMES[k][1] for k in top if k in TIMES),
+            1,
+        ]
+    sr = [
+        k
+        for k in (
+            "SR int3c init (q_cond, cintopt)",
+            "SR int3c libcint (PBCfill_nr3c)",
+            "SR dd block (FFT)",
+        )
+        if k in TIMES
+    ]
     if "SR j3c total (pass 1)" in TIMES:
         TIMES["SR rest (h5 swap, merge_dd)"] = [
             TIMES["SR j3c total (pass 1)"][0] - sum(TIMES[k][0] for k in sr),
-            TIMES["SR j3c total (pass 1)"][1] - sum(TIMES[k][1] for k in sr), 1]
+            TIMES["SR j3c total (pass 1)"][1] - sum(TIMES[k][1] for k in sr),
+            1,
+        ]
     stages = {k: dict(wall_s=v[0], cpu_s=v[1], calls=v[2]) for k, v in TIMES.items()}
     counts = run_counts(b, a.count) if a.count != "none" else None
     rs_cell = b.rs_cell
@@ -528,8 +632,15 @@ def run(a, cell_atoms=None):
         nao=int(cell.nao_nr()),
         naux=int(b.auxcell.nao_nr()),
         cell_rcut=float(cell.rcut),
-        rs_cell_bas_types=dict(zip(("steep", "local", "smooth"),
-                                   (int((rs_cell.bas_type == t).sum()) for t in (ft_ao.STEEP_BASIS, ft_ao.LOCAL_BASIS, ft_ao.SMOOTH_BASIS)))),
+        rs_cell_bas_types=dict(
+            zip(
+                ("steep", "local", "smooth"),
+                (
+                    int((rs_cell.bas_type == t).sum())
+                    for t in (ft_ao.STEEP_BASIS, ft_ao.LOCAL_BASIS, ft_ao.SMOOTH_BASIS)
+                ),
+            )
+        ),
         exclude_dd_block=bool(b.exclude_dd_block),
         exclude_d_aux=bool(b.exclude_d_aux),
         stages=stages,
@@ -542,26 +653,42 @@ def run(a, cell_atoms=None):
 
 
 def summary(rec):
-    print(f"[sr3] {rec['cell']}: PySCF {rec['pyscf_version']}  threads {rec['threads']}  precision {rec['precision']:.0e}")
-    print(f"[sr3] omega {rec['omega']:.6f} Bohr^-1  LR mesh {rec['mesh']}  ke_cutoff {rec['ke_cutoff']:.3f}  "
-          f"nao {rec['nao']}  naux {rec['naux']}  rs_cell {rec['rs_cell_bas_types']}")
+    print(
+        f"[sr3] {rec['cell']}: PySCF {rec['pyscf_version']}  threads {rec['threads']}  precision {rec['precision']:.0e}"
+    )
+    print(
+        f"[sr3] omega {rec['omega']:.6f} Bohr^-1  LR mesh {rec['mesh']}  ke_cutoff {rec['ke_cutoff']:.3f}  "
+        f"nao {rec['nao']}  naux {rec['naux']}  rs_cell {rec['rs_cell_bas_types']}"
+    )
     for k, v in rec["stages"].items():
-        print(f"[sr3]   {k:40s} wall {v['wall_s']:9.3f} s  cpu {v['cpu_s']:9.3f} s  calls {v['calls']}")
+        print(
+            f"[sr3]   {k:40s} wall {v['wall_s']:9.3f} s  cpu {v['cpu_s']:9.3f} s  calls {v['calls']}"
+        )
     c = rec["sr3"]
     if c:
-        print(f"[sr3] SR screen: direct_scf_tol {c['direct_scf_tol']:.3e} (log_cutoff {c['log_cutoff']})  "
-              f"supmol nbas {c['supmol_nbas']} ({c['supmol_nimgs']} image slots)  compact aux pieces {c['n_aux_pieces']}")
+        print(
+            f"[sr3] SR screen: direct_scf_tol {c['direct_scf_tol']:.3e} (log_cutoff {c['log_cutoff']})  "
+            f"supmol nbas {c['supmol_nbas']} ({c['supmol_nimgs']} image slots)  compact aux pieces {c['n_aux_pieces']}"
+        )
         for key in ("replica_s2", "callback_s2", "replica_s1", "callback_s1"):
             if key in c:
                 t = c[key]
-                print(f"[sr3]   {key:12s} libcint calls {t['libcint_calls']:>12d}  prim {t['prim_triplets']:>14d}  "
-                      f"ctr {t['ctr_triplets']:>12d}  image pairs {t['image_pairs']:>9d}  dL {t['pair_translations']:>5d}  "
-                      f"(count {t['count_wall_s']:.1f} s)")
-        print(f"[sr3]   unscreened (cell0-mask only): s2 {c['unscreened_s2']}  s1 {c['unscreened_s1']}")
+                print(
+                    f"[sr3]   {key:12s} libcint calls {t['libcint_calls']:>12d}  prim {t['prim_triplets']:>14d}  "
+                    f"ctr {t['ctr_triplets']:>12d}  image pairs {t['image_pairs']:>9d}  dL {t['pair_translations']:>5d}  "
+                    f"(count {t['count_wall_s']:.1f} s)"
+                )
+        print(
+            f"[sr3]   unscreened (cell0-mask only): s2 {c['unscreened_s2']}  s1 {c['unscreened_s1']}"
+        )
         for aosym in ("s2", "s1"):
             if f"replica_equals_callback_{aosym}" in c:
-                print(f"[sr3]   replica == C callback ({aosym}): {c[f'replica_equals_callback_{aosym}']}")
-        print("[sr3] compare the s1 'libcint calls' (or 'ctr') with ferric's 'rsgdf SR3 triplets'")
+                print(
+                    f"[sr3]   replica == C callback ({aosym}): {c[f'replica_equals_callback_{aosym}']}"
+                )
+        print(
+            "[sr3] compare the s1 'libcint calls' (or 'ctr') with ferric's 'rsgdf SR3 triplets'"
+        )
 
 
 # ---------------------------------------------------------------------------------------------
@@ -604,7 +731,14 @@ def _sr_tensor_from_triples(s: Sr3Setup, triples):
     ao, xo = s.cell.ao_loc, s.b.auxcell.ao_loc
     nsup = s.supmol.nbas
     for i, j, k in triples:
-        v = gto.moleintor.getints3c(s.intor, s.atm, s.bas, s.env, shls_slice=(i, i + 1, j, j + 1, k, k + 1), aosym="s1")
+        v = gto.moleintor.getints3c(
+            s.intor,
+            s.atm,
+            s.bas,
+            s.env,
+            shls_slice=(i, i + 1, j, j + 1, k, k + 1),
+            aosym="s1",
+        )
         ci, cj, ck = cell_of[i], cell_of[j], aux_of[k - nsup]
         out[ao[ci] : ao[ci + 1], ao[cj] : ao[cj + 1], xo[ck] : xo[ck + 1]] += v.reshape(
             ao[ci + 1] - ao[ci], ao[cj + 1] - ao[cj], xo[ck + 1] - xo[ck]
@@ -629,11 +763,15 @@ def selftest():
                     eq &= r == c
                     if aosym == "s1":
                         calls.append(c["libcint_calls"])
-                        print(f"[selftest] {toy} prec {prec:.0e}: omega {s.b.omega:.4f} calls s1 {c['libcint_calls']} "
-                              f"prim {c['prim_triplets']} unscreened s1 {brute_force_size(s, 's1')}  replica==C {eq}")
+                        print(
+                            f"[selftest] {toy} prec {prec:.0e}: omega {s.b.omega:.4f} calls s1 {c['libcint_calls']} "
+                            f"prim {c['prim_triplets']} unscreened s1 {brute_force_size(s, 's1')}  replica==C {eq}"
+                        )
                 ok &= eq
             mono = all(x <= y for x, y in zip(calls, calls[1:]))
-            print(f"[selftest] {toy}: s1 count non-decreasing as precision tightens: {mono} {calls}")
+            print(
+                f"[selftest] {toy}: s1 count non-decreasing as precision tightens: {mono} {calls}"
+            )
             ok &= mono
 
         # 2. unscreened anchor: every visited triplet passes -> both counters == the brute-force product.
@@ -642,12 +780,16 @@ def selftest():
         s = Sr3Setup(b)
         s_open = Sr3Setup(b)
         s_open.log_cutoff = -(2**30)
-        s_open.sindex = np.full_like(s.sindex, 32000)  # every pair passes, even the dd block
+        s_open.sindex = np.full_like(
+            s.sindex, 32000
+        )  # every pair passes, even the dd block
         s_open.cell0_mask[:] = 1
         n_open = count_callback(s_open, "s1")[0]["libcint_calls"]
         n_open_r = count_replica(s_open, "s1")[0]["libcint_calls"]
         bf = brute_force_size(s_open, "s1")
-        print(f"[selftest] unscreened anchor: C callback {n_open}  replica {n_open_r}  brute force {bf}")
+        print(
+            f"[selftest] unscreened anchor: C callback {n_open}  replica {n_open_r}  brute force {bf}"
+        )
         ok &= n_open == n_open_r == bf
 
         # 3. the counted triples ARE the SR integrals PySCF sums: libcint over them == PySCF's kernel.
@@ -665,13 +807,18 @@ def selftest():
             if t not in kept and s.sindex[t[0], t[1]] > rsdf_builder.INDEX_MIN
         ]
         rng = np.random.default_rng(0)
-        drop = [cut[n] for n in rng.choice(len(cut), size=min(len(cut), 20000), replace=False)]
+        drop = [
+            cut[n]
+            for n in rng.choice(len(cut), size=min(len(cut), 20000), replace=False)
+        ]
         dropped = _sr_tensor_from_triples(s, drop)
         err = float(abs(ref - mine).max())
-        print(f"[selftest] h2 1e-6: triple SETS identical (replica vs C) {same}; "
-              f"max|PySCF SR j3c - libcint summed over the counted triples| = {err:.2e} "
-              f"(max|j3c| {abs(ref).max():.2e}; {len(drop)} of {len(cut)} screened-out non-dd triples sum to "
-              f"max {abs(dropped).max():.2e})")
+        print(
+            f"[selftest] h2 1e-6: triple SETS identical (replica vs C) {same}; "
+            f"max|PySCF SR j3c - libcint summed over the counted triples| = {err:.2e} "
+            f"(max|j3c| {abs(ref).max():.2e}; {len(drop)} of {len(cut)} screened-out non-dd triples sum to "
+            f"max {abs(dropped).max():.2e})"
+        )
         ok &= same and err < 1e-12
     print(f"[selftest] {'PASS' if ok else 'FAIL'}")
     return ok
@@ -687,7 +834,11 @@ def main(a=None):
     summary(rec)
     os.makedirs(os.path.join(HERE, "out"), exist_ok=True)
     name = os.path.basename(a.cell)
-    out = a.out or os.path.join(HERE, "out", f"pyscf_sr3_{name}_{a.aux}_{a.basis}_t{a.threads}_p{a.precision:.0e}.json")
+    out = a.out or os.path.join(
+        HERE,
+        "out",
+        f"pyscf_sr3_{name}_{a.aux}_{a.basis}_t{a.threads}_p{a.precision:.0e}.json",
+    )
     json.dump(rec, open(out, "w"), indent=1)
     print(f"[sr3] -> {out}")
 

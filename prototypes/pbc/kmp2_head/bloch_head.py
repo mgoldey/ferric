@@ -22,6 +22,7 @@ Artifact hypotheses (stated before running)
 Physics expectation if H5 carries the residual: E3_true - E3 ~ +6.2e-5 x n^-3 (the direct-channel residual of
 cheap_account), stable between n = 3 and 4, and shrinking rapidly with a (dispersion).  If not, |E3_true - E3| << that.
 """
+
 import itertools
 import sys
 
@@ -53,7 +54,9 @@ def lattice_S(cell, kpts, rcut=22.0):
     L1 = cell.translations(rcut)
     sm = cell.supermol(L1)
     nao, nb0 = cell.mol.nao, cell.mol.nbas
-    S_L = sm.intor("int1e_ovlp_cart", shls_slice=(0, nb0, 0, sm.nbas)).reshape(nao, len(L1), nao)
+    S_L = sm.intor("int1e_ovlp_cart", shls_slice=(0, nb0, 0, sm.nbas)).reshape(
+        nao, len(L1), nao
+    )
     ph = np.exp(1j * kpts @ L1.T)
     S = np.einsum("kL,mLn->kmn", ph, S_L)
     dS = np.einsum("kL,Lx,mLn->kmnx", ph, 1j * L1, S_L)
@@ -78,7 +81,12 @@ def head_vectors(z, cell, m, dF_override=None):
     C, eps, A = z["C"], z["eps"], z["A"]
     ints, kpts = mp_mesh(cell, (m, m, m))
     S, dS = lattice_S(cell, kpts)
-    Fk = np.einsum("kmp,kp,knp->kmn", np.einsum("kmn,knp->kmp", S, C), eps, np.einsum("kmn,knp->kmp", S, C).conj())
+    Fk = np.einsum(
+        "kmp,kp,knp->kmn",
+        np.einsum("kmn,knp->kmp", S, C),
+        eps,
+        np.einsum("kmn,knp->kmp", S, C).conj(),
+    )
     dF = fourier_grad(Fk, cell, m) if dF_override is None else dF_override
     dS_f = fourier_grad(S, cell, m)
     ci, ca = C[:, :, 0], C[:, :, 1]
@@ -89,8 +97,11 @@ def head_vectors(z, cell, m, dF_override=None):
     Xa = dF - ea[:, None, None, None] * dS
     d_ov = np.einsum("km,kmnx,kn->kx", ci.conj(), Xi, ca) / (ea - ei)[:, None]
     d_vo = np.einsum("km,kmnx,kn->kx", ca.conj(), Xa, ci) / (ei - ea)[:, None]
-    info = dict(S_err=abs(S - z["P0"]).max(), dS_alias=abs(dS_f - dS).max() / abs(dS).max(),
-                d_rel=np.sqrt((abs(d_ov) ** 2).sum() / (abs(gfix_ov) ** 2).sum()))
+    info = dict(
+        S_err=abs(S - z["P0"]).max(),
+        dS_alias=abs(dS_f - dS).max() / abs(dS).max(),
+        d_rel=np.sqrt((abs(d_ov) ** 2).sum() / (abs(gfix_ov) ** 2).sum()),
+    )
     return gfix_ov, gfix_vo, gfix_ov + d_ov, gfix_vo + d_vo, info
 
 
@@ -99,11 +110,14 @@ def head_energies(st, gov, gvo, eo, ev, vol, PHI):
     Nk = st["Nk"]
     c = 4 * np.pi / vol
     eo_, ev_ = np.array(eo)[:, 0], np.array(ev)[:, 0]
-    D = eo_[:, None] + eo_[None, :] - ev_[:, None] - ev_[None, :]  # (ki, kj), ka = ki, kb = kj
+    D = (
+        eo_[:, None] + eo_[None, :] - ev_[:, None] - ev_[None, :]
+    )  # (ki, kj), ka = ki, kb = kj
     G = c * np.einsum("ia,jb->ijab", gov, gvo.conj())  # H(u) = u_a u_b G_ab
     Hc = np.einsum("ijaa->ij", G) / 3
     Qc = 2 * np.sum(abs(Hc) ** 2 / D) / Nk**3
     Ql = 2 * np.sum(np.einsum("ijab,ijcd,abcd->ij", G, G.conj(), PHI).real / D) / Nk**3
+
     # linear part via the exact quadratic of the cubic head (all channels)
     def e_with(lam):
         new = dict(st)
@@ -112,6 +126,7 @@ def head_energies(st, gov, gvo, eo, ev, vol, PHI):
             V[x, :, x, 0, 0, 0, 0] += lam * Hc[x]
         new["V"] = V
         return sum(kmp2_split(new, eo, ev))
+
     s0 = sum(kmp2_split(st, eo, ev))
     e1, e2 = e_with(1.0) - s0, e_with(2.0) - s0
     Qall = (e2 - 2 * e1) / 2
@@ -135,25 +150,39 @@ def main():
         S0 = row["sh"][0]
         F = row["fock"][0] - S0
         gfo, gfv, gto_, gtv, info = head_vectors(z, cell, m)
-        print(f"== a={a:g} {orient} n={m}: |S_lat - P0| {info['S_err']:.1e}; Fourier-dS aliasing (rel) "
-              f"{info['dS_alias']:.2e}; |Delta_ov|/|g_fix_ov| {info['d_rel']:.4f}")
-        print(f"   g_fix_ov k-avg |x,y,z|^2 {np.mean(abs(gfo) ** 2, 0)}; g_true {np.mean(abs(gto_) ** 2, 0)}")
+        print(
+            f"== a={a:g} {orient} n={m}: |S_lat - P0| {info['S_err']:.1e}; Fourier-dS aliasing (rel) "
+            f"{info['dS_alias']:.2e}; |Delta_ov|/|g_fix_ov| {info['d_rel']:.4f}"
+        )
+        print(
+            f"   g_fix_ov k-avg |x,y,z|^2 {np.mean(abs(gfo) ** 2, 0)}; g_true {np.mean(abs(gto_) ** 2, 0)}"
+        )
         out = {}
         for tag, (go, gv) in (("fixed", (gfo, gfv)), ("true", (gto_, gtv))):
             L, Qc, Ql, Qall = head_energies(st, go, gv, eo, ev, cell.vol, PHI)
-            E3d = S0 + L + Qall + (Ql - Qc) + F  # cubic head (all channels) + lattice re-weighting of the direct quad
+            E3d = (
+                S0 + L + Qall + (Ql - Qc) + F
+            )  # cubic head (all channels) + lattice re-weighting of the direct quad
             out[tag] = (L, Qc, Ql, Qall, E3d)
-            print(f"   {tag:5s} (x n^3): L {L * n3:+.5e} Qcub(direct) {Qc * n3:+.5e} Qcub(all) {Qall * n3:+.5e} "
-                  f"Qlat(direct) {Ql * n3:+.5e} | E1 {S0 + L + Qall:.10e} E3d {E3d:.10e}")
+            print(
+                f"   {tag:5s} (x n^3): L {L * n3:+.5e} Qcub(direct) {Qc * n3:+.5e} Qcub(all) {Qall * n3:+.5e} "
+                f"Qlat(direct) {Ql * n3:+.5e} | E1 {S0 + L + Qall:.10e} E3d {E3d:.10e}"
+            )
         if "fixed" in out:
-            print(f"   anchor: fixed-k E1 from MO vectors - row cub1 = {S0 + out['fixed'][0] + out['fixed'][3] - row['cub1'][0]:.1e}")
+            print(
+                f"   anchor: fixed-k E1 from MO vectors - row cub1 = {S0 + out['fixed'][0] + out['fixed'][3] - row['cub1'][0]:.1e}"
+            )
         dE = out["true"][4] - out["fixed"][4]
-        print(f"   H5 analytic: E3d(true) - E3d(fixed) = {dE:+.3e} (x n^3 {dE * n3:+.4e}); split L {(out['true'][0] - out['fixed'][0]) * n3:+.3e}"
-              f" Qlat {(out['true'][2] - out['fixed'][2]) * n3:+.3e} Qall-Qc {((out['true'][3] - out['true'][1]) - (out['fixed'][3] - out['fixed'][1])) * n3:+.3e}")
+        print(
+            f"   H5 analytic: E3d(true) - E3d(fixed) = {dE:+.3e} (x n^3 {dE * n3:+.4e}); split L {(out['true'][0] - out['fixed'][0]) * n3:+.3e}"
+            f" Qlat {(out['true'][2] - out['fixed'][2]) * n3:+.3e} Qall-Qc {((out['true'][3] - out['true'][1]) - (out['fixed'][3] - out['fixed'][1])) * n3:+.3e}"
+        )
         if "true_b_cub" in row:
             fb = (row["true_b_cub"][0] - row["fixk_b_cub"][0]) * n3
-            print(f"   finite-b rows (b = 2pi/(n a)): true_b_cub - fixk_b_cub = {fb:+.4e} x n^-3; analytic cubic-head "
-                  f"difference {(out['true'][0] + out['true'][3] - out['fixed'][0] - out['fixed'][3]) * n3:+.4e}")
+            print(
+                f"   finite-b rows (b = 2pi/(n a)): true_b_cub - fixk_b_cub = {fb:+.4e} x n^-3; analytic cubic-head "
+                f"difference {(out['true'][0] + out['true'][3] - out['fixed'][0] - out['fixed'][3]) * n3:+.4e}"
+            )
 
 
 if __name__ == "__main__":

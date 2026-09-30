@@ -19,9 +19,17 @@ def enumerate_triples():
     olds = OldScreen(1.0)
     dsum = sum(abs(c) for c in olds.e["coefficients"])
     pmax = max(new0.P) ** 2 * sum(w * math.sqrt(math.pi / z) for w, z in new0.terms)
-    r_ecp = math.sqrt(math.log(pmax / 1e-16) / mu(min(new0.ap), min(z for _, z in new0.terms)))
+    r_ecp = math.sqrt(
+        math.log(pmax / 1e-16) / mu(min(new0.ap), min(z for _, z in new0.terms))
+    )
     M = translations(r_ecp)
-    S = np.array([POS[1] + m for m in M if np.min(np.linalg.norm(POS - (POS[1] + m), axis=1)) <= r_ecp])
+    S = np.array(
+        [
+            POS[1] + m
+            for m in M
+            if np.min(np.linalg.norm(POS - (POS[1] + m), axis=1)) <= r_ecp
+        ]
+    )
     L = translations(2 * r_ecp)
     out = {k: [] for k in ("a", "b", "il", "iu", "new", "lnold")}
     for il, lv in enumerate(L):
@@ -34,17 +42,33 @@ def enumerate_triples():
                 tot = np.zeros(len(S))
                 for w, z in new0.terms:
                     p = al + be + z
-                    tot += w * math.sqrt(math.pi / p) * np.exp(
-                        -(al * be * (RA - RB) ** 2 + al * z * RA**2 + be * z * RB**2) / p
+                    tot += (
+                        w
+                        * math.sqrt(math.pi / p)
+                        * np.exp(
+                            -(
+                                al * be * (RA - RB) ** 2
+                                + al * z * RA**2
+                                + be * z * RB**2
+                            )
+                            / p
+                        )
                     )
                 bn = new0.P[a] * new0.P[b] * tot
                 dab2 = np.sum((cent[a] - rb) ** 2)
-                e = np.maximum.reduce([
-                    np.full(len(S), mu(olds.amin[a], olds.amin[b]) * dab2),
-                    mu(olds.amin[a], olds.zmin) * RA**2,
-                    mu(olds.amin[b], olds.zmin) * RB**2,
-                ])
-                lbo = math.log(dsum) + 3 + max(olds.log_pref[a] + olds.log_pref[b], 0.0) - e
+                e = np.maximum.reduce(
+                    [
+                        np.full(len(S), mu(olds.amin[a], olds.amin[b]) * dab2),
+                        mu(olds.amin[a], olds.zmin) * RA**2,
+                        mu(olds.amin[b], olds.zmin) * RB**2,
+                    ]
+                )
+                lbo = (
+                    math.log(dsum)
+                    + 3
+                    + max(olds.log_pref[a] + olds.log_pref[b], 0.0)
+                    - e
+                )
                 sel = np.where((bn > 1e-24) | (lbo > math.log(1e-24)))[0]
                 out["a"] += [a] * len(sel)
                 out["b"] += [b] * len(sel)

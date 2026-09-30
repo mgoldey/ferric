@@ -8,13 +8,13 @@
 //! Cartesian→spherical code is reused unchanged.
 //!
 //! * Semi-local channels (`type2`): exp-scaled modified spherical Bessel
-//!   functions ([`bessel`]) — stable at every distance and exact on-centre —
+//!   functions ([`bessel`](crate::ecp_quad::bessel)) — stable at every distance and exact on-centre —
 //!   with the r-independent angular tensor `T` hoisted out of every
 //!   primitive/term/node loop and ONE radial tensor per (shell pair, centre,
 //!   channel).
 //! * Local channel (`type1`): the product Gaussian's plane-wave expansion in
 //!   the same `k̃_λ`.
-//! * Radial ([`radial`]): per-(primitive pair, ECP term) windows; Gauss–Hermite
+//! * Radial ([`radial`](crate::ecp_quad::radial)): per-(primitive pair, ECP term) windows; Gauss–Hermite
 //!   away from r = 0, adaptive Gauss–Legendre (16–40 nodes) otherwise.
 //! * Derivatives: raised/lowered shells (`∂χ/∂A_x = 2α χ(i+1) − i χ(i−1)`);
 //!   centre `= −(bra + ket)` per triple (exact translation invariance).

@@ -19,6 +19,7 @@ density equal to the mesh one (orbital effect 0 to O(Nk^-2)) — the uncoupled a
 
 usage: relax.py a m [orient]
 """
+
 import glob
 import sys
 
@@ -57,35 +58,61 @@ def kb_from(cell, m, V, Vk, rcut_1e=22.0):
     L1 = cell.translations(rcut_1e)
     sm = cell.supermol(L1)
     nb0 = cell.mol.nbas
-    S_L = sm.intor("int1e_ovlp_cart", shls_slice=(0, nb0, 0, sm.nbas)).reshape(nao, len(L1), nao)
-    T_L = sm.intor("int1e_kin_cart", shls_slice=(0, nb0, 0, sm.nbas)).reshape(nao, len(L1), nao)
+    S_L = sm.intor("int1e_ovlp_cart", shls_slice=(0, nb0, 0, sm.nbas)).reshape(
+        nao, len(L1), nao
+    )
+    T_L = sm.intor("int1e_kin_cart", shls_slice=(0, nb0, 0, sm.nbas)).reshape(
+        nao, len(L1), nao
+    )
     ph1 = np.exp(1j * kpts @ L1.T)
     S = np.einsum("kL,mLn->kmn", ph1, S_L)
     T = np.einsum("kL,mLn->kmn", ph1, T_L)
     ii = np.arange(Nk)
     Jker = V[ii[:, None], ii[None, :], ii[:, None]]
     Kker = V[ii[:, None], ii[None, :], ii[None, :]]
-    return dict(S=S, T=T, h=T + Vk, Jker=Jker, Kker=Kker, enn=ewald_nn(cell, 1.0),
-                madelung=PK.kmesh_madelung(cell, n), kpts=kpts, ints=ints, n=n, Nk=Nk)
+    return dict(
+        S=S,
+        T=T,
+        h=T + Vk,
+        Jker=Jker,
+        Kker=Kker,
+        enn=ewald_nn(cell, 1.0),
+        madelung=PK.kmesh_madelung(cell, n),
+        kpts=kpts,
+        ints=ints,
+        n=n,
+        Nk=Nk,
+    )
 
 
 def mo_store(V, C, n, ints):
     """pbc_kcorr store (1 occ, 1 vir per k) for orbitals C from V_AO."""
     Nk = len(ints)
     ii = np.arange(Nk)
-    KB = np.array([[[mesh_index(n, ints[a] + ints[b] - ints[c]) for c in ii] for b in ii] for a in ii])
+    KB = np.array(
+        [
+            [[mesh_index(n, ints[a] + ints[b] - ints[c]) for c in ii] for b in ii]
+            for a in ii
+        ]
+    )
     ci, ca = C[:, :, 0], C[:, :, 1]
-    Vmo = np.einsum("xm,zn,xyzl,ys,xyzmnls->xyz", ci.conj(), ca, ca[KB], ci.conj(), V, optimize=True)
+    Vmo = np.einsum(
+        "xm,zn,xyzl,ys,xyzmnls->xyz", ci.conj(), ca, ca[KB], ci.conj(), V, optimize=True
+    )
     return dict(V=Vmo[..., None, None, None, None], n=n, ints=ints, Nk=Nk)
 
 
 def scf(kb, extraK=None, kshift=None):
     jk = None
     if extraK is not None:
+
         def jk(dm):
             J, K = PK.jk_k(kb, dm)
             return J, K + extraK
-    e, eps, it, C, occ = PK.krhf(kb, 2, conv=1e-13, kshift=kshift, return_mo=True, jk=jk)
+
+    e, eps, it, C, occ = PK.krhf(
+        kb, 2, conv=1e-13, kshift=kshift, return_mo=True, jk=jk
+    )
     assert all(int(o.sum()) == 1 and o[0] for o in occ)
     return e, np.array(eps), np.array(C)
 
@@ -119,8 +146,10 @@ def main():
     vm = kb["madelung"]
     # A1
     e0, eps0, C0 = scf(kb, kshift=0.0)
-    print(f"A1: |E_HF - saved| {abs(e0 - float(z['e_hf'])):.1e}  max|eps - saved| {abs(eps0 - z['eps']).max():.1e}  v_M {vm:.8f} "
-          f"(saved {float(z['vm']):.8f})")
+    print(
+        f"A1: |E_HF - saved| {abs(e0 - float(z['e_hf'])):.1e}  max|eps - saved| {abs(eps0 - z['eps']).max():.1e}  v_M {vm:.8f} "
+        f"(saved {float(z['vm']):.8f})"
+    )
     C = z["C"]
     eps_sh = z["eps"].copy()
     eps_sh[:, 0] -= vm
@@ -141,27 +170,48 @@ def main():
             eW, epsW, CW = scf(kb, extraK=dK_ao)  # kshift = v_M: eps already 'shifted'
             CW = align(CW, C, kb["S"])
             epsF_l = eps_sh - lam * np.einsum("kpp->kp", dK).real / 2
-            E_full = mp2(V, CW, epsW, kb)       # relaxed orbitals + SCF eigenvalues
-            E_orbfix = mp2(V, C, epsW, kb)      # mesh orbitals + SCF eigenvalues
-            E_first = mp2(V, C, epsF_l, kb)     # E3's Fock head (first order, frozen orbitals)
+            E_full = mp2(V, CW, epsW, kb)  # relaxed orbitals + SCF eigenvalues
+            E_orbfix = mp2(V, C, epsW, kb)  # mesh orbitals + SCF eigenvalues
+            E_first = mp2(
+                V, C, epsF_l, kb
+            )  # E3's Fock head (first order, frozen orbitals)
             # uncoupled first-order rotation (no J/K response): kappa_ai = -W_ai / (e_a - e_i), W = -dK/2 (per k)
             CU = C.copy()
             W = -lam * dK / 2
-            CU[:, :, 0] = C[:, :, 0] + (W[:, 1, 0] / (eps_sh[:, 0] - eps_sh[:, 1]))[:, None] * C[:, :, 1]
-            CU[:, :, 1] = C[:, :, 1] + (W[:, 0, 1] / (eps_sh[:, 1] - eps_sh[:, 0]))[:, None] * C[:, :, 0]
+            CU[:, :, 0] = (
+                C[:, :, 0]
+                + (W[:, 1, 0] / (eps_sh[:, 0] - eps_sh[:, 1]))[:, None] * C[:, :, 1]
+            )
+            CU[:, :, 1] = (
+                C[:, :, 1]
+                + (W[:, 0, 1] / (eps_sh[:, 1] - eps_sh[:, 0]))[:, None] * C[:, :, 0]
+            )
             E_unc = mp2(V, CU, epsW, kb)
             deig = epsW - eps_sh
             a4 = abs(deig + lam * np.einsum("kpp->kp", dK).real / 2).max()
             # overlap of the relaxed occupied orbital with the mesh virtual (the rotation actually made)
-            rot = np.array([abs(C[k][:, 1].conj() @ kb["S"][k] @ CW[k][:, 0]) for k in range(Nk)])
-            res[lam] = (E_full - E_orbfix, E_unc - E_orbfix, E_orbfix - E_first, E_full - SF if lam == 1 else None)
-            print(f"[{tag}] lam {lam}: A4 max|d eps_SCF + lam dK/2| {a4:.1e} (x n^3 {a4 * n3:.2e}); |<a|i'>| max {rot.max() * n3:.4f} x n^-3 "
-                  f"| x n^3: orbital relaxation (coupled) {(E_full - E_orbfix) * n3:+.4e}  (uncoupled) {(E_unc - E_orbfix) * n3:+.4e}  "
-                  f"eig beyond 1st order {(E_orbfix - E_first) * n3:+.4e}")
+            rot = np.array(
+                [abs(C[k][:, 1].conj() @ kb["S"][k] @ CW[k][:, 0]) for k in range(Nk)]
+            )
+            res[lam] = (
+                E_full - E_orbfix,
+                E_unc - E_orbfix,
+                E_orbfix - E_first,
+                E_full - SF if lam == 1 else None,
+            )
+            print(
+                f"[{tag}] lam {lam}: A4 max|d eps_SCF + lam dK/2| {a4:.1e} (x n^3 {a4 * n3:.2e}); |<a|i'>| max {rot.max() * n3:.4f} x n^-3 "
+                f"| x n^3: orbital relaxation (coupled) {(E_full - E_orbfix) * n3:+.4e}  (uncoupled) {(E_unc - E_orbfix) * n3:+.4e}  "
+                f"eig beyond 1st order {(E_orbfix - E_first) * n3:+.4e}"
+            )
         r1, rh = res[1.0][0], res[0.5][0]
-        print(f"[{tag}] A5 linearity: relax(lam=1)/relax(lam=1/2) = {r1 / rh:.4f} (first order: 2)")
-        print(f"[{tag}] SUMMARY x n^3: F (1st-order eig, E3's) {(SF - S0) * n3:+.4e}; full SCF-relaxed Fock head "
-              f"{(res[1.0][3] + SF - S0) * n3:+.4e}; difference (what E3 misses) {res[1.0][3] * n3:+.4e}")
+        print(
+            f"[{tag}] A5 linearity: relax(lam=1)/relax(lam=1/2) = {r1 / rh:.4f} (first order: 2)"
+        )
+        print(
+            f"[{tag}] SUMMARY x n^3: F (1st-order eig, E3's) {(SF - S0) * n3:+.4e}; full SCF-relaxed Fock head "
+            f"{(res[1.0][3] + SF - S0) * n3:+.4e}; difference (what E3 misses) {res[1.0][3] * n3:+.4e}"
+        )
 
 
 if __name__ == "__main__":

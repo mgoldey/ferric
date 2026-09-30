@@ -1,5 +1,5 @@
-//! Per-thread integral-engine pool (2e via [`EnginePool::new`]; any engine
-//! kind via [`EnginePool::from_fn`]).
+//! Per-thread integral-engine pool (2e via [`EnginePool::new`](crate::engine_pool::EnginePool::new); any engine
+//! kind via [`EnginePool::from_fn`](crate::engine_pool::EnginePool::from_fn)).
 //!
 //! Lives in `ferric-integrals` (next to [`crate::engine::Engine`]) rather than `ferric-scf` so
 //! that lower-level integral code — Schwarz bounds, 3-index drivers — can use it

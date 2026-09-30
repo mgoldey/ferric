@@ -20,6 +20,7 @@ Artifact hypotheses (before running)
 Physics: nonzero ov elements => the mesh orbitals are rotated by kappa = O(1/Nk) relative to the converged ones,
 and the MP2 NUMERATORS carry an O(1/Nk) error that E3 (eigenvalue-only Fock head) does not correct.
 """
+
 import itertools
 import sys
 
@@ -60,7 +61,9 @@ class Bands:
         sm = cell.supermol(L1)
         nao, nb0 = cell.mol.nao, cell.mol.nbas
         self.L1 = L1
-        self.S_L = sm.intor("int1e_ovlp_cart", shls_slice=(0, nb0, 0, sm.nbas)).reshape(nao, len(L1), nao)
+        self.S_L = sm.intor("int1e_ovlp_cart", shls_slice=(0, nb0, 0, sm.nbas)).reshape(
+            nao, len(L1), nao
+        )
         C, eps = z["C"], z["eps"].copy()
         if conv == "ewald":
             eps[:, 0] -= float(z["vm"])
@@ -72,7 +75,9 @@ class Bands:
         for mv in itertools.product(rng, repeat=3):
             w = np.prod([0.5 if (m % 2 == 0 and abs(x) == m // 2) else 1.0 for x in mv])
             L = np.array(mv, float) @ cell.a
-            self.FL.append((L, w * np.einsum("k,kmn->mn", np.exp(-1j * kpts @ L), Fk) / len(kpts)))
+            self.FL.append(
+                (L, w * np.einsum("k,kmn->mn", np.exp(-1j * kpts @ L), Fk) / len(kpts))
+            )
         self.C, self.eps = C, eps
         # per-L pair FT machinery
         self.pl = _PerL(cell)
@@ -89,7 +94,9 @@ class Bands:
         return e, c
 
     def QL(self, K):
-        return pair_ft_residues(self.pl, np.atleast_2d(K), 1e-14)[..., 0] * self.nn[None]
+        return (
+            pair_ft_residues(self.pl, np.atleast_2d(K), 1e-14)[..., 0] * self.nn[None]
+        )
 
     def P(self, QL, kp):
         return np.einsum("L,Lmn->mn", np.exp(1j * self.pl.Ls @ kp), QL)
@@ -100,7 +107,9 @@ def dK_mo(b, z, deltas=(4e-3, 2e-3), true=True):
     cell, Nk = b.cell, len(b.kpts)
     pref = 4 * np.pi / (cell.vol * Nk)
     res = []
-    keys = [(dl, ax, sg) for dl in deltas for ax, sg in itertools.product(range(3), (1, -1))]
+    keys = [
+        (dl, ax, sg) for dl in deltas for ax, sg in itertools.product(range(3), (1, -1))
+    ]
     Ks = np.zeros((len(keys) + 1, 3))
     for i, (dl, ax, sg) in enumerate(keys):
         Ks[i, ax] = sg * dl
@@ -149,19 +158,33 @@ def main():
             b = Bands(cell, z, m, conv)
             # interpolant reproduces the mesh: orbitals at mesh k == saved C (projector)
             e0, c0 = b.orbitals(b.kpts[1])
-            pr = abs(c0[:, :1] @ c0[:, :1].conj().T - z["C"][1][:, :1] @ z["C"][1][:, :1].conj().T).max()
+            pr = abs(
+                c0[:, :1] @ c0[:, :1].conj().T
+                - z["C"][1][:, :1] @ z["C"][1][:, :1].conj().T
+            ).max()
             if conv == "ewald":
                 rows["fixed(fd)"] = dK_mo(b, z, true=False)
             rows[f"true[{conv}]"] = dK_mo(b, z, true=True)
             print(f"  [{conv}] interpolant == mesh projector at k1: {pr:.1e}")
-        print(f"== a={a:g} {orient} n={m}  (x n^3; eps shift = +dK_pp/2 is mesh - true)")
-        print(f"   anchor fixed(fd) - analytic A/B: max {abs(rows['fixed(fd)'] - ana).max() * n3:.2e}")
+        print(
+            f"== a={a:g} {orient} n={m}  (x n^3; eps shift = +dK_pp/2 is mesh - true)"
+        )
+        print(
+            f"   anchor fixed(fd) - analytic A/B: max {abs(rows['fixed(fd)'] - ana).max() * n3:.2e}"
+        )
         for name, d in [("fixed(A/B)", ana)] + list(rows.items()):
-            print(f"   {name:12s} k-avg dK_ii/2 {d[:, 0, 0].real.mean() / 2 * n3:+.5f} dK_aa/2 {d[:, 1, 1].real.mean() / 2 * n3:+.5f} "
-                  f"gap {(d[:, 1, 1] - d[:, 0, 0]).real.mean() / 2 * n3:+.5f} | |dK_ia| max {abs(d[:, 0, 1]).max() * n3:.4f} "
-                  f"k-avg {abs(d[:, 0, 1]).mean() * n3:.4f} | Gamma occ {d[0, 0, 0].real / 2 * n3:+.5f}")
-        np.savez(f"/home/matt/qc/ferric-pbc/prototypes/pbc/kmp2_head/dK_a{a:g}_n{m}{suf}.npz", ana=ana,
-                 fixed_fd=rows["fixed(fd)"], true_ewald=rows["true[ewald]"], true_none=rows["true[none]"])
+            print(
+                f"   {name:12s} k-avg dK_ii/2 {d[:, 0, 0].real.mean() / 2 * n3:+.5f} dK_aa/2 {d[:, 1, 1].real.mean() / 2 * n3:+.5f} "
+                f"gap {(d[:, 1, 1] - d[:, 0, 0]).real.mean() / 2 * n3:+.5f} | |dK_ia| max {abs(d[:, 0, 1]).max() * n3:.4f} "
+                f"k-avg {abs(d[:, 0, 1]).mean() * n3:.4f} | Gamma occ {d[0, 0, 0].real / 2 * n3:+.5f}"
+            )
+        np.savez(
+            f"/home/matt/qc/ferric-pbc/prototypes/pbc/kmp2_head/dK_a{a:g}_n{m}{suf}.npz",
+            ana=ana,
+            fixed_fd=rows["fixed(fd)"],
+            true_ewald=rows["true[ewald]"],
+            true_none=rows["true[none]"],
+        )
 
 
 if __name__ == "__main__":

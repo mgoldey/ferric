@@ -3,7 +3,7 @@
 //!
 //! Port of `reference/pbc/pbc_rohf_newton.py` (FINDINGS "Iteration 24
 //! (Python, second-order ROHF on the injected path) — 2026-09-27"). Built for
-//! the injected (periodic) path ([`solve_rohf_injected_second_order`]), where
+//! the injected (periodic) path ([`solve_rohf_injected_second_order`](crate::rohf_trah::solve_rohf_injected_second_order)), where
 //! the DIIS loop of [`crate::rohf::solve_rohf_injected`] cannot converge the
 //! triclinic 4H s+p ROHF triplet: at PySCF's minimum (`exxdiv = none`) a
 //! virtual lies BELOW the second open orbital in the Roothaan `F_eff` order,
@@ -29,7 +29,7 @@
 //! read-off     out[(p, q)] = G[q, p] − G[p, q]
 //! ```
 //!
-//! The true gradient is EXACTLY 2 × [`crate::rohf_newton::gradient_blocks`]
+//! The true gradient is EXACTLY 2 × `rohf_newton::gradient_blocks`
 //! in each of the three blocks (measured to 1e-8 by FD in the prototype, and
 //! pinned by this module's tests); the true Hessian is 2 × ferric's packed
 //! 2e response plus the full Fock-commutator terms, O(n³) per product and no
@@ -38,8 +38,8 @@
 //!
 //! # The response callback
 //!
-//! Everything integral-specific is behind [`RohfOrbitalModel`]: the energy and
-//! spin Focks at a density, and the linear response ([`OrbitalResponse`])
+//! Everything integral-specific is behind [`RohfOrbitalModel`](crate::rohf_trah::RohfOrbitalModel): the energy and
+//! spin Focks at a density, and the linear response ([`OrbitalResponse`](crate::rohf_trah::OrbitalResponse))
 //!
 //! ```text
 //! δF_σ = J[δD_α + δD_β] − a·K[δD_σ] + δV_xc^σ

@@ -10,6 +10,7 @@ run_kcorr_head_anomaly.run_mesh, so the saved mesh C reproduce its rows (anchor 
 
 usage: vao_build.py a m iq0 iq1 [orient]     -> vao_data/vao_a{a}_n{m}{suf}_q{iq0}-{iq1}.npz
 """
+
 import os
 import sys
 import time
@@ -35,7 +36,12 @@ def h2_atoms(orient):
 
 
 def main():
-    a, m, iq0, iq1 = float(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
+    a, m, iq0, iq1 = (
+        float(sys.argv[1]),
+        int(sys.argv[2]),
+        int(sys.argv[3]),
+        int(sys.argv[4]),
+    )
     orient = sys.argv[5] if len(sys.argv) > 5 else "z"
     suf = "" if orient == "z" else f"_{orient}"
     cell = Cell(np.eye(3) * a, h2_atoms(orient), "sto-3g")
@@ -58,7 +64,9 @@ def main():
             K2 = np.einsum("gi,gi->g", Kc, Kc)
             v = 4 * np.pi / K2 / cell.vol
             Q = pair_ft_residues(scell, Kc, 1e-14) * nn[None, :, :, None]
-            P = np.einsum("jr,rmng->jmng", ph_r, Q)  # P[j] = P^{kof[j], j}(K), raw (no sqrt v)
+            P = np.einsum(
+                "jr,rmng->jmng", ph_r, Q
+            )  # P[j] = P^{kof[j], j}(K), raw (no sqrt v)
             T = np.einsum("xmng,ylsg->xymnls", P * v, P.conj(), optimize=True)
             for x in range(Nk):
                 V[kof[x], :, x] += T[x]  # ki = kof[x], ka = x, kj = y, kb = kof[y]
@@ -67,7 +75,14 @@ def main():
                 Vk -= np.einsum("kmng,g->kmn", P, 4 * np.pi / K2 * SG.conj()) / cell.vol
         print(f"  iq {iq} nK {len(K)} ({time.time() - t0:.0f}s)", flush=True)
     os.makedirs(f"{HERE}/vao_data", exist_ok=True)
-    np.savez(f"{HERE}/vao_data/vao_a{a:g}_n{m}{suf}_q{iq0}-{iq1}.npz", V=V, Vk=Vk, iq0=iq0, iq1=iq1, gcut=gcut)
+    np.savez(
+        f"{HERE}/vao_data/vao_a{a:g}_n{m}{suf}_q{iq0}-{iq1}.npz",
+        V=V,
+        Vk=Vk,
+        iq0=iq0,
+        iq1=iq1,
+        gcut=gcut,
+    )
 
 
 if __name__ == "__main__":

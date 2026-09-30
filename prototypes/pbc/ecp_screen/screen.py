@@ -53,7 +53,8 @@ class OldScreen:
         self.amin = np.array([min(s["exponents"]) for s in self.sh])
         self.log_pref = np.array(
             [
-                math.log(sum(abs(c) for c in s["coefficients"])) + 0.75 * math.log(math.pi / a)
+                math.log(sum(abs(c) for c in s["coefficients"]))
+                + 0.75 * math.log(math.pi / a)
                 for s, a in zip(self.sh, self.amin)
             ]
         )
@@ -124,13 +125,18 @@ class NewScreen:
         self.P = np.array(
             [
                 kappa(s["l"])
-                * sum(abs(c) * poly_q(s["l"], x) for c, x in zip(s["coefficients"], s["exponents"]))
+                * sum(
+                    abs(c) * poly_q(s["l"], x)
+                    for c, x in zip(s["coefficients"], s["exponents"])
+                )
                 for s in self.sh
             ]
         )
         self.terms = [
             (abs(d) * poly_q(n, z) * 4 * math.pi, shrink(n, z))
-            for n, z, d in zip(self.e["ns"], self.e["exponents"], self.e["coefficients"])
+            for n, z, d in zip(
+                self.e["ns"], self.e["exponents"], self.e["coefficients"]
+            )
         ]
 
     def bound(self, a, b, RA, RB):
@@ -143,4 +149,7 @@ class NewScreen:
         return self.P[a] * self.P[b] * tot
 
     def keep(self, a, b, ra, rb, rc):
-        return self.bound(a, b, np.linalg.norm(ra - rc), np.linalg.norm(rb - rc)) >= self.prec
+        return (
+            self.bound(a, b, np.linalg.norm(ra - rc), np.linalg.norm(rb - rc))
+            >= self.prec
+        )

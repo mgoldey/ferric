@@ -49,9 +49,9 @@
 //! (`½(x + conj conj x) = x`), and each element is still written by exactly
 //! one task (bitwise across thread counts). `n_sr_triplets` counts the
 //! triplets COMPUTED; `n_sr_triplets_ordered` (off-diagonal × 2) is the
-//! pre-s2 ordered count. [`periodic_hcore_kpts_pair_s1_oracle`] is the pre-s2
+//! pre-s2 ordered count. [`periodic_hcore_kpts_pair_s1_oracle`](crate::hcore::kpoint::periodic_hcore_kpts_pair_s1_oracle) is the pre-s2
 //! build (the FROZEN serial ordered loops), bit for bit. A transposed write
-//! WITHOUT the conjugation ([`KHcorePairMutant::NoConj`]) is an identity on a
+//! WITHOUT the conjugation ([`KHcorePairMutant::NoConj`](crate::hcore::kpoint::KHcorePairMutant::NoConj)) is an identity on a
 //! mesh whose phases are all ±1 (every k TRIM), so it is only visible on a
 //! non-TRIM mesh (`tests/pbc_kpair_symmetry.rs`).
 

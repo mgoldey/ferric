@@ -3066,7 +3066,7 @@ impl RsGdfK<'_> {
 }
 
 /// Number of fixed aux groups of the RS-GDF exchange builds
-/// ([`exchange_aux_grouped`], `kpoint::add_exchange`). A CONSTANT: it never
+/// (`exchange_aux_grouped`, `kpoint::add_exchange`). A CONSTANT: it never
 /// depends on the thread count or the budget, so the grouping (and hence
 /// every bit of K) is a pure function of `naux`.
 pub const EXCHANGE_AUX_GROUPS: usize = 24;

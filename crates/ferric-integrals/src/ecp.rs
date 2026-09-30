@@ -1,5 +1,5 @@
 //! ECP integrals: the libecpint shim ([`crate::ecp_ffi`]) or ferric's own
-//! quadrature ([`crate::ecp_quad`]), selected by [`EcpBackend`].
+//! quadrature ([`crate::ecp_quad`]), selected by [`EcpBackend`](crate::ecp::EcpBackend).
 //!
 //! Computes the dense **spherical** ECP matrix `V_ECP` for a molecule with ECP
 //! centers, matching libint's spherical AO basis (and PySCF's `ECPscalar`).

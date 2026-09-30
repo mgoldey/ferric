@@ -18,6 +18,7 @@ What this script measures
       eigenvalue shift already in F.  Artifact hypothesis: a symmetry (mirror z, TRIM) forcing dK_ia = 0 would give
       exactly 0 at kz = 0 and at TRIM points but NOT at general kz; a bug (wrong C) would give O(1) everywhere.
 """
+
 import sys
 
 import numpy as np
@@ -40,7 +41,15 @@ def st_from(z, cell, m):
     n = (m, m, m)
     ints, kpts = mp_mesh(cell, n)
     C = z["C"]
-    return dict(V=z["V"], Kq=z["Kq"], Co=C[:, :, :1], Cv=C[:, :, 1:], n=n, ints=ints, Nk=len(kpts))
+    return dict(
+        V=z["V"],
+        Kq=z["Kq"],
+        Co=C[:, :, :1],
+        Cv=C[:, :, 1:],
+        n=n,
+        ints=ints,
+        Nk=len(kpts),
+    )
 
 
 def with_head(st, P, lam=1.0):
@@ -62,11 +71,20 @@ def kmp2_split(st, eo, ev):
     """(OS, SS) per cell; OS + SS = the closed-shell KMP2 (pbc_kcorr.kmp2 convention)."""
     V, n, ints, Nk = st["V"], st["n"], st["ints"], st["Nk"]
     ii = np.arange(Nk)
-    KB = np.array([[[mesh_index(n, ints[a] + ints[b] - ints[c]) for c in ii] for b in ii] for a in ii])
+    KB = np.array(
+        [
+            [[mesh_index(n, ints[a] + ints[b] - ints[c]) for c in ii] for b in ii]
+            for a in ii
+        ]
+    )
     eo, ev = np.array(eo), np.array(ev)
     X = V[ii[:, None, None], ii[None, :, None], KB].transpose(0, 1, 2, 3, 6, 5, 4)
-    d = (eo[:, None, None, :, None, None, None] - ev[None, None, :, None, :, None, None]
-         + eo[None, :, None, None, None, :, None] - ev[KB][:, :, :, None, None, None, :])
+    d = (
+        eo[:, None, None, :, None, None, None]
+        - ev[None, None, :, None, :, None, None]
+        + eo[None, :, None, None, None, :, None]
+        - ev[KB][:, :, :, None, None, None, :]
+    )
     t = V.conj() / d
     return np.sum(t * V).real / Nk**3, np.sum(t * (V - X)).real / Nk**3
 
@@ -82,7 +100,10 @@ def fock_dK(cell, z, Nk):
         M = np.zeros((2,) * 4, complex)
         for ax in range(3):
             M += np.einsum("ml,ns->mlns", A[k, ..., ax], A[k, ..., ax].conj())
-            M += 0.5 * (np.einsum("ml,ns->mlns", B[k, ..., ax], S.conj()) + np.einsum("ml,ns->mlns", S, B[k, ..., ax].conj()))
+            M += 0.5 * (
+                np.einsum("ml,ns->mlns", B[k, ..., ax], S.conj())
+                + np.einsum("ml,ns->mlns", S, B[k, ..., ax].conj())
+            )
         M /= 3
         dK = pref * np.einsum("mlns,ls->mn", M, dm)
         out.append(C[k].conj().T @ dK @ C[k])
@@ -116,8 +137,13 @@ def main():
         assert abs(F.sum() - (row["fock"][0] - row["sh"][0])) < 1e-14
         res = (Qlat - Qc) + F
         print(f"a=6 z n={m}  (x n^3)       {'OS':>12s} {'SS':>12s} {'total':>12s}")
-        for name, v in (("L (cubic, linear)", Lc), ("quad cubic", Qc), ("quad lattice", Qlat), ("F (Fock head)", F),
-                        ("E3-E1 = dquad+F", res)):
+        for name, v in (
+            ("L (cubic, linear)", Lc),
+            ("quad cubic", Qc),
+            ("quad lattice", Qlat),
+            ("F (Fock head)", F),
+            ("E3-E1 = dquad+F", res),
+        ):
             print(f"  {name:22s} {v[0] * n3:+.4e} {v[1] * n3:+.4e} {v.sum() * n3:+.4e}")
         print(f"  S itself (not x n^3): OS {S[0]:.10e} SS {S[1]:.10e}")
         # (c/e) off-diagonal Fock head in MO basis
@@ -125,11 +151,17 @@ def main():
         ints, kpts = mp_mesh(cell, (m, m, m))
         off = abs(dKmo[:, 0, 1])
         gap = eps[:, 1] - eps[:, 0]
-        print(f"  dK MO diag occ k-avg {dKmo[:, 0, 0].real.mean() * n3:+.4e} vir {dKmo[:, 1, 1].real.mean() * n3:+.4e} (x n^3)")
-        print(f"  |dK_ov| max {off.max() * n3:.3e} k-avg {off.mean() * n3:.3e} (x n^3); first-order |kappa| max "
-              f"{(0.5 * off / gap).max() * n3:.3e} (x n^3)")
+        print(
+            f"  dK MO diag occ k-avg {dKmo[:, 0, 0].real.mean() * n3:+.4e} vir {dKmo[:, 1, 1].real.mean() * n3:+.4e} (x n^3)"
+        )
+        print(
+            f"  |dK_ov| max {off.max() * n3:.3e} k-avg {off.mean() * n3:.3e} (x n^3); first-order |kappa| max "
+            f"{(0.5 * off / gap).max() * n3:.3e} (x n^3)"
+        )
         for k in np.argsort(-off)[:4]:
-            print(f"     k-int {ints[k]} |dK_ov| x n^3 {off[k] * n3:.3e}  gap {gap[k]:.4f}")
+            print(
+                f"     k-int {ints[k]} |dK_ov| x n^3 {off[k] * n3:.3e}  gap {gap[k]:.4f}"
+            )
         kz0 = [k for k in range(Nk) if ints[k][2] == 0]
         print(f"  max |dK_ov| on kz = 0 plane {off[kz0].max():.1e}")
 

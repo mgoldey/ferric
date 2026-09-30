@@ -31,15 +31,30 @@ for tag, idxs in (("sus", sus), ("strat", strat)):
         v = triple_value(sh[a], shifted(sh[b], lv), rc)
         ra = np.asarray(sh[a]["center"])
         rb = np.asarray(sh[b]["center"]) + lv
-        rows.append((tag == "sus", a, b, math.log(max(v, 1e-300)), lnnew[i], d["lnold"][i],
-                     np.linalg.norm(ra - rc), np.linalg.norm(rb - rc), np.linalg.norm(ra - rb)))
+        rows.append(
+            (
+                tag == "sus",
+                a,
+                b,
+                math.log(max(v, 1e-300)),
+                lnnew[i],
+                d["lnold"][i],
+                np.linalg.norm(ra - rc),
+                np.linalg.norm(rb - rc),
+                np.linalg.norm(ra - rb),
+            )
+        )
 R = np.array(rows)
 np.save("targeted.npy", R)
 s = R[R[:, 0] == 1]
 t = R[R[:, 0] == 0]
 print("RIGOUR: max ln(exact/new) over", len(R), "=", float(np.max(R[:, 3] - R[:, 4])))
-print("stratified: max ln(exact/old) =", float(np.max(t[:, 3] - t[:, 5])),
-      " median ln(new/exact) =", float(np.median(t[:, 4] - t[:, 3])))
+print(
+    "stratified: max ln(exact/old) =",
+    float(np.max(t[:, 3] - t[:, 5])),
+    " median ln(new/exact) =",
+    float(np.median(t[:, 4] - t[:, 3])),
+)
 if len(s):
     print("suspects: largest exact values")
     print(" a b lnExact lnNew lnOld RA RB dAB")
