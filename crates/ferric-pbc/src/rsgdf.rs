@@ -141,6 +141,30 @@
 //!   (`deriv`, `strain`, `split`'s `deriv`) have their own ordered loops and
 //!   are unchanged.
 //!
+//! # Column rotation of the Gamma SR 3-centre walk (opt-in)
+//!
+//! [`RsGdfConfig::sr_column_rotation`] = `Some(`[`ColumnRotation`]`)`
+//! evaluates the Gamma SR 3-centre sum (unsplit, or the kept part of a range
+//! split) on the COLUMN-ROTATED orbital basis of [`crate::sr_rotation`]
+//! (generally contracted shell groups: the single-primitive columns
+//! subtracted from the others, zero primitives dropped) and back-transforms
+//! the finished `J3_SR` rows EXACTLY into the parent AO basis
+//! (`J3 = (T ⊗ T) J3'`, a serial pass over (group, group) pairs) before the
+//! LR and G = 0 terms are added. Everything else — the pair images (from
+//! the parent shells; the rotated primitive sets are subsets, so the parent
+//! radius covers them), the metric, the LR and G = 0 parts, `S_ss` and the
+//! moved `(ss | X_c)` block of a split — stays in the parent basis; the
+//! split's compact/smooth partition is linear in the coefficient vector, so
+//! the kept part is covariant too. The kept triplet set is the rotated
+//! shells' own screen, so the result matches the unrotated build to the
+//! screening precision, not bitwise; `n_sr3_triplets` counts the rotated
+//! walk's calls. `None` (the default) is today's build bit for bit, and so
+//! is `Some` on a basis with nothing to rotate (detection returns the
+//! identity; counter `rsgdf SR3 rotated columns` = 0). Gamma energy builds
+//! only: [`RsGdf::build_for_gradient`] and the frozen s1 oracle refuse it
+//! (the forces must differentiate exactly the walk the energy ran), and the
+//! k-point build ([`kpoint`]) does not apply it.
+//!
 //! # Forces
 //!
 //! [`RsGdf::build_for_gradient`] keeps the metric eigen-data the analytic
@@ -162,6 +186,7 @@ use crate::lattice::Cell;
 use crate::ordered::{ordered_units, Stored};
 use crate::pair_ft::residues::residue_index;
 use crate::pair_ft::{pair_ft_chunked_serial_oracle, pair_ft_chunked_timed};
+use crate::sr_rotation::{ColumnRotation, ColumnRotationMutant, RotatedBasis};
 use crate::timing::{CallClock, PbcTimings, StageClock};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -248,6 +273,12 @@ pub struct RsGdfConfig {
     /// doc; Gamma energy, forces and stress). `None` = today's construction,
     /// bit for bit. The k-point build refuses it.
     pub range_split: Option<RangeSplit>,
+    /// Opt-in column rotation of generally contracted orbital shells inside
+    /// the Gamma SR 3-centre walk (module doc "Column rotation"). `None`
+    /// (default) = today's construction, bit for bit. Gamma energy builds
+    /// only: [`RsGdf::build_for_gradient`] refuses it; the k-point build
+    /// does not apply it.
+    pub sr_column_rotation: Option<ColumnRotation>,
 }
 
 impl Default for RsGdfConfig {
@@ -261,6 +292,7 @@ impl Default for RsGdfConfig {
             budget_bytes: None,
             g0: G0Handling::Consistent,
             range_split: None,
+            sr_column_rotation: None,
         }
     }
 }
@@ -941,6 +973,32 @@ struct Sr2Ctx<'a> {
     global: f64,
     /// `R_T` zeroed `(naux, naux)` bins every task copies into.
     out: &'a Mutex<Vec<Array2<f64>>>,
+}
+
+impl<'a> Stage<'a> {
+    /// The same stage (cell, ω, precision, screen mode) on other orbital and
+    /// aux bases with the parent's AO layout (the column-rotated SR walk,
+    /// module doc "Column rotation").
+    fn with_bases<'b>(
+        &self,
+        obs: &'b PreparedBasis,
+        aux: &'b PreparedBasis,
+    ) -> Result<Stage<'b>, FerricError>
+    where
+        'a: 'b,
+    {
+        Ok(Stage {
+            cell: self.cell,
+            obs,
+            aux,
+            obs_sh: gshells(obs, "RsGdf rotated orbital basis")?,
+            aux_sh: gshells(aux, "RsGdf aux basis")?,
+            omega: self.omega,
+            thresh: self.thresh,
+            sr_screen: self.sr_screen,
+            walker: LatticeWalker::new(self.cell),
+        })
+    }
 }
 
 impl Stage<'_> {
@@ -2183,18 +2241,125 @@ fn check_obs_on_cell(cell: &Cell, obs: &PreparedBasis) -> Result<(), FerricError
     Ok(())
 }
 
-/// The Gamma build's SR 3-index sum under `pair_sym`: `(J3_SR, computed,
-/// ordered-equivalent)` (module doc "Orbital-pair symmetry").
+/// The Gamma build's SR 3-index sum under `pair_sym`, or on the
+/// column-rotated shells when `rotation` is set (s2 only; module doc
+/// "Column rotation"): `(J3_SR, computed, ordered-equivalent)` (module doc
+/// "Orbital-pair symmetry").
 fn gamma_sr_three_index(
     pair_sym: PairSym,
     st: &Stage<'_>,
     plan: Option<&split::SplitPlan>,
+    rotation: Option<&Sr3Rotation>,
+    range_split: Option<RangeSplit>,
     images: &[[f64; 3]],
 ) -> Result<(Array2<f64>, usize, usize), FerricError> {
-    match pair_sym {
-        PairSym::S2 => split::sr_three_index(st, plan, images),
-        PairSym::S1Oracle => split::sr_three_index_s1(st, plan, images),
+    match (pair_sym, rotation) {
+        (_, Some(rot)) => gamma_sr_three_index_rotated(st, rot, range_split, images),
+        (PairSym::S2, None) => split::sr_three_index(st, plan, images),
+        (PairSym::S1Oracle, None) => split::sr_three_index_s1(st, plan, images),
     }
+}
+
+/// The rotated bases of the Gamma SR 3-centre walk (module doc "Column
+/// rotation"): the rotated orbital basis and, for
+/// [`ColumnRotationMutant::RotateAux`] only, a rotated aux basis whose
+/// columns are (deliberately) never transformed back.
+pub(super) struct Sr3Rotation {
+    pub(super) obs: RotatedBasis,
+    aux: Option<RotatedBasis>,
+}
+
+impl Sr3Rotation {
+    /// The aux basis the rotated walk calls into.
+    pub(super) fn aux_prep<'b>(&'b self, parent: &'b PreparedBasis) -> &'b PreparedBasis {
+        self.aux.as_ref().map_or(parent, |a| &a.prep)
+    }
+}
+
+/// The column rotation `cfg` asks for on `(obs, aux)`: `Ok(None)` when it is
+/// off or nothing in `obs` rotates (the identity: the caller runs the
+/// unrotated walk, bit for bit).
+pub(super) fn sr3_rotation(
+    cell: &Cell,
+    obs: &PreparedBasis,
+    aux: &PreparedBasis,
+    cfg: &RsGdfConfig,
+) -> Result<Option<Sr3Rotation>, FerricError> {
+    let Some(rot) = cfg.sr_column_rotation else {
+        return Ok(None);
+    };
+    let Some(obs_rot) = RotatedBasis::detect(cell, obs, rot, "RsGdf")? else {
+        return Ok(None);
+    };
+    let aux_rot = if rot.mutant == ColumnRotationMutant::RotateAux {
+        RotatedBasis::detect(cell, aux, rot, "RsGdf aux (mutant)")?
+    } else {
+        None
+    };
+    Ok(Some(Sr3Rotation {
+        obs: obs_rot,
+        aux: aux_rot,
+    }))
+}
+
+/// The build's opt-in SR plans: the range split ([`split::SplitPlan::maybe`])
+/// and the column rotation ([`sr3_rotation`]; refused on the gradient build
+/// and the frozen s1 oracle, which must walk the parent shells), with the
+/// `rsgdf SR3 rotated columns` counter set on `timings` whenever a rotation
+/// was asked for (0 = nothing rotates, the identity).
+#[allow(clippy::too_many_arguments)]
+fn sr_plans(
+    st: &Stage<'_>,
+    cfg: &RsGdfConfig,
+    images: &[[f64; 3]],
+    ledger: &mut Ledger,
+    retain_grad: bool,
+    pair_sym: PairSym,
+    timings: &mut PbcTimings,
+) -> Result<(Option<split::SplitPlan>, Option<Sr3Rotation>), FerricError> {
+    let plan = split::SplitPlan::maybe(st, cfg, images, ledger)?;
+    if cfg.sr_column_rotation.is_none() {
+        return Ok((plan, None));
+    }
+    if retain_grad || pair_sym != PairSym::S2 {
+        return Err(FerricError::General(
+            "RsGdf: sr_column_rotation applies to the Gamma energy build only; the gradient \
+             build and the frozen s1 oracle walk the unrotated shells (build without it)"
+                .into(),
+        ));
+    }
+    let rotation = sr3_rotation(st.cell, st.obs, st.aux, cfg)?;
+    timings.set_counter(
+        "rsgdf SR3 rotated columns",
+        rotation.as_ref().map_or(0, |r| r.obs.n_rotated_columns) as u64,
+    );
+    Ok((plan, rotation))
+}
+
+/// The Gamma s2 SR 3-index sum on the column-rotated stage, back-transformed
+/// into the parent AO basis: `(J3_SR, computed, ordered-equivalent)` of the
+/// ROTATED walk (module doc "Column rotation"). The split plan of the
+/// rotated walk carries only its orbital and aux pieces
+/// ([`split::SplitPlan::sr3_only`]); the build's own plan keeps the LR,
+/// `S_ss` and G = 0 parts in the parent basis.
+fn gamma_sr_three_index_rotated(
+    st: &Stage<'_>,
+    rot: &Sr3Rotation,
+    range_split: Option<RangeSplit>,
+    images: &[[f64; 3]],
+) -> Result<(Array2<f64>, usize, usize), FerricError> {
+    let st_rot = st.with_bases(&rot.obs.prep, rot.aux_prep(st.aux))?;
+    let plan = match range_split {
+        None => None,
+        Some(rs) => Some(split::SplitPlan::sr3_only(&st_rot, rs)?),
+    };
+    let (mut j3, count, ordered) = split::sr_three_index(&st_rot, plan.as_ref(), images)?;
+    let w = j3.ncols();
+    let data = j3.as_slice_mut().ok_or_else(|| {
+        FerricError::General("RsGdf column rotation: J3_SR is not contiguous".into())
+    })?;
+    rot.obs.back_transform_pair_rows(data, w)?;
+    Ok((j3, count, ordered))
 }
 
 /// Symmetrise `j3` over μ↔ν in place; returns the largest asymmetry seen.
@@ -2524,9 +2689,18 @@ impl RsGdf {
             gvector_list_bytes(cell, gcut)?,
         )?;
         let gv = half_gvectors(cell, gcut)?;
-        // Opt-in range split (`split`): `None` leaves every stage below as
-        // it was, bit for bit.
-        let plan = split::SplitPlan::maybe(&st, cfg, &images, &mut ledger)?;
+        // Opt-in range split (`split`) and column rotation of the SR
+        // 3-centre walk (module doc "Column rotation"): `None` leaves every
+        // stage below as it was, bit for bit.
+        let (plan, rotation) = sr_plans(
+            &st,
+            cfg,
+            &images,
+            &mut ledger,
+            retain_grad,
+            pair_sym,
+            &mut timings,
+        )?;
         let resident_bytes = ledger.resident();
         let chunk_budget = ledger.remaining().min(G_CHUNK_BYTES);
         timings.stop("rsgdf setup (shells, pair images, G list)", &clock);
@@ -2541,8 +2715,14 @@ impl RsGdf {
         let (mut j2, n_sr2) = split::sr_metric(&st, plan.as_ref())?;
         timings.stop("rsgdf SR metric (2-centre)", &clock);
         let clock = StageClock::start();
-        let (mut j3, n_sr3, n_sr3_ordered) =
-            gamma_sr_three_index(pair_sym, &st, plan.as_ref(), &images)?;
+        let (mut j3, n_sr3, n_sr3_ordered) = gamma_sr_three_index(
+            pair_sym,
+            &st,
+            plan.as_ref(),
+            rotation.as_ref(),
+            cfg.range_split,
+            &images,
+        )?;
         timings.stop("rsgdf SR 3-centre", &clock);
         let clock = StageClock::start();
         let mut lr_sub = PbcTimings::default();

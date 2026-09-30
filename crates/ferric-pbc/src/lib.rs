@@ -118,6 +118,13 @@
 //!   eigenvalue, noise-floor flag) and the OPT-IN `exp_to_discard` basis
 //!   filter (`prepare_cell_basis`); FINDINGS "Iteration 15".
 //!
+//! * [`sr_rotation`] — OPT-IN column rotation of generally contracted
+//!   orbital shells inside the Gamma SR 3-centre walk (RS-GDF) and the hcore
+//!   SR attraction ([`ColumnRotation`] on `RsGdfConfig` /
+//!   `PeriodicHcoreConfig`): subtract each shell group's single-primitive
+//!   columns from the others, compute the SR blocks on the rotated shells,
+//!   back-transform exactly (design `reference/pbc/sr-general-contraction-design.md`).
+//!
 //! * [`timing`] — stage timers (wall + process CPU) and counters on
 //!   `PeriodicHcore`, `RsGdf`, `DenseAftEri`, the KS results and the k-point
 //!   results, plus per-SCF-iteration J/K/XC call clocks ([`PbcTimings`]);
@@ -151,6 +158,7 @@ mod ordered;
 pub mod pair_ft;
 pub mod rohf;
 pub mod rsgdf;
+pub mod sr_rotation;
 pub mod stress;
 pub mod timing;
 pub mod ucorr;
@@ -220,6 +228,7 @@ pub use rohf::{
 pub use rsgdf::kpoint::{KRsGdf, KRsGdfConfig, KRsGdfJk, KRsGdfQStats, KRsGdfStats};
 pub use rsgdf::{PeriodicFitParts, RsGdf, RsGdfConfig, RsGdfFitDiagnostics};
 pub use rsgdf::{RangeSplit, RangeSplitMutant};
+pub use sr_rotation::{ColumnRotation, ColumnRotationMutant};
 pub use stress::{
     gamma_rhf_stress, gamma_rhf_stress_rsgdf, gamma_rks_stress, gamma_rks_stress_rsgdf,
     gamma_uhf_stress, gamma_uhf_stress_rsgdf, gamma_uks_stress, gamma_uks_stress_rsgdf,

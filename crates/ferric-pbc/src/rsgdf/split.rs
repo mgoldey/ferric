@@ -619,6 +619,25 @@ impl SplitPlan {
         Self::new(st, rs, images, ledger).map(Some)
     }
 
+    /// The plan of `rs` for the SR 3-centre walk ALONE on `st` — the
+    /// column-rotated stage (`super` module doc "Column rotation"): the
+    /// orbital and aux piece bases, but no smooth-pair basis and no `S_ss`
+    /// (those serve the LR and G = 0 terms, which stay in the parent basis
+    /// on the build's own plan). Only the SR 3-centre sum and its counts
+    /// ([`SplitPlan::sr_three_index_s2`], [`SplitPlan::counts`]) may use it.
+    /// Its pieces are split from the ROTATED shells, whose libint
+    /// normalisation the piece factors `f` refer to.
+    pub(super) fn sr3_only(st: &Stage<'_>, rs: RangeSplit) -> Result<Self, FerricError> {
+        rs.validate()?;
+        Ok(Self {
+            rs,
+            obs: Side::new(st.obs, &st.obs_sh, rs.orbital_threshold(st.omega))?,
+            aux: Side::new(st.aux, &st.aux_sh, rs.aux_threshold(st.omega))?,
+            smooth_obs: None,
+            s_ss: None,
+        })
+    }
+
     /// The plan of `rs` with its resident buffers reserved on `ledger` and
     /// `S_ss` formed over the pair `images`.
     fn new(
@@ -1546,7 +1565,9 @@ pub(super) fn finish(
 /// cost statement of the range split without its integrals (FINDINGS
 /// "Iteration 23", `count_sr3_ferric`) — plus the pre-s2 ordered-walk count
 /// `n_sr3_triplets_s1` (the walk visits every ordered pair once and derives
-/// the s2 counts from those per-pair counts).
+/// the s2 counts from those per-pair counts). With
+/// [`RsGdfConfig::sr_column_rotation`] the counts are those of the build's
+/// ROTATED walk (`super` module doc "Column rotation").
 pub fn sr_walk_counts(
     cell: &Cell,
     obs: &PreparedBasis,
@@ -1554,10 +1575,29 @@ pub fn sr_walk_counts(
     cfg: &RsGdfConfig,
 ) -> Result<SrWalkCounts, FerricError> {
     let (st, images) = super::kpoint::diagnostic_stage(cell, obs, aux, cfg)?;
+    // Column rotation (`super` module doc): the build's rotated walk on the
+    // parent pair images.
+    if let Some(rot) = super::sr3_rotation(cell, obs, aux, cfg)? {
+        let st_rot = st.with_bases(&rot.obs.prep, rot.aux_prep(aux))?;
+        let plan = match cfg.range_split {
+            None => None,
+            Some(rs) => Some(SplitPlan::sr3_only(&st_rot, rs)?),
+        };
+        return walk_counts(&st_rot, plan.as_ref(), &images);
+    }
     let mut ledger = Ledger::new(crate::budget::resolve(cfg.budget_bytes));
     let plan = SplitPlan::maybe(&st, cfg, &images, &mut ledger)?;
-    if let Some(p) = split_walks(plan.as_ref()) {
-        return p.counts(&st, &images);
+    walk_counts(&st, plan.as_ref(), &images)
+}
+
+/// [`sr_walk_counts`] of the stage `st` under `plan`.
+fn walk_counts(
+    st: &Stage<'_>,
+    plan: Option<&SplitPlan>,
+    images: &[[f64; 3]],
+) -> Result<SrWalkCounts, FerricError> {
+    if let Some(p) = split_walks(plan) {
+        return p.counts(st, images);
     }
     let nsh = st.obs_sh.len();
     let global = st.sr3_global_radius();
@@ -1565,7 +1605,7 @@ pub fn sr_walk_counts(
         .into_par_iter()
         .map(|pair| {
             let mut c = 0usize;
-            for l in &images {
+            for l in images {
                 st.sr3_pair_image(
                     pair / nsh,
                     pair % nsh,

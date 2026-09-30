@@ -155,6 +155,25 @@
 //! bit. The k-point sums (`kpoint`) keep the ordered loops (`h(k)` is
 //! Hermitian, not symmetric: s2 there needs the `e^{ik·L}` ↔ `e^{−ik·L}`
 //! pairing), and so do the force/strain derivative walks (their own loops).
+//!
+//! # Column rotation of the SR attraction (opt-in)
+//!
+//! [`PeriodicHcoreConfig::sr_column_rotation`] = `Some(`[`ColumnRotation`]`)`
+//! runs the Gamma SR attraction walk on the column-rotated orbital basis of
+//! [`crate::sr_rotation`] and back-transforms `V_SR = T V'_SR Tᵀ` exactly
+//! (serial, exactly symmetric) before it joins `V`. The pair images and the
+//! nucleus candidates come from the PARENT shells (every rotated primitive
+//! set is a subset of its parent's, so each rotated pair's bound and radius
+//! are at most the parent's and the candidate list covers them); S, T,
+//! `V_LR`, `V_G0` and the ECP are untouched. The kept triplets follow the
+//! rotated shells' own screen, so `V_SR` matches the unrotated one to the
+//! screening precision, not bitwise; `n_sr_triplets` counts the rotated
+//! walk. `None` (default) is today's build bit for bit, and so is `Some` on
+//! a basis with nothing to rotate (counter `hcore SR rotated columns` = 0).
+//! Gamma only: the k-point sums (`kpoint`) and the SR force/strain walks do
+//! not apply it (the forces differentiate the unrotated `V_SR`, which
+//! differs at the screening precision); the frozen s1 oracle and the
+//! `RotateAux` mutant are refused.
 
 use crate::budget::{bytes_of, Ledger};
 use crate::ewald::{default_ewald_omega, ewald_nuclear_repulsion};
@@ -162,6 +181,7 @@ use crate::lattice::Cell;
 use crate::ordered::{ordered_units, window_budget, Stored};
 use crate::pair_ft::{pair_ft_bytes_per_g, pair_ft_chunked};
 use crate::rsgdf::unordered_pairs;
+use crate::sr_rotation::{ColumnRotation, ColumnRotationMutant, RotatedBasis};
 use crate::timing::{PbcTimings, StageClock};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -275,6 +295,10 @@ pub struct PeriodicHcoreConfig {
     /// available RAM, else 2 GiB; `Some(0)` counts as unset, the ferric
     /// convention).
     pub budget_bytes: Option<usize>,
+    /// Opt-in column rotation of generally contracted orbital shells inside
+    /// the Gamma SR attraction walk (module doc "Column rotation"). `None`
+    /// (default) = today's construction, bit for bit. Gamma only.
+    pub sr_column_rotation: Option<ColumnRotation>,
 }
 
 impl PeriodicHcoreConfig {
@@ -286,6 +310,7 @@ impl PeriodicHcoreConfig {
             precision: DEFAULT_HCORE_PRECISION,
             nucleus_exponent: GAUSSIAN_NUCLEUS_EXPONENT,
             budget_bytes: None,
+            sr_column_rotation: None,
         }
     }
 
@@ -1300,6 +1325,31 @@ fn periodic_hcore_impl(
     let mut timings = PbcTimings::default();
     let clock = StageClock::start();
     let shells = prim_shells(cell, prep)?;
+    // Opt-in column rotation of the SR attraction (module doc "Column
+    // rotation"); `None` leaves that walk as it was, bit for bit.
+    let rotation = match cfg.sr_column_rotation {
+        None => None,
+        Some(rot) => {
+            if s1_oracle || rot.mutant == ColumnRotationMutant::RotateAux {
+                return Err(FerricError::General(format!(
+                    "periodic_hcore: sr_column_rotation {:?} is not available on {} (build \
+                     without it)",
+                    rot.mutant,
+                    if s1_oracle {
+                        "the frozen s1 oracle"
+                    } else {
+                        "the SR attraction (no aux basis)"
+                    }
+                )));
+            }
+            let r = RotatedBasis::detect(cell, prep, rot, "periodic_hcore")?;
+            timings.set_counter(
+                "hcore SR rotated columns",
+                r.as_ref().map_or(0, |r| r.n_rotated_columns) as u64,
+            );
+            r
+        }
+    };
     let n = prep.nbasis();
     let omega = cfg.omega;
     let thresh = cfg.precision;
@@ -1345,9 +1395,19 @@ fn periodic_hcore_impl(
         } else {
             sr_attraction
         };
+        // Column rotation: the walk runs on the rotated shells (parent pair
+        // images and candidates, module doc) and is transformed back below.
+        let rot_shells = match &rotation {
+            Some(r) => Some(prim_shells(cell, &r.prep)?),
+            None => None,
+        };
+        let (sr_prep, sr_shells) = match (&rotation, &rot_shells) {
+            (Some(r), Some(rs)) => (&r.prep, rs.as_slice()),
+            _ => (prep, shells.as_slice()),
+        };
         let sr = sr_loop(
-            prep,
-            &shells,
+            sr_prep,
+            sr_shells,
             &images,
             &cands,
             &nuc,
@@ -1362,7 +1422,10 @@ fn periodic_hcore_impl(
         n_sr_triplets_ordered = sr.n_triplets_ordered;
         timings.set_counter("hcore SR segment tests", sr.n_segment_tests as u64);
         let (sym, asym) = symmetrize(&sr.v);
-        v_sr = sym;
+        v_sr = match &rotation {
+            None => sym,
+            Some(r) => r.back_transform_matrix(&sym)?,
+        };
         sr_asymmetry = asym;
     }
     timings.stop("hcore SR attraction", &clock);
