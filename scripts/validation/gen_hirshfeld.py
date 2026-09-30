@@ -17,7 +17,8 @@ WHAT FERRIC COMPUTES (read from the code, not the doc comments)
 on ferric's default XC grid (75 TA-M4 radial x 110 Lebedev, unpruned, Becke
 partition of the home atom folded into w_g). Two proatom sources:
 
-* `proatom = Some(provider)` (what ferric-cli passes): a tabulated radial
+* `proatom = Some(provider)` (what ferric-cli and the Python binding
+  `ferric.hirshfeld_charges` pass by default, `proatom="scf"`): a tabulated radial
   density, `RadialProatom { radii = 0.05, 0.10, ..., 30.0 Bohr, rho }`, where
   rho(r_k) is the Lebedev-110 spherical average of the free NEUTRAL atom's SCF
   density in the molecule's own basis (`spherically_averaged_proatom`). Between
@@ -25,7 +26,7 @@ partition of the home atom folded into w_g). Two proatom sources:
   rho(0.05); at or beyond 30 Bohr it returns 0. The free-atom SCF is ferric-cli's
   recipe with an HF molecular config: RHF for singlets, else UHF with MOM after
   iteration 5 (H doublet, C and O triplets here).
-* `proatom = None` (what the Python binding `ferric.hirshfeld_charges` passes):
+* `proatom = None` (what the Python binding passes only for `proatom="slater"`):
   rho0_A(r) = Z_A xi^3 / pi * exp(-2 xi r), a single normalized Slater
   exponential with xi = 1 / R_BS(Z) and R_BS from `slater_xi_for_z`
   (ferric-scf/src/properties.rs), a table that is NOT the Becke-partition
