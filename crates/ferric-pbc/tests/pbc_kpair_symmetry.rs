@@ -831,24 +831,34 @@ fn wrong_pair_bin_mutant_moves_the_krhf_energy_only_on_a_non_trim_mesh() {
 }
 
 /// The k-point builds do not implement the Gamma-only SR column rotation:
-/// a typed refusal naming the option, never a silently unrotated build.
+/// an EXPLICIT request is a typed refusal naming the option, never a
+/// silently unrotated build; the default `Auto` (every config above) runs
+/// unrotated without complaint.
 #[test]
 fn kpoint_builds_refuse_the_gamma_column_rotation() {
+    use ferric_pbc::sr_rotation::SrColumnRotation;
     let ks = ksys(h2_cell(4.0), &pyscf_sto3g_h(), &et_sp_aux(), TRIM);
-    let rot = Some(ferric_pbc::sr_rotation::ColumnRotation::new());
-    let hcfg = PeriodicHcoreConfig {
-        sr_column_rotation: rot,
-        ..hcore_cfg()
-    };
+    let rot = SrColumnRotation::on();
+    assert_eq!(hcore_cfg().sr_column_rotation, SrColumnRotation::Auto);
+    let hcfg = hcore_cfg().with_sr_column_rotation(rot);
     let msg = periodic_hcore_kpts(&ks.cell, &ks.prep, &ks.mesh, &hcfg)
         .expect_err("k hcore with a column rotation must be refused")
         .to_string();
-    assert!(msg.contains("sr_column_rotation"), "{msg}");
+    assert!(
+        msg.contains("sr_column_rotation") && msg.contains("explicitly"),
+        "{msg}"
+    );
     let hk = periodic_hcore_kpts(&ks.cell, &ks.prep, &ks.mesh, &hcore_cfg()).expect("hcore(k)");
     let mut cfg = kgdf_cfg(None, None);
+    assert_eq!(cfg.gdf.sr_column_rotation, SrColumnRotation::Auto);
+    KRsGdf::build(&ks.cell, &ks.prep, &ks.aux, &ks.mesh, &hk.s, &cfg)
+        .expect("KRsGdf with the default Auto runs unrotated");
     cfg.gdf.sr_column_rotation = rot;
     let msg = KRsGdf::build(&ks.cell, &ks.prep, &ks.aux, &ks.mesh, &hk.s, &cfg)
         .expect_err("KRsGdf with a column rotation must be refused")
         .to_string();
-    assert!(msg.contains("sr_column_rotation"), "{msg}");
+    assert!(
+        msg.contains("sr_column_rotation") && msg.contains("explicitly"),
+        "{msg}"
+    );
 }

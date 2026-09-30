@@ -52,6 +52,12 @@
 //!     contracted aux basis — cc-pVDZ itself — since cc-pvdz-ri is segmented
 //!     and the mutant would be a no-op there; production on the same aux
 //!     passes (b)'s bar).
+//! (g) Default resolution (`SrColumnRotation::Auto`): the Gamma energy
+//!     builds rotate (bitwise explicit `On`); the gradient build, the s1
+//!     oracles, the k-point builds and a `for_derivatives` hcore run
+//!     unrotated (bitwise explicit `Off`); explicit `On` on those paths, and
+//!     a Gamma gradient given a rotated hcore, are refused by name. The
+//!     unrotated references of (a)-(f) are explicit `Off`.
 //!
 //! Artifact hypothesis, stated before measuring. Correct: (b) at the
 //! ~1e-15 level and shrinking with `P_TIGHT`. Missing renormalisation:
@@ -71,12 +77,16 @@ use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_pbc::dense_aft::ExxDiv;
+use ferric_pbc::grad::{gamma_rhf_gradient_rsgdf, GammaGradConfig, RsGdfGradSource};
+use ferric_pbc::hcore::kpoint::periodic_hcore_kpts;
 use ferric_pbc::hcore::{
     periodic_hcore, periodic_hcore_pair_s1_oracle, PeriodicHcore, PeriodicHcoreConfig,
 };
+use ferric_pbc::kpts::KPointMesh;
 use ferric_pbc::lattice::Cell;
+use ferric_pbc::rsgdf::kpoint::{KRsGdf, KRsGdfConfig};
 use ferric_pbc::rsgdf::{sr_walk_counts, RangeSplit, RsGdf, RsGdfConfig};
-use ferric_pbc::sr_rotation::{ColumnRotation, ColumnRotationMutant};
+use ferric_pbc::sr_rotation::{ColumnRotation, ColumnRotationMutant, SrColumnRotation};
 use ndarray::Array2;
 
 const THREADS: [usize; 3] = [1, 2, 6];
@@ -121,15 +131,19 @@ fn bundled(cell: &Cell, name: &str) -> PreparedBasis {
     prep_for(cell, &basis::bundled(name).expect("bundled basis"))
 }
 
-fn rotation(m: ColumnRotationMutant) -> Option<ColumnRotation> {
-    Some(ColumnRotation { mutant: m })
+fn rotation(m: ColumnRotationMutant) -> SrColumnRotation {
+    SrColumnRotation::On(ColumnRotation { mutant: m })
 }
 
-fn production() -> Option<ColumnRotation> {
-    Some(ColumnRotation::new())
+fn production() -> SrColumnRotation {
+    SrColumnRotation::on()
 }
 
-fn gdf_cfg(split: Option<RangeSplit>, rot: Option<ColumnRotation>, precision: f64) -> RsGdfConfig {
+/// The unrotated reference (explicit: the default `Auto` rotates the Gamma
+/// energy builds).
+const OFF: SrColumnRotation = SrColumnRotation::Off;
+
+fn gdf_cfg(split: Option<RangeSplit>, rot: SrColumnRotation, precision: f64) -> RsGdfConfig {
     RsGdfConfig {
         omega: 1.0,
         precision,
@@ -141,7 +155,7 @@ fn gdf_cfg(split: Option<RangeSplit>, rot: Option<ColumnRotation>, precision: f6
     }
 }
 
-fn hcore_cfg(rot: Option<ColumnRotation>, precision: f64) -> PeriodicHcoreConfig {
+fn hcore_cfg(rot: SrColumnRotation, precision: f64) -> PeriodicHcoreConfig {
     PeriodicHcoreConfig {
         precision,
         sr_column_rotation: rot,
@@ -208,7 +222,7 @@ fn identity_rotation_is_bitwise_todays_build() {
     // group has two columns and nothing rotates.
     let prep = prep_for(&cell, &sp_basis_h());
     let aux = bundled(&cell, "cc-pvdz-ri");
-    let hc0 = periodic_hcore(&cell, &prep, &hcore_cfg(None, 1e-14)).expect("hcore");
+    let hc0 = periodic_hcore(&cell, &prep, &hcore_cfg(OFF, 1e-14)).expect("hcore");
     assert_eq!(hc0.timings.counter("hcore SR rotated columns"), None);
     for m in [
         ColumnRotationMutant::Production,
@@ -233,7 +247,7 @@ fn identity_rotation_is_bitwise_todays_build() {
         );
     }
     for split in [None, Some(RangeSplit::default())] {
-        let (g0, j0) = gdf_j3(&cell, &prep, &aux, &hc0.s, &gdf_cfg(split, None, 1e-13));
+        let (g0, j0) = gdf_j3(&cell, &prep, &aux, &hc0.s, &gdf_cfg(split, OFF, 1e-13));
         assert_eq!(g0.timings().counter("rsgdf SR3 rotated columns"), None);
         for m in [
             ColumnRotationMutant::Production,
@@ -272,7 +286,7 @@ fn rotated_sr_blocks_back_transform_to_the_parent_basis() {
     let prep = bundled(&cell, "cc-pvdz");
     let aux = bundled(&cell, "cc-pvdz-ri");
     // hcore: V_SR covariance; S, T, V_LR untouched bit for bit.
-    let hc0 = periodic_hcore(&cell, &prep, &hcore_cfg(None, P_TIGHT)).expect("hcore");
+    let hc0 = periodic_hcore(&cell, &prep, &hcore_cfg(OFF, P_TIGHT)).expect("hcore");
     let hc1 = periodic_hcore(&cell, &prep, &hcore_cfg(production(), P_TIGHT)).expect("hcore");
     for (a, b, what) in [
         (&hc1.s, &hc0.s, "S"),
@@ -298,7 +312,7 @@ fn rotated_sr_blocks_back_transform_to_the_parent_basis() {
     assert!(hc1.n_sr_triplets < hc0.n_sr_triplets, "(e) hcore count");
     for split in [None, Some(RangeSplit::default())] {
         let tag = format!("split {:?}", split.map(|s| s.lambda));
-        let (g0, j0) = gdf_j3(&cell, &prep, &aux, &hc0.s, &gdf_cfg(split, None, P_TIGHT));
+        let (g0, j0) = gdf_j3(&cell, &prep, &aux, &hc0.s, &gdf_cfg(split, OFF, P_TIGHT));
         let (g1, j1) = gdf_j3(
             &cell,
             &prep,
@@ -354,9 +368,9 @@ fn rotated_walk_counts_shrink() {
     let prep = bundled(&cell, "cc-pvdz");
     let aux = bundled(&cell, "cc-pvdz-ri");
     let split = Some(RangeSplit::default());
-    let w0 = sr_walk_counts(&cell, &prep, &aux, &gdf_cfg(split, None, 1e-13)).unwrap();
+    let w0 = sr_walk_counts(&cell, &prep, &aux, &gdf_cfg(split, OFF, 1e-13)).unwrap();
     let w1 = sr_walk_counts(&cell, &prep, &aux, &gdf_cfg(split, production(), 1e-13)).unwrap();
-    let u0 = sr_walk_counts(&cell, &prep, &aux, &gdf_cfg(None, None, 1e-13)).unwrap();
+    let u0 = sr_walk_counts(&cell, &prep, &aux, &gdf_cfg(None, OFF, 1e-13)).unwrap();
     let u1 = sr_walk_counts(&cell, &prep, &aux, &gdf_cfg(None, production(), 1e-13)).unwrap();
     eprintln!(
         "H2O/cc-pVDZ SR3 calls (s2 / ordered-equivalent / s1): split parent {} / {} / {}, \
@@ -392,14 +406,14 @@ fn rhf_energy_matches_the_unrotated_build() {
     let cell = cell_of(FORMALDEHYDE, 9.0);
     let prep = bundled(&cell, "cc-pvdz");
     let aux = bundled(&cell, "cc-pvdz-ri");
-    let hc0 = periodic_hcore(&cell, &prep, &hcore_cfg(None, 1e-14)).expect("hcore");
+    let hc0 = periodic_hcore(&cell, &prep, &hcore_cfg(OFF, 1e-14)).expect("hcore");
     let hc1 = periodic_hcore(&cell, &prep, &hcore_cfg(production(), 1e-14)).expect("hcore");
     // C 1s, 2s, p; O 1s, 2s, p; one s per H.
     assert_eq!(hc1.timings.counter("hcore SR rotated columns"), Some(8));
     for split in [None, Some(RangeSplit::default())] {
         let tag = format!("H2CO/cc-pVDZ split {:?}", split.map(|s| s.lambda));
         let g0 =
-            RsGdf::build(&cell, &prep, &aux, &hc0.s, &gdf_cfg(split, None, 1e-13)).expect("rsgdf");
+            RsGdf::build(&cell, &prep, &aux, &hc0.s, &gdf_cfg(split, OFF, 1e-13)).expect("rsgdf");
         let g1 = RsGdf::build(
             &cell,
             &prep,
@@ -466,8 +480,8 @@ fn mutants_fail_the_covariance_anchor() {
     let cell = cell_of(WATER, 8.0);
     let prep = bundled(&cell, "cc-pvdz");
     let aux = bundled(&cell, "cc-pvdz-ri");
-    let hc0 = periodic_hcore(&cell, &prep, &hcore_cfg(None, P_TIGHT)).expect("hcore");
-    let (_, j0) = gdf_j3(&cell, &prep, &aux, &hc0.s, &gdf_cfg(None, None, P_TIGHT));
+    let hc0 = periodic_hcore(&cell, &prep, &hcore_cfg(OFF, P_TIGHT)).expect("hcore");
+    let (_, j0) = gdf_j3(&cell, &prep, &aux, &hc0.s, &gdf_cfg(None, OFF, P_TIGHT));
     for m in [
         ColumnRotationMutant::FlipSign,
         ColumnRotationMutant::NoRenormalization,
@@ -496,7 +510,7 @@ fn mutants_fail_the_covariance_anchor() {
     // (cc-pVDZ as the fitting basis). Production on the same aux passes the
     // bar, so the failure is the mutant's, not the fixture's.
     let aux_gc = bundled(&cell, "cc-pvdz");
-    let (_, jg0) = gdf_j3(&cell, &prep, &aux_gc, &hc0.s, &gdf_cfg(None, None, P_TIGHT));
+    let (_, jg0) = gdf_j3(&cell, &prep, &aux_gc, &hc0.s, &gdf_cfg(None, OFF, P_TIGHT));
     let (_, jg1) = gdf_j3(
         &cell,
         &prep,
@@ -527,15 +541,299 @@ fn builds_that_must_walk_the_parent_shells_refuse_the_rotation() {
     let cell = cell_of(WATER, 8.0);
     let prep = bundled(&cell, "cc-pvdz");
     let aux = bundled(&cell, "cc-pvdz-ri");
-    let hc = periodic_hcore(&cell, &prep, &hcore_cfg(None, 1e-14)).expect("hcore");
+    let hc = periodic_hcore(&cell, &prep, &hcore_cfg(OFF, 1e-14)).expect("hcore");
     let cfg = gdf_cfg(None, production(), 1e-13);
-    assert!(RsGdf::build_for_gradient(&cell, &prep, &aux, &hc.s, &cfg).is_err());
-    assert!(RsGdf::build_pair_s1_oracle(&cell, &prep, &aux, &hc.s, &cfg).is_err());
-    assert!(periodic_hcore_pair_s1_oracle(&cell, &prep, &hcore_cfg(production(), 1e-14)).is_err());
+    // An explicit request is refused by name, never silently ignored.
+    for (what, r) in [
+        (
+            "build_for_gradient",
+            RsGdf::build_for_gradient(&cell, &prep, &aux, &hc.s, &cfg).map(|_| ()),
+        ),
+        (
+            "build_pair_s1_oracle",
+            RsGdf::build_pair_s1_oracle(&cell, &prep, &aux, &hc.s, &cfg).map(|_| ()),
+        ),
+        (
+            "periodic_hcore_pair_s1_oracle",
+            periodic_hcore_pair_s1_oracle(&cell, &prep, &hcore_cfg(production(), 1e-14))
+                .map(|_| ()),
+        ),
+    ] {
+        let msg = r.expect_err(what).to_string();
+        assert!(
+            msg.contains("sr_column_rotation") && msg.contains("explicitly"),
+            "{what}: {msg}"
+        );
+    }
     assert!(periodic_hcore(
         &cell,
         &prep,
         &hcore_cfg(rotation(ColumnRotationMutant::RotateAux), 1e-14)
     )
     .is_err());
+    // The default `Auto` resolves OFF on the same builds: no refusal, and
+    // bitwise the explicit-Off build (the oracles stay frozen).
+    let auto = gdf_cfg(None, SrColumnRotation::Auto, 1e-13);
+    let off = gdf_cfg(None, OFF, 1e-13);
+    let (ga, go) = (
+        RsGdf::build_pair_s1_oracle(&cell, &prep, &aux, &hc.s, &auto).expect("s1 oracle, Auto"),
+        RsGdf::build_pair_s1_oracle(&cell, &prep, &aux, &hc.s, &off).expect("s1 oracle, Off"),
+    );
+    assert_bitwise(ga.b(), go.b(), "s1 oracle B: Auto vs Off");
+    let (ha, ho) = (
+        periodic_hcore_pair_s1_oracle(&cell, &prep, &hcore_cfg(SrColumnRotation::Auto, 1e-14))
+            .expect("hcore s1 oracle, Auto"),
+        periodic_hcore_pair_s1_oracle(&cell, &prep, &hcore_cfg(OFF, 1e-14))
+            .expect("hcore s1 oracle, Off"),
+    );
+    assert_bitwise(&ha.h, &ho.h, "hcore s1 oracle h: Auto vs Off");
+    assert_eq!(ha.sr_rotated_columns, 0);
+}
+
+// ------------------------------------------- default resolution (Auto)
+
+/// H2 / cc-pVDZ: the cheapest cell with something to rotate (one s column
+/// per H: the diffuse 0.122 primitive is its own column).
+fn h2_ccpvdz() -> (Cell, PreparedBasis, PreparedBasis) {
+    let cell = h2_cell(5.0);
+    let prep = bundled(&cell, "cc-pvdz");
+    let aux = bundled(&cell, "cc-pvdz-ri");
+    (cell, prep, aux)
+}
+
+/// The library default (`SrColumnRotation::Auto`) rotates the Gamma energy
+/// builds: bitwise the explicit `On` build, counters set.
+#[test]
+fn default_gamma_energy_build_rotates() {
+    let cell = cell_of(WATER, 8.0);
+    let prep = bundled(&cell, "cc-pvdz");
+    let aux = bundled(&cell, "cc-pvdz-ri");
+    let hdef = PeriodicHcoreConfig::for_cell(&cell);
+    assert_eq!(hdef.sr_column_rotation, SrColumnRotation::Auto);
+    let hc_def = periodic_hcore(&cell, &prep, &hdef).expect("hcore default");
+    let hc_on = periodic_hcore(&cell, &prep, &hdef.with_sr_column_rotation(production()))
+        .expect("hcore on");
+    let hc_off =
+        periodic_hcore(&cell, &prep, &hdef.with_sr_column_rotation(OFF)).expect("hcore off");
+    assert_eq!(hc_def.sr_rotated_columns, 5, "O 1s, 2s, p and one s per H");
+    assert_eq!(hc_def.timings.counter("hcore SR rotated columns"), Some(5));
+    assert_eq!(hc_off.sr_rotated_columns, 0);
+    assert_eq!(hc_off.timings.counter("hcore SR rotated columns"), None);
+    assert_bitwise(&hc_def.v_sr, &hc_on.v_sr, "default V_SR vs explicit On");
+    assert_bitwise(&hc_def.h, &hc_on.h, "default h vs explicit On");
+    assert!(
+        bit_diffs(&hc_def.v_sr, &hc_off.v_sr) > 0,
+        "default V_SR bitwise the unrotated one: rotation not applied"
+    );
+    let gdef = RsGdfConfig {
+        budget_bytes: Some(1 << 30),
+        ..Default::default()
+    };
+    assert_eq!(gdef.sr_column_rotation, SrColumnRotation::Auto);
+    let gon = RsGdfConfig {
+        sr_column_rotation: production(),
+        ..gdef
+    };
+    let (g_def, j_def) = gdf_j3(&cell, &prep, &aux, &hc_def.s, &gdef);
+    let (g_on, j_on) = gdf_j3(&cell, &prep, &aux, &hc_def.s, &gon);
+    assert_eq!(
+        g_def.timings().counter("rsgdf SR3 rotated columns"),
+        Some(5)
+    );
+    assert_bitwise(&j_def, &j_on, "default J3 vs explicit On");
+    assert_bitwise(g_def.b(), g_on.b(), "default B vs explicit On");
+    let g_plain = RsGdf::build(&cell, &prep, &aux, &hc_def.s, &gdef).expect("rsgdf");
+    assert_bitwise(g_plain.b(), g_def.b(), "build vs build_with_fit_parts B");
+    assert_eq!(
+        g_plain.timings().counter("rsgdf SR3 rotated columns"),
+        Some(5)
+    );
+}
+
+/// A force run builds its hcore with `for_derivatives` and its fit with
+/// `build_for_gradient` on the DEFAULT config: nothing is refused, nothing
+/// rotates, and h / B / the energy are bitwise the explicit-Off build.
+#[test]
+fn default_gradient_path_runs_unrotated() {
+    let (cell, prep, aux) = h2_ccpvdz();
+    let hcfg = PeriodicHcoreConfig::with_omega(HCORE_OMEGA)
+        .for_derivatives()
+        .expect("for_derivatives on the default");
+    assert_eq!(hcfg.sr_column_rotation, OFF);
+    let hc = periodic_hcore(&cell, &prep, &hcfg).expect("hcore");
+    let hc_off = periodic_hcore(
+        &cell,
+        &prep,
+        &PeriodicHcoreConfig::with_omega(HCORE_OMEGA).with_sr_column_rotation(OFF),
+    )
+    .expect("hcore off");
+    assert_eq!(hc.sr_rotated_columns, 0);
+    assert_eq!(hc.timings.counter("hcore SR rotated columns"), None);
+    assert_bitwise(&hc.h, &hc_off.h, "for_derivatives h vs explicit Off");
+    // The default hcore WOULD rotate here (so the test is not vacuous).
+    let hc_auto = periodic_hcore(&cell, &prep, &PeriodicHcoreConfig::with_omega(HCORE_OMEGA))
+        .expect("hcore auto");
+    assert_eq!(hc_auto.sr_rotated_columns, 2, "one s column per H");
+
+    let gdef = RsGdfConfig {
+        exxdiv: ExxDiv::None,
+        budget_bytes: Some(1 << 30),
+        ..Default::default()
+    };
+    let goff = RsGdfConfig {
+        sr_column_rotation: OFF,
+        ..gdef
+    };
+    let g = RsGdf::build_for_gradient(&cell, &prep, &aux, &hc.s, &gdef)
+        .expect("build_for_gradient on the default config");
+    let g_off = RsGdf::build(&cell, &prep, &aux, &hc.s, &goff).expect("rsgdf off");
+    assert_eq!(g.timings().counter("rsgdf SR3 rotated columns"), None);
+    assert_bitwise(g.b(), g_off.b(), "gradient-build B (Auto) vs explicit Off");
+    // ... and the default ENERGY build does rotate on this basis.
+    let g_auto = RsGdf::build(&cell, &prep, &aux, &hc.s, &gdef).expect("rsgdf auto");
+    assert_eq!(
+        g_auto.timings().counter("rsgdf SR3 rotated columns"),
+        Some(2)
+    );
+
+    let scf = gamma_rhf_jk(
+        &cell,
+        &prep,
+        &hc,
+        Box::new(g.j_builder()),
+        Box::new(g.k_builder()),
+    );
+    let e_off = energy(&cell, &prep, &hc_off, &g_off);
+    assert_eq!(
+        scf.energy.to_bits(),
+        e_off.to_bits(),
+        "force-path energy {:.17e} vs explicit Off {e_off:.17e}",
+        scf.energy
+    );
+    let src = RsGdfGradSource {
+        gdf: &g,
+        aux: &aux,
+        aux_jac: None,
+    };
+    let grad = gamma_rhf_gradient_rsgdf(
+        &cell,
+        &prep,
+        &hcfg,
+        &hc,
+        &src,
+        &scf,
+        ExxDiv::None,
+        &GammaGradConfig::default(),
+    )
+    .expect("gradient on the for_derivatives hcore");
+    assert!(grad.grad.iter().all(|x| x.is_finite()));
+}
+
+/// An explicit rotation on a force path is refused by name; so is a
+/// gradient handed a hcore whose SR walk ran rotated (the default `Auto`).
+#[test]
+fn explicit_on_is_refused_on_force_paths() {
+    let (cell, prep, aux) = h2_ccpvdz();
+    let gdef = RsGdfConfig {
+        exxdiv: ExxDiv::None,
+        budget_bytes: Some(1 << 30),
+        ..Default::default()
+    };
+    let gon = RsGdfConfig {
+        sr_column_rotation: production(),
+        ..gdef
+    };
+    let hcfg = PeriodicHcoreConfig::with_omega(HCORE_OMEGA)
+        .for_derivatives()
+        .expect("for_derivatives");
+    let hc = periodic_hcore(&cell, &prep, &hcfg).expect("hcore");
+    let msg = RsGdf::build_for_gradient(&cell, &prep, &aux, &hc.s, &gon)
+        .expect_err("explicit On on the gradient build")
+        .to_string();
+    assert!(msg.contains("sr_column_rotation"), "{msg}");
+    let msg = PeriodicHcoreConfig::with_omega(HCORE_OMEGA)
+        .with_sr_column_rotation(production())
+        .for_derivatives()
+        .expect_err("for_derivatives on an explicit On")
+        .to_string();
+    assert!(msg.contains("sr_column_rotation"), "{msg}");
+
+    let g = RsGdf::build_for_gradient(&cell, &prep, &aux, &hc.s, &gdef).expect("rsgdf");
+    let scf = gamma_rhf_jk(
+        &cell,
+        &prep,
+        &hc,
+        Box::new(g.j_builder()),
+        Box::new(g.k_builder()),
+    );
+    let src = RsGdfGradSource {
+        gdf: &g,
+        aux: &aux,
+        aux_jac: None,
+    };
+    let grad = |hcfg: &PeriodicHcoreConfig, hc: &PeriodicHcore| {
+        gamma_rhf_gradient_rsgdf(
+            &cell,
+            &prep,
+            hcfg,
+            hc,
+            &src,
+            &scf,
+            ExxDiv::None,
+            &GammaGradConfig::default(),
+        )
+    };
+    // The unrotated pair runs (the control: the refusals below are the
+    // rotation's, not the fixture's).
+    grad(&hcfg, &hc).expect("gradient on the unrotated hcore");
+    // A hcore built with the default Auto (rotated here).
+    let auto = PeriodicHcoreConfig::with_omega(HCORE_OMEGA);
+    let hc_auto = periodic_hcore(&cell, &prep, &auto).expect("hcore auto");
+    assert!(hc_auto.sr_rotated_columns > 0);
+    let msg = grad(&auto, &hc_auto)
+        .expect_err("gradient on a rotated hcore")
+        .to_string();
+    assert!(
+        msg.contains("for_derivatives") && msg.contains("column-rotated"),
+        "{msg}"
+    );
+    // An explicit On in hcore_cfg, even with an unrotated hc.
+    let msg = grad(&hcfg.with_sr_column_rotation(production()), &hc)
+        .expect_err("gradient with hcore_cfg On")
+        .to_string();
+    assert!(
+        msg.contains("sr_column_rotation") && msg.contains("explicitly"),
+        "{msg}"
+    );
+}
+
+/// The k-point builds run unrotated under the default `Auto` (no refusal;
+/// bitwise the explicit-Off build). Explicit `On` is refused there
+/// (`pbc_kpair_symmetry::kpoint_builds_refuse_the_gamma_column_rotation`).
+#[test]
+fn kmesh_default_runs_unrotated() {
+    let (cell, prep, aux) = h2_ccpvdz();
+    let mesh = KPointMesh::gamma_centred(&cell, [1, 1, 2]).expect("mesh");
+    let hdef = PeriodicHcoreConfig::with_omega(HCORE_OMEGA);
+    let hk = periodic_hcore_kpts(&cell, &prep, &mesh, &hdef).expect("k hcore, Auto");
+    let hk_off = periodic_hcore_kpts(&cell, &prep, &mesh, &hdef.with_sr_column_rotation(OFF))
+        .expect("k hcore, Off");
+    for (k, (a, b)) in hk.h.iter().zip(&hk_off.h).enumerate() {
+        let d = a
+            .iter()
+            .zip(b.iter())
+            .filter(|(x, y)| x.re.to_bits() != y.re.to_bits() || x.im.to_bits() != y.im.to_bits())
+            .count();
+        assert_eq!(d, 0, "h(k = {k}): Auto vs Off");
+    }
+    let kcfg = KRsGdfConfig {
+        gdf: RsGdfConfig {
+            exxdiv: ExxDiv::None,
+            budget_bytes: Some(1 << 30),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    assert_eq!(kcfg.gdf.sr_column_rotation, SrColumnRotation::Auto);
+    KRsGdf::build(&cell, &prep, &aux, &mesh, &hk.s, &kcfg).expect("KRsGdf, Auto");
 }

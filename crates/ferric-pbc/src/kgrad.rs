@@ -517,6 +517,13 @@ fn check_inputs(
             hk.omega, hcore_cfg.omega
         )));
     }
+    // The k-point hcore runs unrotated (`Auto` resolves off there); an
+    // explicit request is refused, never ignored.
+    hcore_cfg.sr_column_rotation.refuse_explicit(
+        who,
+        "the column rotation applies to the Gamma hcore only; the k-point forces walk the \
+         unrotated shells",
+    )?;
     if hk.v_ecp.is_some() {
         return Err(FerricError::General(format!(
             "{who}: periodic ECP gradients are not implemented"

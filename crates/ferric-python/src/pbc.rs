@@ -26,7 +26,7 @@ use ferric_pbc::dense_aft::{DEFAULT_DENSE_AFT_MAX_BYTES, DEFAULT_DENSE_AFT_PRECI
 use ferric_pbc::drpa::DEFAULT_GAMMA_DRPA_QUAD_POINTS;
 use ferric_pbc::kcorr::DEFAULT_KDRPA_QUAD_POINTS;
 use ferric_pbc::rsgdf::{DEFAULT_RANGE_SPLIT_LAMBDA, DEFAULT_RSGDF_OMEGA};
-use ferric_pbc::ColumnRotation;
+use ferric_pbc::SrColumnRotation;
 use ferric_pbc::{
     gamma_drpa, gamma_mp2, gamma_rks, gamma_rohf, gamma_roks, gamma_uhf, gamma_uks, kpoint_drpa,
     kpoint_mp2, periodic_hcore, periodic_hcore_kpts, solve_krhf, solve_krhf_injected, solve_kuhf,
@@ -280,10 +280,11 @@ struct PbcSetup {
     /// Opt-in RS-GDF range split (Gamma energy bindings only, resolved by
     /// [`parse_range_split`]; `None` everywhere else).
     range_split: Option<RangeSplit>,
-    /// Opt-in SR column rotation of the Gamma hcore and RS-GDF builds
-    /// (Gamma rsgdf energy bindings only, resolved by
-    /// [`parse_sr_column_rotation`]; `None` everywhere else).
-    sr_column_rotation: Option<ColumnRotation>,
+    /// SR column rotation of the Gamma hcore and RS-GDF builds, RESOLVED by
+    /// [`parse_sr_column_rotation`] (`On` / `Off`; on by default for a Gamma
+    /// rsgdf energy run). `Off` for the k-point bindings, whose builds never
+    /// rotate.
+    sr_column_rotation: SrColumnRotation,
 }
 
 impl PbcSetup {
@@ -302,7 +303,7 @@ impl PbcSetup {
     fn set_sr_knobs(
         &mut self,
         range_split: Option<&Bound<'_, PyAny>>,
-        sr_column_rotation: bool,
+        sr_column_rotation: Option<bool>,
     ) -> PyResult<()> {
         let rsgdf = self.aux.is_some();
         self.range_split = parse_range_split(self.fname, range_split, rsgdf, self.derivs)?;
@@ -394,7 +395,7 @@ fn pbc_setup(a: &PbcArgs<'_, '_>) -> PyResult<PbcSetup> {
         budget_bytes: budget_bytes_from_gb(a.memory_budget_gb),
         derivs: DerivRequest::default(),
         range_split: None,
-        sr_column_rotation: None,
+        sr_column_rotation: SrColumnRotation::Off,
     })
 }
 
@@ -516,23 +517,34 @@ pub(crate) fn parse_range_split(
     Ok(Some(RangeSplit::new(lambda)))
 }
 
-/// The `sr_column_rotation` kwarg of the Gamma bindings: `False` (the
-/// default) is today's build bit for bit on every path. `True` runs the
-/// Gamma hcore SR attraction and the RS-GDF SR 3-centre walk on
-/// column-rotated generally contracted shells (`ferric_pbc::ColumnRotation`;
-/// same energy to the screening precision, fewer SR integral calls). It is a
-/// `ValueError` with jk="dense" (the rotation is an RS-GDF cost knob; the
-/// dense oracle is not half-applied) and with with_gradient / with_stress
-/// (the force and stress walks use the unrotated shells, so they would not
-/// differentiate the rotated energy). The k-point bindings do not take it.
+/// The `sr_column_rotation` kwarg of the Gamma bindings, resolved to an
+/// explicit `On` / `Off` (never the library's `Auto`, so the hcore and the
+/// RS-GDF build of one run always agree). `True` / `None` run the Gamma
+/// hcore SR attraction and the RS-GDF SR 3-centre walk on column-rotated
+/// generally contracted shells (`ferric_pbc::SrColumnRotation`; same energy
+/// to the screening precision, fewer SR integral calls); `False` is the
+/// unrotated build bit for bit.
+///
+/// * `None` (the default): on for a jk="rsgdf" energy run; silently off
+///   with jk="dense" (the dense oracle stays unrotated) and with
+///   with_gradient / with_stress (the force and stress walks use the
+///   unrotated shells, so the energy must too).
+/// * `True`: a `ValueError` in exactly those cases (the rotation is an
+///   RS-GDF cost knob and is not half-applied to the dense oracle; a
+///   rotated energy would not be what the forces differentiate).
+///
+/// The k-point bindings do not take it (their builds never rotate).
 pub(crate) fn parse_sr_column_rotation(
     fname: &str,
-    on: bool,
+    on: Option<bool>,
     rsgdf: bool,
     derivs: DerivRequest,
-) -> PyResult<Option<ColumnRotation>> {
-    if !on {
-        return Ok(None);
+) -> PyResult<SrColumnRotation> {
+    match on {
+        Some(false) => return Ok(SrColumnRotation::Off),
+        None if !rsgdf || derivs.any() => return Ok(SrColumnRotation::Off),
+        None => return Ok(SrColumnRotation::on()),
+        Some(true) => {}
     }
     if !rsgdf {
         return Err(val_err(format!(
@@ -547,7 +559,7 @@ pub(crate) fn parse_sr_column_rotation(
              differentiate the rotated energy"
         )));
     }
-    Ok(Some(ColumnRotation::new()))
+    Ok(SrColumnRotation::on())
 }
 
 fn gamma_system(s: &PbcSetup) -> Result<GammaSystem, FerricError> {
@@ -1166,7 +1178,7 @@ fn run_open_shell(
     max_eri_gb=None, max_iter=200, density_conv=1e-10, jk="dense",
     auxbasis=None, memory_budget_gb=None, with_gradient=false, with_stress=false,
     range_split=None,
-    gdf_omega=None, sr_column_rotation=false,
+    gdf_omega=None, sr_column_rotation=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_uhf_gamma(
@@ -1187,7 +1199,7 @@ fn run_uhf_gamma(
     with_stress: bool,
     range_split: Option<&Bound<'_, PyAny>>,
     gdf_omega: Option<f64>,
-    sr_column_rotation: bool,
+    sr_column_rotation: Option<bool>,
 ) -> PyResult<PyGammaOpenShellResult> {
     let fname = "run_uhf_gamma";
     let mut s = pbc_setup(&PbcArgs {
@@ -1239,7 +1251,7 @@ fn run_uhf_gamma(
     max_eri_gb=None, max_iter=200, density_conv=1e-10, jk="dense",
     auxbasis=None, memory_budget_gb=None, with_gradient=false, with_stress=false,
     range_split=None,
-    gdf_omega=None, sr_column_rotation=false,
+    gdf_omega=None, sr_column_rotation=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_rohf_gamma(
@@ -1260,7 +1272,7 @@ fn run_rohf_gamma(
     with_stress: bool,
     range_split: Option<&Bound<'_, PyAny>>,
     gdf_omega: Option<f64>,
-    sr_column_rotation: bool,
+    sr_column_rotation: Option<bool>,
 ) -> PyResult<PyGammaOpenShellResult> {
     let fname = "run_rohf_gamma";
     let mut s = pbc_setup(&PbcArgs {
@@ -1308,7 +1320,7 @@ fn run_rohf_gamma(
     auxbasis=None, memory_budget_gb=None, n_radial=75, n_angular=302,
     neighbour_cutoff=None, with_gradient=false, with_stress=false,
     range_split=None,
-    gdf_omega=None, sr_column_rotation=false,
+    gdf_omega=None, sr_column_rotation=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_uks_gamma(
@@ -1333,7 +1345,7 @@ fn run_uks_gamma(
     with_stress: bool,
     range_split: Option<&Bound<'_, PyAny>>,
     gdf_omega: Option<f64>,
-    sr_column_rotation: bool,
+    sr_column_rotation: Option<bool>,
 ) -> PyResult<PyGammaOpenShellResult> {
     let fname = "run_uks_gamma";
     let mut s = pbc_setup(&PbcArgs {
@@ -1387,7 +1399,7 @@ fn run_uks_gamma(
     auxbasis=None, memory_budget_gb=None, n_radial=75, n_angular=302,
     neighbour_cutoff=None, with_gradient=false, with_stress=false,
     range_split=None,
-    gdf_omega=None, sr_column_rotation=false,
+    gdf_omega=None, sr_column_rotation=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_roks_gamma(
@@ -1412,7 +1424,7 @@ fn run_roks_gamma(
     with_stress: bool,
     range_split: Option<&Bound<'_, PyAny>>,
     gdf_omega: Option<f64>,
-    sr_column_rotation: bool,
+    sr_column_rotation: Option<bool>,
 ) -> PyResult<PyGammaOpenShellResult> {
     let fname = "run_roks_gamma";
     let mut s = pbc_setup(&PbcArgs {
@@ -1559,7 +1571,7 @@ fn rks_driver(
     auxbasis=None, memory_budget_gb=None, n_radial=75, n_angular=302,
     neighbour_cutoff=None, with_gradient=false, with_stress=false,
     range_split=None,
-    gdf_omega=None, sr_column_rotation=false,
+    gdf_omega=None, sr_column_rotation=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_rks_gamma(
@@ -1583,7 +1595,7 @@ fn run_rks_gamma(
     with_stress: bool,
     range_split: Option<&Bound<'_, PyAny>>,
     gdf_omega: Option<f64>,
-    sr_column_rotation: bool,
+    sr_column_rotation: Option<bool>,
 ) -> PyResult<PyGammaRksResult> {
     let fname = "run_rks_gamma";
     let mut s = pbc_setup(&PbcArgs {
@@ -1855,7 +1867,7 @@ fn run_gamma_corr(
     mol, lattice, basis_set, exxdiv, denominators, omega=None, max_eri_gb=None,
     max_iter=200, density_conv=1e-10, jk="dense", auxbasis=None,
     memory_budget_gb=None, frozen_core=0, range_split=None,
-    gdf_omega=None, sr_column_rotation=false,
+    gdf_omega=None, sr_column_rotation=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_mp2_gamma(
@@ -1875,7 +1887,7 @@ fn run_mp2_gamma(
     frozen_core: usize,
     range_split: Option<&Bound<'_, PyAny>>,
     gdf_omega: Option<f64>,
-    sr_column_rotation: bool,
+    sr_column_rotation: Option<bool>,
 ) -> PyResult<PyGammaCorrelationResult> {
     let fname = "run_mp2_gamma";
     let mut s = pbc_setup(&PbcArgs {
@@ -1917,7 +1929,7 @@ fn run_mp2_gamma(
     mol, lattice, basis_set, exxdiv, denominators, omega=None, max_eri_gb=None,
     max_iter=200, density_conv=1e-10, jk="dense", auxbasis=None,
     memory_budget_gb=None, frozen_core=0, quad_points=None, range_split=None,
-    gdf_omega=None, sr_column_rotation=false,
+    gdf_omega=None, sr_column_rotation=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_drpa_gamma(
@@ -1938,7 +1950,7 @@ fn run_drpa_gamma(
     quad_points: Option<usize>,
     range_split: Option<&Bound<'_, PyAny>>,
     gdf_omega: Option<f64>,
-    sr_column_rotation: bool,
+    sr_column_rotation: Option<bool>,
 ) -> PyResult<PyGammaCorrelationResult> {
     let fname = "run_drpa_gamma";
     let mut s = pbc_setup(&PbcArgs {

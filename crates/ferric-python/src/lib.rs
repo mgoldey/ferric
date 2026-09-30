@@ -869,15 +869,16 @@ enum GammaJk {
     /// opt-in range split (`None` = off; energy-only, see
     /// `pbc::parse_range_split`). `gdf_omega_bohr`: the RS-GDF Ewald split
     /// (Bohr⁻¹; `None` = `DEFAULT_RSGDF_OMEGA`, bit for bit).
-    /// `sr_column_rotation`: the opt-in column rotation of the hcore and
-    /// RS-GDF SR walks (`None` = off, bit for bit; energy-only, see
+    /// `sr_column_rotation`: the RESOLVED column rotation of the hcore and
+    /// RS-GDF SR walks (`On` / `Off`, never `Auto`; on by default for an
+    /// energy run, off with with_gradient/with_stress, see
     /// `pbc::parse_sr_column_rotation`).
     RsGdf {
         aux: Box<PreparedBasis>,
         budget_bytes: Option<usize>,
         range_split: Option<ferric_pbc::RangeSplit>,
         gdf_omega_bohr: Option<f64>,
-        sr_column_rotation: Option<ferric_pbc::ColumnRotation>,
+        sr_column_rotation: ferric_pbc::SrColumnRotation,
     },
 }
 
@@ -891,11 +892,11 @@ impl GammaJk {
         }
     }
 
-    /// The SR column rotation of the hcore and RS-GDF builds (`None` = off,
-    /// or dense AFT, which refuses it).
-    fn sr_column_rotation(&self) -> Option<ferric_pbc::ColumnRotation> {
+    /// The resolved SR column rotation of the hcore and RS-GDF builds
+    /// (`Off` with dense AFT, which never rotates).
+    fn sr_column_rotation(&self) -> ferric_pbc::SrColumnRotation {
         match self {
-            GammaJk::Dense { .. } => None,
+            GammaJk::Dense { .. } => ferric_pbc::SrColumnRotation::Off,
             GammaJk::RsGdf {
                 sr_column_rotation, ..
             } => *sr_column_rotation,
@@ -1241,17 +1242,22 @@ fn parse_gamma_options(
 ///                LR half-G"]`). The range split's thresholds and the
 ///                gradient/stress follow it. rsgdf only: with jk="dense" it is
 ///                a ValueError. Every periodic binding takes the same kwarg.
-///   sr_column_rotation (default False) opt-in column rotation of generally
+///   sr_column_rotation (default None = auto) column rotation of generally
 ///                contracted shells (cc-pVXZ-style s/p columns) in the Gamma
 ///                hcore SR attraction and RS-GDF SR 3-centre walks
-///                (`ferric_pbc::ColumnRotation`), back-transformed exactly.
+///                (`ferric_pbc::SrColumnRotation`), back-transformed exactly.
 ///                Same energy to the screening precision, fewer SR integral
-///                calls; False is the default build bit for bit, and so is
-///                True on a basis with nothing to rotate. Counters
+///                calls. None: ON for a jk="rsgdf" energy run, OFF with
+///                jk="dense" or with_gradient/with_stress (so the energy and
+///                the forces walk the same shells). False: off (the unrotated
+///                build bit for bit, as is any setting on a basis with
+///                nothing to rotate). True: on, a ValueError with jk="dense"
+///                or with_gradient/with_stress. Counters
 ///                `timings["counters"]["hcore SR rotated columns"]` and
-///                `["rsgdf SR3 rotated columns"]`. rsgdf ENERGY only: with
-///                jk="dense" or with_gradient/with_stress it is a ValueError.
-///                The Gamma bindings take it; the k-point bindings do not.
+///                `["rsgdf SR3 rotated columns"]` (present whenever the
+///                rotation was on, 0 = nothing in the basis rotates; absent
+///                when it was off). The Gamma bindings take it; the k-point
+///                bindings do not (their builds never rotate).
 ///
 /// Hard errors (ValueError): charged cell (charge != 0; no neutralising-
 /// background correction for electrons), multiplicity != 1 or an odd
@@ -1269,7 +1275,7 @@ fn parse_gamma_options(
     mol, lattice, basis_set, exxdiv="ewald", omega=None, max_eri_gb=None,
     max_iter=200, density_conv=1e-10, jk="dense", auxbasis=None,
     memory_budget_gb=None, with_gradient=false, with_stress=false,
-    range_split=None, gdf_omega=None, sr_column_rotation=false,
+    range_split=None, gdf_omega=None, sr_column_rotation=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_rhf_gamma(
@@ -1289,7 +1295,7 @@ fn run_rhf_gamma(
     with_stress: bool,
     range_split: Option<&Bound<'_, PyAny>>,
     gdf_omega: Option<f64>,
-    sr_column_rotation: bool,
+    sr_column_rotation: Option<bool>,
 ) -> PyResult<PyGammaRhfResult> {
     let val_err = |m: String| pyo3::exceptions::PyValueError::new_err(m);
     let GammaOptions {

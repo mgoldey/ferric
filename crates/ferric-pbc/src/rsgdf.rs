@@ -141,11 +141,11 @@
 //!   (`deriv`, `strain`, `split`'s `deriv`) have their own ordered loops and
 //!   are unchanged.
 //!
-//! # Column rotation of the Gamma SR 3-centre walk (opt-in)
+//! # Column rotation of the Gamma SR 3-centre walk (on by default)
 //!
-//! [`RsGdfConfig::sr_column_rotation`] = `Some(`[`ColumnRotation`]`)`
-//! evaluates the Gamma SR 3-centre sum (unsplit, or the kept part of a range
-//! split) on the COLUMN-ROTATED orbital basis of [`crate::sr_rotation`]
+//! [`RsGdfConfig::sr_column_rotation`] = [`SrColumnRotation::Auto`] (the
+//! default) or [`SrColumnRotation::On`] evaluates the Gamma SR 3-centre
+//! sum (unsplit, or the kept part of a range split) on the COLUMN-ROTATED orbital basis of [`crate::sr_rotation`]
 //! (generally contracted shell groups: the single-primitive columns
 //! subtracted from the others, zero primitives dropped) and back-transforms
 //! the finished `J3_SR` rows EXACTLY into the parent AO basis
@@ -158,12 +158,14 @@
 //! the kept part is covariant too. The kept triplet set is the rotated
 //! shells' own screen, so the result matches the unrotated build to the
 //! screening precision, not bitwise; `n_sr3_triplets` counts the rotated
-//! walk's calls. `None` (the default) is today's build bit for bit, and so
-//! is `Some` on a basis with nothing to rotate (detection returns the
+//! walk's calls. [`SrColumnRotation::Off`] is the unrotated build bit for
+//! bit, and so is a basis with nothing to rotate (detection returns the
 //! identity; counter `rsgdf SR3 rotated columns` = 0). Gamma energy builds
-//! only: [`RsGdf::build_for_gradient`] and the frozen s1 oracle refuse it
-//! (the forces must differentiate exactly the walk the energy ran), and the
-//! k-point build ([`kpoint`]) does not apply it.
+//! only: [`RsGdf::build_for_gradient`] and the frozen s1 oracle run
+//! unrotated under `Auto` and refuse an explicit `On` (the forces must
+//! differentiate exactly the walk the energy ran, and the gradient build IS
+//! the energy build of a force run), and so does the k-point build
+//! ([`kpoint`]).
 //!
 //! # Forces
 //!
@@ -186,7 +188,7 @@ use crate::lattice::Cell;
 use crate::ordered::{ordered_units, Stored};
 use crate::pair_ft::residues::residue_index;
 use crate::pair_ft::{pair_ft_chunked_serial_oracle, pair_ft_chunked_timed};
-use crate::sr_rotation::{ColumnRotation, ColumnRotationMutant, RotatedBasis};
+use crate::sr_rotation::{ColumnRotationMutant, RotatedBasis, SrColumnRotation};
 use crate::timing::{CallClock, PbcTimings, StageClock};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -273,12 +275,13 @@ pub struct RsGdfConfig {
     /// doc; Gamma energy, forces and stress). `None` = today's construction,
     /// bit for bit. The k-point build refuses it.
     pub range_split: Option<RangeSplit>,
-    /// Opt-in column rotation of generally contracted orbital shells inside
-    /// the Gamma SR 3-centre walk (module doc "Column rotation"). `None`
-    /// (default) = today's construction, bit for bit. Gamma energy builds
-    /// only: [`RsGdf::build_for_gradient`] refuses it; the k-point build
-    /// does not apply it.
-    pub sr_column_rotation: Option<ColumnRotation>,
+    /// Column rotation of generally contracted orbital shells inside the
+    /// Gamma SR 3-centre walk (module doc "Column rotation"). Default
+    /// [`SrColumnRotation::Auto`]: on in the Gamma energy builds, off in
+    /// [`RsGdf::build_for_gradient`], the s1 oracle and the k-point build
+    /// (each refuses an explicit `On`). `Off` = the unrotated construction,
+    /// bit for bit.
+    pub sr_column_rotation: SrColumnRotation,
 }
 
 impl Default for RsGdfConfig {
@@ -292,7 +295,7 @@ impl Default for RsGdfConfig {
             budget_bytes: None,
             g0: G0Handling::Consistent,
             range_split: None,
-            sr_column_rotation: None,
+            sr_column_rotation: SrColumnRotation::Auto,
         }
     }
 }
@@ -2276,16 +2279,16 @@ impl Sr3Rotation {
     }
 }
 
-/// The column rotation `cfg` asks for on `(obs, aux)`: `Ok(None)` when it is
-/// off or nothing in `obs` rotates (the identity: the caller runs the
-/// unrotated walk, bit for bit).
+/// The column rotation `cfg` asks for on `(obs, aux)` in a Gamma energy
+/// build (`Auto` = on): `Ok(None)` when it is off or nothing in `obs`
+/// rotates (the identity: the caller runs the unrotated walk, bit for bit).
 pub(super) fn sr3_rotation(
     cell: &Cell,
     obs: &PreparedBasis,
     aux: &PreparedBasis,
     cfg: &RsGdfConfig,
 ) -> Result<Option<Sr3Rotation>, FerricError> {
-    let Some(rot) = cfg.sr_column_rotation else {
+    let Some(rot) = cfg.sr_column_rotation.resolve_supported() else {
         return Ok(None);
     };
     let Some(obs_rot) = RotatedBasis::detect(cell, obs, rot, "RsGdf")? else {
@@ -2302,11 +2305,12 @@ pub(super) fn sr3_rotation(
     }))
 }
 
-/// The build's opt-in SR plans: the range split ([`split::SplitPlan::maybe`])
-/// and the column rotation ([`sr3_rotation`]; refused on the gradient build
-/// and the frozen s1 oracle, which must walk the parent shells), with the
-/// `rsgdf SR3 rotated columns` counter set on `timings` whenever a rotation
-/// was asked for (0 = nothing rotates, the identity).
+/// The build's SR plans: the range split ([`split::SplitPlan::maybe`]) and
+/// the column rotation ([`sr3_rotation`]; `Auto` resolves off on the
+/// gradient build and the frozen s1 oracle, which must walk the parent
+/// shells, and an explicit `On` is refused there), with the `rsgdf SR3
+/// rotated columns` counter set on `timings` whenever the rotation ran
+/// (0 = nothing rotates, the identity).
 #[allow(clippy::too_many_arguments)]
 fn sr_plans(
     st: &Stage<'_>,
@@ -2318,15 +2322,16 @@ fn sr_plans(
     timings: &mut PbcTimings,
 ) -> Result<(Option<split::SplitPlan>, Option<Sr3Rotation>), FerricError> {
     let plan = split::SplitPlan::maybe(st, cfg, images, ledger)?;
-    if cfg.sr_column_rotation.is_none() {
+    if retain_grad || pair_sym != PairSym::S2 {
+        cfg.sr_column_rotation.refuse_explicit(
+            "RsGdf",
+            "the column rotation applies to the Gamma energy build only; the gradient build \
+             and the frozen s1 oracle walk the unrotated shells",
+        )?;
         return Ok((plan, None));
     }
-    if retain_grad || pair_sym != PairSym::S2 {
-        return Err(FerricError::General(
-            "RsGdf: sr_column_rotation applies to the Gamma energy build only; the gradient \
-             build and the frozen s1 oracle walk the unrotated shells (build without it)"
-                .into(),
-        ));
+    if cfg.sr_column_rotation.resolve_supported().is_none() {
+        return Ok((plan, None));
     }
     let rotation = sr3_rotation(st.cell, st.obs, st.aux, cfg)?;
     timings.set_counter(

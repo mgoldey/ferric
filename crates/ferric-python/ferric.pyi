@@ -1370,7 +1370,7 @@ def run_rhf_gamma(
     with_stress: bool = False,
     range_split: float | bool | None = None,
     gdf_omega: float | None = None,
-    sr_column_rotation: bool = False,
+    sr_column_rotation: bool | None = None,
 ) -> GammaRhfResult:
     """Closed-shell Gamma-point periodic RHF.
 
@@ -1405,15 +1405,19 @@ def run_rhf_gamma(
     nuclear-attraction split's cap follows it. rsgdf only: ValueError with
     jk="dense". Every periodic binding below takes the same gdf_omega.
 
-    sr_column_rotation (default False): opt-in column rotation of generally
+    sr_column_rotation (default None = auto): column rotation of generally
     contracted shells (cc-pVXZ-style s/p columns) in the Gamma hcore SR
     attraction and RS-GDF SR 3-centre walks, back-transformed exactly. Same
-    energy to the screening precision with fewer SR integral calls
+    energy to the screening precision (<= 1.5e-11 Ha/cell measured at
+    gdf_omega >= 0.7) with fewer SR integral calls
     (timings["counters"]["hcore SR rotated columns"] and ["rsgdf SR3 rotated
-    columns"]; 0 = nothing in the basis rotates). False, and True on a basis
-    with nothing to rotate, are the default build bit for bit. rsgdf ENERGY
-    only: ValueError with jk="dense" or with_gradient/with_stress. Every Gamma
-    binding below takes it; the k-point bindings do not (TypeError).
+    columns"], present whenever the rotation was on, 0 = nothing in the basis
+    rotates; absent when it was off). None: ON for a jk="rsgdf" energy run, OFF with jk="dense" and
+    with with_gradient/with_stress (the forces and stress walk the unrotated
+    shells, so the energy does too). False: off (the unrotated build bit for
+    bit). True: on; ValueError with jk="dense" or with_gradient/with_stress.
+    Every Gamma binding below takes it; the k-point bindings do not
+    (TypeError; their builds never rotate).
     """
     ...
 
@@ -1786,7 +1790,7 @@ def run_uhf_gamma(
     with_stress: bool = False,
     range_split: float | bool | None = None,
     gdf_omega: float | None = None,
-    sr_column_rotation: bool = False,
+    sr_column_rotation: bool | None = None,
 ) -> GammaOpenShellResult:
     """Gamma-point periodic UHF. ewald_start "staged" (default) | "direct",
     exxdiv="ewald" only (ValueError with "none")."""
@@ -1809,7 +1813,7 @@ def run_rohf_gamma(
     with_stress: bool = False,
     range_split: float | bool | None = None,
     gdf_omega: float | None = None,
-    sr_column_rotation: bool = False,
+    sr_column_rotation: bool | None = None,
 ) -> GammaOpenShellResult:
     """Gamma-point periodic ROHF. KNOWN LIMITATION: does not converge on the
     triclinic 4H s+p triplet (non-convergence is an error, not a number)."""
@@ -1836,7 +1840,7 @@ def run_uks_gamma(
     with_stress: bool = False,
     range_split: float | bool | None = None,
     gdf_omega: float | None = None,
-    sr_column_rotation: bool = False,
+    sr_column_rotation: bool | None = None,
 ) -> GammaOpenShellResult:
     """Gamma-point periodic UKS (LDA/GGA/global hybrids; RSH/meta-GGA/VV10
     refused). neighbour_cutoff in Angstrom (None = max(10 Bohr, covering
@@ -1864,7 +1868,7 @@ def run_roks_gamma(
     with_stress: bool = False,
     range_split: float | bool | None = None,
     gdf_omega: float | None = None,
-    sr_column_rotation: bool = False,
+    sr_column_rotation: bool | None = None,
 ) -> GammaOpenShellResult:
     """Gamma-point periodic ROKS (functional/grid contract of run_uks_gamma).
     max_iter=None: 600 with a 0.05 Ha ramped level shift for a hybrid (a > 0),
@@ -1891,7 +1895,7 @@ def run_rks_gamma(
     with_stress: bool = False,
     range_split: float | bool | None = None,
     gdf_omega: float | None = None,
-    sr_column_rotation: bool = False,
+    sr_column_rotation: bool | None = None,
 ) -> GammaRksResult:
     """Closed-shell Gamma-point periodic RKS; open shells raise ValueError."""
     ...
@@ -1912,7 +1916,7 @@ def run_mp2_gamma(
     frozen_core: int = 0,
     range_split: float | bool | None = None,
     gdf_omega: float | None = None,
-    sr_column_rotation: bool = False,
+    sr_column_rotation: bool | None = None,
 ) -> GammaCorrelationResult:
     """Gamma RHF + MP2 in one call. exxdiv (the reference's) and denominators
     ("shifted" | "unshifted") are required."""
@@ -1935,7 +1939,7 @@ def run_drpa_gamma(
     quad_points: int | None = None,
     range_split: float | bool | None = None,
     gdf_omega: float | None = None,
-    sr_column_rotation: bool = False,
+    sr_column_rotation: bool | None = None,
 ) -> GammaCorrelationResult:
     """Gamma RHF + dRPA in one call. jk="dense" is the exact plasmon formula
     (quad_points there is a ValueError); jk="rsgdf" uses frequency quadrature

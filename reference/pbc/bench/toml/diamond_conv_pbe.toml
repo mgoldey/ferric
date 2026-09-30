@@ -20,6 +20,8 @@ unit = "bohr"
 lattice = [[6.740653086323576, 0.0, 0.0], [0.0, 6.740653086323576, 0.0], [0.0, 0.0, 6.740653086323576]]
 exxdiv = "ewald"
 jk = "rsgdf"
+# The unrotated baseline (the rotation is on by default for this run).
+sr_column_rotation = false
 auxbasis = "def2-universal-jkfit"
 n_radial = 75
 n_angular = 302

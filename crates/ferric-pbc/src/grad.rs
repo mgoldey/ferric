@@ -1602,6 +1602,7 @@ pub(crate) fn check_inputs(
             hc.omega, hcore_cfg.omega
         )));
     }
+    refuse_rotated_hcore(who, hcore_cfg, hc)?;
     if scf.spin != spin {
         let want = match spin {
             Spin::Restricted => "a restricted closed-shell",
@@ -1635,6 +1636,34 @@ pub(crate) fn check_inputs(
     }
     if let JkSource::Fit(f) = jk {
         check_rsgdf_inputs(who, cell, hc, f, n)?;
+    }
+    Ok(())
+}
+
+/// The Gamma force and stress walks differentiate the UNROTATED SR
+/// attraction ([`crate::sr_rotation`]): refuse an explicit
+/// `SrColumnRotation::On` in `hcore_cfg` and a `hc` whose SR walk ran
+/// rotated (the default `Auto` on a generally contracted basis), whose
+/// truncated energy differs from the unrotated one at the screening
+/// precision. Build the hcore with
+/// [`PeriodicHcoreConfig::for_derivatives`] for a force or stress run.
+pub(crate) fn refuse_rotated_hcore(
+    who: &str,
+    hcore_cfg: &PeriodicHcoreConfig,
+    hc: &PeriodicHcore,
+) -> Result<(), FerricError> {
+    hcore_cfg.sr_column_rotation.refuse_explicit(
+        who,
+        "the Gamma force and stress builders walk the unrotated shells",
+    )?;
+    if hc.sr_rotated_columns != 0 {
+        return Err(FerricError::General(format!(
+            "{who}: the hcore's SR attraction was built with {} column-rotated orbital columns \
+             (sr_column_rotation Auto, the default, on a generally contracted basis); the force \
+             and stress walks differentiate the unrotated walk. Build the hcore for a force or \
+             stress run with PeriodicHcoreConfig::for_derivatives (sr_column_rotation Off)",
+            hc.sr_rotated_columns
+        )));
     }
     Ok(())
 }

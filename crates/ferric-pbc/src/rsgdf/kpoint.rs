@@ -315,18 +315,17 @@ pub fn record_stats(t: &mut crate::timing::PbcTimings, st: &KRsGdfStats) {
 }
 
 /// The k-point builds do not implement [`RsGdfConfig::sr_column_rotation`]
-/// (a Gamma energy option): a typed refusal instead of silently ignoring it.
+/// (a Gamma energy option): the default `Auto` runs unrotated, an explicit
+/// `On` is a typed refusal instead of being silently ignored.
 pub(in crate::rsgdf) fn refuse_column_rotation(
     g: &RsGdfConfig,
     who: &str,
 ) -> Result<(), FerricError> {
-    match g.sr_column_rotation {
-        None => Ok(()),
-        Some(rot) => Err(FerricError::General(format!(
-            "{who}: sr_column_rotation {rot:?} applies to the Gamma RS-GDF build only; the k-point \
-             build does not implement it (set it to None)"
-        ))),
-    }
+    g.sr_column_rotation.refuse_explicit(
+        who,
+        "the column rotation applies to the Gamma RS-GDF build only; the k-point build does \
+         not implement it",
+    )
 }
 
 /// One built q class: `b[k']` is `B(k'−q, k')`, `(naux_kept, nao²)`.

@@ -246,12 +246,12 @@ fn periodic_hcore_kpts_impl(
     s1_oracle: bool,
 ) -> Result<PeriodicHcoreK, FerricError> {
     cfg.validate()?;
-    if let Some(rot) = cfg.sr_column_rotation {
-        return Err(FerricError::General(format!(
-            "periodic_hcore_kpts: sr_column_rotation {rot:?} applies to the Gamma hcore only; the \
-             k-point build does not implement it (set it to None)"
-        )));
-    }
+    // `Auto` (the default) runs unrotated here; an explicit `On` is refused.
+    cfg.sr_column_rotation.refuse_explicit(
+        "periodic_hcore_kpts",
+        "the column rotation applies to the Gamma hcore only; the k-point build does not \
+         implement it",
+    )?;
     // Z_eff guard first: a bare Z is silent for the k-mesh ≡ supercell anchor.
     crate::ecp::check_ecp_applied(cell, prep.basis_set())?;
     let shells = prim_shells(cell, prep)?;

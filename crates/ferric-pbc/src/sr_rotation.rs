@@ -57,6 +57,18 @@
 //! G = 0 parts, the metric and every exposed matrix stay in the parent
 //! basis. The k-point builds and the force / stress walks do not apply it.
 //!
+//! It is ON BY DEFAULT ([`SrColumnRotation::Auto`]) in those two Gamma
+//! energy builds and silently off in every build that does not implement it
+//! (k-point builds, the gradient build, the frozen s1 oracles); an explicit
+//! [`SrColumnRotation::On`] is refused by name there. A run that computes
+//! forces or stress builds its hcore with the rotation off
+//! ([`SrColumnRotation::for_derivatives`]); the Gamma force and stress
+//! builders refuse a rotated `PeriodicHcore`. Measured (FINDINGS, "Full
+//! timing series on libint 2.13.1", Γ RHF cc-pVDZ / cc-pvdz-ri, range
+//! split, gdf ω = 1, 6 threads): dry ice 25.9 → 22.4 s, diamond 7.84 →
+//! 3.08 s; energies move ≤ 1.5e-11 Ha/cell at ω ≥ 0.7; bitwise across
+//! thread counts.
+//!
 //! # Numerics
 //!
 //! * The back-transform is a fixed serial loop over (group, group) pairs on
@@ -108,9 +120,8 @@ pub enum ColumnRotationMutant {
     RotateAux,
 }
 
-/// Opt-in column rotation of the Gamma SR walks
-/// ([`crate::rsgdf::RsGdfConfig::sr_column_rotation`],
-/// [`crate::hcore::PeriodicHcoreConfig::sr_column_rotation`]).
+/// The column rotation a Gamma SR walk runs
+/// ([`SrColumnRotation::On`]; production or a mutation-test variant).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ColumnRotation {
     /// [`ColumnRotationMutant::Production`] except in mutation tests.
@@ -119,10 +130,90 @@ pub struct ColumnRotation {
 
 impl ColumnRotation {
     /// The production rotation.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             mutant: ColumnRotationMutant::Production,
         }
+    }
+}
+
+/// The column-rotation request of a build
+/// ([`crate::rsgdf::RsGdfConfig::sr_column_rotation`],
+/// [`crate::hcore::PeriodicHcoreConfig::sr_column_rotation`]).
+///
+/// * [`SrColumnRotation::Auto`] (the default): ON in the builds that
+///   implement it — the Gamma energy builds [`crate::rsgdf::RsGdf::build`]
+///   (and `build_with_fit_parts`, [`crate::rsgdf::sr_walk_counts`]) and
+///   [`crate::hcore::periodic_hcore`] — and silently OFF in every build that
+///   does not: the k-point builds, [`crate::rsgdf::RsGdf::build_for_gradient`]
+///   and the frozen s1 oracles. A basis with nothing to rotate runs the
+///   unrotated walk bit for bit either way.
+/// * [`SrColumnRotation::Off`]: the unrotated walk everywhere, bit for bit.
+/// * [`SrColumnRotation::On`]: an explicit request; the builds that cannot
+///   honour it refuse it by name instead of ignoring it.
+///
+/// A run that computes forces or stress must build its Gamma hcore with the
+/// rotation OFF ([`SrColumnRotation::for_derivatives`]): `periodic_hcore`
+/// cannot know a gradient will follow, and the Gamma force and stress
+/// builders refuse a `PeriodicHcore` whose SR attraction was rotated (they
+/// differentiate the unrotated walk, whose truncated energy differs at the
+/// screening precision).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SrColumnRotation {
+    /// On where implemented, off elsewhere (see the type doc).
+    #[default]
+    Auto,
+    /// The unrotated walk everywhere.
+    Off,
+    /// Explicit request (refused where it cannot be honoured).
+    On(ColumnRotation),
+}
+
+impl SrColumnRotation {
+    /// Explicit production rotation.
+    pub const fn on() -> Self {
+        Self::On(ColumnRotation::new())
+    }
+
+    /// Whether this is an explicit [`SrColumnRotation::On`].
+    pub fn is_explicit_on(self) -> bool {
+        matches!(self, Self::On(_))
+    }
+
+    /// The rotation a build that IMPLEMENTS it runs: `Auto` → the production
+    /// rotation, `On(r)` → `r`, `Off` → `None`.
+    pub fn resolve_supported(self) -> Option<ColumnRotation> {
+        match self {
+            Self::Auto => Some(ColumnRotation::new()),
+            Self::Off => None,
+            Self::On(r) => Some(r),
+        }
+    }
+
+    /// For a build that does NOT implement it: `Auto` and `Off` resolve to
+    /// off (`Ok(())`); an explicit `On` is a typed refusal naming `who` and
+    /// `why`.
+    pub fn refuse_explicit(self, who: &str, why: &str) -> Result<(), FerricError> {
+        match self {
+            Self::Auto | Self::Off => Ok(()),
+            Self::On(r) => Err(FerricError::General(format!(
+                "{who}: sr_column_rotation {:?} was requested explicitly, but {why} \
+                 (use SrColumnRotation::Auto or Off)",
+                r.mutant
+            ))),
+        }
+    }
+
+    /// The request for a run that will compute forces or stress: `Auto` and
+    /// `Off` → `Off` (so the energy and the derivative walk the same
+    /// unrotated shells); an explicit `On` is refused (`who` names the run).
+    pub fn for_derivatives(self, who: &str) -> Result<Self, FerricError> {
+        self.refuse_explicit(
+            who,
+            "the Gamma force and stress builders walk the unrotated shells, so they would \
+             not differentiate the rotated energy",
+        )?;
+        Ok(Self::Off)
     }
 }
 

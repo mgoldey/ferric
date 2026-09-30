@@ -85,6 +85,7 @@ use ferric_pbc::stress::{
     gamma_rhf_stress_rsgdf, gamma_uhf_stress_rsgdf, GammaStress, GammaStressConfig, StressMutation,
 };
 use ferric_pbc::uhf::{gamma_uhf, GammaUhfConfig, GammaUhfIntegrals, GammaUhfResult};
+use ferric_pbc::SrColumnRotation;
 use ferric_scf::fock::{JBuilder, KBuilder};
 use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::{solve_rhf_injected, PeriodicInjection, RhfConfig};
@@ -288,19 +289,28 @@ fn lih_ccpvdz() -> BasisSet {
 
 // -------------------------------------------------------------- configs
 
+/// Column rotation OFF (`ferric_pbc::sr_rotation`): the force and stress
+/// builders differentiate the unrotated SR walks and refuse a rotated hcore,
+/// and the FD energies must be the SAME truncated energy (cc-pVDZ C/O/Li
+/// rotate under the default `Auto`).
 fn hcore_cfg() -> PeriodicHcoreConfig {
     PeriodicHcoreConfig {
         precision: HCORE_PRECISION,
         ..PeriodicHcoreConfig::with_omega(OMEGA)
     }
+    .with_sr_column_rotation(SrColumnRotation::Off)
 }
 
+/// Rotation OFF for the energy-only `RsGdf::build` of the FD points too
+/// (`build_for_gradient` never rotates), so E(R) is the energy the
+/// analytic force differentiates.
 fn gdf_cfg() -> RsGdfConfig {
     RsGdfConfig {
         omega: GDF_OMEGA,
         lindep: DEFAULT_RSGDF_LINDEP,
         exxdiv: ExxDiv::None,
         budget_bytes: Some(AMPLE),
+        sr_column_rotation: SrColumnRotation::Off,
         ..Default::default()
     }
 }

@@ -20,6 +20,8 @@ unit = "bohr"
 lattice = [[0.0, 3.370326543161788, 3.370326543161788], [3.370326543161788, 0.0, 3.370326543161788], [3.370326543161788, 3.370326543161788, 0.0]]
 exxdiv = "ewald"
 jk = "rsgdf"
+# The unrotated baseline (the rotation is on by default for this run).
+sr_column_rotation = false
 auxbasis = "cc-pvdz-ri"
 range_split = true
 

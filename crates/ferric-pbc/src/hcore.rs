@@ -156,24 +156,29 @@
 //! Hermitian, not symmetric: s2 there needs the `e^{ik·L}` ↔ `e^{−ik·L}`
 //! pairing), and so do the force/strain derivative walks (their own loops).
 //!
-//! # Column rotation of the SR attraction (opt-in)
+//! # Column rotation of the SR attraction (on by default)
 //!
-//! [`PeriodicHcoreConfig::sr_column_rotation`] = `Some(`[`ColumnRotation`]`)`
-//! runs the Gamma SR attraction walk on the column-rotated orbital basis of
-//! [`crate::sr_rotation`] and back-transforms `V_SR = T V'_SR Tᵀ` exactly
-//! (serial, exactly symmetric) before it joins `V`. The pair images and the
+//! [`PeriodicHcoreConfig::sr_column_rotation`] = [`SrColumnRotation::Auto`]
+//! (the default) or [`SrColumnRotation::On`] runs the Gamma SR attraction
+//! walk on the column-rotated orbital basis of [`crate::sr_rotation`] and
+//! back-transforms `V_SR = T V'_SR Tᵀ` exactly (serial, exactly symmetric)
+//! before it joins `V`. The pair images and the
 //! nucleus candidates come from the PARENT shells (every rotated primitive
 //! set is a subset of its parent's, so each rotated pair's bound and radius
 //! are at most the parent's and the candidate list covers them); S, T,
 //! `V_LR`, `V_G0` and the ECP are untouched. The kept triplets follow the
 //! rotated shells' own screen, so `V_SR` matches the unrotated one to the
 //! screening precision, not bitwise; `n_sr_triplets` counts the rotated
-//! walk. `None` (default) is today's build bit for bit, and so is `Some` on
-//! a basis with nothing to rotate (counter `hcore SR rotated columns` = 0).
-//! Gamma only: the k-point sums (`kpoint`) and the SR force/strain walks do
-//! not apply it (the forces differentiate the unrotated `V_SR`, which
-//! differs at the screening precision); the frozen s1 oracle and the
-//! `RotateAux` mutant are refused.
+//! walk and [`PeriodicHcore::sr_rotated_columns`] / the counter `hcore SR
+//! rotated columns` how many columns rotated. [`SrColumnRotation::Off`] is
+//! the unrotated build bit for bit, and so is a basis with nothing to rotate
+//! (0 rotated columns). Gamma only: the k-point sums (`kpoint`) and the
+//! frozen s1 oracle run unrotated under `Auto` and refuse an explicit `On`
+//! (as does the `RotateAux` mutant). The SR force/strain walks do not apply
+//! it (the forces differentiate the unrotated `V_SR`, which differs at the
+//! screening precision), so a run that computes forces or stress builds the
+//! hcore with the rotation off ([`SrColumnRotation::for_derivatives`]); the
+//! Gamma force and stress builders refuse a rotated `PeriodicHcore`.
 
 use crate::budget::{bytes_of, Ledger};
 use crate::ewald::{default_ewald_omega, ewald_nuclear_repulsion};
@@ -181,7 +186,7 @@ use crate::lattice::Cell;
 use crate::ordered::{ordered_units, window_budget, Stored};
 use crate::pair_ft::{pair_ft_bytes_per_g, pair_ft_chunked};
 use crate::rsgdf::unordered_pairs;
-use crate::sr_rotation::{ColumnRotation, ColumnRotationMutant, RotatedBasis};
+use crate::sr_rotation::{ColumnRotationMutant, RotatedBasis, SrColumnRotation};
 use crate::timing::{PbcTimings, StageClock};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -295,10 +300,13 @@ pub struct PeriodicHcoreConfig {
     /// available RAM, else 2 GiB; `Some(0)` counts as unset, the ferric
     /// convention).
     pub budget_bytes: Option<usize>,
-    /// Opt-in column rotation of generally contracted orbital shells inside
-    /// the Gamma SR attraction walk (module doc "Column rotation"). `None`
-    /// (default) = today's construction, bit for bit. Gamma only.
-    pub sr_column_rotation: Option<ColumnRotation>,
+    /// Column rotation of generally contracted orbital shells inside the
+    /// Gamma SR attraction walk (module doc "Column rotation"). Default
+    /// [`SrColumnRotation::Auto`]: on in [`periodic_hcore`], off in the
+    /// k-point build and the s1 oracle. `Off` = the unrotated construction,
+    /// bit for bit. A run that computes forces or stress needs it off
+    /// ([`PeriodicHcoreConfig::for_derivatives`]).
+    pub sr_column_rotation: SrColumnRotation,
 }
 
 impl PeriodicHcoreConfig {
@@ -310,8 +318,27 @@ impl PeriodicHcoreConfig {
             precision: DEFAULT_HCORE_PRECISION,
             nucleus_exponent: GAUSSIAN_NUCLEUS_EXPONENT,
             budget_bytes: None,
-            sr_column_rotation: None,
+            sr_column_rotation: SrColumnRotation::Auto,
         }
+    }
+
+    /// `self` with the column-rotation request `r`.
+    pub fn with_sr_column_rotation(self, r: SrColumnRotation) -> Self {
+        Self {
+            sr_column_rotation: r,
+            ..self
+        }
+    }
+
+    /// `self` for a run that computes forces or stress: the column rotation
+    /// resolved OFF (`Auto`/`Off`; an explicit `On` is refused by name), so
+    /// the hcore energy walks the same unrotated shells the Gamma force and
+    /// stress builders differentiate.
+    pub fn for_derivatives(self) -> Result<Self, FerricError> {
+        let r = self
+            .sr_column_rotation
+            .for_derivatives("PeriodicHcoreConfig::for_derivatives")?;
+        Ok(self.with_sr_column_rotation(r))
     }
 
     /// Defaults with the default split of `cell`:
@@ -422,6 +449,11 @@ pub struct PeriodicHcore {
     pub lr_bytes_per_g: usize,
     /// Number of `pair_ft` chunks the `V_LR` sum used.
     pub n_lr_chunks: usize,
+    /// Orbital columns the SR attraction walk ran rotated (module doc
+    /// "Column rotation"); 0 = the unrotated walk (rotation off, or nothing
+    /// in the basis rotates). The Gamma force and stress builders refuse a
+    /// nonzero value.
+    pub sr_rotated_columns: usize,
     /// Stage timings (setup, S/T, SR attraction, LR attraction, ECP, Ewald)
     /// and counters ([`crate::timing`]; observation only).
     pub timings: PbcTimings,
@@ -1325,21 +1357,26 @@ fn periodic_hcore_impl(
     let mut timings = PbcTimings::default();
     let clock = StageClock::start();
     let shells = prim_shells(cell, prep)?;
-    // Opt-in column rotation of the SR attraction (module doc "Column
-    // rotation"); `None` leaves that walk as it was, bit for bit.
-    let rotation = match cfg.sr_column_rotation {
+    // Column rotation of the SR attraction (module doc "Column rotation"):
+    // on under `Auto`/`On`; `Off`, and `Auto` on the frozen s1 oracle, leave
+    // that walk as it was, bit for bit.
+    let request = if s1_oracle {
+        cfg.sr_column_rotation.refuse_explicit(
+            "periodic_hcore_pair_s1_oracle",
+            "the frozen s1 oracle walks the unrotated shells",
+        )?;
+        SrColumnRotation::Off
+    } else {
+        cfg.sr_column_rotation
+    };
+    let rotation = match request.resolve_supported() {
         None => None,
         Some(rot) => {
-            if s1_oracle || rot.mutant == ColumnRotationMutant::RotateAux {
+            if rot.mutant == ColumnRotationMutant::RotateAux {
                 return Err(FerricError::General(format!(
-                    "periodic_hcore: sr_column_rotation {:?} is not available on {} (build \
-                     without it)",
+                    "periodic_hcore: sr_column_rotation {:?} is not available on the SR \
+                     attraction (no aux basis; build without it)",
                     rot.mutant,
-                    if s1_oracle {
-                        "the frozen s1 oracle"
-                    } else {
-                        "the SR attraction (no aux basis)"
-                    }
                 )));
             }
             let r = RotatedBasis::detect(cell, prep, rot, "periodic_hcore")?;
@@ -1350,6 +1387,7 @@ fn periodic_hcore_impl(
             r
         }
     };
+    let sr_rotated_columns = rotation.as_ref().map_or(0, |r| r.n_rotated_columns);
     let n = prep.nbasis();
     let omega = cfg.omega;
     let thresh = cfg.precision;
@@ -1490,6 +1528,7 @@ fn periodic_hcore_impl(
         lr_resident_bytes: lr.resident_bytes,
         lr_bytes_per_g: lr.bytes_per_g,
         n_lr_chunks: lr.n_chunks,
+        sr_rotated_columns,
         timings,
     })
 }

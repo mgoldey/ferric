@@ -1566,8 +1566,9 @@ pub(super) fn finish(
 /// "Iteration 23", `count_sr3_ferric`) — plus the pre-s2 ordered-walk count
 /// `n_sr3_triplets_s1` (the walk visits every ordered pair once and derives
 /// the s2 counts from those per-pair counts). With
-/// [`RsGdfConfig::sr_column_rotation`] the counts are those of the build's
-/// ROTATED walk (`super` module doc "Column rotation").
+/// [`RsGdfConfig::sr_column_rotation`] resolved on (`Auto`, the default, or
+/// `On`) the counts are those of the build's ROTATED walk (`super` module doc
+/// "Column rotation"); pass `SrColumnRotation::Off` for the unrotated walk.
 pub fn sr_walk_counts(
     cell: &Cell,
     obs: &PreparedBasis,

@@ -56,6 +56,7 @@ use ferric_pbc::rsgdf::{
     sr_walk_counts, PeriodicFitParts, RangeSplit, RangeSplitMutant, RsGdf, RsGdfConfig,
     DEFAULT_FITTED_ERI_MAX_BYTES, RANGE_SPLIT_NEG_EIG_GUARD,
 };
+use ferric_pbc::SrColumnRotation;
 use ndarray::Array2;
 use num_complex::Complex64;
 
@@ -563,8 +564,15 @@ fn diamond_sto3g_split_matches_ferric_and_moving_the_core_misses() {
             run with --release -- --ignored"]
 fn diamond_ccpvdz_split_visits_under_a_quarter_of_the_sr3_triplets() {
     let (cell, obs, aux) = diamond("cc-pvdz");
-    let un = sr_walk_counts(&cell, &obs, &aux, &cfg(1.0, None)).unwrap();
-    let sp = sr_walk_counts(&cell, &obs, &aux, &cfg(1.0, Some(RangeSplit::default()))).unwrap();
+    // Column rotation OFF: the pins below are the UNROTATED walk (FINDINGS
+    // "Iteration 23"); the default `Auto` would count the rotated walk
+    // (cc-pVDZ C rotates), `pbc_sr_rotation.rs` covers that one.
+    let unrotated = |split| RsGdfConfig {
+        sr_column_rotation: SrColumnRotation::Off,
+        ..cfg(1.0, split)
+    };
+    let un = sr_walk_counts(&cell, &obs, &aux, &unrotated(None)).unwrap();
+    let sp = sr_walk_counts(&cell, &obs, &aux, &unrotated(Some(RangeSplit::default()))).unwrap();
     // Ordered-walk (s1) units: the prototype counters' unit.
     let r3 = sp.n_sr3_triplets_s1 as f64 / un.n_sr3_triplets_s1 as f64;
     let r2 = sp.n_sr2_pairs as f64 / un.n_sr2_pairs as f64;

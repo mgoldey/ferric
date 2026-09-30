@@ -3562,13 +3562,14 @@ pub struct CellCfg {
     /// With `omega` absent, the default hcore split's cap follows it
     /// (`ferric_pbc::hcore::default_hcore_omega_for_gdf`).
     pub gdf_omega: Option<f64>,
-    /// Opt-in column rotation of generally contracted shells in the Gamma
-    /// short-range walks (`ferric_pbc::ColumnRotation` on both the RS-GDF SR
-    /// 3-centre sum and the hcore SR attraction): `false` (default, today's
-    /// build bit for bit) or `true`. Same energy to the screening precision,
-    /// fewer SR integral calls on cc-pVXZ-style bases. `jk = "rsgdf"` with
-    /// `task = "energy"` at the Gamma point only (see
-    /// `resolve_sr_column_rotation`).
+    /// Column rotation of generally contracted shells in the Gamma
+    /// short-range walks (`ferric_pbc::SrColumnRotation` on both the RS-GDF
+    /// SR 3-centre sum and the hcore SR attraction). Absent (default): on for
+    /// a Gamma-point `jk = "rsgdf"` energy run, off everywhere else. `false`:
+    /// off (the unrotated build bit for bit). `true`: on, refused by name
+    /// where it cannot be honoured (see `resolve_sr_column_rotation`). Same
+    /// energy to the screening precision, fewer SR integral calls on
+    /// cc-pVXZ-style bases.
     pub sr_column_rotation: Option<bool>,
     /// Cap on the dense AFT ERI tensor, GiB (> 0; default 0.5); `jk =
     /// "dense"` only.
@@ -3740,10 +3741,13 @@ pub struct PeriodicPlan {
     pub n_radial: usize,
     pub n_angular: usize,
     pub neighbour_cutoff_bohr: Option<f64>,
-    /// `[cell] sr_column_rotation = true`: the Gamma hcore and RS-GDF builds
-    /// run their SR walks column-rotated. Only ever `true` on a Gamma-point
-    /// `jk = "rsgdf"` energy run.
+    /// The resolved `[cell] sr_column_rotation`: the Gamma hcore and RS-GDF
+    /// builds run their SR walks column-rotated. Only ever `true` on a
+    /// Gamma-point `jk = "rsgdf"` energy run (the default there).
     pub sr_column_rotation: bool,
+    /// Why `sr_column_rotation` resolved as it did (header and run log),
+    /// e.g. `"on (default)"` or `"off (default: kmesh ...)"`.
+    pub sr_column_rotation_note: &'static str,
     /// `method.task = "optimize"`: Gamma-point SCF routes (RHF/UHF/ROHF/RKS/
     /// UKS/ROKS), either J/K, atoms only at a fixed lattice.
     pub optimize: bool,
@@ -3867,14 +3871,18 @@ fn resolve_range_split(
     Ok(Some(lambda))
 }
 
-/// Resolve the opt-in `[cell] sr_column_rotation` key. `false` (or absent)
-/// is today's build, which every route runs, so it is accepted anywhere.
-/// `true` is refused by name wherever it cannot be honoured consistently:
+/// Resolve the `[cell] sr_column_rotation` key to `(on, note)`. `false` is
+/// the unrotated build, which every route runs, so it is accepted anywhere.
+/// Absent (the default) is ON exactly where `true` is accepted and silently
+/// OFF elsewhere (the note says why), so the energy and any force build
+/// always walk the same shells. `true` is refused by name wherever it
+/// cannot be honoured consistently:
 ///
 /// * `jk = "dense"`: the rotation is a cost knob of the RS-GDF SR 3-centre
 ///   walk; the dense AFT oracle has no such walk, and rotating only the
 ///   hcore SR attraction there would buy nothing measurable, so the key is
-///   refused rather than half-applied.
+///   refused rather than half-applied (and the default keeps the dense
+///   oracle unrotated).
 /// * `kmesh`: the k-point hcore and RS-GDF builders do not implement it
 ///   (they refuse it themselves; this names the key up front).
 /// * `task = "optimize"`: the gradient builders walk the UNROTATED shells,
@@ -3886,9 +3894,27 @@ fn resolve_sr_column_rotation(
     rsgdf: bool,
     kpoints: bool,
     optimize: bool,
-) -> Result<bool, String> {
-    if key != Some(true) {
-        return Ok(false);
+) -> Result<(bool, &'static str), String> {
+    match key {
+        Some(false) => return Ok((false, "off (sr_column_rotation = false)")),
+        None => {
+            return Ok(if !rsgdf {
+                (false, "off (default: not applied with jk = \"dense\")")
+            } else if kpoints {
+                (
+                    false,
+                    "off (default: the k-point builds do not implement it)",
+                )
+            } else if optimize {
+                (
+                    false,
+                    "off (default: task = \"optimize\"; the forces walk the unrotated shells)",
+                )
+            } else {
+                (true, "on (default)")
+            });
+        }
+        Some(true) => {}
     }
     if !rsgdf {
         return Err(
@@ -3914,19 +3940,19 @@ fn resolve_sr_column_rotation(
                 .into(),
         );
     }
-    Ok(true)
+    Ok((true, "on (sr_column_rotation = true)"))
 }
 
-/// Resolve the opt-in short-range knobs of `[cell]` once the J/K, the mesh
-/// and the task are known: the range split (installed into an RS-GDF `jk`)
-/// and the Gamma column rotation.
+/// Resolve the short-range knobs of `[cell]` once the J/K, the mesh and the
+/// task are known: the range split (installed into an RS-GDF `jk`) and the
+/// Gamma column rotation (`(on, note)`).
 fn resolve_sr_knobs(
     c: &CellCfg,
     jk: PeriodicJk,
     rsgdf: bool,
     kpoints: bool,
     optimize: bool,
-) -> Result<(PeriodicJk, bool), String> {
+) -> Result<(PeriodicJk, (bool, &'static str)), String> {
     let range_split = resolve_range_split(c.range_split, rsgdf, optimize)?;
     let rotation = resolve_sr_column_rotation(c.sr_column_rotation, rsgdf, kpoints, optimize)?;
     Ok((jk_with_range_split(jk, range_split), rotation))
@@ -4347,7 +4373,8 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
             ))
         }
     };
-    let (jk, sr_column_rotation) = resolve_sr_knobs(c, jk, rsgdf, kpoints, optimize)?;
+    let (jk, (sr_column_rotation, sr_column_rotation_note)) =
+        resolve_sr_knobs(c, jk, rsgdf, kpoints, optimize)?;
     periodic_raw_key_check(raw, route, kpoints, rsgdf, optimize)?;
     let written = raw_keys(raw, "scf");
     let max_iter_explicit = written.contains(&"max_iter");
@@ -4390,6 +4417,7 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
         n_angular: c.n_angular.unwrap_or(302),
         neighbour_cutoff_bohr,
         sr_column_rotation,
+        sr_column_rotation_note,
         optimize,
     }))
 }
@@ -4933,9 +4961,10 @@ kind = "ccsd"
                 !ok(&h2(kind, &with("false"), extra)).sr_column_rotation,
                 "{kind}"
             );
-            // Absent = off (today's build bit for bit).
+            // Absent = on (the default on a Gamma rsgdf energy run).
             let p = ok(&h2(kind, &format!("{RSGDF}\n{cell}"), extra));
-            assert!(!p.sr_column_rotation, "{kind}");
+            assert!(p.sr_column_rotation, "{kind}");
+            assert_eq!(p.sr_column_rotation_note, "on (default)", "{kind}");
         }
         // It composes with the range split and an explicit gdf_omega.
         let p = ok(&h2(
@@ -5012,6 +5041,69 @@ kind = "ccsd"
             "",
         ));
         assert!(p.optimize && !p.sr_column_rotation);
+    }
+
+    #[test]
+    fn sr_column_rotation_default_resolves_off_where_unsupported() {
+        // Absent: silently off (no refusal) wherever `true` is refused, with
+        // the reason in the note; the same TOML with `true` is the refusal.
+        let den = "denominators = \"shifted\"";
+        // Dense J/K (the default jk, and written out).
+        for cell in ["", "jk = \"dense\""] {
+            let p = ok(&h2("rhf", cell, ""));
+            assert!(!p.sr_column_rotation, "{cell}");
+            assert!(
+                p.sr_column_rotation_note.starts_with("off (default")
+                    && p.sr_column_rotation_note.contains("dense"),
+                "{cell}: {}",
+                p.sr_column_rotation_note
+            );
+        }
+        // k-point mesh, on every k-point route.
+        for (kind, cell) in [("rhf", ""), ("uhf", ""), ("rimp2", den), ("pdep-rpa", den)] {
+            let p = ok(&h2(
+                kind,
+                &format!("{RSGDF}\n{cell}\nkmesh = [1, 1, 2]"),
+                "",
+            ));
+            assert!(!p.sr_column_rotation, "{kind}");
+            assert!(
+                p.sr_column_rotation_note.starts_with("off (default")
+                    && p.sr_column_rotation_note.contains("k-point"),
+                "{kind}: {}",
+                p.sr_column_rotation_note
+            );
+        }
+        // task = "optimize", both J/K.
+        for kind in ["rhf", "uhf", "rohf", "ksdft"] {
+            for cell in [RSGDF, ""] {
+                let p = ok(&opt(kind, cell, ""));
+                assert!(p.optimize && !p.sr_column_rotation, "{kind} {cell}");
+                assert!(
+                    p.sr_column_rotation_note.starts_with("off (default"),
+                    "{kind} {cell}: {}",
+                    p.sr_column_rotation_note
+                );
+            }
+            let p = ok(&opt(kind, RSGDF, ""));
+            assert!(p.sr_column_rotation_note.contains("optimize"), "{kind}");
+        }
+        // Explicit false is reported as such.
+        let p = ok(&h2(
+            "rhf",
+            &format!("{RSGDF}\nsr_column_rotation = false"),
+            "",
+        ));
+        assert_eq!(
+            p.sr_column_rotation_note,
+            "off (sr_column_rotation = false)"
+        );
+        let p = ok(&h2(
+            "rhf",
+            &format!("{RSGDF}\nsr_column_rotation = true"),
+            "",
+        ));
+        assert_eq!(p.sr_column_rotation_note, "on (sr_column_rotation = true)");
     }
 }
 
