@@ -157,6 +157,60 @@ fn rks_pbe_trah_matches_diis_and_engages_the_gga_kernel() {
     );
 }
 
+/// UKS: once the orbital gradient has converged, TRAH must defer to DIIS
+/// instead of rejecting the same null step over and over.
+///
+/// Measured on UKS/PBE OH/cc-pVDZ (2026-09-30): without the `predicted_min`
+/// guard in the UHF loop, the model predicted −6.0e-15 from iteration 17, the
+/// energy moved by exactly 0, ρ = 0 rejected the step, and the identical step
+/// was recomputed 28 times — 74 iterations, 28 rejections. With the guard:
+/// 15 iterations, 0 rejections, the same energy. The iteration bar (30) sits
+/// between the two with headroom above the fixed side; the energy is compared
+/// with the unguarded run's endpoint, which the guard must not change.
+#[test]
+fn uks_trah_defers_to_diis_instead_of_cycling_null_steps() {
+    let mol = oh_doublet();
+    let bs = basis::bundled("cc-pvdz").unwrap();
+    let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    let ctx = ParallelContext::default();
+
+    let cfg = RhfConfig {
+        xc: Some("PBE".into()),
+        energy_conv: 1e-9,
+        density_conv: 1e-7,
+        max_iter: 300,
+        level_shift: 0.2,
+        trah_trigger: Some(1e-2),
+        ..Default::default()
+    };
+    let (s0, r0) = (steps(), rejections());
+    let r = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
+    let (ran, rejected) = (steps() - s0, rejections() - r0);
+    eprintln!(
+        "UKS/PBE/OH/cc-pVDZ TRAH: E={:.10} iters={} trah_steps={ran} rejected={rejected}",
+        r.energy, r.iterations
+    );
+    assert!(ran >= 1, "TRAH must have engaged");
+    assert!(r.converged, "TRAH UKS/PBE OH must converge");
+    // `rejected` is printed, not asserted: the TRAH counters are process-wide
+    // and other tests in this file (one rejects on purpose) run concurrently,
+    // so only a lower bound like `ran >= 1` is safe to assert on them. The
+    // iteration count belongs to this run alone and separates the two sides.
+    assert!(
+        r.iterations <= 30,
+        "{} iterations: the null-step cycle is back (unguarded: 74; guarded: 15)",
+        r.iterations
+    );
+    // The endpoint both the guarded and unguarded runs reach (1e-12 apart).
+    assert!(
+        (r.energy - (-75.6449107465)).abs() < 1e-8,
+        "energy {:.10} moved from the TRAH endpoint -75.6449107465",
+        r.energy
+    );
+}
+
 /// UHF: the open-shell path, where α and β rotations are solved as one coupled
 /// trust-region problem.
 #[test]
