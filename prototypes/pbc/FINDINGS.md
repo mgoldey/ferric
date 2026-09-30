@@ -5827,3 +5827,116 @@ Setup:
   fixtures before changing the default. Provisional.
 - **box−mol:** moves by ≤ 1e-6 across ζ ≥ 1e10 and ≤ 1e-9 below. It carries the physical finite-size term, so read
   only its change across ζ.
+
+## k-point MP2 head: the ~3-5% residual after E3 (investigation, measured 2026-09-30)
+
+Question: E3 (S + cubic linear head + Phi-weighted quadratic head + first-order Fock head) left a stable MP2
+residual (-7.0e-5 x n^-3 at z, ~-1.7e-4 at [111]). Which of (a) higher order in q, (b) exchange/SS channel,
+(c) Fock-head incompleteness, (d) fitting choice, (e) orbital relaxation carries it?
+Fixture: H2/STO-3G a = 6, bond along z and [111], n = 3, 4; per-cell MP2; "x n^3" = coefficient of 1/N_k.
+
+### Code (prototypes/pbc/kmp2_head/; reads reference/pbc/head_anomaly_data/*.npz)
+- `cheap_account.py`: OS/SS split of every head piece, MO-basis fixed-k dK (incl. ov block). npz only.
+- `bloch_head.py`: ANALYTIC Bloch-paired head vectors. g_true_ia = C_i^H(A + dS)C_a + C_i^H S dC_a, which gives
+  Delta_ia = C_i^H(dF - eps_i dS)C_a/(eps_a - eps_i) and Delta_ai = C_a^H(dF - eps_a dS)C_i/(eps_i - eps_a).
+  dS comes from exact lattice sums. dF comes from a Wigner-Seitz Fourier interpolation of the mesh Fock
+  (= S C eps C^H S). The quadratic head uses the full cubic tensor Phi_abcd: Phi_aaaa = -0.171599,
+  Phi_aabb = (1 - 3 Phi_aaaa)/6 = 0.252465, which reproduces Phi([111]) = 0.44773.
+- `truefock.py`: Bloch-paired Fock head per k and band pair. It computes lim <[N(q) - N(0)]/q^2>,
+  N = P^{k,k+q}(q) dm(k+q) P^H, with orbitals at k+q from the interpolated Fock, by central differences +
+  Richardson. It uses per-L (unfolded) pair FTs.
+- `vao_build.py` (q-class chunks, ~8 s/class at n = 3): builds the AO tensor V_AO[ki,kj,ka][mnls]. This holds
+  Jker = V_AO[k,j,k], Kker = V_AO[k,k',k'] and the MP2 V for any orbitals.
+- `relax.py`: runs the k-RHF from those kernels with the fixed one-body term dK_AO added to K (so the J/K response
+  is included), then MP2 with the relaxed orbitals.
+- `fits.py`: extrapolation-form sweep on the n = 3..6 series.
+
+### Anchors (all pass)
+- Fixed-k dK by finite differences vs the analytic A/B formula: 4.8e-7 x n^-3.
+- S(k) from lattice sums vs saved P0: 4e-13. Fourier-derivative aliasing on S: 5-8e-4 relative.
+- Interpolated Fock reproduces the mesh projector: 1e-16.
+- SCF from V_AO kernels vs saved: E_HF 3e-14, eps 8e-12. MP2(saved C) vs row sh: 4e-18. MP2 with dK/2 vs row
+  fock: 2e-18.
+- MO-level fixed-k head vs row cub1: 0. Phi-tensor direct quad vs the lambda-fit z-only value: 3.6872e-4 vs
+  3.6876e-4.
+- Relaxation is first order in dK (lambda = 1 vs 1/2 ratio 1.996-2.000).
+- The analytic Bloch-paired head was checked against the b^2-extrapolated finite-b (H5) vectors at Gamma:
+  - true: -0.484 vs -0.498
+  - fixed: -0.933 vs -0.925
+- The true head vectors obey g_true_ai = -conj(g_true_ia) exactly. The fixed-k ones do NOT: they differ by
+  C_a^H dS C_i.
+
+### Measured (x n^-3 unless stated)
+**Residual definition.** Earlier residual numbers used E_inf = the E1 plateau. With E_inf from the shifted
+(3,4) fit, E3d - E_inf is:
+
+| orientation | n = 3 | n = 4 | share of R |
+|---|---|---|---|
+| z | -5.55e-5 | -5.54e-5 | 2.5% of R = 2.213e-3 |
+| [111] | -1.838e-4 | -1.886e-4 | 5.5% of R = 3.409e-3 |
+
+Here E3d is E3 with the Phi weight applied to the direct |H|^2 term only; see (b). Both columns are stable in
+x n^3 from n = 3 to 4, so the residual is a genuine 1/N_k term.
+
+| candidate | z, n = 3 | z, n = 4 | [111], n = 3 | verdict |
+|---|---|---|---|---|
+| (a) beyond-quadratic in h / higher order in q | MP2 is exactly quadratic in the head (A3); odd-degree terms cancel under time reversal; degree >= 2 is n^-5 | | | excluded: the residual is n^-3 (x n^3 stable) |
+| (b) exchange/SS channel: 1/N_k^2 double head (ki = kj = ka) wrongly Phi-weighted by E3 | +4.0e-6 cubic -> -1.0e-5 shift | +1.7e-6 -> -4e-6 | | explains the old -7.39 -> -7.04 drift (now -6.27/-6.20 vs E1). Not the residual |
+| (b) exchange-channel linear head | l <= 2, cubic average exact | | | excluded |
+| (c) Bloch-paired Fock head, eigenvalues (true - fixed-k) | -0.72e-5 | | -1.04e-5 | excluded; wrong sign |
+| (e) orbital relaxation (SCF with dK, J/K response) | -2.10e-5 (uncoupled -1.75e-5) | | -1.64e-5 | real, but wrong sign |
+| (e) eigenvalues beyond first order | +0.38e-5 | | +0.20e-5 | small |
+| H5 Bloch-paired ERI head (analytic) | +2.21e-5 | +1.82e-5 | +1.03e-5 (n = 4: +0.60e-5) | right sign; cancels (c)+(e) |
+| **sum of (c) + (e) + H5** | **-0.23e-5** | | **-1.45e-5** | residual unchanged |
+| (d) fit form / E_inf | E1 c3 = 0 +- 2e-5 over n = 3..6 (forms n^-3, n^-3+n^-5, n^-3+n^-4, 3-6 or 4-6); E_inf spread ~1e-7 (robust fits); pure n^-1 fits of S fail (residual 7e-6) | | | not an extrapolation artefact; +-2e-5 uncertainty |
+
+**(c) validated independently.** The true Fock head reproduces the EMPIRICAL ewald-eigenvalue drift (H1 table,
+4 -> 5):
+
+| quantity | true | fixed-k | empirical |
+|---|---|---|---|
+| k-avg occ | -0.0466 | -0.0458 | -0.0465 |
+| k-avg vir | +0.0172 | +0.0179 | +0.0173 |
+| Gamma occ | -0.0298 | -0.0704 | -0.0271 |
+
+The GAP is identical to 0.3% (0.0635 vs 0.0637). That is why the per-k Fock error hardly reaches MP2.
+
+**(e) is present but small.** dK has an ov block of max 0.029 (k-avg 0.016) x n^-3. It is zero (<6e-9) on the
+kz = 0 plane and at TRIM points by symmetry. So an n = 2 mesh (all TRIM points) can never see it.
+
+**The head vectors vary strongly with k.** Per k, g_true differs from g_fixed by 20-50%: at z, |g_true_z|^2 is
+0.49 at Gamma and 1.46 at kz = pi/a, against a fixed-k average of ~0.93. After the k sums only ~1% of L survives.
+
+### Interpretation (provisional; H2/STO-3G, a = 6, two orientations, n <= 4)
+- None of (a)-(e) explains the residual. Relaxation and the Bloch-paired Fock head (both negative) cancel the
+  Bloch-paired ERI head (positive) to within 2e-6 (z) / 1.5e-5 ([111]). The fully corrected estimator,
+  "E3 + H5 + true Fock + relax", still misses -5.8e-5 (z, 2.6% of R) and -2.0e-4 ([111], 5.9% of R).
+- This rules out the dispersive and Fock-side mechanisms: (c) and (e) are measured, and H5 is no longer
+  finite-b-limited. It also rules out n^-5 terms and the fit form.
+- What it points to: the residual depends on orientation, 3.4x between z and [111] at the same a and similar
+  band width. So an angular (l >= 4) weighting in a degree-0 term is the lead suspect. Either the lattice
+  treatment of the quadratic head is incomplete, or a term assumed l <= 2 is not.
+- Two orientations cannot separate an isotropic part from an l = 4 part. A two-parameter fit gives
+  A = -1.45e-4 and B = 0.109 x (Qlat - Q_Lebedev). This is a fit to two points, not a measurement.
+- Artifact hypothesis to test next: a Z-correction (Phi) that is not exact at n = 3-4 for this integrand. Test it
+  on a synthetic f0(q^) g(q) with a known integral at n = 3..10. Then run a third orientation ([110]) and a = 8.
+
+### For the Rust port
+- Do not port E3 as an exact 1/N_k correction. On this fixture it leaves 2.5% (z) to 5.5% ([111]) of the 1/N_k
+  coefficient.
+- If a head correction is ported, it should be:
+  - cubic linear head;
+  - Phi-tensor quadratic head on the DIRECT |H|^2 term only, not the exchange double head;
+  - first-order Fock head on the eigenvalues.
+  Document it as accurate to ~6% of the 1/N_k term. Keep shifted-denominator extrapolation (c3/n^3 + c5/n^5) as
+  the reference.
+- Do not port the Bloch-paired ERI head without also porting the Bloch-paired Fock head and relaxation: each moves
+  the energy by ~1e-3 relative to R and they cancel.
+- Tests:
+  - Phi tensor: Phi([111]) = 0.44773 from Phi_aaaa and Phi_aabb.
+  - MP2 exactly quadratic in the head scale.
+  - Exchange double head excluded from the Phi weighting (mutant: weighting it moves E3 by 1e-5 x n^-3 at n = 3).
+  - Flatness bar at <= 6% of c3 on TWO orientations (z and [111]).
+  - dK_ov = 0 on the kz = 0 plane (symmetry anchor).
+- Not measured: n >= 5 for the corrected estimators; relaxation at n = 4 (first-order linearity makes it n^-3 by
+  construction); a = 10 (older npz has no C); non-cubic cells; more than one occupied/virtual band; dRPA budget.
