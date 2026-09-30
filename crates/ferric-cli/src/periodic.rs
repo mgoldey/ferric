@@ -23,6 +23,7 @@ use ferric_pbc::dense_aft::DEFAULT_DENSE_AFT_PRECISION;
 use ferric_pbc::drpa::DEFAULT_GAMMA_DRPA_QUAD_POINTS;
 use ferric_pbc::kcorr::DEFAULT_KDRPA_QUAD_POINTS;
 use ferric_pbc::rsgdf::DEFAULT_RSGDF_OMEGA;
+use ferric_pbc::ColumnRotation;
 use ferric_pbc::{
     gamma_drpa, gamma_mp2, gamma_rks, gamma_rohf, gamma_roks, gamma_uhf, gamma_uks, kpoint_drpa,
     kpoint_mp2, periodic_hcore, periodic_hcore_kpts, solve_krhf, solve_krhf_injected, solve_kuhf,
@@ -94,6 +95,7 @@ pub fn run_periodic(cfg: &Config) {
                 "range_split": range_split_lambda(plan).is_some(),
                 "range_split_lambda": range_split_lambda(plan),
                 "gdf_omega_bohr": s.aux.as_ref().map(|_| rsgdf_omega(plan)),
+                "sr_column_rotation": plan.sr_column_rotation,
                 "max_iter": effective_max_iter(plan),
             }),
             serde_json::json!({
@@ -357,6 +359,19 @@ fn print_rsgdf_knobs(plan: &PeriodicPlan) {
         None => " (default)",
     };
     println!("  gdf_omega  = {} Bohr^-1{note}", rsgdf_omega(plan));
+    // Only ever on for a Gamma energy run (`resolve_sr_column_rotation`);
+    // the rotated-column counts are in the stage table's counters.
+    if plan.sr_column_rotation {
+        println!("  sr_column_rotation = on (Gamma hcore + RS-GDF SR walks)");
+    }
+}
+
+/// The opt-in SR column rotation of the Gamma hcore and RS-GDF builds
+/// (`None` = off, today's build bit for bit). The plan only sets it on a
+/// Gamma-point `jk = "rsgdf"` energy run, so no gradient or k-point builder
+/// ever sees it.
+fn sr_column_rotation(plan: &PeriodicPlan) -> Option<ColumnRotation> {
+    plan.sr_column_rotation.then(ColumnRotation::new)
 }
 
 fn print_madelung(plan: &PeriodicPlan, v_m: f64) {
@@ -544,7 +559,10 @@ fn gamma_system(
     s: &Setup,
     for_gradient: bool,
 ) -> Result<GammaSystem, FerricError> {
-    let hcfg = PeriodicHcoreConfig::with_omega(s.omega_bohr);
+    let hcfg = PeriodicHcoreConfig {
+        sr_column_rotation: sr_column_rotation(plan),
+        ..PeriodicHcoreConfig::with_omega(s.omega_bohr)
+    };
     let hc = periodic_hcore(&s.cell, &s.prep, &hcfg)?;
     let ints = match &s.aux {
         None => GammaInts::Dense(Box::new(DenseAftEri::build(
@@ -562,6 +580,7 @@ fn gamma_system(
             // The k-point build takes it through `krsgdf_config`.
             let cfg = RsGdfConfig {
                 exxdiv: plan.exxdiv,
+                sr_column_rotation: sr_column_rotation(plan),
                 ..rsgdf_config(plan)
             };
             let gdf = if for_gradient {

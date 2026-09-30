@@ -869,11 +869,15 @@ enum GammaJk {
     /// opt-in range split (`None` = off; energy-only, see
     /// `pbc::parse_range_split`). `gdf_omega_bohr`: the RS-GDF Ewald split
     /// (Bohr⁻¹; `None` = `DEFAULT_RSGDF_OMEGA`, bit for bit).
+    /// `sr_column_rotation`: the opt-in column rotation of the hcore and
+    /// RS-GDF SR walks (`None` = off, bit for bit; energy-only, see
+    /// `pbc::parse_sr_column_rotation`).
     RsGdf {
         aux: Box<PreparedBasis>,
         budget_bytes: Option<usize>,
         range_split: Option<ferric_pbc::RangeSplit>,
         gdf_omega_bohr: Option<f64>,
+        sr_column_rotation: Option<ferric_pbc::ColumnRotation>,
     },
 }
 
@@ -884,6 +888,17 @@ impl GammaJk {
         match self {
             GammaJk::Dense { .. } => None,
             GammaJk::RsGdf { gdf_omega_bohr, .. } => *gdf_omega_bohr,
+        }
+    }
+
+    /// The SR column rotation of the hcore and RS-GDF builds (`None` = off,
+    /// or dense AFT, which refuses it).
+    fn sr_column_rotation(&self) -> Option<ferric_pbc::ColumnRotation> {
+        match self {
+            GammaJk::Dense { .. } => None,
+            GammaJk::RsGdf {
+                sr_column_rotation, ..
+            } => *sr_column_rotation,
         }
     }
 }
@@ -910,7 +925,10 @@ fn gamma_rhf_driver(
         Some(w) => w,
         None => PeriodicHcoreConfig::for_cell_and_gdf_omega(cell, jk.gdf_omega_bohr()).omega,
     };
-    let hcfg = PeriodicHcoreConfig::with_omega(w);
+    let hcfg = PeriodicHcoreConfig {
+        sr_column_rotation: jk.sr_column_rotation(),
+        ..PeriodicHcoreConfig::with_omega(w)
+    };
     let hc = periodic_hcore(cell, prep, &hcfg)?;
     let mut timings = ferric_pbc::PbcTimings::default();
     timings.absorb(&hc.timings);
@@ -979,12 +997,14 @@ fn gamma_rhf_driver(
             budget_bytes,
             range_split,
             gdf_omega_bohr,
+            sr_column_rotation,
         } => {
             let cfg = RsGdfConfig {
                 omega: gdf_omega_bohr.unwrap_or(ferric_pbc::rsgdf::DEFAULT_RSGDF_OMEGA),
                 exxdiv: exx,
                 budget_bytes: *budget_bytes,
                 range_split: *range_split,
+                sr_column_rotation: *sr_column_rotation,
                 ..Default::default()
             };
             // The gradient build is bitwise the energy's B plus the metric
@@ -1221,6 +1241,17 @@ fn parse_gamma_options(
 ///                LR half-G"]`). The range split's thresholds and the
 ///                gradient/stress follow it. rsgdf only: with jk="dense" it is
 ///                a ValueError. Every periodic binding takes the same kwarg.
+///   sr_column_rotation (default False) opt-in column rotation of generally
+///                contracted shells (cc-pVXZ-style s/p columns) in the Gamma
+///                hcore SR attraction and RS-GDF SR 3-centre walks
+///                (`ferric_pbc::ColumnRotation`), back-transformed exactly.
+///                Same energy to the screening precision, fewer SR integral
+///                calls; False is the default build bit for bit, and so is
+///                True on a basis with nothing to rotate. Counters
+///                `timings["counters"]["hcore SR rotated columns"]` and
+///                `["rsgdf SR3 rotated columns"]`. rsgdf ENERGY only: with
+///                jk="dense" or with_gradient/with_stress it is a ValueError.
+///                The Gamma bindings take it; the k-point bindings do not.
 ///
 /// Hard errors (ValueError): charged cell (charge != 0; no neutralising-
 /// background correction for electrons), multiplicity != 1 or an odd
@@ -1238,7 +1269,7 @@ fn parse_gamma_options(
     mol, lattice, basis_set, exxdiv="ewald", omega=None, max_eri_gb=None,
     max_iter=200, density_conv=1e-10, jk="dense", auxbasis=None,
     memory_budget_gb=None, with_gradient=false, with_stress=false,
-    range_split=None, gdf_omega=None,
+    range_split=None, gdf_omega=None, sr_column_rotation=false,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_rhf_gamma(
@@ -1258,6 +1289,7 @@ fn run_rhf_gamma(
     with_stress: bool,
     range_split: Option<&Bound<'_, PyAny>>,
     gdf_omega: Option<f64>,
+    sr_column_rotation: bool,
 ) -> PyResult<PyGammaRhfResult> {
     let val_err = |m: String| pyo3::exceptions::PyValueError::new_err(m);
     let GammaOptions {
@@ -1281,6 +1313,12 @@ fn run_rhf_gamma(
     let range_split =
         pbc::parse_range_split("run_rhf_gamma", range_split, auxbasis.is_some(), want)?;
     let gdf_omega_bohr = pbc::parse_gdf_omega("run_rhf_gamma", gdf_omega, auxbasis.is_some())?;
+    let sr_column_rotation = pbc::parse_sr_column_rotation(
+        "run_rhf_gamma",
+        sr_column_rotation,
+        auxbasis.is_some(),
+        want,
+    )?;
     let emol = validate_gamma_cell("run_rhf_gamma", &mol.inner, &basis_set.inner)?;
     let cell = ferric_pbc::Cell::new(emol, a).map_err(|e| val_err(format!("{e}")))?;
     let prep = PreparedBasis::new(cell.mol(), &basis_set.inner).map_err(make_err)?;
@@ -1299,6 +1337,7 @@ fn run_rhf_gamma(
                 budget_bytes: budget_bytes_from_gb(memory_budget_gb),
                 range_split,
                 gdf_omega_bohr,
+                sr_column_rotation,
             };
             (choice, Some(aux_bs.name))
         }
