@@ -176,6 +176,97 @@ pub fn transpose_pair_rows(j3: &ndarray::Array2<f64>, n: usize) -> ndarray::Arra
     ndarray::Array2::from_shape_fn(j3.dim(), |(r, p)| j3[((r % n) * n + r / n, p)])
 }
 
+/// `m` with its `μ ≤ ν` half kept and `μ > ν` set to `conj m[(ν, μ)]`: what
+/// the k-point s2 one-electron walks (`hcore::kpoint` module doc
+/// "Orbital-pair symmetry") produce from the ordered loop's elements.
+pub fn mirror_upper_herm(
+    m: &ndarray::Array2<num_complex::Complex64>,
+) -> ndarray::Array2<num_complex::Complex64> {
+    assert_eq!(m.nrows(), m.ncols());
+    ndarray::Array2::from_shape_fn(
+        m.dim(),
+        |(i, j)| {
+            if i <= j {
+                m[(i, j)]
+            } else {
+                m[(j, i)].conj()
+            }
+        },
+    )
+}
+
+/// The shell index of every basis function of `prep`.
+pub fn shell_of(prep: &PreparedBasis) -> Vec<usize> {
+    let mut out = Vec::with_capacity(prep.nbasis());
+    for (sh, &d) in prep.shell_dims().iter().enumerate() {
+        assert_eq!(out.len(), prep.shell_offsets()[sh], "shell offsets");
+        out.extend(std::iter::repeat_n(sh, d));
+    }
+    out
+}
+
+/// Residue index of integer coordinates `c` modulo `m` (row-major, the
+/// `pair_ft::residues` convention), written out here so the tests derive
+/// the k-point s2 bin map independently of the library.
+fn test_residue(c: [i64; 3], m: [usize; 3]) -> usize {
+    let r: Vec<usize> = (0..3)
+        .map(|i| c[i].rem_euclid(m[i] as i64) as usize)
+        .collect();
+    (r[0] * m[1] + r[1]) * m[2] + r[2]
+}
+
+fn test_coords(r: usize, m: [usize; 3]) -> [i64; 3] {
+    [
+        (r / (m[1] * m[2])) as i64,
+        ((r / m[2]) % m[1]) as i64,
+        (r % m[2]) as i64,
+    ]
+}
+
+/// The k-point s2 bin map `M(r_L, r_T) = (−r_L mod mod_l, (r_T − r_L) mod
+/// mod_t)` on flat bins `r_L R_T + r_T` (`rsgdf::kpoint` module doc
+/// "Orbital-pair symmetry at k"): bin `b` of row `μν` holds the sum bin
+/// `M(b)` of row `νμ` holds, from `(μ_0 ν_L | P_T) = (ν_0 μ_{−L} | P_{T−L})`.
+pub fn kpair_mirror(mod_l: [usize; 3], mod_t: [usize; 3], bin: usize) -> usize {
+    let rt: usize = mod_t.iter().product();
+    let (r, t) = (bin / rt, bin % rt);
+    let c = test_coords(r, mod_l);
+    let d = test_coords(t, mod_t);
+    test_residue([-c[0], -c[1], -c[2]], mod_l) * rt
+        + test_residue([d[0] - c[0], d[1] - c[1], d[2] - c[2]], mod_t)
+}
+
+/// The unsplit k-point s2 bins predicted from the FROZEN ordered bins `s1`
+/// (`rsgdf::kpoint` module doc "Orbital-pair symmetry at k"): element `e =
+/// (b, μν)` with mirror `M(e) = (M(b), νμ)` is the ordered `s1[e]` when `μ`'s
+/// shell precedes `ν`'s, or the shells are equal and `e ≤ M(e)`
+/// lexicographically in `(r_L, r_T, μ, ν)`; else `s1[M(e)]`.
+pub fn kpair_s2_expected(
+    s1: &[ndarray::Array2<f64>],
+    n: usize,
+    shell_of: &[usize],
+    mod_l: [usize; 3],
+    mod_t: [usize; 3],
+) -> Vec<ndarray::Array2<f64>> {
+    let rt: usize = mod_t.iter().product();
+    (0..s1.len())
+        .map(|b| {
+            let mb = kpair_mirror(mod_l, mod_t, b);
+            ndarray::Array2::from_shape_fn(s1[b].dim(), |(row, p)| {
+                let (mu, nu) = (row / n, row % n);
+                let e = (b / rt, b % rt, mu, nu);
+                let me = (mb / rt, mb % rt, nu, mu);
+                let own = shell_of[mu] < shell_of[nu] || (shell_of[mu] == shell_of[nu] && e <= me);
+                if own {
+                    s1[b][(row, p)]
+                } else {
+                    s1[mb][(nu * n + mu, p)]
+                }
+            })
+        })
+        .collect()
+}
+
 pub fn array2(rows: &[&[f64]]) -> ndarray::Array2<f64> {
     let n = rows.len();
     let m = rows[0].len();

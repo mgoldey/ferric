@@ -29,12 +29,16 @@
 //!
 //! * `krsgdf_sr_bins_are_bitwise_across_threads_and_vs_serial` — the
 //!   k-point residue-binned SR metric and 3-centre bins (the
-//!   `(pair, r_L)`-parallel walk) at 1/2/6 threads agree bit for bit, and
-//!   equal the FROZEN serial binned walk bit for bit, on a Monkhorst-Pack
-//!   mesh whose pair-image moduli (`2N`) differ from the aux-image moduli
-//!   (`N`), so a bin mix-up in either dimension fails.
+//!   `(pair, r_L)`-parallel metric walk and the s2 3-centre walk,
+//!   `rsgdf::kpoint` module doc "Orbital-pair symmetry at k") at 1/2/6
+//!   threads agree bit for bit, and equal the FROZEN serial ordered binned
+//!   walk bit for bit (J2 as is; J3 under the s2 prescription
+//!   `common::kpair_s2_expected`, i.e. with the `−r_L` residue map), on a
+//!   Monkhorst-Pack mesh whose pair-image moduli (`2N`) differ from the
+//!   aux-image moduli (`N`), so a bin mix-up in either dimension fails.
 //! * `hcore_kpts_sr_attraction_is_bitwise_across_threads_and_vs_serial` —
-//!   `V_SR(k)` against a FROZEN copy of the serial k-point loop, and the full
+//!   `V_SR(k)` (s2: the serial loop's `μ ≤ ν` elements and their conjugates)
+//!   against a FROZEN copy of the serial ordered k-point loop, and the full
 //!   `h(k)` across thread counts.
 //! * `krsgdf_blocks_and_krhf_energy_are_bitwise_across_threads` — every
 //!   `B(k, k')` of `KRsGdf`, `h(k)` and the k-point RS-GDF RHF energy at
@@ -428,14 +432,18 @@ fn krsgdf_sr_bins_are_bitwise_across_threads_and_vs_serial() {
         "J3: only {} live bins",
         live_bins(j3_ref)
     );
+    let shells = shell_of(&prep);
     for (&n, [par, ser]) in THREADS.iter().zip(&runs) {
         let (j2p, j3p, n2p, n3p) = par;
         let (j2s, j3s, n2s, n3s) = ser;
         assert_bins_bitwise(j2p, j2s, &format!("J2 parallel vs serial ({n} threads)"));
-        assert_bins_bitwise(j3p, j3s, &format!("J3 parallel vs serial ({n} threads)"));
+        // J3 is the s2 walk: the serial ordered bins under the −r_L map.
+        let j3x = kpair_s2_expected(j3s, prep.nbasis(), &shells, [1, 4, 4], [1, 2, 2]);
+        assert_bins_bitwise(j3p, &j3x, &format!("J3 s2 vs serial mapped ({n} threads)"));
         assert_bins_bitwise(j2p, j2_ref, &format!("J2 at {n} vs 1 thread"));
         assert_bins_bitwise(j3p, j3_ref, &format!("J3 at {n} vs 1 thread"));
-        assert_eq!((n2p, n3p), (n2s, n3s), "counts vs serial ({n} threads)");
+        assert_eq!(n2p, n2s, "metric counts vs serial ({n} threads)");
+        assert!(n3p < n3s, "s2 computed {n3p} of the ordered {n3s} triplets");
         assert_eq!((n2p, n3p), (n2_ref, n3_ref), "counts at {n} vs 1 thread");
     }
 }
@@ -465,8 +473,11 @@ fn hcore_kpts_sr_attraction_is_bitwise_across_threads_and_vs_serial() {
         "V_SR(k): no imaginary part, so the phases are vacuous"
     );
     for (&n, [(v, nt), (vs, nts)]) in THREADS.iter().zip(&runs) {
-        assert_cbitwise(v, vs, &format!("V_SR(k) parallel vs serial ({n} threads)"));
+        // s2: the serial ordered loop's μ ≤ ν elements and their conjugates.
+        let vx: Vec<_> = vs.iter().map(mirror_upper_herm).collect();
+        assert_cbitwise(v, &vx, &format!("V_SR(k) s2 vs serial ({n} threads)"));
         assert_cbitwise(v, v_ref, &format!("V_SR(k) at {n} vs 1 thread"));
+        // `nt` is the s2 walk's ordered-equivalent count.
         assert_eq!(nt, nts, "triplets vs serial ({n} threads)");
         assert_eq!(nt, nt_ref, "triplets at {n} vs 1 thread");
     }
@@ -483,7 +494,11 @@ fn hcore_kpts_sr_attraction_is_bitwise_across_threads_and_vs_serial() {
     for (&n, hk) in THREADS.iter().zip(&hks) {
         assert_cbitwise(&hk.h, &hks[0].h, &format!("h(k) at {n} vs 1 thread"));
         assert_eq!(hk.n_sr_triplets, hks[0].n_sr_triplets);
-        assert_eq!(hk.n_sr_triplets, *nt_ref, "hcore vs oracle triplet count");
+        assert_eq!(
+            hk.n_sr_triplets_ordered, *nt_ref,
+            "hcore vs oracle triplet count"
+        );
+        assert!(hk.n_sr_triplets < hk.n_sr_triplets_ordered);
     }
 }
 
@@ -1947,13 +1962,19 @@ fn hcore_kpts_overlap_kinetic_is_bitwise_across_threads_and_vs_serial() {
         "S(k): no imaginary part, so the phases are vacuous"
     );
     for (&n, ([(sp, tp), (ss, ts)], _)) in THREADS.iter().zip(&runs) {
-        assert_cbitwise(sp, ss, &format!("S(k) parallel vs serial ({n} threads)"));
-        assert_cbitwise(tp, ts, &format!("T(k) parallel vs serial ({n} threads)"));
+        // s2 (`hcore::kpoint` module doc "Orbital-pair symmetry"): the serial
+        // ordered loop's μ ≤ ν elements and their conjugates.
+        let sx: Vec<_> = ss.iter().map(mirror_upper_herm).collect();
+        let tx: Vec<_> = ts.iter().map(mirror_upper_herm).collect();
+        assert_cbitwise(sp, &sx, &format!("S(k) s2 vs serial ({n} threads)"));
+        assert_cbitwise(tp, &tx, &format!("T(k) s2 vs serial ({n} threads)"));
         assert_cbitwise(sp, s1, &format!("S(k) at {n} vs 1 thread"));
         assert_cbitwise(tp, t1, &format!("T(k) at {n} vs 1 thread"));
     }
-    let ([_, (ss, ts)], _) = &runs[0];
-    let (sh, th): (Vec<_>, Vec<_>) = (ss.iter().map(herm).collect(), ts.iter().map(herm).collect());
+    // periodic_hcore_kpts Hermitises the s2 matrices: off the diagonal that
+    // is the identity, so the result is `herm` of the s2 matrices.
+    let ([(sp, tp), _], _) = &runs[0];
+    let (sh, th): (Vec<_>, Vec<_>) = (sp.iter().map(herm).collect(), tp.iter().map(herm).collect());
     for &n in &THREADS {
         let hk = in_pool(n, || {
             periodic_hcore_kpts(&cell, &prep, &mesh, &cfg).expect("hcore k")

@@ -45,21 +45,27 @@
 //! ([`SplitPlan::sr_three_index_binned`], [`SplitPlan::sr_metric_binned`])
 //! and their ordered-parallel derivative walks with the k weights.
 
-use super::{SplitPlan, RANGE_SPLIT_NEG_EIG_GUARD};
+use super::{SplitPlan, Sr3Ctx, RANGE_SPLIT_NEG_EIG_GUARD};
 use crate::budget::{bytes_of, Ledger};
 use crate::hcore::ONE_E_ENGINE_PRECISION;
 use crate::kpts::{lattice_coords, KPointMesh};
 use crate::pair_ft::residues::{pair_ft_deriv_residues_chunked, pair_ft_residues_chunked};
 use crate::pair_ft::DEFAULT_PAIR_FT_THRESH;
 use crate::rsgdf::kpoint::kderiv::KLrForce;
-use crate::rsgdf::{aux_ft_shells, dot3, RangeSplitMutant, RsGdfConfig, Stage};
+use crate::rsgdf::kpoint::{sr3_binned_s2_drive, zeroed_bins, KPairSymMutant, KSr3Parts};
+use crate::rsgdf::{
+    aux_ft_shells, dot3, RangeSplitMutant, RsGdfConfig, SrBinning, Stage, ENGINE_PRECISION,
+};
 use ferric_core::FerricError;
 use ferric_integrals::engine::Engine;
+use ferric_integrals::engine_pool::EnginePool;
 use ferric_integrals::ffi;
+use ferric_integrals::operator::Operator;
 use ndarray::linalg::general_mat_mul;
 use ndarray::{Array1, Array2, Array3};
 use num_complex::Complex64 as C64;
 use std::f64::consts::PI;
+use std::sync::Mutex;
 
 /// `(scale v_LR(|K|), scale v_SR(|K|))`. `gamma_kernel` (TEST mutant):
 /// `v_SR` at `|K − q|` (the Gamma kernel with the FTs still at `K`; limit
@@ -156,6 +162,62 @@ impl SplitPlan {
             )?;
         }
         Ok(Some(plan))
+    }
+
+    /// The kept SR 3-index bins over UNORDERED parent shell pairs (the k-point
+    /// s2 walk, `kpoint` module doc "Orbital-pair symmetry at k"): `(bins,
+    /// triplets computed, ordered-equivalent)`. Each task is the ordered
+    /// walk's body ([`SplitPlan::sr3_acc`]) on pair `lo <= hi` in the
+    /// orientation [`SplitPlan::orient`] picks (fewer kept calls; the kept
+    /// density `χ_iχ_j − χ_i^sχ_j^s` is symmetric per unordered pair, so
+    /// either orientation gives both halves), copied into both halves by the
+    /// shared driver. A split that moves nothing ties every orientation and
+    /// is bitwise the unsplit s2 bins.
+    pub(in crate::rsgdf) fn sr_three_index_binned_s2(
+        &self,
+        st: &Stage<'_>,
+        images: &[[f64; 3]],
+        bins: SrBinning,
+        mutant: Option<KPairSymMutant>,
+    ) -> Result<KSr3Parts, FerricError> {
+        let n = st.obs.nbasis();
+        let recip = st.cell.reciprocal();
+        let l_bin: Vec<usize> = images
+            .iter()
+            .map(|l| SrBinning::residue(&recip, l, bins.mod_l))
+            .collect();
+        let pool = EnginePool::from_fn(|| {
+            Engine::new_3center(
+                Operator::erfc(st.omega),
+                &self.obs.x,
+                &self.aux.x,
+                ENGINE_PRECISION,
+            )
+        })?;
+        let out = Mutex::new(zeroed_bins(bins, n, st.aux.nbasis()));
+        let ctx = Sr3Ctx {
+            pool: &pool,
+            images,
+            l_bin: &l_bin,
+            recip,
+            bins,
+            global: self.sr3_global_radius(st),
+            out: &out,
+        };
+        let (count, ordered) = sr3_binned_s2_drive(
+            &st.obs_sh,
+            n,
+            bins,
+            mutant,
+            &out,
+            |lo, hi| self.orient(lo, hi),
+            |r_l, pair| self.sr3_acc(st, &ctx, r_l, pair),
+        )?;
+        Ok((
+            out.into_inner().unwrap_or_else(|e| e.into_inner()),
+            count,
+            ordered,
+        ))
     }
 
     /// Whether the build has a moved `(ss pair | X_c)` block (some orbital

@@ -56,6 +56,59 @@
 //! (`split`'s `ksplit`). A split that moves nothing is bitwise today's
 //! build. The metric guard of the Gamma split applies per q.
 //!
+//! # Orbital-pair symmetry at k (s2)
+//!
+//! The SR 3-centre bins are `B[r_L, r_T][μν, P] = Σ_{L ≡ r_L} Σ_{T ≡ r_T}
+//! (μ_0 ν_L | P_T)_erfc` (`r_L = n(L) mod mod_l`, `r_T = n(T) mod mod_t`,
+//! `n` = integer lattice coordinates; flat bin `r_L R_T + r_T`). Translating
+//! all three functions by `−L` and swapping the (symmetric) orbital pair,
+//! `(μ_0 ν_L | P_T) = (ν_0 μ_{−L} | P_{T−L})`. The pair-image set is closed
+//! under `L → −L`, `T` runs over every lattice vector the screen keeps
+//! around the segment, and the screen is invariant under the map (the Gamma
+//! argument, `super` module doc "Orbital-pair symmetry"), so
+//!
+//! ```text
+//! B[r_L, r_T][μν] = B[M(r_L, r_T)][νμ],   M(r_L, r_T) = (r_{−L}, (r_T − r_L) mod mod_t)
+//! ```
+//!
+//! with `r_{−L} = −r_L mod mod_l`. `r_L` fixes `L mod mod_t` because
+//! `mod_t = N` divides `mod_l ∈ {N, 2N}` on every axis
+//! ([`KPointMesh::residue_moduli`]). `M` is an involution, and for a fixed
+//! pair it permutes the bins. No phase enters: the `e^{ik'·L}` /
+//! `e^{−iq·T}` contraction is applied to the bins afterwards and sees
+//! exactly the sums it saw before (round-off aside).
+//!
+//! The build therefore evaluates each UNORDERED shell pair `lo < hi` once
+//! per residue `r_L` (the ordered walk's own per-pair body, so row `μν` of
+//! bin `(r_L, r_T)` is BITWISE the ordered walk's) and ONE task writes the
+//! same scratch into row `νμ` of bin `M(r_L, r_T)`. A diagonal pair runs
+//! only its canonical residues `r_L <= r_{−L}`: `r_L < r_{−L}` writes both
+//! bin sets `r_L` and `r_{−L}`; at a self-conjugate residue (`r_L = r_{−L}`:
+//! 0, and `mod_l/2` on an even axis) `M` maps the task's own elements
+//! `(r_T, μ, ν) ↦ (r_T − r_L, ν, μ)` onto each other, and the task writes the
+//! lexicographically smaller element of each orbit directly and mirrored (at
+//! Gamma: the `μ ≤ ν` rule). The range split evaluates a pair in the
+//! orientation with fewer kept calls (as at Gamma). Consequences:
+//!
+//! * Every bin element is bitwise one of the two ordered evaluations
+//!   `x = B_s1[b][μν]`, `y = B_s1[M(b)][νμ]`, and `B[b][μν] ≡ B[M(b)][νμ]`
+//!   exactly; `|new − ½(x + y)| ≤ ½|x − y| + ε|avg|`.
+//! * Every element is written by exactly one task (a copy, not an addition),
+//!   so the bins are bitwise identical across thread counts.
+//! * A transposed write into bin `r_L` instead of `r_{−L}`
+//!   ([`KPairSymMutant::WrongPairBin`]) is an IDENTITY when every pair-image
+//!   modulus is 1 or 2 (then `−r ≡ r` for every residue): a mesh of TRIM
+//!   points only (Gamma-centred `N_i ≤ 2`) cannot see it. It needs a
+//!   non-TRIM mesh (Gamma-centred 1×1×3: `mod_l = 3`, `−1 ≡ 2`), and even
+//!   there only the `k' ≠ −k'` blocks see it (at a TRIM `k'` the bin phases
+//!   `e^{ik'·r_L}` are real and equal for `±r_L`).
+//! * Counters: [`KRsGdfStats::n_sr3_triplets`] counts triplets COMPUTED;
+//!   `n_sr3_triplets_ordered` weights a task that wrote both halves 2 and a
+//!   self-conjugate diagonal task 1 (unsplit: the pre-s2 ordered count).
+//! * Frozen oracle: [`KRsGdf::build_pair_s1_oracle`] (the ordered
+//!   `(pair, r_L)` walk, bitwise the pre-s2 build). The SR metric bins and
+//!   the force walks (`kderiv`) keep their ordered loops.
+//!
 //! # Memory
 //!
 //! Every big buffer is reserved on a [`crate::budget`] ledger first: S(k)
@@ -67,8 +120,8 @@
 use super::split::{check_metric_guard, SplitPlan};
 use super::{
     aux_ft_shells, check_obs_on_cell, dot3, exchange_aux_groups, exchange_group_scratch_bytes,
-    gshells, pair_image_radius, subtract_g0, G0Handling, LatticeWalker, RsGdfConfig, SrBinning,
-    Stage,
+    gshells, pair_image_radius, subtract_g0, unordered_pairs, G0Handling, GShell, LatticeWalker,
+    RsGdfConfig, Sr3Ctx, SrBinning, Stage,
 };
 use crate::budget::{bytes_of, Ledger};
 use crate::dense_aft::ExxDiv;
@@ -84,6 +137,7 @@ use ndarray::{Array1, Array2, Array3, ArrayView1};
 use num_complex::Complex64 as C64;
 use rayon::prelude::*;
 use std::f64::consts::PI;
+use std::sync::Mutex;
 
 /// k-point RS-GDF force pieces ([`crate::kgrad`]; FINDINGS "Iteration 21").
 pub(crate) mod kderiv;
@@ -112,6 +166,54 @@ pub enum KRsGdfMutation {
     /// instead of `v_SR(|K|)` (the FTs still at `K = G + q`). An identity at
     /// q = 0, so BLIND at 1×1×1; prototype +1.05e-3 Ha (H2 1×1×3).
     SplitGammaKernel,
+    /// A defect of the orbital-pair symmetric (s2) SR 3-centre walk (module
+    /// doc "Orbital-pair symmetry at k"; `tests/pbc_kpair_symmetry.rs`).
+    PairSym(KPairSymMutant),
+}
+
+/// TEST-ONLY defects of the k-point s2 SR 3-centre walk (module doc
+/// "Orbital-pair symmetry at k"). Each must make the bins leave the frozen
+/// ordered oracle's `{x, y}` pair; [`KPairSymMutant::WrongPairBin`] is an
+/// IDENTITY on a mesh whose pair-image moduli are all 1 or 2 (every
+/// residue is its own negative), so it is only visible on a non-TRIM mesh.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KPairSymMutant {
+    /// Transposed half into pair-image bin `r_L` instead of `r_{−L}`.
+    WrongPairBin,
+    /// Transposed half into aux-image bin `r_T` instead of `r_T − r_L`.
+    NoAuxShift,
+    /// Every transposed write dropped (rows `νμ` of off-diagonal pairs stay
+    /// 0, and so do the mirrored halves of the diagonal blocks).
+    DropTransposed,
+    /// Diagonal shell pairs skipped entirely.
+    SkipDiagonal,
+    /// Diagonal pairs run only their canonical residues / elements but
+    /// without the mirrored write (bins `r_{−L}` of the diagonal blocks, and
+    /// the non-canonical elements of self-conjugate residues, stay 0).
+    DiagonalNoMirror,
+}
+
+/// Which k-point SR 3-centre walk a build runs (module doc "Orbital-pair
+/// symmetry at k"). Production is `S2(None)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::rsgdf) enum KPairWalk {
+    /// Each unordered shell pair once, both halves written (`Some`: a
+    /// test-only defect).
+    S2(Option<KPairSymMutant>),
+    /// FROZEN pre-s2 walk: every ORDERED pair ([`Stage::sr_three_index_binned`]
+    /// / its split twin), [`KRsGdf::build_pair_s1_oracle`] only.
+    S1Oracle,
+}
+
+impl KPairWalk {
+    /// The walk a build at `mutation` runs.
+    fn of(mutation: Option<KRsGdfMutation>) -> Self {
+        match mutation {
+            Some(KRsGdfMutation::PairSym(m)) => Self::S2(Some(m)),
+            _ => Self::S2(None),
+        }
+    }
 }
 
 /// Settings for [`KRsGdf::build`]: the Gamma [`RsGdfConfig`] (ω, precision,
@@ -169,8 +271,14 @@ pub struct KRsGdfStats {
     /// q classes built explicitly (the rest by time reversal).
     pub n_q_built: usize,
     pub n_pair_images: usize,
-    /// SR 3-centre shell triplets / 2-centre shell pairs (computed ONCE).
+    /// SR 3-centre shell triplets / 2-centre shell pairs (computed ONCE; the
+    /// 3-centre walk visits each unordered shell pair once, module doc
+    /// "Orbital-pair symmetry at k").
     pub n_sr3_triplets: usize,
+    /// `n_sr3_triplets` in ordered-pair units (a task that also wrote the
+    /// transposed half weighted 2, a self-conjugate diagonal task 1): unsplit,
+    /// the pre-s2 ordered count, the number to compare benchmarks on.
+    pub n_sr3_triplets_ordered: usize,
     pub n_sr2_pairs: usize,
     /// Residue counts of the pair-image (`R_L`) and aux-image (`R_T`) bins.
     pub residues_l: usize,
@@ -203,6 +311,21 @@ pub fn record_stats(t: &mut crate::timing::PbcTimings, st: &KRsGdfStats) {
     }
     for &(name, v) in &st.split_counters {
         t.set_counter(name, v as u64);
+    }
+}
+
+/// The k-point builds do not implement [`RsGdfConfig::sr_column_rotation`]
+/// (a Gamma energy option): a typed refusal instead of silently ignoring it.
+pub(in crate::rsgdf) fn refuse_column_rotation(
+    g: &RsGdfConfig,
+    who: &str,
+) -> Result<(), FerricError> {
+    match g.sr_column_rotation {
+        None => Ok(()),
+        Some(rot) => Err(FerricError::General(format!(
+            "{who}: sr_column_rotation {rot:?} applies to the Gamma RS-GDF build only; the k-point \
+             build does not implement it (set it to None)"
+        ))),
     }
 }
 
@@ -255,27 +378,289 @@ fn sr_metric_binned(
     st.sr_metric_binned(moduli)
 }
 
-/// SR 3-index binned by `(L mod mod_l, T mod mod_t)`: `bins[rL * R_T + rT]`
-/// = `Σ (m_0 l_L|P_T)_erfc`, `(nao², naux)` reals, and the triplet count.
-/// PARALLEL ([`Stage::sr_three_index_binned`]), bit-identical to
-/// [`sr_three_index_binned_serial_oracle`]. The per-thread scratch is checked
-/// on `ledger` first.
-fn sr_three_index_binned(
-    st: &Stage<'_>,
-    images: &[[f64; 3]],
-    mod_l: [usize; 3],
-    mod_t: [usize; 3],
-    ledger: &Ledger,
-    who: &str,
-) -> Result<(Vec<Array2<f64>>, usize), FerricError> {
-    let bins = SrBinning { mod_l, mod_t };
-    st.check_sr_scratch(ledger, who, bins)?;
-    st.sr_three_index_binned(images, bins)
+/// The residue map of the transposed half (module doc "Orbital-pair
+/// symmetry at k"): bin `(r_L, r_T)` of row `μν` holds the same sum as bin
+/// `M(r_L, r_T) = (r_{−L}, r_T − r_L mod mod_t)` of row `νμ`. `M` is an
+/// involution. Needs `mod_t | mod_l` per axis (the k build's `N` / `N or
+/// 2N`), so `r_L` fixes `L mod mod_t`.
+pub(in crate::rsgdf) struct MirrorBins {
+    rt: usize,
+    /// `neg[r_L]` = residue of `−L` modulo `mod_l`.
+    neg: Vec<usize>,
+    /// `tshift[r_L][r_T]` = residue of `T − L` modulo `mod_t`.
+    tshift: Vec<Vec<usize>>,
 }
 
-/// The SR residue bins of a build (`(J2 bins, J3 bins, metric pairs,
-/// triplets)`): the unsplit walks, or the range split's kept calls / compact
-/// pairs on the same bins. The per-thread scratch is checked on `ledger`.
+impl MirrorBins {
+    pub(in crate::rsgdf) fn new(bins: SrBinning) -> Result<Self, FerricError> {
+        let (mod_l, mod_t) = (bins.mod_l, bins.mod_t);
+        if (0..3).any(|i| mod_l[i] == 0 || mod_t[i] == 0 || mod_l[i] % mod_t[i] != 0) {
+            return Err(FerricError::General(format!(
+                "KRsGdf s2 walk: aux-image moduli {mod_t:?} must divide the pair-image moduli \
+                 {mod_l:?} (internal error)"
+            )));
+        }
+        let (rl, rt) = (bins.n_l(), bins.n_t());
+        let neg = (0..rl)
+            .map(|r| {
+                let c = residue_coords(r, mod_l);
+                residue_index([-c[0], -c[1], -c[2]], mod_l)
+            })
+            .collect();
+        let tshift = (0..rl)
+            .map(|r| {
+                let c = residue_coords(r, mod_l);
+                (0..rt)
+                    .map(|t| {
+                        let d = residue_coords(t, mod_t);
+                        residue_index([d[0] - c[0], d[1] - c[1], d[2] - c[2]], mod_t)
+                    })
+                    .collect()
+            })
+            .collect();
+        Ok(Self { rt, neg, tshift })
+    }
+
+    /// `M(bin)` (flat bin index `r_L R_T + r_T`).
+    pub(in crate::rsgdf) fn mirror(&self, bin: usize) -> usize {
+        let (r, t) = (bin / self.rt, bin % self.rt);
+        self.neg[r] * self.rt + self.tshift[r][t]
+    }
+}
+
+/// The `(lo, hi, r_L)` tasks of the k-point s2 walk, pair-major then `r_L`:
+/// every `r_L` of an off-diagonal pair `lo < hi`; the CANONICAL residues
+/// `r_L <= r_{−L}` of a diagonal pair (the task of `r_L < r_{−L}` also writes
+/// bin `r_{−L}`; a self-conjugate `r_L = r_{−L}` writes only itself).
+/// `skip_diag`: the [`KPairSymMutant::SkipDiagonal`] defect.
+fn s2_tasks(nsh: usize, neg: &[usize], skip_diag: bool) -> Vec<(usize, usize, usize)> {
+    let mut out = Vec::new();
+    for (lo, hi) in unordered_pairs(nsh) {
+        if lo == hi && skip_diag {
+            continue;
+        }
+        for (r_l, &r_m) in neg.iter().enumerate() {
+            if lo == hi && r_l > r_m {
+                continue;
+            }
+            out.push((lo, hi, r_l));
+        }
+    }
+    out
+}
+
+/// COPY one s2 task's finished scratch (`acc[r_T bl + (i nb + j) naux + P]`
+/// of shell pair `(a, b)` at pair-image residue `r_l`, the layout of
+/// [`Stage::sr3_pair_acc`]) into row `μν` of bins `(r_l, r_T)` and, when
+/// `mirror`, into row `νμ` of bins `M(r_l, r_T)` ([`MirrorBins`]).
+///
+/// `self_conj`: a diagonal pair (`a` is `b`) at a residue with `r_{−L} =
+/// r_L`. `M` then maps the task's own elements `(r_T, i, j) ↦ (r_T', j, i)`
+/// onto each other, so only the canonical element of each orbit
+/// (`(r_T, i, j) <= (r_T', j, i)`, lexicographic) is written, directly and
+/// mirrored (a fixed point once): the bins stay EXACTLY `M`-symmetric (at
+/// Gamma this is the `i <= j` rule). `mutant` selects a test-only defect of
+/// the mirrored write (the canonical choice always uses the true map).
+#[allow(clippy::too_many_arguments)]
+fn copy_pair_bins_s2(
+    out: &mut [Array2<f64>],
+    n: usize,
+    acc: &[f64],
+    (a, b): (&GShell, &GShell),
+    r_l: usize,
+    mb: &MirrorBins,
+    (mirror, self_conj): (bool, bool),
+    mutant: Option<KPairSymMutant>,
+) {
+    let naux = out.first().map_or(0, |m| m.ncols());
+    let (na, nb, rt) = (a.nfun, b.nfun, mb.rt);
+    let bl = na * nb * naux;
+    let mirror = mirror && mutant != Some(KPairSymMutant::DropTransposed);
+    let r_m = if mutant == Some(KPairSymMutant::WrongPairBin) {
+        r_l
+    } else {
+        mb.neg[r_l]
+    };
+    let copy = |dst: &mut Array2<f64>, row: usize, src: &[f64]| {
+        dst.row_mut(row)
+            .iter_mut()
+            .zip(src)
+            .for_each(|(d, &x)| *d = x);
+    };
+    for r_t in 0..rt {
+        let t_true = mb.tshift[r_l][r_t];
+        let t_m = if mutant == Some(KPairSymMutant::NoAuxShift) {
+            r_t
+        } else {
+            t_true
+        };
+        for i in 0..na {
+            for j in 0..nb {
+                if self_conj && (r_t, i, j) > (t_true, j, i) {
+                    continue;
+                }
+                let s0 = r_t * bl + (i * nb + j) * naux;
+                let src = &acc[s0..s0 + naux];
+                copy(&mut out[r_l * rt + r_t], (a.off + i) * n + b.off + j, src);
+                let fixed = self_conj && (r_t, i, j) == (t_true, j, i);
+                if mirror && !fixed {
+                    copy(&mut out[r_m * rt + t_m], (b.off + j) * n + a.off + i, src);
+                }
+            }
+        }
+    }
+}
+
+/// The k-point SR 3-centre s2 driver shared by the unsplit walk and the
+/// range split's kept calls (module doc "Orbital-pair symmetry at k"): over
+/// the [`s2_tasks`] in PARALLEL, `acc_of(r_L, orient(lo, hi))` accumulates
+/// the task (the ordered walk's own per-pair body, so its row `μν` is
+/// BITWISE the ordered walk's) and ONE task copies it into both halves
+/// ([`copy_pair_bins_s2`]) of the zeroed `out` under its mutex. Distinct
+/// tasks own disjoint elements (`M` is a bijection on bins for a fixed
+/// pair, and `r_L ↦ r_{−L}` on residues), so every element is written by
+/// exactly one task and the bins are bitwise identical across thread
+/// counts. Returns `(triplets computed, ordered-equivalent)`; the first
+/// error in task order is returned instead.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::rsgdf) fn sr3_binned_s2_drive<O, A>(
+    obs_sh: &[GShell],
+    n: usize,
+    bins: SrBinning,
+    mutant: Option<KPairSymMutant>,
+    out: &Mutex<Vec<Array2<f64>>>,
+    orient: O,
+    acc_of: A,
+) -> Result<(usize, usize), FerricError>
+where
+    O: Fn(usize, usize) -> (usize, usize) + Sync,
+    A: Fn(usize, (usize, usize)) -> Result<(Vec<f64>, usize), FerricError> + Sync,
+{
+    let mb = MirrorBins::new(bins)?;
+    let tasks = s2_tasks(
+        obs_sh.len(),
+        &mb.neg,
+        mutant == Some(KPairSymMutant::SkipDiagonal),
+    );
+    let counts: Vec<Result<usize, FerricError>> = tasks
+        .par_iter()
+        .map(|&(lo, hi, r_l)| {
+            let (p, q) = orient(lo, hi);
+            let (acc, count) = acc_of(r_l, (p, q))?;
+            if count > 0 {
+                let diag = lo == hi;
+                let mirror = !(diag && mutant == Some(KPairSymMutant::DiagonalNoMirror));
+                let self_conj = diag && mb.neg[r_l] == r_l;
+                let mut g = out.lock().unwrap_or_else(|e| e.into_inner());
+                copy_pair_bins_s2(
+                    &mut g[..],
+                    n,
+                    &acc,
+                    (&obs_sh[p], &obs_sh[q]),
+                    r_l,
+                    &mb,
+                    (mirror, self_conj),
+                    mutant,
+                );
+            }
+            Ok(count)
+        })
+        .collect();
+    let (mut computed, mut ordered) = (0usize, 0usize);
+    for (&(lo, hi, r_l), c) in tasks.iter().zip(counts) {
+        let c = c?;
+        computed += c;
+        ordered += if lo != hi || mb.neg[r_l] != r_l {
+            2 * c
+        } else {
+            c
+        };
+    }
+    Ok((computed, ordered))
+}
+
+/// `R_L R_T` zeroed `(nao², naux)` bins.
+pub(in crate::rsgdf) fn zeroed_bins(bins: SrBinning, n: usize, naux: usize) -> Vec<Array2<f64>> {
+    (0..bins.n_l() * bins.n_t())
+        .map(|_| Array2::<f64>::zeros((n * n, naux)))
+        .collect()
+}
+
+/// Unsplit k-point SR 3-index bins over UNORDERED shell pairs (s2, module doc
+/// "Orbital-pair symmetry at k"): `(bins, triplets computed,
+/// ordered-equivalent)`; each task is [`Stage::sr3_pair_acc`] (the ordered
+/// walk's body) on pair `lo <= hi`.
+fn sr_three_index_binned_s2(
+    st: &Stage<'_>,
+    images: &[[f64; 3]],
+    bins: SrBinning,
+    mutant: Option<KPairSymMutant>,
+) -> Result<KSr3Parts, FerricError> {
+    let n = st.obs.nbasis();
+    let recip = st.cell.reciprocal();
+    let l_bin: Vec<usize> = images
+        .iter()
+        .map(|l| SrBinning::residue(&recip, l, bins.mod_l))
+        .collect();
+    let pool = st.sr3_engine_pool()?;
+    let out = Mutex::new(zeroed_bins(bins, n, st.aux.nbasis()));
+    let ctx = Sr3Ctx {
+        pool: &pool,
+        images,
+        l_bin: &l_bin,
+        recip,
+        bins,
+        global: st.sr3_global_radius(),
+        out: &out,
+    };
+    let (count, ordered) = sr3_binned_s2_drive(
+        &st.obs_sh,
+        n,
+        bins,
+        mutant,
+        &out,
+        |lo, hi| (lo, hi),
+        |r_l, pair| st.sr3_pair_acc(&ctx, r_l, pair),
+    )?;
+    Ok((
+        out.into_inner().unwrap_or_else(|e| e.into_inner()),
+        count,
+        ordered,
+    ))
+}
+
+/// One k-point SR 3-centre result: `(J3 bins (R_L R_T of (nao², naux)),
+/// triplets computed, ordered-equivalent triplets)`.
+pub type KSr3Parts = (Vec<Array2<f64>>, usize, usize);
+
+/// The SR 3-index bins of a build under `walk`: unsplit or the range split's
+/// kept calls, s2 (production) or the FROZEN ordered walk (whose two counts
+/// are both the ordered count). The caller checks the per-thread scratch.
+fn sr3_bins(
+    st: &Stage<'_>,
+    plan: Option<&SplitPlan>,
+    images: &[[f64; 3]],
+    bins: SrBinning,
+    walk: KPairWalk,
+) -> Result<KSr3Parts, FerricError> {
+    match (plan, walk) {
+        (None, KPairWalk::S2(m)) => sr_three_index_binned_s2(st, images, bins, m),
+        (Some(p), KPairWalk::S2(m)) => p.sr_three_index_binned_s2(st, images, bins, m),
+        (None, KPairWalk::S1Oracle) => {
+            let (b, c) = st.sr_three_index_binned(images, bins)?;
+            Ok((b, c, c))
+        }
+        (Some(p), KPairWalk::S1Oracle) => {
+            let (b, c) = p.sr_three_index_binned(st, images, bins)?;
+            Ok((b, c, c))
+        }
+    }
+}
+
+/// The SR residue bins of a build (`((J2 bins, J3 bins, metric pairs,
+/// triplets computed), ordered-equivalent triplets)`): the unsplit walks, or
+/// the range split's kept calls / compact pairs on the same bins; the J3
+/// walk per `walk`. The per-thread scratch is checked on `ledger`.
 fn sr_bins_of(
     st: &Stage<'_>,
     plan: Option<&SplitPlan>,
@@ -283,17 +668,16 @@ fn sr_bins_of(
     (mod_l, mod_t): ([usize; 3], [usize; 3]),
     ledger: &Ledger,
     who: &str,
-) -> Result<SrBinsParts, FerricError> {
-    let Some(p) = plan else {
-        let (j2, n2) = sr_metric_binned(st, mod_t, ledger, who)?;
-        let (j3, n3) = sr_three_index_binned(st, images, mod_l, mod_t, ledger, who)?;
-        return Ok((j2, j3, n2, n3));
-    };
+    walk: KPairWalk,
+) -> Result<(SrBinsParts, usize), FerricError> {
     let bins = SrBinning { mod_l, mod_t };
     st.check_sr_scratch(ledger, who, bins)?;
-    let (j2, n2) = p.sr_metric_binned(st, mod_t)?;
-    let (j3, n3) = p.sr_three_index_binned(st, images, bins)?;
-    Ok((j2, j3, n2, n3))
+    let (j2, n2) = match plan {
+        None => st.sr_metric_binned(mod_t)?,
+        Some(p) => p.sr_metric_binned(st, mod_t)?,
+    };
+    let (j3, n3, n3_ordered) = sr3_bins(st, plan, images, bins, walk)?;
+    Ok(((j2, j3, n2, n3), n3_ordered))
 }
 
 /// Every aux function's charge `q_P = X_P(0)`.
@@ -462,12 +846,16 @@ pub type SrBinsParts = (Vec<Array2<f64>>, Vec<Array2<f64>>, usize, usize);
 
 /// TEST ORACLE for the parallel k-point SR walks: `[parallel, serial]` SR
 /// residue bins of [`KRsGdf::build`] for `mesh` (`L` by
-/// [`KPointMesh::residue_moduli`], `T` by the mesh size) at `cfg`. `serial`
-/// is the pre-parallel binned walk, FROZEN verbatim
-/// (`sr_*_binned_serial_oracle`); the two must agree BIT FOR BIT
-/// (`tests/pbc_parallel_bitwise.rs`), which is the proof that the
-/// `(pair, r_L)`-parallel nest kept every element's summation sequence,
-/// including the bin dimension.
+/// [`KPointMesh::residue_moduli`], `T` by the mesh size) at `cfg` (unsplit).
+/// `serial` is the pre-parallel binned walk over ORDERED pairs, FROZEN
+/// verbatim (`sr_*_binned_serial_oracle`). The metric bins must agree BIT
+/// FOR BIT (the `(pair, r_L)`-parallel nest kept every element's summation
+/// sequence, including the bin dimension); the 3-centre bins are the
+/// production s2 walk (module doc "Orbital-pair symmetry at k"), BITWISE
+/// the serial walk's elements under the s2 prescription (row `μν`, shell of
+/// `μ` < shell of `ν`, or a diagonal pair at a canonical residue, from bin
+/// `b`; the others from bin `M(b)` of row `νμ`) and their count is the
+/// COMPUTED one (`tests/pbc_parallel_bitwise.rs`).
 #[doc(hidden)]
 pub fn sr_bins_parallel_and_serial(
     cell: &Cell,
@@ -480,11 +868,56 @@ pub fn sr_bins_parallel_and_serial(
     let (mod_l, mod_t) = (mesh.residue_moduli(), mesh.n());
     let ledger = Ledger::new(crate::budget::resolve(cfg.budget_bytes));
     let (j2p, n2p) = sr_metric_binned(&st, mod_t, &ledger, "KRsGdf diagnostic")?;
-    let (j3p, n3p) =
-        sr_three_index_binned(&st, &images, mod_l, mod_t, &ledger, "KRsGdf diagnostic")?;
+    let bins = SrBinning { mod_l, mod_t };
+    st.check_sr_scratch(&ledger, "KRsGdf diagnostic", bins)?;
+    let (j3p, n3p, _) = sr_three_index_binned_s2(&st, &images, bins, None)?;
     let (j2s, n2s) = sr_metric_binned_serial_oracle(&st, mod_t)?;
     let (j3s, n3s) = sr_three_index_binned_serial_oracle(&st, &images, mod_l, mod_t)?;
     Ok([(j2p, j3p, n2p, n3p), (j2s, j3s, n2s, n3s)])
+}
+
+/// TEST ORACLE for the k-point s2 SR 3-centre walk (module doc "Orbital-pair
+/// symmetry at k"): `[s2, s1]` = the SR 3-index bins [`KRsGdf::build`]
+/// computes for `mesh` at `cfg` (range split honoured) under the s2 walk
+/// with the test-only defect `mutant` (`None`: production), and the FROZEN
+/// ordered walk [`KRsGdf::build_pair_s1_oracle`] computes. Expected
+/// (`tests/pbc_kpair_symmetry.rs`): `s2[b][μν] == s2[M(b)][νμ]` bitwise;
+/// each `s2[b][μν]` bitwise `s1[b][μν]` or `s1[M(b)][νμ]`; the unsplit
+/// ordered-equivalent count equal to `s1`'s count.
+#[doc(hidden)]
+pub fn sr3_kbins_s2_and_s1(
+    cell: &Cell,
+    obs: &PreparedBasis,
+    aux: &PreparedBasis,
+    mesh: &KPointMesh,
+    cfg: &RsGdfConfig,
+    mutant: Option<KPairSymMutant>,
+) -> Result<[KSr3Parts; 2], FerricError> {
+    super::require_pure_aux(aux, "KRsGdf")?;
+    let (st, images) = diagnostic_stage(cell, obs, aux, cfg)?;
+    let bins = SrBinning {
+        mod_l: mesh.residue_moduli(),
+        mod_t: mesh.n(),
+    };
+    let mut ledger = Ledger::new(crate::budget::resolve(cfg.budget_bytes));
+    let plan = SplitPlan::for_kpoint(&st, cfg, &images, (bins.n_l(), mesh.nk()), &mut ledger)?;
+    st.check_sr_scratch(&ledger, "KRsGdf diagnostic", bins)?;
+    Ok([
+        sr3_bins(&st, plan.as_ref(), &images, bins, KPairWalk::S2(mutant))?,
+        sr3_bins(&st, plan.as_ref(), &images, bins, KPairWalk::S1Oracle)?,
+    ])
+}
+
+/// `M(bin)` of the k-point s2 walk for pair-image moduli `mod_l` and
+/// aux-image moduli `mod_t` (module doc "Orbital-pair symmetry at k"), for
+/// tests that want the library's map next to their own derivation.
+#[doc(hidden)]
+pub fn kpair_mirror_bin(
+    mod_l: [usize; 3],
+    mod_t: [usize; 3],
+    bin: usize,
+) -> Result<usize, FerricError> {
+    Ok(MirrorBins::new(SrBinning { mod_l, mod_t })?.mirror(bin))
 }
 
 /// LR K vectors of class `iq`: q = 0 → the Gamma half sphere (weight 2);
@@ -718,8 +1151,39 @@ impl KRsGdf {
         s_k: &[Array2<C64>],
         cfg: &KRsGdfConfig,
     ) -> Result<Self, FerricError> {
+        Self::build_impl(cell, obs, aux, mesh, s_k, cfg, KPairWalk::of(cfg.mutation))
+    }
+
+    /// TEST ORACLE (FROZEN; do not "improve"): [`KRsGdf::build`] with the
+    /// pre-s2 SR 3-centre walk over every ORDERED shell pair (module doc
+    /// "Orbital-pair symmetry at k"). Bit for bit the build before s2,
+    /// including its counters (computed = ordered-equivalent = the ordered
+    /// count). The production build differs from it only by round-off: each
+    /// SR bin element is one of the two ordered evaluations.
+    #[doc(hidden)]
+    pub fn build_pair_s1_oracle(
+        cell: &Cell,
+        obs: &PreparedBasis,
+        aux: &PreparedBasis,
+        mesh: &KPointMesh,
+        s_k: &[Array2<C64>],
+        cfg: &KRsGdfConfig,
+    ) -> Result<Self, FerricError> {
+        Self::build_impl(cell, obs, aux, mesh, s_k, cfg, KPairWalk::S1Oracle)
+    }
+
+    fn build_impl(
+        cell: &Cell,
+        obs: &PreparedBasis,
+        aux: &PreparedBasis,
+        mesh: &KPointMesh,
+        s_k: &[Array2<C64>],
+        cfg: &KRsGdfConfig,
+        walk: KPairWalk,
+    ) -> Result<Self, FerricError> {
         let g = &cfg.gdf;
         g.validate()?;
+        refuse_column_rotation(g, "KRsGdf")?;
         super::require_pure_aux(aux, "KRsGdf")?;
         let n = obs.nbasis();
         let n2 = n * n;
@@ -813,8 +1277,8 @@ impl KRsGdf {
         // --- SR, once for every q: residue bins (parallel; per-thread
         // scratch checked after `chunk_budget` is fixed).
         let plan = plan.as_ref();
-        let (j2res, j3res, n_sr2, n_sr3) =
-            sr_bins_of(&st, plan, &images, (mod_l, mod_t), &ledger, "KRsGdf")?;
+        let ((j2res, j3res, n_sr2, n_sr3), n_sr3_ordered) =
+            sr_bins_of(&st, plan, &images, (mod_l, mod_t), &ledger, "KRsGdf", walk)?;
 
         let (qv, s_kept) = g0_inputs(&st, plan, &images, mesh, s_k)?;
         let s_g0 = s_kept.as_deref().unwrap_or(s_k);
@@ -1018,6 +1482,7 @@ impl KRsGdf {
             n_q_built: n_built,
             n_pair_images: images.len(),
             n_sr3_triplets: n_sr3,
+            n_sr3_triplets_ordered: n_sr3_ordered,
             n_sr2_pairs: n_sr2,
             residues_l: rl,
             residues_t: rt,

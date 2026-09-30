@@ -64,8 +64,9 @@
 //! a force for a different build is refused, not returned.
 
 use super::{
-    aux_charges, g0_inputs, hermitize_pairs, lr_accumulate_q_any, lr_kvectors, sr_bins_of,
-    subtract_g0_three_index, KRsGdf, KRsGdfConfig, KRsGdfMutation,
+    aux_charges, g0_inputs, hermitize_pairs, lr_accumulate_q_any, lr_kvectors,
+    refuse_column_rotation, sr_bins_of, subtract_g0_three_index, KPairWalk, KRsGdf, KRsGdfConfig,
+    KRsGdfMutation,
 };
 use crate::budget::{bytes_of, Ledger};
 use crate::hcore::{gvector_list_bytes, G_CHUNK_BYTES};
@@ -333,8 +334,15 @@ pub(crate) fn kpoint_fit_gradient(
 
     // --- The energy's SR bins (same walk, same order; the kept calls of a
     // range split) and G = 0 inputs.
-    let (j2res, j3res, _, _) =
-        sr_bins_of(&st, plan.as_ref(), &images, (mod_l, mod_t), ledger, who)?;
+    let ((j2res, j3res, _, _), _) = sr_bins_of(
+        &st,
+        plan.as_ref(),
+        &images,
+        (mod_l, mod_t),
+        ledger,
+        who,
+        KPairWalk::S2(None),
+    )?;
     let (qv, s_kept) = g0_inputs(&st, plan.as_ref(), &images, mesh, s_k)?;
     // M_g0's charges: the build's (q_c with a split), or every aux charge
     // under the SplitFullG0 mutant.
@@ -450,6 +458,7 @@ fn check_fit_inputs(
     let who = "k-point RS-GDF forces";
     let g = &cfg.gdf;
     g.validate()?;
+    refuse_column_rotation(g, who)?;
     match cfg.mutation {
         None | Some(KRsGdfMutation::NoTimeReversal) => {}
         Some(m) => {
