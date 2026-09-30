@@ -27,10 +27,14 @@
 //! (`ferric_rpa::properties::hirshfeld_charges` etc.) are unaffected.
 //!
 //! Three siblings — `atomic_effective_volumes_hirshfeld`, `hirshfeld_i_charges`,
-//! and `hirshfeld_charges` — are equally RPA-independent but could NOT move:
-//! they depend on `ferric_integrals::ao_grid::GridSpec` /
-//! `ferric_integrals::ao_grid::eval_basis_on_grid`. They remain defined
-//! here.
+//! and `hirshfeld_charges` — are equally RPA-independent and are defined here.
+//! The first two integrate on the uniform Cartesian lattice of
+//! `ferric_integrals::ao_grid::GridSpec`; `hirshfeld_charges` integrates on the
+//! atom-centred Becke–Lebedev grid. Their proatoms come from a caller-supplied
+//! [`ProatomProvider`](ferric_scf::properties::ProatomProvider) — normally
+//! [`ferric_scf::properties::scf_proatom_provider`] — with the single-Slater
+//! proatom of [`slater_xi_for_z`](ferric_scf::properties::slater_xi_for_z) as the
+//! fallback.
 //!
 //! Both routines are closed-shell only.  They return
 //! `FerricError::General(...)` if handed an Unrestricted / RestrictedOpen
@@ -3403,12 +3407,19 @@ pub fn preflight_hirshfeld_grid_scan_reserved(
     ferric_core::memory::pool::reserve_global(label, est)
 }
 
-/// Per-atom effective volume via Hirshfeld (Slater proatom) partitioning:
+/// Per-atom effective volume via Hirshfeld partitioning:
 /// ```text
-///   v_A = ∫ w^A_Hirsh(r) ρ(r) |r − R_A|³ dV
+///   v_A = ∫ w^A_Hirsh(r) ρ(r) |r − R_A|³ dV,   w^A = ρ⁰_A / (Σ_B ρ⁰_B + 1e-12)
 /// ```
 /// This is the partition the TS dispersion model was calibrated for.
-/// Uses the same Slater single-exponential proatom as `hirshfeld_charges`.
+///
+/// `proatom` supplies each atom's neutral free-atom density ρ⁰_A (ferric-cli
+/// passes [`ferric_scf::properties::scf_proatom_provider`]); with `None`, or for
+/// an atom the provider returns `None` for, ρ⁰_A is the single-Slater proatom of
+/// [`slater_xi_for_z`]. Integrated on a uniform Cartesian lattice around the
+/// molecule (`FERRIC_HIRSHFELD_SPACING`, default 0.20 Bohr;
+/// `FERRIC_HIRSHFELD_MARGIN`, default 6 Bohr), not the Becke–Lebedev grid that
+/// [`hirshfeld_charges`] uses.
 pub fn atomic_effective_volumes_hirshfeld(
     mol: &Molecule,
     obs_bs: &ferric_core::basis::BasisSet,
@@ -3693,6 +3704,14 @@ pub fn hirshfeld_i_charges(
     Ok(q)
 }
 
+/// Hirshfeld atomic charges q_A = Z_A − ∫ w^A(r) ρ(r) dr, with
+/// w^A = ρ⁰_A / (Σ_B ρ⁰_B + 1e-12), on the atom-centred Becke–Lebedev grid.
+///
+/// `proatom` supplies each atom's neutral free-atom density ρ⁰_A; ferric-cli
+/// and the Python `ferric.hirshfeld_charges` (default `proatom="scf"`) pass
+/// [`ferric_scf::properties::scf_proatom_provider`]. With `None`, or for an atom
+/// the provider returns `None` for, ρ⁰_A is the single-Slater proatom of
+/// [`slater_xi_for_z`], and a warning is printed.
 ///
 /// The total electronic charge is renormalized so Σ_A (Z_A − q_A) = N_e
 /// exactly (compensates for grid quadrature error in the density integral).

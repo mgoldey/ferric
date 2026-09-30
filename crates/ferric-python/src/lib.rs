@@ -483,6 +483,9 @@ struct PyRhfResult {
     density_data: Array2<f64>,
     orbital_energies_data: Vec<f64>,
     scf_data: ScfResult,
+    /// The SCF settings this result was solved with. `hirshfeld_charges`
+    /// solves its free-atom proatoms with the same settings, as ferric-cli does.
+    scf_config: RhfConfig,
 }
 
 #[pymethods]
@@ -648,6 +651,7 @@ fn run_rhf(
         density_data: r.density_total.clone(),
         orbital_energies_data: r.eps_alpha.clone(),
         scf_data: r,
+        scf_config: config,
     })
 }
 
@@ -3617,6 +3621,13 @@ impl<'py> DensitySource<'py> {
             DensitySource::Dft(d) => &d.scf_data,
         }
     }
+
+    fn scf_config(&self) -> &RhfConfig {
+        match self {
+            DensitySource::Rhf(r) => &r.scf_config,
+            DensitySource::Dft(d) => &d.scf_config,
+        }
+    }
 }
 
 impl<'py> FromPyObject<'py> for DensitySource<'py> {
@@ -3675,17 +3686,97 @@ fn esp_at_points(
         .map_err(make_err)
 }
 
-/// Hirshfeld partial charges (units of e), using the default free-atom
-/// (single-exponential Slater) proatom reference. `result` is an `RhfResult`
-/// or `DftResult` from a converged SCF.
+/// Hirshfeld partial charges (units of e). `result` is an `RhfResult` or
+/// `DftResult` from a converged SCF.
+///
+/// `proatom` selects the free-atom reference density:
+///   "scf"    (default) free-atom SCF densities in the molecule's own basis,
+///            solved with the same SCF settings as `result` (method, functional,
+///            density fitting, thresholds) — the proatom ferric-cli's
+///            `[rpa] compute_hirshfeld_charges` uses
+///            (`ferric_scf::properties::scf_proatom_provider`). An atom whose
+///            free-atom SCF fails falls back to the Slater proatom, with a warning.
+///   "slater" a single-exponential Slater proatom (xi = 1 / Bragg-Slater
+///            radius). Qualitative: 0.23-0.72 e from "scf" on H2O, CO and
+///            CH3OH. Prints a warning.
+/// Any other value raises ValueError.
 #[pyfunction]
+#[pyo3(signature = (mol, basis_set, result, proatom="scf"))]
 fn hirshfeld_charges(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     result: DensitySource,
+    proatom: &str,
 ) -> PyResult<Vec<f64>> {
-    ferric_rpa::properties::hirshfeld_charges(&mol.inner, &basis_set.inner, result.density(), None)
-        .map_err(make_err)
+    let job = HirshfeldJob::new(mol, basis_set, &result, proatom)?;
+    // Owned values only cross the GIL release: the free-atom SCFs can take
+    // seconds per element.
+    py.allow_threads(|| job.run()).map_err(make_err)
+}
+
+/// Owned inputs of one `hirshfeld_charges` call.
+struct HirshfeldJob {
+    mol: ferric_core::mol::Molecule,
+    bs: ferric_core::basis::BasisSet,
+    density: ndarray::Array2<f64>,
+    config: RhfConfig,
+    use_scf: bool,
+}
+
+impl HirshfeldJob {
+    fn new(
+        mol: &PyMolecule,
+        basis_set: &PyBasisSet,
+        result: &DensitySource,
+        proatom: &str,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            use_scf: parse_proatom(proatom)?,
+            mol: mol.inner.clone(),
+            bs: basis_set.inner.clone(),
+            density: result.density().clone(),
+            config: result.scf_config().clone(),
+        })
+    }
+
+    fn run(&self) -> Result<Vec<f64>, ferric_core::FerricError> {
+        hirshfeld_with_proatoms(
+            &self.mol,
+            &self.bs,
+            &self.density,
+            &self.config,
+            self.use_scf,
+        )
+    }
+}
+
+/// `"scf"` → true (free-atom SCF proatoms, the CLI's), `"slater"` → false.
+fn parse_proatom(proatom: &str) -> PyResult<bool> {
+    match proatom {
+        "scf" => Ok(true),
+        "slater" => Ok(false),
+        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "unknown proatom {other:?}: expected \"scf\" or \"slater\""
+        ))),
+    }
+}
+
+fn hirshfeld_with_proatoms(
+    mol: &ferric_core::mol::Molecule,
+    bs: &ferric_core::basis::BasisSet,
+    density: &ndarray::Array2<f64>,
+    config: &RhfConfig,
+    use_scf: bool,
+) -> Result<Vec<f64>, ferric_core::FerricError> {
+    if !use_scf {
+        return ferric_rpa::properties::hirshfeld_charges(mol, bs, density, None);
+    }
+    let ctx = ParallelContext::default();
+    let provider =
+        ferric_scf::properties::scf_proatom_provider(&ctx, bs, Operator::coulomb(), config);
+    let provider: &ferric_rpa::properties::ProatomProvider = &provider;
+    ferric_rpa::properties::hirshfeld_charges(mol, bs, density, Some(provider))
 }
 
 /// Per-orbital centroids <p|r|p> (Bohr, list of [x,y,z]) and spatial spreads
@@ -5532,6 +5623,9 @@ struct PyDftResult {
     /// LDA / GGA / hybrid / RSH only; VV10 nonlocal piece is excluded.
     gradient_data: Option<Array2<f64>>,
     scf_data: ScfResult,
+    /// The base SCF settings (functional, grid, density fitting, thresholds)
+    /// this result was solved with; see `PyRhfResult::scf_config`.
+    scf_config: RhfConfig,
 }
 
 #[pymethods]
@@ -5886,6 +5980,7 @@ fn run_dft(
         density_data: rhf.density_total.clone(),
         gradient_data,
         scf_data: rhf,
+        scf_config: cfg,
     })
 }
 

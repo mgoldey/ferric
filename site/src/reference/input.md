@@ -214,7 +214,7 @@ Read by `pdep-rpa`, `gw`, `bse-tda`, `tdhf-static-polarizability`, and, for
 | `compute_electric_field` | bool | `true` | | |
 | `compute_density_matrix` | bool | `true` | | |
 | `compute_dipole` | bool | `true` | | |
-| `compute_hirshfeld_charges` | bool | `true` | | |
+| `compute_hirshfeld_charges` | bool | `true` | | Proatoms are free-atom SCF densities in the molecule's basis and SCF settings, as in Python's `hirshfeld_charges`. |
 | `compute_lowdin_charges` | bool | `true` | | |
 | `compute_mulliken_charges` | bool | `true` | | |
 | `compute_chelpg_charges` | bool | `true` | | |
