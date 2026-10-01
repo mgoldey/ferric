@@ -930,8 +930,9 @@ fn mirror_det(sys: &System, a: &Det) -> Det {
 }
 
 /// Constrained UKS/PBE solve of the diabat with the hole on `frag`.
-fn solve_diabat(sys: &System, frag: usize, lambda_init: f64) -> CdftResult {
-    let cfg = RhfConfig {
+/// The end-to-end cDFT config for one diabat (hole on fragment `frag`).
+fn diabat_config(frag: usize, lambda_init: f64) -> RhfConfig {
+    RhfConfig {
         constraints: vec![Constraint {
             fragment: vec![frag],
             spin: SpinChannel::Total,
@@ -946,7 +947,11 @@ fn solve_diabat(sys: &System, frag: usize, lambda_init: f64) -> CdftResult {
         level_shift: E2E_LEVEL_SHIFT,
         max_iter: E2E_INNER_MAX_ITER,
         ..base_config()
-    };
+    }
+}
+
+fn solve_diabat(sys: &System, frag: usize, lambda_init: f64) -> CdftResult {
+    let cfg = diabat_config(frag, lambda_init);
     let tag = &sys.tag;
     let res = solve_cdft_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bs, &sys.bounds, &cfg)
         .unwrap_or_else(|e| {
@@ -1038,11 +1043,23 @@ fn run_basis(basis_name: &str) {
         if KNOWN_NONCONVERGING.contains(&(basis_name, r_tag)) {
             // Asserted, not skipped: if the driver learns to converge this point
             // the assert fails and the case should move back into the row.
-            let attempt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                solve_diabat(&sys, 0, lam_ref)
-            }));
+            // Only a NON-CONVERGENCE counts as the known gap: any other failure
+            // (population, W mismatch, a regression) must not pass silently.
+            let attempt = solve_cdft_uhf(
+                &sys.ctx,
+                &sys.mol,
+                &sys.prep,
+                &sys.bs,
+                &sys.bounds,
+                &diabat_config(0, lam_ref),
+            );
+            let not_converged = match &attempt {
+                Err(ferric_core::FerricError::Convergence(_)) => true,
+                Err(e) => panic!("{tag}: known non-converging point failed differently: {e:?}"),
+                Ok(r) => !r.scf.converged,
+            };
             assert!(
-                attempt.is_err(),
+                not_converged,
                 "{tag}: listed in KNOWN_NONCONVERGING but now converges -- restore it"
             );
             eprintln!("{tag}: KNOWN driver gap -- outer loop does not converge from NWChem's lambda; skipped");

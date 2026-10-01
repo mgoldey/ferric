@@ -110,7 +110,8 @@ first target of each constraint kind); numbers are on
 reference value is stated for UHF-cDFT energies. The He₂⁺ coupling ingredients
 (determinant overlap, one- and two-electron transition elements, |V|) match
 NWChem's `et` module to ≤ 6e-11 Ha on NWChem's own determinants, and the KS
-diabats and couplings match end to end when started from NWChem's λ (see
+diabats and couplings match end to end when started from NWChem's λ, except
+def2-SVP at 3.50 Å, where the outer loop limit-cycles (see
 [Capabilities and validation](../reference/validation.md)). From λ = 0 the
 outer loop does not reliably find these diabats: the root sits next to an
 over-localization cliff. The tests also check the coupling kernel on synthetic matrices and He₂⁺ identities
