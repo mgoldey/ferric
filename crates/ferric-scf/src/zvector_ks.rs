@@ -30,7 +30,7 @@
 //! F_ai = ¼ ∂E_SCF/∂κ_ai, so Σ_ai Z_ai ∂F_ai/∂R = ¼ d/dt [∂E_SCF/∂R] at the
 //! orbitals rotated by t·Z. The nuclear derivative of E_SCF along the
 //! fixed-orbital path is the ordinary gradient EXPRESSION g(D, W) with
-//! W = ½ D F[D] D (which is the usual 2 Σ ε_i C_i C_iᵀ at convergence), so
+//! W = ½ D F\[D\] D (which is the usual 2 Σ ε_i C_i C_iᵀ at convergence), so
 //!
 //! ```text
 //!   Σ Z_ai ∂F_ai/∂R = ¼ d/dt g(D + t δD_Z, W + t Ẇ) |_{t=0},
@@ -45,7 +45,7 @@
 //! gradient uses. g is linear in W and linear or bilinear in D for the
 //! one-electron, ECP and two-electron parts, so the central difference is exact
 //! for them up to rounding; only the XC part carries an O(t²) truncation, and
-//! t is chosen so that t·max|δD_Z| = [`T_SCALE`].
+//! t is chosen so that t·max|δD_Z| = `T_SCALE`.
 //!
 //! # Scope
 //!

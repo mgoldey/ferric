@@ -1583,7 +1583,11 @@ mod tests {
             let k = k_mix_from_xc_def(&def);
             assert!((k.sr - 0.25).abs() < 1e-12, "{name}: c_sr = {}", k.sr);
             assert!(k.lr.abs() < 1e-12, "{name}: c_lr = {}", k.lr);
-            assert!((k.omega - 0.11).abs() < 1e-12, "{name}: omega = {}", k.omega);
+            assert!(
+                (k.omega - 0.11).abs() < 1e-12,
+                "{name}: omega = {}",
+                k.omega
+            );
         }
     }
 
