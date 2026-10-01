@@ -4,26 +4,37 @@
 //! The volume ratio of atom A is `r_A = v_A / v_A^free`, with
 //! `v_A = ∫ w_A ρ |r − R_A|³` from
 //! [`atomic_effective_volumes_hirshfeld_on_grid`] on
-//! [`hirshfeld_volume_grid`] and `v_A^free` the same integral for the
+//! [`mbd_volume_grid`] and `v_A^free` the same integral for the
 //! isolated neutral atom ([`live_free_atom_volume`]). Both use free-atom SCFs
 //! that [`MbdFreeAtomCache`] solves once per element.
 //!
-//! The gradient returned by [`mbd_rsscs_for_density`] is
+//! The exact nuclear gradient, returned by [`mbd_rsscs_for_scf`], is
 //! ```text
-//!   dE/dR_B = ∂E/∂R_B |_{ratios fixed}
-//!           + Σ_A c_A ∂v_A/∂R_B |_{D fixed, lattice fixed}
-//!           − ½ Tr[V D Sˣ D],     c_A = (∂E/∂r_A) / v_A^free,
-//!                                 V = ∂(Σ_A c_A v_A)/∂D
+//!   dE/dR_B = ∂E/∂R_B |_{ratios fixed}                      (mbd_rsscs_gradient)
+//!           + Σ_A c_A ∂v_A/∂R_B |_{D fixed, lattice fixed}  (hirshfeld_volume_gradient)
+//!           − ½ Tr[V D Sˣ D]                                 (orthonormality)
+//!           − (1/N) Σ_C Σ_A c_A ∂v_A/∂R_C |_{D, lattice}     (lattice response)
+//!           + Σ_ai Z_ai ∂F_ai/∂R_B                           (orbital relaxation)
+//!   c_A = (∂E/∂r_A) / v_A^free,   V = ∂(Σ_A c_A v_A)/∂D
 //! ```
-//! (the second term from [`hirshfeld_volume_gradient`], the third, which keeps
-//! the occupied orbitals orthonormal as the basis moves, from
-//! [`crate::properties::hirshfeld_volume_density_derivative`] and the overlap
-//! derivative). Together they are the derivative with the occupied orbitals
-//! held fixed. NOT included: the orbital relaxation (the CPKS response of D to
-//! the displacement) and the motion of the integration lattice with the
-//! molecule. Measured against FD of the full pipeline (6-31G, PBE): the
-//! relaxation is 1.0e-5 Hartree/Bohr for H2O and 1.6e-6 for NH3, the rest
-//! agrees to 3e-8 (`tests/mbd_scf_gradient.rs`).
+//! The first four are the derivative with the occupied orbitals held fixed
+//! (`gradient_unrelaxed`, also returned by [`mbd_rsscs_for_density`]); the
+//! orthonormality term keeps them orthonormal as the basis moves; the lattice
+//! term follows [`mbd_volume_grid`], whose points move by 1/N of every atom's
+//! displacement (translation invariance at fixed D turns the lattice shift
+//! into minus the sum of the fixed-lattice term). The relaxation term is the
+//! closed-shell KS Z-vector of [`ferric_scf::zvector_ks`] with V as its
+//! right-hand side.
+//!
+//! Measured against central FD of the full SCF + MBD pipeline at 6-31G
+//! (`tests/mbd_scf_gradient.rs`): 6.0e-9 Hartree/Bohr for H2O with PBE, PBE0,
+//! HSE06 and PBE + RI-J; 9.1e-10 for NH3/PBE (FD step 1e-4 Bohr). The
+//! relaxation term alone is 1.0e-5 (H2O) and 1.6e-6 (NH3) and matches FD to
+//! 3.5e-9. The proatom's piecewise-linear interpolant has kinks every
+//! 0.05 Bohr, so the energy is not differentiable where a lattice point sits
+//! on one (the analytic gradient takes the symmetric subgradient there, see
+//! `RadialProatom::deriv`); a FD step that straddles such a kink disagrees by
+//! up to 5e-8 (NH3, h = 1e-3).
 
 use std::collections::BTreeMap;
 
@@ -44,7 +55,7 @@ use crate::dispersion::mbd_rsscs::{
 };
 use crate::properties::{
     atomic_effective_volumes_hirshfeld, atomic_effective_volumes_hirshfeld_on_grid,
-    hirshfeld_volume_gradient, hirshfeld_volume_grid, ProatomProvider,
+    hirshfeld_volume_gradient, mbd_volume_grid, ProatomProvider,
 };
 
 /// Free-atom TS volume `v_free` of neutral element `z` in basis `bs` — the
@@ -222,8 +233,17 @@ pub struct MbdScfResult {
     pub volume_ratios: Vec<f64>,
     /// The full MBD@rsSCS result.
     pub rsscs: MbdRsscsResult,
-    /// Full analytic gradient (term 1 + term 2), (natoms,3), Hartree/Bohr.
+    /// The exact analytic nuclear gradient, (natoms,3), Hartree/Bohr:
+    /// `gradient_unrelaxed + gradient_relaxation`. Set only by
+    /// [`mbd_rsscs_for_scf`], which has the SCF needed for the relaxation term.
     pub gradient: Option<Array2<f64>>,
+    /// The gradient with the occupied orbitals held fixed (no orbital
+    /// relaxation): fixed-ratio term + fixed-D volume term + orthonormality
+    /// term. Set when a gradient was requested.
+    pub gradient_unrelaxed: Option<Array2<f64>>,
+    /// The orbital-relaxation term Σ Z_ai ∂F_ai/∂R (Z-vector, see
+    /// [`ferric_scf::zvector_ks`]). Set only by [`mbd_rsscs_for_scf`].
+    pub gradient_relaxation: Option<Array2<f64>>,
     /// Term 1 alone (ratios fixed), for diagnostics/tests.
     pub gradient_fixed_ratios: Option<Array2<f64>>,
     /// Volume term at fixed AO density matrix (AOs and proatoms follow the
@@ -232,19 +252,23 @@ pub struct MbdScfResult {
     /// Orbital-orthonormality term −½ Tr[V D S^x D], V = ∂(Σ c_A v_A)/∂D,
     /// for diagnostics/tests.
     pub gradient_orthonormality: Option<Array2<f64>>,
+    /// V = ∂E_MBD/∂D (AO, symmetric) at fixed geometry: the right-hand side
+    /// of the Z-vector equation. Set when a gradient was requested.
+    pub density_derivative: Option<Array2<f64>>,
 }
 
 /// MBD@rsSCS energy (and, with `want_gradient`, nuclear gradient) for the
 /// total AO density `density_total` of `mol` in `bs`.
 ///
 /// Volumes: [`atomic_effective_volumes_hirshfeld_on_grid`] on
-/// [`hirshfeld_volume_grid`]`(mol)` with `cache`'s proatoms; ratios against
+/// [`mbd_volume_grid`]`(mol)` with `cache`'s proatoms; ratios against
 /// `cache`'s free volumes. Gradient: `∂E/∂R|_ratios` from
 /// [`mbd_rsscs_gradient`] plus [`hirshfeld_volume_gradient`] contracted with
 /// `de_dv_A = (∂E/∂r_A) / v_A^free` on the same lattice, plus the
-/// orthonormality term −½ Tr[V D Sˣ D]. Not included: the
-/// orbital relaxation of D and the lattice following the molecule (see the
-/// module doc). The gradient requires a closed-shell density (checked:
+/// orthonormality and lattice-response terms: `gradient_unrelaxed`, the
+/// derivative with the occupied orbitals held fixed (see the module doc).
+/// The orbital relaxation needs the SCF: [`mbd_rsscs_for_scf`]. The gradient
+/// requires a closed-shell density (checked:
 /// D S D = 2D); `want_gradient` on an open-shell density is an error.
 ///
 /// # Errors
@@ -284,7 +308,7 @@ pub fn mbd_rsscs_for_density(
     }
     let positions: Vec<[f64; 3]> = mol.atoms.iter().map(|a| [a.x, a.y, a.zpos]).collect();
 
-    let grid = hirshfeld_volume_grid(mol);
+    let grid = mbd_volume_grid(mol);
     let provider = cache.proatom();
     let provider_ref: &ProatomProvider = &provider;
     let volumes = atomic_effective_volumes_hirshfeld_on_grid(
@@ -309,9 +333,12 @@ pub fn mbd_rsscs_for_density(
             volume_ratios,
             rsscs,
             gradient: None,
+            gradient_unrelaxed: None,
+            gradient_relaxation: None,
             gradient_fixed_ratios: None,
             gradient_volume_fixed_d: None,
             gradient_orthonormality: None,
+            density_derivative: None,
         });
     }
 
@@ -337,24 +364,34 @@ pub fn mbd_rsscs_for_density(
         .collect();
     let term2 =
         hirshfeld_volume_gradient(mol, bs, density_total, Some(provider_ref), &grid, &de_dv)?;
-    let orth = orthonormality_term(mol, bs, density_total, provider_ref, &grid, &de_dv)?;
-    let full = &fixed + &term2 + &orth;
+    let (orth, v) = orthonormality_term(mol, bs, density_total, provider_ref, &grid, &de_dv)?;
+    // Lattice response: every point of `mbd_volume_grid` moves by 1/N of each
+    // atom's displacement, and at fixed D, ∂v/∂(lattice shift) = −Σ_B ∂v/∂R_B.
+    let mut lattice = Array2::<f64>::zeros((natoms, 3));
+    for k in 0..3 {
+        let shift = -term2.column(k).sum() / natoms as f64;
+        lattice.column_mut(k).fill(shift);
+    }
+    let full = &fixed + &term2 + &orth + &lattice;
     Ok(MbdScfResult {
         energy: g.result.energy,
         volumes,
         free_volumes,
         volume_ratios,
         rsscs: g.result,
-        gradient: Some(full),
+        gradient: None,
+        gradient_unrelaxed: Some(full),
+        gradient_relaxation: None,
         gradient_fixed_ratios: Some(fixed),
         gradient_volume_fixed_d: Some(term2),
         gradient_orthonormality: Some(orth),
+        density_derivative: Some(v),
     })
 }
 
 /// −½ Tr[V D S^x D]: the change of Σ_A c_A v_A from keeping the occupied
 /// orbitals orthonormal as the basis moves (closed shell, D = 2 C_occ C_occᵀ,
-/// dD = −½ D S^x D at fixed orbital rotation).
+/// dD = −½ D S^x D at fixed orbital rotation). Returns the term and V.
 fn orthonormality_term(
     mol: &Molecule,
     bs: &BasisSet,
@@ -362,7 +399,7 @@ fn orthonormality_term(
     provider: &ProatomProvider,
     grid: &ferric_integrals::ao_grid::GridSpec,
     de_dv: &[f64],
-) -> Result<Array2<f64>, FerricError> {
+) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
     let prep = PreparedBasis::new(mol, bs)?;
     // Closed-shell check: D S D = 2 D. An open-shell total density fails it,
     // and the term above is then wrong (it needs the spin densities).
@@ -390,5 +427,50 @@ fn orthonormality_term(
     )?;
     let dvd = density_total.dot(&v).dot(density_total);
     let g = ferric_scf::gradient::overlap_deriv_contract(&prep, &dvd)?;
-    Ok(g * -0.5)
+    Ok((g * -0.5, v))
+}
+
+/// [`mbd_rsscs_for_density`] at the converged closed-shell KS `result` of
+/// `config`, plus the orbital-relaxation term of the gradient from the
+/// Z-vector ([`ferric_scf::zvector_ks::relaxation_gradient_closed`]), so that
+/// `gradient` is the exact derivative of the energy the SCF + MBD pipeline
+/// reports (see the module doc for the terms and their validation).
+///
+/// # Errors
+///
+/// Those of [`mbd_rsscs_for_density`], and every reference the Z-vector does
+/// not support ([`ferric_scf::zvector_ks::unsupported_reason`]): never an
+/// unrelaxed gradient presented as the exact one.
+#[allow(clippy::too_many_arguments)]
+pub fn mbd_rsscs_for_scf(
+    ctx: &ParallelContext,
+    cache: &MbdFreeAtomCache,
+    mol: &Molecule,
+    bs: &BasisSet,
+    op: Operator,
+    rhf_config: &RhfConfig,
+    result: &ferric_scf::ScfResult,
+    config: &MbdRsscsConfig,
+) -> Result<MbdScfResult, FerricError> {
+    if let Some(r) = ferric_scf::zvector_ks::unsupported_reason(rhf_config) {
+        return Err(FerricError::General(format!(
+            "MBD@rsSCS nuclear gradient: the orbital-relaxation (Z-vector) term is not \
+             available: {r}"
+        )));
+    }
+    let mut out = mbd_rsscs_for_density(cache, mol, bs, result.density_r(), config, true)?;
+    let v = out.density_derivative.as_ref().ok_or_else(|| {
+        FerricError::General("mbd_rsscs_for_scf: no density derivative was formed".into())
+    })?;
+    let prep = PreparedBasis::new(mol, bs)?;
+    let bounds = SchwarzBounds::compute_for_screening(op, &prep, rhf_config.screening)?;
+    let relax = ferric_scf::zvector_ks::relaxation_gradient_closed(
+        ctx, mol, &prep, bs, op, &bounds, rhf_config, result, v,
+    )?;
+    let unrelaxed = out.gradient_unrelaxed.as_ref().ok_or_else(|| {
+        FerricError::General("mbd_rsscs_for_scf: no unrelaxed gradient was formed".into())
+    })?;
+    out.gradient = Some(unrelaxed + &relax.gradient);
+    out.gradient_relaxation = Some(relax.gradient);
+    Ok(out)
 }

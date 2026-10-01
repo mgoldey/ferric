@@ -371,8 +371,8 @@ pub fn run(args: Vec<String>) {
     // or Hessian as though it were dispersion-corrected.
     // `optimize` IS supported: the D3(BJ) and MBD@rsSCS analytic gradients are
     // implemented and threaded through `optimize_geometry_with_scf_correction`,
-    // so the energy and the gradient describe the same surface (for MBD@rsSCS,
-    // up to the omitted orbital relaxation of the Hirshfeld volumes).
+    // so the energy and the gradient describe the same surface (MBD@rsSCS
+    // includes the Z-vector orbital relaxation of its Hirshfeld volumes).
     //
     // `frequencies` is NOT, and that is a real gap rather than an oversight: a
     // Hessian needs the SECOND derivative, which does not exist here. The
@@ -5402,6 +5402,15 @@ fn run_optimize(
                         eprintln!("error: {e}");
                         std::process::exit(1);
                     });
+                    // The gradient's orbital-relaxation (Z-vector) term must be
+                    // available, or the optimizer would fail after the first SCF.
+                    if let Some(r) = ferric_scf::zvector_ks::unsupported_reason(rhf_config) {
+                        eprintln!(
+                            "error: [dft] dispersion = \"mbd\" with method.task = \"optimize\": \
+                             the exact MBD@rsSCS gradient is not available: {r}"
+                        );
+                        std::process::exit(1);
+                    }
                     Some((mbd_free_atom_cache(ctx, mol, bs, op, rhf_config), mcfg))
                 }
                 _ => None,
@@ -5426,13 +5435,8 @@ fn run_optimize(
                         return Ok((e, Some(arr)));
                     }
                     if let Some((cache, mcfg)) = &mbd {
-                        let r = ferric_rpa::dispersion::mbd_scf::mbd_rsscs_for_density(
-                            cache,
-                            m,
-                            bs,
-                            scf.density_total(),
-                            mcfg,
-                            true,
+                        let r = ferric_rpa::dispersion::mbd_scf::mbd_rsscs_for_scf(
+                            ctx, cache, m, bs, op, rhf_config, scf, mcfg,
                         )?;
                         let g = r.gradient.ok_or_else(|| {
                             ferric_core::FerricError::General(

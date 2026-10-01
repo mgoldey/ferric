@@ -5946,7 +5946,7 @@ fn run_dft(
         None => None,
         Some(spec) => {
             let bs_owned = basis_set.inner.clone();
-            let density = rhf.density_total();
+            let scf_ref = &rhf;
             Some(
                 py.allow_threads(|| {
                     evaluate_dispersion(
@@ -5956,7 +5956,7 @@ fn run_dft(
                         &bs_owned,
                         op,
                         &cfg,
-                        density,
+                        scf_ref,
                         with_gradient,
                     )
                 })
@@ -6122,11 +6122,10 @@ struct DispersionEval {
     volume_ratios: Option<Vec<f64>>,
 }
 
-/// Evaluate `spec` at `mol`, given the converged closed-shell SCF's total AO
-/// density (MBD@rsSCS takes its Hirshfeld volumes from it; D3(BJ) does not
-/// use it). With `want_gradient` the analytic gradient is returned too: for
-/// MBD@rsSCS it is the explicit term plus the Hirshfeld-volume term with the
-/// occupied orbitals held fixed (no orbital relaxation of the volumes).
+/// Evaluate `spec` at `mol`, given the converged closed-shell SCF (MBD@rsSCS
+/// takes its Hirshfeld volumes from its density; D3(BJ) does not use it).
+/// With `want_gradient` the analytic gradient is returned too; for MBD@rsSCS
+/// it is exact, including the orbital relaxation of the volumes (Z-vector).
 #[allow(clippy::too_many_arguments)]
 fn evaluate_dispersion(
     spec: &DispersionSpec,
@@ -6135,7 +6134,7 @@ fn evaluate_dispersion(
     bs: &ferric_core::basis::BasisSet,
     op: Operator,
     cfg: &RhfConfig,
-    density_total: &Array2<f64>,
+    scf: &ScfResult,
     want_gradient: bool,
 ) -> Result<DispersionEval, ferric_core::FerricError> {
     match spec {
@@ -6163,10 +6162,16 @@ fn evaluate_dispersion(
         }
         DispersionSpec::Mbd(functional) => {
             use ferric_rpa::dispersion::mbd_rsscs::MbdRsscsConfig;
-            use ferric_rpa::dispersion::mbd_scf::{mbd_rsscs_for_density, MbdFreeAtomCache};
+            use ferric_rpa::dispersion::mbd_scf::{
+                mbd_rsscs_for_density, mbd_rsscs_for_scf, MbdFreeAtomCache,
+            };
             let mcfg = MbdRsscsConfig::for_functional(functional)?;
             let cache = MbdFreeAtomCache::build(ctx, mol, bs, op, cfg)?;
-            let r = mbd_rsscs_for_density(&cache, mol, bs, density_total, &mcfg, want_gradient)?;
+            let r = if want_gradient {
+                mbd_rsscs_for_scf(ctx, &cache, mol, bs, op, cfg, scf, &mcfg)?
+            } else {
+                mbd_rsscs_for_density(&cache, mol, bs, scf.density_total(), &mcfg, false)?
+            };
             Ok(DispersionEval {
                 model: "MBD@rsSCS",
                 energy: r.energy,

@@ -134,7 +134,13 @@ def test_unknown_spec_error_lists_every_accepted_spelling(water, sto3g):
     with pytest.raises(ValueError) as exc:
         ferric.run_dft(water, sto3g, functional="PBE", dispersion="d4")
     msg = str(exc.value)
-    for spelling in ['"d3bj"', '"d3(bj)"', "d3bj(<functional>)", '"mbd"', "mbd(<functional>)"]:
+    for spelling in [
+        '"d3bj"',
+        '"d3(bj)"',
+        "d3bj(<functional>)",
+        '"mbd"',
+        "mbd(<functional>)",
+    ]:
         assert spelling in msg, f"{spelling} missing from: {msg}"
 
 

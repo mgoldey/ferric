@@ -115,6 +115,40 @@ pub fn ks_gradient_closed_with_exchange(
     ext: Option<&ferric_core::external_potential::ExternalPotential>,
     cosx: Option<&crate::cosx_k::CosxConfig>,
 ) -> Result<Array2<f64>, FerricError> {
+    let nocc = (mol.nelec() / 2) as usize;
+    let w = build_energy_weighted_density(result, nocc);
+    let d = result.density_r().clone();
+    ks_gradient_closed_for_density(
+        mol, prep, bs, op, bounds, xc_name, result, ext, cosx, &d, &w,
+    )
+}
+
+/// The closed-shell KS gradient EXPRESSION evaluated at an arbitrary density
+/// `d` and energy-weighted density `w` (the Pulay term is −Σ w ∂S/∂R):
+/// one-electron + ECP + two-electron (by the route `result` recorded: RI-J /
+/// fitted K / COSX / exact) + XC (with grid response) + VV10, each a function
+/// of `d` alone. With `d = result.density_r()` and `w` from
+/// `build_energy_weighted_density` this IS [`ks_gradient_closed_with_exchange`].
+///
+/// `result` supplies only the two-electron route and the spin check. Linear
+/// in `w`; the one-electron, ECP and two-electron parts are linear or
+/// bilinear in `d`. The Z-vector relaxation term
+/// ([`crate::zvector_ks`]) takes its directional derivative along a
+/// density perturbation.
+#[allow(clippy::too_many_arguments)]
+pub fn ks_gradient_closed_for_density(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bs: &ferric_core::basis::BasisSet,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    xc_name: &str,
+    result: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+    cosx: Option<&crate::cosx_k::CosxConfig>,
+    d: &Array2<f64>,
+    w: &Array2<f64>,
+) -> Result<Array2<f64>, FerricError> {
     if let Some(cfg) = cosx {
         crate::cosx_gradient::check_gradient_supported(cfg)?;
         // Fitted COSX + KS needs the XC Fock derivative in its Z-vector term,
@@ -154,12 +188,10 @@ pub fn ks_gradient_closed_with_exchange(
         }
     }
     let k_mix = ferric_dft::libxc::k_mix_from_xc_def(&xc);
-    let nocc = (mol.nelec() / 2) as usize;
-    let w = build_energy_weighted_density(result, nocc);
-    let d = result.density_r().clone();
+    let d = d.clone();
 
     // 1e + nuclear repulsion gradient — identical to HF.
-    let mut grad = oneelectron_gradient(mol, prep, &d, &w, ext)?;
+    let mut grad = oneelectron_gradient(mol, prep, &d, w, ext)?;
     // ECP term Σ D dV_ECP/dR (zero for an all-electron basis): V_ECP is in
     // the KS hcore (driver::prepare), so its derivative belongs here too.
     grad += &crate::gradient::ecp_gradient(mol, prep, &d)?;

@@ -3499,6 +3499,52 @@ pub fn hirshfeld_volume_grid(mol: &Molecule) -> ferric_integrals::ao_grid::GridS
     ferric_integrals::ao_grid::GridSpec::bounding_box(mol, hirshfeld_margin(), hirshfeld_spacing())
 }
 
+/// The lattice MBD@rsSCS integrates its Hirshfeld volumes on: the same
+/// spacing and margin as [`hirshfeld_volume_grid`], but anchored to the
+/// CENTROID c of the nuclei instead of the bounding box. Points are
+/// `c + i·h` along each axis, `i = −m..=m`, `m = ceil((max_A |R_A − c| + margin)/h)`.
+///
+/// Why: on the bounding-box lattice the points follow whichever atom is
+/// extreme on each axis, so the volumes are not differentiable where two atoms
+/// tie for the extreme (water's two H share z). Here every point moves by
+/// exactly `1/N` of an atom's displacement, so the lattice response of the
+/// volumes is the smooth term `−(1/N) Σ_B ∂v/∂R_B|_lattice fixed` (translation
+/// invariance at fixed D). A change of `m` re-labels the points and adds or
+/// drops an edge row at least `margin` from every nucleus, so the volumes stay
+/// continuous.
+pub fn mbd_volume_grid(mol: &Molecule) -> ferric_integrals::ao_grid::GridSpec {
+    let h = hirshfeld_spacing();
+    let margin = hirshfeld_margin();
+    let n = mol.atoms.len().max(1) as f64;
+    let mut c = [0.0_f64; 3];
+    for a in &mol.atoms {
+        c[0] += a.x / n;
+        c[1] += a.y / n;
+        c[2] += a.zpos / n;
+    }
+    let mut origin = [0.0_f64; 3];
+    let mut counts = [1usize; 3];
+    for k in 0..3 {
+        let half = mol
+            .atoms
+            .iter()
+            .map(|a| ([a.x, a.y, a.zpos][k] - c[k]).abs())
+            .fold(0.0_f64, f64::max);
+        let m = ((half + margin) / h).ceil() as usize;
+        origin[k] = c[k] - m as f64 * h;
+        counts[k] = 2 * m + 1;
+    }
+    ferric_integrals::ao_grid::GridSpec {
+        origin,
+        n_x: counts[0],
+        n_y: counts[1],
+        n_z: counts[2],
+        step_x: [h, 0.0, 0.0],
+        step_y: [0.0, h, 0.0],
+        step_z: [0.0, 0.0, h],
+    }
+}
+
 /// Reject a lattice the Hirshfeld volume loops cannot integrate on: they read
 /// only the diagonal step components (`step_x[0]`, `step_y[1]`, `step_z[2]`)
 /// and use their product as the cell volume, so the lattice must be

@@ -1752,8 +1752,7 @@ def run_dft(
     MBD@rsSCS on Hirshfeld volume ratios of the converged density with the
     beta published for `functional` (PBE, PBE0, HSE06), `"mbd(<name>)"` uses
     `<name>`'s beta. Matching is case-insensitive. The MBD@rsSCS gradient
-    holds the occupied orbitals fixed in the volume term (kept orthonormal as
-    the basis moves); the orbital relaxation of the volumes is not included. `None` (the default) applies no correction and leaves the energy
+    is exact, including the orbital relaxation of the volumes (Z-vector). `None` (the default) applies no correction and leaves the energy
     exactly as it was. Any other value, or a functional with no published
     parameters, raises ValueError -- there is no spelling that means "compute
     a zero correction".
@@ -1811,8 +1810,7 @@ def run_ksdft(
     MBD@rsSCS on Hirshfeld volume ratios of the converged density with the
     beta published for `functional` (PBE, PBE0, HSE06), `"mbd(<name>)"` uses
     `<name>`'s beta. Matching is case-insensitive. The MBD@rsSCS gradient
-    holds the occupied orbitals fixed in the volume term (kept orthonormal as
-    the basis moves); the orbital relaxation of the volumes is not included. `None` (the default) applies no correction and leaves the energy
+    is exact, including the orbital relaxation of the volumes (Z-vector). `None` (the default) applies no correction and leaves the energy
     exactly as it was. Any other value, or a functional with no published
     parameters, raises ValueError -- there is no spelling that means "compute
     a zero correction".

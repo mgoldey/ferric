@@ -222,11 +222,15 @@ def r_vdw_table_comparison(r_tab) -> dict:
     for z in range(1, 55):
         sym = common.ELEMENTS[z]
         rp = float(vdw_params[sym]["R_vdw(TS)"])
-        rows.append({"z": z, "symbol": sym, "ferric_r_vdw": r_tab[z], "pymbd_r_vdw_ts": rp})
+        rows.append(
+            {"z": z, "symbol": sym, "ferric_r_vdw": r_tab[z], "pymbd_r_vdw_ts": rp}
+        )
         if r_tab[z] != rp:
             mism.append(z)
     if mism:
-        raise RuntimeError(f"ferric R_vdW table differs from pymbd R_vdw(TS) at Z={mism}")
+        raise RuntimeError(
+            f"ferric R_vdW table differs from pymbd R_vdw(TS) at Z={mism}"
+        )
     return {"rows": rows, "mismatched_z": mism}
 
 
@@ -536,7 +540,9 @@ def libmbd_rsscs_gradient(xyz, alpha, c6, r_vdw, beta, e_ref, ctx):
         )
 
     with MBDGeom(xyz, n_freq=PYMBD_NFREQ) as g:
-        e_f, arr = g.mbd_energy(alpha, c6, r_vdw, beta=beta, variant="rsscs", force=True)
+        e_f, arr = g.mbd_energy(
+            alpha, c6, r_vdw, beta=beta, variant="rsscs", force=True
+        )
     arr = np.asarray(arr, dtype=float)
     if arr.shape != xyz.shape:
         raise RuntimeError(f"{ctx}: libmbd gradient shape {arr.shape} != {xyz.shape}")
@@ -574,7 +580,6 @@ def libmbd_rsscs_gradient(xyz, alpha, c6, r_vdw, beta, e_ref, ctx):
         "energy_with_force": float(e_f),
     }
     return de_dr, chk
-
 
 
 def gen_system(system, basis, source, tab, r_tab, overrides) -> Path:
@@ -723,7 +728,9 @@ def gen_system(system, basis, source, tab, r_tab, overrides) -> Path:
         "runs": [],
     }
     for beta in RSSCS_BETAS:
-        e15, a15, c15, r15, om15, evmin = rsscs_np(xyz, alpha, c6, r_vdw_ts, beta, PYMBD_NFREQ)
+        e15, a15, c15, r15, om15, evmin = rsscs_np(
+            xyz, alpha, c6, r_vdw_ts, beta, PYMBD_NFREQ
+        )
         e_pm = float(pymbd.mbd_energy(xyz, alpha, c6, r_vdw_ts, beta))
         e_lb, a_lb, c_lb = MBDGeom(xyz, n_freq=PYMBD_NFREQ).mbd_energy(
             alpha, c6, r_vdw_ts, beta=beta, variant="rsscs", intermediates=True
@@ -736,7 +743,9 @@ def gen_system(system, basis, source, tab, r_tab, overrides) -> Path:
         }
         for k, v in chk.items():
             if not v < 1e-10:
-                raise RuntimeError(f"{key} beta={beta}: rsSCS constructions disagree {k}={v:.2e}")
+                raise RuntimeError(
+                    f"{key} beta={beta}: rsSCS constructions disagree {k}={v:.2e}"
+                )
         grad, grad_chk = libmbd_rsscs_gradient(
             xyz, alpha, c6, r_vdw_ts, beta, e_lb, f"{key} beta={beta}"
         )

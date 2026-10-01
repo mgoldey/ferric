@@ -115,18 +115,20 @@ no `run_end` record, write a `dispersion` record with the same fields. Python:
 `run_dft(..., dispersion="mbd")`, which also reports `DftResult.volume_ratios`.
 
 **Gradient.** `task = "optimize"` (closed shell) and
-`run_dft(with_gradient=True)` add the analytic MBD@rsSCS gradient: the explicit
-dependence on the nuclear positions plus the dependence through the Hirshfeld
-volumes with the occupied orbitals held fixed: basis functions and proatoms
-move with their atoms, the orbitals are kept orthonormal in the moving basis
-(the −½ D Sˣ D term), and the volume integration lattice stays fixed in
-space. The orbital relaxation of the volumes (the CPKS response of the
-density to the displacement) is not included, so this gradient is not the
-exact derivative of the reported energy. Measured against finite differences
-of the full SCF + MBD pipeline at 6-31G/PBE, the omitted term is 1.0e-5
-Hartree/Bohr for H2O and 1.6e-6 for NH3 (11.5% and 1.8% of the largest MBD
-gradient component); everything that is included agrees with finite
-differences to 3e-8 Hartree/Bohr.
+`run_dft(with_gradient=True)` add the exact analytic MBD@rsSCS gradient: the
+explicit dependence on the nuclear positions, and the dependence through the
+Hirshfeld volumes, including how the SCF density itself responds to the
+displacement. That response is the orbital relaxation, obtained from one
+coupled-perturbed Kohn–Sham (Z-vector) solve per gradient; it costs about as
+much as a few SCF iterations. The volumes are integrated on a lattice
+anchored to the molecular centroid, and its motion is part of the gradient.
+Against finite differences of the full SCF + MBD calculation at 6-31G the
+gradient agrees to 6e-9 Hartree/Bohr for H2O with PBE, PBE0, HSE06 and
+PBE with RI-J, and to 9e-10 for NH3; the orbital relaxation alone is 1.0e-5
+for H2O (11.5% of the largest MBD component). The relaxation term needs an
+LDA, GGA or hybrid-GGA functional without VV10, no implicit solvation,
+polarizable embedding or cDFT constraints, and integer occupation; other
+setups are refused rather than given an approximate gradient.
 Open-shell optimization and `task = "frequencies"` with dispersion are refused.
 
 ## Implicit solvation

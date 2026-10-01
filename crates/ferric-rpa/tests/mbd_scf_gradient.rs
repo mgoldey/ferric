@@ -21,7 +21,9 @@ use ferric_core::parallel::ParallelContext;
 use ferric_integrals::ao_grid::GridSpec;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_rpa::dispersion::{mbd_rsscs_for_density, MbdFreeAtomCache, MbdRsscsConfig};
+use ferric_rpa::dispersion::{
+    mbd_rsscs_for_density, mbd_rsscs_for_scf, MbdFreeAtomCache, MbdRsscsConfig,
+};
 use ferric_rpa::properties::{
     atomic_effective_volumes_hirshfeld, atomic_effective_volumes_hirshfeld_on_grid,
     hirshfeld_volume_gradient, hirshfeld_volume_grid, ProatomProvider, RadialProatom,
@@ -362,13 +364,11 @@ fn reorthonormalized_density(mol: &Molecule, bs: &BasisSet, c: &Array2<f64>) -> 
     cp.dot(&cp.t()) * 2.0
 }
 
-/// Bar for the analytic MBD gradient against FD of the pipeline with the
-/// reference orbitals kept and only re-orthonormalized (what the analytic
-/// gradient models). Measured max 3.3e-8 (H2O/6-31G PBE), 2.9e-8
-/// (NH3/6-31G PBE), Hartree/Bohr: the lattice following the molecule, which
-/// the analytic gradient holds fixed. Dropping the orthonormality term misses
-/// by 1.4e-6 (H2O, the size of that term).
-const FD_ORTH_TOL: f64 = 3e-7;
+/// Bar for the unrelaxed analytic MBD gradient against FD of the pipeline
+/// with the reference orbitals kept and only re-orthonormalized (what the
+/// unrelaxed gradient models). Measured 3.4e-9 (this test, HF/STO-3G water).
+/// Dropping the orthonormality term misses by 4.6e-6.
+const FD_ORTH_TOL: f64 = 5e-8;
 
 /// THE model test, fast (HF/STO-3G water). Catches: the orthonormality term
 /// dropped or sign-flipped, `de_dv` not divided by v_free, the volume term
@@ -384,7 +384,7 @@ fn mbd_gradient_matches_fd_with_reorthonormalized_orbitals() {
     let cache = MbdFreeAtomCache::build(&ctx, &mol, &bs, op, &cfg).expect("cache");
     let (c0, d0) = rhf_occ(&mol, &bs, &cfg);
     let r0 = mbd_rsscs_for_density(&cache, &mol, &bs, &d0, &mbd_cfg, true).expect("mbd");
-    let g = r0.gradient.expect("gradient");
+    let g = r0.gradient_unrelaxed.expect("gradient");
     let orth = r0.gradient_orthonormality.expect("orth");
     let h = 1e-3;
     let n = mol.atoms.len();
@@ -419,98 +419,189 @@ fn mbd_gradient_matches_fd_with_reorthonormalized_orbitals() {
     );
 }
 
-/// Measurement, not a validation. Full pipeline at displaced geometries
-/// (lattice rebuilt by `hirshfeld_volume_grid` each time), central FD of E_MBD,
-/// decomposed:
-///   FD_full  — SCF re-solved: the true derivative of the pipeline.
-///   FD_orth  — reference orbitals kept, only re-orthonormalized: what the
-///              analytic gradient models (term 1 + fixed-D volume term +
-///              orthonormality term), up to the lattice motion.
-///   FD_full − FD_orth = the orbital-relaxation term (not implemented).
+fn scf(mol: &Molecule, bs: &BasisSet, cfg: &RhfConfig) -> ferric_scf::ScfResult {
+    let prep = PreparedBasis::new(mol, bs).expect("prepared basis");
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).expect("schwarz");
+    let ctx = ParallelContext::default();
+    let r = solve_rhf(&ctx, mol, &prep, op, &bounds, cfg).expect("scf");
+    assert!(r.converged, "SCF did not converge");
+    r
+}
+
+/// Central FD (step `h`, Bohr) of E_MBD over every coordinate, with the
+/// density at each displaced geometry from `density(m)`.
+fn fd_mbd(
+    mol: &Molecule,
+    bs: &BasisSet,
+    cache: &MbdFreeAtomCache,
+    mbd_cfg: &MbdRsscsConfig,
+    h: f64,
+    density: impl Fn(&Molecule) -> Array2<f64>,
+) -> Array2<f64> {
+    let n = mol.atoms.len();
+    let mut fd = Array2::<f64>::zeros((n, 3));
+    for a in 0..n {
+        for k in 0..3 {
+            let e = |s: f64| {
+                let m = displaced(mol, a, k, s * h);
+                let d = density(&m);
+                mbd_rsscs_for_density(cache, &m, bs, &d, mbd_cfg, false)
+                    .expect("mbd")
+                    .energy
+            };
+            fd[(a, k)] = (e(1.0) - e(-1.0)) / (2.0 * h);
+        }
+    }
+    fd
+}
+
+/// Bar on the EXACT gradient (with the Z-vector relaxation) against central
+/// FD (h = 1e-3 Bohr) of the full SCF + MBD pipeline. Measured 4.1e-9
+/// (PBE/STO-3G water, this test); 6.0e-9 for H2O/6-31G with PBE, PBE0, HSE06
+/// and RI-J, and 9.1e-10 for NH3/6-31G at h = 1e-4 (`measure_full_pipeline_fd`).
+/// Without the relaxation term it misses by 7.7e-6.
+const FD_FULL_TOL: f64 = 5e-8;
+
+/// THE exactness test, fast: PBE/STO-3G water, exact gradient vs FD of the
+/// full pipeline (SCF re-solved at every displaced geometry). Without the
+/// Z-vector term it misses by the orbital relaxation, which is asserted to be
+/// resolvable at this bar (reachability), so dropping or mis-scaling the
+/// relaxation term fails.
 #[test]
-#[ignore = "measurement: full-pipeline FD, slow-ish"]
-fn measure_full_pipeline_fd_rks_pbe() {
-    let bs = basis::bundled("6-31g").expect("6-31g");
+fn mbd_exact_gradient_matches_fd_of_full_scf_pipeline() {
+    let mol = Molecule::parse_xyz(H2O_XYZ, 0, 1).expect("h2o");
+    let bs = basis::bundled("sto-3g").expect("sto-3g");
     let op = Operator::coulomb();
     let ctx = ParallelContext::default();
     let cfg = rks_pbe();
     let mbd_cfg = MbdRsscsConfig::for_functional("PBE").expect("beta");
-    let h = 1e-3;
-    for (name, xyz) in [("H2O", H2O_XYZ), ("NH3", NH3_XYZ)] {
+    let cache = MbdFreeAtomCache::build(&ctx, &mol, &bs, op, &cfg).expect("cache");
+    let r = scf(&mol, &bs, &cfg);
+    let out = mbd_rsscs_for_scf(&ctx, &cache, &mol, &bs, op, &cfg, &r, &mbd_cfg).expect("mbd");
+    let g = out.gradient.expect("exact gradient");
+    let relax = out.gradient_relaxation.expect("relaxation");
+    let fd = fd_mbd(&mol, &bs, &cache, &mbd_cfg, 1e-3, |m| {
+        scf(m, &bs, &cfg).density_r().to_owned()
+    });
+    let diff = max_abs(&(&g - &fd));
+    println!(
+        "PBE/STO-3G water: max|FD| = {:.3e}, max|relax| = {:.3e}, max|exact - FD| = {diff:.3e}",
+        max_abs(&fd),
+        max_abs(&relax)
+    );
+    assert!(
+        diff < FD_FULL_TOL,
+        "exact gradient vs full FD: {diff:.3e} >= {FD_FULL_TOL:.1e}"
+    );
+    // Translation invariance of the exact gradient: every term is invariant
+    // (the lattice-response term makes the volume part so by construction).
+    for k in 0..3 {
+        let sum: f64 = g.column(k).sum();
+        assert!(
+            sum.abs() < 1e-10 * max_abs(&g),
+            "sum over atoms of the exact gradient, axis {k}: {sum:.3e}"
+        );
+    }
+    assert!(
+        max_abs(&relax) > 10.0 * FD_FULL_TOL,
+        "relaxation term {:.3e} is not resolvable at the bar",
+        max_abs(&relax)
+    );
+}
+
+/// Measurement, not a validation. Full pipeline at displaced geometries
+/// (lattice rebuilt by `hirshfeld_volume_grid` each time), central FD of
+/// E_MBD, decomposed:
+///   FD_full  — SCF re-solved: the true derivative of the pipeline.
+///   FD_orth  — reference orbitals kept, only re-orthonormalized: the
+///              unrelaxed analytic gradient's model.
+///   FD_full − FD_orth = the orbital relaxation, against the Z-vector term.
+/// Runs PBE (H2O, NH3), PBE0 and HSE06 (H2O), and PBE with RI-J (H2O).
+#[test]
+#[ignore = "measurement: full-pipeline FD, slow-ish"]
+fn measure_full_pipeline_fd() {
+    let bs = basis::bundled("6-31g").expect("6-31g");
+    let op = Operator::coulomb();
+    let ctx = ParallelContext::default();
+    // FD step (Bohr); MBD_FD_H overrides it (the default straddles proatom
+    // knots on a few lattice points, see the NH3 note in the module doc).
+    let h: f64 = std::env::var("MBD_FD_H")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1e-3);
+    let only: Option<String> = std::env::var("MBD_FD_ONLY").ok();
+    let ri_j = RhfConfig {
+        df_j_aux: Some("def2-universal-jkfit".to_string()),
+        ..rks_pbe()
+    };
+    let with_xc = |xc: &str| RhfConfig {
+        xc: Some(xc.to_string()),
+        ..rks_pbe()
+    };
+    let cases: Vec<(&str, &str, RhfConfig, &str)> = vec![
+        ("H2O", H2O_XYZ, rks_pbe(), "PBE"),
+        ("NH3", NH3_XYZ, rks_pbe(), "PBE"),
+        ("H2O", H2O_XYZ, with_xc("PBE0"), "PBE0"),
+        ("H2O", H2O_XYZ, with_xc("HSE06"), "HSE06"),
+        ("H2O", H2O_XYZ, ri_j, "PBE"),
+    ];
+    for (name, xyz, cfg, func) in cases {
+        if only.as_deref().is_some_and(|o| o != name) {
+            continue;
+        }
+        let label = format!(
+            "{name}/6-31G {}{}",
+            cfg.xc.as_deref().unwrap_or("HF"),
+            if cfg.df_j_aux.is_some() { " RI-J" } else { "" }
+        );
+        let mbd_cfg = MbdRsscsConfig::for_functional(func).expect("beta");
         let mol = Molecule::parse_xyz(xyz, 0, 1).expect("mol");
         let cache = MbdFreeAtomCache::build(&ctx, &mol, &bs, op, &cfg).expect("cache");
-        let (c0, d0) = rhf_occ(&mol, &bs, &cfg);
-        let r0 = mbd_rsscs_for_density(&cache, &mol, &bs, &d0, &mbd_cfg, true).expect("mbd");
-        let g = r0.gradient.clone().expect("gradient");
-        let g1 = r0.gradient_fixed_ratios.clone().expect("term 1");
-        let g2 = r0.gradient_volume_fixed_d.clone().expect("term 2");
-        let g3 = r0.gradient_orthonormality.clone().expect("orth");
+        let r = scf(&mol, &bs, &cfg);
+        let nocc = mol.nelec() as usize / 2;
+        let c0 = r.mos_r().slice(ndarray::s![.., ..nocc]).to_owned();
+        let out = mbd_rsscs_for_scf(&ctx, &cache, &mol, &bs, op, &cfg, &r, &mbd_cfg).expect("mbd");
+        let g = out.gradient.clone().expect("exact");
+        let gu = out.gradient_unrelaxed.clone().expect("unrelaxed");
+        let gr = out.gradient_relaxation.clone().expect("relaxation");
+        let fd = fd_mbd(&mol, &bs, &cache, &mbd_cfg, h, |m| {
+            scf(m, &bs, &cfg).density_r().to_owned()
+        });
+        let fd_orth = fd_mbd(&mol, &bs, &cache, &mbd_cfg, h, |m| {
+            reorthonormalized_density(m, &bs, &c0)
+        });
+        let relax_fd = &fd - &fd_orth;
         println!(
-            "\n{name}/6-31G RKS-PBE: E_MBD = {:.10e}, ratios = {:?}",
-            r0.energy, r0.volume_ratios
+            "\n{label}: E_MBD = {:.10e}, ratios = {:?}",
+            out.energy, out.volume_ratios
         );
-        let n = mol.atoms.len();
-        let mut fd = Array2::<f64>::zeros((n, 3));
-        let mut fd_orth = Array2::<f64>::zeros((n, 3));
-        for a in 0..n {
-            for k in 0..3 {
-                let e_full = |s: f64| {
-                    let m = displaced(&mol, a, k, s * h);
-                    let d = rhf_density(&m, &bs, &cfg);
-                    mbd_rsscs_for_density(&cache, &m, &bs, &d, &mbd_cfg, false)
-                        .expect("mbd")
-                        .energy
-                };
-                let e_orth = |s: f64| {
-                    let m = displaced(&mol, a, k, s * h);
-                    let d = reorthonormalized_density(&m, &bs, &c0);
-                    mbd_rsscs_for_density(&cache, &m, &bs, &d, &mbd_cfg, false)
-                        .expect("mbd")
-                        .energy
-                };
-                fd[(a, k)] = (e_full(1.0) - e_full(-1.0)) / (2.0 * h);
-                fd_orth[(a, k)] = (e_orth(1.0) - e_orth(-1.0)) / (2.0 * h);
-            }
-        }
         println!(
-            "{:>4} {:>2} {:>13} {:>13} {:>13} {:>11} {:>11} {:>11} {:>11} {:>11}",
-            "atom",
-            "k",
-            "analytic",
-            "FD_orth",
-            "FD_full",
-            "an-FDorth",
-            "relax",
-            "term1",
-            "term2",
-            "orth"
+            "{:>4} {:>2} {:>13} {:>13} {:>11} {:>12} {:>12} {:>11}",
+            "atom", "k", "exact", "FD_full", "exact-FD", "relax(Z)", "relax(FD)", "unrel-FDor"
         );
-        for a in 0..n {
+        for a in 0..mol.atoms.len() {
             for k in 0..3 {
                 println!(
-                    "{a:>4} {k:>2} {:>13.6e} {:>13.6e} {:>13.6e} {:>11.3e} {:>11.3e} {:>11.3e} {:>11.3e} {:>11.3e}",
+                    "{a:>4} {k:>2} {:>13.6e} {:>13.6e} {:>11.3e} {:>12.5e} {:>12.5e} {:>11.3e}",
                     g[(a, k)],
-                    fd_orth[(a, k)],
                     fd[(a, k)],
-                    g[(a, k)] - fd_orth[(a, k)],
-                    fd[(a, k)] - fd_orth[(a, k)],
-                    g1[(a, k)],
-                    g2[(a, k)],
-                    g3[(a, k)]
+                    g[(a, k)] - fd[(a, k)],
+                    gr[(a, k)],
+                    relax_fd[(a, k)],
+                    gu[(a, k)] - fd_orth[(a, k)]
                 );
             }
         }
-        let mfd = max_abs(&fd);
         println!(
-            "{name}: max|FD_full| = {mfd:.4e}; max|analytic - FD_orth| = {:.3e}; \
-             max|relaxation| = max|FD_full - FD_orth| = {:.3e}; max|analytic - FD_full| = {:.3e}",
-            max_abs(&(&g - &fd_orth)),
-            max_abs(&(&fd - &fd_orth)),
-            max_abs(&(&g - &fd))
-        );
-        assert!(
-            max_abs(&(&g - &fd_orth)) < FD_ORTH_TOL,
-            "{name}: analytic vs FD_orth"
+            "{label}: max|FD_full| = {:.4e}; max|exact - FD_full| = {:.3e}; \
+             max|relax(Z) - relax(FD)| = {:.3e}; max|unrelaxed - FD_orth| = {:.3e}; \
+             max|relax| = {:.3e}",
+            max_abs(&fd),
+            max_abs(&(&g - &fd)),
+            max_abs(&(&gr - &relax_fd)),
+            max_abs(&(&gu - &fd_orth)),
+            max_abs(&relax_fd)
         );
     }
 }

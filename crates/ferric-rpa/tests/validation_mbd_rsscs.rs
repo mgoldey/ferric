@@ -93,7 +93,7 @@ const TOL_TS: f64 = 1e-14;
 const TOL_RSSCS_PARAMS: f64 = 1e-12;
 const TOL_RSSCS_E: f64 = 1e-10;
 /// Absolute bar (Hartree/Bohr) on ferric dE/dR vs libMBD. Measured max
-/// 6.2e-16 over 9 systems × 2 β; the negated-reference control misses by
+/// 6.2e-16 over 8 systems × 2 β; the negated-reference control misses by
 /// ≥ 2.0e-5 (CH4).
 const TOL_RSSCS_GRAD_ABS: f64 = 1e-14;
 const MUST_MISS: f64 = 1000.0;

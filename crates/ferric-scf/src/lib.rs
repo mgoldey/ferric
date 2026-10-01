@@ -143,6 +143,9 @@ pub use stability::{
 };
 /// Analytical nuclear gradients for Kohn-Sham DFT (XC + grid response).
 pub mod ks_gradient;
+/// Closed-shell KS Z-vector: orbital-relaxation term of a post-SCF quantity's
+/// nuclear gradient.
+pub mod zvector_ks;
 pub use ks_gradient::ks_gradient_closed;
 /// Harmonic vibrational frequencies from finite-difference Hessian.
 pub mod frequencies;

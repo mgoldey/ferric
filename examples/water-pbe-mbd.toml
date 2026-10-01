@@ -7,10 +7,8 @@
 # energy is printed as E(KS-DFT), and the correction and the corrected total
 # are printed (and logged to the JSON run log) separately.
 #
-# task = "optimize" works too: the analytic gradient is the explicit term plus
-# the Hirshfeld-volume term with the occupied orbitals held fixed (kept
-# orthonormal as the basis moves); the orbital relaxation of the volumes is
-# not included.
+# task = "optimize" works too, with the exact analytic gradient (including the
+# orbital relaxation of the Hirshfeld volumes, from a Z-vector solve).
 #
 # Omit the `dispersion` key for a plain KS-DFT run. There is deliberately no
 # value meaning "off" -- a reported 0.0 dispersion would be a physics claim.

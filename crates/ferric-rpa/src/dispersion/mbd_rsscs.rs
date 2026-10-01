@@ -837,6 +837,21 @@ pub fn mbd_rsscs_gradient_from_params(
     params: &MbdAtomParams,
     config: &MbdRsscsConfig,
 ) -> Result<MbdRsscsGradient, FerricError> {
+    // The tape keeps one dense (3N)² screening inverse per frequency node
+    // (n_freq + 1 of them) plus H's eigenvectors, and the forward/backward
+    // passes hold about two more (3N)² work matrices: charged against the
+    // memory budget before anything is allocated, held for the whole call.
+    let dim = 3 * positions.len();
+    let est = (config.n_freq + 1 + 3)
+        .saturating_mul(dim.saturating_mul(dim))
+        .saturating_mul(std::mem::size_of::<f64>());
+    let label = format!(
+        "mbd_rsscs_gradient (natoms={}, n_freq={})",
+        positions.len(),
+        config.n_freq
+    );
+    ferric_core::memory::check_alloc(&label, est, ferric_core::memory::resolve_budget_bytes(None))?;
+    let _charge = ferric_core::memory::pool::reserve_global(&label, est)?;
     let (res, tape) = rsscs_forward(positions, params, config, true)?;
     let tape = tape.ok_or_else(|| {
         FerricError::General("MBD@rsSCS gradient: forward pass returned no tape".to_string())

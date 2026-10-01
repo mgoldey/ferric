@@ -20,7 +20,9 @@ pub use mbd_rsscs::{
     mbd_rsscs_gradient, mbd_rsscs_gradient_from_params, MbdAtomParams, MbdRsscsConfig,
     MbdRsscsGradient, MbdRsscsResult,
 };
-pub use mbd_scf::{live_free_atom_volume, mbd_rsscs_for_density, MbdFreeAtomCache, MbdScfResult};
+pub use mbd_scf::{
+    live_free_atom_volume, mbd_rsscs_for_density, mbd_rsscs_for_scf, MbdFreeAtomCache, MbdScfResult,
+};
 
 use ndarray::Array2;
 
