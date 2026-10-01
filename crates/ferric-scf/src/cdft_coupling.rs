@@ -11,7 +11,7 @@
 //! # The raw element (constraint-offset invariant form)
 //!
 //! A converged constrained state Φ_X is the stationary point of
-//! E[ρ] + λ_X(∫w_X ρ − N_X), so it is treated (Wu & Van Voorhis) as an
+//! E\[ρ\] + λ_X(∫w_X ρ − N_X), so it is treated (Wu & Van Voorhis) as an
 //! eigenfunction of Ĥ + λ_X ŵ_X with eigenvalue F_X = E_X + λ_X N_X, where
 //! ŵ_X = Σ_i w_X(r_i) is the constraint's population operator and
 //! N_X = ⟨Φ_X|ŵ_X|Φ_X⟩. Projecting onto the other state:
@@ -36,7 +36,7 @@
 //! occupied MOs (equal to the target at convergence), so the invariance holds
 //! exactly for any operator offset, not only to the outer-loop tolerance.
 //! Charge (`SpinChannel::Total`) constraints only: the same ŵ acts on both
-//! spins here, as in [`cross_one_body`].
+//! spins here, as in [`cross_one_body`](crate::cdft_coupling::cross_one_body).
 //!
 //! References: Q. Wu & T. Van Voorhis, J. Chem. Phys. 125, 164105 (2006);
 //! B. Kaduk, T. Kowalczyk & T. Van Voorhis, Chem. Rev. 112, 321 (2012).
