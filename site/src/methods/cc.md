@@ -71,8 +71,10 @@ Kohn–Sham reference (a non-converged reference is an error), then adds the
 LinLCCD(hh) correction on those orbitals. `method.kind = "wb97x-l-v"`
 (`examples/water-wb97xlv.toml`). `[dft] lambda` and `omega` override the
 published 0.6 and 0.1 Bohr⁻¹; omitting them gives the published values.
-Smoke: its pieces and limits are checked, but no reference value for the total
-energy exists in ferric.
+λ enters the amplitude equations as well as the energy (the paper's eqn 22), so
+the correlation term is quadratic in λ at leading order. Validated against PySCF
+with the published parameters plus a numpy LinLCCD(hh) on water and OH, and
+against the paper's Be₂ bond energy (2.3 kcal/mol; ferric 2.299).
 
 ## MP2-based double hybrids
 
