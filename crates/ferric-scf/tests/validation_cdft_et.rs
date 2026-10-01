@@ -165,12 +165,16 @@ use serde_json::Value;
 const ROW_DIR: &str = "testdata/reference/validation/cdft_et";
 const MOL_DIR: &str = "testdata/molecules/validation";
 const SEPARATIONS: [&str; 3] = ["2.50", "3.00", "3.50"];
-/// End-to-end points ferric's cDFT outer loop cannot converge even from
-/// NWChem's converged lambda (8 outer iterations, level shift 0.3): def2-SVP
-/// 3.50 A limit-cycles at the edge of the over-localization cliff (lambda
-/// 2.6498 -> 2.8291 -> 2.6485 ...). A driver-robustness gap, recorded here and
-/// asserted to still fail; the kernel tests cover this point on NWChem's own
-/// determinants.
+/// End-to-end points ferric's cDFT solve does not converge from NWChem's
+/// converged lambda (8 outer iterations, level shift 0.3, 100 inner
+/// iterations). def2-SVP 3.50 A fails in the INNER SCF, not the outer loop:
+/// the outer loop reaches lambda = 2.4570634438 with |N - 1| = 9.6e-10 (the
+/// tolerance is 1e-10), where the converged inner solves take 77-99 of their
+/// 100 iterations, and every inner solve between there and 1e-9 above it hits
+/// the cap unconverged (N = 1.000018, 1.00013, 1.99936). The outer loop backs
+/// off toward the last converged lambda down to a step of 5e-10 and runs out
+/// of outer iterations. Asserted to still fail; the kernel tests cover this
+/// point on NWChem's own determinants.
 const KNOWN_NONCONVERGING: &[(&str, &str)] = &[("def2-svp", "3.50")];
 const BASES: [&str; 2] = ["def2-svp", "aug-cc-pvdz"];
 /// Electrons on the hole-bearing He in each diabat (the generator's TARGET_N).
@@ -986,7 +990,11 @@ fn solve_diabat(sys: &System, frag: usize, lambda_init: f64) -> CdftResult {
 ///
 /// # End-to-end solver settings (why, measured 2026-10-01 on He₂⁺/PBE)
 ///
-/// From the default λ = 0 start the outer loop failed or crawled: R = 2.50
+/// Measured with an outer loop that had only the Newton step and the
+/// sign-change bracket (no backtracking from unconverged inner solves, no
+/// rejection of a probe in another basin; see `ScalarStepper` in
+/// cdft_driver.rs). The λ = 0 start has not been re-measured with those.
+/// From the default λ = 0 start that loop failed or crawled: R = 2.50
 /// aug-cc-pVDZ hole-on-1 did not converge in 60 outer iterations, and def2-SVP
 /// took up to 29 outer iterations of mostly 500-iteration unconverged inner
 /// solves. Traced (`FERRIC_CDFT_TRACE=1`) causes:
@@ -997,7 +1005,9 @@ fn solve_diabat(sys: &System, frag: usize, lambda_init: f64) -> CdftResult {
 ///   localization cliff (N → 0.01–0.06, E → −3 to −2 Ha) with the root at its
 ///   edge; the ±1-clamped step from the plateau lands on the cliff, whose inner
 ///   solves do not converge and so never tighten the bracket, and the loop
-///   limit-cycles (def2-SVP 3.50 Å: λ = 2.6498 → 2.8291 → 2.6485 → …).
+///   limit-cycled (def2-SVP 3.50 Å: λ = 2.6498 → 2.8291 → 2.6485 → …). With
+///   backtracking that point instead stops on an inner-SCF failure; see
+///   `KNOWN_NONCONVERGING`.
 /// With only a 0.3 level shift and a 150-iteration inner cap (no λ start),
 /// 2 of 5 points converged (def2-SVP 2.50 in 36 s, 3.00 in 273 s) and 3 failed.
 ///
@@ -1006,9 +1016,8 @@ fn solve_diabat(sys: &System, frag: usize, lambda_init: f64) -> CdftResult {
 /// 1e-10 (`outer_iters > 1` is asserted), so λ and E remain a real
 /// comparison; what the start does is select the SAME localized branch as the
 /// reference, which the like-for-like rule requires anyway. It does NOT show
-/// that ferric's outer loop finds this state unaided from λ = 0 — measured
-/// above that it does not, and that is a driver-robustness finding, not this
-/// row's subject. The 0.3 Ha level shift changes the path, not the fixed point
+/// that ferric's outer loop finds this state unaided from λ = 0, which is
+/// not this row's subject. The 0.3 Ha level shift changes the path, not the fixed point
 /// (it acts on the virtual block and commutes with D at convergence): def2-SVP
 /// 2.50 Å gave E = −4.856787855242, λ = 2.3217366412 both with and without it.
 /// Hard caps: 8 outer × (1 + 1 FD) inner solves × 100 inner iterations, so a

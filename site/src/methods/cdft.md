@@ -86,9 +86,12 @@ What to know before using it:
   module has no cDFT, because the Becke weight operator is built on the XC
   grid of its DFT module. A Hartree–Fock comparison through that DFT module
   (`xc HFexch`) has not been made.
-- **One constraint is the tested case.** With several constraints the outer
-  loop is a plain k × k Newton step, without the single-constraint bracket
-  safeguard.
+- **One constraint is the tested case.** For one constraint the outer loop is
+  a Newton step kept inside a sign-change bracket. It backs off from a λ
+  whose inner SCF does not converge, and it discards a finite-difference
+  derivative whose two inner solves landed in different SCF states. With
+  several constraints the outer loop is a plain k × k Newton step without
+  these safeguards.
 - **`cdft_coupling` has strict preconditions** and raises `ValueError` when
   one fails. Each state carries exactly one `kind="charge"` constraint, both
   are converged, and both come from the same molecule, geometry, basis,
@@ -111,10 +114,13 @@ reference value is stated for UHF-cDFT energies. The He₂⁺ coupling ingredien
 (determinant overlap, one- and two-electron transition elements, |V|) match
 NWChem's `et` module to ≤ 6e-11 Ha on NWChem's own determinants, and the KS
 diabats and couplings match end to end when started from NWChem's λ, except
-def2-SVP at 3.50 Å, where the outer loop limit-cycles (see
-[Capabilities and validation](../reference/validation.md)). From λ = 0 the
-outer loop does not reliably find these diabats: the root sits next to an
-over-localization cliff. The tests also check the coupling kernel on synthetic matrices and He₂⁺ identities
+def2-SVP at 3.50 Å, where inner SCF solves within 1e-9 in λ of the root do
+not converge in 100 iterations (see
+[Capabilities and validation](../reference/validation.md)). These diabats are
+validated only from NWChem's λ, set through the Rust
+`RhfConfig::cdft_lambda_init`; `run_cdft` starts from λ = 0, where the
+symmetric pair is delocalized and the inner SCF is bistable. The tests also
+check the coupling kernel on synthetic matrices and He₂⁺ identities
 (`ferric-scf/tests/cdft_coupling.rs`), probe HeNe⁺ over a distance series
 (`cdft_coupling_hene.rs`), and check exact identities on LiH/def2-SVP
 (`cdft_uhf.rs`): the constraint is satisfied, λ = 0 reproduces plain UHF, and
