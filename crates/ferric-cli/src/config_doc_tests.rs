@@ -105,6 +105,7 @@ fn accepted_keys_by_section() -> BTreeMap<&'static str, BTreeSet<&'static str>> 
         ("cosmo", fields_of::<ferric_scf::cosmo::CosmoConfig>()),
         ("pcm", fields_of::<PcmCfg>()),
         ("external_potential", fields_of::<ExternalPotentialCfg>()),
+        ("cell", fields_of::<CellCfg>()),
     ])
 }
 

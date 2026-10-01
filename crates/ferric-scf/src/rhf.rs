@@ -825,8 +825,298 @@ pub fn solve_rhf(
     bounds: &SchwarzBounds,
     config: &RhfConfig,
 ) -> Result<ScfResult, FerricError> {
+    solve_rhf_impl(ctx, mol, prep, op, bounds, config, None)
+}
+
+/// Externally built one-electron matrices, nuclear energy and J/K builders
+/// for [`solve_rhf_injected`] — the Gamma-point periodic entry (Stage 1,
+/// `reference/pbc/stage1-design.md` §1-2).
+///
+/// At Gamma the periodic SCF is the molecular RHF on lattice-summed
+/// `(S, h, E_nn)` plus lattice J/K; everything else in `solve_rhf` (DIIS,
+/// canonical orthogonalizer with its lindep filter, level shift, MOM,
+/// smearing, the convergence gate) is geometry-agnostic and reused as-is.
+/// Any exchange-divergence correction (e.g. Madelung `K += v_M·S D S`) lives
+/// inside the injected [`KBuilder`], so the SCF knows no `exxdiv`.
+///
+/// The same struct feeds [`crate::uhf::solve_uhf_injected`] (Stage 4): there
+/// J is built from `D_α + D_β` and the ONE K builder is called once per spin
+/// with `D_σ`. Because the Madelung term `v_M·S D S` is linear in D, the same
+/// builder is correct for both (RHF: `K[D_total]` then `−½K`; UHF: `K[D_σ]`,
+/// coefficient 1 — PySCF `_ewald_exxdiv_for_G0` per dm). No per-spin factor.
+pub struct PeriodicInjection<'a> {
+    /// Overlap matrix, `(nbasis, nbasis)` of the `prep` basis.
+    pub s: Array2<f64>,
+    /// Core Hamiltonian, `(nbasis, nbasis)`.
+    pub h: Array2<f64>,
+    /// Nuclear repulsion energy (e.g. the Ewald sum for a cell).
+    pub vnn: f64,
+    /// Coulomb builder, called with the full density every iteration.
+    pub j: Box<dyn JBuilder + 'a>,
+    /// Exchange builder; `update_density(D)` is called before every `build(D)`.
+    pub k: Box<dyn KBuilder + 'a>,
+    /// Kohn-Sham exchange-correlation on the caller's (periodic) grid, or
+    /// `None` for Hartree-Fock. This is the ONLY way to run KS on the injected
+    /// path: `RhfConfig.xc` stays a named error (it would build the MOLECULAR
+    /// Becke grid). When present [`solve_rhf_injected`] (RKS) forms
+    ///
+    /// ```text
+    /// F = h + J − ½·a·K + V_xc,   E = ½Tr[D(h + F_noxc)] + E_xc + V_nn,
+    /// a = xc.exact_exchange_fraction()
+    /// ```
+    ///
+    /// i.e. the injected K (INCLUDING any Madelung term it carries) is scaled
+    /// by the global-hybrid fraction `a` — measured in the prototype:
+    /// Madelung on `a·K` gives the box-limit `a⁻³` coefficient `a ×` the HF
+    /// one (FINDINGS "Iteration 8"). For `a = 0` the injected K is never built.
+    ///
+    /// [`crate::uhf::solve_uhf_injected`] (UKS, FINDINGS "Iteration 10")
+    /// requires [`XcBuilder::supports_polarized`] and forms, per spin σ,
+    ///
+    /// ```text
+    /// F_σ = h + J[D_α + D_β] − a·K[D_σ] + V_σ,   (V_α, V_β) from build_polarized
+    /// ```
+    ///
+    /// with NO per-spin ½ (the injected K is linear in D_σ, Madelung
+    /// included) and no Madelung on the semilocal `(1 − a)` part.
+    pub xc: Option<Box<dyn XcBuilder + 'a>>,
+}
+
+/// Exchange-correlation builder for the injected (periodic) SCF path: owns its
+/// grid, AO tables and functional, and maps a closed-shell total density `D`
+/// (`tr(D S) = N`) to `(E_xc, V_xc)`. `V_xc` must be `(nbasis, nbasis)` and
+/// symmetric; it is added to the Fock matrix after the exchange term and its
+/// energy is added outside the `½Tr[D(h + F)]` trace (exactly the molecular
+/// `XcContribution::add_xc` convention).
+///
+/// Only global hybrids are expressible: the SCF scales the injected K by
+/// [`XcBuilder::exact_exchange_fraction`]; range-separated functionals need an
+/// attenuated periodic K and must be refused by the implementor.
+pub trait XcBuilder {
+    /// `(E_xc, V_xc)` of the semilocal part of the functional at density `d`.
+    fn build(&mut self, d: &Array2<f64>) -> Result<(f64, Array2<f64>), FerricError>;
+    /// Global exact-exchange fraction `a` (0 for LDA/GGA, 0.25 for PBE0).
+    fn exact_exchange_fraction(&self) -> f64;
+    /// Spin-polarized semilocal `(E_xc, V_α, V_β)` at the per-spin densities
+    /// `(d_a, d_b)` (`tr(D_σ S) = N_σ`), for the injected UKS path
+    /// ([`crate::uhf::solve_uhf_injected`]). Each `V_σ` must be
+    /// `(nbasis, nbasis)` and symmetric, and must be the derivative of `E_xc`
+    /// with respect to `D_σ` INCLUDING the `σ_αβ` cross term of a GGA (an
+    /// energy-only test cannot see that term: FINDINGS "Iteration 10").
+    ///
+    /// Default: an error (closed-shell-only builder). Implementors that
+    /// override it must also override [`XcBuilder::supports_polarized`].
+    fn build_polarized(
+        &mut self,
+        d_a: &Array2<f64>,
+        d_b: &Array2<f64>,
+    ) -> Result<(f64, Array2<f64>, Array2<f64>), FerricError> {
+        let _ = (d_a, d_b);
+        Err(FerricError::General(
+            "XcBuilder::build_polarized is not implemented by this builder (closed-shell only)"
+                .into(),
+        ))
+    }
+    /// Whether [`XcBuilder::build_polarized`] is implemented. Checked by
+    /// [`crate::uhf::solve_uhf_injected`] before the SCF starts, so a
+    /// closed-shell-only builder is refused by name up front.
+    fn supports_polarized(&self) -> bool {
+        false
+    }
+}
+
+/// A [`RhfConfig`] field that [`solve_rhf_injected`] cannot honour, by name.
+///
+/// Every one of these reads the molecular geometry/basis (`mol`, `prep`,
+/// `bounds`) to rebuild integrals the injection is supposed to own, so
+/// accepting it would silently compute a MOLECULAR term on a periodic
+/// system. Refused rather than ignored (config honesty).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InjectedConfigError {
+    /// The offending `RhfConfig` field, exactly as spelled in the struct
+    /// (`"aurora.enabled"` for the nested flag).
+    pub field: &'static str,
+    /// Why the injected path cannot honour it.
+    pub reason: &'static str,
+}
+
+impl std::fmt::Display for InjectedConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "solve_rhf_injected: RhfConfig.{} is not supported with injected S/h/J/K: {}",
+            self.field, self.reason
+        )
+    }
+}
+
+impl std::error::Error for InjectedConfigError {}
+
+impl From<InjectedConfigError> for FerricError {
+    fn from(e: InjectedConfigError) -> Self {
+        FerricError::General(e.to_string())
+    }
+}
+
+/// Reject every `RhfConfig` feature the injected path cannot honour, naming
+/// the first offending field. Checked in struct-declaration order so the
+/// reported field is deterministic when several are set.
+pub fn validate_injected(config: &RhfConfig) -> Result<(), InjectedConfigError> {
+    let reject = |field: &'static str, reason: &'static str| -> Result<(), InjectedConfigError> {
+        Err(InjectedConfigError { field, reason })
+    };
+    if config.k_builder.is_some() {
+        return reject(
+            "k_builder",
+            "exchange comes from the injected KBuilder; name-resolved builders use molecular integrals",
+        );
+    }
+    if config.df_j_aux.is_some() {
+        return reject(
+            "df_j_aux",
+            "Coulomb comes from the injected JBuilder; molecular RI-J would replace it",
+        );
+    }
+    if config.df_k_aux.is_some() {
+        return reject(
+            "df_k_aux",
+            "exchange comes from the injected KBuilder; molecular RI-K would replace it",
+        );
+    }
+    if config.xc.is_some() {
+        return reject(
+            "xc",
+            "the molecular Becke grid would be wrong for a periodic system; pass a periodic \
+             XcBuilder as PeriodicInjection.xc instead (e.g. ferric_pbc::dft::PeriodicXc)",
+        );
+    }
+    if config.newton_trigger > 0.0 {
+        return reject(
+            "newton_trigger",
+            "the Newton orbital Hessian rebuilds molecular J/K from prep/bounds",
+        );
+    }
+    if config.aurora.enabled {
+        return reject(
+            "aurora.enabled",
+            "AURORA builds a molecular auxiliary curvature model",
+        );
+    }
+    if config.trah_trigger.is_some() {
+        return reject(
+            "trah_trigger",
+            "the TRAH orbital Hessian rebuilds molecular J/K from prep/bounds",
+        );
+    }
+    if config.init_guess_density.is_none() && config.use_sad_guess {
+        return reject(
+            "use_sad_guess",
+            "the MINAO/SAD guess projects onto molecular atoms; set use_sad_guess = false \
+             (hcore guess from the injected S/h) or supply init_guess_density",
+        );
+    }
+    if config.external_potential.is_some() {
+        return reject(
+            "external_potential",
+            "point charges/fields would need lattice sums; fold them into the injected h/vnn instead",
+        );
+    }
+    if config.cosmo.is_some() {
+        return reject("cosmo", "implicit solvation is molecular-only");
+    }
+    if config.pcm.is_some() {
+        return reject("pcm", "implicit solvation is molecular-only");
+    }
+    if config.polarizable.is_some() {
+        return reject("polarizable", "polarizable embedding is molecular-only");
+    }
+    if config.check_stability {
+        return reject(
+            "check_stability",
+            "the stability Hessian rebuilds molecular J/K from prep/bounds",
+        );
+    }
+    Ok(())
+}
+
+/// Closed-shell RHF on caller-supplied `(S, h, V_nn)` and J/K builders.
+///
+/// `mol` supplies only the electron count; `prep` supplies only `nbasis`
+/// (and must be the basis the injected matrices/builders are expressed in);
+/// `op`/`bounds` are never read on this path. Config features that would
+/// rebuild molecular integrals are rejected by [`validate_injected`].
+///
+/// Errors if `s`/`h` are not `(nbasis, nbasis)` or `vnn` is not finite.
+pub fn solve_rhf_injected<'a>(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    config: &RhfConfig,
+    inj: PeriodicInjection<'a>,
+) -> Result<ScfResult, FerricError> {
+    validate_injected(config)?;
+    check_injection_shapes("solve_rhf_injected", &inj, prep.nbasis())?;
+    solve_rhf_impl(ctx, mol, prep, op, bounds, config, Some(inj))
+}
+
+/// Shape/finiteness checks shared by [`solve_rhf_injected`] and
+/// [`crate::uhf::solve_uhf_injected`]: `s`/`h` must be `(n, n)` with
+/// `n = prep.nbasis()`, and `vnn` finite. `who` prefixes the message.
+pub(crate) fn check_injection_shapes(
+    who: &str,
+    inj: &PeriodicInjection<'_>,
+    n: usize,
+) -> Result<(), FerricError> {
+    for (name, m) in [("s", &inj.s), ("h", &inj.h)] {
+        if m.dim() != (n, n) {
+            return Err(FerricError::General(format!(
+                "{who}: PeriodicInjection.{name} has shape {:?}, expected ({n}, {n}) \
+                 (prep.nbasis())",
+                m.dim()
+            )));
+        }
+    }
+    if !inj.vnn.is_finite() {
+        return Err(FerricError::General(format!(
+            "{who}: PeriodicInjection.vnn is not finite ({})",
+            inj.vnn
+        )));
+    }
+    Ok(())
+}
+
+/// Shared body of [`solve_rhf`] (`inj = None`, byte-identical to the
+/// pre-injection solver) and [`solve_rhf_injected`] (`inj = Some`, config
+/// already validated).
+fn solve_rhf_impl(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    config: &RhfConfig,
+    inj: Option<PeriodicInjection<'_>>,
+) -> Result<ScfResult, FerricError> {
     // Refuse an open-shell molecule BEFORE any work. See `require_closed_shell`.
+    // (Moved here from solve_rhf on rebase so the injected path keeps it too.)
     require_closed_shell(mol)?;
+    // Split the injection: (S, h, V_nn) go to the shared env builder, the J/K
+    // builders are driven in the iteration loop. Both `None` on the molecular
+    // path.
+    let (pre_env, mut inj_jk, mut inj_xc) = match inj {
+        Some(PeriodicInjection {
+            s,
+            h,
+            vnn,
+            j,
+            k,
+            xc,
+        }) => (Some((s, h, vnn)), Some((j, k)), xc),
+        None => (None, None, None),
+    };
+
     // Build the XC contribution once. None for pure HF. Built FIRST so the
     // shared driver env can size the RSH fitter pair from k_mix, and so the
     // JK-aux auto-defaults below can see hybrid/RSH-ness.
@@ -867,7 +1157,31 @@ pub fn solve_rhf(
     } else {
         None
     };
-    let k_mix: KMix = xc_contrib.as_ref().map(|x| x.k_mix()).unwrap_or_default();
+    // Injected (periodic) KS: a global hybrid scales the injected K by its
+    // exact-exchange fraction (validate_injected guarantees `xc_contrib` is
+    // None there, so the two sources never coexist). Molecular path:
+    // `inj_xc` is None and this is the historical expression.
+    let k_mix: KMix = match inj_xc.as_ref() {
+        Some(x) => {
+            let a = x.exact_exchange_fraction();
+            if !(a.is_finite() && (0.0..=1.0).contains(&a)) {
+                return Err(FerricError::General(format!(
+                    "solve_rhf_injected: XcBuilder exact-exchange fraction must be in [0, 1], \
+                     got {a}"
+                )));
+            }
+            KMix {
+                sr: a,
+                lr: a,
+                omega: 0.0,
+            }
+        }
+        None => xc_contrib.as_ref().map(|x| x.k_mix()).unwrap_or_default(),
+    };
+    // The injected K is consumed unless an injected pure functional (a = 0)
+    // multiplies it by zero; then it is never built (as the molecular
+    // `k_consumed` gate does for pure DFT).
+    let inj_k_consumed = inj_xc.is_none() || k_mix.sr > 0.0;
 
     // Shared geometry-only environment: S, hcore(+ECP, +external), V_nn
     // (+external), COSMO/PCM contexts, resolved memory budget, RSH fitters.
@@ -882,7 +1196,7 @@ pub fn solve_rhf(
         polarizable_site_basis,
         mut dfk_sr,
         mut dfk_lr,
-    } = crate::driver::prepare(ctx, mol, prep, config, &k_mix)?;
+    } = crate::driver::prepare(ctx, mol, prep, config, &k_mix, pre_env)?;
 
     let n = prep.nbasis();
     let nelec = mol.nelec();
@@ -1151,6 +1465,10 @@ pub fn solve_rhf(
     if let Some(kb) = k_builder.as_mut() {
         kb.update_density(&d);
     }
+    // Same contract for an injected exchange builder.
+    if let Some((_, ik)) = inj_jk.as_mut() {
+        ik.update_density(&d);
+    }
 
     // Canonical orthogonalizer X = U_kept · diag(1/sqrt(λ_kept)), shape (n × m),
     // dropping eigenvectors of S with λ < LINDEP_THRESH (near-linear-dependence).
@@ -1271,7 +1589,9 @@ pub fn solve_rhf(
     } else {
         None
     };
-    let mut direct_jk: Option<DirectJK> = if !df_any && k_builder.is_none() {
+    // Not built on the injected path: J/K come from `inj_jk`, and with no
+    // DirectJK the incremental-Fock machinery below stays off.
+    let mut direct_jk: Option<DirectJK> = if !df_any && k_builder.is_none() && inj_jk.is_none() {
         Some(DirectJK::new(
             ctx,
             prep,
@@ -1348,7 +1668,16 @@ pub fn solve_rhf(
         }
         // Build J: DF-J if configured, else fall through to combined direct path below.
         // Build K: DF-K > LinkK > combined DirectJK, in priority order.
-        if df_any {
+        // An injected (periodic) J/K pair pre-empts all of them; validate_injected
+        // guarantees no DF/pluggable builder was requested alongside it. Same
+        // call sequence as the pluggable-K arm (J, update_density, K).
+        if let Some((ij, ik)) = inj_jk.as_mut() {
+            total_quartets += ij.build(&d, &mut j_buf)?;
+            if inj_k_consumed {
+                ik.update_density(&d);
+                total_quartets += ik.build(&d, &mut k_buf)?;
+            }
+        } else if df_any {
             if let Some(dfj) = df_j.as_mut() {
                 dfj.build(&d, &mut j_buf)?;
             } else {
@@ -1473,6 +1802,17 @@ pub fn solve_rhf(
         let e_elec_no_xc: f64 = 0.5 * (&d * &(&h + &f)).sum();
         let e_xc = if let Some(x) = xc_contrib.as_ref() {
             x.add_xc(&d, &mut f)
+        } else if let Some(ix) = inj_xc.as_mut() {
+            let (e, v) = ix.build(&d)?;
+            if v.dim() != f.dim() {
+                return Err(FerricError::General(format!(
+                    "solve_rhf_injected: XcBuilder returned V_xc of shape {:?}, expected {:?}",
+                    v.dim(),
+                    f.dim()
+                )));
+            }
+            f += &v;
+            e
         } else {
             0.0
         };
@@ -1550,7 +1890,11 @@ pub fn solve_rhf(
         if ctx.is_root() {
             if let Some(rl) = crate::runlog::log() {
                 rl.scf_iter(
-                    if xc_contrib.is_some() { "rks" } else { "rhf" },
+                    if xc_contrib.is_some() || inj_xc.is_some() {
+                        "rks"
+                    } else {
+                        "rhf"
+                    },
                     crate::runlog::current_rung(),
                     iter,
                     energy,

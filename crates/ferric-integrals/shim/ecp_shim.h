@@ -90,6 +90,89 @@ int ferric_ecp_matrix_deriv(const ferric_ecp_gshell *shells, int nshell,
                             const ferric_ecp_center *ecps, int necp,
                             double *out_derivs, int *out_natoms);
 
+/* Rectangular ECP block between two INDEPENDENT shell lists at arbitrary
+ * (e.g. lattice-translated) centres -- the periodic-ECP kernel. Unlike
+ * ferric_ecp_matrix there is no bra/ket symmetry, no centre deduplication and
+ * NO internal distance screening: every (bra shell a, ket shell b, ECP u)
+ * triple enabled by `mask` is evaluated with libecpint's per-shell-pair kernel
+ * (ECPIntegral::compute_shell_pair) and summed.
+ *
+ *   bra, nbra  : row shells (Cartesian, bare-Cartesian coefficients)
+ *   ket, nket  : column shells
+ *   ecps, necp : ECP centres (any positions; images allowed)
+ *   mask       : NULL = every triple; else nbra*nket*necp bytes, index
+ *                (a*nket + b)*necp + u, nonzero = evaluate. The caller's
+ *                screen lives here, so the truncation is the caller's to
+ *                report.
+ *   out        : caller-allocated, out_len doubles, row-major
+ *                [ncart(bra)][ncart(ket)]; overwritten (zeroed first).
+ *   out_len    : MUST equal ferric_ecp_ncart(bra) * ferric_ecp_ncart(ket)
+ *                (size cross-check: a mismatch returns FERRIC_ECP_EINVAL and
+ *                writes nothing).
+ *
+ * Validates l, nprim, exponents and ECP angular momenta against
+ * LIBECPINT_MAX_L BEFORE constructing the libecpint engine (whose own checks
+ * are assert()s, i.e. aborts). Never lets a C++ exception cross the ABI.
+ * Returns FERRIC_ECP_OK or a negative error code. */
+int ferric_ecp_block(const ferric_ecp_gshell *bra, int nbra,
+                     const ferric_ecp_gshell *ket, int nket,
+                     const ferric_ecp_center *ecps, int necp,
+                     const unsigned char *mask,
+                     double *out, long long out_len);
+
+/* First derivatives of the rectangular block of ferric_ecp_block (periodic-ECP
+ * forces). For every enabled triple (bra shell a at A, ket shell b at B, ECP
+ * centre u at C) the integral <a|U_u|b> depends on A, B and C; this returns
+ * the TRUE partial derivatives with respect to each of the three centres:
+ *
+ *   out_bra   [3][ncart(bra)][ncart(ket)] += d/dA_x <a|U_u|b>       (x = 0,1,2)
+ *   out_ket   [3][ncart(bra)][ncart(ket)] += d/dB_x <a|U_u|b>
+ *   out_centre[ngroup][3][ncart(bra)][ncart(ket)]
+ *             [centre_group[u]]           += d/dC_x <a|U_u|b> = -(d/dA_x + d/dB_x)
+ *
+ * summed over the enabled triples (row-major; all three outputs zeroed first).
+ * The caller decides which atom each slot belongs to: every bra shell is one
+ * function of its atom, every ket shell (possibly a lattice image) one
+ * function of its atom, and `centre_group[u]` names the caller's group (e.g.
+ * the cell atom of an ECP image) the centre derivative is accumulated under.
+ * No libecpint atom inference / 1e-4 Bohr deduplication is involved.
+ *
+ * ON-CENTRE SHELLS (the libecpint quirk this function removes):
+ * ECPIntegral::compute_shell_pair_derivative, for a shell within 1e-6 Bohr
+ * (L1) of the ECP centre, skips that shell's derivative and reports
+ * A = -B, C = 0 (or B = -A, C = 0). Only the per-ATOM totals are right, and
+ * only because a coincident shell and centre belong to the same atom. That is
+ * wrong for any caller that uses the slots separately (e.g. mutation tests
+ * that drop the centre term, or a caller whose "same atom" assumption fails).
+ * This function therefore does NOT call compute_shell_pair_derivative; it
+ * calls the same kernel that function uses off-centre,
+ * ECPIntegral::left_shell_derivative, for BOTH shells unconditionally:
+ *   bra = left_shell_derivative(U, a, b), ket = left_shell_derivative(U, b, a)^T,
+ *   centre = -(bra + ket)   (translation invariance of each triple).
+ * Off-centre this is bitwise what compute_shell_pair_derivative returns; on
+ * the centre the three slots are the true partial derivatives (and the per-
+ * atom totals agree with libecpint's to roundoff).
+ *
+ *   bra, nbra / ket, nket / ecps, necp / mask : as ferric_ecp_block.
+ *   centre_group : necp ints, each in [0, ngroup) (checked; EINVAL otherwise).
+ *   ngroup       : > 0.
+ *   out_bra, out_ket : 3 * out_len doubles each.
+ *   out_centre   : ngroup * 3 * out_len doubles.
+ *   out_len      : MUST equal ncart(bra) * ncart(ket) (checked; nothing is
+ *                  written on a mismatch).
+ *
+ * libecpint's engine is built with deriv = 1, so max l(bra, ket) + 1 must not
+ * exceed LIBECPINT_MAX_L (checked before construction: its own guards are
+ * assert()s). Never lets a C++ exception cross the ABI.
+ * Returns FERRIC_ECP_OK or a negative error code. */
+int ferric_ecp_block_deriv(const ferric_ecp_gshell *bra, int nbra,
+                           const ferric_ecp_gshell *ket, int nket,
+                           const ferric_ecp_center *ecps, int necp,
+                           const unsigned char *mask,
+                           const int *centre_group, int ngroup,
+                           double *out_bra, double *out_ket, double *out_centre,
+                           long long out_len);
+
 #ifdef __cplusplus
 }
 #endif

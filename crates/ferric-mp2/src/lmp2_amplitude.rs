@@ -205,7 +205,11 @@ fn eigh(m: &Array2<f64>) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
 }
 
 /// Symmetric (Löwdin) orthonormalization of the columns of `c` w.r.t. `s`.
-fn lowdin(c: &Array2<f64>, s: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
+///
+/// `pub` (visibility only, 2026-09-24) so ferric-pbc's Gamma LMP2 builds its
+/// periodic VV-HV space with the SAME orthonormalization; the body is
+/// unchanged, so the molecular path is byte-identical.
+pub fn lowdin(c: &Array2<f64>, s: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
     let o = c.t().dot(&s.dot(c));
     let (w, v) = eigh(&o)?;
     let wmin = w.iter().cloned().fold(f64::INFINITY, f64::min);
@@ -224,7 +228,8 @@ fn lowdin(c: &Array2<f64>, s: &Array2<f64>) -> Result<Array2<f64>, FerricError> 
 
 /// Canonical orthonormalization keeping the `rank` largest-eigenvalue
 /// directions; errors if the kept spectrum dips below the lindep floor.
-fn canonical_orth(
+/// `pub` for ferric-pbc (visibility only; see [`lowdin`]).
+pub fn canonical_orth(
     c: &Array2<f64>,
     s: &Array2<f64>,
     rank: usize,
@@ -257,7 +262,8 @@ fn canonical_orth(
 }
 
 /// Greedy pivoted Cholesky on a PSD matrix; returns `rank` pivot indices.
-fn pivoted_cholesky_order(m: &Array2<f64>, rank: usize) -> Result<Vec<usize>, FerricError> {
+/// `pub` for ferric-pbc (visibility only; see [`lowdin`]).
+pub fn pivoted_cholesky_order(m: &Array2<f64>, rank: usize) -> Result<Vec<usize>, FerricError> {
     let n = m.nrows();
     let mut d: Vec<f64> = (0..n).map(|i| m[(i, i)]).collect();
     let mut l = Array2::<f64>::zeros((rank, n));
@@ -923,6 +929,36 @@ pub fn pair_gate_keep(
     eps: f64,
     cal: f64,
 ) -> (Vec<bool>, usize) {
+    pair_gate_keep_with(
+        |i, j| {
+            (0..3)
+                .map(|x| (occ_centers[(i, x)] - occ_centers[(j, x)]).powi(2))
+                .sum()
+        },
+        occ_spreads,
+        no,
+        eps,
+        cal,
+    )
+}
+
+/// [`pair_gate_keep`] with a caller-supplied SQUARED centroid distance
+/// `rij2(i, j)` (Bohr²). The molecular gate passes the Euclidean distance
+/// (the closure above is the exact expression the gate always used, so the
+/// molecular path is byte-identical — pinned by
+/// `pair_gate_keep_with_euclid_is_bitwise_pair_gate_keep`); ferric-pbc's
+/// Gamma LMP2 passes the MINIMUM-IMAGE distance (a raw Cartesian distance
+/// across a supercell boundary is wrong there).
+pub fn pair_gate_keep_with<D>(
+    rij2: D,
+    occ_spreads: &[f64],
+    no: usize,
+    eps: f64,
+    cal: f64,
+) -> (Vec<bool>, usize)
+where
+    D: Fn(usize, usize) -> f64,
+{
     let theta = 1e-2 * eps;
     let mut keep = vec![true; no * no];
     let mut n_gated = 0usize;
@@ -931,9 +967,7 @@ pub fn pair_gate_keep(
             if i == j {
                 continue;
             }
-            let rij2: f64 = (0..3)
-                .map(|x| (occ_centers[(i, x)] - occ_centers[(j, x)]).powi(2))
-                .sum();
+            let rij2: f64 = rij2(i, j);
             let est = cal * (occ_spreads[i] * occ_spreads[j]).powi(3) / rij2.powi(3).max(1e-12);
             if est < theta {
                 keep[i * no + j] = false;
@@ -1354,4 +1388,40 @@ pub fn amplitude_lmp2_with_virtuals(
             t_reference_s,
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Byte-identity guard for the ferric-pbc seam: the closure form with
+    /// the Euclidean distance reproduces `pair_gate_keep` exactly (mask and
+    /// count), across thresholds that gate some but not all pairs.
+    #[test]
+    fn pair_gate_keep_with_euclid_is_bitwise_pair_gate_keep() {
+        let no = 6;
+        let centers = Array2::from_shape_fn((no, 3), |(i, x)| 1.7 * i as f64 + 0.3 * x as f64);
+        let spreads: Vec<f64> = (0..no).map(|i| 0.8 + 0.1 * i as f64).collect();
+        let mut seen_partial = false;
+        for eps in [0.0, 1e-6, 1e-4, 1e-2] {
+            let a = pair_gate_keep(&centers, &spreads, no, eps, 0.7);
+            let b = pair_gate_keep_with(
+                |i, j| {
+                    (0..3)
+                        .map(|x| (centers[(i, x)] - centers[(j, x)]).powi(2))
+                        .sum()
+                },
+                &spreads,
+                no,
+                eps,
+                0.7,
+            );
+            assert_eq!(a, b, "eps {eps}");
+            seen_partial |= a.1 > 0 && a.1 < no * (no - 1) / 2;
+        }
+        assert!(
+            seen_partial,
+            "no threshold gated a strict subset; the test is vacuous"
+        );
+    }
 }

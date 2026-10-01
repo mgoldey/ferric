@@ -1,0 +1,156 @@
+--- a/include/libint2/boys.h
++++ b/include/libint2/boys.h
+@@ -18,6 +18,22 @@
+  *
+  */
+ 
++/*
++ *  MODIFIED COPY (ferric, 2026-09-30). Upstream: libint 2.13.1 (conda-forge
++ *  build as installed by ferric's scripts/install-libint.sh),
++ *  include/libint2/boys.h, sha256
++ *  890ab0261a2be2517d3d4cedfd7d07e2a1c6be7b6f057dc7ea2ea418e17067c1.
++ *  Changes: see ../libint2-2.13.1-gmeval-no-copy.patch and
++ *  ../../README.md. In short, GenericGmEval::eval no longer
++ *  copy-constructs the erf/erfx evaluator per primitive quartet (atomic
++ *  shared_ptr refcount on the process-wide FmEval_Chebyshev7 singleton, plus
++ *  a heap alloc for erfx's scratch vector); erfx_coulomb_gm_eval::operator()
++ *  is const with its Fm scratch on the stack. Arithmetic is unchanged.
++ *  crates/ferric-integrals/build.rs puts this directory first on the shim's
++ *  include path ONLY when the libint2 prefix's own boys.h is byte-identical
++ *  to the stock 2.13.1 file above.
++ */
++
+ #ifndef _libint2_src_lib_libint_boys_h_
+ #define _libint2_src_lib_libint_boys_h_
+ 
+@@ -1948,6 +1964,23 @@
+   ExpensiveNumbers<Real> numbers_;
+ };
+ 
++namespace detail {
++/// ferric patch: true for evaluators whose operator() is const, reads only
++/// immutable shared state and keeps any scratch on the stack, so that
++/// GenericGmEval::eval may call them through a const reference (race-free
++/// even if one GenericGmEval is shared by several engines/threads).
++/// (erf_coulomb_gm_eval / erfx_coulomb_gm_eval are forward-declared in
++/// boys_fwd.h.)
++template <typename GmEvalFunction>
++struct gm_eval_call_by_const_ref : std::false_type {};
++template <typename Real>
++struct gm_eval_call_by_const_ref<os_core_ints::erf_coulomb_gm_eval<Real>>
++    : std::true_type {};
++template <typename Real>
++struct gm_eval_call_by_const_ref<os_core_ints::erfx_coulomb_gm_eval<Real>>
++    : std::true_type {};
++}  // namespace detail
++
+ template <typename GmEvalFunction>
+ struct GenericGmEval : private GmEvalFunction {
+   typedef typename GmEvalFunction::value_type Real;
+@@ -1963,7 +1996,17 @@
+   template <typename Real, typename... ExtraArgs>
+   void eval(Real* Gm, Real rho, Real T, int mmax, ExtraArgs... args) const {
+     assert(mmax <= mmax_);
+-    (GmEvalFunction(*this))(Gm, rho, T, mmax, std::forward<ExtraArgs>(args)...);
++    // ferric patch: evaluators whose call operator is const and keeps its
++    // scratch on the stack (erf, erfx = erfc/erfx 2-body and erf/erfc/erfx
++    // nuclear) are invoked through a const reference. The stock code
++    // copy-constructed the evaluator here on EVERY primitive quartet/pair:
++    // an atomic inc+dec of the shared_ptr to the process-wide
++    // FmEval_Chebyshev7 singleton (one cache line shared by every thread),
++    // plus, for erfx, a heap allocation+free of the scratch vector. Other
++    // evaluators (delta, r12_xx_K<1>) keep the stock copy path unchanged.
++    eval_dispatch(std::integral_constant<bool,
++                      detail::gm_eval_call_by_const_ref<GmEvalFunction>::value>{},
++                  Gm, rho, T, mmax, std::forward<ExtraArgs>(args)...);
+   }
+ 
+   /// @return the maximum value of m for which the \f$ G_m(\rho, T) \f$ can be
+@@ -1976,6 +2019,20 @@
+  private:
+   int mmax_;
+   Real precision_;
++
++  // ferric patch: const-reference call, no copy (see eval above)
++  template <typename Real, typename... ExtraArgs>
++  void eval_dispatch(std::true_type, Real* Gm, Real rho, Real T, int mmax,
++                     ExtraArgs... args) const {
++    static_cast<const GmEvalFunction&>(*this)(
++        Gm, rho, T, mmax, std::forward<ExtraArgs>(args)...);
++  }
++  // stock behaviour: call a per-call copy (evaluators with mutable scratch)
++  template <typename Real, typename... ExtraArgs>
++  void eval_dispatch(std::false_type, Real* Gm, Real rho, Real T, int mmax,
++                     ExtraArgs... args) const {
++    (GmEvalFunction(*this))(Gm, rho, T, mmax, std::forward<ExtraArgs>(args)...);
++  }
+ };
+ 
+ // these Gm engines need extra scratch data
+@@ -2102,10 +2159,12 @@
+ /// \mathrm{erfc}(\omega r) ) / r \f$ kernel
+ /// @note need extra scratch for Boys function values,
+ ///       since need to call Boys engine twice
++///
++/// ferric patch: no longer derives from CoreEvalScratch (whose heap vector
++/// was re-allocated on every per-call copy); operator() is const and the Fm
++/// scratch lives on the stack. The arithmetic is the stock sequence.
+ template <typename Real>
+-struct erfx_coulomb_gm_eval
+-    : private detail::CoreEvalScratch<erfx_coulomb_gm_eval<Real>> {
+-  typedef detail::CoreEvalScratch<erfx_coulomb_gm_eval<Real>> base_type;
++struct erfx_coulomb_gm_eval {
+   typedef Real value_type;
+ 
+ #ifndef LIBINT_USER_DEFINED_REAL
+@@ -2114,16 +2173,29 @@
+   using FmEvalType = libint2::FmEval_Reference<scalar_type>;
+ #endif
+ 
+-  erfx_coulomb_gm_eval(unsigned int mmax, Real precision) : base_type(mmax) {
++  erfx_coulomb_gm_eval(unsigned int mmax, Real precision) {
+     fm_eval_ = FmEvalType::instance(mmax, precision);
+   }
+   void operator()(Real* Gm, Real rho, Real T, int mmax, Real omega, Real lambda,
+-                  Real sigma) {
++                  Real sigma) const {
++    // ferric patch: FmEval_Chebyshev7 throws for mmax > cheb_table_mmax (40,
++    // boys_cheb7_v2.h), and GenericGmEval::eval asserts mmax <= the mmax the
++    // evaluator was built for, so the stack buffer always suffices for it;
++    // the heap fallback only serves evaluators without that cap
++    // (LIBINT_USER_DEFINED_REAL builds use FmEval_Reference).
++    constexpr int stack_mmax = 63;
++    Real Fm_stack[stack_mmax + 1];
++    std::vector<Real> Fm_heap;  // empty: no allocation unless used
++    Real* Fm = Fm_stack;
++    if (mmax > stack_mmax) {
++      Fm_heap.resize(mmax + 1);
++      Fm = Fm_heap.data();
++    }
+     // \lambda \mathrm{erf}(\omega r) + \sigma \mathrm{erfc}(\omega r) = \sigma
+     // - (\sigma - \lambda) \mathrm{erf}(\omega r)
+     if (sigma != 0) {
+-      fm_eval_->eval(&base_type::Fm_[0], T, mmax);
+-      for (auto m = 0; m <= mmax; ++m) Gm[m] = sigma * base_type::Fm_[m];
++      fm_eval_->eval(Fm, T, mmax);
++      for (auto m = 0; m <= mmax; ++m) Gm[m] = sigma * Fm[m];
+     } else {
+       std::fill(Gm, Gm + mmax + 1, Real{0});
+     }
+@@ -2131,14 +2203,14 @@
+     if (omega > 0 && sigma_minus_lambda != 0) {
+       auto omega2 = omega * omega;
+       auto omega2_over_omega2_plus_rho = omega2 / (omega2 + rho);
+-      fm_eval_->eval(&base_type::Fm_[0], T * omega2_over_omega2_plus_rho, mmax);
++      fm_eval_->eval(Fm, T * omega2_over_omega2_plus_rho, mmax);
+ 
+       using std::sqrt;
+       auto ooversqrto2prho_exp_2mplus1 =
+           sqrt(omega2_over_omega2_plus_rho) * sigma_minus_lambda;
+       for (auto m = 0; m <= mmax;
+            ++m, ooversqrto2prho_exp_2mplus1 *= omega2_over_omega2_plus_rho) {
+-        Gm[m] -= ooversqrto2prho_exp_2mplus1 * base_type::Fm_[m];
++        Gm[m] -= ooversqrto2prho_exp_2mplus1 * Fm[m];
+       }
+     }
+   }
