@@ -275,7 +275,8 @@ pub struct CdftSeed<'a> {
     /// basin it aimed at.
     pub mos: Option<(&'a Array2<f64>, &'a Array2<f64>)>,
     /// Starting multipliers, one per constraint in `config.constraints` order.
-    /// `None` starts at λ = 0. Only the first λ-Newton loop uses it; a
+    /// `None` falls back to `config.cdft_lambda_init`, and λ = 0 is used only
+    /// when both are absent. Only the first λ-Newton loop uses the start; a
     /// stability-descent restart starts at λ = 0 as before.
     pub lambdas: Option<&'a [f64]>,
 }

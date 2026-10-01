@@ -190,7 +190,8 @@ pub struct RhfConfig {
     /// still the root of c(λ) = 0 to `cdft_lambda_tol`.
     ///
     /// Length must equal `constraints.len()` and every entry must be finite
-    /// (an error otherwise).
+    /// (an error otherwise). A `CdftSeed` with explicit multipliers takes
+    /// precedence over this value.
     pub cdft_lambda_init: Option<Vec<f64>>,
     /// cDFT **state selection**: after the λ-Newton loop converges, check the
     /// λ-augmented orbital Hessian and, if the constrained solution is a
