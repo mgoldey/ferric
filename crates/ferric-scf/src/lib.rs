@@ -104,7 +104,7 @@ pub mod uhf;
 pub use uhf::{solve_uhf, solve_uhf_fockmod, UhfConfig};
 /// Constrained DFT solver: charge/spin constraints via Becke-weight operator.
 pub mod cdft_driver;
-pub use cdft_driver::{solve_cdft_uhf, CdftResult};
+pub use cdft_driver::{solve_cdft_uhf, solve_cdft_uhf_seeded, CdftResult, CdftSeed};
 /// cDFT electronic coupling (H_ab) via the Wu–Van Voorhis scheme.
 pub mod cdft_coupling;
 pub use cdft_coupling::{coupling_hab, DiabaticState, HabResult};

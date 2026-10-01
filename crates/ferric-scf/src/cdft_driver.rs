@@ -242,6 +242,10 @@ pub struct CdftResult {
 
 /// Solve constrained UHF/UKS. Reads `config.constraints` and
 /// `config.cdft_lambda_tol`. Requires at least one constraint.
+///
+/// Starts every inner solve from the configured default guess and the
+/// λ-Newton loop from λ = 0; [`solve_cdft_uhf_seeded`] is the same solve from
+/// a caller-supplied starting point.
 pub fn solve_cdft_uhf(
     ctx: &ParallelContext,
     mol: &Molecule,
@@ -250,6 +254,46 @@ pub fn solve_cdft_uhf(
     bounds: &SchwarzBounds,
     config: &RhfConfig,
 ) -> Result<CdftResult, FerricError> {
+    solve_cdft_uhf_seeded(ctx, mol, prep, bs, bounds, config, CdftSeed::default())
+}
+
+/// A caller-supplied starting point for [`solve_cdft_uhf_seeded`].
+///
+/// The constrained problem can have several solutions at one target (HeNe⁺ at
+/// the integer Becke target is the measured case), and WHICH one a solve
+/// returns is decided by where it starts. This lets a caller choose: e.g. start
+/// from another code's converged orbitals to test whether ferric stays on that
+/// code's state.
+///
+/// `Default` (both `None`) reproduces [`solve_cdft_uhf`] exactly.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CdftSeed<'a> {
+    /// α and β MO coefficients, each `(nbf, nbf)` with the occupied columns
+    /// first (the `solve_uhf_fockmod` guess contract). Used as the guess at
+    /// EVERY inner solve of the first λ-Newton loop, not only the first one —
+    /// the same re-seeding the stability descent relies on to stay in the
+    /// basin it aimed at.
+    pub mos: Option<(&'a Array2<f64>, &'a Array2<f64>)>,
+    /// Starting multipliers, one per constraint in `config.constraints` order.
+    /// `None` starts at λ = 0. Only the first λ-Newton loop uses it; a
+    /// stability-descent restart starts at λ = 0 as before.
+    pub lambdas: Option<&'a [f64]>,
+}
+
+/// [`solve_cdft_uhf`] from a caller-supplied starting point (see [`CdftSeed`]).
+///
+/// The stability descent (`config.cdft_stability_descent`) still runs on the
+/// seeded solution; a caller who wants to know only whether the seed's state
+/// is a fixed point should switch it off.
+pub fn solve_cdft_uhf_seeded(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bs: &BasisSet,
+    bounds: &SchwarzBounds,
+    config: &RhfConfig,
+    seed: CdftSeed<'_>,
+) -> Result<CdftResult, FerricError> {
     let cons = &config.constraints;
     if cons.is_empty() {
         return Err(FerricError::General(
@@ -257,6 +301,18 @@ pub fn solve_cdft_uhf(
         ));
     }
     let k = cons.len();
+    let zero_lambdas = vec![0.0_f64; k];
+    let lam_start: &[f64] = match seed.lambdas {
+        None => &zero_lambdas,
+        Some(l) if l.len() == k && l.iter().all(|v| v.is_finite()) => l,
+        Some(l) => {
+            return Err(FerricError::General(format!(
+                "solve_cdft_uhf_seeded: {} starting multipliers for {k} constraints \
+                 (or a non-finite value): {l:?}",
+                l.len()
+            )))
+        }
+    };
 
     // Build the DFT grid + AO values once, then W^C per constraint once.
     // The weight quadrature must be converged tighter than cdft_lambda_tol or
@@ -315,151 +371,157 @@ pub fn solve_cdft_uhf(
     // applied at EVERY inner solve, not only the first: re-seeding each λ is
     // what keeps a descent inside the basin it was aimed at, whereas seeding
     // only λ⁰ lets the subsequent inner solves drift back into the saddle.
-    let lambda_newton =
-        |guess: Option<(&Array2<f64>, &Array2<f64>)>| -> Result<CdftResult, FerricError> {
-            let run_inner = |lam: &[f64]| -> Result<(ScfResult, Vec<f64>, Vec<f64>), FerricError> {
-                let fm = |f_a: &mut Array2<f64>, f_b: &mut Array2<f64>| {
-                    for (ci, c) in cons.iter().enumerate() {
-                        let l = lam[ci];
-                        match c.spin {
-                            SpinChannel::Total => {
-                                // same potential to both spins
-                                let lw = l * &w_mats[ci];
-                                *f_a += &lw;
-                                *f_b += &lw;
-                            }
-                            SpinChannel::SpinDiff => {
-                                let lw = l * &w_mats[ci];
-                                *f_a += &lw;
-                                *f_b -= &lw;
-                            }
+    let lambda_newton_from = |guess: Option<(&Array2<f64>, &Array2<f64>)>,
+                              lam_start: &[f64]|
+     -> Result<CdftResult, FerricError> {
+        let run_inner = |lam: &[f64]| -> Result<(ScfResult, Vec<f64>, Vec<f64>), FerricError> {
+            let fm = |f_a: &mut Array2<f64>, f_b: &mut Array2<f64>| {
+                for (ci, c) in cons.iter().enumerate() {
+                    let l = lam[ci];
+                    match c.spin {
+                        SpinChannel::Total => {
+                            // same potential to both spins
+                            let lw = l * &w_mats[ci];
+                            *f_a += &lw;
+                            *f_b += &lw;
+                        }
+                        SpinChannel::SpinDiff => {
+                            let lw = l * &w_mats[ci];
+                            *f_a += &lw;
+                            *f_b -= &lw;
                         }
                     }
-                };
-                let scf = solve_uhf_fockmod(ctx, mol, prep, bounds, config, guess, Some(&fm))?;
-                let d_a = &scf.density_alpha;
-                let d_b = scf.density_beta.as_ref().unwrap_or(d_a);
-                let mut pops = vec![0.0; k];
-                let mut resid = vec![0.0; k];
-                for (ci, c) in cons.iter().enumerate() {
-                    let n_c = population(&w_mats[ci], d_a, d_b, &c.spin);
-                    pops[ci] = n_c;
-                    resid[ci] = n_c - c.target;
                 }
-                Ok((scf, resid, pops))
             };
+            let scf = solve_uhf_fockmod(ctx, mol, prep, bounds, config, guess, Some(&fm))?;
+            let d_a = &scf.density_alpha;
+            let d_b = scf.density_beta.as_ref().unwrap_or(d_a);
+            let mut pops = vec![0.0; k];
+            let mut resid = vec![0.0; k];
+            for (ci, c) in cons.iter().enumerate() {
+                let n_c = population(&w_mats[ci], d_a, d_b, &c.spin);
+                pops[ci] = n_c;
+                resid[ci] = n_c - c.target;
+            }
+            Ok((scf, resid, pops))
+        };
 
-            // Outer Newton on λ (start at 0).
-            let mut lam = vec![0.0_f64; k];
-            let max_outer = config.cdft_max_outer;
-            let fd = 1e-3_f64; // λ finite-difference step for the Jacobian
-            let trace = trace_enabled();
-            // Safeguarding state for the k = 1 case: the tightest sign-change
-            // bracket on c(λ) seen so far, as two (λ, residual) pairs of
-            // opposite sign. See `Bracket` for why this is the right safeguard.
-            let mut bracket = Bracket::default();
+        // Outer Newton on λ (start at 0 unless the caller seeded it).
+        let mut lam = lam_start.to_vec();
+        let max_outer = config.cdft_max_outer;
+        let fd = 1e-3_f64; // λ finite-difference step for the Jacobian
+        let trace = trace_enabled();
+        // Safeguarding state for the k = 1 case: the tightest sign-change
+        // bracket on c(λ) seen so far, as two (λ, residual) pairs of
+        // opposite sign. See `Bracket` for why this is the right safeguard.
+        let mut bracket = Bracket::default();
 
-            for outer in 1..=max_outer {
-                let (scf, resid, pops) = run_inner(&lam)?;
-                let max_resid = resid.iter().fold(0.0_f64, |m, &r| m.max(r.abs()));
-                if trace {
-                    eprintln!(
-                        "[cdft-trace] outer={outer:2}  lam={lam:?}  N_C={pops:?}  \
+        for outer in 1..=max_outer {
+            let (scf, resid, pops) = run_inner(&lam)?;
+            let max_resid = resid.iter().fold(0.0_f64, |m, &r| m.max(r.abs()));
+            if trace {
+                eprintln!(
+                    "[cdft-trace] outer={outer:2}  lam={lam:?}  N_C={pops:?}  \
                          resid={resid:?}  max|r|={max_resid:.6e}  \
                          E={:.10}  inner_conv={}  inner_iters={}",
-                        scf.energy, scf.converged, scf.iterations
+                    scf.energy, scf.converged, scf.iterations
+                );
+            }
+            if max_resid < config.cdft_lambda_tol {
+                return Ok(CdftResult {
+                    scf,
+                    lambdas: lam,
+                    populations: pops,
+                    outer_iters: outer,
+                    weight_matrices: w_mats.clone(),
+                });
+            }
+            // Record this point in the bracket BEFORE stepping, so the
+            // safeguard below has the current iterate to work with. The
+            // `converged` flag is passed IN rather than filtered here — see
+            // `Bracket::observe`, which owns that decision so it can be
+            // tested directly.
+            if k == 1 {
+                bracket.observe(lam[0], resid[0], scf.converged);
+            }
+
+            // Finite-difference Jacobian J_{ij} = ∂c_i/∂λ_j.
+            let mut jac = Array2::<f64>::zeros((k, k));
+            for j in 0..k {
+                let mut lam_p = lam.clone();
+                lam_p[j] += fd;
+                let (scf_p, resid_p, _) = run_inner(&lam_p)?;
+                if trace {
+                    eprintln!(
+                        "[cdft-trace]   fd j={j} lam+={:.6}  resid+={resid_p:?}  \
+                             E+={:.10}  dE={:.3e}  inner_conv={}",
+                        lam_p[j],
+                        scf_p.energy,
+                        scf_p.energy - scf.energy,
+                        scf_p.converged
                     );
                 }
-                if max_resid < config.cdft_lambda_tol {
-                    return Ok(CdftResult {
-                        scf,
-                        lambdas: lam,
-                        populations: pops,
-                        outer_iters: outer,
-                        weight_matrices: w_mats.clone(),
-                    });
-                }
-                // Record this point in the bracket BEFORE stepping, so the
-                // safeguard below has the current iterate to work with. The
-                // `converged` flag is passed IN rather than filtered here — see
-                // `Bracket::observe`, which owns that decision so it can be
-                // tested directly.
-                if k == 1 {
-                    bracket.observe(lam[0], resid[0], scf.converged);
-                }
-
-                // Finite-difference Jacobian J_{ij} = ∂c_i/∂λ_j.
-                let mut jac = Array2::<f64>::zeros((k, k));
-                for j in 0..k {
-                    let mut lam_p = lam.clone();
-                    lam_p[j] += fd;
-                    let (scf_p, resid_p, _) = run_inner(&lam_p)?;
-                    if trace {
-                        eprintln!(
-                            "[cdft-trace]   fd j={j} lam+={:.6}  resid+={resid_p:?}  \
-                             E+={:.10}  dE={:.3e}  inner_conv={}",
-                            lam_p[j],
-                            scf_p.energy,
-                            scf_p.energy - scf.energy,
-                            scf_p.converged
-                        );
-                    }
-                    for i in 0..k {
-                        jac[(i, j)] = (resid_p[i] - resid[i]) / fd;
-                    }
-                }
-
-                // Solve J · Δλ = c, then λ ← λ − Δλ.
-                let mut delta = solve_linear(&jac, &resid)?;
-                if trace {
-                    eprintln!("[cdft-trace]   jac={jac:?}  raw_step={delta:?}");
-                }
-                // Damp/clamp the Newton step to keep the outer loop from overshooting
-                // into a basin where the inner SCF stalls.
-                for d in delta.iter_mut() {
-                    *d = d.clamp(-1.0, 1.0);
-                }
-                for j in 0..k {
-                    lam[j] -= delta[j]; // λ ← λ − J⁻¹ c
-                }
-
-                // SAFEGUARD (k = 1 only). The clamped Newton step above is kept
-                // whenever it lands inside the bracket; when it does not, the
-                // bisection midpoint is taken instead. See `Bracket::safeguard`
-                // for the measured failure this exists to stop.
-                //
-                // It is NOT a no-op on every previously-converging path, and an
-                // earlier version of this comment wrongly said it was. On the
-                // baselined hcore integer-target run it fires twice, because
-                // that run was ALSO leaving the bracket and wandering through
-                // six unconverged inner solves before stumbling back; it now
-                // converges in 8 outer iterations instead of 16, to the same
-                // solution within 7.7e-8 Ha. See
-                // `tests/cdft_outer_loop.rs::hcore_started_path_reaches_the_
-                // same_constrained_solution`, which carries that trace and the
-                // measured deltas against the downstream suites' tolerances.
-                if k == 1 {
-                    if let Some(safe) = bracket.safeguard(lam[0]) {
-                        if trace {
-                            eprintln!(
-                                "[cdft-trace]   SAFEGUARD: newton lam={:.12} is outside the \
-                                 bracket [{:.6}, {:.6}]; bisecting to {safe:.12}",
-                                lam[0],
-                                bracket.neg.map_or(f64::NAN, |(l, _)| l),
-                                bracket.pos.map_or(f64::NAN, |(l, _)| l),
-                            );
-                        }
-                        lam[0] = safe;
-                    }
+                for i in 0..k {
+                    jac[(i, j)] = (resid_p[i] - resid[i]) / fd;
                 }
             }
 
-            Err(FerricError::Convergence(format!(
-                "cDFT outer loop did not converge in {max_outer} iters"
-            )))
-        };
+            // Solve J · Δλ = c, then λ ← λ − Δλ.
+            let mut delta = solve_linear(&jac, &resid)?;
+            if trace {
+                eprintln!("[cdft-trace]   jac={jac:?}  raw_step={delta:?}");
+            }
+            // Damp/clamp the Newton step to keep the outer loop from overshooting
+            // into a basin where the inner SCF stalls.
+            for d in delta.iter_mut() {
+                *d = d.clamp(-1.0, 1.0);
+            }
+            for j in 0..k {
+                lam[j] -= delta[j]; // λ ← λ − J⁻¹ c
+            }
 
-    let first = lambda_newton(None)?;
+            // SAFEGUARD (k = 1 only). The clamped Newton step above is kept
+            // whenever it lands inside the bracket; when it does not, the
+            // bisection midpoint is taken instead. See `Bracket::safeguard`
+            // for the measured failure this exists to stop.
+            //
+            // It is NOT a no-op on every previously-converging path, and an
+            // earlier version of this comment wrongly said it was. On the
+            // baselined hcore integer-target run it fires twice, because
+            // that run was ALSO leaving the bracket and wandering through
+            // six unconverged inner solves before stumbling back; it now
+            // converges in 8 outer iterations instead of 16, to the same
+            // solution within 7.7e-8 Ha. See
+            // `tests/cdft_outer_loop.rs::hcore_started_path_reaches_the_
+            // same_constrained_solution`, which carries that trace and the
+            // measured deltas against the downstream suites' tolerances.
+            if k == 1 {
+                if let Some(safe) = bracket.safeguard(lam[0]) {
+                    if trace {
+                        eprintln!(
+                            "[cdft-trace]   SAFEGUARD: newton lam={:.12} is outside the \
+                                 bracket [{:.6}, {:.6}]; bisecting to {safe:.12}",
+                            lam[0],
+                            bracket.neg.map_or(f64::NAN, |(l, _)| l),
+                            bracket.pos.map_or(f64::NAN, |(l, _)| l),
+                        );
+                    }
+                    lam[0] = safe;
+                }
+            }
+        }
+
+        Err(FerricError::Convergence(format!(
+            "cDFT outer loop did not converge in {max_outer} iters"
+        )))
+    };
+
+    // The stability descent restarts from λ = 0, exactly as before seeding
+    // existed; only the first loop takes the caller's starting point.
+    let lambda_newton =
+        |guess: Option<(&Array2<f64>, &Array2<f64>)>| lambda_newton_from(guess, &zero_lambdas);
+
+    let first = lambda_newton_from(seed.mos, lam_start)?;
     if !config.cdft_stability_descent {
         return Ok(first);
     }
