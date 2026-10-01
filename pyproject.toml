@@ -114,6 +114,7 @@ dev = [
     "pytest-cov>=7.0.0",
 ]
 reference = [
+    "pymbd>=0.15.0",
     "pyscf>=2.10",
 ]
 build = [
@@ -148,6 +149,10 @@ features = ["pyo3/extension-module"]
 # Prevent uv from rebuilding the Rust extension on every `uv run`.
 # The maturin editable install in .venv is the source of truth; cargo is invoked explicitly.
 no-build-isolation-package = ["ferric"]
+# pymbd 0.15.0 declares `mpi4py = "^3 || ^4"`; poetry-core 2.x renders that as
+# `(>=3,<4 || >=4,<5)`, which is not valid PEP 508 and uv refuses the built wheel.
+# poetry-core 1.x renders it as `(>=3,<5)` (the published PKG-INFO).
+build-constraint-dependencies = ["poetry-core<2"]
 
 
 [tool.pytest.ini_options]
