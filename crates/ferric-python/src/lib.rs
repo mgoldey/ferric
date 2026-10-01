@@ -559,6 +559,16 @@ impl PyRhfResult {
 ///                   vacuum.
 ///   pcm_lebedev_order  tesserae per atomic sphere (6/14/26/50/110/302,
 ///                   default 110). Lower is faster and coarser.
+/// State selection:
+///   stability_descent False (default). When True, check the converged RHF
+///                   solution's internal (singlet) stability and, if it is a
+///                   SADDLE of the orbital Hessian, follow the downhill
+///                   eigenvector and re-converge, keeping the lowest state
+///                   (`RhfConfig::check_stability` + `scf_stability_descent`).
+///                   Costs one Davidson eigensolve per solve plus one SCF per
+///                   descent taken. Needed where the default guess lands on a
+///                   saddle: N2 at 1.6 Å/def2-SVP (19 mHa above the minimum).
+///                   Same as the CLI `[scf] stability_descent`.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set,
@@ -568,6 +578,7 @@ impl PyRhfResult {
     guess=None, diis=None, smearing_sigma=None, soscf=None,
     point_charges=None, external_field=None, smeared_charges=None,
     memory_budget_gb=None, solvent=None, pcm_lebedev_order=None,
+    stability_descent=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_rhf(
@@ -594,7 +605,11 @@ fn run_rhf(
     memory_budget_gb: Option<f64>,
     solvent: Option<&Bound<'_, PyAny>>,
     pcm_lebedev_order: Option<usize>,
+    stability_descent: Option<bool>,
 ) -> PyResult<PyRhfResult> {
+    // The descent needs a stability verdict to act on, so the kwarg turns on
+    // both halves (as run_uhf does).
+    let descent = stability_descent.unwrap_or(false);
     // Apply ECP core-electron counts (no-op without an ECP basis) so nelec()
     // gives the valence count; the effective nuclear charge is set inside
     // PreparedBasis::new from basis_set.ecps.
@@ -629,6 +644,8 @@ fn run_rhf(
         // 0 means "unset -> auto" (ferric_scf::rhf::resolve_three_index_budget),
         // so an omitted kwarg preserves the previous auto-detect behaviour.
         three_index_budget_bytes: budget_bytes_from_gb(memory_budget_gb).unwrap_or(0),
+        check_stability: descent,
+        scf_stability_descent: descent,
         ..Default::default()
     };
     let ctx = ParallelContext::default();
