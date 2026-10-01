@@ -1350,7 +1350,75 @@ fn accumulate_atom_centred_dipoles(
     Ok(d_ai_ao)
 }
 
-/// Closed-shell only. Returns Vec<[[f64; 3]; 3]>, one (3×3) tensor per atom.
+/// Charge-transfer (charge-delocalization) polarizability remainder
+/// α_CT = α_mol − Σ_A α^A for the Krishtal–Senet–Van Alsenoy intrinsic
+/// per-atom tensors (JCP 125, 034312 (2006)).
+///
+/// With α^A = ⟨m^A|R|μ⟩ and α_mol = ⟨μ|R|μ⟩ (same response R: same RI
+/// kernel, same orbitals, frozen_core = 0), linearity gives
+/// α_CT = ⟨Σ_A R_A w_A|R|μ⟩ — the dipole carried by field-induced charge
+/// flow between atoms. `α_CT + Σ_A α^A = α_mol` holds by construction; the
+/// quantity is only meaningful when `molecular` and `per_atom` come from
+/// matching paths (`pdep_polarizability_static` with
+/// `pdep_polarizability_becke`, or `molecular_dynamic_polarizability` with
+/// `pdep_polarizability_becke_dynamic` / `_hirshfeld_dynamic` at the same
+/// frequencies). The atom sum is accumulated in atom order from 0.0.
+pub fn charge_transfer_remainder(
+    molecular: &[[f64; 3]; 3],
+    per_atom: &[[[f64; 3]; 3]],
+) -> [[f64; 3]; 3] {
+    std::array::from_fn(|i| {
+        std::array::from_fn(|j| {
+            let sum: f64 = per_atom.iter().map(|t| t[i][j]).sum();
+            molecular[i][j] - sum
+        })
+    })
+}
+
+/// Frequency-resolved [`charge_transfer_remainder`]: `molecular[k]` is
+/// α_mol(iω_k), `per_atom[A][k]` is α^A(iω_k); returns α_CT(iω_k) for every
+/// k. Errors if the frequency counts disagree (an empty `molecular`, as
+/// returned by the truncated benchmark path, is a mismatch, not a zero).
+pub fn charge_transfer_remainder_dynamic(
+    molecular: &[[[f64; 3]; 3]],
+    per_atom: &[Vec<[[f64; 3]; 3]>],
+) -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
+    let nfreq = molecular.len();
+    if let Some((a, row)) = per_atom.iter().enumerate().find(|(_, r)| r.len() != nfreq) {
+        return Err(FerricError::General(format!(
+            "charge_transfer_remainder_dynamic: atom {a} has {} frequencies, molecular has {nfreq}",
+            row.len()
+        )));
+    }
+    Ok((0..nfreq)
+        .map(|k| {
+            let at_k: Vec<[[f64; 3]; 3]> = per_atom.iter().map(|r| r[k]).collect();
+            charge_transfer_remainder(&molecular[k], &at_k)
+        })
+        .collect())
+}
+
+/// Per-atom static PDEP-RPA polarizability tensors α^A (Bohr³), one 3×3 per
+/// atom, on ferric's Becke-Lebedev grid.
+///
+/// Definition: the Krishtal–Senet–Van Alsenoy "intrinsic" atomic
+/// polarizability (A. Krishtal, P. Senet, C. Van Alsenoy, J. Chem. Phys. 125,
+/// 034312 (2006)),
+///
+/// ```text
+///   α^A_dj = ⟨ m^A_d | R | μ_j ⟩,   m^A = w_A (r − R_A)  (Becke weight w_A),
+/// ```
+///
+/// i.e. the ATOM-CENTRED dipole of atom A on the bra and the true lab-frame
+/// molecular dipole μ (analytic AO integrals) on the field-side ket: the
+/// first-order change of atom A's own dipole in a uniform field.
+/// Charge transfer between atoms is EXCLUDED, so Σ_A α^A ≠ α_mol; the
+/// remainder α_CT = α_mol − Σ_A α^A = ⟨Σ_A R_A w_A | R | μ⟩ is the
+/// charge-transfer (charge-delocalization) polarizability — see
+/// [`charge_transfer_remainder`]. Each α^A is origin-independent.
+///
+/// Closed and open shell (open shell delegates to
+/// [`pdep_polarizability_becke_dynamic`] at ω = 0, the same definition).
 pub fn pdep_polarizability_becke(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -1486,8 +1554,10 @@ pub fn pdep_polarizability_becke(
 
     // Build per-atom Becke-weighted AO dipole using the ATOM-CENTRED position
     // operator (r − R_A). This yields the intrinsic atomic polarizability:
-    // origin-independent and charge-transfer-free, matching
-    // `pdep_polarizability_becke_dynamic`'s ω=0 limit exactly. We deliberately
+    // origin-independent and charge-transfer-free, and the SAME definition as
+    // `pdep_polarizability_becke_dynamic` (atom-centred bra, analytic
+    // molecular-dipole ket), whose ω = 0 value reproduces this one (pinned by
+    // `validation_pdep_c6.rs`, w=0 anchor). We deliberately
     // do NOT renormalize to the global lab-frame analytical dipole — that
     // renormalization is the gauge-breaking step (it scales each atom's
     // contribution by a shared factor derived from a lab-frame quantity and
@@ -1578,11 +1648,18 @@ pub fn pdep_polarizability_becke(
 /// Per-atom Becke polarizability tensors α^A_{ij}(iω) at a list of imaginary
 /// frequencies. Returns `out[a][k]` = 3×3 tensor for atom `a`, frequency `k`.
 ///
-/// This is the frequency generalization of [`pdep_polarizability_becke`]:
-/// the grid, Becke partition, and partition-weighted MO dipoles are built once
-/// (ω-independent); only the χ₀ "denominator" g_ia(ω) = e_ia/(ω²+e_ia²) and the
-/// SMW dielectric ε̃(ω) = I + 4 B̃ diag(g(ω)) B̃^T change per frequency. At ω=0,
-/// g_ia = 1/Δε_ia, so this reproduces `pdep_polarizability_becke` exactly.
+/// This is the frequency generalization of [`pdep_polarizability_becke`],
+/// with the same Krishtal intrinsic definition α^A_dj(iω) = ⟨m^A_d|R(iω)|μ_j⟩
+/// (atom-centred Becke dipole bra, analytic molecular-dipole ket; per spin
+/// for an open-shell reference). The grid, Becke partition, and per-atom MO
+/// dipoles are built once (ω-independent); only the χ₀ "denominator"
+/// g_ia(ω) = e_ia/(ω²+e_ia²) and the SMW dielectric
+/// ε̃(ω) = I + 4 B̃ diag(g(ω)) B̃^T change per frequency. At ω=0,
+/// g_ia = 1/Δε_ia, so a frequency list containing 0.0 reproduces
+/// `pdep_polarizability_becke`. All occupied orbitals respond
+/// (`cfg.frozen_core` is ignored, as in every polarizability path), so
+/// `molecular_dynamic_polarizability(..) − Σ_A out[A]` is the dynamic
+/// charge-transfer remainder.
 ///
 /// The Casimir-Polder C6 follow-up consumes these via
 /// `dispersion::pdep_dynamic_polarizability`.
@@ -1603,8 +1680,14 @@ pub fn pdep_polarizability_becke_dynamic(
 
     let natoms = mol.atoms.len();
     let nfreq = freqs.len();
+    // frozen_core = 0, NOT cfg.frozen_core: the polarizability is the response
+    // of ALL occupied orbitals, and every other α path (static molecular,
+    // static per-atom, molecular dynamic, Hirshfeld) hard-codes 0. Reading
+    // cfg.frozen_core here made the per-atom α^A(iω) and the molecular α(iω)
+    // it is subtracted from (charge-transfer remainder) use different
+    // occupied spaces whenever the RPA energy froze the core.
     let mp2_cfg = ferric_mp2::rimp2::RiMp2Config {
-        frozen_core: cfg.frozen_core,
+        frozen_core: 0,
         memory_budget_bytes: cfg.memory_budget_bytes,
         ..Default::default()
     };
@@ -1797,19 +1880,33 @@ pub fn pdep_polarizability_becke_dynamic(
             })
             .collect();
 
-        // Molecular MO dipoles per spin (sum over atoms).
+        // Field-side (ket) dipole per spin: the analytic lab-frame molecular
+        // dipole (same operator as the closed-shell branch and
+        // `molecular_dynamic_polarizability`'s U branch), NOT Σ_A of the
+        // atom-centred bra pieces.
+        let dip_ao_analytical = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
         let mu_flat_a: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
-            mu_ai_flat_a
-                .iter()
-                .fold(ndarray::Array1::zeros(nov_a), |acc, ai| acc + &ai[d])
+            let mo = c_occ_a.t().dot(&dip_ao_analytical[d]).dot(&c_vir_a);
+            let mut v = ndarray::Array1::<f64>::zeros(nov_a);
+            for i in 0..inter_a.nocc {
+                for ax in 0..inter_a.nvir {
+                    v[i * inter_a.nvir + ax] = mo[(i, ax)];
+                }
+            }
+            v
         });
         let mu_flat_b: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
             if inter_b.nocc == 0 {
                 return ndarray::Array1::zeros(1);
             }
-            mu_ai_flat_b
-                .iter()
-                .fold(ndarray::Array1::zeros(nov_b), |acc, ai| acc + &ai[d])
+            let mo = c_occ_b.t().dot(&dip_ao_analytical[d]).dot(&c_vir_b);
+            let mut v = ndarray::Array1::<f64>::zeros(nov_b);
+            for i in 0..inter_b.nocc {
+                for ax in 0..inter_b.nvir {
+                    v[i * inter_b.nvir + ax] = mo[(i, ax)];
+                }
+            }
+            v
         });
 
         // Frequency loop: each ω is fully independent. Parallelize over
@@ -1942,7 +2039,7 @@ pub fn pdep_polarizability_becke_dynamic(
         return Ok(out);
     }
 
-    // --- Closed-shell path below (unchanged) ---
+    // --- Closed-shell path ---
     let inter = ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
     let b_ov = &inter.b_ov;
     let nocc = inter.nocc;
@@ -2000,10 +2097,9 @@ pub fn pdep_polarizability_becke_dynamic(
     let nbf = obs.nbasis();
     debug_assert_eq!(nbf, obs.nbasis());
 
-    // Atom positions (Bohr) — used to shift dipole to atom-centred coordinates.
-    // Using (r - R_A) instead of the lab-frame r makes each per-atom contribution
-    // to α^A(iω) origin-independent: at all frequencies, α^A and Σ_A α^A are
-    // unchanged by a global translation of the coordinate system.
+    // Atom positions (Bohr) — the bra operator is the atom-centred (r − R_A),
+    // so each α^A(iω) is origin-independent (the occ-vir block of a constant
+    // shift vanishes because occupied and virtual MOs are orthogonal).
     let atom_pos: Vec<[f64; 3]> = mol.atoms.iter().map(|at| [at.x, at.y, at.zpos]).collect();
 
     // No pre-flight gate on this path yet (tracked), so resolve the budget here
@@ -2024,55 +2120,21 @@ pub fn pdep_polarizability_becke_dynamic(
             }
         }
     }
-    // No renormalization of the atom-centred per-atom dipoles.
-    //
-    // The static Becke path renormalizes each AO-pair's grid partition to the
-    // global analytical dipole ⟨μ|r|ν⟩, which fixes grid-quadrature error on the
-    // dipole magnitude. Here we use atom-centred displacements (r − R_A), so the
-    // natural analytical comparison is the atom-centred grid SUM, not the global
-    // dipole — and those differ by Σ_A R_A · q^A_{μν} (charge partition moments).
-    //
-    // For the dynamic path what matters is the *frequency dependence* of α^A(iω),
-    // not the absolute magnitude at ω=0. The grid quadrature error on (r − R_A)
-    // is smooth and does not introduce frequency-dependent artifacts. We therefore
-    // skip renormalization and accept the raw grid integrals. This gives correct
-    // physics for the Casimir-Polder integrand at all ω.
-    //
-    // NOTE: the molecular sum Σ_A α^A(ω=0) from this path will NOT equal
-    // pdep_polarizability_static (which uses a renormalized lab-frame dipole).
-    // The correct comparison for the regression gate is: take the ω=0 dynamic path
-    // result, form the atom-centred MO dipoles, and verify the SMW formula gives
-    // the same α as the lab-frame path scaled by the atom-centred/lab-frame ratio.
-    // For the purposes of C6 correctness, we verify:
-    //   * α_iso_A(ω=0) > 0 for each atom (positive sum rule)
-    //   * α_A(iω) decays monotonically with ω (correct frequency dependence)
-    //   * homonuclear atom pairs give equal C6 (symmetry check)
-    // These are tested in the unit tests.
-    for a in 0..natoms {
-        for d in 0..3 {
-            let m = &mut d_ai_ao[a][d];
-            for i in 0..nbf {
-                for j in (i + 1)..nbf {
-                    let avg = 0.5 * (m[(i, j)] + m[(j, i)]);
-                    m[(i, j)] = avg;
-                    m[(j, i)] = avg;
-                }
-            }
-        }
-    }
 
-    // Transform to MO occ-vir basis (per-atom + molecular sum).
-    let mut mu_ai_mo: Vec<[Array2<f64>; 3]> = (0..natoms)
-        .map(|_| std::array::from_fn(|_| Array2::<f64>::zeros((nocc, nvir))))
+    // Per-atom (bra) MO dipoles from the atom-centred Becke pieces.
+    let mu_ai_mo: Vec<[Array2<f64>; 3]> = (0..natoms)
+        .map(|a| std::array::from_fn(|d| c_occ.t().dot(&d_ai_ao[a][d]).dot(&c_vir)))
         .collect();
-    let mut mu_mo: [Array2<f64>; 3] = std::array::from_fn(|_| Array2::<f64>::zeros((nocc, nvir)));
-    for a in 0..natoms {
-        for d in 0..3 {
-            let m = c_occ.t().dot(&d_ai_ao[a][d]).dot(&c_vir);
-            mu_mo[d] = &mu_mo[d] + &m;
-            mu_ai_mo[a][d] = m;
-        }
-    }
+
+    // Field-side (ket) dipole: the TRUE lab-frame molecular dipole from the
+    // analytic AO integrals — the perturbation a uniform field couples to.
+    // Same operator as `pdep_polarizability_becke` and
+    // `molecular_dynamic_polarizability`, so (a) ω = 0 reproduces the static
+    // per-atom α, and (b) α_mol − Σ_A α^A is the charge-transfer remainder
+    // ⟨Σ_A R_A w_A | R(iω) | μ⟩ (see `charge_transfer_remainder`).
+    let dip_ao_analytical = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
+    let mu_mo: [Array2<f64>; 3] =
+        std::array::from_fn(|d| c_occ.t().dot(&dip_ao_analytical[d]).dot(&c_vir));
 
     // Flatten molecular dipole and per-atom dipoles into (nov,) vectors ONCE.
     let mu_ai_flat: Vec<[ndarray::Array1<f64>; 3]> = (0..natoms)
@@ -2089,7 +2151,6 @@ pub fn pdep_polarizability_becke_dynamic(
         })
         .collect();
 
-    // Flatten the Becke-sum molecular dipole (sum of atom-centred pieces).
     let mu_flat: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
         let mut v = ndarray::Array1::<f64>::zeros(nov);
         for i in 0..nocc {
@@ -2100,14 +2161,13 @@ pub fn pdep_polarizability_becke_dynamic(
         v
     });
 
-    // --- Frequency loop: direct per-atom SMW (symmetric Becke-sum reference) ---
+    // --- Frequency loop: direct per-atom SMW (Krishtal intrinsic α^A) ---
     //
-    // α^A_{ij}(iω) = 4 μ^{A,i}·g·μ^{Becke,j} − 16 (B·μ^{A,i}·g)·ε̃⁻¹·(B·μ^{Becke,j}·g)
+    // α^A_{ij}(iω) = 4 m^{A,i}·g·μ^j − 16 (B·m^{A,i}·g)·ε̃⁻¹·(B·μ^j·g)
     //
-    // Both slots use the same Becke-sum dipole μ^Becke = Σ_A μ^A, so
-    // Σ_A α^A = α_mol(μ^Becke) exactly. This matches pdep_dynamic_polarizability_truncated.
-    // The anisotropy reflects the Becke partition's atom-centred displacements;
-    // for isotropic C6 via Casimir-Polder this is the correct formula.
+    // m^A = atom-centred Becke dipole (bra), μ = analytic molecular dipole
+    // (ket). Σ_A α^A is NOT α_mol: the difference is the charge-transfer
+    // remainder. Same formula as `pdep_dynamic_polarizability_truncated`.
     //
     // Each ω is independent — parallelize over frequencies. The (naux × nov)
     // column-scaled B̃ scratch M9 hoisted out of the loop becomes per-thread
@@ -2141,7 +2201,7 @@ pub fn pdep_polarizability_becke_dynamic(
                         eps_mat[(p, p)] += 1.0;
                     }
 
-                    // Solve ε̃ y^j = B·(g⊙μ^{Becke,j}) once per direction.
+                    // Solve ε̃ y^j = B·(g⊙μ^j) once per direction.
                     let mu_g: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| &mu_flat[d] * &g);
                     let w_mol: [ndarray::Array1<f64>; 3] =
                         std::array::from_fn(|d| b_ov.dot(&mu_g[d]));
@@ -4050,11 +4110,8 @@ mod tests {
 
     #[test]
     fn becke_dynamic_alpha_molecular_sum_decays() {
-        // The MOLECULAR dynamic polarizability — Σ_A α^A(iω) — is the robust,
-        // origin-independent quantity. (Per-atom α^A(iω) is origin-dependent at
-        // ω≠0 because the lab-frame partitioned dipole ⟨i|w^A r|a⟩ depends on the
-        // common origin; only the atom SUM and the static ω=0 limit are clean.)
-        // Check the molecular sum decays monotonically with the right tail.
+        // The atom sum Σ_A α^A(iω) of the intrinsic per-atom tensors decays
+        // monotonically with the right tail.
         let (mol, obs, dfbs, op, rhf) = build_h2();
         let bs = basis::bundled("cc-pvdz").unwrap();
         let cfg = PdepRpaConfig {
@@ -4259,6 +4316,99 @@ mod tests {
             );
         }
         assert!(iso(&mol_dyn_r[0]) > 0.0, "static α must be positive");
+    }
+
+    #[test]
+    fn becke_dynamic_at_zero_frequency_is_the_static_per_atom_alpha() {
+        // Exactness anchor: one Krishtal intrinsic definition, two code paths.
+        // The dynamic path evaluated AT ω = 0 must reproduce the static one,
+        // and α_CT closes Σ_A α^A onto the molecular static α.
+        let (mol, obs, dfbs, op, rhf) = build_h2();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let cfg = PdepRpaConfig::default();
+        let dyn0 =
+            pdep_polarizability_becke_dynamic(&mol, &obs, &bs, &dfbs, &rhf, op, &cfg, &[0.0])
+                .unwrap();
+        let st = pdep_polarizability_becke(&mol, &obs, &bs, &dfbs, &rhf, op, &cfg).unwrap();
+        let scale = st
+            .iter()
+            .flatten()
+            .flatten()
+            .fold(0.0_f64, |m, v| m.max(v.abs()));
+        let mut d = 0.0_f64;
+        for a in 0..st.len() {
+            for i in 0..3 {
+                for j in 0..3 {
+                    d = d.max((dyn0[a][0][i][j] - st[a][i][j]).abs());
+                }
+            }
+        }
+        assert!(
+            d / scale < 1e-11,
+            "per-atom dynamic(ω=0) vs static: rel {:.2e}",
+            d / scale
+        );
+
+        let mol_a = pdep_polarizability_static(&mol, &obs, &dfbs, &rhf, op, &cfg)
+            .unwrap()
+            .tensor;
+        let ct = charge_transfer_remainder(&mol_a, &st);
+        // H2 along z: charge flows only along the bond, so α_CT is zz-dominated
+        // and the remainder is a real (non-negligible) fraction of α_zz.
+        assert!(
+            ct[2][2] > 0.05 * mol_a[2][2],
+            "α_CT,zz = {} vs α_zz = {}",
+            ct[2][2],
+            mol_a[2][2]
+        );
+        assert!(
+            ct[0][0].abs() < 1e-3 * mol_a[0][0],
+            "α_CT,xx = {} should vanish (no charge flow perpendicular to the bond)",
+            ct[0][0]
+        );
+        for i in 0..3 {
+            for j in 0..3 {
+                let s_ij: f64 = st.iter().map(|t| t[i][j]).sum();
+                assert!(
+                    (s_ij + ct[i][j] - mol_a[i][j]).abs() < 1e-13 * mol_a[2][2],
+                    "Σ_A α^A + α_CT != α_mol at [{i}][{j}]"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn becke_dynamic_uhf_matches_rhf_per_atom_on_closed_shell() {
+        // The open-shell (U) branch's ket is the analytic dipole per spin, the
+        // same operator as the closed-shell branch. A singlet forced through
+        // UHF must therefore give the SAME per-atom α^A(iω).
+        use ferric_scf::uhf::solve_uhf;
+        let (mol, obs, dfbs, op, rhf) = build_h2();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let cfg = PdepRpaConfig::default();
+        let freqs = [0.0, 0.7];
+        let ctx = ParallelContext::default();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &RhfConfig::default()).unwrap();
+        assert!(!matches!(uhf.spin, Spin::Restricted));
+        let r = pdep_polarizability_becke_dynamic(&mol, &obs, &bs, &dfbs, &rhf, op, &cfg, &freqs)
+            .unwrap();
+        let u = pdep_polarizability_becke_dynamic(&mol, &obs, &bs, &dfbs, &uhf, op, &cfg, &freqs)
+            .unwrap();
+        for a in 0..r.len() {
+            for k in 0..freqs.len() {
+                for i in 0..3 {
+                    for j in 0..3 {
+                        let (x, y) = (r[a][k][i][j], u[a][k][i][j]);
+                        assert!(
+                            (x - y).abs() < 1e-6 * (1.0 + x.abs()),
+                            "atom {a} ω={} [{i}][{j}]: RHF {x} vs UHF {y}",
+                            freqs[k]
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

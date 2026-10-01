@@ -102,7 +102,7 @@ Configures PDEP-RPA calculations, eigenvalues solvers, and exports.
 | `export_npz` | String | *None* | Output path to write compressed `.npz` feature bundle. |
 | `compute_esp` | Boolean | `true` | Compute nuclear electrostatic potential (in `.npz`). |
 | `compute_polarizability` | Boolean | `true` | Compute static polarizability tensor (in `.npz`). |
-| `compute_alpha_atomic` | Boolean | `true` | Compute Hirshfeld-decomposed polarizabilities (in `.npz`). |
+| `compute_alpha_atomic` | Boolean | `true` | Compute Becke per-atom intrinsic polarizabilities (Krishtal–Senet–Van Alsenoy, JCP 125, 034312 (2006)) as `alpha_atomic`; with `compute_polarizability`, also the charge-transfer remainder `alpha_ct` (in `.npz`). |
 | `compute_electric_field` | Boolean | `true` | Compute nuclear electric field vectors (in `.npz`). |
 | `compute_density_matrix` | Boolean | `true` | Include AO-basis density matrix (in `.npz`). |
 | `compute_hirshfeld_charges`| Boolean | `true` | Include Hirshfeld atomic charges (in `.npz`). |

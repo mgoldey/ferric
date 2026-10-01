@@ -38,8 +38,13 @@
 //! 3. `bounded_divergence_pair_sum_vs_molecular_c6_water`: asserts
 //!    `c6_iso_pair.sum()` vs `c6_molecular_iso` diverge by an amount inside
 //!    [`PAIR_SUM_GAP_LOWER_PCT`, `PAIR_SUM_GAP_UPPER_PCT`] for BOTH
-//!    partitions. Measured 2026-07-17 (S9 spike): Becke -57.6% (16.14 vs
-//!    38.05 a.u.), Hirshfeld -19.5% (30.61 vs 38.05 a.u.) — both signed
+//!    partitions. Measured 2026-07-17 (S9 spike): Hirshfeld -19.5% (30.61
+//!    vs 38.05 a.u.); Becke -57.6% (16.14 vs 38.05 a.u.) under the EARLIER
+//!    Becke per-atom definition (ket Σ_A m^A). The Becke per-atom α is now
+//!    the Krishtal intrinsic one (analytic-dipole ket, as Hirshfeld always
+//!    was); the HF/aug-cc-pVDZ numpy reference for that definition
+//!    (gen_pdep_c6.py) gives -46.7% (13.08 vs 24.55 a.u.), so the Becke PBE
+//!    point needs re-measuring — expected well inside the envelope. Both signed
 //!    negative (pair sum under-counts the molecular total, consistent with
 //!    "coupling is missing, not double-counted"). The bound below has
 //!    deliberate headroom around those two measured points; it is NOT a
@@ -76,7 +81,9 @@ fn water_mol() -> Molecule {
 
 /// Bounded-divergence envelope for `100 * (c6_iso_pair.sum() - c6_molecular_iso)
 /// / c6_molecular_iso`, in percent. Measured 2026-07-17 (S9 spike, water,
-/// aug-cc-pVDZ, RPA@PBE): Becke -57.6%, Hirshfeld -19.5%. Both measured
+/// aug-cc-pVDZ, RPA@PBE): Hirshfeld -19.5%; Becke -57.6% under the earlier
+/// Becke per-atom definition (see the module doc; HF numpy reference for the
+/// current intrinsic definition: -46.7%). Both measured
 /// points sit comfortably inside this envelope, which has headroom on both
 /// ends: the pair sum is expected to consistently UNDER-count the molecular
 /// total (missing inter-atomic coupling, not double-counting it), so the gap
@@ -353,7 +360,7 @@ fn bounded_divergence_pair_sum_vs_molecular_c6_water() {
              (c6_iso_pair is the atom-centred r-R_A per-atom-pair tensor, c6_molecular_iso is the \
              lab-frame molecular response with inter-atomic coupling included — see the \
              CONSUMER WARNING on dispersion::C6Result) — a failure here means the gap moved \
-             outside the envelope measured 2026-07-17 (Becke -57.6%, Hirshfeld -19.5%), which is \
+             outside the envelope (Hirshfeld -19.5% measured 2026-07-17; see the module doc for Becke), which is \
              worth investigating, not silently widening the bound."
         );
     }

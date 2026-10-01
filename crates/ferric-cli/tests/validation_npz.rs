@@ -60,15 +60,17 @@
 //! | hirshfeld_charges | Σq = 0 to the grid floor; H1 = H2; O negative (no independent proatom reference) |
 //! | esp_points, esp_surface | point SET vs ferric's documented construction rebuilt on PySCF's Lebedev-110 table; ESP chain vs PySCF int1e_rinv |
 //! | alpha_tensor | chain vs numpy dRPA-RI α (same definition as the Static α row) |
-//! | alpha_atomic | C2v mirror (H1 ↔ H2 with y → −y); Σ_A α^A vs α printed (NOT additive by construction) |
+//! | alpha_atomic | C2v mirror (H1 ↔ H2 with y → −y); Σ_A α^A vs α printed (Krishtal intrinsic: charge transfer excluded) |
+//! | alpha_ct | = alpha_tensor − Σ_A alpha_atomic from the exported arrays (TOL_CT_RECOMP_REL); C2v: x/y/z diagonal, zero off-diagonal by symmetry |
 //! | pdep_eigenvectors | shape (naux, n_keep) with n_keep from the reference spectrum and the CLI's stdout; EᵀVE = I with PySCF's (P\|Q); Eᵀ(V+Π)E diagonal; projector EEᵀ vs PySCF's generalized eigenvectors |
 //! | c6_partition, c6_source | decode to "becke", "ts" (the documented TS default) |
 //! | c6_freqs, c6_weights | length n_quad = 20; positive |
 //! | alpha_atomic_dynamic | TS shape = exported alpha_atomic / its iso average; single London pole whose ω_A = (4/3)C6_free/α_free² from the TS PRL 2009 free-atom table |
 //! | c6_iso, c6_aniso, c6_molecular_iso | recomputed by numpy-side Casimir–Polder from the exported α(iω), freqs, weights; London C6_AA = (3/4)a²ω_A (quadrature) |
 //!
-//! Key set: EXACTLY the documented set for these knobs (29 keys; `boys_coeffs`
-//! is a `NpzBundle` field the CLI never fills). Second test: with nine knobs
+//! Key set: EXACTLY the documented set for these knobs (30 keys; `boys_coeffs`
+//! is a `NpzBundle` field the CLI never fills; `alpha_ct_dynamic` is written
+//! only for `c6_source = "pdep"`, and this run uses the TS default). Second test: with nine knobs
 //! off, exactly their keys disappear (`compute_density_matrix = false` also
 //! removes `density_second_moment`, which the CLI derives from the density),
 //! and every remaining value still matches the reference.
@@ -151,6 +153,7 @@ const TOL_SURF_ESP: f64 = 1e-10; // measured 6.0e-12
 const TOL_SUM_EXACT: f64 = 1e-12; // measured 0.0
 const TOL_HIRSH_SUM: f64 = 1e-12; // measured 6.7e-16
 const TOL_MIRROR: f64 = 5e-13; // measured 1.8e-14
+const TOL_CT_RECOMP_REL: f64 = 1e-13; // measured 0 (exact subtraction of exported f64s)
 const TOL_C6_RECOMP_REL: f64 = 1e-12; // measured 0.0
 const TOL_TS_SHAPE: f64 = 1e-14; // measured 4.4e-16
 const TOL_TS_POLE_REL: f64 = 1e-14; // measured 3.4e-16
@@ -162,7 +165,7 @@ const MUST_MISS: f64 = 1000.0;
 
 /// The documented key set for the full run's knobs (all export defaults on,
 /// plus `compute_esp_surface = true`).
-const FULL_KEYS: [&str; 29] = [
+const FULL_KEYS: [&str; 30] = [
     "mo_coeffs",
     "orbital_energies",
     "pdep_eigenvectors",
@@ -179,6 +182,7 @@ const FULL_KEYS: [&str; 29] = [
     "alpha_tensor",
     "electric_field",
     "alpha_atomic",
+    "alpha_ct",
     "hirshfeld_charges",
     "lowdin_charges",
     "mulliken_charges",
@@ -197,8 +201,10 @@ const FULL_KEYS: [&str; 29] = [
 /// Knobs turned OFF in the second test, and the keys each one owns.
 const OFF_KNOBS: [(&str, &[&str]); 9] = [
     ("compute_esp", &["esp_atoms"]),
-    ("compute_polarizability", &["alpha_tensor"]),
-    ("compute_alpha_atomic", &["alpha_atomic"]),
+    // alpha_ct needs BOTH alpha_tensor and alpha_atomic, so either knob
+    // removes it.
+    ("compute_polarizability", &["alpha_tensor", "alpha_ct"]),
+    ("compute_alpha_atomic", &["alpha_atomic", "alpha_ct"]),
     // density_second_moment is derived from the exported density in the CLI
     // (`density_m2_opt = dm_ref.and_then(..)`), so it goes with it.
     (
@@ -663,6 +669,7 @@ fn check_shapes(b: &Bundle, r: &Value, c: &mut Checks) {
         ("alpha_tensor", vec![3, 3]),
         ("electric_field", vec![nat, 3]),
         ("alpha_atomic", vec![nat, 3, 3]),
+        ("alpha_ct", vec![3, 3]),
         ("hirshfeld_charges", vec![nat]),
         ("lowdin_charges", vec![nat]),
         ("mulliken_charges", vec![nat]),
@@ -1124,8 +1131,40 @@ fn npz_export_water_cc_pvdz_vs_pyscf() {
         .sum();
     eprintln!(
         "  [measurement] sum_A iso(alpha_atomic) = {sum_iso:.6} vs iso(alpha_tensor) = {:.6} \
-         (not additive by construction: atom-centred dipoles exclude charge transfer)",
+         (Krishtal intrinsic: atom-centred bra excludes charge transfer)",
         (a[(0, 0)] + a[(1, 1)] + a[(2, 2)]) / 3.0
+    );
+
+    // --- Charge-transfer remainder: alpha_ct == alpha_tensor − Σ_A alpha_atomic,
+    // from the arrays the NPZ itself carries (so a CT computed from a
+    // different α — e.g. the dynamic path's, or another partition — fails).
+    let ct = b.mat("alpha_ct");
+    let mut ct_recomp = 0.0_f64;
+    for i in 0..3 {
+        for j in 0..3 {
+            let s_ij: f64 = (0..nat).map(|at_| t(at_, i, j)).sum();
+            ct_recomp = ct_recomp.max((ct[(i, j)] - (a[(i, j)] - s_ij)).abs());
+        }
+    }
+    c.le(
+        "alpha_ct == alpha_tensor - sum_A alpha_atomic (rel)",
+        ct_recomp / scale,
+        TOL_CT_RECOMP_REL,
+    );
+    // Water lies in the yz plane with C2 along z: the off-diagonal elements
+    // vanish by symmetry and charge cannot flow along x (out of plane), so
+    // the remainder must be dominated by the in-plane diagonal.
+    let ct_off = [ct[(0, 1)], ct[(0, 2)], ct[(1, 2)]]
+        .iter()
+        .fold(0.0_f64, |m, v| m.max(v.abs()));
+    c.le("alpha_ct off-diagonal (C2v)", ct_off / scale, TOL_MIRROR);
+    eprintln!(
+        "  [measurement] alpha_ct diag [{:.6}, {:.6}, {:.6}], iso {:.6} = {:.1}% of iso(alpha_tensor)",
+        ct[(0, 0)],
+        ct[(1, 1)],
+        ct[(2, 2)],
+        (ct[(0, 0)] + ct[(1, 1)] + ct[(2, 2)]) / 3.0,
+        100.0 * (ct[(0, 0)] + ct[(1, 1)] + ct[(2, 2)]) / (a[(0, 0)] + a[(1, 1)] + a[(2, 2)])
     );
 
     // --- C6 block.

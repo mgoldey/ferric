@@ -39,9 +39,20 @@ pub struct PolarizabilityBundle<'a> {
     /// The (N, 3) Cartesian points, in **Bohr**, at which `esp_surface` was
     /// evaluated.
     pub esp_points: Option<&'a Array2<f64>>,
+    /// Molecular static polarizability α_mol (3, 3), a.u.
     pub alpha_tensor: Option<&'a [[f64; 3]; 3]>,
     pub electric_field: Option<&'a [[f64; 3]]>,
+    /// Per-atom static polarizability (N, 3, 3), a.u.: the
+    /// Krishtal–Senet–Van Alsenoy intrinsic α^A = ⟨w_A (r − R_A)|R|μ⟩
+    /// (JCP 125, 034312 (2006)) — charge transfer between atoms EXCLUDED, so
+    /// Σ_A α^A ≠ `alpha_tensor`; the remainder is [`Self::alpha_ct`].
     pub alpha_atomic: Option<&'a [[[f64; 3]; 3]]>,
+    /// Charge-transfer (charge-delocalization) polarizability (3, 3), a.u.:
+    /// `alpha_tensor − Σ_A alpha_atomic`, computed from the SAME response
+    /// (same RI kernel, same orbitals) as both, so
+    /// `alpha_ct + alpha_atomic.sum(0) == alpha_tensor`. Supplied exactly when
+    /// both inputs are.
+    pub alpha_ct: Option<&'a [[f64; 3]; 3]>,
 }
 
 /// How a per-atom C6/α decomposition was produced: which α(iω) source, and
@@ -77,8 +88,8 @@ pub struct C6Provenance<'a> {
 /// tensors (`C6Result::c6_iso_pair`/`c6_aniso_pair` from
 /// `ferric_rpa::dispersion::casimir_polder_c6`), NOT the molecular C6 total.
 /// **`c6_iso.sum()` is NOT the molecular C6** and diverges from the correct,
-/// DOSD-comparable value by roughly -20% to -58% in measured cases (water/
-/// aug-cc-pVDZ/RPA@PBE: Becke -57.6%, Hirshfeld -19.5% — see the bounded
+/// DOSD-comparable value by tens of percent (water/aug-cc-pVDZ/RPA@PBE,
+/// Hirshfeld: -19.5%; water/aug-cc-pVDZ/HF, Becke: -46.7% — see the bounded
 /// regression test `bounded_divergence_pair_sum_vs_molecular_c6_water` in
 /// `crates/ferric-rpa/tests/s9_per_atom_c6_consistency.rs` and the
 /// CONSUMER WARNING on `dispersion::C6Result` for why: the per-atom pair
@@ -105,8 +116,16 @@ pub struct C6Export<'a> {
     /// Casimir-Polder quadrature weights w_k.
     pub c6_weights: &'a [f64],
     /// Per-atom dynamic polarizability α^A_{ij}(iω_k), `[natoms][nfreq]` 3×3.
-    /// PARTITION-DEPENDENT — see [`C6Provenance`].
+    /// PARTITION-DEPENDENT — see [`C6Provenance`]. For source `"pdep"` this is
+    /// the Krishtal intrinsic α^A(iω) (charge transfer excluded, remainder in
+    /// [`Self::alpha_ct_dynamic`]); for `"ts"`/`"mbd"` it is the model α(iω).
     pub alpha_atomic_dynamic: &'a [Vec<[[f64; 3]; 3]>],
+    /// Dynamic charge-transfer remainder α_mol(iω_k) − Σ_A α^A(iω_k),
+    /// `[nfreq]` 3×3, from the same PDEP-RPA response as
+    /// `alpha_atomic_dynamic`. `Some` only for source `"pdep"` (a TS/MBD model
+    /// α(iω) has no charge-transfer term to remove); length must equal
+    /// `c6_freqs`.
+    pub alpha_ct_dynamic: Option<&'a [[[f64; 3]; 3]]>,
     /// Per-atom-PAIR isotropic C6^{AB}, (N, N). PARTITION-DEPENDENT, and
     /// `c6_iso.sum()` is NOT the molecular C6 — see the struct warning.
     pub c6_iso: &'a Array2<f64>,
@@ -281,6 +300,14 @@ pub fn export_npz(path: &str, bundle: &NpzBundle) -> Result<(), ExportError> {
             .map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
+    if let Some(ct) = bundle.polarizability.alpha_ct {
+        let flat: Vec<f64> = ct.iter().flat_map(|row| row.iter().copied()).collect();
+        let arr = Array2::from_shape_vec((3, 3), flat).unwrap();
+        writer
+            .add_array("alpha_ct", &arr)
+            .map_err(|e| ExportError::Other(e.to_string()))?;
+    }
+
     if let Some(aa) = bundle.polarizability.alpha_atomic {
         let n = aa.len();
         let mut flat: Vec<f64> = Vec::with_capacity(n * 9);
@@ -336,6 +363,17 @@ pub fn export_npz(path: &str, bundle: &NpzBundle) -> Result<(), ExportError> {
     // makes them interpretable are written from one `Option`, so an NPZ can
     // never contain an untagged per-atom C6 (see `C6Export`/`C6Provenance`).
     if let Some(c6) = bundle.dispersion.c6 {
+        // Shape check BEFORE any C6 key is written, so a mismatch never
+        // leaves a half-written dispersion block behind.
+        if let Some(ct) = c6.alpha_ct_dynamic {
+            if ct.len() != c6.c6_freqs.len() {
+                return Err(ExportError::Other(format!(
+                    "alpha_ct_dynamic has {} frequencies, c6_freqs has {}",
+                    ct.len(),
+                    c6.c6_freqs.len()
+                )));
+            }
+        }
         // Provenance strings as UTF-8 byte arrays (`|u1`). `ndarray-npy` 0.9
         // implements `WritableElement` only for numeric primitives and
         // `bool` — there is no numpy-string element type available — so a
@@ -383,6 +421,18 @@ pub fn export_npz(path: &str, bundle: &NpzBundle) -> Result<(), ExportError> {
         writer
             .add_array("alpha_atomic_dynamic", &arr)
             .map_err(|e| ExportError::Other(e.to_string()))?;
+
+        if let Some(ct) = c6.alpha_ct_dynamic {
+            let flat: Vec<f64> = ct
+                .iter()
+                .flat_map(|t| t.iter().flat_map(|row| row.iter().copied()))
+                .collect();
+            let arr = Array3::from_shape_vec((ct.len(), 3, 3), flat)
+                .map_err(|e| ExportError::Other(e.to_string()))?;
+            writer
+                .add_array("alpha_ct_dynamic", &arr)
+                .map_err(|e| ExportError::Other(e.to_string()))?;
+        }
 
         writer
             .add_array("c6_iso", c6.c6_iso)
