@@ -1,8 +1,13 @@
 //! cDFT outer driver: nested optimization. For fixed λ the inner UHF/UKS solve
-//! adds Σ_C λ_C W^C to the Fock; the outer Newton drives the residual
-//! c_C(λ) = N_C\[ρ_λ\] − target_C to zero. c(λ) is monotonic in λ, so a few
-//! outer iterations suffice. Written k-dimensional (k×k Jacobian) but exercised
-//! at k=1; the Jacobian is finite-difference.
+//! adds Σ_C λ_C W^C to the Fock; the outer loop drives the residual
+//! c_C(λ) = N_C\[ρ_λ\] − target_C to zero.
+//!
+//! One constraint (k = 1, the tested case) is solved by `solve_scalar`:
+//! Newton with a finite-difference Jacobian, a sign-change bracket, and guards
+//! for the two ways c(λ) stops being a smooth function in practice — an inner
+//! SCF that does not converge, and an inner SCF that lands in a different
+//! basin at λ + h than at λ. Several constraints use a plain k × k
+//! finite-difference Newton step.
 
 use crate::result::ScfResult;
 use crate::rhf::RhfConfig;
@@ -216,6 +221,299 @@ impl Bracket {
     }
 }
 
+/// Finite-difference step in λ for the outer-loop Jacobian.
+const FD_STEP: f64 = 1e-3;
+
+/// Largest outer-loop step in λ (Ha per electron), per component.
+const MAX_STEP: f64 = 1.0;
+/// Smallest backtrack distance before [`ScalarStepper::backtrack`] reports a
+/// stall: `FD_STEP × 1e-6`. He₂⁺/def2-SVP at 3.50 Å reached 5e-10 with the
+/// inner SCF still unconverged.
+const BACKTRACK_FLOOR: f64 = FD_STEP * 1e-6;
+
+/// Below this |dc/dλ| the finite-difference Jacobian is treated as singular.
+const SINGULAR_JAC: f64 = 1e-14;
+
+/// Largest accepted Hellmann–Feynman mismatch between a main point and its
+/// finite-difference probe, in Ha. See [`hf_mismatch`].
+///
+/// Placed between two measured populations (HeNe⁺/def2-SVP guess catalogue
+/// at ERI precision 1e-14 and 1e-20, He₂⁺/PBE def2-SVP 2.50–3.50 Å, and the
+/// `cdft_uhf`/`cdft_outer_loop` suites; every pair whose probe converged):
+///
+/// * same basin: 359 pairs, 1.8e-14 … 7.0e-9 Ha (inner-SCF noise in V plus
+///   the trapezoid error);
+/// * different basin: 15 pairs, 5.5e-5 … 0.35 Ha (the V gap between two SCF
+///   solutions);
+/// * one pair at 2.7e-7 Ha, on a steep stretch of c(λ) (dc/dλ = −6.6), that
+///   neither population claims.
+///
+/// 1e-6 is 140× above the largest same-basin value and 55× below the smallest
+/// cross-basin one.
+const HF_MISMATCH_TOL: f64 = 1e-6;
+
+/// One evaluation of the single-constraint residual at some λ.
+#[derive(Debug, Clone, Copy)]
+struct Sample {
+    /// c(λ) = N_C[ρ_λ] − target.
+    c: f64,
+    /// The λ-augmented value V(λ) = E[ρ_λ] + λ·c(λ). On one SCF branch
+    /// dV/dλ = c (Hellmann–Feynman), which is what [`hf_mismatch`] checks.
+    v: f64,
+    /// Did the inner SCF converge? An unconverged density is not a point of
+    /// c(λ).
+    converged: bool,
+}
+
+/// How far a finite-difference pair departs from dV/dλ = c on ONE branch.
+///
+/// For `a` at λ and `b` at λ + h on the same smooth SCF branch,
+/// V(λ+h) − V(λ) = ∫c dλ = h·(c_a + c_b)/2 − h³c''/12, so the mismatch below is
+/// the trapezoid error plus inner-SCF noise. If the inner SCF at λ + h fell
+/// into a different basin, V jumps by the energy gap between the two
+/// solutions and the mismatch is that gap. This detects a basin change
+/// directly, whatever the size or sign of the resulting "Jacobian". A bound on
+/// dc/dλ could not: the Jacobians of one failing HeNe⁺ run (see [`Bracket`])
+/// were −0.137, −0.018, −0.009, −0.031, +0.204, −148.3, +240.5, −247.5, and
+/// small negative values like the first four are also what a basin change on a
+/// flat plateau produces.
+fn hf_mismatch(a: &Sample, b: &Sample, h: f64) -> f64 {
+    ((b.v - a.v) - 0.5 * h * (a.c + b.c)).abs()
+}
+
+/// The converged outcome of [`solve_scalar`].
+struct ScalarRoot<T> {
+    lambda: f64,
+    outer_iters: usize,
+    payload: T,
+}
+
+/// What [`ScalarStepper::step`] decided, for the trace.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum StepKind {
+    /// Newton with the finite-difference Jacobian of this iteration.
+    Newton,
+    /// The probe was untrusted; Newton with the last trusted Jacobian.
+    StaleJacobian,
+    /// The probe was untrusted and no trusted Jacobian exists yet; a step of
+    /// the trust radius in the direction that lowers |c|.
+    SignStep,
+}
+
+/// The decision state of the single-constraint outer loop, kept apart from the
+/// inner solves so every rule can be tested on synthetic residuals.
+///
+/// # The step, when nothing is wrong
+///
+/// Given c at λ and at λ + `FD_STEP`, take J = Δc/`FD_STEP`, step
+/// λ ← λ − clamp(c/J, ±radius), and replace the step by the bracket midpoint if
+/// it leaves a two-sided sign-change bracket ([`Bracket`]). `radius` is
+/// `MAX_STEP` unless guard 1 shrank it. When neither guard fires this is the
+/// same arithmetic, in the same order, as the loop without guards (`guards =
+/// false`), so such a run is bit-identical to it; pinned by
+/// `guards_are_inert_on_a_smooth_residual`.
+///
+/// # Guard 1: an unconverged inner solve means the step went too far
+///
+/// If the inner SCF at λ does not converge and an earlier λ did, no Newton step
+/// is taken from that density: its c is not a value of c(λ), and a finite
+/// difference across it measures nothing. λ backtracks halfway to the last
+/// converged λ, and the trust radius shrinks to half the remaining distance so
+/// the next Newton step cannot land back on the λ that failed. The radius
+/// doubles back toward `MAX_STEP` after every trusted Newton step. With no
+/// earlier converged λ there is nothing to backtrack to, and the plain step is
+/// taken.
+///
+/// # Guard 2: a probe in another SCF basin is not a derivative
+///
+/// Every inner solve starts from the same guess, so the solve at λ + h can land
+/// in a different basin from the one at λ. The pair is trusted only if the
+/// probe converged, J is finite and non-singular, and [`hf_mismatch`] is at
+/// most `HF_MISMATCH_TOL`. An untrusted pair is replaced by the last trusted J
+/// (a quasi-Newton step) or, before any J has been trusted, by a step of
+/// `radius` in the direction that lowers |c|: along the lowest solution c(λ) is
+/// non-increasing, because min over ρ of E + λ·c is concave in λ with
+/// derivative c, so c > 0 means λ must increase. The bracket safeguard still
+/// applies afterwards.
+///
+/// # What it does not handle (measured on HeNe⁺/def2-SVP, target N_He = 2)
+///
+/// * No converged point yet: guard 1 has nothing to back off to. From the
+///   `state A (N_He = 1)` orbitals at ERI precision 1e-20 the first 23 inner
+///   solves hit their 400-iteration cap, so the plain step is taken from each.
+/// * A converged branch on which dc/dλ > 0, with no sign change seen: the same
+///   run then alternates between λ = −0.2324 (c = −0.961, J = +0.199) and
+///   +0.7676 (c = −0.992, J = −0.011), one clamp width apart. Both probes are
+///   on their main point's branch, both residuals are negative, so neither
+///   guard nor the bracket fires. The same start converges at precision
+///   1e-14.
+#[derive(Debug, Clone)]
+struct ScalarStepper {
+    guards: bool,
+    bracket: Bracket,
+    last_good: Option<f64>,
+    last_jac: Option<f64>,
+    radius: f64,
+}
+
+impl ScalarStepper {
+    fn new(guards: bool) -> Self {
+        Self {
+            guards,
+            bracket: Bracket::default(),
+            last_good: None,
+            last_jac: None,
+            radius: MAX_STEP,
+        }
+    }
+
+    /// Guard 1. Called with an inner solve at `lam` that was not within
+    /// tolerance. Returns `Some(next λ)` to backtrack without a probe, or
+    /// `None` to go on to the probe and [`Self::step`].
+    ///
+    /// Errors once the backtrack distance falls below [`BACKTRACK_FLOOR`]: the
+    /// inner SCF fails arbitrarily close to the last converged λ, so further
+    /// halving would only spend the remaining `cdft_max_outer` iterations,
+    /// each a full inner SCF, without progress.
+    fn backtrack(&mut self, lam: f64, s: &Sample) -> Result<Option<f64>, FerricError> {
+        if !self.guards || s.converged {
+            return Ok(None);
+        }
+        let Some(good) = self.last_good else {
+            return Ok(None);
+        };
+        let back = good + 0.5 * (lam - good);
+        if (back - good).abs() < BACKTRACK_FLOOR {
+            return Err(FerricError::Convergence(format!(
+                "cDFT outer loop stalled: the inner SCF does not converge within \
+                 {BACKTRACK_FLOOR:e} of the last converged lambda {good:+.12} \
+                 (unconverged at {lam:+.12})"
+            )));
+        }
+        self.radius = self.radius.min(0.5 * (back - good).abs());
+        Ok(Some(back))
+    }
+
+    /// Record the main point `s` at `lam` (before the probe is run).
+    fn record(&mut self, lam: f64, s: &Sample) {
+        self.bracket.observe(lam, s.c, s.converged);
+        if s.converged {
+            self.last_good = Some(lam);
+        }
+    }
+
+    /// Is the pair (`s` at λ, `p` at λ + `FD_STEP`) a usable derivative?
+    fn trusts(&self, s: &Sample, p: &Sample) -> bool {
+        let jac = (p.c - s.c) / FD_STEP;
+        // An unconverged MAIN point reaches the probe only before any λ has
+        // converged; then there is no better model than this one.
+        !self.guards
+            || !s.converged
+            || (p.converged
+                && jac.is_finite()
+                && jac.abs() >= SINGULAR_JAC
+                && hf_mismatch(s, p, FD_STEP) <= HF_MISMATCH_TOL)
+    }
+
+    /// Guard 2 plus the bracket safeguard: the next λ from `lam`, its main
+    /// point `s` and its probe `p`. Errors only when a TRUSTED Jacobian is
+    /// singular, which with guards on requires an unconverged main point.
+    fn step(&mut self, lam: f64, s: &Sample, p: &Sample) -> Result<(f64, StepKind), FerricError> {
+        let jac = (p.c - s.c) / FD_STEP;
+        let trusted = self.trusts(s, p);
+        let (slope, kind) = if trusted {
+            if jac.abs() < SINGULAR_JAC {
+                return Err(FerricError::Lapack("cDFT Jacobian singular".into()));
+            }
+            if self.guards && s.converged {
+                self.last_jac = Some(jac);
+            }
+            (Some(jac), StepKind::Newton)
+        } else if self.last_jac.is_some() {
+            (self.last_jac, StepKind::StaleJacobian)
+        } else {
+            (None, StepKind::SignStep)
+        };
+        let mut next = lam;
+        match slope {
+            Some(j) => next -= (s.c / j).clamp(-self.radius, self.radius),
+            None => next += if s.c > 0.0 { self.radius } else { -self.radius },
+        }
+        if self.guards && trusted {
+            self.radius = (2.0 * self.radius).min(MAX_STEP);
+        }
+        if let Some(safe) = self.bracket.safeguard(next) {
+            next = safe;
+        }
+        Ok((next, kind))
+    }
+}
+
+/// The single-constraint (k = 1) outer loop: a root of c(λ) = 0 to `tol`,
+/// driven by [`ScalarStepper`] (read that for the rules).
+///
+/// `eval(λ, label)` runs one inner solve and returns its [`Sample`] plus a
+/// payload (the SCF result) that is handed back for the accepted λ.
+fn solve_scalar<T>(
+    eval: &mut dyn FnMut(f64, &str) -> Result<(Sample, T), FerricError>,
+    lam0: f64,
+    tol: f64,
+    max_outer: usize,
+    guards: bool,
+    trace: bool,
+) -> Result<ScalarRoot<T>, FerricError> {
+    let mut lam = lam0;
+    let mut st = ScalarStepper::new(guards);
+
+    for outer in 1..=max_outer {
+        if trace {
+            eprintln!(
+                "[cdft-trace] outer={outer:2}  lam={lam:+.12}  radius={:.3e}",
+                st.radius
+            );
+        }
+        let (s, payload) = eval(lam, "main")?;
+        if s.c.abs() < tol {
+            return Ok(ScalarRoot {
+                lambda: lam,
+                outer_iters: outer,
+                payload,
+            });
+        }
+        if let Some(back) = st.backtrack(lam, &s)? {
+            if trace {
+                eprintln!(
+                    "[cdft-trace]   BACKTRACK: inner SCF unconverged; halving toward \
+                     the last converged lam={:+.12} -> {back:+.12}, radius {:.3e}",
+                    st.last_good.unwrap_or(f64::NAN),
+                    st.radius
+                );
+            }
+            lam = back;
+            continue;
+        }
+        st.record(lam, &s);
+        let (p, _) = eval(lam + FD_STEP, "probe")?;
+        let (next, kind) = st.step(lam, &s, &p)?;
+        if trace {
+            eprintln!(
+                "[cdft-trace]   jac={:+.6e}  hf_mismatch={:.3e}  probe_conv={}  \
+                 step={kind:?}  bracket=[{:.6}, {:.6}]  -> lam={next:+.12}",
+                (p.c - s.c) / FD_STEP,
+                hf_mismatch(&s, &p, FD_STEP),
+                p.converged,
+                st.bracket.neg.map_or(f64::NAN, |(l, _)| l),
+                st.bracket.pos.map_or(f64::NAN, |(l, _)| l),
+            );
+        }
+        lam = next;
+    }
+
+    Err(FerricError::Convergence(format!(
+        "cDFT outer loop did not converge in {max_outer} iters"
+    )))
+}
+
 /// Result of a constrained SCF.
 #[derive(Debug, Clone)]
 #[must_use]
@@ -409,15 +707,53 @@ pub fn solve_cdft_uhf_seeded(
             Ok((scf, resid, pops))
         };
 
-        // Outer Newton on λ (start at 0 unless the caller seeded it).
+        let trace = trace_enabled();
+
+        // k = 1: the safeguarded scalar root finder (see `solve_scalar`). The
+        // inner solve is wrapped as an oracle returning the residual, the
+        // λ-augmented value V(λ) = E + λ·c and the inner convergence flag.
+        if k == 1 {
+            let mut eval =
+                |l: f64, what: &str| -> Result<(Sample, (ScfResult, Vec<f64>)), FerricError> {
+                    let (scf, resid, pops) = run_inner(&[l])?;
+                    let s = Sample {
+                        c: resid[0],
+                        v: scf.energy + l * resid[0],
+                        converged: scf.converged,
+                    };
+                    if trace {
+                        eprintln!(
+                            "[cdft-trace]   {what:<5} lam={l:+.12}  N_C={:.12}  resid={:+.6e}  \
+                         E={:.10}  V={:.10}  inner_conv={}  inner_iters={}",
+                            pops[0], resid[0], scf.energy, s.v, scf.converged, scf.iterations
+                        );
+                    }
+                    Ok((s, (scf, pops)))
+                };
+            let root = solve_scalar(
+                &mut eval,
+                lam_start[0],
+                config.cdft_lambda_tol,
+                config.cdft_max_outer,
+                true,
+                trace,
+            )?;
+            let (scf, pops) = root.payload;
+            return Ok(CdftResult {
+                scf,
+                lambdas: vec![root.lambda],
+                populations: pops,
+                outer_iters: root.outer_iters,
+                weight_matrices: w_mats.clone(),
+            });
+        }
+
+        // k > 1: plain k × k Newton with a finite-difference Jacobian and a
+        // ±1 clamp per component. There is no scalar ordering to bracket or
+        // bisect on, so none of the k = 1 safeguards apply here.
         let mut lam = lam_start.to_vec();
         let max_outer = config.cdft_max_outer;
-        let fd = 1e-3_f64; // λ finite-difference step for the Jacobian
-        let trace = trace_enabled();
-        // Safeguarding state for the k = 1 case: the tightest sign-change
-        // bracket on c(λ) seen so far, as two (λ, residual) pairs of
-        // opposite sign. See `Bracket` for why this is the right safeguard.
-        let mut bracket = Bracket::default();
+        let fd = FD_STEP;
 
         for outer in 1..=max_outer {
             let (scf, resid, pops) = run_inner(&lam)?;
@@ -438,14 +774,6 @@ pub fn solve_cdft_uhf_seeded(
                     outer_iters: outer,
                     weight_matrices: w_mats.clone(),
                 });
-            }
-            // Record this point in the bracket BEFORE stepping, so the
-            // safeguard below has the current iterate to work with. The
-            // `converged` flag is passed IN rather than filtered here — see
-            // `Bracket::observe`, which owns that decision so it can be
-            // tested directly.
-            if k == 1 {
-                bracket.observe(lam[0], resid[0], scf.converged);
             }
 
             // Finite-difference Jacobian J_{ij} = ∂c_i/∂λ_j.
@@ -469,48 +797,16 @@ pub fn solve_cdft_uhf_seeded(
                 }
             }
 
-            // Solve J · Δλ = c, then λ ← λ − Δλ.
+            // Solve J · Δλ = c, then λ ← λ − Δλ, each component clamped to ±1.
             let mut delta = solve_linear(&jac, &resid)?;
             if trace {
                 eprintln!("[cdft-trace]   jac={jac:?}  raw_step={delta:?}");
             }
-            // Damp/clamp the Newton step to keep the outer loop from overshooting
-            // into a basin where the inner SCF stalls.
             for d in delta.iter_mut() {
-                *d = d.clamp(-1.0, 1.0);
+                *d = d.clamp(-MAX_STEP, MAX_STEP);
             }
             for j in 0..k {
-                lam[j] -= delta[j]; // λ ← λ − J⁻¹ c
-            }
-
-            // SAFEGUARD (k = 1 only). The clamped Newton step above is kept
-            // whenever it lands inside the bracket; when it does not, the
-            // bisection midpoint is taken instead. See `Bracket::safeguard`
-            // for the measured failure this exists to stop.
-            //
-            // It is NOT a no-op on every previously-converging path, and an
-            // earlier version of this comment wrongly said it was. On the
-            // baselined hcore integer-target run it fires twice, because
-            // that run was ALSO leaving the bracket and wandering through
-            // six unconverged inner solves before stumbling back; it now
-            // converges in 8 outer iterations instead of 16, to the same
-            // solution within 7.7e-8 Ha. See
-            // `tests/cdft_outer_loop.rs::hcore_started_path_reaches_the_
-            // same_constrained_solution`, which carries that trace and the
-            // measured deltas against the downstream suites' tolerances.
-            if k == 1 {
-                if let Some(safe) = bracket.safeguard(lam[0]) {
-                    if trace {
-                        eprintln!(
-                            "[cdft-trace]   SAFEGUARD: newton lam={:.12} is outside the \
-                                 bracket [{:.6}, {:.6}]; bisecting to {safe:.12}",
-                            lam[0],
-                            bracket.neg.map_or(f64::NAN, |(l, _)| l),
-                            bracket.pos.map_or(f64::NAN, |(l, _)| l),
-                        );
-                    }
-                    lam[0] = safe;
-                }
+                lam[j] -= delta[j];
             }
         }
 
@@ -1210,5 +1506,366 @@ mod tests {
             b.safeguard(f64::NAN).is_some(),
             "a NaN Newton step must never be propagated into lambda"
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // The k = 1 outer loop on synthetic residuals.
+    //
+    // Each oracle returns (Sample, ()) and records the λ of every MAIN
+    // evaluation, so trajectories can be compared bit for bit.
+    // ---------------------------------------------------------------------
+
+    fn sample(c: f64, v: f64, converged: bool) -> Sample {
+        Sample { c, v, converged }
+    }
+
+    /// Run `solve_scalar` on `oracle` from `lam0` at tolerance 1e-5, returning
+    /// the result and the λ of every main evaluation.
+    fn run_oracle(
+        oracle: &dyn Fn(f64) -> Sample,
+        lam0: f64,
+        max_outer: usize,
+        guards: bool,
+    ) -> (Result<ScalarRoot<()>, FerricError>, Vec<f64>) {
+        let mut mains = Vec::new();
+        let mut eval = |l: f64, what: &str| -> Result<(Sample, ()), FerricError> {
+            if what == "main" {
+                mains.push(l);
+            }
+            Ok((oracle(l), ()))
+        };
+        let r = solve_scalar(&mut eval, lam0, 1e-5, max_outer, guards, false);
+        (r, mains)
+    }
+
+    /// A smooth, strictly decreasing c(λ) with its exact V(λ) = ∫c dλ; root at
+    /// λ = −2.75. Newton from 0 hits the ±1 clamp first, so the run exercises
+    /// clamped and unclamped steps.
+    fn smooth(l: f64) -> Sample {
+        let x = l + 2.75;
+        sample(
+            -0.05 * x - 0.02 * x.powi(3),
+            -0.025 * x * x - 0.005 * x.powi(4),
+            true,
+        )
+    }
+
+    /// Plateau, root, cliff: c = 0.5 − 0.5·(λ/2.457)^8 rises to its root at
+    /// λ = 2.457 through a flat start, and past λ = 2.47 the inner SCF "does not
+    /// converge" and returns a λ-dependent garbage population. The shape of the
+    /// He₂⁺/PBE failure (flat N(λ), root at the edge of an over-localization
+    /// cliff whose inner solves do not converge).
+    fn plateau_cliff(l: f64) -> Sample {
+        const ROOT: f64 = 2.457;
+        if l > 2.47 {
+            return sample(-0.95 + 0.3 * (997.0 * l).sin(), 0.0, false);
+        }
+        if l <= 0.0 {
+            return sample(0.5, 0.5 * l, true);
+        }
+        sample(
+            0.5 - 0.5 * (l / ROOT).powi(8),
+            0.5 * l - 0.5 * ROOT / 9.0 * (l / ROOT).powi(9),
+            true,
+        )
+    }
+
+    /// A bistable window: for |λ| < 0.5 the inner SCF lands in a delocalized
+    /// basin when λ falls in an even 1e-3 cell and a localized one otherwise, so
+    /// EVERY finite-difference pair straddles the two basins (the He₂⁺ λ = 0
+    /// start, where a 1e-3 step flips the SCF and the "Jacobian" is O(100)).
+    /// The basins have different V, by 0.02 Ha at λ = 0. The localized branch
+    /// is linear with its root at λ = 2.
+    fn bistable(l: f64) -> Sample {
+        if l.abs() < 0.5 && (l / 1e-3).floor().rem_euclid(2.0) == 0.0 {
+            return sample(0.5 - 0.01 * l, 0.5 * l - 0.005 * l * l + 0.02, true);
+        }
+        sample(0.3 - 0.15 * l, 0.3 * l - 0.075 * l * l, true)
+    }
+
+    /// **Exactness anchor: with nothing wrong, the guards change nothing.**
+    ///
+    /// On a smooth residual every inner solve converges and every probe is on
+    /// the main point's branch, so neither guard may fire and the trajectory
+    /// must be BIT-identical to the unguarded loop's. This is what lets the
+    /// guards land without moving any run that already converged without them.
+    #[test]
+    fn guards_are_inert_on_a_smooth_residual() {
+        let (on, path_on) = run_oracle(&smooth, 0.0, 40, true);
+        let (off, path_off) = run_oracle(&smooth, 0.0, 40, false);
+        let (on, off) = (on.unwrap(), off.unwrap());
+        assert_eq!(
+            path_on.iter().map(|l| l.to_bits()).collect::<Vec<_>>(),
+            path_off.iter().map(|l| l.to_bits()).collect::<Vec<_>>(),
+            "the guarded trajectory left the unguarded one on a residual where no \
+             guard has a reason to fire: {path_on:?} vs {path_off:?}"
+        );
+        assert_eq!(on.lambda.to_bits(), off.lambda.to_bits());
+        assert_eq!(on.outer_iters, off.outer_iters);
+        // Non-vacuous: the run took clamped AND unclamped Newton steps.
+        assert!(on.outer_iters >= 4, "outer = {}", on.outer_iters);
+        assert_eq!(path_on[1], -1.0, "the first step must hit the ±1 clamp");
+        assert!((on.lambda + 2.75).abs() < 1e-3, "root {}", on.lambda);
+    }
+
+    /// **Plateau plus an unconverged cliff: the unguarded loop wanders on the
+    /// cliff; guard 1 backs off it and finds the root at its edge.**
+    ///
+    /// Unguarded, the first clamped step lands at λ = 3 on the cliff, every
+    /// later Newton step is taken from an unconverged population, and the run
+    /// exhausts its cap between 3.0 and 3.2 (the He₂⁺ def2-SVP 3.50 Å limit
+    /// cycle has this shape). Asserting that failure keeps the oracle honest:
+    /// if the unguarded loop ever passes here, the test no longer exercises
+    /// guard 1.
+    #[test]
+    fn backtracking_finds_a_root_at_the_edge_of_an_unconverged_cliff() {
+        let (off, _) = run_oracle(&plateau_cliff, 1.0, 40, false);
+        assert!(
+            off.is_err(),
+            "the unguarded loop converged on the cliff oracle, so it no longer \
+             tests guard 1"
+        );
+        let (on, path) = run_oracle(&plateau_cliff, 1.0, 40, true);
+        let on = on.unwrap_or_else(|e| panic!("guarded loop failed: {e:?}; path {path:?}"));
+        assert!(
+            (on.lambda - 2.457).abs() < 1e-4,
+            "root {} (path {path:?})",
+            on.lambda
+        );
+        // Every accepted point is a converged one: the root is on the plateau.
+        assert!(plateau_cliff(on.lambda).converged);
+        // It got there through at least one backtrack (λ = 3 is on the cliff).
+        assert!(path.iter().any(|&l| l > 2.47), "path {path:?}");
+        assert!(
+            on.outer_iters <= 12,
+            "outer = {} (path {path:?})",
+            on.outer_iters
+        );
+    }
+
+    /// **A probe in another basin: the unguarded loop crawls; guard 2 rejects
+    /// the pair and steps by the sign of c.**
+    ///
+    /// Unguarded, J ≈ (0.3 − 0.5)/1e-3 = −200 and Newton crawls in ~2.5e-3
+    /// steps through the bistable window for the whole cap. The Hellmann–Feynman
+    /// mismatch (0.02 Ha, the V gap between the basins) rejects the pair; with
+    /// no trusted J yet the step is +radius (c > 0), which leaves the window,
+    /// and Newton on the localized branch finishes.
+    #[test]
+    fn a_probe_in_another_basin_is_not_used_as_a_derivative() {
+        let (off, _) = run_oracle(&bistable, 0.0, 40, false);
+        assert!(
+            matches!(off, Err(FerricError::Convergence(_))),
+            "the unguarded loop escaped the bistable window, so this oracle no \
+             longer tests guard 2"
+        );
+        let (on, path) = run_oracle(&bistable, 0.0, 40, true);
+        let on = on.unwrap_or_else(|e| panic!("guarded loop failed: {e:?}; path {path:?}"));
+        assert!((on.lambda - 2.0).abs() < 1e-4, "root {}", on.lambda);
+        // λ = 0 (rejected pair, sign step) → 1 (Newton on the linear branch) → 2.
+        assert_eq!(path.len(), 3, "path {path:?}");
+        assert_eq!(
+            path[1], 1.0,
+            "the rejected pair must give a +radius sign step"
+        );
+    }
+
+    /// Guard 1 stops instead of halving forever: an inner SCF that fails
+    /// arbitrarily close to the last converged λ is reported as a stall.
+    #[test]
+    fn backtrack_reports_a_stall_below_the_floor() {
+        let mut st = ScalarStepper::new(true);
+        st.record(2.0, &sample(0.1, 0.0, true));
+        let mut lam = 3.0;
+        let mut halvings = 0;
+        let err = loop {
+            match st.backtrack(lam, &sample(-0.9, 0.0, false)) {
+                Ok(Some(back)) => {
+                    lam = back;
+                    halvings += 1;
+                    assert!(halvings < 64, "backtrack never reported the stall");
+                }
+                Ok(None) => panic!("an unconverged point with an anchor must backtrack"),
+                Err(e) => break e,
+            }
+        };
+        assert!(
+            matches!(err, FerricError::Convergence(ref m) if m.contains("stalled")),
+            "{err:?}"
+        );
+        // |back − good| halves from 0.5; it falls below 1e-9 after 29 halvings.
+        assert_eq!(halvings, 29);
+    }
+
+    /// Guard 1 in isolation: the backtrack point and the radius it leaves.
+    #[test]
+    fn backtrack_halves_toward_the_last_converged_lambda_and_shrinks_the_radius() {
+        let mut st = ScalarStepper::new(true);
+        // Nothing converged yet: nothing to back off to.
+        assert_eq!(st.backtrack(3.0, &sample(-0.9, 0.0, false)).unwrap(), None);
+        st.record(2.0, &sample(0.1, 0.0, true));
+        // A converged point never backtracks.
+        assert_eq!(st.backtrack(3.0, &sample(-0.9, 0.0, true)).unwrap(), None);
+        // An unconverged one goes halfway back, and the radius becomes half
+        // the remaining distance.
+        assert_eq!(
+            st.backtrack(3.0, &sample(-0.9, 0.0, false)).unwrap(),
+            Some(2.5)
+        );
+        assert_eq!(st.radius, 0.25);
+        // An unconverged point never becomes the anchor.
+        st.record(2.5, &sample(-0.9, 0.0, false));
+        assert_eq!(st.last_good, Some(2.0));
+        // From a converged point at 2.5 Newton wants +100; the shrunken radius
+        // keeps it short of the λ = 3.0 that failed.
+        let s = sample(0.1, 0.0, true);
+        let p = sample(0.1 - 1e-6, 0.1 * FD_STEP - 0.5e-6 * FD_STEP, true);
+        st.record(2.5, &s);
+        let (next, kind) = st.step(2.5, &s, &p).unwrap();
+        assert_eq!(kind, StepKind::Newton);
+        assert_eq!(
+            next, 2.75,
+            "the step must be clamped to the shrunken radius"
+        );
+        // A trusted step doubles the radius back toward MAX_STEP.
+        assert_eq!(st.radius, 0.5);
+        // Off, the guard never fires.
+        let mut off = ScalarStepper::new(false);
+        off.record(2.0, &sample(0.1, 0.0, true));
+        assert_eq!(off.backtrack(3.0, &sample(-0.9, 0.0, false)).unwrap(), None);
+    }
+
+    /// Guard 2 in isolation: which pairs are trusted.
+    #[test]
+    fn a_pair_is_trusted_only_on_one_converged_branch() {
+        let st = ScalarStepper::new(true);
+        let s = sample(0.2, 1.0, true);
+        // Same branch: c drops by 1e-4 over h, V rises by h·(mean c).
+        let good = sample(0.2 - 1e-4, 1.0 + FD_STEP * (0.2 - 0.5e-4), true);
+        assert!(st.trusts(&s, &good));
+        // Unconverged probe.
+        assert!(!st.trusts(
+            &s,
+            &Sample {
+                converged: false,
+                ..good
+            }
+        ));
+        // Another basin: V off by 1e-3 Ha.
+        assert!(!st.trusts(
+            &s,
+            &Sample {
+                v: good.v + 1e-3,
+                ..good
+            }
+        ));
+        // Just inside and just outside the mismatch bar.
+        assert!(st.trusts(
+            &s,
+            &Sample {
+                v: good.v + 0.5 * HF_MISMATCH_TOL,
+                ..good
+            }
+        ));
+        assert!(!st.trusts(
+            &s,
+            &Sample {
+                v: good.v + 2.0 * HF_MISMATCH_TOL,
+                ..good
+            }
+        ));
+        // Singular and non-finite Jacobians.
+        assert!(!st.trusts(
+            &s,
+            &Sample {
+                c: s.c,
+                v: s.v + FD_STEP * s.c,
+                ..good
+            }
+        ));
+        assert!(!st.trusts(
+            &s,
+            &Sample {
+                c: f64::NAN,
+                ..good
+            }
+        ));
+        // An unconverged MAIN point is trusted (no better model exists yet).
+        assert!(st.trusts(
+            &Sample {
+                converged: false,
+                ..s
+            },
+            &Sample { v: 99.0, ..good }
+        ));
+        // Guards off: everything is trusted.
+        assert!(ScalarStepper::new(false).trusts(&s, &Sample { v: 99.0, ..good }));
+    }
+
+    /// Guard 2's two fallbacks: the last trusted Jacobian, else a sign step.
+    #[test]
+    fn an_untrusted_pair_falls_back_to_the_last_jacobian_then_the_sign_of_c() {
+        let bad = |c: f64| sample(c, 0.0, false); // unconverged probe
+                                                  // No history: step by +radius when c > 0 ...
+        let mut st = ScalarStepper::new(true);
+        let (next, kind) = st.step(0.0, &sample(0.4, 0.0, true), &bad(0.0)).unwrap();
+        assert_eq!((next, kind), (1.0, StepKind::SignStep));
+        // ... and by −radius when c < 0.
+        let mut st = ScalarStepper::new(true);
+        let (next, kind) = st.step(0.0, &sample(-0.4, 0.0, true), &bad(0.0)).unwrap();
+        assert_eq!((next, kind), (-1.0, StepKind::SignStep));
+        // An untrusted step does not grow the radius.
+        assert_eq!(st.radius, MAX_STEP);
+        // With history: a trusted J = −0.1 is remembered and reused.
+        let mut st = ScalarStepper::new(true);
+        let s = sample(0.05, 0.0, true);
+        let p = sample(0.05 - 1e-4, FD_STEP * (0.05 - 0.5e-4), true);
+        let (next, _) = st.step(0.0, &s, &p).unwrap();
+        assert!((next - 0.5).abs() < 1e-12, "next = {next}");
+        let s2 = sample(0.02, 0.0, true);
+        let (next2, kind2) = st.step(0.5, &s2, &bad(0.0)).unwrap();
+        assert_eq!(kind2, StepKind::StaleJacobian);
+        assert!((next2 - 0.7).abs() < 1e-9, "next = {next2}");
+    }
+
+    /// The stepper applies the bracket safeguard to EVERY kind of step: a
+    /// Newton or fallback proposal outside a two-sided bracket is replaced by
+    /// its midpoint, and one inside is kept.
+    #[test]
+    fn the_stepper_keeps_every_step_inside_the_bracket() {
+        let mut st = ScalarStepper::new(true);
+        st.record(-2.0, &sample(-0.1, 0.0, true));
+        st.record(-3.0, &sample(0.1, 0.0, true));
+        // From λ = −2 with c = −0.1, J = −0.01 proposes λ = −12, clamped to −3:
+        // ON the c > 0 bound, which the safeguard treats as outside.
+        let s = sample(-0.1, 0.0, true);
+        let p = sample(-0.1 - 1e-5, FD_STEP * (-0.1 - 0.5e-5), true);
+        let (next, kind) = st.step(-2.0, &s, &p).unwrap();
+        assert_eq!(kind, StepKind::Newton);
+        assert_eq!(next, -2.5, "an out-of-bracket Newton step must be bisected");
+        // A sign step (no trusted J yet) that leaves the bracket is bisected too.
+        let mut st = ScalarStepper::new(true);
+        st.record(-2.0, &sample(-0.1, 0.0, true));
+        st.record(-2.2, &sample(0.1, 0.0, true));
+        let unconverged_probe = sample(0.0, 0.0, false);
+        let (next, kind) = st.step(-2.0, &s, &unconverged_probe).unwrap();
+        assert_eq!(kind, StepKind::SignStep);
+        assert!((next + 2.1).abs() < 1e-15, "next = {next}");
+    }
+
+    /// The Hellmann–Feynman check is the trapezoid rule on dV/dλ = c: on one
+    /// branch it returns the trapezoid error (asserted from both sides, so a
+    /// mismatch that ignored V or c would fail), and across two branches the
+    /// V gap.
+    #[test]
+    fn hf_mismatch_is_the_trapezoid_error_on_one_branch_and_the_gap_across_two() {
+        let a = smooth(-1.0);
+        let b = smooth(-1.0 + FD_STEP);
+        let m = hf_mismatch(&a, &b, FD_STEP);
+        // Trapezoid error h³|c''|/12 with |c''| = 0.12·|x| = 0.21 at x = 1.75: 1.75e-11.
+        assert!(m < 1e-10 && m > 1e-12, "same-branch mismatch {m:.3e}");
+        let shifted = Sample { v: b.v + 0.02, ..b };
+        let gap = hf_mismatch(&a, &shifted, FD_STEP);
+        assert!((gap - 0.02).abs() < 1e-10, "gap {gap}");
     }
 }
