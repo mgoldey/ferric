@@ -196,10 +196,13 @@ pub struct RhfConfig {
     /// MARGINAL solution the descent is not taken and only the eigensolve is
     /// paid.
     pub cdft_stability_descent: bool,
-    /// UNCONSTRAINED open-shell **state selection**: after a UHF solve
-    /// converges, check the orbital Hessian and, if the solution is a SADDLE,
-    /// follow the downhill eigenvector and re-converge from there — keeping the
-    /// lower-energy solution. Default **`false`**.
+    /// UNCONSTRAINED **state selection**: after a UHF solve — or, since
+    /// 2026-09-30, a closed-shell RHF/RKS `solve_rhf` — converges, check the
+    /// orbital Hessian and, if the solution is a SADDLE, follow the downhill
+    /// eigenvector and re-converge from there — keeping the lower-energy
+    /// solution. Default **`false`**. For RHF the check is the internal
+    /// (singlet) one; RHF→UHF symmetry breaking is never followed. See
+    /// `rhf_stability_descent` in rhf.rs.
     ///
     /// # Why this defaults OFF, unlike `cdft_stability_descent`
     ///
@@ -818,6 +821,176 @@ pub fn require_closed_shell(mol: &Molecule) -> Result<(), FerricError> {
 /// println!("{}", result); // prints energy, iterations, convergence
 /// ```
 pub fn solve_rhf(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    config: &RhfConfig,
+) -> Result<ScfResult, FerricError> {
+    let first = solve_rhf_once(ctx, mol, prep, op, bounds, config)?;
+    if !config.scf_stability_descent {
+        // Knob off (the default): the single solve, returned untouched.
+        return Ok(first);
+    }
+    Ok(rhf_stability_descent(
+        ctx, mol, prep, op, bounds, config, first,
+    ))
+}
+
+/// **Closed-shell RHF/RKS state selection** — the restricted counterpart of
+/// `uhf::stability_descent`, gated by the same
+/// [`RhfConfig::scf_stability_descent`] knob (default off) and needing
+/// [`RhfConfig::check_stability`] for the verdict it acts on.
+///
+/// Given a converged solution whose RHF-internal (singlet) verdict is
+/// UNSTABLE, rotate the MOs along the downhill eigenvector by each of
+/// [`crate::uhf::DESCENT_STEPS`] radians (Cayley transform), rebuild the
+/// closed-shell density `2 C_occ C_occᵀ` from the rotated MOs, re-converge from
+/// it with an otherwise identical config, and keep the LOWEST converged result
+/// strictly below the incumbent. Repeats up to
+/// [`crate::uhf::MAX_DESCENT_ROUNDS`] times. The step sizes are the UHF ones and
+/// carry the same measured caveat: steps of ≤ 0.5 rad were seen to fall back
+/// into the saddle's own DIIS basin, so the sweep reaches ~1 rad and takes the
+/// lowest result, not the first success.
+///
+/// This is internal (singlet) state selection only: it never breaks spin
+/// symmetry. An RHF→UHF (triplet) instability is a different operator, not
+/// analysed here.
+///
+/// MEASURED motivation: N2 at r = 1.60 Å / def2-SVP. MINAO + every rung of the
+/// default ladder converges to a saddle at −108.4825600107 (singlet λ_min
+/// −0.0654, doubly degenerate) that is 19.06 mHa above the stable RHF minimum
+/// −108.5016165203 PySCF reaches with `newton()` + `stability()`
+/// (`tests/validation_scf_ladder.rs`).
+///
+/// # Failure policy (same as UHF)
+///
+/// Every failure mode returns the INPUT solution unchanged after printing why:
+/// not converged, no verdict, smeared occupations, a step that does not
+/// converge, or one that lands higher. The descent can only lower the energy or
+/// leave the result bit-identical.
+fn rhf_stability_descent(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    config: &RhfConfig,
+    first: ScfResult,
+) -> ScfResult {
+    use crate::stability::StabilityVerdict;
+    use crate::uhf::{accepts_candidate, rotate_mos, DESCENT_STEPS, MAX_DESCENT_ROUNDS};
+
+    if !first.converged {
+        eprintln!(
+            "RHF stability descent: SKIPPED — the SCF did not converge, so the orbital \
+             Hessian would be evaluated at a non-stationary point."
+        );
+        return first;
+    }
+    if config.smearing_sigma.is_some() {
+        eprintln!(
+            "RHF stability descent: SKIPPED — Fermi smearing is on, so the occupations are \
+             fractional and the integer-occupation orbital Hessian does not describe this state."
+        );
+        return first;
+    }
+    let nocc = (mol.nelec() / 2) as usize;
+    let mut best = first;
+    for round in 1..=MAX_DESCENT_ROUNDS {
+        let Some(st) = best.stability.as_ref() else {
+            eprintln!(
+                "RHF stability descent: SKIPPED — no stability verdict is available \
+                 (RhfConfig::check_stability is off, or the analysis was skipped for a \
+                 stated reason). Set check_stability = true alongside \
+                 scf_stability_descent. The solution is returned as converged, which does \
+                 NOT mean it is the lowest state."
+            );
+            return best;
+        };
+        let verdict = st.verdict();
+        let lmin = st.lowest_eigenvalue;
+        if verdict != StabilityVerdict::Unstable {
+            if round == 1 && config.verbose {
+                eprintln!(
+                    "RHF stability descent: the converged solution is {} (lambda_min = \
+                     {lmin:+.4e}); no descent taken.",
+                    verdict.label()
+                );
+            }
+            return best;
+        }
+        let v = st.eigenvector_alpha.clone();
+        eprintln!(
+            "RHF stability descent (round {round}): the converged solution at E = {:.8} is \
+             a SADDLE (lambda_min = {lmin:+.4e}); following the downhill eigenvector.",
+            best.energy
+        );
+
+        let mut improved: Option<ScfResult> = None;
+        for &step in &DESCENT_STEPS {
+            let c_rot = rotate_mos(&best.mos_alpha, &v, nocc, step);
+            let c_occ = c_rot.slice(ndarray::s![.., ..nocc]);
+            let d0 = 2.0 * c_occ.dot(&c_occ.t());
+            let mut cfg = config.clone();
+            cfg.init_guess_density = Some(d0);
+            let cand = match solve_rhf_once(ctx, mol, prep, op, bounds, &cfg) {
+                Ok(c) if c.converged => c,
+                Ok(c) => {
+                    eprintln!(
+                        "RHF stability descent: step {step} did not converge (E = {:.8}); \
+                         discarded.",
+                        c.energy
+                    );
+                    continue;
+                }
+                Err(e) => {
+                    eprintln!("RHF stability descent: step {step} failed ({e:?}); discarded.");
+                    continue;
+                }
+            };
+            if accepts_candidate(
+                cand.energy,
+                best.energy,
+                improved.as_ref().map(|b| b.energy),
+            ) {
+                improved = Some(cand);
+            }
+        }
+
+        match improved {
+            Some(c) => {
+                eprintln!(
+                    "RHF stability descent (round {round}): reached a LOWER state, \
+                     E = {:.8} (was {:.8}, dE = {:.8} Ha)",
+                    c.energy,
+                    best.energy,
+                    best.energy - c.energy
+                );
+                best = c;
+            }
+            None => {
+                eprintln!(
+                    "RHF stability descent (round {round}): the solution is a saddle \
+                     (lambda_min = {lmin:+.4e}) but NO step reached a lower state. Returning \
+                     the saddle, which is therefore NOT established as the lowest state."
+                );
+                return best;
+            }
+        }
+    }
+    eprintln!(
+        "RHF stability descent: still descending after {MAX_DESCENT_ROUNDS} rounds; \
+         returning the lowest found (E = {:.8}). It is NOT established as the bottom.",
+        best.energy
+    );
+    best
+}
+
+/// One closed-shell SCF solve, no state selection. [`solve_rhf`] is this plus
+/// the opt-in [`rhf_stability_descent`].
+fn solve_rhf_once(
     ctx: &ParallelContext,
     mol: &Molecule,
     prep: &PreparedBasis,
