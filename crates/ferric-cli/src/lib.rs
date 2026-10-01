@@ -3818,7 +3818,7 @@ fn run_pdep_rpa_arm(
             match pdep_polarizability_becke(mol, prep, bs, &dfbs, &result, op, &rpa_cfg) {
                 Ok(v) => {
                     println!(
-                        "Per-atom Becke α (iso, a.u.): {:?}",
+                        "Per-atom intrinsic Becke α (iso, a.u.): {:?}",
                         v.iter()
                             .map(|t| (t[0][0] + t[1][1] + t[2][2]) / 3.0)
                             .collect::<Vec<_>>()
@@ -3826,7 +3826,7 @@ fn run_pdep_rpa_arm(
                     Some(v)
                 }
                 Err(e) => {
-                    eprintln!("warning: per-atom α (Hirshfeld) failed: {e}");
+                    eprintln!("warning: per-atom α (Becke) failed: {e}");
                     npz_gaps.push(format!("alpha_atomic (per-atom α): {e}"));
                     None
                 }
@@ -3834,6 +3834,24 @@ fn run_pdep_rpa_arm(
         } else {
             None
         };
+
+        // Charge-transfer remainder α_CT = α_mol − Σ_A α^A: emitted exactly
+        // when both inputs were computed. Both come from the same response
+        // (pdep_polarizability_static / pdep_polarizability_becke: same RI
+        // kernel, same orbitals, frozen_core = 0), so the remainder is the
+        // Krishtal charge-delocalization polarizability, not a definition gap.
+        let alpha_ct_arr: Option<[[f64; 3]; 3]> =
+            match (alpha_arr.as_ref(), alpha_atomic_vec.as_deref()) {
+                (Some(mol_a), Some(per_atom)) => {
+                    let ct = ferric_rpa::properties::charge_transfer_remainder(mol_a, per_atom);
+                    println!(
+                        "Charge-transfer α_CT (iso, a.u.): {:.4}",
+                        (ct[0][0] + ct[1][1] + ct[2][2]) / 3.0
+                    );
+                    Some(ct)
+                }
+                _ => None,
+            };
 
         let compute_dm = cfg.rpa.compute_density_matrix.unwrap_or(true);
         let dm_ref = if compute_dm {
@@ -3983,6 +4001,9 @@ fn run_pdep_rpa_arm(
         let mut c6_freqs_v: Vec<f64> = Vec::new();
         let mut c6_weights_v: Vec<f64> = Vec::new();
         let mut alpha_dyn_v: Vec<Vec<[[f64; 3]; 3]>> = Vec::new();
+        // Dynamic charge-transfer remainder; PDEP source only (TS/MBD model
+        // α(iω) has no charge-transfer term to remove).
+        let mut alpha_ct_dyn_v: Option<Vec<[[f64; 3]; 3]>> = None;
         let mut c6_iso_opt: Option<ndarray::Array2<f64>> = None;
         let mut c6_aniso_v: Vec<Vec<[[f64; 3]; 3]>> = Vec::new();
         // Provenance for the per-atom C6 arrays, carried to the NPZ so an
@@ -4288,6 +4309,21 @@ fn run_pdep_rpa_arm(
             };
 
             if let Some(res) = res_opt {
+                if use_pdep {
+                    // molecular_dynamic_polarizability and the per-atom
+                    // intrinsic α^A(iω) share the RI kernel, orbitals and
+                    // frozen_core = 0, at the same frequencies.
+                    match ferric_rpa::properties::charge_transfer_remainder_dynamic(
+                        &res.per_atom_dynamic.molecular,
+                        &res.per_atom_dynamic.per_atom,
+                    ) {
+                        Ok(ct) => alpha_ct_dyn_v = Some(ct),
+                        Err(e) => {
+                            eprintln!("warning: dynamic charge-transfer α_CT(iω) failed: {e}");
+                            npz_gaps.push(format!("alpha_ct_dynamic: {e}"));
+                        }
+                    }
+                }
                 c6_freqs_v = res.per_atom_dynamic.freqs.clone();
                 c6_weights_v = res.per_atom_dynamic.weights.clone();
                 alpha_dyn_v = res.per_atom_dynamic.per_atom.clone();
@@ -4363,6 +4399,7 @@ fn run_pdep_rpa_arm(
                 alpha_tensor: alpha_arr.as_ref(),
                 electric_field: ef_vec.as_deref(),
                 alpha_atomic: alpha_atomic_vec.as_deref(),
+                alpha_ct: alpha_ct_arr.as_ref(),
             },
             dispersion: DispersionBundle {
                 // All-or-nothing, and the provenance is non-Option inside
@@ -4376,6 +4413,7 @@ fn run_pdep_rpa_arm(
                         c6_freqs: c6_freqs_v.as_slice(),
                         c6_weights: c6_weights_v.as_slice(),
                         alpha_atomic_dynamic: alpha_dyn_v.as_slice(),
+                        alpha_ct_dynamic: alpha_ct_dyn_v.as_deref(),
                         c6_iso: iso,
                         c6_aniso: c6_aniso_v.as_slice(),
                         c6_molecular_iso: c6_molecular_iso_v,

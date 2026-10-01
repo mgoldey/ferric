@@ -25,13 +25,18 @@
 //!   ```
 //!
 //!   evaluated per node by SMW on ε̃(ω) = I + 4 B̃ diag(Δ/(ω²+Δ²)) B̃ᵀ.
-//! * `per_atom[a][k]` (`properties::pdep_polarizability_becke_dynamic`):
-//!   α^A_dj = sym 4 (m^A_d)ᵀ R(iω) M_j with m^A the Becke-weighted ATOM-CENTRED
-//!   dipole (r − R_A) on the flat (75, 110) grid and M = Σ_A m^A (NOT the
-//!   analytic lab-frame dipole). So Σ_A α^A = 4 Mᵀ R M exactly, and it is NOT
-//!   the molecular tensor: the two differ by the charge-transfer pieces
-//!   Σ_A R_A q^A of r = Σ_A w_A (r − R_A) + Σ_A w_A R_A (≈37% of α_iso for
-//!   H2O, ≈28% for N2 at ω_0 — see the reference's `per_atom_becke` block).
+//! * `per_atom[a][k]` (`properties::pdep_polarizability_becke_dynamic`): the
+//!   Krishtal–Senet–Van Alsenoy intrinsic polarizability (JCP 125, 034312,
+//!   2006), α^A_dj = sym 4 (m^A_d)ᵀ R(iω) μ_j with m^A the Becke-weighted
+//!   ATOM-CENTRED dipole (r − R_A) on the flat (75, 110) grid (bra) and μ the
+//!   ANALYTIC lab-frame molecular dipole (ket), frozen_core = 0 regardless of
+//!   `cfg.frozen_core`. The static per-atom path `pdep_polarizability_becke`
+//!   is the same definition at ω = 0. Σ_A α^A is NOT the molecular tensor:
+//!   the remainder α_CT = α_mol − Σ_A α^A
+//!   (`properties::charge_transfer_remainder[_dynamic]`) is
+//!   4 (μ − Σ_A m^A)ᵀ R μ, i.e. the charge-flow term 4 (Σ_A R_A q^A)ᵀ R μ up
+//!   to the grid error of the lab dipole (α_CT,iso at ω = 0: 27.0% of α_iso
+//!   for H2O, 22.7% for N2).
 //! * `casimir_polder_c6`: `c6_molecular_iso` = (3/π) Σ_k w_k ᾱ(iω_k)² from
 //!   `molecular`; `c6_iso_pair`/`c6_aniso_pair` from `per_atom` (aniso is
 //!   elementwise, (3/π) Σ_k w_k α^A_ij α^B_ij).
@@ -51,12 +56,20 @@
 //! Systems: H2O and N2 / aug-cc-pVDZ, aux aug-cc-pvdz-rifit (two molecules:
 //! bent polar vs linear non-polar, different anisotropy and atom types).
 //!
-//! # Exactness anchor
+//! # Exactness anchors
 //!
-//! ω = 0: `molecular_dynamic_polarizability(.., &[0.0])` must equal ferric's
-//! own `pdep_polarizability_static` (independent code path: Δ⁻¹ instead of
-//! Δ/(ω²+Δ²)) and the numpy static α — which is also the `static_alpha` row's
-//! reference (H2O: the two generators agree to 6.7e-13).
+//! * ω = 0, molecular: `molecular_dynamic_polarizability(.., &[0.0])` must
+//!   equal ferric's own `pdep_polarizability_static` (independent code path:
+//!   Δ⁻¹ instead of Δ/(ω²+Δ²)) and the numpy static α — which is also the
+//!   `static_alpha` row's reference (H2O: the two generators agree to 6.7e-13).
+//! * ω = 0, per atom: `pdep_polarizability_becke_dynamic(.., &[0.0])` must
+//!   equal `pdep_polarizability_becke` (the quadrature has no ω = 0 node, so
+//!   the dynamic function is evaluated AT ω = 0 directly), and both the numpy
+//!   `alpha_w0`.
+//! * Charge transfer: Σ_A α^A + α_CT = α_mol (by construction of the
+//!   remainder), α_CT matches the numpy difference at every node, AND it
+//!   matches the INDEPENDENT charge-flow construction 4 (Σ_A R_A q^A)ᵀ R μ to
+//!   the grid error of the lab-frame dipole (numpy: 1.1e-4 H2O, 2.0e-5 N2).
 //!
 //! # Physics hypothesis vs artifact hypothesis
 //!
@@ -70,16 +83,8 @@
 //!   control asserts ferric does not match the TDHF C6.
 //! * Wrong aux basis: the aux-swap control proves the bar resolves it.
 //!
-//! # Definitions that disagree BY CONSTRUCTION (measured, not asserted equal)
+//! # Measured, not asserted
 //!
-//! * Σ_A α^A_Becke ≠ molecular α (charge transfer, above). Tested: the GAP
-//!   ferric reports equals the numpy gap.
-//! * `pdep_polarizability_becke` (static per-atom) uses the analytic lab-frame
-//!   dipole as the RIGHT operand; the dynamic per-atom path uses M = Σ_A m^A.
-//!   Its doc says it matches the dynamic ω = 0 limit exactly; the reference
-//!   shows the two definitions differ by up to 36% (H2O) / 20% (N2) per
-//!   tensor element. Each ferric path is checked against its OWN definition;
-//!   the gap is printed.
 //! * Quadrature: ferric's 20-node C6 vs the exact Casimir–Polder integral is
 //!   3.3e-8 (H2O) / −1.9e-8 (N2) relative — printed, not asserted.
 //!
@@ -97,6 +102,9 @@
 //! | ω=0 dynamic vs ferric static (internal) | 1.9e-16 | 1e-12 |
 //! | C6 iso / tensor, same orbitals | 6.2e-14 | 1e-11 |
 //! | per-atom α^A(iω), same orbitals, worst node | 3.4e-14 | 1e-10 |
+//! | per-atom ω=0 dynamic vs static (internal) | 1.5e-16 | 1e-11 |
+//! | α_CT(iω) and α_CT(0), same orbitals | 3.9e-14 | 1e-10 |
+//! | α_CT vs charge-flow form (grid error) | 1.1e-4 (H2O) / 2.0e-5 (N2) | 1e-3 |
 //! | RHF energy (abs, Ha) | 1.5e-12 | 1e-10 |
 //! | molecular α(iω) and C6, full chain | 5.3e-10 | 5e-9 |
 //!
@@ -115,8 +123,12 @@
 //! * MUTATION C — `let pref = 3.0 / PI;` → `6.0 / PI` in `casimir_polder_c6`:
 //!   α passes, C6 fails by 100%.
 //! * MUTATION D — in `pdep_polarizability_becke_dynamic` (closed shell) build
-//!   `mu_flat` from the analytic dipole instead of Σ_A m^A: per-atom fails
-//!   by ~20-36%.
+//!   `mu_flat` from Σ_A of the atom-centred pieces (`mu_ai_mo`) instead of the
+//!   analytic dipole (the pre-Krishtal definition): per-atom fails by
+//!   ~20-36%, the per-atom ω = 0 anchor fails, and α_CT misses the
+//!   charge-flow form by 0.31 (H2O) / 0.26 (N2) rel. (numpy-side measurement).
+//! * MUTATION E — in the same function set `frozen_core: cfg.frozen_core`:
+//!   the frozen-core-invariance check fails (core response dropped).
 
 use std::path::{Path, PathBuf};
 
@@ -129,8 +141,8 @@ use ferric_rpa::dispersion::{
     casimir_polder_c6, pdep_dynamic_polarizability, DispersionPartition, DynamicPolarizability,
 };
 use ferric_rpa::properties::{
-    molecular_dynamic_polarizability, pdep_polarizability_becke, pdep_polarizability_becke_dynamic,
-    pdep_polarizability_static,
+    charge_transfer_remainder, charge_transfer_remainder_dynamic, molecular_dynamic_polarizability,
+    pdep_polarizability_becke, pdep_polarizability_becke_dynamic, pdep_polarizability_static,
 };
 use ferric_rpa::quadrature::build_quadrature;
 use ferric_rpa::PdepRpaConfig;
@@ -154,6 +166,9 @@ const TOL_ALPHA_SAME_C_REL: f64 = 1e-11;
 const TOL_W0_INTERNAL_REL: f64 = 1e-12;
 const TOL_C6_SAME_C_REL: f64 = 1e-11;
 const TOL_PER_ATOM_SAME_C_REL: f64 = 1e-10;
+const TOL_PER_ATOM_W0_INTERNAL_REL: f64 = 1e-11;
+const TOL_CT_RECONSTRUCT_REL: f64 = 1e-13;
+const TOL_CT_FLOW_REL: f64 = 1e-3;
 const TOL_E_SCF: f64 = 1e-10;
 const TOL_CHAIN_REL: f64 = 5e-9;
 const TOL_ENUC: f64 = 1e-9;
@@ -594,8 +609,8 @@ fn molecular_row(system: &str) {
     );
 }
 
-/// Becke per-atom α^A(iω), its sum over atoms, the pair C6, and both ω = 0
-/// per-atom definitions.
+/// Becke per-atom intrinsic α^A(iω), its sum over atoms, the charge-transfer
+/// remainder, the pair C6, and the ω = 0 per-atom anchor.
 fn per_atom_row(system: &str) {
     let c = setup(system);
     let ctx = c.ctx.as_str();
@@ -619,7 +634,7 @@ fn per_atom_row(system: &str) {
         );
     }
 
-    // The partition: Σ_A α^A, and its (charge-transfer) gap to the molecular α.
+    // The partition: Σ_A α^A, and the charge-transfer remainder.
     let sum: Vec<T3> = (0..nfreq)
         .map(|k| {
             std::array::from_fn(|i| {
@@ -635,27 +650,47 @@ fn per_atom_row(system: &str) {
         TOL_PER_ATOM_SAME_C_REL,
     );
     let mol_ref = t3_list(r, "/molecular/alpha_iw", ctx);
-    let gap = |m: &[T3], s: &[T3]| -> Vec<T3> {
-        m.iter()
-            .zip(s)
-            .map(|(x, y)| std::array::from_fn(|i| std::array::from_fn(|j| x[i][j] - y[i][j])))
-            .collect()
-    };
-    let gap_ferric = gap(&dp.molecular, &sum);
-    let gap_ref = gap(&mol_ref, &sum_ref);
+    let ct = charge_transfer_remainder_dynamic(&dp.molecular, &dp.per_atom)
+        .unwrap_or_else(|e| panic!("{ctx}: charge_transfer_remainder_dynamic failed: {e:?}"));
     check(
         ctx,
-        "molecular - sum_A alpha^A (CT gap), worst",
-        worst_rel(&gap_ferric, &gap_ref, ctx),
+        "alpha_CT(iw) same-C, worst node",
+        worst_rel(
+            &ct,
+            &t3_list(r, "/per_atom_becke/charge_transfer_iw", ctx),
+            ctx,
+        ),
         TOL_PER_ATOM_SAME_C_REL,
+    );
+    // Reconstruction: Σ_A α^A + α_CT = α_mol.
+    let recon: Vec<T3> = (0..nfreq)
+        .map(|k| std::array::from_fn(|i| std::array::from_fn(|j| sum[k][i][j] + ct[k][i][j])))
+        .collect();
+    check(
+        ctx,
+        "sum_A alpha^A + alpha_CT == molecular",
+        worst_rel(&recon, &dp.molecular, ctx),
+        TOL_CT_RECONSTRUCT_REL,
+    );
+    // Independent construction: the charge-flow form 4 (Σ_A R_A q^A)ᵀ R μ.
+    // Agrees only to the grid error of the lab-frame dipole, so this bar is
+    // loose; the pre-Krishtal ket (Σ_A m^A) misses it by 0.31 (H2O) / 0.26
+    // (N2) rel. (numpy, measured 2026-10-01).
+    let ct_flow = t3_list(r, "/per_atom_becke/charge_transfer_flow_iw", ctx);
+    check(
+        ctx,
+        "alpha_CT(iw) vs charge-flow form, worst node",
+        worst_rel(&ct, &ct_flow, ctx),
+        TOL_CT_FLOW_REL,
     );
     let lab_grid = t3_list(r, "/per_atom_becke/alpha_lab_grid_iw", ctx);
     eprintln!(
         "{ctx}: [measurement] w_0: sum_A alpha^A iso {:.6} vs molecular {:.6} \
-         (CT share {:.1}%); grid lab-frame dipole reproduces molecular to {:.2e} (rel)",
+         (alpha_CT iso {:.6}, {:.1}%); grid lab-frame dipole reproduces molecular to {:.2e} (rel)",
         iso(&sum[0]),
         iso(&dp.molecular[0]),
-        100.0 * (1.0 - iso(&sum[0]) / iso(&dp.molecular[0])),
+        iso(&ct[0]),
+        100.0 * iso(&ct[0]) / iso(&dp.molecular[0]),
         worst_rel(&lab_grid, &mol_ref, ctx)
     );
 
@@ -692,18 +727,22 @@ fn per_atom_row(system: &str) {
         c6.c6_molecular_iso
     );
 
-    // ω = 0, both per-atom definitions, each against its own reference.
-    let dyn0 = pdep_polarizability_becke_dynamic(
-        &c.mol,
-        &c.obs,
-        &c.bs,
-        &c.dfbs,
-        &c.injected,
-        Operator::coulomb(),
-        &PdepRpaConfig::default(),
-        &[0.0],
-    )
-    .unwrap_or_else(|e| panic!("{ctx}: pdep_polarizability_becke_dynamic failed: {e:?}"));
+    // ω = 0 anchor: the dynamic per-atom function evaluated AT ω = 0 is the
+    // static per-atom α (one definition, two code paths) and the numpy value.
+    let becke_dyn_at = |cfg: &PdepRpaConfig| {
+        pdep_polarizability_becke_dynamic(
+            &c.mol,
+            &c.obs,
+            &c.bs,
+            &c.dfbs,
+            &c.injected,
+            Operator::coulomb(),
+            cfg,
+            &[0.0],
+        )
+        .unwrap_or_else(|e| panic!("{ctx}: pdep_polarizability_becke_dynamic failed: {e:?}"))
+    };
+    let dyn0 = becke_dyn_at(&PdepRpaConfig::default());
     let st = pdep_polarizability_becke(
         &c.mol,
         &c.obs,
@@ -714,26 +753,74 @@ fn per_atom_row(system: &str) {
         &PdepRpaConfig::default(),
     )
     .unwrap_or_else(|e| panic!("{ctx}: pdep_polarizability_becke failed: {e:?}"));
-    let dyn0_ref = t3_list(r, "/per_atom_becke/alpha_dynamic_w0", ctx);
-    let st_ref = t3_list(r, "/per_atom_becke/alpha_static_lab_right", ctx);
+    let w0_ref = t3_list(r, "/per_atom_becke/alpha_w0", ctx);
     let dyn0_k0: Vec<T3> = (0..natoms).map(|a| dyn0[a][0]).collect();
     check(
         ctx,
-        "per-atom dynamic(w=0) vs its definition",
-        worst_rel(&dyn0_k0, &dyn0_ref, ctx),
+        "per-atom dynamic(w=0) vs static (internal)",
+        worst_rel(&dyn0_k0, &st, ctx),
+        TOL_PER_ATOM_W0_INTERNAL_REL,
+    );
+    check(
+        ctx,
+        "per-atom dynamic(w=0) vs numpy",
+        worst_rel(&dyn0_k0, &w0_ref, ctx),
         TOL_PER_ATOM_SAME_C_REL,
     );
     check(
         ctx,
-        "per-atom static vs its definition",
-        worst_rel(&st, &st_ref, ctx),
+        "per-atom static vs numpy",
+        worst_rel(&st, &w0_ref, ctx),
         TOL_PER_ATOM_SAME_C_REL,
     );
+
+    // All occupied orbitals respond: cfg.frozen_core must not reach α^A.
+    let dyn0_fc = becke_dyn_at(&PdepRpaConfig {
+        frozen_core: 1,
+        ..PdepRpaConfig::default()
+    });
+    let dyn0_fc_k0: Vec<T3> = (0..natoms).map(|a| dyn0_fc[a][0]).collect();
+    check(
+        ctx,
+        "per-atom alpha invariant to cfg.frozen_core",
+        worst_rel(&dyn0_fc_k0, &dyn0_k0, ctx),
+        TOL_PER_ATOM_W0_INTERNAL_REL,
+    );
+
+    // Static charge-transfer remainder: alpha_tensor − Σ_A alpha_atomic, the
+    // two exported static keys.
+    let st_mol = pdep_polarizability_static(
+        &c.mol,
+        &c.obs,
+        &c.dfbs,
+        &c.injected,
+        Operator::coulomb(),
+        &PdepRpaConfig::default(),
+    )
+    .unwrap_or_else(|e| panic!("{ctx}: pdep_polarizability_static failed: {e:?}"))
+    .tensor;
+    let ct0 = charge_transfer_remainder(&st_mol, &st);
+    check(
+        ctx,
+        "alpha_CT(0) same-C",
+        rel_diff(&ct0, &t3(r, "/per_atom_becke/charge_transfer_w0", ctx)),
+        TOL_PER_ATOM_SAME_C_REL,
+    );
+    check(
+        ctx,
+        "alpha_CT(0) vs charge-flow form",
+        rel_diff(&ct0, &t3(r, "/per_atom_becke/charge_transfer_flow_w0", ctx)),
+        TOL_CT_FLOW_REL,
+    );
     eprintln!(
-        "{ctx}: [measurement] per-atom static (lab-frame right operand) vs dynamic w=0 \
-         (sum-of-atom-centred right operand): worst atom {:.2e} (rel) — different \
-         definitions, not quadrature",
-        worst_rel(&st, &dyn0_k0, ctx)
+        "{ctx}: [measurement] alpha_CT(0) iso {:.6} = {:.1}% of alpha iso {:.6}; \
+         diag [{:.6}, {:.6}, {:.6}]",
+        iso(&ct0),
+        100.0 * iso(&ct0) / iso(&st_mol),
+        iso(&st_mol),
+        ct0[0][0],
+        ct0[1][1],
+        ct0[2][2]
     );
 }
 

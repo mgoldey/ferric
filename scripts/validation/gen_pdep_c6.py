@@ -28,24 +28,25 @@ WHAT FERRIC COMPUTES (read from the loops, not the doc comments)
                    flat (75, 110) TA-M4 x Lebedev Becke grid,
                        m^A_d = sum_{g: home=A} w_g (r_g - R_A)_d chi chi
                    (atom-centred, Becke weight of the home atom folded into
-                   w_g, no renormalization), and
-                       alpha^A_dj(iw) = 4 (m^A_d)^T R(iw) M_j,  symmetrised in (d,j),
-                       M = sum_A m^A   (the SUM of atom-centred dipoles, NOT the
-                                        analytic lab-frame dipole),
-                       R(iw) = [diag((w^2+D^2)/D) + 4K]^-1.
-                   So sum_A alpha^A = 4 M^T R M exactly (linearity), and it
-                   differs from `molecular` by the charge-transfer pieces of
-                   r = sum_A w_A (r - R_A) + sum_A w_A R_A.
+                   w_g, no renormalization), and the Krishtal-Senet-Van
+                   Alsenoy intrinsic polarizability (JCP 125, 034312, 2006)
+                       alpha^A_dj(iw) = 4 (m^A_d)^T R(iw) mu_j,  symmetrised in (d,j),
+                       mu = <i|r|a>  (the ANALYTIC lab-frame molecular dipole),
+                       R(iw) = [diag((w^2+D^2)/D) + 4K]^-1,
+                   frozen_core = 0. The static per-atom path
+                   `pdep_polarizability_becke` is the same definition at w = 0.
+                   sum_A alpha^A = 4 M^T R mu with M = sum_A m^A, and the
+                   charge-transfer remainder
+                       alpha_CT(iw) = alpha_mol(iw) - sum_A alpha^A(iw)
+                                    = 4 (mu - M)^T R mu,
+                   where mu - M = sum_A R_A q^A + (grid error of the lab dipole),
+                   q^A = sum_{g: home=A} w_g chi chi. The "charge-flow" form
+                   4 (sum_A R_A q^A)^T R mu is stored separately so the test can
+                   see the grid-error split.
   C6               `casimir_polder_c6`: c6_molecular_iso =
                    (3/pi) sum_k w_k abar(iw_k)^2 with abar = tr(alpha)/3 of
                    `molecular`; c6_iso_pair / c6_aniso_pair from `per_atom`
                    (aniso is ELEMENTWISE: (3/pi) sum_k w_k a^A_ij a^B_ij).
-
-The STATIC per-atom path `pdep_polarizability_becke` uses the atom-centred m^A
-on the left but the ANALYTIC lab-frame dipole on the right. Its doc claims it
-matches the dynamic path's w = 0 limit exactly; by the two loops it cannot
-(the right-hand operators differ by sum_A R_A q^A). This file stores BOTH
-definitions at w = 0 so the test can measure the gap instead of assuming it.
 
 THE REFERENCE (independent routes)
 ----------------------------------
@@ -65,11 +66,11 @@ C, eps. The same orbitals are stored in ferric's AO order for injection.
     so the test can report ferric's quadrature error (measurement only).
   * per-atom: m^A rebuilt on ferric's grid from PySCF primitives
     (gen_properties.atom_centred_grid / becke_partition, the same replica the
-    Becke-volume row matched to 7e-16), then the two per-atom definitions
-    above. Also the grid lab-frame dipole M_lab = sum_A (m^A + R_A q^A),
-    q^A = sum_{g: home=A} w_g chi chi, to show where sum_A alpha^A and the
-    molecular tensor part ways (charge transfer) and that the grid lab-frame
-    dipole reproduces the analytic one (grid error, recorded).
+    Becke-volume row matched to 7e-16), then the intrinsic alpha^A above at
+    every node and at w = 0, and the charge-transfer remainder (difference
+    form and charge-flow form). Also the grid lab-frame dipole
+    M_lab = sum_A (m^A + R_A q^A), to show the grid lab-frame dipole
+    reproduces the analytic one (grid error, recorded).
 
 SCOPE values (not what ferric computes; recorded so the test can assert ferric
 MISSES them or just report them):
@@ -272,18 +273,28 @@ def gen_case(system: str, basis_name: str, aux_name: str) -> Path:
     m_lab_grid = m_sum + np.einsum("ad,ak->dk", xyz, q_at)
     lab_grid_vs_analytic = float(np.max(np.abs(m_lab_grid - mu)) / np.max(np.abs(mu)))
 
-    def per_atom_at(w, right):
-        return [sym(solve_alpha(m_at[a], right, delta, k4, w)) for a in range(natm)]
+    def per_atom_at(w):
+        return [sym(solve_alpha(m_at[a], mu, delta, k4, w)) for a in range(natm)]
 
-    per_atom = np.array([per_atom_at(w, m_sum) for w in freqs])  # (nfreq, natm, 3, 3)
+    per_atom = np.array([per_atom_at(w) for w in freqs])  # (nfreq, natm, 3, 3)
     per_atom = per_atom.transpose(1, 0, 2, 3)  # (natm, nfreq, 3, 3), ferric layout
-    per_atom_dyn_w0 = per_atom_at(0.0, m_sum)
-    per_atom_static_lab = per_atom_at(0.0, mu)
+    per_atom_w0 = per_atom_at(0.0)
     ac_sum = per_atom.sum(axis=0)  # (nfreq, 3, 3)
-    ac_sum_direct = [sym(solve_alpha(m_sum, m_sum, delta, k4, w)) for w in freqs]
+    ac_sum_direct = [sym(solve_alpha(m_sum, mu, delta, k4, w)) for w in freqs]
     lin = max(rel(a, b_) for a, b_ in zip(ac_sum, ac_sum_direct))
     if lin > SELF_CHECK_REL:
-        raise RuntimeError(f"{system}: sum_A alpha^A != 4 M^T R M ({lin:.2e})")
+        raise RuntimeError(f"{system}: sum_A alpha^A != 4 M^T R mu ({lin:.2e})")
+    # Charge-transfer remainder: difference form (what ferric exports) and
+    # the charge-flow form 4 (sum_A R_A q^A)^T R mu (linearity, independent
+    # of the per-atom sum). They differ by the grid error of the lab dipole.
+    ct_iw = [alpha_mol[k] - ac_sum[k] for k in range(len(freqs))]
+    ct_w0 = alpha_static - np.sum(per_atom_w0, axis=0)
+    q_flow = np.einsum("ad,ak->dk", xyz, q_at)  # (3, nov): sum_A R_A q^A
+    ct_flow_iw = [sym(solve_alpha(q_flow, mu, delta, k4, w)) for w in freqs]
+    ct_flow_w0 = sym(solve_alpha(q_flow, mu, delta, k4, 0.0))
+    ct_diff_vs_flow = max(
+        rel(a, b_) for a, b_ in zip([ct_w0, *ct_iw], [ct_flow_w0, *ct_flow_iw])
+    )
     alpha_lab_grid = [
         sym(solve_alpha(m_lab_grid, m_lab_grid, delta, k4, w)) for w in freqs
     ]
@@ -351,9 +362,13 @@ def gen_case(system: str, basis_name: str, aux_name: str) -> Path:
                 "partition": "Becke 1988 + ferric becke.rs Bragg-Slater size adjustment",
             },
             "alpha_iw": [tensors_json(per_atom[a]) for a in range(natm)],
-            "alpha_dynamic_w0": tensors_json(per_atom_dyn_w0),
-            "alpha_static_lab_right": tensors_json(per_atom_static_lab),
+            "alpha_w0": tensors_json(per_atom_w0),
             "sum_over_atoms_iw": tensors_json(ac_sum),
+            "charge_transfer_w0": gp.mat_json(ct_w0),
+            "charge_transfer_iw": tensors_json(ct_iw),
+            "charge_transfer_flow_w0": gp.mat_json(ct_flow_w0),
+            "charge_transfer_flow_iw": tensors_json(ct_flow_iw),
+            "charge_transfer_diff_vs_flow_max_rel": ct_diff_vs_flow,
             "alpha_lab_grid_iw": tensors_json(alpha_lab_grid),
             "lab_grid_dipole_vs_analytic_max_rel": lab_grid_vs_analytic,
             "c6_iso_pair": gp.mat_json(c6_pair_iso),
@@ -361,10 +376,11 @@ def gen_case(system: str, basis_name: str, aux_name: str) -> Path:
                 [gp.mat_json(c6_pair_ten[a, b_]) for b_ in range(natm)]
                 for a in range(natm)
             ],
-            "definition": "alpha^A_dj(iw) = sym 4 (m^A_d)^T R(iw) M_j, "
-            "m^A = sum_{home=A} w (r-R_A) chi chi, M = sum_A m^A; "
-            "alpha_static_lab_right uses the analytic <i|r|a> as the right operand "
-            "(pdep_polarizability_becke)",
+            "definition": "Krishtal-Senet-Van Alsenoy intrinsic (JCP 125, 034312, 2006): "
+            "alpha^A_dj(iw) = sym 4 (m^A_d)^T R(iw) mu_j, "
+            "m^A = sum_{home=A} w (r-R_A) chi chi, mu = analytic <i|r|a>; "
+            "charge_transfer = molecular - sum_A alpha^A; "
+            "charge_transfer_flow = sym 4 (sum_A R_A q^A)^T R mu, q^A = sum_{home=A} w chi chi",
         },
         "scope": {
             "c6_iso_drpa_exact_eri": c6_iso_exact_eri,
@@ -403,7 +419,6 @@ def gen_case(system: str, basis_name: str, aux_name: str) -> Path:
         ),
     }
     path = common.write_reference(ROW, system, basis_name, payload)
-    gap_static = max(rel(a, b_) for a, b_ in zip(per_atom_static_lab, per_atom_dyn_w0))
     print(
         f"{system:4s} {basis_name} aux={aux_name} naux={auxmol.nao_nr()} nov={nov}\n"
         f"  alpha_static iso {iso(alpha_static):.8f}  c6_iso(quad) {c6_iso:.8f}  "
@@ -412,7 +427,12 @@ def gen_case(system: str, basis_name: str, aux_name: str) -> Path:
         f"  SOS vs dense {worst:.2e}; grid lab dipole vs analytic {lab_grid_vs_analytic:.2e}\n"
         f"  per-atom: sum_A alpha^A(w0) iso {iso(ac_sum[0]):.6f} vs molecular "
         f"{iso(alpha_mol[0]):.6f}; lab-grid {iso(alpha_lab_grid[0]):.6f}\n"
-        f"  static-lab-right vs dynamic(w=0) per-atom max rel gap {gap_static:.2e}\n"
+        f"  per-atom w=0 iso {[round(iso(t), 6) for t in per_atom_w0]}; "
+        f"static sum {iso(np.sum(per_atom_w0, axis=0)):.6f} vs alpha_static "
+        f"{iso(alpha_static):.6f}\n"
+        f"  alpha_CT(w=0) iso {iso(ct_w0):.6f} ({100 * iso(ct_w0) / iso(alpha_static):.1f}% "
+        f"of alpha_static); diag {np.diag(ct_w0).round(6).tolist()}\n"
+        f"  alpha_CT difference vs charge-flow form max rel {ct_diff_vs_flow:.2e}\n"
         f"  c6 pair sum {float(c6_pair_iso.sum()):.6f} vs molecular {c6_iso:.6f}"
     )
     return path

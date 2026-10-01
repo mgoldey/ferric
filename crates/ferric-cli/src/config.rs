@@ -1483,11 +1483,17 @@ pub struct RpaCfg {
     pub esp_surface_vdw_scale: Option<f64>,
     /// Lebedev order per atom for the `compute_esp_surface` shell (default 110).
     pub esp_surface_n_angular: Option<usize>,
-    /// Compute and include the static polarizability tensor in the NPZ bundle.
-    /// Default: true when `export_npz` is set.
+    /// Compute and include the static polarizability tensor in the NPZ bundle
+    /// (`alpha_tensor`). Together with `compute_alpha_atomic` it also emits
+    /// `alpha_ct` (see there). Default: true when `export_npz` is set.
     pub compute_polarizability: Option<bool>,
-    /// Compute and include the per-atom **Becke** polarizability decomposition
-    /// (`alpha_atomic`, shape (N, 3, 3), additive to `alpha_tensor`).
+    /// Compute and include the per-atom **Becke** intrinsic polarizability
+    /// (`alpha_atomic`, shape (N, 3, 3)): the Krishtal–Senet–Van Alsenoy
+    /// definition (JCP 125, 034312 (2006)), atom-centred dipole w_A (r − R_A)
+    /// on the bra and the molecular dipole on the field-side ket. Charge
+    /// transfer between atoms is excluded, so Σ_A alpha_atomic ≠ alpha_tensor;
+    /// when `compute_polarizability` is also on, the remainder
+    /// `alpha_ct = alpha_tensor − Σ_A alpha_atomic` (3, 3) is exported too.
     ///
     /// This path always uses the Becke partition (`pdep_polarizability_becke`);
     /// it is NOT governed by `c6_partition`, which only selects the partition
@@ -1548,7 +1554,10 @@ pub struct RpaCfg {
     pub compute_resp_charges: Option<bool>,
     /// Compute per-atom anisotropic C6 dispersion coefficients and include them
     /// in the NPZ bundle (`c6_iso`, `c6_aniso`, `alpha_atomic_dynamic`,
-    /// `c6_freqs`, `c6_weights`). Default: true when `export_npz` is set.
+    /// `c6_freqs`, `c6_weights`, `c6_molecular_iso`, `c6_partition`,
+    /// `c6_source`, and — for `c6_source = "pdep"` only — the dynamic
+    /// charge-transfer remainder `alpha_ct_dynamic` (nfreq, 3, 3) =
+    /// molecular α(iω) − Σ_A α^A(iω)). Default: true when `export_npz` is set.
     pub compute_c6: Option<bool>,
     /// Accept an NPZ bundle that is MISSING one or more requested properties,
     /// and still exit 0. Default: false (an incomplete bundle fails the run).

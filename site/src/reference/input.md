@@ -210,8 +210,8 @@ Read by `pdep-rpa`, `gw`, `bse-tda`, `tdhf-static-polarizability`, and, for
 | `compute_esp_surface` | bool | `false` | | ESP on a vdW shell. |
 | `esp_surface_vdw_scale` | float | `1.4` | | |
 | `esp_surface_n_angular` | integer | `110` | Lebedev order | |
-| `compute_polarizability` | bool | `true` | | |
-| `compute_alpha_atomic` | bool | `true` | | Always Becke-partitioned. `c6_partition` does not affect it. |
+| `compute_polarizability` | bool | `true` | | `alpha_tensor`, the molecular static α. |
+| `compute_alpha_atomic` | bool | `true` | | `alpha_atomic`: the Krishtal–Senet–Van Alsenoy intrinsic per-atom α (JCP 125, 034312 (2006)), always Becke-partitioned; `c6_partition` does not affect it. Charge transfer between atoms is excluded; with `compute_polarizability` also on, the remainder `alpha_ct` = `alpha_tensor` − Σ_A `alpha_atomic` is exported. |
 | `compute_electric_field` | bool | `true` | | |
 | `compute_density_matrix` | bool | `true` | | |
 | `compute_dipole` | bool | `true` | | |
@@ -220,7 +220,7 @@ Read by `pdep-rpa`, `gw`, `bse-tda`, `tdhf-static-polarizability`, and, for
 | `compute_mulliken_charges` | bool | `true` | | |
 | `compute_chelpg_charges` | bool | `true` | | |
 | `compute_resp_charges` | bool | `true` | | |
-| `compute_c6` | bool | `true` | | |
+| `compute_c6` | bool | `true` | | With `c6_source = "pdep"`, also exports `alpha_ct_dynamic` (nfreq, 3, 3): molecular α(iω) − Σ_A α^A(iω). |
 | `allow_partial_npz` | bool | `false` | | By default a bundle missing a requested property fails the run. |
 | `c6_source` | string | `"ts"` | `ts` `pdep` `mbd` | |
 | `c6_partition` | string | `hirshfeld` for `pdep`, `becke` for `ts`/`mbd` | `becke` `hirshfeld` | |
