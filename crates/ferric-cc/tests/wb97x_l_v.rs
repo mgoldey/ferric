@@ -144,6 +144,9 @@ fn omega_reaches_the_operator_and_zero_recovers_coulomb() {
             &lr.result,
             &DoubleHybridConfig {
                 omega,
+                // lambda = 1: the operator is plain erfc(omega), so omega -> 0 is
+                // exactly the Coulomb LinLCCD(hh) computed below.
+                lambda: 1.0,
                 ..Default::default()
             },
         )
@@ -196,16 +199,17 @@ fn omega_reaches_the_operator_and_zero_recovers_coulomb() {
     );
 }
 
-/// λ must scale the correlation contribution linearly, and λ = 0 must reduce the
-/// double hybrid EXACTLY to its underlying range-separated hybrid.
+/// λ enters the AMPLITUDE equations (paper eqn 22), not only the energy, and λ = 0
+/// reduces the double hybrid EXACTLY to its underlying range-separated hybrid.
 ///
-/// This is the cleanest available check that the WFT half is added where the paper
-/// says it is: at λ = 0 there is no wave-function correlation at all, so the total
-/// must equal the bare KS energy.
+/// Exact anchor: with the ladder removed ([`LadderVariant::DriversOnly`]) the
+/// amplitudes are MP2's and linear in λ, so the eqn (27) term is exactly
+/// λ²·E_c,MP2^{sr,ω} (eqns 19–20). A linear-λ assembly (solve at λ = 1, multiply by λ)
+/// gives λ·E instead, off by 1/λ = 1.67x at λ = 0.6.
 #[test]
-fn lambda_scales_correlation_and_zero_recovers_the_hybrid() {
+fn lambda_enters_the_amplitudes_and_zero_recovers_the_hybrid() {
     let mol = Molecule::load_xyz(&mol_path("water.xyz")).unwrap();
-    let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+    let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
 
@@ -224,7 +228,7 @@ fn lambda_scales_correlation_and_zero_recovers_the_hybrid() {
     )
     .unwrap();
 
-    let at = |lambda: f64| {
+    let at = |lambda: f64, variant: LadderVariant| {
         solve_wb97x_l_v(
             &mol,
             &obs,
@@ -232,13 +236,19 @@ fn lambda_scales_correlation_and_zero_recovers_the_hybrid() {
             &lr.result,
             &DoubleHybridConfig {
                 lambda,
+                variant,
+                cc: CcConfig {
+                    energy_conv: 1e-12,
+                    max_iter: 200,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
         )
         .unwrap()
     };
 
-    let zero = at(0.0);
+    let zero = at(0.0, LadderVariant::Hh);
     assert!(
         (zero.total_energy - lr.result.energy).abs() < 1e-12,
         "lambda = 0 must recover the bare KS energy exactly: {:.12} vs {:.12}",
@@ -246,21 +256,25 @@ fn lambda_scales_correlation_and_zero_recovers_the_hybrid() {
         lr.result.energy
     );
 
-    // Linear in lambda at fixed amplitudes: E(2c) - E(c) must be constant.
-    let (a, b, c) = (at(0.2), at(0.4), at(0.6));
-    let d1 = b.total_energy - a.total_energy;
-    let d2 = c.total_energy - b.total_energy;
-    eprintln!(
-        "E(0.2) = {:.10}  E(0.4) = {:.10}  E(0.6) = {:.10}",
-        a.total_energy, b.total_energy, c.total_energy
-    );
+    let lambda = WB97X_L_V_LAMBDA;
+    let mp2_1 = at(1.0, LadderVariant::DriversOnly).e_c_scaled;
+    let mp2_l = at(lambda, LadderVariant::DriversOnly).e_c_scaled;
+    let ratio = mp2_l / mp2_1;
+    eprintln!("MP2 limit: E(1) = {mp2_1:.12}  E({lambda}) = {mp2_l:.12}  ratio {ratio:.12}");
+    assert!(mp2_1 < -1e-4, "no correlation at lambda = 1: {mp2_1:.3e}");
     assert!(
-        (d1 - d2).abs() < 1e-12,
-        "lambda scaling must be linear at fixed amplitudes: {d1:.3e} vs {d2:.3e}"
+        (ratio - lambda * lambda).abs() < 1e-9,
+        "MP2 limit must scale as lambda^2 = {:.4}, got {ratio:.12} (linear would be {lambda})",
+        lambda * lambda
     );
+
+    // With the ladder the dependence is no longer a pure power, but it must stay
+    // near-quadratic and far from linear.
+    let hh_ratio = at(lambda, LadderVariant::Hh).e_c_scaled / at(1.0, LadderVariant::Hh).e_c_scaled;
+    eprintln!("LinLCCD(hh): E({lambda})/E(1) = {hh_ratio:.6}");
     assert!(
-        d1.abs() > 1e-6,
-        "lambda had no effect -- correlation is not being added"
+        (hh_ratio - lambda * lambda).abs() < (hh_ratio - lambda).abs(),
+        "LinLCCD(hh) ratio {hh_ratio:.6} is closer to linear ({lambda}) than quadratic"
     );
 }
 
