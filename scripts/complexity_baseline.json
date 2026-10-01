@@ -30180,7 +30180,7 @@
     "mi": 96.42309199828554
   },
   "crates/ferric-scf/src/uhf.rs::solve_uhf_fockmod": {
-    "cc": 156.0,
+    "cc": 160.0,
     "mi": -32.21752359027134
   },
   "crates/ferric-scf/src/uhf.rs::solve_uhf_fockmod::<anonymous>": {
