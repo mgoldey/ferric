@@ -1886,7 +1886,7 @@ fn solve_rhf_once(
             }
         }
         mon.note_energy(energy);
-        if std::env::var("FERRIC_TRAH_RHO_TRACE").is_ok() {
+        if crate::trah::trah_rho_trace() {
             let dnorm = d.iter().map(|x| x * x).sum::<f64>().sqrt();
             eprintln!(
                 "TRAH-ITER-TRACE: iter={iter} E={energy:.12} |D|={dnorm:.12} err_max={err_max:.3e}"
@@ -2113,7 +2113,7 @@ fn solve_rhf_once(
                     }
 
                     // Save the pre-step point so a rejection can undo it exactly.
-                    if std::env::var("FERRIC_TRAH_RHO_TRACE").is_ok() {
+                    if crate::trah::trah_rho_trace() {
                         let dnorm = d.iter().map(|x| x * x).sum::<f64>().sqrt();
                         let cnorm = c_cur.iter().map(|x| x * x).sum::<f64>().sqrt();
                         let gnorm = {
