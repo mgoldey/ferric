@@ -2219,12 +2219,12 @@
       {
         "z": 46,
         "symbol": "Pd",
-        "ferric_alpha": 61.7,
-        "ferric_c6": 628.0,
+        "ferric_alpha": 26.14,
+        "ferric_c6": 157.5,
         "pymbd_alpha_ts": 23.68,
         "pymbd_c6_ts": 157.5,
-        "alpha_rel_diff": 1.6055743243243246,
-        "c6_rel_diff": 2.9873015873015873
+        "alpha_rel_diff": 0.10388513513513517,
+        "c6_rel_diff": 0.0
       },
       {
         "z": 47,
@@ -2359,8 +2359,8 @@
       "london": "C6_AB = 3/2 a_A a_B w_A w_B/(w_A+w_B) == TS combination rule"
     },
     "free_atom_table": "crates/ferric-rpa/src/dispersion/free_atom_ref.rs",
-    "free_atom_table_sha256": "54fcffe65fc5537aac710f0374c6ceab089003a4cee507f8a28420c8c9613d67",
+    "free_atom_table_sha256": "462bbfe41cda74b3ce7519e88b610f01d22672b9384e6c710b60bb4e3881e79f",
     "generator": "scripts/validation/gen_ts_mbd.py",
-    "git_head": "c371b71d8427b0a9734130ee962a7492b17d8759"
+    "git_head": "b6b873b85cd7760074ac673cd44e37b9f2ae9415"
   }
 }

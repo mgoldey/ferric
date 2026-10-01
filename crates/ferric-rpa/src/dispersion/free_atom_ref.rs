@@ -36,7 +36,15 @@
 //!
 //! Z=19–54 α_free/C6_free are from Gould & Bučko JCTC 12, 3603 (2016) Table 2
 //! (same Chu-Dalgarno lineage as TS-PRL Table I; cross-checks vs the Z≤18 rows
-//! agree <5% — see docs/superpowers/specs/refs/source-crosscheck.md). Their
+//! agree <5% — see docs/superpowers/specs/refs/source-crosscheck.md), except
+//! Pd. Gould–Bučko's Pd (α 61.7, C6 628) is not the closed-shell 4d¹⁰ ground
+//! state: relativistic CCSDTQP gives α = 26.14(10) a.u. (Jerabek, Schwerdtfeger,
+//! Nagle, PRA 98, 012508 (2018); the 2018/2025 Schwerdtfeger–Nagle tables
+//! recommend the same). Pd therefore takes that α and the free-atom TS C6 = 157.5
+//! a.u. from Gobre's compilation (PhD thesis, TU Berlin 2016, Table A.1; the
+//! `C6(TS)` column of libMBD's `vdw-params.csv`). That C6 was tabulated with
+//! α = 23.68, so the implied TS frequency ω = 4C6/(3α²) is 0.307 here vs 0.374
+//! for Gobre's own pair. Their
 //! vol_free is None (no sourced fallback), same as Z≤18 now: the live free-atom
 //! SCF supplies the volume, and None refuses rather than fabricating a
 //! denominator.
@@ -108,15 +116,15 @@ pub fn ts_free_atom(z: usize) -> Option<(f64, f64, Option<f64>)> {
         43 => (79.6, 939.0, None),   // Tc
         44 => (72.3, 809.0, None),   // Ru
         45 => (66.4, 708.0, None),   // Rh
-        46 => (61.7, 628.0, None),   // Pd   (Chu04/ASE 158 is Ruiz12 in-molecular, NOT free-atom)
-        47 => (46.2, 341.0, None),   // Ag
-        48 => (46.7, 405.0, None),   // Cd
-        49 => (62.1, 643.0, None),   // In
-        50 => (60.0, 715.0, None),   // Sn
-        51 => (44.0, 504.0, None),   // Sb
-        52 => (40.0, 471.0, None),   // Te   Chu04 C6=445  (~6%)
-        53 => (33.6, 389.0, None),   // I
-        54 => (27.2, 302.0, None),   // Xe
+        46 => (26.14, 157.5, None), // Pd   α: Jerabek PRA 98 012508 (2018) CCSDTQP; C6: Gobre 2016 Table A.1 (TS)
+        47 => (46.2, 341.0, None),  // Ag
+        48 => (46.7, 405.0, None),  // Cd
+        49 => (62.1, 643.0, None),  // In
+        50 => (60.0, 715.0, None),  // Sn
+        51 => (44.0, 504.0, None),  // Sb
+        52 => (40.0, 471.0, None),  // Te   Chu04 C6=445  (~6%)
+        53 => (33.6, 389.0, None),  // I
+        54 => (27.2, 302.0, None),  // Xe
         _ => return None,
     };
     Some(row)
@@ -145,6 +153,16 @@ mod tests {
         let (_, _, v_o) = ts_free_atom(8).unwrap();
         assert!(v_o.is_none(), "O vol_free must be None: {v_o:?}");
         assert!(ts_free_atom(200).is_none(), "out-of-table should be None");
+    }
+
+    /// Pd is the one Z = 19–54 row NOT taken from Gould–Bučko: their 61.7 a.u.
+    /// is not the closed-shell 4d¹⁰ atom (relativistic CC: 26.14(10)).
+    #[test]
+    fn pd_uses_the_closed_shell_ground_state() {
+        let (a, c6, v) = ts_free_atom(46).unwrap();
+        assert!((a - 26.14).abs() < 1e-9, "Pd alpha: {a}");
+        assert!((c6 - 157.5).abs() < 1e-9, "Pd C6: {c6}");
+        assert!(v.is_none());
     }
 
     #[test]
