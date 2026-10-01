@@ -5997,3 +5997,15 @@ diamond 12.7 s at 6 thr):
   (dense, SR-dominated). A fixed default leaves ~1.5-2× on one of them. The lever is an adaptive ω.
 - **Libint version:** switching 2.7.2 → 2.13.1 moved diamond's energy 1.1e-11 Ha/cell at fixed settings, consistent
   with libint's own precision floor.
+
+## Correction (2026-09-30): the ferric-vs-PySCF timings are not like-for-like
+
+The "faster than PySCF" statements in the sections above (e.g. "1.67× faster", "4.1× faster", "PySCF is faster
+because …" margins) compare runs that differ in:
+- precision target: PySCF cell.precision 1e-12; ferric RS-GDF 1e-13 and hcore 1e-14;
+- SCF stopping rule: PySCF 13 cycles on dry ice and 7 on diamond at conv_tol 1e-10 / grad 1e-6; ferric 20 iterations;
+- date and load: PySCF single runs on 2026-09-28; ferric single runs on 2026-09-30 with desktop load;
+- ω: PySCF picks ω per cell; the ferric ω 0.7 rows are hand-tuned.
+
+Within-ferric before/after comparisons in these sections stand: same harness, inputs and box. The cross-code numbers are
+recorded measurements, not a ranking. A matched comparison is tracked in GitHub issue #228.
