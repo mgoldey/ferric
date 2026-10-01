@@ -171,6 +171,9 @@ impl MemoryPool {
         // exists to fix. The CAS loop is what makes the check atomic against
         // concurrent reservations from rayon workers: two threads that each
         // fit individually cannot both commit past the ceiling.
+        // `fetch_update` is deprecated in favour of `try_update` on newer Rust;
+        // keep the old name so older toolchains still build.
+        #[allow(deprecated)]
         let outcome =
             self.inner
                 .outstanding
@@ -252,6 +255,9 @@ impl MemoryPool {
         // saturating_sub, not wrapping: a double-release (which the type
         // system makes hard but not impossible across a mem::forget) must not
         // wrap the ledger to a near-infinite occupancy that refuses everything.
+        // `fetch_update` is deprecated in favour of `try_update` on newer Rust;
+        // keep the old name so older toolchains still build.
+        #[allow(deprecated)]
         let _ = self
             .inner
             .outstanding
@@ -329,6 +335,9 @@ impl Drop for Reservation {
         let bytes = self.bytes;
         // saturating_sub, not wrapping: a double-release would otherwise wrap
         // to a huge outstanding value and lock the pool out permanently.
+        // `fetch_update` is deprecated in favour of `try_update` on newer Rust;
+        // keep the old name so older toolchains still build.
+        #[allow(deprecated)]
         let _ = pool
             .inner
             .outstanding

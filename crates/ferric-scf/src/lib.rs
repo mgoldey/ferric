@@ -13,6 +13,10 @@
 // needless_range_loop: DIIS coefficient and MO-index loops read clearer with
 // explicit indices than with iterator/enumerate chains.
 #![allow(clippy::needless_range_loop)]
+// Module docs link items by full `crate::` path so they resolve wherever the
+// text is rendered; rustdoc 1.99 reports some of those paths as redundant in
+// the module's own scope. The explicit path is the house convention.
+#![allow(rustdoc::redundant_explicit_links)]
 
 // Compile-time guard against the one MPI feature combination that is silently
 // WRONG rather than merely unsupported: `ferric-core/mpi` ON while this crate's
