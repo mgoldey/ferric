@@ -35,12 +35,8 @@ fn bundled_file(name: &str) -> ferric_core::basis::BasisSet {
 }
 
 fn be2(r_angstrom: f64, cfg: &DoubleHybridConfig) -> DoubleHybridResult {
-    let mol = Molecule::parse_xyz(
-        &format!("2\nBe2\nBe 0 0 0\nBe 0 0 {r_angstrom}\n"),
-        0,
-        1,
-    )
-    .unwrap();
+    let mol =
+        Molecule::parse_xyz(&format!("2\nBe2\nBe 0 0 0\nBe 0 0 {r_angstrom}\n"), 0, 1).unwrap();
     let obs = PreparedBasis::new(&mol, &bundled_file("def2-qzvppd")).unwrap();
     let dfbs = PreparedBasis::new(&mol, &bundled_file("def2-qzvppd-rifit")).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
