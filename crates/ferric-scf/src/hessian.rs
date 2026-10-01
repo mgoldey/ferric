@@ -1197,7 +1197,7 @@ impl<'a> TwoElectronBuilder<'a> {
         let pool = EnginePool::new(
             bounds.op,
             prep,
-            ferric_integrals::engine_pool::ERI_PRECISION,
+            ferric_integrals::engine_pool::eri_precision(),
         )?;
         Ok(TwoElectronBuilder {
             ctx,

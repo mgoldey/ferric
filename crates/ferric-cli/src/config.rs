@@ -1902,6 +1902,11 @@ pub struct ScfCfg {
     pub soscf: bool,
     #[serde(default = "default_integral_thresh")]
     pub integral_thresh: f64,
+    /// libint primitive-screening precision for the SCF J/K two-electron
+    /// integrals. Omitted = `FERRIC_ERI_PRECISION` if set, else 1e-20 (the
+    /// loosest value measured to reach double precision; 1e-14 left up to
+    /// 6e-9 Ha in E_J). `0 ≤ p ≤ 1e-8`; 0 disables primitive screening.
+    pub eri_precision: Option<f64>,
     /// Exchange builder: "direct" (default), "link", or "cosx" (seminumerical
     /// COSX exchange). Honoured by RHF, UHF and ROHF. Ignored with a warning
     /// when DF-J/DF-K is active, when the functional uses no exact exchange, or
@@ -2140,6 +2145,7 @@ impl Default for ScfCfg {
             guess: None,
             soscf: false,
             integral_thresh: 1e-12,
+            eri_precision: None,
             k_builder: None,
             screening: None,
             cosx_grid: None,

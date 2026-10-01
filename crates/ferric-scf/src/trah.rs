@@ -828,7 +828,7 @@ pub fn rhf_trah_step(
     let pool = EnginePool::new(
         inp.bounds.op,
         inp.prep,
-        ferric_integrals::engine_pool::ERI_PRECISION,
+        ferric_integrals::engine_pool::eri_precision(),
     )?;
 
     let matvec = |v: &[f64]| -> Result<Vec<f64>, FerricError> {
@@ -886,7 +886,7 @@ pub fn uhf_trah_step(
     let pool = EnginePool::new(
         inp.bounds.op,
         inp.prep,
-        ferric_integrals::engine_pool::ERI_PRECISION,
+        ferric_integrals::engine_pool::eri_precision(),
     )?;
 
     let matvec = |v: &[f64]| -> Result<Vec<f64>, FerricError> {

@@ -85,7 +85,7 @@ pub fn rhf_newton_step(
     let pool = EnginePool::new(
         inp.bounds.op,
         inp.prep,
-        ferric_integrals::engine_pool::ERI_PRECISION,
+        ferric_integrals::engine_pool::eri_precision(),
     )?;
 
     // Gradient g_{ai} = F_{ai}  (rows = virt, cols = occ).

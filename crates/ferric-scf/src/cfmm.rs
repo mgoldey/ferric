@@ -1271,7 +1271,7 @@ impl CfmmJ {
             self.engine = Some(Engine::new_2e(
                 Operator::coulomb(),
                 &self.prep,
-                ferric_integrals::engine_pool::ERI_PRECISION,
+                ferric_integrals::engine_pool::eri_precision(),
             )?);
         }
 

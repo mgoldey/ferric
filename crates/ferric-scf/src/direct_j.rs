@@ -106,7 +106,7 @@ impl<'a> JBuilder for DirectJ<'a> {
             self.pool = Some(crate::engine_pool::EnginePool::new(
                 op,
                 prep,
-                ferric_integrals::engine_pool::ERI_PRECISION,
+                ferric_integrals::engine_pool::eri_precision(),
             )?);
         }
         let pool = self.pool.as_ref().expect("pool initialized above");

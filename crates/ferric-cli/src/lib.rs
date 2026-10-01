@@ -341,6 +341,16 @@ pub fn run(args: Vec<String>) {
         }
     };
     cfg.scf.verbose = cfg.scf.verbose || cli_verbose;
+    // libint primitive-screening precision for every SCF J/K engine. Process-wide
+    // (one CLI run is one job); validated here so a bad value fails before any work.
+    if let Err(e) = ferric_integrals::engine_pool::set_eri_precision(cfg.scf.eri_precision) {
+        eprintln!("error: [scf] {e}");
+        std::process::exit(1);
+    }
+    eprintln!(
+        "ERI precision: {:e}",
+        ferric_integrals::engine_pool::eri_precision()
+    );
 
     // Machine-readable JSON run log. ON BY DEFAULT (see `config::OutputCfg`):
     // a result whose run left no artifact cannot be checked afterwards, and

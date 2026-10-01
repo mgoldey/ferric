@@ -396,7 +396,7 @@ pub fn uhf_internal_stability(
     let pool = EnginePool::new(
         inp.bounds.op,
         inp.prep,
-        ferric_integrals::engine_pool::ERI_PRECISION,
+        ferric_integrals::engine_pool::eri_precision(),
     )?;
 
     // Diagonal preconditioner: the orbital-energy gap (F_aa - F_ii) per spin.
@@ -484,7 +484,7 @@ pub fn rhf_internal_stability(
     let pool = EnginePool::new(
         inp.bounds.op,
         inp.prep,
-        ferric_integrals::engine_pool::ERI_PRECISION,
+        ferric_integrals::engine_pool::eri_precision(),
     )?;
 
     let f_diag: Vec<f64> = (0..n).map(|i| inp.f_mo[(i, i)]).collect();

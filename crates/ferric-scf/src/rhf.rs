@@ -2198,7 +2198,7 @@ pub fn build_jk(
     let pool = crate::engine_pool::EnginePool::new(
         bounds.op,
         prep,
-        ferric_integrals::engine_pool::ERI_PRECISION,
+        ferric_integrals::engine_pool::eri_precision(),
     )?;
     build_jk_with_pool(
         ctx,

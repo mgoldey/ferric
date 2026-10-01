@@ -61,6 +61,62 @@ use std::sync::Mutex;
 /// system measured.
 pub const ERI_PRECISION: f64 = 1e-20;
 
+/// The precision the SCF J/K engines actually use: [`ERI_PRECISION`] unless
+/// overridden.
+///
+/// Precedence, as for every [`ferric_core::config::ConfigVar`]: an explicit
+/// value set with [`set_eri_precision`] (the CLI's `[scf] eri_precision`) beats
+/// the `FERRIC_ERI_PRECISION` environment variable, which beats the default.
+/// Allowed values are `0 ≤ p ≤ 1e-8`; 0 turns primitive screening off (exact,
+/// 1.8–5.7x slower per J/K build). A malformed or out-of-range environment
+/// value warns and falls back to the default, because this is read where no
+/// `Result` can propagate; an explicit value is validated when it is set.
+pub fn eri_precision() -> f64 {
+    let bits = ERI_PRECISION_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed);
+    let explicit = (bits != UNSET).then(|| f64::from_bits(bits));
+    ERI_PRECISION_VAR
+        .resolve(explicit, ferric_core::config::env_lookup)
+        .map(|r| r.value)
+        .unwrap_or_else(|e| {
+            eprintln!("[config] FERRIC_ERI_PRECISION: {e}; using default {ERI_PRECISION:e}");
+            ERI_PRECISION
+        })
+}
+
+/// Set (or with `None`, clear) the process-wide explicit precision that
+/// [`eri_precision`] returns ahead of the environment. Errors on a value
+/// outside `0 ≤ p ≤ 1e-8`.
+pub fn set_eri_precision(value: Option<f64>) -> Result<(), String> {
+    let bits = match value {
+        Some(v) => {
+            (ERI_PRECISION_VAR.validate)(&v).map_err(|e| format!("eri_precision {v:e}: {e}"))?;
+            v.to_bits()
+        }
+        None => UNSET,
+    };
+    ERI_PRECISION_OVERRIDE.store(bits, std::sync::atomic::Ordering::Relaxed);
+    Ok(())
+}
+
+/// Sentinel for "no explicit precision" (a NaN payload no caller can set,
+/// because validation rejects NaN).
+const UNSET: u64 = u64::MAX;
+static ERI_PRECISION_OVERRIDE: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(UNSET);
+
+/// The descriptor behind [`eri_precision`].
+pub static ERI_PRECISION_VAR: ferric_core::config::ConfigVar<f64> =
+    ferric_core::config::ConfigVar {
+        env_name: "FERRIC_ERI_PRECISION",
+        default: ERI_PRECISION,
+        parse: |s| s.parse::<f64>().map_err(|e| e.to_string()),
+        validate: |v| {
+            (v.is_finite() && (0.0..=1e-8).contains(v))
+                .then_some(())
+                .ok_or_else(|| "must be finite with 0 <= p <= 1e-8".to_string())
+        },
+    };
+
 /// A pool of 2e engines, one slot per rayon worker thread (plus one spare for
 /// the calling thread / non-rayon contexts at index `len-1`).
 pub struct EnginePool {
@@ -98,5 +154,52 @@ impl EnginePool {
         let slot = idx.min(self.engines.len() - 1);
         let mut eng = self.engines[slot].lock().unwrap();
         f(&mut eng)
+    }
+}
+
+#[cfg(test)]
+mod eri_precision_tests {
+    use super::{ERI_PRECISION, ERI_PRECISION_VAR};
+
+    #[test]
+    fn explicit_beats_env_beats_default() {
+        let env = |v: Option<&'static str>| {
+            move |k: &str| {
+                (k == "FERRIC_ERI_PRECISION")
+                    .then_some(v)
+                    .flatten()
+                    .map(str::to_string)
+            }
+        };
+        assert_eq!(
+            ERI_PRECISION_VAR.resolve(None, env(None)).unwrap().value,
+            ERI_PRECISION
+        );
+        assert_eq!(
+            ERI_PRECISION_VAR
+                .resolve(None, env(Some("1e-16")))
+                .unwrap()
+                .value,
+            1e-16
+        );
+        assert_eq!(
+            ERI_PRECISION_VAR
+                .resolve(Some(0.0), env(Some("1e-16")))
+                .unwrap()
+                .value,
+            0.0
+        );
+    }
+
+    #[test]
+    fn out_of_range_and_malformed_are_errors() {
+        let env = |v: &'static str| move |_: &str| Some(v.to_string());
+        for bad in ["1e-6", "-1e-20", "nan", "inf", "abc"] {
+            assert!(
+                ERI_PRECISION_VAR.resolve(None, env(bad)).is_err(),
+                "{bad} accepted"
+            );
+        }
+        assert!(ERI_PRECISION_VAR.resolve(Some(1e-7), env("1e-16")).is_err());
     }
 }

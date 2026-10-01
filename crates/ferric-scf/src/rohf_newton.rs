@@ -78,7 +78,7 @@ pub fn rohf_newton_step(
     let pool = EnginePool::new(
         inp.bounds.op,
         inp.prep,
-        ferric_integrals::engine_pool::ERI_PRECISION,
+        ferric_integrals::engine_pool::eri_precision(),
     )?;
 
     // Pack RHS −g in MO basis from the three blocks.

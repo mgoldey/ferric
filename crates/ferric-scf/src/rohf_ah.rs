@@ -117,7 +117,7 @@ pub fn rohf_ah_step(
     let pool = EnginePool::new(
         base.bounds.op,
         base.prep,
-        ferric_integrals::engine_pool::ERI_PRECISION,
+        ferric_integrals::engine_pool::eri_precision(),
     )?;
 
     // 2. Build the augmented matvec closure. Davidson expects the closure

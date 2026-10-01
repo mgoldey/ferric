@@ -1435,7 +1435,11 @@ pub fn oo_ri_mp2(
     // coefficients C do), instead of build_jk constructing a fresh pool per
     // call. Reduction order is unchanged, so results stay bit-identical across
     // thread counts.
-    let pool = EnginePool::new(bounds.op, obs, ferric_integrals::engine_pool::ERI_PRECISION)?;
+    let pool = EnginePool::new(
+        bounds.op,
+        obs,
+        ferric_integrals::engine_pool::eri_precision(),
+    )?;
 
     // Start from converged RHF orbitals. `c` is the solver's own frame; it is
     // kept continuous across iterations (DIIS mixes successive `c`s), while
@@ -1727,7 +1731,11 @@ pub fn energy_at_kappa(
     let ao = OoRiMp2AoTensors::build(obs, dfbs, op)?;
     let u = cayley_rotation(kappa)?;
     let c_rot = c_init.dot(&u);
-    let pool = EnginePool::new(bounds.op, obs, ferric_integrals::engine_pool::ERI_PRECISION)?;
+    let pool = EnginePool::new(
+        bounds.op,
+        obs,
+        ferric_integrals::engine_pool::eri_precision(),
+    )?;
     let point = evaluate_point(
         obs,
         bounds,
@@ -1893,7 +1901,8 @@ mod tests {
         let orb = OrbitalSpace::new(nocc, nvir, nocc_total, first_occ);
         let h = oneelectron::hcore(&obs);
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let pool = EnginePool::new(op, &obs, ferric_integrals::engine_pool::ERI_PRECISION).unwrap();
+        let pool =
+            EnginePool::new(op, &obs, ferric_integrals::engine_pool::eri_precision()).unwrap();
         let (_e_hf, f_ao, _) = compute_hf_energy(
             &obs,
             &bounds,
@@ -1965,7 +1974,8 @@ mod tests {
         let c = rhf.mos_r();
         let h = oneelectron::hcore(&obs);
         let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
-        let pool = EnginePool::new(op, &obs, ferric_integrals::engine_pool::ERI_PRECISION).unwrap();
+        let pool =
+            EnginePool::new(op, &obs, ferric_integrals::engine_pool::eri_precision()).unwrap();
         let (_e_hf, f_ao, _) = compute_hf_energy(
             &obs,
             &bounds,
@@ -2152,7 +2162,7 @@ mod tests {
             let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
             let ao = OoRiMp2AoTensors::build_with_budget(&obs, &dfbs, op, usize::MAX).unwrap();
             let pool =
-                EnginePool::new(op, &obs, ferric_integrals::engine_pool::ERI_PRECISION).unwrap();
+                EnginePool::new(op, &obs, ferric_integrals::engine_pool::eri_precision()).unwrap();
             let h = oneelectron::hcore(&obs);
             let nbas = obs.nbasis();
             let nocc_total = mol.nelec() as usize / 2;
@@ -2729,7 +2739,8 @@ mod tests {
         );
 
         // MP2 energy + b_ov identical.
-        let pool = EnginePool::new(op, &obs, ferric_integrals::engine_pool::ERI_PRECISION).unwrap();
+        let pool =
+            EnginePool::new(op, &obs, ferric_integrals::engine_pool::eri_precision()).unwrap();
         let (_e_hf, f_ao, _) = compute_hf_energy(
             &obs,
             &bounds,
@@ -2775,7 +2786,8 @@ mod tests {
         let c = rhf.mos_r();
         let h = oneelectron::hcore(&obs);
         let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
-        let pool = EnginePool::new(op, &obs, ferric_integrals::engine_pool::ERI_PRECISION).unwrap();
+        let pool =
+            EnginePool::new(op, &obs, ferric_integrals::engine_pool::eri_precision()).unwrap();
         let (_e_hf, f_ao, _) = compute_hf_energy(
             &obs,
             &bounds,
@@ -2968,7 +2980,8 @@ mod tests {
         let c = rhf.mos_r();
         let h = oneelectron::hcore(&obs);
         let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
-        let pool = EnginePool::new(op, &obs, ferric_integrals::engine_pool::ERI_PRECISION).unwrap();
+        let pool =
+            EnginePool::new(op, &obs, ferric_integrals::engine_pool::eri_precision()).unwrap();
         let (_e_hf, f_ao, _) = compute_hf_energy(
             &obs,
             &bounds,

@@ -87,7 +87,7 @@ pub fn uhf_newton_step(
     let pool = EnginePool::new(
         inp.bounds.op,
         inp.prep,
-        ferric_integrals::engine_pool::ERI_PRECISION,
+        ferric_integrals::engine_pool::eri_precision(),
     )?;
 
     // Gradient blocks g^σ_{ai} = F^σ_{ai}  (rows = virt, cols = occ).
