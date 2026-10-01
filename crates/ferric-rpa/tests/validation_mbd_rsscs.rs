@@ -1,4 +1,4 @@
-//! VALIDATION tier — MBD@rsSCS dispersion energy
+//! VALIDATION tier — MBD@rsSCS dispersion energy and nuclear gradient
 //! (`ferric_rpa::dispersion::mbd_rsscs`).
 //!
 //! ```text
@@ -40,6 +40,13 @@
 //! | front door (Z, ratios) vs reference TS α/C6/R | ~1e-16 | `TOL_TS` 1e-14 |
 //! | α₀, C6, R_vdW, ω ^rsSCS vs pymbd and libMBD (rel) | ~1e-14 | `TOL_RSSCS_PARAMS` 1e-12 |
 //! | E vs pymbd and libMBD (rel) | ~1e-12 | `TOL_RSSCS_E` 1e-10 |
+//! | dE/dR (ratios fixed) vs libMBD `force=True` (abs, Ha/Bohr) | 6.2e-16 | `TOL_RSSCS_GRAD_ABS` 1e-14 |
+//!
+//! The gradient reference is libMBD's analytic gradient stored as dE/dR; the
+//! generator decides libMBD's sign convention by a central FD of libMBD's own
+//! energy and stores that check (`gradient_fd_check`). ferric's gradient is
+//! the reverse-mode adjoint of its own forward pass (unit-tested against FD
+//! in `mbd_rsscs.rs`), so this is an independent construction.
 //!
 //! # CONTROLS (always on)
 //!
@@ -57,13 +64,15 @@
 //! * D — `alpha_0_rsscs = a_dyn[0]` → `a_dyn[1]`.
 //! * E — `erf_exact` → the A&S approximation (predicted ~1e-7 rel miss).
 //! * F — `.cbrt()` → `.sqrt()` in `r_vdw_rsscs`.
+//! * G — in `rsscs_backward`, drop the `+ g[(3 * b + j, 3 * a + i)]` (the
+//!   (B,A) block) or the `- fermi` R-derivative in step 4 (gradient test).
 
 use std::path::{Path, PathBuf};
 
 use ferric_rpa::dispersion::free_atom_ref::ts_free_atom_r_vdw;
 use ferric_rpa::dispersion::mbd_rsscs::{
-    mbd_freq_grid, mbd_rsscs_energy, mbd_rsscs_energy_from_params, MbdAtomParams, MbdRsscsConfig,
-    MbdRsscsResult,
+    mbd_freq_grid, mbd_rsscs_energy, mbd_rsscs_energy_from_params, mbd_rsscs_gradient,
+    MbdAtomParams, MbdRsscsConfig, MbdRsscsResult,
 };
 use serde_json::Value;
 
@@ -83,6 +92,10 @@ const TOL_GRID: f64 = 1e-12;
 const TOL_TS: f64 = 1e-14;
 const TOL_RSSCS_PARAMS: f64 = 1e-12;
 const TOL_RSSCS_E: f64 = 1e-10;
+/// Absolute bar (Hartree/Bohr) on ferric dE/dR vs libMBD. Measured max
+/// 6.2e-16 over 9 systems × 2 β; the negated-reference control misses by
+/// ≥ 2.0e-5 (CH4).
+const TOL_RSSCS_GRAD_ABS: f64 = 1e-14;
 const MUST_MISS: f64 = 1000.0;
 const RATIO_KICK: f64 = 1e-4;
 const BETA_KICK_MIN: f64 = 0.05;
@@ -380,5 +393,76 @@ fn mbd_rsscs_matches_pymbd_and_libmbd() {
             rel(energies[0], energies[1]),
             BETA_KICK_MIN,
         );
+    }
+}
+
+/// ferric's analytic MBD@rsSCS nuclear gradient (volume ratios fixed) vs
+/// libMBD's (`force=True`, stored as dE/dR after the generator's FD
+/// convention check), both β.
+///
+/// CONTROL: the same comparison against the NEGATED reference must miss by
+/// far more than the bar — pins the dE/dR (not force) convention and proves
+/// the reference is not ~0.
+#[test]
+#[ignore = "validation: MBD@rsSCS gradient — libMBD force=True with identical inputs"]
+fn mbd_rsscs_gradient_matches_libmbd() {
+    for &(system, basis) in SYSTEMS {
+        let r = load(&format!("{system}_{basis}"));
+        let ctx0 = format!("{system}/{basis}");
+        let inp = inputs(&r, &ctx0);
+        for beta in [0.83, 0.85] {
+            let ctx = format!("{ctx0} beta={beta}");
+            let p = run_ptr(&r, beta, &ctx);
+            let kind = at(&r, &format!("{p}/gradient_fd_check/libmbd_array_is"), &ctx);
+            eprintln!(
+                "{ctx}: libMBD array convention {kind}, generator FD residual {:.2e}",
+                num(
+                    &r,
+                    &format!("{p}/gradient_fd_check/max_abs_residual_vs_fd"),
+                    &ctx
+                )
+            );
+            let rows = arr(&r, &format!("{p}/gradient"), &ctx);
+            assert_eq!(rows.len(), inp.z.len(), "{ctx}: gradient rows");
+            let want: Vec<f64> = (0..rows.len())
+                .flat_map(|i| {
+                    let row = vec1(&r, &format!("{p}/gradient/{i}"), &ctx);
+                    assert_eq!(row.len(), 3, "{ctx}: gradient row {i}");
+                    row
+                })
+                .collect();
+            let cfg = MbdRsscsConfig::with_beta(beta);
+            let (g, _) = mbd_rsscs_gradient(&inp.z, &inp.pos, &inp.ratios, &cfg).unwrap();
+            let got: Vec<f64> = g.d_positions.iter().flatten().copied().collect();
+            let d = got
+                .iter()
+                .zip(&want)
+                .fold(0.0_f64, |m, (a, b)| m.max((a - b).abs()));
+            check(
+                &ctx,
+                "dE/dR vs libMBD (abs, Ha/Bohr)",
+                d,
+                TOL_RSSCS_GRAD_ABS,
+            );
+            let d_neg = got
+                .iter()
+                .zip(&want)
+                .fold(0.0_f64, |m, (a, b)| m.max((a + b).abs()));
+            must_miss(
+                &ctx,
+                "dE/dR vs NEGATED libMBD",
+                d_neg,
+                MUST_MISS * TOL_RSSCS_GRAD_ABS,
+            );
+            check(
+                &ctx,
+                "gradient's energy vs libMBD (rel)",
+                rel(
+                    g.result.energy,
+                    num(&r, &format!("{p}/energy_libmbd"), &ctx),
+                ),
+                TOL_RSSCS_E,
+            );
+        }
     }
 }

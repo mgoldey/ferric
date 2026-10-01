@@ -12,12 +12,15 @@
 pub mod free_atom_ref;
 pub mod mbd;
 pub mod mbd_rsscs;
+pub mod mbd_scf;
 
 pub use mbd::mbd_dynamic_polarizability;
 pub use mbd_rsscs::{
-    mbd_rsscs_beta_for_functional, mbd_rsscs_energy, mbd_rsscs_energy_from_params, MbdAtomParams,
-    MbdRsscsConfig, MbdRsscsResult,
+    mbd_rsscs_beta_for_functional, mbd_rsscs_energy, mbd_rsscs_energy_from_params,
+    mbd_rsscs_gradient, mbd_rsscs_gradient_from_params, MbdAtomParams, MbdRsscsConfig,
+    MbdRsscsGradient, MbdRsscsResult,
 };
+pub use mbd_scf::{live_free_atom_volume, mbd_rsscs_for_density, MbdFreeAtomCache, MbdScfResult};
 
 use ndarray::Array2;
 

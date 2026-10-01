@@ -46,6 +46,12 @@ Fortran (variant='rsscs', with its alpha_0_scs/C6_scs intermediates). Stored
 for beta = 0.83 (PBE) and 0.85 (PBE0/HSE06): alpha_0^rsSCS, C6^rsSCS,
 R_vdw^rsSCS, omega^rsSCS, E; plus E on 30- and 60-node grids (grid
 sensitivity, pymbd primitives — pymbd.mbd_energy hard-codes nfreq=15).
+Each run also stores `gradient`: libmbd's analytic nuclear gradient
+(`mbd_energy(..., variant='rsscs', force=True)`) as dE/dR (N x 3, Hartree/Bohr,
+alpha_0/C6/R_vdw i.e. the volume ratios held FIXED). Whether libmbd's array is
+dE/dR or the force -dE/dR is DECIDED HERE by a central finite difference of
+libmbd's own energy (h = RSSCS_GRAD_FD_H Bohr, every component), asserted, and
+recorded with its residuals in `gradient_fd_check`.
 R_vdw(TS) is ferric's `ts_free_atom_r_vdw` table, parsed from
 free_atom_ref.rs and required equal to pymbd's `R_vdw(TS)` for every Z=1..54.
 
@@ -143,6 +149,12 @@ RSSCS_BETA = 0.83
 # MBD@rsSCS targets: PBE 0.83, PBE0/HSE06 0.85 (Ambrosetti 2014).
 RSSCS_BETAS = (0.83, 0.85)
 RSSCS_GRID_SENSITIVITY_N = (30, 60)
+# Central-FD step (Bohr) for the libmbd gradient sign/convention check. FD error
+# ~ h^2 E'''/6 + eps*sum(omega)/h ~ 1e-11 Ha/Bohr at h = 1e-4.
+RSSCS_GRAD_FD_H = 1e-4
+# The FD must reproduce libmbd's gradient (in the decided convention) to this
+# fraction of max|FD|, and miss the opposite convention by > 1.0 of it.
+RSSCS_GRAD_FD_REL_TOL = 1e-4
 
 # Model anchors.
 ANCHOR_ELEMENTS = (1, 6, 7, 8)
@@ -507,6 +519,64 @@ def ratios_from_pyscf_lattice(system, basis):
 # ---------------------------------------------------------------------------
 
 
+def libmbd_rsscs_gradient(xyz, alpha, c6, r_vdw, beta, e_ref, ctx):
+    """libmbd's MBD@rsSCS nuclear gradient, returned as dE/dR (N x 3).
+
+    The convention of libmbd's `force=True` array (dE/dR or -dE/dR) is not
+    assumed: it is decided by a central FD of libmbd's own energy and the
+    decision is asserted. Returns (dE/dR, check-dict)."""
+    import numpy as np
+    from pymbd.fortran import MBDGeom
+
+    def energy(x):
+        return float(
+            MBDGeom(x, n_freq=PYMBD_NFREQ).mbd_energy(
+                alpha, c6, r_vdw, beta=beta, variant="rsscs"
+            )
+        )
+
+    with MBDGeom(xyz, n_freq=PYMBD_NFREQ) as g:
+        e_f, arr = g.mbd_energy(alpha, c6, r_vdw, beta=beta, variant="rsscs", force=True)
+    arr = np.asarray(arr, dtype=float)
+    if arr.shape != xyz.shape:
+        raise RuntimeError(f"{ctx}: libmbd gradient shape {arr.shape} != {xyz.shape}")
+    h = RSSCS_GRAD_FD_H
+    fd = np.zeros_like(xyz)
+    for a in range(xyz.shape[0]):
+        for x in range(3):
+            xp = xyz.copy()
+            xm = xyz.copy()
+            xp[a, x] += h
+            xm[a, x] -= h
+            fd[a, x] = (energy(xp) - energy(xm)) / (2 * h)
+    scale = float(np.max(np.abs(fd)))
+    res_grad = float(np.max(np.abs(arr - fd)))
+    res_force = float(np.max(np.abs(arr + fd)))
+    if res_grad < RSSCS_GRAD_FD_REL_TOL * scale and res_force > scale:
+        kind, de_dr, res, res_other = "dE/dR", arr, res_grad, res_force
+    elif res_force < RSSCS_GRAD_FD_REL_TOL * scale and res_grad > scale:
+        kind, de_dr, res, res_other = "force (-dE/dR)", -arr, res_force, res_grad
+    else:
+        raise RuntimeError(
+            f"{ctx}: libmbd gradient matches neither dE/dR nor -dE/dR by FD "
+            f"(max|grad-fd|={res_grad:.2e}, max|grad+fd|={res_force:.2e}, max|fd|={scale:.2e})"
+        )
+    if not abs(e_f - e_ref) <= 1e-12 * abs(e_ref):
+        raise RuntimeError(
+            f"{ctx}: libmbd energy with force=True {e_f!r} != without {e_ref!r}"
+        )
+    chk = {
+        "libmbd_array_is": kind,
+        "fd_step_bohr": h,
+        "max_abs_fd": scale,
+        "max_abs_residual_vs_fd": res,
+        "max_abs_residual_opposite_convention": res_other,
+        "energy_with_force": float(e_f),
+    }
+    return de_dr, chk
+
+
+
 def gen_system(system, basis, source, tab, r_tab, overrides) -> Path:
     import numpy as np
     import pymbd
@@ -667,6 +737,9 @@ def gen_system(system, basis, source, tab, r_tab, overrides) -> Path:
         for k, v in chk.items():
             if not v < 1e-10:
                 raise RuntimeError(f"{key} beta={beta}: rsSCS constructions disagree {k}={v:.2e}")
+        grad, grad_chk = libmbd_rsscs_gradient(
+            xyz, alpha, c6, r_vdw_ts, beta, e_lb, f"{key} beta={beta}"
+        )
         sens = {}
         for nf in RSSCS_GRID_SENSITIVITY_N:
             e_n = rsscs_np(xyz, alpha, c6, r_vdw_ts, beta, nf)[0]
@@ -683,6 +756,8 @@ def gen_system(system, basis, source, tab, r_tab, overrides) -> Path:
                 "alpha_0_rsscs_libmbd": tolist(a_lb),
                 "c6_rsscs_libmbd": tolist(c_lb),
                 "h_min_eigenvalue": evmin,
+                "gradient": tolist(grad),
+                "gradient_fd_check": grad_chk,
                 "grid_sensitivity": sens,
                 "measurements": chk,
             }
@@ -728,6 +803,9 @@ def gen_system(system, basis, source, tab, r_tab, overrides) -> Path:
                 "rsscs_targets": f"MBD@rsSCS beta in {RSSCS_BETAS}, a=6, pymbd 15-node grid; pymbd "
                 "python + libmbd variant='rsscs' (alpha_0_scs/C6_scs intermediates); R_vdw = "
                 "ferric ts_free_atom_r_vdw * ratio^(1/3)",
+                "rsscs_gradient": "libmbd variant='rsscs' force=True, stored as dE/dR (Hartree/Bohr, "
+                "TS alpha_0/C6/R_vdw fixed); convention decided by central FD of libmbd's energy "
+                f"(h={RSSCS_GRAD_FD_H} Bohr), see runs[*].gradient_fd_check",
                 "ts_c6": "Casimir-Polder quadrature on the stored grids + closed-form combination rule",
                 "free_atom_table": "ferric ts_free_atom (parsed from free_atom_ref.rs) == pymbd vdw_params TS",
             },
@@ -754,6 +832,8 @@ def gen_system(system, basis, source, tab, r_tab, overrides) -> Path:
             f"{key:18s} rsSCS beta={run['beta']}: E={run['energy_pymbd']:.12e} "
             f"libmbd-vs-pymbd E={m['libmbd_vs_pymbd_energy_rel']:.1e} "
             f"a0={m['libmbd_vs_pymbd_alpha0_max_rel']:.1e} c6={m['libmbd_vs_pymbd_c6_max_rel']:.1e} "
+            f"grad[{run['gradient_fd_check']['libmbd_array_is']}] "
+            f"vs FD={run['gradient_fd_check']['max_abs_residual_vs_fd']:.1e} "
             "grid "
             + " ".join(
                 f"n{k}:{v['rel_vs_15']:.1e}" for k, v in run["grid_sensitivity"].items()

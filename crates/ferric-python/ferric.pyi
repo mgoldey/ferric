@@ -983,11 +983,24 @@ class DftResult:
 
     @property
     def e_dispersion(self) -> float | None:
-        """D3(BJ) dispersion correction in Hartree, or None if not requested.
+        """Dispersion correction (D3(BJ) or MBD@rsSCS) in Hartree, or None if
+        not requested.
 
         `None` means UNEVALUATED, not zero: a DFT energy with no dispersion and
         one whose dispersion is small are different claims.
         """
+        ...
+
+    @property
+    def dispersion_model(self) -> str | None:
+        """`"D3(BJ)"`, `"MBD@rsSCS"`, or None when dispersion was not requested."""
+        ...
+
+    @property
+    def volume_ratios(self) -> list[float] | None:
+        """MBD@rsSCS only: per-atom Hirshfeld volume ratios v_A / v_A^free of
+        the converged density (the input `mbd_rsscs_energy` takes). None for
+        D3(BJ) or no dispersion."""
         ...
 
     @property
@@ -1732,11 +1745,18 @@ def run_dft(
 ) -> DftResult:
     """Kohn-Sham DFT (closed-shell).
 
-    `dispersion` adds an empirical dispersion correction to the SCF energy:
-    `"d3bj"` uses the damping parameters published for `functional`, and
-    `"d3bj(<name>)"` uses `<name>`'s instead. `None` (the default) applies no
-    correction and leaves the energy exactly as it was. Any other value raises
-    -- there is no spelling that means "compute a zero correction".
+    `dispersion` adds a dispersion correction to the SCF energy (and, with
+    `with_gradient=True`, its analytic gradient to the gradient):
+    `"d3bj"` is D3(BJ) with the damping parameters published for
+    `functional`, `"d3bj(<name>)"` uses `<name>`'s instead; `"mbd"` is
+    MBD@rsSCS on Hirshfeld volume ratios of the converged density with the
+    beta published for `functional` (PBE, PBE0, HSE06), `"mbd(<name>)"` uses
+    `<name>`'s beta. Matching is case-insensitive. The MBD@rsSCS gradient
+    holds the occupied orbitals fixed in the volume term (kept orthonormal as
+    the basis moves); the orbital relaxation of the volumes is not included. `None` (the default) applies no correction and leaves the energy
+    exactly as it was. Any other value, or a functional with no published
+    parameters, raises ValueError -- there is no spelling that means "compute
+    a zero correction".
 
     `grid_radial` / `grid_angular` / `grid_prune` set the main XC grid. All
     `None` (the default) is the 75x110 unpruned grid, unchanged. `grid_angular`
@@ -1784,11 +1804,18 @@ def run_ksdft(
 ) -> DftResult:
     """Kohn-Sham DFT (closed-shell). Alias of run_dft (same grid_* kwargs).
 
-    `dispersion` adds an empirical dispersion correction to the SCF energy:
-    `"d3bj"` uses the damping parameters published for `functional`, and
-    `"d3bj(<name>)"` uses `<name>`'s instead. `None` (the default) applies no
-    correction and leaves the energy exactly as it was. Any other value raises
-    -- there is no spelling that means "compute a zero correction".
+    `dispersion` adds a dispersion correction to the SCF energy (and, with
+    `with_gradient=True`, its analytic gradient to the gradient):
+    `"d3bj"` is D3(BJ) with the damping parameters published for
+    `functional`, `"d3bj(<name>)"` uses `<name>`'s instead; `"mbd"` is
+    MBD@rsSCS on Hirshfeld volume ratios of the converged density with the
+    beta published for `functional` (PBE, PBE0, HSE06), `"mbd(<name>)"` uses
+    `<name>`'s beta. Matching is case-insensitive. The MBD@rsSCS gradient
+    holds the occupied orbitals fixed in the volume term (kept orthonormal as
+    the basis moves); the orbital relaxation of the volumes is not included. `None` (the default) applies no correction and leaves the energy
+    exactly as it was. Any other value, or a functional with no published
+    parameters, raises ValueError -- there is no spelling that means "compute
+    a zero correction".
     """
     ...
 
@@ -1859,7 +1886,8 @@ def mbd_rsscs_energy(
     """MBD@rsSCS dispersion energy (Ambrosetti et al. 2014), standalone.
 
     `volume_ratios` are per-atom Hirshfeld volume ratios V_A/V_free, one per
-    atom. Pass exactly one of `beta` or `functional` (PBE 0.83, PBE0 0.85,
+    atom (`run_dft(dispersion="mbd")` reports those of its converged density
+    as `DftResult.volume_ratios`). Pass exactly one of `beta` or `functional` (PBE 0.83, PBE0 0.85,
     HSE06 0.85); an unlisted functional raises ValueError. Ghost atoms, Z > 54
     and a polarization catastrophe raise.
     """

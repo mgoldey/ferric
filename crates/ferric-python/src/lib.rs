@@ -5608,14 +5608,22 @@ struct PyDftResult {
     /// The Kohn-Sham SCF energy alone, with no dispersion correction.
     #[pyo3(get)]
     e_scf: f64,
-    /// The D3(BJ) dispersion correction in Hartree, or `None` when dispersion
-    /// was not requested.
+    /// The dispersion correction (D3(BJ) or MBD@rsSCS) in Hartree, or `None`
+    /// when dispersion was not requested.
     ///
     /// `None` means UNEVALUATED, not zero. A DFT energy with no dispersion and
     /// one whose dispersion happens to be small are different claims, and a
     /// 0.0 here would assert the second while meaning the first.
     #[pyo3(get)]
     e_dispersion: Option<f64>,
+    /// Which dispersion model `e_dispersion` came from: `"D3(BJ)"`,
+    /// `"MBD@rsSCS"`, or `None` when dispersion was not requested.
+    #[pyo3(get)]
+    dispersion_model: Option<String>,
+    /// MBD@rsSCS only: the per-atom Hirshfeld volume ratios v_A / v_A^free of
+    /// the converged density that scaled the TS inputs. `None` otherwise.
+    #[pyo3(get)]
+    volume_ratios: Option<Vec<f64>>,
     #[pyo3(get)]
     converged: bool,
     vxc_data: Array2<f64>,
@@ -5853,6 +5861,11 @@ fn run_dft(
     cfg.external_potential = build_external_potential(point_charges, external_field);
     let xc_name = functional.unwrap_or("LDA").to_string();
     cfg.xc = Some(xc_name.clone());
+    // Resolve `dispersion=` BEFORE the SCF: an unknown spelling or a
+    // functional with no published parameters must not cost an SCF first.
+    let dispersion = dispersion
+        .map(|spec| resolve_dispersion(spec, &xc_name))
+        .transpose()?;
     // RI-J on by DEFAULT (PySCF's density_fit convention), now OVERRIDABLE.
     // `run_rhf` always exposed these; `run_dft` did not, so there was no way
     // to request exact Coulomb -- and a caller comparing against an
@@ -5919,6 +5932,38 @@ fn run_dft(
         }));
     }
     let nbf = rhf.mos_alpha.nrows();
+    // Dispersion, opt-in: energy, and its gradient when one is requested,
+    // evaluated ONCE from the same resolved parameters (and, for MBD@rsSCS,
+    // the same converged density), so `total_energy` and `gradient()` cannot
+    // come from different surfaces.
+    //
+    // `dispersion=None` leaves the energy BYTE-IDENTICAL to before this
+    // feature existed -- `e_dispersion` is then None (UNEVALUATED), never 0.0,
+    // so a caller cannot mistake "not asked for" for "computed and found to be
+    // zero". Any failure (unknown functional, unparameterised element) is
+    // raised, never swallowed into a neutral-looking zero.
+    let disp = match &dispersion {
+        None => None,
+        Some(spec) => {
+            let bs_owned = basis_set.inner.clone();
+            let density = rhf.density_total();
+            Some(
+                py.allow_threads(|| {
+                    evaluate_dispersion(
+                        spec,
+                        &ctx,
+                        &emol,
+                        &bs_owned,
+                        op,
+                        &cfg,
+                        density,
+                        with_gradient,
+                    )
+                })
+                .map_err(make_err)?,
+            )
+        }
+    };
     let gradient_data = if with_gradient {
         let mut g = ks_gradient_closed(
             &mol.inner,
@@ -5931,26 +5976,29 @@ fn run_dft(
             cfg.external_potential.as_ref(),
         )
         .map_err(make_err)?;
-        // D3(BJ) is additive in the ENERGY, so it is additive in the gradient.
-        // Adding it here rather than returning the bare KS gradient is what
-        // makes `total_energy` and `gradient()` describe the SAME surface --
-        // an optimizer handed a mismatched pair converges to the wrong
-        // geometry with nothing to indicate it.
-        if let Some(spec) = &dispersion {
-            let which = resolve_d3_functional(spec, &xc_name)?;
-            let params = ferric_d3::d3bj_params_for_functional(&which).map_err(make_err)?;
-            let dg =
-                ferric_d3::d3bj_gradient_for_molecule(&mol.inner, &params).map_err(make_err)?;
-            if dg.len() != g.nrows() {
+        // Dispersion is additive in the ENERGY, so it is additive in the
+        // gradient. Adding it here rather than returning the bare KS gradient
+        // is what makes `total_energy` and `gradient()` describe the SAME
+        // surface -- an optimizer handed a mismatched pair converges to the
+        // wrong geometry with nothing to indicate it.
+        if let Some(d) = &disp {
+            let dg = d.gradient.as_ref().ok_or_else(|| {
+                make_err(ferric_core::FerricError::General(format!(
+                    "{} returned no gradient although one was requested",
+                    d.model
+                )))
+            })?;
+            if dg.nrows() != g.nrows() {
                 return Err(make_err(ferric_core::FerricError::General(format!(
-                    "D3 gradient has {} rows but the KS gradient has {}",
-                    dg.len(),
+                    "{} gradient has {} rows but the KS gradient has {}",
+                    d.model,
+                    dg.nrows(),
                     g.nrows()
                 ))));
             }
-            for (k, row) in dg.iter().enumerate() {
+            for k in 0..dg.nrows() {
                 for a in 0..3 {
-                    g[[k, a]] += row[a];
+                    g[[k, a]] += dg[[k, a]];
                 }
             }
         }
@@ -5958,25 +6006,17 @@ fn run_dft(
     } else {
         None
     };
-    // D3(BJ) dispersion, opt-in.
-    //
-    // `dispersion=None` leaves the energy BYTE-IDENTICAL to before this
-    // feature existed -- `e_dispersion` is then None (UNEVALUATED), never 0.0,
-    // so a caller cannot mistake "not asked for" for "computed and found to be
-    // zero". Any failure (unknown functional, unparameterised element) is
-    // raised, never swallowed into a neutral-looking zero.
-    let e_dispersion = match &dispersion {
-        None => None,
-        Some(spec) => {
-            let which = resolve_d3_functional(spec, &xc_name)?;
-            let params = ferric_d3::d3bj_params_for_functional(&which).map_err(make_err)?;
-            Some(ferric_d3::d3bj_energy_for_molecule(&mol.inner, &params).map_err(make_err)?)
-        }
+    let e_dispersion = disp.as_ref().map(|d| d.energy);
+    let (dispersion_model, volume_ratios) = match disp {
+        None => (None, None),
+        Some(d) => (Some(d.model.to_string()), d.volume_ratios),
     };
     Ok(PyDftResult {
         total_energy: rhf.energy + e_dispersion.unwrap_or(0.0),
         e_scf: rhf.energy,
         e_dispersion,
+        dispersion_model,
+        volume_ratios,
         converged: rhf.converged,
         vxc_data: Array2::<f64>::zeros((nbf, nbf)),
         density_data: rhf.density_total.clone(),
@@ -6005,43 +6045,136 @@ fn dft_grid_point_count(
     ferric_dft::grid::atomic_grid_point_count(&mol.inner, &cfg, cfg.prune).map_err(make_err)
 }
 
-/// Resolve a `dispersion=` spec to the functional whose D3(BJ) parameters to use.
+/// A resolved `dispersion=` request: the model and the functional whose
+/// published parameters it uses.
+enum DispersionSpec {
+    /// Grimme D3(BJ) with `<functional>`'s damping parameters.
+    D3Bj(String),
+    /// MBD@rsSCS with `<functional>`'s published range-separation β.
+    Mbd(String),
+}
+
+/// Resolve a `dispersion=` spec.
 ///
 /// Accepts exactly what the CLI's `[dft] dispersion` accepts, so the two
-/// surfaces cannot drift apart:
-///   * `"d3bj"` / `"d3(bj)"` -- the running functional's own parameters
-///   * `"d3bj(<name>)"` -- `<name>`'s parameters instead, for when ferric's XC
-///     name and the D3 fit's name differ
+/// surfaces cannot drift apart (case-insensitive):
+///   * `"d3bj"` / `"d3(bj)"` -- D3(BJ) with the running functional's parameters
+///   * `"d3bj(<name>)"` -- D3(BJ) with `<name>`'s parameters instead, for when
+///     ferric's XC name and the D3 fit's name differ
+///   * `"mbd"` -- MBD@rsSCS with the running functional's published β
+///   * `"mbd(<name>)"` -- MBD@rsSCS with `<name>`'s published β
 ///
-/// Anything else is an error, never a silently-skipped correction.
+/// Anything else is an error, never a silently-skipped correction, and so is
+/// a functional with no published D3(BJ) fit or MBD β (checked here, before
+/// any SCF).
 ///
-/// SHARED between the energy and the gradient on purpose. When these were two
-/// inline copies it was possible for a future edit to make them resolve to
-/// DIFFERENT functionals, which would give an energy and a gradient from
-/// different surfaces -- the exact inconsistency the `with_gradient` rejection
-/// used to exist to prevent.
-fn resolve_d3_functional(spec: &str, xc_name: &str) -> PyResult<String> {
-    let lower = spec.to_ascii_lowercase();
-    if lower == "d3bj" || lower == "d3(bj)" {
-        return Ok(xc_name.to_string());
-    }
-    if let Some(inner) = lower
-        .strip_prefix("d3bj(")
-        .and_then(|r| r.strip_suffix(')'))
-    {
-        let inner = inner.trim();
-        if inner.is_empty() {
-            return Err(make_err(ferric_core::FerricError::General(
-                "dispersion=\"d3bj()\" names no functional".to_string(),
-            )));
+/// SHARED between the energy and the gradient on purpose: one resolution
+/// feeds both, so they cannot come from different surfaces.
+fn resolve_dispersion(spec: &str, xc_name: &str) -> PyResult<DispersionSpec> {
+    let lower = spec.trim().to_ascii_lowercase();
+    let named = |prefix: &str| -> PyResult<Option<String>> {
+        match lower.strip_prefix(prefix).and_then(|r| r.strip_suffix(')')) {
+            None => Ok(None),
+            Some(inner) if inner.trim().is_empty() => Err(pyo3::exceptions::PyValueError::new_err(
+                format!("dispersion=\"{prefix})\" names no functional"),
+            )),
+            Some(inner) => Ok(Some(inner.trim().to_string())),
         }
-        return Ok(inner.to_string());
+    };
+    let value_err =
+        |e: ferric_core::FerricError| pyo3::exceptions::PyValueError::new_err(e.to_string());
+    let d3 = |f: String| -> PyResult<DispersionSpec> {
+        ferric_d3::d3bj_params_for_functional(&f).map_err(value_err)?;
+        Ok(DispersionSpec::D3Bj(f))
+    };
+    let mbd = |f: String| -> PyResult<DispersionSpec> {
+        ferric_rpa::dispersion::mbd_rsscs_beta_for_functional(&f).map_err(value_err)?;
+        Ok(DispersionSpec::Mbd(f))
+    };
+    if lower == "d3bj" || lower == "d3(bj)" {
+        return d3(xc_name.to_string());
     }
-    Err(make_err(ferric_core::FerricError::General(format!(
-        "unknown dispersion scheme {spec:?}; expected \"d3bj\" or \
-         \"d3bj(<functional>)\". Pass dispersion=None for no correction -- \
-         there is no value meaning \"compute zero\"."
-    ))))
+    if lower == "mbd" {
+        return mbd(xc_name.to_string());
+    }
+    if let Some(f) = named("d3bj(")? {
+        return d3(f);
+    }
+    if let Some(f) = named("mbd(")? {
+        return mbd(f);
+    }
+    Err(pyo3::exceptions::PyValueError::new_err(format!(
+        "unknown dispersion scheme {spec:?}; expected \"d3bj\", \"d3(bj)\", \
+         \"d3bj(<functional>)\", \"mbd\" or \"mbd(<functional>)\". Pass \
+         dispersion=None for no correction -- there is no value meaning \"compute zero\"."
+    )))
+}
+
+/// A dispersion correction evaluated at one geometry.
+struct DispersionEval {
+    /// `"D3(BJ)"` or `"MBD@rsSCS"`.
+    model: &'static str,
+    /// Hartree.
+    energy: f64,
+    /// (natoms, 3) Hartree/Bohr, when requested.
+    gradient: Option<Array2<f64>>,
+    /// MBD@rsSCS only: Hirshfeld volume ratios v_A / v_A^free.
+    volume_ratios: Option<Vec<f64>>,
+}
+
+/// Evaluate `spec` at `mol`, given the converged closed-shell SCF's total AO
+/// density (MBD@rsSCS takes its Hirshfeld volumes from it; D3(BJ) does not
+/// use it). With `want_gradient` the analytic gradient is returned too: for
+/// MBD@rsSCS it is the explicit term plus the Hirshfeld-volume term with the
+/// occupied orbitals held fixed (no orbital relaxation of the volumes).
+#[allow(clippy::too_many_arguments)]
+fn evaluate_dispersion(
+    spec: &DispersionSpec,
+    ctx: &ParallelContext,
+    mol: &ferric_core::mol::Molecule,
+    bs: &ferric_core::basis::BasisSet,
+    op: Operator,
+    cfg: &RhfConfig,
+    density_total: &Array2<f64>,
+    want_gradient: bool,
+) -> Result<DispersionEval, ferric_core::FerricError> {
+    match spec {
+        DispersionSpec::D3Bj(functional) => {
+            let params = ferric_d3::d3bj_params_for_functional(functional)?;
+            let energy = ferric_d3::d3bj_energy_for_molecule(mol, &params)?;
+            let gradient = if want_gradient {
+                let rows = ferric_d3::d3bj_gradient_for_molecule(mol, &params)?;
+                let mut g = Array2::<f64>::zeros((rows.len(), 3));
+                for (k, row) in rows.iter().enumerate() {
+                    for a in 0..3 {
+                        g[[k, a]] = row[a];
+                    }
+                }
+                Some(g)
+            } else {
+                None
+            };
+            Ok(DispersionEval {
+                model: "D3(BJ)",
+                energy,
+                gradient,
+                volume_ratios: None,
+            })
+        }
+        DispersionSpec::Mbd(functional) => {
+            use ferric_rpa::dispersion::mbd_rsscs::MbdRsscsConfig;
+            use ferric_rpa::dispersion::mbd_scf::{mbd_rsscs_for_density, MbdFreeAtomCache};
+            let mcfg = MbdRsscsConfig::for_functional(functional)?;
+            let cache = MbdFreeAtomCache::build(ctx, mol, bs, op, cfg)?;
+            let r = mbd_rsscs_for_density(&cache, mol, bs, density_total, &mcfg, want_gradient)?;
+            Ok(DispersionEval {
+                model: "MBD@rsSCS",
+                energy: r.energy,
+                gradient: r.gradient,
+                volume_ratios: Some(r.volume_ratios),
+            })
+        }
+    }
 }
 
 /// Alias under the spec's canonical name. Same surface as `run_dft`.

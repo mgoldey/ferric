@@ -150,9 +150,11 @@ the Fermi function f(R) = 1/(1 + exp(−6(R/(β(R_A + R_B)) − 1))). β is
 functional dependent: PBE 0.83, PBE0 and HSE06 0.85; any other functional
 needs an explicit `beta`. It returns the energy and the screened α₀, C6,
 R_vdW and ω per atom, and raises on a polarization catastrophe (a
-non-positive coupled-oscillator eigenvalue). Energy only: no gradient, no
-periodic systems, not wired into `run_dft` or the CLI. ferric's Python API
-does not expose Hirshfeld volume ratios, so the caller supplies them.
+non-positive coupled-oscillator eigenvalue). No periodic systems. As a
+dispersion correction on a Kohn–Sham SCF it is `[dft] dispersion = "mbd"` /
+`run_dft(dispersion="mbd")`, which take the volume ratios from the converged
+density (reported as `DftResult.volume_ratios`) and add the energy and its
+analytic gradient (see [SCF and DFT](./scf.md#dispersion-correction-mbdrsscs)).
 
 The `argon-c6-rpa-pbe.toml` header records C6(Ar–Ar) = 56.4 a.u. at
 RPA@PBE/aug-cc-pVTZ against the DOSD value 64.3 (−12%). **Which of TS and

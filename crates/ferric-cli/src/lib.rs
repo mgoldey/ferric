@@ -27,33 +27,13 @@ use ferric_mp2::scs::{scs_mp2, scs_mp2_2terfc, ScsMp2Config, ScsMp2TerfcConfig};
 use ferric_rpa::config::{QuadratureConfig, SternheimerConfig};
 use ferric_rpa::{run_pdep_rpa, PdepRpaConfig};
 use ferric_scf::optimize::{
-    optimize_geometry_rohf, optimize_geometry_uhf, optimize_geometry_with_correction,
+    optimize_geometry_rohf, optimize_geometry_uhf, optimize_geometry_with_scf_correction,
     OptimizeConfig,
 };
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::rohf::solve_rohf;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
-
-/// Run `f` on a private single-thread rayon pool.
-///
-/// Free-atom / proatom SCFs are tiny (one atom, ~10-30 basis functions). On the
-/// global multi-thread pool, rayon's per-task coordination overhead dwarfs the
-/// actual Fock-build work — a single S atom at aug-cc-pVDZ took 179 s with
-/// RAYON_NUM_THREADS=8 vs 9.6 s with 1 (18× slower). Since every TS volume and
-/// Hirshfeld proatom triggers such a solve, the penalty made 2nd-row molecules
-/// (h2s, hcl) take 40-60 min. Confining these inner solves to one thread keeps
-/// the big molecular SCF/RPA fully parallel while making the atoms fast.
-fn run_serial<F, R>(f: F) -> R
-where
-    F: FnOnce() -> R + Send,
-    R: Send,
-{
-    match rayon::ThreadPoolBuilder::new().num_threads(1).build() {
-        Ok(pool) => pool.install(f),
-        Err(_) => f(), // if pool creation fails, just run inline
-    }
-}
 
 fn print_usage() {
     eprintln!("usage: ferric [--verbose|-v] [--json <path>|--no-json] <input.toml>");
@@ -389,22 +369,24 @@ pub fn run(args: Vec<String>) {
     // configured correction would therefore be silently DROPPED unless the task
     // path applies it itself, and the run would report a plain KS-DFT geometry
     // or Hessian as though it were dispersion-corrected.
-    // `optimize` IS supported: the D3(BJ) analytic gradient is implemented and
-    // threaded through `optimize_geometry_with_correction`, so the energy and
-    // the gradient describe the same surface.
+    // `optimize` IS supported: the D3(BJ) and MBD@rsSCS analytic gradients are
+    // implemented and threaded through `optimize_geometry_with_scf_correction`,
+    // so the energy and the gradient describe the same surface (for MBD@rsSCS,
+    // up to the omitted orbital relaxation of the Hirshfeld volumes).
     //
     // `frequencies` is NOT, and that is a real gap rather than an oversight: a
     // Hessian needs the SECOND derivative, which does not exist here. The
     // frequency driver finite-differences the analytic gradient, so it WOULD
     // silently produce a dispersion-corrected Hessian if allowed through --
-    // correct in principle, but 6N extra SCF+D3 evaluations whose accuracy has
-    // never been checked against anything. Refused until it is measured.
+    // correct in principle, but 6N extra SCF+dispersion evaluations whose
+    // accuracy has never been checked against anything. Refused until it is measured.
     if cfg.dft.dispersion.is_some() && task == "frequencies" {
         eprintln!(
             "error: [dft] dispersion is not yet supported with method.task = \
-             \"frequencies\". The D3(BJ) analytic GRADIENT exists (so task = \
-             \"optimize\" works), but the finite-difference Hessian built from it \
-             has not been validated. Use task = \"energy\" or \"optimize\"."
+             \"frequencies\". The dispersion analytic GRADIENT exists (D3(BJ) and \
+             MBD@rsSCS, so task = \"optimize\" works), but the finite-difference \
+             Hessian built from it has not been validated. Use task = \"energy\" or \
+             \"optimize\"."
         );
         std::process::exit(1);
     }
@@ -413,18 +395,18 @@ pub fn run(args: Vec<String>) {
     // printed (`print_scf_energy`), so a plain `rhf` energy run passes the
     // task check, dispatches to `run_rhf`, and never sees the dispersion key
     // at all -- reporting a plain HF energy from a config that asks for a
-    // corrected one. There is no correct answer to substitute either:
-    // D3(BJ)'s damping parameters are fitted PER FUNCTIONAL, so there is no
-    // such thing as "D3(BJ) for Hartree-Fock" without naming a fit. Any KS
-    // SCF qualifies: `ksdft`, or `rhf`/`uhf`/`rohf` with `[dft] functional`.
+    // corrected one. There is no correct answer to substitute either: D3(BJ)'s
+    // damping parameters and MBD@rsSCS's beta are fitted PER FUNCTIONAL, so
+    // there is no such thing as "D3(BJ) for Hartree-Fock" without naming a
+    // fit. Any KS SCF qualifies: `ksdft`, or `rhf`/`uhf`/`rohf` with `[dft] functional`.
     if cfg.dft.dispersion.is_some() && cfg.ks_functional().is_none() {
         eprintln!(
             "error: [dft] dispersion is only supported on a Kohn-Sham SCF (method.kind = \
              \"ksdft\", or rhf/uhf/rohf with [dft] functional); got kind = \"{method}\" \
-             without one. D3(BJ) is evaluated on the KS-DFT path only, so this run would \
-             silently report an UNCORRECTED energy. Its damping parameters are fitted per \
-             functional, so there is no default fit to apply here -- remove the dispersion \
-             key, or use kind = \"ksdft\"."
+             without one. Dispersion is evaluated on the KS-DFT path only, so this run would \
+             silently report an UNCORRECTED energy. Its parameters (D3(BJ) damping, MBD@rsSCS \
+             beta) are fitted per functional, so there is no default fit to apply here -- \
+             remove the dispersion key, or use kind = \"ksdft\"."
         );
         std::process::exit(1);
     }
@@ -771,7 +753,7 @@ pub fn run(args: Vec<String>) {
     }
 
     if method == "uhf" {
-        run_uhf(&cfg, &ctx, &mol, &bs, &prep, &bounds, &rhf_config);
+        run_uhf(&cfg, &ctx, &mol, &bs, op, &prep, &bounds, &rhf_config);
         return;
     }
 
@@ -975,7 +957,6 @@ pub fn run(args: Vec<String>) {
     // molecule's OWN basis and SCF settings, built lazily per call. Shared by
     // all Hirshfeld consumers (charges, effective volumes, per-atom
     // polarizability) and by the Python `ferric.hirshfeld_charges` default.
-    let proatom_gs_mult = ferric_scf::properties::proatom_ground_state_mult;
     let proatom = ferric_scf::properties::scf_proatom_provider(&ctx, &bs, op, &rhf_config);
 
     // Snapshot the scalars the terminal log record needs BEFORE the dispatch:
@@ -987,10 +968,26 @@ pub fn run(args: Vec<String>) {
     let scf_converged = result.converged;
     let scf_exit = result.exit;
     let scf_iterations = result.iterations;
+    // `[dft] dispersion` is admitted only on a Kohn-Sham SCF (guarded above),
+    // and the closed-shell KS route dispatches as "ksdft". Evaluated ONCE here
+    // and shared by the printout and the terminal `run_end` record.
+    let dispersion = if method == "ksdft" {
+        dispersion_correction(
+            &cfg,
+            &ctx,
+            &mol,
+            &bs,
+            op,
+            &rhf_config,
+            result.density_total(),
+        )
+    } else {
+        None
+    };
 
     match method {
         "rhf" => run_rhf(&cfg, &bs, &prep, &result),
-        "ksdft" => run_ksdft(&cfg, &mol, &bs, &prep, &result),
+        "ksdft" => run_ksdft(&cfg, &bs, &prep, &result, dispersion.as_ref()),
         "rimp2" => run_rimp2(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "lmp2" => run_lmp2(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "lmp2-direct" => run_lmp2_direct(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
@@ -1032,7 +1029,6 @@ pub fn run(args: Vec<String>) {
             &rhf_config,
             result,
             budget_bytes,
-            &proatom_gs_mult,
             &proatom,
         ),
         "gw" => run_gw(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
@@ -1093,24 +1089,31 @@ pub fn run(args: Vec<String>) {
         }
     }
     if let Some(rl) = ferric_scf::runlog::log() {
-        rl.run_end(
-            scf_energy,
-            scf_converged,
-            &format!("{scf_exit:?}"),
-            serde_json::json!({
-                // The kind as written, like the `run_start` header (`method`
-                // is the dispatch kind by now: `rhf` + functional reads
-                // "ksdft" there).
-                "method": cfg.method.kind,
-                "task": task,
-                "scf_iterations": scf_iterations,
-                "energy_is": if method == "rhf" || method == "uhf" || method == "rohf" || method == "ksdft" {
-                    "total"
-                } else {
-                    "scf_reference_only"
-                },
-            }),
-        );
+        let mut extra = serde_json::json!({
+            // The kind as written, like the `run_start` header (`method`
+            // is the dispatch kind by now: `rhf` + functional reads
+            // "ksdft" there).
+            "method": cfg.method.kind,
+            "task": task,
+            "scf_iterations": scf_iterations,
+            "energy_is": if method == "rhf" || method == "uhf" || method == "rohf" || method == "ksdft" {
+                "total"
+            } else {
+                "scf_reference_only"
+            },
+        });
+        // With a dispersion correction, `energy` is the corrected TOTAL (what
+        // `energy_is: "total"` promises) and the SCF energy and the correction
+        // are recorded alongside it. Without one, no key is added.
+        let energy = match (&dispersion, extra.as_object_mut()) {
+            (Some(d), Some(obj)) => {
+                obj.insert("scf_energy".to_string(), serde_json::json!(scf_energy));
+                obj.insert("dispersion".to_string(), d.to_json());
+                scf_energy + d.energy
+            }
+            _ => scf_energy,
+        };
+        rl.run_end(energy, scf_converged, &format!("{scf_exit:?}"), extra);
     }
 }
 
@@ -1221,60 +1224,191 @@ fn run_rhf(
 /// `"ksdft" => { ... }` match arm.
 fn run_ksdft(
     cfg: &Config,
-    mol: &Molecule,
     bs: &BasisSet,
     prep: &PreparedBasis,
     result: &ferric_scf::result::ScfResult,
+    dispersion: Option<&DispersionCorrection>,
 ) {
     let functional = cfg.dft.functional.as_deref().unwrap_or("LDA");
     println!("KS-DFT[{functional}]/{} on {}", bs.name, cfg.molecule.xyz);
     println!("  nbasis     = {}", prep.nbasis());
     println!("  iterations = {}", result.iterations);
     println!("  converged  = {}", result.converged);
-    print_scf_energy(cfg, mol, result.energy);
+    print_scf_energy(result.energy, dispersion);
 }
 
-/// The `[dft] dispersion` correction for `mol`, if one was asked for:
-/// `(parameter set, E_disp)`. A failure EXITS rather than letting the caller
-/// print an uncorrected energy under a heading that claims a correction was
-/// applied.
-fn d3_correction(cfg: &Config, mol: &Molecule) -> Option<(String, f64)> {
+/// A `[dft] dispersion` correction evaluated at one geometry.
+///
+/// Computed ONCE per single point and shared by the printout and the JSON run
+/// log, so the two can never disagree and MBD's free-atom SCFs never run twice.
+struct DispersionCorrection {
+    /// Model label as printed and logged: `"D3(BJ)"` or `"MBD@rsSCS"`.
+    model: &'static str,
+    /// The functional whose published parameters were used.
+    params: String,
+    /// Dispersion energy (Hartree), ADDED to the SCF energy.
+    energy: f64,
+    /// MBD@rsSCS only: the range-separation β and the Hirshfeld volume ratios
+    /// v_A / v_A^free the TS inputs were scaled by.
+    mbd: Option<(f64, Vec<f64>)>,
+}
+
+impl DispersionCorrection {
+    /// The dispersion lines of an SCF printout: the uncorrected KS energy, the
+    /// correction, and the corrected total on the `energy` line.
+    fn print(&self, scf_energy: f64) {
+        println!("  E(KS-DFT)  = {scf_energy:.10} Hartree");
+        match &self.mbd {
+            None => {
+                println!(
+                    "  E(D3BJ)    = {:+.10} Hartree [params: {}]",
+                    self.energy, self.params
+                );
+                println!(
+                    "  energy     = {:.10} Hartree (KS-DFT + D3(BJ), two-body)",
+                    scf_energy + self.energy
+                );
+            }
+            Some((beta, _)) => {
+                println!(
+                    "  E(MBD@rsSCS) = {:+.10} Hartree [beta: {beta}, functional: {}]",
+                    self.energy, self.params
+                );
+                println!(
+                    "  energy     = {:.10} Hartree (KS-DFT + MBD@rsSCS)",
+                    scf_energy + self.energy
+                );
+            }
+        }
+    }
+
+    /// The `"dispersion"` object of the JSON run log.
+    fn to_json(&self) -> serde_json::Value {
+        let mut v = serde_json::json!({
+            "model": self.model,
+            "params": self.params,
+            "energy": self.energy,
+        });
+        if let (Some((beta, ratios)), Some(obj)) = (&self.mbd, v.as_object_mut()) {
+            obj.insert("beta".to_string(), serde_json::json!(beta));
+            obj.insert("volume_ratios".to_string(), serde_json::json!(ratios));
+        }
+        v
+    }
+}
+
+/// The parsed `[dft] dispersion` request, if the key is set. A parse error
+/// (unknown spelling, or a functional with no published parameters) EXITS.
+fn dispersion_request(cfg: &Config) -> Option<crate::config::DispersionRequest> {
     let spec = cfg.dft.dispersion.as_deref()?;
-    let req =
+    Some(
         crate::config::DispersionRequest::parse_config_str(spec, cfg.dft.functional.as_deref())
             .unwrap_or_else(|e| {
                 eprintln!("error: {e}");
                 std::process::exit(1);
-            });
-    let crate::config::DispersionRequest::D3Bj { functional: dfunc } = &req;
-    let params = ferric_d3::d3bj_params_for_functional(dfunc).unwrap_or_else(|e| {
-        eprintln!("error: {e}");
+            }),
+    )
+}
+
+/// The `[dft] dispersion` correction at `mol`, if one was asked for, given the
+/// converged SCF's spin-summed AO density (MBD@rsSCS takes its per-atom
+/// polarizabilities from Hirshfeld volumes of it; D3(BJ) ignores it).
+///
+/// A failure EXITS rather than letting the caller print an uncorrected energy
+/// under a heading that claims a correction was applied.
+fn dispersion_correction(
+    cfg: &Config,
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    bs: &BasisSet,
+    op: Operator,
+    rhf_config: &RhfConfig,
+    density_total: &ndarray::Array2<f64>,
+) -> Option<DispersionCorrection> {
+    let req = dispersion_request(cfg)?;
+    let evaluated = match req {
+        crate::config::DispersionRequest::D3Bj { functional } => {
+            ferric_d3::d3bj_params_for_functional(&functional)
+                .and_then(|params| ferric_d3::d3bj_energy_for_molecule(mol, &params))
+                .map(|e| DispersionCorrection {
+                    model: "D3(BJ)",
+                    params: functional,
+                    energy: e,
+                    mbd: None,
+                })
+        }
+        crate::config::DispersionRequest::Mbd { functional } => {
+            ferric_rpa::dispersion::mbd_rsscs::MbdRsscsConfig::for_functional(&functional).and_then(
+                |mcfg| {
+                    let cache = mbd_free_atom_cache(ctx, mol, bs, op, rhf_config);
+                    let r = ferric_rpa::dispersion::mbd_scf::mbd_rsscs_for_density(
+                        &cache,
+                        mol,
+                        bs,
+                        density_total,
+                        &mcfg,
+                        false,
+                    )?;
+                    Ok(DispersionCorrection {
+                        model: "MBD@rsSCS",
+                        params: functional,
+                        energy: r.energy,
+                        mbd: Some((mcfg.beta, r.volume_ratios)),
+                    })
+                },
+            )
+        }
+    };
+    Some(evaluated.unwrap_or_else(|e| {
+        eprintln!("error: [dft] dispersion: {e}");
         std::process::exit(1);
-    });
-    let e = ferric_d3::d3bj_energy_for_molecule(mol, &params).unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
-    Some((dfunc.clone(), e))
+    }))
+}
+
+/// The per-element free-atom data (Hirshfeld proatoms and live-SCF free-atom
+/// volumes) MBD@rsSCS needs, built once per run. Its free-atom SCFs are
+/// internal sub-solves, logged as such rather than as the run's SCF.
+fn mbd_free_atom_cache(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    bs: &BasisSet,
+    op: Operator,
+    rhf_config: &RhfConfig,
+) -> ferric_rpa::dispersion::mbd_scf::MbdFreeAtomCache {
+    let _sub = ferric_scf::runlog::SubSolveScope::enter();
+    ferric_rpa::dispersion::mbd_scf::MbdFreeAtomCache::build(ctx, mol, bs, op, rhf_config)
+        .unwrap_or_else(|e| {
+            eprintln!("error: MBD@rsSCS free-atom reference failed: {e}");
+            std::process::exit(1);
+        })
 }
 
 /// The energy line(s) of an SCF printout (RKS, UKS, ROKS, or plain HF).
 ///
-/// Empirical dispersion is added only if `[dft] dispersion` asked for it,
-/// which `run()` admits only on a Kohn-Sham SCF. With the key absent the
-/// output is byte-identical to before the key existed: one "energy" line and
-/// no dispersion line at all.
-fn print_scf_energy(cfg: &Config, mol: &Molecule, energy: f64) {
-    match d3_correction(cfg, mol) {
+/// Dispersion is added only if `[dft] dispersion` asked for it, which `run()`
+/// admits only on a Kohn-Sham SCF. With the key absent the output is
+/// byte-identical to before the key existed: one "energy" line and no
+/// dispersion line at all.
+fn print_scf_energy(energy: f64, dispersion: Option<&DispersionCorrection>) {
+    match dispersion {
         None => println!("  energy     = {energy:.10} Hartree"),
-        Some((dfunc, e_disp)) => {
-            println!("  E(KS-DFT)  = {energy:.10} Hartree");
-            println!("  E(D3BJ)    = {e_disp:+.10} Hartree [params: {dfunc}]");
-            println!(
-                "  energy     = {:.10} Hartree (KS-DFT + D3(BJ), two-body)",
-                energy + e_disp
-            );
-        }
+        Some(d) => d.print(energy),
+    }
+}
+
+/// Open-shell (UKS/ROKS) energy runs return before `run()`'s terminal
+/// `run_end` record, so a dispersion correction is logged as its own
+/// `dispersion` record: the SCF energy, the corrected total, and the model.
+fn log_open_shell_dispersion(scf_energy: f64, dispersion: Option<&DispersionCorrection>) {
+    if let (Some(d), Some(rl)) = (dispersion, ferric_scf::runlog::log()) {
+        rl.note(
+            "dispersion",
+            serde_json::json!({
+                "scf_energy": scf_energy,
+                "energy": scf_energy + d.energy,
+                "dispersion": d.to_json(),
+            }),
+        );
     }
 }
 
@@ -3555,7 +3689,6 @@ fn run_pdep_rpa_arm(
     rhf_config: &RhfConfig,
     result: ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
-    proatom_gs_mult: &dyn Fn(i32) -> usize,
     proatom: &dyn Fn(i32, i32) -> Option<ferric_rpa::properties::RadialProatom>,
 ) {
     let aux_name = cfg
@@ -4127,98 +4260,22 @@ fn run_pdep_rpa_arm(
                     };
                     let z: Vec<usize> = mol.atoms.iter().map(|a| a.z as usize).collect();
 
-                    // Compute free-atom vol_free using Hirshfeld on isolated atoms.
-                    // For a single atom Hirshfeld weight = 1 everywhere (only one
-                    // proatom), so this gives ∫ ρ_free(r) |r|³ dr — same physics
-                    // as the molecular Hirshfeld integral, consistent denominator.
+                    // Free-atom vol_free from a live free-atom SCF in the same
+                    // basis and SCF settings, then Hirshfeld on the isolated
+                    // atom (weight 1 wherever the Slater ρ⁰ is above the 1e-12
+                    // floor), so it is on the same scale as the molecular
+                    // volumes. Shared with MBD@rsSCS dispersion
+                    // (`ferric_rpa::dispersion::live_free_atom_volume`, which
+                    // documents the solve and its HF/UHF retry). A failure
+                    // leaves no entry for that Z, and the loop below skips TS
+                    // C6 with a warning.
                     let mut vol_free_computed: std::collections::HashMap<usize, f64> =
                         std::collections::HashMap::new();
                     for &zi in z.iter().collect::<std::collections::HashSet<_>>() {
-                        let sym = ferric_core::elements::z_to_symbol(zi as i32).unwrap_or("X");
-                        let free_xyz = format!("1\n{sym}\n{sym} 0 0 0\n");
-                        // Correct atomic ground-state multiplicities (3P for
-                        // C/O/Si/S, etc.). Reuse the proatom map — the prior
-                        // ad-hoc match here gave C/O/S a singlet, which is
-                        // wrong physics and HANGS the restricted SCF for S.
-                        let mult = proatom_gs_mult(zi as i32);
-                        if let Ok(free_mol) = Molecule::parse_xyz(&free_xyz, 0, mult) {
-                            if let Ok(free_obs) = PreparedBasis::new(&free_mol, bs) {
-                                let free_bounds = SchwarzBounds::compute(op, &free_obs)
-                                    .unwrap_or_else(|_| SchwarzBounds::compute(op, prep).unwrap());
-                                let mut free_cfg = rhf_config.clone();
-                                free_cfg.mom_after_iter = if mult > 1 { 5 } else { 0 };
-                                // Give the tiny free-atom SCF a generous iteration
-                                // budget — this is now the ONLY source of vol_free
-                                // (the hardcoded-table fallback was removed), so a
-                                // near-converged atom that would previously have
-                                // silently degraded to a table value must instead
-                                // actually converge. Cheap: it's a single atom.
-                                free_cfg.max_iter = free_cfg.max_iter.max(200);
-                                // 1-thread pool for the tiny atom solve — see run_serial.
-                                //
-                                // The free-atom volume must be on the SAME scale (same xc) as
-                                // the molecular volume (vols[i]) or the ratio is meaningless.
-                                // Open-shell xc atoms (³P: O/S/Si) do NOT converge under a
-                                // plain UKS-GGA solve — their degenerate p-shell makes the GGA
-                                // potential orientation-dependent and the SCF oscillates
-                                // forever. Fractional/ensemble occupation (fractional_occ)
-                                // spreads the open-shell electrons equally over the degenerate
-                                // p orbitals, restoring spherical symmetry and converging the
-                                // UKS-PBE atom on the *consistent* scale. Pure HF/UHF free-atom
-                                // solves don't suffer this (K is orbital-invariant in the
-                                // degenerate subspace), so — matching the proatom builder above
-                                // — only enable fractional_occ when an xc functional is set.
-                                if mult > 1 && free_cfg.xc.is_some() {
-                                    free_cfg.fractional_occ = true;
-                                }
-                                let solve_free = |cfg: &RhfConfig| -> Option<ndarray::Array2<f64>> {
-                                    if mult > 1 {
-                                        solve_uhf(ctx, &free_mol, &free_obs, &free_bounds, cfg)
-                                            .ok()
-                                            .map(|r| r.density_total().to_owned())
-                                    } else {
-                                        solve_rhf(ctx, &free_mol, &free_obs, op, &free_bounds, cfg)
-                                            .ok()
-                                            .map(|r| r.density_r().to_owned())
-                                    }
-                                };
-                                // Live free-atom SCF is the ONLY source of the TS
-                                // vol_free denominator now. Try the reference-
-                                // consistent xc solve first (scale-matched to the
-                                // molecular volume); if it fails, retry pure HF/UHF
-                                // as a *scale-consistent* fallback (this changes the
-                                // xc convention slightly, but is still a real
-                                // free-atom integral, not a stale table number). If
-                                // both fail, vol_free_computed has no entry for this
-                                // Z and the loop below skips TS C6 with a clear
-                                // warning — no silent scale-mismatched fabrication.
-                                let free_density = run_serial(|| {
-                                    solve_free(&free_cfg).or_else(|| {
-                                        // xc solve failed — retry pure HF/UHF for a converged,
-                                        // scale-consistent density.
-                                        let mut hf_cfg = free_cfg.clone();
-                                        hf_cfg.xc = None;
-                                        hf_cfg.fractional_occ = false;
-                                        solve_free(&hf_cfg)
-                                    })
-                                });
-                                if let Some(d) = free_density {
-                                    // Single free atom: the Hirshfeld weight is
-                                    // ρ⁰/(ρ⁰ + 1e-12), with ρ⁰ the Slater proatom
-                                    // (None), so it is 1 except where ρ⁰ falls
-                                    // below ~1e-12. The r³-weighted tail there is
-                                    // dropped: measured 8.5e-4 of the free-H
-                                    // volume, ≤3.5e-10 for free C and O
-                                    // (cc-pVDZ, def2-SVP; validation_hirshfeld.rs).
-                                    // The molecular volumes carry the same
-                                    // 1e-12 floor, with the SCF proatom.
-                                    if let Ok(fv) =
-                                        atomic_effective_volumes_hirshfeld(&free_mol, bs, &d, None)
-                                    {
-                                        vol_free_computed.insert(zi, fv[0]);
-                                    }
-                                }
-                            }
+                        if let Ok(vf) = ferric_rpa::dispersion::live_free_atom_volume(
+                            ctx, zi, bs, op, rhf_config,
+                        ) {
+                            vol_free_computed.insert(zi, vf);
                         }
                     }
 
@@ -5109,6 +5166,7 @@ fn run_uhf(
     ctx: &ParallelContext,
     mol: &Molecule,
     bs: &BasisSet,
+    op: Operator,
     prep: &PreparedBasis,
     bounds: &SchwarzBounds,
     rhf_config: &RhfConfig,
@@ -5147,7 +5205,10 @@ fn run_uhf(
     );
     println!("  iterations = {}", result.iterations);
     println!("  converged  = {}", result.converged);
-    print_scf_energy(cfg, mol, result.energy);
+    let dispersion =
+        dispersion_correction(cfg, ctx, mol, bs, op, rhf_config, result.density_total());
+    print_scf_energy(result.energy, dispersion.as_ref());
+    log_open_shell_dispersion(result.energy, dispersion.as_ref());
     println!("  <S^2>      = {:.6} (ideal {:.6})", s2, s_ideal);
     // task == "optimize" is handled by the top-level dispatch above
     // (optimize_geometry_uhf), which returns before reaching here.
@@ -5190,7 +5251,10 @@ fn run_rohf(
     );
     println!("  iterations = {}", result.iterations);
     println!("  converged  = {}", result.converged);
-    print_scf_energy(cfg, mol, result.energy);
+    let dispersion =
+        dispersion_correction(cfg, ctx, mol, bs, op, rhf_config, result.density_total());
+    print_scf_energy(result.energy, dispersion.as_ref());
+    log_open_shell_dispersion(result.energy, dispersion.as_ref());
     println!("  <S^2>      = {:.6} (exact by construction)", s_ideal);
     // task == "optimize" is handled by the top-level dispatch above
     // (optimize_geometry_rohf), which returns before reaching here.
@@ -5306,45 +5370,51 @@ fn run_optimize(
     };
     match method {
         "rhf" | "ksdft" => {
-            // D3(BJ) as an ADDITIVE correction on both halves. It is threaded
-            // as a closure rather than as a flag inside `ferric-scf` so that
-            // crate stays free of any empirical dispersion model; see
-            // `optimize_geometry_with_correction`.
+            // Dispersion (D3(BJ) or MBD@rsSCS) as an ADDITIVE correction on
+            // both halves. It is threaded as a closure rather than as a flag
+            // inside `ferric-scf` so that crate stays free of any dispersion
+            // model; see `optimize_geometry_with_scf_correction`, which hands
+            // the closure the converged SCF at each geometry (MBD@rsSCS needs
+            // its density for the Hirshfeld volumes).
             //
             // The energy and the gradient come from the SAME resolved
             // parameters, which is the property that makes optimizing on this
             // surface meaningful -- a mismatched pair converges to a geometry
             // that is a stationary point of neither.
-            let disp = match cfg.dft.dispersion.as_deref() {
-                None => None,
-                Some(spec) => {
-                    let req = crate::config::DispersionRequest::parse_config_str(
-                        spec,
-                        cfg.dft.functional.as_deref(),
+            let req = dispersion_request(cfg);
+            let d3 = match &req {
+                Some(crate::config::DispersionRequest::D3Bj { functional }) => Some(
+                    ferric_d3::d3bj_params_for_functional(functional).unwrap_or_else(|e| {
+                        eprintln!("error: {e}");
+                        std::process::exit(1);
+                    }),
+                ),
+                _ => None,
+            };
+            // MBD@rsSCS: the free-atom references are per element, so they are
+            // built ONCE here, not at every optimization step.
+            let mbd = match &req {
+                Some(crate::config::DispersionRequest::Mbd { functional }) => {
+                    let mcfg = ferric_rpa::dispersion::mbd_rsscs::MbdRsscsConfig::for_functional(
+                        functional,
                     )
                     .unwrap_or_else(|e| {
                         eprintln!("error: {e}");
                         std::process::exit(1);
                     });
-                    let crate::config::DispersionRequest::D3Bj { functional } = req;
-                    Some(
-                        ferric_d3::d3bj_params_for_functional(&functional).unwrap_or_else(|e| {
-                            eprintln!("error: {e}");
-                            std::process::exit(1);
-                        }),
-                    )
+                    Some((mbd_free_atom_cache(ctx, mol, bs, op, rhf_config), mcfg))
                 }
+                _ => None,
             };
-            let opt_result = optimize_geometry_with_correction(
+            let opt_result = optimize_geometry_with_scf_correction(
                 ctx,
                 mol,
                 &bs.name,
                 op,
                 rhf_config,
                 &opt_config,
-                |m| match &disp {
-                    None => Ok((0.0, None)),
-                    Some(params) => {
+                |m, scf| {
+                    if let Some(params) = &d3 {
                         let e = ferric_d3::d3bj_energy_for_molecule(m, params)?;
                         let g = ferric_d3::d3bj_gradient_for_molecule(m, params)?;
                         let mut arr = ndarray::Array2::<f64>::zeros((g.len(), 3));
@@ -5353,8 +5423,26 @@ fn run_optimize(
                                 arr[[k, a]] = row[a];
                             }
                         }
-                        Ok((e, Some(arr)))
+                        return Ok((e, Some(arr)));
                     }
+                    if let Some((cache, mcfg)) = &mbd {
+                        let r = ferric_rpa::dispersion::mbd_scf::mbd_rsscs_for_density(
+                            cache,
+                            m,
+                            bs,
+                            scf.density_total(),
+                            mcfg,
+                            true,
+                        )?;
+                        let g = r.gradient.ok_or_else(|| {
+                            ferric_core::FerricError::General(
+                                "MBD@rsSCS returned no gradient although one was requested"
+                                    .to_string(),
+                            )
+                        })?;
+                        return Ok((r.energy, Some(g)));
+                    }
+                    Ok((0.0, None))
                 },
             )
             .unwrap_or_else(|e| {
@@ -5555,8 +5643,8 @@ fn refuse_tddft_xc_without_kernel(cfg: &Config, method: &str) {
 }
 
 /// `[dft] dispersion` on an open-shell (UKS/ROKS) geometry optimization is
-/// refused: the D3(BJ) correction is threaded through the optimizer only on
-/// the closed-shell path (`optimize_geometry_with_correction`), so the
+/// refused: the dispersion correction is threaded through the optimizer only
+/// on the closed-shell path (`optimize_geometry_with_scf_correction`), so the
 /// UKS/ROKS optimizer would walk the UNCORRECTED surface while the config
 /// asks for a corrected one. The single-point energy (task = "energy") does
 /// apply it.
@@ -5564,8 +5652,8 @@ fn refuse_open_shell_dispersion_gradient(cfg: &Config, label: &str) {
     if cfg.dft.dispersion.is_some() {
         eprintln!(
             "error: [dft] dispersion is not supported with method.task = \"optimize\" on an \
-             open-shell ({label}) reference: the D3(BJ) gradient is only threaded through the \
-             closed-shell optimizer, so this run would optimize the uncorrected surface. Use \
+             open-shell ({label}) reference: the dispersion gradient is only threaded through \
+             the closed-shell optimizer, so this run would optimize the uncorrected surface. Use \
              task = \"energy\" for a corrected {label} single point, or remove the key."
         );
         std::process::exit(1);

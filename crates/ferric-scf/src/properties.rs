@@ -721,6 +721,73 @@ impl RadialProatom {
         let t = (r - self.radii[lo]) / (self.radii[hi] - self.radii[lo]);
         (1.0 - t) * self.rho[lo] + t * self.rho[hi]
     }
+
+    /// d/dr of the piecewise-linear interpolant [`at`](Self::at) — NOT of the
+    /// underlying free-atom density, which `at` only samples.
+    ///
+    /// Inside a segment this is the segment slope
+    /// `(rho[hi] - rho[lo]) / (radii[hi] - radii[lo])`; it is 0 where `at` is
+    /// constant (`r < radii[0]`, where `at` returns `rho[0]`; `r > radii[n-1]`,
+    /// where it returns 0) and for an empty table.
+    ///
+    /// The interpolant is not differentiable at a knot. Within
+    /// [`Self::KNOT_TOL`] of one, `deriv` returns the MEAN of the two adjacent
+    /// slopes (the symmetric subgradient, which is what a central difference
+    /// straddling the knot converges to). This matters in practice: the
+    /// Hirshfeld lattice spacing (0.20 Bohr) is a multiple of the knot spacing
+    /// (0.05 Bohr), and the bounding-box lattice puts an atom that is extreme
+    /// in x, y and z exactly on a lattice point, so that atom's axis neighbours
+    /// sit on knots up to rounding. A one-sided slope there put a 2% error on
+    /// that atom's volume gradient (measured, H2O/STO-3G).
+    pub fn deriv(&self, r: f64) -> f64 {
+        let n = self.radii.len();
+        if n == 0 {
+            return 0.0;
+        }
+        // Slope of segment `i` = [radii[i], radii[i+1]]; the regions outside
+        // the table, where `at` is constant, have slope 0.
+        let seg = |i: isize| -> f64 {
+            if i < 0 || i as usize + 1 >= n {
+                0.0
+            } else {
+                let i = i as usize;
+                (self.rho[i + 1] - self.rho[i]) / (self.radii[i + 1] - self.radii[i])
+            }
+        };
+        // Index of the last knot <= r (or -1 below the table).
+        let k: isize = if r < self.radii[0] {
+            -1
+        } else {
+            let mut lo = 0usize;
+            let mut hi = n;
+            while hi - lo > 1 {
+                let mid = (lo + hi) / 2;
+                if self.radii[mid] <= r {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            lo as isize
+        };
+        let near = |j: isize| -> bool {
+            j >= 0
+                && (j as usize) < n
+                && (r - self.radii[j as usize]).abs()
+                    <= Self::KNOT_TOL * self.radii[j as usize].abs().max(1.0)
+        };
+        if near(k) {
+            return 0.5 * (seg(k - 1) + seg(k));
+        }
+        if near(k + 1) {
+            return 0.5 * (seg(k) + seg(k + 1));
+        }
+        seg(k)
+    }
+
+    /// Distance (Bohr, relative above 1 Bohr) within which [`Self::deriv`]
+    /// treats `r` as sitting on a knot.
+    pub const KNOT_TOL: f64 = 1e-9;
 }
 
 /// Spherically average a single-atom density (atom at the origin) onto a radial

@@ -92,6 +92,43 @@ methane, benzene and an argon dimer with the three-body term off on both
 sides (`ferric-d3/tests/vs_reference_dftd3.rs`). The omitted three-body term
 is 0.1% of the two-body energy at benzene and grows with size.
 
+## Dispersion correction: MBD@rsSCS
+
+**What it is.** The many-body dispersion energy of Ambrosetti et al. 2014
+(range-separated self-consistent screening), added post-SCF. Its per-atom
+inputs are Tkatchenko–Scheffler free-atom α, C6 and R_vdW scaled by Hirshfeld
+volume ratios v_A / v_A^free of the converged SCF density; the free-atom
+volumes come from live free-atom SCFs in the same basis and SCF settings. The
+model itself is described under
+[Polarizabilities and dispersion coefficients](./rpa-gw.md#polarizabilities-and-dispersion-coefficients).
+
+**Run it.** `[dft] dispersion = "mbd"` on a Kohn–Sham SCF
+(`examples/water-pbe-mbd.toml`) uses the β published for `[dft] functional`
+(PBE 0.83, PBE0 0.85, HSE06 0.85); `"mbd(pbe0)"` uses another functional's β.
+Any other functional is an error, not a default β. The printout gives
+`E(KS-DFT)`, `E(MBD@rsSCS)` with β and the functional, and the corrected
+total; the JSON run log's `run_end` record carries the corrected total as
+`energy`, with `scf_energy` and a `dispersion` object (`model`, `params`,
+`energy`, `beta`, `volume_ratios`) in `extra` (D3(BJ) runs log the same
+object without `beta` and `volume_ratios`). UKS/ROKS energy runs, which write
+no `run_end` record, write a `dispersion` record with the same fields. Python:
+`run_dft(..., dispersion="mbd")`, which also reports `DftResult.volume_ratios`.
+
+**Gradient.** `task = "optimize"` (closed shell) and
+`run_dft(with_gradient=True)` add the analytic MBD@rsSCS gradient: the explicit
+dependence on the nuclear positions plus the dependence through the Hirshfeld
+volumes with the occupied orbitals held fixed: basis functions and proatoms
+move with their atoms, the orbitals are kept orthonormal in the moving basis
+(the −½ D Sˣ D term), and the volume integration lattice stays fixed in
+space. The orbital relaxation of the volumes (the CPKS response of the
+density to the displacement) is not included, so this gradient is not the
+exact derivative of the reported energy. Measured against finite differences
+of the full SCF + MBD pipeline at 6-31G/PBE, the omitted term is 1.0e-5
+Hartree/Bohr for H2O and 1.6e-6 for NH3 (11.5% and 1.8% of the largest MBD
+gradient component); everything that is included agrees with finite
+differences to 3e-8 Hartree/Bohr.
+Open-shell optimization and `task = "frequencies"` with dispersion are refused.
+
 ## Implicit solvation
 
 Two independent implementations. Both are threaded uniformly through RHF, UHF,

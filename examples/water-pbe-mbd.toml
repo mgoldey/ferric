@@ -1,0 +1,32 @@
+# KS-DFT with the MBD@rsSCS many-body dispersion correction.
+#
+# MBD@rsSCS (Ambrosetti et al., JCP 140, 18A508 (2014)) couples per-atom
+# Tkatchenko-Scheffler oscillators, scaled by Hirshfeld volume ratios of the
+# converged SCF density, and screens them at short range with the
+# functional-dependent beta. It is a post-SCF term: the SCF is untouched, its
+# energy is printed as E(KS-DFT), and the correction and the corrected total
+# are printed (and logged to the JSON run log) separately.
+#
+# task = "optimize" works too: the analytic gradient is the explicit term plus
+# the Hirshfeld-volume term with the occupied orbitals held fixed (kept
+# orthonormal as the basis moves); the orbital relaxation of the volumes is
+# not included.
+#
+# Omit the `dispersion` key for a plain KS-DFT run. There is deliberately no
+# value meaning "off" -- a reported 0.0 dispersion would be a physics claim.
+
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "ksdft"
+
+[dft]
+functional = "PBE"
+# "mbd"         -> the beta published for `functional` above (PBE 0.83,
+#                  PBE0 0.85, HSE06 0.85; any other functional is an error).
+# "mbd(pbe0)"   -> some other functional's published beta.
+dispersion = "mbd"

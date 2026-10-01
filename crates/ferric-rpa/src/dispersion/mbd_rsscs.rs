@@ -37,10 +37,16 @@
 //! Abramowitz–Stegun erf for the `[rpa] c6_source = "mbd"` path), this module
 //! uses the C library `erf` (double precision).
 //!
-//! Scope: energy only, finite systems (no lattice, no gradients).
+//! Analytic gradient: [`mbd_rsscs_gradient_from_params`] /
+//! [`mbd_rsscs_gradient`] differentiate the same forward pass in reverse mode
+//! (adjoint; derivation on `rsscs_backward`), giving dE/dR_A with the TS
+//! inputs fixed plus dE/dα₀, dE/dC6, dE/dR_vdW (and dE/dr for volume ratios),
+//! at O(n_freq (3N)³) cost — the cost class of the energy.
+//!
+//! Scope: finite systems only (no lattice).
 
 use ferric_core::FerricError;
-use ndarray::Array2;
+use ndarray::{Array1, Array2, Axis};
 use ndarray_linalg::{Eigh, Inverse, UPLO};
 
 use crate::dispersion::free_atom_ref::{ts_free_atom, ts_free_atom_r_vdw};
@@ -320,19 +326,24 @@ fn norm(d: &[f64; 3]) -> f64 {
     (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
 }
 
-/// Range-separated SCS at every node: returns α^rsSCS(iu_k) as `[k][A]`.
+/// Range-separated SCS at every node: returns α^rsSCS(iu_k) as `[k][A]`, and,
+/// when `keep` is set, the inverse screening matrices B(u_k) = C(u_k)⁻¹ that
+/// the backward pass of [`mbd_rsscs_gradient_from_params`] needs (otherwise
+/// an empty vector; the energy path never holds them).
 fn rsscs_screen(
     positions: &[[f64; 3]],
     p: &MbdAtomParams,
     cfg: &MbdRsscsConfig,
     freqs: &[f64],
-) -> Result<Vec<Vec<f64>>, FerricError> {
+    keep: bool,
+) -> Result<(Vec<Vec<f64>>, Vec<Array2<f64>>), FerricError> {
     let n = positions.len();
     let omega: Vec<f64> = (0..n)
         .map(|a| 4.0 / 3.0 * p.c6[a] / (p.alpha_0[a] * p.alpha_0[a]))
         .collect();
     let frac = (2.0 / std::f64::consts::PI).sqrt() / 3.0;
     let mut out = Vec::with_capacity(freqs.len());
+    let mut kept = Vec::with_capacity(if keep { freqs.len() } else { 0 });
     for (k, &u) in freqs.iter().enumerate() {
         let alpha: Vec<f64> = (0..n)
             .map(|a| p.alpha_0[a] / (1.0 + (u / omega[a]).powi(2)))
@@ -385,30 +396,41 @@ fn rsscs_screen(
             }
         }
         out.push(a_rs);
+        if keep {
+            kept.push(cinv);
+        }
     }
-    Ok(out)
+    Ok((out, kept))
 }
 
-/// MBD@rsSCS energy from per-atom TS inputs (α₀, C6, R_vdW) and coordinates
-/// (Bohr). See the module doc for the construction.
-///
-/// # Errors
-///
-/// Invalid inputs or config; a singular screening matrix; a non-positive
-/// screened α; and a coupled-oscillator matrix that is not positive definite
-/// (polarization catastrophe: an imaginary mode makes the energy undefined).
-pub fn mbd_rsscs_energy_from_params(
+/// Forward-pass intermediates the gradient's backward pass reads.
+struct Tape {
+    freqs: Vec<f64>,
+    weights: Vec<f64>,
+    /// α^rsSCS(iu_k) as `[k][A]`.
+    a_dyn: Vec<Vec<f64>>,
+    /// B(u_k) = (diag 1/α(iu_k) + T_SR)⁻¹ per node.
+    binv: Vec<Array2<f64>>,
+    /// Eigenpairs of the coupled-oscillator matrix H.
+    h_evals: Array1<f64>,
+    h_evecs: Array2<f64>,
+}
+
+/// The one forward pass shared by the energy and the gradient. With
+/// `keep = false` it holds no per-node matrices and returns no tape.
+fn rsscs_forward(
     positions: &[[f64; 3]],
     params: &MbdAtomParams,
     config: &MbdRsscsConfig,
-) -> Result<MbdRsscsResult, FerricError> {
+    keep: bool,
+) -> Result<(MbdRsscsResult, Option<Tape>), FerricError> {
     config.validate()?;
     check_inputs(positions, params)?;
     let n = positions.len();
     let (freqs, weights) = mbd_freq_grid(config.n_freq);
     debug_assert_eq!(freqs[0], 0.0);
 
-    let a_dyn = rsscs_screen(positions, params, config, &freqs)?;
+    let (a_dyn, binv) = rsscs_screen(positions, params, config, &freqs, keep)?;
     let alpha_0_rsscs = a_dyn[0].clone();
     let c6_rsscs: Vec<f64> = (0..n)
         .map(|a| {
@@ -451,7 +473,7 @@ pub fn mbd_rsscs_energy_from_params(
             }
         }
     }
-    let (evals, _) = h
+    let (evals, evecs) = h
         .eigh(UPLO::Lower)
         .map_err(|e| FerricError::Lapack(format!("MBD@rsSCS: eigendecomposition failed: {e}")))?;
     let min_eigenvalue = evals.iter().copied().fold(f64::INFINITY, f64::min);
@@ -466,7 +488,7 @@ pub fn mbd_rsscs_energy_from_params(
     let energy =
         0.5 * evals.iter().map(|&l| l.sqrt()).sum::<f64>() - 1.5 * omega_rsscs.iter().sum::<f64>();
 
-    Ok(MbdRsscsResult {
+    let result = MbdRsscsResult {
         energy,
         ts: params.clone(),
         alpha_0_rsscs,
@@ -475,7 +497,381 @@ pub fn mbd_rsscs_energy_from_params(
         omega_rsscs,
         min_eigenvalue,
         config: *config,
-    })
+    };
+    let tape = keep.then(|| Tape {
+        freqs,
+        weights,
+        a_dyn,
+        binv,
+        h_evals: evals,
+        h_evecs: evecs,
+    });
+    Ok((result, tape))
+}
+
+/// MBD@rsSCS energy from per-atom TS inputs (α₀, C6, R_vdW) and coordinates
+/// (Bohr). See the module doc for the construction.
+///
+/// # Errors
+///
+/// Invalid inputs or config; a singular screening matrix; a non-positive
+/// screened α; and a coupled-oscillator matrix that is not positive definite
+/// (polarization catastrophe: an imaginary mode makes the energy undefined).
+pub fn mbd_rsscs_energy_from_params(
+    positions: &[[f64; 3]],
+    params: &MbdAtomParams,
+    config: &MbdRsscsConfig,
+) -> Result<MbdRsscsResult, FerricError> {
+    Ok(rsscs_forward(positions, params, config, false)?.0)
+}
+
+/// Analytic gradient of the MBD@rsSCS energy.
+#[derive(Debug, Clone)]
+pub struct MbdRsscsGradient {
+    /// The forward result; `result.energy` is BIT-IDENTICAL to
+    /// [`mbd_rsscs_energy_from_params`] for the same inputs (both run the
+    /// same forward code).
+    pub result: MbdRsscsResult,
+    /// dE/dR_A (Hartree/Bohr), per-atom TS inputs held fixed.
+    pub d_positions: Vec<[f64; 3]>,
+    /// dE/dα₀_A of the UNSCREENED TS input (`MbdAtomParams::alpha_0`).
+    pub d_alpha_0: Vec<f64>,
+    /// dE/dC6_A of the UNSCREENED TS input (`MbdAtomParams::c6`).
+    pub d_c6: Vec<f64>,
+    /// dE/dR_vdW_A of the UNSCREENED TS input (`MbdAtomParams::r_vdw`).
+    pub d_r_vdw: Vec<f64>,
+}
+
+/// Fermi partials (∂f/∂R, ∂f/∂S) of f = 1/(1 + e^{−z}), z = a (R/S − 1):
+/// f' = e^{−z}/(1 + e^{−z})² (= f(1 − f) without its cancellation),
+/// ∂f/∂R = f' a/S, ∂f/∂S = −f' a R/S².
+fn fermi_partials(r: f64, s: f64, a: f64) -> (f64, f64) {
+    let e = (-a * (r / s - 1.0)).exp();
+    // e = +inf (R ≪ S, f = 0 to double precision): f' = 0, not inf/inf.
+    let fp = if e.is_finite() {
+        e / ((1.0 + e) * (1.0 + e))
+    } else {
+        0.0
+    };
+    (fp * a / s, -fp * a * r / (s * s))
+}
+
+/// Symmetric part of a 3×3 adjoint; the tensors it is contracted with are
+/// symmetric, so only this part carries a derivative.
+fn sym3(m: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
+    std::array::from_fn(|i| std::array::from_fn(|j| 0.5 * (m[i][j] + m[j][i])))
+}
+
+/// Vector–Jacobian product of the bare dipole tensor. With M symmetric,
+/// L = Σ M_ij T_ij = tr M / R³ − 3 q/R⁵, q = dᵀMd, and
+/// ∂L/∂d = −3 tr(M) d/R⁵ − 6 M d/R⁵ + 15 q d/R⁷.
+/// Returns (L, ∂L/∂d, q, M d).
+fn t_bare_vjp(d: &[f64; 3], r: f64, m: &[[f64; 3]; 3]) -> (f64, [f64; 3], f64, [f64; 3]) {
+    let ms = sym3(m);
+    let tr = ms[0][0] + ms[1][1] + ms[2][2];
+    let md: [f64; 3] = std::array::from_fn(|i| (0..3).map(|j| ms[i][j] * d[j]).sum());
+    let q = d[0] * md[0] + d[1] * md[1] + d[2] * md[2];
+    let r2 = r * r;
+    let r5 = r2 * r2 * r;
+    let r7 = r5 * r2;
+    let l = tr / (r2 * r) - 3.0 * q / r5;
+    let g =
+        std::array::from_fn(|x| -3.0 * tr * d[x] / r5 - 6.0 * md[x] / r5 + 15.0 * q * d[x] / r7);
+    (l, g, q, md)
+}
+
+/// Vector–Jacobian product of [`t_gg`]: for the adjoint M returns
+/// (∂L/∂d, ∂L/∂σ) of L = Σ M_ij T_GG,ij(d, σ).
+///
+/// T_GG = g₁ T_bare + g₂ d dᵀ with ζ = R/σ, θ = 2ζ/√π e^{−ζ²},
+/// g₁ = erf ζ − θ, g₂ = 2ζ²θ/R⁵. Using d erf/dζ = 2/√π e^{−ζ²},
+/// dθ/dζ = 2/√π e^{−ζ²}(1 − 2ζ²), d(ζ²θ)/dζ = θ(3ζ − 2ζ³), ∂ζ/∂R = ζ/R,
+/// ∂ζ/∂σ = −ζ/σ:
+///   ∂g₁/∂R = 2ζ²θ/R,              ∂g₁/∂σ = −2ζ²θ/σ,
+///   ∂g₂/∂R = −4ζ²θ(1 + ζ²)/R⁶,    ∂g₂/∂σ = −2ζ²θ(3 − 2ζ²)/(σ R⁵).
+/// With L_b = Σ M T_bare and q = dᵀMd (M symmetrized):
+///   ∂L/∂d = g₁ ∂L_b/∂d + 2 g₂ M d + (L_b ∂g₁/∂R + q ∂g₂/∂R) d/R,
+///   ∂L/∂σ = L_b ∂g₁/∂σ + q ∂g₂/∂σ.
+fn t_gg_vjp(d: &[f64; 3], r: f64, sigma: f64, m: &[[f64; 3]; 3]) -> ([f64; 3], f64) {
+    const SQRT_PI: f64 = 1.772_453_850_905_516;
+    let (lb, dlb, q, md) = t_bare_vjp(d, r, m);
+    let zeta = r / sigma;
+    let theta = 2.0 * zeta / SQRT_PI * (-zeta * zeta).exp();
+    let g1 = erf_exact(zeta) - theta;
+    let r5 = r.powi(5);
+    let z2t = zeta * zeta * theta;
+    let g2 = 2.0 * z2t / r5;
+    let dg1_dr = 2.0 * z2t / r;
+    let dg1_ds = -2.0 * z2t / sigma;
+    let dg2_dr = -4.0 * z2t * (1.0 + zeta * zeta) / (r5 * r);
+    let dg2_ds = -2.0 * z2t * (3.0 - 2.0 * zeta * zeta) / (sigma * r5);
+    let radial = (lb * dg1_dr + q * dg2_dr) / r;
+    let gd = std::array::from_fn(|x| g1 * dlb[x] + 2.0 * g2 * md[x] + radial * d[x]);
+    (gd, lb * dg1_ds + q * dg2_ds)
+}
+
+/// Reverse-mode (adjoint) pass over the tape. Cost O(n_freq (3N)²) on top of
+/// one (3N)³ product for dE/dH; no per-coordinate matrices are formed.
+///
+/// Adjoint steps (x̄ = ∂E/∂x; every step mirrors a line of `rsscs_forward`):
+/// 1. E = ½ Σ√λ − (3/2) Σ ω̃ with dλ_p = v_pᵀ dH v_p ⇒ ∂E/∂λ_p = ¼ λ_p^{−1/2},
+///    H̄ = G = ¼ V diag(λ^{−1/2}) Vᵀ (= ¼ H^{−1/2}, valid with degeneracies
+///    since E = ½ tr H^{1/2}), and ω̄̃ = −3/2. Check: one atom, H = ω̃² I₃,
+///    ω̄̃ = 2ω̃·3/(4ω̃) − 3/2 = 0, as E ≡ 0 requires.
+/// 2. H diagonal ω̃_A²: ω̄̃_A += 2 ω̃_A Σ_i G_(A,i)(A,i). Off-diagonal pair
+///    A > B: the block value P t_ij sits at (A,i),(B,j) AND (B,j),(A,i), so
+///    its adjoint is v̄_ij = G_(A,i)(B,j) + G_(B,j)(A,i). P̄ = Σ v̄·T_bare,
+///    T̄_bare = P v̄ (→ positions); P = ω̃_A ω̃_B √(α̃_A α̃_B) f(R; β(R̃_A+R̃_B))
+///    → ω̄̃, ᾱ̃ (½ P̄ P/α̃), f̄ → (R̄, S̄) via [`fermi_partials`], R̄̃_{A,B} += β S̄.
+/// 3. ω̃ = 4/3 C̃6/α̃² → C̄̃6 += ω̄̃·4/(3α̃²), ᾱ̃ −= ω̄̃·2ω̃/α̃.
+///    R̃ = R (α̃/α₀)^{1/3} → R̄ += R̄̃ R̃/R, ᾱ̃ += R̄̃ R̃/(3α̃), ᾱ₀ −= R̄̃ R̃/(3α₀).
+/// 4. Per node k: ā_A = C̄̃6_A (6/π) w_k ã_A(u_k) (+ ᾱ̃_A at the u = 0 node).
+///    ã_A = ⅓ Σ_{B,i} B_(A,i)(B,i) with B = C⁻¹ ⇒ C̄ = −Bᵀ Ḃ Bᵀ,
+///    Ḃ_(A,i)(B,j) = ā_A/3 δ_ij. Ḃ = diag(ā/3) (1 1ᵀ ⊗ I₃) factors, so
+///    C̄_mn = −Σ_i z_mi w_ni with z_mi = Σ_A B_(A,i)m ā_A/3 and
+///    w_ni = Σ_B B_n(B,i) (rank 3, only the entries needed are formed).
+///    C diagonal 1/α_A → ᾱ_A −= Σ_i C̄_(A,i)(A,i)/α_A². Off-diagonal pair:
+///    v̄_ij = C̄_(A,i)(B,j) + C̄_(B,j)(A,i), v = (1 − f(R; β(R_A+R_B))) T_GG(d, σ_AB)
+///    → f̄ = −Σ v̄·T_GG, T̄_GG = (1 − f) v̄ → [`t_gg_vjp`] (d, σ_AB);
+///    σ_AB = √(σ_A²+σ_B²) → σ̄_A += σ̄_AB σ_A/σ_AB; σ_A = (frac α_A)^{1/3}
+///    → ᾱ_A += σ̄_A σ_A/(3α_A); α_A = α₀/(1 + (u/ω)²) → ᾱ₀ += ᾱ_A α_A/α₀,
+///    ω̄ += ᾱ_A 2 α_A² u²/(α₀ ω³).
+/// 5. ω = 4/3 C6/α₀² → C̄6 += ω̄·4/(3α₀²), ᾱ₀ −= ω̄·2ω/α₀.
+/// Positions: every pair term depends on d = R_A − R_B only, so ∂/∂d goes
+/// to A with + and to B with −; R = |d| contributes R̄ d/R.
+fn rsscs_backward(
+    positions: &[[f64; 3]],
+    p: &MbdAtomParams,
+    cfg: &MbdRsscsConfig,
+    res: MbdRsscsResult,
+    tape: &Tape,
+) -> MbdRsscsGradient {
+    let n = positions.len();
+    let n3 = 3 * n;
+    let (beta, fa) = (cfg.beta, cfg.a);
+    let mut d_pos = vec![[0.0_f64; 3]; n];
+    let mut d_a0 = vec![0.0_f64; n];
+    let mut d_c6 = vec![0.0_f64; n];
+    let mut d_r = vec![0.0_f64; n];
+
+    // Step 1: G = ¼ V diag(λ^{-1/2}) Vᵀ.
+    let mut vs = tape.h_evecs.clone();
+    for (pidx, mut col) in vs.axis_iter_mut(Axis(1)).enumerate() {
+        let s = 0.25 / tape.h_evals[pidx].sqrt();
+        col.mapv_inplace(|x| x * s);
+    }
+    let g = vs.dot(&tape.h_evecs.t());
+    drop(vs);
+
+    // Step 2: adjoint through H.
+    let (a0t, rt, omt) = (&res.alpha_0_rsscs, &res.r_vdw_rsscs, &res.omega_rsscs);
+    let mut om_bar = vec![-1.5_f64; n];
+    let mut a0t_bar = vec![0.0_f64; n];
+    let mut rt_bar = vec![0.0_f64; n];
+    for a in 0..n {
+        let diag: f64 = (0..3).map(|i| g[(3 * a + i, 3 * a + i)]).sum();
+        om_bar[a] += 2.0 * omt[a] * diag;
+        for b in 0..a {
+            let d = sep(positions, a, b);
+            let r = norm(&d);
+            let s = beta * (rt[a] + rt[b]);
+            let f = fermi(r, s, fa);
+            let sq = (a0t[a] * a0t[b]).sqrt();
+            let pref = omt[a] * omt[b] * sq * f;
+            let tb = t_bare(&d, r);
+            let mut vbar = [[0.0_f64; 3]; 3];
+            let mut pbar = 0.0;
+            for i in 0..3 {
+                for j in 0..3 {
+                    vbar[i][j] = g[(3 * a + i, 3 * b + j)] + g[(3 * b + j, 3 * a + i)];
+                    pbar += vbar[i][j] * tb[i][j];
+                }
+            }
+            let m: [[f64; 3]; 3] =
+                std::array::from_fn(|i| std::array::from_fn(|j| pref * vbar[i][j]));
+            let (_, gd, _, _) = t_bare_vjp(&d, r, &m);
+            om_bar[a] += pbar * omt[b] * sq * f;
+            om_bar[b] += pbar * omt[a] * sq * f;
+            let half = 0.5 * pbar * omt[a] * omt[b] * sq * f;
+            a0t_bar[a] += half / a0t[a];
+            a0t_bar[b] += half / a0t[b];
+            let fbar = pbar * omt[a] * omt[b] * sq;
+            let (df_dr, df_ds) = fermi_partials(r, s, fa);
+            let rbar = fbar * df_dr;
+            let sbar = fbar * df_ds;
+            rt_bar[a] += beta * sbar;
+            rt_bar[b] += beta * sbar;
+            for x in 0..3 {
+                let gx = gd[x] + rbar * d[x] / r;
+                d_pos[a][x] += gx;
+                d_pos[b][x] -= gx;
+            }
+        }
+    }
+    drop(g);
+
+    // Step 3: ω̃ and R̃.
+    let mut c6t_bar = vec![0.0_f64; n];
+    for a in 0..n {
+        c6t_bar[a] = om_bar[a] * 4.0 / (3.0 * a0t[a] * a0t[a]);
+        a0t_bar[a] -= om_bar[a] * 2.0 * omt[a] / a0t[a];
+        a0t_bar[a] += rt_bar[a] * rt[a] / (3.0 * a0t[a]);
+        d_r[a] += rt_bar[a] * rt[a] / p.r_vdw[a];
+        d_a0[a] -= rt_bar[a] * rt[a] / (3.0 * p.alpha_0[a]);
+    }
+
+    // Step 4: per frequency node (buffers reused across nodes).
+    let omega_ts: Vec<f64> = (0..n)
+        .map(|a| 4.0 / 3.0 * p.c6[a] / (p.alpha_0[a] * p.alpha_0[a]))
+        .collect();
+    let frac = (2.0 / std::f64::consts::PI).sqrt() / 3.0;
+    let mut om_ts_bar = vec![0.0_f64; n];
+    let mut abar = vec![0.0_f64; n];
+    let mut alpha = vec![0.0_f64; n];
+    let mut sigma = vec![0.0_f64; n];
+    let mut alpha_bar = vec![0.0_f64; n];
+    let mut sigma_bar = vec![0.0_f64; n];
+    let mut z3 = Array2::<f64>::zeros((n3, 3));
+    let mut w3 = Array2::<f64>::zeros((n3, 3));
+    for (k, &u) in tape.freqs.iter().enumerate() {
+        let bm = &tape.binv[k];
+        let ak = &tape.a_dyn[k];
+        for a in 0..n {
+            abar[a] = c6t_bar[a] * (6.0 / std::f64::consts::PI) * tape.weights[k] * ak[a];
+            if k == 0 {
+                // α̃₀ = a_dyn[0] (the u = 0 node), as in `rsscs_forward`.
+                abar[a] += a0t_bar[a];
+            }
+        }
+        z3.fill(0.0);
+        w3.fill(0.0);
+        for m in 0..n3 {
+            for bb in 0..n {
+                for i in 0..3 {
+                    w3[(m, i)] += bm[(m, 3 * bb + i)];
+                    z3[(m, i)] += bm[(3 * bb + i, m)] * abar[bb] / 3.0;
+                }
+            }
+        }
+        let cbar = |m: usize, q: usize| -> f64 {
+            -(z3[(m, 0)] * w3[(q, 0)] + z3[(m, 1)] * w3[(q, 1)] + z3[(m, 2)] * w3[(q, 2)])
+        };
+        for a in 0..n {
+            alpha[a] = p.alpha_0[a] / (1.0 + (u / omega_ts[a]).powi(2));
+            sigma[a] = (frac * alpha[a]).cbrt();
+        }
+        alpha_bar.fill(0.0);
+        sigma_bar.fill(0.0);
+        for a in 0..n {
+            let dsum: f64 = (0..3).map(|i| cbar(3 * a + i, 3 * a + i)).sum();
+            alpha_bar[a] -= dsum / (alpha[a] * alpha[a]);
+            for b in 0..a {
+                let d = sep(positions, a, b);
+                let r = norm(&d);
+                let s = beta * (p.r_vdw[a] + p.r_vdw[b]);
+                let sr = 1.0 - fermi(r, s, fa);
+                let sab = (sigma[a] * sigma[a] + sigma[b] * sigma[b]).sqrt();
+                let t = t_gg(&d, r, sab);
+                let mut vbar = [[0.0_f64; 3]; 3];
+                let mut srbar = 0.0;
+                for i in 0..3 {
+                    for j in 0..3 {
+                        vbar[i][j] = cbar(3 * a + i, 3 * b + j) + cbar(3 * b + j, 3 * a + i);
+                        srbar += vbar[i][j] * t[i][j];
+                    }
+                }
+                let m: [[f64; 3]; 3] =
+                    std::array::from_fn(|i| std::array::from_fn(|j| sr * vbar[i][j]));
+                let (gd, gsig) = t_gg_vjp(&d, r, sab, &m);
+                let fbar = -srbar;
+                let (df_dr, df_ds) = fermi_partials(r, s, fa);
+                let rbar = fbar * df_dr;
+                let sbar = fbar * df_ds;
+                d_r[a] += beta * sbar;
+                d_r[b] += beta * sbar;
+                for x in 0..3 {
+                    let gx = gd[x] + rbar * d[x] / r;
+                    d_pos[a][x] += gx;
+                    d_pos[b][x] -= gx;
+                }
+                sigma_bar[a] += gsig * sigma[a] / sab;
+                sigma_bar[b] += gsig * sigma[b] / sab;
+            }
+        }
+        for a in 0..n {
+            alpha_bar[a] += sigma_bar[a] * sigma[a] / (3.0 * alpha[a]);
+            d_a0[a] += alpha_bar[a] * alpha[a] / p.alpha_0[a];
+            om_ts_bar[a] += alpha_bar[a] * 2.0 * alpha[a] * alpha[a] * u * u
+                / (p.alpha_0[a] * omega_ts[a].powi(3));
+        }
+    }
+
+    // Step 5: ω = 4/3 C6/α₀².
+    for a in 0..n {
+        d_c6[a] += om_ts_bar[a] * 4.0 / (3.0 * p.alpha_0[a] * p.alpha_0[a]);
+        d_a0[a] -= om_ts_bar[a] * 2.0 * omega_ts[a] / p.alpha_0[a];
+    }
+
+    MbdRsscsGradient {
+        result: res,
+        d_positions: d_pos,
+        d_alpha_0: d_a0,
+        d_c6,
+        d_r_vdw: d_r,
+    }
+}
+
+/// Analytic gradient of the MBD@rsSCS energy with respect to the coordinates
+/// (Bohr) and the unscreened per-atom TS inputs, by one reverse-mode pass
+/// over the same forward computation as [`mbd_rsscs_energy_from_params`]
+/// (cost O(n_freq (3N)³), dominated by the forward inverses).
+///
+/// Memory: the forward pass keeps the n_freq + 1 inverse screening matrices,
+/// (n_freq + 1)·(3N)²·8 bytes.
+///
+/// # Errors
+///
+/// As [`mbd_rsscs_energy_from_params`].
+pub fn mbd_rsscs_gradient_from_params(
+    positions: &[[f64; 3]],
+    params: &MbdAtomParams,
+    config: &MbdRsscsConfig,
+) -> Result<MbdRsscsGradient, FerricError> {
+    let (res, tape) = rsscs_forward(positions, params, config, true)?;
+    let tape = tape.ok_or_else(|| {
+        FerricError::General("MBD@rsSCS gradient: forward pass returned no tape".to_string())
+    })?;
+    Ok(rsscs_backward(positions, params, config, res, &tape))
+}
+
+/// [`mbd_rsscs_gradient_from_params`] from atomic numbers and Hirshfeld
+/// volume ratios (argument order of [`mbd_rsscs_energy`]). Also returns
+/// dE/dr_A through α₀ = r α_free, C6 = r² C6_free, R_vdW = r^{1/3} R_free:
+/// dE/dr = α_free dE/dα₀ + 2 r C6_free dE/dC6 + ⅓ r^{−2/3} R_free dE/dR_vdW.
+///
+/// # Errors
+///
+/// As [`mbd_rsscs_energy`].
+pub fn mbd_rsscs_gradient(
+    z: &[usize],
+    positions: &[[f64; 3]],
+    volume_ratios: &[f64],
+    config: &MbdRsscsConfig,
+) -> Result<(MbdRsscsGradient, Vec<f64>), FerricError> {
+    let params = ts_params_from_volume_ratios(z, volume_ratios)?;
+    let grad = mbd_rsscs_gradient_from_params(positions, &params, config)?;
+    let mut d_ratio = Vec::with_capacity(z.len());
+    for (i, (&za, &r)) in z.iter().zip(volume_ratios).enumerate() {
+        let (alpha_free, c6_free, _) = ts_free_atom(za).ok_or_else(|| out_of_table(i, za))?;
+        let r_free = ts_free_atom_r_vdw(za).ok_or_else(|| out_of_table(i, za))?;
+        let rc = r.cbrt();
+        d_ratio.push(
+            alpha_free * grad.d_alpha_0[i]
+                + 2.0 * r * c6_free * grad.d_c6[i]
+                + r_free / (3.0 * rc * rc) * grad.d_r_vdw[i],
+        );
+    }
+    Ok((grad, d_ratio))
 }
 
 #[cfg(test)]
@@ -742,5 +1138,240 @@ mod tests {
             msg.contains("polarization catastrophe") || msg.contains("screened polarizability"),
             "{msg}"
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // Analytic gradient (reverse mode) vs central finite differences.
+    //
+    // Expected FD error, central difference with step h:
+    //   truncation h²/6 · E''' and roundoff ~ eps·Σω/h (E cancels
+    //   ½Σ√λ against (3/2)Σω, Σω ~ 1–3 Ha here).
+    // Positions, h = 1e-4 Bohr: truncation ~1e-11 (|E| ~ 1e-3 Ha, E''' ~
+    // |E|·336/L³ at L ~ 2–3 Bohr), roundoff ~1e-15·3/2e-4 ~ 1e-11, so
+    // ~1e-10 absolute against max|g| ~ 1e-4..1e-3, i.e. ≲1e-6 of the scale.
+    // Parameters, h = 1e-5·x (x ~ 3–50): roundoff ~1e-14/(2h) ~ 1e-10..1e-9
+    // against |dE/dx| ~ 1e-5..1e-4, i.e. ≲1e-5..1e-6 of the scale.
+    //
+    // WHAT EACH TEST CATCHES (mutations of `rsscs_backward`):
+    // * gradient_matches_fd_*: positions — dropping the T_SR (screening)
+    //   adjoint of step 4, dropping either Fermi R-derivative, a wrong
+    //   ∂T_GG/∂d or ∂T_GG/∂σ term, using only the (A,B) block instead of
+    //   (A,B)+(B,A) (factor 2 on every pair adjoint), C̄ = +B Ḃ B (sign),
+    //   dropping the R̃ dependence on α̃₀ (α̃₀ depends on positions through
+    //   screening). Parameters — dropping the ω(C6, α₀) dependence of α(iu)
+    //   (C6 enters ONLY via ω, so dE/dC6 would be identically zero),
+    //   dropping −R̄̃ R̃/(3α₀) or the β S̄ term on the UNSCREENED R_vdW, the
+    //   wrong weight 6/π w_k in ā.
+    // * ratio_gradient_matches_fd: chain-rule factors (2r C6_free,
+    //   ⅓ r^{-2/3} R_free).
+    // * gradient_is_translation_and_rotation_invariant: a position adjoint
+    //   not built from the separation vector (e.g. M·d replaced by a single
+    //   component, or the ± split between A and B lost).
+    // * gradient_energy_is_bit_identical: the gradient's forward pass
+    //   drifting from the energy's.
+
+    /// PROVISIONAL: max |analytic − FD| / max |analytic| per input family
+    /// (positions, α₀, C6, R_vdW). Expected ≲1e-6 (above); the main
+    /// session tightens this from the measured maxima.
+    const FD_REL_BAR: f64 = 1e-5;
+    /// PROVISIONAL: |Σ_A g_A| and |Σ_A R_A × g_A| relative to max|g| (and
+    /// max|R|·max|g| for the torque). Pure roundoff is expected (~1e-14).
+    const INVARIANCE_REL_BAR: f64 = 1e-10;
+    const FD_H_POS: f64 = 1e-4;
+    const FD_H_PARAM_REL: f64 = 1e-5;
+
+    fn dimer_case() -> (Vec<usize>, Vec<[f64; 3]>, Vec<f64>) {
+        (
+            vec![6, 8],
+            vec![[0.0, 0.0, 0.0], [0.3, -0.4, 2.6]],
+            vec![0.9, 0.8],
+        )
+    }
+
+    /// Non-symmetric 6-atom cluster (formamide-like, bonded distances).
+    fn cluster_case() -> (Vec<usize>, Vec<[f64; 3]>, Vec<f64>) {
+        (
+            vec![6, 8, 7, 1, 1, 1],
+            vec![
+                [0.0, 0.0, 0.0],
+                [2.27, 0.1, 0.05],
+                [-1.3, 2.1, -0.2],
+                [-0.9, -1.95, 0.3],
+                [-3.1, 2.0, 0.4],
+                [-0.4, 3.8, -0.6],
+            ],
+            vec![0.9, 0.85, 0.88, 0.6, 0.65, 0.7],
+        )
+    }
+
+    fn max_abs(v: impl IntoIterator<Item = f64>) -> f64 {
+        v.into_iter().fold(0.0_f64, |m, x| m.max(x.abs()))
+    }
+
+    fn energy(pos: &[[f64; 3]], p: &MbdAtomParams, c: &MbdRsscsConfig) -> f64 {
+        mbd_rsscs_energy_from_params(pos, p, c).unwrap().energy
+    }
+
+    fn check_family(label: &str, analytic: &[f64], fd: &[f64]) {
+        let scale = max_abs(analytic.iter().copied());
+        assert!(
+            scale > 0.0,
+            "{label}: analytic gradient is identically zero"
+        );
+        let err = max_abs(analytic.iter().zip(fd).map(|(a, f)| a - f));
+        eprintln!(
+            "{label}: max|an-fd| {err:.2e} scale {scale:.2e} rel {:.2e}",
+            err / scale
+        );
+        assert!(
+            err < FD_REL_BAR * scale,
+            "{label}: max|analytic - FD| {err:.2e} >= {FD_REL_BAR:.0e} * {scale:.2e}\n\
+             analytic {analytic:?}\nfd {fd:?}"
+        );
+    }
+
+    fn fd_check_all(label: &str, pos: &[[f64; 3]], p: &MbdAtomParams, c: &MbdRsscsConfig) {
+        let g = mbd_rsscs_gradient_from_params(pos, p, c).unwrap();
+        let n = pos.len();
+        // Positions.
+        let mut an = Vec::new();
+        let mut fd = Vec::new();
+        for a in 0..n {
+            for x in 0..3 {
+                let mut pp = pos.to_vec();
+                let mut pm = pos.to_vec();
+                pp[a][x] += FD_H_POS;
+                pm[a][x] -= FD_H_POS;
+                fd.push((energy(&pp, p, c) - energy(&pm, p, c)) / (2.0 * FD_H_POS));
+                an.push(g.d_positions[a][x]);
+            }
+        }
+        check_family(&format!("{label} positions"), &an, &fd);
+        // Unscreened TS inputs.
+        fn f_alpha(q: &mut MbdAtomParams) -> &mut Vec<f64> {
+            &mut q.alpha_0
+        }
+        fn f_c6(q: &mut MbdAtomParams) -> &mut Vec<f64> {
+            &mut q.c6
+        }
+        fn f_r(q: &mut MbdAtomParams) -> &mut Vec<f64> {
+            &mut q.r_vdw
+        }
+        type Field = fn(&mut MbdAtomParams) -> &mut Vec<f64>;
+        let fields: [(&str, Field, &Vec<f64>); 3] = [
+            ("alpha_0", f_alpha, &g.d_alpha_0),
+            ("C6", f_c6, &g.d_c6),
+            ("R_vdW", f_r, &g.d_r_vdw),
+        ];
+        for (name, field, analytic) in fields {
+            let mut fd = Vec::with_capacity(n);
+            for a in 0..n {
+                let mut qp = p.clone();
+                let mut qm = p.clone();
+                let h = FD_H_PARAM_REL * field(&mut qp)[a];
+                field(&mut qp)[a] += h;
+                field(&mut qm)[a] -= h;
+                fd.push((energy(pos, &qp, c) - energy(pos, &qm, c)) / (2.0 * h));
+            }
+            check_family(&format!("{label} {name}"), analytic, &fd);
+        }
+    }
+
+    #[test]
+    fn gradient_matches_fd_dimer() {
+        let (z, pos, r) = dimer_case();
+        let p = ts_params_from_volume_ratios(&z, &r).unwrap();
+        fd_check_all("dimer", &pos, &p, &cfg(0.83));
+    }
+
+    #[test]
+    fn gradient_matches_fd_cluster() {
+        let (z, pos, r) = cluster_case();
+        let p = ts_params_from_volume_ratios(&z, &r).unwrap();
+        fd_check_all("cluster", &pos, &p, &cfg(0.83));
+    }
+
+    #[test]
+    fn ratio_gradient_matches_fd() {
+        let c = cfg(0.83);
+        for (label, (z, pos, r)) in [("dimer", dimer_case()), ("cluster", cluster_case())] {
+            let (g, d_ratio) = mbd_rsscs_gradient(&z, &pos, &r, &c).unwrap();
+            let e_ref = mbd_rsscs_energy(&z, &pos, &r, &c).unwrap().energy;
+            assert_eq!(g.result.energy, e_ref, "{label}: ratio front door energy");
+            let fd: Vec<f64> = (0..r.len())
+                .map(|a| {
+                    let h = FD_H_PARAM_REL * r[a];
+                    let mut rp = r.clone();
+                    let mut rm = r.clone();
+                    rp[a] += h;
+                    rm[a] -= h;
+                    (mbd_rsscs_energy(&z, &pos, &rp, &c).unwrap().energy
+                        - mbd_rsscs_energy(&z, &pos, &rm, &c).unwrap().energy)
+                        / (2.0 * h)
+                })
+                .collect();
+            check_family(&format!("{label} ratios"), &d_ratio, &fd);
+        }
+    }
+
+    #[test]
+    fn gradient_is_translation_and_rotation_invariant() {
+        let (z, pos, r) = cluster_case();
+        let (g, _) = mbd_rsscs_gradient(&z, &pos, &r, &cfg(0.83)).unwrap();
+        let gmax = max_abs(g.d_positions.iter().flatten().copied());
+        let rmax = max_abs(pos.iter().flatten().copied());
+        assert!(gmax > 0.0);
+        let mut force_sum = [0.0_f64; 3];
+        let mut torque = [0.0_f64; 3];
+        for (ra, ga) in pos.iter().zip(&g.d_positions) {
+            for x in 0..3 {
+                force_sum[x] += ga[x];
+            }
+            torque[0] += ra[1] * ga[2] - ra[2] * ga[1];
+            torque[1] += ra[2] * ga[0] - ra[0] * ga[2];
+            torque[2] += ra[0] * ga[1] - ra[1] * ga[0];
+        }
+        let ft = max_abs(force_sum);
+        let tq = max_abs(torque);
+        eprintln!("sum g {ft:.2e}, torque {tq:.2e}, max|g| {gmax:.2e}");
+        assert!(ft < INVARIANCE_REL_BAR * gmax, "sum_A g_A = {force_sum:?}");
+        assert!(
+            tq < INVARIANCE_REL_BAR * gmax * rmax,
+            "sum_A R_A x g_A = {torque:?}"
+        );
+    }
+
+    #[test]
+    fn gradient_energy_is_bit_identical() {
+        for (z, pos, r) in [dimer_case(), cluster_case()] {
+            let p = ts_params_from_volume_ratios(&z, &r).unwrap();
+            let c = cfg(0.83);
+            let g = mbd_rsscs_gradient_from_params(&pos, &p, &c).unwrap();
+            let e = mbd_rsscs_energy_from_params(&pos, &p, &c).unwrap();
+            assert_eq!(g.result.energy, e.energy);
+            assert_eq!(g.result.alpha_0_rsscs, e.alpha_0_rsscs);
+            assert_eq!(g.result.min_eigenvalue, e.min_eigenvalue);
+        }
+    }
+
+    /// EXACTNESS ANCHOR for the gradient: a single atom has E ≡ 0 for every
+    /// position and TS input, so every derivative is exactly zero.
+    #[test]
+    fn single_atom_gradient_is_zero() {
+        let (g, d_ratio) =
+            mbd_rsscs_gradient(&[6], &[[0.3, -0.2, 1.0]], &[0.87], &cfg(0.83)).unwrap();
+        let all = g
+            .d_positions
+            .iter()
+            .flatten()
+            .chain(&g.d_alpha_0)
+            .chain(&g.d_c6)
+            .chain(&g.d_r_vdw)
+            .chain(&d_ratio)
+            .copied();
+        // E = ½·3√(ω̃²) − (3/2)ω̃ cancels exactly in the adjoint too, up to the
+        // rounding of 1/√λ against ω̃ (a few ulp of ω̃·(dω̃/dx)).
+        let m = max_abs(all);
+        assert!(m < 1e-12, "single atom gradient {m:.2e}");
     }
 }

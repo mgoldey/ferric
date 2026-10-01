@@ -5803,6 +5803,46 @@
             1.6367185116443275
           ],
           "h_min_eigenvalue": 0.19878601656951309,
+          "gradient": [
+            [
+              1.6721839542672034e-05,
+              -0.00015559075769552247,
+              1.9536682923724367e-09
+            ],
+            [
+              -9.49639338607895e-05,
+              7.632861142829161e-05,
+              -8.00473746908638e-11
+            ],
+            [
+              -4.5601062606849805e-05,
+              4.238306746551281e-05,
+              -6.830535079207606e-12
+            ],
+            [
+              7.68809912651597e-06,
+              5.941607498339406e-05,
+              4.6904531518008396e-05
+            ],
+            [
+              7.689293560074531e-06,
+              5.941587872410343e-05,
+              -4.690600783731029e-05
+            ],
+            [
+              0.0001084657642383766,
+              -8.195287490577939e-05,
+              -3.904710809828671e-10
+            ]
+          ],
+          "gradient_fd_check": {
+            "libmbd_array_is": "dE/dR",
+            "fd_step_bohr": 0.0001,
+            "max_abs_fd": 0.00015559074917348426,
+            "max_abs_residual_vs_fd": 8.8015451013329e-12,
+            "max_abs_residual_opposite_convention": 0.00031118150686900673,
+            "energy_with_force": -0.0015296867694498673
+          },
           "grid_sensitivity": {
             "30": {
               "energy": -0.001529686746490455,
@@ -5873,6 +5913,46 @@
             1.636285317145446
           ],
           "h_min_eigenvalue": 0.1989310077498162,
+          "gradient": [
+            [
+              1.0382212044284529e-05,
+              -0.00013670448888466325,
+              1.6452593109926577e-09
+            ],
+            [
+              -9.053564448247733e-05,
+              7.009727240606757e-05,
+              -1.4394338863829029e-11
+            ],
+            [
+              -4.260368793505292e-05,
+              3.803636669667381e-05,
+              6.17349134892457e-11
+            ],
+            [
+              1.0014247175346308e-05,
+              4.814630347817458e-05,
+              4.3544108516662854e-05
+            ],
+            [
+              1.0015419694443432e-05,
+              4.814614556076236e-05,
+              -4.35454266314377e-05
+            ],
+            [
+              0.00010272745350345588,
+              -6.772159925701525e-05,
+              -3.744851107331751e-10
+            ]
+          ],
+          "gradient_fd_check": {
+            "libmbd_array_is": "dE/dR",
+            "fd_step_bohr": 0.0001,
+            "max_abs_fd": 0.0001367044832889519,
+            "max_abs_residual_vs_fd": 1.0124440429906331e-11,
+            "max_abs_residual_opposite_convention": 0.00027340897217361515,
+            "energy_with_force": -0.0013268622658113571
+          },
           "grid_sensitivity": {
             "30": {
               "energy": -0.0013268622462696555,
@@ -5922,6 +6002,7 @@
       "target_energy": "plain MBD, damping 'dip,gg', static TS alpha/omega; libmbd variant='plain'",
       "scope_control": "MBD@rsSCS beta=0.83 (pymbd.screening/mbd_energy, libmbd default)",
       "rsscs_targets": "MBD@rsSCS beta in (0.83, 0.85), a=6, pymbd 15-node grid; pymbd python + libmbd variant='rsscs' (alpha_0_scs/C6_scs intermediates); R_vdw = ferric ts_free_atom_r_vdw * ratio^(1/3)",
+      "rsscs_gradient": "libmbd variant='rsscs' force=True, stored as dE/dR (Hartree/Bohr, TS alpha_0/C6/R_vdw fixed); convention decided by central FD of libmbd's energy (h=0.0001 Bohr), see runs[*].gradient_fd_check",
       "ts_c6": "Casimir-Polder quadrature on the stored grids + closed-form combination rule",
       "free_atom_table": "ferric ts_free_atom (parsed from free_atom_ref.rs) == pymbd vdw_params TS"
     },
@@ -5984,8 +6065,8 @@
     ],
     "bohr_in_angstrom": 0.52917721092,
     "generator": "scripts/validation/gen_ts_mbd.py",
-    "git_head": "330a00c86731ee8cf5053f95e3e8a992d4089a15",
-    "generated_utc": "2026-10-01T19:16:56+00:00",
+    "git_head": "977163cdb6002c54cc499c9589dd9c3534964d4a",
+    "generated_utc": "2026-10-01T20:24:12+00:00",
     "basis_role": "only produced the volume ratios"
   }
 }
