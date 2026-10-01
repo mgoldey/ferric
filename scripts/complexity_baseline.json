@@ -3600,8 +3600,8 @@
     "mi": 155.7127700178179
   },
   "crates/ferric-cli/src/config.rs::impl:ScfCfg#1::validate": {
-    "cc": 6.0,
-    "mi": 105.90833136458114
+    "cc": 9.0,
+    "mi": 96.40171273432964
   },
   "crates/ferric-cli/src/config.rs::impl:ScfCfg#1::validate::<anonymous>": {
     "cc": 1.0,
@@ -28762,6 +28762,10 @@
   "crates/ferric-scf/src/rhf.rs::solve_rhf_maxiter_returns_ok_not_converged_with_density::<anonymous>": {
     "cc": 1.0,
     "mi": 157.8484854211024
+  },
+  "crates/ferric-scf/src/rhf.rs::solve_rhf_once": {
+    "cc": 189.0,
+    "mi": -44.20175971781309
   },
   "crates/ferric-scf/src/rhf.rs::stability_rhf": {
     "cc": 9.0,
