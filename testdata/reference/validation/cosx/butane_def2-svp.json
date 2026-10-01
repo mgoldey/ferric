@@ -1,0 +1,243 @@
+{
+  "row": "COSX seminumerical exchange",
+  "system": "butane",
+  "basis": "def2-svp",
+  "charge": 0,
+  "multiplicity": 1,
+  "nao": 106,
+  "nuclear_repulsion": 131.64517729295423,
+  "basis_check": {
+    "nao": 106,
+    "replica_self_overlap_max_dev": 2.220446049250313e-16,
+    "pyscf_diag_max_dev": 4.440892098500626e-16,
+    "diag_checked": 106,
+    "diag_skipped_cartesian": 0
+  },
+  "methods": {
+    "hf": {
+      "xc": "HF",
+      "exact": {
+        "energy": -157.1861392016514
+      },
+      "sgx_matched_nofit": {
+        "75_110": {
+          "radial": 75,
+          "angular": 110,
+          "n_points": 115028,
+          "energy": -157.1863881731389,
+          "minus_exact": -0.0002489714875082427,
+          "scf_cycles": 7,
+          "wall_s": 28.6
+        },
+        "75_302": {
+          "radial": 75,
+          "angular": 302,
+          "n_points": 315853,
+          "energy": -157.18607969956307,
+          "minus_exact": 5.9502088333829306e-05,
+          "scf_cycles": 5,
+          "wall_s": 55.2
+        },
+        "75_434": {
+          "radial": 75,
+          "angular": 434,
+          "n_points": 454195,
+          "energy": -157.18614478068204,
+          "minus_exact": -5.579030641911231e-06,
+          "scf_cycles": 5,
+          "wall_s": 82.2
+        },
+        "75_590": {
+          "radial": 75,
+          "angular": 590,
+          "n_points": 617234,
+          "energy": -157.1861459093939,
+          "minus_exact": -6.707742500111635e-06,
+          "scf_cycles": 4,
+          "wall_s": 115.9
+        }
+      },
+      "sgx_pyscf_fit": {
+        "75_110": {
+          "radial": 75,
+          "angular": 110,
+          "n_points": 115028,
+          "energy": -157.18597011051165,
+          "minus_exact": 0.0001690911397531636,
+          "scf_cycles": 7,
+          "wall_s": 29.3
+        },
+        "75_302": {
+          "radial": 75,
+          "angular": 302,
+          "n_points": 315853,
+          "energy": -157.18617316551823,
+          "minus_exact": -3.396386682652519e-05,
+          "scf_cycles": 5,
+          "wall_s": 55.7
+        },
+        "75_434": {
+          "radial": 75,
+          "angular": 434,
+          "n_points": 454195,
+          "energy": -157.18614506450567,
+          "minus_exact": -5.862854266069917e-06,
+          "scf_cycles": 4,
+          "wall_s": 66.6
+        },
+        "75_590": {
+          "radial": 75,
+          "angular": 590,
+          "n_points": 617234,
+          "energy": -157.18613763714032,
+          "minus_exact": 1.5645110806872253e-06,
+          "scf_cycles": 3,
+          "wall_s": 73.9
+        },
+        "75_974": {
+          "radial": 75,
+          "angular": 974,
+          "n_points": 1018509,
+          "energy": -157.18613926483798,
+          "minus_exact": -6.318657597148558e-08,
+          "scf_cycles": 1,
+          "wall_s": 72.7
+        }
+      }
+    }
+  },
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "scf": "RHF / RKS(B3LYP), exact direct J; conv_tol 1e-11, conv_tol_grad 1e-07, direct_scf_tol 1e-14",
+      "sgx": "sgx_fit(pjs=False); dfj=False, direct_j=True, optk=False (get_jk_favorj), grids_thrd=0, rebuild_nsteps=1, fit_ovlp False (matched) / True (pyscf_fit)",
+      "sgx_grid": "flat (75, N) Treutler radial x Lebedev, Becke partition, becke_atomic_radii_adjust (get_gridss replaced)",
+      "xc_grid": "(75, 110) flat, becke_atomic_radii_adjust (B3LYP only)"
+    },
+    "grid": {
+      "sgx_radial": 75,
+      "sgx_angular_matched": [
+        110,
+        302,
+        434,
+        590
+      ],
+      "sgx_angular_pyscf_fit": [
+        110,
+        302,
+        434,
+        590,
+        974
+      ],
+      "xc": [
+        75,
+        110
+      ]
+    },
+    "aux_basis": "none",
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-11,
+      "conv_tol_grad": 1e-07
+    },
+    "stability": null,
+    "basis": "def2-svp",
+    "basis_json": "crates/ferric-core/src/basis/bundled/def2-svp.json",
+    "basis_sha256": "bfad5f58ceac74a9ac2766b39f510654cea29fb9408e966bb0dfcf14e1302d4f",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/alkane_4.xyz",
+    "geometry_xyz_sha256": "ef5b876a94eb2cdc9e22a80b9486ce939ca07f4f70719152dca99d8119d71b6a",
+    "geometry_bohr": [
+      [
+        "C",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "C",
+        2.354530721067583,
+        1.6649432020480477,
+        0.0
+      ],
+      [
+        "C",
+        4.70906333186129,
+        0.0,
+        0.0
+      ],
+      [
+        "C",
+        7.063594052928873,
+        1.6649432020480477,
+        0.0
+      ],
+      [
+        "H",
+        -1.6879808532326204,
+        1.1936096017851547,
+        0.0
+      ],
+      [
+        "H",
+        5.102260536325667e-05,
+        -1.1935736969887878,
+        -1.6880054196722398
+      ],
+      [
+        "H",
+        5.102260536325667e-05,
+        -1.1935736969887878,
+        1.6880054196722398
+      ],
+      [
+        "H",
+        2.354530721067583,
+        2.8585509141070777,
+        1.6879808532326204
+      ],
+      [
+        "H",
+        2.354530721067583,
+        2.8585509141070777,
+        -1.6879808532326204
+      ],
+      [
+        "H",
+        4.70906333186129,
+        -1.1936096017851547,
+        -1.6879808532326204
+      ],
+      [
+        "H",
+        4.70906333186129,
+        -1.1936096017851547,
+        1.6879808532326204
+      ],
+      [
+        "H",
+        8.751574906161494,
+        0.47133360026289317,
+        0.0
+      ],
+      [
+        "H",
+        7.063543030323509,
+        2.858515009310711,
+        -1.6880054196722398
+      ],
+      [
+        "H",
+        7.063543030323509,
+        2.858515009310711,
+        1.6880054196722398
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_cosx.py",
+    "git_head": "c371b71d8427b0a9734130ee962a7492b17d8759",
+    "generated_utc": "2026-10-01T01:23:07+00:00"
+  }
+}
