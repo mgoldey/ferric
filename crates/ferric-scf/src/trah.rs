@@ -888,7 +888,7 @@ impl TrahState {
     pub fn assess(&mut self, energy_now: f64) -> Option<TrahVerdict> {
         let pending = self.pending.take()?;
         let actual = energy_now - pending.energy_before;
-        if std::env::var("FERRIC_TRAH_RHO_TRACE").is_ok() {
+        if trah_rho_trace() {
             eprintln!(
                 "TRAH-RHO-TRACE: E_before={:.12} E_now={:.12} actual={:.6e} \
                  predicted={:.6e} rho={:.6e}",
@@ -1787,6 +1787,43 @@ mod tests {
             predicted_residual: 0.0,
             on_boundary: true,
             shift_iterations: 1,
+        }
+    }
+}
+
+/// `FERRIC_TRAH_RHO_TRACE` descriptor: per-step TRAH trust-ratio trace
+/// (env-only debug toggle). Read in trah.rs and rhf.rs via [`trah_rho_trace`].
+static TRAH_RHO_TRACE: ferric_core::config::ConfigVar<bool> = ferric_core::config::ConfigVar {
+    env_name: "FERRIC_TRAH_RHO_TRACE",
+    default: false,
+    parse: ferric_core::config::parse_toggle,
+    validate: ferric_core::config::accept_any,
+};
+
+/// Whether the TRAH trust-ratio trace is on. `FERRIC_TRAH_RHO_TRACE=1/true/on/yes`,
+/// off for `0/false/off/no`/unset; a malformed value logs a warning and stays off.
+pub(crate) fn trah_rho_trace() -> bool {
+    TRAH_RHO_TRACE.toggle()
+}
+
+#[cfg(test)]
+mod trah_rho_trace_tests {
+    use super::TRAH_RHO_TRACE;
+
+    #[test]
+    fn trah_rho_trace_parses_like_every_other_toggle() {
+        let env = |v: &'static str| move |_: &str| Some(v.to_string());
+        let unset = |_: &str| None;
+        assert!(!TRAH_RHO_TRACE.resolve(None, unset).unwrap().value);
+        for on in ["1", "true", "on", "yes"] {
+            assert!(TRAH_RHO_TRACE.resolve(None, env(on)).unwrap().value, "{on}");
+        }
+        // "0" used to turn the trace ON (the old code tested only is_ok()).
+        for off in ["0", "false", "off", "no"] {
+            assert!(
+                !TRAH_RHO_TRACE.resolve(None, env(off)).unwrap().value,
+                "{off}"
+            );
         }
     }
 }
