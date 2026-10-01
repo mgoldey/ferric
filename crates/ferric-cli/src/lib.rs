@@ -100,6 +100,7 @@ pub const PROVEN_METHOD_KINDS: &[&str] = &[
     "tda",
     "tddft",
     "oo-rimp2",
+    "wb97x-l-v",
 ];
 
 /// Epistemic-status warnings for `method.kind` values that are graded Smoke
@@ -160,14 +161,6 @@ pub const EPISTEMIC_WARNINGS: &[(&str, &str)] = &[
          with [mp2] frozen_core = 0 (the default here), is unparameterized extrapolation. \
          Open-shell (multiplicity > 1) is DOUBLY unvalidated: S66 is entirely closed-shell, so no \
          open-shell parameterization exists at all.",
-    ),
-    (
-        "wb97x-l-v",
-        "method.kind = \"wb97x-l-v\" is Smoke-grade (see site/src/reference/validation.md): the functional runs \
-         end to end and its pieces (E_KS, E_c, the lambda scaling, the omega range separation) are \
-         separately checked against the paper's structure and limits, but NO reference value for \
-         the TOTAL energy exists in ferric -- nothing compares it to the paper or to another code. \
-         Do not quote a wB97X-L-V total energy as validated.",
     ),
     (
         "b2plyp",

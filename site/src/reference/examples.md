@@ -100,7 +100,7 @@ See [Coupled cluster](../methods/cc.md) and
 | `water-linlccd.toml` | H2O / 6-31G | `linlccd` | — | |
 | `water-ccd.toml` | H2O / STO-3G | `ccd` | — | |
 | `water-ccsd-t.toml` | H2O / STO-3G | `ccsd(t)` | — | Prints the CCSD correlation energy, the (T) correction and the total. |
-| `water-wb97xlv.toml` | H2O / 6-31G | `wb97x-l-v` | — | λ = 0.6, ω = 0.1 Bohr⁻¹ (published values). Smoke grade. |
+| `water-wb97xlv.toml` | H2O / 6-31G | `wb97x-l-v` | — | λ = 0.6, ω = 0.1 Bohr⁻¹ (published values). Proven (narrow) grade. |
 | `water-b2plyp.toml` | H2O / cc-pVDZ | `b2plyp` | — | Spike grade. Aux `cc-pvdz-rifit` (an alias of `cc-pvdz-ri`). |
 
 ## RPA, C6 and properties
