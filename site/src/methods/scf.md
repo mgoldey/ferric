@@ -98,7 +98,10 @@ is 0.1% of the two-body energy at benzene and grows with size.
 (range-separated self-consistent screening), added post-SCF. Its per-atom
 inputs are Tkatchenko–Scheffler free-atom α, C6 and R_vdW scaled by Hirshfeld
 volume ratios v_A / v_A^free of the converged SCF density; the free-atom
-volumes come from live free-atom SCFs in the same basis and SCF settings. The
+volumes come from live free-atom SCFs in the same basis and SCF settings,
+solved for the isolated atom: point charges, external fields, implicit
+solvent, polarizable sites and cDFT constraints of the molecular run are not
+applied to it. The
 model itself is described under
 [Polarizabilities and dispersion coefficients](./rpa-gw.md#polarizabilities-and-dispersion-coefficients).
 
