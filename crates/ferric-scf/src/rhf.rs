@@ -1922,7 +1922,19 @@ fn solve_rhf_once(
         //
         // Phase 2 (step): solve the level-shifted AH equations inside the
         // current radius and apply the rotation.
-        let trah_armed = config.trah_trigger.is_some_and(|t| err_max < t)
+        // Armed below the trigger -- OR while a TRAH step still awaits its ρ
+        // verdict. A step may legitimately RAISE err_max (a hard-case escape
+        // moves along negative curvature, away from a stationary point), and
+        // re-deciding on err_max alone then handed the next iteration to DIIS,
+        // which discarded the prediction unscored and, with a history built at
+        // the saddle, walked straight back into it: tail-mode TRAH cycled to
+        // max_iter on N2/cc-pVDZ (`tests/trah_hard_case.rs`). Every TRAH step
+        // leaves a prediction pending, so TRAH keeps control until it stops
+        // stepping (nothing left to gain) or its radius collapses.
+        let trah_pending = trah_state.as_ref().is_some_and(|s| s.has_pending());
+        let trah_armed = config
+            .trah_trigger
+            .is_some_and(|t| err_max < t || trah_pending)
             && iter > 3
             && k_mix.omega == 0.0
             && !crate::rohf::xc_is_metagga(config.xc.as_deref());
@@ -1936,6 +1948,9 @@ fn solve_rhf_once(
         let trah_runs = trah_armed && !trah_state.as_ref().is_some_and(|s| s.collapsed());
         if let Some(st) = trah_state.as_mut() {
             if !trah_runs {
+                if st.has_pending() {
+                    crate::trah::note_trah_prediction_discarded();
+                }
                 st.clear_pending();
                 trah_undo = None;
             }
@@ -1991,6 +2006,14 @@ fn solve_rhf_once(
                         c_prev = Some(last_c.clone());
                     }
                 }
+                // The rejected iteration must `continue` (as the Phase 2 comment
+                // below says, and as the UHF loop does): `f` here is the Fock
+                // of the density just discarded. Falling through let DIIS
+                // extrapolate from its own history and overwrite the restored
+                // density -- on N2/STO-3G from the core guess one rejection
+                // threw TRAH back to its first step's saddle, it retraced the
+                // same path deterministically, and was rejected again.
+                trah_took_step = true;
             }
 
             // Phase 2: step from the (possibly restored) point.

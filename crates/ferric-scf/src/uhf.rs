@@ -1085,7 +1085,19 @@ pub fn solve_uhf_fockmod(
         // the two-phase ρ scheme are identical to the RHF branch in `rhf.rs` —
         // see its comment for the reasoning. The α and β rotations are solved as
         // ONE coupled trust-region problem (see `crate::trah::uhf_trah_step`).
-        let trah_armed = config.trah_trigger.is_some_and(|t| err_max < t)
+        // Armed below the trigger -- OR while a TRAH step still awaits its ρ
+        // verdict. A step may legitimately RAISE err_max (a hard-case escape
+        // moves along negative curvature, away from a stationary point), and
+        // re-deciding on err_max alone then handed the next iteration to DIIS,
+        // which discarded the prediction unscored and, with a history built at
+        // the saddle, walked straight back into it: tail-mode TRAH cycled to
+        // max_iter on N2/cc-pVDZ (`tests/trah_hard_case.rs`). Every TRAH step
+        // leaves a prediction pending, so TRAH keeps control until it stops
+        // stepping (nothing left to gain) or its radius collapses.
+        let trah_pending = trah_state.as_ref().is_some_and(|s| s.has_pending());
+        let trah_armed = config
+            .trah_trigger
+            .is_some_and(|t| err_max < t || trah_pending)
             && iter > 3
             && k_mix.omega == 0.0
             && !crate::rohf::xc_is_metagga(config.xc.as_deref());
@@ -1096,6 +1108,9 @@ pub fn solve_uhf_fockmod(
         let trah_runs = trah_armed && !trah_state.as_ref().is_some_and(|s| s.collapsed());
         if let Some(st) = trah_state.as_mut() {
             if !trah_runs {
+                if st.has_pending() {
+                    crate::trah::note_trah_prediction_discarded();
+                }
                 st.clear_pending();
                 trah_undo = None;
             }
