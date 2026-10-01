@@ -114,7 +114,11 @@ pub fn rohf_ah_step(
     // here and reuse across every hessian_matvec call inside the Davidson
     // closure below (called repeatedly per column, per Davidson iteration),
     // instead of each call constructing its own pool.
-    let pool = EnginePool::new(base.bounds.op, base.prep, 1e-14)?;
+    let pool = EnginePool::new(
+        base.bounds.op,
+        base.prep,
+        ferric_integrals::engine_pool::eri_precision(),
+    )?;
 
     // 2. Build the augmented matvec closure. Davidson expects the closure
     // to return V^T A V given V (the trial subspace).

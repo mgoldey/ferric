@@ -82,6 +82,7 @@ Read by every kind, because every kind runs an SCF first.
 | `guess` | string | `"minao"` | `minao` `sad` `hcore` (case-insensitive) | `"sad"` is an alias of `"minao"` (the MINAO projection guess); the free-atom-SCF SAD guess is not selectable from config. Any other value is an error. |
 | `soscf` | bool | `false` | | Enables the second-order (Newton) step in the SCF tail. |
 | `integral_thresh` | float | `1e-12` | | Integral screening threshold. |
+| `eri_precision` | float | `1e-20` | `0` to `1e-8` | libint primitive-screening precision for the SCF J/K integrals. Omitted: `FERRIC_ERI_PRECISION` if set, else `1e-20`. `1e-14` costs up to 6e-9 Ha in E_J for atoms past Ne; `0` disables primitive screening (1.8–5.7× slower per J/K build). |
 | `screening` | string | `"schwarz"` | `schwarz` `csb` `csam` | `csb` is rigorous and never looser than `schwarz`. `csam` is not a bound. It is refused for erfc (short-range) operators. See [SCF: screening](../methods/scf.md). |
 | `k_builder` | string | `"direct"` | `direct` `link` `cosx` | Exchange builder. Ignored with a warning when DF-K is active, for functionals with no exact exchange, or for range-separated functionals. See [SCF: choosing how exchange is built](../methods/scf.md). |
 | `cosx_grid` | inline table | `{ radial = 50, angular = 110 }` | `angular` ∈ 6/14/26/50/110/302/434/590 | Only with `k_builder = "cosx"`; otherwise it is an error. The inner table is strict. |
