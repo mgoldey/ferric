@@ -302,7 +302,9 @@ pub fn solve_cdft_uhf_seeded(
     }
     let k = cons.len();
     let zero_lambdas = vec![0.0_f64; k];
-    let lam_start: &[f64] = match seed.lambdas {
+    // Starting multipliers: an explicit seed wins, then
+    // `RhfConfig::cdft_lambda_init`, then 0.
+    let lam_start: &[f64] = match seed.lambdas.or(config.cdft_lambda_init.as_deref()) {
         None => &zero_lambdas,
         Some(l) if l.len() == k && l.iter().all(|v| v.is_finite()) => l,
         Some(l) => {

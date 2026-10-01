@@ -170,6 +170,28 @@ pub struct RhfConfig {
     /// rather than inherit the default, so the assertion is about convergence
     /// and not about how many iterations one particular CPU happened to need.
     pub cdft_max_outer: usize,
+    /// cDFT outer-loop STARTING multipliers, one per constraint. `None` (the
+    /// default) starts the λ-Newton loop at λ = 0 exactly as before.
+    ///
+    /// # Why a caller may need this (measured on He₂⁺/PBE, 2026-10-01)
+    ///
+    /// On a SYMMETRIC donor–acceptor pair λ = 0 is the delocalized state
+    /// (N = 1.5 on either He) and c(λ) is effectively discontinuous there: a
+    /// 1e-3 finite-difference step flips the inner SCF into a localized basin,
+    /// the Jacobian comes out as ±490, and Newton crawls in 1e-3 steps through
+    /// bistable inner solves or walks λ the wrong way (λ → −0.11). Beyond that,
+    /// N(λ) is a flat plateau (dN/dλ ≈ −0.006) ending in an over-localization
+    /// cliff (N → 0.01–0.06, E 1–3 Ha higher) with the root at the cliff edge,
+    /// so the ±1-clamped Newton step from the plateau lands on the cliff, whose
+    /// inner solves do not converge and therefore never tighten the bracket;
+    /// the loop then limit-cycles (def2-SVP R = 3.5 Å: λ = 2.6498 → 2.8291 →
+    /// 2.6485 → …). A start near the root (a previous geometry's λ, or a
+    /// reference value) avoids both. Only the start changes: the result is
+    /// still the root of c(λ) = 0 to `cdft_lambda_tol`.
+    ///
+    /// Length must equal `constraints.len()` and every entry must be finite
+    /// (an error otherwise).
+    pub cdft_lambda_init: Option<Vec<f64>>,
     /// cDFT **state selection**: after the λ-Newton loop converges, check the
     /// λ-augmented orbital Hessian and, if the constrained solution is a
     /// SADDLE, follow the downhill eigenvector and re-converge the whole λ
@@ -440,6 +462,7 @@ impl Default for RhfConfig {
             constraints: Vec::new(),
             cdft_lambda_tol: 1e-5,
             cdft_max_outer: 30,
+            cdft_lambda_init: None,
             cdft_stability_descent: true,
             scf_stability_descent: false,
             fractional_occ: false,

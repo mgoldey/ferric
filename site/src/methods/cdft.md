@@ -18,7 +18,9 @@ follow from it.
   He atom has a charge population of 2.0; He⁺ has 1.0.
 - `cdft_coupling(state_a, state_b)` returns a `CdftCouplingResult` with the
   Wu–Van Voorhis coupling `h_ab`, the determinant overlap `s_ab` and the two
-  diabat energies `e_a`, `e_b`.
+  diabat energies `e_a`, `e_b`. The raw element uses each state's free energy
+  F = E + λN, which makes the coupling independent of a constant shift of the
+  constraint operator.
 
 In Rust the entry points are `ferric_scf::cdft_driver::solve_cdft_uhf` and
 `ferric_scf::cdft_coupling::coupling_hab`; see the
@@ -105,16 +107,21 @@ E_unconstrained to 2.0e-7 Ha and λ to 1.1e-6 against NWChem's grid limit, and
 dE/dN = −λ to 2.3e-12 Ha (this identity is checked at def2-SVP, on the
 first target of each constraint kind); numbers are on
 [Capabilities and validation](../reference/validation.md#anchors). No external
-reference value is stated for UHF-cDFT energies or for the couplings. The
-tests check the coupling kernel on synthetic matrices and He₂⁺ identities
+reference value is stated for UHF-cDFT energies. The He₂⁺ coupling ingredients
+(determinant overlap, one- and two-electron transition elements, |V|) match
+NWChem's `et` module to ≤ 6e-11 Ha on NWChem's own determinants, and the KS
+diabats and couplings match end to end when started from NWChem's λ (see
+[Capabilities and validation](../reference/validation.md)). From λ = 0 the
+outer loop does not reliably find these diabats: the root sits next to an
+over-localization cliff. The tests also check the coupling kernel on synthetic matrices and He₂⁺ identities
 (`ferric-scf/tests/cdft_coupling.rs`), probe HeNe⁺ over a distance series
 (`cdft_coupling_hene.rs`), and check exact identities on LiH/def2-SVP
 (`cdft_uhf.rs`): the constraint is satisfied, λ = 0 reproduces plain UHF, and
 the constraint composes with an external point charge. The Python tests
 (`crates/ferric-python/tests/test_cdft.py`) rerun those configurations
 through the bindings and check `cdft_coupling` against an independent
-transition-density construction. Treat UHF-cDFT energies and the
-couplings as unvalidated against other codes; see
+transition-density construction. Treat UHF-cDFT energies as unvalidated
+against other codes; see
 [Capabilities and validation](../reference/validation.md#python-entry-points).
 
 ## The response connection

@@ -2473,10 +2473,12 @@ impl PyCdftCouplingResult {
 /// diabats (J. Chem. Phys. 125, 164105 (2006)):
 ///
 ///   H_ab = [H_raw - (E_a + E_b) S_ab / 2] / (1 - S_ab^2),
-///   H_raw = ½[(E_b S_ab - λ_b <a|W_b|b>) + (E_a S_ab - λ_a <a|W_a|b>)],
+///   H_raw = ½[(F_b S_ab - λ_b <a|W_b|b>) + (F_a S_ab - λ_a <a|W_a|b>)],
+///   F_x   = E_x + λ_x N_x,   N_x = <x|W_x|x> (the state's own population),
 ///
-/// with each state's energy, λ and W taken from its own result. No two-electron
-/// <a|H|b> is built.
+/// with each state's energy, λ and W taken from its own result. The F form is
+/// invariant under the empty redefinition W -> W - c·N̂ (target N -> N - c·N_e);
+/// the form with E in place of F is not. No two-electron <a|H|b> is built.
 ///
 /// Requirements (ValueError otherwise): each state has EXACTLY ONE constraint
 /// and it is kind="charge" (the Rust kernel applies one operator to both spins

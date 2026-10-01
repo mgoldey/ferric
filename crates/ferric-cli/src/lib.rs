@@ -641,6 +641,7 @@ pub fn run(args: Vec<String>) {
         // cDFT is not CLI-wired (constraints above are always empty), so this
         // is inert here; it is listed only because the literal is exhaustive.
         cdft_max_outer: 30,
+        cdft_lambda_init: None,
         // SCF accelerators, both opt-in and OFF here. Neither is CLI-wired
         // yet; these are listed only because the literal is exhaustive.
         //
