@@ -226,6 +226,10 @@ const FD_STEP: f64 = 1e-3;
 
 /// Largest outer-loop step in λ (Ha per electron), per component.
 const MAX_STEP: f64 = 1.0;
+/// Smallest backtrack distance before [`ScalarStepper::backtrack`] reports a
+/// stall: `FD_STEP × 1e-6`. He₂⁺/def2-SVP at 3.50 Å reached 5e-10 with the
+/// inner SCF still unconverged.
+const BACKTRACK_FLOOR: f64 = FD_STEP * 1e-6;
 
 /// Below this |dc/dλ| the finite-difference Jacobian is treated as singular.
 const SINGULAR_JAC: f64 = 1e-14;
@@ -366,14 +370,28 @@ impl ScalarStepper {
     /// Guard 1. Called with an inner solve at `lam` that was not within
     /// tolerance. Returns `Some(next λ)` to backtrack without a probe, or
     /// `None` to go on to the probe and [`Self::step`].
-    fn backtrack(&mut self, lam: f64, s: &Sample) -> Option<f64> {
+    ///
+    /// Errors once the backtrack distance falls below [`BACKTRACK_FLOOR`]: the
+    /// inner SCF fails arbitrarily close to the last converged λ, so further
+    /// halving would only spend the remaining `cdft_max_outer` iterations,
+    /// each a full inner SCF, without progress.
+    fn backtrack(&mut self, lam: f64, s: &Sample) -> Result<Option<f64>, FerricError> {
         if !self.guards || s.converged {
-            return None;
+            return Ok(None);
         }
-        let good = self.last_good?;
+        let Some(good) = self.last_good else {
+            return Ok(None);
+        };
         let back = good + 0.5 * (lam - good);
+        if (back - good).abs() < BACKTRACK_FLOOR {
+            return Err(FerricError::Convergence(format!(
+                "cDFT outer loop stalled: the inner SCF does not converge within \
+                 {BACKTRACK_FLOOR:e} of the last converged lambda {good:+.12} \
+                 (unconverged at {lam:+.12})"
+            )));
+        }
         self.radius = self.radius.min(0.5 * (back - good).abs());
-        Some(back)
+        Ok(Some(back))
     }
 
     /// Record the main point `s` at `lam` (before the probe is run).
@@ -462,7 +480,7 @@ fn solve_scalar<T>(
                 payload,
             });
         }
-        if let Some(back) = st.backtrack(lam, &s) {
+        if let Some(back) = st.backtrack(lam, &s)? {
             if trace {
                 eprintln!(
                     "[cdft-trace]   BACKTRACK: inner SCF unconverged; halving toward \
@@ -1652,18 +1670,48 @@ mod tests {
         );
     }
 
+    /// Guard 1 stops instead of halving forever: an inner SCF that fails
+    /// arbitrarily close to the last converged λ is reported as a stall.
+    #[test]
+    fn backtrack_reports_a_stall_below_the_floor() {
+        let mut st = ScalarStepper::new(true);
+        st.record(2.0, &sample(0.1, 0.0, true));
+        let mut lam = 3.0;
+        let mut halvings = 0;
+        let err = loop {
+            match st.backtrack(lam, &sample(-0.9, 0.0, false)) {
+                Ok(Some(back)) => {
+                    lam = back;
+                    halvings += 1;
+                    assert!(halvings < 64, "backtrack never reported the stall");
+                }
+                Ok(None) => panic!("an unconverged point with an anchor must backtrack"),
+                Err(e) => break e,
+            }
+        };
+        assert!(
+            matches!(err, FerricError::Convergence(ref m) if m.contains("stalled")),
+            "{err:?}"
+        );
+        // |back − good| halves from 0.5; it falls below 1e-9 after 29 halvings.
+        assert_eq!(halvings, 29);
+    }
+
     /// Guard 1 in isolation: the backtrack point and the radius it leaves.
     #[test]
     fn backtrack_halves_toward_the_last_converged_lambda_and_shrinks_the_radius() {
         let mut st = ScalarStepper::new(true);
         // Nothing converged yet: nothing to back off to.
-        assert_eq!(st.backtrack(3.0, &sample(-0.9, 0.0, false)), None);
+        assert_eq!(st.backtrack(3.0, &sample(-0.9, 0.0, false)).unwrap(), None);
         st.record(2.0, &sample(0.1, 0.0, true));
         // A converged point never backtracks.
-        assert_eq!(st.backtrack(3.0, &sample(-0.9, 0.0, true)), None);
+        assert_eq!(st.backtrack(3.0, &sample(-0.9, 0.0, true)).unwrap(), None);
         // An unconverged one goes halfway back, and the radius becomes half
         // the remaining distance.
-        assert_eq!(st.backtrack(3.0, &sample(-0.9, 0.0, false)), Some(2.5));
+        assert_eq!(
+            st.backtrack(3.0, &sample(-0.9, 0.0, false)).unwrap(),
+            Some(2.5)
+        );
         assert_eq!(st.radius, 0.25);
         // An unconverged point never becomes the anchor.
         st.record(2.5, &sample(-0.9, 0.0, false));
@@ -1684,7 +1732,7 @@ mod tests {
         // Off, the guard never fires.
         let mut off = ScalarStepper::new(false);
         off.record(2.0, &sample(0.1, 0.0, true));
-        assert_eq!(off.backtrack(3.0, &sample(-0.9, 0.0, false)), None);
+        assert_eq!(off.backtrack(3.0, &sample(-0.9, 0.0, false)).unwrap(), None);
     }
 
     /// Guard 2 in isolation: which pairs are trusted.
