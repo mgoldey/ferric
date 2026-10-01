@@ -2146,22 +2146,22 @@ pub struct ScfCfg {
     /// operator. See `ferric_scf::stability`.
     #[serde(default)]
     pub check_stability: bool,
-    /// UHF state selection: after convergence, check internal stability and,
-    /// if the solution is a SADDLE of the UHF orbital Hessian, follow the
-    /// downhill eigenvector and re-converge, keeping the lowest state
-    /// (`RhfConfig::scf_stability_descent`). Default `false`.
+    /// State selection: after convergence, check internal stability and, if
+    /// the solution is a SADDLE of the orbital Hessian (UHF, or the RHF
+    /// singlet channel), follow the downhill eigenvector and re-converge,
+    /// keeping the lowest state (`RhfConfig::scf_stability_descent`). Default
+    /// `false`.
     ///
     /// Same semantics as the Python `run_uhf(stability_descent=True)`: it
     /// turns on `check_stability` as well, because the descent acts on that
     /// verdict. Costs one Davidson per converged solve plus one SCF per
     /// descent taken. Needed where the default guess lands on a saddle (O2
-    /// triplet/STO-3G, N2+/6-31G).
+    /// triplet/STO-3G and N2+/6-31G with UHF; N2 at 1.6 Å/def2-SVP with RHF).
     ///
-    /// SCOPE: `task = "energy"` on the UHF/UKS route only (`kind = "uhf"`, or
-    /// `ksdft` on an open-shell molecule). ROHF has no implemented orbital
-    /// Hessian; the RHF descent exists in the library
-    /// (`RhfConfig::scf_stability_descent` on `solve_rhf`) but is not wired
-    /// here, so every other kind refuses the key (see
+    /// SCOPE: `task = "energy"` with `kind = "rhf"`, `"uhf"` or `"ksdft"`.
+    /// A KS functional with no stability verdict (range-separated, meta-GGA)
+    /// skips the descent with a printed reason. ROHF has no implemented
+    /// orbital Hessian, so `rohf` and every other kind refuse the key (see
     /// [`Config::validate_cli_wired_keys`]).
     #[serde(default)]
     pub stability_descent: bool,
@@ -2967,22 +2967,17 @@ impl Config {
                      steps, so the surface being followed would not be one surface."
                 ));
             }
-            let uhf_route = kind == "uhf" || (kind == "ksdft" && mult > 1);
-            if !uhf_route {
+            if !matches!(kind, "rhf" | "uhf" | "ksdft") {
                 let why = match kind {
                     "rohf" => "ROHF/ROKS has no implemented orbital Hessian (the Roothaan \
                                open-shell Hessian is a third operator), so there is no \
                                descent to follow"
                         .to_string(),
-                    "rhf" | "ksdft" => "the descent follows the UHF orbital Hessian; a \
-                                        restricted solve has none. Use kind = \"uhf\" (it \
-                                        may break spin symmetry, which is the point)"
-                        .to_string(),
-                    _ => format!("kind = \"{kind}\" does not run the UHF/UKS SCF route"),
+                    _ => format!("kind = \"{kind}\" does not run the descent-capable SCF"),
                 };
                 return Err(format!(
-                    "[scf] stability_descent is honoured by the UHF/UKS route only (kind = \
-                     \"uhf\", or \"ksdft\" on an open-shell molecule): {why}."
+                    "[scf] stability_descent is honoured by kind = \"rhf\", \"uhf\" and \
+                     \"ksdft\" only: {why}."
                 ));
             }
         }
@@ -6560,25 +6555,26 @@ mod cli_wired_keys_tests {
     // ---- [scf] stability_descent ----
 
     #[test]
-    fn stability_descent_is_the_uhf_route_on_energy_only() {
+    fn stability_descent_is_rhf_uhf_ksdft_on_energy_only() {
         let sd = "[scf]\nstability_descent = true\n";
-        cfg("uhf", "energy", 3, sd)
-            .validate_cli_wired_keys()
-            .unwrap();
-        cfg("uhf", "energy", 1, sd)
-            .validate_cli_wired_keys()
-            .unwrap();
-        cfg("ksdft", "energy", 3, sd)
-            .validate_cli_wired_keys()
-            .unwrap();
+        for (kind, mult) in [
+            ("uhf", 3),
+            ("uhf", 1),
+            ("ksdft", 3),
+            ("ksdft", 1),
+            ("rhf", 1),
+        ] {
+            cfg(kind, "energy", mult, sd)
+                .validate_cli_wired_keys()
+                .unwrap_or_else(|e| panic!("{kind} mult {mult}: {e}"));
+        }
         refused(
             &cfg("rohf", "energy", 3, sd),
             "ROHF/ROKS has no implemented",
         );
-        refused(&cfg("rhf", "energy", 1, sd), "restricted solve has none");
-        refused(&cfg("ksdft", "energy", 1, sd), "restricted solve has none");
-        refused(&cfg("rimp2", "energy", 1, sd), "UHF/UKS route only");
+        refused(&cfg("rimp2", "energy", 1, sd), "\"rhf\", \"uhf\" and");
         refused(&cfg("uhf", "optimize", 3, sd), "task = \"energy\" only");
+        refused(&cfg("rhf", "optimize", 1, sd), "task = \"energy\" only");
         // Default off.
         assert!(!cfg("uhf", "energy", 3, "").scf.stability_descent);
     }

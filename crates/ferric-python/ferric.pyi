@@ -1311,8 +1311,13 @@ def run_rhf(
     memory_budget_gb: float | None = None,
     solvent: float | str | None = None,
     pcm_lebedev_order: int | None = None,
+    stability_descent: bool | None = None,
 ) -> RhfResult:
     """Closed-shell Restricted Hartree-Fock.
+
+    stability_descent: when True, check internal (singlet) stability and, at a
+    saddle of the orbital Hessian, follow the downhill eigenvector and
+    re-converge, keeping the lowest state. Default False.
 
     df_j_aux / df_k_aux: an aux basis name selects RI-J / RI-K; "" / "exact" /
     "none" / "off" / "conventional" select conventional four-centre integrals

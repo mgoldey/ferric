@@ -344,8 +344,53 @@ fn stability_descent_reaches_the_library_uhf_minimum() {
     );
 }
 
+/// N2 at 1.60 Å / def2-SVP, RHF: the default SCF lands on the plain-DIIS
+/// SADDLE (-108.48256, internal singlet lambda_min -0.0654); the RHF descent
+/// reaches the stable minimum (-108.5016165203, PySCF-validated in
+/// `ferric-scf/tests/validation_scf_ladder.rs`). The CLI key must give the
+/// library's `check_stability + scf_stability_descent` result and differ from
+/// the run without it by the ~19 mHa saddle-to-minimum gap.
 #[test]
-fn stability_descent_is_refused_off_the_uhf_route() {
+fn stability_descent_reaches_the_library_rhf_minimum() {
+    let l = lib("validation/n2_r1.60.xyz", 1, "def2-svp");
+    let r = solve_rhf(
+        &l.ctx,
+        &l.mol,
+        &l.prep,
+        Operator::coulomb(),
+        &l.bounds,
+        &RhfConfig {
+            check_stability: true,
+            scf_stability_descent: true,
+            ..tight()
+        },
+    )
+    .unwrap();
+    assert!(r.converged);
+    let with = run_ok(
+        "sd_rhf_on",
+        &body(
+            "validation/n2_r1.60.xyz",
+            1,
+            "def2-svp",
+            "rhf",
+            &format!("{TIGHT}stability_descent = true\n"),
+        ),
+    );
+    let without = run_ok(
+        "sd_rhf_off",
+        &body("validation/n2_r1.60.xyz", 1, "def2-svp", "rhf", TIGHT),
+    );
+    let (e_on, e_off) = (value(&with, "energy "), value(&without, "energy "));
+    assert_close("rhf + stability_descent", e_on, r.energy, 1e-8);
+    assert!(
+        e_off - e_on > 1e-2,
+        "the descent must leave the saddle: without {e_off:.10}, with {e_on:.10}"
+    );
+}
+
+#[test]
+fn stability_descent_is_refused_off_the_rhf_uhf_ksdft_route() {
     let sd = "[scf]\nstability_descent = true\n";
     assert_refused(
         "sd_rohf",
@@ -353,9 +398,9 @@ fn stability_descent_is_refused_off_the_uhf_route() {
         &["stability_descent", "ROHF"],
     );
     assert_refused(
-        "sd_rhf",
-        &body("water.xyz", 1, "sto-3g", "rhf", sd),
-        &["stability_descent", "UHF/UKS route only"],
+        "sd_rimp2",
+        &body("water.xyz", 1, "sto-3g", "rimp2", sd),
+        &["stability_descent", "\"rhf\", \"uhf\" and"],
     );
 }
 

@@ -646,7 +646,7 @@ pub fn run(args: Vec<String>) {
         // field is how a new knob gets noticed here instead of silently
         // acquiring whatever the Default impl says.
         cdft_stability_descent: true,
-        // `[scf] stability_descent` (UHF/UKS route only; other kinds were
+        // `[scf] stability_descent` (rhf, uhf and ksdft; other kinds were
         // refused by `Config::validate_cli_wired_keys`). It needs the
         // stability verdict, so it turns `check_stability` on too, exactly as
         // the Python `run_uhf(stability_descent=True)` does.
