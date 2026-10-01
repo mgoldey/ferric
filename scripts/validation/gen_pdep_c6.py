@@ -420,6 +420,10 @@ def gen_case(system: str, basis_name: str, aux_name: str) -> Path:
 
 def main(argv: list[str]) -> int:
     only = set(argv[1:])
+    unknown = only - {case[0] for case in CASES}
+    if unknown:
+        print(f"unknown system(s): {sorted(unknown)}", file=sys.stderr)
+        return 2
     written = [gen_case(*case) for case in CASES if not only or case[0] in only]
     for p in written:
         print(f"wrote {p} ({p.stat().st_size} bytes)")
