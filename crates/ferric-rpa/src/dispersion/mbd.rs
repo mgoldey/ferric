@@ -1,5 +1,8 @@
-//! Many-Body Dispersion (MBD@TS): coupled-dipole screening of the TS per-atom
-//! polarizabilities. See docs/superpowers/specs/2026-06-04-mbd-screened-c6-design.md.
+//! Full-range self-consistent screening (SCS) of the TS per-atom
+//! polarizabilities (Tkatchenko, DiStasio, Car & Scheffler, PRL 108, 236402
+//! (2012)), which feeds `[rpa] c6_source = "mbd"`. This is NOT the
+//! range-separated screening of MBD@rsSCS; the MBD@rsSCS dispersion energy
+//! lives in [`crate::dispersion::mbd_rsscs`].
 
 use crate::dispersion::free_atom_ref::ts_free_atom;
 use crate::dispersion::DynamicPolarizability;
@@ -22,7 +25,7 @@ fn erf(x: f64) -> f64 {
     }
 }
 
-/// 3N×3N damped dipole–dipole coupling tensor T (MBD@TS).
+/// 3N×3N Gaussian-damped dipole–dipole coupling tensor T_GG (full-range SCS).
 ///
 /// Block (A,B), A≠B: T_AB^{ij} = damping · (δ_ij − 3 n_i n_j)/r³, n = r̂_AB, with
 /// the sign convention that pairs with the screening equation A_scs⁻¹ = α⁻¹ + T
@@ -110,7 +113,7 @@ pub fn ts_atom_params(
         .collect()
 }
 
-/// MBD@TS screened per-atom α(iω). For each frequency, builds the coupled matrix
+/// Full-range SCS screened per-atom α(iω) (no Fermi range separation). For each frequency, builds the coupled matrix
 /// C = A⁻¹ + T (A = block-diagonal per-atom α(iω), T = damped dipole tensor with
 /// per-atom Gaussian widths σ_A = (√(2/π)·α_A(iω)/3)^{1/3}), inverts it, and
 /// contracts each atom's row of blocks back to a per-atom 3×3 tensor:
@@ -217,13 +220,24 @@ pub fn mbd_dynamic_polarizability(
     })
 }
 
-/// MBD@TS coupled-plasmon dispersion energy (validation path).
+/// Plain coupled-QHO energy with Gaussian (`dip,gg`) damping — NOT an MBD
+/// dispersion energy. Kept only as the validation anchor of the coupled-QHO
+/// algebra against libMBD `variant='plain', damping='dip,gg'`.
 ///
-/// E_MBD = ½ Σ_p √λ_p − (3/2) Σ_A ω_A, where λ_p are eigenvalues of the
-/// 3N×3N coupled QHO matrix
-///   H_{Ai,Bj} = ω_A² δ_{AB} δ_{ij} + ω_A ω_B √(α_A α_B) · T^{damp}_{Ai,Bj},
-/// with static α used for both the widths and the prefactor (standard MBD@TS).
-pub fn mbd_energy(positions: &[[f64; 3]], alpha_eff: &[f64], omega_a: &[f64]) -> f64 {
+/// E = ½ Σ_p √λ_p − (3/2) Σ_A ω_A, where λ_p are eigenvalues of the 3N×3N
+/// matrix H_{Ai,Bj} = ω_A² δ_{AB} δ_{ij} + ω_A ω_B √(α_A α_B) · T^{GG}_{Ai,Bj},
+/// with the UNSCREENED inputs α/ω, Gaussian widths from the static α, no
+/// Fermi damping, no β, no R_vdW, and this module's Abramowitz–Stegun erf.
+/// Without the range separation the full-range dipole coupling is far too
+/// strong: on molecules it is 39–226× larger than MBD@rsSCS (water: about
+/// −34 vs −0.15 kcal/mol). The dispersion energy is
+/// [`crate::dispersion::mbd_rsscs::mbd_rsscs_energy`].
+#[doc(hidden)]
+pub fn coupled_qho_energy_plain_gg(
+    positions: &[[f64; 3]],
+    alpha_eff: &[f64],
+    omega_a: &[f64],
+) -> f64 {
     use ndarray_linalg::Eigh;
     use std::f64::consts::FRAC_2_PI;
     let n = positions.len();
@@ -429,12 +443,12 @@ mod tests {
     }
 
     #[test]
-    fn mbd_energy_two_atoms_negative_and_decays() {
+    fn coupled_qho_energy_two_atoms_negative_and_decays() {
         // Two Ar-like oscillators: E_disp < 0, and |E| shrinks with R.
         let ae = [11.1_f64, 11.1];
         let wa = [(4.0_f64 / 3.0) * 64.3 / (11.1 * 11.1); 2];
-        let e_near = mbd_energy(&[[0.0, 0.0, 0.0], [0.0, 0.0, 7.0]], &ae, &wa);
-        let e_far = mbd_energy(&[[0.0, 0.0, 0.0], [0.0, 0.0, 14.0]], &ae, &wa);
+        let e_near = coupled_qho_energy_plain_gg(&[[0.0, 0.0, 0.0], [0.0, 0.0, 7.0]], &ae, &wa);
+        let e_far = coupled_qho_energy_plain_gg(&[[0.0, 0.0, 0.0], [0.0, 0.0, 14.0]], &ae, &wa);
         assert!(e_near < 0.0, "E_disp should be negative: {e_near}");
         assert!(
             e_far.abs() < e_near.abs(),
@@ -443,13 +457,13 @@ mod tests {
     }
 
     #[test]
-    fn mbd_energy_recovers_london_c6_at_large_r() {
+    fn coupled_qho_energy_recovers_london_c6_at_large_r() {
         // The coupled-plasmon energy must reduce to the pairwise London −C6/R⁶ at
         // large separation (the code-correctness anchor for the energy path).
         let alpha = 11.1_f64;
         let omega = (4.0_f64 / 3.0) * 64.3 / (alpha * alpha);
         let r = 20.0_f64;
-        let e_mbd = mbd_energy(
+        let e_mbd = coupled_qho_energy_plain_gg(
             &[[0.0, 0.0, 0.0], [0.0, 0.0, r]],
             &[alpha, alpha],
             &[omega, omega],

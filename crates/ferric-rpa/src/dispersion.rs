@@ -11,8 +11,13 @@
 
 pub mod free_atom_ref;
 pub mod mbd;
+pub mod mbd_rsscs;
 
-pub use mbd::{mbd_dynamic_polarizability, mbd_energy};
+pub use mbd::mbd_dynamic_polarizability;
+pub use mbd_rsscs::{
+    mbd_rsscs_beta_for_functional, mbd_rsscs_energy, mbd_rsscs_energy_from_params, MbdAtomParams,
+    MbdRsscsConfig, MbdRsscsResult,
+};
 
 use ndarray::Array2;
 

@@ -1802,6 +1802,69 @@ def d3bj_energy(mol: Molecule, functional: str) -> float:
     """
     ...
 
+class MbdRsscsResult:
+    """Result of `mbd_rsscs_energy`. Atomic units; per-atom lists in atom order."""
+
+    @property
+    def energy(self) -> float:
+        """MBD@rsSCS dispersion energy (Hartree)."""
+        ...
+
+    @property
+    def beta(self) -> float:
+        """Range-separation parameter used."""
+        ...
+
+    @property
+    def alpha_0_ts(self) -> list[float]:
+        """TS static polarizabilities, ratio * alpha_free."""
+        ...
+
+    @property
+    def c6_ts(self) -> list[float]:
+        """TS C6, ratio^2 * C6_free."""
+        ...
+
+    @property
+    def r_vdw_ts(self) -> list[float]:
+        """TS vdW radii (Bohr), ratio^(1/3) * R_vdW_free."""
+        ...
+
+    @property
+    def alpha_0_rsscs(self) -> list[float]:
+        """Range-separated-screened static polarizabilities."""
+        ...
+
+    @property
+    def c6_rsscs(self) -> list[float]:
+        """Range-separated-screened C6."""
+        ...
+
+    @property
+    def r_vdw_rsscs(self) -> list[float]:
+        """Screened vdW radii (Bohr), R_TS * (alpha_rsscs/alpha_TS)^(1/3)."""
+        ...
+
+    @property
+    def omega_rsscs(self) -> list[float]:
+        """Screened characteristic frequencies, 4 C6 / (3 alpha^2)."""
+        ...
+
+def mbd_rsscs_energy(
+    mol: Molecule,
+    volume_ratios: Sequence[float],
+    beta: float | None = None,
+    functional: str | None = None,
+) -> MbdRsscsResult:
+    """MBD@rsSCS dispersion energy (Ambrosetti et al. 2014), standalone.
+
+    `volume_ratios` are per-atom Hirshfeld volume ratios V_A/V_free, one per
+    atom. Pass exactly one of `beta` or `functional` (PBE 0.83, PBE0 0.85,
+    HSE06 0.85); an unlisted functional raises ValueError. Ghost atoms, Z > 54
+    and a polarization catastrophe raise.
+    """
+    ...
+
 def run_ccd(
     mol: Molecule,
     basis_set: BasisSet,

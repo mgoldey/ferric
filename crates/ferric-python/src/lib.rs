@@ -6118,6 +6118,112 @@ fn d3bj_energy(mol: &PyMolecule, functional: &str) -> PyResult<f64> {
     ferric_d3::d3bj_energy_for_molecule(&mol.inner, &params).map_err(make_err)
 }
 
+/// Result of `mbd_rsscs_energy`. Atomic units; per-atom lists in atom order.
+#[pyclass]
+#[pyo3(name = "MbdRsscsResult")]
+struct PyMbdRsscsResult {
+    /// MBD@rsSCS dispersion energy (Hartree).
+    #[pyo3(get)]
+    energy: f64,
+    /// β used.
+    #[pyo3(get)]
+    beta: f64,
+    /// TS inputs (volume-ratio scaled): α₀, C6, R_vdW (Bohr).
+    #[pyo3(get)]
+    alpha_0_ts: Vec<f64>,
+    #[pyo3(get)]
+    c6_ts: Vec<f64>,
+    #[pyo3(get)]
+    r_vdw_ts: Vec<f64>,
+    /// Range-separated-screened α₀, C6, R_vdW (Bohr) and ω.
+    #[pyo3(get)]
+    alpha_0_rsscs: Vec<f64>,
+    #[pyo3(get)]
+    c6_rsscs: Vec<f64>,
+    #[pyo3(get)]
+    r_vdw_rsscs: Vec<f64>,
+    #[pyo3(get)]
+    omega_rsscs: Vec<f64>,
+}
+
+#[pymethods]
+impl PyMbdRsscsResult {
+    fn __repr__(&self) -> String {
+        format!(
+            "MbdRsscsResult(energy={:.10e}, beta={}, natoms={})",
+            self.energy,
+            self.beta,
+            self.alpha_0_rsscs.len()
+        )
+    }
+}
+
+/// MBD@rsSCS many-body dispersion energy (Ambrosetti et al., JCP 140,
+/// 18A508 (2014)) for a molecule, in Hartree. Standalone: no SCF.
+///
+/// `volume_ratios` are the per-atom Hirshfeld volume ratios V_A/V_free (one
+/// per atom, from the density functional the correction is paired with).
+/// Exactly one of `beta` (explicit range-separation parameter) or
+/// `functional` (published β: PBE 0.83, PBE0 0.85, HSE06 0.85) is required;
+/// an unlisted functional raises. Ghost atoms are refused. Elements Z > 54
+/// raise (no free-atom reference). A polarization catastrophe (coupled
+/// oscillator matrix not positive definite) raises.
+#[pyfunction]
+#[pyo3(signature = (mol, volume_ratios, beta=None, functional=None))]
+fn mbd_rsscs_energy(
+    mol: &PyMolecule,
+    volume_ratios: Vec<f64>,
+    beta: Option<f64>,
+    functional: Option<&str>,
+) -> PyResult<PyMbdRsscsResult> {
+    use ferric_rpa::dispersion::mbd_rsscs::MbdRsscsConfig;
+    let cfg = match (beta, functional) {
+        (Some(b), None) => MbdRsscsConfig::with_beta(b),
+        (None, Some(f)) => MbdRsscsConfig::for_functional(f)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?,
+        (Some(_), Some(_)) => {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "mbd_rsscs_energy: pass either beta or functional, not both",
+            ))
+        }
+        (None, None) => {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "mbd_rsscs_energy: beta is functional dependent — pass beta=... or \
+                 functional=... (PBE, PBE0, HSE06)",
+            ))
+        }
+    };
+    let atoms = &mol.inner.atoms;
+    if let Some(i) = atoms.iter().position(|a| a.ghost) {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "mbd_rsscs_energy: atom {i} is a ghost; MBD needs a real atom (and a volume \
+             ratio) at every center — remove ghost atoms first"
+        )));
+    }
+    if volume_ratios.len() != atoms.len() {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "mbd_rsscs_energy: {} volume ratios for {} atoms",
+            volume_ratios.len(),
+            atoms.len()
+        )));
+    }
+    let z: Vec<usize> = atoms.iter().map(|a| a.z.max(0) as usize).collect();
+    let pos: Vec<[f64; 3]> = atoms.iter().map(|a| [a.x, a.y, a.zpos]).collect();
+    let res = ferric_rpa::dispersion::mbd_rsscs::mbd_rsscs_energy(&z, &pos, &volume_ratios, &cfg)
+        .map_err(make_err)?;
+    Ok(PyMbdRsscsResult {
+        energy: res.energy,
+        beta: res.config.beta,
+        alpha_0_ts: res.ts.alpha_0,
+        c6_ts: res.ts.c6,
+        r_vdw_ts: res.ts.r_vdw,
+        alpha_0_rsscs: res.alpha_0_rsscs,
+        c6_rsscs: res.c6_rsscs,
+        r_vdw_rsscs: res.r_vdw_rsscs,
+        omega_rsscs: res.omega_rsscs,
+    })
+}
+
 // ── CC (stub) ──
 
 #[pyclass]
@@ -8480,6 +8586,8 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_ksdft, m)?)?;
     m.add_function(wrap_pyfunction!(dft_grid_point_count, m)?)?;
     m.add_function(wrap_pyfunction!(d3bj_energy, m)?)?;
+    m.add_function(wrap_pyfunction!(mbd_rsscs_energy, m)?)?;
+    m.add_class::<PyMbdRsscsResult>()?;
     m.add_function(wrap_pyfunction!(run_ccd, m)?)?;
     m.add_function(wrap_pyfunction!(run_ccsd, m)?)?;
     m.add_function(wrap_pyfunction!(run_ccsd_t, m)?)?;

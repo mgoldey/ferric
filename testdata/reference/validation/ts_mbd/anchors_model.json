@@ -2346,6 +2346,335 @@
       54
     ]
   },
+  "r_vdw_table_comparison": {
+    "rows": [
+      {
+        "z": 1,
+        "symbol": "H",
+        "ferric_r_vdw": 3.1,
+        "pymbd_r_vdw_ts": 3.1
+      },
+      {
+        "z": 2,
+        "symbol": "He",
+        "ferric_r_vdw": 2.65,
+        "pymbd_r_vdw_ts": 2.65
+      },
+      {
+        "z": 3,
+        "symbol": "Li",
+        "ferric_r_vdw": 4.16,
+        "pymbd_r_vdw_ts": 4.16
+      },
+      {
+        "z": 4,
+        "symbol": "Be",
+        "ferric_r_vdw": 4.17,
+        "pymbd_r_vdw_ts": 4.17
+      },
+      {
+        "z": 5,
+        "symbol": "B",
+        "ferric_r_vdw": 3.89,
+        "pymbd_r_vdw_ts": 3.89
+      },
+      {
+        "z": 6,
+        "symbol": "C",
+        "ferric_r_vdw": 3.59,
+        "pymbd_r_vdw_ts": 3.59
+      },
+      {
+        "z": 7,
+        "symbol": "N",
+        "ferric_r_vdw": 3.34,
+        "pymbd_r_vdw_ts": 3.34
+      },
+      {
+        "z": 8,
+        "symbol": "O",
+        "ferric_r_vdw": 3.19,
+        "pymbd_r_vdw_ts": 3.19
+      },
+      {
+        "z": 9,
+        "symbol": "F",
+        "ferric_r_vdw": 3.04,
+        "pymbd_r_vdw_ts": 3.04
+      },
+      {
+        "z": 10,
+        "symbol": "Ne",
+        "ferric_r_vdw": 2.91,
+        "pymbd_r_vdw_ts": 2.91
+      },
+      {
+        "z": 11,
+        "symbol": "Na",
+        "ferric_r_vdw": 3.73,
+        "pymbd_r_vdw_ts": 3.73
+      },
+      {
+        "z": 12,
+        "symbol": "Mg",
+        "ferric_r_vdw": 4.27,
+        "pymbd_r_vdw_ts": 4.27
+      },
+      {
+        "z": 13,
+        "symbol": "Al",
+        "ferric_r_vdw": 4.33,
+        "pymbd_r_vdw_ts": 4.33
+      },
+      {
+        "z": 14,
+        "symbol": "Si",
+        "ferric_r_vdw": 4.2,
+        "pymbd_r_vdw_ts": 4.2
+      },
+      {
+        "z": 15,
+        "symbol": "P",
+        "ferric_r_vdw": 4.01,
+        "pymbd_r_vdw_ts": 4.01
+      },
+      {
+        "z": 16,
+        "symbol": "S",
+        "ferric_r_vdw": 3.86,
+        "pymbd_r_vdw_ts": 3.86
+      },
+      {
+        "z": 17,
+        "symbol": "Cl",
+        "ferric_r_vdw": 3.71,
+        "pymbd_r_vdw_ts": 3.71
+      },
+      {
+        "z": 18,
+        "symbol": "Ar",
+        "ferric_r_vdw": 3.55,
+        "pymbd_r_vdw_ts": 3.55
+      },
+      {
+        "z": 19,
+        "symbol": "K",
+        "ferric_r_vdw": 3.71,
+        "pymbd_r_vdw_ts": 3.71
+      },
+      {
+        "z": 20,
+        "symbol": "Ca",
+        "ferric_r_vdw": 4.65,
+        "pymbd_r_vdw_ts": 4.65
+      },
+      {
+        "z": 21,
+        "symbol": "Sc",
+        "ferric_r_vdw": 4.59,
+        "pymbd_r_vdw_ts": 4.59
+      },
+      {
+        "z": 22,
+        "symbol": "Ti",
+        "ferric_r_vdw": 4.51,
+        "pymbd_r_vdw_ts": 4.51
+      },
+      {
+        "z": 23,
+        "symbol": "V",
+        "ferric_r_vdw": 4.44,
+        "pymbd_r_vdw_ts": 4.44
+      },
+      {
+        "z": 24,
+        "symbol": "Cr",
+        "ferric_r_vdw": 3.99,
+        "pymbd_r_vdw_ts": 3.99
+      },
+      {
+        "z": 25,
+        "symbol": "Mn",
+        "ferric_r_vdw": 3.97,
+        "pymbd_r_vdw_ts": 3.97
+      },
+      {
+        "z": 26,
+        "symbol": "Fe",
+        "ferric_r_vdw": 4.23,
+        "pymbd_r_vdw_ts": 4.23
+      },
+      {
+        "z": 27,
+        "symbol": "Co",
+        "ferric_r_vdw": 4.18,
+        "pymbd_r_vdw_ts": 4.18
+      },
+      {
+        "z": 28,
+        "symbol": "Ni",
+        "ferric_r_vdw": 3.82,
+        "pymbd_r_vdw_ts": 3.82
+      },
+      {
+        "z": 29,
+        "symbol": "Cu",
+        "ferric_r_vdw": 3.76,
+        "pymbd_r_vdw_ts": 3.76
+      },
+      {
+        "z": 30,
+        "symbol": "Zn",
+        "ferric_r_vdw": 4.02,
+        "pymbd_r_vdw_ts": 4.02
+      },
+      {
+        "z": 31,
+        "symbol": "Ga",
+        "ferric_r_vdw": 4.19,
+        "pymbd_r_vdw_ts": 4.19
+      },
+      {
+        "z": 32,
+        "symbol": "Ge",
+        "ferric_r_vdw": 4.2,
+        "pymbd_r_vdw_ts": 4.2
+      },
+      {
+        "z": 33,
+        "symbol": "As",
+        "ferric_r_vdw": 4.11,
+        "pymbd_r_vdw_ts": 4.11
+      },
+      {
+        "z": 34,
+        "symbol": "Se",
+        "ferric_r_vdw": 4.04,
+        "pymbd_r_vdw_ts": 4.04
+      },
+      {
+        "z": 35,
+        "symbol": "Br",
+        "ferric_r_vdw": 3.93,
+        "pymbd_r_vdw_ts": 3.93
+      },
+      {
+        "z": 36,
+        "symbol": "Kr",
+        "ferric_r_vdw": 3.82,
+        "pymbd_r_vdw_ts": 3.82
+      },
+      {
+        "z": 37,
+        "symbol": "Rb",
+        "ferric_r_vdw": 3.72,
+        "pymbd_r_vdw_ts": 3.72
+      },
+      {
+        "z": 38,
+        "symbol": "Sr",
+        "ferric_r_vdw": 4.54,
+        "pymbd_r_vdw_ts": 4.54
+      },
+      {
+        "z": 39,
+        "symbol": "Y",
+        "ferric_r_vdw": 4.8151,
+        "pymbd_r_vdw_ts": 4.8151
+      },
+      {
+        "z": 40,
+        "symbol": "Zr",
+        "ferric_r_vdw": 4.53,
+        "pymbd_r_vdw_ts": 4.53
+      },
+      {
+        "z": 41,
+        "symbol": "Nb",
+        "ferric_r_vdw": 4.2365,
+        "pymbd_r_vdw_ts": 4.2365
+      },
+      {
+        "z": 42,
+        "symbol": "Mo",
+        "ferric_r_vdw": 4.099,
+        "pymbd_r_vdw_ts": 4.099
+      },
+      {
+        "z": 43,
+        "symbol": "Tc",
+        "ferric_r_vdw": 4.076,
+        "pymbd_r_vdw_ts": 4.076
+      },
+      {
+        "z": 44,
+        "symbol": "Ru",
+        "ferric_r_vdw": 3.9953,
+        "pymbd_r_vdw_ts": 3.9953
+      },
+      {
+        "z": 45,
+        "symbol": "Rh",
+        "ferric_r_vdw": 3.95,
+        "pymbd_r_vdw_ts": 3.95
+      },
+      {
+        "z": 46,
+        "symbol": "Pd",
+        "ferric_r_vdw": 3.66,
+        "pymbd_r_vdw_ts": 3.66
+      },
+      {
+        "z": 47,
+        "symbol": "Ag",
+        "ferric_r_vdw": 3.82,
+        "pymbd_r_vdw_ts": 3.82
+      },
+      {
+        "z": 48,
+        "symbol": "Cd",
+        "ferric_r_vdw": 3.99,
+        "pymbd_r_vdw_ts": 3.99
+      },
+      {
+        "z": 49,
+        "symbol": "In",
+        "ferric_r_vdw": 4.23198,
+        "pymbd_r_vdw_ts": 4.23198
+      },
+      {
+        "z": 50,
+        "symbol": "Sn",
+        "ferric_r_vdw": 4.303,
+        "pymbd_r_vdw_ts": 4.303
+      },
+      {
+        "z": 51,
+        "symbol": "Sb",
+        "ferric_r_vdw": 4.276,
+        "pymbd_r_vdw_ts": 4.276
+      },
+      {
+        "z": 52,
+        "symbol": "Te",
+        "ferric_r_vdw": 4.22,
+        "pymbd_r_vdw_ts": 4.22
+      },
+      {
+        "z": 53,
+        "symbol": "I",
+        "ferric_r_vdw": 4.17,
+        "pymbd_r_vdw_ts": 4.17
+      },
+      {
+        "z": 54,
+        "symbol": "Xe",
+        "ferric_r_vdw": 4.08,
+        "pymbd_r_vdw_ts": 4.08
+      }
+    ],
+    "mismatched_z": []
+  },
   "provenance": {
     "code": "mpmath closed forms (dimer: 2x2 per Cartesian direction) + pymbd vdw_params",
     "version": {
@@ -2359,8 +2688,8 @@
       "london": "C6_AB = 3/2 a_A a_B w_A w_B/(w_A+w_B) == TS combination rule"
     },
     "free_atom_table": "crates/ferric-rpa/src/dispersion/free_atom_ref.rs",
-    "free_atom_table_sha256": "462bbfe41cda74b3ce7519e88b610f01d22672b9384e6c710b60bb4e3881e79f",
+    "free_atom_table_sha256": "a54d35974ad0b77e3e93b01db24c44ee765f966bcde4f0c2941ad52b86bf5e5c",
     "generator": "scripts/validation/gen_ts_mbd.py",
-    "git_head": "b6b873b85cd7760074ac673cd44e37b9f2ae9415"
+    "git_head": "330a00c86731ee8cf5053f95e3e8a992d4089a15"
   }
 }
