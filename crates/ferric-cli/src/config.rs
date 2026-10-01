@@ -2122,8 +2122,10 @@ pub struct ScfCfg {
     ///
     /// SCOPE: `task = "energy"` on the UHF/UKS route only (`kind = "uhf"`, or
     /// `ksdft` on an open-shell molecule). ROHF has no implemented orbital
-    /// Hessian and RHF has no descent, so every other kind refuses the key
-    /// (see [`Config::validate_cli_wired_keys`]).
+    /// Hessian; the RHF descent exists in the library
+    /// (`RhfConfig::scf_stability_descent` on `solve_rhf`) but is not wired
+    /// here, so every other kind refuses the key (see
+    /// [`Config::validate_cli_wired_keys`]).
     #[serde(default)]
     pub stability_descent: bool,
 }

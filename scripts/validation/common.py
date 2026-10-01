@@ -85,7 +85,20 @@ def sha256_file(path: Path) -> str:
 
 
 def basis_json_path(name: str) -> Path:
-    """Path of ferric's bundled BSE JSON for `name` (lower-case file stem)."""
+    """Path of ferric's bundled BSE JSON for `name` (lower-case file stem).
+
+    A `name` ending in ``.json`` is instead taken as a path to a BSE JSON file
+    (absolute, or relative to the repo root) — for rows whose basis is not in
+    ferric's bundled copy and is loaded on the Rust side with
+    `ferric_core::basis::load_bse_json` (e.g. scf_ladder's def2-SVP Cr/Cu).
+    """
+    if str(name).lower().endswith(".json"):
+        p = Path(name)
+        if not p.is_absolute():
+            p = ROOT / p
+        if not p.is_file():
+            raise FileNotFoundError(f"no basis JSON {p}")
+        return p
     p = BUNDLED_DIR / f"{name.lower()}.json"
     if not p.is_file():
         raise FileNotFoundError(f"no bundled basis JSON {p}")

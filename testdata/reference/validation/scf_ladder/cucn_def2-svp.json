@@ -1,0 +1,226 @@
+{
+  "row": "SCF ladder",
+  "system": "cucn",
+  "basis": "def2-svp",
+  "basis_file": "testdata/reference/validation/scf_ladder/basis/def2-svp_bse_c-n-o-cr-cu.json",
+  "charge": 0,
+  "multiplicity": 1,
+  "nao": 59,
+  "nelectron": 42,
+  "nuclear_repulsion": 105.3605083403072,
+  "rhf": {
+    "energy": -1730.9327350218732,
+    "converged": true,
+    "selected_from_guess": "huckel",
+    "nocc": 21,
+    "homo": -0.40735370978471186,
+    "lumo": 0.0012096642632650756,
+    "aufbau": true,
+    "occupied_energies_top8": [
+      -0.5546524677183055,
+      -0.5546524677182975,
+      -0.5486543626012368,
+      -0.548654362601217,
+      -0.517050566345115,
+      -0.4334828443988501,
+      -0.40735370978472085,
+      -0.40735370978471186
+    ],
+    "max_orbital_gradient": 3.463213103912329e-09,
+    "singlet_rhf_internal": {
+      "lowest": [
+        0.16989909274403356,
+        0.1981313309971097,
+        0.19813133099713937,
+        0.2026313943825339,
+        0.2026313943825539,
+        0.2091467606689343,
+        0.20914676066895602,
+        0.2647442628733981
+      ],
+      "method": "dense eigvalsh of the explicit MO-integral Hessian",
+      "dim": 798,
+      "construction": "f_ab d_ij - d_ab f_ji + 4(ai|bj) - (ab|ij) - (aj|bi) (ferric rhf_internal_stability convention)",
+      "matvec_check": "max |H x - gen_g_hop_rhf(x)/2| over 3 random vectors",
+      "matvec_check_max_dev": 1.1857181902996672e-12,
+      "max_asymmetry": 4.24764390327681e-14
+    },
+    "triplet_rhf_to_uhf": {
+      "lowest": [
+        0.026946719456992285,
+        0.09293510915298404,
+        0.09293510915301824,
+        0.11019689384894346,
+        0.16306866231610892,
+        0.16306866231613898,
+        0.17627829571498954,
+        0.17627829571504147
+      ],
+      "method": "dense eigvalsh of the explicit MO-integral Hessian",
+      "dim": 798,
+      "construction": "f_ab d_ij - d_ab f_ji - (ab|ij) - (aj|bi) (== stability._gen_hop_rhf_external hop_rhf2uhf, factor 1)",
+      "matvec_check": "max |H x - hop_rhf2uhf(x)| over 3 random vectors",
+      "matvec_check_max_dev": 1.3242740237728867e-12,
+      "max_asymmetry": 4.248077584145804e-14
+    },
+    "stability": {
+      "internal_stable": true,
+      "internal_zero_modes": 0,
+      "internal_first_nonzero": 0.16989909274403356,
+      "external_stable": true,
+      "kind": "RHF internal (dense singlet) + RHF->UHF external (triplet), real, MO-integral Hessians"
+    }
+  },
+  "stable_minima_found": [
+    -1730.9327350218732
+  ],
+  "guess_scan": [
+    {
+      "guess": "minao",
+      "polished_with_diis": true,
+      "energy": -1730.9327350218714,
+      "converged": true,
+      "internal_stable": true,
+      "rounds": [
+        {
+          "round": 0,
+          "energy": -1730.9327350218714,
+          "converged": true,
+          "internal_stable": true,
+          "external_stable": true
+        }
+      ],
+      "wall_s": 2.735257148742676
+    },
+    {
+      "guess": "atom",
+      "polished_with_diis": true,
+      "energy": -1730.9327350218696,
+      "converged": true,
+      "internal_stable": true,
+      "rounds": [
+        {
+          "round": 0,
+          "energy": -1730.9327350218696,
+          "converged": true,
+          "internal_stable": true,
+          "external_stable": true
+        }
+      ],
+      "wall_s": 3.80029296875
+    },
+    {
+      "guess": "huckel",
+      "polished_with_diis": true,
+      "energy": -1730.9327350218732,
+      "converged": true,
+      "internal_stable": true,
+      "rounds": [
+        {
+          "round": 0,
+          "energy": -1730.9327350218732,
+          "converged": true,
+          "internal_stable": true,
+          "external_stable": true
+        }
+      ],
+      "wall_s": 4.457473993301392
+    },
+    {
+      "guess": "1e",
+      "polished_with_diis": true,
+      "energy": -1730.932735021869,
+      "converged": true,
+      "internal_stable": true,
+      "rounds": [
+        {
+          "round": 0,
+          "energy": -1730.932735021869,
+          "converged": true,
+          "internal_stable": true,
+          "external_stable": true
+        }
+      ],
+      "wall_s": 3.7923455238342285
+    }
+  ],
+  "plain_diis_pyscf": {
+    "construction": "scf.RHF, MINAO guess, Pulay DIIS (PySCF default), max_cycle 100, no newton, no stability following",
+    "converged": true,
+    "energy": -1730.9327350218618,
+    "wall_s": 0.22083830833435059,
+    "same_state_as_reference": true
+  },
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "method": "scf.RHF(mol).newton() + stability(internal, external) loop",
+      "guesses": [
+        "minao",
+        "atom",
+        "huckel",
+        "1e"
+      ],
+      "numpy": "1.26.4",
+      "eri": "exact 4-index (no density fitting)",
+      "selection": "lowest converged, internally stable RHF over all guesses",
+      "normalization": "singlet = gen_g_hop_rhf / 2 (ferric convention); triplet = hop_rhf2uhf x1"
+    },
+    "grid": "none",
+    "aux_basis": "none",
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-11,
+      "conv_tol_grad": 1e-07
+    },
+    "stability": {
+      "rhf": {
+        "internal_stable": true,
+        "internal_zero_modes": 0,
+        "internal_first_nonzero": 0.16989909274403356,
+        "external_stable": true,
+        "kind": "RHF internal (dense singlet) + RHF->UHF external (triplet), real, MO-integral Hessians"
+      }
+    },
+    "basis": "testdata/reference/validation/scf_ladder/basis/def2-svp_bse_c-n-o-cr-cu.json",
+    "basis_json": "testdata/reference/validation/scf_ladder/basis/def2-svp_bse_c-n-o-cr-cu.json",
+    "basis_sha256": "208036510a6ac49651ab34cba0295642a5dd02b14c6e5bed0d0ab398d81c16c2",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/cucn.xyz",
+    "geometry_xyz_sha256": "479b2ddb3fc59bee1e15dc1642afe9bd8af9b402c0e9ac64bba1d3de5b87f869",
+    "geometry_bohr": [
+      [
+        "Cu",
+        0.0,
+        0.0,
+        -3.4574807120267286
+      ],
+      [
+        "C",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "N",
+        0.0,
+        0.0,
+        2.1958617567446015
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_scf_ladder.py",
+    "git_head": "c371b71d8427b0a9734130ee962a7492b17d8759",
+    "generated_utc": "2026-10-01T02:19:30+00:00",
+    "basis_self_check": {
+      "nao": 59,
+      "replica_self_overlap_max_dev": 2.220446049250313e-16,
+      "pyscf_diag_max_dev": 6.661338147750939e-16,
+      "diag_checked": 59,
+      "diag_skipped_cartesian": 0
+    },
+    "all_electron": true
+  }
+}

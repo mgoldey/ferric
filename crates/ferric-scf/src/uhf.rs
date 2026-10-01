@@ -113,12 +113,12 @@ pub fn solve_uhf_best_effort(
 /// wrongly conclude the eigenvector is useless. The smaller entries are kept so
 /// a system where a gentler step suffices is not over-rotated past its minimum,
 /// and the sweep takes the LOWEST result rather than the first success.
-const DESCENT_STEPS: [f64; 3] = [0.4, 0.8, 1.2];
+pub(crate) const DESCENT_STEPS: [f64; 3] = [0.4, 0.8, 1.2];
 
 /// Maximum descent rounds. Each round is one Davidson eigensolve plus up to
 /// `DESCENT_STEPS.len()` full SCF re-converges, bounding the worst case at a
 /// small multiple of the undescended solve.
-const MAX_DESCENT_ROUNDS: usize = 3;
+pub(crate) const MAX_DESCENT_ROUNDS: usize = 3;
 
 /// **Unconstrained UHF state selection.** Given a converged UHF solution, check
 /// whether it is a SADDLE of the orbital Hessian and, if so, follow the
@@ -276,7 +276,7 @@ fn stability_descent(
 /// it leaves everything GREEN. It is the entire reason the descent cannot make
 /// an answer worse than not having tried, so it is tested directly. See
 /// `descent_never_accepts_a_higher_state`.
-fn accepts_candidate(cand_e: f64, best_e: f64, improved_e: Option<f64>) -> bool {
+pub(crate) fn accepts_candidate(cand_e: f64, best_e: f64, improved_e: Option<f64>) -> bool {
     cand_e < best_e && improved_e.is_none_or(|b| cand_e < b)
 }
 
@@ -307,7 +307,12 @@ fn nocc_ab(mol: &Molecule) -> Result<(usize, usize), FerricError> {
 /// Rotate MOs by `exp(κ)` for the antisymmetric κ built from the occ→virt
 /// block `k_ov` scaled by `eps`, via the Cayley transform
 /// `(I − κ/2)⁻¹ (I + κ/2)` — orthogonality-preserving to machine precision.
-fn rotate_mos(c: &Array2<f64>, k_ov: &Array2<f64>, nocc: usize, eps: f64) -> Array2<f64> {
+pub(crate) fn rotate_mos(
+    c: &Array2<f64>,
+    k_ov: &Array2<f64>,
+    nocc: usize,
+    eps: f64,
+) -> Array2<f64> {
     use ndarray_linalg::Solve;
     let n = c.nrows();
     let mut kappa = Array2::<f64>::zeros((n, n));
