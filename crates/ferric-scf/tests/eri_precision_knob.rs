@@ -86,9 +86,12 @@ fn eri_precision_knob_reaches_build_jk() {
     assert_eq!(eri_precision(), 1e-14);
     let loose = dk_via_knob(&ctx, &prep, &bounds, &d) - dk0;
 
-    set_eri_precision(None).unwrap();
+    // Set the default explicitly: clearing the override would fall through to
+    // FERRIC_ERI_PRECISION if the environment sets it.
+    set_eri_precision(Some(ERI_PRECISION)).unwrap();
     assert_eq!(eri_precision(), ERI_PRECISION);
     let default = dk_via_knob(&ctx, &prep, &bounds, &d) - dk0;
+    set_eri_precision(None).unwrap();
 
     eprintln!(
         "CS2/cc-pVDZ sum(D K) vs precision 0: knob 1e-14 {loose:+.2e}, default {default:+.2e}"

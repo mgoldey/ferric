@@ -2285,6 +2285,10 @@ impl ScfCfg {
     pub fn validate(&self) -> Result<(), String> {
         self.diis_flavor()?;
         self.use_density_guess()?;
+        if let Some(p) = self.eri_precision {
+            (ferric_integrals::engine_pool::ERI_PRECISION_VAR.validate)(&p)
+                .map_err(|e| format!("[scf] eri_precision {p:e}: {e}"))?;
+        }
         for (i, rung) in self.ladder.iter().enumerate() {
             rung.use_sad_guess()
                 .map_err(|e| format!("[[scf.ladder]] rung {i}: {e}"))?;
@@ -4030,6 +4034,21 @@ json = [1, 2]
         parse(&format!("{MINIMAL}[scf]\n{scf}"))
             .unwrap_or_else(|e| panic!("[scf] {scf:?} must parse: {e}"))
             .scf
+    }
+
+    /// `[scf] eri_precision` is range-checked at load, not first used mid-run.
+    #[test]
+    fn scf_eri_precision_is_validated_at_load() {
+        assert_eq!(scf_cfg("").eri_precision, None);
+        let ok = scf_cfg("eri_precision = 1e-16");
+        assert_eq!(ok.eri_precision, Some(1e-16));
+        assert!(ok.validate().is_ok());
+        for bad in ["1e-6", "-1e-20"] {
+            let err = scf_cfg(&format!("eri_precision = {bad}"))
+                .validate()
+                .unwrap_err();
+            assert!(err.contains("eri_precision"), "{bad}: {err}");
+        }
     }
 
     /// `[scf] guess` used to accept ANY string: everything but "hcore" silently
