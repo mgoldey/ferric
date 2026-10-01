@@ -60,7 +60,9 @@ references the source code itself cites.
 - Grimme, Antony, Ehrlich & Krieg, *J. Chem. Phys.* **132**, 154104 (2010): DFT-D3
 - Grimme, Ehrlich & Goerigk, *J. Comput. Chem.* **32**, 1456 (2011): Becke–Johnson damping for D3
 - Tkatchenko & Scheffler, *Phys. Rev. Lett.* **102**, 073005 (2009): TS dispersion and free-atom reference data
-- Gould & Bučko, *J. Chem. Theory Comput.* **12**, 3603 (2016): free-atom reference data for Z = 19–54
+- Gould & Bučko, *J. Chem. Theory Comput.* **12**, 3603 (2016): free-atom reference data for Z = 19–54 (all but Pd)
+- Jerabek, Schwerdtfeger & Nagle, *Phys. Rev. A* **98**, 012508 (2018): free-atom Pd polarizability (26.14 a.u., closed-shell 4d¹⁰)
+- Gobre, PhD thesis, TU Berlin (2016), Table A.1: free-atom Pd C6 (157.5 a.u., the TS value used by libMBD)
 - Tkatchenko, DiStasio, Car & Scheffler, *Phys. Rev. Lett.* **108**, 236402 (2012): many-body dispersion (MBD)
 
 ### Solvation and embedding
