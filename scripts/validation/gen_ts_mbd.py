@@ -845,6 +845,9 @@ def main(argv: list[str]) -> int:
     args = ap.parse_args(argv[1:])
     overrides = json.loads(args.ratios_json.read_text()) if args.ratios_json else {}
     only = {s.lower() for s in args.only}
+    known = {s for s, _, _ in SYSTEMS} | {"anchors"}
+    if only - known:
+        ap.error(f"unknown system(s): {sorted(only - known)}")
     t0 = time.time()
     tab = ferric_free_atom_table()
     paths = []

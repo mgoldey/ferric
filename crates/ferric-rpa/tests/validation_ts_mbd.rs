@@ -208,6 +208,11 @@ fn t33(v: &Value, ptr: &str, ctx: &str) -> [[f64; 3]; 3] {
 /// max |a - b| / max |b| over flattened values.
 fn rel_max(a: &[f64], b: &[f64]) -> f64 {
     assert_eq!(a.len(), b.len(), "rel_max: length mismatch");
+    // f64::max drops a NaN when the other side is finite, so check first.
+    assert!(
+        a.iter().chain(b).all(|v| v.is_finite()),
+        "rel_max: non-finite value"
+    );
     let scale = b.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
     let d = a
         .iter()
@@ -596,7 +601,10 @@ fn mbd_dimer_matches_closed_form() {
                     scr[1][k][0][2],
                 ]
             })
-            .fold(0.0_f64, |m, v| m.max(v.abs()));
+            .fold(0.0_f64, |m, v| {
+                assert!(v.is_finite(), "{ctx}: non-finite off-diagonal alpha_scs");
+                m.max(v.abs())
+            });
         check(
             &ctx,
             "off-diagonal alpha_scs / alpha",
