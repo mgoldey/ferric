@@ -8,7 +8,38 @@
 //! elements use the reduced-overlap form, with the 0/1/≥2 near-zero
 //! singular-value cases handled explicitly.
 //!
-//! Reference: Wu & Van Voorhis, J. Chem. Phys. 125, 164105 (2006).
+//! # The raw element (constraint-offset invariant form)
+//!
+//! A converged constrained state Φ_X is the stationary point of
+//! E\[ρ\] + λ_X(∫w_X ρ − N_X), so it is treated (Wu & Van Voorhis) as an
+//! eigenfunction of Ĥ + λ_X ŵ_X with eigenvalue F_X = E_X + λ_X N_X, where
+//! ŵ_X = Σ_i w_X(r_i) is the constraint's population operator and
+//! N_X = ⟨Φ_X|ŵ_X|Φ_X⟩. Projecting onto the other state:
+//!
+//! ```text
+//! ⟨Φ_A|Ĥ|Φ_B⟩ ≈ F_B S_AB − λ_B ⟨Φ_A|ŵ_B|Φ_B⟩,   F_B = E_B + λ_B N_B
+//! H_raw = ½[(F_A + F_B) S_AB − λ_A⟨A|ŵ_A|B⟩ − λ_B⟨A|ŵ_B|B⟩]
+//! H_ab  = [H_raw − ½(E_A + E_B) S_AB] / (1 − S_AB²)
+//! ```
+//!
+//! Equivalently each λ multiplies ⟨A|ŵ_X − N_X|B⟩, the matrix element of the
+//! constraint RESIDUAL operator. That is what makes H_ab invariant under the
+//! physically empty redefinition ŵ → ŵ − c·N̂ (target N → N − c·N_e): the
+//! states, λ and E are unchanged, and so is H_ab. The form with E_B in place
+//! of F_B is NOT invariant and, on a symmetric dimer whose two fragment
+//! weights partition unity, overstates |H_ab| by exactly (N_e/2)/(N_e/2 − N)
+//! (3× for He₂⁺ with N = 1). Measured against NWChem's direct ⟨A|Ĥ|B⟩ on
+//! He₂⁺/PBE (`tests/validation_cdft_et.rs`), the F form is within 1.4–6% of
+//! the direct coupling at every point and the E-only form is about 3× high.
+//!
+//! N_X is evaluated as the state's OWN population ⟨Φ_X|ŵ_X|Φ_X⟩ from its
+//! occupied MOs (equal to the target at convergence), so the invariance holds
+//! exactly for any operator offset, not only to the outer-loop tolerance.
+//! Charge (`SpinChannel::Total`) constraints only: the same ŵ acts on both
+//! spins here, as in [`cross_one_body`](crate::cdft_coupling::cross_one_body).
+//!
+//! References: Q. Wu & T. Van Voorhis, J. Chem. Phys. 125, 164105 (2006);
+//! B. Kaduk, T. Kowalczyk & T. Van Voorhis, Chem. Rev. 112, 321 (2012).
 
 use ndarray::{Array1, Array2};
 use ndarray_linalg::SVD;
@@ -136,7 +167,10 @@ pub struct DiabaticState<'a> {
     pub energy: f64,
     /// Constraint multiplier (single constraint, k=1).
     pub lambda: f64,
-    /// Constraint weight operator W^C in AO basis.
+    /// Constraint weight operator W^C in AO basis (the population operator
+    /// whose expectation the constraint drives to its target). Any constant
+    /// offset W − c·S gives the same H_ab; the state's own N = ⟨W⟩ is
+    /// recomputed from its MOs.
     pub w: &'a Array2<f64>,
 }
 
@@ -150,7 +184,14 @@ pub struct HabResult {
     pub e_b: f64,
 }
 
-/// Wu–VV electronic coupling between two constrained UHF states.
+/// ⟨Ψ|Ŵ|Ψ⟩ = Σ_σ tr(C_σ,occᵀ W C_σ,occ) for the state's own weight operator.
+fn own_population(st: &DiabaticState, c_occ_a: &Array2<f64>, c_occ_b: &Array2<f64>) -> f64 {
+    let tr = |c: &Array2<f64>| -> f64 { c.t().dot(st.w).dot(c).diag().sum() };
+    tr(c_occ_a) + tr(c_occ_b)
+}
+
+/// Wu–VV electronic coupling between two constrained UHF states, in the
+/// constraint-offset-invariant form derived in the module docs.
 pub fn coupling_hab(
     state_a: &DiabaticState,
     state_b: &DiabaticState,
@@ -181,12 +222,18 @@ pub fn coupling_hab(
     let w_a_elem = cross_one_body(state_a.w, &pair_alpha, &pair_beta, s_ab);
     let w_b_elem = cross_one_body(state_b.w, &pair_alpha, &pair_beta, s_ab);
 
-    // Symmetric Wu–VV raw element:
-    //   H_raw = ½[(E_b S_ab − λ_b⟨a|W_b|b⟩) + (E_a S_ab − λ_a⟨a|W_a|b⟩)].
+    // Each state's own constraint population N_X = ⟨Ψ_X|Ŵ_X|Ψ_X⟩.
+    let n_a = own_population(state_a, &ca_occ_a, &ca_occ_b);
+    let n_b = own_population(state_b, &cb_occ_a, &cb_occ_b);
+
+    // Symmetric Wu–VV raw element with F_X = E_X + λ_X N_X (module docs):
+    //   H_raw = ½[(F_b S_ab − λ_b⟨a|W_b|b⟩) + (F_a S_ab − λ_a⟨a|W_a|b⟩)].
     let e_a = state_a.energy;
     let e_b = state_b.energy;
+    let f_a = e_a + state_a.lambda * n_a;
+    let f_b = e_b + state_b.lambda * n_b;
     let h_raw =
-        0.5 * ((e_b * s_ab - state_b.lambda * w_b_elem) + (e_a * s_ab - state_a.lambda * w_a_elem));
+        0.5 * ((f_b * s_ab - state_b.lambda * w_b_elem) + (f_a * s_ab - state_a.lambda * w_a_elem));
 
     // Symmetric orthogonalization. Guard the degenerate denominator.
     let denom = 1.0 - s_ab * s_ab;

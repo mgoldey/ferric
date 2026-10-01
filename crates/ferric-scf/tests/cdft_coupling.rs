@@ -345,12 +345,22 @@ fn swap_fixture_is_not_degenerate() {
     // Finally, the pass condition itself is reachable: with these numbers the
     // ONE-SIDED raw element (keeping only the b-term of the Wu–VV average)
     // differs from the averaged one, so an averaging bug has room to show.
+    // F_X = E_X + λ_X N_X with N_X each state's own population (the kernel's
+    // constraint-offset-invariant raw element; N_A = 2.1, N_B = 1.429577).
     let (e_a, l_a) = (-3.0_f64, 0.5_f64);
     let (e_b, l_b) = (-2.9_f64, 0.4_f64);
-    let h_raw_avg = 0.5 * ((e_b * s_ab - l_b * e_wb) + (e_a * s_ab - l_a * e_wa));
-    let h_raw_one_sided = e_b * s_ab - l_b * e_wb;
+    let own_pop = |c: &Array2<f64>, w: &Array2<f64>| -> f64 {
+        let ca = c.slice(ndarray::s![.., ..2]).to_owned();
+        let cb = c.slice(ndarray::s![.., ..1]).to_owned();
+        ca.t().dot(w).dot(&ca).diag().sum() + cb.t().dot(w).dot(&cb).diag().sum()
+    };
+    let f_a = e_a + l_a * own_pop(&c1, &w_a);
+    let f_b = e_b + l_b * own_pop(&c2, &w_b);
+    let h_raw_avg = 0.5 * ((f_b * s_ab - l_b * e_wb) + (f_a * s_ab - l_a * e_wa));
+    let h_raw_one_sided = f_b * s_ab - l_b * e_wb;
+    // Measured gap 0.1036 (numpy rebuild of this fixture); bar 0.05.
     assert!(
-        (h_raw_avg - h_raw_one_sided).abs() > 0.1,
+        (h_raw_avg - h_raw_one_sided).abs() > 0.05,
         "averaged and one-sided h_raw coincide ({h_raw_avg:.9} vs \
          {h_raw_one_sided:.9}); the fixture cannot detect a missing average"
     );
@@ -360,9 +370,12 @@ fn swap_fixture_is_not_degenerate() {
 ///
 /// MUTATION-PROVEN. Replacing the symmetric Wu–VV average in
 /// `cdft_coupling.rs` with either half alone —
-/// `let h_raw = e_b * s_ab - state_b.lambda * w_b_elem;` — makes this fail with
-/// H_ab = -1.142997 vs -3.329290 (swap difference 2.19). Using one state's
-/// weight for both λ terms fails too (difference 1.40). The non-degeneracy of
+/// `let h_raw = f_b * s_ab - state_b.lambda * w_b_elem;` — must make this fail.
+/// Predicted by an independent numpy rebuild of the mutant under the
+/// F = E + λN raw element (2026-10-01; the earlier measured values belonged to
+/// the superseded E-only element): H_ab = +0.587722 vs −0.151331 (swap
+/// difference 0.739). Using state A's weight for both λ terms: difference
+/// 0.237. Re-confirm by mutation after any change here. The non-degeneracy of
 /// the inputs that makes those reachable is pinned by
 /// `swap_fixture_is_not_degenerate`.
 #[test]
@@ -406,11 +419,15 @@ fn coupling_symmetric_under_swap() {
 /// Each λ must multiply ITS OWN state's weight operator.
 ///
 /// WHY THIS EXISTS SEPARATELY: swapping λ_a↔λ_b onto the wrong W is a
-/// SWAP-SYMMETRIC error. `h_raw = ½[(E_b S − λ_b⟨a|W_a|b⟩) + (E_a S − λ_a⟨a|W_b|b⟩)]`
+/// SWAP-SYMMETRIC error. `h_raw = ½[(F_b S − λ_b⟨a|W_a|b⟩) + (F_a S − λ_a⟨a|W_b|b⟩)]`
 /// is invariant under a↔b just as the correct expression is, so
 /// `coupling_symmetric_under_swap` above CANNOT detect it, no matter how
-/// non-degenerate its fixture. Measured: that mis-pairing gives
-/// H_ab = -2.080138 for BOTH orderings, vs the correct -2.236144. A symmetry
+/// non-degenerate its fixture. Predicted (numpy rebuild, 2026-10-01): that
+/// mis-pairing (each λ with the other state's W, in its transition element
+/// AND its population N) gives H_ab = −0.274837 for BOTH orderings, vs the
+/// correct +0.218195; mis-pairing the transition elements only gives
+/// +0.374200. (Under the superseded E-only raw element the correct value was
+/// −2.236144 — the kernel and this reference both moved to the F form.) A symmetry
 /// test alone is therefore not sufficient coverage for this expression; a value
 /// check is required, and this is it.
 ///
@@ -462,7 +479,20 @@ fn coupling_pairs_each_lambda_with_its_own_weight() {
     };
     let w_a_elem = elem(&w_a);
     let w_b_elem = elem(&w_b);
-    let h_raw_ref = 0.5 * ((e_b * s_ab_ref - l_b * w_b_elem) + (e_a * s_ab_ref - l_a * w_a_elem));
+    // Each state's own population N_X = Σ_σ tr(C_Xσᵀ W_X C_Xσ), from the
+    // occupied blocks directly (independent of the kernel's helper).
+    let pop = |side: usize, w: &Array2<f64>| -> f64 {
+        blocks
+            .iter()
+            .map(|blk| {
+                let c = if side == 0 { &blk.0 } else { &blk.1 };
+                c.t().dot(w).dot(c).diag().sum()
+            })
+            .sum()
+    };
+    let f_a = e_a + l_a * pop(0, &w_a);
+    let f_b = e_b + l_b * pop(1, &w_b);
+    let h_raw_ref = 0.5 * ((f_b * s_ab_ref - l_b * w_b_elem) + (f_a * s_ab_ref - l_a * w_a_elem));
     let h_ab_ref = (h_raw_ref - 0.5 * (e_a + e_b) * s_ab_ref) / (1.0 - s_ab_ref * s_ab_ref);
 
     // --- kernel -------------------------------------------------------------
@@ -495,7 +525,7 @@ fn coupling_pairs_each_lambda_with_its_own_weight() {
     assert!(
         (got.h_ab - h_ab_ref).abs() < 1e-12,
         "H_ab: kernel {} vs independent reference {} (difference {:.3e}). \
-         A mis-paired λ/W gives -2.080138 here.",
+         A mis-paired λ/W gives -0.274837 here.",
         got.h_ab,
         h_ab_ref,
         (got.h_ab - h_ab_ref).abs()
@@ -508,6 +538,52 @@ fn coupling_pairs_each_lambda_with_its_own_weight() {
         "λ_a⟨a|W_A|b⟩ == λ_b⟨a|W_B|b⟩ ({:.6} vs {:.6}); mis-pairing undetectable",
         l_a * w_a_elem,
         l_b * w_b_elem
+    );
+}
+
+/// CONSTRAINT-OFFSET INVARIANCE. The constrained problem (W, N) and
+/// (W − c·S, N − c·N_e) — S the AO overlap, i.e. the number operator — have the
+/// same states, the same λ and the same E, so H_ab must not move. The F = E + λN
+/// raw element is invariant exactly; the superseded E-only element
+/// (`h_raw = ½[(E_b S − λ_b⟨a|W_b|b⟩) + …]`) moves from −2.236143 to −0.724343
+/// at c = 0.37 on this fixture (numpy rebuild, 2026-10-01), so this test is red
+/// against it. Also pins the corrected value +0.218195 (same rebuild).
+#[test]
+fn coupling_is_invariant_under_constraint_offset() {
+    use ferric_scf::cdft_coupling::{coupling_hab, DiabaticState};
+    let (s, c1, c2, w_a, w_b) = swap_fixture();
+    let run = |wa: &Array2<f64>, wb: &Array2<f64>| -> f64 {
+        let a = DiabaticState {
+            c_a: &c1,
+            c_b: &c1,
+            nocc_a: 2,
+            nocc_b: 1,
+            energy: -3.0,
+            lambda: 0.5,
+            w: wa,
+        };
+        let b = DiabaticState {
+            c_a: &c2,
+            c_b: &c2,
+            nocc_a: 2,
+            nocc_b: 1,
+            energy: -2.9,
+            lambda: 0.4,
+            w: wb,
+        };
+        coupling_hab(&a, &b, &s).h_ab
+    };
+    let h0 = run(&w_a, &w_b);
+    let c = 0.37;
+    let h1 = run(&(&w_a - &(&s * c)), &(&w_b - &(&s * c)));
+    assert!(
+        (h0 - 0.218_195_497_525_9).abs() < 1e-9,
+        "H_ab = {h0:.12} vs the independent numpy value 0.2181954975 (the E-only \
+         element gives -2.2361434)"
+    );
+    assert!(
+        (h1 - h0).abs() < 1e-12,
+        "H_ab moved under the empty offset W -> W - {c} S: {h0:.12} -> {h1:.12}"
     );
 }
 

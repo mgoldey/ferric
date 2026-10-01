@@ -275,7 +275,8 @@ pub struct CdftSeed<'a> {
     /// basin it aimed at.
     pub mos: Option<(&'a Array2<f64>, &'a Array2<f64>)>,
     /// Starting multipliers, one per constraint in `config.constraints` order.
-    /// `None` starts at λ = 0. Only the first λ-Newton loop uses it; a
+    /// `None` falls back to `config.cdft_lambda_init`, and λ = 0 is used only
+    /// when both are absent. Only the first λ-Newton loop uses the start; a
     /// stability-descent restart starts at λ = 0 as before.
     pub lambdas: Option<&'a [f64]>,
 }
@@ -302,7 +303,9 @@ pub fn solve_cdft_uhf_seeded(
     }
     let k = cons.len();
     let zero_lambdas = vec![0.0_f64; k];
-    let lam_start: &[f64] = match seed.lambdas {
+    // Starting multipliers: an explicit seed wins, then
+    // `RhfConfig::cdft_lambda_init`, then 0.
+    let lam_start: &[f64] = match seed.lambdas.or(config.cdft_lambda_init.as_deref()) {
         None => &zero_lambdas,
         Some(l) if l.len() == k && l.iter().all(|v| v.is_finite()) => l,
         Some(l) => {
