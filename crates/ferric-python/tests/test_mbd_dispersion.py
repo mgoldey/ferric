@@ -167,3 +167,17 @@ def test_gradient_includes_the_mbd_gradient(water, sto3g, mbd):
         f"MBD gradient {np.max(np.abs(diff))} is implausibly large for "
         f"E_MBD = {mbd.e_dispersion}"
     )
+
+
+def test_mbd_gradient_unsupported_by_the_z_vector_raises_before_the_scf(water, sto3g):
+    # SCAN is a meta-GGA: the Z-vector relaxation term has no tau f_xc kernel,
+    # so the exact MBD gradient is refused -- as a ValueError, up front, not
+    # as a RuntimeError after a full SCF.
+    with pytest.raises(ValueError, match="meta-GGA"):
+        ferric.run_dft(
+            water,
+            sto3g,
+            functional="SCAN",
+            dispersion="mbd(pbe)",
+            with_gradient=True,
+        )

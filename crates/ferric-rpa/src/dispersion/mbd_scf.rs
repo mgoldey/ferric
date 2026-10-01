@@ -458,6 +458,13 @@ pub fn mbd_rsscs_for_scf(
              available: {r}"
         )));
     }
+    if !matches!(result.spin, ferric_scf::Spin::Restricted) {
+        return Err(FerricError::General(
+            "MBD@rsSCS nuclear gradient: closed-shell (restricted) KS references only; \
+             open-shell MBD gradients are not implemented"
+                .into(),
+        ));
+    }
     let mut out = mbd_rsscs_for_density(cache, mol, bs, result.density_r(), config, true)?;
     let v = out.density_derivative.as_ref().ok_or_else(|| {
         FerricError::General("mbd_rsscs_for_scf: no density derivative was formed".into())

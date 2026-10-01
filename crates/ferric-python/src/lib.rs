@@ -5919,6 +5919,16 @@ fn run_dft(
              \"link\" when a gradient is needed",
         ));
     }
+    // MBD@rsSCS's exact gradient needs the Z-vector relaxation term: refuse an
+    // unsupported setup before the SCF and the free-atom solves, not after.
+    if with_gradient && matches!(dispersion, Some(DispersionSpec::Mbd(_))) {
+        if let Some(r) = ferric_scf::zvector_ks::unsupported_reason(&cfg) {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "dispersion=\"mbd\" with with_gradient=True: the exact MBD@rsSCS gradient \
+                 is not available: {r}"
+            )));
+        }
+    }
     if with_gradient && cfg.dft_grid.is_some() {
         return Err(pyo3::exceptions::PyValueError::new_err(
             "with_gradient=True cannot be combined with grid_radial / grid_angular / \
