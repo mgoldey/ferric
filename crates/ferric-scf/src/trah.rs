@@ -825,7 +825,11 @@ pub fn rhf_trah_step(
     // One EnginePool for the whole step, reused across every matvec — the same
     // hoist `rhf_newton_step` performs, for the same reason (the pool is
     // geometry/basis-only, so rebuilding it per matvec is pure waste).
-    let pool = EnginePool::new(inp.bounds.op, inp.prep, 1e-14)?;
+    let pool = EnginePool::new(
+        inp.bounds.op,
+        inp.prep,
+        ferric_integrals::engine_pool::ERI_PRECISION,
+    )?;
 
     let matvec = |v: &[f64]| -> Result<Vec<f64>, FerricError> {
         let k = Array2::from_shape_vec((nv, no), v.to_vec())
@@ -879,7 +883,11 @@ pub fn uhf_trah_step(
     let mut diag = gap_diag(&fa_diag, na, n);
     diag.extend(gap_diag(&fb_diag, nb, n));
 
-    let pool = EnginePool::new(inp.bounds.op, inp.prep, 1e-14)?;
+    let pool = EnginePool::new(
+        inp.bounds.op,
+        inp.prep,
+        ferric_integrals::engine_pool::ERI_PRECISION,
+    )?;
 
     let matvec = |v: &[f64]| -> Result<Vec<f64>, FerricError> {
         let ka = Array2::from_shape_vec((nva, na), v[..len_a].to_vec())

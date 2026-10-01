@@ -709,11 +709,13 @@ fn augmented_hessian_equals_plain_hessian_at_fixed_lambda() {
     let kb = mk(&mut rng, sys.nocc_b);
 
     // Central difference, Richardson-extrapolated over steps eps and eps/2 to
-    // cancel the O(eps^2) truncation term. A single step of 1e-4 carries a
-    // truncation error of ~1.5e-6 relative on this point (measured; 4.3e-7 at
-    // 5e-5, ratio 3.4 ~ the expected 4), which sat next to the 1e-6 bar and
-    // depended on which constrained state the SCF reached. Extrapolated:
-    // 8.5e-8. Smaller single steps run into roundoff (2.5e-5 gave 3.6e-6).
+    // cancel the O(eps^2) truncation term, which leaves ROUNDOFF as the error.
+    // |dE/deps| is only ~3e-4 against |E| ~ 130 Ha, so the difference quotient
+    // keeps few digits: at eps = 1e-4 the relative error over 16 random
+    // directions reached 1.5e-6 locally and 5.9e-6 on CI (it grows as eps
+    // shrinks and changes sign, so it is roundoff, not truncation). The bar
+    // below sits above that floor; a wrong gradient term (the λW contribution
+    // alone moves the matvec by 1.5e-2, see (b)) is orders of magnitude larger.
     let central = |eps: f64| -> f64 {
         let e_p = augmented_energy(
             &sys,
@@ -733,6 +735,8 @@ fn augmented_hessian_equals_plain_hessian_at_fixed_lambda() {
         );
         (e_p - e_m) / (2.0 * eps)
     };
+    // Roundoff floor of the energy FD above (5.9e-6 measured worst) with margin.
+    const FD_ENERGY_REL_TOL: f64 = 2e-5;
     let eps_e = 1e-4;
     let de_fd = (4.0 * central(eps_e / 2.0) - central(eps_e)) / 3.0;
     let (g_a, g_b) = augmented_gradient(&sys, &h, &d_a, &d_b, Some(&lam_w));
@@ -753,7 +757,7 @@ fn augmented_hessian_equals_plain_hessian_at_fixed_lambda() {
         de_analytic.abs()
     );
     assert!(
-        (de_fd - de_analytic).abs() <= 1e-6 * de_analytic.abs(),
+        (de_fd - de_analytic).abs() <= FD_ENERGY_REL_TOL * de_analytic.abs(),
         "λ-augmented gradient must be the derivative of the λ-augmented energy: \
          FD {de_fd:.6e} vs analytic {de_analytic:.6e}"
     );
