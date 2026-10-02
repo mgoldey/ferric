@@ -391,9 +391,9 @@ pub fn twoelectron_gradient_scaled_k(
 ///   ∇E_UKS = ∇E_nn + ∇E_1e + ∇E_2e_scaled_k + ∇E_xc[α,β] + ∇E_vv10[total]
 /// ```
 ///
-/// Limitations (this round):
-/// - RSH (ω > 0) is rejected. UKS-RSH needs per-spin DfK_SR/DfK_LR derivative
-///   integrals — same pattern as ks_gradient_closed's RSH path but doubled.
+/// Range-separated hybrids (ω > 0) take their exchange gradient as
+/// c_SR·K[erfc(ω)] + c_LR·K[erf(ω)] per spin, the open-shell form of
+/// `ks_gradient_closed`'s RSH path.
 #[allow(clippy::too_many_arguments)]
 pub fn ks_gradient_uks(
     mol: &Molecule,
@@ -404,6 +404,52 @@ pub fn ks_gradient_uks(
     xc_name: &str,
     result: &ScfResult,
     ext: Option<&ferric_core::external_potential::ExternalPotential>,
+) -> Result<Array2<f64>, FerricError> {
+    assert!(
+        matches!(result.spin, Spin::Unrestricted),
+        "ks_gradient_uks: ScfResult.spin must be Unrestricted"
+    );
+
+    let nelec = mol.nelec() as i64;
+    let two_s = mol.multiplicity as i64 - 1;
+    let nocc_a = ((nelec + two_s) / 2) as usize;
+    let nocc_b = ((nelec - two_s) / 2) as usize;
+
+    let d_a = &result.density_alpha;
+    let d_b = result
+        .density_beta
+        .as_ref()
+        .expect("ks_gradient_uks: missing density_beta");
+    let w = build_energy_weighted_density_uhf(result, nocc_a, nocc_b);
+    ks_gradient_uks_for_density(
+        mol, prep, bs, op, bounds, xc_name, result, ext, d_a, d_b, &w,
+    )
+}
+
+/// The UKS gradient EXPRESSION evaluated at arbitrary spin densities `d_a`,
+/// `d_b` and energy-weighted density `w` (the Pulay term is −Σ w ∂S/∂R): the
+/// open-shell sibling of [`ks_gradient_closed_for_density`]. With the SCF's
+/// spin densities and `w` from `build_energy_weighted_density_uhf` this IS
+/// [`ks_gradient_uks`].
+///
+/// `result` supplies only the two-electron route and the spin check. Linear
+/// in `w`; the one-electron, ECP and two-electron parts are linear or
+/// bilinear in (`d_a`, `d_b`). The unrestricted Z-vector relaxation term
+/// ([`crate::zvector_ks::relaxation_gradient_unrestricted`]) takes its
+/// directional derivative along a spin-density perturbation.
+#[allow(clippy::too_many_arguments)]
+pub fn ks_gradient_uks_for_density(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bs: &ferric_core::basis::BasisSet,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    xc_name: &str,
+    result: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+    d_a: &Array2<f64>,
+    d_b: &Array2<f64>,
+    w: &Array2<f64>,
 ) -> Result<Array2<f64>, FerricError> {
     assert!(
         matches!(result.spin, Spin::Unrestricted),
@@ -421,21 +467,10 @@ pub fn ks_gradient_uks(
     let k_mix = ferric_dft::libxc::k_mix_from_xc_def(&xc);
     let c_k: f64 = k_mix.sr;
 
-    let nelec = mol.nelec() as i64;
-    let two_s = mol.multiplicity as i64 - 1;
-    let nocc_a = ((nelec + two_s) / 2) as usize;
-    let nocc_b = ((nelec - two_s) / 2) as usize;
-
-    let d_a = &result.density_alpha;
-    let d_b = result
-        .density_beta
-        .as_ref()
-        .expect("ks_gradient_uks: missing density_beta");
     let d_total = d_a + d_b;
 
     // 1e + nn gradient.
-    let w = build_energy_weighted_density_uhf(result, nocc_a, nocc_b);
-    let mut grad = oneelectron_gradient(mol, prep, &d_total, &w, ext)?;
+    let mut grad = oneelectron_gradient(mol, prep, &d_total, w, ext)?;
     // ECP term (zero for an all-electron basis), as in ks_gradient_closed.
     grad += &crate::gradient::ecp_gradient(mol, prep, &d_total)?;
 

@@ -352,17 +352,21 @@ fn ksdft_optimize_on_a_doublet_runs_on_the_uks_surface() {
 }
 
 /// D3(BJ) on the UKS route: the single point applies it (E = E(KS) +
-/// E(D3BJ)), and the geometry optimization -- whose open-shell optimizer
-/// has no correction hook -- is refused rather than walking the
-/// uncorrected surface. Removing `refuse_open_shell_dispersion_gradient`
-/// lets the optimize run succeed and fails the refusal.
+/// E(D3BJ)), and the geometry optimization applies it too, through
+/// `optimize_geometry_uhf_with_scf_correction`: its final energy is the
+/// uncorrected optimum shifted by E(D3BJ) (D3 barely moves an OH bond, so the
+/// shift is E(D3BJ) to second order in the geometry change). A dropped
+/// correction leaves the two optima equal and fails the bar; restoring the old
+/// refusal fails `run_ok`. On a ROKS reference the optimize run is still
+/// refused (no ROKS correction hook, no ROKS MBD Z-vector).
 #[test]
-fn open_shell_ks_applies_d3_to_energies_and_refuses_it_on_optimize() {
-    let xyz = oh_097_xyz("open_shell_ks_applies_d3_to_energies_and_refuses_it_on_optimize");
-    let d3 = "[dft]\nfunctional = \"PBE\"\ndispersion = \"d3bj(pbe)\"\n";
+fn open_shell_ks_applies_d3_to_energies_and_optimizations() {
+    let xyz = oh_097_xyz("open_shell_ks_applies_d3_to_energies_and_optimizations");
+    let pbe = format!("[dft]\nfunctional = \"PBE\"\n\n{TIGHT_SCF}");
+    let d3 = format!("[dft]\nfunctional = \"PBE\"\ndispersion = \"d3bj(pbe)\"\n\n{TIGHT_SCF}");
     let out = run_ok(
         "oh_uks_d3",
-        &body_at(&xyz, 2, "sto-3g", "ksdft", "energy", d3),
+        &body_at(&xyz, 2, "sto-3g", "ksdft", "energy", &d3),
     );
     let e_ks = stdout_value(&out, "E(KS-DFT)");
     let e_d3 = stdout_value(&out, "E(D3BJ)");
@@ -371,11 +375,59 @@ fn open_shell_ks_applies_d3_to_energies_and_refuses_it_on_optimize() {
         e_d3 != 0.0 && (e - (e_ks + e_d3)).abs() < 1e-9,
         "{e} {e_ks} {e_d3}"
     );
-    let opt = run_toml(
+    let opt_d3 = run_ok(
         "oh_uks_d3_opt",
-        &body_at(&xyz, 2, "sto-3g", "ksdft", "optimize", d3),
+        &body_at(&xyz, 2, "sto-3g", "ksdft", "optimize", &d3),
     );
-    assert_refused(&opt, &["[dft] dispersion", "UKS[PBE]", "optimize"]);
+    let stdout = String::from_utf8_lossy(&opt_d3.stdout);
+    assert!(stdout.contains("UKS[PBE] Optimization Result"), "{stdout}");
+    assert!(stdout.contains("converged  = true"), "{stdout}");
+    let e_opt_d3 = stdout_value(&opt_d3, "final E");
+    let e_opt = stdout_value(
+        &run_ok(
+            "oh_uks_plain_opt",
+            &body_at(&xyz, 2, "sto-3g", "ksdft", "optimize", &pbe),
+        ),
+        "final E",
+    );
+    let shift = e_opt_d3 - e_opt;
+    println!("E(D3BJ) at the start = {e_d3:.6e}; optimum shift = {shift:.6e}");
+    assert!(
+        (shift - e_d3).abs() < D3_OPT_SHIFT_TOL,
+        "D3 optimum {e_opt_d3:.10} - plain optimum {e_opt:.10} = {shift:.6e}, \
+         expected E(D3BJ) = {e_d3:.6e}"
+    );
+
+    let nh2 = nh2_xyz("open_shell_ks_applies_d3_to_energies_and_optimizations");
+    let roks = run_toml(
+        "nh2_roks_d3_opt",
+        &body_at(&nh2, 2, "sto-3g", "rohf", "optimize", &d3),
+    );
+    assert_refused(&roks, &["[dft] dispersion", "ROKS[PBE]", "optimize"]);
+}
+
+/// Bar on |(D3 optimum − plain optimum) − E(D3BJ) at the start| in Hartree.
+/// Measured 5.6e-7 (E(D3BJ) = −1.520e-4, shift −1.526e-4); a dropped
+/// correction misses by 1.5e-4.
+const D3_OPT_SHIFT_TOL: f64 = 1e-5;
+
+/// MBD@rsSCS on the UKS route, `task = "optimize"`: the run takes the exact
+/// UKS MBD gradient (unrestricted Z-vector) and converges. Restoring the
+/// open-shell refusal fails `run_ok`; an MBD gradient that is not the
+/// derivative of the reported energy would not converge the BFGS walk
+/// cleanly at the default thresholds. The MBD gradient itself is
+/// FD-validated in `ferric-rpa/tests/mbd_scf_gradient_uks.rs`.
+#[test]
+fn open_shell_ks_runs_an_mbd_optimization() {
+    let xyz = oh_097_xyz("open_shell_ks_runs_an_mbd_optimization");
+    let mbd = format!("[dft]\nfunctional = \"PBE\"\ndispersion = \"mbd\"\n\n{TIGHT_SCF}");
+    let out = run_ok(
+        "oh_uks_mbd_opt",
+        &body_at(&xyz, 2, "sto-3g", "ksdft", "optimize", &mbd),
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("UKS[PBE] Optimization Result"), "{stdout}");
+    assert!(stdout.contains("converged  = true"), "{stdout}");
 }
 
 // ─── Open-shell RI-MP2 ──────────────────────────────────────────────────────

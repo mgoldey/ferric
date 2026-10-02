@@ -591,27 +591,3 @@ fn measure_full_pipeline_fd() {
         );
     }
 }
-
-/// An open-shell SCF result is an error from `mbd_rsscs_for_scf`, never a
-/// panic (`ScfResult::density_r` asserts a restricted result). Catches the
-/// spin check being dropped or moved after the `density_r` call.
-#[test]
-fn mbd_exact_gradient_rejects_an_open_shell_result() {
-    use ferric_scf::uhf::solve_uhf;
-    let mol = Molecule::parse_xyz("2\nOH\nO 0 0 0\nH 0 0 0.97\n", 0, 2).expect("OH");
-    let bs = basis::bundled("sto-3g").expect("sto-3g");
-    let op = Operator::coulomb();
-    let ctx = ParallelContext::default();
-    let cfg = rks_pbe();
-    let mbd_cfg = MbdRsscsConfig::for_functional("PBE").expect("beta");
-    let cache = MbdFreeAtomCache::build(&ctx, &mol, &bs, op, &cfg).expect("cache");
-    let prep = PreparedBasis::new(&mol, &bs).expect("prep");
-    let bounds = SchwarzBounds::compute(op, &prep).expect("bounds");
-    let r = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).expect("uks");
-    let err = mbd_rsscs_for_scf(&ctx, &cache, &mol, &bs, op, &cfg, &r, &mbd_cfg)
-        .expect_err("an open-shell result must be refused");
-    assert!(
-        format!("{err:?}").contains("closed-shell"),
-        "unexpected error: {err:?}"
-    );
-}

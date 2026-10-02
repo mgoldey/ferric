@@ -214,31 +214,43 @@ pub fn optimize_geometry_with_scf_correction(
     mut correction: impl FnMut(&Molecule, &ScfResult) -> Result<(f64, Option<Array2<f64>>), FerricError>,
 ) -> Result<OptimizeResult, FerricError> {
     run_bfgs(mol, opt_config, |m| {
-        let (e, mut g, scf) =
-            compute_energy_gradient_and_result(ctx, m, basis_name, op, rhf_config)?;
+        let (e, g, scf) = compute_energy_gradient_and_result(ctx, m, basis_name, op, rhf_config)?;
         let (de, dg) = correction(m, &scf)?;
-        if de != 0.0 || dg.is_some() {
-            let dg = dg.ok_or_else(|| {
-                FerricError::General(
-                    "geometry optimization: the energy correction returned a value but no \
-                     gradient. Optimizing would follow the UNCORRECTED surface while \
-                     reporting corrected energies, converging to a geometry that is a \
-                     stationary point of neither."
-                        .to_string(),
-                )
-            })?;
-            if dg.shape() != g.shape() {
-                return Err(FerricError::General(format!(
-                    "geometry optimization: correction gradient is {:?} but the SCF \
-                     gradient is {:?}",
-                    dg.shape(),
-                    g.shape()
-                )));
-            }
-            g = g + dg;
-        }
-        Ok((e + de, g))
+        add_correction(e, g, de, dg)
     })
+}
+
+/// Combine an SCF (energy, gradient) with an additive correction under the
+/// rules of [`optimize_geometry_with_correction`]: `(0.0, None)` adds nothing
+/// (no floating-point operation), an energy without a gradient and a
+/// mis-shaped gradient are errors.
+fn add_correction(
+    e: f64,
+    mut g: Array2<f64>,
+    de: f64,
+    dg: Option<Array2<f64>>,
+) -> Result<(f64, Array2<f64>), FerricError> {
+    if de != 0.0 || dg.is_some() {
+        let dg = dg.ok_or_else(|| {
+            FerricError::General(
+                "geometry optimization: the energy correction returned a value but no \
+                 gradient. Optimizing would follow the UNCORRECTED surface while \
+                 reporting corrected energies, converging to a geometry that is a \
+                 stationary point of neither."
+                    .to_string(),
+            )
+        })?;
+        if dg.shape() != g.shape() {
+            return Err(FerricError::General(format!(
+                "geometry optimization: correction gradient is {:?} but the SCF \
+                 gradient is {:?}",
+                dg.shape(),
+                g.shape()
+            )));
+        }
+        g = g + dg;
+    }
+    Ok((e + de, g))
 }
 
 /// Optimize the molecular geometry using UHF analytical gradients.
@@ -255,8 +267,36 @@ pub fn optimize_geometry_uhf(
     uhf_config: &RhfConfig,
     opt_config: &OptimizeConfig,
 ) -> Result<OptimizeResult, FerricError> {
+    optimize_geometry_uhf_with_scf_correction(
+        ctx,
+        mol,
+        basis_name,
+        op,
+        uhf_config,
+        opt_config,
+        |_, _| Ok((0.0, None)),
+    )
+}
+
+/// [`optimize_geometry_uhf`] plus an additive correction that sees the
+/// converged UHF/UKS result at each geometry: the open-shell sibling of
+/// [`optimize_geometry_with_scf_correction`], with the same combination rules
+/// (an energy without a gradient is an error; `(0.0, None)` is byte-identical
+/// to no correction). Dispersion is the motivating case — D3(BJ) uses only
+/// the geometry, MBD@rsSCS the UKS spin densities.
+pub fn optimize_geometry_uhf_with_scf_correction(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    basis_name: &str,
+    op: Operator,
+    uhf_config: &RhfConfig,
+    opt_config: &OptimizeConfig,
+    mut correction: impl FnMut(&Molecule, &ScfResult) -> Result<(f64, Option<Array2<f64>>), FerricError>,
+) -> Result<OptimizeResult, FerricError> {
     run_bfgs(mol, opt_config, |m| {
-        compute_energy_and_gradient_uhf(ctx, m, basis_name, op, uhf_config)
+        let (e, g, scf) = compute_energy_and_gradient_uhf(ctx, m, basis_name, op, uhf_config)?;
+        let (de, dg) = correction(m, &scf)?;
+        add_correction(e, g, de, dg)
     })
 }
 
@@ -798,7 +838,7 @@ fn compute_energy_and_gradient_uhf(
     basis_name: &str,
     op: Operator,
     uhf_config: &RhfConfig,
-) -> Result<(f64, Array2<f64>), FerricError> {
+) -> Result<(f64, Array2<f64>, ScfResult), FerricError> {
     // `uhf_gradient` is HF-only (no XC term), so an `xc` run must route to
     // `ks_gradient_uks` instead. That function IS implemented (LDA/GGA/hybrid/
     // RSH/meta-GGA + VV10) and is FD- and PySCF-validated by
@@ -825,7 +865,7 @@ fn compute_energy_and_gradient_uhf(
     // came from COSX (UHF: COSX derivative; UKS: refused).
     let grad =
         crate::gradient::unrestricted_scf_gradient(mol, &prep, &bs, op, &bounds, uhf_config, &res)?;
-    Ok((res.energy, grad))
+    Ok((res.energy, grad, res))
 }
 
 fn compute_energy_and_gradient_rohf(
@@ -1095,7 +1135,7 @@ mod tests {
         // Final gradient norm must be below the configured convergence
         // thresholds -- re-derive it directly rather than trusting the
         // driver's internal bookkeeping.
-        let (_, grad_arr) =
+        let (_, grad_arr, _) =
             compute_energy_and_gradient_uhf(&ctx, &result.mol, "sto-3g", op, &uhf_config).unwrap();
         let grad = flatten_gradient(&grad_arr);
         let g_max = grad.iter().map(|g| g.abs()).fold(0.0f64, f64::max);
