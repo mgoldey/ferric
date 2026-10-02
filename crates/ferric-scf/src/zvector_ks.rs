@@ -90,6 +90,44 @@ pub const T_SCALE: f64 = 1e-4;
 pub const CG_REL_TOL: f64 = 1e-10;
 /// PCG iteration cap; exceeding it is an error, never a silent answer.
 pub const CG_MAX_ITER: usize = 200;
+/// When the curvature along the search direction is numerically zero (PCG
+/// at its rounding floor), the solve is accepted if max|residual| is already
+/// ≤ `CG_FLOOR_TOL` · max|rhs|, and is a convergence error otherwise.
+pub const CG_FLOOR_TOL: f64 = 1e-8;
+
+/// Curvature verdict for one PCG step, with `php = p·Hp` and `pmp = p·M p`
+/// (M = the positive orbital-energy-gap preconditioner, so `pmp` is the
+/// natural scale of `php`).
+///
+/// * Positive curvature: proceed.
+/// * Otherwise, if max|residual| is already ≤ `CG_FLOOR_TOL` · max|rhs|, PCG
+///   has reached the rounding floor of the Hessian product: p is noise and the
+///   sign of p·Hp carries no information (measured on UKS OH/STO-3G PBE:
+///   p·Hp = −8.4e-19 against p·Mp = 1.1e-16). Stop and accept.
+/// * Otherwise negative curvature means H is indefinite (the SCF is not a
+///   minimum) and zero curvature means PCG stalled: both errors.
+fn pcg_curvature_ok(php: f64, pmp: f64, residual: f64, rhs_max: f64) -> Result<bool, FerricError> {
+    const ROUNDING: f64 = 1e-12;
+    if php > ROUNDING * pmp {
+        return Ok(true);
+    }
+    if residual <= CG_FLOOR_TOL * rhs_max {
+        return Ok(false);
+    }
+    if php < 0.0 {
+        return Err(FerricError::General(format!(
+            "Z-vector relaxation: the orbital Hessian is not positive definite along the \
+             search direction (p.Hp = {php:.3e}, p.Mp = {pmp:.3e}, max|r| = {residual:.3e}, max|rhs| = {rhs_max:.3e}); \
+             the SCF is not a minimum, or (open shell) a degenerate SOMO pair makes the \
+             orbital Hessian near-singular"
+        )));
+    }
+    Err(FerricError::Convergence(format!(
+        "Z-vector relaxation: PCG stalled (p.Hp = {php:.3e}, p.Mp = {pmp:.3e}) with \
+         max|r| = {residual:.3e} > {:.3e}",
+        CG_FLOOR_TOL * rhs_max
+    )))
+}
 
 /// The relaxation term and its solve diagnostics.
 #[derive(Debug, Clone)]
@@ -472,11 +510,9 @@ pub fn relaxation_gradient_closed(
             }
             let hp = hx(&p)?;
             let php = inner(&p, &hp);
-            if !(php > 0.0) {
-                return Err(FerricError::General(format!(
-                    "Z-vector relaxation: the orbital Hessian is not positive definite along \
-                     the search direction (p.Hp = {php:.3e}); the SCF is not a minimum"
-                )));
+            let pmp = inner(&p, &(&p * &gap));
+            if !pcg_curvature_ok(php, pmp, residual, rhs_max)? {
+                break;
             }
             let alpha = rz / php;
             z.scaled_add(alpha, &p);
@@ -819,11 +855,9 @@ pub fn relaxation_gradient_unrestricted(
             }
             let hp = hx(&p)?;
             let php = inner2(&p, &hp);
-            if !(php > 0.0) {
-                return Err(FerricError::General(format!(
-                    "Z-vector relaxation: the orbital Hessian is not positive definite along \
-                     the search direction (p.Hp = {php:.3e}); the SCF is not a minimum"
-                )));
+            let pmp = inner(&p[0], &(&p[0] * &sa.gap)) + inner(&p[1], &(&p[1] * &sb.gap));
+            if !pcg_curvature_ok(php, pmp, residual, rhs_max)? {
+                break;
             }
             let alpha = rz / php;
             for s in 0..2 {
@@ -873,4 +907,32 @@ pub fn relaxation_gradient_unrestricted(
         iterations,
         residual,
     })
+}
+
+#[cfg(test)]
+mod pcg_curvature_tests {
+    use super::*;
+
+    /// Positive curvature proceeds; clearly negative curvature is an error
+    /// (the SCF is not a minimum); numerically zero curvature stops PCG and is
+    /// accepted only when the residual is already within `CG_FLOOR_TOL`.
+    /// The zero-curvature case is the rounding floor that a raw `php > 0`
+    /// test misread as an indefinite Hessian (UKS OH, p.Hp = -8.4e-19).
+    #[test]
+    fn curvature_verdicts() {
+        // proceed
+        assert!(pcg_curvature_ok(1.0, 1.0, 1.0, 1.0).unwrap());
+        // negative curvature with a large residual: indefinite Hessian
+        assert!(matches!(
+            pcg_curvature_ok(-0.5, 1.0, 1.0, 1.0),
+            Err(FerricError::General(_))
+        ));
+        // the measured rounding floor, residual within CG_FLOOR_TOL: accept
+        assert!(!pcg_curvature_ok(-8.4e-19, 1.1e-16, 1e-12, 1e-3).unwrap());
+        // zero curvature with a large residual: stall
+        assert!(matches!(
+            pcg_curvature_ok(0.0, 1.0, 1e-6, 1e-3),
+            Err(FerricError::Convergence(_))
+        ));
+    }
 }

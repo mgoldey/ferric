@@ -419,11 +419,15 @@ const D3_OPT_SHIFT_TOL: f64 = 1e-5;
 /// FD-validated in `ferric-rpa/tests/mbd_scf_gradient_uks.rs`.
 #[test]
 fn open_shell_ks_runs_an_mbd_optimization() {
-    let xyz = oh_097_xyz("open_shell_ks_runs_an_mbd_optimization");
+    // NH2 (²B1, non-degenerate SOMO) from a distorted start. Not OH: its ²Π
+    // π pair is degenerate, so the UKS orbital Hessian has a near-null
+    // rotation mode and the Z-vector solve is ill-conditioned there (the
+    // KS validation excludes degenerate-SOMO radicals for the same reason).
+    let xyz = "testdata/molecules/validation/nh2_opt_start.xyz";
     let mbd = format!("[dft]\nfunctional = \"PBE\"\ndispersion = \"mbd\"\n\n{TIGHT_SCF}");
     let out = run_ok(
-        "oh_uks_mbd_opt",
-        &body_at(&xyz, 2, "sto-3g", "ksdft", "optimize", &mbd),
+        "nh2_uks_mbd_opt",
+        &body_at(xyz, 2, "sto-3g", "ksdft", "optimize", &mbd),
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("UKS[PBE] Optimization Result"), "{stdout}");
