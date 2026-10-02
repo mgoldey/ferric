@@ -117,7 +117,7 @@ object without `beta` and `volume_ratios`). UKS/ROKS energy runs, which write
 no `run_end` record, write a `dispersion` record with the same fields. Python:
 `run_dft(..., dispersion="mbd")`, which also reports `DftResult.volume_ratios`.
 
-**Gradient.** `task = "optimize"` on an RKS or UKS reference and
+**Gradient.** `task = "optimize"` on an RKS, UKS or ROKS reference and
 `run_dft(with_gradient=True)` add the exact analytic MBD@rsSCS gradient: the
 explicit dependence on the nuclear positions, and the dependence through the
 Hirshfeld volumes, including how the SCF density itself responds to the
@@ -126,23 +126,27 @@ coupled-perturbed Kohn–Sham (Z-vector) solve per gradient; it costs about as
 much as a few SCF iterations. On a UKS reference the solve is coupled across
 the α and β orbital rotations (Coulomb couples the spins; exchange and the XC
 kernel are spin-resolved), and the orthonormality of each spin's occupied
-orbitals enters separately. The volumes are integrated on a lattice
-anchored to the molecular centroid, and its motion is part of the gradient.
-Against finite differences of the full SCF + MBD calculation at 6-31G the
-gradient agrees to 6e-9 Hartree/Bohr for H2O with PBE, PBE0, HSE06 and
-PBE with RI-J, and to 9e-10 for NH3; the orbital relaxation alone is 1.0e-5
-for H2O (11.5% of the largest MBD component). For UKS doublets and a triplet
-(NH2, OH, O2 at 6-31G with PBE, PBE0 and HSE06) it agrees to ≤ 1.9e-9, and to
-6e-9 for OH with PBE + RI-J and PBE0 + RI-JK, against an orbital relaxation of
-3e-6–1e-5. The relaxation term needs an LDA, GGA or hybrid-GGA functional
-without VV10, no implicit solvation, polarizable embedding or cDFT
-constraints, and integer aufbau occupation (no MOM); UKS additionally needs
-exchange that is not COSX. Other setups are refused rather than given an
-approximate gradient.
-ROKS optimization and open-shell frequencies with dispersion are refused; run an
-open shell unrestricted (`kind = "uhf"` with `[dft] functional`, or `ksdft` at
-multiplicity > 1) to optimize it with dispersion. Python's `run_dft` is
-closed-shell only.
+orbitals enters separately. On a ROKS reference the solve runs over the three
+rotation blocks of the shared orbitals (closed→virtual, open→virtual,
+closed→open) with the exact restricted-open-shell orbital Hessian, and the
+closed and open orbitals are kept orthonormal as one set, which adds a
+closed–open cross term to the orthonormality contribution. The volumes are
+integrated on a lattice anchored to the molecular centroid, and its motion is
+part of the gradient. Against finite differences of the full SCF + MBD
+calculation at 6-31G the gradient agrees to 6e-9 Hartree/Bohr for H2O with
+PBE, PBE0, HSE06 and PBE with RI-J, and to 9e-10 for NH3; the orbital
+relaxation alone is 1.0e-5 for H2O (11.5% of the largest MBD component). For
+UKS doublets and a triplet (NH2, OH, O2 at 6-31G with PBE, PBE0 and HSE06) it
+agrees to ≤ 1.9e-9, and to 6e-9 for OH with PBE + RI-J and PBE0 + RI-JK,
+against an orbital relaxation of 3e-6–1e-5. For ROKS doublets and triplets
+(HCO, NH2, CH2, O2 at 6-31G) it agrees to ≤ 2.1e-11 with PBE and PBE0, ≤ 4.5e-10
+with HSE06 and 7.5e-9 for HCO with PBE + RI-J, against an orbital relaxation
+of 2.7e-6–9.8e-6. The relaxation term needs an LDA, GGA or hybrid-GGA
+functional without VV10, no implicit solvation, polarizable embedding or cDFT
+constraints, and integer aufbau occupation (no MOM); UKS and ROKS additionally
+need exchange that is not COSX. Other setups are refused rather than given an
+approximate gradient. Open-shell frequencies with dispersion are refused. Python's `run_dft` is closed-shell
+only.
 
 ## Frequencies with dispersion
 

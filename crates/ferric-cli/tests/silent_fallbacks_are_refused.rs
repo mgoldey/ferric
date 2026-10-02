@@ -357,8 +357,8 @@ fn ksdft_optimize_on_a_doublet_runs_on_the_uks_surface() {
 /// uncorrected optimum shifted by E(D3BJ) (D3 barely moves an OH bond, so the
 /// shift is E(D3BJ) to second order in the geometry change). A dropped
 /// correction leaves the two optima equal and fails the bar; restoring the old
-/// refusal fails `run_ok`. On a ROKS reference the optimize run is still
-/// refused (no ROKS correction hook, no ROKS MBD Z-vector).
+/// refusal fails `run_ok`. The ROKS route (NH2, `kind = "rohf"`) is checked
+/// the same way through `optimize_geometry_rohf_with_scf_correction`.
 #[test]
 fn open_shell_ks_applies_d3_to_energies_and_optimizations() {
     let xyz = oh_097_xyz("open_shell_ks_applies_d3_to_energies_and_optimizations");
@@ -399,11 +399,30 @@ fn open_shell_ks_applies_d3_to_energies_and_optimizations() {
     );
 
     let nh2 = nh2_xyz("open_shell_ks_applies_d3_to_energies_and_optimizations");
-    let roks = run_toml(
+    let e_d3_roks = stdout_value(
+        &run_ok(
+            "nh2_roks_d3",
+            &body_at(&nh2, 2, "sto-3g", "rohf", "energy", &d3),
+        ),
+        "E(D3BJ)",
+    );
+    let roks_d3 = run_ok(
         "nh2_roks_d3_opt",
         &body_at(&nh2, 2, "sto-3g", "rohf", "optimize", &d3),
     );
-    assert_refused(&roks, &["[dft] dispersion", "ROKS[PBE]", "optimize"]);
+    let stdout = String::from_utf8_lossy(&roks_d3.stdout);
+    assert!(stdout.contains("ROKS[PBE] Optimization Result"), "{stdout}");
+    assert!(stdout.contains("converged  = true"), "{stdout}");
+    let roks_plain = run_ok(
+        "nh2_roks_plain_opt",
+        &body_at(&nh2, 2, "sto-3g", "rohf", "optimize", &pbe),
+    );
+    let shift_roks = stdout_value(&roks_d3, "final E") - stdout_value(&roks_plain, "final E");
+    println!("ROKS: E(D3BJ) at the start = {e_d3_roks:.6e}; optimum shift = {shift_roks:.6e}");
+    assert!(
+        e_d3_roks != 0.0 && (shift_roks - e_d3_roks).abs() < D3_OPT_SHIFT_TOL,
+        "ROKS D3 optimum shift {shift_roks:.6e}, expected E(D3BJ) = {e_d3_roks:.6e}"
+    );
 }
 
 /// Bar on |(D3 optimum − plain optimum) − E(D3BJ) at the start| in Hartree.
@@ -431,6 +450,23 @@ fn open_shell_ks_runs_an_mbd_optimization() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("UKS[PBE] Optimization Result"), "{stdout}");
+    assert!(stdout.contains("converged  = true"), "{stdout}");
+}
+
+/// MBD@rsSCS on the ROKS route (`kind = "rohf"` + functional), `task =
+/// "optimize"`: the run takes the exact ROKS MBD gradient (ROKS Z-vector) and
+/// converges. Restoring the ROKS refusal fails `run_ok`. The MBD gradient itself
+/// is FD-validated in `ferric-rpa/tests/mbd_scf_gradient_roks.rs`.
+#[test]
+fn roks_runs_an_mbd_optimization() {
+    let nh2 = nh2_xyz("roks_runs_an_mbd_optimization");
+    let mbd = format!("[dft]\nfunctional = \"PBE\"\ndispersion = \"mbd\"\n\n{TIGHT_SCF}");
+    let out = run_ok(
+        "nh2_roks_mbd_opt",
+        &body_at(&nh2, 2, "sto-3g", "rohf", "optimize", &mbd),
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("ROKS[PBE] Optimization Result"), "{stdout}");
     assert!(stdout.contains("converged  = true"), "{stdout}");
 }
 

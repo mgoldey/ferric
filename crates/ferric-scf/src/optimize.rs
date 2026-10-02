@@ -309,8 +309,36 @@ pub fn optimize_geometry_rohf(
     rohf_config: &RhfConfig,
     opt_config: &OptimizeConfig,
 ) -> Result<OptimizeResult, FerricError> {
+    optimize_geometry_rohf_with_scf_correction(
+        ctx,
+        mol,
+        basis_name,
+        op,
+        rohf_config,
+        opt_config,
+        |_, _| Ok((0.0, None)),
+    )
+}
+
+/// [`optimize_geometry_rohf`] plus an additive correction that sees the
+/// converged ROHF/ROKS result at each geometry: the restricted-open-shell
+/// sibling of [`optimize_geometry_uhf_with_scf_correction`], with the same
+/// combination rules (an energy without a gradient is an error; `(0.0, None)`
+/// is byte-identical to no correction). Dispersion is the motivating case —
+/// D3(BJ) uses only the geometry, MBD@rsSCS the ROKS spin densities.
+pub fn optimize_geometry_rohf_with_scf_correction(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    basis_name: &str,
+    op: Operator,
+    rohf_config: &RhfConfig,
+    opt_config: &OptimizeConfig,
+    mut correction: impl FnMut(&Molecule, &ScfResult) -> Result<(f64, Option<Array2<f64>>), FerricError>,
+) -> Result<OptimizeResult, FerricError> {
     run_bfgs(mol, opt_config, |m| {
-        compute_energy_and_gradient_rohf(ctx, m, basis_name, op, rohf_config)
+        let (e, g, scf) = compute_energy_and_gradient_rohf(ctx, m, basis_name, op, rohf_config)?;
+        let (de, dg) = correction(m, &scf)?;
+        add_correction(e, g, de, dg)
     })
 }
 
@@ -876,7 +904,7 @@ fn compute_energy_and_gradient_rohf(
     basis_name: &str,
     op: Operator,
     rohf_config: &RhfConfig,
-) -> Result<(f64, Array2<f64>), FerricError> {
+) -> Result<(f64, Array2<f64>, ScfResult), FerricError> {
     // `rohf_gradient` is HF-only (no XC term); an `xc` run routes to
     // `ks_gradient_roks`, which is implemented and FD-validated by
     // tests/roks_gradient.rs (LDA/PBE/B3LYP/wB97X-V). Same shape as the UHF
@@ -907,7 +935,7 @@ fn compute_energy_and_gradient_rohf(
     } else {
         rohf_gradient(mol, &prep, op, &bounds, &res, ext)?
     };
-    Ok((res.energy, grad))
+    Ok((res.energy, grad, res))
 }
 
 fn flatten_gradient(grad: &Array2<f64>) -> Array1<f64> {
@@ -1221,7 +1249,7 @@ mod tests {
             result.energy
         );
 
-        let (_, grad_arr) =
+        let (_, grad_arr, _) =
             compute_energy_and_gradient_rohf(&ctx, &result.mol, "sto-3g", op, &rohf_config)
                 .unwrap();
         let grad = flatten_gradient(&grad_arr);

@@ -12,7 +12,8 @@
 //! ```text
 //!   dE/dR_B = ∂E/∂R_B |_{ratios fixed}                      (mbd_rsscs_gradient)
 //!           + Σ_A c_A ∂v_A/∂R_B |_{D fixed, lattice fixed}  (hirshfeld_volume_gradient)
-//!           − ½ Tr[V D Sˣ D]   (UKS: − Σ_σ Tr[V D_σ Sˣ D_σ]) (orthonormality)
+//!           − ½ Tr[V D Sˣ D]   (UKS: − Σ_σ Tr[V D_σ Sˣ D_σ];   (orthonormality)
+//!                               ROKS: − Tr[Sˣ W_Q], see below)
 //!           − (1/N) Σ_C Σ_A c_A ∂v_A/∂R_C |_{D, lattice}     (lattice response)
 //!           + Σ_ai Z_ai ∂F_ai/∂R_B                           (orbital relaxation)
 //!   c_A = (∂E/∂r_A) / v_A^free,   V = ∂(Σ_A c_A v_A)/∂D
@@ -24,8 +25,11 @@
 //! displacement (translation invariance at fixed D turns the lattice shift
 //! into minus the sum of the fixed-lattice term). The relaxation term is the
 //! KS Z-vector of [`ferric_scf::zvector_ks`] (closed-shell for RKS, coupled
-//! α/β for UKS) with V as its right-hand side; MBD depends on the total
-//! density, so both spins see the same V.
+//! α/β for UKS, three-block closed/open/virtual for ROKS) with V as its
+//! right-hand side; MBD depends on the total density, so both spins see the
+//! same V. For ROKS the closed and open orbitals are re-orthonormalized as one
+//! set, so W_Q = D_α V D_α + P_c V P_c + ½ (P_c V P_o + P_o V P_c) carries a
+//! closed–open cross term.
 //!
 //! Measured against central FD (h = 1e-3 Bohr) of the full SCF + MBD pipeline
 //! at 6-31G (`tests/mbd_scf_gradient.rs`): ≤ 3.5e-9 Hartree/Bohr for H2O with
@@ -40,6 +44,12 @@
 //! PBE + RI-J / PBE0 + RI-JK (the Z-vector Hessian uses exact J/K), against a
 //! relaxation term of 2.7e-6 to 1.0e-5; an RKS result run through the UKS
 //! path reproduces the closed-shell gradient to 3e-14.
+//!
+//! ROKS (`tests/mbd_scf_gradient_roks.rs`, h = 1e-3 Bohr): ≤ 2.1e-11 for HCO,
+//! NH2 (doublets), CH2 and O2 (triplets) at 6-31G with PBE and PBE0, ≤ 4.5e-10
+//! with HSE06 and 7.5e-9 for HCO with PBE + RI-J (the Z-vector Hessian uses
+//! exact J/K), against a relaxation term of 2.7e-6 to 9.8e-6; an RKS result
+//! run through the ROKS path reproduces the closed-shell gradient to 2.7e-14.
 
 use std::collections::BTreeMap;
 
@@ -345,6 +355,43 @@ pub fn mbd_rsscs_for_spin_densities(
     )
 }
 
+/// [`mbd_rsscs_for_density`] for a restricted open-shell (ROKS) reference
+/// given its spin densities `d_alpha` = P_c + P_o and `d_beta` = P_c (one set
+/// of spatial orbitals: closed, open). As for UKS, everything but the
+/// orthonormality term uses the total density. The closed and open orbitals
+/// are re-orthonormalized as ONE set, so the term carries a closed–open cross
+/// piece: −Tr\[Sˣ W_Q\], W_Q = D_α V D_α + P_c V P_c + ½ (P_c V P_o + P_o V P_c)
+/// (see [`ferric_scf::zvector_ks`], "Restricted open-shell (ROKS)
+/// references"). Checked: D_σ S D_σ = D_σ and D_α S D_β = D_β.
+///
+/// # Errors
+///
+/// Those of [`mbd_rsscs_for_density`]; with `want_gradient`, spin densities
+/// that are not idempotent in the S metric or a β space not inside the α one.
+pub fn mbd_rsscs_for_restricted_open_densities(
+    cache: &MbdFreeAtomCache,
+    mol: &Molecule,
+    bs: &BasisSet,
+    d_alpha: &Array2<f64>,
+    d_beta: &Array2<f64>,
+    config: &MbdRsscsConfig,
+    want_gradient: bool,
+) -> Result<MbdScfResult, FerricError> {
+    let total = d_alpha + d_beta;
+    mbd_rsscs_impl(
+        cache,
+        mol,
+        bs,
+        &total,
+        OccupiedDensities::RestrictedOpen {
+            alpha: d_alpha,
+            beta: d_beta,
+        },
+        config,
+        want_gradient,
+    )
+}
+
 /// How the occupied orbitals behind the total density are held orthonormal.
 #[derive(Clone, Copy)]
 enum OccupiedDensities<'a> {
@@ -352,6 +399,12 @@ enum OccupiedDensities<'a> {
     Closed,
     /// Open shell: D_σ = C_σ,occ C_σ,occᵀ per spin.
     Open {
+        alpha: &'a Array2<f64>,
+        beta: &'a Array2<f64>,
+    },
+    /// Restricted open shell: shared spatial orbitals, D_α = P_c + P_o,
+    /// D_β = P_c, closed and open orthonormalized together.
+    RestrictedOpen {
         alpha: &'a Array2<f64>,
         beta: &'a Array2<f64>,
     },
@@ -484,7 +537,10 @@ fn mbd_rsscs_impl(
 /// as the basis moves (dC_occ = −½ C_occ S^x_oo at fixed orbital rotation):
 /// closed shell, D = 2 C_occ C_occᵀ, dD = −½ D S^x D, term −½ Tr[V D S^x D];
 /// open shell, D_σ = C_σ,occ C_σ,occᵀ, dD_σ = −D_σ S^x D_σ, term
-/// −Σ_σ Tr[V D_σ S^x D_σ]. Returns the term and V.
+/// −Σ_σ Tr[V D_σ S^x D_σ]; restricted open shell (closed + open
+/// orthonormalized as one set), term −Tr[S^x W_Q] with
+/// W_Q = D_α V D_α + P_c V P_c + ½ (P_c V P_o + P_o V P_c). Returns the term
+/// and V.
 fn orthonormality_term(
     mol: &Molecule,
     bs: &BasisSet,
@@ -522,6 +578,21 @@ fn orthonormality_term(
             check(alpha, 1.0, "an idempotent alpha spin density")?;
             check(beta, 1.0, "an idempotent beta spin density")?;
         }
+        OccupiedDensities::RestrictedOpen { alpha, beta } => {
+            check(alpha, 1.0, "an idempotent alpha spin density")?;
+            check(beta, 1.0, "an idempotent beta spin density")?;
+            // The closed space inside the occupied one: D_α S D_β = D_β.
+            let scale = beta.iter().fold(0.0_f64, |m, v| m.max(v.abs())).max(1.0);
+            let resid = (&alpha.dot(&s).dot(beta) - beta)
+                .iter()
+                .fold(0.0_f64, |m, v| m.max(v.abs()));
+            if resid > 1e-6 * scale {
+                return Err(FerricError::General(format!(
+                    "mbd_rsscs_for_density: the ROKS MBD nuclear gradient needs the beta \
+                     (closed) space inside the alpha one; max|D_a S D_b - D_b| = {resid:.3e}"
+                )));
+            }
+        }
     }
     let v = crate::properties::hirshfeld_volume_density_derivative(
         mol,
@@ -539,6 +610,13 @@ fn orthonormality_term(
             let dvd = alpha.dot(&v).dot(alpha) + beta.dot(&v).dot(beta);
             -ferric_scf::gradient::overlap_deriv_contract(&prep, &dvd)?
         }
+        OccupiedDensities::RestrictedOpen { alpha, beta } => {
+            let p_o = alpha - beta;
+            let cross = beta.dot(&v).dot(&p_o);
+            let w_q =
+                alpha.dot(&v).dot(alpha) + beta.dot(&v).dot(beta) + 0.5 * (&cross + &cross.t());
+            -ferric_scf::gradient::overlap_deriv_contract(&prep, &w_q)?
+        }
     };
     Ok((g, v))
 }
@@ -550,17 +628,19 @@ fn orthonormality_term(
 ///   term from [`ferric_scf::zvector_ks::relaxation_gradient_closed`];
 /// * `Unrestricted` (UKS): [`mbd_rsscs_for_spin_densities`] plus the term from
 ///   [`ferric_scf::zvector_ks::relaxation_gradient_unrestricted`];
-/// * `RestrictedOpen` (ROKS): refused — there is no ROKS Z-vector.
+/// * `RestrictedOpen` (ROKS): [`mbd_rsscs_for_restricted_open_densities`]
+///   plus the term from [`ferric_scf::zvector_ks::relaxation_gradient_roks`].
 ///
 /// `gradient` is then the exact derivative of the energy the SCF + MBD
 /// pipeline reports (see the module doc for the terms and their validation).
 ///
 /// # Errors
 ///
-/// Those of the density routines, a ROKS result, and every reference the
-/// Z-vector does not support ([`ferric_scf::zvector_ks::unsupported_reason`],
-/// [`ferric_scf::zvector_ks::unsupported_reason_unrestricted`]): never an
-/// unrelaxed gradient presented as the exact one.
+/// Those of the density routines and every reference the Z-vector does not
+/// support ([`ferric_scf::zvector_ks::unsupported_reason`],
+/// [`ferric_scf::zvector_ks::unsupported_reason_unrestricted`],
+/// [`ferric_scf::zvector_ks::unsupported_reason_roks`]): never an unrelaxed
+/// gradient presented as the exact one.
 #[allow(clippy::too_many_arguments)]
 pub fn mbd_rsscs_for_scf(
     ctx: &ParallelContext,
@@ -577,11 +657,9 @@ pub fn mbd_rsscs_for_scf(
         ferric_scf::Spin::Unrestricted => {
             ferric_scf::zvector_ks::unsupported_reason_unrestricted(rhf_config)
         }
-        ferric_scf::Spin::RestrictedOpen => Some(
-            "restricted open-shell (ROKS) references have no Z-vector; run the open shell \
-             unrestricted (UKS)"
-                .to_string(),
-        ),
+        ferric_scf::Spin::RestrictedOpen => {
+            ferric_scf::zvector_ks::unsupported_reason_roks(rhf_config)
+        }
     };
     if let Some(r) = unsupported {
         return Err(FerricError::General(format!(
@@ -589,32 +667,58 @@ pub fn mbd_rsscs_for_scf(
              available: {r}"
         )));
     }
-    let open = matches!(result.spin, ferric_scf::Spin::Unrestricted);
-    let mut out = if open {
-        let d_b = result.density_beta.as_ref().ok_or_else(|| {
-            FerricError::General(
-                "mbd_rsscs_for_scf: unrestricted result has no beta density".into(),
-            )
-        })?;
-        mbd_rsscs_for_spin_densities(cache, mol, bs, &result.density_alpha, d_b, config, true)?
-    } else {
-        mbd_rsscs_for_density(cache, mol, bs, result.density_r(), config, true)?
+    let beta = || {
+        result.density_beta.as_ref().ok_or_else(|| {
+            FerricError::General("mbd_rsscs_for_scf: open-shell result has no beta density".into())
+        })
+    };
+    let mut out = match result.spin {
+        ferric_scf::Spin::Unrestricted => mbd_rsscs_for_spin_densities(
+            cache,
+            mol,
+            bs,
+            &result.density_alpha,
+            beta()?,
+            config,
+            true,
+        )?,
+        ferric_scf::Spin::RestrictedOpen => mbd_rsscs_for_restricted_open_densities(
+            cache,
+            mol,
+            bs,
+            &result.density_alpha,
+            beta()?,
+            config,
+            true,
+        )?,
+        ferric_scf::Spin::Restricted => {
+            mbd_rsscs_for_density(cache, mol, bs, result.density_r(), config, true)?
+        }
     };
     let v = out.density_derivative.as_ref().ok_or_else(|| {
         FerricError::General("mbd_rsscs_for_scf: no density derivative was formed".into())
     })?;
     let prep = PreparedBasis::new(mol, bs)?;
     let bounds = SchwarzBounds::compute_for_screening(op, &prep, rhf_config.screening)?;
-    let relax = if open {
-        ferric_scf::zvector_ks::relaxation_gradient_unrestricted(
-            ctx, mol, &prep, bs, op, &bounds, rhf_config, result, v,
-        )?
-        .gradient
-    } else {
-        ferric_scf::zvector_ks::relaxation_gradient_closed(
-            ctx, mol, &prep, bs, op, &bounds, rhf_config, result, v,
-        )?
-        .gradient
+    let relax = match result.spin {
+        ferric_scf::Spin::Unrestricted => {
+            ferric_scf::zvector_ks::relaxation_gradient_unrestricted(
+                ctx, mol, &prep, bs, op, &bounds, rhf_config, result, v,
+            )?
+            .gradient
+        }
+        ferric_scf::Spin::RestrictedOpen => {
+            ferric_scf::zvector_ks::relaxation_gradient_roks(
+                ctx, mol, &prep, bs, op, &bounds, rhf_config, result, v,
+            )?
+            .gradient
+        }
+        ferric_scf::Spin::Restricted => {
+            ferric_scf::zvector_ks::relaxation_gradient_closed(
+                ctx, mol, &prep, bs, op, &bounds, rhf_config, result, v,
+            )?
+            .gradient
+        }
     };
     let unrelaxed = out.gradient_unrelaxed.as_ref().ok_or_else(|| {
         FerricError::General("mbd_rsscs_for_scf: no unrelaxed gradient was formed".into())
