@@ -155,7 +155,7 @@ fn cfg(half: CosxHalfTransform, fit: bool, screen: Option<f64>) -> CosxConfig {
         overlap_fit: fit,
         screen_thresh: screen,
         half_transform: half,
-        ..CosxConfig::default()
+        ..CosxConfig::flat_reference()
     }
 }
 
@@ -315,7 +315,7 @@ fn sparse_cosx_rhf_water_energy_matches_dense() {
             k_builder: Some("cosx".into()),
             cosx: CosxConfig {
                 half_transform: half,
-                ..CosxConfig::default()
+                ..CosxConfig::flat_reference()
             },
             energy_conv: 1e-10,
             density_conv: 1e-8,

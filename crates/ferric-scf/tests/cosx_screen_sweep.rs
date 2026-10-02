@@ -130,7 +130,7 @@ fn cosx_screen_sweep_cell() {
             &prep,
             CosxConfig {
                 screen_thresh: None,
-                ..CosxConfig::default()
+                ..CosxConfig::flat_reference()
             },
             &d,
         )
@@ -153,7 +153,7 @@ fn cosx_screen_sweep_cell() {
                 &prep,
                 CosxConfig {
                     screen_thresh: Some(t),
-                    ..CosxConfig::default()
+                    ..CosxConfig::flat_reference()
                 },
                 &d,
             )

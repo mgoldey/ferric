@@ -6,13 +6,15 @@
 # RIJCOSX. A named df_k_aux next to k_builder = "cosx" is an error. RHF, UHF
 # and ROHF all honour k_builder.
 #
-# cosx_grid defaults to (50,110) flat. angular must be one of
-# 6/14/26/50/110/194/302/434/590; prune = "sgx" prunes it ORCA/PySCF-style
-# around the peak order (e.g. { radial = 35, angular = 194, prune = "sgx" },
-# 0.65x the points). cosx_final_pass = true re-evaluates exchange once on a
-# larger grid (default { radial = 50, angular = 302, prune = "sgx" }) and
-# reports that energy; measured accuracy and cost of each choice are in
-# site/src/methods/scf.md ("Choosing how exchange is built").
+# cosx_grid defaults to { radial = 35, angular = 194, prune = "sgx" } (pruned
+# ORCA/PySCF-style around the peak order), and by default exchange is then
+# re-evaluated once on a larger final grid
+# ({ radial = 50, angular = 302, prune = "sgx" }) and that energy is reported
+# (cosx_final_pass = false turns it off; geometry tasks always run without
+# it). angular must be one of 6/14/26/50/110/194/302/434/590; a table without
+# prune is a flat grid, e.g. { radial = 50, angular = 110 }. Measured accuracy
+# and cost of each choice are in site/src/methods/scf.md ("Choosing how
+# exchange is built").
 # cosx_overlap_fit defaults to true. cosx_backend selects the 3c1e kernel:
 # "md3c1e" (default, batched McMurchie-Davidson) or "cosx-a" (per-point
 # libint2, ~3.2-3.5x slower, exact vs md3c1e to ~1e-15 — the cross-check).

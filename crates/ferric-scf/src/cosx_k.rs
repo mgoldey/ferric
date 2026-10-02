@@ -33,10 +33,11 @@
 //! # Grid, blocking, determinism
 //!
 //! The builder owns its OWN Becke–Lebedev grid (`CosxConfig::grid`, default
-//! (50,110) — the measured operating point: the composed-budget audit on this
-//! branch found grids coarser than (50,110) fail the 0.1 kcal/mol isodesmic
-//! reaction-energy bar, and at (50,110) the overlap fit took that error from
-//! 0.2068 to 0.0190 kcal/mol, so the fit defaults ON). Points are processed
+//! the pruned sgx (35,194) grid plus a final pass on sgx (50,302); see
+//! `CosxConfig::grid` for the measurement. Among FLAT grids, the
+//! composed-budget audit found grids coarser than (50,110) fail the 0.1
+//! kcal/mol isodesmic reaction-energy bar, and at (50,110) the overlap fit took
+//! that error from 0.2068 to 0.0190 kcal/mol, so the fit defaults ON). Points are processed
 //! in fixed blocks of `COSX_BLOCK_POINTS` points; per block the three `(nbf, B)`
 //! planes `X`, `F`, `G` are resident. The A-build inside a block is parallel
 //! over points (cosx_a: one libint2 engine per rayon worker) or over fixed
@@ -300,15 +301,20 @@ pub fn apply_grid_knobs(
                 "cosx_final_pass = false contradicts an explicit cosx_final_grid; drop one".into(),
             ))
         }
-        (Some(false), None) => cfg.final_grid = None,
+        (Some(false), None) => {
+            cfg.final_grid = None;
+            cfg.final_pass_explicit = false;
+        }
         (_, Some(g)) => {
             validate_grid(&g)?;
             cfg.final_grid = Some(g);
+            cfg.final_pass_explicit = true;
         }
         (Some(true), None) => {
             if cfg.final_grid.is_none() {
                 cfg.final_grid = Some(default_final_grid());
             }
+            cfg.final_pass_explicit = true;
         }
         (None, None) => {}
     }
@@ -332,18 +338,28 @@ pub fn default_final_grid() -> AtomicGridConfig {
 pub const COSX_DEFAULT_FINAL_GRID: (usize, usize, Option<ferric_dft::prune::PruneScheme>) =
     (50, 302, Some(ferric_dft::prune::PruneScheme::Sgx));
 
+/// `(radial, peak angular, prune)` of the default COSX SCF grid. See
+/// [`CosxConfig::grid`] for the measurement behind it.
+pub const COSX_DEFAULT_GRID: (usize, usize, Option<ferric_dft::prune::PruneScheme>) =
+    (35, 194, Some(ferric_dft::prune::PruneScheme::Sgx));
+
 /// User-facing COSX knobs. Carried in `RhfConfig::cosx`.
 #[derive(Debug, Clone)]
 pub struct CosxConfig {
-    /// The exchange (SCF) grid. Default (50,110), unpruned.
+    /// The exchange (SCF) grid. Default: the pruned `sgx` (35,194) grid
+    /// ([`COSX_DEFAULT_GRID`]), together with a final-grid pass on sgx
+    /// (50,302) ([`CosxConfig::final_grid`]).
     ///
-    /// The pruned `sgx` (35,194) grid (`prune = Some(PruneScheme::Sgx)`) was
-    /// measured against it on eight molecules (`scripts/cosx_grid_sweep.py`,
-    /// table in `site/src/methods/scf.md`): 0.65x the points and more accurate
-    /// on seven (1.7x-29x), but 1.15x WORSE on methane/cc-pVDZ (9.2e-6 vs
-    /// 8.0e-6 Ha). The switch was conditioned on winning everywhere, so the
-    /// default stays flat; the pruned grid plus a final pass on sgx (50,302)
-    /// wins on all eight and is the recommended energy setting.
+    /// Measured against exact exchange on eight molecules
+    /// (`scripts/cosx_grid_sweep.py`, table in `site/src/methods/scf.md`):
+    /// with the final pass it is more accurate than flat (50,110) on all eight
+    /// and on the isodesmic C3H8 + CH4 -> 2 C2H6 reaction (+0.003 vs +0.074
+    /// kcal/mol), at 0.80-0.91x its wall time. Geometry drivers run without
+    /// the final pass (it is energy-only), so their energies and gradients use
+    /// the sgx (35,194) grid alone: more accurate than flat (50,110) on seven
+    /// of the eight, 1.15x worse on methane/cc-pVDZ (9.2e-6 vs 8.0e-6 Ha).
+    /// [`CosxConfig::flat_reference`] is the flat (50,110) grid with no final
+    /// pass.
     pub grid: AtomicGridConfig,
     /// Overlap fitting `K = 0.5(S S_num^{-1} Ktilde + h.c.)`. Default `true`.
     /// Measured to be net-negative on grids coarser than (50,110) and a ~10x
@@ -486,6 +502,12 @@ pub struct CosxConfig {
     /// [`CosxFinalPass`]). With `final_grid == grid` the pass reproduces
     /// `E_scf` bit for bit (anchored).
     pub final_grid: Option<AtomicGridConfig>,
+    /// `true` when the final pass was asked for explicitly (CLI
+    /// `cosx_final_pass` / `cosx_final_grid`, Python `cosx_final_pass=` /
+    /// `cosx_final_grid=`, via [`apply_grid_knobs`]) rather than coming from
+    /// [`Default`]. ROHF/ROKS has no final pass: an explicit request there is
+    /// an error, the default one is dropped with a note.
+    pub final_pass_explicit: bool,
 }
 
 /// The record of a COSX final-grid pass ([`CosxConfig::final_grid`]).
@@ -591,6 +613,26 @@ pub const COSX_DEFAULT_SCREEN_THRESH: f64 = 1e-7;
 
 impl Default for CosxConfig {
     fn default() -> Self {
+        let (n_radial, n_angular, prune) = COSX_DEFAULT_GRID;
+        Self {
+            grid: AtomicGridConfig {
+                n_radial,
+                n_angular,
+                prune,
+            },
+            final_grid: Some(default_final_grid()),
+            final_pass_explicit: false,
+            ..Self::flat_reference()
+        }
+    }
+}
+
+impl CosxConfig {
+    /// The flat (50,110) grid with no final pass, and every other knob at its
+    /// default. The grid many COSX accuracy and screening measurements in
+    /// this crate's tests were taken on; tests that measure against it pin it
+    /// here rather than through `Default`.
+    pub fn flat_reference() -> Self {
         Self {
             grid: AtomicGridConfig {
                 n_radial: 50,
@@ -603,6 +645,7 @@ impl Default for CosxConfig {
             half_transform: CosxHalfTransform::SPARSE_DEFAULT,
             screen_group: 0,
             final_grid: None,
+            final_pass_explicit: false,
         }
     }
 }
@@ -1766,7 +1809,16 @@ mod tests {
     #[test]
     fn default_grid_is_the_measured_operating_point() {
         let c = CosxConfig::default();
-        assert_eq!((c.grid.n_radial, c.grid.n_angular), (50, 110));
+        assert_eq!((c.grid.n_radial, c.grid.n_angular), (35, 194));
+        assert_eq!(c.grid.prune, Some(ferric_dft::prune::PruneScheme::Sgx));
+        let f = c.final_grid.as_ref().expect("final pass on by default");
+        assert_eq!((f.n_radial, f.n_angular), (50, 302));
+        assert_eq!(f.prune, Some(ferric_dft::prune::PruneScheme::Sgx));
+        assert!(!c.final_pass_explicit);
+        let flat = CosxConfig::flat_reference();
+        assert_eq!((flat.grid.n_radial, flat.grid.n_angular), (50, 110));
+        assert_eq!(flat.grid.prune, None);
+        assert!(flat.final_grid.is_none());
         assert!(c.overlap_fit);
         assert_eq!(c.screen_thresh, Some(COSX_DEFAULT_SCREEN_THRESH));
         assert_eq!(COSX_DEFAULT_SCREEN_THRESH, 1e-7);

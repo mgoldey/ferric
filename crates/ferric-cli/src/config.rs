@@ -2020,8 +2020,9 @@ pub struct ScfCfg {
     pub cosx_grid: Option<CosxGridCfg>,
     /// COSX final-grid pass on/off: after convergence, exchange is evaluated
     /// once more on a larger grid at the converged density (Psi4/ORCA style,
-    /// non-self-consistent) and the run reports that energy. Omitted = the
-    /// library default. `true` without `cosx_final_grid` uses
+    /// non-self-consistent) and the run reports that energy. Omitted = on (the
+    /// library default; ROHF/ROKS, which has no final pass, skips it with a
+    /// note). `true` without `cosx_final_grid` uses
     /// `ferric_scf::cosx_k::COSX_DEFAULT_FINAL_GRID`; `false` with an explicit
     /// `cosx_final_grid` is a hard error. Gradient tasks run without it.
     pub cosx_final_pass: Option<bool>,
@@ -4282,9 +4283,18 @@ json = [1, 2]
             ))
             .unwrap()
         };
-        // Defaults: (50,110), fit on, density-driven screen at the library default.
+        // Defaults: pruned sgx (35,194) plus the sgx (50,302) final pass, fit
+        // on, density-driven screen at the library default.
         let c = parse("k_builder = \"cosx\"\n").scf.cosx_config().unwrap();
-        assert_eq!((c.grid.n_radial, c.grid.n_angular), (50, 110));
+        assert_eq!((c.grid.n_radial, c.grid.n_angular), (35, 194));
+        assert_eq!(c.grid.prune, Some(ferric_dft::prune::PruneScheme::Sgx));
+        assert!(c.final_grid.is_some() && !c.final_pass_explicit);
+        // cosx_final_pass = false turns the default pass off.
+        let c = parse("k_builder = \"cosx\"\ncosx_final_pass = false\n")
+            .scf
+            .cosx_config()
+            .unwrap();
+        assert!(c.final_grid.is_none());
         assert!(c.overlap_fit);
         assert_eq!(
             c.screen_thresh,

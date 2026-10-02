@@ -148,7 +148,7 @@ fn cfg_at(screen_thresh: Option<f64>, screen_group: usize) -> CosxConfig {
         overlap_fit: true,
         screen_thresh,
         screen_group,
-        ..CosxConfig::default()
+        ..CosxConfig::flat_reference()
     }
 }
 

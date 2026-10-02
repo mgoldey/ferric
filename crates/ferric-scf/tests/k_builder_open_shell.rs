@@ -277,15 +277,19 @@ fn rhf_closed_shell_matches_direct_across_builders() {
     );
 
     // COSX carries a GRID error, not accumulation noise: 4.862e-06 Ha on both
-    // machines at (50,110)+fit. Bracket it — a value far below would mean the
-    // builder silently fell back to direct, far above means the grid path broke.
+    // machines at (50,110)+fit (pinned via `flat_reference`, not the library
+    // default). Bracket it — a value far below would mean the builder silently
+    // fell back to direct, far above means the grid path broke.
     let cosx = solve_rhf(
         &ctx,
         &mol,
         &prep,
         Operator::coulomb(),
         &bounds,
-        &cfg(Some("cosx")),
+        &RhfConfig {
+            cosx: CosxConfig::flat_reference(),
+            ..cfg(Some("cosx"))
+        },
     )
     .expect("rhf cosx");
     assert!(cosx.converged);
@@ -757,3 +761,35 @@ fn strip_last_h(xyz: &str) -> String {
 
 /// Butane geometry, used as a butyl radical by `strip_last_h`.
 const BUTYL_XYZ: &str = include_str!("../../../testdata/molecules/alkane_4.xyz");
+
+/// ROHF/ROKS has no COSX final-grid pass. The DEFAULT pass (on in
+/// `CosxConfig::default()`) is skipped, so the run succeeds and reports the
+/// SCF-grid energy with no `cosx_final` record; an EXPLICIT request
+/// (`apply_grid_knobs`, as the CLI / Python knobs set it) is refused. Catches:
+/// the refusal applied to the default pass (every ROHF COSX run would fail), or
+/// an explicit request silently ignored.
+#[test]
+fn rohf_cosx_skips_the_default_final_pass_and_refuses_an_explicit_one() {
+    let (mol, prep, bounds) = setup(CH3_XYZ, 0, 2, "sto-3g", Operator::coulomb());
+    let ctx = ParallelContext::default();
+    let default_cfg = cfg(Some("cosx"));
+    assert!(default_cfg.cosx.final_grid.is_some() && !default_cfg.cosx.final_pass_explicit);
+    let r = solve_rohf(
+        &ctx,
+        &mol,
+        &prep,
+        Operator::coulomb(),
+        &bounds,
+        &default_cfg,
+    )
+    .expect("ROHF COSX with the default final pass must run");
+    assert!(r.cosx_final.is_none(), "ROHF must not report a final pass");
+
+    let mut explicit = cfg(Some("cosx"));
+    ferric_scf::cosx_k::apply_grid_knobs(&mut explicit.cosx, None, Some(true), None)
+        .expect("knobs");
+    assert!(explicit.cosx.final_pass_explicit);
+    let err = solve_rohf(&ctx, &mol, &prep, Operator::coulomb(), &bounds, &explicit)
+        .expect_err("an explicit ROHF final pass must be refused");
+    assert!(format!("{err}").contains("ROHF/ROKS"), "{err}");
+}

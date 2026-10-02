@@ -350,7 +350,7 @@ fn cosx_production(g: AtomicGridConfig) -> CosxConfig {
     CosxConfig {
         grid: g,
         final_grid: None,
-        ..CosxConfig::default()
+        ..CosxConfig::flat_reference()
     }
 }
 
@@ -363,7 +363,7 @@ fn cosx_unscreened_nofit(g: AtomicGridConfig) -> CosxConfig {
         screen_thresh: None,
         half_transform: CosxHalfTransform::Dense,
         final_grid: None,
-        ..CosxConfig::default()
+        ..CosxConfig::flat_reference()
     }
 }
 
@@ -775,7 +775,7 @@ fn cosx_gradient_matches_fd_water_augccpvdz_b3lyp_nofit() {
         Some("B3LYP"),
         CosxConfig {
             overlap_fit: false,
-            ..CosxConfig::default()
+            ..CosxConfig::flat_reference()
         },
     );
 }

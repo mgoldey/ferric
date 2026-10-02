@@ -509,11 +509,20 @@ pub fn solve_rohf_best_effort(
     let pluggable_k_kind =
         crate::fock_assembly::narrow_k_builder_to_supported(pluggable_k_kind, need_k, k_mix.omega);
     if pluggable_k_kind == Some("cosx") && config.cosx.final_grid.is_some() {
-        return Err(FerricError::General(
-            "COSX final-grid pass (cosx final_grid) is implemented for RHF/RKS and UHF/UKS, not \
-             ROHF/ROKS; unset the final grid for ROHF/ROKS runs"
-                .into(),
-        ));
+        // The COSX final-grid pass is implemented for RHF/RKS and UHF/UKS
+        // only. An explicit request is refused; the default one is skipped,
+        // so the reported energy is the SCF-grid energy.
+        if config.cosx.final_pass_explicit {
+            return Err(FerricError::General(
+                "COSX final-grid pass (cosx final_grid) is implemented for RHF/RKS and UHF/UKS, \
+                 not ROHF/ROKS; unset the final grid for ROHF/ROKS runs"
+                    .into(),
+            ));
+        }
+        eprintln!(
+            "[ferric] COSX final-grid pass skipped: not implemented for ROHF/ROKS; the energy is \
+             the SCF-grid (pruned sgx) energy"
+        );
     }
     // Same `LinkBound::SchwarzRef` adapter and same rationale as `solve_uhf`'s
     // — see the comment there. No table on `bounds` (the default) makes this

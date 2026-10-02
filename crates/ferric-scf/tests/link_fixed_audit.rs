@@ -359,7 +359,7 @@ fn link_fixed_audit_cell() {
                 );
             }
             "cosx" => {
-                let cfg = CosxConfig::default();
+                let cfg = CosxConfig::flat_reference();
                 let mut cosx =
                     CosxK::new(&ctx, &mol, &prep, cfg, budget_bytes).expect("CosxK::new");
                 let npts = cosx.npts();

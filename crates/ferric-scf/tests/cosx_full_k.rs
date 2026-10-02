@@ -311,7 +311,7 @@ fn cosx_full_k_cell() {
             prune: None,
         },
         final_grid: None,
-        ..CosxConfig::default()
+        ..CosxConfig::flat_reference()
     };
     if let Ok(g) = std::env::var("COSX_FK_GRID") {
         let (r, a) = g
