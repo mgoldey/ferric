@@ -140,6 +140,12 @@ pub struct RelaxationGradient {
     pub iterations: usize,
     /// Final max|residual| of H Z = −4 V_vo.
     pub residual: f64,
+    /// `true` when PCG stopped at the rounding floor of the Hessian product
+    /// (numerically zero curvature) with `residual` between `CG_REL_TOL` and
+    /// `CG_FLOOR_TOL` times max|rhs| instead of reaching `CG_REL_TOL`. The
+    /// relaxation term then carries a relative error of order
+    /// `residual / max|rhs|` (≤ `CG_FLOOR_TOL`).
+    pub stopped_at_floor: bool,
 }
 
 /// Why a closed-shell Z-vector cannot be formed for `config`, or `None`.
@@ -400,7 +406,9 @@ fn inner(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
 ///
 /// Any [`unsupported_reason`]; a non-restricted or unconverged `result`; a
 /// non-symmetric or mis-sized `v_ao`; a PCG solve that does not reach
-/// [`CG_REL_TOL`] in [`CG_MAX_ITER`] iterations; any integral, kernel or
+/// [`CG_REL_TOL`] in [`CG_MAX_ITER`] iterations, unless it stops at the
+/// rounding floor with max|residual| ≤ [`CG_FLOOR_TOL`] · max|rhs| (then it
+/// succeeds with `stopped_at_floor = true`); any integral, kernel or
 /// gradient error.
 #[allow(clippy::too_many_arguments)]
 pub fn relaxation_gradient_closed(
@@ -491,6 +499,7 @@ pub fn relaxation_gradient_closed(
     let rhs_max = max_abs(&rhs);
     let mut z = &rhs / &gap;
     let mut iterations = 0usize;
+    let mut stopped_at_floor = false;
     let mut residual;
     if rhs_max == 0.0 {
         z.fill(0.0);
@@ -512,6 +521,7 @@ pub fn relaxation_gradient_closed(
             let php = inner(&p, &hp);
             let pmp = inner(&p, &(&p * &gap));
             if !pcg_curvature_ok(php, pmp, residual, rhs_max)? {
+                stopped_at_floor = true;
                 break;
             }
             let alpha = rz / php;
@@ -565,6 +575,7 @@ pub fn relaxation_gradient_closed(
         z,
         iterations,
         residual,
+        stopped_at_floor,
     })
 }
 
@@ -581,6 +592,12 @@ pub struct UnrestrictedRelaxationGradient {
     pub iterations: usize,
     /// Final max|residual| over both spins of H Z = −2 V_vo.
     pub residual: f64,
+    /// `true` when PCG stopped at the rounding floor of the Hessian product
+    /// (numerically zero curvature) with `residual` between `CG_REL_TOL` and
+    /// `CG_FLOOR_TOL` times max|rhs| instead of reaching `CG_REL_TOL`. The
+    /// relaxation term then carries a relative error of order
+    /// `residual / max|rhs|` (≤ `CG_FLOOR_TOL`).
+    pub stopped_at_floor: bool,
 }
 
 /// Why an unrestricted (UKS) Z-vector cannot be formed for `config`, or
@@ -729,7 +746,8 @@ impl SpinBlock {
 /// unconverged `result`; spin densities that are not the aufbau projectors of
 /// the MOs; a non-positive orbital gap; a non-symmetric or mis-sized `v_ao`;
 /// a PCG solve that does not reach [`CG_REL_TOL`] in [`CG_MAX_ITER`]
-/// iterations; any integral, kernel or gradient error.
+/// iterations, unless it stops at the rounding floor with max|residual| ≤
+/// [`CG_FLOOR_TOL`] · max|rhs| (then it succeeds with `stopped_at_floor = true`); any integral, kernel or gradient error.
 #[allow(clippy::too_many_arguments)]
 pub fn relaxation_gradient_unrestricted(
     ctx: &ParallelContext,
@@ -834,6 +852,7 @@ pub fn relaxation_gradient_unrestricted(
     let rhs_max = max2(&rhs);
     let mut z = precond(&rhs);
     let mut iterations = 0usize;
+    let mut stopped_at_floor = false;
     let mut residual;
     if rhs_max == 0.0 {
         z[0].fill(0.0);
@@ -857,6 +876,7 @@ pub fn relaxation_gradient_unrestricted(
             let php = inner2(&p, &hp);
             let pmp = inner(&p[0], &(&p[0] * &sa.gap)) + inner(&p[1], &(&p[1] * &sb.gap));
             if !pcg_curvature_ok(php, pmp, residual, rhs_max)? {
+                stopped_at_floor = true;
                 break;
             }
             let alpha = rz / php;
@@ -906,6 +926,7 @@ pub fn relaxation_gradient_unrestricted(
         z_beta,
         iterations,
         residual,
+        stopped_at_floor,
     })
 }
 
