@@ -1,0 +1,25 @@
+# RI-MP2 under the amplitude-threshold LOCAL approximation (WSHG23 single
+# threshold, closed-shell). The method is kind = "rimp2"; [local] says how its
+# amplitudes are truncated. Without [local] the same file runs exact RI-MP2.
+#
+# eps is part of the model and has no default: eps = 0 keeps every amplitude
+# and reproduces exact RI-MP2; a finite eps carries a one-sided, ~linear-in-eps
+# error. reference = true also computes the exact RI-MP2 (a full N^5 canonical
+# run; off by default) and prints the local error against it.
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "6-31g"
+
+[method]
+kind = "rimp2"
+
+[mp2]
+auxbasis = "cc-pvdz-ri"
+frozen_core = 1
+
+[local]
+scheme = "amplitude-threshold"
+eps = 1e-4
+reference = true

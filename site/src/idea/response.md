@@ -54,11 +54,11 @@ what comes out of that sum.
   3 Bohr). The C2-C12 sweep and the drug-molecule figure are measurements,
   not regression tests.
 - **Local MP2 (amplitude threshold)** has localized virtuals and per-pair
-  domain-local RI fits. The integral-direct variant (`lmp2-direct`) is
-  measured at about N<sup>1.24</sup> (erfc) to N<sup>1.4</sup> (Coulomb) on
+  domain-local RI fits. The integral-direct variant (`rimp2` with `[local]
+  integral_direct = true`) is measured at about N<sup>1.24</sup> (erfc) to N<sup>1.4</sup> (Coulomb) on
   alkanes C20–C48, three points in one basis, so the reading is provisional.
-  The plain `lmp2` path still builds the global 3-index tensor and makes no
-  scaling claim.
+  Local MP2 without `integral_direct` still builds the global 3-index tensor
+  and makes no scaling claim.
 - **RI-Laplace MP2** is dense; it is the correctness reference for the AO
   formulation, not a reduced-scaling path.
 

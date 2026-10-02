@@ -23,9 +23,11 @@ those two files if a cell looks wrong. For keyword details see the
 ## Grades
 
 The grades are the ones ferric's CLI uses. Every CLI `method.kind` except
-`lmp2`, `lmp2-direct` and `laplace-sos-mp2` has a grade. The CLI prints the
-Smoke and Spike grades as a `[warning]` line on stderr at run time; Proven
-kinds and the three ungraded kinds print nothing. The warning text is the
+`laplace-sos-mp2` has a grade. A kind's grade is for the EXACT method; the
+local approximation of `rimp2`, `drpa` and `linlccd` (the `[local]` section)
+is graded separately in that row's Caveat. The CLI prints the Smoke and Spike
+grades as a `[warning]` line on stderr at run time; Proven kinds and the
+ungraded kind print nothing. The warning text is the
 `EPISTEMIC_WARNINGS` table in `crates/ferric-cli/src/lib.rs`, and the
 "Caveat" column of the matrix condenses it.
 
@@ -55,9 +57,7 @@ Open-shell support is listed only where the dispatch code handles it (see
 | `uhf` | [SCF](../methods/scf.md) | UHF; UKS with `[dft] functional` | ✓ | ✓ analytic (+ D3(BJ) or MBD@rsSCS gradient with `[dft] dispersion` on UKS) | analytic (UHF, exact J/K, no ECP, up to f); FD otherwise | `run_uhf`, `run_frequencies(reference="uhf", xc=...)` | `h_uhf.toml` | [Proven](#anchors) | — |
 | `rohf` | [SCF](../methods/scf.md) | ROHF; ROKS with `[dft] functional` | ✓ | ✓ analytic (+ D3(BJ) or MBD@rsSCS gradient with `[dft] dispersion` on ROKS) | FD | `run_rohf`, `run_frequencies(reference="rohf", xc=...)` | — | [Proven](#anchors) | — |
 | `ksdft` | [SCF/DFT](../methods/scf.md) | RKS; UKS when multiplicity > 1 | ✓ | ✓ analytic (+ D3(BJ) or MBD@rsSCS gradient with `[dft] dispersion`, RKS and UKS) | FD; with `[dft] dispersion` (closed shell) FD of the KS + dispersion gradient; refused with `grid_prune` | `run_dft` / `run_ksdft`, `run_frequencies(xc=..., dispersion=...)` | `benzene-dfb3lyp.toml`, `h2-lda-opt.toml` | [Proven](#anchors) | — |
-| `rimp2` | [MP2](../methods/mp2.md) | RHF; UHF + unrestricted RI-MP2 when multiplicity > 1 (energy only) | ✓ | ✓ analytic (Z-vector; closed shell only) | — | `run_rimp2` (UHF + UMP2 when multiplicity > 1) | `water-rimp2.toml` | [Proven](#anchors) | — |
-| `lmp2` | [MP2](../methods/mp2.md) | RHF (refuses multiplicity > 1) | ✓ | — | — | `run_lmp2` | `water-lmp2.toml` | not graded | ε = 0 reproduces `rimp2`. The canonical RI-MP2 reference and the error against it are opt-in (`[mp2] lmp2_reference = true`, `compute_reference=True`). |
-| `lmp2-direct` | [MP2](../methods/mp2.md) | RHF (refuses multiplicity > 1) | ✓ | — | — | `run_lmp2_direct` | `alkane8-lmp2-direct.toml` | not graded | Same as `lmp2`. The opt-in reference forms the global 3-index tensor that this path otherwise avoids. The measured scaling is under [Known limits](#known-limits-and-negatives). |
+| `rimp2` | [MP2](../methods/mp2.md) | RHF; UHF + unrestricted RI-MP2 when multiplicity > 1 (energy only) | ✓ | ✓ analytic (Z-vector; closed shell only) | — | `run_rimp2` (UHF + UMP2 when multiplicity > 1) | `water-rimp2.toml`; local: `water-rimp2-local.toml`, `alkane8-rimp2-local-direct.toml` | [Proven](#anchors) | Exact RI-MP2. With `[local] scheme = "amplitude-threshold"` (`run_rimp2(local=..., eps=...)`): not graded; closed shell and `task = "energy"` only; ε = 0 reproduces exact `rimp2`; the exact reference and the error against it are opt-in (`[local] reference = true`, `compute_reference=True`). `integral_direct = true` never forms the global 3-index tensor; its measured scaling is under [Known limits](#known-limits-and-negatives). |
 | `mp3` | [MP2](../methods/mp2.md) | RHF | ✓ | — | — | `run_mp3` | `water-mp3.toml` | [Proven](#anchors) | — |
 | `oo-rimp2` | [MP2](../methods/mp2.md) | RHF; UHF + unrestricted OO-RI-MP2 when multiplicity > 1 (energy only) | ✓ | — | — | `run_oo_rimp2` (closed shell only) | `water-oo-rimp2.toml` | [Proven (narrow)](#anchors) | Energy matches an independent numpy OO-RI-MP2 to 7.5e-13 Ha (closed-shell H2O and NH3, UHF CH3 / cc-pVDZ) and the closed-shell analytic gradient matches a finite difference of its own energy to 8e-9 Ha/Bohr. ORCA 6.1.1 stops 3.7e-8 to 7.0e-8 Ha above the same minimum. |
 | `att-rimp2` | [MP2](../methods/mp2.md) | RHF | ✓ | — | — | `run_attenuated_rimp2` | `water-attmp2.toml` | [Proven](#anchors) | — |
@@ -74,9 +74,8 @@ Open-shell support is listed only where the dispatch code handles it (see
 | `ccsd` | [CC](../methods/cc.md) | RHF (spin-adapted solver) | ✓ | — | — | `run_ccsd` | `water-ccsd.toml` | [Proven](#anchors) | — |
 | `ccd` | [CC](../methods/cc.md) | RHF only (refuses multiplicity > 1) | ✓ | — | — | `run_ccd` | `water-ccd.toml` | [Proven (narrow)](#anchors) | RI-CCD, spin-orbital solver. |
 | `ccsd(t)` | [CC](../methods/cc.md) | RHF only (refuses multiplicity > 1) | ✓ | — | — | `run_ccsd_t` | `water-ccsd-t.toml` | [Proven (narrow)](#anchors) | Spin-adapted CCSD + spin-adapted (T). Prints E_CCSD, E_(T) and the total. |
-| `linlccd` | [CC](../methods/cc.md) | RHF only (refuses multiplicity > 1; open-shell LinLCCD(hh) is library-only) | ✓ | — | — | none (`run_linlccd_amplitude` is the amplitude-threshold variant) | `water-linlccd.toml` | [Proven (narrow)](#anchors) | No other code implements LinLCCD(hh); the energy matches an independent numpy solve on PySCF density-fitted integrals to ≤1.2e-12 Ha (H2O and NH3 through the CLI's closed-shell path; UHF OH through the library-only open-shell path). With the hole–hole ladder off it reduces exactly to RI-MP2, and with exact integrals its driver terms reproduce canonical MP2; size consistency is checked. |
-| `linlccd-amplitude` | [CC](../methods/cc.md) | RHF only (refuses multiplicity > 1) | ✓ | — | — | `run_linlccd_amplitude` | `water-linlccd-amplitude.toml` | Proven (narrow) | Amplitude-threshold LinLCCD; `[mp2] linlccd_variant`, `linlccd_eps`. ε = 0 reproduces the canonical LinLCCD of the same variant. |
-| `drpa` | [RPA/GW](../methods/rpa-gw.md) | RHF only (refuses multiplicity > 1) | ✓ | — | — | `run_drpa`, `run_drpa_scan` | `water-drpa.toml` | Proven (narrow) | Amplitude-threshold dRPA; `[mp2] drpa_eps`, `drpa_reference`, `drpa_eps_sweep`. ε = 0 reproduces the canonical plasmon dRPA; finite-ε error is ~linear in ε. |
+| `linlccd` | [CC](../methods/cc.md) | RHF only (refuses multiplicity > 1; open-shell LinLCCD(hh) is library-only) | ✓ | — | — | `run_linlccd` | `water-linlccd.toml`; local: `water-linlccd-local.toml` | [Proven (narrow)](#anchors) | No other code implements LinLCCD(hh); the energy matches an independent numpy solve on PySCF density-fitted integrals to ≤1.2e-12 Ha (H2O and NH3 through the CLI's closed-shell path; UHF OH through the library-only open-shell path). With the hole–hole ladder off it reduces exactly to RI-MP2, and with exact integrals its driver terms reproduce canonical MP2; size consistency is checked. `[mp2] linlccd_variant` (`hh`, `drivers-only`, `full`) applies exact and local. With `[local]` (amplitude threshold): Proven (narrow) by its exact limit, ε = 0 reproduces the exact LinLCCD of the same variant. |
+| `drpa` | [RPA/GW](../methods/rpa-gw.md) | RHF only (refuses multiplicity > 1) | ✓ | — | — | `run_drpa`, `run_drpa_scan` (local ε scan) | `water-drpa.toml`; local: `water-drpa-local.toml` | Proven (narrow) | Exact dRPA@HF by the drCCD Riccati solve with nothing truncated; equals the canonical plasmon formula (≤1e-12 Ha) and full-rank PDEP (`pdep-rpa`, `trunc_thresh = 0`). Its memory grows as no³·nv² and a run that cannot fit is refused before the SCF. With `[local]` (amplitude threshold, `eps` or `eps_sweep`): Proven (narrow) by its exact limit; the finite-ε error is ~linear in ε and not variational. |
 | `wb97x-l-v` | [CC § ωB97X-L-V](../methods/cc.md#linlccd-and-ωb97x-l-v) | Its own RKS (wB97X-L-V) reference (refuses multiplicity > 1; open shell is library-only) | ✓ | — | — | none | `water-wb97xlv.toml` | Proven (narrow) | E_KS and λ·E_c against PySCF with the paper's parameters plus a numpy LinLCCD(hh) (water, OH / def2-SVP); Be₂ bond energy against the paper's Table 4. |
 | `b2plyp` | [CC § double hybrids](../methods/cc.md#mp2-based-double-hybrids) | Its own RKS reference | ✓ | — | — | `run_double_hybrid(kind="b2plyp")` | `water-b2plyp.toml` | Spike | Weighted B88+LYP reference. Not compared with any reference code. |
 | `dsd-pbep86` | [CC § double hybrids](../methods/cc.md#mp2-based-double-hybrids) | Its own RKS reference | ✓ | — | — | `run_double_hybrid(kind="dsd-pbep86")` | — | Spike | Weighted PBE+P86 reference. Not compared with any reference code. |
@@ -269,13 +268,19 @@ Reported rather than omitted:
   embedding or solvent, basis up to f functions). ROHF has none (PySCF has no
   ROHF Hessian either). Every other method's frequencies take central finite
   differences of the analytic gradient.
-- **Local MP2**: `lmp2-direct`'s correlation stage is measured at about
+- **Local MP2**: the integral-direct local MP2 (`rimp2` with `[local]
+  integral_direct = true`) has its correlation stage measured at about
   N<sup>1.24</sup> (erfc) and N<sup>1.4</sup> (Coulomb) on n-alkanes C20–C48
-  (6-31G / cc-pVDZ-RI, frozen carbon cores, a calibrated pair gate; fitted to
-  three points). That is one family of molecules in one basis: not shown to
-  be linear, and not measured on 3-D or diffuse systems. The plain `lmp2`
-  path still builds the global 3-index tensor and makes no scaling claim.
-  See [The MP2 family](../methods/mp2.md#local-mp2).
+  (6-31G / cc-pVDZ-RI, ε = 1e-4, frozen carbon cores, a calibrated pair gate;
+  fitted to three points). That is one family of molecules in one basis: not
+  shown to be linear, and not measured on 3-D or diffuse systems. Local MP2
+  without `integral_direct` still builds the global 3-index tensor and makes
+  no scaling claim. See [The MP2 family](../methods/mp2.md#exact-and-local-mp2).
+- **Exact dRPA by the Riccati solve** is a small-system path: its ring-product
+  plan holds no³·nv² numbers, `no` times the amplitudes themselves (C12
+  thrashed, then was killed for memory). The CLI and `run_drpa` refuse a run
+  that cannot fit before the SCF; full-rank `pdep-rpa` gives the same energy
+  at far lower memory.
 - **Laplace SOS-MP2, AO-sparse variant**: the domain truncation is accurate,
   and the radius it needs grows far more slowly than the molecule (chemical
   accuracy at 3 to 5 Bohr on n-alkanes C2 to C12, radius/diameter falling from

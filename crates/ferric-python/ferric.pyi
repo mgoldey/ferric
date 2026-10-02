@@ -802,6 +802,14 @@ class RiMp2Result:
         (unrestricted RI-MP2, for multiplicity > 1)."""
         ...
 
+    @property
+    def local(self) -> dict[str, object] | None:
+        """The local model: None for the exact RI-MP2, else a dict with
+        scheme, eps, keep_fraction, pair_fraction, integral_direct,
+        e_corr_canonical_ri (None unless compute_reference=True) and the
+        solver counters."""
+        ...
+
 class OoRiMp2Result:
     """Result of an orbital-optimized RI-MP2 calculation."""
 
@@ -1591,12 +1599,32 @@ def run_rimp2(
     k_builder: str | None = None,
     memory_budget_gb: float | None = None,
     kappa: float | None = None,
+    local: str | None = None,
+    eps: float | None = None,
+    compute_reference: bool | None = None,
+    integral_direct: bool | None = None,
+    aux_radius: float | None = None,
+    virt_radius: float | None = None,
+    ao_tail: float | None = None,
+    schwarz_skip: float | None = None,
+    batch_merge: int | None = None,
+    gate_cal: float | None = None,
+    virt_schwarz_kappa: float | None = None,
 ) -> RiMp2Result:
-    """Resolution-of-identity (density-fitted) MP2.
+    """Resolution-of-identity (density-fitted) MP2. Exact by default.
 
     RHF reference for a singlet; UHF reference + unrestricted RI-MP2 (UMP2)
     for multiplicity > 1 (`result.reference` says which). `kappa` is
     closed-shell only and raises ValueError on an open-shell molecule.
+
+    `local="amplitude-threshold"` with `eps` (required, no default) runs the
+    amplitude-threshold local MP2 (closed-shell; eps=0 reproduces the exact
+    RI-MP2); `integral_direct=True` its integral-direct variant with the
+    locality maps aux_radius/virt_radius (Bohr), ao_tail, schwarz_skip,
+    batch_merge, gate_cal and virt_schwarz_kappa. Same rules as the CLI
+    `[local]` section: every local kwarg is a ValueError on the exact method,
+    and `kappa` a ValueError on the local one. `result.local` is None for the
+    exact method, else the local model dict.
     """
     ...
 
@@ -2090,53 +2118,28 @@ def run_double_hybrid(
     """MP2-based double hybrid: kind="b2plyp" or "dsd-pbep86"."""
     ...
 
-def run_lmp2(
-    mol: Molecule,
-    basis_set: BasisSet,
-    auxbasis: BasisSet,
-    eps: float | None = None,
-    frozen_core: int | None = None,
-    k_builder: str | None = None,
-    memory_budget_gb: float | None = None,
-    compute_reference: bool | None = None,
-) -> dict[str, object]:
-    """Amplitude-threshold local MP2 (closed-shell). Returns a dict."""
-    ...
-
-def run_lmp2_direct(
-    mol: Molecule,
-    basis_set: BasisSet,
-    auxbasis: BasisSet,
-    eps: float | None = None,
-    frozen_core: int | None = None,
-    aux_radius_bohr: float | None = None,
-    virt_radius_bohr: float | None = None,
-    ao_tail: float | None = None,
-    schwarz_skip: float | None = None,
-    batch_merge: int | None = None,
-    pair_gate_cal: float | None = None,
-    virt_schwarz_kappa: float | None = None,
-    k_builder: str | None = None,
-    memory_budget_gb: float | None = None,
-    compute_reference: bool | None = None,
-) -> dict[str, object]:
-    """Integral-direct amplitude-threshold local MP2 (closed-shell). Returns
-    the run_lmp2 dict plus strip/eri3 counters and stage timings."""
-    ...
-
 def run_drpa(
     mol: Molecule,
     basis_set: BasisSet,
     auxbasis: BasisSet,
-    eps: float | None = None,
     frozen_core: int | None = None,
     k_builder: str | None = None,
     memory_budget_gb: float | None = None,
+    local: str | None = None,
+    eps: float | None = None,
     compute_reference: bool | None = None,
     diis: int | None = None,
     eps_rtol_factor: float | None = None,
 ) -> dict[str, object]:
-    """Amplitude-threshold direct RPA (closed-shell). Returns a dict."""
+    """Direct RPA (dRPA@HF) by the drCCD Riccati solve, closed-shell.
+
+    Exact by default (eps = 0, anchored to the canonical plasmon formula);
+    raises MemoryError before the SCF when the exact solve cannot fit (use
+    run_pdep_rpa(..., trunc_thresh=0) instead). local="amplitude-threshold"
+    with eps (required) runs the local approximation; compute_reference and
+    eps_rtol_factor are local-only. The dict carries "local": None (exact)
+    or the local model dict.
+    """
     ...
 
 def run_drpa_scan(
@@ -2151,20 +2154,26 @@ def run_drpa_scan(
     diis: int | None = None,
     eps_rtol_factor: float | None = None,
 ) -> list[dict[str, object]]:
-    """Amplitude-threshold dRPA over a list of eps values. Returns list of dicts."""
+    """The LOCAL (amplitude-threshold) dRPA over a list of eps values, one
+    SCF and one localized assembly. Each dict carries "local"."""
     ...
 
-def run_linlccd_amplitude(
+def run_linlccd(
     mol: Molecule,
     basis_set: BasisSet,
     auxbasis: BasisSet,
     variant: str | None = None,
+    local: str | None = None,
     eps: float | None = None,
+    compute_reference: bool | None = None,
     frozen_core: int | None = None,
     k_builder: str | None = None,
     memory_budget_gb: float | None = None,
 ) -> dict[str, object]:
-    """Amplitude-threshold LinLCCD (closed-shell). Returns a dict."""
+    """Linearized ladder CCD, closed-shell. variant: "hh" (default),
+    "drivers-only" or "full". Exact by default; local="amplitude-threshold"
+    with eps (required) runs the local approximation (compute_reference adds
+    the exact energy as local["e_corr_exact"]). The dict carries "local"."""
     ...
 
 def tune_omega(

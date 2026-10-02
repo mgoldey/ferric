@@ -149,8 +149,10 @@ comes from.
 A post-SCF method that isn't wired up to `result` yet writes this instead,
 naming the `kind`. The methods that do write `result` are `rimp2`,
 `oo-rimp2`, `att-rimp2`, `laplace-mp2`, `laplace-sos-mp2`, `scs-mp2`,
-`scs-mp2-2terfc`, `mp3`, `ccsd`, `linlccd`, `lmp2`, `lmp2-direct`, `mp2-v` and
-`rs-mp2-rpa`.
+`scs-mp2-2terfc`, `mp3`, `ccsd`, `ccd`, `ccsd(t)`, `linlccd`, `drpa`, `mp2-v` and
+`rs-mp2-rpa`. For `rimp2`, `drpa` and `linlccd` the record's `components`
+carry `"local"`: `null` for the exact method, else `{"scheme", "eps",
+"keep_fraction", "integral_direct"}`.
 
 It exists because **silence is ambiguous**: a log with no `result` record could
 mean the method does not record one yet, or that the run died before producing

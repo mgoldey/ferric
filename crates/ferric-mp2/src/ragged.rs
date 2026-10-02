@@ -363,18 +363,115 @@ pub struct RingPlan {
     triples: Vec<Vec<RingTriple>>,
 }
 
+/// The pattern-only index sets of one (i,k,j) ring-product triple:
+/// `(p_ik, p_kj, cset, rows, cols)` exactly as [`RingTriple`] stores them.
+type TripleIndex = (
+    usize,
+    usize,
+    Vec<(usize, usize)>,
+    Vec<(usize, usize)>,
+    Vec<(usize, usize)>,
+);
+
+/// Every contributing triple of output pair `out_pb`, resolved from the
+/// pattern alone. Shared by [`RingPlan::new`] (which then gathers the
+/// constant operand's panels) and [`RingPlan::bytes_for`] (which only sizes
+/// them), so the size a caller budgets for and the plan that is built cannot
+/// disagree.
+fn triple_index_sets(
+    rg: &Ragged,
+    pair_index: &HashMap<(usize, usize), usize>,
+    out_pb: &PairBlock,
+) -> Vec<TripleIndex> {
+    let (i, j) = (out_pb.i, out_pb.j);
+    let mut out = Vec::new();
+    let Some(iks) = rg.by_i.get(&i) else {
+        return out;
+    };
+    for &p_ik in iks {
+        let ik = &rg.pairs[p_ik];
+        let k = ik.j;
+        let Some(&p_kj) = pair_index.get(&(k, j)) else {
+            continue;
+        };
+        let kj = &rg.pairs[p_kj];
+        let cset: Vec<(usize, usize)> = ik
+            .db
+            .iter()
+            .enumerate()
+            .filter_map(|(cx, &c)| {
+                let ry = kj.pos_da[c];
+                (ry != usize::MAX).then_some((cx, ry))
+            })
+            .collect();
+        if cset.is_empty() {
+            continue;
+        }
+        let rows: Vec<(usize, usize)> = out_pb
+            .da
+            .iter()
+            .enumerate()
+            .filter_map(|(r, &a)| {
+                let rx = ik.pos_da[a];
+                (rx != usize::MAX).then_some((r, rx))
+            })
+            .collect();
+        let cols: Vec<(usize, usize)> = out_pb
+            .db
+            .iter()
+            .enumerate()
+            .filter_map(|(c, &b)| {
+                let cy = kj.pos_db[b];
+                (cy != usize::MAX).then_some((c, cy))
+            })
+            .collect();
+        if rows.is_empty() || cols.is_empty() {
+            continue;
+        }
+        out.push((p_ik, p_kj, cset, rows, cols));
+    }
+    out
+}
+
+fn pair_index_of(rg: &Ragged) -> HashMap<(usize, usize), usize> {
+    rg.pairs
+        .iter()
+        .enumerate()
+        .map(|(p, pb)| ((pb.i, pb.j), p))
+        .collect()
+}
+
 impl RingPlan {
+    /// Bytes a [`RingPlan`] built on `rg` holds: every gathered `panel_x`
+    /// (`rows × cset` f64) plus its three `(usize, usize)` index lists.
+    ///
+    /// This is the dominant allocation of the dRPA Riccati solve when the
+    /// pattern is full: at ε = 0 every output pair has `no` triples of
+    /// `nv × nv` panels, i.e. `no` times the size of B itself. Computed from
+    /// the same index sets [`RingPlan::new`] uses, without gathering
+    /// anything.
+    pub fn bytes_for(rg: &Ragged) -> usize {
+        let pair_index = pair_index_of(rg);
+        let idx = std::mem::size_of::<(usize, usize)>();
+        rg.pairs
+            .iter()
+            .map(|out_pb| {
+                triple_index_sets(rg, &pair_index, out_pb)
+                    .iter()
+                    .map(|(_, _, cset, rows, cols)| {
+                        rows.len() * cset.len() * 8 + (cset.len() + rows.len() + cols.len()) * idx
+                    })
+                    .sum::<usize>()
+            })
+            .sum()
+    }
+
     /// Build the plan for ring products with a CONSTANT first operand `x`
     /// (caller's responsibility: `x` must not change for the lifetime of
     /// this plan — the dRPA solver holds `x = b_blocks`, assembled once
     /// before the fixed-point loop starts).
     pub fn new(rg: &Ragged, x: &[Array2<f64>]) -> RingPlan {
-        let pair_index: HashMap<(usize, usize), usize> = rg
-            .pairs
-            .iter()
-            .enumerate()
-            .map(|(p, pb)| ((pb.i, pb.j), p))
-            .collect();
+        let pair_index = pair_index_of(rg);
         let dims: Vec<(usize, usize)> = rg
             .pairs
             .iter()
@@ -384,67 +481,25 @@ impl RingPlan {
             .pairs
             .iter()
             .map(|out_pb| {
-                let (i, j) = (out_pb.i, out_pb.j);
-                let mut out = Vec::new();
-                let Some(iks) = rg.by_i.get(&i) else {
-                    return out;
-                };
-                for &p_ik in iks {
-                    let ik = &rg.pairs[p_ik];
-                    let k = ik.j;
-                    let Some(&p_kj) = pair_index.get(&(k, j)) else {
-                        continue;
-                    };
-                    let kj = &rg.pairs[p_kj];
-                    let cset: Vec<(usize, usize)> = ik
-                        .db
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(cx, &c)| {
-                            let ry = kj.pos_da[c];
-                            (ry != usize::MAX).then_some((cx, ry))
-                        })
-                        .collect();
-                    if cset.is_empty() {
-                        continue;
-                    }
-                    let rows: Vec<(usize, usize)> = out_pb
-                        .da
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(r, &a)| {
-                            let rx = ik.pos_da[a];
-                            (rx != usize::MAX).then_some((r, rx))
-                        })
-                        .collect();
-                    let cols: Vec<(usize, usize)> = out_pb
-                        .db
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(c, &b)| {
-                            let cy = kj.pos_db[b];
-                            (cy != usize::MAX).then_some((c, cy))
-                        })
-                        .collect();
-                    if rows.is_empty() || cols.is_empty() {
-                        continue;
-                    }
-                    let xs = &x[p_ik];
-                    let mut panel_x = Array2::<f64>::zeros((rows.len(), cset.len()));
-                    for (rr, &(_, rx)) in rows.iter().enumerate() {
-                        for (cc, &(cx, _)) in cset.iter().enumerate() {
-                            panel_x[(rr, cc)] = xs[(rx, cx)];
+                triple_index_sets(rg, &pair_index, out_pb)
+                    .into_iter()
+                    .map(|(p_ik, p_kj, cset, rows, cols)| {
+                        let xs = &x[p_ik];
+                        let mut panel_x = Array2::<f64>::zeros((rows.len(), cset.len()));
+                        for (rr, &(_, rx)) in rows.iter().enumerate() {
+                            for (cc, &(cx, _)) in cset.iter().enumerate() {
+                                panel_x[(rr, cc)] = xs[(rx, cx)];
+                            }
                         }
-                    }
-                    out.push(RingTriple {
-                        p_kj,
-                        cset,
-                        rows,
-                        cols,
-                        panel_x,
-                    });
-                }
-                out
+                        RingTriple {
+                            p_kj,
+                            cset,
+                            rows,
+                            cols,
+                            panel_x,
+                        }
+                    })
+                    .collect()
             })
             .collect();
         RingPlan { dims, triples }

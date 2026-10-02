@@ -2,9 +2,8 @@
 //! dispatches, and the unknown-kind error must list every one of them.
 //!
 //! The error message used to be a hand-written string beside a separate
-//! `matches!` accept-list, and it drifted: `lmp2` and `lmp2-direct` were
-//! accepted and dispatched but missing from the message, so a user who typo'd
-//! `lmp2` was told it did not exist. The message is now derived from the list;
+//! `matches!` accept-list, and it drifted: two dispatched kinds were missing
+//! from the message, so a user who typo'd one was told it did not exist. The message is now derived from the list;
 //! this test pins that, and pins the list against the dispatch arms by parsing
 //! the source (running every kind would mean an SCF plus a correlated method
 //! per kind).
@@ -48,17 +47,21 @@ fn unknown_kind_message_lists_every_supported_kind() {
     let msg = ferric_cli::unsupported_method_message("not-a-method");
     assert!(msg.contains("\"not-a-method\""), "{msg}");
     // Match the QUOTED token: a bare substring check would let "rimp2" pass
-    // on the strength of "oo-rimp2", and "lmp2" on "lmp2-direct".
+    // on the strength of "oo-rimp2".
     for kind in ferric_cli::SUPPORTED_METHOD_KINDS {
         assert!(
             msg.contains(&format!("\"{kind}\"")),
             "unknown-kind message omits {kind:?}: {msg}"
         );
     }
-    // The two that drifted out of the old hand-written message.
-    for kind in ["lmp2", "lmp2-direct"] {
-        assert!(ferric_cli::SUPPORTED_METHOD_KINDS.contains(&kind));
-        assert!(msg.contains(&format!("\"{kind}\"")), "{msg}");
+    // A local approximation is `[local]`, not a kind: the kinds that once
+    // named one must stay unknown (no aliases).
+    for kind in ["lmp2", "lmp2-direct", "linlccd-amplitude"] {
+        assert!(
+            !ferric_cli::SUPPORTED_METHOD_KINDS.contains(&kind),
+            "{kind}"
+        );
+        assert!(!msg.contains(&format!("\"{kind}\"")), "{msg}");
     }
 }
 

@@ -180,40 +180,49 @@ saturation: no single radius is shown to suffice at every size.
 **What is not claimed:** any speedup. The domains discard contributions but
 the tensor algebra is still dense, so there are no timings to report.
 
-## Local MP2
+## Exact and local MP2
 
-**Amplitude-threshold LMP2** (`lmp2`, `examples/water-lmp2.toml`,
-`run_lmp2(..., eps=1e-4)`): the single-threshold local MP2 of Wang, Aldossary,
-Shi, Liu, Li & Head-Gordon (2023), closed shell, with localized virtuals and
-per-pair domain-local RI fits. `eps = 0` reproduces RI-MP2 exactly; the
-default `1e-4` carries a one-sided truncation error.
+`method.kind = "rimp2"` is the method; it is computed exactly unless a
+[`[local]`](../reference/input.md#local) section asks for a local
+approximation (see
+[Exact and local correlation](./index.md#exact-and-local-correlation)).
+The local approximation is closed shell and energy only.
 
-The canonical RI-MP2 reference that measures that error is **opt-in** for
-both `lmp2` and `lmp2-direct`. It is a full canonical RI-MP2 and forms the
-global `(naux, nocc·nvir)` tensor, so a run with it switched on is not
-reduced-cost. In the CLI, `[mp2] lmp2_reference = true` computes it and
-prints the local error against it; without it the output reads
-`E_corr(canonical RI)  = not computed (opt-in: set [mp2] lmp2_reference = true)`
+**Amplitude-threshold local MP2** (`examples/water-rimp2-local.toml`;
+`[local] scheme = "amplitude-threshold"`, `eps = 1e-4`; Python
+`run_rimp2(..., local="amplitude-threshold", eps=1e-4)`): the
+single-threshold local MP2 of Wang, Aldossary, Shi, Liu, Li & Head-Gordon
+(2023), with localized virtuals and per-pair domain-local RI fits. `eps` has
+no default: it is part of the model. `eps = 0` reproduces RI-MP2 exactly; a
+finite `eps` carries a one-sided truncation error, about linear in `eps`.
+Every printout and run-log record of a local run states `eps` and the
+fraction of amplitudes kept.
+
+The exact RI-MP2 reference that measures that error is **opt-in**. It is a
+full canonical RI-MP2 and forms the global `(naux, nocc·nvir)` tensor, so a
+run with it switched on is not reduced-cost. In the CLI, `[local] reference =
+true` computes it and prints the local error against it; without it the
+output reads
+`E_corr(canonical RI)  = not computed (opt-in: set [local] reference = true)`
 and the run log's `e_corr_canonical_ri` is null. In Python,
-`run_lmp2(..., compute_reference=True)` and
-`run_lmp2_direct(..., compute_reference=True)` compute it; by default the
-returned dict's `e_corr_canonical_ri` is `None`. `examples/water-lmp2.toml`
-sets `lmp2_reference = true`.
+`compute_reference=True` computes it; by default
+`result.local["e_corr_canonical_ri"]` is `None`.
 
-**Integral-direct LMP2** (`lmp2-direct`, `examples/alkane8-lmp2-direct.toml`,
-`run_lmp2_direct`) is the reduced-cost path. Its correlation assembly never
-forms the global 3-index tensor; only the opt-in canonical reference does.
-Locality comes from an integral-free pair gate, per-occupied
-auxiliary-fit and virtual domains, and truncation of each orbital's AO
-support. With every map at its trivial setting it reproduces the global
-3-index path and canonical RI-MP2 (`tests/lmp2_direct.rs`).
+**Integral-direct local MP2** (`[local] integral_direct = true`,
+`examples/alkane8-rimp2-local-direct.toml`; Python `integral_direct=True`) is
+the reduced-cost path. Its correlation assembly never forms the global
+3-index tensor; only the opt-in reference does. Locality comes from an
+integral-free pair gate (`gate_cal`), per-occupied auxiliary-fit and virtual
+domains (`aux_radius`, `virt_radius`), and truncation of each orbital's AO
+support (`ao_tail`). With every map at its trivial setting it reproduces the
+global 3-index path and canonical RI-MP2 (`tests/lmp2_direct.rs`).
 
-**What is measured for `lmp2-direct`** (n-alkanes C20 → C48, 6-31G with
+**What is measured for the integral-direct local MP2** (n-alkanes C20 → C48, 6-31G with
 cc-pVDZ-RI, a quiet machine, 2026-09-07; benchmark
 `bench_direct_alkane_series` in `crates/ferric-mp2/tests/lmp2_direct.rs`).
 The run froze the carbon cores (`frozen_core` = number of carbons) and
-calibrated the pair gate (0.7 Coulomb, 0.02 erfc with ω = 1.0); the library
-defaults are all-electron with no pair gate. Timings are the correlation
+calibrated the pair gate (0.7 Coulomb, 0.02 erfc with ω = 1.0) at
+`eps = 1e-4`; the defaults are all-electron with no pair gate. Timings are the correlation
 stage (assembly + solve) and exclude the canonical reference:
 
 - Correlation-stage cost grows as about N<sup>1.24</sup> with the erfc
@@ -225,8 +234,8 @@ stage (assembly + solve) and exclude the canonical reference:
 has three points on one family of molecules in one basis. It is not shown
 to be linear, and it is not measured on 3-D or diffuse systems.
 
-**The plain `lmp2` path makes no scaling claim.** Its assembly is
-pair-local (no dense J is formed), but it still builds the global 3-index
+**Local MP2 without `integral_direct` makes no scaling claim.** Its assembly
+is pair-local (no dense J is formed), but it still builds the global 3-index
 tensor. Use it as the reference implementation and for small systems.
 
 ## Cite

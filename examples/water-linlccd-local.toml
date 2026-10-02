@@ -1,0 +1,28 @@
+# LinLCCD under the amplitude-threshold LOCAL approximation (closed-shell).
+# The method is kind = "linlccd" with its ladder variant (part of the method):
+# "hh" (default, LinLCCD(hh)), "drivers-only" (no ladder, equal to RI-MP2) or
+# "full" (hole-hole + particle-particle). Without [local] the same file runs
+# the exact LinLCCD of that variant (see water-linlccd.toml).
+#
+# eps is part of the model and has no default; eps = 0 reproduces the exact
+# LinLCCD. reference = true would also run the exact LinLCCD and print the
+# error against it. Same calculation as Python
+# ferric.run_linlccd(..., local="amplitude-threshold", eps=1e-4).
+
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "6-31g"
+
+[method]
+kind = "linlccd"
+
+[mp2]
+auxbasis = "cc-pvdz-ri"
+frozen_core = 1
+linlccd_variant = "hh"
+
+[local]
+scheme = "amplitude-threshold"
+eps = 1e-4

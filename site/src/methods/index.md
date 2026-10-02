@@ -9,12 +9,45 @@ number. To go from a task to a method, start with
 | Family | Methods | Page |
 |---|---|---|
 | SCF and DFT | RHF, UHF, ROHF; KS-DFT (LDA, GGA, hybrid, range-separated, VV10, SCAN/r2SCAN); D3(BJ) and MBD@rsSCS dispersion; IEF-PCM and COSMO solvation; gradients, optimization, finite-difference frequencies, TS search and IRC | [SCF and DFT](./scf.md) |
-| MP2 | RI-MP2, attenuated (erfc, terfc), SCS, SCS-MP2(2terfc), MP2-V, RS-MP2 + LR-RPA, OO-RI-MP2, MP3, Laplace MP2 and SOS-MP2, local MP2 | [The MP2 family](./mp2.md) |
-| Coupled cluster | CCD, CCSD, CCSD(T), LinLCCD(hh); double hybrids B2PLYP, DSD-PBEP86, ωB97X-L-V | [Coupled cluster](./cc.md) |
-| Response | PDEP-RPA, G0W0, COHSEX, evGW0, evGW, BSE-TDA, TDA/TDDFT, polarizabilities and \\( C_6 \\) | [RPA, GW and excited states](./rpa-gw.md) |
+| MP2 | RI-MP2, attenuated (erfc, terfc), SCS, SCS-MP2(2terfc), MP2-V, RS-MP2 + LR-RPA, OO-RI-MP2, MP3, Laplace MP2 and SOS-MP2; local approximation of RI-MP2 | [The MP2 family](./mp2.md) |
+| Coupled cluster | CCD, CCSD, CCSD(T), LinLCCD (hh, drivers-only, full; exact or local); double hybrids B2PLYP, DSD-PBEP86, ωB97X-L-V | [Coupled cluster](./cc.md) |
+| Response | PDEP-RPA, dRPA by the Riccati solve (exact or local), G0W0, COHSEX, evGW0, evGW, BSE-TDA, TDA/TDDFT, polarizabilities and \\( C_6 \\) | [RPA, GW and excited states](./rpa-gw.md) |
 | Electron transfer | cDFT, \\( H_{ab} \\) couplings (Python and Rust, no CLI) | [Constrained DFT](./cdft.md) |
 
 QM/MM embedding is on its own page: [QM/MM](../using/qmmm.md).
+
+## Exact and local correlation
+
+A correlated calculation is two choices: the **method** (what is computed:
+RI-MP2, dRPA, LinLCCD) and the **approximation** (whether, and how, its
+amplitudes are truncated). ferric keeps them apart. `method.kind` (and the
+Python function) names the method, and the method is computed exactly. A
+local approximation is asked for explicitly, with the CLI's
+[`[local]`](../reference/input.md#local) section or the Python `local=` and
+`eps=` keywords, and only `rimp2`, `drpa` and `linlccd` have one.
+
+The one local scheme is the **amplitude threshold**: in the Boys-localized
+basis, a pair amplitude whose localized integral is at or below `eps` is
+dropped (single threshold, Wang et al. 2023). Three facts govern its use:
+
+- **`eps` is part of the model.** It has no default and must be written, and
+  every printout and run-log record of a local run carries it, with the
+  fraction of amplitudes kept (`"local": null` marks an exact run). Report it
+  with any number you quote.
+- **`eps = 0` is the exact method.** It keeps every amplitude and reproduces
+  the exact energy (RI-MP2 to ≤ 1e-9 Ha; dRPA to the canonical plasmon
+  formula; LinLCCD of the same variant), which is how each local path is
+  anchored.
+- **The error is one-sided and about linear in `eps`**: dropped amplitudes
+  give less correlation energy, measured with the same sign at every point.
+  MP2 has Hylleraas stationarity; dRPA does not, so its error is first order
+  and the one-sidedness is measured, not guaranteed.
+
+Riccati, plasmon and PDEP are not approximations of each other: they are
+**algorithms for the same exact dRPA**. The drCCD Riccati solve at `eps = 0`,
+the plasmon formula and full-rank PDEP agree to ≤ 2.6e-14 Ha (H2/STO-3G and
+water/6-31G, PDEP at 64 quadrature points). Which one to use is a cost
+question: see [RPA, GW and excited states](./rpa-gw.md#exact-and-local-drpa).
 
 Formal scaling with system size N, for orientation (these are the textbook
 exponents, not measured timings): SCF and DFT N⁴ for exact four-centre
@@ -53,10 +86,12 @@ method:
 
 - **TDHF/RPAx \\( C_6 \\)** stays about 63% low regardless of gap. Use that
   kernel for static polarizabilities only.
-- **Local MP2**: `lmp2-direct` is measured sub-quadratic (about N<sup>1.24</sup>
+- **Local MP2**: the integral-direct local MP2 (`rimp2` with `[local]
+  integral_direct = true`) is measured sub-quadratic (about N<sup>1.24</sup>
   erfc, N<sup>1.4</sup> Coulomb) on alkanes C20–C48; it is at about parity with
-  RI-MP2 at C20 and about 6× faster at C32;
-  plain `lmp2` makes no scaling claim. See [The MP2 family](./mp2.md#local-mp2).
+  exact RI-MP2 at C20 and about 6× faster at C32. Local MP2 without
+  `integral_direct` makes no scaling claim. See
+  [The MP2 family](./mp2.md#exact-and-local-mp2).
 
 The AO-sparse Laplace SOS-MP2 truncation is *not* a negative: the radius it
 needs does not track the molecular diameter. See

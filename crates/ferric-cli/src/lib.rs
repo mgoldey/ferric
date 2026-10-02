@@ -1,12 +1,15 @@
 mod config;
 
 use config::{load_config, Config};
+/// The `[local]` model types, re-exported for the Python bindings, which
+/// apply the SAME rules to their `local=`/`eps=` kwargs.
+pub use config::{LocalCfg, LocalDirectKnobs, LocalModel, LocalScheme};
 use ferric_cc::ccd::ccd;
 use ferric_cc::ccsd::ccsd;
 use ferric_cc::ccsd_closed_shell::ccsd_closed_shell;
 use ferric_cc::ccsd_t_closed_shell::ccsd_t_closed_shell;
 use ferric_cc::double_hybrid::{run_wb97x_l_v, DoubleHybridConfig};
-use ferric_cc::linlccd::{linlccd, LadderVariant};
+use ferric_cc::linlccd::linlccd;
 use ferric_cc::CcConfig;
 use ferric_core::basis;
 use ferric_core::basis::BasisSet;
@@ -76,7 +79,6 @@ pub const PROVEN_METHOD_KINDS: &[&str] = &[
     "ccsd(t)",
     "linlccd",
     "drpa",
-    "linlccd-amplitude",
     "tda",
     "tddft",
     "oo-rimp2",
@@ -161,8 +163,8 @@ pub const EPISTEMIC_WARNINGS: &[(&str, &str)] = &[
 ///
 /// SINGLE SOURCE for both the accept check in [`run`] and the error message
 /// ([`unsupported_method_message`]). The two used to be a `matches!` and a
-/// hand-written string, and the string drifted: it omitted `lmp2` and
-/// `lmp2-direct`, which the `matches!` accepted. `tests/method_kinds_are_listed.rs`
+/// hand-written string, and the string drifted: it omitted two kinds the
+/// `matches!` accepted. `tests/method_kinds_are_listed.rs`
 /// checks this list against the dispatch arms in `run`, so a kind added to
 /// one and not the other fails a test.
 pub const SUPPORTED_METHOD_KINDS: &[&str] = &[
@@ -171,8 +173,6 @@ pub const SUPPORTED_METHOD_KINDS: &[&str] = &[
     "rohf",
     "ksdft",
     "rimp2",
-    "lmp2",
-    "lmp2-direct",
     "mp3",
     "oo-rimp2",
     "att-rimp2",
@@ -190,7 +190,6 @@ pub const SUPPORTED_METHOD_KINDS: &[&str] = &[
     "ccd",
     "ccsd(t)",
     "linlccd",
-    "linlccd-amplitude",
     "drpa",
     "wb97x-l-v",
     "b2plyp",
@@ -805,6 +804,9 @@ pub fn run(args: Vec<String>) {
         return;
     }
 
+    // An exact `drpa` that cannot fit is refused here, before the SCF.
+    preflight_exact_drpa(&cfg, &mol, &prep, budget_bytes);
+
     // RHF and closed-shell KS-DFT both run through `solve_rhf` (KS-DFT is
     // `solve_rhf` with `cfg.xc` set), so both take the level-shift ladder. This
     // gives KS-DFT the same DIIS-oscillation fallback RHF already had: a hybrid
@@ -993,8 +995,6 @@ pub fn run(args: Vec<String>) {
         "rhf" => run_rhf(&cfg, &bs, &prep, &result),
         "ksdft" => run_ksdft(&cfg, &bs, &prep, &result, dispersion.as_ref()),
         "rimp2" => run_rimp2(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
-        "lmp2" => run_lmp2(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
-        "lmp2-direct" => run_lmp2_direct(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "mp3" => run_mp3(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "oo-rimp2" => run_oo_rimp2(
             &cfg,
@@ -1017,9 +1017,6 @@ pub fn run(args: Vec<String>) {
         "ccd" => run_ccd(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "ccsd(t)" => run_ccsd_t(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "drpa" => run_drpa(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
-        "linlccd-amplitude" => {
-            run_linlccd_amplitude(&cfg, &mol, &bs, &prep, op, &result, budget_bytes)
-        }
         "laplace-mp2" => run_laplace_mp2(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "laplace-sos-mp2" => run_laplace_sos_mp2(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "pdep-rpa" => run_pdep_rpa_arm(
@@ -1079,10 +1076,7 @@ pub fn run(args: Vec<String>) {
         "ccd",
         "ccsd(t)",
         "linlccd",
-        "linlccd-amplitude",
         "drpa",
-        "lmp2",
-        "lmp2-direct",
         "mp2-v",
         "rs-mp2-rpa",
     ];
@@ -1685,40 +1679,98 @@ fn solve_open_shell_reference(
     })
 }
 
-/// The canonical-reference lines of the `lmp2`/`lmp2-direct` printout.
+/// The value, or print the error and exit 1 (the CLI's config-error path).
+fn or_exit<T>(r: Result<T, String>) -> T {
+    r.unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    })
+}
+
+/// A local (amplitude-threshold) run's model, as every printout and run-log
+/// record of `rimp2`/`drpa`/`linlccd` states it.
+struct LocalPrint {
+    eps: f64,
+    keep_fraction: f64,
+    integral_direct: bool,
+}
+
+/// The first line of a `rimp2`/`drpa`/`linlccd` result block: the method
+/// and its model, `"<method> (exact)"` or `"<method> (local: amplitude
+/// threshold, eps = <eps>; kept <x>% of amplitudes)"`. The threshold is part
+/// of the model, so a local number never prints without it.
+fn model_label(method: &str, local: Option<&LocalPrint>) -> String {
+    match local {
+        None => format!("{method} (exact)"),
+        Some(l) => format!(
+            "{method} (local: amplitude threshold{}, eps = {:.1e}; kept {:.2}% of amplitudes)",
+            if l.integral_direct {
+                ", integral-direct"
+            } else {
+                ""
+            },
+            l.eps,
+            100.0 * l.keep_fraction
+        ),
+    }
+}
+
+/// The run-log `local` component of a `rimp2`/`drpa`/`linlccd` result:
+/// `null` for the exact method, else the scheme, threshold, kept fraction and
+/// whether the integral-direct path ran.
+fn local_json(local: Option<&LocalPrint>) -> serde_json::Value {
+    match local {
+        None => serde_json::Value::Null,
+        Some(l) => serde_json::json!({
+            "scheme": config::LocalScheme::AmplitudeThreshold.as_str(),
+            "eps": l.eps,
+            "keep_fraction": l.keep_fraction,
+            "integral_direct": l.integral_direct,
+        }),
+    }
+}
+
+/// The exact-reference lines of a local run's printout.
 ///
-/// `e_ref` is `None` when the (opt-in, `[mp2] lmp2_reference = true`)
-/// reference was not computed: the output then SAYS so, instead of printing
-/// the library's NaN sentinel and a NaN difference. `err_label` names the
-/// difference line ("threshold error", "total error"); `err_note` is its
+/// `e_ref` is `None` when the (opt-in, `[local] reference = true`) reference
+/// was not computed: the output then SAYS so, instead of printing the
+/// library's NaN sentinel and a NaN difference. `ref_label` names the
+/// reference line, `err_label` the difference line; `err_note` is its
 /// parenthetical.
-fn lmp2_reference_lines(
+fn local_reference_lines(
     e_corr: f64,
     e_ref: Option<f64>,
+    ref_label: &str,
     err_label: &str,
     err_note: &str,
 ) -> Vec<String> {
     match e_ref {
         Some(e_ref) => vec![
-            format!("  E_corr(canonical RI)  = {e_ref:.10} Ha"),
+            format!("  {ref_label:<22}= {e_ref:.10} Ha"),
             format!("  {err_label:<22}= {:+.3e} Ha ({err_note})", e_corr - e_ref),
         ],
-        None => vec![
-            "  E_corr(canonical RI)  = not computed (opt-in: set [mp2] lmp2_reference = true)"
-                .to_string(),
-        ],
+        None => vec![format!(
+            "  {ref_label:<22}= not computed (opt-in: set [local] reference = true)"
+        )],
     }
 }
 
-/// `method.kind = "lmp2"`: amplitude-threshold local MP2
-/// (`ferric_mp2::lmp2_amplitude`, WSHG23 single-threshold; closed-shell).
-/// The ε=0 limit reproduces `rimp2` exactly (library anchor <=1e-9); the
-/// default ε=1e-4 carries a one-sided ~linear-in-ε truncation error. The
-/// canonical reference and the error against it are printed only when
-/// `[mp2] lmp2_reference = true` (OPT-IN: the reference is a full N^5
-/// canonical RI-MP2); otherwise the output states it was not computed.
-fn run_lmp2(
+/// `method.kind = "rimp2"` with `[local] scheme = "amplitude-threshold"`:
+/// amplitude-threshold local MP2 (`ferric_mp2::lmp2_amplitude`, WSHG23
+/// single-threshold; closed-shell), or with `integral_direct = true` the
+/// integral-direct local MP2 (`ferric_mp2::lmp2_direct`), which never forms
+/// the global 3-index tensor and prints every locality map it used.
+///
+/// ε = 0 reproduces the exact RI-MP2 (library anchor <= 1e-9); a finite ε
+/// carries a one-sided, ~linear-in-ε truncation error. The canonical RI-MP2
+/// reference and the error against it are printed only with `[local]
+/// reference = true` (OPT-IN: it is a full N^5 canonical RI-MP2 over the
+/// global 3-index tensor -- the object the integral-direct path exists to
+/// avoid). Measured record of the direct path: wiki/amplitude-threshold-lmp2.md.
+#[allow(clippy::too_many_arguments)]
+fn run_rimp2_local(
     cfg: &Config,
+    model: &config::LocalModel,
     mol: &Molecule,
     bs: &BasisSet,
     prep: &PreparedBasis,
@@ -1727,175 +1779,117 @@ fn run_lmp2(
     budget_bytes: Option<usize>,
 ) {
     use ferric_mp2::lmp2_amplitude::{amplitude_lmp2, AmplitudeLmp2Config};
-    if result.spin != ferric_scf::result::Spin::Restricted {
-        eprintln!("error: lmp2 is closed-shell (RHF/RKS reference) only");
-        std::process::exit(1);
-    }
-    let aux_name = cfg
-        .mp2
-        .auxbasis
-        .as_deref()
-        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
-    let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
-    let dfbs = PreparedBasis::new(mol, &aux_bs).unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
-    let eps = cfg.mp2.lmp2_eps.unwrap_or(1e-4);
-    let want_ref = cfg.mp2.lmp2_reference();
-    let r = amplitude_lmp2(
-        mol,
-        prep,
-        bs,
-        &dfbs,
-        op,
-        result,
-        &AmplitudeLmp2Config {
-            eps,
-            frozen_core: cfg.mp2.frozen_core.resolve(mol),
-            eri3_budget_bytes: budget_bytes,
-            compute_reference: want_ref,
-            ..Default::default()
-        },
-    )
-    .unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
-    println!("Amplitude-threshold LMP2 (aux: {aux_name}, eps = {eps:.1e})");
-    println!("  E_corr(LMP2)          = {:.10} Ha", r.e_corr);
-    let e_ref = want_ref.then_some(r.e_corr_canonical_ri);
-    for line in lmp2_reference_lines(
-        r.e_corr,
-        e_ref,
-        "threshold error",
-        "one-sided; ~linear in eps",
-    ) {
-        println!("{line}");
-    }
-    println!("  total energy          = {:.10} Ha", r.e_total);
-    if let Some(rl) = ferric_scf::runlog::log() {
-        rl.result(
-            "lmp2",
-            r.e_total,
-            serde_json::json!({
-                "e_corr": r.e_corr,
-                // null when the opt-in reference was not computed
-                "e_corr_canonical_ri": e_ref,
-                "e_scf_reference": result.energy,
-                "scf_converged": result.converged,
-            }),
-        );
-    }
-    println!(
-        "  keep {:.4}  pairs {:.3}  dom(mean/max) {:.1}/{}  cg {}",
-        r.keep_fraction, r.pair_fraction, r.dom_mean, r.dom_max, r.cg_iterations
-    );
-}
-
-/// `method.kind = "lmp2-direct"`: INTEGRAL-DIRECT amplitude-threshold local
-/// MP2 (`ferric_mp2::lmp2_direct`; closed-shell). Never forms the global
-/// 3-index tensor: per-atom-batched integral evaluation into per-occupied
-/// sparse strips + per-pair domain-local fits. Every locality knob defaults
-/// to its measured production value and is printed with the run. The
-/// canonical-reference error is printed only with `[mp2] lmp2_reference =
-/// true` (OPT-IN: that reference forms the global 3-index tensor this path
-/// exists to avoid, so a default run stays reduced-cost); otherwise the
-/// output states it was not computed.
-/// Measured record: wiki/amplitude-threshold-lmp2.md §27-30 (C32 crossover
-/// vs canonical ri_mp2; C20→C48 tail N^1.2 erfc / N^1.4 coul).
-fn run_lmp2_direct(
-    cfg: &Config,
-    mol: &Molecule,
-    bs: &BasisSet,
-    prep: &PreparedBasis,
-    op: Operator,
-    result: &ferric_scf::result::ScfResult,
-    budget_bytes: Option<usize>,
-) {
-    use ferric_mp2::lmp2_amplitude::AmplitudeLmp2Config;
     use ferric_mp2::lmp2_direct::{amplitude_lmp2_direct, DirectConfig};
-    if result.spin != ferric_scf::result::Spin::Restricted {
-        eprintln!("error: lmp2-direct is closed-shell (RHF/RKS reference) only");
-        std::process::exit(1);
-    }
-    let aux_name = cfg
-        .mp2
-        .auxbasis
-        .as_deref()
-        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
-    let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
-    let dfbs = PreparedBasis::new(mol, &aux_bs).unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
-    let eps = cfg.mp2.lmp2_eps.unwrap_or(1e-4);
-    let dcfg = DirectConfig {
-        aux_radius_bohr: cfg.mp2.direct_aux_radius.unwrap_or(10.0),
-        virt_radius_bohr: Some(cfg.mp2.direct_virt_radius.unwrap_or(12.0)),
-        ao_tail: cfg.mp2.direct_ao_tail.unwrap_or(1e-3),
-        schwarz_skip: cfg.mp2.direct_schwarz_skip.unwrap_or(1e-5),
-        batch_merge: cfg.mp2.direct_batch_merge.unwrap_or(4),
-        virt_schwarz_kappa: cfg.mp2.direct_virt_schwarz_kappa,
+    require_restricted(result, "rimp2");
+    let (aux_name, dfbs) = correlation_aux(cfg, mol);
+    let eps = model.eps[0];
+    let want_ref = model.reference;
+    let lcfg = AmplitudeLmp2Config {
+        eps,
+        frozen_core: cfg.mp2.frozen_core.resolve(mol),
+        eri3_budget_bytes: budget_bytes,
+        compute_reference: want_ref,
+        pair_gate_cal: model.direct.as_ref().and_then(|d| d.gate_cal),
         ..Default::default()
     };
-    let want_ref = cfg.mp2.lmp2_reference();
-    let (r, st) = amplitude_lmp2_direct(
-        mol,
-        prep,
-        bs,
-        &dfbs,
-        op,
-        result,
-        &AmplitudeLmp2Config {
-            eps,
-            frozen_core: cfg.mp2.frozen_core.resolve(mol),
-            eri3_budget_bytes: budget_bytes,
-            pair_gate_cal: cfg.mp2.direct_gate_cal,
-            compute_reference: want_ref,
-            ..Default::default()
-        },
-        &dcfg,
-    )
-    .unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
-    println!(
-        "Integral-direct amplitude-threshold LMP2 (aux: {aux_name}, eps = {eps:.1e}, \
-         r_aux = {} Bohr, r_virt = {} Bohr, ao_tail = {:.0e}, schwarz_skip = {:.0e}, \
-         batch_merge = {}, gate_cal = {}, virt_schwarz_kappa = {})",
-        dcfg.aux_radius_bohr,
-        dcfg.virt_radius_bohr.unwrap_or(f64::INFINITY),
-        dcfg.ao_tail,
-        dcfg.schwarz_skip,
-        dcfg.batch_merge,
-        cfg.mp2
-            .direct_gate_cal
-            .map_or("off".to_string(), |c| format!("{c}")),
-        dcfg.virt_schwarz_kappa
-            .map_or("off".to_string(), |k| format!("{k}")),
-    );
-    println!("  E_corr(direct LMP2)   = {:.10} Ha", r.e_corr);
+    let (r, maps) = match &model.direct {
+        None => (
+            amplitude_lmp2(mol, prep, bs, &dfbs, op, result, &lcfg).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }),
+            None,
+        ),
+        Some(d) => {
+            let dcfg = DirectConfig {
+                aux_radius_bohr: d.aux_radius,
+                virt_radius_bohr: Some(d.virt_radius),
+                ao_tail: d.ao_tail,
+                schwarz_skip: d.schwarz_skip,
+                batch_merge: d.batch_merge,
+                virt_schwarz_kappa: d.virt_schwarz_kappa,
+                ..Default::default()
+            };
+            let (r, st) = amplitude_lmp2_direct(mol, prep, bs, &dfbs, op, result, &lcfg, &dcfg)
+                .unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                });
+            (r, Some((d, st)))
+        }
+    };
+    let local = LocalPrint {
+        eps,
+        keep_fraction: r.keep_fraction,
+        integral_direct: model.direct.is_some(),
+    };
+    println!("{}", model_label("MP2", Some(&local)));
+    println!("  basis / aux           = {} / {aux_name}", bs.name);
+    if let Some((d, _)) = &maps {
+        println!(
+            "  locality maps         = r_aux {} Bohr, r_virt {} Bohr, ao_tail {:.0e}, \
+             schwarz_skip {:.0e}, batch_merge {}, gate_cal {}, virt_schwarz_kappa {}",
+            d.aux_radius,
+            d.virt_radius,
+            d.ao_tail,
+            d.schwarz_skip,
+            d.batch_merge,
+            d.gate_cal.map_or("off".to_string(), |c| format!("{c}")),
+            d.virt_schwarz_kappa
+                .map_or("off".to_string(), |k| format!("{k}")),
+        );
+    }
+    println!("  RHF energy            = {:.10} Ha", result.energy);
+    println!("  E_corr(local MP2)     = {:.10} Ha", r.e_corr);
     let e_ref = want_ref.then_some(r.e_corr_canonical_ri);
-    for line in lmp2_reference_lines(
-        r.e_corr,
-        e_ref,
-        "total error",
-        "eps truncation + locality maps",
-    ) {
+    let (err_label, err_note) = if maps.is_some() {
+        ("total error", "eps truncation + locality maps")
+    } else {
+        ("threshold error", "one-sided; ~linear in eps")
+    };
+    for line in local_reference_lines(r.e_corr, e_ref, "E_corr(canonical RI)", err_label, err_note)
+    {
         println!("{line}");
     }
     println!("  total energy          = {:.10} Ha", r.e_total);
+    match &maps {
+        None => println!(
+            "  keep {:.4}  pairs {:.3}  dom(mean/max) {:.1}/{}  cg {}",
+            r.keep_fraction, r.pair_fraction, r.dom_mean, r.dom_max, r.cg_iterations
+        ),
+        Some((_, st)) => {
+            println!(
+                "  keep {:.4}  pairs {:.3}  gated {}  dom(mean/max) {:.1}/{}  \
+                 cand(mean/max) {:.1}/{}  cg {}",
+                r.keep_fraction,
+                r.pair_fraction,
+                r.n_pairs_gated,
+                r.dom_mean,
+                r.dom_max,
+                st.virt_cand_mean,
+                st.virt_cand_max,
+                r.cg_iterations
+            );
+            println!(
+                "  strips rows {:.0}/{} cols {:.0}/{}  eri3 {:.1}M evald / {:.1}M skipped  \
+                 t maps/eri3/metric/pairs/solve {:.2}/{:.2}/{:.2}/{:.2}/{:.2} s",
+                st.strip_rows_mean,
+                st.strip_rows_max,
+                st.strip_cols_mean,
+                st.strip_cols_max,
+                st.n_eri3_shell_triples as f64 / 1e6,
+                st.n_eri3_skipped as f64 / 1e6,
+                st.t_maps_s,
+                st.t_eri3_s,
+                st.t_metric_s,
+                st.t_pairs_s,
+                r.timings.t_solve_s,
+            );
+        }
+    }
     if let Some(rl) = ferric_scf::runlog::log() {
         rl.result(
-            "lmp2-direct",
+            "rimp2",
             r.e_total,
             serde_json::json!({
                 "e_corr": r.e_corr,
@@ -1903,36 +1897,17 @@ fn run_lmp2_direct(
                 "e_corr_canonical_ri": e_ref,
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
+                "local": local_json(Some(&local)),
             }),
         );
     }
-    println!(
-        "  keep {:.4}  pairs {:.3}  gated {}  dom(mean/max) {:.1}/{}  \
-         cand(mean/max) {:.1}/{}  cg {}",
-        r.keep_fraction,
-        r.pair_fraction,
-        r.n_pairs_gated,
-        r.dom_mean,
-        r.dom_max,
-        st.virt_cand_mean,
-        st.virt_cand_max,
-        r.cg_iterations
-    );
-    println!(
-        "  strips rows {:.0}/{} cols {:.0}/{}  eri3 {:.1}M evald / {:.1}M skipped  \
-         t maps/eri3/metric/pairs/solve {:.2}/{:.2}/{:.2}/{:.2}/{:.2} s",
-        st.strip_rows_mean,
-        st.strip_rows_max,
-        st.strip_cols_mean,
-        st.strip_cols_max,
-        st.n_eri3_shell_triples as f64 / 1e6,
-        st.n_eri3_skipped as f64 / 1e6,
-        st.t_maps_s,
-        st.t_eri3_s,
-        st.t_metric_s,
-        st.t_pairs_s,
-        r.timings.t_solve_s,
-    );
+    if !result.converged {
+        eprintln!(
+            "warning: SCF did not converge (exit {:?} after {} iterations) — the correlation \
+             energy above is built on an unconverged reference and must not be quoted",
+            result.exit, result.iterations
+        );
+    }
 }
 
 /// `"rimp2" => { ... }` match arm.
@@ -1945,6 +1920,14 @@ fn run_rimp2(
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
 ) {
+    let model = cfg.local_model().unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    if let Some(model) = model {
+        run_rimp2_local(cfg, &model, mol, bs, prep, op, result, budget_bytes);
+        return;
+    }
     // An open-shell molecule arrives with a UHF reference (see
     // `solve_open_shell_reference`) and takes the unrestricted RI-MP2.
     if result.spin != ferric_scf::result::Spin::Restricted {
@@ -1981,6 +1964,7 @@ fn run_rimp2(
         eprintln!("error: {e}");
         std::process::exit(1);
     });
+    println!("{}", model_label("RI-MP2", None));
     println!(
         "RI-MP2/{} (aux: {}) on {}",
         bs.name, aux_name, cfg.molecule.xyz
@@ -2020,6 +2004,7 @@ fn run_rimp2(
                 "e_corr": mp2_result.mp2_corr,
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
+                "local": local_json(None),
             }),
         );
     }
@@ -2092,6 +2077,7 @@ fn run_u_rimp2(
     // Same layout as the closed-shell printout (the "MP2 corr" / "Total"
     // labels are what downstream parsers read), with the reference named and
     // the three spin blocks shown.
+    println!("{}", model_label("U-RI-MP2", None));
     println!(
         "U-RI-MP2/{} (aux: {}) on {}",
         bs.name, aux_name, cfg.molecule.xyz
@@ -2125,6 +2111,7 @@ fn run_u_rimp2(
                 "e_ab": r.components.e_ab,
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
+                "local": local_json(None),
             }),
         );
     }
@@ -3113,14 +3100,17 @@ fn run_ccsd(
     }
 }
 
-/// `method.kind = "linlccd"`. Linearized hole-hole ladder CCD on the converged
-/// closed-shell reference.
+/// `method.kind = "linlccd"`. Linearized ladder CCD on the converged
+/// closed-shell reference, in the ladder variant `[mp2] linlccd_variant`
+/// (`hh` default = LinLCCD(hh); `drivers-only` reproduces RI-MP2; `full`
+/// adds the pp ladder with CCD-like VVVV memory).
 ///
-/// Mirrors [`run_ccsd`]'s aux-basis resolution (`[mp2] auxbasis`, default
-/// `cc-pvdz-ri`) because LinLCCD is RI-based in exactly the same way. The
-/// published [`LadderVariant::Hh`] is what is exposed: `DriversOnly` reproduces
-/// RI-MP2 (already reachable via `method.kind = "rimp2"`) and `Full` carries
-/// CCD-like VVVV memory, so neither earns a CLI knob here.
+/// Exact by default: the canonical `ferric_cc::linlccd::linlccd`, which
+/// supports all three variants. With `[local] scheme = "amplitude-threshold"`
+/// it is the amplitude-threshold LinLCCD in the localized basis
+/// (`ferric_cc::linlccd_amplitude`); `eps = 0` reproduces the exact method of
+/// the same variant. Aux basis as `run_ccsd` (`[mp2] auxbasis`, default
+/// `cc-pvdz-ri`).
 fn run_linlccd(
     cfg: &Config,
     mol: &Molecule,
@@ -3130,24 +3120,6 @@ fn run_linlccd(
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
 ) {
-    let aux_name = cfg
-        .mp2
-        .auxbasis
-        .as_deref()
-        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
-    let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
-    let dfbs = PreparedBasis::new(mol, &aux_bs).unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
-    let cc_config = CcConfig {
-        frozen_core: cfg.mp2.frozen_core.resolve(mol),
-        memory_budget_bytes: budget_bytes,
-        ..Default::default()
-    };
     // `linlccd` is closed-shell (RHF-reference) only — it calls `eps_r()`/`mos_r()`,
     // which assert on `Spin::Restricted`. Reject an open-shell reference here with a
     // clear message instead of letting that assert fire as a panic.
@@ -3158,33 +3130,124 @@ fn run_linlccd(
         );
         std::process::exit(1);
     }
-    let cc_result = linlccd(mol, prep, &dfbs, op, result, &cc_config, LadderVariant::Hh)
-        .unwrap_or_else(|e| {
-            eprintln!("error: {e}");
-            std::process::exit(1);
-        });
+    let variant = or_exit(cfg.mp2.linlccd_variant());
+    let model = or_exit(cfg.local_model());
+    let method = format!("LinLCCD({})", variant.as_str());
+    let (aux_name, dfbs) = correlation_aux(cfg, mol);
+    let frozen_core = cfg.mp2.frozen_core.resolve(mol);
+    let (e_corr, local) = match &model {
+        None => {
+            let cc_config = CcConfig {
+                frozen_core,
+                memory_budget_bytes: budget_bytes,
+                ..Default::default()
+            };
+            let cc =
+                linlccd(mol, prep, &dfbs, op, result, &cc_config, variant).unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                });
+            println!("{}", model_label(&method, None));
+            (cc.correlation_energy, None)
+        }
+        Some(m) => {
+            use ferric_cc::linlccd_amplitude::{amplitude_linlccd, AmplitudeLinLccdConfig};
+            let eps = m.eps[0];
+            let r = amplitude_linlccd(
+                mol,
+                prep,
+                bs,
+                &dfbs,
+                op,
+                result,
+                &AmplitudeLinLccdConfig {
+                    eps,
+                    frozen_core,
+                    eri3_budget_bytes: budget_bytes,
+                    ..Default::default()
+                },
+                variant,
+            )
+            .unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+            let local = LocalPrint {
+                eps,
+                keep_fraction: r.keep_fraction,
+                integral_direct: false,
+            };
+            println!("{}", model_label(&method, Some(&local)));
+            println!(
+                "  keep {:.4}  cg {}  relres {:.2e}  converged {}",
+                r.keep_fraction, r.cg_iterations, r.cg_relres, r.cg_converged
+            );
+            if !r.cg_converged {
+                eprintln!(
+                    "warning: local LinLCCD PCG did not converge (relres {:.2e} after {} \
+                     iterations)",
+                    r.cg_relres, r.cg_iterations
+                );
+            }
+            (r.e_corr, Some(local))
+        }
+    };
+    // `[local] reference = true`: the exact LinLCCD of the same variant (the
+    // canonical solve), and the local error against it.
+    let e_ref = match &model {
+        Some(m) if m.reference => Some(
+            linlccd(
+                mol,
+                prep,
+                &dfbs,
+                op,
+                result,
+                &CcConfig {
+                    frozen_core,
+                    memory_budget_bytes: budget_bytes,
+                    ..Default::default()
+                },
+                variant,
+            )
+            .unwrap_or_else(|e| {
+                eprintln!("error: exact LinLCCD reference: {e}");
+                std::process::exit(1);
+            })
+            .correlation_energy,
+        ),
+        _ => None,
+    };
+    if model.is_some() {
+        for line in local_reference_lines(
+            e_corr,
+            e_ref,
+            "E_corr(exact)",
+            "threshold error",
+            "~linear in eps",
+        ) {
+            println!("{line}");
+        }
+    }
     println!(
-        "LinLCCD(hh)/{} (aux: {}) on {}",
+        "{method}/{} (aux: {}) on {}",
         bs.name, aux_name, cfg.molecule.xyz
     );
     println!("  nbasis     = {}", prep.nbasis());
     println!("  RHF energy = {:.10} Hartree", result.energy);
-    println!(
-        "  LinLCCD corr = {:.10} Hartree",
-        cc_result.correlation_energy
-    );
-    println!(
-        "  Total      = {:.10} Hartree",
-        result.energy + cc_result.correlation_energy
-    );
+    println!("  LinLCCD corr = {e_corr:.10} Hartree");
+    println!("  Total      = {:.10} Hartree", result.energy + e_corr);
     if let Some(rl) = ferric_scf::runlog::log() {
         rl.result(
             "linlccd",
-            result.energy + cc_result.correlation_energy,
+            result.energy + e_corr,
             serde_json::json!({
-                "e_corr": cc_result.correlation_energy,
+                "variant": variant.as_str(),
+                "e_corr": e_corr,
+                // null unless a local run opted in to the exact reference
+                "e_corr_exact": e_ref,
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
+                "local": local_json(local.as_ref()),
             }),
         );
     }
@@ -3330,17 +3393,27 @@ fn run_ccsd_t(
     }
 }
 
-/// `method.kind = "drpa"`: amplitude-threshold direct RPA
-/// (`ferric_mp2::drpa_amplitude`, drCCD Riccati on localized orbitals;
-/// closed-shell). `[mp2] drpa_eps` (default 1e-4; 0 = the canonical plasmon
-/// dRPA), `drpa_reference` (opt-in canonical plasmon reference), and
-/// `drpa_eps_sweep` (several ε on ONE SCF and ONE ε-independent localized
-/// assembly via `amplitude_drpa_scan_timed`, the `r0_sweep` pattern).
+/// `method.kind = "drpa"`: direct RPA correlation (dRPA@HF) by the drCCD
+/// Riccati solve on localized orbitals (`ferric_mp2::drpa_amplitude`;
+/// closed-shell).
+///
+/// EXACT by default: the Riccati solve with nothing truncated (ε = 0), which
+/// the library anchors to the canonical plasmon formula (<= 1e-12). Riccati,
+/// plasmon and full-rank PDEP (`pdep-rpa`) are algorithms for the same exact
+/// dRPA energy. The exact path's memory grows as `no^3·nv^2` (the ring-product
+/// plan), so [`preflight_exact_drpa`] refuses a run that cannot fit before
+/// the SCF.
+///
+/// With `[local] scheme = "amplitude-threshold"`: the amplitude-threshold
+/// dRPA at `eps` (one-sided, ~linear-in-ε error; not variational), `reference`
+/// (opt-in canonical plasmon reference) and `eps_sweep` (several ε on ONE SCF
+/// and ONE ε-independent localized assembly via `amplitude_drpa_scan_timed`,
+/// the `r0_sweep` pattern).
 ///
 /// The fixed-point accelerators match the Python binding's defaults (DIIS
 /// subspace 8, ε-linked stopping tolerance factor 0.1), so a CLI run and
 /// `run_drpa(...)` with default kwargs solve the same equations the same way.
-/// Both are no-ops for the ε = 0 anchor's stopping rule.
+/// The ε-link is a no-op at ε = 0.
 fn run_drpa(
     cfg: &Config,
     mol: &Molecule,
@@ -3354,44 +3427,42 @@ fn run_drpa(
         amplitude_drpa, amplitude_drpa_scan_timed, AmplitudeDrpaConfig,
     };
     require_restricted(result, "drpa");
-    let (points, is_sweep) = cfg.mp2.drpa_eps_points().unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
-    if is_sweep && cfg.mp2.drpa_eps.is_some() {
-        eprintln!("warning: [mp2] drpa_eps is ignored when drpa_eps_sweep is set");
-    }
+    let model = or_exit(cfg.local_model());
+    let (points, is_sweep, want_ref) = match &model {
+        None => (vec![0.0], false, false),
+        Some(m) => (m.eps.clone(), m.is_sweep, m.reference),
+    };
     let (aux_name, dfbs) = correlation_aux(cfg, mol);
-    let want_ref = cfg.mp2.drpa_reference();
     let base = AmplitudeDrpaConfig {
         eps: points[0],
         frozen_core: cfg.mp2.frozen_core.resolve(mol),
         eri3_budget_bytes: budget_bytes,
         compute_reference: want_ref,
-        diis: Some(8),
+        diis: Some(DRPA_DIIS_SUBSPACE),
         eps_rtol_factor: Some(0.1),
         ..Default::default()
     };
+    fn fail(e: ferric_core::FerricError, exact: bool) -> ! {
+        eprintln!("error: {e}");
+        if exact {
+            eprintln!("{EXACT_DRPA_MEMORY_HINT}");
+        }
+        std::process::exit(1);
+    }
+    let exact = model.is_none();
     let results = if is_sweep {
         let (rs, prefix_wall_s, _) =
             amplitude_drpa_scan_timed(mol, prep, bs, &dfbs, op, result, &base, &points)
-                .unwrap_or_else(|e| {
-                    eprintln!("error: {e}");
-                    std::process::exit(1);
-                });
+                .unwrap_or_else(|e| fail(e, exact));
         eprintln!(
-            "[ferric] drpa_eps_sweep: {} points on one SCF + one localized assembly \
+            "[ferric] [local] eps_sweep: {} points on one SCF + one localized assembly \
              ({prefix_wall_s:.2} s shared)",
             points.len()
         );
         rs
     } else {
-        vec![
-            amplitude_drpa(mol, prep, bs, &dfbs, op, result, &base).unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            }),
-        ]
+        vec![amplitude_drpa(mol, prep, bs, &dfbs, op, result, &base)
+            .unwrap_or_else(|e| fail(e, exact))]
     };
     let n_points = points.len();
     for (k, (r, eps)) in results.iter().zip(&points).enumerate() {
@@ -3402,21 +3473,26 @@ fn run_drpa(
                 n_points
             );
         }
-        println!("Amplitude-threshold dRPA (aux: {aux_name}, eps = {eps:.1e})");
+        let local = model.as_ref().map(|m| LocalPrint {
+            eps: *eps,
+            keep_fraction: r.keep_fraction,
+            integral_direct: m.direct.is_some(),
+        });
+        println!("{}", model_label("dRPA", local.as_ref()));
+        println!("  basis / aux           = {} / {aux_name}", bs.name);
         println!("  RHF energy            = {:.10} Ha", result.energy);
         println!("  E_corr(dRPA)          = {:.10} Ha", r.e_corr);
         let e_ref = want_ref.then_some(r.e_corr_plasmon_canonical);
-        match e_ref {
-            Some(e_ref) => {
-                println!("  E_corr(canonical)     = {e_ref:.10} Ha");
-                println!(
-                    "  threshold error       = {:+.3e} Ha (~linear in eps; not variational)",
-                    r.e_corr - e_ref
-                );
+        if model.is_some() {
+            for line in local_reference_lines(
+                r.e_corr,
+                e_ref,
+                "E_corr(canonical)",
+                "threshold error",
+                "~linear in eps; not variational",
+            ) {
+                println!("{line}");
             }
-            None => println!(
-                "  E_corr(canonical)     = not computed (opt-in: set [mp2] drpa_reference = true)"
-            ),
         }
         println!("  total energy          = {:.10} Ha", r.e_total);
         println!(
@@ -3442,88 +3518,53 @@ fn run_drpa(
                     "converged": r.converged,
                     "e_scf_reference": result.energy,
                     "scf_converged": result.converged,
+                    "local": local_json(local.as_ref()),
                 }),
             );
         }
     }
 }
 
-/// `method.kind = "linlccd-amplitude"`: amplitude-threshold LinLCCD
-/// (`ferric_cc::linlccd_amplitude`; closed-shell). `[mp2] linlccd_variant`
-/// (`hh` default, `drivers-only` = RI-MP2, `full`) and `linlccd_eps`
-/// (default 1e-4; 0 reproduces the canonical `linlccd` of that variant).
-/// Same library call as Python `run_linlccd_amplitude`.
-fn run_linlccd_amplitude(
-    cfg: &Config,
-    mol: &Molecule,
-    bs: &BasisSet,
-    prep: &PreparedBasis,
-    op: Operator,
-    result: &ferric_scf::result::ScfResult,
-    budget_bytes: Option<usize>,
-) {
-    use ferric_cc::linlccd_amplitude::{amplitude_linlccd, AmplitudeLinLccdConfig};
-    require_restricted(result, "linlccd-amplitude");
-    let variant = cfg.mp2.linlccd_variant().unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
-    let eps = cfg.mp2.linlccd_eps().unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
-    let variant_name = match variant {
-        LadderVariant::DriversOnly => "drivers-only",
-        LadderVariant::Hh => "hh",
-        LadderVariant::Full => "full",
-    };
-    let (aux_name, dfbs) = correlation_aux(cfg, mol);
-    let r = amplitude_linlccd(
-        mol,
-        prep,
-        bs,
-        &dfbs,
-        op,
-        result,
-        &AmplitudeLinLccdConfig {
-            eps,
-            frozen_core: cfg.mp2.frozen_core.resolve(mol),
-            eri3_budget_bytes: budget_bytes,
-            ..Default::default()
-        },
-        variant,
-    )
-    .unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
-    println!("Amplitude-threshold LinLCCD({variant_name}) (aux: {aux_name}, eps = {eps:.1e})");
-    println!("  RHF energy            = {:.10} Ha", result.energy);
-    println!("  E_corr(LinLCCD)       = {:.10} Ha", r.e_corr);
-    println!("  total energy          = {:.10} Ha", r.e_total);
-    println!(
-        "  keep {:.4}  cg {}  relres {:.2e}  converged {}",
-        r.keep_fraction, r.cg_iterations, r.cg_relres, r.cg_converged
-    );
-    if !r.cg_converged {
-        eprintln!(
-            "warning: linlccd-amplitude PCG did not converge (relres {:.2e} after {} iterations)",
-            r.cg_relres, r.cg_iterations
-        );
+/// DIIS subspace of the CLI's dRPA Riccati solve (the Python binding's
+/// default). Shared by [`run_drpa`] and [`preflight_exact_drpa`], whose
+/// memory estimate depends on it.
+const DRPA_DIIS_SUBSPACE: usize = 8;
+
+/// Where an exact dRPA that does not fit should go instead.
+const EXACT_DRPA_MEMORY_HINT: &str =
+    "hint: exact dRPA through the Riccati solve holds the full no^3*nv^2 ring-product plan. \
+     method.kind = \"pdep-rpa\" with [rpa] trunc_thresh = 0 (full rank) computes the same \
+     exact dRPA energy (to its frequency-quadrature error) at far lower memory; \
+     [local] scheme = \"amplitude-threshold\" with a stated eps is the local approximation.";
+
+/// Refuse an EXACT `drpa` run whose Riccati solve cannot fit the memory
+/// budget, BEFORE the SCF: the ε = 0 path's peak
+/// (`ferric_mp2::drpa_amplitude::exact_drpa_peak_bytes`) is `no` times the
+/// size of B in the ring-product plan alone, which made C12 thrash and then
+/// be OOM-killed. The solve itself also hard-charges the memory pool (the
+/// backstop); this check only moves the refusal ahead of the SCF and points
+/// at the alternatives.
+fn preflight_exact_drpa(cfg: &Config, mol: &Molecule, prep: &PreparedBasis, budget: Option<usize>) {
+    if cfg.method.kind != "drpa" || !matches!(cfg.local_model(), Ok(None)) {
+        return;
     }
-    if let Some(rl) = ferric_scf::runlog::log() {
-        rl.result(
-            "linlccd-amplitude",
-            r.e_total,
-            serde_json::json!({
-                "variant": variant_name,
-                "eps": eps,
-                "e_corr": r.e_corr,
-                "converged": r.cg_converged,
-                "e_scf_reference": result.energy,
-                "scf_converged": result.converged,
-            }),
+    let nocc = (mol.nelec() as usize) / 2;
+    let no = nocc.saturating_sub(cfg.mp2.frozen_core.resolve(mol));
+    let nv = prep.nbasis().saturating_sub(nocc);
+    let need = ferric_mp2::drpa_amplitude::exact_drpa_peak_bytes(no, nv, Some(DRPA_DIIS_SUBSPACE));
+    let have = ferric_core::memory::resolve_budget(budget);
+    if need > have.bytes {
+        let gib = |b: usize| b as f64 / (1024.0 * 1024.0 * 1024.0);
+        eprintln!(
+            "error: exact dRPA (kind = \"drpa\", no [local]) needs ~{:.2} GiB for the Riccati \
+             solve at no = {no}, nv = {nv}, over the {:.2} GiB memory budget [source: {}]; \
+             refused before the SCF.",
+            gib(need),
+            gib(have.bytes),
+            have.source.label()
         );
+        eprintln!("{EXACT_DRPA_MEMORY_HINT}");
+        std::process::exit(1);
     }
 }
 
@@ -6078,39 +6119,79 @@ fn run_tddft_arm(
 }
 
 #[cfg(test)]
-mod lmp2_reference_printout_tests {
-    use super::lmp2_reference_lines;
+mod local_printout_tests {
+    use super::{local_json, local_reference_lines, model_label, LocalPrint};
 
     /// With the opt-in reference OFF the printout must say so and must never
     /// show the library's NaN sentinel or a NaN difference.
     ///
-    /// Fails if reverted: the pre-change code printed `r.e_corr_canonical_ri`
-    /// and `r.e_corr - r.e_corr_canonical_ri` unconditionally, i.e. "NaN"
-    /// twice once the library default went off; a helper that formatted the
+    /// Fails if reverted to printing the raw reference unconditionally (NaN
+    /// twice once the library default is off); a helper that formatted the
     /// raw NaN instead of branching on `None` fails the `!contains("NaN")`
     /// assert, and one that printed nothing fails the "not computed" assert.
     #[test]
     fn reference_off_prints_not_computed_and_no_nan() {
-        let text = lmp2_reference_lines(-0.2, None, "threshold error", "note").join("\n");
+        let text = local_reference_lines(
+            -0.2,
+            None,
+            "E_corr(canonical RI)",
+            "threshold error",
+            "note",
+        )
+        .join("\n");
         assert!(
             !text.contains("NaN"),
             "NaN leaked into the printout:\n{text}"
         );
         assert!(text.contains("not computed"), "{text}");
         assert!(
-            text.contains("[mp2] lmp2_reference = true"),
+            text.contains("[local] reference = true"),
             "the printout must name the opt-in key:\n{text}"
         );
         assert!(!text.contains("threshold error"), "{text}");
     }
 
-    /// With the reference ON the value and the difference are printed in the
-    /// historical layout (labels aligned on the `=` column).
+    /// With the reference ON the value and the difference are printed with
+    /// the labels aligned on the `=` column.
     #[test]
     fn reference_on_prints_value_and_signed_difference() {
-        let lines = lmp2_reference_lines(-0.2, Some(-0.25), "total error", "maps");
+        let lines = local_reference_lines(
+            -0.2,
+            Some(-0.25),
+            "E_corr(canonical RI)",
+            "total error",
+            "maps",
+        );
         assert_eq!(lines.len(), 2, "{lines:?}");
         assert_eq!(lines[0], "  E_corr(canonical RI)  = -0.2500000000 Ha");
         assert_eq!(lines[1], "  total error           = +5.000e-2 Ha (maps)");
+    }
+
+    /// The model line names the model: "(exact)" with no threshold, or the
+    /// scheme, the threshold and the kept fraction. The run-log `local`
+    /// component is `null` exactly for the exact method.
+    #[test]
+    fn model_line_and_log_state_the_model() {
+        assert_eq!(model_label("dRPA", None), "dRPA (exact)");
+        let l = LocalPrint {
+            eps: 1e-4,
+            keep_fraction: 0.023,
+            integral_direct: false,
+        };
+        assert_eq!(
+            model_label("dRPA", Some(&l)),
+            "dRPA (local: amplitude threshold, eps = 1.0e-4; kept 2.30% of amplitudes)"
+        );
+        let d = LocalPrint {
+            integral_direct: true,
+            ..l
+        };
+        assert!(model_label("MP2", Some(&d)).contains("integral-direct, eps = 1.0e-4"));
+        assert!(local_json(None).is_null());
+        let j = local_json(Some(&d));
+        assert_eq!(j["scheme"], "amplitude-threshold");
+        assert_eq!(j["eps"], 1e-4);
+        assert_eq!(j["keep_fraction"], 0.023);
+        assert_eq!(j["integral_direct"], true);
     }
 }

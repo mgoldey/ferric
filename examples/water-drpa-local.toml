@@ -1,0 +1,31 @@
+# Direct RPA (dRPA@HF) under the amplitude-threshold LOCAL approximation
+# (drCCD Riccati on localized orbitals, closed-shell). Without [local] the
+# same file runs exact dRPA (see water-drpa.toml).
+#
+# eps is part of the model and has no default: eps = 0 reproduces exact dRPA;
+# a finite eps carries a one-sided error that is ~linear in eps (dRPA is not
+# variational). reference = true also computes the canonical plasmon-formula
+# dRPA (a dense eigensolve, off by default) and prints the error against it.
+#
+# To scan several thresholds on ONE SCF, replace eps with e.g.
+#   eps_sweep = [0.0, 1e-4, 1e-3]
+# Same calculation as Python ferric.run_drpa(..., local="amplitude-threshold",
+# eps=1e-4) / run_drpa_scan.
+
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "6-31g"
+
+[method]
+kind = "drpa"
+
+[mp2]
+auxbasis = "cc-pvdz-ri"
+frozen_core = 1
+
+[local]
+scheme = "amplitude-threshold"
+eps = 1e-4
+reference = true

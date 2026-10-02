@@ -63,7 +63,7 @@ same table: `cc-pvdz-ri`, `cc-pvtz-rifit`, `aug-cc-pv{d,t,q}z-rifit`,
 
 | Key | Type | Default | Allowed values | Notes |
 |---|---|---|---|---|
-| `kind` | string | **required** | `rhf` `uhf` `rohf` `ksdft` `rimp2` `lmp2` `lmp2-direct` `mp3` `oo-rimp2` `att-rimp2` `mp2-v` `scs-mp2` `scs-mp2-2terfc` `laplace-mp2` `laplace-sos-mp2` `pdep-rpa` `rs-mp2-rpa` `gw` `bse-tda` `tdhf-static-polarizability` `ccsd` `ccd` `ccsd(t)` `linlccd` `linlccd-amplitude` `drpa` `wb97x-l-v` `b2plyp` `dsd-pbep86` `tda` `tddft` | Any other value is an error. Smoke- and Spike-grade kinds print a `[warning]` grade line on stderr; Proven kinds and the ungraded `lmp2`, `lmp2-direct` and `laplace-sos-mp2` print none (see [Capabilities and validation](./validation.md#grades)). |
+| `kind` | string | **required** | `rhf` `uhf` `rohf` `ksdft` `rimp2` `mp3` `oo-rimp2` `att-rimp2` `mp2-v` `scs-mp2` `scs-mp2-2terfc` `laplace-mp2` `laplace-sos-mp2` `pdep-rpa` `rs-mp2-rpa` `gw` `bse-tda` `tdhf-static-polarizability` `ccsd` `ccd` `ccsd(t)` `linlccd` `drpa` `wb97x-l-v` `b2plyp` `dsd-pbep86` `tda` `tddft` | Any other value is an error. Smoke- and Spike-grade kinds print a `[warning]` grade line on stderr; Proven kinds and the ungraded `laplace-sos-mp2` print none. `rimp2`, `drpa` and `linlccd` name the method and are computed exactly unless [`[local]`](#local) sets a local approximation (see [Capabilities and validation](./validation.md#grades)). |
 | `task` | string | `"energy"` | `energy` `optimize` `frequencies` | `optimize`: `rhf` `ksdft` `uhf` `rohf` `rimp2` `pdep-rpa` only. `frequencies`: `rhf` `ksdft` `uhf` `rohf` only. |
 
 ## `[scf]`
@@ -136,15 +136,17 @@ as elsewhere.
 ## `[mp2]`
 
 This section is shared by the whole MP2 family, `ccsd`, `ccd`, `ccsd(t)`,
-`linlccd`, `linlccd-amplitude`, `drpa`, the double hybrids and `tda`/`tddft`,
-all of which read `auxbasis` and `frozen_core` from here.
+`linlccd`, `drpa`, the double hybrids and `tda`/`tddft`, all of which read
+`auxbasis` and `frozen_core` from here. `drpa`, `linlccd` and a local `rimp2`
+read nothing else from it (plus `linlccd_variant` for `linlccd`); any other
+`[mp2]` key on them is an error.
 
 | Key | Type | Default | Allowed values | Notes |
 |---|---|---|---|---|
 | `auxbasis` | string | `"cc-pvdz-ri"`; `"cc-pvdz-rifit"` for `tda`/`tddft` | aux basis name | The two defaults name the same bundled set (`cc-pvdz-rifit` is an alias of `cc-pvdz-ri`). |
 | `frozen_core` | int, string or bool | `0` | integer ≥ 0, `"auto"`, `"none"`, `true` (= auto), `false` (= 0) | `"auto"` gives the standard small core for this molecule after the ECP is applied, and the run prints the resolved count. |
 | `omega` | float | `0.420` | Å⁻¹ | `att-rimp2` (erfc), `rs-mp2-rpa`. Ignored with a warning when `attenuator = "terf"`. An error on `att-rimp2` with `att_operator = "terfc"`. |
-| `kappa` | float | none | κ > 0, Hartree⁻¹ | κ-regularized MP2 for `rimp2`. Absent = plain MP2. |
+| `kappa` | float | none | κ > 0, Hartree⁻¹ | κ-regularized MP2 for the exact `rimp2`; an error with `[local]`. Absent = plain MP2. |
 | `c_os` | float | `1.2` (`scs-mp2`), `1.27` (`scs-mp2-2terfc`), `1.3` (`laplace-sos-mp2`) | | |
 | `c_ss` | float | `1/3` (`scs-mp2`), `4.05` (`scs-mp2-2terfc`) | | `laplace-sos-mp2` warns and ignores it. |
 | `n_quad` | integer | `7` | `3` `5` `7` | `laplace-mp2`, `laplace-sos-mp2`. Any other value is an error. |
@@ -159,20 +161,7 @@ all of which read `auxbasis` and `frozen_core` from here.
 | `r0_sweep` | array of floats | none | Å, > 0 | `rs-mp2-rpa` with `terf` only. Reuses one SCF for several r0 values. `r0` is then ignored with a warning. |
 | `r0_bonded` | float | `0.75` | Å | `scs-mp2-2terfc`. |
 | `r0_nonbonded` | float | `1.05` | Å, > `r0_bonded` | `scs-mp2-2terfc`. |
-| `lmp2_eps` | float | `1e-4` | | `lmp2`, `lmp2-direct`. `0` reproduces `rimp2`. |
-| `lmp2_reference` | bool | `false` | | `lmp2`, `lmp2-direct`. Also compute the canonical RI-MP2 reference and print the local error against it. Costs a full RI-MP2 and forms the global 3-index tensor. |
-| `drpa_eps` | float | `1e-4` | ≥ 0 | `drpa`. `0` reproduces the canonical plasmon-formula dRPA. Ignored with a warning when `drpa_eps_sweep` is set. |
-| `drpa_reference` | bool | `false` | | `drpa`. Also compute the canonical plasmon-formula dRPA (a dense eigensolve) and print the threshold error against it. |
-| `drpa_eps_sweep` | array of floats | none | each ≥ 0 | `drpa`. Several ε on one SCF and one localized assembly; sorted and de-duplicated, one result block per point. |
-| `linlccd_variant` | string | `"hh"` | `hh` `drivers-only` `full` | `linlccd-amplitude`. `drivers-only` equals RI-MP2. Any other value is an error. |
-| `linlccd_eps` | float | `1e-4` | ≥ 0 | `linlccd-amplitude`. `0` reproduces the canonical LinLCCD of the same variant. |
-| `direct_aux_radius` | float | `10.0` | Bohr | `lmp2-direct`. |
-| `direct_virt_radius` | float | `12.0` | Bohr | `lmp2-direct`. |
-| `direct_ao_tail` | float | `1e-3` | | `lmp2-direct`. `0.0` keeps every shell. |
-| `direct_schwarz_skip` | float | `1e-5` | | `lmp2-direct`. Must be `0.0` for terfc operators, or the run errors. |
-| `direct_batch_merge` | integer | `4` | ≥ 1 | `lmp2-direct`. |
-| `direct_gate_cal` | float | none (gate off) | | `lmp2-direct` pair gate. |
-| `direct_virt_schwarz_kappa` | float | none (off) | | `lmp2-direct`. |
+| `linlccd_variant` | string | `"hh"` | `hh` `drivers-only` `full` | `linlccd` only (an error on any other kind), exact and local alike: it selects the method. `drivers-only` equals RI-MP2; `full` adds the pp ladder (CCD-like VVVV memory). Any other value is an error. |
 | `mp2v_r0` | float | `1.00` | Å, > 0 | `mp2-v`. Also sets the VV10 damping r0. It is correlated with `mp2v_b` in the published fit. |
 | `mp2v_b` | float | `11.0` | | `mp2-v`. |
 | `mp2v_c` | float | `0.0089` | | `mp2-v`. Fixed in the paper. Changing it leaves the published parameterization. |
@@ -185,6 +174,33 @@ all of which read `auxbasis` and `frozen_core` from here.
 | `oo_grad_conv` | float | `1e-4` | > 0 | `oo-rimp2` only. Convergence threshold on the orbital-gradient norm. |
 | `oo_level_shift` | float | `0.1` | Hartree, ≥ 0 | `oo-rimp2` only. Level shift on the approximate diagonal orbital Hessian. |
 | `oo_diis_size` | integer | `6` | ≥ 1 | `oo-rimp2` only. DIIS subspace for the orbital rotations. The four `oo_*` keys match Python `run_oo_rimp2(max_iter=, grad_conv=, level_shift=, diis_size=)`; on any other kind they are an error. |
+
+## `[local]`
+
+The local approximation of a correlated method. `method.kind` names the
+method (`rimp2`, `drpa` or `linlccd`); this section says whether and how its
+amplitudes are truncated. Without it (or with `scheme = "none"`) the method is
+computed exactly. On any other kind the section is an error. The local runs
+are closed shell and `task = "energy"` only, and every printout and run-log
+`result` carries the model: `"<method> (exact)"` with `"local": null`, or the
+scheme, `eps` and kept fraction. See
+[The MP2 family](../methods/mp2.md#exact-and-local-mp2) and
+[Exact and local correlation](../methods/index.md#exact-and-local-correlation).
+
+| Key | Type | Default | Allowed values | Notes |
+|---|---|---|---|---|
+| `scheme` | string | `"none"` | `none` `amplitude-threshold` | `amplitude-threshold`: drop pair amplitudes whose localized integral is at or below `eps` (single threshold). Any other value is an error. |
+| `eps` | float | **required** with `amplitude-threshold` | ≥ 0, finite | The threshold is part of the model and has no default. `0` keeps every amplitude and reproduces the exact method. An error with `scheme = "none"`. |
+| `eps_sweep` | array of floats | none | each ≥ 0 | `drpa` only. Several ε on one SCF and one localized assembly; sorted and de-duplicated, one result block per point. Instead of `eps`, not with it. |
+| `reference` | bool | `false` | | Also compute the exact method (canonical RI-MP2, canonical plasmon dRPA, exact LinLCCD) and print the local error against it. Costs the full exact calculation. An error with `scheme = "none"`. |
+| `integral_direct` | bool | `false` | | `rimp2` only. The integral-direct local MP2: never forms the global 3-index tensor. |
+| `aux_radius` | float | `10.0` | Bohr, > 0 | Integral-direct only (an error otherwise). Aux fit-domain radius. |
+| `virt_radius` | float | `12.0` | Bohr, > 0 | Integral-direct only. Virtual domain radius. |
+| `ao_tail` | float | `1e-3` | ≥ 0 | Integral-direct only. `0.0` keeps every shell. |
+| `schwarz_skip` | float | `1e-5` | ≥ 0 | Integral-direct only. Must be `0.0` for terfc operators, or the run errors. |
+| `batch_merge` | integer | `4` | ≥ 1 | Integral-direct only. |
+| `gate_cal` | float | none (gate off) | > 0 | Integral-direct only. Pair-gate calibration (~0.7 Coulomb, ~0.02 erfc ω = 1). |
+| `virt_schwarz_kappa` | float | none (off) | > 0 | Integral-direct only. ε-linked Schwarz virtual-candidate screen. |
 
 ## `[rpa]`
 
