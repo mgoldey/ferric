@@ -2948,6 +2948,9 @@ fn dispersion_frequencies(
     fcfg: &ferric_scf::frequencies::FrequencyConfig,
     spec: &DispersionSpec,
 ) -> Result<ferric_scf::frequencies::FrequencyResult, ferric_core::FerricError> {
+    // Refuse an unsupported configuration (e.g. hessian = "analytic") before
+    // the MBD@rsSCS free-atom SCFs below, not after them.
+    ferric_scf::frequencies::check_scf_correction_config(fcfg)?;
     let op = Operator::coulomb();
     let bs = ferric_core::basis::bundled(basis_name)?;
     // MBD@rsSCS free-atom references are per element: built once, not at each

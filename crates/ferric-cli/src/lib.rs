@@ -5484,6 +5484,11 @@ fn frequencies_maybe_dispersion(
         };
         refuse_open_shell_dispersion_gradient(cfg, &label, "frequencies");
     }
+    // Refuse an unsupported configuration (e.g. hessian = "analytic") before
+    // the dispersion model is built (MBD@rsSCS solves free atoms), not after.
+    if dispersion_request(cfg).is_some() {
+        ferric_scf::frequencies::check_scf_correction_config(fcfg)?;
+    }
     let Some(model) = dispersion_gradient_model(cfg, ctx, mol, bs, op, rhf_config, "frequencies")
     else {
         return harmonic_frequencies(ctx, mol, &bs.name, op, rhf_config, fcfg).map(|r| (r, None));

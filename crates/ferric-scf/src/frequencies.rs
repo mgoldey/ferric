@@ -351,6 +351,37 @@ pub fn harmonic_frequencies(
     })
 }
 
+/// The configuration checks of [`harmonic_frequencies_with_scf_correction`]
+/// that need no SCF: closed-shell RHF/RKS reference, no analytic Hessian, a
+/// finite positive displacement. Public so a caller can run them before any
+/// expensive setup of its correction (e.g. MBD@rsSCS's free-atom SCFs).
+pub fn check_scf_correction_config(freq_config: &FrequencyConfig) -> Result<(), FerricError> {
+    if freq_config.reference != FrequencyReference::Rhf {
+        return Err(FerricError::General(format!(
+            "harmonic frequencies with an SCF energy correction support only a closed-shell \
+             RHF/RKS reference, got {}: the correction is evaluated from a closed-shell SCF \
+             result, as in the geometry optimizer",
+            freq_config.reference.label()
+        )));
+    }
+    if freq_config.hessian == HessianMethod::Analytic {
+        return Err(FerricError::General(
+            "harmonic frequencies with an SCF energy correction: hessian = \"analytic\" is \
+             not available. The analytic SCF Hessian has no correction term, and adding a \
+             finite-difference correction Hessian to it would mix two constructions; use \
+             \"auto\" or \"fd\" (central differences of the corrected analytic gradient)."
+                .to_string(),
+        ));
+    }
+    if !(freq_config.delta.is_finite() && freq_config.delta > 0.0) {
+        return Err(FerricError::General(format!(
+            "frequency displacement delta must be finite and positive, got {}",
+            freq_config.delta
+        )));
+    }
+    Ok(())
+}
+
 /// Harmonic frequencies on the surface `E_SCF + E_corr`, where the correction
 /// is evaluated from the CONVERGED closed-shell SCF at every geometry.
 ///
@@ -400,29 +431,7 @@ pub fn harmonic_frequencies_with_scf_correction(
             "harmonic frequencies require at least 2 atoms, got {natoms}"
         )));
     }
-    if freq_config.reference != FrequencyReference::Rhf {
-        return Err(FerricError::General(format!(
-            "harmonic frequencies with an SCF energy correction support only a closed-shell \
-             RHF/RKS reference, got {}: the correction is evaluated from a closed-shell SCF \
-             result, as in the geometry optimizer",
-            freq_config.reference.label()
-        )));
-    }
-    if freq_config.hessian == HessianMethod::Analytic {
-        return Err(FerricError::General(
-            "harmonic frequencies with an SCF energy correction: hessian = \"analytic\" is \
-             not available. The analytic SCF Hessian has no correction term, and adding a \
-             finite-difference correction Hessian to it would mix two constructions; use \
-             \"auto\" or \"fd\" (central differences of the corrected analytic gradient)."
-                .to_string(),
-        ));
-    }
-    if !(freq_config.delta.is_finite() && freq_config.delta > 0.0) {
-        return Err(FerricError::General(format!(
-            "frequency displacement delta must be finite and positive, got {}",
-            freq_config.delta
-        )));
-    }
+    check_scf_correction_config(freq_config)?;
     let masses = atom_masses(mol)?;
 
     let mut corrected = |m: &Molecule| -> Result<(f64, f64, Array2<f64>), FerricError> {
