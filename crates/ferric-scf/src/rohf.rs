@@ -521,7 +521,7 @@ pub fn solve_rohf_best_effort(
         }
         eprintln!(
             "[ferric] COSX final-grid pass skipped: not implemented for ROHF/ROKS; the energy is \
-             the SCF-grid (pruned sgx) energy"
+             the SCF-grid energy"
         );
     }
     // Same `LinkBound::SchwarzRef` adapter and same rationale as `solve_uhf`'s
