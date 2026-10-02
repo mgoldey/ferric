@@ -330,6 +330,13 @@ class RhfResult:
         """MO coefficient matrix C (n_bf x n_mo), column k = MO k."""
         ...
 
+    @property
+    def cosx_final_pass(self) -> dict[str, float | int | bool] | None:
+        """The COSX final-grid pass: ``{"e_scf_grid", "e_final",
+        "npts_scf_grid", "npts_final_grid", "gradient_differentiates"}``, or
+        None when no pass ran. ``energy`` is ``e_final`` when it ran."""
+        ...
+
 class UhfResult:
     """Result of an open-shell UHF or ROHF calculation."""
 
@@ -367,6 +374,13 @@ class UhfResult:
 
     def orbital_energies_beta(self) -> NDArray[np.float64]:
         """Beta-spin orbital energies (Hartree), ascending."""
+        ...
+
+    @property
+    def cosx_final_pass(self) -> dict[str, float | int | bool] | None:
+        """The COSX final-grid pass: ``{"e_scf_grid", "e_final",
+        "npts_scf_grid", "npts_final_grid", "gradient_differentiates"}``, or
+        None when no pass ran. ``energy`` is ``e_final`` when it ran."""
         ...
 
 class CdftConstraint:
@@ -1030,6 +1044,13 @@ class DftResult:
         """Analytic nuclear gradient (natoms x 3) if with_gradient=True, else None."""
         ...
 
+    @property
+    def cosx_final_pass(self) -> dict[str, float | int | bool] | None:
+        """The COSX final-grid pass: ``{"e_scf_grid", "e_final",
+        "npts_scf_grid", "npts_final_grid", "gradient_differentiates"}``, or
+        None when no pass ran. ``energy`` is ``e_final`` when it ran."""
+        ...
+
 class CcResult:
     """Result of a coupled-cluster calculation."""
 
@@ -1325,9 +1346,20 @@ def run_rhf(
     solvent: float | str | None = None,
     pcm_lebedev_order: int | None = None,
     stability_descent: bool | None = None,
+    cosx_grid: tuple[int, int] | tuple[int, int, str] | None = None,
+    cosx_final_pass: bool | None = None,
+    cosx_final_grid: tuple[int, int] | tuple[int, int, str] | None = None,
+    cosx_overlap_fit: bool | None = None,
 ) -> RhfResult:
     """Closed-shell Restricted Hartree-Fock.
 
+
+    cosx_grid / cosx_final_pass / cosx_final_grid / cosx_overlap_fit: COSX
+    knobs, read only with ``k_builder="cosx"`` (any of them with another
+    ``k_builder`` raises ValueError). A grid is ``(radial, angular)`` or
+    ``(radial, angular, prune)`` with prune ``"none"`` / ``"sgx"`` /
+    ``"nwchem"``. The default is the pruned sgx (35, 194) SCF grid plus one
+    final pass on the sgx (50, 302) grid.
     stability_descent: when True, check internal (singlet) stability and, at a
     saddle of the orbital Hessian, follow the downhill eigenvector and
     re-converge, keeping the lowest state. Default False.
@@ -1364,9 +1396,20 @@ def run_uhf(
     memory_budget_gb: float | None = None,
     guess: str | None = None,
     stability_descent: bool | None = None,
+    cosx_grid: tuple[int, int] | tuple[int, int, str] | None = None,
+    cosx_final_pass: bool | None = None,
+    cosx_final_grid: tuple[int, int] | tuple[int, int, str] | None = None,
+    cosx_overlap_fit: bool | None = None,
 ) -> UhfResult:
     """Unrestricted Hartree-Fock (open-shell).
 
+
+    cosx_grid / cosx_final_pass / cosx_final_grid / cosx_overlap_fit: COSX
+    knobs, read only with ``k_builder="cosx"`` (any of them with another
+    ``k_builder`` raises ValueError). A grid is ``(radial, angular)`` or
+    ``(radial, angular, prune)`` with prune ``"none"`` / ``"sgx"`` /
+    ``"nwchem"``. The default is the pruned sgx (35, 194) SCF grid plus one
+    final pass on the sgx (50, 302) grid.
     ``guess`` is ``"minao"`` (default; ``"sad"`` is an alias) or ``"hcore"``. ``stability_descent=True``
     checks internal stability and follows a downhill orbital-Hessian mode off a
     saddle (e.g. O2 triplet/STO-3G, whose default-guess solution is a saddle
@@ -1786,9 +1829,20 @@ def run_dft(
     grid_radial: int | None = None,
     grid_angular: int | None = None,
     grid_prune: str | None = None,
+    cosx_grid: tuple[int, int] | tuple[int, int, str] | None = None,
+    cosx_final_pass: bool | None = None,
+    cosx_final_grid: tuple[int, int] | tuple[int, int, str] | None = None,
+    cosx_overlap_fit: bool | None = None,
 ) -> DftResult:
     """Kohn-Sham DFT (closed-shell).
 
+
+    cosx_grid / cosx_final_pass / cosx_final_grid / cosx_overlap_fit: COSX
+    knobs, read only with ``k_builder="cosx"`` (any of them with another
+    ``k_builder`` raises ValueError). A grid is ``(radial, angular)`` or
+    ``(radial, angular, prune)`` with prune ``"none"`` / ``"sgx"`` /
+    ``"nwchem"``. The default is the pruned sgx (35, 194) SCF grid plus one
+    final pass on the sgx (50, 302) grid.
     `dispersion` adds a dispersion correction to the SCF energy (and, with
     `with_gradient=True`, its analytic gradient to the gradient):
     `"d3bj"` is D3(BJ) with the damping parameters published for
@@ -1822,6 +1876,14 @@ def dft_grid_point_count(
     grid_prune: str | None = None,
 ) -> int:
     """Number of points in the main XC grid `run_dft` builds with these kwargs."""
+    ...
+
+def cosx_grid_point_count(
+    mol: Molecule,
+    cosx_grid: tuple[int, int] | tuple[int, int, str] | None = None,
+) -> int:
+    """Number of points in the COSX exchange grid `cosx_grid` describes for
+    `mol` (None = the default COSX SCF grid), without building it."""
     ...
 
 def run_ksdft(
