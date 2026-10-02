@@ -2,7 +2,7 @@
 //!
 //! The correction is evaluated only on a Kohn-Sham SCF (`ksdft`, or
 //! `rhf`/`uhf`/`rohf` with `[dft] functional`): in the energy printout, and in
-//! the closed-shell optimizer. Every other route through the CLI reaches its
+//! the closed-shell optimizer and frequency driver. Every other route through the CLI reaches its
 //! result without ever reading the key. Accepting
 //! the config there does not produce a wrong number so much as a MISLABELLED
 //! one: the run prints an uncorrected energy from a file that asks for a
@@ -145,7 +145,7 @@ fn dispersion_is_refused_for_a_non_ksdft_method() {
 }
 
 #[test]
-fn dispersion_works_for_optimize_and_is_refused_for_frequencies() {
+fn dispersion_works_for_optimize_and_frequencies() {
     // `optimize` USED TO BE REFUSED, because the D3(BJ) nuclear gradient did
     // not exist. It does now, and it is threaded through
     // `optimize_geometry_with_correction`, so the energy and the gradient
@@ -163,22 +163,52 @@ fn dispersion_works_for_optimize_and_is_refused_for_frequencies() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    // `frequencies` is STILL refused, and the refusal is narrower than it was:
-    // the gradient exists, but the finite-difference Hessian built from it has
-    // never been validated against anything. Refusing an unvalidated number is
-    // the point -- it would be 6N extra SCF+D3 evaluations producing a Hessian
-    // nobody has checked.
+    // `frequencies` differentiates the CORRECTED gradient
+    // (`harmonic_frequencies_with_scf_correction`; the Hessian itself is
+    // validated in `dispersion_frequencies.rs`). The printout must carry the
+    // correction, so a run that silently dropped it would fail here.
     let freq = run_toml("freq", &body("ksdft", "frequencies", true));
-    let err = String::from_utf8_lossy(&freq.stderr);
+    let stdout = String::from_utf8_lossy(&freq.stdout);
     assert!(
-        !freq.status.success(),
-        "task=frequencies with dispersion must still FAIL.\nstdout: {}",
-        String::from_utf8_lossy(&freq.stdout)
+        freq.status.success(),
+        "task=frequencies with dispersion must SUCCEED.\nstderr: {}",
+        String::from_utf8_lossy(&freq.stderr)
     );
     assert!(
-        err.contains("frequencies") && err.contains("validated"),
-        "the error must name the task AND say why it is refused (the Hessian \
-         is unvalidated, not that the gradient is missing), got: {err}"
+        stdout.contains("E(D3BJ)") && stdout.contains("KS-DFT + D3(BJ)"),
+        "the frequency printout must report the dispersion it applied, got:\n{stdout}"
+    );
+}
+
+/// Open-shell (UKS/ROKS) frequencies are refused WITH dispersion -- the
+/// correction is threaded only through the closed-shell frequency driver --
+/// and run WITHOUT it, which pins that the key is what refuses them.
+#[test]
+fn open_shell_frequencies_refuse_dispersion() {
+    let triplet = |disp: bool| {
+        body("uhf", "frequencies", disp).replacen(
+            "xyz = \"testdata/molecules/h2.xyz\"\n",
+            "xyz = \"testdata/molecules/h2.xyz\"\nmultiplicity = 3\n",
+            1,
+        ) + "functional = \"PBE\"\n"
+    };
+    let out = run_toml("freq_uks", &triplet(true));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "UKS frequencies with dispersion must FAIL.\nstdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(
+        err.contains("frequencies") && err.contains("open-shell"),
+        "the error must name the task and the open-shell reference, got: {err}"
+    );
+    let ok = run_toml("freq_uks_nodisp", &triplet(false));
+    assert!(
+        ok.status.success(),
+        "UKS frequencies WITHOUT dispersion must run; otherwise the refusal \
+         above proves nothing.\nstderr: {}",
+        String::from_utf8_lossy(&ok.stderr)
     );
 }
 
@@ -204,6 +234,7 @@ fn the_supported_combination_still_runs_and_the_key_is_what_refuses() {
     for (tag, kind, task) in [
         ("rhf_nodisp", "rhf", "energy"),
         ("opt_nodisp", "ksdft", "optimize"),
+        ("freq_nodisp", "ksdft", "frequencies"),
     ] {
         let out = run_toml(tag, &body(kind, task, false));
         assert!(

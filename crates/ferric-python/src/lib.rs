@@ -2712,9 +2712,15 @@ struct PyFrequencyResult {
     /// the Hessian.
     #[pyo3(get)]
     hessian_source: String,
-    /// Electronic energy at the undisplaced geometry.
+    /// Electronic energy at the undisplaced geometry. With `dispersion=` it is
+    /// the CORRECTED total, KS + dispersion.
     #[pyo3(get)]
     energy: f64,
+    /// The dispersion energy at the undisplaced geometry (Hartree), already
+    /// included in `energy`. `None` when `dispersion=` was not given (not
+    /// evaluated), never 0.0.
+    #[pyo3(get)]
+    e_dispersion: Option<f64>,
     /// Normal-mode displacement vectors in CARTESIAN coordinates: one row per
     /// entry of `frequencies`, `3N` values each, ordered `[x0,y0,z0,x1,...]`
     /// to match `Molecule.symbols()`. These are the mass-weighted eigenvectors
@@ -2768,10 +2774,20 @@ impl PyFrequencyResult {
 /// a real accuracy knob that degrades silently -- too large adds truncation
 /// error, too small amplifies SCF noise. Check `.asymmetry` rather than
 /// assuming.
+///
+/// `dispersion`: the same strict spellings as `run_dft` ("d3bj", "d3(bj)",
+/// "d3bj(<functional>)", "mbd", "mbd(<functional>)"). Requires `xc` and the
+/// closed-shell reference ("rhf"); open-shell references raise. The Hessian is
+/// then the central difference of the corrected analytic gradient
+/// (KS + dispersion), each from the SCF converged at that displaced geometry,
+/// so `hessian="analytic"` raises and "auto" runs finite differences. MBD@rsSCS
+/// enters through its exact gradient, including the orbital relaxation of its
+/// Hirshfeld volumes. `.energy` is then the corrected total and
+/// `.e_dispersion` the dispersion part.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_name, reference=None, xc=None, delta=None, multiplicity=None,
-    point_charges=None, external_field=None, hessian="auto",
+    point_charges=None, external_field=None, hessian="auto", dispersion=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_frequencies(
@@ -2784,10 +2800,9 @@ fn run_frequencies(
     point_charges: Option<Vec<(f64, f64, f64, f64)>>,
     external_field: Option<(f64, f64, f64)>,
     hessian: &str,
+    dispersion: Option<&str>,
 ) -> PyResult<PyFrequencyResult> {
-    use ferric_scf::frequencies::{
-        harmonic_frequencies, FrequencyConfig, FrequencyReference, HessianMethod,
-    };
+    use ferric_scf::frequencies::{FrequencyConfig, FrequencyReference, HessianMethod};
 
     // Strict, like the CLI: an unrecognized reference must ERROR rather than
     // silently running RHF and handing back frequencies for the wrong system.
@@ -2833,9 +2848,8 @@ fn run_frequencies(
         fcfg.delta = d;
     }
 
-    let ctx = ParallelContext::default();
-    let r = harmonic_frequencies(&ctx, &m, basis_name, Operator::coulomb(), &scf_cfg, &fcfg)
-        .map_err(make_err)?;
+    let (r, e_dispersion) =
+        frequencies_with_dispersion(&m, basis_name, &scf_cfg, &fcfg, dispersion, xc)?;
     Ok(PyFrequencyResult {
         frequencies: r.frequencies,
         trans_rot_frequencies: r.trans_rot_frequencies,
@@ -2844,6 +2858,7 @@ fn run_frequencies(
         n_gradient_evaluations: r.n_gradient_evaluations,
         hessian_source: r.hessian_source.label().to_string(),
         energy: r.energy,
+        e_dispersion,
         // Array2 -> Vec<Vec<f64>>, one row per mode. `.rows()` preserves the
         // (mode, 3N) layout the Rust field documents; collecting from the flat
         // slice would silently transpose whenever the array is not square.
@@ -2854,6 +2869,107 @@ fn run_frequencies(
             .map(|row| row.to_vec())
             .collect(),
     })
+}
+
+/// `run_frequencies(dispersion=...)`, resolved BEFORE any SCF with
+/// `run_dft`'s strict parser. The parameters are fitted per functional, so
+/// there is no dispersion without `xc`; the correction is threaded through the
+/// closed-shell driver only; MBD@rsSCS needs its exact (Z-vector) gradient.
+fn resolve_frequency_dispersion(
+    dispersion: Option<&str>,
+    xc: Option<&str>,
+    reference: ferric_scf::frequencies::FrequencyReference,
+    scf_cfg: &RhfConfig,
+) -> PyResult<Option<DispersionSpec>> {
+    let Some(spec) = dispersion else {
+        return Ok(None);
+    };
+    let xc_name = xc.ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err(
+            "dispersion= requires xc=: D3(BJ) and MBD@rsSCS parameters are fitted per \
+             functional, so there is no dispersion correction for Hartree-Fock",
+        )
+    })?;
+    if reference != ferric_scf::frequencies::FrequencyReference::Rhf {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "dispersion= is supported only with the closed-shell reference (\"rhf\" + xc, \
+             i.e. RKS): the dispersion gradient is threaded through the closed-shell \
+             frequency driver only",
+        ));
+    }
+    let spec = resolve_dispersion(spec, xc_name)?;
+    if matches!(spec, DispersionSpec::Mbd(_)) {
+        if let Some(why) = ferric_scf::zvector_ks::unsupported_reason(scf_cfg) {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "dispersion=\"mbd\": the exact MBD@rsSCS gradient is not available: {why}"
+            )));
+        }
+    }
+    Ok(Some(spec))
+}
+
+/// Harmonic frequencies, plain or (with `dispersion`) on the KS + dispersion
+/// surface, with the dispersion energy at the input geometry (`None` without
+/// `dispersion`). See [`resolve_frequency_dispersion`] for what is refused.
+fn frequencies_with_dispersion(
+    mol: &ferric_core::mol::Molecule,
+    basis_name: &str,
+    scf_cfg: &RhfConfig,
+    fcfg: &ferric_scf::frequencies::FrequencyConfig,
+    dispersion: Option<&str>,
+    xc: Option<&str>,
+) -> PyResult<(ferric_scf::frequencies::FrequencyResult, Option<f64>)> {
+    let spec = resolve_frequency_dispersion(dispersion, xc, fcfg.reference, scf_cfg)?;
+    let ctx = ParallelContext::default();
+    let r = match &spec {
+        None => ferric_scf::frequencies::harmonic_frequencies(
+            &ctx,
+            mol,
+            basis_name,
+            Operator::coulomb(),
+            scf_cfg,
+            fcfg,
+        ),
+        Some(spec) => dispersion_frequencies(&ctx, mol, basis_name, scf_cfg, fcfg, spec),
+    }
+    .map_err(make_err)?;
+    let e_dispersion = spec.map(|_| r.correction_energy);
+    Ok((r, e_dispersion))
+}
+
+/// Harmonic frequencies on the KS + `spec` surface: central differences of
+/// the corrected analytic gradient, each from the SCF converged at that
+/// displaced geometry.
+fn dispersion_frequencies(
+    ctx: &ParallelContext,
+    mol: &ferric_core::mol::Molecule,
+    basis_name: &str,
+    scf_cfg: &RhfConfig,
+    fcfg: &ferric_scf::frequencies::FrequencyConfig,
+    spec: &DispersionSpec,
+) -> Result<ferric_scf::frequencies::FrequencyResult, ferric_core::FerricError> {
+    let op = Operator::coulomb();
+    let bs = ferric_core::basis::bundled(basis_name)?;
+    // MBD@rsSCS free-atom references are per element: built once, not at each
+    // of the 6N + 1 geometries.
+    let cache = match spec {
+        DispersionSpec::Mbd(_) => Some(ferric_rpa::dispersion::mbd_scf::MbdFreeAtomCache::build(
+            ctx, mol, &bs, op, scf_cfg,
+        )?),
+        DispersionSpec::D3Bj(_) => None,
+    };
+    ferric_scf::frequencies::harmonic_frequencies_with_scf_correction(
+        ctx,
+        mol,
+        basis_name,
+        op,
+        scf_cfg,
+        fcfg,
+        |m, scf| {
+            let d = evaluate_dispersion(spec, ctx, m, &bs, op, scf_cfg, scf, true, cache.as_ref())?;
+            Ok((d.energy, d.gradient))
+        },
+    )
 }
 
 // ── Conformer ensembles (Boltzmann-weighted property averaging) ──
@@ -5985,6 +6101,7 @@ fn run_dft(
                         &cfg,
                         scf_ref,
                         with_gradient,
+                        None,
                     )
                 })
                 .map_err(make_err)?,
@@ -6153,6 +6270,8 @@ struct DispersionEval {
 /// takes its Hirshfeld volumes from its density; D3(BJ) does not use it).
 /// With `want_gradient` the analytic gradient is returned too; for MBD@rsSCS
 /// it is exact, including the orbital relaxation of the volumes (Z-vector).
+/// `mbd_cache` reuses MBD@rsSCS free-atom references built once by a caller
+/// that evaluates many geometries; `None` builds them here.
 #[allow(clippy::too_many_arguments)]
 fn evaluate_dispersion(
     spec: &DispersionSpec,
@@ -6163,6 +6282,7 @@ fn evaluate_dispersion(
     cfg: &RhfConfig,
     scf: &ScfResult,
     want_gradient: bool,
+    mbd_cache: Option<&ferric_rpa::dispersion::mbd_scf::MbdFreeAtomCache>,
 ) -> Result<DispersionEval, ferric_core::FerricError> {
     match spec {
         DispersionSpec::D3Bj(functional) => {
@@ -6193,11 +6313,18 @@ fn evaluate_dispersion(
                 mbd_rsscs_for_density, mbd_rsscs_for_scf, MbdFreeAtomCache,
             };
             let mcfg = MbdRsscsConfig::for_functional(functional)?;
-            let cache = MbdFreeAtomCache::build(ctx, mol, bs, op, cfg)?;
+            let built;
+            let cache = match mbd_cache {
+                Some(c) => c,
+                None => {
+                    built = MbdFreeAtomCache::build(ctx, mol, bs, op, cfg)?;
+                    &built
+                }
+            };
             let r = if want_gradient {
-                mbd_rsscs_for_scf(ctx, &cache, mol, bs, op, cfg, scf, &mcfg)?
+                mbd_rsscs_for_scf(ctx, cache, mol, bs, op, cfg, scf, &mcfg)?
             } else {
-                mbd_rsscs_for_density(&cache, mol, bs, scf.density_total(), &mcfg, false)?
+                mbd_rsscs_for_density(cache, mol, bs, scf.density_total(), &mcfg, false)?
             };
             Ok(DispersionEval {
                 model: "MBD@rsSCS",

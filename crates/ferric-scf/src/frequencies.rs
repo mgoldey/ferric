@@ -25,6 +25,12 @@
 //! the general one. ROHF has no analytic Hessian (nor does PySCF) and always
 //! uses finite differences.
 //!
+//! [`harmonic_frequencies_with_scf_correction`](crate::frequencies::harmonic_frequencies_with_scf_correction)
+//! is the closed-shell finite-difference path on the surface `E_SCF + E_corr`
+//! for a correction (dispersion) evaluated from the converged SCF at every
+//! displaced geometry; it never uses the analytic Hessian, so the SCF and the
+//! correction parts of its Hessian come from one construction.
+//!
 //! **Analytic gradients only.** There is deliberately no finite-difference-of-
 //! finite-difference fallback. A method without an analytic gradient produces a
 //! clean typed error naming the method rather than a silently noisy number.
@@ -99,6 +105,7 @@ use ndarray::{Array1, Array2};
 
 use crate::gradient::rohf_gradient;
 use crate::ks_gradient::ks_gradient_roks;
+use crate::result::ScfResult;
 use crate::rhf::{solve_rhf, RhfConfig};
 use crate::rohf::solve_rohf;
 use crate::screening::SchwarzBounds;
@@ -259,8 +266,14 @@ pub struct FrequencyResult {
     pub n_gradient_evaluations: usize,
     /// Which construction produced the Hessian.
     pub hessian_source: HessianSource,
-    /// Electronic energy at the *undisplaced* input geometry.
+    /// Electronic energy at the *undisplaced* input geometry. From
+    /// [`harmonic_frequencies_with_scf_correction`] this INCLUDES the
+    /// correction ([`Self::correction_energy`]).
     pub energy: f64,
+    /// The energy correction (e.g. dispersion) at the undisplaced geometry,
+    /// Hartree, already included in [`Self::energy`]. Zero from every entry
+    /// point except [`harmonic_frequencies_with_scf_correction`].
+    pub correction_energy: f64,
 }
 
 impl FrequencyResult {
@@ -327,17 +340,140 @@ pub fn harmonic_frequencies(
     // Fail fast on a missing mass before spending 6N SCF evaluations.
     let masses = atom_masses(mol)?;
 
-    let n_coord = 3 * natoms;
-
     // Energy at the undisplaced geometry, and an early check that the method
     // combination actually produces a gradient at all.
     let (energy, _) =
         energy_and_gradient(ctx, mol, basis_name, op, scf_config, freq_config.reference)?;
 
+    fd_hessian_frequencies(mol, &masses, freq_config.delta, energy, |m| {
+        energy_and_gradient(ctx, m, basis_name, op, scf_config, freq_config.reference)
+            .map(|(_, g)| g)
+    })
+}
+
+/// Harmonic frequencies on the surface `E_SCF + E_corr`, where the correction
+/// is evaluated from the CONVERGED closed-shell SCF at every geometry.
+///
+/// The frequency counterpart of
+/// [`crate::optimize::optimize_geometry_with_scf_correction`], with the same
+/// closure contract: `correction(mol, scf)` returns `(E_corr, Some(dE_corr/dR))`
+/// at `mol`, given the SCF that converged there, or `(0.0, None)` for no
+/// correction. It is how a dispersion model (D3(BJ), MBD@rsSCS) reaches the
+/// Hessian without `ferric-scf` depending on any dispersion crate.
+///
+/// The Hessian is ALWAYS the central difference of the corrected analytic
+/// gradient `g_SCF + g_corr`, both evaluated at each displaced geometry from
+/// that geometry's own SCF. A correction that depends on the density (MBD@rsSCS
+/// through its Hirshfeld volumes) is therefore differentiated on exactly the
+/// surface its gradient describes, as long as that gradient is exact — this
+/// function cannot check that, and a gradient missing its orbital-relaxation
+/// term would give a Hessian of a different surface.
+///
+/// Refused, each with a typed error and before any SCF:
+/// * an open-shell reference (`freq_config.reference` other than
+///   [`FrequencyReference::Rhf`]) — the closure takes a closed-shell
+///   [`ScfResult`], as in the optimizer;
+/// * `freq_config.hessian` = [`HessianMethod::Analytic`] — the analytic SCF
+///   Hessian has no correction term, and adding a finite-difference correction
+///   Hessian to it would mix two constructions on one surface. `Auto` runs
+///   finite differences here.
+///
+/// The correction is called first at the undisplaced geometry, then at the
+/// `+delta` and `-delta` displacement of each Cartesian coordinate in order
+/// (atom-major, x/y/z). [`FrequencyResult::energy`] is the CORRECTED energy at
+/// the undisplaced geometry and [`FrequencyResult::correction_energy`] the
+/// correction part of it. With a closure that always returns `(0.0, None)`
+/// the result is bit-identical to [`harmonic_frequencies`] run with
+/// [`HessianMethod::FiniteDifference`].
+pub fn harmonic_frequencies_with_scf_correction(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    basis_name: &str,
+    op: Operator,
+    scf_config: &RhfConfig,
+    freq_config: &FrequencyConfig,
+    mut correction: impl FnMut(&Molecule, &ScfResult) -> Result<(f64, Option<Array2<f64>>), FerricError>,
+) -> Result<FrequencyResult, FerricError> {
+    let natoms = mol.atoms.len();
+    if natoms < 2 {
+        return Err(FerricError::General(format!(
+            "harmonic frequencies require at least 2 atoms, got {natoms}"
+        )));
+    }
+    if freq_config.reference != FrequencyReference::Rhf {
+        return Err(FerricError::General(format!(
+            "harmonic frequencies with an SCF energy correction support only a closed-shell \
+             RHF/RKS reference, got {}: the correction is evaluated from a closed-shell SCF \
+             result, as in the geometry optimizer",
+            freq_config.reference.label()
+        )));
+    }
+    if freq_config.hessian == HessianMethod::Analytic {
+        return Err(FerricError::General(
+            "harmonic frequencies with an SCF energy correction: hessian = \"analytic\" is \
+             not available. The analytic SCF Hessian has no correction term, and adding a \
+             finite-difference correction Hessian to it would mix two constructions; use \
+             \"auto\" or \"fd\" (central differences of the corrected analytic gradient)."
+                .to_string(),
+        ));
+    }
+    if !(freq_config.delta.is_finite() && freq_config.delta > 0.0) {
+        return Err(FerricError::General(format!(
+            "frequency displacement delta must be finite and positive, got {}",
+            freq_config.delta
+        )));
+    }
+    let masses = atom_masses(mol)?;
+
+    let mut corrected = |m: &Molecule| -> Result<(f64, f64, Array2<f64>), FerricError> {
+        let (e, mut g, scf) = rhf_energy_gradient_and_result(ctx, m, basis_name, op, scf_config)?;
+        let (de, dg) = correction(m, &scf)?;
+        if de != 0.0 || dg.is_some() {
+            let dg = dg.ok_or_else(|| {
+                FerricError::General(
+                    "harmonic frequencies: the energy correction returned a value but no \
+                     gradient, so the Hessian would be that of the UNCORRECTED surface while \
+                     the energy is reported corrected"
+                        .to_string(),
+                )
+            })?;
+            if dg.shape() != g.shape() {
+                return Err(FerricError::General(format!(
+                    "harmonic frequencies: correction gradient is {:?} but the SCF gradient \
+                     is {:?}",
+                    dg.shape(),
+                    g.shape()
+                )));
+            }
+            g = g + dg;
+        }
+        Ok((e + de, de, g))
+    };
+
+    let (energy, correction_energy, _) = corrected(mol)?;
+    let mut res = fd_hessian_frequencies(mol, &masses, freq_config.delta, energy, |m| {
+        corrected(m).map(|(_, _, g)| g)
+    })?;
+    res.correction_energy = correction_energy;
+    Ok(res)
+}
+
+/// Steps 1-5 of the finite-difference pipeline: central-difference
+/// `gradient_at` over every Cartesian coordinate, symmetrize (recording the
+/// asymmetry), and hand the Hessian to [`frequencies_from_cartesian_hessian`].
+/// `energy` is the already-computed energy at the undisplaced geometry.
+fn fd_hessian_frequencies(
+    mol: &Molecule,
+    masses: &[f64],
+    delta: f64,
+    energy: f64,
+    mut gradient_at: impl FnMut(&Molecule) -> Result<Array2<f64>, FerricError>,
+) -> Result<FrequencyResult, FerricError> {
+    let n_coord = 3 * mol.atoms.len();
+
     // --- Step 1: central-difference the analytic gradient -----------------
     // Column b of the Hessian is d(g)/d(x_b), so we displace coordinate b and
     // collect the whole 3N-vector gradient at each of the two displacements.
-    let delta = freq_config.delta;
     let mut hess = Array2::<f64>::zeros((n_coord, n_coord));
     let mut n_evals = 0usize;
 
@@ -350,22 +486,8 @@ pub fn harmonic_frequencies(
         displace(&mut mol_p, atom, coord, delta);
         displace(&mut mol_m, atom, coord, -delta);
 
-        let (_, g_p) = energy_and_gradient(
-            ctx,
-            &mol_p,
-            basis_name,
-            op,
-            scf_config,
-            freq_config.reference,
-        )?;
-        let (_, g_m) = energy_and_gradient(
-            ctx,
-            &mol_m,
-            basis_name,
-            op,
-            scf_config,
-            freq_config.reference,
-        )?;
+        let g_p = gradient_at(&mol_p)?;
+        let g_m = gradient_at(&mol_m)?;
         n_evals += 2;
 
         for a in 0..n_coord {
@@ -392,7 +514,7 @@ pub fn harmonic_frequencies(
     };
 
     // --- Steps 3-5 --------------------------------------------------------
-    let mut result = frequencies_from_cartesian_hessian(mol, &cartesian_hessian, &masses)?;
+    let mut result = frequencies_from_cartesian_hessian(mol, &cartesian_hessian, masses)?;
     result.asymmetry = asymmetry;
     result.n_gradient_evaluations = n_evals;
     result.energy = energy;
@@ -665,6 +787,7 @@ pub fn frequencies_from_cartesian_hessian(
         n_gradient_evaluations: 0,
         hessian_source: HessianSource::FiniteDifference,
         energy: 0.0,
+        correction_energy: 0.0,
     })
 }
 
@@ -818,6 +941,30 @@ fn displace(mol: &mut Molecule, atom: usize, coord: usize, d: f64) {
 /// named error for a combination it cannot handle, and frequencies inherit it.
 /// This hook is kept so a future gradient-less method has an obvious place to
 /// declare itself rather than silently producing a noisy Hessian.
+/// One closed-shell SCF + its analytic gradient at a geometry, keeping the
+/// converged [`ScfResult`] (the correction closure of
+/// [`harmonic_frequencies_with_scf_correction`] needs it).
+fn rhf_energy_gradient_and_result(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    basis_name: &str,
+    op: Operator,
+    config: &RhfConfig,
+) -> Result<(f64, Array2<f64>, ScfResult), FerricError> {
+    let bs = ferric_core::basis::bundled(basis_name)?;
+    let prep = PreparedBasis::new(mol, &bs)?;
+    let bounds = SchwarzBounds::compute(op, &prep)?;
+    // Differentiates the exchange the SCF actually built: exactly
+    // `ks_gradient_closed` / `rhf_gradient` unless `k_builder = "cosx"` is in
+    // effect (then the COSX derivative, or a refusal before the SCF where no
+    // COSX gradient exists).
+    crate::gradient::preflight_cosx_restricted(config)?;
+    let res = solve_rhf(ctx, mol, &prep, op, &bounds, config)?;
+    let grad =
+        crate::gradient::restricted_scf_gradient(mol, &prep, &bs, op, &bounds, config, &res)?;
+    Ok((res.energy, grad, res))
+}
+
 /// One SCF + analytic gradient at a geometry, dispatched on the reference.
 fn energy_and_gradient(
     ctx: &ParallelContext,
@@ -827,10 +974,13 @@ fn energy_and_gradient(
     config: &RhfConfig,
     reference: FrequencyReference,
 ) -> Result<(f64, Array2<f64>), FerricError> {
-    let bs = ferric_core::basis::bundled(basis_name)?;
-    let prep = PreparedBasis::new(mol, &bs)?;
-    let bounds = SchwarzBounds::compute(op, &prep)?;
     let ext = config.external_potential.as_ref();
+    let prepared = || -> Result<_, FerricError> {
+        let bs = ferric_core::basis::bundled(basis_name)?;
+        let prep = PreparedBasis::new(mol, &bs)?;
+        let bounds = SchwarzBounds::compute(op, &prep)?;
+        Ok((bs, prep, bounds))
+    };
 
     match reference {
         // Each arm differentiates the exchange the SCF actually built: exactly
@@ -838,14 +988,11 @@ fn energy_and_gradient(
         // `k_builder = "cosx"` is in effect (then the COSX derivative, or a
         // refusal before the SCF where no COSX gradient exists).
         FrequencyReference::Rhf => {
-            crate::gradient::preflight_cosx_restricted(config)?;
-            let res = solve_rhf(ctx, mol, &prep, op, &bounds, config)?;
-            let grad = crate::gradient::restricted_scf_gradient(
-                mol, &prep, &bs, op, &bounds, config, &res,
-            )?;
-            Ok((res.energy, grad))
+            let (e, grad, _) = rhf_energy_gradient_and_result(ctx, mol, basis_name, op, config)?;
+            Ok((e, grad))
         }
         FrequencyReference::Uhf => {
+            let (bs, prep, bounds) = prepared()?;
             crate::gradient::preflight_cosx_unrestricted(config)?;
             let res = solve_uhf(ctx, mol, &prep, &bounds, config)?;
             let grad = crate::gradient::unrestricted_scf_gradient(
@@ -854,6 +1001,7 @@ fn energy_and_gradient(
             Ok((res.energy, grad))
         }
         FrequencyReference::Rohf => {
+            let (bs, prep, bounds) = prepared()?;
             crate::gradient::refuse_cosx_restricted_open(config)?;
             let res = solve_rohf(ctx, mol, &prep, op, &bounds, config)?;
             let grad = if let Some(xc_name) = config.xc.as_deref() {

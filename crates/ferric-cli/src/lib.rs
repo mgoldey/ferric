@@ -363,33 +363,14 @@ pub fn run(args: Vec<String>) {
         eprintln!("error: unsupported method.task = \"{task}\"; expected energy, optimize, or frequencies");
         std::process::exit(1);
     }
-    // [dft] dispersion — same task guard as grid_prune below, for the same
-    // reason. The correction is applied inside `run_ksdft`, which only the
-    // "energy" task reaches: `optimize` and `frequencies` return above. A
-    // configured correction would therefore be silently DROPPED unless the task
-    // path applies it itself, and the run would report a plain KS-DFT geometry
-    // or Hessian as though it were dispersion-corrected.
-    // `optimize` IS supported: the D3(BJ) and MBD@rsSCS analytic gradients are
-    // implemented and threaded through `optimize_geometry_with_scf_correction`,
-    // so the energy and the gradient describe the same surface (MBD@rsSCS
-    // includes the Z-vector orbital relaxation of its Hirshfeld volumes).
-    //
-    // `frequencies` is NOT, and that is a real gap rather than an oversight: a
-    // Hessian needs the SECOND derivative, which does not exist here. The
-    // frequency driver finite-differences the analytic gradient, so it WOULD
-    // silently produce a dispersion-corrected Hessian if allowed through --
-    // correct in principle, but 6N extra SCF+dispersion evaluations whose
-    // accuracy has never been checked against anything. Refused until it is measured.
-    if cfg.dft.dispersion.is_some() && task == "frequencies" {
-        eprintln!(
-            "error: [dft] dispersion is not yet supported with method.task = \
-             \"frequencies\". The dispersion analytic GRADIENT exists (D3(BJ) and \
-             MBD@rsSCS, so task = \"optimize\" works), but the finite-difference \
-             Hessian built from it has not been validated. Use task = \"energy\" or \
-             \"optimize\"."
-        );
-        std::process::exit(1);
-    }
+    // [dft] dispersion on `optimize` / `frequencies`: the correction is
+    // applied inside `run_ksdft`, which only the "energy" task reaches, so each
+    // of those tasks applies it itself. Both thread the analytic D3(BJ) or
+    // MBD@rsSCS gradient through a closure that sees the converged SCF at every
+    // geometry (`optimize_geometry_with_scf_correction`,
+    // `harmonic_frequencies_with_scf_correction`), so the energy, the gradient
+    // and the finite-difference Hessian all describe one surface. Open-shell
+    // references are refused per task (`refuse_open_shell_dispersion_gradient`).
     // ...and the same for the METHOD, which the task guard above does not
     // cover. The correction is evaluated only where a Kohn-Sham SCF result is
     // printed (`print_scf_energy`), so a plain `rhf` energy run passes the
@@ -1365,6 +1346,130 @@ fn dispersion_correction(
     }))
 }
 
+/// A `[dft] dispersion` model resolved ONCE for a task that needs its energy
+/// AND gradient at many geometries (`optimize`, `frequencies`).
+///
+/// The energy and the gradient come from the SAME resolved parameters, which
+/// is the property that makes optimizing on (or differentiating) this surface
+/// meaningful -- a mismatched pair describes no surface at all.
+enum DispersionGradientModel {
+    /// D3(BJ) with `functional`'s damping parameters (geometry only).
+    D3Bj {
+        functional: String,
+        params: ferric_d3::D3Params,
+    },
+    /// MBD@rsSCS: the free-atom references are per element, so they are built
+    /// once here, not at every geometry.
+    Mbd {
+        functional: String,
+        cache: ferric_rpa::dispersion::mbd_scf::MbdFreeAtomCache,
+        mcfg: ferric_rpa::dispersion::mbd_rsscs::MbdRsscsConfig,
+    },
+}
+
+impl DispersionGradientModel {
+    /// The correction and its exact analytic nuclear gradient (natoms, 3) at
+    /// `mol`, given the SCF converged there. For MBD@rsSCS the gradient
+    /// includes the orbital relaxation of the Hirshfeld volumes (Z-vector).
+    fn evaluate(
+        &self,
+        ctx: &ParallelContext,
+        mol: &Molecule,
+        bs: &BasisSet,
+        op: Operator,
+        rhf_config: &RhfConfig,
+        scf: &ferric_scf::result::ScfResult,
+    ) -> Result<(DispersionCorrection, ndarray::Array2<f64>), ferric_core::FerricError> {
+        match self {
+            DispersionGradientModel::D3Bj { functional, params } => {
+                let e = ferric_d3::d3bj_energy_for_molecule(mol, params)?;
+                let g = ferric_d3::d3bj_gradient_for_molecule(mol, params)?;
+                let mut arr = ndarray::Array2::<f64>::zeros((g.len(), 3));
+                for (k, row) in g.iter().enumerate() {
+                    for a in 0..3 {
+                        arr[[k, a]] = row[a];
+                    }
+                }
+                let c = DispersionCorrection {
+                    model: "D3(BJ)",
+                    params: functional.clone(),
+                    energy: e,
+                    mbd: None,
+                };
+                Ok((c, arr))
+            }
+            DispersionGradientModel::Mbd {
+                functional,
+                cache,
+                mcfg,
+            } => {
+                let r = ferric_rpa::dispersion::mbd_scf::mbd_rsscs_for_scf(
+                    ctx, cache, mol, bs, op, rhf_config, scf, mcfg,
+                )?;
+                let g = r.gradient.ok_or_else(|| {
+                    ferric_core::FerricError::General(
+                        "MBD@rsSCS returned no gradient although one was requested".to_string(),
+                    )
+                })?;
+                let c = DispersionCorrection {
+                    model: "MBD@rsSCS",
+                    params: functional.clone(),
+                    energy: r.energy,
+                    mbd: Some((mcfg.beta, r.volume_ratios)),
+                };
+                Ok((c, g))
+            }
+        }
+    }
+}
+
+/// The `[dft] dispersion` model for a gradient-consuming `task`, if the key is
+/// set. Every failure EXITS before any molecular SCF: an unknown functional,
+/// or (MBD@rsSCS) a configuration whose exact gradient is unavailable, which
+/// would otherwise fail after the first SCF.
+fn dispersion_gradient_model(
+    cfg: &Config,
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    bs: &BasisSet,
+    op: Operator,
+    rhf_config: &RhfConfig,
+    task: &str,
+) -> Option<DispersionGradientModel> {
+    match dispersion_request(cfg)? {
+        crate::config::DispersionRequest::D3Bj { functional } => {
+            let params = ferric_d3::d3bj_params_for_functional(&functional).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+            Some(DispersionGradientModel::D3Bj { functional, params })
+        }
+        crate::config::DispersionRequest::Mbd { functional } => {
+            let mcfg =
+                ferric_rpa::dispersion::mbd_rsscs::MbdRsscsConfig::for_functional(&functional)
+                    .unwrap_or_else(|e| {
+                        eprintln!("error: {e}");
+                        std::process::exit(1);
+                    });
+            // The gradient's orbital-relaxation (Z-vector) term must be
+            // available, or the run would fail after the first SCF.
+            if let Some(r) = ferric_scf::zvector_ks::unsupported_reason(rhf_config) {
+                eprintln!(
+                    "error: [dft] dispersion = \"mbd\" with method.task = \"{task}\": \
+                     the exact MBD@rsSCS gradient is not available: {r}"
+                );
+                std::process::exit(1);
+            }
+            let cache = mbd_free_atom_cache(ctx, mol, bs, op, rhf_config);
+            Some(DispersionGradientModel::Mbd {
+                functional,
+                cache,
+                mcfg,
+            })
+        }
+    }
+}
+
 /// The per-element free-atom data (Hirshfeld proatoms and live-SCF free-atom
 /// volumes) MBD@rsSCS needs, built once per run. Its free-atom SCFs are
 /// internal sub-solves, logged as such rather than as the run's SCF.
@@ -1396,10 +1501,11 @@ fn print_scf_energy(energy: f64, dispersion: Option<&DispersionCorrection>) {
     }
 }
 
-/// Open-shell (UKS/ROKS) energy runs return before `run()`'s terminal
-/// `run_end` record, so a dispersion correction is logged as its own
-/// `dispersion` record: the SCF energy, the corrected total, and the model.
-fn log_open_shell_dispersion(scf_energy: f64, dispersion: Option<&DispersionCorrection>) {
+/// Runs that return before `run()`'s terminal `run_end` record (open-shell
+/// UKS/ROKS energies, `task = "frequencies"`) log a dispersion correction as
+/// its own `dispersion` record: the SCF energy, the corrected total, and the
+/// model, at the run's input geometry.
+fn log_scf_dispersion(scf_energy: f64, dispersion: Option<&DispersionCorrection>) {
     if let (Some(d), Some(rl)) = (dispersion, ferric_scf::runlog::log()) {
         rl.note(
             "dispersion",
@@ -5208,7 +5314,7 @@ fn run_uhf(
     let dispersion =
         dispersion_correction(cfg, ctx, mol, bs, op, rhf_config, result.density_total());
     print_scf_energy(result.energy, dispersion.as_ref());
-    log_open_shell_dispersion(result.energy, dispersion.as_ref());
+    log_scf_dispersion(result.energy, dispersion.as_ref());
     println!("  <S^2>      = {:.6} (ideal {:.6})", s2, s_ideal);
     // task == "optimize" is handled by the top-level dispatch above
     // (optimize_geometry_uhf), which returns before reaching here.
@@ -5254,7 +5360,7 @@ fn run_rohf(
     let dispersion =
         dispersion_correction(cfg, ctx, mol, bs, op, rhf_config, result.density_total());
     print_scf_energy(result.energy, dispersion.as_ref());
-    log_open_shell_dispersion(result.energy, dispersion.as_ref());
+    log_scf_dispersion(result.energy, dispersion.as_ref());
     println!("  <S^2>      = {:.6} (exact by construction)", s_ideal);
     // task == "optimize" is handled by the top-level dispatch above
     // (optimize_geometry_rohf), which returns before reaching here.
@@ -5266,6 +5372,12 @@ fn run_rohf(
 /// translations/rotations projected out. The reference is chosen from
 /// `method.kind` the same way `run_optimize` does; `[dft] xc` promotes RHF/UHF/
 /// ROHF to the corresponding KS variant automatically.
+///
+/// With `[dft] dispersion` (closed-shell KS only, as in `run_optimize`) the
+/// Hessian is the central difference of the CORRECTED gradient
+/// `g_KS + g_disp`, each evaluated from the SCF converged at that displaced
+/// geometry (`harmonic_frequencies_with_scf_correction`); MBD@rsSCS's density
+/// dependence enters through its exact (Z-vector-relaxed) gradient.
 fn run_frequencies(
     method: &str,
     cfg: &Config,
@@ -5275,9 +5387,7 @@ fn run_frequencies(
     op: Operator,
     rhf_config: &RhfConfig,
 ) {
-    use ferric_scf::frequencies::{
-        harmonic_frequencies, FrequencyConfig, FrequencyReference, HessianMethod,
-    };
+    use ferric_scf::frequencies::{FrequencyConfig, FrequencyReference, HessianMethod};
 
     let reference = match method {
         "rhf" | "ksdft" => FrequencyReference::Rhf,
@@ -5311,13 +5421,16 @@ fn run_frequencies(
         });
     }
 
-    let res = harmonic_frequencies(ctx, mol, &bs.name, op, rhf_config, &fcfg).unwrap_or_else(|e| {
+    let (res, at_reference) = frequencies_maybe_dispersion(
+        cfg, ctx, mol, bs, op, rhf_config, &fcfg,
+    )
+    .unwrap_or_else(|e| {
         eprintln!("error computing frequencies: {e}");
         std::process::exit(1);
     });
 
     println!("Harmonic frequencies/{} on {}", bs.name, cfg.molecule.xyz);
-    println!("  energy            = {:.10} Hartree", res.energy);
+    print_frequency_energy(&res, at_reference.as_ref());
     println!("  Hessian           = {}", res.hessian_source.label());
     println!("  gradient evals    = {}", res.n_gradient_evaluations);
     println!("  linear molecule   = {}", res.is_linear);
@@ -5338,6 +5451,94 @@ fn run_frequencies(
             .map(|v| (v * 100.0).round() / 100.0)
             .collect::<Vec<_>>()
     );
+}
+
+/// The frequency run itself: plain, or on the KS + `[dft] dispersion` surface
+/// (`harmonic_frequencies_with_scf_correction`), returning the correction at
+/// the UNDISPLACED geometry for the printout and the run log (the driver
+/// evaluates the closure there first).
+#[allow(clippy::type_complexity)]
+fn frequencies_maybe_dispersion(
+    cfg: &Config,
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    bs: &BasisSet,
+    op: Operator,
+    rhf_config: &RhfConfig,
+    fcfg: &ferric_scf::frequencies::FrequencyConfig,
+) -> Result<
+    (
+        ferric_scf::frequencies::FrequencyResult,
+        Option<DispersionCorrection>,
+    ),
+    ferric_core::FerricError,
+> {
+    use ferric_scf::frequencies::{
+        harmonic_frequencies, harmonic_frequencies_with_scf_correction, FrequencyReference,
+    };
+    if fcfg.reference != FrequencyReference::Rhf {
+        let label = if fcfg.reference == FrequencyReference::Uhf {
+            open_shell_scf_label("UHF", "UKS", rhf_config)
+        } else {
+            open_shell_scf_label("ROHF", "ROKS", rhf_config)
+        };
+        refuse_open_shell_dispersion_gradient(cfg, &label, "frequencies");
+    }
+    let Some(model) = dispersion_gradient_model(cfg, ctx, mol, bs, op, rhf_config, "frequencies")
+    else {
+        return harmonic_frequencies(ctx, mol, &bs.name, op, rhf_config, fcfg).map(|r| (r, None));
+    };
+    let mut at_reference: Option<DispersionCorrection> = None;
+    let res = harmonic_frequencies_with_scf_correction(
+        ctx,
+        mol,
+        &bs.name,
+        op,
+        rhf_config,
+        fcfg,
+        |m, scf| {
+            let (c, g) = model.evaluate(ctx, m, bs, op, rhf_config, scf)?;
+            let e = c.energy;
+            at_reference.get_or_insert(c);
+            Ok((e, Some(g)))
+        },
+    )?;
+    Ok((res, at_reference))
+}
+
+/// The energy lines of a frequency printout. With `[dft] dispersion` they
+/// carry the corrected total, the KS energy and the correction at the input
+/// geometry, which also go to the JSON run log as a `dispersion` record.
+fn print_frequency_energy(
+    res: &ferric_scf::frequencies::FrequencyResult,
+    at_reference: Option<&DispersionCorrection>,
+) {
+    match at_reference {
+        None => println!("  energy            = {:.10} Hartree", res.energy),
+        Some(d) => {
+            let scf_energy = res.energy - res.correction_energy;
+            println!(
+                "  energy            = {:.10} Hartree (KS-DFT + {})",
+                res.energy, d.model
+            );
+            println!("  E(KS-DFT)         = {scf_energy:.10} Hartree");
+            match &d.mbd {
+                None => println!(
+                    "  E(D3BJ)           = {:+.10} Hartree [params: {}]",
+                    d.energy, d.params
+                ),
+                Some((beta, _)) => println!(
+                    "  E(MBD@rsSCS)      = {:+.10} Hartree [beta: {beta}, functional: {}]",
+                    d.energy, d.params
+                ),
+            }
+            println!(
+                "  dispersion        = in the Hessian (central differences of the KS + \
+                 dispersion analytic gradient)"
+            );
+            log_scf_dispersion(scf_energy, Some(d));
+        }
+    }
 }
 
 /// `task.method = "optimize"` dispatch. Extracted verbatim from the former
@@ -5381,40 +5582,7 @@ fn run_optimize(
             // parameters, which is the property that makes optimizing on this
             // surface meaningful -- a mismatched pair converges to a geometry
             // that is a stationary point of neither.
-            let req = dispersion_request(cfg);
-            let d3 = match &req {
-                Some(crate::config::DispersionRequest::D3Bj { functional }) => Some(
-                    ferric_d3::d3bj_params_for_functional(functional).unwrap_or_else(|e| {
-                        eprintln!("error: {e}");
-                        std::process::exit(1);
-                    }),
-                ),
-                _ => None,
-            };
-            // MBD@rsSCS: the free-atom references are per element, so they are
-            // built ONCE here, not at every optimization step.
-            let mbd = match &req {
-                Some(crate::config::DispersionRequest::Mbd { functional }) => {
-                    let mcfg = ferric_rpa::dispersion::mbd_rsscs::MbdRsscsConfig::for_functional(
-                        functional,
-                    )
-                    .unwrap_or_else(|e| {
-                        eprintln!("error: {e}");
-                        std::process::exit(1);
-                    });
-                    // The gradient's orbital-relaxation (Z-vector) term must be
-                    // available, or the optimizer would fail after the first SCF.
-                    if let Some(r) = ferric_scf::zvector_ks::unsupported_reason(rhf_config) {
-                        eprintln!(
-                            "error: [dft] dispersion = \"mbd\" with method.task = \"optimize\": \
-                             the exact MBD@rsSCS gradient is not available: {r}"
-                        );
-                        std::process::exit(1);
-                    }
-                    Some((mbd_free_atom_cache(ctx, mol, bs, op, rhf_config), mcfg))
-                }
-                _ => None,
-            };
+            let model = dispersion_gradient_model(cfg, ctx, mol, bs, op, rhf_config, "optimize");
             let opt_result = optimize_geometry_with_scf_correction(
                 ctx,
                 mol,
@@ -5422,31 +5590,12 @@ fn run_optimize(
                 op,
                 rhf_config,
                 &opt_config,
-                |m, scf| {
-                    if let Some(params) = &d3 {
-                        let e = ferric_d3::d3bj_energy_for_molecule(m, params)?;
-                        let g = ferric_d3::d3bj_gradient_for_molecule(m, params)?;
-                        let mut arr = ndarray::Array2::<f64>::zeros((g.len(), 3));
-                        for (k, row) in g.iter().enumerate() {
-                            for a in 0..3 {
-                                arr[[k, a]] = row[a];
-                            }
-                        }
-                        return Ok((e, Some(arr)));
+                |m, scf| match &model {
+                    Some(d) => {
+                        let (c, g) = d.evaluate(ctx, m, bs, op, rhf_config, scf)?;
+                        Ok((c.energy, Some(g)))
                     }
-                    if let Some((cache, mcfg)) = &mbd {
-                        let r = ferric_rpa::dispersion::mbd_scf::mbd_rsscs_for_scf(
-                            ctx, cache, m, bs, op, rhf_config, scf, mcfg,
-                        )?;
-                        let g = r.gradient.ok_or_else(|| {
-                            ferric_core::FerricError::General(
-                                "MBD@rsSCS returned no gradient although one was requested"
-                                    .to_string(),
-                            )
-                        })?;
-                        return Ok((r.energy, Some(g)));
-                    }
-                    Ok((0.0, None))
+                    None => Ok((0.0, None)),
                 },
             )
             .unwrap_or_else(|e| {
@@ -5583,7 +5732,7 @@ fn run_optimize(
             // `ksdft` on an open-shell molecule): `optimize_geometry_uhf` then
             // takes `ks_gradient_uks`.
             let label = open_shell_scf_label("UHF", "UKS", rhf_config);
-            refuse_open_shell_dispersion_gradient(cfg, &label);
+            refuse_open_shell_dispersion_gradient(cfg, &label, "optimize");
             let opt_result = optimize_geometry_uhf(ctx, mol, &bs.name, op, rhf_config, &opt_config)
                 .unwrap_or_else(|e| {
                     eprintln!("error during {label} optimization: {e}");
@@ -5604,7 +5753,7 @@ fn run_optimize(
         "rohf" => {
             // ROKS (`ks_gradient_roks`) when `[dft] functional` is set.
             let label = open_shell_scf_label("ROHF", "ROKS", rhf_config);
-            refuse_open_shell_dispersion_gradient(cfg, &label);
+            refuse_open_shell_dispersion_gradient(cfg, &label, "optimize");
             let opt_result =
                 optimize_geometry_rohf(ctx, mol, &bs.name, op, rhf_config, &opt_config)
                     .unwrap_or_else(|e| {
@@ -5646,19 +5795,25 @@ fn refuse_tddft_xc_without_kernel(cfg: &Config, method: &str) {
     }
 }
 
-/// `[dft] dispersion` on an open-shell (UKS/ROKS) geometry optimization is
-/// refused: the dispersion correction is threaded through the optimizer only
-/// on the closed-shell path (`optimize_geometry_with_scf_correction`), so the
-/// UKS/ROKS optimizer would walk the UNCORRECTED surface while the config
-/// asks for a corrected one. The single-point energy (task = "energy") does
-/// apply it.
-fn refuse_open_shell_dispersion_gradient(cfg: &Config, label: &str) {
+/// `[dft] dispersion` on an open-shell (UKS/ROKS) geometry optimization or
+/// frequency run is refused: the dispersion gradient is threaded through the
+/// optimizer and the frequency driver only on the closed-shell path
+/// (`optimize_geometry_with_scf_correction`,
+/// `harmonic_frequencies_with_scf_correction`), so the UKS/ROKS drivers would
+/// walk the UNCORRECTED surface while the config asks for a corrected one. The
+/// single-point energy (task = "energy") does apply it.
+fn refuse_open_shell_dispersion_gradient(cfg: &Config, label: &str, task: &str) {
     if cfg.dft.dispersion.is_some() {
+        let what = if task == "optimize" {
+            "the closed-shell optimizer, so this run would optimize the uncorrected surface"
+        } else {
+            "the closed-shell frequency driver, so this run would report the Hessian of the \
+             uncorrected surface"
+        };
         eprintln!(
-            "error: [dft] dispersion is not supported with method.task = \"optimize\" on an \
+            "error: [dft] dispersion is not supported with method.task = \"{task}\" on an \
              open-shell ({label}) reference: the dispersion gradient is only threaded through \
-             the closed-shell optimizer, so this run would optimize the uncorrected surface. Use \
-             task = \"energy\" for a corrected {label} single point, or remove the key."
+             {what}. Use task = \"energy\" for a corrected {label} single point, or remove the key."
         );
         std::process::exit(1);
     }

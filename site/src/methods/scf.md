@@ -83,9 +83,9 @@ fitted damping parameters. Python: `run_dft(..., dispersion="d3bj")`, or
 
 **Scope.** The damping parameters are fitted per functional, so the key is
 refused on any method other than `ksdft`. `task = "optimize"` works (the D3
-gradient is implemented; `ferric-d3/tests/gradient_vs_fd.rs`);
-`task = "frequencies"` with dispersion is refused until the finite-difference
-Hessian built from it is validated.
+gradient is implemented; `ferric-d3/tests/gradient_vs_fd.rs`), and so does
+closed-shell `task = "frequencies"`: see
+[Frequencies with dispersion](#frequencies-with-dispersion).
 
 **Accuracy.** Agrees with simple-dftd3 1.6.0 to below 1e-12 Ha on water,
 methane, benzene and an argon dimer with the three-body term off on both
@@ -132,7 +132,44 @@ for H2O (11.5% of the largest MBD component). The relaxation term needs an
 LDA, GGA or hybrid-GGA functional without VV10, no implicit solvation,
 polarizable embedding or cDFT constraints, and integer occupation; other
 setups are refused rather than given an approximate gradient.
-Open-shell optimization and `task = "frequencies"` with dispersion are refused.
+Open-shell optimization and open-shell frequencies with dispersion are refused.
+
+## Frequencies with dispersion
+
+**What it is.** Harmonic frequencies on the dispersion-corrected surface
+E(KS) + E(disp), closed-shell Kohn–Sham only. The Hessian is the central
+difference of the corrected analytic gradient: at each of the 6N displaced
+geometries the SCF is converged, the KS gradient and the dispersion gradient
+are evaluated there, and their sum is differenced. For MBD@rsSCS the
+dispersion gradient is the exact one above, so the response of the Hirshfeld
+volumes to the displacement, through the SCF density, is in the Hessian.
+There is no analytic Hessian on this path: `[frequencies] hessian = "analytic"`
+is an error and `"auto"` runs finite differences.
+
+**Run it.** `[dft] dispersion` with `method.task = "frequencies"` on a
+closed-shell KS SCF. The printout gives the corrected `energy`, `E(KS-DFT)`
+and the dispersion energy at the input geometry, and the JSON run log gets a
+`dispersion` record with the same fields as an energy run. Python:
+`run_frequencies(mol, basis, xc="PBE", dispersion="d3bj")`, which reports
+`.e_dispersion` and the corrected `.energy`. Open-shell (UKS/ROKS)
+frequencies with dispersion are refused.
+
+**Accuracy.** For PBE/STO-3G water, the D3(BJ) part of the Hessian agrees
+with 4-point second differences of the D3(BJ) energy to 5.3e-9 Hartree/Bohr²
+(largest element 1.9e-5), and the resulting frequencies with those of the KS
+Hessian plus that independent D3 Hessian to 1e-5 cm⁻¹. The MBD@rsSCS part
+agrees along three fixed directions with second differences of the full
+SCF + MBD energy to 1.5e-6 Hartree/Bohr² (0.8% of the largest curvature, 2.0e-4).
+That figure is set by noise in the energy differences, not by the Hessian
+construction. A gradient without the orbital-relaxation term misses by 3.2e-5.
+Dispersion leaves the Hessian's asymmetry (7.6e-6 Hartree/Bohr² for
+PBE/6-31G water) and the projected translation/rotation modes (below 1e-4
+cm⁻¹) where they are without it.
+
+The shifts are small for a single molecule. For PBE/6-31G water at its
+uncorrected PBE minimum (1594.35, 3500.27 and 3669.29 cm⁻¹), D3(BJ) shifts
+the three modes by +0.006, −0.077 and −0.095 cm⁻¹, and MBD@rsSCS by +0.107,
+−0.406 and −0.516 cm⁻¹.
 
 ## Implicit solvation
 
