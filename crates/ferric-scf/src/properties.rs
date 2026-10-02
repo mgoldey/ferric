@@ -684,116 +684,280 @@ pub fn becke_charges_chunked(
 }
 
 /// A spherically averaged free-atom radial density ρ⁰(r), tabulated on a
-/// radial grid, for use as a Hirshfeld proatom.
+/// radial grid and interpolated smoothly, for use as a Hirshfeld proatom.
 ///
 /// Built by [`spherically_averaged_proatom`] from a free-atom SCF density in the
 /// molecule's own basis (so the Hirshfeld weight ratio is basis-consistent with
 /// the molecular density); [`scf_proatom_provider`] builds one per element.
+///
+/// # Interpolant
+///
+/// [`at`](Self::at) evaluates `exp(y(r))`, where `y` is a cubic spline through
+/// `y_k = ln ρ_k` at the tabulated radii `r_k`:
+///
+/// * **Positive everywhere** by construction: the Hirshfeld weight divides by
+///   `Σ_B ρ⁰_B`, and a cubic spline of ρ itself undershoots below zero in an
+///   exponentially decaying tail.
+/// * **Accurate for a decaying density**: `ln ρ` of a Gaussian-basis atom is a
+///   slowly curving function of r (exactly quadratic, `−2a r²`, in a
+///   single-Gaussian tail), so the spline's O(h⁴) error is on a much flatter
+///   function than ρ.
+/// * **Even at the nucleus**: the spline is the restriction to r ≥ 0 of the
+///   spline through the mirrored table `{(±r_k, y_k)}`. A spherically averaged
+///   Gaussian-basis density is an even function of r, and so is this
+///   extension: on `[0, r_0]` the mirrored segment is the even cubic
+///   `y_0 + M_0 (r² − r_0²)/2`, so `y'(0) = 0` and ρ is C2 through r = 0.
+///   With `r_0 = 0` the same equations reduce to the clamped condition
+///   `y'(0) = 0`.
+/// * **Smooth exponential tail**: the far end is a natural end
+///   (`y''(r_last) = 0`) and `y` continues LINEARLY beyond the last used
+///   radius with its end slope, which must be negative. ρ then decays
+///   exponentially to zero instead of jumping to it, and the continuation is
+///   C2 because the spline's second derivative is already zero there.
+///   Knots from the first `ρ_k <= `[`Self::TAIL_RHO_MIN`] onward are not used
+///   (they are underflow, not data).
+///
+/// The result is C2 in r everywhere, and [`deriv`](Self::deriv) is its exact
+/// derivative at every r, knots included. Evaluation is O(1) per point on a
+/// uniform table (direct index) and O(log n) otherwise.
+///
+/// A table that is zero at every radius (a bare nucleus, e.g. H⁺ in
+/// Hirshfeld-I) is the identically zero proatom.
 #[derive(Debug, Clone)]
 pub struct RadialProatom {
-    /// Radii (Bohr), ascending. Shared across all atoms.
-    pub radii: Vec<f64>,
-    /// ρ_free at each radius (a.u.).
-    pub rho: Vec<f64>,
+    radii: Vec<f64>,
+    rho: Vec<f64>,
+    /// `None` for the identically zero proatom.
+    spline: Option<LogSpline>,
+}
+
+/// Cubic spline in `ln ρ` over the used knots (see [`RadialProatom`]).
+#[derive(Debug, Clone)]
+struct LogSpline {
+    /// Used knots `r_0 < … < r_{n-1}`, `n >= 2`, `r_0 >= 0`.
+    r: Vec<f64>,
+    /// `ln ρ_k`.
+    y: Vec<f64>,
+    /// `y''(r_k)`; `m[n-1] = 0` (natural end).
+    m: Vec<f64>,
+    /// `y'(r_{n-1}) < 0`, the slope of the linear continuation.
+    tail_slope: f64,
+    /// `(r_0, 1/h)` when the knots are uniform: the segment is a direct index.
+    uniform: Option<(f64, f64)>,
+}
+
+impl LogSpline {
+    fn build(r: Vec<f64>, y: Vec<f64>) -> Result<Self, FerricError> {
+        let n = r.len();
+        debug_assert!(n >= 2 && y.len() == n);
+        // Second-derivative (moment) equations. Row 0 is the continuity row
+        // at r_0 with the mirrored segment [-r_0, r_0] (length 2 r_0, moments
+        // M_0 at both ends by symmetry, equal values so zero secant):
+        //   (r_0 + h_0/3) M_0 + h_0/6 M_1 = (y_1 - y_0)/h_0.
+        // Interior rows are the standard ones; the last row is M_{n-1} = 0.
+        // Strictly diagonally dominant, so the Thomas sweep is stable.
+        let h: Vec<f64> = (0..n - 1).map(|i| r[i + 1] - r[i]).collect();
+        let mut diag = vec![0.0_f64; n];
+        let mut upper = vec![0.0_f64; n];
+        let mut lower = vec![0.0_f64; n];
+        let mut rhs = vec![0.0_f64; n];
+        diag[0] = r[0] + h[0] / 3.0;
+        upper[0] = h[0] / 6.0;
+        rhs[0] = (y[1] - y[0]) / h[0];
+        for i in 1..n - 1 {
+            lower[i] = h[i - 1] / 6.0;
+            diag[i] = (h[i - 1] + h[i]) / 3.0;
+            upper[i] = h[i] / 6.0;
+            rhs[i] = (y[i + 1] - y[i]) / h[i] - (y[i] - y[i - 1]) / h[i - 1];
+        }
+        diag[n - 1] = 1.0;
+        rhs[n - 1] = 0.0;
+        // Forward elimination.
+        for i in 1..n {
+            let w = lower[i] / diag[i - 1];
+            diag[i] -= w * upper[i - 1];
+            rhs[i] -= w * rhs[i - 1];
+        }
+        let mut m = vec![0.0_f64; n];
+        m[n - 1] = rhs[n - 1] / diag[n - 1];
+        for i in (0..n - 1).rev() {
+            m[i] = (rhs[i] - upper[i] * m[i + 1]) / diag[i];
+        }
+        let hl = h[n - 2];
+        let tail_slope = (y[n - 1] - y[n - 2]) / hl + hl * (m[n - 2] + 2.0 * m[n - 1]) / 6.0;
+        if !(tail_slope < 0.0) {
+            return Err(FerricError::General(format!(
+                "RadialProatom: ln ρ has slope {tail_slope:.3e} at the last used radius \
+                 {:.4} Bohr; a proatom must decay there",
+                r[n - 1]
+            )));
+        }
+        let span = r[n - 1] - r[0];
+        let step = span / (n - 1) as f64;
+        let uniform = (0..n)
+            .all(|k| (r[k] - (r[0] + k as f64 * step)).abs() <= 1e-9 * step)
+            .then_some((r[0], 1.0 / step));
+        Ok(Self {
+            r,
+            y,
+            m,
+            tail_slope,
+            uniform,
+        })
+    }
+
+    /// `(y(r), y'(r))` for `r >= 0`.
+    fn eval(&self, r: f64) -> (f64, f64) {
+        let n = self.r.len();
+        let i: isize = if r < self.r[0] {
+            -1
+        } else if r >= self.r[n - 1] {
+            (n - 1) as isize
+        } else {
+            (match self.uniform {
+                Some((a, inv_h)) => (((r - a) * inv_h) as usize).min(n - 2),
+                None => self.r.partition_point(|&x| x <= r).clamp(1, n - 1) - 1,
+            }) as isize
+        };
+        self.piece(i, r)
+    }
+
+    /// `(y, y')` of polynomial piece `i` at `r` (any r, no range check):
+    /// `-1` the even mirrored segment `[0, r_0]`, `0..n-1` the cubic on
+    /// `[r_i, r_{i+1}]`, `n-1` the linear tail beyond `r_{n-1}`.
+    fn piece(&self, i: isize, r: f64) -> (f64, f64) {
+        let n = self.r.len();
+        if i < 0 {
+            // Even mirrored segment: y_0 + M_0 (r² − r_0²)/2.
+            let r0 = self.r[0];
+            return (
+                self.y[0] + 0.5 * self.m[0] * (r * r - r0 * r0),
+                self.m[0] * r,
+            );
+        }
+        let i = i as usize;
+        if i >= n - 1 {
+            let rl = self.r[n - 1];
+            return (self.y[n - 1] + self.tail_slope * (r - rl), self.tail_slope);
+        }
+        let h = self.r[i + 1] - self.r[i];
+        let a = (self.r[i + 1] - r) / h;
+        let b = 1.0 - a;
+        let (mi, mj) = (self.m[i], self.m[i + 1]);
+        let y = a * self.y[i]
+            + b * self.y[i + 1]
+            + ((a * a * a - a) * mi + (b * b * b - b) * mj) * h * h / 6.0;
+        let dy = (self.y[i + 1] - self.y[i]) / h - (3.0 * a * a - 1.0) * h * mi / 6.0
+            + (3.0 * b * b - 1.0) * h * mj / 6.0;
+        (y, dy)
+    }
 }
 
 impl RadialProatom {
-    /// Linear-interpolate ρ_free at distance `r` (clamped/zero outside range).
+    /// Tabulated densities at or below this value end the used table (see
+    /// the type doc). It is far below anything a consumer resolves (the
+    /// Hirshfeld weight's denominator floor is 1e-12) and far above the
+    /// subnormal range, where `ln ρ` of a tabulated value loses precision.
+    pub const TAIL_RHO_MIN: f64 = 1e-200;
+
+    /// Build the smooth proatom through the table `(radii[k], rho[k])`.
+    ///
+    /// # Errors
+    ///
+    /// Mismatched or empty arrays; a radius that is not finite, a negative
+    /// first radius, or radii that are not strictly ascending; a density that
+    /// is not finite or is negative; a table that is not identically zero but
+    /// has fewer than two leading values above [`Self::TAIL_RHO_MIN`]; and a
+    /// table whose `ln ρ` does not decrease at the last used radius (no
+    /// decaying tail to continue).
+    pub fn new(radii: Vec<f64>, rho: Vec<f64>) -> Result<Self, FerricError> {
+        let err = |m: String| FerricError::General(format!("RadialProatom: {m}"));
+        if radii.is_empty() || radii.len() != rho.len() {
+            return Err(err(format!(
+                "{} radii and {} densities; need equal, non-zero lengths",
+                radii.len(),
+                rho.len()
+            )));
+        }
+        if radii.iter().any(|r| !r.is_finite()) || radii[0] < 0.0 {
+            return Err(err("radii must be finite and start at r >= 0".into()));
+        }
+        if radii.windows(2).any(|w| w[1] <= w[0]) {
+            return Err(err("radii must be strictly ascending".into()));
+        }
+        if rho.iter().any(|p| !p.is_finite() || *p < 0.0) {
+            return Err(err("densities must be finite and >= 0".into()));
+        }
+        if rho.iter().all(|&p| p == 0.0) {
+            return Ok(Self {
+                radii,
+                rho,
+                spline: None,
+            });
+        }
+        let used = rho
+            .iter()
+            .position(|&p| p <= Self::TAIL_RHO_MIN)
+            .unwrap_or(rho.len());
+        if used < 2 {
+            return Err(err(format!(
+                "only {used} leading densities above {:e}; need at least 2",
+                Self::TAIL_RHO_MIN
+            )));
+        }
+        let spline = LogSpline::build(
+            radii[..used].to_vec(),
+            rho[..used].iter().map(|p| p.ln()).collect(),
+        )?;
+        Ok(Self {
+            radii,
+            rho,
+            spline: Some(spline),
+        })
+    }
+
+    /// Tabulated radii (Bohr), strictly ascending.
+    pub fn radii(&self) -> &[f64] {
+        &self.radii
+    }
+
+    /// Tabulated densities ρ⁰(r_k) (a.u.).
+    pub fn rho(&self) -> &[f64] {
+        &self.rho
+    }
+
+    /// `(ρ⁰(r), dρ⁰/dr)` of the smooth interpolant, as an even function of r.
+    pub fn value_and_deriv(&self, r: f64) -> (f64, f64) {
+        let Some(s) = &self.spline else {
+            return (0.0, 0.0);
+        };
+        let (y, dy) = s.eval(r.abs());
+        let v = y.exp();
+        (v, v * dy * r.signum())
+    }
+
+    /// ρ⁰ at distance `r` (Bohr); see the type doc for the interpolant.
     pub fn at(&self, r: f64) -> f64 {
-        let n = self.radii.len();
-        if n == 0 || r <= self.radii[0] {
-            return self.rho.first().copied().unwrap_or(0.0);
-        }
-        if r >= self.radii[n - 1] {
-            return 0.0; // tail beyond the grid is negligible
-        }
-        // Binary search for the bracketing interval.
-        let mut lo = 0usize;
-        let mut hi = n - 1;
-        while hi - lo > 1 {
-            let mid = (lo + hi) / 2;
-            if self.radii[mid] <= r {
-                lo = mid;
-            } else {
-                hi = mid;
-            }
-        }
-        let t = (r - self.radii[lo]) / (self.radii[hi] - self.radii[lo]);
-        (1.0 - t) * self.rho[lo] + t * self.rho[hi]
+        self.value_and_deriv(r).0
     }
 
-    /// d/dr of the piecewise-linear interpolant [`at`](Self::at) — NOT of the
-    /// underlying free-atom density, which `at` only samples.
-    ///
-    /// Inside a segment this is the segment slope
-    /// `(rho[hi] - rho[lo]) / (radii[hi] - radii[lo])`; it is 0 where `at` is
-    /// constant (`r < radii[0]`, where `at` returns `rho[0]`; `r > radii[n-1]`,
-    /// where it returns 0) and for an empty table.
-    ///
-    /// The interpolant is not differentiable at a knot. Within
-    /// [`Self::KNOT_TOL`] of one, `deriv` returns the MEAN of the two adjacent
-    /// slopes (the symmetric subgradient, which is what a central difference
-    /// straddling the knot converges to). This matters in practice: the
-    /// Hirshfeld lattice spacing (0.20 Bohr) is a multiple of the knot spacing
-    /// (0.05 Bohr), and the bounding-box lattice puts an atom that is extreme
-    /// in x, y and z exactly on a lattice point, so that atom's axis neighbours
-    /// sit on knots up to rounding. A one-sided slope there put a 2% error on
-    /// that atom's volume gradient (measured, H2O/STO-3G).
+    /// dρ⁰/dr of [`at`](Self::at): the exact derivative of the interpolant
+    /// (not of the free-atom density it interpolates) at every r, knots
+    /// included. 0 at r = 0.
     pub fn deriv(&self, r: f64) -> f64 {
-        let n = self.radii.len();
-        if n == 0 {
-            return 0.0;
-        }
-        // Slope of segment `i` = [radii[i], radii[i+1]]; the regions outside
-        // the table, where `at` is constant, have slope 0.
-        let seg = |i: isize| -> f64 {
-            if i < 0 || i as usize + 1 >= n {
-                0.0
-            } else {
-                let i = i as usize;
-                (self.rho[i + 1] - self.rho[i]) / (self.radii[i + 1] - self.radii[i])
-            }
-        };
-        // Index of the last knot <= r (or -1 below the table).
-        let k: isize = if r < self.radii[0] {
-            -1
-        } else {
-            let mut lo = 0usize;
-            let mut hi = n;
-            while hi - lo > 1 {
-                let mid = (lo + hi) / 2;
-                if self.radii[mid] <= r {
-                    lo = mid;
-                } else {
-                    hi = mid;
-                }
-            }
-            lo as isize
-        };
-        let near = |j: isize| -> bool {
-            j >= 0
-                && (j as usize) < n
-                && (r - self.radii[j as usize]).abs()
-                    <= Self::KNOT_TOL * self.radii[j as usize].abs().max(1.0)
-        };
-        if near(k) {
-            return 0.5 * (seg(k - 1) + seg(k));
-        }
-        if near(k + 1) {
-            return 0.5 * (seg(k) + seg(k + 1));
-        }
-        seg(k)
+        self.value_and_deriv(r).1
     }
-
-    /// Distance (Bohr, relative above 1 Bohr) within which [`Self::deriv`]
-    /// treats `r` as sitting on a knot.
-    pub const KNOT_TOL: f64 = 1e-9;
 }
 
 /// Spherically average a single-atom density (atom at the origin) onto a radial
 /// grid via Lebedev angular quadrature. `atom_density` is the atomic SCF AO
 /// density matrix in `atom_bs`; the returned [`RadialProatom`] is the proatom
 /// reference for Hirshfeld partitioning.
+///
+/// # Errors
+///
+/// An AO evaluation failure, or a table [`RadialProatom::new`] refuses (e.g.
+/// radii that are not strictly ascending, or a density that does not decay).
 pub fn spherically_averaged_proatom(
     z: i32,
     atom_bs: &ferric_core::basis::BasisSet,
@@ -841,10 +1005,7 @@ pub fn spherically_averaged_proatom(
         }
         rho[ri] = acc.max(0.0);
     }
-    Ok(RadialProatom {
-        radii: radii.to_vec(),
-        rho,
-    })
+    RadialProatom::new(radii.to_vec(), rho)
 }
 
 /// Provider of spherically-averaged free-atom proatom densities: given element
@@ -2146,5 +2307,271 @@ mod dipole_tests {
             "HI dipole {mag_d:.4} D is far too large — the nuclear term is \
              almost certainly using the bare Z instead of effective_z()"
         );
+    }
+}
+
+#[cfg(test)]
+mod proatom_tests {
+    //! The smooth proatom interpolant of [`RadialProatom`]. No SCF: synthetic
+    //! sums of Gaussians stand in for a spherically averaged Gaussian-basis
+    //! atom (whose density is exactly such an even function of r).
+    use super::*;
+
+    /// Two-shell "atom": an even, positive sum of Gaussians and its derivative.
+    /// The 0.6 tail exponent underflows the table below `TAIL_RHO_MIN` at
+    /// r ≈ 27.7 Bohr, so the truncated-table path is exercised.
+    fn model(r: f64) -> (f64, f64) {
+        let terms = [(300.0, 60.0), (5.0, 3.0), (0.3, 0.9), (0.05, 0.6)];
+        let mut v = 0.0;
+        let mut d = 0.0;
+        for (c, a) in terms {
+            let e = c * (-a * r * r).exp();
+            v += e;
+            d += -2.0 * a * r * e;
+        }
+        (v, d)
+    }
+
+    fn table(radii: &[f64]) -> RadialProatom {
+        RadialProatom::new(radii.to_vec(), radii.iter().map(|&r| model(r).0).collect()).unwrap()
+    }
+
+    fn uniform(step: f64, n: usize) -> Vec<f64> {
+        (1..=n).map(|k| k as f64 * step).collect()
+    }
+
+    /// Dense probe points on [0, rmax], deliberately including every knot
+    /// and r = 0.
+    fn probes(p: &RadialProatom, rmax: f64) -> Vec<f64> {
+        let mut out: Vec<f64> = (0..=20_000).map(|i| rmax * i as f64 / 20_000.0).collect();
+        out.extend(p.radii().iter().copied().filter(|&r| r <= rmax));
+        out
+    }
+
+    /// EXACTNESS ANCHOR: the interpolant passes through every tabulated value
+    /// (up to the exp∘ln round trip). Catches: an off-by-one segment index, a
+    /// wrong basis-function weight (A/B swapped), a table shifted by a knot.
+    #[test]
+    fn reproduces_the_table_at_every_knot() {
+        let p = table(&scf_proatom_radii());
+        let mut worst = 0.0_f64;
+        for (k, (&r, &v)) in p.radii().iter().zip(p.rho()).enumerate() {
+            if v <= RadialProatom::TAIL_RHO_MIN {
+                break;
+            }
+            let rel = (p.at(r) - v).abs() / v;
+            worst = worst.max(rel);
+            assert!(
+                rel < 1e-12,
+                "knot {k} r={r}: {} vs {v} (rel {rel:.2e})",
+                p.at(r)
+            );
+        }
+        println!("max rel error at the knots: {worst:.2e}");
+    }
+
+    /// Accuracy and ORDER on a smooth analytic density: halving the step cuts
+    /// the max relative error on [0, 10] Bohr by ~16 (O(h⁴)), and at the
+    /// production step it is far below the piecewise-linear error.
+    #[test]
+    fn converges_at_fourth_order_on_an_analytic_density() {
+        let err = |step: f64| -> (f64, f64) {
+            let radii = uniform(step, (30.0 / step).round() as usize);
+            let p = table(&radii);
+            let mut e_spline = 0.0_f64;
+            let mut e_linear = 0.0_f64;
+            for i in 0..=10_000 {
+                let r = 10.0 * i as f64 / 10_000.0;
+                let t = model(r).0;
+                e_spline = e_spline.max((p.at(r) - t).abs() / t);
+                // The piecewise-linear interpolant (constant below radii[0]),
+                // for the record.
+                let lin = if r <= radii[0] {
+                    model(radii[0]).0
+                } else {
+                    let k = ((r / step).floor() as usize).clamp(1, radii.len() - 1);
+                    let (a, b) = (radii[k - 1], radii[k]);
+                    let f = (r - a) / (b - a);
+                    (1.0 - f) * model(a).0 + f * model(b).0
+                };
+                e_linear = e_linear.max((lin - t).abs() / t);
+            }
+            (e_spline, e_linear)
+        };
+        let (e1, l1) = err(0.05);
+        let (e2, l2) = err(0.025);
+        let (e3, _) = err(0.0125);
+        let order = (e2 / e3).log2();
+        println!(
+            "max rel error on [0, 10], spline: h=0.05 {e1:.3e}, h=0.025 {e2:.3e}, \
+             h=0.0125 {e3:.3e}, observed order {:.2} then {order:.2}; piecewise linear: \
+             {l1:.3e}, {l2:.3e}",
+            (e1 / e2).log2()
+        );
+        assert!(e1 < SPLINE_REL_ERR_005, "h = 0.05: {e1:.3e}");
+        assert!((3.5..5.0).contains(&order), "observed order {order:.2}");
+    }
+
+    /// Max relative error at the production step; measured 4.6e-3 (the
+    /// piecewise-linear interpolant: 1.5e-1) on this steep (exponent 60) core.
+    const SPLINE_REL_ERR_005: f64 = 6e-3;
+
+    /// `deriv` is the exact derivative of `at` EVERYWHERE — at knots, at
+    /// r = 0, in the mirrored segment, across the last used knot and in the
+    /// tail — by central FD, with no special-casing. Catches: a wrong
+    /// moment term in y', the A/B sign of the slope, the tail slope, the
+    /// mirrored-segment derivative, a dropped chain-rule factor ρ.
+    #[test]
+    fn deriv_matches_fd_everywhere_including_knots() {
+        let p = table(&scf_proatom_radii());
+        let last = p.spline.as_ref().unwrap().r.last().copied().unwrap();
+        let mut pts = probes(&p, 35.0);
+        pts.push(last);
+        let h = 1e-6;
+        let mut worst = 0.0_f64;
+        for &r in &pts {
+            let fd = (p.at(r + h) - p.at(r - h)) / (2.0 * h);
+            let an = p.deriv(r);
+            let scale = p.at(r).max(1e-300);
+            let rel = (an - fd).abs() / scale;
+            worst = worst.max(rel);
+            assert!(rel < DERIV_FD_REL, "r={r}: deriv {an:.12e} vs FD {fd:.12e}");
+        }
+        println!(
+            "max |deriv - FD| / rho = {worst:.2e} over {} points",
+            pts.len()
+        );
+        assert_eq!(p.deriv(0.0), 0.0);
+    }
+
+    /// Bar on |deriv − FD(h=1e-6)| / ρ; measured 1.2e-7 (FD truncation and
+    /// rounding), knots included.
+    const DERIV_FD_REL: f64 = 1e-6;
+
+    /// `ln ρ`, and with it ρ, ρ' and ρ'', is continuous across every knot
+    /// (C2): the two polynomial pieces meeting at a knot agree there in
+    /// value, slope and curvature. Includes the mirrored piece at r_0 and the
+    /// linear tail at the last used knot. Curvature is the central difference
+    /// of y' along ONE piece, exact for its quadratic y' up to rounding. A
+    /// kink leaves an O(1) slope mismatch; a C1-only spline (e.g. a wrong
+    /// row-0 or natural-end equation) a curvature one.
+    #[test]
+    fn value_slope_and_curvature_are_continuous_across_knots() {
+        let p = table(&scf_proatom_radii());
+        let s = p.spline.as_ref().unwrap();
+        let n = s.r.len() as isize;
+        let curv = |i: isize, r: f64| (s.piece(i, r + 1e-3).1 - s.piece(i, r - 1e-3).1) / 2e-3;
+        let (mut j0, mut j1, mut j2) = (0.0_f64, 0.0_f64, 0.0_f64);
+        for k in 0..n {
+            let rk = s.r[k as usize];
+            let (l, r) = (s.piece(k - 1, rk), s.piece(k, rk));
+            let scale = 1.0 + l.0.abs();
+            j0 = j0.max((l.0 - r.0).abs() / scale);
+            j1 = j1.max((l.1 - r.1).abs() / scale);
+            j2 = j2.max((curv(k - 1, rk) - curv(k, rk)).abs() / scale);
+        }
+        println!("max jumps across knots (/(1+|ln rho|)): ln rho {j0:.2e}, slope {j1:.2e}, curvature {j2:.2e}");
+        assert!(j0 < JUMP_Y, "ln rho jump {j0:.2e}");
+        assert!(j1 < JUMP_DY, "slope jump {j1:.2e}");
+        assert!(j2 < JUMP_D2Y, "curvature jump {j2:.2e}");
+    }
+
+    const JUMP_Y: f64 = 1e-12;
+    const JUMP_DY: f64 = 1e-9;
+    const JUMP_D2Y: f64 = 1e-6;
+
+    /// Even at the nucleus: ρ(−r) = ρ(r), ρ'(0) = 0, ρ'(r) ≈ ρ''(0) r near 0,
+    /// and positive everywhere, including far beyond the table, where it decays
+    /// monotonically to zero instead of jumping to it.
+    #[test]
+    fn even_at_the_nucleus_positive_and_decaying_in_the_tail() {
+        let p = table(&scf_proatom_radii());
+        for &r in &[1e-9, 0.01, 0.03, 0.05, 0.07, 1.0] {
+            assert_eq!(p.at(-r).to_bits(), p.at(r).to_bits());
+            assert_eq!(p.deriv(-r), -p.deriv(r));
+        }
+        assert_eq!(p.deriv(0.0), 0.0);
+        // Below radii[0] the model is ~flat; the interpolant must be too.
+        let (t0, _) = model(0.0);
+        assert!((p.at(0.0) - t0).abs() / t0 < 1e-3, "{} vs {t0}", p.at(0.0));
+        // Positive until exp(ln ρ) underflows f64 (ln ρ < −745), which this
+        // model's steep Gaussian tail reaches ~3 Bohr past the last used knot.
+        let mut prev = f64::INFINITY;
+        for i in 0..=8000 {
+            let r = 80.0 * i as f64 / 8000.0;
+            let v = p.at(r);
+            let (y, _) = p.spline.as_ref().unwrap().eval(r);
+            assert!(v > 0.0 || y < -745.0, "rho({r}) = {v}, ln rho {y}");
+            assert!(v >= 0.0 && v.is_finite());
+            if r > 1.0 {
+                assert!(v <= prev, "tail not decaying at r={r}");
+            }
+            prev = v;
+        }
+    }
+
+    /// Non-uniform radii take the binary-search path; it must give the same
+    /// interpolant as the direct index on a table where both apply, and still
+    /// pass through the knots with FD-exact derivatives.
+    #[test]
+    fn non_uniform_and_uniform_paths_agree() {
+        let p = table(&scf_proatom_radii());
+        let mut q = p.clone();
+        q.spline.as_mut().unwrap().uniform = None;
+        assert!(p.spline.as_ref().unwrap().uniform.is_some());
+        for &r in &probes(&p, 35.0) {
+            let (a, b) = (p.value_and_deriv(r), q.value_and_deriv(r));
+            // Both paths pick a valid piece; at a knot they may pick the two
+            // neighbours, which agree to rounding in ln ρ (|ln ρ| up to ~460):
+            // measured 1.4e-14 relative.
+            assert!(
+                (a.0 - b.0).abs() <= 1e-12 * a.0.abs(),
+                "r={r}: {a:?} vs {b:?}"
+            );
+            assert!((a.1 - b.1).abs() <= 1e-10 * a.0.abs().max(1e-300), "r={r}");
+        }
+        // A genuinely non-uniform table, starting at r = 0.
+        let radii: Vec<f64> = (0..400)
+            .map(|k| 0.05 * k as f64 + 2e-4 * (k * k) as f64)
+            .collect();
+        let s = table(&radii);
+        assert!(s.spline.as_ref().unwrap().uniform.is_none());
+        let mut checked = 0;
+        for (&r, &v) in s.radii().iter().zip(s.rho()) {
+            if v <= RadialProatom::TAIL_RHO_MIN {
+                break;
+            }
+            checked += 1;
+            assert!((s.at(r) - v).abs() <= 1e-12 * v, "knot r={r}");
+            let fd = (s.at(r + 1e-6) - s.at(r - 1e-6)) / 2e-6;
+            assert!((s.deriv(r) - fd).abs() <= DERIV_FD_REL * v, "r={r}");
+        }
+        assert!(checked > 200, "{checked} knots");
+        // With a knot AT r = 0 the zero slope is the clamped end condition,
+        // satisfied to rounding (not by an explicit zero as for r_0 > 0).
+        assert!(s.deriv(0.0).abs() <= 1e-12 * s.at(0.0), "{}", s.deriv(0.0));
+    }
+
+    /// A bare nucleus (all zeros) is the zero proatom; invalid tables are
+    /// errors, not silently clamped.
+    #[test]
+    fn zero_table_and_invalid_tables() {
+        let r = scf_proatom_radii();
+        let z = RadialProatom::new(r.clone(), vec![0.0; r.len()]).unwrap();
+        assert_eq!(z.value_and_deriv(1.0), (0.0, 0.0));
+        let bad = |radii: Vec<f64>, rho: Vec<f64>| RadialProatom::new(radii, rho).is_err();
+        assert!(bad(vec![], vec![]));
+        assert!(bad(vec![1.0, 2.0], vec![1.0]));
+        assert!(bad(vec![-0.1, 1.0, 2.0], vec![3.0, 2.0, 1.0]));
+        assert!(bad(vec![1.0, 1.0, 2.0], vec![3.0, 2.0, 1.0]));
+        assert!(bad(vec![1.0, 2.0, 3.0], vec![3.0, f64::NAN, 1.0]));
+        assert!(bad(vec![1.0, 2.0, 3.0], vec![3.0, -1.0, 1.0]));
+        // One usable leading value only.
+        assert!(bad(vec![1.0, 2.0, 3.0], vec![3.0, 0.0, 0.0]));
+        // No decaying tail: ln rho rises at the end.
+        assert!(bad(vec![1.0, 2.0, 3.0], vec![1.0, 1.0, 2.0]));
+        // A trailing underflow is dropped, not an error.
+        let t = RadialProatom::new(vec![1.0, 2.0, 3.0, 4.0], vec![1.0, 0.1, 0.01, 0.0]).unwrap();
+        assert!(t.at(4.0) > 0.0 && t.at(4.0) < 0.01);
     }
 }

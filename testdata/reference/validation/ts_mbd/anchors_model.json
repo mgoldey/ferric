@@ -2690,6 +2690,6 @@
     "free_atom_table": "crates/ferric-rpa/src/dispersion/free_atom_ref.rs",
     "free_atom_table_sha256": "26d7c0f049ca23d70e019dd5cad8777fa23af19f97a79f81702071cc1b88a496",
     "generator": "scripts/validation/gen_ts_mbd.py",
-    "git_head": "977163cdb6002c54cc499c9589dd9c3534964d4a"
+    "git_head": "761d5507dc118c34d7a666217e5830da10c123eb"
   }
 }

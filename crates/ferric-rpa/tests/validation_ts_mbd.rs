@@ -66,7 +66,7 @@
 //! | quantity | measured max | bar |
 //! |---|---:|---:|
 //! | TS α_eff, ω vs reference (rel) | 4.7e-16 | `TOL_TS_PARAMS` 1e-14 |
-//! | TS C6 pair and molecular, same grid (rel) | 5.7e-16 | `TOL_TS_C6_SAME_GRID` 1e-12 |
+//! | TS C6 pair and molecular, same grid (rel) | 7.5e-16 | `TOL_TS_C6_SAME_GRID` 1e-12 |
 //! | TS C6 pair, ferric default grid vs combination rule | 3.0e-14 | `TOL_TS_C6_CLOSED` 1e-12 |
 //! | ferric default nodes vs reference nodes (abs) | — | `TOL_GRID` 1e-12 |
 //! | MBD α_scs / C6 / energy vs EXACT erf (rel) | 5.1e-7 | `TOL_MBD_EXACT_ERF` 1e-6 |

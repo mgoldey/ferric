@@ -237,10 +237,7 @@ fn h2o_hirshfeld_i_adhoc_charges_physical() {
         let n_elec = z - qi;
         if n_elec <= 0 {
             // Bare nucleus (e.g. H+): zero electron density.
-            return Some(RadialProatom {
-                radii: radii.clone(),
-                rho: vec![0.0; radii.len()],
-            });
+            return RadialProatom::new(radii.clone(), vec![0.0; radii.len()]).ok();
         }
         let mult = mult_for_n(n_elec);
         let sym = z_to_symbol(z).unwrap_or("X");

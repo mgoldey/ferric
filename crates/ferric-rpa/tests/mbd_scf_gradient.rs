@@ -2,7 +2,7 @@
 //!
 //! Fast tests (run by default):
 //!   * `on_grid_volumes_are_bit_identical_to_default` — the refactor anchor.
-//!   * `radial_proatom_deriv_matches_fd_inside_segments` — the interpolant slope.
+//!   * `radial_proatom_deriv_matches_fd_everywhere` — the interpolant slope.
 //!   * `hirshfeld_volume_gradient_matches_fd_*` — THE construction test:
 //!     analytic ∂(Σ_A c_A v_A)/∂R vs central FD of the on-grid volumes with D and
 //!     the lattice held fixed.
@@ -41,14 +41,11 @@ const NH3_XYZ: &str = "4\nammonia\nN 0.000000 0.000000 0.116489\nH 0.000000 0.93
 /// cusp derivative on the lattice point that coincides with a nucleus missed
 /// by 2.3e-3.
 const FD_TOL_SMOOTH_REL: f64 = 1e-6;
-/// Bar for the tabulated-proatom construction test. The piecewise-linear
-/// interpolant has kinks at its knots (0.05 Bohr apart), and a lattice point
-/// whose distance to the moved atom crosses a knot within ±h breaks central
-/// FD. Measured: h = 1e-5 → 1.2e-4 abs (a few such points), h = 1e-6 →
-/// 1.3e-7 abs (7.5e-8 rel), so the test runs at h = 1e-6. A one-sided slope at
-/// the knots that the lattice-coincident H atom's neighbours sit on missed by
-/// 3.2e-2.
-const FD_TOL_TABULATED_REL: f64 = 1e-6;
+/// Bar for the tabulated-proatom construction test, relative to
+/// max(1, max|G|). The proatom interpolant is C2 in r (knots included), so the
+/// test runs at the same h = 1e-4 Bohr as the Slater one. Measured 6.5e-9 abs
+/// (3.7e-9 rel), H2O/STO-3G; a zero proatom slope misses by 2.6.
+const FD_TOL_TABULATED_REL: f64 = 5e-8;
 
 fn rhf_density(mol: &Molecule, bs: &BasisSet, cfg: &RhfConfig) -> Array2<f64> {
     let prep = PreparedBasis::new(mol, bs).expect("prepared basis");
@@ -87,7 +84,7 @@ fn synthetic_proatom(z: i32) -> RadialProatom {
         .iter()
         .map(|&r| prefac * (-2.0 * xi * r).exp())
         .collect();
-    RadialProatom { radii, rho }
+    RadialProatom::new(radii, rho).expect("synthetic proatom")
 }
 
 fn synthetic_provider() -> impl Fn(i32, i32) -> Option<RadialProatom> {
@@ -211,50 +208,40 @@ fn on_grid_volumes_are_bit_identical_to_default() {
     }
 }
 
-/// Catches: the slope of the wrong segment (off-by-one bracket, e.g. the
-/// left-hand segment), a sign error, dividing by the wrong knot spacing, and
-/// a non-zero value where `at` is constant (below radii[0], beyond the end).
-/// Points sit strictly inside segments (fraction 0.37 of the way), so central
-/// FD of the linear piece is exact up to rounding.
+/// Catches: a `deriv` that is not the derivative of `at` anywhere — a wrong
+/// segment (off-by-one bracket), a sign error, the wrong knot spacing, a kink
+/// or subgradient at a knot, a wrong slope below radii[0] (the even
+/// extension) or beyond the end (the exponential tail). Points sit inside
+/// segments AND exactly on knots, with no special-casing: the interpolant is
+/// C2, so central FD is accurate everywhere.
 #[test]
-fn radial_proatom_deriv_matches_fd_inside_segments() {
+fn radial_proatom_deriv_matches_fd_everywhere() {
     let p = synthetic_proatom(8);
     // Make the table non-uniform so a wrong-spacing bug is visible.
-    let radii: Vec<f64> = p.radii.iter().map(|&r| r + 0.01 * r * r).collect();
-    let pa = RadialProatom {
-        radii: radii.clone(),
-        rho: p.rho.clone(),
-    };
-    let mut checked = 0;
+    let radii: Vec<f64> = p.radii().iter().map(|&r| r + 0.01 * r * r).collect();
+    let pa = RadialProatom::new(radii.clone(), p.rho().to_vec()).unwrap();
+    let mut pts = vec![0.0, 0.5 * radii[0], radii[radii.len() - 1] + 1.0];
     for k in (0..radii.len() - 1).step_by(7) {
         let dr = radii[k + 1] - radii[k];
-        let r = radii[k] + 0.37 * dr;
-        let h = 1e-3 * dr;
+        pts.push(radii[k]);
+        pts.push(radii[k] + 0.37 * dr);
+    }
+    let mut worst = 0.0_f64;
+    for &r in &pts {
+        let h = 1e-5;
         let fd = (pa.at(r + h) - pa.at(r - h)) / (2.0 * h);
         let an = pa.deriv(r);
-        let tol = 1e-8 * fd.abs().max(1e-12) + 1e-14;
-        assert!(
-            (an - fd).abs() <= tol,
-            "segment {k}: deriv {an:.12e} vs FD {fd:.12e}"
-        );
-        checked += 1;
+        let rel = (an - fd).abs() / pa.at(r);
+        worst = worst.max(rel);
+        assert!(rel <= 1e-7, "r = {r}: deriv {an:.12e} vs FD {fd:.12e}");
     }
-    assert!(checked > 50);
-    assert_eq!(
-        pa.deriv(0.5 * radii[0]),
-        0.0,
-        "below radii[0] `at` is constant"
+    println!(
+        "max |deriv - FD| / rho over {} points: {worst:.2e}",
+        pts.len()
     );
-    assert_eq!(
-        pa.deriv(radii[radii.len() - 1] + 1.0),
-        0.0,
-        "beyond the table `at` is 0"
-    );
-    let empty = RadialProatom {
-        radii: vec![],
-        rho: vec![],
-    };
-    assert_eq!(empty.deriv(1.0), 0.0);
+    assert!(pts.len() > 100);
+    assert_eq!(pa.deriv(0.0), 0.0, "the proatom is even in r");
+    assert!(RadialProatom::new(vec![], vec![]).is_err());
 }
 
 /// THE construction test, smooth proatom (Slater fallback, `proatom = None`).
@@ -295,7 +282,7 @@ fn hirshfeld_volume_gradient_matches_fd_tabulated_proatom() {
     let pref: &ProatomProvider = &p;
     let c = [-0.6, 1.1, 0.25];
     let an = hirshfeld_volume_gradient(&mol, &bs, &d, Some(pref), &grid, &c).unwrap();
-    let fd = fd_contracted_volumes(&mol, &bs, &d, Some(pref), &grid, &c, 1e-6);
+    let fd = fd_contracted_volumes(&mol, &bs, &d, Some(pref), &grid, &c, 1e-4);
     compare("tabulated proatom", &an, &fd, FD_TOL_TABULATED_REL);
 }
 
@@ -457,11 +444,11 @@ fn fd_mbd(
 }
 
 /// Bar on the EXACT gradient (with the Z-vector relaxation) against central
-/// FD (h = 1e-3 Bohr) of the full SCF + MBD pipeline. Measured 4.1e-9
-/// (PBE/STO-3G water, this test); 6.0e-9 for H2O/6-31G with PBE, PBE0, HSE06
-/// and RI-J, and 9.1e-10 for NH3/6-31G at h = 1e-4 (`measure_full_pipeline_fd`).
+/// FD (h = 1e-3 Bohr) of the full SCF + MBD pipeline. Measured 8.0e-10
+/// (PBE/STO-3G water, this test); ≤ 3.5e-9 for H2O/6-31G with PBE, PBE0, HSE06
+/// and RI-J, and 2.0e-10 for NH3/6-31G (`measure_full_pipeline_fd`, same h).
 /// Without the relaxation term it misses by 7.7e-6.
-const FD_FULL_TOL: f64 = 5e-8;
+const FD_FULL_TOL: f64 = 5e-9;
 
 /// THE exactness test, fast: PBE/STO-3G water, exact gradient vs FD of the
 /// full pipeline (SCF re-solved at every displaced geometry). Without the
@@ -524,8 +511,7 @@ fn measure_full_pipeline_fd() {
     let bs = basis::bundled("6-31g").expect("6-31g");
     let op = Operator::coulomb();
     let ctx = ParallelContext::default();
-    // FD step (Bohr); MBD_FD_H overrides it (the default straddles proatom
-    // knots on a few lattice points, see the NH3 note in the module doc).
+    // FD step (Bohr); MBD_FD_H overrides it.
     let h: f64 = std::env::var("MBD_FD_H")
         .ok()
         .and_then(|v| v.parse().ok())

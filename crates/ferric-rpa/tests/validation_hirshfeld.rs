@@ -22,8 +22,9 @@
 //!
 //! * `Some(provider)` — what ferric-cli and `ferric.hirshfeld_charges` pass
 //!   (`ferric_scf::properties::scf_proatom_provider`): a `RadialProatom` table on
-//!   r_k = 0.05·k Bohr (k = 1..600), linear interpolation, ρ(0.05) below the
-//!   first node, 0 from 30 Bohr, holding the spherical average of the free
+//!   r_k = 0.05·k Bohr (k = 1..600), interpolated by a cubic spline in ln ρ
+//!   (even extension through r = 0, natural far end, linear-in-ln ρ tail),
+//!   holding the spherical average of the free
 //!   NEUTRAL atom's SCF density in the molecule's basis (RHF singlets, UHF with
 //!   MOM after iteration 5 otherwise, for an HF molecular config); or
 //! * `None` — `ferric.hirshfeld_charges(..., proatom="slater")`: a
@@ -61,9 +62,10 @@
 //! proatom tabulated at 0.005 Bohr (the 0.05 Bohr table's error), and the
 //! volumes on a dense Becke–Lebedev grid (the lattice's error). The dense-grid
 //! charges agree with the same integral on PySCF's own level-9 grid (PySCF's
-//! Becke partition and pruning) to ≤3.0e-5 e, so ferric's default-grid error
-//! (≤2.7e-4 e, measured by numpy on the rebuilt grid) is ferric's, not the
-//! reference's.
+//! Becke partition and pruning) to ≤2.8e-7 e, so ferric's default-grid error
+//! (≤2.0e-4 e, measured by numpy on the rebuilt grid) is ferric's, not the
+//! reference's. The 0.05 Bohr table moves the dense-grid charges by ≤2.9e-7 e
+//! against a 0.005 Bohr table.
 //!
 //! # Physics hypothesis vs artifact hypothesis
 //!
@@ -83,27 +85,28 @@
 //!
 //! A promolecule density (block-diagonal He and H free-atom densities, both
 //! spherical) with its own proatoms has zero Hirshfeld charges up to the table
-//! and the grid: measured 7.0e-5 e on ferric's grid with the 0.05 Bohr table,
-//! 8.8e-7 e on the dense grid with a 0.005 Bohr table. Asserted twice: on the
+//! and the grid: measured 8.7e-6 e on ferric's grid with the 0.05 Bohr table
+//! (the grid's error: 2.7e-9 e on the dense grid with the same table), 1.1e-9 e
+//! on the dense grid with a 0.005 Bohr table. Asserted twice: on the
 //! reference promolecule (same density) and on ferric's own free atoms.
 //!
-//! # TOLERANCES (measured 2026-09-30, worst over every system and basis)
+//! # TOLERANCES (measured 2026-10-01, worst over every system and basis)
 //!
 //! | quantity | measured max |d| | bar |
 //! |---|---:|---:|
 //! | overlap, PySCF (ferric order) vs ferric (molecules and atoms) | 8.9e-16 | 1e-12 |
 //! | proatom table, same density (rel. to max ρ) | 2.4e-15 | 1e-12 |
-//! | free-atom SCF energy (Ha) | 5.0e-14 | 1e-9 |
+//! | free-atom SCF energy (Ha) | 2.8e-14 | 1e-9 |
 //! | proatom table, ferric's free atom (rel. to max ρ) | 1.1e-11 | 1e-7 |
 //! | charges, same density + proatoms (SCF and Slater) (e) | 1.9e-13 | 1e-10 |
-//! | Σq (e) | 2.7e-15 | 1e-10 |
-//! | charges vs the dense-grid reference (e) | 2.7e-4 | 1e-3 |
+//! | Σq (e) | 5.1e-15 | 1e-10 |
+//! | charges vs the dense-grid reference (e) | 2.0e-4 | 1e-3 |
 //! | Hirshfeld volumes, same density (rel) | 3.5e-13 | 1e-11 |
 //! | free-atom `None` volume, same density (rel) | 8.6e-14 | 1e-11 |
-//! | RHF energy (Ha) | 9.1e-12 | 1e-10 |
+//! | RHF energy (Ha) | 9.3e-12 | 1e-10 |
 //! | charges, full chain (e) | 2.6e-9 | 1e-6 |
 //! | Hirshfeld volumes, full chain (rel) | 2.3e-9 | 1e-6 |
-//! | promolecule anchor |q| (e), both routes | 7.0e-5 | 5e-4 |
+//! | promolecule anchor |q| (e), both routes | 8.7e-6 | 5e-5 |
 //!
 //! # NEGATIVE CONTROLS / MUTATIONS
 //!
@@ -128,8 +131,9 @@
 //!   fail by the grid's electron-count error (7e-6 e for H2O, 1.7e-4 e for CO,
 //!   7.5e-4 e for CH3OH on ferric's grid, from the reference files).
 //! * MUTATION D — make `RadialProatom::at` (ferric-scf/src/properties.rs)
-//!   return the lower node instead of interpolating: the same-density charges
-//!   and volumes fail (the reference interpolates linearly).
+//!   drop the spline's moment terms (piecewise linear in ln ρ): the
+//!   same-density charges fail by 3.5e-5–9.3e-5 e and the anchor's
+//!   same-density charges by 9.9e-7 e (4 of 5 tests). Run 2026-10-01.
 //!
 //! A missing reference JSON is a HARD failure (panic naming the path).
 
@@ -170,7 +174,7 @@ const TOL_VOL_SAME_REL: f64 = 1e-11;
 const TOL_E_SCF: f64 = 1e-10;
 const TOL_Q_CHAIN: f64 = 1e-6;
 const TOL_VOL_CHAIN_REL: f64 = 1e-6;
-const TOL_ANCHOR: f64 = 5e-4;
+const TOL_ANCHOR: f64 = 5e-5;
 /// A control must move a quantity by at least this multiple of its bar.
 const MUST_MISS: f64 = 1000.0;
 const DENSITY_KICK: f64 = 1e-3;
@@ -399,7 +403,7 @@ fn proatoms(
         check(
             &actx,
             "proatom table same-D (rel max)",
-            table_diff(&same.rho, &rho_ref),
+            table_diff(same.rho(), &rho_ref),
             TOL_TABLE_SAME,
         );
 
@@ -414,16 +418,13 @@ fn proatoms(
         check(
             &actx,
             "proatom table own SCF (rel max)",
-            table_diff(&own.rho, &rho_ref),
+            table_diff(own.rho(), &rho_ref),
             TOL_TABLE_CHAIN,
         );
 
         t_ref.insert(
             z,
-            RadialProatom {
-                radii: radii.clone(),
-                rho: rho_ref,
-            },
+            RadialProatom::new(radii.clone(), rho_ref).expect("reference proatom table"),
         );
         t_own.insert(z, own);
         d_own.insert(z, dens_own);
