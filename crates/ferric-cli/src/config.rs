@@ -2009,12 +2009,25 @@ pub struct ScfCfg {
     /// `k_builder = "cosx"` consumes no Schwarz table at all, so `screening`
     /// has no effect there — a property of COSX, not a gap in this wiring.
     pub screening: Option<String>,
-    /// COSX exchange grid, `cosx_grid = { radial = 50, angular = 110 }`.
-    /// Omitted = (50,110), the measured operating point (coarser grids fail the
-    /// 0.1 kcal/mol isodesmic reaction-energy bar in the composed-budget audit).
-    /// `angular` must be a tabulated Lebedev order (6/14/26/50/110/302/434/590). Setting
-    /// this with any `k_builder` other than "cosx" is a hard error.
+    /// COSX exchange grid (the SCF grid),
+    /// `cosx_grid = { radial = 35, angular = 194, prune = "sgx" }`. Omitted =
+    /// `ferric_scf::cosx_k::CosxConfig::default()` (see `site/src/methods/scf.md`,
+    /// "Choosing how exchange is built"). `angular` is a tabulated Lebedev order
+    /// (6/14/26/50/110/194/302/434/590), and with `prune = "sgx"` the PEAK of an
+    /// ORCA-GridX-like row (50/110/194/302/434/590). A table WITHOUT `prune` is
+    /// a FLAT grid. Unknown prune spellings and setting this with any
+    /// `k_builder` other than "cosx" are hard errors.
     pub cosx_grid: Option<CosxGridCfg>,
+    /// COSX final-grid pass on/off: after convergence, exchange is evaluated
+    /// once more on a larger grid at the converged density (Psi4/ORCA style,
+    /// non-self-consistent) and the run reports that energy. Omitted = the
+    /// library default. `true` without `cosx_final_grid` uses
+    /// `ferric_scf::cosx_k::COSX_DEFAULT_FINAL_GRID`; `false` with an explicit
+    /// `cosx_final_grid` is a hard error. Gradient tasks run without it.
+    pub cosx_final_pass: Option<bool>,
+    /// The COSX final grid, same table as `cosx_grid`. Setting it turns the
+    /// final pass on.
+    pub cosx_final_grid: Option<CosxGridCfg>,
     /// COSX overlap fit (Izsák–Neese). Omitted = `true`. At (50,110) the fit
     /// took the isodesmic reaction-energy error 0.2068 -> 0.0190 kcal/mol
     /// (water-favourable set); it is net-NEGATIVE on grids coarser than
@@ -2188,6 +2201,8 @@ impl Default for ScfCfg {
             k_builder: None,
             screening: None,
             cosx_grid: None,
+            cosx_final_pass: None,
+            cosx_final_grid: None,
             cosx_overlap_fit: None,
             cosx_backend: None,
             cosx_screen_thresh: None,
@@ -2208,12 +2223,22 @@ impl Default for ScfCfg {
     }
 }
 
-/// `[scf] cosx_grid = { radial = .., angular = .. }` — the COSX exchange grid.
-#[derive(Deserialize, Debug, Clone, Copy)]
+/// `[scf] cosx_grid = { radial = .., angular = .., prune = .. }` — a COSX
+/// exchange grid (also the shape of `cosx_final_grid`). `prune` omitted =
+/// flat; `"sgx"` = the pruned COSX scheme; `"none"` = flat.
+#[derive(Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct CosxGridCfg {
     pub radial: usize,
     pub angular: usize,
+    pub prune: Option<String>,
+}
+
+impl CosxGridCfg {
+    fn to_grid(&self, key: &str) -> Result<ferric_dft::grid::AtomicGridConfig, String> {
+        ferric_scf::cosx_k::grid_from_parts(self.radial, self.angular, self.prune.as_deref())
+            .map_err(|e| format!("[scf] {key}: {e}"))
+    }
 }
 
 impl ScfCfg {
@@ -2249,22 +2274,32 @@ impl ScfCfg {
         use ferric_scf::cosx_k::{validate_grid, CosxBackend, CosxConfig, CosxHalfTransform};
         let is_cosx = self.k_builder.as_deref() == Some("cosx");
         let any_cosx_knob = self.cosx_grid.is_some()
+            || self.cosx_final_pass.is_some()
+            || self.cosx_final_grid.is_some()
             || self.cosx_overlap_fit.is_some()
             || self.cosx_backend.is_some()
             || self.cosx_screen_thresh.is_some()
             || self.cosx_half_transform.is_some();
         if !is_cosx && any_cosx_knob {
             return Err(format!(
-                "[scf] cosx_grid / cosx_overlap_fit / cosx_backend / cosx_screen_thresh / cosx_half_transform are set but k_builder = {:?}; they are only read with k_builder = \"cosx\"",
+                "[scf] cosx_grid / cosx_final_pass / cosx_final_grid / cosx_overlap_fit / cosx_backend / cosx_screen_thresh / cosx_half_transform are set but k_builder = {:?}; they are only read with k_builder = \"cosx\"",
                 self.k_builder
             ));
         }
         let mut cfg = CosxConfig::default();
-        if let Some(g) = self.cosx_grid {
-            cfg.grid.n_radial = g.radial;
-            cfg.grid.n_angular = g.angular;
-            validate_grid(&cfg.grid).map_err(|e| format!("[scf] cosx_grid: {e}"))?;
-        }
+        let grid = self
+            .cosx_grid
+            .as_ref()
+            .map(|g| g.to_grid("cosx_grid"))
+            .transpose()?;
+        let final_grid = self
+            .cosx_final_grid
+            .as_ref()
+            .map(|g| g.to_grid("cosx_final_grid"))
+            .transpose()?;
+        ferric_scf::cosx_k::apply_grid_knobs(&mut cfg, grid, self.cosx_final_pass, final_grid)
+            .map_err(|e| format!("[scf] {e}"))?;
+        validate_grid(&cfg.grid).map_err(|e| format!("[scf] cosx_grid: {e}"))?;
         if let Some(fit) = self.cosx_overlap_fit {
             cfg.overlap_fit = fit;
         }
@@ -2832,22 +2867,16 @@ impl Config {
     ///   Refused rather than warned: the result is a different method, not a
     ///   slightly different number.
     ///
-    /// * `[scf] k_builder = "cosx"` + any gradient task: every CLI gradient
-    ///   (`rhf_gradient`, `uhf_gradient`, `ks_gradient_*`, and the frequency
-    ///   driver's finite differences of them) is built from exact four-centre
-    ///   derivative integrals, and the RI-MP2/RPA optimizers ignore
-    ///   `k_builder` altogether. An optimize run therefore paired COSX
-    ///   energies with an exact-exchange gradient that is not their
-    ///   derivative: the optimizer steers to the exact-exchange stationary
-    ///   point while its energies (and its energy-change convergence test)
-    ///   come from COSX. MEASURED (water, central FD along one H z,
-    ///   1e-3 Angstrom): dE/dz from COSX energies minus dE/dz from exact-K
-    ///   energies = -8.9e-6 Ha/Bohr at STO-3G and -1.4e-5 at cc-pVDZ. That
-    ///   is under the default g_max (4.5e-4) for water, but it is a grid
-    ///   error that grows with system and basis (the COSX energy error is
-    ///   5e-6 Ha on water/cc-pVDZ and 1.2e-4 Ha on butane/def2-TZVP), and the
-    ///   published docs already list COSX as "no gradients"; this makes the
-    ///   CLI agree with them.
+    /// * `[scf] k_builder = "cosx"` + a gradient task on a kind whose
+    ///   gradient does not differentiate COSX (everything except
+    ///   [`COSX_GRADIENT_KINDS`]: the RI-MP2/RPA optimizers ignore
+    ///   `k_builder`, ROHF/ROKS has no COSX gradient). Pairing COSX energies
+    ///   with an exact-exchange gradient steers the optimizer to the
+    ///   exact-exchange stationary point while its energies come from COSX
+    ///   (measured on water by central FD: -8.9e-6 Ha/Bohr at STO-3G, -1.4e-5
+    ///   at cc-pVDZ). RHF/RKS/UHF route through `restricted_scf_gradient` /
+    ///   `unrestricted_scf_gradient`, which differentiate the COSX (and RI-J)
+    ///   energy the SCF built, so they are admitted.
     pub fn validate_task_compat(&self) -> Result<(), String> {
         let kind = self.method.kind.as_str();
         let task = self.method.task.as_str();
@@ -2870,18 +2899,29 @@ impl Config {
             ));
         }
         self.validate_cli_wired_keys()?;
-        if task != "energy" && self.scf.k_builder.as_deref() == Some("cosx") {
+        if task != "energy"
+            && self.scf.k_builder.as_deref() == Some("cosx")
+            && !COSX_GRADIENT_KINDS.contains(&kind)
+        {
             return Err(format!(
-                "[scf] k_builder = \"cosx\" is not supported with method.task = \"{task}\": \
-                 COSX has no analytic gradient, and the gradient used here is built from \
-                 exact exchange (or ignores k_builder), so it would not be the derivative of \
-                 the COSX energy. Use k_builder = \"direct\" or \"link\" for gradient \
-                 tasks, or task = \"energy\" for COSX."
+                "[scf] k_builder = \"cosx\" is not supported with method.kind = \"{kind}\", \
+                 task = \"{task}\": this method's gradient is built from exact exchange (or \
+                 ignores k_builder), so it would not be the derivative of the COSX energy. \
+                 COSX gradients exist for kind = \"rhf\" / \"ksdft\" (RHF/RKS) and \
+                 \"uhf\" (UHF); use k_builder = \"direct\" or \"link\" here, or task = \
+                 \"energy\"."
             ));
         }
         Ok(())
     }
 }
+
+/// `method.kind`s whose optimize / frequencies tasks differentiate COSX
+/// exchange (`ferric_scf::gradient::restricted_scf_gradient` /
+/// `unrestricted_scf_gradient` behind `optimize_geometry*` and the frequency
+/// driver): RHF/RKS and UHF (UKS is refused by the library before the SCF).
+/// Every other kind's gradient ignores `k_builder`.
+const COSX_GRADIENT_KINDS: &[&str] = &["rhf", "ksdft", "uhf"];
 
 /// `method.kind`s whose run honours `[pcm]`: the SCF-only kinds (the
 /// reported energy IS the solvated SCF energy; `solve_rhf`/`solve_uhf`/
@@ -3492,15 +3532,24 @@ mod compat_guard_tests {
     /// energies with an exact-exchange gradient. Reverting the cosx branch of
     /// `validate_task_compat` fails the `expect_err`s; the `Ok` cases pin
     /// that COSX energies and exact-exchange gradients are both still allowed.
+    /// COSX gradient tasks are admitted exactly for the SCF kinds whose
+    /// library gradient differentiates COSX, and refused for the rest.
     #[test]
-    fn cosx_is_refused_on_every_gradient_task() {
+    fn cosx_gradient_tasks_are_admitted_only_where_a_cosx_gradient_exists() {
         let cosx = "[scf]\nk_builder = \"cosx\"\n";
         for task in ["optimize", "frequencies"] {
-            for kind in ["rhf", "uhf", "ksdft", "rimp2"] {
+            for kind in ["rimp2", "rohf"] {
                 let e = cfg(kind, task, cosx)
                     .validate_task_compat()
                     .expect_err(task);
                 assert!(e.contains("cosx") && e.contains(task), "{e}");
+            }
+            for kind in ["rhf", "uhf", "ksdft"] {
+                assert_eq!(
+                    cfg(kind, task, cosx).validate_task_compat(),
+                    Ok(()),
+                    "{kind}"
+                );
             }
         }
         assert_eq!(cfg("rhf", "energy", cosx).validate_task_compat(), Ok(()));
@@ -4361,7 +4410,7 @@ json = [1, 2]
         );
         // Untabulated angular order is a typed error, not a panic.
         assert!(
-            parse("k_builder = \"cosx\"\ncosx_grid = { radial = 50, angular = 194 }\n")
+            parse("k_builder = \"cosx\"\ncosx_grid = { radial = 50, angular = 146 }\n")
                 .scf
                 .cosx_config()
                 .is_err()
@@ -6608,7 +6657,7 @@ mod cli_wired_keys_tests {
 
     #[test]
     fn grid_keys_are_refused_where_they_cannot_apply() {
-        let bad_ang = cfg("ksdft", "energy", 1, "[dft]\ngrid_angular = 194\n");
+        let bad_ang = cfg("ksdft", "energy", 1, "[dft]\ngrid_angular = 146\n");
         let e = bad_ang.validate_dft_section().unwrap_err();
         assert!(e.contains("not a supported Lebedev order"), "{e}");
         let zero = cfg("ksdft", "energy", 1, "[dft]\ngrid_radial = 0\n");

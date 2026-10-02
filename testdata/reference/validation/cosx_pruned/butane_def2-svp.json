@@ -1,0 +1,166 @@
+{
+  "row": "COSX pruned (sgx) grid",
+  "system": "butane",
+  "basis": "def2-svp",
+  "charge": 0,
+  "multiplicity": 1,
+  "nao": 106,
+  "nuclear_repulsion": 131.64517729295423,
+  "basis_check": {
+    "nao": 106,
+    "replica_self_overlap_max_dev": 2.220446049250313e-16,
+    "pyscf_diag_max_dev": 4.440892098500626e-16,
+    "diag_checked": 106,
+    "diag_skipped_cartesian": 0
+  },
+  "exact": {
+    "energy": -157.1861392016501
+  },
+  "sgx_pruned_matched_nofit": {
+    "35_194": {
+      "radial": 35,
+      "angular_peak": 194,
+      "prune": "sgx",
+      "n_points": 50564,
+      "n_points_nonzero_weight": 50329,
+      "energy": -157.186406885563,
+      "minus_exact": -0.0002676839129094333,
+      "wall_s": 43.5
+    },
+    "50_302": {
+      "radial": 50,
+      "angular_peak": 302,
+      "prune": "sgx",
+      "n_points": 114800,
+      "n_points_nonzero_weight": 114278,
+      "energy": -157.18607931500006,
+      "minus_exact": 5.988665003542337e-05,
+      "wall_s": 67.2
+    }
+  },
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "scf": "RHF, exact direct J; conv_tol 1e-11",
+      "sgx": "sgx_fit(pjs=False); dfj=False, direct_j=True, optk=False, grids_thrd=0, rebuild_nsteps=1, fit_ovlp=False",
+      "sgx_grid": "(n_radial, peak) Treutler radial (same count for every element) x gen_grid.sgx_prune, Becke partition, becke_atomic_radii_adjust (get_gridss replaced)"
+    },
+    "grid": {
+      "sgx": [
+        [
+          35,
+          194
+        ],
+        [
+          50,
+          302
+        ]
+      ],
+      "prune": "sgx_prune"
+    },
+    "aux_basis": "none",
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-11
+    },
+    "stability": null,
+    "basis": "def2-svp",
+    "basis_json": "crates/ferric-core/src/basis/bundled/def2-svp.json",
+    "basis_sha256": "bfad5f58ceac74a9ac2766b39f510654cea29fb9408e966bb0dfcf14e1302d4f",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/alkane_4.xyz",
+    "geometry_xyz_sha256": "ef5b876a94eb2cdc9e22a80b9486ce939ca07f4f70719152dca99d8119d71b6a",
+    "geometry_bohr": [
+      [
+        "C",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "C",
+        2.354530721067583,
+        1.6649432020480477,
+        0.0
+      ],
+      [
+        "C",
+        4.70906333186129,
+        0.0,
+        0.0
+      ],
+      [
+        "C",
+        7.063594052928873,
+        1.6649432020480477,
+        0.0
+      ],
+      [
+        "H",
+        -1.6879808532326204,
+        1.1936096017851547,
+        0.0
+      ],
+      [
+        "H",
+        5.102260536325667e-05,
+        -1.1935736969887878,
+        -1.6880054196722398
+      ],
+      [
+        "H",
+        5.102260536325667e-05,
+        -1.1935736969887878,
+        1.6880054196722398
+      ],
+      [
+        "H",
+        2.354530721067583,
+        2.8585509141070777,
+        1.6879808532326204
+      ],
+      [
+        "H",
+        2.354530721067583,
+        2.8585509141070777,
+        -1.6879808532326204
+      ],
+      [
+        "H",
+        4.70906333186129,
+        -1.1936096017851547,
+        -1.6879808532326204
+      ],
+      [
+        "H",
+        4.70906333186129,
+        -1.1936096017851547,
+        1.6879808532326204
+      ],
+      [
+        "H",
+        8.751574906161494,
+        0.47133360026289317,
+        0.0
+      ],
+      [
+        "H",
+        7.063543030323509,
+        2.858515009310711,
+        -1.6880054196722398
+      ],
+      [
+        "H",
+        7.063543030323509,
+        2.858515009310711,
+        1.6880054196722398
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_cosx_pruned.py",
+    "git_head": "51653d0289319ebd0d78b5a1113fead1722c921f",
+    "generated_utc": "2026-10-02T02:07:11+00:00"
+  }
+}

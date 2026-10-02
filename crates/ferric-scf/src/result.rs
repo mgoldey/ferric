@@ -116,6 +116,13 @@ pub struct ScfResult {
     /// needs the spin Focks themselves. `None` for RHF/UHF and hand-built
     /// results.
     pub rohf_spin_focks: Option<(Array2<f64>, Array2<f64>)>,
+    /// COSX final-grid pass (`CosxConfig::final_grid`): the exchange energy
+    /// re-evaluated ONCE on the larger final grid at the converged density
+    /// (non-self-consistent, ORCA/Psi4 style). When `Some`,
+    /// [`ScfResult::energy`] is `e_final` and the SCF-grid energy is kept in
+    /// `e_scf_grid`; the analytic gradients differentiate the SCF-grid energy
+    /// (see `crate::cosx_k::CosxFinalPass`). `None` when no final pass ran.
+    pub cosx_final: Option<crate::cosx_k::CosxFinalPass>,
 }
 
 /// The density-fitted two-electron builders one SCF actually used.

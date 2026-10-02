@@ -451,7 +451,14 @@ pub fn solve_rohf_best_effort(
     } else {
         None
     };
-    let k_aux_eff = if need_k && k_mix.omega == 0.0 {
+    // RIJCOSX: `k_builder = "cosx"` replaces the ω = 0 DF-K (an explicitly
+    // named `df_k_aux` alongside it is refused); DF-J is unaffected.
+    let cosx_k = crate::fock_assembly::cosx_replaces_df_k(
+        config.k_builder.as_deref(),
+        config.df_k_aux.as_deref(),
+        need_k && k_mix.omega == 0.0,
+    )?;
+    let k_aux_eff = if need_k && k_mix.omega == 0.0 && !cosx_k {
         config.df_k_aux.as_deref()
     } else {
         None
@@ -493,13 +500,21 @@ pub fn solve_rohf_best_effort(
     // is untouched by this.
     let pluggable_k_kind = crate::fock_assembly::resolve_k_builder(
         config.k_builder.as_deref(),
-        df_j.is_some() || df_k.is_some(),
+        df_j.is_some(),
+        df_k.is_some(),
         df_k.is_some(),
         need_k,
         k_mix.omega,
     )?;
     let pluggable_k_kind =
         crate::fock_assembly::narrow_k_builder_to_supported(pluggable_k_kind, need_k, k_mix.omega);
+    if pluggable_k_kind == Some("cosx") && config.cosx.final_grid.is_some() {
+        return Err(FerricError::General(
+            "COSX final-grid pass (cosx final_grid) is implemented for RHF/RKS and UHF/UKS, not \
+             ROHF/ROKS; unset the final grid for ROHF/ROKS runs"
+                .into(),
+        ));
+    }
     // Same `LinkBound::SchwarzRef` adapter and same rationale as `solve_uhf`'s
     // — see the comment there. No table on `bounds` (the default) makes this
     // byte-identical to passing `bounds` directly.
@@ -873,6 +888,7 @@ pub fn solve_rohf_best_effort(
                 stability: None,
                 df_jk: df_jk_route.clone(),
                 rohf_spin_focks: spin_focks_last.clone(),
+                cosx_final: None,
             };
             // Swap witness (F6): returned now, or held while its best
             // single-swap neighbours are evaluated on the next passes.
@@ -1083,6 +1099,7 @@ pub fn solve_rohf_best_effort(
         stability: None,
         df_jk: df_jk_route,
         rohf_spin_focks: spin_focks_last,
+        cosx_final: None,
     })
 }
 

@@ -508,11 +508,10 @@ fn exact_k_gradients_are_bit_identical_through_the_dispatch() {
     let b = rhf_gradient(&mol, &prep, op, &bounds, &r, None).unwrap();
     assert!(a == b, "RHF dispatch differs from rhf_gradient");
 
-    // B3LYP with the default DF auto-default AND k_builder = "cosx": the SCF
-    // ignores COSX (RI-J/RI-K active), so must the gradient.
-    // Loose-ish convergence on purpose: this compares two runs bit for bit, and
-    // under DF the energy random-walks at ~1e-8 (cosx_scf.rs::tight), so a
-    // tighter energy_conv would make convergence a coin flip.
+    // B3LYP with the DF auto-default and no k_builder: the dispatcher and
+    // `_with_exchange(None)` are exactly `ks_gradient_closed`. (With
+    // k_builder = "cosx" the same config is RIJCOSX now — RI-J + COSX K, see
+    // `tests/cosx_rijcosx.rs` — so it no longer belongs to the exact-K set.)
     let plain = RhfConfig {
         xc: Some("B3LYP".into()),
         energy_conv: 1e-6,
@@ -520,29 +519,26 @@ fn exact_k_gradients_are_bit_identical_through_the_dispatch() {
         max_iter: 300,
         ..Default::default()
     };
-    let with_cosx = RhfConfig {
-        k_builder: Some("cosx".into()),
-        cosx: cosx_production_nofit(),
-        ..plain.clone()
-    };
-    assert!(!scf_exchange_is_cosx(&with_cosx, false).unwrap());
+    assert!(!scf_exchange_is_cosx(&plain, false).unwrap());
     let r_plain = solve_restricted(&mol, basis, &plain);
-    let r_cosx = solve_restricted(&mol, basis, &with_cosx);
-    assert!(
-        r_plain.energy.to_bits() == r_cosx.energy.to_bits(),
-        "SCF did not ignore COSX under DF: {} vs {} — scf_exchange_is_cosx disagrees with solve_rhf",
-        r_plain.energy,
-        r_cosx.energy
-    );
-    let a = restricted_scf_gradient(&mol, &prep, &bs, op, &bounds, &with_cosx, &r_cosx).unwrap();
-    let b = ks_gradient_closed(&mol, &prep, &bs, op, &bounds, "B3LYP", &r_cosx, None).unwrap();
+    let a = restricted_scf_gradient(&mol, &prep, &bs, op, &bounds, &plain, &r_plain).unwrap();
+    let b = ks_gradient_closed(&mol, &prep, &bs, op, &bounds, "B3LYP", &r_plain, None).unwrap();
     let c = ks_gradient_closed_with_exchange(
-        &mol, &prep, &bs, op, &bounds, "B3LYP", &r_cosx, None, None,
+        &mol, &prep, &bs, op, &bounds, "B3LYP", &r_plain, None, None,
     )
     .unwrap();
     assert!(
         a == b && b == c,
         "KS dispatch / _with_exchange(None) differ from ks_gradient_closed"
+    );
+    let with_cosx = RhfConfig {
+        k_builder: Some("cosx".into()),
+        cosx: cosx_production_nofit(),
+        ..plain
+    };
+    assert!(
+        scf_exchange_is_cosx(&with_cosx, false).unwrap(),
+        "RI-J auto-default + cosx is RIJCOSX, not exact K"
     );
 }
 
@@ -563,11 +559,15 @@ fn unsupported_cosx_gradients_are_refused() {
     assert!(format!("{err}").contains("overlap_fit"), "{err}");
     assert!(check_fitted_ks_supported(&cosx_exact(), Some("B3LYP")).is_ok());
 
-    // A pruned COSX grid has no weight response.
+    // A pruned COSX grid is differentiated (per-point weight response); a
+    // pruned grid without a region table for its peak order is refused.
     let mut pruned = cosx_exact();
-    pruned.grid.prune = Some(ferric_dft::prune::PruneScheme::NwchemLike);
+    pruned.grid.n_angular = 194;
+    pruned.grid.prune = Some(ferric_dft::prune::PruneScheme::Sgx);
+    check_gradient_supported(&pruned).expect("pruned sgx grid is supported");
+    pruned.grid.n_angular = 26;
     let err = check_gradient_supported(&pruned).unwrap_err();
-    assert!(format!("{err}").contains("pruned"), "{err}");
+    assert!(format!("{err}").contains("sgx"), "{err}");
 
     let basis = "sto-3g";
     let mol = mol_of(WATER, 1);
@@ -638,7 +638,8 @@ fn unsupported_cosx_gradients_are_refused() {
 /// Mutation: restoring the old `df_j_aux.is_some() || df_k_aux.is_some()`
 /// open-shell predicate makes the first two asserts fail (it reported "not
 /// COSX", and `unrestricted_scf_gradient` then paired an exact-K gradient with
-/// a COSX energy). The last two asserts keep a real DF name switching COSX off.
+/// a COSX energy). The last two asserts pin RIJCOSX: a named RI-J keeps COSX,
+/// a named RI-K next to it is an error.
 #[test]
 fn open_shell_empty_df_name_keeps_cosx_active() {
     let base = RhfConfig {
@@ -665,8 +666,10 @@ fn open_shell_empty_df_name_keeps_cosx_active() {
         df_k_aux: Some("def2-universal-jkfit".into()),
         ..base
     };
-    assert!(!scf_exchange_is_cosx(&named_j, true).unwrap());
-    assert!(!scf_exchange_is_cosx(&named_k, true).unwrap());
+    // A named RI-J keeps COSX on (RIJCOSX); a named RI-K next to COSX is a
+    // conflict, refused rather than silently resolved.
+    assert!(scf_exchange_is_cosx(&named_j, true).unwrap());
+    assert!(scf_exchange_is_cosx(&named_k, true).is_err());
 }
 
 // ---------------------------------------------------------------------------

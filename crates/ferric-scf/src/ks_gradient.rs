@@ -203,17 +203,7 @@ pub fn ks_gradient_closed_for_density(
     //   * J piece always uses full Coulomb with Γ_J = 0.5·D·D
     //   * For plain hybrids (ω=0): single K with c_K = k_mix.sr
     //   * For RSH (ω>0): two K pieces with c_SR · K[erfc] + c_LR · K[erf]
-    if let Some(route) = crate::gradient::active_df_route(result) {
-        grad += &crate::df_gradient::routed_two_electron_gradient(
-            mol,
-            prep,
-            op,
-            bounds,
-            crate::df_gradient::TwoElectronDensity::Closed(&d),
-            route,
-            crate::df_gradient::ExchangeMix::from_k_mix(&k_mix),
-        )?;
-    } else if let Some(cfg) = cosx {
+    if let Some(cfg) = cosx {
         if k_mix.omega > 0.0 {
             return Err(FerricError::General(format!(
                 "COSX exchange gradient: range-separated functional '{xc_name}' (omega = {}) has no \
@@ -221,8 +211,23 @@ pub fn ks_gradient_closed_for_density(
                 k_mix.omega
             )));
         }
-        // J piece from the four-centre integrals (Γ_J = ½·D·D, c_K = 0) ...
-        grad += &twoelectron_gradient_scaled_k(prep, op, bounds, &d, 0.0)?;
+        // J piece from the Coulomb builder the SCF used: RI-J when the route
+        // recorded one (the RIJCOSX composite), else the four-centre
+        // integrals (Γ_J = ½·D·D, c_K = 0). Never the routed J+K path, which
+        // would differentiate EXACT exchange next to it ...
+        match crate::gradient::active_df_route(result) {
+            Some(route) => {
+                if route.k_aux.is_some() || route.rsh_k.is_some() {
+                    return Err(FerricError::General(
+                        "COSX gradient: the SCF recorded a density-fitted exchange route next to \
+                         COSX exchange; RIJCOSX fits Coulomb only"
+                            .into(),
+                    ));
+                }
+                grad += &crate::df_gradient::df_j_gradient(mol, prep, route, &d)?;
+            }
+            None => grad += &twoelectron_gradient_scaled_k(prep, op, bounds, &d, 0.0)?,
+        }
         // ... and E_x = −(c_x/4)·tr[D K_COSX(D)] differentiated on the COSX grid.
         if k_mix.sr != 0.0 {
             grad += &crate::cosx_gradient::cosx_exchange_gradient(
@@ -232,6 +237,16 @@ pub fn ks_gradient_closed_for_density(
                 &[(&d, -0.25 * k_mix.sr)],
             )?;
         }
+    } else if let Some(route) = crate::gradient::active_df_route(result) {
+        grad += &crate::df_gradient::routed_two_electron_gradient(
+            mol,
+            prep,
+            op,
+            bounds,
+            crate::df_gradient::TwoElectronDensity::Closed(&d),
+            route,
+            crate::df_gradient::ExchangeMix::from_k_mix(&k_mix),
+        )?;
     } else if k_mix.omega > 0.0 {
         // J piece (Coulomb, no K).
         grad += &twoelectron_gradient_scaled_k(prep, op, bounds, &d, 0.0)?;

@@ -627,7 +627,14 @@ pub fn solve_uhf_fockmod(
     } else {
         None
     };
-    let k_aux_eff = if need_k && k_mix.omega == 0.0 {
+    // RIJCOSX: `k_builder = "cosx"` replaces the ω = 0 DF-K (an explicitly
+    // named `df_k_aux` alongside it is refused); DF-J is unaffected.
+    let cosx_k = crate::fock_assembly::cosx_replaces_df_k(
+        config.k_builder.as_deref(),
+        config.df_k_aux.as_deref(),
+        need_k && k_mix.omega == 0.0,
+    )?;
+    let k_aux_eff = if need_k && k_mix.omega == 0.0 && !cosx_k {
         config.df_k_aux.as_deref()
     } else {
         None
@@ -688,7 +695,8 @@ pub fn solve_uhf_fockmod(
     // is what supplied J for free.
     let pluggable_k_kind = crate::fock_assembly::resolve_k_builder(
         config.k_builder.as_deref(),
-        df_j.is_some() || df_k.is_some(),
+        df_j.is_some(),
+        df_k.is_some(),
         df_k.is_some(),
         need_k,
         k_mix.omega,
@@ -1053,6 +1061,24 @@ pub fn solve_uhf_fockmod(
             } else {
                 None
             };
+            // COSX final-grid pass (opt-in, `CosxConfig::final_grid`):
+            // `k_a_buf`/`k_b_buf` hold K_scf(D_σ) from this iteration's build.
+            let (energy, cosx_final) = match (pluggable_k_kind, config.cosx.final_grid.as_ref()) {
+                (Some("cosx"), Some(fg)) => {
+                    let rec = crate::cosx_k::run_final_pass(
+                        ctx,
+                        mol,
+                        prep,
+                        &config.cosx,
+                        fg,
+                        ooc_budget,
+                        energy,
+                        &[(&d_a, &k_a_buf, -0.5 * c_k), (&d_b, &k_b_buf, -0.5 * c_k)],
+                    )?;
+                    (rec.e_final, Some(rec))
+                }
+                _ => (energy, None),
+            };
             return Ok(ScfResult {
                 spin: Spin::Unrestricted,
                 energy,
@@ -1073,6 +1099,7 @@ pub fn solve_uhf_fockmod(
                 stability,
                 df_jk: df_jk_route.clone(),
                 rohf_spin_focks: None,
+                cosx_final,
             });
         }
         mon.note_energy(energy);
@@ -1512,6 +1539,7 @@ pub fn solve_uhf_fockmod(
         stability: None,
         df_jk: df_jk_route,
         rohf_spin_focks: None,
+        cosx_final: None,
     })
 }
 

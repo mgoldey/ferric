@@ -475,13 +475,13 @@ pub fn rhf_gradient_cosx_with_q(
     if !cosx.overlap_fit && !identity {
         let w = build_energy_weighted_density(result, nocc);
         let mut grad = oneelectron_gradient(mol, prep, d, &w, ext)?;
-        grad += &twoelectron_j_gradient(prep, op, bounds, d)?;
+        grad += &cosx_run_coulomb_gradient(mol, prep, op, bounds, result, d, None)?;
         grad += &crate::cosx_gradient::cosx_exchange_gradient(mol, prep, cosx, &[(d, -0.25)])?;
         grad += &ecp_gradient(mol, prep, d)?;
         return Ok(grad);
     }
     // Overlap fit: Z-vector Lagrangian (Hartree-Fock, c_x = 1).
-    let resp = crate::cosx_gradient::fitted_exchange_response_with_q(
+    let resp = crate::cosx_gradient::fitted_exchange_response_routed(
         mol,
         prep,
         bounds,
@@ -494,11 +494,12 @@ pub fn rhf_gradient_cosx_with_q(
         }],
         1.0,
         q,
+        active_df_route(result),
     )?;
     let zs = &resp.zs[0];
     let dz = d + zs;
     let mut grad = oneelectron_gradient(mol, prep, &dz, &resp.w, ext)?;
-    grad += &twoelectron_j_gradient_with_response(prep, op, bounds, d, zs)?;
+    grad += &cosx_run_coulomb_gradient(mol, prep, op, bounds, result, d, Some(zs))?;
     grad += &crate::cosx_gradient::cosx_exchange_gradient_bilinear_with_q(
         mol,
         prep,
@@ -549,7 +550,7 @@ pub fn uhf_gradient_cosx(
     if !cosx.overlap_fit {
         let w = build_energy_weighted_density_uhf(result, nocc_a, nocc_b);
         let mut grad = oneelectron_gradient(mol, prep, &d_total, &w, ext)?;
-        grad += &twoelectron_j_gradient(prep, op, bounds, &d_total)?;
+        grad += &cosx_run_coulomb_gradient(mol, prep, op, bounds, result, &d_total, None)?;
         grad += &crate::cosx_gradient::cosx_exchange_gradient(
             mol,
             prep,
@@ -568,7 +569,7 @@ pub fn uhf_gradient_cosx(
             ))
         }
     };
-    let resp = crate::cosx_gradient::fitted_exchange_response(
+    let resp = crate::cosx_gradient::fitted_exchange_response_routed(
         mol,
         prep,
         bounds,
@@ -588,12 +589,14 @@ pub fn uhf_gradient_cosx(
             },
         ],
         1.0,
+        crate::cosx_gradient::FitQ::Configured,
+        active_df_route(result),
     )?;
     let (zs_a, zs_b) = (&resp.zs[0], &resp.zs[1]);
     let zt = zs_a + zs_b;
     let dz = &d_total + &zt;
     let mut grad = oneelectron_gradient(mol, prep, &dz, &resp.w, ext)?;
-    grad += &twoelectron_j_gradient_with_response(prep, op, bounds, &d_total, &zt)?;
+    grad += &cosx_run_coulomb_gradient(mol, prep, op, bounds, result, &d_total, Some(&zt))?;
     grad += &crate::cosx_gradient::cosx_exchange_gradient_bilinear(
         mol,
         prep,
@@ -607,6 +610,55 @@ pub fn uhf_gradient_cosx(
     )?;
     grad += &ecp_gradient(mol, prep, &dz)?;
     Ok(grad)
+}
+
+/// Coulomb gradient of an SCF whose exchange came from COSX:
+/// `½ J'(D, D) + J'(Z, D)` (`z = None`: `½ J'(D, D)`), differentiated with the
+/// Coulomb builder the SCF actually used.
+///
+/// * RI-J recorded in `result.df_jk` (the RIJCOSX composite): the RI-J energy
+///   `E_J(D) = ½ dᵀV⁻¹d` is quadratic, so the bilinear Z-vector term follows
+///   by polarization, `½J'(D,D) + J'(Z,D) = E_J'(D + Z) − E_J'(Z)` (two passes
+///   of [`crate::df_gradient::df_j_gradient`]).
+/// * Exact J: the four-centre [`twoelectron_j_gradient`] /
+///   [`twoelectron_j_gradient_with_response`], unchanged.
+///
+/// A route that also fitted exchange cannot come with COSX (the solvers refuse
+/// or replace DF-K under `k_builder = "cosx"`), so it is an internal error
+/// rather than a K term silently dropped.
+fn cosx_run_coulomb_gradient(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    result: &ScfResult,
+    d: &Array2<f64>,
+    z: Option<&Array2<f64>>,
+) -> Result<Array2<f64>, FerricError> {
+    match active_df_route(result) {
+        Some(route) => {
+            if route.k_aux.is_some() || route.rsh_k.is_some() {
+                return Err(FerricError::General(
+                    "COSX gradient: the SCF recorded a density-fitted exchange route next to COSX \
+                     exchange; RIJCOSX fits Coulomb only"
+                        .into(),
+                ));
+            }
+            match z {
+                None => crate::df_gradient::df_j_gradient(mol, prep, route, d),
+                Some(z) => {
+                    let dz = d + z;
+                    let mut g = crate::df_gradient::df_j_gradient(mol, prep, route, &dz)?;
+                    g -= &crate::df_gradient::df_j_gradient(mol, prep, route, z)?;
+                    Ok(g)
+                }
+            }
+        }
+        None => match z {
+            None => twoelectron_j_gradient(prep, op, bounds, d),
+            Some(z) => twoelectron_j_gradient_with_response(prep, op, bounds, d, z),
+        },
+    }
 }
 
 /// Coulomb-only four-centre gradient `Σ ½·D_μν D_λσ · d(μν|λσ)/dR` — the J half
@@ -696,6 +748,34 @@ pub fn unrestricted_scf_gradient(
         }
         (None, true) => uhf_gradient_cosx(mol, prep, op, bounds, result, ext, &config.cosx),
         (None, false) => uhf_gradient(mol, prep, op, bounds, result, ext),
+    }
+}
+
+/// The SCF config a geometry driver (optimize, finite-difference
+/// frequencies) runs with: `config` itself, except that a COSX final-grid
+/// pass ([`crate::cosx_k::CosxConfig::final_grid`]) is removed, with a note.
+///
+/// The final pass is ENERGY-ONLY: it re-evaluates exchange non-self-
+/// consistently on a larger grid, and the analytic gradient differentiates
+/// the SCF-grid energy (see [`crate::cosx_k::CosxFinalPass`]). A driver that
+/// paired the final-grid energy with that gradient would mix two surfaces, so
+/// geometry steps use the SCF-grid energy throughout (and skip the extra
+/// final-grid K build at every step).
+pub fn gradient_task_config(
+    config: &crate::rhf::RhfConfig,
+) -> std::borrow::Cow<'_, crate::rhf::RhfConfig> {
+    if config.k_builder.as_deref() == Some("cosx") && config.cosx.final_grid.is_some() {
+        if config.verbose {
+            eprintln!(
+                "[ferric] COSX final-grid pass skipped for the geometry driver: energies and \
+                 gradients use the SCF grid (the final pass is energy-only)"
+            );
+        }
+        let mut c = config.clone();
+        c.cosx.final_grid = None;
+        std::borrow::Cow::Owned(c)
+    } else {
+        std::borrow::Cow::Borrowed(config)
     }
 }
 

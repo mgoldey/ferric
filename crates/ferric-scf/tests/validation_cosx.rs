@@ -466,6 +466,56 @@ fn cosx_matches_pyscf_sgx_on_the_same_grid_butane() {
     same_grid_case(Sys::Butane, None, &[110, 302]);
 }
 
+/// 2b. The PRUNED `sgx` grid (`PruneScheme::Sgx`, one radial count for every
+/// element, ORCA/PySCF region orders) vs PySCF SGX with its own `sgx_prune`
+/// on the same Treutler radial and Becke partition
+/// (`scripts/validation/gen_cosx_pruned.py`): the same discrete operator, so
+/// ferric (fit off, screens off) must match to the same-grid bar. Fails at
+/// O(1e-4..1e-3) if a region boundary, a region order or the Bragg radius
+/// differs (the pruned and flat (35,194) energies differ by that much).
+#[test]
+#[ignore = "validation: COSX seminumerical exchange (pruned grid)"]
+fn pruned_sgx_grid_matches_pyscf_on_the_same_grid() {
+    for sys in [Sys::Water, Sys::Butane] {
+        let s = setup(sys);
+        let path = workspace_root()
+            .join("testdata/reference/validation/cosx_pruned")
+            .join(format!("{}_{}.json", sys.name(), sys.basis()));
+        let r: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!("missing {} ({e}); run gen_cosx_pruned.py", path.display())
+        }))
+        .expect("json");
+        check_harness(&s, &r);
+        let exact = solve(&s, &scf_cfg(None, None), "exact");
+        for (nr, na) in [(35usize, 194usize), (50, 302)] {
+            let mut g = grid(nr, na);
+            g.prune = Some(ferric_dft::prune::PruneScheme::Sgx);
+            let npts =
+                ferric_dft::grid::atomic_grid_point_count(&s.mol, &g, g.prune).expect("count");
+            let cfg = seeded(
+                scf_cfg(None, Some(cosx_unscreened_nofit(g))),
+                exact.density_r(),
+            );
+            let e = solve(&s, &cfg, &format!("sgx({nr},{na}) fit off")).energy;
+            let key = format!("/sgx_pruned_matched_nofit/{nr}_{na}");
+            let want = num(&r, &format!("{key}/energy"), &s.label);
+            let want_n = num(&r, &format!("{key}/n_points"), &s.label) as usize;
+            let d = (e - want).abs();
+            eprintln!(
+                "{} sgx({nr},{na}) fit off: ferric {e:.12} PySCF {want:.12} |d| {d:.2e}; npts                  ferric {npts} PySCF {want_n}; E-E_exact {:+.3e}",
+                s.label,
+                e - exact.energy
+            );
+            assert_eq!(npts, want_n, "{}: pruned grid point count differs", s.label);
+            assert!(
+                d < TOL_SAME_GRID,
+                "{}: pruned sgx({nr},{na}) |d| {d:.2e}",
+                s.label
+            );
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 3. Grid convergence to exact K (ferric vs ferric, both sides live)
 // ---------------------------------------------------------------------------
