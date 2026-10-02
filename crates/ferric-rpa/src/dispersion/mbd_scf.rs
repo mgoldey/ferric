@@ -26,15 +26,13 @@
 //! closed-shell KS Z-vector of [`ferric_scf::zvector_ks`] with V as its
 //! right-hand side.
 //!
-//! Measured against central FD of the full SCF + MBD pipeline at 6-31G
-//! (`tests/mbd_scf_gradient.rs`): 6.0e-9 Hartree/Bohr for H2O with PBE, PBE0,
-//! HSE06 and PBE + RI-J; 9.1e-10 for NH3/PBE (FD step 1e-4 Bohr). The
-//! relaxation term alone is 1.0e-5 (H2O) and 1.6e-6 (NH3) and matches FD to
-//! 3.5e-9. The proatom's piecewise-linear interpolant has kinks every
-//! 0.05 Bohr, so the energy is not differentiable where a lattice point sits
-//! on one (the analytic gradient takes the symmetric subgradient there, see
-//! `RadialProatom::deriv`); a FD step that straddles such a kink disagrees by
-//! up to 5e-8 (NH3, h = 1e-3).
+//! Measured against central FD (h = 1e-3 Bohr) of the full SCF + MBD pipeline
+//! at 6-31G (`tests/mbd_scf_gradient.rs`): ≤ 3.5e-9 Hartree/Bohr for H2O with
+//! PBE, PBE0, HSE06 and PBE + RI-J; 2.0e-10 for NH3/PBE. The relaxation term
+//! alone is 1.0e-5 (H2O) and 1.6e-6 (NH3) and matches FD to 3.5e-9. The
+//! proatom interpolant is C2 in r (see `RadialProatom`), so the volumes and
+//! the energy are smooth in the nuclear coordinates and the FD step needs no
+//! special choice.
 
 use std::collections::BTreeMap;
 

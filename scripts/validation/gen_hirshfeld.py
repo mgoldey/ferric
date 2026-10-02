@@ -21,9 +21,12 @@ partition of the home atom folded into w_g). Two proatom sources:
   `ferric.hirshfeld_charges` pass by default, `proatom="scf"`): a tabulated radial
   density, `RadialProatom { radii = 0.05, 0.10, ..., 30.0 Bohr, rho }`, where
   rho(r_k) is the Lebedev-110 spherical average of the free NEUTRAL atom's SCF
-  density in the molecule's own basis (`spherically_averaged_proatom`). Between
-  nodes `RadialProatom::at` interpolates linearly; below 0.05 Bohr it returns
-  rho(0.05); at or beyond 30 Bohr it returns 0. The free-atom SCF is ferric-cli's
+  density in the molecule's own basis (`spherically_averaged_proatom`).
+  `RadialProatom::at` is exp of a cubic spline through ln rho(r_k): the spline
+  through the MIRRORED table {(+-r_k, ln rho_k)} with natural (zero second
+  derivative) ends, restricted to r >= 0 (so it is even and flat at r = 0),
+  continued linearly in ln rho beyond the last used radius with its end slope.
+  Radii from the first rho_k <= 1e-200 onward are not used. The free-atom SCF is ferric-cli's
   recipe with an HF molecular config: RHF for singlets, else UHF with MOM after
   iteration 5 (H doublet, C and O triplets here).
 * `proatom = None` (what the Python binding passes only for `proatom="slater"`):
@@ -172,14 +175,37 @@ def spherical_average(atom_mol, dm, radii):
     return np.maximum(out, 0.0)
 
 
-def table_eval(radii, rho, r):
-    """ferric `RadialProatom::at`: rho[0] at r <= radii[0], 0 at r >= radii[-1],
-    linear in between."""
-    import numpy as np
+TAIL_RHO_MIN = 1e-200  # ferric `RadialProatom::TAIL_RHO_MIN`
 
-    out = np.interp(r, radii, rho)
-    out = np.where(r <= radii[0], rho[0], out)
-    return np.where(r >= radii[-1], 0.0, out)
+
+def table_eval(radii, rho, r):
+    """ferric `RadialProatom::at`, built independently with scipy: the natural
+    cubic spline of ln rho through the mirrored knots (+-r_k), evaluated at |r|,
+    with the linear-in-ln rho continuation beyond the last used knot. An
+    all-zero table is the zero proatom."""
+    import numpy as np
+    from scipy.interpolate import CubicSpline
+
+    radii = np.asarray(radii, dtype=float)
+    rho = np.asarray(rho, dtype=float)
+    r = np.abs(np.asarray(r, dtype=float))
+    if not np.any(rho > 0.0):
+        return np.zeros_like(r)
+    bad = np.nonzero(rho <= TAIL_RHO_MIN)[0]
+    n = int(bad[0]) if len(bad) else len(rho)
+    if n < 2:
+        raise ValueError("fewer than two usable proatom values")
+    x, y = radii[:n], np.log(rho[:n])
+    if x[0] == 0.0:
+        xs, ys = np.concatenate([-x[:0:-1], x]), np.concatenate([y[:0:-1], y])
+    else:
+        xs, ys = np.concatenate([-x[::-1], x]), np.concatenate([y[::-1], y])
+    cs = CubicSpline(xs, ys, bc_type="natural")
+    slope = float(cs(x[-1], 1))
+    if not slope < 0.0:
+        raise ValueError(f"proatom ln rho does not decay at its end: {slope}")
+    out = np.where(r <= x[-1], cs(np.minimum(r, x[-1])), y[-1] + slope * (r - x[-1]))
+    return np.exp(out)
 
 
 def free_atom(z: int, basis_name: str) -> dict:
@@ -502,7 +528,8 @@ def gen(only: set[str]) -> list[Path]:
                     "charges": "Z_A - (N_e / sum_B n_B) n_A on ferric's (75,110) TA-M4 x "
                     "Lebedev Becke grid",
                     "scf_proatom": "RadialProatom table r_k = 0.05 k (k=1..600) Bohr, "
-                    "linear interpolation, rho(0.05) below, 0 at/after 30 Bohr; neutral "
+                    "exp of the even natural cubic spline of ln rho (mirrored knots), "
+                    "linear-in-ln rho tail; neutral "
                     "free-atom UHF (H 2S, C 3P, O 3P) in the molecule's basis",
                     "slater": "Z xi^3/pi exp(-2 xi r), xi = 1/R_BS from slater_xi_for_z",
                     "volumes": "sum_g h^3 rho w_A |r-R_A|^3 on GridSpec::bounding_box(6.0, 0.20)",

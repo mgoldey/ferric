@@ -567,7 +567,9 @@ def libmbd_rsscs_gradient(xyz, alpha, c6, r_vdw, beta, e_ref, ctx):
             f"{ctx}: libmbd gradient matches neither dE/dR nor -dE/dR by FD "
             f"(max|grad-fd|={res_grad:.2e}, max|grad+fd|={res_force:.2e}, max|fd|={scale:.2e})"
         )
-    if not abs(e_f - e_ref) <= 1e-12 * abs(e_ref):
+    # Rounding-level agreement: measured 1.8e-12 rel (4.4e-16 Ha) for
+    # h2o_cc-pvdz beta=0.83, so the bar is 1e-11, not 1e-12.
+    if not abs(e_f - e_ref) <= 1e-11 * abs(e_ref):
         raise RuntimeError(
             f"{ctx}: libmbd energy with force=True {e_f!r} != without {e_ref!r}"
         )

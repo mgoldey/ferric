@@ -3692,6 +3692,11 @@ pub fn atomic_effective_volumes_hirshfeld_on_grid(
 /// with it the order of the final fold — is a pure function of the lattice.
 pub const HIRSHFELD_GRAD_CHUNK_POINTS: usize = 1024;
 
+/// Distance (Bohr) below which [`hirshfeld_volume_gradient`] treats a lattice
+/// point as sitting on a nucleus, where the proatom gradient direction
+/// `d_B / r_B` is undefined (the Slater proatom's cusp).
+const NUCLEUS_TOL: f64 = 1e-9;
+
 /// Bytes [`hirshfeld_volume_gradient`] holds at its peak, split out so the
 /// formula can be checked by hand. Per chunk in flight: `chi`, the three
 /// `∇chi` planes and `D·chi` (5 × `(nbf, chunk)`), plus the point list and
@@ -3730,8 +3735,7 @@ pub fn estimate_hirshfeld_volume_gradient_bytes(
 /// at FIXED AO density matrix `D` and FIXED lattice `grid`: basis functions
 /// and proatoms move with their atoms, the lattice points do not. This is the
 /// exact derivative of the quadrature `atomic_effective_volumes_hirshfeld_on_grid`
-/// evaluates on the same `grid` (up to the kinks of the piecewise-linear
-/// proatom interpolant, see [`RadialProatom::deriv`]), not of the continuous
+/// evaluates on the same `grid`, not of the continuous
 /// integral: there is no lattice-response term, so Σ_B G[B, :] need not vanish.
 ///
 /// With `v_A = Σ_g dV w_A ρ |r−R_A|³`, `w_A = ρ⁰_A / (S + ε)`,
@@ -3743,7 +3747,8 @@ pub fn estimate_hirshfeld_volume_gradient_bytes(
 ///   (iii) −3 dV ρ de_dv[B] w_B r_B d_B                 ∂r_B³/∂R_B
 /// ```
 /// where `g_B = ∂ρ⁰_B/∂R_B = −ρ⁰_B'(r_B) d_B / r_B` (0 at `r_B = 0`, where the
-/// radial profile has a cusp or, for a tabulated proatom, is flat).
+/// Slater profile has a cusp and the tabulated proatom, an even function of
+/// r, is flat).
 /// `ρ⁰_B'` is [`RadialProatom::deriv`] for a provider proatom and
 /// `−2ξ ρ⁰_B` for the Slater fallback; each atom uses the same proatom the
 /// energy uses (`proatom(z, 0)`, else the [`slater_xi_for_z`] Slater). The
@@ -3926,7 +3931,7 @@ pub fn hirshfeld_volume_gradient(
                     let d = [p[0] - pos[a][0], p[1] - pos[a][1], p[2] - pos[a][2]];
                     let r = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
                     let (v, dvdr) = match &pro[a] {
-                        Some(pa) => (pa.at(r), pa.deriv(r)),
+                        Some(pa) => pa.value_and_deriv(r),
                         None => {
                             let (xi, prefac) = slater[a];
                             let v = prefac * (-2.0 * xi * r).exp();
@@ -3952,10 +3957,13 @@ pub fn hirshfeld_volume_gradient(
                     let r3 = r * r * r;
                     // (ii): g_B = −ρ⁰_B'(r_B) d_B / r_B. At the nucleus the
                     // Slater proatom has a cusp and d_B/r_B no direction; a
-                    // lattice point there is common (see `RadialProatom::deriv`)
+                    // lattice point there is common (the bounding-box lattice
+                    // puts an atom that is extreme in x, y and z on a point)
                     // and sits at r ~ 1e-16, not 0, so the guard is a distance:
-                    // zero is the symmetric subgradient a central difference sees.
-                    if r > RadialProatom::KNOT_TOL {
+                    // zero is the symmetric subgradient a central difference
+                    // sees. The tabulated proatom is even in r, so its term
+                    // vanishes there anyway.
+                    if r > NUCLEUS_TOL {
                         let f = dv * rho_g * (de_dv[b] * r3 - qg) / den * (-drho0[b] / r);
                         for k in 0..3 {
                             local[b][k] += f * d[k];
