@@ -73,10 +73,12 @@ use crate::properties::{
 ///   — the single-atom Hirshfeld integral with the Slater proatom weight
 ///   (1 wherever the Slater ρ⁰ is above the 1e-12 floor).
 ///
-/// As in the CLI, the solve's `converged` flag is not checked (an `Ok` result
-/// at `max_iter` is used), and the remaining `rhf_config` fields — including
-/// any external potential, solvent or constraints — are passed to the atom
-/// unchanged.
+/// The free atom is ISOLATED: the molecule's environment (point charges and
+/// field, COSMO/PCM solvent, polarizable sites, cDFT constraints) is not
+/// applied to it, as for the proatoms of [`scf_proatom_provider`]. Otherwise
+/// a QM/MM or solvated run would divide by the volume of an atom polarized by
+/// an environment centred on someone else's coordinates. An SCF that returns
+/// unconverged counts as failed (it is retried with HF/UHF, then an error).
 ///
 /// # Errors
 ///
@@ -100,19 +102,29 @@ pub fn live_free_atom_volume(
     let free_obs = PreparedBasis::new(&free_mol, bs)?;
     let free_bounds = SchwarzBounds::compute(op, &free_obs)?;
     let mut free_cfg = rhf_config.clone();
+    free_cfg.external_potential = None;
+    free_cfg.cosmo = None;
+    free_cfg.pcm = None;
+    free_cfg.polarizable = None;
+    free_cfg.constraints.clear();
     free_cfg.mom_after_iter = if mult > 1 { 5 } else { 0 };
     free_cfg.max_iter = free_cfg.max_iter.max(200);
     if mult > 1 && free_cfg.xc.is_some() {
         free_cfg.fractional_occ = true;
     }
     let solve_free = |cfg: &RhfConfig| -> Result<Array2<f64>, FerricError> {
-        if mult > 1 {
-            solve_uhf(ctx, &free_mol, &free_obs, &free_bounds, cfg)
-                .map(|r| r.density_total().to_owned())
+        let r = if mult > 1 {
+            solve_uhf(ctx, &free_mol, &free_obs, &free_bounds, cfg)?
         } else {
-            solve_rhf(ctx, &free_mol, &free_obs, op, &free_bounds, cfg)
-                .map(|r| r.density_r().to_owned())
+            solve_rhf(ctx, &free_mol, &free_obs, op, &free_bounds, cfg)?
+        };
+        if !r.converged {
+            return Err(FerricError::Convergence(format!(
+                "free-atom SCF for {sym} did not converge in {} iterations",
+                cfg.max_iter
+            )));
         }
+        Ok(r.density_total().to_owned())
     };
     let solve_with_fallback = || -> Result<Array2<f64>, FerricError> {
         solve_free(&free_cfg).or_else(|first| {
