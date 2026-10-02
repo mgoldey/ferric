@@ -308,9 +308,9 @@ Reported rather than omitted:
     takes its exchange from density-fitted short- and long-range fitters and
     ignores `k_builder = "cosx"`, with a warning.
   - Its analytic gradient is exact for RHF, RKS and UHF with the overlap fit
-    off, and for RHF and UHF with the default overlap fit. Fitted COSX with a
-    KS functional, UKS, ROHF/ROKS and pruned COSX grids are refused for
-    gradient tasks, before the SCF runs.
+    off, and for RHF and UHF with the default overlap fit, on flat and pruned
+    (`sgx`) COSX grids. Fitted COSX with a KS functional, UKS and ROHF/ROKS
+    are refused for gradient tasks, before the SCF runs.
 
 ## Why the distinction is drawn so sharply
 
