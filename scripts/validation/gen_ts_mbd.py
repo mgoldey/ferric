@@ -35,8 +35,25 @@ That is the plain-SCS screening (libmbd variant='scs') and the plain MBD energy
 with 'dip,gg' damping (libmbd variant='plain'). It is NOT MBD@rsSCS (Ambrosetti
 2014: range-separated screening with the Fermi (beta, R_vdw) split, then a
 Fermi-damped bare-dipole energy from the SCREENED alpha/C6/R_vdw), which is what
-pymbd.mbd_energy / mbd_energy_species compute. The rsSCS numbers are stored as a
-SCOPE control (ferric must MISS them), never as the target.
+pymbd.mbd_energy / mbd_energy_species compute. For those functions the rsSCS
+numbers (`mbd/scope_rsscs`) are a SCOPE control they must MISS.
+
+MBD@rsSCS (`dispersion::mbd_rsscs::mbd_rsscs_energy`) is a separate ferric
+function; its references are `mbd_rsscs` in each system file (consumer:
+crates/ferric-rpa/tests/validation_mbd_rsscs.rs). Two constructions, required
+to agree to < 1e-10: pymbd python (`screening` + `mbd_energy`) and libmbd
+Fortran (variant='rsscs', with its alpha_0_scs/C6_scs intermediates). Stored
+for beta = 0.83 (PBE) and 0.85 (PBE0/HSE06): alpha_0^rsSCS, C6^rsSCS,
+R_vdw^rsSCS, omega^rsSCS, E; plus E on 30- and 60-node grids (grid
+sensitivity, pymbd primitives — pymbd.mbd_energy hard-codes nfreq=15).
+Each run also stores `gradient`: libmbd's analytic nuclear gradient
+(`mbd_energy(..., variant='rsscs', force=True)`) as dE/dR (N x 3, Hartree/Bohr,
+alpha_0/C6/R_vdw i.e. the volume ratios held FIXED). Whether libmbd's array is
+dE/dR or the force -dE/dR is DECIDED HERE by a central finite difference of
+libmbd's own energy (h = RSSCS_GRAD_FD_H Bohr, every component), asserted, and
+recorded with its residuals in `gradient_fd_check`.
+R_vdw(TS) is ferric's `ts_free_atom_r_vdw` table, parsed from
+free_atom_ref.rs and required equal to pymbd's `R_vdw(TS)` for every Z=1..54.
 
 ferric's erf is Abramowitz-Stegun 7.1.26 (|err| < 1.5e-7). Every MBD quantity is
 therefore also computed here with THAT erf (`*_as_erf`), and the gap between the
@@ -129,6 +146,15 @@ PYMBD_NFREQ = 15
 
 # MBD@rsSCS scope control: the PBE value of beta (pymbd docstring, Ambrosetti 2014).
 RSSCS_BETA = 0.83
+# MBD@rsSCS targets: PBE 0.83, PBE0/HSE06 0.85 (Ambrosetti 2014).
+RSSCS_BETAS = (0.83, 0.85)
+RSSCS_GRID_SENSITIVITY_N = (30, 60)
+# Central-FD step (Bohr) for the libmbd gradient sign/convention check. FD error
+# ~ h^2 E'''/6 + eps*sum(omega)/h ~ 1e-11 Ha/Bohr at h = 1e-4.
+RSSCS_GRAD_FD_H = 1e-4
+# The FD must reproduce libmbd's gradient (in the decided convention) to this
+# fraction of max|FD|, and miss the opposite convention by > 1.0 of it.
+RSSCS_GRAD_FD_REL_TOL = 1e-4
 
 # Model anchors.
 ANCHOR_ELEMENTS = (1, 6, 7, 8)
@@ -173,6 +199,39 @@ def ferric_free_atom_table() -> dict[int, tuple[float, float]]:
             "the regex no longer matches free_atom_ref.rs"
         )
     return table
+
+
+def ferric_r_vdw_table() -> dict[int, float]:
+    """`ts_free_atom_r_vdw` rows parsed from the Rust source (Bohr)."""
+    text = FREE_ATOM_REF_RS.read_text()
+    start = text.index("pub fn ts_free_atom_r_vdw")
+    body = text[start : text.index("_ => return None", start)]
+    pat = re.compile(r"^\s*(\d+)\s*=>\s*([0-9.eE+-]+)\s*,", re.M)
+    table = {int(m.group(1)): float(m.group(2)) for m in pat.finditer(body)}
+    if sorted(table) != list(range(1, 55)):
+        raise RuntimeError(
+            f"parsed ferric R_vdW table has Z={sorted(table)}; expected 1..54"
+        )
+    return table
+
+
+def r_vdw_table_comparison(r_tab) -> dict:
+    from pymbd.pymbd import vdw_params
+
+    rows, mism = [], []
+    for z in range(1, 55):
+        sym = common.ELEMENTS[z]
+        rp = float(vdw_params[sym]["R_vdw(TS)"])
+        rows.append(
+            {"z": z, "symbol": sym, "ferric_r_vdw": r_tab[z], "pymbd_r_vdw_ts": rp}
+        )
+        if r_tab[z] != rp:
+            mism.append(z)
+    if mism:
+        raise RuntimeError(
+            f"ferric R_vdW table differs from pymbd R_vdw(TS) at Z={mism}"
+        )
+    return {"rows": rows, "mismatched_z": mism}
 
 
 def table_comparison(ferric_tab) -> dict:
@@ -346,6 +405,25 @@ def mbd_energy_np(coords, alpha, omega, tensor_fn):
     )
 
 
+def rsscs_np(xyz, alpha, c6, r_vdw, beta, nfreq):
+    """MBD@rsSCS from pymbd's primitives on an `nfreq`-node grid (pymbd's own
+    `mbd_energy` hard-codes nfreq=15). Returns (E, a0_rs, c6_rs, r_rs, om_rs, ev_min)."""
+    import numpy as np
+    from pymbd.pymbd import dipole_matrix, screening
+
+    a_rs, c6_rs, r_rs = screening(xyz, alpha, c6, r_vdw, beta, nfreq=nfreq)
+    om = 4 / 3 * c6_rs / a_rs**2
+    pre = np.repeat(om * np.sqrt(a_rs), 3)
+    h = np.diag(np.repeat(om**2, 3)) + np.outer(pre, pre) * dipole_matrix(
+        xyz, "fermi,dip", R_vdw=r_rs, beta=beta
+    )
+    ev = np.linalg.eigvalsh(h)
+    if ev.min() <= 0:
+        raise RuntimeError(f"rsSCS: non-positive coupled eigenvalue {ev.min():.3e}")
+    e = float(np.sum(np.sqrt(ev)) / 2 - 1.5 * np.sum(om))
+    return e, a_rs, c6_rs, r_rs, om, float(ev.min())
+
+
 def rel(a, b):
     import numpy as np
 
@@ -445,7 +523,66 @@ def ratios_from_pyscf_lattice(system, basis):
 # ---------------------------------------------------------------------------
 
 
-def gen_system(system, basis, source, tab, overrides) -> Path:
+def libmbd_rsscs_gradient(xyz, alpha, c6, r_vdw, beta, e_ref, ctx):
+    """libmbd's MBD@rsSCS nuclear gradient, returned as dE/dR (N x 3).
+
+    The convention of libmbd's `force=True` array (dE/dR or -dE/dR) is not
+    assumed: it is decided by a central FD of libmbd's own energy and the
+    decision is asserted. Returns (dE/dR, check-dict)."""
+    import numpy as np
+    from pymbd.fortran import MBDGeom
+
+    def energy(x):
+        return float(
+            MBDGeom(x, n_freq=PYMBD_NFREQ).mbd_energy(
+                alpha, c6, r_vdw, beta=beta, variant="rsscs"
+            )
+        )
+
+    with MBDGeom(xyz, n_freq=PYMBD_NFREQ) as g:
+        e_f, arr = g.mbd_energy(
+            alpha, c6, r_vdw, beta=beta, variant="rsscs", force=True
+        )
+    arr = np.asarray(arr, dtype=float)
+    if arr.shape != xyz.shape:
+        raise RuntimeError(f"{ctx}: libmbd gradient shape {arr.shape} != {xyz.shape}")
+    h = RSSCS_GRAD_FD_H
+    fd = np.zeros_like(xyz)
+    for a in range(xyz.shape[0]):
+        for x in range(3):
+            xp = xyz.copy()
+            xm = xyz.copy()
+            xp[a, x] += h
+            xm[a, x] -= h
+            fd[a, x] = (energy(xp) - energy(xm)) / (2 * h)
+    scale = float(np.max(np.abs(fd)))
+    res_grad = float(np.max(np.abs(arr - fd)))
+    res_force = float(np.max(np.abs(arr + fd)))
+    if res_grad < RSSCS_GRAD_FD_REL_TOL * scale and res_force > scale:
+        kind, de_dr, res, res_other = "dE/dR", arr, res_grad, res_force
+    elif res_force < RSSCS_GRAD_FD_REL_TOL * scale and res_grad > scale:
+        kind, de_dr, res, res_other = "force (-dE/dR)", -arr, res_force, res_grad
+    else:
+        raise RuntimeError(
+            f"{ctx}: libmbd gradient matches neither dE/dR nor -dE/dR by FD "
+            f"(max|grad-fd|={res_grad:.2e}, max|grad+fd|={res_force:.2e}, max|fd|={scale:.2e})"
+        )
+    if not abs(e_f - e_ref) <= 1e-12 * abs(e_ref):
+        raise RuntimeError(
+            f"{ctx}: libmbd energy with force=True {e_f!r} != without {e_ref!r}"
+        )
+    chk = {
+        "libmbd_array_is": kind,
+        "fd_step_bohr": h,
+        "max_abs_fd": scale,
+        "max_abs_residual_vs_fd": res,
+        "max_abs_residual_opposite_convention": res_other,
+        "energy_with_force": float(e_f),
+    }
+    return de_dr, chk
+
+
+def gen_system(system, basis, source, tab, r_tab, overrides) -> Path:
     import numpy as np
     import pymbd
     from pymbd.fortran import MBDGeom
@@ -577,6 +714,65 @@ def gen_system(system, basis, source, tab, overrides) -> Path:
     meas["rsscs_vs_target_static_alpha_max_rel"] = rel(a_rs, a_scs_np0)
     meas["rsscs_vs_target_energy_rel"] = abs(e_rs - e_np) / abs(e_np)
 
+    # MBD@rsSCS targets (ferric `mbd_rsscs`): pymbd python vs libmbd Fortran.
+    r_free = np.array([r_tab[zz] for zz in z])
+    r_vdw_ts = r_free * np.asarray(ratios, dtype=float) ** (1 / 3)
+    meas["pymbd_from_volumes_vs_ferric_r_vdw_max_rel"] = rel(rvdw_p, r_vdw_ts)
+    if meas["pymbd_from_volumes_vs_ferric_r_vdw_max_rel"] > 1e-15:
+        raise RuntimeError(f"{key}: pymbd R_vdw differs from ferric's R_vdW table")
+    rsscs = {
+        "r_vdw_free": tolist(r_free),
+        "r_vdw_ts": tolist(r_vdw_ts),
+        "fermi_a": 6.0,
+        "n_freq": PYMBD_NFREQ,
+        "runs": [],
+    }
+    for beta in RSSCS_BETAS:
+        e15, a15, c15, r15, om15, evmin = rsscs_np(
+            xyz, alpha, c6, r_vdw_ts, beta, PYMBD_NFREQ
+        )
+        e_pm = float(pymbd.mbd_energy(xyz, alpha, c6, r_vdw_ts, beta))
+        e_lb, a_lb, c_lb = MBDGeom(xyz, n_freq=PYMBD_NFREQ).mbd_energy(
+            alpha, c6, r_vdw_ts, beta=beta, variant="rsscs", intermediates=True
+        )
+        chk = {
+            "own_np_vs_pymbd_energy_rel": abs(e15 - e_pm) / abs(e_pm),
+            "libmbd_vs_pymbd_energy_rel": abs(e_lb - e_pm) / abs(e_pm),
+            "libmbd_vs_pymbd_alpha0_max_rel": rel(a_lb, a15),
+            "libmbd_vs_pymbd_c6_max_rel": rel(c_lb, c15),
+        }
+        for k, v in chk.items():
+            if not v < 1e-10:
+                raise RuntimeError(
+                    f"{key} beta={beta}: rsSCS constructions disagree {k}={v:.2e}"
+                )
+        grad, grad_chk = libmbd_rsscs_gradient(
+            xyz, alpha, c6, r_vdw_ts, beta, e_lb, f"{key} beta={beta}"
+        )
+        sens = {}
+        for nf in RSSCS_GRID_SENSITIVITY_N:
+            e_n = rsscs_np(xyz, alpha, c6, r_vdw_ts, beta, nf)[0]
+            sens[str(nf)] = {"energy": e_n, "rel_vs_15": abs(e_n - e15) / abs(e15)}
+        rsscs["runs"].append(
+            {
+                "beta": beta,
+                "energy_pymbd": e_pm,
+                "energy_libmbd": float(e_lb),
+                "alpha_0_rsscs": tolist(a15),
+                "c6_rsscs": tolist(c15),
+                "r_vdw_rsscs": tolist(r15),
+                "omega_rsscs": tolist(om15),
+                "alpha_0_rsscs_libmbd": tolist(a_lb),
+                "c6_rsscs_libmbd": tolist(c_lb),
+                "h_min_eigenvalue": evmin,
+                "gradient": tolist(grad),
+                "gradient_fd_check": grad_chk,
+                "grid_sensitivity": sens,
+                "measurements": chk,
+            }
+        )
+    mbd["rsscs_targets"] = rsscs
+
     payload = {
         "row": "TS C6 (153) / MBD@TS (156)",
         "system": system,
@@ -613,6 +809,12 @@ def gen_system(system, basis, source, tab, overrides) -> Path:
                 "pymbd.pymbd.T_erf_coulomb, sigma=(sqrt(2/pi) alpha/3)^(1/3); libmbd variant='scs'",
                 "target_energy": "plain MBD, damping 'dip,gg', static TS alpha/omega; libmbd variant='plain'",
                 "scope_control": f"MBD@rsSCS beta={RSSCS_BETA} (pymbd.screening/mbd_energy, libmbd default)",
+                "rsscs_targets": f"MBD@rsSCS beta in {RSSCS_BETAS}, a=6, pymbd 15-node grid; pymbd "
+                "python + libmbd variant='rsscs' (alpha_0_scs/C6_scs intermediates); R_vdw = "
+                "ferric ts_free_atom_r_vdw * ratio^(1/3)",
+                "rsscs_gradient": "libmbd variant='rsscs' force=True, stored as dE/dR (Hartree/Bohr, "
+                "TS alpha_0/C6/R_vdw fixed); convention decided by central FD of libmbd's energy "
+                f"(h={RSSCS_GRAD_FD_H} Bohr), see runs[*].gradient_fd_check",
                 "ts_c6": "Casimir-Polder quadrature on the stored grids + closed-form combination rule",
                 "free_atom_table": "ferric ts_free_atom (parsed from free_atom_ref.rs) == pymbd vdw_params TS",
             },
@@ -633,6 +835,20 @@ def gen_system(system, basis, source, tab, overrides) -> Path:
         f"rsSCS E={meas['rsscs_vs_target_energy_rel']:.2f}",
         flush=True,
     )
+    for run in rsscs["runs"]:
+        m = run["measurements"]
+        print(
+            f"{key:18s} rsSCS beta={run['beta']}: E={run['energy_pymbd']:.12e} "
+            f"libmbd-vs-pymbd E={m['libmbd_vs_pymbd_energy_rel']:.1e} "
+            f"a0={m['libmbd_vs_pymbd_alpha0_max_rel']:.1e} c6={m['libmbd_vs_pymbd_c6_max_rel']:.1e} "
+            f"grad[{run['gradient_fd_check']['libmbd_array_is']}] "
+            f"vs FD={run['gradient_fd_check']['max_abs_residual_vs_fd']:.1e} "
+            "grid "
+            + " ".join(
+                f"n{k}:{v['rel_vs_15']:.1e}" for k, v in run["grid_sensitivity"].items()
+            ),
+            flush=True,
+        )
     return path
 
 
@@ -667,7 +883,7 @@ def dimer_energy(mp, a, b, wa, wb, tp, tz):
     return e
 
 
-def gen_anchors(tab) -> Path:
+def gen_anchors(tab, r_tab) -> Path:
     import mpmath as mp
     import numpy as np
     import pymbd
@@ -799,6 +1015,7 @@ def gen_anchors(tab) -> Path:
         "dimers": dimers,
         "london": london,
         "free_atom_table_comparison": ferric_tab_cmp,
+        "r_vdw_table_comparison": r_vdw_table_comparison(r_tab),
         "provenance": {
             "code": "mpmath closed forms (dimer: 2x2 per Cartesian direction) + pymbd vdw_params",
             "version": {
@@ -850,13 +1067,14 @@ def main(argv: list[str]) -> int:
         ap.error(f"unknown system(s): {sorted(only - known)}")
     t0 = time.time()
     tab = ferric_free_atom_table()
+    r_tab = ferric_r_vdw_table()
     paths = []
     if not only or "anchors" in only:
-        paths.append(gen_anchors(tab))
+        paths.append(gen_anchors(tab, r_tab))
     for system, basis, source in SYSTEMS:
         if only and system not in only:
             continue
-        paths.append(gen_system(system, basis, source, tab, overrides))
+        paths.append(gen_system(system, basis, source, tab, r_tab, overrides))
     for p in paths:
         print(
             "wrote", p.relative_to(common.ROOT), f"({p.stat().st_size / 1024:.0f} KB)"

@@ -59,6 +59,7 @@ See [SCF and DFT](../methods/scf.md).
 | `benzene-dfb3lyp-mpi.toml` | benzene / cc-pVDZ | `ksdft` B3LYP | — | Run under `mpirun` with the MPI build (see its header). |
 | `water-wb97xv.toml` | H2O / cc-pVDZ | `ksdft` wB97X-V | — | |
 | `water-pbe-d3bj.toml` | H2O / cc-pVDZ | `ksdft` PBE + D3(BJ) | — | Prints E(KS-DFT) and E(D3BJ) separately. |
+| `water-pbe-mbd.toml` | H2O / cc-pVDZ | `ksdft` PBE + MBD@rsSCS | — | Prints E(KS-DFT) and E(MBD@rsSCS) separately. |
 | `water-pbe-pruned-grid.toml` | H2O / cc-pVDZ | `ksdft` PBE / energy | "removes ~23% of the grid points" (at 75×110) | Validated in `crates/ferric-dft/tests/grid_prune_live_scf.rs`. |
 | `h2-lda-opt.toml` | H2 / STO-3G | `ksdft` LDA / optimize | — | |
 | `water-qmmm.toml` | H2O + Na⁺ (PQR) / STO-3G | `rhf` + `[qmmm]` | "vacuum −74.9629466809, embedded −74.9653197421, i.e. −1.489 kcal/mol from the ion at 4 A. Verified against `ferric.run_rhf(point_charges=...)` to all 10 digits." | The vacuum number is at the PQR geometry, not the xyz. The embedded number is asserted by a test. |

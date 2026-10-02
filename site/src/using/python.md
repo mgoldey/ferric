@@ -387,14 +387,15 @@ capability is Python-only. How well each one is validated is on
 | `run_rhf` | Closed-shell RHF with the full SCF knob set, point charges, field and IEF-PCM solvent. | `rhf` |
 | `run_uhf` | Unrestricted HF; α/β counts come from the molecule's charge and multiplicity. | `uhf` |
 | `run_rohf` | Restricted open-shell HF (Guest–Saunders coupling); returns a `UhfResult`. | `rohf` |
-| `run_dft` | Closed-shell Kohn–Sham DFT (LDA/GGA/hybrid/RSH/meta-GGA by name), optional D3(BJ) and analytic gradient. | `ksdft` |
+| `run_dft` | Closed-shell Kohn–Sham DFT (LDA/GGA/hybrid/RSH/meta-GGA by name), optional dispersion (`dispersion="d3bj"` or `"mbd"`, added to the energy and, with `with_gradient=True`, to the gradient) and analytic gradient. | `ksdft` |
 | `run_ksdft` | Alias of `run_dft`. | `ksdft` |
 | `d3bj_energy` | Grimme D3(BJ) dispersion energy for a molecule and functional, in Hartree. | `[dft] dispersion` |
+| `mbd_rsscs_energy` | MBD@rsSCS dispersion energy (Hartree) from per-atom Hirshfeld volume ratios and β (or a functional with a published β); returns `MbdRsscsResult` with the screened α₀, C6, R_vdW and ω. | — |
 | `tune_omega` | IP-based (Baer/Kronik) tuning of an RSH functional's ω (Bohr⁻¹); closed-shell neutral plus doublet cation. | — |
 | `dft_grid_point_count` | Number of points in the main KS grid `run_dft` would build for the molecule with the same `grid_*` kwargs, without running an SCF (shows what pruning saves). | — |
 | `RhfResult` | Result of `run_rhf`: `energy`, `converged`, `iterations`, `density()`, `orbital_energies()`, `mo_coefficients()`. | |
 | `UhfResult` | Result of `run_uhf`/`run_rohf`: α and β densities and orbital energies. | |
-| `DftResult` | Result of `run_dft`: `total_energy`, `e_scf`, `e_dispersion`, `converged`, `exit_reason()`, `density()`, `gradient()`. | |
+| `DftResult` | Result of `run_dft`: `total_energy` (= `e_scf + e_dispersion`), `e_scf`, `e_dispersion` (`None` when not requested), `dispersion_model` (`"D3(BJ)"`, `"MBD@rsSCS"` or `None`), `volume_ratios` (MBD@rsSCS only), `converged`, `exit_reason()`, `density()`, `gradient()`. | |
 
 ### Constrained DFT
 

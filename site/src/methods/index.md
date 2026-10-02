@@ -8,7 +8,7 @@ number. To go from a task to a method, start with
 
 | Family | Methods | Page |
 |---|---|---|
-| SCF and DFT | RHF, UHF, ROHF; KS-DFT (LDA, GGA, hybrid, range-separated, VV10, SCAN/r2SCAN); D3(BJ); IEF-PCM and COSMO solvation; gradients, optimization, finite-difference frequencies, TS search and IRC | [SCF and DFT](./scf.md) |
+| SCF and DFT | RHF, UHF, ROHF; KS-DFT (LDA, GGA, hybrid, range-separated, VV10, SCAN/r2SCAN); D3(BJ) and MBD@rsSCS dispersion; IEF-PCM and COSMO solvation; gradients, optimization, finite-difference frequencies, TS search and IRC | [SCF and DFT](./scf.md) |
 | MP2 | RI-MP2, attenuated (erfc, terfc), SCS, SCS-MP2(2terfc), MP2-V, RS-MP2 + LR-RPA, OO-RI-MP2, MP3, Laplace MP2 and SOS-MP2, local MP2 | [The MP2 family](./mp2.md) |
 | Coupled cluster | CCD, CCSD, CCSD(T), LinLCCD(hh); double hybrids B2PLYP, DSD-PBEP86, ωB97X-L-V | [Coupled cluster](./cc.md) |
 | Response | PDEP-RPA, G0W0, COHSEX, evGW0, evGW, BSE-TDA, TDA/TDDFT, polarizabilities and \\( C_6 \\) | [RPA, GW and excited states](./rpa-gw.md) |

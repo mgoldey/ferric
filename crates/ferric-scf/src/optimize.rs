@@ -7,6 +7,7 @@
 
 use crate::gradient::rohf_gradient;
 use crate::ks_gradient::ks_gradient_roks;
+use crate::result::ScfResult;
 use crate::rhf::{solve_rhf, RhfConfig};
 use crate::rohf::solve_rohf;
 use crate::screening::SchwarzBounds;
@@ -182,9 +183,40 @@ pub fn optimize_geometry_with_correction(
     opt_config: &OptimizeConfig,
     mut correction: impl FnMut(&Molecule) -> Result<(f64, Option<Array2<f64>>), FerricError>,
 ) -> Result<OptimizeResult, FerricError> {
+    optimize_geometry_with_scf_correction(
+        ctx,
+        mol,
+        basis_name,
+        op,
+        rhf_config,
+        opt_config,
+        |m, _scf| correction(m),
+    )
+}
+
+/// [`optimize_geometry_with_correction`] whose correction also sees the
+/// converged closed-shell SCF result at the geometry being evaluated.
+///
+/// For corrections that depend on the electron density, not only on the
+/// nuclear positions -- MBD@rsSCS takes its per-atom polarizabilities from
+/// Hirshfeld volumes of the SCF density. `correction(mol, scf)` is called once
+/// per evaluated geometry, after the SCF and its gradient, with the
+/// [`ScfResult`] that produced the SCF energy; its return value is combined
+/// exactly as in [`optimize_geometry_with_correction`] (same guard, same
+/// refusals), which delegates here.
+pub fn optimize_geometry_with_scf_correction(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    basis_name: &str,
+    op: Operator,
+    rhf_config: &RhfConfig,
+    opt_config: &OptimizeConfig,
+    mut correction: impl FnMut(&Molecule, &ScfResult) -> Result<(f64, Option<Array2<f64>>), FerricError>,
+) -> Result<OptimizeResult, FerricError> {
     run_bfgs(mol, opt_config, |m| {
-        let (e, mut g) = compute_energy_and_gradient(ctx, m, basis_name, op, rhf_config)?;
-        let (de, dg) = correction(m)?;
+        let (e, mut g, scf) =
+            compute_energy_gradient_and_result(ctx, m, basis_name, op, rhf_config)?;
+        let (de, dg) = correction(m, &scf)?;
         if de != 0.0 || dg.is_some() {
             let dg = dg.ok_or_else(|| {
                 FerricError::General(
@@ -724,13 +756,15 @@ pub fn optimize_coordinates(
     Ok((x.to_vec(), energy, step_idx, converged))
 }
 
-fn compute_energy_and_gradient(
+/// Closed-shell SCF energy, its nuclear gradient, and the converged SCF
+/// result that produced both (handed to density-dependent corrections).
+fn compute_energy_gradient_and_result(
     ctx: &ParallelContext,
     mol: &Molecule,
     basis_name: &str,
     op: Operator,
     rhf_config: &RhfConfig,
-) -> Result<(f64, Array2<f64>), FerricError> {
+) -> Result<(f64, Array2<f64>, ScfResult), FerricError> {
     let bs = ferric_core::basis::bundled(basis_name)?;
     let prep = PreparedBasis::new(mol, &bs)?;
     // Honour `[scf] screening` here too: geometry optimization rebuilds the
@@ -755,7 +789,7 @@ fn compute_energy_and_gradient(
     // effect, in which case the exchange term is the COSX derivative.
     let grad =
         crate::gradient::restricted_scf_gradient(mol, &prep, &bs, op, &bounds, rhf_config, &res)?;
-    Ok((res.energy, grad))
+    Ok((res.energy, grad, res))
 }
 
 fn compute_energy_and_gradient_uhf(

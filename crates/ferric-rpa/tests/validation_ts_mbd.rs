@@ -20,13 +20,15 @@
 //! ferric equals it up to the frequency quadrature only. ferric has no TS
 //! pairwise ENERGY; nothing here compares one.
 //!
-//! MBD (`mbd::mbd_screen`, `mbd_dynamic_polarizability`, `mbd::mbd_energy`):
+//! MBD (`mbd::mbd_screen`, `mbd_dynamic_polarizability`, `mbd::coupled_qho_energy_plain_gg`):
 //! PLAIN SCS screening with the Gaussian-damped dipole tensor (no Fermi
 //! damping, no β, no R_vdw), widths from the DYNAMIC α at each node, full 3×3
 //! per-atom block row sums; energy = plain MBD with 'dip,gg' damping from the
 //! UNSCREENED static TS α/ω. That is libmbd `variant='scs'` / `variant='plain',
-//! damping='dip,gg'`, NOT MBD@rsSCS (`pymbd.mbd_energy`). The rsSCS numbers sit
-//! in the reference only as a SCOPE control that ferric must miss.
+//! damping='dip,gg'`, NOT MBD@rsSCS (`pymbd.mbd_energy`). The rsSCS numbers are
+//! a SCOPE control that these functions must miss here; ferric's MBD@rsSCS
+//! (`dispersion::mbd_rsscs`) is validated against them in
+//! `validation_mbd_rsscs.rs`.
 //!
 //! # Like-for-like
 //!
@@ -99,7 +101,7 @@ use std::path::{Path, PathBuf};
 
 use ferric_rpa::config::QuadratureConfig;
 use ferric_rpa::dispersion::free_atom_ref::ts_free_atom;
-use ferric_rpa::dispersion::mbd::{mbd_energy, mbd_screen, ts_atom_params};
+use ferric_rpa::dispersion::mbd::{coupled_qho_energy_plain_gg, mbd_screen, ts_atom_params};
 use ferric_rpa::dispersion::{
     casimir_polder_c6, mbd_dynamic_polarizability, ts_dynamic_polarizability,
 };
@@ -516,7 +518,7 @@ fn mbd_single_atom_is_unscreened() {
         let b: Vec<f64> = ts.per_atom[0].iter().flatten().flatten().copied().collect();
         check(&ctx, "alpha_scs vs bare", rel_max(&a, &b), TOL_SINGLE_ATOM);
         let p = ts_atom_params(&[z], &[0.8], &st).unwrap();
-        let e = mbd_energy(&[[0.0; 3]], &[p[0].0], &[p[0].1]);
+        let e = coupled_qho_energy_plain_gg(&[[0.0; 3]], &[p[0].0], &[p[0].1]);
         check(&ctx, "E_MBD / omega", e.abs() / p[0].1, TOL_SINGLE_ATOM);
     }
 }
@@ -583,7 +585,7 @@ fn mbd_dimer_matches_closed_form() {
             } else {
                 "energy_as_erf"
             };
-            let e = mbd_energy(&pos, &al, &om);
+            let e = coupled_qho_energy_plain_gg(&pos, &al, &om);
             check(
                 &ctx,
                 &format!("E_MBD [{tag}]"),
@@ -632,7 +634,7 @@ fn mbd_energy_tends_to_ts_pair_c6() {
         let p_ab = ts_atom_params(&[za, zb], &[1.0, 1.0], &iso_static(&[1.0, 1.0])).unwrap();
         let al = [p_ab[0].0, p_ab[1].0];
         let om = [p_ab[0].1, p_ab[1].1];
-        let e = mbd_energy(&[[0.0, 0.0, 0.0], [0.0, 0.0, r]], &al, &om);
+        let e = coupled_qho_energy_plain_gg(&[[0.0, 0.0, 0.0], [0.0, 0.0, r]], &al, &om);
         check(
             &ctx,
             "E_MBD vs closed form",
@@ -777,7 +779,7 @@ fn mbd_matches_pymbd_same_inputs() {
             }
         }
 
-        let e = mbd_energy(&inp.pos, &alpha, &omega);
+        let e = coupled_qho_energy_plain_gg(&inp.pos, &alpha, &omega);
         check(
             &ctx,
             "E_MBD exact erf",

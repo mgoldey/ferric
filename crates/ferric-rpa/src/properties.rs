@@ -3479,21 +3479,117 @@ pub fn preflight_hirshfeld_grid_scan_reserved(
 /// [`slater_xi_for_z`]. Integrated on a uniform Cartesian lattice around the
 /// molecule (`FERRIC_HIRSHFELD_SPACING`, default 0.20 Bohr;
 /// `FERRIC_HIRSHFELD_MARGIN`, default 6 Bohr), not the Becke–Lebedev grid that
-/// [`hirshfeld_charges`] uses.
+/// [`hirshfeld_charges`] uses. The lattice is [`hirshfeld_volume_grid`];
+/// [`atomic_effective_volumes_hirshfeld_on_grid`] takes it explicitly.
 pub fn atomic_effective_volumes_hirshfeld(
     mol: &Molecule,
     obs_bs: &ferric_core::basis::BasisSet,
     density: &Array2<f64>,
     proatom: Option<&ProatomProvider>,
 ) -> Result<Vec<f64>, FerricError> {
-    use ferric_integrals::ao_grid::eval_basis_on_grid;
-    use ferric_integrals::ao_grid::GridSpec;
+    let grid = hirshfeld_volume_grid(mol);
+    atomic_effective_volumes_hirshfeld_on_grid(mol, obs_bs, density, proatom, &grid)
+}
 
-    let natoms = mol.atoms.len();
-    let spacing = hirshfeld_spacing();
+/// The uniform Cartesian lattice [`atomic_effective_volumes_hirshfeld`]
+/// integrates on: `GridSpec::bounding_box(mol, hirshfeld_margin(),
+/// hirshfeld_spacing())` (`FERRIC_HIRSHFELD_MARGIN`, default 6 Bohr;
+/// `FERRIC_HIRSHFELD_SPACING`, default 0.20 Bohr).
+pub fn hirshfeld_volume_grid(mol: &Molecule) -> ferric_integrals::ao_grid::GridSpec {
+    ferric_integrals::ao_grid::GridSpec::bounding_box(mol, hirshfeld_margin(), hirshfeld_spacing())
+}
+
+/// The lattice MBD@rsSCS integrates its Hirshfeld volumes on: the same
+/// spacing and margin as [`hirshfeld_volume_grid`], but anchored to the
+/// CENTROID c of the nuclei instead of the bounding box. Points are
+/// `c + i·h` along each axis, `i = −m..=m`, `m = ceil((max_A |R_A − c| + margin)/h)`.
+///
+/// Why: on the bounding-box lattice the points follow whichever atom is
+/// extreme on each axis, so the volumes are not differentiable where two atoms
+/// tie for the extreme (water's two H share z). Here every point moves by
+/// exactly `1/N` of an atom's displacement, so the lattice response of the
+/// volumes is the smooth term `−(1/N) Σ_B ∂v/∂R_B|_lattice fixed` (translation
+/// invariance at fixed D). A change of `m` re-labels the points and adds or
+/// drops an edge row at least `margin` from every nucleus, so the volumes stay
+/// continuous.
+pub fn mbd_volume_grid(mol: &Molecule) -> ferric_integrals::ao_grid::GridSpec {
+    let h = hirshfeld_spacing();
     let margin = hirshfeld_margin();
-    let grid = GridSpec::bounding_box(mol, margin, spacing);
-    let dv = spacing * spacing * spacing;
+    let n = mol.atoms.len().max(1) as f64;
+    let mut c = [0.0_f64; 3];
+    for a in &mol.atoms {
+        c[0] += a.x / n;
+        c[1] += a.y / n;
+        c[2] += a.zpos / n;
+    }
+    let mut origin = [0.0_f64; 3];
+    let mut counts = [1usize; 3];
+    for k in 0..3 {
+        let half = mol
+            .atoms
+            .iter()
+            .map(|a| ([a.x, a.y, a.zpos][k] - c[k]).abs())
+            .fold(0.0_f64, f64::max);
+        let m = ((half + margin) / h).ceil() as usize;
+        origin[k] = c[k] - m as f64 * h;
+        counts[k] = 2 * m + 1;
+    }
+    ferric_integrals::ao_grid::GridSpec {
+        origin,
+        n_x: counts[0],
+        n_y: counts[1],
+        n_z: counts[2],
+        step_x: [h, 0.0, 0.0],
+        step_y: [0.0, h, 0.0],
+        step_z: [0.0, 0.0, h],
+    }
+}
+
+/// Reject a lattice the Hirshfeld volume loops cannot integrate on: they read
+/// only the diagonal step components (`step_x[0]`, `step_y[1]`, `step_z[2]`)
+/// and use their product as the cell volume, so the lattice must be
+/// axis-aligned with positive steps.
+fn check_axis_aligned_grid(
+    label: &str,
+    grid: &ferric_integrals::ao_grid::GridSpec,
+) -> Result<(), FerricError> {
+    let off_diag = [
+        grid.step_x[1],
+        grid.step_x[2],
+        grid.step_y[0],
+        grid.step_y[2],
+        grid.step_z[0],
+        grid.step_z[1],
+    ];
+    let diag = [grid.step_x[0], grid.step_y[1], grid.step_z[2]];
+    if off_diag.iter().any(|&v| v != 0.0) || diag.iter().any(|&h| !(h.is_finite() && h > 0.0)) {
+        return Err(FerricError::General(format!(
+            "{label}: the integration lattice must be axis-aligned with positive steps \
+             (got step_x={:?}, step_y={:?}, step_z={:?})",
+            grid.step_x, grid.step_y, grid.step_z
+        )));
+    }
+    Ok(())
+}
+
+/// [`atomic_effective_volumes_hirshfeld`] on a caller-supplied lattice `grid`
+/// (axis-aligned; cell volume `step_x[0]·step_y[1]·step_z[2]`). On
+/// [`hirshfeld_volume_grid`]`(mol)` it is bit-identical to
+/// `atomic_effective_volumes_hirshfeld`, which delegates here. Holding one
+/// `grid` fixed while atoms move is the "lattice fixed" convention of
+/// [`hirshfeld_volume_gradient`].
+pub fn atomic_effective_volumes_hirshfeld_on_grid(
+    mol: &Molecule,
+    obs_bs: &ferric_core::basis::BasisSet,
+    density: &Array2<f64>,
+    proatom: Option<&ProatomProvider>,
+    grid: &ferric_integrals::ao_grid::GridSpec,
+) -> Result<Vec<f64>, FerricError> {
+    use ferric_integrals::ao_grid::eval_basis_on_grid;
+
+    check_axis_aligned_grid("atomic_effective_volumes_hirshfeld", grid)?;
+    let natoms = mol.atoms.len();
+    let dv = grid.step_x[0] * grid.step_y[1] * grid.step_z[2];
     let npts = grid.n_x * grid.n_y * grid.n_z;
     let hx = grid.step_x[0];
     let hy = grid.step_y[1];
@@ -3514,7 +3610,7 @@ pub fn atomic_effective_volumes_hirshfeld(
         natoms,
     )?;
 
-    let chi = eval_basis_on_grid(mol, obs_bs, &grid).map_err(|e| {
+    let chi = eval_basis_on_grid(mol, obs_bs, grid).map_err(|e| {
         FerricError::General(format!(
             "atomic_effective_volumes_hirshfeld: chi failed: {e}"
         ))
@@ -3589,6 +3685,478 @@ pub fn atomic_effective_volumes_hirshfeld(
         vol[a] = acc;
     }
     Ok(vol)
+}
+
+/// Lattice points per chunk of [`hirshfeld_volume_gradient`]. A constant (not
+/// derived from the thread count or the budget), so the chunk partition — and
+/// with it the order of the final fold — is a pure function of the lattice.
+pub const HIRSHFELD_GRAD_CHUNK_POINTS: usize = 1024;
+
+/// Bytes [`hirshfeld_volume_gradient`] holds at its peak, split out so the
+/// formula can be checked by hand. Per chunk in flight: `chi`, the three
+/// `∇chi` planes and `D·chi` (5 × `(nbf, chunk)`), plus the point list and
+/// the per-point scalars (`ρ`, `q`, 3 coordinates — 5 × `chunk`). Shared:
+/// the symmetrized density `(nbf, nbf)` and one `(natoms, 3)` partial per
+/// chunk.
+pub fn estimate_hirshfeld_volume_gradient_bytes(
+    nbf: usize,
+    natoms: usize,
+    chunk_points: usize,
+    n_chunks: usize,
+    workers: usize,
+) -> usize {
+    const F64_BYTES: usize = 8;
+    let per_chunk = nbf
+        .saturating_mul(5)
+        .saturating_add(5)
+        .saturating_mul(chunk_points)
+        .saturating_mul(F64_BYTES);
+    let d_sym = nbf.saturating_mul(nbf).saturating_mul(F64_BYTES);
+    let partials = n_chunks
+        .saturating_mul(natoms)
+        .saturating_mul(3)
+        .saturating_mul(F64_BYTES);
+    per_chunk
+        .saturating_mul(workers)
+        .saturating_add(d_sym)
+        .saturating_add(partials)
+}
+
+/// Nuclear derivative of the contracted Hirshfeld volumes of
+/// [`atomic_effective_volumes_hirshfeld_on_grid`]:
+/// ```text
+///   G[B, :] = Σ_A de_dv[A] · ∂v_A/∂R_B
+/// ```
+/// at FIXED AO density matrix `D` and FIXED lattice `grid`: basis functions
+/// and proatoms move with their atoms, the lattice points do not. This is the
+/// exact derivative of the quadrature `atomic_effective_volumes_hirshfeld_on_grid`
+/// evaluates on the same `grid` (up to the kinks of the piecewise-linear
+/// proatom interpolant, see [`RadialProatom::deriv`]), not of the continuous
+/// integral: there is no lattice-response term, so Σ_B G[B, :] need not vanish.
+///
+/// With `v_A = Σ_g dV w_A ρ |r−R_A|³`, `w_A = ρ⁰_A / (S + ε)`,
+/// `S = Σ_C ρ⁰_C`, `ε = 1e-12` (the energy's floor), `d_C = r − R_C`,
+/// `r_C = |d_C|` and `q(g) = Σ_A de_dv[A] w_A r_A³`, each lattice point adds
+/// ```text
+///   (i)   −2 dV q Σ_{μ on B} ∇χ_μ (D_s χ)_μ           ∂ρ/∂R_B, D_s = (D + Dᵀ)/2
+///   (ii)  dV ρ (de_dv[B] r_B³ − q) g_B / (S + ε)       ∂w_A/∂R_B = (δ_AB − w_A) g_B/(S+ε)
+///   (iii) −3 dV ρ de_dv[B] w_B r_B d_B                 ∂r_B³/∂R_B
+/// ```
+/// where `g_B = ∂ρ⁰_B/∂R_B = −ρ⁰_B'(r_B) d_B / r_B` (0 at `r_B = 0`, where the
+/// radial profile has a cusp or, for a tabulated proatom, is flat).
+/// `ρ⁰_B'` is [`RadialProatom::deriv`] for a provider proatom and
+/// `−2ξ ρ⁰_B` for the Slater fallback; each atom uses the same proatom the
+/// energy uses (`proatom(z, 0)`, else the [`slater_xi_for_z`] Slater). The
+/// provider is called once per distinct element.
+///
+/// Evaluated in [`HIRSHFELD_GRAD_CHUNK_POINTS`]-point lattice chunks, in
+/// parallel; per-chunk `(natoms, 3)` partials are folded in ascending chunk
+/// order, so the result does not depend on the thread count.
+///
+/// # Errors
+///
+/// `de_dv` or `density` of the wrong size, a non-axis-aligned `grid`, an AO
+/// evaluation failure, or a peak (see
+/// [`estimate_hirshfeld_volume_gradient_bytes`]) above the memory budget.
+pub fn hirshfeld_volume_gradient(
+    mol: &Molecule,
+    obs_bs: &ferric_core::basis::BasisSet,
+    density: &Array2<f64>,
+    proatom: Option<&ProatomProvider>,
+    grid: &ferric_integrals::ao_grid::GridSpec,
+    de_dv: &[f64],
+) -> Result<Array2<f64>, FerricError> {
+    use ferric_integrals::ao_grid::{collect_shells, eval_shell_and_grad};
+    use rayon::prelude::*;
+
+    const LABEL: &str = "hirshfeld_volume_gradient";
+    check_axis_aligned_grid(LABEL, grid)?;
+    let natoms = mol.atoms.len();
+    if de_dv.len() != natoms {
+        return Err(FerricError::General(format!(
+            "{LABEL}: de_dv has {} entries for {natoms} atoms",
+            de_dv.len()
+        )));
+    }
+
+    // AO → atom, in collect_shells' order (atom-major, shell, function).
+    let shells =
+        collect_shells(mol, obs_bs).map_err(|e| FerricError::General(format!("{LABEL}: {e}")))?;
+    let mut ao_atom: Vec<usize> = Vec::new();
+    for (a, atom) in mol.atoms.iter().enumerate() {
+        let atom_shells = obs_bs
+            .for_element(atom.z)
+            .ok_or_else(|| FerricError::General(format!("{LABEL}: no basis for Z={}", atom.z)))?;
+        for sh in atom_shells {
+            let n = ferric_core::basis::num_functions(sh.l, sh.pure);
+            ao_atom.extend(std::iter::repeat_n(a, n));
+        }
+    }
+    let nbf = ao_atom.len();
+    if density.nrows() != nbf || density.ncols() != nbf {
+        return Err(FerricError::General(format!(
+            "{LABEL}: density {:?} does not match nbf {nbf}",
+            density.dim()
+        )));
+    }
+    let shell_nf: Vec<usize> = shells
+        .iter()
+        .map(|s| ferric_core::basis::num_functions(s.l, s.pure))
+        .collect();
+
+    let hx = grid.step_x[0];
+    let hy = grid.step_y[1];
+    let hz = grid.step_z[2];
+    let dv = hx * hy * hz;
+    let npts = grid.n_x * grid.n_y * grid.n_z;
+    let chunk = HIRSHFELD_GRAD_CHUNK_POINTS;
+    let chunk_starts: Vec<usize> = (0..npts).step_by(chunk).collect();
+    let n_chunks = chunk_starts.len();
+
+    // Thread count enters only the memory estimate (how many chunks can be
+    // in flight), never the partition or the fold.
+    let workers = rayon::current_num_threads().max(1).min(n_chunks.max(1));
+    let est = estimate_hirshfeld_volume_gradient_bytes(nbf, natoms, chunk, n_chunks, workers);
+    let label = format!(
+        "{LABEL} (nbf={nbf}, npts={npts}, natoms={natoms}, chunk={chunk}, workers={workers})"
+    );
+    ferric_core::memory::check_alloc(&label, est, ferric_core::memory::resolve_budget_bytes(None))?;
+    // Held for the whole call: every buffer it charges is live until return.
+    let _charge = ferric_core::memory::pool::reserve_global(&label, est)?;
+
+    let d_sym = {
+        let mut d = density.to_owned();
+        d += &density.t();
+        d *= 0.5;
+        d
+    };
+
+    // Per-atom proatom (same choice as the energy), one provider call per Z.
+    let mut by_z: std::collections::BTreeMap<i32, Option<RadialProatom>> =
+        std::collections::BTreeMap::new();
+    let mut pro: Vec<Option<RadialProatom>> = Vec::with_capacity(natoms);
+    let mut slater: Vec<(f64, f64)> = Vec::with_capacity(natoms); // (xi, prefac)
+    let mut pos: Vec<[f64; 3]> = Vec::with_capacity(natoms);
+    for atom in &mol.atoms {
+        let z_a = atom.z;
+        let pa = by_z
+            .entry(z_a)
+            .or_insert_with(|| proatom.and_then(|p| p(z_a, 0)))
+            .clone();
+        pro.push(pa);
+        let xi = slater_xi_for_z(z_a);
+        slater.push((xi, z_a as f64 * xi.powi(3) / std::f64::consts::PI));
+        pos.push([atom.x, atom.y, atom.zpos]);
+    }
+
+    let eps_floor = 1e-12;
+    let (n_y, n_z) = (grid.n_y, grid.n_z);
+    let origin = grid.origin;
+
+    let partials: Vec<Vec<[f64; 3]>> = chunk_starts
+        .par_iter()
+        .map(|&g0| -> Result<Vec<[f64; 3]>, FerricError> {
+            let g1 = (g0 + chunk).min(npts);
+            let c = g1 - g0;
+            // Lattice coordinates, same arithmetic as the energy loops.
+            let pts: Vec<[f64; 3]> = (g0..g1)
+                .map(|g| {
+                    let ix = g / (n_y * n_z);
+                    let rem = g % (n_y * n_z);
+                    let iy = rem / n_z;
+                    let iz = rem % n_z;
+                    [
+                        origin[0] + ix as f64 * hx,
+                        origin[1] + iy as f64 * hy,
+                        origin[2] + iz as f64 * hz,
+                    ]
+                })
+                .collect();
+
+            // χ and ∇χ for this chunk, serially (no nested parallelism, so at
+            // most `workers` chunks are ever resident).
+            let mut chi = Array2::<f64>::zeros((nbf, c));
+            let mut dchi: [Array2<f64>; 3] = std::array::from_fn(|_| Array2::zeros((nbf, c)));
+            let mut buf = [0.0f64; 15];
+            let mut gbuf = [[0.0f64; 15]; 3];
+            for (gc, p) in pts.iter().enumerate() {
+                let mut row0 = 0usize;
+                for (sh, &n) in shells.iter().zip(&shell_nf) {
+                    buf.fill(0.0);
+                    for row in gbuf.iter_mut() {
+                        row.fill(0.0);
+                    }
+                    eval_shell_and_grad(
+                        sh,
+                        p[0] - sh.center[0],
+                        p[1] - sh.center[1],
+                        p[2] - sh.center[2],
+                        &mut buf[..n],
+                        &mut gbuf,
+                    )
+                    .map_err(|e| FerricError::General(format!("{LABEL}: {e}")))?;
+                    for i in 0..n {
+                        chi[(row0 + i, gc)] = buf[i];
+                        for k in 0..3 {
+                            dchi[k][(row0 + i, gc)] = gbuf[k][i];
+                        }
+                    }
+                    row0 += n;
+                }
+            }
+            let d_chi = d_sym.dot(&chi);
+
+            let mut rho = vec![0.0_f64; c];
+            for mu in 0..nbf {
+                for gc in 0..c {
+                    rho[gc] += chi[(mu, gc)] * d_chi[(mu, gc)];
+                }
+            }
+
+            let mut local = vec![[0.0_f64; 3]; natoms];
+            let mut q = vec![0.0_f64; c];
+            let mut rho0 = vec![0.0_f64; natoms];
+            let mut drho0 = vec![0.0_f64; natoms];
+            let mut dvec = vec![[0.0_f64; 3]; natoms];
+            let mut rr = vec![0.0_f64; natoms];
+            for gc in 0..c {
+                let p = pts[gc];
+                let mut s = 0.0;
+                for a in 0..natoms {
+                    let d = [p[0] - pos[a][0], p[1] - pos[a][1], p[2] - pos[a][2]];
+                    let r = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                    let (v, dvdr) = match &pro[a] {
+                        Some(pa) => (pa.at(r), pa.deriv(r)),
+                        None => {
+                            let (xi, prefac) = slater[a];
+                            let v = prefac * (-2.0 * xi * r).exp();
+                            (v, -2.0 * xi * v)
+                        }
+                    };
+                    dvec[a] = d;
+                    rr[a] = r;
+                    rho0[a] = v;
+                    drho0[a] = dvdr;
+                    s += v;
+                }
+                let den = s + eps_floor;
+                let mut qg = 0.0;
+                for a in 0..natoms {
+                    qg += de_dv[a] * (rho0[a] / den) * rr[a] * rr[a] * rr[a];
+                }
+                q[gc] = qg;
+                let rho_g = rho[gc];
+                for b in 0..natoms {
+                    let r = rr[b];
+                    let d = dvec[b];
+                    let r3 = r * r * r;
+                    // (ii): g_B = −ρ⁰_B'(r_B) d_B / r_B. At the nucleus the
+                    // Slater proatom has a cusp and d_B/r_B no direction; a
+                    // lattice point there is common (see `RadialProatom::deriv`)
+                    // and sits at r ~ 1e-16, not 0, so the guard is a distance:
+                    // zero is the symmetric subgradient a central difference sees.
+                    if r > RadialProatom::KNOT_TOL {
+                        let f = dv * rho_g * (de_dv[b] * r3 - qg) / den * (-drho0[b] / r);
+                        for k in 0..3 {
+                            local[b][k] += f * d[k];
+                        }
+                    }
+                    // (iii)
+                    let f3 = -3.0 * dv * rho_g * de_dv[b] * (rho0[b] / den) * r;
+                    for k in 0..3 {
+                        local[b][k] += f3 * d[k];
+                    }
+                }
+            }
+
+            // (i): −2 dV q Σ_{μ on B} ∇χ_μ (D_s χ)_μ.
+            for mu in 0..nbf {
+                let b = ao_atom[mu];
+                let mut acc = [0.0_f64; 3];
+                for gc in 0..c {
+                    let t = q[gc] * d_chi[(mu, gc)];
+                    for k in 0..3 {
+                        acc[k] += t * dchi[k][(mu, gc)];
+                    }
+                }
+                for k in 0..3 {
+                    local[b][k] += -2.0 * dv * acc[k];
+                }
+            }
+            Ok(local)
+        })
+        .collect::<Result<Vec<_>, FerricError>>()?;
+
+    // Serial fold in ascending chunk order — the determinism anchor.
+    let mut out = Array2::<f64>::zeros((natoms, 3));
+    for part in &partials {
+        for (b, row) in part.iter().enumerate() {
+            for k in 0..3 {
+                out[(b, k)] += row[k];
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Density-matrix derivative of the contracted Hirshfeld volumes of
+/// [`atomic_effective_volumes_hirshfeld_on_grid`]:
+/// ```text
+///   V_μν = ∂(Σ_A c_A v_A)/∂D_μν = Σ_g dV q(r_g) χ_μ(r_g) χ_ν(r_g),
+///   q(r) = Σ_A c_A w_A(r) |r − R_A|³
+/// ```
+/// on the same lattice, proatoms and floor as the volumes (`c` = `de_dv`).
+/// Symmetric. Contracted with a density-matrix change δD it gives the
+/// first-order change of Σ_A c_A v_A at fixed geometry; the MBD nuclear
+/// gradient uses it for the orbital-orthonormality term −½ Tr[V D S^x D].
+pub fn hirshfeld_volume_density_derivative(
+    mol: &Molecule,
+    obs_bs: &ferric_core::basis::BasisSet,
+    proatom: Option<&ProatomProvider>,
+    grid: &ferric_integrals::ao_grid::GridSpec,
+    de_dv: &[f64],
+) -> Result<Array2<f64>, FerricError> {
+    use ferric_integrals::ao_grid::{collect_shells, eval_shell};
+    use rayon::prelude::*;
+
+    const LABEL: &str = "hirshfeld_volume_density_derivative";
+    check_axis_aligned_grid(LABEL, grid)?;
+    let natoms = mol.atoms.len();
+    if de_dv.len() != natoms {
+        return Err(FerricError::General(format!(
+            "{LABEL}: de_dv has {} entries for {natoms} atoms",
+            de_dv.len()
+        )));
+    }
+    let shells =
+        collect_shells(mol, obs_bs).map_err(|e| FerricError::General(format!("{LABEL}: {e}")))?;
+    let shell_nf: Vec<usize> = shells
+        .iter()
+        .map(|s| ferric_core::basis::num_functions(s.l, s.pure))
+        .collect();
+    let nbf: usize = shell_nf.iter().sum();
+
+    let hx = grid.step_x[0];
+    let hy = grid.step_y[1];
+    let hz = grid.step_z[2];
+    let dv = hx * hy * hz;
+    let npts = grid.n_x * grid.n_y * grid.n_z;
+    let chunk = HIRSHFELD_GRAD_CHUNK_POINTS;
+    let chunk_starts: Vec<usize> = (0..npts).step_by(chunk).collect();
+    let n_chunks = chunk_starts.len();
+    let workers = rayon::current_num_threads().max(1).min(n_chunks.max(1));
+    // Chunks are summed in HIRSHFELD_V_GROUPS fixed contiguous groups (a
+    // constant, not the thread count, so the fold order and the result do not
+    // depend on it). Resident: per in-flight group χ, q·χ (2·nbf·chunk) and a
+    // GEMM temporary (nbf²); one nbf² accumulator per group; the output.
+    const HIRSHFELD_V_GROUPS: usize = 16;
+    let est = {
+        const F64_BYTES: usize = 8;
+        let nbf2 = nbf.saturating_mul(nbf);
+        let per = nbf
+            .saturating_mul(2)
+            .saturating_mul(chunk)
+            .saturating_add(nbf2)
+            .saturating_mul(F64_BYTES);
+        per.saturating_mul(workers.min(HIRSHFELD_V_GROUPS))
+            .saturating_add(
+                nbf2.saturating_mul(HIRSHFELD_V_GROUPS + 1)
+                    .saturating_mul(F64_BYTES),
+            )
+    };
+    let label = format!("{LABEL} (nbf={nbf}, npts={npts}, chunk={chunk}, workers={workers})");
+    ferric_core::memory::check_alloc(&label, est, ferric_core::memory::resolve_budget_bytes(None))?;
+    let _charge = ferric_core::memory::pool::reserve_global(&label, est)?;
+
+    let mut by_z: std::collections::BTreeMap<i32, Option<RadialProatom>> =
+        std::collections::BTreeMap::new();
+    let mut pro: Vec<Option<RadialProatom>> = Vec::with_capacity(natoms);
+    let mut slater: Vec<(f64, f64)> = Vec::with_capacity(natoms);
+    let mut pos: Vec<[f64; 3]> = Vec::with_capacity(natoms);
+    for atom in &mol.atoms {
+        let z_a = atom.z;
+        let pa = by_z
+            .entry(z_a)
+            .or_insert_with(|| proatom.and_then(|p| p(z_a, 0)))
+            .clone();
+        pro.push(pa);
+        let xi = slater_xi_for_z(z_a);
+        slater.push((xi, z_a as f64 * xi.powi(3) / std::f64::consts::PI));
+        pos.push([atom.x, atom.y, atom.zpos]);
+    }
+    let eps_floor = 1e-12;
+    let (n_y, n_z) = (grid.n_y, grid.n_z);
+    let origin = grid.origin;
+
+    let per_group = n_chunks.div_ceil(HIRSHFELD_V_GROUPS).max(1);
+    let chunk_contrib = |g0: usize| -> Result<Array2<f64>, FerricError> {
+        let g1 = (g0 + chunk).min(npts);
+        let c = g1 - g0;
+        let mut chi = Array2::<f64>::zeros((nbf, c));
+        let mut qchi = Array2::<f64>::zeros((nbf, c));
+        let mut buf = [0.0f64; 15];
+        for (gc, g) in (g0..g1).enumerate() {
+            let ix = g / (n_y * n_z);
+            let rem = g % (n_y * n_z);
+            let iy = rem / n_z;
+            let iz = rem % n_z;
+            let p = [
+                origin[0] + ix as f64 * hx,
+                origin[1] + iy as f64 * hy,
+                origin[2] + iz as f64 * hz,
+            ];
+            let mut s = 0.0;
+            let mut num = 0.0;
+            for a in 0..natoms {
+                let d = [p[0] - pos[a][0], p[1] - pos[a][1], p[2] - pos[a][2]];
+                let r = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                let r0 = match &pro[a] {
+                    Some(pa) => pa.at(r),
+                    None => {
+                        let (xi, prefac) = slater[a];
+                        prefac * (-2.0 * xi * r).exp()
+                    }
+                };
+                s += r0;
+                num += de_dv[a] * r0 * r * r * r;
+            }
+            let q = dv * num / (s + eps_floor);
+            let mut row0 = 0usize;
+            for (sh, &n) in shells.iter().zip(&shell_nf) {
+                buf.fill(0.0);
+                eval_shell(
+                    sh,
+                    p[0] - sh.center[0],
+                    p[1] - sh.center[1],
+                    p[2] - sh.center[2],
+                    &mut buf[..n],
+                )
+                .map_err(|e| FerricError::General(format!("{LABEL}: {e}")))?;
+                for i in 0..n {
+                    chi[(row0 + i, gc)] = buf[i];
+                    qchi[(row0 + i, gc)] = q * buf[i];
+                }
+                row0 += n;
+            }
+        }
+        Ok(qchi.dot(&chi.t()))
+    };
+    let partials: Vec<Array2<f64>> = chunk_starts
+        .par_chunks(per_group)
+        .map(|group| -> Result<Array2<f64>, FerricError> {
+            let mut acc = Array2::<f64>::zeros((nbf, nbf));
+            for &g0 in group {
+                acc += &chunk_contrib(g0)?;
+            }
+            Ok(acc)
+        })
+        .collect::<Result<Vec<_>, FerricError>>()?;
+
+    let mut out = Array2::<f64>::zeros((nbf, nbf));
+    for part in &partials {
+        out += part;
+    }
+    Ok(out)
 }
 
 /// Iterative Hirshfeld (Hirshfeld-I) charges using ad-hoc same-basis free-atom

@@ -1150,6 +1150,8 @@ fn friendly_to_libxc(name: &str) -> Option<&'static [&'static str]> {
         // does not exist in libxc.
         "PBE0" | "PBEH" => &["HYB_GGA_XC_PBEH"],
         "B3LYP" => &["HYB_GGA_XC_B3LYP"],
+        // HSE06: screened (short-range-only) PBE hybrid, ω = 0.11 Bohr⁻¹.
+        "HSE06" => &["HYB_GGA_XC_HSE06"],
         "WB97XV" => &["HYB_GGA_XC_WB97X_V"],
         _ => return None,
     };
@@ -1160,7 +1162,7 @@ fn friendly_to_libxc(name: &str) -> Option<&'static [&'static str]> {
 /// closed-shell, nspin=2 for spin-polarized (UKS / ROKS).
 ///
 /// Recognized friendly names: `LDA`/`SVWN`, `PBE`, `PBEsol`, `BLYP`, `BP86`,
-/// `PBE0`, `B3LYP`, `wB97X-V` (case/separator-insensitive). Any other name is
+/// `PBE0`, `B3LYP`, `HSE06`, `wB97X-V` (case/separator-insensitive). Any other name is
 /// passed to libxc verbatim, so canonical identifiers (e.g. `HYB_GGA_XC_PBEH`)
 /// also work. Meta-GGA functionals are rejected — ferric has no mGGA kernel.
 pub fn xc_def_from_name(name: &str) -> Result<XcDef, LibxcError> {
@@ -1568,6 +1570,23 @@ mod tests {
             assert!(
                 xc_def_from_name(name).is_ok(),
                 "friendly name {name} should resolve"
+            );
+        }
+    }
+
+    /// HSE06 resolves to libxc's screened hybrid: short-range exact exchange
+    /// only (c_sr 0.25, c_lr 0, ω 0.11 Bohr⁻¹).
+    #[test]
+    fn hse06_friendly_name_is_the_screened_hybrid() {
+        for name in ["HSE06", "hse06", "HSE-06"] {
+            let def = xc_def_from_name(name).expect("HSE06 should resolve");
+            let k = k_mix_from_xc_def(&def);
+            assert!((k.sr - 0.25).abs() < 1e-12, "{name}: c_sr = {}", k.sr);
+            assert!(k.lr.abs() < 1e-12, "{name}: c_lr = {}", k.lr);
+            assert!(
+                (k.omega - 0.11).abs() < 1e-12,
+                "{name}: omega = {}",
+                k.omega
             );
         }
     }

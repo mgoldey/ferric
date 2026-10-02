@@ -130,9 +130,103 @@ pub fn ts_free_atom(z: usize) -> Option<(f64, f64, Option<f64>)> {
     Some(row)
 }
 
+/// Free-atom van der Waals radius R_vdW^free (Bohr) used by the TS/MBD Fermi
+/// damping. Indexed by atomic number `z` (1..=54, the same coverage as
+/// [`ts_free_atom`]); `None` outside the table.
+///
+/// Source: the `R_vdw(TS)` column of libMBD's `vdw-params.csv` (pymbd 0.15.0),
+/// which reproduces Gobre, PhD thesis, TU Berlin (2016), Table A.1; for Z ≤ 18
+/// these are the R0 values of Tkatchenko & Scheffler, PRL 102, 073005 (2009),
+/// Table I (H 3.10, C 3.59, N 3.34, O 3.19 Bohr). The values are in Bohr:
+/// libMBD's `vdw-params.SOURCES.md` labels the column Å, but libMBD/pymbd use
+/// the numbers directly as atomic units, and the TS table gives them in Bohr.
+///
+/// Mixed sources for Z = 19–54: R_vdW comes from Gobre's compilation, while
+/// α_free/C6_free in [`ts_free_atom`] come from Gould & Bučko (2016) (and Pd's
+/// α from Jerabek et al. 2018). Gobre tabulated these radii next to his own α
+/// and C6, so for those elements the triple (α, C6, R_vdW) is not from a single
+/// source. For Z ≤ 18 all three are TS PRL 2009 Table I.
+pub fn ts_free_atom_r_vdw(z: usize) -> Option<f64> {
+    let r = match z {
+        1 => 3.10,     // H
+        2 => 2.65,     // He
+        3 => 4.16,     // Li
+        4 => 4.17,     // Be
+        5 => 3.89,     // B
+        6 => 3.59,     // C
+        7 => 3.34,     // N
+        8 => 3.19,     // O
+        9 => 3.04,     // F
+        10 => 2.91,    // Ne
+        11 => 3.73,    // Na
+        12 => 4.27,    // Mg
+        13 => 4.33,    // Al
+        14 => 4.20,    // Si
+        15 => 4.01,    // P
+        16 => 3.86,    // S
+        17 => 3.71,    // Cl
+        18 => 3.55,    // Ar
+        19 => 3.71,    // K
+        20 => 4.65,    // Ca
+        21 => 4.59,    // Sc
+        22 => 4.51,    // Ti
+        23 => 4.44,    // V
+        24 => 3.99,    // Cr
+        25 => 3.97,    // Mn
+        26 => 4.23,    // Fe
+        27 => 4.18,    // Co
+        28 => 3.82,    // Ni
+        29 => 3.76,    // Cu
+        30 => 4.02,    // Zn
+        31 => 4.19,    // Ga
+        32 => 4.20,    // Ge
+        33 => 4.11,    // As
+        34 => 4.04,    // Se
+        35 => 3.93,    // Br
+        36 => 3.82,    // Kr
+        37 => 3.72,    // Rb
+        38 => 4.54,    // Sr
+        39 => 4.8151,  // Y
+        40 => 4.53,    // Zr
+        41 => 4.2365,  // Nb
+        42 => 4.099,   // Mo
+        43 => 4.076,   // Tc
+        44 => 3.9953,  // Ru
+        45 => 3.95,    // Rh
+        46 => 3.66,    // Pd
+        47 => 3.82,    // Ag
+        48 => 3.99,    // Cd
+        49 => 4.23198, // In
+        50 => 4.303,   // Sn
+        51 => 4.276,   // Sb
+        52 => 4.22,    // Te
+        53 => 4.17,    // I
+        54 => 4.08,    // Xe
+        _ => return None,
+    };
+    Some(r)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The R_vdW table must cover exactly the Z range of the α/C6 table, so a
+    /// volume-ratio MBD call can never get an α but no radius (or vice versa).
+    #[test]
+    fn r_vdw_table_covers_the_same_elements_as_alpha_c6() {
+        for z in 0..=120 {
+            assert_eq!(
+                ts_free_atom(z).is_some(),
+                ts_free_atom_r_vdw(z).is_some(),
+                "Z={z}: alpha/C6 and R_vdW tables disagree on coverage"
+            );
+        }
+        // TS PRL 2009 Table I spot values (Bohr).
+        assert_eq!(ts_free_atom_r_vdw(1), Some(3.10));
+        assert_eq!(ts_free_atom_r_vdw(6), Some(3.59));
+        assert_eq!(ts_free_atom_r_vdw(8), Some(3.19));
+    }
 
     #[test]
     fn known_free_atoms_present() {

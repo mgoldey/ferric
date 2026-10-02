@@ -131,9 +131,30 @@ polarizabilities \\( \alpha^A(i\omega) \\), and many-body dispersion (MBD).
 Three sources feed the \\( C_6 \\) contraction (`[rpa] c6_source`):
 
 - `ts`: the Tkatchenko–Scheffler single-pole model (default).
-- `mbd`: many-body (coupled-dipole) screening on top of the TS polarizabilities.
+- `mbd`: self-consistent dipole screening of the TS polarizabilities. This is
+  the full-range screening of Tkatchenko et al. 2012 (Gaussian-damped dipole
+  tensor, no Fermi range separation), not the range-separated screening of
+  MBD@rsSCS.
 - `pdep`: dynamic PDEP-RPA polarizabilities (`examples/water-c6-pdep.toml`,
   `examples/argon-c6-rpa-pbe.toml`).
+
+**MBD@rsSCS dispersion energy.** `ferric.mbd_rsscs_energy(mol, volume_ratios,
+functional=... | beta=...)` (Rust: `ferric_rpa::dispersion::mbd_rsscs_energy`)
+computes the MBD@rsSCS energy of Ambrosetti et al. 2014 for a finite molecule,
+standalone (no SCF). Inputs are per-atom Hirshfeld volume ratios, which scale
+the free-atom α, C6 and R_vdW (Z = 1–54). The polarizabilities are screened
+with the short-range part (1 − f) of the Gaussian-damped dipole tensor on
+libMBD's 15-point imaginary-frequency grid; the energy couples the screened
+oscillators through the long-range part f of the bare dipole tensor, with
+the Fermi function f(R) = 1/(1 + exp(−6(R/(β(R_A + R_B)) − 1))). β is
+functional dependent: PBE 0.83, PBE0 and HSE06 0.85; any other functional
+needs an explicit `beta`. It returns the energy and the screened α₀, C6,
+R_vdW and ω per atom, and raises on a polarization catastrophe (a
+non-positive coupled-oscillator eigenvalue). No periodic systems. As a
+dispersion correction on a Kohn–Sham SCF it is `[dft] dispersion = "mbd"` /
+`run_dft(dispersion="mbd")`, which take the volume ratios from the converged
+density (reported as `DftResult.volume_ratios`) and add the energy and its
+analytic gradient (see [SCF and DFT](./scf.md#dispersion-correction-mbdrsscs)).
 
 The `argon-c6-rpa-pbe.toml` header records C6(Ar–Ar) = 56.4 a.u. at
 RPA@PBE/aug-cc-pVTZ against the DOSD value 64.3 (−12%). **Which of TS and
@@ -159,5 +180,6 @@ hits it as shipped, so set `scissor` to about 0.3–0.4 Ha.
 PDEP: Wilson, Gygi & Galli 2008. RI-RPA quadrature: Eshuis, Yarkony & Furche
 2010; minimax grids: Kaltak, Klimeš & Kresse 2014. GW: Hedin 1965; GW100:
 van Setten et al. 2015. TDDFT review: Dreuw & Head-Gordon 2005. TS:
-Tkatchenko & Scheffler 2009; MBD: Tkatchenko et al. 2012. Full entries in
+Tkatchenko & Scheffler 2009; MBD: Tkatchenko et al. 2012; MBD@rsSCS: Ambrosetti
+et al. 2014. Full entries in
 [References](../reference/references.md).

@@ -323,9 +323,13 @@ pub struct DftCfg {
     ///   `"d3bj(<name>)"`  — D3(BJ) using `<name>`'s published parameters
     ///                       instead, for when ferric's XC name and the D3
     ///                       fit's name differ (e.g. a libxc spelling).
+    ///   `"mbd"`           — MBD@rsSCS on Hirshfeld volumes of the SCF
+    ///                       density, with the β published for `functional`
+    ///                       (PBE 0.83, PBE0 0.85, HSE06 0.85).
+    ///   `"mbd(<name>)"`   — MBD@rsSCS with `<name>`'s published β.
     ///
     /// Unknown values are a hard error, and so is a functional with no
-    /// published D3(BJ) fit: the correction is FITTED per functional, so
+    /// published D3(BJ) fit or MBD β: the correction is FITTED per functional, so
     /// substituting another one's parameters would silently change the answer.
     /// There is deliberately no "off" value that reports a 0.0 correction --
     /// absent means absent.
@@ -383,48 +387,72 @@ impl DftCfg {
 pub enum DispersionRequest {
     /// D3(BJ) with the named functional's published damping parameters.
     D3Bj { functional: String },
+    /// MBD@rsSCS (Ambrosetti et al., JCP 140, 18A508 (2014)) with the named
+    /// functional's published range-separation β. Parsing guarantees β exists
+    /// for `functional` (see [`ferric_rpa::dispersion::mbd_rsscs_beta_for_functional`]).
+    Mbd { functional: String },
 }
+
+/// Every accepted `[dft] dispersion` spelling, for error messages.
+const DISPERSION_SPELLINGS: &str =
+    "\"d3bj\", \"d3(bj)\", \"d3bj(<functional>)\", \"mbd\" or \"mbd(<functional>)\"";
 
 impl DispersionRequest {
     /// Parse the `[dft] dispersion` value.
     ///
     /// `xc` is the functional being run, used when the value does not name one
     /// explicitly. Strict by this config's convention: an unknown value is an
-    /// error, never a silent no-op.
+    /// error, never a silent no-op. For MBD the functional must have a
+    /// published β; an unlisted one is an error here, never a default β.
     pub fn parse_config_str(s: &str, xc: Option<&str>) -> Result<Self, ferric_core::FerricError> {
         let v = s.trim();
         let lower = v.to_ascii_lowercase();
-        let named = |f: &str| -> Result<Self, ferric_core::FerricError> {
+        let d3 = |f: &str| -> Result<Self, ferric_core::FerricError> {
             Ok(DispersionRequest::D3Bj {
                 functional: f.to_string(),
             })
         };
-        if lower == "d3bj" || lower == "d3(bj)" {
-            let f = xc.ok_or_else(|| {
-                ferric_core::FerricError::General(
-                    "[dft] dispersion = \"d3bj\" needs [dft] functional to know which \
-                     damping parameters to use, or name one explicitly as \
-                     \"d3bj(pbe)\"."
-                        .to_string(),
-                )
+        let mbd = |f: &str| -> Result<Self, ferric_core::FerricError> {
+            ferric_rpa::dispersion::mbd_rsscs_beta_for_functional(f).map_err(|e| {
+                ferric_core::FerricError::General(format!("[dft] dispersion = {v:?}: {e}"))
             })?;
-            return named(f);
+            Ok(DispersionRequest::Mbd {
+                functional: f.to_string(),
+            })
+        };
+        let running = |spelling: &str, example: &str| {
+            xc.ok_or_else(|| {
+                ferric_core::FerricError::General(format!(
+                    "[dft] dispersion = \"{spelling}\" needs [dft] functional to know which \
+                     parameters to use, or name one explicitly as \"{example}\"."
+                ))
+            })
+        };
+        if lower == "d3bj" || lower == "d3(bj)" {
+            return d3(running("d3bj", "d3bj(pbe)")?);
         }
-        if let Some(rest) = lower
-            .strip_prefix("d3bj(")
-            .and_then(|r| r.strip_suffix(')'))
-        {
-            if rest.trim().is_empty() {
-                return Err(ferric_core::FerricError::General(
-                    "[dft] dispersion = \"d3bj()\" names no functional".to_string(),
-                ));
+        if lower == "mbd" {
+            return mbd(running("mbd", "mbd(pbe)")?);
+        }
+        let named = |prefix: &str| -> Result<Option<String>, ferric_core::FerricError> {
+            match lower.strip_prefix(prefix).and_then(|r| r.strip_suffix(')')) {
+                None => Ok(None),
+                Some(rest) if rest.trim().is_empty() => Err(ferric_core::FerricError::General(
+                    format!("[dft] dispersion = \"{prefix})\" names no functional"),
+                )),
+                Some(rest) => Ok(Some(rest.trim().to_string())),
             }
-            return named(rest.trim());
+        };
+        if let Some(f) = named("d3bj(")? {
+            return d3(&f);
+        }
+        if let Some(f) = named("mbd(")? {
+            return mbd(&f);
         }
         Err(ferric_core::FerricError::General(format!(
-            "unknown [dft] dispersion value {v:?}; expected \"d3bj\" or \
-             \"d3bj(<functional>)\". Omit the key entirely for no dispersion \
-             correction -- there is no value that means \"compute zero\"."
+            "unknown [dft] dispersion value {v:?}; expected {DISPERSION_SPELLINGS}. \
+             Omit the key entirely for no dispersion correction -- there is no value \
+             that means \"compute zero\"."
         )))
     }
 }
@@ -4440,8 +4468,62 @@ trunc_threshold = 1e-12
         assert!(DispersionRequest::parse_config_str("d3bj", None).is_err());
         // An empty parenthesised name is an error, not an empty lookup.
         assert!(DispersionRequest::parse_config_str("d3bj()", Some("PBE")).is_err());
-        // Unknown schemes error.
-        for bad in ["d4", "xdm", "vv10", "yes", "true", "0", "none", "off"] {
+        // MBD@rsSCS: "mbd" takes the running functional, case-insensitively.
+        assert_eq!(
+            DispersionRequest::parse_config_str("mbd", Some("PBE")).unwrap(),
+            DispersionRequest::Mbd {
+                functional: "PBE".to_string()
+            }
+        );
+        assert_eq!(
+            DispersionRequest::parse_config_str("MBD", Some("pbe0")).unwrap(),
+            DispersionRequest::Mbd {
+                functional: "pbe0".to_string()
+            }
+        );
+        // An explicit functional overrides the running one.
+        assert_eq!(
+            DispersionRequest::parse_config_str("MBD(HSE06)", Some("PBE")).unwrap(),
+            DispersionRequest::Mbd {
+                functional: "hse06".to_string()
+            }
+        );
+        // No functional to fall back on, an empty name, and a functional with
+        // no published beta are all errors -- never a default beta.
+        assert!(DispersionRequest::parse_config_str("mbd", None).is_err());
+        assert!(DispersionRequest::parse_config_str("mbd()", Some("PBE")).is_err());
+        let err = DispersionRequest::parse_config_str("mbd", Some("B3LYP"))
+            .expect_err("B3LYP has no published MBD@rsSCS beta");
+        assert!(err.to_string().contains("B3LYP"), "{err}");
+        assert!(DispersionRequest::parse_config_str("mbd(blyp)", Some("PBE")).is_err());
+
+        // Unknown schemes error, and the message lists every accepted spelling.
+        let err = DispersionRequest::parse_config_str("d4", Some("PBE")).unwrap_err();
+        for spelling in [
+            "d3bj",
+            "d3(bj)",
+            "d3bj(<functional>)",
+            "\"mbd\"",
+            "mbd(<functional>)",
+        ] {
+            assert!(
+                err.to_string().contains(spelling),
+                "{spelling} missing: {err}"
+            );
+        }
+        for bad in [
+            "d4",
+            "xdm",
+            "vv10",
+            "yes",
+            "true",
+            "0",
+            "none",
+            "off",
+            "mbd@rsscs",
+            "mbd-nl",
+            "ts",
+        ] {
             assert!(
                 DispersionRequest::parse_config_str(bad, Some("PBE")).is_err(),
                 "{bad:?} must be rejected; omitting the key is the only way to \
