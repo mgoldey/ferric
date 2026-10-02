@@ -968,6 +968,9 @@ fn rhf_energy_gradient_and_result(
     // effect (then the COSX derivative, or a refusal before the SCF where no
     // COSX gradient exists).
     crate::gradient::preflight_cosx_restricted(config)?;
+    // A COSX final pass is energy-only: the gradient differentiates the
+    // SCF-grid energy, so the geometry task runs without it.
+    let config = &*crate::gradient::gradient_task_config(config);
     let res = solve_rhf(ctx, mol, &prep, op, &bounds, config)?;
     let grad =
         crate::gradient::restricted_scf_gradient(mol, &prep, &bs, op, &bounds, config, &res)?;
@@ -1003,6 +1006,7 @@ fn energy_and_gradient(
         FrequencyReference::Uhf => {
             let (bs, prep, bounds) = prepared()?;
             crate::gradient::preflight_cosx_unrestricted(config)?;
+            let config = &*crate::gradient::gradient_task_config(config);
             let res = solve_uhf(ctx, mol, &prep, &bounds, config)?;
             let grad = crate::gradient::unrestricted_scf_gradient(
                 mol, &prep, &bs, op, &bounds, config, &res,
@@ -1012,6 +1016,7 @@ fn energy_and_gradient(
         FrequencyReference::Rohf => {
             let (bs, prep, bounds) = prepared()?;
             crate::gradient::refuse_cosx_restricted_open(config)?;
+            let config = &*crate::gradient::gradient_task_config(config);
             let res = solve_rohf(ctx, mol, &prep, op, &bounds, config)?;
             let grad = if let Some(xc_name) = config.xc.as_deref() {
                 ks_gradient_roks(mol, &prep, &bs, op, &bounds, xc_name, &res, ext)?

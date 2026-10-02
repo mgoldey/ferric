@@ -24,9 +24,9 @@
 //! four-centre exchange derivative REPLACED by the explicit fixed-`D` derivative
 //! of `sum_g w_g e_g`, computed here.
 //!
-//! The grid is ferric's atom-centred Becke–Lebedev grid (`build_atomic_grid`,
-//! the same one `CosxK::new` builds for an unpruned `CosxConfig::grid`); every
-//! point rides rigidly with its home atom `h(g)`. Three terms:
+//! The grid is ferric's atom-centred Becke–Lebedev grid
+//! (`build_atomic_grid_pruned`, the same one `CosxK::new` builds, flat or
+//! pruned); every point rides rigidly with its home atom `h(g)`. Three terms:
 //!
 //! ```text
 //!  d/dR_X [w_g e_g] = e_g dw_g/dR_X                                           (c)
@@ -84,8 +84,6 @@
 //!   `tr[Zs V_xc'(D)]` — the nuclear derivative of the XC Fock matrix at fixed
 //!   density, with grid response — which ferric does not have (`hessian.rs` is a
 //!   stub). Fit-off COSX with a hybrid is exact (the energy is variational).
-//! * **A pruned COSX grid.** The weight response exists only for the flat grid
-//!   (see `build_atomic_grid_with_response`).
 //!
 //! # Screening
 //!
@@ -102,7 +100,7 @@ use ferric_core::memory::plan::{Lifetime, MemoryPlan};
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
-use ferric_dft::grid::{build_atomic_grid_with_response, GridPoint};
+use ferric_dft::grid::{build_atomic_grid_with_response_pruned, GridPoint};
 use ferric_integrals::ao_grid::{
     collect_shells, eval_basis_and_grad_on_points_unchecked, LocatedShell,
 };
@@ -169,13 +167,10 @@ pub enum FitQ {
 /// `fitted_exchange_response`. KS + fit is refused separately by
 /// [`check_fitted_ks_supported`], which needs to know the functional.
 pub fn check_gradient_supported(cfg: &CosxConfig) -> Result<(), FerricError> {
-    if cfg.grid.prune.is_some() {
-        return Err(FerricError::General(
-            "COSX analytic gradient: a pruned COSX grid is not supported (the Becke weight \
-             response is built for the flat grid only); set the cosx grid's prune = None"
-                .into(),
-        ));
-    }
+    // Pruned grids are differentiated like flat ones: the Becke weight
+    // response of `build_atomic_grid_with_response_pruned` is per point, and
+    // per-shell Lebedev orders only change which points exist (FD-validated
+    // on the `sgx` grid in `tests/cosx_gradient.rs`).
     validate_grid(&cfg.grid)
 }
 
@@ -215,16 +210,18 @@ pub fn unsupported_reference_error(reference: &str) -> FerricError {
 /// whether its gradient must come from this module.
 ///
 /// `k_builder = "cosx"` alone is not enough: the solvers IGNORE it (with a
-/// warning) when density-fitted J/K is active, when the functional uses no
-/// exact exchange, and for range-separated functionals. This mirrors those
-/// rules so the gradient differentiates the exchange the SCF actually used:
+/// warning) when the functional uses no exact exchange and for
+/// range-separated functionals (whose exchange comes from the SR/LR DF
+/// fitters). This mirrors those rules so the gradient differentiates the
+/// exchange the SCF actually used.
 ///
-/// * restricted (`solve_rhf`, `open_shell = false`): a functional
-///   AUTO-DEFAULTS RI-J (and RI-K for a hybrid) unless the caller opts out with
-///   `df_j_aux = Some("")` / `df_k_aux = Some("")`; any active DF skips COSX.
-/// * open shell (`solve_uhf` / `solve_rohf`, `open_shell = true`): no
-///   auto-default; a NON-EMPTY `df_j_aux` or `df_k_aux` skips COSX (`Some("")`
-///   is the exact-J/K sentinel, filtered out by `fock_assembly::build_df_jk`).
+/// Density-fitted Coulomb does NOT switch COSX off: DF-J + COSX is the
+/// RIJCOSX composite, and the gradient then takes J from the DF-J route the
+/// SCF recorded (`ScfResult::df_jk`) and K from COSX. An explicitly named
+/// `df_k_aux` next to `k_builder = "cosx"` is refused, by the solvers and here
+/// alike (`fock_assembly::cosx_replaces_df_k`); the RHF auto-default
+/// DF-K of a functional is replaced by COSX. `open_shell` is kept for the
+/// callers' symmetry: the rule is the same for every reference.
 ///
 /// A mismatch between this predicate and the solvers would show up as a
 /// finite-difference failure in `tests/cosx_gradient.rs`, which runs the
@@ -233,6 +230,7 @@ pub fn scf_exchange_is_cosx(
     config: &crate::rhf::RhfConfig,
     open_shell: bool,
 ) -> Result<bool, FerricError> {
+    let _ = open_shell;
     if config.k_builder.as_deref() != Some("cosx") {
         return Ok(false);
     }
@@ -244,28 +242,13 @@ pub fn scf_exchange_is_cosx(
                 .map_err(|e| FerricError::General(format!("libxc: {e:?}")))?,
         ),
     };
-    // Exact exchange consumed from a K matrix at all (RSH exchange comes from
-    // the SR/LR fitters and has no COSX form; the SCF refuses or skips it).
+    // Exact exchange consumed from a plain (omega = 0) K matrix at all.
     let need_k = !has_xc || k_mix.sr != 0.0;
-    if !need_k || k_mix.omega > 0.0 {
-        return Ok(false);
-    }
-    let df_active = if open_shell {
-        // `fock_assembly::build_df_jk` drops an empty name (`Some("")` is the
-        // explicit exact-J/K sentinel), so only a NON-EMPTY name activates DF.
-        let named = |aux: &Option<String>| aux.as_deref().is_some_and(|s| !s.is_empty());
-        named(&config.df_j_aux) || named(&config.df_k_aux)
-    } else {
-        // `solve_rhf`'s `resolve_aux`: None = auto-default when needed,
-        // Some("") = explicit opt-out, Some(name) = on.
-        let requested = |aux: &Option<String>, auto: bool| match aux.as_deref() {
-            None => auto,
-            Some("") => false,
-            Some(_) => true,
-        };
-        requested(&config.df_j_aux, has_xc) || requested(&config.df_k_aux, has_xc)
-    };
-    Ok(!df_active)
+    crate::fock_assembly::cosx_replaces_df_k(
+        config.k_builder.as_deref(),
+        config.df_k_aux.as_deref(),
+        need_k && k_mix.omega == 0.0,
+    )
 }
 
 /// `d/dR sum_i c_i tr[D_i K_COSX(D_i)]` at FIXED densities — the EXPLICIT part.
@@ -338,9 +321,9 @@ pub fn cosx_exchange_gradient_bilinear_with_q(
     let fit = cfg.overlap_fit && q == FitQ::Configured;
     let identity_path = q == FitQ::Identity;
 
-    // The SAME points and weights `CosxK::new` builds (`build_atomic_grid` for
-    // an unpruned config), plus d w_g / d R.
-    let (grid, weight1) = build_atomic_grid_with_response(mol, &cfg.grid)?;
+    // The SAME points and weights `CosxK::new` builds
+    // (`build_atomic_grid_pruned(mol, grid, grid.prune)`), plus d w_g / d R.
+    let (grid, weight1) = build_atomic_grid_with_response_pruned(mol, &cfg.grid)?;
     let shells = collect_shells(mol, prep.basis_set())
         .map_err(|e| FerricError::General(format!("cosx_exchange_gradient AO shells: {e:?}")))?;
     let ao_atom = ao_to_atom(prep);
@@ -929,6 +912,26 @@ pub fn fitted_exchange_response_with_q(
     c_x: f64,
     q: FitQ,
 ) -> Result<FittedResponse, FerricError> {
+    fitted_exchange_response_routed(mol, prep, bounds, cfg, spins, c_x, q, None)
+}
+
+/// [`fitted_exchange_response_with_q`] with the Coulomb response `J(Zs)` built
+/// by the SAME builder the SCF used: `j_route = Some(route)` with an RI-J aux
+/// (the RIJCOSX composite) uses `DfJ` on that aux basis, `None` (or a route
+/// without RI-J) the exact four-centre `DirectJ`. The Z-vector is the
+/// orbital-response of the energy actually converged, so its Coulomb kernel
+/// must be the fitted one when J was fitted.
+#[allow(clippy::too_many_arguments)]
+pub fn fitted_exchange_response_routed(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    cfg: &CosxConfig,
+    spins: &[SpinOrbitals],
+    c_x: f64,
+    q: FitQ,
+    j_route: Option<&crate::result::DfJkRoute>,
+) -> Result<FittedResponse, FerricError> {
     let identity = q == FitQ::Identity;
     if !cfg.overlap_fit && !identity {
         return Err(FerricError::General(
@@ -994,7 +997,7 @@ pub fn fitted_exchange_response_with_q(
     let _guard = plan.commit()?;
 
     // Q pieces on the same grid as the energy.
-    let grid = ferric_dft::grid::build_atomic_grid(mol, &cfg.grid);
+    let grid = ferric_dft::grid::build_atomic_grid_pruned(mol, &cfg.grid, cfg.grid.prune)?;
     let shells = collect_shells(mol, prep.basis_set())
         .map_err(|e| FerricError::General(format!("COSX response AO shells: {e:?}")))?;
     let s = ferric_integrals::oneelectron::overlap(prep);
@@ -1034,13 +1037,26 @@ pub fn fitted_exchange_response_with_q(
         },
         0,
     )?;
-    let mut jb = crate::direct_j::DirectJ::new(
-        &ctx,
-        prep,
-        bounds,
-        ZVEC_J_THRESH,
-        ferric_core::memory::resolve_budget_bytes(None),
-    );
+    let j_aux = j_route.and_then(|r| r.j_aux.as_deref().map(|a| (a, r)));
+    let mut jb: Box<dyn JBuilder + '_> = match j_aux {
+        Some((aux, route)) => {
+            let dfbs = PreparedBasis::new(mol, &ferric_core::basis::bundled(aux)?)?;
+            Box::new(crate::df_j::DfJ::new_banded(
+                route.op,
+                prep,
+                &dfbs,
+                route.budget_bytes,
+                Some(&ctx),
+            )?)
+        }
+        None => Box::new(crate::direct_j::DirectJ::new(
+            &ctx,
+            prep,
+            bounds,
+            ZVEC_J_THRESH,
+            ferric_core::memory::resolve_budget_bytes(None),
+        )),
+    };
 
     let mut l_of = |y: &Array2<f64>| -> Result<Array2<f64>, FerricError> {
         let mut out = Array2::<f64>::zeros((nbf, nbf));

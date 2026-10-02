@@ -279,6 +279,79 @@ fn resolve_df_aux(requested: Option<&str>, default_aux: &str) -> Option<String> 
     }
 }
 
+/// One COSX grid kwarg: `(radial, angular)` (flat) or `(radial, angular,
+/// prune)` with `prune` in `"none"` / `"sgx"` / `"nwchem"` (the CLI's
+/// `cosx_grid = { radial, angular, prune }` table). Strict.
+fn parse_cosx_grid(
+    name: &str,
+    v: &Bound<'_, PyAny>,
+) -> PyResult<ferric_dft::grid::AtomicGridConfig> {
+    let (r, a, p) = if let Ok((r, a)) = v.extract::<(usize, usize)>() {
+        (r, a, None)
+    } else if let Ok((r, a, p)) = v.extract::<(usize, usize, String)>() {
+        (r, a, Some(p))
+    } else {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "{name} must be (radial, angular) or (radial, angular, prune)"
+        )));
+    };
+    ferric_scf::cosx_k::grid_from_parts(r, a, p.as_deref())
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{name}: {e}")))
+}
+
+/// The `cosx_*` kwargs of `run_rhf` / `run_uhf` / `run_dft` (same names and
+/// rules as the CLI `[scf] cosx_*` keys): `cosx_grid`, `cosx_final_pass`,
+/// `cosx_final_grid`, `cosx_overlap_fit`. Any of them with `k_builder` other
+/// than `"cosx"` is a `ValueError` (a knob that would silently do nothing).
+fn resolve_cosx_kwargs(
+    k_builder: Option<&str>,
+    cosx_grid: Option<&Bound<'_, PyAny>>,
+    cosx_final_pass: Option<bool>,
+    cosx_final_grid: Option<&Bound<'_, PyAny>>,
+    cosx_overlap_fit: Option<bool>,
+) -> PyResult<ferric_scf::cosx_k::CosxConfig> {
+    let any = cosx_grid.is_some()
+        || cosx_final_pass.is_some()
+        || cosx_final_grid.is_some()
+        || cosx_overlap_fit.is_some();
+    if any && k_builder != Some("cosx") {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "cosx_grid / cosx_final_pass / cosx_final_grid / cosx_overlap_fit are only read with \
+             k_builder=\"cosx\" (got k_builder={k_builder:?})"
+        )));
+    }
+    let mut cfg = ferric_scf::cosx_k::CosxConfig::default();
+    let grid = cosx_grid
+        .map(|v| parse_cosx_grid("cosx_grid", v))
+        .transpose()?;
+    let final_grid = cosx_final_grid
+        .map(|v| parse_cosx_grid("cosx_final_grid", v))
+        .transpose()?;
+    ferric_scf::cosx_k::apply_grid_knobs(&mut cfg, grid, cosx_final_pass, final_grid)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    if let Some(fit) = cosx_overlap_fit {
+        cfg.overlap_fit = fit;
+    }
+    Ok(cfg)
+}
+
+/// The COSX final-grid pass record as a dict, or `None` when no pass ran.
+fn cosx_final_dict(
+    py: Python<'_>,
+    f: Option<ferric_scf::cosx_k::CosxFinalPass>,
+) -> PyResult<Option<Py<pyo3::types::PyDict>>> {
+    let Some(f) = f else {
+        return Ok(None);
+    };
+    let d = pyo3::types::PyDict::new(py);
+    d.set_item("e_scf_grid", f.e_scf_grid)?;
+    d.set_item("e_final", f.e_final)?;
+    d.set_item("npts_scf_grid", f.npts_scf)?;
+    d.set_item("npts_final_grid", f.npts_final)?;
+    d.set_item("gradient_differentiates", "e_scf_grid")?;
+    Ok(Some(d.into()))
+}
+
 /// Resolve the `grid_radial` / `grid_angular` / `grid_prune` kwargs into the
 /// main KS grid config (`RhfConfig::dft_grid`).
 ///
@@ -323,6 +396,12 @@ fn resolve_dft_grid(
             "grid_angular = {n_angular} is not a supported Lebedev order \
              (supported: {SUPPORTED_LEBEDEV_ORDERS:?})"
         )));
+    }
+    if prune == Some(PruneScheme::Sgx) {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "grid_prune = \"sgx\" is the COSX exchange grid's scheme (cosx_grid=); the XC \
+             grid is validated with \"nwchem\" or \"none\" only",
+        ));
     }
     if prune.is_some() {
         region_orders(n_angular)
@@ -503,6 +582,14 @@ impl PyRhfResult {
     fn mo_coefficients<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         PyArray2::from_array(py, &self.scf_data.mos_alpha)
     }
+    /// The COSX final-grid pass (`cosx_final_pass=` / `cosx_final_grid=`):
+    /// `{"e_scf_grid", "e_final", "npts_scf_grid", "npts_final_grid",
+    /// "gradient_differentiates"}`, or `None` when no pass ran. `energy` is
+    /// `e_final` when it ran.
+    #[getter]
+    fn cosx_final_pass(&self, py: Python<'_>) -> PyResult<Option<Py<pyo3::types::PyDict>>> {
+        cosx_final_dict(py, self.scf_data.cosx_final)
+    }
     fn __repr__(&self) -> String {
         format!(
             "RhfResult(energy={:.10}, converged={})",
@@ -579,6 +666,7 @@ impl PyRhfResult {
     point_charges=None, external_field=None, smeared_charges=None,
     memory_budget_gb=None, solvent=None, pcm_lebedev_order=None,
     stability_descent=None,
+    cosx_grid=None, cosx_final_pass=None, cosx_final_grid=None, cosx_overlap_fit=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_rhf(
@@ -606,6 +694,10 @@ fn run_rhf(
     solvent: Option<&Bound<'_, PyAny>>,
     pcm_lebedev_order: Option<usize>,
     stability_descent: Option<bool>,
+    cosx_grid: Option<&Bound<'_, PyAny>>,
+    cosx_final_pass: Option<bool>,
+    cosx_final_grid: Option<&Bound<'_, PyAny>>,
+    cosx_overlap_fit: Option<bool>,
 ) -> PyResult<PyRhfResult> {
     // The descent needs a stability verdict to act on, so the kwarg turns on
     // both halves (as run_uhf does).
@@ -626,6 +718,13 @@ fn run_rhf(
         diis_size: diis_size.unwrap_or(8),
         integral_thresh: integral_thresh.unwrap_or(1e-12),
         k_builder: k_builder.map(|s| s.to_string()),
+        cosx: resolve_cosx_kwargs(
+            k_builder,
+            cosx_grid,
+            cosx_final_pass,
+            cosx_final_grid,
+            cosx_overlap_fit,
+        )?,
         // Same opt-out spellings as run_dft ("exact"/"none"/"off"/...).
         df_j_aux: df_j_aux.map(ferric_scf::rhf::normalize_df_aux),
         df_k_aux: df_k_aux.map(ferric_scf::rhf::normalize_df_aux),
@@ -1668,10 +1767,16 @@ struct PyUhfResult {
     density_beta_data: Array2<f64>,
     eps_alpha_data: Vec<f64>,
     eps_beta_data: Vec<f64>,
+    cosx_final: Option<ferric_scf::cosx_k::CosxFinalPass>,
 }
 
 #[pymethods]
 impl PyUhfResult {
+    /// The COSX final-grid pass record (see `RhfResult.cosx_final_pass`).
+    #[getter]
+    fn cosx_final_pass(&self, py: Python<'_>) -> PyResult<Option<Py<pyo3::types::PyDict>>> {
+        cosx_final_dict(py, self.cosx_final)
+    }
     fn density_alpha<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         PyArray2::from_array(py, &self.density_alpha_data)
     }
@@ -1728,6 +1833,7 @@ impl PyUhfResult {
     level_shift=None, mom_after_iter=None,
     point_charges=None, external_field=None, memory_budget_gb=None,
     guess=None, stability_descent=None,
+    cosx_grid=None, cosx_final_pass=None, cosx_final_grid=None, cosx_overlap_fit=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_uhf(
@@ -1749,6 +1855,10 @@ fn run_uhf(
     memory_budget_gb: Option<f64>,
     guess: Option<&str>,
     stability_descent: Option<bool>,
+    cosx_grid: Option<&Bound<'_, PyAny>>,
+    cosx_final_pass: Option<bool>,
+    cosx_final_grid: Option<&Bound<'_, PyAny>>,
+    cosx_overlap_fit: Option<bool>,
 ) -> PyResult<PyUhfResult> {
     // The shared strict parser (same as run_rhf and the CLI): a typo must not
     // silently select a different SCF state (on O2/STO-3G the two guesses
@@ -1770,6 +1880,13 @@ fn run_uhf(
         diis_size: diis_size.unwrap_or(8),
         integral_thresh: integral_thresh.unwrap_or(1e-12),
         k_builder: k_builder.map(|s| s.to_string()),
+        cosx: resolve_cosx_kwargs(
+            k_builder,
+            cosx_grid,
+            cosx_final_pass,
+            cosx_final_grid,
+            cosx_overlap_fit,
+        )?,
         // Same opt-out spellings as run_dft ("exact"/"none"/"off"/...).
         df_j_aux: df_j_aux.map(ferric_scf::rhf::normalize_df_aux),
         df_k_aux: df_k_aux.map(ferric_scf::rhf::normalize_df_aux),
@@ -1799,6 +1916,7 @@ fn run_uhf(
         computed_quartets: r.computed_quartets,
         density_alpha_data: r.density_alpha,
         density_beta_data: r.density_beta.unwrap_or_else(|| r.density_total.clone()),
+        cosx_final: r.cosx_final,
         eps_alpha_data: r.eps_alpha,
         eps_beta_data: r.eps_beta.unwrap_or_default(),
     })
@@ -1881,6 +1999,7 @@ fn run_rohf(
         computed_quartets: r.computed_quartets,
         density_alpha_data: r.density_alpha,
         density_beta_data: r.density_beta.unwrap_or_else(|| r.density_total.clone()),
+        cosx_final: r.cosx_final,
         eps_alpha_data: r.eps_alpha,
         eps_beta_data: r.eps_beta.unwrap_or_default(),
     })
@@ -5780,6 +5899,12 @@ impl PyDftResult {
         PyArray2::from_array(py, &self.vxc_data)
     }
 
+    /// The COSX final-grid pass record (see `RhfResult.cosx_final_pass`).
+    #[getter]
+    fn cosx_final_pass(&self, py: Python<'_>) -> PyResult<Option<Py<pyo3::types::PyDict>>> {
+        cosx_final_dict(py, self.scf_data.cosx_final)
+    }
+
     fn density<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         PyArray2::from_array(py, &self.density_data)
     }
@@ -5944,6 +6069,7 @@ fn run_double_hybrid(
     point_charges=None, external_field=None, memory_budget_gb=None,
     dispersion=None, df_j_aux=None, df_k_aux=None,
     grid_radial=None, grid_angular=None, grid_prune=None,
+    cosx_grid=None, cosx_final_pass=None, cosx_final_grid=None, cosx_overlap_fit=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_dft(
@@ -5967,6 +6093,10 @@ fn run_dft(
     grid_radial: Option<usize>,
     grid_angular: Option<usize>,
     grid_prune: Option<&str>,
+    cosx_grid: Option<&Bound<'_, PyAny>>,
+    cosx_final_pass: Option<bool>,
+    cosx_final_grid: Option<&Bound<'_, PyAny>>,
+    cosx_overlap_fit: Option<bool>,
 ) -> PyResult<PyDftResult> {
     // Refuse an (E, grad-E) pair that does not belong to the same surface.
     //
@@ -6012,7 +6142,21 @@ fn run_dft(
     // RI-K only matters for ω = 0 hybrids and HF. For a pure functional (and
     // for RSH, which uses its own SR/LR fitters) `solve_rhf` now skips
     // building this DfK altogether rather than building it and discarding K.
-    cfg.df_k_aux = resolve_df_aux(df_k_aux, "def2-universal-jkfit");
+    // RIJCOSX: with k_builder="cosx", COSX replaces RI-K, so the RI-K
+    // default is not applied (an explicit df_k_aux next to COSX is a conflict
+    // the SCF refuses); RI-J stays on by default.
+    cfg.df_k_aux = if k_builder == Some("cosx") && df_k_aux.is_none() {
+        None
+    } else {
+        resolve_df_aux(df_k_aux, "def2-universal-jkfit")
+    };
+    cfg.cosx = resolve_cosx_kwargs(
+        k_builder,
+        cosx_grid,
+        cosx_final_pass,
+        cosx_final_grid,
+        cosx_overlap_fit,
+    )?;
     // Main KS grid. `None` (no grid kwarg) keeps the historical 75x110 flat
     // grid byte-for-byte; `ksdft_ladder` clones `cfg`, so every rung uses it.
     cfg.dft_grid = resolve_dft_grid(grid_radial, grid_angular, grid_prune)?;
@@ -6021,22 +6165,16 @@ fn run_dft(
     // gradient of a different energy -- and on a pruned grid the XC
     // grid-response term does not exist at all. Refuse the pair up front, the
     // same rule the CLI applies to `[dft] grid_prune` with task != "energy".
-    // Same rule for COSX exchange: `ks_gradient_closed` builds its exchange
-    // term from exact four-centre derivative integrals, so after a COSX SCF
-    // (which a hybrid consumes; a pure functional builds no K at all) the
-    // gradient is not the derivative of `total_energy`. MEASURED on water
-    // by FD of the energy along one H z: COSX minus exact-K = -8.9e-6 Ha/Bohr
-    // at STO-3G, -1.4e-5 at cc-pVDZ, and the COSX grid error grows with
-    // system and basis. Refused for every functional, matching the CLI's
-    // `k_builder = "cosx"` refusal on gradient tasks and the docs' "no
-    // gradients" entry for COSX.
-    if with_gradient && k_builder == Some("cosx") {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "with_gradient=True cannot be combined with k_builder=\"cosx\": COSX has \
-             no analytic gradient, and the KS gradient is built from exact exchange, so \
-             it would not be the gradient of this energy. Use k_builder=\"direct\" or \
-             \"link\" when a gradient is needed",
-        ));
+    // COSX exchange (RIJCOSX by default here): the gradient below goes
+    // through `restricted_scf_gradient`, which differentiates the COSX (and
+    // RI-J) energy the SCF built; setups it cannot differentiate (overlap fit
+    // with a functional) are refused BEFORE the SCF. A COSX final-grid pass
+    // is energy-only, so a gradient run drops it (`gradient_task_config`) and
+    // `total_energy` stays on the surface the gradient describes.
+    if with_gradient {
+        ferric_scf::gradient::preflight_cosx_restricted(&cfg)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        cfg = ferric_scf::gradient::gradient_task_config(&cfg).into_owned();
     }
     // MBD@rsSCS's exact gradient needs the Z-vector relaxation term: refuse an
     // unsupported setup before the SCF and the free-atom solves, not after.
@@ -6112,15 +6250,15 @@ fn run_dft(
         }
     };
     let gradient_data = if with_gradient {
-        let mut g = ks_gradient_closed(
+        // Exactly `ks_gradient_closed` unless the SCF's exchange was COSX.
+        let mut g = ferric_scf::gradient::restricted_scf_gradient(
             &mol.inner,
             &prep,
             &basis_set.inner,
             op,
             &bounds,
-            &xc_name,
+            &cfg,
             &rhf,
-            cfg.external_potential.as_ref(),
         )
         .map_err(make_err)?;
         // Dispersion is additive in the ENERGY, so it is additive in the
@@ -6190,6 +6328,21 @@ fn dft_grid_point_count(
 ) -> PyResult<usize> {
     let cfg = resolve_dft_grid(grid_radial, grid_angular, grid_prune)?.unwrap_or_default();
     ferric_dft::grid::atomic_grid_point_count(&mol.inner, &cfg, cfg.prune).map_err(make_err)
+}
+
+/// Number of points in the COSX exchange grid `cosx_grid=` describes for
+/// `mol` (`None` = the default COSX SCF grid), without building it.
+#[pyfunction]
+#[pyo3(signature = (mol, cosx_grid=None))]
+fn cosx_grid_point_count(
+    mol: &PyMolecule,
+    cosx_grid: Option<&Bound<'_, PyAny>>,
+) -> PyResult<usize> {
+    let g = match cosx_grid {
+        Some(v) => parse_cosx_grid("cosx_grid", v)?,
+        None => ferric_scf::cosx_k::CosxConfig::default().grid,
+    };
+    ferric_dft::grid::atomic_grid_point_count(&mol.inner, &g, g.prune).map_err(make_err)
 }
 
 /// A resolved `dispersion=` request: the model and the functional whose
@@ -6393,6 +6546,10 @@ fn run_ksdft(
         grid_radial,
         grid_angular,
         grid_prune,
+        None,
+        None,
+        None,
+        None,
     )
 }
 
@@ -8878,6 +9035,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_laplace_mp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_laplace_sos_mp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_dft, m)?)?;
+    m.add_function(wrap_pyfunction!(cosx_grid_point_count, m)?)?;
     m.add_function(wrap_pyfunction!(run_ksdft, m)?)?;
     m.add_function(wrap_pyfunction!(dft_grid_point_count, m)?)?;
     m.add_function(wrap_pyfunction!(d3bj_energy, m)?)?;

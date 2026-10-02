@@ -1,7 +1,6 @@
 //! End-to-end RHF with `k_builder = "cosx"` (water/cc-pVDZ) vs the direct
 //! builder: converged energy difference and iteration count. Also the
-//! honesty checks around the knob: DF-K active => cosx ignored (with a
-//! warning) and the energy is exactly the DF-JK one.
+//! honesty checks around the knob: a named DF-K next to cosx is refused.
 
 use ferric_core::basis::bundled;
 use ferric_core::mol::Molecule;
@@ -77,8 +76,16 @@ fn cosx_default() -> CosxConfig {
         Some("dense") => CosxHalfTransform::Dense,
         Some(other) => panic!("COSX_ANCHOR_HALF = {other:?}: expected \"sparse\" or \"dense\""),
     };
+    // Pinned to the flat (50,110) grid this file's numbers were measured on,
+    // with no final pass (the library default may differ).
     CosxConfig {
         half_transform: half,
+        grid: ferric_dft::grid::AtomicGridConfig {
+            n_radial: 50,
+            n_angular: 110,
+            prune: None,
+        },
+        final_grid: None,
         ..CosxConfig::default()
     }
 }
@@ -154,29 +161,28 @@ fn cosx_rhf_energy_error_falls_with_grid() {
     );
 }
 
-/// With DF-K active the pluggable builder is ignored (warning on stderr) and
-/// the energy is EXACTLY the DF-JK energy — never a half-wired hybrid.
+/// A NAMED DF-K next to `k_builder = "cosx"` is a conflict (two builders for
+/// one exchange matrix) and a hard error — never a silent pick of one of them.
+/// A named DF-J next to it is RIJCOSX (`tests/cosx_rijcosx.rs`).
 #[test]
-fn cosx_is_ignored_and_warned_when_df_k_is_active() {
+fn cosx_with_a_named_df_k_is_refused() {
     let aux = "def2-universal-jkfit";
-    let df = run(RhfConfig {
-        df_j_aux: Some(aux.into()),
-        df_k_aux: Some(aux.into()),
-        ..tight()
-    });
-    let df_cosx = run(RhfConfig {
+    let mol = Molecule::parse_xyz(WATER, 0, 1).expect("water");
+    let bs = bundled("cc-pvdz").expect("cc-pvdz");
+    let prep = PreparedBasis::new(&mol, &bs).expect("prep");
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).expect("schwarz");
+    let cfg = RhfConfig {
         df_j_aux: Some(aux.into()),
         df_k_aux: Some(aux.into()),
         k_builder: Some("cosx".into()),
         ..tight()
-    });
-    assert!(df.converged && df_cosx.converged);
-    assert_eq!(
-        df.energy.to_bits(),
-        df_cosx.energy.to_bits(),
-        "DF-JK energy changed when k_builder=cosx was set"
+    };
+    let err = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap_err();
+    assert!(
+        format!("{err}").contains("conflicts with df_k_aux"),
+        "{err}"
     );
-    assert_eq!(df.iterations, df_cosx.iterations);
 }
 
 /// Unknown k_builder values are a hard error, and an untabulated COSX grid
@@ -195,7 +201,7 @@ fn cosx_config_errors_are_typed() {
     };
     assert!(solve_rhf(&ctx, &mol, &prep, op, &bounds, &bad).is_err());
     let mut cosx = cosx_default();
-    cosx.grid.n_angular = 194;
+    cosx.grid.n_angular = 146;
     let bad_grid = RhfConfig {
         k_builder: Some("cosx".into()),
         cosx,

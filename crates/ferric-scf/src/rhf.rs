@@ -1164,7 +1164,14 @@ fn solve_rhf_once(
     // (`df_active = false` here is only about which branch reports the error;
     // the whitelist check is unconditional). The DF-vs-pluggable decision is
     // re-resolved below once `build_df_jk` has said what is actually active.
-    crate::fock_assembly::resolve_k_builder(config.k_builder.as_deref(), false, false, true, 0.0)?;
+    crate::fock_assembly::resolve_k_builder(
+        config.k_builder.as_deref(),
+        false,
+        false,
+        false,
+        true,
+        0.0,
+    )?;
 
     // Meta-GGA default virtual-block level shift (see driver::effective_level_shift).
     let effective_level_shift = crate::driver::effective_level_shift(config);
@@ -1218,7 +1225,21 @@ fn solve_rhf_once(
     let k_buf_consumed = k_consumed && k_mix.omega == 0.0;
     // The DF-K the caller asked for (explicitly, or via the functional
     // auto-default), BEFORE the consumption gate.
-    let df_k_aux_requested: Option<String> = resolve_aux(&config.df_k_aux, needs_k);
+    // RIJCOSX: with `k_builder = "cosx"` and a consumed ω = 0 exchange, COSX
+    // replaces the ω = 0 DF-K (auto-defaulted or not); an explicitly named
+    // `df_k_aux` alongside it is refused (`cosx_replaces_df_k`). DF-J keeps
+    // its own resolution, so a functional's RI-J auto-default stays on and the
+    // run is the RIJCOSX composite.
+    let cosx_k = crate::fock_assembly::cosx_replaces_df_k(
+        config.k_builder.as_deref(),
+        config.df_k_aux.as_deref(),
+        k_buf_consumed,
+    )?;
+    let df_k_aux_requested: Option<String> = if cosx_k {
+        None
+    } else {
+        resolve_aux(&config.df_k_aux, needs_k)
+    };
     // Do not build a DF-K whose K is thrown away. `resolve_aux` honours an
     // explicit `Some(name)` regardless of `needs_k`, and `run_dft` passes
     // `def2-universal-jkfit` for every functional, so a pure GGA used to
@@ -1281,13 +1302,19 @@ fn solve_rhf_once(
     // DF-K is active it would be built and then silently ignored — a
     // pre-existing silent no-op for "link" — so warn and skip construction.
     let df_any = df_j.is_some() || df_k.is_some() || df_k_skipped;
+    // DF-J alone does not override COSX (RIJCOSX: J from DfJ, K from COSX);
+    // an active or dropped DF-K does. A pure / RSH functional cannot consume a
+    // pluggable K at all (`narrow_k_builder_to_supported` warns).
     let pluggable_k = crate::fock_assembly::resolve_k_builder(
         config.k_builder.as_deref(),
-        df_any,
+        df_j.is_some(),
+        df_k.is_some() || df_k_skipped,
         df_k.is_some(),
         k_consumed,
         k_mix.omega,
     )?;
+    let pluggable_k =
+        crate::fock_assembly::narrow_k_builder_to_supported(pluggable_k, k_consumed, k_mix.omega);
     // Build the pluggable builder once — LinK's SignificantPairs and COSX's
     // grid/overlap-fit factor are geometry-only and expensive per iteration.
     // When using "link", compute a fresh screening bound to own the lifetime.
@@ -1426,6 +1453,7 @@ fn solve_rhf_once(
             stability: None,
             df_jk: df_jk_route.clone(),
             rohf_spin_focks: None,
+            cosx_final: None,
         }
     };
 
@@ -1452,17 +1480,18 @@ fn solve_rhf_once(
     // grid work was ~0.4 s. HF and ω = 0 hybrids are unaffected. Gated on
     // `k_buf_consumed`, not `k_consumed`: an RSH run whose main DF-K the gate
     // above dropped must not fall through to a 4-centre K it would also discard.
-    let mut direct_k: Option<DirectK> = if df_any && df_k.is_none() && k_buf_consumed {
-        Some(DirectK::new(
-            ctx,
-            prep,
-            bounds,
-            config.integral_thresh,
-            ooc_budget,
-        ))
-    } else {
-        None
-    };
+    let mut direct_k: Option<DirectK> =
+        if df_any && df_k.is_none() && k_buf_consumed && k_builder.is_none() {
+            Some(DirectK::new(
+                ctx,
+                prep,
+                bounds,
+                config.integral_thresh,
+                ooc_budget,
+            ))
+        } else {
+            None
+        };
     let mut direct_jk: Option<DirectJK> = if !df_any && k_builder.is_none() {
         Some(DirectJK::new(
             ctx,
@@ -1547,7 +1576,13 @@ fn solve_rhf_once(
                 let dj = direct_j.as_mut().expect("DirectJ built before loop");
                 total_quartets += dj.build(&d, &mut j_buf)?;
             }
-            if let Some(dfk) = df_k.as_mut() {
+            if let Some(kb) = k_builder.as_mut() {
+                // RIJCOSX: J came from DF-J above, K from the pluggable
+                // builder (COSX — the only one `resolve_k_builder` admits next
+                // to an active DF-J). No density-dependent state to refresh.
+                kb.update_density(&d);
+                total_quartets += kb.build(&d, &mut k_buf)?;
+            } else if let Some(dfk) = df_k.as_mut() {
                 // O(naux·n²·nocc) C_occ half-transform instead of the
                 // O(naux·n³) density contraction. `d_occ` is None on iteration 1
                 // (no diagonalization yet) and whenever fractional occupations
@@ -1862,6 +1897,25 @@ fn solve_rhf_once(
                 } else {
                     None
                 };
+                // COSX final-grid pass (opt-in, `CosxConfig::final_grid`):
+                // `k_buf` holds K_scf(d) from this iteration's build, so only
+                // the final grid is built here.
+                let (energy, cosx_final) = match (pluggable_k, config.cosx.final_grid.as_ref()) {
+                    (Some("cosx"), Some(fg)) => {
+                        let rec = crate::cosx_k::run_final_pass(
+                            ctx,
+                            mol,
+                            prep,
+                            &config.cosx,
+                            fg,
+                            ooc_budget,
+                            energy,
+                            &[(&d, &k_buf, -0.25 * k_mix.sr)],
+                        )?;
+                        (rec.e_final, Some(rec))
+                    }
+                    _ => (energy, None),
+                };
                 return Ok(ScfResult {
                     spin: Spin::Restricted,
                     energy,
@@ -1882,6 +1936,7 @@ fn solve_rhf_once(
                     stability,
                     df_jk: df_jk_route.clone(),
                     rohf_spin_focks: None,
+                    cosx_final,
                 });
             }
         }

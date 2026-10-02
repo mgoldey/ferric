@@ -456,6 +456,7 @@ pub fn solve_rhf_with_df_increments(
                 // The reported energy comes from the exact cleanup iterations.
                 df_jk: None,
                 rohf_spin_focks: None,
+                cosx_final: None,
             };
             return Ok(DfIncrementsResult {
                 result,
@@ -493,6 +494,7 @@ pub fn solve_rhf_with_df_increments(
                 // The reported energy comes from the exact cleanup iterations.
                 df_jk: None,
                 rohf_spin_focks: None,
+                cosx_final: None,
             };
             return Ok(DfIncrementsResult {
                 result,

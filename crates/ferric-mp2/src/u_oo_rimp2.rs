@@ -242,6 +242,7 @@ fn make_scf_view(
         stability: None,
         df_jk: None,
         rohf_spin_focks: None,
+        cosx_final: None,
     }
 }
 

@@ -405,6 +405,7 @@ impl SemicanonicalOrbitals {
             // Same energy as the ROHF reference, so the same J/K builders.
             df_jk: rohf.df_jk.clone(),
             rohf_spin_focks: rohf.rohf_spin_focks.clone(),
+            cosx_final: rohf.cosx_final,
         }
     }
 }

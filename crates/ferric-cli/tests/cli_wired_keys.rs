@@ -466,7 +466,7 @@ fn dft_grid_keys_are_refused_where_they_cannot_apply() {
             1,
             "sto-3g",
             "ksdft",
-            "[dft]\ngrid_angular = 194\n",
+            "[dft]\ngrid_angular = 146\n",
         ),
         &["grid_angular", "Lebedev"],
     );

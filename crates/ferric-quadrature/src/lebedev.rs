@@ -4,17 +4,19 @@
 //! `(x, y, z)` and `weights` integrate `1/(4π)` on the sphere (i.e., they
 //! sum to 1, not 4π — multiply by 4π·r² for spherical integration).
 //!
-//! Supported orders: 6, 14, 26, 50, 110, 302, 434, 590. These are the
+//! Supported orders: 6, 14, 26, 50, 110, 194, 302, 434, 590. These are the
 //! standard tabulated Lebedev rules suitable for atomic integration (302 is
-//! the Becke/Furche-default for production DFT; 434 and 590 integrate
-//! spherical harmonics exactly through degree 35 and 41 respectively).
+//! the Becke/Furche-default for production DFT; 194, 434 and 590 integrate
+//! spherical harmonics exactly through degree 23, 35 and 41 respectively;
+//! 194 is the valence order of the pruned COSX exchange grids, as in ORCA's
+//! GridX3 and PySCF's SGX level 2).
 //!
 //! Reference: Lebedev & Laikov, Russian Acad. Sci. Dokl. Math. 59, 477 (1999).
 //! Tables transcribed from the canonical C source at
 //! `https://people.sc.fsu.edu/~jburkardt/datasets/sphere_lebedev_rule/`.
-//! Orders 434 and 590 were recovered from PySCF's compiled Lebedev-Laikov
-//! generator (`pyscf.dft.gen_grid.MakeAngularGrid`); see the per-order
-//! comments in [`lebedev`] for the cross-check.
+//! Orders 194, 434 and 590 were recovered from PySCF's compiled
+//! Lebedev-Laikov generator (`pyscf.dft.gen_grid.MakeAngularGrid`); see the
+//! per-order comments in [`lebedev`] for the cross-check.
 
 /// Generate Lebedev nodes by group symmetry.
 ///
@@ -127,6 +129,45 @@ fn class_d(w: f64, p: f64, q: f64) -> Vec<(Triplet, f64)> {
     v
 }
 
+/// Lebedev order 194 (see the comment inside for provenance).
+fn rule_194() -> Vec<(Triplet, f64)> {
+    // Degree 23. 6 (a1) + 8 (a2) + 12 (a3) + 4·24 (b) + 1·24 (c) + 1·48 (d)
+    // = 194 points. Lebedev-Laikov (Dokl. Math. 59, 477 (1999)) LD0194
+    // parameters, read from PySCF 2.13.1's compiled generator
+    // `pyscf.dft.gen_grid.MakeAngularGrid(194)` by grouping its nodes into O_h
+    // orbits (one representative per orbit, full repr precision). They agree
+    // digit for digit with the published LD0194 table (Lebedev-Laikov C
+    // source: V = 0.1782340447244611e-2 / 0.5716905949977102e-2 /
+    // 0.5573383178848738e-2; A = 0.6712973442695226, 0.2892465627575439,
+    // 0.4446933178717437, 0.1299335447650067; A = 0.3457702197611283;
+    // A, B = 0.1590417105383530, 0.8360360154824589). Cross-check
+    // (2026-10-01): a numpy transcription of the class_* expansion with these
+    // parameters reproduces PySCF's 194 points and weights exactly (max |Δ| =
+    // 0 with both sets sorted by coordinate); exactness of THIS code is pinned
+    // by `lebedev_194_integrates_monomials_through_degree_23`.
+    //
+    // Orbit naming: ferric's class_a2 is the 8-point cube (Lebedev-Laikov's
+    // code 3) and class_a3 the 12 edge midpoints (code 2); class_b is code 4
+    // (±a, ±a, ±b), class_c code 5 (±a, ±b, 0), class_d code 6.
+    let mut v = class_a1(0.001782340447244611_f64);
+    v.extend(class_a2(0.005573383178848738_f64));
+    v.extend(class_a3(0.005716905949977102_f64));
+    // 4 b-orbits (24 pts each)
+    v.extend(class_b(0.005608704082587997_f64, 0.6712973442695226_f64));
+    v.extend(class_b(0.005158237711805383_f64, 0.2892465627575439_f64));
+    v.extend(class_b(0.005518771467273614_f64, 0.4446933178717437_f64));
+    v.extend(class_b(0.004106777028169394_f64, 0.1299335447650067_f64));
+    // 1 c-orbit (24 pts)
+    v.extend(class_c(0.005051846064614808_f64, 0.3457702197611283_f64));
+    // 1 d-orbit (48 pts)
+    v.extend(class_d(
+        0.005530248916233094_f64,
+        0.159041710538353_f64,
+        0.8360360154824589_f64,
+    ));
+    v
+}
+
 /// Lebedev order 434 (see the comment inside for provenance).
 fn rule_434() -> Vec<(Triplet, f64)> {
     // Degree 35. 6 (a1) + 8 (a2) + 12 (a3) + 7·24 (b) + 2·24 (c)
@@ -235,7 +276,7 @@ fn rule_590() -> Vec<(Triplet, f64)> {
 
 /// Return Lebedev `(unit-vectors, weights)` summing to 1 for the given order.
 ///
-/// Supported: 6, 14, 26, 50, 110, 302, 434, 590. Panics on any other order.
+/// Supported: 6, 14, 26, 50, 110, 194, 302, 434, 590. Panics on any other order.
 pub fn lebedev(order: usize) -> (Vec<[f64; 3]>, Vec<f64>) {
     let raw: Vec<(Triplet, f64)> = match order {
         6 => class_a1(1.0 / 6.0),
@@ -310,9 +351,12 @@ pub fn lebedev(order: usize) -> (Vec<[f64; 3]>, Vec<f64>) {
             ));
             v
         }
+        194 => rule_194(),
         434 => rule_434(),
         590 => rule_590(),
-        _ => panic!("lebedev: unsupported order {order} (try 6, 14, 26, 50, 110, 302, 434, 590)"),
+        _ => panic!(
+            "lebedev: unsupported order {order} (try 6, 14, 26, 50, 110, 194, 302, 434, 590)"
+        ),
     };
     let mut pts = Vec::with_capacity(raw.len());
     let mut wts = Vec::with_capacity(raw.len());
@@ -475,6 +519,19 @@ mod tests {
         );
     }
 
+    /// Lebedev-194 is degree 23. Measured 2026-10-01: worst relative error
+    /// through degree 23 is at the f64 floor; at degree 24 it is O(1e-3)
+    /// (the negative control in `check_monomial_exactness`).
+    #[test]
+    fn lebedev_194_integrates_monomials_through_degree_23() {
+        check_monomial_exactness(194, 23);
+    }
+    #[test]
+    fn lebedev_194_sum_and_norm() {
+        check_weight_sum(194, 1e-14);
+        check_unit_norm(194);
+        assert_eq!(lebedev(194).0.len(), 194);
+    }
     #[test]
     fn lebedev_302_integrates_monomials_through_degree_29() {
         check_monomial_exactness(302, 29);

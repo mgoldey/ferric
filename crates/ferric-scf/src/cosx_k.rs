@@ -222,9 +222,10 @@ impl CosxHalfTransform {
 /// Lebedev orders ferric's quadrature tables provide. `ferric_quadrature::lebedev`
 /// PANICS on any other order, so a grid config is validated against this list
 /// up front and rejected with a typed error instead.
-pub const SUPPORTED_ANGULAR_ORDERS: [usize; 8] = [6, 14, 26, 50, 110, 302, 434, 590];
+pub const SUPPORTED_ANGULAR_ORDERS: [usize; 9] = [6, 14, 26, 50, 110, 194, 302, 434, 590];
 
-/// Validate a COSX grid config: positive radial count and a tabulated Lebedev order.
+/// Validate a COSX grid config: positive radial count, a tabulated Lebedev
+/// order, and — when pruned — a peak order the scheme has a region table for.
 pub fn validate_grid(grid: &AtomicGridConfig) -> Result<(), FerricError> {
     if grid.n_radial == 0 {
         return Err(FerricError::General(
@@ -237,14 +238,112 @@ pub fn validate_grid(grid: &AtomicGridConfig) -> Result<(), FerricError> {
             grid.n_angular, SUPPORTED_ANGULAR_ORDERS
         )));
     }
+    match grid.prune {
+        None => {}
+        Some(ferric_dft::prune::PruneScheme::Sgx) => {
+            ferric_dft::prune::sgx_region_orders(grid.n_angular)
+                .map_err(|e| FerricError::General(format!("cosx grid: {e}")))?;
+        }
+        Some(ferric_dft::prune::PruneScheme::NwchemLike) => {
+            ferric_dft::prune::region_orders(grid.n_angular)
+                .map_err(|e| FerricError::General(format!("cosx grid: {e}")))?;
+        }
+    }
     Ok(())
 }
+
+/// A COSX grid from its user-facing parts: radial count, peak Lebedev order
+/// and a prune spelling (`None` / `"none"` = flat; `"sgx"` = the pruned COSX
+/// scheme; `"nwchem"` = the XC grids' NWChem-like scheme). Strict: unknown
+/// spellings and orders the scheme has no table for are errors.
+pub fn grid_from_parts(
+    n_radial: usize,
+    n_angular: usize,
+    prune: Option<&str>,
+) -> Result<AtomicGridConfig, FerricError> {
+    let prune = match prune {
+        None => None,
+        Some(s) => ferric_dft::prune::PruneScheme::parse_config_str(s)?,
+    };
+    let grid = AtomicGridConfig {
+        n_radial,
+        n_angular,
+        prune,
+    };
+    validate_grid(&grid)?;
+    Ok(grid)
+}
+
+/// Apply the grid / final-pass knobs (CLI `[scf] cosx_grid`,
+/// `cosx_final_pass`, `cosx_final_grid`; the same Python kwargs) to `cfg`.
+///
+/// * `grid`: replaces the SCF grid.
+/// * `final_pass = Some(false)`: no final pass (an explicit `final_grid` with
+///   it is a contradiction and an error).
+/// * `final_pass = Some(true)`: final pass on `final_grid`, or on
+///   [`COSX_DEFAULT_FINAL_GRID`] when none is given.
+/// * `final_pass = None`: a given `final_grid` turns the pass on; otherwise
+///   the default (`cfg.final_grid` as it came in) is kept.
+pub fn apply_grid_knobs(
+    cfg: &mut CosxConfig,
+    grid: Option<AtomicGridConfig>,
+    final_pass: Option<bool>,
+    final_grid: Option<AtomicGridConfig>,
+) -> Result<(), FerricError> {
+    if let Some(g) = grid {
+        validate_grid(&g)?;
+        cfg.grid = g;
+    }
+    match (final_pass, final_grid) {
+        (Some(false), Some(_)) => {
+            return Err(FerricError::General(
+                "cosx_final_pass = false contradicts an explicit cosx_final_grid; drop one".into(),
+            ))
+        }
+        (Some(false), None) => cfg.final_grid = None,
+        (_, Some(g)) => {
+            validate_grid(&g)?;
+            cfg.final_grid = Some(g);
+        }
+        (Some(true), None) => {
+            if cfg.final_grid.is_none() {
+                cfg.final_grid = Some(default_final_grid());
+            }
+        }
+        (None, None) => {}
+    }
+    Ok(())
+}
+
+/// The final grid [`apply_grid_knobs`] uses for `final_pass = true` without an
+/// explicit grid: [`COSX_DEFAULT_FINAL_GRID`] as an `AtomicGridConfig`.
+pub fn default_final_grid() -> AtomicGridConfig {
+    let (n_radial, n_angular, prune) = COSX_DEFAULT_FINAL_GRID;
+    AtomicGridConfig {
+        n_radial,
+        n_angular,
+        prune,
+    }
+}
+
+/// `(radial, peak angular, prune)` of the final grid a bare
+/// `cosx_final_pass = true` selects. See `site/src/methods/scf.md`
+/// ("Choosing how exchange is built") for the measurement behind it.
+pub const COSX_DEFAULT_FINAL_GRID: (usize, usize, Option<ferric_dft::prune::PruneScheme>) =
+    (50, 302, Some(ferric_dft::prune::PruneScheme::Sgx));
 
 /// User-facing COSX knobs. Carried in `RhfConfig::cosx`.
 #[derive(Debug, Clone)]
 pub struct CosxConfig {
-    /// The exchange grid. Default (50,110), unpruned — see the module doc for
-    /// why not coarser.
+    /// The exchange (SCF) grid. Default (50,110), unpruned.
+    ///
+    /// The pruned `sgx` (35,194) grid (`prune = Some(PruneScheme::Sgx)`) was
+    /// measured against it on eight molecules (`scripts/cosx_grid_sweep.py`,
+    /// table in `site/src/methods/scf.md`): 0.65x the points and more accurate
+    /// on seven (1.7x-29x), but 1.15x WORSE on methane/cc-pVDZ (9.2e-6 vs
+    /// 8.0e-6 Ha). The switch was conditioned on winning everywhere, so the
+    /// default stays flat; the pruned grid plus a final pass on sgx (50,302)
+    /// wins on all eight and is the recommended energy setting.
     pub grid: AtomicGridConfig,
     /// Overlap fitting `K = 0.5(S S_num^{-1} Ktilde + h.c.)`. Default `true`.
     /// Measured to be net-negative on grids coarser than (50,110) and a ~10x
@@ -369,6 +468,112 @@ pub struct CosxConfig {
     /// coverage of alignment, and it must be re-mutated before being trusted as
     /// such. See its doc comment and `scripts/queue/out/cosx_subbatch_bound_results.md` §5.1.
     pub screen_group: usize,
+    /// FINAL-GRID PASS (Psi4 `COSX_*_FINAL` + `COSX_MAXITER_FINAL = 1`; ORCA
+    /// `UseFinalGridX`): after the SCF converges on [`CosxConfig::grid`], the
+    /// exchange energy is evaluated ONCE more on this larger grid with the
+    /// converged density, and the run reports
+    ///
+    /// ```text
+    ///   E_final = E_scf + sum_s c_s ( tr[D_s K_final(D_s)] - tr[D_s K_scf(D_s)] )
+    /// ```
+    ///
+    /// (`c = -c_x/4` for the closed-shell total density, `-c_x/2` per spin).
+    /// Non-self-consistent: the orbitals stay those of the SCF grid. Every
+    /// other knob (fit, screens, backend) is shared with the SCF grid. `None`
+    /// = no final pass. The record is [`CosxFinalPass`] on
+    /// `ScfResult::cosx_final`; analytic gradients differentiate the SCF-grid
+    /// energy and the geometry drivers run without the pass (see
+    /// [`CosxFinalPass`]). With `final_grid == grid` the pass reproduces
+    /// `E_scf` bit for bit (anchored).
+    pub final_grid: Option<AtomicGridConfig>,
+}
+
+/// The record of a COSX final-grid pass ([`CosxConfig::final_grid`]).
+///
+/// What the GRADIENT differentiates: the SCF-grid energy `e_scf_grid`, never
+/// `e_final`. `e_final` is not variational in the orbitals (they were
+/// converged on the SCF grid), so its exact gradient would need an orbital
+/// response on top of the final-grid derivative; ORCA's final-grid gradient
+/// omits that response. ferric keeps the gradient exact for the energy it
+/// differentiates, and the geometry drivers (optimize, finite-difference
+/// frequencies) therefore run WITHOUT the final pass so that energy and
+/// gradient belong to one surface.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CosxFinalPass {
+    /// The SCF energy on the SCF grid (`ScfResult::energy` without the pass).
+    pub e_scf_grid: f64,
+    /// `e_scf_grid` plus the final-grid exchange correction; this is what
+    /// `ScfResult::energy` reports.
+    pub e_final: f64,
+    /// Exchange-grid points of the SCF grid and of the final grid.
+    pub npts_scf: usize,
+    pub npts_final: usize,
+}
+
+/// Run the final-grid pass for converged densities.
+///
+/// `terms` lists `(D_s, K_scf(D_s), c_s)`: each density, the exchange matrix
+/// the SCF grid produced FROM THAT DENSITY (the solver's last K, so the SCF
+/// grid is not rebuilt), and its coefficient in the energy. Returns
+/// `(delta, npts_final)` with `delta = sum_s c_s (tr[D_s K_final] - tr[D_s
+/// K_scf])`. The two traces are accumulated in the same element order, so a
+/// final grid identical to the SCF grid gives `delta == 0.0` exactly.
+pub fn final_pass_delta(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    cfg: &CosxConfig,
+    final_grid: &AtomicGridConfig,
+    mem_budget: usize,
+    terms: &[(&Array2<f64>, &Array2<f64>, f64)],
+) -> Result<(f64, usize), FerricError> {
+    let fcfg = CosxConfig {
+        grid: final_grid.clone(),
+        final_grid: None,
+        ..cfg.clone()
+    };
+    let mut fb = CosxK::new(ctx, mol, prep, fcfg, mem_budget)?;
+    let n = prep.nbasis();
+    let mut kf = Array2::<f64>::zeros((n, n));
+    let mut delta = 0.0;
+    for &(d, ks, c) in terms {
+        kf.fill(0.0);
+        fb.build(d, &mut kf)?;
+        let tf: f64 = (d * &kf).sum();
+        let ts: f64 = (d * ks).sum();
+        delta += c * (tf - ts);
+    }
+    Ok((delta, fb.npts()))
+}
+
+/// [`final_pass_delta`] plus the bookkeeping every solver needs: point
+/// counts, the [`CosxFinalPass`] record and one printed line naming both
+/// energies (`e_scf` is the converged SCF-grid energy).
+#[allow(clippy::too_many_arguments)]
+pub fn run_final_pass(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    cfg: &CosxConfig,
+    final_grid: &AtomicGridConfig,
+    mem_budget: usize,
+    e_scf: f64,
+    terms: &[(&Array2<f64>, &Array2<f64>, f64)],
+) -> Result<CosxFinalPass, FerricError> {
+    let (delta, npts_final) = final_pass_delta(ctx, mol, prep, cfg, final_grid, mem_budget, terms)?;
+    let npts_scf = ferric_dft::grid::atomic_grid_point_count(mol, &cfg.grid, cfg.grid.prune)?;
+    let rec = CosxFinalPass {
+        e_scf_grid: e_scf,
+        e_final: e_scf + delta,
+        npts_scf,
+        npts_final,
+    };
+    eprintln!(
+        "[ferric] COSX final grid: E(SCF grid, {} pts) = {:.10}  E(final grid, {} pts) = {:.10}  \
+         dE = {:+.3e} Ha (non-self-consistent; reported energy = final)",
+        rec.npts_scf, rec.e_scf_grid, rec.npts_final, rec.e_final, delta
+    );
+    Ok(rec)
 }
 
 /// Default density-driven screen threshold (`CosxConfig::screen_thresh`).
@@ -397,6 +602,7 @@ impl Default for CosxConfig {
             backend: CosxBackend::Md3c1e,
             half_transform: CosxHalfTransform::SPARSE_DEFAULT,
             screen_group: 0,
+            final_grid: None,
         }
     }
 }
@@ -1831,13 +2037,25 @@ mod tests {
         assert!(validate_grid(&ok).is_ok());
         let bad_ang = AtomicGridConfig {
             n_radial: 50,
-            n_angular: 194,
+            n_angular: 146,
             ..Default::default()
         };
         assert!(
             validate_grid(&bad_ang).is_err(),
-            "194 is not tabulated and must be refused, not panic"
+            "146 is not tabulated and must be refused, not panic"
         );
+        // 194 is tabulated; as an sgx peak it is valid, as a 26-point sgx peak not.
+        let sgx = AtomicGridConfig {
+            n_radial: 35,
+            n_angular: 194,
+            prune: Some(ferric_dft::prune::PruneScheme::Sgx),
+        };
+        assert!(validate_grid(&sgx).is_ok());
+        assert!(validate_grid(&AtomicGridConfig {
+            n_angular: 26,
+            ..sgx
+        })
+        .is_err());
         let bad_rad = AtomicGridConfig {
             n_radial: 0,
             n_angular: 110,

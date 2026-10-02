@@ -419,11 +419,15 @@ const D3_OPT_SHIFT_TOL: f64 = 1e-5;
 /// FD-validated in `ferric-rpa/tests/mbd_scf_gradient_uks.rs`.
 #[test]
 fn open_shell_ks_runs_an_mbd_optimization() {
-    let xyz = oh_097_xyz("open_shell_ks_runs_an_mbd_optimization");
+    // NH2 (²B1, non-degenerate SOMO) from a distorted start. Not OH: its ²Π
+    // π pair is degenerate, so the UKS orbital Hessian has a near-null
+    // rotation mode and the Z-vector solve is ill-conditioned there (the
+    // KS validation excludes degenerate-SOMO radicals for the same reason).
+    let xyz = "testdata/molecules/validation/nh2_opt_start.xyz";
     let mbd = format!("[dft]\nfunctional = \"PBE\"\ndispersion = \"mbd\"\n\n{TIGHT_SCF}");
     let out = run_ok(
-        "oh_uks_mbd_opt",
-        &body_at(&xyz, 2, "sto-3g", "ksdft", "optimize", &mbd),
+        "nh2_uks_mbd_opt",
+        &body_at(xyz, 2, "sto-3g", "ksdft", "optimize", &mbd),
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("UKS[PBE] Optimization Result"), "{stdout}");
@@ -646,14 +650,22 @@ fn rpa_optimize_with_a_ks_reference_is_refused() {
 
 /// Pre-fix: water/STO-3G, rhf, task = "optimize", `k_builder = "cosx"` ran
 /// to completion with COSX energies and an exact-exchange gradient (FD
-/// mismatch -8.9e-6 Ha/Bohr on one H z at STO-3G, -1.4e-5 at cc-pVDZ).
-/// Removing the cosx branch of `validate_task_compat` lets it run again. The
-/// anchor is the same molecule with COSX on task = "energy", which must run.
+/// mismatch -8.9e-6 Ha/Bohr on one H z at STO-3G, -1.4e-5 at cc-pVDZ). The
+/// RHF/RKS/UHF gradients now differentiate COSX, so an rhf COSX optimize
+/// RUNS; a kind whose gradient has no COSX derivative (ROHF) stays refused.
+/// Removing the cosx branch of `validate_task_compat` lets the rohf run start.
 #[test]
-fn cosx_with_optimize_is_refused_but_a_cosx_energy_runs() {
+fn cosx_optimize_runs_for_rhf_and_is_refused_for_rohf() {
     let cosx = "[scf]\nk_builder = \"cosx\"\n";
-    let out = run_toml("cosx_opt", &body("h2.xyz", 1, "rhf", "optimize", cosx));
+    let out = run_toml(
+        "cosx_opt_rohf",
+        &body("h2.xyz", 1, "rohf", "optimize", cosx),
+    );
     assert_refused(&out, &["k_builder = \"cosx\"", "optimize"]);
+    assert_runs(
+        &run_toml("cosx_opt", &body("h2.xyz", 1, "rhf", "optimize", cosx)),
+        "an rhf COSX optimization",
+    );
     assert_runs(
         &run_toml("cosx_energy", &body("h2.xyz", 1, "rhf", "energy", cosx)),
         "an rhf COSX energy",

@@ -410,6 +410,13 @@ pub fn run(args: Vec<String>) {
             }
         },
     };
+    if grid_prune == Some(ferric_dft::prune::PruneScheme::Sgx) {
+        eprintln!(
+            "error: [dft] grid_prune = \"sgx\" is the COSX exchange grid's scheme \
+             ([scf] cosx_grid); the XC grid is validated with \"nwchem\" or \"none\" only."
+        );
+        std::process::exit(1);
+    }
     if grid_prune.is_some() && task != "energy" {
         eprintln!(
             "error: [dft] grid_prune is supported for method.task = \"energy\" only \
@@ -580,7 +587,17 @@ pub fn run(args: Vec<String>) {
         // Shared spelling parser: "exact"/"none"/"off"/"conventional" mean
         // the same "" (no density fitting) as in the Python bindings.
         df_j_aux: cfg.scf.df_j_aux_resolved().or(df_j_default),
-        df_k_aux: cfg.scf.df_k_aux_resolved().or(df_k_default),
+        // RIJCOSX: `k_builder = "cosx"` replaces RI-K, so the RI-K default
+        // is not applied under it (an explicit `df_k_aux` next to COSX is
+        // refused by the SCF as a conflict).
+        df_k_aux: cfg
+            .scf
+            .df_k_aux_resolved()
+            .or(if cfg.scf.k_builder.as_deref() == Some("cosx") {
+                None
+            } else {
+                df_k_default
+            }),
         xc,
         // `None` keeps `AtomicGridConfig::default()` (75x110, unpruned) —
         // byte-identical to the historical path. Only a `[dft] grid_prune`
@@ -952,6 +969,7 @@ pub fn run(args: Vec<String>) {
     let scf_converged = result.converged;
     let scf_exit = result.exit;
     let scf_iterations = result.iterations;
+    let cosx_final = result.cosx_final;
     // `[dft] dispersion` is admitted only on a Kohn-Sham SCF (guarded above),
     // and the closed-shell KS route dispatches as "ksdft". Evaluated ONCE here
     // and shared by the printout and the terminal `run_end` record.
@@ -1097,8 +1115,37 @@ pub fn run(args: Vec<String>) {
             }
             _ => scf_energy,
         };
+        if let (Some(f), Some(obj)) = (cosx_final, extra.as_object_mut()) {
+            obj.insert("cosx_final_pass".to_string(), cosx_final_json(&f));
+        }
         rl.run_end(energy, scf_converged, &format!("{scf_exit:?}"), extra);
     }
+}
+
+/// Print the two COSX energies of a final-grid pass (no-op without one).
+fn print_cosx_final(result: &ferric_scf::result::ScfResult) {
+    if let Some(f) = result.cosx_final {
+        println!(
+            "  COSX final grid: E(SCF grid, {} pts) = {:.10}, E(final grid, {} pts) = {:.10} \
+             Hartree (reported; gradients use the SCF grid)",
+            f.npts_scf, f.e_scf_grid, f.npts_final, f.e_final
+        );
+    }
+}
+
+/// The run-log record of a COSX final-grid pass: both energies, both point
+/// counts, and which of the two an analytic gradient of this run
+/// differentiates (the SCF-grid one; see `ferric_scf::cosx_k::CosxFinalPass`).
+fn cosx_final_json(f: &ferric_scf::cosx_k::CosxFinalPass) -> serde_json::Value {
+    serde_json::json!({
+        "e_scf_grid": f.e_scf_grid,
+        "e_final": f.e_final,
+        "delta": f.e_final - f.e_scf_grid,
+        "npts_scf_grid": f.npts_scf,
+        "npts_final_grid": f.npts_final,
+        "energy_reported": "e_final",
+        "gradient_differentiates": "e_scf_grid",
+    })
 }
 
 /// `RhfConfig::pcm` from `[pcm]` (`None` when the section is absent). The
@@ -1202,6 +1249,7 @@ fn run_rhf(
     println!("  iterations = {}", result.iterations);
     println!("  converged  = {}", result.converged);
     println!("  energy     = {:.10} Hartree", result.energy);
+    print_cosx_final(result);
 }
 
 /// `method.kind = "ksdft"`. Extracted verbatim from the former `main()`
@@ -1219,6 +1267,7 @@ fn run_ksdft(
     println!("  iterations = {}", result.iterations);
     println!("  converged  = {}", result.converged);
     print_scf_energy(result.energy, dispersion);
+    print_cosx_final(result);
 }
 
 /// A `[dft] dispersion` correction evaluated at one geometry.
@@ -1552,6 +1601,36 @@ fn log_jk_path(scf: &RhfConfig, open_shell: bool) {
     } else {
         scf.df_j_aux.as_deref()
     };
+    if scf.k_builder.as_deref() == Some("cosx") && exchange_used && !rsh {
+        let j = df_j.filter(|s| !s.is_empty()).map_or_else(
+            || "exact J (four-centre)".to_string(),
+            |a| format!("RI-J via {a}"),
+        );
+        let g = &scf.cosx.grid;
+        let prune = g
+            .prune
+            .map_or("flat".to_string(), |p| format!("{p:?}").to_lowercase());
+        let fin = scf
+            .cosx
+            .final_grid
+            .as_ref()
+            .map_or("no final pass".to_string(), |f| {
+                let fp = f
+                    .prune
+                    .map_or("flat".to_string(), |p| format!("{p:?}").to_lowercase());
+                format!("final pass on ({}, {}, {fp})", f.n_radial, f.n_angular)
+            });
+        let tag = if j.starts_with("RI-J") {
+            " (RIJCOSX)"
+        } else {
+            ""
+        };
+        eprintln!(
+            "[ferric] SCF J/K: {j}, COSX K{tag}; COSX grid ({}, {}, {prune}), {fin}",
+            g.n_radial, g.n_angular
+        );
+        return;
+    }
     eprintln!(
         "[ferric] SCF J/K: {}",
         config::describe_jk_path(df_j, scf.df_k_aux.as_deref(), exchange_used)
@@ -5323,7 +5402,13 @@ fn run_uhf(
     let dispersion =
         dispersion_correction(cfg, ctx, mol, bs, op, rhf_config, result.density_total());
     print_scf_energy(result.energy, dispersion.as_ref());
+    print_cosx_final(&result);
     log_scf_dispersion(result.energy, dispersion.as_ref());
+    // Open-shell energy runs return before `run()`'s `run_end`, so the final
+    // pass gets its own record (as the dispersion correction does).
+    if let (Some(f), Some(rl)) = (result.cosx_final, ferric_scf::runlog::log()) {
+        rl.note("cosx_final_pass", cosx_final_json(&f));
+    }
     println!("  <S^2>      = {:.6} (ideal {:.6})", s2, s_ideal);
     // task == "optimize" is handled by the top-level dispatch above
     // (optimize_geometry_uhf), which returns before reaching here.

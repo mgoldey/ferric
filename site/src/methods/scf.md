@@ -250,7 +250,7 @@ Butane, one thread; TZ is def2-TZVP (184 functions), QZ is def2-QZVP (528).
 | *(default)* | Schwarz-screened direct four-centre J + K | yes | all SCF types |
 | `k_builder = "link"` | LinK: pair-list-screened direct K | yes (== direct to 9e-12 Ha, butane/def2-SVP) | RHF, UHF, ROHF |
 | `df_j_aux` / `df_k_aux` | density-fitted J and K (RI-JK) | fitting error, grows with size (see *Kohn–Sham DFT* above) | all SCF types |
-| `k_builder = "cosx"` | seminumerical (COSX) K on a grid | grid-dependent error, see below | RHF/UHF/ROHF, Coulomb operator only; analytic gradient for RHF, RKS, UHF (see below) |
+| `k_builder = "cosx"` | seminumerical (COSX) K on a grid; with RI-J active this is RIJCOSX | grid-dependent error, see below | RHF/UHF/ROHF and their Kohn–Sham variants, Coulomb operator only; analytic gradient for RHF, RKS, UHF (see below) |
 
 **Time for one exchange build** (seconds, butane, one thread):
 
@@ -293,9 +293,22 @@ LinK's cost is being re-measured, so no LinK timing is quoted here.
 build K_α and K_β from one builder instance, refreshing its density-dependent
 state per spin. Whether LinK is the faster choice for a given system is a
 separate question from whether it is honoured — see the cost note above, which
-is being re-measured. It is skipped with a warning, never silently, whenever
-density-fitted J/K is active, the functional uses no exact exchange, or the
-functional is range-separated (exchange then comes from the SR/LR fitters).
+is being re-measured. `link` is skipped with a warning, never silently,
+whenever density-fitted J/K is active; both `link` and `cosx` are skipped with
+a warning when the functional uses no exact exchange or is range-separated
+(exchange then comes from the SR/LR fitters).
+
+**RIJCOSX.** `k_builder = "cosx"` combines with density-fitted Coulomb: when
+RI-J is active (`df_j_aux` named, or the Kohn–Sham default), J comes from RI-J
+and K from COSX, as in ORCA's RIJCOSX and Psi4's DFDIRJ+COSX. COSX then
+replaces RI-K: the Kohn–Sham RI-K default is not applied, and an explicitly
+named `df_k_aux` next to `k_builder = "cosx"` is an error. `df_j_aux = ""`
+keeps exact J with COSX K. The two approximations add: on water/6-31G (HF) the
+COSX error is 7.140e-6 Ha with exact J and 7.141e-6 Ha with RI-J, and the
+cross term is second order (2.8–5.8 × the product of the two errors; 7.8e-10
+Ha at the (50,110) grid, 2.3e-11 Ha at (75,302)). Gradients take J from the
+RI-J derivative and K from the COSX derivative (FD agreement 1.7e-9 Ha/Bohr
+RHF, 3.6e-9 UHF).
 
 **COSX is for large basis sets on systems too big for RI-JK.** Its cost per
 grid point barely moves with angular momentum while analytic exchange grows
@@ -325,8 +338,9 @@ COSX's energy error at the default grid is about 5e-6 Ha on water/cc-pVDZ
 1.7e-4 Ha on butane/def2-SVP and 1.2e-4 Ha on butane/def2-TZVP (against exact
 exchange). ORCA 6.1.1's COSX at its own default grid gives 4.9e-6, 3.8e-5 and
 1.3e-5 Ha on the same systems and bases, although ferric's default grid has
-about twice as many points: ORCA evaluates its final energy once on a finer
-grid, and ferric does not. Refining ferric's grid converges water to 3.4e-8 Ha,
+about twice as many points: ORCA's grids are pruned around a 194-point valence
+shell and it evaluates its final energy once on a finer grid, which ferric does
+only on request (`cosx_grid` pruning and `cosx_final_pass`, below). Refining ferric's grid converges water to 3.4e-8 Ha,
 but butane/def2-SVP stays at 3.4e-5 Ha at Lebedev-302 for every radial grid.
 That residual is angular: an independent COSX (PySCF SGX, 75 radial shells) on
 the same system goes from 5.5e-5 Ha at 302 points per shell to -8.5e-6 at 434
@@ -336,12 +350,23 @@ and 2.7e-6 at 590. ferric's COSX follows the same path at 75 radial shells:
 most of the error (0.02 kcal/mol on an isodesmic alkane reaction at the default
 grid); absolute energies do not. Four knobs, all optional:
 
-- `cosx_grid = { radial = 50, angular = 110 }` is the default and the coarsest
-  grid that meets a 0.1 kcal/mol reaction-energy bar. Coarser grids fail it.
-  The angular order matters most: on butane/def2-TZVP the error falls from
+- `cosx_grid = { radial = 50, angular = 110 }` is the default (flat). The
+  angular order matters most: on butane/def2-TZVP the error falls from
   1.2e-4 Ha at 110 points per shell to 4.0e-6 Ha at 302, while going from 50
   to 100 radial shells changes it by 1e-6 or less. Cost grows with the number
-  of points. `angular` must be one of 6, 14, 26, 50, 110, 302, 434 or 590.
+  of points. `angular` must be one of 6, 14, 26, 50, 110, 194, 302, 434 or
+  590. `prune = "sgx"` prunes the grid the way ORCA's GridX and PySCF's SGX
+  do: five radial regions per atom (NWChem boundaries on Bragg radii) with
+  Lebedev orders from one row, picked by the peak `angular` — at 194 the
+  regions get 26/50/110/194/110 points. ferric's pruned COSX energy equals
+  PySCF SGX on the same grid to 1.8e-12 Ha. A table without `prune` is flat.
+- `cosx_final_pass = true` (default `false`) re-evaluates exchange once on a
+  larger grid at the converged density and reports that energy; the SCF-grid
+  energy is printed and logged next to it. `cosx_final_grid` picks the grid
+  (default `{ radial = 50, angular = 302, prune = "sgx" }`). The pass is not
+  self-consistent, but it lands within 1.5e-7 Ha of an SCF converged on the
+  final grid (table below). It is energy-only: gradients and geometry tasks
+  run without it.
 - `cosx_overlap_fit = true` (default) applies the Izsák–Neese overlap
   correction. At the default grid it helps; on coarser grids it makes things
   *worse*, and its benefit is strongly molecule-dependent — large on water,
@@ -354,18 +379,77 @@ grid); absolute energies do not. Four knobs, all optional:
   threshold. `0.0` disables screening bit-identically; `1e-6` already fails a
   1e-6 Ha K-error bar on butane. Not available with the `"cosx-a"` backend.
 
-Setting any `cosx_*` key without `k_builder = "cosx"`, or `k_builder` together
-with `df_k_aux`, is refused or warned about rather than silently ignored.
+Setting any `cosx_*` key without `k_builder = "cosx"`, or `k_builder = "cosx"`
+together with a named `df_k_aux`, is an error.
 
-**COSX gradients.** `task = "optimize"` and `task = "frequencies"` with
+**Which COSX grid.** Measured against exact exchange (exact J on both sides,
+RHF, overlap fit on unless noted), one run each, six threads; times are whole
+SCFs, indicative only. Errors, E − E_exact in Ha:
+
+| System | atoms | flat (50,110), default | sgx (35,194) | sgx (35,194) + final sgx (50,302) | sgx (50,302) | sgx (50,194) | flat (50,194) | sgx (35,194), no fit |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| water / aug-cc-pVDZ | 3 | +6.1e-6 | +1.9e-6 | −8.1e-9 | −8.1e-9 | +9.8e-7 | +1.6e-7 | +1.6e-6 |
+| butane / def2-SVP | 14 | +1.7e-4 | +4.6e-5 | −3.4e-5 | −3.4e-5 | +4.1e-5 | +5.0e-5 | −2.7e-4 |
+| butane / def2-TZVP | 14 | −1.2e-4 | −4.1e-5 | −4.3e-6 | −4.3e-6 | −3.2e-5 | −1.6e-5 | −1.2e-4 |
+| benzene / def2-SVP | 12 | +8.2e-5 | −4.8e-5 | +5.6e-6 | +5.6e-6 | −4.8e-5 | −4.0e-5 | −8.8e-5 |
+| sulfamethoxazole / def2-SVP | 28 | +2.5e-4 | −1.9e-5 | +2.2e-5 | +2.1e-5 | −2.3e-5 | −2.3e-5 | −1.9e-4 |
+| methane / cc-pVDZ | 5 | +8.0e-6 | +9.2e-6 | +6.5e-7 | +6.5e-7 | +1.0e-5 | +5.1e-6 | −1.9e-4 |
+| ethane / cc-pVDZ | 8 | +1.2e-4 | −4.3e-6 | −2.6e-6 | −2.6e-6 | −4.5e-6 | +1.7e-6 | −9.1e-5 |
+| propane / cc-pVDZ | 11 | +1.2e-4 | +1.9e-5 | −1.0e-5 | −1.0e-5 | +1.8e-5 | +1.8e-5 | −7.0e-5 |
+| C3H8 + CH4 → 2 C2H6, kcal/mol | | +0.074 | −0.023 | +0.003 | +0.003 | −0.024 | −0.012 | +0.052 |
+| points per atom | | 5500 | 3545–3629 | 3545–3629 SCF, 8109–8214 final | 8109–8214 | 4996–5068 | 9700 | 3545–3629 |
+
+Whole-SCF wall time relative to exact-K RHF on the same system (COSX is
+slower than exact exchange at all of these sizes and bases; see above for
+where it wins):
+
+| System | exact K | flat (50,110) | sgx (35,194) | sgx (35,194) + final | sgx (50,302) |
+|---|---:|---:|---:|---:|---:|
+| water / aug-cc-pVDZ | 0.3 s | 15.7× | 10.1× | 12.8× | 21.7× |
+| butane / def2-SVP | 2.6 s | 17.7× | 11.8× | 14.3× | 25.5× |
+| butane / def2-TZVP | 19.0 s | 5.4× | 3.9× | 4.4× | 7.5× |
+| benzene / def2-SVP | 3.2 s | 13.2× | 8.8× | 10.6× | 18.9× |
+| sulfamethoxazole / def2-SVP | 78.7 s | 7.2× | 5.9× | 6.5× | 14.4× |
+| methane / cc-pVDZ | 0.2 s | 27.0× | 20.5× | 22.5× | 40.2× |
+| ethane / cc-pVDZ | 1.0 s | 18.7× | 12.7× | 15.8× | 28.7× |
+| propane / cc-pVDZ | 3.6 s | 13.8× | 9.7× | 11.0× | 20.8× |
+
+What the table shows:
+
+- The pruned `sgx (35,194)` grid uses 0.65× the points of the flat default
+  and is more accurate on seven of the eight molecules, by 1.7× (benzene) to
+  29× (ethane). On methane it is 1.15× worse (9.2e-6 against 8.0e-6 Ha).
+  Because it does not win on every system, it is **not** the default; select
+  it with `cosx_grid = { radial = 35, angular = 194, prune = "sgx" }`.
+- The final pass on `sgx (50,302)` reproduces an SCF converged on that grid to
+  4e-8 Ha on seven molecules and 1.5e-7 Ha on sulfamethoxazole, at 0.45–0.59×
+  of that SCF's cost. Together with the pruned SCF grid it is more accurate
+  than the flat default on all eight molecules and on the reaction (0.003
+  against 0.074 kcal/mol), and faster on all eight (0.80–0.91× the default's
+  wall time). It is opt-in, not the default, because gradient tasks run
+  without it and their SCF-grid energy is then the pruned grid's alone.
+- More radial shells (35 → 50) at a 194 peak buy little; removing the
+  pruning (flat 194) costs 2.7× the points for errors of the same size. The
+  overlap fit helps on every molecule but water (1.8× to 21×; on water it is
+  1.2× worse).
+
+**COSX gradients.**
+
+`task = "optimize"` and `task = "frequencies"` with
 `k_builder = "cosx"` differentiate the COSX energy itself (grid-function,
 ESP-integral and Becke-weight derivatives). With the default overlap fit the
 fitted exchange is not variational in the orbitals, so the gradient adds an
 orbital-response (Z-vector) term. The gradient is exact for RHF, RKS and UHF
 with `cosx_overlap_fit = false`, and for RHF and UHF with the default fit;
 measured against finite differences of the COSX energy it agrees to
-2e-9–4e-9 Ha/Bohr. Fitted COSX with a Kohn–Sham functional, UKS, ROHF/ROKS
-and pruned COSX grids are refused for gradient tasks before the SCF runs.
+2e-9–4e-9 Ha/Bohr, on flat and pruned (`sgx`) grids alike, and with RI-J
+(RIJCOSX). The gradient differentiates the SCF-grid energy: with
+`cosx_final_pass` the reported energy is the final-grid one, so geometry tasks
+run without the pass and a gradient of a final-pass result is refused (an
+ORCA-style gradient evaluated on the final grid misses finite differences of
+the final-grid energy by 4.6e-7–7.3e-7 Ha/Bohr on water/6-31G, so it is not
+used). Fitted COSX with a Kohn–Sham functional, UKS and ROHF/ROKS are refused
+for gradient tasks before the SCF runs.
 
 ## Convergence
 
