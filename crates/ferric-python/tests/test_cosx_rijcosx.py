@@ -52,8 +52,11 @@ def test_rijcosx_b3lyp_gradient_matches_fd(setup):
     """
     _, bs = setup
     kw = dict(
-        k_builder="cosx", cosx_overlap_fit=False,
-        cosx_final_pass=False, energy_conv=1e-8, density_conv=1e-9
+        k_builder="cosx",
+        cosx_overlap_fit=False,
+        cosx_final_pass=False,
+        energy_conv=1e-8,
+        density_conv=1e-9,
     )
     mol0 = ferric.Molecule.from_xyz_string(_water_xyz(0.0))
     g = np.asarray(

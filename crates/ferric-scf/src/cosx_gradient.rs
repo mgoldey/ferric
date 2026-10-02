@@ -219,7 +219,7 @@ pub fn unsupported_reference_error(reference: &str) -> FerricError {
 /// RIJCOSX composite, and the gradient then takes J from the DF-J route the
 /// SCF recorded (`ScfResult::df_jk`) and K from COSX. An explicitly named
 /// `df_k_aux` next to `k_builder = "cosx"` is refused, by the solvers and here
-/// alike ([`crate::fock_assembly::cosx_replaces_df_k`]); the RHF auto-default
+/// alike (`fock_assembly::cosx_replaces_df_k`); the RHF auto-default
 /// DF-K of a functional is replaced by COSX. `open_shell` is kept for the
 /// callers' symmetry: the rule is the same for every reference.
 ///
