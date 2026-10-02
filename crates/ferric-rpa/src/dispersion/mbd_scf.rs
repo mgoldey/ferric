@@ -12,7 +12,7 @@
 //! ```text
 //!   dE/dR_B = ∂E/∂R_B |_{ratios fixed}                      (mbd_rsscs_gradient)
 //!           + Σ_A c_A ∂v_A/∂R_B |_{D fixed, lattice fixed}  (hirshfeld_volume_gradient)
-//!           − ½ Tr[V D Sˣ D]                                 (orthonormality)
+//!           − ½ Tr[V D Sˣ D]   (UKS: − Σ_σ Tr[V D_σ Sˣ D_σ]) (orthonormality)
 //!           − (1/N) Σ_C Σ_A c_A ∂v_A/∂R_C |_{D, lattice}     (lattice response)
 //!           + Σ_ai Z_ai ∂F_ai/∂R_B                           (orbital relaxation)
 //!   c_A = (∂E/∂r_A) / v_A^free,   V = ∂(Σ_A c_A v_A)/∂D
@@ -23,8 +23,9 @@
 //! term follows [`mbd_volume_grid`], whose points move by 1/N of every atom's
 //! displacement (translation invariance at fixed D turns the lattice shift
 //! into minus the sum of the fixed-lattice term). The relaxation term is the
-//! closed-shell KS Z-vector of [`ferric_scf::zvector_ks`] with V as its
-//! right-hand side.
+//! KS Z-vector of [`ferric_scf::zvector_ks`] (closed-shell for RKS, coupled
+//! α/β for UKS) with V as its right-hand side; MBD depends on the total
+//! density, so both spins see the same V.
 //!
 //! Measured against central FD (h = 1e-3 Bohr) of the full SCF + MBD pipeline
 //! at 6-31G (`tests/mbd_scf_gradient.rs`): ≤ 3.5e-9 Hartree/Bohr for H2O with
@@ -33,6 +34,12 @@
 //! proatom interpolant is C2 in r (see `RadialProatom`), so the volumes and
 //! the energy are smooth in the nuclear coordinates and the FD step needs no
 //! special choice.
+//!
+//! UKS (`tests/mbd_scf_gradient_uks.rs`, h = 3e-5 Bohr): ≤ 1.9e-9 for NH2,
+//! OH and O2 at 6-31G with PBE, PBE0 and HSE06, 6.0e-9 / 5.0e-9 for OH with
+//! PBE + RI-J / PBE0 + RI-JK (the Z-vector Hessian uses exact J/K), against a
+//! relaxation term of 2.7e-6 to 1.0e-5; an RKS result run through the UKS
+//! path reproduces the closed-shell gradient to 3e-14.
 
 use std::collections::BTreeMap;
 
@@ -293,6 +300,72 @@ pub fn mbd_rsscs_for_density(
     config: &MbdRsscsConfig,
     want_gradient: bool,
 ) -> Result<MbdScfResult, FerricError> {
+    mbd_rsscs_impl(
+        cache,
+        mol,
+        bs,
+        density_total,
+        OccupiedDensities::Closed,
+        config,
+        want_gradient,
+    )
+}
+
+/// [`mbd_rsscs_for_density`] for an open-shell (UKS) reference given its spin
+/// densities `d_alpha`, `d_beta` (each D_σ = C_σ,occ C_σ,occᵀ). The volumes,
+/// energy and every gradient term but one use the total density
+/// D_α + D_β; the orthonormality term keeps each spin's occupied orbitals
+/// orthonormal, −Σ_σ Tr[V D_σ Sˣ D_σ] (checked: D_σ S D_σ = D_σ).
+///
+/// # Errors
+///
+/// Those of [`mbd_rsscs_for_density`]; with `want_gradient`, spin densities
+/// that are not idempotent in the S metric.
+pub fn mbd_rsscs_for_spin_densities(
+    cache: &MbdFreeAtomCache,
+    mol: &Molecule,
+    bs: &BasisSet,
+    d_alpha: &Array2<f64>,
+    d_beta: &Array2<f64>,
+    config: &MbdRsscsConfig,
+    want_gradient: bool,
+) -> Result<MbdScfResult, FerricError> {
+    let total = d_alpha + d_beta;
+    mbd_rsscs_impl(
+        cache,
+        mol,
+        bs,
+        &total,
+        OccupiedDensities::Open {
+            alpha: d_alpha,
+            beta: d_beta,
+        },
+        config,
+        want_gradient,
+    )
+}
+
+/// How the occupied orbitals behind the total density are held orthonormal.
+#[derive(Clone, Copy)]
+enum OccupiedDensities<'a> {
+    /// Closed shell: D = 2 C_occ C_occᵀ, the total density.
+    Closed,
+    /// Open shell: D_σ = C_σ,occ C_σ,occᵀ per spin.
+    Open {
+        alpha: &'a Array2<f64>,
+        beta: &'a Array2<f64>,
+    },
+}
+
+fn mbd_rsscs_impl(
+    cache: &MbdFreeAtomCache,
+    mol: &Molecule,
+    bs: &BasisSet,
+    density_total: &Array2<f64>,
+    occupied: OccupiedDensities<'_>,
+    config: &MbdRsscsConfig,
+    want_gradient: bool,
+) -> Result<MbdScfResult, FerricError> {
     let natoms = mol.atoms.len();
     let mut z = Vec::with_capacity(natoms);
     let mut free_volumes = Vec::with_capacity(natoms);
@@ -374,7 +447,15 @@ pub fn mbd_rsscs_for_density(
         .collect();
     let term2 =
         hirshfeld_volume_gradient(mol, bs, density_total, Some(provider_ref), &grid, &de_dv)?;
-    let (orth, v) = orthonormality_term(mol, bs, density_total, provider_ref, &grid, &de_dv)?;
+    let (orth, v) = orthonormality_term(
+        mol,
+        bs,
+        density_total,
+        occupied,
+        provider_ref,
+        &grid,
+        &de_dv,
+    )?;
     // Lattice response: every point of `mbd_volume_grid` moves by 1/N of each
     // atom's displacement, and at fixed D, ∂v/∂(lattice shift) = −Σ_B ∂v/∂R_B.
     let mut lattice = Array2::<f64>::zeros((natoms, 3));
@@ -399,34 +480,48 @@ pub fn mbd_rsscs_for_density(
     })
 }
 
-/// −½ Tr[V D S^x D]: the change of Σ_A c_A v_A from keeping the occupied
-/// orbitals orthonormal as the basis moves (closed shell, D = 2 C_occ C_occᵀ,
-/// dD = −½ D S^x D at fixed orbital rotation). Returns the term and V.
+/// The change of Σ_A c_A v_A from keeping the occupied orbitals orthonormal
+/// as the basis moves (dC_occ = −½ C_occ S^x_oo at fixed orbital rotation):
+/// closed shell, D = 2 C_occ C_occᵀ, dD = −½ D S^x D, term −½ Tr[V D S^x D];
+/// open shell, D_σ = C_σ,occ C_σ,occᵀ, dD_σ = −D_σ S^x D_σ, term
+/// −Σ_σ Tr[V D_σ S^x D_σ]. Returns the term and V.
 fn orthonormality_term(
     mol: &Molecule,
     bs: &BasisSet,
     density_total: &Array2<f64>,
+    occupied: OccupiedDensities<'_>,
     provider: &ProatomProvider,
     grid: &ferric_integrals::ao_grid::GridSpec,
     de_dv: &[f64],
 ) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
     let prep = PreparedBasis::new(mol, bs)?;
-    // Closed-shell check: D S D = 2 D. An open-shell total density fails it,
-    // and the term above is then wrong (it needs the spin densities).
     let s = ferric_integrals::oneelectron::overlap(&prep);
-    let dsd = density_total.dot(&s).dot(density_total);
-    let scale = density_total
-        .iter()
-        .fold(0.0_f64, |m, v| m.max(v.abs()))
-        .max(1.0);
-    let resid = (&dsd - &(density_total * 2.0))
-        .iter()
-        .fold(0.0_f64, |m, v| m.max(v.abs()));
-    if resid > 1e-6 * scale {
-        return Err(FerricError::General(format!(
-            "mbd_rsscs_for_density: the MBD nuclear gradient needs a closed-shell \
-             (RKS) density; max|D S D - 2D| = {resid:.3e}"
-        )));
+    // Projector check: D S D = occ·D (occ = 2 closed shell, 1 per spin). A
+    // density that fails it is not what the term above assumes.
+    let check = |d: &Array2<f64>, occ: f64, what: &str| -> Result<(), FerricError> {
+        let dsd = d.dot(&s).dot(d);
+        let scale = d.iter().fold(0.0_f64, |m, v| m.max(v.abs())).max(1.0);
+        let resid = (&dsd - &(d * occ))
+            .iter()
+            .fold(0.0_f64, |m, v| m.max(v.abs()));
+        if resid > 1e-6 * scale {
+            return Err(FerricError::General(format!(
+                "mbd_rsscs_for_density: the MBD nuclear gradient needs {what}; \
+                 max|D S D - {occ}D| = {resid:.3e}"
+            )));
+        }
+        Ok(())
+    };
+    match occupied {
+        OccupiedDensities::Closed => check(
+            density_total,
+            2.0,
+            "a closed-shell (RKS) density (use mbd_rsscs_for_spin_densities for UKS)",
+        )?,
+        OccupiedDensities::Open { alpha, beta } => {
+            check(alpha, 1.0, "an idempotent alpha spin density")?;
+            check(beta, 1.0, "an idempotent beta spin density")?;
+        }
     }
     let v = crate::properties::hirshfeld_volume_density_derivative(
         mol,
@@ -435,21 +530,36 @@ fn orthonormality_term(
         grid,
         de_dv,
     )?;
-    let dvd = density_total.dot(&v).dot(density_total);
-    let g = ferric_scf::gradient::overlap_deriv_contract(&prep, &dvd)?;
-    Ok((g * -0.5, v))
+    let g = match occupied {
+        OccupiedDensities::Closed => {
+            let dvd = density_total.dot(&v).dot(density_total);
+            ferric_scf::gradient::overlap_deriv_contract(&prep, &dvd)? * -0.5
+        }
+        OccupiedDensities::Open { alpha, beta } => {
+            let dvd = alpha.dot(&v).dot(alpha) + beta.dot(&v).dot(beta);
+            -ferric_scf::gradient::overlap_deriv_contract(&prep, &dvd)?
+        }
+    };
+    Ok((g, v))
 }
 
-/// [`mbd_rsscs_for_density`] at the converged closed-shell KS `result` of
-/// `config`, plus the orbital-relaxation term of the gradient from the
-/// Z-vector ([`ferric_scf::zvector_ks::relaxation_gradient_closed`]), so that
-/// `gradient` is the exact derivative of the energy the SCF + MBD pipeline
-/// reports (see the module doc for the terms and their validation).
+/// MBD@rsSCS at the converged KS `result` of `config` with its exact nuclear
+/// gradient, dispatching on `result.spin`:
+///
+/// * `Restricted` (RKS): [`mbd_rsscs_for_density`] plus the orbital-relaxation
+///   term from [`ferric_scf::zvector_ks::relaxation_gradient_closed`];
+/// * `Unrestricted` (UKS): [`mbd_rsscs_for_spin_densities`] plus the term from
+///   [`ferric_scf::zvector_ks::relaxation_gradient_unrestricted`];
+/// * `RestrictedOpen` (ROKS): refused — there is no ROKS Z-vector.
+///
+/// `gradient` is then the exact derivative of the energy the SCF + MBD
+/// pipeline reports (see the module doc for the terms and their validation).
 ///
 /// # Errors
 ///
-/// Those of [`mbd_rsscs_for_density`], and every reference the Z-vector does
-/// not support ([`ferric_scf::zvector_ks::unsupported_reason`]): never an
+/// Those of the density routines, a ROKS result, and every reference the
+/// Z-vector does not support ([`ferric_scf::zvector_ks::unsupported_reason`],
+/// [`ferric_scf::zvector_ks::unsupported_reason_unrestricted`]): never an
 /// unrelaxed gradient presented as the exact one.
 #[allow(clippy::too_many_arguments)]
 pub fn mbd_rsscs_for_scf(
@@ -462,32 +572,54 @@ pub fn mbd_rsscs_for_scf(
     result: &ferric_scf::ScfResult,
     config: &MbdRsscsConfig,
 ) -> Result<MbdScfResult, FerricError> {
-    if let Some(r) = ferric_scf::zvector_ks::unsupported_reason(rhf_config) {
+    let unsupported = match result.spin {
+        ferric_scf::Spin::Restricted => ferric_scf::zvector_ks::unsupported_reason(rhf_config),
+        ferric_scf::Spin::Unrestricted => {
+            ferric_scf::zvector_ks::unsupported_reason_unrestricted(rhf_config)
+        }
+        ferric_scf::Spin::RestrictedOpen => Some(
+            "restricted open-shell (ROKS) references have no Z-vector; run the open shell \
+             unrestricted (UKS)"
+                .to_string(),
+        ),
+    };
+    if let Some(r) = unsupported {
         return Err(FerricError::General(format!(
             "MBD@rsSCS nuclear gradient: the orbital-relaxation (Z-vector) term is not \
              available: {r}"
         )));
     }
-    if !matches!(result.spin, ferric_scf::Spin::Restricted) {
-        return Err(FerricError::General(
-            "MBD@rsSCS nuclear gradient: closed-shell (restricted) KS references only; \
-             open-shell MBD gradients are not implemented"
-                .into(),
-        ));
-    }
-    let mut out = mbd_rsscs_for_density(cache, mol, bs, result.density_r(), config, true)?;
+    let open = matches!(result.spin, ferric_scf::Spin::Unrestricted);
+    let mut out = if open {
+        let d_b = result.density_beta.as_ref().ok_or_else(|| {
+            FerricError::General(
+                "mbd_rsscs_for_scf: unrestricted result has no beta density".into(),
+            )
+        })?;
+        mbd_rsscs_for_spin_densities(cache, mol, bs, &result.density_alpha, d_b, config, true)?
+    } else {
+        mbd_rsscs_for_density(cache, mol, bs, result.density_r(), config, true)?
+    };
     let v = out.density_derivative.as_ref().ok_or_else(|| {
         FerricError::General("mbd_rsscs_for_scf: no density derivative was formed".into())
     })?;
     let prep = PreparedBasis::new(mol, bs)?;
     let bounds = SchwarzBounds::compute_for_screening(op, &prep, rhf_config.screening)?;
-    let relax = ferric_scf::zvector_ks::relaxation_gradient_closed(
-        ctx, mol, &prep, bs, op, &bounds, rhf_config, result, v,
-    )?;
+    let relax = if open {
+        ferric_scf::zvector_ks::relaxation_gradient_unrestricted(
+            ctx, mol, &prep, bs, op, &bounds, rhf_config, result, v,
+        )?
+        .gradient
+    } else {
+        ferric_scf::zvector_ks::relaxation_gradient_closed(
+            ctx, mol, &prep, bs, op, &bounds, rhf_config, result, v,
+        )?
+        .gradient
+    };
     let unrelaxed = out.gradient_unrelaxed.as_ref().ok_or_else(|| {
         FerricError::General("mbd_rsscs_for_scf: no unrelaxed gradient was formed".into())
     })?;
-    out.gradient = Some(unrelaxed + &relax.gradient);
-    out.gradient_relaxation = Some(relax.gradient);
+    out.gradient = Some(unrelaxed + &relax);
+    out.gradient_relaxation = Some(relax);
     Ok(out)
 }

@@ -117,22 +117,32 @@ object without `beta` and `volume_ratios`). UKS/ROKS energy runs, which write
 no `run_end` record, write a `dispersion` record with the same fields. Python:
 `run_dft(..., dispersion="mbd")`, which also reports `DftResult.volume_ratios`.
 
-**Gradient.** `task = "optimize"` (closed shell) and
+**Gradient.** `task = "optimize"` on an RKS or UKS reference and
 `run_dft(with_gradient=True)` add the exact analytic MBD@rsSCS gradient: the
 explicit dependence on the nuclear positions, and the dependence through the
 Hirshfeld volumes, including how the SCF density itself responds to the
 displacement. That response is the orbital relaxation, obtained from one
 coupled-perturbed Kohn–Sham (Z-vector) solve per gradient; it costs about as
-much as a few SCF iterations. The volumes are integrated on a lattice
+much as a few SCF iterations. On a UKS reference the solve is coupled across
+the α and β orbital rotations (Coulomb couples the spins; exchange and the XC
+kernel are spin-resolved), and the orthonormality of each spin's occupied
+orbitals enters separately. The volumes are integrated on a lattice
 anchored to the molecular centroid, and its motion is part of the gradient.
 Against finite differences of the full SCF + MBD calculation at 6-31G the
 gradient agrees to 6e-9 Hartree/Bohr for H2O with PBE, PBE0, HSE06 and
 PBE with RI-J, and to 9e-10 for NH3; the orbital relaxation alone is 1.0e-5
-for H2O (11.5% of the largest MBD component). The relaxation term needs an
-LDA, GGA or hybrid-GGA functional without VV10, no implicit solvation,
-polarizable embedding or cDFT constraints, and integer occupation; other
-setups are refused rather than given an approximate gradient.
-Open-shell optimization and open-shell frequencies with dispersion are refused.
+for H2O (11.5% of the largest MBD component). For UKS doublets and a triplet
+(NH2, OH, O2 at 6-31G with PBE, PBE0 and HSE06) it agrees to ≤ 1.9e-9, and to
+6e-9 for OH with PBE + RI-J and PBE0 + RI-JK, against an orbital relaxation of
+3e-6–1e-5. The relaxation term needs an LDA, GGA or hybrid-GGA functional
+without VV10, no implicit solvation, polarizable embedding or cDFT
+constraints, and integer aufbau occupation (no MOM); UKS additionally needs
+exchange that is not COSX. Other setups are refused rather than given an
+approximate gradient.
+ROKS optimization and open-shell frequencies with dispersion are refused; run an
+open shell unrestricted (`kind = "uhf"` with `[dft] functional`, or `ksdft` at
+multiplicity > 1) to optimize it with dispersion. Python's `run_dft` is
+closed-shell only.
 
 ## Frequencies with dispersion
 

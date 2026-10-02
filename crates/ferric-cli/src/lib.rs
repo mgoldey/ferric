@@ -27,8 +27,8 @@ use ferric_mp2::scs::{scs_mp2, scs_mp2_2terfc, ScsMp2Config, ScsMp2TerfcConfig};
 use ferric_rpa::config::{QuadratureConfig, SternheimerConfig};
 use ferric_rpa::{run_pdep_rpa, PdepRpaConfig};
 use ferric_scf::optimize::{
-    optimize_geometry_rohf, optimize_geometry_uhf, optimize_geometry_with_scf_correction,
-    OptimizeConfig,
+    optimize_geometry_rohf, optimize_geometry_uhf_with_scf_correction,
+    optimize_geometry_with_scf_correction, OptimizeConfig,
 };
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::rohf::solve_rohf;
@@ -369,8 +369,11 @@ pub fn run(args: Vec<String>) {
     // MBD@rsSCS gradient through a closure that sees the converged SCF at every
     // geometry (`optimize_geometry_with_scf_correction`,
     // `harmonic_frequencies_with_scf_correction`), so the energy, the gradient
-    // and the finite-difference Hessian all describe one surface. Open-shell
-    // references are refused per task (`refuse_open_shell_dispersion_gradient`).
+    // and the finite-difference Hessian all describe one surface. UKS
+    // `optimize` takes the same correction through
+    // `optimize_geometry_uhf_with_scf_correction` (MBD@rsSCS with the
+    // unrestricted Z-vector); ROKS `optimize` and open-shell `frequencies` are
+    // refused (`refuse_open_shell_dispersion_gradient`).
     // ...and the same for the METHOD, which the task guard above does not
     // cover. The correction is evaluated only where a Kohn-Sham SCF result is
     // printed (`print_scf_energy`), so a plain `rhf` energy run passes the
@@ -1435,6 +1438,7 @@ fn dispersion_gradient_model(
     op: Operator,
     rhf_config: &RhfConfig,
     task: &str,
+    unrestricted: bool,
 ) -> Option<DispersionGradientModel> {
     match dispersion_request(cfg)? {
         crate::config::DispersionRequest::D3Bj { functional } => {
@@ -1453,7 +1457,12 @@ fn dispersion_gradient_model(
                     });
             // The gradient's orbital-relaxation (Z-vector) term must be
             // available, or the run would fail after the first SCF.
-            if let Some(r) = ferric_scf::zvector_ks::unsupported_reason(rhf_config) {
+            let unsupported = if unrestricted {
+                ferric_scf::zvector_ks::unsupported_reason_unrestricted(rhf_config)
+            } else {
+                ferric_scf::zvector_ks::unsupported_reason(rhf_config)
+            };
+            if let Some(r) = unsupported {
                 eprintln!(
                     "error: [dft] dispersion = \"mbd\" with method.task = \"{task}\": \
                      the exact MBD@rsSCS gradient is not available: {r}"
@@ -5489,7 +5498,8 @@ fn frequencies_maybe_dispersion(
     if dispersion_request(cfg).is_some() {
         ferric_scf::frequencies::check_scf_correction_config(fcfg)?;
     }
-    let Some(model) = dispersion_gradient_model(cfg, ctx, mol, bs, op, rhf_config, "frequencies")
+    let Some(model) =
+        dispersion_gradient_model(cfg, ctx, mol, bs, op, rhf_config, "frequencies", false)
     else {
         return harmonic_frequencies(ctx, mol, &bs.name, op, rhf_config, fcfg).map(|r| (r, None));
     };
@@ -5587,7 +5597,8 @@ fn run_optimize(
             // parameters, which is the property that makes optimizing on this
             // surface meaningful -- a mismatched pair converges to a geometry
             // that is a stationary point of neither.
-            let model = dispersion_gradient_model(cfg, ctx, mol, bs, op, rhf_config, "optimize");
+            let model =
+                dispersion_gradient_model(cfg, ctx, mol, bs, op, rhf_config, "optimize", false);
             let opt_result = optimize_geometry_with_scf_correction(
                 ctx,
                 mol,
@@ -5734,15 +5745,33 @@ fn run_optimize(
         }
         "uhf" => {
             // UKS when `rhf_config.xc` is set (`kind = "uhf"` + functional, or
-            // `ksdft` on an open-shell molecule): `optimize_geometry_uhf` then
+            // `ksdft` on an open-shell molecule): `optimize_geometry_uhf_with_scf_correction` then
             // takes `ks_gradient_uks`.
+            // `[dft] dispersion` is applied as on the closed-shell path: D3(BJ)
+            // from the geometry, MBD@rsSCS from the UKS spin densities with the
+            // unrestricted Z-vector relaxation term.
             let label = open_shell_scf_label("UHF", "UKS", rhf_config);
-            refuse_open_shell_dispersion_gradient(cfg, &label, "optimize");
-            let opt_result = optimize_geometry_uhf(ctx, mol, &bs.name, op, rhf_config, &opt_config)
-                .unwrap_or_else(|e| {
-                    eprintln!("error during {label} optimization: {e}");
-                    std::process::exit(1);
-                });
+            let model =
+                dispersion_gradient_model(cfg, ctx, mol, bs, op, rhf_config, "optimize", true);
+            let opt_result = optimize_geometry_uhf_with_scf_correction(
+                ctx,
+                mol,
+                &bs.name,
+                op,
+                rhf_config,
+                &opt_config,
+                |m, scf| match &model {
+                    Some(d) => {
+                        let (c, g) = d.evaluate(ctx, m, bs, op, rhf_config, scf)?;
+                        Ok((c.energy, Some(g)))
+                    }
+                    None => Ok((0.0, None)),
+                },
+            )
+            .unwrap_or_else(|e| {
+                eprintln!("error during {label} optimization: {e}");
+                std::process::exit(1);
+            });
             println!("\nFinal Optimized Geometry (Bohr):");
             for (i, atom) in opt_result.mol.atoms.iter().enumerate() {
                 println!(
@@ -5800,17 +5829,19 @@ fn refuse_tddft_xc_without_kernel(cfg: &Config, method: &str) {
     }
 }
 
-/// `[dft] dispersion` on an open-shell (UKS/ROKS) geometry optimization or
-/// frequency run is refused: the dispersion gradient is threaded through the
-/// optimizer and the frequency driver only on the closed-shell path
-/// (`optimize_geometry_with_scf_correction`,
-/// `harmonic_frequencies_with_scf_correction`), so the UKS/ROKS drivers would
+/// `[dft] dispersion` is refused where no dispersion gradient is threaded:
+/// ROHF/ROKS geometry optimization (the ROKS optimizer has no correction hook
+/// and MBD@rsSCS has no ROKS Z-vector) and any open-shell frequency run (the
+/// frequency driver's correction hook is closed-shell only). Such a run would
 /// walk the UNCORRECTED surface while the config asks for a corrected one. The
-/// single-point energy (task = "energy") does apply it.
+/// single-point energy (task = "energy") applies the correction on every
+/// reference, and UKS `optimize` is supported.
 fn refuse_open_shell_dispersion_gradient(cfg: &Config, label: &str, task: &str) {
     if cfg.dft.dispersion.is_some() {
         let what = if task == "optimize" {
-            "the closed-shell optimizer, so this run would optimize the uncorrected surface"
+            "the RHF/RKS and UHF/UKS optimizers (MBD@rsSCS has no ROKS Z-vector), so this run \
+             would optimize the uncorrected surface; method.kind = \"uhf\" optimizes an open \
+             shell with the correction"
         } else {
             "the closed-shell frequency driver, so this run would report the Hessian of the \
              uncorrected surface"
