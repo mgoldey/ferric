@@ -461,6 +461,28 @@ fn open_shell_ks_runs_an_mbd_optimization() {
 fn roks_runs_an_mbd_optimization() {
     let nh2 = nh2_xyz("roks_runs_an_mbd_optimization");
     let mbd = format!("[dft]\nfunctional = \"PBE\"\ndispersion = \"mbd\"\n\n{TIGHT_SCF}");
+    let plain = format!("[dft]\nfunctional = \"PBE\"\n\n{TIGHT_SCF}");
+    // The ROKS energy run applies MBD: total = E(KS-DFT) + E(MBD@rsSCS) ≠ 0.
+    let energy = run_ok(
+        "nh2_roks_mbd_energy",
+        &body_at(&nh2, 2, "sto-3g", "rohf", "energy", &mbd),
+    );
+    let e_ks = stdout_value(&energy, "E(KS-DFT)");
+    let e_mbd = stdout_value(&energy, "E(MBD@rsSCS)");
+    let e_total = stdout_value(&energy, "energy ");
+    assert!(
+        e_mbd < -1e-6,
+        "E(MBD@rsSCS) = {e_mbd:.3e} is not a correction"
+    );
+    assert!(
+        (e_total - (e_ks + e_mbd)).abs() < 1e-9,
+        "total {e_total:.10} != E(KS-DFT) {e_ks:.10} + E(MBD) {e_mbd:.10}"
+    );
+    // The optimizer applies it too: the corrected optimum sits about E(MBD)
+    // below the plain one. NH2 starts distorted, so E(MBD) at the start is not
+    // E(MBD) at the optimum (measured shift / start E(MBD) = 0.91); the band
+    // [0.5, 1.5] x E(MBD) still fails a dropped correction (shift ~0), a sign
+    // flip and a doubled term.
     let out = run_ok(
         "nh2_roks_mbd_opt",
         &body_at(&nh2, 2, "sto-3g", "rohf", "optimize", &mbd),
@@ -468,6 +490,17 @@ fn roks_runs_an_mbd_optimization() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("ROKS[PBE] Optimization Result"), "{stdout}");
     assert!(stdout.contains("converged  = true"), "{stdout}");
+    let opt_plain = run_ok(
+        "nh2_roks_plain_opt",
+        &body_at(&nh2, 2, "sto-3g", "rohf", "optimize", &plain),
+    );
+    let shift = stdout_value(&out, "final E") - stdout_value(&opt_plain, "final E");
+    println!("ROKS E(MBD) at the start = {e_mbd:.6e}; optimum shift = {shift:.6e}");
+    let ratio = shift / e_mbd;
+    assert!(
+        (0.5..1.5).contains(&ratio),
+        "MBD optimum shift {shift:.6e} is {ratio:.3} x E(MBD@rsSCS) at the start {e_mbd:.6e}"
+    );
 }
 
 // ─── Open-shell RI-MP2 ──────────────────────────────────────────────────────
