@@ -58,6 +58,9 @@ struct Run {
     stdout: String,
     stderr: String,
     results: Vec<serde_json::Value>,
+    /// Whether the run log holds any SCF iteration record (`scf_iter` or
+    /// `guess_scf_iter`): false means the SCF never started.
+    scf_started: bool,
 }
 
 /// Run water/6-31G under `kind` with the given extra TOML sections, logging
@@ -84,19 +87,28 @@ fn run(tag: &str, kind: &str, extra: &str) -> Run {
         .env("RAYON_NUM_THREADS", "2")
         .output()
         .expect("failed to run ferric-cli binary");
-    let results = std::fs::read_to_string(&log_path)
+    let records: Vec<serde_json::Value> = std::fs::read_to_string(&log_path)
         .map(|log| {
             log.lines()
                 .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
-                .filter(|v| v["record"] == "result")
                 .collect()
         })
         .unwrap_or_default();
+    let scf_started = records.iter().any(|v| {
+        v["record"]
+            .as_str()
+            .is_some_and(|r| r.ends_with("scf_iter"))
+    });
+    let results = records
+        .into_iter()
+        .filter(|v| v["record"] == "result")
+        .collect();
     Run {
         ok: out.status.success(),
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
         results,
+        scf_started,
     }
 }
 
@@ -288,8 +300,8 @@ fn refusals_fail_before_the_scf() {
             r.stderr
         );
         assert!(
-            !r.stdout.contains("RHF energy") && r.results.is_empty(),
-            "{tag}: refused only after a result was computed:\n{}",
+            !r.scf_started && !r.stdout.contains("RHF energy") && r.results.is_empty(),
+            "{tag}: refused only after the SCF started:\n{}",
             r.stdout
         );
     }

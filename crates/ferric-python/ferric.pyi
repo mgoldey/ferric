@@ -331,7 +331,7 @@ class RhfResult:
         ...
 
     @property
-    def cosx_final_pass(self) -> dict[str, float | int | bool] | None:
+    def cosx_final_pass(self) -> dict[str, float | int | str] | None:
         """The COSX final-grid pass: ``{"e_scf_grid", "e_final",
         "npts_scf_grid", "npts_final_grid", "gradient_differentiates"}``, or
         None when no pass ran. ``energy`` is ``e_final`` when it ran."""
@@ -377,7 +377,7 @@ class UhfResult:
         ...
 
     @property
-    def cosx_final_pass(self) -> dict[str, float | int | bool] | None:
+    def cosx_final_pass(self) -> dict[str, float | int | str] | None:
         """The COSX final-grid pass: ``{"e_scf_grid", "e_final",
         "npts_scf_grid", "npts_final_grid", "gradient_differentiates"}``, or
         None when no pass ran. ``energy`` is ``e_final`` when it ran."""
@@ -1045,7 +1045,7 @@ class DftResult:
         ...
 
     @property
-    def cosx_final_pass(self) -> dict[str, float | int | bool] | None:
+    def cosx_final_pass(self) -> dict[str, float | int | str] | None:
         """The COSX final-grid pass: ``{"e_scf_grid", "e_final",
         "npts_scf_grid", "npts_final_grid", "gradient_differentiates"}``, or
         None when no pass ran. ``energy`` is ``e_final`` when it ran."""

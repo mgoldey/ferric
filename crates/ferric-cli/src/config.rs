@@ -864,7 +864,7 @@ impl LocalScheme {
 /// Absent (or `scheme = "none"`) means the method is computed EXACTLY. With
 /// `scheme = "amplitude-threshold"` the threshold `eps` is part of the model
 /// and has no default: it must be written, and every printout and run-log
-/// record of the run carries it. See [`Config::local_model`] for the rules.
+/// record of the run carries it. See `Config::local_model` for the rules.
 #[derive(Deserialize, Default, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct LocalCfg {
@@ -921,7 +921,7 @@ pub struct LocalDirectKnobs {
 }
 
 /// A resolved `scheme = "amplitude-threshold"` model. An exact run has none
-/// ([`Config::local_model`] returns `Ok(None)`).
+/// (`Config::local_model` returns `Ok(None)`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct LocalModel {
     /// The ε points: one for `eps`, the sorted de-duplicated sweep for
@@ -1449,15 +1449,13 @@ impl Mp2Cfg {
     }
 
     /// The `[mp2]` keys this file SET, read from serde's own view of the
-    /// struct (a key is set when it serializes to something other than
-    /// `null`). `frozen_core` is never listed: every correlated kind reads it.
+    /// struct (a key is set when it serializes at all: `toml` skips `None`
+    /// fields and, unlike `serde_json`, keeps a non-finite float such as
+    /// `nan`/`inf` instead of mapping it to null). `frozen_core` is never
+    /// listed: every correlated kind reads it.
     pub fn set_keys(&self) -> Vec<String> {
-        match serde_json::to_value(self) {
-            Ok(serde_json::Value::Object(m)) => m
-                .into_iter()
-                .filter(|(_, v)| !v.is_null())
-                .map(|(k, _)| k)
-                .collect(),
+        match toml::Value::try_from(self) {
+            Ok(toml::Value::Table(m)) => m.into_iter().map(|(k, _)| k).collect(),
             _ => Vec::new(),
         }
     }
@@ -3928,6 +3926,25 @@ mod compat_guard_tests {
 
     /// `[local]` rules that depend on the kind/task/molecule, and the `[mp2]`
     /// keys the local paths do not read. Each refusal is its own case.
+    #[test]
+    fn unread_mp2_keys_are_refused_even_when_non_finite() {
+        // serde_json maps a non-finite f64 to null, which once made
+        // `omega = nan` look unset and slip past the refusal.
+        for value in ["0.4", "nan", "inf", "-inf"] {
+            let body = format!("[mp2]\nomega = {value}\n");
+            assert_eq!(
+                cfg("drpa", "energy", &body).mp2.set_keys(),
+                vec!["omega".to_string()],
+                "{value}"
+            );
+            let e = cfg("drpa", "energy", &body)
+                .validate_task_compat()
+                .expect_err(value);
+            assert!(e.contains("omega"), "{value}: {e}");
+        }
+        assert!(cfg("drpa", "energy", "").mp2.set_keys().is_empty());
+    }
+
     #[test]
     fn local_section_kind_rules() {
         let at = "[local]\nscheme = \"amplitude-threshold\"\neps = 1e-4\n";

@@ -454,7 +454,7 @@ pub fn ragged_bytes(rg: &Ragged) -> usize {
 }
 
 /// Bytes the masked Riccati solve allocates on top of the assembled `rg`:
-/// [`RICCATI_WORK_COPIES`] ragged working sets, the DIIS history at
+/// `RICCATI_WORK_COPIES` ragged working sets, the DIIS history at
 /// subspace `diis`, and the ring-product plan ([`RingPlan::bytes_for`]).
 ///
 /// The plan dominates when the pattern is full: at ε = 0 it is `no` times
