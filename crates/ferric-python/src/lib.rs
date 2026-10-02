@@ -30,7 +30,7 @@ use ferric_mp2::oo_rimp2::{oo_ri_mp2, OoRiMp2Config};
 use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
 use ferric_mp2::scs::{scs_mp2, scs_mp2_2terfc, ScsMp2Config, ScsMp2TerfcConfig};
 use ferric_scf::ks_gradient::ks_gradient_closed;
-use ferric_scf::optimize::{optimize_geometry, OptimizeConfig};
+use ferric_scf::optimize::{optimize_geometry, optimize_geometry_uhf, OptimizeConfig};
 use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::rohf::{solve_rohf, RohfConfig};
@@ -2788,6 +2788,52 @@ fn run_optimize(
         basis_name,
         Operator::coulomb(),
         &rhf_config,
+        &OptimizeConfig {
+            max_steps: max_steps.unwrap_or(100),
+            e_conv: e_conv.unwrap_or(1e-6),
+            ..Default::default()
+        },
+    )
+    .map_err(make_err)?;
+    Ok(PyOptimizeResult {
+        energy: r.energy,
+        converged: r.converged,
+        steps: r.steps,
+        energy_trace: r.energy_trace,
+        mol_data: r.mol,
+    })
+}
+
+/// Optimize an OPEN-SHELL geometry with a UHF reference.
+///
+/// The spin state comes from the `Molecule` (its multiplicity), exactly as in
+/// `run_uhf` -- there is no `multiplicity` kwarg here, and passing a
+/// closed-shell molecule simply runs UHF on a singlet.
+///
+/// `run_optimize` uses an RHF reference and cannot relax a radical: the
+/// doublet would be forced into a closed-shell density. Use this for any
+/// molecule with unpaired electrons.
+#[pyfunction]
+#[pyo3(signature = (mol, basis_name, max_steps=None, e_conv=None, point_charges=None, external_field=None))]
+fn run_optimize_uhf(
+    mol: &PyMolecule,
+    basis_name: &str,
+    max_steps: Option<usize>,
+    e_conv: Option<f64>,
+    point_charges: Option<Vec<(f64, f64, f64, f64)>>,
+    external_field: Option<(f64, f64, f64)>,
+) -> PyResult<PyOptimizeResult> {
+    let ctx = ParallelContext::default();
+    let uhf_config = RhfConfig {
+        external_potential: build_external_potential(point_charges, external_field),
+        ..Default::default()
+    };
+    let r = optimize_geometry_uhf(
+        &ctx,
+        &mol.inner,
+        basis_name,
+        Operator::coulomb(),
+        &uhf_config,
         &OptimizeConfig {
             max_steps: max_steps.unwrap_or(100),
             e_conv: e_conv.unwrap_or(1e-6),
@@ -9172,6 +9218,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_cdft, m)?)?;
     m.add_function(wrap_pyfunction!(cdft_coupling, m)?)?;
     m.add_function(wrap_pyfunction!(run_optimize, m)?)?;
+    m.add_function(wrap_pyfunction!(run_optimize_uhf, m)?)?;
     m.add_function(wrap_pyfunction!(run_qmmm, m)?)?;
     m.add_function(wrap_pyfunction!(run_optimize_qmmm, m)?)?;
     m.add_function(wrap_pyfunction!(run_frequencies, m)?)?;
