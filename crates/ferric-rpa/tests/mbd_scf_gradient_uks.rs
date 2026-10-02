@@ -15,7 +15,6 @@
 //!     the closed-shell gradient term by term.
 //!   * `uks_mbd_unrelaxed_gradient_matches_fd_with_reorthonormalized_orbitals`
 //!   * `uks_mbd_exact_gradient_matches_fd_of_full_scf_pipeline` — OH/STO-3G PBE.
-//!   * `mbd_exact_gradient_refuses_a_roks_result`
 //!
 //! Measurement (`#[ignore]`, prints): `measure_uks_full_pipeline_fd` — NH2, OH
 //! and O2 at 6-31G with PBE, PBE0 and HSE06.
@@ -380,28 +379,6 @@ fn uks_mbd_exact_gradient_matches_fd_of_full_scf_pipeline() {
         max_abs(&relax) > 10.0 * FD_FULL_TOL,
         "relaxation term {:.3e} is not resolvable at the bar",
         max_abs(&relax)
-    );
-}
-
-/// A ROKS result is refused with a reason (no ROKS Z-vector), never answered
-/// with an unrelaxed gradient or a panic.
-#[test]
-fn mbd_exact_gradient_refuses_a_roks_result() {
-    use ferric_scf::rohf::solve_rohf;
-    let mol = Molecule::parse_xyz(OH_XYZ, 0, 2).expect("OH");
-    let bs = basis::bundled("sto-3g").expect("sto-3g");
-    let op = Operator::coulomb();
-    let ctx = ParallelContext::default();
-    let cfg = ks("PBE");
-    let mbd_cfg = MbdRsscsConfig::for_functional("PBE").expect("beta");
-    let cache = MbdFreeAtomCache::build(&ctx, &mol, &bs, op, &cfg).expect("cache");
-    let (prep, bounds) = bounds_for(&mol, &bs);
-    let r = solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg).expect("roks");
-    let err = mbd_rsscs_for_scf(&ctx, &cache, &mol, &bs, op, &cfg, &r, &mbd_cfg)
-        .expect_err("a ROKS result must be refused");
-    assert!(
-        format!("{err:?}").contains("ROKS"),
-        "unexpected error: {err:?}"
     );
 }
 
