@@ -579,7 +579,12 @@ class FrequencyResult:
 
     @property
     def energy(self) -> float:
-        """Electronic energy at the undisplaced geometry."""
+        """Electronic energy at the undisplaced geometry (KS + dispersion with `dispersion=`)."""
+        ...
+
+    @property
+    def e_dispersion(self) -> float | None:
+        """Dispersion energy at the undisplaced geometry, included in `energy`; None without `dispersion=`."""
         ...
 
 class WeightedStats:
@@ -1448,6 +1453,7 @@ def run_frequencies(
     point_charges: list[tuple[float, float, float, float]] | None = None,
     external_field: tuple[float, float, float] | None = None,
     hessian: str = "auto",
+    dispersion: str | None = None,
 ) -> FrequencyResult:
     """Harmonic vibrational frequencies.
 
@@ -1459,6 +1465,11 @@ def run_frequencies(
 
     `point_charges` ((q, x, y, z) in Bohr) and `external_field` embed the QM
     region in an MM field, the same way `run_optimize` does.
+
+    `dispersion` ("d3bj", "d3(bj)", "d3bj(<functional>)", "mbd",
+    "mbd(<functional>)", as in `run_dft`) requires `xc` and the closed-shell
+    reference; the Hessian is then the finite difference of the KS +
+    dispersion analytic gradient, so `hessian="analytic"` raises.
     """
     ...
 

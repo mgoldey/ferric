@@ -52,19 +52,11 @@ STILL OPEN, and these are the real remaining gaps:
   uncorrected vs 6.6418 with d3bj -- the attraction shortens the bond, which is
   the direction that shows the correction reached the GRADIENT and not only the
   energy.
-  STILL REFUSED: `task="frequencies"`, on narrower grounds than before. The
-  gradient exists; the finite-difference Hessian built from it has never been
-  validated against anything, and 6N unvalidated SCF+D3 evaluations is not a
-  number to hand back silently.
-  HOW it is refused, checked 2026-09-20: STRUCTURALLY, not at runtime.
-  `dispersion=` is a `run_dft` argument (the correction surfaces as
-  `DftResult.e_dispersion`); `run_frequencies` has no such parameter, so
-  `run_frequencies(mol, "sto-3g", dispersion="d3bj")` is a TypeError from
-  Python's own argument binding. Plain `run_frequencies(mol, "sto-3g")` works
-  and is what C4 uses. That is a stronger guarantee than a runtime check --
-  there is no code path to reach -- but it also means the refusal carries no
-  explanation, so a reader who does not know dispersion is DFT-path-only sees
-  only "unexpected keyword argument".
+  `task="frequencies"` and `run_frequencies(xc=..., dispersion=...)` also
+  WORK on a closed-shell KS reference: the Hessian is the finite difference of
+  the KS + dispersion gradient, validated against second differences of the
+  D3(BJ) energy and of the full SCF + MBD@rsSCS energy (see
+  [Validation](./validation.md)). Open-shell references are refused.
 - **QM/MM dispersion.** D3/D4/XDM/VV10 are all QM-atom-pairwise; MM point
   charges carry none. Needs LJ terms in `ferric-mm`.
 - **Pose noise.** MEASURED per-pose sd 29.07 kcal/mol against 1-2 kcal/mol
