@@ -1452,14 +1452,19 @@ fn roks_kappa(z: &Blocks3, nc: usize, no: usize, nmo: usize) -> Array2<f64> {
 /// The Cayley rotation (I − tκ/2)⁻¹(I + tκ/2) of an antisymmetric κ: exactly
 /// orthogonal, = I + tκ + O(t²), and its inverse is its value at −t.
 fn cayley(kappa: &Array2<f64>, tt: f64) -> Result<Array2<f64>, FerricError> {
-    use ndarray_linalg::Solve;
+    use ndarray_linalg::{FactorizeInto, Solve};
     let n = kappa.nrows();
     let eye = Array2::<f64>::eye(n);
     let a = &eye - &(0.5 * tt * kappa);
     let b = &eye + &(0.5 * tt * kappa);
+    // One LU of `a`, reused for every column (a fresh `a.solve` per column
+    // would refactorize it nmo times).
+    let lu = a
+        .factorize_into()
+        .map_err(|e| FerricError::Lapack(format!("Z-vector relaxation: Cayley LU: {e}")))?;
     let mut u = Array2::<f64>::zeros((n, n));
     for j in 0..n {
-        let col = a
+        let col = lu
             .solve(&b.column(j).to_owned())
             .map_err(|e| FerricError::Lapack(format!("Z-vector relaxation: Cayley solve: {e}")))?;
         u.column_mut(j).assign(&col);
