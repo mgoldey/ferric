@@ -75,6 +75,38 @@ pub enum LadderVariant {
 }
 
 impl LadderVariant {
+    /// The accepted spellings, in the order error messages list them.
+    pub const SPELLINGS: &'static [&'static str] = &["hh", "drivers-only", "full"];
+
+    /// Strict parse shared by the CLI (`[mp2] linlccd_variant`) and the
+    /// Python bindings (`variant=`): `"hh"`, `"drivers-only"`, `"full"`.
+    /// Anything else is an error naming the accepted spellings, never a
+    /// silent default.
+    pub fn parse_config_str(s: &str) -> Result<Self, FerricError> {
+        match s {
+            "hh" => Ok(LadderVariant::Hh),
+            "drivers-only" => Ok(LadderVariant::DriversOnly),
+            "full" => Ok(LadderVariant::Full),
+            other => Err(FerricError::General(format!(
+                "LinLCCD variant {other:?} is not recognised; expected one of {}",
+                Self::SPELLINGS
+                    .iter()
+                    .map(|v| format!("'{v}'"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))),
+        }
+    }
+
+    /// The spelling [`LadderVariant::parse_config_str`] accepts for `self`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LadderVariant::Hh => "hh",
+            LadderVariant::DriversOnly => "drivers-only",
+            LadderVariant::Full => "full",
+        }
+    }
+
     fn needs_vvvv(self) -> bool {
         matches!(self, LadderVariant::Full)
     }

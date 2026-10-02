@@ -48,6 +48,58 @@ The static eigensolve defaults to **Lanczos**, with a dense path for small
 problems. Geometry optimization with `pdep-rpa` is supported
 (`task = "optimize"`) on a closed-shell RHF reference.
 
+## Exact and local dRPA
+
+**What it is.** `method.kind = "drpa"` (Python `ferric.run_drpa`) is dRPA@HF
+computed by the drCCD Riccati equations in the Boys-localized basis,
+closed shell, energy only. It is **exact by default**: no amplitude is
+truncated (`examples/water-drpa.toml`), and the energy equals the canonical
+plasmon formula to ≤ 1e-12 Ha. Riccati, plasmon and full-rank PDEP-RPA are
+algorithms for the same exact dRPA; measured agreement is ≤ 2.6e-14 Ha
+(H2/STO-3G, water/6-31G with and without frozen core, PDEP with
+`trunc_thresh = 0` at 64 Gauss–Legendre points). Proven (narrow).
+
+**Which exact algorithm.** The Riccati solve holds a ring-product plan of
+no³·nv² numbers, `no` times the size of the amplitudes, so it is the
+small-system path: C12 thrashed and was then killed for memory. A run that
+cannot fit the memory budget is refused before the SCF and pointed at
+`pdep-rpa` with `[rpa] trunc_thresh = 0`, which gives the same energy (to its
+frequency-quadrature error) at far lower memory and is faster at every size
+measured (n-alkanes C4–C16).
+
+**The local approximation** (`[local] scheme = "amplitude-threshold"` with
+`eps`, `examples/water-drpa-local.toml`; Python
+`run_drpa(..., local="amplitude-threshold", eps=1e-4)`) drops pair amplitudes
+whose localized `|2(ia|jb)|` is at or below `eps`. `eps` has no default and
+is printed and logged with the kept fraction; `eps = 0` is the exact method.
+dRPA is not variational, so the error is first order in what is dropped:
+about linear in `eps`, and positive (less correlation) at every point
+measured, which is a measurement, not a guarantee. `[local] reference = true`
+(Python `compute_reference=True`) also computes the canonical plasmon dRPA and
+prints the error against it. `[local] eps_sweep` (Python `run_drpa_scan`)
+evaluates several `eps` on one SCF and one localized assembly. Proven
+(narrow) through its exact limit.
+
+**What is measured** (n-alkanes, 6-31G / cc-pVDZ-RI, frozen carbon cores,
+Coulomb, single thread; local error against the plasmon formula, PDEP error
+against full-rank PDEP at 32 quadrature points). The fraction of the
+truncated object retained at 1 kcal/mol error:
+
+| Size | Local dRPA (amplitudes kept) | PDEP (modes kept) |
+|---|---|---|
+| C4 | 23.3% | 17.9% |
+| C8 | 10.0% | 21.5% |
+| C12 | 4.9% | 22.6% |
+| C16 | 2.8% | 23.3% |
+
+The amplitude threshold compresses more as the molecule grows, and PDEP's
+fraction stays flat. The two fractions are of different objects (no²nv²
+amplitudes against naux modes), so this is not a cost comparison. In wall
+time at a matched error of about 1 kcal/mol (reference off), truncated PDEP
+stays about 8× faster from C4 to C16 (C16: 165.7 s local at
+`eps = 1e-4` against about 21 s PDEP), and both grow at the same rate in that
+range. **No speedup over PDEP is claimed for local dRPA.**
+
 ## GW
 
 **What it is.** Quasiparticle energies from the GW self-energy: **G0W0**,

@@ -4211,10 +4211,24 @@ struct PyRiMp2Result {
     /// RI-MP2) or "UHF" (unrestricted RI-MP2 for multiplicity > 1).
     #[pyo3(get)]
     reference: String,
+    /// The local model: `None` for the exact RI-MP2, else a dict with
+    /// `scheme`, `eps`, `keep_fraction`, `pair_fraction`, `integral_direct`,
+    /// `e_corr_canonical_ri` (the exact reference, or `None` unless
+    /// `compute_reference=True`) and the solver counters. Read through the
+    /// `local` getter.
+    local: Option<Py<pyo3::types::PyDict>>,
 }
 
 #[pymethods]
 impl PyRiMp2Result {
+    /// The local model: `None` for the exact RI-MP2, else a dict with
+    /// `scheme`, `eps`, `keep_fraction`, `pair_fraction`, `integral_direct`,
+    /// `e_corr_canonical_ri` (`None` unless `compute_reference=True`) and the
+    /// solver counters.
+    #[getter]
+    fn local(&self, py: Python<'_>) -> Option<Py<pyo3::types::PyDict>> {
+        self.local.as_ref().map(|d| d.clone_ref(py))
+    }
     fn __repr__(&self) -> String {
         format!(
             "RiMp2Result(total_energy={:.10}, mp2_corr={:.10})",
@@ -4223,10 +4237,58 @@ impl PyRiMp2Result {
     }
     fn __str__(&self) -> String {
         format!(
-            "RI-MP2 Total Energy: {:.10} Ha ({}: {:.10}, corr: {:.10})",
-            self.total_energy, self.reference, self.rhf_energy, self.mp2_corr,
+            "RI-MP2 {} Total Energy: {:.10} Ha ({}: {:.10}, corr: {:.10})",
+            if self.local.is_some() {
+                "(local)"
+            } else {
+                "(exact)"
+            },
+            self.total_energy,
+            self.reference,
+            self.rhf_energy,
+            self.mp2_corr,
         )
     }
+}
+
+/// Resolve the `local=` / `eps=` / `compute_reference=` / `integral_direct=`
+/// (+ integral-direct knobs) kwargs of `run_rimp2` / `run_drpa` /
+/// `run_linlccd` with the SAME rules as the CLI's `[local]` section
+/// (`ferric_cli::LocalCfg::model`): `local` is `None`/`"none"` (exact) or
+/// `"amplitude-threshold"`; `eps` is required with the threshold and refused
+/// without it; `compute_reference` and every integral-direct knob are refused
+/// on the exact method. `Ok(None)` is the exact method. Errors are
+/// `ValueError`, raised before any SCF.
+fn local_model_from_kwargs(
+    fname: &str,
+    cfg: ferric_cli::LocalCfg,
+) -> PyResult<Option<ferric_cli::LocalModel>> {
+    cfg.model().map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "{fname}: {} (Python kwargs mirror the CLI [local] keys: local= is scheme, \
+             compute_reference= is reference)",
+            e.trim_start_matches("[local] ")
+        ))
+    })
+}
+
+/// The `local` dict every local result carries: scheme, threshold, kept
+/// fraction, whether the integral-direct path ran.
+fn local_dict<'py>(
+    py: Python<'py>,
+    eps: f64,
+    keep_fraction: f64,
+    integral_direct: bool,
+) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+    let d = pyo3::types::PyDict::new(py);
+    d.set_item(
+        "scheme",
+        ferric_cli::LocalScheme::AmplitudeThreshold.as_str(),
+    )?;
+    d.set_item("eps", eps)?;
+    d.set_item("keep_fraction", keep_fraction)?;
+    d.set_item("integral_direct", integral_direct)?;
+    Ok(d)
 }
 
 /// `run_rimp2`'s compute: `(reference SCF energy, MP2 correlation, total)`.
@@ -4272,6 +4334,21 @@ fn rimp2_energies(
 /// kwarg), then the RI-MP2 correlation energy using `auxbasis` as the
 /// fitting basis.
 ///
+/// EXACT by default. `local="amplitude-threshold"` with `eps=` (required: the
+/// threshold is part of the model and has no default) runs the
+/// amplitude-threshold local MP2 instead (WSHG23 single threshold,
+/// closed-shell, `task` energy only); `eps=0` reproduces the exact RI-MP2.
+/// `compute_reference=True` also computes the exact RI-MP2 and puts it in
+/// `result.local["e_corr_canonical_ri"]`. `integral_direct=True` selects the
+/// integral-direct local MP2, which never forms the global 3-index tensor;
+/// its locality maps are `aux_radius` (Bohr, default 10.0), `virt_radius`
+/// (Bohr, 12.0), `ao_tail` (1e-3), `schwarz_skip` (1e-5; must be 0 for
+/// terfc), `batch_merge` (4), `gate_cal` (pair gate, off) and
+/// `virt_schwarz_kappa` (off), the same names and defaults as the CLI's
+/// `[local]` keys. The rules are the CLI's: every local kwarg is a
+/// `ValueError` on the exact method, and `kappa` is a `ValueError` on the
+/// local one (it reads only `frozen_core` and `auxbasis`).
+///
 /// The reference follows the molecule's multiplicity: RHF + closed-shell
 /// RI-MP2 for a singlet, UHF + unrestricted RI-MP2 (UMP2, as PySCF's
 /// `mp.MP2(uhf)`) for multiplicity > 1. `result.reference` says which.
@@ -4291,10 +4368,12 @@ fn rimp2_energies(
 ///
 /// Returns a [`RiMp2Result`](PyRiMp2Result) with `total_energy` (reference +
 /// MP2 correlation), `rhf_energy` (the reference SCF energy, RHF or UHF),
-/// `mp2_corr` (the correlation energy alone, always negative) and
-/// `reference` ("RHF" or "UHF").
+/// `mp2_corr` (the correlation energy alone, always negative), `reference`
+/// ("RHF" or "UHF") and `local` (`None` for the exact method, else the
+/// local model dict).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, kappa=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, kappa=None, local=None, eps=None, compute_reference=None, integral_direct=None, aux_radius=None, virt_radius=None, ao_tail=None, schwarz_skip=None, batch_merge=None, gate_cal=None, virt_schwarz_kappa=None))]
+#[allow(clippy::too_many_arguments)]
 fn run_rimp2(
     py: Python<'_>,
     mol: &PyMolecule,
@@ -4304,7 +4383,48 @@ fn run_rimp2(
     k_builder: Option<&str>,
     memory_budget_gb: Option<f64>,
     kappa: Option<f64>,
+    local: Option<String>,
+    eps: Option<f64>,
+    compute_reference: Option<bool>,
+    integral_direct: Option<bool>,
+    aux_radius: Option<f64>,
+    virt_radius: Option<f64>,
+    ao_tail: Option<f64>,
+    schwarz_skip: Option<f64>,
+    batch_merge: Option<usize>,
+    gate_cal: Option<f64>,
+    virt_schwarz_kappa: Option<f64>,
 ) -> PyResult<PyRiMp2Result> {
+    let model = local_model_from_kwargs(
+        "run_rimp2",
+        ferric_cli::LocalCfg {
+            scheme: local,
+            eps,
+            eps_sweep: None,
+            reference: compute_reference,
+            integral_direct,
+            aux_radius,
+            virt_radius,
+            ao_tail,
+            schwarz_skip,
+            batch_merge,
+            gate_cal,
+            virt_schwarz_kappa,
+        },
+    )?;
+    if let Some(model) = model {
+        return run_rimp2_local(
+            py,
+            mol,
+            basis_set,
+            auxbasis,
+            frozen_core,
+            k_builder,
+            memory_budget_gb,
+            kappa,
+            &model,
+        );
+    }
     let emol = mol.inner.clone();
     let ebasis = basis_set.inner.clone();
     let eaux = auxbasis.inner.clone();
@@ -4336,43 +4456,25 @@ fn run_rimp2(
         rhf_energy: scf_energy,
         mp2_corr,
         reference: if open_shell { "UHF" } else { "RHF" }.to_string(),
+        local: None,
     })
 }
 
-/// Amplitude-threshold local MP2 (WSHG23 single-threshold; closed-shell).
-/// `eps = 0` reproduces `run_rimp2` exactly (library anchor <= 1e-9); the
-/// default `eps = 1e-4` carries a one-sided ~linear-in-eps truncation error.
-/// Returns a dict with e_corr, e_corr_canonical_ri, total_energy and the
-/// sparsity counters (keep/pair fractions, domain sizes, CG iterations).
-///
-/// `compute_reference` (default False) opts in to the canonical RI-MP2
-/// reference — a full N^5 canonical run over the global 3-index tensor.
-/// Off, `e_corr_canonical_ri` is None (the key is always present).
-#[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, eps=None, frozen_core=None, k_builder=None, memory_budget_gb=None, compute_reference=None))]
-fn run_lmp2(
-    py: Python<'_>,
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    auxbasis: &PyBasisSet,
-    eps: Option<f64>,
-    frozen_core: Option<usize>,
+/// Solve the closed-shell RHF reference the local correlation paths share,
+/// erroring on non-convergence (same rule as every `run_*` driver).
+fn local_rhf_reference(
+    mol: &Molecule,
+    prep: &PreparedBasis,
     k_builder: Option<&str>,
     memory_budget_gb: Option<f64>,
-    compute_reference: Option<bool>,
-) -> PyResult<Py<pyo3::types::PyDict>> {
-    use ferric_mp2::lmp2_amplitude::{amplitude_lmp2, AmplitudeLmp2Config};
-    // Opt-in: `None` (the default) and `False` both skip the N^5 reference.
-    let compute_reference = compute_reference.unwrap_or(false);
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
+) -> PyResult<ferric_scf::result::ScfResult> {
     let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
+    let bounds = SchwarzBounds::compute(op, prep).map_err(make_err)?;
     let ctx = ParallelContext::default();
     let rhf = solve_rhf(
         &ctx,
-        &mol.inner,
-        &prep,
+        mol,
+        prep,
         op,
         &bounds,
         &rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb)),
@@ -4384,150 +4486,114 @@ fn run_lmp2(
             last_energy: rhf.energy,
         }));
     }
-    let r = amplitude_lmp2(
-        &mol.inner,
-        &prep,
-        &basis_set.inner,
-        &dfbs,
-        op,
-        &rhf,
-        &AmplitudeLmp2Config {
-            eps: eps.unwrap_or(1e-4),
-            frozen_core: frozen_core.unwrap_or(0),
-            eri3_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-            compute_reference,
-            ..Default::default()
-        },
-    )
-    .map_err(make_err)?;
-    let d = pyo3::types::PyDict::new(py);
-    d.set_item("e_corr", r.e_corr)?;
-    d.set_item(
-        "e_corr_canonical_ri",
-        compute_reference.then_some(r.e_corr_canonical_ri),
-    )?;
-    d.set_item("total_energy", r.e_total)?;
-    d.set_item("rhf_energy", rhf.energy)?;
-    d.set_item("keep_fraction", r.keep_fraction)?;
-    d.set_item("pair_fraction", r.pair_fraction)?;
-    d.set_item("dom_mean", r.dom_mean)?;
-    d.set_item("dom_max", r.dom_max)?;
-    d.set_item("cg_iterations", r.cg_iterations)?;
-    Ok(d.into())
+    Ok(rhf)
 }
 
-/// INTEGRAL-DIRECT amplitude-threshold local MP2 (closed-shell): never
-/// forms the global 3-index tensor — per-atom-batched integral evaluation
-/// into per-occupied sparse strips + per-pair domain-local fits
-/// (`ferric_mp2::lmp2_direct`; measured record in
-/// wiki/amplitude-threshold-lmp2.md §27-30). Locality kwargs default to
-/// the measured production values; `schwarz_skip` must be 0.0 for terfc.
-/// `pair_gate_cal`: ~0.7 Coulomb / ~0.02 erfc(1); None = gate off.
-/// `virt_schwarz_kappa`: ε-linked Schwarz virtual-candidate screen (None =
-/// off; 1.0 = conservative, measured escape-free — see
-/// WIKI-APPEND-eps-linked-maps.md).
-/// Returns the `run_lmp2` dict plus strip/eri3 counters and stage timings.
-/// `compute_reference` (default False) as in `run_lmp2`; turning it on
-/// forms the global 3-index tensor this path otherwise never builds.
-#[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, eps=None, frozen_core=None, aux_radius_bohr=None, virt_radius_bohr=None, ao_tail=None, schwarz_skip=None, batch_merge=None, pair_gate_cal=None, virt_schwarz_kappa=None, k_builder=None, memory_budget_gb=None, compute_reference=None))]
+/// `run_rimp2(local="amplitude-threshold", ...)`: the amplitude-threshold
+/// local MP2 (`ferric_mp2::lmp2_amplitude`), or the integral-direct one
+/// (`ferric_mp2::lmp2_direct`) with `integral_direct=True`. Closed-shell.
 #[allow(clippy::too_many_arguments)]
-fn run_lmp2_direct(
+fn run_rimp2_local(
     py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     auxbasis: &PyBasisSet,
-    eps: Option<f64>,
     frozen_core: Option<usize>,
-    aux_radius_bohr: Option<f64>,
-    virt_radius_bohr: Option<f64>,
-    ao_tail: Option<f64>,
-    schwarz_skip: Option<f64>,
-    batch_merge: Option<usize>,
-    pair_gate_cal: Option<f64>,
-    virt_schwarz_kappa: Option<f64>,
     k_builder: Option<&str>,
     memory_budget_gb: Option<f64>,
-    compute_reference: Option<bool>,
-) -> PyResult<Py<pyo3::types::PyDict>> {
-    use ferric_mp2::lmp2_amplitude::AmplitudeLmp2Config;
+    kappa: Option<f64>,
+    model: &ferric_cli::LocalModel,
+) -> PyResult<PyRiMp2Result> {
+    use ferric_mp2::lmp2_amplitude::{amplitude_lmp2, AmplitudeLmp2Config};
     use ferric_mp2::lmp2_direct::{amplitude_lmp2_direct, DirectConfig};
-    // Opt-in: `None` (the default) and `False` both skip the N^5 reference.
-    let compute_reference = compute_reference.unwrap_or(false);
+    if mol.inner.multiplicity > 1 {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "run_rimp2: local=\"amplitude-threshold\" is closed-shell only (it localizes a \
+             single restricted occupied space), but the molecule has multiplicity {}. Omit \
+             local= for the exact unrestricted RI-MP2.",
+            mol.inner.multiplicity
+        )));
+    }
+    if let Some(k) = kappa {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "run_rimp2: kappa = {k} is not read by the local (amplitude-threshold) MP2; \
+             kappa-regularized MP2 exists for the exact rimp2 only. Omit kappa or local=."
+        )));
+    }
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
+    let rhf = local_rhf_reference(&mol.inner, &prep, k_builder, memory_budget_gb)?;
     let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
-    let rhf = solve_rhf(
-        &ctx,
-        &mol.inner,
-        &prep,
-        op,
-        &bounds,
-        &rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb)),
-    )
-    .map_err(make_err)?;
-    if !rhf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: rhf.iterations,
-            last_energy: rhf.energy,
-        }));
-    }
-    let dcfg = DirectConfig {
-        aux_radius_bohr: aux_radius_bohr.unwrap_or(10.0),
-        virt_radius_bohr: Some(virt_radius_bohr.unwrap_or(12.0)),
-        ao_tail: ao_tail.unwrap_or(1e-3),
-        schwarz_skip: schwarz_skip.unwrap_or(1e-5),
-        batch_merge: batch_merge.unwrap_or(4),
-        virt_schwarz_kappa,
+    let eps = model.eps[0];
+    let lcfg = AmplitudeLmp2Config {
+        eps,
+        frozen_core: frozen_core.unwrap_or(0),
+        eri3_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
+        pair_gate_cal: model.direct.as_ref().and_then(|d| d.gate_cal),
+        compute_reference: model.reference,
         ..Default::default()
     };
-    let (r, st) = amplitude_lmp2_direct(
-        &mol.inner,
-        &prep,
-        &basis_set.inner,
-        &dfbs,
-        op,
-        &rhf,
-        &AmplitudeLmp2Config {
-            eps: eps.unwrap_or(1e-4),
-            frozen_core: frozen_core.unwrap_or(0),
-            eri3_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-            pair_gate_cal,
-            compute_reference,
-            ..Default::default()
-        },
-        &dcfg,
-    )
-    .map_err(make_err)?;
-    let d = pyo3::types::PyDict::new(py);
-    d.set_item("e_corr", r.e_corr)?;
+    let (r, st) = match &model.direct {
+        None => (
+            amplitude_lmp2(&mol.inner, &prep, &basis_set.inner, &dfbs, op, &rhf, &lcfg)
+                .map_err(make_err)?,
+            None,
+        ),
+        Some(d) => {
+            let dcfg = DirectConfig {
+                aux_radius_bohr: d.aux_radius,
+                virt_radius_bohr: Some(d.virt_radius),
+                ao_tail: d.ao_tail,
+                schwarz_skip: d.schwarz_skip,
+                batch_merge: d.batch_merge,
+                virt_schwarz_kappa: d.virt_schwarz_kappa,
+                ..Default::default()
+            };
+            let (r, st) = amplitude_lmp2_direct(
+                &mol.inner,
+                &prep,
+                &basis_set.inner,
+                &dfbs,
+                op,
+                &rhf,
+                &lcfg,
+                &dcfg,
+            )
+            .map_err(make_err)?;
+            (r, Some(st))
+        }
+    };
+    let d = local_dict(py, eps, r.keep_fraction, model.direct.is_some())?;
+    d.set_item("pair_fraction", r.pair_fraction)?;
     d.set_item(
         "e_corr_canonical_ri",
-        compute_reference.then_some(r.e_corr_canonical_ri),
+        model.reference.then_some(r.e_corr_canonical_ri),
     )?;
-    d.set_item("total_energy", r.e_total)?;
-    d.set_item("rhf_energy", rhf.energy)?;
-    d.set_item("keep_fraction", r.keep_fraction)?;
-    d.set_item("pair_fraction", r.pair_fraction)?;
-    d.set_item("n_pairs_gated", r.n_pairs_gated)?;
     d.set_item("dom_mean", r.dom_mean)?;
     d.set_item("dom_max", r.dom_max)?;
     d.set_item("cg_iterations", r.cg_iterations)?;
-    d.set_item("strip_rows_mean", st.strip_rows_mean)?;
-    d.set_item("strip_rows_max", st.strip_rows_max)?;
-    d.set_item("strip_cols_mean", st.strip_cols_mean)?;
-    d.set_item("strip_cols_max", st.strip_cols_max)?;
-    d.set_item("n_eri3_shell_triples", st.n_eri3_shell_triples)?;
-    d.set_item("n_eri3_skipped", st.n_eri3_skipped)?;
-    d.set_item("virt_cand_mean", st.virt_cand_mean)?;
-    d.set_item("virt_cand_max", st.virt_cand_max)?;
-    d.set_item("t_maps_s", st.t_maps_s)?;
-    d.set_item("t_eri3_s", st.t_eri3_s)?;
-    d.set_item("t_metric_s", st.t_metric_s)?;
-    d.set_item("t_pairs_s", st.t_pairs_s)?;
-    Ok(d.into())
+    if let Some(st) = st {
+        d.set_item("n_pairs_gated", r.n_pairs_gated)?;
+        d.set_item("strip_rows_mean", st.strip_rows_mean)?;
+        d.set_item("strip_rows_max", st.strip_rows_max)?;
+        d.set_item("strip_cols_mean", st.strip_cols_mean)?;
+        d.set_item("strip_cols_max", st.strip_cols_max)?;
+        d.set_item("n_eri3_shell_triples", st.n_eri3_shell_triples)?;
+        d.set_item("n_eri3_skipped", st.n_eri3_skipped)?;
+        d.set_item("virt_cand_mean", st.virt_cand_mean)?;
+        d.set_item("virt_cand_max", st.virt_cand_max)?;
+        d.set_item("t_maps_s", st.t_maps_s)?;
+        d.set_item("t_eri3_s", st.t_eri3_s)?;
+        d.set_item("t_metric_s", st.t_metric_s)?;
+        d.set_item("t_pairs_s", st.t_pairs_s)?;
+    }
+    Ok(PyRiMp2Result {
+        total_energy: r.e_total,
+        rhf_energy: rhf.energy,
+        mp2_corr: r.e_corr,
+        reference: "RHF".to_string(),
+        local: Some(d.unbind()),
+    })
 }
 
 /// Build an `AmplitudeDrpaConfig` from the shared `run_drpa`/`run_drpa_scan`
@@ -4552,7 +4618,9 @@ fn drpa_config(
     let diis_subspace = diis.unwrap_or(8);
     let eps_rtol = eps_rtol_factor.unwrap_or(0.1);
     AmplitudeDrpaConfig {
-        eps: eps.unwrap_or(1e-4),
+        // The caller always resolves eps (0.0 for the exact method): there is
+        // no default threshold.
+        eps: eps.unwrap_or(0.0),
         frozen_core: frozen_core.unwrap_or(0),
         eri3_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
         compute_reference,
@@ -4595,83 +4663,132 @@ fn drpa_result_to_dict(
     Ok(d.into())
 }
 
-/// Amplitude-threshold direct RPA (drCCD Riccati, ragged direct-assembly
-/// path; proof notebook 12). eps = 0 anchors on the canonical
-/// semicanonicalized plasmon formula; finite eps carries a ~linear
-/// one-sided threshold error (dRPA is non-variational). Closed-shell.
+/// Direct RPA correlation (dRPA@HF) by the drCCD Riccati solve on localized
+/// orbitals (proof notebook 12). Closed-shell.
+///
+/// EXACT by default: the Riccati solve with nothing truncated (eps = 0),
+/// anchored to the canonical semicanonicalized plasmon formula. Riccati,
+/// plasmon and full-rank PDEP (`run_pdep_rpa(..., trunc_thresh=0)`) are
+/// algorithms for the same exact dRPA. The exact path holds an `no^3 nv^2`
+/// ring-product plan, so a run that cannot fit the memory budget raises
+/// `MemoryError` BEFORE the SCF and points at `run_pdep_rpa`.
+///
+/// `local="amplitude-threshold"` with `eps=` (required; no default) runs the
+/// amplitude-threshold dRPA: a ~linear, one-sided threshold error (dRPA is
+/// non-variational). `compute_reference=True` (local only) adds the canonical
+/// plasmon reference (a dense eigensolve over a global B) as
+/// `e_corr_plasmon_canonical`; otherwise that key is None.
 ///
 /// `diis` (default 8): Pulay/DIIS subspace size accelerating the Riccati
-/// fixed point (measured 70-79 -> 25-28 iterations); pass `diis=0` to
-/// disable and recover the legacy unaccelerated solve.
-/// `eps_rtol_factor` (default 0.1): links the fixed-point stopping
-/// tolerance to eps (effective rtol = max(fp_rtol, eps_rtol_factor*eps));
-/// combined with DIIS this reaches 8-11 iterations. Pass
-/// `eps_rtol_factor=0.0` to disable and use the tight fp_rtol=1e-12
-/// always. At `eps=0` this is a no-op regardless of the factor, so the
-/// eps=0 exactness anchor is unaffected either way.
+/// fixed point; `diis=0` disables it. `eps_rtol_factor` (local only, default
+/// 0.1) links the stopping tolerance to eps (effective rtol =
+/// max(1e-12, eps_rtol_factor*eps)); `0.0` disables it. It is a no-op at
+/// eps = 0, so it is a ValueError on the exact method. Both knobs change
+/// which point on the same truncated-equation solution manifold is returned,
+/// calibrated to stay within ~10% of eps's own truncation error
+/// (wiki/amplitude-threshold-drpa.md, "Subdominance calibration").
 ///
-/// Both knobs change WHICH POINT on the same truncated-equation solution
-/// manifold is returned, not which equation is solved: energies at finite
-/// eps can shift versus the legacy tight-rtol/no-DIIS solve, but the shift
-/// is calibrated to stay within ~10% of eps's own truncation error (see
-/// wiki/amplitude-threshold-drpa.md, "Subdominance calibration").
-///
-/// `compute_reference` (default False) opts in to the canonical plasmon
-/// reference (a dense eigensolve over a global B); off,
-/// `e_corr_plasmon_canonical` is None (the key is always present).
+/// Returns a dict: e_corr, e_corr_plasmon_canonical, total_energy,
+/// rhf_energy, keep_fraction, pair_fraction, iterations, relres, converged,
+/// and `local` (None for the exact method, else scheme/eps/keep_fraction/
+/// integral_direct).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, eps=None, frozen_core=None, k_builder=None, memory_budget_gb=None, compute_reference=None, diis=None, eps_rtol_factor=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, local=None, eps=None, compute_reference=None, diis=None, eps_rtol_factor=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_drpa(
     py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     auxbasis: &PyBasisSet,
-    eps: Option<f64>,
     frozen_core: Option<usize>,
     k_builder: Option<&str>,
     memory_budget_gb: Option<f64>,
+    local: Option<String>,
+    eps: Option<f64>,
     compute_reference: Option<bool>,
     diis: Option<usize>,
     eps_rtol_factor: Option<f64>,
 ) -> PyResult<Py<pyo3::types::PyDict>> {
-    use ferric_mp2::drpa_amplitude::amplitude_drpa;
-    // Opt-in: `None` (the default) and `False` both skip the N^5 reference.
-    let compute_reference = compute_reference.unwrap_or(false);
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
-    let rhf = solve_rhf(
-        &ctx,
-        &mol.inner,
-        &prep,
-        op,
-        &bounds,
-        &rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb)),
-    )
-    .map_err(make_err)?;
-    if !rhf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: rhf.iterations,
-            last_energy: rhf.energy,
-        }));
+    use ferric_mp2::drpa_amplitude::{amplitude_drpa, exact_drpa_peak_bytes};
+    let model = local_model_from_kwargs(
+        "run_drpa",
+        ferric_cli::LocalCfg {
+            scheme: local,
+            eps,
+            reference: compute_reference,
+            ..Default::default()
+        },
+    )?;
+    if model.is_none() && eps_rtol_factor.is_some() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "run_drpa: eps_rtol_factor links the stopping tolerance to eps and is a no-op at \
+             eps = 0, i.e. on the exact method; pass it only with local=\"amplitude-threshold\"",
+        ));
     }
+    let (eps, compute_reference) = match &model {
+        None => (0.0, false),
+        Some(m) => (m.eps[0], m.reference),
+    };
+    let fc = frozen_core.unwrap_or(0);
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    if model.is_none() {
+        // Refuse an exact run that cannot fit, BEFORE the SCF.
+        let nocc = (mol.inner.nelec() as usize) / 2;
+        let no = nocc.saturating_sub(fc);
+        let nv = prep.nbasis().saturating_sub(nocc);
+        let diis_sub = match diis.unwrap_or(8) {
+            0 => None,
+            n => Some(n),
+        };
+        let need = exact_drpa_peak_bytes(no, nv, diis_sub);
+        let have = ferric_core::memory::resolve_budget(budget_bytes_from_gb(memory_budget_gb));
+        if need > have.bytes {
+            let gib = |b: usize| b as f64 / (1024.0 * 1024.0 * 1024.0);
+            return Err(pyo3::exceptions::PyMemoryError::new_err(format!(
+                "run_drpa: exact dRPA needs ~{:.2} GiB for the Riccati solve (no = {no}, \
+                 nv = {nv}; the no^3*nv^2 ring-product plan dominates), over the {:.2} GiB \
+                 memory budget [source: {}]. run_pdep_rpa(..., trunc_thresh=0) computes the \
+                 same exact dRPA energy (to its frequency-quadrature error) at far lower \
+                 memory; local=\"amplitude-threshold\" with eps= is the local approximation.",
+                gib(need),
+                gib(have.bytes),
+                have.source.label()
+            )));
+        }
+    }
+    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
+    let rhf = local_rhf_reference(&mol.inner, &prep, k_builder, memory_budget_gb)?;
     let cfg = drpa_config(
-        eps,
+        Some(eps),
         frozen_core,
         memory_budget_gb,
         compute_reference,
         diis,
         eps_rtol_factor,
     );
-    let r = amplitude_drpa(&mol.inner, &prep, &basis_set.inner, &dfbs, op, &rhf, &cfg)
-        .map_err(make_err)?;
-    drpa_result_to_dict(py, &r, rhf.energy, compute_reference)
+    let r = amplitude_drpa(
+        &mol.inner,
+        &prep,
+        &basis_set.inner,
+        &dfbs,
+        Operator::coulomb(),
+        &rhf,
+        &cfg,
+    )
+    .map_err(make_err)?;
+    let d = drpa_result_to_dict(py, &r, rhf.energy, compute_reference)?;
+    let local_v = match &model {
+        None => None,
+        Some(_) => Some(local_dict(py, eps, r.keep_fraction, false)?),
+    };
+    d.bind(py).set_item("local", local_v)?;
+    Ok(d)
 }
 
-/// Amplitude-threshold direct RPA over a LIST of eps values, reusing ONE
+/// The amplitude-threshold (LOCAL) dRPA over a LIST of eps values — an
+/// eps scan of the local scheme by definition, so it takes no `local=`
+/// kwarg; each point is `run_drpa(..., local="amplitude-threshold", eps=e)`.
+/// Reuses ONE
 /// RHF solve + ONE localized-basis assembly (RHF, Boys localization,
 /// VV-HV, Fock blocks, unwhitened RI B — everything eps-INDEPENDENT)
 /// across every point; only the eps-dependent ragged assembly + Riccati
@@ -4698,6 +4815,16 @@ fn run_drpa_scan(
     eps_rtol_factor: Option<f64>,
 ) -> PyResult<Py<pyo3::types::PyList>> {
     use ferric_mp2::drpa_amplitude::amplitude_drpa_scan_timed;
+    // The same eps_sweep rules as the CLI's [local] eps_sweep (non-empty,
+    // finite, >= 0); the points are evaluated in the order given.
+    local_model_from_kwargs(
+        "run_drpa_scan",
+        ferric_cli::LocalCfg {
+            scheme: Some("amplitude-threshold".to_string()),
+            eps_sweep: Some(eps_list.clone()),
+            ..Default::default()
+        },
+    )?;
     // Opt-in: `None` (the default) and `False` both skip the N^5 reference.
     let compute_reference = compute_reference.unwrap_or(false);
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
@@ -4744,6 +4871,7 @@ fn run_drpa_scan(
         let d = drpa_result_to_dict(py, r, rhf.energy, compute_reference)?;
         let d_ref = d.bind(py);
         d_ref.set_item("eps", *eps)?;
+        d_ref.set_item("local", local_dict(py, *eps, r.keep_fraction, false)?)?;
         d_ref.set_item("wall_s", *wall_s)?;
         d_ref.set_item("prefix_wall_s", prefix_wall_s)?;
         out.append(d_ref)?;
@@ -4751,76 +4879,121 @@ fn run_drpa_scan(
     Ok(out.into())
 }
 
-/// Amplitude-threshold LinLCCD (ragged path, proof notebook 13).
-/// `variant`: "drivers" (== RI-MP2), "hh" (LinLCCD(hh)), "full".
-/// eps = 0 anchors on the canonical spin-orbital linlccd. Closed-shell.
+/// Linearized ladder CCD on an RHF reference (closed-shell). `variant`:
+/// `"hh"` (default, LinLCCD(hh)), `"drivers-only"` (no ladder; reproduces
+/// RI-MP2) or `"full"` (hh + pp ladders, CCD-like VVVV memory) — the CLI's
+/// `[mp2] linlccd_variant` spellings, parsed by the same strict parser.
+///
+/// EXACT by default (`ferric_cc::linlccd::linlccd`, the CLI `linlccd`).
+/// `local="amplitude-threshold"` with `eps=` (required; no default) runs the
+/// amplitude-threshold LinLCCD in the localized basis; `eps=0` reproduces the
+/// exact method of the same variant. `compute_reference=True` (local only)
+/// also runs the exact LinLCCD and reports it as `local["e_corr_exact"]`.
+///
+/// Returns a dict: e_corr, total_energy, rhf_energy, variant, and `local`
+/// (None for the exact method, else scheme/eps/keep_fraction/integral_direct
+/// plus cg_iterations, converged and e_corr_exact).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, variant=None, eps=None, frozen_core=None, k_builder=None, memory_budget_gb=None))]
-fn run_linlccd_amplitude(
+#[pyo3(signature = (mol, basis_set, auxbasis, variant=None, local=None, eps=None, compute_reference=None, frozen_core=None, k_builder=None, memory_budget_gb=None))]
+#[allow(clippy::too_many_arguments)]
+fn run_linlccd(
     py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     auxbasis: &PyBasisSet,
     variant: Option<&str>,
+    local: Option<String>,
     eps: Option<f64>,
+    compute_reference: Option<bool>,
     frozen_core: Option<usize>,
     k_builder: Option<&str>,
     memory_budget_gb: Option<f64>,
 ) -> PyResult<Py<pyo3::types::PyDict>> {
-    use ferric_cc::linlccd::LadderVariant;
+    use ferric_cc::linlccd::{linlccd, LadderVariant};
     use ferric_cc::linlccd_amplitude::{amplitude_linlccd, AmplitudeLinLccdConfig};
-    let var = match variant.unwrap_or("hh") {
-        "drivers" => LadderVariant::DriversOnly,
-        "hh" => LadderVariant::Hh,
-        "full" => LadderVariant::Full,
-        other => {
-            return Err(make_err(ferric_core::FerricError::General(format!(
-                "unknown LinLCCD variant {other:?}; expected \"drivers\", \"hh\", or \"full\""
-            ))))
-        }
+    let var = match variant {
+        None => LadderVariant::Hh,
+        Some(v) => LadderVariant::parse_config_str(v).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("run_linlccd: variant: {e}"))
+        })?,
     };
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
-    let rhf = solve_rhf(
-        &ctx,
-        &mol.inner,
-        &prep,
-        op,
-        &bounds,
-        &rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb)),
-    )
-    .map_err(make_err)?;
-    if !rhf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: rhf.iterations,
-            last_energy: rhf.energy,
-        }));
-    }
-    let r = amplitude_linlccd(
-        &mol.inner,
-        &prep,
-        &basis_set.inner,
-        &dfbs,
-        op,
-        &rhf,
-        &AmplitudeLinLccdConfig {
-            eps: eps.unwrap_or(1e-4),
-            frozen_core: frozen_core.unwrap_or(0),
-            eri3_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
+    let model = local_model_from_kwargs(
+        "run_linlccd",
+        ferric_cli::LocalCfg {
+            scheme: local,
+            eps,
+            reference: compute_reference,
             ..Default::default()
         },
-        var,
-    )
-    .map_err(make_err)?;
+    )?;
+    if mol.inner.multiplicity > 1 {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "run_linlccd: closed-shell (RHF) only, but the molecule has multiplicity {}; \
+             open-shell LinLCCD(hh) is library-only (ferric_cc::linlccd_u)",
+            mol.inner.multiplicity
+        )));
+    }
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
+    let rhf = local_rhf_reference(&mol.inner, &prep, k_builder, memory_budget_gb)?;
+    let op = Operator::coulomb();
+    let fc = frozen_core.unwrap_or(0);
+    let budget = budget_bytes_from_gb(memory_budget_gb);
+    let exact = |var: LadderVariant| -> PyResult<f64> {
+        let cc = linlccd(
+            &mol.inner,
+            &prep,
+            &dfbs,
+            op,
+            &rhf,
+            &ferric_cc::CcConfig {
+                frozen_core: fc,
+                memory_budget_bytes: budget,
+                ..Default::default()
+            },
+            var,
+        )
+        .map_err(make_err)?;
+        Ok(cc.correlation_energy)
+    };
     let d = pyo3::types::PyDict::new(py);
-    d.set_item("e_corr", r.e_corr)?;
-    d.set_item("total_energy", r.e_total)?;
+    let e_corr = match &model {
+        None => {
+            let e = exact(var)?;
+            d.set_item("local", py.None())?;
+            e
+        }
+        Some(m) => {
+            let eps = m.eps[0];
+            let r = amplitude_linlccd(
+                &mol.inner,
+                &prep,
+                &basis_set.inner,
+                &dfbs,
+                op,
+                &rhf,
+                &AmplitudeLinLccdConfig {
+                    eps,
+                    frozen_core: fc,
+                    eri3_budget_bytes: budget,
+                    ..Default::default()
+                },
+                var,
+            )
+            .map_err(make_err)?;
+            let l = local_dict(py, eps, r.keep_fraction, false)?;
+            l.set_item("cg_iterations", r.cg_iterations)?;
+            l.set_item("converged", r.cg_converged)?;
+            let e_ref = if m.reference { Some(exact(var)?) } else { None };
+            l.set_item("e_corr_exact", e_ref)?;
+            d.set_item("local", l)?;
+            r.e_corr
+        }
+    };
+    d.set_item("e_corr", e_corr)?;
+    d.set_item("total_energy", rhf.energy + e_corr)?;
     d.set_item("rhf_energy", rhf.energy)?;
-    d.set_item("keep_fraction", r.keep_fraction)?;
-    d.set_item("cg_iterations", r.cg_iterations)?;
+    d.set_item("variant", var.as_str())?;
     Ok(d.into())
 }
 
@@ -5408,6 +5581,7 @@ fn run_terfc_rimp2(
         rhf_energy: rhf.energy,
         mp2_corr: mp2.mp2_corr,
         reference: "RHF".to_string(),
+        local: None,
     })
 }
 
@@ -9010,11 +9184,9 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(esp_at_points, m)?)?;
     m.add_function(wrap_pyfunction!(hirshfeld_charges, m)?)?;
     m.add_function(wrap_pyfunction!(lowdin_charges, m)?)?;
-    m.add_function(wrap_pyfunction!(run_lmp2, m)?)?;
-    m.add_function(wrap_pyfunction!(run_lmp2_direct, m)?)?;
     m.add_function(wrap_pyfunction!(run_drpa, m)?)?;
     m.add_function(wrap_pyfunction!(run_drpa_scan, m)?)?;
-    m.add_function(wrap_pyfunction!(run_linlccd_amplitude, m)?)?;
+    m.add_function(wrap_pyfunction!(run_linlccd, m)?)?;
     m.add_function(wrap_pyfunction!(tune_omega, m)?)?;
     m.add_function(wrap_pyfunction!(orbital_moments, m)?)?;
     m.add_function(wrap_pyfunction!(density_second_moment, m)?)?;

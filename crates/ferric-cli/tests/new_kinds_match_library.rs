@@ -1,11 +1,12 @@
-//! The CLI kinds `ccd`, `ccsd(t)`, `drpa` and `linlccd-amplitude` must report
-//! the SAME energy as a direct call of the library function they wrap.
+//! The CLI kinds `ccd`, `ccsd(t)`, `drpa` (exact and `[local]`) and `linlccd`
+//! with `[local]` must report the SAME energy as a direct call of the library
+//! function they wrap.
 //!
 //! These kinds are wiring only -- the library functions (and their Python
 //! bindings) already exist and are validated on their own. What wiring can get
 //! wrong is the part these tests pin: which function is called, which `[mp2]`
-//! knob reaches which config field (aux, frozen core, eps, variant, the sweep
-//! points), and which number is printed/logged as the total. Each test runs
+//! knob reaches which config field (aux, frozen core, `[local]` eps, variant,
+//! the sweep points), and which number is printed/logged as the total. Each test runs
 //! the real `ferric-cli` binary, reads the `result` record from its JSON run
 //! log (full f64 precision, unlike the 10-decimal printout), and compares it
 //! with the library called in-process on an RHF solved with the same SCF
@@ -71,8 +72,9 @@ fn workspace_root() -> PathBuf {
 
 const SCF: &str = "[scf]\nmax_iter = 200\ndensity_conv = 1e-10\ndf_guess = false\n";
 
-/// Run water/`basis` under `kind` with `[mp2]` = `mp2`, and return the stdout
-/// and every `result` record of the JSON run log, in order.
+/// Run water/`basis` under `kind` with `[mp2]` = `mp2` (and any further
+/// sections after it, e.g. `[local]`), and return the stdout and every
+/// `result` record of the JSON run log, in order.
 fn run_cli(tag: &str, basis: &str, kind: &str, mp2: &str) -> (String, Vec<serde_json::Value>) {
     let root = workspace_root();
     let toml_path = root.join("target").join(format!("new_kinds_{tag}.toml"));
@@ -258,14 +260,15 @@ fn drpa_lib_cfg(
     }
 }
 
-/// `kind = "drpa"`, single eps with the opt-in reference == `amplitude_drpa`.
+/// `kind = "drpa"` with `[local]`, single eps with the opt-in reference ==
+/// `amplitude_drpa`.
 #[test]
 fn drpa_matches_the_library() {
     let (stdout, res) = run_cli(
         "drpa",
         "6-31g",
         "drpa",
-        "frozen_core = 1\ndrpa_eps = 1e-3\ndrpa_reference = true",
+        "frozen_core = 1\n\n[local]\nscheme = \"amplitude-threshold\"\neps = 1e-3\nreference = true",
     );
     assert_eq!(res.len(), 1, "one eps => one result record");
     assert!(stdout.contains("threshold error"), "{stdout}");
@@ -291,7 +294,35 @@ fn drpa_matches_the_library() {
     assert_close(num(&res[0]["total"], "total"), r.e_total, "dRPA total");
 }
 
-/// `[mp2] drpa_eps_sweep` gives one result per (sorted, de-duplicated) eps,
+/// `kind = "drpa"` with NO `[local]` is the exact method == `amplitude_drpa`
+/// at eps = 0 == the canonical plasmon formula.
+#[test]
+fn exact_drpa_matches_the_library_at_eps_zero() {
+    let (stdout, res) = run_cli("drpa_exact", "6-31g", "drpa", "frozen_core = 1");
+    assert!(stdout.contains("dRPA (exact)"), "{stdout}");
+    let lib = library_setup("6-31g");
+    let r = ferric_mp2::drpa_amplitude::amplitude_drpa(
+        &lib.mol,
+        &lib.obs,
+        &lib.obs_bs,
+        &lib.dfbs,
+        Operator::coulomb(),
+        &lib.rhf,
+        &drpa_lib_cfg(0.0, true),
+    )
+    .expect("library amplitude_drpa");
+    let c = &res[0]["components"];
+    assert!(c["local"].is_null(), "{c}");
+    assert!(c["e_corr_plasmon_canonical"].is_null(), "{c}");
+    assert_close(num(&c["e_corr"], "e_corr"), r.e_corr, "exact dRPA corr");
+    assert_close(
+        num(&c["e_corr"], "e_corr"),
+        r.e_corr_plasmon_canonical,
+        "exact dRPA vs canonical plasmon",
+    );
+}
+
+/// `[local] eps_sweep` gives one result per (sorted, de-duplicated) eps,
 /// each equal to a SEPARATE library `amplitude_drpa` call at that eps. The
 /// sweep is written unsorted with a duplicate on purpose. Without a
 /// reference the log field is null, not the library's NaN sentinel.
@@ -301,7 +332,7 @@ fn drpa_eps_sweep_matches_separate_library_calls() {
         "drpa_sweep",
         "6-31g",
         "drpa",
-        "frozen_core = 1\ndrpa_eps_sweep = [1e-3, 0.0, 1e-3]",
+        "frozen_core = 1\n\n[local]\nscheme = \"amplitude-threshold\"\neps_sweep = [1e-3, 0.0, 1e-3]",
     );
     assert_eq!(res.len(), 2, "sweep must yield one record per distinct eps");
     assert!(stdout.contains("not computed"), "{stdout}");
@@ -320,6 +351,7 @@ fn drpa_eps_sweep_matches_separate_library_calls() {
         .expect("library amplitude_drpa");
         let c = &rec["components"];
         assert_close(num(&c["eps"], "eps"), eps, "sweep order");
+        assert_close(num(&c["local"]["eps"], "local.eps"), eps, "local.eps");
         assert!(c["e_corr_plasmon_canonical"].is_null(), "{c}");
         let e = num(&c["e_corr"], "e_corr");
         assert_close(e, r.e_corr, &format!("sweep dRPA corr at eps={eps:e}"));
@@ -356,11 +388,11 @@ fn linlccd_lib(
     .expect("library amplitude_linlccd")
 }
 
-/// `kind = "linlccd-amplitude"` == `amplitude_linlccd`, for the default
+/// `kind = "linlccd"` with `[local]` == `amplitude_linlccd`, for the default
 /// variant (hh) and for `drivers-only`. Two variants so a CLI that ignored
 /// `linlccd_variant` (always hh) fails the second comparison.
 #[test]
-fn linlccd_amplitude_matches_the_library() {
+fn local_linlccd_matches_the_library() {
     let lib = library_setup("6-31g");
     for (tag, knob, variant, name) in [
         ("linlccd_amp_hh", "", LadderVariant::Hh, "hh"),
@@ -374,12 +406,15 @@ fn linlccd_amplitude_matches_the_library() {
         let (_, res) = run_cli(
             tag,
             "6-31g",
-            "linlccd-amplitude",
-            &format!("frozen_core = 1\nlinlccd_eps = 1e-3\n{knob}"),
+            "linlccd",
+            &format!(
+                "frozen_core = 1\n{knob}\n[local]\nscheme = \"amplitude-threshold\"\neps = 1e-3\n"
+            ),
         );
         let r = linlccd_lib(&lib, variant, 1e-3);
         let c = &res[0]["components"];
         assert_eq!(c["variant"], name, "{c}");
+        assert_eq!(c["local"]["eps"], 1e-3, "{c}");
         assert_close(
             num(&c["e_corr"], "e_corr"),
             r.e_corr,
@@ -396,4 +431,44 @@ fn linlccd_amplitude_matches_the_library() {
     let hh = linlccd_lib(&lib, LadderVariant::Hh, 1e-3).e_corr;
     let dr = linlccd_lib(&lib, LadderVariant::DriversOnly, 1e-3).e_corr;
     assert!((hh - dr).abs() > 1e-6, "hh {hh} vs drivers-only {dr}");
+}
+
+/// Exact `kind = "linlccd"` honours `[mp2] linlccd_variant` too (the
+/// canonical solver supports every variant): `drivers-only` == the library
+/// canonical `linlccd` of that variant, and differs from hh.
+#[test]
+fn exact_linlccd_honours_the_variant() {
+    let lib = library_setup("6-31g");
+    let cfg = CcConfig {
+        frozen_core: 1,
+        ..Default::default()
+    };
+    for (tag, knob, variant) in [
+        ("linlccd_exact_hh", "", LadderVariant::Hh),
+        (
+            "linlccd_exact_drivers",
+            "linlccd_variant = \"drivers-only\"",
+            LadderVariant::DriversOnly,
+        ),
+    ] {
+        let (_, res) = run_cli(tag, "6-31g", "linlccd", &format!("frozen_core = 1\n{knob}"));
+        let r = ferric_cc::linlccd::linlccd(
+            &lib.mol,
+            &lib.obs,
+            &lib.dfbs,
+            Operator::coulomb(),
+            &lib.rhf,
+            &cfg,
+            variant,
+        )
+        .expect("library linlccd");
+        let c = &res[0]["components"];
+        assert!(c["local"].is_null(), "{c}");
+        assert_eq!(c["variant"], variant.as_str(), "{c}");
+        assert_close(
+            num(&c["e_corr"], "e_corr"),
+            r.correlation_energy,
+            &format!("exact LinLCCD({}) corr", variant.as_str()),
+        );
+    }
 }

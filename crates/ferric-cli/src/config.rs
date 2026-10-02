@@ -1,5 +1,5 @@
 use ferric_core::mol::Molecule;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Correlation (RI) auxiliary basis used when `[mp2] auxbasis` / `[rpa]
 /// auxbasis` is omitted. Named here, not as a literal at each use site, so
@@ -61,6 +61,11 @@ pub struct Config {
     /// file) -- logging is ON BY DEFAULT, see [`OutputCfg`].
     #[serde(default)]
     pub output: OutputCfg,
+    /// Optional `[local]` section: the local approximation of a correlated
+    /// method (see [`LocalCfg`]). Absent means the method named by
+    /// `method.kind` is computed exactly.
+    #[serde(default)]
+    pub local: Option<LocalCfg>,
     /// Optional `[qmmm]` section: QM/MM embedding. Absent means no QM/MM --
     /// byte-identical to the plain single-region run, the same convention
     /// `[cosmo]` and `[external_potential]` follow.
@@ -807,7 +812,286 @@ impl<'de> Deserialize<'de> for FrozenCore {
     }
 }
 
-#[derive(Deserialize, Default)]
+/// The `method.kind`s whose correlation can be run under a local
+/// approximation (`[local]`). The kind names the METHOD; `[local]` says
+/// whether and how its amplitudes are truncated.
+pub const LOCAL_KINDS: &[&str] = &["rimp2", "drpa", "linlccd"];
+
+/// `[local] scheme`: the local approximation applied to the method's
+/// amplitudes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalScheme {
+    /// No local approximation: the method is computed exactly (the default).
+    None,
+    /// Single-threshold amplitude truncation in the localized basis (WSHG23
+    /// Eq. 8): pair amplitudes whose localized integral is at or below `eps`
+    /// are dropped. `eps = 0` keeps every amplitude and reproduces the exact
+    /// method.
+    AmplitudeThreshold,
+}
+
+impl LocalScheme {
+    /// The accepted spellings, in the order error messages list them.
+    pub const SPELLINGS: &'static [&'static str] = &["none", "amplitude-threshold"];
+
+    /// Strict parse; an unknown value is an error listing the accepted ones.
+    pub fn parse_config_str(s: &str) -> Result<Self, String> {
+        match s {
+            "none" => Ok(LocalScheme::None),
+            "amplitude-threshold" => Ok(LocalScheme::AmplitudeThreshold),
+            other => Err(format!(
+                "[local] scheme = {other:?} is not recognised; expected one of {}",
+                Self::SPELLINGS
+                    .iter()
+                    .map(|v| format!("\"{v}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LocalScheme::None => "none",
+            LocalScheme::AmplitudeThreshold => "amplitude-threshold",
+        }
+    }
+}
+
+/// Optional `[local]` section: the local approximation of a correlated
+/// method (`method.kind` = `rimp2`, `drpa` or `linlccd`).
+///
+/// Absent (or `scheme = "none"`) means the method is computed EXACTLY. With
+/// `scheme = "amplitude-threshold"` the threshold `eps` is part of the model
+/// and has no default: it must be written, and every printout and run-log
+/// record of the run carries it. See `Config::local_model` for the rules.
+#[derive(Deserialize, Default, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct LocalCfg {
+    /// `"none"` (default) or `"amplitude-threshold"`.
+    pub scheme: Option<String>,
+    /// The amplitude threshold ε (finite, >= 0). REQUIRED with
+    /// `scheme = "amplitude-threshold"` (unless `eps_sweep` is given); an
+    /// error with `scheme = "none"`. `0` keeps every amplitude.
+    pub eps: Option<f64>,
+    /// `kind = "drpa"` only: evaluate several ε in ONE job on one SCF and one
+    /// ε-independent localized assembly. Sorted and de-duplicated; each value
+    /// finite and >= 0. Mutually exclusive with `eps`.
+    pub eps_sweep: Option<Vec<f64>>,
+    /// Also compute the exact (canonical) reference and print the local
+    /// error against it. Default false; an error with `scheme = "none"`.
+    pub reference: Option<bool>,
+    /// `kind = "rimp2"` only: the integral-direct local MP2, which never forms
+    /// the global 3-index tensor. Default false.
+    pub integral_direct: Option<bool>,
+    /// Integral-direct only: aux fit-domain radius, Bohr. Default 10.0.
+    pub aux_radius: Option<f64>,
+    /// Integral-direct only: virtual domain radius on dipole centroids, Bohr.
+    /// Default 12.0.
+    pub virt_radius: Option<f64>,
+    /// Integral-direct only: AO-support shell threshold on max |C|. Default
+    /// 1e-3; 0 keeps every shell.
+    pub ao_tail: Option<f64>,
+    /// Integral-direct only: Cauchy–Schwarz triple cut on the batch integral
+    /// stream. Default 1e-5.
+    pub schwarz_skip: Option<f64>,
+    /// Integral-direct only: nearest-atom batches merged per integral pass
+    /// (>= 1). Default 4.
+    pub batch_merge: Option<usize>,
+    /// Integral-direct only: R⁻⁶ pair-gate calibration constant. Omitted =
+    /// gate off (every pair kept).
+    pub gate_cal: Option<f64>,
+    /// Integral-direct only: ε-linked Schwarz virtual-candidate screen κ.
+    /// Omitted = off.
+    pub virt_schwarz_kappa: Option<f64>,
+}
+
+/// The integral-direct locality knobs of a local MP2 run, with their
+/// defaults applied (every one is a controlled approximation; the run prints
+/// them).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LocalDirectKnobs {
+    pub aux_radius: f64,
+    pub virt_radius: f64,
+    pub ao_tail: f64,
+    pub schwarz_skip: f64,
+    pub batch_merge: usize,
+    pub gate_cal: Option<f64>,
+    pub virt_schwarz_kappa: Option<f64>,
+}
+
+/// A resolved `scheme = "amplitude-threshold"` model. An exact run has none
+/// (`Config::local_model` returns `Ok(None)`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LocalModel {
+    /// The ε points: one for `eps`, the sorted de-duplicated sweep for
+    /// `eps_sweep`.
+    pub eps: Vec<f64>,
+    /// Whether the points came from `eps_sweep`.
+    pub is_sweep: bool,
+    /// `[local] reference`.
+    pub reference: bool,
+    /// `Some` exactly when `integral_direct = true`.
+    pub direct: Option<LocalDirectKnobs>,
+}
+
+impl LocalCfg {
+    fn sets_direct_knobs(&self) -> bool {
+        self.aux_radius.is_some()
+            || self.virt_radius.is_some()
+            || self.ao_tail.is_some()
+            || self.schwarz_skip.is_some()
+            || self.batch_merge.is_some()
+            || self.gate_cal.is_some()
+            || self.virt_schwarz_kappa.is_some()
+    }
+
+    /// The kind-independent rules of `[local]`: values, and which keys go
+    /// with which scheme. `Ok(None)` is an exact run.
+    pub fn model(&self) -> Result<Option<LocalModel>, String> {
+        let scheme = match self.scheme.as_deref() {
+            None => LocalScheme::None,
+            Some(s) => LocalScheme::parse_config_str(s)?,
+        };
+        if scheme == LocalScheme::None {
+            let stray: Vec<&str> = [
+                ("eps", self.eps.is_some()),
+                ("eps_sweep", self.eps_sweep.is_some()),
+                ("reference", self.reference.is_some()),
+                ("integral_direct", self.integral_direct.is_some()),
+                ("aux_radius", self.aux_radius.is_some()),
+                ("virt_radius", self.virt_radius.is_some()),
+                ("ao_tail", self.ao_tail.is_some()),
+                ("schwarz_skip", self.schwarz_skip.is_some()),
+                ("batch_merge", self.batch_merge.is_some()),
+                ("gate_cal", self.gate_cal.is_some()),
+                ("virt_schwarz_kappa", self.virt_schwarz_kappa.is_some()),
+            ]
+            .into_iter()
+            .filter_map(|(k, set)| set.then_some(k))
+            .collect();
+            if !stray.is_empty() {
+                return Err(format!(
+                    "[local] {} set with scheme = \"none\" (the exact method), which would \
+                     silently ignore {}; set scheme = \"amplitude-threshold\" to run the local \
+                     approximation, or remove {}",
+                    stray.join(", "),
+                    if stray.len() == 1 { "it" } else { "them" },
+                    if stray.len() == 1 {
+                        "the key"
+                    } else {
+                        "the keys"
+                    },
+                ));
+            }
+            return Ok(None);
+        }
+        let check_eps = |what: &str, e: f64| -> Result<(), String> {
+            if e.is_finite() && e >= 0.0 {
+                Ok(())
+            } else {
+                Err(format!("[local] {what} must be finite and >= 0 (got {e})"))
+            }
+        };
+        let (eps, is_sweep) = match (self.eps, &self.eps_sweep) {
+            (Some(_), Some(_)) => {
+                return Err(
+                    "[local] eps and eps_sweep are mutually exclusive: give one \
+                            threshold (eps) or a list of them (eps_sweep), not both"
+                        .to_string(),
+                )
+            }
+            (None, None) => {
+                return Err(
+                    "[local] scheme = \"amplitude-threshold\" requires eps (or, for \
+                            kind = \"drpa\", eps_sweep): the threshold is part of the model \
+                            and has no default. eps = 0 keeps every amplitude (the exact \
+                            method); 1e-4 is the value the measured error maps use."
+                        .to_string(),
+                )
+            }
+            (Some(e), None) => {
+                check_eps("eps", e)?;
+                (vec![e], false)
+            }
+            (None, Some(v)) => {
+                let mut s = v.clone();
+                // NaN-tolerant sort, so a `nan` literal reaches the
+                // finiteness check (the lesson `r0_sweep` learned).
+                s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                s.dedup();
+                if s.is_empty() {
+                    return Err("[local] eps_sweep is empty".to_string());
+                }
+                for &e in &s {
+                    check_eps("eps_sweep values", e)?;
+                }
+                (s, true)
+            }
+        };
+        let direct = if self.integral_direct == Some(true) {
+            let pos = |k: &str, v: Option<f64>, d: f64| -> Result<f64, String> {
+                let x = v.unwrap_or(d);
+                if x.is_finite() && x > 0.0 {
+                    Ok(x)
+                } else {
+                    Err(format!("[local] {k} must be finite and > 0 (got {x})"))
+                }
+            };
+            let nonneg = |k: &str, v: Option<f64>, d: f64| -> Result<f64, String> {
+                let x = v.unwrap_or(d);
+                if x.is_finite() && x >= 0.0 {
+                    Ok(x)
+                } else {
+                    Err(format!("[local] {k} must be finite and >= 0 (got {x})"))
+                }
+            };
+            let opt_pos = |k: &str, v: Option<f64>| -> Result<Option<f64>, String> {
+                match v {
+                    Some(x) if !(x.is_finite() && x > 0.0) => {
+                        Err(format!("[local] {k} must be finite and > 0 (got {x})"))
+                    }
+                    other => Ok(other),
+                }
+            };
+            if self.batch_merge == Some(0) {
+                return Err("[local] batch_merge must be >= 1".to_string());
+            }
+            Some(LocalDirectKnobs {
+                aux_radius: pos("aux_radius", self.aux_radius, 10.0)?,
+                virt_radius: pos("virt_radius", self.virt_radius, 12.0)?,
+                ao_tail: nonneg("ao_tail", self.ao_tail, 1e-3)?,
+                schwarz_skip: nonneg("schwarz_skip", self.schwarz_skip, 1e-5)?,
+                batch_merge: self.batch_merge.unwrap_or(4),
+                gate_cal: opt_pos("gate_cal", self.gate_cal)?,
+                virt_schwarz_kappa: opt_pos("virt_schwarz_kappa", self.virt_schwarz_kappa)?,
+            })
+        } else {
+            if self.sets_direct_knobs() {
+                return Err(
+                    "[local] aux_radius / virt_radius / ao_tail / schwarz_skip / \
+                            batch_merge / gate_cal / virt_schwarz_kappa are the integral-direct \
+                            locality maps and are read only with integral_direct = true; \
+                            without it they would be silently ignored"
+                        .to_string(),
+                );
+            }
+            None
+        };
+        Ok(Some(LocalModel {
+            eps,
+            is_sweep,
+            reference: self.reference.unwrap_or(false),
+            direct,
+        }))
+    }
+}
+
+/// `Serialize` is derived for one reason: [`Mp2Cfg::set_keys`] reads the
+/// keys a file actually set from serde's own field table, so the
+/// "[mp2] key the selected method does not read" refusal of the local
+/// correlation path cannot drift from the struct (a hand-kept list would).
+#[derive(Deserialize, Serialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Mp2Cfg {
     pub auxbasis: Option<String>,
@@ -817,7 +1101,7 @@ pub struct Mp2Cfg {
     ///
     /// Shared by the whole MP2 family AND by the CC/double-hybrid methods,
     /// which read this key rather than defining one of their own.
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub frozen_core: FrozenCore,
     // NOTE: `orbital_optimize` used to live here behind `#[allow(dead_code)]`.
     // Nothing ever read it — orbital optimization is selected with
@@ -827,79 +1111,13 @@ pub struct Mp2Cfg {
     // stale key now errors instead of lying.
     /// Range-separation parameter ω in Å⁻¹ (for att-rimp2 and rs-mp2-rpa). Default 0.420.
     pub omega: Option<f64>,
-    /// Amplitude-threshold LMP2 (`kind = "lmp2"`): the single threshold ε on
-    /// localized |(ia|jb)| (WSHG23 Eq. 8). Default 1e-4. The finite-ε energy
-    /// is a controlled approximation — error one-sided and ~linear in ε (see
-    /// wiki/amplitude-threshold-lmp2.md for the measured map).
-    pub lmp2_eps: Option<f64>,
-    /// Amplitude-threshold LMP2 (`kind = "lmp2"` and `"lmp2-direct"`): also
-    /// compute the canonical RI-MP2 reference and print it with the error
-    /// against it. Default false (OPT-IN): the reference is a full N^5
-    /// canonical RI-MP2 that forms the global (naux, nocc·nvir) tensor —
-    /// the very object `lmp2-direct` exists to avoid — so with it on no run
-    /// is reduced-cost. Off, the printout says the reference was not
-    /// computed and the run log's `e_corr_canonical_ri` is null. A bool:
-    /// any other TOML type is a parse error.
-    pub lmp2_reference: Option<bool>,
-    /// Amplitude-threshold direct RPA (`kind = "drpa"`): the threshold ε on
-    /// localized |B_iajb| = |2(ia|jb)|. Default 1e-4. `0` keeps every
-    /// amplitude and reproduces the canonical plasmon-formula dRPA (the
-    /// library's exactness anchor). dRPA is not variational, so the finite-ε
-    /// error is ~linear in ε with no Hylleraas protection. Must be finite and
-    /// ≥ 0. Ignored (with a warning) when `drpa_eps_sweep` is set.
-    pub drpa_eps: Option<f64>,
-    /// Amplitude-threshold dRPA (`kind = "drpa"`): also compute the canonical
-    /// plasmon-formula reference (a dense (no·nv)-dimensional eigensolve over
-    /// a global B) and print the threshold error against it. Default false
-    /// (OPT-IN), mirroring `lmp2_reference`. A bool.
-    pub drpa_reference: Option<bool>,
-    /// Amplitude-threshold dRPA (`kind = "drpa"`): evaluate several ε in ONE
-    /// job, reusing a single SCF and a single ε-independent localized
-    /// assembly (`amplitude_drpa_scan_timed`). Values are sorted and
-    /// de-duplicated; each must be finite and ≥ 0. Same pattern as
-    /// `r0_sweep`: one result block per point.
-    pub drpa_eps_sweep: Option<Vec<f64>>,
-    /// Amplitude-threshold LinLCCD (`kind = "linlccd-amplitude"`) ladder
-    /// variant: `"hh"` (default, LinLCCD(hh)), `"drivers-only"` (no ladder —
-    /// reproduces RI-MP2), or `"full"` (hh + pp ladders). Unknown values are
-    /// a hard error ([`Mp2Cfg::linlccd_variant`]).
+    /// LinLCCD (`kind = "linlccd"`) ladder variant — part of the METHOD, so
+    /// it applies to the exact and the local (`[local]`) run alike: `"hh"`
+    /// (default, LinLCCD(hh)), `"drivers-only"` (no ladder — reproduces
+    /// RI-MP2), or `"full"` (hh + pp ladders, CCD-like VVVV memory). Unknown
+    /// values are a hard error ([`Mp2Cfg::linlccd_variant`]), and so is the
+    /// key on any other kind.
     pub linlccd_variant: Option<String>,
-    /// Amplitude-threshold LinLCCD (`kind = "linlccd-amplitude"`): the
-    /// threshold ε on localized |(ia|jb)|. Default 1e-4. `0` reproduces the
-    /// canonical `linlccd` of the same variant. Must be finite and ≥ 0.
-    pub linlccd_eps: Option<f64>,
-    /// Integral-direct LMP2 (`kind = "lmp2-direct"`): aux fit-domain radius
-    /// in Bohr (pair (i,j) fits in aux functions within this radius of
-    /// either Boys centroid). Default 10.0 — the measured production value
-    /// (wiki/amplitude-threshold-lmp2.md §27-30); ≥1e5 ≈ global fit.
-    pub direct_aux_radius: Option<f64>,
-    /// Integral-direct LMP2: virtual domain radius in Bohr on dipole
-    /// centroids. Default 12.0 (production); omit-able only by setting a
-    /// huge value — every default here is a CONTROLLED approximation, and
-    /// `lmp2_reference = true` prints the canonical reference error alongside.
-    pub direct_virt_radius: Option<f64>,
-    /// Integral-direct LMP2: AO-support shell threshold on max |C|.
-    /// Default 1e-3 (production); 0.0 keeps every shell.
-    pub direct_ao_tail: Option<f64>,
-    /// Integral-direct LMP2: Cauchy–Schwarz triple cut √(P|P)·Q(μν) on the
-    /// batch integral stream. Default 1e-5 (calibrated ~1e-8 Ha at C16);
-    /// MUST be 0.0 for operators without Schwarz support (terfc) — the run
-    /// hard-errors otherwise, naming this knob.
-    pub direct_schwarz_skip: Option<f64>,
-    /// Integral-direct LMP2: nearest-atom batches merged per integral pass.
-    /// Default 4 (measured ~0.4× the evaluations of per-atom batches); 1 =
-    /// per-atom (the anchor limit).
-    pub direct_batch_merge: Option<usize>,
-    /// Integral-direct LMP2: R⁻⁶ pair-gate calibration constant (p95:
-    /// ~0.7 Coulomb, ~0.02 erfc ω=1). Omitted = gate OFF (keep all pairs).
-    pub direct_gate_cal: Option<f64>,
-    /// Integral-direct LMP2: ε-linked Schwarz virtual-candidate screen —
-    /// keep a in C_ij iff q_ia·qmax_j ≥ κ·ε (either orientation), q from
-    /// strip-local fitted diagonals. Omitted = OFF (the validated distance
-    /// candidates alone). κ = 1 is conservative (measured escape-free at
-    /// C8, both operators); larger κ trades bounded sub-dominant error for
-    /// smaller pair blocks (WIKI-APPEND-eps-linked-maps.md).
-    pub direct_virt_schwarz_kappa: Option<f64>,
     /// κ-regularized MP2 (Lee/Head-Gordon JCTC 2018) for `kind = "rimp2"`:
     /// damps every amplitude by (1 − e^{−κΔ})², κ in inverse Hartree
     /// (κ→∞ recovers plain MP2; the paper's recommended value is ~1.45).
@@ -1218,90 +1436,27 @@ impl Mp2Cfg {
         Ok(())
     }
 
-    /// Whether `lmp2`/`lmp2-direct` compute the canonical RI-MP2 reference:
-    /// `[mp2] lmp2_reference`, default FALSE (opt-in — see the field doc).
-    pub fn lmp2_reference(&self) -> bool {
-        self.lmp2_reference.unwrap_or(false)
-    }
-
-    /// Whether `drpa` computes the canonical plasmon reference:
-    /// `[mp2] drpa_reference`, default FALSE (opt-in, like `lmp2_reference`).
-    pub fn drpa_reference(&self) -> bool {
-        self.drpa_reference.unwrap_or(false)
-    }
-
-    /// The ε points `kind = "drpa"` evaluates, and whether they came from
-    /// `drpa_eps_sweep` (`true`) or the single `drpa_eps` (`false`).
-    ///
-    /// A sweep is sorted and de-duplicated (NaN-tolerant sort, so a `nan`
-    /// literal reaches the finiteness check and gets its message rather than a
-    /// panic — the lesson `r0_sweep` learned). Every point must be finite and
-    /// ≥ 0: ε = 0 is the exactness anchor, a negative ε would keep everything
-    /// silently like 0 does.
-    pub fn drpa_eps_points(&self) -> Result<(Vec<f64>, bool), String> {
-        match &self.drpa_eps_sweep {
-            Some(v) => {
-                let mut s = v.clone();
-                s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-                s.dedup();
-                if s.is_empty() {
-                    return Err("[mp2] drpa_eps_sweep is empty".to_string());
-                }
-                if s.iter().any(|x| !(x.is_finite() && *x >= 0.0)) {
-                    return Err(format!(
-                        "[mp2] drpa_eps_sweep values must be finite and >= 0 (got {s:?})"
-                    ));
-                }
-                Ok((s, true))
-            }
-            None => {
-                let eps = self.drpa_eps.unwrap_or(1e-4);
-                if !(eps.is_finite() && eps >= 0.0) {
-                    return Err(format!(
-                        "[mp2] drpa_eps must be finite and >= 0 (got {eps})"
-                    ));
-                }
-                Ok((vec![eps], false))
-            }
-        }
-    }
-
-    /// `[mp2] linlccd_variant` for `kind = "linlccd-amplitude"`, parsed
-    /// strictly: `"hh"` (default), `"drivers-only"`, `"full"`. Anything else
-    /// is an error listing the valid spellings, never a silent default.
+    /// `[mp2] linlccd_variant` for `kind = "linlccd"`, parsed strictly by the
+    /// shared [`ferric_cc::linlccd::LadderVariant::parse_config_str`]:
+    /// `"hh"` (default), `"drivers-only"`, `"full"`. Anything else is an
+    /// error listing the valid spellings, never a silent default.
     pub fn linlccd_variant(&self) -> Result<ferric_cc::linlccd::LadderVariant, String> {
-        use ferric_cc::linlccd::LadderVariant;
         match self.linlccd_variant.as_deref() {
-            None | Some("hh") => Ok(LadderVariant::Hh),
-            Some("drivers-only") => Ok(LadderVariant::DriversOnly),
-            Some("full") => Ok(LadderVariant::Full),
-            Some(other) => Err(format!(
-                "[mp2] linlccd_variant = {other:?} is not recognised; expected one of \
-                 'hh', 'drivers-only', 'full'"
-            )),
+            None => Ok(ferric_cc::linlccd::LadderVariant::Hh),
+            Some(s) => ferric_cc::linlccd::LadderVariant::parse_config_str(s)
+                .map_err(|e| format!("[mp2] linlccd_variant: {e}")),
         }
     }
 
-    /// Strict-parse every `drpa`/`linlccd-amplitude` knob, whatever the kind,
-    /// so a typo'd VALUE (`linlccd_variant = "hhh"`, `drpa_eps = -1`) errors
-    /// at load time rather than after the SCF.
-    pub fn validate_amplitude_knobs(&self) -> Result<(), String> {
-        self.drpa_eps_points()?;
-        self.linlccd_variant()?;
-        self.linlccd_eps()?;
-        Ok(())
-    }
-
-    /// `[mp2] linlccd_eps` for `kind = "linlccd-amplitude"`: default 1e-4,
-    /// must be finite and ≥ 0.
-    pub fn linlccd_eps(&self) -> Result<f64, String> {
-        let eps = self.linlccd_eps.unwrap_or(1e-4);
-        if eps.is_finite() && eps >= 0.0 {
-            Ok(eps)
-        } else {
-            Err(format!(
-                "[mp2] linlccd_eps must be finite and >= 0 (got {eps})"
-            ))
+    /// The `[mp2]` keys this file SET, read from serde's own view of the
+    /// struct (a key is set when it serializes at all: `toml` skips `None`
+    /// fields and, unlike `serde_json`, keeps a non-finite float such as
+    /// `nan`/`inf` instead of mapping it to null). `frozen_core` is never
+    /// listed: every correlated kind reads it.
+    pub fn set_keys(&self) -> Vec<String> {
+        match toml::Value::try_from(self) {
+            Ok(toml::Value::Table(m)) => m.into_iter().map(|(k, _)| k).collect(),
+            _ => Vec::new(),
         }
     }
 
@@ -2608,7 +2763,7 @@ fn open_shell_kinds(task: &str) -> &'static [&'static str] {
 /// stops before the basis is even loaded. (`run_optimize`/`run_frequencies`
 /// also refuse every kind they do not handle, but only after the geometry,
 /// basis and memory pool are set up.)
-const ENERGY_ONLY_KINDS: &[&str] = &["ccd", "ccsd(t)", "drpa", "linlccd-amplitude"];
+const ENERGY_ONLY_KINDS: &[&str] = &["ccd", "ccsd(t)", "drpa"];
 
 /// `method.kind`s whose Kohn-Sham reference is chosen by `[rpa] xc` (the same
 /// list `run()` uses to turn `[rpa] xc` into the SCF functional).
@@ -2841,10 +2996,10 @@ impl Config {
                     _ => "CCSD(T)",
                 }
             ),
-            "drpa" | "linlccd-amplitude" => format!(
-                "the amplitude-threshold kind = \"{kind}\" is closed-shell only (it localizes \
-                 a single restricted occupied space); no open-shell variant exists"
-            ),
+            "drpa" => "dRPA (exact or local) runs the drCCD Riccati solve on a single \
+                       restricted occupied space; no open-shell variant exists in the CLI \
+                       (open-shell RPA is kind = \"pdep-rpa\")"
+                .to_string(),
             "wb97x-l-v" => "open-shell wB97X-L-V is library-only \
                             (ferric_cc::double_hybrid::u_solve_wb97x_l_v)"
                 .to_string(),
@@ -2938,11 +3093,13 @@ impl Config {
     /// `[pcm]` section, run by [`load_config`] so a bad value fails at load
     /// time on every entry point.
     /// Every post-parse value check `load_config` runs, in order: memory,
-    /// SCF, the amplitude-threshold knobs, then the CLI-wired keys.
+    /// SCF, `[mp2] linlccd_variant` and the `[local]` values, then the
+    /// CLI-wired keys.
     fn validate_loaded_values(&self) -> Result<(), String> {
         self.memory.validate()?;
         self.scf.validate()?;
-        self.mp2.validate_amplitude_knobs()?;
+        self.mp2.linlccd_variant()?;
+        self.local_model()?;
         self.external_potential.validate()?;
         match &self.pcm {
             Some(pcm) => pcm.to_pcm_config().map(|_| ()),
@@ -3072,6 +3229,8 @@ impl Config {
             ));
         }
 
+        self.validate_local()?;
+
         if self.gw.reference.is_some() {
             self.gw.parse_reference()?;
             if kind != "gw" {
@@ -3088,6 +3247,133 @@ impl Config {
                         .to_string(),
                 );
             }
+        }
+        Ok(())
+    }
+}
+
+impl Config {
+    /// The local model of this run: `Ok(None)` when the method is computed
+    /// exactly (no `[local]`, or `scheme = "none"`), else the resolved
+    /// amplitude-threshold model. Value rules only; the kind rules are
+    /// [`Config::validate_local`]'s.
+    pub fn local_model(&self) -> Result<Option<LocalModel>, String> {
+        match &self.local {
+            None => Ok(None),
+            Some(l) => l.model(),
+        }
+    }
+
+    /// The kind/task rules of `[local]` and of the `[mp2]` keys a correlated
+    /// kind with a local variant does not read. Every refusal is a key the run
+    /// would otherwise silently ignore, or a combination no code path
+    /// implements:
+    ///
+    /// * `[local]` on a kind outside [`LOCAL_KINDS`];
+    /// * `eps_sweep` on anything but `drpa`, `integral_direct` on anything but
+    ///   `rimp2`;
+    /// * a local run with `task != "energy"` (no local gradient exists) or an
+    ///   open-shell molecule (every local path localizes one restricted
+    ///   occupied space);
+    /// * `[mp2] linlccd_variant` on any kind but `linlccd`;
+    /// * any other `[mp2]` key on `drpa`, `linlccd` or a local `rimp2`, which
+    ///   read only `auxbasis` and `frozen_core` (plus `linlccd_variant` for
+    ///   `linlccd`). The set of keys a file wrote comes from serde
+    ///   ([`Mp2Cfg::set_keys`]), so a new `[mp2]` field is covered without
+    ///   touching this list.
+    pub fn validate_local(&self) -> Result<(), String> {
+        let kind = self.method.kind.as_str();
+        let task = self.method.task.as_str();
+        if self.local.is_some() && !LOCAL_KINDS.contains(&kind) {
+            return Err(format!(
+                "[local] applies to method.kind = {} only; kind = \"{kind}\" has no local \
+                 approximation, so the section would be silently ignored. Remove [local].",
+                LOCAL_KINDS
+                    .iter()
+                    .map(|k| format!("\"{k}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        let model = self.local_model()?;
+        if self.mp2.linlccd_variant.is_some() && kind != "linlccd" {
+            return Err(format!(
+                "[mp2] linlccd_variant is read by method.kind = \"linlccd\" only; kind = \
+                 \"{kind}\" would silently ignore it"
+            ));
+        }
+        let read: Option<&[&str]> = match (kind, &model) {
+            ("drpa", _) => Some(&["auxbasis"][..]),
+            ("linlccd", _) => Some(&["auxbasis", "linlccd_variant"][..]),
+            ("rimp2", Some(_)) => Some(&["auxbasis"][..]),
+            _ => None,
+        };
+        if let Some(read) = read {
+            let stray: Vec<String> = self
+                .mp2
+                .set_keys()
+                .into_iter()
+                .filter(|k| !read.contains(&k.as_str()))
+                .collect();
+            if !stray.is_empty() {
+                let what = match (kind, &model) {
+                    (_, Some(_)) => format!("the local (amplitude-threshold) {kind}"),
+                    _ => format!("kind = \"{kind}\""),
+                };
+                let kappa_hint = if kind == "rimp2" && stray.iter().any(|k| k == "kappa") {
+                    " (kappa-regularized MP2 exists for the exact rimp2 only)"
+                } else {
+                    ""
+                };
+                return Err(format!(
+                    "[mp2] {} {} not read by {what}, which reads only [mp2] auxbasis and \
+                     frozen_core{}; the run would silently ignore {}{kappa_hint}",
+                    stray.join(", "),
+                    if stray.len() == 1 { "is" } else { "are" },
+                    if kind == "linlccd" {
+                        " and linlccd_variant"
+                    } else {
+                        ""
+                    },
+                    if stray.len() == 1 { "it" } else { "them" },
+                ));
+            }
+        }
+        let Some(model) = model else {
+            return Ok(());
+        };
+        if model.is_sweep && kind != "drpa" {
+            return Err(format!(
+                "[local] eps_sweep is supported for method.kind = \"drpa\" only (got \
+                 \"{kind}\"); use a single eps"
+            ));
+        }
+        if self
+            .local
+            .as_ref()
+            .and_then(|l| l.integral_direct)
+            .is_some()
+            && kind != "rimp2"
+        {
+            return Err(format!(
+                "[local] integral_direct is the integral-direct local MP2 and applies to \
+                 method.kind = \"rimp2\" only (got \"{kind}\")"
+            ));
+        }
+        if task != "energy" {
+            return Err(format!(
+                "[local] scheme = \"amplitude-threshold\" supports task = \"energy\" only (got \
+                 \"{task}\"): no local correlation method has a nuclear gradient. Remove \
+                 [local] to run the exact method's {task}."
+            ));
+        }
+        if self.molecule.multiplicity > 1 {
+            return Err(format!(
+                "[local] scheme = \"amplitude-threshold\" is closed-shell only (it localizes a \
+                 single restricted occupied space), but the molecule has multiplicity = {}. \
+                 Remove [local] to run the exact method.",
+                self.molecule.multiplicity
+            ));
         }
         Ok(())
     }
@@ -3304,7 +3590,6 @@ mod compat_guard_tests {
             "ccd",
             "ccsd(t)",
             "drpa",
-            "linlccd-amplitude",
             "linlccd",
             "laplace-sos-mp2",
             "bse-tda",
@@ -3449,14 +3734,14 @@ mod compat_guard_tests {
         );
     }
 
-    /// The CLI kinds with no nuclear gradient (`ccd`, `ccsd(t)`, `drpa`,
-    /// `linlccd-amplitude`) refuse `optimize`/`frequencies` in
-    /// `validate_task_compat`, before any integral. Removing the
-    /// `ENERGY_ONLY_KINDS` branch fails the `expect_err`s; the energy task and
-    /// a gradient-capable kind are the reachability anchors.
+    /// The CLI kinds with no nuclear gradient (`ccd`, `ccsd(t)`, `drpa`)
+    /// refuse `optimize`/`frequencies` in `validate_task_compat`, before any
+    /// integral. Removing the `ENERGY_ONLY_KINDS` branch fails the
+    /// `expect_err`s; the energy task and a gradient-capable kind are the
+    /// reachability anchors.
     #[test]
     fn energy_only_kinds_refuse_gradient_tasks() {
-        for kind in ["ccd", "ccsd(t)", "drpa", "linlccd-amplitude"] {
+        for kind in ["ccd", "ccsd(t)", "drpa"] {
             for task in ["optimize", "frequencies"] {
                 let e = cfg(kind, task, "").validate_task_compat().expect_err(kind);
                 assert!(
@@ -3469,14 +3754,14 @@ mod compat_guard_tests {
         assert_eq!(cfg("rimp2", "optimize", "").validate_task_compat(), Ok(()));
     }
 
-    /// `[mp2] linlccd_variant` is strict, and the eps knobs reject negative
-    /// and non-finite values. Each accepted spelling is checked to map to its
-    /// own variant (a parser that returned `Hh` for everything would pass a
-    /// bare `is_ok`).
+    /// `[mp2] linlccd_variant` is strict. Each accepted spelling is checked
+    /// to map to its own variant (a parser that returned `Hh` for everything
+    /// would pass a bare `is_ok`), and a bad value fails at LOAD (through
+    /// `validate_loaded_values`), not after the SCF.
     #[test]
-    fn amplitude_knobs_parse_strictly() {
+    fn linlccd_variant_parses_strictly() {
         use ferric_cc::linlccd::LadderVariant;
-        let mp2 = |extra: &str| cfg("linlccd-amplitude", "energy", &format!("[mp2]\n{extra}")).mp2;
+        let mp2 = |extra: &str| cfg("linlccd", "energy", &format!("[mp2]\n{extra}")).mp2;
         assert_eq!(mp2("").linlccd_variant(), Ok(LadderVariant::Hh));
         assert_eq!(
             mp2("linlccd_variant = \"hh\"").linlccd_variant(),
@@ -3491,42 +3776,259 @@ mod compat_guard_tests {
             Ok(LadderVariant::Full)
         );
         for bad in ["HH", "drivers", "pp", ""] {
-            let e = mp2(&format!("linlccd_variant = {bad:?}"))
-                .validate_amplitude_knobs()
-                .expect_err(bad);
+            let c = cfg(
+                "linlccd",
+                "energy",
+                &format!("[mp2]\nlinlccd_variant = {bad:?}"),
+            );
+            let e = c.validate_loaded_values().expect_err(bad);
             assert!(
                 e.contains("linlccd_variant") && e.contains("'drivers-only'"),
                 "{e}"
             );
         }
-        assert_eq!(mp2("").linlccd_eps(), Ok(1e-4));
-        assert_eq!(mp2("linlccd_eps = 0.0").linlccd_eps(), Ok(0.0));
-        assert!(mp2("linlccd_eps = -1e-4")
-            .validate_amplitude_knobs()
-            .is_err());
-        assert!(mp2("linlccd_eps = nan").validate_amplitude_knobs().is_err());
+    }
 
-        // dRPA: single point by default, sweep sorted + de-duplicated.
-        assert_eq!(mp2("").drpa_eps_points(), Ok((vec![1e-4], false)));
-        assert_eq!(
-            mp2("drpa_eps = 0.0").drpa_eps_points(),
-            Ok((vec![0.0], false))
+    /// `[local]` rules that do not depend on the kind: the scheme is strict,
+    /// `eps` is REQUIRED with the amplitude threshold (no default), every
+    /// other key is refused under `scheme = "none"`, values are range-checked,
+    /// the sweep is sorted + de-duplicated, and the integral-direct knobs need
+    /// `integral_direct = true`. Each refusal is its own case, so dropping
+    /// any one check fails exactly the case that names it.
+    #[test]
+    fn local_section_values_are_strict() {
+        let model = |body: &str| cfg("drpa", "energy", &format!("[local]\n{body}")).local_model();
+        // exact: absent section, empty section, explicit none
+        assert_eq!(cfg("drpa", "energy", "").local_model(), Ok(None));
+        assert_eq!(model(""), Ok(None));
+        assert_eq!(model("scheme = \"none\""), Ok(None));
+        // strict scheme
+        let e = model("scheme = \"amplitude_threshold\"").unwrap_err();
+        assert!(
+            e.contains("\"amplitude-threshold\"") && e.contains("\"none\""),
+            "{e}"
         );
+        let e = model("scheme = \"dlpno\"").unwrap_err();
+        assert!(e.contains("dlpno"), "{e}");
+        // eps required, no default
+        let e = model("scheme = \"amplitude-threshold\"").unwrap_err();
+        assert!(
+            e.contains("requires eps") && e.contains("no default"),
+            "{e}"
+        );
+        // eps = 0 is allowed (the exactness anchor)
+        let m = model("scheme = \"amplitude-threshold\"\neps = 0.0")
+            .unwrap()
+            .unwrap();
+        assert_eq!((m.eps, m.is_sweep, m.reference), (vec![0.0], false, false));
+        let m = model("scheme = \"amplitude-threshold\"\neps = 1e-4\nreference = true")
+            .unwrap()
+            .unwrap();
+        assert_eq!((m.eps, m.reference), (vec![1e-4], true));
+        for bad in ["-1e-4", "inf", "nan"] {
+            let e = model(&format!("scheme = \"amplitude-threshold\"\neps = {bad}")).unwrap_err();
+            assert!(e.contains("eps must be finite and >= 0"), "{bad}: {e}");
+        }
+        // sweep: sorted, de-duplicated, validated, exclusive with eps
+        let m = model("scheme = \"amplitude-threshold\"\neps_sweep = [1e-3, 0.0, 1e-3, 1e-4]")
+            .unwrap()
+            .unwrap();
+        assert_eq!((m.eps, m.is_sweep), (vec![0.0, 1e-4, 1e-3], true));
+        for bad in ["[]", "[1e-4, nan]", "[-1e-4]"] {
+            assert!(
+                model(&format!(
+                    "scheme = \"amplitude-threshold\"\neps_sweep = {bad}"
+                ))
+                .is_err(),
+                "{bad}"
+            );
+        }
+        let e =
+            model("scheme = \"amplitude-threshold\"\neps = 1e-4\neps_sweep = [1e-4]").unwrap_err();
+        assert!(e.contains("mutually exclusive"), "{e}");
+        // every key is refused under scheme = "none" (and with no scheme)
+        for (key, val) in [
+            ("eps", "1e-4"),
+            ("eps_sweep", "[1e-4]"),
+            ("reference", "true"),
+            ("reference", "false"),
+            ("integral_direct", "true"),
+            ("aux_radius", "10.0"),
+            ("gate_cal", "0.7"),
+        ] {
+            for scheme in ["scheme = \"none\"\n", ""] {
+                let e = model(&format!("{scheme}{key} = {val}")).unwrap_err();
+                assert!(
+                    e.contains(key) && e.contains("scheme = \"none\""),
+                    "{key} under none: {e}"
+                );
+            }
+        }
+        // direct knobs need integral_direct = true
+        for (key, val) in [
+            ("aux_radius", "10.0"),
+            ("virt_radius", "12.0"),
+            ("ao_tail", "1e-3"),
+            ("schwarz_skip", "1e-5"),
+            ("batch_merge", "4"),
+            ("gate_cal", "0.7"),
+            ("virt_schwarz_kappa", "1.0"),
+        ] {
+            for direct in ["", "integral_direct = false\n"] {
+                let e = model(&format!(
+                    "scheme = \"amplitude-threshold\"\neps = 1e-4\n{direct}{key} = {val}"
+                ))
+                .unwrap_err();
+                assert!(e.contains("integral_direct = true"), "{key}: {e}");
+            }
+        }
+        // direct defaults are the measured production values; values checked
+        let m = model("scheme = \"amplitude-threshold\"\neps = 1e-4\nintegral_direct = true")
+            .unwrap()
+            .unwrap();
         assert_eq!(
-            mp2("drpa_eps_sweep = [1e-3, 0.0, 1e-3, 1e-4]").drpa_eps_points(),
-            Ok((vec![0.0, 1e-4, 1e-3], true))
+            m.direct,
+            Some(LocalDirectKnobs {
+                aux_radius: 10.0,
+                virt_radius: 12.0,
+                ao_tail: 1e-3,
+                schwarz_skip: 1e-5,
+                batch_merge: 4,
+                gate_cal: None,
+                virt_schwarz_kappa: None,
+            })
         );
         for bad in [
-            "drpa_eps = -1.0",
-            "drpa_eps = inf",
-            "drpa_eps_sweep = []",
-            "drpa_eps_sweep = [1e-4, nan]",
-            "drpa_eps_sweep = [-1e-4]",
+            "aux_radius = 0.0",
+            "virt_radius = -1.0",
+            "ao_tail = -1e-3",
+            "schwarz_skip = nan",
+            "batch_merge = 0",
+            "gate_cal = 0.0",
+            "virt_schwarz_kappa = -1.0",
         ] {
-            assert!(mp2(bad).validate_amplitude_knobs().is_err(), "{bad}");
+            assert!(
+                model(&format!(
+                    "scheme = \"amplitude-threshold\"\neps = 1e-4\nintegral_direct = true\n{bad}"
+                ))
+                .is_err(),
+                "{bad}"
+            );
         }
-        assert!(!mp2("").drpa_reference());
-        assert!(mp2("drpa_reference = true").drpa_reference());
+        // a typo'd [local] key is a parse error
+        let src = "[molecule]\nxyz = \"w.xyz\"\n[basis]\nname = \"sto-3g\"\n[method]\n\
+                   kind = \"drpa\"\n[local]\nscheme = \"amplitude-threshold\"\nepsilon = 1e-4\n";
+        let e = toml::from_str::<Config>(src)
+            .err()
+            .expect("typo must not parse");
+        assert!(e.to_string().contains("epsilon"), "{e}");
+    }
+
+    /// `[local]` rules that depend on the kind/task/molecule, and the `[mp2]`
+    /// keys the local paths do not read. Each refusal is its own case.
+    #[test]
+    fn unread_mp2_keys_are_refused_even_when_non_finite() {
+        // serde_json maps a non-finite f64 to null, which once made
+        // `omega = nan` look unset and slip past the refusal.
+        for value in ["0.4", "nan", "inf", "-inf"] {
+            let body = format!("[mp2]\nomega = {value}\n");
+            assert_eq!(
+                cfg("drpa", "energy", &body).mp2.set_keys(),
+                vec!["omega".to_string()],
+                "{value}"
+            );
+            let e = cfg("drpa", "energy", &body)
+                .validate_task_compat()
+                .expect_err(value);
+            assert!(e.contains("omega"), "{value}: {e}");
+        }
+        assert!(cfg("drpa", "energy", "").mp2.set_keys().is_empty());
+    }
+
+    #[test]
+    fn local_section_kind_rules() {
+        let at = "[local]\nscheme = \"amplitude-threshold\"\neps = 1e-4\n";
+        let ok = |kind: &str, extra: &str| cfg(kind, "energy", extra).validate_task_compat();
+        // the three kinds accept the scheme
+        for kind in ["rimp2", "drpa", "linlccd"] {
+            assert_eq!(ok(kind, at), Ok(()), "{kind}");
+        }
+        // [local] on any other kind, even scheme = "none"
+        for kind in ["rhf", "ccsd", "pdep-rpa", "oo-rimp2", "scs-mp2"] {
+            for body in [at, "[local]\nscheme = \"none\"\n"] {
+                let e = ok(kind, body).expect_err(kind);
+                assert!(e.contains("[local] applies to") && e.contains(kind), "{e}");
+            }
+        }
+        // eps_sweep: drpa only
+        let sweep = "[local]\nscheme = \"amplitude-threshold\"\neps_sweep = [1e-4, 1e-3]\n";
+        assert_eq!(ok("drpa", sweep), Ok(()));
+        for kind in ["rimp2", "linlccd"] {
+            let e = ok(kind, sweep).expect_err(kind);
+            assert!(e.contains("eps_sweep") && e.contains("drpa"), "{e}");
+        }
+        // integral_direct: rimp2 only (true or false)
+        for flag in ["true", "false"] {
+            let direct = format!("{at}integral_direct = {flag}\n");
+            assert_eq!(ok("rimp2", &direct), Ok(()));
+            for kind in ["drpa", "linlccd"] {
+                let e = ok(kind, &direct).expect_err(kind);
+                assert!(e.contains("integral_direct") && e.contains("rimp2"), "{e}");
+            }
+        }
+        // local is energy-only
+        for task in ["optimize", "frequencies"] {
+            let e = cfg("rimp2", task, at)
+                .validate_task_compat()
+                .expect_err(task);
+            assert!(
+                e.contains("task = \"energy\" only") && e.contains(task),
+                "{e}"
+            );
+            assert_eq!(cfg("rimp2", task, "").validate_task_compat(), Ok(()));
+        }
+        // local is closed-shell only
+        let open = cfg("rimp2", "energy", at);
+        let open = Config {
+            molecule: MoleculeCfg {
+                multiplicity: 3,
+                ..open.molecule
+            },
+            ..open
+        };
+        let e = open.validate_task_compat().unwrap_err();
+        assert!(
+            e.contains("closed-shell only") && e.contains("multiplicity = 3"),
+            "{e}"
+        );
+        // [mp2] keys the local rimp2 does not read
+        let e = ok("rimp2", &format!("{at}[mp2]\nkappa = 1.45\n")).unwrap_err();
+        assert!(e.contains("kappa") && e.contains("exact rimp2 only"), "{e}");
+        assert_eq!(ok("rimp2", "[mp2]\nkappa = 1.45\n"), Ok(()));
+        let e = ok("rimp2", &format!("{at}[mp2]\nc_os = 1.2\n")).unwrap_err();
+        assert!(e.contains("c_os"), "{e}");
+        assert_eq!(
+            ok(
+                "rimp2",
+                &format!("{at}[mp2]\nauxbasis = \"cc-pvdz-ri\"\nfrozen_core = 1\n")
+            ),
+            Ok(())
+        );
+        // drpa and linlccd, exact or local
+        for kind in ["drpa", "linlccd"] {
+            for body in ["", at] {
+                let e = ok(kind, &format!("{body}[mp2]\nomega = 0.4\n")).expect_err(kind);
+                assert!(e.contains("omega"), "{kind}: {e}");
+            }
+        }
+        // linlccd_variant: linlccd only (exact and local)
+        let v = "[mp2]\nlinlccd_variant = \"full\"\n";
+        assert_eq!(ok("linlccd", v), Ok(()));
+        assert_eq!(ok("linlccd", &format!("{at}{v}")), Ok(()));
+        for kind in ["drpa", "rimp2"] {
+            let e = ok(kind, v).expect_err(kind);
+            assert!(e.contains("linlccd_variant"), "{e}");
+        }
     }
 
     /// Pre-fix, `k_builder = "cosx"` + optimize ran silently, pairing COSX
@@ -4430,44 +4932,45 @@ json = [1, 2]
         assert!(toml::from_str::<Config>(s).is_err());
     }
 
-    /// `[mp2] lmp2_reference` (opt-in canonical reference for lmp2 and
-    /// lmp2-direct): absent means OFF; `true`/`false` parse; a non-bool value
-    /// and a misspelled key are hard errors (deny_unknown_fields), never a
-    /// silent default.
-    ///
-    /// Fails if reverted: with `lmp2_reference()` defaulting to true (the old
-    /// always-on behaviour) the first assert fails; if the field were removed
-    /// the `lmp2_reference = true` document would stop parsing; if the type
-    /// were loosened to a string the `"yes"` case would parse.
+    /// The kinds and `[mp2]` keys the local approximation used to live
+    /// under are GONE, not aliased: each fails as an unknown kind / unknown
+    /// key. A silently accepted old key would run the exact method under a
+    /// file that asks for a local one (or the reverse).
     #[test]
-    fn lmp2_reference_is_an_opt_in_strict_bool() {
+    fn removed_local_kinds_and_keys_are_rejected() {
         let base = "[molecule]\nxyz = \"w.xyz\"\n[basis]\nname = \"6-31g\"\n\
-                    [method]\nkind = \"lmp2-direct\"\n[mp2]\nauxbasis = \"cc-pvdz-ri\"\n";
-        let absent: Config = toml::from_str(base).unwrap();
-        assert!(
-            !absent.mp2.lmp2_reference(),
-            "the canonical reference must be OFF when the key is absent"
-        );
-        let on: Config = toml::from_str(&format!("{base}lmp2_reference = true\n")).unwrap();
-        assert!(on.mp2.lmp2_reference());
-        let off: Config = toml::from_str(&format!("{base}lmp2_reference = false\n")).unwrap();
-        assert!(!off.mp2.lmp2_reference());
-        // a non-bool value is a parse error, not a coerced default
-        for bad in ["\"yes\"", "\"true\"", "1"] {
+                    [method]\nkind = \"rimp2\"\n[mp2]\n";
+        for key in [
+            "lmp2_eps = 1e-4",
+            "lmp2_reference = true",
+            "drpa_eps = 1e-4",
+            "drpa_reference = true",
+            "drpa_eps_sweep = [1e-4]",
+            "linlccd_eps = 1e-4",
+            "direct_aux_radius = 10.0",
+            "direct_virt_radius = 12.0",
+            "direct_ao_tail = 1e-3",
+            "direct_schwarz_skip = 1e-5",
+            "direct_batch_merge = 4",
+            "direct_gate_cal = 0.7",
+            "direct_virt_schwarz_kappa = 1.0",
+        ] {
+            let name = key.split(' ').next().unwrap();
+            let e = toml::from_str::<Config>(&format!("{base}{key}\n"))
+                .err()
+                .unwrap_or_else(|| panic!("[mp2] {name} must not parse"));
+            assert!(e.to_string().contains(name), "{name}: {e}");
+        }
+        for kind in ["lmp2", "lmp2-direct", "linlccd-amplitude"] {
             assert!(
-                toml::from_str::<Config>(&format!("{base}lmp2_reference = {bad}\n")).is_err(),
-                "lmp2_reference = {bad} must not parse"
+                !crate::SUPPORTED_METHOD_KINDS.contains(&kind),
+                "{kind} must not be a supported kind"
+            );
+            assert!(
+                crate::unsupported_method_message(kind).contains(&format!("\"{kind}\"")),
+                "{kind}"
             );
         }
-        // a typo'd key errors and names itself
-        let err = match toml::from_str::<Config>(&format!("{base}lmp2_referense = true\n")) {
-            Ok(_) => panic!("typo'd lmp2_reference key parsed — deny_unknown_fields regressed"),
-            Err(e) => e.to_string(),
-        };
-        assert!(
-            err.contains("lmp2_referense"),
-            "error should name the bad key: {err}"
-        );
     }
 
     /// Unknown/typo'd keys must be a parse error, not silently ignored. A

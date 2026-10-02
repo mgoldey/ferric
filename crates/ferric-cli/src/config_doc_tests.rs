@@ -94,6 +94,7 @@ fn accepted_keys_by_section() -> BTreeMap<&'static str, BTreeSet<&'static str>> 
         ("scf.ladder", fields_of::<LadderRungCfg>()),
         ("dft", fields_of::<DftCfg>()),
         ("mp2", fields_of::<Mp2Cfg>()),
+        ("local", fields_of::<LocalCfg>()),
         ("rpa", fields_of::<RpaCfg>()),
         ("gw", fields_of::<GwCfg>()),
         ("tddft", fields_of::<TddftCfg>()),

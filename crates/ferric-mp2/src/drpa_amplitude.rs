@@ -427,6 +427,75 @@ fn amplitude_drpa_from_basis(
     })
 }
 
+/// Ragged sets of `Σ_p da·db` f64 entries the Riccati solve holds at its
+/// peak WITHOUT DIIS: `b_blocks`, `t`, `new_t`, `f_t`, `bt`, `u`, `tu`.
+/// Read off [`riccati_masked_solve`]; keep the two in step.
+const RICCATI_WORK_COPIES: usize = 7;
+
+/// Extra ragged-sized copies DIIS adds at subspace `s`: `s` stored iterates,
+/// `s` stored error vectors, the extrapolated output, and the four flat
+/// row vectors of one step (`flat_new`, `flat_prev`, `err`, `flat_ext`).
+fn diis_copies(diis: Option<usize>) -> usize {
+    diis.map_or(0, |s| 2 * s + 5)
+}
+
+/// Bytes an assembled ragged pair space holds: per pair, the integral block,
+/// the denominators and the two virtual Fock blocks (f64), the pattern
+/// (one byte per entry) and the four index vectors.
+pub fn ragged_bytes(rg: &Ragged) -> usize {
+    rg.pairs
+        .iter()
+        .map(|pb| {
+            8 * (pb.j_blk.len() + pb.denom.len() + pb.fvv_aa.len() + pb.fvv_bb.len())
+                + pb.pat.len()
+                + 8 * (pb.da.len() + pb.db.len() + pb.pos_da.len() + pb.pos_db.len())
+        })
+        .sum()
+}
+
+/// Bytes the masked Riccati solve allocates on top of the assembled `rg`:
+/// `RICCATI_WORK_COPIES` ragged working sets, the DIIS history at
+/// subspace `diis`, and the ring-product plan ([`RingPlan::bytes_for`]).
+///
+/// The plan dominates when the pattern is full: at ε = 0 it is `no` times
+/// the size of B, which is what made the exact (ε = 0) path the memory
+/// ceiling of this solver (C12 thrashed, then was OOM-killed).
+pub fn riccati_solve_bytes(rg: &Ragged, diis: Option<usize>) -> usize {
+    let n_blk: usize = rg.pairs.iter().map(|pb| pb.j_blk.len()).sum();
+    8usize
+        .saturating_mul(n_blk)
+        .saturating_mul(RICCATI_WORK_COPIES + diis_copies(diis))
+        .saturating_add(RingPlan::bytes_for(rg))
+}
+
+/// Peak bytes of EXACT dRPA through this solver — ε = 0, no pair gate — for
+/// `no` active occupied and `nv` virtual orbitals, before anything is
+/// assembled: the closed form of [`ragged_bytes`] + [`riccati_solve_bytes`]
+/// when every ordered pair `(i, j)` holds the full virtual space (pinned
+/// against the counted sizes by `tests/drpa_exact_memory.rs`).
+///
+/// Excludes the 3-index RI tensors of the localized basis, which are
+/// `naux·no·nv` (a factor `no·nv/naux` smaller than one ragged set) and are
+/// charged by their own path. Callers use it to refuse an exact run that
+/// cannot fit BEFORE the SCF, rather than after the assembly.
+pub fn exact_drpa_peak_bytes(no: usize, nv: usize, diis: Option<usize>) -> usize {
+    let pairs = no.saturating_mul(no);
+    let nv2 = nv.saturating_mul(nv);
+    let idx = std::mem::size_of::<(usize, usize)>();
+    // per pair: j_blk, denom, fvv_aa, fvv_bb (f64) + pat (u8) + da, db,
+    // pos_da, pos_db (usize, each nv long)
+    let ragged = pairs.saturating_mul(nv2.saturating_mul(4 * 8 + 1).saturating_add(4 * 8 * nv));
+    let work = pairs
+        .saturating_mul(nv2)
+        .saturating_mul(8 * (RICCATI_WORK_COPIES + diis_copies(diis)));
+    // ring plan: per output pair, `no` triples of an nv × nv panel plus three
+    // nv-long index lists
+    let plan = pairs
+        .saturating_mul(no)
+        .saturating_mul(nv2.saturating_mul(8).saturating_add(3 * nv * idx));
+    ragged.saturating_add(work).saturating_add(plan)
+}
+
 /// Masked Riccati fixed-point solve on an already-assembled ragged
 /// B = 2(ia|jb) — the UNCHANGED solver shared by the global-B path
 /// ([`amplitude_drpa_from_basis`]) and the integral-direct path
@@ -440,6 +509,19 @@ fn riccati_masked_solve(
     f_oo: &Array2<f64>,
     cfg: &AmplitudeDrpaConfig,
 ) -> Result<(f64, usize, f64), FerricError> {
+    // HARD charge for everything this solve allocates, before the first of
+    // it exists: the working sets, DIIS history and the ring plan were
+    // visible to no budget before, and at ε = 0 the plan alone is `no`
+    // times B (the measured C12 OOM). Inert without an installed pool.
+    let _solve_charge = crate::rimp2::charge_mo_side(
+        &format!(
+            "dRPA Riccati solve ({} pairs, {} amplitudes; working sets, DIIS history, \
+             ring-product plan)",
+            rg.pairs.len(),
+            rg.pairs.iter().map(|pb| pb.j_blk.len()).sum::<usize>()
+        ),
+        riccati_solve_bytes(rg, cfg.diis),
+    )?;
     let b_blocks: Vec<Array2<f64>> = rg.pairs.iter().map(|pb| pb.j_blk.clone()).collect();
     let bnorm = b_blocks
         .iter()

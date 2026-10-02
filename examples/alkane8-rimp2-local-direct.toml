@@ -1,0 +1,33 @@
+# RI-MP2 under the amplitude-threshold local approximation, INTEGRAL-DIRECT:
+# the correlation assembly never forms the global 3-index tensor. Every
+# locality map is shown at its measured production default; each is a
+# controlled approximation, and the run prints the ones it used.
+#
+# The exact RI-MP2 reference is opt-in (it forms the global 3-index tensor this
+# path exists to avoid): uncomment `reference = true` to print the error
+# against it; left off, the run is reduced-cost and says the reference was not
+# computed.
+[molecule]
+xyz = "testdata/molecules/alkane_8.xyz"
+
+[basis]
+name = "6-31g"
+
+[method]
+kind = "rimp2"
+
+[mp2]
+auxbasis = "cc-pvdz-ri"
+frozen_core = 8
+
+[local]
+scheme = "amplitude-threshold"
+eps = 1e-4
+integral_direct = true
+aux_radius = 10.0
+virt_radius = 12.0
+ao_tail = 1e-3
+schwarz_skip = 1e-5    # set 0.0 for terfc (no Schwarz support)
+batch_merge = 4
+gate_cal = 0.7         # ~0.7 Coulomb / ~0.02 erfc(1); omit = gate off
+# reference = true     # opt-in exact RI-MP2 reference (N^5)
