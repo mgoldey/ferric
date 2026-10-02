@@ -106,7 +106,7 @@ fn cosx_exact() -> CosxConfig {
             prune: None,
         },
         final_grid: None,
-        ..CosxConfig::default()
+        ..CosxConfig::flat_reference()
     }
 }
 
@@ -118,7 +118,7 @@ fn cosx_production_nofit() -> CosxConfig {
         // The default SCF grid; no final pass (its energy is not the one the
         // gradient differentiates, and the dispatcher refuses such a result).
         final_grid: None,
-        ..CosxConfig::default()
+        ..CosxConfig::flat_reference()
     }
 }
 
@@ -698,7 +698,7 @@ fn cosx_fitted() -> CosxConfig {
             prune: None,
         },
         final_grid: None,
-        ..CosxConfig::default()
+        ..CosxConfig::flat_reference()
     };
     c.grid.n_radial = 30;
     c.grid.n_angular = 110;

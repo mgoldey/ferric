@@ -86,7 +86,7 @@ fn cosx_default() -> CosxConfig {
             prune: None,
         },
         final_grid: None,
-        ..CosxConfig::default()
+        ..CosxConfig::flat_reference()
     }
 }
 

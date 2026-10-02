@@ -279,9 +279,12 @@ Butane, one thread; TZ is def2-TZVP (184 functions), QZ is def2-QZVP (528).
 | Builder | System / basis | Error |
 |---|---|---:|
 | LinK | butane / def2-SVP | 9e-12 Ha |
-| COSX, default grid | water / cc-pVDZ | 5e-6 Ha |
-| COSX, default grid | butane / def2-SVP | 1.7e-4 Ha |
-| COSX, default grid | butane / def2-TZVP | 1.2e-4 Ha |
+| COSX, default (sgx (35,194) + final pass on sgx (50,302)) | water / aug-cc-pVDZ | −8.1e-9 Ha |
+| COSX, default | butane / def2-SVP | −3.4e-5 Ha |
+| COSX, default | butane / def2-TZVP | −4.3e-6 Ha |
+| COSX, flat (50,110) | water / cc-pVDZ | 5e-6 Ha |
+| COSX, flat (50,110) | butane / def2-SVP | 1.7e-4 Ha |
+| COSX, flat (50,110) | butane / def2-TZVP | 1.2e-4 Ha |
 | RI-JK | — | not measured on these systems |
 
 **Start with density fitting** whenever its three-index tensor fits in memory
@@ -317,7 +320,7 @@ RHF, 3.6e-9 UHF).
 **COSX is for large basis sets on systems too big for RI-JK.** Its cost per
 grid point barely moves with angular momentum while analytic exchange grows
 roughly tenfold from SVP to QZVP, so it wins at high angular momentum, not at
-large system size. Measured on one thread at the default grid:
+large system size. Measured on one thread at the flat (50,110) grid:
 
 - On butane, against exact direct exchange: at def2-TZVP the full COSX SCF is
   3.7× slower (358 s vs 98 s); at def2-QZVP the COSX K build takes 90 s,
@@ -337,25 +340,26 @@ AO lists (`cosx_half_transform = "sparse"`, the default). At def2-SVP the K
 build grows as N^1.29–N^1.32 between C20 and C48; that is one family of
 molecules in one basis.
 
-COSX's energy error at the default grid is about 5e-6 Ha on water/cc-pVDZ
+On the flat (50,110) grid COSX's energy error is about 5e-6 Ha on water/cc-pVDZ
 (4.9e-6 in `cosx_k_anchors.rs`, 5.1e-6 in the ORCA comparison run),
 1.7e-4 Ha on butane/def2-SVP and 1.2e-4 Ha on butane/def2-TZVP (against exact
 exchange). ORCA 6.1.1's COSX at its own default grid gives 4.9e-6, 3.8e-5 and
-1.3e-5 Ha on the same systems and bases, although ferric's default grid has
-about twice as many points: ORCA's grids are pruned around a 194-point valence
-shell and it evaluates its final energy once on a finer grid, which ferric does
-only on request (`cosx_grid` pruning and `cosx_final_pass`, below). Refining ferric's grid converges water to 3.4e-8 Ha,
+1.3e-5 Ha on the same systems and bases with about half as many points: ORCA's
+grids are pruned around a 194-point valence shell and it evaluates its final
+energy once on a finer grid. ferric's default does the same (`cosx_grid`
+pruning and `cosx_final_pass`, below). Refining the flat grid converges water to 3.4e-8 Ha,
 but butane/def2-SVP stays at 3.4e-5 Ha at Lebedev-302 for every radial grid.
 That residual is angular: an independent COSX (PySCF SGX, 75 radial shells) on
 the same system goes from 5.5e-5 Ha at 302 points per shell to -8.5e-6 at 434
 and 2.7e-6 at 590. ferric's COSX follows the same path at 75 radial shells:
 -3.4e-5 at 302, -5.6e-6 at 434 and +1.8e-6 at 590, for 1.8x and 2.2x the
 302-point wall time. Reaction energies cancel
-most of the error (0.02 kcal/mol on an isodesmic alkane reaction at the default
-grid); absolute energies do not. Four knobs, all optional:
+most of the error (0.02 kcal/mol on an isodesmic alkane reaction at the flat
+(50,110) grid); absolute energies do not. Four knobs, all optional:
 
-- `cosx_grid = { radial = 50, angular = 110 }` is the default (flat). The
-  angular order matters most: on butane/def2-TZVP the error falls from
+- `cosx_grid = { radial = 35, angular = 194, prune = "sgx" }` is the default;
+  `{ radial = 50, angular = 110 }` is the flat grid. The angular order
+  matters most: on butane/def2-TZVP the error falls from
   1.2e-4 Ha at 110 points per shell to 4.0e-6 Ha at 302, while going from 50
   to 100 radial shells changes it by 1e-6 or less. Cost grows with the number
   of points. `angular` must be one of 6, 14, 26, 50, 110, 194, 302, 434 or
@@ -364,7 +368,7 @@ grid); absolute energies do not. Four knobs, all optional:
   Lebedev orders from one row, picked by the peak `angular` — at 194 the
   regions get 26/50/110/194/110 points. ferric's pruned COSX energy equals
   PySCF SGX on the same grid to 1.8e-12 Ha. A table without `prune` is flat.
-- `cosx_final_pass = true` (default `false`) re-evaluates exchange once on a
+- `cosx_final_pass = true` (the default; `false` turns it off) re-evaluates exchange once on a
   larger grid at the converged density and reports that energy; the SCF-grid
   energy is printed and logged next to it. `cosx_final_grid` picks the grid
   (default `{ radial = 50, angular = 302, prune = "sgx" }`). The pass is not
@@ -390,7 +394,7 @@ together with a named `df_k_aux`, is an error.
 RHF, overlap fit on unless noted), one run each, six threads; times are whole
 SCFs, indicative only. Errors, E − E_exact in Ha:
 
-| System | atoms | flat (50,110), default | sgx (35,194) | sgx (35,194) + final sgx (50,302) | sgx (50,302) | sgx (50,194) | flat (50,194) | sgx (35,194), no fit |
+| System | atoms | flat (50,110) | sgx (35,194) | sgx (35,194) + final sgx (50,302), default | sgx (50,302) | sgx (50,194) | flat (50,194) | sgx (35,194), no fit |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | water / aug-cc-pVDZ | 3 | +6.1e-6 | +1.9e-6 | −8.1e-9 | −8.1e-9 | +9.8e-7 | +1.6e-7 | +1.6e-6 |
 | butane / def2-SVP | 14 | +1.7e-4 | +4.6e-5 | −3.4e-5 | −3.4e-5 | +4.1e-5 | +5.0e-5 | −2.7e-4 |
@@ -420,18 +424,18 @@ where it wins):
 
 What the table shows:
 
-- The pruned `sgx (35,194)` grid uses 0.65× the points of the flat default
+- The pruned `sgx (35,194)` grid uses 0.65× the points of flat (50,110)
   and is more accurate on seven of the eight molecules, by 1.7× (benzene) to
   29× (ethane). On methane it is 1.15× worse (9.2e-6 against 8.0e-6 Ha).
-  Because it does not win on every system, it is **not** the default; select
-  it with `cosx_grid = { radial = 35, angular = 194, prune = "sgx" }`.
+  This is the grid geometry tasks (optimize, frequencies) use, since they
+  run without the final pass.
 - The final pass on `sgx (50,302)` reproduces an SCF converged on that grid to
   4e-8 Ha on seven molecules and 1.5e-7 Ha on sulfamethoxazole, at 0.45–0.59×
   of that SCF's cost. Together with the pruned SCF grid it is more accurate
-  than the flat default on all eight molecules and on the reaction (0.003
-  against 0.074 kcal/mol), and faster on all eight (0.80–0.91× the default's
-  wall time). It is opt-in, not the default, because gradient tasks run
-  without it and their SCF-grid energy is then the pruned grid's alone.
+  than flat (50,110) on all eight molecules and on the reaction (0.003
+  against 0.074 kcal/mol), and faster on all eight (0.80–0.91× flat
+  (50,110)'s wall time). This pair is the default for energies; ROHF/ROKS has
+  no final pass and skips it with a note.
 - More radial shells (35 → 50) at a 194 peak buy little; removing the
   pruning (flat 194) costs 2.7× the points for errors of the same size. The
   overlap fit helps on every molecule but water (1.8× to 21×; on water it is

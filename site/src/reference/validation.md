@@ -294,7 +294,7 @@ Reported rather than omitted:
   than run without it. B3LYP at aug-cc-pVDZ agrees with PySCF to 6.5e-4 eV,
   40× worse than PBE in the same basis; the cause is not yet identified.
 - **COSX wins at high angular momentum, not at large system size.**
-  Measured on one thread at the default `(50,110)` grid and overlap fit:
+  Measured on one thread at the flat `(50,110)` grid with the overlap fit:
   - Against LinK on n-alkanes at def2-SVP it is slower at every size
     measured: 1.59× (C20), 1.09× (C32) and 1.22× (C48), with no trend toward
     parity. At def2-TZVP on C20 it is faster (0.67×); that is the only

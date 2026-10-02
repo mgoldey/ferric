@@ -110,7 +110,7 @@ fn cosx_exact() -> CosxConfig {
             prune: None,
         },
         final_grid: None,
-        ..CosxConfig::default()
+        ..CosxConfig::flat_reference()
     }
 }
 
@@ -601,7 +601,7 @@ fn pruned_grid_exchange_gradient_is_the_derivative_at_fixed_density() {
 #[test]
 fn final_pass_on_the_scf_grid_is_bit_identical() {
     let mol = mol_of(WATER, 1);
-    let base = cfg(None, true, Some(no_final(CosxConfig::default())));
+    let base = cfg(None, true, Some(no_final(CosxConfig::flat_reference())));
     let r0 = solve_r(&mol, "sto-3g", &base);
     assert!(r0.cosx_final.is_none());
     let mut same = base.clone();
@@ -617,7 +617,7 @@ fn final_pass_on_the_scf_grid_is_bit_identical() {
     assert_eq!(rec.npts_final, rec.npts_scf);
 
     let ho2 = mol_of(HO2, 2);
-    let base_u = cfg(None, false, Some(no_final(CosxConfig::default())));
+    let base_u = cfg(None, false, Some(no_final(CosxConfig::flat_reference())));
     let u0 = solve_u(&ho2, "sto-3g", &base_u);
     let mut same_u = base_u.clone();
     same_u.cosx.final_grid = Some(same_u.cosx.grid.clone());
@@ -660,11 +660,11 @@ fn final_pass_on_a_larger_grid_moves_towards_exact_exchange() {
 /// The geometry drivers run without the final pass (it is energy-only).
 #[test]
 fn geometry_drivers_drop_the_final_pass() {
-    let mut c = cfg(None, true, Some(no_final(CosxConfig::default())));
+    let mut c = cfg(None, true, Some(no_final(CosxConfig::flat_reference())));
     c.cosx.final_grid = Some(c.cosx.grid.clone());
     let g = gradient_task_config(&c);
     assert!(g.cosx.final_grid.is_none());
-    let plain = cfg(None, true, Some(no_final(CosxConfig::default())));
+    let plain = cfg(None, true, Some(no_final(CosxConfig::flat_reference())));
     assert!(matches!(
         gradient_task_config(&plain),
         std::borrow::Cow::Borrowed(_)
