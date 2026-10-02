@@ -100,6 +100,12 @@ fn cosx_exact() -> CosxConfig {
         overlap_fit: false,
         screen_thresh: None,
         half_transform: CosxHalfTransform::Dense,
+        grid: ferric_dft::grid::AtomicGridConfig {
+            n_radial: 50,
+            n_angular: 110,
+            prune: None,
+        },
+        final_grid: None,
         ..CosxConfig::default()
     }
 }
@@ -109,6 +115,9 @@ fn cosx_exact() -> CosxConfig {
 fn cosx_production_nofit() -> CosxConfig {
     CosxConfig {
         overlap_fit: false,
+        // The default SCF grid; no final pass (its energy is not the one the
+        // gradient differentiates, and the dispatcher refuses such a result).
+        final_grid: None,
         ..CosxConfig::default()
     }
 }
@@ -683,6 +692,12 @@ fn cosx_fitted() -> CosxConfig {
         overlap_fit: true,
         screen_thresh: None,
         half_transform: CosxHalfTransform::Dense,
+        grid: ferric_dft::grid::AtomicGridConfig {
+            n_radial: 50,
+            n_angular: 110,
+            prune: None,
+        },
+        final_grid: None,
         ..CosxConfig::default()
     };
     c.grid.n_radial = 30;

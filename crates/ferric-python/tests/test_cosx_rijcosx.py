@@ -52,7 +52,8 @@ def test_rijcosx_b3lyp_gradient_matches_fd(setup):
     """
     _, bs = setup
     kw = dict(
-        k_builder="cosx", cosx_overlap_fit=False, energy_conv=1e-8, density_conv=1e-9
+        k_builder="cosx", cosx_overlap_fit=False,
+        cosx_final_pass=False, energy_conv=1e-8, density_conv=1e-9
     )
     mol0 = ferric.Molecule.from_xyz_string(_water_xyz(0.0))
     g = np.asarray(
@@ -101,7 +102,9 @@ def test_final_pass_record(setup):
     assert fp["npts_final_grid"] > fp["npts_scf_grid"]
     assert fp["npts_scf_grid"] == ferric.cosx_grid_point_count(mol, (35, 194, "sgx"))
     assert fp["gradient_differentiates"] == "e_scf_grid"
-    plain = ferric.run_rhf(mol, bs, k_builder="cosx", cosx_grid=(35, 194, "sgx"))
+    plain = ferric.run_rhf(
+        mol, bs, k_builder="cosx", cosx_grid=(35, 194, "sgx"), cosx_final_pass=False
+    )
     assert plain.cosx_final_pass is None
     assert plain.energy == fp["e_scf_grid"]
 

@@ -91,11 +91,25 @@ fn max_abs(a: &Array2<f64>) -> f64 {
 
 /// COSX with the screens and the fit OFF: the energy the gradient
 /// differentiates exactly.
+/// `cfg` with the final pass off (the tests that want one set it).
+fn no_final(cfg: CosxConfig) -> CosxConfig {
+    CosxConfig {
+        final_grid: None,
+        ..cfg
+    }
+}
+
 fn cosx_exact() -> CosxConfig {
     CosxConfig {
         overlap_fit: false,
         screen_thresh: None,
         half_transform: CosxHalfTransform::Dense,
+        grid: ferric_dft::grid::AtomicGridConfig {
+            n_radial: 50,
+            n_angular: 110,
+            prune: None,
+        },
+        final_grid: None,
         ..CosxConfig::default()
     }
 }
@@ -587,7 +601,7 @@ fn pruned_grid_exchange_gradient_is_the_derivative_at_fixed_density() {
 #[test]
 fn final_pass_on_the_scf_grid_is_bit_identical() {
     let mol = mol_of(WATER, 1);
-    let base = cfg(None, true, Some(CosxConfig::default()));
+    let base = cfg(None, true, Some(no_final(CosxConfig::default())));
     let r0 = solve_r(&mol, "sto-3g", &base);
     assert!(r0.cosx_final.is_none());
     let mut same = base.clone();
@@ -603,7 +617,7 @@ fn final_pass_on_the_scf_grid_is_bit_identical() {
     assert_eq!(rec.npts_final, rec.npts_scf);
 
     let ho2 = mol_of(HO2, 2);
-    let base_u = cfg(None, false, Some(CosxConfig::default()));
+    let base_u = cfg(None, false, Some(no_final(CosxConfig::default())));
     let u0 = solve_u(&ho2, "sto-3g", &base_u);
     let mut same_u = base_u.clone();
     same_u.cosx.final_grid = Some(same_u.cosx.grid.clone());
@@ -646,11 +660,11 @@ fn final_pass_on_a_larger_grid_moves_towards_exact_exchange() {
 /// The geometry drivers run without the final pass (it is energy-only).
 #[test]
 fn geometry_drivers_drop_the_final_pass() {
-    let mut c = cfg(None, true, Some(CosxConfig::default()));
+    let mut c = cfg(None, true, Some(no_final(CosxConfig::default())));
     c.cosx.final_grid = Some(c.cosx.grid.clone());
     let g = gradient_task_config(&c);
     assert!(g.cosx.final_grid.is_none());
-    let plain = cfg(None, true, Some(CosxConfig::default()));
+    let plain = cfg(None, true, Some(no_final(CosxConfig::default())));
     assert!(matches!(
         gradient_task_config(&plain),
         std::borrow::Cow::Borrowed(_)
@@ -685,11 +699,17 @@ fn final_pass_gradient_options_measured() {
         let rec = r.cosx_final.expect("final pass");
         let (bs, prep, bounds) = prep_of(&mol, basis);
         let op = Operator::coulomb();
-        let g_a = restricted_scf_gradient(&mol, &prep, &bs, op, &bounds, &c, &r).expect("a");
-        let mut c_b = c.clone();
+        // The dispatcher refuses a final-pass result; strip the record to
+        // evaluate both candidate formulas at the same SCF density.
+        assert!(restricted_scf_gradient(&mol, &prep, &bs, op, &bounds, &c, &r).is_err());
+        let mut r0 = r.clone();
+        r0.cosx_final = None;
+        let mut c_a = c.clone();
+        c_a.cosx.final_grid = None;
+        let g_a = restricted_scf_gradient(&mol, &prep, &bs, op, &bounds, &c_a, &r0).expect("a");
+        let mut c_b = c_a.clone();
         c_b.cosx.grid = fg;
-        c_b.cosx.final_grid = None;
-        let g_b = restricted_scf_gradient(&mol, &prep, &bs, op, &bounds, &c_b, &r).expect("b");
+        let g_b = restricted_scf_gradient(&mol, &prep, &bs, op, &bounds, &c_b, &r0).expect("b");
         let cs = seeded(&c, r.density_r());
         let fd_final = fd(&mol, &|m: &Molecule| solve_r(m, basis, &cs).energy);
         let fd_scf = fd(&mol, &|m: &Molecule| {

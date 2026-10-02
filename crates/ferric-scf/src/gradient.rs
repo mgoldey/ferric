@@ -714,6 +714,7 @@ pub fn restricted_scf_gradient(
     config: &crate::rhf::RhfConfig,
     result: &ScfResult,
 ) -> Result<Array2<f64>, FerricError> {
+    refuse_final_pass_result(result)?;
     let ext = config.external_potential.as_ref();
     let cosx = crate::cosx_gradient::scf_exchange_is_cosx(config, false)?.then_some(&config.cosx);
     match (config.xc.as_deref(), cosx) {
@@ -739,6 +740,7 @@ pub fn unrestricted_scf_gradient(
     config: &crate::rhf::RhfConfig,
     result: &ScfResult,
 ) -> Result<Array2<f64>, FerricError> {
+    refuse_final_pass_result(result)?;
     let ext = config.external_potential.as_ref();
     let cosx = crate::cosx_gradient::scf_exchange_is_cosx(config, true)?;
     match (config.xc.as_deref(), cosx) {
@@ -749,6 +751,25 @@ pub fn unrestricted_scf_gradient(
         (None, true) => uhf_gradient_cosx(mol, prep, op, bounds, result, ext, &config.cosx),
         (None, false) => uhf_gradient(mol, prep, op, bounds, result, ext),
     }
+}
+
+/// Refuse to differentiate a result whose reported energy came from a COSX
+/// final-grid pass: `result.energy` is then `e_final`, while every analytic
+/// gradient here is the derivative of the SCF-grid energy, so returning one
+/// would pair two surfaces (measured: 2.1e-6..1.6e-5 Ha/Bohr apart on
+/// water/6-31G). Run the SCF with [`gradient_task_config`] (the geometry
+/// drivers and `run_dft(with_gradient=True)` do).
+fn refuse_final_pass_result(result: &ScfResult) -> Result<(), FerricError> {
+    if let Some(f) = result.cosx_final {
+        return Err(FerricError::General(format!(
+            "this SCF result reports a COSX final-grid energy (E_final = {:.10}, SCF grid {:.10}); \
+             analytic gradients differentiate the SCF-grid energy, so they are not the gradient \
+             of the reported energy. Solve with the final pass off (gradient_task_config / \
+             cosx final_grid = None) for gradient work",
+            f.e_final, f.e_scf_grid
+        )));
+    }
+    Ok(())
 }
 
 /// The SCF config a geometry driver (optimize, finite-difference

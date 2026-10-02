@@ -335,8 +335,15 @@ pub const COSX_DEFAULT_FINAL_GRID: (usize, usize, Option<ferric_dft::prune::Prun
 /// User-facing COSX knobs. Carried in `RhfConfig::cosx`.
 #[derive(Debug, Clone)]
 pub struct CosxConfig {
-    /// The exchange grid. Default (50,110), unpruned — see the module doc for
-    /// why not coarser.
+    /// The exchange (SCF) grid. Default (50,110), unpruned.
+    ///
+    /// The pruned `sgx` (35,194) grid (`prune = Some(PruneScheme::Sgx)`) was
+    /// measured against it on eight molecules (`scripts/cosx_grid_sweep.py`,
+    /// table in `site/src/methods/scf.md`): 0.65x the points and more accurate
+    /// on seven (1.7x-29x), but 1.15x WORSE on methane/cc-pVDZ (9.2e-6 vs
+    /// 8.0e-6 Ha). The switch was conditioned on winning everywhere, so the
+    /// default stays flat; the pruned grid plus a final pass on sgx (50,302)
+    /// wins on all eight and is the recommended energy setting.
     pub grid: AtomicGridConfig,
     /// Overlap fitting `K = 0.5(S S_num^{-1} Ktilde + h.c.)`. Default `true`.
     /// Measured to be net-negative on grids coarser than (50,110) and a ~10x

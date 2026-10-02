@@ -349,6 +349,7 @@ fn grid(n_radial: usize, n_angular: usize) -> AtomicGridConfig {
 fn cosx_production(g: AtomicGridConfig) -> CosxConfig {
     CosxConfig {
         grid: g,
+        final_grid: None,
         ..CosxConfig::default()
     }
 }
@@ -361,6 +362,7 @@ fn cosx_unscreened_nofit(g: AtomicGridConfig) -> CosxConfig {
         overlap_fit: false,
         screen_thresh: None,
         half_transform: CosxHalfTransform::Dense,
+        final_grid: None,
         ..CosxConfig::default()
     }
 }
@@ -534,11 +536,11 @@ fn ladder_case(sys: Sys, xc: Option<&str>) {
 
     let exact = solve(&s, &scf_cfg(xc, None), "exact");
 
-    // Production point (50,110)+fit.
+    // Production point: the library default (SCF grid + final pass).
     let prod_cfg = seeded(scf_cfg(xc, Some(CosxConfig::default())), exact.density_r());
-    let e_prod = solve(&s, &prod_cfg, "cosx production (50,110)").energy - exact.energy;
+    let e_prod = solve(&s, &prod_cfg, "cosx production default").energy - exact.energy;
     eprintln!(
-        "{} {key}: production (50,110)+fit  E-E_exact {e_prod:+.3e}",
+        "{} {key}: production default  E-E_exact {e_prod:+.3e}",
         s.label
     );
 
@@ -700,7 +702,15 @@ fn fd_case(xyz_rel: &str, basis_name: &str, xc: Option<&str>, cosx: CosxConfig) 
     );
     let s = setup_from(label.clone(), mol, basis_name);
 
-    let cfg_c = scf_cfg(xc, Some(cosx));
+    // Gradient work runs without the (energy-only) final pass, as the
+    // geometry drivers do.
+    let cfg_c = scf_cfg(
+        xc,
+        Some(CosxConfig {
+            final_grid: None,
+            ..cosx
+        }),
+    );
     let r_c = solve(&s, &cfg_c, "cosx");
     let (g_c, g_old) = grads(&s, &cfg_c, &r_c);
     let fd_c = fd_gradient(&s, basis_name, &cfg_c, r_c.density_r());

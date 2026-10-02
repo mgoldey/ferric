@@ -76,8 +76,16 @@ fn cosx_default() -> CosxConfig {
         Some("dense") => CosxHalfTransform::Dense,
         Some(other) => panic!("COSX_ANCHOR_HALF = {other:?}: expected \"sparse\" or \"dense\""),
     };
+    // Pinned to the flat (50,110) grid this file's numbers were measured on,
+    // with no final pass (the library default may differ).
     CosxConfig {
         half_transform: half,
+        grid: ferric_dft::grid::AtomicGridConfig {
+            n_radial: 50,
+            n_angular: 110,
+            prune: None,
+        },
+        final_grid: None,
         ..CosxConfig::default()
     }
 }

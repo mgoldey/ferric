@@ -646,14 +646,22 @@ fn rpa_optimize_with_a_ks_reference_is_refused() {
 
 /// Pre-fix: water/STO-3G, rhf, task = "optimize", `k_builder = "cosx"` ran
 /// to completion with COSX energies and an exact-exchange gradient (FD
-/// mismatch -8.9e-6 Ha/Bohr on one H z at STO-3G, -1.4e-5 at cc-pVDZ).
-/// Removing the cosx branch of `validate_task_compat` lets it run again. The
-/// anchor is the same molecule with COSX on task = "energy", which must run.
+/// mismatch -8.9e-6 Ha/Bohr on one H z at STO-3G, -1.4e-5 at cc-pVDZ). The
+/// RHF/RKS/UHF gradients now differentiate COSX, so an rhf COSX optimize
+/// RUNS; a kind whose gradient has no COSX derivative (ROHF) stays refused.
+/// Removing the cosx branch of `validate_task_compat` lets the rohf run start.
 #[test]
-fn cosx_with_optimize_is_refused_but_a_cosx_energy_runs() {
+fn cosx_optimize_runs_for_rhf_and_is_refused_for_rohf() {
     let cosx = "[scf]\nk_builder = \"cosx\"\n";
-    let out = run_toml("cosx_opt", &body("h2.xyz", 1, "rhf", "optimize", cosx));
+    let out = run_toml(
+        "cosx_opt_rohf",
+        &body("h2.xyz", 1, "rohf", "optimize", cosx),
+    );
     assert_refused(&out, &["k_builder = \"cosx\"", "optimize"]);
+    assert_runs(
+        &run_toml("cosx_opt", &body("h2.xyz", 1, "rhf", "optimize", cosx)),
+        "an rhf COSX optimization",
+    );
     assert_runs(
         &run_toml("cosx_energy", &body("h2.xyz", 1, "rhf", "energy", cosx)),
         "an rhf COSX energy",
