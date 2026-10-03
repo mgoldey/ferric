@@ -21432,8 +21432,8 @@
     "mi": 64.73801420189571
   },
   "crates/ferric-python/src/lib.rs::run_optimize": {
-    "cc": 2.0,
-    "mi": 79.51907087456598
+    "cc": 4.0,
+    "mi": 72.94126260984918
   },
   "crates/ferric-python/src/lib.rs::run_optimize_qmmm": {
     "cc": 13.0,
