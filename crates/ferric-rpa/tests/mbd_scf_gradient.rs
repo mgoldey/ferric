@@ -1,7 +1,10 @@
 //! Hirshfeld-volume nuclear derivative and the MBD@rsSCS-on-SCF gradient.
 //!
 //! Fast tests (run by default):
-//!   * `on_grid_volumes_are_bit_identical_to_default` — the refactor anchor.
+//!   * `on_grid_volumes_are_reproducible_and_differ_from_the_becke_default`
+//!     — the lattice path is pinned to the ulp against itself, and must NOT
+//!     equal the Becke-grid default (a zero difference means the volume grid
+//!     never took effect).
 //!   * `radial_proatom_deriv_matches_fd_everywhere` — the interpolant slope.
 //!   * `hirshfeld_volume_gradient_matches_fd_*` — THE construction test:
 //!     analytic ∂(Σ_A c_A v_A)/∂R vs central FD of the on-grid volumes with D and
