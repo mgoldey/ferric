@@ -1,6 +1,41 @@
 #!/usr/bin/env python3
 """PROVEN closed-form for the terfc (s|s|s) base integral, verified vs direct
 radial quadrature to ~1e-12 across r0 and D.
+########################################################################
+# WARNING (2026-09-14): THIS FILE'S OPERATOR IS MISSING A FACTOR OF 2
+# AND IS **NOT** THE KERNEL THE SHIM SHIPS. Do not use it as an oracle.
+########################################################################
+
+`base_terfc_gt` below (and the Phi_h construction it validates) uses
+
+    op(r) = 1/r - (erf(w(r-r0)) + erf(w(r+r0))) / r          <-- no /2
+
+whereas the shipped engine (crates/ferric-integrals/shim/shim.cc:717-718) is
+
+    terfc(r,r0)/r = 1/r - (erf(w(r-r0)) + erf(w(r+r0))) / (2 r)
+
+Both halves of this file use the SAME un-halved form, so its self-check agrees
+to 1e-60 — the agreement is real but it validates the wrong operator. The
+un-halved numerator `1 - (erf(..) + erf(..))` falls through zero at r ~ r0 and
+tends to -1, so it is not a short-range attenuator at all. Measured on this
+file's own geometry, via its own `gt_phi`:
+
+    r0    S        un-halved (this file)    shipped (/2)    coulomb F_0(S)
+    0.5   0.0663        -0.5075                0.2354          0.9783
+    1.0   1.0131        -0.1556                0.2944          0.7443
+    2.0   7.1814        -0.1296                0.1005          0.3307
+
+terfc is a NON-NEGATIVE kernel integrated against non-negative s-Gaussian
+product densities, so [0|terfc|0] must lie strictly in (0, [0|coulomb|0]).
+The un-halved column violates that; the shipped column satisfies it, and
+matches what crates/ferric-integrals/tests/terfc_base_validation.rs pins
+(`terfc/coulomb ratio must be in (0,1)`).
+
+Left UNCHANGED deliberately, and flagged rather than silently edited: this
+file is a historical derivation record, the shim does not depend on it, and
+`scripts/terfc_pd_check.py` + `scripts/terfc_csb_positivity.py` already use
+the correct /2 convention. Anyone reviving this as an oracle must insert the
+/2 in `base_terfc_gt` AND re-derive `Phi_h`'s prefactor to match.
 
 Result (all verified numerically in this file):
 
