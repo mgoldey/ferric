@@ -1068,11 +1068,13 @@ jobs:
   # is the general check: it is what would catch a NEW reduction that gets
   # striped but never summed, which no compile-time assert can anticipate.
   mpi:
-    name: mpi (OpenMPI, 2-rank correctness)
+    name: mpi (OpenMPI, cross-rank correctness at np 1/2/3)
     runs-on: ubuntu-22.04
     # Well under build-and-test's 170. The cargo build here is a subset of the
-    # workspace (ferric-scf + ferric-mp2 and their deps, not --all-targets),
-    # and the test systems are water/cc-pVDZ -- seconds of compute. The
+    # workspace (ferric-scf/-mp2/-rpa/-gw test targets and their deps, not
+    # --all-targets), and the multi-rank test systems are water -- about a
+    # minute of compute in total across all 25 mpirun launches (measured
+    # locally; the per-test table is in the step comment and the PR). The
     # headroom is almost entirely for a cold cargo build.
     timeout-minutes: 120
     steps:
@@ -1168,21 +1170,109 @@ jobs:
           fi
           echo "OK: partial-feature combination is rejected at compile time by the documented guard"
 
-      - name: Build the MPI correctness test binary
-        run: cargo test -p ferric-mp2 --features mpi --locked --test mpi_rimp2_banding --no-run
+      # Every cross-rank correctness test binary in the workspace, built with
+      # each crate's own `mpi` feature. Those features CHAIN: ferric-rpa/mpi
+      # turns on ferric-scf/mpi + ferric-mp2/mpi + ferric-core/mpi, and
+      # ferric-gw/mpi additionally chains ferric-rpa/mpi (see each
+      # Cargo.toml), so `-p ferric-gw --features mpi` is what makes the GW
+      # file's `#![cfg(feature = "mpi")]` body exist at all. Without the
+      # feature those two files compile to ZERO tests, and libtest reports
+      # `test result: ok. 0 passed` -- a green line with nothing run, which
+      # is exactly the shape of a fake pass the rank-count assertion below
+      # cannot see. Hence the per-binary expected-test-count check there.
+      #
+      # MERELY BUILDING THESE IS ALREADY A GATE THE REPO DID NOT HAVE.
+      # `mpi_rpa_freq_banding.rs` and `mpi_gw_qp_banding.rs` are
+      # `#![cfg(feature = "mpi")]`, so NO default-feature job in this workflow
+      # ever compiles their bodies -- they bit-rot in silence. Measured when
+      # this step was added (2026-10-03): `mpi_gw_qp_banding.rs` did not
+      # compile on main at all, `error[E0063]: missing field
+      # need_eigenvalues_freq in initializer of PdepRpaConfig` -- a field
+      # added to ferric-rpa's config after the test was written. Nothing in CI
+      # could see it. The `--no-run` builds below are the fix for that whole
+      # class of rot, independently of the mpirun runs that follow.
+      #
+      # BINARY PATHS COME FROM CARGO, NOT FROM `find`. The old step did
+      # `find target/debug/deps -name 'mpi_rimp2_banding-*' | head -1`, which
+      # picks an arbitrary one of however many stale metadata hashes a warm
+      # target/ holds -- a cache restore from a different Cargo.lock can leave
+      # a binary built WITHOUT the mpi feature sitting next to the fresh one,
+      # and `head -1` has no way to prefer the right one. `--message-format=json`
+      # emits one `compiler-artifact` record per built target carrying the
+      # `executable` path cargo just produced; that is the only authoritative
+      # answer. The mapping is written to /tmp/mpi-bins.txt as
+      # `<test-stem> <path>` lines for the run step to read.
+      - name: Build the MPI correctness test binaries
+        run: |
+          set -euo pipefail
+          : > /tmp/mpi-artifacts.json
+          build() {
+            echo "=== cargo test --no-run $*"
+            cargo test "$@" --features mpi --locked --no-run \
+              --message-format=json >> /tmp/mpi-artifacts.json
+          }
+          build -p ferric-scf \
+            --test mpi_dfjk_banding \
+            --test mpi_direct_jk_correctness \
+            --test mpi_sad_guess_correctness \
+            --test mpi_direct_jk_incremental_carryover \
+            --test mpi_guess_collective_ordering
+          build -p ferric-rpa --test mpi_rpa_freq_banding
+          build -p ferric-gw  --test mpi_gw_qp_banding
+          build -p ferric-mp2 --test mpi_rimp2_banding
 
-      # THE POINT OF THIS JOB. Runs the SAME test binary under 1 and 2 ranks
-      # and requires both to pass. At -np 2 the aux band is genuinely split
-      # (measured locally: rank 0 owns [0,42), rank 1 owns [42,84) of an
-      # 84-function cc-pVDZ-RI water aux basis), and
+          # One `<stem> <path>` line per test binary. `jq -r` over the
+          # compiler-artifact stream; the stem is the file name with cargo's
+          # `-<metadata hash>` suffix stripped, which is the name used by the
+          # run step and in the test files' own doc headers.
+          jq -r 'select(.reason == "compiler-artifact")
+                 | select(.target.kind[] == "test")
+                 | select(.executable != null)
+                 | "\(.target.name) \(.executable)"' \
+            /tmp/mpi-artifacts.json | sort -u > /tmp/mpi-bins.txt
+          cat /tmp/mpi-bins.txt
+          # Exactly the eight binaries below must be present. A missing line
+          # means a --test target was renamed or its build silently produced
+          # no executable, and the run step would then skip it in silence.
+          for stem in mpi_dfjk_banding mpi_direct_jk_correctness \
+                      mpi_sad_guess_correctness \
+                      mpi_direct_jk_incremental_carryover \
+                      mpi_guess_collective_ordering mpi_rpa_freq_banding \
+                      mpi_gw_qp_banding mpi_rimp2_banding; do
+            n=$(awk -v s="$stem" '$1 == s {c++} END {print c + 0}' /tmp/mpi-bins.txt)
+            if [ "$n" -ne 1 ]; then
+              echo "::error::expected exactly 1 built test binary for $stem, cargo reported $n"
+              exit 1
+            fi
+          done
+          echo "OK: 8 MPI test binaries located from cargo's own artifact records"
+
+      # THE POINT OF THIS JOB. Runs each cross-rank test binary under 1, 2 and
+      # 3 ranks and requires every rank of every run to pass. At -np 2 the aux
+      # band is genuinely split (measured locally: rank 0 owns [0,42), rank 1
+      # owns [42,84) of an 84-function cc-pVDZ-RI water aux basis), and
       # `assert_all_ranks_agree` MPI-Allreduces (max - min) of the
       # correlation energy across the world and fails above 1e-12 Ha. If a
       # band were ever striped without being summed back, the ranks would
       # hold different numbers and that assert is what catches it.
       #
-      # Measured locally (OpenMPI 4.1.6, this exact binary): both ranks
+      # WHY -np 3 AND NOT JUST -np 2. Every band split in this codebase is
+      # `n / size` with the remainder handed to the low ranks, so at -np 2 on
+      # an EVEN count (water's naux 84/116, the RPA frequency grid, the GW MO
+      # list) every rank gets the same width and the remainder branch never
+      # executes. 3 ranks is the smallest count that makes the bands UNEVEN,
+      # which is the arithmetic -np 2 structurally cannot reach: an off-by-one
+      # in a band offset that happens to cancel for equal widths shows up
+      # immediately as a cross-rank disagreement at -np 3. -np 1 stays as the
+      # exactness anchor (band == full range, distribution does nothing).
+      # `mpi_guess_collective_ordering` additionally runs at -np 4, the count
+      # its own header specifies (measured 8/10 aborts there pre-fix).
+      #
+      # Measured locally (OpenMPI 4.1.6, these exact binaries): both ranks
       # reported RI-MP2 corr = -0.204008549668735 Ha, bit-identical
-      # (0xbfca1cf3c0773ef0 on both), cross-rank spread 0.000e0.
+      # (0xbfca1cf3c0773ef0 on both), cross-rank spread 0.000e0; the full
+      # matrix of per-test wall times and cross-rank spreads at np 1/2/3 is
+      # in the PR for this job's expansion.
       #
       # WHY THE EXIT CODE IS PARSED FROM OUTPUT INSTEAD OF TRUSTED.
       # ferric parks the MPI Universe process-globally and never calls
@@ -1198,7 +1288,7 @@ jobs:
       # EVERY rank, and require zero failures. `--test-threads=1` keeps that
       # output parseable, and `--oversubscribe` lets 2 ranks onto a runner
       # that may advertise fewer slots than that.
-      - name: 2-rank correctness check
+      - name: Cross-rank correctness at np 1, 2 and 3
         env:
           # BLAS>1 under rayon segfaults/miscomputes in this repo (see the
           # workflow-level env and docs/reliability-audit). Per-rank, this
@@ -1221,17 +1311,33 @@ jobs:
           # license running this as root somewhere else.
         run: |
           set -euo pipefail
-          BIN=$(find target/debug/deps -name 'mpi_rimp2_banding-*' -type f -executable | head -1)
-          if [ -z "$BIN" ]; then
-            echo "::error::could not locate the mpi_rimp2_banding test binary"
-            exit 1
-          fi
-          echo "test binary: $BIN"
+          # Binary paths were resolved from cargo's own artifact records in
+          # the build step (see there for why `find ... | head -1` is wrong).
+          bin_for() {
+            local stem="$1" path
+            path=$(awk -v s="$stem" '$1 == s {print $2}' /tmp/mpi-bins.txt)
+            if [ -z "$path" ] || [ ! -x "$path" ]; then
+              echo "::error::no executable test binary recorded for $stem" >&2
+              exit 1
+            fi
+            printf '%s\n' "$path"
+          }
 
-          # $1 = rank count, $2 = test-name filter.
+          # $1 = test-binary stem, $2 = rank count, $3 = test-name filter,
+          # $4 = the number of tests that filter MUST select (per rank).
+          #
+          # The 4th argument exists because `test result: ok.` is printed just
+          # the same for `0 passed`. Two of these files are
+          # `#![cfg(feature = "mpi")]`, so a feature-chain regression would
+          # empty them out and every rank would still print a cheerful `ok.`
+          # summary; a filter typo does the same thing. Asserting the passed
+          # count per rank is what makes "green" mean "tests ran".
           run_ranks() {
-            local np="$1" filter="$2" log="/tmp/mpi-np$1-$2.log"
-            echo "=== mpirun -np $np ($filter) ==="
+            local stem="$1" np="$2" filter="$3" want="$4"
+            local BIN log
+            BIN=$(bin_for "$stem")
+            log="/tmp/mpi-$stem-np$np-$filter.log"
+            echo "=== mpirun -np $np $stem ($filter) ==="
             # `timeout 300`: an MPI misconfiguration does not fail, it HANGS
             # (measured: a bad BTL selection spun both ranks at 99% CPU
             # indefinitely). Without a bound, that burns this job's entire
@@ -1323,7 +1429,22 @@ jobs:
               sed -n '1,120p' "$log"
               exit 1
             fi
-            echo "-- np=$np OK ($oks/$np ranks passed)"
+            # A GREEN SUMMARY WITH ZERO TESTS EXECUTED PROVES NOTHING. Each
+            # rank's summary must report exactly $want passing tests. This
+            # catches (a) a `#![cfg(feature = "mpi")]` file emptied out by a
+            # broken feature chain, (b) a filter that matches nothing, and
+            # (c) a test newly marked `#[ignore]`, each of which otherwise
+            # yields `test result: ok. 0 passed; N ignored` on every rank and
+            # sails past the rank-count check above.
+            local bad
+            bad=$(grep 'test result: ok\.' "$log" \
+                  | grep -cv "ok\. $want passed" || true)
+            if [ "$bad" -ne 0 ]; then
+              echo "::error::$bad of $oks rank summaries did not report exactly $want passing tests under -np $np -- the filter '$filter' selected the wrong number of tests, or they were ignored/cfg'd out"
+              grep 'test result:' "$log" || true
+              exit 1
+            fi
+            echo "-- np=$np $stem OK ($oks/$np ranks, $want test(s) each)"
           }
 
           # -np 1: run_mpi_ri_mp2 against the SERIAL ri_mp2_spin_components
@@ -1333,34 +1454,120 @@ jobs:
           # agree with EACH OTHER, which a uniformly-wrong result also
           # satisfies.
           #
-          # NOTE: this filter selects the two cross-rank tests, NOT
-          # mpi_rimp2_np1_matches_serial_water, which asserts
-          # `rhf.converged` at energy_conv 1e-10 -- a bar DF-JK water
-          # plateaus just above (measured locally: energy -76.026735427522,
-          # correct to 1e-9, converged=false). That is a pre-existing
-          # test-strictness issue unrelated to MPI (ferric-scf's own
-          # mpi_dfjk_banding deliberately does NOT assert converged, for
-          # exactly this reason), and this job must not be red on account of
-          # it. The anchor is preserved because
-          # mpi_rimp2_cross_rank_agreement_water ALSO cross-checks the
-          # correlation energy against a pinned serial reference value.
+          # `mpi_rimp2_np1_matches_serial_water` IS NOW INCLUDED. This job
+          # used to filter it out, because the test's `df_rhf_config` forced
+          # `energy_conv: 1e-10` and then asserted `rhf.converged` -- a bar
+          # DF-JK water plateaus just above, so the SCF burned to max_iter
+          # with a perfectly good density and `converged == false` (the
+          # excluded run measured energy -76.026735427522, correct to 1e-9).
+          # That forcing has since been REMOVED from the test itself
+          # (crates/ferric-mp2/tests/mpi_rimp2_banding.rs: `energy_conv` is
+          # left at its loose 1e-3 "no longer descending" default and
+          # `density_conv: 1e-8` is the real criterion), so the exclusion is
+          # obsolete. Verified by running it: it passes at -np 1, 2 and 3.
+          # Keeping the exclusion would have hidden a serial-reference
+          # assertion this job is supposed to depend on.
           #
-          # WATER ONLY, not the whole `mpi_rimp2_cross_rank_agreement` prefix.
-          # That prefix also selects ..._benzene, which is a DEBUG-profile
-          # benzene/cc-pVDZ RI-MP2: measured locally it completes in ~9 s at
+          # WATER ONLY, not the whole file. `_water` also deselects
+          # ..._benzene, a benzene/cc-pVDZ RI-MP2 which completed in ~9 s at
           # -np 1 but had not finished after 20 minutes of 2 ranks each
           # pinned at 99% CPU at -np 2 (the per-occupied-index Allreduce in
           # run_mpi_ri_mp2 is one collective per `i`, so rank count adds
-          # synchronization to a build with no optimization). Water/cc-pVDZ
-          # exercises the identical striping-and-reduction code path -- the
-          # aux band really is split [0,42)/[42,84) -- in seconds. Scaling
-          # behaviour is not what this job is for; correctness is.
-          run_ranks 1 mpi_rimp2_cross_rank_agreement_water
+          # synchronization). Water/cc-pVDZ exercises the identical
+          # striping-and-reduction code path -- the aux band really is split
+          # [0,42)/[42,84) -- in seconds. Scaling behaviour is not what this
+          # job is for; correctness is.
+          #
+          # WALL-TIME DECISION: `cargo test` profile, water-only FILTERS, no
+          # `--release`.
+          #
+          # NOTE ON "DEBUG": the root Cargo.toml sets `[profile.test]
+          # opt-level = 2` and `[profile.dev.package."*"] opt-level = 2`, so
+          # these `cargo test` binaries are ALREADY optimized ("Finished
+          # `test` profile [optimized + debuginfo]"). `--release` would buy
+          # only `lto`/`codegen-units=1` while costing a SECOND full build of
+          # the workspace in this job -- a bad trade for test systems whose
+          # correctness content is identical, and the band arithmetic this job
+          # checks is profile-independent. So: no --release.
+          #
+          # MEASURED (OpenMPI 4.1.6, 6 physical cores,
+          # OPENBLAS_NUM_THREADS=1, this profile), libtest's own in-process
+          # seconds at np 1 / 2 / 3 -- the mpirun wall adds ~0.1-3 s of
+          # launcher overhead per invocation:
+          #   mpi_dfjk_banding      (water + benzene)  7.37 / 7.22 / 4.32
+          #   mpi_direct_jk_correctness       (2)      0.05 / 0.25 / 0.05
+          #   mpi_sad_guess_correctness       (1)      0.14 / 0.05 / 0.05
+          #   mpi_direct_jk_incremental_carryover (6)  0.14 / 0.11 / 0.17
+          #   mpi_guess_collective_ordering   (1)      0.30 / 0.30 / 0.37  (+0.48 at np 4)
+          #   mpi_rpa_freq_banding   water   (2)       0.37 / 0.38 / 0.73
+          #   mpi_gw_qp_banding      water   (2)       0.63 / 0.62 / 1.22
+          #   mpi_rimp2_banding      water   (2)       0.29 / 0.34 / 0.67
+          # All 25 launches, measured end to end including every mpirun
+          # startup: 58 SECONDS. This job's timeout-minutes is 120, nearly all
+          # of which is headroom for a cold cargo build; the mpirun phase is
+          # not what would ever exhaust it.
+          #
+          # THE BENZENE CASES ARE FILTERED OUT, NOT DROPPED. `_water` /
+          # `..._water` filters select the water test functions in
+          # mpi_rimp2_banding and mpi_rpa_freq_banding; their `..._benzene`
+          # siblings stay in the files and still compile and run single-rank
+          # under build-and-test. The measured reason is in the rimp2 note
+          # above: benzene/cc-pVDZ RI-MP2 at -np 2 had not finished in 20
+          # minutes, because run_mpi_ri_mp2 does one Allreduce per occupied
+          # index. `mpi_dfjk_banding` is the exception -- its single test
+          # function does water AND benzene DF-B3LYP and cannot be filtered
+          # apart -- and it does NOT need to be: measured 7.4 s at np 1 and
+          # 4.3 s at np 3, both systems included.
+          #
+          # ORDER: every binary at -np 1 FIRST. -np 1 is the exactness anchor
+          # (band == full range), and a multi-rank agreement check proves
+          # only that the ranks agree with EACH OTHER -- which a uniformly
+          # wrong result also satisfies. `set -e` plus this ordering means no
+          # multi-rank number is ever reported from a build whose serial
+          # reference assertions have not already passed.
+          echo "##### -np 1: exactness anchors (band == full range) #####"
+          run_ranks mpi_rimp2_banding                      1 _water 2
+          run_ranks mpi_dfjk_banding                       1 mpi_df_b3lyp_water_and_benzene_banded 1
+          run_ranks mpi_direct_jk_correctness              1 mpi_ 2
+          run_ranks mpi_sad_guess_correctness              1 mpi_sad_guess_direct_rhf_water_sto3g 1
+          run_ranks mpi_direct_jk_incremental_carryover    1 '' 6
+          run_ranks mpi_guess_collective_ordering          1 minao_guess_is_collective_order_safe_across_ranks 1
+          run_ranks mpi_rpa_freq_banding                   1 _water 2
+          run_ranks mpi_gw_qp_banding                      1 _water_g0w0 2
+
           # -np 2: the real distributed run. Bands are disjoint and the
           # Allreduce is what must put them back together.
-          run_ranks 2 mpi_rimp2_cross_rank_agreement_water
+          echo "##### -np 2: disjoint, EQUAL-width bands #####"
+          run_ranks mpi_rimp2_banding                      2 _water 2
+          run_ranks mpi_dfjk_banding                       2 mpi_df_b3lyp_water_and_benzene_banded 1
+          run_ranks mpi_direct_jk_correctness              2 mpi_ 2
+          run_ranks mpi_sad_guess_correctness              2 mpi_sad_guess_direct_rhf_water_sto3g 1
+          run_ranks mpi_direct_jk_incremental_carryover    2 '' 6
+          run_ranks mpi_guess_collective_ordering          2 minao_guess_is_collective_order_safe_across_ranks 1
+          run_ranks mpi_rpa_freq_banding                   2 _water 2
+          run_ranks mpi_gw_qp_banding                      2 _water_g0w0 2
 
-          echo "MPI 2-rank correctness check passed"
+          # -np 3: UNEVEN bands. This is the case -np 2 cannot reach (see the
+          # block comment above the step).
+          echo "##### -np 3: UNEVEN bands (the case -np 2 cannot exercise) #####"
+          run_ranks mpi_rimp2_banding                      3 _water 2
+          run_ranks mpi_dfjk_banding                       3 mpi_df_b3lyp_water_and_benzene_banded 1
+          run_ranks mpi_direct_jk_correctness              3 mpi_ 2
+          run_ranks mpi_sad_guess_correctness              3 mpi_sad_guess_direct_rhf_water_sto3g 1
+          run_ranks mpi_direct_jk_incremental_carryover    3 '' 6
+          run_ranks mpi_guess_collective_ordering          3 minao_guess_is_collective_order_safe_across_ranks 1
+          run_ranks mpi_rpa_freq_banding                   3 _water 2
+          run_ranks mpi_gw_qp_banding                      3 _water_g0w0 2
+
+          # -np 4 for the collective-ORDERING guard only, the count its own
+          # file header specifies. That bug was probabilistic in the rank
+          # count (measured on main @ c11ff82d: 9/10 aborts at np 2, 8/10 at
+          # np 3, 8/10 at np 4), and more ranks means more chances for two
+          # elements' collectives to be matched against each other.
+          echo "##### -np 4: collective-ordering guard at its documented rank count #####"
+          run_ranks mpi_guess_collective_ordering          4 minao_guess_is_collective_order_safe_across_ranks 1
+
+          echo "MPI cross-rank correctness check passed at np 1, 2, 3 (+4 for the ordering guard)"
 
   # ---------------------------------------------------------------------
   # FAST jobs below. None of these `needs: build-and-test` and none touch
