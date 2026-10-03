@@ -32808,8 +32808,8 @@
     "mi": 89.33339001199828
   },
   "crates/ferric-scf/src/rhf.rs::stability_rhf": {
-    "cc": 9.0,
-    "mi": 59.30950585543408
+    "cc": 12.0,
+    "mi": 49.42594069859834
   },
   "crates/ferric-scf/src/rhf.rs::stability_rhf::<anonymous>": {
     "cc": 1.0,
