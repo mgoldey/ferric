@@ -21,8 +21,9 @@ pub use mbd_rsscs::{
     MbdRsscsGradient, MbdRsscsResult,
 };
 pub use mbd_scf::{
-    live_free_atom_volume, mbd_rsscs_for_density, mbd_rsscs_for_restricted_open_densities,
-    mbd_rsscs_for_scf, mbd_rsscs_for_spin_densities, MbdFreeAtomCache, MbdScfResult,
+    live_free_atom_volume, live_free_atom_volume_with, mbd_rsscs_for_density,
+    mbd_rsscs_for_restricted_open_densities, mbd_rsscs_for_scf, mbd_rsscs_for_spin_densities,
+    FreeAtomVolumeQuadrature, MbdFreeAtomCache, MbdScfResult,
 };
 
 use ndarray::Array2;

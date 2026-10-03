@@ -4,9 +4,29 @@
 //! The volume ratio of atom A is `r_A = v_A / v_A^free`, with
 //! `v_A = ∫ w_A ρ |r − R_A|³` from
 //! [`atomic_effective_volumes_hirshfeld_on_grid`] on
-//! [`mbd_volume_grid`] and `v_A^free` the same integral for the
-//! isolated neutral atom ([`live_free_atom_volume`]). Both use free-atom SCFs
-//! that [`MbdFreeAtomCache`] solves once per element.
+//! [`mbd_volume_grid`] and `v_A^free` the same integral on the same lattice for
+//! the isolated neutral atom ([`live_free_atom_volume_with`] with
+//! [`FreeAtomVolumeQuadrature::Lattice`], so the ratio is on one integration
+//! scale). Both use free-atom SCFs that [`MbdFreeAtomCache`] solves once per
+//! element.
+//!
+//! MBD stays on the lattice while the TS C6 path moved to the atom-centred
+//! Becke–Lebedev grid: `mbd_volume_grid`'s points move by exactly 1/N of every
+//! atom's displacement, which is what makes the lattice-response term below a
+//! single translation-invariance identity. A Becke grid moves WITH the atoms
+//! and would need its own weight-derivative (grid-response) term in
+//! [`hirshfeld_volume_gradient`], validated by FD — a separate piece of work.
+//! The BOUNDING-BOX lattice's measured error against the dense Becke reference
+//! is 5.0e-5 to 2.4e-4 relative on the molecular volumes and 1.1e-5 to 1.7e-3
+//! on the free-atom ones (`tests/validation_hirshfeld.rs`); the centroid
+//! lattice this path uses has not been measured against that reference,
+//! because no reference was generated on it. What is measured is that the two
+//! lattices agree with each other to 8.7e-8 to 1.8e-4 on the free atoms
+//! (`tests/measure_free_atom_quadratures.rs`), so the centroid lattice is of
+//! the same accuracy class. Whatever that error is, it is now the SAME error
+//! in numerator and denominator and so largely cancels in the ratio — which
+//! it did not before this change, when `v_free` came from the bounding-box
+//! lattice while the numerators came from the centroid one.
 //!
 //! The exact nuclear gradient, returned by [`mbd_rsscs_for_scf`], is
 //! ```text
@@ -73,9 +93,48 @@ use crate::properties::{
     hirshfeld_volume_gradient, mbd_volume_grid, ProatomProvider,
 };
 
+/// The quadrature a free-atom volume is integrated on.
+///
+/// The ratio `v_A / v_A^free` is only meaningful when numerator and
+/// denominator are on the SAME integration scale (CLAUDE.md's TS/MBD honesty
+/// note: a mismatched `vol_free` is what inflated Si's TS C6 by ~2x). Since
+/// the TS path and MBD@rsSCS integrate their MOLECULAR volumes differently,
+/// the denominator has to be selectable rather than fixed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FreeAtomVolumeQuadrature {
+    /// The atom-centred Becke–Lebedev grid of
+    /// [`crate::properties::atomic_effective_volumes_hirshfeld`] — what the TS
+    /// C6 path integrates its molecular volumes on.
+    Becke,
+    /// The uniform Cartesian lattice of [`mbd_volume_grid`] — what MBD@rsSCS
+    /// integrates its molecular volumes on, because its gradient's
+    /// lattice-response term is derived for a lattice.
+    ///
+    /// On a one-atom molecule the centroid IS the nucleus, so the nucleus sits
+    /// exactly on a node, where ρ has its cusp. MEASURED against the
+    /// [`Becke`](FreeAtomVolumeQuadrature::Becke) denominator
+    /// (`tests/measure_free_atom_quadratures.rs`, cc-pVDZ / def2-SVP):
+    /// this lattice puts the free-atom volume 3.33e-4 (H), 2.25e-4 (C) and
+    /// 1.06e-5 (O) relative LOW at cc-pVDZ, and 3.34e-4 / 2.93e-4 / 9.96e-6 at
+    /// def2-SVP. (The bounding-box lattice, which is what this denominator came
+    /// from before the TS path moved, is lower still: 5.12e-4 / 3.24e-4 /
+    /// 1.07e-5.) The free-atom Becke value does not depend on the grid size at
+    /// all — it is identical from Lebedev 110 to 590 — so these gaps are the
+    /// lattice's.
+    ///
+    /// MBD keeps the lattice anyway, so that error cancels against the same
+    /// error in its molecular volumes rather than being added to them, which
+    /// is the whole reason this variant exists.
+    Lattice,
+}
+
 /// Free-atom TS volume `v_free` of neutral element `z` in basis `bs` — the
-/// denominator of the Hirshfeld volume ratio, computed the way ferric-cli's
-/// TS C6 path computes it:
+/// denominator of the Hirshfeld volume ratio, on the [`Becke`
+/// quadrature](FreeAtomVolumeQuadrature::Becke) that ferric-cli's TS C6 path
+/// uses for its molecular volumes. [`live_free_atom_volume_with`] selects
+/// another.
+///
+/// Computed the way ferric-cli's TS C6 path computes it:
 ///
 /// * the isolated atom at the origin, multiplicity
 ///   [`proatom_ground_state_mult`], solved from a clone of `rhf_config` with
@@ -106,6 +165,21 @@ pub fn live_free_atom_volume(
     bs: &BasisSet,
     op: Operator,
     rhf_config: &RhfConfig,
+) -> Result<f64, FerricError> {
+    live_free_atom_volume_with(ctx, z, bs, op, rhf_config, FreeAtomVolumeQuadrature::Becke)
+}
+
+/// [`live_free_atom_volume`] with an explicit quadrature for the volume
+/// integral, so a caller can match the denominator to the scale its molecular
+/// volumes are on. Everything else — the free-atom SCF, the environment
+/// stripping, the HF/UHF retry, the one-thread pool — is identical.
+pub fn live_free_atom_volume_with(
+    ctx: &ParallelContext,
+    z: usize,
+    bs: &BasisSet,
+    op: Operator,
+    rhf_config: &RhfConfig,
+    quadrature: FreeAtomVolumeQuadrature,
 ) -> Result<f64, FerricError> {
     let zi = z as i32;
     let sym = ferric_core::elements::z_to_symbol(zi).ok_or_else(|| {
@@ -160,7 +234,18 @@ pub fn live_free_atom_volume(
         Ok(pool) => pool.install(solve_with_fallback),
         Err(_) => solve_with_fallback(),
     }?;
-    let v = atomic_effective_volumes_hirshfeld(&free_mol, bs, &density, None)?;
+    let v = match quadrature {
+        FreeAtomVolumeQuadrature::Becke => {
+            atomic_effective_volumes_hirshfeld(&free_mol, bs, &density, None)?
+        }
+        FreeAtomVolumeQuadrature::Lattice => atomic_effective_volumes_hirshfeld_on_grid(
+            &free_mol,
+            bs,
+            &density,
+            None,
+            &mbd_volume_grid(&free_mol),
+        )?,
+    };
     let v0 = v.first().copied().ok_or_else(|| {
         FerricError::General(format!(
             "live_free_atom_volume: empty volume vector for Z={z}"
@@ -217,7 +302,21 @@ impl MbdFreeAtomCache {
             })?;
             let zu = usize::try_from(z)
                 .map_err(|_| FerricError::General(format!("MbdFreeAtomCache: invalid Z={z}")))?;
-            let vf = live_free_atom_volume(ctx, zu, bs, op, rhf_config)?;
+            // Lattice, NOT Becke: these free volumes are the denominator of
+            // ratios whose numerators `mbd_rsscs_impl` integrates on
+            // `mbd_volume_grid`. A Becke denominator against a lattice
+            // numerator would make the ratio carry the DIFFERENCE between the
+            // two quadratures (~2e-4 relative, per
+            // `FreeAtomVolumeQuadrature::Lattice`'s doc) instead of cancelling
+            // it.
+            let vf = live_free_atom_volume_with(
+                ctx,
+                zu,
+                bs,
+                op,
+                rhf_config,
+                FreeAtomVolumeQuadrature::Lattice,
+            )?;
             proatoms.insert(z, pa);
             free_volumes.insert(zu, vf);
         }

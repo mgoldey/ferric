@@ -4506,8 +4506,9 @@ fn run_pdep_rpa_arm(
                     // Free-atom vol_free from a live free-atom SCF in the same
                     // basis and SCF settings, then Hirshfeld on the isolated
                     // atom (weight 1 wherever the Slater ρ⁰ is above the 1e-12
-                    // floor), so it is on the same scale as the molecular
-                    // volumes. Shared with MBD@rsSCS dispersion
+                    // floor) on the SAME atom-centred Becke–Lebedev quadrature
+                    // `atomic_effective_volumes_hirshfeld` just integrated the
+                    // molecular volumes on, so the ratio is scale-consistent. Shared with MBD@rsSCS dispersion
                     // (`ferric_rpa::dispersion::live_free_atom_volume`, which
                     // documents the solve and its HF/UHF retry). A failure
                     // leaves no entry for that Z, and the loop below skips TS
