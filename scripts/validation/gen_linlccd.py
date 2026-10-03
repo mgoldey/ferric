@@ -1,7 +1,10 @@
-"""PySCF + numpy references for the VALIDATION.md "LinLCCD(hh)" row.
+"""PySCF + numpy references for the VALIDATION.md "LinLCCD(hh)" and
+"Amplitude-threshold LinLCCD" rows.
 
-Consumer: crates/ferric-cc/tests/validation_linlccd.rs
-Output:   testdata/reference/validation/linlccd/<system>_<basis>.json
+Consumers: crates/ferric-cc/tests/validation_linlccd.rs (canonical hh),
+           crates/ferric-cc/tests/validation_linlccd_amplitude.rs (local,
+           all three tiers incl. the `linlccd_full` block)
+Output:    testdata/reference/validation/linlccd/<system>_<basis>.json
 
 WHAT FERRIC COMPUTES (read from crates/ferric-cc/src/linlccd.rs and
 linlccd_u.rs, not assumed): LinLCCD(hh) (Carter-Fenk, JPCA 129, 7251 (2025),
@@ -37,6 +40,28 @@ THE REFERENCE, built independently of ferric's construction:
         (Lso^P_pq = C_pα^T L^P C_qα + C_pβ^T L^P C_qβ), which is also the
         construction used for UHF OH. Agreement to 1e-12 is asserted here.
 
+FULL LinLCCD (closed shell only, block `linlccd_full`): ferric's
+`LadderVariant::Full` (linlccd.rs, eq. 7) adds the particle–particle ladder
+½ Σ_cd <ab||cd> t_ij^cd. The hh ladder dresses only the occupied-pair index
+and the pp ladder only the virtual-pair index, so the equation is the
+Sylvester equation H_occ T − T H_vir = v with H_occ = diag(ε_i + ε_j) − W_oo
+and H_vir = diag(ε_a + ε_b) + W_vv, solved exactly in the two eigenbases
+(solve_sylvester). Built twice — spin-orbital (½<ab||cd>) and spin-adapted
+(Σ_cd (ac|bd) T_ijcd) — and refused unless they agree to 1e-12; the
+Sylvester solver with W_vv = 0 must reproduce the pair-eigenbasis hh solve
+to 1e-12 (`checks/full_solver_pp_off_vs_hh`).
+
+NOT an anchor: full LinLCCD is NOT exact for two-electron systems (the
+paper, §3.1: "LinLCCD is no longer exact for all two electron systems").
+Measured 2026-10-02 on the same DF integrals: H2/STO-3G full LinLCCD
+−0.008498 vs PySCF CCD (t1 frozen at 0) −0.020585 Eh; H2/cc-pVDZ −0.017450
+vs −0.034609 Eh. The ring terms LinLCCD drops are what CCD needs there, so
+no H2-vs-CCD anchor is used.
+
+Existing references are MERGED, not rewritten: PySCF's RHF is not
+bit-reproducible run to run, so every committed field is kept verbatim and
+only new fields are added (merge_into_committed; `--fresh` overrides).
+
 Anchors asserted HERE before anything is written:
   * ladder off (MP2) numpy == PySCF `mp.dfmp2.DFMP2` (RHF) or
     `mp.dfump2.DFUMP2` (UHF), frozen=None, to 1e-12;
@@ -52,6 +77,7 @@ Run (light; seconds per system):
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -116,6 +142,24 @@ def solve_pair_linear(h_pair, drive, s_ab):
     return u @ ((u.T @ drive) / (lam[:, None] - s_ab[None, :]))
 
 
+def solve_sylvester(h_occ, h_vir, drive):
+    """Solve H_occ T − T H_vir = drive exactly (both symmetric).
+
+    The full-LinLCCD operator is H_occ ⊗ 1 − 1 ⊗ H_vir on the (occ pair) ×
+    (vir pair) amplitude matrix: the hh ladder dresses only the occupied-pair
+    index and the pp ladder only the virtual-pair index, so the two
+    eigenbases diagonalize it together. Asserts max λ_occ < min μ_vir (the
+    operator is then negative definite and the solve is unique).
+    Returns (T, gap).
+    """
+    lam, u = np.linalg.eigh(h_occ)
+    mu, v = np.linalg.eigh(h_vir)
+    gap = float(mu.min() - lam.max())
+    assert gap > 0.0, f"no gap: min(mu) - max(lambda) = {gap}"
+    tt = (u.T @ drive @ v) / (lam[:, None] - mu[None, :])
+    return u @ tt @ v.T, gap
+
+
 # ---------------------------------------------------------------------------
 # Closed shell, spin-adapted (spatial orbitals)
 # ---------------------------------------------------------------------------
@@ -142,16 +186,50 @@ def spin_adapted(lov, loo, eo, ev, ladder):
     return e, sym
 
 
+def spin_adapted_full(lov, loo, lvv, eo, ev, pp=True):
+    """Full LinLCCD (hh + pp ladders) in spatial orbitals, closed shell:
+
+        D T_ijab = (ia|jb) + Σ_kl (ki|lj) T_klab + Σ_cd (ac|bd) T_ijcd,
+        E = Σ_ijab T_ijab [2 (ia|jb) − (ib|ja)].
+
+    The pp term is the spin integration of ½ <ab||cd> t_ij^cd exactly as the
+    hh term is that of ½ <kl||ij> t_kl^ab; agreement with spin_orbital(...,
+    pp=True), which never spin-integrates, is the proof. `pp=False` runs the
+    SAME Sylvester solver with the pp block zeroed (solver check against the
+    pair-eigenbasis hh solve).
+    """
+    no, nv = len(eo), len(ev)
+    g = np.einsum("Pia,Pjb->ijab", lov, lov, optimize=True)  # (ia|jb) as [i,j,a,b]
+    g_x = g.transpose(0, 1, 3, 2)  # (ib|ja)
+    w_oo = np.einsum("Pki,Plj->ijkl", loo, loo, optimize=True).reshape(no * no, no * no)
+    h_occ = np.diag((eo[:, None] + eo[None, :]).reshape(-1)) - w_oo
+    h_vir = np.diag((ev[:, None] + ev[None, :]).reshape(-1))
+    if pp:
+        # W_vv[(ab),(cd)] = (ac|bd)
+        h_vir = h_vir + np.einsum("Pac,Pbd->abcd", lvv, lvv, optimize=True).reshape(
+            nv * nv, nv * nv
+        )
+    t, gap = solve_sylvester(h_occ, h_vir, g.reshape(no * no, nv * nv))
+    t = t.reshape(no, no, nv, nv)
+    e = float(np.sum(t * (2.0 * g - g_x)))
+    sym = float(np.max(np.abs(t - t.transpose(1, 0, 3, 2))))
+    return e, sym, gap
+
+
 # ---------------------------------------------------------------------------
 # Spin-orbital (RHF or UHF)
 # ---------------------------------------------------------------------------
 
 
-def spin_orbital(lao, c_a, c_b, e_a, e_b, na, nb, ladder):
-    """LinLCCD(hh) / MP2 in spin orbitals from per-spin MOs.
+def spin_orbital(lao, c_a, c_b, e_a, e_b, na, nb, ladder, pp=False):
+    """LinLCCD(hh) / MP2 in spin orbitals from per-spin MOs; `pp=True`
+    (requires `ladder`) adds the particle–particle ladder ½ <ab||cd> t_ij^cd —
+    full LinLCCD, ferric's `LadderVariant::Full` (linlccd.rs, eq. 7) — and
+    solves the coupled hh+pp system exactly with solve_sylvester.
 
     Spin-orbital order: occ = [α occ..., β occ...], vir = [α vir..., β vir...].
     """
+    assert ladder or not pp
     nao = c_a.shape[0]
     nmo = c_a.shape[1]
 
@@ -195,21 +273,97 @@ def spin_orbital(lao, c_a, c_b, e_a, e_b, na, nb, ladder):
     else:
         v_oooo = None
         h_pair = np.diag(pair_e)
-    t = solve_pair_linear(h_pair, v_oovv.reshape(no * no, nv * nv), s_ab)
+    if pp:
+        lvv = l3(va, vb, va, vb)
+        c_vvvv = np.einsum(
+            "Pac,Pbd->abcd", lvv, lvv, optimize=True
+        )  # (ac|bd) = <ab|cd> as [a,b,c,d]
+        v_vvvv = c_vvvv - c_vvvv.transpose(0, 1, 3, 2)  # <ab||cd>
+        mv = 0.5 * v_vvvv.reshape(nv * nv, nv * nv)  # [(ab),(cd)]
+        assert np.max(np.abs(mv - mv.T)) < 1e-12
+        t, _gap = solve_sylvester(
+            h_pair, np.diag(s_ab) + mv, v_oovv.reshape(no * no, nv * nv)
+        )
+    else:
+        v_vvvv = None
+        t = solve_pair_linear(h_pair, v_oovv.reshape(no * no, nv * nv), s_ab)
     t = t.reshape(no, no, nv, nv)
     e = float(0.25 * np.sum(v_oovv * t))
     # Dense residual of the amplitude equation (independent of the solve).
     r = v_oovv - d * t
     if v_oooo is not None:
         r = r + 0.5 * np.einsum("klij,klab->ijab", v_oooo, t, optimize=True)
+    if v_vvvv is not None:
+        r = r + 0.5 * np.einsum("abcd,ijcd->ijab", v_vvvv, t, optimize=True)
     return e, float(np.max(np.abs(r)))
+
+
+def _numeric_leaves(d, pre=""):
+    if isinstance(d, dict):
+        for k, v in d.items():
+            yield from _numeric_leaves(v, f"{pre}/{k}")
+    elif isinstance(d, list):
+        for i, v in enumerate(d):
+            yield from _numeric_leaves(v, f"{pre}/{i}")
+    elif isinstance(d, (int, float)) and not isinstance(d, bool):
+        yield pre, float(d)
+
+
+def _keep_committed(old, new):
+    """`new`'s key order; every value already in `old` kept verbatim.
+
+    A committed key `new` no longer emits is kept too (appended after `new`'s
+    keys), so a default run never deletes committed data; `--fresh` does.
+    """
+    if not (isinstance(old, dict) and isinstance(new, dict)):
+        return old
+    merged = {
+        k: (_keep_committed(old[k], v) if k in old else v) for k, v in new.items()
+    }
+    merged.update({k: v for k, v in old.items() if k not in new})
+    return merged
+
+
+def merge_into_committed(system, basis_name, payload):
+    """Add only the NEW fields to an existing reference, byte-stable otherwise.
+
+    PySCF's RHF is not bit-reproducible run to run (measured: existing
+    energies move by up to ~4e-15 Eh), so a fresh write would churn every
+    committed number. Instead every field already in the committed JSON is
+    kept verbatim, the new fields are added, and the largest drift of the
+    shared numeric fields (outside provenance) is recorded and capped at
+    1e-12 so a real change cannot hide behind the merge. `--fresh` skips it.
+    """
+    path = common.reference_path(ROW, system, basis_name)
+    if not path.exists():
+        return payload
+    old = json.loads(path.read_text())
+    old_num = dict(_numeric_leaves({k: v for k, v in old.items() if k != "provenance"}))
+    new_num = dict(
+        _numeric_leaves({k: v for k, v in payload.items() if k != "provenance"})
+    )
+    added = sorted(set(new_num) - set(old_num))
+    if not added:
+        return old
+    drift = max(abs(new_num[k] - old_num[k]) for k in old_num if k in new_num)
+    if drift > 1e-12:
+        raise RuntimeError(f"{system}/{basis_name}: committed fields drift {drift:.2e}")
+    merged = _keep_committed(old, payload)
+    merged["provenance"]["added_fields"] = {
+        "fields": added,
+        "git_head": payload["provenance"]["git_head"],
+        "generated_utc": payload["provenance"]["generated_utc"],
+        "max_abs_drift_of_committed_numeric_fields": drift,
+    }
+    return merged
 
 
 def main() -> int:
     import pyscf
     from pyscf import scf
 
-    only = set(sys.argv[1:])
+    fresh = "--fresh" in sys.argv[1:]
+    only = set(sys.argv[1:]) - {"--fresh"}
     unknown = only - set(SYSTEMS)
     if unknown:
         raise SystemExit(
@@ -259,6 +413,7 @@ def main() -> int:
             )
             e_hh_so, res_hh = spin_orbital(lao, c_a, c_b, e_a, e_b, na, nb, ladder=True)
             ctx = f"{system}/{basis_name}"
+            e_full_so = None
             checks = {
                 "mp2_numpy_so_vs_pyscf": abs(e_mp2_so - e_pyscf_mp2),
                 "residual_mp2_max": res_mp2,
@@ -297,6 +452,37 @@ def main() -> int:
                     if checks[k] > TOL_ANCHOR:
                         raise RuntimeError(f"{ctx}: {k} = {checks[k]:.2e}")
 
+                # ---- full LinLCCD (hh + pp ladders), closed shell only ----
+                lvv = np.einsum("Pmn,ma,nb->Pab", lao, cvir, cvir, optimize=True)
+                e_full_so, res_full = spin_orbital(
+                    lao, c_a, c_b, e_a, e_b, na, nb, ladder=True, pp=True
+                )
+                e_full_sa, sym_full, gap_full = spin_adapted_full(
+                    lov, loo, lvv, e_a[:na], e_a[na:], pp=True
+                )
+                e_hh_syl, _, _ = spin_adapted_full(
+                    lov, loo, lvv, e_a[:na], e_a[na:], pp=False
+                )
+                checks.update(
+                    {
+                        "residual_full_max": res_full,
+                        "full_spin_adapted_vs_spin_orbital": abs(e_full_sa - e_full_so),
+                        "full_solver_pp_off_vs_hh": abs(e_hh_syl - e_hh_so),
+                        "pair_symmetry_max_full": sym_full,
+                        "full_operator_gap": gap_full,
+                    }
+                )
+                for k in (
+                    "full_spin_adapted_vs_spin_orbital",
+                    "full_solver_pp_off_vs_hh",
+                ):
+                    if checks[k] > TOL_ANCHOR:
+                        raise RuntimeError(f"{ctx}: {k} = {checks[k]:.2e}")
+                if res_full > TOL_RESIDUAL:
+                    raise RuntimeError(f"{ctx}: full residual {res_full:.2e}")
+                if abs(e_full_so - e_hh_so) < 1e-5:
+                    raise RuntimeError(f"{ctx}: pp ladder correction unresolvable")
+
             payload = {
                 "row": ROW_NAME,
                 "system": system,
@@ -314,6 +500,14 @@ def main() -> int:
                 "mp2": {"e_corr": e_mp2_so, "pyscf_df_mp2_e_corr": e_pyscf_mp2},
                 "linlccd_hh": {"e_corr": e_hh_so},
                 "hh_minus_mp2": e_hh_so - e_mp2_so,
+                **(
+                    {}
+                    if e_full_so is None
+                    else {
+                        "linlccd_full": {"e_corr": e_full_so},
+                        "full_minus_hh": e_full_so - e_hh_so,
+                    }
+                ),
                 "checks": checks,
                 "provenance": common.provenance(
                     code="PySCF + numpy",
@@ -335,6 +529,16 @@ def main() -> int:
                         )
                         + "(frozen=None)",
                         "numpy": np.__version__,
+                        **(
+                            {}
+                            if unrestricted
+                            else {
+                                "method_full": "full LinLCCD: D t = <ij||ab> + 1/2 "
+                                "sum_kl <kl||ij> t_kl^ab + 1/2 sum_cd <ab||cd> t_ij^cd; "
+                                "solved EXACTLY as the Sylvester equation H_occ T - T H_vir "
+                                "= <ij||ab> in the joint eigenbasis (no iteration)"
+                            }
+                        ),
                     },
                     basis_name=basis_name,
                     xyz_path=xyz,
@@ -354,11 +558,19 @@ def main() -> int:
                     },
                 ),
             }
+            if not fresh:
+                payload = merge_into_committed(system, basis_name, payload)
             path = common.write_reference(ROW, system, basis_name, payload)
             written.append(path)
+            full_txt = (
+                ""
+                if e_full_so is None
+                else f"full={e_full_so:+.12f} (full-hh {e_full_so - e_hh_so:+.3e}) "
+            )
             print(
                 f"{ctx:14s} E_scf={mf.e_tot:.12f} MP2={e_mp2_so:+.12f} "
                 f"hh={e_hh_so:+.12f} (hh-MP2 {e_hh_so - e_mp2_so:+.3e}) "
+                + full_txt
                 + " ".join(f"{k}={v:.1e}" for k, v in checks.items())
             )
     print(f"GEN_LINLCCD_DONE written={len(written)}")

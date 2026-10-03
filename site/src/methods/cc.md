@@ -68,8 +68,10 @@ driver terms reproduce canonical MP2.
 `[mp2] linlccd_variant` (Python `run_linlccd(variant=...)`) selects the
 method's ladder terms: `hh` (default), `drivers-only` (no ladder, equal to
 RI-MP2) or `full` (hole–hole plus particle–particle, with CCD-like VVVV
-memory). Every variant is computed exactly by default. The numpy anchor
-above is for `hh`; `drivers-only` is anchored to RI-MP2.
+memory). Every variant is computed exactly by default. All three variants
+match an independent numpy solve on the same density-fitted integrals
+(H2O and NH3, 6-31G and cc-pVDZ, ≤ 4.4e-13 Ha); `drivers-only` also matches
+PySCF `DFMP2`.
 
 **Local LinLCCD.** With `[local] scheme = "amplitude-threshold"` and `eps`
 (`examples/water-linlccd-local.toml`; Python
@@ -77,8 +79,9 @@ above is for `hh`; `drivers-only` is anchored to RI-MP2.
 is solved in the Boys-localized basis with pair amplitudes at or below `eps`
 dropped (see [Exact and local correlation](./index.md#exact-and-local-correlation)).
 `eps` has no default and is printed and logged with the kept fraction;
-`eps = 0` reproduces the exact LinLCCD of the same variant, which is how the
-local path is anchored. `[local] reference = true` also runs the exact
+`eps = 0` reproduces the exact LinLCCD of the same variant and the numpy
+reference (≤ 4.4e-13 Ha, every variant), which is how the local path is
+anchored. `[local] reference = true` also runs the exact
 LinLCCD and prints the local error. Closed shell and energy only.
 
 **ωB97X-L-V** is a double-hybrid functional that uses short-range LinLCCD(hh)
