@@ -310,10 +310,18 @@ def _numeric_leaves(d, pre=""):
 
 
 def _keep_committed(old, new):
-    """`new`'s key order; every value already in `old` kept verbatim."""
+    """`new`'s key order; every value already in `old` kept verbatim.
+
+    A committed key `new` no longer emits is kept too (appended after `new`'s
+    keys), so a default run never deletes committed data; `--fresh` does.
+    """
     if not (isinstance(old, dict) and isinstance(new, dict)):
         return old
-    return {k: (_keep_committed(old[k], v) if k in old else v) for k, v in new.items()}
+    merged = {
+        k: (_keep_committed(old[k], v) if k in old else v) for k, v in new.items()
+    }
+    merged.update({k: v for k, v in old.items() if k not in new})
+    return merged
 
 
 def merge_into_committed(system, basis_name, payload):
