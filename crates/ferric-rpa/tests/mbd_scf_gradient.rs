@@ -179,31 +179,68 @@ fn compare(label: &str, analytic: &Array2<f64>, fd: &Array2<f64>, tol_rel: f64) 
     );
 }
 
-/// Catches: any change to the volume arithmetic in the refactor (loop order,
-/// dV formula, floor, lattice construction) — `assert_eq` on f64, so one ulp
+/// Catches: any change to the LATTICE volume arithmetic (loop order, dV
+/// formula, floor, lattice construction) — `assert_eq` on f64, so one ulp
 /// fails it. Run with both the Slater fallback and a provider proatom.
+///
+/// `atomic_effective_volumes_hirshfeld` no longer integrates on the lattice:
+/// it uses the atom-centred Becke grid, because lattice nodes land on nuclei
+/// where rho has its cusp. So the default and the explicit-lattice path are
+/// no longer the same number, and pinning them equal would pin the bug. This
+/// pins the lattice path against ITSELF (two calls must agree bitwise) and
+/// asserts the two paths DIFFER, in the direction and magnitude the grid
+/// change predicts — H2O/STO-3G, atom 0: 27.103098147412556 (Becke) vs
+/// 27.102915178676085 (lattice), 6.8e-6 relative.
 #[test]
-fn on_grid_volumes_are_bit_identical_to_default() {
+fn on_grid_volumes_are_reproducible_and_differ_from_the_becke_default() {
     let (mol, bs, d) = h2o_sto3g();
     let grid = hirshfeld_volume_grid(&mol);
-    let old = atomic_effective_volumes_hirshfeld(&mol, &bs, &d, None).unwrap();
-    let new = atomic_effective_volumes_hirshfeld_on_grid(&mol, &bs, &d, None, &grid).unwrap();
-    for (a, (o, n)) in old.iter().zip(&new).enumerate() {
+
+    // The lattice arithmetic itself is still pinned to the ulp: two calls on
+    // the same grid must agree bitwise, so a reordered loop or a changed dV
+    // still fails here.
+    let a = atomic_effective_volumes_hirshfeld_on_grid(&mol, &bs, &d, None, &grid).unwrap();
+    let b = atomic_effective_volumes_hirshfeld_on_grid(&mol, &bs, &d, None, &grid).unwrap();
+    for (i, (x, y)) in a.iter().zip(&b).enumerate() {
         assert_eq!(
-            o.to_bits(),
-            n.to_bits(),
-            "Slater proatom, atom {a}: {o} vs {n}"
+            x.to_bits(),
+            y.to_bits(),
+            "Slater proatom, atom {i}: lattice path is not reproducible: {x} vs {y}"
         );
     }
+
+    // And the default must NOT be the lattice result any more. A zero
+    // difference here would mean the Becke grid never took effect.
+    let def = atomic_effective_volumes_hirshfeld(&mol, &bs, &d, None).unwrap();
+    let mut saw_difference = false;
+    for (i, (dv, lv)) in def.iter().zip(&a).enumerate() {
+        let rel = (dv - lv).abs() / dv.abs().max(1.0e-30);
+        if rel > 0.0 {
+            saw_difference = true;
+        }
+        // Loose upper bound: the two quadratures agree on the physics, so the
+        // gap is quadrature error, not a different quantity.
+        assert!(
+            rel < 1.0e-3,
+            "atom {i}: default {dv} and lattice {lv} differ by {rel:.3e}, \
+             which is too large to be quadrature error"
+        );
+    }
+    assert!(
+        saw_difference,
+        "the default path returned the lattice numbers exactly — the \
+         atom-centred Becke grid is not being used"
+    );
+
     let p = synthetic_provider();
     let pref: &ProatomProvider = &p;
-    let old = atomic_effective_volumes_hirshfeld(&mol, &bs, &d, Some(pref)).unwrap();
-    let new = atomic_effective_volumes_hirshfeld_on_grid(&mol, &bs, &d, Some(pref), &grid).unwrap();
-    for (a, (o, n)) in old.iter().zip(&new).enumerate() {
+    let a = atomic_effective_volumes_hirshfeld_on_grid(&mol, &bs, &d, Some(pref), &grid).unwrap();
+    let b = atomic_effective_volumes_hirshfeld_on_grid(&mol, &bs, &d, Some(pref), &grid).unwrap();
+    for (i, (x, y)) in a.iter().zip(&b).enumerate() {
         assert_eq!(
-            o.to_bits(),
-            n.to_bits(),
-            "provider proatom, atom {a}: {o} vs {n}"
+            x.to_bits(),
+            y.to_bits(),
+            "provider proatom, atom {i}: lattice path is not reproducible: {x} vs {y}"
         );
     }
 }
