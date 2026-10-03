@@ -393,7 +393,8 @@ fn default_u_qp_range(mol: &Molecule, scf: &ScfResult) -> std::ops::Range<usize>
 /// given, the QP equation includes Σ_x − v_xc *inside* the self-consistency
 /// (correct for a KS reference; Σ_c is then evaluated at the shifted QP root).
 /// `None` ⇒ HF reference (no shift). Use `vxc_mo::vxc_diagonal_mo` to build it.
-/// Wired for `GwMethod::G0W0`, `GwMethod::EvGw0`, and `GwMethod::EvGw`: for the
+/// Wired for `GwMethod::Cohsex` (static: the shift is a plain additive term),
+/// `GwMethod::G0W0`, `GwMethod::EvGw0`, and `GwMethod::EvGw`: for the
 /// latter two, the Σ_x − v_xc shift is computed once from the frozen starting
 /// KS orbitals and held fixed across the outer eigenvalue (and, for evGW, W)
 /// self-consistency loop — it is a property of the KS reference, not
@@ -430,6 +431,14 @@ pub fn run_gw(
             qp_range.end
         )));
     }
+    if let Some(v) = vxc_diag {
+        if v.len() != nmo {
+            return Err(FerricError::General(format!(
+                "run_gw: vxc_diag length {} must equal the number of MOs ({nmo})",
+                v.len()
+            )));
+        }
+    }
 
     // 1. Run PDEP-RPA to get {λ_α(iω_k), V_α^dressed, B̃^P_ia}.
     //    GW Σ_c needs the inverse-dielectric stack — force the flag (M9 gate).
@@ -456,7 +465,9 @@ pub fn run_gw(
 
     // 4. Dispatch by method.
     let result = match gw_cfg.method {
-        GwMethod::Cohsex => cohsex::run_cohsex(mol, rhf, &mo_b, &v_dressed, pdep, qp_range, gw_cfg),
+        GwMethod::Cohsex => cohsex::run_cohsex(
+            mol, rhf, &mo_b, &v_dressed, pdep, qp_range, gw_cfg, vxc_diag,
+        ),
         GwMethod::G0W0 => sigma::run_g0w0(
             mol, rhf, &mo_b, &v_dressed, pdep, qp_range, gw_cfg, vxc_diag,
         ),

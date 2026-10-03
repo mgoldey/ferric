@@ -2,7 +2,11 @@
 //!
 //! Σ_SEX(m) = − Σ_i Σ_α [1/λ_α(0)]              M^α_{mi}²
 //! Σ_COH(m) = +½ Σ_p Σ_α [1/λ_α(0) − 1]         M^α_{mp}²  (sum over ALL active MOs p)
-//! ε^QP_m   = ε_m + Σ_x(m) + Σ_SEX(m) + Σ_COH(m)    (no v_xc since HF reference)
+//! ε^QP_m   = ε_m + ΔΣ_SEX(m) + Σ_COH(m) [+ Σ_x(m) − v_xc(m) for a KS reference]
+//!
+//! (ΔΣ_SEX = Σ_SEX − Σ_x; at an HF reference Σ_x − v_x = 0, so only the
+//! correlation piece enters. The self-energy is static, so there is no QP
+//! root search and the KS shift is a plain additive term.)
 //!
 //! Note: with the convention that W̃_total(0) = ε̃⁻¹(0) in the dressed basis,
 //! the static *full* W̃ has eigenvalues 1/λ_α(0). The exchange piece of W̃(0)
@@ -350,7 +354,12 @@ pub(crate) fn cohsex_pieces(
     (delta_sex, coh)
 }
 
-/// Run COHSEX.
+/// Run closed-shell COHSEX.
+///
+/// `vxc_diag`: absolute-MO-indexed v_xc diagonal for a KS (RKS) reference;
+/// when given, Σ_x(m) − v_xc(m) is added to each QP energy. `None` ⇒ HF
+/// reference, no shift.
+#[allow(clippy::too_many_arguments)]
 pub fn run_cohsex(
     mol: &Molecule,
     rhf: &ScfResult,
@@ -359,6 +368,7 @@ pub fn run_cohsex(
     pdep: PdepRpaResult,
     qp_range: std::ops::Range<usize>,
     gw_cfg: &GwConfig,
+    vxc_diag: Option<&Array1<f64>>,
 ) -> Result<GwResult, FerricError> {
     let _ = (mol, gw_cfg, rhf);
     let first_act = mo_b.first_act;
@@ -385,11 +395,11 @@ pub fn run_cohsex(
     let (delta_sigma_sex, sigma_coh) = cohsex_pieces(mo_b, &m_proj, &w_static);
 
     // HF reference: Σ_x^GW − v_xc^HF = 0 exactly (the HF Fock already
-    // contains Σ_x). So the QP correction is just the correlation piece
-    // ΔΣ_SEX + Σ_COH.
+    // contains Σ_x), so the QP correction is just the correlation piece
+    // ΔΣ_SEX + Σ_COH. A KS reference adds the static Σ_x − v_xc below.
     //
-    // We still report Σ_x for diagnostics — it equals the diagonal of the
-    // HF exchange in MO basis, used by `sigma_x_matches_rhf_exchange` test.
+    // Σ_x is reported either way — it equals the diagonal of the HF exchange
+    // in the MO basis, used by the `sigma_x_matches_rhf_exchange` test.
     let mo_indices: Vec<usize> = qp_range.clone().collect();
     let mut eps_qp = Array1::<f64>::zeros(mo_indices.len());
     let mut eps_mf = Array1::<f64>::zeros(mo_indices.len());
@@ -410,6 +420,11 @@ pub fn run_cohsex(
         let scoh = sigma_coh[m_loc];
         sc_out[idx] = dsex + scoh;
         eps_qp[idx] = eps_mf[idx] + sc_out[idx];
+        // KS reference: static Σ_x − v_xc. Skipped entirely (not "+ 0.0") for
+        // an HF reference so that path is untouched (mirrors u_cohsex.rs).
+        if let Some(v) = vxc_diag {
+            eps_qp[idx] += sx_out[idx] - v[mo_abs];
+        }
     }
 
     let n_states = mo_indices.len();
@@ -546,6 +561,7 @@ mod tests {
                     rhf_stub_pdep(),
                     0..n_act,
                     &gw_cfg,
+                    None,
                 )
                 .unwrap()
             })
