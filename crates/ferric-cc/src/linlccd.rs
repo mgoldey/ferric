@@ -70,7 +70,9 @@ pub enum LadderVariant {
     /// Both hole–hole and particle–particle ladders — full **LinLCCD**, eq. 7.
     ///
     /// Restores the O(n_o²n_v⁴) pp ladder and the `(2n_v)⁴` VVVV block, so it carries
-    /// CCD-like memory cost. Exact for two-electron systems, which LinLCCD(hh) is not.
+    /// CCD-like memory cost. Not exact for two-electron systems: it drops the ring
+    /// terms, and on H2/cc-pVDZ it recovers about half of the CCD correlation energy
+    /// (`scripts/validation/gen_linlccd.py`).
     Full,
 }
 

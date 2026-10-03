@@ -23,6 +23,10 @@
     "e_corr": -0.10694812468193804
   },
   "hh_minus_mp2": 0.021923749066092763,
+  "linlccd_full": {
+    "e_corr": -0.09238178240143469
+  },
+  "full_minus_hh": 0.014566342280509612,
   "checks": {
     "mp2_numpy_so_vs_pyscf": 2.7755575615628914e-17,
     "residual_mp2_max": 1.3877787807814457e-17,
@@ -30,7 +34,12 @@
     "mp2_spin_adapted_vs_spin_orbital": 2.7755575615628914e-17,
     "hh_spin_adapted_vs_spin_orbital": 0.0,
     "mp2_spin_adapted_vs_pyscf": 0.0,
-    "pair_symmetry_max_hh": 4.336808689942018e-17
+    "pair_symmetry_max_hh": 4.336808689942018e-17,
+    "residual_full_max": 4.0072112295064244e-16,
+    "full_spin_adapted_vs_spin_orbital": 1.3877787807814457e-17,
+    "full_solver_pp_off_vs_hh": 0.0,
+    "pair_symmetry_max_full": 3.469446951953614e-17,
+    "full_operator_gap": 2.3869542941758892
   },
   "provenance": {
     "code": "PySCF + numpy",
@@ -40,7 +49,8 @@
       "integrals": "df.incore.cholesky_eri with auxmol from ferric's aux JSON (Coulomb metric)",
       "method": "LinLCCD(hh): D t = <ij||ab> + 1/2 sum_kl <kl||ij> t_kl^ab, E = 1/4 sum <ij||ab> t; solved EXACTLY per (a,b) in the eigenbasis of the occupied-pair matrix (no iteration)",
       "mp2_anchor": "mp.dfmp2.DFMP2(frozen=None)",
-      "numpy": "1.26.4"
+      "numpy": "1.26.4",
+      "method_full": "full LinLCCD: D t = <ij||ab> + 1/2 sum_kl <kl||ij> t_kl^ab + 1/2 sum_cd <ab||cd> t_ij^cd; solved EXACTLY as the Sylvester equation H_occ T - T H_vir = <ij||ab> in the joint eigenbasis (no iteration)"
     },
     "grid": "none",
     "aux_basis": "cc-pvdz-ri",
@@ -88,6 +98,20 @@
       "diag_checked": 13,
       "diag_skipped_cartesian": 0
     },
-    "aux_basis_json_sha256": "8221d2a31b5bbebd39218fc3f9244917e173a338ff9c56904038443a06e2a250"
+    "aux_basis_json_sha256": "8221d2a31b5bbebd39218fc3f9244917e173a338ff9c56904038443a06e2a250",
+    "added_fields": {
+      "fields": [
+        "/checks/full_operator_gap",
+        "/checks/full_solver_pp_off_vs_hh",
+        "/checks/full_spin_adapted_vs_spin_orbital",
+        "/checks/pair_symmetry_max_full",
+        "/checks/residual_full_max",
+        "/full_minus_hh",
+        "/linlccd_full/e_corr"
+      ],
+      "git_head": "b8898b187d11ee26ca4e86f1fe384fb7bfe535ff",
+      "generated_utc": "2026-10-03T02:44:46+00:00",
+      "max_abs_drift_of_committed_numeric_fields": 5.684341886080802e-14
+    }
   }
 }
