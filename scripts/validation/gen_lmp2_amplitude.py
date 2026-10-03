@@ -369,6 +369,11 @@ def main() -> int:
     args = sys.argv[1:]
     if "--orca" in args:
         only = {a for a in args if not a.startswith("--")}
+        unknown = only - set(ORCA_SYSTEMS)
+        if unknown:
+            raise SystemExit(
+                f"unknown ORCA systems: {sorted(unknown)}; known: {sorted(ORCA_SYSTEMS)}"
+            )
         written = [orca_ballpark(s) for s in ORCA_SYSTEMS if not only or s in only]
         print(f"GEN_LMP2_AMPLITUDE_ORCA_DONE written={len(written)}")
         return 0
