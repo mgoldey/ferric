@@ -2770,6 +2770,7 @@ impl PyOptimizeResult {
 #[pyfunction]
 #[pyo3(signature = (mol, basis_name, max_steps=None, e_conv=None, point_charges=None, external_field=None))]
 fn run_optimize(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_name: &str,
     max_steps: Option<usize>,
@@ -2782,19 +2783,29 @@ fn run_optimize(
         external_potential: build_external_potential(point_charges, external_field),
         ..Default::default()
     };
-    let r = optimize_geometry(
-        &ctx,
-        &mol.inner,
-        basis_name,
-        Operator::coulomb(),
+    // Apply the ECP before optimizing: each SCF derives its occupations from
+    // `Molecule::nelec()`, which counts ALL electrons until `apply_ecp` has
+    // run. Without this an ECP basis (aug-cc-pvdz-pp, Z >= 37) would optimize
+    // with the all-electron count against ECP integrals.
+    let bs = basis::bundled(basis_name).map_err(make_err)?;
+    let mut emol = mol.inner.clone();
+    emol.apply_ecp(&bs);
+    let r = py
+        .allow_threads(|| {
+            optimize_geometry(
+                &ctx,
+                &emol,
+                basis_name,
+                Operator::coulomb(),
         &rhf_config,
-        &OptimizeConfig {
-            max_steps: max_steps.unwrap_or(100),
-            e_conv: e_conv.unwrap_or(1e-6),
-            ..Default::default()
-        },
-    )
-    .map_err(make_err)?;
+                &OptimizeConfig {
+                    max_steps: max_steps.unwrap_or(100),
+                    e_conv: e_conv.unwrap_or(1e-6),
+                    ..Default::default()
+                },
+            )
+        })
+        .map_err(make_err)?;
     Ok(PyOptimizeResult {
         energy: r.energy,
         converged: r.converged,
@@ -2816,6 +2827,7 @@ fn run_optimize(
 #[pyfunction]
 #[pyo3(signature = (mol, basis_name, max_steps=None, e_conv=None, point_charges=None, external_field=None))]
 fn run_optimize_uhf(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_name: &str,
     max_steps: Option<usize>,
@@ -2828,19 +2840,29 @@ fn run_optimize_uhf(
         external_potential: build_external_potential(point_charges, external_field),
         ..Default::default()
     };
-    let r = optimize_geometry_uhf(
-        &ctx,
-        &mol.inner,
-        basis_name,
-        Operator::coulomb(),
+    // Apply the ECP before optimizing: each SCF derives its occupations from
+    // `Molecule::nelec()`, which counts ALL electrons until `apply_ecp` has
+    // run. Without this an ECP basis (aug-cc-pvdz-pp, Z >= 37) would optimize
+    // with the all-electron count against ECP integrals.
+    let bs = basis::bundled(basis_name).map_err(make_err)?;
+    let mut emol = mol.inner.clone();
+    emol.apply_ecp(&bs);
+    let r = py
+        .allow_threads(|| {
+            optimize_geometry_uhf(
+                &ctx,
+                &emol,
+                basis_name,
+                Operator::coulomb(),
         &uhf_config,
-        &OptimizeConfig {
-            max_steps: max_steps.unwrap_or(100),
-            e_conv: e_conv.unwrap_or(1e-6),
-            ..Default::default()
-        },
-    )
-    .map_err(make_err)?;
+                &OptimizeConfig {
+                    max_steps: max_steps.unwrap_or(100),
+                    e_conv: e_conv.unwrap_or(1e-6),
+                    ..Default::default()
+                },
+            )
+        })
+        .map_err(make_err)?;
     Ok(PyOptimizeResult {
         energy: r.energy,
         converged: r.converged,
