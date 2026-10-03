@@ -1494,6 +1494,21 @@ def run_optimize(
     """Geometry optimization (RHF)."""
     ...
 
+def run_optimize_uhf(
+    mol: Molecule,
+    basis_name: str,
+    max_steps: int | None = None,
+    e_conv: float | None = None,
+    point_charges: list[tuple[float, float, float, float]] | None = None,
+    external_field: tuple[float, float, float] | None = None,
+) -> OptimizeResult:
+    """Geometry optimization (UHF) -- for open-shell systems.
+
+    The spin state comes from the `Molecule`'s multiplicity, as in `run_uhf`.
+    `run_optimize` uses an RHF reference and cannot relax a radical.
+    """
+    ...
+
 def run_frequencies(
     mol: Molecule,
     basis_name: str,
