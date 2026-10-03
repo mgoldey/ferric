@@ -748,7 +748,10 @@ fn water_row(system: &str, expect_external: StabilityVerdict) {
     let st_trip = res.stability_external.as_ref().unwrap_or_else(|| {
         panic!("{ctx}: check_stability was set on an RHF run but no EXTERNAL verdict came back")
     });
-    eprintln!("{ctx}: external (dedicated triplet operator): {}", st_trip.summary());
+    eprintln!(
+        "{ctx}: external (dedicated triplet operator): {}",
+        st_trip.summary()
+    );
     assert_eq!(st_trip.kind, StabilityKind::RhfExternalTriplet);
     assert!(st_trip.converged, "{ctx}: {}", st_trip.summary());
     check_close(

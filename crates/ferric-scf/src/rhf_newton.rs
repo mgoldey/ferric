@@ -31,9 +31,11 @@
 //!
 //! # Two Hessians in this module
 //!
-//! [`hessian_matvec`] is the SINGLET channel (κ_α = +κ_β), the one the Newton
-//! solver drives and the one RHF's own energy is stationary in.
-//! [`triplet_hessian_matvec`] is the TRIPLET channel (κ_β = −κ_α), used only
+//! [`hessian_matvec`](crate::rhf_newton::hessian_matvec) is the SINGLET channel
+//! (κ_α = +κ_β), the one the Newton solver drives and the one RHF's own energy
+//! is stationary in.
+//! [`triplet_hessian_matvec`](crate::rhf_newton::triplet_hessian_matvec) is the
+//! TRIPLET channel (κ_β = −κ_α), used only
 //! by the external stability analysis
 //! ([`stability::rhf_external_stability`](crate::stability::rhf_external_stability)):
 //! it differs by the ABSENCE of the δJ term, because equal-and-opposite spin
@@ -210,7 +212,8 @@ pub fn hessian_matvec(
 ///
 /// This is the operator that answers "is this RHF solution a minimum against
 /// breaking SPIN symmetry?", i.e. against the rotation `κ_β = −κ_α` that
-/// [`hessian_matvec`] (which hard-codes `κ_β = +κ_α`) cannot express. It is a
+/// [`hessian_matvec`](crate::rhf_newton::hessian_matvec) (which hard-codes
+/// `κ_β = +κ_α`) cannot express. It is a
 /// genuinely different Hessian block, not a scaled version of the singlet one:
 ///
 /// ```text
@@ -218,7 +221,8 @@ pub fn hessian_matvec(
 ///   triplet  (κ_α = −κ_β):   (ε_a − ε_i)κ         − ½·k_mix·δK(δD)    _ai
 /// ```
 ///
-/// with `δD = 2·C(κ_MO)Cᵀ` in both cases (see [`hessian_matvec`]). **The
+/// with `δD = 2·C(κ_MO)Cᵀ` in both cases (see
+/// [`hessian_matvec`](crate::rhf_newton::hessian_matvec)). **The
 /// Coulomb term is ABSENT**, and that is the whole physical content of the
 /// channel: in the triplet rotation the α and β density perturbations are
 /// equal and opposite, so `δD_total = δD_α + δD_β = 0` and the Coulomb

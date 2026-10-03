@@ -137,9 +137,13 @@ fn workspace_root() -> std::path::PathBuf {
 
 fn read_xyz(rel: &str) -> String {
     let path = workspace_root().join(rel);
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("{}: {e} — this test needs the validation geometry the \
-             PySCF reference was generated from", path.display()))
+    std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "{}: {e} — this test needs the validation geometry the \
+             PySCF reference was generated from",
+            path.display()
+        )
+    })
 }
 
 /// Bar on "two independent constructions of the same operator agree".
@@ -320,7 +324,8 @@ fn dense_uhf_channels(s: &Rhf, inp: &UhfNewtonInputs) -> (Array2<f64>, Array2<f6
         v[col] = 1.0;
         let ka = Array2::from_shape_vec((nv, no), v[..d].to_vec()).unwrap();
         let kb = Array2::from_shape_vec((nv, no), v[d..].to_vec()).unwrap();
-        let (ha, hb) = ferric_scf::uhf_newton::hessian_matvec(&s.ctx, inp, &ka, &kb, &pool).unwrap();
+        let (ha, hb) =
+            ferric_scf::uhf_newton::hessian_matvec(&s.ctx, inp, &ka, &kb, &pool).unwrap();
         for (r, x) in ha.iter().chain(hb.iter()).enumerate() {
             h[(r, col)] = *x;
         }
@@ -555,8 +560,7 @@ fn stretched_water_reproduces_the_reference_internal_stable_external_unstable() 
         "water 2.0A/6-31G singlet ferric {:+.12e} PySCF {SINGLET_REF:+.12e} |d| {di:.2e}; \
          triplet ferric {:+.12e} PySCF {TRIPLET_REF:+.12e} |d| {de:.2e} \
          (bar {TOL_LAMBDA_REF:.0e})",
-        internal.lowest_eigenvalue,
-        external.lowest_eigenvalue
+        internal.lowest_eigenvalue, external.lowest_eigenvalue
     );
     assert!(di < TOL_LAMBDA_REF, "singlet lambda_min off by {di:.2e}");
     assert!(de < TOL_LAMBDA_REF, "triplet lambda_min off by {de:.2e}");
