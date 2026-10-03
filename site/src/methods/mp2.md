@@ -194,7 +194,8 @@ The local approximation is closed shell and energy only.
 single-threshold local MP2 of Wang, Aldossary, Shi, Liu, Li & Head-Gordon
 (2023), with localized virtuals and per-pair domain-local RI fits. `eps` has
 no default: it is part of the model. `eps = 0` reproduces RI-MP2 exactly; a
-finite `eps` carries a one-sided truncation error, about linear in `eps`.
+finite `eps` carries a one-sided truncation error that grows faster than
+linearly in `eps`.
 Every printout and run-log record of a local run states `eps` and the
 fraction of amplitudes kept.
 
