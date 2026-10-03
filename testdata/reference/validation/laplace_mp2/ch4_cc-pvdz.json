@@ -1,0 +1,187 @@
+{
+  "row": "AO-Laplace MP2 (O(N))",
+  "system": "ch4",
+  "basis": "cc-pvdz",
+  "aux_basis": "cc-pvdz-ri",
+  "geometry_stem": "ch4",
+  "nao": 34,
+  "naux": 112,
+  "nocc": 5,
+  "nvir": 29,
+  "n_heavy_atoms": 1,
+  "nuclear_repulsion": 13.439527889904605,
+  "e_rhf": -40.19870854248146,
+  "laplace_range": {
+    "eps_homo": -0.5426488601880521,
+    "eps_lumo": 0.1930667910462267,
+    "eps_0": -11.216056606106356,
+    "eps_max": 2.7949939676189146,
+    "ymin": 1.4714313024685577,
+    "ymax": 28.02210114745054,
+    "r": 19.04411106413127,
+    "comment": "ymin=2(eps_LUMO-eps_HOMO), ymax=2(eps_max-eps_0); eps_0 is the lowest orbital even when frozen"
+  },
+  "exact": {
+    "e_os": -0.13286709004489763,
+    "e_ss": -0.03119697910275725,
+    "e_corr": -0.1640640691476549,
+    "pyscf_dfmp2_e_corr": -0.16406406914765548,
+    "numpy_vs_pyscf_abs_diff": 5.828670879282072e-16
+  },
+  "quadrature": [
+    {
+      "n_quad": 3,
+      "range_exceeded": false,
+      "r_tab_selected": 20.0,
+      "points": [
+        0.04614647576592534,
+        0.3328696940776359,
+        1.3566393331245783
+      ],
+      "weights": [
+        0.12721395434577687,
+        0.5188048654144164,
+        1.778520757221655
+      ],
+      "e_os": -0.13288230397540712,
+      "e_ss": -0.031190970249244502,
+      "e_corr": -0.16407327422465162,
+      "quadrature_error_e_corr": -9.20507699672668e-06,
+      "quadrature_error_e_os": -1.5213930509488938e-05,
+      "quadrature_error_e_ss": 6.00885351274838e-06
+    },
+    {
+      "n_quad": 5,
+      "range_exceeded": false,
+      "r_tab_selected": 20.0,
+      "points": [
+        0.027042401131385643,
+        0.15720293713353278,
+        0.46887989418660614,
+        1.1620274119063965,
+        2.728583094623429
+      ],
+      "weights": [
+        0.0709118967262721,
+        0.20086467238032676,
+        0.45386511605689744,
+        1.005063341498955,
+        2.36019913797805
+      ],
+      "e_os": -0.13286812276776894,
+      "e_ss": -0.031197247029759175,
+      "e_corr": -0.16406536979752812,
+      "quadrature_error_e_corr": -1.3006498732204275e-06,
+      "quadrature_error_e_os": -1.032722871302516e-06,
+      "quadrature_error_e_ss": -2.679270019248503e-07
+    },
+    {
+      "n_quad": 7,
+      "range_exceeded": false,
+      "r_tab_selected": 20.0,
+      "points": [
+        0.019299490891430612,
+        0.10649131512759888,
+        0.28630866825669354,
+        0.6121321042809972,
+        1.1928467781374823,
+        2.238900286649203,
+        4.224969325107829
+      ],
+      "weights": [
+        0.05004715046512658,
+        0.1278320484777057,
+        0.2403004555492032,
+        0.4288520767282243,
+        0.7658341405033745,
+        1.3953812810454402,
+        2.8076163713250506
+      ],
+      "e_os": -0.13286708669238462,
+      "e_ss": -0.03119697444645119,
+      "e_corr": -0.16406406113883581,
+      "quadrature_error_e_corr": 8.008819080140839e-09,
+      "quadrature_error_e_os": 3.3525130171963013e-09,
+      "quadrature_error_e_ss": 4.6563060594750905e-09
+    }
+  ],
+  "quadrature_error_monotone": true,
+  "provenance": {
+    "code": "PySCF + numpy",
+    "version": "2.13.1",
+    "keywords": {
+      "scf": "scf.RHF exact J/K, conv_tol 1e-12, conv_tol_grad 1e-10",
+      "integrals": "df.incore.cholesky_eri(mol, auxmol from ferric's aux JSON), Coulomb metric, Cholesky-factorized",
+      "exact_energy": "dense numpy sum over (i,a,j,b) with 1/Delta",
+      "quadrature_energy": "the SAME dense sum with 1/Delta -> sum_k w_k exp(-t_k Delta), nodes parsed from ferric's MINIMAX_K{n} and rescaled t/ymin, w/ymin as LaplaceQuadrature::new does",
+      "anchor": "exact numpy == mp.dfmp2.DFMP2(frozen=None) to 1e-10",
+      "n_quads": [
+        3,
+        5,
+        7
+      ],
+      "numpy": "1.26.4"
+    },
+    "grid": "none",
+    "aux_basis": "cc-pvdz-ri",
+    "frozen_core": 0,
+    "scf_convergence": {
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-10
+    },
+    "stability": null,
+    "basis": "cc-pvdz",
+    "basis_json": "crates/ferric-core/src/basis/bundled/cc-pvdz.json",
+    "basis_sha256": "ae48fcca0d533addd60dbd48490153130e697121767ba607e1d70f3b341eeef7",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/ch4.xyz",
+    "geometry_xyz_sha256": "bdc436de2d7b7694752df7c4a783b709bf83566726b186b08745985d13519537",
+    "geometry_bohr": [
+      [
+        "C",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "H",
+        1.1888607200341226,
+        1.1888607200341226,
+        1.1888607200341226
+      ],
+      [
+        "H",
+        -1.1888607200341226,
+        -1.1888607200341226,
+        1.1888607200341226
+      ],
+      [
+        "H",
+        -1.1888607200341226,
+        1.1888607200341226,
+        -1.1888607200341226
+      ],
+      [
+        "H",
+        1.1888607200341226,
+        -1.1888607200341226,
+        -1.1888607200341226
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_laplace_mp2.py",
+    "git_head": "07b62a6c52a8e8f15952f84e9299ff7e9c8a67f3",
+    "generated_utc": "2026-10-03T18:59:30+00:00",
+    "basis_self_check": {
+      "nao": 34,
+      "replica_self_overlap_max_dev": 4.440892098500626e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 34,
+      "diag_skipped_cartesian": 0
+    },
+    "aux_basis_json_sha256": "8221d2a31b5bbebd39218fc3f9244917e173a338ff9c56904038443a06e2a250",
+    "minimax_rs": "crates/ferric-quadrature/src/minimax.rs",
+    "minimax_rs_sha256": "d7f9bbcbf5764a8e1b3b85b4acd0ecae58adf646682af2680e950fee78f2426b"
+  }
+}
