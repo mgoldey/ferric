@@ -1097,6 +1097,12 @@ pub fn solve_uhf_fockmod(
                 computed_quartets: total_quartets,
                 induced_dipoles: last_induced_dipoles,
                 stability,
+                // No external check on a UHF reference: the UHF-internal
+                // Hessian already spans the independent alpha/beta rotations
+                // that an RHF->UHF check would open up, so there is no
+                // additional spin-symmetry-breaking channel to test. (UHF->GHF
+                // is a further external channel and is not implemented.)
+                stability_external: None,
                 df_jk: df_jk_route.clone(),
                 rohf_spin_focks: None,
                 cosx_final,
@@ -1537,6 +1543,7 @@ pub fn solve_uhf_fockmod(
         computed_quartets: total_quartets,
         induced_dipoles: last_induced_dipoles,
         stability: None,
+        stability_external: None,
         df_jk: df_jk_route,
         rohf_spin_focks: None,
         cosx_final: None,

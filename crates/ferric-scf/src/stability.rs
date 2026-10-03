@@ -48,25 +48,37 @@
 //!   `A + B` in TDHF language). This answers "is this RHF solution an RHF
 //!   minimum?".
 //!
-//! **NOT implemented: EXTERNAL stability.** PySCF's `stability()` also reports
-//! an external verdict, which is a genuinely DIFFERENT Hessian block, not a
-//! bigger version of this one:
+//! **Implemented: EXTERNAL stability, RHF→UHF.**
 //!
-//! * RHF→UHF (spin-symmetry breaking) is the *triplet* channel: κ_α = −κ_β
-//!   rather than κ_α = κ_β. In the response, the triplet Hessian has the
-//!   Coulomb term `δJ` ABSENT (the α and β density perturbations cancel in
-//!   δD_total) where the singlet channel has it present. Neither
-//!   [`rhf_newton::hessian_matvec`](crate::rhf_newton::hessian_matvec) nor
-//!   [`uhf_newton::hessian_matvec`](crate::uhf_newton::hessian_matvec) can
-//!   express that: the RHF matvec hard-codes the singlet combination
-//!   (`δD = 2·δD_single`, so δJ is always present), and the UHF matvec builds
-//!   δJ from `δD_α + δD_β` — feeding it κ_β = −κ_α would give the triplet
-//!   Coulomb cancellation but the wrong exchange bookkeeping for a
-//!   *restricted* reference, because the UHF matvec reads gaps from two
-//!   separate Fock matrices that are identical at an RHF point. Doing it
-//!   correctly requires a new matvec, not a new caller.
-//! * real→complex instabilities need a complex-κ Hessian, which does not exist
-//!   anywhere in this crate.
+//! * [`rhf_external_stability`] — RHF (HF only). The *triplet* channel,
+//!   `κ_β = −κ_α`: does breaking SPIN symmetry lower the energy? The triplet
+//!   Hessian has the Coulomb term `δJ` ABSENT (the α and β density
+//!   perturbations cancel in δD_total) where the singlet channel has it
+//!   present, so it needs its own matvec —
+//!   [`rhf_newton::triplet_hessian_matvec`](crate::rhf_newton::triplet_hessian_matvec).
+//!   Neither existing matvec can express it:
+//!   [`rhf_newton::hessian_matvec`](crate::rhf_newton::hessian_matvec)
+//!   hard-codes the singlet combination (`δD = 2·δD_single`, so δJ is always
+//!   present), and [`uhf_newton::hessian_matvec`](crate::uhf_newton::hessian_matvec)
+//!   reads gaps from two separate Fock matrices. The triplet operator equals
+//!   the triplet BLOCK of the UHF Hessian evaluated at the RHF point, and the
+//!   agreement between those two independent constructions is the exactness
+//!   anchor in `tests/scf_stability_external.rs`.
+//!
+//!   This is the check that catches the stretched-bond saddle an
+//!   internal-only check calls STABLE: water / 6-31G at r(OH) = 2.0 Å is
+//!   internally stable (singlet λ_min = +1.9710e-2) and externally unstable
+//!   (triplet λ_min = −3.0724e-1). [`RhfConfig::check_stability`](crate::rhf::RhfConfig::check_stability)
+//!   therefore runs BOTH and reports both.
+//!
+//!   KS references are REFUSED
+//!   ([`StabilitySkip::TripletXcKernel`]): the triplet XC response kernel is
+//!   `f_αα − f_αβ`, and the closed-shell `FxcResponse` in this workspace
+//!   supplies the singlet combination `f_αα + f_αβ`.
+//!
+//! **NOT implemented:** real→complex instabilities need a complex-κ Hessian,
+//! which does not exist anywhere in this crate; and there is no UHF→GHF
+//! (spin-flip) external check.
 //!
 //! A `STABLE` verdict from this module therefore means "stable against the
 //! rotations tested", never "stable" unqualified. [`StabilityResult`] carries
@@ -125,8 +137,15 @@ pub enum StabilityKind {
     UhfInternal,
     /// RHF/RKS internal: one real closed-shell occ→virt rotation applied to
     /// both spins (the singlet channel). Says nothing about RHF→UHF spin
-    /// symmetry breaking, which is the triplet channel (see module docs).
+    /// symmetry breaking, which is the triplet channel
+    /// ([`RhfExternalTriplet`](Self::RhfExternalTriplet)).
     RhfInternal,
+    /// RHF external, RHF→UHF: one real occ→virt rotation applied with OPPOSITE
+    /// sign to α and β (the triplet channel, `κ_β = −κ_α`). This is the
+    /// spin-symmetry-breaking question — the stretched-bond instability that
+    /// [`RhfInternal`](Self::RhfInternal) is blind to. HF references only (see
+    /// [`StabilitySkip::TripletXcKernel`]).
+    RhfExternalTriplet,
 }
 
 impl StabilityKind {
@@ -135,6 +154,9 @@ impl StabilityKind {
         match self {
             StabilityKind::UhfInternal => "UHF internal (real, same-spin-ansatz)",
             StabilityKind::RhfInternal => "RHF internal (real, singlet channel)",
+            StabilityKind::RhfExternalTriplet => {
+                "RHF external, RHF->UHF (real, triplet channel)"
+            }
         }
     }
 }
@@ -456,8 +478,9 @@ pub fn uhf_internal_stability(
 ///
 /// It is BLIND to RHF→UHF spin-symmetry breaking — the classic stretched-H₂
 /// instability — which lives in the triplet channel (κ_α = −κ_β) where the
-/// Coulomb response cancels. See the module docs: that is a different
-/// operator, not a different caller of this one, and it is not implemented.
+/// Coulomb response cancels. That is a different operator, not a different
+/// caller of this one: it is [`rhf_external_stability`], and a complete
+/// verdict on an RHF solution needs both.
 ///
 /// # Errors
 ///
@@ -507,6 +530,110 @@ pub fn rhf_internal_stability(
         kind: StabilityKind::RhfInternal,
         lowest_eigenvalue: dav.eigenvalue,
         is_stable: dav.eigenvalue > -noise_floor_of(cfg, dav.residual),
+        eigenvector_alpha: Array2::from_shape_vec((nv, no), dav.eigenvector)
+            .expect("eigenvector block shape is (nvirt, nocc) by construction"),
+        eigenvector_beta: None,
+        converged: dav.converged,
+        residual: dav.residual,
+        iterations: dav.iterations,
+        noise_floor: noise_floor_of(cfg, dav.residual),
+    })
+}
+
+/// **External stability of a converged RHF solution: the RHF→UHF (triplet)
+/// channel.**
+///
+/// Drives
+/// [`rhf_newton::triplet_hessian_matvec`](crate::rhf_newton::triplet_hessian_matvec)
+/// with the same block Davidson [`rhf_internal_stability`] uses, over the same
+/// `(nvirt, nocc)` rotation space. The question answered is "does breaking
+/// SPIN symmetry lower the energy?" — the rotation `κ_β = −κ_α`, which the
+/// singlet operator cannot express.
+///
+/// This is the check that catches the classic stretched-bond saddle. Measured
+/// (water / 6-31G at r(OH) = 2.0 Å, `testdata/reference/validation/
+/// scf_stability/water_stretched_6-31g.json`): the RHF solution is internally
+/// STABLE (singlet λ_min = +1.9710e-2) and externally UNSTABLE (triplet
+/// λ_min = −3.0724e-1). An internal-only checker reports that saddle STABLE,
+/// which is why `RhfConfig::check_stability` runs BOTH.
+///
+/// # HF only
+///
+/// Returns `Err` for a KS reference (`inp.fxc.is_some()`), with the reason in
+/// [`StabilitySkip::TripletXcKernel`]: the triplet XC kernel `f_αα − f_αβ`
+/// does not exist in this workspace, and the singlet one would be the wrong
+/// operator. The gate reads `inp.fxc`, not a functional name, because `fxc`
+/// being `Some` is exactly the condition under which a semilocal response
+/// term belongs in the Hessian.
+///
+/// # Scope
+///
+/// Real rotations only. A real→complex (time-reversal-breaking) instability
+/// needs a complex-κ Hessian, which does not exist in this crate; neither this
+/// function nor [`rhf_internal_stability`] can see one, so a `Stable` verdict
+/// from both still means "stable against real rotations".
+///
+/// # Errors
+///
+/// Returns [`FerricError`] if the rotation space is empty, if `inp.fxc` is
+/// `Some` (KS reference, see above), or if a J/K build inside the matvec
+/// fails.
+pub fn rhf_external_stability(
+    ctx: &ParallelContext,
+    inp: &RhfNewtonInputs,
+    cfg: &StabilityConfig,
+) -> Result<StabilityResult, FerricError> {
+    if inp.fxc.is_some() {
+        return Err(FerricError::General(format!(
+            "RHF external (RHF->UHF triplet) stability analysis: {}",
+            StabilitySkip::TripletXcKernel.reason()
+        )));
+    }
+    let n = inp.c.nrows();
+    let no = inp.nocc;
+    let nv = n - no;
+    let dim = nv * no;
+    if dim == 0 {
+        return Err(FerricError::General(
+            "RHF external stability analysis: the occ→virt rotation space is \
+             empty (no occupied or no virtual orbitals); there is nothing to \
+             rotate, so stability is undefined"
+                .to_string(),
+        ));
+    }
+
+    let pool = EnginePool::new(
+        inp.bounds.op,
+        inp.prep,
+        ferric_integrals::engine_pool::eri_precision(),
+    )?;
+
+    // Same diagonal preconditioner as the singlet channel: the orbital-energy
+    // gap dominates the Hessian diagonal in BOTH channels (the two-electron
+    // part differs only by the absent δJ).
+    let f_diag: Vec<f64> = (0..n).map(|i| inp.f_mo[(i, i)]).collect();
+    let mut diag = Vec::with_capacity(dim);
+    for a in no..n {
+        for i in 0..no {
+            diag.push(f_diag[a] - f_diag[i]);
+        }
+    }
+
+    let matvec = |v: &[f64]| -> Result<Vec<f64>, FerricError> {
+        let k = Array2::from_shape_vec((nv, no), v.to_vec())
+            .expect("rotation block shape is (nvirt, nocc) by construction");
+        let h = crate::rhf_newton::triplet_hessian_matvec(ctx, inp, &k, &pool)?;
+        Ok(h.iter().copied().collect())
+    };
+
+    let dav = davidson_lowest(dim, matvec, &diag, cfg)?;
+    Ok(StabilityResult {
+        kind: StabilityKind::RhfExternalTriplet,
+        lowest_eigenvalue: dav.eigenvalue,
+        is_stable: dav.eigenvalue > -noise_floor_of(cfg, dav.residual),
+        // The α block of the triplet rotation. The β block is its NEGATIVE by
+        // construction (κ_β = −κ_α), so storing it would be redundant; the
+        // remedy text in `report_stability` names the sign convention.
         eigenvector_alpha: Array2::from_shape_vec((nv, no), dav.eigenvector)
             .expect("eigenvector block shape is (nvirt, nocc) by construction"),
         eigenvector_beta: None,
@@ -909,6 +1036,16 @@ pub enum StabilitySkip {
     /// failed J/K build inside the matvec). The message is printed at the call
     /// site; SCF is not failed.
     AnalysisFailed,
+    /// RHF→UHF (external, triplet) analysis on a KS reference. The triplet XC
+    /// response kernel is `f_αα − f_αβ`; the closed-shell
+    /// [`crate::rohf_newton::FxcResponse`] this workspace builds returns the
+    /// SINGLET combination `f_αα + f_αβ` and cannot be reinterpreted as the
+    /// other one. Running the triplet matvec with no XC response at all would
+    /// analyse the HF triplet Hessian at a KS density — the same
+    /// wrong-operator failure [`ks_reference_is_analysable`] exists to
+    /// prevent — so a KS reference is refused here. The INTERNAL (singlet)
+    /// verdict is unaffected and is still computed.
+    TripletXcKernel,
 }
 
 impl StabilitySkip {
@@ -937,6 +1074,12 @@ impl StabilitySkip {
                  the implemented Hessian belongs to"
             }
             StabilitySkip::AnalysisFailed => "the stability eigensolve returned an error",
+            StabilitySkip::TripletXcKernel => {
+                "the reference is KS (a functional is set) and the RHF->UHF triplet channel \
+                 needs the XC response kernel f_aa - f_ab, while the closed-shell FxcResponse \
+                 in this workspace supplies the singlet combination f_aa + f_ab; the external \
+                 check is refused rather than analysing the HF triplet Hessian at a KS density"
+            }
         }
     }
 }
@@ -965,6 +1108,34 @@ pub fn ks_reference_is_analysable(xc: Option<&str>, omega: f64) -> Result<(), St
         return Err(StabilitySkip::MetaGga);
     }
     Ok(())
+}
+
+/// The remedy text for an UNSTABLE verdict, which differs by channel.
+///
+/// An INTERNAL instability is fixed within the same ansatz — rotate and
+/// re-converge. An RHF→UHF (triplet) instability cannot be: the downhill
+/// direction leaves the restricted ansatz entirely, so re-converging RHF from
+/// ANY rotated restricted guess lands back on the same RHF solution. The only
+/// remedy is to run UHF, seeded from the triplet eigenvector so the two spins
+/// start apart.
+fn unstable_remedy(kind: StabilityKind) -> &'static str {
+    match kind {
+        StabilityKind::UhfInternal | StabilityKind::RhfInternal => {
+            "re-converge from a guess rotated along the returned Hessian eigenvector \
+             (ScfResult::stability -> eigenvector_alpha / eigenvector_beta). A measured \
+             caveat: small steps fall straight back into the saddle's DIIS basin, so use a \
+             rotation of order 1 radian, not 0.1."
+        }
+        StabilityKind::RhfExternalTriplet => {
+            "run UHF, not RHF. This instability BREAKS SPIN SYMMETRY, so no restricted guess \
+             can reach the lower state: rotating the RHF orbitals and re-converging RHF \
+             returns the same solution. Seed a UHF run with the triplet eigenvector \
+             (ScfResult::stability_external -> eigenvector_alpha) applied with OPPOSITE sign \
+             to the alpha and beta MOs (kappa_beta = -kappa_alpha), using a rotation of order 1 \
+             radian. The resulting broken-symmetry UHF state is spin-contaminated by \
+             construction - that is what the instability means, not a solver defect."
+        }
+    }
 }
 
 /// Print the post-SCF stability verdict.
@@ -1016,13 +1187,11 @@ pub fn report_stability(res: &StabilityResult, verbose: bool) {
             "SCF stability WARNING: {}\n  This converged solution is a SADDLE POINT, not a \
              minimum: lambda_min = {:+.6e} Ha < 0 means an orbital rotation exists that LOWERS \
              the energy. The SCF is stationary (the gradient vanishes at a saddle too), so \
-             nothing else could have detected this.\n  REMEDY: re-converge from a guess rotated \
-             along the returned Hessian eigenvector (ScfResult::stability -> eigenvector_alpha / \
-             eigenvector_beta). A measured caveat: small steps fall straight back into the \
-             saddle's DIIS basin, so use a rotation of order 1 radian, not 0.1.\n  SCOPE: this \
+             nothing else could have detected this.\n  REMEDY: {}\n  SCOPE: this \
              verdict covers {} only; it says nothing about the rotations that space excludes.",
             res.summary(),
             res.lowest_eigenvalue,
+            unstable_remedy(res.kind),
             res.kind.label()
         ),
     }

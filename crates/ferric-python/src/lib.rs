@@ -648,14 +648,23 @@ impl PyRhfResult {
 ///                   default 110). Lower is faster and coarser.
 /// State selection:
 ///   stability_descent False (default). When True, check the converged RHF
-///                   solution's internal (singlet) stability and, if it is a
-///                   SADDLE of the orbital Hessian, follow the downhill
-///                   eigenvector and re-converge, keeping the lowest state
-///                   (`RhfConfig::check_stability` + `scf_stability_descent`).
+///                   solution's stability and, if the INTERNAL (singlet)
+///                   channel is a SADDLE of the orbital Hessian, follow the
+///                   downhill eigenvector and re-converge, keeping the lowest
+///                   state (`RhfConfig::check_stability` +
+///                   `scf_stability_descent`).
 ///                   Costs one Davidson eigensolve per solve plus one SCF per
 ///                   descent taken. Needed where the default guess lands on a
 ///                   saddle: N2 at 1.6 Å/def2-SVP (19 mHa above the minimum).
 ///                   Same as the CLI `[scf] stability_descent`.
+///                   Setting it also enables the EXTERNAL (RHF→UHF, triplet)
+///                   check, whose verdict is PRINTED to stderr but is NOT
+///                   descended along: that instability breaks spin symmetry,
+///                   so no restricted re-convergence can reach the lower
+///                   state — the remedy it names is to run `run_uhf` seeded
+///                   from the triplet eigenvector. Stretched geometries are
+///                   routinely internally stable and externally unstable
+///                   (water at r(OH) = 2.0 Å / 6-31G: +1.97e-2 vs −3.07e-1).
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set,
