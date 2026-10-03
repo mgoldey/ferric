@@ -1,0 +1,156 @@
+{
+  "row": "Amplitude-threshold LMP2",
+  "system": "c4h10",
+  "basis": "6-31g",
+  "aux_basis": "cc-pvdz-ri",
+  "nao": 56,
+  "naux": 364,
+  "nocc": 17,
+  "nvir": 39,
+  "n_heavy_atoms": 4,
+  "nuclear_repulsion": 131.64517729295423,
+  "e_rhf": -157.23112330765233,
+  "dfmp2": [
+    {
+      "frozen_core": 0,
+      "e_corr": -0.3755452570249899,
+      "e_os": -0.299057123577084,
+      "e_ss": -0.07648813344790611,
+      "numpy_vs_pyscf_abs_diff": 2.220446049250313e-16
+    },
+    {
+      "frozen_core": 4,
+      "e_corr": -0.3701632370807759,
+      "e_os": -0.29517430168336883,
+      "e_ss": -0.07498893539740722,
+      "numpy_vs_pyscf_abs_diff": 1.1102230246251565e-16
+    }
+  ],
+  "provenance": {
+    "code": "PySCF + numpy",
+    "version": "2.13.1",
+    "keywords": {
+      "scf": "scf.RHF exact J/K, conv_tol 1e-12, conv_tol_grad 1e-10",
+      "mp2": "mp.dfmp2.DFMP2(frozen=fc), auxmol from ferric's cc-pvdz-ri JSON, Coulomb metric",
+      "cross_check": "dense numpy (i,a,j,b) sum on df.incore.cholesky_eri == DFMP2 to 1e-12"
+    },
+    "grid": "none",
+    "aux_basis": "cc-pvdz-ri",
+    "frozen_core": [
+      0,
+      4
+    ],
+    "scf_convergence": {
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-10
+    },
+    "stability": null,
+    "basis": "6-31g",
+    "basis_json": "crates/ferric-core/src/basis/bundled/6-31g.json",
+    "basis_sha256": "1ae9712168e449cee8ee656810f9dc2619083fc9a78f0b8e8dac77c5dbcfa7ef",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/c4h10.xyz",
+    "geometry_xyz_sha256": "2ac05624c7bd2e48ee1e7fe72a2c625a98f605906d37c4d7954dd600208d9ff1",
+    "geometry_bohr": [
+      [
+        "C",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "C",
+        2.354530721067583,
+        1.6649432020480477,
+        0.0
+      ],
+      [
+        "C",
+        4.70906333186129,
+        0.0,
+        0.0
+      ],
+      [
+        "C",
+        7.063594052928873,
+        1.6649432020480477,
+        0.0
+      ],
+      [
+        "H",
+        -1.6879808532326204,
+        1.1936096017851547,
+        0.0
+      ],
+      [
+        "H",
+        5.102260536325667e-05,
+        -1.1935736969887878,
+        -1.6880054196722398
+      ],
+      [
+        "H",
+        5.102260536325667e-05,
+        -1.1935736969887878,
+        1.6880054196722398
+      ],
+      [
+        "H",
+        2.354530721067583,
+        2.8585509141070777,
+        1.6879808532326204
+      ],
+      [
+        "H",
+        2.354530721067583,
+        2.8585509141070777,
+        -1.6879808532326204
+      ],
+      [
+        "H",
+        4.70906333186129,
+        -1.1936096017851547,
+        -1.6879808532326204
+      ],
+      [
+        "H",
+        4.70906333186129,
+        -1.1936096017851547,
+        1.6879808532326204
+      ],
+      [
+        "H",
+        8.751574906161494,
+        0.47133360026289317,
+        0.0
+      ],
+      [
+        "H",
+        7.063543030323509,
+        2.858515009310711,
+        -1.6880054196722398
+      ],
+      [
+        "H",
+        7.063543030323509,
+        2.858515009310711,
+        1.6880054196722398
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_lmp2_amplitude.py",
+    "git_head": "b8898b187d11ee26ca4e86f1fe384fb7bfe535ff",
+    "generated_utc": "2026-10-03T02:45:01+00:00",
+    "basis_self_check": {
+      "nao": 56,
+      "replica_self_overlap_max_dev": 4.440892098500626e-16,
+      "pyscf_diag_max_dev": 2.220446049250313e-16,
+      "diag_checked": 56,
+      "diag_skipped_cartesian": 0
+    },
+    "aux_basis_json_sha256": "8221d2a31b5bbebd39218fc3f9244917e173a338ff9c56904038443a06e2a250",
+    "pyscf": "2.13.1",
+    "numpy": "1.26.4"
+  }
+}
