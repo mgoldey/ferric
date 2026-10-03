@@ -246,13 +246,33 @@ static std::atomic<int> libint_init_count{0};
 // one SCF at a time so it rarely trips, but it is the same latent bug.
 static std::mutex libint_ctor_mutex;
 
+// Guards the init/finalize COUNT TRANSITION, not just the counter. The
+// counter alone is not enough: an atomic fetch_add makes the increment
+// indivisible, but it does not make the window between "I incremented" and
+// "libint2::initialize() has returned" exclusive. Thread A would take the
+// count 0->1 and start initializing; thread B would take it 1->2, observe
+// non-zero, skip the init and go straight to building an engine -- tripping
+// `assert(libint2::initialized())` inside libint2's Engine ctor while A was
+// still inside initialize(). That is what made the parallel
+// terfc_base_validation binary abort ("libint is not initialized"): nine
+// tests in one process, seven of them racing to initialize.
+//
+// Holding this mutex ACROSS the initialize()/finalize() call means every
+// caller that returns from scf_libint_init() is guaranteed libint is ready,
+// which is the contract the name implies. Both are called once per
+// process/engine-group, never in a hot loop, so the serialization costs
+// nothing measurable.
+static std::mutex libint_init_mutex;
+
 void scf_libint_init(void) {
+    std::lock_guard<std::mutex> lock(libint_init_mutex);
     if (libint_init_count.fetch_add(1) == 0) {
         libint2::initialize();
     }
 }
 
 void scf_libint_finalize(void) {
+    std::lock_guard<std::mutex> lock(libint_init_mutex);
     if (libint_init_count.fetch_sub(1) == 1) {
         libint2::finalize();
     }
