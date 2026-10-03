@@ -5265,7 +5265,7 @@
   },
   "crates/ferric-cli/src/lib.rs::run_pdep_rpa_arm": {
     "cc": 112.0,
-    "mi": -17.368901843223085
+    "mi": -17.38766270229725
   },
   "crates/ferric-cli/src/lib.rs::run_pdep_rpa_arm::<anonymous>": {
     "cc": 1.0,
@@ -5281,7 +5281,7 @@
   },
   "crates/ferric-cli/src/lib.rs::run_pdep_rpa_arm::<anonymous>#11": {
     "cc": 21.0,
-    "mi": 42.84309121452783
+    "mi": 42.73686132568005
   },
   "crates/ferric-cli/src/lib.rs::run_pdep_rpa_arm::<anonymous>#11::<anonymous>": {
     "cc": 1.0,
@@ -23105,7 +23105,7 @@
   },
   "crates/ferric-rpa/src/dispersion/mbd_scf.rs::impl:MbdFreeAtomCache::build": {
     "cc": 8.0,
-    "mi": 77.3800198369786
+    "mi": 71.46316340251225
   },
   "crates/ferric-rpa/src/dispersion/mbd_scf.rs::impl:MbdFreeAtomCache::build::<anonymous>": {
     "cc": 1.0,
@@ -23128,30 +23128,34 @@
     "mi": 117.45413519333735
   },
   "crates/ferric-rpa/src/dispersion/mbd_scf.rs::live_free_atom_volume": {
-    "cc": 25.0,
-    "mi": 54.81403611656974
+    "cc": 1.0,
+    "mi": 108.9731188394099
   },
-  "crates/ferric-rpa/src/dispersion/mbd_scf.rs::live_free_atom_volume::<anonymous>": {
+  "crates/ferric-rpa/src/dispersion/mbd_scf.rs::live_free_atom_volume_with": {
+    "cc": 28.0,
+    "mi": 51.187388548950096
+  },
+  "crates/ferric-rpa/src/dispersion/mbd_scf.rs::live_free_atom_volume_with::<anonymous>": {
     "cc": 1.0,
     "mi": 135.2862545389334
   },
-  "crates/ferric-rpa/src/dispersion/mbd_scf.rs::live_free_atom_volume::<anonymous>#1": {
+  "crates/ferric-rpa/src/dispersion/mbd_scf.rs::live_free_atom_volume_with::<anonymous>#1": {
     "cc": 5.0,
     "mi": 95.8743198168961
   },
-  "crates/ferric-rpa/src/dispersion/mbd_scf.rs::live_free_atom_volume::<anonymous>#2": {
+  "crates/ferric-rpa/src/dispersion/mbd_scf.rs::live_free_atom_volume_with::<anonymous>#2": {
     "cc": 3.0,
     "mi": 99.87187632668042
   },
-  "crates/ferric-rpa/src/dispersion/mbd_scf.rs::live_free_atom_volume::<anonymous>#2::<anonymous>": {
+  "crates/ferric-rpa/src/dispersion/mbd_scf.rs::live_free_atom_volume_with::<anonymous>#2::<anonymous>": {
     "cc": 2.0,
     "mi": 104.94831975317564
   },
-  "crates/ferric-rpa/src/dispersion/mbd_scf.rs::live_free_atom_volume::<anonymous>#2::<anonymous>::<anonymous>": {
+  "crates/ferric-rpa/src/dispersion/mbd_scf.rs::live_free_atom_volume_with::<anonymous>#2::<anonymous>::<anonymous>": {
     "cc": 1.0,
     "mi": 123.27515995041077
   },
-  "crates/ferric-rpa/src/dispersion/mbd_scf.rs::live_free_atom_volume::<anonymous>#3": {
+  "crates/ferric-rpa/src/dispersion/mbd_scf.rs::live_free_atom_volume_with::<anonymous>#3": {
     "cc": 1.0,
     "mi": 127.01087943392437
   },
@@ -24272,8 +24276,36 @@
     "mi": 87.4746135841517
   },
   "crates/ferric-rpa/src/properties.rs::atomic_effective_volumes_hirshfeld": {
+    "cc": 23.0,
+    "mi": 42.76519814898535
+  },
+  "crates/ferric-rpa/src/properties.rs::atomic_effective_volumes_hirshfeld::<anonymous>": {
+    "cc": 3.0,
+    "mi": 113.1279737414464
+  },
+  "crates/ferric-rpa/src/properties.rs::atomic_effective_volumes_hirshfeld::<anonymous>#1": {
     "cc": 1.0,
-    "mi": 107.16338544263225
+    "mi": 153.42889531439928
+  },
+  "crates/ferric-rpa/src/properties.rs::atomic_effective_volumes_hirshfeld::<anonymous>#2": {
+    "cc": 1.0,
+    "mi": 147.8522258934663
+  },
+  "crates/ferric-rpa/src/properties.rs::atomic_effective_volumes_hirshfeld::<anonymous>#3": {
+    "cc": 1.0,
+    "mi": 153.46801625837676
+  },
+  "crates/ferric-rpa/src/properties.rs::atomic_effective_volumes_hirshfeld::<anonymous>#4": {
+    "cc": 1.0,
+    "mi": 160.0060069647112
+  },
+  "crates/ferric-rpa/src/properties.rs::atomic_effective_volumes_hirshfeld::<anonymous>#5": {
+    "cc": 1.0,
+    "mi": 126.22876917047284
+  },
+  "crates/ferric-rpa/src/properties.rs::atomic_effective_volumes_hirshfeld::<anonymous>::<anonymous>": {
+    "cc": 1.0,
+    "mi": 151.8492041915592
   },
   "crates/ferric-rpa/src/properties.rs::atomic_effective_volumes_hirshfeld_on_grid": {
     "cc": 19.0,
@@ -24594,6 +24626,14 @@
   "crates/ferric-rpa/src/properties.rs::hirshfeld_volume_grid": {
     "cc": 1.0,
     "mi": 130.18890379774788
+  },
+  "crates/ferric-rpa/src/properties.rs::hirshfeld_volume_grid_config": {
+    "cc": 1.0,
+    "mi": 112.59691775962177
+  },
+  "crates/ferric-rpa/src/properties.rs::hirshfeld_volume_quadrature_matches_the_closed_form_slater_moment": {
+    "cc": 5.0,
+    "mi": 67.41119363969028
   },
   "crates/ferric-rpa/src/properties.rs::mbd_volume_grid": {
     "cc": 4.0,
