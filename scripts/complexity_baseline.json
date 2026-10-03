@@ -16533,7 +16533,7 @@
   },
   "crates/ferric-mp2/src/laplace.rs::test_laplace_mp2_methane_ccpvdz_vs_live_rimp2": {
     "cc": 1.0,
-    "mi": 69.5754507232695
+    "mi": 67.86422367919019
   },
   "crates/ferric-mp2/src/laplace.rs::test_laplace_mp2_mo_vs_ao": {
     "cc": 1.0,
@@ -16541,15 +16541,15 @@
   },
   "crates/ferric-mp2/src/laplace.rs::test_laplace_mp2_water_augccpvdz_vs_live_rimp2": {
     "cc": 1.0,
-    "mi": 69.02492022639476
+    "mi": 66.78014508431505
   },
   "crates/ferric-mp2/src/laplace.rs::test_laplace_mp2_water_ccpvdz": {
     "cc": 1.0,
-    "mi": 73.52311233967116
+    "mi": 66.64382499843961
   },
   "crates/ferric-mp2/src/laplace.rs::test_laplace_quadrature_convergence": {
     "cc": 1.0,
-    "mi": 74.89601847482062
+    "mi": 69.666351966267
   },
   "crates/ferric-mp2/src/laplace.rs::test_lmp2_large_cutoff_matches_canonical": {
     "cc": 1.0,
