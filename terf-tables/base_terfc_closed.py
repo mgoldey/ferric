@@ -10,7 +10,7 @@ radial quadrature to ~1e-12 across r0 and D.
 
     op(r) = 1/r - (erf(w(r-r0)) + erf(w(r+r0))) / r          <-- no /2
 
-whereas the shipped engine (crates/ferric-integrals/shim/shim.cc:717-718) is
+whereas the shipped engine (crates/ferric-integrals/shim/shim.cc:1118-1119) is
 
     terfc(r,r0)/r = 1/r - (erf(w(r-r0)) + erf(w(r+r0))) / (2 r)
 
