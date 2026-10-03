@@ -96,6 +96,14 @@ COHSEX: static, closed form, numpy on PySCF's Lpq:
 which is cohsex.rs's formula with w_alpha = 1/lambda_alpha - 1 in the full-rank
 static eigenbasis.
 
+COHSEX@PBE (block `cohsex_pbe`, the COHSEX_CASES that are also PBE_CASES): the
+same numpy on the Lpq and Pi(0) of the `g0w0_pbe` block's RKS/PBE orbitals
+(exact J, ferric's XC density floor), plus the static KS shift
+    eps_qp = eps_mf + dSigma_SEX + Sigma_COH + (Sigma_x - v_xc)
+with Sigma_x = PySCF `vk` under `vhf_df = True` (from the same Lpq, ferric's
+DF Sigma_x) and v_xc = PySCF `gw.vxc` (mf.get_veff - J in the MO basis, the
+floored PBE potential). The unshifted value is kept as `eps_qp_no_shift`.
+
 DIAGNOSTICS written alongside (not asserted by the Rust test; they explain the
 old loose bars):
   * h2o/cc-pvdz `diagnostics.pbe_recipe_sensitivity`: G0W0@PBE HOMO under
@@ -110,6 +118,8 @@ Run (light; about a minute per system):
         uv run --no-sync python scripts/validation/gen_gw.py [system ...]
 Only the U-G0W0@UKS/PBE block, leaving every other block untouched:
     ... gen_gw.py --uks-only [oh ch3 nh2]
+Only the COHSEX@PBE block, leaving every other block untouched:
+    ... gen_gw.py --cohsex-ks-only [h2o n2]
 """
 
 from __future__ import annotations
@@ -553,7 +563,9 @@ def ev_loop(gw, mf, update_w):
     }
 
 
-def cohsex_block(gw, mf, orbs):
+def cohsex_block(gw, mf, orbs, ks_shift=False):
+    """Closed-shell COHSEX in numpy. `ks_shift`: add Sigma_x - v_xc (PySCF's
+    `gw.vk - gw.vxc`; run `gw` with `vhf_df = True` so vk is the DF Sigma_x)."""
     np = _np()
     from pyscf.gw.gw_ac import get_rho_response
 
@@ -573,13 +585,83 @@ def cohsex_block(gw, mf, orbs):
         out_sex.append(dsex)
         out_coh.append(coh)
         eqp.append(float(e[m]) + dsex + coh)
-    return {
+    block = {
         "orbs": list(orbs),
         "eps_mf": [float(e[m]) for m in orbs],
         "delta_sigma_sex": out_sex,
         "sigma_coh": out_coh,
         "eps_qp": eqp,
     }
+    if ks_shift:
+        assert gw.vhf_df is True, "the KS shift needs the DF Sigma_x (vhf_df = True)"
+        assert list(gw.orbs_frz) == list(orbs), "frozen core is not supported here"
+        sx = [float(gw.vk[m, m]) for m in orbs]
+        sx_df = [float(-np.sum(lpq[:, m, :nocc] ** 2)) for m in orbs]
+        assert max(abs(a - b) for a, b in zip(sx, sx_df)) < 1e-12, (
+            "vk is not the DF Sigma_x"
+        )
+        vxc = [float(gw.vxc[m, m]) for m in orbs]
+        shift = [a - b for a, b in zip(sx, vxc)]
+        block.update(
+            {
+                "eps_qp_no_shift": eqp,
+                "eps_qp": [q + d for q, d in zip(eqp, shift)],
+                "sigma_x_df": sx,
+                "v_mf": vxc,
+                "static_shift": shift,
+            }
+        )
+    return block
+
+
+def cohsex_pbe_block(gw_pbe, mks, orbs):
+    """COHSEX@PBE on the `g0w0_pbe` block's RKS orbitals and DF integrals."""
+    block = cohsex_block(gw_pbe, mks, orbs, ks_shift=True)
+    block["rks_energy"] = float(mks.e_tot)
+    block["xc"] = "PBE"
+    block["j"] = "exact (no density fitting)"
+    block["density_floor"] = FERRIC_DENSITY_FLOOR
+    return block
+
+
+def gen_cohsex_ks_only(system):
+    """Add/refresh ONLY the `cohsex_pbe` block of an existing JSON, leaving
+    every other block byte-for-byte as it was."""
+    import json
+
+    xyz_rel, bases = CLOSED[system]
+    xyz = common.MOL_DIR / xyz_rel
+    for basis_name in bases:
+        key = (system, basis_name)
+        if key not in COHSEX_CASES or key not in PBE_CASES:
+            continue
+        path = common.reference_path(ROW, system, basis_name)
+        payload = json.loads(path.read_text())
+        aux_name = AUX_FOR[basis_name]
+        mol, symbols, _coords, _ll = mol_and_prov_base(xyz, basis_name)
+        assert payload["nao"] == mol.nao_nr() and payload["aux"] == aux_name
+        aux = aux_dict(aux_name, symbols)
+        orbs = payload["g0w0_pbe"]["orbs"]
+        mks = rks_pbe_exact(mol)
+        # Same SCF state as the committed g0w0_pbe block.
+        d_e = abs(mks.e_tot - payload["g0w0_pbe"]["rks_energy"])
+        assert d_e < 1e-9, f"RKS/PBE energy moved by {d_e:.2e} Ha"
+        gw_pbe, _ = run_gwac(mks, aux, orbs, vhf_df=True, continuation="textbook")
+        blk = cohsex_pbe_block(gw_pbe, mks, orbs)
+        payload["cohsex_pbe"] = blk
+        prov = payload.pop("provenance")
+        blocks = prov.setdefault("blocks", [])
+        if "cohsex_pbe" not in blocks:
+            blocks.append("cohsex_pbe")
+        prov["cohsex_pbe_generated"] = {
+            "git_head": common.git_head(),
+            "mode": "gen_gw.py --cohsex-ks-only (other blocks untouched)",
+        }
+        payload["provenance"] = prov
+        common.write_reference(ROW, system, basis_name, payload)
+        ha = 27.211386245988
+        for p, sh in zip(orbs, blk["static_shift"]):
+            print(f"{system}/{basis_name} COHSEX@PBE MO {p}: shift {sh * ha:+.4f} eV")
 
 
 def mol_and_prov_base(xyz, basis_name, charge=0, mult=1, ecp_json=None):
@@ -679,7 +761,9 @@ def gen_closed(system):
             payload["evgw_hf"] = ev_loop(gw, mf, update_w=True)
         if key in PBE_CASES:
             mks = rks_pbe_exact(mol)
-            _, g_pbe = run_gwac(mks, aux, orbs, vhf_df=True, continuation="textbook")
+            gw_pbe, g_pbe = run_gwac(
+                mks, aux, orbs, vhf_df=True, continuation="textbook"
+            )
             g_pbe["rks_energy"] = float(mks.e_tot)
             g_pbe["xc"] = "PBE"
             g_pbe["j"] = "exact (no density fitting)"
@@ -689,6 +773,8 @@ def gen_closed(system):
                 max(abs(mks.mo_energy[i] - raw.mo_energy[i]) for i in orbs)
             )
             payload["g0w0_pbe"] = g_pbe
+            if key in COHSEX_CASES:
+                payload["cohsex_pbe"] = cohsex_pbe_block(gw_pbe, mks, orbs)
             if key == ("h2o", "cc-pvdz"):
                 payload["diagnostics"] = {
                     "pbe_recipe_sensitivity": pbe_sensitivity(
@@ -1291,6 +1377,11 @@ def old_u_recipe(mol, aux, orbs):
 
 
 def main(argv):
+    if "--cohsex-ks-only" in argv:
+        rest = [a for a in argv if a != "--cohsex-ks-only"]
+        for s in rest or sorted({sys_ for sys_, _ in COHSEX_CASES & PBE_CASES}):
+            gen_cohsex_ks_only(s)
+        return
     if "--uks-only" in argv:
         # Add/refresh only the U-G0W0@UKS/PBE block in the existing JSONs.
         rest = [a for a in argv if a != "--uks-only"]

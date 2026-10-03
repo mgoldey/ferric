@@ -107,8 +107,8 @@ range. **No speedup over PDEP is claimed for local dRPA.**
 The starting point is HF by default or a KS functional (`[rpa] xc`). From a
 KS starting point the static term Σx − v_xc enters the G0W0, evGW₀ and evGW
 quasiparticle equation (for U-GW, each spin's own equation with that spin's
-v_xc), so Σc is evaluated at the shifted root; U-COHSEX, which is static, adds
-it to the quasiparticle energy.
+v_xc), so Σc is evaluated at the shifted root; COHSEX and U-COHSEX, which are
+static, add it to the quasiparticle energy.
 
 **Run it.** `method.kind = "gw"` with `[gw] method = "g0w0"`
 (`examples/water-g0w0-pbe.toml`, open shell `examples/oh-ugw.toml`); Python
