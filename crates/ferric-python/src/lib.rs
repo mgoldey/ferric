@@ -2797,7 +2797,7 @@ fn run_optimize(
                 &emol,
                 basis_name,
                 Operator::coulomb(),
-        &rhf_config,
+                &rhf_config,
                 &OptimizeConfig {
                     max_steps: max_steps.unwrap_or(100),
                     e_conv: e_conv.unwrap_or(1e-6),
@@ -2854,7 +2854,7 @@ fn run_optimize_uhf(
                 &emol,
                 basis_name,
                 Operator::coulomb(),
-        &uhf_config,
+                &uhf_config,
                 &OptimizeConfig {
                     max_steps: max_steps.unwrap_or(100),
                     e_conv: e_conv.unwrap_or(1e-6),
