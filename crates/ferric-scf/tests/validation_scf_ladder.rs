@@ -470,12 +470,9 @@ fn external_check(sys: &System, res: &ScfResult, r: &Value) {
         thresh: RhfConfig::default().integral_thresh,
         ooc_budget: ferric_core::memory::resolve_budget_bytes(None),
     };
-    let st_trip = ferric_scf::stability::rhf_external_stability(
-        &sys.ctx,
-        &rinp,
-        &StabilityConfig::default(),
-    )
-    .unwrap_or_else(|e| panic!("{ctx}: dedicated triplet analysis failed: {e:?}"));
+    let st_trip =
+        ferric_scf::stability::rhf_external_stability(&sys.ctx, &rinp, &StabilityConfig::default())
+            .unwrap_or_else(|e| panic!("{ctx}: dedicated triplet analysis failed: {e:?}"));
     eprintln!(
         "{ctx}: external (dedicated triplet operator): {}",
         st_trip.summary()

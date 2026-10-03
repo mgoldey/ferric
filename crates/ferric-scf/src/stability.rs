@@ -154,9 +154,7 @@ impl StabilityKind {
         match self {
             StabilityKind::UhfInternal => "UHF internal (real, same-spin-ansatz)",
             StabilityKind::RhfInternal => "RHF internal (real, singlet channel)",
-            StabilityKind::RhfExternalTriplet => {
-                "RHF external, RHF->UHF (real, triplet channel)"
-            }
+            StabilityKind::RhfExternalTriplet => "RHF external, RHF->UHF (real, triplet channel)",
         }
     }
 }
