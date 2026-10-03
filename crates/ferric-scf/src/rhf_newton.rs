@@ -28,6 +28,20 @@
 //!
 //! Rotation is applied via the Cayley unitary U = (I − κ/2)^{−1}(I + κ/2), which
 //! exactly preserves orthonormality (identical to `uhf_newton.rs`).
+//!
+//! # Two Hessians in this module
+//!
+//! [`hessian_matvec`](crate::rhf_newton::hessian_matvec) is the SINGLET channel
+//! (κ_α = +κ_β), the one the Newton solver drives and the one RHF's own energy
+//! is stationary in.
+//! [`triplet_hessian_matvec`](crate::rhf_newton::triplet_hessian_matvec) is the
+//! TRIPLET channel (κ_β = −κ_α), used only
+//! by the external stability analysis
+//! ([`stability::rhf_external_stability`](crate::stability::rhf_external_stability)):
+//! it differs by the ABSENCE of the δJ term, because equal-and-opposite spin
+//! density perturbations cancel in δD_total. Keeping them as separate
+//! functions rather than one flag is deliberate — the Newton path must never
+//! be able to pick up the triplet operator by accident.
 
 use crate::engine_pool::EnginePool;
 use crate::rhf::build_jk_with_pool;
@@ -183,6 +197,117 @@ pub fn hessian_matvec(
     let mut h = occ_virt_block(&df_mo, no, n);
 
     // Diagonal orbital-energy-gap term: + (F[a,a] − F[i,i]) · κ[a,i].
+    let f_diag: Vec<f64> = (0..n).map(|i| inp.f_mo[(i, i)]).collect();
+    for (ir, a) in (no..n).enumerate() {
+        for (ic, i) in (0..no).enumerate() {
+            h[(ir, ic)] += (f_diag[a] - f_diag[i]) * k[(ir, ic)];
+        }
+    }
+
+    Ok(h)
+}
+
+/// **Triplet (RHF→UHF) orbital-Hessian matvec** — the external-stability
+/// operator, `H_triplet · κ`.
+///
+/// This is the operator that answers "is this RHF solution a minimum against
+/// breaking SPIN symmetry?", i.e. against the rotation `κ_β = −κ_α` that
+/// [`hessian_matvec`](crate::rhf_newton::hessian_matvec) (which hard-codes
+/// `κ_β = +κ_α`) cannot express. It is a
+/// genuinely different Hessian block, not a scaled version of the singlet one:
+///
+/// ```text
+///   singlet  (κ_α = +κ_β):   (ε_a − ε_i)κ + [ δJ(δD) − ½·k_mix·δK(δD) ]_ai
+///   triplet  (κ_α = −κ_β):   (ε_a − ε_i)κ         − ½·k_mix·δK(δD)    _ai
+/// ```
+///
+/// with `δD = 2·C(κ_MO)Cᵀ` in both cases (see
+/// [`hessian_matvec`](crate::rhf_newton::hessian_matvec)). **The
+/// Coulomb term is ABSENT**, and that is the whole physical content of the
+/// channel: in the triplet rotation the α and β density perturbations are
+/// equal and opposite, so `δD_total = δD_α + δD_β = 0` and the Coulomb
+/// response — which sees only the total density — cancels exactly. Exchange
+/// does not cancel, because each spin's `K` sees only its own
+/// `δD_σ`, and `K(−δD) = −K(δD)` flips sign together with `κ_β`, leaving
+/// `−½·K(δD)` on the α block and its negative on the β block. The two blocks
+/// therefore carry the same operator and the problem reduces to the single
+/// α block implemented here.
+///
+/// Equal, with no overall factor, to PySCF's
+/// `scf.stability._gen_hop_rhf_external` → `hop_rhf2uhf`, which builds
+/// `(ε_a − ε_i)κ − ½K(2C(κ+κᵀ)Cᵀ)`. The in-tree references
+/// (`testdata/reference/validation/scf_stability/*.json`,
+/// `/rhf/triplet_rhf_to_uhf/lowest`) are stored in exactly this convention.
+///
+/// # Equivalently: the triplet block of the UHF Hessian at the RHF point
+///
+/// Evaluating [`uhf_newton::hessian_matvec`](crate::uhf_newton::hessian_matvec)
+/// with `C_α = C_β = C_RHF` and `F_α = F_β = F_RHF` gives a Hessian that
+/// block-diagonalizes EXACTLY into the singlet `(κ, +κ)/√2` and triplet
+/// `(κ, −κ)/√2` channels (the coupling block vanishes identically). This
+/// function reproduces the triplet block of that construction, and that
+/// agreement — two independent constructions of the same operator — is the
+/// exactness anchor in `scf_stability_external.rs`.
+///
+/// # Cost
+///
+/// `build_jk_with_pool` is a combined J+K builder, so `δJ` is BUILT AND
+/// DISCARDED here: one J matrix of wasted work per matvec. The crate's K-only
+/// path (`direct_k::DirectK`) screens on a global density maximum
+/// (`DensityScreen::Global`) where `build_jk_with_pool` screens on the
+/// shell-blocked `d_max_shell` table, so swapping it in would change `δK` in
+/// the last digits and break the bit-level agreement with the UHF-at-RHF
+/// construction that the anchor rests on. The combined build is kept
+/// deliberately: the anchor is worth more than the J.
+///
+/// # KS references
+///
+/// There is no `fxc` term here, and `inp.fxc` is IGNORED rather than applied:
+/// the triplet XC response kernel is `f_αα − f_αβ`, which the closed-shell
+/// [`FxcResponse`] does not provide (it returns the SINGLET combination
+/// `f_αα + f_αβ`). Callers must not reach this function with a KS reference;
+/// [`stability::rhf_external_stability`](crate::stability::rhf_external_stability)
+/// refuses them with
+/// [`StabilitySkip::TripletXcKernel`](crate::stability::StabilitySkip::TripletXcKernel)
+/// before any matvec runs. `k_mix_sr` IS honoured, so the hybrid exact-exchange
+/// fraction is correct — it is only the semilocal response that is missing.
+///
+/// # Errors
+///
+/// Propagates a failed J/K build.
+pub fn triplet_hessian_matvec(
+    ctx: &ParallelContext,
+    inp: &RhfNewtonInputs,
+    k: &Array2<f64>,
+    pool: &EnginePool,
+) -> Result<Array2<f64>, FerricError> {
+    let n = inp.c.nrows();
+    let no = inp.nocc;
+
+    // SAME density perturbation as the singlet channel: δD = 2·C(κ+κᵀ)Cᵀ.
+    // The triplet character is NOT in δD, it is in which response terms act
+    // on it (see the doc above) — building a different δD here would be the
+    // classic way to get a plausible-looking wrong operator.
+    let dd_ao = 2.0 * &ao_from_ov(inp.c, k, no, n);
+
+    let mut dj = Array2::<f64>::zeros((n, n));
+    let mut dk = Array2::<f64>::zeros((n, n));
+    let band_bytes = crate::reduce::resolve_band_bytes(inp.ooc_budget);
+    build_jk_with_pool(
+        ctx, inp.prep, inp.bounds, inp.thresh, &dd_ao, &mut dj, &mut dk, pool, band_bytes,
+    )?;
+    // `dj` is deliberately dropped: see the Cost section. The triplet response
+    // is exchange-only.
+    drop(dj);
+
+    // δF_triplet = −½·k_mix·δK. No δJ, no δV_xc.
+    let df: Array2<f64> = -0.5 * inp.k_mix_sr * &dk;
+
+    let df_mo = inp.c.t().dot(&df).dot(inp.c);
+    let mut h = occ_virt_block(&df_mo, no, n);
+
+    // Diagonal orbital-energy-gap term, identical to the singlet channel: the
+    // one-electron part of the Hessian does not know about spin coupling.
     let f_diag: Vec<f64> = (0..n).map(|i| inp.f_mo[(i, i)]).collect();
     for (ir, a) in (no..n).enumerate() {
         for (ic, i) in (0..no).enumerate() {

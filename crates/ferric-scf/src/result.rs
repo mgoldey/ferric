@@ -95,6 +95,24 @@ pub struct ScfResult {
     ///
     /// Purely diagnostic: an instability never makes the SCF return `Err`.
     pub stability: Option<crate::stability::StabilityResult>,
+    /// Post-convergence **EXTERNAL** stability verdict (RHF→UHF, the triplet
+    /// channel), when `RhfConfig::check_stability` was set on an RHF/HF run.
+    ///
+    /// A separate field from [`stability`](Self::stability) because it is a
+    /// separate OPERATOR answering a separate question, and the two verdicts
+    /// routinely disagree — that disagreement is the diagnostic. Water /
+    /// 6-31G at r(OH) = 2.0 Å is internally STABLE (+1.97e-2) and externally
+    /// UNSTABLE (−3.07e-1): a caller reading only `stability` there concludes
+    /// the solution is a minimum when it is a saddle.
+    ///
+    /// **`None` means NOT CHECKED, not stable.** It is `None` whenever the
+    /// flag was off, the reference is not RHF (UHF-internal already spans the
+    /// spin-broken space; ROHF is skipped entirely), the reference is KS (the
+    /// triplet XC kernel does not exist — `StabilitySkip::TripletXcKernel`),
+    /// or the eigensolve errored. Every skip prints its reason.
+    ///
+    /// Purely diagnostic, exactly like [`stability`](Self::stability).
+    pub stability_external: Option<crate::stability::StabilityResult>,
     /// Which density-fitted (RI) Coulomb / exchange builders produced
     /// [`ScfResult::energy`], recorded by the solver that built them.
     ///

@@ -2299,20 +2299,28 @@ pub struct ScfCfg {
     /// `ferric_scf::ladder::DF_GUESS_DEFAULT_AUX` ("def2-universal-jkfit").
     /// Ignored (with a hard error) when `df_increments = false`.
     pub df_increments_aux: Option<String>,
-    /// Run an internal stability analysis after the SCF converges, and report
-    /// whether the converged solution is a minimum or a SADDLE POINT. Default
-    /// `false` — the check costs a Davidson eigensolve whose every matvec is a
-    /// J/K build, and with it off the SCF path is bit-identical to a build with
-    /// no stability support at all.
+    /// Run a stability analysis after the SCF converges, and report whether
+    /// the converged solution is a minimum or a SADDLE POINT. Default `false`
+    /// — the check costs a Davidson eigensolve whose every matvec is a J/K
+    /// build, and with it off the SCF path is bit-identical to a build with no
+    /// stability support at all.
     ///
     /// DIAGNOSTIC ONLY: an instability prints a warning naming λ_min and the
     /// remedy, and never makes the run fail — a deliberately-unstable state (a
     /// cDFT diabat, a MOM excited state) is a legitimate thing to compute.
     ///
-    /// SCOPE: honoured for RHF/RKS (singlet channel) and UHF/UKS (independent
-    /// α/β rotations). ROHF/ROKS, range-separated functionals and meta-GGAs
-    /// are SKIPPED with a printed reason rather than analysed with the wrong
-    /// operator. See `ferric_scf::stability`.
+    /// SCOPE: on an RHF/HF run BOTH checks run and both verdicts are printed —
+    /// INTERNAL (the singlet channel: is this RHF solution an RHF minimum?)
+    /// and EXTERNAL RHF→UHF (the triplet channel: does breaking spin symmetry
+    /// lower the energy?). They routinely disagree, and that disagreement is
+    /// the point: water / 6-31G at r(OH) = 2.0 Å is internally stable
+    /// (+1.97e-2) and externally a saddle (−3.07e-1), with a broken-symmetry
+    /// UHF state 0.22 Ha lower. RKS runs get the internal verdict only (the
+    /// triplet XC kernel f_αα − f_αβ does not exist in this workspace, printed
+    /// as a skip). UHF/UKS get the internal verdict, which already spans the
+    /// independent α/β rotations. ROHF/ROKS, range-separated functionals and
+    /// meta-GGAs are SKIPPED entirely with a printed reason rather than
+    /// analysed with the wrong operator. See `ferric_scf::stability`.
     #[serde(default)]
     pub check_stability: bool,
     /// State selection: after convergence, check internal stability and, if

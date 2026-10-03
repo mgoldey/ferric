@@ -415,8 +415,11 @@ fn dense_rhf_spectrum(sys: &System, res: &ScfResult) -> Vec<f64> {
     sym_eigh(&h, &format!("{} RHF", sys.name))
 }
 
-/// INFORMATION: the RHF→UHF external check, as ferric's UHF Hessian at the RHF
-/// point (its λ_min is min(singlet, triplet); see validation_scf_stability.rs).
+/// INFORMATION: the RHF→UHF external check, by BOTH constructions — ferric's
+/// UHF Hessian at the RHF point (λ_min = min(singlet, triplet)) and the
+/// dedicated `rhf_external_stability` triplet operator (λ_min = triplet alone,
+/// which is what `RhfConfig::check_stability` reports). See
+/// validation_scf_stability.rs for the normalization and the channel split.
 fn external_check(sys: &System, res: &ScfResult, r: &Value) {
     let ctx = sys.name.as_str();
     let nocc = sys.mol.nelec() as usize / 2;
@@ -450,6 +453,36 @@ fn external_check(sys: &System, res: &ScfResult, r: &Value) {
         "external lambda_min",
         st.lowest_eigenvalue,
         sing.min(trip),
+        TOL_LAMBDA,
+    );
+
+    // The DEDICATED triplet operator, which is what `check_stability` runs:
+    // it isolates the RHF→UHF channel instead of reporting min(singlet,
+    // triplet), so it is compared against the TRIPLET reference alone.
+    let rinp = RhfNewtonInputs {
+        prep: &sys.prep,
+        bounds: &sys.bounds,
+        c: &c,
+        f_mo: &f_mo,
+        nocc,
+        k_mix_sr: 1.0,
+        fxc: None,
+        thresh: RhfConfig::default().integral_thresh,
+        ooc_budget: ferric_core::memory::resolve_budget_bytes(None),
+    };
+    let st_trip =
+        ferric_scf::stability::rhf_external_stability(&sys.ctx, &rinp, &StabilityConfig::default())
+            .unwrap_or_else(|e| panic!("{ctx}: dedicated triplet analysis failed: {e:?}"));
+    eprintln!(
+        "{ctx}: external (dedicated triplet operator): {}",
+        st_trip.summary()
+    );
+    assert!(st_trip.converged, "{ctx}: {}", st_trip.summary());
+    check_close(
+        ctx,
+        "triplet lambda_min",
+        st_trip.lowest_eigenvalue,
+        trip,
         TOL_LAMBDA,
     );
     let ext_stable = boolean(r, "/rhf/stability/external_stable", ctx);

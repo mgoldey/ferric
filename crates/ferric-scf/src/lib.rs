@@ -138,8 +138,8 @@ pub mod trah;
 pub mod uhf_newton;
 pub use gradient::{rhf_gradient, rohf_gradient, uhf_gradient};
 pub use stability::{
-    rhf_internal_stability, uhf_internal_stability, StabilityConfig, StabilityKind,
-    StabilityResult, StabilitySkip, StabilityVerdict,
+    rhf_external_stability, rhf_internal_stability, uhf_internal_stability, StabilityConfig,
+    StabilityKind, StabilityResult, StabilitySkip, StabilityVerdict,
 };
 /// Analytical nuclear gradients for Kohn-Sham DFT (XC + grid response).
 pub mod ks_gradient;

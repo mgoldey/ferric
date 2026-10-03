@@ -203,6 +203,7 @@ pub(crate) fn solve_rhf_with_external(
                 computed_quartets: total_quartets,
                 induced_dipoles: None,
                 stability: None,
+                stability_external: None,
                 df_jk: None,
                 rohf_spin_focks: None,
                 cosx_final: None,
