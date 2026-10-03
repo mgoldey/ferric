@@ -186,25 +186,27 @@ fn free_atom_scf_converges_z1_18_pbe() {
     );
 }
 
-/// Diagnostic (not the primary verification): compare the unbounded
-/// Becke-Lebedev `atomic_effective_volumes_becke` quadrature used above
-/// against `atomic_effective_volumes_hirshfeld` — the fixed
-/// 6-Bohr-margin/0.2-Bohr-spacing real-space cubic grid that
-/// `ferric-cli/src/lib.rs`'s ACTUAL free-atom TS fallback uses (see
-/// "Compute free-atom vol_free using Hirshfeld on isolated atoms" there).
-/// Both reduce exactly for a single free atom (partition weight = 1
-/// everywhere in both schemes), so any gap between them is pure grid/
-/// truncation artifact, not a partition-scheme physics difference — this
-/// tests whether the vol_free-table's true convention is the *bounded*
-/// grid (which would explain the G7 disagreement trend as tail
-/// truncation, worse for more diffuse atoms) rather than a real free-atom
-/// integral. See docs/vol-free-verification.md.
+/// Diagnostic (not the primary verification): compare
+/// `atomic_effective_volumes_becke` (Becke partition) against
+/// `atomic_effective_volumes_hirshfeld` (Hirshfeld partition) on a single
+/// free atom, where BOTH partition weights are identically 1.
+///
+/// Both now integrate on the same atom-centred Becke-Lebedev grid, so this
+/// comparison is an INTERNAL CONSISTENCY check only — the two numbers are the
+/// same quadrature of the same integrand and should agree to the
+/// floating-point floor. It can no longer measure grid truncation, which is
+/// what it was written for: the bounded 6-Bohr lattice it used to compare
+/// against is reachable as `atomic_effective_volumes_hirshfeld_on_grid` on
+/// `hirshfeld_volume_grid`, and the `Becke<->Hirsh%` column below would need
+/// to call that to recover its original meaning. Left as a cheap agreement
+/// probe rather than deleted; it carries no conclusion about the vol_free
+/// table (see docs/vol-free-verification.md for that).
 #[test]
 #[ignore] // slow: 6 free-atom UKS-PBE solves at aug-cc-pVTZ; diagnostic only.
 fn diagnose_becke_vs_hirshfeld_grid_truncation() {
     println!(
-        "\nDiagnostic: unbounded Becke-Lebedev vs 6-Bohr-margin Hirshfeld-grid \
-         free-atom volumes (aug-cc-pVTZ PBE), representative Z."
+        "\nDiagnostic: Becke- vs Hirshfeld-partition free-atom volumes on the same \
+         Becke-Lebedev grid (aug-cc-pVTZ PBE), representative Z."
     );
     println!(
         "{:>4} {:>4} {:>14} {:>10} {:>14}",
@@ -247,9 +249,9 @@ fn diagnose_becke_vs_hirshfeld_grid_truncation() {
 
         let v_becke = atomic_effective_volumes_becke(&mol, &obs, &bs, &density).unwrap()[0];
         let v_hirsh = atomic_effective_volumes_hirshfeld(&mol, &bs, &density, None).unwrap()[0];
-        // Both partition weights are trivially 1 for a single free atom, so any
-        // gap between the two is a pure grid/truncation artifact (the bounded
-        // 6-Bohr Hirshfeld grid truncates diffuse tails, e.g. Na's 3s valence).
+        // Both partition weights are trivially 1 for a single free atom AND
+        // both integrate on the same grid, so this gap is now a consistency
+        // residual, not a truncation measurement.
         let gap = 100.0 * (v_becke - v_hirsh) / v_hirsh;
 
         println!(
