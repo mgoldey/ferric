@@ -72,9 +72,11 @@ measured (n-alkanes C4–C16).
 `run_drpa(..., local="amplitude-threshold", eps=1e-4)`) drops pair amplitudes
 whose localized `|2(ia|jb)|` is at or below `eps`. `eps` has no default and
 is printed and logged with the kept fraction; `eps = 0` is the exact method.
-dRPA is not variational, so the error is first order in what is dropped:
-about linear in `eps`, and positive (less correlation) at every point
-measured, which is a measurement, not a guarantee. `[local] reference = true`
+dRPA is not variational, so the error is first order in what is dropped. It
+is positive (less correlation) at every point measured, which is a
+measurement, not a guarantee, and grows faster than linearly in `eps`: on
+n-octane / 6-31G it is 6.7e-7, 3.9e-5, 5.5e-4 and 1.0e-2 Ha at `eps` = 1e-6,
+1e-5, 1e-4 and 1e-3, keeping 82%, 50%, 18% and 3% of the amplitudes. `[local] reference = true`
 (Python `compute_reference=True`) also computes the canonical plasmon dRPA and
 prints the error against it. `[local] eps_sweep` (Python `run_drpa_scan`)
 evaluates several `eps` on one SCF and one localized assembly. Proven

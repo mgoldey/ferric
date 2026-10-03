@@ -38,10 +38,12 @@ dropped (single threshold, Wang et al. 2023). Three facts govern its use:
   the exact energy (RI-MP2 to ≤ 1e-9 Ha; dRPA to the canonical plasmon
   formula; LinLCCD of the same variant), which is how each local path is
   anchored.
-- **The error is one-sided and about linear in `eps`**: dropped amplitudes
-  give less correlation energy, measured with the same sign at every point.
-  MP2 has Hylleraas stationarity; dRPA does not, so its error is first order
-  and the one-sidedness is measured, not guaranteed.
+- **The error is one-sided and grows faster than linearly in `eps`**:
+  dropped amplitudes give less correlation energy, measured with the same sign
+  at every point, and each decade of `eps` raises the error by more than a
+  decade (the fraction of amplitudes dropped grows with it). MP2 has Hylleraas
+  stationarity; dRPA does not, so its error is first order in the dropped
+  amplitudes and the one-sidedness is measured, not guaranteed.
 
 Riccati, plasmon and PDEP are not approximations of each other: they are
 **algorithms for the same exact dRPA**. The drCCD Riccati solve at `eps = 0`,
