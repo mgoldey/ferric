@@ -532,12 +532,26 @@ impl RhfConfig {
     }
 }
 
-/// Post-convergence internal stability analysis for an RHF/RKS solution.
+/// Post-convergence stability analysis for an RHF/RKS solution: BOTH the
+/// internal (singlet) and the external (RHF→UHF, triplet) verdict.
+///
+/// Returns `(internal, external)` for
+/// [`ScfResult::stability`](crate::result::ScfResult::stability) and
+/// [`ScfResult::stability_external`](crate::result::ScfResult::stability_external).
+///
+/// Both are run because they are different operators answering different
+/// questions, and a solution can be internally stable while externally a
+/// saddle — water / 6-31G at r(OH) = 2.0 Å is exactly that (singlet
+/// +1.9710e-2, triplet −3.0724e-1). Reporting only the internal verdict there
+/// tells the user STABLE about a saddle point.
 ///
 /// Called ONLY from `solve_rhf`'s converged exit and ONLY when
-/// `config.check_stability` is set. Returns `None` — meaning "not checked", per
-/// [`crate::result::ScfResult::stability`] — whenever the reference is not
-/// analysable with the operator that exists, ALWAYS after printing why.
+/// `config.check_stability` is set. A `None` means "not checked", per
+/// [`crate::result::ScfResult::stability`] — the reference was not analysable
+/// with the operator that exists — ALWAYS after printing why. The external
+/// verdict is additionally `None` on any KS reference (no triplet XC kernel;
+/// see [`crate::stability::StabilitySkip::TripletXcKernel`]) while the
+/// internal verdict there is still computed.
 ///
 /// # The KS trap this function exists to avoid
 ///
@@ -567,16 +581,20 @@ fn stability_rhf(
     has_xc: bool,
     k_mix: ferric_dft::xc_trait::KMix,
     ooc_budget: usize,
-) -> Option<crate::stability::StabilityResult> {
+) -> (
+    Option<crate::stability::StabilityResult>,
+    Option<crate::stability::StabilityResult>,
+) {
     if let Err(skip) =
         crate::stability::ks_reference_is_analysable(config.xc.as_deref(), k_mix.omega)
     {
         eprintln!(
             "SCF stability: check requested but SKIPPED — {}. \
-             ScfResult::stability is None (not checked), which does NOT mean stable.",
+             ScfResult::stability and ScfResult::stability_external are both None (not \
+             checked), which does NOT mean stable.",
             skip.reason()
         );
-        return None;
+        return (None, None);
     }
 
     // The f_xc response kernel, at the same restricted reference the RKS Newton
@@ -591,9 +609,10 @@ fn stability_rhf(
                 eprintln!(
                     "SCF stability: check requested but SKIPPED — the f_xc response kernel could \
                      not be built ({e}), and analysing the HF Hessian at a KS density instead \
-                     would be a wrong-operator verdict. ScfResult::stability is None."
+                     would be a wrong-operator verdict. ScfResult::stability and \
+                     ScfResult::stability_external are both None."
                 );
-                return None;
+                return (None, None);
             }
         }
     } else {
@@ -614,7 +633,7 @@ fn stability_rhf(
         thresh: config.integral_thresh,
         ooc_budget,
     };
-    match crate::stability::rhf_internal_stability(
+    let internal = match crate::stability::rhf_internal_stability(
         ctx,
         &inputs,
         &crate::stability::StabilityConfig::default(),
@@ -631,7 +650,50 @@ fn stability_rhf(
             );
             None
         }
-    }
+    };
+
+    // ── EXTERNAL (RHF→UHF, triplet) ──────────────────────────────────────
+    // Run UNCONDITIONALLY alongside the internal check, never instead of it:
+    // the two answer different questions and routinely disagree. Water/6-31G
+    // at r(OH) = 2.0 Å is internally STABLE (+1.97e-2) and externally UNSTABLE
+    // (−3.07e-1), so an internal-only `check_stability` reports a saddle as a
+    // minimum. That is the defect this branch exists to close, pinned by
+    // `scf_stability_external.rs::check_stability_populates_both_verdicts`.
+    //
+    // KS references are refused by `rhf_external_stability` itself (the
+    // triplet XC kernel f_aa − f_ab does not exist here); the skip is printed
+    // and the INTERNAL verdict above still stands.
+    let external = if has_xc {
+        eprintln!(
+            "SCF stability: the RHF->UHF (external, triplet) check was SKIPPED — {}. \
+             ScfResult::stability_external is None (not checked), which does NOT mean \
+             stable. The internal (singlet) verdict above is unaffected.",
+            crate::stability::StabilitySkip::TripletXcKernel.reason()
+        );
+        None
+    } else {
+        match crate::stability::rhf_external_stability(
+            ctx,
+            &inputs,
+            &crate::stability::StabilityConfig::default(),
+        ) {
+            Ok(res) => {
+                crate::stability::report_stability(&res, config.verbose);
+                Some(res)
+            }
+            Err(e) => {
+                eprintln!(
+                    "SCF stability: the RHF->UHF (external, triplet) check was requested but \
+                     FAILED — {}: {e}. ScfResult::stability_external is None (not checked). \
+                     The SCF result itself is unaffected.",
+                    crate::stability::StabilitySkip::AnalysisFailed.reason()
+                );
+                None
+            }
+        }
+    };
+
+    (internal, external)
 }
 
 /// Resolve the 3-index memory budget in bytes by delegating to the single
@@ -1451,6 +1513,7 @@ fn solve_rhf_once(
             // stability is a property of a STATIONARY point, and these are not
             // stationary. `None` = not checked, as documented on the field.
             stability: None,
+            stability_external: None,
             df_jk: df_jk_route.clone(),
             rohf_spin_focks: None,
             cosx_final: None,
@@ -1879,7 +1942,7 @@ fn solve_rhf_once(
                 // with `check_stability = false` (the default) nothing below is
                 // constructed, so this branch is bit-identical to a build with
                 // no stability support. Diagnostic: it warns, it never Errs.
-                let stability = if config.check_stability {
+                let (stability, stability_external) = if config.check_stability {
                     stability_rhf(
                         ctx,
                         mol,
@@ -1895,7 +1958,7 @@ fn solve_rhf_once(
                         ooc_budget,
                     )
                 } else {
-                    None
+                    (None, None)
                 };
                 // COSX final-grid pass (opt-in, `CosxConfig::final_grid`):
                 // `k_buf` holds K_scf(d) from this iteration's build, so only
@@ -1934,6 +1997,7 @@ fn solve_rhf_once(
                     computed_quartets: total_quartets,
                     induced_dipoles: last_induced_dipoles,
                     stability,
+                    stability_external,
                     df_jk: df_jk_route.clone(),
                     rohf_spin_focks: None,
                     cosx_final,

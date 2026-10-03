@@ -17,16 +17,28 @@
 //! | `uhf_internal_stability`, HF | UHF → UHF | `newton_ah.gen_g_hop_uhf` | 1 |
 //! | `uhf_internal_stability`, KS (`fxc` threaded by `solve_uhf`) | UKS → UKS | `gen_g_hop_uhf` on `dft.UKS` (f_xc via `gen_response`) | 1 |
 //! | `rhf_internal_stability` | RHF → RHF (singlet) | `newton_ah.gen_g_hop_rhf` | 1/2 |
+//! | `rhf_external_stability` | RHF → UHF (triplet) | `stability._gen_hop_rhf_external` `hop_rhf2uhf` | 1 |
 //! | `uhf_internal_stability` on UHF inputs built AT THE RHF POINT | RHF → UHF (triplet) ∪ RHF → RHF | `stability._gen_hop_rhf_external` `hop_rhf2uhf` ∪ `gen_g_hop_rhf`/2 | 1 |
 //!
-//! There is no dedicated RHF → UHF operator in ferric. The external check
-//! here is the UHF Hessian evaluated at the RHF solution (C_α = C_β = C_RHF,
-//! F_α = F_β = F_RHF), which block-diagonalizes EXACTLY into the singlet
-//! (κ_β = κ_α) and triplet (κ_β = −κ_α) channels: in the triplet channel δJ
-//! cancels and each spin keeps −K(δD_σ), which is PySCF's `hop_rhf2uhf`; in
-//! the singlet channel it is `(A+B)`, ferric's RHF Hessian. Its λ_min is
-//! therefore min(singlet, triplet), and the triplet spectrum is extracted
-//! here by rotating the dense Hessian into the (κ, ±κ)/√2 basis.
+//! The external check is made TWICE, by two independent constructions, and
+//! both are compared against the same PySCF reference:
+//!
+//! * `rhf_external_stability` drives the DEDICATED triplet matvec
+//!   (`rhf_newton::triplet_hessian_matvec`), which omits δJ algebraically.
+//!   This is the operator `RhfConfig::check_stability` runs and reports on
+//!   `ScfResult::stability_external`.
+//! * `uhf_internal_stability` on UHF inputs built at the RHF solution
+//!   (C_α = C_β = C_RHF, F_α = F_β = F_RHF) gives a Hessian that
+//!   block-diagonalizes EXACTLY into the singlet (κ_β = κ_α) and triplet
+//!   (κ_β = −κ_α) channels: in the triplet channel δJ cancels NUMERICALLY and
+//!   each spin keeps −K(δD_σ), which is PySCF's `hop_rhf2uhf`; in the singlet
+//!   channel it is `(A+B)`, ferric's RHF Hessian. Its λ_min is therefore
+//!   min(singlet, triplet), and the triplet spectrum is extracted here by
+//!   rotating the dense Hessian into the (κ, ±κ)/√2 basis.
+//!
+//! Agreement between the two is the exactness anchor (also asserted at the
+//! fast tier, `scf_stability_external.rs`): a shared defect would have to live
+//! in `build_jk_with_pool` itself.
 //!
 //! ## Normalization (read from both codes; proved numerically)
 //!
@@ -77,10 +89,13 @@
 //! * If a Hessian carries a wrong FACTOR (the 2 / 4 conventions above): every
 //!   eigenvalue misses by 50-300%; the raw-PySCF-singlet MISS assertion is the
 //!   explicit guard for the RHF factor.
-//! * If the triplet channel is mis-built (δJ not cancelling, exchange on the
-//!   wrong spin): the stretched-water external λ misses PySCF's −3.07e-1 and
-//!   the singlet/triplet coupling block of ferric's UHF-at-RHF Hessian is not
-//!   zero (ferric-internal identity, asserted).
+//! * If the triplet channel is mis-built (δJ not removed, exchange on the
+//!   wrong spin, the ½ on K dropped): the stretched-water external λ misses
+//!   PySCF's −3.07e-1, the dedicated triplet operator disagrees with the
+//!   UHF-at-RHF triplet block, and the singlet/triplet coupling block of
+//!   ferric's UHF-at-RHF Hessian is not zero (ferric-internal identities, both
+//!   asserted). A δJ left in makes the dedicated triplet λ equal the SINGLET
+//!   reference, which the `must_miss` channel guard rejects.
 //! * If the KS kernel is dropped (`fxc_ref = None` in `uhf.rs`'s stability
 //!   path): NH2's UKS λ_min moves from 0.0787 to 0.1674 and the UKS reference
 //!   comparison fails (measured by that mutation). The separate UHF SCF's
@@ -101,7 +116,8 @@
 //! # NEGATIVE CONTROLS (asserted inside the tests)
 //!
 //! * stretched water: external verdict UNSTABLE with λ matching PySCF's
-//!   negative triplet eigenvalue, while the internal verdict is STABLE.
+//!   negative triplet eigenvalue, while the internal verdict is STABLE — from
+//!   the dedicated operator AND from the UHF-at-RHF construction.
 //! * N2⁺ default guess: verdict UNSTABLE with PySCF's negative λ_min.
 //! * RHF factor: ferric's singlet spectrum must MISS the raw (×2) PySCF one.
 //! * channel identity: ferric's triplet λ must MISS the singlet reference.
@@ -723,6 +739,47 @@ fn water_row(system: &str, expect_external: StabilityVerdict) {
     }
     let t_spec = sym_eigh(&h_t, &format!("{ctx} triplet block"));
     check_spectrum(ctx, "triplet (RHF->UHF)", &t_spec, &want_t, TOL_LAMBDA);
+
+    // --- The DEDICATED external operator, through the SCF path -----------
+    // `rhf_external_stability` drives `rhf_newton::triplet_hessian_matvec`,
+    // which omits δJ algebraically where the UHF-at-RHF construction above
+    // builds it and lets it cancel numerically. Two independent constructions
+    // of one operator, both compared against the SAME PySCF reference.
+    let st_trip = res.stability_external.as_ref().unwrap_or_else(|| {
+        panic!("{ctx}: check_stability was set on an RHF run but no EXTERNAL verdict came back")
+    });
+    eprintln!("{ctx}: external (dedicated triplet operator): {}", st_trip.summary());
+    assert_eq!(st_trip.kind, StabilityKind::RhfExternalTriplet);
+    assert!(st_trip.converged, "{ctx}: {}", st_trip.summary());
+    check_close(
+        ctx,
+        "triplet lambda_min",
+        st_trip.lowest_eigenvalue,
+        want_t[0],
+        TOL_LAMBDA,
+    );
+    check_close(
+        ctx,
+        "triplet vs UHF@RHF block",
+        st_trip.lowest_eigenvalue,
+        t_spec[0],
+        TOL_DAVIDSON_VS_DENSE,
+    );
+    // CHANNEL GUARD: the dedicated triplet verdict must MISS the singlet
+    // reference, or the external path is computing the internal operator.
+    must_miss(
+        ctx,
+        "singlet reference as dedicated triplet lambda",
+        st_trip.lowest_eigenvalue,
+        want_s[0],
+        TOL_LAMBDA,
+    );
+    assert_eq!(
+        st_trip.verdict(),
+        expect_external,
+        "{ctx}: dedicated RHF->UHF verdict: {}",
+        st_trip.summary()
+    );
     // Channel guard: a triplet built as the singlet must fail.
     must_miss(
         ctx,

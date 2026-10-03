@@ -402,6 +402,7 @@ impl SemicanonicalOrbitals {
             computed_quartets: rohf.computed_quartets,
             induced_dipoles: rohf.induced_dipoles.clone(),
             stability: None,
+            stability_external: None,
             // Same energy as the ROHF reference, so the same J/K builders.
             df_jk: rohf.df_jk.clone(),
             rohf_spin_focks: rohf.rohf_spin_focks.clone(),
