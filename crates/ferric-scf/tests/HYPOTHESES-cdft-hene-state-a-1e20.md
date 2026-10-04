@@ -279,3 +279,115 @@ half), because with the short-circuit closed there is no Jacobian at all on
 these iterations. Whether that is enough to reach a root, or whether the inner
 solve's inability to converge at this target is the real blocker, is NOT yet
 established and must not be asserted until the remaining measurements land.
+
+---
+
+## MEASUREMENT 2 (2026-10-04, COMPLETE): both mechanisms are real, in different phases
+
+Full run, uncancelled: `rc=0`, 3 tests passed, 36.6 s, release, quiet box
+(box held the slot; #283's suite and #288's job had finished).
+
+**This SUPERSEDES measurement 1's provisional reading, which generalised from
+outer 1-11 to the whole run. Measurement 1 is correct for the range it saw and
+wrong as a verdict; it was committed as provisional for exactly this reason.**
+
+### The run has TWO phases, and the issue describes both
+
+Exactly **23 capped main solves, then 17 converged ones** — the issue's "first
+23 inner solves hit their 400-iteration cap" is confirmed to the integer.
+
+Phase 1 (outer 1-23): every main AND probe `inner_conv=false inner_iters=400`.
+Jacobians sign-flip across +310.9/-204.9; `hf_mismatch` 5.2e-4 … 2.3e-2, i.e.
+100x-23000x ABOVE tol. `trusts` accepts all of them via its `!s.converged`
+short-circuit, so a Jacobian from two capped DIIS snapshots drives the step.
+lambda random-walks in [-0.004, +0.102]. H-ARTIFACT-A CONFIRMED here.
+
+Phase 2 (outer 24-40): a bit-identical period-2 cycle on CONVERGED solves.
+
+| outer | lam | N_C | c | E | conv | iters | jac | hf_mismatch |
+|---|---|---|---|---|---|---|---|---|
+| 24 | -0.232435480779 | 1.039258195 | -9.607418e-1 | -130.3582888372 | **true** | **31** | **+1.990141e-1** | **2.096e-10** |
+| 25 | +0.767564519221 | 1.008189106 | -9.918109e-1 | -130.3717295214 | **true** | **8** | -1.129936e-2 | 1.037e-12 |
+| 26 | -0.232435480779 | 1.039258207 | -9.607418e-1 | -130.3582888344 | true | 31 | +1.990021e-1 | 2.156e-10 |
+| 27 | +0.767564519221 | 1.008189106 | -9.918109e-1 | -130.3717295214 | true | 8 | -1.129936e-2 | 1.037e-12 |
+| … repeats to outer 40 | | | | | | | | |
+
+gap = 0.767564519221 - (-0.232435480779) = **exactly 1.000000000000 = MAX_STEP**.
+Only THREE distinct converged states occur after outer 24 (two of them the same
+lambda differing in E's 11th decimal, 2.8e-9 — inner-SCF exit noise).
+
+**The cycle points are GENUINELY CONVERGED**: 31/26 and 8/8 iterations against a
+400 cap, and `hf_mismatch` 2.1e-10 / 1.0e-12 is far BELOW `HF_MISMATCH_TOL`
+= 1e-6, so guard 2 correctly has no grounds to fire. H-PHYSICS CONFIRMED here.
+Per #281's lesson the iteration counts were read, and they do NOT excuse the
+slope this time.
+
+### The slope sign is ROBUST (my FD-noise hypothesis is REFUTED)
+
+| lam | h = 1e-4 | h = 1e-3 | h = 1e-2 | probes converged |
+|---|---|---|---|---|
+| -0.2324 | **+0.200683** | **+0.199158** | **+0.209687** | 31/31, 31/26, 31/37 |
+| +0.7676 | -0.011307 | -0.011299 | -0.011216 | 8/8, 8/8, 8/8 |
+
+Stable to ~5% over two decades of h, every probe converged. I had argued from
+`density_conv = 1e-6` that FD noise could reach ~1e-1 and flip the sign; that
+prediction is REFUTED. The positive slope is a property of the branch.
+
+### The decisive new fact: TWO BRANCHES, and the root is on the OTHER one
+
+Direct c(lambda) scan, one inner solve per lambda from the state-A seed, NO
+outer loop involved (independent construction, not a re-reading of the trace):
+
+| lam | c | E | conv | iters | branch |
+|---|---|---|---|---|---|
+| -2.753700 | +0.860747625 | -128.127747908 | true | 24 | (collapsed) |
+| **-2.439010** | **-0.000000122** | **-130.426707290** | true | 22 | **LOWER — THE ROOT** |
+| -2.000000 | -0.020349050 | -130.472912532 | true | 34 | lower |
+| -1.500000 | -0.028646434 | -130.487652444 | true | 11 | lower |
+| -1.000000 | -0.034238265 | -130.494682023 | true | 11 | lower |
+| -0.500000 | -0.039686606 | -130.498744411 | true | 11 | lower |
+| **-0.232400** | **-0.960734932** | -130.358287240 | true | 31 | **state-A branch** |
+| +0.000000 | -0.937374421 | -130.382251622 | **false** | **400** | (no solution) |
+| +0.267600 | -0.975638511 | -130.378575579 | true | 11 | state-A |
+| +0.500000 | -0.987559970 | -130.374352635 | true | 9 | state-A |
+| **+0.767600** | **-0.991811295** | -130.371729213 | true | 8 | **state-A branch** |
+| +1.000000 | -0.994098880 | -130.369717946 | true | 7 | state-A |
+
+The state-A branch carries c = -0.96 … -0.99 across its whole extent: **it has
+NO root**. The lower branch carries c = -0.020 … -0.040 and its root is at
+lambda = -2.43901, c = -1.2e-7, E = **-130.426707290**.
+
+### Which state, and why (acceptance criterion)
+
+**LOWER: E = -130.4267065, lambda = -2.43901.** The scan hits it at
+E = -130.426707290, lambda = -2.439010 — agreeing with the documented LOWER to
+**8e-7 Ha** and **1e-8 in lambda**, inside the test's 1e-5 / 1e-3 bars. It is
+also the state this start reaches at precision 1e-14 in 9 outer iterations, so a
+fix is restoring the 1e-14 answer, not inventing one.
+
+WHY the loop cannot get there unaided: the cycle sits on a branch with no root,
+both probes are on that branch, both residuals are negative, so `Bracket` never
+gets a two-sided bracket (the trace shows `bracket=[-0.232435, NaN]` — one-sided
+forever) and guard 2 has nothing to object to. The ONLY local signal that the
+branch is wrong is **dc/dlambda = +0.199 > 0**, which by concavity of
+V(lambda) = min_rho(E + lambda*c) cannot happen on the lowest solution. The
+issue's theoretical lead is therefore CORRECT and is the only available signal.
+
+### Both of the issue's mechanisms are real; neither alone explains the failure
+
+A guard on the slope alone would not have helped in phase 1 (nothing is
+converged there, so it is inert — measurement 1 established that). Closing the
+`!s.converged` short-circuit alone would not help in phase 2 (everything is
+converged there and `hf_mismatch` is legitimately tiny). **The failure needs
+both fixes**, and that is the finding that neither the issue nor measurement 1
+states on its own.
+
+### Note on StabilitySkip::FockModified
+
+No stability descent is needed for this row. `cdft_driver::augmented_instability`
+already forms the correct operator (the lambda-augmented Hessian, valid because
+W is density-independent so it drops out of dF/dD), and the catalogue runs with
+`cdft_stability_descent: false` anyway. `StabilitySkip::FockModified` guards the
+BARE UHF stability call in `uhf.rs`, which is a different question. The root is
+reachable by the outer loop once it stops stepping along a rootless branch, so
+this does not need the constrained-Fock descent.
