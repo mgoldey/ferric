@@ -174,3 +174,108 @@ problem — which `StabilitySkip::FockModified` currently refuses — the right
 report is that measurement, with lambda_min(H_aug) at the cycle points and the
 noise floor, and NOT a guard forced in to make the test green. A well-evidenced
 "this needs the constrained-Fock Hessian" closes the issue honestly.
+
+---
+
+## MEASUREMENT 1 (2026-10-04, partial): H-ARTIFACT-A CONFIRMED at outer 1-11
+
+Appended, NOT edited into the pre-registration above, per the protocol.
+
+PROVENANCE CAVEAT, stated because it affects nothing but must not be hidden:
+this trace comes from a run that was CANCELLED at outer 11 of 40 (I killed it
+while reorganising the slot queue, mistakenly believing it had produced no
+data). The lines below are the run's own stderr, unmodified, and the run was
+mid-measurement when killed; the cut is a TRUNCATION, not a corruption. The
+remaining iterations are being re-measured.
+
+Release build, ERI precision 1e-20, HeNe+/def2-SVP R = 2.0 A, state-A seed,
+target N_He = 2, `max_iter: 400`, `cdft_max_outer: 40`.
+
+### The state-A REFERENCE solve (target 1.0) is healthy
+
+| outer | lam | N_C | resid | inner_conv | inner_iters | jac | hf_mismatch |
+|---|---|---|---|---|---|---|---|
+| 1 | +0.000000 | 1.953538 | +9.535e-1 | true | 11 | -1.615e-2 | 9.7e-12 |
+| 2 | +1.000000 | 1.005901 | +5.901e-3 | true | 22 | -8.915e-3 | 2.2e-12 |
+| 3 | +1.661955 | 0.999635 | -3.653e-4 | true | 10 | -1.196e-2 | 1.1e-10 |
+| 4 | +1.631409 | 0.999993 | -6.793e-6 | true | 10 | — | — |
+
+Converged in 4 outer iterations to E = -130.3618594952, lam = +1.63140887 —
+which matches the state-A diabat recorded in HYPOTHESES-constrained-stability.md
+(lambda = +1.631409, E = -130.36185950). Every jac is NEGATIVE, consistent with
+concavity. This is the seed, and it is sound.
+
+### The state-A START at target 2.0: EVERY solve is iteration-capped
+
+| outer | lam | N_C (main) | resid | inner_conv | inner_iters | jac | hf_mismatch | step |
+|---|---|---|---|---|---|---|---|---|
+| 1 | +0.000000 | 1.062626 | -9.374e-1 | **false** | **400** | +3.109e2 | 2.28e-2 | Newton |
+| 2 | +0.003015 | 1.103962 | -8.960e-1 | **false** | **400** | +7.374e1 | 4.24e-3 | Newton |
+| 3 | +0.015167 | 1.161356 | -8.386e-1 | **false** | **400** | -7.275e1 | 1.77e-2 | Newton |
+| 4 | +0.003640 | 1.138120 | -8.619e-1 | **false** | **400** | +4.063e1 | 1.17e-2 | Newton |
+| 5 | +0.024854 | 1.160649 | -8.394e-1 | **false** | **400** | +3.036e1 | 5.79e-3 | Newton |
+| 6 | +0.052500 | 1.283740 | -7.163e-1 | **false** | **400** | -2.049e2 | 1.53e-2 | Newton |
+| 7 | +0.049004 | 1.093312 | -9.067e-1 | **false** | **400** | +2.286e1 | 1.85e-3 | Newton |
+| 8 | +0.088667 | 1.200925 | -7.991e-1 | **false** | **400** | -6.354e1 | 5.24e-4 | Newton |
+| 9 | +0.076090 | 1.164410 | -8.356e-1 | **false** | **400** | +9.076e1 | 1.35e-2 | Newton |
+| 10 | +0.085297 | 1.201393 | -7.986e-1 | **false** | **400** | +4.805e1 | 2.60e-3 | Newton |
+| 11 | +0.101917 | 1.167771 | -8.322e-1 | **false** | **400** | — | — | — |
+
+(Every PROBE is also `inner_conv=false inner_iters=400`.)
+
+### What this refutes
+
+1. **The issue's mechanism (2) is NOT what happens at these iterations.** It
+   describes "a clamp-width period-2 cycle on a CONVERGED branch with
+   dc/dlambda > 0". At outer 1-11 nothing is converged, there is no period-2
+   cycle (lambda random-walks in [0.003, 0.102], never revisiting a point), and
+   the Jacobians sign-flip across +310.9/-204.9. **H-ARTIFACT-A is confirmed**
+   for this range; H-PHYSICS has no support here. The guard I drafted from the
+   concavity argument ("reject jac > 0 on a CONVERGED pair") would have been
+   INERT on every line above, because `s.converged` is false throughout.
+
+2. **Guard 2 is being BYPASSED, and that is the live defect.** `hf_mismatch`
+   runs 5.2e-4 … 2.3e-2, i.e. **100x to 23,000x above HF_MISMATCH_TOL = 1e-6**,
+   and the probe never converges — so `trusts` should reject every pair. It
+   accepts all of them (`step=Newton` on every line) because of its own
+   short-circuit:
+
+   ```rust
+   !self.guards || !s.converged || (p.converged && … && hf_mismatch(..) <= HF_MISMATCH_TOL)
+   ```
+
+   `!s.converged` returns TRUSTED unconditionally. The code comment justifies
+   this as "no better model than this one" — but a Jacobian of +310 formed from
+   two 400-iteration-capped DIIS snapshots is not a model of anything, and the
+   loop spends its entire budget on it. This is the same CLASS of finding as
+   #283's: the guard that should fire already exists, and the failure is in
+   what reaches it.
+
+3. **Guard 1 cannot engage, for a derived reason.** `backtrack` requires
+   `last_good`, which `record` sets only on a converged point. With no inner
+   solve ever converging there is no anchor, exactly as the issue says — but the
+   consequence is not "the plain step is taken", it is "an untrusted Jacobian is
+   taken as TRUSTED", which is worse and is what (2) describes.
+
+### What is still open
+
+* outer 12-40: whether any solve converges later, and whether the documented
+  lam = -0.2324 / +0.7676 cycle with jac = +0.199 appears AFTER one does. The
+  issue's numbers must come from somewhere; this trace does not reach them.
+* the direct c(lambda) scan (no outer loop): where the root actually is from
+  this seed, and whether the FD slope sign at the documented cycle points is
+  robust across h = 1e-4/1e-3/1e-2.
+* WHY the inner solve cannot converge from the state-A orbitals at target 2.0
+  while the same guess converges in 10-22 iterations at target 1.0. At 1e-14
+  this start converges in 9 outer iterations, so the inner solve CAN converge
+  from it; what the extra ERI precision changes is the open question.
+
+### Provisional reading (dated, explicitly not a verdict)
+
+The fix suggested by the data so far is NOT a new outer guard on the slope. It
+is that an unconverged main point must not confer trust on its probe — and then
+"no converged point yet" needs a defined behaviour (the issue's task 2, second
+half), because with the short-circuit closed there is no Jacobian at all on
+these iterations. Whether that is enough to reach a root, or whether the inner
+solve's inability to converge at this target is the real blocker, is NOT yet
+established and must not be asserted until the remaining measurements land.
