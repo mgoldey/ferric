@@ -2261,6 +2261,8 @@ def tune_omega(
     omega_hi: float | None = None,
     omega_tol: float | None = None,
     max_evals: int | None = None,
+    continuation: bool | None = None,
+    branch_tol: float | None = None,
 ) -> dict[str, object]:
     """Optimal tuning of range-separation omega for an RSH functional."""
     ...

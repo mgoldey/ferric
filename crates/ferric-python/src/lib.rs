@@ -5093,13 +5093,13 @@ fn run_linlccd(
 ///   `seed` ("default" or "continued"), `seed_from_omega` (the omega continued
 ///   from, or `None`), and `branch_changed`.
 ///
-/// `continuation` (default `True`) seeds each evaluation's neutral and cation
+/// `continuation` (default `False`) seeds each evaluation's neutral and cation
 /// SCF from the converged orbitals of the NEAREST already-evaluated omega, so
 /// a golden-section search — which visits omega out of order — keeps the
 /// cation on one branch instead of re-solving it from the default guess at
 /// every point. `False` reproduces independent per-omega solves exactly.
 ///
-/// `branch_tol` (default 0.05) is the largest change in cation <S^2> or spin
+/// `branch_tol` (default 1e-7) is the largest change in cation spin
 /// asymmetry still attributed to omega moving rather than to the cation
 /// changing state; `0` or a negative value disables the check, in which case
 /// `branch_changed` is `False` everywhere because nothing was CHECKED, not
