@@ -12,12 +12,16 @@ import numpy as np
 
 _ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT / "scripts/validation"))
-import common  # noqa: E402
-import gen_bse  # noqa: E402
-import gen_gw  # noqa: E402
+# These three imports MUST follow the sys.path.insert above — they resolve
+# through it. E402 is not in this repo's ruff select list, so a suppression
+# directive here would itself be flagged as an unused one.
+import common
+import gen_bse
+import gen_gw
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from measure_qp_window import decode_kernel, omegas  # noqa: E402
+# Same: resolves through the insert on the line above.
+from measure_qp_window import decode_kernel, omegas
 
 HA_EV = 27.211386245988
 WANT = [
