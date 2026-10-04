@@ -339,3 +339,55 @@ passed/failed/ignored counts read (all runs executed 5 tests, 0 ignored):
 
 5/5 caught, each by the test written for it. `bse.rs` byte-identical to the
 pre-mutation copy afterwards (verified with `diff -q`).
+
+---
+
+# ADDENDUM 2026-10-04: the degenerate-QP mechanism is measured, not separate
+
+The issue lists NH3's degeneracy splitting as a distinct symptom: the noise
+splits degenerate QP energies, so Omega depends on an arbitrary MO rotation
+(quoted 1.9e-8 to 4.9e-8 Ha). It is natural to read that as a second,
+unaddressed mechanism. The measurement covers it, and it is the SAME
+attenuation story.
+
+NH3/cc-pVDZ degenerate QP pair splits, stored run:
+
+| MO pair | split (Ha) |
+|---|---|
+| 2/3 | 2.14e-07 |
+| 6/7 | 5.97e-09 |
+| 8/9 | 3.39e-07 |
+| 12/13 | 1.06e-07 |
+| 14/15 | 3.32e-06 |
+| 19/20 | 6.47e-05 |
+| 21/22 | 3.97e-03 |
+| 24/25 | 2.01e-04 |
+| 27/28 | 2.71e-04 |
+
+The splits grow by five orders of magnitude with distance from the Fermi level,
+exactly like the sensitivities. The corresponding Omega degeneracy splits:
+
+| quantity | stored run | independent re-run | change between runs |
+|---|---|---|---|
+| Omega2 - Omega3 | 4.172e-08 | 3.600e-08 | 5.72e-09 |
+| Omega4 - Omega5 | 3.067e-07 | 3.370e-07 | 3.03e-08 |
+
+So a 3.97e-03 Ha QP degeneracy violation on MO 21/22 reaches the lowest Omega
+pairs as a 4e-08 to 3e-07 Ha split, and that split is itself reproducible to
+6e-09 / 3e-08 Ha between runs. The stored
+`degenerate_rotation_ambiguity = 4.90e-08` agrees with the Omega-level split, and
+is NOT the 3.97e-03 Ha QP-level number.
+
+Consequence for the fix decision: unchanged, and reinforced. The windowed
+scissor would REPLACE those out-of-window QP energies with a single rigid shift,
+which makes every out-of-window degenerate pair exactly degenerate — cosmetically
+better at the QP level, while moving the lowest Omega by 1.4e-05 to 5.2e-04 Ha
+(k = 8 and k = 2), i.e. 100 to 10^4 times the 4e-08 Ha Omega-level split it
+would tidy up. Enforcing a symmetry at the QP level by discarding real
+information is not a trade worth making for a quantity already attenuated to
+1e-07.
+
+What the measurement does NOT cover: whether the Omega-level split matters for
+assigning degenerate STATE pairs in a code that reports symmetry labels.
+ferric's BSE-TDA reports neither labels nor irreps, so there is nothing for a
+4e-08 Ha split to corrupt today. If labelling is added, this becomes live again.

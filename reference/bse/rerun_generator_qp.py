@@ -12,12 +12,12 @@ import numpy as np
 
 _ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT / "scripts/validation"))
-import common
-import gen_bse
-import gen_gw
+import common  # noqa: E402
+import gen_bse  # noqa: E402
+import gen_gw  # noqa: E402
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from measure_qp_window import decode_kernel, omegas
+from measure_qp_window import decode_kernel, omegas  # noqa: E402
 
 HA_EV = 27.211386245988
 WANT = [
