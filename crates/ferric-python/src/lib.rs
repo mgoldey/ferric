@@ -5075,10 +5075,46 @@ fn run_linlccd(
 }
 
 /// Optimal (Baer/Kronik IP-based) tuning of the range-separation omega for
-/// an RSH functional. Returns {omega, j, converged, evals: [(omega,
-/// eps_homo, ip, j), ...]}. Closed-shell neutral + doublet cation.
+/// an RSH functional. Closed-shell neutral + doublet cation.
+///
+/// Returns a dict:
+///
+/// * `omega`, `j`, `converged` — the tuned omega (Bohr^-1), its Koopmans
+///   residual J, and whether the golden-section search met `omega_tol`.
+/// * `branch_warning` — `None`, or a string naming every omega whose cation
+///   changed electronic state relative to its nearest evaluated neighbour.
+///   When this is set the J curve was assembled from more than one state and
+///   `omega` is not the tuned omega of either.
+/// * `evals` — one dict per evaluation: `omega`, `eps_homo`, `ip`, `j`,
+///   `e_neutral`, `e_cation`, `cation_iterations`, `neutral_iterations`,
+///   `cation_s_squared`, `cation_spin_asymmetry`
+///   (largest spin-population difference over symmetry-equivalent atoms; ~0
+///   for a hole shared over equivalent centres, O(1) for a localized hole),
+///   `seed` ("default" or "continued"), `seed_from_omega` (the omega continued
+///   from, or `None`), and `branch_changed`.
+///
+/// `continuation` (default `True`) seeds each evaluation's neutral and cation
+/// SCF from the converged orbitals of the NEAREST already-evaluated omega, so
+/// a golden-section search — which visits omega out of order — keeps the
+/// cation on one branch instead of re-solving it from the default guess at
+/// every point. `False` reproduces independent per-omega solves exactly.
+///
+/// `branch_tol` (default 0.05) is the largest change in cation <S^2> or spin
+/// asymmetry still attributed to omega moving rather than to the cation
+/// changing state; `0` or a negative value disables the check, in which case
+/// `branch_changed` is `False` everywhere because nothing was CHECKED, not
+/// because the states agreed.
+///
+/// LIMITATION: neither mechanism is a stability verdict. ferric's
+/// orbital-Hessian stability analysis refuses omega != 0 (its exchange
+/// response is built from the plain Coulomb kernel and does not reproduce a
+/// range-separated Fock's SR/LR split), so a converged cation that is an
+/// internal SADDLE is not detected and a returned omega can sit on a branch
+/// that has stopped being a minimum. Continuation keeps the curve on ONE
+/// branch; it does not certify that branch is the lowest one.
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, functional, omega_lo=None, omega_hi=None, omega_tol=None, max_evals=None))]
+#[pyo3(signature = (mol, basis_set, functional, omega_lo=None, omega_hi=None, omega_tol=None, max_evals=None, continuation=None, branch_tol=None))]
+#[allow(clippy::too_many_arguments)]
 fn tune_omega(
     py: Python<'_>,
     mol: &PyMolecule,
@@ -5088,32 +5124,71 @@ fn tune_omega(
     omega_hi: Option<f64>,
     omega_tol: Option<f64>,
     max_evals: Option<usize>,
+    continuation: Option<bool>,
+    branch_tol: Option<f64>,
 ) -> PyResult<Py<pyo3::types::PyDict>> {
     use ferric_scf::omega_tuning::{tune_omega as tune, OmegaTuneConfig};
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
     let ctx = ParallelContext::default();
+    let defaults = OmegaTuneConfig::default();
     let cfg = OmegaTuneConfig {
         functional: functional.to_string(),
         omega_lo: omega_lo.unwrap_or(0.1),
         omega_hi: omega_hi.unwrap_or(1.0),
         omega_tol: omega_tol.unwrap_or(5e-3),
         max_evals: max_evals.unwrap_or(24),
-        ..Default::default()
+        continuation: continuation.unwrap_or(defaults.continuation),
+        // A non-positive tolerance is the documented "off" switch; anything
+        // positive is taken literally rather than clamped, so a caller that
+        // asks for an absurdly tight bar gets flags, not a silent default.
+        branch_tol: match branch_tol {
+            None => defaults.branch_tol,
+            Some(t) if t > 0.0 => Some(t),
+            Some(_) => None,
+        },
+        ..defaults
     };
     let r = tune(&ctx, &mol.inner, &prep, &bounds, &cfg).map_err(make_err)?;
     let d = pyo3::types::PyDict::new(py);
     d.set_item("omega", r.omega)?;
     d.set_item("j", r.j)?;
     d.set_item("converged", r.converged)?;
-    let evals: Vec<(f64, f64, f64, f64)> = r
-        .evals
-        .iter()
-        .map(|e| (e.omega, e.eps_homo, e.ip_delta_scf, e.j))
-        .collect();
+    d.set_item("branch_warning", r.branch_warning.clone())?;
+    let evals = pyo3::types::PyList::empty(py);
+    for e in &r.evals {
+        evals.append(omega_eval_dict(py, e)?)?;
+    }
     d.set_item("evals", evals)?;
     Ok(d.into())
+}
+
+/// One `OmegaEval` as the dict `tune_omega` returns in its `evals` list.
+fn omega_eval_dict<'py>(
+    py: Python<'py>,
+    e: &ferric_scf::omega_tuning::OmegaEval,
+) -> PyResult<pyo3::Bound<'py, pyo3::types::PyDict>> {
+    use ferric_scf::omega_tuning::OmegaSeed;
+    let item = pyo3::types::PyDict::new(py);
+    item.set_item("omega", e.omega)?;
+    item.set_item("eps_homo", e.eps_homo)?;
+    item.set_item("ip", e.ip_delta_scf)?;
+    item.set_item("j", e.j)?;
+    item.set_item("e_neutral", e.e_neutral)?;
+    item.set_item("e_cation", e.e_cation)?;
+    item.set_item("cation_s_squared", e.cation_s_squared)?;
+    item.set_item("cation_spin_asymmetry", e.cation_spin_asymmetry)?;
+    item.set_item("cation_iterations", e.cation_iterations)?;
+    item.set_item("neutral_iterations", e.neutral_iterations)?;
+    item.set_item("branch_changed", e.branch_changed)?;
+    let (seed, from) = match e.seed {
+        OmegaSeed::Default => ("default", None),
+        OmegaSeed::Continued { from_omega } => ("continued", Some(from_omega)),
+    };
+    item.set_item("seed", seed)?;
+    item.set_item("seed_from_omega", from)?;
+    Ok(item)
 }
 
 // ── OO-RI-MP2 (orbital-optimized) ──

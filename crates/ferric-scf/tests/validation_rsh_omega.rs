@@ -241,6 +241,11 @@ fn tune_config(omega_lo: f64, omega_hi: f64) -> OmegaTuneConfig {
             density_conv: 1e-7,
             ..Default::default()
         },
+        // Continuation and the cation branch check at their library defaults.
+        // `check_points` calls `eval_j`, which never continues, so the ω-grid
+        // comparison below is unaffected; only `check_omega_star`'s tuner run
+        // sees them.
+        ..Default::default()
     }
 }
 
@@ -311,6 +316,21 @@ fn check_omega_star(system: &str) {
     let t = tune_omega(&sys.ctx, &sys.mol, &sys.prep, &sys.bounds, &cfg)
         .unwrap_or_else(|e| panic!("{ctx}: tune_omega failed: {e:?}"));
     eprintln!("{ctx}: {t}");
+    for e in &t.evals {
+        eprintln!(
+            "{ctx}:   w={:.6} J={:+.3e} S2={:.6} asym={:.3e} seed={} flag={}",
+            e.omega, e.j, e.cation_s_squared, e.cation_spin_asymmetry, e.seed, e.branch_changed
+        );
+    }
+    // H2O and NH3 have a single cation branch over this bracket (the hole is
+    // on the heavy atom, not on the equivalent H), so the branch check must
+    // stay quiet. A flag here is either a real branch switch or a tolerance
+    // below the metric's smooth ω-drift — both are failures of this row.
+    assert!(
+        t.branch_warning.is_none(),
+        "{ctx}: cation branch check fired during tuning: {:?}",
+        t.branch_warning
+    );
     assert!(
         t.converged,
         "{ctx}: tuner did not converge in {TUNE_MAX_EVALS} evals"

@@ -20004,8 +20004,8 @@
     "mi": 125.53275533735598
   },
   "crates/ferric-python/src/lib.rs::ferric": {
-    "cc": 168.0,
-    "mi": 7.531282250961098
+    "cc": 170.0,
+    "mi": 6.881287709420221
   },
   "crates/ferric-python/src/lib.rs::ferric::<anonymous>": {
     "cc": 1.0,
@@ -21047,6 +21047,10 @@
     "cc": 2.0,
     "mi": 108.28906305397692
   },
+  "crates/ferric-python/src/lib.rs::omega_eval_dict": {
+    "cc": 16.0,
+    "mi": 79.00030929570589
+  },
   "crates/ferric-python/src/lib.rs::orbital_moments": {
     "cc": 5.0,
     "mi": 87.32666894220314
@@ -21435,6 +21439,10 @@
     "cc": 4.0,
     "mi": 72.94126260984918
   },
+  "crates/ferric-python/src/lib.rs::run_optimize::<anonymous>": {
+    "cc": 1.0,
+    "mi": 101.62924968556047
+  },
   "crates/ferric-python/src/lib.rs::run_optimize_qmmm": {
     "cc": 13.0,
     "mi": 62.07854066363602
@@ -21442,6 +21450,14 @@
   "crates/ferric-python/src/lib.rs::run_optimize_qmmm::<anonymous>": {
     "cc": 1.0,
     "mi": 157.04690188600065
+  },
+  "crates/ferric-python/src/lib.rs::run_optimize_uhf": {
+    "cc": 4.0,
+    "mi": 72.94126260984918
+  },
+  "crates/ferric-python/src/lib.rs::run_optimize_uhf::<anonymous>": {
+    "cc": 1.0,
+    "mi": 101.62924968556047
   },
   "crates/ferric-python/src/lib.rs::run_pdep_rpa": {
     "cc": 14.0,
@@ -21636,12 +21652,8 @@
     "mi": 157.8484854211024
   },
   "crates/ferric-python/src/lib.rs::tune_omega": {
-    "cc": 9.0,
-    "mi": 72.99249677351149
-  },
-  "crates/ferric-python/src/lib.rs::tune_omega::<anonymous>": {
-    "cc": 1.0,
-    "mi": 152.30766979154288
+    "cc": 16.0,
+    "mi": 65.53869286082005
   },
   "crates/ferric-python/src/lib.rs::weighted_stats": {
     "cc": 1.0,
@@ -30543,33 +30555,117 @@
     "cc": 1.0,
     "mi": 101.1027631655244
   },
+  "crates/ferric-scf/src/omega_tuning.rs::branch_warning_for": {
+    "cc": 2.0,
+    "mi": 91.54788476511136
+  },
   "crates/ferric-scf/src/omega_tuning.rs::eval_j": {
-    "cc": 6.0,
-    "mi": 74.86018330352064
+    "cc": 2.0,
+    "mi": 105.12149101092434
+  },
+  "crates/ferric-scf/src/omega_tuning.rs::eval_j::<anonymous>": {
+    "cc": 1.0,
+    "mi": 156.27079806218674
+  },
+  "crates/ferric-scf/src/omega_tuning.rs::eval_j_seeded": {
+    "cc": 15.0,
+    "mi": 53.50064649762692
+  },
+  "crates/ferric-scf/src/omega_tuning.rs::eval_j_seeded::<anonymous>": {
+    "cc": 1.0,
+    "mi": 150.97535505319436
+  },
+  "crates/ferric-scf/src/omega_tuning.rs::eval_j_seeded::<anonymous>#1": {
+    "cc": 1.0,
+    "mi": 155.01840677617037
+  },
+  "crates/ferric-scf/src/omega_tuning.rs::eval_j_seeded::<anonymous>#2": {
+    "cc": 1.0,
+    "mi": 155.01840677617037
+  },
+  "crates/ferric-scf/src/omega_tuning.rs::geometrically_equivalent": {
+    "cc": 8.0,
+    "mi": 83.00608184519734
+  },
+  "crates/ferric-scf/src/omega_tuning.rs::geometrically_equivalent::<anonymous>": {
+    "cc": 4.0,
+    "mi": 98.56775719440219
+  },
+  "crates/ferric-scf/src/omega_tuning.rs::geometrically_equivalent::<anonymous>#1": {
+    "cc": 1.0,
+    "mi": 151.04762065645747
+  },
+  "crates/ferric-scf/src/omega_tuning.rs::geometrically_equivalent::<anonymous>::<anonymous>": {
+    "cc": 1.0,
+    "mi": 156.27079806218674
+  },
+  "crates/ferric-scf/src/omega_tuning.rs::geometrically_equivalent::<anonymous>::<anonymous>#1": {
+    "cc": 1.0,
+    "mi": 120.04882892465557
+  },
+  "crates/ferric-scf/src/omega_tuning.rs::geometrically_equivalent::<anonymous>::<anonymous>#2": {
+    "cc": 1.0,
+    "mi": 152.48082321907071
+  },
+  "crates/ferric-scf/src/omega_tuning.rs::impl:OmegaSeed::fmt": {
+    "cc": 3.0,
+    "mi": 114.4588651842856
   },
   "crates/ferric-scf/src/omega_tuning.rs::impl:OmegaTuneConfig::default": {
     "cc": 1.0,
-    "mi": 110.59075212831839
+    "mi": 105.97831814269992
   },
   "crates/ferric-scf/src/omega_tuning.rs::impl:OmegaTuneResult::fmt": {
+    "cc": 4.0,
+    "mi": 98.12006155236665
+  },
+  "crates/ferric-scf/src/omega_tuning.rs::nearest_evaluated": {
+    "cc": 6.0,
+    "mi": 91.53169361742073
+  },
+  "crates/ferric-scf/src/omega_tuning.rs::nearest_evaluated::<anonymous>": {
     "cc": 1.0,
-    "mi": 107.51217131952502
+    "mi": 156.27079806218674
+  },
+  "crates/ferric-scf/src/omega_tuning.rs::nearest_evaluated_is_not_the_previous_evaluation": {
+    "cc": 1.0,
+    "mi": 85.22671043612809
+  },
+  "crates/ferric-scf/src/omega_tuning.rs::s_squared": {
+    "cc": 4.0,
+    "mi": 89.16938696966513
+  },
+  "crates/ferric-scf/src/omega_tuning.rs::s_squared::<anonymous>": {
+    "cc": 1.0,
+    "mi": 159.05793486938265
+  },
+  "crates/ferric-scf/src/omega_tuning.rs::spin_population_asymmetry": {
+    "cc": 8.0,
+    "mi": 74.08474488140367
   },
   "crates/ferric-scf/src/omega_tuning.rs::state_scf_config": {
     "cc": 4.0,
     "mi": 91.42732773660667
   },
   "crates/ferric-scf/src/omega_tuning.rs::tune_omega": {
-    "cc": 14.0,
-    "mi": 61.070221215258144
+    "cc": 20.0,
+    "mi": 50.38803468858221
   },
   "crates/ferric-scf/src/omega_tuning.rs::tune_omega::<anonymous>": {
-    "cc": 2.0,
-    "mi": 116.68762637012458
+    "cc": 7.0,
+    "mi": 80.00180298861237
   },
   "crates/ferric-scf/src/omega_tuning.rs::tune_omega::<anonymous>#1": {
     "cc": 1.0,
     "mi": 149.74613340726034
+  },
+  "crates/ferric-scf/src/omega_tuning.rs::tune_omega::<anonymous>::<anonymous>": {
+    "cc": 1.0,
+    "mi": 160.0060069647112
+  },
+  "crates/ferric-scf/src/omega_tuning.rs::tune_omega::<anonymous>::<anonymous>#1": {
+    "cc": 1.0,
+    "mi": 156.27079806218674
   },
   "crates/ferric-scf/src/optimize.rs::add_correction": {
     "cc": 6.0,

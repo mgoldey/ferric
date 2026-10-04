@@ -329,3 +329,52 @@ def test_tune_omega_h2_smoke():
     assert 0.3 < t["omega"] < 1.2
     assert abs(t["j"]) < 5e-3  # Koopmans residual driven down from ~1e-2
     assert len(t["evals"]) >= 2
+    # H2+ has one electron, so one cation branch: no flag over the whole run.
+    assert t["branch_warning"] is None
+    # Continuation is OFF by default, so every evaluation uses the solver's
+    # own guess and none names a seed omega.
+    assert all(e["seed"] == "default" for e in t["evals"])
+    assert all(e["seed_from_omega"] is None for e in t["evals"])
+    for e in t["evals"]:
+        assert e["j"] == pytest.approx(e["eps_homo"] + e["ip"], abs=0.0)
+        assert e["ip"] == pytest.approx(e["e_cation"] - e["e_neutral"], abs=1e-12)
+        # H2 has two equivalent H, so the asymmetry metric is live, not a
+        # no-op 0 by absence of equivalent atoms -- and the hole is shared.
+        assert e["cation_spin_asymmetry"] < 1e-6
+        assert not e["branch_changed"]
+
+
+def test_tune_omega_continuation_off_matches_on_for_a_single_branch_system():
+    """continuation=False must still tune H2 (one branch, so the two agree),
+    and must report every evaluation as using the default guess."""
+    mol = ferric.Molecule.from_xyz("testdata/molecules/h2.xyz")
+    obs = ferric.BasisSet.bundled("6-31g")
+    kw = dict(omega_lo=0.3, omega_hi=1.2, omega_tol=0.1, max_evals=10)
+    on = ferric.tune_omega(mol, obs, "wB97X-V", continuation=True, **kw)
+    off = ferric.tune_omega(mol, obs, "wB97X-V", continuation=False, **kw)
+    assert all(e["seed"] == "default" for e in off["evals"])
+    assert any(e["seed"] == "continued" for e in on["evals"])
+    # Golden section visits the same omega either way, and H2+ has a single
+    # branch, so the tuned omega and J must agree to the SCF threshold.
+    assert off["omega"] == pytest.approx(on["omega"], abs=1e-12)
+    assert off["j"] == pytest.approx(on["j"], abs=1e-8)
+
+
+def test_tune_omega_branch_tol_zero_disables_the_check():
+    """branch_tol<=0 is the off switch: branch_changed is then False because
+    nothing was CHECKED. Uses N2/STO-3G, not H2 -- H2+ has one electron, so
+    D_beta = 0 and the spin asymmetry is identically zero at every omega,
+    which would make the control below unable to fire for a reason that has
+    nothing to do with the switch."""
+    mol = ferric.Molecule.from_xyz("testdata/molecules/n2.xyz")
+    obs = ferric.BasisSet.bundled("sto-3g")
+    kw = dict(omega_lo=0.3, omega_hi=0.7, omega_tol=0.1, max_evals=6)
+    off = ferric.tune_omega(mol, obs, "wB97X-V", branch_tol=0.0, **kw)
+    assert off["branch_warning"] is None
+    assert all(not e["branch_changed"] for e in off["evals"])
+    tight = ferric.tune_omega(mol, obs, "wB97X-V", branch_tol=1e-30, **kw)
+    assert tight["branch_warning"] is not None, (
+        "a 1e-30 tolerance must flag something -- otherwise branch_tol=0 "
+        "proves nothing, because the check never fires either way"
+    )
+    assert any(e["branch_changed"] for e in tight["evals"][1:])
