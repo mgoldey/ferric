@@ -173,16 +173,25 @@ pub struct RhfConfig {
     /// cDFT outer-loop STARTING multipliers, one per constraint. `None` (the
     /// default) starts the outer loop at λ = 0.
     ///
-    /// # When a caller may need this (He₂⁺/PBE)
+    /// # When a caller may want this (He₂⁺/PBE): cost, not correctness
     ///
     /// On a SYMMETRIC donor–acceptor pair λ = 0 is the delocalized state
-    /// (N = 1.5 on either He): the inner SCF there is bistable, and the root
-    /// sits on a flat stretch of N(λ) (dN/dλ ≈ −0.006) next to an
-    /// over-localization region whose inner solves do not converge. Starting
-    /// near the root (a previous geometry's λ, or a reference value) selects
-    /// the intended localized branch and avoids both regions. Only the start
-    /// changes: the result is still the root of c(λ) = 0 to
+    /// (N = 1.5 on either He) while the root is at λ ≈ 1.6–2.5, and the Newton
+    /// step is clamped to 1 per outer iteration, so λ = 0 costs 11–21 outer
+    /// iterations where a start near the root costs 3–4. Measured on the six
+    /// He₂⁺ diabats of `tests/validation_cdft_et.rs`
+    /// (`he2_plus_diabats_converge_from_lambda_zero`), BOTH starts reach the
+    /// same root, to ≤ 3.5e-10 in λ and ≤ 1.6e-10 Ha in E. Supplying a start
+    /// (a previous geometry's λ, or a reference value) buys iterations, and on
+    /// a system with several constrained solutions it also selects which branch
+    /// the solve begins on. Either way the result is the root of c(λ) = 0 to
     /// `cdft_lambda_tol`.
+    ///
+    /// A λ = 0 start does need the outer budget to reach the root: the default
+    /// `cdft_max_outer` of 30 covers every measured He₂⁺ point (deepest 21),
+    /// but a caller who lowers it below the distance to the root divided by the
+    /// step clamp will see a bare "did not converge" from a loop that was on a
+    /// monotone trajectory.
     ///
     /// Length must equal `constraints.len()` and every entry must be finite
     /// (an error otherwise). A `CdftSeed` with explicit multipliers takes

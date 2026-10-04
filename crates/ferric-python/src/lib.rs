@@ -2318,12 +2318,20 @@ fn cdft_hamiltonian_key(emol: &Molecule, config: &RhfConfig) -> String {
 ///                     smoke-level, and the stability descent is SKIPPED on a
 ///                     KS reference (it would need the f_xc kernel).
 ///   lambda_tol        stop when max |N_C - target_C| < lambda_tol (electrons).
-///                     Default 1e-5. On a constraint whose response N(lambda)
-///                     is nearly flat (e.g. He2+ at the localized-hole plateau)
-///                     this must be loosened to match that flatness (1e-2
-///                     there), or the Newton walks lambda off a cliff.
+///                     Default 1e-5. A flat stretch of N(lambda) (e.g. He2+ at
+///                     the localized-hole plateau, dN/dlambda ~ 7e-5) costs
+///                     outer iterations, not accuracy: the six validated He2+
+///                     diabats converge there at 1e-10 from lambda = 0. Loosen
+///                     it only to buy iterations, and read what is returned --
+///                     a looser tolerance accepts a lambda further from the
+///                     root, and on a plateau that is a large distance in
+///                     lambda for a small one in N.
 ///   max_outer         outer lambda-Newton iteration cap. Default 30. Exceeding
 ///                     it raises RuntimeError; nothing unconverged is returned.
+///                     The default covers a lambda = 0 start on the validated
+///                     He2+ points (deepest 21 iterations); because the Newton
+///                     step is clamped to 1 per iteration, a start far from the
+///                     root needs at least |lambda_root| iterations to arrive.
 ///   stability_descent True (default, as in the Rust driver): after the outer
 ///                     loop converges, check the lambda-augmented orbital
 ///                     Hessian and, if the constrained solution is a saddle,

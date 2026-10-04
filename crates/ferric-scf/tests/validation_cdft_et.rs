@@ -340,6 +340,38 @@ const E2E_INNER_MAX_ITER: usize = 150;
 /// checks at compile time.
 const MEASURED_DEEPEST_INNER: usize = 106;
 const E2E_MAX_OUTER: usize = 8;
+/// Outer-loop cap for the λ = 0 start (issue #283), as opposed to
+/// `E2E_MAX_OUTER` for the NWChem-started rows.
+///
+/// NOT a loosened bar: the λ = 0 start has 2.3 Ha of λ to travel that the
+/// NWChem start does not, and the Newton step is clamped to `MAX_STEP` = 1 per
+/// iteration, so it CANNOT arrive in 8. Measured 2026-10-04 (release, 99x302,
+/// level shift 0.3, inner cap `E2E_INNER_MAX_ITER`), as the outer count at
+/// which each point first converges, swept over caps 8/12/16/20/30:
+///
+/// | point | λ_root | outer iters from λ = 0 | from NWChem's λ |
+/// |---|---:|---:|---:|
+/// | def2-SVP 2.50 Å | 2.3217 | 11 | 3 |
+/// | def2-SVP 3.00 Å | 2.4050 | 13 | 4 |
+/// | def2-SVP 3.50 Å | 2.4571 | **21** | 3 |
+/// | aug-cc-pVDZ 2.50 Å | 1.5692 | 13 | 4 |
+/// | aug-cc-pVDZ 3.00 Å | 1.5564 | 14 | 4 |
+/// | aug-cc-pVDZ 3.50 Å | 1.5543 | 14 | 4 |
+///
+/// Every point converges to the SAME root as its NWChem-started run, to
+/// ≤ 3.5e-10 in λ and ≤ 1.6e-10 Ha in E — five orders inside this row's own
+/// `TOL_LAMBDA`/`TOL_DE` bars. The cap is an upper bound only: a point that
+/// converges in 11 cannot see 30, and the sweep confirms 16/20/30 give
+/// bit-identical λ and E wherever they converge.
+///
+/// 30 is also `RhfConfig`'s own default `cdft_max_outer`, so a user calling
+/// `run_cdft` with no λ start already has this budget. The row's 8 is a
+/// COST cap chosen for the NWChem start, and applying it to a start 2.3 Ha
+/// away is what made the λ = 0 case look like a solver defect.
+const LAM0_MAX_OUTER: usize = 30;
+/// Deepest outer count any point needs from λ = 0 (measured, def2-SVP 3.50 Å;
+/// every other point is ≤ 14). `LAM0_MAX_OUTER` must exceed it.
+const MEASURED_DEEPEST_OUTER_FROM_ZERO: usize = 21;
 
 // ───────────────────────────── harness ─────────────────────────────
 
@@ -1035,6 +1067,23 @@ fn diabat_config(frag: usize, lambda_init: f64) -> RhfConfig {
     }
 }
 
+/// The same diabat config with NO λ start (issue #283): `cdft_lambda_init` is
+/// `None`, so the outer loop begins at λ = 0, and the outer cap is
+/// `LAM0_MAX_OUTER` instead of `E2E_MAX_OUTER` (see that const for why 8
+/// cannot work from λ = 0 and the measured per-point counts).
+///
+/// Everything else — target, tolerance, level shift, inner cap, grid, the
+/// descent being off — is `diabat_config`'s, so the two differ in exactly the
+/// two fields the issue is about and a difference in the ROOT cannot be
+/// attributed to anything else.
+fn diabat_config_from_zero(frag: usize) -> RhfConfig {
+    RhfConfig {
+        cdft_lambda_init: None,
+        cdft_max_outer: LAM0_MAX_OUTER,
+        ..diabat_config(frag, 0.0)
+    }
+}
+
 fn solve_diabat(sys: &System, frag: usize, lambda_init: f64) -> CdftResult {
     let cfg = diabat_config(frag, lambda_init);
     let tag = &sys.tag;
@@ -1069,35 +1118,24 @@ fn solve_diabat(sys: &System, frag: usize, lambda_init: f64) -> CdftResult {
 /// coupling on ferric's determinants vs NWChem's V(RP), and log-slopes across
 /// R = 2.50/3.00/3.50 Å (the plan's convention-robust comparison).
 ///
-/// # End-to-end solver settings (why, measured 2026-10-01 on He₂⁺/PBE)
+/// # End-to-end solver settings (why, measured 2026-10-04 on He₂⁺/PBE)
 ///
-/// Measured with an outer loop that had only the Newton step and the
-/// sign-change bracket (no backtracking from unconverged inner solves, no
-/// rejection of a probe in another basin; see `ScalarStepper` in
-/// cdft_driver.rs). The λ = 0 start has not been re-measured with those.
-/// From the default λ = 0 start that loop failed or crawled: R = 2.50
-/// aug-cc-pVDZ hole-on-1 did not converge in 60 outer iterations, and def2-SVP
-/// took up to 29 outer iterations of mostly 500-iteration unconverged inner
-/// solves. Traced (`FERRIC_CDFT_TRACE=1`) causes:
-/// * λ = 0 is the SYMMETRIC delocalized state (N = 1.5); a 1e-3 FD step flips
-///   the inner SCF into a localized basin, so the "Jacobian" is ±490 and Newton
-///   crawls or walks λ the wrong way (to −0.11 at def2-SVP 3.00 Å);
-/// * N(λ) is then a flat plateau (dN/dλ ≈ −0.006) ending at an over-
-///   localization cliff (N → 0.01–0.06, E → −3 to −2 Ha) with the root at its
-///   edge; the ±1-clamped step from the plateau lands on the cliff, whose inner
-///   solves do not converge and so never tighten the bracket, and the loop
-///   limit-cycled (def2-SVP 3.50 Å: λ = 2.6498 → 2.8291 → 2.6485 → …). With
-///   backtracking that point instead stops on an inner-SCF failure.
-/// With only a 0.3 level shift and a 150-iteration inner cap (no λ start),
-/// 2 of 5 points converged (def2-SVP 2.50 in 36 s, 3.00 in 273 s) and 3 failed.
+/// Each diabat starts at NWChem's converged multiplier (`cdft_lambda_init`).
+/// That is a COST choice, not a correctness one: λ = 0 is ~1.5 electrons and
+/// ~2.3 Ha of λ away from the root, so starting there costs 11-21 outer
+/// iterations instead of 3-4. The result is still ferric's OWN root of
+/// c(λ) = 0 to 1e-10 (`outer_iters > 1` is asserted), so λ and E remain a real
+/// comparison, and the start also selects the same localized branch as the
+/// reference, which the like-for-like rule requires anyway.
 ///
-/// So each diabat starts at NWChem's converged multiplier
-/// (`cdft_lambda_init`). The result is still ferric's OWN root of c(λ) = 0 to
-/// 1e-10 (`outer_iters > 1` is asserted), so λ and E remain a real
-/// comparison; what the start does is select the SAME localized branch as the
-/// reference, which the like-for-like rule requires anyway. It does NOT show
-/// that ferric's outer loop finds this state unaided from λ = 0, which is
-/// not this row's subject. The 0.3 Ha level shift changes the path, not the fixed point
+/// The λ = 0 start reaches the SAME root on all six points, to ≤ 3.5e-10 in λ
+/// and ≤ 1.6e-10 Ha in E, given the outer budget its longer journey needs
+/// (`LAM0_MAX_OUTER`, which is `RhfConfig`'s own default). That is measured and
+/// asserted by `he2_plus_diabats_converge_from_lambda_zero`, which carries the
+/// per-point trace and the λ = 0 Jacobian diagnostics; read it before
+/// concluding anything about this row's λ start.
+///
+/// The 0.3 Ha level shift changes the path, not the fixed point
 /// (it acts on the virtual block and commutes with D at convergence): def2-SVP
 /// 2.50 Å gave E = −4.856787855242, λ = 2.3217366412 both with and without it.
 /// Hard caps: `E2E_MAX_OUTER` outer × (1 + 1 FD) inner solves ×
@@ -1407,4 +1445,193 @@ fn inner_cap_100_is_what_breaks_def2_svp_350() {
         lam_ref,
         TOL_LAMBDA,
     );
+}
+
+/// Issue #283: the outer loop finds the He₂⁺ diabat from λ = 0, unaided.
+///
+/// All six points (def2-SVP and aug-cc-pVDZ × R = 2.50/3.00/3.50 Å) are solved
+/// TWICE — once from NWChem's converged multiplier as the row does, once with
+/// `cdft_lambda_init: None` — and the two roots must agree. That is the
+/// EXACTNESS ANCHOR: the root is unique on the localized branch, so a
+/// different answer from the two starts would be a branch error, not a
+/// tolerance question.
+///
+/// # What the issue predicted, and what was measured
+///
+/// Issue #283 and the row's own doc attributed this to the inner SCF: "λ = 0
+/// is the SYMMETRIC delocalized state (N = 1.5); a 1e-3 FD step flips the
+/// inner SCF into a localized basin, so the Jacobian is ±490 and Newton crawls
+/// or walks λ the wrong way". Re-traced 2026-10-04 on main with PR #248's
+/// guards and PR #309's inner cap, that is NOT what happens. Per-point outer-1
+/// diagnostics at λ = 0:
+///
+/// | point | jac at λ=0 | hf_mismatch | probe converged | step taken |
+/// |---|---:|---:|---|---|
+/// | def2-SVP 2.50 Å | −1.035 | 3.3e-13 | yes | Newton |
+/// | def2-SVP 3.00 Å | +5.965 | 2.7e-5 | no | SignStep |
+/// | def2-SVP 3.50 Å | +53.6 | 1.8e-3 | no | SignStep |
+/// | aug-cc-pVDZ 2.50 Å | −1.047 | 4.1e-13 | yes | Newton |
+/// | aug-cc-pVDZ 3.00 Å | −164 | 1.6e-2 | no | SignStep |
+/// | aug-cc-pVDZ 3.50 Å | −7.78 | 3.6e-5 | no | SignStep |
+///
+/// On the four points where the λ = 0 probe IS compromised, `hf_mismatch` is
+/// 2.7e-5 … 1.6e-2 — squarely in the measured CROSS-BASIN band (≥ 5.5e-5, and
+/// the 2.7e-5 pair also has an unconverged probe) — so guard 2 rejects the
+/// Jacobian and the loop takes a `SignStep` instead. The ±490 Jacobian is
+/// never USED. Guard 2 was added by PR #248 for exactly this; the issue's
+/// diagnosis predates it.
+///
+/// What actually blocked the λ = 0 start is the OUTER ITERATION BUDGET. The
+/// root sits at λ ≈ 2.32-2.46 (def2-SVP) or ≈ 1.55-1.57 (aug-cc-pVDZ), the
+/// Newton step is clamped to `MAX_STEP` = 1 per outer iteration, and the row
+/// caps the outer loop at `E2E_MAX_OUTER` = 8 — a cost cap chosen for a start
+/// that is already AT the root. At outer 8 from λ = 0 every one of the six
+/// points is on a healthy monotone trajectory with a two-sided bracket and
+/// |c| already down to 4.1e-5 … 6.9e-4; def2-SVP 2.50 Å, for instance, is at
+/// λ = 2.3222662 on its way to 2.3217366 and proposes the next iterate
+/// λ = 2.3217425. It was not lost — it was interrupted.
+///
+/// So this needs NO solver change: the fix is to give the λ = 0 start the
+/// budget its longer journey requires (`LAM0_MAX_OUTER`, which is also
+/// `RhfConfig`'s own default). The candidate fixes the issue proposed —
+/// a symmetry-broken start, target continuation, re-seeding each inner solve
+/// including the FD probe — were therefore NOT implemented; `REPORT-283.md`
+/// records the N(λ) scan that rules each of them out as unnecessary, including
+/// the direct measurement that the branch reachable from λ = 0 DOES contain
+/// the root (N falls smoothly from 1.0085 at λ = 0.4 through 1.0 at λ = 2.32).
+///
+/// # Negative control
+///
+/// `E2E_MAX_OUTER` is asserted to still FAIL from λ = 0 on def2-SVP 3.50 Å —
+/// the point that needs the most outer iterations (21) — in the same test, so
+/// "the budget is what changed the outcome" is pinned rather than claimed.
+///
+/// # Cost
+///
+/// 12 constrained solves (6 points × 2 starts). ~7 min on this box; the λ = 0
+/// solves are 16-81 s each, the NWChem-started ones 10-40 s.
+#[test]
+#[ignore = "validation: cDFT-ET coupling (Wu–Van Voorhis)"]
+fn he2_plus_diabats_converge_from_lambda_zero() {
+    // The cap must exceed the deepest measured outer count, or the test is
+    // asserting its own cap rather than the solver's reach. Compile-time, so
+    // lowering the const cannot even build (clippy rejects a runtime assert on
+    // two consts).
+    const _: () = assert!(
+        LAM0_MAX_OUTER > MEASURED_DEEPEST_OUTER_FROM_ZERO,
+        "LAM0_MAX_OUTER is at or below the measured deepest outer count from \
+         lambda = 0 (21, def2-SVP 3.50 A) -- see its doc comment for the table"
+    );
+
+    let mut worst_lam = 0.0_f64;
+    let mut worst_e = 0.0_f64;
+    for basis_name in BASES {
+        for r_tag in SEPARATIONS {
+            let r = reference(r_tag, basis_name);
+            let sys = load_system(r_tag, basis_name, &r);
+            let tag = &sys.tag;
+            let lam_ref = num(&r, "/results/converged/state_a/lambda", tag);
+
+            // (1) the row's own run: ferric's root from NWChem's λ.
+            let from_nw = solve_diabat(&sys, 0, lam_ref);
+
+            // (2) the same solve with no λ start at all.
+            let from_zero = solve_cdft_uhf(
+                &sys.ctx,
+                &sys.mol,
+                &sys.prep,
+                &sys.bs,
+                &sys.bounds,
+                &diabat_config_from_zero(0),
+            )
+            .unwrap_or_else(|e| {
+                panic!(
+                    "{tag}: lambda = 0 start did not converge in {LAM0_MAX_OUTER} outer \
+                     iterations: {e:?}"
+                )
+            });
+            assert!(
+                from_zero.scf.converged,
+                "{tag}: lambda = 0 inner SCF not converged"
+            );
+            assert!(
+                (from_zero.populations[0] - TARGET_N).abs() < TOL_POP,
+                "{tag}: lambda = 0 population {:.12} misses {TARGET_N}",
+                from_zero.populations[0]
+            );
+            // It must have been SOLVED for, not accepted at iteration 1 (λ = 0
+            // is 1.5 electrons away from the target, so this cannot pass by
+            // accident -- it is here so a future default of cdft_lambda_init
+            // could not make the test vacuous).
+            assert!(
+                from_zero.outer_iters > 1,
+                "{tag}: lambda = 0 run accepted its starting lambda unchanged"
+            );
+            eprintln!(
+                "{tag}: lambda0 -> lam {:+.12} N {:.12} E {:.12} outer {} | \
+                 NWChem-start -> lam {:+.12} E {:.12} outer {}",
+                from_zero.lambdas[0],
+                from_zero.populations[0],
+                from_zero.scf.energy,
+                from_zero.outer_iters,
+                from_nw.lambdas[0],
+                from_nw.scf.energy,
+                from_nw.outer_iters
+            );
+
+            // ── the exactness anchor: same root from both starts ──
+            worst_lam = worst_lam.max(check(
+                tag,
+                "lambda from 0 vs from NWChem's lambda",
+                from_zero.lambdas[0],
+                from_nw.lambdas[0],
+                TOL_LAMBDA,
+            ));
+            worst_e = worst_e.max(check(
+                tag,
+                "E from 0 vs from NWChem's lambda",
+                from_zero.scf.energy,
+                from_nw.scf.energy,
+                TOL_DE,
+            ));
+        }
+    }
+    eprintln!(
+        "lambda0 vs NWChem-start over all 6 points: max |dlambda| {worst_lam:.2e} \
+         (bar {TOL_LAMBDA:.0e}), max |dE| {worst_e:.2e} Ha (bar {TOL_DE:.0e})"
+    );
+
+    // ── NEGATIVE CONTROL: the row's 8-iteration cap still fails from λ = 0 ──
+    //
+    // def2-SVP 3.50 Å is the point that needs the most outer iterations (21),
+    // so it is the one where the budget claim is least deniable. Same config,
+    // one field different.
+    let (r_tag, basis_name) = ("3.50", "def2-svp");
+    let r = reference(r_tag, basis_name);
+    let sys = load_system(r_tag, basis_name, &r);
+    let mut starved = diabat_config_from_zero(0);
+    starved.cdft_max_outer = E2E_MAX_OUTER;
+    match solve_cdft_uhf(
+        &sys.ctx,
+        &sys.mol,
+        &sys.prep,
+        &sys.bs,
+        &sys.bounds,
+        &starved,
+    ) {
+        Err(ferric_core::FerricError::Convergence(msg)) => eprintln!(
+            "{}: lambda = 0 at the row's {E2E_MAX_OUTER}-iteration cap fails as \
+             issue #283 reported: {msg}",
+            sys.tag
+        ),
+        Err(e) => panic!("{}: starved run failed differently: {e:?}", sys.tag),
+        Ok(got) => panic!(
+            "{}: lambda = 0 now converges in {E2E_MAX_OUTER} outer iterations \
+             (lam {:+.12} N {:.12} outer {}). The negative control is gone, so \
+             this test no longer shows that the OUTER BUDGET is what changed the \
+             outcome. Re-measure the per-point outer counts from lambda = 0 and \
+             lower LAM0_MAX_OUTER to match, or drop this control with the evidence.",
+            sys.tag, got.lambdas[0], got.populations[0], got.outer_iters
+        ),
+    }
 }
