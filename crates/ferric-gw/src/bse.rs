@@ -197,7 +197,7 @@ fn tda_oscillator_strengths(
 /// that will enter a BSE/TDA diagonal.
 ///
 /// Two criteria, both already computed by `sigma::solve_qp_for_mo` and carried
-/// on [`GwResult`]:
+/// on [`crate::GwResult`]:
 ///
 /// 1. `qp_converged[k] == false` — the Newton iteration exhausted its 30-step
 ///    budget or bailed out on a near-singular slope `|1 − Σc′(ε)| < 1e-3`. The
