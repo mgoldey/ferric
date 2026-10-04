@@ -118,3 +118,224 @@ them separately.
 - Independently: if Q2 at the proposed default k EXCEEDS Q1, the window is a
   net accuracy LOSS and must not be the default, whatever Q1 is.
 
+
+---
+
+# MEASUREMENT (2026-10-03/04). Raw tables first, verdict last.
+
+Method: the reference JSONs under `testdata/reference/validation/bse/` store
+`bse_kernel`, the QP-INDEPENDENT part K = 2(ia|jb) − (ab|W(0)|ij) (upper
+triangle, base64 f64le, flat ia = i·nvir + a). Every row below is
+`eigvalsh(K + diag(eps_qp[nocc+b] − eps_qp[i]))`, lowest 5, in numpy. No Rust
+build is involved in the measurement, so none of these numbers depend on the
+code change this branch makes.
+
+## Anchor A1 (gate for everything below) — stored kernel + stored eps_qp must
+## reproduce the stored `bse_singlet.omega`
+
+| system | nov | max abs dev (Ha) |
+|---|---|---|
+| h2o/cc-pvdz | 95 | 8.549e-15 |
+| nh3/cc-pvdz | 120 | 8.493e-15 |
+| ch2o/cc-pvdz | 240 | 9.742e-15 |
+| h2o/aug-cc-pvdz | 180 | 1.282e-14 |
+
+Passes. The decode convention, flat index order and diagonal assembly are right.
+
+## Anchor A2 — window vacuous limit
+
+| system | k = nmo: max abs dOmega | k = 2: max abs dOmega |
+|---|---|---|
+| h2o/cc-pvdz | 0.000e+00 | 1.483e-04 |
+| nh3/cc-pvdz | 0.000e+00 | 5.151e-04 |
+| ch2o/cc-pvdz | 0.000e+00 | 9.434e-03 |
+| h2o/aug-cc-pvdz | 0.000e+00 | 7.798e-04 |
+
+A window covering every MO is bit-identically the all-MO result (so the
+windowing code is not applied where it should not be), and k = 2 is not a no-op
+(so it is applied where it should be). Both halves of H-A2 hold.
+
+## (a) all-MO QP, lowest 5 Omega (Ha)
+
+| system | Ω1 | Ω2 | Ω3 | Ω4 | Ω5 |
+|---|---|---|---|---|---|
+| h2o/cc-pvdz | 0.31081386 | 0.38595037 | 0.41045565 | 0.48558280 | 0.55112229 |
+| nh3/cc-pvdz | 0.29073775 | 0.37354665 | 0.37354669 | 0.49709856 | 0.49709887 |
+| ch2o/cc-pvdz | 0.16896081 | 0.33152774 | 0.36340227 | 0.38814580 | 0.41567603 |
+| h2o/aug-cc-pvdz | 0.28381285 | 0.34604724 | 0.37282426 | 0.40951431 | 0.43367154 |
+
+## (b) windowed QP + rigid scissor outside, dOmega vs (a) (Ha)
+
+Window: occupied `max(0, nocc−1−k)` .. virtual `min(nmo−1, nocc+k)`, QP inside;
+below the window `eps_mf + corr[lo]`, above `eps_mf + corr[hi]`,
+`corr = eps_qp − eps_mf`.
+
+### k = 2
+
+| system | MOs solved | dΩ1 | dΩ2 | dΩ3 | dΩ4 | dΩ5 | max abs |
+|---|---|---|---|---|---|---|---|
+| h2o/cc-pvdz | 6/24 | +1.09e-04 | +6.46e-05 | +1.37e-04 | +1.48e-04 | +1.01e-04 | 1.483e-04 |
+| nh3/cc-pvdz | 6/29 | +2.52e-04 | +5.15e-04 | +5.15e-04 | +2.35e-04 | +2.35e-04 | 5.151e-04 |
+| ch2o/cc-pvdz | 6/38 | +3.06e-04 | +1.85e-04 | +9.17e-04 | +1.36e-03 | −9.43e-03 | 9.434e-03 |
+| h2o/aug-cc-pvdz | 6/41 | +6.21e-04 | +7.80e-04 | +5.96e-04 | +5.27e-04 | +5.10e-04 | 7.798e-04 |
+
+### k = 4
+
+| system | MOs solved | max abs dOmega (Ha) | (eV) |
+|---|---|---|---|
+| h2o/cc-pvdz | 10/24 | 4.501e-05 | 0.0012 |
+| nh3/cc-pvdz | 10/29 | 1.954e-04 | 0.0053 |
+| ch2o/cc-pvdz | 10/38 | 6.041e-04 | 0.0164 |
+| h2o/aug-cc-pvdz | 10/41 | 2.594e-04 | 0.0071 |
+
+### k = 8
+
+| system | MOs solved | max abs dOmega (Ha) | (eV) |
+|---|---|---|---|
+| h2o/cc-pvdz | 14/24 | 1.652e-05 | 0.0004 |
+| nh3/cc-pvdz | 14/29 | 1.393e-05 | 0.0004 |
+| ch2o/cc-pvdz | 17/38 | 3.583e-05 | 0.0010 |
+| h2o/aug-cc-pvdz | 14/41 | 1.958e-04 | 0.0053 |
+
+k = 12 for reference: 2.31e-06 / 5.21e-06 / 2.25e-05 / 4.39e-05 Ha.
+
+## (c) two independent runs of the generator's QP stage
+
+Re-ran `gen_bse.run_gw_all` + `sigma_nodes` + `ferric_qp` from scratch (same
+code, same inputs, fresh PySCF process) and compared to the stored `qp.eps_qp`.
+This is the real run-to-run spread, not a proxy.
+
+| system | max abs d eps_qp, any MO (Ha) | worst MO | max abs d eps_qp in HOMO−2..LUMO+2 (Ha) | max abs dOmega, lowest 5 (Ha) | (eV) |
+|---|---|---|---|---|---|
+| h2o/cc-pvdz | 1.194e-03 | 23 | 2.514e-08 | 4.615e-08 | 1.26e-06 |
+| nh3/cc-pvdz | 3.250e-03 | 22 | 1.190e-10 | 1.118e-07 | 3.04e-06 |
+| ch2o/cc-pvdz | 3.752e-03 | 1 | 3.761e-11 | 8.702e-08 | 2.37e-06 |
+| h2o/aug-cc-pvdz | 7.975e-04 | 34 | 4.523e-11 | 1.097e-08 | 2.98e-07 |
+
+Attenuation from QP movement to Ω movement: 2.6e4 / 2.9e4 / 4.3e4 / 7.3e4.
+
+## Monte-Carlo proxy and worst-case bound on the same quantity
+
+Re-drawing every QP energy uniformly within its stored `qp.sensitivity`, 200
+draws, gives max abs dOmega of 2.45e-05 / 3.86e-06 / 3.68e-05 / 9.69e-06 Ha.
+A worst-case COHERENT-sign bound from first-order perturbation theory,
+`dOmega_n = sum_p (sum of |X_n(ia)|^2 over rows touching MO p) * sensitivity_p`,
+gives 3.17e-05 / 6.78e-06 / 5.53e-05 / 1.21e-05 Ha.
+
+Both OVER-estimate the observed run-to-run movement by 1-2 orders of magnitude,
+because the real generator-to-generator noise is correlated across MOs rather
+than independent-uniform. Quoting the proxy as if it were run-to-run, which
+H-A4 warned about, would have over-stated the defect by ~500x on H2O.
+
+## Why the attenuation is so large
+
+Summed `|X_n(ia)|^2` of the lowest 5 states over rows touching ANY MO whose
+stored sensitivity exceeds 1e-3:
+
+| system | suspect MOs | affected rows | summed amplitude^2, lowest 5 |
+|---|---|---|---|
+| h2o/cc-pvdz | 14/24 | 74/95 | 1.4e-03 .. 5.1e-03 |
+| nh3/cc-pvdz | 16/29 | 90/120 | 5.6e-04 .. 8.3e-04 |
+| ch2o/cc-pvdz | 21/38 | 180/240 | 1.1e-03 .. 6.6e-03 |
+| h2o/aug-cc-pvdz | 21/41 | 129/180 | 2.6e-04 .. 1.4e-03 |
+
+Most ROWS touch a suspect MO, but the lowest eigenvectors carry under 0.7% of
+their norm there. The first-order response is the amplitude-weighted sum, so a
+0.3 Ha uncertainty on a high virtual reaches Ω at the 1e-4 level at worst, and
+at the 1e-7 level in practice because the per-MO errors partially cancel.
+
+---
+
+# VERDICT (dated 2026-10-04, provisional as all verdicts here are)
+
+Measured, not assumed:
+
+1. The conditioning defect is REAL. Individual far-from-Fermi QP energies are
+   not reproducible to better than ~4e-3 Ha between runs, so
+   `BseResult::eps_qp` must not be quoted for core or high-virtual MOs.
+2. It does NOT reach the quantity users read. The lowest five Ω move by at most
+   1.1e-7 Ha (3.0e-6 eV) between independent runs, on all four systems. That is
+   four orders of magnitude below chemical significance and below the existing
+   `TOL_OMEGA_RAW = 2e-6` validation bar.
+3. The proposed remedy is WORSE than the defect, at every window size measured.
+   The windowed-QP + scissor recipe moves the lowest five Ω by 1.5e-4..9.4e-3 Ha
+   at k = 2, 1.4e-5..2.0e-4 Ha at k = 8, and 2.3e-06..4.4e-05 Ha at k = 12 —
+   never below the 1.1e-7 Ha it would remove. Even the pessimistic worst-case
+   coherent bound on the noise (1.2e-05..5.5e-05 Ha) is comparable to or smaller
+   than the k = 8 scissor error. The scissor discards a real, smooth ~0.04-0.09
+   Ha spread of QP corrections across the virtual manifold; that systematic loss
+   dominates the noise it removes.
+
+Matches/contradicts the pre-registered hypotheses:
+
+- H-P1 CONFIRMED (amplitude^2 on affected rows <= 7e-3; the mechanism is the
+  predicted one).
+- H-P2 WRONG in the conservative direction. I predicted Q1 in 1e-6..1e-4 Ha and
+  "larger than TOL_OMEGA_RAW". The real run-to-run Q1 is 1.1e-8..1.1e-7 Ha,
+  i.e. 10-100x SMALLER than predicted and BELOW the 2e-6 bar. My error was
+  assuming the per-MO noise adds incoherently at full amplitude; it partly
+  cancels. The Monte-Carlo proxy reproduced my prediction (2.4e-5 Ha) and the
+  real re-run refuted it — which is exactly why H-A4 required running both.
+- H-P3 CONFIRMED and stronger than stated: Q2 exceeds Q1 by 100-10^5x and does
+  so at every k measured, not only at k = 2.
+- H-P4 CONFIRMED: NH3's degenerate pairs (Ω2/Ω3 and Ω4/Ω5) stay degenerate to
+  4e-11 Ha under the re-run, i.e. the degeneracy split is also attenuated.
+
+Per the pre-registered decision rule, Q1 < 1e-9 Ha is false (it is 1e-8..1e-7)
+and Q1 > 1e-4 is false, so this lands in the middle branch: "real, numerically
+visible, chemically irrelevant — report the numbers, add a diagnostic, do NOT
+change the default behaviour". The rule's independent clause also fires: Q2 at
+every candidate k exceeds Q1, so the window must not be the default.
+
+## What was therefore changed, and what was not
+
+CHANGED (robustness/observability only, no returned energy moves):
+- `ferric_gw::bse::flag_suspect_qp` names the MOs whose G0W0 Newton solve did
+  not converge or whose Z renormalization was clamped to a boundary of the
+  [0, 1.5] clamp `sigma::solve_qp_for_mo` applies.
+- `run_bse_tda` and `run_bse_c6` warn once naming those MOs, with the measured
+  attenuation in the message so a reader can judge the consequence.
+- `BseResult::qp_suspect_mos` (and the Python getter) report the list.
+- The validation row and `TOL_OMEGA_RAW`'s comment carry the measured numbers.
+
+NOT CHANGED, deliberately:
+- No `qp_window` config field, no scissor, no CLI/TOML key, no change to
+  `gen_bse.py`'s reference spectrum. Issue #280 task items 2, 4 and 5 describe
+  the window as the fix; the measurement says the window is a net accuracy
+  loss, so implementing it as the default would make BSE-TDA less accurate in
+  order to close a ticket. Task item 1 was explicit that the measurement
+  decides, and it decided against.
+- `TOL_OMEGA_RAW` stays at 2e-6. It is ~9x its measured max (2.2e-7 Ha), which
+  is already the repo's ~10x rule. That 2.2e-7 also carries the
+  ferric-vs-generator screening-path difference, not only QP noise, so
+  tightening toward the 1.1e-7 Ha Ω-noise floor would be a bar on a different
+  quantity.
+- The `QP_SENS_FACTOR`-scaled per-MO QP bars stay. They are the correct
+  observable for the per-MO energies, which genuinely are only reproducible to
+  their measured sensitivity.
+
+## Open item this measurement does NOT close
+
+The issue notes that with `frozen_core > 0` the all-MO QP range hits the frozen
+block and `run_gw` refuses it, and that a window would remove that limitation.
+That is a real, separate usability gap with its own correct fix (restrict the
+QP range to the ACTIVE MOs, which needs no scissor and no accuracy tradeoff).
+It is not addressed here and should be its own issue, because bundling it with
+the window would re-import the accuracy loss this measurement rejects.
+
+## Mutation ledger
+
+`flag_suspect_qp`, 5 unit tests, each mutant run with
+`cargo test -p ferric-gw --lib bse::tests::flag_suspect` and the
+passed/failed/ignored counts read (all runs executed 5 tests, 0 ignored):
+
+| # | mutation | result | caught by |
+|---|---|---|---|
+| M1 | drop the `!qp_converged[k]` criterion | 4 passed, 1 FAILED | `..._catches_unconverged_newton` |
+| M2 | drop both Z-clamp criteria | 3 passed, 2 FAILED | `..._catches_both_z_clamp_boundaries...`, `..._returns_absolute_ascending_mo_indices` |
+| M3 | `<=`/`>=` weakened to `<`/`>` at the clamp boundary (off-by-one) | 3 passed, 2 FAILED | same two |
+| M4 | return the local index `k` instead of the absolute MO index | 2 passed, 3 FAILED | three tests |
+| M5 | drop `out.sort_unstable()` | 4 passed, 1 FAILED | `..._returns_absolute_ascending_mo_indices` |
+
+5/5 caught, each by the test written for it. `bse.rs` byte-identical to the
+pre-mutation copy afterwards (verified with `diff -q`).

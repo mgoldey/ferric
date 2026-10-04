@@ -7939,6 +7939,12 @@ struct PyBseResult {
     /// convention (PySCF-cross-checked, see
     /// `crates/ferric-gw/tests/bse_oscillator_strength.rs`).
     oscillator_strength: Vec<f64>,
+    /// Absolute MO indices whose G0W0 quasiparticle solve is poorly determined
+    /// (Newton did not converge, or the Z renormalization was clamped) and
+    /// which still entered the TDA diagonal. Observability only: `omega` is
+    /// unaffected, and the measured effect of these MOs on the lowest
+    /// excitations is ~4 orders of magnitude below their own uncertainty.
+    qp_suspect_mos: Vec<usize>,
 }
 
 #[pymethods]
@@ -7954,6 +7960,12 @@ impl PyBseResult {
     #[getter]
     fn oscillator_strength<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         PyArray1::from_slice(py, &self.oscillator_strength)
+    }
+    /// Absolute MO indices with a poorly-determined quasiparticle energy on
+    /// the TDA diagonal (empty in the healthy case).
+    #[getter]
+    fn qp_suspect_mos(&self) -> Vec<usize> {
+        self.qp_suspect_mos.clone()
     }
     /// Lowest singlet excitation energy in eV.
     fn lowest_ev(&self) -> f64 {
@@ -8075,6 +8087,7 @@ fn run_bse_tda(
         omega: r.omega,
         eps_qp: r.eps_qp,
         oscillator_strength: r.oscillator_strength,
+        qp_suspect_mos: r.qp_suspect_mos,
     })
 }
 
