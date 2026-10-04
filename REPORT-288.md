@@ -475,3 +475,31 @@ The five ignored tests, run with `--ignored`:
 | `h2o_tuning_raises_no_branch_flag` | `1 passed` — 10 ω, asymmetry 1e-15, zero flags |
 
 Total: **16 passing non-ignored + 5 passing validation-tier, 0 failures.**
+
+---
+
+# Part 4: acceptance criteria, item by item
+
+| criterion | status |
+|---|---|
+| Exactness anchor: continuation disabled ⇒ J(ω) bit-identical to today's; `omega_tuning.rs` and `validation_rsh_omega.rs` pass unchanged | **MET.** `continuation_off_is_bit_identical_to_independent_eval_j` asserts every tuner evaluation equals a bare `eval_j` at the same ω, and asserts it is testing the DEFAULT path. Both existing test files pass; `validation_rsh_omega.rs`'s `j_of_omega_*` tests use `eval_j`, which never continues. |
+| ...with seeding enabled, agree with today's to ≤1e-9 Ha where the default guess already reaches the stable state | **NOT MET as written — measured 1.02e-7 Ha on H2O**, two decades above the stated 1e-9. The per-ω cation ENERGIES agree to ≤2.8e-13 Ha (same state, 2.2), so the criterion's premise holds; what exceeds 1e-9 is J, because each SCF stops at a different point inside its 1e-10 / 1e-7 thresholds depending on its guess. This is why continuation ships OFF by default rather than being argued inside a bar. |
+| Measured: the N2⁺ onset bracket as ferric sees it vs the generator's `symmetric_cation_probe`; bar set from the measurement | **MET.** 2.2: ferric's J on the symmetric branch matches the probe to 7.4e-8 Ha (ω = 0.53) and 4.7e-7 Ha (ω = 0.56), ⟨S²⟩ to 3.0e-7. ferric sees NO onset in any observable it can compute; PySCF's λ_min brackets it at exactly those two ω. The bar that was set from measurement is `DEFAULT_BRANCH_TOL` (2.4). |
+| Negative control: today's `eval_j` at ω = 0.60 for N2 lands on the symmetric saddle / other branch — the new check must flag it, the old code must not | **HALF MET, and the unmet half is the finding.** Confirmed that `eval_j` at ω = 0.60 lands on the symmetric state and that a lower state exists there (4.6e-4 Ha below, reached when seeded). **The new check does NOT flag it, and cannot.** A branch check compares adjacent ω; at ω = 0.60 every adjacent ω is on the same branch, so there is no difference to detect. The quantity that distinguishes a saddle from a minimum at a single ω is the orbital-Hessian eigenvalue, which is item 3's dependency. `n2_onset_is_not_visible_without_an_orbital_hessian` asserts this state of affairs rather than papering over it. |
+| Mutation-test: disable the branch check; seed from the wrong ω; ignore the stability verdict — each must fail a test | **MET for the two that exist** (M4 branch check disabled → 2 tests fail; M1/M1b wrong-ω seed → fail at distinct lines), plus M2, M3, M5, M6 beyond what was asked. **The stability-verdict mutation does not exist to run**, because no stability verdict is computed (item 3). |
+| `#[ignore = "validation: RSH omega tuning"]` on the PySCF-comparison test | **MET.** All five validation-tier tests in the new file carry it verbatim; `validation_rsh_omega.rs`'s existing annotations are unchanged. |
+| Update the "RSH ω tuning" row in `site/src/reference/validation.md`, current facts only | **MET.** Both the capability table and the validation matrix row updated with measured numbers; no "previously", no PR references. `site/src/using/python.md` updated too. |
+| fmt / clippy -D warnings / `RUSTDOCFLAGS="-D warnings" cargo doc`; ruff if Python changes | **MET** (3.4). ruff passes via the pre-commit hook on the Python test change. |
+| Item 3 (stability check) | **NOT DONE, out of scope by instruction**, dependency named: `stability::ks_reference_is_analysable` refuses ω ≠ 0 with `StabilitySkip::RangeSeparated`. |
+
+## What a reviewer should push back on
+
+1. The ≤1e-9 agreement criterion is not met (1.02e-7 on H2O). I did not relax
+   it quietly — it is why the default is off. If the project would rather have
+   continuation on by default, the honest route is to tighten the SCF
+   thresholds until the J difference drops below 1e-9 and re-measure, not to
+   accept 1.02e-7 as "within the bar".
+2. The branch check cannot flag the case in the issue's own negative control.
+   If that was the primary deliverable rather than continuation, this PR does
+   not deliver it and the ω≠0 orbital-Hessian issue has to land first.
+3. `DEFAULT_BRANCH_TOL` rests on one system with ≈1.5 decades of margin.
