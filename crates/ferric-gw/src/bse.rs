@@ -82,6 +82,17 @@ pub struct BseResult {
     /// and length as `omega`. See `tda_oscillator_strengths` for the
     /// convention and its PySCF cross-check.
     pub oscillator_strength: Vec<f64>,
+    /// ABSOLUTE MO indices whose G0W0 quasiparticle solve is flagged as
+    /// poorly determined and which nonetheless entered the TDA diagonal.
+    /// See [`flag_suspect_qp`] for the criteria and
+    /// `reference/bse/qp-window-hypotheses.md` for the measurement that sets
+    /// the scale of their effect on Ω. Empty in the healthy case.
+    ///
+    /// This is observability only: the returned `omega` is unaffected by the
+    /// flag, and a non-empty list does NOT by itself mean the excitation
+    /// energies are wrong — the measured attenuation from a far-from-Fermi
+    /// QP energy to the lowest Ω is ~4 orders of magnitude.
+    pub qp_suspect_mos: Vec<usize>,
 }
 
 impl BseResult {
@@ -182,12 +193,93 @@ fn tda_oscillator_strengths(
     f
 }
 
+/// Flag MOs whose G0W0 quasiparticle solve is poorly determined, among those
+/// that will enter a BSE/TDA diagonal.
+///
+/// Two criteria, both already computed by `sigma::solve_qp_for_mo` and carried
+/// on [`crate::GwResult`]:
+///
+/// 1. `qp_converged[k] == false` — the Newton iteration exhausted its 30-step
+///    budget or bailed out on a near-singular slope `|1 − Σc′(ε)| < 1e-3`. The
+///    returned `eps_qp` is the last iterate, not a root.
+/// 2. `z_factor[k]` sits on a boundary of the clamp `solve_qp_for_mo` applies,
+///    `Z = (1 − Σc′)⁻¹ clamped to [0, 1.5]`. A Z pinned at 0.0 or 1.5 means the
+///    unclamped renormalization was outside the physical range, i.e. the Padé
+///    model of Σc has a near-pole or a wrong-sign slope at the mean-field
+///    energy. `Z_LO_FLAG`/`Z_HI_FLAG` test the clamp boundaries exactly,
+///    because the clamp writes the boundary value bit-exactly when it fires.
+///
+/// Returned indices are ABSOLUTE MO indices and ascending. `mo_indices` and
+/// the two arrays are the aligned `GwResult` fields.
+///
+/// # Why this is a diagnostic and not a correction
+///
+/// Measured on the four validation systems (H₂O/cc-pVDZ, NH₃/cc-pVDZ,
+/// CH₂O/cc-pVDZ, H₂O/aug-cc-pVDZ), two independent runs of the reference
+/// generator move individual far-from-Fermi QP energies by up to 3.8e-3 Ha
+/// while the lowest five Ω move by at most 1.1e-7 Ha — the lowest TDA
+/// eigenvectors carry ≲ 7e-3 of their norm on the rows those MOs touch, so the
+/// first-order response is ~4 orders of magnitude smaller than the QP noise.
+/// Replacing the out-of-window QP energies by the usual rigid scissor instead
+/// moves the lowest five Ω by 1.5e-4 to 9.4e-3 Ha, i.e. the "fix" is larger
+/// than the defect at every window size measured. So the right action is to
+/// SAY which MOs are poorly determined, not to substitute a coarser model for
+/// them. Numbers and recipe: `reference/bse/qp-window-hypotheses.md`.
+pub fn flag_suspect_qp(
+    mo_indices: &[usize],
+    z_factor: &[f64],
+    qp_converged: &[bool],
+) -> Vec<usize> {
+    /// Lower clamp boundary in `solve_qp_for_mo`'s `(1.0 / (1.0 - dsig)).clamp(0.0, 1.5)`.
+    const Z_LO_FLAG: f64 = 0.0;
+    /// Upper clamp boundary of the same expression.
+    const Z_HI_FLAG: f64 = 1.5;
+    let mut out: Vec<usize> = mo_indices
+        .iter()
+        .enumerate()
+        .filter(|&(k, _)| !qp_converged[k] || z_factor[k] <= Z_LO_FLAG || z_factor[k] >= Z_HI_FLAG)
+        .map(|(_, &mo)| mo)
+        .collect();
+    out.sort_unstable();
+    out
+}
+
+/// One stderr line naming the suspect MOs that entered a BSE/TDA diagonal, with
+/// the measured attenuation so a reader can judge the consequence instead of
+/// guessing. Pure observability; `label` identifies the caller.
+fn warn_suspect_qp_in_diagonal(label: &str, suspect: &[usize], n_total: usize) {
+    if suspect.is_empty() {
+        return;
+    }
+    eprintln!(
+        "ferric-gw WARNING: {label} put {} of {n_total} quasiparticle energies on its \
+         diagonal whose G0W0 Newton solve is poorly determined (MO indices {suspect:?}): \
+         Newton did not converge, or the Z renormalization was clamped to a boundary of \
+         [0, 1.5]. These are typically core and high-virtual MOs far from the Fermi \
+         level, where the Thiele/Pade continuation of Sigma_c is ill-conditioned. \
+         Measured consequence on the lowest excitations is small (run-to-run movement of \
+         the lowest 5 Omega <= 1.1e-7 Ha on the validation systems, against QP movement \
+         up to 3.8e-3 Ha), but the absolute QP energies of these MOs should not be quoted.",
+        suspect.len(),
+    );
+}
+
 /// Run a BSE-TDA singlet calculation on a closed-shell RHF reference.
 ///
 /// Computes G0W0@HF quasiparticle energies for ALL MOs (so every particle–hole
 /// pair has a real QP energy), builds the static-screened TDA matrix, and
 /// returns its eigenvalues. `frozen_core` freezes the lowest `frozen_core`
 /// occupied orbitals out of the (ia) space (and out of GW).
+///
+/// The all-MO QP solve is deliberate and measured. Core and high-virtual QP
+/// energies are individually ill-conditioned (the Thiele/Padé continuation of
+/// Σc far from the Fermi level: two runs of the reference generator differ by
+/// up to 3.8e-3 Ha on one such MO), but their effect on the lowest excitation
+/// energies is ≤ 1.1e-7 Ha, whereas replacing them by a rigid scissor outside
+/// a HOMO−k…LUMO+k window shifts the lowest Ω by 1.5e-4 to 9.4e-3 Ha. So every
+/// QP energy is solved, and the poorly-determined ones are reported in
+/// [`BseResult::qp_suspect_mos`] instead of being replaced. Measurement:
+/// `reference/bse/qp-window-hypotheses.md`.
 pub fn run_bse_tda(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -218,6 +310,17 @@ pub fn run_bse_tda(
         verbose: pdep_cfg.verbose,
     };
     let gw = run_gw(mol, obs, dfbs, op, rhf, pdep_cfg, &gw_cfg, None)?;
+
+    // Conditioning diagnostic: name the MOs whose QP solve is poorly determined
+    // and which are about to land on the TDA diagonal. Observability only — the
+    // diagonal below is unchanged. See `flag_suspect_qp` for why this is a
+    // warning rather than a substitution.
+    let qp_suspect_mos = flag_suspect_qp(
+        &gw.mo_indices,
+        gw.z_factor.as_slice().expect("z_factor is contiguous"),
+        &gw.qp_converged,
+    );
+    warn_suspect_qp_in_diagonal("BSE-TDA", &qp_suspect_mos, gw.mo_indices.len());
 
     // Map absolute MO index → QP energy.
     let mut eps_qp_full = rhf.eps_r().to_vec(); // fallback = HF (should be fully overwritten)
@@ -394,6 +497,7 @@ pub fn run_bse_tda(
         nvir,
         eps_qp: eps_qp_act,
         oscillator_strength,
+        qp_suspect_mos,
     })
 }
 
@@ -571,6 +675,9 @@ pub fn run_cis_tda(
         nvir,
         eps_qp: eps_act,
         oscillator_strength,
+        // CIS/TDHF-TDA runs on HF orbital energies: there is no QP solve and so
+        // nothing that can be ill-conditioned. Always empty, by construction.
+        qp_suspect_mos: Vec::new(),
     })
 }
 
@@ -639,6 +746,20 @@ pub fn run_bse_c6(
         verbose: pdep_cfg.verbose,
     };
     let gw = run_gw(mol, obs, dfbs, op, rhf, pdep_cfg, &gw_cfg, None)?;
+    // Same all-MO QP diagonal as run_bse_tda, so the same conditioning
+    // diagnostic applies. C6 weights the whole α(iω) tail rather than one
+    // low-lying root, so a single poorly-determined high-virtual QP energy
+    // matters even less here than it does for Ω — this warns, and like
+    // run_bse_tda it does not substitute a coarser model.
+    warn_suspect_qp_in_diagonal(
+        "BSE-C6",
+        &flag_suspect_qp(
+            &gw.mo_indices,
+            gw.z_factor.as_slice().expect("z_factor is contiguous"),
+            &gw.qp_converged,
+        ),
+        gw.mo_indices.len(),
+    );
     let mut eps_qp = rhf.eps_r().to_vec();
     for (k, &mo) in gw.mo_indices.iter().enumerate() {
         eps_qp[mo] = gw.eps_qp[k];
@@ -1646,5 +1767,63 @@ mod tests {
                 b.to_bits(),
             );
         }
+    }
+    // ---- flag_suspect_qp (issue #280 conditioning diagnostic) -------------
+    //
+    // The flag criteria are not tuned thresholds: they are the EXACT clamp
+    // boundaries `sigma::solve_qp_for_mo` writes, `(1.0 / (1.0 - dsig))
+    // .clamp(0.0, 1.5)`. A Z that fired the clamp carries 0.0 or 1.5
+    // bit-exactly, so the tests below pin bit-exact boundary behaviour and the
+    // just-inside values that must NOT flag. Mutation ledger for this block is
+    // in `reference/bse/qp-window-hypotheses.md`.
+
+    #[test]
+    fn flag_suspect_qp_is_empty_when_every_solve_is_healthy() {
+        let mos = [0usize, 1, 2, 3];
+        let z = [0.95, 0.88, 0.91, 0.80];
+        let conv = [true; 4];
+        assert_eq!(flag_suspect_qp(&mos, &z, &conv), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn flag_suspect_qp_catches_unconverged_newton() {
+        let mos = [5usize, 6, 7];
+        let z = [0.9, 0.9, 0.9]; // all Z healthy; only the flag differs
+        let conv = [true, false, true];
+        assert_eq!(flag_suspect_qp(&mos, &z, &conv), vec![6]);
+    }
+
+    #[test]
+    fn flag_suspect_qp_catches_both_z_clamp_boundaries_and_not_just_inside() {
+        // 0.0 and 1.5 are the clamp boundaries in solve_qp_for_mo; the values
+        // just inside must stay unflagged, or every ordinary MO would warn.
+        let mos = [0usize, 1, 2, 3];
+        let z = [
+            0.0,
+            1.5,
+            f64::from_bits(0.0f64.to_bits() + 1),
+            1.5 - f64::EPSILON,
+        ];
+        let conv = [true; 4];
+        assert_eq!(flag_suspect_qp(&mos, &z, &conv), vec![0, 1]);
+    }
+
+    #[test]
+    fn flag_suspect_qp_returns_absolute_ascending_mo_indices() {
+        // mo_indices need not start at 0 (frozen core) nor be ascending in the
+        // caller's order; the returned list is absolute and sorted, so a
+        // caller can print it or index eps_qp_full with it directly.
+        let mos = [12usize, 4, 9];
+        let z = [1.5, 0.9, 0.0];
+        let conv = [true, true, true];
+        assert_eq!(flag_suspect_qp(&mos, &z, &conv), vec![9, 12]);
+    }
+
+    #[test]
+    fn flag_suspect_qp_flags_an_mo_once_when_both_criteria_fire() {
+        let mos = [3usize];
+        let z = [1.5];
+        let conv = [false];
+        assert_eq!(flag_suspect_qp(&mos, &z, &conv), vec![3]);
     }
 }
