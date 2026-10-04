@@ -391,3 +391,83 @@ W is density-independent so it drops out of dF/dD), and the catalogue runs with
 BARE UHF stability call in `uhf.rs`, which is a different question. The root is
 reachable by the outer loop once it stops stepping along a rootless branch, so
 this does not need the constrained-Fock descent.
+
+---
+
+## MEASUREMENT 3 (2026-10-04): the slope guard was measured and DROPPED
+
+The guard built on the concavity argument was implemented, measured, and NOT
+kept. Recording the comparison because a dropped alternative is evidence, and
+because the concavity reasoning is sound and a future system may need it.
+
+Three variants, full catalogue, ERI precision 1e-20, release, quiet box:
+
+| variant | state A | the other 7 rows |
+|---|---|---|
+| **A: `trusts` short-circuit fix only** | **LOWER, 7 outer** | **all bit-unchanged** |
+| B: slope guard only | LOWER, 31 outer | two rows 11 -> 13 outer |
+| A + B (both) | LOWER, 7 outer | two rows 11 -> 13 outer |
+
+Baseline for the other rows (unchanged in A): UPPER 8 / UPPER 8 / UPPER 10 /
+LOWER 11 / UPPER 10 / (state A) / LOWER 11 / LOWER 7.
+
+B works — the slope guard does escape the rootless branch, exactly as the
+concavity argument predicts, which is a genuine confirmation of H-PHYSICS. But:
+
+* A reaches the root in 7 outer iterations against B's 31, because A keeps the
+  loop OUT of the rootless region altogether rather than detecting and escaping
+  it after the fact;
+* B perturbs two starts that already converged (`unconstrained UHF (pi)` and
+  `natural target`, both 11 -> 13) while A leaves every one bit-unchanged. The
+  acceptance criterion asks for exactly that invariance, and A is the only
+  variant that delivers it;
+* so B's cost is real and its benefit is entirely contained in A.
+
+I PREDICTED B would be inert on all previously-converging starts, reasoning that
+all three existing synthetic oracles have jac <= 0 on every converged branch
+they visit (verified numerically) and therefore nothing healthy could trip it.
+**That prediction was WRONG on the real catalogue**: two real paths do present a
+converged positive slope somewhere in their trajectory, transiently, and
+rejecting those pairs costs each of them 2 outer iterations. The synthetic
+oracles were too clean to show it, and the exactness anchor is what caught it —
+the same way the `Bracket` docstring records its own predicted-bit-identity
+failing.
+
+### What was kept
+
+Only the one-line logic change in `trusts`. The slope reasoning and these
+numbers live in `ScalarStepper`'s "What it does not handle", so the next person
+to meet a fully-converged cycle has the argument and the measurement without
+having to rediscover either.
+
+### Mutation ledger (all against the SHIPPED fix)
+
+Every run `0 ignored`, non-zero `passed`, so each is real evidence.
+
+| mutation | result | tests turned RED |
+|---|---|---|
+| baseline (control) | ok, 18 passed | — |
+| M1 restore `!s.converged` short-circuit | **FAILED 16/2** | `a_pair_is_trusted_only_on_one_converged_branch`, `a_pair_of_capped_solves_is_not_trusted` |
+| M2 drop the `p.converged` clause | **FAILED 17/1** | `a_pair_is_trusted_only_on_one_converged_branch` |
+| M3 drop the `s.converged` clause | **FAILED 17/1** | `a_pair_is_trusted_only_on_one_converged_branch` |
+| M4 loosen `HF_MISMATCH_TOL` by 1e6 | **FAILED 15/3** | + `a_probe_in_another_basin_is_not_used_as_a_derivative` |
+| M5 flip the sign-step direction | **FAILED 16/2** | `a_probe_in_another_basin...`, `an_untrusted_pair_falls_back...` |
+
+A FIRST ledger attempt was WORTHLESS and is recorded so the mechanism is known:
+its harness restored the pristine file BEFORE running the tests, so two
+mutations reported "survived" when they had never been compiled in. Both were
+genuinely caught once applied correctly. That is a third distinct way a mutation
+run can look like success and be nothing — alongside "did not compile" and
+"0 passed; N ignored".
+
+### Method notes
+
+* The slope guard's own test initially PASSED with the guard's reaction
+  replaced by `false` (fall through to the stale Jacobian), because on that
+  oracle the stale J happened to point the same way. The code comment had
+  already flagged this as "right here only by luck of the sign"; the surviving
+  mutation proved the warning load-bearing. Moot now that the guard is dropped,
+  but the lesson is that asserting the OUTCOME is not asserting the DECISION.
+* One trace log was read with `tail -3`, which showed only the sentinel and led
+  me to report "no data" for a run that held 145 lines of real trace. Read the
+  whole file before concluding a run produced nothing.
