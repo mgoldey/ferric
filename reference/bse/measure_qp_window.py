@@ -97,9 +97,15 @@ def main():
         print(
             f"  {s:20s} nov={k.shape[0]:4d} n_ref={n_ref}  max|d| = {dev:.3e}  {'OK' if ok else 'FAIL'}"
         )
-        data[s] = dict(
-            d=d, k=k, nocc=nocc, nvir=nvir, nmo=nmo, eps_qp=eps_qp, eps_mf=eps_mf
-        )
+        data[s] = {
+            "d": d,
+            "k": k,
+            "nocc": nocc,
+            "nvir": nvir,
+            "nmo": nmo,
+            "eps_qp": eps_qp,
+            "eps_mf": eps_mf,
+        }
     if not anchor_ok:
         print(
             "\nANCHOR FAILED -- refusing to run the sweep (artifact hypothesis H-A1)."
@@ -155,14 +161,14 @@ def main():
             w, lo, hi = windowed_eps(z["eps_mf"], z["eps_qp"], z["nocc"], z["nmo"], kk)
             b_om = omegas(z["k"], w, z["nocc"], z["nvir"])
             dd = b_om - a_om
-            q2[s][kk] = dict(
-                om=b_om,
-                d=dd,
-                lo=lo,
-                hi=hi,
-                nsolved=hi - lo + 1,
-                nshift=z["nmo"] - (hi - lo + 1),
-            )
+            q2[s][kk] = {
+                "om": b_om,
+                "d": dd,
+                "lo": lo,
+                "hi": hi,
+                "nsolved": hi - lo + 1,
+                "nshift": z["nmo"] - (hi - lo + 1),
+            }
             print(
                 f"    (b) k={kk:<2d} MOs {lo}..{hi} solved ({hi - lo + 1}/{z['nmo']}), "
                 f"{z['nmo'] - (hi - lo + 1)} shifted"
@@ -208,7 +214,7 @@ def main():
                     omegas(z["k"], z["eps_qp"] + pert_out, z["nocc"], z["nvir"]) - a_om
                 ),
             )
-        q1[s] = dict(all=worst, out=worst_out)
+        q1[s] = {"all": worst, "out": worst_out}
         print(f"\n  {s}")
         print(
             "    max|dOmega| over draws, ALL MOs perturbed  (Ha): "
