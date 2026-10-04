@@ -21,8 +21,9 @@
 //! * converging is meeting the constraint: |N − 2| < `cdft_lambda_tol`;
 //! * each converged start lands on the state it was measured to reach
 //!   (`EXPECTED_LEVEL`, the same at both precisions);
-//! * every start converges except those listed in `allowed_failures`: none at
-//!   1e-14, `state A (N_He=1)` at 1e-20.
+//! * every start converges except those listed in `allowed_failures`, which is
+//!   now empty at BOTH precisions (it held `state A (N_He=1)` at 1e-20 until
+//!   #282).
 //!
 //! MEASURED (release, this box):
 //!
@@ -33,18 +34,28 @@
 //!   SAD                         UPPER 10       UPPER 10
 //!   unconstrained UHF (pi)      LOWER 11       LOWER 11
 //!   unconstrained UHF (sigma)   UPPER 10       UPPER 10
-//!   state A (N_He=1)            LOWER  9       does not converge in 40
+//!   state A (N_He=1)            LOWER  7       LOWER  7
 //!   natural target (1.954484)   LOWER 11       LOWER 11
 //!   post-descent (0.8 rad)      LOWER  7       LOWER  7
 //!   (state, outer iterations)
 //! ```
 //!
 //! UPPER is E(target) = −130.40218994, LOWER −130.42670699 at both precisions.
-//! The `state A` failure at 1e-20 is an outer-loop limit the driver documents
-//! (`ScalarStepper`, "What it does not handle"): 23 inner solves that do not
-//! converge before any that does, then a clamp-width cycle on a branch with
-//! dc/dλ > 0 and no sign change. It is listed rather than hidden so that a fix
-//! for it fails this test and gets recorded.
+//!
+//! `state A` used to fail at 1e-20 and was listed in `allowed_failures` so that
+//! a fix would fail this test and get recorded. Fixed in #282: the first 23
+//! inner solves hit their 400-iteration cap, and `ScalarStepper::trusts`
+//! short-circuited on an unconverged main point, so Jacobians of ±310 built
+//! from capped DIIS snapshots drove Newton steps for more than half the budget
+//! (guard 2's `hf_mismatch` was BYPASSED, not absent — it would have rejected
+//! every pair). With the short-circuit closed the start reaches LOWER in 7
+//! outer iterations at both precisions, and the 1e-14 column moved 9 → 7 for
+//! the same reason.
+//!
+//! Note the row is now the FASTEST LOWER start in the table. That is not
+//! suspicious: it begins from constrained orbitals at the neighbouring target,
+//! which is a better guess for λ ≈ −2.44 than hcore or MINAO, and it was only
+//! ever slow because the loop spent 23 iterations in a region with no root.
 //!
 //! Run (release; ~minutes per precision):
 //!
@@ -439,5 +450,5 @@ fn catalogue_converges_at_eri_precision_1e_14() {
 #[test]
 #[ignore = "8+3 constrained HeNe+ solves on a 99x302 grid; minutes"]
 fn catalogue_converges_at_eri_precision_1e_20() {
-    catalogue_at(1e-20, &["state A (N_He=1)"]);
+    catalogue_at(1e-20, &[]);
 }

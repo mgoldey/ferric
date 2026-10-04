@@ -321,8 +321,10 @@ enum StepKind {
 /// converged λ, and the trust radius shrinks to half the remaining distance so
 /// the next Newton step cannot land back on the λ that failed. The radius
 /// doubles back toward `MAX_STEP` after every trusted Newton step. With no
-/// earlier converged λ there is nothing to backtrack to, and the plain step is
-/// taken.
+/// earlier converged λ there is nothing to backtrack to; the pair is then
+/// untrusted (an unconverged point is not a value of `c(λ)`, so it confers no
+/// trust — see [`Self::trusts`]) and guard 2's fallback chain supplies the
+/// step.
 ///
 /// # Guard 2: a probe in another SCF basin is not a derivative
 ///
@@ -336,17 +338,11 @@ enum StepKind {
 /// derivative c, so c > 0 means λ must increase. The bracket safeguard still
 /// applies afterwards.
 ///
-/// # What it does not handle (measured on HeNe⁺/def2-SVP, target N_He = 2)
+/// # What it does not handle
 ///
-/// * No converged point yet: guard 1 has nothing to back off to. From the
-///   `state A (N_He = 1)` orbitals at ERI precision 1e-20 the first 23 inner
-///   solves hit their 400-iteration cap, so the plain step is taken from each.
-/// * A converged branch on which dc/dλ > 0, with no sign change seen: the same
-///   run then alternates between λ = −0.2324 (c = −0.961, J = +0.199) and
-///   +0.7676 (c = −0.992, J = −0.011), one clamp width apart. Both probes are
-///   on their main point's branch, both residuals are negative, so neither
-///   guard nor the bracket fires. The same start converges at precision
-///   1e-14.
+/// * Several constraints (`k > 1`). Bracket, backtrack and the sign rule are
+///   all scalar notions; the `k × k` path takes a plain clamped Newton step
+///   with none of these guards.
 /// * A start far from the root, under an outer cap too small to reach it. The
 ///   step is clamped to `MAX_STEP` per iteration, so arriving from λ⁰ takes at
 ///   least |λ_root − λ⁰| / `MAX_STEP` iterations whatever the residual does,
@@ -358,6 +354,30 @@ enum StepKind {
 ///   outer 8, and all six converge to the same root as a start AT the root
 ///   given 11-21 iterations. Nothing here is wrong in that case — the budget
 ///   is — so no guard fires and none should.
+/// * An inner SCF that cannot converge anywhere near the root. Guard 1
+///   backtracks toward the last converged λ and reports a stall at
+///   [`BACKTRACK_FLOOR`] rather than spending the budget silently.
+/// * A converged branch on which `dc/dλ > 0`. This is diagnostic rather than
+///   merely slow: `V(λ) = min_ρ (E + λ·c)` is concave with `dV/dλ = c`, so
+///   `dc/dλ ≤ 0` on the LOWEST solution, and a converged positive slope means
+///   the inner solve is on a higher branch. MEASURED on the `state A` start at
+///   1e-20 (#282), where outer 24–40 cycled with period 2 exactly [`MAX_STEP`]
+///   apart between λ = −0.2324 (c = −0.9607, J = +0.1990, 31 inner iterations)
+///   and λ = +0.7676 (c = −0.9918, J = −0.0113, 8 inner iterations) — both
+///   genuinely converged, `hf_mismatch` 2.1e-10 and 1.0e-12, so guard 2
+///   correctly had no grounds and the bracket stayed one-sided forever. A
+///   direct `c(λ)` scan from that seed showed why: the state-A branch carries
+///   `c ∈ [−0.99, −0.96]` across `λ ∈ [−0.23, +1.0]` and has NO root, while the
+///   root sits on the lower branch at λ = −2.43901.
+///
+///   A guard on that slope was written, measured, and NOT kept. It did fix the
+///   row (LOWER in 31 outer iterations), but closing the `trusts`
+///   short-circuit above fixes it better (LOWER in 7) by keeping the loop out
+///   of that region altogether, and the slope guard additionally perturbed two
+///   innocent catalogue starts from 11 to 13 outer iterations. Both measurements
+///   are in `tests/HYPOTHESES-cdft-hene-state-a-1e20.md`. If a future system
+///   reaches such a cycle with every solve converged, the slope is the signal
+///   to reach for — but it is not needed for this one.
 #[derive(Debug, Clone)]
 struct ScalarStepper {
     guards: bool,
@@ -414,13 +434,49 @@ impl ScalarStepper {
     }
 
     /// Is the pair (`s` at λ, `p` at λ + `FD_STEP`) a usable derivative?
+    ///
+    /// # The `!s.converged` short-circuit this used to have (removed, #282)
+    ///
+    /// The old version returned TRUSTED whenever the MAIN point had not
+    /// converged, justified in a comment as "there is no better model than
+    /// this one". There is: no model at all. An unconverged population is not
+    /// a value of `c(λ)` — the [`Bracket`] docstring already made exactly that
+    /// argument for the bracket bounds — so a finite difference across one
+    /// measures nothing, and dividing it by `FD_STEP` manufactures a large
+    /// number that then drives a Newton step.
+    ///
+    /// MEASURED on the HeNe⁺/def2-SVP `state A (N_He = 1)` start at ERI
+    /// precision 1e-20, target N_He = 2, where the first 23 inner solves all
+    /// hit their 400-iteration cap. Every one took a plain Newton step:
+    ///
+    /// | outer | jac | `hf_mismatch` | step taken |
+    /// |---|---|---|---|
+    /// | 1 | +3.109e2 | 2.28e-2 | Newton |
+    /// | 2 | +7.374e1 | 4.24e-3 | Newton |
+    /// | 3 | −7.275e1 | 1.77e-2 | Newton |
+    /// | 6 | −2.049e2 | 1.53e-2 | Newton |
+    /// | 9 | +9.076e1 | 1.35e-2 | Newton |
+    ///
+    /// Those mismatches are 100×–23,000× ABOVE [`HF_MISMATCH_TOL`], so guard 2
+    /// would have rejected every pair had it been consulted. The guard was not
+    /// missing, it was BYPASSED — and the distinction matters, because the fix
+    /// for a missing guard is to write one while the fix for an unreachable
+    /// guard is to stop short-circuiting past it. λ random-walked in
+    /// [−0.004, +0.102] for those 23 iterations, more than half the budget,
+    /// which is also why guard 1 never acquired a converged λ to back off to.
+    ///
+    /// With the short-circuit gone the pair is untrusted, and [`Self::step`]'s
+    /// existing fallback chain applies: the last trusted Jacobian if one
+    /// exists, else a `radius` step in the direction that lowers `|c|`. Both
+    /// are defined without a derivative, which is the honest position when no
+    /// value of `c(λ)` is in hand. On the measured run this reaches the LOWER
+    /// state in 7 outer iterations, and leaves all seven other catalogue
+    /// starts bit-identical.
     fn trusts(&self, s: &Sample, p: &Sample) -> bool {
         let jac = (p.c - s.c) / FD_STEP;
-        // An unconverged MAIN point reaches the probe only before any λ has
-        // converged; then there is no better model than this one.
         !self.guards
-            || !s.converged
-            || (p.converged
+            || (s.converged
+                && p.converged
                 && jac.is_finite()
                 && jac.abs() >= SINGULAR_JAC
                 && hf_mismatch(s, p, FD_STEP) <= HF_MISMATCH_TOL)
@@ -1594,6 +1650,45 @@ mod tests {
         sample(0.3 - 0.15 * l, 0.3 * l - 0.075 * l * l, true)
     }
 
+    /// **A pair of iteration-capped inner solves is not a derivative.**
+    ///
+    /// The regression this closes is #282's root cause: `trusts` used to
+    /// short-circuit on `!s.converged` and return TRUSTED, so a Jacobian built
+    /// from two 400-iteration-capped DIIS snapshots drove a Newton step. The
+    /// literals are the real outer-1 values from the measured HeNe⁺ trace.
+    #[test]
+    fn a_pair_of_capped_solves_is_not_trusted() {
+        let st = ScalarStepper::new(true);
+        let main = Sample {
+            c: -9.373744e-1,
+            v: -130.3822516219,
+            converged: false,
+        };
+        let probe = Sample {
+            c: -6.265126e-1,
+            v: -130.4057977009,
+            converged: false,
+        };
+        // Reachability of the guard-2 clause on this pair: if the measured
+        // mismatch were INSIDE the bar, this test would prove nothing about the
+        // short-circuit, so assert the premise rather than assume it.
+        let m = hf_mismatch(&main, &probe, FD_STEP);
+        assert!(
+            m > HF_MISMATCH_TOL,
+            "the measured pair must sit outside the mismatch bar for this test \
+             to exercise the short-circuit; mismatch = {m:.3e}"
+        );
+        // The "Jacobian" the old code trusted, for the record: +310.9.
+        let jac = (probe.c - main.c) / FD_STEP;
+        assert!(jac > 3.0e2, "jac = {jac:.4e}");
+        assert!(
+            !st.trusts(&main, &probe),
+            "two iteration-capped solves must not be trusted as a derivative"
+        );
+        // Guards off is unchanged: everything is trusted, as before.
+        assert!(ScalarStepper::new(false).trusts(&main, &probe));
+    }
+
     /// **Exactness anchor: with nothing wrong, the guards change nothing.**
     ///
     /// On a smooth residual every inner solve converges and every probe is on
@@ -1801,13 +1896,32 @@ mod tests {
                 ..good
             }
         ));
-        // An unconverged MAIN point is trusted (no better model exists yet).
-        assert!(st.trusts(
+        // An unconverged MAIN point confers NO trust.
+        //
+        // CHANGED #282. This read `assert!` with the comment "an unconverged
+        // MAIN point is trusted (no better model exists yet)", and it encoded
+        // the defect: note the probe it hands over has `v: 99.0`, a
+        // Hellmann–Feynman mismatch of ~100 Ha — 10⁸× the tolerance — which
+        // the old `!s.converged` short-circuit nonetheless called a usable
+        // derivative. On the HeNe⁺ `state A` start at ERI precision 1e-20 that
+        // let 23 consecutive 400-iteration-capped pairs drive Newton steps,
+        // with real Jacobians of +310.9 and −204.9. See `Self::trusts`.
+        assert!(!st.trusts(
             &Sample {
                 converged: false,
                 ..s
             },
             &Sample { v: 99.0, ..good }
+        ));
+        // ... and an unconverged main point with an otherwise PERFECT probe is
+        // still untrusted, so the rejection is about the main point and not a
+        // side effect of the mismatch bar.
+        assert!(!st.trusts(
+            &Sample {
+                converged: false,
+                ..s
+            },
+            &good
         ));
         // Guards off: everything is trusted.
         assert!(ScalarStepper::new(false).trusts(&s, &Sample { v: 99.0, ..good }));
