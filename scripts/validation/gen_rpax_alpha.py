@@ -355,7 +355,9 @@ def gen_one(system, basis_name, ref, scissor):
             "b_exact_bare_numpy_vs_pyscf_exact_cphf_max_rel": b_rel,
             "b_exact_cphf_tensor": [[float(x) for x in r] for r in cphf_ex],
             "cphf_matrix": "dense, built from PySCF gen_response(hermi=1)",
-            "a_df_cphf_iterative_solver_vs_dense_max_rel": max_rel(cphf_df_iter, cphf_df),
+            "a_df_cphf_iterative_solver_vs_dense_max_rel": max_rel(
+                cphf_df_iter, cphf_df
+            ),
             "b_exact_cphf_iterative_solver_vs_dense_max_rel": max_rel(
                 cphf_ex_iter, cphf_ex
             ),
@@ -397,21 +399,29 @@ def gen_one(system, basis_name, ref, scissor):
         f"{system}/{basis_name}/{ref} scissor {scissor}: E {mf.e_tot:.10f} "
         f"nocc {nocc} nvir {nvir} naux {naux} lambda_max {lam.max():.4f}"
     )
-    print(f"   screened iso {screened['iso']:.8f} diag "
-          f"{[round(screened['tensor'][d][d], 6) for d in range(3)]} "
-          f"min eig A+B {screened['min_eig_apb']:.6f} A-B {screened['min_eig_amb']:.6f} "
-          f"route {screened['alpha_route_identity_max_rel']:.1e}")
-    print(f"   bare     iso {bare['iso']:.8f}; screened vs bare "
-          f"{payload['screened_vs_bare_max_rel']:.3e} rel")
+    print(
+        f"   screened iso {screened['iso']:.8f} diag "
+        f"{[round(screened['tensor'][d][d], 6) for d in range(3)]} "
+        f"min eig A+B {screened['min_eig_apb']:.6f} A-B {screened['min_eig_amb']:.6f} "
+        f"route {screened['alpha_route_identity_max_rel']:.1e}"
+    )
+    print(
+        f"   bare     iso {bare['iso']:.8f}; screened vs bare "
+        f"{payload['screened_vs_bare_max_rel']:.3e} rel"
+    )
     if "anchors" in payload:
         a = payload["anchors"]
-        print(f"   anchor (a) DF {a['a_df_bare_numpy_vs_pyscf_df_cphf_max_rel']:.2e} "
-              f"(b) exact {a['b_exact_bare_numpy_vs_pyscf_exact_cphf_max_rel']:.2e} "
-              f"DF gap {a['df_fitting_gap_bare_df_vs_exact_cphf_max_rel']:.2e}; "
-              f"cphf.solve vs dense {a['a_df_cphf_iterative_solver_vs_dense_max_rel']:.1e}")
+        print(
+            f"   anchor (a) DF {a['a_df_bare_numpy_vs_pyscf_df_cphf_max_rel']:.2e} "
+            f"(b) exact {a['b_exact_bare_numpy_vs_pyscf_exact_cphf_max_rel']:.2e} "
+            f"DF gap {a['df_fitting_gap_bare_df_vs_exact_cphf_max_rel']:.2e}; "
+            f"cphf.solve vs dense {a['a_df_cphf_iterative_solver_vs_dense_max_rel']:.1e}"
+        )
     if "scissor0" in payload:
-        print(f"   scissor 0 diag {[round(payload['scissor0']['tensor'][d][d], 6) for d in range(3)]}"
-              f" iso {payload['scissor0']['iso']:.6f}")
+        print(
+            f"   scissor 0 diag {[round(payload['scissor0']['tensor'][d][d], 6) for d in range(3)]}"
+            f" iso {payload['scissor0']['iso']:.6f}"
+        )
     print(f"   -> {path.relative_to(common.ROOT)}")
 
 
