@@ -10,7 +10,7 @@
 //!   K_total,σ = c_SR · K[erfc(ω)](D_σ) + c_LR · K[erf(ω)](D_σ)
 //! ```
 //!
-//! via [`crate::fock_assembly::subtract_rsh_exchange`] and two [`DfK`] fitters.
+//! via `fock_assembly::subtract_rsh_exchange` and two [`DfK`](crate::df_k::DfK) fitters.
 //! The Hessian matvecs built their response from ONE `build_jk_with_pool` call
 //! at the ambient (Coulomb) operator scaled by the single scalar `k_mix.sr`,
 //! which is not the ω ≠ 0 kernel at all. `stability::ks_reference_is_analysable`
@@ -41,11 +41,13 @@
 //!
 //! # Interior mutability, and why this BORROWS the fitters
 //!
-//! [`DfK::build`] needs `&mut self` (it streams its dressed tensor through a
+//! [`KBuilder::build`](crate::fock::KBuilder::build) on a `DfK` needs `&mut self` (it streams its dressed tensor through a
 //! budgeted reduction). The Hessian matvecs take `&inputs` and are driven
 //! inside a PCG loop and a Davidson eigensolve that call them many times with
-//! the same inputs, so the fitters sit behind a [`RefCell`] and the borrow is
-//! taken and released inside [`RshResponse::exchange_response`] — no guard is
+//! the same inputs, so the fitters sit behind a [`RefCell`](std::cell::RefCell) and the borrow is
+//! taken and released inside
+//! [`RshResponse::exchange_response`](crate::rsh_response::RshResponse::exchange_response)
+//! — no guard is
 //! ever held across a call back into caller code.
 //!
 //! This type BORROWS the cells rather than owning the fitters. That is
@@ -159,7 +161,7 @@ impl<'a> RshResponse<'a> {
     /// of one spin's density perturbation.
     ///
     /// Element-wise association matches
-    /// [`crate::fock_assembly::subtract_rsh_exchange`]: scale the SR matrix by
+    /// `fock_assembly::subtract_rsh_exchange`: scale the SR matrix by
     /// `c_sr` in place, then `scaled_add(c_lr, &k_lr)`. The caller applies the
     /// Fock's own sign and factor (−1 per spin for UHF/ROHF, −½ for the
     /// restricted total density), exactly as it does for the Coulomb-kernel

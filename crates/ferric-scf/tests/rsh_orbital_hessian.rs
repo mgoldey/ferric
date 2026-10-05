@@ -66,18 +66,11 @@ impl Xorshift64 {
     }
 }
 
-const BASIS: &str = "def2-svp";
 const AUX: &str = "def2-universal-jkfit";
 const FUNCTIONAL: &str = "wB97X-V";
 
 fn oh_doublet() -> Molecule {
     Molecule::parse_xyz("2\nOH\nO 0 0 0\nH 0 0 0.97\n", 0, 2).unwrap()
-}
-
-fn n2_cation() -> Molecule {
-    // Same geometry as testdata/molecules/validation/n2.xyz (r_e = 1.0977 A),
-    // charge +1 / doublet — the state PySCF's `symmetric_cation_probe` probes.
-    Molecule::parse_xyz("2\nN2+ 2Sg+\nN 0 0 0\nN 0 0 1.09770000\n", 1, 2).unwrap()
 }
 
 // ---------------------------------------------------------------------------

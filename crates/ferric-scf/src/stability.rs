@@ -1014,7 +1014,7 @@ pub enum StabilitySkip {
     Rohf,
     /// The functional carries VV10 nonlocal correlation, whose linear response
     /// exists NOWHERE in this workspace: `ferric_dft::fxc` has no VV10 term, so
-    /// [`crate::rohf::FxcKernelStore`] silently omits it.
+    /// `rohf::FxcKernelStore` silently omits it.
     /// `zvector_ks` and `ferric_dft::lr_kernel::resolve_singlet_response_xc`
     /// refuse VV10 functionals for the same reason.
     ///
