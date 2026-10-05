@@ -195,7 +195,7 @@ fn l_of_dim(d: usize) -> usize {
 fn ao_l(b: &PreparedBasis) -> Vec<usize> {
     b.shell_dims()
         .iter()
-        .flat_map(|&d| std::iter::repeat(l_of_dim(d)).take(d))
+        .flat_map(|&d| std::iter::repeat_n(l_of_dim(d), d))
         .collect()
 }
 
