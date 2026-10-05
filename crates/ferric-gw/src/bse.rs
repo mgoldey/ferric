@@ -1226,9 +1226,11 @@ pub const ALPHA_DIAGONAL_ZERO_TOL: f64 = 1e-8;
 /// BSE/TDDFT excitonic instability caused by pairing a strongly static-screened
 /// exchange kernel with the SAME narrow, GW-uncorrected KS gap on the response
 /// diagonal, which drives `(A−B)` (and sometimes even the TDA `A`) non-positive
-/// -definite. It is NOT an assembly bug: the kernel was independently
-/// re-derived and matches PySCF TDHF to 3e-4 in the bare-exchange limit (see
-/// `crates/ferric-gw/tests/rpax_bare_ab_check.rs`), and the full root-cause
+/// -definite. It is NOT an assembly bug: an independent numpy build of the same
+/// kernel gives the same negative α_xx (−2.680881, water/cc-pVDZ@PBE, scissor
+/// 0), ferric matches that build to 5e-9 relative where α is positive, and the
+/// bare-exchange limit equals PySCF CPHF (see
+/// `crates/ferric-gw/tests/validation_rpax_alpha.rs`). The root-cause
 /// investigation is in `docs/rpax-negative-diagonal-investigation.md`.
 ///
 /// Following the workspace "honest failure over silent-wrong" convention (see
@@ -1280,8 +1282,8 @@ pub fn check_alpha_diagonal_positive(
          against the applied field along that axis, which cannot happen for a bound closed-shell \
          molecule. On the RPAx@KS path this is a genuine BSE/TDDFT excitonic instability from \
          pairing a static-screened exchange kernel with the same GW-uncorrected KS gap on the \
-         response diagonal (NOT an assembly bug -- the kernel matches PySCF TDHF to 3e-4 in the \
-         bare-exchange limit). REMEDY: re-run with a nonzero scissor (~0.3-0.4 Ha for small \
+         response diagonal (NOT an assembly bug -- an independent build of the same kernel \
+         reproduces it, and the bare-exchange limit matches PySCF CPHF). REMEDY: re-run with a nonzero scissor (~0.3-0.4 Ha for small \
          molecules; [gw] scissor in the CLI TOML, scissor= in Python) to widen the diagonal \
          toward the true GW gap, or source the diagonal from real G0W0 quasiparticle energies. \
          Full diagonal: ({:+.6e}, {:+.6e}, {:+.6e}). Root cause: \
@@ -1338,12 +1340,15 @@ pub struct RpaxStaticPolarizabilityResult {
 /// deficit). The dynamic/C6 variant (`run_bse_c6_ks`) remains library-only
 /// and unwired from the CLI/Python surface for exactly this reason.
 ///
-/// The STATIC α is not validated either. The earlier "matches DOSD water
-/// almost exactly (9.24 vs 9.64 a.u.)" figure came from `scissor = 0.0`,
-/// whose tensor had a negative diagonal element (α_xx = −2.68) and is now
-/// refused (see Errors below). At `scissor = 0.36` Ha, the shift matching
-/// water's GW gap at PBE/cc-pVDZ, the same system gives α_iso = 5.20 a.u.,
-/// 46% below DOSD (`examples/water-tdhf-static-alpha.toml`).
+/// The static α is implemented as specified but not physically established.
+/// It matches an independent numpy build of the same kernel to 5e-9 relative
+/// (H2O and NH3 at RHF, water at PBE + 0.36 Ha scissor; full-rank PDEP,
+/// `crates/ferric-gw/tests/validation_rpax_alpha.rs`). Physically, at
+/// `scissor = 0.36` Ha, the shift matching water's GW gap at PBE/cc-pVDZ,
+/// α_iso = 5.20 a.u., 46% below DOSD 9.64, and the independent build gives
+/// the same 5.20, so the deficit belongs to the kernel, not the code. At
+/// `scissor = 0.0` the tensor has α_xx = −2.68 and is refused (see Errors
+/// below).
 ///
 /// `scissor` (Hartree) is added to every virtual orbital energy before
 /// assembling the diagonal, matching `run_bse_c6_ks`'s knob (a cheap proxy
@@ -1371,6 +1376,68 @@ pub fn run_rpax_static_polarizability(
     frozen_core: usize,
     scissor: f64,
 ) -> Result<RpaxStaticPolarizabilityResult, FerricError> {
+    rpax_static_polarizability_with_screening(
+        mol,
+        obs,
+        dfbs,
+        op,
+        ks,
+        pdep_cfg,
+        frozen_core,
+        scissor,
+        RpaxScreening::StaticPdep,
+        false,
+    )
+    .map(|d| d.result)
+}
+
+/// Which interaction enters the exchange-type blocks of the RPAx kernel.
+///
+/// VALIDATION HOOK ONLY (`crates/ferric-gw/tests/validation_rpax_alpha.rs`);
+/// not exposed through the CLI or Python.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RpaxScreening {
+    /// The shipped kernel: static PDEP-screened W(0) of the same reference.
+    StaticPdep,
+    /// W → v (bare exchange, no PDEP run): the TDHF kernel. At an HF
+    /// reference its static α is the coupled-perturbed HF α.
+    Bare,
+}
+
+/// [`RpaxStaticPolarizabilityResult`] plus the lowest eigenvalue of each of
+/// A+B and A−B. VALIDATION HOOK ONLY.
+///
+/// The static α depends only on A+B (`t = (A+B)⁻¹(A−B)⁻¹(A−B)μ`), so A−B is
+/// observable only through `min_eig_amb`.
+#[doc(hidden)]
+#[derive(Debug, Clone)]
+pub struct RpaxStaticAlphaDetail {
+    pub result: RpaxStaticPolarizabilityResult,
+    /// Lowest eigenvalue of A+B (`None` unless requested).
+    pub min_eig_apb: Option<f64>,
+    /// Lowest eigenvalue of A−B (`None` unless requested).
+    pub min_eig_amb: Option<f64>,
+}
+
+/// [`run_rpax_static_polarizability`] with the screening selectable and the
+/// A±B lowest eigenvalues optionally reported. VALIDATION HOOK ONLY: with
+/// `RpaxScreening::StaticPdep` and `kernel_spectrum = false` this IS the
+/// public function, bit for bit. The α diagonal guard applies in every mode.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn rpax_static_polarizability_with_screening(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    ks: &ScfResult,
+    pdep_cfg: &PdepRpaConfig,
+    frozen_core: usize,
+    scissor: f64,
+    screening: RpaxScreening,
+    kernel_spectrum: bool,
+) -> Result<RpaxStaticAlphaDetail, FerricError> {
     if !matches!(ks.spin, ferric_scf::Spin::Restricted) {
         return Err(FerricError::General(
             "run_rpax_static_polarizability: closed-shell only".into(),
@@ -1385,7 +1452,12 @@ pub fn run_rpax_static_polarizability(
     }
 
     // PDEP screening modes from the KS response (same as run_bse_c6_ks).
-    let pdep = ferric_rpa::run_pdep_rpa(mol, obs, dfbs, op, ks, pdep_cfg)?;
+    let pdep = match screening {
+        RpaxScreening::StaticPdep => {
+            Some(ferric_rpa::run_pdep_rpa(mol, obs, dfbs, op, ks, pdep_cfg)?)
+        }
+        RpaxScreening::Bare => None,
+    };
 
     let first_act = frozen_core;
     let nocc = ferric_mp2::rimp2::active_occ(nocc_total, frozen_core)?;
@@ -1410,14 +1482,22 @@ pub fn run_rpax_static_polarizability(
         frozen_core,
         pdep_cfg.memory_budget_bytes,
     )?;
-    let (v_dressed, _dev) = w_pdep::redress_with_check(&mob.v_inv_sqrt, &pdep.eigenpotentials)?;
-    let m_proj = project_b_into_pdep(&mob, &v_dressed, pdep_cfg.memory_budget_bytes)?;
-    let m_modes = m_proj.shape()[0];
-    let w_red: Vec<f64> = pdep
-        .eigenvalues_static
-        .iter()
-        .map(|&l| 1.0 / l - 1.0)
-        .collect();
+    // `None` = RpaxScreening::Bare: W -> v, the screened closure below is
+    // then the bare integral.
+    let screening_modes = match &pdep {
+        Some(pdep) => {
+            let (v_dressed, _dev) =
+                w_pdep::redress_with_check(&mob.v_inv_sqrt, &pdep.eigenpotentials)?;
+            let m_proj = project_b_into_pdep(&mob, &v_dressed, pdep_cfg.memory_budget_bytes)?;
+            let w_red: Vec<f64> = pdep
+                .eigenvalues_static
+                .iter()
+                .map(|&l| 1.0 / l - 1.0)
+                .collect();
+            Some((m_proj, w_red))
+        }
+        None => None,
+    };
     let b = &mob.b_full;
     let naux = mob.naux;
     let bare = |p: usize, q: usize, r: usize, s: usize| -> f64 {
@@ -1429,8 +1509,10 @@ pub fn run_rpax_static_polarizability(
     };
     let screened = |p: usize, q: usize, r: usize, s: usize| -> f64 {
         let mut acc = bare(p, q, r, s);
-        for alpha in 0..m_modes {
-            acc += w_red[alpha] * m_proj[(alpha, p, q)] * m_proj[(alpha, r, s)];
+        if let Some((m_proj, w_red)) = &screening_modes {
+            for alpha in 0..m_proj.shape()[0] {
+                acc += w_red[alpha] * m_proj[(alpha, p, q)] * m_proj[(alpha, r, s)];
+            }
         }
         acc
     };
@@ -1526,11 +1608,26 @@ pub fn run_rpax_static_polarizability(
     // two silently wrong. See `check_alpha_diagonal_positive`.
     check_alpha_diagonal_positive("run_rpax_static_polarizability", &tensor)?;
     let iso = (tensor[0][0] + tensor[1][1] + tensor[2][2]) / 3.0;
-    Ok(RpaxStaticPolarizabilityResult {
-        tensor,
-        iso,
-        nocc,
-        nvir,
+    let (min_eig_apb, min_eig_amb) = if kernel_spectrum {
+        let lowest = |m: &Array2<f64>, what: &str| -> Result<f64, FerricError> {
+            let (w, _) = m
+                .eigh(UPLO::Upper)
+                .map_err(|e| FerricError::Lapack(format!("RPAx {what} eigh: {e}")))?;
+            Ok(w.iter().copied().fold(f64::INFINITY, f64::min))
+        };
+        (Some(lowest(&apb, "A+B")?), Some(lowest(&amb, "A-B")?))
+    } else {
+        (None, None)
+    };
+    Ok(RpaxStaticAlphaDetail {
+        result: RpaxStaticPolarizabilityResult {
+            tensor,
+            iso,
+            nocc,
+            nvir,
+        },
+        min_eig_apb,
+        min_eig_amb,
     })
 }
 
