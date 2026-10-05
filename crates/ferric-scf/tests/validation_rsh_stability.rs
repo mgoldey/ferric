@@ -95,18 +95,20 @@ const FUNCTIONAL: &str = "wB97X-V";
 
 /// Absolute bar on λ_min against PySCF.
 ///
-/// MEASURED max |Δλ_min| across the reference's two ω (0.40 and 0.60) on this
-/// branch: **4.1e-6** (see `REPORT-292.md` for the per-ω table). Bar set at
-/// ~10× that, as #292 asks, and recorded here so a future tightening or
-/// loosening is a deliberate edit against a number rather than a guess.
+/// MEASURED on this branch (N2⁺ / def2-SVP / ωB97X-V, both codes on the same
+/// symmetric state, |ΔE| ≤ 1.65e-8 Ha):
 ///
-/// For scale, ferric's own DF-K fitting error on a comparable exchange-response
-/// quantity is 1.7e-3 RELATIVE
-/// (`rsh_orbital_hessian.rs::erfc_plus_erf_response_reproduces_the_coulomb_response`),
-/// and the independent O2/def2-SVP control in `REPORT-292.md` puts ferric's
-/// ω = 0 PBE and B3LYP λ_min at 1e-4 relative against PySCF — so this bar is
-/// NOT tighter than the floor of the quantity being compared.
-const TOL_LAMBDA: f64 = 4e-5;
+/// ```text
+///   omega   ferric lambda_min    PySCF lambda_min    |d|
+///   0.40    +8.602627327e-3      +8.602813033e-3     1.86e-7
+///   0.60    -1.116833188e-2      -1.116816528e-2     1.67e-7
+/// ```
+///
+/// Bar = ~10x the measured max (1.857e-7), as #292 asks. Checked against the
+/// mutation ledger: the smallest miss of any killed mutant on this comparison is
+/// 3.57e-3 (xc_omega not threaded into the f_xc kernel), ~1800x this bar, and
+/// the plain-Coulomb negative control misses by >= 2.9e-1.
+const TOL_LAMBDA: f64 = 2e-6;
 /// The negative control must miss by at least this multiple of the bar (#292).
 const NEGATIVE_CONTROL_FACTOR: f64 = 10.0;
 

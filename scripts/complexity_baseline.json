@@ -25969,7 +25969,7 @@
   },
   "crates/ferric-scf/src/cdft_driver.rs::augmented_instability": {
     "cc": 6.0,
-    "mi": 64.34473043124031
+    "mi": 63.81569729237792
   },
   "crates/ferric-scf/src/cdft_driver.rs::backtrack_halves_toward_the_last_converged_lambda_and_shrinks_the_radius": {
     "cc": 1.0,
@@ -28609,7 +28609,7 @@
   },
   "crates/ferric-scf/src/driver.rs::prepare": {
     "cc": 16.0,
-    "mi": 57.20352812266462
+    "mi": 57.09144828430014
   },
   "crates/ferric-scf/src/driver.rs::prepare::<anonymous>": {
     "cc": 1.0,
@@ -32808,8 +32808,8 @@
     "mi": 157.8484854211024
   },
   "crates/ferric-scf/src/rhf.rs::solve_rhf_once": {
-    "cc": 198.0,
-    "mi": -47.11563703521173
+    "cc": 200.0,
+    "mi": -48.15542245910983
   },
   "crates/ferric-scf/src/rhf.rs::solve_rhf_once::<anonymous>": {
     "cc": 1.0,
@@ -32909,7 +32909,7 @@
   },
   "crates/ferric-scf/src/rhf.rs::solve_rhf_once::<anonymous>#4": {
     "cc": 1.0,
-    "mi": 80.7674625162184
+    "mi": 80.21854505631984
   },
   "crates/ferric-scf/src/rhf.rs::solve_rhf_once::<anonymous>#5": {
     "cc": 1.0,
@@ -32945,7 +32945,7 @@
   },
   "crates/ferric-scf/src/rhf.rs::stability_rhf": {
     "cc": 12.0,
-    "mi": 49.42594069859834
+    "mi": 47.89420028686236
   },
   "crates/ferric-scf/src/rhf.rs::stability_rhf::<anonymous>": {
     "cc": 1.0,
@@ -33044,8 +33044,8 @@
     "mi": 99.20532713285277
   },
   "crates/ferric-scf/src/rhf_newton.rs::hessian_matvec": {
-    "cc": 6.0,
-    "mi": 67.24457394432343
+    "cc": 9.0,
+    "mi": 64.04334686947644
   },
   "crates/ferric-scf/src/rhf_newton.rs::hessian_matvec::<anonymous>": {
     "cc": 1.0,
@@ -33103,6 +33103,14 @@
     "cc": 1.0,
     "mi": 157.8484854211024
   },
+  "crates/ferric-scf/src/rhf_newton.rs::triplet_hessian_matvec": {
+    "cc": 8.0,
+    "mi": 68.18377897199409
+  },
+  "crates/ferric-scf/src/rhf_newton.rs::triplet_hessian_matvec::<anonymous>": {
+    "cc": 1.0,
+    "mi": 153.42889531439928
+  },
   "crates/ferric-scf/src/rohf.rs::build_rohf_densities": {
     "cc": 3.0,
     "mi": 90.35719569885306
@@ -33120,8 +33128,8 @@
     "mi": 83.72317439437442
   },
   "crates/ferric-scf/src/rohf.rs::impl:FxcKernelStore::build": {
-    "cc": 9.0,
-    "mi": 74.81193973831614
+    "cc": 11.0,
+    "mi": 71.82159086890204
   },
   "crates/ferric-scf/src/rohf.rs::impl:FxcKernelStore::build::<anonymous>": {
     "cc": 1.0,
@@ -33173,7 +33181,7 @@
   },
   "crates/ferric-scf/src/rohf.rs::solve_rohf_best_effort": {
     "cc": 139.0,
-    "mi": -24.61358423139926
+    "mi": -25.63689874299979
   },
   "crates/ferric-scf/src/rohf.rs::solve_rohf_best_effort::<anonymous>": {
     "cc": 1.0,
@@ -33296,8 +33304,8 @@
     "mi": 100.58468799259042
   },
   "crates/ferric-scf/src/rohf_newton.rs::hessian_matvec": {
-    "cc": 19.0,
-    "mi": 40.915596913708924
+    "cc": 22.0,
+    "mi": 39.036172090242744
   },
   "crates/ferric-scf/src/rohf_newton.rs::hessian_matvec::<anonymous>": {
     "cc": 1.0,
@@ -33554,6 +33562,114 @@
   "crates/ferric-scf/src/rohf_occupation.rs::witness_candidates_pick_the_smallest_koopmans_estimate_per_class": {
     "cc": 1.0,
     "mi": 94.7323635938688
+  },
+  "crates/ferric-scf/src/rsh_response.rs::fd_holds_at_nonzero_omega_with_equal_coefficients": {
+    "cc": 1.0,
+    "mi": 104.97124323433636
+  },
+  "crates/ferric-scf/src/rsh_response.rs::fd_holds_when_sr_and_lr_coefficients_differ": {
+    "cc": 1.0,
+    "mi": 106.29102145718542
+  },
+  "crates/ferric-scf/src/rsh_response.rs::fd_residual_slope": {
+    "cc": 8.0,
+    "mi": 44.10242822564247
+  },
+  "crates/ferric-scf/src/rsh_response.rs::fd_residual_slope::<anonymous>": {
+    "cc": 1.0,
+    "mi": 153.362447374354
+  },
+  "crates/ferric-scf/src/rsh_response.rs::fd_residual_slope::<anonymous>#1": {
+    "cc": 1.0,
+    "mi": 154.58924178123317
+  },
+  "crates/ferric-scf/src/rsh_response.rs::fd_residual_slope::<anonymous>#2": {
+    "cc": 1.0,
+    "mi": 154.58924178123317
+  },
+  "crates/ferric-scf/src/rsh_response.rs::fd_residual_slope::<anonymous>#3": {
+    "cc": 1.0,
+    "mi": 150.3245067098335
+  },
+  "crates/ferric-scf/src/rsh_response.rs::fd_residual_slope::<anonymous>#4": {
+    "cc": 1.0,
+    "mi": 153.362447374354
+  },
+  "crates/ferric-scf/src/rsh_response.rs::impl:Harness<'_>::density": {
+    "cc": 1.0,
+    "mi": 122.12896516249626
+  },
+  "crates/ferric-scf/src/rsh_response.rs::impl:Harness<'_>::diag": {
+    "cc": 1.0,
+    "mi": 116.45538221432759
+  },
+  "crates/ferric-scf/src/rsh_response.rs::impl:Harness<'_>::fock": {
+    "cc": 1.0,
+    "mi": 87.38255897957286
+  },
+  "crates/ferric-scf/src/rsh_response.rs::impl:Harness<'_>::gradient": {
+    "cc": 4.0,
+    "mi": 86.36113280554117
+  },
+  "crates/ferric-scf/src/rsh_response.rs::impl:Harness<'_>::gradient::<anonymous>": {
+    "cc": 3.0,
+    "mi": 102.82600316243777
+  },
+  "crates/ferric-scf/src/rsh_response.rs::impl:RshResponse<'_>::fmt": {
+    "cc": 1.0,
+    "mi": 111.93016829395879
+  },
+  "crates/ferric-scf/src/rsh_response.rs::impl:RshResponse<'a>::coefficients": {
+    "cc": 1.0,
+    "mi": 131.99693563217028
+  },
+  "crates/ferric-scf/src/rsh_response.rs::impl:RshResponse<'a>::exchange_response": {
+    "cc": 1.0,
+    "mi": 129.64265239805246
+  },
+  "crates/ferric-scf/src/rsh_response.rs::impl:RshResponse<'a>::new": {
+    "cc": 4.0,
+    "mi": 81.85888379158713
+  },
+  "crates/ferric-scf/src/rsh_response.rs::impl:RshResponse<'a>::new::<anonymous>": {
+    "cc": 3.0,
+    "mi": 94.65083020157408
+  },
+  "crates/ferric-scf/src/rsh_response.rs::impl:RshResponse<'a>::omega": {
+    "cc": 1.0,
+    "mi": 134.9997572104644
+  },
+  "crates/ferric-scf/src/rsh_response.rs::impl:Xorshift64::next_f64": {
+    "cc": 1.0,
+    "mi": 107.74950419377211
+  },
+  "crates/ferric-scf/src/rsh_response.rs::rotate": {
+    "cc": 5.0,
+    "mi": 83.03603796998527
+  },
+  "crates/ferric-scf/src/rsh_response.rs::rsh_uks_lowest_hessian_eigenvalue": {
+    "cc": 23.0,
+    "mi": 46.099833876692585
+  },
+  "crates/ferric-scf/src/rsh_response.rs::rsh_uks_lowest_hessian_eigenvalue::<anonymous>": {
+    "cc": 1.0,
+    "mi": 136.1792509193966
+  },
+  "crates/ferric-scf/src/rsh_response.rs::rsh_uks_lowest_hessian_eigenvalue::<anonymous>#1": {
+    "cc": 1.0,
+    "mi": 136.1792509193966
+  },
+  "crates/ferric-scf/src/rsh_response.rs::rsh_uks_lowest_hessian_eigenvalue::<anonymous>#2": {
+    "cc": 1.0,
+    "mi": 136.1792509193966
+  },
+  "crates/ferric-scf/src/rsh_response.rs::rsh_uks_lowest_hessian_eigenvalue::<anonymous>#3": {
+    "cc": 1.0,
+    "mi": 153.0837736153568
+  },
+  "crates/ferric-scf/src/rsh_response.rs::rsh_uks_lowest_hessian_eigenvalue::<anonymous>#4": {
+    "cc": 1.0,
+    "mi": 156.27079806218674
   },
   "crates/ferric-scf/src/runlog.rs::civil_from_days": {
     "cc": 3.0,
@@ -34184,8 +34300,8 @@
     "mi": 111.98444597420858
   },
   "crates/ferric-scf/src/stability.rs::impl:StabilityKind::label": {
-    "cc": 3.0,
-    "mi": 117.88886872518876
+    "cc": 4.0,
+    "mi": 113.89646153754194
   },
   "crates/ferric-scf/src/stability.rs::impl:StabilityResult::is_marginal": {
     "cc": 1.0,
@@ -34200,16 +34316,16 @@
     "mi": 105.89106277025431
   },
   "crates/ferric-scf/src/stability.rs::impl:StabilitySkip::reason": {
-    "cc": 6.0,
-    "mi": 90.21370435854456
+    "cc": 7.0,
+    "mi": 85.32586098753215
   },
   "crates/ferric-scf/src/stability.rs::impl:StabilityVerdict::label": {
     "cc": 5.0,
     "mi": 110.44596406261152
   },
   "crates/ferric-scf/src/stability.rs::ks_reference_is_analysable": {
-    "cc": 3.0,
-    "mi": 107.23825522520802
+    "cc": 6.0,
+    "mi": 81.95494152424591
   },
   "crates/ferric-scf/src/stability.rs::noise_floor_of": {
     "cc": 1.0,
@@ -34217,7 +34333,19 @@
   },
   "crates/ferric-scf/src/stability.rs::report_stability": {
     "cc": 7.0,
-    "mi": 76.60633415947365
+    "mi": 77.0741674207994
+  },
+  "crates/ferric-scf/src/stability.rs::rhf_external_stability": {
+    "cc": 10.0,
+    "mi": 62.165160982058595
+  },
+  "crates/ferric-scf/src/stability.rs::rhf_external_stability::<anonymous>": {
+    "cc": 1.0,
+    "mi": 153.42889531439928
+  },
+  "crates/ferric-scf/src/stability.rs::rhf_external_stability::<anonymous>#1": {
+    "cc": 2.0,
+    "mi": 112.17995376749093
   },
   "crates/ferric-scf/src/stability.rs::rhf_internal_stability": {
     "cc": 9.0,
@@ -34246,6 +34374,10 @@
   "crates/ferric-scf/src/stability.rs::uhf_internal_stability::<anonymous>#2": {
     "cc": 2.0,
     "mi": 98.5708503860345
+  },
+  "crates/ferric-scf/src/stability.rs::unstable_remedy": {
+    "cc": 3.0,
+    "mi": 98.44686438619566
   },
   "crates/ferric-scf/src/trah.rs::a_consumed_step_is_not_reassessable_and_none_is_not_acceptance": {
     "cc": 1.0,
@@ -34696,8 +34828,8 @@
     "mi": 96.42309199828554
   },
   "crates/ferric-scf/src/uhf.rs::solve_uhf_fockmod": {
-    "cc": 168.0,
-    "mi": -36.689677533089
+    "cc": 170.0,
+    "mi": -38.00900690255777
   },
   "crates/ferric-scf/src/uhf.rs::solve_uhf_fockmod::<anonymous>": {
     "cc": 1.0,
@@ -34785,7 +34917,7 @@
   },
   "crates/ferric-scf/src/uhf.rs::stability_uhf": {
     "cc": 10.0,
-    "mi": 56.4058391509147
+    "mi": 55.54426783364552
   },
   "crates/ferric-scf/src/uhf.rs::stability_uhf::<anonymous>": {
     "cc": 1.0,
@@ -34836,8 +34968,8 @@
     "mi": 99.20532713285277
   },
   "crates/ferric-scf/src/uhf_newton.rs::hessian_matvec": {
-    "cc": 11.0,
-    "mi": 55.84931477621541
+    "cc": 14.0,
+    "mi": 52.45949302151146
   },
   "crates/ferric-scf/src/uhf_newton.rs::hessian_matvec::<anonymous>": {
     "cc": 1.0,
@@ -34961,7 +35093,7 @@
   },
   "crates/ferric-scf/src/zvector_ks.rs::impl:ResponseFock<'a>::new": {
     "cc": 11.0,
-    "mi": 67.74326439509446
+    "mi": 66.38302795184234
   },
   "crates/ferric-scf/src/zvector_ks.rs::impl:ResponseFock<'a>::new::<anonymous>": {
     "cc": 1.0,

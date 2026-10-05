@@ -22,21 +22,26 @@
 //!   ω ≠ 0 holds the ω = 0 bar, and N2⁺/def2-SVP λ_min straddles zero between
 //!   ω = 0.53 and 0.56 as PySCF's probe says.
 //! * **A1 erf/erfc swapped**, **A2 c_LR dropped**, **A3 `k_mix.sr` for both** —
-//!   each leaves the Fock untouched and so is invisible to any energy, but makes
-//!   analytic-vs-FD fail. The mutation ledger in `REPORT-314.md` records that
-//!   each one does fail, and `fd_residual_is_a_step_error_not_a_floor` below is
-//!   the test that can see them.
+//!   each, made inside the Hessian's exchange response, leaves the converged
+//!   energy untouched. They do NOT make the in-crate analytic-vs-FD tests fail:
+//!   those build their reference Fock through the same `RshResponse`, so a
+//!   mutation there moves Fock and Hessian together (measured in the #292
+//!   mutation ledger: all three survive FD). The test that sees them is
+//!   `rsh_response_matches_an_independent_four_centre_construction` below,
+//!   against direct four-centre integrals; the weekly
+//!   `validation_rsh_stability.rs` PySCF comparison sees them too.
 //! * **A4 DF-vs-direct inconsistency** — had the response been built from direct
 //!   four-centre erf/erfc integrals instead of the Fock's own fitters, the FD
 //!   residual would sit at the DF fitting error and NOT shrink with the step.
-//!   `fd_residual_is_a_step_error_not_a_floor` measures the residual at two
-//!   steps and asserts it shrinks, which is what distinguishes a wrong operator
-//!   from a coarse difference.
+//!   The in-crate `rsh_response::tests::fd_holds_*` tests measure the residual
+//!   at two steps and assert it shrinks, which is what distinguishes a wrong
+//!   operator from a coarse difference.
 //! * **A6 the λ_min test cannot fail** — asserting only "the signs differ" is
 //!   arithmetic if the two values do not actually straddle zero.
-//!   `n2_cation_lambda_min_flips_sign_across_the_onset` asserts the PREMISE
-//!   (λ_min(0.53) > 0 with margin AND λ_min(0.56) < 0 with margin) before the
-//!   conclusion.
+//!   `validation_rsh_stability.rs::n2_cation_is_stable_below_the_onset_and_unstable_above`
+//!   asserts the PREMISE
+//!   (λ_min(0.40) > 0 with margin AND λ_min(0.60) < 0 with margin, either side
+//!   of the 0.53–0.56 onset) before the conclusion.
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
