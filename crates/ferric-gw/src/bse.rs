@@ -1226,9 +1226,11 @@ pub const ALPHA_DIAGONAL_ZERO_TOL: f64 = 1e-8;
 /// BSE/TDDFT excitonic instability caused by pairing a strongly static-screened
 /// exchange kernel with the SAME narrow, GW-uncorrected KS gap on the response
 /// diagonal, which drives `(A−B)` (and sometimes even the TDA `A`) non-positive
-/// -definite. It is NOT an assembly bug: the kernel was independently
-/// re-derived and matches PySCF TDHF to 3e-4 in the bare-exchange limit (see
-/// `crates/ferric-gw/tests/rpax_bare_ab_check.rs`), and the full root-cause
+/// -definite. It is NOT an assembly bug: an independent numpy build of the same
+/// kernel gives the same negative α_xx (−2.680881, water/cc-pVDZ@PBE, scissor
+/// 0), ferric matches that build to 5e-9 relative where α is positive, and the
+/// bare-exchange limit equals PySCF CPHF (see
+/// `crates/ferric-gw/tests/validation_rpax_alpha.rs`). The root-cause
 /// investigation is in `docs/rpax-negative-diagonal-investigation.md`.
 ///
 /// Following the workspace "honest failure over silent-wrong" convention (see
@@ -1280,8 +1282,8 @@ pub fn check_alpha_diagonal_positive(
          against the applied field along that axis, which cannot happen for a bound closed-shell \
          molecule. On the RPAx@KS path this is a genuine BSE/TDDFT excitonic instability from \
          pairing a static-screened exchange kernel with the same GW-uncorrected KS gap on the \
-         response diagonal (NOT an assembly bug -- the kernel matches PySCF TDHF to 3e-4 in the \
-         bare-exchange limit). REMEDY: re-run with a nonzero scissor (~0.3-0.4 Ha for small \
+         response diagonal (NOT an assembly bug -- an independent build of the same kernel \
+         reproduces it, and the bare-exchange limit matches PySCF CPHF). REMEDY: re-run with a nonzero scissor (~0.3-0.4 Ha for small \
          molecules; [gw] scissor in the CLI TOML, scissor= in Python) to widen the diagonal \
          toward the true GW gap, or source the diagonal from real G0W0 quasiparticle energies. \
          Full diagonal: ({:+.6e}, {:+.6e}, {:+.6e}). Root cause: \
@@ -1338,12 +1340,15 @@ pub struct RpaxStaticPolarizabilityResult {
 /// deficit). The dynamic/C6 variant (`run_bse_c6_ks`) remains library-only
 /// and unwired from the CLI/Python surface for exactly this reason.
 ///
-/// The STATIC α is not validated either. The earlier "matches DOSD water
-/// almost exactly (9.24 vs 9.64 a.u.)" figure came from `scissor = 0.0`,
-/// whose tensor had a negative diagonal element (α_xx = −2.68) and is now
-/// refused (see Errors below). At `scissor = 0.36` Ha, the shift matching
-/// water's GW gap at PBE/cc-pVDZ, the same system gives α_iso = 5.20 a.u.,
-/// 46% below DOSD (`examples/water-tdhf-static-alpha.toml`).
+/// The static α is implemented as specified but not physically established.
+/// It matches an independent numpy build of the same kernel to 5e-9 relative
+/// (H2O and NH3 at RHF, water at PBE + 0.36 Ha scissor; full-rank PDEP,
+/// `crates/ferric-gw/tests/validation_rpax_alpha.rs`). Physically, at
+/// `scissor = 0.36` Ha, the shift matching water's GW gap at PBE/cc-pVDZ,
+/// α_iso = 5.20 a.u., 46% below DOSD 9.64, and the independent build gives
+/// the same 5.20, so the deficit belongs to the kernel, not the code. At
+/// `scissor = 0.0` the tensor has α_xx = −2.68 and is refused (see Errors
+/// below).
 ///
 /// `scissor` (Hartree) is added to every virtual orbital energy before
 /// assembling the diagonal, matching `run_bse_c6_ks`'s knob (a cheap proxy

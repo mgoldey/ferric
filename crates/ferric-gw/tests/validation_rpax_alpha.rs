@@ -87,9 +87,13 @@
 //!   the `check_alpha_diagonal_positive` error naming α_xx = −2.680881. The
 //!   instability is the kernel's, not an assembly defect.
 //!
-//! # MUTATIONS
+//! # MUTATIONS (run 2026-10-05; full ledger in HYPOTHESES-rpax-static-alpha.md)
 //!
-//! Ledger in `HYPOTHESES-rpax-static-alpha.md` (Results).
+//! * A−B roles swapped (`amb = w_abij − w_ibaj`): α is unchanged (A−B cancels);
+//!   killed only by the A−B lowest-eigenvalue check, in all three cases.
+//! * `4.0 * coul` → `2.0 * coul`: α off by 0.29 relative; scissor-0 refusal lost.
+//! * `w_red` → 0 (W → v): screened α off by 0.086–0.19 relative.
+//! * α prefactor 4 → 2: α off by 0.50 relative.
 //!
 //! # What this does NOT validate
 //!
