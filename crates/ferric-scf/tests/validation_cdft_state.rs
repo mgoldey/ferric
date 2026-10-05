@@ -488,6 +488,7 @@ fn augmented_lambda_min(s: &System, r: &CdftResult) -> (f64, String) {
         nocc_a: s.nocc_a,
         nocc_b: s.nocc_b,
         k_mix_sr: 1.0,
+        rsh: None,
         fxc: None,
         thresh: RhfConfig::default().integral_thresh,
         ooc_budget: 0,

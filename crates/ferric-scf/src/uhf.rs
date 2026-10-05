@@ -438,9 +438,26 @@ pub fn solve_uhf_fockmod(
         cosmo_cavity,
         pcm_ctx,
         polarizable_site_basis,
-        mut dfk_sr,
-        mut dfk_lr,
+        dfk_sr,
+        dfk_lr,
     } = crate::driver::prepare(ctx, mol, prep, config, &k_mix)?;
+
+    // The ONE SR/LR exchange response every Hessian matvec in this solve uses —
+    // Newton steps, TRAH steps and the post-SCF stability eigensolve alike. It
+    // borrows the SAME two fitters `subtract_rsh_exchange` assembles the
+    // converged Fock from and reads the SAME `k_mix`, so the Fock and the
+    // Hessian cannot disagree about the kernel (the #314 defect). `None` at
+    // omega == 0, where the matvecs keep their untouched plain-Coulomb path.
+    let rsh_response = match (dfk_sr.as_ref(), dfk_lr.as_ref()) {
+        (Some(sr), Some(lr)) => Some(crate::rsh_response::RshResponse::new(
+            sr,
+            lr,
+            k_mix.sr,
+            k_mix.lr,
+            k_mix.omega,
+        )),
+        _ => None,
+    };
     let n = prep.nbasis();
     let nelec = mol.nelec() as i64;
     let mult = mol.multiplicity as i64;
@@ -858,8 +875,15 @@ pub fn solve_uhf_fockmod(
         let mut f_a: Array2<f64> = &h + &j_buf;
         let mut f_b: Array2<f64> = &h + &j_buf;
         if k_mix.omega > 0.0 {
-            let dfk_sr = dfk_sr.as_mut().expect("dfk_sr built when omega>0");
-            let dfk_lr = dfk_lr.as_mut().expect("dfk_lr built when omega>0");
+            let mut dfk_sr = dfk_sr
+                .as_ref()
+                .expect("dfk_sr built when omega>0")
+                .borrow_mut();
+            let mut dfk_lr = dfk_lr
+                .as_ref()
+                .expect("dfk_lr built when omega>0")
+                .borrow_mut();
+            let (dfk_sr, dfk_lr) = (&mut *dfk_sr, &mut *dfk_lr);
             crate::fock_assembly::subtract_rsh_exchange(
                 dfk_sr,
                 dfk_lr,
@@ -1057,6 +1081,7 @@ pub fn solve_uhf_fockmod(
                     k_mix,
                     ooc_budget,
                     fock_mod.is_some(),
+                    rsh_response.as_ref(),
                 )
             } else {
                 None
@@ -1255,6 +1280,7 @@ pub fn solve_uhf_fockmod(
                     nocc_a,
                     nocc_b,
                     k_mix_sr: if xc_contrib.is_some() { c_k } else { 1.0 },
+                    rsh: rsh_response.as_ref(),
                     fxc: fxc_ref,
                     thresh: config.integral_thresh,
                     ooc_budget,
@@ -1415,6 +1441,7 @@ pub fn solve_uhf_fockmod(
                 nocc_a,
                 nocc_b,
                 k_mix_sr: if xc_contrib.is_some() { c_k } else { 1.0 },
+                rsh: rsh_response.as_ref(),
                 fxc: fxc_ref,
                 thresh: config.integral_thresh,
                 ooc_budget,
@@ -1570,7 +1597,7 @@ pub fn solve_uhf_fockmod(
 /// be built — range-separated or meta-GGA — it SKIPS with a printed reason.
 /// Those are exactly the gates the UKS Newton branch itself uses.
 #[allow(clippy::too_many_arguments)]
-fn stability_uhf(
+fn stability_uhf<'r>(
     ctx: &ParallelContext,
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -1588,6 +1615,7 @@ fn stability_uhf(
     k_mix: ferric_dft::xc_trait::KMix,
     ooc_budget: usize,
     fock_modified: bool,
+    rsh: Option<&'r crate::rsh_response::RshResponse<'r>>,
 ) -> Option<crate::stability::StabilityResult> {
     let skip = if fock_modified {
         Some(crate::stability::StabilitySkip::FockModified)
@@ -1635,6 +1663,7 @@ fn stability_uhf(
         nocc_a,
         nocc_b,
         k_mix_sr: if has_xc { k_mix.sr } else { 1.0 },
+        rsh,
         fxc: fxc_ref,
         thresh: config.integral_thresh,
         ooc_budget,

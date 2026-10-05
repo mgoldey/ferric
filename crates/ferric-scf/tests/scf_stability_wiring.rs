@@ -507,6 +507,7 @@ fn ks_reference_is_analysed_with_the_xc_kernel_not_the_hf_hessian() {
             f_mo: &f_mo,
             nocc,
             k_mix_sr,
+            rsh: None, // PBE: omega == 0.
             fxc: None,
             thresh: cfg.integral_thresh,
             ooc_budget: ferric_core::memory::resolve_budget_bytes(None),

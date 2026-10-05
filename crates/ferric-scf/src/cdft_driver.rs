@@ -1181,6 +1181,8 @@ fn augmented_instability(
         nocc_a,
         nocc_b,
         k_mix_sr: 1.0,
+        // cDFT is pure-HF here (no functional, so no range separation).
+        rsh: None,
         fxc: None,
         thresh: config.integral_thresh,
         ooc_budget: 0,

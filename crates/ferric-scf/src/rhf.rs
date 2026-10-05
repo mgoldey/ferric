@@ -577,7 +577,7 @@ impl RhfConfig {
 /// `solve_rhf`'s own Newton branch uses. Proven, not asserted, by
 /// `ks_reference_is_analysed_with_the_xc_kernel_not_the_hf_hessian`.
 #[allow(clippy::too_many_arguments)]
-fn stability_rhf(
+fn stability_rhf<'r>(
     ctx: &ParallelContext,
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -590,6 +590,7 @@ fn stability_rhf(
     has_xc: bool,
     k_mix: ferric_dft::xc_trait::KMix,
     ooc_budget: usize,
+    rsh: Option<&'r crate::rsh_response::RshResponse<'r>>,
 ) -> (
     Option<crate::stability::StabilityResult>,
     Option<crate::stability::StabilityResult>,
@@ -638,6 +639,7 @@ fn stability_rhf(
         f_mo: &f_mo,
         nocc,
         k_mix_sr: if has_xc { k_mix.sr } else { 1.0 },
+        rsh,
         fxc: fxc_ref,
         thresh: config.integral_thresh,
         ooc_budget,
@@ -1143,9 +1145,26 @@ fn solve_rhf_once(
         cosmo_cavity,
         pcm_ctx,
         polarizable_site_basis,
-        mut dfk_sr,
-        mut dfk_lr,
+        dfk_sr,
+        dfk_lr,
     } = crate::driver::prepare(ctx, mol, prep, config, &k_mix)?;
+
+    // The ONE SR/LR exchange response every Hessian matvec in this solve uses —
+    // Newton steps, TRAH steps and the post-SCF stability eigensolve alike. It
+    // borrows the SAME two fitters `subtract_rsh_exchange` assembles the
+    // converged Fock from and reads the SAME `k_mix`, so the Fock and the
+    // Hessian cannot disagree about the kernel (the #314 defect). `None` at
+    // omega == 0, where the matvecs keep their untouched plain-Coulomb path.
+    let rsh_response = match (dfk_sr.as_ref(), dfk_lr.as_ref()) {
+        (Some(sr), Some(lr)) => Some(crate::rsh_response::RshResponse::new(
+            sr,
+            lr,
+            k_mix.sr,
+            k_mix.lr,
+            k_mix.omega,
+        )),
+        _ => None,
+    };
 
     let n = prep.nbasis();
     let nelec = mol.nelec();
@@ -1740,8 +1759,15 @@ fn solve_rhf_once(
         if k_mix.omega > 0.0 {
             // Range-separated: SR/LR DfK fitters were built once before the
             // loop (geometry-only). Only the D-dependent contraction runs here.
-            let dfk_sr = dfk_sr.as_mut().expect("dfk_sr built when omega>0");
-            let dfk_lr = dfk_lr.as_mut().expect("dfk_lr built when omega>0");
+            let mut dfk_sr = dfk_sr
+                .as_ref()
+                .expect("dfk_sr built when omega>0")
+                .borrow_mut();
+            let mut dfk_lr = dfk_lr
+                .as_ref()
+                .expect("dfk_lr built when omega>0")
+                .borrow_mut();
+            let (dfk_sr, dfk_lr) = (&mut *dfk_sr, &mut *dfk_lr);
             // occ path when available: `occ_factor = 2.0` supplies the RHF
             // D = 2·C_occ·C_occᵀ factor that `build_from_occ` does not apply,
             // so eff_scale = 0.5·2.0 = 1.0 matches the density path's
@@ -1965,6 +1991,7 @@ fn solve_rhf_once(
                         xc_contrib.is_some(),
                         k_mix,
                         ooc_budget,
+                        rsh_response.as_ref(),
                     )
                 } else {
                     (None, None)
@@ -2175,6 +2202,7 @@ fn solve_rhf_once(
                     f_mo: &f_mo,
                     nocc,
                     k_mix_sr: if xc_contrib.is_some() { k_mix.sr } else { 1.0 },
+                    rsh: rsh_response.as_ref(),
                     fxc: fxc_ref,
                     thresh: config.integral_thresh,
                     ooc_budget,
@@ -2393,6 +2421,7 @@ fn solve_rhf_once(
                 f_mo: &f_mo,
                 nocc,
                 k_mix_sr: if xc_contrib.is_some() { k_mix.sr } else { 1.0 },
+                rsh: rsh_response.as_ref(),
                 fxc: fxc_ref,
                 thresh: config.integral_thresh,
                 ooc_budget,

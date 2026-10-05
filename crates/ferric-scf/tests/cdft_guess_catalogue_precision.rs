@@ -301,6 +301,7 @@ fn post_descent_mos(sys: &Sys, upper: &CdftResult) -> (Array2<f64>, Array2<f64>)
         nocc_a: sys.nocc_a,
         nocc_b: sys.nocc_b,
         k_mix_sr: 1.0,
+        rsh: None,
         fxc: None,
         thresh: 1e-12,
         ooc_budget: 0,

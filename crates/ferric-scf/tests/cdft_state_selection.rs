@@ -387,6 +387,7 @@ fn newton_inputs<'a>(
         nocc_a: sys.nocc_a,
         nocc_b: sys.nocc_b,
         k_mix_sr: 1.0,
+        rsh: None,
         fxc: None,
         thresh: 1e-12,
         ooc_budget: 0,

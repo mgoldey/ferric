@@ -276,9 +276,26 @@ pub fn solve_rohf_best_effort(
         cosmo_cavity,
         pcm_ctx,
         polarizable_site_basis,
-        mut dfk_sr,
-        mut dfk_lr,
+        dfk_sr,
+        dfk_lr,
     } = crate::driver::prepare(ctx, mol, prep, config, &k_mix)?;
+
+    // The ONE SR/LR exchange response every Hessian matvec in this solve uses —
+    // Newton steps, TRAH steps and the post-SCF stability eigensolve alike. It
+    // borrows the SAME two fitters `subtract_rsh_exchange` assembles the
+    // converged Fock from and reads the SAME `k_mix`, so the Fock and the
+    // Hessian cannot disagree about the kernel (the #314 defect). `None` at
+    // omega == 0, where the matvecs keep their untouched plain-Coulomb path.
+    let rsh_response = match (dfk_sr.as_ref(), dfk_lr.as_ref()) {
+        (Some(sr), Some(lr)) => Some(crate::rsh_response::RshResponse::new(
+            sr,
+            lr,
+            k_mix.sr,
+            k_mix.lr,
+            k_mix.omega,
+        )),
+        _ => None,
+    };
     let n = prep.nbasis();
     let nelec = mol.nelec() as i64;
     let mult = mol.multiplicity as i64;
@@ -673,8 +690,15 @@ pub fn solve_rohf_best_effort(
         let mut f_a: Array2<f64> = &h + &j_buf;
         let mut f_b: Array2<f64> = &h + &j_buf;
         if k_mix.omega > 0.0 {
-            let dfk_sr = dfk_sr.as_mut().expect("dfk_sr built when omega>0");
-            let dfk_lr = dfk_lr.as_mut().expect("dfk_lr built when omega>0");
+            let mut dfk_sr = dfk_sr
+                .as_ref()
+                .expect("dfk_sr built when omega>0")
+                .borrow_mut();
+            let mut dfk_lr = dfk_lr
+                .as_ref()
+                .expect("dfk_lr built when omega>0")
+                .borrow_mut();
+            let (dfk_sr, dfk_lr) = (&mut *dfk_sr, &mut *dfk_lr);
             // occ-path DISABLED (always None) — see the matching note in
             // rhf.rs: the DF-K half-transform's B-tensor reassociation differs
             // from the density path at the f64 floor, which measurably
@@ -963,7 +987,12 @@ pub fn solve_rohf_best_effort(
                 f_b_mo: &f_b_mo,
                 nocc_double,
                 nocc_open,
-                k_mix_sr: if k_mix.omega > 0.0 { 0.0 } else { c_k },
+                // Pre-#314 this was `if omega > 0 { 0.0 }`, i.e. a
+                // range-separated ROKS Newton step built NO exchange response
+                // at all. The SR/LR response now comes from `rsh` instead, and
+                // this scalar is read only on the omega == 0 path.
+                k_mix_sr: c_k,
+                rsh: rsh_response.as_ref(),
                 fxc: fxc_ref,
                 thresh: config.integral_thresh,
                 ooc_budget,
@@ -1013,7 +1042,12 @@ pub fn solve_rohf_best_effort(
                 f_b_mo: &f_b_mo,
                 nocc_double,
                 nocc_open,
-                k_mix_sr: if k_mix.omega > 0.0 { 0.0 } else { c_k },
+                // Pre-#314 this was `if omega > 0 { 0.0 }`, i.e. a
+                // range-separated ROKS Newton step built NO exchange response
+                // at all. The SR/LR response now comes from `rsh` instead, and
+                // this scalar is read only on the omega == 0 path.
+                k_mix_sr: c_k,
+                rsh: rsh_response.as_ref(),
                 fxc: fxc_ref,
                 thresh: config.integral_thresh,
                 ooc_budget,

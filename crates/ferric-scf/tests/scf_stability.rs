@@ -212,6 +212,7 @@ fn uhf_inputs<'a>(st: &'a UhfState) -> UhfNewtonInputs<'a> {
         nocc_a: st.nocc_a,
         nocc_b: st.nocc_b,
         k_mix_sr: 1.0, // pure HF
+        rsh: None,
         fxc: None,
         thresh: 1e-12,
         ooc_budget: ferric_core::memory::resolve_budget_bytes(None),
@@ -438,6 +439,7 @@ fn anchor_water_rhf_singlet_channel_is_internally_stable() {
         f_mo: &f_mo,
         nocc,
         k_mix_sr: 1.0,
+        rsh: None,
         fxc: None,
         thresh: 1e-12,
         ooc_budget: ferric_core::memory::resolve_budget_bytes(None),
@@ -1031,6 +1033,7 @@ fn small_rotation_space_converges_without_collapse_deadlock() {
         f_mo: &f_mo,
         nocc,
         k_mix_sr: 1.0,
+        rsh: None,
         fxc: None,
         thresh: 1e-12,
         ooc_budget: ferric_core::memory::resolve_budget_bytes(None),
