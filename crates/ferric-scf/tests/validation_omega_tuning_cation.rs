@@ -32,7 +32,8 @@ use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::omega_tuning::{
-    eval_j, eval_j_seeded, spin_population_asymmetry, tune_omega, OmegaSeedState, OmegaTuneConfig,
+    eval_j, eval_j_seeded, spin_population_asymmetry, tune_omega, OmegaSeed, OmegaSeedState,
+    OmegaTuneConfig,
 };
 use ferric_scf::rhf::RhfConfig;
 use ferric_scf::screening::SchwarzBounds;
@@ -50,6 +51,38 @@ fn load(name: &str, basis: &str) -> (Molecule, PreparedBasis, SchwarzBounds) {
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
     (mol, prep, bounds)
 }
+/// (energy_conv, density_conv) at which H2O's continuation-on vs -off J
+/// agree to the ≤1e-9 Ha of issue #288. MEASURED
+/// (`h2o_continuation_dj_vs_scf_convergence_measurement`, max per-eval |ΔJ|
+/// over a full ω* tune): 1e-9/1e-6 → 3.315e-6; 1e-10/1e-7 → 1.712e-7;
+/// 1e-11/1e-8 → 1.354e-8; 1e-12/1e-9 → 2.650e-10. The difference is ε_HOMO
+/// (|ΔE| of either state ≤ 6e-12 from 1e-10/1e-7 down), linear in the density
+/// residual, so it is SCF stopping noise and not a different SCF solution.
+const H2O_TIGHT_CONV: (f64, f64) = (1e-12, 1e-9);
+
+/// Both arms of an on/off comparison must really differ in configuration.
+///
+/// `cfg()` takes `..Default::default()`, and `DEFAULT_CONTINUATION` is
+/// `false`, so an "on" arm built from it without setting `continuation: true`
+/// is a second OFF arm. That is not hypothetical: it made every on-vs-off
+/// difference in this file read exactly 0.000e0 with identical SCF iteration
+/// counts. Every evaluation after the first must record a continued seed.
+fn assert_arm_continued(t: &ferric_scf::omega_tuning::OmegaTuneResult, what: &str) {
+    assert!(t.evals.len() >= 2, "{what}: fewer than two evaluations");
+    assert_eq!(
+        t.evals[0].seed,
+        OmegaSeed::Default,
+        "{what}: first eval has no neighbour"
+    );
+    for e in &t.evals[1..] {
+        assert!(
+            matches!(e.seed, OmegaSeed::Continued { .. }),
+            "{what}: ω={} ran from the default guess — the ON arm is not continuing",
+            e.omega
+        );
+    }
+}
+
 fn cfg(basis_cfg: RhfConfig, lo: f64, hi: f64) -> OmegaTuneConfig {
     OmegaTuneConfig {
         functional: FUNCTIONAL.into(),
@@ -291,6 +324,11 @@ fn n2_broken_branch_probe_measurement() {
 /// UNCHANGED — not merely "still inside its bar". This prints the pair so the
 /// claim is a number, not an argument. H2/6-31G is `omega_tuning.rs`'s driver
 /// test; H2O and NH3 / def2-SVP are `validation_rsh_omega.rs`'s ω* rows.
+///
+/// H2O additionally ASSERTS issue #288's ≤1e-9 Ha J agreement, at
+/// [`H2O_TIGHT_CONV`], and that continuation actually cuts SCF iterations
+/// (the only one of the two that a discarded seed can fail). The tight
+/// setting costs ~180 s for the H2O pair against ~130 s at 1e-10 / 1e-7.
 #[test]
 #[ignore = "validation: RSH omega tuning"]
 fn omega_star_before_and_after_continuation() {
@@ -309,12 +347,19 @@ fn omega_star_before_and_after_continuation() {
                 ..Default::default()
             }
         } else {
+            // H2O runs at the tight setting its ΔJ assertion needs (below);
+            // NH3 keeps the validation row's 1e-10 / 1e-7.
+            let (e_conv, d_conv) = if xyz.contains("h2o") {
+                H2O_TIGHT_CONV
+            } else {
+                (1e-10, 1e-7)
+            };
             RhfConfig {
                 df_j_aux: Some(String::new()),
                 df_k_aux: Some("def2-universal-jkfit".into()),
                 max_iter: 500,
-                energy_conv: 1e-10,
-                density_conv: 1e-7,
+                energy_conv: e_conv,
+                density_conv: d_conv,
                 ..Default::default()
             }
         };
@@ -334,7 +379,18 @@ fn omega_star_before_and_after_continuation() {
             },
         )
         .unwrap();
-        let on = tune_omega(&ctx, &mol, &prep, &bounds, &base).unwrap();
+        let on = tune_omega(
+            &ctx,
+            &mol,
+            &prep,
+            &bounds,
+            &OmegaTuneConfig {
+                continuation: true,
+                ..base.clone()
+            },
+        )
+        .unwrap();
+        assert_arm_continued(&on, xyz);
         eprintln!(
             "{xyz}/{basis}:\n  OFF omega*={:.9} J={:+.6e} evals={} conv={}\n  \
              ON  omega*={:.9} J={:+.6e} evals={} conv={} warn={:?}\n  \
@@ -359,6 +415,47 @@ fn omega_star_before_and_after_continuation() {
             on.evals.len(),
             "{xyz}: the two arms ran a different number of evaluations"
         );
+        let max_dj = off
+            .evals
+            .iter()
+            .zip(&on.evals)
+            .map(|(a, b)| (a.j - b.j).abs())
+            .fold(0.0_f64, f64::max);
+        let iters = |t: &ferric_scf::omega_tuning::OmegaTuneResult| -> usize {
+            t.evals.iter().map(|e| e.cation_iterations).sum()
+        };
+        let (it_off, it_on) = (iters(&off), iters(&on));
+        eprintln!(
+            "  max per-eval |dJ| {max_dj:.3e}; cation SCF iterations off {it_off} on {it_on} \
+             (ratio {:.3})",
+            it_on as f64 / it_off as f64
+        );
+        if xyz.contains("h2o") {
+            // Issue #288's criterion: with seeding on, J agrees with the
+            // independent solves to ≤1e-9 Ha. Measured 2.650e-10 (max over
+            // the 25 golden-section points) at H2O_TIGHT_CONV; at the
+            // validation row's 1e-10 / 1e-7 it is 1.712e-7, because |ΔJ| is
+            // ε_HOMO stopping noise that tracks density_conv (see
+            // h2o_continuation_dj_vs_scf_convergence_measurement).
+            assert!(
+                max_dj <= 1e-9,
+                "{xyz}: continuation moved J by {max_dj:.3e} Ha at the tight setting \
+                 (measured 2.650e-10, bar 1e-9)"
+            );
+            // The bound above CANNOT fail if the seed is discarded: a
+            // discarded seed makes both arms identical, |ΔJ| = 0. This is the
+            // assertion that can. Measured ratio 193/325 = 0.594; with the
+            // seed discarded (or both arms off) the two runs are the same
+            // computation and the ratio is exactly 1.000 (325/325, measured).
+            // 0.8 sits between.
+            assert!(
+                (it_on as f64) < 0.8 * it_off as f64,
+                "{xyz}: continuation took {it_on} cation SCF iterations vs {it_off} \
+                 independent (ratio {:.3}; measured 0.594, bar < 0.8) — the seed is \
+                 not reaching the solver",
+                it_on as f64 / it_off as f64
+            );
+        }
         for (a, b) in off.evals.iter().zip(on.evals.iter()) {
             assert_eq!(a.omega, b.omega, "{xyz}: the two arms visited different ω");
             eprintln!(
@@ -534,4 +631,105 @@ fn n2_onset_is_not_visible_without_an_orbital_hessian() {
         indep_60.e_cation,
         lower.energy
     );
+}
+
+/// MEASUREMENT: is H2O's continuation-on vs -off |ΔJ| SCF stopping noise
+/// (shrinks with the convergence threshold) or a different SCF solution
+/// (plateaus)? Sweeps (energy_conv, density_conv) together and prints, per
+/// setting, the largest per-evaluation |ΔJ| and its decomposition.
+#[test]
+#[ignore = "validation: RSH omega tuning"]
+fn h2o_continuation_dj_vs_scf_convergence_measurement() {
+    let ctx = ParallelContext::default();
+    let (mol, prep, bounds) = load("validation/h2o.xyz", "def2-svp");
+    for (e_conv, d_conv) in [(1e-9, 1e-6), (1e-10, 1e-7), (1e-11, 1e-8), (1e-12, 1e-9)] {
+        let scf = RhfConfig {
+            df_j_aux: Some(String::new()),
+            df_k_aux: Some("def2-universal-jkfit".into()),
+            max_iter: 500,
+            energy_conv: e_conv,
+            density_conv: d_conv,
+            ..Default::default()
+        };
+        let base = OmegaTuneConfig {
+            omega_tol: 1e-5,
+            max_evals: 40,
+            ..cfg(scf, 0.2, 0.8)
+        };
+        let t0 = std::time::Instant::now();
+        let off = tune_omega(
+            &ctx,
+            &mol,
+            &prep,
+            &bounds,
+            &OmegaTuneConfig {
+                continuation: false,
+                ..base.clone()
+            },
+        );
+        let t_off = t0.elapsed().as_secs_f64();
+        let t1 = std::time::Instant::now();
+        let on = tune_omega(
+            &ctx,
+            &mol,
+            &prep,
+            &bounds,
+            &OmegaTuneConfig {
+                continuation: true,
+                ..base.clone()
+            },
+        );
+        let t_on = t1.elapsed().as_secs_f64();
+        let (off, on) = match (off, on) {
+            (Ok(a), Ok(b)) => (a, b),
+            (a, b) => {
+                eprintln!(
+                    "SETTING e={e_conv:.0e} d={d_conv:.0e}: FAILED off_ok={} on_ok={}",
+                    a.is_ok(),
+                    b.is_ok()
+                );
+                continue;
+            }
+        };
+        assert_arm_continued(&on, "h2o sweep");
+        let same_seq = off.evals.len() == on.evals.len()
+            && off
+                .evals
+                .iter()
+                .zip(&on.evals)
+                .all(|(a, b)| a.omega == b.omega);
+        let mut m = [0.0_f64; 4]; // dJ, deps, dEcat, dEneu
+        let mut it = [0usize; 4]; // off cat, on cat, off neu, on neu
+        for (a, b) in off.evals.iter().zip(&on.evals) {
+            m[0] = m[0].max((a.j - b.j).abs());
+            m[1] = m[1].max((a.eps_homo - b.eps_homo).abs());
+            m[2] = m[2].max((a.e_cation - b.e_cation).abs());
+            m[3] = m[3].max((a.e_neutral - b.e_neutral).abs());
+            it[0] += a.cation_iterations;
+            it[1] += b.cation_iterations;
+            it[2] += a.neutral_iterations;
+            it[3] += b.neutral_iterations;
+        }
+        eprintln!(
+            "SETTING e={e_conv:.0e} d={d_conv:.0e}: evals {}/{} same_seq={same_seq} \
+             omega* off {:.9} on {:.9} | max|dJ| {:.3e} max|deps| {:.3e} \
+             max|dEcat| {:.3e} max|dEneu| {:.3e} | final|dJ| {:.3e} | \
+             cation iters off {} on {}, neutral iters off {} on {} | wall off {:.0}s on {:.0}s",
+            off.evals.len(),
+            on.evals.len(),
+            off.omega,
+            on.omega,
+            m[0],
+            m[1],
+            m[2],
+            m[3],
+            (off.j - on.j).abs(),
+            it[0],
+            it[1],
+            it[2],
+            it[3],
+            t_off,
+            t_on
+        );
+    }
 }

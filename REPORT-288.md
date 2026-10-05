@@ -483,7 +483,7 @@ Total: **16 passing non-ignored + 5 passing validation-tier, 0 failures.**
 | criterion | status |
 |---|---|
 | Exactness anchor: continuation disabled ⇒ J(ω) bit-identical to today's; `omega_tuning.rs` and `validation_rsh_omega.rs` pass unchanged | **MET.** `continuation_off_is_bit_identical_to_independent_eval_j` asserts every tuner evaluation equals a bare `eval_j` at the same ω, and asserts it is testing the DEFAULT path. Both existing test files pass; `validation_rsh_omega.rs`'s `j_of_omega_*` tests use `eval_j`, which never continues. |
-| ...with seeding enabled, agree with today's to ≤1e-9 Ha where the default guess already reaches the stable state | **NOT MET as written — measured 1.02e-7 Ha on H2O**, two decades above the stated 1e-9. The per-ω cation ENERGIES agree to ≤2.8e-13 Ha (same state, 2.2), so the criterion's premise holds; what exceeds 1e-9 is J, because each SCF stops at a different point inside its 1e-10 / 1e-7 thresholds depending on its guess. This is why continuation ships OFF by default rather than being argued inside a bar. |
+| ...with seeding enabled, agree with today's to ≤1e-9 Ha where the default guess already reaches the stable state | **MET at a tight SCF setting; asserted** (Part 5). At 1e-10 / 1e-7 the max per-eval |ΔJ| is 1.7e-7 Ha; it is ε_HOMO stopping noise that falls about a decade per decade of `density_conv`, reaching 2.65e-10 Ha at 1e-12 / 1e-9, which `omega_star_before_and_after_continuation` now asserts (bar 1e-9). |
 | Measured: the N2⁺ onset bracket as ferric sees it vs the generator's `symmetric_cation_probe`; bar set from the measurement | **MET.** 2.2: ferric's J on the symmetric branch matches the probe to 7.4e-8 Ha (ω = 0.53) and 4.7e-7 Ha (ω = 0.56), ⟨S²⟩ to 3.0e-7. ferric sees NO onset in any observable it can compute; PySCF's λ_min brackets it at exactly those two ω. The bar that was set from measurement is `DEFAULT_BRANCH_TOL` (2.4). |
 | Negative control: today's `eval_j` at ω = 0.60 for N2 lands on the symmetric saddle / other branch — the new check must flag it, the old code must not | **HALF MET, and the unmet half is the finding.** Confirmed that `eval_j` at ω = 0.60 lands on the symmetric state and that a lower state exists there (4.6e-4 Ha below, reached when seeded). **The new check does NOT flag it, and cannot.** A branch check compares adjacent ω; at ω = 0.60 every adjacent ω is on the same branch, so there is no difference to detect. The quantity that distinguishes a saddle from a minimum at a single ω is the orbital-Hessian eigenvalue, which is item 3's dependency. `n2_onset_is_not_visible_without_an_orbital_hessian` asserts this state of affairs rather than papering over it. |
 | Mutation-test: disable the branch check; seed from the wrong ω; ignore the stability verdict — each must fail a test | **MET for the two that exist** (M4 branch check disabled → 2 tests fail; M1/M1b wrong-ω seed → fail at distinct lines), plus M2, M3, M5, M6 beyond what was asked. **The stability-verdict mutation does not exist to run**, because no stability verdict is computed (item 3). |
@@ -494,12 +494,91 @@ Total: **16 passing non-ignored + 5 passing validation-tier, 0 failures.**
 
 ## What a reviewer should push back on
 
-1. The ≤1e-9 agreement criterion is not met (1.02e-7 on H2O). I did not relax
-   it quietly — it is why the default is off. If the project would rather have
-   continuation on by default, the honest route is to tighten the SCF
-   thresholds until the J difference drops below 1e-9 and re-measure, not to
-   accept 1.02e-7 as "within the bar".
+1. The ≤1e-9 agreement criterion holds only at a tight SCF setting (1e-12 /
+   1e-9: 2.65e-10 Ha); at the validation row's 1e-10 / 1e-7 the difference is
+   1.7e-7 Ha. Part 5 shows it is stopping noise, not a different state.
 2. The branch check cannot flag the case in the issue's own negative control.
    If that was the primary deliverable rather than continuation, this PR does
    not deliver it and the ω≠0 orbital-Hessian issue has to land first.
 3. `DEFAULT_BRANCH_TOL` rests on one system with ≈1.5 decades of margin.
+
+---
+
+# Part 5: the H2O ΔJ question (review follow-up)
+
+Question: is H2O's continuation-on vs -off |ΔJ| SCF convergence noise
+(H-conv: shrinks with the threshold) or a different SCF solution (H-state:
+plateaus)? One slot job, H2O/def2-SVP, full ω* tune (25 golden-section points)
+per arm per setting, `h2o_continuation_dj_vs_scf_convergence_measurement`.
+
+## A defect found first: the comparison had become OFF vs OFF
+
+The first run of the sweep returned |ΔJ| = 0.000e0 at every setting with
+IDENTICAL SCF iteration counts on both arms (250/250, 275/275, 325/325). Too
+clean. Cause: the test's `cfg()` takes `..Default::default()`, and
+`DEFAULT_CONTINUATION` is `false`, so the "on" arm was a second off arm. The
+committed `omega_star_before_and_after_continuation` had the same defect from
+the moment the default was flipped: the 1.020e-7 figure in 2.3 came from a
+binary built while the default was still `true`, and the committed test could
+no longer reproduce it.
+
+Fixed: both on arms now set `continuation: true` explicitly and call
+`assert_arm_continued`, which requires every evaluation after the first to
+record `OmegaSeed::Continued`.
+
+## Measurement (real on arm)
+
+| energy_conv / density_conv | same ω sequence | max per-eval \|ΔJ\| | max \|Δε_HOMO\| | max \|ΔE_cation\| | max \|ΔE_neutral\| | final \|ΔJ\| | cation SCF iters off / on | wall off / on |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 1e-9 / 1e-6 | no (ω* 0.504915142 vs 0.504920929) | 3.315e-6 | 3.347e-6 | 6.8e-7 | 7.1e-7 | 3.412e-7 | 225 / 101 | 72 s / 33 s |
+| 1e-10 / 1e-7 | yes | 1.712e-7 | 1.713e-7 | 8.2e-13 | 5.8e-12 | **1.020e-7** | 250 / 129 | 82 s / 46 s |
+| 1e-11 / 1e-8 | yes | 1.354e-8 | 1.354e-8 | 1.6e-13 | 5.4e-13 | 1.627e-9 | 275 / 160 | 89 s / 47 s |
+| 1e-12 / 1e-9 | yes | **2.650e-10** | 2.648e-10 | 5.7e-14 | 1.4e-13 | 4.524e-11 | 325 / 193 | 97 s / 84 s |
+
+`test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out`,
+`SLOT_DONE rc=0`.
+
+**H-conv holds.** |ΔJ| falls about a decade per decade of `density_conv` and
+is entirely ε_HOMO; both total energies agree to ≤6e-12 Ha from 1e-10 / 1e-7
+down. ε_HOMO is first-order in the density residual while the energies are
+second-order, which is why the energies agree far better than J. The original
+1.020e-7 final |ΔJ| reproduces exactly at 1e-10 / 1e-7. At 1e-9 / 1e-6 the
+noise is large enough to flip a golden-section comparison, so the two arms
+visit different ω and ω* moves by 5.8e-6 Bohr⁻¹.
+
+## What changed
+
+* `omega_star_before_and_after_continuation` runs H2O at
+  `H2O_TIGHT_CONV = (1e-12, 1e-9)` and asserts max per-eval |ΔJ| ≤ 1e-9
+  (measured 2.650e-10). H2 and NH3 are unchanged and log only.
+* It also asserts the on arm's cation SCF iterations are < 0.8 × the off
+  arm's (measured 193/325 = 0.594). The ΔJ bound alone cannot fail if the
+  seed is discarded: a discarded seed makes both arms the same computation,
+  |ΔJ| = 0, which passes any upper bound. Identical computations give a ratio
+  of exactly 1.000 (measured, 325/325 in the defective run), so 0.8 sits
+  between the two measured sides.
+* Cost: the H2O pair now takes ~180 s against ~130 s at 1e-10 / 1e-7.
+
+## Does this change why `DEFAULT_CONTINUATION` is off?
+
+It changes the stated reason, not the decision. Continuation is not less
+accurate: both arms are equally converged to within the threshold, and
+continuation needs ~40 % fewer SCF iterations. The remaining reason to keep it
+off is narrower: at the thresholds existing callers use, turning it on would
+change their J values at the 1e-7 Ha level. The constant's doc now says that.
+Whether that is worth keeping off is a separate decision; this PR does not flip it.
+
+## Mutation check
+
+| # | mutation | test | observed |
+|---|---|---|---|
+| M7 | continuation seed discarded: `cat_seed` → `None` and the neutral `init_guess_density` assignment removed | `omega_star_before_and_after_continuation` | **FAILED** — `test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out`, panic at line 451 (the iteration assertion): "continuation took 325 cation SCF iterations vs 325 independent (ratio 1.000; measured 0.594, bar < 0.8)". The ΔJ bound passed under the mutation (max \|ΔJ\| 0.000e0), as argued above. |
+
+Unmutated run of the same test in the same slot job:
+`test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out`;
+H2 \|ΔJ\| 1.333e-11 (iterations 45/55), H2O 2.650e-10 (193/325), NH3 at
+1e-10 / 1e-7 1.405e-7 (131/273, logged only). Source restored after the
+mutation; a grep for both mutation strings returns 0.
+
+`cargo test --release -p ferric-cli` (whole suite, same slot job): every
+binary `ok`, 0 failed; fmt and clippy `-D warnings` clean.

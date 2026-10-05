@@ -123,16 +123,19 @@ impl Default for OmegaTuneConfig {
 
 /// Default [`OmegaTuneConfig::continuation`]: OFF.
 ///
-/// NOT a preference. MEASURED (`tests/omega_tuning_cation_branch.rs`,
-/// `omega_star_before_and_after_continuation`): turning continuation on
-/// leaves ω* bit-identical on H2/6-31G and H2O/def2-SVP (|Δω*| = 0 exactly,
-/// same 11 and 25 golden-section points) but moves J by up to 1.0e-7 Ha on
-/// H2O — each SCF stops at a slightly different point inside its 1e-10 /
-/// 1e-7 thresholds when it starts from a different guess. 1.0e-7 Ha is far
-/// inside the J bar of the ωB97X-V validation row (2e-5 Ha), but "inside the
-/// bar" is not "unchanged", and only unchanged justifies changing every
-/// existing caller's numbers. So the fix ships OFF by default and is turned
-/// on per system by the caller that needs it.
+/// MEASURED (`tests/validation_omega_tuning_cation.rs`,
+/// `omega_star_before_and_after_continuation` and
+/// `h2o_continuation_dj_vs_scf_convergence_measurement`): turning continuation
+/// on leaves ω* bit-identical on H2/6-31G, H2O/def2-SVP and NH3/def2-SVP at
+/// 1e-10 / 1e-7, but moves J by up to 1.7e-7 Ha on H2O there. That difference
+/// is SCF stopping noise in ε_HOMO, not a different solution: the cation and
+/// neutral energies agree to ≤6e-12 Ha, and the J difference falls about a
+/// decade per decade of `density_conv` (3.3e-6, 1.7e-7, 1.4e-8, 2.6e-10 Ha at
+/// 1e-6 … 1e-9). Continuation also cuts SCF iterations by ~40 %.
+///
+/// It stays off because, at the thresholds callers already use, turning it on
+/// would change their J values at the 1e-7 Ha level; that is a numbers change
+/// for every existing caller, made only by a caller who opts in.
 pub const DEFAULT_CONTINUATION: bool = false;
 
 /// Default [`OmegaTuneConfig::branch_tol`], an absolute bar on the change in
