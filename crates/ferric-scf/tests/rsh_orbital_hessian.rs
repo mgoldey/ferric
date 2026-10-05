@@ -74,30 +74,35 @@ fn oh_doublet() -> Molecule {
 }
 
 // ---------------------------------------------------------------------------
-// 1. The exactness anchor: ω = 0 is BIT-IDENTICAL.
+// 1. ω = 0: determinism, equivalence to the pre-#292 code, and wiring.
 // ---------------------------------------------------------------------------
+//
+// Three separate questions, three separate tests. Only the second answers "did
+// #292 leave the ω = 0 path mathematically unchanged?":
+//
+// * `omega_zero_matvec_is_deterministic_through_the_none_path` — DETERMINISM
+//   only (two runs of the same code agree to the bit).
+// * `omega_zero_matvec_matches_the_pre_292_reference` — EQUIVALENCE to the
+//   pre-#292 `hessian_matvec`, on fixed inputs, against a reference generated
+//   from that code.
+// * `omega_zero_production_stability_takes_the_coulomb_arm` — WIRING: the
+//   production solver hands the matvec `rsh: None` at ω = 0.
 
-/// **THE EXACTNESS ANCHOR.** At ω = 0 the matvec must be bit-identical to the
-/// pre-#314 path — not "within 1e-12", exactly equal as `f64`.
+/// **Determinism through `rsh: None`, and nothing more.**
 ///
-/// The trivial limit of the new approximation is `rsh = None`, which is what
-/// every ω = 0 caller passes (`driver::prepare` builds the fitters only for
-/// `k_mix.omega > 0.0`, so `rsh_response` is `None` there by construction).
-/// This test drives the matvec twice through `rsh: None` and asserts exact
-/// equality of every element, which pins two things at once:
+/// Drives the ω = 0 matvec twice with identical inputs and asserts every element
+/// is bit-identical. That pins the property the crate's bit-identity convention
+/// rests on — the ω = 0 arm is deterministic and reduction-order-stable — and
+/// that the `rsh` dispatch adds no run-to-run nondeterminism.
 ///
-/// 1. the ω = 0 arm is deterministic and reduction-order-stable (the property
-///    the whole crate's bit-identity convention rests on), and
-/// 2. nothing in the new `match inp.rsh` dispatch perturbs it — a stray
-///    reassociation such as folding `c_k` into the subtraction differently
-///    would show up here as a last-digit difference, which `assert_eq!` on
-///    `f64` sees and a `< 1e-12` bar would not.
-///
-/// Mutation-checked: changing the ω = 0 arm from `&dj - &(c_k * &dk_a)` to the
-/// algebraically identical `&dj - &dk_a * c_k` makes this test FAIL on the last
-/// digits, which is exactly the class of silent change it exists to catch.
+/// It does NOT check equivalence to the pre-#292 code: both calls execute
+/// whatever the ω = 0 arm currently is, so any change to that arm, wrong or not,
+/// leaves them equal to each other. (An earlier version of this doc claimed a
+/// reassociation mutant made it fail. That claim was never run, and it cannot
+/// hold, for exactly this reason.) Equivalence is
+/// `omega_zero_matvec_matches_the_pre_292_reference`.
 #[test]
-fn omega_zero_matvec_is_bit_identical_through_the_none_path() {
+fn omega_zero_matvec_is_deterministic_through_the_none_path() {
     let mol = oh_doublet();
     let bs = basis::bundled("cc-pvdz").unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
@@ -217,11 +222,13 @@ fn omega_zero_matvec_is_bit_identical_through_the_none_path() {
 /// measured them.** OH is a ²Π radical with a near-degenerate SOMO, so its SCF
 /// endpoint moves with the floating-point environment. On CI the DIIS path,
 /// which #314 does not touch, lands at −75.7319390095, 1.16e-6 Ha from the value
-/// measured here. CI's guard on the ω = 0 path is
-/// `omega_zero_matvec_is_bit_identical_through_the_none_path`, which compares the
-/// two code paths inside one run and is therefore machine-independent.
+/// measured here. CI's machine-independent guards on the ω = 0 path are
+/// `omega_zero_matvec_matches_the_pre_292_reference` (the matvec equals the
+/// pre-#292 code on fixed inputs) and
+/// `omega_zero_production_stability_takes_the_coulomb_arm` (the solver feeds it
+/// `rsh: None`).
 #[test]
-#[ignore = "pins absolute OH/B3LYP energies and iteration counts measured on the dev box; machine-dependent (CI's DIIS lands 1.2e-6 Ha away), so run it locally with --ignored. The CI guard is the bit-identity test above."]
+#[ignore = "pins absolute OH/B3LYP energies and iteration counts measured on the dev box; machine-dependent (CI's DIIS lands 1.2e-6 Ha away), so run it locally with --ignored. The CI guards are omega_zero_matvec_matches_the_pre_292_reference and omega_zero_production_stability_takes_the_coulomb_arm."]
 fn omega_zero_hybrid_newton_still_matches_diis() {
     let mol = oh_doublet();
     let bs = basis::bundled("cc-pvdz").unwrap();
@@ -668,4 +675,366 @@ fn rsh_response_matches_an_independent_four_centre_construction() {
         "RshResponse differs from the independent four-centre SR/LR combination by rel \
          {d_correct:.3e} (bar {TOL_DF_VS_DIRECT_SPLIT:.0e})"
     );
+}
+
+// ---- FIXED, MACHINE-INDEPENDENT INPUTS (shared verbatim with the generator) ----
+// Plain-Rust loops only (no LAPACK, no rayon), so every input is bit-identical on
+// any IEEE-754 machine: seeded xorshift64 -> modified Gram-Schmidt for C,
+// seeded sorted diagonal "orbital energies" for F_MO, seeded rotations k.
+struct Rng292(u64);
+impl Rng292 {
+    fn next(&mut self) -> f64 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        ((x >> 11) as f64) / ((1u64 << 53) as f64) * 2.0 - 1.0
+    }
+}
+/// Modified Gram-Schmidt on the columns of a seeded random n x n matrix.
+fn mgs_orthonormal(n: usize, seed: u64) -> ndarray::Array2<f64> {
+    let mut r = Rng292(seed);
+    let mut m = ndarray::Array2::<f64>::zeros((n, n));
+    for i in 0..n {
+        for j in 0..n {
+            m[(i, j)] = r.next();
+        }
+    }
+    for j in 0..n {
+        for k in 0..j {
+            let mut d = 0.0;
+            for i in 0..n {
+                d += m[(i, k)] * m[(i, j)];
+            }
+            for i in 0..n {
+                m[(i, j)] -= d * m[(i, k)];
+            }
+        }
+        let mut nn = 0.0;
+        for i in 0..n {
+            nn += m[(i, j)] * m[(i, j)];
+        }
+        let nn = nn.sqrt();
+        for i in 0..n {
+            m[(i, j)] /= nn;
+        }
+    }
+    m
+}
+/// Diagonal MO "Fock" with sorted seeded energies: occupied in [-20, -0.3],
+/// virtual in [0.05, 3.0]. hessian_matvec reads only the diagonal.
+fn seeded_fock_mo(n: usize, nocc: usize, seed: u64) -> ndarray::Array2<f64> {
+    let mut r = Rng292(seed);
+    let mut occ: Vec<f64> = (0..nocc)
+        .map(|_| -0.3 - 19.7 * (0.5 + 0.5 * r.next()))
+        .collect();
+    let mut vir: Vec<f64> = (nocc..n)
+        .map(|_| 0.05 + 2.95 * (0.5 + 0.5 * r.next()))
+        .collect();
+    occ.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    vir.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let mut f = ndarray::Array2::<f64>::zeros((n, n));
+    for (i, e) in occ.iter().chain(vir.iter()).enumerate() {
+        f[(i, i)] = *e;
+    }
+    f
+}
+fn seeded_kappa(n: usize, nocc: usize, seed: u64) -> ndarray::Array2<f64> {
+    let mut r = Rng292(seed);
+    ndarray::Array2::<f64>::from_shape_fn((n - nocc, nocc), |_| 0.01 * r.next())
+}
+/// (sum, sum of squares) fingerprint, so drift in the generator is detected.
+fn fingerprint(a: &ndarray::Array2<f64>) -> (f64, f64) {
+    let mut s = 0.0;
+    let mut q = 0.0;
+    for v in a.iter() {
+        s += v;
+        q += v * v;
+    }
+    (s, q)
+}
+const G292_NOCC_A: usize = 5;
+const G292_NOCC_B: usize = 4;
+const G292_K_MIX_SR: f64 = 0.2; // hybrid-like, NOT pure HF
+const G292_THRESH: f64 = 1e-12;
+const G292_OOC_BUDGET: usize = 1 << 30; // fixed: band width only, never results
+                                        // ---- end fixed inputs ----
+
+/// Relative bar for `omega_zero_matvec_matches_the_pre_292_reference`.
+///
+/// MEASURED (this branch vs the pre-#292 reference, same box, release build):
+/// rel **1.41e-16** — 14 of 130 elements differ in the last bit only. Mutants,
+/// same test: ω = 0 coefficient `c_k × 0.999` → rel 1.83e-5; δK dropped →
+/// rel 1.83e-2.
+///
+/// Bar 1e-12, deliberately NOT 10× the measured 1.4e-16. That figure is
+/// same-machine; across machines the matvec's ERIs (libint built with or
+/// without FMA) and its BLAS GEMMs legitimately differ in the last digits,
+/// plausibly to ~1e-13 relative, so a 1.4e-15 bar would make CI fail at random
+/// rather than guard anything. 1e-12 sits 1.8e7× below the weakest real kill.
+const TOL_PRE292: f64 = 1e-12;
+
+/// **Equivalence of the ω = 0 matvec to the pre-#292 code** — the
+/// machine-independent CI guard that #292 left the ω = 0 path mathematically
+/// unchanged.
+///
+/// The inputs are FIXED, not a converged SCF, because the SCF endpoint is what
+/// moves across machines (OH's DIIS endpoint lands 1.16e-6 Ha apart on CI). They
+/// are built in plain-Rust loops — a seeded xorshift64, modified Gram–Schmidt for
+/// the α/β MO coefficients, sorted seeded diagonal energies, seeded κ — so they
+/// are bit-identical on any IEEE-754 machine, and the reference stores a
+/// (sum, sum-of-squares) fingerprint of each so a change to the generator fails
+/// HERE rather than as an unexplained output difference. `k_mix_sr = 0.2`, a
+/// hybrid-like coefficient, so the exchange term is scaled rather than the
+/// pure-HF `1.0` that a dropped coefficient would also reproduce.
+///
+/// The reference (`testdata/reference/rsh_hessian/omega0_matvec_pre292.json`) was
+/// generated by running THIS function's inputs through the pre-#292
+/// `uhf_newton::hessian_matvec` at the commit recorded in its
+/// `generating_commit` field (8637a5d5, the branch's merge-base with main: the
+/// pre-#292 code including #313). The generator is this file's fixed-input block
+/// verbatim, minus the `rsh` field the old struct did not have.
+///
+/// A tolerance, not bit equality, even though the two agree to the bit on the
+/// machine that measured them: CI is a different machine (BLAS build, rayon
+/// thread count, libint compile), and the matvec contains BLAS GEMMs and a
+/// thread-count-dependent reduction width, so last-digit differences across
+/// machines are expected and are not a change in the mathematics.
+///
+/// What this test CANNOT see, stated rather than implied: a pure reassociation
+/// of the ω = 0 expression (e.g. `&dj - &dk_a * c_k`) changes no physics and
+/// moves results at most by an ulp-scale amount, inside any tolerance a
+/// cross-machine test can hold. Catching that is out of scope; it is not a
+/// defect.
+#[test]
+fn omega_zero_matvec_matches_the_pre_292_reference() {
+    let path = workspace_root().join("testdata/reference/rsh_hessian/omega0_matvec_pre292.json");
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("missing reference {} ({e})", path.display()));
+    let r: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let sha = r["generating_commit"].as_str().expect("generating_commit");
+    assert!(
+        sha.starts_with("8637a5d5"),
+        "reference generated at an unexpected commit {sha}"
+    );
+
+    let mol = oh_doublet();
+    let bs = basis::bundled("cc-pvdz").unwrap();
+    let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+    let ctx = ParallelContext::default();
+    let n = prep.nbasis();
+    assert_eq!(
+        n as u64,
+        r["nbasis"].as_u64().unwrap(),
+        "basis size changed"
+    );
+    let c_a = mgs_orthonormal(n, 0x1F2E3D4C5B6A7988);
+    let c_b = mgs_orthonormal(n, 0x2A3B4C5D6E7F8091);
+    let f_a = seeded_fock_mo(n, G292_NOCC_A, 0x3C4D5E6F708192A3);
+    let f_b = seeded_fock_mo(n, G292_NOCC_B, 0x4E5F60718293A4B5);
+    let k_a = seeded_kappa(n, G292_NOCC_A, 0x5061728394A5B6C7);
+    let k_b = seeded_kappa(n, G292_NOCC_B, 0x62738495A6B7C8D9);
+
+    // The inputs must be the ones the reference was generated from.
+    for (name, a) in [
+        ("c_a", &c_a),
+        ("c_b", &c_b),
+        ("f_a_mo", &f_a),
+        ("f_b_mo", &f_b),
+        ("k_a", &k_a),
+        ("k_b", &k_b),
+    ] {
+        let (s0, q0) = fingerprint(a);
+        let fp = &r["input_fingerprints"][name];
+        let (s1, q1) = (fp[0].as_f64().unwrap(), fp[1].as_f64().unwrap());
+        assert!(
+            (s0 - s1).abs() <= 1e-14 * s1.abs().max(1.0)
+                && (q0 - q1).abs() <= 1e-14 * q1.abs().max(1.0),
+            "input '{name}' differs from the one the reference was generated from \
+             ({s0:.17e},{q0:.17e}) vs ({s1:.17e},{q1:.17e}): the generator drifted"
+        );
+    }
+
+    let inputs = ferric_scf::uhf_newton::UhfNewtonInputs {
+        prep: &prep,
+        bounds: &bounds,
+        c_a: &c_a,
+        c_b: &c_b,
+        f_a_mo: &f_a,
+        f_b_mo: &f_b,
+        nocc_a: G292_NOCC_A,
+        nocc_b: G292_NOCC_B,
+        k_mix_sr: G292_K_MIX_SR,
+        rsh: None,
+        fxc: None,
+        thresh: G292_THRESH,
+        ooc_budget: G292_OOC_BUDGET,
+    };
+    let pool = ferric_scf::engine_pool::EnginePool::new(
+        bounds.op,
+        &prep,
+        ferric_integrals::engine_pool::eri_precision(),
+    )
+    .unwrap();
+    let (h_a, h_b) =
+        ferric_scf::uhf_newton::hessian_matvec(&ctx, &inputs, &k_a, &k_b, &pool).unwrap();
+
+    let want = |key: &str| -> Vec<f64> {
+        r[key]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect()
+    };
+    let (ra, rb) = (want("h_a"), want("h_b"));
+    assert_eq!(ra.len(), h_a.len(), "h_a size changed");
+    assert_eq!(rb.len(), h_b.len(), "h_b size changed");
+    let got: Vec<f64> = h_a.iter().chain(h_b.iter()).cloned().collect();
+    let refv: Vec<f64> = ra.iter().chain(rb.iter()).cloned().collect();
+    let scale = refv.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+    assert!(
+        scale > 1e-6,
+        "reference block is ~zero ({scale:.3e}); the comparison is vacuous"
+    );
+    let dmax = got
+        .iter()
+        .zip(refv.iter())
+        .fold(0.0f64, |m, (a, b)| m.max((a - b).abs()));
+    let rel = dmax / scale;
+    let nbit = got
+        .iter()
+        .zip(refv.iter())
+        .filter(|(a, b)| a.to_bits() != b.to_bits())
+        .count();
+    eprintln!(
+        "omega = 0 matvec vs pre-#292 reference ({sha:.8}): max|d| = {dmax:.3e}, rel {rel:.3e} \
+         (scale {scale:.3e}); {nbit} of {} elements differ in any bit; bar {TOL_PRE292:.0e}",
+        got.len()
+    );
+    assert!(
+        rel <= TOL_PRE292,
+        "the omega = 0 Hessian matvec differs from the pre-#292 code by rel {rel:.3e} \
+         (bar {TOL_PRE292:.0e}): #292 changed the omega = 0 mathematics"
+    );
+}
+
+/// **Wiring at ω = 0: the production solver hands the matvec `rsh: None`.**
+///
+/// `omega_zero_matvec_matches_the_pre_292_reference` fixes `rsh: None` itself, so
+/// it cannot see a solver that wrongly passes `Some(rsh)` at ω = 0 (e.g.
+/// `driver::prepare` building the SR/LR fitters for `omega >= 0.0`), which would
+/// silently swap the direct four-centre exchange response for a density-fitted
+/// `erfc(0)`/`erf(0)` one. This test closes that.
+///
+/// UHF/NH₂ (²B₁) / 6-31G with `check_stability` set: the production path
+/// computes λ_min internally. NOT OH: OH is a ²Π radical whose λ_min is an exact
+/// zero mode (rotating the π hole about the axis is a symmetry of the energy for
+/// ANY exchange operator), so a density-fitted miswiring would leave it at zero
+/// and this comparison would be blind — the first draft of this test used OH and
+/// measured |d| = 0 against λ_min = −1.5e-10 for exactly that reason. NH₂ has a
+/// non-degenerate ground state and no such mode. The test then recomputes λ_min at the SAME converged MOs and
+/// Fock with an explicit `rsh: None`, `k_mix_sr = 1.0` matvec. Both read the
+/// one SCF endpoint this run produced, so the comparison is machine-independent
+/// even though that endpoint is not. At baseline both run identical code on
+/// identical inputs; under the miswiring the production side carries the DF
+/// fitting error. The bar is derived from both measurements at `TOL_WIRING`.
+#[test]
+fn omega_zero_production_stability_takes_the_coulomb_arm() {
+    use ferric_scf::stability::{uhf_internal_stability, StabilityConfig};
+    let xyz = workspace_root().join("testdata/molecules/validation/nh2.xyz");
+    let mol = Molecule::load_xyz_with_charge(xyz.to_str().unwrap(), 0, 2).unwrap();
+    let bs = basis::bundled("6-31g").unwrap();
+    let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+    let ctx = ParallelContext::default();
+    let cfg = RhfConfig {
+        energy_conv: 1e-10,
+        density_conv: 1e-8,
+        max_iter: 200,
+        check_stability: true,
+        ..Default::default()
+    };
+    let res = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
+    assert!(res.converged);
+    let prod = res
+        .stability
+        .as_ref()
+        .expect("check_stability produced no verdict");
+
+    let c_a = res.mos_alpha.clone();
+    let c_b = res.mos_beta.clone().unwrap();
+    let f_a_mo = c_a.t().dot(&res.fock_alpha).dot(&c_a);
+    let f_b_mo = c_b.t().dot(res.fock_beta.as_ref().unwrap()).dot(&c_b);
+    let nelec = mol.nelec() as usize;
+    let two_s = mol.multiplicity - 1;
+    let inputs = ferric_scf::uhf_newton::UhfNewtonInputs {
+        prep: &prep,
+        bounds: &bounds,
+        c_a: &c_a,
+        c_b: &c_b,
+        f_a_mo: &f_a_mo,
+        f_b_mo: &f_b_mo,
+        nocc_a: (nelec + two_s) / 2,
+        nocc_b: (nelec - two_s) / 2,
+        k_mix_sr: 1.0,
+        rsh: None,
+        fxc: None,
+        thresh: cfg.integral_thresh,
+        ooc_budget: ferric_core::memory::resolve_budget_bytes(None),
+    };
+    let mine = uhf_internal_stability(&ctx, &inputs, &StabilityConfig::default()).unwrap();
+    // Not a symmetry zero mode: a vanishing lambda_min here would make the
+    // comparison blind to the miswiring it exists to catch.
+    assert!(
+        mine.lowest_eigenvalue.abs() > 1e-3,
+        "NH2 lambda_min {:.3e} is ~0; the wiring comparison would be blind",
+        mine.lowest_eigenvalue
+    );
+    let d = (prod.lowest_eigenvalue - mine.lowest_eigenvalue).abs();
+    eprintln!(
+        "omega = 0 wiring: production lambda_min {:+.12e} vs explicit rsh: None {:+.12e}, \
+         |d| {d:.3e} (bar {TOL_WIRING:.0e})",
+        prod.lowest_eigenvalue, mine.lowest_eigenvalue
+    );
+    assert!(
+        d <= TOL_WIRING,
+        "at omega = 0 the production stability path disagrees with an explicit rsh: None \
+         matvec at the same state by {d:.3e}: the solver is not handing the Hessian the \
+         plain-Coulomb exchange arm"
+    );
+}
+
+/// Absolute bar (Ha) for `omega_zero_production_stability_takes_the_coulomb_arm`.
+///
+/// MEASURED on NH₂ / 6-31G: baseline |Δλ_min| = **0** exactly (both sides run
+/// the same code on the same converged state in one process, so this holds on
+/// any machine up to run-to-run nondeterminism, of which the solver has none);
+/// with `driver::prepare` miswired to build the SR/LR fitters at ω = 0, the
+/// production λ_min moves +7.500756250e-2 → +7.500817900e-2, |Δ| = 6.165e-7 —
+/// the density-fitting error of an `erfc(0)`/`erf(0)` response. Bar 1e-8, 62×
+/// below that signal.
+const TOL_WIRING: f64 = 1e-8;
+
+fn workspace_root() -> std::path::PathBuf {
+    use std::path::{Path, PathBuf};
+    let looks_like_root = |p: &Path| {
+        p.join("Cargo.toml").is_file() && p.join("testdata").is_dir() && p.join("crates").is_dir()
+    };
+    if let Ok(cwd) = std::env::current_dir() {
+        let mut here: Option<&Path> = Some(cwd.as_path());
+        while let Some(p) = here {
+            if looks_like_root(p) {
+                return p.to_path_buf();
+            }
+            here = p.parent();
+        }
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("manifest dir should be <root>/crates/ferric-scf")
+        .to_path_buf()
 }
