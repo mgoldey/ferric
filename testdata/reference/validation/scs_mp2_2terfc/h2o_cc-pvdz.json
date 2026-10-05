@@ -8,7 +8,7 @@
   "nao": 24,
   "naux": 84,
   "nuclear_repulsion": 9.189193229309746,
-  "rhf_energy": -76.02676799737655,
+  "rhf_energy": -76.02676799737654,
   "n_heavy": 1,
   "integrals": {
     "aux_l_ferric_order": [
@@ -6457,23 +6457,23 @@
         {
           "r0_angstrom": 0.75,
           "r0_bohr": 1.4172944914499999,
-          "e_os": -0.14828053091781543,
-          "e_ss": -0.049841465958221476,
-          "e_total": -0.1981219968760369
+          "e_os": -0.14828053091780868,
+          "e_ss": -0.049841465958218714,
+          "e_total": -0.19812199687602738
         },
         {
           "r0_angstrom": 1.0,
           "r0_bohr": 1.8897259886,
-          "e_os": -0.15158414929057065,
-          "e_ss": -0.05142329633143961,
-          "e_total": -0.20300744562201026
+          "e_os": -0.15158414929056452,
+          "e_ss": -0.05142329633143673,
+          "e_total": -0.20300744562200124
         },
         {
           "r0_angstrom": 1.05,
           "r0_bohr": 1.98421228803,
-          "e_os": -0.15181051732345963,
-          "e_ss": -0.051510510234037674,
-          "e_total": -0.2033210275574973
+          "e_os": -0.15181051732345358,
+          "e_ss": -0.051510510234034704,
+          "e_total": -0.20332102755748827
         }
       ],
       "scs_2terfc": {
@@ -6481,8 +6481,8 @@
         "r0_nonbonded_angstrom": 1.05,
         "c_os": 1.27,
         "c_ss": 4.05,
-        "scs_corr": -0.1950759035826812,
-        "total_energy": -76.22184390095923
+        "scs_corr": -0.1950759035826718,
+        "total_energy": -76.22184390095921
       }
     },
     {
@@ -6491,23 +6491,23 @@
         {
           "r0_angstrom": 0.75,
           "r0_bohr": 1.4172944914499999,
-          "e_os": -0.1467535428415483,
-          "e_ss": -0.049030358916381814,
-          "e_total": -0.1957839017579301
+          "e_os": -0.1467535428415417,
+          "e_ss": -0.049030358916379205,
+          "e_total": -0.19578390175792093
         },
         {
           "r0_angstrom": 1.0,
           "r0_bohr": 1.8897259886,
-          "e_os": -0.15005667915550844,
-          "e_ss": -0.05061192998765029,
-          "e_total": -0.20066860914315873
+          "e_os": -0.1500566791555025,
+          "e_ss": -0.050611929987647596,
+          "e_total": -0.2006686091431501
         },
         {
           "r0_angstrom": 1.05,
           "r0_bohr": 1.98421228803,
-          "e_os": -0.150283123337049,
-          "e_ss": -0.050699236821544924,
-          "e_total": -0.20098236015859391
+          "e_os": -0.15028312333704313,
+          "e_ss": -0.050699236821542135,
+          "e_total": -0.20098236015858528
         }
       ],
       "scs_2terfc": {
@@ -6515,8 +6515,8 @@
         "r0_nonbonded_angstrom": 1.05,
         "c_os": 1.27,
         "c_ss": 4.05,
-        "scs_corr": -0.19313595492467694,
-        "total_energy": -76.21990395230122
+        "scs_corr": -0.19313595492466784,
+        "total_energy": -76.21990395230121
       }
     }
   ],
@@ -6725,6 +6725,363 @@
         "max_abs_dev_over_C": 2.1226222847619752e-05
       }
     ],
+    "s_type_oracle": {
+      "description": "1-D real-space Gaussian-blob quadrature (no FT, no Lebedev, no ft_ao) vs the k-space terf/terfc tensors on s-s-s and s-s elements; the generator refuses to write above the bar",
+      "bar": 5e-11,
+      "this_system": [
+        {
+          "r0_angstrom": 0.75,
+          "terf_max_abs": 5.329070518200751e-13,
+          "terfc_max_abs": 5.488942633746774e-13,
+          "n_compared": 50
+        },
+        {
+          "r0_angstrom": 1.0,
+          "terf_max_abs": 3.872457909892546e-13,
+          "terfc_max_abs": 4.014566457044566e-13,
+          "n_compared": 50
+        },
+        {
+          "r0_angstrom": 1.05,
+          "terf_max_abs": 3.730349362740526e-13,
+          "terfc_max_abs": 3.872457909892546e-13,
+          "n_compared": 50
+        }
+      ],
+      "this_system_max_abs": 5.488942633746774e-13,
+      "contracted_s_normalization_vs_pyscf_overlap_max_abs": 4.440892098500626e-16,
+      "oracle_anchors": {
+        "coulomb_vs_boys_F0_max_abs": 8.881784197001252e-16,
+        "terf_r0_0_fixed_w_vs_erf_closed_form_max_abs": 6.661338147750939e-16,
+        "terf_curvature_constrained_r0_to_0_vs_coulomb": [
+          {
+            "r0_bohr": 0.1,
+            "max_abs_vs_coulomb_boys": 0.4977095585967941
+          },
+          {
+            "r0_bohr": 0.01,
+            "max_abs_vs_coulomb_boys": 0.006079568883252229
+          },
+          {
+            "r0_bohr": 0.001,
+            "max_abs_vs_coulomb_boys": 6.093110407423552e-05
+          }
+        ],
+        "bar": 1e-12
+      },
+      "synthetic_primitives": {
+        "bar": 5e-11,
+        "max_abs": 3.4843239404835913e-12,
+        "cases": [
+          {
+            "geometry_bohr": [
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ]
+            ],
+            "r0_bohr": 0.5,
+            "n_compared": 17,
+            "terf_max_abs": 3.446132268436486e-12,
+            "terfc_max_abs": 3.4843239404835913e-12,
+            "negative_control_cos_dropped_max_abs": 1.4426999417309387,
+            "negative_control_n_over_bar": 17
+          },
+          {
+            "geometry_bohr": [
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ]
+            ],
+            "r0_bohr": 1.4172944914499999,
+            "n_compared": 17,
+            "terf_max_abs": 1.0089706847793423e-12,
+            "terfc_max_abs": 1.0302869668521453e-12,
+            "negative_control_cos_dropped_max_abs": 7.085175944651716,
+            "negative_control_n_over_bar": 17
+          },
+          {
+            "geometry_bohr": [
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ]
+            ],
+            "r0_bohr": 1.98421228803,
+            "n_compared": 17,
+            "terf_max_abs": 7.034373084024992e-13,
+            "terfc_max_abs": 7.283063041541027e-13,
+            "negative_control_cos_dropped_max_abs": 9.291022922836856,
+            "negative_control_n_over_bar": 17
+          },
+          {
+            "geometry_bohr": [
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                0.0,
+                0.0
+              ]
+            ],
+            "r0_bohr": 4.0,
+            "n_compared": 17,
+            "terf_max_abs": 3.268496584496461e-13,
+            "terfc_max_abs": 3.410605131648481e-13,
+            "negative_control_cos_dropped_max_abs": 9.712389876648615,
+            "negative_control_n_over_bar": 17
+          },
+          {
+            "geometry_bohr": [
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                1.4,
+                0.0,
+                0.0
+              ],
+              [
+                0.3,
+                0.9,
+                -0.4
+              ]
+            ],
+            "r0_bohr": 0.5,
+            "n_compared": 17,
+            "terf_max_abs": 3.446132268436486e-12,
+            "terfc_max_abs": 3.4843239404835913e-12,
+            "negative_control_cos_dropped_max_abs": 1.4426999417309316,
+            "negative_control_n_over_bar": 17
+          },
+          {
+            "geometry_bohr": [
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                1.4,
+                0.0,
+                0.0
+              ],
+              [
+                0.3,
+                0.9,
+                -0.4
+              ]
+            ],
+            "r0_bohr": 1.4172944914499999,
+            "n_compared": 17,
+            "terf_max_abs": 1.0018652574217413e-12,
+            "terfc_max_abs": 1.0231815394945443e-12,
+            "negative_control_cos_dropped_max_abs": 7.085175944651709,
+            "negative_control_n_over_bar": 17
+          },
+          {
+            "geometry_bohr": [
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                1.4,
+                0.0,
+                0.0
+              ],
+              [
+                0.3,
+                0.9,
+                -0.4
+              ]
+            ],
+            "r0_bohr": 1.98421228803,
+            "n_compared": 17,
+            "terf_max_abs": 6.963318810448982e-13,
+            "terfc_max_abs": 7.212008767965017e-13,
+            "negative_control_cos_dropped_max_abs": 9.291022922836863,
+            "negative_control_n_over_bar": 17
+          },
+          {
+            "geometry_bohr": [
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                1.4,
+                0.0,
+                0.0
+              ],
+              [
+                0.3,
+                0.9,
+                -0.4
+              ]
+            ],
+            "r0_bohr": 4.0,
+            "n_compared": 17,
+            "terf_max_abs": 3.232969447708456e-13,
+            "terfc_max_abs": 3.410605131648481e-13,
+            "negative_control_cos_dropped_max_abs": 9.712389876648615,
+            "negative_control_n_over_bar": 17
+          },
+          {
+            "geometry_bohr": [
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                2.5,
+                0.0
+              ],
+              [
+                3.0,
+                1.0,
+                2.0
+              ]
+            ],
+            "r0_bohr": 0.5,
+            "n_compared": 17,
+            "terf_max_abs": 3.446132268436486e-12,
+            "terfc_max_abs": 3.4843239404835913e-12,
+            "negative_control_cos_dropped_max_abs": 1.4426999417309316,
+            "negative_control_n_over_bar": 17
+          },
+          {
+            "geometry_bohr": [
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                2.5,
+                0.0
+              ],
+              [
+                3.0,
+                1.0,
+                2.0
+              ]
+            ],
+            "r0_bohr": 1.4172944914499999,
+            "n_compared": 17,
+            "terf_max_abs": 1.0089706847793423e-12,
+            "terfc_max_abs": 1.0302869668521453e-12,
+            "negative_control_cos_dropped_max_abs": 7.085175944651716,
+            "negative_control_n_over_bar": 17
+          },
+          {
+            "geometry_bohr": [
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                2.5,
+                0.0
+              ],
+              [
+                3.0,
+                1.0,
+                2.0
+              ]
+            ],
+            "r0_bohr": 1.98421228803,
+            "n_compared": 17,
+            "terf_max_abs": 6.963318810448982e-13,
+            "terfc_max_abs": 7.212008767965017e-13,
+            "negative_control_cos_dropped_max_abs": 9.291022922836856,
+            "negative_control_n_over_bar": 17
+          },
+          {
+            "geometry_bohr": [
+              [
+                0.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                2.5,
+                0.0
+              ],
+              [
+                3.0,
+                1.0,
+                2.0
+              ]
+            ],
+            "r0_bohr": 4.0,
+            "n_compared": 17,
+            "terf_max_abs": 3.268496584496461e-13,
+            "terfc_max_abs": 3.410605131648481e-13,
+            "negative_control_cos_dropped_max_abs": 9.712389876648615,
+            "negative_control_n_over_bar": 17
+          }
+        ],
+        "negative_control": {
+          "variant": "cos(k r0) dropped from the k-space kernel (erf piece only)",
+          "max_abs": 9.712389876648615,
+          "n_over_bar": 204,
+          "n_compared": 204
+        }
+      }
+    },
     "metric_eigenvalues": {
       "0.75": {
         "terfc_min": 0.0005103680756999795,
@@ -6745,11 +7102,11 @@
         "terf_max": 70.49938773914437
       }
     },
-    "numpy_vs_pyscf_dfmp2_coulomb_abs": 2.7755575615628914e-17,
+    "numpy_vs_pyscf_dfmp2_coulomb_abs": 1.1102230246251565e-16,
     "coulomb_ri_mp2": {
-      "e_os": -0.15244021340110048,
-      "e_ss": -0.05159324365312342,
-      "e_total": -0.2040334570542239
+      "e_os": -0.15244021340109545,
+      "e_ss": -0.051593243653120666,
+      "e_total": -0.2040334570542161
     }
   },
   "provenance": {
@@ -6803,8 +7160,8 @@
     ],
     "bohr_in_angstrom": 0.52917721092,
     "generator": "scripts/validation/gen_terfc_integrals.py",
-    "git_head": "5f83f62cbb7e67da81ebefcbd999738be1442fef",
-    "generated_utc": "2026-10-05T16:17:35+00:00",
+    "git_head": "13bcdbc4bad690ca0885d07f5446dffc0cffe572",
+    "generated_utc": "2026-10-05T21:35:35+00:00",
     "basis_self_check": {
       "nao": 24,
       "replica_self_overlap_max_dev": 4.440892098500626e-16,
@@ -6816,6 +7173,6 @@
     "aux_basis_sha256": "8221d2a31b5bbebd39218fc3f9244917e173a338ff9c56904038443a06e2a250",
     "r0_angstrom_to_bohr": 1.8897259886,
     "seed": 275,
-    "wall_seconds": 59.841291666030884
+    "wall_seconds": 240.56797647476196
   }
 }
