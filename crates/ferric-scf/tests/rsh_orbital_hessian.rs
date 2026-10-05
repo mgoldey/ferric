@@ -414,3 +414,251 @@ fn wb97xv_is_still_refused_but_for_the_vv10_reason() {
         Err(StabilitySkip::MetaGga)
     );
 }
+
+/// **#292's exactness anchor (a).** With `c_SR = c_LR = c` the RSH exchange
+/// response must equal the GLOBAL-HYBRID response with coefficient `c`, to
+/// ≤1e-12, because `erf(ωr)/r + erfc(ωr)/r = 1/r` pointwise for every ω.
+///
+/// Unlike the ω = 0 anchor this one exercises the erf/erfc wiring AT nonzero ω,
+/// which is exactly what ω = 0 cannot do.
+///
+/// # The mapping onto ferric's actual `KMix` fields
+///
+/// `ferric_dft::xc_trait::KMix` carries `{ sr, lr, omega }` and
+/// `fock_assembly::subtract_rsh_exchange` consumes them as
+///
+/// ```text
+///   K_total(D) = sr · K[erfc(omega)](D) + lr · K[erf(omega)](D)
+/// ```
+///
+/// so the global-hybrid limit is `sr = lr = c`. `KMix::default()` is
+/// `{ sr: 1.0, lr: 1.0, omega: 0.0 }` — the `omega = 0` corner of the same
+/// mapping — which is why the plain-HF `k_mix_sr = 1.0` callers and the `c = 1`
+/// case here describe one operator.
+///
+/// # Where the 1e-12 bar is reachable, and where it is NOT
+///
+/// This test compares the three exchange matrices at the INTEGRAL level
+/// (direct four-centre `build_jk` at `Operator::erfc(ω)`, `Operator::erf(ω)`
+/// and `Operator::coulomb()`), because that is where the identity is exact:
+/// measured **6.4e-15 to 8.2e-15 relative** across ω = 0.11 / 0.30 / 0.56,
+/// three decades inside the bar.
+///
+/// It is NOT reachable through ferric's production DF path, and that is a fact
+/// about density fitting rather than a defect. Each of the three `DfK` fitters
+/// forms its own `V^{-1/2}` from its own two-centre metric — `(P|erfc|Q)`,
+/// `(P|erf|Q)`, `(P|1/r|Q)` — so the identity cancels most but not all of the
+/// fitting error. MEASURED on this system at ω = 0.30, `c = 1`:
+///
+/// ```text
+///   aux basis              naux   SR+LR vs DF-Coulomb   DF-Coulomb vs direct
+///   def2-universal-jkfit     95          6.87e-5               2.34e-3
+///   cc-pvdz-ri               70          5.71e-5               7.73e-3
+///   aug-cc-pvtz              69          1.45e-4               4.78e-2
+/// ```
+///
+/// The SR+LR-vs-DF-Coulomb column is 30–300× SMALLER than the DF-vs-direct
+/// column and tracks the aux basis, which is the signature of a residual
+/// fitting error rather than a wiring error: a wrong coefficient or a swapped
+/// kernel would not shrink toward the DF reference at all, and
+/// `erfc_plus_erf_response_reproduces_the_coulomb_response` below reports that
+/// production-path number (1.68e-3 relative) on its own terms.
+///
+/// Three ω and three `c` are swept, because a single pair can be satisfied by a
+/// construction that is wrong in a way that happens to cancel there.
+#[test]
+fn equal_sr_lr_coefficients_reproduce_the_global_hybrid_response() {
+    let mol = oh_doublet();
+    let bs = basis::bundled("cc-pvdz").unwrap();
+    let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    let ctx = ParallelContext::default();
+    let n = prep.nbasis();
+
+    // A symmetric probe perturbation, the shape a matvec feeds in.
+    let mut rng = Xorshift64(0xCBBB9D5DC1059ED8);
+    let mut dd = Array2::<f64>::from_shape_fn((n, n), |_| 0.01 * rng.next_f64());
+    dd = 0.5 * (&dd + &dd.t());
+
+    let kbuild = |op: Operator| -> Array2<f64> {
+        let b = SchwarzBounds::compute(op, &prep).unwrap();
+        let mut j = Array2::<f64>::zeros((n, n));
+        let mut k = Array2::<f64>::zeros((n, n));
+        ferric_scf::rhf::build_jk(&ctx, &prep, &b, 1e-14, &dd, &mut j, &mut k).unwrap();
+        k
+    };
+    let k_coul = kbuild(Operator::coulomb());
+    let scale = k_coul.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+    assert!(
+        scale > 1e-6,
+        "the Coulomb reference response is ~zero ({scale:.3e}); the test would be vacuous"
+    );
+
+    let mut worst = 0.0f64;
+    for omega in [0.11_f64, 0.30, 0.56] {
+        let k_sr = kbuild(Operator::erfc(omega));
+        let k_lr = kbuild(Operator::erf(omega));
+
+        // REACHABILITY, per omega: the identity must not hold trivially. If the
+        // SR half alone were already ~equal to the full Coulomb exchange, then
+        // agreement at c_SR = c_LR would say nothing about the SPLIT.
+        let sr_alone = k_sr
+            .iter()
+            .zip(k_coul.iter())
+            .fold(0.0f64, |m, (a, b)| m.max((a - b).abs()))
+            / scale;
+        assert!(
+            sr_alone > 1e-2,
+            "omega {omega}: the SR half alone is within {sr_alone:.3e} of the full Coulomb \
+             exchange, so the equal-coefficient identity is nearly vacuous here"
+        );
+
+        for c in [1.0_f64, 0.25, 0.167] {
+            // Exactly the combination `subtract_rsh_exchange` forms, at sr = lr = c.
+            let combined = c * &k_sr + c * &k_lr;
+            let dev = combined
+                .iter()
+                .zip(k_coul.iter())
+                .fold(0.0f64, |m, (a, b)| m.max((a - c * b).abs()));
+            let rel = dev / (c * scale);
+            eprintln!(
+                "c_SR = c_LR = {c:<6} omega {omega:<5}: max|c(K_erfc + K_erf) - c*K_Coulomb| \
+                 = {dev:.3e}  (rel {rel:.3e});  SR alone vs Coulomb: rel {sr_alone:.3e}"
+            );
+            worst = worst.max(rel);
+            assert!(
+                rel <= 1e-12,
+                "c_SR = c_LR = {c} at omega = {omega}: the SR/LR combination does not \
+                 reproduce the global-hybrid exchange (rel {rel:.3e} > 1e-12). \
+                 erf + erfc = Coulomb is an IDENTITY in the integrals, so this is an \
+                 erf/erfc wiring or coefficient error, not a fitting error."
+            );
+        }
+    }
+    eprintln!("worst relative deviation across 3 omega x 3 c: {worst:.3e} (bar 1e-12)");
+}
+
+/// Bar for [`rsh_response_matches_an_independent_four_centre_construction`]:
+/// relative max-deviation of the DF `RshResponse` from the direct four-centre
+/// SR/LR combination. DERIVED from both sides (OH / cc-pVDZ, jkfit aux,
+/// c_SR = 0.167, c_LR = 1.0, ω = 0.30):
+///
+/// ```text
+///   correct construction (DF fitting error)   7.7e-4
+///   omega doubled                              4.20e-1   <- nearest artifact
+///   erf/erfc swapped                           5.66e-1
+///   c_SR for both                              6.95e-1
+///   c_LR dropped                               8.34e-1
+/// ```
+///
+/// 8e-3 is ~10x the measured value and 52x below the nearest artifact.
+const TOL_DF_VS_DIRECT_SPLIT: f64 = 8e-3;
+
+/// **The fast-tier test that pins WHICH kernel `RshResponse` builds.**
+///
+/// The in-crate finite-difference tests (`rsh_response::tests`) cannot do this,
+/// and that is a property of their design, not a weakness of their bar: their
+/// reference Fock is assembled through the SAME `RshResponse::exchange_response`
+/// the matvec uses, so a mutation inside it (erf↔erfc swapped, `c_LR` dropped,
+/// `c_SR` used for both, the wrong ω) changes the Fock and the Hessian
+/// TOGETHER and the FD check sees a self-consistent derivative of a wrong
+/// functional. They validate the matvec's STRUCTURE (δJ, the per-spin factor,
+/// the MO projection) given the exchange operator. The equal-coefficient
+/// identity test above works at the integral level and never calls
+/// `RshResponse`.
+///
+/// This test supplies the INDEPENDENT construction: `RshResponse` (density
+/// fitted, the production code) at `c_SR ≠ c_LR` against
+/// `c_SR·K[erfc(ω)] + c_LR·K[erf(ω)]` from direct four-centre integrals, which
+/// share nothing with `RshResponse` but the operator definitions. The two can
+/// only differ by the DF fitting error.
+///
+/// Its discrimination is ASSERTED, not assumed: the same comparison is made for
+/// the four artifact constructions — kernels swapped, `c_SR` for both
+/// coefficients, `c_LR` dropped, ω doubled — each built from the same direct
+/// integrals, and each must sit at least 10× the bar away from the DF response.
+#[test]
+fn rsh_response_matches_an_independent_four_centre_construction() {
+    let mol = oh_doublet();
+    let bs = basis::bundled("cc-pvdz").unwrap();
+    let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    let ctx = ParallelContext::default();
+    let n = prep.nbasis();
+    let budget = ferric_core::memory::resolve_budget_bytes(None);
+    let dfbs = basis::bundled(AUX).unwrap();
+    let dfbs_prep = PreparedBasis::new(&mol, &dfbs).unwrap();
+
+    let mut rng = Xorshift64(0x5851F42D4C957F2D);
+    let mut dd = Array2::<f64>::from_shape_fn((n, n), |_| 0.01 * rng.next_f64());
+    dd = 0.5 * (&dd + &dd.t());
+
+    let kdirect = |op: Operator| -> Array2<f64> {
+        let b = SchwarzBounds::compute(op, &prep).unwrap();
+        let mut j = Array2::<f64>::zeros((n, n));
+        let mut k = Array2::<f64>::zeros((n, n));
+        ferric_scf::rhf::build_jk(&ctx, &prep, &b, 1e-14, &dd, &mut j, &mut k).unwrap();
+        k
+    };
+
+    // wB97X-V's own split at its published omega (KMix sr = 0.167, lr = 1.0,
+    // omega = 0.3, read from libxc in this session) — the production case.
+    let (c_sr, c_lr, omega) = (0.167_f64, 1.0_f64, 0.30_f64);
+    let sr = std::cell::RefCell::new(
+        ferric_scf::df_k::DfK::new(Operator::erfc(omega), &prep, &dfbs_prep, budget).unwrap(),
+    );
+    let lr = std::cell::RefCell::new(
+        ferric_scf::df_k::DfK::new(Operator::erf(omega), &prep, &dfbs_prep, budget).unwrap(),
+    );
+    let k_df = ferric_scf::rsh_response::RshResponse::new(&sr, &lr, c_sr, c_lr, omega)
+        .exchange_response(&dd)
+        .unwrap();
+
+    let (k_erfc, k_erf) = (
+        kdirect(Operator::erfc(omega)),
+        kdirect(Operator::erf(omega)),
+    );
+    let (k_erfc2, k_erf2) = (
+        kdirect(Operator::erfc(2.0 * omega)),
+        kdirect(Operator::erf(2.0 * omega)),
+    );
+    let reference = c_sr * &k_erfc + c_lr * &k_erf;
+    let scale = reference.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+    assert!(
+        scale > 1e-6,
+        "reference response is ~zero ({scale:.3e}); vacuous"
+    );
+    let rel = |a: &Array2<f64>, b: &Array2<f64>| {
+        a.iter()
+            .zip(b.iter())
+            .fold(0.0f64, |m, (x, y)| m.max((x - y).abs()))
+            / scale
+    };
+
+    let d_correct = rel(&k_df, &reference);
+    let artifacts = [
+        ("erf/erfc swapped", c_sr * &k_erf + c_lr * &k_erfc),
+        ("c_SR for both", c_sr * &k_erfc + c_sr * &k_erf),
+        ("c_LR dropped", c_sr * &k_erfc),
+        ("omega doubled", c_sr * &k_erfc2 + c_lr * &k_erf2),
+    ];
+    eprintln!(
+        "DF RshResponse vs direct c_SR*K[erfc] + c_LR*K[erf] (c_SR {c_sr}, c_LR {c_lr}, \
+         omega {omega}): rel {d_correct:.3e}   (bar {TOL_DF_VS_DIRECT_SPLIT:.0e})"
+    );
+    for (name, wrong) in &artifacts {
+        let d = rel(&k_df, wrong);
+        eprintln!(
+            "  artifact '{name}': DF response is rel {d:.3e} from it  ({:.1}x the bar)",
+            d / TOL_DF_VS_DIRECT_SPLIT
+        );
+        assert!(
+            d >= 10.0 * TOL_DF_VS_DIRECT_SPLIT,
+            "the DF response is only rel {d:.3e} from the '{name}' construction — under 10x \
+             the bar, so this test could not tell that artifact from the right answer"
+        );
+    }
+    assert!(
+        d_correct < TOL_DF_VS_DIRECT_SPLIT,
+        "RshResponse differs from the independent four-centre SR/LR combination by rel \
+         {d_correct:.3e} (bar {TOL_DF_VS_DIRECT_SPLIT:.0e})"
+    );
+}

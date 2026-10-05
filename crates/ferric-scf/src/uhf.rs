@@ -1363,9 +1363,18 @@ pub fn solve_uhf_fockmod(
         // instead of DIIS. For UKS this uses the SAME LDA/GGA f_xc kernel the
         // ROKS Newton path uses (via FxcKernelStore), so PBE/B3LYP/etc. UKS now
         // gets real second-order acceleration, not just LDA. Gated to the
-        // non-RSH case (ω = 0): the Newton matvec's K comes from the plain
-        // Coulomb `build_jk`, so range-separated K would be inconsistent — RSH
-        // keeps the DIIS path.
+        // non-RSH case (ω = 0). The REASON is no longer the matvec's kernel:
+        // since #292 the matvec builds `c_SR·δK[erfc(ω)] + c_LR·δK[erf(ω)]`
+        // from the converged Fock's own DF-K fitters (`crate::rsh_response`,
+        // threaded via `UhfNewtonInputs::rsh`), and that response is
+        // finite-difference-validated at ω ≠ 0 to 5.3e-12 and matches PySCF's
+        // dense UKS Hessian on O2/def2-SVP/ωB97X-V to 1.0e-7 relative. The gate
+        // stays only because LIFTING it changes the SCF trajectory of every RSH
+        // run, which needs its own convergence measurement (iteration counts,
+        // no regressions across the RSH test set) that has not been made.
+        // #292 lists the lift as optional and as a separate commit; it is not
+        // a correctness blocker any more, and stability analysis — which drives
+        // the same matvec through Davidson — is already unblocked.
         // Meta-GGA (SCAN / r2SCAN) has no τ-dependent f_xc kernel in Phase A —
         // exclude it from the Newton path so it falls back to DIIS (energy-only).
         let use_newton = config.newton_trigger > 0.0
