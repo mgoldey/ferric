@@ -78,10 +78,13 @@ const CASES: &[(&str, &str, &str)] = &[
     ("h2o", "aug-cc-pvdz", "aug-cc-pvdz-rifit"),
 ];
 
-/// RHF total energy vs PySCF. Measured max: TBD.
-const TOL_RHF: f64 = 1e-10;
-/// E_OS, E_SS, E_total per r₀ and the Eq. 12 total. Measured max: TBD.
-const TOL_CORR: f64 = 1e-9;
+/// RHF total energy vs PySCF. Measured max 4.6e-12 (NH3).
+const TOL_RHF: f64 = 5e-11;
+/// E_OS, E_SS, E_total per r₀ and the Eq. 12 correlation energy. Measured max
+/// 3.3e-12 (H2O/cc-pVDZ scs_corr) over 3 systems × 2 frozen-core × 3 r₀.
+/// The Eq. 12 TOTAL carries the RHF difference too (measured 4.8e-12) and is
+/// checked at TOL_CORR + TOL_RHF.
+const TOL_CORR: f64 = 5e-11;
 const TOL_ENUC: f64 = 1e-9;
 const MUST_MISS: f64 = 1000.0 * TOL_CORR;
 
@@ -319,7 +322,7 @@ fn scs_mp2_2terfc_h2o_aug_cc_pvdz_vs_kspace() {
 }
 
 /// terfc → Coulomb as r₀ → ∞ at O(1/r₀): the gap to Coulomb RI-MP2 must
-/// shrink, and roughly halve, when r₀ doubles. ferric vs itself; the Coulomb
+/// shrink, and halve on the last doubling of r₀. ferric vs itself; the Coulomb
 /// end is the attenuated-MP2 row's anchor.
 #[test]
 #[ignore = "validation: SCS-MP2(2terfc)"]
@@ -334,13 +337,20 @@ fn terfc_ri_mp2_approaches_coulomb_as_r0_grows() {
         "h2o/cc-pvdz: |E(terfc r0) - E(Coulomb)| at r0 = 25, 50, 100 Bohr: {:?}",
         gaps.iter().map(|g| format!("{g:.3e}")).collect::<Vec<_>>()
     );
-    for w in gaps.windows(2) {
-        let ratio = w[0] / w[1];
-        assert!(
-            (1.6..2.4).contains(&ratio),
-            "gap ratio on doubling r0 is {ratio:.3}, expected ~2 (O(1/r0))"
-        );
-    }
+    // MEASURED (H2O/cc-pVDZ): 3.170e-8, 1.197e-8, 5.768e-9 Ha, ratios 2.65
+    // and 2.08. The leading O(1/r0) shift of terf is C*N_P*S_mu_nu, which
+    // vanishes in (ia|jb) for orthogonal MOs, so the gap is small and the
+    // first doubling is still pre-asymptotic; the trend is asserted, with the
+    // last doubling at the O(1/r0) ratio.
+    assert!(
+        gaps.windows(2).all(|w| w[1] < w[0]),
+        "gap to Coulomb RI-MP2 does not shrink as r0 grows: {gaps:?}"
+    );
+    let ratio = gaps[1] / gaps[2];
+    assert!(
+        (1.8..2.4).contains(&ratio),
+        "gap ratio on the last doubling of r0 is {ratio:.3}, expected ~2 (O(1/r0))"
+    );
 }
 
 /// Resolving power: r₀ = 0.75 Å vs 1.05 Å, and terfc vs erfc at the same
