@@ -116,12 +116,14 @@ pub const EPISTEMIC_WARNINGS: &[(&str, &str)] = &[
     (
         "tdhf-static-polarizability",
         "method.kind = \"tdhf-static-polarizability\" is Smoke-grade (see site/src/reference/validation.md): \
-         static alpha is NOT validated -- the one case checked (water/cc-pVDZ, RPAx@PBE, \
-         [gw] scissor = 0.36 Ha) gives 5.20 a.u. vs the DOSD reference 9.64, 46% low (an \
-         earlier 'matches DOSD' figure came from scissor = 0.0 and a negative alpha diagonal, \
-         and is retracted), and the same dense TDHF/RPAx kernel gives C6 ~63% low regardless \
-         of gap. At the default scissor = 0.0 this kernel is prone to a genuine excitonic \
-         instability that yields a NEGATIVE alpha diagonal; the run hard-errors instead of \
+         the kernel (statically screened RPAx, not bare TDHF) matches an independent numpy build \
+         of the same kernel to 5e-9 relative only at matched settings (exact-J SCF, [rpa] \
+         trunc_thresh = 0; the default is 1e-4). Its PHYSICS is not validated: water/cc-pVDZ, \
+         RPAx@PBE, [gw] scissor = 0.36 Ha gives 5.20 a.u. vs the DOSD reference 9.64, 46% low, \
+         and the independent build gives the same 5.20. The same kernel gives C6 ~63% low \
+         regardless of gap; do not use it for dispersion. At the default scissor = 0.0 this \
+         kernel is prone to a genuine excitonic instability that yields a NEGATIVE alpha \
+         diagonal (the independent build reproduces it); the run hard-errors instead of \
          returning it, so if the job aborts on an unphysical alpha diagonal, set [gw] scissor \
          to ~0.3-0.4 Ha rather than treating it as a crash.",
     ),
