@@ -5113,12 +5113,11 @@ fn run_linlccd(
 /// `branch_changed` is `False` everywhere because nothing was CHECKED, not
 /// because the states agreed.
 ///
-/// LIMITATION: neither mechanism is a stability verdict. ferric's
-/// orbital-Hessian stability analysis refuses omega != 0 (its exchange
-/// response is built from the plain Coulomb kernel and does not reproduce a
-/// range-separated Fock's SR/LR split), so a converged cation that is an
-/// internal SADDLE is not detected and a returned omega can sit on a branch
-/// that has stopped being a minimum. Continuation keeps the curve on ONE
+/// LIMITATION: neither mechanism is a stability verdict. `tune_omega` does not
+/// report the orbital Hessian's lowest eigenvalue, and ferric's stability
+/// analysis refuses wB97X-V (no VV10 response kernel exists), so a converged
+/// cation that is an internal SADDLE is not detected and a returned omega can
+/// sit on a branch that has stopped being a minimum. Continuation keeps the curve on ONE
 /// branch; it does not certify that branch is the lowest one.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, functional, omega_lo=None, omega_hi=None, omega_tol=None, max_evals=None, continuation=None, branch_tol=None))]
