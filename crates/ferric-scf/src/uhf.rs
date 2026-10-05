@@ -1285,6 +1285,7 @@ pub fn solve_uhf_fockmod(
                         st.clear_pending();
                     }
                     trah_undo = None;
+                    crate::trah::note_trah_null_step_declined();
                     let d_tot = &d_a + &d_b;
                     mon.record_density_change(&d_tot, &d_tot);
                     declined = true;

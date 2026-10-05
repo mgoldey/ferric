@@ -104,14 +104,36 @@
 //! while the radius contracts until [`crate::trah::TrahState::collapsed`] and
 //! the run falls back to DIIS (123 iterations / 98 s against DIIS's 69 / 1.5 s).
 //!
-//! Both SCF loops (`rhf.rs` and `uhf.rs`) skip any step whose |predicted
+//! Both SCF loops (`rhf.rs` and `uhf.rs`) decline any step whose |predicted
 //! change| is below [`crate::trah::TrahConfig::predicted_min`] (default
-//! 1e-12 Ha) and defer to DIIS. The open-shell loop hits the same cycle: on
-//! UKS/PBE OH/cc-pVDZ without the guard, the identical step (predicted
-//! −6.0e-15, actual 0) was rejected 28 times, 74 iterations against DIIS's 33;
-//! with it, 15 iterations. `trah_converges.rs` pins that case at ≤30
-//! iterations. The RKS water case no longer reaches the cycle with or without
-//! the guard (8 iterations either way), so it carries no iteration bound.
+//! 1e-12 Ha), record a zero density change, and count the decline in
+//! [`crate::trah::TRAH_NULL_STEPS_DECLINED`]. They differ in what follows:
+//! the open-shell loop falls through to DIIS in the same iteration; the
+//! closed-shell loop ends the iteration, so the next one rebuilds the Fock
+//! matrix at the unchanged density, sees ΔE = 0 and ΔP = 0, and the normal
+//! convergence test ends the run.
+//!
+//! Each loop's guard is pinned by an iteration bound on a system that cycles
+//! without it:
+//!
+//! - UKS/PBE OH/cc-pVDZ (`trah_converges.rs`, bound 30): without the guard
+//!   the identical step (predicted −6.0e-15, actual 0) is rejected 28 times,
+//!   74 iterations; with it, 15.
+//! - RKS/PBE water/cc-pVDZ at `energy_conv` 1e-10, `density_conv` 1e-8, no
+//!   level shift, `trah_trigger` 1e-3 (`trah_rks_null_step.rs`, bound 20):
+//!   without the guard the step (|predicted| 5.4e-15) is rejected 24 times,
+//!   57 iterations / 99 s; with it, 8 iterations and 1 decline. The same
+//!   test pins RHF water/cc-pVDZ (level shift 0.2): 57 against 8.
+//!
+//! The guard fires on every closed-shell water/cc-pVDZ configuration measured
+//! (RKS/PBE, RKS/B3LYP and RHF; `energy_conv` 1e-9 to 1e-12; level shift 0 and
+//! 0.2; `trah_trigger` 1e-2 and 1e-3: 48 of 48). Whether a run cycles without
+//! it is a different matter: at `density_conv` 1e-7 none does, because the
+//! applied null step already meets the density test; at 1e-8 and tighter 18
+//! of 36 do, in no monotone pattern (most likely because the outcome turns on
+//! the sign of the energy noise the null step produces; inferred, not
+//! measured directly). So the closed-shell test also
+//! asserts the decline counter, which does not depend on that sign.
 //!
 //! # Scope
 //!
@@ -157,6 +179,22 @@ pub static TRAH_STEPS_REJECTED: std::sync::atomic::AtomicUsize =
 /// into the saddle, TRAH re-armed, escaped again -- until max_iter.
 pub static TRAH_PREDICTIONS_DISCARDED: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
+
+/// Count of TRAH steps DECLINED by the null-step guard
+/// ([`TrahConfig::predicted_min`]), process-wide. Each one is an iteration on
+/// which the armed loop computed a step, found |predicted| below the bound,
+/// and did not apply it. What happens next differs by loop: the closed-shell
+/// RHF/RKS loop ENDS the iteration (no DIIS step), while the UHF/UKS loop
+/// falls through to DIIS in the same iteration. It makes the
+/// guard's branch observable: an iteration count alone cannot tell "the guard
+/// fired and helped" from "the guard was never reached".
+pub static TRAH_NULL_STEPS_DECLINED: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Record that the null-step guard declined a step. Called from the SCF loops.
+pub fn note_trah_null_step_declined() {
+    TRAH_NULL_STEPS_DECLINED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
 
 /// Record that a pending TRAH prediction was dropped at a hand-off to DIIS.
 pub fn note_trah_prediction_discarded() {

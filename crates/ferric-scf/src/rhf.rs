@@ -2190,9 +2190,13 @@ fn solve_rhf_once(
                 // noise over a vanishing denominator (measured on RKS/PBE
                 // water: pred=-1.4e-15, actual=+2.7e-9, rho=-1.9e6). Stepping
                 // there cannot help and costs two Fock builds per cycle -- see
-                // `TrahConfig::predicted_min`. Falling through to DIIS lets the
-                // normal convergence test end the run.
+                // `TrahConfig::predicted_min`. The declined iteration ends
+                // without moving the density: the next one rebuilds F at the
+                // same density, sees dE = 0 and the zero density change
+                // recorded below, and the normal convergence test ends the run.
+                // Pinned by `tests/trah_rks_null_step.rs`.
                 if step.predicted.abs() < config.trah.predicted_min {
+                    crate::trah::note_trah_null_step_declined();
                     if scf_trace() {
                         eprintln!(
                             "TRAH iter={iter}: predicted |{:.3e}| < {:.0e}, \
@@ -2204,9 +2208,6 @@ fn solve_rhf_once(
                         st.clear_pending();
                     }
                     trah_undo = None;
-                    // `trah_took_step` is already false here -- it is only set true in
-                    // the else-branch below -- so leaving it is what makes the loop
-                    // fall through to DIIS.
                     // Record that the density did NOT move.
                     //
                     // `record_density_change` is a SETTER, not an accumulator:
