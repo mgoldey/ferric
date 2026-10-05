@@ -86,5 +86,22 @@ SCF computed, so FD and analytic should share one surface.
 
 ## Results
 
-(Filled in after measurement; see the trailing tables of
-`validation_optimize_qmmm.rs`.)
+Measured 2026-10-05 (details in the trailing tables of
+`validation_optimize_qmmm.rs`):
+
+- A0 HELD: bit-identical for all four methods.
+- H1 HELD: off-minimum relative residual ≤ 9.7e-8 (STO-3G), ≤ 7.0e-7 (6-31G,
+  SCF-noise limited at small h); every scheme.
+- H2 PARTLY REFUTED: Keep's gradient is correct as predicted, but the
+  optimization CONVERGES (13 steps) at this host charge (q = −0.1, 0.44 Å from
+  the link H). No divergence to record for this system.
+- H3 HELD: ⟨S²⟩ drift < 1e-4, STABLE at start and end.
+- H4 REFUTED in the good direction: the KS floor is 1.0e-8..1.1e-8 Ha/Bohr,
+  the same as HF, not 1e-7..1e-6.
+- H5 HELD: frozen atoms bit-identical, frozen rows ≥ 3e-3, and the M2 atoms
+  cross r during the run (the per-step mutant is reached and caught).
+- H6 HELD: all negative controls miss by ≥ 3.5e-3 relative; broken MM-row
+  folds pass a QM-only probe set.
+- Not anticipated: the residue-tagged ethane + 2 waters system has no bound
+  minimum with its generic force field (constant ~1e-2 Ha/Bohr drift), so
+  only its free set and off-minimum gradient are checked.

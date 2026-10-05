@@ -1620,3 +1620,41 @@ fn rhf_rcd_ethane_waters_residues() {
     c.atoms = res.system.atoms.clone();
     off_minimum(&c, &c.atoms.clone());
 }
+
+// ---------------------------------------------------------------------------
+// MEASURED (2026-10-05, release build, OPENBLAS_NUM_THREADS=1).
+//
+// - Anchors: with no MM atoms, optimize_qmmm reproduces optimize_geometry
+//   (RHF, RKS/PBE) and optimize_geometry_uhf (UHF, UKS/PBE) bit for bit: same
+//   step count, same per-evaluation energy trace.
+// - KS floor: FD vs analytic at the minimum is 1.0e-8 (RKS) / 1.1e-8 (UKS)
+//   Ha/Bohr, the same as HF. The DF-J/K gradient and the grid response
+//   differentiate the energy the SCF computed, so the pre-registered looser
+//   KS floor (1e-7..1e-6) did not materialize.
+// - Keep: the host charge (q = -0.1) sits 0.8315 Bohr = 0.44 A from the link H,
+//   and the optimization CONVERGES (13 steps, gradient FD-correct). The
+//   divergence recorded elsewhere for Keep does not occur at this host charge.
+// - UHF/UKS: <S^2> 0.7525..0.7649, stability STABLE at start and end; <S^2>
+//   drift over every FD displacement < 1e-4.
+// - WithinRadius: the M2 hydrogens start 4.338 (RKS) / 4.270 (UKS) Bohr from
+//   the QM region and end at 4.051 / 4.003, so r = 4.2 / 4.15 is crossed and a
+//   per-step re-evaluation of the free set is reachable.
+// - Residues: no bound minimum with the generic force field (see the test).
+//
+// MUTATION LEDGER (2026-10-05). Each mutant was applied to src/qmmm.rs by a
+// kill-safe harness (source restored from HEAD at startup and after every
+// mutant), COMPILED, and the named tests RAN (counts read from the
+// `test result:` line; none ignored).
+//
+// | # | mutation (src/qmmm.rs) | tests run | observed |
+// |---|---|---|---|
+// | 1 | Z1 host-charge deletion skipped (`DeleteHost => {}`) | rhf_z1, rhf_z1_631g | 0 passed / 2 failed: "embedded MM charge -0.001000 != +0.099000 expected for DeleteHost" (assert_partition). FD alone cannot see this: both paths see the same undeleted charge. |
+// | 2 | RC midpoint charge q/n -> 2q/n | rhf_rc | 0/1: "embedded MM charge -0.101000 != -0.001000 expected for RedistributedCharge" |
+// | 3 | `optimize_qmmm` Uks branch passes `None` instead of `ext` to ks_gradient_uks | uks_rcd_within | 0/1: "QM real free rows 7.735e-4 >= 5.3e-5" — the optimizer stopped where the embedded energy is not stationary |
+// | 4 | WithinRadius free set re-evaluated every step from the current geometry | rks_rcd_within, uks_rcd_within | 0/2: panic in optimize.rs (gradient length changes when the M2 atoms cross r) |
+// | 5 | full_gradient midpoint split 0.5/0.5 -> 1.0/0.0 | rhf_rc | 0/1: "at-min \|D\| 4.89e-3 >= 2.4e-7" |
+//
+// The in-test negative controls (wrong-scheme gradient, MM field off, M2
+// own-charge force dropped, midpoint split broken) run in every case and
+// miss the FD by >= 3.5e-3 relative, >= 1e4 x the bars, while the broken
+// MM-row folds PASS a QM-only probe set — the MM probes are load-bearing.
