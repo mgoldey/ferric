@@ -46,15 +46,21 @@
 //! written for (its GGA f_xc kernel enters the Hessian), and the RHF case
 //! reaches the same branch in a tenth of the time.
 //!
-//! # Mutation ledger
+//! # Mutation ledger (each mutant compiled and ran: 0 passed, 1 failed)
 //!
-//! - `rhf.rs` guard removed: KILLED (both cases cycle; declined = 0).
-//! - `TrahConfig::predicted_min` default set to 0: KILLED (`|predicted| < 0`
-//!   is never true, so it is the guard removed).
+//! - `rhf.rs` guard removed (`if false && ...`): KILLED. RKS/PBE ran 57
+//!   iterations with 24 rejections and declined = 0; the decline assertion
+//!   fires first, and 57 is also above the iteration bound.
+//! - `TrahConfig::predicted_min` default set to 0: KILLED, identically
+//!   (`|predicted| < 0` is never true, so it is the guard removed).
 //! - `TrahConfig::predicted_min` default set to 1e-6: KILLED, on the
-//!   engagement assertion. The single step TRAH takes in each case predicts
-//!   |3.0e-7| Ha (RKS) and |4.4e-7| Ha (RHF), so a 1e-6 bound declines it too
-//!   and TRAH never steps: the bound would switch TRAH off for the whole tail.
+//!   engagement assertion: 0 TRAH steps. The single step TRAH takes in each
+//!   case predicts |3.0e-7| Ha (RKS) and |4.4e-7| Ha (RHF, from the search),
+//!   so a 1e-6 bound declines it. The run then reported convergence in 7
+//!   iterations 3.0e-7 Ha above the DIIS energy, because a declined
+//!   iteration records a zero density change and the next one passes the
+//!   density test at an unchanged density: a bound that loose declares
+//!   convergence instead of reaching it.
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
