@@ -368,6 +368,29 @@ fn check_case(system: &str, basis_name: &str, auxbasis: &str) {
     let ctx = format!("{system}/{basis_name}");
     let ints = &c.r["integrals"];
 
+    // The reference's own s-type check (1-D real-space Gaussian-blob oracle,
+    // no Fourier transform) is recorded by the generator, which refuses to
+    // write above its bar. Re-assert it so a JSON from an older generator
+    // without the oracle fails here instead of passing silently.
+    let orc = &c.r["checks"]["s_type_oracle"];
+    let bar = orc["bar"]
+        .as_f64()
+        .expect("checks.s_type_oracle.bar missing");
+    let got = orc["this_system_max_abs"].as_f64().unwrap();
+    let syn = orc["synthetic_primitives"]["max_abs"].as_f64().unwrap();
+    eprintln!("{ctx}: k-space vs blob oracle: {got:.2e} (synthetic {syn:.2e}, bar {bar:.0e})");
+    assert!(
+        got < bar && syn < bar,
+        "{ctx}: k-space reference misses the s-type oracle"
+    );
+    assert!(
+        orc["synthetic_primitives"]["negative_control"]["n_over_bar"]
+            .as_u64()
+            .unwrap()
+            > 0,
+        "{ctx}: the oracle's negative control did not fail"
+    );
+
     // AO-order anchor first: ferric libint Coulomb vs PySCF Coulomb.
     let c3 = eri3_tensor(Operator::coulomb(), &c.obs, &c.dfbs).unwrap();
     let c2 = coulomb_metric_2c(Operator::coulomb(), &c.dfbs).unwrap();
