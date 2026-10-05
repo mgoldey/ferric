@@ -411,10 +411,19 @@ fn unrepresentable_ks_references_are_refused_not_silently_downgraded() {
     assert!(ks_reference_is_analysable(None, 0.0).is_ok());
     assert!(ks_reference_is_analysable(Some("PBE"), 0.0).is_ok());
     assert!(ks_reference_is_analysable(Some("B3LYP"), 0.0).is_ok());
-    // Range-separated: the matvec's K is plain Coulomb, so refuse.
+    // Range separation is NO LONGER a refusal (#314): the matvec builds
+    // c_SR*dK[erfc(w)] + c_LR*dK[erf(w)] from the converged Fock's own DF-K
+    // fitters, so a range-separated reference is analysed with the operator it
+    // was converged with.
+    assert!(ks_reference_is_analysable(Some("CAM-B3LYP"), 0.33).is_ok());
+    // VV10 still is, and it is a DIFFERENT missing term: there is no VV10
+    // response kernel anywhere in this workspace (ferric_dft::fxc has none, and
+    // zvector_ks / lr_kernel refuse VV10 for the same reason), so analysing
+    // wB97X-V would omit a term its own energy contains. Before #314 this case
+    // was unreachable, shadowed by the omega refusal.
     assert_eq!(
         ks_reference_is_analysable(Some("wB97X-V"), 0.3),
-        Err(StabilitySkip::RangeSeparated)
+        Err(StabilitySkip::Vv10Kernel)
     );
     // Meta-GGA: no tau f_xc kernel, so refuse.
     assert_eq!(

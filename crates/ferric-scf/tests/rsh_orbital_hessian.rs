@@ -361,3 +361,56 @@ fn erfc_plus_erf_response_reproduces_the_coulomb_response() {
          density-fitted and a four-centre contraction — one of the two is not what it claims"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 3. The production gate after dropping the omega != 0 refusal.
+// ---------------------------------------------------------------------------
+//
+// The DECISIVE lambda_min measurement (N2+ / def2-SVP / wB97X-V at omega =
+// 0.53 and 0.56 vs PySCF's symmetric_cation_probe) lives IN-CRATE, in
+// `src/rsh_response.rs`'s test module. It needs `rohf::FxcKernelStore`, which
+// is `pub(crate)`: the f_xc response kernel is deliberately not public, and
+// exporting it just to let a test build one would widen the crate's surface for
+// a measurement rather than for a user. See `rsh_response::tests`.
+
+/// `check_stability` must STILL refuse ωB97X-V, for the VV10 reason rather than
+/// the range-separation reason.
+///
+/// Dropping the ω ≠ 0 refusal without this would turn a correct skip into a
+/// silently incomplete λ_min: the exchange response is now right, but the VV10
+/// nonlocal correlation response does not exist anywhere in the workspace
+/// (`ferric_dft::fxc` has no VV10 term, and `zvector_ks` /
+/// `lr_kernel::resolve_singlet_response_xc` both refuse VV10 functionals for
+/// exactly this reason).
+#[test]
+fn wb97xv_is_still_refused_but_for_the_vv10_reason() {
+    use ferric_scf::stability::{ks_reference_is_analysable, StabilitySkip};
+
+    // Range separation alone is NO LONGER a refusal.
+    assert!(
+        ks_reference_is_analysable(Some("CAM-B3LYP"), 0.33).is_ok(),
+        "a range-separated functional with no VV10 must now be analysable: the matvec \
+         builds the SR/LR exchange response from the Fock's own fitters"
+    );
+    // VV10 is, and names itself.
+    assert_eq!(
+        ks_reference_is_analysable(Some(FUNCTIONAL), 0.3),
+        Err(StabilitySkip::Vv10Kernel),
+        "wB97X-V carries VV10 and must be refused for THAT reason"
+    );
+    let reason = StabilitySkip::Vv10Kernel.reason();
+    assert!(
+        reason.contains("VV10"),
+        "the skip reason must name VV10: {reason}"
+    );
+    assert!(
+        !reason.contains("plain Coulomb"),
+        "the skip reason still blames the plain-Coulomb kernel, which is no longer \
+         what happens: {reason}"
+    );
+    // And the meta-GGA arm is untouched.
+    assert_eq!(
+        ks_reference_is_analysable(Some("SCAN"), 0.0),
+        Err(StabilitySkip::MetaGga)
+    );
+}

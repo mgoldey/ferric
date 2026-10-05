@@ -613,7 +613,15 @@ fn stability_rhf<'r>(
         let grid = config.dft_grid.clone().unwrap_or_default();
         let name = config.xc.as_deref().expect("has_xc implies Some(xc)");
         let d_half = 0.5 * d;
-        match crate::rohf::FxcKernelStore::build(mol, prep, &grid, name, &d_half, &d_half) {
+        match crate::rohf::FxcKernelStore::build(
+            mol,
+            prep,
+            &grid,
+            name,
+            config.xc_omega,
+            &d_half,
+            &d_half,
+        ) {
             Ok(s) => Some(s),
             Err(e) => {
                 eprintln!(
@@ -2187,7 +2195,13 @@ fn solve_rhf_once(
                     let name = config.xc.as_deref().expect("xc_contrib implies Some(xc)");
                     let d_half = 0.5 * &d;
                     Some(crate::rohf::FxcKernelStore::build(
-                        mol, prep, &main, name, &d_half, &d_half,
+                        mol,
+                        prep,
+                        &main,
+                        name,
+                        config.xc_omega,
+                        &d_half,
+                        &d_half,
                     )?)
                 } else {
                     None
@@ -2406,7 +2420,13 @@ fn solve_rhf_once(
                 let name = config.xc.as_deref().expect("xc_contrib implies Some(xc)");
                 let d_half = 0.5 * &d;
                 Some(crate::rohf::FxcKernelStore::build(
-                    mol, prep, &main, name, &d_half, &d_half,
+                    mol,
+                    prep,
+                    &main,
+                    name,
+                    config.xc_omega,
+                    &d_half,
+                    &d_half,
                 )?)
             } else {
                 None

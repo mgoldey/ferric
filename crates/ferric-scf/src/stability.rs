@@ -1012,11 +1012,19 @@ pub enum StabilitySkip {
     /// at MO coefficients that are not a UHF stationary point — a wrong-operator
     /// verdict that would look authoritative. Skipped deliberately.
     Rohf,
-    /// Range-separated hybrid (ω ≠ 0). The Hessian matvec builds its exchange
-    /// response from the plain Coulomb `build_jk`, so the LR/SR split of the
-    /// converged Fock is not reproduced in the response. The Newton path gates
-    /// on `k_mix.omega == 0.0` for the same reason.
-    RangeSeparated,
+    /// The functional carries VV10 nonlocal correlation, whose linear response
+    /// exists NOWHERE in this workspace: `ferric_dft::fxc` has no VV10 term, so
+    /// [`crate::rohf::FxcKernelStore`] silently omits it.
+    /// `zvector_ks` and `ferric_dft::lr_kernel::resolve_singlet_response_xc`
+    /// refuse VV10 functionals for the same reason.
+    ///
+    /// Before #314 this case was unreachable: every VV10 functional ferric
+    /// knows (wB97X-V, wB97X-L-V) is range-separated, so the old
+    /// `omega != 0` refusal shadowed it. Removing that refusal — the Hessian
+    /// now builds the correct SR/LR exchange response — is what exposes the
+    /// VV10 gap, which is a SEPARATE missing term in the XC response rather
+    /// than a wrong exchange kernel.
+    Vv10Kernel,
     /// Meta-GGA functional. There is no τ-dependent f_xc kernel in this
     /// workspace (`xc_is_metagga` gates the Newton f_xc path for the same
     /// reason), so the XC response term of the Hessian cannot be formed.
@@ -1056,10 +1064,11 @@ impl StabilitySkip {
                  RHF-internal); analysing either of those here would give a \
                  wrong-operator verdict"
             }
-            StabilitySkip::RangeSeparated => {
-                "the functional is range-separated (omega != 0) and the orbital-Hessian \
-                 matvec builds its exchange response from the plain Coulomb kernel, so \
-                 it does not reproduce the converged Fock's SR/LR split"
+            StabilitySkip::Vv10Kernel => {
+                "the functional carries VV10 nonlocal correlation and no VV10 response kernel \
+                 exists in this workspace, so the orbital Hessian would omit a term the \
+                 functional's own energy contains (the range-separated exchange response \
+                 itself IS now built, from the converged Fock's own SR/LR fitters)"
             }
             StabilitySkip::MetaGga => {
                 "the functional is a meta-GGA and no tau-dependent f_xc kernel exists in \
@@ -1099,11 +1108,35 @@ impl StabilitySkip {
 /// that gets `Ok(())` for a KS reference is thereby committed to supplying the
 /// kernel.
 pub fn ks_reference_is_analysable(xc: Option<&str>, omega: f64) -> Result<(), StabilitySkip> {
-    if omega != 0.0 {
-        return Err(StabilitySkip::RangeSeparated);
-    }
+    // The former `omega != 0.0` arm is GONE: the matvecs now build
+    // `c_SR·δK[erfc(ω)] + c_LR·δK[erf(ω)]` from the converged Fock's own DF-K
+    // fitters (`crate::rsh_response`), so a range-separated reference is
+    // analysable with the operator it was converged with. `omega` is still a
+    // parameter because the VV10 arm below is reached through it in spirit —
+    // see the note there — and because removing it would silently change every
+    // caller's argument list.
+    let _ = omega;
     if crate::rohf::xc_is_metagga(xc) {
         return Err(StabilitySkip::MetaGga);
+    }
+    // VV10 nonlocal correlation has NO response kernel anywhere in this
+    // workspace: `ferric_dft::fxc` does not mention it, so
+    // `rohf::FxcKernelStore` silently omits it, and `zvector_ks` and
+    // `lr_kernel::resolve_singlet_response_xc` both refuse VV10 functionals for
+    // exactly this reason. Analysing one here would report a λ_min for the
+    // semilocal-plus-exchange Hessian of a functional whose energy also has a
+    // nonlocal term — a wrong-operator verdict of precisely the kind this
+    // function exists to prevent, and one that ω ≠ 0 made unreachable until now
+    // (every VV10 functional ferric knows, wB97X-V and wB97X-L-V, is
+    // range-separated, so dropping the ω arm is what exposes this).
+    if let Some(name) = xc {
+        match ferric_dft::libxc::xc_def_from_name(name) {
+            Ok(def) if def.vv10.is_some() => return Err(StabilitySkip::Vv10Kernel),
+            // An unknown name cannot have produced a live `xc_contrib`
+            // upstream, so this is unreachable from the solvers; be permissive
+            // rather than inventing a refusal for a case that cannot occur.
+            Ok(_) | Err(_) => {}
+        }
     }
     Ok(())
 }

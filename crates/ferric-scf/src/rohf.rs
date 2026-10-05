@@ -116,16 +116,34 @@ impl FxcKernelStore {
     /// the given reference densities. `xc_name` is the functional string that
     /// already produced a live `xc_contrib` upstream, so it is guaranteed
     /// LDA/GGA/hybrid/RSH (meta-GGA rejected at KsXcUks::new).
+    ///
+    /// `omega_override` is `RhfConfig::xc_omega`, and threading it is NOT
+    /// cosmetic. The SCF's own `xc_contrib` is built with the override (see
+    /// `KsXcUks::new`'s `config.xc_omega` argument), so without it here the
+    /// response kernel would be the one for the functional's PUBLISHED ω while
+    /// the converged density came from the overridden one — a wrong-operator
+    /// Hessian of exactly the kind the stability module exists to prevent, and
+    /// the defect `zvector_ks::ks_hessian_unsupported_reason` still refuses an
+    /// `xc_omega` run over. Measured on N2⁺/def2-SVP/ωB97X-V: omitting the
+    /// override put λ_min's zero crossing at ω ≈ 0.468 instead of PySCF's
+    /// ≈ 0.531, i.e. a sign DISAGREEMENT at ω = 0.53 while the energy agreed
+    /// to 1e-9. `None` means "use the functional's published ω", which is
+    /// byte-identical to the former behaviour for every caller that has no
+    /// override set.
     pub(crate) fn build(
         mol: &Molecule,
         prep: &PreparedBasis,
         cfg: &ferric_dft::grid::AtomicGridConfig,
         xc_name: &str,
+        omega_override: Option<f64>,
         d_a: &Array2<f64>,
         d_b: &Array2<f64>,
     ) -> Result<Self, FerricError> {
-        let xc_def = ferric_dft::libxc::xc_def_from_name_nspin(xc_name, 2)
-            .map_err(|e| FerricError::General(format!("fxc def for {xc_name}: {e:?}")))?;
+        let xc_def = match omega_override {
+            Some(w) => ferric_dft::libxc::xc_def_from_name_nspin_omega(xc_name, 2, w),
+            None => ferric_dft::libxc::xc_def_from_name_nspin(xc_name, 2),
+        }
+        .map_err(|e| FerricError::General(format!("fxc def for {xc_name}: {e:?}")))?;
         let is_lda = xc_def
             .funcs
             .iter()
@@ -972,7 +990,15 @@ pub fn solve_rohf_best_effort(
                     .xc
                     .as_deref()
                     .expect("xc_supports_newton_fxc implies Some(xc)");
-                Some(FxcKernelStore::build(mol, prep, &main, name, &d_a, &d_b)?)
+                Some(FxcKernelStore::build(
+                    mol,
+                    prep,
+                    &main,
+                    name,
+                    config.xc_omega,
+                    &d_a,
+                    &d_b,
+                )?)
             } else {
                 None
             };
@@ -1027,7 +1053,15 @@ pub fn solve_rohf_best_effort(
                     .xc
                     .as_deref()
                     .expect("xc_supports_newton_fxc implies Some(xc)");
-                Some(FxcKernelStore::build(mol, prep, &main, name, &d_a, &d_b)?)
+                Some(FxcKernelStore::build(
+                    mol,
+                    prep,
+                    &main,
+                    name,
+                    config.xc_omega,
+                    &d_a,
+                    &d_b,
+                )?)
             } else {
                 None
             };

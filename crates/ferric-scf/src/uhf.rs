@@ -1262,7 +1262,13 @@ pub fn solve_uhf_fockmod(
                         avail,
                     )?;
                     Some(crate::rohf::FxcKernelStore::build(
-                        mol, prep, &main, name, &d_a, &d_b,
+                        mol,
+                        prep,
+                        &main,
+                        name,
+                        config.xc_omega,
+                        &d_a,
+                        &d_b,
                     )?)
                 } else {
                     None
@@ -1423,7 +1429,13 @@ pub fn solve_uhf_fockmod(
                     avail,
                 )?;
                 Some(crate::rohf::FxcKernelStore::build(
-                    mol, prep, &main, name, &d_a, &d_b,
+                    mol,
+                    prep,
+                    &main,
+                    name,
+                    config.xc_omega,
+                    &d_a,
+                    &d_b,
                 )?)
             } else {
                 None
@@ -1634,7 +1646,8 @@ fn stability_uhf<'r>(
     let fxc_store = if has_xc {
         let grid = config.dft_grid.clone().unwrap_or_default();
         let name = config.xc.as_deref().expect("has_xc implies Some(xc)");
-        match crate::rohf::FxcKernelStore::build(mol, prep, &grid, name, d_a, d_b) {
+        match crate::rohf::FxcKernelStore::build(mol, prep, &grid, name, config.xc_omega, d_a, d_b)
+        {
             Ok(s) => Some(s),
             Err(e) => {
                 eprintln!(

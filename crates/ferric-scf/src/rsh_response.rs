@@ -483,4 +483,395 @@ mod tests {
             "c_SR != c_LR: analytic-vs-FD residual {rel:.3e} above the bar"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // THE DECISIVE MEASUREMENT: the N2+ lambda_min sign flip across the onset.
+    // -----------------------------------------------------------------------
+
+    /// Workspace root (walk up from the CWD; `CARGO_MANIFEST_DIR` is baked in
+    /// at compile time and wrong inside a nextest archive).
+    fn workspace_root() -> std::path::PathBuf {
+        use std::path::{Path, PathBuf};
+        let looks_like_root = |p: &Path| {
+            p.join("Cargo.toml").is_file()
+                && p.join("testdata").is_dir()
+                && p.join("crates").is_dir()
+        };
+        if let Ok(cwd) = std::env::current_dir() {
+            let mut here: Option<&Path> = Some(cwd.as_path());
+            while let Some(p) = here {
+                if looks_like_root(p) {
+                    return p.to_path_buf();
+                }
+                here = p.parent();
+            }
+        }
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("manifest dir should be <root>/crates/ferric-scf")
+            .to_path_buf()
+    }
+
+    /// Converge the symmetric N2+ wB97X-V UKS state at `omega` and return
+    /// `(lambda_min, Davidson residual, converged, SCF energy)`.
+    ///
+    /// SCF recipe verbatim from `tests/validation_rsh_omega.rs` — exact J for
+    /// both states, DF-K `def2-universal-jkfit`, default (75,110) Becke grid —
+    /// which is the recipe `scripts/validation/gen_rsh_omega.py` matches in
+    /// PySCF.
+    fn n2_cation_lambda_min(omega: f64) -> (f64, f64, bool, f64) {
+        use crate::stability::{uhf_internal_stability, StabilityConfig};
+        use crate::uhf::solve_uhf;
+
+        // Same geometry as testdata/molecules/validation/n2.xyz (r_e = 1.0977 A).
+        let mol = Molecule::parse_xyz("2\nN2+ 2Sg+\nN 0 0 0\nN 0 0 1.09770000\n", 1, 2).unwrap();
+        let bs = basis::bundled("def2-svp").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+        let cfg = crate::rhf::RhfConfig {
+            xc: Some("wB97X-V".into()),
+            xc_omega: Some(omega),
+            df_j_aux: Some(String::new()),
+            df_k_aux: Some("def2-universal-jkfit".into()),
+            energy_conv: 1e-10,
+            density_conv: 1e-7,
+            max_iter: 500,
+            ..Default::default()
+        };
+        let res = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
+        assert!(
+            res.converged,
+            "N2+ wB97X-V at omega = {omega} did not converge ({} iters)",
+            res.iterations
+        );
+
+        let c_a = res.mos_alpha.clone();
+        let c_b = res.mos_beta.clone().unwrap();
+        let f_a_mo = c_a.t().dot(&res.fock_alpha).dot(&c_a);
+        let f_b_mo = c_b.t().dot(res.fock_beta.as_ref().unwrap()).dot(&c_b);
+        let nelec = mol.nelec() as usize;
+        let two_s = mol.multiplicity - 1;
+        let nocc_a = (nelec + two_s) / 2;
+        let nocc_b = (nelec - two_s) / 2;
+
+        // The SAME SR/LR kernel the converged Fock used. Rebuilt from the
+        // identical (operator, obs, aux, budget) arguments rather than handed
+        // back by `solve_uhf`, so the dressed B[P,mu,nu] is the same tensor.
+        let xc_def = ferric_dft::libxc::xc_def_from_name_nspin_omega("wB97X-V", 2, omega)
+            .expect("wB97X-V at the overridden omega");
+        let k_mix = ferric_dft::libxc::k_mix_from_xc_def(&xc_def);
+        assert!(
+            k_mix.omega > 0.0,
+            "the omega override did not reach the functional: k_mix.omega = {}",
+            k_mix.omega
+        );
+        let dfbs = basis::bundled("def2-universal-jkfit").unwrap();
+        let dfbs_prep = PreparedBasis::new(&mol, &dfbs).unwrap();
+        let budget = ferric_core::memory::resolve_budget_bytes(None);
+        let sr =
+            RefCell::new(DfK::new(Operator::erfc(k_mix.omega), &prep, &dfbs_prep, budget).unwrap());
+        let lr =
+            RefCell::new(DfK::new(Operator::erf(k_mix.omega), &prep, &dfbs_prep, budget).unwrap());
+        let rsh = RshResponse::new(&sr, &lr, k_mix.sr, k_mix.lr, k_mix.omega);
+
+        // The f_xc response kernel at the converged densities, exactly as
+        // `uhf::stability_uhf` builds it. VV10 is NOT in it, and PySCF's probe
+        // omits it too — see the test's doc comment.
+        let d_a = {
+            let o = c_a.slice(ndarray::s![.., ..nocc_a]);
+            o.dot(&o.t())
+        };
+        let d_b = {
+            let o = c_b.slice(ndarray::s![.., ..nocc_b]);
+            o.dot(&o.t())
+        };
+        let grid = cfg.dft_grid.clone().unwrap_or_default();
+        let fxc_store = crate::rohf::FxcKernelStore::build(
+            &mol,
+            &prep,
+            &grid,
+            "wB97X-V",
+            cfg.xc_omega,
+            &d_a,
+            &d_b,
+        )
+        .expect("wB97X-V f_xc kernel (GGA family)");
+        let fxc_storage = fxc_store.response();
+
+        let inputs = UhfNewtonInputs {
+            prep: &prep,
+            bounds: &bounds,
+            c_a: &c_a,
+            c_b: &c_b,
+            f_a_mo: &f_a_mo,
+            f_b_mo: &f_b_mo,
+            nocc_a,
+            nocc_b,
+            // Not read on the RSH arm; a value that would be WRONG if it were.
+            k_mix_sr: 0.0,
+            rsh: Some(&rsh),
+            fxc: Some(&*fxc_storage),
+            thresh: cfg.integral_thresh,
+            ooc_budget: budget,
+        };
+        let st = uhf_internal_stability(&ctx, &inputs, &StabilityConfig::default())
+            .expect("UHF internal stability eigensolve");
+        (st.lowest_eigenvalue, st.residual, st.converged, res.energy)
+    }
+
+    /// **THE DECISIVE TEST.** N2+ / def2-SVP / wB97X-V: lambda_min of the UKS
+    /// orbital Hessian must be POSITIVE at omega = 0.53 and NEGATIVE at
+    /// omega = 0.56, matching PySCF's `symmetric_cation_probe` in sign and
+    /// roughly in magnitude. The reference values (+1.129e-4 and -2.712e-3) are
+    /// READ from `testdata/reference/validation/rsh_omega/n2_def2-svp.json`,
+    /// not hardcoded here.
+    ///
+    /// This is the negative control #288 could not satisfy and #313 could not
+    /// compute: J and <S^2> are perfectly smooth through the onset (ferric
+    /// matches PySCF's J there to 7.4e-8 Ha), so only a curvature can see it.
+    ///
+    /// # Scope: what this comparison does and does NOT establish
+    ///
+    /// `RhfConfig::check_stability` REFUSES wB97X-V, via
+    /// [`crate::stability::StabilitySkip::Vv10Kernel`]: the functional carries
+    /// VV10 nonlocal correlation and no VV10 response kernel exists anywhere in
+    /// this workspace. That refusal is correct and is asserted by
+    /// `tests/rsh_orbital_hessian.rs::wb97xv_is_still_refused_but_for_the_vv10_reason`.
+    /// This test drives `uhf_internal_stability` directly, accepting the same
+    /// omission PySCF's probe makes — its own provenance records
+    /// "PySCF KS response omits the VV10 kernel" — so the comparison is
+    /// like-for-like and isolates exactly what #314 changed: the exchange
+    /// kernel. It does NOT establish that this lambda_min is the complete
+    /// second derivative of wB97X-V's energy. It is not, on either side.
+    ///
+    /// # Reachability (artifact hypothesis A6)
+    ///
+    /// Asserting only `sign(lambda_0.53) != sign(lambda_0.56)` would be
+    /// arithmetic if the values did not actually straddle zero. Each side is
+    /// asserted separately with its own margin, the reference is first checked
+    /// to straddle zero itself, and the Davidson `converged` flag is required
+    /// (artifact A5: an iteration-starved eigensolve returning a wrong lambda
+    /// would otherwise look like success).
+    #[test]
+    #[ignore = "validation: RSH orbital Hessian (two RSH UKS SCFs + two Davidson eigensolves)"]
+    fn n2_cation_lambda_min_flips_sign_across_the_onset() {
+        let path =
+            workspace_root().join("testdata/reference/validation/rsh_omega/n2_def2-svp.json");
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!(
+                "missing validation reference {} ({e}); regenerate with \
+                 scripts/validation/gen_rsh_omega.py — a missing reference is a failure, \
+                 never a skip",
+                path.display()
+            )
+        });
+        let r: serde_json::Value = serde_json::from_str(&text)
+            .unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()));
+        let probe = r["symmetric_cation_probe"]
+            .as_array()
+            .expect("reference symmetric_cation_probe");
+        assert_eq!(
+            probe.len(),
+            2,
+            "the reference probe should carry exactly the two bracketing omegas"
+        );
+
+        let mut measured: Vec<(f64, f64, f64, f64, bool)> = Vec::new();
+        for p in probe {
+            let omega = p["omega"].as_f64().expect("probe omega");
+            let lam_ref = p["cation_lambda_min"].as_f64().expect("probe lambda_min");
+            let j_ref = p["j_on_this_branch"].as_f64().expect("probe j");
+            let (lam, resid, conv, e) = n2_cation_lambda_min(omega);
+            eprintln!(
+                "omega {omega:.2}:  lambda_min ferric {lam:+.6e}  PySCF {lam_ref:+.6e}  \
+                 E_cation {e:.9}  (Davidson resid {resid:.2e}, converged {conv}; \
+                 reference J on this branch {j_ref:+.6e})"
+            );
+            measured.push((omega, lam, lam_ref, resid, conv));
+        }
+
+        // A5.
+        for (omega, _, _, resid, conv) in &measured {
+            assert!(
+                *conv,
+                "omega {omega}: the Davidson eigensolve did NOT converge (residual \
+                 {resid:.3e}); an unconverged lambda_min is not a stability verdict"
+            );
+        }
+
+        let (w_lo, lam_lo, ref_lo, _, _) = measured[0];
+        let (w_hi, lam_hi, ref_hi, _, _) = measured[1];
+        assert!(w_lo < w_hi, "reference probe omegas are not ordered");
+        // The PREMISE on the reference side: if PySCF's own values did not
+        // straddle zero this test could not discriminate at all.
+        assert!(
+            ref_lo > 0.0 && ref_hi < 0.0,
+            "the REFERENCE itself does not straddle zero ({ref_lo:+.3e}, {ref_hi:+.3e}); \
+             this test cannot discriminate and must be redesigned, not relaxed"
+        );
+        // The PREMISE on ferric's side, each with its own margin (A6).
+        let margin_lo = 0.1 * ref_lo.abs();
+        let margin_hi = 0.1 * ref_hi.abs();
+        assert!(
+            lam_lo > margin_lo,
+            "omega {w_lo}: lambda_min = {lam_lo:+.6e} is not clearly POSITIVE (margin \
+             {margin_lo:.3e}); PySCF says {ref_lo:+.6e}. Without this side the sign-flip \
+             claim is arithmetic, not measurement."
+        );
+        assert!(
+            lam_hi < -margin_hi,
+            "omega {w_hi}: lambda_min = {lam_hi:+.6e} is not clearly NEGATIVE (margin \
+             {margin_hi:.3e}); PySCF says {ref_hi:+.6e}"
+        );
+        // The CONCLUSION: roughly the right magnitude, not only the right sign.
+        // A factor bar, not an absolute one: ferric's own DF fitting error on a
+        // comparable quantity is 1.7e-3 RELATIVE (see
+        // `tests/rsh_orbital_hessian.rs::erfc_plus_erf_response_reproduces_the_coulomb_response`),
+        // and the two codes differ in DF-K aux handling and grid details.
+        for (omega, lam, lam_ref, _, _) in &measured {
+            let ratio = lam.abs() / lam_ref.abs();
+            eprintln!("omega {omega:.2}: |ferric| / |PySCF| = {ratio:.3}");
+            assert!(
+                (0.2..=5.0).contains(&ratio),
+                "omega {omega}: lambda_min magnitude {lam:+.6e} is not within a factor 5 \
+                 of PySCF's {lam_ref:+.6e} (ratio {ratio:.3}). The SIGN may be right, but \
+                 'roughly in magnitude' is part of the acceptance and this misses it."
+            );
+        }
+    }
+
+    /// SCRATCH diagnostic (temporary): lambda_min across a wider omega range,
+    /// to see where ferric's curve sits relative to PySCF's two points.
+    #[test]
+    #[ignore = "scratch diagnostic"]
+    fn scratch_lambda_min_sweep() {
+        for w in [0.20_f64, 0.30, 0.40, 0.50, 0.53, 0.56, 0.60] {
+            let (lam, resid, conv, e) = n2_cation_lambda_min(w);
+            eprintln!("SWEEP omega {w:.2}  lambda_min {lam:+.6e}  E {e:.9}  resid {resid:.2e} conv {conv}");
+        }
+    }
+
+    /// SCRATCH: is the lambda_min(omega) slope discrepancy the VV10 response
+    /// omission? Compare wB97X-V (VV10, response incomplete) against HSE06
+    /// (range-separated, NO VV10, so ferric's Hessian IS complete for it).
+    #[test]
+    #[ignore = "scratch diagnostic"]
+    fn scratch_vv10_vs_not() {
+        for name in ["wB97X-V", "HSE06"] {
+            let def = ferric_dft::libxc::xc_def_from_name(name).unwrap();
+            let km = ferric_dft::libxc::k_mix_from_xc_def(&def);
+            eprintln!(
+                "FUNC {name}: vv10 {:?}  k_mix sr {} lr {} omega {}",
+                def.vv10.is_some(),
+                km.sr,
+                km.lr,
+                km.omega
+            );
+        }
+    }
+
+    /// SCRATCH: the independent control. O2/def2-SVP lambda_min vs PySCF for
+    /// PBE (omega=0), B3LYP (omega=0) and wB97X-V (omega!=0). The omega=0 rows
+    /// are unaffected by #314 and calibrate ferric-vs-PySCF agreement for this
+    /// quantity; the wB97X-V row is the one #314 changed.
+    #[test]
+    #[ignore = "scratch diagnostic"]
+    fn scratch_o2_lambda_min_control() {
+        use crate::stability::{uhf_internal_stability, StabilityConfig};
+        use crate::uhf::solve_uhf;
+        // testdata/molecules/validation/o2.xyz
+        let path = workspace_root().join("testdata/molecules/validation/o2.xyz");
+        let mol = Molecule::load_xyz_with_charge(path.to_str().unwrap(), 0, 3).unwrap();
+        let bs = basis::bundled("def2-svp").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+        let budget = ferric_core::memory::resolve_budget_bytes(None);
+        let dfbs = basis::bundled("def2-universal-jkfit").unwrap();
+        let dfbs_prep = PreparedBasis::new(&mol, &dfbs).unwrap();
+
+        for (name, lam_ref) in [
+            ("PBE", 0.2287647933779071),
+            ("B3LYP", 0.1847715331776547),
+            ("wB97X-V", 0.18059386581648604),
+        ] {
+            let cfg = crate::rhf::RhfConfig {
+                xc: Some(name.into()),
+                df_j_aux: Some(String::new()),
+                df_k_aux: Some("def2-universal-jkfit".into()),
+                energy_conv: 1e-10,
+                density_conv: 1e-7,
+                max_iter: 500,
+                ..Default::default()
+            };
+            let res = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
+            let c_a = res.mos_alpha.clone();
+            let c_b = res.mos_beta.clone().unwrap();
+            let f_a_mo = c_a.t().dot(&res.fock_alpha).dot(&c_a);
+            let f_b_mo = c_b.t().dot(res.fock_beta.as_ref().unwrap()).dot(&c_b);
+            let nelec = mol.nelec() as usize;
+            let two_s = mol.multiplicity - 1;
+            let nocc_a = (nelec + two_s) / 2;
+            let nocc_b = (nelec - two_s) / 2;
+            let d_a = {
+                let o = c_a.slice(ndarray::s![.., ..nocc_a]);
+                o.dot(&o.t())
+            };
+            let d_b = {
+                let o = c_b.slice(ndarray::s![.., ..nocc_b]);
+                o.dot(&o.t())
+            };
+            let grid = cfg.dft_grid.clone().unwrap_or_default();
+            let store = crate::rohf::FxcKernelStore::build(
+                &mol,
+                &prep,
+                &grid,
+                name,
+                cfg.xc_omega,
+                &d_a,
+                &d_b,
+            )
+            .unwrap();
+            let fxc = store.response();
+            let def = ferric_dft::libxc::xc_def_from_name_nspin(name, 2).unwrap();
+            let km = ferric_dft::libxc::k_mix_from_xc_def(&def);
+            let (sr, lr);
+            let rsh_opt = if km.omega > 0.0 {
+                sr = RefCell::new(
+                    DfK::new(Operator::erfc(km.omega), &prep, &dfbs_prep, budget).unwrap(),
+                );
+                lr = RefCell::new(
+                    DfK::new(Operator::erf(km.omega), &prep, &dfbs_prep, budget).unwrap(),
+                );
+                Some(RshResponse::new(&sr, &lr, km.sr, km.lr, km.omega))
+            } else {
+                None
+            };
+            let inputs = UhfNewtonInputs {
+                prep: &prep,
+                bounds: &bounds,
+                c_a: &c_a,
+                c_b: &c_b,
+                f_a_mo: &f_a_mo,
+                f_b_mo: &f_b_mo,
+                nocc_a,
+                nocc_b,
+                k_mix_sr: km.sr,
+                rsh: rsh_opt.as_ref(),
+                fxc: Some(&*fxc),
+                thresh: cfg.integral_thresh,
+                ooc_budget: budget,
+            };
+            let st = uhf_internal_stability(&ctx, &inputs, &StabilityConfig::default()).unwrap();
+            eprintln!(
+                "CTRL O2 {name:<8} omega {:<5} lambda ferric {:+.8e}  PySCF {lam_ref:+.8e}                   ratio {:.4}  E {:.9} (resid {:.1e} conv {})",
+                km.omega, st.lowest_eigenvalue, st.lowest_eigenvalue / lam_ref,
+                res.energy, st.residual, st.converged
+            );
+        }
+    }
 }
