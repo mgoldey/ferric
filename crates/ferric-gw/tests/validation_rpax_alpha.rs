@@ -56,16 +56,36 @@
 //!
 //! # TOLERANCES (measured 2026-10-05, see the consts)
 //!
+//! | quantity | measured max | bar |
+//! |---|---|---|
+//! | screened α, worst element / max|α| | 5.3e-9 | 5e-8 |
+//! | screened α_iso, relative | 2.8e-9 | 5e-8 |
+//! | bare-hook α vs numpy bare | 5.4e-9 | 5e-8 |
+//! | lowest eigenvalue of A+B, A−B | 7.5e-10 Ha | 1e-8 Ha |
+//! | E_SCF vs PySCF | 5.2e-12 Ha | 1e-9 Ha |
+//! | bare hook vs exact-ERI CPHF (DF fitting gap) | 9.0e-5 (H2O), 1.5e-5 (NH3) | 3x the generator's gap |
+//!
+//! Generator anchors (asserted at ≤ 1e-9): numpy bare vs PySCF DF-CPHF
+//! 3.1e-15 / 7.6e-15, exact-ERI numpy bare vs exact CPHF 5.3e-15 / 1.9e-14
+//! (H2O / NH3). PySCF's ITERATIVE `cphf.solve` stops 1.7e-8..5.5e-8 short of
+//! the dense CPHF solution even at tol 1e-13, so the anchor uses the dense
+//! CPHF matrix built from PySCF's own `gen_response` (recorded beside it).
+//!
 //! Tensor elements are compared as |d| / max_k |α_k| (the off-diagonal
 //! elements vanish by symmetry, so a per-element relative error is undefined).
 //!
-//! # NEGATIVE CONTROLS (asserted)
+//! # NEGATIVE CONTROLS (asserted; must exceed 10x the bar = 5e-7)
 //!
-//! * screened ferric α misses the numpy BARE α (screening is live);
-//! * a truncated PDEP (`trunc_thresh = 1e-2`) misses the full-rank reference;
-//! * an aux swap (def2-universal-jkfit) misses the same-aux reference;
-//! * scissor 0 at PBE: compared with the numpy scissor-0 tensor, see
-//!   `rpax_pbe_scissor0_matches_numpy_sign`.
+//! * screened ferric α misses the numpy BARE α: 7.9e-2 (H2O/aug), 8.0e-2
+//!   (NH3), 1.6e-1 (PBE) — screening is live;
+//! * a truncated PDEP (`trunc_thresh = 1e-2`) misses the full-rank reference
+//!   by 7.6e-5;
+//! * an aux swap (def2-universal-jkfit) misses the same-aux reference by
+//!   3.9e-5;
+//! * scissor 0 at PBE: the INDEPENDENT numpy kernel's tensor has
+//!   α_xx = −2.680881 (diag −2.68, +14.60, +16.49), and ferric refuses with
+//!   the `check_alpha_diagonal_positive` error naming α_xx = −2.680881. The
+//!   instability is the kernel's, not an assembly defect.
 //!
 //! # MUTATIONS
 //!
@@ -101,12 +121,15 @@ const MOL_DIR: &str = "testdata/molecules/validation";
 /// W frequency points (the BSE row's PDEP settings; ω > 0 does not enter W(0)).
 const N_QUAD: usize = 100;
 
-// Screened α, ferric vs numpy, |d| / max|α|. PROVISIONAL until measured.
-const TOL_ALPHA: f64 = 1e-6;
-// Bare hook vs numpy bare, |d| / max|α|. PROVISIONAL.
-const TOL_ALPHA_BARE: f64 = 1e-6;
-// Lowest eigenvalue of A+B and A−B (Ha). PROVISIONAL.
-const TOL_MIN_EIG: f64 = 1e-6;
+// Screened α, ferric vs numpy: worst element |d| / max|α| and the iso
+// relative error. Measured 5.3e-9 (H2O/aug-cc-pVDZ@RHF element), 2.3e-9
+// (H2O/cc-pVDZ@PBE), 2.1e-9 (NH3); iso 2.8e-9 at worst. Bar ~10x.
+const TOL_ALPHA: f64 = 5e-8;
+// Bare hook (W → v) vs numpy bare, |d| / max|α|. Measured 5.4e-9 (H2O),
+// 2.1e-9 (NH3).
+const TOL_ALPHA_BARE: f64 = 5e-8;
+// Lowest eigenvalue of A+B and of A−B (Ha). Measured 7.5e-10 (PBE case).
+const TOL_MIN_EIG: f64 = 1e-8;
 const TOL_E_SCF: f64 = 1e-9;
 const TOL_ENUC: f64 = 1e-9;
 /// A reference ferric must MISS is missed by at least this multiple of the bar.
