@@ -39,8 +39,10 @@ BLOCKS PER FILE
   anchors   - (RHF references) the exactness anchor, asserted HERE before the
               file is written:
                 (a) numpy bare alpha on a DENSITY-FITTED RHF (same aux) equals
-                    PySCF DF-CPHF alpha (`scf.cphf.solve` with
-                    `mf.gen_response(hermi=1)`) to <= 1e-9 relative;
+                    PySCF DF-CPHF alpha (the CPHF matrix built from PySCF's
+                    `mf.gen_response(hermi=1)`, dense solve) to <= 1e-9
+                    relative; PySCF's iterative `scf.cphf.solve` on the same
+                    operator is recorded beside it (it stops ~5e-8 short);
                 (b) numpy bare alpha with EXACT MO ERIs on the exact RHF
                     equals PySCF exact CPHF alpha to <= 1e-9 relative.
               Recorded: the DF-vs-exact gap of the bare alpha on the exact
@@ -194,7 +196,20 @@ def max_rel(a, b):
 
 
 def cphf_alpha(mf):
-    """alpha = -4 sum_ai h_ai x_ai, (e_a - e_i) x + v[x] = -h, PySCF CPHF."""
+    """PySCF CPHF alpha two ways, from PySCF's own response operator
+    (`mf.gen_response(hermi=1)`, i.e. PySCF's J/K code, DF or exact as `mf`):
+
+      dense    - the CPHF matrix (e_a - e_i) + v[.] built column by column from
+                 that operator on unit vectors, then a dense solve. This is
+                 the anchor value: it is the exact CPHF solution.
+      solver   - `scf.cphf.solve` (PySCF's iterative Krylov solver) on the same
+                 operator. Its stopping rule leaves ~5e-8 relative in alpha
+                 even at tol 1e-13 (measured on H2O/aug-cc-pVDZ, where the
+                 dense matrix equals the numpy A+B to 1.3e-14), so it is
+                 recorded, not used as the anchor.
+
+    alpha = -4 sum_ai h_ai x_ai with (e_a - e_i) x + v[x] = -h, h = <a|r|i>.
+    """
     from pyscf.scf import cphf
 
     mol = mf.mol
@@ -214,6 +229,14 @@ def cphf_alpha(mf):
         v1 = vresp(dm1)
         return np.einsum("xpq,pa,qi->xai", v1, orbv, orbo).reshape(x.shape)
 
+    e = np.asarray(mf.mo_energy)
+    d_ai = (e[~occ][:, None] - e[occ][None, :]).ravel()
+    n = nvir * nocc
+    m = fvind(np.eye(n).reshape(n, nvir, nocc)).reshape(n, n).T + np.diag(d_ai)
+    sym = float(np.max(np.abs(m - m.T)))
+    assert sym < 1e-11, f"PySCF CPHF matrix not symmetric: {sym:.2e}"
+    x = np.linalg.solve(m, -h1.reshape(3, n).T)
+    a_dense = -4.0 * h1.reshape(3, n) @ x
     mo1 = cphf.solve(
         fvind,
         mf.mo_energy,
@@ -223,8 +246,8 @@ def cphf_alpha(mf):
         max_cycle=CPHF_MAX_CYCLE,
         tol=CPHF_TOL,
     )[0]
-    a = -4.0 * np.einsum("xai,yai->xy", h1, mo1)
-    return 0.5 * (a + a.T)
+    a_iter = -4.0 * np.einsum("xai,yai->xy", h1, mo1)
+    return 0.5 * (a_dense + a_dense.T), 0.5 * (a_iter + a_iter.T)
 
 
 def df_rhf(mol, aux):
@@ -316,13 +339,13 @@ def gen_one(system, basis_name, ref, scissor):
             *apb_amb_df(lpq_df, np.asarray(mf_df.mo_energy), nocc, None),
             dipole_ia(mol, c_df, nocc),
         )
-        cphf_df = cphf_alpha(mf_df)
+        cphf_df, cphf_df_iter = cphf_alpha(mf_df)
         a_rel = max_rel(bare_df["tensor"], cphf_df)
         assert a_rel <= ANCHOR_REL_TOL, f"anchor (a) DF: {a_rel:.2e}"
         # (b) bare numpy with EXACT MO ERIs vs PySCF exact CPHF.
         eri_mo = ao2mo.restore(1, ao2mo.full(mol, c), nmo)
         bare_ex = alpha_block(*apb_amb_exact(eri_mo, e_mf, nocc), mu)
-        cphf_ex = cphf_alpha(mf)
+        cphf_ex, cphf_ex_iter = cphf_alpha(mf)
         b_rel = max_rel(bare_ex["tensor"], cphf_ex)
         assert b_rel <= ANCHOR_REL_TOL, f"anchor (b) exact: {b_rel:.2e}"
         payload["anchors"] = {
@@ -331,6 +354,11 @@ def gen_one(system, basis_name, ref, scissor):
             "a_df_cphf_tensor": [[float(x) for x in r] for r in cphf_df],
             "b_exact_bare_numpy_vs_pyscf_exact_cphf_max_rel": b_rel,
             "b_exact_cphf_tensor": [[float(x) for x in r] for r in cphf_ex],
+            "cphf_matrix": "dense, built from PySCF gen_response(hermi=1)",
+            "a_df_cphf_iterative_solver_vs_dense_max_rel": max_rel(cphf_df_iter, cphf_df),
+            "b_exact_cphf_iterative_solver_vs_dense_max_rel": max_rel(
+                cphf_ex_iter, cphf_ex
+            ),
             "tolerance_rel": ANCHOR_REL_TOL,
             "cphf_tol": CPHF_TOL,
             "df_fitting_gap_bare_df_vs_exact_cphf_max_rel": max_rel(
@@ -350,7 +378,7 @@ def gen_one(system, basis_name, ref, scissor):
         keywords={
             "scf": "conv_tol 1e-11, conv_tol_grad 1e-8",
             "df": "pyscf.df.DF with ferric's aux JSON (Coulomb metric)",
-            "cphf": f"pyscf.scf.cphf.solve, tol {CPHF_TOL}, gen_response(hermi=1)",
+            "cphf": f"dense matrix from gen_response(hermi=1); also scf.cphf.solve tol {CPHF_TOL}",
             "numpy": np.__version__,
         },
         basis_name=basis_name,
@@ -379,7 +407,8 @@ def gen_one(system, basis_name, ref, scissor):
         a = payload["anchors"]
         print(f"   anchor (a) DF {a['a_df_bare_numpy_vs_pyscf_df_cphf_max_rel']:.2e} "
               f"(b) exact {a['b_exact_bare_numpy_vs_pyscf_exact_cphf_max_rel']:.2e} "
-              f"DF gap {a['df_fitting_gap_bare_df_vs_exact_cphf_max_rel']:.2e}")
+              f"DF gap {a['df_fitting_gap_bare_df_vs_exact_cphf_max_rel']:.2e}; "
+              f"cphf.solve vs dense {a['a_df_cphf_iterative_solver_vs_dense_max_rel']:.1e}")
     if "scissor0" in payload:
         print(f"   scissor 0 diag {[round(payload['scissor0']['tensor'][d][d], 6) for d in range(3)]}"
               f" iso {payload['scissor0']['iso']:.6f}")
