@@ -183,7 +183,9 @@ pub static TRAH_PREDICTIONS_DISCARDED: std::sync::atomic::AtomicUsize =
 /// Count of TRAH steps DECLINED by the null-step guard
 /// ([`TrahConfig::predicted_min`]), process-wide. Each one is an iteration on
 /// which the armed loop computed a step, found |predicted| below the bound,
-/// and handed the iteration to DIIS instead of applying it. It makes the
+/// and did not apply it. What happens next differs by loop: the closed-shell
+/// RHF/RKS loop ENDS the iteration (no DIIS step), while the UHF/UKS loop
+/// falls through to DIIS in the same iteration. It makes the
 /// guard's branch observable: an iteration count alone cannot tell "the guard
 /// fired and helped" from "the guard was never reached".
 pub static TRAH_NULL_STEPS_DECLINED: std::sync::atomic::AtomicUsize =
