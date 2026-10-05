@@ -347,6 +347,17 @@ enum StepKind {
 ///   on their main point's branch, both residuals are negative, so neither
 ///   guard nor the bracket fires. The same start converges at precision
 ///   1e-14.
+/// * A start far from the root, under an outer cap too small to reach it. The
+///   step is clamped to `MAX_STEP` per iteration, so arriving from λ⁰ takes at
+///   least |λ_root − λ⁰| / `MAX_STEP` iterations whatever the residual does,
+///   and the error on running out is a bare "did not converge" that cannot be
+///   told from a stall. Measured on the six He₂⁺/PBE diabats
+///   (`tests/validation_cdft_et.rs::he2_plus_diabats_converge_from_lambda_zero`):
+///   from λ = 0, with roots at λ ≈ 1.55-2.46, every point is on a monotone
+///   trajectory with a two-sided bracket and |c| already 4.1e-5 … 6.9e-4 at
+///   outer 8, and all six converge to the same root as a start AT the root
+///   given 11-21 iterations. Nothing here is wrong in that case — the budget
+///   is — so no guard fires and none should.
 #[derive(Debug, Clone)]
 struct ScalarStepper {
     guards: bool,
