@@ -218,7 +218,7 @@ pub struct OmegaEval {
     pub cation_iterations: usize,
     /// SCF iterations the neutral took, for the same reason.
     pub neutral_iterations: usize,
-    /// `true` when the cation's ⟨S²⟩ or spin asymmetry moved further than
+    /// `true` when the cation's spin-population asymmetry moved further than
     /// [`OmegaTuneConfig::branch_tol`] from the nearest already-evaluated ω,
     /// i.e. this point is probably not on the same branch as that neighbour.
     /// `false` with `branch_tol: None` means NOT CHECKED, not consistent.
@@ -273,7 +273,8 @@ pub struct OmegaSeedState {
     /// Cation α/β MO coefficients → `uhf::solve_uhf_with_guess`, which wants
     /// (nbasis, nbasis) and occupies the first nocc_σ columns of each.
     pub cation_mos: (Array2<f64>, Array2<f64>),
-    /// Cation ⟨S²⟩, for the branch comparison.
+    /// Cation ⟨S²⟩. Reported in the branch diagnostic but NOT compared: its
+    /// smooth ω-drift exceeds the signal (see [`DEFAULT_BRANCH_TOL`]).
     pub s_squared: f64,
     /// Cation spin-population asymmetry, for the branch comparison.
     pub spin_asymmetry: f64,
@@ -609,10 +610,11 @@ fn branch_warning_for(
 
 /// Golden-section minimization of |J(ω)| over the bracket.
 ///
-/// Each evaluation is seeded by continuation from the nearest already-evaluated
-/// ω unless [`OmegaTuneConfig::continuation`] is off, and its cation is checked
+/// With [`OmegaTuneConfig::continuation`] on (it is OFF by default), each
+/// evaluation after the first is seeded from the nearest already-evaluated ω;
+/// the first always uses the default guess. Each evaluation's cation is checked
 /// against that same neighbour for a branch switch unless
-/// [`OmegaTuneConfig::branch_tol`] is `None`. See the module doc for what the
+/// [`OmegaTuneConfig::branch_tol`] is `None` (the check is on by default). See the module doc for what the
 /// two mechanisms do and do NOT establish — in particular neither is a
 /// stability verdict, which ω ≠ 0 cannot currently have.
 pub fn tune_omega(

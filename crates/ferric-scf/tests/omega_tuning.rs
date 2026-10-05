@@ -137,9 +137,10 @@ fn tune_omega_h2_converges_and_improves_j() {
             energy_conv: 1e-9,
             ..Default::default()
         },
-        // Continuation and the branch check at their defaults (on): this test
-        // is the end-to-end driver, so it must exercise the driver's own
-        // configuration, not a stripped one.
+        // Continuation and the branch check at their defaults (continuation
+        // OFF, branch check ON): this test is the end-to-end driver, so it
+        // exercises the driver's shipped configuration, not a stripped one.
+        // The continuation path is covered by `omega_tuning_cation_branch.rs`.
         ..Default::default()
     };
     let r = tune_omega(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
