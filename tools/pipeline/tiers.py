@@ -207,6 +207,14 @@ def tier2_forcefield(iso: Isomer, context: dict) -> TierResult:
         energy = float(res[0][1])
     except Exception as e:  # noqa: BLE001 - RDKit raises RuntimeError on cages
         return TierResult(iso.canonical, None, f"MMFF failed: {type(e).__name__}: {e}")
+    # DO NOT DISPLACE AN UPSTREAM POSE. This geometry is a free-solution
+    # re-embedding from SMILES; `funnel._harvest_geometry` writes whatever a
+    # successful payload carries into `context["geometry"]`, so advertising it
+    # here when an earlier stage (docking) already supplied one would replace
+    # the docked pose and tiers 3 and 4 would score a conformer that never saw
+    # the receptor. The energy above is still this tier's own verdict.
+    if iso.canonical in context.get("geometry", {}):
+        return TierResult(iso.canonical, energy)
     conf = mol.GetConformer()
     coords = [tuple(conf.GetAtomPosition(i)) for i in range(mol.GetNumAtoms())]
     return TierResult(

@@ -176,16 +176,24 @@ def main() -> int:
         "mem_budget_gb": 9,
     }
 
-    # DOCK_WORKERS env override: the 10 default assumes a quiet 12-core box
-    # (M11). It is a real measured number for THAT condition, not a knob to
-    # edit here for a transient one -- override it at invocation time instead
-    # when something else is already on the machine.
-    dock_workers = int(os.environ.get("DOCK_WORKERS", "10"))
+    # DOCK_WORKERS env override. The default is 4, and the binding constraint
+    # is MEMORY, not cores.
+    #
+    # M11 chose 10 on core-count grounds (fan-out beats Vina's internal
+    # threading above ~4 workers on a 12-core box). That is right about
+    # throughput and silent about footprint: ONE Vina dock at this target's
+    # box size peaks at 0.79 GB measured (2026-09-12), essentially all of it
+    # Vina's grid maps, so 10 workers is ~7.9 GB of maps before each worker's
+    # own Python/RDKit copy. Two 58-candidate runs at 10 workers never finished
+    # tier 1 that day: the box fell to 935 MB available with memory pressure
+    # avg10=81, which presents as a stalled run rather than as an OOM.
+    #
+    # 4 x 0.79 = ~3.2 GB. The throughput cost is small: tier 1 is ~58 x 26.4 s
+    # of work, ~6.4 min at 4 workers against ~2.6 min at 10. Raising this is a
+    # memory decision: check MemAvailable against workers x 0.79 GB.
+    dock_workers = int(os.environ.get("DOCK_WORKERS", "4"))
 
     stages = [
-        # workers=10 on a 12-core box: fan-out beats Vina's internal threading
-        # above ~4 workers (M11), and leaving 2 cores free keeps the box usable
-        # for whoever else is on it.
         Stage(
             Tier.SEARCH, tier1_dock, keep=KEEPS[0], name="dock", workers=dock_workers
         ),

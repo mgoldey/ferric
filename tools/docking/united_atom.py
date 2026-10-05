@@ -157,6 +157,20 @@ def restore_hydrogens(
     else:
         targets = list(heavy_idx)
 
+    # ELEMENT CHECK, per atom. The permutation check above passes any
+    # reordering -- a REVERSED map is a permutation -- and on an achiral
+    # molecule the stereo guard below cannot fire, so a map that puts an
+    # oxygen's coordinates on a carbon would come back as a complete,
+    # plausible molecule with no error. The docked symbols are the evidence.
+    for k, (idx, (sym, _)) in enumerate(zip(targets, docked_heavy)):
+        want = mol.GetAtomWithIdx(idx).GetSymbol()
+        if sym.upper() != want.upper():
+            raise ValueError(
+                f"docked heavy atom {k} is {sym} but maps to atom {idx}, which "
+                f"is {want} -- an element mismatch, so the pose-to-molecule "
+                "atom order is wrong"
+            )
+
     AllChem.EmbedMolecule(mol, randomSeed=seed)
     conf = mol.GetConformer()
     for idx, (_, c) in zip(targets, docked_heavy):
