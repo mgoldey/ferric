@@ -374,4 +374,15 @@ fn scs_mp2_2terfc_negative_controls() {
     }
 }
 
-// MUTATION LEDGER: TBD
+// MUTATION LEDGER (2026-10-05, each mutant compiled, its test ran with
+// `--ignored --exact`, and the harness restored the source with
+// `git checkout`; test = scs_mp2_2terfc_h2o_cc_pvdz_vs_kspace):
+//
+// | mutant | where | result |
+// |---|---|---|
+// | M1 drop the r0 shift (`r02 = 0.0`, 3 sites) | shim.cc | FAILED, 0 passed 1 failed; E_OS(0.75 A) off by 2.7e-2 Ha |
+// | M2 Angstrom->Bohr inverted (`/ ANGSTROM_TO_BOHR`, both defaults) | scs.rs ScsMp2TerfcConfig::default | FAILED, 0 passed 1 failed; scs_corr off by 1.0e-1 Ha |
+// | M3 drop the SS difference (`e_ss = sc2.e_ss`) | scs.rs scs_mp2_2terfc | FAILED, 0 passed 1 failed; scs_corr off by 2.0e-1 Ha |
+// | M5 omega = 1/r0 in Operator::terfc | operator.rs | FAILED, 0 passed 1 failed; E_OS(0.75 A) off by 1.6e-2 Ha |
+//
+// M4 (the ket-side Hermite sign) is in the integral half's ledger.

@@ -54,3 +54,23 @@ These two predictions differ, so the per-class comparison distinguishes them.
 * The terfc metric (P|terfc|Q) is positive definite for cc-pvdz-ri and
   aug-cc-pvdz-rifit (smallest eigenvalue small but > 0); if it is not, report,
   do not regularize.
+
+## Results (measured 2026-10-05, after the predictions above)
+
+* H-REF held. The erf anchor reaches 6.7e-13 to 3.4e-12 on the production
+  grid (80 radial × 2030 Lebedev, k ≤ 14w); the ladder in each JSON shows
+  1e-1 at (16,110) falling to ~1e-12 by (40,590). The radial inverse of
+  K̂_terf matches real space to ≤ 8.4e-15. r₀ → ∞ converges ~16× per
+  doubling (O(1/r₀⁴)), faster than the O(1/r₀²) I would have guessed,
+  because w·r₀ = 1/√2 is the zero-curvature point of the kernel.
+* H-PHYS held, by a wider margin than predicted: 3-index ≤ 1.4e-13 and
+  2-index ≤ 2.6e-12 (the 2-index figure is at the reference's own floor),
+  in every shell class s through f. No class dependence.
+* Energies: ≤ 3.3e-12 Ha (predicted ≤ 1e-10). Negative controls miss by
+  5.2e-3 Ha (r₀) and 4.1e-2 Ha (erfc) or more.
+* The terfc metric is positive definite: smallest eigenvalue 1.7e-4
+  (aug-cc-pvdz-rifit) to 6.0e-4 (cc-pvdz-ri). The terf metric is
+  indefinite (smallest −0.15), which is why ferric routes terf to eigh.
+* H-ART was confirmed as a DETECTION claim by mutation M4 (ket sign
+  dropped): s-pair classes pass, p/d-pair classes fail. No such defect is
+  present in ferric.

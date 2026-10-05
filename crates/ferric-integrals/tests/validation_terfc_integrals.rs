@@ -24,11 +24,13 @@
 //!
 //! Before writing anything the generator requires (all recorded in the JSON
 //! under `checks`): the radial inverse of K̂_terf reproduces the real-space
-//! kernel at 20 radii (≤ 3.9e-15); the same k-grid with the plain erf kernel
+//! kernel at 20 radii (≤ 8.4e-15); the same k-grid with the plain erf kernel
 //! reproduces PySCF `with_range_coulomb(w)` `int3c2e`/`int2c2e` to ≤ 1e-10 on
 //! the production rung of a recorded grid ladder; terf moves ≤ 1e-10 between
 //! the last two rungs; r₀ → 0 at fixed w reproduces erf; r₀ → ∞ on the
-//! curvature constraint approaches C(r₀)·N_P·S_μν monotonically.
+//! curvature constraint approaches C(r₀)·N_P·S_μν monotonically (measured
+//! ~16× per doubling of r₀, i.e. O(1/r₀⁴) relative: the O(w²r²) term of the
+//! kernel vanishes because w·r₀ = 1/√2 is exactly the zero-curvature point).
 //!
 //! Stored per tensor: the largest-|value| element of every shell-class (l_P,
 //! l_μ ≥ l_ν for 3-index; l_P ≥ l_Q for 2-index), a seeded random subset of a
@@ -93,7 +95,7 @@ const TOL_COULOMB_2C: f64 = 5e-12;
 /// 1.4e-13 (NH3/cc-pVDZ terfc 0.75 A), every class. Spec target 1e-9.
 const TOL_INT_3C: f64 = 2e-12;
 /// terf / terfc 2-index, element-wise. Measured max 2.6e-12 (H2O/aug, 0.75 A);
-/// the reference's own erf-anchor floor on (P|Q) is 3.4e-13..4.7e-12 (JSON
+/// the reference's own erf-anchor floor on (P|Q) is 6.7e-13..3.4e-12 (JSON
 /// `checks.kspace_grid`), so this measures the reference as much as ferric.
 const TOL_INT_2C: f64 = 3e-11;
 /// Full-tensor sum of squares, relative. Measured max 9.0e-14.
@@ -498,4 +500,23 @@ fn terfc_integrals_negative_controls() {
     }
 }
 
-// MUTATION LEDGER: TBD
+// MUTATION LEDGER (2026-10-05, each mutant compiled, its test ran with
+// `--ignored --exact`, and the harness restored the source with
+// `git checkout`; test = terfc_integrals_h2o_cc_pvdz_vs_kspace):
+//
+// | mutant | where | result |
+// |---|---|---|
+// | M1 drop the r0 shift: `r02 = r0 * r0` -> `0.0` (3 sites; terf -> erf) | shim.cc compute_cart_eri3/eri2 | FAILED, 0 passed 1 failed; terf 3c misses in every class, 4e-4..1.4e-1 |
+// | M4 ket-side `(-1)^(t+u+v)` -> `1.0` | shim.cc compute_cart_eri3 | FAILED, 0 passed 1 failed; ddp dds dpp dps fdp fds fpp fps pdp pds ppp pps sdp sds ... miss by 8e-5..1.2e-1, while the s-pair classes (sss pss dss fss) PASS |
+// | M5 omega = 1/r0 instead of 1/(r0 sqrt2) | operator.rs Operator::terfc | FAILED, 0 passed 1 failed; terfc 3c misses in every class incl. sss (1.1e-1) |
+//
+// M4 is the artifact hypothesis made concrete: the broken sign touches only
+// odd Hermite orders of the orbital pair, so every class whose pair is s-s
+// passes at the floor and only the p/d pair classes fail. A one-centre pair
+// with even l_mu + l_nu (O d-d in cc-pVDZ) also passes, because for A = B the
+// Hermite expansion of x^(a+b) has a single parity and the dropped sign is the
+// constant (-1)^(l_mu+l_nu) = +1. The literal issue mutant "erf(w(r+r0)) ->
+// erf(w(r-r0))" is not expressible in this engine: r0 enters only through
+// s = phi^2 r0^2 (terf is even in r0), so M1 removes the shift instead.
+// Energy-level mutants (A->Bohr, Eq. 12 SS difference) are in
+// crates/ferric-mp2/tests/validation_scs_mp2_2terfc.rs.
