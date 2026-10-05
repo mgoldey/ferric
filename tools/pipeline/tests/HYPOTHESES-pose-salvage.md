@@ -55,3 +55,19 @@ alone (rdDetermineBonds), and the docked heavy atoms must not move.
 
 Prediction: passes on main. Artifact check: the killer molecule's Meeko order
 must actually differ from RDKit's, or positional assignment would pass too.
+
+## Results (2026-10-05, measured after the above was committed)
+
+* H1: xtb reads BOHR. NH4+, +1 charge at d: dE = 0.096579 / 0.049574 /
+  0.024943 Ha at d = 10 / 20 / 40 against 1/d = 0.1 / 0.05 / 0.025 (Bohr) and
+  0.0529 / 0.0265 / 0.0132 (Angstrom). The branch's Angstrom premise is
+  refuted; main's Bohr-throughout key is correct.
+* H2: confirmed. dock -> tier2_forcefield -> quantum tier delivered tier 2's
+  MMFF re-embedding on unmodified main. Fixed in tier2_forcefield.
+* H3: confirmed. A reversed (permutation) map on 4-fluorophenol returned
+  without error on unmodified main. Fixed with a per-atom element check.
+* H4: passed on unmodified main. Reachability held (the 42-heavy-atom
+  molecule's Meeko order differs from RDKit's). Pairing the map with
+  iso.canonical instead of Meeko's SMILES is an EQUIVALENT mutant on this
+  path: Meeko's REMARK SMILES equals RDKit's canonical SMILES for every input
+  tried (4 molecules), and tier1_dock always docks iso.canonical.
