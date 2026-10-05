@@ -375,12 +375,25 @@ issue's theoretical lead is therefore CORRECT and is the only available signal.
 
 ### Both of the issue's mechanisms are real; neither alone explains the failure
 
+> **SUPERSEDED by MEASUREMENT 3 (below).** The conclusion in this subsection —
+> that the failure needs BOTH fixes — is **disproved**. Measurement 3 ran the
+> three variants and found the short-circuit fix ALONE reaches LOWER in 7 outer
+> iterations with all seven other catalogue starts bit-unchanged; the slope
+> guard adds nothing there, costs 4.4x, and perturbs two innocent starts.
+> Only the short-circuit fix ships. The reasoning below is kept verbatim as the
+> dated record of what was believed after measurement 2, not as a current fact.
+
 A guard on the slope alone would not have helped in phase 1 (nothing is
 converged there, so it is inert — measurement 1 established that). Closing the
 `!s.converged` short-circuit alone would not help in phase 2 (everything is
 converged there and `hf_mismatch` is legitimately tiny). **The failure needs
 both fixes**, and that is the finding that neither the issue nor measurement 1
 states on its own.
+
+*(The error in the second sentence: phase 2 is never REACHED once phase 1 stops
+feeding Newton untrusted Jacobians, so "would not help in phase 2" was true in
+isolation and irrelevant in sequence. Avoidance, not a phase-2 remedy, is what
+fixes the row — see MEASUREMENT 3's "What was kept".)*
 
 ### Note on StabilitySkip::FockModified
 
