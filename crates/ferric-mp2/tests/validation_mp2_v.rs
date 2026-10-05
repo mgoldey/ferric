@@ -563,3 +563,25 @@ fn mp2_v_chain_nh3_ccpvdz() {
 fn mp2_v_chain_water_dimer_aug_ccpvdz() {
     check_chain(&CASES[3], false);
 }
+
+// MUTATION LEDGER (2026-10-05). Each mutant was applied to the source,
+// compiled, and run against `vv10_half_h2o_ccpvdz` + `mp2_v_chain_h2o_ccpvdz`
+// with `--ignored` (counts read from `test result:`); every one FAILED a named
+// assertion and the source was restored and checked clean afterwards.
+//
+// | mutant | where | first failing assertion | miss |
+// |---|---|---|---|
+// | invert `1 − terfc²` → `terfc²` | vv10.rs `factor_from_r2` | `E_nl r0->0`; chain `E_nl damped (own density)` | 1.4e-3; 4.1e-4 |
+// | wrong b (11.0 → 10.0) | `mp2_v_terfc_atz` | `E_nl undamped` (b read from the config) | 2.6e-3 |
+// | damping r₀ in Å, MP2 r₀ in Bohr | `effective_vv10_damping` | `E_nl damped` | 2.8e-4 |
+// | drop grid weight in the E_nl sum | vv10.rs finalisation | `E_nl undamped` | 2.8e2 |
+// | erfc ω from r₀ in Å | `mp2_operator` | `E_c(erfc)` | 6.7e-2 |
+// | frozen core ignored | `ri_mp2_config` | `E_c(erfc)` | 2.3e-3 |
+// | drop VV10 from `total` | `assemble` | additivity of `total` | 1.9e-2 |
+// | damping disabled in `assemble` | `assemble` | chain `E_nl damped (own density)` | 4.7e-4 |
+// | Table 1 b at 0.85 Å (8.0 → 9.0) | `TABLE1_R0_B_PAIRS` | `E_nl undamped` (b = 8 block) | 4.4e-3 |
+//
+// Of the 8 mutations seeded for the earlier Smoke grade, 7 are reached here
+// (drop VV10, Å→Bohr, disable damping, drop weights, invert the factor, wrong
+// b, desync damping r₀). "Hold b fixed across the valley" is the Table 1 row
+// above. Not reached: the terfc MP2 operator (no reference for it here).

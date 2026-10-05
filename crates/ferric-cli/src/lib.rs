@@ -135,8 +135,9 @@ pub const EPISTEMIC_WARNINGS: &[(&str, &str)] = &[
     ),
     (
         "mp2-v",
-        "method.kind = \"mp2-v\" is Smoke-grade (see site/src/reference/validation.md): the VV10 half is proven \
-         bit-identical to the wB97X-V code path and the damping is validated by limits, but there \
+        "method.kind = \"mp2-v\" is Smoke-grade (see site/src/reference/validation.md): the damped VV10 \
+         half and the erfc-attenuator control match PySCF/numpy references, but the published \
+         terfc-attenuated MP2 half has no independent reference, and there \
          is NO comparison to any published MP2-V number (the paper reports only S66/G2 statistics, \
          never a total energy). The defaults (r0 = 1.00 A, b = 11.0, C = 0.0089, terfc, post-HF) \
          are fitted for aug-cc-pVTZ, no counterpoise, frozen core -- running another basis, or \
