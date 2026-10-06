@@ -123,7 +123,10 @@ def main() -> int:
             scf_conv={"conv_tol": g.CONV_TOL, "conv_tol_grad": g.CONV_TOL_GRAD},
             stability={"cation": "NOT followed; lambda_min of the converged state"},
             generator="scripts/validation/gen_rsh_cation_stability.py",
-            extra={"basis_self_check": basis_check, "runtime_s": round(time.time() - t0, 1)},
+            extra={
+                "basis_self_check": basis_check,
+                "runtime_s": round(time.time() - t0, 1),
+            },
         )
         path = common.write_reference(ROW, system, BASIS, payload)
         print(f"wrote {path}", flush=True)
