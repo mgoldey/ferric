@@ -138,7 +138,13 @@ pub fn install(explicit: GpuSettingsExplicit) -> Result<&'static GpuStatus, Stri
         );
     }
     match INSTALLED.set((settings, status)) {
-        Ok(()) => Ok(&installed().1),
+        Ok(()) => {
+            let (s, st) = installed();
+            if let GpuStatus::Ready(info) = st {
+                install_default_pool(s, info, true);
+            }
+            Ok(st)
+        }
         Err(_) => {
             let (stored, st) = installed();
             if *stored == settings {
@@ -184,6 +190,50 @@ fn installed() -> &'static (GpuSettings, GpuStatus) {
             eprintln!("[ferric] gpu: {reason}; running on the CPU");
             GpuStatus::Unavailable { reason }
         });
+        if let GpuStatus::Ready(info) = &st {
+            install_default_pool(&settings, info, false);
+        }
         (settings, st)
     })
+}
+
+#[cfg(feature = "gpu")]
+static POOL: OnceLock<pool::DevicePool> = OnceLock::new();
+
+/// Pool ceiling: `memory_gb` if set, otherwise 80% of the free bytes seen at probe.
+#[cfg(feature = "gpu")]
+fn default_pool_capacity(settings: &GpuSettings, info: &GpuInfo) -> usize {
+    settings
+        .memory_gb
+        .map(|g| (g * 1e9) as usize)
+        .unwrap_or((info.free_bytes as f64 * 0.8) as usize)
+}
+
+/// Size and install the process-wide pool (first install wins); optionally announce it.
+fn install_default_pool(settings: &GpuSettings, info: &GpuInfo, announce: bool) {
+    #[cfg(feature = "gpu")]
+    {
+        let p = pool::DevicePool::with_capacity_bytes(default_pool_capacity(settings, info));
+        let gb = p.capacity_bytes() as f64 / 1e9;
+        if POOL.set(p).is_ok() && announce {
+            eprintln!("[ferric] gpu: device pool {gb:.2} GB");
+        }
+    }
+    #[cfg(not(feature = "gpu"))]
+    let _ = (settings, info, announce);
+}
+
+/// The process-wide device pool; `None` when no device is in play.
+#[cfg(feature = "gpu")]
+pub fn pool() -> Option<pool::DevicePool> {
+    POOL.get().cloned()
+}
+
+/// Install a pool of `cap` bytes (first caller wins; returns the installed one).
+#[cfg(feature = "gpu")]
+#[doc(hidden)]
+pub fn install_pool_for_tests(cap: usize) -> pool::DevicePool {
+    let p = pool::DevicePool::with_capacity_bytes(cap);
+    let _ = POOL.set(p.clone());
+    POOL.get().cloned().expect("set")
 }
