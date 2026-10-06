@@ -7,6 +7,12 @@ physics above it.
 
 This runs the real enumerate -> force-field -> GFN2 path on a small parent, so
 it is a genuine end-to-end check rather than a stub.
+
+The population is the parent's fluoro POSITIONAL ISOMERS only, one formula.
+The force-field and GFN2 stages rank total energies, which the funnel refuses
+to cut across differing formulas (IncomparableError). The parent C7H6O2 and
+its C7H5FO2 analogues are not comparable that way. This test is about
+reproducibility, not cross-formula ranking.
 """
 
 from __future__ import annotations
@@ -16,12 +22,14 @@ import pytest
 from tools.campaign.hierarchy import Tier
 from tools.isomers import enumerate_isomers
 from tools.pipeline import Stage, run_funnel
+from tools.pipeline.funnel import formula
 from tools.pipeline.tiers import tier2_forcefield, tier3_gfn2
 
 PARENT = "OC(=O)c1ccccc1"
 
 
-def _run():
+def _isomer_population():
+    """The fluoro analogues of PARENT: one formula, so totals are comparable."""
     cands = enumerate_isomers(
         PARENT,
         substituents={"F": "F"},
@@ -29,6 +37,14 @@ def _run():
         include_rings=False,
         include_bioisosteres=False,
     )
+    analogues = [c for c in cands if formula(c) == "C7H5FO2"]
+    # ortho/meta/para at minimum, so the GFN2 stage (keep=2) really cuts.
+    assert len(analogues) >= 3, [c.canonical for c in cands]
+    return analogues
+
+
+def _run():
+    cands = _isomer_population()
     stages = [
         Stage(Tier.FORCE_FIELD, tier2_forcefield, keep=3, name="ff"),
         Stage(Tier.SEMIEMPIRICAL, tier3_gfn2, keep=2, name="gfn2"),
