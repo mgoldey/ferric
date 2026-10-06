@@ -70,7 +70,7 @@ use ferric_scf::saddle::{find_saddle, SaddleConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::{Array1, Array2};
 
-const ANGSTROM_TO_BOHR: f64 = 1.8897261254578281;
+use ferric_core::units::ANGSTROM_TO_BOHR;
 
 fn main() -> Result<(), FerricError> {
     let ctx = ParallelContext::default();

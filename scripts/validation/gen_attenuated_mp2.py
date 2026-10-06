@@ -49,8 +49,9 @@ ROW_NAME = "Attenuated RI-MP2"
 BASIS = "aug-cc-pvdz"
 AUXBASIS = "aug-cc-pvdz-rifit"
 SYSTEMS = ("h2o", "nh3")
-# ferric: BOHR_INV_PER_ANG_INV = 1/1.8897259886; default omega = 0.420 A^-1.
-OMEGA_DEFAULT_BOHR = 0.420 * (1.0 / 1.8897259886)
+# ferric: BOHR_INV_PER_ANG_INV = 1/ANGSTROM_TO_BOHR (ferric_core::units);
+# default omega = 0.420 A^-1.
+OMEGA_DEFAULT_BOHR = 0.420 * (1.0 / common.ANGSTROM_TO_BOHR)
 OMEGAS = (0.2, OMEGA_DEFAULT_BOHR, 0.42, 1.0)
 CONV_TOL = 1e-12
 CONV_TOL_GRAD = 1e-9
@@ -193,7 +194,7 @@ def main() -> int:
             blocks.append(
                 {
                     "omega_bohr_inv": omega,
-                    "omega_angstrom_inv": omega * 1.8897259886,
+                    "omega_angstrom_inv": omega * common.ANGSTROM_TO_BOHR,
                     "e_corr": r["e_corr"],
                     "e_os": r["e_os"],
                     "e_ss": r["e_ss"],

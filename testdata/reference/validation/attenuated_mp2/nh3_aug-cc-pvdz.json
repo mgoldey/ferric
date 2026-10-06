@@ -8,52 +8,52 @@
   "nao": 50,
   "naux": 141,
   "nuclear_repulsion": 11.904528974062835,
-  "rhf_energy": -56.205142058795694,
+  "rhf_energy": -56.205142058795836,
   "coulomb": {
-    "e_os": -0.15534960751187926,
-    "e_ss": -0.04714141204618382,
-    "e_corr": -0.2024910195580631
+    "e_os": -0.15534960751192178,
+    "e_ss": -0.04714141204621691,
+    "e_corr": -0.2024910195581387
   },
   "attenuated": [
     {
       "omega_bohr_inv": 0.2,
-      "omega_angstrom_inv": 0.37794519772,
-      "e_corr": -0.19532236559472368,
-      "e_os": -0.15045910527150516,
-      "e_ss": -0.04486326032321853,
-      "exact_4index_e_corr_info": -0.1953534526501744,
-      "ri_error_info": 3.108705545071255e-05
+      "omega_angstrom_inv": 0.3779452249130124,
+      "e_corr": -0.195322365594796,
+      "e_os": -0.15045910527154652,
+      "e_ss": -0.04486326032324948,
+      "exact_4index_e_corr_info": -0.19535345265024723,
+      "ri_error_info": 3.108705545123991e-05
     },
     {
-      "omega_bohr_inv": 0.2222544445775211,
+      "omega_bohr_inv": 0.22225442858640002,
       "omega_angstrom_inv": 0.42,
-      "e_corr": -0.19288261526597078,
-      "e_os": -0.1488045348199783,
-      "e_ss": -0.044078080445992485,
-      "exact_4index_e_corr_info": -0.1929138876581954,
-      "ri_error_info": 3.1272392224612755e-05
+      "e_corr": -0.19288261716533744,
+      "e_os": -0.1488045361074143,
+      "e_ss": -0.044078081057923164,
+      "exact_4index_e_corr_info": -0.1929138895574173,
+      "ri_error_info": 3.127239207986743e-05
     },
     {
       "omega_bohr_inv": 0.42,
-      "omega_angstrom_inv": 0.7936849152119999,
-      "e_corr": -0.15613366638515525,
-      "e_os": -0.12372732025968415,
-      "e_ss": -0.03240634612547108,
-      "exact_4index_e_corr_info": -0.15616796721408724,
-      "ri_error_info": 3.430082893199349e-05
+      "omega_angstrom_inv": 0.7936849723173259,
+      "e_corr": -0.15613366638520573,
+      "e_os": -0.12372732025971421,
+      "e_ss": -0.03240634612549152,
+      "exact_4index_e_corr_info": -0.15616796721413792,
+      "ri_error_info": 3.430082893218778e-05
     },
     {
       "omega_bohr_inv": 1.0,
-      "omega_angstrom_inv": 1.8897259886,
-      "e_corr": -0.04876268673062435,
-      "e_os": -0.043531747078776564,
-      "e_ss": -0.005230939651847788,
-      "exact_4index_e_corr_info": -0.048796951955392784,
-      "ri_error_info": 3.4265224768431635e-05
+      "omega_angstrom_inv": 1.8897261245650618,
+      "e_corr": -0.048762686730632554,
+      "e_os": -0.04353174707878128,
+      "e_ss": -0.005230939651851274,
+      "exact_4index_e_corr_info": -0.04879695195540115,
+      "ri_error_info": 3.426522476859817e-05
     }
   ],
   "checks": {
-    "numpy_vs_pyscf_dfmp2_omega0_abs": 5.273559366969494e-16,
+    "numpy_vs_pyscf_dfmp2_omega0_abs": 2.7755575615628914e-17,
     "erfc_plus_erf_minus_coulomb_max_abs": 3.699107686827574e-11
   },
   "provenance": {
@@ -110,8 +110,8 @@
     ],
     "bohr_in_angstrom": 0.52917721092,
     "generator": "scripts/validation/gen_attenuated_mp2.py",
-    "git_head": "dfeb5daa34f791a42da36135daba64c9e7f600cb",
-    "generated_utc": "2026-09-24T23:18:10+00:00",
+    "git_head": "8d6bb4f9bdf45c51b317a971b61ccf1537d84ee2",
+    "generated_utc": "2026-10-06T17:31:05+00:00",
     "basis_self_check": {
       "nao": 50,
       "replica_self_overlap_max_dev": 2.220446049250313e-16,

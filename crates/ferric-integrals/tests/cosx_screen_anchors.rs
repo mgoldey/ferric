@@ -547,7 +547,7 @@ fn bragg_slater_bohr(z: i32) -> f64 {
         10 => 0.45,
         _ => 1.00,
     };
-    r_a * 1.8897259886
+    r_a * ferric_core::units::ANGSTROM_TO_BOHR
 }
 
 /// Becke fuzzy weights at `r` for every atom (Becke 1988, k=3 smoothing,

@@ -154,8 +154,10 @@ pub struct AttenuatedMp2Config {
     pub memory_budget_bytes: Option<usize>,
 }
 
-/// Bohr⁻¹ per Å⁻¹ (inverse of the Å-to-Bohr conversion).
-pub const BOHR_INV_PER_ANG_INV: f64 = 1.0 / 1.8897259886;
+/// Bohr⁻¹ per Å⁻¹: an inverse length in Å⁻¹ times this is Bohr⁻¹. The same
+/// value as [`ferric_core::units::BOHR_TO_ANGSTROM`], kept under this name for
+/// the ω conversions that read it.
+pub const BOHR_INV_PER_ANG_INV: f64 = ferric_core::units::BOHR_TO_ANGSTROM;
 
 impl Default for AttenuatedMp2Config {
     fn default() -> Self {

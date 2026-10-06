@@ -40,6 +40,8 @@ pub mod mol;
 pub mod orbitals;
 /// Parallelism context: thread pools, optional MPI world handle.
 pub mod parallel;
+/// Length units: the one Ångström ↔ Bohr conversion ([`units::ANGSTROM_TO_BOHR`]).
+pub mod units;
 
 pub use error::FerricError;
 pub use orbitals::OrbitalSpace;

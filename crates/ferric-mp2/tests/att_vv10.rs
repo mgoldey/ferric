@@ -658,10 +658,11 @@ fn published_parameters_are_the_paper_values() {
     // constant `r0_bohr` was multiplied by, so it round-trips even if that
     // constant is inverted — an independent anchor is required. (Found by
     // mutation testing: inverting BOHR_PER_ANG left the round-trip assertion
-    // above passing.) 1.00 A = 1.8897259886 Bohr; a 1/x error would give 0.529.
+    // above passing.) 1.00 A = 1/0.52917721092 = 1.8897261246 Bohr; a 1/x error
+    // would give 0.529.
     assert!(
-        (cfg.r0_bohr - 1.889_725_988_6).abs() < 1e-9,
-        "r0 = 1.00 A must be 1.8897259886 Bohr, got {} (a value near 0.529 means \
+        (cfg.r0_bohr - 1.889_726_124_565).abs() < 1e-9,
+        "r0 = 1.00 A must be 1.8897261246 Bohr, got {} (a value near 0.529 means \
          the Angstrom->Bohr conversion is inverted)",
         cfg.r0_bohr
     );
@@ -1069,8 +1070,13 @@ fn decoupled_omega_lockstep_guards() {
 /// tightening ten thousand-fold further to 1e-11 gives -0.1806640933242712 --
 /// IDENTICAL, so this is the converged number and the old constant was not.
 /// E_HF and E_NL were unaffected throughout and are unchanged here.
+///
+/// E_c depends on r0 through the erfc ω = 1/(r0·√2), so it moves with the
+/// Å→Bohr factor: at r0 = 1.00 Å × (1/0.52917721092) (ferric_core::units, the
+/// geometry's factor) E_c = -0.18066409770641687; the earlier pin
+/// -0.1806640933 was at 1.00 Å × 1.8897259886, an r0 7.2e-8 relative smaller.
 const PHASE_A_WATER_CCPVDZ_ERFC_E_HF: f64 = -76.0267833623;
-const PHASE_A_WATER_CCPVDZ_ERFC_E_C: f64 = -0.1806640933;
+const PHASE_A_WATER_CCPVDZ_ERFC_E_C: f64 = -0.1806640977;
 const PHASE_A_WATER_CCPVDZ_ERFC_E_NL: f64 = 0.0186722266;
 
 #[test]

@@ -18,8 +18,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::ScfResult;
 
-/// Angstrom to Bohr conversion factor.
-const ANGSTROM_TO_BOHR: f64 = 1.8897259886;
+use ferric_core::units::ANGSTROM_TO_BOHR;
 
 /// Standard SCS-MP2 configuration (Grimme, J. Chem. Phys. 118, 9095 (2003)).
 #[derive(Debug, Clone)]

@@ -6,7 +6,7 @@ use crate::FerricError;
 use std::fs;
 use std::str::FromStr;
 
-const ANGSTROM_TO_BOHR: f64 = 1.0 / 0.529_177_210_92;
+use crate::units::ANGSTROM_TO_BOHR;
 
 /// A single atom with element symbol, atomic number, and Cartesian coordinates in Bohr.
 ///

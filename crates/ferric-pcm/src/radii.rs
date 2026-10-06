@@ -13,7 +13,7 @@
 //! returns `None` so callers can choose to hard-error instead if they want
 //! stricter behavior.
 
-const BOHR_PER_ANGSTROM: f64 = 1.8897259886;
+use ferric_core::units::ANGSTROM_TO_BOHR as BOHR_PER_ANGSTROM;
 
 /// Bondi radii in Angstrom, indexed by atomic number Z (1-based; `RADII[0]`
 /// is a dummy Z=0 entry). `None` = not tabulated.
@@ -114,7 +114,7 @@ mod tests {
 
     #[test]
     fn hydrogen_radius_matches_bondi_1964() {
-        // 1.20 A * 1.8897259886 = 2.2676... Bohr
+        // 1.20 A * (1/0.52917721092) = 2.2676... Bohr
         let r = bondi_radius_bohr(1);
         assert!((r - 1.20 * BOHR_PER_ANGSTROM).abs() < 1e-10);
     }
