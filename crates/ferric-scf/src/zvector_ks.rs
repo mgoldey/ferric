@@ -345,7 +345,11 @@ impl<'a> ResponseFock<'a> {
             k_mix.sr
         };
         let grid = config.dft_grid.clone().unwrap_or_default();
-        let fxc = crate::rohf::FxcKernelStore::build(mol, prep, &grid, xc, d_a, d_b)?;
+        // `ks_hessian_unsupported_reason` refuses an `xc_omega` run outright, so
+        // this is always `None` in practice; passed through rather than hardcoded
+        // so the two places cannot drift apart silently.
+        let fxc =
+            crate::rohf::FxcKernelStore::build(mol, prep, &grid, xc, config.xc_omega, d_a, d_b)?;
         let budget = crate::rhf::resolve_three_index_budget(config.three_index_budget_bytes);
         Ok(Self {
             prep,

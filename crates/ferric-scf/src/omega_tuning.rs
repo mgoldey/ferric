@@ -49,14 +49,15 @@
 //!
 //! Neither mechanism can tell a converged cation that is an internal SADDLE
 //! from one that is a minimum. The instrument for that is the orbital
-//! Hessian, and [`crate::stability::ks_reference_is_analysable`] refuses
-//! ω ≠ 0 ([`crate::stability::StabilitySkip::RangeSeparated`]): the matvec
-//! builds its exchange response from the plain Coulomb kernel and so does not
-//! reproduce a range-separated Fock's SR/LR split. Until an ω ≠ 0
-//! orbital-Hessian matvec exists, a tuned ω* can sit on a cation branch that
-//! has stopped being a minimum, and this module cannot say so. Continuation
-//! keeps the curve on ONE branch; it does not certify that branch is the
-//! lowest one.
+//! Hessian. Its exchange response reproduces a range-separated Fock's SR/LR
+//! split, so [`crate::stability::ks_reference_is_analysable`] accepts ω ≠ 0
+//! for functionals without VV10. ωB97X-V, the functional this module is
+//! validated with, carries VV10 and is still refused
+//! ([`crate::stability::StabilitySkip::Vv10Kernel`]): no VV10 response kernel
+//! exists. This module also does not yet report the Hessian's lowest
+//! eigenvalue per ω. A tuned ω* can therefore sit on a cation branch that has
+//! stopped being a minimum, and this module cannot say so. Continuation keeps
+//! the curve on ONE branch; it does not certify that branch is the lowest one.
 
 use crate::rhf::{solve_rhf, RhfConfig};
 use crate::screening::SchwarzBounds;

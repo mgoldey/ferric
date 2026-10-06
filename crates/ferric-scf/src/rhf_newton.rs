@@ -62,8 +62,15 @@ pub struct RhfNewtonInputs<'a> {
     /// Fock in the MO basis (current iter).
     pub f_mo: &'a Array2<f64>,
     pub nocc: usize,
-    /// K mixing coefficient (1.0 for HF, c_HF for hybrid; ignored for RSH).
+    /// K mixing coefficient for the plain-Coulomb exchange response
+    /// (1.0 for HF, c_HF for a global hybrid). Read ONLY when `rsh` is `None`.
     pub k_mix_sr: f64,
+    /// Range-separated exchange response (ω ≠ 0 only). `Some(..)` replaces the
+    /// single Coulomb-kernel `k_mix_sr · δK` with the SR/LR combination
+    /// `c_SR·δK[erfc(ω)] + c_LR·δK[erf(ω)]` built from the SAME `DfK` fitters
+    /// the converged Fock was assembled from — see [`crate::rsh_response`].
+    /// `None` (ω = 0) leaves the Coulomb path bit-identical to the pre-#314 code.
+    pub rsh: Option<&'a crate::rsh_response::RshResponse<'a>>,
     /// Optional XC-kernel response closure (None for pure RHF). Called with the
     /// per-spin restricted density perturbation (δD_α = δD_β = ½·δD_total).
     pub fxc: Option<&'a FxcResponse<'a>>,
@@ -179,9 +186,16 @@ pub fn hessian_matvec(
         ctx, inp.prep, inp.bounds, inp.thresh, &dd_ao, &mut dj, &mut dk, pool, band_bytes,
     )?;
 
-    // F = H + J − ½·k_mix·K  ⇒  δF = δJ − ½·k_mix·δK.
-    let c_k = inp.k_mix_sr;
-    let mut df: Array2<f64> = &dj - &(0.5 * c_k * &dk);
+    // F = H + J − ½·K_total  ⇒  δF = δJ − ½·δK_total. For ω = 0, K_total =
+    // k_mix·K[Coulomb]; for ω ≠ 0 it is c_SR·K[erfc(ω)] + c_LR·K[erf(ω)] from
+    // the Fock's own fitters (`scale = 0.5` in `subtract_rsh_exchange`'s
+    // restricted call, which is the ½ here). The ω = 0 arm is the untouched
+    // pre-#314 expression, so a non-RSH run is bit-identical; `dk` is simply
+    // unused on the RSH arm (the combined J+K builder supplies δJ either way).
+    let mut df: Array2<f64> = match inp.rsh {
+        Some(rsh) => &dj - &(0.5 * &rsh.exchange_response(&dd_ao)?),
+        None => &dj - &(0.5 * inp.k_mix_sr * &dk),
+    };
 
     if let Some(fxc) = inp.fxc {
         // The f_xc response expects the per-spin perturbation. For a restricted
@@ -300,8 +314,14 @@ pub fn triplet_hessian_matvec(
     // is exchange-only.
     drop(dj);
 
-    // δF_triplet = −½·k_mix·δK. No δJ, no δV_xc.
-    let df: Array2<f64> = -0.5 * inp.k_mix_sr * &dk;
+    // δF_triplet = −½·δK_total. No δJ, no δV_xc. The exchange that does NOT
+    // cancel in this channel is the SAME range-separated combination the Fock
+    // builds, so ω ≠ 0 takes the SR/LR response here too; ω = 0 keeps the
+    // untouched single-kernel expression.
+    let df: Array2<f64> = match inp.rsh {
+        Some(rsh) => -0.5 * &rsh.exchange_response(&dd_ao)?,
+        None => -0.5 * inp.k_mix_sr * &dk,
+    };
 
     let df_mo = inp.c.t().dot(&df).dot(inp.c);
     let mut h = occ_virt_block(&df_mo, no, n);

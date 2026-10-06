@@ -10,10 +10,11 @@
 //! ω) and the branch check (⟨S²⟩ + spin-population asymmetry against that same
 //! neighbour) are what this file tests.
 //!
-//! Neither is a stability verdict. `stability::ks_reference_is_analysable`
-//! refuses ω ≠ 0 (`StabilitySkip::RangeSeparated`), so a converged cation that
-//! is an internal SADDLE cannot be identified here. The measured consequence
-//! is in `validation_omega_tuning_cation.rs` (issue #314 tracks the fix).
+//! Neither is a stability verdict. `tune_omega` does not report the orbital
+//! Hessian's lowest eigenvalue, and `stability::ks_reference_is_analysable`
+//! refuses ωB97X-V (`StabilitySkip::Vv10Kernel`: no VV10 response kernel), so a
+//! converged cation that is an internal SADDLE cannot be identified here. The
+//! measured consequence is in `validation_omega_tuning_cation.rs`.
 //!
 //! # Measured: N2/def2-SVP ωB97X-V, ω = 0.50…0.60
 //!

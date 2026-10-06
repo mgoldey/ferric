@@ -15,11 +15,12 @@
 //! # What these establish, and what they cannot
 //!
 //! Neither continuation nor the branch check is a stability verdict.
-//! `stability::ks_reference_is_analysable` refuses ω ≠ 0
-//! (`StabilitySkip::RangeSeparated`), so a converged cation that is an internal
-//! SADDLE cannot be identified here. `n2_onset_is_not_visible_without_an_
-//! orbital_hessian` is the measured statement of that limit, and issue #314
-//! tracks the fix.
+//! `tune_omega` does not report the orbital Hessian's lowest eigenvalue, and
+//! `stability::ks_reference_is_analysable` refuses ωB97X-V
+//! (`StabilitySkip::Vv10Kernel`: no VV10 response kernel), so a converged cation
+//! that is an internal SADDLE cannot be identified here.
+//! `n2_onset_is_not_visible_without_an_orbital_hessian` is the measured
+//! statement of that limit.
 //!
 //! # Measured: N2/def2-SVP ωB97X-V, ω = 0.50…0.60
 //!
@@ -490,7 +491,8 @@ fn omega_star_before_and_after_continuation() {
 /// So neither continuation nor any observable this module can compute flags
 /// this onset: the curve is self-consistent, single-branch and smooth, and
 /// what has changed is a CURVATURE, which only an orbital Hessian sees.
-/// ferric's refuses ω ≠ 0 (`StabilitySkip::RangeSeparated`). The assertions
+/// `tune_omega` reports no Hessian eigenvalue, and ferric's stability analysis
+/// refuses ωB97X-V (`StabilitySkip::Vv10Kernel`). The assertions
 /// below pin that state of affairs so it cannot regress silently in either
 /// direction — if a future change makes the plain tuner reach the lower
 /// branch, the monotonicity assert fails and this doc is wrong.

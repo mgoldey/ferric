@@ -95,11 +95,14 @@
 //!
 //! * PBE / B3LYP UKS: ferric runs `check_stability` + `scf_stability_descent`
 //!   and must end STABLE; λ_min is compared with PySCF's dense UKS Hessian.
-//! * ωB97X-V UKS: ferric's stability analysis SKIPS range-separated
-//!   functionals (`StabilitySkip::RangeSeparated` — the Hessian's exchange
-//!   response is plain Coulomb). The state is then pinned by the energy and
-//!   ⟨S²⟩ matching a stability-followed reference. If ferric ever returns a
-//!   verdict here it must be STABLE, and this paragraph must be updated.
+//! * ωB97X-V UKS: ferric's stability analysis SKIPS this functional
+//!   (`StabilitySkip::Vv10Kernel` — ωB97X-V carries VV10 nonlocal correlation
+//!   and no VV10 response kernel exists in this workspace). Range separation
+//!   itself is no longer the reason: the Hessian's exchange response is now the
+//!   converged Fock's own `c_SR·K[erfc(ω)] + c_LR·K[erf(ω)]`. The state is
+//!   pinned by the energy and ⟨S²⟩ matching a stability-followed reference. If
+//!   ferric ever returns a verdict here it must be STABLE, and this paragraph
+//!   must be updated.
 //! * O2: ⟨S²⟩ within 0.05 of 2. UKS at multiplicity 3 fixes N_α − N_β = 2, so
 //!   it cannot become a singlet; the state within the triplet manifold is
 //!   pinned by the energy and ⟨S²⟩ matching PySCF's stability-checked

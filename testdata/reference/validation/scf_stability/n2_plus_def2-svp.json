@@ -1,0 +1,137 @@
+{
+  "row": "SCF stability",
+  "system": "n2_plus",
+  "basis": "def2-svp",
+  "charge": 1,
+  "multiplicity": 2,
+  "nao": 28,
+  "nuclear_repulsion": 23.23448327516129,
+  "functional": "wB97X-V",
+  "omega_override_anchor": {
+    "published_omega": 0.3,
+    "abs_e_override_at_published_minus_default": 0.0,
+    "abs_e_override_plus_0p1_minus_default": 0.01587333858032025
+  },
+  "rsh_uks_omega_scan": [
+    {
+      "omega": 0.4,
+      "energy": -108.80694971577239,
+      "s_squared": 0.7549153689751718,
+      "selected_guess": "minao (default; NOT stability-followed)",
+      "hessian": {
+        "construction": "dense newton_ah.gen_g_hop_uhf h_op on dft.UKS (== ferric uhf_internal_stability, factor 1); f_xc via gen_response",
+        "dim": 279,
+        "lowest": [
+          0.008602813033197125,
+          0.008602813033204764,
+          0.03996126349382461,
+          0.15775495023124897,
+          0.20074518951443404,
+          0.20075435460689145,
+          0.31977071108966504,
+          0.31977636416972666
+        ],
+        "max_asymmetry": 1.9297063946766002e-14,
+        "max_orbital_gradient": 2.6344082949018424e-09
+      }
+    },
+    {
+      "omega": 0.6,
+      "energy": -108.77696707421782,
+      "s_squared": 0.7571623729976285,
+      "selected_guess": "minao (default; NOT stability-followed)",
+      "hessian": {
+        "construction": "dense newton_ah.gen_g_hop_uhf h_op on dft.UKS (== ferric uhf_internal_stability, factor 1); f_xc via gen_response",
+        "dim": 279,
+        "lowest": [
+          -0.011168165283223097,
+          -0.011168165283219693,
+          0.0025472521772156673,
+          0.12656714359186594,
+          0.16869494600849644,
+          0.1687046361429046,
+          0.28976261680605303,
+          0.289769605090239
+        ],
+        "max_asymmetry": 2.5229818234606682e-14,
+        "max_orbital_gradient": 5.244599398007076e-09
+      }
+    }
+  ],
+  "caveat": "PySCF's KS response omits the VV10 second derivative, and so does ferric's f_xc kernel; this comparison is like-for-like ON THAT OMISSION and is not the complete second derivative of wB97X-V's energy. The cation is NOT stability-followed: these are the symmetric D-inf-h branch's spectra, which is the point (past the onset that branch is a saddle).",
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "method": "dft.UKS wB97X-V with mf.omega overridden",
+      "xc": "wB97X_V",
+      "jk": "EXACT J (4-index) for neutral and cation + density-fitted K in the attenuated metric; full-range K served as K_SR^DF[erfc] + K_LR^DF[erf] (== ferric's c_SR K_SR + c_LR K_LR)",
+      "init_guess": "minao (default), NOT stability-followed",
+      "stability": "dense gen_g_hop_uhf (includes f_xc); PySCF KS response omits the VV10 kernel",
+      "normalization": "stored 'lowest' arrays are in FERRIC's convention: gen_g_hop_uhf x1",
+      "numpy": "1.26.4"
+    },
+    "grid": {
+      "main": {
+        "atom_grid": [
+          75,
+          110
+        ],
+        "prune": null,
+        "partition": "Becke (original_becke)",
+        "radii_adjust": "becke_atomic_radii_adjust"
+      },
+      "nlc_vv10": {
+        "atom_grid": [
+          50,
+          50
+        ],
+        "prune": null
+      }
+    },
+    "aux_basis": {
+      "name": "def2-universal-jkfit"
+    },
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-10,
+      "conv_tol_grad": 1e-07
+    },
+    "stability": {
+      "note": "no stability-following; verdicts are read from the dense spectra above"
+    },
+    "basis": "def2-svp",
+    "basis_json": "crates/ferric-core/src/basis/bundled/def2-svp.json",
+    "basis_sha256": "bfad5f58ceac74a9ac2766b39f510654cea29fb9408e966bb0dfcf14e1302d4f",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/n2_plus.xyz",
+    "geometry_xyz_sha256": "441b0c659e41b405216b29ed61da83c37112c3710decc6f88ba7df7cd654fb0d",
+    "geometry_bohr": [
+      [
+        "N",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "N",
+        0.0,
+        0.0,
+        2.1089343550146094
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_scf_stability.py",
+    "git_head": "e02ee5420c865c923b65a680064b469b79a21516",
+    "generated_utc": "2026-10-05T02:58:10+00:00",
+    "basis_self_check": {
+      "nao": 28,
+      "replica_self_overlap_max_dev": 1.1102230246251565e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 28,
+      "diag_skipped_cartesian": 0,
+      "aux_nao": 154
+    }
+  }
+}
