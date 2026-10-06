@@ -255,7 +255,9 @@ def run_qmmm(
 
     mm_topology, if given, adds ferric-mm's AMBER-form force field under the additive QM/MM
     convention (MM-MM bonded/nonbonded + QM-MM Lennard-Jones; no QM-MM Coulomb, already inside
-    the embedding). Omitting it is bit-identical to a topology with zero energy/gradient
+    the embedding). QM-MM Lennard-Jones follows the topology's own exclusion rules across the
+    cut: pairs 1-2/1-3 apart through its bond list are skipped and 1-4 pairs are scaled by its
+    LJ 1-4 factor (AMBER 0.5). Omitting it is bit-identical to a topology with zero energy/gradient
     everywhere (QmmmResult.mm_energy reports all-zero, not absent).
 
     thole_a controls Thole damping for polarizable sites (system built with
