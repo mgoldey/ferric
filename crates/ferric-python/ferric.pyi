@@ -61,7 +61,9 @@ class GpuStatus(TypedDict):
 
 def gpu_status() -> GpuStatus:
     """CUDA backend state. Resolved once per process from the environment; touches
-    a device only when ``FERRIC_GPU`` is ``auto`` or ``on``."""
+    a device only when ``FERRIC_GPU`` is ``auto`` or ``on``. Unlike the CLI, where
+    ``on`` with no usable device is an error, here it prints a notice and the run
+    stays on the CPU; read the returned status to see which."""
     ...
 
 # ── Classes ──

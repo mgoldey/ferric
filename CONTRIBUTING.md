@@ -178,8 +178,9 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo fmt --all --check
 
 # Optional CUDA backend (builds with no toolkit; needs a driver only to run):
-cargo clippy --workspace --all-targets --features ferric-core/gpu,ferric-tensors/gpu,ferric-cli/gpu,ferric-python/gpu -- -D warnings
+cargo clippy --workspace --all-targets --features ferric-core/gpu,ferric-tensors/gpu,ferric-cli/gpu,ferric-python/gpu,ferric-benchmarks/gpu -- -D warnings
 OPENBLAS_NUM_THREADS=1 FERRIC_GPU_TESTS_REQUIRED=1 cargo test -p ferric-core --features gpu --test gpu_probe
+OPENBLAS_NUM_THREADS=1 cargo test -p ferric-cli --features gpu --locked --test gpu_section -- --nocapture
 
 # Python: formatting and security
 uvx ruff@0.15.8 format --check .

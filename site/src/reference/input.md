@@ -309,7 +309,7 @@ Optional CUDA backend. A default build has no GPU code: there `mode = "on"` is a
 | `mode` | string | `"off"` | `off`, `auto`, `on` | `auto` uses a device when one is usable and otherwise prints a notice and runs on the CPU; `on` makes an unusable device an error. Env: `FERRIC_GPU`. |
 | `device` | integer | 0 | a CUDA ordinal | Which device to use. Env: `FERRIC_GPU_DEVICE`. |
 | `memory_gb` | float | 0.8 x free | finite and > 0 | Device-memory pool (decimal GB). A GEMM that does not fit runs on the CPU. Env: `FERRIC_GPU_MEM_GB`. |
-| `min_flops` | integer | 1073741824 | | Smallest `2*m*n*k` sent to the device. Env: `FERRIC_GPU_MIN_FLOPS`. |
+| `min_flops` | integer | 1073741824 | | Smallest `2*m*n*k` sent to the device; the default is not tuned for any particular card. Env: `FERRIC_GPU_MIN_FLOPS`. |
 
 ## `[output]`
 

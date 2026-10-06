@@ -201,7 +201,7 @@ its own cgroup, for example with `scripts/ferric-limited -- ferric input.toml`
 
 ## GPU offload is opt-in and may not help
 
-The CUDA backend is not in the PyPI wheel; it needs a source build with the `gpu` feature (see [GPU (CUDA)](installation.md#gpu-cuda)), and even then it is off by default (`FERRIC_GPU=auto` or `[gpu] mode` turns it on). Consumer GeForce cards run FP64 at 1/32 of their FP32 rate, so offloading f64 contractions may be slower than the CPU once transfer time is counted; whether it helps depends on the card and the problem, and has to be measured on your own hardware.
+The CUDA backend is not in the PyPI wheel; it needs a source build with the `gpu` feature (see [GPU (CUDA)](installation.md#gpu-cuda)), and even then it is off by default (`FERRIC_GPU=auto` or `[gpu] mode` turns it on). Consumer GeForce cards run FP64 at 1/32 of their FP32 rate or less, so offloading f64 contractions may be slower than the CPU once transfer time is counted; whether it helps depends on the card and the problem, and has to be measured on your own hardware.
 
 Device memory is a separate pool (`[gpu] memory_gb`); the host `[memory] budget_gb` is not reduced by it. A contraction that does not fit the device pool runs on the CPU and is counted, not refused. `FERRIC_GPU_TRACE=1` prints each fallback.
 

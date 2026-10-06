@@ -358,8 +358,11 @@ echo
 if [[ "${CI_GATE_GPU:-0}" == "1" ]]; then
     echo "-- cargo clippy --features gpu --"
     OPENBLAS_NUM_THREADS=1 cargo clippy --workspace --all-targets --locked -j "$JOBS" \
-        --features ferric-core/gpu,ferric-tensors/gpu,ferric-cli/gpu,ferric-python/gpu -- -D warnings \
+        --features ferric-core/gpu,ferric-tensors/gpu,ferric-cli/gpu,ferric-python/gpu,ferric-benchmarks/gpu -- -D warnings \
         || { echo "RESULT: FAIL (gpu clippy)"; exit 1; }
+    echo "-- cargo test ferric-cli gpu_section (gpu feature) --"
+    OPENBLAS_NUM_THREADS=1 cargo test -p ferric-cli --features gpu --locked --test gpu_section \
+        || { echo "RESULT: FAIL (gpu_section)"; exit 1; }
 fi
 
 # ---- 3. complexity regression (CC/MI vs. checked-in baseline) ----------

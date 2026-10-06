@@ -321,7 +321,7 @@ jobs:
       # because this is a virtual workspace.
       - name: gpu feature (no toolkit) — check, clippy, doc, skip-path test
         env:
-          GPU_FEATURES: ferric-core/gpu,ferric-tensors/gpu,ferric-cli/gpu,ferric-python/gpu
+          GPU_FEATURES: ferric-core/gpu,ferric-tensors/gpu,ferric-cli/gpu,ferric-python/gpu,ferric-benchmarks/gpu
         run: |
           set -euo pipefail
           if [ -e /usr/lib/x86_64-linux-gnu/libcuda.so.1 ]; then
@@ -333,6 +333,10 @@ jobs:
           RUSTDOCFLAGS='-D warnings' cargo doc -p ferric-core --no-deps --locked --features gpu
           OPENBLAS_NUM_THREADS=1 cargo test -p ferric-core --features gpu --locked --test gpu_probe --test gpu_config -- --nocapture 2>&1 | tee gpu-probe.log
           grep -q 'skipping: no CUDA device' gpu-probe.log
+          # The CLI's [gpu] section on a gpu-feature binary with no driver: refusal and
+          # notice paths run; the real-device test skips with a printed notice.
+          OPENBLAS_NUM_THREADS=1 cargo test -p ferric-cli --features gpu --locked --test gpu_section -- --nocapture 2>&1 | tee gpu-section.log
+          grep -q 'skipping: no usable CUDA device' gpu-section.log
 
       # rustdoc is built HERE, not in docs.yml, and the reason is structural:
       # `cargo doc` does not link, but it DOES run build scripts, and

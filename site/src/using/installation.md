@@ -221,9 +221,9 @@ cargo build --release -p ferric-cli --features ferric-cli/gpu
 FERRIC_GPU=auto ./target/release/ferric examples/water-ccsd.toml
 ```
 
-Building needs no CUDA toolkit: the driver and cuBLAS libraries are loaded at run time. Running needs an NVIDIA driver and the CUDA 12 runtime libraries (`libcuda.so.1`, `libcublas.so.12`) on the loader path; without them `mode = "auto"` prints a notice and runs on the CPU, and `mode = "on"` stops with the reason. The CUDA 12 libraries support compute capability 5.0 and above; CUDA 13 does not support Pascal (compute capability 6.x), so a Pascal card needs the CUDA 12 libraries.
+Building needs no CUDA toolkit: the driver and cuBLAS libraries are loaded at run time. Running needs an NVIDIA driver and the CUDA 12 runtime libraries (`libcuda.so.1`, `libcublas.so.12`) on the loader path; without them `mode = "auto"` prints a notice and runs on the CPU, and `mode = "on"` stops the `ferric` binary with the reason. Library and Python callers that set `FERRIC_GPU=on` with no usable device get the same notice and a CPU run, not an error; check `ferric.gpu_status()`. The CUDA 12 libraries support compute capability 5.0 and above; CUDA 13 does not support Pascal (compute capability 6.x), so a Pascal card needs the CUDA 12 libraries.
 
-What runs on the device: dense f64 contractions issued through `einsum!` (the coupled-cluster and MP3 drivers) above a size threshold. Everything else (integrals, SCF diagonalisation, DIIS, grids) runs on the CPU. Device results are reproducible run to run on one device and agree with the CPU to the accuracy of a different summation order, not bit for bit. See the `[gpu]` keys in the [input reference](../reference/input.md#gpu).
+What runs on the device: dense f64 contractions issued through `einsum!` (the coupled-cluster and MP2-family drivers) above a size threshold. Everything else (integrals, SCF diagonalisation, DIIS, grids) runs on the CPU. Device results are reproducible run to run on one device and agree with the CPU to the accuracy of a different summation order, not bit for bit. See the `[gpu]` keys in the [input reference](../reference/input.md#gpu).
 
 ## Threading
 
