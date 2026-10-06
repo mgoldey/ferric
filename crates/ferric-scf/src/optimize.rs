@@ -890,7 +890,7 @@ fn compute_energy_and_gradient_uhf(
     let uhf_config = &*crate::gradient::gradient_task_config(uhf_config);
     let res = solve_uhf(ctx, mol, &prep, &bounds, uhf_config)?;
     // Exactly `ks_gradient_uks` / `uhf_gradient` unless the SCF's exchange
-    // came from COSX (UHF: COSX derivative; UKS: refused).
+    // came from COSX (then the COSX derivative; a fitted setup is refused).
     let grad =
         crate::gradient::unrestricted_scf_gradient(mol, &prep, &bs, op, &bounds, uhf_config, &res)?;
     Ok((res.energy, grad, res))

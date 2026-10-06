@@ -2980,13 +2980,13 @@ impl PyFrequencyResult {
 /// assuming.
 ///
 /// `dispersion`: the same strict spellings as `run_dft` ("d3bj", "d3(bj)",
-/// "d3bj(<functional>)", "mbd", "mbd(<functional>)"). Requires `xc` and the
-/// closed-shell reference ("rhf"); open-shell references raise. The Hessian is
+/// "d3bj(<functional>)", "mbd", "mbd(<functional>)"). Requires `xc`; any
+/// reference ("rhf", "uhf", "rohf", i.e. RKS, UKS or ROKS). The Hessian is
 /// then the central difference of the corrected analytic gradient
 /// (KS + dispersion), each from the SCF converged at that displaced geometry,
 /// so `hessian="analytic"` raises and "auto" runs finite differences. MBD@rsSCS
 /// enters through its exact gradient, including the orbital relaxation of its
-/// Hirshfeld volumes. `.energy` is then the corrected total and
+/// Hirshfeld volumes (the reference's own Z-vector: RKS, UKS or ROKS). `.energy` is then the corrected total and
 /// `.e_dispersion` the dispersion part.
 #[pyfunction]
 #[pyo3(signature = (
@@ -3077,8 +3077,8 @@ fn run_frequencies(
 
 /// `run_frequencies(dispersion=...)`, resolved BEFORE any SCF with
 /// `run_dft`'s strict parser. The parameters are fitted per functional, so
-/// there is no dispersion without `xc`; the correction is threaded through the
-/// closed-shell driver only; MBD@rsSCS needs its exact (Z-vector) gradient.
+/// there is no dispersion without `xc`; MBD@rsSCS needs its exact (Z-vector)
+/// gradient for the chosen reference.
 fn resolve_frequency_dispersion(
     dispersion: Option<&str>,
     xc: Option<&str>,
@@ -3094,16 +3094,17 @@ fn resolve_frequency_dispersion(
              functional, so there is no dispersion correction for Hartree-Fock",
         )
     })?;
-    if reference != ferric_scf::frequencies::FrequencyReference::Rhf {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "dispersion= is supported only with the closed-shell reference (\"rhf\" + xc, \
-             i.e. RKS): the dispersion gradient is threaded through the closed-shell \
-             frequency driver only",
-        ));
-    }
     let spec = resolve_dispersion(spec, xc_name)?;
     if matches!(spec, DispersionSpec::Mbd(_)) {
-        if let Some(why) = ferric_scf::zvector_ks::unsupported_reason(scf_cfg) {
+        use ferric_scf::frequencies::FrequencyReference;
+        let unsupported = match reference {
+            FrequencyReference::Rhf => ferric_scf::zvector_ks::unsupported_reason(scf_cfg),
+            FrequencyReference::Uhf => {
+                ferric_scf::zvector_ks::unsupported_reason_unrestricted(scf_cfg)
+            }
+            FrequencyReference::Rohf => ferric_scf::zvector_ks::unsupported_reason_roks(scf_cfg),
+        };
+        if let Some(why) = unsupported {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "dispersion=\"mbd\": the exact MBD@rsSCS gradient is not available: {why}"
             )));

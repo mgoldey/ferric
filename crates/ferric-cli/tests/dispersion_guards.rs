@@ -2,7 +2,7 @@
 //!
 //! The correction is evaluated only on a Kohn-Sham SCF (`ksdft`, or
 //! `rhf`/`uhf`/`rohf` with `[dft] functional`): in the energy printout, and in
-//! the closed-shell optimizer and frequency driver. Every other route through the CLI reaches its
+//! the optimizer and frequency driver (RKS, UKS and ROKS). Every other route through the CLI reaches its
 //! result without ever reading the key. Accepting
 //! the config there does not produce a wrong number so much as a MISLABELLED
 //! one: the run prints an uncorrected energy from a file that asks for a
@@ -180,36 +180,76 @@ fn dispersion_works_for_optimize_and_frequencies() {
     );
 }
 
-/// Open-shell (UKS/ROKS) frequencies are refused WITH dispersion -- the
-/// correction is threaded only through the closed-shell frequency driver --
-/// and run WITHOUT it, which pins that the key is what refuses them.
+/// Open-shell (UKS and ROKS) frequencies take `[dft] dispersion`: the driver
+/// solves the reference's own SCF at every displaced geometry and adds the
+/// dispersion gradient there (the Hessian is validated in
+/// `dispersion_frequencies_open_shell.rs`). End to end, per reference: the run
+/// SUCCEEDS, reports the reference it ran, and prints the D3(BJ) energy of the
+/// input geometry, checked against `ferric_d3` directly so a run that dropped
+/// or mis-evaluated the correction fails here.
 #[test]
-fn open_shell_frequencies_refuse_dispersion() {
-    let triplet = |disp: bool| {
-        body("uhf", "frequencies", disp).replacen(
-            "xyz = \"testdata/molecules/h2.xyz\"\n",
-            "xyz = \"testdata/molecules/h2.xyz\"\nmultiplicity = 3\n",
-            1,
-        ) + "functional = \"PBE\"\n"
-    };
-    let out = run_toml("freq_uks", &triplet(true));
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        !out.status.success(),
-        "UKS frequencies with dispersion must FAIL.\nstdout: {}",
-        String::from_utf8_lossy(&out.stdout)
-    );
-    assert!(
-        err.contains("frequencies") && err.contains("open-shell"),
-        "the error must name the task and the open-shell reference, got: {err}"
-    );
-    let ok = run_toml("freq_uks_nodisp", &triplet(false));
-    assert!(
-        ok.status.success(),
-        "UKS frequencies WITHOUT dispersion must run; otherwise the refusal \
-         above proves nothing.\nstderr: {}",
-        String::from_utf8_lossy(&ok.stderr)
-    );
+fn open_shell_frequencies_take_dispersion() {
+    let root = workspace_root();
+    // Bent NH2 (UKS) and HCO (ROKS) doublets, Angstrom.
+    let cases = [
+        (
+            "uks",
+            "uhf",
+            "UKS",
+            "3\nNH2\nN 0.000000 0.020000 0.142000\nH 0.050000 0.802000 -0.497000\nH 0.000000 -0.782000 -0.517000\n",
+        ),
+        (
+            "roks",
+            "rohf",
+            "ROKS",
+            "3\nHCO\nC 0.000000 0.000000 0.000000\nO 1.180000 0.000000 0.000000\nH -0.627000 0.916000 0.000000\n",
+        ),
+    ];
+    let params = ferric_d3::d3bj_params_for_functional("pbe").expect("d3 params");
+    for (tag, kind, label, xyz) in cases {
+        let xyz_path = root
+            .join("target")
+            .join(format!("disp_guard_freq_{tag}.xyz"));
+        std::fs::write(&xyz_path, xyz).expect("write xyz");
+        let toml = format!(
+            "[molecule]\nxyz = \"{}\"\nmultiplicity = 2\n\n\
+             [basis]\nname = \"sto-3g\"\n\n\
+             [method]\nkind = \"{kind}\"\ntask = \"frequencies\"\n\n\
+             [dft]\nfunctional = \"PBE\"\ndispersion = \"d3bj(pbe)\"\n",
+            xyz_path.display()
+        );
+        let out = run_toml(&format!("freq_{tag}"), &toml);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success(),
+            "{label} frequencies with dispersion must SUCCEED.\nstderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            stdout.contains("KS-DFT + D3(BJ)"),
+            "{label}: the printout must report the dispersion it applied:\n{stdout}"
+        );
+        let printed: f64 = stdout
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("E(D3BJ)"))
+            .and_then(|r| r.trim().trim_start_matches('=').split_whitespace().next())
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_else(|| panic!("{label}: no E(D3BJ) line in:\n{stdout}"));
+        let mol = ferric_core::mol::Molecule::parse_xyz(xyz, 0, 2).expect("molecule");
+        let expected = ferric_d3::d3bj_energy_for_molecule(&mol, &params).expect("d3 energy");
+        assert!(
+            (printed - expected).abs() < 1e-9,
+            "{label}: printed E(D3BJ) {printed} vs ferric_d3 {expected}"
+        );
+        // Three vibrations for a nonlinear triatomic.
+        let n_modes = stdout
+            .lines()
+            .skip_while(|l| !l.contains("mode   frequency"))
+            .skip(1)
+            .take_while(|l| !l.trim().is_empty())
+            .count();
+        assert_eq!(n_modes, 3, "{label}: expected 3 modes in:\n{stdout}");
+    }
 }
 
 /// THE EXACTNESS ANCHOR for both guards above.
