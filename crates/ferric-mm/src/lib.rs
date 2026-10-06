@@ -23,5 +23,7 @@ pub mod energy;
 pub mod topology;
 pub mod units;
 
-pub use energy::{energy, gradient, qm_mm_lj_energy_gradient, MmEnergy};
+pub use energy::{
+    energy, gradient, qm_mm_lj_energy_gradient, qm_mm_lj_energy_gradient_scaled, MmEnergy,
+};
 pub use topology::{Angle, Bond, LjParams, MmTopology, Torsion};

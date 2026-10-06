@@ -1633,14 +1633,21 @@ pub fn full_gradient_with_polarizable(
 ///   atoms, using [`MmTopology`]'s own derived exclusions/1-4 scaling.
 /// - **QM-MM Lennard-Jones**: every QM real atom (link atoms and boundary
 ///   midpoint charges carry no LJ) paired with every MM atom, using each
-///   atom's own `top.lj` entry (Lorentz-Berthelot mixed), no cutoff, no
-///   exclusions (a QM/MM boundary link atom sitting between them is not an
-///   MM-topology bond, so there is nothing to exclude by construction —
-///   the two regions were never bonded IN THE TOPOLOGY, only in reality,
-///   which is exactly why this is an approximation like any additive
-///   scheme).
+///   atom's own `top.lj` entry (Lorentz-Berthelot mixed), no cutoff, with the
+///   force field's own nonbonded exclusion rules applied ACROSS the cut: a
+///   QM-MM pair in [`MmTopology::exclusions`] (1-2 or 1-3 through the bond
+///   graph) is skipped, and a pair in [`MmTopology::pairs14`] is scaled by
+///   `top.scale_lj_14`. Both sets are derived from the ORIGINAL, unfiltered
+///   `top.bonds` (the cut bond included, as it must be for the straddling
+///   bonded terms above), i.e. the same graph the MM-MM pass uses. A
+///   topology with no bond path of length <= 3 between the regions gives
+///   every QM-MM pair a scale of 1 and is bit-identical to the unscaled sum.
 /// - **No QM-MM Coulomb term**: the electrostatic embedding already lets
 ///   the QM density see every MM point charge (`to_external_potential`);
+///   near-cut charges are handled there by the boundary scheme
+///   ([`BoundaryChargeScheme`]: Keep / Z1 / RC / RCD), NOT by the force
+///   field's 1-2/1-3 exclusions or `scale_coul_14`, which this function
+///   therefore never applies to a QM-MM pair;
 ///   adding a classical Coulomb term between QM atoms' `top.charges` entry
 ///   and MM charges would double count that interaction. `top.charges` for
 ///   QM atoms is therefore only consulted for possible QM-QM terms, which
@@ -1790,7 +1797,10 @@ pub fn qmmm_mm_terms(
 
     // 3. QM-MM Lennard-Jones: every real QM atom (link atoms/boundary
     //    charges excluded by construction — they are not `system.atoms`
-    //    indices) paired with every MM atom, using top.lj on both sides.
+    //    indices) paired with every MM atom, using top.lj on both sides, and
+    //    the topology's exclusions (skip) / 1-4 pairs (scale_lj_14) derived
+    //    from the ORIGINAL bond graph, so a pair bonded across the cut is
+    //    treated exactly as the force field treats it inside the MM region.
     let qm_lj: Vec<ferric_mm::LjParams> = system.qm_indices.iter().map(|&i| top.lj[i]).collect();
     let mm_lj: Vec<ferric_mm::LjParams> = system.mm_indices.iter().map(|&i| top.lj[i]).collect();
     if !qm_lj.is_empty() && !mm_lj.is_empty() {
@@ -1806,8 +1816,22 @@ pub fn qmmm_mm_terms(
                 coords_mm[(row, c)] = coords_full[(i, c)];
             }
         }
-        let (e_qm_mm_lj, g_qm, g_mm) =
-            ferric_mm::qm_mm_lj_energy_gradient(&qm_lj, &coords_qm, &mm_lj, &coords_mm);
+        let exclusions = top.exclusions();
+        let pairs14 = top.pairs14();
+        let pair_scale = |a: usize, b: usize| -> f64 {
+            let (i, j) = (system.qm_indices[a], system.mm_indices[b]);
+            let pair = if i < j { (i, j) } else { (j, i) };
+            if exclusions.contains(&pair) {
+                0.0
+            } else if pairs14.contains(&pair) {
+                top.scale_lj_14
+            } else {
+                1.0
+            }
+        };
+        let (e_qm_mm_lj, g_qm, g_mm) = ferric_mm::qm_mm_lj_energy_gradient_scaled(
+            &qm_lj, &coords_qm, &mm_lj, &coords_mm, pair_scale,
+        );
         e.lj += e_qm_mm_lj;
         for (row, &i) in system.qm_indices.iter().enumerate() {
             for c in 0..3 {

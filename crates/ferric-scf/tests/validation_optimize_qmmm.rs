@@ -351,24 +351,25 @@ fn topology(
     MmTopology::new(charges, lj, mm_bonds, angles, torsions).unwrap()
 }
 
-/// The `qmmm_gradient_at_minimum.rs` LJ: small sigmas, because `qmmm_mm_terms`
-/// applies QM–MM LJ to EVERY QM–MM pair, bonded ones included.
-fn lj_small(a: &QmmmAtom) -> LjParams {
+/// Realistic AMBER-like LJ (parm99 CT / HC): carbon sigma 3.40 A, hydrogen
+/// 2.65 A. Every QM–MM pair in these systems is 1-2, 1-3 or 1-4 through the
+/// bond graph, so `qmmm_mm_terms` excludes or 1-4-scales all of them.
+fn lj_realistic(a: &QmmmAtom) -> LjParams {
     match a.z {
         6 => LjParams {
-            sigma: 0.6 * ANG2BOHR,
-            epsilon: 0.109 * KCAL,
+            sigma: 3.3997 * ANG2BOHR,
+            epsilon: 0.1094 * KCAL,
         },
         _ => LjParams {
-            sigma: 0.5 * ANG2BOHR,
+            sigma: 2.6495 * ANG2BOHR,
             epsilon: 0.0157 * KCAL,
         },
     }
 }
 
-/// For the water system: TIP3P oxygen; a water hydrogen and ethane atoms large
-/// enough that a free water cannot collapse onto a charge, still small enough
-/// that the bonded QM–MM LJ pairs across the cut stay small.
+/// For the water system: TIP3P oxygen, a water hydrogen large enough that a
+/// free water cannot collapse onto a charge, and the realistic ethane LJ of
+/// [`lj_realistic`].
 fn lj_waters(a: &QmmmAtom) -> LjParams {
     match (a.z, a.charge) {
         (8, _) => LjParams {
@@ -379,14 +380,7 @@ fn lj_waters(a: &QmmmAtom) -> LjParams {
             sigma: 1.0 * ANG2BOHR,
             epsilon: 0.046 * KCAL,
         },
-        (6, _) => LjParams {
-            sigma: 1.5 * ANG2BOHR,
-            epsilon: 0.109 * KCAL,
-        },
-        _ => LjParams {
-            sigma: 1.2 * ANG2BOHR,
-            epsilon: 0.0157 * KCAL,
-        },
+        _ => lj_realistic(a),
     }
 }
 
@@ -402,7 +396,7 @@ fn ethane_case(
     Case {
         name,
         atoms: ethane_atoms(stretch),
-        top: topology(&ethane_atoms(0.0), &bonds, lj_small),
+        top: topology(&ethane_atoms(0.0), &bonds, lj_realistic),
         bonds,
         selection: Selection::Indices(vec![0, 2, 4, 6]),
         qm_charge: 0,
@@ -425,7 +419,7 @@ fn ethyl_case(
     Case {
         name,
         atoms: ethyl_atoms(stretch),
-        top: topology(&ethyl_atoms(0.0), &bonds, lj_small),
+        top: topology(&ethyl_atoms(0.0), &bonds, lj_realistic),
         bonds,
         selection: Selection::Indices(vec![0, 2, 4]),
         qm_charge: 0,
