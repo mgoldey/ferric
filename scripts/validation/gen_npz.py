@@ -46,7 +46,7 @@ WHAT EACH REFERENCE IS
   (the kept count would then be a coin toss, not a reference).
 * esp_surface / esp_points: ferric's documented construction
   (`ferric_scf::properties::esp_on_surface`): a Lebedev-110 sphere at
-  1.4 x the Bondi radius (H 1.20, O 1.52 A; ferric-pcm's 1.8897259886 Bohr/A)
+  1.4 x the Bondi radius (H 1.20, O 1.52 A; ferric's 1/0.52917721092 Bohr/A)
   about each atom, dropping points strictly inside another atom's scaled
   sphere; ESP there = sum_B Z_B/|r-R_B| - Tr(D rinv(r)) with PySCF's D. The
   Lebedev set is PySCF's own table, so the POINT SET is itself a check.
@@ -89,7 +89,7 @@ TRUNC_MARGIN = 1e-6
 SURFACE_SCALE = 1.4
 SURFACE_N_ANG = 110
 BONDI_ANGSTROM = {1: 1.20, 8: 1.52}  # Bondi, J. Phys. Chem. 68, 441 (1964)
-FERRIC_PCM_BOHR_PER_ANGSTROM = 1.8897259886  # crates/ferric-pcm/src/radii.rs
+FERRIC_PCM_BOHR_PER_ANGSTROM = common.ANGSTROM_TO_BOHR  # ferric_core::units
 
 # (alpha_free, C6_free), a.u. — Tkatchenko & Scheffler PRL 102, 073005 (2009).
 TS_FREE_ATOM = {1: (4.5, 6.5), 8: (5.4, 15.6)}

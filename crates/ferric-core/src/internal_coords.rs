@@ -58,7 +58,7 @@ use crate::mol::Molecule;
 use crate::FerricError;
 use ndarray::{Array1, Array2};
 
-const BOHR_PER_ANGSTROM: f64 = 1.889_725_988_579_923_8;
+use crate::units::ANGSTROM_TO_BOHR as BOHR_PER_ANGSTROM;
 
 /// Cordero 2008 covalent radii in Angstrom, indexed by atomic number
 /// (`COVALENT_RADII_ANGSTROM[Z]`; index 0 is a dummy).

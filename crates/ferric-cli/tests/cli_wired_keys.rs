@@ -745,7 +745,7 @@ fn att_rimp2_terfc_matches_the_library() {
         &l.mol,
         &l.prep,
         &dfbs,
-        Operator::terfc(1.05 * 1.8897259886),
+        Operator::terfc(1.05 * ferric_core::units::ANGSTROM_TO_BOHR),
         &r,
         &ferric_mp2::rimp2::RiMp2Config::default(),
     )
@@ -784,7 +784,7 @@ fn rs_mp2_rpa_terf_omega_matches_the_library() {
         return;
     };
     let _ = tdir; // the CLI child and the library both read the same env var
-    const ANG2BOHR: f64 = 1.8897259886;
+    const ANG2BOHR: f64 = ferric_core::units::ANGSTROM_TO_BOHR;
     let (r0_ang, w_ang) = (1.2, 2.5);
     let l = lib("water.xyz", 1, "sto-3g");
     let jk = Some("def2-universal-jkfit".to_string());

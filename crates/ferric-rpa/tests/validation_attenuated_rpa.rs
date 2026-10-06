@@ -124,7 +124,12 @@ const N_QUAD: usize = 40;
 const U0: f64 = 0.5;
 /// ω grid in Bohr⁻¹; the second entry is asserted equal to the production
 /// default `RsMp2RpaConfig::default().omega`.
-const OMEGAS: [f64; 4] = [0.2, 0.420 / 1.8897259886, 0.42, 1.0];
+const OMEGAS: [f64; 4] = [
+    0.2,
+    0.420 * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
+    0.42,
+    1.0,
+];
 /// Index of the production default in `OMEGAS`, and of its Å⁻¹-digits slip.
 const I_DEFAULT: usize = 1;
 const I_UNIT_SLIP: usize = 2;

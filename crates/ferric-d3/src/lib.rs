@@ -97,8 +97,9 @@ use ferric_core::FerricError;
 const KCN: f64 = 16.0;
 /// Gaussian weighting factor for the reference interpolation (upstream `wf_default`).
 const WF: f64 = 4.0;
-/// Angstrom -> Bohr. Matches upstream mctc-lib's `aatoau`.
-const AA_TO_AU: f64 = 1.0 / 0.52917721092;
+/// Angstrom -> Bohr. Matches upstream mctc-lib's `aatoau` (= ferric's
+/// one conversion, [`ferric_core::units::ANGSTROM_TO_BOHR`]).
+const AA_TO_AU: f64 = ferric_core::units::ANGSTROM_TO_BOHR;
 /// Upstream scales the 2009 covalent radii by 4/3 to build the D3 CN.
 const COV_SCALE: f64 = 4.0 / 3.0;
 

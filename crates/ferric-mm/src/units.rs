@@ -6,16 +6,16 @@
 //! constants convert **once**, at construction time — nothing downstream of
 //! [`crate::topology::MmTopology::from_amber_units`] ever sees AMBER units.
 //!
-//! The literals match the ones already used elsewhere in the workspace
-//! (`crates/ferric-core/src/mol.rs`'s `ANGSTROM_TO_BOHR`), so a topology built
-//! from AMBER units and one built directly in a.u. agree bit-for-bit on a
+//! The length factor IS ferric's one conversion
+//! ([`ferric_core::units::ANGSTROM_TO_BOHR`], re-exported here), so a topology
+//! built from AMBER units and one built directly in a.u. agree bit-for-bit on a
 //! shared geometry.
 
 /// 1 kcal/mol in Hartree (CODATA-consistent value used throughout ferric).
 pub const KCAL_PER_MOL_TO_HARTREE: f64 = 1.0 / 627.509_474;
 
 /// 1 Å in Bohr.
-pub const ANGSTROM_TO_BOHR: f64 = 1.0 / 0.529_177_210_92;
+pub use ferric_core::units::ANGSTROM_TO_BOHR;
 
 /// Convert degrees to radians.
 #[inline]
@@ -30,7 +30,7 @@ mod tests {
     #[test]
     fn kcal_and_angstrom_constants_are_nonzero_and_sane() {
         assert!((KCAL_PER_MOL_TO_HARTREE - 1.0 / 627.509_474).abs() < 1e-18);
-        assert!((ANGSTROM_TO_BOHR - 1.0 / 0.529_177_210_92).abs() < 1e-18);
+        const { assert!(ANGSTROM_TO_BOHR > 1.889 && ANGSTROM_TO_BOHR < 1.890) };
     }
 
     #[test]

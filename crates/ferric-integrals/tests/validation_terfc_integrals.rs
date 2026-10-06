@@ -20,7 +20,7 @@
 //! − that terf. Nothing of ferric's MD recursion, Hermite sign conventions,
 //! tables, series or asymptotic branches is shared. H2O and NH3 / cc-pVDZ +
 //! cc-pVDZ-RI, H2O / aug-cc-pVDZ + aug-cc-pVDZ-RIFIT (both aux sets carry f),
-//! r₀ = 0.75 and 1.05 Å (× 1.8897259886, ferric's conversion).
+//! r₀ = 0.75 and 1.05 Å (× ferric_core::units::ANGSTROM_TO_BOHR).
 //!
 //! Before writing anything the generator requires (all recorded in the JSON
 //! under `checks`): the radial inverse of K̂_terf reproduces the real-space

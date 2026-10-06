@@ -1219,7 +1219,7 @@ mod tests {
         );
 
         let dist_bohr = (result.mol.atoms[0].zpos - result.mol.atoms[1].zpos).abs();
-        let dist_ang = dist_bohr * 0.529_177_210_92;
+        let dist_ang = dist_bohr * ferric_core::units::BOHR_TO_ANGSTROM;
         eprintln!(
             "OH/ROHF/STO-3G optimized distance: {:.6} Bohr ({:.4} Ang), energy: {:.10} Ha",
             dist_bohr, dist_ang, result.energy

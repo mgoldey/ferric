@@ -3788,19 +3788,18 @@ impl PyConformerEnsemble {
     }
 }
 
-/// The Ångström->Bohr factor `ferric_core::mol` applies when parsing XYZ
-/// (its `ANGSTROM_TO_BOHR`, which is private, hence the duplicate literal —
-/// keep the two in sync).
+/// The Ångström->Bohr factor `ferric_core::mol` applies when parsing XYZ:
+/// ferric's one conversion, [`ferric_core::units::ANGSTROM_TO_BOHR`].
 ///
 /// `coordinates()` inverts the conversion by **dividing** by this constant
-/// rather than multiplying by the literal 0.529_177_210_92. Both are correct
+/// rather than multiplying by `BOHR_TO_ANGSTROM`. Both are correct
 /// to 1 ulp, but the divide is the better inverse: measured over 3e6 random
 /// coordinates in -20..20 Å, `x * A2B / A2B != x` for 5.0% of values whereas
-/// `x * A2B * 0.529_177_210_92 != x` for 15.4%; worst-case error is 3.6e-15 Å
+/// `x * A2B * BOHR_TO_ANGSTROM != x` for 15.4%; worst-case error is 3.6e-15 Å
 /// either way. Floating-point multiplication is not exactly invertible, so a
 /// round-trip through `from_coordinates` -> `coordinates()` is accurate to
 /// ~1 ulp (< 1e-14 Å), NOT bit-exact — do not assert equality on it.
-const ANGSTROM_TO_BOHR: f64 = 1.0 / 0.529_177_210_92;
+use ferric_core::units::ANGSTROM_TO_BOHR;
 
 /// Accept either element symbols (`"C"`, `"@O"`) or atomic numbers (`6`) for
 /// the shared element list — RDKit hands you `GetSymbol()` naturally, but
@@ -5722,7 +5721,7 @@ fn run_terfc_rimp2(
         }));
     }
     // r0 supplied in Å; convert to Bohr for the operator.
-    let r0_bohr = r0.unwrap_or(1.05) * 1.8897259886;
+    let r0_bohr = r0.unwrap_or(1.05) * ANGSTROM_TO_BOHR;
     let mp2 = ri_mp2(
         &mol.inner,
         &prep,
@@ -5865,7 +5864,7 @@ fn run_scs_mp2_2terfc(
             last_energy: rhf.energy,
         }));
     }
-    const ANG2BOHR: f64 = 1.8897259886;
+    const ANG2BOHR: f64 = ANGSTROM_TO_BOHR;
     let cfg = ScsMp2TerfcConfig {
         r0_bonded: r0_bonded.unwrap_or(0.75) * ANG2BOHR,
         r0_nonbonded: r0_nonbonded.unwrap_or(1.05) * ANG2BOHR,
@@ -6156,7 +6155,7 @@ fn run_rs_mp2_rpa(
     // supplied in Å (2026-07-21: fixed from Bohr, matching r0_bonded/
     // r0_nonbonded's existing Å convention elsewhere in this file); convert
     // to Bohr for RsMp2RpaConfig, which stays Bohr-native.
-    const ANG2BOHR_R0: f64 = 1.8897259886;
+    const ANG2BOHR_R0: f64 = ANGSTROM_TO_BOHR;
     let mut cfg = ferric_rpa::RsMp2RpaConfig {
         omega: omega.unwrap_or(0.420) * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
         attenuator: atten,
@@ -9114,7 +9113,7 @@ fn run_saddle(
 
     let r = find_saddle(&m, &cfg, energy_gradient, hessian).map_err(make_err)?;
 
-    const BOHR_TO_ANGSTROM: f64 = 0.529_177_210_903;
+    const BOHR_TO_ANGSTROM: f64 = ferric_core::units::BOHR_TO_ANGSTROM;
     Ok(PySaddleResult {
         symbols: r.mol.atoms.iter().map(|a| a.symbol.clone()).collect(),
         coords: r
@@ -9273,9 +9272,9 @@ fn run_irc(
 
     let r = follow_irc(&m, &ndarray::Array1::from_vec(mode), &cfg, eg).map_err(make_err)?;
 
-    // Same value as run_saddle's local const. Both convert Bohr (ferric's
-    // internal unit) to the Angstrom the Python surface uses.
-    const BOHR_TO_ANGSTROM: f64 = 0.529_177_210_903;
+    // Same as run_saddle: Bohr (ferric's internal unit) to the Angstrom the
+    // Python surface uses.
+    const BOHR_TO_ANGSTROM: f64 = ferric_core::units::BOHR_TO_ANGSTROM;
     let to_branch = |b: ferric_scf::irc::IrcBranch| PyIrcBranch {
         symbols: b.mol.atoms.iter().map(|a| a.symbol.clone()).collect(),
         coords: b
