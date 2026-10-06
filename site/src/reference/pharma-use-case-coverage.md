@@ -11,8 +11,8 @@ warm-vs-cold, both are given, because quoting one hides a 3-30x spread.
 | docking | `docking.vina_dock`, `tiers.tier1_dock` | **31 s** @ 57 atoms, 5.7 @ 21, 1.9 @ 9 (ex=4, 7LCJ); ~N^1.5 | `pose_ensemble`, `funnel_survival` |
 | docking geom opt | `active_site.pose_relaxation` | **77.8 s/step** @ 71 atoms in a 6458-charge pocket | `optimization_trace` |
 | minima with FF | `tiers.tier2_forcefield` | **9 ms** @ 21 atoms (2.2 ms @ 9 atoms, 8.2 @ 19, 21.6 @ 34) | `tier_comparison` |
-| minima with xtb | `tiers.tier3_gfn2` | **39 ms** @ 21 atoms (0.152 s @ 9, 0.050 @ 19) | `tier_comparison` |
-| score with DFT | `tiers.tier4_dft` | **2.6 s** @ 9 atoms at the def2-svp DEFAULT (0.75 s at STO-3G) | `tier_comparison` |
+| minima with xtb | `tiers.tier3_gfn2` | **39 ms** @ 21 atoms (0.152 s @ 9, 0.050 @ 19); one single point, ×2 under `score="interaction"` | `tier_comparison` |
+| score with DFT | `tiers.tier4_dft` | **2.6 s** @ 9 atoms at the def2-svp DEFAULT (0.75 s at STO-3G); one SCF, ×2 under `score="interaction"` | `tier_comparison` |
 | transition state | `ferric.run_saddle` | `2*(6N+1) + (n_steps+1)` gradients | `imaginary_mode` |
 | reaction path (IRC) | `ferric.run_irc` | ~70 gradients/branch | `reaction_path` |
 | common substitutions | `pipeline.substitution` | **7.6 ms** warm / 7 proposals (248 ms first call) | `site_substituent_heatmap` |
@@ -36,6 +36,14 @@ tiers and so doubles those columns:
 |---|---:|---:|---:|---:|---:|
 | STO-3G | 45.0 s | **72.7%** | 0.1% | 0.3% | 27.0% |
 | **def2-svp (the `tier4_dft` DEFAULT)** | 82.1 s | **39.8%** | 0.1% | 0.1% | **60.0%** |
+
+With the xtb and DFT columns doubled for `score="interaction"` (derived from the
+rows above, not separately measured):
+
+| basis | total | dock | FF | xtb | DFT |
+|---|---:|---:|---:|---:|---:|
+| STO-3G | 57.2 s | **57.2%** | 0.1% | 0.5% | 42.3% |
+| **def2-svp** | 131.3 s | 24.9% | 0.1% | 0.1% | **74.9%** |
 
 **"Docking dominates, not DFT" holds only at STO-3G.** At the default basis the
 ranking inverts and DFT is the majority of the run. The absolute docking cost

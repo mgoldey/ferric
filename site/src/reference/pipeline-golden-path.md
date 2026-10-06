@@ -843,6 +843,13 @@ idle at low exhaustiveness".
 | 4 | ferric DFT via `tier4_dft` | **0.66 s @ 9, 8.7 s @ 19** (STO-3G); 96.1 s @ 32 (**def2-SVP**, ~450 bf) | MEASURED 2026-09-19 / RESULTS.md |
 | 4 | ferric DFT | 612.4 s @ 71 atoms, **STO-3G**/PBE (~234 bf), 18 iters, converged | RESULTS.md |
 
+**Tiers 3 and 4 cost TWICE these rows when ranking analogues.** Each row is ONE
+single point. Analogues of differing formula cannot be ranked on a total energy
+(`run_funnel` raises `IncomparableError`), so they are ranked on
+`score="interaction"` = E(in pocket field) − E(vacuum) at the same pose: two
+single points per candidate at tier 3 and at tier 4. Isomer campaigns may keep
+the default `score="total"` at one single point.
+
 **DO NOT DERIVE A SCALING LAW FROM THOSE TWO ROWS.** They differ in BASIS as
 well as size, and in the unhelpful direction: the BIGGER system used the
 SMALLER basis. Fitting them gives p = 2.32, which UNDERSTATES pure N-scaling
@@ -1120,6 +1127,16 @@ table moves:
 |---|---:|---:|---:|---:|---:|
 | STO-3G (the rows above) | 1% | **79%** | 3% | **18%** | 9.3 h |
 | **def2-svp (the default)** | 0% | **30%** | 1% | **69%** | 24.4 h |
+
+Those rows are ONE single point per candidate at xtb and DFT, i.e. `score="total"`
+(isomers). An ANALOGUE campaign ranks on `score="interaction"`, which runs two;
+doubling the xtb and DFT columns of the rows above (derived, not separately
+measured):
+
+| `score="interaction"` | cheap | dock | xtb | DFT | total |
+|---|---:|---:|---:|---:|---:|
+| STO-3G | 1% | **65%** | 5% | **30%** | 11.3 h |
+| **def2-svp (the default)** | 0% | **18%** | 1% | **81%** | 41.5 h |
 
 So "docking dominates, not DFT" is true of a DEMONSTRATION basis and false of
 the default. The M11 conclusion below stands for what it measured -- tier 1 at
@@ -1817,7 +1834,10 @@ it is the first call in the process -- the RDKit/ETKDG warm-up documented under
 
 So the budget for N ligands through G0-G3 is
 
-    N * (26.4 s docking + ~0.02 s FF + ~0.05 s xtb) + N_survivors * DFT
+    N * (26.4 s docking + ~0.02 s FF + k * ~0.05 s xtb) + N_survivors * k * DFT
+
+with k = 1 for `score="total"` (isomers) and **k = 2 for `score="interaction"`**,
+the in-pocket minus vacuum score that analogues of differing formula require.
 
 and **DFT is the only term whose exponent hurts**: 2.6 -> 62.6 -> 265.3 s across
 9 -> 21 -> 34 atoms. Fitted on ATOM COUNT the exponent is **3.0 (21->34), 3.75

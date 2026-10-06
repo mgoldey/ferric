@@ -38,6 +38,13 @@ MEASURED costs (2026-09-19, through the tier functions; tier 1 from RESULTS.md M
                            order, so dispersion-corrected OPTIMIZATION costs
                            no more than uncorrected.
 
+TIERS 3 AND 4 COST TWICE THE ROWS ABOVE under `context["score"] =
+"interaction"`: the rows are ONE single point, and the interaction score is
+E(in field) - E(vacuum), two single points at the same geometry. That is the
+score substitution analogues need (a total energy cannot rank differing
+formulas; `run_funnel` refuses the cut), so budget 2x for any analogue
+campaign. The default `"total"` remains one single point.
+
 Tier 4's cost is the reason the funnel must narrow to a handful before reaching
 it. See `tools/campaign/hierarchy.py` for the rules.
 """
