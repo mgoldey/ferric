@@ -233,15 +233,24 @@ pub enum CationStability {
 }
 
 impl CationStability {
-    /// `true` only for a PROVEN internal saddle.
+    /// `true` only for a PROVEN internal saddle: an `Unstable` verdict, or an
+    /// unconverged (`Indeterminate`) eigensolve whose Ritz value is already
+    /// below `-noise_floor`. Rayleigh-Ritz is variational, so that value is an
+    /// upper bound on the true λ_min and a negative one proves the instability
+    /// even though nothing is proven in the other direction.
     pub fn is_saddle(&self) -> bool {
-        matches!(
-            self,
+        match self {
             CationStability::Analysed {
                 verdict: StabilityVerdict::Unstable,
                 ..
-            }
-        )
+            } => true,
+            CationStability::Analysed {
+                verdict: StabilityVerdict::Indeterminate,
+                lambda_min,
+                noise_floor,
+            } => *lambda_min < -*noise_floor,
+            _ => false,
+        }
     }
 
     /// `true` only for a PROVEN minimum.
@@ -577,9 +586,9 @@ pub fn eval_j_seeded(
     } else {
         None
     };
-    if cfg.check_cation_stability && skip.is_none() {
-        cat_cfg.check_stability = true;
-    }
+    // Assigned on every path: a `true` cloned from `cfg.scf` must not make the
+    // solver analyse a cation the eval then reports as `NotChecked`.
+    cat_cfg.check_stability = cfg.check_cation_stability && skip.is_none();
     let cat_seed = seed.map(|sd| (&sd.cation_mos.0, &sd.cation_mos.1));
     let cat = solve_uhf_with_guess(ctx, &cation, prep, bounds, &cat_cfg, cat_seed)?;
     if !cat.converged {
@@ -872,6 +881,14 @@ fn stability_report(evals: &[OmegaEval], best: &OmegaEval) -> Result<Option<Stri
     let mut skip_seen: Option<StabilitySkip> = None;
     let mut n_skip = 0usize;
     for e in evals {
+        if e.cation_stability.is_saddle() {
+            msgs.push(format!(
+                "ω={:.6}: cation is an internal SADDLE (λ_min = {:.3e})",
+                e.omega,
+                e.cation_stability.lambda_min().unwrap_or(f64::NAN)
+            ));
+            continue;
+        }
         match e.cation_stability {
             CationStability::NotChecked => {}
             CationStability::NotAnalysed(sk) => {
@@ -942,9 +959,15 @@ mod tests {
             CationStability::NotAnalysed(StabilitySkip::Vv10Kernel),
             analysed(StabilityVerdict::Marginal, 1e-7),
             analysed(StabilityVerdict::Indeterminate, 1e-3),
+            // Unconverged and inside the noise band: nothing proven.
+            analysed(StabilityVerdict::Indeterminate, -5e-7),
         ] {
             assert!(!c.is_saddle() && !c.is_proven_stable(), "{c:?}");
         }
+        // Unconverged but its Ritz value (an upper bound on λ_min) is already
+        // below -noise_floor: the instability is proven.
+        let ritz = analysed(StabilityVerdict::Indeterminate, -2e-3);
+        assert!(ritz.is_saddle() && !ritz.is_proven_stable());
         assert_eq!(saddle.lambda_min(), Some(-6.9e-3));
         assert_eq!(CationStability::NotChecked.lambda_min(), None);
     }
