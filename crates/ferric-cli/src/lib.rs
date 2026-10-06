@@ -40,6 +40,7 @@ use ferric_scf::uhf::solve_uhf;
 
 fn print_usage() {
     eprintln!("usage: ferric [--verbose|-v] [--json <path>|--no-json] <input.toml>");
+    eprintln!("       ferric --version|-V");
     eprintln!();
     eprintln!("Run a ferric quantum-chemistry calculation from a TOML input file.");
     eprintln!(
@@ -53,6 +54,22 @@ fn print_usage() {
     eprintln!("                  Overrides `[output] json`. A run log is written BY");
     eprintln!("                  DEFAULT to <input-stem>.ferric.jsonl beside the input.");
     eprintln!("  --no-json       Do not write a run log. Same as `[output] json = false`.");
+    eprintln!("  --version, -V   Print which build this is (version, git commit, dirty");
+    eprintln!("                  flag, build profile, libint version) and exit.");
+}
+
+/// The `ferric --version` text: one `key: value` line per field, the same
+/// fields `ferric.build_info()` returns in Python. Every value is fixed at
+/// compile time (see the `ferric-build-info` crate).
+pub fn version_text() -> String {
+    format!(
+        "ferric {}\ncommit: {}\ndirty: {}\nprofile: {}\nlibint: {}\n",
+        ferric_build_info::VERSION,
+        ferric_build_info::COMMIT,
+        ferric_build_info::dirty_str(),
+        ferric_build_info::PROFILE,
+        ferric_integrals::libint_version(),
+    )
 }
 
 /// The `method.kind`s graded Proven or Proven (narrow). They never appear in
@@ -268,6 +285,10 @@ pub fn run(args: Vec<String>) {
     // this, running the release binary directly oversubscribes rayon × BLAS.
     ferric_integrals::blas_threads::init_threading();
     let ctx = ParallelContext::new();
+    if args.len() == 2 && (args[1] == "--version" || args[1] == "-V") {
+        print!("{}", version_text());
+        std::process::exit(0);
+    }
     if args.len() < 2 || args[1] == "--help" || args[1] == "-h" {
         print_usage();
         std::process::exit(if args.len() < 2 { 2 } else { 0 });
@@ -695,6 +716,10 @@ pub fn run(args: Vec<String>) {
     // run, written before any expensive work so it survives even a job killed
     // in the first SCF iteration. No-op when no log is installed.
     if let Some(rl) = ferric_scf::runlog::log() {
+        ferric_scf::runlog::set_build_identity(
+            ferric_build_info::VERSION,
+            ferric_build_info::short_commit().as_deref(),
+        );
         rl.run_start(
             serde_json::json!({
                 "method": method,

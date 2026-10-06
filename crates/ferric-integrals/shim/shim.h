@@ -38,6 +38,11 @@ typedef struct {
 void scf_libint_init(void);
 void scf_libint_finalize(void);
 
+/* The LIBINT_VERSION string of the libint2 headers this shim was compiled
+   against (e.g. "2.7.2"), or "unknown" if the headers define none. Static
+   storage; never NULL; cannot fail. */
+const char *scf_libint_version(void);
+
 /* Build a basis set from caller-owned arrays. Returns NULL on error. */
 scf_basis *scf_basis_create(const scf_shell *shells, int nshells,
                                 const scf_atom *atoms, int natoms);

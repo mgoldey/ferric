@@ -1,6 +1,6 @@
 [package]
 name = "ferric-python"
-version = "0.1.0"
+version = "0.1.0-dev0"  # SemVer twin of pyproject.toml's 0.1.0.dev0; see the comment there
 license.workspace = true
 edition = "2021"
 
@@ -12,6 +12,7 @@ name = "ferric"
 crate-type = ["cdylib"]
 
 [dependencies]
+ferric-build-info = { path = "../ferric-build-info" }
 ferric-core = { path = "../ferric-core" }
 ferric-integrals = { path = "../ferric-integrals" }
 ferric-mm = { path = "../ferric-mm" }

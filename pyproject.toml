@@ -4,7 +4,14 @@ build-backend = "maturin"
 
 [project]
 name = "ferric"
-version = "0.1.0"
+# A placeholder: main carries the next `.devN` so a local build can never equal
+# a published wheel. Release wheels never ship it: on a `v*` tag the wheel
+# workflow (.github/workflows/wheels.yml) stamps the tag's version into this
+# line and the SemVer twin in crates/ferric-python/Cargo.toml, after verifying
+# the tree is clean and the stamp touches only those lines. Nothing to commit
+# to release. The build's git commit is reported by `ferric.build_info()` /
+# `ferric.__build__` / `ferric --version` (crates/ferric-build-info).
+version = "0.1.0.dev0"
 description = "Python bindings for ferric, a Rust-native quantum chemistry engine"
 readme = "README.md"
 license = { text = "MIT OR Apache-2.0" }
