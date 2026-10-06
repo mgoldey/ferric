@@ -264,6 +264,14 @@ static std::mutex libint_ctor_mutex;
 // nothing measurable.
 static std::mutex libint_init_mutex;
 
+const char *scf_libint_version(void) {
+#ifdef LIBINT_VERSION
+    return LIBINT_VERSION;
+#else
+    return "unknown";
+#endif
+}
+
 void scf_libint_init(void) {
     std::lock_guard<std::mutex> lock(libint_init_mutex);
     if (libint_init_count.fetch_add(1) == 0) {

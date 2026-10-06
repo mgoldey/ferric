@@ -40,6 +40,7 @@ use ferric_scf::uhf::solve_uhf;
 
 fn print_usage() {
     eprintln!("usage: ferric [--verbose|-v] [--json <path>|--no-json] <input.toml>");
+    eprintln!("       ferric --version|-V");
     eprintln!();
     eprintln!("Run a ferric quantum-chemistry calculation from a TOML input file.");
     eprintln!(
@@ -53,6 +54,22 @@ fn print_usage() {
     eprintln!("                  Overrides `[output] json`. A run log is written BY");
     eprintln!("                  DEFAULT to <input-stem>.ferric.jsonl beside the input.");
     eprintln!("  --no-json       Do not write a run log. Same as `[output] json = false`.");
+    eprintln!("  --version, -V   Print which build this is (version, git commit, dirty");
+    eprintln!("                  flag, build profile, libint version) and exit.");
+}
+
+/// The `ferric --version` text: one `key: value` line per field, the same
+/// fields `ferric.build_info()` returns in Python. Every value is fixed at
+/// compile time (see the `ferric-build-info` crate).
+pub fn version_text() -> String {
+    format!(
+        "ferric {}\ncommit: {}\ndirty: {}\nprofile: {}\nlibint: {}\n",
+        ferric_build_info::VERSION,
+        ferric_build_info::COMMIT,
+        ferric_build_info::dirty_str(),
+        ferric_build_info::PROFILE,
+        ferric_integrals::libint_version(),
+    )
 }
 
 /// The `method.kind`s graded Proven or Proven (narrow). They never appear in
@@ -268,6 +285,10 @@ pub fn run(args: Vec<String>) {
     // this, running the release binary directly oversubscribes rayon × BLAS.
     ferric_integrals::blas_threads::init_threading();
     let ctx = ParallelContext::new();
+    if args.len() == 2 && (args[1] == "--version" || args[1] == "-V") {
+        print!("{}", version_text());
+        std::process::exit(0);
+    }
     if args.len() < 2 || args[1] == "--help" || args[1] == "-h" {
         print_usage();
         std::process::exit(if args.len() < 2 { 2 } else { 0 });
@@ -376,8 +397,9 @@ pub fn run(args: Vec<String>) {
     // `optimize_geometry_uhf_with_scf_correction` (MBD@rsSCS with the
     // unrestricted Z-vector) and ROKS `optimize` through
     // `optimize_geometry_rohf_with_scf_correction` (the ROKS Z-vector);
-    // open-shell `frequencies` are refused
-    // (`refuse_open_shell_dispersion_gradient`).
+    // `frequencies` passes the reference to
+    // `harmonic_frequencies_with_scf_correction`, which solves the matching
+    // UKS/ROKS SCF at every displaced geometry.
     // ...and the same for the METHOD, which the task guard above does not
     // cover. The correction is evaluated only where a Kohn-Sham SCF result is
     // printed (`print_scf_energy`), so a plain `rhf` energy run passes the
@@ -694,6 +716,10 @@ pub fn run(args: Vec<String>) {
     // run, written before any expensive work so it survives even a job killed
     // in the first SCF iteration. No-op when no log is installed.
     if let Some(rl) = ferric_scf::runlog::log() {
+        ferric_scf::runlog::set_build_identity(
+            ferric_build_info::VERSION,
+            ferric_build_info::short_commit().as_deref(),
+        );
         rl.run_start(
             serde_json::json!({
                 "method": method,
@@ -5520,11 +5546,12 @@ fn run_rohf(
 /// `method.kind` the same way `run_optimize` does; `[dft] xc` promotes RHF/UHF/
 /// ROHF to the corresponding KS variant automatically.
 ///
-/// With `[dft] dispersion` (closed-shell KS only, as in `run_optimize`) the
+/// With `[dft] dispersion` (RKS, UKS or ROKS, as in `run_optimize`) the
 /// Hessian is the central difference of the CORRECTED gradient
 /// `g_KS + g_disp`, each evaluated from the SCF converged at that displaced
 /// geometry (`harmonic_frequencies_with_scf_correction`); MBD@rsSCS's density
-/// dependence enters through its exact (Z-vector-relaxed) gradient.
+/// dependence enters through its exact (Z-vector-relaxed) gradient for the
+/// reference's own spin densities.
 fn run_frequencies(
     method: &str,
     cfg: &Config,
@@ -5623,29 +5650,22 @@ fn frequencies_maybe_dispersion(
     use ferric_scf::frequencies::{
         harmonic_frequencies, harmonic_frequencies_with_scf_correction, FrequencyReference,
     };
-    if fcfg.reference != FrequencyReference::Rhf {
-        let label = if fcfg.reference == FrequencyReference::Uhf {
-            open_shell_scf_label("UHF", "UKS", rhf_config)
-        } else {
-            open_shell_scf_label("ROHF", "ROKS", rhf_config)
-        };
-        refuse_open_shell_dispersion_gradient(cfg, &label, "frequencies");
-    }
+    // The spin of the SCF the frequency driver solves for this reference; the
+    // MBD@rsSCS model checks that reference's Z-vector is available before
+    // any SCF.
+    let spin = match fcfg.reference {
+        FrequencyReference::Rhf => ferric_scf::Spin::Restricted,
+        FrequencyReference::Uhf => ferric_scf::Spin::Unrestricted,
+        FrequencyReference::Rohf => ferric_scf::Spin::RestrictedOpen,
+    };
     // Refuse an unsupported configuration (e.g. hessian = "analytic") before
     // the dispersion model is built (MBD@rsSCS solves free atoms), not after.
     if dispersion_request(cfg).is_some() {
         ferric_scf::frequencies::check_scf_correction_config(fcfg)?;
     }
-    let Some(model) = dispersion_gradient_model(
-        cfg,
-        ctx,
-        mol,
-        bs,
-        op,
-        rhf_config,
-        "frequencies",
-        ferric_scf::Spin::Restricted,
-    ) else {
+    let Some(model) =
+        dispersion_gradient_model(cfg, ctx, mol, bs, op, rhf_config, "frequencies", spin)
+    else {
         return harmonic_frequencies(ctx, mol, &bs.name, op, rhf_config, fcfg).map(|r| (r, None));
     };
     let mut at_reference: Option<DispersionCorrection> = None;
@@ -6011,26 +6031,6 @@ fn refuse_tddft_xc_without_kernel(cfg: &Config, method: &str) {
     }
     if let Err(e) = ferric_dft::lr_kernel::resolve_singlet_response_xc(xc_name, "[tddft] xc") {
         eprintln!("error: {e}");
-        std::process::exit(1);
-    }
-}
-
-/// `[dft] dispersion` is refused where no dispersion gradient is threaded:
-/// any open-shell frequency run (the frequency driver's correction hook is
-/// closed-shell only). Such a run would report the Hessian of the
-/// UNCORRECTED surface while the config asks for a corrected one. The
-/// single-point energy (task = "energy") applies the correction on every
-/// reference, and `optimize` is supported on RKS, UKS and ROKS.
-fn refuse_open_shell_dispersion_gradient(cfg: &Config, label: &str, task: &str) {
-    if cfg.dft.dispersion.is_some() {
-        eprintln!(
-            "error: [dft] dispersion is not supported with method.task = \"{task}\" on an \
-             open-shell ({label}) reference: the dispersion gradient is only threaded through \
-             the closed-shell frequency driver, so this run would report the Hessian of the \
-             uncorrected surface. Use task = \"energy\" for a corrected {label} single point, \
-             task = \"optimize\" (supported with the correction on every reference), or remove \
-             the key."
-        );
         std::process::exit(1);
     }
 }

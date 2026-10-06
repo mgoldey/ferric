@@ -24,6 +24,99 @@ from tools.pipeline.tiers import TierResult
 TierFn = Callable[[Isomer, dict], TierResult]
 
 
+class IncomparableError(ValueError):
+    """A stage was asked to rank values that are not comparable.
+
+    Raised, not reported per candidate: the defect is the RUN's configuration
+    (a total-energy tier cutting a population of differing formulas), it
+    applies to every candidate equally, and any survivor list it produced
+    would be an ordering by electron count presented as a selection.
+    """
+
+
+def formula(iso: Isomer) -> str:
+    """Molecular formula of `iso` INCLUDING hydrogens and net charge.
+
+    The charge is part of it on purpose: a carboxylate and its acid differ by
+    a proton, and their total energies are no more comparable than two
+    different substituents'.
+    """
+    from rdkit import Chem
+    from rdkit.Chem.rdMolDescriptors import CalcMolFormula
+
+    return CalcMolFormula(Chem.MolFromSmiles(iso.canonical))
+
+
+def require_same_formula(population: list[Isomer], stage_name: str) -> None:
+    """Refuse to rank a per-molecule TOTAL across differing formulas.
+
+    A total energy scales with electron count, so ordering a fluoro and a
+    chloro analogue by it orders them by the chlorine's 8 extra electrons --
+    the heavier substituent "wins" whatever it does in the pocket. Same-formula
+    populations (the isomer campaigns the funnel was built for) pass.
+    """
+    formulas = sorted({formula(iso) for iso in population})
+    if len(formulas) > 1:
+        raise IncomparableError(
+            f"stage {stage_name!r} ranks a TOTAL energy (formula_bound=True) "
+            f"across differing formulas {formulas}; a total is comparable only "
+            "between isomers. Score a difference against a common reference "
+            "instead -- for tiers 3 and 4, context['score'] = 'interaction' "
+            "with the pocket's point_charges -- or set keep >= the population "
+            "so this stage does not cut."
+        )
+
+
+def paired_delta(parent: list[float], analogue: list[float]) -> list[float]:
+    """Per-pose paired difference: analogue pose i minus parent pose i.
+
+    Pairing cancels what the two share at pose i (the pose's own placement
+    error), which is why the danuglipron campaign's paired ddE carried ~1-3
+    kcal/mol of noise where an unpaired difference carried ~4. Refuses
+    unequal lengths: an unpaired remainder is not a pair. A self-pair is
+    exactly 0 at every pose (x - x == 0.0 for every finite float).
+    """
+    if len(parent) != len(analogue):
+        raise ValueError(
+            f"cannot pair {len(analogue)} analogue poses with "
+            f"{len(parent)} parent poses"
+        )
+    return [a - p for p, a in zip(parent, analogue)]
+
+
+def _cut(ok: list[Isomer], by_id: dict, keep: int) -> tuple[list[Isomer], str]:
+    """Top-`keep` by ascending value, never splitting an UNRESOLVED group.
+
+    Sorted candidates are grouped wherever a neighbour pair is NOT resolved
+    (`TierResult.resolves(...) is False`: the gap is inside the two results'
+    combined `resolution`). If `keep` falls inside a group, the WHOLE group
+    survives and the note says so: the tier cannot order those candidates, so
+    dropping some of them would be a decision made by sort order, not by the
+    measurement. An uncharacterised resolution (`None`) ranks as before.
+    """
+    ranked = sorted(ok, key=lambda iso: by_id[iso.canonical].value)
+    groups: list[list[Isomer]] = []
+    for iso in ranked:
+        if groups and (
+            by_id[groups[-1][-1].canonical].resolves(by_id[iso.canonical]) is False
+        ):
+            groups[-1].append(iso)
+        else:
+            groups.append([iso])
+    kept: list[Isomer] = []
+    note = ""
+    for g in groups:
+        if len(kept) >= keep:
+            break
+        if len(kept) + len(g) > keep:
+            note = (
+                f"; keep={keep} falls inside an unresolved group of {len(g)}, "
+                f"kept all {len(kept) + len(g)}"
+            )
+        kept += g
+    return kept, note
+
+
 @dataclass
 class Stage:
     """One tier in the stack. `keep` is how many survivors pass downward."""
@@ -192,6 +285,15 @@ def run_funnel(
 ) -> FunnelReport:
     """Narrow `candidates` through `stages`, cheapest first.
 
+    **Comparability.** A stage whose results are `formula_bound` (a total
+    energy) and whose population spans more than one formula raises
+    `IncomparableError` if it would CUT (keep < scored); see
+    `require_same_formula`. A stage that keeps everyone passes them on in
+    input order. Same-formula populations rank exactly as before.
+
+    **Resolution.** The cut never splits candidates the tier cannot resolve
+    from each other (`TierResult.resolution`); see `_cut`.
+
     Ranking is ASCENDING by value at every tier, because every tier here reports
     an energy or an energy-like score where lower is better. A candidate the
     tier FAILED on is dropped and counted -- never ranked, and never treated as
@@ -222,8 +324,17 @@ def run_funnel(
             for iso in population
             if iso.canonical in by_id and by_id[iso.canonical].ok
         ]
-        ok.sort(key=lambda iso: by_id[iso.canonical].value)
-        survivors = ok[: stage.keep]
+        bound = any(by_id[iso.canonical].formula_bound for iso in ok)
+        note = ""
+        if bound and len(ok) > stage.keep:
+            require_same_formula(ok, stage.name)
+        if bound and len({formula(iso) for iso in ok}) > 1:
+            # No cut, so no ranking decision: pass everyone on in INPUT order
+            # rather than in an electron-count order that would look like one.
+            survivors = list(ok)
+            note = "; differing formulas on a total, passed through unranked"
+        else:
+            survivors, note = _cut(ok, by_id, stage.keep)
 
         rep.outcomes.append(
             TierOutcome(
@@ -231,7 +342,7 @@ def run_funnel(
                 n_in=len(population),
                 n_out=len(survivors),
                 n_failed=len(population) - len(ok),
-                note=f"{stage.name}: kept {len(survivors)} of {len(ok)} scored",
+                note=f"{stage.name}: kept {len(survivors)} of {len(ok)} scored{note}",
                 errors=[r.error for r in results if r.error][:10],
                 seconds=elapsed,
             )

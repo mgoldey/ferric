@@ -2980,13 +2980,13 @@ impl PyFrequencyResult {
 /// assuming.
 ///
 /// `dispersion`: the same strict spellings as `run_dft` ("d3bj", "d3(bj)",
-/// "d3bj(<functional>)", "mbd", "mbd(<functional>)"). Requires `xc` and the
-/// closed-shell reference ("rhf"); open-shell references raise. The Hessian is
+/// "d3bj(<functional>)", "mbd", "mbd(<functional>)"). Requires `xc`; any
+/// reference ("rhf", "uhf", "rohf", i.e. RKS, UKS or ROKS). The Hessian is
 /// then the central difference of the corrected analytic gradient
 /// (KS + dispersion), each from the SCF converged at that displaced geometry,
 /// so `hessian="analytic"` raises and "auto" runs finite differences. MBD@rsSCS
 /// enters through its exact gradient, including the orbital relaxation of its
-/// Hirshfeld volumes. `.energy` is then the corrected total and
+/// Hirshfeld volumes (the reference's own Z-vector: RKS, UKS or ROKS). `.energy` is then the corrected total and
 /// `.e_dispersion` the dispersion part.
 #[pyfunction]
 #[pyo3(signature = (
@@ -3077,8 +3077,8 @@ fn run_frequencies(
 
 /// `run_frequencies(dispersion=...)`, resolved BEFORE any SCF with
 /// `run_dft`'s strict parser. The parameters are fitted per functional, so
-/// there is no dispersion without `xc`; the correction is threaded through the
-/// closed-shell driver only; MBD@rsSCS needs its exact (Z-vector) gradient.
+/// there is no dispersion without `xc`; MBD@rsSCS needs its exact (Z-vector)
+/// gradient for the chosen reference.
 fn resolve_frequency_dispersion(
     dispersion: Option<&str>,
     xc: Option<&str>,
@@ -3094,16 +3094,17 @@ fn resolve_frequency_dispersion(
              functional, so there is no dispersion correction for Hartree-Fock",
         )
     })?;
-    if reference != ferric_scf::frequencies::FrequencyReference::Rhf {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "dispersion= is supported only with the closed-shell reference (\"rhf\" + xc, \
-             i.e. RKS): the dispersion gradient is threaded through the closed-shell \
-             frequency driver only",
-        ));
-    }
     let spec = resolve_dispersion(spec, xc_name)?;
     if matches!(spec, DispersionSpec::Mbd(_)) {
-        if let Some(why) = ferric_scf::zvector_ks::unsupported_reason(scf_cfg) {
+        use ferric_scf::frequencies::FrequencyReference;
+        let unsupported = match reference {
+            FrequencyReference::Rhf => ferric_scf::zvector_ks::unsupported_reason(scf_cfg),
+            FrequencyReference::Uhf => {
+                ferric_scf::zvector_ks::unsupported_reason_unrestricted(scf_cfg)
+            }
+            FrequencyReference::Rohf => ferric_scf::zvector_ks::unsupported_reason_roks(scf_cfg),
+        };
+        if let Some(why) = unsupported {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "dispersion=\"mbd\": the exact MBD@rsSCS gradient is not available: {why}"
             )));
@@ -8768,6 +8769,57 @@ fn _cli_main(py: Python<'_>) -> PyResult<()> {
     Ok(())
 }
 
+/// Which build of ferric is this?
+///
+/// Returns a dict with:
+///
+/// - ``version`` (str): the PEP 440 package version, same as
+///   ``ferric.__version__``. A checkout carries a ``.devN`` version; only a
+///   release wheel built from a ``v*`` tag has the plain version.
+/// - ``commit`` (str): full git hash of the source tree the extension was
+///   compiled from, or ``"unknown"`` when that tree was not a git checkout.
+/// - ``dirty`` (bool or None): whether any tracked file differed from
+///   ``commit`` (untracked files never count); ``None`` when unknown.
+/// - ``profile`` (str): cargo build profile, ``"release"`` or ``"debug"``.
+/// - ``libint_version`` (str): version of the libint2 headers the integral
+///   shim was compiled against, or ``"unknown"``.
+///
+/// All values are fixed when the extension is compiled, so they describe the
+/// loaded ``.so`` even when it is a symlink into some other checkout.
+#[pyfunction]
+fn build_info(py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+    let d = pyo3::types::PyDict::new(py);
+    d.set_item("version", ferric_build_info::VERSION)?;
+    d.set_item("commit", ferric_build_info::COMMIT)?;
+    d.set_item("dirty", ferric_build_info::DIRTY)?;
+    d.set_item("profile", ferric_build_info::PROFILE)?;
+    d.set_item("libint_version", ferric_integrals::libint_version())?;
+    Ok(d.unbind())
+}
+
+/// `ferric.__build__`: `{"git_sha": str, "dirty": bool}`, or `None` when the
+/// build had no git metadata (an undeterminable dirty flag also gives `None`;
+/// never guess a bool). smeltery reads exactly this shape.
+fn add_build_stamp(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    if let (true, Some(dirty)) = (ferric_build_info::commit_known(), ferric_build_info::DIRTY) {
+        let b = pyo3::types::PyDict::new(m.py());
+        b.set_item("git_sha", ferric_build_info::COMMIT)?;
+        b.set_item("dirty", dirty)?;
+        m.add("__build__", b)
+    } else {
+        m.add("__build__", m.py().None())
+    }
+}
+
+/// Register `__version__`, `__build__` and `build_info`. `m.add` also appends to
+/// the module's `__all__`, which carries `__version__` through maturin's
+/// generated `from .ferric import *`.
+fn add_build_identity(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add("__version__", ferric_build_info::VERSION)?;
+    add_build_stamp(m)?;
+    m.add_function(wrap_pyfunction!(build_info, m)?)
+}
+
 // ── Module ──
 
 /// One direction of an IRC walk.
@@ -9338,6 +9390,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // `ferric` console script's entry point wires to this by name -- see
     // pyproject.toml [project.scripts].
     m.add_function(wrap_pyfunction!(_cli_main, m)?)?;
+    add_build_identity(m)?;
     m.add_function(wrap_pyfunction!(run_rhf, m)?)?;
     m.add_function(wrap_pyfunction!(run_uhf, m)?)?;
     m.add_function(wrap_pyfunction!(run_rohf, m)?)?;

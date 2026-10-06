@@ -23,6 +23,7 @@ pip install ferric        # or: uv pip install ferric
 The only releases so far are pre-releases (`0.1.0rc*`). pip and uv both select
 them when no final release exists, so the plain command above works. Pin a
 version (`ferric==0.1.0rc5`) if you need a reproducible environment.
+[Which build am I running](#which-build-am-i-running) shows how to check.
 
 The wheel gives you two things:
 
@@ -163,6 +164,29 @@ gradient. The wheel has no G12 class, so F12 methods need a source build.
 mpqc4 tarball (libint2 2.7.2) has no second derivatives and no G12 class: built
 against it, ferric uses finite-difference Hessians and the G12 tests skip with
 an explicit message.
+
+## Which build am I running
+
+```bash
+python -c "import ferric; print(ferric.__version__); print(ferric.build_info()); print(ferric.__build__)"
+ferric --version
+```
+
+`ferric.build_info()` and `ferric --version` report the version, the full git
+commit, whether tracked files differed from that commit (`dirty`), the cargo
+profile and the libint2 version. `ferric.__build__` is the compact stamp
+`{"git_sha": ..., "dirty": ...}`. All of it is fixed when the extension is
+compiled, so it describes the loaded `.so` even if that is a symlink into
+another checkout.
+
+- A released wheel carries the plain version (`0.1.0`), the tagged commit and
+  `dirty: False`. To release, push a `vX.Y.Z` tag; there is nothing to commit,
+  and the build fails rather than ship from a dirty or unidentified tree.
+- A build from a checkout carries a `.devN` version (`0.1.0.dev0`) and the
+  commit it was built from, with `dirty: True` if tracked files had uncommitted
+  changes. Untracked files do not count.
+- A build with no git metadata (an sdist or source tarball) reports
+  `commit: "unknown"`, and `ferric.__build__` is `None`.
 
 ## MPI
 

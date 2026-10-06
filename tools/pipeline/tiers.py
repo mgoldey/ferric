@@ -38,6 +38,13 @@ MEASURED costs (2026-09-19, through the tier functions; tier 1 from RESULTS.md M
                            order, so dispersion-corrected OPTIMIZATION costs
                            no more than uncorrected.
 
+TIERS 3 AND 4 COST TWICE THE ROWS ABOVE under `context["score"] =
+"interaction"`: the rows are ONE single point, and the interaction score is
+E(in field) - E(vacuum), two single points at the same geometry. That is the
+score substitution analogues need (a total energy cannot rank differing
+formulas; `run_funnel` refuses the cut), so budget 2x for any analogue
+campaign. The default `"total"` remains one single point.
+
 Tier 4's cost is the reason the funnel must narrow to a handful before reaching
 it. See `tools/campaign/hierarchy.py` for the rules.
 """
@@ -74,6 +81,19 @@ class TierResult:
     #: of 1-2 (RESULTS.md M4-M13), so two candidates 0.5 kcal/mol apart are
     #: indistinguishable no matter how many digits the tier prints.
     resolution: float | None = None
+    #: `True` when `value` is a per-molecule TOTAL (an MMFF, GFN2 or DFT total
+    #: energy). A total scales with electron count, so it is comparable only
+    #: between molecules of the SAME FORMULA: ranking a fluoro analogue
+    #: against its chloro sibling by total energy orders them by the chlorine's
+    #: electrons, not by anything about binding. `run_funnel` refuses to CUT a
+    #: population of differing formulas on such a value (`IncomparableError`).
+    #:
+    #: `False` (the default) is for a value that is already a difference
+    #: against a common reference -- a Vina score, or the in-pocket minus
+    #: gas-phase interaction energy tiers 3 and 4 report under
+    #: `context["score"] = "interaction"` -- and so is comparable across
+    #: formulas.
+    formula_bound: bool = False
 
     def __post_init__(self) -> None:
         """Reject a resolution that cannot mean what the field promises.
@@ -214,13 +234,15 @@ def tier2_forcefield(iso: Isomer, context: dict) -> TierResult:
     # the docked pose and tiers 3 and 4 would score a conformer that never saw
     # the receptor. The energy above is still this tier's own verdict.
     if iso.canonical in context.get("geometry", {}):
-        return TierResult(iso.canonical, energy)
+        return TierResult(iso.canonical, energy, formula_bound=True)
     conf = mol.GetConformer()
     coords = [tuple(conf.GetAtomPosition(i)) for i in range(mol.GetNumAtoms())]
     return TierResult(
         iso.canonical,
         energy,
         payload={"coords": coords, "symbols": [a.GetSymbol() for a in mol.GetAtoms()]},
+        # An MMFF total energy: comparable between isomers only.
+        formula_bound=True,
     )
 
 
@@ -304,6 +326,55 @@ def _embedded(iso: Isomer, context: dict):
     if not r.ok:
         return None, r.error
     return r.payload["symbols"], r.payload["coords"]
+
+
+_SCORES = ("total", "interaction")
+
+
+def _pocket_field(context: dict):
+    """`(point_charges, score, error)` for tiers 3 and 4.
+
+    Two refusals live here so both quantum tiers share them:
+
+    **A receptor without a pocket field is refused.** A funnel that docks
+    against `context["receptor_pdbqt"]` and then scores the pose in vacuum has
+    thrown away the receptor's electrostatics -- the dominant in-pocket signal
+    -- with no error, and the vacuum number looks like any other. A caller that
+    really wants vacuum after docking says so with
+    `context["point_charges"] = None`; leaving the key out is the omission this
+    catches.
+
+    **`score="interaction"` needs a non-empty field.** It reports
+    E(in field) - E(vacuum) at one geometry, which is 0 by construction without
+    charges; a 0 would rank as "neutral" rather than "unevaluated".
+    """
+    score = context.get("score", "total")
+    if score not in _SCORES:
+        return None, None, (f"context['score'] must be one of {_SCORES}, got {score!r}")
+    if "receptor_pdbqt" in context and "point_charges" not in context:
+        return (
+            None,
+            None,
+            (
+                "a receptor is configured (context['receptor_pdbqt']) but no pocket "
+                "field: context['point_charges'] is absent, so this tier would score "
+                "the docked pose in VACUUM. Pass the pocket's (q, x, y, z) charges "
+                "in BOHR (tools.active_site.pocket_charges.derive_pocket_charges), "
+                "or set context['point_charges'] = None to ask for vacuum explicitly"
+            ),
+        )
+    pc = context.get("point_charges")
+    if score == "interaction" and not pc:
+        return (
+            None,
+            None,
+            (
+                "score='interaction' is E(in field) - E(vacuum) and needs a "
+                "non-empty context['point_charges']; without one it is 0 by "
+                "construction, not a measurement"
+            ),
+        )
+    return pc, score, None
 
 
 def tier1_dock(iso: Isomer, context: dict) -> TierResult:
@@ -459,17 +530,26 @@ def tier1_dock(iso: Isomer, context: dict) -> TierResult:
         # danuglipron). When the pose carries no mapping there is nothing to
         # mis-index, so our own SMILES is right.
         _mapping = getattr(best, "rdkit_index_of_heavy", None)
-        _smiles = getattr(best, "meeko_smiles", None) if _mapping else None
+        _smiles = getattr(best, "meeko_smiles", None)
+        # NO MAP, NO POSE. Without `rdkit_index_of_heavy`, `restore_hydrogens`
+        # assigns the docked heavy-atom coordinates to the SMILES atoms in
+        # LIST ORDER -- there is no substructure-match fallback. Meeko
+        # reorders atoms for its torsion tree (10 of 13 heavy atoms on
+        # aspirin), and its per-atom element check cannot see a reorder among
+        # atoms of the SAME element: an all-carbon permutation on an achiral
+        # molecule comes back as a complete, plausible, wrong geometry. So a
+        # pose without the map (a ligand PDBQT lacking `REMARK SMILES IDX`) is
+        # refused here rather than re-hydrogenated by position.
+        if not _mapping or not _smiles:
+            raise ValueError(
+                "the docked pose carries no heavy-atom map (rdkit_index_of_heavy "
+                "/ meeko_smiles); assigning coordinates by list order cannot "
+                "detect a same-element reorder"
+            )
         symbols, coords = restore_hydrogens(
-            _smiles or iso.canonical,
+            _smiles,
             [s for s, _ in zip(best.symbols, best.coords_angstrom) if s != "H"],
             [c for s, c in zip(best.symbols, best.coords_angstrom) if s != "H"],
-            # getattr, because the multi-seed tests drive this with a fake
-            # pose that carries only symbols/coords/vina_score. The mapping is
-            # an OPTIMISATION for `restore_hydrogens` (it falls back to a
-            # substructure match without it), not a requirement, so a pose
-            # lacking it must still re-hydrogenate rather than fail the
-            # candidate.
             rdkit_index_of_heavy=_mapping,
         )
     except Exception as exc:  # noqa: BLE001
@@ -496,7 +576,21 @@ def tier1_dock(iso: Isomer, context: dict) -> TierResult:
 
 
 def tier3_gfn2(iso: Isomer, context: dict) -> TierResult:
-    """GFN2-xTB single point, optionally in a pocket point-charge field."""
+    """GFN2-xTB single point, optionally in a pocket point-charge field.
+
+    `context["score"]` picks what `value` is:
+
+    * `"total"` (default): the GFN2 total energy, in or out of the field.
+      `formula_bound=True` -- comparable between isomers only.
+    * `"interaction"`: E(in field) - E(vacuum) at the same geometry, Hartree.
+      Needs a non-empty `context["point_charges"]` (Bohr); comparable across
+      formulas, so this is the score for substitution analogues. Two single
+      points per candidate.
+
+    With `context["receptor_pdbqt"]` set and no `context["point_charges"]`
+    key the candidate is REFUSED rather than scored in vacuum; see
+    `_pocket_field`.
+    """
     from tools.campaign.xtb_engine import singlepoint
 
     symbols, coords = _embedded(iso, context)
@@ -506,17 +600,25 @@ def tier3_gfn2(iso: Isomer, context: dict) -> TierResult:
         # which says nothing about why and sent a reader looking for a missing
         # cache when the geometry was present and wrong.
         return TierResult(iso.canonical, None, coords or "no geometry for GFN2")
-    run = singlepoint(
-        symbols,
-        coords,
-        charge=iso.net_charge,
-        point_charges=context.get("point_charges"),
-    )
+    pc, score, why = _pocket_field(context)
+    if why is not None:
+        return TierResult(iso.canonical, None, why)
+    run = singlepoint(symbols, coords, charge=iso.net_charge, point_charges=pc)
     if not run.ok:
         return TierResult(iso.canonical, None, run.error)
-    return TierResult(
-        iso.canonical, run.energy, payload={"symbols": symbols, "coords": coords}
-    )
+    payload = {"symbols": symbols, "coords": coords, "e_total": run.energy}
+    if score == "total":
+        return TierResult(
+            iso.canonical, run.energy, payload=payload, formula_bound=True
+        )
+    # INTERACTION: the same geometry in vacuum, so the difference carries the
+    # pocket's electrostatics and polarisation and nothing else -- comparable
+    # across formulas, unlike either total.
+    vac = singlepoint(symbols, coords, charge=iso.net_charge)
+    if not vac.ok:
+        return TierResult(iso.canonical, None, f"vacuum reference failed: {vac.error}")
+    payload["e_vacuum"] = vac.energy
+    return TierResult(iso.canonical, run.energy - vac.energy, payload=payload)
 
 
 def tier4_dft(iso: Isomer, context: dict) -> TierResult:
@@ -535,6 +637,12 @@ def tier4_dft(iso: Isomer, context: dict) -> TierResult:
     two-body correction to the SCF energy. Dispersion is the dominant attractive
     term in ligand binding, so a bare semilocal DFT energy is not comparable
     between conformers or substituents.
+
+    **What `value` is** follows `context["score"]`, exactly as in `tier3_gfn2`:
+    the DFT total (`"total"`, the default, `formula_bound=True`) or the
+    in-pocket minus vacuum interaction energy at one geometry
+    (`"interaction"`, two SCFs, comparable across formulas). The payload
+    carries `e_total` (in field) and `e_vacuum` (`None` unless computed).
 
     Pass `context["dispersion"] = None` to get the uncorrected SCF energy back.
     The result's payload carries `e_scf` and `e_dispersion` separately;
@@ -581,27 +689,57 @@ def _tier4_dft_inner(iso: Isomer, context: dict, ferric) -> TierResult:
         # which says nothing about why and sent a reader looking for a missing
         # cache when the geometry was present and wrong.
         return TierResult(iso.canonical, None, coords or "no geometry for DFT")
+    pc, score, why = _pocket_field(context)
+    if why is not None:
+        return TierResult(iso.canonical, None, why)
     xyz = [str(len(symbols)), "tier4"]
     for s, (x, y, z) in zip(symbols, coords):
         xyz.append(f"{s} {x:.8f} {y:.8f} {z:.8f}")
-    try:
+
+    def _scf(charges):
         mol = ferric.Molecule.from_xyz_string("\n".join(xyz) + "\n", iso.net_charge, 1)
         bs = ferric.BasisSet.bundled(context.get("basis", "def2-svp"))
-        res = ferric.run_dft(
+        return ferric.run_dft(
             mol,
             bs,
             functional=context.get("functional", "PBE"),
-            point_charges=context.get("point_charges"),
+            point_charges=charges,
             dispersion=context.get("dispersion", "d3bj"),
         )
+
+    try:
+        res = _scf(pc)
     except Exception as e:  # noqa: BLE001
         return TierResult(iso.canonical, None, f"DFT failed: {type(e).__name__}: {e}")
     if not res.converged:
         return TierResult(iso.canonical, None, "DFT did not converge")
+    value, e_vacuum = res.total_energy, None
+    if score == "interaction":
+        # The same geometry, basis, functional and dispersion in vacuum. D3(BJ)
+        # is QM-atom-pairwise, so it is IDENTICAL in both SCFs and cancels: the
+        # difference is the pocket's electrostatics plus the ligand's
+        # polarisation response. Costs a second SCF.
+        try:
+            vac = _scf(None)
+        except Exception as e:  # noqa: BLE001
+            return TierResult(
+                iso.canonical,
+                None,
+                f"vacuum reference DFT failed: {type(e).__name__}: {e}",
+            )
+        if not vac.converged:
+            return TierResult(
+                iso.canonical, None, "vacuum reference DFT did not converge"
+            )
+        e_vacuum = vac.total_energy
+        value = res.total_energy - vac.total_energy
     return TierResult(
         iso.canonical,
-        res.total_energy,
+        value,
+        formula_bound=(score == "total"),
         payload={
+            "e_total": res.total_energy,
+            "e_vacuum": e_vacuum,
             "converged": True,
             "symbols": symbols,
             "coords": coords,
@@ -646,8 +784,6 @@ def _tier4_dft_inner(iso: Isomer, context: dict, ferric) -> TierResult:
             # charges but no sigma/epsilon, and nothing in this pipeline types
             # atoms against a force field. That PARAMETER-ASSIGNMENT problem,
             # not the 12-6 sum, is the actual remaining work.
-            "dispersion_covers_qm_only": (
-                res.e_dispersion is not None and bool(context.get("point_charges"))
-            ),
+            "dispersion_covers_qm_only": (res.e_dispersion is not None and bool(pc)),
         },
     )

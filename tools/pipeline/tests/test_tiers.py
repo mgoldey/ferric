@@ -252,6 +252,9 @@ def _fake_dock_factory(scores_by_seed):
                 for i in _heavy
             ],
             rdkit_index_of_heavy=list(range(len(_heavy))),
+            # The map indexes THIS SMILES (heavy atoms first after AddHs), so
+            # it plays the role of Meeko's REMARK SMILES.
+            meeko_smiles=BENZOIC.canonical,
         )
         return SimpleNamespace(ok=True, error=None, best=pose, poses=[pose])
 
@@ -764,3 +767,30 @@ def test_a_legitimate_geometry_still_passes():
     )
     assert cached.ok, f"a perturbed conformer must still score: {cached.error}"
     assert cached.value is not None
+
+
+def test_a_pose_WITHOUT_a_heavy_atom_map_is_refused_not_placed_by_list_order(
+    monkeypatch,
+):
+    """#324: with no map, `restore_hydrogens` assigns coordinates by LIST ORDER.
+
+    There is no substructure-match fallback (the old comment here claimed one).
+    List order cannot see a reorder among atoms of the same element -- an
+    all-carbon permutation on an achiral molecule passes every element and
+    stereo check -- so a mapless pose must fail the candidate, with a reason.
+    """
+    import tools.docking as docking
+
+    fake, _ = _fake_dock_factory({0xF00D: -8.0})
+
+    def mapless(*a, **k):
+        res = fake(*a, **k)
+        res.best.rdkit_index_of_heavy = None
+        return res
+
+    monkeypatch.setattr(docking, "dock_ligand", mapless)
+    r = tier1_dock(
+        BENZOIC, {"receptor_pdbqt": "r.pdbqt", "box_center": (0.0, 0.0, 0.0)}
+    )
+    assert not r.ok and r.value is None
+    assert "no heavy-atom map" in r.error, r.error
