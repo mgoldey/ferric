@@ -16,5 +16,9 @@ ferric-tensors = { path = "../ferric-tensors" }
 ndarray = { workspace = true }
 rayon = { workspace = true }
 
+[features]
+# CUDA backend: einsum GEMMs offload to the device.
+gpu = ["ferric-core/gpu", "ferric-tensors/gpu"]
+
 [dev-dependencies]
 serde_json = { workspace = true }
