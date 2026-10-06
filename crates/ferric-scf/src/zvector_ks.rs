@@ -2184,6 +2184,116 @@ mod degenerate_somo_investigation {
         );
     }
 
+    fn oh_uks_pbe0(
+        ext: Option<ferric_core::external_potential::ExternalPotential>,
+    ) -> (
+        Molecule,
+        ferric_core::basis::BasisSet,
+        PreparedBasis,
+        SchwarzBounds,
+        RhfConfig,
+        ScfResult,
+    ) {
+        let mol = Molecule::parse_xyz(OH, 0, 2).unwrap();
+        let bs = ferric_core::basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+        let cfg = RhfConfig {
+            xc: Some("PBE0".into()),
+            max_iter: 300,
+            energy_conv: 1e-11,
+            density_conv: 1e-9,
+            external_potential: ext,
+            ..Default::default()
+        };
+        let r =
+            crate::uhf::solve_uhf(&ParallelContext::default(), &mol, &prep, &bounds, &cfg).unwrap();
+        assert!(r.converged);
+        (mol, bs, prep, bounds, cfg, r)
+    }
+
+    /// REFUSED, NOT PROJECTED: a property that is not symmetric about the axis
+    /// has a right-hand side along κ_L, so its Z-vector equation has no
+    /// solution on the complement and the derivative is not determined. A
+    /// generic symmetric V (no symmetry) must be refused with the overlap
+    /// named. Fails if the `NULL_RHS_TOL` refusal is dropped.
+    #[test]
+    fn non_axisymmetric_property_is_refused() {
+        let (mol, bs, prep, bounds, cfg, r) = oh_uks_pbe0(None);
+        let n = prep.nbasis();
+        let v = Array2::from_shape_fn((n, n), |(i, j)| {
+            let (a, b) = (i.min(j) as f64, i.max(j) as f64);
+            (0.37 * a + 1.13 * b + 0.29 * a * b).sin()
+        });
+        let err = relaxation_gradient_unrestricted(
+            &ParallelContext::default(),
+            &mol,
+            &prep,
+            &bs,
+            Operator::coulomb(),
+            &bounds,
+            &cfg,
+            &r,
+            &v,
+        )
+        .expect_err("a non-axisymmetric property must be refused");
+        println!("{err}");
+        assert!(format!("{err}").contains("not orthogonal"), "{err}");
+    }
+
+    /// NOT PROJECTED when the symmetry is broken from outside: a point charge
+    /// off the molecular axis makes the axis rotation an ordinary, stiff
+    /// direction (its Rayleigh quotient rises above `NULL_RAYLEIGH_TOL`), so
+    /// the mode must not be removed. Fails if the Rayleigh bar is dropped.
+    #[test]
+    fn external_symmetry_breaking_is_not_projected() {
+        let ext = ferric_core::external_potential::ExternalPotential {
+            point_charges: vec![ferric_core::external_potential::PointCharge {
+                q: 1.0,
+                x: 3.0,
+                y: 0.0,
+                z: 0.9,
+            }],
+            ..Default::default()
+        };
+        let (mol, bs, prep, bounds, cfg, r) = oh_uks_pbe0(Some(ext));
+        let v = ferric_integrals::oneelectron::hcore(&prep);
+        let u = relaxation_gradient_unrestricted(
+            &ParallelContext::default(),
+            &mol,
+            &prep,
+            &bs,
+            Operator::coulomb(),
+            &bounds,
+            &cfg,
+            &r,
+            &v,
+        )
+        .expect("solve");
+        // The Rayleigh quotient of κ_L itself, for the record.
+        let (h, gap, kl) = dense(&mol, &bs, &prep, &cfg, &r);
+        let k = kl.expect("linear");
+        let dim = gap.len();
+        let khk: f64 = (0..dim)
+            .map(|i| {
+                k[i] * (0..dim)
+                    .map(|j| 0.5 * (h[(i, j)] + h[(j, i)]) * k[j])
+                    .sum::<f64>()
+            })
+            .sum();
+        let kmk: f64 = k.iter().zip(&gap).map(|(a, g)| a * a * g).sum();
+        println!(
+            "off-axis charge: Rayleigh {:.3e}, null_mode {:?}",
+            khk / kmk,
+            u.null_mode
+        );
+        assert!(
+            (khk / kmk).abs() > NULL_RAYLEIGH_TOL,
+            "the charge is too weak to test the bar"
+        );
+        assert_eq!(u.null_mode, None);
+    }
+
     #[test]
     #[ignore = "measurement: issue #265 null-mode investigation"]
     fn measure_open_shell_hessian_null_mode() {
