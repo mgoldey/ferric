@@ -363,13 +363,13 @@ mod tests {
         // that constant were inverted. (This exact blind spot was found by
         // mutation testing in att_vv10.rs.) 0.75 A = 1.4173 Bohr, not 0.397.
         assert!(
-            (c.r0_bonded - 1.417_294_491_45).abs() < 1e-8,
+            (c.r0_bonded - 1.417_294_593_42).abs() < 1e-8,
             "0.75 A must be ~1.41729 Bohr, got {} (a value near 0.397 means the \
              Angstrom->Bohr conversion is inverted)",
             c.r0_bonded
         );
         assert!(
-            (c.r0_nonbonded - 1.984_212_287_1).abs() < 1e-8,
+            (c.r0_nonbonded - 1.984_212_430_79).abs() < 1e-8,
             "1.05 A must be ~1.98421 Bohr, got {}",
             c.r0_nonbonded
         );
