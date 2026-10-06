@@ -205,6 +205,8 @@ The CUDA backend is not in the PyPI wheel; it needs a source build with the `gpu
 
 Device memory is a separate pool (`[gpu] memory_gb`); the host `[memory] budget_gb` is not reduced by it. A contraction that does not fit the device pool runs on the CPU and is counted, not refused. `FERRIC_GPU_TRACE=1` prints each fallback.
 
+`[gpu] precision = "mixed"` changes the numbers, not just the speed: the audit line and `ferric.gpu_status()["precision"]` say which precision a run used, and the per-kernel error map is on the validation page.
+
 ## Implemented is not validated
 
 A method listed on these pages exists and runs. How closely its numbers have

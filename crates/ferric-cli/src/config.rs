@@ -175,10 +175,14 @@ pub struct GpuCfg {
     pub device: Option<usize>,
     pub memory_gb: Option<f64>,
     pub min_flops: Option<usize>,
+    /// `"f64"` (default) or `"mixed"`. See the `[gpu]` table in the input reference.
+    pub precision: Option<String>,
+    /// Kernels allowed to run in mixed precision; requires `precision = "mixed"`.
+    pub mixed_kernels: Option<Vec<String>>,
 }
 
 impl GpuCfg {
-    /// Value checks: `mode` parses and `memory_gb` is finite and > 0.
+    /// Value checks: `mode`, `precision` and `mixed_kernels` parse and `memory_gb` is finite and > 0.
     pub fn validate(&self) -> Result<(), String> {
         if let Some(s) = &self.mode {
             s.parse::<ferric_core::gpu::GpuMode>()
@@ -188,6 +192,15 @@ impl GpuCfg {
             if !(g.is_finite() && g > 0.0) {
                 return Err(format!("[gpu] memory_gb must be finite and > 0, got {g}"));
             }
+        }
+        if let Some(p) = &self.precision {
+            p.parse::<ferric_core::gpu::Precision>()
+                .map_err(|e| format!("[gpu] precision: {e}"))?;
+        }
+        if let Some(ks) = &self.mixed_kernels {
+            ks.join(",")
+                .parse::<ferric_core::gpu::MixedKernelSet>()
+                .map_err(|e| format!("[gpu] mixed_kernels: {e}"))?;
         }
         Ok(())
     }
@@ -200,6 +213,11 @@ impl GpuCfg {
             device: self.device,
             memory_gb: self.memory_gb,
             min_flops: self.min_flops,
+            precision: self.precision.as_deref().and_then(|s| s.parse().ok()),
+            mixed_kernels: self
+                .mixed_kernels
+                .as_ref()
+                .and_then(|ks| ks.join(",").parse().ok()),
         }
     }
 }

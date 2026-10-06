@@ -11,7 +11,7 @@ import sys
 
 import ferric
 
-KEYS = {"compiled", "mode", "status", "reason", "device"}
+KEYS = {"compiled", "mode", "status", "reason", "device", "precision", "mixed_kernels"}
 DEVICE_KEYS = {"ordinal", "name", "cc", "free_bytes", "total_bytes"}
 COMPILED = ferric.gpu_status()["compiled"]
 
@@ -21,6 +21,10 @@ def _check_types(st):
     assert type(st["compiled"]) is bool
     assert st["mode"] in {"off", "auto", "on"}
     assert st["status"] in {"not_compiled", "unavailable", "ready"}
+    assert st["precision"] in {"f64", "mixed"}
+    assert isinstance(st["mixed_kernels"], list) and all(
+        isinstance(k, str) for k in st["mixed_kernels"]
+    )
     assert st["reason"] is None or isinstance(st["reason"], str)
     if st["device"] is None:
         assert st["status"] != "ready"
@@ -40,6 +44,8 @@ def _in_subprocess(value):
     """gpu_status() in a fresh process with FERRIC_GPU=value (None = unset)."""
     env = dict(os.environ)
     env.pop("FERRIC_GPU", None)
+    env.pop("FERRIC_GPU_PRECISION", None)
+    env.pop("FERRIC_GPU_MIXED_KERNELS", None)
     if value is not None:
         env["FERRIC_GPU"] = value
     out = subprocess.run(
@@ -95,7 +101,37 @@ def test_default_build_contract():
         "status": "not_compiled",
         "reason": None,
         "device": None,
+        "precision": "f64",
+        "mixed_kernels": [],
     }
+
+
+def test_precision_keys_present_and_default_f64():
+    st = _in_subprocess(None)
+    assert st["precision"] == "f64" and st["mixed_kernels"] == []
+
+
+def test_mixed_without_a_device_mode_degrades_to_off_and_says_why():
+    env = dict(os.environ)
+    env.pop("FERRIC_GPU", None)
+    env["FERRIC_GPU_PRECISION"] = "mixed"
+    out = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import json, ferric; print(json.dumps(ferric.gpu_status()))",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    st = json.loads(out.stdout.strip().splitlines()[-1])
+    _check_types(st)
+    # library path: an unsatisfiable knob set degrades to off with the reason
+    assert st["mode"] == "off" and st["precision"] == "f64"
+    if COMPILED:
+        assert st["status"] == "unavailable" and "precision" in st["reason"]
 
 
 def _skip_or_fail_not_required(reason):

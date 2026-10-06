@@ -1,4 +1,5 @@
 use ferric_core::gpu::config::{GpuSettings, GpuSettingsExplicit, FERRIC_GPU_MIN_FLOPS_DEFAULT};
+use ferric_core::gpu::precision::{MixedKernelSet, Precision};
 use ferric_core::gpu::GpuMode;
 use std::collections::HashMap;
 
@@ -109,6 +110,8 @@ fn with_mode(mode: GpuMode, device: usize) -> GpuSettings {
         device,
         memory_gb: None,
         min_flops: FERRIC_GPU_MIN_FLOPS_DEFAULT,
+        precision: Precision::F64,
+        mixed_kernels: MixedKernelSet::EMPTY,
     }
 }
 

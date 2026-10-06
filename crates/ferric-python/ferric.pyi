@@ -58,6 +58,10 @@ class GpuStatus(TypedDict):
     degrades to ``off``); ``None`` otherwise."""
     device: GpuDevice | None
     """Set only when ``status == "ready"``."""
+    precision: str
+    """``"f64"`` (default) or ``"mixed"``, from ``FERRIC_GPU_PRECISION``."""
+    mixed_kernels: list[str]
+    """Kernels allowed in mixed precision (``FERRIC_GPU_MIXED_KERNELS``); empty under ``f64``."""
 
 def gpu_status() -> GpuStatus:
     """CUDA backend state. Resolved once per process from the environment; touches

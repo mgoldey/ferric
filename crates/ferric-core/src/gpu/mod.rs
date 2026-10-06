@@ -15,11 +15,13 @@ pub mod device;
 pub mod gemm;
 #[cfg(feature = "gpu")]
 pub mod pool;
+pub mod precision;
 pub mod stats;
 
 use std::sync::OnceLock;
 
 pub use config::{GpuMode, GpuSettings, GpuSettingsExplicit};
+pub use precision::{MixedKernel, MixedKernelSet, MixedScope, Precision};
 pub use stats::{stats, GpuStatsSnapshot};
 
 /// Whether this binary was compiled with the `gpu` feature.
@@ -125,22 +127,28 @@ pub fn install(explicit: GpuSettingsExplicit) -> Result<&'static GpuStatus, Stri
     match &status {
         _ if !first => {}
         GpuStatus::NotCompiled if settings.mode == GpuMode::Auto => {
-            eprintln!("[ferric] gpu: built without the gpu feature; running on the CPU");
+            eprintln!("[ferric] gpu: built without the gpu feature; running on the CPU in f64");
         }
         GpuStatus::Unavailable { reason } if settings.mode == GpuMode::Auto => {
-            eprintln!("[ferric] gpu: unavailable ({reason}); running on the CPU");
+            eprintln!("[ferric] gpu: unavailable ({reason}); running on the CPU in f64");
         }
         _ => {}
     }
     if let (true, GpuStatus::Ready(info)) = (first, &status) {
         eprintln!(
-            "[ferric] gpu: device {} {} (cc {}.{}, {:.2} GB free of {:.2} GB)",
+            "[ferric] gpu: device {} {} (cc {}.{}, {:.2} GB free of {:.2} GB), precision {}{}",
             info.ordinal,
             info.name,
             info.cc_major,
             info.cc_minor,
             info.free_bytes as f64 / 1e9,
-            info.total_bytes as f64 / 1e9
+            info.total_bytes as f64 / 1e9,
+            settings.precision,
+            if settings.precision == Precision::Mixed {
+                format!(", mixed kernels {}", settings.mixed_kernels)
+            } else {
+                String::new()
+            }
         );
     }
     match INSTALLED.set((settings, status)) {
@@ -186,12 +194,7 @@ fn installed() -> &'static (GpuSettings, GpuStatus) {
                 Err(e) => {
                     eprintln!("[ferric] gpu: {e}; GPU disabled");
                     malformed = Some(e);
-                    GpuSettings {
-                        mode: GpuMode::Off,
-                        device: 0,
-                        memory_gb: None,
-                        min_flops: config::FERRIC_GPU_MIN_FLOPS_DEFAULT,
-                    }
+                    GpuSettings::degraded_off()
                 }
             };
         let st = match malformed {

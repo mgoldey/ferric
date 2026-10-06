@@ -8679,6 +8679,10 @@ fn gpu_status(py: Python<'_>) -> PyResult<Bound<'_, pyo3::types::PyDict>> {
     let d = pyo3::types::PyDict::new(py);
     d.set_item("compiled", gpu_compiled())?;
     d.set_item("mode", mode)?;
+    let s = ferric_core::gpu::settings();
+    d.set_item("precision", s.precision.to_string())?;
+    let kernels: Vec<&str> = s.mixed_kernels.iter().map(|k| k.name()).collect();
+    d.set_item("mixed_kernels", kernels)?;
     match st {
         GpuStatus::NotCompiled => {
             d.set_item("status", "not_compiled")?;

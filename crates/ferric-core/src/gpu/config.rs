@@ -5,7 +5,11 @@
 use std::fmt;
 use std::str::FromStr;
 
-use crate::config::{accept_any, parse_toggle, ConfigVar, Resolved};
+use crate::config::{accept_any, parse_toggle, ConfigSource, ConfigVar, Resolved};
+
+use super::precision::{
+    MixedKernel, MixedKernelSet, Precision, GPU_MIXED_KERNELS, GPU_PRECISION, PRECISION_DEFAULT,
+};
 
 /// Whether the GPU backend is used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -156,6 +160,8 @@ pub struct GpuSettingsExplicit {
     pub device: Option<usize>,
     pub memory_gb: Option<f64>,
     pub min_flops: Option<usize>,
+    pub precision: Option<Precision>,
+    pub mixed_kernels: Option<MixedKernelSet>,
 }
 
 /// Resolved GPU settings.
@@ -165,6 +171,8 @@ pub struct GpuSettings {
     pub device: usize,
     pub memory_gb: Option<f64>,
     pub min_flops: usize,
+    pub precision: Precision,
+    pub mixed_kernels: MixedKernelSet,
 }
 
 fn tag<T>(r: Result<Resolved<T>, String>, name: &str) -> Result<Resolved<T>, String> {
@@ -172,6 +180,24 @@ fn tag<T>(r: Result<Resolved<T>, String>, name: &str) -> Result<Resolved<T>, Str
 }
 
 impl GpuSettings {
+    /// `true` only when `precision = mixed` AND `k` is in the allowlist.
+    pub fn mixed_allows(&self, k: MixedKernel) -> bool {
+        self.precision == Precision::Mixed && self.mixed_kernels.contains(k)
+    }
+
+    /// The library fallback when the env knobs cannot be resolved: GPU off, every
+    /// other knob at its default (precision from [`PRECISION_DEFAULT`]).
+    pub fn degraded_off() -> GpuSettings {
+        GpuSettings {
+            mode: GpuMode::Off,
+            device: 0,
+            memory_gb: None,
+            min_flops: FERRIC_GPU_MIN_FLOPS_DEFAULT,
+            precision: PRECISION_DEFAULT,
+            mixed_kernels: MixedKernelSet::SHIPPED,
+        }
+    }
+
     /// Resolve every knob (TOML/kwarg > env via `get` > default). Returns the
     /// settings and one audit line per knob.
     pub fn resolve(
@@ -191,6 +217,38 @@ impl GpuSettings {
             GPU_MIN_FLOPS.resolve(explicit.min_flops, &get),
             "FERRIC_GPU_MIN_FLOPS",
         )?;
+        let precision = tag(
+            GPU_PRECISION.resolve(explicit.precision, &get),
+            "FERRIC_GPU_PRECISION",
+        )?;
+        let kernels = tag(
+            GPU_MIXED_KERNELS.resolve(explicit.mixed_kernels, &get),
+            "FERRIC_GPU_MIXED_KERNELS",
+        )?;
+        let kernels_given = matches!(kernels.source, ConfigSource::Explicit | ConfigSource::Env);
+        match precision.value {
+            Precision::F64 if kernels_given => {
+                return Err(format!(
+                    "FERRIC_GPU_MIXED_KERNELS / [gpu] mixed_kernels = {} given but the precision is f64; \
+                     set [gpu] precision = \"mixed\" or drop the list",
+                    kernels.value
+                ));
+            }
+            Precision::Mixed if mode.value == GpuMode::Off => {
+                return Err(
+                    "[gpu] precision = mixed requires mode = auto or on (FERRIC_GPU / [gpu] mode is off)"
+                        .to_string(),
+                );
+            }
+            Precision::Mixed if kernels.value.is_empty() => {
+                return Err(format!(
+                    "[gpu] precision = mixed but no mixed-precision kernel is available: \
+                     FERRIC_GPU_MIXED_KERNELS resolved to none and this build ships {}",
+                    MixedKernelSet::SHIPPED
+                ));
+            }
+            _ => {}
+        }
         // The unset default is 0.0, which would read as "zero GB".
         let mem_line = if mem.value > 0.0 {
             mem.audit_line()
@@ -206,6 +264,8 @@ impl GpuSettings {
             device.audit_line(),
             mem_line,
             min_flops.audit_line(),
+            precision.audit_line(),
+            kernels.audit_line(),
         ];
         Ok((
             GpuSettings {
@@ -213,6 +273,8 @@ impl GpuSettings {
                 device: device.value,
                 memory_gb: (mem.value > 0.0).then_some(mem.value),
                 min_flops: min_flops.value,
+                precision: precision.value,
+                mixed_kernels: kernels.value,
             },
             audit,
         ))
