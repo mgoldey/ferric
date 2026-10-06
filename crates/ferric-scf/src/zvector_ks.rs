@@ -2108,6 +2108,82 @@ mod degenerate_somo_investigation {
         assert!(null_mode_numbers(O2, 3, "sto-3g", "PBE").is_none());
     }
 
+    /// THE PROJECTION ITSELF, both references: with an axis-symmetric
+    /// property (V = the core Hamiltonian, no grid in it, so its right-hand
+    /// side is orthogonal to κ_L to rounding) the UKS and ROKS solves on OH
+    /// must report the mode and return a Z with no component along κ_L.
+    /// Without the projection the UKS solve is refused (negative Rayleigh
+    /// quotient with PBE0) and the ROKS solve (positive quotient) returns the
+    /// unprojected Z, whose κ_L component is the arbitrary 0/0 one — so each
+    /// assertion fails if its reference loses the projection.
+    #[test]
+    fn projected_z_has_no_null_mode_component() {
+        let mol = Molecule::parse_xyz(OH, 0, 2).unwrap();
+        let bs = ferric_core::basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+        let cfg = RhfConfig {
+            xc: Some("PBE0".into()),
+            max_iter: 300,
+            energy_conv: 1e-11,
+            density_conv: 1e-9,
+            ..Default::default()
+        };
+        let v = ferric_integrals::oneelectron::hcore(&prep);
+        let ru = crate::uhf::solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
+        let u =
+            relaxation_gradient_unrestricted(&ctx, &mol, &prep, &bs, op, &bounds, &cfg, &ru, &v)
+                .expect("UKS");
+        let nelec = mol.nelec() as usize;
+        let (na, nb) = (nelec.div_ceil(2), nelec / 2);
+        let c_b = ru.mos_beta.as_ref().unwrap();
+        let mode = axis_rotation_mode(
+            &mol,
+            &bs,
+            &prep,
+            &[
+                (
+                    &ru.mos_alpha.slice(s![.., na..]).to_owned(),
+                    &ru.mos_alpha.slice(s![.., ..na]).to_owned(),
+                ),
+                (
+                    &c_b.slice(s![.., nb..]).to_owned(),
+                    &c_b.slice(s![.., ..nb]).to_owned(),
+                ),
+            ],
+        )
+        .unwrap()
+        .expect("mode");
+        let zu = [u.z_alpha.clone(), u.z_beta.clone()];
+        let ovl_u = inner_blocks(&mode, &zu).abs() / inner_blocks(&zu, &zu).sqrt();
+        let ro = crate::rohf::solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
+        let o = relaxation_gradient_roks(&ctx, &mol, &prep, &bs, op, &bounds, &cfg, &ro, &v)
+            .expect("ROKS");
+        let c = &ro.mos_alpha;
+        let (cc, co, cv) = (
+            c.slice(s![.., ..nb]).to_owned(),
+            c.slice(s![.., nb..na]).to_owned(),
+            c.slice(s![.., na..]).to_owned(),
+        );
+        let mode_o = axis_rotation_mode(&mol, &bs, &prep, &[(&cv, &cc), (&cv, &co), (&co, &cc)])
+            .unwrap()
+            .expect("mode");
+        let zo = [o.z_vc.clone(), o.z_vo.clone(), o.z_oc.clone()];
+        let ovl_o = inner_blocks(&mode_o, &zo).abs() / inner_blocks(&zo, &zo).sqrt();
+        println!(
+            "UKS: {:?}, |z.k|/|z| = {ovl_u:.2e}; ROKS: {:?}, |z.k|/|z| = {ovl_o:.2e}",
+            u.null_mode, o.null_mode
+        );
+        assert!(u.null_mode.is_some() && o.null_mode.is_some());
+        assert!(ovl_u < 1e-10, "UKS Z has a null-mode component {ovl_u:.3e}");
+        assert!(
+            ovl_o < 1e-10,
+            "ROKS Z has a null-mode component {ovl_o:.3e}"
+        );
+    }
+
     #[test]
     #[ignore = "measurement: issue #265 null-mode investigation"]
     fn measure_open_shell_hessian_null_mode() {
