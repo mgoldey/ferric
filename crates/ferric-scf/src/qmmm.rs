@@ -1795,12 +1795,27 @@ pub fn qmmm_mm_terms(
         }
     }
 
+    // 3. QM-MM Lennard-Jones across the cut: see `qm_mm_lj_pass`.
+    e.lj += qm_mm_lj_pass(system, top, coords_full, &mut g);
+    e.total = e.bond + e.angle + e.torsion + e.lj + e.coulomb;
+    Ok((e, g))
+}
+
+/// The QM-MM Lennard-Jones pass of [`qmmm_mm_terms`]: adds its gradient into
+/// `g` (full-structure rows) and returns its energy.
+fn qm_mm_lj_pass(
+    system: &QmmmSystem,
+    top: &MmTopology,
+    coords_full: &Array2<f64>,
+    g: &mut Array2<f64>,
+) -> f64 {
     // 3. QM-MM Lennard-Jones: every real QM atom (link atoms/boundary
     //    charges excluded by construction — they are not `system.atoms`
     //    indices) paired with every MM atom, using top.lj on both sides, and
     //    the topology's exclusions (skip) / 1-4 pairs (scale_lj_14) derived
     //    from the ORIGINAL bond graph, so a pair bonded across the cut is
     //    treated exactly as the force field treats it inside the MM region.
+    let mut e_lj = 0.0;
     let qm_lj: Vec<ferric_mm::LjParams> = system.qm_indices.iter().map(|&i| top.lj[i]).collect();
     let mm_lj: Vec<ferric_mm::LjParams> = system.mm_indices.iter().map(|&i| top.lj[i]).collect();
     if !qm_lj.is_empty() && !mm_lj.is_empty() {
@@ -1832,7 +1847,7 @@ pub fn qmmm_mm_terms(
         let (e_qm_mm_lj, g_qm, g_mm) = ferric_mm::qm_mm_lj_energy_gradient_scaled(
             &qm_lj, &coords_qm, &mm_lj, &coords_mm, pair_scale,
         );
-        e.lj += e_qm_mm_lj;
+        e_lj = e_qm_mm_lj;
         for (row, &i) in system.qm_indices.iter().enumerate() {
             for c in 0..3 {
                 g[(i, c)] += g_qm[(row, c)];
@@ -1845,8 +1860,7 @@ pub fn qmmm_mm_terms(
         }
     }
 
-    e.total = e.bond + e.angle + e.torsion + e.lj + e.coulomb;
-    Ok((e, g))
+    e_lj
 }
 
 /// [`full_gradient`] plus the MM force-field contribution from
