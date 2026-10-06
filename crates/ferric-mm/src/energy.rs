@@ -363,7 +363,9 @@ fn dihedral_and_gradient(
 /// QM-MM Lennard-Jones energy and split gradient between "real QM" atoms
 /// (which carry their own topology LJ parameters, e.g. an ordinary force
 /// field's protein-ligand vdW term) and MM atoms. Full N×M direct sum, no
-/// cutoff, Lorentz-Berthelot mixing.
+/// cutoff, Lorentz-Berthelot mixing, and NO exclusions: every QM-MM pair gets
+/// the full term. Use [`qm_mm_lj_energy_gradient_scaled`] to apply a force
+/// field's 1-2/1-3 exclusions and 1-4 scaling across a covalent QM/MM cut.
 ///
 /// Returns `(energy, grad_qm (n_qm,3), grad_mm (n_mm,3))`.
 pub fn qm_mm_lj_energy_gradient(
@@ -371,6 +373,24 @@ pub fn qm_mm_lj_energy_gradient(
     coords_qm: &Array2<f64>,
     lj_mm: &[LjParams],
     coords_mm: &Array2<f64>,
+) -> (f64, Array2<f64>, Array2<f64>) {
+    qm_mm_lj_energy_gradient_scaled(lj_qm, coords_qm, lj_mm, coords_mm, |_, _| 1.0)
+}
+
+/// [`qm_mm_lj_energy_gradient`] with a per-pair scale factor:
+/// `pair_scale(a, b)` multiplies the LJ term between QM atom `a` (row of
+/// `coords_qm`) and MM atom `b` (row of `coords_mm`). A scale of `0.0` skips
+/// the pair entirely (an excluded 1-2/1-3 pair); `1.0` leaves the term
+/// unscaled, evaluated by exactly the same floating-point operations as the
+/// unscaled function, so an all-ones scale is bit-identical to it.
+///
+/// Returns `(energy, grad_qm (n_qm,3), grad_mm (n_mm,3))`.
+pub fn qm_mm_lj_energy_gradient_scaled(
+    lj_qm: &[LjParams],
+    coords_qm: &Array2<f64>,
+    lj_mm: &[LjParams],
+    coords_mm: &Array2<f64>,
+    pair_scale: impl Fn(usize, usize) -> f64,
 ) -> (f64, Array2<f64>, Array2<f64>) {
     let n_qm = lj_qm.len();
     let n_mm = lj_mm.len();
@@ -386,6 +406,10 @@ pub fn qm_mm_lj_energy_gradient(
             if lj_mm[b].epsilon == 0.0 {
                 continue;
             }
+            let scale = pair_scale(a, b);
+            if scale == 0.0 {
+                continue;
+            }
             let rij = [
                 coords_qm[(a, 0)] - coords_mm[(b, 0)],
                 coords_qm[(a, 1)] - coords_mm[(b, 1)],
@@ -396,8 +420,13 @@ pub fn qm_mm_lj_energy_gradient(
             let mixed = mix(lj_qm[a], lj_mm[b]);
             let sr6 = (mixed.sigma / r).powi(6);
             let sr12 = sr6 * sr6;
-            e += 4.0 * mixed.epsilon * (sr12 - sr6);
-            let dedr = 4.0 * mixed.epsilon * (-12.0 * sr12 + 6.0 * sr6) / r;
+            let mut e_pair = 4.0 * mixed.epsilon * (sr12 - sr6);
+            let mut dedr = 4.0 * mixed.epsilon * (-12.0 * sr12 + 6.0 * sr6) / r;
+            if scale != 1.0 {
+                e_pair *= scale;
+                dedr *= scale;
+            }
+            e += e_pair;
             add_row(
                 &mut g_qm,
                 a,

@@ -106,12 +106,14 @@
 //!
 //! Both SCF loops (`rhf.rs` and `uhf.rs`) decline any step whose |predicted
 //! change| is below [`crate::trah::TrahConfig::predicted_min`] (default
-//! 1e-12 Ha), record a zero density change, and count the decline in
-//! [`crate::trah::TRAH_NULL_STEPS_DECLINED`]. They differ in what follows:
-//! the open-shell loop falls through to DIIS in the same iteration; the
-//! closed-shell loop ends the iteration, so the next one rebuilds the Fock
-//! matrix at the unchanged density, sees ΔE = 0 and ΔP = 0, and the normal
-//! convergence test ends the run.
+//! 1e-12 Ha), count the decline in [`crate::trah::TRAH_NULL_STEPS_DECLINED`],
+//! and fall through to DIIS in the same iteration. The DIIS step moves the
+//! density and records the real change, so convergence is measured on the
+//! next iteration, never declared by the decline itself: a declined step
+//! leaves the density where it was, and an iteration that then saw ΔE = 0 and
+//! ΔP = 0 would pass the convergence test whatever the orbital gradient
+//! (`trah_rks_null_step_is_measured.rs` pins that with `predicted_min` raised
+//! to 1e-6, where the declined step is NOT negligible).
 //!
 //! Each loop's guard is pinned by an iteration bound on a system that cycles
 //! without it:
@@ -183,9 +185,8 @@ pub static TRAH_PREDICTIONS_DISCARDED: std::sync::atomic::AtomicUsize =
 /// Count of TRAH steps DECLINED by the null-step guard
 /// ([`TrahConfig::predicted_min`]), process-wide. Each one is an iteration on
 /// which the armed loop computed a step, found |predicted| below the bound,
-/// and did not apply it. What happens next differs by loop: the closed-shell
-/// RHF/RKS loop ENDS the iteration (no DIIS step), while the UHF/UKS loop
-/// falls through to DIIS in the same iteration. It makes the
+/// and did not apply it; both the RHF/RKS and the UHF/UKS loops then fall
+/// through to DIIS in the same iteration. It makes the
 /// guard's branch observable: an iteration count alone cannot tell "the guard
 /// fired and helped" from "the guard was never reached".
 pub static TRAH_NULL_STEPS_DECLINED: std::sync::atomic::AtomicUsize =

@@ -2232,11 +2232,13 @@ fn solve_rhf_once(
                 // noise over a vanishing denominator (measured on RKS/PBE
                 // water: pred=-1.4e-15, actual=+2.7e-9, rho=-1.9e6). Stepping
                 // there cannot help and costs two Fock builds per cycle -- see
-                // `TrahConfig::predicted_min`. The declined iteration ends
-                // without moving the density: the next one rebuilds F at the
-                // same density, sees dE = 0 and the zero density change
-                // recorded below, and the normal convergence test ends the run.
-                // Pinned by `tests/trah_rks_null_step.rs`.
+                // `TrahConfig::predicted_min`. A declined step falls through to
+                // DIIS in this same iteration, as the UHF loop does: DIIS moves
+                // the density from this F and records the real change, so the
+                // next iteration's convergence test MEASURES the state instead
+                // of seeing an unchanged density (`tests/trah_rks_null_step.rs`
+                // pins the guard; `tests/trah_rks_null_step_is_measured.rs`
+                // pins that a decline cannot declare convergence).
                 if step.predicted.abs() < config.trah.predicted_min {
                     crate::trah::note_trah_null_step_declined();
                     if scf_trace() {
@@ -2250,24 +2252,14 @@ fn solve_rhf_once(
                         st.clear_pending();
                     }
                     trah_undo = None;
-                    // Record that the density did NOT move.
-                    //
-                    // `record_density_change` is a SETTER, not an accumulator:
-                    // `dp_rms`/`dp_max` keep whatever was last written. TRAH
-                    // `continue`s past the DIIS path, so on the iterations it
-                    // drives it is the ONLY writer -- and the moment it stops
-                    // writing, the last value it wrote is frozen in.
-                    //
-                    // That froze `dp_rms` at 2.059e-6 (above the 1e-8 bar) for
-                    // 200 iterations on RKS/PBE water while dE was exactly 0,
-                    // |g|_rms 4.9e-9 and err_max 2.2e-8 -- every other signal
-                    // converged, the run declared failure, and it reached an
-                    // energy matching DIIS to 1.9e-10. The solve was DONE; only
-                    // the bookkeeping said otherwise.
-                    //
-                    // Writing the true (zero) change here lets the ordinary
-                    // convergence test see the state the solver is actually in.
-                    mon.record_density_change(&d, &d);
+                    // `trah_took_step` stays false, so the DIIS path below
+                    // takes this iteration and writes the density change. No
+                    // zero change is recorded here: `record_density_change` is
+                    // a setter, and a zero written by a step that did not move
+                    // the density would let the NEXT iteration pass the
+                    // density test at an unchanged density whatever the
+                    // orbital gradient (#315: converged 4.4e-7 Ha above DIIS
+                    // with `predicted_min` 1e-6).
                 } else {
                     if scf_trace() {
                         eprintln!(
@@ -2314,8 +2306,8 @@ fn solve_rhf_once(
                     if effective_level_shift > 0.0 {
                         c_prev = Some(last_c.clone());
                     }
+                    trah_took_step = true;
                 }
-                trah_took_step = true;
             }
         }
         if trah_took_step {

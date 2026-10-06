@@ -122,7 +122,16 @@ mod tests {
 
     #[test]
     fn short_commit_carries_the_dirty_suffix() {
-        let s = short_commit().expect("tests run from a checkout");
+        let Some(s) = short_commit() else {
+            // sdist / `git archive` build: no .git, nothing to suffix. The
+            // anchor test above pins that COMMIT is then exactly "unknown".
+            assert_eq!(
+                COMMIT, "unknown",
+                "commit is known but short_commit() is None"
+            );
+            eprintln!("skipped: no git commit embedded (build outside a checkout)");
+            return;
+        };
         assert!(COMMIT.starts_with(s.trim_end_matches("-dirty")));
         assert_eq!(s.ends_with("-dirty"), DIRTY == Some(true));
     }
