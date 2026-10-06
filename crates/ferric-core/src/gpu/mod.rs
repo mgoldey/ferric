@@ -73,28 +73,29 @@ pub fn probe(ordinal: usize) -> GpuStatus {
 static INSTALLED: OnceLock<(GpuSettings, GpuStatus)> = OnceLock::new();
 
 /// The on/auto/off decision, pure (no globals, no printing): `probe_fn` is
-/// injected. `off` never calls it; `auto` degrades to `Unavailable` /
+/// injected. A build without the `gpu` feature is always `NotCompiled` (`on`
+/// errors). `off` never calls it; `auto` degrades to `Unavailable` /
 /// `NotCompiled` (the caller prints the notice); `on` with no usable device,
 /// or on a build without the `gpu` feature, is an `Err` naming the reason.
 pub fn decide(
     settings: &GpuSettings,
     probe_fn: impl Fn(usize) -> GpuStatus,
 ) -> Result<GpuStatus, String> {
+    if !gpu_compiled() {
+        return match settings.mode {
+            GpuMode::On => Err(
+                "[gpu] mode = on but this binary was built without the gpu feature; \
+                 rebuild with `--features ferric-cli/gpu`"
+                    .to_string(),
+            ),
+            GpuMode::Off | GpuMode::Auto => Ok(GpuStatus::NotCompiled),
+        };
+    }
     match settings.mode {
         GpuMode::Off => Ok(GpuStatus::Unavailable {
             reason: "mode off".into(),
         }),
         GpuMode::Auto | GpuMode::On => {
-            if !gpu_compiled() {
-                return match settings.mode {
-                    GpuMode::On => Err(
-                        "[gpu] mode = on but this binary was built without the gpu feature; \
-                         rebuild with `--features ferric-cli/gpu`"
-                            .to_string(),
-                    ),
-                    _ => Ok(GpuStatus::NotCompiled),
-                };
-            }
             let status = probe_fn(settings.device);
             match (&status, settings.mode) {
                 (GpuStatus::Unavailable { reason }, GpuMode::On) => {
@@ -173,11 +174,13 @@ pub fn settings() -> &'static GpuSettings {
 
 fn installed() -> &'static (GpuSettings, GpuStatus) {
     INSTALLED.get_or_init(|| {
+        let mut malformed = None;
         let settings =
             match GpuSettings::resolve(GpuSettingsExplicit::default(), crate::config::env_lookup) {
                 Ok((s, _)) => s,
                 Err(e) => {
                     eprintln!("[ferric] gpu: {e}; GPU disabled");
+                    malformed = Some(e);
                     GpuSettings {
                         mode: GpuMode::Off,
                         device: 0,
@@ -186,10 +189,13 @@ fn installed() -> &'static (GpuSettings, GpuStatus) {
                     }
                 }
             };
-        let st = decide(&settings, probe).unwrap_or_else(|reason| {
-            eprintln!("[ferric] gpu: {reason}; running on the CPU");
-            GpuStatus::Unavailable { reason }
-        });
+        let st = match malformed {
+            Some(reason) if gpu_compiled() => GpuStatus::Unavailable { reason },
+            _ => decide(&settings, probe).unwrap_or_else(|reason| {
+                eprintln!("[ferric] gpu: {reason}; running on the CPU");
+                GpuStatus::Unavailable { reason }
+            }),
+        };
         if let GpuStatus::Ready(info) = &st {
             install_default_pool(&settings, info, false);
         }

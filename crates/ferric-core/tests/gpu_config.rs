@@ -107,12 +107,16 @@ fn off_never_calls_the_probe() {
     })
     .unwrap();
     assert_eq!(calls.get(), 0);
-    assert_eq!(
-        st,
-        GpuStatus::Unavailable {
-            reason: "mode off".into()
-        }
-    );
+    if gpu_compiled() {
+        assert_eq!(
+            st,
+            GpuStatus::Unavailable {
+                reason: "mode off".into()
+            }
+        );
+    } else {
+        assert_eq!(st, GpuStatus::NotCompiled);
+    }
 }
 
 #[test]

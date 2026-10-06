@@ -8674,16 +8674,11 @@ fn boys_localize(
 #[pyfunction]
 fn gpu_status(py: Python<'_>) -> PyResult<Bound<'_, pyo3::types::PyDict>> {
     use ferric_core::gpu::{gpu_compiled, settings, status, GpuStatus};
+    // The first call may probe the device (FERRIC_GPU=auto|on); release the GIL.
+    let (mode, st) = py.allow_threads(|| (settings().mode.to_string(), status()));
     let d = pyo3::types::PyDict::new(py);
     d.set_item("compiled", gpu_compiled())?;
-    d.set_item("mode", settings().mode.to_string())?;
-    // Core reports "mode off" ahead of "not compiled"; the Python contract is
-    // that a binary without the feature always says `not_compiled`.
-    let st = if gpu_compiled() {
-        status()
-    } else {
-        &GpuStatus::NotCompiled
-    };
+    d.set_item("mode", mode)?;
     match st {
         GpuStatus::NotCompiled => {
             d.set_item("status", "not_compiled")?;

@@ -38,8 +38,30 @@ class BuildInfo(TypedDict):
 def build_info() -> BuildInfo:
     """Which build of ferric is loaded. All values are fixed at compile time."""
 
-def gpu_status() -> dict[str, object]:
-    """CUDA backend state: compiled, mode, status (not_compiled|unavailable|ready), reason, device."""
+class GpuDevice(TypedDict):
+    ordinal: int
+    name: str
+    cc: str
+    """Compute capability, ``"major.minor"``."""
+    free_bytes: int
+    total_bytes: int
+
+class GpuStatus(TypedDict):
+    compiled: bool
+    """Built with the ``gpu`` feature."""
+    mode: str
+    """``"off"`` (default), ``"auto"`` or ``"on"``, from ``FERRIC_GPU``."""
+    status: str
+    """``"not_compiled"``, ``"unavailable"`` or ``"ready"``."""
+    reason: str | None
+    """Why ``unavailable`` (also set for a malformed ``FERRIC_GPU``, which
+    degrades to ``off``); ``None`` otherwise."""
+    device: GpuDevice | None
+    """Set only when ``status == "ready"``."""
+
+def gpu_status() -> GpuStatus:
+    """CUDA backend state. Resolved once per process from the environment; touches
+    a device only when ``FERRIC_GPU`` is ``auto`` or ``on``."""
     ...
 
 # ── Classes ──
