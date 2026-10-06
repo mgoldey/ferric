@@ -2110,12 +2110,11 @@ mod degenerate_somo_investigation {
 
     /// THE PROJECTION ITSELF, both references: with an axis-symmetric
     /// property (V = the core Hamiltonian, no grid in it, so its right-hand
-    /// side is orthogonal to κ_L to rounding) the UKS and ROKS solves on OH
-    /// must report the mode and return a Z with no component along κ_L.
-    /// Without the projection the UKS solve is refused (negative Rayleigh
-    /// quotient with PBE0) and the ROKS solve (positive quotient) returns the
-    /// unprojected Z, whose κ_L component is the arbitrary 0/0 one — so each
-    /// assertion fails if its reference loses the projection.
+    /// side is orthogonal to κ_L to rounding) the UKS (OH/STO-3G PBE0) and
+    /// ROKS (NO/6-31G PBE) solves must report the mode and return a Z with no
+    /// component along κ_L. Both modes have NEGATIVE Rayleigh quotients, so
+    /// without the projection the solve meets negative curvature and is
+    /// refused — each half fails if its reference loses the projection.
     #[test]
     fn projected_z_has_no_null_mode_component() {
         let mol = Molecule::parse_xyz(OH, 0, 2).unwrap();
@@ -2158,7 +2157,23 @@ mod degenerate_somo_investigation {
         .expect("mode");
         let zu = [u.z_alpha.clone(), u.z_beta.clone()];
         let ovl_u = inner_blocks(&mode, &zu).abs() / inner_blocks(&zu, &zu).sqrt();
+        // ROKS on NO/6-31G-PBE, where the mode's Rayleigh quotient is
+        // NEGATIVE (−4.6e-3): there the unprojected PCG meets it. (On OH
+        // ROKS-PBE0 it is positive and the Krylov space of an axisymmetric
+        // right-hand side never acquires a κ_L component, projection or not.)
+        let mol = Molecule::parse_xyz(NO, 0, 2).unwrap();
+        let bs = ferric_core::basis::bundled("6-31g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let cfg = RhfConfig {
+            xc: Some("PBE".into()),
+            ..cfg
+        };
+        let v = ferric_integrals::oneelectron::hcore(&prep);
+        let nelec = mol.nelec() as usize;
+        let (na, nb) = (nelec.div_ceil(2), nelec / 2);
         let ro = crate::rohf::solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
+        assert!(ro.converged);
         let o = relaxation_gradient_roks(&ctx, &mol, &prep, &bs, op, &bounds, &cfg, &ro, &v)
             .expect("ROKS");
         let c = &ro.mos_alpha;
