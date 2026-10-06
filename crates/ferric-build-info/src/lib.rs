@@ -125,7 +125,10 @@ mod tests {
         let Some(s) = short_commit() else {
             // sdist / `git archive` build: no .git, nothing to suffix. The
             // anchor test above pins that COMMIT is then exactly "unknown".
-            assert_eq!(COMMIT, "unknown", "commit is known but short_commit() is None");
+            assert_eq!(
+                COMMIT, "unknown",
+                "commit is known but short_commit() is None"
+            );
             eprintln!("skipped: no git commit embedded (build outside a checkout)");
             return;
         };

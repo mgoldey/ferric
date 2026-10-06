@@ -19,11 +19,20 @@ fn version_prints_every_identity_field_and_matches_the_embedded_values() {
     assert_eq!(lines.len(), 5, "{text}");
     assert_eq!(lines[0], format!("ferric {}", ferric_build_info::VERSION));
     assert_eq!(lines[1], format!("commit: {}", ferric_build_info::COMMIT));
-    assert_eq!(lines[2], format!("dirty: {}", ferric_build_info::dirty_str()));
+    assert_eq!(
+        lines[2],
+        format!("dirty: {}", ferric_build_info::dirty_str())
+    );
     assert_eq!(lines[3], format!("profile: {}", ferric_build_info::PROFILE));
     assert!(lines[4].starts_with("libint: "), "{text}");
-    assert!(lines[4].len() > "libint: ".len(), "libint must never be empty");
-    assert!(!ferric_build_info::VERSION.contains('+'), "no PyPI-rejected local version");
+    assert!(
+        lines[4].len() > "libint: ".len(),
+        "libint must never be empty"
+    );
+    assert!(
+        !ferric_build_info::VERSION.contains('+'),
+        "no PyPI-rejected local version"
+    );
 }
 
 #[test]
