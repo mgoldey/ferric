@@ -67,8 +67,11 @@
 //! the total density, W = Σ_σ D_σ F_σ D_σ, and a factor ½ (not ¼) on the
 //! directional derivative of
 //! [`crate::ks_gradient::ks_gradient_uks_for_density`]. The same references
-//! are refused, plus COSX exchange (no UKS COSX gradient) and spin densities
-//! that are not the aufbau projectors of the MOs (MOM).
+//! are refused, plus spin densities that are not the aufbau projectors of the
+//! MOs (MOM). COSX exchange is supported with the overlap fit off (the
+//! contraction then differentiates the COSX energy through the same
+//! gradient expression); the fitted COSX energy is refused, as for the
+//! closed shell.
 //!
 //! # Restricted open-shell (ROKS) references
 //!
@@ -162,8 +165,9 @@
 //! the closed-shell ¼: the exactness anchor of the tests.
 //!
 //! H uses exact four-centre J and K. When the SCF fitted J and/or K (RI-J is
-//! `run_dft`'s default), Z solves a Hessian that differs from the SCF's by the
-//! fitting error; the contraction itself uses the SCF's own route.
+//! `run_dft`'s default) or built K with COSX, Z solves a Hessian that differs
+//! from the SCF's by the fitting / grid error; the contraction itself uses the
+//! SCF's own route.
 
 use crate::engine_pool::EnginePool;
 use crate::result::{ScfResult, Spin};
@@ -697,16 +701,29 @@ pub struct UnrestrictedRelaxationGradient {
 }
 
 /// Why an unrestricted (UKS) Z-vector cannot be formed for `config`, or
-/// `None`: every [`unsupported_reason`], plus COSX exchange (the UKS gradient
-/// has no COSX form).
+/// `None`: every [`unsupported_reason`], plus a COSX configuration the UKS
+/// gradient cannot differentiate (the overlap fit with a functional).
 pub fn unsupported_reason_unrestricted(config: &RhfConfig) -> Option<String> {
     if let Some(r) = unsupported_reason(config) {
         return Some(r);
     }
+    open_shell_cosx_reason(config, "UKS")
+}
+
+/// The COSX part of the open-shell refusals: `None` when exchange is not COSX
+/// or is fit-off COSX on a grid the gradient differentiates; otherwise the
+/// reason (the overlap fit with a functional needs the XC Fock nuclear
+/// derivative in its own Z-vector term, which ferric does not implement).
+fn open_shell_cosx_reason(config: &RhfConfig, reference: &str) -> Option<String> {
     match crate::cosx_gradient::scf_exchange_is_cosx(config, true) {
         Err(e) => Some(format!("COSX exchange check failed: {e}")),
-        Ok(true) => Some("COSX exchange: the UKS gradient has no COSX form".into()),
         Ok(false) => None,
+        Ok(true) => crate::cosx_gradient::check_gradient_supported(&config.cosx)
+            .and_then(|()| {
+                crate::cosx_gradient::check_fitted_ks_supported(&config.cosx, config.xc.as_deref())
+            })
+            .err()
+            .map(|e| format!("COSX exchange ({reference}): {e}")),
     }
 }
 
@@ -1003,12 +1020,14 @@ pub fn relaxation_gradient_unrestricted(
         let w0 = crate::gradient::build_energy_weighted_density_uhf(result, nocc_a, nocc_b);
         let t = T_SCALE / max_abs(&dd_a).max(max_abs(&dd_b));
         let ext = config.external_potential.as_ref();
+        let cosx =
+            crate::cosx_gradient::scf_exchange_is_cosx(config, true)?.then_some(&config.cosx);
         let g_at = |sgn: f64| -> Result<Array2<f64>, FerricError> {
             let da = rotated_projector(&sa.co, &sa.cv, &z[0], sgn * t, 1.0)?;
             let db = rotated_projector(&sb.co, &sb.cv, &z[1], sgn * t, 1.0)?;
             let wt = &w0 + &(sgn * t * &w_dot);
             crate::ks_gradient::ks_gradient_uks_for_density(
-                mol, prep, bs, op, bounds, xc, result, ext, &da, &db, &wt,
+                mol, prep, bs, op, bounds, xc, result, ext, cosx, &da, &db, &wt,
             )
         };
         let gp = g_at(1.0)?;
@@ -1050,8 +1069,9 @@ pub struct RestrictedOpenRelaxationGradient {
 }
 
 /// Why a restricted open-shell (ROKS) Z-vector cannot be formed for
-/// `config`, or `None`: every [`unsupported_reason`], plus COSX exchange (the
-/// ROKS gradient has no COSX form). Nothing ROKS-specific beyond that: the
+/// `config`, or `None`: every [`unsupported_reason`], plus a COSX
+/// configuration the ROKS gradient cannot differentiate (the overlap fit; see
+/// [`crate::gradient::preflight_cosx_restricted_open`]). Nothing ROKS-specific beyond that: the
 /// limits of `rohf_newton::hessian_matvec` (diagonal Fock entries
 /// only, range-separated exchange dropped) do not apply, because the Z-vector
 /// builds its own exact product (see the module doc) with the same response
@@ -1060,11 +1080,7 @@ pub fn unsupported_reason_roks(config: &RhfConfig) -> Option<String> {
     if let Some(r) = unsupported_reason(config) {
         return Some(r);
     }
-    match crate::cosx_gradient::scf_exchange_is_cosx(config, true) {
-        Err(e) => Some(format!("COSX exchange check failed: {e}")),
-        Ok(true) => Some("COSX exchange: the ROKS gradient has no COSX form".into()),
-        Ok(false) => None,
-    }
+    open_shell_cosx_reason(config, "ROKS")
 }
 
 /// The three ROKS rotation blocks (vc, vo, oc) as one PCG vector.
@@ -1378,6 +1394,8 @@ pub fn relaxation_gradient_roks(
         let t = T_SCALE / max_abs(&dd_a).max(max_abs(&dd_b));
         let ext = config.external_potential.as_ref();
         let kappa = roks_kappa(&z, nc, no, nmo);
+        let cosx =
+            crate::cosx_gradient::scf_exchange_is_cosx(config, true)?.then_some(&config.cosx);
         let g_at = |sgn: f64| -> Result<Array2<f64>, FerricError> {
             let ct = c.dot(&cayley(&kappa, sgn * t)?);
             let cct = ct.slice(s![.., ..nc]);
@@ -1386,7 +1404,7 @@ pub fn relaxation_gradient_roks(
             let db = cct.dot(&cct.t());
             let wt = &w0 + &(sgn * t * &w_dot);
             crate::ks_gradient::ks_gradient_roks_for_density(
-                mol, prep, bs, op, bounds, xc, result, ext, &da, &db, &wt,
+                mol, prep, bs, op, bounds, xc, result, ext, cosx, &da, &db, &wt,
             )
         };
         let gp = g_at(1.0)?;

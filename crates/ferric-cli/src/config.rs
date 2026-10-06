@@ -3034,13 +3034,16 @@ impl Config {
     /// * `[scf] k_builder = "cosx"` + a gradient task on a kind whose
     ///   gradient does not differentiate COSX (everything except
     ///   [`COSX_GRADIENT_KINDS`]: the RI-MP2/RPA optimizers ignore
-    ///   `k_builder`, ROHF/ROKS has no COSX gradient). Pairing COSX energies
-    ///   with an exact-exchange gradient steers the optimizer to the
-    ///   exact-exchange stationary point while its energies come from COSX
-    ///   (measured on water by central FD: -8.9e-6 Ha/Bohr at STO-3G, -1.4e-5
-    ///   at cc-pVDZ). RHF/RKS/UHF route through `restricted_scf_gradient` /
-    ///   `unrestricted_scf_gradient`, which differentiate the COSX (and RI-J)
-    ///   energy the SCF built, so they are admitted.
+    ///   `k_builder`). Pairing COSX energies with an exact-exchange gradient
+    ///   steers the optimizer to the exact-exchange stationary point while its
+    ///   energies come from COSX (measured on water by central FD: -8.9e-6
+    ///   Ha/Bohr at STO-3G, -1.4e-5 at cc-pVDZ). RHF/RKS, UHF/UKS and
+    ///   ROHF/ROKS route through `restricted_scf_gradient` /
+    ///   `unrestricted_scf_gradient` / `restricted_open_scf_gradient`, which
+    ///   differentiate the COSX (and RI-J) energy the SCF built, so they are
+    ///   admitted here; the library refuses the configurations those gradients
+    ///   do not cover (the overlap fit with a functional, or for ROHF/ROKS)
+    ///   before the SCF.
     pub fn validate_task_compat(&self) -> Result<(), String> {
         let kind = self.method.kind.as_str();
         let task = self.method.task.as_str();
@@ -3071,9 +3074,8 @@ impl Config {
                 "[scf] k_builder = \"cosx\" is not supported with method.kind = \"{kind}\", \
                  task = \"{task}\": this method's gradient is built from exact exchange (or \
                  ignores k_builder), so it would not be the derivative of the COSX energy. \
-                 COSX gradients exist for kind = \"rhf\" / \"ksdft\" (RHF/RKS) and \
-                 \"uhf\" (UHF); use k_builder = \"direct\" or \"link\" here, or task = \
-                 \"energy\"."
+                 COSX gradients exist for kind = \"rhf\" / \"uhf\" / \"rohf\" / \"ksdft\"; \
+                 use k_builder = \"direct\" or \"link\" here, or task = \"energy\"."
             ));
         }
         Ok(())
@@ -3082,10 +3084,11 @@ impl Config {
 
 /// `method.kind`s whose optimize / frequencies tasks differentiate COSX
 /// exchange (`ferric_scf::gradient::restricted_scf_gradient` /
-/// `unrestricted_scf_gradient` behind `optimize_geometry*` and the frequency
-/// driver): RHF/RKS and UHF (UKS is refused by the library before the SCF).
-/// Every other kind's gradient ignores `k_builder`.
-const COSX_GRADIENT_KINDS: &[&str] = &["rhf", "ksdft", "uhf"];
+/// `unrestricted_scf_gradient` / `restricted_open_scf_gradient` behind
+/// `optimize_geometry*` and the frequency driver): RHF/RKS, UHF/UKS and
+/// ROHF/ROKS (the library refuses the overlap fit with a functional, and for
+/// ROHF/ROKS, before the SCF). Every other kind's gradient ignores `k_builder`.
+const COSX_GRADIENT_KINDS: &[&str] = &["rhf", "ksdft", "uhf", "rohf"];
 
 /// `method.kind`s whose run honours `[pcm]`: the SCF-only kinds (the
 /// reported energy IS the solvated SCF energy; `solve_rhf`/`solve_uhf`/
@@ -4049,13 +4052,11 @@ mod compat_guard_tests {
     fn cosx_gradient_tasks_are_admitted_only_where_a_cosx_gradient_exists() {
         let cosx = "[scf]\nk_builder = \"cosx\"\n";
         for task in ["optimize", "frequencies"] {
-            for kind in ["rimp2", "rohf"] {
-                let e = cfg(kind, task, cosx)
-                    .validate_task_compat()
-                    .expect_err(task);
-                assert!(e.contains("cosx") && e.contains(task), "{e}");
-            }
-            for kind in ["rhf", "uhf", "ksdft"] {
+            let e = cfg("rimp2", task, cosx)
+                .validate_task_compat()
+                .expect_err(task);
+            assert!(e.contains("cosx") && e.contains(task), "{e}");
+            for kind in ["rhf", "uhf", "rohf", "ksdft"] {
                 assert_eq!(
                     cfg(kind, task, cosx).validate_task_compat(),
                     Ok(()),

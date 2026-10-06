@@ -103,8 +103,6 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ndarray::{Array1, Array2};
 
-use crate::gradient::rohf_gradient;
-use crate::ks_gradient::ks_gradient_roks;
 use crate::result::ScfResult;
 use crate::rhf::{solve_rhf, RhfConfig};
 use crate::rohf::solve_rohf;
@@ -986,7 +984,6 @@ fn energy_and_gradient(
     config: &RhfConfig,
     reference: FrequencyReference,
 ) -> Result<(f64, Array2<f64>), FerricError> {
-    let ext = config.external_potential.as_ref();
     let prepared = || -> Result<_, FerricError> {
         let bs = ferric_core::basis::bundled(basis_name)?;
         let prep = PreparedBasis::new(mol, &bs)?;
@@ -1015,14 +1012,12 @@ fn energy_and_gradient(
         }
         FrequencyReference::Rohf => {
             let (bs, prep, bounds) = prepared()?;
-            crate::gradient::refuse_cosx_restricted_open(config)?;
+            crate::gradient::preflight_cosx_restricted_open(config)?;
             let config = &*crate::gradient::gradient_task_config(config);
             let res = solve_rohf(ctx, mol, &prep, op, &bounds, config)?;
-            let grad = if let Some(xc_name) = config.xc.as_deref() {
-                ks_gradient_roks(mol, &prep, &bs, op, &bounds, xc_name, &res, ext)?
-            } else {
-                rohf_gradient(mol, &prep, op, &bounds, &res, ext)?
-            };
+            let grad = crate::gradient::restricted_open_scf_gradient(
+                mol, &prep, &bs, op, &bounds, config, &res,
+            )?;
             Ok((res.energy, grad))
         }
     }

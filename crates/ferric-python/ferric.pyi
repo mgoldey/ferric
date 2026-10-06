@@ -1878,9 +1878,11 @@ def run_dft(
     any other value raises ValueError. Pruning has no table at
     `grid_angular=50`. Any grid kwarg with `with_gradient=True` raises
     ValueError: the analytic gradient is built on the default grid.
-    `k_builder="cosx"` with `with_gradient=True` also raises ValueError: COSX
-    has no analytic gradient, and the exact-exchange gradient is not the
-    derivative of a COSX energy.
+    With `k_builder="cosx"` and `with_gradient=True` the gradient
+    differentiates the COSX energy; the overlap fit with a functional is not
+    differentiable (its response needs the XC Fock nuclear derivative), so
+    `cosx_overlap_fit=False` is required there and the fitted case raises
+    ValueError before the SCF.
     """
     ...
 

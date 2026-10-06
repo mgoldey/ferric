@@ -86,9 +86,9 @@ Open-shell support is listed only where the dispatch code handles it (see
 `pdep-rpa` and `rimp2`. `task = "frequencies"` is accepted only for `rhf`,
 `ksdft`, `uhf` and `rohf`. On an open-shell molecule both tasks are accepted
 only for `uhf`, `rohf` and `ksdft` (UHF/UKS, ROHF/ROKS). Both tasks refuse
-`[dft] grid_prune`, and `[scf] k_builder = "cosx"` except for `rhf`, `ksdft`
-and `uhf` (closed-shell RHF/RKS and UHF; UKS with COSX is refused before the
-SCF); a COSX final pass is skipped for them. `[dft] dispersion` is
+`[dft] grid_prune`, and `[scf] k_builder = "cosx"` except for `rhf`, `ksdft`,
+`uhf` and `rohf` (the overlap fit with a functional, and for `rohf`, is
+refused before the SCF); a COSX final pass is skipped for them. `[dft] dispersion` is
 refused for `frequencies` on an open-shell reference: the frequency driver
 threads the correction through the closed-shell SCF only, so it would report
 the Hessian of the uncorrected surface. The RKS, UKS and ROKS optimizers apply
@@ -254,6 +254,8 @@ demand (`cargo nextest run --run-ignored only -E 'binary(/^validation_/)'`).
 | COSX SCF energy, (50,110)+fit | butane / def2-TZVP | direct K | 1.2e-4 Ha | — | ″ |
 | COSX, open shell | CH3 doublet / cc-pVDZ | direct K | 1.96e-5 Ha (UHF), 1.97e-5 Ha (ROHF) | — | [`k_builder_open_shell.rs`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-scf/tests/k_builder_open_shell.rs) |
 | COSX analytic gradient (RHF, RKS, UHF; default overlap fit for RHF/UHF) | water / STO-3G, 6-31G; HO2 / STO-3G | finite differences of the COSX energy | 1.6e-9 to 4.3e-9 Ha/Bohr | 1e-6 / 3e-8 Ha/Bohr | [`cosx_gradient.rs`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-scf/tests/cosx_gradient.rs) |
+| COSX analytic gradient, open shell (UKS-B3LYP, ROKS-B3LYP, ROHF; fit off; flat (50,110) and pruned `sgx` (35,194) grids) | HO2 / STO-3G, NH2 / STO-3G | central FD of the COSX energy on the same grid (exchange-isolated against the direct-K run) | 1.7e-10 to 2.0e-9 Ha/Bohr; the exact-K gradient paired with the COSX energy misses by 6.1e-6 to 2.4e-4 | 1e-7 Ha/Bohr | [`cosx_gradient_open_shell.rs`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-scf/tests/cosx_gradient_open_shell.rs) |
+| MBD@rsSCS gradient on a UKS-PBE0 reference with COSX exchange (fit off) | NH2 / STO-3G | central FD of the full UKS(COSX) + MBD pipeline | 2.3e-11 Ha/Bohr; the exact-K Z-vector contraction misses by 4.6e-10 | 1e-10 Ha/Bohr | [`mbd_scf_gradient_uks.rs`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-rpa/tests/mbd_scf_gradient_uks.rs) |
 | COSX exchange against PySCF and against exact K: fit off with no screening on the identical grid; angular-grid convergence (75,110)→(75,590) with production knobs; analytic gradient with fit on (RHF) and off (B3LYP) | water / aug-cc-pVDZ (RHF, B3LYP); butane / def2-SVP (RHF); distorted water, NH3 for gradients | PySCF `sgx` on ferric's grid recipe (exact J, fit off, no screening); ferric exact-K energy; central FD of the COSX energy | same grid ≤ 1.2e-12 Ha at every grid; error shrinks 93x (butane) to 2576x (water) from 110 to 590 points; exact-K vs PySCF ≤ 2.1e-11 Ha; gradient ≤ 1.6e-8 Ha/Bohr | 1e-10 Ha; ≥ 30x; 1e-9 Ha; 2e-7 Ha/Bohr | [`validation_cosx.rs`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-scf/tests/validation_cosx.rs), [`gen_cosx.py`](https://github.com/mgoldey/ferric/blob/main/scripts/validation/gen_cosx.py) |
 | RIJCOSX energy (RI-J + COSX K): separation into RI-J error + COSX error | water / 6-31G (HF, B3LYP); HO2 / 6-31G (UHF) | the three other corners of (exact or RI) J × (exact or COSX) K, same grid | second-order cross term, 2.8–5.8 × e_cosx·e_rij (7.8e-10 Ha at (50,110), 2.3e-11 Ha at (75,302)) | 30 × e_cosx·e_rij, or 1e-10 Ha | [`cosx_rijcosx.rs`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-scf/tests/cosx_rijcosx.rs) |
 | RIJCOSX analytic gradient (RI-J derivative + COSX derivative; flat and pruned grids; fit on and off) | water / STO-3G (RHF, B3LYP); HO2 / STO-3G (UHF) | central FD of the RIJCOSX energy | 1.7e-9 Ha/Bohr (RHF), 4.9e-10 (B3LYP, exchange-isolated), 3.6e-9 (UHF) | 1e-7 / 3e-8 Ha/Bohr | ″ |
@@ -324,10 +326,10 @@ Reported rather than omitted:
   - It applies to the Coulomb operator only: a range-separated functional
     takes its exchange from density-fitted short- and long-range fitters and
     ignores `k_builder = "cosx"`, with a warning.
-  - Its analytic gradient is exact for RHF, RKS and UHF with the overlap fit
-    off, and for RHF and UHF with the default overlap fit, on flat and pruned
-    (`sgx`) COSX grids. Fitted COSX with a KS functional, UKS and ROHF/ROKS
-    are refused for gradient tasks, before the SCF runs.
+  - Its analytic gradient is exact for RHF, RKS, UHF, UKS, ROHF and ROKS with
+    the overlap fit off, and for RHF and UHF with the default overlap fit, on
+    flat and pruned (`sgx`) COSX grids. Fitted COSX with a KS functional, and
+    fitted COSX for ROHF, are refused for gradient tasks, before the SCF runs.
 
 ## Why the distinction is drawn so sharply
 
