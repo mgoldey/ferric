@@ -268,8 +268,9 @@ fn correction_free_closure_is_bit_identical_to_plain_fd() {
     assert_eq!(none.n_gradient_evaluations, plain.n_gradient_evaluations);
 }
 
-/// The refusals: an analytic Hessian request, an open-shell reference, and an
-/// energy correction without a gradient.
+/// The refusals: an analytic Hessian request and an energy correction
+/// without a gradient. (Open-shell references are supported:
+/// `dispersion_frequencies_open_shell.rs`.)
 #[test]
 fn unsupported_combinations_are_refused() {
     let mol = Molecule::parse_xyz(H2_XYZ, 0, 1).expect("h2");
@@ -291,16 +292,6 @@ fn unsupported_combinations_are_refused() {
     )
     .expect_err("analytic must be refused");
     assert!(e.to_string().contains("analytic"), "{e}");
-    let uhf = FrequencyConfig {
-        reference: ferric_scf::frequencies::FrequencyReference::Uhf,
-        ..Default::default()
-    };
-    let e =
-        harmonic_frequencies_with_scf_correction(&ctx, &mol, "sto-3g", op, &cfg, &uhf, |_, _| {
-            Ok((0.0, None))
-        })
-        .expect_err("open shell must be refused");
-    assert!(e.to_string().contains("closed-shell"), "{e}");
     let e = harmonic_frequencies_with_scf_correction(
         &ctx,
         &mol,

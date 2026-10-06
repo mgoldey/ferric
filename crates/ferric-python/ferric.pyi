@@ -1533,9 +1533,9 @@ def run_frequencies(
     region in an MM field, the same way `run_optimize` does.
 
     `dispersion` ("d3bj", "d3(bj)", "d3bj(<functional>)", "mbd",
-    "mbd(<functional>)", as in `run_dft`) requires `xc` and the closed-shell
-    reference; the Hessian is then the finite difference of the KS +
-    dispersion analytic gradient, so `hessian="analytic"` raises.
+    "mbd(<functional>)", as in `run_dft`) requires `xc` and works on every
+    reference (RKS, UKS, ROKS); the Hessian is then the finite difference of
+    the KS + dispersion analytic gradient, so `hessian="analytic"` raises.
     """
     ...
 
