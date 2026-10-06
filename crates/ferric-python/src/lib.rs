@@ -8768,6 +8768,34 @@ fn _cli_main(py: Python<'_>) -> PyResult<()> {
     Ok(())
 }
 
+/// Which build of ferric is this?
+///
+/// Returns a dict with:
+///
+/// - ``version`` (str): the PEP 440 package version, same as
+///   ``ferric.__version__``. A checkout carries a ``.devN`` version; only a
+///   release wheel built from a ``v*`` tag has the plain version.
+/// - ``commit`` (str): full git hash of the source tree the extension was
+///   compiled from, or ``"unknown"`` when that tree was not a git checkout.
+/// - ``dirty`` (bool or None): whether any tracked file differed from
+///   ``commit`` (untracked files never count); ``None`` when unknown.
+/// - ``profile`` (str): cargo build profile, ``"release"`` or ``"debug"``.
+/// - ``libint_version`` (str): version of the libint2 headers the integral
+///   shim was compiled against, or ``"unknown"``.
+///
+/// All values are fixed when the extension is compiled, so they describe the
+/// loaded ``.so`` even when it is a symlink into some other checkout.
+#[pyfunction]
+fn build_info(py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+    let d = pyo3::types::PyDict::new(py);
+    d.set_item("version", ferric_build_info::VERSION)?;
+    d.set_item("commit", ferric_build_info::COMMIT)?;
+    d.set_item("dirty", ferric_build_info::DIRTY)?;
+    d.set_item("profile", ferric_build_info::PROFILE)?;
+    d.set_item("libint_version", ferric_integrals::libint_version())?;
+    Ok(d.unbind())
+}
+
 // ── Module ──
 
 /// One direction of an IRC walk.
@@ -9338,6 +9366,21 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // `ferric` console script's entry point wires to this by name -- see
     // pyproject.toml [project.scripts].
     m.add_function(wrap_pyfunction!(_cli_main, m)?)?;
+    // `m.add` also appends to the module's `__all__`, which is what carries
+    // `__version__` through maturin's generated `from .ferric import *`.
+    m.add("__version__", ferric_build_info::VERSION)?;
+    // `__build__`: {"git_sha": str, "dirty": bool}, or None when the build had
+    // no git metadata. smeltery reads exactly this shape.
+    // (An undeterminable dirty flag also gives None: never guess a bool.)
+    if let (true, Some(dirty)) = (ferric_build_info::commit_known(), ferric_build_info::DIRTY) {
+        let b = pyo3::types::PyDict::new(m.py());
+        b.set_item("git_sha", ferric_build_info::COMMIT)?;
+        b.set_item("dirty", dirty)?;
+        m.add("__build__", b)?;
+    } else {
+        m.add("__build__", m.py().None())?;
+    }
+    m.add_function(wrap_pyfunction!(build_info, m)?)?;
     m.add_function(wrap_pyfunction!(run_rhf, m)?)?;
     m.add_function(wrap_pyfunction!(run_uhf, m)?)?;
     m.add_function(wrap_pyfunction!(run_rohf, m)?)?;

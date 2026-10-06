@@ -320,13 +320,25 @@ impl RunLog {
     /// `config` and `molecule` are opaque JSON objects assembled by the caller
     /// (the CLI knows the TOML; this crate does not), so adding a knob to the
     /// CLI never requires touching this signature.
-    pub fn run_start(self, config: serde_json::Value, molecule: serde_json::Value) {
+    ///
+    /// `ferric_version` and `git_sha` describe the BUILD, which only the
+    /// top-level artifact knows (the `ferric-build-info` crate, a dependency of
+    /// ferric-cli and ferric-python but deliberately not of this crate):
+    /// `git_sha` is the short commit with a `-dirty` suffix, or `None` when the
+    /// build had no git checkout.
+    pub fn run_start(
+        self,
+        ferric_version: &str,
+        git_sha: Option<&str>,
+        config: serde_json::Value,
+        molecule: serde_json::Value,
+    ) {
         self.emit(
             "run_start",
             serde_json::json!({
                 "schema": SCHEMA_VERSION,
-                "ferric_version": env!("CARGO_PKG_VERSION"),
-                "git_sha": git_sha(),
+                "ferric_version": ferric_version,
+                "git_sha": git_sha,
                 "timestamp": timestamp_rfc3339(),
                 "config": config,
                 "molecule": molecule,
@@ -513,16 +525,6 @@ fn json_f64(v: f64) -> serde_json::Value {
     } else {
         serde_json::Value::from(v)
     }
-}
-
-/// Build-time git SHA, if the build environment supplied one.
-///
-/// `FERRIC_GIT_SHA` is read with `option_env!`, so a plain `cargo build`
-/// (which sets nothing) reports `null` rather than a wrong or stale SHA.
-/// Shelling out to `git` at runtime was rejected: the binary may run far from
-/// its source tree, on a different machine, long after the checkout moved.
-fn git_sha() -> Option<&'static str> {
-    option_env!("FERRIC_GIT_SHA")
 }
 
 /// Wall-clock timestamp as an RFC-3339 UTC string.

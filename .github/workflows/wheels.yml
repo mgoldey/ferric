@@ -16,6 +16,9 @@ name: Wheels
 # `cc`; none of that is portable to a MSVC or Apple-clang toolchain without
 # work nobody has scoped, let alone tested. Scope this to what is proven.
 #
+# RELEASING: push a `vX.Y.Z` tag; nothing to commit. The tag supplies the
+# version (main carries a `.devN` placeholder); see "RELEASING" in build-wheels.
+#
 # THIS WORKFLOW IS UNTESTED. It has never been run end-to-end (see the PR
 # description) -- it was written by reading ci.yml and the crate build
 # scripts, not by a green CI run. Treat the first real run as a debugging
@@ -534,23 +537,62 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      # The tag IS the version -- pyproject.toml's checked-in "0.1.0" is a
-      # dev placeholder, never the version actually published. maturin has no
-      # dynamic-version support for the pyo3 backend (no `dynamic = ["version"]`
-      # equivalent; confirmed against `maturin build --help`, which offers no
-      # env/flag to override it), so the only way to make the tag the source
-      # of truth is to rewrite both files that hardcode the version BEFORE
-      # `maturin build` runs -- pyproject.toml (what maturin actually reads
-      # for the wheel filename/METADATA when `[project].version` is present)
-      # and crates/ferric-python/Cargo.toml (kept in lockstep so the two
-      # never drift, even though maturin itself doesn't consult the Cargo.toml
-      # version when pyproject.toml has one).
+      # RELEASING: push a `vX.Y.Z` tag; there is NOTHING TO COMMIT. main carries
+      # a `.devN` placeholder version that release builds never ship. On a tag
+      # build the version comes from the tag, and the guarantee that a release
+      # wheel is never from a dirty or unidentified tree is built from gates
+      # rather than trust:
+      #   1. before ANY edit, the host records HEAD and asserts the tree is
+      #      clean and HEAD is the tagged commit ("Record build identity");
+      #   2. the tag's version is stamped into exactly two version lines and
+      #      `git diff` is verified to touch only those, equal to the tag;
+      #   3. FERRIC_RELEASE_BUILD=1 + FERRIC_GIT_SHA + FERRIC_GIT_DIRTY=0 are
+      #      handed to the build (inside the manylinux container too).
+      #      ferric-build-info's build.rs then takes its identity ONLY from
+      #      those (the stamped tree is intentionally modified, so it must not
+      #      run its own `git status`) and fails on missing/malformed values;
+      #      dev builds ignore them and measure git themselves;
+      #   4. smoke-test installs each built wheel and asserts
+      #      ferric.__build__ == {git_sha: $GITHUB_SHA, dirty: False} and
+      #      ferric.__version__ == the tag; publish needs smoke-test.
+      # Non-tag runs (nightly, workflow_dispatch) run 1, 3 and 4 as a dry run
+      # (no stamp, no publish).
+      #
+      # The tag IS the version: maturin has no dynamic-version support for the
+      # pyo3 backend, so the stamp rewrites pyproject.toml (what maturin reads)
+      # and crates/ferric-python/Cargo.toml (SemVer twin, kept in lockstep).
       #
       # Only runs on a tag push -- a workflow_dispatch run or a scheduled
       # (nightly) run (neither has a tag) leaves both files at their
       # checked-in placeholder, since neither path ever reaches `publish`
       # anyway (see that job's `if:` guard, which cannot pass for either
       # event type).
+      - name: Record build identity (host, before any edit)
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+            echo "::error::tracked files are modified before the build:"; git status --porcelain --untracked-files=no; exit 1
+          fi
+          if [ "$sha" != "$GITHUB_SHA" ]; then
+            echo "::error::checked-out HEAD $sha != GITHUB_SHA $GITHUB_SHA"; exit 1
+          fi
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            tagged="$(git rev-parse "refs/tags/${GITHUB_REF_NAME}^{commit}")"
+            if [ "$tagged" != "$sha" ]; then
+              echo "::error::HEAD $sha is not the tagged commit $tagged"; exit 1
+            fi
+          fi
+          # Host-computed: the manylinux container may lack git or refuse the
+          # mounted checkout ("dubious ownership"). Handed to the container
+          # build through the inline exports in before-script-linux below.
+          {
+            echo "FERRIC_RELEASE_BUILD=1"
+            echo "FERRIC_GIT_SHA=$sha"
+            echo "FERRIC_GIT_DIRTY=0"
+          } >> "$GITHUB_ENV"
+          echo "identity: $sha clean"
+
       - name: Stamp the version from the tag
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
@@ -563,13 +605,13 @@ jobs:
           # by hand; not reimplementing that table in bash). Rather than risk
           # this step and the publish job's wheel-filename check disagreeing
           # on a normalized form neither reproduces exactly, tags MUST arrive
-          # pre-normalized: v1.2.3, v1.2.3rc1, v1.2.3.post1, v1.2.3.dev1,
-          # v1.2.3+local -- never v1.2.3-rc1. Every string this accepts is
+          # pre-normalized: v1.2.3, v1.2.3rc1, v1.2.3.post1, v1.2.3.dev1
+          # -- never v1.2.3-rc1. Every string this accepts is
           # its own PEP 440 normalization (round-trips byte-identical through
           # `Version()`), so the raw tag can be compared textually downstream
           # with no normalization step anywhere.
-          if ! [[ "$tag_version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)((a|b|rc)[0-9]+)?(\.post[0-9]+)?(\.dev[0-9]+)?(\+[a-zA-Z0-9.]+)?$ ]]; then
-            echo "::error::tag 'v${tag_version}' is not canonical PEP 440 (no hyphens -- use v1.2.3rc1, not v1.2.3-rc1) -- refusing to stamp"
+          if ! [[ "$tag_version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)((a|b|rc)[0-9]+)?(\.post[0-9]+)?(\.dev[0-9]+)?$ ]]; then
+            echo "::error::tag 'v${tag_version}' is not canonical PEP 440 without a local '+label' (PyPI rejects local versions; no hyphens -- use v1.2.3rc1, not v1.2.3-rc1) -- refusing to stamp"
             exit 1
           fi
           echo "stamping version ${tag_version} from tag ${GITHUB_REF}"
@@ -594,7 +636,7 @@ jobs:
           #
           # BASH_REMATCH from the SAME match above (not a second regex) gives
           # the exact pieces: [1]=X.Y.Z, [2]=(a|b|rc)N pre-release, [4]=.postN,
-          # [5]=.devN, [6]=+local. Join whichever of pre/post/dev are present
+          # [5]=.devN. Join whichever of pre/post/dev are present
           # with "." after ONE leading "-"; append +local (SemVer's build
           # metadata separator, unchanged from PEP 440's) last, outside the
           # hyphen segment.
@@ -602,18 +644,38 @@ jobs:
           pre="${BASH_REMATCH[2]}"
           post="${BASH_REMATCH[4]#.}"
           dev="${BASH_REMATCH[5]#.}"
-          plus="${BASH_REMATCH[6]}"
           semver_extra=""
           for part in "$pre" "$post" "$dev"; do
             [[ -n "$part" ]] && semver_extra="${semver_extra:+$semver_extra.}$part"
           done
           semver_version="$base"
           [[ -n "$semver_extra" ]] && semver_version="$semver_version-$semver_extra"
-          semver_version="$semver_version$plus"
 
           sed -i "0,/^version = /s/^version = .*/version = \"${semver_version}\"/" crates/ferric-python/Cargo.toml
           grep -m1 "^version" pyproject.toml
           grep -m1 "^version" crates/ferric-python/Cargo.toml
+
+          # VERIFIED STAMP: the only tracked-file difference from the tagged
+          # commit may be these two version lines, each equal to the tag's
+          # version. Anything else fails the release.
+          files="$(git diff --name-only | sort | tr '\n' ' ')"
+          if [ "$files" != "crates/ferric-python/Cargo.toml pyproject.toml " ]; then
+            echo "::error::stamping changed unexpected files: $files"; exit 1
+          fi
+          git diff --numstat
+          if [ "$(git diff --numstat | awk '{a+=$1; d+=$2} END {print a" "d}')" != "2 2" ]; then
+            echo "::error::stamp must change exactly one line in each of the two files"; exit 1
+          fi
+          added="$(git diff -U0 | grep '^+[^+]' | sort)"
+          expected="$(printf '+version = "%s"\n+version = "%s"\n' "$tag_version" "$semver_version" | sort)"
+          if [ "$added" != "$expected" ]; then
+            echo "::error::stamped lines differ from the tag version. got: $added expected: $expected"; exit 1
+          fi
+          removed="$(git diff -U0 | grep '^-[^-]' | grep -vc '^-version = ' || true)"
+          if [ "$removed" != "0" ]; then
+            echo "::error::stamp removed a line that is not a version line"; exit 1
+          fi
+          echo "stamp verified: only the two version lines changed"
 
       # Same rationale as ci.yml's "Free runner disk space" step: the
       # manylinux_2_28 image maturin-action pulls is itself several GB, on
@@ -736,6 +798,12 @@ jobs:
             set -euo pipefail
             NATIVE_PREFIX="$(pwd)/native-deps-cache"
             bash "$NATIVE_PREFIX/prepare-container.sh" "${{ env.EIGEN_VERSION }}"
+            # Release gate: ferric-build-info's build.rs fails the build unless
+            # the host-recorded stamp says clean (see "Record commit and dirty
+            # state"). Exported inline for the same reason as the vars below.
+            export FERRIC_RELEASE_BUILD=1
+            export FERRIC_GIT_SHA="${{ env.FERRIC_GIT_SHA }}"
+            export FERRIC_GIT_DIRTY="${{ env.FERRIC_GIT_DIRTY }}"
             export LIBINT2_PREFIX="$NATIVE_PREFIX"
             export PKG_CONFIG_PATH="$NATIVE_PREFIX/lib/pkgconfig:$NATIVE_PREFIX/lib64/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
             export LD_LIBRARY_PATH="$NATIVE_PREFIX/lib:$NATIVE_PREFIX/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
@@ -813,6 +881,26 @@ jobs:
           # instead of silently invoking a compiler in a test job.
           pip install --only-binary=:all: dist/*.whl
           pip show ferric
+
+      # Gate 3: the built wheel must identify itself as THIS commit, clean,
+      # and (on a tag) as the tagged version. publish needs smoke-test, so a
+      # failure here blocks the upload. Runs on nightly/dispatch too, as a dry
+      # run of the same gate (version check only applies to tags).
+      - name: Assert the wheel's build identity
+        run: |
+          set -euo pipefail
+          source /tmp/smoke-venv/bin/activate
+          cd /tmp
+          EXPECT_SHA="$GITHUB_SHA" python - <<'PY'
+          import os, ferric
+          expect = {"git_sha": os.environ["EXPECT_SHA"], "dirty": False}
+          assert ferric.__build__ == expect, f"build stamp {ferric.__build__!r} != {expect!r}"
+          ref = os.environ["GITHUB_REF"]
+          if ref.startswith("refs/tags/v"):
+              tag = ref[len("refs/tags/v"):]
+              assert ferric.__version__ == tag, f"{ferric.__version__!r} != tag {tag!r}"
+          print("build identity OK:", ferric.__version__, ferric.__build__)
+          PY
 
       - name: Smoke test -- import + RHF energy on the built wheel
         run: |
@@ -1424,14 +1512,9 @@ jobs:
           ls -lh dist/
           # Every wheel filename must carry the same version as the tag
           # (v0.1.0 -> ferric-0.1.0-*), and there must be exactly one wheel
-          # per supported CPython tag. The "Stamp the version from the tag"
-          # step in build-wheels is what makes this true in the normal case
-          # -- pyproject.toml's version IS the tag by the time maturin builds
-          # -- so a mismatch here means that step's rewrite didn't reach this
-          # leg's build (a cache serving a pre-stamp checkout, a matrix leg
-          # that failed before stamping and got re-run against stale state,
-          # etc), not a hand-edited version drifting from the tag. Either
-          # way: fail before PyPI ever sees it, since a bad upload to a
+          # per supported CPython tag. build-wheels' "Stamp the version from
+          # the tag" step makes this true in the normal case, so a
+          # mismatch here is defence in depth. Fail before PyPI ever sees it, since a bad upload to a
           # version that already exists cannot be overwritten or deleted,
           # only yanked.
           tag_version="${GITHUB_REF#refs/tags/v}"
