@@ -323,7 +323,11 @@ jobs:
         env:
           GPU_FEATURES: ferric-core/gpu,ferric-tensors/gpu,ferric-cli/gpu,ferric-python/gpu
         run: |
-          test ! -e /usr/lib/x86_64-linux-gnu/libcuda.so.1 || echo "::warning::runner has libcuda; skip-path test is not exercising the missing-driver branch"
+          set -euo pipefail
+          if [ -e /usr/lib/x86_64-linux-gnu/libcuda.so.1 ]; then
+            echo "::error::runner has libcuda; the skip-path test would not exercise the missing-driver branch"
+            exit 1
+          fi
           cargo check --workspace --all-targets --locked --features "$GPU_FEATURES"
           cargo clippy --workspace --all-targets --locked --features "$GPU_FEATURES" -- -D warnings
           RUSTDOCFLAGS='-D warnings' cargo doc -p ferric-core --no-deps --locked --features gpu

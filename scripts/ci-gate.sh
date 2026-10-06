@@ -357,7 +357,7 @@ echo
 # ---- 2b. optional: clippy with the gpu feature (CI_GATE_GPU=1) ----------
 if [[ "${CI_GATE_GPU:-0}" == "1" ]]; then
     echo "-- cargo clippy --features gpu --"
-    OPENBLAS_NUM_THREADS=1 cargo clippy --workspace --all-targets -j "$JOBS" \
+    OPENBLAS_NUM_THREADS=1 cargo clippy --workspace --all-targets --locked -j "$JOBS" \
         --features ferric-core/gpu,ferric-tensors/gpu,ferric-cli/gpu,ferric-python/gpu -- -D warnings \
         || { echo "RESULT: FAIL (gpu clippy)"; exit 1; }
 fi
