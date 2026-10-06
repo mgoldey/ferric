@@ -84,7 +84,7 @@ fitted damping parameters. Python: `run_dft(..., dispersion="d3bj")`, or
 **Scope.** The damping parameters are fitted per functional, so the key is
 refused on any method other than `ksdft`. `task = "optimize"` works (the D3
 gradient is implemented; `ferric-d3/tests/gradient_vs_fd.rs`), and so does
-closed-shell `task = "frequencies"`: see
+`task = "frequencies"` on RKS, UKS and ROKS: see
 [Frequencies with dispersion](#frequencies-with-dispersion).
 
 **Accuracy.** Agrees with simple-dftd3 1.6.0 to below 1e-12 Ha on water,
@@ -145,28 +145,29 @@ of 2.7e-6–9.8e-6. The relaxation term needs an LDA, GGA or hybrid-GGA
 functional without VV10, no implicit solvation, polarizable embedding or cDFT
 constraints, and integer aufbau occupation (no MOM); UKS and ROKS additionally
 need exchange that is not COSX. Other setups are refused rather than given an
-approximate gradient. Open-shell frequencies with dispersion are refused. Python's `run_dft` is closed-shell
-only.
+approximate gradient. Python's `run_dft` is closed-shell only; open-shell
+frequencies with MBD@rsSCS run through the CLI or `run_frequencies`.
 
 ## Frequencies with dispersion
 
 **What it is.** Harmonic frequencies on the dispersion-corrected surface
-E(KS) + E(disp), closed-shell Kohn–Sham only. The Hessian is the central
+E(KS) + E(disp), on an RKS, UKS or ROKS reference. The Hessian is the central
 difference of the corrected analytic gradient: at each of the 6N displaced
-geometries the SCF is converged, the KS gradient and the dispersion gradient
+geometries the SCF of that reference is converged, the KS gradient and the dispersion gradient
 are evaluated there, and their sum is differenced. For MBD@rsSCS the
-dispersion gradient is the exact one above, so the response of the Hirshfeld
+dispersion gradient is the exact one above, with the Z-vector of the
+reference actually solved (RKS, UKS or ROKS), so the response of the Hirshfeld
 volumes to the displacement, through the SCF density, is in the Hessian.
 There is no analytic Hessian on this path: `[frequencies] hessian = "analytic"`
 is an error and `"auto"` runs finite differences.
 
-**Run it.** `[dft] dispersion` with `method.task = "frequencies"` on a
-closed-shell KS SCF. The printout gives the corrected `energy`, `E(KS-DFT)`
+**Run it.** `[dft] dispersion` with `method.task = "frequencies"` on a KS
+SCF: `ksdft`, or `rhf`/`uhf`/`rohf` with `[dft] functional`. The printout gives the corrected `energy`, `E(KS-DFT)`
 and the dispersion energy at the input geometry, and the JSON run log gets a
 `dispersion` record with the same fields as an energy run. Python:
 `run_frequencies(mol, basis, xc="PBE", dispersion="d3bj")`, which reports
-`.e_dispersion` and the corrected `.energy`. Open-shell (UKS/ROKS)
-frequencies with dispersion are refused.
+`.e_dispersion` and the corrected `.energy`; `reference="uhf"` or `"rohf"`
+selects UKS or ROKS.
 
 **Accuracy.** For PBE/STO-3G water, the D3(BJ) part of the Hessian agrees
 with 4-point second differences of the D3(BJ) energy to 5.3e-9 Hartree/Bohr²
@@ -179,6 +180,17 @@ construction. A gradient without the orbital-relaxation term misses by 3.2e-5.
 Dispersion leaves the Hessian's asymmetry (7.6e-6 Hartree/Bohr² for
 PBE/6-31G water) and the projected translation/rotation modes (below 1e-4
 cm⁻¹) where they are without it.
+
+On open shells (PBE/STO-3G, bent NH2 doublet on UKS, HCO doublet on ROKS), the
+D3(BJ) part agrees with 4-point second differences of the D3(BJ) energy to
+3.7e-9 and 6.5e-9 Hartree/Bohr² and the frequencies to 9.4e-6 and 3.0e-5 cm⁻¹;
+the D3 Hessian obeys the translational sum rule to 1e-11 and the rotational one
+(with the D3 gradient) to 3e-9. The MBD@rsSCS part agrees along three fixed
+directions with 5-point second differences of the full SCF + MBD energy to
+≤ 4.8e-8 Hartree/Bohr² for UKS NH2 and CH2 (triplet) and ROKS HCO and CH2,
+against curvatures of 6e-5–2e-4; without the orbital-relaxation term the
+misses are 8.3e-7–1.6e-5. A correction that does nothing reproduces the plain
+UKS or ROKS finite-difference Hessian bit for bit.
 
 The shifts are small for a single molecule. For PBE/6-31G water at its
 uncorrected PBE minimum (1594.35, 3500.27 and 3669.29 cm⁻¹), D3(BJ) shifts
