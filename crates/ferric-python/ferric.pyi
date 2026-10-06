@@ -38,6 +38,10 @@ class BuildInfo(TypedDict):
 def build_info() -> BuildInfo:
     """Which build of ferric is loaded. All values are fixed at compile time."""
 
+def gpu_status() -> dict[str, object]:
+    """CUDA backend state: compiled, mode, status (not_compiled|unavailable|ready), reason, device."""
+    ...
+
 # ── Classes ──
 
 class Molecule:

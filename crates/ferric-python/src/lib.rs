@@ -8669,6 +8669,47 @@ fn boys_localize(
     })
 }
 
+/// Report the CUDA backend's state without touching a device unless
+/// `FERRIC_GPU` asks for one (mode defaults to `off`).
+#[pyfunction]
+fn gpu_status(py: Python<'_>) -> PyResult<Bound<'_, pyo3::types::PyDict>> {
+    use ferric_core::gpu::{gpu_compiled, settings, status, GpuStatus};
+    let d = pyo3::types::PyDict::new(py);
+    d.set_item("compiled", gpu_compiled())?;
+    d.set_item("mode", settings().mode.to_string())?;
+    // Core reports "mode off" ahead of "not compiled"; the Python contract is
+    // that a binary without the feature always says `not_compiled`.
+    let st = if gpu_compiled() {
+        status()
+    } else {
+        &GpuStatus::NotCompiled
+    };
+    match st {
+        GpuStatus::NotCompiled => {
+            d.set_item("status", "not_compiled")?;
+            d.set_item("reason", py.None())?;
+            d.set_item("device", py.None())?;
+        }
+        GpuStatus::Unavailable { reason } => {
+            d.set_item("status", "unavailable")?;
+            d.set_item("reason", reason)?;
+            d.set_item("device", py.None())?;
+        }
+        GpuStatus::Ready(info) => {
+            d.set_item("status", "ready")?;
+            d.set_item("reason", py.None())?;
+            let dev = pyo3::types::PyDict::new(py);
+            dev.set_item("ordinal", info.ordinal)?;
+            dev.set_item("name", &info.name)?;
+            dev.set_item("cc", format!("{}.{}", info.cc_major, info.cc_minor))?;
+            dev.set_item("free_bytes", info.free_bytes)?;
+            dev.set_item("total_bytes", info.total_bytes)?;
+            d.set_item("device", dev)?;
+        }
+    }
+    Ok(d)
+}
+
 /// Shell geometry of `basis_set` on `mol` (works for orbital AND auxiliary
 /// sets): returns (centers, first_function_offsets, n_functions) with shapes
 /// ((n_shells, 3) in Bohr, (n_shells,), (n_shells,)). Enough to build
@@ -9454,5 +9495,6 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compute_metric_2c, m)?)?;
     m.add_function(wrap_pyfunction!(boys_localize, m)?)?;
     m.add_function(wrap_pyfunction!(shell_info, m)?)?;
+    m.add_function(wrap_pyfunction!(gpu_status, m)?)?;
     Ok(())
 }
