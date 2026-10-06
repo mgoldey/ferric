@@ -220,7 +220,7 @@ pub fn einsum_binary_batched(
 /// Contraction-axis block size for [`gemm_kblocked`]. Matches
 /// `three_index_source.rs`'s `DRESS_K_BLOCK`, which the DF dressing work
 /// (`eb895df`) measured as the accuracy knee.
-const GEMM_K_BLOCK: usize = 128;
+pub const GEMM_K_BLOCK: usize = 128;
 
 /// `out = left · right`, accumulating over the contraction axis in fixed
 /// blocks of [`GEMM_K_BLOCK`] rather than as one full-k GEMM.
@@ -398,6 +398,75 @@ fn row_band_bounds(m: usize, width: usize) -> Vec<(usize, usize)> {
 /// below this, so the threshold is conservative.
 const PAR_GEMM_MIN_FLOPS: usize = 4 << 20;
 
+/// Device branch of [`gemm_row_banded`]. Returns `true` when the product was
+/// computed on the GPU. Every "no" after the mode/device gate is counted in
+/// `ferric_core::gpu::stats`, so a path that is configured on but never taken
+/// is visible to a test (`gemm_f64` itself records nothing on error).
+///
+/// Rules, in order: mode not `off` and a device `Ready`; not inside a rayon
+/// worker (one handle, one stream; fan-in is Phase 5); FLOPs at or above
+/// `FERRIC_GPU_MIN_FLOPS`; the device pool admits operands+result and both
+/// operands are in an accepted layout (both reported by `gemm_f64`). Any CUDA
+/// error, including an allocation failure the pool did not foresee, falls back
+/// too.
+///
+/// On `Err` the CPU path that follows is unchanged and overwrites `out`
+/// completely: `gemm_f64` writes `out` only in its final device-to-host copy,
+/// and the CPU k-blocked GEMM starts with `beta = 0`, so no partial device
+/// data can survive.
+#[cfg(feature = "gpu")]
+fn try_device_gemm(
+    left: &ndarray::ArrayView2<f64>,
+    right: &ndarray::ArrayView2<f64>,
+    out: &mut ndarray::ArrayViewMut2<f64>,
+) -> bool {
+    use ferric_core::gpu::stats::{note_cpu, CpuReason};
+    use ferric_core::gpu::{device::GpuError, GpuMode, GpuStatus};
+
+    let settings = ferric_core::gpu::settings();
+    if settings.mode == GpuMode::Off {
+        return false;
+    }
+    let GpuStatus::Ready(info) = ferric_core::gpu::status() else {
+        return false;
+    };
+    if rayon::current_thread_index().is_some() {
+        note_cpu(CpuReason::InsideRayonWorker);
+        return false;
+    }
+    let (m, k, n) = (left.nrows(), left.ncols(), right.ncols());
+    let flops = 2usize.saturating_mul(m).saturating_mul(n).saturating_mul(k);
+    if flops < settings.min_flops {
+        note_cpu(CpuReason::BelowThreshold);
+        return false;
+    }
+    let Some(pool) = ferric_core::gpu::pool() else {
+        return false;
+    };
+    let Ok(dev) = ferric_core::gpu::device::device(info.ordinal) else {
+        note_cpu(CpuReason::CudaError);
+        return false;
+    };
+    match ferric_core::gpu::gemm::gemm_f64(&dev, &pool, left, right, out, GEMM_K_BLOCK) {
+        Ok(()) => true,
+        Err(GpuError::PoolFull { .. }) => {
+            note_cpu(CpuReason::PoolFull);
+            false
+        }
+        Err(GpuError::Layout(_)) => {
+            note_cpu(CpuReason::Layout);
+            false
+        }
+        Err(e) => {
+            if ferric_core::gpu::config::gpu_trace() {
+                eprintln!("[gpu] einsum GEMM {m}x{k}x{n} fell back to the CPU: {e}");
+            }
+            note_cpu(CpuReason::CudaError);
+            false
+        }
+    }
+}
+
 /// `out = left · right`, computed by [`gemm_kblocked`] on disjoint bands of
 /// output ROWS in parallel.
 ///
@@ -467,6 +536,11 @@ fn gemm_row_banded(
     out: &mut ndarray::ArrayViewMut2<f64>,
 ) {
     use rayon::prelude::*;
+
+    #[cfg(feature = "gpu")]
+    if try_device_gemm(left, right, out) {
+        return;
+    }
 
     let (m, k) = (left.nrows(), left.ncols());
     let n = right.ncols();
