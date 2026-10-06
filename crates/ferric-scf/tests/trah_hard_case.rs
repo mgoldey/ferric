@@ -253,8 +253,10 @@ fn uhf_trah_tail_breaks_spin_symmetry_without_handing_off_to_diis() {
 ///
 /// No per-iteration energies leave the solver, so this pins the iteration
 /// count, measured on both sides (single-thread-independent: the J/K
-/// reduction is deterministic): rejection falls through -> 37 iterations;
-/// rejection retries -> 29. Bound halfway.
+/// reduction is deterministic): rejection falls through -> 42 iterations;
+/// rejection retries -> 34. Bound halfway. (Both counts include the iterations
+/// a declined null step spends on a DIIS step; the decline falls through to
+/// DIIS so that convergence is measured, see `trah_rks_null_step_is_measured.rs`.)
 #[test]
 fn a_rejected_trah_step_is_retried_not_handed_to_diis() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -278,8 +280,8 @@ fn a_rejected_trah_step_is_retried_not_handed_to_diis() {
     assert!(r.converged);
     assert!((r.energy - E_STABLE).abs() < 1e-7, "E = {:.10}", r.energy);
     assert!(
-        r.iterations <= 33,
-        "{} iterations with {rej} rejections (retry path: 29; fall-through-to-DIIS: 37)",
+        r.iterations <= 38,
+        "{} iterations with {rej} rejections (retry path: 34; fall-through-to-DIIS: 42)",
         r.iterations
     );
 }

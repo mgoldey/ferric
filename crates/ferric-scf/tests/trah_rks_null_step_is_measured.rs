@@ -26,9 +26,10 @@ use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::trah::{TrahConfig, TRAH_NULL_STEPS_DECLINED};
 use std::sync::atomic::Ordering;
 
-/// Energy bar against DIIS. The defect puts the TRAH run 3.0e-7 (RKS) /
-/// 4.4e-7 (RHF) Ha above DIIS; a measured run sits at the SCF's own
-/// convergence noise. See the PR for the measured values on both sides.
+/// Energy bar against DIIS, placed between the two measured sides: with the
+/// defect the RHF run reports convergence +4.437e-7 Ha above DIIS (7
+/// iterations); measured, RHF and RKS/PBE both land on the DIIS energy to the
+/// 12 printed decimals (|ΔE| < 1e-12).
 const TOL_E: f64 = 1e-8;
 
 fn water() -> Molecule {
