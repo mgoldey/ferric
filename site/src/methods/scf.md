@@ -143,8 +143,10 @@ against an orbital relaxation of 3e-6–1e-5. For ROKS doublets and triplets
 with HSE06 and 7.5e-9 for HCO with PBE + RI-J, against an orbital relaxation
 of 2.7e-6–9.8e-6. The relaxation term needs an LDA, GGA or hybrid-GGA
 functional without VV10, no implicit solvation, polarizable embedding or cDFT
-constraints, and integer aufbau occupation (no MOM); UKS and ROKS additionally
-need exchange that is not COSX. Other setups are refused rather than given an
+constraints, and integer aufbau occupation (no MOM). With COSX exchange the
+overlap fit must be off (`cosx_overlap_fit = false`); the UKS-PBE0 + COSX
+gradient on NH2/STO-3G agrees with finite differences of the full pipeline to
+2.3e-11. Other setups are refused rather than given an
 approximate gradient. Python's `run_dft` is closed-shell only; open-shell
 frequencies with MBD@rsSCS run through the CLI or `run_frequencies`.
 
@@ -266,7 +268,7 @@ Butane, one thread; TZ is def2-TZVP (184 functions), QZ is def2-QZVP (528).
 | *(default)* | Schwarz-screened direct four-centre J + K | yes | all SCF types |
 | `k_builder = "link"` | LinK: pair-list-screened direct K | yes (== direct to 9e-12 Ha, butane/def2-SVP) | RHF, UHF, ROHF |
 | `df_j_aux` / `df_k_aux` | density-fitted J and K (RI-JK) | fitting error, grows with size (see *Kohn–Sham DFT* above) | all SCF types |
-| `k_builder = "cosx"` | seminumerical (COSX) K on a grid; with RI-J active this is RIJCOSX | grid-dependent error, see below | RHF/UHF/ROHF and their Kohn–Sham variants, Coulomb operator only; analytic gradient for RHF, RKS, UHF (see below) |
+| `k_builder = "cosx"` | seminumerical (COSX) K on a grid; with RI-J active this is RIJCOSX | grid-dependent error, see below | RHF/UHF/ROHF and their Kohn–Sham variants, Coulomb operator only; analytic gradient for all six (see below) |
 
 **Time for one exchange build** (seconds, butane, one thread):
 
@@ -459,17 +461,23 @@ What the table shows:
 `k_builder = "cosx"` differentiate the COSX energy itself (grid-function,
 ESP-integral and Becke-weight derivatives). With the default overlap fit the
 fitted exchange is not variational in the orbitals, so the gradient adds an
-orbital-response (Z-vector) term. The gradient is exact for RHF, RKS and UHF
-with `cosx_overlap_fit = false`, and for RHF and UHF with the default fit;
-measured against finite differences of the COSX energy it agrees to
-2e-9–4e-9 Ha/Bohr, on flat and pruned (`sgx`) grids alike, and with RI-J
-(RIJCOSX). The gradient differentiates the SCF-grid energy: with
+orbital-response (Z-vector) term. The gradient is exact for RHF, RKS, UHF,
+UKS, ROHF and ROKS with `cosx_overlap_fit = false`, and for RHF and UHF with
+the default fit; measured against finite differences of the COSX energy it
+agrees to 2e-9–4e-9 Ha/Bohr, on flat and pruned (`sgx`) grids alike, and with
+RI-J (RIJCOSX). The open-shell exchange term is differentiated per spin; an
+exact-exchange gradient paired with the same COSX energy misses those finite
+differences by 4e-5–2e-4 Ha/Bohr (HO2 and NH2, B3LYP and ROHF, STO-3G). The
+MBD@rsSCS gradient's orbital-response term on a UKS or ROKS reference uses the
+same COSX derivative. The gradient differentiates the SCF-grid energy: with
 `cosx_final_pass` the reported energy is the final-grid one, so geometry tasks
 run without the pass and a gradient of a final-pass result is refused (an
 ORCA-style gradient evaluated on the final grid misses finite differences of
 the final-grid energy by 4.6e-7–7.3e-7 Ha/Bohr on water/6-31G, so it is not
-used). Fitted COSX with a Kohn–Sham functional, UKS and ROHF/ROKS are refused
-for gradient tasks before the SCF runs.
+used). Refused for gradient tasks before the SCF runs: fitted COSX with a
+Kohn–Sham functional (RKS, UKS, ROKS — the fitted energy's response needs the
+nuclear derivative of the XC Fock matrix) and fitted COSX for ROHF (no
+restricted-open-shell response).
 
 ## Convergence
 

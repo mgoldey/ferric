@@ -78,12 +78,27 @@
 //! response) and the `Q = I` limit (response identically zero, plain gradient
 //! reproduced to 2e-16).
 //!
+//! # References
+//!
+//! The fit-off derivative is reference-agnostic: RHF/RKS pass `[(D, -c_x/4)]`,
+//! UHF/UKS and ROHF/ROKS pass one term per spin, `[(D_a, -c_x/2), (D_b,
+//! -c_x/2)]` (`gradient::uhf_gradient_cosx`, `gradient::rohf_gradient_cosx`,
+//! `ks_gradient::ks_gradient_uks_with_exchange`,
+//! `ks_gradient::ks_gradient_roks_with_exchange`). Fit-off COSX exchange is a
+//! quadratic form whose `D_s`-derivative is the `K_COSX(D_s)` the SCF put in
+//! its Fock matrices, so every one of these energies stays variational and
+//! the usual `-W dS` Pulay form applies unchanged.
+//!
 //! # What is NOT supported, and why (hard errors, never a silent fallback)
 //!
-//! * **Fitted COSX with a KS functional.** The Z-vector term then also needs
-//!   `tr[Zs V_xc'(D)]` — the nuclear derivative of the XC Fock matrix at fixed
-//!   density, with grid response — which ferric does not have (`hessian.rs` is a
-//!   stub). Fit-off COSX with a hybrid is exact (the energy is variational).
+//! * **Fitted COSX with a KS functional** (RKS, UKS, ROKS). The Z-vector term
+//!   then also needs `tr[Zs V_xc'(D)]` — the nuclear derivative of the XC Fock
+//!   matrix at fixed density, with grid response — which ferric does not have
+//!   (`hessian.rs` is a stub). Fit-off COSX with a hybrid is exact (the energy
+//!   is variational).
+//! * **Fitted COSX for ROHF/ROKS.** Its response would need a
+//!   restricted-open-shell Z-vector, which `fitted_exchange_response` (RHF and
+//!   UHF orbital Hessians) does not provide.
 //!
 //! # Screening
 //!
@@ -193,17 +208,6 @@ pub fn check_fitted_ks_supported(cfg: &CosxConfig, xc: Option<&str>) -> Result<(
         )));
     }
     Ok(())
-}
-
-/// The refusal for a reference whose SCF can use COSX exchange but whose
-/// gradient path has no COSX derivative wired in (UKS, ROHF, ROKS): an error,
-/// never an exact-exchange gradient paired with a COSX energy.
-pub fn unsupported_reference_error(reference: &str) -> FerricError {
-    FerricError::General(format!(
-        "k_builder = \"cosx\": the COSX exchange gradient is implemented for RHF, RKS and UHF \
-         only, not {reference}; the exact-exchange gradient would not be the derivative of the \
-         COSX energy. Use k_builder = \"direct\" for {reference} gradient tasks."
-    ))
 }
 
 /// Whether an SCF run with `config` builds its exchange with COSX — i.e.

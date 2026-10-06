@@ -5,8 +5,6 @@
 //! either Cartesian coordinates (the default) or redundant internal
 //! coordinates ([`CoordSystem`](crate::optimize::CoordSystem)).
 
-use crate::gradient::rohf_gradient;
-use crate::ks_gradient::ks_gradient_roks;
 use crate::result::ScfResult;
 use crate::rhf::{solve_rhf, RhfConfig};
 use crate::rohf::solve_rohf;
@@ -892,7 +890,7 @@ fn compute_energy_and_gradient_uhf(
     let uhf_config = &*crate::gradient::gradient_task_config(uhf_config);
     let res = solve_uhf(ctx, mol, &prep, &bounds, uhf_config)?;
     // Exactly `ks_gradient_uks` / `uhf_gradient` unless the SCF's exchange
-    // came from COSX (UHF: COSX derivative; UKS: refused).
+    // came from COSX (then the COSX derivative; a fitted setup is refused).
     let grad =
         crate::gradient::unrestricted_scf_gradient(mol, &prep, &bs, op, &bounds, uhf_config, &res)?;
     Ok((res.energy, grad, res))
@@ -905,10 +903,10 @@ fn compute_energy_and_gradient_rohf(
     op: Operator,
     rohf_config: &RhfConfig,
 ) -> Result<(f64, Array2<f64>, ScfResult), FerricError> {
-    // `rohf_gradient` is HF-only (no XC term); an `xc` run routes to
-    // `ks_gradient_roks`, which is implemented and FD-validated by
-    // tests/roks_gradient.rs (LDA/PBE/B3LYP/wB97X-V). Same shape as the UHF
-    // path above.
+    // `restricted_open_scf_gradient` routes HF to `rohf_gradient` and an `xc`
+    // run to `ks_gradient_roks` (FD-validated by tests/roks_gradient.rs,
+    // LDA/PBE/B3LYP/wB97X-V), or to their COSX forms when the SCF built its
+    // exchange with COSX. Same shape as the UHF path above.
     let bs = ferric_core::basis::bundled(basis_name)?;
     let prep = PreparedBasis::new(mol, &bs)?;
     // Honour `[scf] screening` here too: geometry optimization rebuilds the
@@ -924,17 +922,21 @@ fn compute_energy_and_gradient_rohf(
     // sound (plain Schwarz is still a rigorous bound, just looser) and is
     // recorded as a known gap rather than silently assumed to be covered.
     let bounds = SchwarzBounds::compute_for_screening(op, &prep, rohf_config.screening)?;
-    // No COSX gradient for ROHF/ROKS: refuse BEFORE the SCF rather than pair a
-    // COSX energy with the exact-K gradient below.
-    crate::gradient::refuse_cosx_restricted_open(rohf_config)?;
+    // A COSX setup whose ROHF/ROKS gradient is not implemented (the overlap
+    // fit) is refused BEFORE the SCF; the gradient differentiates the
+    // exchange the SCF actually built.
+    crate::gradient::preflight_cosx_restricted_open(rohf_config)?;
     let rohf_config = &*crate::gradient::gradient_task_config(rohf_config);
     let res = solve_rohf(ctx, mol, &prep, op, &bounds, rohf_config)?;
-    let ext = rohf_config.external_potential.as_ref();
-    let grad = if let Some(xc_name) = rohf_config.xc.as_deref() {
-        ks_gradient_roks(mol, &prep, &bs, op, &bounds, xc_name, &res, ext)?
-    } else {
-        rohf_gradient(mol, &prep, op, &bounds, &res, ext)?
-    };
+    let grad = crate::gradient::restricted_open_scf_gradient(
+        mol,
+        &prep,
+        &bs,
+        op,
+        &bounds,
+        rohf_config,
+        &res,
+    )?;
     Ok((res.energy, grad, res))
 }
 

@@ -425,25 +425,35 @@ fn roks_mbd_exact_gradient_matches_fd_of_full_scf_pipeline() {
 }
 
 /// The ROKS Z-vector refuses what it cannot answer exactly, with a reason:
-/// meta-GGA (no τ kernel), VV10, COSX exchange (no ROKS COSX gradient), an
-/// xc_omega override, solvation and cDFT; and a plain GGA/hybrid/RSH is
-/// accepted. `mbd_rsscs_for_scf` surfaces the same reason.
+/// meta-GGA (no τ kernel), VV10, overlap-fitted COSX exchange (its response
+/// needs the XC Fock nuclear derivative), an xc_omega override, solvation and
+/// cDFT; and a plain GGA/hybrid/RSH, and fit-off COSX, are accepted.
+/// `mbd_rsscs_for_scf` surfaces the same reason.
 #[test]
 fn roks_zvector_refuses_unsupported_references() {
     use ferric_scf::zvector_ks::unsupported_reason_roks;
     for xc in ["PBE", "PBE0", "HSE06", "B3LYP"] {
         assert_eq!(unsupported_reason_roks(&ks(xc)), None, "{xc}");
     }
+    let fit_off = RhfConfig {
+        k_builder: Some("cosx".into()),
+        cosx: ferric_scf::cosx_k::CosxConfig {
+            overlap_fit: false,
+            ..Default::default()
+        },
+        ..ks("PBE0")
+    };
+    assert_eq!(unsupported_reason_roks(&fit_off), None, "fit-off COSX");
     let cases: Vec<(&str, RhfConfig, &str)> = vec![
         ("SCAN", ks("SCAN"), "meta-GGA"),
         ("wB97X-V", ks("wB97X-V"), "VV10"),
         (
-            "PBE0 cosx",
+            "PBE0 fitted cosx",
             RhfConfig {
                 k_builder: Some("cosx".into()),
                 ..ks("PBE0")
             },
-            "COSX",
+            "overlap_fit",
         ),
         (
             "PBE xc_omega",
@@ -467,8 +477,8 @@ fn roks_zvector_refuses_unsupported_references() {
         let r = unsupported_reason_roks(&cfg).unwrap_or_else(|| panic!("{label} accepted"));
         assert!(r.contains(word), "{label}: {r}");
     }
-    // End to end: a COSX ROKS config is refused by the MBD gradient driver
-    // before anything is solved for it (the SCF here is plain exact-K).
+    // End to end: a fitted-COSX ROKS config is refused by the MBD gradient
+    // driver before anything is solved for it (the SCF here is plain exact-K).
     let mol = Molecule::parse_xyz(NH2_XYZ, 0, 2).expect("NH2");
     let bs = basis::bundled("sto-3g").expect("sto-3g");
     let op = Operator::coulomb();
@@ -482,7 +492,7 @@ fn roks_zvector_refuses_unsupported_references() {
         ..cfg
     };
     let err = mbd_rsscs_for_scf(&ctx, &cache, &mol, &bs, op, &cosx, &r, &mbd_cfg)
-        .expect_err("COSX ROKS must be refused");
+        .expect_err("fitted-COSX ROKS must be refused");
     assert!(format!("{err:?}").contains("COSX"), "{err:?}");
 }
 
