@@ -354,6 +354,14 @@ else
 fi
 echo
 
+# ---- 2b. optional: clippy with the gpu feature (CI_GATE_GPU=1) ----------
+if [[ "${CI_GATE_GPU:-0}" == "1" ]]; then
+    echo "-- cargo clippy --features gpu --"
+    OPENBLAS_NUM_THREADS=1 cargo clippy --workspace --all-targets -j "$JOBS" \
+        --features ferric-core/gpu,ferric-tensors/gpu,ferric-cli/gpu,ferric-python/gpu -- -D warnings \
+        || { echo "RESULT: FAIL (gpu clippy)"; exit 1; }
+fi
+
 # ---- 3. complexity regression (CC/MI vs. checked-in baseline) ----------
 # Soft-skip (does not set FAILED) if the tool isn't installed -- this is a
 # machine-local dev tool (`cargo install rust-code-analysis-cli`), not a

@@ -87,6 +87,16 @@ max-threads = 2
 filter = 'test(/scf|dft|rimp2|ccsd|rpa|cosx|link_k/)'
 test-group = 'numerics'
 
+# Tests that touch the CUDA device. One device, one cuBLAS handle per process
+# is fine (the handle is mutex-guarded), but two PROCESSES racing on device
+# memory make the pool tests' tight/ample budgets meaningless. Serialize them.
+[test-groups.gpu]
+max-threads = 1
+
+[[profile.ci.overrides]]
+filter = 'binary_id(/gpu_/) or test(/gpu/)'
+test-group = 'gpu'
+
 # The weekly `validation` job (.github/workflows/ci.yml): ferric vs committed
 # external references, `--run-ignored only -E 'binary(/^validation_/)'`.
 # Profiles inherit from [profile.default], not from [profile.ci], so the CI

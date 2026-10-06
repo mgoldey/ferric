@@ -32,3 +32,6 @@ lapack-sys = { workspace = true }
 rayon = { workspace = true }
 openblas-src = { workspace = true }
 serde_json = { workspace = true }
+
+[features]
+gpu = ["ferric-core/gpu", "ferric-tensors/gpu"]

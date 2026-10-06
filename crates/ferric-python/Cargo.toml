@@ -107,3 +107,4 @@ default = []
 # ferric-core/mpi alone is the silently-wrong combination a const-assert in
 # ferric-scf/src/lib.rs now rejects at compile time; do not shortcut it here.
 mpi = ["ferric-mp2/mpi", "ferric-scf/mpi", "ferric-core/mpi"]
+gpu = ["ferric-core/gpu", "ferric-cli/gpu"]
