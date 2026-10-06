@@ -5,11 +5,21 @@ Generation lives in `tools/isomers`; the individual methods live in
 them and records what happened at each step.
 """
 
-from .funnel import FunnelReport, Stage, run_funnel
+from .funnel import (
+    FunnelReport,
+    IncomparableError,
+    Stage,
+    paired_delta,
+    require_same_formula,
+    run_funnel,
+)
 from .tiers import TierResult, tier1_dock, tier2_forcefield, tier3_gfn2, tier4_dft
 
 __all__ = [
     "FunnelReport",
+    "IncomparableError",
+    "paired_delta",
+    "require_same_formula",
     "Stage",
     "run_funnel",
     "TierResult",

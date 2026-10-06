@@ -59,6 +59,7 @@ import numpy as np  # noqa: E402
 from tools.campaign.hierarchy import Tier  # noqa: E402
 from tools.campaign.rank import tier_agreement  # noqa: E402
 from tools.campaign.strain import load_xyz_ensemble  # noqa: E402
+from tools.active_site.pocket_charges import derive_pocket_charges  # noqa: E402
 from tools.docking import prepare_receptor  # noqa: E402
 from tools.isomers import enumerate_with_report  # noqa: E402
 from tools.pipeline import Stage, run_funnel  # noqa: E402
@@ -76,9 +77,89 @@ ENSEMBLE = _root / "testdata/molecules/c9_systems/danuglipron"
 OUT = _root / "experiments/danuglipron/out/isomer_pipeline.json"
 
 # Survivors passed down from each tier. Tuned so tier 4 sees only a handful.
-KEEPS = (24, 12, 5, 3)
+# The MMFF stage keeps EVERYONE dock passed it (24 -> 24): it is a declash
+# pass, and an MMFF total energy cannot order candidates of differing formula
+# (run_funnel refuses that cut). Its narrowing moved to tier 3, which ranks on
+# the comparable in-pocket interaction energy.
+KEEPS = (24, 24, 5, 3)
 SEED = 0xF00D
 MAX_CANDIDATES = 60
+
+
+def build_context(receptor, center, size, pocket_charges) -> dict:
+    """The funnel context for this campaign. Factored out so a test can pin it.
+
+    `pocket_charges` is `derive_pocket_charges(RECEPTOR_PDB).charges`: (q, x,
+    y, z) in BOHR, from the same PDB the receptor PDBQT is prepared from, so
+    the docking frame and the field frame are one frame. An empty field is
+    refused: it would make every interaction 0 by construction.
+    """
+    if not pocket_charges:
+        raise ValueError(
+            "no pocket charges: tiers 3 and 4 would score the docked pose in "
+            "vacuum, and the interaction score would be 0 by construction"
+        )
+    context = {
+        "seed": SEED,
+        "receptor_pdbqt": receptor,
+        "box_center": center,
+        "box_size": size,
+        # THE POCKET FIELD, in BOHR (derive_pocket_charges' convention, and what
+        # both quantum tiers read -- pinned against Coulomb's law in
+        # tools/pipeline/tests/test_pocket_field_units.py). Without it tiers 3
+        # and 4 score the docked pose in vacuum; with a receptor configured they
+        # now REFUSE that rather than doing it silently.
+        "point_charges": list(pocket_charges),
+        # Rank on E(in pocket) - E(vacuum), not on a total energy. The enumerated
+        # candidates include SUBSTITUTIONAL analogues, whose formulas differ, and
+        # a total energy orders those by electron count; run_funnel refuses that
+        # cut. The interaction energy is a difference against a common reference
+        # (the same ligand, same pose, no pocket), so it compares across formulas.
+        # Costs a second single point per candidate at tiers 3 and 4.
+        "score": "interaction",
+        # 4, not 16: RESULTS.md M11 measured 4/8/16 as indistinguishable on
+        # this target (<=0.03 A vs a 0.13 A between-seed SEM) at 2.6x the cost.
+        # Raise it for a NEW target until a redock says otherwise -- this is a
+        # measurement about 7LCJ, not a universal setting.
+        "exhaustiveness": 4,
+        # 1 core per dock, because the stage below fans out across ligands.
+        # Vina's own default (0) takes every core, and its internal
+        # parallelism runs at only 34% efficiency (M11).
+        "vina_cpu": 1,
+        # 3 independent ETKDG embeddings per ligand. M11 measured the starting
+        # conformer as the variable that MOVES redock RMSD (0.75-1.24 A across
+        # seeds) while exhaustiveness does not (0.097 A across an 8x range,
+        # below the 0.131 A between-seed SEM). Spending the budget freed by
+        # ex=16 -> 4 on seeds instead is strictly better sampling, and the whole
+        # screen is still ~2x faster than the single-seed ex=16 configuration
+        # it replaces.
+        "n_seeds": 3,
+        "n_poses": 10,
+        # 6-31G, not def2-SVP. Sized with tools/pipeline/cost.py BEFORE
+        # spending the compute, which is the whole reason that model exists:
+        #
+        #   basis      nbf   AO cache   fits 9 GB   est/candidate
+        #   sto-3g     234     4.32 GB        yes        10.2 min
+        #   6-31g      434     8.02 GB        yes        35.1 min
+        #   def2-svp   719    13.29 GB         NO        96.3 min
+        #
+        # def2-SVP would need 13.29 GB of resident AO cache -- more than the
+        # pinned budget and more than this box has free -- so it would fall to
+        # the batching path or OOM, and cost ~4.8 h for KEEPS[-1]=3. That is
+        # M10's failure mode exactly. 6-31G is a genuine step up from minimal
+        # basis and fits with headroom.
+        "basis": "6-31g",
+        "functional": "PBE",
+        # PIN the DFT memory budget. ferric's default is 0.8 x *live*
+        # MemAvailable, which makes the AO-cache Full-vs-Batched decision depend
+        # on whatever else is running -- and an under-resolved budget is exactly
+        # what turned tier 4's real ~10 min into M10's ">57 min, did not finish"
+        # (it paged until the kernel OOM-killed it). 9 GB fits the 4.4 GB AO
+        # cache plus SCF state with headroom on this 23 GB box.
+        "mem_budget_gb": 9,
+    }
+
+    return context
 
 
 def main() -> int:
@@ -129,52 +210,9 @@ def main() -> int:
         f"  {receptor.name}; box centre {np.round(center, 1)} size {np.round(size, 1)}"
     )
 
-    context = {
-        "seed": SEED,
-        "receptor_pdbqt": receptor,
-        "box_center": center,
-        "box_size": size,
-        # 4, not 16: RESULTS.md M11 measured 4/8/16 as indistinguishable on
-        # this target (<=0.03 A vs a 0.13 A between-seed SEM) at 2.6x the cost.
-        # Raise it for a NEW target until a redock says otherwise -- this is a
-        # measurement about 7LCJ, not a universal setting.
-        "exhaustiveness": 4,
-        # 1 core per dock, because the stage below fans out across ligands.
-        # Vina's own default (0) takes every core, and its internal
-        # parallelism runs at only 34% efficiency (M11).
-        "vina_cpu": 1,
-        # 3 independent ETKDG embeddings per ligand. M11 measured the starting
-        # conformer as the variable that MOVES redock RMSD (0.75-1.24 A across
-        # seeds) while exhaustiveness does not (0.097 A across an 8x range,
-        # below the 0.131 A between-seed SEM). Spending the budget freed by
-        # ex=16 -> 4 on seeds instead is strictly better sampling, and the whole
-        # screen is still ~2x faster than the single-seed ex=16 configuration
-        # it replaces.
-        "n_seeds": 3,
-        "n_poses": 10,
-        # 6-31G, not def2-SVP. Sized with tools/pipeline/cost.py BEFORE
-        # spending the compute, which is the whole reason that model exists:
-        #
-        #   basis      nbf   AO cache   fits 9 GB   est/candidate
-        #   sto-3g     234     4.32 GB        yes        10.2 min
-        #   6-31g      434     8.02 GB        yes        35.1 min
-        #   def2-svp   719    13.29 GB         NO        96.3 min
-        #
-        # def2-SVP would need 13.29 GB of resident AO cache -- more than the
-        # pinned budget and more than this box has free -- so it would fall to
-        # the batching path or OOM, and cost ~4.8 h for KEEPS[-1]=3. That is
-        # M10's failure mode exactly. 6-31G is a genuine step up from minimal
-        # basis and fits with headroom.
-        "basis": "6-31g",
-        "functional": "PBE",
-        # PIN the DFT memory budget. ferric's default is 0.8 x *live*
-        # MemAvailable, which makes the AO-cache Full-vs-Batched decision depend
-        # on whatever else is running -- and an under-resolved budget is exactly
-        # what turned tier 4's real ~10 min into M10's ">57 min, did not finish"
-        # (it paged until the kernel OOM-killed it). 9 GB fits the 4.4 GB AO
-        # cache plus SCF state with headroom on this 23 GB box.
-        "mem_budget_gb": 9,
-    }
+    pocket = derive_pocket_charges(RECEPTOR_PDB)
+    print(f"  pocket field: {pocket.n_charges} charges (Bohr)")
+    context = build_context(receptor, center, size, pocket.charges)
 
     # DOCK_WORKERS env override. The default is 4, and the binding constraint
     # is MEMORY, not cores.

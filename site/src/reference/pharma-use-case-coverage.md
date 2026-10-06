@@ -25,7 +25,12 @@ warm-vs-cold, both are given, because quoting one hides a 3-30x spread.
 
 The whole funnel RUN end to end — 10 substitution candidates of benzoic acid
 through dock → FF → xtb → DFT against the 7LCJ pocket, keeping 6/4/2/1, zero
-failures, same survivor both times:
+failures. These are COST measurements only. That run ranked the analogues on
+total energies, which order differing formulas by electron count rather than by
+binding, so its survivor carries no selection information. `run_funnel` refuses
+that cut; the comparable score is `score="interaction"` (in-pocket minus vacuum
+at one geometry), which runs two single points per candidate at the xtb and DFT
+tiers and so doubles those columns:
 
 | basis | total | dock | FF | xtb | DFT |
 |---|---:|---:|---:|---:|---:|

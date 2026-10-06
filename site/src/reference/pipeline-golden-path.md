@@ -378,8 +378,15 @@ from tools.pipeline import run_funnel, Stage
 from tools.pipeline.tiers import tier1_dock, tier2_forcefield, tier3_gfn2, tier4_dft
 from tools.campaign.hierarchy import Tier
 
+# The analogues have DIFFERENT FORMULAS, so no total energy can order them:
+# a total tracks electron count, and run_funnel raises IncomparableError
+# rather than cut such a population on one. So the force-field stage keeps
+# everyone (a declash pass), and tiers 3-4 rank on
+#     score="interaction":  E(in pocket field) - E(vacuum), same geometry
+# which is a difference against a common reference and compares across
+# formulas. It costs two single points per candidate.
 stages = [
-    Stage(Tier.FORCE_FIELD,   tier2_forcefield, keep=2, name="ff"),
+    Stage(Tier.FORCE_FIELD,   tier2_forcefield, keep=len(props), name="ff"),
     Stage(Tier.SEMIEMPIRICAL, tier3_gfn2,       keep=2, name="xtb"),
     Stage(Tier.QUANTUM,       tier4_dft,        keep=1, name="dft"),
 ]
@@ -396,26 +403,40 @@ candidates = [
     )
     for p in props
 ]
-rep = run_funnel(candidates, stages, {"seed": 0xF00D, "basis": "sto-3g"})
+# A PLACEHOLDER field: one -1 charge 10 Bohr from the origin, (q, x, y, z)
+# with coordinates in BOHR. For a real pocket use
+# tools.active_site.pocket_charges.derive_pocket_charges(pdb).charges, and add
+# tier 1 so the poses sit in the pocket's frame.
+field = [(-1.0, 0.0, 0.0, 10.0)]
+rep = run_funnel(
+    candidates,
+    stages,
+    {"seed": 0xF00D, "basis": "sto-3g", "point_charges": field, "score": "interaction"},
+)
 #   tier 1 is omitted above only because it needs the `docking` extra and a
 #   receptor; add Stage(Tier.EMPIRICAL, tier1_dock, ...) with
-#   context["receptor_pdbqt"] and ["box_center"] to run it.
+#   context["receptor_pdbqt"] and ["box_center"] to run it. With a receptor
+#   configured, tiers 3-4 REFUSE to run without context["point_charges"].
 ```
 
-MEASURED 2026-09-19, two small candidates, STO-3G, one process:
+MEASURED 2026-09-19, two small candidates, STO-3G, one process (timings only;
+the funnel ranked total energies in that run, which carries no information
+across these two formulas):
 
 ```
 funnel wall: 1.58 s
   FORCE_FIELD    in=2 out=2 failed=0   0.03 s
   SEMIEMPIRICAL  in=2 out=2 failed=0   0.04 s
   QUANTUM        in=2 out=1 failed=0   1.51 s     <- 96% of the wall
-survivors: ['CC(=O)O']   dft = -225.76133078 Ha
+acetic acid (CC(=O)O): dft total = -225.76133078 Ha
 ```
 
 **96% of the wall in the last tier on TWO candidates** is the funnel's whole
 argument in one line, and it gets worse with candidate count: the cheap tiers
 scale with the population, tier 4 scales with what reaches it. That is why
-`keep=` matters more than any per-call cost in this note.
+`keep=` matters more than any per-call cost in this note. Under
+`score="interaction"` tiers 3 and 4 run two single points per candidate, so
+their rows double.
 
 Note the DFT total (-225.76133078) is 4.18 mHa BELOW the SCF energy the ladder
 logs (-225.7571497). That difference is the D3(BJ) correction, -2.62 kcal/mol
@@ -1062,8 +1083,11 @@ STO-3G and the split inverts at the default basis.
 
 Not a model of the shares -- the actual pipeline, 10 substitution candidates of
 benzoic acid through dock -> FF -> xtb -> DFT against the 7LCJ pocket, keeping
-6/4/2/1. Zero failures at either basis, same survivor
-(`O=C(O)c1cccc(F)c1`):
+6/4/2/1, zero failures at either basis. These are COST measurements only: that
+run ranked the analogues on total energies, which order differing formulas by
+electron count, so its survivor is not a selection. `run_funnel` refuses
+that cut; the comparable score is `score="interaction"` (in-pocket minus
+vacuum), which doubles the xtb and DFT rows.
 
 | basis | total | dock | FF | xtb | DFT |
 |---|---:|---:|---:|---:|---:|
