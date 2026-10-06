@@ -720,17 +720,39 @@ fn rpa_optimize_with_a_ks_reference_is_refused() {
 /// Pre-fix: water/STO-3G, rhf, task = "optimize", `k_builder = "cosx"` ran
 /// to completion with COSX energies and an exact-exchange gradient (FD
 /// mismatch -8.9e-6 Ha/Bohr on one H z at STO-3G, -1.4e-5 at cc-pVDZ). The
-/// RHF/RKS/UHF gradients now differentiate COSX, so an rhf COSX optimize
-/// RUNS; a kind whose gradient has no COSX derivative (ROHF) stays refused.
-/// Removing the cosx branch of `validate_task_compat` lets the rohf run start.
+/// RHF/RKS, UHF/UKS and ROHF/ROKS gradients now differentiate COSX, so those
+/// COSX optimizations RUN; a kind whose gradient ignores `k_builder`
+/// (RI-MP2) stays refused by `validate_task_compat`, and the ROHF overlap fit
+/// (no restricted-open-shell response) is refused by the library before the
+/// SCF. Removing the cosx branch of `validate_task_compat` lets the rimp2 run
+/// start; dropping the ROHF fit refusal lets the fitted rohf run finish.
 #[test]
-fn cosx_optimize_runs_for_rhf_and_is_refused_for_rohf() {
+fn cosx_optimize_runs_where_differentiated_and_is_refused_elsewhere() {
     let cosx = "[scf]\nk_builder = \"cosx\"\n";
+    let fit_off = "[scf]\nk_builder = \"cosx\"\ncosx_overlap_fit = false\n";
     let out = run_toml(
-        "cosx_opt_rohf",
-        &body("h2.xyz", 1, "rohf", "optimize", cosx),
+        "cosx_opt_rimp2",
+        &body(
+            "h2.xyz",
+            1,
+            "rimp2",
+            "optimize",
+            "[scf]\nk_builder = \"cosx\"\n\n[mp2]\nauxbasis = \"cc-pvdz-ri\"\n",
+        ),
     );
     assert_refused(&out, &["k_builder = \"cosx\"", "optimize"]);
+    let out = run_toml(
+        "cosx_opt_rohf_fit",
+        &body("h2.xyz", 1, "rohf", "optimize", cosx),
+    );
+    assert_refused(&out, &["overlap_fit", "ROHF"]);
+    assert_runs(
+        &run_toml(
+            "cosx_opt_rohf",
+            &body("h2.xyz", 1, "rohf", "optimize", fit_off),
+        ),
+        "a fit-off rohf COSX optimization",
+    );
     assert_runs(
         &run_toml("cosx_opt", &body("h2.xyz", 1, "rhf", "optimize", cosx)),
         "an rhf COSX optimization",

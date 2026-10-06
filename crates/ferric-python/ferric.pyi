@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Sequence, TypedDict
 
 import numpy as np
 from numpy.typing import NDArray
@@ -11,6 +11,32 @@ from numpy.typing import NDArray
 
 DEFAULT_TEMPERATURE_K: float
 BOLTZMANN_HARTREE_PER_K: float
+
+__version__: str
+"""PEP 440 package version. A checkout builds a ``.devN`` version; only a
+release wheel from a ``v*`` tag carries the plain version."""
+
+__build__: dict[str, str | bool] | None
+"""``{"git_sha": <40-char HEAD hash>, "dirty": <tracked files differed from
+HEAD>}`` for the tree this build came from, or ``None`` when the build had no
+git metadata (sdist, tarball). Untracked files never set ``dirty``."""
+
+# ── Build identity ──
+
+class BuildInfo(TypedDict):
+    version: str
+    """Same as ``ferric.__version__``."""
+    commit: str
+    """Full git hash of the compiled source tree, or ``"unknown"``."""
+    dirty: bool | None
+    """Compiled sources differed from ``commit``; ``None`` if unknown."""
+    profile: str
+    """Cargo build profile: ``"release"`` or ``"debug"``."""
+    libint_version: str
+    """libint2 header version the integral shim was compiled against, or ``"unknown"``."""
+
+def build_info() -> BuildInfo:
+    """Which build of ferric is loaded. All values are fixed at compile time."""
 
 # ── Classes ──
 
@@ -1878,9 +1904,11 @@ def run_dft(
     any other value raises ValueError. Pruning has no table at
     `grid_angular=50`. Any grid kwarg with `with_gradient=True` raises
     ValueError: the analytic gradient is built on the default grid.
-    `k_builder="cosx"` with `with_gradient=True` also raises ValueError: COSX
-    has no analytic gradient, and the exact-exchange gradient is not the
-    derivative of a COSX energy.
+    With `k_builder="cosx"` and `with_gradient=True` the gradient
+    differentiates the COSX energy; the overlap fit with a functional is not
+    differentiable (its response needs the XC Fock nuclear derivative), so
+    `cosx_overlap_fit=False` is required there and the fitted case raises
+    ValueError before the SCF.
     """
     ...
 

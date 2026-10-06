@@ -453,3 +453,86 @@ fn measure_uks_full_pipeline_fd() {
         }
     }
 }
+
+/// Fit-off, unscreened COSX on a flat (50,110) grid: the exchange energy the
+/// open-shell COSX gradient differentiates exactly.
+fn cosx_flat() -> ferric_scf::cosx_k::CosxConfig {
+    ferric_scf::cosx_k::CosxConfig {
+        overlap_fit: false,
+        screen_thresh: None,
+        half_transform: ferric_scf::cosx_k::CosxHalfTransform::Dense,
+        grid: ferric_dft::grid::AtomicGridConfig {
+            n_radial: 50,
+            n_angular: 110,
+            prune: None,
+        },
+        final_grid: None,
+        ..ferric_scf::cosx_k::CosxConfig::flat_reference()
+    }
+}
+
+/// Bar of the MBD + COSX UKS test (absolute, Ha/Bohr), derived from both
+/// sides at h = 1e-3: the exact gradient measured 2.3e-11 against FD_full,
+/// the relaxation term 3.2e-11 against FD_full − FD_orth; the same driver
+/// with the COSX switch removed (the Z-vector contraction then differentiates
+/// EXACT exchange against the COSX SCF) misses FD_full by 4.6e-10. 1e-10 sits
+/// 4.3x above the first and 4.6x below the second.
+const COSX_MBD_TOL: f64 = 1e-10;
+
+/// MBD@rsSCS on a UKS-PBE0 SCF whose exchange is COSX (fit off): the exact
+/// gradient (unrelaxed + orthonormality + Z-vector relaxation, the
+/// contraction differentiating the COSX energy) vs central FD of the full
+/// UKS(COSX) + MBD pipeline, NH2/STO-3G. NEGATIVE CONTROL: the same driver
+/// with the COSX switch removed from the config (exact-K contraction against
+/// the COSX SCF — the pairing the open-shell COSX refusal used to prevent)
+/// must miss FD by more than the bar.
+#[test]
+fn uks_mbd_cosx_exact_gradient_matches_fd_of_full_scf_pipeline() {
+    let mol = Molecule::parse_xyz(NH2_XYZ, 0, 2).expect("NH2");
+    let bs = basis::bundled("sto-3g").expect("sto-3g");
+    let op = Operator::coulomb();
+    let ctx = ParallelContext::default();
+    let plain = ks("PBE0");
+    let cfg = RhfConfig {
+        k_builder: Some("cosx".into()),
+        cosx: cosx_flat(),
+        ..plain.clone()
+    };
+    assert!(ferric_scf::cosx_gradient::scf_exchange_is_cosx(&cfg, true).unwrap());
+    let mbd_cfg = MbdRsscsConfig::for_functional("PBE0").expect("beta");
+    let cache = MbdFreeAtomCache::build(&ctx, &mol, &bs, op, &plain).expect("cache");
+    let r = uks(&mol, &bs, &cfg, None);
+    let out = mbd_rsscs_for_scf(&ctx, &cache, &mol, &bs, op, &cfg, &r, &mbd_cfg).expect("mbd");
+    let g = out.gradient.expect("exact");
+    let relax = out.gradient_relaxation.expect("relaxation");
+    let paired = mbd_rsscs_for_scf(&ctx, &cache, &mol, &bs, op, &plain, &r, &mbd_cfg)
+        .expect("exact-K contraction")
+        .gradient
+        .expect("exact");
+    let h = fd_step();
+    let fd = fd_full(&mol, &bs, &cache, &mbd_cfg, &cfg, &r, h);
+    let fdo = fd_orth(&mol, &bs, &cache, &mbd_cfg, &r, h);
+    let relax_fd = &fd - &fdo;
+    let diff = max_abs(&(&g - &fd));
+    let diff_relax = max_abs(&(&relax - &relax_fd));
+    let diff_paired = max_abs(&(&paired - &fd));
+    println!(
+        "NH2/STO-3G UKS-PBE0 COSX + MBD: max|FD| = {:.3e}, max|relax| = {:.3e}, \
+         max|exact - FD| = {diff:.3e}, max|relax(Z) - relax(FD)| = {diff_relax:.3e}; \
+         exact-K contraction: max|g - FD| = {diff_paired:.3e}",
+        max_abs(&fd),
+        max_abs(&relax)
+    );
+    assert!(
+        diff < COSX_MBD_TOL,
+        "exact vs FD_full: {diff:.3e} >= {COSX_MBD_TOL:.1e}"
+    );
+    assert!(
+        diff_relax < COSX_MBD_TOL,
+        "relaxation vs FD: {diff_relax:.3e} >= {COSX_MBD_TOL:.1e}"
+    );
+    assert!(
+        diff_paired > COSX_MBD_TOL,
+        "NEGATIVE CONTROL blind: the exact-K contraction is only {diff_paired:.3e} off FD"
+    );
+}

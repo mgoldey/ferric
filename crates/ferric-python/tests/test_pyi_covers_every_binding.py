@@ -39,7 +39,7 @@ PYI = CRATE / "ferric.pyi"
 # Top-level stub names that exist only for type checkers and are deliberately
 # NOT registered by the module (TypeAliases, Protocols, TypeVars). Empty today;
 # add a name here only if it has no runtime counterpart by design.
-STUB_ONLY: frozenset[str] = frozenset()
+STUB_ONLY: frozenset[str] = frozenset({"BuildInfo"})  # TypedDict return type
 
 
 def _split_top(body: str) -> list[str]:

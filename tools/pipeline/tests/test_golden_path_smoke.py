@@ -230,7 +230,19 @@ def test_the_full_funnel_reaches_tier_4_and_produces_a_survivor():
         Stage(Tier.SEMIEMPIRICAL, tier3_gfn2, keep=2, name="xtb"),
         Stage(Tier.QUANTUM, tier4_dft, keep=1, name="dft"),
     ]
-    rep = run_funnel(cands, stages, {"seed": 0xF00D, "basis": "sto-3g"})
+    # Three DIFFERENT formulas, so tiers 3-4 rank the comparable
+    # in-field-minus-vacuum interaction (a total-energy cut is refused). The
+    # field is one -1 charge 10 Bohr out; the chemistry is irrelevant here.
+    rep = run_funnel(
+        cands,
+        stages,
+        {
+            "seed": 0xF00D,
+            "basis": "sto-3g",
+            "point_charges": [(-1.0, 0.0, 0.0, 10.0)],
+            "score": "interaction",
+        },
+    )
 
     by_tier = {o.tier.name: o for o in rep.outcomes}
     assert "QUANTUM" in by_tier, (
@@ -248,7 +260,9 @@ def test_the_full_funnel_reaches_tier_4_and_produces_a_survivor():
     for iso in rep.survivors:
         e = rep.value("dft", iso.canonical)
         assert e is not None, f"{iso.canonical} survived tier 4 with no energy"
-        assert e < 0.0, f"an electronic energy must be negative, got {e}"
+        (r,) = [r for r in rep.results["dft"] if r.candidate_id == iso.canonical]
+        total = r.payload["e_total"]
+        assert total < 0.0, f"an electronic energy must be negative, got {total}"
 
 
 def test_the_quickstart_block_actually_RUNS(tmp_path):
@@ -346,15 +360,12 @@ def test_ALL_FOUR_tiers_compose_from_substitutions_to_a_survivor(tmp_path):
     -- the one that turns a SMILES list into poses, and the one that costs the
     most -- outside any composition test. Nothing exercised all four together.
 
-    SLOW (~45 s): it docks 10 candidates and runs two real SCFs.
+    SLOW (~1 min): it docks 10 candidates and runs four real SCFs (two
+    survivors at tier 4, each in field and in vacuum).
 
-    MEASURED 2026-09-20 on this stack, benzoic acid + {F, Cl, Me} against 7LCJ,
-    keeping 6/4/2/1:
-
-        STO-3G     45.0 s   dock 72.7%  FF 0.1%  xtb 0.3%  DFT 27.0%
-        def2-svp   82.1 s   dock 39.8%  FF 0.1%  xtb 0.1%  DFT 60.0%
-
-    The test asserts COMPOSITION, not those timings: a survivor comes out, no
+    The cost split between the tiers is recorded in
+    site/src/reference/pharma-use-case-coverage.md. The test asserts
+    COMPOSITION, not timings: a survivor comes out, no
     tier fails, and every stage passes something to the next. Timings vary with
     the box; what must not vary is that the four tiers still fit together.
     """
@@ -405,12 +416,19 @@ def test_ALL_FOUR_tiers_compose_from_substitutions_to_a_survivor(tmp_path):
         "receptor_pdbqt": str(receptor),
         "box_center": centre,
         "basis": "sto-3g",  # the FAST basis: this is a composition test
+        # The pocket field (Bohr), and the score that compares analogues of
+        # DIFFERENT formula: in-pocket minus vacuum at the docked pose. A
+        # total-energy cut across these formulas is refused by run_funnel.
+        "point_charges": pocket.charges,
+        "score": "interaction",
     }
     rep = run_funnel(
         cands,
         [
             Stage(Tier.SEARCH, tier1_dock, keep=4, name="dock"),
-            Stage(Tier.FORCE_FIELD, tier2_forcefield, keep=3, name="ff"),
+            # keep = everyone: MMFF is a declash pass here, since its total
+            # energy cannot order analogues of differing formula.
+            Stage(Tier.FORCE_FIELD, tier2_forcefield, keep=4, name="ff"),
             Stage(Tier.SEMIEMPIRICAL, tier3_gfn2, keep=2, name="xtb"),
             Stage(Tier.QUANTUM, tier4_dft, keep=1, name="dft"),
         ],
@@ -430,10 +448,13 @@ def test_ALL_FOUR_tiers_compose_from_substitutions_to_a_survivor(tmp_path):
     # The last tier must have produced a real energy, not merely survived.
     dft = rep.results["dft"][0]
     assert dft.ok and dft.value is not None
-    assert dft.value < -100.0, (
+    assert dft.payload["e_total"] < -100.0, (
         f"a benzoic-acid-sized DFT total energy should be well below -100 Ha, "
-        f"got {dft.value} -- a placeholder would pass a bare `is not None`"
+        f"got {dft.payload['e_total']} -- a placeholder would pass `is not None`"
     )
+    # The ranked value is the in-pocket interaction, not a total.
+    assert dft.value == dft.payload["e_total"] - dft.payload["e_vacuum"]
+    assert dft.value != 0.0
 
 
 @pytest.mark.skipif(

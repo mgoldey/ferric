@@ -56,8 +56,9 @@ use ferric_scf::cosx_k::{CosxConfig, CosxHalfTransform, CosxK};
 use ferric_scf::fock::KBuilder;
 use ferric_scf::gradient::{
     build_energy_weighted_density, build_energy_weighted_density_uhf, oneelectron_gradient,
-    preflight_cosx_restricted, restricted_scf_gradient, rhf_gradient, rhf_gradient_cosx,
-    rhf_gradient_cosx_with_q, twoelectron_j_gradient, uhf_gradient, unrestricted_scf_gradient,
+    preflight_cosx_restricted, preflight_cosx_restricted_open, preflight_cosx_unrestricted,
+    restricted_scf_gradient, rhf_gradient, rhf_gradient_cosx, rhf_gradient_cosx_with_q,
+    twoelectron_j_gradient, uhf_gradient, unrestricted_scf_gradient,
 };
 use ferric_scf::ks_gradient::{ks_gradient_closed, ks_gradient_closed_with_exchange};
 use ferric_scf::result::ScfResult;
@@ -553,11 +554,13 @@ fn exact_k_gradients_are_bit_identical_through_the_dispatch() {
 
 /// REFUSALS, never a silent approximate gradient. The overlap fit itself is
 /// now SUPPORTED for Hartree-Fock (RHF/UHF, Z-vector); what stays refused:
-/// fitted COSX with a KS functional (its Z-vector needs the XC Fock-matrix
-/// nuclear derivative, which ferric lacks), pruned COSX grids, UKS, ROHF/ROKS.
+/// fitted COSX with a KS functional (RKS/UKS/ROKS: its Z-vector needs the XC
+/// Fock-matrix nuclear derivative, which ferric lacks), fitted COSX for ROHF
+/// (no restricted-open-shell response), and pruned grids without a region
+/// table.
 ///
 /// Fails if the fitted-HF refusal is restored (the first two asserts), or if
-/// the KS/pruned/UKS/ROHF refusals are dropped.
+/// the fitted-KS / fitted-ROHF / pruned refusals are dropped.
 #[test]
 fn unsupported_cosx_gradients_are_refused() {
     // The default (fitted) config is accepted by the HF-level check ...
@@ -609,14 +612,22 @@ fn unsupported_cosx_gradients_are_refused() {
     preflight_cosx_restricted(&scf_cfg(None, Some(CosxConfig::default())))
         .expect("fitted HF passes the preflight");
 
-    // UKS with COSX in effect is refused before any gradient work.
-    let uks = RhfConfig {
+    // UKS: fit-off COSX is differentiated (`uks_cosx_*` below); the overlap
+    // fit with a functional is refused by the gradient and the preflight.
+    let uks_fitted = RhfConfig {
         k_builder: Some("cosx".into()),
-        cosx: cosx_exact(),
+        cosx: CosxConfig::default(),
         xc: Some("B3LYP".into()),
         ..Default::default()
     };
-    assert!(scf_exchange_is_cosx(&uks, true).unwrap());
+    assert!(scf_exchange_is_cosx(&uks_fitted, true).unwrap());
+    let err = preflight_cosx_unrestricted(&uks_fitted).unwrap_err();
+    assert!(format!("{err}").contains("overlap_fit"), "{err}");
+    preflight_cosx_unrestricted(&RhfConfig {
+        cosx: cosx_exact(),
+        ..uks_fitted.clone()
+    })
+    .expect("fit-off UKS passes the preflight");
     let oh = mol_of(OH, 2);
     let prep_oh = PreparedBasis::new(&oh, &bs).expect("prep");
     let bounds_oh = SchwarzBounds::compute(op, &prep_oh).expect("schwarz");
@@ -628,16 +639,28 @@ fn unsupported_cosx_gradients_are_refused() {
         &scf_cfg(None, None),
     )
     .expect("uhf");
-    let err =
-        unrestricted_scf_gradient(&oh, &prep_oh, &bs, op, &bounds_oh, &uks, &r_oh).unwrap_err();
-    assert!(format!("{err}").contains("UKS"), "{err}");
-    assert!(
-        ferric_scf::gradient::refuse_cosx_restricted_open(&RhfConfig {
-            k_builder: Some("cosx".into()),
-            ..Default::default()
+    let err = unrestricted_scf_gradient(&oh, &prep_oh, &bs, op, &bounds_oh, &uks_fitted, &r_oh)
+        .unwrap_err();
+    assert!(format!("{err}").contains("overlap_fit"), "{err}");
+
+    // ROHF/ROKS: fit-off passes, the overlap fit is refused for HF and KS.
+    let rohf_fitted = RhfConfig {
+        k_builder: Some("cosx".into()),
+        ..Default::default()
+    };
+    for xc in [None, Some("B3LYP")] {
+        let c = RhfConfig {
+            xc: xc.map(str::to_string),
+            ..rohf_fitted.clone()
+        };
+        let err = preflight_cosx_restricted_open(&c).unwrap_err();
+        assert!(format!("{err}").contains("ROHF/ROKS"), "{xc:?}: {err}");
+        preflight_cosx_restricted_open(&RhfConfig {
+            cosx: cosx_exact(),
+            ..c
         })
-        .is_err()
-    );
+        .expect("fit-off ROHF/ROKS passes the preflight");
+    }
 }
 
 /// The open-shell solvers treat `df_j_aux = Some("")` / `df_k_aux = Some("")`

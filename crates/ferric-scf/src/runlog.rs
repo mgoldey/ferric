@@ -321,12 +321,13 @@ impl RunLog {
     /// (the CLI knows the TOML; this crate does not), so adding a knob to the
     /// CLI never requires touching this signature.
     pub fn run_start(self, config: serde_json::Value, molecule: serde_json::Value) {
+        let (ferric_version, git_sha) = build_identity();
         self.emit(
             "run_start",
             serde_json::json!({
                 "schema": SCHEMA_VERSION,
-                "ferric_version": env!("CARGO_PKG_VERSION"),
-                "git_sha": git_sha(),
+                "ferric_version": ferric_version,
+                "git_sha": git_sha,
                 "timestamp": timestamp_rfc3339(),
                 "config": config,
                 "molecule": molecule,
@@ -515,14 +516,23 @@ fn json_f64(v: f64) -> serde_json::Value {
     }
 }
 
-/// Build-time git SHA, if the build environment supplied one.
-///
-/// `FERRIC_GIT_SHA` is read with `option_env!`, so a plain `cargo build`
-/// (which sets nothing) reports `null` rather than a wrong or stale SHA.
-/// Shelling out to `git` at runtime was rejected: the binary may run far from
-/// its source tree, on a different machine, long after the checkout moved.
-fn git_sha() -> Option<&'static str> {
-    option_env!("FERRIC_GIT_SHA")
+static BUILD_IDENTITY: OnceLock<(String, Option<String>)> = OnceLock::new();
+
+/// Record which build is running, for the `run_start` record's
+/// `ferric_version` / `git_sha`. Only the top-level artifact knows (the
+/// `ferric-build-info` crate is deliberately not a dependency of this one):
+/// `git_sha` is the short commit with a `-dirty` suffix, or `None` when the
+/// build had no git checkout. First call wins; never set => this crate's own
+/// version and `null`.
+pub fn set_build_identity(ferric_version: &str, git_sha: Option<&str>) {
+    let _ = BUILD_IDENTITY.set((ferric_version.to_string(), git_sha.map(str::to_string)));
+}
+
+fn build_identity() -> (String, Option<String>) {
+    BUILD_IDENTITY
+        .get()
+        .cloned()
+        .unwrap_or_else(|| (env!("CARGO_PKG_VERSION").to_string(), None))
 }
 
 /// Wall-clock timestamp as an RFC-3339 UTC string.
