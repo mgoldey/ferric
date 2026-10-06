@@ -214,8 +214,9 @@ fn pcg_curvature_ok(php: f64, pmp: f64, residual: f64, rhs_max: f64) -> Result<b
         return Err(FerricError::General(format!(
             "Z-vector relaxation: the orbital Hessian is not positive definite along the \
              search direction (p.Hp = {php:.3e}, p.Mp = {pmp:.3e}, max|r| = {residual:.3e}, max|rhs| = {rhs_max:.3e}); \
-             the SCF is not a minimum, or (open shell) a degenerate SOMO pair makes the \
-             orbital Hessian near-singular"
+             the SCF is not a minimum, or (open shell) a near-degenerate state makes the \
+             orbital Hessian near-singular. The axis-rotation null mode of a linear molecule \
+             is removed automatically (NullModeDiagnostics); any other near-null mode is not"
         )));
     }
     Err(FerricError::Convergence(format!(
@@ -498,6 +499,296 @@ fn inner(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
     a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
 }
 
+/// What the open-shell Z-vector did about the axis-rotation null mode of a
+/// linear molecule (issue #265).
+///
+/// A linear molecule's energy is invariant under a rotation of the electrons
+/// about the molecular axis. A state that breaks that symmetry (a ²Π radical:
+/// one π orbital of a spin occupied and its partner empty) turns the rotation
+/// into an occ→virt orbital rotation κ_L that is an exact zero mode of the
+/// orbital Hessian in the continuum; ferric's XC grid lifts it only by its
+/// anisotropy (measured gap-metric Rayleigh quotients from +9.9e-3 to −7.7e-5
+/// on OH, CH, NO at STO-3G, 6-31G and cc-pVDZ; the rest of the spectrum ≥ 0.57
+/// in magnitude on every minimum; the softest eigenvector is κ_L to
+/// |cos| ≥ 0.99999). Its sign is grid noise, so
+/// PCG meets zero or negative curvature along it. The Z-vector removes it:
+/// the solve runs on the complement of κ_L (Z_L := 0), which is exact in the
+/// symmetric limit (a symmetric property has no right-hand side along κ_L, and
+/// κ_L·∂F/∂R = −κ_L·H dκ*/dR = 0 there).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NullModeDiagnostics {
+    /// κ_L·Hκ_L / κ_L·Mκ_L (M the orbital-gap preconditioner).
+    pub rayleigh: f64,
+    /// |b·κ_L| / (‖b‖ ‖κ_L‖) of the right-hand side b before projection.
+    pub rhs_overlap: f64,
+}
+
+/// Largest |gap-metric Rayleigh quotient| of κ_L for it to count as the null
+/// mode. Placed between the measured null (≤ 9.9e-3 in magnitude, OH UKS-PBE
+/// STO-3G at the default (75,110) grid; −7.7e-5 at (75,302); −3.5e-3 OH
+/// cc-pVDZ) and the smallest other eigenvalue magnitude measured on the same
+/// systems (0.127, the genuinely negative second mode of the CH UKS saddle;
+/// ≥ 0.57 on every minimum): 0.05 is 5x above the first and 2.5x below the
+/// second.
+pub const NULL_RAYLEIGH_TOL: f64 = 0.05;
+
+/// Largest |b·κ̂_L|/‖b‖ accepted. A property that is NOT invariant under the
+/// axis rotation has a right-hand side along κ_L, and its derivative is then
+/// ill-conditioned rather than merely conventional: refused.
+pub const NULL_RHS_TOL: f64 = 1e-3;
+
+/// κ_L of `max|κ_L|` below this counts as absent (a Σ state, or both π
+/// partners of every spin occupied: the rotation is occ–occ).
+const KAPPA_VANISH: f64 = 1e-8;
+
+/// Euclidean inner product over a set of blocks.
+fn inner_blocks(a: &[Array2<f64>], b: &[Array2<f64>]) -> f64 {
+    a.iter().zip(b).map(|(x, y)| inner(x, y)).sum()
+}
+
+/// x ← x − (u·x) u for a unit `u`.
+fn project_out(u: &[Array2<f64>], x: &mut [Array2<f64>]) {
+    let d = inner_blocks(u, x);
+    for (xk, uk) in x.iter_mut().zip(u) {
+        xk.scaled_add(-d, uk);
+    }
+}
+
+/// The axis-rotation mode in the Z-vector parametrization: block k is
+/// `left_kᵀ S Gᵀ right_k` (the occ→virt part of δC = Gᵀ C), normalized to a
+/// Euclidean unit vector. `None` for a non-linear molecule or when κ_L
+/// vanishes.
+fn axis_rotation_mode(
+    mol: &Molecule,
+    bs: &ferric_core::basis::BasisSet,
+    prep: &PreparedBasis,
+    blocks: &[(&Array2<f64>, &Array2<f64>)],
+) -> Result<Option<Vec<Array2<f64>>>, FerricError> {
+    let Some(axis) = linear_axis(mol) else {
+        return Ok(None);
+    };
+    let g = axis_rotation_generator(mol, bs, axis)?;
+    let sgt = ferric_integrals::oneelectron::overlap(prep).dot(&g.t());
+    let k: Vec<Array2<f64>> = blocks
+        .iter()
+        .map(|(l, r)| l.t().dot(&sgt).dot(*r))
+        .collect();
+    let kmax = k.iter().fold(0.0_f64, |m, b| m.max(max_abs(b)));
+    if kmax < KAPPA_VANISH {
+        return Ok(None);
+    }
+    let nrm = inner_blocks(&k, &k).sqrt();
+    Ok(Some(k.into_iter().map(|b| b / nrm).collect()))
+}
+
+/// Accept or refuse a detected axis-rotation mode: `u` unit, `hu = H u`,
+/// `gap` the preconditioner diagonals (same block layout), `rhs` the
+/// unprojected right-hand side. `Ok(Some(..))`: project it out;
+/// `Ok(None)`: κ_L is not near-null (an ordinary direction, nothing to do).
+fn accept_null_mode(
+    u: &[Array2<f64>],
+    hu: &[Array2<f64>],
+    gap: &[Array2<f64>],
+    rhs: &[Array2<f64>],
+) -> Result<Option<NullModeDiagnostics>, FerricError> {
+    let uhu = inner_blocks(u, hu);
+    let umu: f64 = u.iter().zip(gap).map(|(x, g)| inner(x, &(x * g))).sum();
+    let rayleigh = uhu / umu;
+    if rayleigh.abs() >= NULL_RAYLEIGH_TOL {
+        return Ok(None);
+    }
+    let bn = inner_blocks(rhs, rhs).sqrt();
+    let rhs_overlap = if bn == 0.0 {
+        0.0
+    } else {
+        inner_blocks(rhs, u).abs() / bn
+    };
+    if rhs_overlap > NULL_RHS_TOL {
+        return Err(FerricError::General(format!(
+            "Z-vector relaxation: the molecule is linear and its state breaks the cylindrical \
+             symmetry, so the orbital Hessian has a null mode (rotation about the axis, \
+             Rayleigh {rayleigh:.3e}); the property's right-hand side is not orthogonal to it \
+             (overlap {rhs_overlap:.3e} > {NULL_RHS_TOL:.0e}), so its derivative is not \
+             determined by the Z-vector equation"
+        )));
+    }
+    Ok(Some(NullModeDiagnostics {
+        rayleigh,
+        rhs_overlap,
+    }))
+}
+
+/// (mode to project out, its diagnostics) — see [`detect_axis_null_mode`].
+type NullModeChoice = (Option<Vec<Array2<f64>>>, Option<NullModeDiagnostics>);
+
+/// Detect and vet the axis-rotation null mode for one solve: `(Some(unit
+/// mode), Some(diagnostics))` when it is to be projected out, `(None, None)`
+/// otherwise. `hx` is the Hessian product on the same block layout.
+fn detect_axis_null_mode(
+    mol: &Molecule,
+    bs: &ferric_core::basis::BasisSet,
+    prep: &PreparedBasis,
+    blocks: &[(&Array2<f64>, &Array2<f64>)],
+    gap: &[Array2<f64>],
+    rhs: &[Array2<f64>],
+    hx: impl Fn(&[Array2<f64>]) -> Result<Vec<Array2<f64>>, FerricError>,
+) -> Result<NullModeChoice, FerricError> {
+    let Some(u) = axis_rotation_mode(mol, bs, prep, blocks)? else {
+        return Ok((None, None));
+    };
+    let hu = hx(&u)?;
+    Ok(match accept_null_mode(&u, &hu, gap, rhs)? {
+        Some(d) => (Some(u), Some(d)),
+        None => (None, None),
+    })
+}
+
+/// [`project_out`] when a mode was accepted; a no-op otherwise.
+fn project_opt(mode: &Option<Vec<Array2<f64>>>, x: &mut [Array2<f64>]) {
+    if let Some(u) = mode {
+        project_out(u, x);
+    }
+}
+
+/// Largest perpendicular distance (Bohr) of an atom from the molecular axis
+/// for the molecule to count as linear.
+const LINEAR_TOL: f64 = 1e-8;
+
+/// Unit vector along the line every atom lies on, or `None` (fewer than two
+/// atoms, or not collinear to `LINEAR_TOL`).
+fn linear_axis(mol: &Molecule) -> Option<[f64; 3]> {
+    let pts: Vec<[f64; 3]> = mol.atoms.iter().map(|a| [a.x, a.y, a.zpos]).collect();
+    let p0 = *pts.first()?;
+    let rel = |p: &[f64; 3]| [p[0] - p0[0], p[1] - p0[1], p[2] - p0[2]];
+    let nrm = |v: &[f64; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    let far = pts
+        .iter()
+        .map(rel)
+        .max_by(|a, b| nrm(a).total_cmp(&nrm(b)))?;
+    let d = nrm(&far);
+    if d < LINEAR_TOL {
+        return None;
+    }
+    let n = [far[0] / d, far[1] / d, far[2] / d];
+    for p in &pts {
+        let v = rel(p);
+        let t = v[0] * n[0] + v[1] * n[1] + v[2] * n[2];
+        let perp = [v[0] - t * n[0], v[1] - t * n[1], v[2] - t * n[2]];
+        if nrm(&perp) > LINEAR_TOL {
+            return None;
+        }
+    }
+    Some(n)
+}
+
+/// AO representation `G` of the generator of a rotation of the electrons
+/// about `axis` (through the nuclei, all of which lie on it):
+/// `(n × (r − A))·∇χ_μ(r) = Σ_ν G_μν χ_ν(r)` for every AO μ on centre A.
+/// Every shell maps onto itself (its centre is on the axis and solid
+/// harmonics / Cartesian monomials of one l are closed under rotations), so
+/// `G` is block-diagonal by shell. A rotated MO keeps coefficients
+/// `δC = Gᵀ C`.
+///
+/// Each shell block is fitted from AO values and gradients at points on a
+/// sphere around its centre (the radial factor cancels: (n × d)·d = 0), and
+/// the fit residual is checked: the relation is exact, so a residual above
+/// rounding is an error, never a silently wrong generator.
+fn axis_rotation_generator(
+    mol: &Molecule,
+    bs: &ferric_core::basis::BasisSet,
+    axis: [f64; 3],
+) -> Result<Array2<f64>, FerricError> {
+    use ferric_integrals::ao_grid::{collect_shells, eval_shell_and_grad};
+    use ndarray_linalg::Solve;
+    let shells = collect_shells(mol, bs)
+        .map_err(|e| FerricError::General(format!("axis rotation generator: {e:?}")))?;
+    let ncomp = |l: i32, pure: bool| -> usize {
+        let l = l as usize;
+        if pure {
+            2 * l + 1
+        } else {
+            (l + 1) * (l + 2) / 2
+        }
+    };
+    let nbf: usize = shells.iter().map(|s| ncomp(s.l, s.pure)).sum();
+    // Deterministic golden-spiral directions: well spread, none on the axis
+    // by construction of a generic axis.
+    const NPTS: usize = 48;
+    let dirs: Vec<[f64; 3]> = (0..NPTS)
+        .map(|k| {
+            let z = 1.0 - (2.0 * k as f64 + 1.0) / NPTS as f64;
+            let r = (1.0 - z * z).sqrt();
+            let phi = k as f64 * 2.399_963_229_728_653;
+            [r * phi.cos(), r * phi.sin(), z]
+        })
+        .collect();
+    let mut g = Array2::<f64>::zeros((nbf, nbf));
+    let mut off = 0usize;
+    for sh in &shells {
+        let m = ncomp(sh.l, sh.pure);
+        if sh.l == 0 {
+            off += m;
+            continue;
+        }
+        // Radius at which the contracted radial factor is far from a node.
+        let amin = sh.exponents.iter().cloned().fold(f64::INFINITY, f64::min);
+        let radius = (0.5 / amin).sqrt().clamp(0.05, 3.0);
+        let mut v = Array2::<f64>::zeros((m, NPTS));
+        let mut lv = Array2::<f64>::zeros((m, NPTS));
+        let mut out = [0.0_f64; 15];
+        let mut grad = [[0.0_f64; 15]; 3];
+        for (k, u) in dirs.iter().enumerate() {
+            let d = [radius * u[0], radius * u[1], radius * u[2]];
+            out.iter_mut().for_each(|x| *x = 0.0);
+            grad.iter_mut()
+                .for_each(|row| row.iter_mut().for_each(|x| *x = 0.0));
+            eval_shell_and_grad(sh, d[0], d[1], d[2], &mut out, &mut grad)
+                .map_err(|e| FerricError::General(format!("axis rotation generator: {e:?}")))?;
+            // n × d
+            let t = [
+                axis[1] * d[2] - axis[2] * d[1],
+                axis[2] * d[0] - axis[0] * d[2],
+                axis[0] * d[1] - axis[1] * d[0],
+            ];
+            for j in 0..m {
+                v[(j, k)] = out[j];
+                lv[(j, k)] = t[0] * grad[0][j] + t[1] * grad[1][j] + t[2] * grad[2][j];
+            }
+        }
+        // Normalize away the common radial factor before the fit.
+        let scale = max_abs(&v);
+        if !(scale > 0.0) {
+            return Err(FerricError::General(
+                "axis rotation generator: a shell vanishes on its fitting sphere".into(),
+            ));
+        }
+        let v = &v / scale;
+        let lv = &lv / scale;
+        // G_s = LV Vᵀ (V Vᵀ)⁻¹, solved column by column of Gᵀ.
+        let vvt = v.dot(&v.t());
+        let rhs = v.dot(&lv.t()); // (V Vᵀ) G_sᵀ = V LVᵀ
+        let mut gs_t = Array2::<f64>::zeros((m, m));
+        for c in 0..m {
+            let col = vvt
+                .solve(&rhs.column(c).to_owned())
+                .map_err(|e| FerricError::Lapack(format!("axis rotation generator: {e}")))?;
+            gs_t.column_mut(c).assign(&col);
+        }
+        let gs = gs_t.t().to_owned();
+        let resid = max_abs(&(&lv - &gs.dot(&v)));
+        if resid > 1e-10 * max_abs(&lv).max(1.0) {
+            return Err(FerricError::General(format!(
+                "axis rotation generator: shell (l = {}, pure = {}) is not closed under the axis \
+                 rotation (fit residual {resid:.3e}); the AO convention is not the one assumed",
+                sh.l, sh.pure
+            )));
+        }
+        g.slice_mut(s![off..off + m, off..off + m]).assign(&gs);
+        off += m;
+    }
+    Ok(g)
+}
+
 /// The orbital-relaxation term Σ_ai Z_ai ∂F_ai/∂R of a post-SCF quantity with
 /// AO density derivative `v_ao` = ∂Q/∂D (symmetric), for the converged
 /// closed-shell KS `result` of `config` on `mol`. See the module doc.
@@ -698,6 +989,10 @@ pub struct UnrestrictedRelaxationGradient {
     /// relaxation term then carries a relative error of order
     /// `residual / max|rhs|` (≤ `CG_FLOOR_TOL`).
     pub stopped_at_floor: bool,
+    /// The axis-rotation null mode removed from the solve (linear molecules
+    /// whose state breaks the cylindrical symmetry, issue #265), or `None`
+    /// when no such mode exists (every non-linear molecule; Σ states).
+    pub null_mode: Option<NullModeDiagnostics>,
 }
 
 /// Why an unrestricted (UKS) Z-vector cannot be formed for `config`, or
@@ -958,12 +1253,27 @@ pub fn relaxation_gradient_unrestricted(
     let precond = |r: &[Array2<f64>; 2]| [&r[0] / &sa.gap, &r[1] / &sb.gap];
 
     // H Z = −2 V_vo per spin, PCG on the coupled pair.
-    let rhs = [
+    let mut rhs = [
         -2.0 * sa.cv.t().dot(v_ao).dot(&sa.co),
         -2.0 * sb.cv.t().dot(v_ao).dot(&sb.co),
     ];
+    // Linear molecule in a symmetry-broken state: remove the axis-rotation
+    // null mode (issue #265; `NullModeDiagnostics`). `None` everywhere else,
+    // and then every `proj` below is a no-op (the solve is unchanged).
+    let (mode, null_mode) = detect_axis_null_mode(
+        mol,
+        bs,
+        prep,
+        &[(&sa.cv, &sa.co), (&sb.cv, &sb.co)],
+        &[sa.gap.clone(), sb.gap.clone()],
+        &rhs,
+        |u| hx(&[u[0].clone(), u[1].clone()]).map(Vec::from),
+    )?;
+    let proj = |x: &mut [Array2<f64>; 2]| project_opt(&mode, x);
+    proj(&mut rhs);
     let rhs_max = max2(&rhs);
     let mut z = precond(&rhs);
+    proj(&mut z);
     let mut iterations = 0usize;
     let mut stopped_at_floor = false;
     let mut residual;
@@ -974,7 +1284,9 @@ pub fn relaxation_gradient_unrestricted(
     } else {
         let hz = hx(&z)?;
         let mut r = [&rhs[0] - &hz[0], &rhs[1] - &hz[1]];
+        proj(&mut r);
         let mut p = precond(&r);
+        proj(&mut p);
         let mut rz = inner2(&r, &p);
         residual = max2(&r);
         while residual > CG_REL_TOL * rhs_max {
@@ -985,7 +1297,8 @@ pub fn relaxation_gradient_unrestricted(
                     CG_REL_TOL * rhs_max
                 )));
             }
-            let hp = hx(&p)?;
+            let mut hp = hx(&p)?;
+            proj(&mut hp);
             let php = inner2(&p, &hp);
             let pmp = inner(&p[0], &(&p[0] * &sa.gap)) + inner(&p[1], &(&p[1] * &sb.gap));
             if !pcg_curvature_ok(php, pmp, residual, rhs_max)? {
@@ -997,7 +1310,8 @@ pub fn relaxation_gradient_unrestricted(
                 z[s].scaled_add(alpha, &p[s]);
                 r[s].scaled_add(-alpha, &hp[s]);
             }
-            let zr = precond(&r);
+            let mut zr = precond(&r);
+            proj(&mut zr);
             let rz_new = inner2(&r, &zr);
             let beta = rz_new / rz;
             p = [&zr[0] + &(beta * &p[0]), &zr[1] + &(beta * &p[1])];
@@ -1042,6 +1356,7 @@ pub fn relaxation_gradient_unrestricted(
         iterations,
         residual,
         stopped_at_floor,
+        null_mode,
     })
 }
 
@@ -1066,6 +1381,10 @@ pub struct RestrictedOpenRelaxationGradient {
     /// with `residual` between `CG_REL_TOL` and `CG_FLOOR_TOL` times max|rhs|
     /// (see `RelaxationGradient::stopped_at_floor`).
     pub stopped_at_floor: bool,
+    /// The axis-rotation null mode removed from the solve (linear molecules
+    /// whose state breaks the cylindrical symmetry, issue #265), or `None`
+    /// when no such mode exists (every non-linear molecule; Σ states).
+    pub null_mode: Option<NullModeDiagnostics>,
 }
 
 /// Why a restricted open-shell (ROKS) Z-vector cannot be formed for
@@ -1327,13 +1646,27 @@ pub fn relaxation_gradient_roks(
     };
 
     // H Z = −(4 V_vc, 2 V_vo, 2 V_oc).
-    let rhs: Blocks3 = [
+    let mut rhs: Blocks3 = [
         -4.0 * rb.cv.t().dot(v_ao).dot(&rb.cc),
         -2.0 * rb.cv.t().dot(v_ao).dot(&rb.co),
         -2.0 * rb.co.t().dot(v_ao).dot(&rb.cc),
     ];
+    // Axis-rotation null mode of a linear molecule (issue #265), as in the
+    // UKS solve; `None` (no-op projections) everywhere else.
+    let (mode, null_mode) = detect_axis_null_mode(
+        mol,
+        bs,
+        prep,
+        &[(&rb.cv, &rb.cc), (&rb.cv, &rb.co), (&rb.co, &rb.cc)],
+        &rb.diag,
+        &rhs,
+        |u| hx(&[u[0].clone(), u[1].clone(), u[2].clone()]).map(Vec::from),
+    )?;
+    let proj = |x: &mut Blocks3| project_opt(&mode, x);
+    proj(&mut rhs);
     let rhs_max = max3(&rhs);
     let mut z = precond(&rhs);
+    proj(&mut z);
     let mut iterations = 0usize;
     let mut stopped_at_floor = false;
     let mut residual;
@@ -1345,7 +1678,9 @@ pub fn relaxation_gradient_roks(
     } else {
         let hz = hx(&z)?;
         let mut r: Blocks3 = [&rhs[0] - &hz[0], &rhs[1] - &hz[1], &rhs[2] - &hz[2]];
+        proj(&mut r);
         let mut p = precond(&r);
+        proj(&mut p);
         let mut rz = inner3(&r, &p);
         residual = max3(&r);
         while residual > CG_REL_TOL * rhs_max {
@@ -1356,7 +1691,8 @@ pub fn relaxation_gradient_roks(
                     CG_REL_TOL * rhs_max
                 )));
             }
-            let hp = hx(&p)?;
+            let mut hp = hx(&p)?;
+            proj(&mut hp);
             let php = inner3(&p, &hp);
             let pmp: f64 = (0..3).map(|k| inner(&p[k], &(&p[k] * &rb.diag[k]))).sum();
             if !pcg_curvature_ok(php, pmp, residual, rhs_max)? {
@@ -1368,7 +1704,8 @@ pub fn relaxation_gradient_roks(
                 z[k].scaled_add(alpha, &p[k]);
                 r[k].scaled_add(-alpha, &hp[k]);
             }
-            let zr = precond(&r);
+            let mut zr = precond(&r);
+            proj(&mut zr);
             let rz_new = inner3(&r, &zr);
             let beta = rz_new / rz;
             p = [
@@ -1420,6 +1757,7 @@ pub fn relaxation_gradient_roks(
         iterations,
         residual,
         stopped_at_floor,
+        null_mode,
     })
 }
 
@@ -1519,5 +1857,500 @@ mod pcg_curvature_tests {
             pcg_curvature_ok(0.0, 1.0, 1e-6, 1e-3),
             Err(FerricError::Convergence(_))
         ));
+    }
+}
+
+/// Issue #265 investigation (measurement, prints): the dense open-shell
+/// orbital Hessian of small radicals, its spectrum in the gap metric, and the
+/// alignment of its softest eigenvector with the axis-rotation mode κ_L.
+/// Pre-registered predictions: tests/HYPOTHESES-degenerate-somo-zvector.md.
+#[cfg(test)]
+mod degenerate_somo_investigation {
+    use super::*;
+    use ndarray_linalg::{Eigh, UPLO};
+
+    fn flatten(blocks: &[Array2<f64>]) -> Vec<f64> {
+        blocks.iter().flat_map(|b| b.iter().cloned()).collect()
+    }
+
+    fn unflatten(v: &[f64], shapes: &[(usize, usize)]) -> Vec<Array2<f64>> {
+        let mut off = 0;
+        shapes
+            .iter()
+            .map(|&(r, c)| {
+                let a = Array2::from_shape_vec((r, c), v[off..off + r * c].to_vec()).unwrap();
+                off += r * c;
+                a
+            })
+            .collect()
+    }
+
+    /// (dense H, gap diagonal, κ_L flattened or None) for a converged result.
+    fn dense(
+        mol: &Molecule,
+        bs: &ferric_core::basis::BasisSet,
+        prep: &PreparedBasis,
+        cfg: &RhfConfig,
+        r: &ScfResult,
+    ) -> (Array2<f64>, Vec<f64>, Option<Vec<f64>>) {
+        let ctx = ParallelContext::default();
+        let xc = cfg.xc.as_deref().unwrap();
+        let s_ao = ferric_integrals::oneelectron::overlap(prep);
+        let gen = linear_axis(mol).map(|ax| axis_rotation_generator(mol, bs, ax).expect("G"));
+        match r.spin {
+            Spin::Unrestricted => {
+                let nelec = mol.nelec() as i64;
+                let two_s = mol.multiplicity as i64 - 1;
+                let na = ((nelec + two_s) / 2) as usize;
+                let nb = ((nelec - two_s) / 2) as usize;
+                let db = r.density_beta.as_ref().unwrap();
+                let sa =
+                    SpinBlock::new("a", &r.mos_alpha, &r.fock_alpha, &r.density_alpha, na).unwrap();
+                let sb = SpinBlock::new(
+                    "b",
+                    r.mos_beta.as_ref().unwrap(),
+                    r.fock_beta.as_ref().unwrap(),
+                    db,
+                    nb,
+                )
+                .unwrap();
+                let resp = ResponseFock::new(mol, prep, cfg, xc, &r.density_alpha, db).unwrap();
+                let shapes = [sa.gap.dim(), sb.gap.dim()];
+                let dim: usize = shapes.iter().map(|(a, b)| a * b).sum();
+                let mut h = Array2::<f64>::zeros((dim, dim));
+                for j in 0..dim {
+                    let mut e = vec![0.0; dim];
+                    e[j] = 1.0;
+                    let x = unflatten(&e, &shapes);
+                    let (dfa, dfb) = resp
+                        .apply_spin(&ctx, &sa.density(&x[0]), &sb.density(&x[1]))
+                        .unwrap();
+                    let hb = |sp: &SpinBlock, x: &Array2<f64>, df: &Array2<f64>| {
+                        let mut hh = sp.f_vv.dot(x) - x.dot(&sp.f_oo);
+                        hh += &sp.cv.t().dot(df).dot(&sp.co);
+                        hh
+                    };
+                    let col = flatten(&[hb(&sa, &x[0], &dfa), hb(&sb, &x[1], &dfb)]);
+                    for i in 0..dim {
+                        h[(i, j)] = col[i];
+                    }
+                }
+                let gap = flatten(&[sa.gap.clone(), sb.gap.clone()]);
+                let kl = gen.map(|g| {
+                    let k = |sp: &SpinBlock| sp.cv.t().dot(&s_ao).dot(&g.t()).dot(&sp.co);
+                    flatten(&[k(&sa), k(&sb)])
+                });
+                (h, gap, kl)
+            }
+            _ => unreachable!("UKS only here"),
+        }
+    }
+
+    fn report(label: &str, h: &Array2<f64>, gap: &[f64], kl: Option<&Vec<f64>>) {
+        let dim = gap.len();
+        let asym = max_abs(&(h - &h.t()));
+        let hs = 0.5 * (h + &h.t());
+        // Gap metric: M^{-1/2} H M^{-1/2}.
+        let mut hm = hs.clone();
+        for i in 0..dim {
+            for j in 0..dim {
+                hm[(i, j)] /= (gap[i] * gap[j]).sqrt();
+            }
+        }
+        let (w, v) = hm.eigh(UPLO::Lower).unwrap();
+        let mut order: Vec<usize> = (0..dim).collect();
+        order.sort_by(|&a, &b| w[a].abs().total_cmp(&w[b].abs()));
+        let soft = order[0];
+        println!(
+            "{label}: dim {dim}, max|H - H^T| {asym:.2e}; gap-metric eigenvalues (sorted by |.|): \
+             {:?}",
+            order
+                .iter()
+                .take(4)
+                .map(|&k| format!("{:.3e}", w[k]))
+                .collect::<Vec<_>>()
+        );
+        match kl {
+            None => println!("{label}: not linear, no axis-rotation mode"),
+            Some(k) => {
+                let kn: f64 = k.iter().map(|x| x * x).sum::<f64>().sqrt();
+                if kn < 1e-10 {
+                    println!("{label}: kappa_L vanishes (|kappa_L| = {kn:.2e})");
+                    return;
+                }
+                // Rayleigh in the gap metric and cosine with the softest
+                // eigenvector (both in the M^{1/2}-scaled coordinates).
+                let ks: Vec<f64> = k.iter().zip(gap).map(|(x, g)| x * g.sqrt()).collect();
+                let ksn: f64 = ks.iter().map(|x| x * x).sum::<f64>().sqrt();
+                let hk: Vec<f64> = (0..dim)
+                    .map(|i| (0..dim).map(|j| hs[(i, j)] * k[j]).sum())
+                    .collect();
+                let khk: f64 = k.iter().zip(&hk).map(|(a, b)| a * b).sum();
+                let kmk: f64 = k.iter().zip(gap).map(|(a, g)| a * a * g).sum();
+                let cos: f64 = (0..dim).map(|i| v[(i, soft)] * ks[i]).sum::<f64>().abs() / ksn;
+                let hk_rel = hk.iter().map(|x| x.abs()).fold(0.0, f64::max)
+                    / k.iter().map(|x| x.abs()).fold(0.0, f64::max);
+                println!(
+                    "{label}: |kappa_L| {kn:.3e}; Rayleigh kHk/kMk = {:.3e}; max|H k|/max|k| = \
+                     {hk_rel:.3e}; |cos(softest, kappa_L)| = {cos:.6}",
+                    khk / kmk
+                );
+            }
+        }
+    }
+
+    fn uks(xyz: &str, mult: usize, basis: &str, xc: &str, ang: usize) {
+        let mol = Molecule::parse_xyz(xyz, 0, mult).unwrap();
+        let bs = ferric_core::basis::bundled(basis).unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+        let cfg = RhfConfig {
+            xc: Some(xc.into()),
+            max_iter: 300,
+            energy_conv: 1e-11,
+            density_conv: 1e-9,
+            dft_grid: Some(ferric_dft::grid::AtomicGridConfig {
+                n_radial: 75,
+                n_angular: ang,
+                prune: None,
+            }),
+            ..Default::default()
+        };
+        let r =
+            crate::uhf::solve_uhf(&ParallelContext::default(), &mol, &prep, &bounds, &cfg).unwrap();
+        assert!(r.converged);
+        let (h, gap, kl) = dense(&mol, &bs, &prep, &cfg, &r);
+        report(
+            &format!(
+                "{} {basis} UKS-{xc} (75,{ang})",
+                xyz.lines().nth(1).unwrap()
+            ),
+            &h,
+            &gap,
+            kl.as_ref(),
+        );
+    }
+
+    const OH: &str = "2\nOH\nO 0.000000 0.000000 0.000000\nH 0.100000 0.000000 0.970000\n";
+    const NH2: &str =
+        "3\nNH2\nN 0.000000 0.000000 0.142000\nH 0.000000 0.802000 -0.497000\nH 0.000000 -0.802000 -0.497000\n";
+    const O2: &str = "2\nO2\nO 0.000000 0.000000 0.604000\nO 0.000000 0.000000 -0.604000\n";
+    const CH: &str = "2\nCH\nC 0.000000 0.000000 0.000000\nH 0.000000 0.300000 1.080000\n";
+    const NO: &str = "2\nNO\nN 0.000000 0.000000 0.000000\nO 0.200000 0.000000 1.140000\n";
+
+    /// (Rayleigh quotient of κ_L in the gap metric, |cos(softest eigenvector,
+    /// κ_L)|, smallest |eigenvalue| among the OTHER directions), or `None`
+    /// when no axis-rotation mode exists.
+    fn null_mode_numbers(xyz: &str, mult: usize, basis: &str, xc: &str) -> Option<(f64, f64, f64)> {
+        let mol = Molecule::parse_xyz(xyz, 0, mult).unwrap();
+        let bs = ferric_core::basis::bundled(basis).unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+        let cfg = RhfConfig {
+            xc: Some(xc.into()),
+            max_iter: 300,
+            energy_conv: 1e-11,
+            density_conv: 1e-9,
+            ..Default::default()
+        };
+        let r =
+            crate::uhf::solve_uhf(&ParallelContext::default(), &mol, &prep, &bounds, &cfg).unwrap();
+        assert!(r.converged);
+        let (h, gap, kl) = dense(&mol, &bs, &prep, &cfg, &r);
+        let k = kl?;
+        if k.iter().fold(0.0_f64, |m, x| m.max(x.abs())) < KAPPA_VANISH {
+            return None;
+        }
+        let dim = gap.len();
+        let hs = 0.5 * (&h + &h.t());
+        let mut hm = hs.clone();
+        for i in 0..dim {
+            for j in 0..dim {
+                hm[(i, j)] /= (gap[i] * gap[j]).sqrt();
+            }
+        }
+        let (w, v) = hm.eigh(UPLO::Lower).unwrap();
+        let ks: Vec<f64> = k.iter().zip(&gap).map(|(x, g)| x * g.sqrt()).collect();
+        let ksn: f64 = ks.iter().map(|x| x * x).sum::<f64>().sqrt();
+        let cosines: Vec<f64> = (0..dim)
+            .map(|e| (0..dim).map(|i| v[(i, e)] * ks[i]).sum::<f64>().abs() / ksn)
+            .collect();
+        let soft = (0..dim)
+            .max_by(|&a, &b| cosines[a].total_cmp(&cosines[b]))
+            .unwrap();
+        let other = (0..dim)
+            .filter(|&e| e != soft)
+            .map(|e| w[e].abs())
+            .fold(f64::INFINITY, f64::min);
+        let khk: f64 = (0..dim)
+            .map(|i| k[i] * (0..dim).map(|j| hs[(i, j)] * k[j]).sum::<f64>())
+            .sum();
+        let kmk: f64 = k.iter().zip(&gap).map(|(a, g)| a * a * g).sum();
+        Some((khk / kmk, cosines[soft], other))
+    }
+
+    /// INDEPENDENT CONSTRUCTION CHECK of the generator and of the detection
+    /// bar: the eigenvector of the dense UKS orbital Hessian (built by unit
+    /// matvecs, no symmetry input) that best matches κ_L must match it to
+    /// |cos| > 0.9999, its Rayleigh quotient must lie under
+    /// `NULL_RAYLEIGH_TOL`, and every OTHER eigenvalue must lie above it, so
+    /// the bar separates the two sides on these systems (s/p bases and the
+    /// pure-d cc-pVDZ, where the generator acts on solid harmonics). A wrong
+    /// generator (sign or ordering convention, wrong axis) gives |cos| ≪ 1.
+    /// NH2 (bent) and O2 ³Σg⁻ (both π partners of each spin filled) have no
+    /// mode.
+    #[test]
+    fn axis_mode_is_the_softest_hessian_direction() {
+        for (xyz, mult, basis, xc) in [
+            (OH, 2, "sto-3g", "PBE"),
+            (OH, 2, "sto-3g", "PBE0"),
+            (NO, 2, "sto-3g", "PBE"),
+            (OH, 2, "cc-pvdz", "PBE"),
+        ] {
+            let (ray, cos, other) =
+                null_mode_numbers(xyz, mult, basis, xc).expect("mode must be detected");
+            println!(
+                "{basis} {xc}: rayleigh {ray:.3e}, |cos| {cos:.8}, other min |eig| {other:.3e}"
+            );
+            assert!(cos > 0.9999, "{basis} {xc}: |cos| {cos}");
+            assert!(
+                ray.abs() < NULL_RAYLEIGH_TOL,
+                "{basis} {xc}: rayleigh {ray}"
+            );
+            assert!(
+                other > NULL_RAYLEIGH_TOL,
+                "{basis} {xc}: other eigenvalue {other}"
+            );
+        }
+        assert!(null_mode_numbers(NH2, 2, "sto-3g", "PBE").is_none());
+        assert!(null_mode_numbers(O2, 3, "sto-3g", "PBE").is_none());
+    }
+
+    /// THE PROJECTION ITSELF, both references: with a near-axisymmetric
+    /// property (V = the core Hamiltonian + a 1e-6 symmetry-breaking
+    /// admixture, see below) the UKS (OH/STO-3G PBE0) and
+    /// ROKS (NO/6-31G PBE) solves must report the mode and return a Z with no
+    /// component along κ_L. Both modes have NEGATIVE Rayleigh quotients;
+    /// without the projection the small κ_L component of the right-hand side
+    /// is amplified by 1/λ (or PCG meets the negative curvature) — each half
+    /// fails if its reference loses the projection.
+    #[test]
+    fn projected_z_has_no_null_mode_component() {
+        let mol = Molecule::parse_xyz(OH, 0, 2).unwrap();
+        let bs = ferric_core::basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+        let cfg = RhfConfig {
+            xc: Some("PBE0".into()),
+            max_iter: 300,
+            energy_conv: 1e-11,
+            density_conv: 1e-9,
+            ..Default::default()
+        };
+        // An axisymmetric property plus a 1e-6 symmetry-breaking admixture:
+        // the right-hand side then has a small component along κ_L (the size
+        // the MBD lattice's anisotropy gives, rhs overlap ~1e-6..1e-8, under
+        // NULL_RHS_TOL), which an unprojected solve amplifies by 1/λ.
+        let v =
+            ferric_integrals::oneelectron::hcore(&prep) + 1e-6 * generic_symmetric(prep.nbasis());
+        let ru = crate::uhf::solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
+        let u =
+            relaxation_gradient_unrestricted(&ctx, &mol, &prep, &bs, op, &bounds, &cfg, &ru, &v)
+                .expect("UKS");
+        let nelec = mol.nelec() as usize;
+        let (na, nb) = (nelec.div_ceil(2), nelec / 2);
+        let c_b = ru.mos_beta.as_ref().unwrap();
+        let mode = axis_rotation_mode(
+            &mol,
+            &bs,
+            &prep,
+            &[
+                (
+                    &ru.mos_alpha.slice(s![.., na..]).to_owned(),
+                    &ru.mos_alpha.slice(s![.., ..na]).to_owned(),
+                ),
+                (
+                    &c_b.slice(s![.., nb..]).to_owned(),
+                    &c_b.slice(s![.., ..nb]).to_owned(),
+                ),
+            ],
+        )
+        .unwrap()
+        .expect("mode");
+        let zu = [u.z_alpha.clone(), u.z_beta.clone()];
+        let ovl_u = inner_blocks(&mode, &zu).abs() / inner_blocks(&zu, &zu).sqrt();
+        // ROKS on NO/6-31G-PBE, where the mode's Rayleigh quotient is
+        // NEGATIVE (−4.6e-3): there the unprojected PCG meets it. (On OH
+        // ROKS-PBE0 it is positive and the Krylov space of an axisymmetric
+        // right-hand side never acquires a κ_L component, projection or not.)
+        let mol = Molecule::parse_xyz(NO, 0, 2).unwrap();
+        let bs = ferric_core::basis::bundled("6-31g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let cfg = RhfConfig {
+            xc: Some("PBE".into()),
+            ..cfg
+        };
+        let v =
+            ferric_integrals::oneelectron::hcore(&prep) + 1e-6 * generic_symmetric(prep.nbasis());
+        let nelec = mol.nelec() as usize;
+        let (na, nb) = (nelec.div_ceil(2), nelec / 2);
+        let ro = crate::rohf::solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
+        assert!(ro.converged);
+        let o = relaxation_gradient_roks(&ctx, &mol, &prep, &bs, op, &bounds, &cfg, &ro, &v)
+            .expect("ROKS");
+        let c = &ro.mos_alpha;
+        let (cc, co, cv) = (
+            c.slice(s![.., ..nb]).to_owned(),
+            c.slice(s![.., nb..na]).to_owned(),
+            c.slice(s![.., na..]).to_owned(),
+        );
+        let mode_o = axis_rotation_mode(&mol, &bs, &prep, &[(&cv, &cc), (&cv, &co), (&co, &cc)])
+            .unwrap()
+            .expect("mode");
+        let zo = [o.z_vc.clone(), o.z_vo.clone(), o.z_oc.clone()];
+        let ovl_o = inner_blocks(&mode_o, &zo).abs() / inner_blocks(&zo, &zo).sqrt();
+        println!(
+            "UKS: {:?}, |z.k|/|z| = {ovl_u:.2e}; ROKS: {:?}, |z.k|/|z| = {ovl_o:.2e}",
+            u.null_mode, o.null_mode
+        );
+        assert!(u.null_mode.is_some() && o.null_mode.is_some());
+        assert!(ovl_u < 1e-10, "UKS Z has a null-mode component {ovl_u:.3e}");
+        assert!(
+            ovl_o < 1e-10,
+            "ROKS Z has a null-mode component {ovl_o:.3e}"
+        );
+    }
+
+    /// A deterministic symmetric matrix with no symmetry at all.
+    fn generic_symmetric(n: usize) -> Array2<f64> {
+        Array2::from_shape_fn((n, n), |(i, j)| {
+            let (a, b) = (i.min(j) as f64, i.max(j) as f64);
+            (0.37 * a + 1.13 * b + 0.29 * a * b).sin()
+        })
+    }
+
+    fn oh_uks_pbe0(
+        ext: Option<ferric_core::external_potential::ExternalPotential>,
+    ) -> (
+        Molecule,
+        ferric_core::basis::BasisSet,
+        PreparedBasis,
+        SchwarzBounds,
+        RhfConfig,
+        ScfResult,
+    ) {
+        let mol = Molecule::parse_xyz(OH, 0, 2).unwrap();
+        let bs = ferric_core::basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+        let cfg = RhfConfig {
+            xc: Some("PBE0".into()),
+            max_iter: 300,
+            energy_conv: 1e-11,
+            density_conv: 1e-9,
+            external_potential: ext,
+            ..Default::default()
+        };
+        let r =
+            crate::uhf::solve_uhf(&ParallelContext::default(), &mol, &prep, &bounds, &cfg).unwrap();
+        assert!(r.converged);
+        (mol, bs, prep, bounds, cfg, r)
+    }
+
+    /// REFUSED, NOT PROJECTED: a property that is not symmetric about the axis
+    /// has a right-hand side along κ_L, so its Z-vector equation has no
+    /// solution on the complement and the derivative is not determined. A
+    /// generic symmetric V (no symmetry) must be refused with the overlap
+    /// named. Fails if the `NULL_RHS_TOL` refusal is dropped.
+    #[test]
+    fn non_axisymmetric_property_is_refused() {
+        let (mol, bs, prep, bounds, cfg, r) = oh_uks_pbe0(None);
+        let v = generic_symmetric(prep.nbasis());
+        let err = relaxation_gradient_unrestricted(
+            &ParallelContext::default(),
+            &mol,
+            &prep,
+            &bs,
+            Operator::coulomb(),
+            &bounds,
+            &cfg,
+            &r,
+            &v,
+        )
+        .expect_err("a non-axisymmetric property must be refused");
+        println!("{err}");
+        assert!(format!("{err}").contains("not orthogonal"), "{err}");
+    }
+
+    /// NOT PROJECTED when the symmetry is broken from outside: a point charge
+    /// off the molecular axis makes the axis rotation an ordinary, stiff
+    /// direction (its Rayleigh quotient rises above `NULL_RAYLEIGH_TOL`), so
+    /// the mode must not be removed. Fails if the Rayleigh bar is dropped.
+    #[test]
+    fn external_symmetry_breaking_is_not_projected() {
+        let ext = ferric_core::external_potential::ExternalPotential {
+            point_charges: vec![ferric_core::external_potential::PointCharge {
+                q: 1.0,
+                x: 3.0,
+                y: 0.0,
+                z: 0.9,
+            }],
+            ..Default::default()
+        };
+        let (mol, bs, prep, bounds, cfg, r) = oh_uks_pbe0(Some(ext));
+        let v = ferric_integrals::oneelectron::hcore(&prep);
+        let u = relaxation_gradient_unrestricted(
+            &ParallelContext::default(),
+            &mol,
+            &prep,
+            &bs,
+            Operator::coulomb(),
+            &bounds,
+            &cfg,
+            &r,
+            &v,
+        )
+        .expect("solve");
+        // The Rayleigh quotient of κ_L itself, for the record.
+        let (h, gap, kl) = dense(&mol, &bs, &prep, &cfg, &r);
+        let k = kl.expect("linear");
+        let dim = gap.len();
+        let khk: f64 = (0..dim)
+            .map(|i| {
+                k[i] * (0..dim)
+                    .map(|j| 0.5 * (h[(i, j)] + h[(j, i)]) * k[j])
+                    .sum::<f64>()
+            })
+            .sum();
+        let kmk: f64 = k.iter().zip(&gap).map(|(a, g)| a * a * g).sum();
+        println!(
+            "off-axis charge: Rayleigh {:.3e}, null_mode {:?}",
+            khk / kmk,
+            u.null_mode
+        );
+        assert!(
+            (khk / kmk).abs() > NULL_RAYLEIGH_TOL,
+            "the charge is too weak to test the bar"
+        );
+        assert_eq!(u.null_mode, None);
+    }
+
+    #[test]
+    #[ignore = "measurement: issue #265 null-mode investigation"]
+    fn measure_open_shell_hessian_null_mode() {
+        for ang in [110, 302] {
+            uks(OH, 2, "sto-3g", "PBE", ang);
+        }
+        uks(OH, 2, "6-31g", "PBE", 110);
+        uks(OH, 2, "sto-3g", "PBE0", 110);
+        uks(CH, 2, "sto-3g", "PBE", 110);
+        uks(NO, 2, "sto-3g", "PBE", 110);
+        uks(CH, 2, "6-31g", "PBE", 110);
+        uks(CH, 2, "sto-3g", "PBE", 302);
+        uks(NH2, 2, "sto-3g", "PBE", 110);
+        uks(O2, 3, "sto-3g", "PBE", 110);
     }
 }
