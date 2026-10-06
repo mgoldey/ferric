@@ -1,0 +1,116 @@
+{
+  "row": "RSH omega tuning (cation stability)",
+  "system": "n2",
+  "basis": "def2-svp",
+  "functional": "HYB_GGA_XC_WB97X",
+  "points": [
+    {
+      "omega": 0.3,
+      "e_cation": -108.82592003907051,
+      "cation_s_squared": 0.7541432357506448,
+      "cation_lambda_min": 0.030601671192300974
+    },
+    {
+      "omega": 0.4,
+      "e_cation": -108.80853906104367,
+      "cation_s_squared": 0.7550131238168589,
+      "cation_lambda_min": 0.02014179132400347
+    },
+    {
+      "omega": 0.45,
+      "e_cation": -108.80062482520488,
+      "cation_s_squared": 0.755525245123378,
+      "cation_lambda_min": 0.012302452008701281
+    },
+    {
+      "omega": 0.5,
+      "e_cation": -108.79293703332708,
+      "cation_s_squared": 0.7560639438683499,
+      "cation_lambda_min": 0.002217662880887518
+    },
+    {
+      "omega": 0.55,
+      "e_cation": -108.7854199734697,
+      "cation_s_squared": 0.7566130409000458,
+      "cation_lambda_min": -0.006893814215427442
+    },
+    {
+      "omega": 0.6,
+      "e_cation": -108.77807974490192,
+      "cation_s_squared": 0.7571592431301397,
+      "cation_lambda_min": -0.01498674272377069
+    },
+    {
+      "omega": 0.8,
+      "e_cation": -108.75141813420056,
+      "cation_s_squared": 0.7591441138322335,
+      "cation_lambda_min": -0.038307570237307964
+    }
+  ],
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "method": "dft.UKS doublet cation, mf.omega override, minao guess, not stability-followed; lambda_min = dense gen_g_hop_uhf",
+      "xc": "wb97x",
+      "jk": "EXACT J (4-index) for neutral and cation + density-fitted K in the attenuated metric; full-range K served as K_SR^DF[erfc] + K_LR^DF[erf] (== ferric's c_SR K_SR + c_LR K_LR)"
+    },
+    "grid": {
+      "main": {
+        "atom_grid": [
+          75,
+          110
+        ],
+        "prune": null,
+        "partition": "Becke (original_becke)",
+        "radii_adjust": "becke_atomic_radii_adjust"
+      }
+    },
+    "aux_basis": {
+      "name": "def2-universal-jkfit",
+      "json": "crates/ferric-core/src/basis/bundled/def2-universal-jkfit.json",
+      "sha256": "a9fcb52ae8a74e80bd3a65c5e12e7a2d2f391fef62c3c81050ae816399b57671"
+    },
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-10,
+      "conv_tol_grad": 1e-07
+    },
+    "stability": {
+      "cation": "NOT followed; lambda_min of the converged state"
+    },
+    "basis": "def2-svp",
+    "basis_json": "crates/ferric-core/src/basis/bundled/def2-svp.json",
+    "basis_sha256": "bfad5f58ceac74a9ac2766b39f510654cea29fb9408e966bb0dfcf14e1302d4f",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/n2.xyz",
+    "geometry_xyz_sha256": "5052256eb567623c160b56fbdc907f92c0ed0d8e060f00319e04fa85b138a0c3",
+    "geometry_bohr": [
+      [
+        "N",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "N",
+        0.0,
+        0.0,
+        2.0743523669350683
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_rsh_cation_stability.py",
+    "git_head": "cddfd1aa57777430484f67ab72f52a3351687076",
+    "generated_utc": "2026-10-06T22:18:03+00:00",
+    "basis_self_check": {
+      "nao": 28,
+      "replica_self_overlap_max_dev": 1.1102230246251565e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 28,
+      "diag_skipped_cartesian": 0
+    },
+    "runtime_s": 311.6
+  }
+}

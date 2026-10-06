@@ -45,22 +45,34 @@
 //!   three orders of magnitude larger than the asymmetry signal that separates
 //!   the branches.
 //!
-//! # LIMITATION: no stability verdict
+//! # Cation stability verdict
 //!
-//! Neither mechanism can tell a converged cation that is an internal SADDLE
-//! from one that is a minimum. The instrument for that is the orbital
-//! Hessian. Its exchange response reproduces a range-separated Fock's SR/LR
-//! split, so [`crate::stability::ks_reference_is_analysable`] accepts ω ≠ 0
-//! for functionals without VV10. ωB97X-V, the functional this module is
-//! validated with, carries VV10 and is still refused
-//! ([`crate::stability::StabilitySkip::Vv10Kernel`]): no VV10 response kernel
-//! exists. This module also does not yet report the Hessian's lowest
-//! eigenvalue per ω. A tuned ω* can therefore sit on a cation branch that has
-//! stopped being a minimum, and this module cannot say so. Continuation keeps
-//! the curve on ONE branch; it does not certify that branch is the lowest one.
+//! Neither mechanism above can tell a converged cation that is an internal
+//! SADDLE from one that is a minimum; the instrument for that is the orbital
+//! Hessian, and the onset it detects is a CURVATURE change that no energy,
+//! ⟨S²⟩ or population observable sees (N2⁺: ⟨S²⟩ and J stay smooth while the
+//! Hessian's lowest eigenvalue changes sign). So
+//! [`OmegaTuneConfig::check_cation_stability`](crate::omega_tuning::OmegaTuneConfig::check_cation_stability) (default ON) runs
+//! [`crate::stability::uhf_internal_stability`] on every cation and records a
+//! [`CationStability`](crate::omega_tuning::CationStability) per [`OmegaEval`](crate::omega_tuning::OmegaEval):
+//!
+//! * `Analysed` — λ_min, the verdict and the noise floor. A tuned ω* whose
+//!   cation is an internal saddle is an ERROR from [`tune_omega`](crate::omega_tuning::tune_omega): it is not a
+//!   valid tuned ω, and returning it with a flag would let a caller that never
+//!   reads the flag use it. A saddle at a non-ω* point, or a marginal /
+//!   unconverged verdict anywhere, is reported in
+//!   [`OmegaTuneResult::stability_warning`](crate::omega_tuning::OmegaTuneResult::stability_warning).
+//! * `NotAnalysed(skip)` — the Hessian cannot be built for this functional
+//!   (VV10 such as ωB97X-V: [`StabilitySkip::Vv10Kernel`](crate::stability::StabilitySkip::Vv10Kernel); meta-GGA). This is
+//!   NEVER read as stable: it is recorded per eval, summarised in
+//!   `stability_warning` and printed to stderr.
+//!
+//! Continuation keeps the curve on ONE branch; it does not certify that
+//! branch is the lowest one.
 
 use crate::rhf::{solve_rhf, RhfConfig};
 use crate::screening::SchwarzBounds;
+use crate::stability::{ks_reference_is_analysable, StabilitySkip, StabilityVerdict};
 use crate::uhf::solve_uhf_with_guess;
 use ferric_core::error::FerricError;
 use ferric_core::mol::Molecule;
@@ -105,6 +117,13 @@ pub struct OmegaTuneConfig {
     /// `None` disables the check, which leaves every
     /// [`OmegaEval::branch_changed`] `false` because nothing was CHECKED.
     pub branch_tol: Option<f64>,
+    /// Run the UHF/UKS internal-stability analysis on every cation and refuse
+    /// a tuned ω* whose cation is an internal saddle (see the module doc).
+    /// Default `true`: each evaluation is already two SCFs, and the onset of
+    /// the instability is invisible to every other diagnostic. `false` skips
+    /// the analysis entirely and is bit-identical to a build without it; every
+    /// [`OmegaEval::cation_stability`] is then [`CationStability::NotChecked`].
+    pub check_cation_stability: bool,
 }
 
 impl Default for OmegaTuneConfig {
@@ -118,6 +137,7 @@ impl Default for OmegaTuneConfig {
             scf: RhfConfig::default(),
             continuation: DEFAULT_CONTINUATION,
             branch_tol: Some(DEFAULT_BRANCH_TOL),
+            check_cation_stability: true,
         }
     }
 }
@@ -193,6 +213,72 @@ impl std::fmt::Display for OmegaSeed {
     }
 }
 
+/// What the orbital Hessian said about one evaluation's cation.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CationStability {
+    /// [`OmegaTuneConfig::check_cation_stability`] was off: nothing was asked.
+    NotChecked,
+    /// The analysis cannot be run for this functional / reference, for the
+    /// stated reason. NOT a stable verdict.
+    NotAnalysed(StabilitySkip),
+    /// The internal-stability eigensolve ran.
+    Analysed {
+        /// Lowest eigenvalue of the UKS orbital Hessian (Ha / rad²).
+        lambda_min: f64,
+        /// Magnitude below which `lambda_min` is indistinguishable from zero.
+        noise_floor: f64,
+        /// Total verdict (Stable / Unstable / Marginal / Indeterminate).
+        verdict: StabilityVerdict,
+    },
+}
+
+impl CationStability {
+    /// `true` only for a PROVEN internal saddle.
+    pub fn is_saddle(&self) -> bool {
+        matches!(
+            self,
+            CationStability::Analysed {
+                verdict: StabilityVerdict::Unstable,
+                ..
+            }
+        )
+    }
+
+    /// `true` only for a PROVEN minimum.
+    pub fn is_proven_stable(&self) -> bool {
+        matches!(
+            self,
+            CationStability::Analysed {
+                verdict: StabilityVerdict::Stable,
+                ..
+            }
+        )
+    }
+
+    /// Short machine label: `not_checked`, `not_analysed`, `stable`,
+    /// `unstable`, `marginal`, `indeterminate`.
+    pub fn label(&self) -> &'static str {
+        match self {
+            CationStability::NotChecked => "not_checked",
+            CationStability::NotAnalysed(_) => "not_analysed",
+            CationStability::Analysed { verdict, .. } => match verdict {
+                StabilityVerdict::Stable => "stable",
+                StabilityVerdict::Unstable => "unstable",
+                StabilityVerdict::Marginal => "marginal",
+                StabilityVerdict::Indeterminate => "indeterminate",
+            },
+        }
+    }
+
+    /// λ_min when the analysis ran.
+    pub fn lambda_min(&self) -> Option<f64> {
+        match self {
+            CationStability::Analysed { lambda_min, .. } => Some(*lambda_min),
+            _ => None,
+        }
+    }
+}
+
 /// A single ω evaluation: HOMO eigenvalue, ΔSCF ionization potential, the
 /// Koopmans residual J, and the cation-state diagnostics that say whether
 /// this point belongs on the same J curve as its neighbours.
@@ -227,6 +313,8 @@ pub struct OmegaEval {
     /// i.e. this point is probably not on the same branch as that neighbour.
     /// `false` with `branch_tol: None` means NOT CHECKED, not consistent.
     pub branch_changed: bool,
+    /// The orbital-Hessian verdict on this evaluation's cation.
+    pub cation_stability: CationStability,
 }
 
 /// Result of an ω-tuning run: optimal ω, residual J, and the full evaluation trace.
@@ -244,6 +332,12 @@ pub struct OmegaTuneResult {
     /// this set is assembled from more than one electronic state and its ω*
     /// is not the ω* of either.
     pub branch_warning: Option<String>,
+    /// Human-readable account of every cation whose stability was NOT proven
+    /// (not analysable, marginal, unconverged) or was a saddle at a point
+    /// other than ω*. `None` when every evaluation was a proven minimum, or
+    /// when [`OmegaTuneConfig::check_cation_stability`] was off (read that to
+    /// tell the two apart).
+    pub stability_warning: Option<String>,
 }
 
 impl std::fmt::Display for OmegaTuneResult {
@@ -258,6 +352,9 @@ impl std::fmt::Display for OmegaTuneResult {
         )?;
         if let Some(w) = &self.branch_warning {
             write!(f, "; BRANCH WARNING: {w}")?;
+        }
+        if let Some(w) = &self.stability_warning {
+            write!(f, "; STABILITY WARNING: {w}")?;
         }
         Ok(())
     }
@@ -472,6 +569,17 @@ pub fn eval_j_seeded(
     // not carry the α/β difference that IS the branch.
     let mut cat_cfg = scf_cfg.clone();
     cat_cfg.init_guess_density = None;
+    // Stability: decide up front whether the Hessian exists for this
+    // functional, so a skip is a typed per-eval record and not only a stderr
+    // line inside the solver.
+    let skip = if cfg.check_cation_stability {
+        ks_reference_is_analysable(Some(&cfg.functional), omega).err()
+    } else {
+        None
+    };
+    if cfg.check_cation_stability && skip.is_none() {
+        cat_cfg.check_stability = true;
+    }
     let cat_seed = seed.map(|sd| (&sd.cation_mos.0, &sd.cation_mos.1));
     let cat = solve_uhf_with_guess(ctx, &cation, prep, bounds, &cat_cfg, cat_seed)?;
     if !cat.converged {
@@ -497,6 +605,21 @@ pub fn eval_j_seeded(
     let s2 = s_squared(&c_a, &c_b, &ovlp, nocc_a, nocc_b);
     let asym = spin_population_asymmetry(&cation, prep, &cat.density_alpha, d_b)?;
 
+    let cation_stability = if !cfg.check_cation_stability {
+        CationStability::NotChecked
+    } else if let Some(skip) = skip {
+        CationStability::NotAnalysed(skip)
+    } else {
+        match &cat.stability {
+            Some(st) => CationStability::Analysed {
+                lambda_min: st.lowest_eigenvalue,
+                noise_floor: st.noise_floor,
+                verdict: st.verdict(),
+            },
+            None => CationStability::NotAnalysed(StabilitySkip::AnalysisFailed),
+        }
+    };
+
     let ip = cat.energy - neutral.energy;
     let eval = OmegaEval {
         omega,
@@ -516,6 +639,7 @@ pub fn eval_j_seeded(
             },
         },
         branch_changed: false,
+        cation_stability,
     };
     let carry = OmegaSeedState {
         omega,
@@ -702,6 +826,7 @@ pub fn tune_omega(
         .cloned()
         .min_by(|x, y| x.j.abs().partial_cmp(&y.j.abs()).expect("NaN J"))
         .expect("at least two evaluations");
+    let stability_warning = stability_report(&evals, &best)?;
     let branch_warning = if warnings.is_empty() {
         None
     } else {
@@ -713,12 +838,153 @@ pub fn tune_omega(
         evals,
         converged,
         branch_warning,
+        stability_warning,
+    })
+}
+
+/// Turn the per-eval cation verdicts into the tuning outcome: `Err` when the
+/// tuned ω* itself sits on a proven internal saddle, otherwise the warning
+/// text (`None` when nothing needs saying).
+fn stability_report(evals: &[OmegaEval], best: &OmegaEval) -> Result<Option<String>, FerricError> {
+    if best.cation_stability.is_saddle() {
+        let lam = best.cation_stability.lambda_min().unwrap_or(f64::NAN);
+        let stable_max = evals
+            .iter()
+            .filter(|e| e.cation_stability.is_proven_stable())
+            .map(|e| e.omega)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let hint = if stable_max.is_finite() {
+            format!("; the largest evaluated ω whose cation is a proven minimum is {stable_max:.6}")
+        } else {
+            "; no evaluated ω had a proven-minimum cation".to_string()
+        };
+        return Err(FerricError::General(format!(
+            "tune_omega: the cation at the tuned ω* = {:.6} Bohr⁻¹ is an internal SADDLE \
+             (orbital-Hessian λ_min = {lam:.3e} Ha/rad²), so this ω* is not a valid result: \
+             J there belongs to a state that is not the cation's minimum{hint}. Restrict \
+             the bracket below the onset, or disable the check with \
+             check_cation_stability = false only if the symmetric constrained cation is \
+             what you intend",
+            best.omega
+        )));
+    }
+    let mut msgs: Vec<String> = Vec::new();
+    let mut skip_seen: Option<StabilitySkip> = None;
+    let mut n_skip = 0usize;
+    for e in evals {
+        match e.cation_stability {
+            CationStability::NotChecked => {}
+            CationStability::NotAnalysed(sk) => {
+                n_skip += 1;
+                skip_seen.get_or_insert(sk);
+            }
+            CationStability::Analysed {
+                lambda_min,
+                noise_floor,
+                verdict,
+            } => match verdict {
+                StabilityVerdict::Stable => {}
+                StabilityVerdict::Unstable => msgs.push(format!(
+                    "ω={:.6}: cation is an internal SADDLE (λ_min = {lambda_min:.3e})",
+                    e.omega
+                )),
+                StabilityVerdict::Marginal => msgs.push(format!(
+                    "ω={:.6}: cation stability MARGINAL (|λ_min| = {:.3e} <= noise floor {noise_floor:.3e})",
+                    e.omega,
+                    lambda_min.abs()
+                )),
+                StabilityVerdict::Indeterminate => msgs.push(format!(
+                    "ω={:.6}: cation stability INDETERMINATE (eigensolve unconverged, λ_min bound {lambda_min:.3e})",
+                    e.omega
+                )),
+            },
+        }
+    }
+    if let Some(sk) = skip_seen {
+        let m = format!(
+            "cation stability NOT ANALYSED at {n_skip} of {} evaluations — {}; \
+             the tuned ω* is NOT certified to sit on a stable cation",
+            evals.len(),
+            sk.reason()
+        );
+        eprintln!("tune_omega: {m}");
+        msgs.push(m);
+    }
+    Ok(if msgs.is_empty() {
+        None
+    } else {
+        Some(msgs.join(" | "))
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn analysed(v: StabilityVerdict, lam: f64) -> CationStability {
+        CationStability::Analysed {
+            lambda_min: lam,
+            noise_floor: 1e-6,
+            verdict: v,
+        }
+    }
+
+    /// Only a PROVEN saddle is a saddle and only a PROVEN minimum is stable:
+    /// not-analysed, not-checked, marginal and indeterminate are neither.
+    #[test]
+    fn cation_stability_never_reads_unknown_as_stable() {
+        let saddle = analysed(StabilityVerdict::Unstable, -6.9e-3);
+        let stable = analysed(StabilityVerdict::Stable, 2.2e-3);
+        assert!(saddle.is_saddle() && !saddle.is_proven_stable());
+        assert!(stable.is_proven_stable() && !stable.is_saddle());
+        for c in [
+            CationStability::NotChecked,
+            CationStability::NotAnalysed(StabilitySkip::Vv10Kernel),
+            analysed(StabilityVerdict::Marginal, 1e-7),
+            analysed(StabilityVerdict::Indeterminate, 1e-3),
+        ] {
+            assert!(!c.is_saddle() && !c.is_proven_stable(), "{c:?}");
+        }
+        assert_eq!(saddle.lambda_min(), Some(-6.9e-3));
+        assert_eq!(CationStability::NotChecked.lambda_min(), None);
+    }
+
+    /// The tuned point on a saddle is refused with ω and λ_min in the text; a
+    /// saddle elsewhere and an un-analysable functional are warnings.
+    #[test]
+    fn stability_report_refuses_saddle_omega_star_and_flags_unknowns() {
+        let mk = |omega: f64, c: CationStability| OmegaEval {
+            omega,
+            eps_homo: 0.0,
+            ip_delta_scf: 0.0,
+            j: 0.0,
+            e_cation: 0.0,
+            e_neutral: 0.0,
+            cation_s_squared: 0.75,
+            cation_spin_asymmetry: 0.0,
+            seed: OmegaSeed::Default,
+            cation_iterations: 1,
+            neutral_iterations: 1,
+            branch_changed: false,
+            cation_stability: c,
+        };
+        let ok = mk(0.4, analysed(StabilityVerdict::Stable, 1e-2));
+        let bad = mk(0.6, analysed(StabilityVerdict::Unstable, -3e-3));
+        let err = stability_report(&[ok, bad], &bad).unwrap_err().to_string();
+        assert!(
+            err.contains("0.600000") && err.contains("-3.000e-3"),
+            "{err}"
+        );
+        assert!(err.contains("0.400000"), "names the stable ω: {err}");
+        let w = stability_report(&[ok, bad], &ok).unwrap().unwrap();
+        assert!(w.contains("SADDLE") && w.contains("0.600000"), "{w}");
+        let v = mk(0.5, CationStability::NotAnalysed(StabilitySkip::Vv10Kernel));
+        let w = stability_report(&[v, v], &v).unwrap().unwrap();
+        assert!(w.contains("NOT ANALYSED") && w.contains("VV10"), "{w}");
+        assert_eq!(stability_report(&[ok], &ok).unwrap(), None);
+        let off = mk(0.5, CationStability::NotChecked);
+        assert_eq!(stability_report(&[off], &off).unwrap(), None);
+    }
 
     /// Nearest-ω selection, which is NOT previous-evaluation selection. An
     /// SCF test on a monotone ω sweep cannot tell those apart (both pick the
