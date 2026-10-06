@@ -4,14 +4,19 @@
 //! γ_k = k u/(1 − k u), u = 2^-53. Two independently-rounded products therefore
 //! differ by at most 2 γ_k (|A||B|)_ij elementwise. The bound is derived, not
 //! tuned, and machine-independent. Defect side (measured before pinning, see
-//! the docstring of `every_accepted_layout_meets_the_higham_bound`): swapping
-//! transa, or ignoring the stride of a transposed view, violates it by >1e8x.
+//! the docstring of `every_accepted_layout_meets_the_higham_bound`): ignoring
+//! the stride of a transposed view or the k offset of a slab violates it by >1e10x,
+//! and swapping transa/transb is rejected by cuBLAS (INVALID_VALUE).
 use ferric_core::gpu::device::device;
 use ferric_core::gpu::gemm::{gemm_f64, offload_bytes};
 use ferric_core::gpu::pool::DevicePool;
 use ferric_core::gpu::{probe, GpuStatus};
 use ndarray::linalg::general_mat_mul;
 use ndarray::{Array2, ArrayView2};
+
+/// One device test at a time: the memory-hog test would starve the others of
+/// device memory, and the stats deltas are process-global.
+static GPU: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn skip() -> bool {
     match probe(0) {
@@ -71,9 +76,11 @@ fn check(a: ArrayView2<f64>, b: ArrayView2<f64>, label: &str) {
 }
 
 /// Measured 2026-10-06 on GTX 1080 (sm_61), cuBLAS via cudarc 0.19.10, k_block
-/// 128. Passing: max |gpu-cpu|/bound is 7e-4 at k=1000 (301x1000x97), 2e-4 at
-/// k=2000, 9e-5 at k=3000, 0 at k=128, 0.16 at k=5 (one slab, so the two codes
-/// agree to a few ulp and the bound is tiny); the bound is never approached.
+/// 128. Passing, max over the four layouts (std, A^T, B^T, A^T B^T) of
+/// max |gpu-cpu|/bound: 7.2e-4 at k=1000 (301x1000x97; std 5.3e-4, A^T 5.2e-4,
+/// B^T 7.2e-4, A^T B^T 5.3e-4), 2.0e-4 at k=2000, 9.4e-5 at k=3000, 0 at k=128,
+/// and 0.16 at k=5 (std and B^T; one slab, the bound is tiny there). The bound
+/// is never approached.
 /// Defect side (first failing shape, 301x1000x97 elementwise |gpu-cpu|/bound):
 ///   - op-N k_step forced to 1:      std,  1.77 / 1.4e-11  = 1.3e11
 ///   - op-T k_step forced to 1:      A^T,  4.86 / 1.3e-11  = 3.6e11
@@ -82,6 +89,7 @@ fn check(a: ArrayView2<f64>, b: ArrayView2<f64>, label: &str) {
 ///     leading dimensions no longer fit), so the test fails on the unwrap.
 #[test]
 fn every_accepted_layout_meets_the_higham_bound() {
+    let _gpu = GPU.lock().unwrap_or_else(|e| e.into_inner());
     if skip() {
         return;
     }
@@ -107,6 +115,7 @@ fn every_accepted_layout_meets_the_higham_bound() {
 
 #[test]
 fn an_interleaved_view_is_refused_not_mangled() {
+    let _gpu = GPU.lock().unwrap_or_else(|e| e.into_inner());
     if skip() {
         return;
     }
@@ -125,6 +134,7 @@ fn an_interleaved_view_is_refused_not_mangled() {
 
 #[test]
 fn pool_too_small_is_a_pool_error_before_any_transfer() {
+    let _gpu = GPU.lock().unwrap_or_else(|e| e.into_inner());
     if skip() {
         return;
     }
@@ -151,6 +161,7 @@ fn device_results_are_run_to_run_identical() {
     // cuBLAS documents bitwise reproducibility for a fixed config on one
     // architecture. MEASURE it here; if this ever fails, record it and drop
     // the claim from the docs rather than loosening the test.
+    let _gpu = GPU.lock().unwrap_or_else(|e| e.into_inner());
     if skip() {
         return;
     }
@@ -180,6 +191,7 @@ fn device_alloc_failure_after_a_granted_reserve_is_an_error_not_an_abort() {
     // nearly all free device memory ourselves, with a pool that happily admits
     // the request. The GEMM must return Err (caller falls back to the CPU),
     // not panic/abort, and must not leave the pool debited.
+    let _gpu = GPU.lock().unwrap_or_else(|e| e.into_inner());
     if skip() {
         return;
     }

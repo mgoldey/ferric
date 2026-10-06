@@ -210,6 +210,13 @@ mod tests {
     }
 
     #[test]
+    fn negative_stride_view_has_no_descriptor() {
+        let a = Array2::<f64>::zeros((8, 8));
+        assert!(col_major_desc(&a.slice(ndarray::s![..;-1, ..]), true).is_none());
+        assert!(col_major_desc(&a.slice(ndarray::s![.., ..;-1]), false).is_none());
+    }
+
+    #[test]
     fn offload_bytes_is_eight_times_the_three_operands() {
         assert_eq!(offload_bytes(2, 3, 5), 8 * (6 + 15 + 10));
     }
