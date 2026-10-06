@@ -72,35 +72,59 @@ pub fn probe(ordinal: usize) -> GpuStatus {
 
 static INSTALLED: OnceLock<(GpuSettings, GpuStatus)> = OnceLock::new();
 
+/// The on/auto/off decision, pure (no globals, no printing): `probe_fn` is
+/// injected. `off` never calls it; `auto` degrades to `Unavailable` /
+/// `NotCompiled` (the caller prints the notice); `on` with no usable device,
+/// or on a build without the `gpu` feature, is an `Err` naming the reason.
+pub fn decide(
+    settings: &GpuSettings,
+    probe_fn: impl Fn(usize) -> GpuStatus,
+) -> Result<GpuStatus, String> {
+    match settings.mode {
+        GpuMode::Off => Ok(GpuStatus::Unavailable {
+            reason: "mode off".into(),
+        }),
+        GpuMode::Auto | GpuMode::On => {
+            if !gpu_compiled() {
+                return match settings.mode {
+                    GpuMode::On => Err(
+                        "[gpu] mode = on but this binary was built without the gpu feature; \
+                         rebuild with `--features ferric-cli/gpu`"
+                            .to_string(),
+                    ),
+                    _ => Ok(GpuStatus::NotCompiled),
+                };
+            }
+            let status = probe_fn(settings.device);
+            match (&status, settings.mode) {
+                (GpuStatus::Unavailable { reason }, GpuMode::On) => {
+                    Err(format!("[gpu] mode = on but no usable device: {reason}"))
+                }
+                _ => Ok(status),
+            }
+        }
+    }
+}
+
 /// Resolve `explicit` against the process env, probe if the mode asks for a
 /// device, and install the result process-wide. The CLI calls this once before
-/// any method runs. Errors: malformed knob; `mode = on` with no usable device;
-/// a device mode on a binary built without the `gpu` feature.
+/// any method runs. Errors: malformed knob; `mode = on` with no usable device
+/// or without the `gpu` feature; a second install with different settings, or
+/// an install after `status()`/`settings()` already initialised the lazy state.
 pub fn install(explicit: GpuSettingsExplicit) -> Result<&'static GpuStatus, String> {
     let (settings, audit) = GpuSettings::resolve(explicit, crate::config::env_lookup)?;
     for line in &audit {
         eprintln!("[ferric] {line}");
     }
-    let status = match settings.mode {
-        GpuMode::Off => GpuStatus::Unavailable {
-            reason: "mode off".into(),
-        },
-        GpuMode::Auto | GpuMode::On => {
-            if !gpu_compiled() {
-                return Err(format!(
-                    "[gpu] mode = {} but this binary was built without the gpu feature; \
-                     rebuild with `--features ferric-cli/gpu`",
-                    settings.mode
-                ));
-            }
-            probe(settings.device)
+    let status = decide(&settings, probe)?;
+    match &status {
+        GpuStatus::NotCompiled if settings.mode == GpuMode::Auto => {
+            eprintln!("[ferric] gpu: built without the gpu feature; running on the CPU");
         }
-    };
-    if let (GpuMode::On, GpuStatus::Unavailable { reason }) = (settings.mode, &status) {
-        return Err(format!("[gpu] mode = on but no usable device: {reason}"));
-    }
-    if let (GpuMode::Auto, GpuStatus::Unavailable { reason }) = (settings.mode, &status) {
-        eprintln!("[ferric] gpu: unavailable ({reason}); running on the CPU");
+        GpuStatus::Unavailable { reason } if settings.mode == GpuMode::Auto => {
+            eprintln!("[ferric] gpu: unavailable ({reason}); running on the CPU");
+        }
+        _ => {}
     }
     if let GpuStatus::Ready(info) = &status {
         eprintln!(
@@ -113,8 +137,20 @@ pub fn install(explicit: GpuSettingsExplicit) -> Result<&'static GpuStatus, Stri
             info.total_bytes as f64 / 1e9
         );
     }
-    let _ = INSTALLED.set((settings, status));
-    Ok(&installed().1)
+    match INSTALLED.set((settings, status)) {
+        Ok(()) => Ok(&installed().1),
+        Err(_) => {
+            let (stored, st) = installed();
+            if *stored == settings {
+                Ok(st)
+            } else {
+                Err(format!(
+                    "[gpu] settings already installed ({stored:?}); install() must run before \
+                     status()/settings() and only once (requested {settings:?})"
+                ))
+            }
+        }
+    }
 }
 
 /// Library/Python callers that never called [`install`]: resolve from the env
@@ -144,12 +180,10 @@ fn installed() -> &'static (GpuSettings, GpuStatus) {
                     }
                 }
             };
-        let st = match settings.mode {
-            GpuMode::Off => GpuStatus::Unavailable {
-                reason: "mode off".into(),
-            },
-            _ => probe(settings.device),
-        };
+        let st = decide(&settings, probe).unwrap_or_else(|reason| {
+            eprintln!("[ferric] gpu: {reason}; running on the CPU");
+            GpuStatus::Unavailable { reason }
+        });
         (settings, st)
     })
 }
