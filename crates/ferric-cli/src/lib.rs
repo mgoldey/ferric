@@ -715,9 +715,11 @@ pub fn run(args: Vec<String>) {
     // run, written before any expensive work so it survives even a job killed
     // in the first SCF iteration. No-op when no log is installed.
     if let Some(rl) = ferric_scf::runlog::log() {
-        rl.run_start(
+        ferric_scf::runlog::set_build_identity(
             ferric_build_info::VERSION,
             ferric_build_info::short_commit().as_deref(),
+        );
+        rl.run_start(
             serde_json::json!({
                 "method": method,
                 "task": task,

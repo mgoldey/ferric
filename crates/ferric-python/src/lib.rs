@@ -8796,6 +8796,29 @@ fn build_info(py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
     Ok(d.unbind())
 }
 
+/// `ferric.__build__`: `{"git_sha": str, "dirty": bool}`, or `None` when the
+/// build had no git metadata (an undeterminable dirty flag also gives `None`;
+/// never guess a bool). smeltery reads exactly this shape.
+fn add_build_stamp(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    if let (true, Some(dirty)) = (ferric_build_info::commit_known(), ferric_build_info::DIRTY) {
+        let b = pyo3::types::PyDict::new(m.py());
+        b.set_item("git_sha", ferric_build_info::COMMIT)?;
+        b.set_item("dirty", dirty)?;
+        m.add("__build__", b)
+    } else {
+        m.add("__build__", m.py().None())
+    }
+}
+
+/// Register `__version__`, `__build__` and `build_info`. `m.add` also appends to
+/// the module's `__all__`, which carries `__version__` through maturin's
+/// generated `from .ferric import *`.
+fn add_build_identity(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add("__version__", ferric_build_info::VERSION)?;
+    add_build_stamp(m)?;
+    m.add_function(wrap_pyfunction!(build_info, m)?)
+}
+
 // ── Module ──
 
 /// One direction of an IRC walk.
@@ -9366,21 +9389,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // `ferric` console script's entry point wires to this by name -- see
     // pyproject.toml [project.scripts].
     m.add_function(wrap_pyfunction!(_cli_main, m)?)?;
-    // `m.add` also appends to the module's `__all__`, which is what carries
-    // `__version__` through maturin's generated `from .ferric import *`.
-    m.add("__version__", ferric_build_info::VERSION)?;
-    // `__build__`: {"git_sha": str, "dirty": bool}, or None when the build had
-    // no git metadata. smeltery reads exactly this shape.
-    // (An undeterminable dirty flag also gives None: never guess a bool.)
-    if let (true, Some(dirty)) = (ferric_build_info::commit_known(), ferric_build_info::DIRTY) {
-        let b = pyo3::types::PyDict::new(m.py());
-        b.set_item("git_sha", ferric_build_info::COMMIT)?;
-        b.set_item("dirty", dirty)?;
-        m.add("__build__", b)?;
-    } else {
-        m.add("__build__", m.py().None())?;
-    }
-    m.add_function(wrap_pyfunction!(build_info, m)?)?;
+    add_build_identity(m)?;
     m.add_function(wrap_pyfunction!(run_rhf, m)?)?;
     m.add_function(wrap_pyfunction!(run_uhf, m)?)?;
     m.add_function(wrap_pyfunction!(run_rohf, m)?)?;

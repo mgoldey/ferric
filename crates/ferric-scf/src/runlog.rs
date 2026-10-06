@@ -320,19 +320,8 @@ impl RunLog {
     /// `config` and `molecule` are opaque JSON objects assembled by the caller
     /// (the CLI knows the TOML; this crate does not), so adding a knob to the
     /// CLI never requires touching this signature.
-    ///
-    /// `ferric_version` and `git_sha` describe the BUILD, which only the
-    /// top-level artifact knows (the `ferric-build-info` crate, a dependency of
-    /// ferric-cli and ferric-python but deliberately not of this crate):
-    /// `git_sha` is the short commit with a `-dirty` suffix, or `None` when the
-    /// build had no git checkout.
-    pub fn run_start(
-        self,
-        ferric_version: &str,
-        git_sha: Option<&str>,
-        config: serde_json::Value,
-        molecule: serde_json::Value,
-    ) {
+    pub fn run_start(self, config: serde_json::Value, molecule: serde_json::Value) {
+        let (ferric_version, git_sha) = build_identity();
         self.emit(
             "run_start",
             serde_json::json!({
@@ -525,6 +514,25 @@ fn json_f64(v: f64) -> serde_json::Value {
     } else {
         serde_json::Value::from(v)
     }
+}
+
+static BUILD_IDENTITY: OnceLock<(String, Option<String>)> = OnceLock::new();
+
+/// Record which build is running, for the `run_start` record's
+/// `ferric_version` / `git_sha`. Only the top-level artifact knows (the
+/// `ferric-build-info` crate is deliberately not a dependency of this one):
+/// `git_sha` is the short commit with a `-dirty` suffix, or `None` when the
+/// build had no git checkout. First call wins; never set => this crate's own
+/// version and `null`.
+pub fn set_build_identity(ferric_version: &str, git_sha: Option<&str>) {
+    let _ = BUILD_IDENTITY.set((ferric_version.to_string(), git_sha.map(str::to_string)));
+}
+
+fn build_identity() -> (String, Option<String>) {
+    BUILD_IDENTITY
+        .get()
+        .cloned()
+        .unwrap_or_else(|| (env!("CARGO_PKG_VERSION").to_string(), None))
 }
 
 /// Wall-clock timestamp as an RFC-3339 UTC string.
