@@ -55,7 +55,9 @@ pub fn probe(ordinal: usize) -> GpuStatus {
         match device::device(ordinal) {
             Ok(d) => GpuStatus::Ready(d.info.clone()),
             Err(e) => GpuStatus::Unavailable {
-                reason: e.to_string(),
+                // Name the ordinal in every variant: library-absent errors
+                // (no driver) carry no ordinal of their own.
+                reason: format!("GPU {ordinal}: {e}"),
             },
         }
     }

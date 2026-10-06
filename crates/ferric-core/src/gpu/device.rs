@@ -35,15 +35,25 @@ pub struct Device {
 }
 
 fn precheck_libraries() -> Result<(), GpuError> {
-    // SAFETY: loading a system shared library runs its constructors; these are
-    // NVIDIA's own driver/cuBLAS libraries, the same ones cudarc will dlopen.
-    unsafe {
-        libloading::Library::new("libcuda.so.1")
-            .map_err(|e| GpuError::DriverLibrary(e.to_string()))?;
-        libloading::Library::new("libcublas.so.12")
-            .or_else(|_| libloading::Library::new("libcublas.so"))
-            .map_err(|e| GpuError::BlasLibrary(e.to_string()))?;
+    precheck_named(&["libcuda.so.1"], &["libcublas.so.12", "libcublas.so"])
+}
+
+/// dlopen the first loadable name of each list; absence becomes a typed error.
+fn precheck_named(driver: &[&str], blas: &[&str]) -> Result<(), GpuError> {
+    fn first_loadable(names: &[&str]) -> Result<(), String> {
+        let mut last = String::from("no library names given");
+        for n in names {
+            // SAFETY: loading a system shared library runs its constructors; these
+            // are NVIDIA's own driver/cuBLAS libraries, the same ones cudarc will dlopen.
+            match unsafe { libloading::Library::new(n) } {
+                Ok(_) => return Ok(()),
+                Err(e) => last = e.to_string(),
+            }
+        }
+        Err(last)
     }
+    first_loadable(driver).map_err(GpuError::DriverLibrary)?;
+    first_loadable(blas).map_err(GpuError::BlasLibrary)?;
     Ok(())
 }
 
@@ -121,5 +131,29 @@ impl Device {
         self.ctx
             .mem_get_info()
             .map_err(|e| GpuError::Cuda(format!("{e:?}")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn absent_driver_library_is_a_driver_error() {
+        let e = precheck_named(&["libferric_no_such_driver.so.1"], &["libc.so.6"]).unwrap_err();
+        assert!(
+            matches!(e, GpuError::DriverLibrary(ref m) if !m.is_empty()),
+            "{e:?}"
+        );
+    }
+
+    #[test]
+    fn absent_blas_library_is_a_blas_error() {
+        // libc is always loadable, so only the cuBLAS slot fails.
+        let e = precheck_named(&["libc.so.6"], &["libferric_no_such_blas.so"]).unwrap_err();
+        assert!(
+            matches!(e, GpuError::BlasLibrary(ref m) if !m.is_empty()),
+            "{e:?}"
+        );
     }
 }
