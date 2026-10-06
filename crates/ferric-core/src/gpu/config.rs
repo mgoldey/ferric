@@ -43,8 +43,20 @@ impl fmt::Display for GpuMode {
     }
 }
 
-/// Placeholder until Task 1.3 derives it from the measured CPU/GPU crossover.
-/// 1 GFLOP keeps every small GEMM on the CPU; the measurement replaces it.
+/// NOT YET MEASURED. 1 GFLOP is a conservative placeholder that keeps every
+/// small GEMM on the CPU in `auto`; it is not derived from this box's
+/// CPU-vs-device crossover. The derivation is deferred until the box is quiet:
+///
+/// ```text
+/// RAYON_NUM_THREADS=6 OPENBLAS_NUM_THREADS=1 ///   cargo run --release -p ferric-benchmarks --features gpu --example gpu_gemm_crossover
+/// ```
+///
+/// Protocol: `/proc/pressure/cpu` `some avg10 <= 0.05` before and after, no
+/// competing heavy processes, same binary, CPU (6 BLAS threads) and GPU
+/// (including H2D/D2H) arms interleaved, 7 repeats per shape, min and median
+/// reported. Rule for the value: the smallest FLOP count (2*m*n*k) such that
+/// GPU median <= CPU median at every larger measured shape, rounded up to a
+/// power of two; if the GPU never wins, `usize::MAX / 2` (never offload).
 pub const FERRIC_GPU_MIN_FLOPS_DEFAULT: usize = 1 << 30;
 
 pub static GPU_MODE: ConfigVar<GpuMode> = ConfigVar {
