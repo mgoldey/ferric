@@ -141,7 +141,17 @@ agrees to ≤ 1.9e-9, and to 6e-9 for OH with PBE + RI-J and PBE0 + RI-JK,
 against an orbital relaxation of 3e-6–1e-5. For ROKS doublets and triplets
 (HCO, NH2, CH2, O2 at 6-31G) it agrees to ≤ 2.1e-11 with PBE and PBE0, ≤ 4.5e-10
 with HSE06 and 7.5e-9 for HCO with PBE + RI-J, against an orbital relaxation
-of 2.7e-6–9.8e-6. The relaxation term needs an LDA, GGA or hybrid-GGA
+of 2.7e-6–9.8e-6. For a linear radical whose state breaks the cylindrical
+symmetry (²Π: OH, NO, CH), a rotation of the electrons about the molecular
+axis is an orbital rotation that leaves the energy unchanged, so the orbital
+Hessian has a null mode; only the anisotropy of the XC grid gives it a small
+eigenvalue of either sign. The UKS and ROKS Z-vectors detect it on linear
+molecules and solve on its complement, which is exact for a property that is
+symmetric about the axis. On OH, NO and CH (STO-3G and 6-31G, PBE and PBE0)
+the gradient agrees with finite differences of the full pipeline to
+7e-12–5e-11 Hartree/Bohr. A state with any other negative or near-null
+orbital-Hessian direction is still refused (the UKS-PBE CH state is a saddle
+point and is refused). The relaxation term needs an LDA, GGA or hybrid-GGA
 functional without VV10, no implicit solvation, polarizable embedding or cDFT
 constraints, and integer aufbau occupation (no MOM); UKS and ROKS additionally
 need exchange that is not COSX. Other setups are refused rather than given an

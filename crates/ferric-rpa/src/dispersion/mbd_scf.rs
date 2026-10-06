@@ -370,6 +370,10 @@ pub struct MbdScfResult {
     /// The orbital-relaxation term Σ Z_ai ∂F_ai/∂R (Z-vector, see
     /// [`ferric_scf::zvector_ks`]). Set only by [`mbd_rsscs_for_scf`].
     pub gradient_relaxation: Option<Array2<f64>>,
+    /// The axis-rotation null mode the open-shell Z-vector removed (linear
+    /// molecules in a symmetry-broken state, e.g. ²Π radicals; issue #265),
+    /// or `None` (no such mode, or no relaxation term was formed).
+    pub null_mode: Option<ferric_scf::zvector_ks::NullModeDiagnostics>,
     /// Term 1 alone (ratios fixed), for diagnostics/tests.
     pub gradient_fixed_ratios: Option<Array2<f64>>,
     /// Volume term at fixed AO density matrix (AOs and proatoms follow the
@@ -570,6 +574,7 @@ fn mbd_rsscs_impl(
             gradient: None,
             gradient_unrelaxed: None,
             gradient_relaxation: None,
+            null_mode: None,
             gradient_fixed_ratios: None,
             gradient_volume_fixed_d: None,
             gradient_orthonormality: None,
@@ -625,6 +630,7 @@ fn mbd_rsscs_impl(
         gradient: None,
         gradient_unrelaxed: Some(full),
         gradient_relaxation: None,
+        null_mode: None,
         gradient_fixed_ratios: Some(fixed),
         gradient_volume_fixed_d: Some(term2),
         gradient_orthonormality: Some(orth),
@@ -799,26 +805,28 @@ pub fn mbd_rsscs_for_scf(
     })?;
     let prep = PreparedBasis::new(mol, bs)?;
     let bounds = SchwarzBounds::compute_for_screening(op, &prep, rhf_config.screening)?;
-    let relax = match result.spin {
+    let (relax, null_mode) = match result.spin {
         ferric_scf::Spin::Unrestricted => {
-            ferric_scf::zvector_ks::relaxation_gradient_unrestricted(
+            let r = ferric_scf::zvector_ks::relaxation_gradient_unrestricted(
                 ctx, mol, &prep, bs, op, &bounds, rhf_config, result, v,
-            )?
-            .gradient
+            )?;
+            (r.gradient, r.null_mode)
         }
         ferric_scf::Spin::RestrictedOpen => {
-            ferric_scf::zvector_ks::relaxation_gradient_roks(
+            let r = ferric_scf::zvector_ks::relaxation_gradient_roks(
                 ctx, mol, &prep, bs, op, &bounds, rhf_config, result, v,
-            )?
-            .gradient
+            )?;
+            (r.gradient, r.null_mode)
         }
-        ferric_scf::Spin::Restricted => {
+        ferric_scf::Spin::Restricted => (
             ferric_scf::zvector_ks::relaxation_gradient_closed(
                 ctx, mol, &prep, bs, op, &bounds, rhf_config, result, v,
             )?
-            .gradient
-        }
+            .gradient,
+            None,
+        ),
     };
+    out.null_mode = null_mode;
     let unrelaxed = out.gradient_unrelaxed.as_ref().ok_or_else(|| {
         FerricError::General("mbd_rsscs_for_scf: no unrelaxed gradient was formed".into())
     })?;

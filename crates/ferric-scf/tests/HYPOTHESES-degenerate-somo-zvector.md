@@ -81,3 +81,27 @@ axis-symmetric, P5 violated), and everywhere the detection does not apply
   (²Π), UKS and ROKS where they converge.
 * Negative control: the same solve WITHOUT projection must either be refused
   (curvature error) or miss FD — it must never pass silently.
+
+## Result (measured 2026-10-06, after the predictions above were committed)
+
+`zvector_ks::degenerate_somo_investigation::measure_open_shell_hessian_null_mode`
+(dense UKS orbital Hessian by unit matvecs, gap metric, default (75,110) XC grid
+unless stated):
+
+| system | softest eigenvalue | |cos(softest, κ_L)| | next |eigenvalue| |
+|---|---|---|---|
+| OH STO-3G PBE | +9.902e-3 | 1.000000 | 0.718 |
+| OH STO-3G PBE (75,302) | −7.735e-5 | 1.000000 | 0.718 |
+| OH 6-31G PBE | +2.590e-3 | 1.000000 | 0.710 |
+| OH STO-3G PBE0 | −9.359e-4 | 1.000000 | 0.567 |
+| NO STO-3G PBE | −2.326e-3 | 0.999998 | 0.587 |
+| CH STO-3G PBE | −4.731e-3 | 0.999990 | −0.154 (a second, genuine negative mode) |
+| CH 6-31G PBE | −5.117e-4 | 1.000000 | −0.127 (same) |
+| NH2 STO-3G PBE | — (not linear) | — | 0.711 |
+| O2 ³Σg⁻ STO-3G PBE | κ_L = 1.2e-14 (absent) | — | 0.803 |
+
+Verdict: H-GOLDSTONE (P1, P2 incl. the 128x shrink from 110 to 302 angular
+points, P4). H-ARTIFACT A1/A2 refuted: the null eigenvalue is 1e-2..1e-5, not
+a PCG floor on a well-conditioned H, and it IS κ_L. P3 holds except CH UKS,
+whose state is a saddle (a second negative direction) and stays refused. P5:
+the MBD right-hand side overlap with κ̂_L is 1e-6..1e-17.
