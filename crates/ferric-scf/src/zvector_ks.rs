@@ -2108,13 +2108,14 @@ mod degenerate_somo_investigation {
         assert!(null_mode_numbers(O2, 3, "sto-3g", "PBE").is_none());
     }
 
-    /// THE PROJECTION ITSELF, both references: with an axis-symmetric
-    /// property (V = the core Hamiltonian, no grid in it, so its right-hand
-    /// side is orthogonal to κ_L to rounding) the UKS (OH/STO-3G PBE0) and
+    /// THE PROJECTION ITSELF, both references: with a near-axisymmetric
+    /// property (V = the core Hamiltonian + a 1e-6 symmetry-breaking
+    /// admixture, see below) the UKS (OH/STO-3G PBE0) and
     /// ROKS (NO/6-31G PBE) solves must report the mode and return a Z with no
-    /// component along κ_L. Both modes have NEGATIVE Rayleigh quotients, so
-    /// without the projection the solve meets negative curvature and is
-    /// refused — each half fails if its reference loses the projection.
+    /// component along κ_L. Both modes have NEGATIVE Rayleigh quotients;
+    /// without the projection the small κ_L component of the right-hand side
+    /// is amplified by 1/λ (or PCG meets the negative curvature) — each half
+    /// fails if its reference loses the projection.
     #[test]
     fn projected_z_has_no_null_mode_component() {
         let mol = Molecule::parse_xyz(OH, 0, 2).unwrap();
@@ -2130,7 +2131,12 @@ mod degenerate_somo_investigation {
             density_conv: 1e-9,
             ..Default::default()
         };
-        let v = ferric_integrals::oneelectron::hcore(&prep);
+        // An axisymmetric property plus a 1e-6 symmetry-breaking admixture:
+        // the right-hand side then has a small component along κ_L (the size
+        // the MBD lattice's anisotropy gives, rhs overlap ~1e-6..1e-8, under
+        // NULL_RHS_TOL), which an unprojected solve amplifies by 1/λ.
+        let v =
+            ferric_integrals::oneelectron::hcore(&prep) + 1e-6 * generic_symmetric(prep.nbasis());
         let ru = crate::uhf::solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
         let u =
             relaxation_gradient_unrestricted(&ctx, &mol, &prep, &bs, op, &bounds, &cfg, &ru, &v)
@@ -2169,7 +2175,8 @@ mod degenerate_somo_investigation {
             xc: Some("PBE".into()),
             ..cfg
         };
-        let v = ferric_integrals::oneelectron::hcore(&prep);
+        let v =
+            ferric_integrals::oneelectron::hcore(&prep) + 1e-6 * generic_symmetric(prep.nbasis());
         let nelec = mol.nelec() as usize;
         let (na, nb) = (nelec.div_ceil(2), nelec / 2);
         let ro = crate::rohf::solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
@@ -2197,6 +2204,14 @@ mod degenerate_somo_investigation {
             ovl_o < 1e-10,
             "ROKS Z has a null-mode component {ovl_o:.3e}"
         );
+    }
+
+    /// A deterministic symmetric matrix with no symmetry at all.
+    fn generic_symmetric(n: usize) -> Array2<f64> {
+        Array2::from_shape_fn((n, n), |(i, j)| {
+            let (a, b) = (i.min(j) as f64, i.max(j) as f64);
+            (0.37 * a + 1.13 * b + 0.29 * a * b).sin()
+        })
     }
 
     fn oh_uks_pbe0(
@@ -2235,11 +2250,7 @@ mod degenerate_somo_investigation {
     #[test]
     fn non_axisymmetric_property_is_refused() {
         let (mol, bs, prep, bounds, cfg, r) = oh_uks_pbe0(None);
-        let n = prep.nbasis();
-        let v = Array2::from_shape_fn((n, n), |(i, j)| {
-            let (a, b) = (i.min(j) as f64, i.max(j) as f64);
-            (0.37 * a + 1.13 * b + 0.29 * a * b).sin()
-        });
+        let v = generic_symmetric(prep.nbasis());
         let err = relaxation_gradient_unrestricted(
             &ParallelContext::default(),
             &mol,
