@@ -101,6 +101,7 @@ fn accepted_keys_by_section() -> BTreeMap<&'static str, BTreeSet<&'static str>> 
         ("optimize", fields_of::<OptimizeCfg>()),
         ("frequencies", fields_of::<FrequenciesCfg>()),
         ("memory", fields_of::<MemoryCfg>()),
+        ("gpu", fields_of::<GpuCfg>()),
         ("output", fields_of::<OutputCfg>()),
         ("qmmm", fields_of::<QmmmCfg>()),
         ("cosmo", fields_of::<ferric_scf::cosmo::CosmoConfig>()),

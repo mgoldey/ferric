@@ -38,6 +38,8 @@ pub struct Config {
     #[serde(default)]
     pub memory: MemoryCfg,
     #[serde(default)]
+    pub gpu: GpuCfg,
+    #[serde(default)]
     pub external_potential: ExternalPotentialCfg,
     /// Optional `[cosmo]` section: COSMO implicit-solvent configuration.
     /// Absent (or explicit `None`) means no solvation — byte-identical to a
@@ -159,6 +161,46 @@ impl Config {
                 )
             })
             .collect()
+    }
+}
+
+/// `[gpu]` — the optional CUDA backend. Mode `off` (default) never loads
+/// CUDA; `auto` uses a device when present and prints a notice otherwise;
+/// `on` makes a missing device an error. All keys also exist as
+/// `FERRIC_GPU*` env vars; TOML wins.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct GpuCfg {
+    pub mode: Option<String>,
+    pub device: Option<usize>,
+    pub memory_gb: Option<f64>,
+    pub min_flops: Option<usize>,
+}
+
+impl GpuCfg {
+    /// Value checks: `mode` parses and `memory_gb` is finite and > 0.
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(s) = &self.mode {
+            s.parse::<ferric_core::gpu::GpuMode>()
+                .map_err(|e| format!("[gpu] mode: {e}"))?;
+        }
+        if let Some(g) = self.memory_gb {
+            if !(g.is_finite() && g > 0.0) {
+                return Err(format!("[gpu] memory_gb must be finite and > 0, got {g}"));
+            }
+        }
+        Ok(())
+    }
+
+    /// The typed TOML side of the resolution. Call [`GpuCfg::validate`] first
+    /// (`load_config` does); an unparsable `mode` reads as unset here.
+    pub fn explicit(&self) -> ferric_core::gpu::GpuSettingsExplicit {
+        ferric_core::gpu::GpuSettingsExplicit {
+            mode: self.mode.as_deref().and_then(|s| s.parse().ok()),
+            device: self.device,
+            memory_gb: self.memory_gb,
+            min_flops: self.min_flops,
+        }
     }
 }
 
@@ -3108,6 +3150,7 @@ impl Config {
     /// CLI-wired keys.
     fn validate_loaded_values(&self) -> Result<(), String> {
         self.memory.validate()?;
+        self.gpu.validate()?;
         self.scf.validate()?;
         self.mp2.linlccd_variant()?;
         self.local_model()?;

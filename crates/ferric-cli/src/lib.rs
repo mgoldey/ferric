@@ -592,6 +592,15 @@ pub fn run(args: Vec<String>) {
         ferric_core::memory::pool::install_global(pool);
         eprintln!("[ferric] {}", resolution.audit_line());
     }
+    // GPU backend: resolve + probe + install the device pool, or refuse an
+    // explicit `on` that cannot be honoured (no device, bad ordinal, or a build
+    // without the gpu feature). Runs before anything calls `gpu::status()` so
+    // the installed settings are the TOML-aware ones. Printed next to the
+    // memory audit so every run states where its GEMMs go.
+    if let Err(e) = ferric_core::gpu::install(cfg.gpu.explicit()) {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    }
     let rhf_config = RhfConfig {
         xc_omega: None,
         max_iter: cfg.scf.max_iter,

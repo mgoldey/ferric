@@ -300,6 +300,17 @@ Read when `task = "frequencies"`.
 | `budget_gb` | float | auto | finite and > 0 | Precedence: this key, then `FERRIC_MEM_BUDGET_GB`, then the legacy `FERRIC_OOC_BUDGET_GB`/`FERRIC_ERI3_BUDGET_GB`, then 0.8 × available RAM, then 2 GiB. A value of 0, a negative value or NaN is an error; omit the key for auto. It bounds the ledgered allocations, not total process memory. |
 | `three_index_budget_gb` | float | — | | Deprecated alias. `budget_gb` wins if both are set. |
 
+## `[gpu]`
+
+Optional CUDA backend. A default build has no GPU code: there `mode = "on"` is an error and `mode = "auto"` prints a notice and runs on the CPU. A GPU run is deterministic run to run on one device but is not bit-identical to the CPU run (a different summation order, like `FERRIC_BLAS_THREADS` above 1).
+
+| Key | Type | Default | Constraint | Meaning |
+|---|---|---|---|---|
+| `mode` | string | `"off"` | `off`, `auto`, `on` | `auto` uses a device when one is usable and otherwise prints a notice and runs on the CPU; `on` makes an unusable device an error. Env: `FERRIC_GPU`. |
+| `device` | integer | 0 | a CUDA ordinal | Which device to use. Env: `FERRIC_GPU_DEVICE`. |
+| `memory_gb` | float | 0.8 x free | finite and > 0 | Device-memory pool (decimal GB). A GEMM that does not fit runs on the CPU. Env: `FERRIC_GPU_MEM_GB`. |
+| `min_flops` | integer | 1073741824 | | Smallest `2*m*n*k` sent to the device. Env: `FERRIC_GPU_MIN_FLOPS`. |
+
 ## `[output]`
 
 | Key | Type | Default | Allowed values | Notes |
