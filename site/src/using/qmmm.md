@@ -155,6 +155,11 @@ forces to 3e-10**. An empty or all-zero MM region is **bit-identical** to a gas
 phase calculation — the trivial limit is a genuine no-op, not an approximation
 that happens to be small.
 
+The QM–MM Lennard-Jones term across a covalent cut is checked against OpenMM's
+own exclusion and 1-4 handling (ethanol cut at C–C, realistic LJ): **energy and
+gradient agree to ~1e-18 Ha**. With no bond path between the regions it is
+bit-identical to the plain every-pair sum.
+
 Not validated: periodic boundary conditions (absent), and the solvation
 droplet, which is a hard-sphere packing at roughly bulk density rather than an
 equilibrated box.

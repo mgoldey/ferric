@@ -77,14 +77,14 @@ fn stationarity_bar(case: &Case) -> f64 {
         return 1.0e-4;
     }
     match case.name {
-        "rhf_keep" => 4.3e-5,       // measured 4.30e-6 (MM host x, FD)
-        "rhf_z1" => 3.3e-5,         // measured 3.30e-6 (MM host z, FD)
-        "rhf_rc" => 2.8e-6,         // measured 2.84e-7 (MM host z, FD)
-        "rhf_z1_631g" => 8.3e-6,    // measured 8.27e-7 (frontier)
-        "uhf_z1" => 1.2e-5,         // measured 1.19e-6 (frontier)
-        "uhf_rc" => 1.7e-5,         // measured 1.70e-6 (M2 y, FD)
-        "rks_rcd_within" => 2.0e-5, // measured 1.97e-6 (QM H)
-        "uks_rcd_within" => 5.3e-5, // measured 5.31e-6 (MM host z, FD)
+        "rhf_keep" => 1.3e-5,       // measured 1.28e-6 (MM host)
+        "rhf_z1" => 9.6e-6,         // measured 9.55e-7 (MM host z, FD)
+        "rhf_rc" => 1.4e-5,         // measured 1.33e-6 (MM host)
+        "rhf_z1_631g" => 4.1e-5,    // measured 4.04e-6 (MM host)
+        "uhf_z1" => 1.7e-5,         // measured 1.66e-6 (M2)
+        "uhf_rc" => 1.6e-5,         // measured 1.58e-6 (M2)
+        "rks_rcd_within" => 2.0e-5, // measured 1.99e-6 (QM H)
+        "uks_rcd_within" => 4.4e-5, // measured 4.36e-6 (MM host z, FD)
         other => panic!("no measured stationarity bar for {other}"),
     }
 }
@@ -96,12 +96,12 @@ fn fd_min_bar(case: &Case) -> f64 {
         return 1.0e-6;
     }
     match case.name {
-        "rhf_keep" => 1.0e-7,          // measured 1.02e-8
-        "rhf_z1" => 1.0e-7,            // measured 1.04e-8
-        "rhf_rc" => 2.4e-7,            // measured 2.39e-8
-        "rhf_z1_631g" => 1.1e-7,       // measured 1.11e-8
-        "uhf_z1" | "uhf_rc" => 1.0e-7, // measured 1.03e-8 both
-        "rks_rcd_within" => 1.0e-7,    // measured 1.00e-8 (PBE, DF-J/K, grid)
+        "rhf_keep" => 1.1e-7,          // measured 1.01e-8
+        "rhf_z1" => 1.1e-7,            // measured 1.04e-8
+        "rhf_rc" => 1.8e-7,            // measured 1.73e-8
+        "rhf_z1_631g" => 1.1e-7,       // measured 1.03e-8
+        "uhf_z1" | "uhf_rc" => 1.1e-7, // measured 1.04e-8 / 1.05e-8
+        "rks_rcd_within" => 1.1e-7,    // measured 1.02e-8 (PBE, DF-J/K, grid)
         "uks_rcd_within" => 1.1e-7,    // measured 1.06e-8 (PBE, DF-J/K, grid)
         other => panic!("no measured at-minimum FD bar for {other}"),
     }
@@ -109,21 +109,21 @@ fn fd_min_bar(case: &Case) -> f64 {
 
 /// Relative FD-vs-analytic bar off the minimum (every probed row is
 /// O(1e-2) Ha/Bohr there). The residual grows ~h^2 (FD truncation) except on
-/// 6-31G, where the h = 5e-5 point is SCF-noise limited.
+/// `rhf_z1`, where the h = 5e-5 point is SCF-noise limited.
 fn fd_off_rel_bar(case: &Case) -> f64 {
     if measuring() {
         return 1.0e-4;
     }
     match case.name {
-        "rhf_keep" => 9.5e-7,         // measured 9.54e-8 (QM H z, h=2e-4)
-        "rhf_z1" => 9.7e-7,           // measured 9.66e-8 (QM H z, h=2e-4)
-        "rhf_rc" => 6.7e-7,           // measured 6.69e-8 (QM H z, h=2e-4)
-        "rhf_z1_631g" => 7.0e-6,      // measured 6.95e-7 (QM H z, h=1e-4: SCF noise)
-        "uhf_z1" => 5.5e-7,           // measured 5.51e-8
-        "uhf_rc" => 6.0e-7,           // measured 5.92e-8
-        "rks_rcd_within" => 8.8e-7,   // measured 8.84e-8
-        "rhf_rcd_residues" => 2.0e-6, // measured 5.3e-8 (h<=1e-4, QM H z); 7.5e-8 water rows
-        "uks_rcd_within" => 6.3e-7,   // measured 6.29e-8 (frozen M2 z)
+        "rhf_keep" => 5.7e-7,         // measured 5.65e-8 (M2 z, h=2e-4)
+        "rhf_z1" => 5.8e-6,           // measured 5.78e-7 (QM H z, h=5e-5: SCF noise)
+        "rhf_rc" => 6.4e-7,           // measured 6.33e-8 (QM H z, h=2e-4)
+        "rhf_z1_631g" => 6.7e-7,      // measured 6.65e-8 (QM H z, h=2e-4)
+        "uhf_z1" => 5.3e-7,           // measured 5.24e-8 (M2 z, h=2e-4)
+        "uhf_rc" => 5.4e-7,           // measured 5.37e-8 (M2 z, h=2e-4)
+        "rks_rcd_within" => 8.4e-7,   // measured 8.34e-8 (QM H z, h=5e-5)
+        "rhf_rcd_residues" => 2.5e-6, // measured 2.43e-7 (frozen water H x, h=2e-4)
+        "uks_rcd_within" => 6.7e-7,   // measured 6.64e-8 (frozen M2 z, h=2e-4)
         other => panic!("no measured off-minimum FD bar for {other}"),
     }
 }
@@ -1616,12 +1616,14 @@ fn rhf_rcd_ethane_waters_residues() {
 }
 
 // ---------------------------------------------------------------------------
-// MEASURED (2026-10-05, release build, OPENBLAS_NUM_THREADS=1).
+// MEASURED (2026-10-06, release build, OPENBLAS_NUM_THREADS=1; bars re-derived
+// after the QM-MM LJ exclusions of #319 made realistic LJ sizes possible —
+// carbon sigma 3.40 A, hydrogen 2.65 A, every QM-MM pair excluded or 1-4 scaled).
 //
 // - Anchors: with no MM atoms, optimize_qmmm reproduces optimize_geometry
 //   (RHF, RKS/PBE) and optimize_geometry_uhf (UHF, UKS/PBE) bit for bit: same
 //   step count, same per-evaluation energy trace.
-// - KS floor: FD vs analytic at the minimum is 1.0e-8 (RKS) / 1.1e-8 (UKS)
+// - KS floor: FD vs analytic at the minimum is 1.02e-8 (RKS) / 1.06e-8 (UKS)
 //   Ha/Bohr, the same as HF. The DF-J/K gradient and the grid response
 //   differentiate the energy the SCF computed, so the pre-registered looser
 //   KS floor (1e-7..1e-6) did not materialize.
