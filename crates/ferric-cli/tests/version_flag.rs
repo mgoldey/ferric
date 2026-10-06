@@ -1,10 +1,35 @@
 //! `ferric --version` reports the same build identity as `ferric.build_info()`:
 //! one `key: value` line per field, every value fixed at compile time.
 
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// The `ferric-cli` binary, resolved at RUN TIME.
+///
+/// `env!("CARGO_BIN_EXE_ferric-cli")` is baked in when the test binary is
+/// COMPILED. CI builds tests in one job and runs them from a `cargo nextest
+/// archive` in another, so that path points at the build job's `target/debug/`
+/// -- which does not exist on the shard runner.
+///
+/// Prefer a sibling of the currently-running test binary
+/// (`<extract-dir>/target/debug/deps/<test>` -> `../ferric-cli`), which is
+/// where nextest puts it, then fall back to the compile-time path for plain
+/// `cargo test`.
+fn ferric_cli_bin() -> PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        // .../target/<profile>/deps/<test-binary>  ->  .../target/<profile>/
+        if let Some(profile_dir) = exe.parent().and_then(Path::parent) {
+            let p = profile_dir.join("ferric-cli");
+            if p.is_file() {
+                return p;
+            }
+        }
+    }
+    PathBuf::from(env!("CARGO_BIN_EXE_ferric-cli"))
+}
+
 fn version_output(flag: &str) -> String {
-    let out = Command::new(env!("CARGO_BIN_EXE_ferric-cli"))
+    let out = Command::new(ferric_cli_bin())
         .arg(flag)
         .output()
         .expect("ferric runs");
