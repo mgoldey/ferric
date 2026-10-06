@@ -11,13 +11,13 @@
 //! short run alone cannot tell "the guard fired" from "the guard was never
 //! reached".
 //!
-//! # Measured (water/cc-pVDZ, the two configurations below, 2026-10-04)
+//! # Measured (water/cc-pVDZ, the two configurations below, 2026-10-06)
 //!
 //! | case | `rhf.rs` guard | iterations | TRAH steps | rejected | declined | wall  |
 //! |------|----------------|-----------:|-----------:|---------:|---------:|------:|
-//! | RKS/PBE | present     |          8 |          1 |        0 |        1 |  8 s  |
-//! | RKS/PBE | removed     |         57 |         25 |       24 |        0 | 99 s  |
-//! | RHF     | present     |          8 |          1 |        0 |        1 | 0.7 s |
+//! | RKS/PBE | present     |          9 |          1 |        0 |        2 |   —   |
+//! | RKS/PBE | removed     |         57 |         25 |       24 |        0 | 74 s  |
+//! | RHF     | present     |          9 |          1 |        0 |        2 |   —   |
 //! | RHF     | removed     |         57 |         25 |       24 |        0 | 8.6 s |
 //!
 //! Without the guard the model's predicted change falls to |5.4e-15| Ha (RKS)
@@ -56,11 +56,9 @@
 //! - `TrahConfig::predicted_min` default set to 1e-6: KILLED, on the
 //!   engagement assertion: 0 TRAH steps. The single step TRAH takes in each
 //!   case predicts |3.0e-7| Ha (RKS) and |4.4e-7| Ha (RHF, from the search),
-//!   so a 1e-6 bound declines it. The run then reported convergence in 7
-//!   iterations 3.0e-7 Ha above the DIIS energy, because a declined
-//!   iteration records a zero density change and the next one passes the
-//!   density test at an unchanged density: a bound that loose declares
-//!   convergence instead of reaching it.
+//!   so a 1e-6 bound declines it. Each decline falls through to DIIS, so the
+//!   run still reaches the DIIS energy; `trah_rks_null_step_is_measured.rs`
+//!   pins that with `predicted_min` 1e-6.
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -72,8 +70,8 @@ use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::trah::{TRAH_NULL_STEPS_DECLINED, TRAH_STEPS_REJECTED, TRAH_STEPS_TAKEN};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// The iteration bar. Measured: 8 with the guard and 57 without it, in both
-/// cases (table above). 20 leaves 12 iterations of headroom over the guarded
+/// The iteration bar. Measured: 9 with the guard and 57 without it, in both
+/// cases (table above). 20 leaves 11 iterations of headroom over the guarded
 /// runs for machine-dependent arithmetic and sits 37 below the unguarded ones.
 const MAX_ITERATIONS: usize = 20;
 
@@ -134,7 +132,7 @@ fn assert_declines_null_steps(what: &str, cfg_diis: RhfConfig) {
     assert!(
         r.iterations <= MAX_ITERATIONS,
         "{what}: {} iterations, {rejected} rejections: the null-step cycle is \
-         back (guarded: 8; unguarded: 57)",
+         back (guarded: 9; unguarded: 57)",
         r.iterations
     );
     assert_eq!(
