@@ -48,16 +48,45 @@ impl fmt::Display for GpuMode {
 /// CPU-vs-device crossover. The derivation is deferred until the box is quiet:
 ///
 /// ```text
-/// RAYON_NUM_THREADS=6 OPENBLAS_NUM_THREADS=1 ///   cargo run --release -p ferric-benchmarks --features gpu --example gpu_gemm_crossover
+/// RAYON_NUM_THREADS=6 OPENBLAS_NUM_THREADS=1 \
+///   cargo run --release -p ferric-benchmarks --features gpu --example gpu_gemm_crossover
 /// ```
 ///
-/// Protocol: `/proc/pressure/cpu` `some avg10 <= 0.05` before and after, no
+/// The harness prints the value its table implies, labelled "candidate default
+/// (apply in step 1.3b)", via [`derive_min_flops`].
+///
+/// Protocol: `/proc/pressure/cpu` `some avg10 <= 0.05` before and after (the
+/// harness prints "NOT QUOTABLE: box contested" otherwise), no
 /// competing heavy processes, same binary, CPU (6 BLAS threads) and GPU
 /// (including H2D/D2H) arms interleaved, 7 repeats per shape, min and median
 /// reported. Rule for the value: the smallest FLOP count (2*m*n*k) such that
 /// GPU median <= CPU median at every larger measured shape, rounded up to a
 /// power of two; if the GPU never wins, `usize::MAX / 2` (never offload).
 pub const FERRIC_GPU_MIN_FLOPS_DEFAULT: usize = 1 << 30;
+
+/// The crossover rule documented on [`FERRIC_GPU_MIN_FLOPS_DEFAULT`], as a pure
+/// function of measured `(flops, cpu_median_s, gpu_median_s)` rows (any order).
+/// Rows are sorted by flops; the threshold is the smallest flops `f` such that
+/// the GPU wins (`gpu <= cpu`) at `f` and at EVERY larger measured shape,
+/// rounded up to a power of two. A win followed by a later loss therefore does
+/// not lower the threshold. Never wins at the largest shape (or empty table):
+/// `usize::MAX / 2`. Wins everywhere: the smallest measured flops (rounded up).
+pub fn derive_min_flops(table: &[(usize, f64, f64)]) -> usize {
+    let mut rows = table.to_vec();
+    rows.sort_by_key(|r| r.0);
+    let mut threshold = None;
+    for &(flops, cpu, gpu) in rows.iter().rev() {
+        if gpu <= cpu {
+            threshold = Some(flops);
+        } else {
+            break;
+        }
+    }
+    match threshold {
+        Some(f) => f.next_power_of_two(),
+        None => usize::MAX / 2,
+    }
+}
 
 pub static GPU_MODE: ConfigVar<GpuMode> = ConfigVar {
     env_name: "FERRIC_GPU",
@@ -177,5 +206,54 @@ impl GpuSettings {
             },
             audit,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::derive_min_flops;
+
+    #[test]
+    fn never_wins_is_never_offload() {
+        let t = [(100, 1.0, 2.0), (1000, 1.0, 1.5), (10000, 1.0, 1.1)];
+        assert_eq!(derive_min_flops(&t), usize::MAX / 2);
+        assert_eq!(derive_min_flops(&[]), usize::MAX / 2);
+    }
+
+    #[test]
+    fn always_wins_is_smallest_shape_rounded_up() {
+        let t = [(1000, 2.0, 1.0), (100, 2.0, 1.0), (10000, 2.0, 1.0)];
+        assert_eq!(derive_min_flops(&t), 128);
+    }
+
+    #[test]
+    fn crossover_in_the_middle() {
+        let t = [
+            (100, 1.0, 2.0),
+            (1000, 1.0, 2.0),
+            (5000, 2.0, 1.0),
+            (9000, 3.0, 1.0),
+        ];
+        assert_eq!(derive_min_flops(&t), 8192);
+    }
+
+    #[test]
+    fn tie_counts_as_a_win() {
+        assert_eq!(derive_min_flops(&[(64, 1.0, 1.0)]), 64);
+    }
+
+    #[test]
+    fn non_monotone_win_then_loss_does_not_lower_threshold() {
+        // GPU wins at 200, loses at 3000, wins at 40000: only 40000 qualifies.
+        let t = [
+            (100, 1.0, 2.0),
+            (200, 2.0, 1.0),
+            (3000, 1.0, 2.0),
+            (40000, 2.0, 1.0),
+        ];
+        assert_eq!(derive_min_flops(&t), 65536);
+        // A loss at the largest shape means never.
+        let t = [(200, 2.0, 1.0), (3000, 1.0, 2.0)];
+        assert_eq!(derive_min_flops(&t), usize::MAX / 2);
     }
 }

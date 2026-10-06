@@ -2,7 +2,9 @@
 //! interleaved (CPU, GPU, CPU, GPU, ...): OpenBLAS at 6 threads (physical cores;
 //! 7-12 add nothing here) vs device GEMM INCLUDING H2D/D2H. Prints min and
 //! median of 7 reps per cell. Run only when /proc/pressure/cpu `some avg10` is
-//! ~0.00; PSI is printed before and after so a loaded box is visible.
+//! <= 0.05; PSI is printed before and after, and "NOT QUOTABLE: box contested"
+//! is printed if either reading is above 0.05 or unreadable. Each shape also
+//! checks GPU vs CPU agreement against a Higham bound and panics if exceeded.
 //!
 //! RAYON_NUM_THREADS=6 OPENBLAS_NUM_THREADS=1 \
 //!   cargo run --release -p ferric-benchmarks --features gpu --example gpu_gemm_crossover
@@ -37,21 +39,44 @@ fn min_median(mut v: Vec<f64>) -> (f64, f64) {
     (v[0], v[v.len() / 2])
 }
 
+/// Higham bound on |gpu - cpu| for one entry of C = A*B (alpha=1, beta=0).
+/// Each arm computes a length-k dot product with error <= gamma_n * (|A||B|)_ij,
+/// gamma_n = n*u/(1-n*u), u = 2^-53. The device GEMM is k-blocked (block `kb`),
+/// adding at most ceil(k/kb) accumulations into C, so n = k + ceil(k/kb) for it
+/// and n = k for the CPU; by the triangle inequality the difference is bounded
+/// by (gamma_k + gamma_n) * (|A||B|)_ij. This is conservative for FMA/blocked
+/// summation orders (all are covered by the standard model).
+#[cfg(feature = "gpu")]
+fn higham_gamma(n: usize) -> f64 {
+    let nu = n as f64 * f64::EPSILON / 2.0;
+    nu / (1.0 - nu)
+}
+
+#[cfg(feature = "gpu")]
+fn env_or_unset(name: &str) -> String {
+    std::env::var(name).unwrap_or_else(|_| "unset".to_string())
+}
+
 #[cfg(feature = "gpu")]
 fn main() {
     use ferric_core::blas_threads::with_blas_threads;
+    use ferric_core::gpu::config::derive_min_flops;
     use ferric_core::gpu::device::device;
     use ferric_core::gpu::gemm::{gemm_f64, offload_bytes};
     use ferric_core::gpu::pool::DevicePool;
     use ndarray::{linalg::general_mat_mul, Array2};
     use std::time::Instant;
 
+    const KB: usize = 128;
     let smoke = std::env::var_os("FERRIC_XOVER_SMOKE").is_some();
     let reps: usize = if smoke { 1 } else { 7 };
     println!(
-        "PSI cpu some avg10 before = {:.2} (must be ~0.00 for a quotable run)",
-        psi_cpu_some_avg10()
+        "RAYON_NUM_THREADS={} OPENBLAS_NUM_THREADS={}",
+        env_or_unset("RAYON_NUM_THREADS"),
+        env_or_unset("OPENBLAS_NUM_THREADS")
     );
+    let psi_before = psi_cpu_some_avg10();
+    println!("PSI cpu some avg10 before = {psi_before:.2} (must be <= 0.05 for a quotable run)");
     let dev = device(0).expect("GPU 0");
     let pool = DevicePool::with_capacity_bytes(4 << 30);
     println!(
@@ -77,6 +102,7 @@ fn main() {
         (1600, 128, 1600),
     ];
     let shapes = if smoke { &shapes[..2] } else { shapes };
+    let mut table: Vec<(usize, f64, f64)> = Vec::new();
     for &(m, k, n) in shapes {
         assert!(offload_bytes(m, k, n) <= 4 << 30);
         let a = Array2::from_shape_fn((m, k), |(i, j)| {
@@ -85,21 +111,40 @@ fn main() {
         let b = Array2::from_shape_fn((k, n), |(i, j)| {
             ((i * 13 + j * 29) % 89) as f64 / 89.0 - 0.5
         });
-        let mut c = Array2::zeros((m, n));
-        // Warm-up (cuBLAS/context init, page-in) on both arms, untimed.
-        with_blas_threads(6, || general_mat_mul(1.0, &a, &b, 0.0, &mut c));
-        gemm_f64(&dev, &pool, &a.view(), &b.view(), &mut c.view_mut(), 128).unwrap();
+        let mut c_cpu = Array2::zeros((m, n));
+        let mut c_gpu = Array2::zeros((m, n));
+        // Warm-up (cuBLAS/context init, page-in) on both arms, untimed; each
+        // arm into its own output so the arms can be compared.
+        with_blas_threads(6, || general_mat_mul(1.0, &a, &b, 0.0, &mut c_cpu));
+        gemm_f64(&dev, &pool, &a.view(), &b.view(), &mut c_gpu.view_mut(), KB).unwrap();
+        // Agreement check (depth k; see higham_gamma). Fails loudly so a broken
+        // device arm cannot look fast.
+        let mut absprod = Array2::zeros((m, n));
+        general_mat_mul(1.0, &a.mapv(f64::abs), &b.mapv(f64::abs), 0.0, &mut absprod);
+        let g = higham_gamma(k) + higham_gamma(k + k.div_ceil(KB));
+        for ((cc, gg), ap) in c_cpu.iter().zip(c_gpu.iter()).zip(absprod.iter()) {
+            let bound = g * ap + f64::MIN_POSITIVE;
+            assert!(
+                (gg - cc).abs() <= bound,
+                "GPU/CPU disagree at shape (m={m}, k={k}, n={n}): |{gg} - {cc}| > {bound:e}"
+            );
+        }
         let (mut cpu, mut gpu) = (Vec::new(), Vec::new());
         for _ in 0..reps {
+            // Thread-count save/set is outside the timed region.
+            let dt = with_blas_threads(6, || {
+                let t = Instant::now();
+                general_mat_mul(1.0, &a, &b, 0.0, &mut c_cpu);
+                t.elapsed().as_secs_f64()
+            });
+            cpu.push(dt);
             let t = Instant::now();
-            with_blas_threads(6, || general_mat_mul(1.0, &a, &b, 0.0, &mut c));
-            cpu.push(t.elapsed().as_secs_f64());
-            let t = Instant::now();
-            gemm_f64(&dev, &pool, &a.view(), &b.view(), &mut c.view_mut(), 128).unwrap();
+            gemm_f64(&dev, &pool, &a.view(), &b.view(), &mut c_gpu.view_mut(), KB).unwrap();
             gpu.push(t.elapsed().as_secs_f64());
         }
         let (cmin, cmed) = min_median(cpu);
         let (gmin, gmed) = min_median(gpu);
+        table.push((2 * m * n * k, cmed, gmed));
         println!(
             "{m:>6} {k:>6} {n:>6} {:>14} {:>9.3} {:>9.3} {:>9.3} {:>9.3} {:>8.2} {:>8.2}",
             2 * m * n * k,
@@ -111,5 +156,14 @@ fn main() {
             gmed / cmed
         );
     }
-    println!("PSI cpu some avg10 after = {:.2}", psi_cpu_some_avg10());
+    let psi_after = psi_cpu_some_avg10();
+    println!("PSI cpu some avg10 after = {psi_after:.2}");
+    let quiet = |p: f64| p.is_finite() && p <= 0.05;
+    if !(quiet(psi_before) && quiet(psi_after)) {
+        println!("NOT QUOTABLE: box contested");
+    }
+    println!(
+        "candidate default (apply in step 1.3b): FERRIC_GPU_MIN_FLOPS = {}",
+        derive_min_flops(&table)
+    );
 }
