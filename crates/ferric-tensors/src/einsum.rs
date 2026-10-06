@@ -420,7 +420,7 @@ fn try_device_gemm(
     right: &ndarray::ArrayView2<f64>,
     out: &mut ndarray::ArrayViewMut2<f64>,
 ) -> bool {
-    use ferric_core::gpu::stats::{note_cpu, CpuReason};
+    use ferric_core::gpu::stats::{note_cpu, note_cpu_detail, CpuReason};
     use ferric_core::gpu::{device::GpuError, GpuMode, GpuStatus};
 
     let settings = ferric_core::gpu::settings();
@@ -458,10 +458,7 @@ fn try_device_gemm(
             false
         }
         Err(e) => {
-            if ferric_core::gpu::config::gpu_trace() {
-                eprintln!("[gpu] einsum GEMM {m}x{k}x{n} fell back to the CPU: {e}");
-            }
-            note_cpu(CpuReason::CudaError);
+            note_cpu_detail(CpuReason::CudaError, &format!("{m}x{k}x{n}: {e}"));
             false
         }
     }

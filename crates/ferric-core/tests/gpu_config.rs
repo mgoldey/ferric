@@ -25,6 +25,26 @@ fn default_mode_is_off_and_audit_names_the_source() {
 }
 
 #[test]
+fn unset_memory_audit_reads_as_automatic_not_zero() {
+    let (_, audit) = GpuSettings::resolve(GpuSettingsExplicit::default(), lookup(&[])).unwrap();
+    assert!(
+        audit
+            .iter()
+            .any(|l| l.starts_with("FERRIC_GPU_MEM_GB: auto (80% of free)")),
+        "{audit:?}"
+    );
+    let (_, set) = GpuSettings::resolve(
+        GpuSettingsExplicit::default(),
+        lookup(&[("FERRIC_GPU_MEM_GB", "2")]),
+    )
+    .unwrap();
+    assert!(
+        set.iter().any(|l| l.starts_with("FERRIC_GPU_MEM_GB: 2 ")),
+        "{set:?}"
+    );
+}
+
+#[test]
 fn toml_beats_env_beats_default() {
     let env = lookup(&[("FERRIC_GPU", "auto"), ("FERRIC_GPU_DEVICE", "1")]);
     let (s, _) = GpuSettings::resolve(

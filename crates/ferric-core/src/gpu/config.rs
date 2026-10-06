@@ -191,10 +191,20 @@ impl GpuSettings {
             GPU_MIN_FLOPS.resolve(explicit.min_flops, &get),
             "FERRIC_GPU_MIN_FLOPS",
         )?;
+        // The unset default is 0.0, which would read as "zero GB".
+        let mem_line = if mem.value > 0.0 {
+            mem.audit_line()
+        } else {
+            format!(
+                "{}: auto (80% of free)  [source: {}]",
+                mem.env_name,
+                mem.source.label()
+            )
+        };
         let audit = vec![
             mode.audit_line(),
             device.audit_line(),
-            mem.audit_line(),
+            mem_line,
             min_flops.audit_line(),
         ];
         Ok((

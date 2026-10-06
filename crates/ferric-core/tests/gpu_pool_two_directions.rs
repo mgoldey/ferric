@@ -1,7 +1,7 @@
 #![cfg(feature = "gpu")]
 //! A device-memory gate must refuse what does not fit AND admit what does.
-//! `pool_capacity_above_physical_free_falls_back_per_call` is Review Focus #2:
-//! a pool that believes more is free than the card has must not abort the run.
+//! `pool_believing_more_than_physical_free_yields_a_typed_alloc_error` is Review
+//! Focus #2: a pool that believes more is free than the card has must not abort.
 use ferric_core::gpu::pool::DevicePool;
 use ferric_core::gpu::{device::device, probe, GpuStatus};
 
@@ -46,8 +46,14 @@ fn ample_pool_admits_and_credits_back_on_drop() {
     assert_eq!(pool.available_bytes(), 8 << 20);
 }
 
+/// Checks only that the device allocation returns a typed error when the pool
+/// ledger admitted more than the card has. The CPU fallback and its counter are
+/// pinned elsewhere: `pool_admits_but_device_alloc_fails_falls_back_to_cpu`
+/// (ferric-tensors) and
+/// `device_alloc_failure_after_a_granted_reserve_is_an_error_not_an_abort`
+/// (ferric-core).
 #[test]
-fn pool_capacity_above_physical_free_falls_back_per_call() {
+fn pool_believing_more_than_physical_free_yields_a_typed_alloc_error() {
     if skip_without_device() {
         return;
     }

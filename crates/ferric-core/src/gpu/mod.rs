@@ -114,11 +114,16 @@ pub fn decide(
 /// an install after `status()`/`settings()` already initialised the lazy state.
 pub fn install(explicit: GpuSettingsExplicit) -> Result<&'static GpuStatus, String> {
     let (settings, audit) = GpuSettings::resolve(explicit, crate::config::env_lookup)?;
-    for line in &audit {
-        eprintln!("[ferric] {line}");
+    // A repeated identical install is a no-op: announce only the first one.
+    let first = INSTALLED.get().is_none();
+    if first {
+        for line in &audit {
+            eprintln!("[ferric] {line}");
+        }
     }
     let status = decide(&settings, probe)?;
     match &status {
+        _ if !first => {}
         GpuStatus::NotCompiled if settings.mode == GpuMode::Auto => {
             eprintln!("[ferric] gpu: built without the gpu feature; running on the CPU");
         }
@@ -127,7 +132,7 @@ pub fn install(explicit: GpuSettingsExplicit) -> Result<&'static GpuStatus, Stri
         }
         _ => {}
     }
-    if let GpuStatus::Ready(info) = &status {
+    if let (true, GpuStatus::Ready(info)) = (first, &status) {
         eprintln!(
             "[ferric] gpu: device {} {} (cc {}.{}, {:.2} GB free of {:.2} GB)",
             info.ordinal,
@@ -233,13 +238,4 @@ fn install_default_pool(settings: &GpuSettings, info: &GpuInfo, announce: bool) 
 #[cfg(feature = "gpu")]
 pub fn pool() -> Option<pool::DevicePool> {
     POOL.get().cloned()
-}
-
-/// Install a pool of `cap` bytes (first caller wins; returns the installed one).
-#[cfg(feature = "gpu")]
-#[doc(hidden)]
-pub fn install_pool_for_tests(cap: usize) -> pool::DevicePool {
-    let p = pool::DevicePool::with_capacity_bytes(cap);
-    let _ = POOL.set(p.clone());
-    POOL.get().cloned().expect("set")
 }

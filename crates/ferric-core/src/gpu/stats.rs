@@ -30,8 +30,27 @@ pub fn note_offloaded(h2d: usize, d2h: usize) {
     BYTES_D2H.fetch_add(d2h as u64, Ordering::Relaxed);
 }
 
+/// `FERRIC_GPU_TRACE`, read once: the per-fallback print costs one cached load
+/// per refusal and nothing on the offload path.
+fn trace_on() -> bool {
+    static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *TRACE.get_or_init(super::config::gpu_trace)
+}
+
+/// Count a CPU fallback; with `FERRIC_GPU_TRACE` set, also print one line
+/// naming the reason (`InsideRayonWorker`, `BelowThreshold`, `PoolFull`,
+/// `Layout`, `CudaError`).
 #[doc(hidden)]
 pub fn note_cpu(reason: CpuReason) {
+    note_cpu_detail(reason, "");
+}
+
+/// [`note_cpu`] with a free-text detail (shape, error) appended to the trace line.
+#[doc(hidden)]
+pub fn note_cpu_detail(reason: CpuReason, detail: &str) {
+    if trace_on() {
+        eprintln!("[gpu] GEMM fell back to the CPU: {reason:?} {detail}");
+    }
     let c = match reason {
         CpuReason::InsideRayonWorker => &GEMM_CPU_INSIDE_WORKER,
         CpuReason::BelowThreshold => &GEMM_CPU_BELOW_THRESHOLD,
