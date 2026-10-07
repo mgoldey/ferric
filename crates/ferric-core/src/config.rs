@@ -31,6 +31,9 @@ pub enum ConfigSource {
     Explicit,
     /// The setting's env var.
     Env,
+    /// Implied by a preset that was itself given (`[gpu] preset`); only knobs
+    /// a preset expands into can carry this source.
+    Preset,
     /// The descriptor's built-in default (nothing was set).
     Default,
 }
@@ -41,6 +44,7 @@ impl ConfigSource {
         match self {
             ConfigSource::Explicit => "explicit (config/TOML/kwarg)",
             ConfigSource::Env => "env",
+            ConfigSource::Preset => "preset",
             ConfigSource::Default => "default",
         }
     }

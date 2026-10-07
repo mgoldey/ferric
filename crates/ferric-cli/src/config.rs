@@ -209,6 +209,7 @@ impl GpuCfg {
     /// (`load_config` does); an unparsable `mode` reads as unset here.
     pub fn explicit(&self) -> ferric_core::gpu::GpuSettingsExplicit {
         ferric_core::gpu::GpuSettingsExplicit {
+            preset: None,
             mode: self.mode.as_deref().and_then(|s| s.parse().ok()),
             device: self.device,
             memory_gb: self.memory_gb,

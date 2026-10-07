@@ -10,6 +10,7 @@ use crate::config::{accept_any, parse_toggle, ConfigSource, ConfigVar, Resolved}
 use super::precision::{
     MixedKernel, MixedKernelSet, Precision, GPU_MIXED_KERNELS, GPU_PRECISION, PRECISION_DEFAULT,
 };
+use super::preset::{GpuPreset, GPU_PRESET};
 
 /// Whether the GPU backend is used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -189,6 +190,7 @@ pub fn gpu_trace() -> bool {
 /// The TOML/kwarg side (already typed; `None` = not given).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GpuSettingsExplicit {
+    pub preset: Option<GpuPreset>,
     pub mode: Option<GpuMode>,
     pub device: Option<usize>,
     pub memory_gb: Option<f64>,
@@ -210,6 +212,32 @@ pub struct GpuSettings {
 
 fn tag<T>(r: Result<Resolved<T>, String>, name: &str) -> Result<Resolved<T>, String> {
     r.map_err(|e| format!("{name}: {e}"))
+}
+
+/// A knob a preset expands into: a default takes the preset's value (source
+/// `preset`), a given value that agrees is kept, one that disagrees is a
+/// refusal naming both keys and both sources. `shown` is the knob's env /
+/// TOML spelling, `key` its TOML key.
+fn merge_preset<T: PartialEq + fmt::Display + Copy>(
+    r: &mut Resolved<T>,
+    implied: T,
+    preset: &Resolved<GpuPreset>,
+    shown: &str,
+    key: &str,
+) -> Result<(), String> {
+    if r.source == ConfigSource::Default {
+        r.value = implied;
+        r.source = ConfigSource::Preset;
+    } else if r.value != implied {
+        return Err(format!(
+            "[gpu] preset = {} ({}) implies {key} = {implied} but {shown} = {} ({}); set one of them",
+            preset.value,
+            preset.source.label(),
+            r.value,
+            r.source.label(),
+        ));
+    }
+    Ok(())
 }
 
 impl GpuSettings {
@@ -251,7 +279,22 @@ impl GpuSettings {
         default_precision: Precision,
         shipped: MixedKernelSet,
     ) -> Result<(GpuSettings, Vec<String>), String> {
-        let mode = tag(GPU_MODE.resolve(explicit.mode, &get), "FERRIC_GPU")?;
+        let preset = tag(
+            GPU_PRESET.resolve(explicit.preset, &get),
+            "FERRIC_GPU_PRESET",
+        )?;
+        let preset_given = preset.source != ConfigSource::Default;
+        let implied = preset.value.implied(shipped);
+        let mut mode = tag(GPU_MODE.resolve(explicit.mode, &get), "FERRIC_GPU")?;
+        if preset_given {
+            merge_preset(
+                &mut mode,
+                implied.mode,
+                &preset,
+                "FERRIC_GPU / [gpu] mode",
+                "mode",
+            )?;
+        }
         let device = tag(
             GPU_DEVICE.resolve(explicit.device, &get),
             "FERRIC_GPU_DEVICE",
@@ -280,10 +323,27 @@ impl GpuSettings {
             prec_var.resolve(explicit.precision, &get),
             "FERRIC_GPU_PRECISION",
         )?;
-        let kernels = tag(
+        if preset_given {
+            merge_preset(
+                &mut precision,
+                implied.precision,
+                &preset,
+                "FERRIC_GPU_PRECISION / [gpu] precision",
+                "precision",
+            )?;
+        }
+        let mut kernels = tag(
             kern_var.resolve(explicit.mixed_kernels, &get),
             "FERRIC_GPU_MIXED_KERNELS",
         )?;
+        // A given list is kept (narrowing is allowed; the unshipped-name check
+        // below still runs on it); only a default takes the preset's set.
+        if let (true, Some(k)) = (preset_given, implied.mixed_kernels) {
+            if kernels.source == ConfigSource::Default {
+                kernels.value = k;
+                kernels.source = ConfigSource::Preset;
+            }
+        }
         let kernels_given = matches!(kernels.source, ConfigSource::Explicit | ConfigSource::Env);
         let mut precision_line = None;
         if precision.value == Precision::Mixed
@@ -365,6 +425,7 @@ impl GpuSettings {
             min_flops.audit_line(),
             precision_line.unwrap_or_else(|| precision.audit_line()),
             kernels.audit_line(),
+            preset.audit_line(),
         ];
         Ok((
             GpuSettings {

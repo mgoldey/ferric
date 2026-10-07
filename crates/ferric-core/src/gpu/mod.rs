@@ -22,6 +22,7 @@ pub mod mixed_rules;
 #[cfg(feature = "gpu")]
 pub mod pool;
 pub mod precision;
+pub mod preset;
 #[cfg(feature = "gpu")]
 pub mod resident;
 pub mod stats;
@@ -30,6 +31,7 @@ use std::sync::OnceLock;
 
 pub use config::{GpuMode, GpuSettings, GpuSettingsExplicit};
 pub use precision::{MixedKernel, MixedKernelSet, MixedScope, Precision};
+pub use preset::GpuPreset;
 pub use stats::{stats, GpuStatsSnapshot};
 
 /// Whether this binary was compiled with the `gpu` feature.
