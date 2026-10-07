@@ -169,7 +169,8 @@ pub fn gemm_f32_f64acc_dev(
 /// `x as f32` for a whole operand, refusing any finite f64 that overflows to
 /// inf in f32 (`GpuError::F32Range`, naming the operand and the first index).
 /// Existing inf/NaN inputs pass through unchanged (they are the caller's data).
-pub(crate) fn round_to_f32(label: &str, x: &[f64]) -> Result<Vec<f32>, GpuError> {
+#[doc(hidden)]
+pub fn round_to_f32(label: &str, x: &[f64]) -> Result<Vec<f32>, GpuError> {
     let mut out = Vec::with_capacity(x.len());
     for (i, &v) in x.iter().enumerate() {
         let r = v as f32;

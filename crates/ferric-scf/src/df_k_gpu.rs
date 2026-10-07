@@ -33,7 +33,18 @@
 //! (`GpuError::Kernel`) runs the f64 device upload for that `DfK` instead, counted
 //! once (`mixed_fallback_f64`), never the CPU. A `C_occ` element beyond `f32::MAX`
 //! cannot fall back (the resident `B` is f32): the build errors and the dispatcher
-//! declines to the CPU as for any build error.
+//! declines to the CPU as for any build error (counted under `gemm_cpu_f32_range`).
+//! The mixed bound assumes IEEE binary32 SGEMM (cuBLAS default math mode, no TF32)
+//! and operands in the f32 normal range (the underflow term is omitted).
+//! `resident_bytes` is the f64 figure; the mixed charge is `4·band·n²` + `8·n²`.
+//! Open-shell builds reuse the alpha-sized scratch for beta: every mixed copy and
+//! slice uses `nocc`, never the scratch capacity.
+//! Where C2's budget row will need more than this file measures: the shipping bar
+//! is |dE_total| <= 1.0e-3 Eh with error growing no faster than linearly in N, so
+//! the map needs the error per atom and the slope of ln(error) vs ln(N) with its
+//! standard error and degrees of freedom, over the dfk-occ ladder (H2O, butane,
+//! octane, dodecane, benzene aDZ/aTZ, UKS, RSH); the tests here pin the kernel,
+//! not that map.
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -42,7 +53,7 @@ use ferric_core::gpu::batched::{
 };
 use ferric_core::gpu::device::{device, Device, GpuError};
 use ferric_core::gpu::gemm::{dev_left_padded, dev_right_padded};
-use ferric_core::gpu::mixed::{effective_k_panel, gemm_f32_f64acc_dev};
+use ferric_core::gpu::mixed::{effective_k_panel, gemm_f32_f64acc_dev, round_to_f32};
 use ferric_core::gpu::mixed_host::{gamma, mixed_error_factor, round_trip_f32, U64};
 use ferric_core::gpu::pool::DevicePool;
 use ferric_core::gpu::precision::MixedKernel;
@@ -78,7 +89,8 @@ pub static TRUNCATE_B_TO_F32: AtomicBool = AtomicBool::new(false);
 /// Test seam: settings used for the `dfk-occ` allowlist decision instead of the
 /// installed ones (the kernel is not in `SHIPPED`, so no installed setting can
 /// allow it). Only that one decision reads it; mode and device still come from
-/// the installed settings. Production never sets it.
+/// the installed settings. Production never sets it. Task C3 (shipping dfk-occ)
+/// deletes this seam or puts it behind a test-only feature.
 #[doc(hidden)]
 pub static MIXED_SETTINGS_OVERRIDE: Mutex<Option<GpuSettings>> = Mutex::new(None);
 
@@ -461,28 +473,13 @@ fn upload_c_occ(dev: &Device, sc: &mut Scratch, c_host: &[f64]) -> Result<usize,
             Ok(8 * up)
         }
         Some(m) => {
-            let c32 = round_f32_checked("DF-K C_occ", c_host)?;
+            let c32 = round_to_f32("DF-K C_occ", c_host)?;
             dev.stream
                 .memcpy_htod(&c32, &mut m.c32.buf_mut().slice_mut(..up))
                 .map_err(|e| cuda("H2D C_occ (f32)", &e))?;
             Ok(4 * up)
         }
     }
-}
-
-/// `x as f32` elementwise, refusing a finite value that overflows f32.
-fn round_f32_checked(label: &str, x: &[f64]) -> Result<Vec<f32>, GpuError> {
-    let mut out = Vec::with_capacity(x.len());
-    for (i, &v) in x.iter().enumerate() {
-        let r = v as f32;
-        if v.is_finite() && !r.is_finite() {
-            return Err(GpuError::F32Range(format!(
-                "{label}[{i}] = {v:e} exceeds f32::MAX"
-            )));
-        }
-        out.push(r);
-    }
-    Ok(out)
 }
 
 /// `Y_P = C_occᵀ·B_P` for every aux row of the chunk, stacked into `sc.y`.

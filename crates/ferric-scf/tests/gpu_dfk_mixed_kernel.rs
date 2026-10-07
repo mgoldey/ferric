@@ -7,47 +7,67 @@
 //! precision decision reads instead of the installed settings. Mode, device and
 //! pool still come from the installed (auto, 4 GB) settings.
 //!
-//! The K gate is derived. With S_μν = Σ_{P,i} (|B_P||C|)_μi (|B_P||C|)_νi, the mixed
-//! K differs from the exact one by at most `k_error_factor_mixed(n, b, k_chunk,
-//! nchunks)·S` (stage 1: f32 operands, f32 panel sums of depth b, f64 flush over
-//! ⌈n/b⌉ panels; stage 2: f64 SYRK), and the f64 host K by at most its own
-//! `k_error_factor`; the compared quantity is |K_mixed − K_host| / (bound·S·1.01)
-//! over the upper triangle, bound = ε_mixed(device) + ε_f64(host).
+//! WHAT EACH GATE CATCHES (the K bound is a worst case and is blind to subtle
+//! defects: against the f64 host K the clean side sits 1e-2..1e-3 of the bound,
+//! and the defects stay below it, because the f32 rounding of the OPERANDS
+//! dominates the error).
+//!  * `clean <= 1` against `k_error_factor_mixed` (+ the host f64 K's own factor)
+//!    is the only DERIVED statement: |K_mixed - K_host| <= (eps_mixed + eps_host)*S
+//!    with S = sum_{P,i} (|B_P||C|)(|B_P||C|)^T, on converged RI-JK orbitals.
+//!  * `the_f64_flush_across_k_panels_is_pinned_exactly` (deterministic, device and
+//!    order independent): n = b + 8, band 1, nocc 1, two single-term panels
+//!    2^24 and 1: the f64 flush gives K = 2^48 + 2^25 + 1 bit for bit; summing the
+//!    panels in f32 gives 2^48. Mutant FERRIC_GPU_MIXED_K_PANEL = n (one panel):
+//!    K[nu*,nu*] = 2.81474976710656e14 against 281475010265089.
+//!  * `c_occ_rounding_is_round_to_nearest_even_bit_for_bit_through_the_kernel`
+//!    (B = I, nocc 1: K = c32 (x) c32, a 48-bit exact product): C_occ rounding is
+//!    round-to-nearest-even; with the core bit-exact `upload_rounded` test this is
+//!    the truncation guarantee for B as well.
+//!  * the exact panel count band*ceil(n/b) (asserted on hexane n = 154 and octane
+//!    n = 202, both > 2b) catches a changed panel width, b = 128 included: the
+//!    RMS bar below does NOT. f32 accumulation inside a b = 64 wide panel is the
+//!    design, not a defect.
+//!  * the multi-chunk test (12 chunks of 10 aux rows): K equals the single-chunk
+//!    mixed K to 1.5e-2 of the stage-2 bound; the mutant `p` for `p0 + p` in the
+//!    chunk loop gives 1.2e14 of it (and 3.2e6 of the mixed bound against the host).
+//!  * the OPERAND-CLASS gate (twin RMS): the twin is the f64 device K of the
+//!    f32-rounded B and C; RMS over the upper triangle of |K - K_twin|/(eps*S).
+//!    A MEASUREMENT, not a derived bound, identical on GPU 0 and GPU 1 (GTX 1080),
+//!    converged RI-JK RHF orbitals, def2-universal-jkfit, b = 64:
+//!    ```text
+//!      system           n   nocc  clean      plain f32 acc (a)  truncating upload
+//!      water           24    5    2.349e-3   2.349e-3 (1 panel)  6.950e-3
+//!      butane         106   17    1.769e-4   1.825e-4            7.549e-4
+//!      hexane         154   25    1.218e-4   1.702e-4            5.450e-4
+//!      octane         202   33    1.280e-4   1.576e-4            4.903e-4
+//!    ```
+//!    The bar 2.9e-4 is the geometric midpoint of the largest clean value on the
+//!    asserted systems (n > b: butane 1.769e-4) and the smallest truncating one
+//!    (octane 4.903e-4): 1.6x either side. Plain f32 accumulation (a) is only
+//!    1.0-1.4x the clean side and is NOT caught by this gate (the exact pin above
+//!    is its guarantee). Water (n < b) is reported, not asserted.
+//!  * open-shell: OH alpha 5 / beta 4 / alpha again on one mixed `DfK` (scratch
+//!    sized by alpha, reused by beta): no panic, alpha bit-equal on rebuild, each
+//!    spin inside its bound (2.8e-2, 2.3e-2). Mutant: copying the whole alpha-sized
+//!    per-P panel panics in cudarc (`dst.len() >= src.len()`).
+//!  * flush-kernel loss (`FORCE_KERNEL_FAILURE`) before the upload (f64 device
+//!    upload, exactly 8*band*n^2 bytes, fallback +1, K bits equal the f64 device K)
+//!    and after it (the build errors with `GpuError::Kernel`, k untouched, the slot
+//!    declines sticky, the CPU K is the host K); a C_occ element beyond f32::MAX:
+//!    `GpuError::F32Range`, k untouched, declined sticky, counted under
+//!    `gemm_cpu_f32_range`.
 //!
-//! MEASURED SIDES (GTX 1080, printed on every run; def2-universal-jkfit,
-//! deterministic C_occ; "bound ratio" = max |K_mixed − K_host|/(bound·S·1.01)):
-//!   system (nocc)            clean (b = 64)   (a) plain f32 acc.   (b) truncating upload
-//!                            FERRIC_GPU_MIXED_K_PANEL = n          TRUNCATE_B_TO_F32
-//!   water/cc-pVDZ (5)        6.8e-3           6.8e-3 (n < b: one panel anyway)   1.4e-2
-//!   butane/cc-pVDZ (17)      1.4e-3           2.7e-3               3.1e-3
-//!   octane/cc-pVDZ (33)      1.2e-3           1.7e-3               2.2e-3
-//! The bound is a worst case: the clean side sits 2.5 decades below it and neither
-//! defect reaches it (they are 1.4x to 2.4x the clean side), so the bound alone is
-//! blind to both. The reason is that against the f64 host K the dominant term is
-//! the f32 rounding of the OPERANDS, common to the clean and plain-accumulation
-//! runs. The discriminating gate therefore compares against a TWIN: the f64 device
-//! K of the f32-rounded operands, where the operand rounding cancels and only the
-//! panel accumulation remains. RMS over the upper triangle of |K − K_twin|/(ε·S),
-//! same ε as above (octane, n = 202, 4 panels at b = 64):
-//!   clean 3.36e-5   (a) plain f32 accumulation 5.30e-5   (b) truncating upload 3.32e-4
-//!   (butane: 4.12e-5, 5.17e-5, 3.42e-4; water: 9.0e-4, 9.0e-4 (one panel), 4.1e-3)
-//! The asserted bar is the geometric midpoint to the NEARER defect (a):
-//! sqrt(3.36e-5 · 5.30e-5) = 4.22e-5, with the clean side 1.26x below and (a) 1.26x
-//! above it; (b) is 7.9x above. Plain accumulation is only 1.6x the clean side
-//! because n/b = 4 panels: the random-walk depth ratio sqrt(202/64) = 1.8. The twin
-//! bar is a measurement on this device, not a property of the algorithm; the
-//! derived statement is the bound (clean <= 1, asserted on every fixture).
+//! The twin-RMS bar and the clean ratios depend on cuBLAS SGEMM's internal order
+//! on this device; only the bound, the exact pins and the counts are portable.
 //!
-//! Also pinned: resident bytes (4·band·n², half the f64 path), mixed panels per
-//! build (band·⌈n/b⌉), the allowlist (precision = mixed with only rimp2-energy
-//! leaves DF-K f64 and moves no mixed counter), the F32Range fallback (one f64
-//! device upload, counted once, K bit-equal to the f64 device K), the f64 path's
-//! K bits when mixed is not allowed, and the resolver's refusal of dfk-occ in
-//! this build (not shipped).
+//! Also pinned: resident bytes (4*band*n^2 + 4*n*nocc on the first build), mixed
+//! panels per build, the allowlist (precision = mixed with only rimp2-energy
+//! leaves DF-K f64 and moves no mixed counter), the f64 path's K bits when mixed
+//! is not allowed, and the resolver's refusal of dfk-occ in this build.
 use ferric_core::basis;
 use ferric_core::gpu::config::{GpuSettings, GpuSettingsExplicit};
 use ferric_core::gpu::device::FORCE_KERNEL_FAILURE;
-use ferric_core::gpu::mixed::effective_k_panel;
+use ferric_core::gpu::mixed::{effective_k_panel, MIXED_K_PANEL_DEFAULT};
 use ferric_core::gpu::{
     install, pool, probe, stats, GpuMode, GpuStatus, MixedKernel, MixedKernelSet, Precision,
 };
@@ -132,7 +152,6 @@ impl Drop for Mixed {
         TRUNCATE_B_TO_F32.store(false, Ordering::SeqCst);
         FORCE_HOST.store(false, Ordering::SeqCst);
         FORCE_KERNEL_FAILURE.store(false, Ordering::SeqCst);
-        std::env::remove_var("FERRIC_GPU_MIXED_K_PANEL");
     }
 }
 
@@ -198,9 +217,8 @@ fn rms_ratio(a: &Array2<f64>, b: &Array2<f64>, s: &Array2<f64>, eps: f64) -> f64
     (sum / cnt as f64).sqrt()
 }
 
-/// Geometric midpoint of the measured clean (3.36e-5) and nearer defect (plain
-/// f32 accumulation, 5.30e-5) twin RMS on octane/cc-pVDZ: sqrt(3.36e-5 · 5.30e-5).
-const TWIN_RMS_BAR: f64 = 4.22e-5;
+/// Operand-class gate bar (twin RMS), a MEASUREMENT: see the docstring.
+const TWIN_RMS_BAR: f64 = 2.9e-4;
 
 fn host_k(dfk: &mut DfK, c: &Array2<f64>) -> Array2<f64> {
     FORCE_HOST.store(true, Ordering::SeqCst);
@@ -228,18 +246,20 @@ fn dispatched_k(xyz: &str, obs: &str, c: &Array2<f64>) -> Array2<f64> {
 }
 
 #[test]
-fn mixed_k_is_inside_its_bound_and_two_mutants_leave_it() {
+fn mixed_k_is_inside_its_bound_and_the_operand_class_gate_separates_truncation() {
     let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
     if !ready() {
         return;
     }
-    for (label, xyz, nocc) in [
-        ("water/cc-pVDZ", WATER.to_string(), 5usize),
-        ("butane/cc-pVDZ", alkane(4), 17),
-        ("octane/cc-pVDZ", alkane(8), 33),
+    for (label, xyz) in [
+        ("water/cc-pVDZ", WATER.to_string()),
+        ("butane/cc-pVDZ", alkane(4)),
+        ("hexane/cc-pVDZ", alkane(6)),
+        ("octane/cc-pVDZ", alkane(8)),
     ] {
+        let (c, _) = scf_occ(&xyz, 1, "cc-pvdz");
+        let nocc = c.ncols();
         let (mut dfk0, n) = dfk_for(&xyz, "cc-pvdz");
-        let c = c_occ(n, nocc, 1);
         let flat = dfk0.dressed_incore_flat_for_test().unwrap().to_owned();
         let naux = flat.nrows();
         let s = s_matrix(&flat.view(), n, &c);
@@ -254,54 +274,31 @@ fn mixed_k_is_inside_its_bound_and_two_mutants_leave_it() {
         assert_eq!(
             panels,
             (naux * n.div_ceil(b)) as u64,
-            "{label}: the mixed path did not run"
+            "{label}: the mixed path did not run (or the panel count is off)"
         );
         let clean = max_ratio(&k_clean, &k_host, &s, eps);
-        let rms_clean = rms_ratio(&k_clean, &k_host, &s, eps);
-
-        std::env::set_var("FERRIC_GPU_MIXED_K_PANEL", n.to_string());
-        let k_a = dispatched_k(&xyz, "cc-pvdz", &c);
-        std::env::remove_var("FERRIC_GPU_MIXED_K_PANEL");
-        let defect_a = max_ratio(&k_a, &k_host, &s, eps);
-        let rms_a = rms_ratio(&k_a, &k_host, &s, eps);
 
         TRUNCATE_B_TO_F32.store(true, Ordering::SeqCst);
         let k_b = dispatched_k(&xyz, "cc-pvdz", &c);
         TRUNCATE_B_TO_F32.store(false, Ordering::SeqCst);
-        let defect_b = max_ratio(&k_b, &k_host, &s, eps);
-        let rms_b = rms_ratio(&k_b, &k_host, &s, eps);
-        eprintln!("{label}: RMS clean {rms_clean:.4e}  (a) {rms_a:.4e}  (b) {rms_b:.4e}");
-        // TWIN: the f64 device K of the f32-ROUNDED operands. Mixed minus twin is the
-        // f32 panel accumulation alone (the operand rounding cancels).
-        let dev = ferric_core::gpu::device::device(0).unwrap();
-        let rb = ferric_core::gpu::mixed_host::round_trip_f32(&flat.view());
-        let rc = ferric_core::gpu::mixed_host::round_trip_f32(&c.view());
-        let mut tw = DeviceDfK::upload(&dev, &pool().unwrap(), &rb.view(), n).unwrap();
-        let mut k_twin = Array2::zeros((n, n));
-        tw.build_from_occ(&rc.view(), &mut k_twin).unwrap();
-        drop(tw);
-        let (tc, ta, tb) = (
+        let k_twin = twin_k(&flat.view(), &c, None);
+        let (tc, tb) = (
             rms_ratio(&k_clean, &k_twin, &s, eps),
-            rms_ratio(&k_a, &k_twin, &s, eps),
             rms_ratio(&k_b, &k_twin, &s, eps),
         );
-        eprintln!("{label}: vs TWIN: RMS clean {tc:.4e} (a) {ta:.4e} (b) {tb:.4e}");
-        if n > 2 * b {
-            // Accumulation depth n = 202 > 3 panels: both defects are visible.
-            assert!(tc < TWIN_RMS_BAR, "{label}: clean twin RMS {tc:e} >= bar");
-            assert!(
-                ta > TWIN_RMS_BAR,
-                "{label}: plain f32 accumulation not caught ({ta:e})"
-            );
-            assert!(
-                tb > TWIN_RMS_BAR,
-                "{label}: truncating upload not caught ({tb:e})"
-            );
+        // plain f32 accumulation across panels, reported (not asserted: the exact
+        // cross-panel pin below is the guarantee)
+        let prev = std::env::var("FERRIC_GPU_MIXED_K_PANEL").ok();
+        std::env::set_var("FERRIC_GPU_MIXED_K_PANEL", n.to_string());
+        let k_a = dispatched_k(&xyz, "cc-pvdz", &c);
+        match prev {
+            Some(v) => std::env::set_var("FERRIC_GPU_MIXED_K_PANEL", v),
+            None => std::env::remove_var("FERRIC_GPU_MIXED_K_PANEL"),
         }
-
+        let ta = rms_ratio(&k_a, &k_twin, &s, eps);
         eprintln!(
             "{label}: n={n} naux={naux} nocc={nocc} b={b} bound_factor={eps:.3e}: \
-             clean {clean:.4e}  (a) plain f32 accumulation {defect_a:.4e}  (b) truncating upload {defect_b:.4e}"
+             bound ratio {clean:.4e}; twin RMS clean {tc:.4e} (a) plain f32 acc {ta:.4e} (b) truncating upload {tb:.4e}"
         );
         assert!(
             clean <= 1.0,
@@ -312,7 +309,181 @@ fn mixed_k_is_inside_its_bound_and_two_mutants_leave_it() {
                 assert_eq!(k_clean[(r, cc)], k_clean[(cc, r)]);
             }
         }
+        if n > b {
+            assert!(tc < TWIN_RMS_BAR, "{label}: clean twin RMS {tc:e} >= bar");
+            assert!(
+                tb > TWIN_RMS_BAR,
+                "{label}: truncating upload not caught ({tb:e})"
+            );
+        }
     }
+}
+
+/// n = b + 8, band = 1, nocc = 1: C[0] = C[b] = 1, B_0[0,nu*] = 2^24, B_0[b,nu*] = 1.
+/// Rows 0 and b fall in different k-panels, each panel sum has exactly one nonzero
+/// term, so each panel is exact in f32; the f64 flush gives Y[nu*] = 2^24 + 1 exactly
+/// and K[nu*,nu*] = (2^24+1)^2 = 2^48 + 2^25 + 1 (49 bits, exact in f64). Summing the
+/// panels in f32 (in any order) rounds 2^24 + 1 to 2^24 and gives 2^48.
+#[test]
+fn the_f64_flush_across_k_panels_is_pinned_exactly() {
+    let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    if !ready() {
+        return;
+    }
+    let b = MIXED_K_PANEL_DEFAULT;
+    let n = b + 8;
+    let nu = 5usize;
+    let mut flat = Array2::<f64>::zeros((1, n * n));
+    let p24 = (1u64 << 24) as f64;
+    flat[(0, nu)] = p24; // B_0[0, nu*]
+    flat[(0, b * n + nu)] = 1.0; // B_0[b, nu*]
+    flat[(0, nu * n)] = p24; // mirrors
+    flat[(0, nu * n + b)] = 1.0;
+    let mut c = Array2::<f64>::zeros((n, 1));
+    c[(0, 0)] = 1.0;
+    c[(b, 0)] = 1.0;
+    let dev = ferric_core::gpu::device::device(0).unwrap();
+    let mut d = DeviceDfK::upload_with_precision(
+        &dev,
+        &pool().unwrap(),
+        &flat.view(),
+        n,
+        DfkPrecision::Mixed,
+    )
+    .unwrap();
+    assert!(d.is_mixed());
+    let s0 = stats();
+    let mut k = Array2::zeros((n, n));
+    d.build_from_occ(&c.view(), &mut k).unwrap();
+    let panels = stats().mixed_panels - s0.mixed_panels;
+    assert_eq!(
+        panels,
+        n.div_ceil(effective_k_panel()) as u64,
+        "k_panel override in force? the pin needs b = {b}"
+    );
+    let want = (1u64 << 48) + (1u64 << 25) + 1;
+    assert_eq!(
+        k[(nu, nu)].to_bits(),
+        (want as f64).to_bits(),
+        "K[nu*,nu*] = {:e}, want 2^48 + 2^25 + 1 = {want}",
+        k[(nu, nu)]
+    );
+    let nonzero = k.iter().filter(|&&v| v != 0.0).count();
+    assert_eq!(nonzero, 1, "only K[nu*,nu*] is nonzero");
+}
+
+/// B_0 = I, nocc = 1: Y = C32 exactly, K_mu,nu = c32_mu * c32_nu, a 48-bit product
+/// exact in f64. Pins round-to-nearest-even of C_occ through the real kernel
+/// (truncation would differ at 1 + 3*2^-24 and 1 + 2^-24 + 2^-40; the tie 1 + 2^-24
+/// goes to the even neighbour 1.0 in both modes, so it pins ties-to-even only
+/// against round-half-up).
+#[test]
+fn c_occ_rounding_is_round_to_nearest_even_bit_for_bit_through_the_kernel() {
+    let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    if !ready() {
+        return;
+    }
+    let vals = [
+        1.0 + 3.0 * 2f64.powi(-24),
+        1.0 + 2f64.powi(-24),
+        1.0 + 2f64.powi(-24) + 2f64.powi(-40),
+        -(1.0 + 3.0 * 2f64.powi(-24)),
+        1.0 + 5.0 * 2f64.powi(-24), // tie between odd and even neighbours
+        0.1,
+        1.0 / 3.0,
+        std::f64::consts::PI,
+        -0.7,
+        0.0,
+        2f64.powi(-30) * 1.000_000_07,
+        123.456_789_012_345,
+    ];
+    let n = vals.len();
+    let mut flat = Array2::<f64>::zeros((1, n * n));
+    for i in 0..n {
+        flat[(0, i * n + i)] = 1.0;
+    }
+    let c = Array2::from_shape_fn((n, 1), |(i, _)| vals[i]);
+    let dev = ferric_core::gpu::device::device(0).unwrap();
+    let mut d = DeviceDfK::upload_with_precision(
+        &dev,
+        &pool().unwrap(),
+        &flat.view(),
+        n,
+        DfkPrecision::Mixed,
+    )
+    .unwrap();
+    assert!(d.is_mixed());
+    let mut k = Array2::zeros((n, n));
+    d.build_from_occ(&c.view(), &mut k).unwrap();
+    for i in 0..n {
+        for j in 0..n {
+            let want = (vals[i] as f32 as f64) * (vals[j] as f32 as f64);
+            // 0 * (-x) is -0 in the product but SYRK writes +0: zero compares by value
+            assert!(
+                k[(i, j)] == want && (want == 0.0 || k[(i, j)].to_bits() == want.to_bits()),
+                "K[{i},{j}] = {:e}, want {want:e}",
+                k[(i, j)]
+            );
+        }
+    }
+    // the values really do distinguish the modes
+    let trunc = |x: f64| {
+        let r = x as f32;
+        if f64::from(r).abs() > x.abs() {
+            f64::from(f32::from_bits(r.to_bits() - 1))
+        } else {
+            f64::from(r)
+        }
+    };
+    assert!(vals.iter().any(|&v| trunc(v) != v as f32 as f64));
+}
+
+/// Several chunks (a small scratch budget): every chunk must read ITS aux rows. A
+/// `p`-for-`p0 + p` offset would make every chunk reuse rows 0..c.
+#[test]
+fn a_mixed_build_over_many_chunks_matches_the_single_chunk_build() {
+    let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    if !ready() {
+        return;
+    }
+    let (c, _) = scf_occ(WATER, 1, "cc-pvdz");
+    let nocc = c.ncols();
+    let (mut dfk0, n) = dfk_for(WATER, "cc-pvdz");
+    let flat = dfk0.dressed_incore_flat_for_test().unwrap().to_owned();
+    let band = flat.nrows();
+    let s = s_matrix(&flat.view(), n, &c);
+    let k_host = host_k(&mut dfk0, &c);
+    let dev = ferric_core::gpu::device::device(0).unwrap();
+    let pool = pool().unwrap();
+    let mk = |bytes: Option<usize>| {
+        let mut d =
+            DeviceDfK::upload_with_precision(&dev, &pool, &flat.view(), n, DfkPrecision::Mixed)
+                .unwrap();
+        if let Some(b) = bytes {
+            d = d.with_scratch_bytes(b);
+        }
+        let mut k = Array2::zeros((n, n));
+        let plan = d.build_from_occ(&c.view(), &mut k).unwrap();
+        (k, plan)
+    };
+    let (k1, p1) = mk(None);
+    let (km, pm) = mk(Some(8 * nocc * n * 10)); // 10 aux rows per chunk
+    assert_eq!(p1.nchunks, 1);
+    assert_eq!(pm.chunk, 10);
+    assert_eq!(pm.nchunks, band.div_ceil(10));
+    assert!(pm.nchunks > 5);
+    let b = effective_k_panel();
+    // identical Y (same panels, same order): the K's differ by stage-2 order only
+    let eps2 = k_error_factor(n, band * nocc, 1) + k_error_factor(n, pm.chunk * nocc, pm.nchunks);
+    let d12 = max_ratio(&km, &k1, &s, eps2);
+    let eps = k_error_factor_mixed(n, b, pm.chunk * nocc, pm.nchunks) + eps_host(n, nocc, band);
+    let dh = max_ratio(&km, &k_host, &s, eps);
+    eprintln!(
+        "water: {} chunks: vs single-chunk mixed {d12:.3e} of the stage-2 bound; vs host {dh:.3e} of the mixed bound",
+        pm.nchunks
+    );
+    assert!(d12 <= 1.0, "many-chunk K != single-chunk K ({d12:e})");
+    assert!(dh <= 1.0);
 }
 
 const OH: &str = "2\nOH\nO 0 0 0\nH 0 0 0.97\n";
@@ -737,6 +908,7 @@ fn default_config_keeps_the_f64_path_bit_for_bit_and_moves_no_mixed_counter() {
 
 #[test]
 fn the_resolver_refuses_dfk_occ_in_this_build_and_a_kernel_list_with_f64() {
+    let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
     // This build ships no dfk-occ row: naming it is a refusal, so no config can
     // reach the mixed DF-K path before the C3 commit.
     assert!(!MixedKernelSet::SHIPPED.contains(MixedKernel::DfkOcc));
