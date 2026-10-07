@@ -9,28 +9,30 @@
 //! Run-to-run on one device the result is expected bit-identical (cuBLAS
 //! §2.1.4 reproducibility + a deterministic flush); the parity test measures it.
 //!
+//! Operand range: rounding to f32 turns |x| > f32::MAX into inf (the host
+//! wrapper refuses that with `GpuError::F32Range` so the caller can run f64)
+//! and loses the relative 2u32 term for f32-subnormal operands (|x| < 1.2e-38,
+//! absolute error <= 7e-46 per element instead); the model bound assumes
+//! normal-range operands.
+//!
+//! Variant (c) (hi/lo split, three products) was measured and is NOT shipped:
+//! at (256,8192,256) b = 128 its rms e is 5.7e-9 against 5.8e-9 for variant (b),
+//! ratio ~1.0 against the pre-registered 2x, because the error is the f32
+//! panel accumulation, not the operand rounding.
+//!
 //! Why a kernel: cublasGemmEx offers no f32-input / f64-accumulate combination
 //! (64F compute requires 64F A/B/C), and downloading each f32 panel to
 //! accumulate on the host would move ⌈k/b⌉·4 bytes per output element instead
-//! of 8 (3.5x the traffic at k = 912, b = 128).
+//! of 8 (4x the traffic at k = 912, b = 128: ⌈912/128⌉ = 8 panels, 8·4/8).
 use cudarc::cublas::{Gemm, GemmConfig};
 use cudarc::driver::{CudaSlice, LaunchConfig, PushKernelArg};
 use ndarray::{ArrayView2, ArrayViewMut2};
 
 use super::device::{Device, GpuError};
-use super::gemm::{col_major_desc, DevOperand};
+use super::gemm::{check_dev_geometry, col_major_desc, DevOperand};
 use super::pool::DevicePool;
+use super::precision::mixed_k_panel_override;
 use super::stats;
-
-/// TEMP: replaced by `gpu::precision::mixed_k_panel_override` once Task 4.0
-/// lands (one-line import swap). `FERRIC_GPU_MIXED_K_PANEL`; 0 or unset or
-/// unparsable means no override.
-fn mixed_k_panel_override() -> Option<usize> {
-    std::env::var("FERRIC_GPU_MIXED_K_PANEL")
-        .ok()
-        .and_then(|v| v.trim().parse::<usize>().ok())
-        .filter(|&b| b > 0)
-}
 
 /// Panel width. Provisional, set by the quiet-box sweep: 128 mirrors
 /// `GEMM_K_BLOCK` as a placeholder until
@@ -68,6 +70,8 @@ fn flush_launch(n_elems: usize) -> LaunchConfig {
 /// Device core on resident f32 operands. `c32` and `c64` hold m·n elements
 /// each (column-major n × m = row-major m × n); `c64` is zeroed here, so the
 /// result is `left·right` (beta 0). Returns the number of panels flushed.
+/// Operand shapes and both buffer lengths are checked first (typed
+/// `GpuError::Layout`, nothing launched or written).
 pub fn gemm_f32_f64acc_dev(
     dev: &Device,
     m: usize,
@@ -80,6 +84,14 @@ pub fn gemm_f32_f64acc_dev(
     k_panel: usize,
 ) -> Result<usize, GpuError> {
     let cuda = |e: std::fmt::Arguments| GpuError::Cuda(e.to_string());
+    check_dev_geometry(
+        m,
+        k,
+        n,
+        (left.rows, left.cols),
+        (right.rows, right.cols),
+        &[("c32", c32.len()), ("c64", c64.len())],
+    )?;
     let func = dev.axpy_f32_to_f64()?; // typed Kernel error BEFORE any work
     let s = &dev.stream;
     s.memset_zeros(c64)
@@ -128,9 +140,32 @@ pub fn gemm_f32_f64acc_dev(
     Ok(panels)
 }
 
+/// `x as f32` for a whole operand, refusing any finite f64 that overflows to
+/// inf in f32 (`GpuError::F32Range`, naming the operand and the first index).
+/// Existing inf/NaN inputs pass through unchanged (they are the caller's data).
+fn round_to_f32(label: &str, x: &[f64]) -> Result<Vec<f32>, GpuError> {
+    let mut out = Vec::with_capacity(x.len());
+    for (i, &v) in x.iter().enumerate() {
+        let r = v as f32;
+        if v.is_finite() && !r.is_finite() {
+            return Err(GpuError::F32Range(format!(
+                "{label}[{i}] = {v:e} exceeds f32::MAX"
+            )));
+        }
+        out.push(r);
+    }
+    Ok(out)
+}
+
 /// Host-view convenience (einsum path, tests): rounds and uploads the
 /// operands, runs the device core, downloads the f64 result. Same layout
 /// rules and refusals as `gemm_f64`.
+///
+/// Precondition: operands in the f32 normal range. A finite |x| > f32::MAX is
+/// refused with `GpuError::F32Range` (before any lease or transfer) so the
+/// caller can run f64; f32-subnormal operands (|x| < 1.2e-38) are accepted but
+/// lose the relative 2u32 term of the error bound. The kernel (`GpuError::Kernel`)
+/// and range checks run before the pool is touched.
 pub fn gemm_f32_f64acc(
     dev: &Device,
     pool: &DevicePool,
@@ -172,18 +207,20 @@ pub fn gemm_f32_f64acc(
     let db = col_major_desc(right, false).ok_or_else(|| {
         GpuError::Layout("right operand is neither standard nor transposed-standard".into())
     })?;
-    let la: Vec<f32> = left
-        .as_slice_memory_order()
-        .ok_or_else(|| GpuError::Layout("left not contiguous".into()))?
-        .iter()
-        .map(|&x| x as f32)
-        .collect();
-    let rb: Vec<f32> = right
-        .as_slice_memory_order()
-        .ok_or_else(|| GpuError::Layout("right not contiguous".into()))?
-        .iter()
-        .map(|&x| x as f32)
-        .collect();
+    // Kernel availability BEFORE any conversion, lease or transfer, so the
+    // caller's f64 fallback wastes no work.
+    dev.axpy_f32_to_f64()?;
+    let la = round_to_f32(
+        "left",
+        left.as_slice_memory_order()
+            .ok_or_else(|| GpuError::Layout("left not contiguous".into()))?,
+    )?;
+    let rb = round_to_f32(
+        "right",
+        right
+            .as_slice_memory_order()
+            .ok_or_else(|| GpuError::Layout("right not contiguous".into()))?,
+    )?;
     let bytes = mixed_offload_bytes(m, k, n);
     let _lease = pool.reserve("gemm_f32_f64acc operands+scratch+result", bytes)?;
     let s = &dev.stream;
@@ -200,18 +237,8 @@ pub fn gemm_f32_f64acc(
     let mut c64: CudaSlice<f64> = s
         .alloc_zeros(m * n)
         .map_err(|e| cuda(format_args!("alloc c64: {e:?}")))?;
-    let left_op = DevOperand {
-        view: d_a.slice(..),
-        op: da.op,
-        ld: da.ld,
-        k_step: da.k_step,
-    };
-    let right_op = DevOperand {
-        view: d_b.slice(..),
-        op: db.op,
-        ld: db.ld,
-        k_step: db.k_step,
-    };
+    let left_op = DevOperand::from_desc(d_a.slice(..), da, m, k)?;
+    let right_op = DevOperand::from_desc(d_b.slice(..), db, k, n)?;
     let panels = gemm_f32_f64acc_dev(
         dev, m, k, n, &left_op, &right_op, &mut c32, &mut c64, k_panel,
     )?;
@@ -240,6 +267,19 @@ mod tests {
             "regenerate with -arch=compute_61"
         );
         assert!(ptx.contains(".address_size 64"));
+    }
+
+    #[test]
+    fn f32_range_overflow_is_a_typed_error_naming_the_element() {
+        let e = round_to_f32("left", &[1.0, 2.0, 1e300, 4.0]).unwrap_err();
+        assert!(
+            matches!(e, GpuError::F32Range(ref s) if s.contains("left[2]")),
+            "{e:?}"
+        );
+        let ok = round_to_f32("right", &[f64::from(f32::MAX), -1e-300, 0.0]).unwrap();
+        assert_eq!(ok, vec![f32::MAX, 0.0, 0.0]);
+        // already-non-finite input is the caller's data, not an overflow
+        assert!(round_to_f32("x", &[f64::INFINITY, f64::NAN]).is_ok());
     }
 
     #[test]

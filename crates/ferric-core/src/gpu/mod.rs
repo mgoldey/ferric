@@ -16,6 +16,7 @@ pub mod gemm;
 #[cfg(feature = "gpu")]
 pub mod mixed;
 pub mod mixed_host;
+pub mod mixed_rules;
 #[cfg(feature = "gpu")]
 pub mod pool;
 pub mod precision;

@@ -76,33 +76,105 @@ pub fn offload_bytes(m: usize, k: usize, n: usize) -> usize {
 /// the operand's first element, `ld` is its leading dimension in the stored
 /// column-major matrix, `op` says whether cuBLAS transposes it, and `k_step`
 /// is the element offset per unit of k (see `col_major_desc`).
+///
+/// Soundness: the fields are crate-private and the only constructors
+/// ([`dev_operand`], `DevOperand::from_desc`) derive the descriptor from a
+/// `rows × cols` shape and check `view.len() == rows * cols`; the `*_dev`
+/// GEMMs then check that shape against the `(m, k, n)` they are given. A
+/// descriptor from `col_major_desc` for a contiguous `rows × cols` matrix never
+/// reads outside those `rows * cols` elements, so no caller can make the cuBLAS
+/// call read past a buffer (no `unsafe` in the public signatures).
 pub struct DevOperand<'a, T> {
-    pub view: CudaView<'a, T>,
-    pub op: cublasOperation_t,
-    pub ld: i32,
-    pub k_step: usize,
+    pub(crate) view: CudaView<'a, T>,
+    pub(crate) op: cublasOperation_t,
+    pub(crate) ld: i32,
+    pub(crate) k_step: usize,
+    pub(crate) rows: usize,
+    pub(crate) cols: usize,
+}
+
+impl<'a, T> DevOperand<'a, T> {
+    pub(crate) fn from_desc(
+        view: CudaView<'a, T>,
+        d: Desc,
+        rows: usize,
+        cols: usize,
+    ) -> Result<Self, GpuError> {
+        if view.len() != rows * cols {
+            return Err(GpuError::Layout(format!(
+                "device operand holds {} elements but its {rows}x{cols} shape needs {}",
+                view.len(),
+                rows * cols
+            )));
+        }
+        Ok(Self {
+            view,
+            op: d.op,
+            ld: d.ld,
+            k_step: d.k_step,
+            rows,
+            cols,
+        })
+    }
 }
 
 /// Describe a resident operand whose host twin `host` has the stored layout
-/// (the same two layouts `gemm_f64` accepts); `view` must hold exactly the
-/// elements of `host` in memory order. `None` for any other layout.
+/// (standard or transposed-standard, hence contiguous, the two layouts
+/// `gemm_f64` accepts). `view` must hold exactly `host.len()` elements in the
+/// host's memory order; anything else is a `GpuError::Layout`.
 pub fn dev_operand<'a, T>(
     view: CudaView<'a, T>,
     host: &ArrayView2<T>,
     k_is_cols: bool,
-) -> Option<DevOperand<'a, T>> {
-    let d = col_major_desc(host, k_is_cols)?;
-    Some(DevOperand {
-        view,
-        op: d.op,
-        ld: d.ld,
-        k_step: d.k_step,
-    })
+) -> Result<DevOperand<'a, T>, GpuError> {
+    let d = col_major_desc(host, k_is_cols).ok_or_else(|| {
+        GpuError::Layout("operand is neither standard nor transposed-standard".into())
+    })?;
+    DevOperand::from_desc(view, d, host.nrows(), host.ncols())
+}
+
+/// Device-free part of the `*_dev` argument checks: operand shapes against
+/// `(m, k, n)` and each output buffer's length against `m·n`.
+pub(crate) fn check_dev_geometry(
+    m: usize,
+    k: usize,
+    n: usize,
+    left: (usize, usize),
+    right: (usize, usize),
+    outputs: &[(&str, usize)],
+) -> Result<(), GpuError> {
+    if [m, k, n].iter().any(|&d| d > i32::MAX as usize) {
+        return Err(GpuError::Layout(format!(
+            "dimension exceeds cuBLAS i32 range: {m}x{k}x{n}"
+        )));
+    }
+    if left != (m, k) {
+        return Err(GpuError::Layout(format!(
+            "left operand is {}x{} but the product is {m}x{k}x{n}",
+            left.0, left.1
+        )));
+    }
+    if right != (k, n) {
+        return Err(GpuError::Layout(format!(
+            "right operand is {}x{} but the product is {m}x{k}x{n}",
+            right.0, right.1
+        )));
+    }
+    for &(name, len) in outputs {
+        if len < m * n {
+            return Err(GpuError::Layout(format!(
+                "output buffer {name} holds {len} elements, {m}x{n} needs {}",
+                m * n
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// The k-blocked f64 loop on resident operands; `c` holds m·n f64 in the
 /// column-major (n × m) layout that is row-major (m × n). Numerics unchanged:
-/// `gemm_f64` is upload + this + download.
+/// `gemm_f64` is upload + this + download. Shapes and buffer lengths are
+/// checked first (typed `GpuError::Layout`, nothing launched).
 pub fn gemm_f64_dev(
     dev: &Device,
     m: usize,
@@ -113,6 +185,14 @@ pub fn gemm_f64_dev(
     c: &mut CudaSlice<f64>,
     k_block: usize,
 ) -> Result<(), GpuError> {
+    check_dev_geometry(
+        m,
+        k,
+        n,
+        (left.rows, left.cols),
+        (right.rows, right.cols),
+        &[("c", c.len())],
+    )?;
     let cuda = |e: std::fmt::Arguments| GpuError::Cuda(e.to_string());
     let blas = dev.blas.lock().unwrap_or_else(|e| e.into_inner());
     let kb = k_block.max(1);
@@ -205,18 +285,8 @@ pub fn gemm_f64(
         .alloc_zeros(m * n)
         .map_err(|e| cuda(format_args!("alloc out: {e:?}")))?;
 
-    let left_op = DevOperand {
-        view: d_a.slice(..),
-        op: da.op,
-        ld: da.ld,
-        k_step: da.k_step,
-    };
-    let right_op = DevOperand {
-        view: d_b.slice(..),
-        op: db.op,
-        ld: db.ld,
-        k_step: db.k_step,
-    };
+    let left_op = DevOperand::from_desc(d_a.slice(..), da, m, k)?;
+    let right_op = DevOperand::from_desc(d_b.slice(..), db, k, n)?;
     gemm_f64_dev(dev, m, k, n, &left_op, &right_op, &mut d_c, k_block)?;
     let host = out.as_slice_mut().expect("standard layout checked above");
     s.memcpy_dtoh(&d_c, host)
@@ -272,6 +342,38 @@ mod tests {
         let a = Array2::<f64>::zeros((8, 8));
         assert!(col_major_desc(&a.slice(ndarray::s![..;-1, ..]), true).is_none());
         assert!(col_major_desc(&a.slice(ndarray::s![.., ..;-1]), false).is_none());
+    }
+
+    #[test]
+    fn dev_geometry_accepts_matching_shapes_and_exact_or_larger_outputs() {
+        assert!(check_dev_geometry(4, 6, 5, (4, 6), (6, 5), &[("c", 20)]).is_ok());
+        assert!(check_dev_geometry(4, 6, 5, (4, 6), (6, 5), &[("c", 99)]).is_ok());
+    }
+
+    #[test]
+    fn dev_geometry_refuses_each_short_or_mismatched_buffer_by_name() {
+        let e =
+            check_dev_geometry(4, 6, 5, (4, 6), (6, 5), &[("c32", 20), ("c64", 19)]).unwrap_err();
+        assert!(
+            matches!(e, GpuError::Layout(ref s) if s.contains("c64")),
+            "{e:?}"
+        );
+        let e = check_dev_geometry(4, 6, 5, (4, 7), (6, 5), &[]).unwrap_err();
+        assert!(
+            matches!(e, GpuError::Layout(ref s) if s.contains("left")),
+            "{e:?}"
+        );
+        let e = check_dev_geometry(4, 6, 5, (4, 6), (5, 5), &[]).unwrap_err();
+        assert!(
+            matches!(e, GpuError::Layout(ref s) if s.contains("right")),
+            "{e:?}"
+        );
+        let big = i32::MAX as usize + 1;
+        let e = check_dev_geometry(big, 1, 1, (big, 1), (1, 1), &[]).unwrap_err();
+        assert!(
+            matches!(e, GpuError::Layout(ref s) if s.contains("i32")),
+            "{e:?}"
+        );
     }
 
     #[test]

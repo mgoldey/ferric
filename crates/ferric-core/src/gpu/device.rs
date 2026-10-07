@@ -28,6 +28,10 @@ pub enum GpuError {
     Cuda(String),
     #[error("device kernel unavailable: {0}")]
     Kernel(String),
+    /// An operand element is not finite after rounding to f32 (|x| > f32::MAX
+    /// overflows to inf); the caller should run this GEMM in f64.
+    #[error("operand not representable in f32: {0}")]
+    F32Range(String),
 }
 
 pub struct Device {

@@ -15,6 +15,9 @@
 //! for every reachable k the bound is ≈ (b + 2)·u32 and independent of k. The
 //! two-precision optimum b* = sqrt(k·u64/u32) is < 1 for k < 5e8: smaller b is
 //! always more accurate, and b is chosen by throughput (see `mixed.rs`).
+//!
+//! The `2u32 + γ_b(u32)` term is first-order; the rigorous form is
+//! γ_{b+2}(u32), and the difference is covered by the 1.01 slack the tests apply.
 use ndarray::linalg::general_mat_mul;
 use ndarray::{s, Array2, ArrayView2, ArrayViewMut2, Zip};
 

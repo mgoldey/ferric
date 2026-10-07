@@ -9,7 +9,8 @@
 //!   cargo run --release -p ferric-benchmarks --features gpu --example gpu_mixed_gemm_sweep
 //!
 //! `FERRIC_SWEEP_SMOKE=1`: first (small) shape only, 1 rep; a wiring check, not
-//! a measurement, and the rules are not evaluated.
+//! a measurement; the rules ARE evaluated over its rows (restricted to the shape
+//! it ran) so a naming mismatch fails the smoke run, but the verdicts mean nothing.
 //!
 //! Operands are in [0, 1) (positive: |A||B| = AB, so an f32 accumulator cannot
 //! hide behind cancellation). Arm rows carry their own name, time and error.
@@ -98,11 +99,11 @@ fn main() {
         MIXED_K_PANEL_DEFAULT,
     };
     use ferric_core::gpu::mixed_host::gemm_f32_f64acc_host;
+    use ferric_core::gpu::mixed_rules::{evaluate_rules, render, ArmRow, ShapeRows, PANELS};
     use ferric_core::gpu::pool::DevicePool;
     use ndarray::{linalg::general_mat_mul, Array2};
     use std::time::Instant;
 
-    const PANELS: [usize; 5] = [64, 128, 256, 512, 1024];
     let smoke = std::env::var_os("FERRIC_SWEEP_SMOKE").is_some();
     let reps: usize = if smoke { 1 } else { 7 };
     println!(
@@ -133,7 +134,7 @@ fn main() {
     };
 
     // (shape, arm name -> (median_s, rms)) for the rules after the tables.
-    let mut results: Vec<((usize, usize, usize), Vec<(String, f64, f64)>)> = Vec::new();
+    let mut results: Vec<ShapeRows> = Vec::new();
 
     for &(m, k, n) in shapes {
         let a = lcg_positive(m, k, 1);
@@ -355,9 +356,16 @@ fn main() {
                 flops / tmed / 1e9,
                 arm.rms
             );
-            row.push((arm.name.clone(), tmed, arm.rms));
+            row.push(ArmRow {
+                name: arm.name.clone(),
+                median_s: tmed,
+                rms: arm.rms,
+            });
         }
-        results.push(((m, k, n), row));
+        results.push(ShapeRows {
+            shape: (m, k, n),
+            rows: row,
+        });
     }
 
     let psi_after = psi_cpu_some_avg10();
@@ -367,68 +375,26 @@ fn main() {
     if !quotable {
         println!("NOT QUOTABLE: box contested (timings and every rule verdict below are wiring checks only)");
     }
-    if smoke {
-        println!("smoke run: rules not evaluated");
-        return;
-    }
-
-    let find = |row: &[(String, f64, f64)], name: &str| -> (f64, f64) {
-        let r = row
-            .iter()
-            .find(|r| r.0.starts_with(name))
-            .unwrap_or_else(|| panic!("arm {name}"));
-        (r.1, r.2)
+    // The pre-registered rules live in ferric_core::gpu::mixed_rules (pure,
+    // unit-tested). The smoke run evaluates them over its real rows, with the
+    // panel rule restricted to the shapes it ran, so an arm-name mismatch
+    // fails here instead of at the end of a full sweep.
+    let rule_shapes: Vec<(usize, usize, usize)> = if smoke {
+        shapes.to_vec()
+    } else {
+        vec![(393, 912, 5895), (256, 8192, 256)]
     };
-    let row_of =
-        |shape: (usize, usize, usize)| &results.iter().find(|r| r.0 == shape).expect("shape").1;
-
-    // Panel rule: smallest b with mixed median throughput >= 0.25 x resident
-    // plain SGEMM at BOTH (393,912,5895) and (256,8192,256) (same flops, so the
-    // ratio of throughputs is the inverse ratio of medians).
-    let rule_shapes = [(393usize, 912usize, 5895usize), (256, 8192, 256)];
-    let mut candidate = None;
-    for &p in &PANELS {
-        let ok = rule_shapes.iter().all(|&sh| {
-            let row = row_of(sh);
-            let (t_sgemm, _) = find(row, "gpu_sgemm_resident");
-            let (t_mixed, _) = find(row, &format!("gpu_mixed_resident_b{p} "));
-            t_sgemm / t_mixed >= 0.25
-        });
-        if ok {
-            candidate = Some(p);
-            break;
+    match evaluate_rules(&results, &rule_shapes) {
+        Ok(outcome) => {
+            for line in render(&outcome) {
+                println!("{line}");
+            }
         }
+        Err(e) => panic!("rule evaluation failed: {e}"),
     }
-    match candidate {
-        Some(p) => println!("candidate MIXED_K_PANEL_DEFAULT = {p}"),
-        None => {
-            println!("candidate MIXED_K_PANEL_DEFAULT = none of {PANELS:?} meets the 0.25 rule")
-        }
+    if smoke {
+        println!("smoke run: rule verdicts above are wiring checks, not results");
     }
-    // Variant (c) rule.
-    let c_fires = results.iter().all(|(_, row)| {
-        let (t_b, _) = find(row, "gpu_mixed_resident_b128 ");
-        let (t_c, _) = find(row, "gpu_split3_resident_128");
-        t_c <= 2.0 * t_b
-    }) && results.iter().all(|(_, row)| {
-        let (_, e_b) = find(row, "gpu_mixed_resident_b128 ");
-        let (_, e_c) = find(row, "gpu_split3_resident_128");
-        e_b / e_c >= 2.0
-    });
-    println!(
-        "variant (c) rule: ship only if rms(b)/rms(c) >= 2 at b=128 AND t(c) <= 2 t(b) at every shape -> {}",
-        if c_fires { "fires" } else { "does not fire" }
-    );
-    // CPU counterpart rule (§3.6), all four shapes taken as the production shapes.
-    let cpu_fires = results.iter().all(|(_, row)| {
-        let (t_f64, _) = find(row, "cpu_f64");
-        let (t_mixed, _) = find(row, "cpu_mixed_b");
-        t_mixed <= 0.6 * t_f64
-    });
-    println!(
-        "CPU counterpart rule (§3.6): t(cpu_mixed) <= 0.6 t(cpu_f64) at every shape -> {}",
-        if cpu_fires { "fires" } else { "does not fire" }
-    );
     if !quotable {
         println!("NOT QUOTABLE: box contested");
     }
