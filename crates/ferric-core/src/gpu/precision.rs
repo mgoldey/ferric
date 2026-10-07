@@ -71,14 +71,20 @@ pub enum MixedKernel {
     /// COSX 3-centre kernel (`md3c1e`), routed per (pair, sub-batch) by the
     /// Hölder bound (Workstream D). Named only: not in `SHIPPED`.
     CosxKern = 8,
+    /// Device RI-J with the packed raw 3-index tensor resident as f32 and the
+    /// f64-accumulating mixed-storage GEMV (`crate::gpu::gemv::gemv_f32mat_f64_dev`).
+    /// Named only: not in `SHIPPED`, selectable only through the `df_k_gpu`
+    /// settings-override seam until its error map ships.
+    DfjPack = 16,
 }
 
 impl MixedKernel {
-    pub const ALL: [MixedKernel; 4] = [
+    pub const ALL: [MixedKernel; 5] = [
         MixedKernel::RiMp2Energy,
         MixedKernel::CcsdAmplitudes,
         MixedKernel::DfkOcc,
         MixedKernel::CosxKern,
+        MixedKernel::DfjPack,
     ];
 
     pub const fn name(self) -> &'static str {
@@ -87,6 +93,7 @@ impl MixedKernel {
             MixedKernel::CcsdAmplitudes => "ccsd-amplitudes",
             MixedKernel::DfkOcc => "dfk-occ",
             MixedKernel::CosxKern => "cosx-kern",
+            MixedKernel::DfjPack => "dfj-pack",
         }
     }
 }
@@ -262,7 +269,22 @@ mod tests {
         );
         assert!(MixedKernel::ALL.contains(&MixedKernel::CosxKern));
         assert!(!MixedKernelSet::SHIPPED.contains(MixedKernel::CosxKern));
-        assert_eq!(MixedKernel::ALL.len(), 4);
+        assert_eq!(MixedKernel::ALL.len(), 5);
+    }
+
+    #[test]
+    fn dfj_pack_is_named_in_all_and_not_shipped() {
+        assert_eq!(MixedKernel::DfjPack as u8, 16);
+        assert_eq!(MixedKernel::DfjPack.name(), "dfj-pack");
+        assert_eq!(
+            "dfj-pack".parse::<MixedKernel>().unwrap(),
+            MixedKernel::DfjPack
+        );
+        assert!(MixedKernel::ALL.contains(&MixedKernel::DfjPack));
+        assert!(!MixedKernelSet::SHIPPED.contains(MixedKernel::DfjPack));
+        let set = MixedKernelSet::SHIPPED.with(MixedKernel::DfjPack);
+        assert_eq!(set.to_string(), "rimp2-energy,dfj-pack");
+        assert_eq!(set.to_string().parse::<MixedKernelSet>().unwrap(), set);
     }
 
     #[test]

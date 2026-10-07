@@ -44,6 +44,17 @@ pub struct Device {
     /// Flush kernel for the mixed GEMM, loaded from committed PTX on first use.
     /// `Err` is cached too (one JIT attempt per process).
     kernel_axpy: OnceLock<Result<CudaFunction, String>>,
+    /// The f32-matrix / f64-vector GEMV kernels (`gemv_f32_f64_n`, `_t`), same
+    /// caching rule.
+    kernel_gemv_f32: OnceLock<Result<GemvF32Kernels, String>>,
+}
+
+/// The two entry points of `kernels/gemv_f32_f64.ptx`.
+pub struct GemvF32Kernels {
+    /// `y = A·x` (one block per row).
+    pub n: CudaFunction,
+    /// `y = Aᵀ·x` (32 columns × 16 row groups per block).
+    pub t: CudaFunction,
 }
 
 /// Test seam: makes `axpy_f32_to_f64` report a load failure so callers' f64
@@ -140,6 +151,7 @@ fn open(ordinal: usize) -> Result<Arc<Device>, GpuError> {
         stream,
         blas: Mutex::new(blas),
         kernel_axpy: OnceLock::new(),
+        kernel_gemv_f32: OnceLock::new(),
     }))
 }
 
@@ -173,6 +185,35 @@ impl Device {
                 module
                     .load_function("axpy_f32_to_f64")
                     .map_err(|e| format!("cuModuleGetFunction(axpy_f32_to_f64): {e:?}"))
+            })
+            .as_ref()
+            .map_err(|e| GpuError::Kernel(e.clone()))
+    }
+
+    /// The f32-matrix GEMV kernels, JIT-loaded from the committed PTX. The same
+    /// `FORCE_KERNEL_FAILURE` seam makes this report a load failure.
+    pub fn gemv_f32_f64(&self) -> Result<&GemvF32Kernels, GpuError> {
+        if kernel_failure_forced() {
+            return Err(GpuError::Kernel(
+                "forced by FORCE_KERNEL_FAILURE (test)".into(),
+            ));
+        }
+        self.kernel_gemv_f32
+            .get_or_init(|| {
+                let ptx = Ptx::from_src(include_str!("kernels/gemv_f32_f64.ptx"));
+                let module = self
+                    .ctx
+                    .load_module(ptx)
+                    .map_err(|e| format!("cuModuleLoadData(gemv_f32_f64.ptx): {e:?}"))?;
+                let load = |name: &str| {
+                    module
+                        .load_function(name)
+                        .map_err(|e| format!("cuModuleGetFunction({name}): {e:?}"))
+                };
+                Ok(GemvF32Kernels {
+                    n: load("gemv_f32_f64_n")?,
+                    t: load("gemv_f32_f64_t")?,
+                })
             })
             .as_ref()
             .map_err(|e| GpuError::Kernel(e.clone()))
