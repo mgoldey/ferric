@@ -259,7 +259,10 @@ impl<'a> DfK<'a> {
         } else {
             ThreeIndexSource::build_dressed_band(raw, &v_inv_sqrt, budget_bytes, p0, p1)?
         };
-        // The caller owns `raw`; DfK retains only the dressed tensor.
+        // The caller owns `raw`; DfK retains only the dressed tensor. Dressing
+        // is the one streaming pass over `raw`; a packed `raw` that moves on
+        // into DfJ must not keep its unpacked scratch block for the whole SCF.
+        raw.release_scratch();
 
         let ctx = ctx.filter(|c| c.size > 1);
         Ok(DfK {
@@ -620,6 +623,37 @@ mod tests {
     use ferric_core::basis;
     use ferric_core::mol::Molecule;
     use ferric_core::parallel::ParallelContext;
+
+    /// Dressing is the one streaming pass over a shared packed `raw`; the
+    /// unpacked scratch block it allocated must be gone once `from_full_raw`
+    /// returns, since `raw` then lives on inside DfJ for the whole SCF.
+    #[test]
+    fn dressing_a_packed_raw_releases_its_unpack_scratch() {
+        let mol = Molecule::load_xyz("../../testdata/molecules/alkane_3.xyz").unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("def2-svp").unwrap()).unwrap();
+        let dfbs =
+            PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let (n, naux) = (obs.nbasis(), dfbs.nbasis());
+        let budget = (naux * n * n * 8 + naux * (n * (n + 1) / 2) * 8) / 2;
+        let mut raw = ThreeIndexSource::build(op, &obs, &dfbs, budget).unwrap();
+        assert!(raw.is_packed_incore_for_test(), "must be the packed tier");
+        assert_eq!(raw.scratch_bytes(), 0);
+        let mut probe = ThreeIndexSource::build(op, &obs, &dfbs, budget).unwrap();
+        probe.for_each_block(|_| Ok(())).unwrap();
+        assert!(
+            probe.scratch_bytes() > 0,
+            "a streaming pass allocates scratch"
+        );
+        probe.release_scratch();
+        assert_eq!(probe.scratch_bytes(), 0);
+        DfK::from_full_raw(&mut raw, &obs, &dfbs, op, budget, None).unwrap();
+        assert_eq!(
+            raw.scratch_bytes(),
+            0,
+            "dressing left the scratch allocated"
+        );
+    }
 
     #[test]
     fn df_k_matches_direct_k_with_jkfit() {

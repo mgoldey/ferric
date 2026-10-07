@@ -1461,6 +1461,20 @@ impl ThreeIndexSource {
         let align = align.max(1);
         let rows = self.packed_stream_rows(align);
         let (band, band_p0, nao) = (self.band_naux(), self.band_p0, self.nao);
+        // The read-ahead pipeline holds up to three blocks (one consumed, one
+        // queued, one being read) and the recompute backend one unpacked block
+        // plus its packed copy; neither is part of the tensor's own charge.
+        let _charge = match &self.backend {
+            Backend::DiskSpill { .. } => Some(charge_three_index_soft(
+                "DF 3-index packed read-ahead blocks",
+                3 * rows * packed_pair_len(nao) * 8,
+            )),
+            Backend::Recompute { .. } => Some(charge_three_index_soft(
+                "DF 3-index packed recompute block",
+                rows * (nao * nao + packed_pair_len(nao)) * 8,
+            )),
+            _ => None,
+        };
         match &mut self.backend {
             Backend::InCore(_) => Err(FerricError::General(
                 "packed streaming needs a packed, spilled or recompute source".into(),
@@ -1479,6 +1493,28 @@ impl ThreeIndexSource {
                 let scr = screen.as_ref().map(|(b, t)| (b.as_ref(), *t));
                 stream_recompute_packed((*op, obs, dfbs, scr), (band, band_p0, rows), f)
             }
+        }
+    }
+
+    /// Free the unpacked scratch block a packed in-core source allocated for
+    /// `for_each_block`. The next `for_each_block` allocates it again, so this is
+    /// safe at any point; a consumer that streams once (the DF-K dressing) calls
+    /// it so the block is not held for the rest of the SCF. A no-op for every
+    /// other tier.
+    pub fn release_scratch(&mut self) {
+        if let Backend::InCorePacked { scratch, .. } = &mut self.backend {
+            *scratch = None;
+        }
+    }
+
+    /// Bytes of the unpacked scratch block currently held (0 unless a packed
+    /// in-core source has streamed and not released it).
+    pub fn scratch_bytes(&self) -> usize {
+        match &self.backend {
+            Backend::InCorePacked {
+                scratch: Some(s), ..
+            } => s.len() * 8,
+            _ => 0,
         }
     }
 
@@ -1569,6 +1605,15 @@ impl ThreeIndexSource {
         match &mut self.backend {
             Backend::InCore(eri) => stream_in_core(eri, band, band_p0, step, f),
             Backend::InCorePacked { packed, scratch } => {
+                // The unpacked block is allocated on this first pass; charge it
+                // while the pass runs (soft: the packed tensor already holds the
+                // hard charge). `release_scratch` frees it afterwards.
+                let _charge = scratch.is_none().then(|| {
+                    charge_three_index_soft(
+                        "DF 3-index packed unpack scratch",
+                        step * nao * nao * 8,
+                    )
+                });
                 stream_packed(packed, scratch, nao, band, band_p0, step, f)
             }
             Backend::Recompute {
