@@ -8,7 +8,7 @@
 //! for the bound that IS guaranteed.
 use cudarc::cublas::sys::cublasOperation_t;
 use cudarc::cublas::{Gemm, GemmConfig};
-use cudarc::driver::CudaSlice;
+use cudarc::driver::{CudaSlice, CudaView};
 use ndarray::{ArrayView2, ArrayViewMut2};
 
 use super::device::{Device, GpuError};
@@ -28,7 +28,7 @@ pub(crate) struct Desc {
 /// `Some` for the two layouts the device path accepts, `None` otherwise.
 /// `k_is_cols` says whether the contraction index is this operand's COLUMN
 /// axis in row-major terms (true for `left`, false for `right`).
-pub(crate) fn col_major_desc(v: &ArrayView2<f64>, k_is_cols: bool) -> Option<Desc> {
+pub(crate) fn col_major_desc<T>(v: &ArrayView2<T>, k_is_cols: bool) -> Option<Desc> {
     let (r, c) = (v.nrows(), v.ncols());
     if v.is_standard_layout() {
         // Row-major (r×c) memory read as column-major with ld = c is the
@@ -69,6 +69,77 @@ pub(crate) fn col_major_desc(v: &ArrayView2<f64>, k_is_cols: bool) -> Option<Des
 /// Bytes the pool is charged for one offload: both operands and the result.
 pub fn offload_bytes(m: usize, k: usize, n: usize) -> usize {
     8 * (m * k + k * n + m * n)
+}
+
+/// One operand already on the device, described the way cuBLAS reads it after
+/// the row-major → column-major swap (`outᵀ = rightᵀ·leftᵀ`): `view` starts at
+/// the operand's first element, `ld` is its leading dimension in the stored
+/// column-major matrix, `op` says whether cuBLAS transposes it, and `k_step`
+/// is the element offset per unit of k (see `col_major_desc`).
+pub struct DevOperand<'a, T> {
+    pub view: CudaView<'a, T>,
+    pub op: cublasOperation_t,
+    pub ld: i32,
+    pub k_step: usize,
+}
+
+/// Describe a resident operand whose host twin `host` has the stored layout
+/// (the same two layouts `gemm_f64` accepts); `view` must hold exactly the
+/// elements of `host` in memory order. `None` for any other layout.
+pub fn dev_operand<'a, T>(
+    view: CudaView<'a, T>,
+    host: &ArrayView2<T>,
+    k_is_cols: bool,
+) -> Option<DevOperand<'a, T>> {
+    let d = col_major_desc(host, k_is_cols)?;
+    Some(DevOperand {
+        view,
+        op: d.op,
+        ld: d.ld,
+        k_step: d.k_step,
+    })
+}
+
+/// The k-blocked f64 loop on resident operands; `c` holds m·n f64 in the
+/// column-major (n × m) layout that is row-major (m × n). Numerics unchanged:
+/// `gemm_f64` is upload + this + download.
+pub fn gemm_f64_dev(
+    dev: &Device,
+    m: usize,
+    k: usize,
+    n: usize,
+    left: &DevOperand<'_, f64>,
+    right: &DevOperand<'_, f64>,
+    c: &mut CudaSlice<f64>,
+    k_block: usize,
+) -> Result<(), GpuError> {
+    let cuda = |e: std::fmt::Arguments| GpuError::Cuda(e.to_string());
+    let blas = dev.blas.lock().unwrap_or_else(|e| e.into_inner());
+    let kb = k_block.max(1);
+    let mut k0 = 0usize;
+    while k0 < k {
+        let k1 = (k0 + kb).min(k);
+        let cfg = GemmConfig {
+            transa: right.op,
+            transb: left.op,
+            m: n as i32,
+            n: m as i32,
+            k: (k1 - k0) as i32,
+            alpha: 1.0,
+            lda: right.ld,
+            ldb: left.ld,
+            beta: if k0 == 0 { 0.0 } else { 1.0 },
+            ldc: n as i32,
+        };
+        let a_view = right.view.slice(k0 * right.k_step..);
+        let b_view = left.view.slice(k0 * left.k_step..);
+        // SAFETY: shapes and leading dimensions come from the descriptors and
+        // the buffers hold exactly those elements.
+        unsafe { blas.gemm(cfg, &a_view, &b_view, c) }
+            .map_err(|e| cuda(format_args!("cublasDgemm k-block {k0}..{k1}: {e:?}")))?;
+        k0 = k1;
+    }
+    Ok(())
 }
 
 pub fn gemm_f64(
@@ -134,32 +205,19 @@ pub fn gemm_f64(
         .alloc_zeros(m * n)
         .map_err(|e| cuda(format_args!("alloc out: {e:?}")))?;
 
-    let blas = dev.blas.lock().unwrap_or_else(|e| e.into_inner());
-    let kb = k_block.max(1);
-    let mut k0 = 0usize;
-    while k0 < k {
-        let k1 = (k0 + kb).min(k);
-        let cfg = GemmConfig {
-            transa: db.op,
-            transb: da.op,
-            m: n as i32,
-            n: m as i32,
-            k: (k1 - k0) as i32,
-            alpha: 1.0,
-            lda: db.ld,
-            ldb: da.ld,
-            beta: if k0 == 0 { 0.0 } else { 1.0 },
-            ldc: n as i32,
-        };
-        let a_view = d_b.slice(k0 * db.k_step..);
-        let b_view = d_a.slice(k0 * da.k_step..);
-        // SAFETY: shapes/leading dimensions were derived from the ndarray views
-        // above and the device buffers hold exactly those elements.
-        unsafe { blas.gemm(cfg, &a_view, &b_view, &mut d_c) }
-            .map_err(|e| cuda(format_args!("cublasDgemm k-block {k0}..{k1}: {e:?}")))?;
-        k0 = k1;
-    }
-    drop(blas);
+    let left_op = DevOperand {
+        view: d_a.slice(..),
+        op: da.op,
+        ld: da.ld,
+        k_step: da.k_step,
+    };
+    let right_op = DevOperand {
+        view: d_b.slice(..),
+        op: db.op,
+        ld: db.ld,
+        k_step: db.k_step,
+    };
+    gemm_f64_dev(dev, m, k, n, &left_op, &right_op, &mut d_c, k_block)?;
     let host = out.as_slice_mut().expect("standard layout checked above");
     s.memcpy_dtoh(&d_c, host)
         .map_err(|e| cuda(format_args!("D2H out: {e:?}")))?;

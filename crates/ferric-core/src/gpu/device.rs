@@ -3,10 +3,12 @@
 //! PANIC (cudarc src/lib.rs `panic_no_lib_found`) from ever firing: we dlopen
 //! the two libraries ourselves first and turn absence into an error.
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use cudarc::cublas::CudaBlas;
-use cudarc::driver::{sys, CudaContext, CudaStream};
+use cudarc::driver::{sys, CudaContext, CudaFunction, CudaStream};
+use cudarc::nvrtc::Ptx;
 
 use super::GpuInfo;
 
@@ -24,6 +26,8 @@ pub enum GpuError {
     Layout(String),
     #[error("cuBLAS/CUDA call failed: {0}")]
     Cuda(String),
+    #[error("device kernel unavailable: {0}")]
+    Kernel(String),
 }
 
 pub struct Device {
@@ -32,7 +36,15 @@ pub struct Device {
     pub stream: Arc<CudaStream>,
     /// cuBLAS handles are not safe for concurrent use; serialize callers.
     pub blas: Mutex<CudaBlas>,
+    /// Flush kernel for the mixed GEMM, loaded from committed PTX on first use.
+    /// `Err` is cached too (one JIT attempt per process).
+    kernel_axpy: OnceLock<Result<CudaFunction, String>>,
 }
+
+/// Test seam: makes `axpy_f32_to_f64` report a load failure so callers' f64
+/// fallback can be exercised on a healthy machine.
+#[doc(hidden)]
+pub static FORCE_KERNEL_FAILURE: AtomicBool = AtomicBool::new(false);
 
 fn precheck_libraries() -> Result<(), GpuError> {
     precheck_named(&["libcuda.so.1"], &["libcublas.so.12", "libcublas.so"])
@@ -110,6 +122,7 @@ fn open(ordinal: usize) -> Result<Arc<Device>, GpuError> {
         ctx,
         stream,
         blas: Mutex::new(blas),
+        kernel_axpy: OnceLock::new(),
     }))
 }
 
@@ -126,6 +139,28 @@ pub fn device(ordinal: usize) -> Result<Arc<Device>, GpuError> {
 }
 
 impl Device {
+    /// The `c64 += (double) c32` flush kernel, JIT-loaded from the committed PTX.
+    pub fn axpy_f32_to_f64(&self) -> Result<&CudaFunction, GpuError> {
+        if FORCE_KERNEL_FAILURE.load(Ordering::Relaxed) {
+            return Err(GpuError::Kernel(
+                "forced by FORCE_KERNEL_FAILURE (test)".into(),
+            ));
+        }
+        self.kernel_axpy
+            .get_or_init(|| {
+                let ptx = Ptx::from_src(include_str!("kernels/axpy_f32_to_f64.ptx"));
+                let module = self
+                    .ctx
+                    .load_module(ptx)
+                    .map_err(|e| format!("cuModuleLoadData(axpy_f32_to_f64.ptx): {e:?}"))?;
+                module
+                    .load_function("axpy_f32_to_f64")
+                    .map_err(|e| format!("cuModuleGetFunction(axpy_f32_to_f64): {e:?}"))
+            })
+            .as_ref()
+            .map_err(|e| GpuError::Kernel(e.clone()))
+    }
+
     /// Current (free, total) device memory in bytes.
     pub fn mem_info(&self) -> Result<(usize, usize), GpuError> {
         self.ctx

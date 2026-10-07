@@ -10,6 +10,9 @@ static GEMM_CPU_LAYOUT: AtomicU64 = AtomicU64::new(0);
 static GEMM_CPU_CUDA_ERROR: AtomicU64 = AtomicU64::new(0);
 static BYTES_H2D: AtomicU64 = AtomicU64::new(0);
 static BYTES_D2H: AtomicU64 = AtomicU64::new(0);
+static GEMM_MIXED: AtomicU64 = AtomicU64::new(0);
+static MIXED_PANELS: AtomicU64 = AtomicU64::new(0);
+static MIXED_FALLBACK_F64: AtomicU64 = AtomicU64::new(0);
 
 /// Why a GEMM ran on the CPU although the GPU mode was not `off`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +31,22 @@ pub fn note_offloaded(h2d: usize, d2h: usize) {
     GEMM_OFFLOADED.fetch_add(1, Ordering::Relaxed);
     BYTES_H2D.fetch_add(h2d as u64, Ordering::Relaxed);
     BYTES_D2H.fetch_add(d2h as u64, Ordering::Relaxed);
+}
+
+/// A mixed-precision GEMM ran on the device (`panels` flushes).
+#[doc(hidden)]
+pub fn note_mixed(panels: usize, h2d: usize, d2h: usize) {
+    GEMM_MIXED.fetch_add(1, Ordering::Relaxed);
+    MIXED_PANELS.fetch_add(panels as u64, Ordering::Relaxed);
+    BYTES_H2D.fetch_add(h2d as u64, Ordering::Relaxed);
+    BYTES_D2H.fetch_add(d2h as u64, Ordering::Relaxed);
+}
+
+/// Mixed was requested and allowed, but the call ran in f64 on the device
+/// (kernel unavailable or a mixed-path CUDA error). Never silent.
+#[doc(hidden)]
+pub fn note_mixed_fallback() {
+    MIXED_FALLBACK_F64.fetch_add(1, Ordering::Relaxed);
 }
 
 /// `FERRIC_GPU_TRACE`, read once: the per-fallback print costs one cached load
@@ -72,6 +91,9 @@ pub struct GpuStatsSnapshot {
     pub gemm_cpu_cuda_error: u64,
     pub bytes_h2d: u64,
     pub bytes_d2h: u64,
+    pub gemm_mixed: u64,
+    pub mixed_panels: u64,
+    pub mixed_fallback_f64: u64,
 }
 
 pub fn stats() -> GpuStatsSnapshot {
@@ -84,5 +106,8 @@ pub fn stats() -> GpuStatsSnapshot {
         gemm_cpu_cuda_error: GEMM_CPU_CUDA_ERROR.load(Ordering::Relaxed),
         bytes_h2d: BYTES_H2D.load(Ordering::Relaxed),
         bytes_d2h: BYTES_D2H.load(Ordering::Relaxed),
+        gemm_mixed: GEMM_MIXED.load(Ordering::Relaxed),
+        mixed_panels: MIXED_PANELS.load(Ordering::Relaxed),
+        mixed_fallback_f64: MIXED_FALLBACK_F64.load(Ordering::Relaxed),
     }
 }
