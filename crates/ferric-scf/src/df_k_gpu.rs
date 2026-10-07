@@ -1,0 +1,459 @@
+//! Device-resident DF-K, occupied path. The dressed tensor `B[P,μ,ν]` (this
+//! rank's aux band, in-core) is uploaded ONCE per `DfK` under the pool label
+//! "DF-K dressed B"; each `build_from_occ` then moves only `C_occ` up and `K`
+//! down (`8·n·nocc` and `8·n²` bytes).
+//!
+//! Per chunk of `c` aux rows (one strided-batched GEMM, one SYRK):
+//!   Y_P = C_occᵀ · B_P         (nocc × n each, stacked: Y is (c·nocc) × n row-major;
+//!                               B_P is symmetric, so this is (B_P·C_occ)ᵀ)
+//!   K_F += Y_F · Y_Fᵀ          (Y_F = the n × (c·nocc) column-major view, ld = n)
+//! K is symmetric; SYRK fills the Fortran-lower triangle (= row-major upper, the
+//! CPU path's convention) and the host mirrors upper → lower after one n² download.
+//! Chunks run in ascending aux order on one stream, accumulating on the device
+//! (`beta = 0` for the first chunk, `1` after); the result does not depend on
+//! the rayon worker count and is deterministic run to run on one device. It is
+//! NOT bit-identical to the CPU path (different summation order): the contract
+//! is the two-stage Higham bound of [`k_error_factor`].
+//!
+//! Error model (Higham, ASNA §3.5; u = 2⁻⁵³, γ_k = ku/(1−ku)): stage 1 has depth
+//! n, stage 2 sums `k_chunk + nchunks` terms per element (a SYRK of depth
+//! `c·nocc` per chunk, then `nchunks` sequential accumulations). With
+//! `S_μν = Σ_{P,i} (|B_P||C|)_μi (|B_P||C|)_νi`:
+//! `|K̂ − K| ≤ ε·S`, `ε = 2γ_n + γ_n² + γ_{k_chunk+nchunks}(1+γ_n)²`.
+//!
+//! Precision: everything here is f64 for every `[gpu] precision` setting (no DF-K
+//! kernel is in the mixed allowlist); `Y` is the f64 panel a mixed half-transform
+//! would flush into.
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+use ferric_core::gpu::batched::{
+    dev_batched_left, dev_batched_right, gemm_f64_strided_batched_dev, syrk_f64_dev, BatchedDims,
+};
+use ferric_core::gpu::device::{device, Device, GpuError};
+use ferric_core::gpu::mixed_host::{gamma, round_trip_f32, U64};
+use ferric_core::gpu::pool::DevicePool;
+use ferric_core::gpu::resident::DeviceMatrix;
+use ferric_core::gpu::stats::{self, CpuReason};
+use ferric_core::gpu::{GpuMode, GpuStatus};
+use ferric_core::parallel::ParallelContext;
+use ferric_integrals::three_index_source::ThreeIndexSource;
+use ndarray::{Array2, ArrayView2};
+
+/// Upper bound on the half-transform scratch `Y` ((chunk·nocc) × n f64).
+/// A default, not a tuned value (override with [`DeviceDfK::with_scratch_bytes`]); at
+/// benzene/aug-cc-pVTZ the scratch for ALL 558 aux rows is 38.8 MB, so one chunk covers the band.
+pub const SCRATCH_BYTES_DEFAULT: usize = 256 << 20;
+
+/// Test seam: the dispatcher reports "not handled" so the CPU path runs.
+#[doc(hidden)]
+pub static FORCE_HOST: AtomicBool = AtomicBool::new(false);
+/// Test seam: `build_from_occ` fails after the upload AND all chunk work, before
+/// anything reaches the host `k` (a mid-build CUDA error stand-in).
+#[doc(hidden)]
+pub static FORCE_BUILD_FAILURE: AtomicBool = AtomicBool::new(false);
+/// Test seam (mutation): upload `B` rounded through f32. Measures the
+/// "defect present" side of the SCF energy gate; never set in production.
+#[doc(hidden)]
+pub static ROUND_B_TO_F32: AtomicBool = AtomicBool::new(false);
+
+/// Aux rows per chunk and the number of chunks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChunkPlan {
+    pub chunk: usize,
+    pub nchunks: usize,
+}
+
+fn checked_elems(dims: &[usize], what: &str) -> Result<usize, GpuError> {
+    dims.iter()
+        .try_fold(1usize, |a, &d| a.checked_mul(d))
+        .ok_or_else(|| GpuError::Layout(format!("{what}: {dims:?} elements overflow usize")))
+}
+
+fn f64_bytes(elems: usize, what: &str) -> Result<usize, GpuError> {
+    elems
+        .checked_mul(8)
+        .ok_or_else(|| GpuError::Layout(format!("{what}: {elems} f64 overflow usize")))
+}
+
+/// Bytes the resident state holds for a band: `8·(band·n² + n²)` (B + K accumulator).
+pub fn resident_bytes(band_naux: usize, n: usize) -> Result<usize, GpuError> {
+    let b = checked_elems(&[band_naux, n, n], "DF-K dressed B")?;
+    let k = checked_elems(&[n, n], "DF-K K accumulator")?;
+    let total = b
+        .checked_add(k)
+        .ok_or_else(|| GpuError::Layout("DF-K resident size overflows usize".into()))?;
+    f64_bytes(total, "DF-K resident")
+}
+
+/// `chunk = min(scratch_bytes / (8·nocc·n), band_naux, i32::MAX / nocc)`; zero
+/// sizes plan no work. A budget that cannot hold one aux row is a typed
+/// `PoolFull` naming the scratch. Pure: no thread count, no device query.
+pub fn chunk_plan(
+    band_naux: usize,
+    n: usize,
+    nocc: usize,
+    scratch_bytes: usize,
+) -> Result<ChunkPlan, GpuError> {
+    if band_naux == 0 || n == 0 || nocc == 0 {
+        return Ok(ChunkPlan {
+            chunk: 0,
+            nchunks: 0,
+        });
+    }
+    let per_aux = f64_bytes(
+        checked_elems(&[nocc, n], "DF-K half-transform scratch")?,
+        "DF-K half-transform scratch",
+    )?;
+    let chunk = (scratch_bytes / per_aux)
+        .min(band_naux)
+        .min(i32::MAX as usize / nocc);
+    if chunk == 0 {
+        return Err(GpuError::PoolFull {
+            label: "DF-K half-transform scratch".into(),
+            detail: format!(
+                "one aux row needs {per_aux} B but the scratch budget is {scratch_bytes} B"
+            ),
+        });
+    }
+    Ok(ChunkPlan {
+        chunk,
+        nchunks: band_naux.div_ceil(chunk),
+    })
+}
+
+/// ε of the module docs: `|K̂ − K| ≤ ε·S` for the device path.
+pub fn k_error_factor(n: usize, k_chunk: usize, nchunks: usize) -> f64 {
+    let gn = gamma(n, U64);
+    let gl = gamma(k_chunk.saturating_add(nchunks), U64);
+    2.0 * gn + gn * gn + gl * (1.0 + gn) * (1.0 + gn)
+}
+
+struct Scratch {
+    /// Largest `nocc` this scratch was sized for (UHF α/β reuse it).
+    nocc_cap: usize,
+    chunk: usize,
+    c_dev: DeviceMatrix<f64>,
+    y: DeviceMatrix<f64>,
+}
+
+/// The resident state for one `DfK`.
+pub struct DeviceDfK {
+    dev: Arc<Device>,
+    pool: DevicePool,
+    n: usize,
+    band: usize,
+    b: DeviceMatrix<f64>,
+    k_dev: DeviceMatrix<f64>,
+    scratch: Option<Scratch>,
+    /// Zeros, n² long: stride-only host twins for the operand descriptors
+    /// (their contents are never read).
+    twin: Vec<f64>,
+    scratch_bytes: usize,
+}
+
+impl DeviceDfK {
+    /// Reserve and upload. `b_flat` is `(band_naux × n²)` row-major (the
+    /// in-core band from `ThreeIndexSource::incore_flat`). The small K
+    /// accumulator is reserved FIRST so a refusal of the large `B` moves no
+    /// bytes and leaks nothing; `B` is charged under "DF-K dressed B".
+    pub fn upload(
+        dev: &Arc<Device>,
+        pool: &DevicePool,
+        b_flat: &ArrayView2<f64>,
+        n: usize,
+    ) -> Result<Self, GpuError> {
+        let (band, n2) = b_flat.dim();
+        if n == 0 || band == 0 || n.checked_mul(n) != Some(n2) {
+            return Err(GpuError::Layout(format!(
+                "flat dressed B is {band}x{n2}; expected (band x n*n) with n = {n}, both non-zero"
+            )));
+        }
+        resident_bytes(band, n)?;
+        let k_dev = DeviceMatrix::<f64>::zeros(dev, pool, "DF-K K accumulator", n, n)?;
+        let b = DeviceMatrix::<f64>::upload(dev, pool, "DF-K dressed B", b_flat)?;
+        Ok(Self {
+            dev: Arc::clone(dev),
+            pool: pool.clone(),
+            n,
+            band,
+            b,
+            k_dev,
+            scratch: None,
+            twin: vec![0.0; n2],
+            scratch_bytes: SCRATCH_BYTES_DEFAULT,
+        })
+    }
+
+    /// Override the scratch ceiling (tests force many chunks).
+    pub fn with_scratch_bytes(mut self, bytes: usize) -> Self {
+        self.scratch = None;
+        self.scratch_bytes = bytes;
+        self
+    }
+
+    fn ensure_scratch(&mut self, nocc: usize) -> Result<(), GpuError> {
+        if matches!(&self.scratch, Some(s) if s.nocc_cap >= nocc) {
+            return Ok(());
+        }
+        // Release the old charge BEFORE sizing the new one.
+        self.scratch = None;
+        let c_bytes = f64_bytes(checked_elems(&[self.n, nocc], "DF-K C_occ")?, "DF-K C_occ")?;
+        let budget = self
+            .scratch_bytes
+            .min(self.pool.available_bytes().saturating_sub(c_bytes));
+        let plan = chunk_plan(self.band, self.n, nocc, budget)?;
+        let c_dev = DeviceMatrix::<f64>::zeros(&self.dev, &self.pool, "DF-K C_occ", self.n, nocc)?;
+        let y = DeviceMatrix::<f64>::zeros(
+            &self.dev,
+            &self.pool,
+            "DF-K half-transform scratch",
+            plan.chunk * nocc, // ≤ i32::MAX by chunk_plan
+            self.n,
+        )?;
+        self.scratch = Some(Scratch {
+            nocc_cap: nocc,
+            chunk: plan.chunk,
+            c_dev,
+            y,
+        });
+        Ok(())
+    }
+
+    /// `K = Σ_P (B_P C)(B_P C)ᵀ` for this band, written into `k` (n × n, any
+    /// layout). `nocc = 0` writes zeros without touching the device. On error `k`
+    /// is untouched.
+    pub fn build_from_occ(
+        &mut self,
+        c_occ: &ArrayView2<f64>,
+        k: &mut Array2<f64>,
+    ) -> Result<ChunkPlan, GpuError> {
+        let n = self.n;
+        let lay = |s: String| GpuError::Layout(s);
+        if c_occ.nrows() != n || k.dim() != (n, n) {
+            return Err(lay(format!(
+                "C_occ is {}x{} and K is {:?}; both need {n} rows/columns",
+                c_occ.nrows(),
+                c_occ.ncols(),
+                k.dim()
+            )));
+        }
+        let nocc = c_occ.ncols();
+        if nocc > n {
+            return Err(lay(format!("C_occ has {nocc} columns for {n} functions")));
+        }
+        if nocc == 0 {
+            k.fill(0.0);
+            return Ok(ChunkPlan {
+                chunk: 0,
+                nchunks: 0,
+            });
+        }
+        self.ensure_scratch(nocc)?;
+        let n2 = n * n; // checked at upload
+        let Self {
+            dev,
+            b,
+            k_dev,
+            scratch,
+            twin,
+            band,
+            ..
+        } = self;
+        let dev: &Device = dev;
+        let sc = scratch
+            .as_mut()
+            .ok_or_else(|| lay("scratch missing".into()))?;
+        let c_std = c_occ.as_standard_layout();
+        let c_host = c_std
+            .as_slice()
+            .ok_or_else(|| lay("C_occ not contiguous".into()))?;
+        let cuda = |what: &str, e: &dyn std::fmt::Debug| GpuError::Cuda(format!("{what}: {e:?}"));
+        dev.stream
+            .memcpy_htod(c_host, &mut sc.c_dev.buf_mut().slice_mut(..n * nocc))
+            .map_err(|e| cuda("H2D C_occ", &e))?;
+        let twin_b = ArrayView2::from_shape((n, n), &twin[..n2]).map_err(|e| lay(e.to_string()))?;
+        let twin_c =
+            ArrayView2::from_shape((n, nocc), &twin[..n * nocc]).map_err(|e| lay(e.to_string()))?;
+        let c_t = twin_c.t();
+        let chunk = sc.chunk;
+        let mut p0 = 0usize;
+        while p0 < *band {
+            let c = chunk.min(*band - p0);
+            let right = dev_batched_right(b.buf().slice(p0 * n2..(p0 + c) * n2), &twin_b, c, n2)?;
+            let left = dev_batched_left(sc.c_dev.buf().slice(..n * nocc), &c_t, c, 0)?;
+            let dims = BatchedDims {
+                m: nocc,
+                k: n,
+                n,
+                batch: c,
+            };
+            gemm_f64_strided_batched_dev(dev, dims, &left, &right, sc.y.buf_mut(), nocc * n)?;
+            let y_view = sc.y.buf().slice(..c * nocc * n);
+            syrk_f64_dev(dev, n, c * nocc, &y_view, k_dev.buf_mut(), p0 != 0)?;
+            p0 += c;
+        }
+        // Failure stand-in at the worst point: every chunk has run and the device
+        // accumulator holds a (partial-looking) K, but nothing has reached `k`.
+        if FORCE_BUILD_FAILURE.load(Ordering::Relaxed) {
+            return Err(GpuError::Cuda("injected DF-K build failure".into()));
+        }
+        let mut flat = vec![0.0f64; n2];
+        dev.stream
+            .memcpy_dtoh(k_dev.buf(), &mut flat)
+            .map_err(|e| cuda("D2H K", &e))?;
+        dev.stream.synchronize().map_err(|e| cuda("sync", &e))?;
+        // SYRK filled one triangle (row-major upper); mirror it.
+        for i in 0..n {
+            for j in (i + 1)..n {
+                flat[j * n + i] = flat[i * n + j];
+            }
+        }
+        let full = ArrayView2::from_shape((n, n), &flat).map_err(|e| lay(e.to_string()))?;
+        k.assign(&full);
+        stats::note_dfk_build(8 * n * nocc, 8 * n2);
+        Ok(ChunkPlan {
+            chunk,
+            nchunks: band.div_ceil(chunk),
+        })
+    }
+}
+
+/// Per-`DfK` device state. `Declined` is sticky (and has released the device memory).
+#[derive(Default)]
+pub enum DeviceSlot {
+    #[default]
+    Untried,
+    Ready(Box<DeviceDfK>),
+    Declined,
+}
+
+fn real_mpi_world(ctx: Option<&ParallelContext>) -> bool {
+    #[cfg(feature = "mpi")]
+    {
+        ctx.is_some_and(|c| c.world().is_some())
+    }
+    #[cfg(not(feature = "mpi"))]
+    {
+        let _ = ctx;
+        false
+    }
+}
+
+/// Why this source can never use the device path, or `None`.
+fn ineligible(src: &ThreeIndexSource, ctx: Option<&ParallelContext>) -> Option<&'static str> {
+    if !src.is_incore() {
+        return Some(
+            "the dressed tensor is spilled or recomputed (the device path needs the in-core band)",
+        );
+    }
+    if real_mpi_world(ctx) {
+        return Some(
+            "MPI ranks would share one device ordinal (a device per rank is not available yet)",
+        );
+    }
+    None
+}
+
+fn decline(slot: &mut DeviceSlot, reason: &str) {
+    eprintln!("[ferric] gpu: DF-K stays on the CPU ({reason})");
+    stats::note_dfk_declined(reason);
+    *slot = DeviceSlot::Declined;
+}
+
+fn count_cpu_fallback(e: &GpuError) {
+    let reason = match e {
+        GpuError::PoolFull { .. } => CpuReason::PoolFull,
+        GpuError::Layout(_) => CpuReason::Layout,
+        _ => CpuReason::CudaError,
+    };
+    stats::note_cpu_detail(reason, &format!("(DF-K occupied path: {e})"));
+}
+
+/// Upload the in-core band (rounded through f32 only under the mutation seam).
+fn upload_band(
+    dev: &Arc<Device>,
+    pool: &DevicePool,
+    src: &ThreeIndexSource,
+) -> Result<DeviceDfK, GpuError> {
+    let flat = src
+        .incore_flat()
+        .ok_or_else(|| GpuError::Layout("dressed tensor is not in core".into()))?;
+    let owned;
+    let view = if ROUND_B_TO_F32.load(Ordering::Relaxed) {
+        owned = round_trip_f32(&flat);
+        owned.view()
+    } else {
+        flat
+    };
+    DeviceDfK::upload(dev, pool, &view, src.nao())
+}
+
+/// Try the device. `true` means `k` holds this rank's band contribution (the
+/// caller then runs the cross-rank reduction exactly as for the CPU path);
+/// `false` means run the CPU path (`k` untouched by this call). Never panics;
+/// never touches CUDA when the mode is off.
+pub fn try_build_from_occ(
+    slot: &mut DeviceSlot,
+    src: &ThreeIndexSource,
+    ctx: Option<&ParallelContext>,
+    c_occ: &Array2<f64>,
+    k: &mut Array2<f64>,
+) -> bool {
+    if FORCE_HOST.load(Ordering::Relaxed) || matches!(slot, DeviceSlot::Declined) {
+        return false;
+    }
+    let settings = ferric_core::gpu::settings();
+    if settings.mode == GpuMode::Off {
+        return false;
+    }
+    let GpuStatus::Ready(info) = ferric_core::gpu::status() else {
+        return false;
+    };
+    if rayon::current_thread_index().is_some() {
+        stats::note_cpu(CpuReason::InsideRayonWorker); // transient: the slot is untouched
+        return false;
+    }
+    if src.band_naux() == 0 {
+        return false; // an empty band contributes nothing; the CPU loop is a no-op too
+    }
+    if let Some(why) = ineligible(src, ctx) {
+        decline(slot, why);
+        return false;
+    }
+    let Some(pool) = ferric_core::gpu::pool() else {
+        return false;
+    };
+    if matches!(slot, DeviceSlot::Untried) {
+        let uploaded = device(info.ordinal).and_then(|dev| upload_band(&dev, &pool, src));
+        match uploaded {
+            Ok(d) => {
+                eprintln!(
+                    "[ferric] gpu: DF-K resident on device {} ({:.3} GB dressed B, {} aux rows, nbf {})",
+                    info.ordinal,
+                    8.0 * (src.band_naux() * src.nao() * src.nao()) as f64 / 1e9,
+                    src.band_naux(),
+                    src.nao()
+                );
+                *slot = DeviceSlot::Ready(Box::new(d));
+            }
+            Err(e) => {
+                count_cpu_fallback(&e);
+                decline(slot, &e.to_string());
+                return false;
+            }
+        }
+    }
+    let outcome = match slot {
+        DeviceSlot::Ready(d) => d.build_from_occ(&c_occ.view(), k),
+        _ => return false,
+    };
+    match outcome {
+        Ok(_) => true,
+        Err(e) => {
+            count_cpu_fallback(&e);
+            decline(slot, &e.to_string());
+            false
+        }
+    }
+}

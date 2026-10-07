@@ -91,6 +91,8 @@ pub mod cosx_k;
 pub mod df_j;
 /// Density-fitted exchange (K) matrix builder (RI-K).
 pub mod df_k;
+#[cfg(feature = "gpu")]
+pub mod df_k_gpu;
 /// DIIS convergence accelerator for SCF iterations.
 pub mod diis;
 /// Initial guess generators: core Hamiltonian, SAD, read-in.

@@ -25,6 +25,8 @@ mpi = { workspace = true, optional = true }
 [features]
 default = []
 mpi = ["dep:mpi", "ferric-core/mpi"]
+# Device-resident DF-K occupied path (df_k_gpu). Additive; default builds unchanged.
+gpu = ["ferric-core/gpu"]
 # CFMM J-builder. OFF by default.
 #
 # The former all-zero-J stubs are implemented and validated (trivial-limit

@@ -14,6 +14,8 @@ static GEMM_MIXED: AtomicU64 = AtomicU64::new(0);
 static MIXED_PANELS: AtomicU64 = AtomicU64::new(0);
 static MIXED_FALLBACK_F64: AtomicU64 = AtomicU64::new(0);
 static RESIDENT_UPLOADS: AtomicU64 = AtomicU64::new(0);
+static DFK_DEVICE_BUILDS: AtomicU64 = AtomicU64::new(0);
+static DFK_DECLINED: AtomicU64 = AtomicU64::new(0);
 
 /// Why a GEMM ran on the CPU although the GPU mode was not `off`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +51,25 @@ pub fn note_mixed(panels: usize, h2d: usize, d2h: usize) {
 pub fn note_resident_upload(bytes: usize) {
     RESIDENT_UPLOADS.fetch_add(1, Ordering::Relaxed);
     BYTES_H2D.fetch_add(bytes as u64, Ordering::Relaxed);
+}
+
+/// One resident DF-K occupied-path build ran on the device (`h2d` = C_occ
+/// bytes, `d2h` = K bytes; they count toward `bytes_h2d` / `bytes_d2h`).
+#[doc(hidden)]
+pub fn note_dfk_build(h2d: usize, d2h: usize) {
+    DFK_DEVICE_BUILDS.fetch_add(1, Ordering::Relaxed);
+    BYTES_H2D.fetch_add(h2d as u64, Ordering::Relaxed);
+    BYTES_D2H.fetch_add(d2h as u64, Ordering::Relaxed);
+}
+
+/// A DF-K that will stay on the CPU for its lifetime (ineligible source, MPI
+/// world, pool refusal, CUDA error). With `FERRIC_GPU_TRACE` the reason is printed.
+#[doc(hidden)]
+pub fn note_dfk_declined(reason: &str) {
+    if trace_on() {
+        eprintln!("[gpu] DF-K stays on the CPU: {reason}");
+    }
+    DFK_DECLINED.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Mixed was requested and allowed, but the call ran in f64 on the device
@@ -104,6 +125,8 @@ pub struct GpuStatsSnapshot {
     pub mixed_panels: u64,
     pub mixed_fallback_f64: u64,
     pub resident_uploads: u64,
+    pub dfk_device_builds: u64,
+    pub dfk_declined: u64,
 }
 
 pub fn stats() -> GpuStatsSnapshot {
@@ -120,5 +143,7 @@ pub fn stats() -> GpuStatsSnapshot {
         mixed_panels: MIXED_PANELS.load(Ordering::Relaxed),
         mixed_fallback_f64: MIXED_FALLBACK_F64.load(Ordering::Relaxed),
         resident_uploads: RESIDENT_UPLOADS.load(Ordering::Relaxed),
+        dfk_device_builds: DFK_DEVICE_BUILDS.load(Ordering::Relaxed),
+        dfk_declined: DFK_DECLINED.load(Ordering::Relaxed),
     }
 }

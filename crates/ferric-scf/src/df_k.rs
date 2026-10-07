@@ -103,6 +103,10 @@ pub struct DfK<'a> {
     /// The memory budget this source was built under — also caps the K
     /// reduction band scratch via `resolve_band_bytes`.
     budget_bytes: usize,
+    /// Device-resident copy state (feature `gpu`); `Untried` until the first
+    /// occupied-path build asks for it. See `crate::df_k_gpu`.
+    #[cfg(feature = "gpu")]
+    device: crate::df_k_gpu::DeviceSlot,
 }
 
 impl<'a> std::fmt::Debug for DfK<'a> {
@@ -262,11 +266,20 @@ impl<'a> DfK<'a> {
             dressed,
             ctx,
             budget_bytes,
+            #[cfg(feature = "gpu")]
+            device: crate::df_k_gpu::DeviceSlot::default(),
         })
     }
 }
 
 impl DfK<'_> {
+    /// The in-core dressed band as `(band_naux × n²)`; `None` when spilled. Test hook.
+    #[cfg(feature = "gpu")]
+    #[doc(hidden)]
+    pub fn dressed_incore_flat_for_test(&self) -> Option<ndarray::ArrayView2<'_, f64>> {
+        self.dressed.incore_flat()
+    }
+
     /// Density-based exchange contraction (O(naux·n³)); see [`KBuilder::build`].
     /// Kept as an inherent method so both the trait `build` and the C_occ-based
     /// `build_from_occ` share one struct-level definition.
@@ -405,6 +418,17 @@ impl DfK<'_> {
         // below are well-defined at nocc = 0 but do no work; short-circuit to
         // avoid a zero-width reshape edge case.
         if nocc == 0 {
+            self.reduce_k_across_ranks(k);
+            return Ok(0);
+        }
+
+        // Device-resident path (opt-in `gpu` feature, `[gpu] mode` != off). Placed AFTER
+        // the FERRIC_DFK_FORCE_DENSITY and nocc == 0 shortcuts so the test switch and the
+        // empty channel never reach the card. `true` = K written; the cross-rank
+        // reduction below is shared with the CPU path.
+        #[cfg(feature = "gpu")]
+        if crate::df_k_gpu::try_build_from_occ(&mut self.device, &self.dressed, self.ctx, c_occ, k)
+        {
             self.reduce_k_across_ranks(k);
             return Ok(0);
         }
