@@ -92,8 +92,6 @@ pub(crate) struct OperandGeom {
     pub k_step: usize,
     pub rows: usize,
     pub cols: usize,
-    /// Elements in the device view.
-    pub len: usize,
 }
 
 impl OperandGeom {
@@ -121,7 +119,6 @@ impl OperandGeom {
             k_step: d.k_step,
             rows,
             cols,
-            len,
         })
     }
 
@@ -139,16 +136,23 @@ impl OperandGeom {
     /// One past the last element cuBLAS reads for the panel [k0, k0 + kc), in
     /// the swapped column-major call (right is cuBLAS A with m_c = n, left is
     /// cuBLAS B with n_c = m).
+    ///
+    /// Total on all inputs: saturating arithmetic, so no argument (zero sizes
+    /// included, where nothing is read and the caller skips this) can panic or wrap.
     fn panel_end(&self, m: usize, n: usize, k0: usize, kc: usize) -> usize {
-        let ld = self.ld as usize;
+        let ld = usize::try_from(self.ld).unwrap_or(usize::MAX);
         let n_op = self.op == cublasOperation_t::CUBLAS_OP_N;
-        let extent = match (self.role, n_op) {
-            (Role::Right, true) => ld * (kc - 1) + n,
-            (Role::Right, false) => ld * (n - 1) + kc,
-            (Role::Left, true) => ld * (m - 1) + kc,
-            (Role::Left, false) => ld * (kc - 1) + m,
+        let strided = |count: usize, tail: usize| {
+            ld.saturating_mul(count.saturating_sub(1))
+                .saturating_add(tail)
         };
-        k0 * self.k_step + extent
+        let extent = match (self.role, n_op) {
+            (Role::Right, true) => strided(kc, n),
+            (Role::Right, false) => strided(n, kc),
+            (Role::Left, true) => strided(m, kc),
+            (Role::Left, false) => strided(kc, m),
+        };
+        k0.saturating_mul(self.k_step).saturating_add(extent)
     }
 }
 
@@ -207,8 +211,8 @@ pub(crate) fn check_dev_geometry(
     k: usize,
     n: usize,
     kb: usize,
-    left: &OperandGeom,
-    right: &OperandGeom,
+    left: (&OperandGeom, usize),
+    right: (&OperandGeom, usize),
     outputs: &[(&str, usize)],
 ) -> Result<(), GpuError> {
     if [m, k, n].iter().any(|&d| d > i32::MAX as usize) {
@@ -216,7 +220,11 @@ pub(crate) fn check_dev_geometry(
             "dimension exceeds cuBLAS i32 range: {m}x{k}x{n}"
         )));
     }
-    for (name, g, role, want) in [
+    // Nothing is read when any dimension is zero, so there is no extent to
+    // check (and `m - 1`-style terms would be meaningless); roles, shapes and
+    // descriptors are still validated.
+    let reads_nothing = m == 0 || k == 0 || n == 0;
+    for (name, (g, view_len), role, want) in [
         ("left", left, Role::Left, (m, k)),
         ("right", right, Role::Right, (k, n)),
     ] {
@@ -232,7 +240,9 @@ pub(crate) fn check_dev_geometry(
                 g.rows, g.cols
             )));
         }
-        if (g.ld as usize, g.k_step) != g.expected_ld_k_step() {
+        if (usize::try_from(g.ld).ok(), g.k_step)
+            != (Some(g.expected_ld_k_step().0), g.expected_ld_k_step().1)
+        {
             return Err(GpuError::Layout(format!(
                 "{name} operand descriptor (ld {}, k_step {}) does not match its role, op and shape",
                 g.ld, g.k_step
@@ -240,24 +250,25 @@ pub(crate) fn check_dev_geometry(
         }
         let kb = kb.max(1);
         let mut k0 = 0usize;
-        while k0 < k {
-            let kc = (k0 + kb).min(k) - k0;
+        while !reads_nothing && k0 < k {
+            let kc = k.min(k0.saturating_add(kb)) - k0;
             let end = g.panel_end(m, n, k0, kc);
-            if end > g.len {
+            if end > view_len {
                 return Err(GpuError::Layout(format!(
-                    "{name} operand panel {k0}..{} reads up to element {end} but the view holds {}",
+                    "{name} operand panel {k0}..{} reads up to element {end} but the view holds {view_len}",
                     k0 + kc,
-                    g.len
                 )));
             }
             k0 += kc;
         }
     }
+    let need = m
+        .checked_mul(n)
+        .ok_or_else(|| GpuError::Layout(format!("output size {m}x{n} overflows usize")))?;
     for &(name, len) in outputs {
-        if len < m * n {
+        if len < need {
             return Err(GpuError::Layout(format!(
-                "output buffer {name} holds {len} elements, {m}x{n} needs {}",
-                m * n
+                "output buffer {name} holds {len} elements, {m}x{n} needs {need}"
             )));
         }
     }
@@ -278,7 +289,26 @@ pub fn gemm_f64_dev(
     c: &mut CudaSlice<f64>,
     k_block: usize,
 ) -> Result<(), GpuError> {
-    check_dev_geometry(m, k, n, k_block, &left.geom, &right.geom, &[("c", c.len())])?;
+    check_dev_geometry(
+        m,
+        k,
+        n,
+        k_block,
+        (&left.geom, left.view.len()),
+        (&right.geom, right.view.len()),
+        &[("c", c.len())],
+    )?;
+    // Empty product: nothing to compute and nothing to write (same as the CPU
+    // path and the mixed core). k == 0 with m, n > 0 is the zero matrix.
+    if m == 0 || n == 0 {
+        return Ok(());
+    }
+    if k == 0 {
+        return dev
+            .stream
+            .memset_zeros(c)
+            .map_err(|e| GpuError::Cuda(format!("memset c (k = 0): {e:?}")));
+    }
     let (left_op, right_op) = (left.geom.op, right.geom.op);
     let (left_ld, right_ld) = (left.geom.ld, right.geom.ld);
     let (left_ks, right_ks) = (left.geom.k_step, right.geom.k_step);
@@ -302,8 +332,11 @@ pub fn gemm_f64_dev(
         };
         let a_view = right.view.slice(k0 * right_ks..);
         let b_view = left.view.slice(k0 * left_ks..);
-        // SAFETY: shapes and leading dimensions come from the descriptors and
-        // the buffers hold exactly those elements.
+        // SAFETY: `check_dev_geometry` above proved, for every panel, that the
+        // highest element each operand read touches lies inside its view
+        // (descriptor derived from the role and shape, extents checked) and that
+        // `c` holds AT LEAST m·n elements (it may hold more; cuBLAS writes only
+        // m·n of them).
         unsafe { blas.gemm(cfg, &a_view, &b_view, c) }
             .map_err(|e| cuda(format_args!("cublasDgemm k-block {k0}..{k1}: {e:?}")))?;
         k0 = k1;
@@ -453,6 +486,27 @@ mod tests {
         ]
     }
 
+    /// `check_dev_geometry` with each view exactly as long as its host shape.
+    fn cdg(
+        m: usize,
+        k: usize,
+        n: usize,
+        kb: usize,
+        l: &OperandGeom,
+        r: &OperandGeom,
+        outs: &[(&str, usize)],
+    ) -> Result<(), GpuError> {
+        check_dev_geometry(
+            m,
+            k,
+            n,
+            kb,
+            (l, l.rows * l.cols),
+            (r, r.rows * r.cols),
+            outs,
+        )
+    }
+
     const SHAPES: [(usize, usize, usize); 9] = [
         (5, 7, 3),
         (1, 9, 4),
@@ -475,7 +529,7 @@ mod tests {
         for &(m, k, n) in &SHAPES {
             for (label, l, r) in honest(m, k, n) {
                 for kb in PANELS {
-                    check_dev_geometry(m, k, n, kb, &l, &r, &[("c", m * n)])
+                    cdg(m, k, n, kb, &l, &r, &[("c", m * n)])
                         .unwrap_or_else(|e| panic!("{label} {m}x{k}x{n} kb={kb}: {e:?}"));
                 }
             }
@@ -489,17 +543,12 @@ mod tests {
         for &(m, k, n) in &SHAPES {
             for (label, l, r) in honest(m, k, n) {
                 for kb in PANELS {
-                    let short_l = OperandGeom {
-                        len: l.len - 1,
-                        ..l
-                    };
-                    let e = check_dev_geometry(m, k, n, kb, &short_l, &r, &[]).unwrap_err();
+                    let (ll, rl) = (l.rows * l.cols, r.rows * r.cols);
+                    let e =
+                        check_dev_geometry(m, k, n, kb, (&l, ll - 1), (&r, rl), &[]).unwrap_err();
                     assert!(is_layout(&e, "reads up to"), "{label} L {m}x{k}x{n}: {e:?}");
-                    let short_r = OperandGeom {
-                        len: r.len - 1,
-                        ..r
-                    };
-                    let e = check_dev_geometry(m, k, n, kb, &l, &short_r, &[]).unwrap_err();
+                    let e =
+                        check_dev_geometry(m, k, n, kb, (&l, ll), (&r, rl - 1), &[]).unwrap_err();
                     assert!(is_layout(&e, "reads up to"), "{label} R {m}x{k}x{n}: {e:?}");
                 }
             }
@@ -545,7 +594,7 @@ mod tests {
                     if (bad_l.k_step, bad_r.k_step) == (l.k_step, r.k_step) {
                         continue; // degenerate shape: the swap is the identity
                     }
-                    let e = check_dev_geometry(m, k, n, 128, &bad_l, &bad_r, &[]).unwrap_err();
+                    let e = cdg(m, k, n, 128, &bad_l, &bad_r, &[]).unwrap_err();
                     assert!(is_layout(&e, "descriptor"), "{label} {m}x{k}x{n}: {e:?}");
                 }
             }
@@ -557,34 +606,91 @@ mod tests {
         let (m, k, n) = (4usize, 7usize, 3usize);
         for (label, l, r) in honest(m, k, n) {
             // roles swapped between the slots
-            let e = check_dev_geometry(m, k, n, 128, &r, &l, &[]).unwrap_err();
+            let e = cdg(m, k, n, 128, &r, &l, &[]).unwrap_err();
             assert!(is_layout(&e, "slot holds"), "{label}: {e:?}");
             // same role in both slots
-            let e = check_dev_geometry(m, k, n, 128, &l, &l, &[]).unwrap_err();
+            let e = cdg(m, k, n, 128, &l, &l, &[]).unwrap_err();
             assert!(is_layout(&e, "right slot"), "{label}: {e:?}");
         }
         // the host matrix of a left, derived under the Right role: shape check refuses
         let host = Array2::<f64>::zeros((m, k));
         let as_right = OperandGeom::derive(Role::Right, &host.view(), host.len()).unwrap();
         let (_, l, _) = honest(m, k, n).remove(0);
-        let e = check_dev_geometry(m, k, n, 128, &l, &as_right, &[]).unwrap_err();
+        let e = cdg(m, k, n, 128, &l, &as_right, &[]).unwrap_err();
         assert!(is_layout(&e, "right"), "{e:?}");
     }
 
     #[test]
     fn shapes_i32_range_and_output_buffers_are_checked_by_name() {
         let (_, l, r) = honest(4, 6, 5).remove(0);
-        assert!(check_dev_geometry(4, 6, 5, 8, &l, &r, &[("c", 20)]).is_ok());
-        assert!(check_dev_geometry(4, 6, 5, 8, &l, &r, &[("c", 99)]).is_ok());
-        let e = check_dev_geometry(4, 6, 5, 8, &l, &r, &[("c32", 20), ("c64", 19)]).unwrap_err();
+        assert!(cdg(4, 6, 5, 8, &l, &r, &[("c", 20)]).is_ok());
+        assert!(cdg(4, 6, 5, 8, &l, &r, &[("c", 99)]).is_ok());
+        let e = cdg(4, 6, 5, 8, &l, &r, &[("c32", 20), ("c64", 19)]).unwrap_err();
         assert!(is_layout(&e, "c64"), "{e:?}");
-        let e = check_dev_geometry(4, 7, 5, 8, &l, &r, &[]).unwrap_err();
+        let e = cdg(4, 7, 5, 8, &l, &r, &[]).unwrap_err();
         assert!(is_layout(&e, "left"), "{e:?}");
-        let e = check_dev_geometry(4, 6, 6, 8, &l, &r, &[]).unwrap_err();
+        let e = cdg(4, 6, 6, 8, &l, &r, &[]).unwrap_err();
         assert!(is_layout(&e, "right"), "{e:?}");
         let big = i32::MAX as usize + 1;
-        let e = check_dev_geometry(big, 1, 1, 8, &l, &r, &[]).unwrap_err();
+        let e = cdg(big, 1, 1, 8, &l, &r, &[]).unwrap_err();
         assert!(is_layout(&e, "i32"), "{e:?}");
+    }
+
+    #[test]
+    fn zero_sized_dimensions_never_panic_and_are_accepted_when_honest() {
+        // m = 0, n = 0, k = 0 and all-zero, both roles, both ops (the T variants
+        // are built by hand: an empty host array is always standard layout).
+        let zero_shapes = [
+            (0usize, 5usize, 3usize),
+            (4, 5, 0),
+            (4, 0, 3),
+            (0, 0, 0),
+            (0, 0, 5),
+            (5, 0, 0),
+            (0, 5, 0),
+        ];
+        for &(m, k, n) in &zero_shapes {
+            for kb in PANELS {
+                for (label, l, r) in honest(m, k, n) {
+                    cdg(m, k, n, kb, &l, &r, &[("c", m * n)])
+                        .unwrap_or_else(|e| panic!("{label} {m}x{k}x{n}: {e:?}"));
+                }
+                for op in [
+                    cublasOperation_t::CUBLAS_OP_N,
+                    cublasOperation_t::CUBLAS_OP_T,
+                ] {
+                    for role in [Role::Left, Role::Right] {
+                        let (rows, cols) = if role == Role::Left { (m, k) } else { (k, n) };
+                        let mut g = OperandGeom {
+                            role,
+                            op,
+                            ld: 0,
+                            k_step: 0,
+                            rows,
+                            cols,
+                        };
+                        let (ld, ks) = g.expected_ld_k_step();
+                        g.ld = ld as i32;
+                        g.k_step = ks;
+                        // the raw extent math is total too
+                        for (mm, nn, k0, kc) in [(m, n, 0, 0), (0, 0, 0, 0), (m, n, 3, 1)] {
+                            let _ = g.panel_end(mm, nn, k0, kc);
+                        }
+                    }
+                }
+            }
+        }
+        // a zero dimension does not excuse a wrong shape or role
+        let (_, l, r) = honest(0, 5, 3).remove(0);
+        let e = cdg(0, 6, 3, 8, &l, &r, &[]).unwrap_err();
+        assert!(is_layout(&e, "left"), "{e:?}");
+        let e = check_dev_geometry(0, 5, 3, 8, (&r, 0), (&l, 0), &[]).unwrap_err();
+        assert!(is_layout(&e, "slot holds"), "{e:?}");
+        // ... and output buffers are still sized against m*n
+        let (_, l, r) = honest(2, 0, 3).remove(0);
+        let e = cdg(2, 0, 3, 8, &l, &r, &[("c", 5)]).unwrap_err();
+        assert!(is_layout(&e, "c holds 5"), "{e:?}");
+        assert!(cdg(2, 0, 3, 8, &l, &r, &[("c", 6)]).is_ok());
     }
 
     #[test]

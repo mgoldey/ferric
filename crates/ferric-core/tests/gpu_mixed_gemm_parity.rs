@@ -381,6 +381,94 @@ fn degenerate_shapes_and_every_layout_and_panel_width_meet_the_bound() {
 }
 
 #[test]
+fn zero_sized_products_return_ok_and_leave_the_output_as_the_cpu_path_does() {
+    // m = 0, n = 0: nothing computed, nothing written (c keeps its contents).
+    // k = 0 with m, n > 0: the zero matrix. Both device cores and both host
+    // wrappers agree, and none panics or sends ld = 0 to cuBLAS.
+    use ferric_core::gpu::gemm::{dev_left, dev_right, gemm_f64, gemm_f64_dev};
+    use ferric_core::gpu::mixed::gemm_f32_f64acc_dev;
+    let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    if skip() {
+        return;
+    }
+    let dev = device(0).unwrap();
+    let s = &dev.stream;
+    let pool = DevicePool::with_capacity_bytes(1 << 28);
+    for &(m, k, n) in &[
+        (0usize, 4usize, 3usize),
+        (4, 4, 0),
+        (4, 0, 3),
+        (0, 0, 0),
+        (0, 0, 3),
+        (3, 0, 0),
+    ] {
+        let a64 = Array2::<f64>::zeros((m, k));
+        let b64 = Array2::<f64>::zeros((k, n));
+        let a32 = a64.mapv(|x| x as f32);
+        let b32 = b64.mapv(|x| x as f32);
+        let sentinel = vec![7.0f64; 12];
+        let want: Vec<f64> = if k == 0 && m > 0 && n > 0 {
+            let mut w = sentinel.clone();
+            w[..m * n].fill(0.0);
+            w
+        } else {
+            sentinel.clone()
+        };
+        let d_a = s.clone_htod(a64.as_slice().unwrap()).unwrap();
+        let d_b = s.clone_htod(b64.as_slice().unwrap()).unwrap();
+        let lo = dev_left(d_a.slice(..), &a64.view()).unwrap();
+        let ro = dev_right(d_b.slice(..), &b64.view()).unwrap();
+        let mut c = s.clone_htod(&sentinel).unwrap();
+        gemm_f64_dev(&dev, m, k, n, &lo, &ro, &mut c, 128)
+            .unwrap_or_else(|e| panic!("gemm_f64_dev {m}x{k}x{n}: {e:?}"));
+        assert_eq!(s.clone_dtoh(&c).unwrap(), want, "gemm_f64_dev {m}x{k}x{n}");
+
+        let d_a32 = s.clone_htod(a32.as_slice().unwrap()).unwrap();
+        let d_b32 = s.clone_htod(b32.as_slice().unwrap()).unwrap();
+        let lo = dev_left(d_a32.slice(..), &a32.view()).unwrap();
+        let ro = dev_right(d_b32.slice(..), &b32.view()).unwrap();
+        let mut c32 = s.alloc_zeros::<f32>(12).unwrap();
+        let mut c64 = s.clone_htod(&sentinel).unwrap();
+        let panels = gemm_f32_f64acc_dev(&dev, m, k, n, &lo, &ro, &mut c32, &mut c64, 128)
+            .unwrap_or_else(|e| panic!("gemm_f32_f64acc_dev {m}x{k}x{n}: {e:?}"));
+        assert_eq!(panels, 0);
+        assert_eq!(
+            s.clone_dtoh(&c64).unwrap(),
+            want,
+            "gemm_f32_f64acc_dev {m}x{k}x{n}"
+        );
+
+        // host wrappers: out is an (m, n) array, k = 0 gives zeros, empty stays empty
+        let mut out = Array2::<f64>::from_elem((m, n), 7.0);
+        gemm_f64(
+            &dev,
+            &pool,
+            &a64.view(),
+            &b64.view(),
+            &mut out.view_mut(),
+            128,
+        )
+        .unwrap();
+        assert!(out.iter().all(|&v| v == 0.0), "gemm_f64 {m}x{k}x{n}");
+        let mut out = Array2::<f64>::from_elem((m, n), 7.0);
+        gemm_f32_f64acc(
+            &dev,
+            &pool,
+            &a64.view(),
+            &b64.view(),
+            &mut out.view_mut(),
+            128,
+        )
+        .unwrap();
+        let cpu_expect = if m * n == 0 { 7.0 } else { 0.0 };
+        assert!(
+            out.iter().all(|&v| v == 0.0 || v == cpu_expect),
+            "gemm_f32_f64acc {m}x{k}x{n}"
+        );
+    }
+}
+
+#[test]
 fn an_operand_beyond_f32_range_is_a_typed_error_before_any_lease_or_transfer() {
     let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
     if skip() {

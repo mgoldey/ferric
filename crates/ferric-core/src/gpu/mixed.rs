@@ -89,16 +89,19 @@ pub fn gemm_f32_f64acc_dev(
         k,
         n,
         k_panel,
-        &left.geom,
-        &right.geom,
+        (&left.geom, left.view.len()),
+        (&right.geom, right.view.len()),
         &[("c32", c32.len()), ("c64", c64.len())],
     )?;
     let func = dev.axpy_f32_to_f64()?; // typed Kernel error BEFORE any work
+    if m == 0 || n == 0 {
+        return Ok(0); // empty product: nothing to compute, nothing to write
+    }
     let s = &dev.stream;
     s.memset_zeros(c64)
         .map_err(|e| cuda(format_args!("memset c64: {e:?}")))?;
-    if k == 0 || m == 0 || n == 0 {
-        return Ok(0);
+    if k == 0 {
+        return Ok(0); // c64 is now the zero matrix
     }
     let n_elems = (m * n) as u64;
     let launch = flush_launch(m * n);
@@ -121,12 +124,14 @@ pub fn gemm_f32_f64acc_dev(
         };
         let a_view = right.view.slice(k0 * right.geom.k_step..);
         let b_view = left.view.slice(k0 * left.geom.k_step..);
-        // SAFETY: shapes/leading dimensions come from the descriptors; the
-        // buffers hold exactly those elements (same argument as gemm_f64).
+        // SAFETY: `check_dev_geometry` above proved, for every panel, that the
+        // highest element each operand read touches lies inside its view and
+        // that c32 and c64 hold AT LEAST m·n elements each (they may hold more;
+        // only the first m·n are written).
         unsafe { blas.gemm(cfg, &a_view, &b_view, c32) }
             .map_err(|e| cuda(format_args!("cublasSgemm panel {k0}..{k1}: {e:?}")))?;
         // SAFETY: the kernel signature is (double*, const float*, u64) and the
-        // two buffers hold >= n_elems elements each.
+        // two buffers hold >= n_elems = m·n elements each (checked above).
         unsafe {
             s.launch_builder(func)
                 .arg(&mut *c64)
