@@ -200,7 +200,12 @@ fn installed() -> &'static (GpuSettings, GpuStatus) {
         let st = match malformed {
             Some(reason) if gpu_compiled() => GpuStatus::Unavailable { reason },
             _ => decide(&settings, probe).unwrap_or_else(|reason| {
-                eprintln!("[ferric] gpu: {reason}; running on the CPU");
+                let f64_note = if settings.precision == Precision::Mixed {
+                    " in f64"
+                } else {
+                    ""
+                };
+                eprintln!("[ferric] gpu: {reason}; running on the CPU{f64_note}");
                 GpuStatus::Unavailable { reason }
             }),
         };

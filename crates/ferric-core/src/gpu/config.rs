@@ -185,16 +185,17 @@ impl GpuSettings {
         self.precision == Precision::Mixed && self.mixed_kernels.contains(k)
     }
 
-    /// The library fallback when the env knobs cannot be resolved: GPU off, every
-    /// other knob at its default (precision from [`PRECISION_DEFAULT`]).
+    /// The library fallback when the env knobs cannot be resolved: GPU off and
+    /// f64 by definition (so a future change of `PRECISION_DEFAULT` cannot
+    /// leave an off-mode fallback labelled mixed).
     pub fn degraded_off() -> GpuSettings {
         GpuSettings {
             mode: GpuMode::Off,
             device: 0,
             memory_gb: None,
             min_flops: FERRIC_GPU_MIN_FLOPS_DEFAULT,
-            precision: PRECISION_DEFAULT,
-            mixed_kernels: MixedKernelSet::SHIPPED,
+            precision: Precision::F64,
+            mixed_kernels: MixedKernelSet::EMPTY,
         }
     }
 
@@ -203,6 +204,19 @@ impl GpuSettings {
     pub fn resolve(
         explicit: GpuSettingsExplicit,
         get: impl Fn(&str) -> Option<String>,
+    ) -> Result<(GpuSettings, Vec<String>), String> {
+        Self::resolve_with_default(explicit, get, PRECISION_DEFAULT, MixedKernelSet::SHIPPED)
+    }
+
+    /// [`resolve`](Self::resolve) with the default precision and the shipped
+    /// kernel set injected, so tests can drive a `Mixed` default or a non-empty
+    /// shipped set without editing the constants. Not a user-facing knob.
+    #[doc(hidden)]
+    pub fn resolve_with_default(
+        explicit: GpuSettingsExplicit,
+        get: impl Fn(&str) -> Option<String>,
+        default_precision: Precision,
+        shipped: MixedKernelSet,
     ) -> Result<(GpuSettings, Vec<String>), String> {
         let mode = tag(GPU_MODE.resolve(explicit.mode, &get), "FERRIC_GPU")?;
         let device = tag(
@@ -217,15 +231,49 @@ impl GpuSettings {
             GPU_MIN_FLOPS.resolve(explicit.min_flops, &get),
             "FERRIC_GPU_MIN_FLOPS",
         )?;
-        let precision = tag(
-            GPU_PRECISION.resolve(explicit.precision, &get),
+        let prec_var = ConfigVar {
+            env_name: GPU_PRECISION.env_name,
+            default: default_precision,
+            parse: GPU_PRECISION.parse,
+            validate: GPU_PRECISION.validate,
+        };
+        let kern_var = ConfigVar {
+            env_name: GPU_MIXED_KERNELS.env_name,
+            default: shipped,
+            parse: GPU_MIXED_KERNELS.parse,
+            validate: GPU_MIXED_KERNELS.validate,
+        };
+        let mut precision = tag(
+            prec_var.resolve(explicit.precision, &get),
             "FERRIC_GPU_PRECISION",
         )?;
         let kernels = tag(
-            GPU_MIXED_KERNELS.resolve(explicit.mixed_kernels, &get),
+            kern_var.resolve(explicit.mixed_kernels, &get),
             "FERRIC_GPU_MIXED_KERNELS",
         )?;
         let kernels_given = matches!(kernels.source, ConfigSource::Explicit | ConfigSource::Env);
+        let mut precision_line = None;
+        if precision.value == Precision::Mixed
+            && precision.source == ConfigSource::Default
+            && !kernels_given
+        {
+            // A mixed DEFAULT never errors and never claims mixed it cannot run.
+            let why = if mode.value == GpuMode::Off {
+                Some("mode off")
+            } else if kernels.value.is_empty() {
+                Some("no kernel shipped")
+            } else {
+                None
+            };
+            if let Some(why) = why {
+                precision.value = Precision::F64;
+                precision_line = Some(format!(
+                    "{}: f64 (default mixed; {why})  [source: {}]",
+                    precision.env_name,
+                    precision.source.label()
+                ));
+            }
+        }
         match precision.value {
             Precision::F64 if kernels_given => {
                 return Err(format!(
@@ -240,12 +288,30 @@ impl GpuSettings {
                         .to_string(),
                 );
             }
+            Precision::Mixed if kernels_given => {
+                let missing: Vec<&str> = kernels
+                    .value
+                    .iter()
+                    .filter(|&k| !shipped.contains(k))
+                    .map(|k| k.name())
+                    .collect();
+                if !missing.is_empty() {
+                    let have = if shipped.is_empty() {
+                        "none are shipped in this build".to_string()
+                    } else {
+                        format!("shipped in this build: {shipped}")
+                    };
+                    return Err(format!(
+                        "[gpu] mixed_kernels: {} not shipped yet ({have})",
+                        missing.join(", ")
+                    ));
+                }
+            }
             Precision::Mixed if kernels.value.is_empty() => {
-                return Err(format!(
-                    "[gpu] precision = mixed but no mixed-precision kernel is available: \
-                     FERRIC_GPU_MIXED_KERNELS resolved to none and this build ships {}",
-                    MixedKernelSet::SHIPPED
-                ));
+                return Err(
+                    "[gpu] precision = mixed but no mixed-precision kernel is available in this build"
+                        .to_string(),
+                );
             }
             _ => {}
         }
@@ -264,7 +330,7 @@ impl GpuSettings {
             device.audit_line(),
             mem_line,
             min_flops.audit_line(),
-            precision.audit_line(),
+            precision_line.unwrap_or_else(|| precision.audit_line()),
             kernels.audit_line(),
         ];
         Ok((

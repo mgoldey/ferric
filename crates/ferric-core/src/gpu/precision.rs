@@ -16,10 +16,13 @@ use std::str::FromStr;
 
 use crate::config::{accept_any, ConfigVar};
 
-/// The default precision, in ONE place. Every path that resolves the default
-/// (`FERRIC_GPU_PRECISION` unset, the CLI `[gpu]` table without `precision`, the
-/// lazy library fallback, the Python status) reads this constant, so changing
-/// the default is a one-line edit here.
+/// The default precision, in ONE place. Every path that resolves an unset
+/// `precision` (env unset, CLI `[gpu]` without the key, library, Python) reads
+/// this constant. If it is changed to `Mixed`, `GpuSettings::resolve` still
+/// runs f64 (silently, with an audit line saying why) whenever the precision
+/// came from the default and either the mode is `off` or this build ships no
+/// mixed kernel; an EXPLICIT `mixed` in those cases remains an error. The GPU-off
+/// fallback `GpuSettings::degraded_off` is f64 by definition and ignores this.
 pub const PRECISION_DEFAULT: Precision = Precision::F64;
 
 /// Which arithmetic the device GEMMs use.
@@ -192,6 +195,11 @@ static GPU_MIXED_K_PANEL: ConfigVar<usize> = ConfigVar {
 pub fn mixed_k_panel_override() -> Option<usize> {
     match GPU_MIXED_K_PANEL.resolve(None, crate::config::env_lookup) {
         Ok(r) if r.value > 0 => Some(r.value),
+        Err(e) => {
+            static NOTED: std::sync::Once = std::sync::Once::new();
+            NOTED.call_once(|| eprintln!("[ferric] gpu: {e}; FERRIC_GPU_MIXED_K_PANEL ignored"));
+            None
+        }
         _ => None,
     }
 }

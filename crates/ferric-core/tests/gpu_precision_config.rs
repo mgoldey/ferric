@@ -9,6 +9,12 @@ use ferric_core::gpu::precision::{
 use ferric_core::gpu::GpuMode;
 use std::collections::HashMap;
 
+/// A test-only shipped set (the real constant is a build fact).
+const ALL_SHIPPED: MixedKernelSet = MixedKernelSet::EMPTY
+    .with(MixedKernel::RiMp2Energy)
+    .with(MixedKernel::CcsdAmplitudes)
+    .with(MixedKernel::DfkOcc);
+
 fn lookup(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
     let m: HashMap<String, String> = pairs
         .iter()
@@ -40,7 +46,10 @@ fn mixed_requires_a_device_mode() {
         lookup(&[("FERRIC_GPU_PRECISION", "mixed")]),
     )
     .unwrap_err();
-    assert!(err.contains("precision") && err.contains("mode"), "{err}");
+    assert!(
+        err.contains("[gpu] precision = mixed requires mode = auto or on"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -109,7 +118,8 @@ fn toml_beats_env_for_precision_and_kernels() {
         mixed_kernels: Some(MixedKernelSet::EMPTY.with(MixedKernel::CcsdAmplitudes)),
         ..Default::default()
     };
-    let (s, _) = GpuSettings::resolve(explicit, &env).unwrap();
+    let (s, _) =
+        GpuSettings::resolve_with_default(explicit, &env, PRECISION_DEFAULT, ALL_SHIPPED).unwrap();
     assert_eq!(s.precision, Precision::Mixed);
     assert!(s.mixed_allows(MixedKernel::CcsdAmplitudes));
     assert!(!s.mixed_allows(MixedKernel::RiMp2Energy));
@@ -161,35 +171,129 @@ fn scope_is_thread_local_nests_and_restores_on_drop_and_on_unwind() {
 fn every_default_resolution_path_agrees_with_precision_default() {
     // The ConfigVar default.
     assert_eq!(GPU_PRECISION.default, PRECISION_DEFAULT);
-    // Unset env, nothing explicit: value AND audit source.
+    // Unset env, nothing explicit, no device mode: with an f64 default the value
+    // and audit are the default's; with a mixed default the effective precision
+    // is f64 (mode off) and the audit says why (source still default).
     let (s, audit) = GpuSettings::resolve(GpuSettingsExplicit::default(), lookup(&[])).unwrap();
-    assert_eq!(s.precision, PRECISION_DEFAULT);
     let line = audit
         .iter()
         .find(|l| l.starts_with("FERRIC_GPU_PRECISION: "))
         .unwrap();
-    assert!(
-        line.starts_with(&format!("FERRIC_GPU_PRECISION: {PRECISION_DEFAULT}"))
-            && line.contains("[source: default]"),
-        "{line}"
-    );
-    // The lazy library fallback (unresolvable env -> GPU off).
+    assert!(line.contains("[source: default]"), "{line}");
+    assert_eq!(s.precision, Precision::F64, "mode off => f64");
+    if PRECISION_DEFAULT == Precision::F64 {
+        assert!(line.starts_with("FERRIC_GPU_PRECISION: f64  "), "{line}");
+    }
+    // degraded_off is f64 by definition and deliberately independent of the
+    // constant (it is the GPU-off fallback).
     let d = GpuSettings::degraded_off();
-    assert_eq!(d.precision, PRECISION_DEFAULT);
-    assert_eq!(d.mixed_kernels, MixedKernelSet::SHIPPED);
+    assert_eq!(d.precision, Precision::F64);
+    assert_eq!(d.mixed_kernels, MixedKernelSet::EMPTY);
     assert_eq!(d.mode, GpuMode::Off);
-    // An explicit value still beats the default (the constant is a default only).
-    let other = if PRECISION_DEFAULT == Precision::F64 {
-        Precision::Mixed
-    } else {
-        Precision::F64
-    };
+}
+
+#[test]
+fn a_mixed_default_is_silently_f64_with_mode_off_or_no_shipped_kernel() {
+    let off = GpuSettings::resolve_with_default(
+        GpuSettingsExplicit::default(),
+        lookup(&[]),
+        Precision::Mixed,
+        ALL_SHIPPED,
+    )
+    .unwrap();
+    assert_eq!(off.0.precision, Precision::F64);
+    assert!(
+        off.1
+            .iter()
+            .any(|l| l == "FERRIC_GPU_PRECISION: f64 (default mixed; mode off)  [source: default]"),
+        "{:?}",
+        off.1
+    );
+    let none = GpuSettings::resolve_with_default(
+        GpuSettingsExplicit::default(),
+        lookup(&[("FERRIC_GPU", "auto")]),
+        Precision::Mixed,
+        MixedKernelSet::EMPTY,
+    )
+    .unwrap();
+    assert_eq!(none.0.precision, Precision::F64);
+    assert!(
+        none.1.iter().any(|l| l
+            == "FERRIC_GPU_PRECISION: f64 (default mixed; no kernel shipped)  [source: default]"),
+        "{:?}",
+        none.1
+    );
+    // Mixed default + device mode + shipped kernels: really mixed.
+    let on = GpuSettings::resolve_with_default(
+        GpuSettingsExplicit::default(),
+        lookup(&[("FERRIC_GPU", "auto")]),
+        Precision::Mixed,
+        ALL_SHIPPED,
+    )
+    .unwrap();
+    assert_eq!(on.0.precision, Precision::Mixed);
+    assert!(on.0.mixed_allows(MixedKernel::RiMp2Energy));
+    // An EXPLICIT mixed in the same situations is still an error.
     let ex = GpuSettingsExplicit {
-        precision: Some(other),
+        precision: Some(Precision::Mixed),
         ..Default::default()
     };
-    let env = lookup(&[("FERRIC_GPU", "auto")]);
-    if let Ok((s, _)) = GpuSettings::resolve(ex, &env) {
-        assert_eq!(s.precision, other);
+    let e = GpuSettings::resolve_with_default(ex, lookup(&[]), Precision::F64, ALL_SHIPPED)
+        .unwrap_err();
+    assert!(e.contains("[gpu] precision = mixed requires mode"), "{e}");
+    let e = GpuSettings::resolve_with_default(
+        ex,
+        lookup(&[("FERRIC_GPU", "auto")]),
+        Precision::F64,
+        MixedKernelSet::EMPTY,
+    )
+    .unwrap_err();
+    assert!(
+        e.contains("no mixed-precision kernel is available in this build"),
+        "{e}"
+    );
+}
+
+#[test]
+fn an_explicit_unshipped_kernel_is_refused_and_a_shipped_one_admitted() {
+    let env = lookup(&[
+        ("FERRIC_GPU", "auto"),
+        ("FERRIC_GPU_PRECISION", "mixed"),
+        ("FERRIC_GPU_MIXED_KERNELS", "rimp2-energy"),
+    ]);
+    // Real build: nothing shipped.
+    if MixedKernelSet::SHIPPED.is_empty() {
+        let e = GpuSettings::resolve(GpuSettingsExplicit::default(), &env).unwrap_err();
+        assert!(
+            e.contains("[gpu] mixed_kernels: rimp2-energy not shipped yet")
+                && e.contains("none are shipped in this build"),
+            "{e}"
+        );
     }
+    // Partially shipped: the error names the offender and the shipped set.
+    let shipped = MixedKernelSet::EMPTY.with(MixedKernel::CcsdAmplitudes);
+    let e = GpuSettings::resolve_with_default(
+        GpuSettingsExplicit::default(),
+        &env,
+        Precision::F64,
+        shipped,
+    )
+    .unwrap_err();
+    assert!(
+        e.contains("rimp2-energy not shipped yet")
+            && e.contains("shipped in this build: ccsd-amplitudes"),
+        "{e}"
+    );
+    // Once the kernel is in the shipped set it is admitted.
+    let (s, _) = GpuSettings::resolve_with_default(
+        GpuSettingsExplicit::default(),
+        &env,
+        Precision::F64,
+        shipped.with(MixedKernel::RiMp2Energy),
+    )
+    .unwrap();
+    assert!(s.mixed_allows(MixedKernel::RiMp2Energy));
+    // Unknown is a different message from not-shipped.
+    let e = "diis".parse::<MixedKernelSet>().unwrap_err();
+    assert!(e.contains("unknown mixed-precision kernel"), "{e}");
 }

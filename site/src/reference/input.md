@@ -311,7 +311,7 @@ Optional CUDA backend. A default build has no GPU code: there `mode = "on"` is a
 | `memory_gb` | float | 0.8 x free | finite and > 0 | Device-memory pool (decimal GB). A GEMM that does not fit runs on the CPU. Env: `FERRIC_GPU_MEM_GB`. |
 | `min_flops` | integer | 1073741824 | | Smallest `2*m*n*k` sent to the device; the default is not tuned for any particular card. Env: `FERRIC_GPU_MIN_FLOPS`. |
 | `precision` | string | `"f64"` | `f64`, `mixed` | `mixed` runs the kernels in `mixed_kernels` with f32 storage and f32 panels accumulated in f64; every other contraction stays f64. Requires `mode` `auto` or `on`. A mixed result is not an f64 result: its error is bounded, measured and documented on the [validation page](validation.md), not validated against a reference code. Env: `FERRIC_GPU_PRECISION`. |
-| `mixed_kernels` | string array | the kernels this build ships | `rimp2-energy`, `ccsd-amplitudes`, `dfk-occ` | Which kernels may run in mixed precision; requires `precision = "mixed"`. Kernels that are not names here (SCF diagonalisation, DIIS, metric inverses, GW, grids) never run below f64. Env: `FERRIC_GPU_MIXED_KERNELS` (comma-separated). |
+| `mixed_kernels` | string array | the kernels this build ships | `rimp2-energy`, `ccsd-amplitudes`, `dfk-occ` | Which kernels may run in mixed precision; requires `precision = "mixed"`. Naming a kernel this build does not ship yet is an error, and a build that ships no mixed kernel refuses `precision = "mixed"` ("no mixed-precision kernel is available in this build"). Kernels that are not names here (SCF diagonalisation, DIIS, metric inverses, GW, grids) never run below f64. Env: `FERRIC_GPU_MIXED_KERNELS` (comma-separated). |
 
 ## `[output]`
 

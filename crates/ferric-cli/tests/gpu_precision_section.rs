@@ -77,7 +77,7 @@ fn precision_mixed_with_mode_off_is_an_error_naming_both_keys() {
     );
     assert!(!out.status.success(), "must refuse: {}", stderr(&out));
     let e = stderr(&out);
-    assert!(e.contains("precision") && e.contains("mode"), "{e}");
+    assert!(e.contains("[gpu] precision = mixed requires mode"), "{e}");
 }
 
 #[test]
