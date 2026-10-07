@@ -127,9 +127,11 @@ fn energy_bound(p: &Prepared, kappa: Option<f64>) -> (f64, f64) {
         p.nvir,
         p.first_occ,
         p.nocc_total,
-        2.0 * gamma(p.b_ov.nrows()),
-        0.0,
-        kappa,
+        bound::BoundSpec {
+            eps_g: 2.0 * gamma(p.b_ov.nrows()),
+            eta: 0.0,
+            kappa,
+        },
     );
     eprintln!(
         "  kappa_E {:.3e}, p99 element kappa (i=0) {:.3e}",

@@ -7,17 +7,19 @@ use ferric_core::gpu::mixed_host::{gamma, U32, U64};
 
 /// Storage only: the CPU f64 product of the f32-rounded B_ov against the exact
 /// f64 product. Each operand carries a relative error ≤ u32, so a term carries
-/// (1+u32)² − 1 = 2·u32 + u32², and both products are f64 sums of depth naux:
-/// 2·u32 + u32² + 2·γ_naux(u64).
+/// (1+u32)² − 1 = 2·u32 + u32²; both products are f64 sums of depth naux, the
+/// rounded one over S̃ ≤ (1+u32)²·S, the exact one over S:
+/// 2·u32 + u32² + γ_naux(u64)·(1 + (1+u32)²).
 pub fn eps_storage(naux: usize) -> f64 {
-    2.0 * U32 + U32 * U32 + 2.0 * gamma(naux, U64)
+    2.0 * U32 + U32 * U32 + gamma(naux, U64) * (1.0 + (1.0 + U32) * (1.0 + U32))
 }
 
 /// The shipped device kernel against the exact f64 product. A term carries
 /// (1+u32)² from storage; a panel of b products summed in f32 adds
 /// (1 + γ_b(u32)); the ⌈naux/b⌉ panels are summed in f64, (1 + γ_⌈naux/b⌉(u64));
-/// the f64 reference adds γ_naux(u64). The product form is exact, so no slack
-/// factor is applied. `b` is clamped to [1, naux].
+/// the f64 reference adds γ_naux(u64) (additively: the comparison is device
+/// against the COMPUTED reference, whose own error is bounded against the true
+/// product). No slack factor is applied. `b` is clamped to [1, naux].
 pub fn eps_device(naux: usize, b: usize) -> f64 {
     let naux = naux.max(1);
     let b = b.clamp(1, naux);

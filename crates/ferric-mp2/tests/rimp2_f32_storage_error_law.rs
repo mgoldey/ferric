@@ -18,10 +18,19 @@
 //!    b = 8, 64 (the shipped default) and one panel: every element inside
 //!    `eps_device(naux, b)` and the energy inside its bound.
 //!
+//! Rounding mode: the truncation comparison above is a measurement here (2.5x to
+//! 2.8x worse than round-to-nearest); the guarantee against a truncating upload
+//! is the bit-exact device test in gpu_rimp2_mixed.rs, not these statistics.
+//!
+//! The file name predates the wording: the sweep below describes how the
+//! storage RMS falls with naux (four systems, naux confounded with the
+//! molecule); it is not a law and not a gate on defects.
+//!
 //! The deterministic bounds are worst cases over rounding signs, 3 to 6 decades
 //! above the measured errors: they catch gross defects only (see
-//! `common/rimp2_error_bound.rs`). The subtle mutants are pinned by the
-//! measured two-sided per-element check in gpu_rimp2_mixed.rs.
+//! `common/rimp2_error_bound.rs`). The subtle defects are pinned in
+//! gpu_rimp2_mixed.rs (bit-exact upload, deterministic flush construction,
+//! supplementary per-element comparison).
 //!
 //! MEASURED (cc-pVDZ, RI-JK SCF; printed by this test; the binary runs in about
 //! 3 s of test time after compilation, water and butane only):
@@ -158,9 +167,11 @@ fn f32_storage_error_is_within_its_bounds_above_the_noise_floor_and_truncation_i
             p.nvir,
             p.first_occ,
             p.nocc_total,
-            eg,
-            eta,
-            None,
+            bound::BoundSpec {
+                eps_g: eg,
+                eta,
+                kappa: None,
+            },
         );
         let (rms_rn, rms_tr, worst) = storage_elements(&p, eg, eta);
         eprintln!(
@@ -204,9 +215,11 @@ fn the_host_twin_of_the_mixed_gemm_is_within_its_bounds_for_every_panel_width() 
                 p.nvir,
                 p.first_occ,
                 p.nocc_total,
-                eg,
-                eta,
-                None,
+                bound::BoundSpec {
+                    eps_g: eg,
+                    eta,
+                    kappa: None,
+                },
             );
             let (d_os, d_ss) = (m_os - cpu.e_os, m_ss - cpu.e_ss);
             let mut el = stats::Elem::new(eg, eta);
@@ -278,7 +291,7 @@ fn storage_per_element_rms_falls_with_the_auxiliary_depth() {
     let (slope, se) = stats::loglog_fit(&pts);
     let upper = slope + stats::t95(pts.len() - 2) * se;
     eprintln!(
-        "per-element storage law: slope of ln RMS vs ln naux = {slope:.3} +- {se:.3} (df {}), one-sided 95% upper limit {upper:.3}; random-sign model: -0.5",
+        "per-element storage RMS vs naux: slope of ln RMS vs ln naux = {slope:.3} +- {se:.3} (df {}), one-sided 95% upper limit {upper:.3}; random-sign model: -0.5",
         pts.len() - 2
     );
     assert!(

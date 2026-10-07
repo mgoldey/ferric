@@ -24,15 +24,39 @@
 //! WHAT EACH GATE CATCHES. The energy bound is a worst case over rounding signs,
 //! 3 to 6 decades above every measured energy error; it catches gross defects
 //! (wrong operand offset, dropped panel or pair weight: 1e-1 relative) and
-//! NOTHING subtle. The subtle mutants (plain SGEMM without the f64 flush, f32
-//! B_ov with an f64 GEMM, truncating instead of round-to-nearest upload) are
-//! pinned by `the_shipped_kernel_is_pinned_by_a_two_sided_per_element_measurement`:
-//! the per-element RMS of err/S over all G blocks of real benzene/aug-cc-pVTZ
-//! (naux 912), device against the host twin at the same b, and against each
-//! mutant's host emulation; the accepted band for device/twin is the geometric
-//! midpoint between the clean side (ratio 1) and each measured mutant side.
-//! The upload's rounding mode is additionally pinned bit-for-bit
-//! (`the_f32_upload_is_round_to_nearest_even_bit_for_bit`).
+//! NOTHING subtle. The subtle defects are pinned as follows.
+//!  * ROUNDING MODE (round-to-nearest-even vs truncation): the GUARANTEE is the
+//!    bit-exact upload test (`the_f32_upload_is_round_to_nearest_even_bit_for_bit`),
+//!    which compares the device f32 B_ov with `as f32` element for element. The
+//!    statistical band below also moves under truncation (1.29 vs the band edge
+//!    1.13), but that margin (13%) is of the size of the device/twin spread
+//!    between systems (0.87 at water/cc-pVDZ, 1.007 at benzene/aug-cc-pVTZ), so
+//!    it is supplementary and device and system dependent: a build whose in-panel
+//!    order is more accurate could put truncation inside the band.
+//!  * PANEL STRUCTURE: `the_shipped_kernel_is_pinned_by_a_two_sided_per_element_measurement`
+//!    measures the per-element RMS of err/S over all G blocks of real
+//!    benzene/aug-cc-pVTZ (naux 912), device against the host twin at the shipped
+//!    b and against host emulations of the defects; the accepted device/twin band
+//!    is the geometric midpoint between the clean side (ratio 1) and the nearest
+//!    measured defect on each side. It catches plain SGEMM (one panel; also run
+//!    with the real device via FERRIC_GPU_MIXED_K_PANEL=1000000000), an f32 B_ov
+//!    with an f64 GEMM (below the band), and wider panels (below). It does NOT
+//!    catch a panel width below the shipped one (b = 32 reads 0.70: a more
+//!    accurate kernel, a performance regression only, not pinned).
+//!  * F64 FLUSH ACROSS PANELS (defect: panels summed in f32, one f64 flush at the
+//!    end): the band also moves for it on this data (ratio 1.30, outside the
+//!    band) but that is again supplementary; the deterministic guarantee is
+//!    `the_f64_flush_across_panels_keeps_what_an_f32_sum_loses` (panel sums
+//!    +2^20, 2^-9, -2^20 through the real `g_block`: the f64 flush returns 2^-9
+//!    exactly, the f32-across-panels emulation 0).
+//!  The RMS band is not a statement about other devices or builds; the two
+//!  bit-exact/exact tests above are.
+//! Measured panel-width sensitivity (host twin at width b' over the shipped
+//! b = 64 twin, benzene/aug-cc-pVTZ, all blocks): b' = 32: 0.704 (inside the
+//! band, not caught), 96: 1.270, 128: 1.506, 256: 2.389 (all above the band edge
+//! 1.135, caught). Other measured ratios to the twin: device 1.007, plain SGEMM
+//! 2.793, f32 B + f64 GEMM 0.240, truncating upload 1.287, f32-across-panels
+//! 1.300.
 //!
 //! Decomposition (per system): device − CPU = storage + accumulation, where
 //! storage = CPU f64 energy of the f32-rounded B_ov − CPU (factor eps_storage)
@@ -65,12 +89,17 @@
 //! Band for device/twin: (sqrt(0.240), sqrt(1.287)) = (0.49, 1.13); plain
 //! SGEMM / device = 2.77 against sqrt(naux/b) = 3.78. Worst element / its bound:
 //! 7.1e-2.
-//! Per-element law (cc-pVDZ, four systems; RMS of err/S at naux 84, 364, 700,
-//! 1036: 4.9e-8, 2.5e-8, 2.1e-8, 1.8e-8): slope of ln RMS vs ln naux
+//! Per-element RMS against naux (cc-pVDZ, four systems; RMS of err/S at naux 84,
+//! 364, 700, 1036: 4.9e-8, 2.5e-8, 2.1e-8, 1.8e-8): slope of ln RMS vs ln naux
 //! -0.400 +- 0.027 (df 2), one-sided 95% upper limit -0.323; random-sign model
-//! -0.5. The assertion FAILS if the upper limit is >= 0 (an error that does not
-//! fall with naux). Nothing is asserted about the total energy error vs N: its
-//! signed OS/SS parts scatter by two decades through cancellation.
+//! -0.5. The test fails only if that limit is >= 0. It is a DESCRIPTION of the
+//! shipped kernel, not a law and not a gate on defects: naux is confounded with
+//! the molecule (four systems; without water the slope is -0.314), and the
+//! plain-SGEMM and truncating-upload emulations on the same blocks also fall
+//! with naux (slopes -0.240 and -0.469). The only absolute guard is the
+//! per-element bound (every element <= eps_device*S + eta). Nothing is asserted
+//! about the total energy error vs N: its signed OS/SS parts scatter by two
+//! decades through cancellation.
 //! Teeth against the f64 device gate (gpu_rimp2_resident.rs): the f32-storage
 //! defect exceeds that gate's bound on every system above (by 2.3x at
 //! benzene/aug-cc-pvtz up to ~1e5x on water/cc-pvdz).
@@ -90,7 +119,7 @@ use ferric_mp2::rimp2::{spin_components_from_b_ov_kappa, spin_components_from_b_
 use ferric_mp2::rimp2_gpu::{
     g_block_on_device, spin_components_on_device, FAIL_AS_KERNEL, FAIL_AT_BLOCK,
 };
-use ndarray::{s, Array2, ArrayView2};
+use ndarray::{linalg::general_mat_mul, s, Array2, ArrayView2};
 use std::sync::atomic::Ordering;
 
 #[path = "common/rimp2_error_bound.rs"]
@@ -167,6 +196,29 @@ fn host_mixed(l: &ArrayView2<f64>, r: &ArrayView2<f64>, b: usize) -> Array2<f64>
     let mut out = Array2::zeros((l.nrows(), r.ncols()));
     gemm_f32_f64acc_host(l, r, &mut out.view_mut(), b);
     out
+}
+
+/// Mutant 4, host emulation: the panels are summed in f32 and flushed to f64
+/// ONCE at the end (f32 accumulation across panels).
+fn host_f32_across_panels(l: &ArrayView2<f64>, r: &ArrayView2<f64>, b: usize) -> Array2<f64> {
+    let (a32, b32) = (l.mapv(|x| x as f32), r.mapv(|x| x as f32));
+    let k = l.ncols();
+    let mut acc = Array2::<f32>::zeros((l.nrows(), r.ncols()));
+    let mut k0 = 0;
+    while k0 < k {
+        let k1 = (k0 + b).min(k);
+        let mut c = Array2::<f32>::zeros(acc.dim());
+        general_mat_mul(
+            1.0f32,
+            &a32.slice(s![.., k0..k1]),
+            &b32.slice(s![k0..k1, ..]),
+            0.0f32,
+            &mut c,
+        );
+        acc += &c;
+        k0 = k1;
+    }
+    acc.mapv(f64::from)
 }
 
 /// Blocks sampled for the per-element statistics: at most 8, evenly spread.
@@ -256,6 +308,9 @@ fn the_shipped_kernel_is_pinned_by_a_two_sided_per_element_measurement() {
     let pool = pool().unwrap();
     let mk = || stat::Elem::new(eg, eta);
     let (mut e_dev, mut e_twin, mut e_one, mut e_sto, mut e_trun) = (mk(), mk(), mk(), mk(), mk());
+    let mut e_xp = mk(); // mutant 4: f32 accumulation across panels
+    let sweep_b = [32usize, 96, 128, 256];
+    let mut e_b: Vec<stat::Elem> = sweep_b.iter().map(|_| mk()).collect();
     for i in 0..p.nocc {
         let lo = i * p.nvir;
         let (g, sab) = stat::block_g_s(&p.b_ov, &babs, i, p.nvir);
@@ -282,6 +337,20 @@ fn the_shipped_kernel_is_pinned_by_a_two_sided_per_element_measurement() {
         // mutant 2: f32-resident B with an f64 GEMM (storage error only)
         let (lr, rr) = view(&rn);
         e_sto.add(&lr.dot(&rr).view(), &g.view(), &sab.view());
+        // mutant 4: panels summed in f32, one f64 flush at the end
+        e_xp.add(
+            &host_f32_across_panels(&l.view(), &r.view(), b).view(),
+            &g.view(),
+            &sab.view(),
+        );
+        // the panel-width sweep: what a device running another b would show
+        for (e, &bb) in e_b.iter_mut().zip(&sweep_b) {
+            e.add(
+                &host_mixed(&l.view(), &r.view(), bb).view(),
+                &g.view(),
+                &sab.view(),
+            );
+        }
         // mutant 3: truncating instead of round-to-nearest upload (same kernel)
         let (lt, rt) = view(&tr);
         e_trun.add(
@@ -318,17 +387,63 @@ fn the_shipped_kernel_is_pinned_by_a_two_sided_per_element_measurement() {
         lo < r_dev && r_dev < hi,
         "device/twin RMS ratio {r_dev:.3} is outside the band ({lo:.3}, {hi:.3}) set by the measured mutants"
     );
-    // (b): plain SGEMM must exceed the shipped kernel by c, c derived from the
-    // measured sides (the midpoint of the plain-SGEMM side), expected ~ sqrt(naux/b)
-    let c = r_one.sqrt();
+    // Measured, not asserted against the band: the fourth mutant and the panel
+    // widths (the host twin at width b' is what a device running b' would show).
+    let r_xp = rms(&e_xp) / rms(&e_twin);
+    let r_b: Vec<f64> = e_b.iter().map(|e| rms(e) / rms(&e_twin)).collect();
     eprintln!(
-        "plain SGEMM / device = {:.3} (c = {c:.3}; sqrt(naux/b) = {:.3})",
-        rms(&e_one) / rms(&e_dev),
-        (naux as f64 / b as f64).sqrt()
+        "mutant 4 (f32 accumulation across panels, one f64 flush at the end): ratio to the twin {r_xp:.3}, inside the band ({lo:.3}, {hi:.3}): {}",
+        lo < r_xp && r_xp < hi
     );
+    for (bb, r) in sweep_b.iter().zip(&r_b) {
+        eprintln!(
+            "panel width {bb}: ratio to the b = {b} twin {r:.3}; caught by the band: {}",
+            !(lo < *r && *r < hi)
+        );
+    }
+    // monotone in b: a wider panel never reads as a more accurate kernel
     assert!(
-        rms(&e_one) >= c * rms(&e_dev),
-        "plain SGEMM is not separated from the device by c"
+        r_b.windows(2).all(|w| w[1] > w[0]),
+        "RMS is not monotone in the panel width: {r_b:?}"
+    );
+}
+
+/// The cancelling construction that the RMS band cannot see (mutant 4): three
+/// panels whose f32 sums are +2^20, 2^-9 and -2^20 (all exact in f32). The f64
+/// flush keeps 2^-9; summing the panels in f32 loses it (ulp32(2^20) = 2^-3) and
+/// returns 0. G_0[0][1] of this B_ov is exactly that sum.
+#[test]
+fn the_f64_flush_across_panels_keeps_what_an_f32_sum_loses() {
+    let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    if !ready() {
+        return;
+    }
+    let b = effective_k_panel();
+    let naux = 3 * b;
+    let tiny = 2.0f64.powi(-9);
+    // B_ov (naux x 2), nvir = 1: column 0 all ones, column 1 the pattern
+    let mut x = vec![0.0f64; naux];
+    x[0] = 1048576.0; // 2^20, panel 1
+    x[b] = tiny; // panel 2
+    x[2 * b] = -1048576.0; // panel 3
+    let b_ov = Array2::from_shape_fn((naux, 2), |(r, c)| if c == 0 { 1.0 } else { x[r] });
+    let dev = device(0).unwrap();
+    let pool = pool().unwrap();
+    let g = g_block_on_device(&dev, &pool, &b_ov, 0, 1, Precision::Mixed).unwrap();
+    assert_eq!(g.dim(), (1, 2));
+    assert_eq!(
+        g[(0, 1)],
+        tiny,
+        "the f64 flush must keep the middle panel's 2^-9"
+    );
+    // the emulated mutant loses it, so this construction has teeth
+    let l = b_ov.slice(s![.., 0..1]).t().to_owned();
+    let r = b_ov.slice(s![.., 0..2]).to_owned();
+    let mutant = host_f32_across_panels(&l.view(), &r.view(), b);
+    assert_eq!(
+        mutant[(0, 1)],
+        0.0,
+        "the f32-across-panels mutant returns 0 here"
     );
 }
 
@@ -377,9 +492,11 @@ fn gate(label: &str, p: &Prepared, cpu: &ferric_mp2::rimp2::SpinComponents) {
             p.nvir,
             p.first_occ,
             p.nocc_total,
-            eg,
-            eta,
-            None,
+            bound::BoundSpec {
+                eps_g: eg,
+                eta,
+                kappa: None,
+            },
         )
     };
     let full = eb(eps::eps_device(naux, b));
@@ -421,9 +538,11 @@ fn gate(label: &str, p: &Prepared, cpu: &ferric_mp2::rimp2::SpinComponents) {
         p.nvir,
         p.first_occ,
         p.nocc_total,
-        2.0 * gamma(naux, U64),
-        0.0,
-        None,
+        bound::BoundSpec {
+            eps_g: 2.0 * gamma(naux, U64),
+            eta: 0.0,
+            kappa: None,
+        },
     );
     assert!(
         ds_os.abs() > f64b.os && ds_ss.abs() > f64b.ss,
@@ -438,7 +557,7 @@ fn mixed_energy_decomposes_and_the_per_element_error_falls_with_the_auxiliary_de
     if !ready() {
         return;
     }
-    let mut pts = Vec::new();
+    let (mut pts, mut pts_one, mut pts_trunc) = (Vec::new(), Vec::new(), Vec::new());
     for sys in ["h2o", "c4h10", "c8h18", "alkane_12"] {
         let (p, cpu) = fixture::prepare_scf(sys, "cc-pvdz", "cc-pvdz-ri", 0);
         gate(&format!("{sys}/cc-pvdz"), &p, &cpu);
@@ -451,17 +570,53 @@ fn mixed_energy_decomposes_and_the_per_element_error_falls_with_the_auxiliary_de
         eprintln!("per-element {sys}: naux {naux}, {} elements: device RMS(err/S) {:.3e}, worst/bound {:.3e}, eps_device {eg:.3e}", el.n, el.rms(), el.worst);
         assert!(el.worst <= 1.0);
         pts.push((naux as f64, el.rms()));
+        // the same blocks through two host-emulated defects, to state what the
+        // slope can and cannot tell: plain SGEMM (one panel) and a truncating upload
+        let blocks = sample_blocks(p.nocc);
+        let babs = p.b_ov.mapv(f64::abs);
+        let tr = stat::truncate_f32(&p.b_ov);
+        let (mut e1, mut et) = (stat::Elem::new(eg, eta), stat::Elem::new(eg, eta));
+        for &i in &blocks {
+            let lo = i * p.nvir;
+            let (g, sab) = stat::block_g_s(&p.b_ov, &babs, i, p.nvir);
+            let lr = |m: &Array2<f64>| {
+                (
+                    m.slice(s![.., lo..lo + p.nvir]).t().to_owned(),
+                    m.slice(s![.., lo..]).to_owned(),
+                )
+            };
+            let (l, r) = lr(&p.b_ov);
+            e1.add(
+                &host_mixed(&l.view(), &r.view(), naux).view(),
+                &g.view(),
+                &sab.view(),
+            );
+            let (lt, rt) = lr(&tr);
+            et.add(
+                &host_mixed(&lt.view(), &rt.view(), b).view(),
+                &g.view(),
+                &sab.view(),
+            );
+        }
+        pts_one.push((naux as f64, e1.rms()));
+        pts_trunc.push((naux as f64, et.rms()));
     }
     // The per-element RMS of err/S against the auxiliary depth. Model: the
     // rounding errors of the naux terms of one element add with random signs
     // against S = Σ|terms|, so RMS(err/S) falls as naux^(-1/2) at fixed b. The
     // assertion is the one-sided 95% upper confidence limit of the fitted slope
-    // being NEGATIVE; it FAILS if the data admit a slope of 0 or more (an error
-    // that does not fall with naux), at df = n - 2 = 2.
+    // being NEGATIVE (df = n - 2 = 2): it fails only if the data admit a slope of
+    // 0 or more. It DESCRIBES the shipped kernel; it is not a gate on defects
+    // (see the module docs): the plain-SGEMM and truncating-upload emulations
+    // measured here fall with naux too.
     let (slope, se) = stat::loglog_fit(&pts);
     let df = pts.len() - 2;
     let upper = slope + stat::t95(df) * se;
-    eprintln!("per-element law (cc-pvdz, N = naux): slope of ln RMS vs ln naux = {slope:.3} +- {se:.3} (df {df}), one-sided 95% upper limit {upper:.3}; random-sign model -0.5");
+    eprintln!("per-element RMS vs naux (cc-pvdz, 4 systems; naux is confounded with the molecule): slope of ln RMS vs ln naux = {slope:.3} +- {se:.3} (df {df}), one-sided 95% upper limit {upper:.3}; random-sign model -0.5");
+    let (s1, _) = stat::loglog_fit(&pts[1..]);
+    let (so, _) = stat::loglog_fit(&pts_one);
+    let (st, _) = stat::loglog_fit(&pts_trunc);
+    eprintln!("without the smallest system (3 points, no standard error at df 1): slope {s1:.3}; plain-SGEMM emulation slope {so:.3}; truncating-upload emulation slope {st:.3}");
     assert!(
         upper < 0.0,
         "the per-element RMS does not demonstrably fall with naux: upper limit {upper:.3}"
@@ -517,9 +672,11 @@ fn damped_mp2_runs_through_the_mixed_path_within_its_bound() {
         p.nvir,
         p.first_occ,
         p.nocc_total,
-        eps::eps_device(naux, b),
-        eta,
-        kappa,
+        bound::BoundSpec {
+            eps_g: eps::eps_device(naux, b),
+            eta,
+            kappa,
+        },
     );
     let (d_os, d_ss) = (mixed.e_os - cpu.e_os, mixed.e_ss - cpu.e_ss);
     eprintln!("error map mixed damped (kappa 1.1) h2o/cc-pvdz: dE_os {d_os:+.3e} dE_ss {d_ss:+.3e} | bound {:.3e} {:.3e}", bd.os, bd.ss);

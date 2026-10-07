@@ -321,30 +321,49 @@ part (the device minus that), each inside its own bound; at benzene /
 aug-cc-pVTZ the accumulation part (OS −9.4e-10) is the larger.
 
 What the bound can and cannot catch. The energy bound is a worst case over
-rounding signs, three to six decades above the measured energy errors (the
-per-element worst case reaches 7-12% of its per-element bound, but those
-elements carry little of the energy). It catches gross defects, such as a wrong
-operand offset, a dropped panel or a dropped pair weight (1e-1 relative error).
-It does **not** catch a subtle degradation of the kernel: a plain SGEMM without
-the f64 flush, an f32 `B_ov` with an f64 GEMM, or a truncating instead of
-round-to-nearest upload all stay inside it. Those are pinned by a separate
-measurement over every G block of benzene / aug-cc-pVTZ (18.3 million elements):
-the per-element RMS of err/S is 1.80e-8 for the device and 1.78e-8 for the host
-twin of the same algorithm (ratio 1.007), against 2.8× the twin for a plain
-SGEMM, 0.24× for an f32 `B_ov` with an f64 GEMM and 1.29× for a truncating
-upload; the accepted device/twin ratio lies between the geometric midpoints of
-those measured sides. The upload's rounding mode is also checked bit for bit
-against `as f32`.
+rounding signs, three to six decades above the measured energy errors (at the
+worst single element the error reaches 7.1e-2 of its per-element bound at
+benzene / aug-cc-pVTZ and up to 1.2e-1 at dodecane, but those elements carry
+little of the energy). It catches gross defects, such as a wrong operand offset,
+a dropped panel or a dropped pair weight (1e-1 relative error). It does **not**
+catch a subtle degradation of the kernel: a plain SGEMM without the f64 flush,
+an f32 `B_ov` with an f64 GEMM, a truncating instead of round-to-nearest upload,
+or f32 accumulation across panels all stay inside it. They are pinned by other
+checks:
+
+- The rounding mode is guaranteed by a bit-exact test: the device f32 `B_ov`
+  equals `as f32` (round to nearest, ties to even) element for element.
+- The f64 flush across panels is guaranteed by a deterministic construction
+  (panel sums +2²⁰, 2⁻⁹, −2²⁰ give exactly 2⁻⁹ on the device; summing the panels
+  in f32 gives 0).
+- The panel structure is checked by a measurement over every G block of
+  benzene / aug-cc-pVTZ (18.3 million elements): the per-element RMS of err/S is
+  1.80e-8 for the device and 1.78e-8 for the host twin of the same algorithm
+  (ratio 1.007), against 2.79× the twin for a plain SGEMM, 0.24× for an f32
+  `B_ov` with an f64 GEMM, 1.29× for a truncating upload and 1.30× for f32
+  accumulation across panels. The accepted device/twin ratio lies between 0.49
+  and 1.13 (the geometric midpoints to the nearest measured defect on each
+  side). This measurement is supplementary and device and system dependent: its
+  margin (about 13%) is of the size of the device/twin spread between systems
+  (0.87 at water / cc-pVDZ, 1.007 at benzene / aug-cc-pVTZ), so it is not a
+  guarantee on another device or build. Measured against the shipped b = 64, a
+  panel width of 96, 128 or 256 reads 1.27, 1.51 or 2.39 (above the band); a
+  width of 32 reads 0.70 (inside it: a more accurate kernel, a performance
+  difference that is not pinned).
 
 How the error depends on size. The per-element RMS of err/S falls with the
 auxiliary depth over the four cc-pVDZ systems: 4.9e-8, 2.5e-8, 2.1e-8, 1.8e-8
 at naux 84, 364, 700, 1036; the fitted slope of ln RMS against ln naux is
 −0.40 ± 0.03 (2 degrees of freedom; one-sided 95% upper limit −0.32; the
-random-sign model predicts −0.5), and the test fails if that upper limit is not
-negative. No size law is claimed for the total energy error: its signed OS and
-SS parts scatter by two decades across systems through cancellation. Test
-files: `crates/ferric-mp2/tests/rimp2_f32_storage_error_law.rs` (no device) and
-`crates/ferric-mp2/tests/gpu_rimp2_mixed.rs` (device).
+random-sign model predicts −0.5). This describes the shipped kernel; it is not a
+law and not a defect gate: naux is confounded with the molecule (without water
+the slope is −0.31), and a plain-SGEMM or truncating-upload emulation on the
+same blocks also falls with naux. No size dependence is claimed for the total
+energy error: its signed OS and SS parts scatter by two decades across systems
+through cancellation. Test files:
+`crates/ferric-mp2/tests/rimp2_f32_storage_error_law.rs` (no device; the name
+predates this wording) and `crates/ferric-mp2/tests/gpu_rimp2_mixed.rs`
+(device).
 
 ## Known limits and negatives
 

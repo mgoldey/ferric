@@ -22,8 +22,10 @@
 //! every measured energy error. It therefore catches gross defects (a wrong
 //! operand offset, a dropped panel or pair weight: errors of 1e-1 relative) and
 //! nothing subtle: a plain SGEMM without the f64 flush, an f32 B_ov with an f64
-//! GEMM, or a truncating instead of round-to-nearest upload all pass it. Those
-//! are pinned by the measured two-sided per-element check in `gpu_rimp2_mixed.rs`.
+//! GEMM, a truncating instead of round-to-nearest upload, or f32 accumulation
+//! across panels all pass it. `gpu_rimp2_mixed.rs` pins them with a bit-exact
+//! upload test, a deterministic flush construction and a (supplementary)
+//! measured per-element comparison; see its module docs.
 use ferric_core::gpu::mixed_host::{gamma, U64};
 use ndarray::{linalg::general_mat_mul, s, Array2, ArrayView2};
 
@@ -97,10 +99,16 @@ fn p99(mut v: Vec<f64>) -> f64 {
     *v.select_nth_unstable_by(k, |a, b| a.total_cmp(b)).1
 }
 
-/// The bound for (OS, SS) at per-element factor `eps_g` and absolute term
-/// `eta`; `b_ov` is the f64 (naux × nocc·nvir) tensor, `kappa` the optional
-/// κ-damping of the energy.
-#[allow(clippy::too_many_arguments)]
+/// The error model of one evaluation: per-element factor `eps_g`, absolute
+/// underflow term `eta`, optional κ-damping of the energy.
+pub struct BoundSpec {
+    pub eps_g: f64,
+    pub eta: f64,
+    pub kappa: Option<f64>,
+}
+
+/// The bound for (OS, SS) under `spec`; `b_ov` is the f64 (naux × nocc·nvir)
+/// tensor.
 pub fn energy_bound(
     b_ov: &Array2<f64>,
     eps: &[f64],
@@ -108,10 +116,9 @@ pub fn energy_bound(
     nvir: usize,
     first_occ: usize,
     nocc_total: usize,
-    eps_g: f64,
-    eta: f64,
-    kappa: Option<f64>,
+    spec: BoundSpec,
 ) -> EnergyBound {
+    let BoundSpec { eps_g, eta, kappa } = spec;
     let babs = b_ov.mapv(f64::abs);
     let mut acc = Acc {
         os: 0.0,
