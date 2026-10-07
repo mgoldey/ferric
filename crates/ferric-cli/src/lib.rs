@@ -1,4 +1,5 @@
 mod config;
+mod gpu_flag;
 
 use config::{load_config, Config};
 /// The `[local]` model types, re-exported for the Python bindings, which
@@ -38,8 +39,11 @@ use ferric_scf::rohf::solve_rohf;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
 
-fn print_usage() {
-    eprintln!("usage: ferric [--verbose|-v] [--json <path>|--no-json] <input.toml>");
+/// The synopsis and one-line description at the top of `--help`.
+fn print_usage_head() {
+    eprintln!(
+        "usage: ferric [--verbose|-v] [--json <path>|--no-json] [--gpu <preset>] <input.toml>"
+    );
     eprintln!("       ferric --version|-V");
     eprintln!();
     eprintln!("Run a ferric quantum-chemistry calculation from a TOML input file.");
@@ -47,13 +51,18 @@ fn print_usage() {
         "See examples/*.toml for sample inputs and site/src/using/quickstart.md for a walkthrough."
     );
     eprintln!();
-    eprintln!("  --verbose, -v   Print one line per SCF iteration to stdout (energy, dE,");
+}
+
+fn print_usage() {
+    print_usage_head();
+    eprintln!("  --verbose, -v  Print one line per SCF iteration to stdout (energy, dE,");
     eprintln!("                  density/DIIS error) as the job runs. Same effect as setting");
     eprintln!("                  `verbose = true` in the [scf] TOML section.");
     eprintln!("  --json <path>   Write the machine-readable JSON Lines run log here.");
     eprintln!("                  Overrides `[output] json`. A run log is written BY");
     eprintln!("                  DEFAULT to <input-stem>.ferric.jsonl beside the input.");
     eprintln!("  --no-json       Do not write a run log. Same as `[output] json = false`.");
+    gpu_flag::print_help();
     eprintln!("  --version, -V   Print which build this is (version, git commit, dirty");
     eprintln!("                  flag, build profile, libint version) and exit.");
 }
@@ -252,8 +261,12 @@ pub fn main() {
 /// Install the GPU backend from `[gpu]`, or print `error: ...` and exit 1 when
 /// an explicit `on` cannot be honoured. Extracted from `run` to keep its
 /// cyclomatic complexity at the baseline.
-fn install_gpu_or_exit(cfg: &Config) {
-    if let Err(e) = ferric_core::gpu::install(cfg.gpu.explicit()) {
+fn install_gpu_or_exit(cfg: &Config, cli_preset: Option<ferric_core::gpu::GpuPreset>) {
+    let explicit = ferric_core::gpu::GpuSettingsExplicit {
+        cli_preset,
+        ..cfg.gpu.explicit()
+    };
+    if let Err(e) = ferric_core::gpu::install(explicit) {
         eprintln!("error: {e}");
         std::process::exit(1);
     }
@@ -303,6 +316,8 @@ pub fn run(args: Vec<String>) {
         print_usage();
         std::process::exit(if args.len() < 2 { 2 } else { 0 });
     }
+    // `--gpu <preset>` is taken out first so it can sit anywhere on the line.
+    let (args, cli_gpu) = gpu_flag::extract_or_exit(args);
     // Accept the positional TOML path plus an optional `--verbose`/`-v` flag,
     // in either order (`ferric -v input.toml` or `ferric input.toml -v`).
     // `-v`/`--verbose` sets RhfConfig.verbose (live per-iteration SCF
@@ -607,7 +622,7 @@ pub fn run(args: Vec<String>) {
     // without the gpu feature). Runs before anything calls `gpu::status()` so
     // the installed settings are the TOML-aware ones. Printed next to the
     // memory audit so every run states where its GEMMs go.
-    install_gpu_or_exit(&cfg);
+    install_gpu_or_exit(&cfg, cli_gpu);
     let rhf_config = RhfConfig {
         xc_omega: None,
         max_iter: cfg.scf.max_iter,

@@ -190,6 +190,9 @@ pub fn gpu_trace() -> bool {
 /// The TOML/kwarg side (already typed; `None` = not given).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GpuSettingsExplicit {
+    /// A `--gpu <preset>` command-line flag: outranks `preset` (TOML) and the
+    /// env var, and is labelled `command line` in the audit lines.
+    pub cli_preset: Option<GpuPreset>,
     pub preset: Option<GpuPreset>,
     pub mode: Option<GpuMode>,
     pub device: Option<usize>,
@@ -214,6 +217,9 @@ fn tag<T>(r: Result<Resolved<T>, String>, name: &str) -> Result<Resolved<T>, Str
     r.map_err(|e| format!("{name}: {e}"))
 }
 
+/// Source label of a preset given as `ferric --gpu <preset>`.
+const COMMAND_LINE_LABEL: &str = "command line";
+
 /// A knob a preset expands into: a default takes the preset's value (source
 /// `preset`), a given value that agrees is kept, one that disagrees is a
 /// refusal naming both keys and both sources. `shown` is the knob's env /
@@ -221,7 +227,7 @@ fn tag<T>(r: Result<Resolved<T>, String>, name: &str) -> Result<Resolved<T>, Str
 fn merge_preset<T: PartialEq + fmt::Display + Copy>(
     r: &mut Resolved<T>,
     implied: T,
-    preset: &Resolved<GpuPreset>,
+    preset: (GpuPreset, &str),
     shown: &str,
     key: &str,
 ) -> Result<(), String> {
@@ -231,8 +237,8 @@ fn merge_preset<T: PartialEq + fmt::Display + Copy>(
     } else if r.value != implied {
         return Err(format!(
             "[gpu] preset = {} ({}) implies {key} = {implied} but {shown} = {} ({}); set one of them",
-            preset.value,
-            preset.source.label(),
+            preset.0,
+            preset.1,
             r.value,
             r.source.label(),
         ));
@@ -317,9 +323,15 @@ impl GpuSettings {
         shipped: MixedKernelSet,
     ) -> Result<(GpuSettings, Vec<String>), String> {
         let preset = tag(
-            GPU_PRESET.resolve(explicit.preset, &get),
+            GPU_PRESET.resolve(explicit.cli_preset.or(explicit.preset), &get),
             "FERRIC_GPU_PRESET",
         )?;
+        // The flag resolves as an explicit value; only its label differs.
+        let preset_label = if explicit.cli_preset.is_some() {
+            COMMAND_LINE_LABEL
+        } else {
+            preset.source.label()
+        };
         let preset_given = preset.source != ConfigSource::Default;
         let implied = preset.value.implied(shipped);
         let mut mode = tag(GPU_MODE.resolve(explicit.mode, &get), "FERRIC_GPU")?;
@@ -327,7 +339,7 @@ impl GpuSettings {
             merge_preset(
                 &mut mode,
                 implied.mode,
-                &preset,
+                (preset.value, preset_label),
                 "FERRIC_GPU / [gpu] mode",
                 "mode",
             )?;
@@ -364,7 +376,7 @@ impl GpuSettings {
             merge_preset(
                 &mut precision,
                 implied.precision,
-                &preset,
+                (preset.value, preset_label),
                 "FERRIC_GPU_PRECISION / [gpu] precision",
                 "precision",
             )?;
@@ -462,7 +474,10 @@ impl GpuSettings {
             min_flops.audit_line(),
             precision_line.unwrap_or_else(|| precision.audit_line()),
             kernels.audit_line(),
-            preset.audit_line(),
+            format!(
+                "{}: {}  [source: {preset_label}]",
+                preset.env_name, preset.value
+            ),
         ];
         Ok((
             GpuSettings {
