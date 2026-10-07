@@ -205,6 +205,21 @@ fn unknown_preset_is_refused_with_the_vocabulary() {
 }
 
 #[test]
+fn a_cli_preset_outranks_toml_and_env_and_is_labelled_command_line() {
+    let get = |k: &str| (k == "FERRIC_GPU_PRESET").then(|| "on".to_string());
+    let ex = GpuSettingsExplicit {
+        cli_preset: Some(GpuPreset::Off),
+        preset: Some(GpuPreset::Auto),
+        ..Default::default()
+    };
+    let (s, audit) = GpuSettings::resolve(ex, get).unwrap();
+    assert_eq!(s.mode, GpuMode::Off);
+    assert!(audit
+        .iter()
+        .any(|l| l == "FERRIC_GPU_PRESET: off  [source: command line]"));
+}
+
+#[test]
 fn the_audit_line_order_is_pinned() {
     for explicit in [
         GpuSettingsExplicit::default(),
