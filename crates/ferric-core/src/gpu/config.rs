@@ -371,7 +371,7 @@ impl GpuSettings {
             Precision::F64 if kernels_given => {
                 return Err(format!(
                     "FERRIC_GPU_MIXED_KERNELS / [gpu] mixed_kernels = {} given but the precision is f64; \
-                     set [gpu] precision = \"mixed\" or drop the list",
+                     set [gpu] precision = \"mixed\" (or use preset = \"mixed\") or drop the list",
                     kernels.value
                 ));
             }

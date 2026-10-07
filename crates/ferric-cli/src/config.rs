@@ -38,7 +38,7 @@ pub struct Config {
     #[serde(default)]
     pub memory: MemoryCfg,
     #[serde(default)]
-    pub gpu: GpuCfg,
+    pub gpu: GpuSection,
     #[serde(default)]
     pub external_potential: ExternalPotentialCfg,
     /// Optional `[cosmo]` section: COSMO implicit-solvent configuration.
@@ -168,9 +168,12 @@ impl Config {
 /// CUDA; `auto` uses a device when present and prints a notice otherwise;
 /// `on` makes a missing device an error. All keys also exist as
 /// `FERRIC_GPU*` env vars; TOML wins.
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct GpuCfg {
+    /// One word that sets `mode` and `precision` together (`off`, `auto`, `on`,
+    /// `mixed`, `auto-mixed`). The root key `gpu = "<preset>"` is the same.
+    pub preset: Option<String>,
     pub mode: Option<String>,
     pub device: Option<usize>,
     pub memory_gb: Option<f64>,
@@ -184,6 +187,10 @@ pub struct GpuCfg {
 impl GpuCfg {
     /// Value checks: `mode`, `precision` and `mixed_kernels` parse and `memory_gb` is finite and > 0.
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(p) = &self.preset {
+            p.parse::<ferric_core::gpu::GpuPreset>()
+                .map_err(|e| format!("[gpu] preset: {e}"))?;
+        }
         if let Some(s) = &self.mode {
             s.parse::<ferric_core::gpu::GpuMode>()
                 .map_err(|e| format!("[gpu] mode: {e}"))?;
@@ -209,7 +216,7 @@ impl GpuCfg {
     /// (`load_config` does); an unparsable `mode` reads as unset here.
     pub fn explicit(&self) -> ferric_core::gpu::GpuSettingsExplicit {
         ferric_core::gpu::GpuSettingsExplicit {
-            preset: None,
+            preset: self.preset.as_deref().and_then(|s| s.parse().ok()),
             mode: self.mode.as_deref().and_then(|s| s.parse().ok()),
             device: self.device,
             memory_gb: self.memory_gb,
@@ -220,6 +227,55 @@ impl GpuCfg {
                 .as_ref()
                 .and_then(|ks| ks.join(",").parse().ok()),
         }
+    }
+}
+
+/// `[gpu]` as a table, or the root shorthand `gpu = "<preset>"`. TOML cannot
+/// hold both under the one key `gpu`, so the parser itself refuses the pair
+/// (duplicate key `gpu`).
+pub enum GpuSection {
+    Preset(String),
+    Table(GpuCfg),
+}
+
+impl Default for GpuSection {
+    fn default() -> Self {
+        GpuSection::Table(GpuCfg::default())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for GpuSection {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let v = toml::Value::deserialize(d)?;
+        match v {
+            toml::Value::String(s) => Ok(GpuSection::Preset(s)),
+            toml::Value::Table(_) => GpuCfg::deserialize(v)
+                .map(GpuSection::Table)
+                .map_err(D::Error::custom),
+            other => Err(D::Error::custom(format!(
+                "gpu: expected a preset string (gpu = \"mixed\") or a [gpu] table, got {}",
+                other.type_str()
+            ))),
+        }
+    }
+}
+
+impl GpuSection {
+    fn as_cfg(&self) -> GpuCfg {
+        match self {
+            GpuSection::Preset(p) => GpuCfg {
+                preset: Some(p.clone()),
+                ..Default::default()
+            },
+            GpuSection::Table(t) => t.clone(),
+        }
+    }
+    pub fn validate(&self) -> Result<(), String> {
+        self.as_cfg().validate()
+    }
+    pub fn explicit(&self) -> ferric_core::gpu::GpuSettingsExplicit {
+        self.as_cfg().explicit()
     }
 }
 
