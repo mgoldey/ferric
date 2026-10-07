@@ -754,6 +754,15 @@ pub fn u_opposite_spin_on_device(
         ch_a.nvir,
         nov_b,
     )?;
+    // Both tensors must fit TOGETHER before either is transferred: a pool that
+    // fits B_alpha but not B_beta refuses here, naming the tensor that does not
+    // fit, with nothing uploaded and nothing left reserved (the probe leases
+    // drop at the end of this block, before the real charges are taken).
+    {
+        let bytes = |c: &SpinChannel<'_>| c.b.len().saturating_mul(8);
+        let _alpha = pool.reserve("U-RI-MP2 B_ov alpha", bytes(&ch_a))?;
+        let _beta = pool.reserve("U-RI-MP2 B_ov beta", bytes(&ch_b))?;
+    }
     let ba = upload_b_ov(dev, pool, "U-RI-MP2 B_ov alpha", ch_a.b)?;
     let bb = upload_b_ov(dev, pool, "U-RI-MP2 B_ov beta", ch_b.b)?;
     let mut host = vec![0.0f64; ch_a.nvir * nov_b];
