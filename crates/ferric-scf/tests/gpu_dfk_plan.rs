@@ -109,3 +109,73 @@ fn the_fit_table_matches_the_real_basis_sizes() {
     // the brief's expectation: benzene/aTZ is 765 MB of B, nowhere near a card
     assert_eq!(8 * 558 * 414 * 414, 765_111_744);
 }
+
+/// What a pool ceiling does for a range-separated hybrid, which holds one resident
+/// dressed tensor PER FITTER (`DfK` for erfc and another for erf).
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum RshFit {
+    /// `2·resident + scratch <= pool`: both fitters on the device.
+    Both,
+    /// `resident + scratch <= pool < 2·resident + scratch`: the second declines (`PoolFull`).
+    One,
+    /// Not even one fitter fits: both stay on the CPU.
+    Cpu,
+}
+
+fn rsh_fit(naux: usize, nbf: usize, pool: usize) -> RshFit {
+    let one = resident_bytes(naux, nbf).unwrap();
+    if 2 * one + SCRATCH_BYTES_DEFAULT <= pool {
+        RshFit::Both
+    } else if one + SCRATCH_BYTES_DEFAULT <= pool {
+        RshFit::One
+    } else {
+        RshFit::Cpu
+    }
+}
+
+/// The two-fitter fit rule against the real bundled bases. The ceilings are the
+/// table's policy inputs; every byte count is computed from the real shell
+/// structure. `resident_bytes` includes the n^2 K accumulator, so it exceeds the
+/// bare `8*naux*n^2` figure by `8*n^2` (asserted below), and the rule charges the
+/// second fitter the same resident size as the first.
+#[test]
+fn the_rsh_fit_table_charges_both_fitters() {
+    let cases: [(&str, &str, [RshFit; 2]); 4] = [
+        ("water", "cc-pvdz", [RshFit::Both, RshFit::Both]),
+        ("benzene", "aug-cc-pvtz", [RshFit::Both, RshFit::Both]),
+        ("alkane_20", "def2-svp", [RshFit::One, RshFit::Cpu]),
+        ("alkane_16", "def2-tzvp", [RshFit::Cpu, RshFit::Cpu]),
+    ];
+    for (mol_name, bs, want) in cases {
+        let mol = Molecule::load_xyz(&format!("../../testdata/molecules/{mol_name}.xyz")).unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled(bs).unwrap()).unwrap();
+        let aux =
+            PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+        let (n, naux) = (obs.nbasis(), aux.nbasis());
+        let one = resident_bytes(naux, n).unwrap();
+        assert_eq!(one, 8 * naux * n * n + 8 * n * n, "{mol_name}: B plus K");
+        let got = [rsh_fit(naux, n, POOL_A), rsh_fit(naux, n, POOL_B)];
+        assert_eq!(
+            got, want,
+            "{mol_name}/{bs}: n {n}, naux {naux}, one {one} B"
+        );
+        // the single-fitter verdict must agree with the one-fitter rule
+        for (pool, g) in [POOL_A, POOL_B].into_iter().zip(got) {
+            let single_fits = one + SCRATCH_BYTES_DEFAULT <= pool;
+            assert_eq!(
+                single_fits,
+                g != RshFit::Cpu,
+                "{mol_name}: one-fitter verdict"
+            );
+        }
+    }
+    // benzene/aTZ: the 8*naux*n^2 figure is 765_111_744 B and two fitters fit even
+    // the 4 GB pool.
+    let one = resident_bytes(558, 414).unwrap();
+    assert_eq!(one - 8 * 414 * 414, 765_111_744);
+    assert!(2 * one + SCRATCH_BYTES_DEFAULT <= POOL_B);
+    // alkane_20/def2-SVP: one fitter is ~4.3 GB, so exactly one fits the first pool.
+    let big = resident_bytes(2256, 490).unwrap();
+    assert!((4.33e9..4.34e9).contains(&(big as f64)), "{big}");
+    assert!(big + SCRATCH_BYTES_DEFAULT <= POOL_A && 2 * big + SCRATCH_BYTES_DEFAULT > POOL_A);
+}
