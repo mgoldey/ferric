@@ -4,9 +4,13 @@
 //! UKS (alpha and beta channels through each fitter).
 //!
 //! Each `DfK` owns its own `DeviceSlot`, so the second fitter is charged its own
-//! resident tensor. The fit rule is `2·resident + scratch <= pool` for both on the
+//! resident tensor. The fit rule is `2·(resident + scratch) <= pool` for both on the
 //! device; between `resident + scratch` and that, the first fitter is resident and
 //! the second declines (`PoolFull`, sticky, counted once) and runs the CPU path.
+//! Driver-level gap: these tests drive `DfK::build_from_occ` directly. The alpha/beta
+//! routing and which fitter receives which K in `fock_assembly` /
+//! `subtract_rsh_exchange` (both pub(crate)) are NOT exercised here; tracked for an
+//! in-crate unit test.
 //! The gate is the derived two-stage bound of `gpu_dfk_resident.rs`:
 //! `|K_dev - K_host| <= (eps_dev + eps_cpu)·S`, with `S` from each fitter's own B.
 //!
@@ -79,7 +83,8 @@ fn ready() -> bool {
     static INSTALL: std::sync::Once = std::sync::Once::new();
     INSTALL.call_once(|| {
         let (n, band, ne) = dims(O2, 3);
-        let uks = 2 * one_fitter_bytes(n, band, ne - ne / 2);
+        let nalpha = (ne + 3 - 1) / 2; // triplet: ne = 16 -> 9 alpha, 7 beta
+        let uks = 2 * one_fitter_bytes(n, band, nalpha);
         let cap = (2 * tight_target()).max(uks + uks / 4);
         install(GpuSettingsExplicit {
             mode: Some(GpuMode::Auto),
@@ -182,6 +187,11 @@ fn rsh_arm(target: usize, round_b: bool) -> ([u64; 4], [f64; 2]) {
     let (s_sr, s_lr) = (s_matrix(&sr, n, &c), s_matrix(&lr, n, &c));
     let (h_sr, h_lr) = (host_k(&mut sr, &c), host_k(&mut lr, &c));
     let hog = available_exactly(target);
+    assert_eq!(
+        pool().unwrap().available_bytes(),
+        target,
+        "hog left the wrong amount"
+    );
     let a = stats();
     ROUND_B_TO_F32.store(round_b, Ordering::SeqCst);
     let (mut k_sr, mut k_lr) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
@@ -191,6 +201,13 @@ fn rsh_arm(target: usize, round_b: bool) -> ([u64; 4], [f64; 2]) {
     }
     ROUND_B_TO_F32.store(false, Ordering::SeqCst);
     let d = delta(&a, &stats());
+    if d[0] > 0 {
+        // one fitter is resident and the REAL pool refuses a second tensor of that size
+        let p = pool().unwrap();
+        let r = resident_bytes(band, n).unwrap();
+        assert!(p.available_bytes() < r, "a second fitter would still fit");
+        assert!(p.try_reserve("second fitter probe", r).is_none());
+    }
     drop((sr, lr));
     drop(hog);
     let e = eps(n, nocc, band);
@@ -207,7 +224,8 @@ fn rsh_arm(target: usize, round_b: bool) -> ([u64; 4], [f64; 2]) {
 /// once with PoolFull and runs the CPU path; both K match the forced-host K inside the
 /// two-stage bound. With the pool doubled both fitters are resident (two uploads, no
 /// decline). The f32-B defect on each arm is asserted to exceed the bound, so the
-/// gate cannot go blind.
+/// gate cannot go blind. In the tight arm the K_LR comparison is CPU against CPU
+/// (fallback output correctness only), not a device check.
 #[test]
 fn rsh_second_fitter_declines_cleanly_when_only_one_fits() {
     let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
@@ -217,9 +235,8 @@ fn rsh_second_fitter_declines_cleanly_when_only_one_fits() {
     let (n, band, _) = dims(WATER, 1);
     let tight = tight_target();
     let r1 = resident_bytes(band, n).unwrap();
-    // the arm really is "one fits, two do not"
+    // "one fits, two do not" is checked against the real pool inside `rsh_arm`
     assert!(tight >= one_fitter_bytes(n, band, 5));
-    assert!(tight < 2 * r1 + one_fitter_bytes(n, band, 5));
     eprintln!("water/cc-pVDZ: n {n} band {band}; tight pool {tight} B, resident {r1} B each");
 
     // one fitter fits: [declined, pool_full, uploads, device builds]

@@ -114,9 +114,9 @@ fn the_fit_table_matches_the_real_basis_sizes() {
 /// dressed tensor PER FITTER (`DfK` for erfc and another for erf).
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum RshFit {
-    /// `2·resident + scratch <= pool`: both fitters on the device.
+    /// `2·(resident + scratch) <= pool`: both fitters on the device.
     Both,
-    /// `resident + scratch <= pool < 2·resident + scratch`: the second declines (`PoolFull`).
+    /// `resident + scratch <= pool < 2·(resident + scratch)`: the second declines (`PoolFull`).
     One,
     /// Not even one fitter fits: both stay on the CPU.
     Cpu,
@@ -124,7 +124,7 @@ enum RshFit {
 
 fn rsh_fit(naux: usize, nbf: usize, pool: usize) -> RshFit {
     let one = resident_bytes(naux, nbf).unwrap();
-    if 2 * one + SCRATCH_BYTES_DEFAULT <= pool {
+    if 2 * (one + SCRATCH_BYTES_DEFAULT) <= pool {
         RshFit::Both
     } else if one + SCRATCH_BYTES_DEFAULT <= pool {
         RshFit::One
@@ -137,7 +137,10 @@ fn rsh_fit(naux: usize, nbf: usize, pool: usize) -> RshFit {
 /// table's policy inputs; every byte count is computed from the real shell
 /// structure. `resident_bytes` includes the n^2 K accumulator, so it exceeds the
 /// bare `8*naux*n^2` figure by `8*n^2` (asserted below), and the rule charges the
-/// second fitter the same resident size as the first.
+/// second fitter the same resident size as the first. Each `DfK` holds its own
+/// scratch and `C_occ`, so the rule charges two scratches; an earlier form of the
+/// rule charged one, which under-counted by up to `SCRATCH_BYTES_DEFAULT` (256 MiB).
+/// No row of the table changes under the two-scratch rule.
 #[test]
 fn the_rsh_fit_table_charges_both_fitters() {
     let cases: [(&str, &str, [RshFit; 2]); 4] = [
@@ -173,9 +176,9 @@ fn the_rsh_fit_table_charges_both_fitters() {
     // the 4 GB pool.
     let one = resident_bytes(558, 414).unwrap();
     assert_eq!(one - 8 * 414 * 414, 765_111_744);
-    assert!(2 * one + SCRATCH_BYTES_DEFAULT <= POOL_B);
+    assert!(2 * (one + SCRATCH_BYTES_DEFAULT) <= POOL_B);
     // alkane_20/def2-SVP: one fitter is ~4.3 GB, so exactly one fits the first pool.
     let big = resident_bytes(2256, 490).unwrap();
     assert!((4.33e9..4.34e9).contains(&(big as f64)), "{big}");
-    assert!(big + SCRATCH_BYTES_DEFAULT <= POOL_A && 2 * big + SCRATCH_BYTES_DEFAULT > POOL_A);
+    assert!(big + SCRATCH_BYTES_DEFAULT <= POOL_A && 2 * (big + SCRATCH_BYTES_DEFAULT) > POOL_A);
 }
