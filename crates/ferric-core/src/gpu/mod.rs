@@ -8,6 +8,8 @@
 //! single GEMM may still fall back to the CPU (pool full, layout, CUDA error) —
 //! that is recorded in [`stats`](mod@crate::gpu::stats), never silent.
 
+#[cfg(feature = "gpu")]
+pub mod batched;
 pub mod config;
 #[cfg(feature = "gpu")]
 pub mod device;
