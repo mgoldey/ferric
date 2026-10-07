@@ -13,7 +13,7 @@ use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_dft::grid::AtomicGridConfig;
 use ferric_integrals::basis_bridge::PreparedBasis;
-use ferric_integrals::md3c1e::Md3c1e;
+use ferric_integrals::md3c1e::{Md3c1e, PrimPairSum};
 use ferric_integrals::operator::Operator;
 use ferric_scf::cosx_k::{
     CosxBackend, CosxConfig, CosxK, CosxTimings, COSX_DEFAULT_FP64_MULTIPLIER,
@@ -246,6 +246,48 @@ fn the_share_is_flop_weighted_from_the_pair_flops_table() {
         (weighted - unweighted).abs() > 0.01,
         "flop-weighted {weighted} vs unit share {unweighted} must differ"
     );
+}
+
+/// The `f32_route` test seam: with it set, exactly the router's F32 units are
+/// computed by the f32 block (counted), K changes (so the path is live) and
+/// the F64 units keep their bits (every unit routed F64 at multiplier 0 is the
+/// unrouted build); with it unset nothing is computed in f32; set without a
+/// multiplier it is refused.
+#[test]
+fn f32_route_computes_exactly_the_routed_units() {
+    let s = butane();
+    let (k_f64, t_f64) = build(&s, cfg(1e5));
+    assert_eq!((t_f64.f32_blocks, t_f64.f32_fallbacks), (0, 0));
+    for sum in PrimPairSum::ALL {
+        let (k, t) = build(
+            &s,
+            CosxConfig {
+                f32_route: Some(sum),
+                ..cfg(1e5)
+            },
+        );
+        assert_eq!(t.route_f32_units, t_f64.route_f32_units, "{sum:?}");
+        assert_eq!(t.f32_blocks + t.f32_fallbacks, t.route_f32_units, "{sum:?}");
+        assert_eq!(
+            t.f32_fallbacks, 0,
+            "{sum:?}: no f32-range fallback on butane/SVP"
+        );
+        assert!(t.f32_blocks > 0, "{sum:?}");
+        assert_ne!(bits(&k), bits(&k_f64), "{sum:?}: the f32 path must be live");
+    }
+    let ctx = ParallelContext::default();
+    let e = CosxK::new(
+        &ctx,
+        &s.mol,
+        &s.prep,
+        CosxConfig {
+            f32_route: Some(PrimPairSum::F64),
+            ..cfg(0.0)
+        },
+        usize::MAX,
+    )
+    .unwrap_err();
+    assert!(format!("{e}").contains("f32_route needs fp64_multiplier > 0"));
 }
 
 #[test]

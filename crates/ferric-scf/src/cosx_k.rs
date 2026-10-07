@@ -102,7 +102,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::cosx_a::{a_matrix_at_point_with, CosxScreen, PairBounds};
 use ferric_integrals::engine::Engine;
 use ferric_integrals::ffi;
-use ferric_integrals::md3c1e::{Md3c1e, Md3c1eScratch};
+use ferric_integrals::md3c1e::{Md3c1e, Md3c1eScratch, PrimPairSum};
 use ndarray::Array2;
 use ndarray_linalg::{Cholesky, Diag, SolveTriangular, UPLO};
 use rayon::prelude::*;
@@ -490,11 +490,20 @@ pub struct CosxConfig {
     /// sub-batch) unit is classified [`Route::F32`] iff its Hölder K-element
     /// bound `max_q est_q * fmax_q` is below `tau = fp64_multiplier *
     /// screen_thresh`, else [`Route::F64`]. `0.0` (the default and every f64
-    /// run) disables the router: every kept pair is `F64`. This build only
+    /// run) disables the router: every kept pair is `F64`. This build
     /// classifies and counts (`CosxTimings::route_*`); every pair is still
-    /// computed in f64, so K is bit-identical for every multiplier. Requires
+    /// computed in f64 (K is bit-identical for every multiplier) unless the
+    /// `f32_route` test seam is set. Requires
     /// the md3c1e backend and `screen_thresh > 0` when nonzero.
     pub fp64_multiplier: f64,
+    /// Test seam for the unshipped `cosx-kern` kernel: `Some(sum)` computes
+    /// the units the router classifies [`Route::F32`] with the f32 block
+    /// (`Md3c1e::pair_block_f32`, primitive-pair sum `sum`); `None` (the
+    /// default, and the only value any shipped path sets) computes every kept
+    /// unit in f64, so K is bit-identical for every multiplier. Needs
+    /// `fp64_multiplier > 0`. The fold stays f64 either way.
+    #[doc(hidden)]
+    pub f32_route: Option<PrimPairSum>,
     /// FINAL-GRID PASS (Psi4 `COSX_*_FINAL` + `COSX_MAXITER_FINAL = 1`; ORCA
     /// `UseFinalGridX`): after the SCF converges on [`CosxConfig::grid`], the
     /// exchange energy is evaluated ONCE more on this larger grid with the
@@ -664,6 +673,7 @@ impl CosxConfig {
             half_transform: CosxHalfTransform::SPARSE_DEFAULT,
             screen_group: 0,
             fp64_multiplier: 0.0,
+            f32_route: None,
             final_grid: None,
             final_pass_explicit: false,
         }
@@ -753,6 +763,10 @@ pub struct CosxTimings {
     /// router is off, the flop table is only built for a nonzero multiplier).
     pub route_f32_flops: u64,
     pub route_flops: u64,
+    /// Units actually computed by the f32 block (`CosxConfig::f32_route`).
+    pub f32_blocks: usize,
+    /// `F32` units recomputed in f64 after a non-finite f32 element.
+    pub f32_fallbacks: usize,
     /// `tau = fp64_multiplier * screen_thresh` in force (0.0 = router off).
     pub fp64_tau: f64,
 }
@@ -1059,10 +1073,12 @@ impl<'a> CosxK<'a> {
                 let t0 = Instant::now();
                 let mut screen = self.batch_screen(kern, sub, &fsub, n);
                 let mut tally = RouteTally::default();
-                let (kept, total) = scratch.with(|scr| {
-                    kern.for_each_pair_where(
+                let sum = self.cfg.f32_route.unwrap_or(PrimPairSum::F64);
+                let counts = scratch.with(|scr| {
+                    kern.for_each_pair_routed(
                         sub,
                         |s1, s2| self.route_unit(&mut screen, &mut tally, s1, s2, n),
+                        sum,
                         scr,
                         |s1, s2, blk| {
                             let t = Instant::now();
@@ -1073,6 +1089,9 @@ impl<'a> CosxK<'a> {
                         },
                     )
                 })?;
+                let (kept, total) = (counts.kept, counts.total);
+                tally.f32_blocks = counts.f32_blocks;
+                tally.f32_fallbacks = counts.f32_fallbacks;
                 tally.flush(acc);
                 let geom = screen.as_ref().map_or(total, |sc| sc.geom_kept);
                 let (bev, deg) = screen
@@ -1116,8 +1135,9 @@ impl<'a> CosxK<'a> {
         }
     }
 
-    /// Route one unit (no screen: kept, F64), tally it, and say whether the
-    /// kernel evaluates it.
+    /// Route one unit (no screen: kept, F64), tally the CLASSIFIED route and
+    /// return the route the kernel computes: an `F32` classification is
+    /// computed in f64 unless `CosxConfig::f32_route` is set.
     #[inline]
     fn route_unit(
         &self,
@@ -1126,10 +1146,13 @@ impl<'a> CosxK<'a> {
         s1: usize,
         s2: usize,
         n: usize,
-    ) -> bool {
+    ) -> Route {
         let route = screen.as_mut().map_or(Route::F64, |sc| sc.classify(s1, s2));
         tally.note(route, self.unit_flops(s1, s2, n), n);
-        route != Route::Drop
+        match route {
+            Route::F32 if self.cfg.f32_route.is_none() => Route::F64,
+            r => r,
+        }
     }
 
     /// Flops of the unit `(s1, s2)` over a sub-batch of `n` points; 0 when the
@@ -1265,6 +1288,8 @@ impl<'a> CosxK<'a> {
         t.screen_degenerate = acc.degenerate.load(Ordering::Relaxed);
         t.route_units = acc.route_units.load(Ordering::Relaxed);
         t.route_points = acc.route_points.load(Ordering::Relaxed);
+        t.f32_blocks = acc.f32_blocks.load(Ordering::Relaxed);
+        t.f32_fallbacks = acc.f32_fallbacks.load(Ordering::Relaxed);
         t.route_f32_units = acc.route_f32_units.load(Ordering::Relaxed);
         let (fl, fl32) = (
             acc.route_flops.load(Ordering::Relaxed),
@@ -1636,23 +1661,19 @@ struct BlockCounters {
     degenerate: AtomicUsize,
     route_units: AtomicUsize,
     route_points: AtomicUsize,
+    f32_blocks: AtomicUsize,
+    f32_fallbacks: AtomicUsize,
     route_f32_units: AtomicUsize,
     /// Flops (per point) x points, summed over kept units / over F32 units.
     route_flops: AtomicU64,
     route_f32_flops: AtomicU64,
 }
 
-/// Precision route of one (shell pair, sub-batch) unit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Route {
-    /// The screen drops the pair (its K contribution is below `screen_thresh`).
-    Drop,
-    /// Kept and computed in f64.
-    F64,
-    /// Kept, with a bound below `fp64_multiplier * screen_thresh`: eligible
-    /// for the f32 kernel (not yet computed there; counted only).
-    F32,
-}
+/// Precision route of one (shell pair, sub-batch) unit: `Drop` (the screen
+/// drops the pair), `F64` (kept, f64) or `F32` (kept, with a bound below
+/// `fp64_multiplier * screen_thresh`: eligible for the f32 block, computed
+/// there only when [`CosxConfig::f32_route`] is set, else counted only).
+pub use ferric_integrals::md3c1e::PairRoute as Route;
 
 /// Per-sub-batch router bookkeeping, kept out of `contract_block_md3c1e`.
 #[derive(Default)]
@@ -1662,6 +1683,8 @@ struct RouteTally {
     f32_units: usize,
     flops: u64,
     f32_flops: u64,
+    f32_blocks: usize,
+    f32_fallbacks: usize,
 }
 
 impl RouteTally {
@@ -1688,6 +1711,9 @@ impl RouteTally {
         acc.route_flops.fetch_add(self.flops, Ordering::Relaxed);
         acc.route_f32_flops
             .fetch_add(self.f32_flops, Ordering::Relaxed);
+        acc.f32_blocks.fetch_add(self.f32_blocks, Ordering::Relaxed);
+        acc.f32_fallbacks
+            .fetch_add(self.f32_fallbacks, Ordering::Relaxed);
     }
 }
 
@@ -1868,6 +1894,12 @@ fn check_router(cfg: &CosxConfig) -> Result<(), FerricError> {
     if m > 0.0 && cfg.backend != CosxBackend::Md3c1e {
         return Err(FerricError::General(
             "CosxK: fp64_multiplier > 0 is implemented for the md3c1e backend only".into(),
+        ));
+    }
+    if cfg.f32_route.is_some() && m <= 0.0 {
+        return Err(FerricError::General(
+            "CosxK: f32_route needs fp64_multiplier > 0 (it computes the router's F32 units)"
+                .into(),
         ));
     }
     if m > 0.0 && !matches!(cfg.screen_thresh, Some(t) if t > 0.0) {
