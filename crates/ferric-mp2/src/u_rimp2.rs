@@ -23,7 +23,7 @@ use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::{ScfResult, Spin};
-use ndarray::{Array2, Array3, Array4};
+use ndarray::{Array2, Array3, Array4, ArrayView2};
 
 /// Components of the U-RI-MP2 correlation energy.
 #[derive(Debug, Clone, PartialEq)]
@@ -483,6 +483,75 @@ pub(crate) struct SpinChannel<'a> {
 // only wants the energy (same_spin_pair_energy /
 // opposite_spin_pair_energy), the write is skipped entirely.
 
+/// The energy-only pair arithmetic of one occupied block `i` of the same-spin
+/// kernel: `0.25 * sum_{j >= i} fac * sum_ab K^2 / D` with `K = g_ab - g_ba`,
+/// from `g_i[a, (j-i)*nvir + b] = (ia|jb)`, `j >= i` (shape
+/// `(nvir, (nocc-i)*nvir)`). Shared by the CPU loop and the device path, which
+/// differ ONLY in how `g_i` was formed; the floating-point operation order is
+/// the one the inline loop had (j ascending, a, b ascending).
+#[inline]
+pub(crate) fn same_spin_block_energy(g_i: &ArrayView2<f64>, i: usize, ch: SpinChannel) -> f64 {
+    let SpinChannel {
+        eps,
+        nocc,
+        nvir,
+        first_occ,
+        nocc_total,
+        ..
+    } = ch;
+    let eps_i = eps[first_occ + i];
+    let mut energy_i = 0.0;
+    for j in i..nocc {
+        let fac = if i == j { 1.0 } else { 2.0 };
+        let jcol = (j - i) * nvir; // column offset within the tail
+        let eps_j = eps[first_occ + j];
+        let mut energy_ij = 0.0;
+        for a in 0..nvir {
+            let eps_a = eps[nocc_total + a];
+            for b_idx in 0..nvir {
+                let eps_b = eps[nocc_total + b_idx];
+                let g_ab = g_i[(a, jcol + b_idx)]; // (ia|jb)
+                let g_ba = g_i[(b_idx, jcol + a)]; // (ib|ja)
+                let k = g_ab - g_ba;
+                let denom = eps_i + eps_j - eps_a - eps_b;
+                let t_val = k / denom;
+                energy_ij += t_val * k;
+            }
+        }
+        energy_i += fac * energy_ij;
+    }
+    0.25 * energy_i
+}
+
+/// The energy-only pair arithmetic of one alpha-occupied block `i` of the
+/// opposite-spin kernel, from `g_i[a, J*nvir_b + B] = (ia|JB)` (shape
+/// `(nvir_a, nocc_b*nvir_b)`). Shared by the CPU loop and the device path;
+/// operation order is the inline loop's (a, J, B ascending).
+#[inline]
+pub(crate) fn opposite_spin_block_energy(
+    g_i: &ArrayView2<f64>,
+    i: usize,
+    ch_a: SpinChannel,
+    ch_b: SpinChannel,
+) -> f64 {
+    let eps_i = ch_a.eps[ch_a.first_occ + i];
+    let mut energy_i = 0.0;
+    for a in 0..ch_a.nvir {
+        let eps_av = ch_a.eps[ch_a.nocc_total + a];
+        for jj in 0..ch_b.nocc {
+            let eps_j = ch_b.eps[ch_b.first_occ + jj];
+            for bb_idx in 0..ch_b.nvir {
+                let eps_bv = ch_b.eps[ch_b.nocc_total + bb_idx];
+                let eri = g_i[(a, jj * ch_b.nvir + bb_idx)];
+                let denom = eps_i + eps_j - eps_av - eps_bv;
+                let t_val = eri / denom;
+                energy_i += t_val * eri;
+            }
+        }
+    }
+    energy_i
+}
+
 /// Same-spin (αα or ββ) pair kernel: builds the energy and, optionally, the
 /// antisymmetrized amplitude tensor `t[i,j,a,b] = [(ia|jb) − (ib|ja)] / D`.
 ///
@@ -548,28 +617,7 @@ pub(crate) fn same_spin_pair_kernel(
                 // (nvir, (nocc-i)*nvir); g_i[a, (j-i)*nvir+b] = (ia|jb), j >= i
                 let b_tail = b.slice(ndarray::s![.., i * nvir..]);
                 let g_i = b_i.t().dot(&b_tail);
-                let eps_i = eps[first_occ + i];
-                let mut energy_i = 0.0;
-                for j in i..nocc {
-                    let fac = if i == j { 1.0 } else { 2.0 };
-                    let jcol = (j - i) * nvir; // column offset within the tail
-                    let eps_j = eps[first_occ + j];
-                    let mut energy_ij = 0.0;
-                    for a in 0..nvir {
-                        let eps_a = eps[nocc_total + a];
-                        for b_idx in 0..nvir {
-                            let eps_b = eps[nocc_total + b_idx];
-                            let g_ab = g_i[(a, jcol + b_idx)]; // (ia|jb)
-                            let g_ba = g_i[(b_idx, jcol + a)]; // (ib|ja)
-                            let k = g_ab - g_ba;
-                            let denom = eps_i + eps_j - eps_a - eps_b;
-                            let t_val = k / denom;
-                            energy_ij += t_val * k;
-                        }
-                    }
-                    energy_i += fac * energy_ij;
-                }
-                0.25 * energy_i
+                same_spin_block_energy(&g_i.view(), i, ch)
             })
             .collect();
         let energy = partials.into_iter().sum();
@@ -656,22 +704,7 @@ pub(crate) fn opposite_spin_pair_kernel(
             .map(|i| {
                 let bi = b_a.slice(ndarray::s![.., i * nvir_a..(i + 1) * nvir_a]);
                 let g_i = bi.t().dot(b_b); // (nvir_a, nocc_b*nvir_b); g_i[a, J*nvir_b+B] = (ia|JB)
-                let eps_i = eps_a[first_occ_a + i];
-                let mut energy_i = 0.0;
-                for a in 0..nvir_a {
-                    let eps_av = eps_a[nocc_total_a + a];
-                    for jj in 0..nocc_b {
-                        let eps_j = eps_b[first_occ_b + jj];
-                        for bb_idx in 0..nvir_b {
-                            let eps_bv = eps_b[nocc_total_b + bb_idx];
-                            let eri = g_i[(a, jj * nvir_b + bb_idx)];
-                            let denom = eps_i + eps_j - eps_av - eps_bv;
-                            let t_val = eri / denom;
-                            energy_i += t_val * eri;
-                        }
-                    }
-                }
-                energy_i
+                opposite_spin_block_energy(&g_i.view(), i, ch_a, ch_b)
             })
             .collect();
         let energy = partials.into_iter().sum();
