@@ -20,24 +20,41 @@
 //! [`MIN_SAMPLES`] one-second samples all give an invalid summary that is
 //! never quotable.
 //!
-//! ## Thresholds: PROVISIONAL (not yet calibrated on this sampler)
+//! ## Thresholds: CALIBRATED on this sampler (2026-10-07)
 //!
-//! The numbers below came from a DIFFERENT instrument: the old `ps` contender
-//! logger, whose %CPU is a lifetime average (cputime/etime) over processes above
-//! 3%. This sampler reads one-second deltas of every process, quantised at 0.01
-//! core and burstier (a background service reading 0.084 cores lifetime-average
-//! reads 0.169 per second live). They are placeholders and `CALIBRATED` stays
-//! `false` until they are replaced.
+//! Derivation: each threshold is the geometric midpoint sqrt(clean_worst *
+//! contested_mildest), both measured with THIS sampler (`quiet_calibrate`
+//! example, 120 s per run, 118 samples, quiet box, no agents; background =
+//! several claude sessions + conky + python3). Five runs:
 //!
-//! Derivation procedure (done with this sampler, on the quiet box, via the
-//! `quiet_calibrate` example):
-//! 1. Clean side: several runs with no workload; take the WORST value of each
-//!    statistic (mean total cores, max single process in any second, fraction
-//!    of seconds with a process above `SPIKE_CORES`).
-//! 2. Contested side: `FERRIC_QUIET_BUSY=1` runs (two busy loops outside the
-//!    harness's process tree); take the MILDEST value of each statistic.
-//! 3. Each threshold is the geometric midpoint, sqrt(clean_worst *
-//!    contested_mildest). Then set the constants and `CALIBRATED = true`.
+//! | run    | mean cores | max single | seconds above 0.16 |
+//! |--------|-----------:|-----------:|-------------------:|
+//! | idle_1 |     0.2036 |     0.4691 |              5/118 |
+//! | idle_2 |     0.1824 |     0.2895 |              1/118 |
+//! | idle_3 |     0.2222 |     1.2982 |              3/118 |
+//! | busy_1 |     2.1857 |     1.0283 |            117/118 |
+//! | busy_2 |     2.2464 |     1.0186 |            118/118 |
+//!
+//! The busy runs are two detached busy loops (about 1.0 core each over the
+//! idle floor: (2.1857 - 0.2036) / 2 = 0.99, both runs 0.99-1.02 per loop).
+//!
+//! - Mean: worst clean 0.2222; mildest contested = ONE fully busy core on the
+//!   worst clean floor = 0.2222 + 1.0 = 1.22. sqrt(0.2222 * 1.22) = 0.5207, so
+//!   `MAX_MEAN_CORES = 0.52`.
+//! - Spike fraction (seconds in which any single process exceeds
+//!   `SPIKE_CORES = 0.16`): worst clean 5/118 = 0.0424; mildest contested =
+//!   one busy loop is above the level in nearly every second (117/118 =
+//!   0.9915 measured). sqrt(0.0424 * 0.9915) = 0.205, so
+//!   `MAX_SPIKE_FRACTION = 0.205`. Tolerance is max(1 s, ceil(fraction * s)).
+//! - Max single process is NOT a criterion: it does not discriminate (idle
+//!   burst 1.30 vs busy 1.03). It is still printed as information.
+//!
+//! Honest limits: only 3 idle runs; the idle background is a function of the
+//! user's other sessions; the criterion is permissive about a steady
+//! competitor below about 0.5 core (a 0.5-core process on a 12-hardware-thread
+//! box with 6 workers costing more than a few percent is not shown here).
+//! Recalibrate (rerun `quiet_calibrate` idle and `FERRIC_QUIET_BUSY=1`) if the
+//! idle floor changes.
 //!
 //! The spike tolerance is a FRACTION of the sampled seconds (floor 1 s), so a
 //! multi-minute run is not failed by the first cron or updater burst.
@@ -51,18 +68,15 @@ use std::time::{Duration, Instant};
 /// `USER_HZ` on Linux (clock ticks per second in `/proc/<pid>/stat`).
 pub const CLK_TCK: f64 = 100.0;
 
-// ---- Thresholds: one block; replace the numbers and set CALIBRATED = true
-// in a data-only commit once derived from this sampler's own output. ----
-/// `false` while the numbers below are placeholders from a different instrument.
-pub const CALIBRATED: bool = false;
+// ---- Thresholds: one block; derivation in the module docs. ----
+/// `true`: the numbers below were derived from this sampler's own output.
+pub const CALIBRATED: bool = true;
 /// Quotable only if the mean total non-harness CPU is at most this (cores).
-pub const MAX_MEAN_CORES: f64 = 0.27;
-/// Quotable only if no single process used more than this in any second.
-pub const MAX_SINGLE_CORES: f64 = 0.21;
+pub const MAX_MEAN_CORES: f64 = 0.52;
 /// A second counts as a spike when a non-harness process used more than this.
 pub const SPIKE_CORES: f64 = 0.16;
 /// Quotable only if spike seconds <= max(1, ceil(this * sampled seconds)).
-pub const MAX_SPIKE_FRACTION: f64 = 0.02;
+pub const MAX_SPIKE_FRACTION: f64 = 0.205;
 /// PSI `some avg10` ceiling for the BEFORE reading.
 pub const MAX_PSI_BEFORE: f64 = 0.05;
 // ---- end of threshold block ----
@@ -315,7 +329,6 @@ pub fn allowed_spike_seconds(seconds: f64) -> usize {
 pub fn sampler_quotable(s: &Summary) -> bool {
     s.valid
         && s.mean_total_cores <= MAX_MEAN_CORES
-        && s.max_single_cores <= MAX_SINGLE_CORES
         && s.spike_seconds <= allowed_spike_seconds(s.seconds)
 }
 
@@ -403,20 +416,20 @@ pub fn quotable(psi_before: f64, s: &Summary) -> bool {
 
 /// The sampler verdict line.
 pub fn verdict_line(s: &Summary) -> String {
-    let provisional = if CALIBRATED {
-        ""
+    let provenance = if CALIBRATED {
+        "; thresholds CALIBRATED 2026-10-07 on this sampler (see quiet.rs docs)"
     } else {
-        "; thresholds provisional: not yet calibrated on the sampler's own output"
+        "; thresholds UNCALIBRATED"
     };
     if !s.valid {
         return format!(
-            "quotable by external-load sampler: no (sampler failed: {}; {} samples){provisional}",
+            "quotable by external-load sampler: no (sampler failed: {}; {} samples){provenance}",
             s.failure, s.samples
         );
     }
     format!(
-        "quotable by external-load sampler: {} (mean {:.3} cores, max {:.3} cores, {} seconds above {SPIKE_CORES}); \
-         thresholds mean<={MAX_MEAN_CORES}, max<={MAX_SINGLE_CORES}, seconds above<={}{provisional}",
+        "quotable by external-load sampler: {} (mean {:.3} cores, max {:.3} cores (information only), {} seconds above {SPIKE_CORES}); \
+         thresholds mean<={MAX_MEAN_CORES}, seconds above<={}{provenance}",
         if sampler_quotable(s) { "yes" } else { "no" },
         s.mean_total_cores,
         s.max_single_cores,
@@ -716,34 +729,67 @@ mod tests {
         assert!(!quotable(0.06, &ok));
         assert!(!quotable(f64::NAN, &ok));
         let mean = Summary {
-            mean_total_cores: 0.3,
+            mean_total_cores: MAX_MEAN_CORES * 1.01,
             ..ok.clone()
         };
         assert!(!sampler_quotable(&mean));
-        let single = Summary {
-            max_single_cores: 0.5,
+        // The max single process is information only: a burst does not fail.
+        let burst = Summary {
+            max_single_cores: 1.30,
             ..ok.clone()
         };
-        assert!(!sampler_quotable(&single));
-        // 60 s run: allowed = max(1, ceil(0.02 * 60)) = 2.
-        let two = Summary {
-            spike_seconds: 2,
+        assert!(sampler_quotable(&burst));
+        let allowed = allowed_spike_seconds(ok.seconds);
+        assert!(sampler_quotable(&Summary {
+            spike_seconds: allowed,
             ..ok.clone()
-        };
-        assert!(sampler_quotable(&two));
-        let three = Summary {
-            spike_seconds: 3,
+        }));
+        assert!(!sampler_quotable(&Summary {
+            spike_seconds: allowed + 1,
             ..ok.clone()
-        };
-        assert!(!sampler_quotable(&three));
+        }));
+    }
+
+    /// A 118-sample run at the calibration data's points.
+    fn calib_summary(mean: f64, max_single: f64, spikes: usize) -> Summary {
+        Summary {
+            samples: 118,
+            seconds: 118.0,
+            mean_total_cores: mean,
+            max_single_cores: max_single,
+            spike_seconds: spikes,
+            ..valid_summary()
+        }
+    }
+
+    #[test]
+    fn quiet_calibration_points_pass_and_fail_as_derived() {
+        // Worst clean point of the calibration (idle_3 mean, idle_1 spikes,
+        // idle_3 burst): quotable.
+        assert!(sampler_quotable(&calib_summary(0.2222, 1.2982, 5)));
+        // One busy core on the worst clean floor: fails on the mean alone...
+        let one_core_mean = 0.2222 + 1.0;
+        assert!(!sampler_quotable(&calib_summary(one_core_mean, 1.03, 0)));
+        // ...and on the spike fraction alone (117/118 seconds).
+        assert!(!sampler_quotable(&calib_summary(0.2222, 1.03, 117)));
+        // The measured busy runs fail on both.
+        assert!(!sampler_quotable(&calib_summary(2.1857, 1.0283, 117)));
+        assert!(!sampler_quotable(&calib_summary(2.2464, 1.0186, 118)));
+        // Constants sit strictly between clean-worst and contested-mildest.
+        assert!(MAX_MEAN_CORES > 0.2222 && MAX_MEAN_CORES < one_core_mean);
+        const { assert!(MAX_SPIKE_FRACTION > 5.0 / 118.0 && MAX_SPIKE_FRACTION < 117.0 / 118.0) };
+        assert!(allowed_spike_seconds(118.0) >= 5 && allowed_spike_seconds(118.0) < 117);
     }
 
     #[test]
     fn quiet_spike_tolerance_scales_with_the_run() {
-        assert_eq!(allowed_spike_seconds(40.0), 1);
-        assert_eq!(allowed_spike_seconds(300.0), 6);
-        assert_eq!(allowed_spike_seconds(800.0), 16);
-        assert_eq!(allowed_spike_seconds(3.0), 1);
+        let want = |secs: f64| ((MAX_SPIKE_FRACTION * secs - 1e-9).ceil().max(1.0)) as usize;
+        for secs in [3.0, 40.0, 118.0, 300.0, 800.0] {
+            assert_eq!(allowed_spike_seconds(secs), want(secs), "{secs}");
+        }
+        // Floor of one second on a very short run; grows with the run.
+        assert_eq!(allowed_spike_seconds(0.5), 1);
+        assert!(allowed_spike_seconds(800.0) > allowed_spike_seconds(300.0));
     }
 
     #[test]
@@ -778,11 +824,13 @@ mod tests {
         assert!(!s.valid && s.failure == "run too short for the sampler");
         assert!(!sampler_quotable(&s));
         assert!(sampler_quotable(&idle_acc(3).summary()));
-        // The verdict line names the failure and the provisional status.
+        // The verdict line names the failure and the calibration provenance.
         let line = verdict_line(&s);
         assert!(line.contains("run too short for the sampler"), "{line}");
-        assert!(line.contains("thresholds provisional"), "{line}");
-        assert!(verdict_line(&valid_summary()).contains("thresholds provisional"));
+        for l in [line, verdict_line(&valid_summary())] {
+            assert!(l.contains("CALIBRATED 2026-10-07"), "{l}");
+            assert!(!l.to_lowercase().contains("provisional"), "{l}");
+        }
     }
 
     #[test]
