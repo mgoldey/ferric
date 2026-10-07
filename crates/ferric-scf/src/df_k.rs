@@ -276,6 +276,17 @@ impl<'a> DfK<'a> {
 }
 
 impl DfK<'_> {
+    /// Device bytes this builder's resident tensor needs under `gpu = on`: the
+    /// dressed band plus the K accumulator when the dressed tensor is in core, 0
+    /// when it is spilled or recomputed (the device path declines it).
+    #[cfg(feature = "gpu")]
+    pub fn device_footprint_bytes(&self) -> usize {
+        if !self.dressed.is_incore() {
+            return 0;
+        }
+        crate::df_k_gpu::resident_bytes(self.dressed.band_naux(), self.dressed.nao()).unwrap_or(0)
+    }
+
     /// The in-core dressed band as `(band_naux × n²)`; `None` when spilled. Test hook.
     #[cfg(feature = "gpu")]
     #[doc(hidden)]

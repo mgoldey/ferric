@@ -84,6 +84,11 @@ pub struct DfJ<'a> {
     /// build asks for it. See `crate::df_j_gpu`.
     #[cfg(feature = "gpu")]
     device: crate::df_j_gpu::DeviceSlot,
+    /// Device bytes the same SCF's DF-K will want (0 = none): the J upload leaves
+    /// that much of the pool free, so the larger K tensor is not locked out by
+    /// the J build that runs first each iteration.
+    #[cfg(feature = "gpu")]
+    k_reserve_bytes: usize,
 }
 
 impl<'a> std::fmt::Debug for DfJ<'a> {
@@ -196,7 +201,18 @@ impl<'a> DfJ<'a> {
             budget_bytes,
             #[cfg(feature = "gpu")]
             device: crate::df_j_gpu::DeviceSlot::default(),
+            #[cfg(feature = "gpu")]
+            k_reserve_bytes: 0,
         })
+    }
+
+    /// Leave `bytes` of the device pool free when the RI-J tensor is uploaded
+    /// (the DF-K footprint of the same SCF, see
+    /// [`DfK::device_footprint_bytes`](crate::df_k::DfK::device_footprint_bytes)).
+    /// If J and K together do not fit, J stays on the CPU and K gets the card.
+    #[cfg(feature = "gpu")]
+    pub fn reserve_device_for_k(&mut self, bytes: usize) {
+        self.k_reserve_bytes = bytes;
     }
 
     /// The raw packed band as `(naux, n(n+1)/2)`; `None` unless the packed
@@ -387,7 +403,7 @@ impl JBuilder for DfJ<'_> {
             if crate::df_j_gpu::try_build(
                 &mut self.device,
                 &mut self.source,
-                self.ctx,
+                (self.ctx, self.k_reserve_bytes),
                 d,
                 j,
                 solve,

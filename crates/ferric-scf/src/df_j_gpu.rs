@@ -351,6 +351,22 @@ fn ineligible(src: &ThreeIndexSource, ctx: Option<&ParallelContext>) -> Option<&
     None
 }
 
+/// J is built before K every iteration, so J's upload would take the card first.
+/// When the same SCF's DF-K (`k_reserve` device bytes) would no longer fit next to
+/// J, J stays on the CPU: the dressed K tensor is the larger device win.
+fn yields_to_k(pool: &DevicePool, src: &ThreeIndexSource, k_reserve: usize) -> Option<String> {
+    if k_reserve == 0 {
+        return None;
+    }
+    let pair = pair_len(src.nao()).ok()?;
+    let need = resident_bytes(src.band_naux(), pair).ok()?;
+    (pool.available_bytes() < need.saturating_add(k_reserve)).then(|| {
+        format!(
+            "the device pool cannot hold both this tensor ({need} B) and the DF-K tensor ({k_reserve} B); DF-K gets the device"
+        )
+    })
+}
+
 /// The first line of an error's Display: the pool's refusal embeds a multi-line
 /// occupancy report, which stays in the typed error and out of the notices.
 fn one_line(e: &GpuError) -> String {
@@ -447,7 +463,7 @@ fn upload_band(
 pub fn try_build(
     slot: &mut DeviceSlot,
     src: &mut ThreeIndexSource,
-    ctx: Option<&ParallelContext>,
+    (ctx, k_reserve): (Option<&ParallelContext>, usize),
     d: &Array2<f64>,
     j: &mut Array2<f64>,
     solve: impl FnOnce(&Array1<f64>) -> Result<Array1<f64>, FerricError>,
@@ -478,6 +494,10 @@ pub fn try_build(
         return Ok(false);
     };
     if matches!(slot, DeviceSlot::Untried) {
+        if let Some(why) = yields_to_k(&pool, src, k_reserve) {
+            decline(slot, &why);
+            return Ok(false);
+        }
         match device(info.ordinal).and_then(|dev| upload_band(&dev, &pool, src)) {
             Ok(dd) => {
                 eprintln!(

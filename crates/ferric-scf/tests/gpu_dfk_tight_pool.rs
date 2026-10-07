@@ -203,9 +203,14 @@ fn scf_energy_under_a_refusing_pool_is_bit_identical_to_the_forced_host_run() {
         "another test left a reservation behind"
     );
 
+    // The forced-host run puts RI-J on the CPU too: the tight run below cannot
+    // hold the RI-J tensor either, and RI-J on the device is not bit-identical to
+    // the host.
     FORCE_HOST.store(true, Ordering::SeqCst);
+    ferric_scf::df_j_gpu::FORCE_HOST.store(true, Ordering::SeqCst);
     let host = run();
     FORCE_HOST.store(false, Ordering::SeqCst);
+    ferric_scf::df_j_gpu::FORCE_HOST.store(false, Ordering::SeqCst);
 
     // Leave room for the small K accumulator but not for B (B is ~0.5 MB here).
     const LEFT: usize = 100_000;
