@@ -137,3 +137,68 @@ fn cli_cfg_without_precision_resolves_to_precision_default() {
         "{e}"
     );
 }
+
+#[test]
+fn shipping_rimp2_energy_leaves_the_default_f64_and_admits_mixed_with_a_device_mode() {
+    let _g = device_lock();
+    // default: f64, and the allowlist the build ships is printed
+    let out = run_toml(
+        "prec_shipped_default",
+        &format!("{WATER}\n[gpu]\nmode = \"off\"\n"),
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let e = stderr(&out);
+    assert!(
+        e.contains("FERRIC_GPU_PRECISION: f64  [source: default]"),
+        "{e}"
+    );
+    assert!(
+        e.contains("FERRIC_GPU_MIXED_KERNELS: rimp2-energy  [source: default]"),
+        "{e}"
+    );
+    // explicit mixed with mode off is still an error naming the keys
+    let out = run_toml(
+        "prec_shipped_off",
+        &format!("{WATER}\n[gpu]\nmode = \"off\"\nprecision = \"mixed\"\n"),
+    );
+    assert!(!out.status.success(), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("[gpu] precision = mixed requires mode"),
+        "{}",
+        stderr(&out)
+    );
+    // mode auto + mixed + rimp2-energy: accepted; the run states `mixed` and the
+    // kernel (device present), or degrades to the CPU in f64 with the notice
+    // (no usable device / no gpu feature), never an error
+    let out = run_toml(
+        "prec_shipped_auto",
+        &format!(
+            "{WATER}\n[gpu]\nmode = \"auto\"\nprecision = \"mixed\"\nmixed_kernels = [\"rimp2-energy\"]\n"
+        ),
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let e = stderr(&out);
+    assert!(
+        e.contains("FERRIC_GPU_PRECISION: mixed  [source: explicit"),
+        "{e}"
+    );
+    assert!(
+        e.contains("running on the CPU in f64")
+            || e.contains("precision mixed, mixed kernels rimp2-energy"),
+        "neither the degrade notice nor the device line states the precision: {e}"
+    );
+    // a kernel that is not shipped yet is refused, naming it and the shipped set
+    let out = run_toml(
+        "prec_shipped_ccsd",
+        &format!(
+            "{WATER}\n[gpu]\nmode = \"auto\"\nprecision = \"mixed\"\nmixed_kernels = [\"ccsd-amplitudes\"]\n"
+        ),
+    );
+    assert!(!out.status.success(), "{}", stderr(&out));
+    let e = stderr(&out);
+    assert!(
+        e.contains("ccsd-amplitudes not shipped yet")
+            && e.contains("shipped in this build: rimp2-energy"),
+        "{e}"
+    );
+}

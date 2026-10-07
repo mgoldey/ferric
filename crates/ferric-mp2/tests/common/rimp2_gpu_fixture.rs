@@ -10,6 +10,32 @@ use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::Array2;
 
+/// The SCF settings. The aug-cc bases (hundreds of functions) and the C12 chain use RI-JK with a
+/// loose integral threshold and convergence so the reference SCF is cheap: every
+/// arm of a test compares on the SAME B_ov and orbital energies this SCF
+/// produces, so only their mutual consistency matters, not how converged the
+/// orbitals are against an exact-integral SCF.
+fn scf_config(sys: &str, obs_name: &str) -> RhfConfig {
+    if obs_name.starts_with("aug-cc") || sys == "alkane_12" {
+        RhfConfig {
+            max_iter: 200,
+            energy_conv: 1e-8,
+            density_conv: 1e-6,
+            integral_thresh: 1e-9,
+            df_j_aux: Some("def2-universal-jkfit".into()),
+            df_k_aux: Some("def2-universal-jkfit".into()),
+            ..Default::default()
+        }
+    } else {
+        RhfConfig {
+            max_iter: 200,
+            energy_conv: 1e-11,
+            density_conv: 1e-9,
+            ..Default::default()
+        }
+    }
+}
+
 pub struct Prepared {
     pub b_ov: Array2<f64>,
     pub eps: Vec<f64>,
@@ -29,7 +55,16 @@ pub fn prepare_scf(
     frozen: usize,
 ) -> (Prepared, SpinComponents) {
     let root = env!("CARGO_MANIFEST_DIR");
-    let mol = Molecule::load_xyz(&format!("{root}/../../testdata/molecules/{sys}.xyz")).unwrap();
+    // testdata/molecules/{sys}.xyz first, then testdata/molecules/validation/
+    let dir = format!("{root}/../../testdata/molecules");
+    let path = [
+        format!("{dir}/{sys}.xyz"),
+        format!("{dir}/validation/{sys}.xyz"),
+    ]
+    .into_iter()
+    .find(|p| std::path::Path::new(p).exists())
+    .unwrap_or_else(|| panic!("no geometry for {sys} under {dir}"));
+    let mol = Molecule::load_xyz(&path).unwrap();
     let obs = PreparedBasis::new(&mol, &basis::bundled(obs_name).unwrap()).unwrap();
     let dfbs = PreparedBasis::new(&mol, &basis::bundled(aux_name).unwrap()).unwrap();
     let op = Operator::coulomb();
@@ -40,12 +75,7 @@ pub fn prepare_scf(
         &obs,
         op,
         &bounds,
-        &RhfConfig {
-            max_iter: 200,
-            energy_conv: 1e-11,
-            density_conv: 1e-9,
-            ..Default::default()
-        },
+        &scf_config(sys, obs_name),
     )
     .unwrap();
     assert!(rhf.converged, "{sys}: RHF did not converge");

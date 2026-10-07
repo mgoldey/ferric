@@ -22,9 +22,8 @@
 //! most ~1e-4 (the bound is a worst case over summation orders and signs, so
 //! it is loose by design), and the nearest subtle defect, B_ov rounded through
 //! f32 on the CPU, exceeds the bound by 1e1 .. 1e4 and is asserted to, so the
-//! gate cannot go blind. The synthetic aTZ-shape system (random-sign B_ov,
-//! heavy cancellation in the contraction) is reported but not given the
-//! teeth assertion: there the worst-case bound is ~2x the f32-storage error.
+//! gate cannot go blind; the same teeth assertion holds on the real
+//! benzene/aug-cc-pVTZ system (frozen core 6, naux 912, nocc 15, nvir 393).
 //! Gross defects, measured once by temporary mutation of rimp2_gpu.rs (each
 //! reverted, file diffed against the original), on water/cc-pVDZ:
 //!   right operand view offset `slice(off..)` -> `slice(..)`: relative error
@@ -37,7 +36,7 @@
 //! Also pins: serial vs parallel pair fold bit-identical for 1, 3 and 4
 //! explicit rayon workers; run-to-run device bit-identity; zero CPU fallbacks
 //! during the device run; the dispatcher takes the device on an ample pool.
-use ferric_core::gpu::device::{device, GpuError};
+use ferric_core::gpu::device::{device, GpuError, FORCE_KERNEL_FAILURE};
 use ferric_core::gpu::mixed_host::round_trip_f32;
 use ferric_core::gpu::pool::DevicePool;
 use ferric_core::gpu::{
@@ -215,11 +214,13 @@ fn systems() -> Vec<(String, Prepared, bool)> {
         ));
     }
     // The benzene/aug-cc-pVTZ shape the performance table is written for
-    // (naux 912, nocc 15 with a frozen core of 6, nvir 393), synthetic data.
+    // (naux 912, nocc 15 with a frozen core of 6, nvir 393), a REAL RHF
+    // reference (RI-JK SCF, see the fixture) so the f32-storage teeth are
+    // asserted at this shape too.
     v.push((
-        "synthetic aTZ shape".into(),
-        synthetic(912, 15, 393, 6, 11),
-        false,
+        "benzene/aug-cc-pvtz fc6".into(),
+        fixture::prepare_scf("benzene", "aug-cc-pvtz", "aug-cc-pvtz-rifit", 6).0,
+        true,
     ));
     v
 }
@@ -425,7 +426,7 @@ fn ample_pool_runs_the_device_path() {
 }
 
 #[test]
-fn degenerate_shapes_never_panic_and_mixed_is_a_typed_refusal() {
+fn degenerate_shapes_never_panic_and_an_unavailable_mixed_kernel_is_a_typed_refusal() {
     let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
     if !ready() {
         return;
@@ -463,13 +464,17 @@ fn degenerate_shapes_never_panic_and_mixed_is_a_typed_refusal() {
     // nocc * nvir overflows usize
     let e = run(&Array2::zeros((1, 1)), &[0.0; 4], usize::MAX, 2, 0, 1, f);
     assert!(matches!(e, Err(GpuError::Layout(_))), "{e:?}");
-    // the mixed arm ships separately: a typed refusal, never a silent f64 run
+    // the mixed arm refuses with a typed Kernel error when the flush kernel is
+    // unavailable, before anything is reserved or uploaded (its working
+    // behaviour is gated in gpu_rimp2_mixed.rs)
     let p = synthetic(8, 2, 3, 0, 1);
     let s0 = stats();
+    FORCE_KERNEL_FAILURE.store(true, std::sync::atomic::Ordering::Relaxed);
     let e = run(&p.b_ov, &p.eps, p.nocc, p.nvir, 0, p.nocc, Precision::Mixed);
+    let g = g_block_on_device(&dev, &pool, &p.b_ov, 0, p.nvir, Precision::Mixed);
+    FORCE_KERNEL_FAILURE.store(false, std::sync::atomic::Ordering::Relaxed);
     assert!(matches!(e, Err(GpuError::Kernel(_))), "{e:?}");
-    let e = g_block_on_device(&dev, &pool, &p.b_ov, 0, p.nvir, Precision::Mixed);
-    assert!(matches!(e, Err(GpuError::Kernel(_))), "{e:?}");
+    assert!(matches!(g, Err(GpuError::Kernel(_))), "{g:?}");
     // an out-of-range block index is refused, not indexed
     let e = g_block_on_device(&dev, &pool, &p.b_ov, p.nocc, p.nvir, Precision::F64);
     assert!(matches!(e, Err(GpuError::Layout(_))), "{e:?}");

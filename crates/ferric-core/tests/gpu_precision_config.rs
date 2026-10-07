@@ -24,11 +24,18 @@ fn lookup(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
 }
 
 #[test]
-fn default_precision_is_f64_with_an_empty_allowlist_and_audit_names_both() {
+fn default_precision_is_f64_with_the_shipped_allowlist_and_audit_names_both() {
     let (s, audit) = GpuSettings::resolve(GpuSettingsExplicit::default(), lookup(&[])).unwrap();
     assert_eq!(s.precision, Precision::F64);
+    // the build ships exactly rimp2-energy; shipping it does not make mixed the
+    // default: precision stays f64, so no kernel is allowed to run mixed
+    assert_eq!(
+        MixedKernelSet::SHIPPED,
+        MixedKernelSet::EMPTY.with(MixedKernel::RiMp2Energy)
+    );
     assert_eq!(s.mixed_kernels, MixedKernelSet::SHIPPED);
     assert!(!s.mixed_allows(MixedKernel::RiMp2Energy));
+    assert_eq!(PRECISION_DEFAULT, Precision::F64);
     assert!(
         audit
             .iter()
@@ -53,20 +60,25 @@ fn mixed_requires_a_device_mode() {
 }
 
 #[test]
-fn mixed_with_no_shipped_kernel_is_refused_and_a_shipped_one_resolves() {
+fn mixed_resolves_to_the_shipped_kernel_and_an_empty_shipped_set_is_refused() {
     let env = lookup(&[("FERRIC_GPU", "auto"), ("FERRIC_GPU_PRECISION", "mixed")]);
-    let r = GpuSettings::resolve(GpuSettingsExplicit::default(), &env);
-    if MixedKernelSet::SHIPPED.is_empty() {
-        let err = r.unwrap_err();
-        assert!(err.contains("no mixed-precision kernel"), "{err}");
-    } else {
-        let (s, _) = r.unwrap();
-        assert_eq!(s.precision, Precision::Mixed);
-        assert_eq!(s.mixed_kernels, MixedKernelSet::SHIPPED);
-        for k in MixedKernelSet::SHIPPED.iter() {
-            assert!(s.mixed_allows(k));
-        }
-    }
+    // The real build ships rimp2-energy: explicit mixed resolves and allows it
+    // (and nothing else).
+    let (s, _) = GpuSettings::resolve(GpuSettingsExplicit::default(), &env).unwrap();
+    assert_eq!(s.precision, Precision::Mixed);
+    assert_eq!(s.mixed_kernels, MixedKernelSet::SHIPPED);
+    assert!(s.mixed_allows(MixedKernel::RiMp2Energy));
+    assert!(!s.mixed_allows(MixedKernel::CcsdAmplitudes));
+    assert!(!s.mixed_allows(MixedKernel::DfkOcc));
+    // A build that shipped nothing refuses the same request.
+    let err = GpuSettings::resolve_with_default(
+        GpuSettingsExplicit::default(),
+        &env,
+        PRECISION_DEFAULT,
+        MixedKernelSet::EMPTY,
+    )
+    .unwrap_err();
+    assert!(err.contains("no mixed-precision kernel"), "{err}");
 }
 
 #[test]
@@ -261,15 +273,34 @@ fn an_explicit_unshipped_kernel_is_refused_and_a_shipped_one_admitted() {
         ("FERRIC_GPU_PRECISION", "mixed"),
         ("FERRIC_GPU_MIXED_KERNELS", "rimp2-energy"),
     ]);
-    // Real build: nothing shipped.
-    if MixedKernelSet::SHIPPED.is_empty() {
-        let e = GpuSettings::resolve(GpuSettingsExplicit::default(), &env).unwrap_err();
-        assert!(
-            e.contains("[gpu] mixed_kernels: rimp2-energy not shipped yet")
-                && e.contains("none are shipped in this build"),
-            "{e}"
-        );
-    }
+    // Real build: rimp2-energy is shipped and admitted; the others are not and
+    // the error names the offender and the shipped set.
+    let (s, _) = GpuSettings::resolve(GpuSettingsExplicit::default(), &env).unwrap();
+    assert!(s.mixed_allows(MixedKernel::RiMp2Energy));
+    let env_ccsd = lookup(&[
+        ("FERRIC_GPU", "auto"),
+        ("FERRIC_GPU_PRECISION", "mixed"),
+        ("FERRIC_GPU_MIXED_KERNELS", "ccsd-amplitudes"),
+    ]);
+    let e = GpuSettings::resolve(GpuSettingsExplicit::default(), &env_ccsd).unwrap_err();
+    assert!(
+        e.contains("[gpu] mixed_kernels: ccsd-amplitudes not shipped yet")
+            && e.contains("shipped in this build: rimp2-energy"),
+        "{e}"
+    );
+    // An empty shipped set says none are shipped.
+    let e = GpuSettings::resolve_with_default(
+        GpuSettingsExplicit::default(),
+        &env,
+        Precision::F64,
+        MixedKernelSet::EMPTY,
+    )
+    .unwrap_err();
+    assert!(
+        e.contains("[gpu] mixed_kernels: rimp2-energy not shipped yet")
+            && e.contains("none are shipped in this build"),
+        "{e}"
+    );
     // Partially shipped: the error names the offender and the shipped set.
     let shipped = MixedKernelSet::EMPTY.with(MixedKernel::CcsdAmplitudes);
     let e = GpuSettings::resolve_with_default(

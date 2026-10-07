@@ -108,6 +108,33 @@ impl DeviceMatrix<f64> {
 }
 
 impl DeviceMatrix<f32> {
+    /// A zeroed `rows × cols` f32 device matrix (a panel scratch that lives as
+    /// long as its charge). Charges `4·rows·cols` first; moves no bytes.
+    pub fn zeros(
+        dev: &Device,
+        pool: &DevicePool,
+        label: &str,
+        rows: usize,
+        cols: usize,
+    ) -> Result<Self, GpuError> {
+        let len = rows
+            .checked_mul(cols)
+            .ok_or_else(|| GpuError::Layout(format!("{rows}x{cols} overflows usize")))?;
+        let bytes = byte_len(len, 4)?;
+        let lease = pool.reserve(label, bytes)?;
+        let buf = dev
+            .stream
+            .alloc_zeros::<f32>(len)
+            .map_err(|e| GpuError::Cuda(format!("alloc {label}: {e:?}")))?;
+        Ok(Self {
+            buf,
+            rows,
+            cols,
+            bytes,
+            _lease: lease,
+        })
+    }
+
     /// Upload `x as f32` (IEEE round-to-nearest-even). Charges `4·rows·cols`.
     /// A finite value that overflows f32 is refused (`GpuError::F32Range`)
     /// before the pool is touched.

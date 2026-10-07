@@ -205,7 +205,7 @@ The CUDA backend is not in the PyPI wheel; it needs a source build with the `gpu
 
 Device memory is a separate pool (`[gpu] memory_gb`); the host `[memory] budget_gb` is not reduced by it. A contraction that does not fit the device pool runs on the CPU and is counted, not refused. `FERRIC_GPU_TRACE=1` prints each fallback.
 
-`[gpu] precision = "mixed"` changes the numbers, not just the speed: the audit line and `ferric.gpu_status()["precision"]` say which precision a run used, and the per-kernel error map is on the validation page.
+`[gpu] precision = "mixed"` changes the numbers, not just the speed: the audit line and `ferric.gpu_status()["precision"]` say which precision a run used, and the per-kernel error map is on the [validation page](../reference/validation.md#mixed-precision-gpu-kernels). The one shipped mixed kernel is `rimp2-energy` (f32-resident `B_ov`); its measured energy errors are 1e-10 to 1e-8 Eh on the systems listed there, graded as a measured error map, not Proven. A tiny problem still pays the device upload when the mode is on, whatever the precision.
 
 ## Implemented is not validated
 

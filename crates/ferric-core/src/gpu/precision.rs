@@ -111,10 +111,12 @@ impl MixedKernelSet {
     pub const EMPTY: Self = Self(0);
     /// The kernels whose error-budget row has shipped. Each Phase 4 task that
     /// ships a row extends this constant in the same commit as its gates:
-    /// Task 4.2b adds `RiMp2Energy`, Task 4.3 `CcsdAmplitudes`, Task 4.4 `DfkOcc`.
-    /// It is the default of `FERRIC_GPU_MIXED_KERNELS`; while it is empty,
-    /// `precision = mixed` is refused.
-    pub const SHIPPED: Self = Self::EMPTY;
+    /// `RiMp2Energy` is shipped (its budget row is in the `gpu_rimp2_mixed`
+    /// test docstring); Task 4.3 adds `CcsdAmplitudes`, Task 4.4 `DfkOcc`.
+    /// It is the default of `FERRIC_GPU_MIXED_KERNELS`; a build whose set is
+    /// empty refuses `precision = mixed`. Shipping a kernel does not change the
+    /// precision default: `PRECISION_DEFAULT` stays f64.
+    pub const SHIPPED: Self = Self::EMPTY.with(MixedKernel::RiMp2Energy);
 
     pub const fn with(self, k: MixedKernel) -> Self {
         Self(self.0 | k as u8)

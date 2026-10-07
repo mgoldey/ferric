@@ -102,13 +102,13 @@ def test_default_build_contract():
         "reason": None,
         "device": None,
         "precision": "f64",
-        "mixed_kernels": [],
+        "mixed_kernels": ["rimp2-energy"],
     }
 
 
 def test_precision_keys_present_and_default_f64():
     st = _in_subprocess(None)
-    assert st["precision"] == "f64" and st["mixed_kernels"] == []
+    assert st["precision"] == "f64" and st["mixed_kernels"] == ["rimp2-energy"]
 
 
 def test_mixed_without_a_device_mode_degrades_to_off_and_says_why():

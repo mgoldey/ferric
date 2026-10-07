@@ -272,6 +272,59 @@ and are not reproduced here. Quoting a benchmark statistic from memory rather
 than from the record is the kind of unchecked claim this page exists to
 prevent.
 
+## Mixed-precision GPU kernels
+
+`[gpu] precision = "mixed"` is opt-in (the default is `f64`) and applies only to
+the kernels in `mixed_kernels`. A mixed result is **not Proven**: it is not
+compared with an independent code, and it is not an f64 result. It is graded as
+a **measured error map**: a deterministic bound derived from the operation
+count, and the errors measured against the same run's f64 CPU energy on the
+systems below. Whether that error is acceptable for a given use is not decided
+here.
+
+**`rimp2-energy`** (shipped). `B_ov` is stored on the device as f32 (half the
+bytes of the f64 tensor); each block `G_i = B_iᵀ·B_tail` is formed by f32
+panel products of width b = 128 (the committed default, provisional until the
+panel sweep) summed into an f64 accumulator; the pair arithmetic, denominators
+and all sums are f64. A `B_ov` element beyond the f32 range, or an unavailable
+flush kernel, runs the f64 device path instead and is counted
+(`mixed_fallback_f64`); a pool too small for the f32 tensor runs the CPU path
+unchanged.
+
+| Column | Value |
+|---|---|
+| Accumulation depth | n = naux per element, panels of b = 128 |
+| κ_sum | measured per system (table); S_ab/\|g_ab\| is unbounded because g_ab crosses zero, so the energy-level κ_E = Σ fac\|g\|S/\|D\| / \|E_os\| and the p99 of the element κ on the first block are reported |
+| Bound | per element ε_G·S_ab with ε_G = 2u₃₂ + γ_b(u₃₂) + γ_⌈naux/b⌉(u₆₄) (u₃₂ = 2⁻²⁴, u₆₄ = 2⁻⁵³), summed into an energy bound through the OS and SS terms |
+| Mitigation | f64 panel accumulation, f64 pair arithmetic, f64 everything else |
+| Precision | f32 storage, f32 panel products, f64 sums |
+
+The measured error against the f64 CPU energy of the same B_ov (b = 128; E_corr
+is the f64 RI-MP2 correlation energy; the water, butane and octane cc-pVDZ rows use an
+exact-integral RHF reference, the dodecane and aug-cc rows an RI-JK RHF reference
+with a loose threshold,
+the same orbitals on both sides of every comparison):
+
+| System (frozen core) | nocc / nvir / naux | E_corr (Eh) | \|ΔE\| (Eh) | \|ΔE\| (kcal/mol) | \|ΔE\|/\|E_corr\| | bound OS / SS (Eh) | κ_E |
+|---|---|---|---|---|---|---|---|
+| H2O / cc-pVDZ | 5 / 19 / 84 | −0.204033 | 3.5e-9 | 2.2e-6 | 1.7e-8 | 2.1e-6 / 3.7e-6 | 1.30 |
+| n-butane / cc-pVDZ | 17 / 89 / 364 | −0.599645 | 1.6e-9 | 1.0e-6 | 2.7e-9 | 1.4e-5 / 2.7e-5 | 1.95 |
+| n-octane / cc-pVDZ | 33 / 169 / 700 | −1.183893 | 4.4e-11 | 2.7e-8 | 3.7e-11 | 3.4e-5 / 6.6e-5 | 2.40 |
+| n-dodecane / cc-pVDZ | 49 / 249 / 1036 | −1.767936 | 1.2e-10 | 7.6e-8 | 6.9e-11 | 5.9e-5 / 1.1e-4 | 2.76 |
+| H2O / aug-cc-pVTZ | 5 / 87 / 198 | −0.283553 | 2.5e-9 | 1.6e-6 | 8.9e-9 | 5.1e-6 / 9.2e-6 | 1.50 |
+| benzene / aug-cc-pVDZ (6) | 15 / 171 / 570 | −0.810690 | 1.3e-9 | 8.4e-7 | 1.6e-9 | 1.5e-5 / 2.8e-5 | 1.65 |
+| benzene / aug-cc-pVTZ (6) | 15 / 393 / 912 | −0.963520 | 1.4e-10 | 9.0e-8 | 1.5e-10 | 2.1e-5 / 3.9e-5 | 1.84 |
+
+Every measured error is inside its bound, by three to six orders of
+magnitude. The error splits into an f32-storage part (B_ov rounded through f32,
+recomputed in f64, bounded at ε_G = 2u₃₂) and an accumulation part (the device
+minus that), each inside its own bound. Over the four cc-pVDZ systems the
+error does not grow with the number of occupied orbitals while the bound grows
+as N<sup>1.5</sup> (fitted slope −1.8 ± 0.7 for the error against 1.49 ± 0.05
+for the bound, on four points; it does not resolve a √N law). Test files:
+`crates/ferric-mp2/tests/rimp2_f32_storage_error_law.rs` (no device) and
+`crates/ferric-mp2/tests/gpu_rimp2_mixed.rs` (device).
+
 ## Known limits and negatives
 
 Reported rather than omitted:

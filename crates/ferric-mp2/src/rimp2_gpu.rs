@@ -26,10 +26,11 @@
 //! (or refuse to the CPU path) without touching the device.
 use ferric_core::gpu::device::{device, Device, GpuError};
 use ferric_core::gpu::gemm::{dev_left_padded, dev_right_padded, gemm_f64_dev};
+use ferric_core::gpu::mixed::{effective_k_panel, gemm_f32_f64acc_dev};
 use ferric_core::gpu::pool::DevicePool;
 use ferric_core::gpu::resident::DeviceMatrix;
 use ferric_core::gpu::stats::{
-    note_cpu, note_cpu_detail, note_mixed_fallback, note_offloaded, CpuReason,
+    note_cpu, note_cpu_detail, note_mixed, note_mixed_fallback, note_offloaded, CpuReason,
 };
 use ferric_core::gpu::{GpuMode, GpuStatus, MixedKernel, Precision};
 use ferric_tensors::einsum::GEMM_K_BLOCK;
@@ -77,13 +78,13 @@ pub fn try_spin_components_on_device(
     };
     match run(precision) {
         Ok(sc) => Some(sc),
-        Err(GpuError::Kernel(reason)) if precision == Precision::Mixed => {
-            // Mixed requested but the path is unavailable: f64 on the device,
-            // counted and traced, never silent.
+        Err(e @ (GpuError::Kernel(_) | GpuError::F32Range(_))) if precision == Precision::Mixed => {
+            // Mixed requested but the path is unavailable (flush kernel will
+            // not load) or the operand does not survive f32 (a finite value
+            // beyond f32::MAX): f64 on the device, counted and traced, never
+            // silent and never a wrong number.
             if ferric_core::gpu::config::gpu_trace() {
-                eprintln!(
-                    "[gpu] RI-MP2 mixed path unavailable ({reason}); running f64 on the device"
-                );
+                eprintln!("[gpu] RI-MP2 mixed path unavailable ({e}); running f64 on the device");
             }
             note_mixed_fallback();
             match run(Precision::F64) {
@@ -121,8 +122,11 @@ fn checked_nov(nocc: usize, nvir: usize) -> Result<usize, GpuError> {
 
 /// The device energy. `b_ov` row-major (naux × nocc·nvir). Charges the pool
 /// for the resident tensor and the per-i scratch; refuses (`PoolFull`) before
-/// any transfer when either does not fit. `Precision::Mixed` is a typed
-/// refusal until the mixed arm ships.
+/// any transfer when either does not fit. `Precision::Mixed` keeps `B_ov` on the
+/// device as f32 (half the bytes) and forms `G_i` by the k-panelled SGEMM with
+/// f64 accumulation; it refuses with `GpuError::Kernel` (flush kernel will not
+/// load; checked before any reservation) or `GpuError::F32Range` (a finite
+/// `B_ov` element beyond `f32::MAX`), never a silent f64 run.
 pub fn spin_components_on_device(
     dev: &Device,
     pool: &DevicePool,
@@ -197,11 +201,19 @@ pub fn spin_components_on_device(
     })
 }
 
-/// Resident `B_ov` + the `G_i` scratch for one stage. Both are charged to the
-/// pool for the stage's lifetime.
+/// `B_ov` resident on the device in the precision of the stage.
+enum Resident {
+    F64(DeviceMatrix<f64>),
+    F32(DeviceMatrix<f32>),
+}
+
+/// Resident `B_ov` + the `G_i` scratch for one stage. All are charged to the
+/// pool, each under its own label, for the stage's lifetime. The mixed stage
+/// also holds the f32 panel scratch.
 struct Stage {
-    b: DeviceMatrix<f64>,
+    b: Resident,
     c64: DeviceMatrix<f64>,
+    c32: Option<DeviceMatrix<f32>>,
 }
 
 impl Stage {
@@ -213,9 +225,9 @@ impl Stage {
         precision: Precision,
     ) -> Result<Self, GpuError> {
         if precision == Precision::Mixed {
-            // The mixed arm (f32-resident B_ov) ships separately; the
-            // dispatcher turns this into the counted f64 device path.
-            return Err(GpuError::Kernel("mixed RI-MP2 not shipped".into()));
+            // The flush kernel is checked before ANY reservation or transfer, so
+            // the dispatcher's f64 fallback wastes nothing.
+            dev.axpy_f32_to_f64()?;
         }
         let nov = b_ov.ncols();
         // Scratch first: a pool too small for the scratch refuses before the
@@ -228,8 +240,41 @@ impl Stage {
             nvir,
             nov,
         )?;
-        let b = DeviceMatrix::<f64>::upload(dev, pool, "RI-MP2 B_ov (device, f64)", &b_ov.view())?;
-        Ok(Self { b, c64 })
+        match precision {
+            Precision::F64 => {
+                let b = DeviceMatrix::<f64>::upload(
+                    dev,
+                    pool,
+                    "RI-MP2 B_ov (device, f64)",
+                    &b_ov.view(),
+                )?;
+                Ok(Self {
+                    b: Resident::F64(b),
+                    c64,
+                    c32: None,
+                })
+            }
+            Precision::Mixed => {
+                let c32 = DeviceMatrix::<f32>::zeros(
+                    dev,
+                    pool,
+                    "RI-MP2 energy (device): G_i scratch f32 panel",
+                    nvir,
+                    nov,
+                )?;
+                let b = DeviceMatrix::<f32>::upload_rounded(
+                    dev,
+                    pool,
+                    "RI-MP2 B_ov (device, f32)",
+                    &b_ov.view(),
+                )?;
+                Ok(Self {
+                    b: Resident::F32(b),
+                    c64,
+                    c32: Some(c32),
+                })
+            }
+        }
     }
 
     /// Computes G_i into the device scratch and downloads it (row-major
@@ -259,20 +304,45 @@ impl Stage {
         let (m, k, n) = (nvir, b_ov.nrows(), nov - off);
         let b_i = b_ov.slice(s![.., off..off + nvir]);
         let b_tail = b_ov.slice(s![.., off..]);
-        let left = dev_left_padded(self.b.buf().slice(off..), &b_i.t())?;
-        let right = dev_right_padded(self.b.buf().slice(off..), &b_tail)?;
-        gemm_f64_dev(
-            dev,
-            m,
-            k,
-            n,
-            &left,
-            &right,
-            self.c64.buf_mut(),
-            GEMM_K_BLOCK,
-        )?;
-        // m·n ≤ nvir·nov (checked when the scratch was sized).
-        note_offloaded(0, 8 * m * n);
+        match (&self.b, &mut self.c32) {
+            (Resident::F64(b), _) => {
+                let left = dev_left_padded(b.buf().slice(off..), &b_i.t())?;
+                let right = dev_right_padded(b.buf().slice(off..), &b_tail)?;
+                gemm_f64_dev(
+                    dev,
+                    m,
+                    k,
+                    n,
+                    &left,
+                    &right,
+                    self.c64.buf_mut(),
+                    GEMM_K_BLOCK,
+                )?;
+                // m·n ≤ nvir·nov (checked when the scratch was sized).
+                note_offloaded(0, 8 * m * n);
+            }
+            (Resident::F32(b), Some(c32)) => {
+                let left = dev_left_padded(b.buf().slice(off..), &b_i.t())?;
+                let right = dev_right_padded(b.buf().slice(off..), &b_tail)?;
+                let panels = gemm_f32_f64acc_dev(
+                    dev,
+                    m,
+                    k,
+                    n,
+                    &left,
+                    &right,
+                    c32.buf_mut(),
+                    self.c64.buf_mut(),
+                    effective_k_panel(),
+                )?;
+                note_mixed(panels, 0, 8 * m * n);
+            }
+            (Resident::F32(_), None) => {
+                return Err(GpuError::Layout(
+                    "mixed stage without its f32 scratch".into(),
+                ))
+            }
+        }
         if host.len() != m * n {
             return Err(GpuError::Layout(format!(
                 "host block holds {} elements, G_{i} has {}",
