@@ -547,7 +547,7 @@ fn half_transform_chunk_mixed(
         stats::note_mixed(panels, 0, 0);
         let mut slot = y.buf_mut().slice_mut(p * nocc * n..(p + 1) * nocc * n);
         dev.stream
-            .memcpy_dtod(m.yp.buf(), &mut slot)
+            .memcpy_dtod(&m.yp.buf().slice(..nocc * n), &mut slot)
             .map_err(|e| cuda("D2D Y_P", &e))?;
     }
     Ok(())

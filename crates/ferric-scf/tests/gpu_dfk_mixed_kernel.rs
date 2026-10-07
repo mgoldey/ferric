@@ -51,6 +51,7 @@ use ferric_core::gpu::{
     install, pool, probe, stats, GpuMode, GpuStatus, MixedKernel, MixedKernelSet, Precision,
 };
 use ferric_core::mol::Molecule;
+use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::df_k::DfK;
@@ -59,6 +60,9 @@ use ferric_scf::df_k_gpu::{
     MIXED_SETTINGS_OVERRIDE, TRUNCATE_B_TO_F32,
 };
 use ferric_scf::fock::KBuilder;
+use ferric_scf::rhf::{solve_rhf, RhfConfig};
+use ferric_scf::screening::SchwarzBounds;
+use ferric_scf::uhf::{solve_uhf, UhfConfig};
 use ndarray::{Array2, ArrayView2};
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
@@ -131,7 +135,8 @@ impl Drop for Mixed {
 }
 
 fn dfk_for(xyz: &str, obs_name: &str) -> (DfK<'static>, usize) {
-    let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+    let mult = if xyz.contains("OH") { 2 } else { 1 };
+    let mol = Molecule::parse_xyz(xyz, 0, mult).unwrap();
     let obs = PreparedBasis::new(&mol, &basis::bundled(obs_name).unwrap()).unwrap();
     let aux = PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
     let n = obs.nbasis();
@@ -305,6 +310,125 @@ fn mixed_k_is_inside_its_bound_and_two_mutants_leave_it() {
                 assert_eq!(k_clean[(r, cc)], k_clean[(cc, r)]);
             }
         }
+    }
+}
+
+const OH: &str = "2\nOH\nO 0 0 0\nH 0 0 0.97\n";
+
+/// Converged occupied orbitals (host RI-JK SCF, `def2-universal-jkfit` J and K):
+/// restricted when `mult == 1` (beta = None), unrestricted otherwise.
+fn scf_occ(xyz: &str, mult: usize, obs_name: &str) -> (Array2<f64>, Option<Array2<f64>>) {
+    let mol = Molecule::parse_xyz(xyz, 0, mult).unwrap();
+    let obs = PreparedBasis::new(&mol, &basis::bundled(obs_name).unwrap()).unwrap();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+    let ctx = ParallelContext::default();
+    let aux = Some("def2-universal-jkfit".to_string());
+    FORCE_HOST.store(true, Ordering::SeqCst);
+    let res = if mult == 1 {
+        let cfg = RhfConfig {
+            energy_conv: 1e-3,
+            density_conv: 1e-8,
+            max_iter: 200,
+            df_j_aux: aux.clone(),
+            df_k_aux: aux,
+            ..Default::default()
+        };
+        solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg)
+    } else {
+        let cfg = UhfConfig {
+            energy_conv: 1e-3,
+            density_conv: 1e-8,
+            max_iter: 300,
+            df_j_aux: aux.clone(),
+            df_k_aux: aux,
+            ..Default::default()
+        };
+        solve_uhf(&ctx, &mol, &obs, &bounds, &cfg)
+    };
+    FORCE_HOST.store(false, Ordering::SeqCst);
+    let res = res.expect("SCF");
+    let nelec = mol.nelec() as usize;
+    let na = (nelec + mult - 1) / 2;
+    let nb = nelec - na;
+    let occ = |c: &Array2<f64>, k: usize| c.slice(ndarray::s![.., ..k]).to_owned();
+    let ca = occ(&res.mos_alpha, na);
+    // convention check: D_alpha = C_occ C_occ^T
+    let d = ca.dot(&ca.t());
+    let err = (&d - &res.density_alpha)
+        .mapv(f64::abs)
+        .fold(0.0f64, |a, &b| a.max(b));
+    assert!(err < 1e-6, "MO column convention: |D - C C^T| = {err:e}");
+    let cb = res.mos_beta.as_ref().map(|c| occ(c, nb));
+    (ca, cb)
+}
+
+/// The f64 device K of the f32-ROUNDED operands: mixed minus this is the f32 panel
+/// accumulation alone (the operand rounding is common to both).
+fn twin_k(flat: &ArrayView2<f64>, c: &Array2<f64>, scratch: Option<usize>) -> Array2<f64> {
+    let n = c.nrows();
+    let dev = ferric_core::gpu::device::device(0).unwrap();
+    let rb = ferric_core::gpu::mixed_host::round_trip_f32(flat);
+    let rc = ferric_core::gpu::mixed_host::round_trip_f32(&c.view());
+    let mut tw = DeviceDfK::upload(&dev, &pool().unwrap(), &rb.view(), n).unwrap();
+    if let Some(bytes) = scratch {
+        tw = tw.with_scratch_bytes(bytes);
+    }
+    let mut k = Array2::zeros((n, n));
+    tw.build_from_occ(&rc.view(), &mut k).unwrap();
+    k
+}
+
+#[test]
+fn mixed_alpha_beta_reuse_with_unequal_nocc_neither_panics_nor_accumulates() {
+    let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    if !ready() {
+        return;
+    }
+    // Converged UHF orbitals of OH: alpha 5, beta 4. The scratch is sized by alpha
+    // and reused for beta (nocc_cap 5 > 4): every mixed copy must use nocc, not nocc_cap.
+    let (ca, cb) = scf_occ(OH, 2, "cc-pvdz");
+    let cb = cb.expect("UHF");
+    assert_eq!((ca.ncols(), cb.ncols()), (5, 4));
+    let (mut dfk0, n) = dfk_for(OH, "cc-pvdz");
+    let flat = dfk0.dressed_incore_flat_for_test().unwrap().to_owned();
+    let band = flat.nrows();
+    let b = effective_k_panel();
+    let hk = [host_k(&mut dfk0, &ca), host_k(&mut dfk0, &cb)];
+
+    let _m = Mixed::with(shipped_plus_dfk());
+    let (mut dfk, _) = dfk_for(OH, "cc-pvdz");
+    let (mut ka1, mut kb, mut ka2) = (
+        Array2::zeros((n, n)),
+        Array2::zeros((n, n)),
+        Array2::zeros((n, n)),
+    );
+    let s0 = stats();
+    dfk.build_from_occ(&ca, &mut ka1).unwrap();
+    dfk.build_from_occ(&cb, &mut kb).unwrap();
+    dfk.build_from_occ(&ca, &mut ka2).unwrap();
+    let s1 = stats();
+    assert_eq!(
+        s1.mixed_panels - s0.mixed_panels,
+        (3 * band * n.div_ceil(b)) as u64,
+        "three mixed builds"
+    );
+    assert_eq!(s1.mixed_fallback_f64, s0.mixed_fallback_f64);
+    assert_eq!(s1.dfk_declined, s0.dfk_declined, "no decline");
+    assert_eq!(
+        bits(&ka1),
+        bits(&ka2),
+        "alpha rebuilt after beta differs: stale scratch or non-determinism"
+    );
+    for (label, c, k, host) in [("alpha", &ca, &ka1, &hk[0]), ("beta", &cb, &kb, &hk[1])] {
+        let nocc = c.ncols();
+        let s = s_matrix(&flat.view(), n, c);
+        let eps = k_error_factor_mixed(n, b, band * nocc, 1) + eps_host(n, nocc, band);
+        let clean = max_ratio(k, host, &s, eps);
+        let twin = twin_k(&flat.view(), c, None);
+        let rms = rms_ratio(k, &twin, &s, eps);
+        eprintln!("OH {label}: nocc {nocc}: bound ratio {clean:.4e}; twin RMS {rms:.4e}");
+        assert!(clean <= 1.0, "{label}: outside the bound ({clean:e})");
     }
 }
 
