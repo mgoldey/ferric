@@ -43,6 +43,30 @@ fn spill_block_naux_for(budget_bytes: usize, nao: usize) -> usize {
     block_naux_for(budget_bytes / 2, nao)
 }
 
+/// Largest unpacked scratch block (bytes) a packed in-core source unpacks into
+/// for a `for_each_block` consumer. Bounded so that a budget with a large
+/// headroom does not allocate gigabytes for a block that only the dressing
+/// loops read.
+const PACKED_SCRATCH_CAP_BYTES: usize = 512 * 1024 * 1024;
+
+/// Does the packed band, plus at least ONE unpacked aux row of scratch, fit the
+/// budget? The scratch row is the floor a `for_each_block` consumer needs; a
+/// consumer that reads [`ThreeIndexSource::packed_flat`] directly needs none.
+fn packed_in_core_fits(packed_bytes: usize, nao: usize, budget_bytes: usize) -> bool {
+    let row = nao.saturating_mul(nao).saturating_mul(8);
+    packed_bytes.saturating_add(row) <= budget_bytes
+}
+
+/// Aux rows per unpacked scratch block for a packed in-core source: the
+/// headroom left after the packed tensor, capped at
+/// [`PACKED_SCRATCH_CAP_BYTES`], at least one row.
+fn packed_scratch_rows(packed_bytes: usize, nao: usize, budget_bytes: usize) -> usize {
+    let head = budget_bytes
+        .saturating_sub(packed_bytes)
+        .min(PACKED_SCRATCH_CAP_BYTES);
+    block_naux_for(head, nao)
+}
+
 /// Pure decision + report for the SEQUENTIAL blocked/spilled DF-dressing
 /// path's over-budget-by-construction warning (see the comment at its call
 /// site in `build_dressed_band`).
@@ -412,6 +436,17 @@ pub struct AuxBlock<'a> {
 
 enum Backend {
     InCore(Array3<f64>),
+    /// The whole band resident as the PACKED lower μν triangle, one row of
+    /// `packed_pair_len(nao)` per aux function. Half the footprint of
+    /// [`Backend::InCore`] because `(P|μν)` is symmetric in μν.
+    ///
+    /// `for_each_block` unpacks one block at a time into `scratch` (allocated on
+    /// the first streaming pass, so a consumer that reads the packed rows
+    /// directly through [`ThreeIndexSource::packed_flat`] never pays for it).
+    InCorePacked {
+        packed: Array2<f64>,
+        scratch: Option<Array3<f64>>,
+    },
     DiskSpill {
         file: File,
         scratch: Array3<f64>,
@@ -715,11 +750,30 @@ impl ThreeIndexSource {
             .saturating_mul(nao)
             .saturating_mul(nao)
             .saturating_mul(8);
+        let packed_bytes = band.saturating_mul(packed_pair_len(nao)).saturating_mul(8);
+        let tier = if needed <= budget_bytes {
+            "InCore"
+        } else if packed_in_core_fits(packed_bytes, nao, budget_bytes) {
+            "InCorePacked"
+        } else {
+            "Spill"
+        };
         if ooc_trace() {
             eprintln!(
-                "[OOC build] naux={naux} band=[{band_p0},{band_p1}) nao={nao} needed={:.2}GB budget={:.2}GB -> {}",
-                needed as f64 / 1e9, budget_bytes as f64 / 1e9,
-                if needed <= budget_bytes { "InCore" } else { "Spill" },
+                "[OOC build] naux={naux} band=[{band_p0},{band_p1}) nao={nao} needed={:.2}GB packed={:.2}GB budget={:.2}GB -> {tier}",
+                needed as f64 / 1e9,
+                packed_bytes as f64 / 1e9,
+                budget_bytes as f64 / 1e9,
+            );
+        }
+        if tier == "InCorePacked" {
+            return Self::build_packed_in_core(
+                op,
+                obs,
+                dfbs,
+                budget_bytes,
+                (band_p0, band_p1),
+                screen,
             );
         }
         if needed <= budget_bytes {
@@ -836,6 +890,56 @@ impl ThreeIndexSource {
                 _charge,
             })
         }
+    }
+
+    /// Build the band `[band_p0, band_p1)` directly into the packed in-core
+    /// backend. The unpacked tensor is NEVER materialised whole (that is the
+    /// footprint this tier exists to avoid): blocks of at most
+    /// `packed_scratch_rows` aux rows are computed and packed in turn.
+    ///
+    /// `eri3_block_screened` is a pure, write-once-per-element function of its
+    /// row range, so the packed values are bit-identical to packing the
+    /// one-shot tensor.
+    fn build_packed_in_core(
+        op: Operator,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        budget_bytes: usize,
+        band: (usize, usize),
+        screen: Option<(&crate::qqr3::QqrBounds3, f64)>,
+    ) -> Result<Self, FerricError> {
+        let (band_p0, band_p1) = band;
+        let naux = dfbs.nbasis();
+        let nao = obs.nbasis();
+        let rows = band_p1 - band_p0;
+        let pair = packed_pair_len(nao);
+        let packed_bytes = rows.saturating_mul(pair).saturating_mul(8);
+        let _charge = charge_three_index("DF 3-index (P|mn) in-core packed", packed_bytes)?;
+        let step = packed_scratch_rows(packed_bytes, nao, budget_bytes).min(rows.max(1));
+        let mut packed = Array2::<f64>::zeros((rows, pair));
+        let mut p0 = band_p0;
+        while p0 < band_p1 {
+            let p1 = (p0 + step).min(band_p1);
+            let blk = crate::threeindex::eri3_block_screened(op, obs, dfbs, p0, p1, screen)?;
+            let dst = packed
+                .slice_mut(ndarray::s![p0 - band_p0..p1 - band_p0, ..])
+                .into_slice()
+                .ok_or_else(|| FerricError::General("packed rows not contiguous".into()))?;
+            pack_lower_triangle(&blk.view(), nao, dst);
+            p0 = p1;
+        }
+        Ok(Self {
+            naux,
+            nao,
+            block_naux: step,
+            band_p0,
+            band_p1,
+            backend: Backend::InCorePacked {
+                packed,
+                scratch: None,
+            },
+            _charge,
+        })
     }
 
     /// Build a DRESSED source: `out[P,:,:] = Σ_Q m[P,Q] · raw[Q,:,:]`, honoring budget.
@@ -1224,6 +1328,26 @@ impl ThreeIndexSource {
         }
     }
 
+    /// The resident packed lower-μν triangle as a `(band_naux, nao(nao+1)/2)`
+    /// view, rows band-local, columns in `(μ, ν≤μ)` row-major order; `None`
+    /// unless this source is the packed in-core tier.
+    ///
+    /// A consumer contracting a μν-symmetric quantity (RI-J) reads these rows
+    /// directly and moves half the bytes of the unpacked tensor.
+    pub fn packed_flat(&self) -> Option<ndarray::ArrayView2<'_, f64>> {
+        match &self.backend {
+            Backend::InCorePacked { packed, .. } => Some(packed.view()),
+            _ => None,
+        }
+    }
+
+    /// Is this source the packed in-core tier? Test hook, paired with
+    /// [`Self::is_spilled_for_test`].
+    #[doc(hidden)]
+    pub fn is_packed_incore_for_test(&self) -> bool {
+        matches!(self.backend, Backend::InCorePacked { .. })
+    }
+
     /// GLOBAL `[q0, q1)` aux ranges that [`Self::for_each_block`] yields, in the
     /// same ascending order. Callers that replace `for_each_block` with their own
     /// loop MUST sweep these exact edges to keep floating-point accumulation
@@ -1295,24 +1419,16 @@ impl ThreeIndexSource {
     /// whether the source is full or a per-rank band.
     pub fn for_each_block(
         &mut self,
-        mut f: impl FnMut(AuxBlock<'_>) -> Result<(), FerricError>,
+        f: impl FnMut(AuxBlock<'_>) -> Result<(), FerricError>,
     ) -> Result<(), FerricError> {
         let band = self.band_naux();
         let band_p0 = self.band_p0;
+        let nao = self.nao;
+        let step = self.block_naux.max(1);
         match &mut self.backend {
-            Backend::InCore(eri) => {
-                let nb = band.div_ceil(self.block_naux.max(1));
-                for i in 0..nb {
-                    // local rows into the band-local storage; global p0 reported.
-                    let l0 = i * self.block_naux;
-                    let l1 = (l0 + self.block_naux).min(band);
-                    let view = eri.slice(ndarray::s![l0..l1, .., ..]);
-                    f(AuxBlock {
-                        p0: band_p0 + l0,
-                        data: view,
-                    })?;
-                }
-                Ok(())
+            Backend::InCore(eri) => stream_in_core(eri, band, band_p0, step, f),
+            Backend::InCorePacked { packed, scratch } => {
+                stream_packed(packed, scratch, nao, band, band_p0, step, f)
             }
             Backend::Recompute {
                 op,
@@ -1321,63 +1437,139 @@ impl ThreeIndexSource {
                 scratch,
                 screen,
             } => {
-                // Rebuild each block from the bases rather than reading it back.
-                //
-                // BIT-IDENTICAL to what the in-core backend would have stored:
-                // `eri3_block` is a pure function of (op, obs, dfbs, p0, p1)
-                // and write-once per element, and nothing is summed across
-                // blocks here, so there is no reassociation to worry about.
-                // Pinned by `mwe_recompute_backend_avoids_disk.rs` CONTRACT 1.
-                let nb = band.div_ceil(self.block_naux.max(1));
-                for i in 0..nb {
-                    let l0 = i * self.block_naux;
-                    let l1 = (l0 + self.block_naux).min(band);
-                    let p0 = band_p0 + l0;
-                    let p1 = band_p0 + l1;
-                    // Same screen the source was built with -- see the purity
-                    // contract on eri3_block_screened. A rebuilt block must skip
-                    // exactly the triples the original build skipped.
-                    let scr = screen.as_ref().map(|(b, t)| (b.as_ref(), *t));
-                    let blk = crate::threeindex::eri3_block_screened(*op, obs, dfbs, p0, p1, scr)?;
-                    let b = l1 - l0;
-                    scratch.slice_mut(ndarray::s![0..b, .., ..]).assign(&blk);
-                    let view = scratch.slice(ndarray::s![0..b, .., ..]);
-                    f(AuxBlock { p0, data: view })?;
-                }
-                Ok(())
+                let scr = screen.as_ref().map(|(b, t)| (b.as_ref(), *t));
+                stream_recompute((*op, obs, dfbs, scr), scratch, band, band_p0, step, f)
             }
             Backend::DiskSpill { file, scratch } => {
-                file.seek(SeekFrom::Start(0))
-                    .map_err(|e| FerricError::General(format!("seek: {e}")))?;
-                let mut packbuf: Vec<f64> = Vec::new();
-                let nb = band.div_ceil(self.block_naux.max(1));
-                for i in 0..nb {
-                    let l0 = i * self.block_naux;
-                    let l1 = (l0 + self.block_naux).min(band);
-                    let b = l1 - l0;
-                    // The file holds the PACKED triangle; read that, then expand
-                    // into `scratch` so the yielded view keeps its historical
-                    // (b, nao, nao) shape and every consumer is untouched.
-                    let pair = packed_pair_len(self.nao);
-                    let elems = b * pair;
-                    packbuf.resize(elems, 0.0);
-                    let bytes: &mut [u8] = bytemuck::cast_slice_mut(&mut packbuf[..elems]);
-                    file.read_exact(bytes)
-                        .map_err(|e| FerricError::General(format!("spill read: {e}")))?;
-                    unpack_lower_triangle(&packbuf[..elems], self.nao, b, scratch);
-                    let view = scratch.slice(ndarray::s![0..b, .., ..]);
-                    f(AuxBlock {
-                        p0: band_p0 + l0,
-                        data: view,
-                    })?;
-                }
-                // Reads also populate the cgroup-charged page cache; drop them so
-                // a full streaming pass doesn't pull the entire file into cache.
-                drop_page_cache(file);
-                Ok(())
+                stream_spill(file, scratch, nao, band, band_p0, step, f)
             }
         }
     }
+}
+
+/// `for_each_block` over the unpacked in-core tensor: borrowed slices, no copy.
+fn stream_in_core(
+    eri: &Array3<f64>,
+    band: usize,
+    band_p0: usize,
+    step: usize,
+    mut f: impl FnMut(AuxBlock<'_>) -> Result<(), FerricError>,
+) -> Result<(), FerricError> {
+    for i in 0..band.div_ceil(step) {
+        // local rows into the band-local storage; global p0 reported.
+        let l0 = i * step;
+        let l1 = (l0 + step).min(band);
+        let view = eri.slice(ndarray::s![l0..l1, .., ..]);
+        f(AuxBlock {
+            p0: band_p0 + l0,
+            data: view,
+        })?;
+    }
+    Ok(())
+}
+
+/// `for_each_block` over the packed in-core tier: each block is unpacked into
+/// the lazily allocated scratch, so consumers see the usual `(b, nao, nao)`.
+fn stream_packed(
+    packed: &Array2<f64>,
+    scratch: &mut Option<Array3<f64>>,
+    nao: usize,
+    band: usize,
+    band_p0: usize,
+    step: usize,
+    mut f: impl FnMut(AuxBlock<'_>) -> Result<(), FerricError>,
+) -> Result<(), FerricError> {
+    let scratch = scratch.get_or_insert_with(|| Array3::<f64>::zeros((step, nao, nao)));
+    for i in 0..band.div_ceil(step) {
+        let l0 = i * step;
+        let l1 = (l0 + step).min(band);
+        let b = l1 - l0;
+        let rows = packed.slice(ndarray::s![l0..l1, ..]);
+        let src = rows
+            .to_slice()
+            .ok_or_else(|| FerricError::General("packed rows not contiguous".into()))?;
+        unpack_lower_triangle(src, nao, b, scratch);
+        let view = scratch.slice(ndarray::s![0..b, .., ..]);
+        f(AuxBlock {
+            p0: band_p0 + l0,
+            data: view,
+        })?;
+    }
+    Ok(())
+}
+
+/// `for_each_block` for the recompute backend: rebuild each block from the
+/// bases rather than reading it back.
+///
+/// BIT-IDENTICAL to what the in-core backend would have stored:
+/// `eri3_block` is a pure function of (op, obs, dfbs, p0, p1) and write-once
+/// per element, and nothing is summed across blocks here, so there is no
+/// reassociation to worry about. Pinned by `mwe_recompute_backend_avoids_disk.rs`
+/// CONTRACT 1. The screen is the one the source was built with -- see the
+/// purity contract on `eri3_block_screened`: a rebuilt block must skip exactly
+/// the triples the original build skipped.
+fn stream_recompute(
+    (op, obs, dfbs, screen): (
+        Operator,
+        &PreparedBasis,
+        &PreparedBasis,
+        Option<(&crate::qqr3::QqrBounds3, f64)>,
+    ),
+    scratch: &mut Array3<f64>,
+    band: usize,
+    band_p0: usize,
+    step: usize,
+    mut f: impl FnMut(AuxBlock<'_>) -> Result<(), FerricError>,
+) -> Result<(), FerricError> {
+    for i in 0..band.div_ceil(step) {
+        let l0 = i * step;
+        let l1 = (l0 + step).min(band);
+        let (p0, p1) = (band_p0 + l0, band_p0 + l1);
+        let blk = crate::threeindex::eri3_block_screened(op, obs, dfbs, p0, p1, screen)?;
+        let b = l1 - l0;
+        scratch.slice_mut(ndarray::s![0..b, .., ..]).assign(&blk);
+        let view = scratch.slice(ndarray::s![0..b, .., ..]);
+        f(AuxBlock { p0, data: view })?;
+    }
+    Ok(())
+}
+
+/// `for_each_block` for the disk spill: the file holds the PACKED triangle;
+/// read that, then expand into `scratch` so the yielded view keeps its
+/// historical `(b, nao, nao)` shape and every consumer is untouched.
+fn stream_spill(
+    file: &mut File,
+    scratch: &mut Array3<f64>,
+    nao: usize,
+    band: usize,
+    band_p0: usize,
+    step: usize,
+    mut f: impl FnMut(AuxBlock<'_>) -> Result<(), FerricError>,
+) -> Result<(), FerricError> {
+    file.seek(SeekFrom::Start(0))
+        .map_err(|e| FerricError::General(format!("seek: {e}")))?;
+    let mut packbuf: Vec<f64> = Vec::new();
+    let pair = packed_pair_len(nao);
+    for i in 0..band.div_ceil(step) {
+        let l0 = i * step;
+        let l1 = (l0 + step).min(band);
+        let b = l1 - l0;
+        let elems = b * pair;
+        packbuf.resize(elems, 0.0);
+        let bytes: &mut [u8] = bytemuck::cast_slice_mut(&mut packbuf[..elems]);
+        file.read_exact(bytes)
+            .map_err(|e| FerricError::General(format!("spill read: {e}")))?;
+        unpack_lower_triangle(&packbuf[..elems], nao, b, scratch);
+        let view = scratch.slice(ndarray::s![0..b, .., ..]);
+        f(AuxBlock {
+            p0: band_p0 + l0,
+            data: view,
+        })?;
+    }
+    // Reads also populate the cgroup-charged page cache; drop them so a full
+    // streaming pass doesn't pull the entire file into cache.
+    drop_page_cache(file);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2262,6 +2454,42 @@ mod tests {
             maxdiff == 0.0,
             "spill blocks != dense eri3, maxdiff={maxdiff}"
         );
+    }
+
+    #[test]
+    fn packed_in_core_tier_is_chosen_by_packed_size_and_equals_dense_eri3() {
+        let (mol,) = water();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let dense = crate::threeindex::eri3_tensor(op, &obs, &dfbs).unwrap();
+        let (naux, nao, _) = dense.dim();
+        let unpacked = naux * nao * nao * 8;
+        let packed = naux * packed_pair_len(nao) * 8;
+        assert!(packed < unpacked);
+        // Between the packed footprint (plus a scratch row) and the unpacked one.
+        let budget = (packed + unpacked) / 2;
+        let mut src = ThreeIndexSource::build(op, &obs, &dfbs, budget).unwrap();
+        assert!(src.is_packed_incore_for_test(), "must pick the packed tier");
+        assert!(!src.is_incore() && !src.is_spilled_for_test());
+        let pk = src.packed_flat().unwrap().to_owned();
+        assert_eq!(pk.dim(), (naux, packed_pair_len(nao)));
+        let mut reassembled = ndarray::Array3::<f64>::zeros((naux, nao, nao));
+        src.for_each_block(|blk| {
+            let b = blk.data.shape()[0];
+            reassembled
+                .slice_mut(ndarray::s![blk.p0..blk.p0 + b, .., ..])
+                .assign(&blk.data);
+            Ok(())
+        })
+        .unwrap();
+        assert!(
+            reassembled == dense,
+            "unpacked packed-tier blocks != dense eri3"
+        );
+        // Just under the packed footprint (+ scratch row) it must spill.
+        let src = ThreeIndexSource::build(op, &obs, &dfbs, packed).unwrap();
+        assert!(src.is_spilled_for_test());
     }
 
     #[test]
