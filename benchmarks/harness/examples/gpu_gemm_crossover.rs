@@ -4,7 +4,10 @@
 //! median of 7 reps per cell. Run only when /proc/pressure/cpu `some avg10` is
 //! <= 0.05 before the run, and a sampler thread (`ferric_benchmarks::quiet`)
 //! finds no external CPU load during it (PSI after is informational: it includes
-//! this harness's own load); otherwise "NOT QUOTABLE: box contested" is printed. Each shape also
+//! this harness's own load; any concurrent monitor such as a ps loop or htop
+//! counts as external load); the sampler covers the shape loop (device setup is
+//! before it); otherwise "NOT QUOTABLE: box contested" is printed.
+//! Any concurrent monitor (ps loop, htop) counts as external load. Each shape also
 //! checks GPU vs CPU agreement against a Higham bound and panics if exceeded.
 //!
 //! RAYON_NUM_THREADS=6 OPENBLAS_NUM_THREADS=1 \
@@ -62,11 +65,11 @@ fn main() {
         env_or_unset("RAYON_NUM_THREADS"),
         env_or_unset("OPENBLAS_NUM_THREADS")
     );
+    let dev = device(0).expect("GPU 0");
+    let pool = DevicePool::with_capacity_bytes(4 << 30);
     let psi_before = ferric_benchmarks::quiet::psi_cpu_some_avg10();
     println!("PSI cpu some avg10 before = {psi_before:.2} (must be <= 0.05 for a quotable run)");
     let sampler = ferric_benchmarks::quiet::Sampler::start();
-    let dev = device(0).expect("GPU 0");
-    let pool = DevicePool::with_capacity_bytes(4 << 30);
     println!(
         "{:>6} {:>6} {:>6} {:>14} {:>9} {:>9} {:>9} {:>9} {:>8} {:>8}",
         "m", "k", "n", "flops", "cpu_min", "cpu_med", "gpu_min", "gpu_med", "min/min", "med/med"

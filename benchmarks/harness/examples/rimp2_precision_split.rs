@@ -3,7 +3,7 @@
 //! device path and the mixed device path (`spin_components_on_device` with
 //! `Precision::F64` / `Precision::Mixed`) on the SAME `B_ov` and orbital
 //! energies (one RI-JK RHF, one `B_ov`), reps interleaved
-//! (cpu, dev_f64, dev_mixed, cpu, ...). Each arm gets one untimed warm-up first
+//! with the arm order rotated each rep (printed per rep). Each arm gets one untimed warm-up first
 //! (cuBLAS handle, pool and kernel first-use are one-off costs).
 //!
 //! Prints per arm: min and median wall over the reps, `cpu_s/wall_s` (this
@@ -21,7 +21,9 @@
 //! Same env knobs as `rimp2_stage_split`: `FERRIC_MOL` (default benzene),
 //! `FERRIC_OBS` (aug-cc-pvtz), `FERRIC_AUX` (aug-cc-pvtz-rifit), `FERRIC_FROZEN`
 //! (6); plus `FERRIC_PREC_REPS` (7). `FERRIC_PREC_SMOKE=1` runs one rep on water
-//! (a wiring check, not a measurement).
+//! (a wiring check, not a measurement); `FERRIC_PSI_SETTLE_SECS` (180) bounds the wait for PSI to decay after setup.
+//! Arm order rotates per rep (cpu,f64,mixed / f64,mixed,cpu / mixed,cpu,f64) and is printed.
+//! Any concurrent monitor (ps loop, htop) counts as external load.
 //!
 //!   CUDA_VISIBLE_DEVICES=0 FERRIC_MOL=benzene OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=6 \
 //!     cargo run --release -p ferric-benchmarks --features gpu --example rimp2_precision_split
@@ -246,31 +248,56 @@ mod run {
         (v[0], v[v.len() / 2])
     }
 
+    /// Poll PSI every 2 s until it is within the quotable ceiling or `max_secs`
+    /// elapse; returns the last reading.
+    fn settle_psi(max_secs: u64) -> f64 {
+        let t = Instant::now();
+        loop {
+            let psi = quiet::psi_cpu_some_avg10();
+            if (psi.is_finite() && psi <= quiet::MAX_PSI_BEFORE)
+                || t.elapsed().as_secs() >= max_secs
+            {
+                return psi;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+    }
+
+    /// Arm index order for rep `r`: the arms are rotated each rep (rep 0 cpu,
+    /// dev_f64, dev_mixed; rep 1 dev_f64, dev_mixed, cpu; rep 2 dev_mixed,
+    /// cpu, dev_f64; ...) so no arm always runs first or after the same arm.
+    fn order(r: usize) -> [usize; 3] {
+        [r % 3, (r + 1) % 3, (r + 2) % 3]
+    }
+
     fn measure(p: &Prepared, reps: usize) -> [Rows; 3] {
         let mut rows: [Rows; 3] = Default::default();
         for (arm, _) in ARMS {
             run_arm(p, arm); // untimed warm-up
         }
-        for _ in 0..reps {
-            let mut cpu_ref: Option<SpinComponents> = None;
-            for (i, (arm, _)) in ARMS.iter().enumerate() {
+        for r in 0..reps {
+            let ord = order(r);
+            let names: Vec<&str> = ord.iter().map(|&i| ARMS[i].1).collect();
+            println!("rep {r} order: {}", names.join(", "));
+            let mut res: [Option<SpinComponents>; 3] = [None, None, None];
+            for &i in &ord {
                 let s0 = stats();
                 let c0 = process_cpu_seconds();
                 let t = Instant::now();
-                let sc = run_arm(p, *arm);
+                let sc = run_arm(p, ARMS[i].0);
                 let wall = t.elapsed().as_secs_f64();
                 let cpu = process_cpu_seconds() - c0;
-                let r = &mut rows[i];
-                r.wall.push(wall);
-                r.cpu.push(cpu);
-                r.delta.add(&s0, &stats());
-                match &cpu_ref {
-                    None => cpu_ref = Some(sc),
-                    Some(c) => {
-                        r.d_os = r.d_os.max((sc.e_os - c.e_os).abs());
-                        r.d_ss = r.d_ss.max((sc.e_ss - c.e_ss).abs());
-                    }
-                }
+                let row = &mut rows[i];
+                row.wall.push(wall);
+                row.cpu.push(cpu);
+                row.delta.add(&s0, &stats());
+                res[i] = Some(sc);
+            }
+            let c = res[0].as_ref().expect("cpu arm ran");
+            for i in 1..3 {
+                let sc = res[i].as_ref().expect("arm ran");
+                rows[i].d_os = rows[i].d_os.max((sc.e_os - c.e_os).abs());
+                rows[i].d_ss = rows[i].d_ss.max((sc.e_ss - c.e_ss).abs());
             }
         }
         rows
@@ -342,10 +369,6 @@ mod run {
                 ""
             }
         );
-        let psi_before = quiet::psi_cpu_some_avg10();
-        println!(
-            "PSI cpu some avg10 before = {psi_before:.2} (must be <= 0.05 for a quotable run)"
-        );
         let p = prepare(smoke);
         // Device and mixed policy are installed after the SCF and B_ov build so
         // the shared orbitals are made by the same code for every arm.
@@ -357,6 +380,21 @@ mod run {
             ..Default::default()
         })
         .expect("install GPU settings");
+        // The SCF and B_ov build load this process's own cores, which raises PSI
+        // for tens of seconds; wait for it to decay (no timing is taken here) so
+        // the reading is the box's, then read PSI and start the sampler together.
+        let settle = if smoke {
+            0
+        } else {
+            env_or("FERRIC_PSI_SETTLE_SECS", "180")
+                .parse()
+                .expect("settle")
+        };
+        let psi_before = settle_psi(settle);
+        println!(
+            "PSI cpu some avg10 before = {psi_before:.2} (must be <= 0.05 for a quotable run; \
+             read after setup, waiting up to {settle} s for the harness's own setup load to decay)"
+        );
         let sampler = quiet::Sampler::start();
         let rows = measure(&p, reps);
         print_table(&rows, reps);

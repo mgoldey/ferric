@@ -13,7 +13,10 @@
 //! The run prints `NOT QUOTABLE: box contested` unless `/proc/pressure/cpu`
 //! some avg10 is readable and <= 0.05 before, and the external-load sampler
 //! (`ferric_benchmarks::quiet`, which excludes this process and its child arms)
-//! finds no other process using CPU during the run.
+//! finds no other process using CPU during the run. The sampled span is the
+//! parent's loop over the child arms (each child's SCF, untimed warm-up and
+//! timed CCSD); the parent's own idle waiting is the only thing it does. Any concurrent monitor (ps
+//! loop, htop) counts as external load.
 //!
 //! Matched settings are the caller's job and are printed: run with
 //! `RAYON_NUM_THREADS=6 OPENBLAS_NUM_THREADS=1`, on a quiet box

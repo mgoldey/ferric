@@ -4,7 +4,9 @@
 //! product) is deterministic and quotable on any box; the TIMINGS are quotable
 //! only when `/proc/pressure/cpu` `some avg10` is <= 0.05 before and the
 //! external-load sampler (`ferric_benchmarks::quiet`) finds no other process
-//! using CPU during the run (otherwise "NOT QUOTABLE: box contested" is printed).
+//! using CPU during the run (any concurrent monitor, e.g. a ps loop or htop,
+//! counts; the sampler covers the shape loop, device setup is before it);
+//! otherwise "NOT QUOTABLE: box contested" is printed.
 //!
 //! RAYON_NUM_THREADS=6 OPENBLAS_NUM_THREADS=1 \
 //!   cargo run --release -p ferric-benchmarks --features gpu --example gpu_mixed_gemm_sweep
@@ -100,13 +102,13 @@ fn main() {
         MIXED_K_PANEL_DEFAULT,
         effective_k_panel()
     );
-    let psi_before = ferric_benchmarks::quiet::psi_cpu_some_avg10();
-    println!("PSI cpu some avg10 before = {psi_before:.2} (must be <= 0.05 for quotable timings)");
-    let sampler = ferric_benchmarks::quiet::Sampler::start();
     let dev_arc = device(0).expect("GPU 0");
     let dev = &*dev_arc;
     println!("device: {}", dev.info.name);
     let pool = DevicePool::with_capacity_bytes(3 << 30);
+    let psi_before = ferric_benchmarks::quiet::psi_cpu_some_avg10();
+    println!("PSI cpu some avg10 before = {psi_before:.2} (must be <= 0.05 for quotable timings)");
+    let sampler = ferric_benchmarks::quiet::Sampler::start();
     let b_cpu = effective_k_panel();
 
     let all_shapes: [(usize, usize, usize); 4] = [
