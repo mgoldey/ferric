@@ -1127,6 +1127,123 @@ impl<'a> CosxK<'a> {
         Ok((g, Some(touched)))
     }
 
+    /// The exchange grid points (error-law diagnostics).
+    #[doc(hidden)]
+    pub fn grid_points(&self) -> &[[f64; 3]] {
+        &self.points
+    }
+
+    /// Entrywise a-priori bound on `|K_f32route - K_f64|` (post-fit) for the
+    /// density `d`: per routed `F32` unit the f32 block's element bound
+    /// (`Md3c1e::pair_block_f32_bound`, primitive-pair sum `sum`) times
+    /// `|F|`, summed into `|dG|`, `|dK~| <= |X| |dG|^T`, then through the fit
+    /// `K = sym(S S_num^-1 K~)` as `0.5 (|Q| B + (|Q| B)^T)`, `|Q| =
+    /// |S S_num^-1|` (the inverse formed in f64). Uses the DENSE half
+    /// transform (`F = D X`, so the bound is exact for the dense path and an
+    /// estimate for a sparse one), the same sub-batches, screen and router as
+    /// `build`. Needs the md3c1e backend, the router on and, with the overlap
+    /// fit, a previous `build` (for the cached `S_num` factor). Not on any
+    /// production path.
+    #[doc(hidden)]
+    pub fn f32_k_bound(
+        &self,
+        d: &Array2<f64>,
+        sum: PrimPairSum,
+    ) -> Result<Array2<f64>, FerricError> {
+        let kern = self.kernel.as_ref().ok_or_else(|| {
+            FerricError::General("CosxK::f32_k_bound: md3c1e backend only".into())
+        })?;
+        if self.fp64_tau() <= 0.0 {
+            return Err(FerricError::General(
+                "CosxK::f32_k_bound: the router is off (fp64_multiplier = 0)".into(),
+            ));
+        }
+        let nbf = self.prep.nbasis();
+        let mut kb = Array2::<f64>::zeros((nbf, nbf));
+        for (pts, sw) in self
+            .points
+            .chunks(COSX_BLOCK_POINTS)
+            .zip(self.sqrt_w.chunks(COSX_BLOCK_POINTS))
+        {
+            let x = self.eval_x_block(pts, sw)?;
+            let f = d.dot(&x);
+            let gb = self.bound_block(kern, pts, &f, sum)?;
+            kb += &x.mapv(f64::abs).dot(&gb.t());
+        }
+        if !self.cfg.overlap_fit {
+            let mut out = kb.clone();
+            out += &kb.t();
+            out *= 0.5;
+            return Ok(out);
+        }
+        let fac = self.snum.as_ref().ok_or_else(|| {
+            FerricError::General("CosxK::f32_k_bound: call build() first (S_num factor)".into())
+        })?;
+        let s_ao = self.s_ao.as_ref().expect("overlap present when fitting");
+        let eye = Array2::<f64>::eye(nbf);
+        let mut sinv = Array2::<f64>::zeros((nbf, nbf));
+        finalize_fitted_inverse(fac, &eye, &mut sinv)?;
+        let q = s_ao.dot(&sinv).mapv(f64::abs);
+        let m = q.dot(&kb);
+        let mut out = m.clone();
+        out += &m.t();
+        out *= 0.5;
+        Ok(out)
+    }
+
+    /// `|dG|` bound `(nbf, B)` of one block: the F32-routed units' element
+    /// bounds times `|F|`, folded like `accumulate_pair`.
+    fn bound_block(
+        &self,
+        kern: &Md3c1e,
+        pts: &[[f64; 3]],
+        f: &Array2<f64>,
+        sum: PrimPairSum,
+    ) -> Result<Array2<f64>, FerricError> {
+        let nbf = self.prep.nbasis();
+        let f_std = f.as_standard_layout();
+        let ys: Vec<Vec<f64>> = pts
+            .par_chunks(COSX_SUB_BATCH_POINTS)
+            .enumerate()
+            .map(|(c, sub)| -> Result<Vec<f64>, FerricError> {
+                let n = sub.len();
+                let fsub = copy_columns(&f_std.view(), c * COSX_SUB_BATCH_POINTS, n);
+                let fabs: Vec<f64> = fsub.iter().map(|v| v.abs()).collect();
+                let mut y = vec![0.0_f64; nbf * n];
+                let mut screen = self.batch_screen(kern, sub, &fsub, n);
+                let mut scr = kern.scratch();
+                let mut blk = Vec::new();
+                let mut sab = Vec::new();
+                for s1 in 0..kern.nshells() {
+                    for s2 in 0..=s1 {
+                        let r = screen.as_mut().map(|sc| sc.classify(s1, s2));
+                        if r != Some(Route::F32) {
+                            continue;
+                        }
+                        let need = kern.shell_dim(s1) * kern.shell_dim(s2) * n;
+                        blk.resize(need, 0.0);
+                        sab.resize(need, 0.0);
+                        kern.pair_block_f32_bound(s1, s2, sub, &mut scr, sum, &mut blk, &mut sab)?;
+                        accumulate_pair(kern, s1, s2, n, &blk, &fabs, &mut y);
+                    }
+                }
+                Ok(y)
+            })
+            .collect::<Result<_, _>>()?;
+        let mut g = Array2::<f64>::zeros((nbf, pts.len()));
+        for (c, y) in ys.iter().enumerate() {
+            let c0 = c * COSX_SUB_BATCH_POINTS;
+            let n = y.len() / nbf;
+            for (mu, row) in y.chunks_exact(n).enumerate() {
+                g.slice_mut(ndarray::s![mu, c0..c0 + n])
+                    .as_slice_mut()
+                    .expect("row segment of a standard-layout matrix is contiguous")
+                    .copy_from_slice(row);
+            }
+        }
+        Ok(g)
+    }
+
     /// `fp64_multiplier * screen_thresh` (0.0 = router off).
     fn fp64_tau(&self) -> f64 {
         match self.cfg.screen_thresh {
@@ -1997,6 +2114,26 @@ fn factorize_snum(snum: &Array2<f64>) -> Result<SnumFactor, FerricError> {
     })?;
     let lt = l.t().to_owned();
     Ok(SnumFactor { l, lt })
+}
+
+/// `out = S_num^{-1} b` via the two triangular solves against the cached factor.
+fn finalize_fitted_inverse(
+    fac: &SnumFactor,
+    b: &Array2<f64>,
+    out: &mut Array2<f64>,
+) -> Result<(), FerricError> {
+    let y = fac
+        .l
+        .solve_triangular(UPLO::Lower, Diag::NonUnit, b)
+        .map_err(|e| {
+            FerricError::General(format!("CosxK overlap fit: forward solve failed: {e}"))
+        })?;
+    let z = fac
+        .lt
+        .solve_triangular(UPLO::Upper, Diag::NonUnit, &y)
+        .map_err(|e| FerricError::General(format!("CosxK overlap fit: back solve failed: {e}")))?;
+    out.assign(&z);
+    Ok(())
 }
 
 /// `K = 0.5 (Q Ktilde + (Q Ktilde)^T)` with `Q Ktilde = S (S_num^{-1} Ktilde)`
