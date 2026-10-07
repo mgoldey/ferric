@@ -21,21 +21,34 @@
 //! `S_μν = Σ_{P,i} (|B_P||C|)_μi (|B_P||C|)_νi`:
 //! `|K̂ − K| ≤ ε·S`, `ε = 2γ_n + γ_n² + γ_{k_chunk+nchunks}(1+γ_n)²`.
 //!
-//! Precision: everything here is f64 for every `[gpu] precision` setting (no DF-K
-//! kernel is in the mixed allowlist); `Y` is the f64 panel a mixed half-transform
-//! would flush into.
+//! Precision: f64 for every `[gpu] precision` setting unless `[gpu] precision =
+//! "mixed"` AND the kernel `dfk-occ` is in `mixed_kernels` (`settings().mixed_allows`,
+//! decided once per `DfK` when `B` is uploaded). The mixed upload keeps the dressed
+//! `B` as f32 (`4·band·n²` bytes, label "DF-K dressed B (f32)") and rounds `C_occ`
+//! to f32 on every build; each `Y_P = C_occᵀ·B_P` is the k-panelled SGEMM with f64
+//! accumulation (`gemm_f32_f64acc_dev`, panel width `effective_k_panel()`), copied
+//! into the f64 chunk scratch `Y`; the SYRK and everything after it are f64. The
+//! mixed contract is [`k_error_factor_mixed`]. A finite `B` element beyond
+//! `f32::MAX` (`GpuError::F32Range`) or a flush kernel that will not load
+//! (`GpuError::Kernel`) runs the f64 device upload for that `DfK` instead, counted
+//! once (`mixed_fallback_f64`), never the CPU. A `C_occ` element beyond `f32::MAX`
+//! cannot fall back (the resident `B` is f32): the build errors and the dispatcher
+//! declines to the CPU as for any build error.
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use ferric_core::gpu::batched::{
     dev_batched_left, dev_batched_right, gemm_f64_strided_batched_dev, syrk_f64_dev, BatchedDims,
 };
 use ferric_core::gpu::device::{device, Device, GpuError};
-use ferric_core::gpu::mixed_host::{gamma, round_trip_f32, U64};
+use ferric_core::gpu::gemm::{dev_left_padded, dev_right_padded};
+use ferric_core::gpu::mixed::{effective_k_panel, gemm_f32_f64acc_dev};
+use ferric_core::gpu::mixed_host::{gamma, mixed_error_factor, round_trip_f32, U64};
 use ferric_core::gpu::pool::DevicePool;
+use ferric_core::gpu::precision::MixedKernel;
 use ferric_core::gpu::resident::DeviceMatrix;
 use ferric_core::gpu::stats::{self, CpuReason};
-use ferric_core::gpu::{GpuMode, GpuStatus};
+use ferric_core::gpu::{GpuMode, GpuSettings, GpuStatus};
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::three_index_source::ThreeIndexSource;
 use ndarray::{Array2, ArrayView2};
@@ -56,6 +69,43 @@ pub static FORCE_BUILD_FAILURE: AtomicBool = AtomicBool::new(false);
 /// "defect present" side of the SCF energy gate; never set in production.
 #[doc(hidden)]
 pub static ROUND_B_TO_F32: AtomicBool = AtomicBool::new(false);
+
+/// Test seam (mutation): a mixed upload rounds `B` toward zero instead of to
+/// nearest. Measures the "defect present" side of the mixed K gate; never set
+/// in production.
+#[doc(hidden)]
+pub static TRUNCATE_B_TO_F32: AtomicBool = AtomicBool::new(false);
+/// Test seam: settings used for the `dfk-occ` allowlist decision instead of the
+/// installed ones (the kernel is not in `SHIPPED`, so no installed setting can
+/// allow it). Only that one decision reads it; mode and device still come from
+/// the installed settings. Production never sets it.
+#[doc(hidden)]
+pub static MIXED_SETTINGS_OVERRIDE: Mutex<Option<GpuSettings>> = Mutex::new(None);
+
+/// Precision of the resident `B` and of the half transform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DfkPrecision {
+    F64,
+    Mixed,
+}
+
+/// The precision this process allows for DF-K: mixed iff `precision = mixed`
+/// and `dfk-occ` is in the allowlist.
+fn dfk_precision() -> DfkPrecision {
+    let allows = |s: &GpuSettings| s.mixed_allows(MixedKernel::DfkOcc);
+    let over = MIXED_SETTINGS_OVERRIDE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let mixed = match over.as_ref() {
+        Some(s) => allows(s),
+        None => allows(ferric_core::gpu::settings()),
+    };
+    if mixed {
+        DfkPrecision::Mixed
+    } else {
+        DfkPrecision::F64
+    }
+}
 
 /// Aux rows per chunk and the number of chunks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,12 +179,37 @@ pub fn k_error_factor(n: usize, k_chunk: usize, nchunks: usize) -> f64 {
     2.0 * gn + gn * gn + gl * (1.0 + gn) * (1.0 + gn)
 }
 
+/// ε of the mixed path: stage 1 is the mixed GEMM's own factor
+/// `ε₁ = mixed_error_factor(n, k_panel)` (f32 rounding of both operands, f32
+/// panel sums of depth `k_panel`, f64 sum over `⌈n/k_panel⌉` panels; u32 = 2⁻²⁴),
+/// stage 2 is the f64 row: `2ε₁ + ε₁² + γ_{k_chunk+nchunks}(u64)·(1+ε₁)²`.
+pub fn k_error_factor_mixed(n: usize, k_panel: usize, k_chunk: usize, nchunks: usize) -> f64 {
+    let e1 = mixed_error_factor(n, k_panel);
+    let gl = gamma(k_chunk.saturating_add(nchunks), U64);
+    2.0 * e1 + e1 * e1 + gl * (1.0 + e1) * (1.0 + e1)
+}
+
+/// Resident `B`: f64, or f32 (half the bytes) under the mixed kernel.
+enum ResidentB {
+    F64(DeviceMatrix<f64>),
+    F32(DeviceMatrix<f32>),
+}
+
+/// Mixed-path scratch: `C_occ` as f32 (n × nocc), the per-P f32 panel product
+/// (nocc × n) and the per-P f64 result (nocc × n) that is copied into `Y`.
+struct MixedScratch {
+    c32: DeviceMatrix<f32>,
+    y32: DeviceMatrix<f32>,
+    yp: DeviceMatrix<f64>,
+}
+
 struct Scratch {
     /// Largest `nocc` this scratch was sized for (UHF α/β reuse it).
     nocc_cap: usize,
     chunk: usize,
     c_dev: DeviceMatrix<f64>,
     y: DeviceMatrix<f64>,
+    mixed: Option<MixedScratch>,
 }
 
 /// The resident state for one `DfK`.
@@ -143,7 +218,7 @@ pub struct DeviceDfK {
     pool: DevicePool,
     n: usize,
     band: usize,
-    b: DeviceMatrix<f64>,
+    b: ResidentB,
     k_dev: DeviceMatrix<f64>,
     scratch: Option<Scratch>,
     /// Zeros, n² long: stride-only host twins for the operand descriptors
@@ -153,7 +228,7 @@ pub struct DeviceDfK {
 }
 
 impl DeviceDfK {
-    /// Reserve and upload. `b_flat` is `(band_naux × n²)` row-major (the
+    /// Reserve and upload `B` as f64. `b_flat` is `(band_naux × n²)` row-major (the
     /// in-core band from `ThreeIndexSource::incore_flat`). The small K
     /// accumulator is reserved FIRST so a refusal of the large `B` moves no
     /// bytes and leaks nothing; `B` is charged under "DF-K dressed B".
@@ -163,6 +238,20 @@ impl DeviceDfK {
         b_flat: &ArrayView2<f64>,
         n: usize,
     ) -> Result<Self, GpuError> {
+        Self::upload_with_precision(dev, pool, b_flat, n, DfkPrecision::F64)
+    }
+
+    /// [`upload`](Self::upload) with the precision of the resident `B`. `Mixed`
+    /// charges `4·band·n²` under "DF-K dressed B (f32)"; an `F32Range` refusal or
+    /// an unloadable flush kernel (`GpuError::Kernel`, probed first) runs the f64
+    /// upload instead and counts one `mixed_fallback_f64`.
+    pub fn upload_with_precision(
+        dev: &Arc<Device>,
+        pool: &DevicePool,
+        b_flat: &ArrayView2<f64>,
+        n: usize,
+        precision: DfkPrecision,
+    ) -> Result<Self, GpuError> {
         let (band, n2) = b_flat.dim();
         if n == 0 || band == 0 || n.checked_mul(n) != Some(n2) {
             return Err(GpuError::Layout(format!(
@@ -171,7 +260,22 @@ impl DeviceDfK {
         }
         resident_bytes(band, n)?;
         let k_dev = DeviceMatrix::<f64>::zeros(dev, pool, "DF-K K accumulator", n, n)?;
-        let b = DeviceMatrix::<f64>::upload(dev, pool, "DF-K dressed B", b_flat)?;
+        let b = match precision {
+            DfkPrecision::F64 => ResidentB::F64(upload_f64_b(dev, pool, b_flat)?),
+            DfkPrecision::Mixed => match upload_f32_b(dev, pool, b_flat) {
+                Ok(b32) => ResidentB::F32(b32),
+                Err(e @ (GpuError::F32Range(_) | GpuError::Kernel(_))) => {
+                    if ferric_core::gpu::config::gpu_trace() {
+                        eprintln!(
+                            "[gpu] DF-K mixed path unavailable ({e}); running f64 on the device"
+                        );
+                    }
+                    stats::note_mixed_fallback();
+                    ResidentB::F64(upload_f64_b(dev, pool, b_flat)?)
+                }
+                Err(e) => return Err(e),
+            },
+        };
         Ok(Self {
             dev: Arc::clone(dev),
             pool: pool.clone(),
@@ -183,6 +287,11 @@ impl DeviceDfK {
             twin: vec![0.0; n2],
             scratch_bytes: SCRATCH_BYTES_DEFAULT,
         })
+    }
+
+    /// `true` when the resident `B` is f32.
+    pub fn is_mixed(&self) -> bool {
+        matches!(self.b, ResidentB::F32(_))
     }
 
     /// Override the scratch ceiling (tests force many chunks).
@@ -199,9 +308,16 @@ impl DeviceDfK {
         // Release the old charge BEFORE sizing the new one.
         self.scratch = None;
         let c_bytes = f64_bytes(checked_elems(&[self.n, nocc], "DF-K C_occ")?, "DF-K C_occ")?;
+        let mixed = self.is_mixed();
+        // Mixed adds C_occ f32 (4·n·nocc) and the per-P panels (4 + 8 bytes · nocc·n).
+        let extra = if mixed {
+            c_bytes / 2 + c_bytes * 3 / 2
+        } else {
+            0
+        };
         let budget = self
             .scratch_bytes
-            .min(self.pool.available_bytes().saturating_sub(c_bytes));
+            .min(self.pool.available_bytes().saturating_sub(c_bytes + extra));
         let plan = chunk_plan(self.band, self.n, nocc, budget)?;
         let c_dev = DeviceMatrix::<f64>::zeros(&self.dev, &self.pool, "DF-K C_occ", self.n, nocc)?;
         let y = DeviceMatrix::<f64>::zeros(
@@ -211,11 +327,22 @@ impl DeviceDfK {
             plan.chunk * nocc, // ≤ i32::MAX by chunk_plan
             self.n,
         )?;
+        let mixed = if mixed {
+            let (dev, pool, n) = (&self.dev, &self.pool, self.n);
+            Some(MixedScratch {
+                c32: DeviceMatrix::<f32>::zeros(dev, pool, "DF-K C_occ (f32)", n, nocc)?,
+                y32: DeviceMatrix::<f32>::zeros(dev, pool, "DF-K panel (f32)", nocc, n)?,
+                yp: DeviceMatrix::<f64>::zeros(dev, pool, "DF-K panel (f64)", nocc, n)?,
+            })
+        } else {
+            None
+        };
         self.scratch = Some(Scratch {
             nocc_cap: nocc,
             chunk: plan.chunk,
             c_dev,
             y,
+            mixed,
         });
         Ok(())
     }
@@ -269,28 +396,18 @@ impl DeviceDfK {
             .as_slice()
             .ok_or_else(|| lay("C_occ not contiguous".into()))?;
         let cuda = |what: &str, e: &dyn std::fmt::Debug| GpuError::Cuda(format!("{what}: {e:?}"));
-        // One length per direction, shared by the transfer and the byte counter.
-        let up = c_host.len();
-        dev.stream
-            .memcpy_htod(c_host, &mut sc.c_dev.buf_mut().slice_mut(..up))
-            .map_err(|e| cuda("H2D C_occ", &e))?;
+        let up_bytes = upload_c_occ(dev, sc, c_host)?;
         let twin_b = ArrayView2::from_shape((n, n), &twin[..n2]).map_err(|e| lay(e.to_string()))?;
         let twin_c =
             ArrayView2::from_shape((n, nocc), &twin[..n * nocc]).map_err(|e| lay(e.to_string()))?;
         let c_t = twin_c.t();
         let chunk = sc.chunk;
+        let k_panel = effective_k_panel();
         let mut p0 = 0usize;
         while p0 < *band {
             let c = chunk.min(*band - p0);
-            let right = dev_batched_right(b.buf().slice(p0 * n2..(p0 + c) * n2), &twin_b, c, n2)?;
-            let left = dev_batched_left(sc.c_dev.buf().slice(..n * nocc), &c_t, c, 0)?;
-            let dims = BatchedDims {
-                m: nocc,
-                k: n,
-                n,
-                batch: c,
-            };
-            gemm_f64_strided_batched_dev(dev, dims, &left, &right, sc.y.buf_mut(), nocc * n)?;
+            let at = ChunkAt { p0, c, n, nocc };
+            half_transform_chunk(dev, b, sc, at, (&twin_b, &c_t), k_panel)?;
             let y_view = sc.y.buf().slice(..c * nocc * n);
             syrk_f64_dev(dev, n, c * nocc, &y_view, k_dev.buf_mut(), p0 != 0)?;
             p0 += c;
@@ -313,12 +430,161 @@ impl DeviceDfK {
         }
         let full = ArrayView2::from_shape((n, n), &flat).map_err(|e| lay(e.to_string()))?;
         k.assign(&full);
-        stats::note_dfk_build(8 * up, 8 * flat.len());
+        stats::note_dfk_build(up_bytes, 8 * flat.len());
         Ok(ChunkPlan {
             chunk,
             nchunks: band.div_ceil(chunk),
         })
     }
+}
+
+/// One chunk of the half transform: aux rows `p0..p0+c`, geometry `n`, `nocc`.
+#[derive(Clone, Copy)]
+struct ChunkAt {
+    p0: usize,
+    c: usize,
+    n: usize,
+    nocc: usize,
+}
+
+/// Move this build's `C_occ` to the device (f64, or rounded to f32 for the mixed
+/// path; a finite element beyond `f32::MAX` is an `F32Range` error because the
+/// resident `B` is already f32). Returns the bytes sent.
+fn upload_c_occ(dev: &Device, sc: &mut Scratch, c_host: &[f64]) -> Result<usize, GpuError> {
+    let cuda = |what: &str, e: &dyn std::fmt::Debug| GpuError::Cuda(format!("{what}: {e:?}"));
+    let up = c_host.len();
+    match sc.mixed.as_mut() {
+        None => {
+            dev.stream
+                .memcpy_htod(c_host, &mut sc.c_dev.buf_mut().slice_mut(..up))
+                .map_err(|e| cuda("H2D C_occ", &e))?;
+            Ok(8 * up)
+        }
+        Some(m) => {
+            let c32 = round_f32_checked("DF-K C_occ", c_host)?;
+            dev.stream
+                .memcpy_htod(&c32, &mut m.c32.buf_mut().slice_mut(..up))
+                .map_err(|e| cuda("H2D C_occ (f32)", &e))?;
+            Ok(4 * up)
+        }
+    }
+}
+
+/// `x as f32` elementwise, refusing a finite value that overflows f32.
+fn round_f32_checked(label: &str, x: &[f64]) -> Result<Vec<f32>, GpuError> {
+    let mut out = Vec::with_capacity(x.len());
+    for (i, &v) in x.iter().enumerate() {
+        let r = v as f32;
+        if v.is_finite() && !r.is_finite() {
+            return Err(GpuError::F32Range(format!(
+                "{label}[{i}] = {v:e} exceeds f32::MAX"
+            )));
+        }
+        out.push(r);
+    }
+    Ok(out)
+}
+
+/// `Y_P = C_occᵀ·B_P` for every aux row of the chunk, stacked into `sc.y`.
+fn half_transform_chunk(
+    dev: &Device,
+    b: &ResidentB,
+    sc: &mut Scratch,
+    at: ChunkAt,
+    twins: (&ArrayView2<f64>, &ArrayView2<f64>),
+    k_panel: usize,
+) -> Result<(), GpuError> {
+    let ChunkAt { p0, c, n, nocc } = at;
+    match b {
+        ResidentB::F64(b) => {
+            let n2 = n * n;
+            let right = dev_batched_right(b.buf().slice(p0 * n2..(p0 + c) * n2), twins.0, c, n2)?;
+            let left = dev_batched_left(sc.c_dev.buf().slice(..n * nocc), twins.1, c, 0)?;
+            let dims = BatchedDims {
+                m: nocc,
+                k: n,
+                n,
+                batch: c,
+            };
+            gemm_f64_strided_batched_dev(dev, dims, &left, &right, sc.y.buf_mut(), nocc * n)
+        }
+        ResidentB::F32(b) => half_transform_chunk_mixed(dev, b, sc, at, twins, k_panel),
+    }
+}
+
+/// The mixed per-P loop: each `Y_P` is one `gemm_f32_f64acc_dev` (f32 panels of
+/// depth `k_panel`, flushed into f64) into the per-P f64 buffer, then copied into
+/// its slot of the chunk scratch `Y` (the GEMM's output must be a whole buffer).
+fn half_transform_chunk_mixed(
+    dev: &Device,
+    b: &DeviceMatrix<f32>,
+    sc: &mut Scratch,
+    at: ChunkAt,
+    twins: (&ArrayView2<f64>, &ArrayView2<f64>),
+    k_panel: usize,
+) -> Result<(), GpuError> {
+    let ChunkAt { p0, c, n, nocc } = at;
+    let n2 = n * n;
+    let Scratch { y, mixed, .. } = sc;
+    let m = mixed
+        .as_mut()
+        .ok_or_else(|| GpuError::Layout("mixed stage without its f32 scratch".into()))?;
+    let cuda = |what: &str, e: &dyn std::fmt::Debug| GpuError::Cuda(format!("{what}: {e:?}"));
+    for p in 0..c {
+        let left = dev_left_padded(m.c32.buf().slice(..n * nocc), twins.1)?;
+        let right = dev_right_padded(b.buf().slice((p0 + p) * n2..(p0 + p + 1) * n2), twins.0)?;
+        let panels = gemm_f32_f64acc_dev(
+            dev,
+            nocc,
+            n,
+            n,
+            &left,
+            &right,
+            m.y32.buf_mut(),
+            m.yp.buf_mut(),
+            k_panel,
+        )?;
+        stats::note_mixed(panels, 0, 0);
+        let mut slot = y.buf_mut().slice_mut(p * nocc * n..(p + 1) * nocc * n);
+        dev.stream
+            .memcpy_dtod(m.yp.buf(), &mut slot)
+            .map_err(|e| cuda("D2D Y_P", &e))?;
+    }
+    Ok(())
+}
+
+fn upload_f64_b(
+    dev: &Device,
+    pool: &DevicePool,
+    b_flat: &ArrayView2<f64>,
+) -> Result<DeviceMatrix<f64>, GpuError> {
+    DeviceMatrix::<f64>::upload(dev, pool, "DF-K dressed B", b_flat)
+}
+
+/// `x` rounded to f32 toward zero (the TRUNCATE_B_TO_F32 mutant), as f64.
+fn truncate_to_f32(x: f64) -> f64 {
+    let r = x as f32;
+    if f64::from(r).abs() > x.abs() {
+        f64::from(f32::from_bits(r.to_bits() - 1))
+    } else {
+        f64::from(r)
+    }
+}
+
+/// The f32-resident `B`. The flush kernel is probed first so a missing kernel
+/// (`GpuError::Kernel`) moves no bytes; `upload_rounded` refuses `F32Range`
+/// before touching the pool.
+fn upload_f32_b(
+    dev: &Device,
+    pool: &DevicePool,
+    b_flat: &ArrayView2<f64>,
+) -> Result<DeviceMatrix<f32>, GpuError> {
+    dev.axpy_f32_to_f64()?;
+    if TRUNCATE_B_TO_F32.load(Ordering::Relaxed) {
+        let t = b_flat.mapv(truncate_to_f32);
+        return DeviceMatrix::<f32>::upload_rounded(dev, pool, "DF-K dressed B (f32)", &t.view());
+    }
+    DeviceMatrix::<f32>::upload_rounded(dev, pool, "DF-K dressed B (f32)", b_flat)
 }
 
 /// Per-`DfK` device state. `Declined` is sticky (and has released the device memory).
@@ -395,7 +661,7 @@ fn upload_band(
     } else {
         flat
     };
-    DeviceDfK::upload(dev, pool, &view, src.nao())
+    DeviceDfK::upload_with_precision(dev, pool, &view, src.nao(), dfk_precision())
 }
 
 /// Try the device. `true` means `k` holds this rank's band contribution (the
@@ -437,10 +703,15 @@ pub fn try_build_from_occ(
         let uploaded = device(info.ordinal).and_then(|dev| upload_band(&dev, &pool, src));
         match uploaded {
             Ok(d) => {
+                let (word, bytes) = if d.is_mixed() {
+                    ("mixed: f32 B, f64 panels; ", 4.0)
+                } else {
+                    ("", 8.0)
+                };
                 eprintln!(
-                    "[ferric] gpu: DF-K resident on device {} ({:.3} GB dressed B, {} aux rows, nbf {})",
+                    "[ferric] gpu: DF-K resident on device {} ({word}{:.3} GB dressed B, {} aux rows, nbf {})",
                     info.ordinal,
-                    8.0 * (src.band_naux() * src.nao() * src.nao()) as f64 / 1e9,
+                    bytes * (src.band_naux() * src.nao() * src.nao()) as f64 / 1e9,
                     src.band_naux(),
                     src.nao()
                 );
