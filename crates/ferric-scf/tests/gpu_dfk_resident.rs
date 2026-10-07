@@ -1,4 +1,4 @@
-#![cfg(feature = "gpu")]
+#![cfg(all(feature = "gpu", feature = "test-seams"))]
 //! Device DF-K occupied path vs the CPU path of the SAME `DfK` (same dressed B).
 //!
 //! The gate is derived, not tuned. With A_Pμi = (|B_P||C|)_μi and

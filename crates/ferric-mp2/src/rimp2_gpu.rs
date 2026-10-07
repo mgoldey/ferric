@@ -36,21 +36,47 @@ use ferric_core::gpu::{GpuMode, GpuStatus, MixedKernel, Precision};
 use ferric_tensors::einsum::GEMM_K_BLOCK;
 use ndarray::{s, Array2, ArrayView2};
 use rayon::prelude::*;
+#[cfg(feature = "test-seams")]
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::rimp2::{pair_energy, SpinComponents};
 use crate::u_rimp2::{opposite_spin_block_energy, same_spin_block_energy, SpinChannel};
 
-/// Test hook (mirrors `FORCE_KERNEL_FAILURE`): when set to a block index, the
-/// device block `G_i` with that `i` fails with a typed error before any work,
-/// so the mid-loop failure path (counters, fallback) can be exercised.
+/// Test hook (`test-seams` feature; mirrors `FORCE_KERNEL_FAILURE`): when set to a
+/// block index, the device block `G_i` with that `i` fails with a typed error
+/// before any work, so the mid-loop failure path (counters, fallback) can be
+/// exercised.
+#[cfg(feature = "test-seams")]
 #[doc(hidden)]
 pub static FAIL_AT_BLOCK: AtomicUsize = AtomicUsize::new(usize::MAX);
-/// Test hook: the injected failure is a `GpuError::Kernel` in the MIXED stage
-/// only (a mixed-path failure the dispatcher turns into the f64 device path)
-/// when `true`, else a `GpuError::Cuda` in either stage (a CPU fallback).
+/// Test hook (`test-seams` feature): the injected failure is a
+/// `GpuError::Kernel` in the MIXED stage only (a mixed-path failure the
+/// dispatcher turns into the f64 device path) when `true`, else a
+/// `GpuError::Cuda` in either stage (a CPU fallback).
+#[cfg(feature = "test-seams")]
 #[doc(hidden)]
 pub static FAIL_AS_KERNEL: AtomicBool = AtomicBool::new(false);
+
+/// The block index an injected failure targets (`usize::MAX` = none).
+#[cfg(feature = "test-seams")]
+fn fail_at_block() -> usize {
+    FAIL_AT_BLOCK.load(Ordering::Relaxed)
+}
+
+#[cfg(not(feature = "test-seams"))]
+fn fail_at_block() -> usize {
+    usize::MAX
+}
+
+#[cfg(feature = "test-seams")]
+fn fail_as_kernel() -> bool {
+    FAIL_AS_KERNEL.load(Ordering::Relaxed)
+}
+
+#[cfg(not(feature = "test-seams"))]
+fn fail_as_kernel() -> bool {
+    false
+}
 
 /// Counter updates of finished blocks, applied only when the whole call
 /// succeeds so that a run that ends as the f64 device path or the CPU path
@@ -352,12 +378,10 @@ impl Stage {
     ) -> Result<(), GpuError> {
         let cuda =
             |what: &str, e: &dyn std::fmt::Debug| GpuError::Cuda(format!("{what} G_{i}: {e:?}"));
-        let kernel_class = FAIL_AS_KERNEL.load(Ordering::Relaxed);
+        let kernel_class = fail_as_kernel();
         // a Kernel-class injection models a MIXED-path failure: the f64 stage is
         // not affected, so the dispatcher's f64 device fallback can complete
-        if FAIL_AT_BLOCK.load(Ordering::Relaxed) == i
-            && (!kernel_class || matches!(self.b, Resident::F32(_)))
-        {
+        if fail_at_block() == i && (!kernel_class || matches!(self.b, Resident::F32(_))) {
             return Err(if kernel_class {
                 GpuError::Kernel(format!("injected failure at block {i} (test)"))
             } else {
@@ -550,7 +574,7 @@ pub fn u_g_block_on_device(
         ncols,
     } = blk;
     let layout = |what: String| GpuError::Layout(format!("U-RI-MP2 block {i}: {what}"));
-    if FAIL_AT_BLOCK.load(Ordering::Relaxed) == i {
+    if fail_at_block() == i {
         return Err(GpuError::Cuda(format!(
             "injected failure at block {i} (test)"
         )));

@@ -3,6 +3,7 @@
 //! PANIC (cudarc src/lib.rs `panic_no_lib_found`) from ever firing: we dlopen
 //! the two libraries ourselves first and turn absence into an error.
 use std::collections::HashMap;
+#[cfg(feature = "test-seams")]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -46,9 +47,21 @@ pub struct Device {
 }
 
 /// Test seam: makes `axpy_f32_to_f64` report a load failure so callers' f64
-/// fallback can be exercised on a healthy machine.
+/// fallback can be exercised on a healthy machine. Compiled only with the
+/// `test-seams` feature.
+#[cfg(feature = "test-seams")]
 #[doc(hidden)]
 pub static FORCE_KERNEL_FAILURE: AtomicBool = AtomicBool::new(false);
+
+#[cfg(feature = "test-seams")]
+fn kernel_failure_forced() -> bool {
+    FORCE_KERNEL_FAILURE.load(Ordering::Relaxed)
+}
+
+#[cfg(not(feature = "test-seams"))]
+fn kernel_failure_forced() -> bool {
+    false
+}
 
 fn precheck_libraries() -> Result<(), GpuError> {
     precheck_named(&["libcuda.so.1"], &["libcublas.so.12", "libcublas.so"])
@@ -145,7 +158,7 @@ pub fn device(ordinal: usize) -> Result<Arc<Device>, GpuError> {
 impl Device {
     /// The `c64 += (double) c32` flush kernel, JIT-loaded from the committed PTX.
     pub fn axpy_f32_to_f64(&self) -> Result<&CudaFunction, GpuError> {
-        if FORCE_KERNEL_FAILURE.load(Ordering::Relaxed) {
+        if kernel_failure_forced() {
             return Err(GpuError::Kernel(
                 "forced by FORCE_KERNEL_FAILURE (test)".into(),
             ));

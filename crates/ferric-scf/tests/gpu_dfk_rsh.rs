@@ -1,4 +1,4 @@
-#![cfg(feature = "gpu")]
+#![cfg(all(feature = "gpu", feature = "test-seams"))]
 //! Resident device DF-K under a range-separated hybrid (two fitters, one `DfK` for
 //! `erfc(0.3)/r` and one for `erf(0.3)/r`, as `fock_assembly` builds them) and under
 //! UKS (alpha and beta channels through each fitter).

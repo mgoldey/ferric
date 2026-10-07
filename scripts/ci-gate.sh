@@ -358,7 +358,7 @@ echo
 if [[ "${CI_GATE_GPU:-0}" == "1" ]]; then
     echo "-- cargo clippy --features gpu --"
     OPENBLAS_NUM_THREADS=1 cargo clippy --workspace --all-targets --locked -j "$JOBS" \
-        --features ferric-core/gpu,ferric-tensors/gpu,ferric-cli/gpu,ferric-python/gpu,ferric-benchmarks/gpu,ferric-mp2/gpu -- -D warnings \
+        --features ferric-core/gpu,ferric-tensors/gpu,ferric-cli/gpu,ferric-python/gpu,ferric-benchmarks/gpu,ferric-mp2/gpu,ferric-core/test-seams,ferric-scf/test-seams,ferric-mp2/test-seams -- -D warnings \
         || { echo "RESULT: FAIL (gpu clippy)"; exit 1; }
     echo "-- cargo test ferric-cli gpu_section (gpu feature) --"
     OPENBLAS_NUM_THREADS=1 cargo test -p ferric-cli --features gpu --locked --test gpu_section \

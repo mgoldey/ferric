@@ -1,4 +1,4 @@
-#![cfg(feature = "gpu")]
+#![cfg(all(feature = "gpu", feature = "test-seams"))]
 //! With the feature built and `[gpu] mode` at its default (off), the device path
 //! must be invisible: every counter unchanged, K bit-identical across builds.
 //! (The CPU path's own bit-identity across thread counts is pinned by the

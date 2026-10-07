@@ -1,4 +1,4 @@
-#![cfg(feature = "gpu")]
+#![cfg(all(feature = "gpu", feature = "test-seams"))]
 //! RI-J through the real SCF solve path (not `DfJ::new`): a single-rank RHF with
 //! RI-J reaches the device DF-J, and the forced-host solve never does. `DfJ` keeps
 //! a `ctx` only when it spans more than one rank, so a one-rank `Some(ctx)` from

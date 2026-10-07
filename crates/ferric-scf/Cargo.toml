@@ -27,6 +27,10 @@ default = []
 mpi = ["dep:mpi", "ferric-core/mpi"]
 # Device-resident DF-K occupied path (df_k_gpu). Additive; default builds unchanged.
 gpu = ["ferric-core/gpu"]
+# Fault-injection and mutation statics for the device tests (FORCE_HOST,
+# FORCE_BUILD_FAILURE, ROUND_B_TO_F32, TRUNCATE_B_TO_F32, MIXED_SETTINGS_OVERRIDE).
+# Never enabled by a shipped build.
+test-seams = ["gpu", "ferric-core/test-seams"]
 # CFMM J-builder. OFF by default.
 #
 # The former all-zero-J stubs are implemented and validated (trivial-limit

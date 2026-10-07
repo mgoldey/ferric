@@ -1,4 +1,4 @@
-#![cfg(feature = "gpu")]
+#![cfg(all(feature = "gpu", feature = "test-seams"))]
 //! Mixed-precision RI-MP2 energy (f32-resident B_ov, k-panelled SGEMM with f64
 //! accumulation) against the CPU f64 energy of the same B_ov. Every system uses
 //! an RI-JK SCF reference (same B_ov and orbital energies on both sides); panel

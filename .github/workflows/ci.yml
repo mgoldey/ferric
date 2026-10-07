@@ -321,7 +321,7 @@ jobs:
       # because this is a virtual workspace.
       - name: gpu feature (no toolkit) — check, clippy, doc, skip-path test
         env:
-          GPU_FEATURES: ferric-core/gpu,ferric-tensors/gpu,ferric-cli/gpu,ferric-python/gpu,ferric-benchmarks/gpu,ferric-mp2/gpu
+          GPU_FEATURES: ferric-core/gpu,ferric-tensors/gpu,ferric-cli/gpu,ferric-python/gpu,ferric-benchmarks/gpu,ferric-mp2/gpu,ferric-core/test-seams,ferric-scf/test-seams,ferric-mp2/test-seams
         run: |
           set -euo pipefail
           if [ -e /usr/lib/x86_64-linux-gnu/libcuda.so.1 ]; then

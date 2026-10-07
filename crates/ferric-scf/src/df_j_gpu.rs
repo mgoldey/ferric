@@ -28,7 +28,6 @@
 //! Precision is f64 for every `[gpu] precision` setting. A mixed variant (f32
 //! resident `Bp`, f64 accumulation) is not implemented; see the plan in the commit
 //! that introduces this file.
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use ferric_core::gpu::device::{device, Device, GpuError};
@@ -50,12 +49,18 @@ pub const GEMV_ELEMS_MAX: usize = 1 << 30;
 /// Host staging for packing the unpacked in-core tensor (bytes).
 const STAGE_BYTES: usize = 64 << 20;
 
-/// Test seam: the dispatcher reports "not handled" so the CPU path runs.
-#[doc(hidden)]
-pub static FORCE_HOST: AtomicBool = AtomicBool::new(false);
-/// Test seam: a device build fails after pass 1 (a mid-build CUDA error stand-in).
-#[doc(hidden)]
-pub static FORCE_BUILD_FAILURE: AtomicBool = AtomicBool::new(false);
+seam_flag!(
+    /// Test seam (`test-seams` feature): the dispatcher reports "not handled" so
+    /// the CPU path runs.
+    FORCE_HOST,
+    force_host
+);
+seam_flag!(
+    /// Test seam (`test-seams` feature): a device build fails after pass 1 (a
+    /// mid-build CUDA error stand-in).
+    FORCE_BUILD_FAILURE,
+    force_build_failure
+);
 
 /// Packed pair count `n(n+1)/2`, or a typed overflow refusal.
 pub fn pair_len(n: usize) -> Result<usize, GpuError> {
@@ -468,7 +473,7 @@ pub fn try_build(
     j: &mut Array2<f64>,
     solve: impl FnOnce(&Array1<f64>) -> Result<Array1<f64>, FerricError>,
 ) -> Result<bool, FerricError> {
-    if FORCE_HOST.load(Ordering::Relaxed) || matches!(slot, DeviceSlot::Declined) {
+    if force_host() || matches!(slot, DeviceSlot::Declined) {
         return Ok(false);
     }
     let settings = ferric_core::gpu::settings();
@@ -530,7 +535,7 @@ pub fn try_build(
         }
     };
     let c_p = solve(&d_p)?;
-    let outcome = if FORCE_BUILD_FAILURE.load(Ordering::Relaxed) {
+    let outcome = if force_build_failure() {
         Err(GpuError::Cuda("injected RI-J build failure".into()))
     } else {
         match c_p.as_slice() {

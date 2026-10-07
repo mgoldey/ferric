@@ -1,4 +1,4 @@
-#![cfg(feature = "gpu")]
+#![cfg(all(feature = "gpu", feature = "test-seams"))]
 //! A process pool too small for the dressed tensor: the dispatcher runs the CPU
 //! path, counts `PoolFull` exactly ONCE (the decline is sticky, not per
 //! iteration), uploads and computes nothing on the device, leaks no

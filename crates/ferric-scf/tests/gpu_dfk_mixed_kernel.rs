@@ -1,4 +1,4 @@
-#![cfg(feature = "gpu")]
+#![cfg(all(feature = "gpu", feature = "test-seams"))]
 //! Mixed `dfk-occ`: f32-resident dressed B and C_occ, f32 k-panels flushed into f64,
 //! f64 SYRK. The kernel is NOT in `MixedKernelSet::SHIPPED`, so these tests enable
 //! it through `GpuSettings::resolve_with_default(.., shipped + dfk-occ)` (the real

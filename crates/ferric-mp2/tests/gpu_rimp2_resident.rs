@@ -1,4 +1,4 @@
-#![cfg(feature = "gpu")]
+#![cfg(all(feature = "gpu", feature = "test-seams"))]
 //! RI-MP2 energy with B_ov resident on the device (f64) vs the CPU path, on
 //! E_os and E_ss separately.
 //!

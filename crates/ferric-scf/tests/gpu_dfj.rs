@@ -1,4 +1,4 @@
-#![cfg(feature = "gpu")]
+#![cfg(all(feature = "gpu", feature = "test-seams"))]
 //! Device-resident RI-J (`df_j_gpu`): agreement with the host passes to the
 //! derived GEMV bounds, the counters (one upload per geometry, per-build bytes),
 //! every decline to the host, and zero-size safety. Skips cleanly without a CUDA

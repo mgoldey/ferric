@@ -1,4 +1,4 @@
-#![cfg(feature = "gpu")]
+#![cfg(all(feature = "gpu", feature = "test-seams"))]
 //! SCF energy with the device DF-K vs the CPU DF-K, same binary, same config.
 //!
 //! Both arms run their own SCF, so the comparison is the converged energy; the

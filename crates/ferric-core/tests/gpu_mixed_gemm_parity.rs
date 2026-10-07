@@ -1,4 +1,4 @@
-#![cfg(feature = "gpu")]
+#![cfg(all(feature = "gpu", feature = "test-seams"))]
 //! Device mixed GEMM vs the CPU f64 product, bounded by
 //! (2u32 + γ_b(u32) + γ_{⌈k/b⌉}(u64) + γ_k(u64))·(|A||B|)_ij (plan §3.2 (b);
 //! the last term is the f64 reference's own error). u32 = 2^-24, u64 = 2^-53.

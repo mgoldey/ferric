@@ -45,8 +45,7 @@
 //! standard error and degrees of freedom, over the dfk-occ ladder (H2O, butane,
 //! octane, dodecane, benzene aDZ/aTZ, UKS, RSH); the tests here pin the kernel,
 //! not that map.
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use ferric_core::gpu::batched::{
     dev_batched_left, dev_batched_right, gemm_f64_strided_batched_dev, syrk_f64_dev, BatchedDims,
@@ -59,7 +58,7 @@ use ferric_core::gpu::pool::DevicePool;
 use ferric_core::gpu::precision::MixedKernel;
 use ferric_core::gpu::resident::DeviceMatrix;
 use ferric_core::gpu::stats::{self, CpuReason};
-use ferric_core::gpu::{GpuMode, GpuSettings, GpuStatus};
+use ferric_core::gpu::{GpuMode, GpuStatus};
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::three_index_source::ThreeIndexSource;
 use ndarray::{Array2, ArrayView2};
@@ -69,30 +68,40 @@ use ndarray::{Array2, ArrayView2};
 /// benzene/aug-cc-pVTZ the scratch for ALL 558 aux rows is 38.8 MB, so one chunk covers the band.
 pub const SCRATCH_BYTES_DEFAULT: usize = 256 << 20;
 
-/// Test seam: the dispatcher reports "not handled" so the CPU path runs.
+seam_flag!(
+    /// Test seam (`test-seams` feature): the dispatcher reports "not handled" so
+    /// the CPU path runs.
+    FORCE_HOST,
+    force_host
+);
+seam_flag!(
+    /// Test seam (`test-seams` feature): `build_from_occ` fails after the upload
+    /// AND all chunk work, before anything reaches the host `k` (a mid-build CUDA
+    /// error stand-in).
+    FORCE_BUILD_FAILURE,
+    force_build_failure
+);
+seam_flag!(
+    /// Test seam (`test-seams` feature, mutation): upload `B` rounded through
+    /// f32. Measures the "defect present" side of the SCF energy gate.
+    ROUND_B_TO_F32,
+    round_b_to_f32
+);
+seam_flag!(
+    /// Test seam (`test-seams` feature, mutation): a mixed upload rounds `B`
+    /// toward zero instead of to nearest. Measures the "defect present" side of
+    /// the mixed K gate.
+    TRUNCATE_B_TO_F32,
+    truncate_b_to_f32
+);
+/// Test seam (`test-seams` feature): settings used for the `dfk-occ` allowlist
+/// decision instead of the installed ones (the kernel is not in `SHIPPED`, so no
+/// installed setting can allow it). Only that one decision reads it; mode and
+/// device still come from the installed settings.
+#[cfg(feature = "test-seams")]
 #[doc(hidden)]
-pub static FORCE_HOST: AtomicBool = AtomicBool::new(false);
-/// Test seam: `build_from_occ` fails after the upload AND all chunk work, before
-/// anything reaches the host `k` (a mid-build CUDA error stand-in).
-#[doc(hidden)]
-pub static FORCE_BUILD_FAILURE: AtomicBool = AtomicBool::new(false);
-/// Test seam (mutation): upload `B` rounded through f32. Measures the
-/// "defect present" side of the SCF energy gate; never set in production.
-#[doc(hidden)]
-pub static ROUND_B_TO_F32: AtomicBool = AtomicBool::new(false);
-
-/// Test seam (mutation): a mixed upload rounds `B` toward zero instead of to
-/// nearest. Measures the "defect present" side of the mixed K gate; never set
-/// in production.
-#[doc(hidden)]
-pub static TRUNCATE_B_TO_F32: AtomicBool = AtomicBool::new(false);
-/// Test seam: settings used for the `dfk-occ` allowlist decision instead of the
-/// installed ones (the kernel is not in `SHIPPED`, so no installed setting can
-/// allow it). Only that one decision reads it; mode and device still come from
-/// the installed settings. Production never sets it. Task C3 (shipping dfk-occ)
-/// deletes this seam or puts it behind a test-only feature.
-#[doc(hidden)]
-pub static MIXED_SETTINGS_OVERRIDE: Mutex<Option<GpuSettings>> = Mutex::new(None);
+pub static MIXED_SETTINGS_OVERRIDE: std::sync::Mutex<Option<ferric_core::gpu::GpuSettings>> =
+    std::sync::Mutex::new(None);
 
 /// Precision of the resident `B` and of the half transform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,19 +113,28 @@ pub enum DfkPrecision {
 /// The precision this process allows for DF-K: mixed iff `precision = mixed`
 /// and `dfk-occ` is in the allowlist.
 fn dfk_precision() -> DfkPrecision {
-    let allows = |s: &GpuSettings| s.mixed_allows(MixedKernel::DfkOcc);
-    let over = MIXED_SETTINGS_OVERRIDE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    let mixed = match over.as_ref() {
-        Some(s) => allows(s),
-        None => allows(ferric_core::gpu::settings()),
-    };
-    if mixed {
+    if dfk_occ_allowed() {
         DfkPrecision::Mixed
     } else {
         DfkPrecision::F64
     }
+}
+
+#[cfg(feature = "test-seams")]
+fn dfk_occ_allowed() -> bool {
+    let allows = |s: &ferric_core::gpu::GpuSettings| s.mixed_allows(MixedKernel::DfkOcc);
+    let over = MIXED_SETTINGS_OVERRIDE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    match over.as_ref() {
+        Some(s) => allows(s),
+        None => allows(ferric_core::gpu::settings()),
+    }
+}
+
+#[cfg(not(feature = "test-seams"))]
+fn dfk_occ_allowed() -> bool {
+    ferric_core::gpu::settings().mixed_allows(MixedKernel::DfkOcc)
 }
 
 /// Aux rows per chunk and the number of chunks.
@@ -426,7 +444,7 @@ impl DeviceDfK {
         }
         // Failure stand-in at the worst point: every chunk has run and the device
         // accumulator holds a (partial-looking) K, but nothing has reached `k`.
-        if FORCE_BUILD_FAILURE.load(Ordering::Relaxed) {
+        if force_build_failure() {
             return Err(GpuError::Cuda("injected DF-K build failure".into()));
         }
         let mut flat = vec![0.0f64; n2];
@@ -577,7 +595,7 @@ fn upload_f32_b(
     b_flat: &ArrayView2<f64>,
 ) -> Result<DeviceMatrix<f32>, GpuError> {
     dev.axpy_f32_to_f64()?;
-    if TRUNCATE_B_TO_F32.load(Ordering::Relaxed) {
+    if truncate_b_to_f32() {
         let t = b_flat.mapv(truncate_to_f32);
         return DeviceMatrix::<f32>::upload_rounded(dev, pool, "DF-K dressed B (f32)", &t.view());
     }
@@ -653,7 +671,7 @@ fn upload_band(
         .incore_flat()
         .ok_or_else(|| GpuError::Layout("dressed tensor is not in core".into()))?;
     let owned;
-    let view = if ROUND_B_TO_F32.load(Ordering::Relaxed) {
+    let view = if round_b_to_f32() {
         owned = round_trip_f32(&flat);
         owned.view()
     } else {
@@ -673,7 +691,7 @@ pub fn try_build_from_occ(
     c_occ: &Array2<f64>,
     k: &mut Array2<f64>,
 ) -> bool {
-    if FORCE_HOST.load(Ordering::Relaxed) || matches!(slot, DeviceSlot::Declined) {
+    if force_host() || matches!(slot, DeviceSlot::Declined) {
         return false;
     }
     let settings = ferric_core::gpu::settings();

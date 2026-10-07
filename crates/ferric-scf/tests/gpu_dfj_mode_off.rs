@@ -1,4 +1,4 @@
-#![cfg(feature = "gpu")]
+#![cfg(all(feature = "gpu", feature = "test-seams"))]
 //! With the feature built and `[gpu] mode` at its default (off), the device RI-J
 //! must be invisible: every counter unchanged, J bit-identical to the forced-host
 //! build (the code path of a build without the feature).

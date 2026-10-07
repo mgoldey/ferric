@@ -1,4 +1,4 @@
-#![cfg(feature = "gpu")]
+#![cfg(all(feature = "gpu", feature = "test-seams"))]
 //! Unrestricted RI-MP2 energy blocks on the device (f64, two resident B_ov) vs
 //! the CPU path, on E_αα, E_ββ, E_αβ separately.
 //!
