@@ -336,6 +336,34 @@ fn measure_io(sample: &[f64], pair: usize, band: usize, max_bytes: usize) -> Opt
     Some((bytes / write_s, bytes / read_s))
 }
 
+/// What a calibration depends on: the problem size, the budget that caps its
+/// buffers, and the directory whose I/O it measures.
+type CalibrationKey = (usize, usize, usize, usize, std::path::PathBuf);
+
+static CALIBRATIONS: std::sync::Mutex<Vec<(CalibrationKey, Calibration)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// [`Calibration`] for `key`, measured once per process: every later
+/// out-of-memory construction of the same size (the next geometry step, the next
+/// SCF) reuses it and does no integral or file I/O. The cache is per process, so
+/// each MPI rank measures once; ranks do not exchange the result.
+fn cached_calibration(
+    key: CalibrationKey,
+    measure: impl FnOnce() -> Result<Calibration, FerricError>,
+) -> Result<Calibration, FerricError> {
+    let hit =
+        |t: &Vec<(CalibrationKey, Calibration)>| t.iter().find(|(k, _)| *k == key).map(|(_, c)| *c);
+    if let Some(c) = hit(&CALIBRATIONS.lock().unwrap_or_else(|e| e.into_inner())) {
+        return Ok(c);
+    }
+    let c = measure()?;
+    let mut table = CALIBRATIONS.lock().unwrap_or_else(|e| e.into_inner());
+    if hit(&table).is_none() {
+        table.push((key, c));
+    }
+    Ok(c)
+}
+
 impl ThreeIndexSource {
     /// Build the raw tensor for the SCF RI-J/K path under the effective
     /// [`jk_storage`] policy. `mol` is needed only to re-prepare the bases for
@@ -352,8 +380,12 @@ impl ThreeIndexSource {
         let nao = obs.nbasis();
         let band = band_p1 - band_p0;
         let (tier, cal) = decide(policy, (nao, band, budget_bytes), || {
-            let free = super::free_bytes_at(&super::spill_dir());
-            calibrate(op, obs, dfbs, (band_p0, band_p1), (budget_bytes, free))
+            let dir = super::spill_dir();
+            let key = (nao, dfbs.nbasis(), band_p0, budget_bytes, dir.clone());
+            cached_calibration(key, || {
+                let free = super::free_bytes_at(&dir);
+                calibrate(op, obs, dfbs, (band_p0, band_p1), (budget_bytes, free))
+            })
         })?;
         if super::ooc_trace() {
             let c = cal.map_or(String::new(), |c| {
@@ -660,5 +692,42 @@ mod tests {
         )
         .unwrap();
         assert!(c.build_s_per_row > 0.0);
+    }
+
+    /// The second call for the same key reuses the first measurement and runs
+    /// no measurement closure (no integrals, no file I/O); a different key
+    /// measures again.
+    #[test]
+    fn calibration_is_measured_once_per_key() {
+        use std::cell::Cell;
+        let dir = std::path::PathBuf::from("/cache-test-dir");
+        let first = Calibration {
+            build_s_per_row: 1.0,
+            io: Some((2.0, 3.0)),
+        };
+        let runs = Cell::new(0);
+        let key = (7001, 7002, 0, 7003, dir.clone());
+        let a = cached_calibration(key.clone(), || {
+            runs.set(runs.get() + 1);
+            Ok(first)
+        })
+        .unwrap();
+        let b = cached_calibration(key, || {
+            runs.set(runs.get() + 1);
+            Ok(Calibration {
+                build_s_per_row: 9.0,
+                io: None,
+            })
+        })
+        .unwrap();
+        assert_eq!(runs.get(), 1, "the second call re-measured");
+        assert_eq!(a.build_s_per_row, b.build_s_per_row);
+        assert_eq!(b.io, Some((2.0, 3.0)));
+        cached_calibration((7001, 7002, 0, 7004, dir), || {
+            runs.set(runs.get() + 1);
+            Ok(first)
+        })
+        .unwrap();
+        assert_eq!(runs.get(), 2, "a different budget must measure again");
     }
 }
