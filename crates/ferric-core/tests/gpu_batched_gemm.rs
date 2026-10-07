@@ -515,3 +515,32 @@ fn a_left_operand_in_the_right_slot_is_refused_on_the_device_path() {
     assert!(matches!(e, Err(GpuError::Layout(_))), "{e:?}");
     assert!(bits(&dev, &c).iter().all(|&b| b == SENTINEL));
 }
+
+/// `syrk_f64_dev` is a raw cuBLAS call: it must work on a thread that never
+/// touched the context (a rayon worker, a fresh `std::thread`).
+#[test]
+fn syrk_runs_on_a_thread_that_never_bound_the_context() {
+    let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    if skip() {
+        return;
+    }
+    let dev = device(0).unwrap();
+    let pool = DevicePool::with_capacity_bytes(1 << 24);
+    let (n, k) = (9usize, 12usize);
+    let y = operand(k, n, 11);
+    let a = DeviceMatrix::<f64>::upload(&dev, &pool, "Y", &y.view()).unwrap();
+    let mut c =
+        DeviceMatrix::<f64>::upload(&dev, &pool, "K", &Array2::zeros((n, n)).view()).unwrap();
+    std::thread::scope(|s| {
+        s.spawn(|| syrk_f64_dev(&dev, n, k, &a.buf().slice(..), c.buf_mut(), false))
+            .join()
+            .unwrap()
+    })
+    .unwrap();
+    let mut got = vec![0.0f64; n * n];
+    dev.stream.memcpy_dtoh(c.buf(), &mut got).unwrap();
+    dev.stream.synchronize().unwrap();
+    let want = y.t().dot(&y);
+    let s = y.mapv(f64::abs).t().dot(&y.mapv(f64::abs));
+    upper_within(&got, &want, &s, k, "fresh thread");
+}

@@ -312,6 +312,11 @@ pub fn syrk_f64_dev(
         return Ok(());
     }
     let (alpha, beta) = (1.0f64, if accumulate { 1.0f64 } else { 0.0f64 });
+    // The raw cuBLAS call below does not go through a cudarc wrapper that binds
+    // the context, so bind it to this thread first.
+    dev.ctx
+        .bind_to_thread()
+        .map_err(|e| GpuError::Cuda(format!("bind context before cublasDsyrk: {e:?}")))?;
     let blas = dev.blas.lock().unwrap_or_else(|e| e.into_inner());
     let (ap, _ra) = a.device_ptr(&dev.stream);
     let (cp, _rc) = c.device_ptr_mut(&dev.stream);
