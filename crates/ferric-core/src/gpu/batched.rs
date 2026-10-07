@@ -92,6 +92,17 @@ pub struct BatchedDims {
     pub batch: usize,
 }
 
+/// The product writes its output panels (the single definition shared by the
+/// geometry check and the launch path, so the two cannot drift).
+fn writes_output(d: BatchedDims) -> bool {
+    d.batch > 0 && d.m > 0 && d.n > 0
+}
+
+/// The product reads its operands (a `k = 0` product is the zero matrix).
+fn reads_operands(d: BatchedDims) -> bool {
+    writes_output(d) && d.k > 0
+}
+
 /// Device-free soundness check; `left`/`right` are `(geom, view_len, stride)`,
 /// `out` is `(c_len, c_stride)`. Total on all inputs (zero sizes, overflow).
 pub(crate) fn check_batched_geometry(
@@ -122,8 +133,7 @@ pub(crate) fn check_batched_geometry(
     let mn =
         d.m.checked_mul(d.n)
             .ok_or_else(|| lay(format!("output size {}x{} overflows usize", d.m, d.n)))?;
-    let writes = d.batch > 0 && d.m > 0 && d.n > 0;
-    let reads = writes && d.k > 0;
+    let (writes, reads) = (writes_output(d), reads_operands(d));
     if writes {
         if d.batch > 1 && out.1 < mn {
             return Err(lay(format!(
@@ -150,10 +160,9 @@ pub(crate) fn check_batched_geometry(
                 ))
             })
         } else {
-            // Nothing is read (a zero dimension, or no batch at all, which
-            // `check_dev_geometry` cannot see): no extent applies, so the
-            // view length is not a constraint. Roles, shapes and descriptors
-            // are still validated.
+            // Nothing is read (`reads_operands`, the launch condition): no
+            // extent applies, so the view length is not a constraint. Roles,
+            // shapes and descriptors are still validated.
             Ok(usize::MAX)
         }
     };
@@ -196,15 +205,20 @@ pub fn gemm_f64_strided_batched_dev(
         (&right.operand.geom, right.operand.view.len(), right.stride),
         (c.len(), c_stride),
     )?;
-    if d.m == 0 || d.n == 0 || d.batch == 0 {
+    if !writes_output(d) {
         return Ok(());
     }
-    if d.k == 0 {
-        let used = batch_tail(d.batch, c_stride)? + d.m * d.n; // checked by the geometry call
-        return dev
-            .stream
-            .memset_zeros(&mut c.slice_mut(..used))
-            .map_err(|e| GpuError::Cuda(format!("memset c (k = 0): {e:?}")));
+    if !reads_operands(d) {
+        // k = 0: zero exactly the output panels (the gaps between panels, when
+        // c_stride > m*n, are not part of the contract). Extents are checked.
+        let mn = d.m * d.n;
+        for b in 0..d.batch {
+            let at = b * c_stride;
+            dev.stream
+                .memset_zeros(&mut c.slice_mut(at..at + mn))
+                .map_err(|e| GpuError::Cuda(format!("memset c panel {b} (k = 0): {e:?}")))?;
+        }
+        return Ok(());
     }
     let cfg = StridedBatchedConfig {
         gemm: GemmConfig {
@@ -270,8 +284,8 @@ pub(crate) fn check_syrk_geometry(
 /// (equivalently the row-major `k×n` matrix `Y`). The Fortran-LOWER triangle of
 /// `c` (= the row-major UPPER triangle, the CPU path's convention) becomes
 /// `A·Aᵀ` when `accumulate` is false, `c + A·Aᵀ` when true; the other triangle
-/// is never read or written. `k = 0` zeroes the output (or leaves it when
-/// accumulating); `n = 0` is a no-op.
+/// is never read or written. `k = 0` zeroes the owned triangle only (or leaves
+/// `c` alone when accumulating); `n = 0` is a no-op.
 pub fn syrk_f64_dev(
     dev: &Device,
     n: usize,
@@ -288,10 +302,14 @@ pub fn syrk_f64_dev(
         if accumulate {
             return Ok(());
         }
-        return dev
-            .stream
-            .memset_zeros(&mut c.slice_mut(..n * n))
-            .map_err(|e| GpuError::Cuda(format!("memset c (k = 0): {e:?}")));
+        // Zero only the triangle this routine owns (row-major r <= c, the
+        // Fortran lower): row r's run starts at r*n + r and is n - r long.
+        for r in 0..n {
+            dev.stream
+                .memset_zeros(&mut c.slice_mut(r * n + r..(r + 1) * n))
+                .map_err(|e| GpuError::Cuda(format!("memset c row {r} (k = 0): {e:?}")))?;
+        }
+        return Ok(());
     }
     let (alpha, beta) = (1.0f64, if accumulate { 1.0f64 } else { 0.0f64 });
     let blas = dev.blas.lock().unwrap_or_else(|e| e.into_inner());
@@ -609,5 +627,65 @@ mod tests {
             check_syrk_geometry(1, big, usize::MAX, usize::MAX),
             Err(GpuError::Layout(_))
         ));
+    }
+
+    #[test]
+    fn a_gapped_output_stride_needs_exactly_the_last_panel() {
+        let (lg, rg) = dfk_geoms(N, NOCC);
+        let d = dims(NOCC, N, N, BATCH);
+        let mn = NOCC * N;
+        let cs = mn + 3;
+        let need = (BATCH - 1) * cs + mn;
+        let r = (BATCH * N * N, N * N);
+        let ok = check(d, &lg, &rg, (N * NOCC, 0), r, (need, cs));
+        assert!(ok.is_ok(), "{ok:?}");
+        let e = check(d, &lg, &rg, (N * NOCC, 0), r, (need - 1, cs));
+        assert!(matches!(e, Err(GpuError::Layout(_))), "{e:?}");
+    }
+
+    #[test]
+    fn a_nonbroadcast_left_operand_is_extent_checked_over_every_batch() {
+        let (lg, rg) = dfk_geoms(N, NOCC);
+        let d = dims(NOCC, N, N, BATCH);
+        let stride = N * NOCC;
+        let need = (BATCH - 1) * stride + N * NOCC;
+        let c = (BATCH * NOCC * N, NOCC * N);
+        let r = (BATCH * N * N, N * N);
+        assert!(check(d, &lg, &rg, (need, stride), r, c).is_ok());
+        let e = check(d, &lg, &rg, (need - 1, stride), r, c);
+        assert!(matches!(e, Err(GpuError::Layout(_))), "{e:?}");
+    }
+
+    #[test]
+    fn an_operand_in_the_wrong_slot_is_refused() {
+        let (lg, rg) = dfk_geoms(N, NOCC);
+        let d = dims(NOCC, N, N, BATCH);
+        let c = (BATCH * NOCC * N, NOCC * N);
+        let e = check(d, &rg, &lg, (BATCH * N * N, N * N), (N * NOCC, 0), c);
+        assert!(matches!(e, Err(GpuError::Layout(_))), "{e:?}");
+    }
+
+    #[test]
+    fn zero_axis_combinations_with_nonzero_strides_are_accepted() {
+        // Operands are empty when m, k or n is zero, whatever the strides and batch.
+        for (m, k, n, batch) in [
+            (0, 4, 5, 3),
+            (3, 4, 0, 3),
+            (3, 0, 5, 3),
+            (0, 0, 0, 0),
+            (3, 4, 5, 0),
+            (0, 4, 0, 2),
+        ] {
+            let h_l = Array2::<f64>::zeros((m, k));
+            let h_r = Array2::<f64>::zeros((k, n));
+            let lg = OperandGeom::derive_padded(Role::Left, &h_l.view(), m * k).unwrap();
+            let rg = OperandGeom::derive_padded(Role::Right, &h_r.view(), k * n).unwrap();
+            // only k = 0 with a real output still writes: it needs the last panel
+            let writes = m > 0 && n > 0 && batch > 0;
+            let clen = if writes { 3 * m * n + 8 } else { 0 };
+            let d = dims(m, k, n, batch);
+            let ok = check(d, &lg, &rg, (m * k, 17), (k * n, 19), (clen, m * n + 2));
+            assert!(ok.is_ok(), "m={m} k={k} n={n} batch={batch}: {ok:?}");
+        }
     }
 }
