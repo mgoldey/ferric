@@ -192,3 +192,196 @@ def test_malformed_value_degrades_to_off_and_says_why():
         assert "FERRIC_GPU" in st["reason"]
     else:
         assert st["status"] == "not_compiled" and st["reason"] is None
+
+
+# ── ferric.configure_gpu(): process-global, so every case is a subprocess ──
+
+
+def _configure(code, **env_extra):
+    """Run `code` in a fresh process with a cleared GPU environment.
+
+    Returns (returncode, last stdout line, stderr)."""
+    env = dict(os.environ)
+    for k in list(env):
+        if k.startswith("FERRIC_GPU"):
+            del env[k]
+    env.update(env_extra)
+    p = subprocess.run(
+        [sys.executable, "-c", code], env=env, capture_output=True, text=True
+    )
+    lines = p.stdout.strip().splitlines()
+    return p.returncode, (lines[-1] if lines else ""), p.stderr
+
+
+def _configured(kwargs):
+    rc, out, err = _configure(
+        f"import json, ferric; print(json.dumps(ferric.configure_gpu(**{kwargs!r})))"
+    )
+    assert rc == 0, err
+    st = json.loads(out)
+    _check_types(st)
+    return st
+
+
+def _refusal(code, exc="ValueError", **env_extra):
+    """The message of the exception `code` must raise (its last stderr line)."""
+    rc, _, err = _configure(code, **env_extra)
+    assert rc != 0
+    last = err.strip().splitlines()[-1]
+    assert last.startswith(exc + ": "), last
+    return last[len(exc) + 2 :]
+
+
+def test_configure_gpu_preset_off_equals_the_untouched_default():
+    st = _configured({"preset": "off"})
+    assert st == _in_subprocess(None)
+    assert st["mode"] == "off" and st["precision"] == "f64"
+    assert st["mixed_kernels"] == ["rimp2-energy"]
+
+
+def test_configure_gpu_returns_what_gpu_status_reports_afterwards():
+    rc, out, err = _configure(
+        "import json, ferric; a = ferric.configure_gpu(preset='auto'); "
+        "print(json.dumps([a, ferric.gpu_status()]))"
+    )
+    assert rc == 0, err
+    a, b = json.loads(out)
+    assert a == b and a["mode"] == "auto" and a["precision"] == "f64"
+
+
+def test_configure_gpu_auto_mixed_degrades_without_a_device():
+    st = _configured({"preset": "auto-mixed"})
+    assert st["mode"] == "auto"
+    if st["status"] == "ready":
+        assert st["precision"] == "mixed" and st["mixed_kernels"] == ["rimp2-energy"]
+    else:
+        # an unusable device never leaves a run labelled mixed
+        assert st["status"] in ("not_compiled", "unavailable")
+        assert st["device"] is None
+        if COMPILED:
+            _skip_or_fail("no usable device for preset auto-mixed")
+
+
+def test_configure_gpu_mixed_preset_on_the_device_or_a_named_refusal():
+    rc, out, err = _configure(
+        "import json, ferric; print(json.dumps(ferric.configure_gpu(preset='mixed')))"
+    )
+    if rc == 0:
+        st = json.loads(out)
+        assert st["mode"] == "on" and st["status"] == "ready"
+        assert st["precision"] == "mixed" and st["mixed_kernels"] == ["rimp2-energy"]
+    elif COMPILED:
+        assert "[gpu] mode = on but no usable device: " in err
+        _skip_or_fail("no usable device for preset mixed")
+    else:
+        assert err.strip().splitlines()[-1] == (
+            "ValueError: [gpu] mode = on but this binary was built without the gpu "
+            "feature; rebuild with `--features ferric-cli/gpu`"
+        )
+
+
+def test_configure_gpu_fine_keys_that_agree_with_the_preset_are_kept():
+    st = _configured({"preset": "off", "mode": "off", "precision": "f64"})
+    assert st["mode"] == "off" and st["precision"] == "f64"
+    st = _configured({"preset": "auto", "device": 0, "min_flops": 1, "memory_gb": 1.0})
+    assert st["mode"] == "auto"
+
+
+def test_configure_gpu_preset_vs_precision_conflict_names_both_keys():
+    msg = _refusal(
+        "import ferric; ferric.configure_gpu(preset='mixed', precision='f64')"
+    )
+    assert msg == (
+        "[gpu] preset = mixed (explicit (config/TOML/kwarg)) implies precision = mixed "
+        "but FERRIC_GPU_PRECISION / [gpu] precision = f64 (explicit (config/TOML/kwarg)); "
+        "set one of them"
+    )
+
+
+def test_configure_gpu_preset_vs_mode_conflict_names_both_keys():
+    msg = _refusal("import ferric; ferric.configure_gpu(preset='off', mode='on')")
+    assert msg == (
+        "[gpu] preset = off (explicit (config/TOML/kwarg)) implies mode = off "
+        "but FERRIC_GPU / [gpu] mode = on (explicit (config/TOML/kwarg)); set one of them"
+    )
+
+
+def test_configure_gpu_kwarg_preset_against_env_mode_names_both_sources():
+    msg = _refusal("import ferric; ferric.configure_gpu(preset='off')", FERRIC_GPU="on")
+    assert msg == (
+        "[gpu] preset = off (explicit (config/TOML/kwarg)) implies mode = off "
+        "but FERRIC_GPU / [gpu] mode = on (env); set one of them"
+    )
+
+
+def test_configure_gpu_unknown_values_are_value_errors_naming_the_key():
+    assert _refusal("import ferric; ferric.configure_gpu(preset='bogus')") == (
+        '[gpu] preset: invalid GPU preset "bogus" '
+        "(expected off, auto, on, mixed or auto-mixed)"
+    )
+    assert _refusal("import ferric; ferric.configure_gpu(precision='half')") == (
+        '[gpu] precision: invalid GPU precision "half" (expected f64 or mixed)'
+    )
+    assert _refusal("import ferric; ferric.configure_gpu(mode='sometimes')").startswith(
+        "[gpu] mode: "
+    )
+    msg = _refusal("import ferric; ferric.configure_gpu(mixed_kernels=['nope'])")
+    assert msg == (
+        '[gpu] mixed_kernels: unknown mixed-precision kernel "nope" '
+        "(valid: rimp2-energy, ccsd-amplitudes, dfk-occ, cosx-kern)"
+    )
+
+
+def test_configure_gpu_mixed_needs_a_device_mode():
+    msg = _refusal("import ferric; ferric.configure_gpu(precision='mixed')")
+    assert msg == (
+        "[gpu] precision = mixed requires mode = auto or on "
+        "(FERRIC_GPU / [gpu] mode is off)"
+    )
+
+
+def test_configure_gpu_kernel_list_under_f64_is_refused():
+    msg = _refusal(
+        "import ferric; ferric.configure_gpu(mixed_kernels=['rimp2-energy'])"
+    )
+    assert msg == (
+        "FERRIC_GPU_MIXED_KERNELS / [gpu] mixed_kernels = rimp2-energy given but the "
+        'precision is f64; set [gpu] precision = "mixed" (or use preset = "mixed") '
+        "or drop the list"
+    )
+
+
+def test_configure_gpu_on_without_the_feature_is_refused():
+    if COMPILED:
+        return _skip_or_fail_not_required("gpu build")
+    msg = _refusal("import ferric; ferric.configure_gpu(mode='on')")
+    assert msg == (
+        "[gpu] mode = on but this binary was built without the gpu feature; "
+        "rebuild with `--features ferric-cli/gpu`"
+    )
+
+
+def test_configure_gpu_twice_identical_is_ok_and_different_is_a_runtime_error():
+    rc, out, err = _configure(
+        "import json, ferric; a = ferric.configure_gpu(preset='off'); "
+        "b = ferric.configure_gpu(preset='off'); print(json.dumps(a == b))"
+    )
+    assert rc == 0, err
+    assert out == "true"
+    assert err.count("FERRIC_GPU_PRESET: off") == 1  # audited once
+    msg = _refusal(
+        "import ferric; ferric.configure_gpu(preset='off'); "
+        "ferric.configure_gpu(preset='auto')",
+        exc="RuntimeError",
+    )
+    assert msg.startswith("[gpu] settings already installed (")
+    assert "requested GpuSettings" in msg
+    assert "GPU settings are process-global" in msg
+
+
+def test_configure_gpu_after_gpu_status_read_the_settings_is_refused():
+    msg = _refusal(
+        "import ferric; ferric.gpu_status(); ferric.configure_gpu(preset='auto')",
+        exc="RuntimeError",
+    )
+    assert "already installed" in msg and "process-global" in msg
