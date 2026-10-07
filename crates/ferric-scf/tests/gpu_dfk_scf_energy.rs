@@ -17,6 +17,10 @@
 //! `ENERGY_TOL = sqrt(max_systems A * min_systems B)` over the three default
 //! systems.
 //!
+//! The host arm forces BOTH the DF-K and the RI-J (`df_j_gpu`) onto the CPU, so side
+//! A carries the device RI-J difference as well; re-measured with RI-J on the
+//! device: A = 1.4e-14 (water), 0 (benzene, OH), within the table below.
+//!
 //! MEASURED SIDES (RHF/UHF, both cards identical; every arm converged in 12-13
 //! iterations, iteration counts equal across arms):
 //!   system                    A (clean)   B (f32-B)   B/A
@@ -43,6 +47,7 @@ use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
+use ferric_scf::df_j_gpu::FORCE_HOST as FORCE_HOST_J;
 use ferric_scf::df_k_gpu::{FORCE_HOST, ROUND_B_TO_F32};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
@@ -89,6 +94,7 @@ enum Arm {
 
 fn set(arm: Arm) {
     FORCE_HOST.store(matches!(arm, Arm::Host), Ordering::SeqCst);
+    FORCE_HOST_J.store(matches!(arm, Arm::Host), Ordering::SeqCst);
     ROUND_B_TO_F32.store(matches!(arm, Arm::DeviceRoundedB), Ordering::SeqCst);
 }
 

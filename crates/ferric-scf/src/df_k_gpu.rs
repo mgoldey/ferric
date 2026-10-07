@@ -593,7 +593,7 @@ pub enum DeviceSlot {
     Declined,
 }
 
-fn real_mpi_world(ctx: Option<&ParallelContext>) -> bool {
+pub(crate) fn real_mpi_world(ctx: Option<&ParallelContext>) -> bool {
     #[cfg(feature = "mpi")]
     {
         ctx.is_some_and(|c| c.world().is_some())

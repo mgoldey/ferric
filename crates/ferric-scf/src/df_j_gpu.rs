@@ -343,7 +343,7 @@ pub enum DeviceSlot {
 
 /// Why this source can never use the device path, or `None`.
 fn ineligible(src: &ThreeIndexSource, ctx: Option<&ParallelContext>) -> Option<&'static str> {
-    if ctx.is_some() || src.band_naux() != src.naux() {
+    if crate::df_k_gpu::real_mpi_world(ctx) || src.band_naux() != src.naux() {
         return Some(
             "MPI ranks would share one device ordinal (a device per rank is not available yet)",
         );
