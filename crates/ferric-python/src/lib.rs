@@ -8709,6 +8709,64 @@ fn gpu_status(py: Python<'_>) -> PyResult<Bound<'_, pyo3::types::PyDict>> {
     Ok(d)
 }
 
+/// Install the CUDA backend for this process from keyword arguments (the
+/// Python side of `[gpu]`): `preset` is one word, the rest are the fine-grained
+/// keys. Resolved through the same machinery as the CLI (explicit > env >
+/// default); a refusal is a `ValueError` naming the keys. Settings are
+/// process-global: the call must precede the first read of the GPU settings
+/// (`gpu_status()` or any GPU path), and a second call must repeat identical
+/// settings, otherwise `RuntimeError`. Returns `gpu_status()`.
+#[pyfunction]
+#[pyo3(signature = (preset=None, mode=None, precision=None, mixed_kernels=None, device=None, memory_gb=None, min_flops=None))]
+fn configure_gpu<'py>(
+    py: Python<'py>,
+    preset: Option<&str>,
+    mode: Option<&str>,
+    precision: Option<&str>,
+    mixed_kernels: Option<Vec<String>>,
+    device: Option<usize>,
+    memory_gb: Option<f64>,
+    min_flops: Option<usize>,
+) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+    use ferric_core::gpu::{GpuMode, GpuPreset, GpuSettingsExplicit, MixedKernelSet, Precision};
+    let bad =
+        |k: &str, e: String| pyo3::exceptions::PyValueError::new_err(format!("[gpu] {k}: {e}"));
+    let explicit = GpuSettingsExplicit {
+        preset: preset
+            .map(|s| s.parse::<GpuPreset>().map_err(|e| bad("preset", e)))
+            .transpose()?,
+        mode: mode
+            .map(|s| s.parse::<GpuMode>().map_err(|e| bad("mode", e)))
+            .transpose()?,
+        device,
+        memory_gb,
+        min_flops,
+        precision: precision
+            .map(|s| s.parse::<Precision>().map_err(|e| bad("precision", e)))
+            .transpose()?,
+        mixed_kernels: mixed_kernels
+            .map(|ks| {
+                ks.join(",")
+                    .parse::<MixedKernelSet>()
+                    .map_err(|e| bad("mixed_kernels", e))
+            })
+            .transpose()?,
+    };
+    // The device probe may take a while; release the GIL.
+    py.allow_threads(|| ferric_core::gpu::install(explicit).map(|_| ()))
+        .map_err(|e| {
+            if e.contains("already installed") {
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "{e}; GPU settings are process-global: call configure_gpu once, before \
+                     gpu_status() or any GPU work, and repeat identical settings if called again"
+                ))
+            } else {
+                pyo3::exceptions::PyValueError::new_err(e)
+            }
+        })?;
+    gpu_status(py)
+}
+
 /// Shell geometry of `basis_set` on `mol` (works for orbital AND auxiliary
 /// sets): returns (centers, first_function_offsets, n_functions) with shapes
 /// ((n_shells, 3) in Bohr, (n_shells,), (n_shells,)). Enough to build
@@ -9495,5 +9553,6 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(boys_localize, m)?)?;
     m.add_function(wrap_pyfunction!(shell_info, m)?)?;
     m.add_function(wrap_pyfunction!(gpu_status, m)?)?;
+    m.add_function(wrap_pyfunction!(configure_gpu, m)?)?;
     Ok(())
 }

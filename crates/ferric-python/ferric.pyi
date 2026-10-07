@@ -61,13 +61,45 @@ class GpuStatus(TypedDict):
     precision: str
     """``"f64"`` (default) or ``"mixed"``, from ``FERRIC_GPU_PRECISION``."""
     mixed_kernels: list[str]
-    """Kernels allowed in mixed precision (``FERRIC_GPU_MIXED_KERNELS``); empty under ``f64``."""
+    """Kernels allowed in mixed precision (``FERRIC_GPU_MIXED_KERNELS``); under ``f64`` it lists the build's shipped kernels (the allowlist is inert there)."""
 
 def gpu_status() -> GpuStatus:
     """CUDA backend state. Resolved once per process from the environment; touches
     a device only when ``FERRIC_GPU`` is ``auto`` or ``on``. Unlike the CLI, where
     ``on`` with no usable device is an error, here it prints a notice and the run
     stays on the CPU; read the returned status to see which."""
+    ...
+
+def configure_gpu(
+    preset: str | None = None,
+    mode: str | None = None,
+    precision: str | None = None,
+    mixed_kernels: list[str] | None = None,
+    device: int | None = None,
+    memory_gb: float | None = None,
+    min_flops: int | None = None,
+) -> GpuStatus:
+    """Install the CUDA backend settings for this process (the Python side of
+    the ``[gpu]`` input section) and return ``gpu_status()``.
+
+    ``preset`` is one of ``"off"``, ``"auto"``, ``"on"``, ``"mixed"``,
+    ``"auto-mixed"`` and sets ``mode`` and ``precision`` together; ``mode``,
+    ``precision`` and ``mixed_kernels`` may sit beside it only if they agree.
+    Arguments given here override ``FERRIC_GPU*`` environment variables.
+    Unlike ``gpu_status()``, ``mode="on"`` with no usable device (or in a build
+    without the ``gpu`` feature) is an error.
+
+    Settings are process-global. Call this once, before ``gpu_status()`` or any
+    GPU work; a repeated call with identical settings is a no-op.
+
+    Raises:
+        ValueError: unknown value, a preset that disagrees with ``mode`` /
+            ``precision``, mixed precision with no shipped kernel or no device
+            mode, or ``mode="on"`` that cannot be satisfied. The message names
+            the keys involved.
+        RuntimeError: the settings were already installed or read with
+            different values.
+    """
     ...
 
 # ── Classes ──
