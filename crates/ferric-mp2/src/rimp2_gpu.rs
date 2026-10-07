@@ -39,6 +39,7 @@ use rayon::prelude::*;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::rimp2::{pair_energy, SpinComponents};
+use crate::u_rimp2::{opposite_spin_block_energy, same_spin_block_energy, SpinChannel};
 
 /// Test hook (mirrors `FORCE_KERNEL_FAILURE`): when set to a block index, the
 /// device block `G_i` with that `i` fails with a typed error before any work,
@@ -466,4 +467,318 @@ pub fn g_block_on_device(
     stage.g_block(dev, b_ov, i, nvir, &mut host)?;
     stage.tally.commit();
     Ok(Array2::from_shape_vec((nvir, ntail), host).expect("shape"))
+}
+
+// ---------------------------------------------------------------------------
+// Unrestricted RI-MP2 energy (f64 only).
+//
+// The same wide GEMM `G_i = B_iᵀ·B_right[:, col0..col0+ncols]` as above, with
+// `B` resident per spin; the pair arithmetic is the shared
+// `u_rimp2::{same,opposite}_spin_block_energy`, so the device and CPU energies
+// differ ONLY in how `g_i` was formed. The per-i energies are summed serially in
+// ascending i, exactly as the CPU `partials.into_iter().sum()`.
+//
+// Precision is f64: `mixed_allows(RiMp2Energy)` is NOT consulted here (the
+// antisymmetrised K = g_ab - g_ba has no shipped mixed row).
+//
+// Zero-size shapes (nocc or nvir of either spin 0, naux 0) are a typed
+// `Layout` refusal from the `u_*_on_device` functions, which the dispatchers
+// turn into the CPU path (counted as a layout fallback): there is no work, and
+// the CPU path owns the value of the empty sum.
+//
+// Counters: every block's download bytes are collected and applied with
+// `note_offloaded` only after the last block succeeded, so a mid-loop failure
+// leaves the counters untouched and the CPU path reruns from scratch.
+
+/// One spin's `B_ov` resident on the device, with its host twin (the block
+/// views the operand descriptors are derived from).
+pub struct ResidentBov<'a> {
+    m: DeviceMatrix<f64>,
+    host: &'a Array2<f64>,
+}
+
+impl ResidentBov<'_> {
+    /// Rows of `B` (the auxiliary dimension).
+    pub fn naux(&self) -> usize {
+        self.m.rows()
+    }
+    /// Columns of `B` (`nocc·nvir`).
+    pub fn cols(&self) -> usize {
+        self.m.cols()
+    }
+}
+
+/// Uploads `b_ov` once, charged to `pool` under `label`.
+pub fn upload_b_ov<'a>(
+    dev: &Device,
+    pool: &DevicePool,
+    label: &str,
+    b_ov: &'a Array2<f64>,
+) -> Result<ResidentBov<'a>, GpuError> {
+    let m = DeviceMatrix::<f64>::upload(dev, pool, label, &b_ov.view())?;
+    Ok(ResidentBov { m, host: b_ov })
+}
+
+/// Where one `G_i` block comes from: `B_left` rows block `i` against
+/// `B_right[:, col0..col0+ncols]`.
+#[derive(Clone, Copy)]
+pub struct UBlock {
+    pub i: usize,
+    pub nvir_left: usize,
+    pub col0: usize,
+    pub ncols: usize,
+}
+
+/// `out = B_left[:, i·nvir_left..(i+1)·nvir_left]ᵀ · B_right[:, col0..col0+ncols]`
+/// (row-major `nvir_left × ncols`), f64, formed in `scratch` (at least
+/// `nvir_left·ncols` elements) and downloaded into `out`. Returns the bytes
+/// downloaded; the caller counts them (`note_offloaded(0, bytes)`) only when its
+/// whole call succeeds.
+pub fn u_g_block_on_device(
+    dev: &Device,
+    left: &ResidentBov<'_>,
+    right: &ResidentBov<'_>,
+    blk: UBlock,
+    scratch: &mut DeviceMatrix<f64>,
+    out: &mut [f64],
+) -> Result<usize, GpuError> {
+    let UBlock {
+        i,
+        nvir_left,
+        col0,
+        ncols,
+    } = blk;
+    let layout = |what: String| GpuError::Layout(format!("U-RI-MP2 block {i}: {what}"));
+    if FAIL_AT_BLOCK.load(Ordering::Relaxed) == i {
+        return Err(GpuError::Cuda(format!(
+            "injected failure at block {i} (test)"
+        )));
+    }
+    if left.naux() != right.naux() {
+        return Err(layout(format!("naux {} vs {}", left.naux(), right.naux())));
+    }
+    let off = i
+        .checked_mul(nvir_left)
+        .filter(|&o| o <= left.cols() && nvir_left <= left.cols() - o)
+        .ok_or_else(|| {
+            layout(format!(
+                "left block of width {nvir_left} outside {}",
+                left.cols()
+            ))
+        })?;
+    let end = col0
+        .checked_add(ncols)
+        .filter(|&e| e <= right.cols())
+        .ok_or_else(|| {
+            layout(format!(
+                "right columns {col0}+{ncols} outside {}",
+                right.cols()
+            ))
+        })?;
+    let len = nvir_left
+        .checked_mul(ncols)
+        .ok_or_else(|| layout("block size overflows usize".into()))?;
+    if out.len() != len {
+        return Err(layout(format!(
+            "host block holds {} elements, needs {len}",
+            out.len()
+        )));
+    }
+    let b_i = left.host.slice(s![.., off..off + nvir_left]);
+    let b_r = right.host.slice(s![.., col0..end]);
+    let lop = dev_left_padded(left.m.buf().slice(off..), &b_i.t())?;
+    let rop = dev_right_padded(right.m.buf().slice(col0..), &b_r)?;
+    gemm_f64_dev(
+        dev,
+        nvir_left,
+        left.naux(),
+        ncols,
+        &lop,
+        &rop,
+        scratch.buf_mut(),
+        GEMM_K_BLOCK,
+    )?;
+    let cuda = |what: &str, e: &dyn std::fmt::Debug| {
+        GpuError::Cuda(format!("{what} U-RI-MP2 G_{i}: {e:?}"))
+    };
+    dev.stream
+        .memcpy_dtoh(&scratch.buf().slice(..len), out)
+        .map_err(|e| cuda("D2H", &e))?;
+    dev.stream.synchronize().map_err(|e| cuda("sync", &e))?;
+    Ok(8 * len)
+}
+
+/// Shared dispatcher prologue: the device and pool, or `None` (CPU path; a
+/// reason is counted unless the mode is off or there is no device at all).
+fn u_dispatch_context() -> Option<(std::sync::Arc<Device>, DevicePool)> {
+    let settings = ferric_core::gpu::settings();
+    if settings.mode == GpuMode::Off {
+        return None;
+    }
+    let GpuStatus::Ready(info) = ferric_core::gpu::status() else {
+        return None;
+    };
+    if rayon::current_thread_index().is_some() {
+        note_cpu(CpuReason::InsideRayonWorker);
+        return None;
+    }
+    let pool = ferric_core::gpu::pool()?;
+    let Ok(dev) = device(info.ordinal) else {
+        note_cpu(CpuReason::CudaError);
+        return None;
+    };
+    Some((dev, pool))
+}
+
+/// `nocc·nvir` of a channel after checking its shapes; `Err` for an
+/// inconsistent or empty one.
+fn u_channel_nov(ch: &SpinChannel<'_>) -> Result<usize, GpuError> {
+    let nov = ch.nocc.checked_mul(ch.nvir).ok_or_else(|| {
+        GpuError::Layout(format!(
+            "U-RI-MP2 dimensions nocc={} nvir={} overflow usize",
+            ch.nocc, ch.nvir
+        ))
+    })?;
+    if ch.b.ncols() != nov {
+        return Err(GpuError::Layout(format!(
+            "b_ov is {}x{} but nocc*nvir = {nov}",
+            ch.b.nrows(),
+            ch.b.ncols()
+        )));
+    }
+    let eps_needed = ch
+        .first_occ
+        .saturating_add(ch.nocc)
+        .max(ch.nocc_total.saturating_add(ch.nvir));
+    if ch.eps.len() < eps_needed {
+        return Err(GpuError::Layout(format!(
+            "eps holds {} orbital energies but the index ranges reach {eps_needed}",
+            ch.eps.len()
+        )));
+    }
+    if nov == 0 || ch.b.nrows() == 0 {
+        return Err(GpuError::Layout("empty U-RI-MP2 spin channel".into()));
+    }
+    Ok(nov)
+}
+
+fn u_finish(r: Result<f64, GpuError>) -> Option<f64> {
+    match r {
+        Ok(e) => Some(e),
+        Err(e) => {
+            count_cpu_fallback(&e);
+            None
+        }
+    }
+}
+
+/// Same-spin (αα or ββ) energy on the device, or `None` for the CPU path.
+pub fn try_u_same_spin_on_device(ch: SpinChannel<'_>) -> Option<f64> {
+    let (dev, pool) = u_dispatch_context()?;
+    u_finish(u_same_spin_on_device(&dev, &pool, ch))
+}
+
+/// Opposite-spin (αβ) energy on the device, or `None` for the CPU path.
+pub fn try_u_opposite_spin_on_device(ch_a: SpinChannel<'_>, ch_b: SpinChannel<'_>) -> Option<f64> {
+    let (dev, pool) = u_dispatch_context()?;
+    u_finish(u_opposite_spin_on_device(&dev, &pool, ch_a, ch_b))
+}
+
+/// The device same-spin energy against an explicit pool (the dispatcher's
+/// body). One scratch and one resident `B` ("U-RI-MP2 B_ov same-spin").
+pub fn u_same_spin_on_device(
+    dev: &Device,
+    pool: &DevicePool,
+    ch: SpinChannel<'_>,
+) -> Result<f64, GpuError> {
+    let nov = u_channel_nov(&ch)?;
+    // scratch first (refuses before the larger upload); widest block is i = 0
+    let mut scratch = DeviceMatrix::<f64>::zeros(
+        dev,
+        pool,
+        "U-RI-MP2 energy (device): G_i scratch",
+        ch.nvir,
+        nov,
+    )?;
+    let bres = upload_b_ov(dev, pool, "U-RI-MP2 B_ov same-spin", ch.b)?;
+    let mut host = vec![0.0f64; ch.nvir * nov];
+    let mut partials = Vec::with_capacity(ch.nocc);
+    let mut tally = Vec::with_capacity(ch.nocc);
+    for i in 0..ch.nocc {
+        let ncols = (ch.nocc - i) * ch.nvir;
+        let block = &mut host[..ch.nvir * ncols];
+        let blk = UBlock {
+            i,
+            nvir_left: ch.nvir,
+            col0: i * ch.nvir,
+            ncols,
+        };
+        tally.push(u_g_block_on_device(
+            dev,
+            &bres,
+            &bres,
+            blk,
+            &mut scratch,
+            block,
+        )?);
+        let g_i = ArrayView2::from_shape((ch.nvir, ncols), &*block).expect("shape");
+        partials.push(same_spin_block_energy(&g_i, i, ch));
+    }
+    for d2h in tally {
+        note_offloaded(0, d2h);
+    }
+    Ok(partials.into_iter().sum())
+}
+
+/// The device opposite-spin energy against an explicit pool. Uploads `B_α` and
+/// `B_β` once each under "U-RI-MP2 B_ov alpha" / "U-RI-MP2 B_ov beta".
+pub fn u_opposite_spin_on_device(
+    dev: &Device,
+    pool: &DevicePool,
+    ch_a: SpinChannel<'_>,
+    ch_b: SpinChannel<'_>,
+) -> Result<f64, GpuError> {
+    u_channel_nov(&ch_a)?;
+    let nov_b = u_channel_nov(&ch_b)?;
+    if ch_a.b.nrows() != ch_b.b.nrows() {
+        return Err(GpuError::Layout(format!(
+            "naux differs between spins: {} vs {}",
+            ch_a.b.nrows(),
+            ch_b.b.nrows()
+        )));
+    }
+    let mut scratch = DeviceMatrix::<f64>::zeros(
+        dev,
+        pool,
+        "U-RI-MP2 energy (device): G_i scratch",
+        ch_a.nvir,
+        nov_b,
+    )?;
+    let ba = upload_b_ov(dev, pool, "U-RI-MP2 B_ov alpha", ch_a.b)?;
+    let bb = upload_b_ov(dev, pool, "U-RI-MP2 B_ov beta", ch_b.b)?;
+    let mut host = vec![0.0f64; ch_a.nvir * nov_b];
+    let mut partials = Vec::with_capacity(ch_a.nocc);
+    let mut tally = Vec::with_capacity(ch_a.nocc);
+    for i in 0..ch_a.nocc {
+        let blk = UBlock {
+            i,
+            nvir_left: ch_a.nvir,
+            col0: 0,
+            ncols: nov_b,
+        };
+        tally.push(u_g_block_on_device(
+            dev,
+            &ba,
+            &bb,
+            blk,
+            &mut scratch,
+            &mut host,
+        )?);
+        let g_i = ArrayView2::from_shape((ch_a.nvir, nov_b), &host[..]).expect("shape");
+        partials.push(opposite_spin_block_energy(&g_i, i, ch_a, ch_b));
+    }
+    for d2h in tally {
+        note_offloaded(0, d2h);
+    }
+    Ok(partials.into_iter().sum())
 }

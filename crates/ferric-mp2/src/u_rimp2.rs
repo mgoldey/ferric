@@ -466,7 +466,7 @@ pub fn compute_u_mp2_amplitudes(
 /// convention. `Copy` (all fields are references or plain `usize`), so callers
 /// may pass by value freely.
 #[derive(Clone, Copy)]
-pub(crate) struct SpinChannel<'a> {
+pub struct SpinChannel<'a> {
     /// Dressed occ-vir tensor, shape `(naux, nocc*nvir)`.
     pub b: &'a Array2<f64>,
     /// Full per-spin orbital-energy slice (denominators index
@@ -571,10 +571,8 @@ pub(crate) fn opposite_spin_block_energy(
 /// slab is bit-for-bit identical to the previous two-pass version.
 ///
 /// Returns `(energy, Some(t))` when `want_amplitudes`, else `(energy, None)`.
-pub(crate) fn same_spin_pair_kernel(
-    ch: SpinChannel,
-    want_amplitudes: bool,
-) -> (f64, Option<Array4<f64>>) {
+#[doc(hidden)]
+pub fn same_spin_pair_kernel(ch: SpinChannel, want_amplitudes: bool) -> (f64, Option<Array4<f64>>) {
     use ndarray::Axis;
     use rayon::prelude::*;
 
@@ -588,6 +586,10 @@ pub(crate) fn same_spin_pair_kernel(
     } = ch;
 
     if !want_amplitudes {
+        #[cfg(feature = "gpu")]
+        if let Some(e) = crate::rimp2_gpu::try_u_same_spin_on_device(ch) {
+            return (e, None);
+        }
         // Energy-only: no t tensor to write, so the per-i partial is just a
         // scalar — no allocation/collection of a Vec<Option<..>> needed at all.
         //
@@ -673,7 +675,8 @@ pub(crate) fn same_spin_pair_kernel(
 /// is allocated ONCE and each rayon worker writes its disjoint `t[i, .., ..,
 /// ..]` slab directly (peak transient 1× the `t` tensor, not 2×); per-`i`
 /// energies are collected in ascending `i` and summed serially.
-pub(crate) fn opposite_spin_pair_kernel(
+#[doc(hidden)]
+pub fn opposite_spin_pair_kernel(
     ch_a: SpinChannel,
     ch_b: SpinChannel,
     want_amplitudes: bool,
@@ -699,6 +702,10 @@ pub(crate) fn opposite_spin_pair_kernel(
     } = ch_b;
 
     if !want_amplitudes {
+        #[cfg(feature = "gpu")]
+        if let Some(e) = crate::rimp2_gpu::try_u_opposite_spin_on_device(ch_a, ch_b) {
+            return (e, None);
+        }
         let partials: Vec<f64> = (0..nocc_a)
             .into_par_iter()
             .map(|i| {
