@@ -47,26 +47,58 @@ impl fmt::Display for GpuMode {
     }
 }
 
-/// NOT YET MEASURED. 1 GFLOP is a conservative placeholder that keeps every
-/// small GEMM on the CPU in `auto`; it is not derived from this box's
-/// CPU-vs-device crossover. The derivation is deferred until the box is quiet:
+/// Smallest `2*m*n*k` the f64 `einsum!` GEMM offload (`try_device_gemm` in
+/// `ferric-tensors`) sends to the device in `auto`/`on`. Derived from the
+/// quiet-box CPU-vs-device crossover:
 ///
 /// ```text
 /// RAYON_NUM_THREADS=6 OPENBLAS_NUM_THREADS=1 \
 ///   cargo run --release -p ferric-benchmarks --features gpu --example gpu_gemm_crossover
 /// ```
 ///
-/// The harness prints the value its table implies, labelled "candidate default
-/// (apply in step 1.3b)", via [`derive_min_flops`].
-///
 /// Protocol: `/proc/pressure/cpu` `some avg10 <= 0.05` before and after (the
-/// harness prints "NOT QUOTABLE: box contested" otherwise), no
-/// competing heavy processes, same binary, CPU (6 BLAS threads) and GPU
-/// (including H2D/D2H) arms interleaved, 7 repeats per shape, min and median
-/// reported. Rule for the value: the smallest FLOP count (2*m*n*k) such that
-/// GPU median <= CPU median at every larger measured shape, rounded up to a
-/// power of two; if the GPU never wins, `usize::MAX / 2` (never offload).
-pub const FERRIC_GPU_MIN_FLOPS_DEFAULT: usize = 1 << 30;
+/// harness prints "NOT QUOTABLE: box contested" otherwise), no competing heavy
+/// processes, same binary, CPU (6 BLAS threads) and GPU (including H2D/D2H)
+/// arms interleaved, 7 repeats per shape, min and median reported (ms; ratios
+/// are gpu/cpu, so above 1 the CPU is faster). Rule for the value: the
+/// smallest FLOP count (2*m*n*k) such that GPU median <= CPU median at every
+/// larger measured shape, rounded up to a power of two; if the GPU never wins,
+/// `usize::MAX / 2` (never offload).
+///
+/// Measured (GTX 1080, CPU pressure `some avg10` 0.00 before and 0.00 after):
+///
+/// ```text
+///      m      k      n          flops   cpu_min   cpu_med   gpu_min   gpu_med  min/min  med/med
+///    128    128    128        4194304     0.055     0.056     0.135     0.142     2.47     2.52
+///    256    256    256       33554432     0.280     0.287     0.524     0.543     1.87     1.90
+///    384    384    384      113246208     0.803     0.818     1.403     1.429     1.75     1.75
+///    512    512    512      268435456     2.185     2.599     2.651     2.676     1.21     1.03
+///    768    768    768      905969664     3.858     3.955     6.823     6.831     1.77     1.73
+///   1024   1024   1024     2147483648    10.104    10.226    14.282    15.734     1.41     1.54
+///   1536   1536   1536     7247757312    28.799    28.959    39.136    39.150     1.36     1.35
+///   2048   2048   2048    17179869184    69.625    70.008    80.851    81.258     1.16     1.16
+///   3072   3072   3072    57982058496   218.866   235.760   252.440   252.578     1.15     1.07
+///   4096   4096   4096   137438953472   552.146   566.473   577.170   577.285     1.05     1.02
+///   6144   6144   6144   463856467968  1897.142  2029.042  1859.190  1878.231     0.98     0.93
+///    414    558    414      191277936     1.505     1.883     1.905     1.919     1.27     1.02
+///   3726    414    414     1277242992     6.466     6.746    10.529    10.600     1.63     1.57
+///    414   3726    414     1277242992     7.045     7.091    10.935    10.963     1.55     1.55
+///    393    912   5895     4225724640    20.068    20.257    30.836    30.897     1.54     1.53
+///   1600    128   1600      655360000     3.550     3.638     6.440     6.454     1.81     1.77
+/// ```
+///
+/// The rule gives 549755813888 (2^39), above the largest measured shape
+/// (6144^3 = 4.6e11 FLOP): at no measured shape up to 6144^3 does the device
+/// beat 6 CPU cores on a single f64 GEMM by a margin. The default therefore
+/// keeps `auto` off the device for single f64 GEMMs (the 4096^3 shape was a
+/// CPU win in all three runs; at 6144^3 the two were within 7%).
+///
+/// Scope: only the f64 `einsum!` GEMM offload reads this threshold. The
+/// device RI-MP2 energy (resident f64 and mixed precision, `rimp2_gpu.rs`)
+/// does not consult `min_flops`; it is gated by the mode, the device status,
+/// not running inside a rayon worker, the pool and, for the mixed lane,
+/// `precision`/`mixed_kernels`.
+pub const FERRIC_GPU_MIN_FLOPS_DEFAULT: usize = 1usize << 39;
 
 /// The crossover rule documented on [`FERRIC_GPU_MIN_FLOPS_DEFAULT`], as a pure
 /// function of measured `(flops, cpu_median_s, gpu_median_s)` rows (any order).
