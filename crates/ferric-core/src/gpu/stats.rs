@@ -63,12 +63,10 @@ pub fn note_dfk_build(h2d: usize, d2h: usize) {
 }
 
 /// A DF-K that will stay on the CPU for its lifetime (ineligible source, MPI
-/// world, pool refusal, CUDA error). With `FERRIC_GPU_TRACE` the reason is printed.
+/// world, pool refusal, CUDA error). Counting only; the dispatcher prints the notice.
 #[doc(hidden)]
 pub fn note_dfk_declined(reason: &str) {
-    if trace_on() {
-        eprintln!("[gpu] DF-K stays on the CPU: {reason}");
-    }
+    let _ = reason; // the dispatcher prints the one-line notice
     DFK_DECLINED.fetch_add(1, Ordering::Relaxed);
 }
 

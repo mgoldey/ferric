@@ -269,8 +269,10 @@ impl DeviceDfK {
             .as_slice()
             .ok_or_else(|| lay("C_occ not contiguous".into()))?;
         let cuda = |what: &str, e: &dyn std::fmt::Debug| GpuError::Cuda(format!("{what}: {e:?}"));
+        // One length per direction, shared by the transfer and the byte counter.
+        let up = c_host.len();
         dev.stream
-            .memcpy_htod(c_host, &mut sc.c_dev.buf_mut().slice_mut(..n * nocc))
+            .memcpy_htod(c_host, &mut sc.c_dev.buf_mut().slice_mut(..up))
             .map_err(|e| cuda("H2D C_occ", &e))?;
         let twin_b = ArrayView2::from_shape((n, n), &twin[..n2]).map_err(|e| lay(e.to_string()))?;
         let twin_c =
@@ -311,7 +313,7 @@ impl DeviceDfK {
         }
         let full = ArrayView2::from_shape((n, n), &flat).map_err(|e| lay(e.to_string()))?;
         k.assign(&full);
-        stats::note_dfk_build(8 * n * nocc, 8 * n2);
+        stats::note_dfk_build(8 * up, 8 * flat.len());
         Ok(ChunkPlan {
             chunk,
             nchunks: band.div_ceil(chunk),
@@ -355,6 +357,13 @@ fn ineligible(src: &ThreeIndexSource, ctx: Option<&ParallelContext>) -> Option<&
     None
 }
 
+/// The first line of an error's Display: the pool's refusal embeds a multi-line
+/// occupancy report, which stays in the typed error and out of the notices.
+fn one_line(e: &GpuError) -> String {
+    let full = e.to_string();
+    full.lines().next().unwrap_or_default().to_string()
+}
+
 fn decline(slot: &mut DeviceSlot, reason: &str) {
     eprintln!("[ferric] gpu: DF-K stays on the CPU ({reason})");
     stats::note_dfk_declined(reason);
@@ -367,7 +376,7 @@ fn count_cpu_fallback(e: &GpuError) {
         GpuError::Layout(_) => CpuReason::Layout,
         _ => CpuReason::CudaError,
     };
-    stats::note_cpu_detail(reason, &format!("(DF-K occupied path: {e})"));
+    stats::note_cpu_detail(reason, &format!("(DF-K occupied path: {})", one_line(e)));
 }
 
 /// Upload the in-core band (rounded through f32 only under the mutation seam).
@@ -439,7 +448,7 @@ pub fn try_build_from_occ(
             }
             Err(e) => {
                 count_cpu_fallback(&e);
-                decline(slot, &e.to_string());
+                decline(slot, &one_line(&e));
                 return false;
             }
         }
@@ -452,7 +461,7 @@ pub fn try_build_from_occ(
         Ok(_) => true,
         Err(e) => {
             count_cpu_fallback(&e);
-            decline(slot, &e.to_string());
+            decline(slot, &one_line(&e));
             false
         }
     }

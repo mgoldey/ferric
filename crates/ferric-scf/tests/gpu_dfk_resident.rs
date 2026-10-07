@@ -25,7 +25,10 @@
 //! upper instead of upper to lower (4 fail); SYRK beta always 1 (the alpha/beta
 //! reuse test and the failure test fail; a single fresh build cannot see it);
 //! every chunk reading aux rows 0..c (only the many-chunk test fails); no sticky
-//! decline after a failed build (the once-only test fails); the DF-K hook moved
+//! decline after a failed build (the once-only test fails); skipping the C_occ
+//! upload when nocc equals the previous build's (the warm-build loop, fresh
+//! coefficients at a fixed nocc, fails at ratio 3e12, and so does alpha-prime);
+//! the DF-K hook moved
 //! above the FORCE_DENSITY and nocc == 0 shortcuts (those two tests fail).
 //!
 //! What is pinned about reproducibility: the device K of one build is bit-identical
@@ -231,10 +234,27 @@ fn b_is_uploaded_once_and_each_build_moves_exactly_the_documented_bytes() {
         (8 * band * n * n + 8 * n * nocc) as u64
     );
     assert_eq!(b.bytes_d2h - a.bytes_d2h, (8 * n * n) as u64);
-    for _ in 0..3 {
-        dfk.build_from_occ(&c, &mut k).unwrap(); // warm
+    // Warm builds refresh C_occ at a FIXED nocc, as every SCF iteration does: a new
+    // salt each time, and EACH build is checked against the CPU K.
+    let flat = dfk.dressed_incore_flat_for_test().unwrap().to_owned();
+    let mut warm = Vec::new();
+    for i in 0..3 {
+        let ci = c_occ(n, nocc, 10 + i);
+        dfk.build_from_occ(&ci, &mut k).unwrap();
+        warm.push((ci, k.clone()));
     }
     let w = stats();
+    for (i, (ci, ki)) in warm.iter().enumerate() {
+        let s = s_matrix(&flat.view(), n, ci);
+        let k_cpu = cpu_k(&mut dfk, ci);
+        let eps = k_error_factor(n, band * nocc, 1) + eps_cpu(n, nocc, band);
+        let ratio = max_ratio(ki, &k_cpu, &s, eps);
+        eprintln!("warm build {i}: ratio {ratio:.3e}");
+        assert!(
+            ratio <= 1.0,
+            "warm build {i} (fresh C_occ, same nocc): {ratio:e}"
+        );
+    }
     assert_eq!(w.resident_uploads, b.resident_uploads, "B was re-uploaded");
     assert_eq!(w.bytes_h2d - b.bytes_h2d, 3 * (8 * n * nocc) as u64);
     assert_eq!(w.bytes_d2h - b.bytes_d2h, 3 * (8 * n * n) as u64);
@@ -272,7 +292,20 @@ fn alpha_beta_reuse_does_not_accumulate_and_is_run_to_run_identical() {
         bits(&ka2),
         "α rebuilt after β differs: stale accumulator or non-determinism"
     );
-    for (label, c, k) in [("alpha", &ca, &ka1), ("beta", &cb, &kb)] {
+    // alpha' = same nocc as alpha, different coefficients: the upload must be refreshed
+    let ca2 = c_occ(n, 5, 11);
+    let mut ka3 = Array2::zeros((n, n));
+    dfk.build_from_occ(&ca2, &mut ka3).unwrap();
+    assert_ne!(
+        bits(&ka3),
+        bits(&ka1),
+        "alpha' gave alpha's K: a stale C_occ upload"
+    );
+    for (label, c, k) in [
+        ("alpha", &ca, &ka1),
+        ("beta", &cb, &kb),
+        ("alpha-prime", &ca2, &ka3),
+    ] {
         let nocc = c.ncols();
         let s = s_matrix(&flat.view(), n, c);
         let k_cpu = cpu_k(&mut dfk, c);

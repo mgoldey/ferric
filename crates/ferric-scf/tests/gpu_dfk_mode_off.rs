@@ -32,8 +32,13 @@ fn mode_off_leaves_every_counter_alone_and_k_is_reproducible() {
     dfk.build_from_occ(&c, &mut k1).unwrap();
     dfk.build_from_occ(&c, &mut k2).unwrap();
     assert_eq!(stats(), before, "mode off must not move any GPU counter");
-    assert_eq!(
-        k1.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
-        k2.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
-    );
+    let bits = |m: &Array2<f64>| m.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+    assert_eq!(bits(&k1), bits(&k2));
+    // and equal to the forced-host build: the dispatcher's own "not handled" answer,
+    // which is the code path of a build without the feature
+    ferric_scf::df_k_gpu::FORCE_HOST.store(true, std::sync::atomic::Ordering::SeqCst);
+    let mut k3 = Array2::zeros((n, n));
+    dfk.build_from_occ(&c, &mut k3).unwrap();
+    ferric_scf::df_k_gpu::FORCE_HOST.store(false, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(bits(&k1), bits(&k3));
 }

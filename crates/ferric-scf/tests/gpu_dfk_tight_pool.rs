@@ -255,3 +255,106 @@ fn scf_energy_under_a_refusing_pool_is_bit_identical_to_the_forced_host_run() {
         "the SCF leaked a reservation"
     );
 }
+
+fn water_dfk(budget: usize) -> (DfK<'static>, usize) {
+    let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+    let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+    let aux = PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+    let n = obs.nbasis();
+    (
+        DfK::new(Operator::coulomb(), &obs, &aux, budget).unwrap(),
+        n,
+    )
+}
+
+/// B and the K accumulator fit, the half-transform scratch does not: the first build
+/// declines (after the upload), counts PoolFull once, returns the forced-host K bit for
+/// bit, and gives every byte back.
+#[test]
+fn b_fits_but_the_scratch_is_refused_declines_on_the_first_build() {
+    use ferric_scf::df_k_gpu::resident_bytes;
+
+    let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    if !ready() {
+        return;
+    }
+    let (mut dfk, n) = water_dfk(usize::MAX);
+    let nocc = 5;
+    let band = dfk.dressed_incore_flat_for_test().unwrap().nrows();
+    let cap = pool().unwrap().capacity_bytes();
+    assert_eq!(
+        pool().unwrap().available_bytes(),
+        cap,
+        "another test left a reservation behind"
+    );
+    // after B and K are resident, one byte less than C_occ's own reservation remains
+    let left = resident_bytes(band, n).unwrap() + 8 * n * nocc - 1;
+    let hog = pool().unwrap().reserve("test hog", cap - left).unwrap();
+    let c = c_occ(n, nocc);
+    FORCE_HOST.store(true, Ordering::SeqCst);
+    let mut k_host = Array2::zeros((n, n));
+    dfk.build_from_occ(&c, &mut k_host).unwrap();
+    FORCE_HOST.store(false, Ordering::SeqCst);
+    let a = stats();
+    let mut k = Array2::zeros((n, n));
+    for _ in 0..3 {
+        dfk.build_from_occ(&c, &mut k).unwrap();
+        assert_eq!(bits(&k), bits(&k_host));
+    }
+    let b = stats();
+    assert_eq!(
+        b.gemm_cpu_pool_full,
+        a.gemm_cpu_pool_full + 1,
+        "PoolFull once, not per build"
+    );
+    assert_eq!(b.dfk_declined, a.dfk_declined + 1);
+    assert_eq!(b.dfk_device_builds, a.dfk_device_builds);
+    assert_eq!(
+        b.resident_uploads,
+        a.resident_uploads + 1,
+        "B was uploaded before the scratch refusal"
+    );
+    assert_eq!(
+        pool().unwrap().available_bytes(),
+        left,
+        "the decline leaked device memory"
+    );
+    drop(hog);
+    assert_eq!(pool().unwrap().available_bytes(), cap);
+}
+
+/// A source that spilled (tiny budget) cannot be copied to the device: one sticky
+/// decline, nothing uploaded, the CPU K.
+#[test]
+fn a_spilled_source_declines_once_and_moves_no_bytes() {
+    let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    if !ready() {
+        return;
+    }
+    let n0 = water_dfk(usize::MAX).1;
+    let (mut dfk, n) = water_dfk(n0 * n0 * 8 * 3);
+    assert!(
+        dfk.dressed_incore_flat_for_test().is_none(),
+        "fixture: the source must have spilled"
+    );
+    let c = c_occ(n, 5);
+    FORCE_HOST.store(true, Ordering::SeqCst);
+    let mut k_host = Array2::zeros((n, n));
+    dfk.build_from_occ(&c, &mut k_host).unwrap();
+    FORCE_HOST.store(false, Ordering::SeqCst);
+    let a = stats();
+    let mut k = Array2::zeros((n, n));
+    for _ in 0..3 {
+        dfk.build_from_occ(&c, &mut k).unwrap();
+        assert_eq!(bits(&k), bits(&k_host));
+    }
+    let b = stats();
+    assert_eq!(b.dfk_declined, a.dfk_declined + 1, "declined once, sticky");
+    assert_eq!(b.dfk_device_builds, a.dfk_device_builds);
+    assert_eq!(b.resident_uploads, a.resident_uploads);
+    assert_eq!(b.bytes_h2d, a.bytes_h2d);
+    assert_eq!(
+        pool().unwrap().available_bytes(),
+        pool().unwrap().capacity_bytes()
+    );
+}
