@@ -9551,6 +9551,13 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compute_eri3_mo, m)?)?;
     m.add_function(wrap_pyfunction!(compute_metric_2c, m)?)?;
     m.add_function(wrap_pyfunction!(boys_localize, m)?)?;
+    register_device_and_geometry(m)?;
+    Ok(())
+}
+
+/// Registration tail of the module: shell geometry and the CUDA backend
+/// (kept out of `ferric` so the module function's complexity stays bounded).
+fn register_device_and_geometry(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(shell_info, m)?)?;
     m.add_function(wrap_pyfunction!(gpu_status, m)?)?;
     m.add_function(wrap_pyfunction!(configure_gpu, m)?)?;
