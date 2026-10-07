@@ -407,8 +407,15 @@ impl ThreeIndexSource {
             );
         }
         if tier == Tier::Recompute {
+            let dfbs_naux = dfbs.nbasis();
             let obs = Arc::new(PreparedBasis::new(mol, obs.basis_set())?);
             let dfbs = Arc::new(PreparedBasis::new(mol, dfbs.basis_set())?);
+            debug_assert_eq!(obs.nbasis(), nao, "re-prepared orbital basis changed size");
+            debug_assert_eq!(
+                dfbs.nbasis(),
+                dfbs_naux,
+                "re-prepared auxiliary basis changed size"
+            );
             return Self::build_recompute_band(
                 op,
                 obs,
