@@ -114,3 +114,51 @@ fn a_pool_that_fits_alpha_but_not_beta_runs_same_spin_alpha_on_the_device_only()
         "nothing left reserved"
     );
 }
+
+#[test]
+fn a_pool_that_fits_each_tensor_alone_but_not_both_keeps_same_spin_on_the_device() {
+    let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    if !ready() {
+        return;
+    }
+    let cap = pool().expect("process pool").capacity_bytes();
+    let a = synth::synthetic(100, 3, 20, 0, 33);
+    let b = synth::synthetic(100, 3, 21, 0, 34);
+    let (ba, bb) = (8 * a.b.len(), 8 * b.b.len());
+    let scratch_a = 8 * a.nvir * a.b.ncols();
+    let scratch_b = 8 * b.nvir * b.b.ncols();
+    let scratch_ab = 8 * a.nvir * b.b.ncols();
+    assert!(
+        ba + scratch_a <= cap && bb + scratch_b <= cap && ba + bb + scratch_ab > cap,
+        "fixture no longer exercises the pool: cap {cap}, B_alpha {ba}, B_beta {bb}"
+    );
+    let cpu_ab = cpu_opp(&a, &b);
+    let s0 = stats();
+    let (aa, _) = same_spin_pair_kernel(a.ch(), false);
+    let (bbe, _) = same_spin_pair_kernel(b.ch(), false);
+    let s1 = stats();
+    assert_eq!(
+        (
+            s1.gemm_offloaded - s0.gemm_offloaded,
+            s1.gemm_cpu_pool_full - s0.gemm_cpu_pool_full
+        ),
+        ((a.nocc + b.nocc) as u64, 0),
+        "both same-spin energies run on the device"
+    );
+    assert!((aa - cpu_same(&a)).abs() <= bound::same_spin_bound(&a));
+    assert!((bbe - cpu_same(&b)).abs() <= bound::same_spin_bound(&b));
+    let (ab, _) = opposite_spin_pair_kernel(a.ch(), b.ch(), false);
+    let s2 = stats();
+    assert_eq!(
+        (
+            s2.gemm_cpu_pool_full - s1.gemm_cpu_pool_full,
+            s2.gemm_offloaded - s1.gemm_offloaded,
+            s2.bytes_h2d - s1.bytes_h2d
+        ),
+        (1, 0, 0),
+        "opposite-spin: one PoolFull before any transfer"
+    );
+    assert_eq!(ab.to_bits(), cpu_ab.to_bits(), "CPU energy bit for bit");
+    let p = pool().unwrap();
+    assert_eq!(p.available_bytes(), p.capacity_bytes());
+}

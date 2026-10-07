@@ -466,6 +466,7 @@ pub fn compute_u_mp2_amplitudes(
 /// convention. `Copy` (all fields are references or plain `usize`), so callers
 /// may pass by value freely.
 #[derive(Clone, Copy)]
+#[doc(hidden)]
 pub struct SpinChannel<'a> {
     /// Dressed occ-vir tensor, shape `(naux, nocc*nvir)`.
     pub b: &'a Array2<f64>,

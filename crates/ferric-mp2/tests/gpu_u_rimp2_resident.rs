@@ -166,6 +166,7 @@ fn u_rimp2_energy_matches_cpu_within_the_summation_order_bound() {
         // end to end, u_ri_mp2 on the main thread (device) vs inside a 1-thread
         // pool (CPU), every component inside its bound
         let cfg = RiMp2Config::default();
+        let e0 = stats();
         let dev = u_ri_mp2(
             &case.mol,
             &case.obs,
@@ -176,6 +177,21 @@ fn u_rimp2_energy_matches_cpu_within_the_summation_order_bound() {
         )
         .unwrap()
         .components;
+        let e1 = stats();
+        assert_eq!(
+            e1.gemm_offloaded - e0.gemm_offloaded,
+            (2 * a.nocc + b.nocc) as u64,
+            "{name}: e2e u_ri_mp2 offloads one GEMM per occupied block of aa, bb, ab"
+        );
+        assert_eq!(
+            (
+                e1.gemm_cpu_pool_full - e0.gemm_cpu_pool_full,
+                e1.gemm_cpu_layout - e0.gemm_cpu_layout,
+                e1.gemm_cpu_cuda_error - e0.gemm_cpu_cuda_error
+            ),
+            (0, 0, 0),
+            "{name}: e2e fallbacks"
+        );
         let cpu = rayon::ThreadPoolBuilder::new()
             .num_threads(1)
             .build()
@@ -208,34 +224,37 @@ fn deep_contraction_differs_in_rounding_and_stays_inside_the_bound() {
     if !ready() {
         return;
     }
-    let a = synth::synthetic(600, 5, 18, 0, 41);
-    let b = synth::synthetic(600, 4, 21, 0, 42);
-    let (d_aa, d_bb, d_ab) = device_energies(&a, &b);
-    let errs = [
-        (
-            "aa",
-            (d_aa - cpu_same(&a)).abs(),
-            bound::same_spin_bound(&a),
-        ),
-        (
-            "bb",
-            (d_bb - cpu_same(&b)).abs(),
-            bound::same_spin_bound(&b),
-        ),
-        (
-            "ab",
-            (d_ab - cpu_opp(&a, &b)).abs(),
-            bound::opposite_spin_bound(&a, &b),
-        ),
-    ];
-    for (blk, err, bd) in errs {
-        eprintln!(
-            "deep naux 600 E_{blk}: err {err:.3e} bound {bd:.3e} err/bound {:.3e}",
-            err / bd
-        );
-        assert!(err <= bd, "E_{blk}: {err:e} > {bd:e}");
+    for first in [0usize, 1] {
+        let a = synth::synthetic(600, 5, 18, first, 41);
+        let b = synth::synthetic(600, 4, 21, first, 42);
+        let (d_aa, d_bb, d_ab) = device_energies(&a, &b);
+        let errs = [
+            (
+                "aa",
+                (d_aa - cpu_same(&a)).abs(),
+                bound::same_spin_bound(&a),
+            ),
+            (
+                "bb",
+                (d_bb - cpu_same(&b)).abs(),
+                bound::same_spin_bound(&b),
+            ),
+            (
+                "ab",
+                (d_ab - cpu_opp(&a, &b)).abs(),
+                bound::opposite_spin_bound(&a, &b),
+            ),
+        ];
+        for (blk, err, bd) in errs {
+            eprintln!(
+                "deep naux 600 first_occ {first} E_{blk}: err {err:.3e} bound {bd:.3e} err/bound {:.3e}",
+                err / bd
+            );
+            assert!(err <= bd, "E_{blk}: {err:e} > {bd:e}");
+        }
     }
     // the same rule's other side on this shape: f32-rounded B is far outside
+    let a = synth::synthetic(600, 5, 18, 0, 41);
     let f = f32_rounded(&a);
     let f_aa = (cpu_same(&f) - cpu_same(&a)).abs();
     assert!(f_aa > bound::same_spin_bound(&a));
