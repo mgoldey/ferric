@@ -34,19 +34,34 @@ use super::pool::DevicePool;
 use super::precision::mixed_k_panel_override;
 use super::stats;
 
-/// Panel width. Provisional, set by the quiet-box sweep: 128 mirrors
-/// `GEMM_K_BLOCK` as a placeholder until
-/// `benchmarks/harness/examples/gpu_mixed_gemm_sweep.rs` runs on a quiet box
-/// (the accuracy half alone cannot choose: rms e falls monotonically with
-/// smaller b, so the throughput half decides). Accuracy measured at
-/// (256,8192,256), positive operands, rms e: b=64 3.9e-9, 128 5.8e-9,
-/// 256 8.9e-9, 512 1.4e-8, 1024 2.4e-8; plain sgemm 1.6e-7.
-/// Rule for the value: the smallest b in {64,128,256,512,1024} whose resident
-/// mixed throughput is >= 0.25 x the resident plain-SGEMM throughput at BOTH
-/// (393,912,5895) and (256,8192,256). Smaller b is always more accurate
-/// (`mixed_host.rs`); this picks the most accurate b that keeps the lane at
-/// >= 7x DGEMM by the §2 flush model. The measured table goes here.
-pub const MIXED_K_PANEL_DEFAULT: usize = 128;
+/// Panel width, chosen by the quiet-box sweep
+/// `benchmarks/harness/examples/gpu_mixed_gemm_sweep.rs`.
+///
+/// Rule: the smallest b in {64,128,256,512,1024} whose resident mixed
+/// throughput is >= 0.25 x the resident plain-SGEMM throughput at BOTH
+/// (393,912,5895) and (256,8192,256). Smaller b is always more accurate (rms e
+/// falls monotonically with smaller b, `mixed_host.rs`), so the rule picks the
+/// most accurate b that keeps the lane at >= 0.25 x plain SGEMM.
+///
+/// Measured (GTX 1080, 7 reps, min of reps, positive operands; CPU pressure
+/// `some avg10` 0.00 before and 0.00 after, no competing heavy process).
+/// Resident plain SGEMM: 2917 GFLOP/s at (256,8192,256), 3818 at
+/// (393,912,5895); 0.25x thresholds 729 and 954 GFLOP/s.
+///
+/// ```text
+///        (256,8192,256)           (393,912,5895)
+///   b    GFLOP/s   rms e          GFLOP/s   rms e
+///   64      815    3.9e-9            989    3.0e-8
+///  128     1358    5.8e-9           1575    5.9e-8
+///  256     1964    8.9e-9           2386    1.1e-7
+///  512     2386    1.4e-8           3198    2.2e-7
+/// 1024     2663    2.4e-8           3851    4.2e-7
+/// plain    2917    1.6e-7           3818    4.2e-7
+/// ```
+///
+/// b = 64 meets both thresholds (815 >= 729 and 989 >= 954), and it is the
+/// smallest candidate, so it is the default.
+pub const MIXED_K_PANEL_DEFAULT: usize = 64;
 
 /// The panel width in force: the env override if set, else the default.
 pub fn effective_k_panel() -> usize {

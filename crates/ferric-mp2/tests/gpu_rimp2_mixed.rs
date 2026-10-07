@@ -5,9 +5,8 @@
 //! BUDGET ROW (kernel `rimp2-energy`; every number is printed by this test and
 //! kept in the MEASURED block below):
 //!   kernel         G_i = B_iᵀ·B_tail, k = naux; resident B_ov f32
-//!   depth          n = naux per element, in panels of b = MIXED_K_PANEL_DEFAULT
-//!                  (128, the committed default; PROVISIONAL until the panel
-//!                  sweep, see gpu/mixed.rs)
+//!   depth          n = naux per element, in panels of b = effective_k_panel()
+//!                  (the shipped default, see gpu/mixed.rs)
 //!   kappa_sum      max_ab S_ab/|g_ab| is unbounded (g_ab crosses zero), so the
 //!                  budget carries the energy-level kappa_E = Σ fac|g|S/|D| / |E_os|
 //!                  and the p99 of the element kappa on block i = 0, per system
