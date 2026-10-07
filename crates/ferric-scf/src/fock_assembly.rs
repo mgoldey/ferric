@@ -134,8 +134,13 @@ fn build_df_jk_impl<'a>(
             // Multi-rank keeps the independent builds below.
             if ctx.size <= 1 {
                 let naux = dfbs.nbasis();
-                let mut raw = ferric_integrals::three_index_source::ThreeIndexSource::build_band(
-                    op, prep, &dfbs, ooc_budget, 0, naux,
+                let mut raw = ferric_integrals::three_index_source::ThreeIndexSource::build_for_jk(
+                    op,
+                    mol,
+                    prep,
+                    &dfbs,
+                    ooc_budget,
+                    (0, naux),
                 )?;
                 let df_k = Some(DfK::from_full_raw(
                     &mut raw,
@@ -148,7 +153,14 @@ fn build_df_jk_impl<'a>(
                 let df_j = Some(DfJ::from_source(raw, op, &dfbs, ooc_budget, Some(ctx))?);
                 return Ok((df_j, df_k));
             }
-            let df_j = Some(DfJ::new_banded(op, prep, &dfbs, ooc_budget, Some(ctx))?);
+            let df_j = Some(DfJ::new_for_jk(
+                op,
+                mol,
+                prep,
+                &dfbs,
+                ooc_budget,
+                Some(ctx),
+            )?);
             let df_k = Some(DfK::new_banded(op, prep, &dfbs, ooc_budget, Some(ctx))?);
             return Ok((df_j, df_k));
         }
@@ -156,7 +168,14 @@ fn build_df_jk_impl<'a>(
     let df_j = if let Some(aux_name) = j_aux {
         let dfbs_set = ferric_core::basis::bundled(aux_name)?;
         let dfbs = PreparedBasis::new(mol, &dfbs_set)?;
-        Some(DfJ::new_banded(op, prep, &dfbs, ooc_budget, Some(ctx))?)
+        Some(DfJ::new_for_jk(
+            op,
+            mol,
+            prep,
+            &dfbs,
+            ooc_budget,
+            Some(ctx),
+        )?)
     } else {
         None
     };

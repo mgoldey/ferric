@@ -177,8 +177,10 @@ When a charged allocation does not fit, the result depends on the allocation:
   fit. When only the symmetric half (`n_aux × n_bf(n_bf+1)/2 × 8` bytes, plus
   one aux row of scratch) fits, it is kept in memory as that packed triangle
   and the RI-J build reads the packed rows directly. When even that does not
-  fit, it is spilled to a file in `$TMPDIR` (`/tmp` by default) and reread on
-  every iteration.
+  fit, it is either spilled to a file in `$TMPDIR` (`/tmp` by default) and
+  reread on every iteration, or recomputed on every iteration without
+  writing anything. `auto` chooses between those two from a rate measured on
+  the machine; `[scf] jk_storage` forces `memory`, `disk` or `direct`.
 - The DFT grid AO cache is recomputed at every Fock build instead of stored.
   The energy is bit-identical.
 - An allocation with no fallback stops the job with an error naming it. For

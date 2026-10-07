@@ -2217,6 +2217,13 @@ pub struct ScfCfg {
     /// loosest value measured to reach double precision; 1e-14 left up to
     /// 6e-9 Ha in E_J). `0 ≤ p ≤ 1e-8`; 0 disables primitive screening.
     pub eri_precision: Option<f64>,
+    /// Where the raw RI-J/K three-index tensor lives: `"auto"` (default),
+    /// `"memory"`, `"disk"` or `"direct"`. `auto` keeps it in memory when it
+    /// fits `[memory] budget_gb` (packed when only the symmetric half fits),
+    /// and otherwise picks disk or recompute from a rate measured on this
+    /// machine. `memory` errors when it does not fit; `disk` always spills;
+    /// `direct` always recomputes. Omitted: `FERRIC_JK_STORAGE` if set.
+    pub jk_storage: Option<String>,
     /// Exchange builder: "direct" (default), "link", or "cosx" (seminumerical
     /// COSX exchange). Honoured by RHF, UHF and ROHF. Ignored with a warning
     /// when DF-J/DF-K is active, when the functional uses no exact exchange, or
@@ -2489,6 +2496,7 @@ impl Default for ScfCfg {
             soscf: false,
             integral_thresh: 1e-12,
             eri_precision: None,
+            jk_storage: None,
             k_builder: None,
             screening: None,
             cosx_grid: None,
@@ -2674,6 +2682,16 @@ impl ScfCfg {
                 .map_err(|e| format!("[scf] guess: {e}")),
         }
     }
+    /// The `[scf] jk_storage` policy, strictly parsed.
+    pub fn jk_storage_policy(
+        &self,
+    ) -> Result<Option<ferric_integrals::three_index_source::JkStorage>, String> {
+        self.jk_storage
+            .as_deref()
+            .map(ferric_integrals::three_index_source::JkStorage::parse)
+            .transpose()
+            .map_err(|e| format!("[scf] {e}"))
+    }
     /// Post-parse validation of the `[scf]` string knobs whose resolution is
     /// otherwise deferred to the point of use. Called from [`load_config`] so
     /// every entry point (CLI and `ferric-batch`) fails before any integral is
@@ -2685,6 +2703,7 @@ impl ScfCfg {
             (ferric_integrals::engine_pool::ERI_PRECISION_VAR.validate)(&p)
                 .map_err(|e| format!("[scf] eri_precision {p:e}: {e}"))?;
         }
+        self.jk_storage_policy()?;
         for (i, rung) in self.ladder.iter().enumerate() {
             rung.use_sad_guess()
                 .map_err(|e| format!("[[scf.ladder]] rung {i}: {e}"))?;
@@ -4803,6 +4822,23 @@ json = [1, 2]
                 .unwrap_err();
             assert!(err.contains("eri_precision"), "{bad}: {err}");
         }
+    }
+
+    /// `[scf] jk_storage` is strict: the four spellings parse, anything else
+    /// errors at load and lists them.
+    #[test]
+    fn scf_jk_storage_is_strict() {
+        assert_eq!(scf_cfg("").jk_storage_policy().unwrap(), None);
+        for v in ["auto", "memory", "disk", "direct"] {
+            let cfg = scf_cfg(&format!("jk_storage = \"{v}\""));
+            assert!(cfg.validate().is_ok(), "{v}");
+            assert_eq!(cfg.jk_storage_policy().unwrap().unwrap().as_str(), v);
+        }
+        let err = scf_cfg("jk_storage = \"ram\"").validate().unwrap_err();
+        assert!(
+            err.contains("jk_storage") && err.contains("\"direct\""),
+            "{err}"
+        );
     }
 
     /// `[scf] guess` used to accept ANY string: everything but "hcore" silently

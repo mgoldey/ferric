@@ -272,6 +272,20 @@ fn install_gpu_or_exit(cfg: &Config, cli_preset: Option<ferric_core::gpu::GpuPre
     }
 }
 
+/// Install the process-wide integral settings from `[scf]`. One CLI run is one
+/// job, so these are globals; validated here so a bad value fails before any
+/// work.
+///
+/// * `eri_precision`: libint primitive-screening precision for every SCF J/K
+///   engine.
+/// * `jk_storage`: where the raw RI-J/K three-index tensor lives.
+fn install_integral_settings(scf: &config::ScfCfg) -> Result<(), String> {
+    ferric_integrals::engine_pool::set_eri_precision(scf.eri_precision)
+        .map_err(|e| format!("[scf] {e}"))?;
+    ferric_integrals::three_index_source::set_jk_storage(scf.jk_storage_policy()?);
+    Ok(())
+}
+
 /// The actual CLI, taking argv explicitly instead of reading
 /// `std::env::args()` itself. Split out so a caller whose real OS-process
 /// argv does NOT match `[program_name, ...user_args]` can reconstruct that
@@ -351,7 +365,9 @@ pub fn run(args: Vec<String>) {
         std::process::exit(2);
     }
     let Some(toml_path) = toml_path else {
-        eprintln!("usage: ferric [--verbose|-v] [--json <path>|--no-json] [--gpu <preset>] <input.toml>");
+        eprintln!(
+            "usage: ferric [--verbose|-v] [--json <path>|--no-json] [--gpu <preset>] <input.toml>"
+        );
         std::process::exit(2);
     };
     let mut cfg = match load_config(toml_path) {
@@ -362,10 +378,8 @@ pub fn run(args: Vec<String>) {
         }
     };
     cfg.scf.verbose = cfg.scf.verbose || cli_verbose;
-    // libint primitive-screening precision for every SCF J/K engine. Process-wide
-    // (one CLI run is one job); validated here so a bad value fails before any work.
-    if let Err(e) = ferric_integrals::engine_pool::set_eri_precision(cfg.scf.eri_precision) {
-        eprintln!("error: [scf] {e}");
+    if let Err(e) = install_integral_settings(&cfg.scf) {
+        eprintln!("error: {e}");
         std::process::exit(1);
     }
     eprintln!(

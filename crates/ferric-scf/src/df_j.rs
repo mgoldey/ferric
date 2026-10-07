@@ -125,6 +125,26 @@ impl<'a> DfJ<'a> {
         Self::from_source(source, op, dfbs, budget_bytes, ctx)
     }
 
+    /// Same as [`DfJ::new_banded`] but places the raw tensor by the effective
+    /// `[scf] jk_storage` policy (memory, disk spill or recompute), which
+    /// needs the molecule to re-prepare the bases for the recompute backend.
+    pub fn new_for_jk(
+        op: Operator,
+        mol: &ferric_core::mol::Molecule,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        budget_bytes: usize,
+        ctx: Option<&'a ParallelContext>,
+    ) -> Result<Self, FerricError> {
+        let naux = dfbs.nbasis();
+        let band = match ctx {
+            Some(c) => c.aux_band(naux),
+            None => (0, naux),
+        };
+        let source = ThreeIndexSource::build_for_jk(op, mol, obs, dfbs, budget_bytes, band)?;
+        Self::from_source(source, op, dfbs, budget_bytes, ctx)
+    }
+
     /// Same as [`DfJ::new_banded`] but adopts an ALREADY-BUILT raw `(P|μν)`
     /// source instead of generating one.
     ///

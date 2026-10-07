@@ -4,6 +4,9 @@
 //! budget. In-core when the full tensor fits the budget; disk-spill otherwise.
 //! Consumers apply their own metric (V^{-1} for J, V^{-1/2} for K).
 
+pub mod jk_storage;
+pub use jk_storage::{jk_storage, set_jk_storage, JkStorage};
+
 use crate::basis_bridge::PreparedBasis;
 use crate::operator::Operator;
 use ferric_core::memory::plan::{Lifetime, MemoryPlan};
@@ -765,145 +768,191 @@ impl ThreeIndexSource {
             .saturating_mul(nao)
             .saturating_mul(8);
         let packed_bytes = band.saturating_mul(packed_pair_len(nao)).saturating_mul(8);
-        let tier = if needed <= budget_bytes {
-            "InCore"
-        } else if packed_in_core_fits(packed_bytes, nao, budget_bytes) {
-            "InCorePacked"
-        } else {
-            "Spill"
-        };
+        let tier =
+            jk_storage::memory_tier(nao, band, budget_bytes).unwrap_or(jk_storage::Tier::Spill);
         if ooc_trace() {
             eprintln!(
-                "[OOC build] naux={naux} band=[{band_p0},{band_p1}) nao={nao} needed={:.2}GB packed={:.2}GB budget={:.2}GB -> {tier}",
+                "[OOC build] naux={naux} band=[{band_p0},{band_p1}) nao={nao} needed={:.2}GB packed={:.2}GB budget={:.2}GB -> {}",
                 needed as f64 / 1e9,
                 packed_bytes as f64 / 1e9,
                 budget_bytes as f64 / 1e9,
+                tier.name(),
             );
         }
-        if tier == "InCorePacked" {
-            return Self::build_packed_in_core(
-                op,
-                obs,
-                dfbs,
-                budget_bytes,
-                (band_p0, band_p1),
-                screen,
-            );
+        Self::build_band_tier(
+            op,
+            obs,
+            dfbs,
+            budget_bytes,
+            (band_p0, band_p1),
+            screen,
+            tier,
+        )
+    }
+
+    /// Build the band `[band_p0, band_p1)` in the given storage `tier`. The
+    /// recompute tier owns its bases and is built by
+    /// [`Self::build_recompute_band`] instead.
+    pub(crate) fn build_band_tier(
+        op: Operator,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        budget_bytes: usize,
+        (band_p0, band_p1): (usize, usize),
+        screen: Option<(&crate::qqr3::QqrBounds3, f64)>,
+        tier: jk_storage::Tier,
+    ) -> Result<Self, FerricError> {
+        match tier {
+            jk_storage::Tier::InCore => {
+                Self::build_unpacked_in_core(op, obs, dfbs, (band_p0, band_p1), screen)
+            }
+            jk_storage::Tier::InCorePacked => {
+                Self::build_packed_in_core(op, obs, dfbs, budget_bytes, (band_p0, band_p1), screen)
+            }
+            jk_storage::Tier::Spill => {
+                Self::build_spilled(op, obs, dfbs, budget_bytes, (band_p0, band_p1), screen)
+            }
+            jk_storage::Tier::Recompute => Err(FerricError::General(
+                "the recompute tier owns its bases: use build_recompute_band".into(),
+            )),
         }
-        if needed <= budget_bytes {
-            // In-core: build exactly the band (global rows [band_p0, band_p1)).
-            // eri3_block returns a (band, nao, nao) tensor indexed band-locally.
-            let _charge = charge_three_index("DF 3-index (P|mn) in-core", needed)?;
-            let eri =
-                crate::threeindex::eri3_block_screened(op, obs, dfbs, band_p0, band_p1, screen)?;
-            Ok(Self {
-                naux,
-                nao,
-                block_naux: band.max(1),
-                band_p0,
-                band_p1,
-                backend: Backend::InCore(eri),
-                _charge,
-            })
-        } else {
-            // Double-buffered spill: a producer thread computes block N+1 (via the
-            // rayon-parallel `eri3_block`) while this thread writes block N to
-            // disk, so compute and I/O overlap instead of serializing. A rendezvous
-            // `sync_channel(0)` bounds the pipeline to exactly TWO live blocks at
-            // any instant (one being written, one being computed) — the producer's
-            // `send` blocks until the writer takes the previous block, so it never
-            // runs more than one block ahead. `spill_block_naux_for` sizes each
-            // block to half the budget so that pair stays inside the ceiling
-            // (budget-honest). The write thread does pure I/O — no rayon here.
-            //
-            // Block content is byte-identical to the old serial loop: `eri3_block`
-            // is write-once per element (see threeindex.rs) and blocks are written
-            // in the same p0-ascending order, so the on-disk file — and thus the
-            // read-back path in `for_each_block` — is unchanged.
-            // Preflight BEFORE creating the file or computing a single block:
-            // refuse a spill the destination cannot hold, and announce the
-            // per-SCF-iteration re-read cost the caller did not ask for.
-            // `needed` is the UNPACKED band size, used for the in-core decision
-            // above. What this branch actually WRITES is the packed triangle,
-            // ~half that -- so preflight the packed figure or the disk guard
-            // refuses spills that would comfortably fit, and the warning quotes
-            // a size and an IO time that are both 2x too large.
-            let spill_bytes = (band as u64)
-                .saturating_mul(packed_pair_len(nao) as u64)
-                .saturating_mul(8);
-            preflight_spill(spill_bytes as usize)?;
-            let block_naux = spill_block_naux_for(budget_bytes, nao);
-            let mut file =
-                tempfile::tempfile().map_err(|e| FerricError::General(format!("tempfile: {e}")))?;
+    }
 
-            // Channel carries either a computed block or a producer-side error.
-            let (tx, rx) = std::sync::mpsc::sync_channel::<Result<Array3<f64>, FerricError>>(0);
+    /// In-core: build exactly the band (global rows [band_p0, band_p1)).
+    /// `eri3_block` returns a (band, nao, nao) tensor indexed band-locally.
+    fn build_unpacked_in_core(
+        op: Operator,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        (band_p0, band_p1): (usize, usize),
+        screen: Option<(&crate::qqr3::QqrBounds3, f64)>,
+    ) -> Result<Self, FerricError> {
+        let (naux, nao) = (dfbs.nbasis(), obs.nbasis());
+        let band = band_p1 - band_p0;
+        let needed = band
+            .saturating_mul(nao)
+            .saturating_mul(nao)
+            .saturating_mul(8);
+        let _charge = charge_three_index("DF 3-index (P|mn) in-core", needed)?;
+        let eri = crate::threeindex::eri3_block_screened(op, obs, dfbs, band_p0, band_p1, screen)?;
+        Ok(Self {
+            naux,
+            nao,
+            block_naux: band.max(1),
+            band_p0,
+            band_p1,
+            backend: Backend::InCore(eri),
+            _charge,
+        })
+    }
 
-            std::thread::scope(|s| -> Result<(), FerricError> {
-                // Producer: compute blocks in ascending GLOBAL p0 order over the
-                // band [band_p0, band_p1), hand each off. Only band rows are ever
-                // computed or spilled — the on-disk file holds exactly the band.
-                s.spawn(move || {
-                    let mut p0 = band_p0;
-                    while p0 < band_p1 {
-                        let p1 = (p0 + block_naux).min(band_p1);
-                        let blk =
-                            crate::threeindex::eri3_block_screened(op, obs, dfbs, p0, p1, screen);
-                        let is_err = blk.is_err();
-                        // If the receiver hung up (writer hit an I/O error and
-                        // returned early), stop producing.
-                        if tx.send(blk).is_err() || is_err {
-                            return;
-                        }
-                        p0 = p1;
+    /// Spill the packed band to a temporary file, double-buffered.
+    fn build_spilled(
+        op: Operator,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        budget_bytes: usize,
+        (band_p0, band_p1): (usize, usize),
+        screen: Option<(&crate::qqr3::QqrBounds3, f64)>,
+    ) -> Result<Self, FerricError> {
+        let (naux, nao) = (dfbs.nbasis(), obs.nbasis());
+        let band = band_p1 - band_p0;
+        // Double-buffered spill: a producer thread computes block N+1 (via the
+        // rayon-parallel `eri3_block`) while this thread writes block N to
+        // disk, so compute and I/O overlap instead of serializing. A rendezvous
+        // `sync_channel(0)` bounds the pipeline to exactly TWO live blocks at
+        // any instant (one being written, one being computed) — the producer's
+        // `send` blocks until the writer takes the previous block, so it never
+        // runs more than one block ahead. `spill_block_naux_for` sizes each
+        // block to half the budget so that pair stays inside the ceiling
+        // (budget-honest). The write thread does pure I/O — no rayon here.
+        //
+        // Block content is byte-identical to the old serial loop: `eri3_block`
+        // is write-once per element (see threeindex.rs) and blocks are written
+        // in the same p0-ascending order, so the on-disk file — and thus the
+        // read-back path in `for_each_block` — is unchanged.
+        // Preflight BEFORE creating the file or computing a single block:
+        // refuse a spill the destination cannot hold, and announce the
+        // per-SCF-iteration re-read cost the caller did not ask for.
+        // `needed` is the UNPACKED band size, used for the in-core decision
+        // above. What this branch actually WRITES is the packed triangle,
+        // ~half that -- so preflight the packed figure or the disk guard
+        // refuses spills that would comfortably fit, and the warning quotes
+        // a size and an IO time that are both 2x too large.
+        let spill_bytes = (band as u64)
+            .saturating_mul(packed_pair_len(nao) as u64)
+            .saturating_mul(8);
+        preflight_spill(spill_bytes as usize)?;
+        let block_naux = spill_block_naux_for(budget_bytes, nao);
+        let mut file =
+            tempfile::tempfile().map_err(|e| FerricError::General(format!("tempfile: {e}")))?;
+
+        // Channel carries either a computed block or a producer-side error.
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Result<Array3<f64>, FerricError>>(0);
+
+        std::thread::scope(|s| -> Result<(), FerricError> {
+            // Producer: compute blocks in ascending GLOBAL p0 order over the
+            // band [band_p0, band_p1), hand each off. Only band rows are ever
+            // computed or spilled — the on-disk file holds exactly the band.
+            s.spawn(move || {
+                let mut p0 = band_p0;
+                while p0 < band_p1 {
+                    let p1 = (p0 + block_naux).min(band_p1);
+                    let blk = crate::threeindex::eri3_block_screened(op, obs, dfbs, p0, p1, screen);
+                    let is_err = blk.is_err();
+                    // If the receiver hung up (writer hit an I/O error and
+                    // returned early), stop producing.
+                    if tx.send(blk).is_err() || is_err {
+                        return;
                     }
-                });
-
-                // Consumer (this thread): write each block as it arrives. Pure I/O.
-                // Reused across blocks so the pack buffer is allocated once.
-                let mut packbuf: Vec<f64> = Vec::new();
-                for blk in rx.iter() {
-                    let blk = blk?;
-                    // Store the PACKED μν triangle: half the bytes written, and
-                    // half the bytes re-read on every subsequent streaming pass
-                    // (which for DfK is every SCF iteration -- the cost the
-                    // spill warning quantifies).
-                    let b = blk.shape()[0];
-                    let pair = packed_pair_len(nao);
-                    packbuf.resize(b * pair, 0.0);
-                    pack_lower_triangle(&blk.view(), nao, &mut packbuf);
-                    let bytes: &[u8] = bytemuck::cast_slice(&packbuf[..b * pair]);
-                    file.write_all(bytes)
-                        .map_err(|e| FerricError::General(format!("spill write: {e}")))?;
-                    // Evict just-written pages so the cgroup-charged page cache does
-                    // not accumulate the whole (>budget) file. See drop_page_cache.
-                    drop_page_cache(&file);
+                    p0 = p1;
                 }
-                Ok(())
-            })?;
+            });
 
-            file.flush().ok();
-            drop_page_cache(&file);
-            // The spilled tensor lives on DISK; what is RESIDENT is the one
-            // read-back scratch block, so that is what is charged.
-            let _charge = charge_three_index_soft(
-                "DF 3-index (P|mn) spill scratch",
-                block_naux
-                    .saturating_mul(nao)
-                    .saturating_mul(nao)
-                    .saturating_mul(8),
-            );
-            let scratch = Array3::<f64>::zeros((block_naux, nao, nao));
-            Ok(Self {
-                naux,
-                nao,
-                block_naux,
-                band_p0,
-                band_p1,
-                backend: Backend::DiskSpill { file, scratch },
-                _charge,
-            })
-        }
+            // Consumer (this thread): write each block as it arrives. Pure I/O.
+            // Reused across blocks so the pack buffer is allocated once.
+            let mut packbuf: Vec<f64> = Vec::new();
+            for blk in rx.iter() {
+                let blk = blk?;
+                // Store the PACKED μν triangle: half the bytes written, and
+                // half the bytes re-read on every subsequent streaming pass
+                // (which for DfK is every SCF iteration -- the cost the
+                // spill warning quantifies).
+                let b = blk.shape()[0];
+                let pair = packed_pair_len(nao);
+                packbuf.resize(b * pair, 0.0);
+                pack_lower_triangle(&blk.view(), nao, &mut packbuf);
+                let bytes: &[u8] = bytemuck::cast_slice(&packbuf[..b * pair]);
+                file.write_all(bytes)
+                    .map_err(|e| FerricError::General(format!("spill write: {e}")))?;
+                // Evict just-written pages so the cgroup-charged page cache does
+                // not accumulate the whole (>budget) file. See drop_page_cache.
+                drop_page_cache(&file);
+            }
+            Ok(())
+        })?;
+
+        file.flush().ok();
+        drop_page_cache(&file);
+        // The spilled tensor lives on DISK; what is RESIDENT is the one
+        // read-back scratch block, so that is what is charged.
+        let _charge = charge_three_index_soft(
+            "DF 3-index (P|mn) spill scratch",
+            block_naux
+                .saturating_mul(nao)
+                .saturating_mul(nao)
+                .saturating_mul(8),
+        );
+        let scratch = Array3::<f64>::zeros((block_naux, nao, nao));
+        Ok(Self {
+            naux,
+            nao,
+            block_naux,
+            band_p0,
+            band_p1,
+            backend: Backend::DiskSpill { file, scratch },
+            _charge,
+        })
     }
 
     /// Build the band `[band_p0, band_p1)` directly into the packed in-core
