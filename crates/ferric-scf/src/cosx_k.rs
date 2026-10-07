@@ -734,14 +734,25 @@ pub struct CosxTimings {
     /// measured to do.
     pub screen_degenerate: usize,
     /// Kept (shell pair, sub-batch) units the router classified (unscaled by
-    /// the sub-batch's point count, unlike `pairs_kept`). 0 when unscreened.
+    /// the sub-batch's point count, unlike `pairs_kept`). Without a screen
+    /// (`screen_thresh = None`) every pair is kept, so every pair-sub-batch
+    /// unit is tallied as `Route::F64` (the router itself is refused there);
+    /// 0 only for the cosx-a backend, which has no routing.
     pub route_units: usize,
+    /// Sum over kept units of the sub-batch's point count; equals `pairs_kept`
+    /// exactly (both count kept units x points).
+    pub route_points: usize,
     /// Of `route_units`, the units classified [`Route::F32`].
     pub route_f32_units: usize,
     /// Flop-weighted F32 share: `sum_F32 pair_flops * points / sum_kept
     /// pair_flops * points` (`Md3c1e::pair_flops_per_point`); 0.0 when the
     /// router is off or nothing is kept.
     pub route_f32_flop_share: f64,
+    /// Raw numerator and denominator of `route_f32_flop_share`: flops per
+    /// point x points, summed over F32 units / over all kept units (0 when the
+    /// router is off, the flop table is only built for a nonzero multiplier).
+    pub route_f32_flops: u64,
+    pub route_flops: u64,
     /// `tau = fp64_multiplier * screen_thresh` in force (0.0 = router off).
     pub fp64_tau: f64,
 }
@@ -1117,7 +1128,7 @@ impl<'a> CosxK<'a> {
         n: usize,
     ) -> bool {
         let route = screen.as_mut().map_or(Route::F64, |sc| sc.classify(s1, s2));
-        tally.note(route, self.unit_flops(s1, s2, n));
+        tally.note(route, self.unit_flops(s1, s2, n), n);
         route != Route::Drop
     }
 
@@ -1253,11 +1264,14 @@ impl<'a> CosxK<'a> {
         t.bound_evals = acc.bound_evals.load(Ordering::Relaxed);
         t.screen_degenerate = acc.degenerate.load(Ordering::Relaxed);
         t.route_units = acc.route_units.load(Ordering::Relaxed);
+        t.route_points = acc.route_points.load(Ordering::Relaxed);
         t.route_f32_units = acc.route_f32_units.load(Ordering::Relaxed);
         let (fl, fl32) = (
             acc.route_flops.load(Ordering::Relaxed),
             acc.route_f32_flops.load(Ordering::Relaxed),
         );
+        t.route_flops = fl;
+        t.route_f32_flops = fl32;
         t.route_f32_flop_share = if fl == 0 {
             0.0
         } else {
@@ -1621,6 +1635,7 @@ struct BlockCounters {
     bound_evals: AtomicUsize,
     degenerate: AtomicUsize,
     route_units: AtomicUsize,
+    route_points: AtomicUsize,
     route_f32_units: AtomicUsize,
     /// Flops (per point) x points, summed over kept units / over F32 units.
     route_flops: AtomicU64,
@@ -1643,6 +1658,7 @@ pub enum Route {
 #[derive(Default)]
 struct RouteTally {
     units: usize,
+    points: usize,
     f32_units: usize,
     flops: u64,
     f32_flops: u64,
@@ -1651,11 +1667,12 @@ struct RouteTally {
 impl RouteTally {
     /// Record one classified unit of `flops` (per-point flops x points).
     #[inline]
-    fn note(&mut self, route: Route, flops: u64) {
+    fn note(&mut self, route: Route, flops: u64, points: usize) {
         if route == Route::Drop {
             return;
         }
         self.units += 1;
+        self.points += points;
         self.flops += flops;
         if route == Route::F32 {
             self.f32_units += 1;
@@ -1665,6 +1682,7 @@ impl RouteTally {
 
     fn flush(&self, acc: &BlockCounters) {
         acc.route_units.fetch_add(self.units, Ordering::Relaxed);
+        acc.route_points.fetch_add(self.points, Ordering::Relaxed);
         acc.route_f32_units
             .fetch_add(self.f32_units, Ordering::Relaxed);
         acc.route_flops.fetch_add(self.flops, Ordering::Relaxed);
@@ -1790,6 +1808,8 @@ impl BatchScreen<'_> {
         let mut kept = false;
         let mut geom = false;
         let mut max_p = 0.0_f64;
+        // `f64::max` swallows NaN, so a NaN product is tracked on its own.
+        let mut nonfinite = false;
         let mut scanned = 0;
         for (q, reg) in self.regions.iter().enumerate() {
             let f = self.fmax[q * self.nsh + s1].max(self.fmax[q * self.nsh + s2]);
@@ -1803,6 +1823,7 @@ impl BatchScreen<'_> {
                 geom = true;
             }
             max_p = max_p.max(est * f);
+            nonfinite |= (est * f).is_nan();
             if est * f >= self.thresh {
                 kept = true;
                 break;
@@ -1817,9 +1838,12 @@ impl BatchScreen<'_> {
         if self.tau > 0.0 {
             for (q, reg) in self.regions.iter().enumerate().skip(scanned) {
                 let f = self.fmax[q * self.nsh + s1].max(self.fmax[q * self.nsh + s2]);
-                max_p = max_p.max(reg.bound(self.bounds, s1, s2) * f);
+                let p = reg.bound(self.bounds, s1, s2) * f;
+                max_p = max_p.max(p);
+                nonfinite |= p.is_nan();
             }
-            if max_p < self.tau {
+            // A non-finite bound proves nothing: such a unit stays F64.
+            if !nonfinite && max_p.is_finite() && max_p < self.tau {
                 return Route::F32;
             }
         }
@@ -2207,6 +2231,14 @@ mod tests {
         assert_eq!(mk(5.0 * est).classify(1, 0), Route::F32);
         // tau exactly equal to the max is NOT below it.
         assert_eq!(mk(3.0 * est).classify(1, 0), Route::F64);
+        // A NaN fmax in a later group must not be swallowed by `f64::max`:
+        // the unit stays F64 whatever tau is (NaN guard).
+        let mut nan = mk(f64::INFINITY);
+        nan.fmax = vec![0.0, 0.5, f64::NAN, f64::NAN];
+        assert_eq!(nan.classify(1, 0), Route::F64);
+        let mut inf = mk(f64::INFINITY);
+        inf.fmax = vec![0.0, 0.5, 0.0, f64::INFINITY];
+        assert_eq!(inf.classify(1, 0), Route::F64);
         // Dropped by the screen whatever tau is: both groups below thresh.
         let mut dropped = mk(5.0 * est);
         dropped.fmax = vec![0.0; 4];

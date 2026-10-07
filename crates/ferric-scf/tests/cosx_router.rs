@@ -106,22 +106,12 @@ fn bits(k: &Array2<f64>) -> Vec<u64> {
 #[test]
 fn multiplier_zero_routes_nothing_and_k_is_bit_identical_to_the_unrouted_build() {
     let s = butane();
-    // The default config never names the field: that is the pre-change build's
-    // behaviour (multiplier 0.0 is its default, asserted).
+    // The library default is the router off (asserted); `k_zero` is that arm.
     assert_eq!(CosxConfig::default().fp64_multiplier, 0.0);
-    let (k_default, t_default) = build(
-        &s,
-        CosxConfig {
-            fp64_multiplier: CosxConfig::default().fp64_multiplier,
-            ..cfg(0.0)
-        },
-    );
     let (k_zero, t_zero) = build(&s, cfg(0.0));
-    assert_eq!(bits(&k_zero), bits(&k_default));
     assert_eq!(t_zero.route_f32_units, 0);
     assert_eq!(t_zero.route_f32_flop_share, 0.0);
     assert_eq!(t_zero.fp64_tau, 0.0);
-    assert_eq!(t_default.pairs_kept, t_zero.pairs_kept);
     // The golden: the screen with the router ENABLED keeps exactly the same
     // pairs and produces the same bits (the router only classifies).
     let (k_on, t_on) = build(&s, cfg(1e5));
@@ -130,6 +120,27 @@ fn multiplier_zero_routes_nothing_and_k_is_bit_identical_to_the_unrouted_build()
     assert_eq!(t_on.pairs_kept_geom, t_zero.pairs_kept_geom);
     assert_eq!(t_on.bound_evals, t_zero.bound_evals);
     assert_eq!(t_on.route_units, t_zero.route_units);
+}
+
+/// The same bit-identity on the PRODUCTION default grid (`CosxConfig::default`,
+/// not the 30x110 test grid): router on (1e5) vs off, butane/def2-SVP.
+#[test]
+fn k_is_bit_identical_with_the_router_on_at_the_production_default_grid() {
+    let s = butane();
+    let at = |m: f64| {
+        build(
+            &s,
+            CosxConfig {
+                fp64_multiplier: m,
+                ..CosxConfig::default()
+            },
+        )
+    };
+    let (k0, t0) = at(0.0);
+    let (k1, t1) = at(1e5);
+    assert_eq!(bits(&k1), bits(&k0));
+    assert_eq!(t1.pairs_kept, t0.pairs_kept);
+    assert!(t1.route_f32_units > 0 && t1.route_f32_units < t1.route_units);
 }
 
 #[test]
@@ -159,10 +170,11 @@ fn routed_share_is_zero_at_multiplier_zero_one_at_infinity_and_monotone_between(
     assert!(shares.windows(2).all(|w| w[0] < w[1]), "{shares:?}");
     let t_inf_units = build(&s, cfg(f64::INFINITY)).1;
     assert_eq!(t_inf_units.route_f32_units, t_inf_units.route_units);
-    // Non-inert in the middle: 1e5 x 1e-7 = tau 1e-2 routes a strict
-    // fraction (the spike measured 0.65-0.93 on ethane/benzene/octane).
-    let mid = shares[5];
-    assert!(0.0 < mid && mid < 1.0, "share at 1e5: {mid}");
+    // Non-inert at the seed: shares = [0, 1e2, 1e3, 1e4, 1e5, 1e6, inf], so
+    // index 4 is the 1e5 seed (tau 1e-2; the spike measured 0.65-0.93 on
+    // ethane/benzene/octane). Loose band around the measured ~0.88.
+    let mid = shares[4];
+    assert!(0.80 < mid && mid < 0.95, "share at 1e5: {mid}");
     eprintln!("butane/def2-SVP router shares (0, 1e2..1e6, inf): {shares:?}");
 }
 
@@ -171,9 +183,11 @@ fn the_router_never_routes_a_unit_the_screen_dropped() {
     let s = butane();
     let (_, t) = build(&s, cfg(1e5));
     assert!(t.route_units > 0 && t.route_f32_units <= t.route_units);
-    // `pairs_kept` is the kept-unit count scaled by each sub-batch's points
-    // (1..=COSX_SUB_BATCH_POINTS), `route_units` the unscaled count: a unit is
-    // routed only if kept, so both bracket each other.
+    // `pairs_kept` is the kept-unit count scaled by each sub-batch's points;
+    // `route_points` sums the same point counts over the routed units, so a
+    // unit is routed iff kept and the two agree exactly. `route_units` is
+    // unscaled (>= 1 point per unit, <= COSX_SUB_BATCH_POINTS).
+    assert_eq!(t.route_points, t.pairs_kept);
     assert!(t.route_units <= t.pairs_kept);
     assert!(t.pairs_kept <= t.route_units * COSX_SUB_BATCH_POINTS);
     assert!(t.pairs_kept < t.pairs_total, "the screen dropped something");
@@ -187,6 +201,51 @@ fn the_router_never_routes_a_unit_the_screen_dropped() {
     );
     assert_eq!(tu.route_f32_units, 0);
     assert_eq!(tu.fp64_tau, 0.0);
+}
+
+/// The share is FLOP-weighted: with everything kept (screen threshold so low
+/// that almost no unit is dropped) the weighted denominator is
+/// within 1% of `sum(pair_flops_table) x npts`, recomputed here from the table; and at the
+/// seed the flop share differs from the unweighted unit share (an
+/// unweighted-share mutant fails both).
+#[test]
+fn the_share_is_flop_weighted_from_the_pair_flops_table() {
+    let s = butane();
+    let kern = Md3c1e::new(&s.prep).expect("kernel");
+    let table_sum: u64 = kern.pair_flops_table().iter().sum();
+    let (_, all) = build(
+        &s,
+        CosxConfig {
+            screen_thresh: Some(1e-30),
+            ..cfg(1e30)
+        },
+    );
+    // Not every unit survives even at 1e-30 (a far sub-batch's tight-core AO
+    // values underflow to exactly 0, measured 68 560 800 of 68 607 000 pairs
+    // kept), so the denominator is bracketed, not equated: at most the whole
+    // table x npts, and (measured) above 0.99 of it.
+    let npts = pool().install(|| {
+        let ctx = ParallelContext::default();
+        CosxK::new(&ctx, &s.mol, &s.prep, cfg(0.0), usize::MAX)
+            .expect("CosxK")
+            .npts()
+    }) as u64;
+    assert!(all.pairs_kept as f64 > 0.99 * all.pairs_total as f64);
+    let full = table_sum * npts;
+    assert!(
+        all.route_flops <= full && all.route_flops as f64 > 0.99 * full as f64,
+        "{} vs {full}",
+        all.route_flops
+    );
+    assert_eq!(all.route_f32_flops, all.route_flops, "tau 1e0 routes all");
+    let (_, t) = build(&s, cfg(1e5));
+    let weighted = t.route_f32_flops as f64 / t.route_flops as f64;
+    assert_eq!(weighted, t.route_f32_flop_share);
+    let unweighted = t.route_f32_units as f64 / t.route_units as f64;
+    assert!(
+        (weighted - unweighted).abs() > 0.01,
+        "flop-weighted {weighted} vs unit share {unweighted} must differ"
+    );
 }
 
 #[test]
