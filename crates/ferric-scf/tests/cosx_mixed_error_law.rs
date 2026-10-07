@@ -1,7 +1,8 @@
-//! Task D2: the COSX mixed-precision (`cosx-kern`) error law. Alkanes C4
-//! (un-ignored), C8, C12, C16, C20 (`#[ignore]`, precondition: a quiet box;
-//! deviation from the brief, which asked for C4/C8/C12 un-ignored: the C4 cell
-//! alone took 26 minutes at load ~14, C12 is ~15x that) at def2-SVP and butane
+//! Task D2: the COSX mixed-precision (`cosx-kern`) error law. Ethane/SVP
+//! on the 30x110 grid is the one un-ignored cell (cheap); C4, C8, C12, C16, C20
+//! (`#[ignore]`, precondition: a quiet box; deviation from the brief, which
+//! asked for C4/C8/C12 un-ignored: the C4 cell alone took 26 minutes at load
+//! ~14 and CI kills a test at 8 minutes, C12 is ~15x that) at def2-SVP and butane
 //! at def2-TZVP (`#[ignore]`); densities
 //! from RI-JK RHF; production default grid (`CosxConfig::default`);
 //! `cosx_fp64_multiplier` in {1e4, 1e5, 1e6} (tau = 1e-3, 1e-2, 1e-1 at the
@@ -21,7 +22,7 @@
 //!
 //! `CosxK::f32_k_bound`: per routed F32 unit the f32 block's element bound
 //! `Md3c1e::pair_block_f32_bound` (derivation in `md3c1e/f32_block.rs`: Higham
-//! chain depth `D = nnz + 16 l_tot + 49` per primitive pair, absolute-value
+//! chain depth `D = nnz + 18 l_tot + 47` per primitive pair, absolute-value
 //! shadow recursion `S_pp`, primitive-pair term `V` per variant) times `|F|`,
 //! `|dK~| <= |X| |dG|^T`, through the fit `K = sym(S S_num^-1 K~)` as
 //! `0.5 (|Q| B + (|Q| B)^T)`. It assumes the dense half transform (the cells
@@ -34,7 +35,7 @@
 //!
 //! | kernel | depth | kappa_sum | bound | mitigation | precision |
 //! |---|---|---|---|---|---|
-//! | `cosx-kern` | per primitive pair `D = nnz + 16 l_tot + 49` f32 roundings (<= 2 nnz-term chain + R recursion + Boys); across primitive pairs `n_pp` (f64, compensated f32, or plain f32) | block-level p99 `sum|terms|/|A|`: 58.8 (butane/def2-SVP; C8-C20 not yet measured) | per block element `sum_pp (e^{1/8} gamma_D(u32) + 2 gamma_D(u64)) S_pp + V` with `V = gamma_{n_pp}(u64) sum|A_pp|` (F64), `2 u32 sum|A_pp|` (CompensatedF32), `gamma_{n_pp-1}(u32) sum|A_pp|` (F32); propagated through the f64 fold and the fit | Hölder routing: f32 only where `max_q est_q fmax_q < multiplier x screen_thresh`; f64 fold and fit; f32-range overflow falls back to the f64 block (counted) | f32 block, f64 or compensated-f32 primitive-pair sum, f64 fold |
+//! | `cosx-kern` | per primitive pair `D = nnz + 18 l_tot + 47` f32 roundings (contraction + R recursion + Boys, derivation in `md3c1e/f32_block.rs`); across primitive pairs `n_pp` (f64, compensated f32, or plain f32) | block-level `sum|terms|/|A|`: p99 58.8 (butane/def2-SVP, probe sample); per-class MAX over water/def2-QZVP probes 1.0 ((s,s)) to 4.1e4 ((4,0)); C8-C20 not yet measured | per block element, first order and assuming no underflow, `sum_pp (e^{1/8} gamma_D(u32) + 2 gamma_D(u64)) S_pp + V` with `V = gamma_{n_pp}(u64) sum|A_pp|` (F64), `2 u32 sum|A_pp|` (CompensatedF32), `gamma_{n_pp-1}(u32) sum|A_pp|` (F32); propagated through the f64 fold and the fit | Hölder routing: f32 only where `max_q est_q fmax_q < multiplier x screen_thresh`; f64 fold and fit; f32-range overflow falls back to the f64 block (counted) | f32 block, f64 or compensated-f32 primitive-pair sum, f64 fold |
 //!
 //! # Measured so far (butane/def2-SVP, default grid, 2 workers)
 //!
@@ -116,12 +117,35 @@ fn sweep(sizes: &[usize]) -> Vec<common_map::Row> {
     for &n in sizes {
         let sys = common_map::load(&format!("C{n}"), &format!("alkane_{n}.xyz"), "def2-svp");
         let scf: &[f64] = if n <= 8 { &[1e5] } else { &[] };
-        rows.extend(common_map::run_system(&sys, &MULTS, scf));
+        rows.extend(common_map::run_system(
+            &sys,
+            &MULTS,
+            scf,
+            &common_map::Opts::production(),
+        ));
     }
     rows
 }
 
+/// The cheap un-ignored cell (CI's nextest slow-timeout kills a test at 8
+/// minutes): ethane/def2-SVP on the 30x110 test grid (not the production
+/// default), the 1e5 seed, the compensated variant only, no SCF. It asserts
+/// the same per-cell rules (inside the bound, `dE_x` inside its bound, the
+/// f32 path ran, no fallback) as the full cells below.
 #[test]
+fn ethane_def2_svp_quick_cell() {
+    let sys = common_map::load("C2", "alkane_2.xyz", "def2-svp");
+    let opts = common_map::Opts {
+        grid: Some((30, 110)),
+        sums: vec![ferric_integrals::md3c1e::PrimPairSum::CompensatedF32],
+    };
+    let rows = common_map::run_system(&sys, &[1e5], &[], &opts);
+    report(&rows);
+    check_rows(&rows);
+}
+
+#[test]
+#[ignore = "precondition: quiet box; 26 min at load ~14 (the nextest slow-timeout is 8 min)"]
 fn alkane_def2_svp_c4_cell() {
     let rows = sweep(&[4]);
     report(&rows);
@@ -140,7 +164,7 @@ fn alkane_def2_svp_error_law_c4_c8_c12() {
 #[ignore = "precondition: quiet box; butane/def2-TZVP default-grid cell"]
 fn butane_def2_tzvp_cell() {
     let sys = common_map::load("C4", "alkane_4.xyz", "def2-tzvp");
-    let rows = common_map::run_system(&sys, &MULTS, &[1e5]);
+    let rows = common_map::run_system(&sys, &MULTS, &[1e5], &common_map::Opts::production());
     report(&rows);
     check_rows(&rows);
 }

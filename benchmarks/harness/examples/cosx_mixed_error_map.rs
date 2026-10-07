@@ -51,7 +51,7 @@ fn main() {
         } else {
             &[]
         };
-        svp.extend(map::run_system(&sys, &MULTS, scf));
+        svp.extend(map::run_system(&sys, &MULTS, scf, &map::Opts::production()));
     }
     map::print_rows(&svp);
     let sl = map::slopes(&svp);
@@ -59,7 +59,7 @@ fn main() {
     map::print_device_rule(&sl);
     if tzvp {
         let sys = map::load("C4", "alkane_4.xyz", "def2-tzvp");
-        let rows = map::run_system(&sys, &MULTS, &[1e5]);
+        let rows = map::run_system(&sys, &MULTS, &[1e5], &map::Opts::production());
         map::print_rows(&rows);
     }
 }

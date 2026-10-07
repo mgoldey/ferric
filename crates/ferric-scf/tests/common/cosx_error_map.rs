@@ -6,6 +6,7 @@
 use ferric_core::basis::bundled;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
+use ferric_dft::grid::AtomicGridConfig;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::md3c1e::{Md3c1e, PrimPairSum};
 use ferric_integrals::operator::Operator;
@@ -90,13 +91,37 @@ pub fn load(label: &str, xyz: &str, basis: &str) -> System {
 
 /// K-level configuration: production default grid, DENSE half transform (so
 /// the a-priori bound is exact), no final pass (a K build never runs one).
-fn k_cfg(mult: f64, route: Option<PrimPairSum>) -> CosxConfig {
+fn k_cfg(mult: f64, route: Option<PrimPairSum>, opts: &Opts) -> CosxConfig {
+    let grid = opts.grid.map(|(n_radial, n_angular)| AtomicGridConfig {
+        n_radial,
+        n_angular,
+        ..Default::default()
+    });
     CosxConfig {
+        grid: grid.unwrap_or_else(|| CosxConfig::default().grid),
         half_transform: CosxHalfTransform::Dense,
         final_grid: None,
         fp64_multiplier: mult,
         f32_route: route,
         ..CosxConfig::default()
+    }
+}
+
+/// What a sweep runs: the K-level grid (`None` = the production default; the
+/// SCF always uses the production default) and the `PrimPairSum` variants.
+#[derive(Clone, Debug)]
+pub struct Opts {
+    pub grid: Option<(usize, usize)>,
+    pub sums: Vec<PrimPairSum>,
+}
+
+impl Opts {
+    /// Production default grid, all three variants.
+    pub fn production() -> Self {
+        Self {
+            grid: None,
+            sums: PrimPairSum::ALL.to_vec(),
+        }
     }
 }
 
@@ -183,11 +208,18 @@ fn scf_energy(sys: &System, cosx: CosxConfig) -> (f64, usize) {
 
 /// All rows of one system: every multiplier x every PrimPairSum; the SCF
 /// comparison for the multipliers in `scf_mults` (CPU energy computed once).
-pub fn run_system(sys: &System, mults: &[f64], scf_mults: &[f64]) -> Vec<Row> {
+pub fn run_system(sys: &System, mults: &[f64], scf_mults: &[f64], opts: &Opts) -> Vec<Row> {
     let n = sys.prep.nbasis();
     let ctx = ParallelContext::default();
     let (k_ref, points) = pool().install(|| {
-        let mut kb = CosxK::new(&ctx, &sys.mol, &sys.prep, k_cfg(0.0, None), usize::MAX).unwrap();
+        let mut kb = CosxK::new(
+            &ctx,
+            &sys.mol,
+            &sys.prep,
+            k_cfg(0.0, None, opts),
+            usize::MAX,
+        )
+        .unwrap();
         let mut k = Array2::zeros((n, n));
         kb.build(&sys.d, &mut k).unwrap();
         (k, kb.grid_points().to_vec())
@@ -199,10 +231,16 @@ pub fn run_system(sys: &System, mults: &[f64], scf_mults: &[f64]) -> Vec<Row> {
         .map(|_| scf_energy(sys, CosxConfig::default()));
     let mut rows = Vec::new();
     for &m in mults {
-        for sum in PrimPairSum::ALL {
+        for &sum in &opts.sums {
             let (k, bound, t) = pool().install(|| {
-                let mut kb =
-                    CosxK::new(&ctx, &sys.mol, &sys.prep, k_cfg(m, Some(sum)), usize::MAX).unwrap();
+                let mut kb = CosxK::new(
+                    &ctx,
+                    &sys.mol,
+                    &sys.prep,
+                    k_cfg(m, Some(sum), opts),
+                    usize::MAX,
+                )
+                .unwrap();
                 let mut k = Array2::zeros((n, n));
                 kb.build(&sys.d, &mut k).unwrap();
                 let bound = kb.f32_k_bound(&sys.d, sum).unwrap();

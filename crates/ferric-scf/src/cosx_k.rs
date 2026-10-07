@@ -501,7 +501,11 @@ pub struct CosxConfig {
     /// (`Md3c1e::pair_block_f32`, primitive-pair sum `sum`); `None` (the
     /// default, and the only value any shipped path sets) computes every kept
     /// unit in f64, so K is bit-identical for every multiplier. Needs
-    /// `fp64_multiplier > 0`. The fold stays f64 either way.
+    /// `fp64_multiplier > 0`. The fold stays f64 either way. HIDDEN AND
+    /// TEST-ONLY: no shipped path (CLI, Python) sets it and the library does
+    /// not consult `[gpu] mixed_kernels`; wiring it behind
+    /// `GpuSettings::mixed_allows(MixedKernel::CosxKern)` is Task D6, in the
+    /// commit that adds `cosx-kern` to `MixedKernelSet::SHIPPED`.
     #[doc(hidden)]
     pub f32_route: Option<PrimPairSum>,
     /// FINAL-GRID PASS (Psi4 `COSX_*_FINAL` + `COSX_MAXITER_FINAL = 1`; ORCA

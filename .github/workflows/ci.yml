@@ -819,7 +819,7 @@ jobs:
                 screening_exactness csam_screening link_scf_anchor link_screen_reachability \
                 grid_prune_live_scf hirshfeld_symmetry \
                 cdft_coupling_hene cdft_state_selection rimp2_qqr3_screening \
-                cosx_group_screen_anchors cosx_sparse_anchors"
+                cosx_group_screen_anchors cosx_sparse_anchors cosx_mixed_error_law"
           EXPR=""
           for b in $SLOW; do
             [ -n "$EXPR" ] && EXPR="$EXPR + "
@@ -917,7 +917,8 @@ jobs:
           # lines that honour it.
           cargo test --no-fail-fast -p ferric-scf \
             --test cdft_coupling_hene --test cdft_state_selection \
-            --test cosx_group_screen_anchors --test cosx_sparse_anchors --locked || rc=1
+            --test cosx_group_screen_anchors --test cosx_sparse_anchors \
+            --test cosx_mixed_error_law --locked || rc=1
           cargo test --no-fail-fast -p ferric-mp2 --test rimp2_qqr3_screening --locked || rc=1
           if [ "$rc" -ne 0 ]; then
             echo "::error::one or more deferred test commands failed -- see the FAILED lines above"

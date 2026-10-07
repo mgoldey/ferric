@@ -68,6 +68,10 @@ fn setup(mol: Molecule, basis: &str) -> Setup {
     }
 }
 
+fn water() -> Setup {
+    setup(Molecule::parse_xyz(WATER, 0, 1).unwrap(), "def2-svp")
+}
+
 fn butane() -> Setup {
     let path = format!(
         "{}/../../testdata/molecules/alkane_4.xyz",
@@ -125,6 +129,7 @@ fn multiplier_zero_routes_nothing_and_k_is_bit_identical_to_the_unrouted_build()
 /// The same bit-identity on the PRODUCTION default grid (`CosxConfig::default`,
 /// not the 30x110 test grid): router on (1e5) vs off, butane/def2-SVP.
 #[test]
+#[ignore = "slow tier: two production-grid butane K builds"]
 fn k_is_bit_identical_with_the_router_on_at_the_production_default_grid() {
     let s = butane();
     let at = |m: f64| {
@@ -144,6 +149,7 @@ fn k_is_bit_identical_with_the_router_on_at_the_production_default_grid() {
 }
 
 #[test]
+#[ignore = "slow tier: 8 butane K builds (one per decade); the seed point is checked in the fast tier"]
 fn routed_share_is_zero_at_multiplier_zero_one_at_infinity_and_monotone_between() {
     let s = butane();
     let (k0, t0) = build(&s, cfg(0.0));
@@ -201,16 +207,29 @@ fn the_router_never_routes_a_unit_the_screen_dropped() {
     );
     assert_eq!(tu.route_f32_units, 0);
     assert_eq!(tu.fp64_tau, 0.0);
+    // The seed cannot go inert: shares over (0, 1e2..1e6, inf) measured 0,
+    // .24, .44, .69, .88, .99, 1.0 on butane/def2-SVP; 1e5 is index 4.
+    let share = t.route_f32_flop_share;
+    assert!(0.80 < share && share < 0.95, "share at 1e5: {share}");
+    // The share is flop-weighted (`route_f32_flops / route_flops`), not the
+    // unit share: they differ by more than 0.01 here.
+    let weighted = t.route_f32_flops as f64 / t.route_flops as f64;
+    assert_eq!(weighted, share);
+    let unweighted = t.route_f32_units as f64 / t.route_units as f64;
+    assert!(
+        (weighted - unweighted).abs() > 0.01,
+        "{weighted} vs {unweighted}"
+    );
 }
 
-/// The share is FLOP-weighted: with everything kept (screen threshold so low
-/// that almost no unit is dropped) the weighted denominator is
-/// within 1% of `sum(pair_flops_table) x npts`, recomputed here from the table; and at the
-/// seed the flop share differs from the unweighted unit share (an
-/// unweighted-share mutant fails both).
+/// The flop weight: with everything kept (screen threshold so low that almost
+/// no unit is dropped) the weighted denominator is within 1% of
+/// `sum(pair_flops_table) x npts`, recomputed from the table (an
+/// unweighted-share mutant, `unit_flops = points`, failed this assertion by 2 orders of
+/// magnitude when performed once, on its butane form). Water, so it is cheap.
 #[test]
-fn the_share_is_flop_weighted_from_the_pair_flops_table() {
-    let s = butane();
+fn the_flop_weight_is_the_pair_flops_table_times_points() {
+    let s = water();
     let kern = Md3c1e::new(&s.prep).expect("kernel");
     let table_sum: u64 = kern.pair_flops_table().iter().sum();
     let (_, all) = build(
@@ -220,10 +239,9 @@ fn the_share_is_flop_weighted_from_the_pair_flops_table() {
             ..cfg(1e30)
         },
     );
-    // Not every unit survives even at 1e-30 (a far sub-batch's tight-core AO
-    // values underflow to exactly 0, measured 68 560 800 of 68 607 000 pairs
-    // kept), so the denominator is bracketed, not equated: at most the whole
-    // table x npts, and (measured) above 0.99 of it.
+    // Not every unit need survive even at 1e-30 (AO values of tight cores
+    // underflow to exactly 0 far away; butane kept 68 560 800 of 68 607 000
+    // pairs), so the denominator is bracketed: at most the whole table x npts.
     let npts = pool().install(|| {
         let ctx = ParallelContext::default();
         CosxK::new(&ctx, &s.mol, &s.prep, cfg(0.0), usize::MAX)
@@ -237,15 +255,7 @@ fn the_share_is_flop_weighted_from_the_pair_flops_table() {
         "{} vs {full}",
         all.route_flops
     );
-    assert_eq!(all.route_f32_flops, all.route_flops, "tau 1e0 routes all");
-    let (_, t) = build(&s, cfg(1e5));
-    let weighted = t.route_f32_flops as f64 / t.route_flops as f64;
-    assert_eq!(weighted, t.route_f32_flop_share);
-    let unweighted = t.route_f32_units as f64 / t.route_units as f64;
-    assert!(
-        (weighted - unweighted).abs() > 0.01,
-        "flop-weighted {weighted} vs unit share {unweighted} must differ"
-    );
+    assert_eq!(all.route_f32_flops, all.route_flops, "tau routes all");
 }
 
 /// The `f32_route` test seam: with it set, exactly the router's F32 units are
@@ -255,7 +265,7 @@ fn the_share_is_flop_weighted_from_the_pair_flops_table() {
 /// multiplier it is refused.
 #[test]
 fn f32_route_computes_exactly_the_routed_units() {
-    let s = butane();
+    let s = water();
     let (k_f64, t_f64) = build(&s, cfg(1e5));
     assert_eq!((t_f64.f32_blocks, t_f64.f32_fallbacks), (0, 0));
     for sum in PrimPairSum::ALL {
@@ -270,7 +280,7 @@ fn f32_route_computes_exactly_the_routed_units() {
         assert_eq!(t.f32_blocks + t.f32_fallbacks, t.route_f32_units, "{sum:?}");
         assert_eq!(
             t.f32_fallbacks, 0,
-            "{sum:?}: no f32-range fallback on butane/SVP"
+            "{sum:?}: no f32-range fallback on water/SVP"
         );
         assert!(t.f32_blocks > 0, "{sum:?}");
         assert_ne!(bits(&k), bits(&k_f64), "{sum:?}: the f32 path must be live");
@@ -381,4 +391,32 @@ fn rijcosx_scf_energy_is_bit_identical_with_the_router_on() {
     assert!(a.converged && b.converged);
     assert_eq!(a.energy.to_bits(), b.energy.to_bits());
     assert_eq!(a.iterations, b.iterations);
+}
+
+/// GOLDEN: the seam-off K of water/def2-SVP (30x110 grid, two workers, the
+/// deterministic density below) hashes to the value measured at the D1 commit
+/// 52fe8d88, i.e. D2 changed no f64 bit of K. FNV-1a over the K bits. Taken on
+/// an AVX2+FMA host (the kernel's FMA path); a host without FMA runs the
+/// portable path, whose bits differ, so the test returns early there.
+#[test]
+fn seam_off_k_bits_match_the_d1_golden() {
+    const GOLDEN: u64 = 0xb8c5_7af4_e256_e48a;
+    let s = water();
+    if !Md3c1e::new(&s.prep).unwrap().uses_fma() {
+        return;
+    }
+    let n = s.prep.nbasis();
+    let mut d = Array2::<f64>::zeros((n, n));
+    for i in 0..n {
+        for j in 0..n {
+            d[(i, j)] = 0.1 / (1.0 + (i as f64 - j as f64).abs()) * ((i + 2 * j) as f64).cos();
+        }
+    }
+    let d = &d + &d.t();
+    let s = Setup { d, ..s };
+    let (k, _) = build(&s, cfg(0.0));
+    let h = k.iter().fold(0xcbf2_9ce4_8422_2325_u64, |h, v| {
+        (h ^ v.to_bits()).wrapping_mul(0x100_0000_01b3)
+    });
+    assert_eq!(h, GOLDEN, "K bits changed vs the D1 commit: {h:016x}");
 }
