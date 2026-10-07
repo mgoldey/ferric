@@ -110,6 +110,17 @@ pub fn jk_storage() -> JkStorage {
         })
 }
 
+/// Resolve the policy strictly: an invalid `FERRIC_JK_STORAGE` is an error
+/// naming the variable, not a warning. The CLI calls this once at start so the
+/// environment is refused the way the TOML key is.
+pub fn validate_jk_storage() -> Result<JkStorage, String> {
+    let explicit = JkStorage::from_code(OVERRIDE.load(Ordering::Relaxed));
+    JK_STORAGE_VAR
+        .resolve(explicit, ferric_core::config::env_lookup)
+        .map(|r| r.value)
+        .map_err(|e| format!("FERRIC_JK_STORAGE: {e}"))
+}
+
 /// Set (or with `None`, clear) the process-wide explicit policy.
 pub fn set_jk_storage(value: Option<JkStorage>) {
     OVERRIDE.store(value.map_or(UNSET, JkStorage::code), Ordering::Relaxed);
@@ -185,6 +196,11 @@ pub struct Calibration {
 /// `T_build` is the whole-band integral time, `N` is [`ASSUMED_PASSES`]. The
 /// spill build overlaps compute with the write, hence the `max`. Ties go to
 /// Recompute, which needs no scratch disk.
+///
+/// The shared RI-JK path streams the raw tensor one more time to dress it for
+/// K. That pass costs `T_build` under Recompute and `bytes/R_read` under
+/// Spill, one pass in `N + 1`, and is not counted: it cannot move the choice
+/// except within a few percent of the break-even.
 pub fn recompute_is_cheaper(cal: &Calibration, band: usize, packed_bytes: usize) -> bool {
     let t_build = cal.build_s_per_row * band as f64;
     let Some((w, r)) = cal.io else {
@@ -209,7 +225,7 @@ pub fn decide(
             let packed = band * packed_pair_len(nao) * 8;
             FerricError::General(format!(
                 "jk_storage = \"memory\": the 3-index tensor needs {:.2} GB packed \
-                 ({:.2} GB unpacked) plus one aux row of scratch, but the memory budget is \
+                 ({:.2} GB unpacked) plus 64 aux rows of scratch, but the memory budget (or what the shared pool has free) is \
                  {:.2} GB. Raise [memory] budget_gb or use jk_storage = \"auto\", \"disk\" \
                  or \"direct\".",
                 packed as f64 / 1e9,
@@ -235,15 +251,24 @@ pub fn decide(
 
 /// Measure [`Calibration`] for the band `[p0, p1)`.
 ///
-/// Costs one warm-up row, four blocks of ~3% of the band each (at most 128 rows),
-/// and a 64 MiB write + sync + cold read: about a second on a SATA SSD. The
-/// timed block uses the same rayon-parallel `eri3_block` the real build uses,
-/// so the per-row cost includes the parallel efficiency actually obtained.
+/// Costs one untimed warm-up block, four timed blocks of ~3% of the band each
+/// (at most 128 rows), and a cold write + sync + direct read of up to 64 MiB:
+/// about two seconds on a SATA SSD. Blocks use the same rayon-parallel
+/// `eri3_block` the real build uses, so the per-row cost includes the parallel
+/// efficiency actually obtained. Every allocation here is uncharged, so block
+/// rows and the IO buffer are capped by `budget_bytes` the way the spill block
+/// is.
+///
+/// `free_bytes` is the free space of the spill directory (`None` if unknown).
+/// When the packed band plus the spill headroom does not fit there, the spill
+/// is not an option and no IO is measured (`io = None`, which selects
+/// Recompute).
 pub fn calibrate(
     op: Operator,
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
     (p0, p1): (usize, usize),
+    (budget_bytes, free_bytes): (usize, Option<u64>),
 ) -> Result<Calibration, FerricError> {
     let nao = obs.nbasis();
     let pair = packed_pair_len(nao);
@@ -251,7 +276,10 @@ pub fn calibrate(
     // Four blocks at the centres of the band's quarters: the cost per aux row
     // varies with the aux shell mix (heavy-atom d/f rows versus hydrogen
     // rows), so one block in the middle over- or under-states the average.
-    let rows = (band / 32).clamp(1, 128).min(band);
+    let rows = (band / 32)
+        .clamp(1, 128)
+        .min(spill_block_naux_for(budget_bytes, nao))
+        .min(band);
     // Warm-up with a full-size block, untimed: every rayon worker builds its
     // libint engine on first use, which would otherwise be charged to the rows.
     crate::threeindex::eri3_block(op, obs, dfbs, p0, p0 + rows)?;
@@ -266,7 +294,15 @@ pub fn calibrate(
         seconds += t.elapsed().as_secs_f64();
     }
     let build_s_per_row = seconds.max(1e-9) / (4 * rows) as f64;
-    let io = measure_io(&sample, pair, band);
+    let packed_bytes = band.saturating_mul(pair).saturating_mul(8);
+    let spill_fits = free_bytes.is_none_or(|free| {
+        super::check_spill_disk(packed_bytes as u64, free, &super::spill_dir()).is_ok()
+    });
+    let io = if spill_fits {
+        measure_io(&sample, pair, band, budget_bytes / 8)
+    } else {
+        None
+    };
     Ok(Calibration {
         build_s_per_row,
         io,
@@ -275,9 +311,11 @@ pub fn calibrate(
 
 /// Cold `(write, read)` rates of the spill directory, or `None` if it cannot
 /// hold a calibration file. Content is the compute sample repeated: the rate of
-/// an SSD does not depend on it.
-fn measure_io(sample: &[f64], pair: usize, band: usize) -> Option<(f64, f64)> {
-    let io_rows = (CALIBRATION_IO_BYTES / (pair * 8)).clamp(1, band);
+/// an SSD does not depend on it. The file is at most [`CALIBRATION_IO_BYTES`]
+/// and at most `max_bytes` (the read buffer is resident), at least one row.
+fn measure_io(sample: &[f64], pair: usize, band: usize, max_bytes: usize) -> Option<(f64, f64)> {
+    let io_bytes = CALIBRATION_IO_BYTES.min(max_bytes);
+    let io_rows = (io_bytes / (pair * 8)).clamp(1, band);
     let mut file = tempfile::tempfile().ok()?;
     let t = Instant::now();
     let mut written = 0usize;
@@ -314,7 +352,8 @@ impl ThreeIndexSource {
         let nao = obs.nbasis();
         let band = band_p1 - band_p0;
         let (tier, cal) = decide(policy, (nao, band, budget_bytes), || {
-            calibrate(op, obs, dfbs, (band_p0, band_p1))
+            let free = super::free_bytes_at(&super::spill_dir());
+            calibrate(op, obs, dfbs, (band_p0, band_p1), (budget_bytes, free))
         })?;
         if super::ooc_trace() {
             let c = cal.map_or(String::new(), |c| {
@@ -577,9 +616,49 @@ mod tests {
         let obs = PreparedBasis::new(&mol, &basis::bundled("def2-svp").unwrap()).unwrap();
         let dfbs =
             PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
-        let c = calibrate(op, &obs, &dfbs, (0, dfbs.nbasis())).unwrap();
+        let c = calibrate(op, &obs, &dfbs, (0, dfbs.nbasis()), (usize::MAX, None)).unwrap();
         assert!(c.build_s_per_row.is_finite() && c.build_s_per_row > 0.0);
         let (w, r) = c.io.expect("the temp dir is writable in tests");
         assert!(w.is_finite() && w > 0.0 && r.is_finite() && r > 0.0);
+    }
+
+    /// `auto` rules the spill out when the spill directory cannot hold the
+    /// packed tensor plus headroom: calibration reports no IO, so recompute
+    /// wins whatever the build time is.
+    #[test]
+    fn a_full_spill_directory_rules_out_spill() {
+        let mol = dimer();
+        let op = Operator::coulomb();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("def2-svp").unwrap()).unwrap();
+        let dfbs =
+            PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+        let band = (0, dfbs.nbasis());
+        let roomy = calibrate(op, &obs, &dfbs, band, (usize::MAX, Some(u64::MAX / 2))).unwrap();
+        assert!(roomy.io.is_some());
+        let full = calibrate(op, &obs, &dfbs, band, (usize::MAX, Some(1_000_000))).unwrap();
+        assert!(full.io.is_none(), "1 MB free cannot hold the packed tensor");
+        let packed = band.1 * packed_pair_len(obs.nbasis()) * 8;
+        assert!(recompute_is_cheaper(&full, band.1, packed));
+    }
+
+    /// Calibration rows and its IO buffer obey the budget (the allocations are
+    /// not charged to the pool).
+    #[test]
+    fn calibration_respects_a_tiny_budget() {
+        let mol = dimer();
+        let op = Operator::coulomb();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("def2-svp").unwrap()).unwrap();
+        let dfbs =
+            PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+        let nao = obs.nbasis();
+        let c = calibrate(
+            op,
+            &obs,
+            &dfbs,
+            (0, dfbs.nbasis()),
+            (nao * nao * 8 * 2, None),
+        )
+        .unwrap();
+        assert!(c.build_s_per_row > 0.0);
     }
 }

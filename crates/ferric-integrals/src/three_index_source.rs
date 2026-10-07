@@ -5,7 +5,7 @@
 //! Consumers apply their own metric (V^{-1} for J, V^{-1/2} for K).
 
 pub mod jk_storage;
-pub use jk_storage::{jk_storage, set_jk_storage, JkStorage};
+pub use jk_storage::{jk_storage, set_jk_storage, validate_jk_storage, JkStorage};
 
 use crate::basis_bridge::PreparedBasis;
 use crate::operator::Operator;
@@ -52,12 +52,29 @@ fn spill_block_naux_for(budget_bytes: usize, nao: usize) -> usize {
 /// loops read.
 const PACKED_SCRATCH_CAP_BYTES: usize = 512 * 1024 * 1024;
 
-/// Does the packed band, plus at least ONE unpacked aux row of scratch, fit the
-/// budget? The scratch row is the floor a `for_each_block` consumer needs; a
-/// consumer that reads [`ThreeIndexSource::packed_flat`] directly needs none.
+/// Unpacked aux rows of headroom a packed in-core source must leave for a
+/// `for_each_block` consumer: the widest J chunk (`chunk_width` is clamped to
+/// 64 rows), so the dressing GEMM never degenerates to single-row blocks.
+const PACKED_MIN_SCRATCH_ROWS: usize = 64;
+
+/// Does the packed band, plus [`PACKED_MIN_SCRATCH_ROWS`] unpacked rows of
+/// scratch (capped at [`PACKED_SCRATCH_CAP_BYTES`]), fit BOTH the budget and
+/// what the shared memory pool has FREE right now?
+///
+/// The pool check matters because the packed tensor is hard-charged
+/// (`charge_three_index`): a second packed-eligible source built while the
+/// first is resident (an RSH J/K pair, or `df_j_aux != df_k_aux`) is admitted
+/// against `budget_bytes` alone, then refused by the pool it never consulted.
+/// With the check it falls to the soft-charged spill/recompute tiers instead.
+/// With no pool installed there is nothing to consult.
 fn packed_in_core_fits(packed_bytes: usize, nao: usize, budget_bytes: usize) -> bool {
     let row = nao.saturating_mul(nao).saturating_mul(8);
-    packed_bytes.saturating_add(row) <= budget_bytes
+    let head = row
+        .saturating_mul(PACKED_MIN_SCRATCH_ROWS)
+        .min(PACKED_SCRATCH_CAP_BYTES);
+    let need = packed_bytes.saturating_add(head);
+    let pool_free = ferric_core::memory::pool::global_available_bytes().unwrap_or(usize::MAX);
+    need <= budget_bytes && need <= pool_free
 }
 
 /// Aux rows per unpacked scratch block for a packed in-core source: the
@@ -323,7 +340,8 @@ fn check_spill_disk(needed: u64, free: u64, dir: &std::path::Path) -> Result<(),
          out from under the rest of the system). Remedies: raise the in-core ceiling so \
          the tensor never spills ([memory] budget_gb / FERRIC_MEM_BUDGET_GB); point the \
          spill elsewhere (TMPDIR=/path/with/room); use a smaller auxiliary basis; or use \
-         a K builder that does not materialize the 3-index tensor ([scf] k_builder).",
+         a K builder that does not materialize the 3-index tensor ([scf] k_builder); or \
+         recompute the integrals each pass instead of writing them (jk_storage = \"direct\").",
         needed as f64 / 1e9,
         dir.display(),
         free as f64 / 1e9,
@@ -1723,7 +1741,7 @@ fn stream_spill_packed(
     file: &mut File,
     pair: usize,
     (band, band_p0, rows): (usize, usize, usize),
-    mut f: impl FnMut(PackedBlock<'_>) -> Result<(), FerricError>,
+    f: impl FnMut(PackedBlock<'_>) -> Result<(), FerricError>,
 ) -> Result<(), FerricError> {
     let file: &File = file;
     let fd = file.as_raw_fd();
@@ -1734,31 +1752,54 @@ fn stream_spill_packed(
             libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_SEQUENTIAL);
         }
     }
+    let read = |l0: usize, b: usize| {
+        let got = read_spill_block(file, direct.as_ref(), pair, (l0, b));
+        if direct.is_none() {
+            // SAFETY: as above; DONTNEED on a range already copied out.
+            unsafe {
+                libc::posix_fadvise(
+                    fd,
+                    (l0 * pair * 8) as libc::off_t,
+                    (b * pair * 8) as libc::off_t,
+                    libc::POSIX_FADV_DONTNEED,
+                );
+            }
+        }
+        got
+    };
+    stream_read_ahead(read, pair, (band, band_p0, rows), f)
+}
+
+/// The read-ahead pipeline behind [`stream_spill_packed`], generic over the
+/// block reader so its failure paths can be driven without a broken disk.
+///
+/// A reader error is forwarded to the consumer and stops the reader; a
+/// consumer error drops the channel, which stops the reader at its next send,
+/// and the scope joins it before returning. The consumer also checks it
+/// received exactly `band` rows, so a reader that quietly stops early cannot
+/// produce a short, silently wrong contraction.
+fn stream_read_ahead(
+    read: impl Fn(usize, usize) -> Result<SpillRead, FerricError> + Sync,
+    pair: usize,
+    (band, band_p0, rows): (usize, usize, usize),
+    mut f: impl FnMut(PackedBlock<'_>) -> Result<(), FerricError>,
+) -> Result<(), FerricError> {
     let (tx, rx) = std::sync::mpsc::sync_channel::<Result<SpillRead, FerricError>>(1);
+    let read = &read;
     std::thread::scope(|s| -> Result<(), FerricError> {
         s.spawn(move || {
             let mut l0 = 0usize;
             while l0 < band {
                 let b = rows.min(band - l0);
-                let got = read_spill_block(file, direct.as_ref(), pair, (l0, b));
+                let got = read(l0, b);
                 let failed = got.is_err();
-                if direct.is_none() {
-                    // SAFETY: as above; DONTNEED on a range already copied out.
-                    unsafe {
-                        libc::posix_fadvise(
-                            fd,
-                            (l0 * pair * 8) as libc::off_t,
-                            (b * pair * 8) as libc::off_t,
-                            libc::POSIX_FADV_DONTNEED,
-                        );
-                    }
-                }
                 if tx.send(got).is_err() || failed {
                     return;
                 }
                 l0 += b;
             }
         });
+        let mut received = 0usize;
         for item in rx {
             let SpillRead { l0, buf, start } = item?;
             let b = rows.min(band - l0);
@@ -1768,6 +1809,12 @@ fn stream_spill_packed(
                 p0: band_p0 + l0,
                 data,
             })?;
+            received += b;
+        }
+        if received != band {
+            return Err(FerricError::General(format!(
+                "packed stream ended after {received} of {band} aux rows"
+            )));
         }
         Ok(())
     })
@@ -2760,11 +2807,20 @@ mod tests {
         );
     }
 
+    /// A molecule large enough that the packed in-core tier is admissible: the
+    /// packed tensor plus 64 unpacked rows of scratch must fit below the
+    /// unpacked tensor (propane / def2-SVP: nao 82, 3.4 MB of scratch against a
+    /// 19 MB packed and 38 MB unpacked tensor).
+    fn packed_eligible_molecule() -> Molecule {
+        Molecule::load_xyz("../../testdata/molecules/alkane_3.xyz").unwrap()
+    }
+
     #[test]
     fn packed_in_core_tier_is_chosen_by_packed_size_and_equals_dense_eri3() {
-        let (mol,) = water();
-        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
-        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let mol = packed_eligible_molecule();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("def2-svp").unwrap()).unwrap();
+        let dfbs =
+            PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
         let op = Operator::coulomb();
         let dense = crate::threeindex::eri3_tensor(op, &obs, &dfbs).unwrap();
         let (naux, nao, _) = dense.dim();
@@ -2798,9 +2854,10 @@ mod tests {
 
     #[test]
     fn packed_streaming_agrees_across_backends_and_read_modes() {
-        let (mol,) = water();
-        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
-        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let mol = packed_eligible_molecule();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("def2-svp").unwrap()).unwrap();
+        let dfbs =
+            PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
         let op = Operator::coulomb();
         let dense = crate::threeindex::eri3_tensor(op, &obs, &dfbs).unwrap();
         let (naux, nao, _) = dense.dim();
@@ -2836,9 +2893,17 @@ mod tests {
             for (l0, b) in [(0, 5), (5, 17), (naux - 3, 3)] {
                 let r = read_spill_block(file, None, pair, (l0, b)).unwrap();
                 assert!(r.buf[r.start..r.start + b * pair] == want[l0 * pair..(l0 + b) * pair]);
-                if let Some(d) = open_direct(file, naux * pair) {
-                    let r = read_spill_block(file, Some(&d), pair, (l0, b)).unwrap();
-                    assert!(r.buf[r.start..r.start + b * pair] == want[l0 * pair..(l0 + b) * pair]);
+                match open_direct(file, naux * pair) {
+                    Some(d) => {
+                        let r = read_spill_block(file, Some(&d), pair, (l0, b)).unwrap();
+                        assert!(
+                            r.buf[r.start..r.start + b * pair] == want[l0 * pair..(l0 + b) * pair]
+                        );
+                    }
+                    None => eprintln!(
+                        "SKIPPED: O_DIRECT is not available on the spill directory; \
+                         the direct-read leg of this test did not run"
+                    ),
                 }
             }
         } else {
@@ -2848,10 +2913,10 @@ mod tests {
         let mut recomputed = ThreeIndexSource::build_recomputing(
             op,
             std::sync::Arc::new(
-                PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap(),
+                PreparedBasis::new(&mol, &basis::bundled("def2-svp").unwrap()).unwrap(),
             ),
             std::sync::Arc::new(
-                PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap(),
+                PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap(),
             ),
             tiny,
         )
@@ -2872,6 +2937,85 @@ mod tests {
         let mut full = ThreeIndexSource::build(op, &obs, &dfbs, usize::MAX).unwrap();
         assert!(!full.supports_packed_stream());
         assert!(full.for_each_packed_block(5, |_| Ok(())).is_err());
+    }
+
+    fn read_of(pair: usize) -> impl Fn(usize, usize) -> Result<SpillRead, FerricError> + Sync {
+        move |l0, b| {
+            Ok(SpillRead {
+                l0,
+                buf: vec![l0 as f64; b * pair],
+                start: 0,
+            })
+        }
+    }
+
+    #[test]
+    fn read_ahead_delivers_every_row_once_in_order() {
+        let (pair, band) = (3, 23);
+        let mut seen = Vec::new();
+        stream_read_ahead(read_of(pair), pair, (band, 100, 5), |blk| {
+            seen.push((blk.p0, blk.data.nrows()));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(seen, vec![(100, 5), (105, 5), (110, 5), (115, 5), (120, 3)]);
+    }
+
+    #[test]
+    fn read_ahead_propagates_an_injected_reader_error() {
+        let pair = 3;
+        let read = move |l0: usize, b: usize| {
+            if l0 >= 10 {
+                Err(FerricError::General("injected read failure".into()))
+            } else {
+                read_of(pair)(l0, b)
+            }
+        };
+        let mut blocks = 0;
+        let err = stream_read_ahead(read, pair, (40, 0, 5), |_| {
+            blocks += 1;
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("injected read failure"), "{err}");
+        assert_eq!(blocks, 2, "only the blocks before the failure are consumed");
+    }
+
+    #[test]
+    fn read_ahead_joins_cleanly_when_the_consumer_fails_mid_stream() {
+        let pair = 3;
+        let mut blocks = 0;
+        let err = stream_read_ahead(read_of(pair), pair, (400, 0, 5), |_| {
+            blocks += 1;
+            if blocks == 2 {
+                Err(FerricError::General("consumer failure".into()))
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("consumer failure"), "{err}");
+        assert_eq!(blocks, 2);
+    }
+
+    #[test]
+    fn a_truncated_spill_file_is_an_error_not_a_short_contraction() {
+        let mol = packed_eligible_molecule();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+        let dfbs =
+            PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+        let nao = obs.nbasis();
+        let mut src =
+            ThreeIndexSource::build(Operator::coulomb(), &obs, &dfbs, nao * nao * 8 * 6).unwrap();
+        assert!(src.is_spilled_for_test());
+        if let Backend::DiskSpill { file, .. } = &src.backend {
+            let len = file.metadata().unwrap().len();
+            file.set_len(len / 2).unwrap();
+        }
+        let err = src
+            .for_each_packed_block(4, |_| Ok(()))
+            .expect_err("a truncated spill must fail loudly");
+        assert!(err.to_string().contains("spill read"), "{err}");
     }
 
     #[test]

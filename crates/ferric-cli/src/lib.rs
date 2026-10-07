@@ -283,6 +283,9 @@ fn install_integral_settings(scf: &config::ScfCfg) -> Result<(), String> {
     ferric_integrals::engine_pool::set_eri_precision(scf.eri_precision)
         .map_err(|e| format!("[scf] {e}"))?;
     ferric_integrals::three_index_source::set_jk_storage(scf.jk_storage_policy()?);
+    // Refuse a malformed FERRIC_JK_STORAGE here, as a malformed TOML value is,
+    // instead of warning and running as `auto` at the first RI-J build.
+    ferric_integrals::three_index_source::validate_jk_storage()?;
     Ok(())
 }
 

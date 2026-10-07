@@ -949,16 +949,16 @@ fn jk_storage_places_the_tensor_without_changing_the_energy() {
         let extra = format!(
             "[memory]\nbudget_gb = {budget}\n{TIGHT}jk_storage = \"{storage}\"\n[dft]\nfunctional = \"PBE\"\n"
         );
-        body("water.xyz", 1, "def2-svp", "ksdft", &extra)
+        body("alkane_3.xyz", 1, "def2-svp", "ksdft", &extra)
     };
     let reference = run_ok("jk_ref", &job("auto", "4.0"));
     let e_ref = value(&reference, "energy ");
-    // water/def2-SVP: nao 24, naux 113: unpacked 0.52 MB, packed 0.27 MB.
+    // propane/def2-SVP: unpacked ~20 MB, packed ~10 MB plus 3.4 MB of scratch.
     for (storage, budget) in [
-        ("auto", "0.0004"),
-        ("memory", "0.0004"),
-        ("disk", "0.0004"),
-        ("direct", "0.0004"),
+        ("auto", "0.015"),
+        ("memory", "0.015"),
+        ("disk", "0.015"),
+        ("direct", "0.015"),
         ("direct", "4.0"),
     ] {
         let out = run_ok(&format!("jk_{storage}_{budget}"), &job(storage, budget));
@@ -971,7 +971,7 @@ fn jk_storage_places_the_tensor_without_changing_the_energy() {
     }
     assert_refused(
         "jk_memory_refused",
-        &job("memory", "0.0001"),
+        &job("memory", "0.005"),
         &["jk_storage", "memory"],
     );
 }

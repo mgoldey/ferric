@@ -313,8 +313,9 @@ Butane, one thread; TZ is def2-TZVP (184 functions), QZ is def2-QZVP (528).
 
 **Start with density fitting** whenever its three-index tensor fits in memory
 (`n_aux × n_bf² × 8` bytes: 1 GB for butane/QZVP, 7 GB for octane/QZVP; half
-that when stored as the packed symmetric triangle). It spills to disk when it
-does not. It is two to three orders of magnitude faster
+that when stored as the packed symmetric triangle). When it does not fit, it is
+spilled to disk or recomputed each iteration, whichever a measurement on the
+machine says is cheaper (`[scf] jk_storage`). It is two to three orders of magnitude faster
 per build than anything else here. Its error is a fitting error, not zero, and
 it grows with system size.
 

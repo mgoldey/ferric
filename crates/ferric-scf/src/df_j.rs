@@ -682,14 +682,13 @@ mod tests {
     }
 
     #[test]
-    fn packed_j_matches_unpacked_water_symmetric_and_nonsymmetric_density() {
-        let mol =
-            Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1).unwrap();
-        assert_packed_matches(&mol, "cc-pvdz", "cc-pvdz-ri", true);
+    fn packed_j_matches_unpacked_propane_symmetric_and_nonsymmetric_density() {
+        let mol = alkane(3);
+        assert_packed_matches(&mol, "def2-svp", "def2-universal-jkfit", true);
         // The unpacked path contracts the raw D; the symmetric B makes the
         // antisymmetric part of D drop out of J, which the packed weights
         // D[μν]+D[νμ] must reproduce.
-        assert_packed_matches(&mol, "cc-pvdz", "cc-pvdz-ri", false);
+        assert_packed_matches(&mol, "def2-svp", "def2-universal-jkfit", false);
     }
 
     #[test]
