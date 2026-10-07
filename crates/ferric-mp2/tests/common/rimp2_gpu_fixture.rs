@@ -10,29 +10,20 @@ use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::Array2;
 
-/// The SCF settings. The aug-cc bases (hundreds of functions) and the C12 chain use RI-JK with a
-/// loose integral threshold and convergence so the reference SCF is cheap: every
-/// arm of a test compares on the SAME B_ov and orbital energies this SCF
-/// produces, so only their mutual consistency matters, not how converged the
-/// orbitals are against an exact-integral SCF.
-fn scf_config(sys: &str, obs_name: &str) -> RhfConfig {
-    if obs_name.starts_with("aug-cc") || sys == "alkane_12" {
-        RhfConfig {
-            max_iter: 200,
-            energy_conv: 1e-8,
-            density_conv: 1e-6,
-            integral_thresh: 1e-9,
-            df_j_aux: Some("def2-universal-jkfit".into()),
-            df_k_aux: Some("def2-universal-jkfit".into()),
-            ..Default::default()
-        }
-    } else {
-        RhfConfig {
-            max_iter: 200,
-            energy_conv: 1e-11,
-            density_conv: 1e-9,
-            ..Default::default()
-        }
+/// The SCF settings: RI-JK (def2-universal-jkfit) with loose integral threshold
+/// and convergence, so the reference SCF is cheap. Every arm of a test compares
+/// on the SAME B_ov and orbital energies this SCF produces, so only their mutual
+/// consistency matters, not how converged the orbitals are against an
+/// exact-integral SCF.
+fn scf_config() -> RhfConfig {
+    RhfConfig {
+        max_iter: 200,
+        energy_conv: 1e-8,
+        density_conv: 1e-6,
+        integral_thresh: 1e-9,
+        df_j_aux: Some("def2-universal-jkfit".into()),
+        df_k_aux: Some("def2-universal-jkfit".into()),
+        ..Default::default()
     }
 }
 
@@ -75,7 +66,7 @@ pub fn prepare_scf(
         &obs,
         op,
         &bounds,
-        &scf_config(sys, obs_name),
+        &scf_config(),
     )
     .unwrap();
     assert!(rhf.converged, "{sys}: RHF did not converge");

@@ -61,6 +61,11 @@ use super::stats;
 ///
 /// b = 64 meets both thresholds (815 >= 729 and 989 >= 954), and it is the
 /// smallest candidate, so it is the default.
+///
+/// The rule covers only those two named shapes. At (1024,4096,1024) and
+/// (7921,7921,289) b = 64 would NOT meet 0.25 x plain SGEMM while b = 128 would
+/// (thresholds 1084 and 1026 GFLOP/s against 1456 and 1196 for b = 128); those
+/// shapes are outside the rule.
 pub const MIXED_K_PANEL_DEFAULT: usize = 64;
 
 /// The panel width in force: the env override if set, else the default.

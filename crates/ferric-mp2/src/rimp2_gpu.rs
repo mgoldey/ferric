@@ -36,8 +36,40 @@ use ferric_core::gpu::{GpuMode, GpuStatus, MixedKernel, Precision};
 use ferric_tensors::einsum::GEMM_K_BLOCK;
 use ndarray::{s, Array2, ArrayView2};
 use rayon::prelude::*;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::rimp2::{pair_energy, SpinComponents};
+
+/// Test hook (mirrors `FORCE_KERNEL_FAILURE`): when set to a block index, the
+/// device block `G_i` with that `i` fails with a typed error before any work,
+/// so the mid-loop failure path (counters, fallback) can be exercised.
+#[doc(hidden)]
+pub static FAIL_AT_BLOCK: AtomicUsize = AtomicUsize::new(usize::MAX);
+/// Test hook: the injected failure is a `GpuError::Kernel` in the MIXED stage
+/// only (a mixed-path failure the dispatcher turns into the f64 device path)
+/// when `true`, else a `GpuError::Cuda` in either stage (a CPU fallback).
+#[doc(hidden)]
+pub static FAIL_AS_KERNEL: AtomicBool = AtomicBool::new(false);
+
+/// Counter updates of finished blocks, applied only when the whole call
+/// succeeds so that a run that ends as the f64 device path or the CPU path
+/// never shows mixed or offloaded work it threw away.
+#[derive(Default)]
+struct Tally {
+    f64_blocks: Vec<usize>,
+    mixed_blocks: Vec<(usize, usize)>,
+}
+
+impl Tally {
+    fn commit(self) {
+        for d2h in self.f64_blocks {
+            note_offloaded(0, d2h);
+        }
+        for (panels, d2h) in self.mixed_blocks {
+            note_mixed(panels, 0, d2h);
+        }
+    }
+}
 
 /// Dispatcher: `None` means "run the CPU path" (reason counted unless the
 /// mode is off). Never panics; never touches CUDA when the mode is off.
@@ -194,11 +226,34 @@ pub fn spin_components_on_device(
         e_os += a;
         e_ss += b;
     }
+    stage.tally.commit();
     Ok(SpinComponents {
         e_os,
         e_ss,
         e_total: e_os + e_ss,
     })
+}
+
+/// Refuses (`GpuError::F32Range`, to the f64 device path) a `B_ov` whose f32
+/// PANEL SUMS could overflow: with every finite |B| ≤ M and panels of b terms,
+/// a panel sum of products is ≤ b·M², which stays below `f32::MAX` iff
+/// M ≤ sqrt(f32::MAX / b). Storage alone (`upload_rounded`) only refuses an
+/// element beyond `f32::MAX`; this guards the arithmetic. NaN and ±inf are the
+/// caller's data, not a range violation: they pass through to a NaN energy, as
+/// on the CPU path.
+fn check_f32_arithmetic_range(b_ov: &Array2<f64>) -> Result<(), GpuError> {
+    let b = effective_k_panel().clamp(1, b_ov.nrows().max(1));
+    let limit = (f64::from(f32::MAX) / b as f64).sqrt();
+    let max = b_ov
+        .iter()
+        .filter(|x| x.is_finite())
+        .fold(0.0f64, |m, x| m.max(x.abs()));
+    if max > limit {
+        return Err(GpuError::F32Range(format!(
+            "max|B_ov| = {max:e} exceeds sqrt(f32::MAX/b) = {limit:e} (panel width {b}): an f32 panel sum could overflow"
+        )));
+    }
+    Ok(())
 }
 
 /// `B_ov` resident on the device in the precision of the stage.
@@ -214,6 +269,7 @@ struct Stage {
     b: Resident,
     c64: DeviceMatrix<f64>,
     c32: Option<DeviceMatrix<f32>>,
+    tally: Tally,
 }
 
 impl Stage {
@@ -228,6 +284,7 @@ impl Stage {
             // The flush kernel is checked before ANY reservation or transfer, so
             // the dispatcher's f64 fallback wastes nothing.
             dev.axpy_f32_to_f64()?;
+            check_f32_arithmetic_range(b_ov)?;
         }
         let nov = b_ov.ncols();
         // Scratch first: a pool too small for the scratch refuses before the
@@ -252,6 +309,7 @@ impl Stage {
                     b: Resident::F64(b),
                     c64,
                     c32: None,
+                    tally: Tally::default(),
                 })
             }
             Precision::Mixed => {
@@ -272,6 +330,7 @@ impl Stage {
                     b: Resident::F32(b),
                     c64,
                     c32: Some(c32),
+                    tally: Tally::default(),
                 })
             }
         }
@@ -291,6 +350,18 @@ impl Stage {
     ) -> Result<(), GpuError> {
         let cuda =
             |what: &str, e: &dyn std::fmt::Debug| GpuError::Cuda(format!("{what} G_{i}: {e:?}"));
+        let kernel_class = FAIL_AS_KERNEL.load(Ordering::Relaxed);
+        // a Kernel-class injection models a MIXED-path failure: the f64 stage is
+        // not affected, so the dispatcher's f64 device fallback can complete
+        if FAIL_AT_BLOCK.load(Ordering::Relaxed) == i
+            && (!kernel_class || matches!(self.b, Resident::F32(_)))
+        {
+            return Err(if kernel_class {
+                GpuError::Kernel(format!("injected failure at block {i} (test)"))
+            } else {
+                GpuError::Cuda(format!("injected failure at block {i} (test)"))
+            });
+        }
         let nov = b_ov.ncols();
         // The whole block [off, off + nvir) must lie inside the matrix: a width
         // that is not a multiple of nvir would otherwise leave a partial last
@@ -304,6 +375,7 @@ impl Stage {
         let (m, k, n) = (nvir, b_ov.nrows(), nov - off);
         let b_i = b_ov.slice(s![.., off..off + nvir]);
         let b_tail = b_ov.slice(s![.., off..]);
+        let mut mixed_panels = 0usize; // 0 = an f64 block
         match (&self.b, &mut self.c32) {
             (Resident::F64(b), _) => {
                 let left = dev_left_padded(b.buf().slice(off..), &b_i.t())?;
@@ -319,7 +391,6 @@ impl Stage {
                     GEMM_K_BLOCK,
                 )?;
                 // m·n ≤ nvir·nov (checked when the scratch was sized).
-                note_offloaded(0, 8 * m * n);
             }
             (Resident::F32(b), Some(c32)) => {
                 let left = dev_left_padded(b.buf().slice(off..), &b_i.t())?;
@@ -335,7 +406,7 @@ impl Stage {
                     self.c64.buf_mut(),
                     effective_k_panel(),
                 )?;
-                note_mixed(panels, 0, 8 * m * n);
+                mixed_panels = panels;
             }
             (Resident::F32(_), None) => {
                 return Err(GpuError::Layout(
@@ -354,6 +425,13 @@ impl Stage {
             .memcpy_dtoh(&self.c64.buf().slice(..m * n), host)
             .map_err(|e| cuda("D2H", &e))?;
         dev.stream.synchronize().map_err(|e| cuda("sync", &e))?;
+        // Counted only now, and only applied by `Tally::commit` when the whole
+        // call succeeds.
+        if mixed_panels > 0 {
+            self.tally.mixed_blocks.push((mixed_panels, 8 * m * n));
+        } else {
+            self.tally.f64_blocks.push(8 * m * n);
+        }
         Ok(())
     }
 }
@@ -386,5 +464,6 @@ pub fn g_block_on_device(
         .ok_or_else(|| GpuError::Layout("G_i block overflows usize".into()))?;
     let mut host = vec![0.0f64; len];
     stage.g_block(dev, b_ov, i, nvir, &mut host)?;
+    stage.tally.commit();
     Ok(Array2::from_shape_vec((nvir, ntail), host).expect("shape"))
 }

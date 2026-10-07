@@ -284,45 +284,66 @@ here.
 
 **`rimp2-energy`** (shipped). `B_ov` is stored on the device as f32 (half the
 bytes of the f64 tensor); each block `G_i = B_iᵀ·B_tail` is formed by f32
-panel products of width b = 128 (the committed default, provisional until the
-panel sweep) summed into an f64 accumulator; the pair arithmetic, denominators
-and all sums are f64. A `B_ov` element beyond the f32 range, or an unavailable
-flush kernel, runs the f64 device path instead and is counted
-(`mixed_fallback_f64`); a pool too small for the f32 tensor runs the CPU path
-unchanged.
+panel products of width b = 64 (the shipped default) summed into an f64
+accumulator; the pair arithmetic, denominators and all sums are f64. A finite
+`B_ov` element beyond the f32 range, or one above sqrt(f32::MAX / b) (an f32
+panel sum of products could overflow), or an unavailable flush kernel, runs the
+f64 device path instead and is counted (`mixed_fallback_f64`); a NaN `B_ov`
+passes through to a NaN energy as on the CPU; a pool too small for the f32
+tensor runs the CPU path unchanged.
 
 | Column | Value |
 |---|---|
-| Accumulation depth | n = naux per element, panels of b = 128 |
-| κ_sum | measured per system (table); S_ab/\|g_ab\| is unbounded because g_ab crosses zero, so the energy-level κ_E = Σ fac\|g\|S/\|D\| / \|E_os\| and the p99 of the element κ on the first block are reported |
-| Bound | per element ε_G·S_ab with ε_G = 2u₃₂ + γ_b(u₃₂) + γ_⌈naux/b⌉(u₆₄) (u₃₂ = 2⁻²⁴, u₆₄ = 2⁻⁵³), summed into an energy bound through the OS and SS terms |
+| Accumulation depth | n = naux per element, panels of b = 64 |
+| κ_sum | measured per system (table): the energy-level κ_E = Σ fac\|g\|S/\|D\| / \|E_os\| and the p99 of the element κ = S_ab/\|g_ab\| on the first block (the element maximum is unbounded because g_ab crosses zero) |
+| Bound | per element ε_G·S_ab + η with ε_G = (1+u₃₂)²(1+γ_b(u₃₂))(1+γ_⌈naux/b⌉(u₆₄)) − 1 + γ_naux(u₆₄) (u₃₂ = 2⁻²⁴, u₆₄ = 2⁻⁵³; the last term is the f64 reference's own rounding) and η the f32 underflow term; summed into an energy bound through the OS and SS terms |
 | Mitigation | f64 panel accumulation, f64 pair arithmetic, f64 everything else |
 | Precision | f32 storage, f32 panel products, f64 sums |
 
-The measured error against the f64 CPU energy of the same B_ov (b = 128; E_corr
-is the f64 RI-MP2 correlation energy; the water, butane and octane cc-pVDZ rows use an
-exact-integral RHF reference, the dodecane and aug-cc rows an RI-JK RHF reference
-with a loose threshold,
-the same orbitals on both sides of every comparison):
+The measured error against the f64 CPU energy of the same B_ov at b = 64
+(E_corr is the f64 RI-MP2 correlation energy; every reference is an RI-JK RHF
+with loose thresholds, the same orbitals on both sides of each comparison).
+OS and SS are signed and partly cancel in the total, so all three are given:
 
-| System (frozen core) | nocc / nvir / naux | E_corr (Eh) | \|ΔE\| (Eh) | \|ΔE\| (kcal/mol) | \|ΔE\|/\|E_corr\| | bound OS / SS (Eh) | κ_E |
-|---|---|---|---|---|---|---|---|
-| H2O / cc-pVDZ | 5 / 19 / 84 | −0.204033 | 3.5e-9 | 2.2e-6 | 1.7e-8 | 2.1e-6 / 3.7e-6 | 1.30 |
-| n-butane / cc-pVDZ | 17 / 89 / 364 | −0.599645 | 1.6e-9 | 1.0e-6 | 2.7e-9 | 1.4e-5 / 2.7e-5 | 1.95 |
-| n-octane / cc-pVDZ | 33 / 169 / 700 | −1.183893 | 4.4e-11 | 2.7e-8 | 3.7e-11 | 3.4e-5 / 6.6e-5 | 2.40 |
-| n-dodecane / cc-pVDZ | 49 / 249 / 1036 | −1.767936 | 1.2e-10 | 7.6e-8 | 6.9e-11 | 5.9e-5 / 1.1e-4 | 2.76 |
-| H2O / aug-cc-pVTZ | 5 / 87 / 198 | −0.283553 | 2.5e-9 | 1.6e-6 | 8.9e-9 | 5.1e-6 / 9.2e-6 | 1.50 |
-| benzene / aug-cc-pVDZ (6) | 15 / 171 / 570 | −0.810690 | 1.3e-9 | 8.4e-7 | 1.6e-9 | 1.5e-5 / 2.8e-5 | 1.65 |
-| benzene / aug-cc-pVTZ (6) | 15 / 393 / 912 | −0.963520 | 1.4e-10 | 9.0e-8 | 1.5e-10 | 2.1e-5 / 3.9e-5 | 1.84 |
+| System (frozen core) | nocc / nvir / naux | E_corr (Eh) | ΔE_OS (Eh) | ΔE_SS (Eh) | ΔE total (Eh) | total (kcal/mol) | bound OS / SS (Eh) | κ_E | p99 κ |
+|---|---|---|---|---|---|---|---|---|---|
+| H2O / cc-pVDZ | 5 / 19 / 84 | −0.204009 | −4.9e-9 | −2.1e-9 | −7.0e-9 | −4.4e-6 | 1.6e-6 / 2.8e-6 | 1.30 | 4.8e11 |
+| n-butane / cc-pVDZ | 17 / 89 / 364 | −0.599582 | −2.8e-10 | −3.7e-10 | −6.5e-10 | −4.1e-7 | 7.2e-6 / 1.4e-5 | 1.95 | 4.6e11 |
+| n-octane / cc-pVDZ | 33 / 169 / 700 | −1.183770 | +1.1e-10 | −8.3e-11 | +2.6e-11 | +1.6e-8 | 1.7e-5 / 3.3e-5 | 2.40 | 2.0e11 |
+| n-dodecane / cc-pVDZ | 49 / 249 / 1036 | −1.767936 | −1.7e-10 | −9.1e-11 | −2.6e-10 | −1.6e-7 | 2.9e-5 / 5.6e-5 | 2.76 | 1.2e11 |
+| H2O / aug-cc-pVTZ | 5 / 87 / 198 | −0.283553 | −6.1e-10 | +3.7e-10 | −2.4e-10 | −1.5e-7 | 2.5e-6 / 4.6e-6 | 1.50 | 1.2e11 |
+| benzene / aug-cc-pVDZ (6) | 15 / 171 / 570 | −0.810690 | +5.1e-10 | +4.7e-10 | +9.7e-10 | +6.1e-7 | 7.8e-6 / 1.4e-5 | 1.65 | 2.1e12 |
+| benzene / aug-cc-pVTZ (6) | 15 / 393 / 912 | −0.963520 | −8.7e-10 | −1.0e-10 | −9.7e-10 | −6.1e-7 | 1.0e-5 / 2.0e-5 | 1.84 | 3.0e12 |
 
-Every measured error is inside its bound, by three to six orders of
-magnitude. The error splits into an f32-storage part (B_ov rounded through f32,
-recomputed in f64, bounded at ε_G = 2u₃₂) and an accumulation part (the device
-minus that), each inside its own bound. Over the four cc-pVDZ systems the
-error does not grow with the number of occupied orbitals while the bound grows
-as N<sup>1.5</sup> (fitted slope −1.8 ± 0.7 for the error against 1.49 ± 0.05
-for the bound, on four points; it does not resolve a √N law). Test files:
-`crates/ferric-mp2/tests/rimp2_f32_storage_error_law.rs` (no device) and
+Every component is inside its bound. The error splits into an f32-storage part
+(B_ov rounded to nearest through f32, recomputed in f64) and an accumulation
+part (the device minus that), each inside its own bound; at benzene /
+aug-cc-pVTZ the accumulation part (OS −9.4e-10) is the larger.
+
+What the bound can and cannot catch. The energy bound is a worst case over
+rounding signs, three to six decades above the measured energy errors (the
+per-element worst case reaches 7-12% of its per-element bound, but those
+elements carry little of the energy). It catches gross defects, such as a wrong
+operand offset, a dropped panel or a dropped pair weight (1e-1 relative error).
+It does **not** catch a subtle degradation of the kernel: a plain SGEMM without
+the f64 flush, an f32 `B_ov` with an f64 GEMM, or a truncating instead of
+round-to-nearest upload all stay inside it. Those are pinned by a separate
+measurement over every G block of benzene / aug-cc-pVTZ (18.3 million elements):
+the per-element RMS of err/S is 1.80e-8 for the device and 1.78e-8 for the host
+twin of the same algorithm (ratio 1.007), against 2.8× the twin for a plain
+SGEMM, 0.24× for an f32 `B_ov` with an f64 GEMM and 1.29× for a truncating
+upload; the accepted device/twin ratio lies between the geometric midpoints of
+those measured sides. The upload's rounding mode is also checked bit for bit
+against `as f32`.
+
+How the error depends on size. The per-element RMS of err/S falls with the
+auxiliary depth over the four cc-pVDZ systems: 4.9e-8, 2.5e-8, 2.1e-8, 1.8e-8
+at naux 84, 364, 700, 1036; the fitted slope of ln RMS against ln naux is
+−0.40 ± 0.03 (2 degrees of freedom; one-sided 95% upper limit −0.32; the
+random-sign model predicts −0.5), and the test fails if that upper limit is not
+negative. No size law is claimed for the total energy error: its signed OS and
+SS parts scatter by two decades across systems through cancellation. Test
+files: `crates/ferric-mp2/tests/rimp2_f32_storage_error_law.rs` (no device) and
 `crates/ferric-mp2/tests/gpu_rimp2_mixed.rs` (device).
 
 ## Known limits and negatives

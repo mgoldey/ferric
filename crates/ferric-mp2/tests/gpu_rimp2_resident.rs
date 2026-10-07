@@ -17,13 +17,15 @@
 //! Σ|t̂| ≤ Σ|t| + (the bound above). `energy_bound` computes this sum; no
 //! machine constant is asserted.
 //!
-//! Sensitivity (measured on the GTX 1080 test box; the test prints both sides
-//! on every run). On the two real SCF systems, |device − CPU| / bound is at
-//! most ~1e-4 (the bound is a worst case over summation orders and signs, so
-//! it is loose by design), and the nearest subtle defect, B_ov rounded through
-//! f32 on the CPU, exceeds the bound by 1e1 .. 1e4 and is asserted to, so the
-//! gate cannot go blind; the same teeth assertion holds on the real
-//! benzene/aug-cc-pVTZ system (frozen core 6, naux 912, nocc 15, nvir 393).
+//! Sensitivity (measured on the GTX 1080 test box with RI-JK SCF references;
+//! the test prints both sides on every run). On the three real systems,
+//! |device − CPU| / bound is at most 1.7e-4 (OS) / 1.9e-4 (SS) (the bound is a
+//! worst case over summation orders and signs, so it is loose by design), and
+//! the nearest subtle defect, B_ov rounded through f32 on the CPU, exceeds the
+//! bound by (OS / SS) 9.6e4 / 2.6e4 on water/cc-pVDZ, 2.5e2 / 2.0e1 on
+//! benzene/cc-pVDZ and 3.0 / 2.3 on benzene/aug-cc-pVTZ (frozen core 6,
+//! naux 912, nocc 15, nvir 393), and is asserted to exceed it on each, so the
+//! gate cannot go blind (at aTZ the margin is a factor of 2 to 3).
 //! Gross defects, measured once by temporary mutation of rimp2_gpu.rs (each
 //! reverted, file diffed against the original), on water/cc-pVDZ:
 //!   right operand view offset `slice(off..)` -> `slice(..)`: relative error
@@ -46,6 +48,8 @@ use ferric_mp2::rimp2::{spin_components_from_b_ov_kappa, spin_components_from_b_
 use ferric_mp2::rimp2_gpu::{g_block_on_device, spin_components_on_device};
 use ndarray::{s, Array2};
 
+#[path = "common/rimp2_error_bound.rs"]
+mod bound;
 #[path = "common/rimp2_gpu_fixture.rs"]
 mod fixture;
 use fixture::Prepared;
@@ -113,53 +117,25 @@ fn synthetic(naux: usize, nocc: usize, nvir: usize, first_occ: usize, seed: u64)
 }
 
 /// The derived bound on |E_device − E_cpu| for (OS, SS); see the module docs.
+/// The shared implementation (`common/rimp2_error_bound.rs`) at the f64
+/// per-element factor eps = 2·γ_naux(u64), no underflow term (all f64).
 fn energy_bound(p: &Prepared, kappa: Option<f64>) -> (f64, f64) {
-    let naux = p.b_ov.nrows();
-    let gk = gamma(naux);
-    let gm = gamma(p.nvir * p.nvir + 2 * p.nocc + 8);
-    let abs_b = p.b_ov.mapv(f64::abs);
-    let (mut b_os, mut b_ss, mut abs_os, mut abs_ss) = (0.0, 0.0, 0.0, 0.0);
-    for i in 0..p.nocc {
-        let (lo, hi) = (i * p.nvir, (i + 1) * p.nvir);
-        let g = p
-            .b_ov
-            .slice(s![.., lo..hi])
-            .t()
-            .dot(&p.b_ov.slice(s![.., lo..]));
-        let sc = abs_b
-            .slice(s![.., lo..hi])
-            .t()
-            .dot(&abs_b.slice(s![.., lo..]));
-        for j in i..p.nocc {
-            let fac = if i == j { 1.0 } else { 2.0 };
-            let jcol = (j - i) * p.nvir;
-            let e_ij = p.eps[p.first_occ + i] + p.eps[p.first_occ + j];
-            for a in 0..p.nvir {
-                for b in 0..p.nvir {
-                    let (g_ab, g_ba) = (g[(a, jcol + b)].abs(), g[(b, jcol + a)].abs());
-                    let (d_ab, d_ba) = (2.0 * gk * sc[(a, jcol + b)], 2.0 * gk * sc[(b, jcol + a)]);
-                    let denom = e_ij - p.eps[p.nocc_total + a] - p.eps[p.nocc_total + b];
-                    let damp = match kappa {
-                        None => 1.0,
-                        Some(k) => {
-                            let d1 = 1.0 - (k * denom).exp();
-                            d1 * d1
-                        }
-                    };
-                    let w = fac * damp / denom.abs();
-                    let sq = d_ab * (2.0 * g_ab + d_ab);
-                    b_os += w * sq;
-                    b_ss += w * (sq + d_ab * g_ba + g_ab * d_ba + d_ab * d_ba);
-                    abs_os += w * g_ab * g_ab;
-                    abs_ss += w * g_ab * (g_ab + g_ba);
-                }
-            }
-        }
-    }
-    (
-        b_os + gm * (2.0 * abs_os + b_os),
-        b_ss + gm * (2.0 * abs_ss + b_ss),
-    )
+    let bd = bound::energy_bound(
+        &p.b_ov,
+        &p.eps,
+        p.nocc,
+        p.nvir,
+        p.first_occ,
+        p.nocc_total,
+        2.0 * gamma(p.b_ov.nrows()),
+        0.0,
+        kappa,
+    );
+    eprintln!(
+        "  kappa_E {:.3e}, p99 element kappa (i=0) {:.3e}",
+        bd.kappa_e_os, bd.kappa_p99_block0
+    );
+    (bd.os, bd.ss)
 }
 
 fn on_device(

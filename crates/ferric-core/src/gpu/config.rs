@@ -87,11 +87,12 @@ impl fmt::Display for GpuMode {
 ///   1600    128   1600      655360000     3.550     3.638     6.440     6.454     1.81     1.77
 /// ```
 ///
-/// The rule gives 549755813888 (2^39), above the largest measured shape
-/// (6144^3 = 4.6e11 FLOP): at no measured shape up to 6144^3 does the device
-/// beat 6 CPU cores on a single f64 GEMM by a margin. The default therefore
-/// keeps `auto` off the device for single f64 GEMMs (the 4096^3 shape was a
-/// CPU win in all three runs; at 6144^3 the two were within 7%).
+/// The rule gives 549755813888 (2^39), the rounded-up value, above the largest
+/// measured shape (6144^3 = 4.6e11 FLOP). The device does not clearly beat 6 CPU
+/// cores on a single f64 GEMM at any measured shape up to 6144^3: the best case
+/// is a 2-8% median win at 6144^3 in two of three runs, a loss in the contested
+/// run, and at 4096^3 and below the CPU won. GEMMs of 2^39 FLOP or more go to
+/// the device by this default, and that region is unmeasured.
 ///
 /// Scope: only the f64 `einsum!` GEMM offload reads this threshold. The
 /// device RI-MP2 energy (resident f64 and mixed precision, `rimp2_gpu.rs`)
