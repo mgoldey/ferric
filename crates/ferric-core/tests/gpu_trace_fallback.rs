@@ -4,12 +4,13 @@
 use ferric_core::gpu::stats::{note_cpu, stats, CpuReason};
 use std::process::Command;
 
-const ALL: [(CpuReason, &str); 5] = [
+const ALL: [(CpuReason, &str); 6] = [
     (CpuReason::InsideRayonWorker, "InsideRayonWorker"),
     (CpuReason::BelowThreshold, "BelowThreshold"),
     (CpuReason::PoolFull, "PoolFull"),
     (CpuReason::Layout, "Layout"),
     (CpuReason::CudaError, "CudaError"),
+    (CpuReason::F32Range, "F32Range"),
 ];
 
 /// Child body: only does anything when spawned by the parent test below.

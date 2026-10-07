@@ -640,6 +640,7 @@ fn count_cpu_fallback(e: &GpuError) {
     let reason = match e {
         GpuError::PoolFull { .. } => CpuReason::PoolFull,
         GpuError::Layout(_) => CpuReason::Layout,
+        GpuError::F32Range(_) => CpuReason::F32Range,
         _ => CpuReason::CudaError,
     };
     stats::note_cpu_detail(reason, &format!("(DF-K occupied path: {})", one_line(e)));

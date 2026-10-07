@@ -8,6 +8,7 @@ static GEMM_CPU_BELOW_THRESHOLD: AtomicU64 = AtomicU64::new(0);
 static GEMM_CPU_POOL_FULL: AtomicU64 = AtomicU64::new(0);
 static GEMM_CPU_LAYOUT: AtomicU64 = AtomicU64::new(0);
 static GEMM_CPU_CUDA_ERROR: AtomicU64 = AtomicU64::new(0);
+static GEMM_CPU_F32_RANGE: AtomicU64 = AtomicU64::new(0);
 static BYTES_H2D: AtomicU64 = AtomicU64::new(0);
 static BYTES_D2H: AtomicU64 = AtomicU64::new(0);
 static GEMM_MIXED: AtomicU64 = AtomicU64::new(0);
@@ -25,6 +26,8 @@ pub enum CpuReason {
     PoolFull,
     Layout,
     CudaError,
+    /// A mixed-precision operand held a finite value beyond `f32::MAX`.
+    F32Range,
 }
 
 /// Called by the device GEMM (this crate) — public and hidden because
@@ -86,7 +89,7 @@ fn trace_on() -> bool {
 
 /// Count a CPU fallback; with `FERRIC_GPU_TRACE` set, also print one line
 /// naming the reason (`InsideRayonWorker`, `BelowThreshold`, `PoolFull`,
-/// `Layout`, `CudaError`).
+/// `Layout`, `CudaError`, `F32Range`).
 #[doc(hidden)]
 pub fn note_cpu(reason: CpuReason) {
     note_cpu_detail(reason, "");
@@ -104,6 +107,7 @@ pub fn note_cpu_detail(reason: CpuReason, detail: &str) {
         CpuReason::PoolFull => &GEMM_CPU_POOL_FULL,
         CpuReason::Layout => &GEMM_CPU_LAYOUT,
         CpuReason::CudaError => &GEMM_CPU_CUDA_ERROR,
+        CpuReason::F32Range => &GEMM_CPU_F32_RANGE,
     };
     c.fetch_add(1, Ordering::Relaxed);
 }
@@ -117,6 +121,7 @@ pub struct GpuStatsSnapshot {
     pub gemm_cpu_pool_full: u64,
     pub gemm_cpu_layout: u64,
     pub gemm_cpu_cuda_error: u64,
+    pub gemm_cpu_f32_range: u64,
     pub bytes_h2d: u64,
     pub bytes_d2h: u64,
     pub gemm_mixed: u64,
@@ -135,6 +140,7 @@ pub fn stats() -> GpuStatsSnapshot {
         gemm_cpu_pool_full: GEMM_CPU_POOL_FULL.load(Ordering::Relaxed),
         gemm_cpu_layout: GEMM_CPU_LAYOUT.load(Ordering::Relaxed),
         gemm_cpu_cuda_error: GEMM_CPU_CUDA_ERROR.load(Ordering::Relaxed),
+        gemm_cpu_f32_range: GEMM_CPU_F32_RANGE.load(Ordering::Relaxed),
         bytes_h2d: BYTES_H2D.load(Ordering::Relaxed),
         bytes_d2h: BYTES_D2H.load(Ordering::Relaxed),
         gemm_mixed: GEMM_MIXED.load(Ordering::Relaxed),

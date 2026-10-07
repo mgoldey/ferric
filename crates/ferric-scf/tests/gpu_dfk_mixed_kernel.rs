@@ -46,6 +46,7 @@
 //! this build (not shipped).
 use ferric_core::basis;
 use ferric_core::gpu::config::{GpuSettings, GpuSettingsExplicit};
+use ferric_core::gpu::device::FORCE_KERNEL_FAILURE;
 use ferric_core::gpu::mixed::effective_k_panel;
 use ferric_core::gpu::{
     install, pool, probe, stats, GpuMode, GpuStatus, MixedKernel, MixedKernelSet, Precision,
@@ -130,6 +131,7 @@ impl Drop for Mixed {
             .unwrap_or_else(|e| e.into_inner()) = None;
         TRUNCATE_B_TO_F32.store(false, Ordering::SeqCst);
         FORCE_HOST.store(false, Ordering::SeqCst);
+        FORCE_KERNEL_FAILURE.store(false, Ordering::SeqCst);
         std::env::remove_var("FERRIC_GPU_MIXED_K_PANEL");
     }
 }
@@ -519,6 +521,158 @@ fn an_f32_range_violation_in_b_runs_the_f64_device_path_once_and_counts_it() {
         "K must equal the f64 device K bitwise"
     );
     assert_eq!(bits(&k2), bits(&k_f64));
+}
+
+#[test]
+fn a_missing_flush_kernel_at_upload_runs_the_f64_device_path_and_counts_it() {
+    let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    if !ready() {
+        return;
+    }
+    let (dfk0, n) = dfk_for(WATER, "cc-pvdz");
+    let flat = dfk0.dressed_incore_flat_for_test().unwrap().to_owned();
+    let band = flat.nrows();
+    let (c, _) = scf_occ(WATER, 1, "cc-pvdz");
+    let dev = ferric_core::gpu::device::device(0).unwrap();
+    let pool = pool().unwrap();
+    let mut direct = DeviceDfK::upload(&dev, &pool, &flat.view(), n).unwrap();
+    let mut k_f64 = Array2::zeros((n, n));
+    direct.build_from_occ(&c.view(), &mut k_f64).unwrap();
+    drop(direct);
+
+    let _m = Mixed::with(shipped_plus_dfk());
+    FORCE_KERNEL_FAILURE.store(true, Ordering::SeqCst);
+    let s0 = stats();
+    let mut fb =
+        DeviceDfK::upload_with_precision(&dev, &pool, &flat.view(), n, DfkPrecision::Mixed)
+            .unwrap();
+    let s1 = stats();
+    assert!(!fb.is_mixed());
+    assert_eq!(s1.mixed_fallback_f64 - s0.mixed_fallback_f64, 1);
+    assert_eq!(
+        s1.bytes_h2d - s0.bytes_h2d,
+        (8 * band * n * n) as u64,
+        "no f32 bytes were uploaded or reserved"
+    );
+    let mut k = Array2::zeros((n, n));
+    fb.build_from_occ(&c.view(), &mut k).unwrap();
+    assert_eq!(bits(&k), bits(&k_f64), "K must equal the f64 device K");
+    assert_eq!(stats().mixed_panels, s1.mixed_panels);
+    assert_eq!(stats().dfk_declined, s0.dfk_declined, "never the CPU");
+}
+
+#[test]
+fn a_flush_kernel_lost_after_a_mixed_upload_declines_sticky_and_leaves_k_alone() {
+    let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    if !ready() {
+        return;
+    }
+    let (mut dfk0, n) = dfk_for(WATER, "cc-pvdz");
+    let flat = dfk0.dressed_incore_flat_for_test().unwrap().to_owned();
+    let (c, _) = scf_occ(WATER, 1, "cc-pvdz");
+    let k_host = host_k(&mut dfk0, &c);
+    let dev = ferric_core::gpu::device::device(0).unwrap();
+    // (a) the device object: the build errors and k is untouched
+    let _m = Mixed::with(shipped_plus_dfk());
+    let mut d = DeviceDfK::upload_with_precision(
+        &dev,
+        &pool().unwrap(),
+        &flat.view(),
+        n,
+        DfkPrecision::Mixed,
+    )
+    .unwrap();
+    assert!(d.is_mixed());
+    FORCE_KERNEL_FAILURE.store(true, Ordering::SeqCst);
+    let mut k = Array2::from_elem((n, n), 7.0);
+    let e = d.build_from_occ(&c.view(), &mut k).unwrap_err();
+    assert!(
+        matches!(e, ferric_core::gpu::device::GpuError::Kernel(_)),
+        "{e:?}"
+    );
+    assert!(k.iter().all(|&v| v == 7.0), "k must be untouched on error");
+    drop(d);
+    FORCE_KERNEL_FAILURE.store(false, Ordering::SeqCst);
+
+    // (b) the dispatcher: first build mixed, then the kernel is lost
+    let (mut dfk, _) = dfk_for(WATER, "cc-pvdz");
+    let s0 = stats();
+    let mut k1 = Array2::zeros((n, n));
+    dfk.build_from_occ(&c, &mut k1).unwrap();
+    let s1 = stats();
+    assert_eq!(s1.dfk_device_builds, s0.dfk_device_builds + 1);
+    FORCE_KERNEL_FAILURE.store(true, Ordering::SeqCst);
+    let mut k2 = Array2::zeros((n, n));
+    dfk.build_from_occ(&c, &mut k2).unwrap(); // device fails, CPU answers
+    FORCE_KERNEL_FAILURE.store(false, Ordering::SeqCst);
+    let s2 = stats();
+    assert_eq!(s2.dfk_declined, s1.dfk_declined + 1, "declined once");
+    assert_eq!(s2.gemm_cpu_cuda_error, s1.gemm_cpu_cuda_error + 1);
+    assert_eq!(
+        s2.dfk_device_builds, s1.dfk_device_builds,
+        "no device build"
+    );
+    assert_eq!(bits(&k2), bits(&k_host), "the CPU K is the host K");
+    let mut k3 = Array2::zeros((n, n));
+    dfk.build_from_occ(&c, &mut k3).unwrap(); // kernel is back, slot stays declined
+    let s3 = stats();
+    assert_eq!(
+        s3.dfk_device_builds, s2.dfk_device_builds,
+        "decline is sticky"
+    );
+    assert_eq!(s3.dfk_declined, s2.dfk_declined);
+    assert_eq!(bits(&k3), bits(&k_host));
+}
+
+#[test]
+fn a_c_occ_element_beyond_f32_declines_to_the_cpu_sticky_and_is_counted_by_reason() {
+    let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    if !ready() {
+        return;
+    }
+    let (mut dfk0, n) = dfk_for(WATER, "cc-pvdz");
+    let flat = dfk0.dressed_incore_flat_for_test().unwrap().to_owned();
+    let (mut c, _) = scf_occ(WATER, 1, "cc-pvdz");
+    c[(3, 1)] = 1e39; // finite in f64, beyond f32::MAX
+    let k_host = host_k(&mut dfk0, &c);
+    let dev = ferric_core::gpu::device::device(0).unwrap();
+    let _m = Mixed::with(shipped_plus_dfk());
+    let mut d = DeviceDfK::upload_with_precision(
+        &dev,
+        &pool().unwrap(),
+        &flat.view(),
+        n,
+        DfkPrecision::Mixed,
+    )
+    .unwrap();
+    let mut k = Array2::from_elem((n, n), 7.0);
+    let e = d.build_from_occ(&c.view(), &mut k).unwrap_err();
+    assert!(
+        matches!(e, ferric_core::gpu::device::GpuError::F32Range(_)),
+        "{e:?}"
+    );
+    assert!(k.iter().all(|&v| v == 7.0), "k must be untouched on error");
+    drop(d);
+
+    let (mut dfk, _) = dfk_for(WATER, "cc-pvdz");
+    let s0 = stats();
+    let mut k1 = Array2::zeros((n, n));
+    dfk.build_from_occ(&c, &mut k1).unwrap();
+    let s1 = stats();
+    assert_eq!(s1.dfk_declined, s0.dfk_declined + 1);
+    assert_eq!(
+        s1.gemm_cpu_f32_range,
+        s0.gemm_cpu_f32_range + 1,
+        "own reason"
+    );
+    assert_eq!(
+        s1.gemm_cpu_cuda_error, s0.gemm_cpu_cuda_error,
+        "not a CUDA error"
+    );
+    assert_eq!(bits(&k1), bits(&k_host), "never a wrong number: the CPU K");
+    let mut k2 = Array2::zeros((n, n));
+    dfk.build_from_occ(&c, &mut k2).unwrap();
+    assert_eq!(stats().dfk_declined, s1.dfk_declined, "sticky");
 }
 
 #[test]
