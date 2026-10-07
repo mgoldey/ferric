@@ -331,7 +331,11 @@ A preset fills in every knob below that is not given; the filled-in knobs print 
 | `mixed` | `on` | `mixed` | every kernel this build ships (`rimp2-energy`, closed-shell RI-MP2 energy only; the unrestricted energy stays f64) |
 | `auto-mixed` | `auto` | `mixed` | every kernel this build ships (`rimp2-energy`, closed-shell RI-MP2 energy only; the unrestricted energy stays f64) |
 
-`preset = "off"` is the same as no `[gpu]` key. A narrower `mixed_kernels` list is allowed under `mixed` and `auto-mixed`; naming a kernel the build does not ship is an error. Precedence for the preset itself: `[gpu] preset` or the root `gpu` key, then `FERRIC_GPU_PRESET`, then `off`.
+`preset = "off"` is the same as no `[gpu]` key. A narrower `mixed_kernels` list is allowed under `mixed` and `auto-mixed`; naming a kernel the build does not ship is an error. Precedence for the preset itself: the command-line flag `ferric --gpu <preset> input.toml` (or `--gpu=<preset>`), then `[gpu] preset` or the root `gpu` key, then `FERRIC_GPU_PRESET`, then `off`. The flag labels its audit line `[source: command line]`; a `mode`, `precision` or `mixed_kernels` key or env var that disagrees with the flag is an error naming both, and `--gpu` given twice, without a value or with an unknown name is refused (exit code 2).
+
+```
+ferric --gpu mixed input.toml
+```
 
 ## `[output]`
 

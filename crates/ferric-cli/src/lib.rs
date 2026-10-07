@@ -55,7 +55,7 @@ fn print_usage_head() {
 
 fn print_usage() {
     print_usage_head();
-    eprintln!("  --verbose, -v  Print one line per SCF iteration to stdout (energy, dE,");
+    eprintln!("  --verbose, -v   Print one line per SCF iteration to stdout (energy, dE,");
     eprintln!("                  density/DIIS error) as the job runs. Same effect as setting");
     eprintln!("                  `verbose = true` in the [scf] TOML section.");
     eprintln!("  --json <path>   Write the machine-readable JSON Lines run log here.");
@@ -351,7 +351,7 @@ pub fn run(args: Vec<String>) {
         std::process::exit(2);
     }
     let Some(toml_path) = toml_path else {
-        eprintln!("usage: ferric [--verbose|-v] <input.toml>");
+        eprintln!("usage: ferric [--verbose|-v] [--json <path>|--no-json] [--gpu <preset>] <input.toml>");
         std::process::exit(2);
     };
     let mut cfg = match load_config(toml_path) {
