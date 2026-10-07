@@ -29,7 +29,7 @@ use cudarc::driver::{CudaSlice, LaunchConfig, PushKernelArg};
 use ndarray::{ArrayView2, ArrayViewMut2};
 
 use super::device::{Device, GpuError};
-use super::gemm::{check_dev_geometry, col_major_desc, DevOperand};
+use super::gemm::{check_dev_geometry, col_major_desc, DevOperand, Role};
 use super::pool::DevicePool;
 use super::precision::mixed_k_panel_override;
 use super::stats;
@@ -88,8 +88,9 @@ pub fn gemm_f32_f64acc_dev(
         m,
         k,
         n,
-        (left.rows, left.cols),
-        (right.rows, right.cols),
+        k_panel,
+        &left.geom,
+        &right.geom,
         &[("c32", c32.len()), ("c64", c64.len())],
     )?;
     let func = dev.axpy_f32_to_f64()?; // typed Kernel error BEFORE any work
@@ -107,19 +108,19 @@ pub fn gemm_f32_f64acc_dev(
     while k0 < k {
         let k1 = (k0 + kb).min(k);
         let cfg = GemmConfig::<f32> {
-            transa: right.op,
-            transb: left.op,
+            transa: right.geom.op,
+            transb: left.geom.op,
             m: n as i32,
             n: m as i32,
             k: (k1 - k0) as i32,
             alpha: 1.0,
-            lda: right.ld,
-            ldb: left.ld,
+            lda: right.geom.ld,
+            ldb: left.geom.ld,
             beta: 0.0, // every panel starts fresh in f32; the sum lives in c64
             ldc: n as i32,
         };
-        let a_view = right.view.slice(k0 * right.k_step..);
-        let b_view = left.view.slice(k0 * left.k_step..);
+        let a_view = right.view.slice(k0 * right.geom.k_step..);
+        let b_view = left.view.slice(k0 * left.geom.k_step..);
         // SAFETY: shapes/leading dimensions come from the descriptors; the
         // buffers hold exactly those elements (same argument as gemm_f64).
         unsafe { blas.gemm(cfg, &a_view, &b_view, c32) }
@@ -201,12 +202,16 @@ pub fn gemm_f32_f64acc(
         out.fill(0.0);
         return Ok(());
     }
-    let da = col_major_desc(left, true).ok_or_else(|| {
-        GpuError::Layout("left operand is neither standard nor transposed-standard".into())
-    })?;
-    let db = col_major_desc(right, false).ok_or_else(|| {
-        GpuError::Layout("right operand is neither standard nor transposed-standard".into())
-    })?;
+    if col_major_desc(left, true).is_none() {
+        return Err(GpuError::Layout(
+            "left operand is neither standard nor transposed-standard".into(),
+        ));
+    }
+    if col_major_desc(right, false).is_none() {
+        return Err(GpuError::Layout(
+            "right operand is neither standard nor transposed-standard".into(),
+        ));
+    }
     // Kernel availability BEFORE any conversion, lease or transfer, so the
     // caller's f64 fallback wastes no work.
     dev.axpy_f32_to_f64()?;
@@ -237,8 +242,8 @@ pub fn gemm_f32_f64acc(
     let mut c64: CudaSlice<f64> = s
         .alloc_zeros(m * n)
         .map_err(|e| cuda(format_args!("alloc c64: {e:?}")))?;
-    let left_op = DevOperand::from_desc(d_a.slice(..), da, m, k)?;
-    let right_op = DevOperand::from_desc(d_b.slice(..), db, k, n)?;
+    let left_op = DevOperand::new(d_a.slice(..), left, Role::Left)?;
+    let right_op = DevOperand::new(d_b.slice(..), right, Role::Right)?;
     let panels = gemm_f32_f64acc_dev(
         dev, m, k, n, &left_op, &right_op, &mut c32, &mut c64, k_panel,
     )?;

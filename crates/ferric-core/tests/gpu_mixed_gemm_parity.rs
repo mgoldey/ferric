@@ -163,7 +163,7 @@ fn expected_panels(k: usize, b: usize) -> usize {
 /// Upload f32-rounded standard-layout operands and run the device core;
 /// returns (panels returned by the core).
 fn core_panels(m: usize, k: usize, n: usize, k_panel: usize) -> usize {
-    use ferric_core::gpu::gemm::dev_operand;
+    use ferric_core::gpu::gemm::{dev_left, dev_right};
     use ferric_core::gpu::mixed::gemm_f32_f64acc_dev;
     let dev = device(0).unwrap();
     let a32 = positive_operand(m, k, 21).mapv(|x| x as f32);
@@ -173,8 +173,8 @@ fn core_panels(m: usize, k: usize, n: usize, k_panel: usize) -> usize {
     let d_b = s.clone_htod(b32.as_slice().unwrap()).unwrap();
     let mut c32 = s.alloc_zeros::<f32>(m * n).unwrap();
     let mut c64 = s.alloc_zeros::<f64>(m * n).unwrap();
-    let lo = dev_operand(d_a.slice(..), &a32.view(), true).unwrap();
-    let ro = dev_operand(d_b.slice(..), &b32.view(), false).unwrap();
+    let lo = dev_left(d_a.slice(..), &a32.view()).unwrap();
+    let ro = dev_right(d_b.slice(..), &b32.view()).unwrap();
     gemm_f32_f64acc_dev(&dev, m, k, n, &lo, &ro, &mut c32, &mut c64, k_panel).unwrap()
 }
 
@@ -222,7 +222,7 @@ fn panel_count_is_exactly_ceil_k_over_b_whatever_cublas_does_inside() {
 /// were calibrated on the device in the module docstring and must be
 /// re-derived on another device with
 /// `cargo test -p ferric-core --features gpu --test gpu_mixed_gemm_parity
-///  separation -- --nocapture` (read the printed ratios, take
+///  separates -- --nocapture` (read the printed ratios, take
 /// floor_1sf(sqrt(ratio)) of the SMALLER one at each shape).
 /// (256,8192,256): ratio 27.3, sqrt 5.2 -> 5.
 /// (128,32768,128): ratio 104.5, sqrt 10.2 -> 10 (the more robust gate: a
@@ -268,7 +268,7 @@ fn device_and_host_twin_both_meet_the_bound_and_one_panel_separates_at_two_depth
 
 #[test]
 fn short_or_mismatched_device_buffers_return_a_typed_error_and_write_nothing() {
-    use ferric_core::gpu::gemm::{dev_operand, gemm_f64_dev};
+    use ferric_core::gpu::gemm::{dev_left, dev_right, gemm_f64_dev};
     use ferric_core::gpu::mixed::gemm_f32_f64acc_dev;
     let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
     if skip() {
@@ -281,8 +281,8 @@ fn short_or_mismatched_device_buffers_return_a_typed_error_and_write_nothing() {
     let b32 = positive_operand(k, n, 32).mapv(|x| x as f32);
     let d_a = s.clone_htod(a32.as_slice().unwrap()).unwrap();
     let d_b = s.clone_htod(b32.as_slice().unwrap()).unwrap();
-    let lo = dev_operand(d_a.slice(..), &a32.view(), true).unwrap();
-    let ro = dev_operand(d_b.slice(..), &b32.view(), false).unwrap();
+    let lo = dev_left(d_a.slice(..), &a32.view()).unwrap();
+    let ro = dev_right(d_b.slice(..), &b32.view()).unwrap();
     let sentinel = vec![7.0f64; m * n];
     let is_layout =
         |e: &GpuError, needle: &str| matches!(e, GpuError::Layout(msg) if msg.contains(needle));
@@ -310,13 +310,20 @@ fn short_or_mismatched_device_buffers_return_a_typed_error_and_write_nothing() {
     assert!(is_layout(&e, "right"), "{e:?}");
     assert_eq!(s.clone_dtoh(&c64).unwrap(), sentinel, "c64 was written");
 
-    // dev_operand: view longer / shorter than the host shape
-    let e = dev_operand(d_a.slice(1..), &a32.view(), true)
-        .err()
-        .unwrap();
+    // wrong role: the left operand in the right slot and vice versa (the role
+    // is fixed by the constructor, so this is the only way to mix them up)
+    let mut c64 = s.clone_htod(&sentinel).unwrap();
+    let e = gemm_f32_f64acc_dev(&dev, m, k, n, &ro, &lo, &mut c32, &mut c64, 8).unwrap_err();
+    assert!(is_layout(&e, "slot holds"), "{e:?}");
+    let e = gemm_f32_f64acc_dev(&dev, m, k, n, &lo, &lo, &mut c32, &mut c64, 8).unwrap_err();
+    assert!(is_layout(&e, "right slot"), "{e:?}");
+    assert_eq!(s.clone_dtoh(&c64).unwrap(), sentinel, "c64 was written");
+
+    // dev_left/dev_right: view longer / shorter than the host shape
+    let e = dev_left(d_a.slice(1..), &a32.view()).err().unwrap();
     assert!(is_layout(&e, "elements"), "{e:?}");
     let strided = a32.slice(ndarray::s![.., ..4]);
-    let e = dev_operand(d_a.slice(..), &strided, true).err().unwrap();
+    let e = dev_left(d_a.slice(..), &strided).err().unwrap();
     assert!(is_layout(&e, "layout") || is_layout(&e, "neither"), "{e:?}");
 
     // f64 core: short c
@@ -324,8 +331,8 @@ fn short_or_mismatched_device_buffers_return_a_typed_error_and_write_nothing() {
     let b64 = positive_operand(k, n, 34);
     let d_a64 = s.clone_htod(a64.as_slice().unwrap()).unwrap();
     let d_b64 = s.clone_htod(b64.as_slice().unwrap()).unwrap();
-    let lo64 = dev_operand(d_a64.slice(..), &a64.view(), true).unwrap();
-    let ro64 = dev_operand(d_b64.slice(..), &b64.view(), false).unwrap();
+    let lo64 = dev_left(d_a64.slice(..), &a64.view()).unwrap();
+    let ro64 = dev_right(d_b64.slice(..), &b64.view()).unwrap();
     let mut c_short = s.clone_htod(&sentinel[..m * n - 1]).unwrap();
     let e = gemm_f64_dev(&dev, m, k, n, &lo64, &ro64, &mut c_short, 8).unwrap_err();
     assert!(is_layout(&e, "output buffer c"), "{e:?}");
@@ -335,6 +342,42 @@ fn short_or_mismatched_device_buffers_return_a_typed_error_and_write_nothing() {
     assert_eq!(after.mixed_panels, before.mixed_panels);
     assert_eq!(after.gemm_mixed, before.gemm_mixed);
     assert_eq!(after.bytes_h2d, before.bytes_h2d);
+}
+
+#[test]
+fn degenerate_shapes_and_every_layout_and_panel_width_meet_the_bound() {
+    // k = 1, k < panel, m = 1, n = 1, k0 > 0 panels (k > b), all four layouts:
+    // the descriptor/extent checks must accept every honest call.
+    let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    if skip() {
+        return;
+    }
+    for &(m, k, n) in &[
+        (1usize, 1usize, 1usize),
+        (1, 9, 4),
+        (4, 9, 1),
+        (3, 1, 5),
+        (4, 3, 6),
+        (5, 130, 3),
+    ] {
+        for b in [1usize, 3, 128] {
+            let bf = (mixed_error_factor(k, b) + gamma(k, U64)) * 1.01;
+            let a = operand(m, k, 51);
+            let bm = operand(k, n, 52);
+            let at = operand(k, m, 53);
+            let bt = operand(n, k, 54);
+            for (label, l, r) in [
+                ("std", a.view(), bm.view()),
+                ("A^T", at.t(), bm.view()),
+                ("B^T", a.view(), bt.t()),
+                ("A^T B^T", at.t(), bt.t()),
+            ] {
+                let (refc, ab) = reference(&l, &r);
+                let (worst, _) = errors(&run(l, r, b), &refc, &ab, bf);
+                assert!(worst <= 1.0, "{label} {m}x{k}x{n} b={b}: {worst:e}");
+            }
+        }
+    }
 }
 
 #[test]

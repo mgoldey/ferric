@@ -93,7 +93,7 @@ struct Arm<'a> {
 fn main() {
     use ferric_core::blas_threads::with_blas_threads;
     use ferric_core::gpu::device::device;
-    use ferric_core::gpu::gemm::{dev_operand, gemm_f64_dev};
+    use ferric_core::gpu::gemm::{dev_left, dev_right, gemm_f64_dev};
     use ferric_core::gpu::mixed::{
         effective_k_panel, gemm_f32_f64acc, gemm_f32_f64acc_dev, mixed_offload_bytes,
         MIXED_K_PANEL_DEFAULT,
@@ -216,8 +216,8 @@ fn main() {
             arms.push(Arm {
                 name: "gpu_f64_resident".into(),
                 run: Box::new(move |timed| {
-                    let lo = dev_operand(d_a.slice(..), &av, true).expect("left layout");
-                    let ro = dev_operand(d_b.slice(..), &bv, false).expect("right layout");
+                    let lo = dev_left(d_a.slice(..), &av).expect("left layout");
+                    let ro = dev_right(d_b.slice(..), &bv).expect("right layout");
                     let t = Instant::now();
                     gemm_f64_dev(dev, m, k, n, &lo, &ro, &mut c, 128).expect("gemm_f64_dev");
                     dev.stream.synchronize().expect("sync");
@@ -244,8 +244,8 @@ fn main() {
             arms.push(Arm {
                 name,
                 run: Box::new(move |timed| {
-                    let lo = dev_operand(d_a.slice(..), &a32v, true).expect("left layout");
-                    let ro = dev_operand(d_b.slice(..), &b32v, false).expect("right layout");
+                    let lo = dev_left(d_a.slice(..), &a32v).expect("left layout");
+                    let ro = dev_right(d_b.slice(..), &b32v).expect("right layout");
                     let t = Instant::now();
                     gemm_f32_f64acc_dev(dev, m, k, n, &lo, &ro, &mut c32, &mut c64, p)
                         .expect("gemm_f32_f64acc_dev");
@@ -290,10 +290,10 @@ fn main() {
             arms.push(Arm {
                 name: "gpu_split3_resident_128 (host sum untimed)".into(),
                 run: Box::new(move |timed| {
-                    let ah = dev_operand(d_ahi.slice(..), &a32v, true).expect("layout");
-                    let bh = dev_operand(d_bhi.slice(..), &b32v, false).expect("layout");
-                    let al = dev_operand(d_alo.slice(..), &a_lo_v, true).expect("layout");
-                    let bl = dev_operand(d_blo.slice(..), &b_lo_v, false).expect("layout");
+                    let ah = dev_left(d_ahi.slice(..), &a32v).expect("layout");
+                    let bh = dev_right(d_bhi.slice(..), &b32v).expect("layout");
+                    let al = dev_left(d_alo.slice(..), &a_lo_v).expect("layout");
+                    let bl = dev_right(d_blo.slice(..), &b_lo_v).expect("layout");
                     let t = Instant::now();
                     gemm_f32_f64acc_dev(dev, m, k, n, &ah, &bh, &mut c32, &mut c_hh, 128)
                         .expect("hh");
