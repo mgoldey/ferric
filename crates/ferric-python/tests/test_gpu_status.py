@@ -374,9 +374,103 @@ def test_configure_gpu_twice_identical_is_ok_and_different_is_a_runtime_error():
         "ferric.configure_gpu(preset='auto')",
         exc="RuntimeError",
     )
-    assert msg.startswith("[gpu] settings already installed (")
-    assert "requested GpuSettings" in msg
+    assert msg.startswith(
+        "[gpu] settings already installed with different values "
+        "(mode: installed off, requested auto); install() must run before "
+        "status()/settings() and only once; "
+    )
+    assert "GpuSettings" not in msg
     assert "GPU settings are process-global" in msg
+
+
+def test_configure_gpu_honours_the_env_preset_when_no_kwarg_is_given():
+    rc, out, err = _configure(
+        "import json, ferric; print(json.dumps(ferric.configure_gpu()))",
+        FERRIC_GPU_PRESET="auto",
+    )
+    assert rc == 0, err
+    st = json.loads(out)
+    assert st["mode"] == "auto" and st["precision"] == "f64"
+    assert "FERRIC_GPU_PRESET: auto  [source: env" in err
+    assert "FERRIC_GPU: auto  [source: preset]" in err
+    assert "FERRIC_GPU_PRECISION: f64  [source: preset]" in err
+
+
+def test_configure_gpu_env_preset_against_a_kwarg_mode_names_both_sources():
+    msg = _refusal(
+        "import ferric; ferric.configure_gpu(mode='off')", FERRIC_GPU_PRESET="mixed"
+    )
+    assert msg == (
+        "[gpu] preset = mixed (env) implies mode = on "
+        "but FERRIC_GPU / [gpu] mode = off (explicit (config/TOML/kwarg)); set one of them"
+    )
+
+
+def test_configure_gpu_mode_alone_leaves_the_preset_at_its_default():
+    rc, out, err = _configure(
+        "import json, ferric; print(json.dumps(ferric.configure_gpu(mode='auto')))"
+    )
+    assert rc == 0, err
+    st = json.loads(out)
+    assert st["mode"] == "auto" and st["precision"] == "f64"
+    assert "FERRIC_GPU_PRESET: off  [source: default]" in err
+    assert "FERRIC_GPU: auto  [source: explicit (config/TOML/kwarg)]" in err
+    assert "FERRIC_GPU_PRECISION: f64  [source: default]" in err
+    assert "[source: preset]" not in err
+
+
+def test_configure_gpu_bad_memory_gb_names_the_key_and_the_value():
+    for bad, shown in (("0", "0"), ("-1.0", "-1"), ("float('nan')", "NaN")):
+        msg = _refusal(f"import ferric; ferric.configure_gpu(memory_gb={bad})")
+        assert msg == f"FERRIC_GPU_MEM_GB: must be finite and > 0, got {shown}"
+
+
+def test_configure_gpu_negative_integers_are_value_errors_not_overflow():
+    assert _refusal("import ferric; ferric.configure_gpu(device=-1)") == (
+        "[gpu] device: must be a non-negative integer, got -1"
+    )
+    assert _refusal("import ferric; ferric.configure_gpu(min_flops=-5)") == (
+        "[gpu] min_flops: must be a non-negative integer, got -5"
+    )
+
+
+def test_configure_gpu_a_comma_inside_a_kernel_item_is_refused():
+    assert _refusal(
+        "import ferric; ferric.configure_gpu(preset='mixed', mixed_kernels=['rimp2-energy,dfk-occ'])"
+    ) == (
+        '[gpu] mixed_kernels: kernel names are separate list items, got "rimp2-energy,dfk-occ"'
+    )
+
+
+def test_configure_gpu_empty_kernel_list_keeps_the_core_refusal():
+    assert _refusal("import ferric; ferric.configure_gpu(mixed_kernels=[])") == (
+        '[gpu] mixed_kernels: unknown mixed-precision kernel "" '
+        "(valid: rimp2-energy, ccsd-amplitudes, dfk-occ, cosx-kern)"
+    )
+
+
+_H2_RIMP2 = (
+    "import ferric; "
+    "m = ferric.Molecule.from_xyz_string('2\\n\\nH 0 0 0\\nH 0 0 0.74\\n'); "
+    "ferric.run_rimp2(m, ferric.BasisSet.bundled('cc-pvdz'), "
+    "ferric.BasisSet.bundled('cc-pvdz-ri')); "
+)
+
+
+def test_configure_gpu_after_gpu_work_read_the_settings_is_refused():
+    # Only a gpu build's RI-MP2 reads the lazy settings; the default build has
+    # no device path to enter, so there is nothing to refuse there.
+    if not COMPILED:
+        return _skip_or_fail_not_required(
+            "default build: no GPU path reads the settings"
+        )
+    msg = _refusal(
+        _H2_RIMP2 + "ferric.configure_gpu(preset='auto')", exc="RuntimeError"
+    )
+    assert msg.startswith(
+        "[gpu] settings already installed with different values (mode: installed off, "
+        "requested auto)"
+    )
 
 
 def test_configure_gpu_after_gpu_status_read_the_settings_is_refused():
@@ -384,4 +478,5 @@ def test_configure_gpu_after_gpu_status_read_the_settings_is_refused():
         "import ferric; ferric.gpu_status(); ferric.configure_gpu(preset='auto')",
         exc="RuntimeError",
     )
-    assert "already installed" in msg and "process-global" in msg
+    assert "(mode: installed off, requested auto)" in msg
+    assert "process-global" in msg
