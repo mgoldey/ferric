@@ -34,4 +34,4 @@ openblas-src = { workspace = true }
 serde_json = { workspace = true }
 
 [features]
-gpu = ["ferric-core/gpu", "ferric-tensors/gpu"]
+gpu = ["ferric-core/gpu", "ferric-tensors/gpu", "ferric-mp2/gpu"]

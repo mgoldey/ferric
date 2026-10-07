@@ -43,6 +43,9 @@ default = []
 # `cargo build -p ferric-scf --features mpi` was correct, which is what
 # traced this to the missing feature edge.)
 mpi = ["dep:mpi", "ferric-core/mpi", "ferric-scf/mpi"]
+# Device-resident B_ov for the RI-MP2 energy (rimp2_gpu). Additive; default builds
+# and the PyPI wheel feature set are unchanged.
+gpu = ["ferric-core/gpu", "ferric-tensors/gpu"]
 
 [dev-dependencies]
 serde = { workspace = true }

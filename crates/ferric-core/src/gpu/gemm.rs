@@ -133,6 +133,88 @@ impl OperandGeom {
         }
     }
 
+    /// Like [`Self::derive`] for a host twin that is a sub-block of a larger
+    /// row-major matrix: one axis has unit stride and the other a
+    /// non-negative stride `ld` at least as long as the unit axis (a standard
+    /// view with padded rows, or its transpose). `ld` becomes the cuBLAS
+    /// leading dimension and `len` (the device view's length, counted from the
+    /// block's first element) must cover the block's extent
+    /// `ld·(outer − 1) + inner`. Anything else (overlapping rows, negative or
+    /// no unit stride, an `ld` beyond cuBLAS's i32) is a typed `Layout` error.
+    /// Total on zero-size views (nothing is read, only the shape is kept).
+    pub(crate) fn derive_padded<H>(
+        role: Role,
+        host: &ArrayView2<H>,
+        len: usize,
+    ) -> Result<Self, GpuError> {
+        let (rows, cols) = (host.nrows(), host.ncols());
+        let (rs, cs) = (host.strides()[0], host.strides()[1]);
+        let bad = || {
+            GpuError::Layout(
+                "padded operand needs a unit stride on one axis and a leading \
+                 dimension at least as long as the other axis"
+                    .into(),
+            )
+        };
+        let long_enough = |stride: isize, axis_len: usize| {
+            usize::try_from(stride).ok().filter(|&ld| ld >= axis_len)
+        };
+        // (op, ld, outer, inner): `outer` axes of `inner` contiguous elements.
+        let (op, ld, outer, inner) = if rows == 0 || cols == 0 {
+            (cublasOperation_t::CUBLAS_OP_N, cols, rows, cols)
+        } else if let (1, Some(ld)) = (cs, long_enough(rs, cols)) {
+            (cublasOperation_t::CUBLAS_OP_N, ld, rows, cols)
+        } else if let (1, Some(ld)) = (rs, long_enough(cs, rows)) {
+            (cublasOperation_t::CUBLAS_OP_T, ld, cols, rows)
+        } else {
+            return Err(bad());
+        };
+        let ld_i32 = i32::try_from(ld).map_err(|_| {
+            GpuError::Layout(format!("leading dimension {ld} exceeds cuBLAS i32 range"))
+        })?;
+        let extent = if outer == 0 || inner == 0 {
+            0
+        } else {
+            ld.saturating_mul(outer - 1).saturating_add(inner)
+        };
+        if len < extent {
+            return Err(GpuError::Layout(format!(
+                "device view holds {len} elements but the {rows}x{cols} block (ld {ld}) spans {extent}"
+            )));
+        }
+        let k_step = match (role, op == cublasOperation_t::CUBLAS_OP_N) {
+            (Role::Left, true) | (Role::Right, false) => 1,
+            _ => ld,
+        };
+        Ok(Self {
+            role,
+            op,
+            ld: ld_i32,
+            k_step,
+            rows,
+            cols,
+        })
+    }
+
+    /// `(ld, k_step)` is a well-formed descriptor for this role, op and shape:
+    /// `ld` no smaller than the stored matrix's row count and `k_step` the
+    /// unique value for that `ld` (1 when k runs along the stored rows, `ld`
+    /// when along its columns). Exact (`ld` = minimum) for [`Self::derive`];
+    /// larger for [`Self::derive_padded`]. The per-panel extent check then
+    /// bounds every element read, whatever `ld` is.
+    fn descriptor_ok(&self) -> bool {
+        let (min_ld, _) = self.expected_ld_k_step();
+        let Ok(ld) = usize::try_from(self.ld) else {
+            return false;
+        };
+        let n_op = self.op == cublasOperation_t::CUBLAS_OP_N;
+        let k_step = match (self.role, n_op) {
+            (Role::Left, true) | (Role::Right, false) => 1,
+            _ => ld,
+        };
+        ld >= min_ld && self.k_step == k_step
+    }
+
     /// One past the last element cuBLAS reads for the panel [k0, k0 + kc), in
     /// the swapped column-major call (right is cuBLAS A with m_c = n, left is
     /// cuBLAS B with n_c = m).
@@ -187,6 +269,17 @@ impl<'a, T> DevOperand<'a, T> {
     }
 }
 
+impl<'a, T> DevOperand<'a, T> {
+    pub(crate) fn new_padded<H>(
+        view: CudaView<'a, T>,
+        host: &ArrayView2<H>,
+        role: Role,
+    ) -> Result<Self, GpuError> {
+        let geom = OperandGeom::derive_padded(role, host, view.len())?;
+        Ok(Self { view, geom })
+    }
+}
+
 /// Resident LEFT operand (m × k) whose host twin `host` is standard or
 /// transposed-standard; `view` holds exactly `host.len()` elements in the
 /// host's memory order, otherwise `GpuError::Layout`.
@@ -203,6 +296,30 @@ pub fn dev_right<'a, T, H>(
     host: &ArrayView2<H>,
 ) -> Result<DevOperand<'a, T>, GpuError> {
     DevOperand::new(view, host, Role::Right)
+}
+
+/// Resident LEFT operand that is a sub-block of a larger resident row-major
+/// matrix (e.g. a column range, so the leading dimension is wider than the
+/// block). `host` is the block as a view into the host twin of the resident
+/// matrix (standard-with-padding or its transpose, see
+/// `OperandGeom::derive_padded`); `view` starts at the block's first element
+/// and must reach at least the block's extent, otherwise `GpuError::Layout`.
+/// The descriptor is derived from `host`'s strides, never supplied by the
+/// caller, and the `*_dev` GEMMs still check every panel's read extent
+/// against `view.len()`.
+pub fn dev_left_padded<'a, T, H>(
+    view: CudaView<'a, T>,
+    host: &ArrayView2<H>,
+) -> Result<DevOperand<'a, T>, GpuError> {
+    DevOperand::new_padded(view, host, Role::Left)
+}
+
+/// Resident RIGHT operand (k × n) that is a sub-block; see [`dev_left_padded`].
+pub fn dev_right_padded<'a, T, H>(
+    view: CudaView<'a, T>,
+    host: &ArrayView2<H>,
+) -> Result<DevOperand<'a, T>, GpuError> {
+    DevOperand::new_padded(view, host, Role::Right)
 }
 
 /// Device-free soundness check for one `*_dev` call with k blocked at `kb`.
@@ -240,9 +357,7 @@ pub(crate) fn check_dev_geometry(
                 g.rows, g.cols
             )));
         }
-        if (usize::try_from(g.ld).ok(), g.k_step)
-            != (Some(g.expected_ld_k_step().0), g.expected_ld_k_step().1)
-        {
+        if !g.descriptor_ok() {
             return Err(GpuError::Layout(format!(
                 "{name} operand descriptor (ld {}, k_step {}) does not match its role, op and shape",
                 g.ld, g.k_step
@@ -426,7 +541,7 @@ pub fn gemm_f64(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ndarray::Array2;
+    use ndarray::{Array2, ShapeBuilder};
 
     // Pure descriptor logic: no device needed, runs in every CI configuration.
     #[test]
@@ -700,6 +815,169 @@ mod tests {
             let e = OperandGeom::derive(Role::Left, &host.view(), len).unwrap_err();
             assert!(is_layout(&e, "elements"), "{e:?}");
         }
+    }
+
+    // ---- padded (sub-block of a larger row-major matrix) operands ----------
+
+    /// The RI-MP2 shapes: B is (naux x nov) row-major, nvir-wide column blocks.
+    /// Returns the geometries of G_i = B_iᵀ·B_tail for block `i`.
+    fn rimp2_geoms(
+        b: &Array2<f64>,
+        nvir: usize,
+        i: usize,
+        len: usize,
+    ) -> Result<(OperandGeom, OperandGeom), GpuError> {
+        let b_i = b.slice(ndarray::s![.., i * nvir..(i + 1) * nvir]);
+        let b_tail = b.slice(ndarray::s![.., i * nvir..]);
+        Ok((
+            OperandGeom::derive_padded(Role::Left, &b_i.t(), len)?,
+            OperandGeom::derive_padded(Role::Right, &b_tail, len)?,
+        ))
+    }
+
+    #[test]
+    fn padded_rimp2_blocks_get_the_wide_leading_dimension() {
+        let (naux, nov, nvir, i) = (7usize, 12usize, 3usize, 1usize);
+        let b = Array2::<f64>::zeros((naux, nov));
+        let off = i * nvir;
+        let (l, r) = rimp2_geoms(&b, nvir, i, naux * nov - off).unwrap();
+        assert_eq!(
+            (l.op, l.ld, l.k_step, l.rows, l.cols),
+            (cublasOperation_t::CUBLAS_OP_T, 12, 12, nvir, naux)
+        );
+        assert_eq!(
+            (r.op, r.ld, r.k_step, r.rows, r.cols),
+            (cublasOperation_t::CUBLAS_OP_N, 12, 12, naux, nov - off)
+        );
+        let (m, k, n) = (nvir, naux, nov - off);
+        // a view from the block's first element to the end of B passes, for every panel width
+        for kb in PANELS {
+            let len = naux * nov - off;
+            check_dev_geometry(m, k, n, kb, (&l, len), (&r, len), &[("c", m * n)]).unwrap();
+        }
+        // tight: the last element read is (k-1)·ld + width of the block on the
+        // left (the tail on the right reaches the end of B)
+        let last_left = (naux - 1) * nov + nvir;
+        let e = check_dev_geometry(
+            m,
+            k,
+            n,
+            128,
+            (&l, last_left - 1),
+            (&r, naux * nov - off),
+            &[],
+        )
+        .unwrap_err();
+        assert!(is_layout(&e, "reads up to"), "{e:?}");
+        check_dev_geometry(m, k, n, 128, (&l, last_left), (&r, naux * nov - off), &[]).unwrap();
+        let last_right = (naux - 1) * nov + n;
+        let e = check_dev_geometry(m, k, n, 128, (&l, last_left), (&r, last_right - 1), &[])
+            .unwrap_err();
+        assert!(is_layout(&e, "reads up to"), "{e:?}");
+        check_dev_geometry(m, k, n, 128, (&l, last_left), (&r, last_right), &[]).unwrap();
+    }
+
+    #[test]
+    fn padded_derivation_agrees_with_the_exact_one_on_unpadded_layouts() {
+        for &(m, k, n) in &SHAPES {
+            let l_std = Array2::<f64>::zeros((m, k));
+            let l_t = Array2::<f64>::zeros((k, m));
+            let r_std = Array2::<f64>::zeros((k, n));
+            let r_t = Array2::<f64>::zeros((n, k));
+            for (role, v) in [
+                (Role::Left, l_std.view()),
+                (Role::Left, l_t.t()),
+                (Role::Right, r_std.view()),
+                (Role::Right, r_t.t()),
+            ] {
+                let exact = OperandGeom::derive(role, &v, v.len()).unwrap();
+                let padded = OperandGeom::derive_padded(role, &v, v.len()).unwrap();
+                // A degenerate axis of length 1 admits two valid descriptions;
+                // both must read the same elements, so compare the cuBLAS
+                // read extents rather than the labels.
+                assert_eq!(
+                    exact.panel_end(m, n, 0, k),
+                    padded.panel_end(m, n, 0, k),
+                    "{role:?} {m}x{k}x{n}"
+                );
+                if v.nrows() > 1 && v.ncols() > 1 {
+                    assert_eq!(exact, padded, "{role:?} {m}x{k}x{n}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn padded_derivation_refuses_what_it_cannot_describe() {
+        let data = vec![0.0f64; 64];
+        let view = |shape: (usize, usize), strides: (usize, usize)| {
+            ndarray::ArrayView2::from_shape(shape.strides(strides), &data[..])
+        };
+        // overlapping rows (stride < width): cuBLAS would read the wrong elements
+        let v = view((3, 4), (2, 1)).unwrap();
+        assert!(OperandGeom::derive_padded(Role::Left, &v, 64).is_err());
+        // neither axis has unit stride
+        let v = view((3, 4), (8, 2)).unwrap();
+        assert!(OperandGeom::derive_padded(Role::Right, &v, 64).is_err());
+        // negative stride (reversed rows)
+        let a = Array2::<f64>::zeros((8, 8));
+        let v = a.slice(ndarray::s![..;-1, ..4]);
+        assert!(OperandGeom::derive_padded(Role::Left, &v, 64).is_err());
+        // view shorter than the host extent: 3 rows of 4 at ld 10 need 24 elements
+        let v = view((3, 4), (10, 1)).unwrap();
+        assert!(OperandGeom::derive_padded(Role::Left, &v, 23).is_err());
+        assert!(OperandGeom::derive_padded(Role::Left, &v, 24).is_ok());
+        // ld beyond the cuBLAS i32 range
+        let big = [0.0f64; 1];
+        let v =
+            ndarray::ArrayView2::from_shape((1, 1).strides((i32::MAX as usize + 1, 1)), &big[..])
+                .unwrap();
+        assert!(OperandGeom::derive_padded(Role::Left, &v, 1).is_err());
+    }
+
+    #[test]
+    fn padded_derivation_is_total_on_zero_sized_views() {
+        let data = [0.0f64; 8];
+        for shape in [(0usize, 5usize), (5, 0), (0, 0)] {
+            for strides in [(5usize, 1usize), (1, 5), (0, 0), (usize::MAX / 4, 1)] {
+                let v = ndarray::ArrayView2::from_shape(shape.strides(strides), &data[..]);
+                if let Ok(v) = v {
+                    for role in [Role::Left, Role::Right] {
+                        let _ = OperandGeom::derive_padded(role, &v, 0);
+                        let _ = OperandGeom::derive_padded(role, &v, 8);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_padded_descriptor_must_still_match_its_role_op_and_shape() {
+        let b = Array2::<f64>::zeros((7, 12));
+        let (l, r) = rimp2_geoms(&b, 3, 1, 7 * 12 - 3).unwrap();
+        let (m, k, n) = (3usize, 7usize, 9usize);
+        let len = 7 * 12 - 3;
+        let ok = |l: &OperandGeom, r: &OperandGeom| {
+            check_dev_geometry(m, k, n, 128, (l, len), (r, len), &[])
+        };
+        ok(&l, &r).unwrap();
+        // ld below the stored matrix's row count
+        let e = ok(&OperandGeom { ld: 2, ..l }, &r).unwrap_err();
+        assert!(is_layout(&e, "descriptor"), "{e:?}");
+        // k_step that disagrees with ld (reads in bounds, computes the wrong product)
+        let e = ok(&OperandGeom { k_step: 3, ..l }, &r).unwrap_err();
+        assert!(is_layout(&e, "descriptor"), "{e:?}");
+        let e = ok(&l, &OperandGeom { k_step: 9, ..r }).unwrap_err();
+        assert!(is_layout(&e, "descriptor"), "{e:?}");
+        // a bigger ld with the matching k_step is a different, still well-formed, operand
+        // that simply needs a longer view
+        let wide_l = OperandGeom {
+            ld: 20,
+            k_step: 20,
+            ..l
+        };
+        let e = ok(&wide_l, &r).unwrap_err();
+        assert!(is_layout(&e, "reads up to"), "{e:?}");
     }
 
     #[test]

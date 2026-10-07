@@ -20,6 +20,8 @@ pub mod mixed_rules;
 #[cfg(feature = "gpu")]
 pub mod pool;
 pub mod precision;
+#[cfg(feature = "gpu")]
+pub mod resident;
 pub mod stats;
 
 use std::sync::OnceLock;

@@ -13,6 +13,7 @@ static BYTES_D2H: AtomicU64 = AtomicU64::new(0);
 static GEMM_MIXED: AtomicU64 = AtomicU64::new(0);
 static MIXED_PANELS: AtomicU64 = AtomicU64::new(0);
 static MIXED_FALLBACK_F64: AtomicU64 = AtomicU64::new(0);
+static RESIDENT_UPLOADS: AtomicU64 = AtomicU64::new(0);
 
 /// Why a GEMM ran on the CPU although the GPU mode was not `off`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +41,14 @@ pub fn note_mixed(panels: usize, h2d: usize, d2h: usize) {
     MIXED_PANELS.fetch_add(panels as u64, Ordering::Relaxed);
     BYTES_H2D.fetch_add(h2d as u64, Ordering::Relaxed);
     BYTES_D2H.fetch_add(d2h as u64, Ordering::Relaxed);
+}
+
+/// A matrix was uploaded to live on the device beyond one GEMM
+/// (`resident::DeviceMatrix`); `bytes` count toward `bytes_h2d` too.
+#[doc(hidden)]
+pub fn note_resident_upload(bytes: usize) {
+    RESIDENT_UPLOADS.fetch_add(1, Ordering::Relaxed);
+    BYTES_H2D.fetch_add(bytes as u64, Ordering::Relaxed);
 }
 
 /// Mixed was requested and allowed, but the call ran in f64 on the device
@@ -94,6 +103,7 @@ pub struct GpuStatsSnapshot {
     pub gemm_mixed: u64,
     pub mixed_panels: u64,
     pub mixed_fallback_f64: u64,
+    pub resident_uploads: u64,
 }
 
 pub fn stats() -> GpuStatsSnapshot {
@@ -109,5 +119,6 @@ pub fn stats() -> GpuStatsSnapshot {
         gemm_mixed: GEMM_MIXED.load(Ordering::Relaxed),
         mixed_panels: MIXED_PANELS.load(Ordering::Relaxed),
         mixed_fallback_f64: MIXED_FALLBACK_F64.load(Ordering::Relaxed),
+        resident_uploads: RESIDENT_UPLOADS.load(Ordering::Relaxed),
     }
 }

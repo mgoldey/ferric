@@ -63,6 +63,6 @@ rayon = { workspace = true }
 
 [features]
 # CUDA backend. Forwarded to every crate with a device path; Phase 2 adds
-# ferric-scf/gpu and ferric-mp2/gpu here. (ferric-tensors is not a dependency
+# ferric-scf/gpu here. (ferric-tensors is not a dependency
 # of this crate, so it has nothing to forward to.)
-gpu = ["ferric-core/gpu", "ferric-cc/gpu"]
+gpu = ["ferric-core/gpu", "ferric-cc/gpu", "ferric-mp2/gpu"]
