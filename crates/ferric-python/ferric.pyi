@@ -2293,8 +2293,19 @@ def tune_omega(
     max_evals: int | None = None,
     continuation: bool | None = None,
     branch_tol: float | None = None,
+    check_cation_stability: bool | None = None,
 ) -> dict[str, object]:
-    """Optimal tuning of range-separation omega for an RSH functional."""
+    """Optimal tuning of range-separation omega for an RSH functional.
+
+    ``check_cation_stability`` (default True) runs the UKS internal-stability
+    analysis on every cation. Each ``evals`` dict gains ``cation_lambda_min``
+    (Ha/rad^2 or None), ``cation_stability`` ("stable", "unstable",
+    "marginal", "indeterminate", "not_analysed", "not_checked") and
+    ``cation_stability_skip``; the result gains ``stability_warning``. A tuned
+    omega whose cation is an internal saddle raises RuntimeError. Functionals
+    without an orbital-Hessian kernel (VV10, meta-GGA) are reported
+    "not_analysed", never stable. False reproduces earlier results bit for bit.
+    """
     ...
 
 def esp_at_atoms(

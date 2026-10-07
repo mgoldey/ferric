@@ -5113,14 +5113,21 @@ fn run_linlccd(
 /// `branch_changed` is `False` everywhere because nothing was CHECKED, not
 /// because the states agreed.
 ///
-/// LIMITATION: neither mechanism is a stability verdict. `tune_omega` does not
-/// report the orbital Hessian's lowest eigenvalue, and ferric's stability
-/// analysis refuses wB97X-V (no VV10 response kernel exists), so a converged
-/// cation that is an internal SADDLE is not detected and a returned omega can
-/// sit on a branch that has stopped being a minimum. Continuation keeps the curve on ONE
-/// branch; it does not certify that branch is the lowest one.
+/// `check_cation_stability` (default `True`) runs the UKS internal-stability
+/// analysis on every cation. Each eval dict then carries `cation_lambda_min`
+/// (lowest orbital-Hessian eigenvalue, Ha/rad^2, or `None`), `cation_stability`
+/// (`"stable"`, `"unstable"`, `"marginal"`, `"indeterminate"`, `"not_analysed"`
+/// or `"not_checked"`) and `cation_stability_skip` (the reason when not
+/// analysed). A tuned omega whose cation is an internal SADDLE raises
+/// `RuntimeError` naming omega and lambda_min: it is not a valid result. The
+/// onset is a curvature change that no energy, <S^2> or population observable
+/// can see. Functionals whose Hessian cannot be built (VV10, e.g. wB97X-V;
+/// meta-GGA) are NOT analysed: every eval is `"not_analysed"`, a warning is
+/// printed, `stability_warning` is set, and the returned omega is not
+/// certified stable. `False` skips the analysis and reproduces the previous
+/// results bit for bit.
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, functional, omega_lo=None, omega_hi=None, omega_tol=None, max_evals=None, continuation=None, branch_tol=None))]
+#[pyo3(signature = (mol, basis_set, functional, omega_lo=None, omega_hi=None, omega_tol=None, max_evals=None, continuation=None, branch_tol=None, check_cation_stability=None))]
 #[allow(clippy::too_many_arguments)]
 fn tune_omega(
     py: Python<'_>,
@@ -5133,6 +5140,7 @@ fn tune_omega(
     max_evals: Option<usize>,
     continuation: Option<bool>,
     branch_tol: Option<f64>,
+    check_cation_stability: Option<bool>,
 ) -> PyResult<Py<pyo3::types::PyDict>> {
     use ferric_scf::omega_tuning::{tune_omega as tune, OmegaTuneConfig};
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
@@ -5155,6 +5163,7 @@ fn tune_omega(
             Some(t) if t > 0.0 => Some(t),
             Some(_) => None,
         },
+        check_cation_stability: check_cation_stability.unwrap_or(defaults.check_cation_stability),
         ..defaults
     };
     let r = tune(&ctx, &mol.inner, &prep, &bounds, &cfg).map_err(make_err)?;
@@ -5163,6 +5172,7 @@ fn tune_omega(
     d.set_item("j", r.j)?;
     d.set_item("converged", r.converged)?;
     d.set_item("branch_warning", r.branch_warning.clone())?;
+    d.set_item("stability_warning", r.stability_warning.clone())?;
     let evals = pyo3::types::PyList::empty(py);
     for e in &r.evals {
         evals.append(omega_eval_dict(py, e)?)?;
@@ -5193,6 +5203,15 @@ fn omega_eval_dict<'py>(
         OmegaSeed::Default => ("default", None),
         OmegaSeed::Continued { from_omega } => ("continued", Some(from_omega)),
     };
+    item.set_item("cation_stability", e.cation_stability.label())?;
+    item.set_item("cation_lambda_min", e.cation_stability.lambda_min())?;
+    item.set_item(
+        "cation_stability_skip",
+        match e.cation_stability {
+            ferric_scf::omega_tuning::CationStability::NotAnalysed(sk) => Some(sk.reason()),
+            _ => None,
+        },
+    )?;
     item.set_item("seed", seed)?;
     item.set_item("seed_from_omega", from)?;
     Ok(item)
