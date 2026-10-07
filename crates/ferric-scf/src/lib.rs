@@ -89,6 +89,8 @@ pub mod cosx_gradient;
 pub mod cosx_k;
 /// Density-fitted Coulomb (J) matrix builder (RI-J).
 pub mod df_j;
+#[cfg(feature = "gpu")]
+pub mod df_j_gpu;
 /// Density-fitted exchange (K) matrix builder (RI-K).
 pub mod df_k;
 #[cfg(feature = "gpu")]

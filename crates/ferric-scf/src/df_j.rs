@@ -80,6 +80,10 @@ pub struct DfJ<'a> {
     /// The memory budget this source was built under — also caps the pass-2
     /// reduction band scratch via `resolve_band_bytes`.
     budget_bytes: usize,
+    /// Device-resident copy state (feature `gpu`); `Untried` until the first
+    /// build asks for it. See `crate::df_j_gpu`.
+    #[cfg(feature = "gpu")]
+    device: crate::df_j_gpu::DeviceSlot,
 }
 
 impl<'a> std::fmt::Debug for DfJ<'a> {
@@ -190,7 +194,24 @@ impl<'a> DfJ<'a> {
             v_chol,
             ctx,
             budget_bytes,
+            #[cfg(feature = "gpu")]
+            device: crate::df_j_gpu::DeviceSlot::default(),
         })
+    }
+
+    /// The raw packed band as `(naux, n(n+1)/2)`; `None` unless the packed
+    /// in-core tier. Test hook.
+    #[cfg(feature = "gpu")]
+    #[doc(hidden)]
+    pub fn packed_incore_for_test(&self) -> Option<ndarray::ArrayView2<'_, f64>> {
+        self.source.packed_flat()
+    }
+
+    /// Does this builder currently hold its raw tensor on the device? Test hook.
+    #[cfg(feature = "gpu")]
+    #[doc(hidden)]
+    pub fn device_resident_for_test(&self) -> bool {
+        matches!(self.device, crate::df_j_gpu::DeviceSlot::Ready(_))
     }
 }
 
@@ -218,7 +239,7 @@ fn chunk_width(n: usize) -> usize {
 /// diagonal. This is the symmetrised density `(D + Dᵀ)/2` with the off-diagonal
 /// doubled, written without the intermediate halving, so a non-symmetric `D`
 /// gives exactly the contraction the unpacked path computes.
-fn packed_density_weights(d: &Array2<f64>, n: usize) -> Array1<f64> {
+pub(crate) fn packed_density_weights(d: &Array2<f64>, n: usize) -> Array1<f64> {
     let mut w = Array1::<f64>::zeros(n * (n + 1) / 2);
     let mut k = 0usize;
     for mu in 0..n {
@@ -233,7 +254,7 @@ fn packed_density_weights(d: &Array2<f64>, n: usize) -> Array1<f64> {
 }
 
 /// Expand a packed lower triangle into the full symmetric matrix `j`.
-fn unpack_symmetric(packed: &[f64], n: usize, j: &mut Array2<f64>) {
+pub(crate) fn unpack_symmetric(packed: &[f64], n: usize, j: &mut Array2<f64>) {
     let mut k = 0usize;
     for mu in 0..n {
         for nu in 0..=mu {
@@ -353,6 +374,27 @@ impl DfJ<'_> {
 
 impl JBuilder for DfJ<'_> {
     fn build(&mut self, d: &Array2<f64>, j: &mut Array2<f64>) -> Result<usize, FerricError> {
+        // Device-resident path (opt-in `gpu` feature, `[gpu] mode` != off). It
+        // declines to the host path below for every reason it cannot run.
+        #[cfg(feature = "gpu")]
+        {
+            let v_chol = &self.v_chol;
+            let solve = |d_p: &Array1<f64>| {
+                v_chol
+                    .solvec(d_p)
+                    .map_err(|e| FerricError::Lapack(format!("DF-J metric solve failed: {e}")))
+            };
+            if crate::df_j_gpu::try_build(
+                &mut self.device,
+                &mut self.source,
+                self.ctx,
+                d,
+                j,
+                solve,
+            )? {
+                return Ok(0);
+            }
+        }
         if self.source.supports_packed_stream() {
             self.build_packed(d, j)?;
             self.reduce_j(j);
