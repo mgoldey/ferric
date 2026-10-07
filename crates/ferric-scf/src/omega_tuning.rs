@@ -213,6 +213,15 @@ impl std::fmt::Display for OmegaSeed {
     }
 }
 
+/// Why the Hessian cannot be built for this functional at `omega`, if so.
+fn cation_stability_skip(cfg: &OmegaTuneConfig, omega: f64) -> Option<StabilitySkip> {
+    if cfg.check_cation_stability {
+        ks_reference_is_analysable(Some(&cfg.functional), omega).err()
+    } else {
+        None
+    }
+}
+
 /// What the orbital Hessian said about one evaluation's cation.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CationStability {
@@ -233,6 +242,29 @@ pub enum CationStability {
 }
 
 impl CationStability {
+    /// Classify one cation solve: `skip` from [`cation_stability_skip`], `st`
+    /// the solver's own result (`None` when it was requested but failed).
+    fn from_solve(
+        cfg: &OmegaTuneConfig,
+        skip: Option<StabilitySkip>,
+        st: Option<&crate::stability::StabilityResult>,
+    ) -> Self {
+        if !cfg.check_cation_stability {
+            return Self::NotChecked;
+        }
+        if let Some(skip) = skip {
+            return Self::NotAnalysed(skip);
+        }
+        match st {
+            Some(st) => Self::Analysed {
+                lambda_min: st.lowest_eigenvalue,
+                noise_floor: st.noise_floor,
+                verdict: st.verdict(),
+            },
+            None => Self::NotAnalysed(StabilitySkip::AnalysisFailed),
+        }
+    }
+
     /// `true` only for a PROVEN internal saddle: an `Unstable` verdict, or an
     /// unconverged (`Indeterminate`) eigensolve whose Ritz value is already
     /// below `-noise_floor`. Rayleigh-Ritz is variational, so that value is an
@@ -351,21 +383,32 @@ pub struct OmegaTuneResult {
 
 impl std::fmt::Display for OmegaTuneResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
+        write!(f, "{}{}", self.headline(), self.warning_suffix())
+    }
+}
+
+impl OmegaTuneResult {
+    fn headline(&self) -> String {
+        format!(
             "ω-tuning: ω* = {:.6} Bohr⁻¹ (J = {:.6}, {} evals, converged: {})",
             self.omega,
             self.j,
             self.evals.len(),
             self.converged
-        )?;
-        if let Some(w) = &self.branch_warning {
-            write!(f, "; BRANCH WARNING: {w}")?;
+        )
+    }
+
+    fn warning_suffix(&self) -> String {
+        let mut out = String::new();
+        for (tag, w) in [
+            ("BRANCH", &self.branch_warning),
+            ("STABILITY", &self.stability_warning),
+        ] {
+            if let Some(w) = w {
+                out.push_str(&format!("; {tag} WARNING: {w}"));
+            }
         }
-        if let Some(w) = &self.stability_warning {
-            write!(f, "; STABILITY WARNING: {w}")?;
-        }
-        Ok(())
+        out
     }
 }
 
@@ -581,11 +624,7 @@ pub fn eval_j_seeded(
     // Stability: decide up front whether the Hessian exists for this
     // functional, so a skip is a typed per-eval record and not only a stderr
     // line inside the solver.
-    let skip = if cfg.check_cation_stability {
-        ks_reference_is_analysable(Some(&cfg.functional), omega).err()
-    } else {
-        None
-    };
+    let skip = cation_stability_skip(cfg, omega);
     // Assigned on every path: a `true` cloned from `cfg.scf` must not make the
     // solver analyse a cation the eval then reports as `NotChecked`.
     cat_cfg.check_stability = cfg.check_cation_stability && skip.is_none();
@@ -614,20 +653,7 @@ pub fn eval_j_seeded(
     let s2 = s_squared(&c_a, &c_b, &ovlp, nocc_a, nocc_b);
     let asym = spin_population_asymmetry(&cation, prep, &cat.density_alpha, d_b)?;
 
-    let cation_stability = if !cfg.check_cation_stability {
-        CationStability::NotChecked
-    } else if let Some(skip) = skip {
-        CationStability::NotAnalysed(skip)
-    } else {
-        match &cat.stability {
-            Some(st) => CationStability::Analysed {
-                lambda_min: st.lowest_eigenvalue,
-                noise_floor: st.noise_floor,
-                verdict: st.verdict(),
-            },
-            None => CationStability::NotAnalysed(StabilitySkip::AnalysisFailed),
-        }
-    };
+    let cation_stability = CationStability::from_solve(cfg, skip, cat.stability.as_ref());
 
     let ip = cat.energy - neutral.energy;
     let eval = OmegaEval {

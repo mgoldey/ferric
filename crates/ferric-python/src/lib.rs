@@ -5181,6 +5181,23 @@ fn tune_omega(
     Ok(d.into())
 }
 
+/// The cation-stability keys of an `OmegaEval` dict.
+fn set_stability_items(
+    item: &pyo3::Bound<'_, pyo3::types::PyDict>,
+    cs: &ferric_scf::omega_tuning::CationStability,
+) -> PyResult<()> {
+    item.set_item("cation_stability", cs.label())?;
+    item.set_item("cation_lambda_min", cs.lambda_min())?;
+    item.set_item(
+        "cation_stability_skip",
+        match *cs {
+            ferric_scf::omega_tuning::CationStability::NotAnalysed(sk) => Some(sk.reason()),
+            _ => None,
+        },
+    )?;
+    Ok(())
+}
+
 /// One `OmegaEval` as the dict `tune_omega` returns in its `evals` list.
 fn omega_eval_dict<'py>(
     py: Python<'py>,
@@ -5203,15 +5220,7 @@ fn omega_eval_dict<'py>(
         OmegaSeed::Default => ("default", None),
         OmegaSeed::Continued { from_omega } => ("continued", Some(from_omega)),
     };
-    item.set_item("cation_stability", e.cation_stability.label())?;
-    item.set_item("cation_lambda_min", e.cation_stability.lambda_min())?;
-    item.set_item(
-        "cation_stability_skip",
-        match e.cation_stability {
-            ferric_scf::omega_tuning::CationStability::NotAnalysed(sk) => Some(sk.reason()),
-            _ => None,
-        },
-    )?;
+    set_stability_items(&item, &e.cation_stability)?;
     item.set_item("seed", seed)?;
     item.set_item("seed_from_omega", from)?;
     Ok(item)
