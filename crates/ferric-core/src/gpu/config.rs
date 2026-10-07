@@ -241,6 +241,43 @@ fn merge_preset<T: PartialEq + fmt::Display + Copy>(
 }
 
 impl GpuSettings {
+    /// One `key: installed X, requested Y` entry per field that differs.
+    pub fn differences(&self, requested: &GpuSettings) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut note = |key: &str, a: String, b: String| {
+            if a != b {
+                out.push(format!("{key}: installed {a}, requested {b}"));
+            }
+        };
+        note("mode", self.mode.to_string(), requested.mode.to_string());
+        note(
+            "device",
+            self.device.to_string(),
+            requested.device.to_string(),
+        );
+        note(
+            "memory_gb",
+            format!("{:?}", self.memory_gb),
+            format!("{:?}", requested.memory_gb),
+        );
+        note(
+            "min_flops",
+            self.min_flops.to_string(),
+            requested.min_flops.to_string(),
+        );
+        note(
+            "precision",
+            self.precision.to_string(),
+            requested.precision.to_string(),
+        );
+        note(
+            "mixed_kernels",
+            self.mixed_kernels.to_string(),
+            requested.mixed_kernels.to_string(),
+        );
+        out
+    }
+
     /// `true` only when `precision = mixed` AND `k` is in the allowlist.
     pub fn mixed_allows(&self, k: MixedKernel) -> bool {
         self.precision == Precision::Mixed && self.mixed_kernels.contains(k)

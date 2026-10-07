@@ -8709,6 +8709,19 @@ fn gpu_status(py: Python<'_>) -> PyResult<Bound<'_, pyo3::types::PyDict>> {
     Ok(d)
 }
 
+/// A non-negative integer GPU key (`device`, `min_flops`): a negative value is
+/// a `ValueError` naming the key rather than pyo3's bare `OverflowError`.
+fn non_negative_gpu_key(key: &str, v: Option<i64>) -> PyResult<Option<usize>> {
+    v.map(|n| {
+        usize::try_from(n).map_err(|_| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "[gpu] {key}: must be a non-negative integer, got {n}"
+            ))
+        })
+    })
+    .transpose()
+}
+
 /// Install the CUDA backend for this process from keyword arguments (the
 /// Python side of `[gpu]`): `preset` is one word, the rest are the fine-grained
 /// keys. Resolved through the same machinery as the CLI (explicit > env >
@@ -8724,9 +8737,9 @@ fn configure_gpu<'py>(
     mode: Option<&str>,
     precision: Option<&str>,
     mixed_kernels: Option<Vec<String>>,
-    device: Option<usize>,
+    device: Option<i64>,
     memory_gb: Option<f64>,
-    min_flops: Option<usize>,
+    min_flops: Option<i64>,
 ) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
     use ferric_core::gpu::{GpuMode, GpuPreset, GpuSettingsExplicit, MixedKernelSet, Precision};
     let bad =
@@ -8738,14 +8751,20 @@ fn configure_gpu<'py>(
         mode: mode
             .map(|s| s.parse::<GpuMode>().map_err(|e| bad("mode", e)))
             .transpose()?,
-        device,
+        device: non_negative_gpu_key("device", device)?,
         memory_gb,
-        min_flops,
+        min_flops: non_negative_gpu_key("min_flops", min_flops)?,
         precision: precision
             .map(|s| s.parse::<Precision>().map_err(|e| bad("precision", e)))
             .transpose()?,
         mixed_kernels: mixed_kernels
             .map(|ks| {
+                if let Some(item) = ks.iter().find(|k| k.contains(',')) {
+                    return Err(bad(
+                        "mixed_kernels",
+                        format!("kernel names are separate list items, got {item:?}"),
+                    ));
+                }
                 ks.join(",")
                     .parse::<MixedKernelSet>()
                     .map_err(|e| bad("mixed_kernels", e))
@@ -8755,7 +8774,7 @@ fn configure_gpu<'py>(
     // The device probe may take a while; release the GIL.
     py.allow_threads(|| ferric_core::gpu::install(explicit).map(|_| ()))
         .map_err(|e| {
-            if e.contains("already installed") {
+            if e.starts_with(ferric_core::gpu::SETTINGS_ALREADY_INSTALLED) {
                 pyo3::exceptions::PyRuntimeError::new_err(format!(
                     "{e}; GPU settings are process-global: call configure_gpu once, before \
                      gpu_status() or any GPU work, and repeat identical settings if called again"

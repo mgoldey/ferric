@@ -90,10 +90,14 @@ def configure_gpu(
     without the ``gpu`` feature) is an error.
 
     Settings are process-global. Call this once, before ``gpu_status()`` or any
-    GPU work; a repeated call with identical settings is a no-op.
+    GPU work; a repeated call with identical settings is a no-op, also after
+    ``gpu_status()``. The preset is not a ``GpuStatus`` field: it is visible
+    only in the ``FERRIC_GPU_PRESET`` audit line printed to stderr on the first
+    call. ``mixed_kernels`` takes one kernel name per list item.
 
     Raises:
-        ValueError: unknown value, a preset that disagrees with ``mode`` /
+        ValueError: unknown or out-of-range value (negative ``device`` /
+            ``min_flops``, non-positive or non-finite ``memory_gb``), a preset that disagrees with ``mode`` /
             ``precision``, mixed precision with no shipped kernel or no device
             mode, or ``mode="on"`` that cannot be satisfied. The message names
             the keys involved.

@@ -175,13 +175,18 @@ pub fn install(explicit: GpuSettingsExplicit) -> Result<&'static GpuStatus, Stri
                 Ok(st)
             } else {
                 Err(format!(
-                    "[gpu] settings already installed ({stored:?}); install() must run before \
-                     status()/settings() and only once (requested {settings:?})"
+                    "{SETTINGS_ALREADY_INSTALLED} with different values ({}); install() must \
+                     run before status()/settings() and only once",
+                    stored.differences(&settings).join("; ")
                 ))
             }
         }
     }
 }
+
+/// Prefix of the [`install`] error for a second install (or an install after
+/// the lazy state was read) with different settings; callers match on it.
+pub const SETTINGS_ALREADY_INSTALLED: &str = "[gpu] settings already installed";
 
 /// Library/Python callers that never called [`install`]: resolve from the env
 /// on first use (mode defaults to `off`, so this touches no device by default).
