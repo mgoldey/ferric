@@ -68,13 +68,17 @@ pub enum MixedKernel {
     CcsdAmplitudes = 2,
     /// DF-K occupied path with f32-resident dressed B (Task 4.4).
     DfkOcc = 4,
+    /// COSX 3-centre kernel (`md3c1e`), routed per (pair, sub-batch) by the
+    /// Hölder bound (Workstream D). Named only: not in `SHIPPED`.
+    CosxKern = 8,
 }
 
 impl MixedKernel {
-    pub const ALL: [MixedKernel; 3] = [
+    pub const ALL: [MixedKernel; 4] = [
         MixedKernel::RiMp2Energy,
         MixedKernel::CcsdAmplitudes,
         MixedKernel::DfkOcc,
+        MixedKernel::CosxKern,
     ];
 
     pub const fn name(self) -> &'static str {
@@ -82,6 +86,7 @@ impl MixedKernel {
             MixedKernel::RiMp2Energy => "rimp2-energy",
             MixedKernel::CcsdAmplitudes => "ccsd-amplitudes",
             MixedKernel::DfkOcc => "dfk-occ",
+            MixedKernel::CosxKern => "cosx-kern",
         }
     }
 }
@@ -245,6 +250,19 @@ mod tests {
             .with(MixedKernel::RiMp2Energy);
         assert_eq!(s.to_string(), "rimp2-energy,dfk-occ");
         assert_eq!(s.to_string().parse::<MixedKernelSet>().unwrap(), s);
+    }
+
+    #[test]
+    fn cosx_kern_is_named_in_all_and_not_shipped() {
+        assert_eq!(MixedKernel::CosxKern as u8, 8);
+        assert_eq!(MixedKernel::CosxKern.name(), "cosx-kern");
+        assert_eq!(
+            "cosx-kern".parse::<MixedKernel>().unwrap(),
+            MixedKernel::CosxKern
+        );
+        assert!(MixedKernel::ALL.contains(&MixedKernel::CosxKern));
+        assert!(!MixedKernelSet::SHIPPED.contains(MixedKernel::CosxKern));
+        assert_eq!(MixedKernel::ALL.len(), 4);
     }
 
     #[test]

@@ -104,7 +104,8 @@ fn unknown_kernel_names_are_refused_with_the_valid_list() {
         assert!(
             err.contains("rimp2-energy")
                 && err.contains("ccsd-amplitudes")
-                && err.contains("dfk-occ"),
+                && err.contains("dfk-occ")
+                && err.contains("cosx-kern"),
             "{bad:?}: {err}"
         );
     }

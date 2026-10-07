@@ -484,6 +484,17 @@ pub struct CosxConfig {
     /// coverage of alignment, and it must be re-mutated before being trusted as
     /// such. See its doc comment and `scripts/queue/out/cosx_subbatch_bound_results.md` §5.1.
     pub screen_group: usize,
+    /// fp64 threshold multiplier of the precision router (Laqua, Kussmann &
+    /// Ochsenfeld, JCP 154, 214116 (2021), Sec. IV A: theta^fp64 = multiplier
+    /// x theta; their recommended value is 1e5, VERIFIED). A kept (pair,
+    /// sub-batch) unit is classified [`Route::F32`] iff its Hölder K-element
+    /// bound `max_q est_q * fmax_q` is below `tau = fp64_multiplier *
+    /// screen_thresh`, else [`Route::F64`]. `0.0` (the default and every f64
+    /// run) disables the router: every kept pair is `F64`. This build only
+    /// classifies and counts (`CosxTimings::route_*`); every pair is still
+    /// computed in f64, so K is bit-identical for every multiplier. Requires
+    /// the md3c1e backend and `screen_thresh > 0` when nonzero.
+    pub fp64_multiplier: f64,
     /// FINAL-GRID PASS (Psi4 `COSX_*_FINAL` + `COSX_MAXITER_FINAL = 1`; ORCA
     /// `UseFinalGridX`): after the SCF converges on [`CosxConfig::grid`], the
     /// exchange energy is evaluated ONCE more on this larger grid with the
@@ -611,6 +622,14 @@ pub fn run_final_pass(
 /// (2.6e-3 of the butane grid error); 1e-6 breaks the bar on butane.
 pub const COSX_DEFAULT_SCREEN_THRESH: f64 = 1e-7;
 
+/// Default `CosxConfig::fp64_multiplier` when the CLI enables the router
+/// (`[gpu] precision = "mixed"` with `cosx-kern` allowed). Source: Laqua,
+/// Kussmann & Ochsenfeld, JCP 154, 214116 (2021), Sec. IV A: "a fp64 threshold
+/// multiplier of 10^5" (VERIFIED, plan section 3.2 V2). A SEED: the shipped
+/// default is decided by Task D2's two-sided sweep, not by this constant.
+/// The library default (`CosxConfig::default`) stays `0.0` (router off).
+pub const COSX_DEFAULT_FP64_MULTIPLIER: f64 = 1e5;
+
 impl Default for CosxConfig {
     fn default() -> Self {
         let (n_radial, n_angular, prune) = COSX_DEFAULT_GRID;
@@ -644,6 +663,7 @@ impl CosxConfig {
             backend: CosxBackend::Md3c1e,
             half_transform: CosxHalfTransform::SPARSE_DEFAULT,
             screen_group: 0,
+            fp64_multiplier: 0.0,
             final_grid: None,
             final_pass_explicit: false,
         }
@@ -713,6 +733,17 @@ pub struct CosxTimings {
     /// screen exists to move; see `CosxConfig::screen_group` for what it was
     /// measured to do.
     pub screen_degenerate: usize,
+    /// Kept (shell pair, sub-batch) units the router classified (unscaled by
+    /// the sub-batch's point count, unlike `pairs_kept`). 0 when unscreened.
+    pub route_units: usize,
+    /// Of `route_units`, the units classified [`Route::F32`].
+    pub route_f32_units: usize,
+    /// Flop-weighted F32 share: `sum_F32 pair_flops * points / sum_kept
+    /// pair_flops * points` (`Md3c1e::pair_flops_per_point`); 0.0 when the
+    /// router is off or nothing is kept.
+    pub route_f32_flop_share: f64,
+    /// `tau = fp64_multiplier * screen_thresh` in force (0.0 = router off).
+    pub fp64_tau: f64,
 }
 
 /// One `T` per rayon worker (plus a spare for non-pool threads) — same
@@ -770,6 +801,9 @@ pub struct CosxK<'a> {
     snum: Option<SnumFactor>,
     /// md3c1e kernel state (`Some` iff `cfg.backend == Md3c1e`); geometry-only.
     kernel: Option<Md3c1e>,
+    /// Per-pair flops per point (`Md3c1e::pair_flops_table`); empty unless the
+    /// router is on (`fp64_multiplier > 0`).
+    pair_flops: Vec<u64>,
     workers: Option<Workers>,
     /// AO offset of every shell (libint2 order; the sparse masks are shell-granular).
     shell_off: Vec<usize>,
@@ -838,6 +872,11 @@ impl<'a> CosxK<'a> {
                     .into(),
             ));
         }
+        check_router(&cfg)?;
+        let pair_flops = match (&kernel, cfg.fp64_multiplier > 0.0) {
+            (Some(k), true) => k.pair_flops_table(),
+            _ => Vec::new(),
+        };
         let bounds = match cfg.screen_thresh {
             Some(_) => Some(PairBounds::build(prep)?),
             None => None,
@@ -856,6 +895,7 @@ impl<'a> CosxK<'a> {
             bounds,
             s_ao,
             snum: None,
+            pair_flops,
             kernel,
             workers: None,
             shell_off: prep.shell_offsets()[..prep.nshells()].to_vec(),
@@ -1007,10 +1047,11 @@ impl<'a> CosxK<'a> {
                 let mut c_ns = 0u64;
                 let t0 = Instant::now();
                 let mut screen = self.batch_screen(kern, sub, &fsub, n);
+                let mut tally = RouteTally::default();
                 let (kept, total) = scratch.with(|scr| {
                     kern.for_each_pair_where(
                         sub,
-                        |s1, s2| screen.as_mut().is_none_or(|sc| sc.keep(s1, s2)),
+                        |s1, s2| self.route_unit(&mut screen, &mut tally, s1, s2, n),
                         scr,
                         |s1, s2, blk| {
                             let t = Instant::now();
@@ -1021,6 +1062,7 @@ impl<'a> CosxK<'a> {
                         },
                     )
                 })?;
+                tally.flush(acc);
                 let geom = screen.as_ref().map_or(total, |sc| sc.geom_kept);
                 let (bev, deg) = screen
                     .as_ref()
@@ -1055,6 +1097,39 @@ impl<'a> CosxK<'a> {
         Ok((g, Some(touched)))
     }
 
+    /// `fp64_multiplier * screen_thresh` (0.0 = router off).
+    fn fp64_tau(&self) -> f64 {
+        match self.cfg.screen_thresh {
+            Some(t) if self.cfg.fp64_multiplier > 0.0 && t > 0.0 => self.cfg.fp64_multiplier * t,
+            _ => 0.0,
+        }
+    }
+
+    /// Route one unit (no screen: kept, F64), tally it, and say whether the
+    /// kernel evaluates it.
+    #[inline]
+    fn route_unit(
+        &self,
+        screen: &mut Option<BatchScreen<'_>>,
+        tally: &mut RouteTally,
+        s1: usize,
+        s2: usize,
+        n: usize,
+    ) -> bool {
+        let route = screen.as_mut().map_or(Route::F64, |sc| sc.classify(s1, s2));
+        tally.note(route, self.unit_flops(s1, s2, n));
+        route != Route::Drop
+    }
+
+    /// Flops of the unit `(s1, s2)` over a sub-batch of `n` points; 0 when the
+    /// router is off (the table is only built for a nonzero multiplier).
+    #[inline]
+    fn unit_flops(&self, s1: usize, s2: usize, n: usize) -> u64 {
+        self.pair_flops
+            .get(s1 * (s1 + 1) / 2 + s2)
+            .map_or(0, |&f| f * n as u64)
+    }
+
     /// The density-driven screen for one sub-batch (`None` when
     /// `screen_thresh` is `None`): one [`Region`] and one `fmax` vector per
     /// contiguous group of `CosxConfig::screen_group` points (`0` = one group
@@ -1087,6 +1162,7 @@ impl<'a> CosxK<'a> {
         Some(BatchScreen {
             bounds,
             thresh,
+            tau: self.fp64_tau(),
             regions,
             fmax,
             nsh,
@@ -1176,6 +1252,18 @@ impl<'a> CosxK<'a> {
         t.pairs_total = acc.total.load(Ordering::Relaxed);
         t.bound_evals = acc.bound_evals.load(Ordering::Relaxed);
         t.screen_degenerate = acc.degenerate.load(Ordering::Relaxed);
+        t.route_units = acc.route_units.load(Ordering::Relaxed);
+        t.route_f32_units = acc.route_f32_units.load(Ordering::Relaxed);
+        let (fl, fl32) = (
+            acc.route_flops.load(Ordering::Relaxed),
+            acc.route_f32_flops.load(Ordering::Relaxed),
+        );
+        t.route_f32_flop_share = if fl == 0 {
+            0.0
+        } else {
+            fl32 as f64 / fl as f64
+        };
+        t.fp64_tau = self.fp64_tau();
         t.total_s = t_start.elapsed().as_secs_f64();
         self.last = t;
         // No shell quartets are computed by this builder; the work counter the
@@ -1532,6 +1620,57 @@ struct BlockCounters {
     total: AtomicUsize,
     bound_evals: AtomicUsize,
     degenerate: AtomicUsize,
+    route_units: AtomicUsize,
+    route_f32_units: AtomicUsize,
+    /// Flops (per point) x points, summed over kept units / over F32 units.
+    route_flops: AtomicU64,
+    route_f32_flops: AtomicU64,
+}
+
+/// Precision route of one (shell pair, sub-batch) unit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Route {
+    /// The screen drops the pair (its K contribution is below `screen_thresh`).
+    Drop,
+    /// Kept and computed in f64.
+    F64,
+    /// Kept, with a bound below `fp64_multiplier * screen_thresh`: eligible
+    /// for the f32 kernel (not yet computed there; counted only).
+    F32,
+}
+
+/// Per-sub-batch router bookkeeping, kept out of `contract_block_md3c1e`.
+#[derive(Default)]
+struct RouteTally {
+    units: usize,
+    f32_units: usize,
+    flops: u64,
+    f32_flops: u64,
+}
+
+impl RouteTally {
+    /// Record one classified unit of `flops` (per-point flops x points).
+    #[inline]
+    fn note(&mut self, route: Route, flops: u64) {
+        if route == Route::Drop {
+            return;
+        }
+        self.units += 1;
+        self.flops += flops;
+        if route == Route::F32 {
+            self.f32_units += 1;
+            self.f32_flops += flops;
+        }
+    }
+
+    fn flush(&self, acc: &BlockCounters) {
+        acc.route_units.fetch_add(self.units, Ordering::Relaxed);
+        acc.route_f32_units
+            .fetch_add(self.f32_units, Ordering::Relaxed);
+        acc.route_flops.fetch_add(self.flops, Ordering::Relaxed);
+        acc.route_f32_flops
+            .fetch_add(self.f32_flops, Ordering::Relaxed);
+    }
 }
 
 /// One screening region: a contiguous group of the sub-batch's points,
@@ -1606,6 +1745,8 @@ impl Region {
 struct BatchScreen<'b> {
     bounds: &'b PairBounds,
     thresh: f64,
+    /// Router threshold `fp64_multiplier * thresh`; `0.0` = router off.
+    tau: f64,
     /// One region per group, in point order.
     regions: Vec<Region>,
     /// `fmax[grp][s] = max_{mu in s, g in group} |F_{mu,g}|`, flattened
@@ -1627,29 +1768,41 @@ struct BatchScreen<'b> {
 }
 
 impl BatchScreen<'_> {
-    /// Keep `(s1, s2)` iff SOME group `q` has
-    /// `min(ball, box)_q(s1, s2) * max(fmax_q[s1], fmax_q[s2]) >= thresh`.
+    /// Route `(s1, s2)`: [`Route::Drop`] unless SOME group `q` has
+    /// `min(ball, box)_q(s1, s2) * max(fmax_q[s1], fmax_q[s2]) >= thresh`
+    /// (the screen); a kept pair is [`Route::F32`] iff `tau > 0` and the
+    /// MAXIMUM of that same product over all groups is `< tau`, else
+    /// [`Route::F64`]. With `tau = 0` (router off) every kept pair is `F64`
+    /// and the scan is exactly the old `keep` rule, so `keep == classify !=
+    /// Drop` bitwise, counters included.
     ///
     /// With one group covering the whole sub-batch this is exactly the old
     /// single-region rule (bar the `min` with the box, which can only tighten
     /// it), which is the trivial limit `screen_group = 0` reproduces bitwise.
     /// For `thresh <= 0` the first group already keeps everything (every
     /// factor is `>= 0`). The `max` over both shells covers both orderings of
-    /// the mirror fold.
+    /// the mirror fold. The scan stops at the first keeping group unless the
+    /// router is on, in which case the remaining groups are scanned for the
+    /// maximum only (their bound evaluations are not added to the diagnostic
+    /// counters, which therefore do not depend on `tau`).
     #[inline]
-    fn keep(&mut self, s1: usize, s2: usize) -> bool {
+    fn classify(&mut self, s1: usize, s2: usize) -> Route {
         let mut kept = false;
         let mut geom = false;
+        let mut max_p = 0.0_f64;
+        let mut scanned = 0;
         for (q, reg) in self.regions.iter().enumerate() {
             let f = self.fmax[q * self.nsh + s1].max(self.fmax[q * self.nsh + s2]);
             let est = reg.bound(self.bounds, s1, s2);
             self.bound_evals += 1;
+            scanned = q + 1;
             if est >= self.bounds.max_estimate(s1, s2) {
                 self.degenerate += 1;
             }
             if est >= self.thresh {
                 geom = true;
             }
+            max_p = max_p.max(est * f);
             if est * f >= self.thresh {
                 kept = true;
                 break;
@@ -1658,8 +1811,49 @@ impl BatchScreen<'_> {
         if geom {
             self.geom_kept += 1;
         }
-        kept
+        if !kept {
+            return Route::Drop;
+        }
+        if self.tau > 0.0 {
+            for (q, reg) in self.regions.iter().enumerate().skip(scanned) {
+                let f = self.fmax[q * self.nsh + s1].max(self.fmax[q * self.nsh + s2]);
+                max_p = max_p.max(reg.bound(self.bounds, s1, s2) * f);
+            }
+            if max_p < self.tau {
+                return Route::F32;
+            }
+        }
+        Route::F64
     }
+
+    /// The pre-router keep rule (`classify != Drop`).
+    #[cfg(test)]
+    fn keep(&mut self, s1: usize, s2: usize) -> bool {
+        self.classify(s1, s2) != Route::Drop
+    }
+}
+
+/// Refuse a router multiplier that cannot act (the repo's dead-knob rule).
+fn check_router(cfg: &CosxConfig) -> Result<(), FerricError> {
+    let m = cfg.fp64_multiplier;
+    if m.is_nan() || m < 0.0 {
+        return Err(FerricError::General(format!(
+            "CosxK: fp64_multiplier must be >= 0 (got {m}); 0 disables the precision router"
+        )));
+    }
+    if m > 0.0 && cfg.backend != CosxBackend::Md3c1e {
+        return Err(FerricError::General(
+            "CosxK: fp64_multiplier > 0 is implemented for the md3c1e backend only".into(),
+        ));
+    }
+    if m > 0.0 && !matches!(cfg.screen_thresh, Some(t) if t > 0.0) {
+        return Err(FerricError::General(
+            "CosxK: fp64_multiplier > 0 needs screen_thresh > 0 (the router classifies by the \
+             screen's own bound)"
+                .into(),
+        ));
+    }
+    Ok(())
 }
 
 /// `fmax[s] = max_{mu in shell s, g in [g0, g1)} |f[mu * n + g]|` for `f` in
@@ -1950,6 +2144,7 @@ mod tests {
         let mk = |fmax: Vec<f64>, thresh: f64| BatchScreen {
             bounds: &bounds,
             thresh,
+            tau: 0.0,
             regions: vec![region],
             fmax,
             nsh: 2,
@@ -1976,6 +2171,53 @@ mod tests {
         let mut sc = mk(vec![0.0, 0.0], t);
         sc.keep(1, 0);
         assert_eq!(sc.geom_kept, 1);
+    }
+
+    /// The router's contract on a toy: Drop iff the old rule drops; F32 iff
+    /// `tau > 0` and the MAX over groups (including groups scanned after the
+    /// first keeping one) is below `tau`; `keep` == `classify != Drop` and the
+    /// diagnostic counters do not depend on `tau`.
+    #[test]
+    fn classify_routes_by_the_max_over_all_groups() {
+        let mol =
+            ferric_core::mol::Molecule::parse_xyz("2\nh2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
+        let bs = ferric_core::basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let bounds = PairBounds::build(&prep).unwrap();
+        let region = Region::of(&[[0.0, 0.0, 0.2], [0.0, 0.0, 1.2]]);
+        let est = region.bound(&bounds, 1, 0);
+        // Two identical regions; group 0 has p0 = 0.5 est, group 1 p1 = 3 est
+        // (fmax rows are [shell0, shell1] per group, flattened).
+        let mk = |tau: f64| BatchScreen {
+            bounds: &bounds,
+            thresh: 0.1 * est,
+            tau,
+            regions: vec![region, region],
+            fmax: vec![0.0, 0.5, 0.0, 3.0],
+            nsh: 2,
+            geom_kept: 0,
+            bound_evals: 0,
+            degenerate: 0,
+        };
+        // Router off: kept pairs are F64.
+        assert_eq!(mk(0.0).classify(1, 0), Route::F64);
+        // The scan stops at group 0 (kept), but p1 = 3 est >= tau = est: F64.
+        assert_eq!(mk(est).classify(1, 0), Route::F64);
+        // tau above the max over both groups: F32.
+        assert_eq!(mk(5.0 * est).classify(1, 0), Route::F32);
+        // tau exactly equal to the max is NOT below it.
+        assert_eq!(mk(3.0 * est).classify(1, 0), Route::F64);
+        // Dropped by the screen whatever tau is: both groups below thresh.
+        let mut dropped = mk(5.0 * est);
+        dropped.fmax = vec![0.0; 4];
+        assert_eq!(dropped.classify(1, 0), Route::Drop);
+        // keep == classify != Drop, and the counters ignore tau.
+        let (mut a, mut b) = (mk(0.0), mk(5.0 * est));
+        assert_eq!(a.keep(1, 0), b.classify(1, 0) != Route::Drop);
+        assert_eq!(
+            (a.geom_kept, a.bound_evals, a.degenerate),
+            (b.geom_kept, b.bound_evals, b.degenerate)
+        );
     }
 
     #[test]

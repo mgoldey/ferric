@@ -2327,6 +2327,15 @@ pub struct ScfCfg {
     /// Unknown values and setting this with `k_builder != "cosx"` are hard
     /// errors.
     pub cosx_half_transform: Option<String>,
+    /// COSX precision-router threshold multiplier `m` (`tau = m *
+    /// cosx_screen_thresh`; Laqua/Kussmann/Ochsenfeld JCP 154, 214116 (2021)
+    /// seed `1e5`). Float >= 0. Read only with `k_builder = "cosx"`,
+    /// `[gpu] precision = "mixed"` and `cosx-kern` in `mixed_kernels`;
+    /// set in any other configuration it is a hard error. Omitted = `1e5`
+    /// when those conditions hold (and the md3c1e backend with a positive
+    /// screen is in use), else `0` (router off). It only classifies and
+    /// counts: K is unchanged.
+    pub cosx_fp64_multiplier: Option<f64>,
     /// Aux basis for density-fitted Coulomb (RI-J), or `""` / `"exact"` /
     /// `"none"` / `"off"` / `"conventional"` for conventional four-centre J
     /// (see [`ScfCfg::df_j_aux_resolved`]). Omitted = the method's default.
@@ -2488,6 +2497,7 @@ impl Default for ScfCfg {
             cosx_backend: None,
             cosx_screen_thresh: None,
             cosx_half_transform: None,
+            cosx_fp64_multiplier: None,
             df_j_aux: None,
             df_k_aux: None,
             level_shift: None,
@@ -2551,7 +2561,13 @@ impl ScfCfg {
     /// is exactly what the config-honesty convention forbids); an untabulated
     /// Lebedev order is a hard error here rather than a panic inside the grid
     /// builder; an unknown backend name is a hard error, never a default.
-    pub fn cosx_config(&self) -> Result<ferric_scf::cosx_k::CosxConfig, String> {
+    /// `router_allowed` is the resolved `[gpu]` side, true iff `precision = mixed`
+    /// AND `cosx-kern` is in the allowed kernel set
+    /// (`GpuSettings::mixed_allows(MixedKernel::CosxKern)`).
+    pub fn cosx_config(
+        &self,
+        router_allowed: bool,
+    ) -> Result<ferric_scf::cosx_k::CosxConfig, String> {
         use ferric_scf::cosx_k::{validate_grid, CosxBackend, CosxConfig, CosxHalfTransform};
         let is_cosx = self.k_builder.as_deref() == Some("cosx");
         let any_cosx_knob = self.cosx_grid.is_some()
@@ -2560,10 +2576,11 @@ impl ScfCfg {
             || self.cosx_overlap_fit.is_some()
             || self.cosx_backend.is_some()
             || self.cosx_screen_thresh.is_some()
-            || self.cosx_half_transform.is_some();
+            || self.cosx_half_transform.is_some()
+            || self.cosx_fp64_multiplier.is_some();
         if !is_cosx && any_cosx_knob {
             return Err(format!(
-                "[scf] cosx_grid / cosx_final_pass / cosx_final_grid / cosx_overlap_fit / cosx_backend / cosx_screen_thresh / cosx_half_transform are set but k_builder = {:?}; they are only read with k_builder = \"cosx\"",
+                "[scf] cosx_grid / cosx_final_pass / cosx_final_grid / cosx_overlap_fit / cosx_backend / cosx_screen_thresh / cosx_half_transform / cosx_fp64_multiplier are set but k_builder = {:?}; they are only read with k_builder = \"cosx\"",
                 self.k_builder
             ));
         }
@@ -2604,7 +2621,30 @@ impl ScfCfg {
             None if cfg.backend == CosxBackend::CosxA => cfg.screen_thresh = None,
             None => {}
         }
+        cfg.fp64_multiplier = self.resolve_fp64_multiplier(&cfg, router_allowed)?;
         Ok(cfg)
+    }
+
+    /// `[scf] cosx_fp64_multiplier`: refused as a dead knob unless the router
+    /// can act, defaulted to the seed only when it can.
+    fn resolve_fp64_multiplier(
+        &self,
+        cfg: &ferric_scf::cosx_k::CosxConfig,
+        router_allowed: bool,
+    ) -> Result<f64, String> {
+        use ferric_scf::cosx_k::{CosxBackend, COSX_DEFAULT_FP64_MULTIPLIER};
+        let acts =
+            cfg.backend == CosxBackend::Md3c1e && matches!(cfg.screen_thresh, Some(t) if t > 0.0);
+        match self.cosx_fp64_multiplier {
+            Some(m) if !(m >= 0.0) || !m.is_finite() => Err(format!(
+                "[scf] cosx_fp64_multiplier = {m}: must be a finite value >= 0 (0 disables the router)"
+            )),
+            Some(_) if !router_allowed => Err("[scf] cosx_fp64_multiplier requires k_builder = \"cosx\" and [gpu] precision = \"mixed\" with cosx-kern in mixed_kernels".into()),
+            Some(m) if m > 0.0 && !acts => Err("[scf] cosx_fp64_multiplier > 0 needs cosx_backend = \"md3c1e\" and cosx_screen_thresh > 0 (the router classifies by the screen's bound)".into()),
+            Some(m) => Ok(m),
+            None if router_allowed && acts => Ok(COSX_DEFAULT_FP64_MULTIPLIER),
+            None => Ok(0.0),
+        }
     }
 
     /// Parse the `diis` string into a `DiisFlavor` (strict — unknown values are a
@@ -4901,6 +4941,68 @@ json = [1, 2]
         }
     }
 
+    /// `[scf] cosx_fp64_multiplier`: default 0 (router off), `1e5` only when
+    /// the router is allowed, explicit values honoured, dead knob refused.
+    #[test]
+    fn cosx_fp64_multiplier_resolves_and_refuses_dead_knobs() {
+        let parse = |scf: &str| -> Config {
+            toml::from_str(&format!(
+                "[molecule]\nxyz = \"w.xyz\"\n[basis]\nname = \"sto-3g\"\n[method]\nkind = \"rhf\"\n[scf]\n{scf}"
+            ))
+            .unwrap()
+        };
+        let cosx = "k_builder = \"cosx\"\n";
+        // Router not allowed (f64 / cosx-kern not allowed): off, key absent.
+        let c = parse(cosx).scf.cosx_config(false).unwrap();
+        assert_eq!(c.fp64_multiplier, 0.0);
+        assert_eq!(
+            parse(cosx).scf.cosx_config(false).unwrap().fp64_multiplier,
+            0.0
+        );
+        // Allowed: the seed default; explicit values (including 0) win.
+        let c = parse(cosx).scf.cosx_config(true).unwrap();
+        assert_eq!(c.fp64_multiplier, 1e5);
+        for (v, want) in [("1e4", 1e4), ("0.0", 0.0), ("1e6", 1e6)] {
+            let c = parse(&format!("{cosx}cosx_fp64_multiplier = {v}\n"))
+                .scf
+                .cosx_config(true)
+                .unwrap();
+            assert_eq!(c.fp64_multiplier, want, "{v}");
+        }
+        // Allowed but the screen is off: nothing to route, default stays 0.
+        let c = parse(&format!("{cosx}cosx_screen_thresh = 0.0\n"))
+            .scf
+            .cosx_config(true)
+            .unwrap();
+        assert_eq!(c.fp64_multiplier, 0.0);
+        // Dead knob: any value while not allowed names the three conditions.
+        let e = parse(&format!("{cosx}cosx_fp64_multiplier = 1e5\n"))
+            .scf
+            .cosx_config(false)
+            .unwrap_err();
+        assert_eq!(e, "[scf] cosx_fp64_multiplier requires k_builder = \"cosx\" and [gpu] precision = \"mixed\" with cosx-kern in mixed_kernels");
+        let e = parse("k_builder = \"direct\"\ncosx_fp64_multiplier = 1e5\n")
+            .scf
+            .cosx_config(true)
+            .unwrap_err();
+        assert!(e.contains("only read with k_builder = \"cosx\""), "{e}");
+        // Bad values and a router that cannot act.
+        for bad in ["-1.0", "nan", "inf"] {
+            let e = parse(&format!("{cosx}cosx_fp64_multiplier = {bad}\n"))
+                .scf
+                .cosx_config(true)
+                .unwrap_err();
+            assert!(e.contains("finite value >= 0"), "{bad}: {e}");
+        }
+        let e = parse(&format!(
+            "{cosx}cosx_screen_thresh = 0.0\ncosx_fp64_multiplier = 1e5\n"
+        ))
+        .scf
+        .cosx_config(true)
+        .unwrap_err();
+        assert!(e.contains("cosx_screen_thresh > 0"), "{e}");
+    }
+
     /// `[scf] cosx_grid` / `cosx_overlap_fit`: parse, resolve, and refuse
     /// when they would be dead knobs (k_builder != "cosx") or name an
     /// untabulated Lebedev order.
@@ -4914,14 +5016,17 @@ json = [1, 2]
         };
         // Defaults: pruned sgx (35,194) plus the sgx (50,302) final pass, fit
         // on, density-driven screen at the library default.
-        let c = parse("k_builder = \"cosx\"\n").scf.cosx_config().unwrap();
+        let c = parse("k_builder = \"cosx\"\n")
+            .scf
+            .cosx_config(false)
+            .unwrap();
         assert_eq!((c.grid.n_radial, c.grid.n_angular), (35, 194));
         assert_eq!(c.grid.prune, Some(ferric_dft::prune::PruneScheme::Sgx));
         assert!(c.final_grid.is_some() && !c.final_pass_explicit);
         // cosx_final_pass = false turns the default pass off.
         let c = parse("k_builder = \"cosx\"\ncosx_final_pass = false\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .unwrap();
         assert!(c.final_grid.is_none());
         assert!(c.overlap_fit);
@@ -4936,7 +5041,7 @@ json = [1, 2]
         // Half transform: both spellings resolve, unknown values and dead knobs error.
         let c = parse("k_builder = \"cosx\"\ncosx_half_transform = \"dense\"\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .unwrap();
         assert_eq!(
             c.half_transform,
@@ -4944,7 +5049,7 @@ json = [1, 2]
         );
         let c = parse("k_builder = \"cosx\"\ncosx_half_transform = \"sparse\"\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .unwrap();
         assert_eq!(
             c.half_transform,
@@ -4953,13 +5058,13 @@ json = [1, 2]
         assert!(
             parse("k_builder = \"cosx\"\ncosx_half_transform = \"Dense\"\n")
                 .scf
-                .cosx_config()
+                .cosx_config(false)
                 .is_err()
         );
         assert!(
             parse("k_builder = \"link\"\ncosx_half_transform = \"dense\"\n")
                 .scf
-                .cosx_config()
+                .cosx_config(false)
                 .is_err()
         );
         // Screen knob: explicit value honoured, 0 disables, negative/NaN refused,
@@ -4967,47 +5072,47 @@ json = [1, 2]
         // (which resolves to None by itself, never a refusal from the default).
         let c = parse("k_builder = \"cosx\"\ncosx_screen_thresh = 1e-9\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .unwrap();
         assert_eq!(c.screen_thresh, Some(1e-9));
         let c = parse("k_builder = \"cosx\"\ncosx_screen_thresh = 0.0\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .unwrap();
         assert_eq!(c.screen_thresh, Some(0.0));
         assert!(parse("k_builder = \"cosx\"\ncosx_screen_thresh = -1e-7\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .is_err());
         assert!(parse("k_builder = \"cosx\"\ncosx_screen_thresh = nan\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .is_err());
         assert!(parse("k_builder = \"link\"\ncosx_screen_thresh = 1e-7\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .is_err());
         assert!(parse(
             "k_builder = \"cosx\"\ncosx_backend = \"cosx-a\"\ncosx_screen_thresh = 1e-7\n"
         )
         .scf
-        .cosx_config()
+        .cosx_config(false)
         .is_err());
         let c = parse("k_builder = \"cosx\"\ncosx_backend = \"cosx-a\"\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .unwrap();
         assert!(c.screen_thresh.is_none());
         let c =
             parse("k_builder = \"cosx\"\ncosx_backend = \"cosx-a\"\ncosx_screen_thresh = 0.0\n")
                 .scf
-                .cosx_config()
+                .cosx_config(false)
                 .unwrap();
         assert_eq!(c.screen_thresh, Some(0.0));
         // Explicit knobs are honoured.
         let c = parse("k_builder = \"cosx\"\ncosx_grid = { radial = 75, angular = 302 }\ncosx_overlap_fit = false\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .unwrap();
         assert_eq!((c.grid.n_radial, c.grid.n_angular), (75, 302));
         assert!(!c.overlap_fit);
@@ -5016,42 +5121,42 @@ json = [1, 2]
         assert_eq!(c.backend, CosxBackend::Md3c1e);
         let c = parse("k_builder = \"cosx\"\ncosx_backend = \"cosx-a\"\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .unwrap();
         assert_eq!(c.backend, CosxBackend::CosxA);
         let c = parse("k_builder = \"cosx\"\ncosx_backend = \"md3c1e\"\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .unwrap();
         assert_eq!(c.backend, CosxBackend::Md3c1e);
         assert!(parse("k_builder = \"cosx\"\ncosx_backend = \"libint\"\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .is_err());
         assert!(parse("k_builder = \"cosx\"\ncosx_backend = \"cosx_a\"\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .is_err());
         // Dead-knob refusal.
         assert!(parse("cosx_overlap_fit = false\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .is_err());
         assert!(parse("cosx_backend = \"md3c1e\"\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .is_err());
         assert!(
             parse("k_builder = \"link\"\ncosx_grid = { radial = 50, angular = 110 }\n")
                 .scf
-                .cosx_config()
+                .cosx_config(false)
                 .is_err()
         );
         // Untabulated angular order is a typed error, not a panic.
         assert!(
             parse("k_builder = \"cosx\"\ncosx_grid = { radial = 50, angular = 146 }\n")
                 .scf
-                .cosx_config()
+                .cosx_config(false)
                 .is_err()
         );
         // Typo inside the inline table hard-errors at parse time.

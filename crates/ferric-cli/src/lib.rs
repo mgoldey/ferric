@@ -622,10 +622,15 @@ pub fn run(args: Vec<String>) {
         smearing_sigma: cfg.scf.smearing_sigma,
         integral_thresh: cfg.scf.integral_thresh,
         k_builder: cfg.scf.k_builder.clone(),
-        cosx: cfg.scf.cosx_config().unwrap_or_else(|e| {
-            eprintln!("error: {e}");
-            std::process::exit(1);
-        }),
+        cosx: cfg
+            .scf
+            .cosx_config(
+                ferric_core::gpu::settings().mixed_allows(ferric_core::gpu::MixedKernel::CosxKern),
+            )
+            .unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }),
         // Shared spelling parser: "exact"/"none"/"off"/"conventional" mean
         // the same "" (no density fitting) as in the Python bindings.
         df_j_aux: cfg.scf.df_j_aux_resolved().or(df_j_default),
