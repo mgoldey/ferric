@@ -1162,15 +1162,11 @@ pub fn ri_mp2_spin_components(
             )));
         }
     }
-    let sc = spin_components_from_b_ov_kappa(
-        &b_flat,
-        eps,
-        nocc,
-        nvir,
-        first_occ,
-        nocc_total,
-        config.kappa,
-    );
+    // The mixed-precision error map was measured on Coulomb RI-MP2 only: an
+    // attenuated or regularised operator runs the device in f64.
+    let mixed_ok = config.kappa.is_none() && op == Operator::coulomb();
+    let dims = (nocc, nvir, first_occ, nocc_total);
+    let sc = dispatch_spin_components(&b_flat, eps, dims, config.kappa, mixed_ok);
     Ok((sc, b_flat))
 }
 
@@ -1179,6 +1175,10 @@ pub fn ri_mp2_spin_components(
 /// already holds the intermediates (e.g. the fused coupled-rings RPA path) can
 /// reuse them rather than rebuild the `(P|op|ia)` transform. `eps` is the full
 /// orbital-energy slice `rhf.eps_r()`.
+///
+/// This is the entry of the attenuated, RS-MP2+RPA and OO-MP2 callers, not of
+/// Coulomb RI-MP2: the device runs f64 even under `[gpu] precision = "mixed"`,
+/// because the mixed error map was measured on Coulomb RI-MP2 only.
 pub fn spin_components_from_b_ov(
     b_ov: &Array2<f64>,
     eps: &[f64],
@@ -1187,7 +1187,7 @@ pub fn spin_components_from_b_ov(
     first_occ: usize,
     nocc_total: usize,
 ) -> SpinComponents {
-    spin_components_from_b_ov_kappa(b_ov, eps, nocc, nvir, first_occ, nocc_total, None)
+    spin_components_from_b_ov_kappa_f64(b_ov, eps, nocc, nvir, first_occ, nocc_total, None)
 }
 
 /// [`spin_components_from_b_ov`] with optional κ-regularization. `None`
@@ -1207,12 +1207,42 @@ pub fn spin_components_from_b_ov_kappa(
     nocc_total: usize,
     kappa: Option<f64>,
 ) -> SpinComponents {
+    let dims = (nocc, nvir, first_occ, nocc_total);
+    dispatch_spin_components(b_ov, eps, dims, kappa, true)
+}
+
+/// [`spin_components_from_b_ov_kappa`] with the device kept in f64 even when
+/// `[gpu] precision = "mixed"` allows the RI-MP2 energy kernel. The mixed error
+/// map was measured on Coulomb RI-MP2 only, so every other caller uses this.
+pub fn spin_components_from_b_ov_kappa_f64(
+    b_ov: &Array2<f64>,
+    eps: &[f64],
+    nocc: usize,
+    nvir: usize,
+    first_occ: usize,
+    nocc_total: usize,
+    kappa: Option<f64>,
+) -> SpinComponents {
+    let dims = (nocc, nvir, first_occ, nocc_total);
+    dispatch_spin_components(b_ov, eps, dims, kappa, false)
+}
+
+/// Device first (mixed only when `mixed_ok`), then the CPU path.
+fn dispatch_spin_components(
+    b_ov: &Array2<f64>,
+    eps: &[f64],
+    (nocc, nvir, first_occ, nocc_total): (usize, usize, usize, usize),
+    kappa: Option<f64>,
+    mixed_ok: bool,
+) -> SpinComponents {
     #[cfg(feature = "gpu")]
     if let Some(sc) = crate::rimp2_gpu::try_spin_components_on_device(
-        b_ov, eps, nocc, nvir, first_occ, nocc_total, kappa,
+        b_ov, eps, nocc, nvir, first_occ, nocc_total, kappa, mixed_ok,
     ) {
         return sc;
     }
+    #[cfg(not(feature = "gpu"))]
+    let _ = mixed_ok;
     spin_components_from_b_ov_kappa_cpu(b_ov, eps, nocc, nvir, first_occ, nocc_total, kappa)
 }
 

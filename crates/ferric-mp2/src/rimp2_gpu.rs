@@ -82,6 +82,7 @@ pub fn try_spin_components_on_device(
     first_occ: usize,
     nocc_total: usize,
     kappa: Option<f64>,
+    mixed_ok: bool,
 ) -> Option<SpinComponents> {
     let settings = ferric_core::gpu::settings();
     if settings.mode == GpuMode::Off {
@@ -99,7 +100,7 @@ pub fn try_spin_components_on_device(
         note_cpu(CpuReason::CudaError);
         return None;
     };
-    let precision = if settings.mixed_allows(MixedKernel::RiMp2Energy) {
+    let precision = if mixed_ok && settings.mixed_allows(MixedKernel::RiMp2Energy) {
         Precision::Mixed
     } else {
         Precision::F64

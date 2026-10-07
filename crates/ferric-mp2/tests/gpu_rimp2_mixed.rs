@@ -1041,3 +1041,42 @@ fn degenerate_shapes_never_panic_in_the_mixed_arm() {
     );
     assert_eq!(pool.available_bytes(), pool.capacity_bytes());
 }
+
+/// The mixed error map was measured on Coulomb RI-MP2 only. The callers that are
+/// not that entry (`spin_components_from_b_ov`: attenuated MP2, SR-MP2 in RS-MP2+RPA,
+/// OO-MP2) and `spin_components_from_b_ov_kappa_f64` run the device in f64 under
+/// `precision = "mixed"`: no mixed GEMM is counted, the result is the f64 device
+/// result bit for bit, and it differs from the mixed one.
+#[test]
+fn callers_other_than_coulomb_ri_mp2_run_the_device_in_f64_under_mixed() {
+    use ferric_mp2::rimp2::{spin_components_from_b_ov, spin_components_from_b_ov_kappa_f64};
+    let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    if !ready() {
+        return;
+    }
+    let (p, _) = fixture::prepare_scf("h2o", "cc-pvdz", "cc-pvdz-ri", 0);
+    let f64dev = on_device(&p, Precision::F64).unwrap();
+    let mixed = on_device(&p, Precision::Mixed).unwrap();
+    assert_ne!(
+        f64dev.e_total.to_bits(),
+        mixed.e_total.to_bits(),
+        "fixture cannot tell the mixed path from the f64 one"
+    );
+    let s0 = stats();
+    let plain =
+        spin_components_from_b_ov(&p.b_ov, &p.eps, p.nocc, p.nvir, p.first_occ, p.nocc_total);
+    let gated = spin_components_from_b_ov_kappa_f64(
+        &p.b_ov,
+        &p.eps,
+        p.nocc,
+        p.nvir,
+        p.first_occ,
+        p.nocc_total,
+        None,
+    );
+    let s1 = stats();
+    assert_eq!(s1.gemm_mixed, s0.gemm_mixed, "a mixed GEMM ran");
+    assert_eq!(s1.gemm_offloaded - s0.gemm_offloaded, 2 * p.nocc as u64);
+    assert_eq!(plain.e_total.to_bits(), f64dev.e_total.to_bits());
+    assert_eq!(gated.e_total.to_bits(), f64dev.e_total.to_bits());
+}
