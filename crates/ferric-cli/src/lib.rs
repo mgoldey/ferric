@@ -249,6 +249,16 @@ pub fn main() {
     run(std::env::args().collect())
 }
 
+/// Install the GPU backend from `[gpu]`, or print `error: ...` and exit 1 when
+/// an explicit `on` cannot be honoured. Extracted from `run` to keep its
+/// cyclomatic complexity at the baseline.
+fn install_gpu_or_exit(cfg: &Config) {
+    if let Err(e) = ferric_core::gpu::install(cfg.gpu.explicit()) {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    }
+}
+
 /// The actual CLI, taking argv explicitly instead of reading
 /// `std::env::args()` itself. Split out so a caller whose real OS-process
 /// argv does NOT match `[program_name, ...user_args]` can reconstruct that
@@ -597,10 +607,7 @@ pub fn run(args: Vec<String>) {
     // without the gpu feature). Runs before anything calls `gpu::status()` so
     // the installed settings are the TOML-aware ones. Printed next to the
     // memory audit so every run states where its GEMMs go.
-    if let Err(e) = ferric_core::gpu::install(cfg.gpu.explicit()) {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    }
+    install_gpu_or_exit(&cfg);
     let rhf_config = RhfConfig {
         xc_omega: None,
         max_iter: cfg.scf.max_iter,
