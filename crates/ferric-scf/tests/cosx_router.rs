@@ -393,18 +393,9 @@ fn rijcosx_scf_energy_is_bit_identical_with_the_router_on() {
     assert_eq!(a.iterations, b.iterations);
 }
 
-/// GOLDEN: the seam-off K of water/def2-SVP (30x110 grid, two workers, the
-/// deterministic density below) hashes to the value measured at the D1 commit
-/// 52fe8d88, i.e. D2 changed no f64 bit of K. FNV-1a over the K bits. Taken on
-/// an AVX2+FMA host (the kernel's FMA path); a host without FMA runs the
-/// portable path, whose bits differ, so the test returns early there.
-#[test]
-fn seam_off_k_bits_match_the_d1_golden() {
-    const GOLDEN: u64 = 0xb8c5_7af4_e256_e48a;
+/// Water/def2-SVP with the deterministic test density used by the two tests below.
+fn water_with_test_density() -> Setup {
     let s = water();
-    if !Md3c1e::new(&s.prep).unwrap().uses_fma() {
-        return;
-    }
     let n = s.prep.nbasis();
     let mut d = Array2::<f64>::zeros((n, n));
     for i in 0..n {
@@ -413,7 +404,68 @@ fn seam_off_k_bits_match_the_d1_golden() {
         }
     }
     let d = &d + &d.t();
-    let s = Setup { d, ..s };
+    Setup { d, ..s }
+}
+
+/// In-process, host independent: the seam-off K is run-to-run deterministic,
+/// is not changed by the router classifying (multiplier 1e5, seam off), and the
+/// comparison can see a change (negative control: the f32 seam moves the bits).
+#[test]
+fn seam_off_k_is_deterministic_unrouted_equal_and_the_comparison_has_teeth() {
+    let s = water_with_test_density();
+    let (k0, _) = build(&s, cfg(0.0));
+    let (k0_again, _) = build(&s, cfg(0.0));
+    assert_eq!(
+        bits(&k0_again),
+        bits(&k0),
+        "seam-off K is not deterministic"
+    );
+    let (k_routed, _) = build(&s, cfg(1e5));
+    assert_eq!(bits(&k_routed), bits(&k0), "classifying changed a bit of K");
+    let (k_f32, _) = build(
+        &s,
+        CosxConfig {
+            f32_route: Some(PrimPairSum::F32),
+            ..cfg(1e5)
+        },
+    );
+    assert_ne!(
+        bits(&k_f32),
+        bits(&k0),
+        "the comparison cannot see an f32 route"
+    );
+}
+
+/// Is this the host class the golden below was measured on: x86-64 with AVX2 and
+/// FMA but no AVX-512? OpenBLAS picks different GEMM kernels (different summation
+/// order) on AVX-512 hosts, so the hash is only comparable on this class.
+fn golden_host_class() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        std::is_x86_feature_detected!("avx2")
+            && std::is_x86_feature_detected!("fma")
+            && !std::is_x86_feature_detected!("avx512f")
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        false
+    }
+}
+
+/// GOLDEN: the seam-off K of water/def2-SVP (30x110 grid, two workers, the
+/// deterministic density above) hashes to the value measured at the D1 commit
+/// 52fe8d88, i.e. D2 changed no f64 bit of K. FNV-1a over the K bits. Measured
+/// on an AVX2+FMA host without AVX-512 (the kernel's FMA path and that host's
+/// BLAS kernels); on any other host the hash is not comparable, so the test
+/// returns early there and the in-process test above carries the check.
+#[test]
+fn seam_off_k_bits_match_the_d1_golden() {
+    const GOLDEN: u64 = 0xb8c5_7af4_e256_e48a;
+    let s = water_with_test_density();
+    if !golden_host_class() || !Md3c1e::new(&s.prep).unwrap().uses_fma() {
+        eprintln!("skipping: not the AVX2+FMA, no-AVX-512 host class the golden was taken on");
+        return;
+    }
     let (k, _) = build(&s, cfg(0.0));
     let h = k.iter().fold(0xcbf2_9ce4_8422_2325_u64, |h, v| {
         (h ^ v.to_bits()).wrapping_mul(0x100_0000_01b3)
