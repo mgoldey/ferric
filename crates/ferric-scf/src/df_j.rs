@@ -241,58 +241,49 @@ impl DfJ<'_> {
         let n = self.source.nao();
         let chunk = chunk_width(n);
         let w = packed_density_weights(d, n);
-        let (band_p0, band_p1) = self.source.band();
-        let band = band_p1 - band_p0;
-        let n_chunks = band.div_ceil(chunk);
+        let pair = n * (n + 1) / 2;
 
         let mut d_p = Array1::<f64>::zeros(naux);
-        {
-            let packed = self
-                .source
-                .packed_flat()
-                .ok_or_else(|| FerricError::General("DF-J: source is not packed".into()))?;
-            let parts: Vec<Array1<f64>> = (0..n_chunks)
+        self.source.for_each_packed_block(chunk, |blk| {
+            let b = blk.data.nrows();
+            let parts: Vec<Array1<f64>> = (0..b.div_ceil(chunk))
                 .into_par_iter()
                 .map(|ci| {
                     let q0 = ci * chunk;
-                    let q1 = (q0 + chunk).min(band);
-                    packed.slice(ndarray::s![q0..q1, ..]).dot(&w)
+                    let q1 = (q0 + chunk).min(b);
+                    blk.data.slice(ndarray::s![q0..q1, ..]).dot(&w)
                 })
                 .collect();
             for (ci, part) in parts.iter().enumerate() {
-                let q0 = ci * chunk;
-                d_p.slice_mut(ndarray::s![band_p0 + q0..band_p0 + q0 + part.len()])
-                    .assign(part);
+                let q0 = blk.p0 + ci * chunk;
+                d_p.slice_mut(ndarray::s![q0..q0 + part.len()]).assign(part);
             }
-        }
+            Ok(())
+        })?;
         self.reduce_d_p(&mut d_p);
         let c_p = self.solve_metric(&d_p)?;
 
-        let pair = n * (n + 1) / 2;
         let mut acc = Array2::<f64>::zeros((1, pair));
-        {
-            let packed = self
-                .source
-                .packed_flat()
-                .ok_or_else(|| FerricError::General("DF-J: source is not packed".into()))?;
-            let band_bytes = crate::reduce::resolve_band_bytes(self.budget_bytes);
+        let band_bytes = crate::reduce::resolve_band_bytes(self.budget_bytes);
+        self.source.for_each_packed_block(chunk, |blk| {
+            let b = blk.data.nrows();
             crate::reduce::grouped_deterministic_sum(
                 &mut acc,
-                n_chunks,
+                b.div_ceil(chunk),
                 n,
                 band_bytes,
                 |ci| -> Result<Array2<f64>, FerricError> {
                     let q0 = ci * chunk;
-                    let q1 = (q0 + chunk).min(band);
-                    let sub = packed.slice(ndarray::s![q0..q1, ..]);
-                    let c_sub = c_p.slice(ndarray::s![band_p0 + q0..band_p0 + q1]);
-                    let contrib = sub.t().dot(&c_sub);
-                    contrib
+                    let q1 = (q0 + chunk).min(b);
+                    let sub = blk.data.slice(ndarray::s![q0..q1, ..]);
+                    let c_sub = c_p.slice(ndarray::s![blk.p0 + q0..blk.p0 + q1]);
+                    sub.t()
+                        .dot(&c_sub)
                         .into_shape_with_order((1, pair))
                         .map_err(|e| FerricError::General(format!("contrib reshape: {e}")))
                 },
-            )?;
-        }
+            )
+        })?;
         let acc_flat = acc
             .as_slice()
             .ok_or_else(|| FerricError::General("packed J accumulator not contiguous".into()))?;
@@ -342,7 +333,7 @@ impl DfJ<'_> {
 
 impl JBuilder for DfJ<'_> {
     fn build(&mut self, d: &Array2<f64>, j: &mut Array2<f64>) -> Result<usize, FerricError> {
-        if self.source.packed_flat().is_some() {
+        if self.source.supports_packed_stream() {
             self.build_packed(d, j)?;
             self.reduce_j(j);
             return Ok(0);
@@ -687,6 +678,50 @@ mod tests {
         // C6H14 has 20 atoms.
         let d6 = assert_packed_matches(&alkane(6), "def2-svp", "def2-universal-jkfit", false);
         println!("packed vs unpacked max|dJ|: C4 {d4:e}, C6H14 {d6:e}");
+    }
+
+    #[test]
+    fn packed_j_is_bit_identical_across_packed_spilled_and_recompute_sources() {
+        // The packed streaming API hands out blocks whose row counts are
+        // multiples of the chunk width, so the fixed chunks and their ascending
+        // fold are the same for every backend: exact equality, not a tolerance.
+        let mol = alkane(3);
+        let obs = PreparedBasis::new(&mol, &basis::bundled("def2-svp").unwrap()).unwrap();
+        let dfbs =
+            PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let n = obs.nbasis();
+        let d = dense_density(n, false);
+
+        let mut j_packed = Array2::zeros((n, n));
+        let mut pj = DfJ::new(op, &obs, &dfbs, packed_tier_budget(&obs, &dfbs)).unwrap();
+        assert!(pj.source.is_packed_incore_for_test());
+        pj.build(&d, &mut j_packed).unwrap();
+
+        // A budget below the packed footprint forces the spill backend.
+        let tiny = n * n * 8 * 40;
+        let mut j_spill = Array2::zeros((n, n));
+        let mut sj = DfJ::new(op, &obs, &dfbs, tiny).unwrap();
+        assert!(sj.source.is_spilled_for_test());
+        sj.build(&d, &mut j_spill).unwrap();
+        assert_eq!(j_packed, j_spill, "spilled packed J != packed in-core J");
+
+        let src = ferric_integrals::three_index_source::ThreeIndexSource::build_recomputing(
+            op,
+            std::sync::Arc::new(
+                PreparedBasis::new(&mol, &basis::bundled("def2-svp").unwrap()).unwrap(),
+            ),
+            std::sync::Arc::new(
+                PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap(),
+            ),
+            tiny,
+        )
+        .unwrap();
+        assert!(src.is_recompute_for_test());
+        let mut rj = DfJ::from_source(src, op, &dfbs, tiny, None).unwrap();
+        let mut j_re = Array2::zeros((n, n));
+        rj.build(&d, &mut j_re).unwrap();
+        assert_eq!(j_packed, j_re, "recompute packed J != packed in-core J");
     }
 
     #[test]

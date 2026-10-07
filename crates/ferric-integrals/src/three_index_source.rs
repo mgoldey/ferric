@@ -427,6 +427,20 @@ fn unpack_lower_triangle(src: &[f64], nao: usize, b: usize, dst: &mut Array3<f64
     }
 }
 
+/// One aux-block of raw (P|μν) in the PACKED lower-μν layout: `data` is
+/// `(b, nao(nao+1)/2)`, rows `[p0, p0+b)`, columns in `(μ, ν≤μ)` row-major order.
+#[derive(Debug)]
+pub struct PackedBlock<'a> {
+    pub p0: usize,
+    pub data: ndarray::ArrayView2<'a, f64>,
+}
+
+/// Upper bound on the bytes of one packed read block streamed from the spill
+/// file or rebuilt by the recompute backend. Large requests are what a SATA
+/// SSD needs to approach its sequential rate (MEASURED on the dev box: 1 MiB
+/// direct reads 278 MB/s, 64 MiB reads 515 MB/s).
+const PACKED_STREAM_BLOCK_CAP_BYTES: usize = 256 * 1024 * 1024;
+
 /// One aux-block of raw (P|μν), rows `[p0, p0+data.shape()[0])`.
 #[derive(Debug)]
 pub struct AuxBlock<'a> {
@@ -1341,6 +1355,66 @@ impl ThreeIndexSource {
         }
     }
 
+    /// Can [`Self::for_each_packed_block`] serve this source? True for the
+    /// packed in-core tier, the disk spill and the recompute backend; false for
+    /// the unpacked in-core tensor, which has no packed rows to hand out.
+    pub fn supports_packed_stream(&self) -> bool {
+        !matches!(self.backend, Backend::InCore(_))
+    }
+
+    /// Aux rows per packed block for a streamed backend: a third of the
+    /// unpacked block this source was sized for (three blocks can be live: one
+    /// being consumed, one queued, one being read), capped at
+    /// [`PACKED_STREAM_BLOCK_CAP_BYTES`], floored at `align` rows and rounded
+    /// DOWN to a multiple of `align`.
+    fn packed_stream_rows(&self, align: usize) -> usize {
+        let pair_bytes = packed_pair_len(self.nao) * 8;
+        let unpacked = self.block_naux * self.nao * self.nao * 8;
+        let target = (unpacked / 3).min(PACKED_STREAM_BLOCK_CAP_BYTES);
+        let rows = (target / pair_bytes.max(1)).max(align);
+        (rows / align * align).max(align)
+    }
+
+    /// Stream the band as PACKED blocks, in ascending order, without ever
+    /// unpacking. `p0` is the GLOBAL aux index of the block's first row.
+    ///
+    /// Every block except the last has a row count that is a multiple of
+    /// `align`, so a consumer that folds fixed `align`-row chunks gets the SAME
+    /// chunks, in the same order, whatever the backend or block size -- which
+    /// is what keeps a chunked reduction bit-identical across backends.
+    ///
+    /// The spill backend reads blocks on a helper thread so the disk read of
+    /// block N+1 overlaps the consumer's work on block N. Errors if the source
+    /// is the unpacked in-core tensor (see [`Self::supports_packed_stream`]).
+    pub fn for_each_packed_block(
+        &mut self,
+        align: usize,
+        f: impl FnMut(PackedBlock<'_>) -> Result<(), FerricError>,
+    ) -> Result<(), FerricError> {
+        let align = align.max(1);
+        let rows = self.packed_stream_rows(align);
+        let (band, band_p0, nao) = (self.band_naux(), self.band_p0, self.nao);
+        match &mut self.backend {
+            Backend::InCore(_) => Err(FerricError::General(
+                "packed streaming needs a packed, spilled or recompute source".into(),
+            )),
+            Backend::InCorePacked { packed, .. } => stream_packed_whole(packed, band_p0, f),
+            Backend::DiskSpill { file, .. } => {
+                stream_spill_packed(file, packed_pair_len(nao), (band, band_p0, rows), f)
+            }
+            Backend::Recompute {
+                op,
+                obs,
+                dfbs,
+                screen,
+                ..
+            } => {
+                let scr = screen.as_ref().map(|(b, t)| (b.as_ref(), *t));
+                stream_recompute_packed((*op, obs, dfbs, scr), (band, band_p0, rows), f)
+            }
+        }
+    }
+
     /// Is this source the packed in-core tier? Test hook, paired with
     /// [`Self::is_spilled_for_test`].
     #[doc(hidden)]
@@ -1494,6 +1568,187 @@ fn stream_packed(
             p0: band_p0 + l0,
             data: view,
         })?;
+    }
+    Ok(())
+}
+
+/// The packed in-core tensor as ONE block.
+fn stream_packed_whole(
+    packed: &Array2<f64>,
+    band_p0: usize,
+    mut f: impl FnMut(PackedBlock<'_>) -> Result<(), FerricError>,
+) -> Result<(), FerricError> {
+    f(PackedBlock {
+        p0: band_p0,
+        data: packed.view(),
+    })
+}
+
+/// Direct-IO alignment (bytes) for the spill reads.
+const DIRECT_ALIGN: usize = 4096;
+
+/// A read-only `O_DIRECT` handle on the same (unlinked) spill file, or `None`
+/// when the filesystem refuses direct IO (tmpfs, some network mounts) or the
+/// probe read fails. Direct reads bypass the page cache: MEASURED on the dev
+/// SATA SSD, buffered 64 MiB reads ran at 359 MB/s and direct ones at 515 MB/s,
+/// and the cgroup-charged cache never fills with spill pages.
+fn open_direct(file: &File, probe_len: usize) -> Option<File> {
+    use std::os::unix::fs::{FileExt, OpenOptionsExt};
+    let direct = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECT)
+        .open(format!("/proc/self/fd/{}", file.as_raw_fd()))
+        .ok()?;
+    if probe_len == 0 {
+        return None;
+    }
+    let mut raw = vec![0.0_f64; (DIRECT_ALIGN + DIRECT_ALIGN) / 8];
+    let bytes: &mut [u8] = bytemuck::cast_slice_mut(&mut raw[..]);
+    let s0 = bytes.as_ptr().align_offset(DIRECT_ALIGN);
+    direct
+        .read_at(&mut bytes[s0..s0 + DIRECT_ALIGN], 0)
+        .ok()
+        .map(|_| direct)
+}
+
+/// One block of packed rows read from the spill file: the `Vec` plus the
+/// element index at which the block's `b * pair` values start (direct reads
+/// land at an aligned address inside an over-allocated buffer).
+struct SpillRead {
+    l0: usize,
+    buf: Vec<f64>,
+    start: usize,
+}
+
+/// Read packed rows `[l0, l0+b)`: direct when a direct handle exists, else a
+/// buffered `pread` of exactly the block.
+fn read_spill_block(
+    file: &File,
+    direct: Option<&File>,
+    pair: usize,
+    (l0, b): (usize, usize),
+) -> Result<SpillRead, FerricError> {
+    use std::os::unix::fs::FileExt;
+    let err = |e: std::io::Error| FerricError::General(format!("spill read: {e}"));
+    let off = l0 * pair * 8;
+    let len = b * pair * 8;
+    let Some(direct) = direct else {
+        let mut buf = vec![0.0_f64; b * pair];
+        file.read_exact_at(bytemuck::cast_slice_mut(&mut buf[..]), off as u64)
+            .map_err(err)?;
+        return Ok(SpillRead { l0, buf, start: 0 });
+    };
+    let off_a = off / DIRECT_ALIGN * DIRECT_ALIGN;
+    let total = (off + len).div_ceil(DIRECT_ALIGN) * DIRECT_ALIGN - off_a;
+    let mut buf = vec![0.0_f64; (total + DIRECT_ALIGN) / 8];
+    let bytes: &mut [u8] = bytemuck::cast_slice_mut(&mut buf[..]);
+    let s0 = bytes.as_ptr().align_offset(DIRECT_ALIGN);
+    let need = off + len - off_a;
+    let mut done = 0usize;
+    while done < need {
+        // A short read is legal at the end of the file; zero progress is not.
+        let got = direct
+            .read_at(&mut bytes[s0 + done..s0 + total], (off_a + done) as u64)
+            .map_err(err)?;
+        if got == 0 {
+            return Err(FerricError::General(
+                "spill read: unexpected end of file".into(),
+            ));
+        }
+        done += got;
+    }
+    Ok(SpillRead {
+        l0,
+        buf,
+        start: (s0 + off - off_a) / 8,
+    })
+}
+
+/// Packed streaming over the spill file. A helper thread reads large
+/// sequential blocks (direct IO when the filesystem allows it) and hands them
+/// over a one-slot channel, so the read of block N+1 runs while the consumer
+/// works on block N. The buffered fallback drops each block's pages from the
+/// page cache as soon as they are read, keeping the cgroup-charged cache
+/// bounded to a few blocks (see `drop_page_cache`).
+fn stream_spill_packed(
+    file: &mut File,
+    pair: usize,
+    (band, band_p0, rows): (usize, usize, usize),
+    mut f: impl FnMut(PackedBlock<'_>) -> Result<(), FerricError>,
+) -> Result<(), FerricError> {
+    let file: &File = file;
+    let fd = file.as_raw_fd();
+    let direct = open_direct(file, band * pair);
+    if direct.is_none() {
+        // SAFETY: fd is a valid open descriptor owned by `file`; advisory only.
+        unsafe {
+            libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_SEQUENTIAL);
+        }
+    }
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Result<SpillRead, FerricError>>(1);
+    std::thread::scope(|s| -> Result<(), FerricError> {
+        s.spawn(move || {
+            let mut l0 = 0usize;
+            while l0 < band {
+                let b = rows.min(band - l0);
+                let got = read_spill_block(file, direct.as_ref(), pair, (l0, b));
+                let failed = got.is_err();
+                if direct.is_none() {
+                    // SAFETY: as above; DONTNEED on a range already copied out.
+                    unsafe {
+                        libc::posix_fadvise(
+                            fd,
+                            (l0 * pair * 8) as libc::off_t,
+                            (b * pair * 8) as libc::off_t,
+                            libc::POSIX_FADV_DONTNEED,
+                        );
+                    }
+                }
+                if tx.send(got).is_err() || failed {
+                    return;
+                }
+                l0 += b;
+            }
+        });
+        for item in rx {
+            let SpillRead { l0, buf, start } = item?;
+            let b = rows.min(band - l0);
+            let data = ndarray::ArrayView2::from_shape((b, pair), &buf[start..start + b * pair])
+                .map_err(|e| FerricError::General(format!("packed block shape: {e}")))?;
+            f(PackedBlock {
+                p0: band_p0 + l0,
+                data,
+            })?;
+        }
+        Ok(())
+    })
+}
+
+/// Packed streaming for the recompute backend: rebuild each block, pack it.
+fn stream_recompute_packed(
+    (op, obs, dfbs, screen): (
+        Operator,
+        &PreparedBasis,
+        &PreparedBasis,
+        Option<(&crate::qqr3::QqrBounds3, f64)>,
+    ),
+    (band, band_p0, rows): (usize, usize, usize),
+    mut f: impl FnMut(PackedBlock<'_>) -> Result<(), FerricError>,
+) -> Result<(), FerricError> {
+    let nao = obs.nbasis();
+    let pair = packed_pair_len(nao);
+    let mut buf: Vec<f64> = Vec::new();
+    let mut l0 = 0usize;
+    while l0 < band {
+        let b = rows.min(band - l0);
+        let (p0, p1) = (band_p0 + l0, band_p0 + l0 + b);
+        let blk = crate::threeindex::eri3_block_screened(op, obs, dfbs, p0, p1, screen)?;
+        buf.resize(b * pair, 0.0);
+        pack_lower_triangle(&blk.view(), nao, &mut buf);
+        let data = ndarray::ArrayView2::from_shape((b, pair), &buf[..b * pair])
+            .map_err(|e| FerricError::General(format!("packed block shape: {e}")))?;
+        f(PackedBlock { p0, data })?;
+        l0 += b;
     }
     Ok(())
 }
@@ -2490,6 +2745,84 @@ mod tests {
         // Just under the packed footprint (+ scratch row) it must spill.
         let src = ThreeIndexSource::build(op, &obs, &dfbs, packed).unwrap();
         assert!(src.is_spilled_for_test());
+    }
+
+    #[test]
+    fn packed_streaming_agrees_across_backends_and_read_modes() {
+        let (mol,) = water();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let dense = crate::threeindex::eri3_tensor(op, &obs, &dfbs).unwrap();
+        let (naux, nao, _) = dense.dim();
+        let pair = packed_pair_len(nao);
+        let mut want = vec![0.0; naux * pair];
+        pack_lower_triangle(&dense.view(), nao, &mut want);
+
+        let collect = |src: &mut ThreeIndexSource, align: usize| -> Vec<f64> {
+            let mut got = vec![f64::NAN; naux * pair];
+            src.for_each_packed_block(align, |blk| {
+                let b = blk.data.nrows();
+                assert!(
+                    b % align == 0 || blk.p0 + b == naux,
+                    "block rows break alignment"
+                );
+                let dst = &mut got[blk.p0 * pair..(blk.p0 + b) * pair];
+                dst.copy_from_slice(blk.data.as_slice().unwrap());
+                Ok(())
+            })
+            .unwrap();
+            got
+        };
+        let tiny = nao * nao * 8 * 7;
+        let mut spilled = ThreeIndexSource::build(op, &obs, &dfbs, tiny).unwrap();
+        assert!(spilled.is_spilled_for_test());
+        assert!(
+            collect(&mut spilled, 5) == want,
+            "direct/default spill stream != packed dense"
+        );
+
+        // The same blocks through the buffered (no O_DIRECT) reader.
+        if let Backend::DiskSpill { file, .. } = &spilled.backend {
+            for (l0, b) in [(0, 5), (5, 17), (naux - 3, 3)] {
+                let r = read_spill_block(file, None, pair, (l0, b)).unwrap();
+                assert!(r.buf[r.start..r.start + b * pair] == want[l0 * pair..(l0 + b) * pair]);
+                if let Some(d) = open_direct(file, naux * pair) {
+                    let r = read_spill_block(file, Some(&d), pair, (l0, b)).unwrap();
+                    assert!(r.buf[r.start..r.start + b * pair] == want[l0 * pair..(l0 + b) * pair]);
+                }
+            }
+        } else {
+            unreachable!();
+        }
+
+        let mut recomputed = ThreeIndexSource::build_recomputing(
+            op,
+            std::sync::Arc::new(
+                PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap(),
+            ),
+            std::sync::Arc::new(
+                PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap(),
+            ),
+            tiny,
+        )
+        .unwrap();
+        assert!(recomputed.is_recompute_for_test());
+        assert!(
+            collect(&mut recomputed, 5) == want,
+            "recompute stream != packed dense"
+        );
+
+        let unpacked = naux * nao * nao * 8;
+        let packed = naux * pair * 8;
+        let mut inc = ThreeIndexSource::build(op, &obs, &dfbs, (unpacked + packed) / 2).unwrap();
+        assert!(
+            collect(&mut inc, 5) == want,
+            "packed in-core stream != packed dense"
+        );
+        let mut full = ThreeIndexSource::build(op, &obs, &dfbs, usize::MAX).unwrap();
+        assert!(!full.supports_packed_stream());
+        assert!(full.for_each_packed_block(5, |_| Ok(())).is_err());
     }
 
     #[test]
