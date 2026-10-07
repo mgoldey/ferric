@@ -85,6 +85,13 @@ use crate::basis_bridge::PreparedBasis;
 use crate::cosx_a::{CosxPoint, CosxScreen, PairBounds};
 use crate::ecp;
 
+mod f32_block;
+use f32_block::F32Scratch;
+pub use f32_block::{
+    f32_chain_depth, trunc_f32, BlockPrecision, F32Fault, PairRoute, PrimPairSum, RoutedCounts,
+    U32, U64,
+};
+
 /// Highest per-shell angular momentum supported (g).
 pub const MAX_L: usize = 4;
 /// Highest total Hermite order `l_a + l_b` supported (g-g).
@@ -485,6 +492,8 @@ pub struct Md3c1e {
     comps: Vec<Vec<[u8; 3]>>,
     c2s: Vec<Vec<f64>>,
     use_fma: bool,
+    /// The Boys node table rounded to f32 once, at construction (f32 block path).
+    boys32: Vec<f32>,
 }
 
 /// Per-thread work buffers for [`Md3c1e`]. Obtain via [`Md3c1e::scratch`];
@@ -500,6 +509,7 @@ pub struct Md3c1eScratch {
     cart: Vec<f64>,
     tmp: Vec<f64>,
     block: Vec<f64>,
+    f32s: F32Scratch,
 }
 
 /// Operation count per grid point for a full unscreened sweep, in the spec's
@@ -728,6 +738,7 @@ impl Md3c1e {
             comps,
             c2s,
             use_fma: detect_fma(),
+            boys32: boys_table().vals.iter().map(|&v| v as f32).collect(),
         })
     }
 
@@ -1066,34 +1077,26 @@ impl Md3c1e {
         pts: &[[f64; 3]],
         mut keep: K,
         scr: &mut Md3c1eScratch,
-        mut f: F,
+        f: F,
     ) -> Result<(usize, usize), FerricError>
     where
         K: FnMut(usize, usize) -> bool,
         F: FnMut(usize, usize, &[f64]),
     {
-        let nsh = self.shells.len();
-        let mut kept = 0usize;
-        let mut total = 0usize;
-        let mut block = std::mem::take(&mut scr.block);
-        let result = (|| {
-            for s1 in 0..nsh {
-                for s2 in 0..=s1 {
-                    total += 1;
-                    if !keep(s1, s2) {
-                        continue;
-                    }
-                    kept += 1;
-                    let need = self.shells[s1].nfun * self.shells[s2].nfun * pts.len();
-                    block.resize(need, 0.0);
-                    self.pair_block(s1, s2, pts, scr, &mut block[..need])?;
-                    f(s1, s2, &block[..need]);
+        self.for_each_pair_routed(
+            pts,
+            |s1, s2| {
+                if keep(s1, s2) {
+                    PairRoute::F64
+                } else {
+                    PairRoute::Drop
                 }
-            }
-            Ok(())
-        })();
-        scr.block = block;
-        result.map(|()| (kept, total))
+            },
+            PrimPairSum::F64,
+            scr,
+            f,
+        )
+        .map(|c| (c.kept, c.total))
     }
 
     /// Dense `(npts, nbf, nbf)` matrices for the batch, symmetric fill.
