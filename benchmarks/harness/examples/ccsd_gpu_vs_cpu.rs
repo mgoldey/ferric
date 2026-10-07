@@ -11,7 +11,9 @@
 //! lazily on the first GEMM), so the timed run excludes that one-off cost; the
 //! CPU child does the same untimed run so the arms stay matched.
 //! The run prints `NOT QUOTABLE: box contested` unless `/proc/pressure/cpu`
-//! some avg10 is readable and <= 0.05 both before and after.
+//! some avg10 is readable and <= 0.05 before, and the external-load sampler
+//! (`ferric_benchmarks::quiet`, which excludes this process and its child arms)
+//! finds no other process using CPU during the run.
 //!
 //! Matched settings are the caller's job and are printed: run with
 //! `RAYON_NUM_THREADS=6 OPENBLAS_NUM_THREADS=1`, on a quiet box
@@ -60,19 +62,6 @@ mod harness {
         let tick = 100.0; // USER_HZ on Linux
         let g = |i: usize| f.get(i).and_then(|x| x.parse::<f64>().ok()).unwrap_or(0.0);
         (g(11) + g(12)) / tick
-    }
-
-    fn psi_cpu_some_avg10() -> f64 {
-        std::fs::read_to_string("/proc/pressure/cpu")
-            .ok()
-            .and_then(|s| {
-                s.lines()
-                    .find(|l| l.starts_with("some"))
-                    .and_then(|l| l.split_whitespace().nth(1))
-                    .and_then(|kv| kv.strip_prefix("avg10="))
-                    .and_then(|v| v.parse().ok())
-            })
-            .unwrap_or(f64::NAN)
     }
 
     fn psi(name: &str) -> String {
@@ -195,7 +184,8 @@ mod harness {
             .unwrap_or(3);
         println!("PSI cpu: {}", psi("cpu"));
         println!("PSI memory: {}", psi("memory"));
-        let psi_before = psi_cpu_some_avg10();
+        let psi_before = ferric_benchmarks::quiet::psi_cpu_some_avg10();
+        let sampler = ferric_benchmarks::quiet::Sampler::start();
         for k in [
             "RAYON_NUM_THREADS",
             "OPENBLAS_NUM_THREADS",
@@ -263,10 +253,9 @@ mod harness {
                 (energies[1] - energies[0]).abs()
             );
         }
-        let psi_after = psi_cpu_some_avg10();
-        println!("PSI cpu some avg10 before = {psi_before:.2}, after = {psi_after:.2}");
-        let quiet = |p: f64| p.is_finite() && p <= 0.05;
-        if !(quiet(psi_before) && quiet(psi_after)) {
+        let psi_after = ferric_benchmarks::quiet::psi_cpu_some_avg10();
+        let summary = sampler.finish();
+        if !ferric_benchmarks::quiet::print_report(psi_before, psi_after, &summary) {
             println!("NOT QUOTABLE: box contested");
         }
     }

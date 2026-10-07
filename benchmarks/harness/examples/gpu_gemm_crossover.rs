@@ -2,8 +2,9 @@
 //! interleaved (CPU, GPU, CPU, GPU, ...): OpenBLAS at 6 threads (physical cores;
 //! 7-12 add nothing here) vs device GEMM INCLUDING H2D/D2H. Prints min and
 //! median of 7 reps per cell. Run only when /proc/pressure/cpu `some avg10` is
-//! <= 0.05; PSI is printed before and after, and "NOT QUOTABLE: box contested"
-//! is printed if either reading is above 0.05 or unreadable. Each shape also
+//! <= 0.05 before the run, and a sampler thread (`ferric_benchmarks::quiet`)
+//! finds no external CPU load during it (PSI after is informational: it includes
+//! this harness's own load); otherwise "NOT QUOTABLE: box contested" is printed. Each shape also
 //! checks GPU vs CPU agreement against a Higham bound and panics if exceeded.
 //!
 //! RAYON_NUM_THREADS=6 OPENBLAS_NUM_THREADS=1 \
@@ -17,20 +18,6 @@
 #[cfg(not(feature = "gpu"))]
 fn main() {
     eprintln!("gpu_gemm_crossover needs --features gpu");
-}
-
-#[cfg(feature = "gpu")]
-fn psi_cpu_some_avg10() -> f64 {
-    std::fs::read_to_string("/proc/pressure/cpu")
-        .ok()
-        .and_then(|s| {
-            s.lines()
-                .find(|l| l.starts_with("some"))
-                .and_then(|l| l.split_whitespace().nth(1))
-                .and_then(|kv| kv.strip_prefix("avg10="))
-                .and_then(|v| v.parse().ok())
-        })
-        .unwrap_or(f64::NAN)
 }
 
 #[cfg(feature = "gpu")]
@@ -75,8 +62,9 @@ fn main() {
         env_or_unset("RAYON_NUM_THREADS"),
         env_or_unset("OPENBLAS_NUM_THREADS")
     );
-    let psi_before = psi_cpu_some_avg10();
+    let psi_before = ferric_benchmarks::quiet::psi_cpu_some_avg10();
     println!("PSI cpu some avg10 before = {psi_before:.2} (must be <= 0.05 for a quotable run)");
+    let sampler = ferric_benchmarks::quiet::Sampler::start();
     let dev = device(0).expect("GPU 0");
     let pool = DevicePool::with_capacity_bytes(4 << 30);
     println!(
@@ -156,10 +144,9 @@ fn main() {
             gmed / cmed
         );
     }
-    let psi_after = psi_cpu_some_avg10();
-    println!("PSI cpu some avg10 after = {psi_after:.2}");
-    let quiet = |p: f64| p.is_finite() && p <= 0.05;
-    if !(quiet(psi_before) && quiet(psi_after)) {
+    let psi_after = ferric_benchmarks::quiet::psi_cpu_some_avg10();
+    let summary = sampler.finish();
+    if !ferric_benchmarks::quiet::print_report(psi_before, psi_after, &summary) {
         println!("NOT QUOTABLE: box contested");
     }
     println!(

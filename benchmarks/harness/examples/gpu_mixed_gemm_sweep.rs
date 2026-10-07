@@ -2,8 +2,9 @@
 //! (c), §3.6 CPU counterpart), ONE box, ONE process, arms interleaved per rep.
 //! Accuracy (rms of e_ij = |got - ref| / (|A||B|)_ij against the CPU f64
 //! product) is deterministic and quotable on any box; the TIMINGS are quotable
-//! only when `/proc/pressure/cpu` `some avg10` is <= 0.05 before and after
-//! (otherwise "NOT QUOTABLE: box contested" is printed).
+//! only when `/proc/pressure/cpu` `some avg10` is <= 0.05 before and the
+//! external-load sampler (`ferric_benchmarks::quiet`) finds no other process
+//! using CPU during the run (otherwise "NOT QUOTABLE: box contested" is printed).
 //!
 //! RAYON_NUM_THREADS=6 OPENBLAS_NUM_THREADS=1 \
 //!   cargo run --release -p ferric-benchmarks --features gpu --example gpu_mixed_gemm_sweep
@@ -22,20 +23,6 @@
 #[cfg(not(feature = "gpu"))]
 fn main() {
     eprintln!("gpu_mixed_gemm_sweep needs --features gpu");
-}
-
-#[cfg(feature = "gpu")]
-fn psi_cpu_some_avg10() -> f64 {
-    std::fs::read_to_string("/proc/pressure/cpu")
-        .ok()
-        .and_then(|s| {
-            s.lines()
-                .find(|l| l.starts_with("some"))
-                .and_then(|l| l.split_whitespace().nth(1))
-                .and_then(|kv| kv.strip_prefix("avg10="))
-                .and_then(|v| v.parse().ok())
-        })
-        .unwrap_or(f64::NAN)
 }
 
 #[cfg(feature = "gpu")]
@@ -113,8 +100,9 @@ fn main() {
         MIXED_K_PANEL_DEFAULT,
         effective_k_panel()
     );
-    let psi_before = psi_cpu_some_avg10();
+    let psi_before = ferric_benchmarks::quiet::psi_cpu_some_avg10();
     println!("PSI cpu some avg10 before = {psi_before:.2} (must be <= 0.05 for quotable timings)");
+    let sampler = ferric_benchmarks::quiet::Sampler::start();
     let dev_arc = device(0).expect("GPU 0");
     let dev = &*dev_arc;
     println!("device: {}", dev.info.name);
@@ -368,10 +356,10 @@ fn main() {
         });
     }
 
-    let psi_after = psi_cpu_some_avg10();
-    println!("\nPSI cpu some avg10 after = {psi_after:.2}");
-    let quiet = |p: f64| p.is_finite() && p <= 0.05;
-    let quotable = quiet(psi_before) && quiet(psi_after);
+    let psi_after = ferric_benchmarks::quiet::psi_cpu_some_avg10();
+    let summary = sampler.finish();
+    println!();
+    let quotable = ferric_benchmarks::quiet::print_report(psi_before, psi_after, &summary);
     if !quotable {
         println!("NOT QUOTABLE: box contested (timings and every rule verdict below are wiring checks only)");
     }
