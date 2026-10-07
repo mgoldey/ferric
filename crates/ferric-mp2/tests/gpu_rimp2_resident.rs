@@ -26,7 +26,13 @@
 //! heavy cancellation in the contraction) is reported but not given the
 //! teeth assertion: there the worst-case bound is ~2x the f32-storage error.
 //! Gross defects, measured once by temporary mutation of rimp2_gpu.rs (each
-//! reverted): see the commit message and the task report.
+//! reverted, file diffed against the original), on water/cc-pVDZ:
+//!   right operand view offset `slice(off..)` -> `slice(..)`: relative error
+//!     dE_os 1.9e-1, dE_ss 6.1e-1; this test FAILS (error 2.9e-2 against a
+//!     bound of 2.0e-14);
+//!   pair weight `fac` forced to 1.0 (the j > i symmetry weight dropped):
+//!     relative error dE_os 2.9e-1, dE_ss 5.0e-1; this test FAILS.
+//! Both sit 12 orders above the bound, so the gate cannot pass them by looseness.
 //!
 //! Also pins: serial vs parallel pair fold bit-identical for 1, 3 and 4
 //! explicit rayon workers; run-to-run device bit-identity; zero CPU fallbacks
@@ -229,10 +235,20 @@ fn device_f64_energy_is_within_the_derived_bound_and_the_gate_has_teeth() {
         let s0 = stats();
         let dev = on_device(&p, None, true).unwrap();
         let s1 = stats();
-        assert!(
-            s1.gemm_offloaded - s0.gemm_offloaded >= p.nocc as u64
-                && s1.resident_uploads - s0.resident_uploads == 1,
-            "{name}: device path not taken"
+        // one GEMM per occupied block, one resident upload, and the downloads
+        // are exactly the G_i blocks: block i is nvir x (nocc - i)*nvir f64,
+        // which pins the j >= i tail shape (a full-width block would move more)
+        let d2h: u64 = (0..p.nocc)
+            .map(|i| (8 * p.nvir * p.nvir * (p.nocc - i)) as u64)
+            .sum();
+        assert_eq!(
+            (
+                s1.gemm_offloaded - s0.gemm_offloaded,
+                s1.resident_uploads - s0.resident_uploads,
+                s1.bytes_d2h - s0.bytes_d2h
+            ),
+            (p.nocc as u64, 1, d2h),
+            "{name}: device path not taken as specified"
         );
         assert_eq!(
             (
@@ -374,9 +390,10 @@ fn ample_pool_runs_the_device_path() {
         None,
     );
     let s1 = stats();
-    assert!(
-        s1.gemm_offloaded - s0.gemm_offloaded >= p.nocc as u64,
-        "the dispatcher did not offload"
+    assert_eq!(
+        s1.gemm_offloaded - s0.gemm_offloaded,
+        p.nocc as u64,
+        "the dispatcher must offload exactly one GEMM per occupied block"
     );
     assert_eq!(s1.resident_uploads - s0.resident_uploads, 1);
     assert_eq!(
@@ -456,10 +473,28 @@ fn degenerate_shapes_never_panic_and_mixed_is_a_typed_refusal() {
     // an out-of-range block index is refused, not indexed
     let e = g_block_on_device(&dev, &pool, &p.b_ov, p.nocc, p.nvir, Precision::F64);
     assert!(matches!(e, Err(GpuError::Layout(_))), "{e:?}");
+    // a width that is not a multiple of nvir leaves a partial last block:
+    // typed refusal for every block that is not whole (never an ndarray panic),
+    // before anything is reserved or uploaded
+    let ragged = Array2::<f64>::zeros((4, 10)); // nvir = 4: blocks 0, 1 whole, block 2 partial
+    for i in [2usize, 3, 9] {
+        let e = g_block_on_device(&dev, &pool, &ragged, i, 4, Precision::F64);
+        assert!(matches!(e, Err(GpuError::Layout(_))), "i={i}: {e:?}");
+    }
+    let ok = g_block_on_device(&dev, &pool, &ragged, 1, 4, Precision::F64).unwrap();
+    assert_eq!(
+        ok.dim(),
+        (4, 6),
+        "the last whole block's tail is the rest of the row"
+    );
     let s1 = stats();
     assert_eq!(
-        (s1.gemm_offloaded, s1.resident_uploads),
-        (s0.gemm_offloaded, s0.resident_uploads)
+        (
+            s1.gemm_offloaded - s0.gemm_offloaded,
+            s1.resident_uploads - s0.resident_uploads
+        ),
+        (1, 1),
+        "only the one valid block did any device work"
     );
     assert_eq!(pool.available_bytes(), pool.capacity_bytes());
 }

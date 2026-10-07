@@ -120,3 +120,92 @@ fn a_view_shorter_than_the_block_extent_is_refused_at_construction() {
     // Exactly long enough is accepted.
     assert!(dev_left_padded(resident.buf().slice(..short + 1), &b_i.t()).is_ok());
 }
+
+/// `left (m x k) · right (k x n)` where `left` is a standard column block
+/// (Left-N, ld = k + pad) and `right` is the transpose of a column block
+/// (Right-T, ld = k + pad): the two layouts the RI-MP2 shape does not use.
+/// Same bound as the first test (2·γ_k·Σ|a_p b_p|); `kb` is the panel width,
+/// so a small `kb` exercises panels past the first with `k_step = 1`.
+fn left_n_right_t(m: usize, k: usize, n: usize, pad: usize, kb: usize, seed: u64) {
+    let dev = device(0).unwrap();
+    let pool = DevicePool::with_capacity_bytes(1 << 26);
+    let a_full = operand(m, k + pad, seed);
+    let b_full = operand(n, k + pad, seed + 1);
+    let a_res = DeviceMatrix::<f64>::upload(&dev, &pool, "Left-N block", &a_full.view()).unwrap();
+    let b_res = DeviceMatrix::<f64>::upload(&dev, &pool, "Right-T block", &b_full.view()).unwrap();
+    let a = a_full.slice(s![.., ..k]);
+    let bt = b_full.slice(s![.., ..k]);
+    let left = dev_left_padded(a_res.buf().slice(..), &a).unwrap();
+    let right = dev_right_padded(b_res.buf().slice(..), &bt.t()).unwrap();
+    let mut c = dev.stream.alloc_zeros::<f64>(m * n).unwrap();
+    gemm_f64_dev(&dev, m, k, n, &left, &right, &mut c, kb).unwrap();
+    let mut got = vec![0.0f64; m * n];
+    dev.stream.memcpy_dtoh(&c, &mut got).unwrap();
+    dev.stream.synchronize().unwrap();
+    let want = a.dot(&bt.t());
+    let scale = a.mapv(f64::abs).dot(&bt.t().mapv(f64::abs));
+    let u = 2.0f64.powi(-53);
+    let gamma = k as f64 * u / (1.0 - k as f64 * u);
+    for r in 0..m {
+        for t in 0..n {
+            let err = (got[r * n + t] - want[(r, t)]).abs();
+            assert!(
+                err <= 2.0 * gamma * scale[(r, t)] + f64::MIN_POSITIVE,
+                "{m}x{k}x{n} pad {pad} kb {kb} ({r},{t}): {err:e}"
+            );
+        }
+    }
+}
+
+#[test]
+fn left_n_and_right_t_padded_blocks_match_the_host_product() {
+    let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    if skip() {
+        return;
+    }
+    // k = 1, a single row/column (ndarray stores stride 0 for a length-1
+    // axis) and a depth past several panels at kb = 1 and 3
+    for (m, k, n, pad, kb) in [
+        (5usize, 40usize, 7usize, 3usize, 128usize),
+        (5, 40, 7, 3, 1),
+        (5, 40, 7, 3, 3),
+        (6, 1, 4, 2, 128),
+        (1, 9, 4, 2, 3),
+        (4, 9, 1, 2, 3),
+        (1, 1, 1, 1, 128),
+    ] {
+        left_n_right_t(m, k, n, pad, kb, 31);
+    }
+}
+
+#[test]
+fn left_n_and_right_t_views_one_element_short_or_in_the_wrong_slot_are_refused() {
+    let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    if skip() {
+        return;
+    }
+    let dev = device(0).unwrap();
+    let pool = DevicePool::with_capacity_bytes(1 << 24);
+    let (m, k, n, pad) = (4usize, 9usize, 5usize, 3usize);
+    let a_full = operand(m, k + pad, 3);
+    let b_full = operand(n, k + pad, 4);
+    let a_res = DeviceMatrix::<f64>::upload(&dev, &pool, "A", &a_full.view()).unwrap();
+    let b_res = DeviceMatrix::<f64>::upload(&dev, &pool, "B", &b_full.view()).unwrap();
+    let a = a_full.slice(s![.., ..k]);
+    let bt = b_full.slice(s![.., ..k]);
+    let a_ext = (m - 1) * (k + pad) + k;
+    let b_ext = (n - 1) * (k + pad) + k;
+    let e = dev_left_padded(a_res.buf().slice(..a_ext - 1), &a);
+    assert!(matches!(e, Err(GpuError::Layout(_))), "{:?}", e.err());
+    let e = dev_right_padded(b_res.buf().slice(..b_ext - 1), &bt.t());
+    assert!(matches!(e, Err(GpuError::Layout(_))), "{:?}", e.err());
+    let left = dev_left_padded(a_res.buf().slice(..a_ext), &a).unwrap();
+    let right = dev_right_padded(b_res.buf().slice(..b_ext), &bt.t()).unwrap();
+    let mut c = dev.stream.alloc_zeros::<f64>(m * n).unwrap();
+    // a padded operand of the wrong shape for the product, and in the wrong slot
+    let e = gemm_f64_dev(&dev, m + 1, k, n, &left, &right, &mut c, 128);
+    assert!(matches!(e, Err(GpuError::Layout(_))), "{e:?}");
+    let e = gemm_f64_dev(&dev, m, k, n, &right, &left, &mut c, 128);
+    assert!(matches!(e, Err(GpuError::Layout(_))), "{e:?}");
+    gemm_f64_dev(&dev, m, k, n, &left, &right, &mut c, 128).unwrap();
+}

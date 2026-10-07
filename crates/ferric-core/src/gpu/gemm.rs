@@ -73,7 +73,9 @@ pub fn offload_bytes(m: usize, k: usize, n: usize) -> usize {
 
 /// Which side of `out = left · right` an operand is. The role fixes how the
 /// contraction index k runs through the stored matrix, so it is never a free
-/// parameter: [`dev_left`] / [`dev_right`] are the only public constructors.
+/// parameter: the public constructors are [`dev_left`] / [`dev_right`] (exact
+/// layouts) and [`dev_left_padded`] / [`dev_right_padded`] (sub-blocks with a
+/// wider leading dimension); each fixes the role itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Role {
     /// m × k, k along the row-major COLUMN axis.
@@ -148,7 +150,29 @@ impl OperandGeom {
         len: usize,
     ) -> Result<Self, GpuError> {
         let (rows, cols) = (host.nrows(), host.ncols());
-        let (rs, cs) = (host.strides()[0], host.strides()[1]);
+        let (rs0, cs0) = (host.strides()[0], host.strides()[1]);
+        // The stride of a length-1 axis is never stepped (ndarray stores 0 for
+        // it, and a transposed view keeps whatever it had), so it must not
+        // decide the layout: a single row (column) is N or T by the OTHER
+        // axis' stride alone.
+        let rs = if rows == 1 {
+            if cs0 == 1 {
+                isize::try_from(cols).unwrap_or(isize::MAX)
+            } else {
+                1
+            }
+        } else {
+            rs0
+        };
+        let cs = if cols == 1 {
+            if rs0 == 1 {
+                isize::try_from(rows).unwrap_or(isize::MAX)
+            } else {
+                1
+            }
+        } else {
+            cs0
+        };
         let bad = || {
             GpuError::Layout(
                 "padded operand needs a unit stride on one axis and a leading \
@@ -245,14 +269,20 @@ impl OperandGeom {
 /// is the element offset per unit of k (see `col_major_desc`).
 ///
 /// What is guaranteed: the fields are crate-private; the only public
-/// constructors are [`dev_left`] and [`dev_right`], which fix the role and
-/// derive (op, ld, k_step) from the host twin's layout (the caller supplies no
-/// descriptor value) and require `view.len() == host.len()`. Before any cuBLAS
-/// call, the `*_dev` GEMMs run `check_dev_geometry`: operand roles and shapes
-/// against `(m, k, n)`, (ld, k_step) against the unique values of that role,
-/// op and shape, and the highest element any panel reads (`k0·k_step` plus the
-/// cuBLAS read extent, for EVERY panel) against the view length; output buffers
-/// against m·n. Violations are typed `GpuError::Layout`, nothing is launched.
+/// constructors are [`dev_left`] / [`dev_right`] (exact layouts) and
+/// [`dev_left_padded`] / [`dev_right_padded`] (sub-blocks of a larger
+/// row-major matrix). They fix the role and derive (op, ld, k_step) from the
+/// host twin's layout (the caller supplies no descriptor value); the exact
+/// constructors require `view.len() == host.len()`, the padded ones a view
+/// that reaches the block's extent. Before any cuBLAS call, the `*_dev` GEMMs
+/// run `check_dev_geometry`: operand roles and shapes against `(m, k, n)`;
+/// the descriptor against the role, op and shape (`ld` no smaller than the
+/// stored matrix's row count, `ld > min` allowed for padded blocks, and
+/// `k_step` the unique value for that `ld`: 1 when k runs along the stored
+/// rows, `ld` when along its columns); the highest element any panel reads
+/// (`k0·k_step` plus the cuBLAS read extent, for EVERY panel) against the view
+/// length; output buffers against m·n. Violations are typed
+/// `GpuError::Layout`, nothing is launched.
 pub struct DevOperand<'a, T> {
     pub(crate) view: CudaView<'a, T>,
     pub(crate) geom: OperandGeom,
@@ -927,12 +957,21 @@ mod tests {
         let v = view((3, 4), (10, 1)).unwrap();
         assert!(OperandGeom::derive_padded(Role::Left, &v, 23).is_err());
         assert!(OperandGeom::derive_padded(Role::Left, &v, 24).is_ok());
-        // ld beyond the cuBLAS i32 range
+        // ld beyond the cuBLAS i32 range (u8 elements: the zeroed 2 GiB is
+        // lazily mapped and never touched)
+        let ld = i32::MAX as usize + 1;
+        let bytes = vec![0u8; ld + 1];
+        let v = ndarray::ArrayView2::from_shape((2, 1).strides((ld, 1)), &bytes[..]).unwrap();
+        let e = OperandGeom::derive_padded(Role::Left, &v, ld + 1).unwrap_err();
+        assert!(is_layout(&e, "i32"), "{e:?}");
+        // the stride of a length-1 axis is never stepped, so it cannot refuse a
+        // view: a (1, 1) block with a huge or zero stride is an ordinary 1x1
         let big = [0.0f64; 1];
-        let v =
-            ndarray::ArrayView2::from_shape((1, 1).strides((i32::MAX as usize + 1, 1)), &big[..])
-                .unwrap();
-        assert!(OperandGeom::derive_padded(Role::Left, &v, 1).is_err());
+        for st in [(0usize, 1usize), (i32::MAX as usize + 1, 1), (1, 0)] {
+            let v = ndarray::ArrayView2::from_shape((1, 1).strides(st), &big[..]).unwrap();
+            let g = OperandGeom::derive_padded(Role::Left, &v, 1).unwrap();
+            assert_eq!((g.ld, g.k_step, g.rows, g.cols), (1, 1, 1, 1), "{st:?}");
+        }
     }
 
     #[test]
@@ -978,6 +1017,160 @@ mod tests {
         };
         let e = ok(&wide_l, &r).unwrap_err();
         assert!(is_layout(&e, "reads up to"), "{e:?}");
+    }
+
+    /// One past the highest element a block view touches, counted from its
+    /// first element (all strides non-negative here).
+    fn block_extent(v: &ArrayView2<f64>) -> usize {
+        if v.is_empty() {
+            return 0;
+        }
+        let s = v.strides();
+        (v.nrows() - 1) * s[0] as usize + (v.ncols() - 1) * s[1] as usize + 1
+    }
+
+    /// (label, left geometry, left extent, right geometry, right extent).
+    type PaddedCase = (&'static str, OperandGeom, usize, OperandGeom, usize);
+
+    /// Padded blocks (leading dimension `pad` elements wider than the block)
+    /// for all four layout cases of an (m, k, n) product: the left as a
+    /// standard block (Left-N) or a transposed block (Left-T), the right as a
+    /// standard block (Right-N) or a transposed block (Right-T).
+    fn padded_cases(m: usize, k: usize, n: usize, pad: usize) -> Vec<PaddedCase> {
+        let l_std = Array2::<f64>::zeros((m, k + pad));
+        let l_t = Array2::<f64>::zeros((k, m + pad));
+        let r_std = Array2::<f64>::zeros((k, n + pad));
+        let r_t = Array2::<f64>::zeros((n, k + pad));
+        let lv_n = l_std.slice(ndarray::s![.., ..k]);
+        let lv_t = l_t.slice(ndarray::s![.., ..m]);
+        let rv_n = r_std.slice(ndarray::s![.., ..n]);
+        let rv_t = r_t.slice(ndarray::s![.., ..k]);
+        let left = |v: &ArrayView2<f64>| {
+            let e = block_extent(v);
+            (OperandGeom::derive_padded(Role::Left, v, e).unwrap(), e)
+        };
+        let right = |v: &ArrayView2<f64>| {
+            let e = block_extent(v);
+            (OperandGeom::derive_padded(Role::Right, v, e).unwrap(), e)
+        };
+        let (a, b) = (left(&lv_n), left(&lv_t.t()));
+        let (c, d) = (right(&rv_n), right(&rv_t.t()));
+        vec![
+            ("Left-N,Right-N", a.0, a.1, c.0, c.1),
+            ("Left-N,Right-T", a.0, a.1, d.0, d.1),
+            ("Left-T,Right-N", b.0, b.1, c.0, c.1),
+            ("Left-T,Right-T", b.0, b.1, d.0, d.1),
+        ]
+    }
+
+    #[test]
+    fn padded_blocks_of_every_layout_have_ld_above_the_minimum_and_pass_at_their_extent() {
+        for &(m, k, n) in &SHAPES {
+            for pad in [1usize, 5] {
+                for (label, l, ll, r, rl) in padded_cases(m, k, n, pad) {
+                    for kb in PANELS {
+                        check_dev_geometry(m, k, n, kb, (&l, ll), (&r, rl), &[("c", m * n)])
+                            .unwrap_or_else(|e| {
+                                panic!("{label} {m}x{k}x{n} pad {pad} kb {kb}: {e:?}")
+                            });
+                    }
+                    for g in [l, r] {
+                        assert!(
+                            g.ld as usize >= g.expected_ld_k_step().0,
+                            "{label} {m}x{k}x{n}"
+                        );
+                    }
+                }
+            }
+        }
+        // all four layouts of one shape are strictly padded (ld > minimum)
+        for (label, l, _, r, _) in padded_cases(4, 7, 5, 3) {
+            for g in [l, r] {
+                assert!(g.ld as usize > g.expected_ld_k_step().0, "{label}: {g:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn padded_extent_is_tight_in_both_directions_with_a_last_panel_past_zero() {
+        // One element short of either operand is refused for every layout and
+        // every panel width; kb in {1, 3} make the LAST panel start at
+        // k0 > 0 (k >= 7 for the shapes that reach it), so the refusal there
+        // comes from a later panel's read extent, not only the first.
+        for &(m, k, n) in &SHAPES {
+            for pad in [1usize, 5] {
+                for (label, l, ll, r, rl) in padded_cases(m, k, n, pad) {
+                    for kb in PANELS {
+                        let ctx = format!("{label} {m}x{k}x{n} pad {pad} kb {kb}");
+                        let e = check_dev_geometry(m, k, n, kb, (&l, ll - 1), (&r, rl), &[])
+                            .unwrap_err();
+                        assert!(is_layout(&e, "reads up to"), "L {ctx}: {e:?}");
+                        let e = check_dev_geometry(m, k, n, kb, (&l, ll), (&r, rl - 1), &[])
+                            .unwrap_err();
+                        assert!(is_layout(&e, "reads up to"), "R {ctx}: {e:?}");
+                        check_dev_geometry(m, k, n, kb, (&l, ll), (&r, rl), &[]).unwrap();
+                    }
+                }
+            }
+        }
+        // the refusing panel really is the last one: with kb = 1 and kb = 3 the
+        // message names a panel starting past 0 (the extent is reached only by
+        // the last panel)
+        let (m, k, n) = (4usize, 7usize, 5usize);
+        for kb in [1usize, 3] {
+            let last = (k - 1) / kb * kb;
+            assert!(last > 0);
+            for (label, l, ll, r, rl) in padded_cases(m, k, n, 3) {
+                for (lv, rv) in [(ll - 1, rl), (ll, rl - 1)] {
+                    let e = check_dev_geometry(m, k, n, kb, (&l, lv), (&r, rv), &[]).unwrap_err();
+                    let GpuError::Layout(msg) = e else {
+                        panic!("{label}")
+                    };
+                    assert!(
+                        msg.contains(&format!("panel {last}..{k}")),
+                        "{label} kb {kb}: refusal should come from the last panel: {msg}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn padded_operands_with_k_equal_one_and_wrong_slots_are_handled() {
+        // k = 1: one panel, k_step never multiplies a non-zero k0
+        for (m, n) in [(1usize, 1usize), (4, 1), (1, 6), (3, 5)] {
+            for pad in [1usize, 4] {
+                for (label, l, ll, r, rl) in padded_cases(m, 1, n, pad) {
+                    for kb in PANELS {
+                        check_dev_geometry(m, 1, n, kb, (&l, ll), (&r, rl), &[("c", m * n)])
+                            .unwrap_or_else(|e| panic!("{label} {m}x1x{n} kb {kb}: {e:?}"));
+                        let e = check_dev_geometry(m, 1, n, kb, (&l, ll - 1), (&r, rl), &[])
+                            .unwrap_err();
+                        assert!(is_layout(&e, "reads up to"), "{label} {m}x1x{n}: {e:?}");
+                    }
+                }
+            }
+        }
+        // wrong operand in a slot, and a padded operand of the wrong shape
+        let (m, k, n) = (4usize, 7usize, 5usize);
+        for (label, l, ll, r, rl) in padded_cases(m, k, n, 3) {
+            let e = check_dev_geometry(m, k, n, 128, (&r, rl), (&l, ll), &[]).unwrap_err();
+            assert!(is_layout(&e, "slot holds"), "{label}: {e:?}");
+            let e = check_dev_geometry(m, k, n, 128, (&l, ll), (&l, ll), &[]).unwrap_err();
+            assert!(is_layout(&e, "right slot"), "{label}: {e:?}");
+            let e = check_dev_geometry(m + 1, k, n, 128, (&l, ll), (&r, rl), &[]).unwrap_err();
+            assert!(is_layout(&e, "left operand is"), "{label}: {e:?}");
+            let e = check_dev_geometry(m, k, n + 1, 128, (&l, ll), (&r, rl), &[]).unwrap_err();
+            assert!(is_layout(&e, "right operand is"), "{label}: {e:?}");
+        }
+        // a left block built under the Right role sits in the right slot with
+        // the wrong shape: refused by the shape check
+        let big = Array2::<f64>::zeros((m, k + 3));
+        let v = big.slice(ndarray::s![.., ..k]);
+        let as_right = OperandGeom::derive_padded(Role::Right, &v, block_extent(&v)).unwrap();
+        let (_, l, ll, _, _) = padded_cases(m, k, n, 3).remove(0);
+        let e = check_dev_geometry(m, k, n, 128, (&l, ll), (&as_right, 1 << 20), &[]).unwrap_err();
+        assert!(is_layout(&e, "right operand is"), "{e:?}");
     }
 
     #[test]

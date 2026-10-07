@@ -247,9 +247,15 @@ impl Stage {
         let cuda =
             |what: &str, e: &dyn std::fmt::Debug| GpuError::Cuda(format!("{what} G_{i}: {e:?}"));
         let nov = b_ov.ncols();
-        let off = i.checked_mul(nvir).filter(|&o| o < nov).ok_or_else(|| {
-            GpuError::Layout(format!("block {i} of width {nvir} is outside nov = {nov}"))
-        })?;
+        // The whole block [off, off + nvir) must lie inside the matrix: a width
+        // that is not a multiple of nvir would otherwise leave a partial last
+        // block and the slice below would panic.
+        let off = i
+            .checked_mul(nvir)
+            .filter(|&o| o < nov && nvir <= nov - o)
+            .ok_or_else(|| {
+                GpuError::Layout(format!("block {i} of width {nvir} is outside nov = {nov}"))
+            })?;
         let (m, k, n) = (nvir, b_ov.nrows(), nov - off);
         let b_i = b_ov.slice(s![.., off..off + nvir]);
         let b_tail = b_ov.slice(s![.., off..]);
@@ -297,7 +303,7 @@ pub fn g_block_on_device(
     let ntail = i
         .checked_mul(nvir)
         .and_then(|off| nov.checked_sub(off))
-        .filter(|&t| t > 0)
+        .filter(|&t| t > 0 && t >= nvir)
         .ok_or_else(|| {
             GpuError::Layout(format!("block {i} of width {nvir} is outside nov = {nov}"))
         })?;
