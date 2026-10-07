@@ -9,9 +9,9 @@
 //!
 //! # Bounds
 //!
-//! 1. DERIVED (rigorous, worst case): `Md3c1e::pair_block_f32_bound` (module
-//!    doc of `md3c1e/f32_block.rs`: Higham chain depth `D = nnz + 16 l_tot +
-//!    49`, `S_pp` from the absolute-value shadow recursion, sum term
+//! 1. DERIVED (first-order worst case, assuming no underflow or subnormals):
+//!    `Md3c1e::pair_block_f32_bound` (module doc of `md3c1e/f32_block.rs`:
+//!    Higham chain depth `D = nnz + 18 l_tot + 47`, `S_pp` from the absolute-value shadow recursion, sum term
 //!    `gamma_{n_pp}(u64) sum|A_pp|` for `F64`, `2 u32 sum|A_pp|` for
 //!    `CompensatedF32`, `gamma_{n_pp-1}(u32) sum|A_pp|` for `F32`). Asserted
 //!    ELEMENT-WISE (`|dA| <= bound`) for both clean variants.
@@ -27,21 +27,21 @@
 //!  class blocks | max|dA|/max|A| F64=Comp | max|dA|/derived bound | kappa max |
 //!               |  accumulation: max|B_plainF32 - B_F64sum|/max|A| | truncE: slope of
 //!               |  (B_truncE - B_nearest) on A         (all in units of u32 = 2^-24)
-//!  (0,0)  120 |  1.862 | 6.3e-2 | 1.0e0 | 1.380 | -0.573
+//!  (0,0)  120 |  1.862 | 6.5e-2 | 1.0e0 | 1.380 | -0.573
 //!  (1,0)  150 |  1.927 | 9.4e-2 | 7.6e2 | 1.188 | -0.601
-//!  (1,1)   55 |  1.296 | 9.5e-2 | 3.0e2 | 0.750 | -0.777
-//!  (2,0)  105 |  1.926 | 9.2e-2 | 9.1e3 | 1.260 | -0.798
-//!  (2,1)   70 |  2.813 | 9.8e-2 | 1.7e3 | 0.381 | -0.713
-//!  (2,2)   28 |  2.947 | 6.4e-2 | 5.5e3 | 0     | -0.630
-//!  (3,0)   60 |  2.329 | 1.25e-1| 5.5e3 | 0.593 | -0.765
-//!  (3,1)   40 |  8.215 | 7.1e-2 | 8.2e3 | 2.470 | -0.851
-//!  (3,2)   28 |  6.448 | 4.9e-2 | 6.2e3 | 0     | -0.620
-//!  (3,3)   10 |  5.009 | 4.5e-2 | 5.9e3 | 0     | -0.584
-//!  (4,0)   15 | 17.05  | 2.9e-2 | 4.1e4 | 1.831 | -0.786
-//!  (4,1)   10 | 12.77  | 3.4e-2 | 1.7e4 | 1.303 | -0.537
-//!  (4,2)    7 | 12.36  | 3.1e-2 | 4.1e4 | 0     | -1.061
-//!  (4,3)    4 |  8.419 | 2.4e-2 | 5.4e3 | 0     | -0.132
-//!  (4,4)    1 | 10.14  | 1.7e-2 | 1.1e4 | 0     | -1.014
+//!  (1,1)   55 |  1.296 | 9.3e-2 | 3.0e2 | 0.750 | -0.777
+//!  (2,0)  105 |  1.926 | 9.0e-2 | 9.1e3 | 1.260 | -0.798
+//!  (2,1)   70 |  2.813 | 9.4e-2 | 1.7e3 | 0.381 | -0.713
+//!  (2,2)   28 |  2.947 | 6.1e-2 | 5.5e3 | 0     | -0.630
+//!  (3,0)   60 |  2.329 | 1.20e-1| 5.5e3 | 0.593 | -0.765
+//!  (3,1)   40 |  8.215 | 6.8e-2 | 8.2e3 | 2.470 | -0.851
+//!  (3,2)   28 |  6.448 | 4.6e-2 | 6.2e3 | 0     | -0.620
+//!  (3,3)   10 |  5.009 | 4.2e-2 | 5.9e3 | 0     | -0.584
+//!  (4,0)   15 | 17.05  | 2.8e-2 | 4.1e4 | 1.831 | -0.786
+//!  (4,1)   10 | 12.77  | 3.2e-2 | 1.7e4 | 1.303 | -0.537
+//!  (4,2)    7 | 12.36  | 2.9e-2 | 4.1e4 | 0     | -1.061
+//!  (4,3)    4 |  8.419 | 2.2e-2 | 5.4e3 | 0     | -0.132
+//!  (4,4)    1 | 10.14  | 1.5e-2 | 1.1e4 | 0     | -1.014
 //! ```
 //!
 //! `CompensatedF32` is bit-equal to `F64` on the error column and differs
@@ -52,8 +52,8 @@
 //! 1.3-17.1 u32 here.
 //!
 //! The three mutants are NOT all outside the DERIVED bound: it is a worst
-//! case (D = 50..180 roundings) and the measured errors sit 8-60x inside it
-//! (max ratio 0.125), so plain-f32 accumulation and truncation, whose errors
+//! case (D = nnz + 18 l_tot + 47 roundings) and the measured errors sit well inside
+//! it (max ratio 0.120), so plain-f32 accumulation and truncation, whose errors
 //! are `O(u32)` like the clean path's, are inside it; only the dropped
 //! primitive pair (error ~ 1.3e7 u32 = O(1) relative) is outside. They are
 //! separated by three bars, each the geometric midpoint of its two measured
@@ -121,6 +121,10 @@ fn probes(mol: &Molecule) -> Vec<[f64; 3]> {
 struct Setup {
     kern: Md3c1e,
     pts: Vec<[f64; 3]>,
+    /// `multi_prim[hi][lo]`: some shell pair of the class has more than one
+    /// primitive pair (so there is something to accumulate), derived from the
+    /// basis' primitive counts.
+    multi_prim: [[bool; 5]; 5],
 }
 
 fn setup() -> Setup {
@@ -128,9 +132,20 @@ fn setup() -> Setup {
     let bs = bundled("def2-qzvp").unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let kern = Md3c1e::new(&prep).unwrap();
+    let mut multi_prim = [[false; 5]; 5];
+    let sh = prep.located_shells();
+    for s1 in 0..sh.len() {
+        for s2 in 0..=s1 {
+            let (l1, l2) = (sh[s1].l as usize, sh[s2].l as usize);
+            if sh[s1].exponents.len() * sh[s2].exponents.len() > 1 {
+                multi_prim[l1.max(l2)][l1.min(l2)] = true;
+            }
+        }
+    }
     Setup {
         kern,
         pts: probes(&mol),
+        multi_prim,
     }
 }
 
@@ -347,19 +362,32 @@ fn mutant_plain_f32_accumulation_is_outside_and_compensated_inside() {
     let s = setup();
     let plain = measure(&s, PrimPairSum::F32, F32Fault::None);
     let comp = measure(&s, PrimPairSum::CompensatedF32, F32Fault::None);
-    let mut defective = 0;
     each_class(&plain, |hi, lo, c| {
         let d = c.diff_u32();
-        assert!(d == 0.0 || d > BAR_ACC, "plain ({hi},{lo}): {d}");
-        defective += (d > BAR_ACC) as usize;
+        // Defective exactly where the basis has more than one primitive pair
+        // to accumulate; exactly 0 elsewhere (derived from the class list).
+        if s.multi_prim[hi][lo] {
+            assert!(d > BAR_ACC, "plain ({hi},{lo}): {d}");
+        } else {
+            assert_eq!(d, 0.0, "plain ({hi},{lo}): {d}");
+        }
     });
-    assert!(defective >= 8, "only {defective} classes accumulate");
+    assert!(
+        s.multi_prim.iter().flatten().filter(|&&m| m).count() >= 1,
+        "no multi-primitive class: the mutant would be vacuous"
+    );
     each_class(&comp, |hi, lo, c| {
         assert!(c.diff_u32() < BAR_ACC, "Comp ({hi},{lo}): {}", c.diff_u32());
     });
 }
 
 /// Mutant 2: truncated E coefficients, in every class; clean variants below.
+/// Caveat: the isolating statistic is the slope of `(B_trunc - B_nearest)` on
+/// `A`, i.e. a systematic SHRINK of the result. A truncation defect that did
+/// not shrink (or that was cancelled by a compensating bias elsewhere in the
+/// chain) would not be seen by it; it detects "coefficients rounded the wrong
+/// way", not "any coefficient defect" (the max-error statistic cannot see
+/// this mutant at all, 2.3-3.7 u32 vs 1.3-2.9 clean).
 #[test]
 fn mutant_truncated_coefficients_are_outside_in_every_class() {
     let s = setup();
@@ -445,4 +473,99 @@ fn routed_sweep_matches_the_per_block_calls() {
         assert_eq!(blk.len(), s.kern.shell_dim(*a) * s.kern.shell_dim(*b) * n);
     }
     assert_eq!(counts.f32_blocks, n32);
+}
+
+/// The first-order bound assumes no underflow/subnormals in the f32 chain.
+/// Necessary-condition guard on the probe set: every nonzero `sum|terms|`
+/// element is at least 26 binary orders (`2^26`) above the smallest normal
+/// f32 (1.18e-38), so no block here sits near the underflow scale. (A block
+/// far outside the probe distribution is not covered by this test.)
+#[test]
+fn the_no_underflow_assumption_holds_on_the_probe_set() {
+    let s = setup();
+    let mut scr = s.kern.scratch();
+    let n = s.pts.len();
+    let floor = f32::MIN_POSITIVE as f64 * (1u64 << 26) as f64;
+    let mut smallest = f64::INFINITY;
+    for s1 in 0..s.kern.nshells() {
+        for s2 in 0..=s1 {
+            let need = s.kern.shell_dim(s1) * s.kern.shell_dim(s2) * n;
+            let (mut b, mut sabs) = (vec![0.0; need], vec![0.0; need]);
+            s.kern
+                .pair_block_f32_bound(
+                    s1,
+                    s2,
+                    &s.pts,
+                    &mut scr,
+                    PrimPairSum::F64,
+                    &mut b,
+                    &mut sabs,
+                )
+                .unwrap();
+            for &v in sabs.iter().filter(|&&v| v != 0.0) {
+                smallest = smallest.min(v);
+            }
+        }
+    }
+    assert!(
+        smallest > floor,
+        "smallest nonzero S = {smallest:e} <= {floor:e}"
+    );
+}
+
+/// A tight high-l primitive (synthetic g shell, exponent 1e5 on O) makes the
+/// f32 seed `(2p)^n F_n` overflow for the g-g pair (`(4e5)^8 = 6.5e44`): the
+/// f32 block is detected non-finite and recomputed by the f64 block. The
+/// result is BITWISE `pair_block`, the fallback is counted, and the other
+/// pairs of the same sweep still run in f32.
+#[test]
+fn an_f32_range_overflow_falls_back_to_the_f64_block_bitwise_and_is_counted() {
+    let mol = Molecule::parse_xyz(WATER, 0, 1).unwrap();
+    let mut bs = bundled("def2-svp").unwrap();
+    bs.shells
+        .get_mut(&8)
+        .unwrap()
+        .push(ferric_core::basis::Shell {
+            l: 4,
+            pure: true,
+            exponents: vec![1.0e5],
+            coefficients: vec![1.0],
+        });
+    let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    let kern = Md3c1e::new(&prep).unwrap();
+    let pts = probes(&mol);
+    let n = pts.len();
+    let g: Vec<usize> = (0..kern.nshells())
+        .filter(|&i| kern.shell_l(i) == 4)
+        .collect();
+    assert_eq!(g.len(), 1, "exactly the synthetic g shell");
+    let mut scr = kern.scratch();
+    let need = kern.shell_dim(g[0]) * kern.shell_dim(g[0]) * n;
+    let (mut a, mut b) = (vec![0.0; need], vec![0.0; need]);
+    kern.pair_block(g[0], g[0], &pts, &mut scr, &mut a).unwrap();
+    for sum in PrimPairSum::ALL {
+        let p = kern
+            .pair_block_f32(g[0], g[0], &pts, &mut scr, sum, &mut b)
+            .unwrap();
+        assert_eq!(p, BlockPrecision::F64Fallback, "{sum:?}");
+        let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        assert_eq!(
+            bits(&a),
+            bits(&b),
+            "{sum:?}: fallback is not bitwise pair_block"
+        );
+    }
+    // Routed sweep: every pair F32; only the overflowing pair(s) fall back.
+    let counts = kern
+        .for_each_pair_routed(
+            &pts,
+            |_, _| PairRoute::F32,
+            PrimPairSum::F64,
+            &mut scr,
+            |_, _, blk| assert!(blk.iter().all(|v| v.is_finite())),
+        )
+        .unwrap();
+    assert!(counts.f32_fallbacks >= 1, "{counts:?}");
+    assert!(counts.f32_blocks > counts.f32_fallbacks, "{counts:?}");
+    assert_eq!(counts.f32_blocks + counts.f32_fallbacks, counts.kept);
 }

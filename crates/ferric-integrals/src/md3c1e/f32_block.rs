@@ -23,44 +23,70 @@
 //!
 //! # The a-priori error bound (Higham, ASNA 2nd ed. ch. 3-4)
 //!
-//! `pair_block_f32_bound` returns, per output element, a rigorous worst-case
-//! bound `|dA| <= sum_pp B_pp + V`. With `u32 = 2^-24`, `u64 = 2^-53`,
-//! `gamma_n(u) = n u / (1 - n u)` and, for one primitive pair, `S_pp =
-//! sum_k |c_k| Rbar_k` (the same recursion run in f64 with absolute values:
-//! `|pc|`, positive seeds `(2p)^n F_n`, `|c|`; because every R recursion term
-//! is added with either sign, the error of `R_k` is bounded relative to
-//! `Rbar_k`, not to `|R_k|`):
+//! `pair_block_f32_bound` returns, per output element, a FIRST-ORDER
+//! WORST-CASE bound `|dA| <= sum_pp B_pp + V` that assumes no underflow or
+//! subnormals in the f32 chain (see "Assumptions"). With `u32 = 2^-24`,
+//! `u64 = 2^-53`, `gamma_n(u) = n u / (1 - n u)` and, for one primitive pair,
+//! `S_pp = sum_k |c_k| Rbar_k` (the same recursion run in f64 with absolute
+//! values: `|pc|`, positive seeds `(2p)^n F_n`, `|c|`; because every R
+//! recursion term is added with either sign, the error of `R_k` is bounded
+//! relative to `Rbar_k`, not to `|R_k|`):
 //!
 //! ```text
 //!   B_pp = e^{1/8} gamma_D(u32) S_pp + 2 gamma_D(u64) S_pp
-//!   D    = nnz + 16 l_tot + 49          (nnz = terms of this Cartesian element)
+//!   D    = nnz + 18 l_tot + 47          (nnz = terms of this Cartesian element)
 //! ```
 //!
-//! `D` counts the rounding operations on the longest dependency chain:
-//! contraction `nnz + 1` (operand rounding of `c`, product, `nnz - 1` adds;
-//! the non-FMA count, FMA only removes roundings); R chain `4 l_tot + 3`
-//! (`p` rounded, `l_tot` seed products and the seed-times-Boys product, 3
-//! roundings per recursion level, `pc` rounded); the argument `T = p |pc|^2`
-//! carries `7u` (pc rounded, squared, 2 adds, `p` rounded, times `p`) and
-//! `F_n(T)` amplifies a relative `T` error by `T F_{n+1} / F_n <= n + 1/2`,
-//! giving `7 (l_tot + 1)`; Boys `38 + 5 l_tot` (node rounded, 9 Horner steps
-//! of 4 roundings, one more for the factorial constant; 5 per downward or
-//! upward step including the f32 `exp`, assumed within 1 ulp = 2u). The
-//! Taylor terms sum to at most `e^{1/16} F` and the node value is within
+//! `D` counts the rounding operations on the longest dependency chain, with
+//! the non-FMA count (an FMA only removes roundings):
+//!
+//! * contraction `nnz + 1`: operand rounding of `c`, its product, `nnz - 1` adds;
+//! * seed `fac_n = (-2 p)^n` times Boys: the ROUNDED `p` enters `n` times
+//!   (`n` roundings' worth of relative error) plus `n - 1` products, plus the
+//!   product with `F_n`: `2 l_tot + 1`;
+//! * recursion: each level multiplies by the rounded `pc` (reused at every
+//!   level, so its operand rounding is paid per level), the coefficient
+//!   product and the add: `4 l_tot`;
+//! * the argument `T = p |pc|^2` carries `7u` (pc rounded, squared, 2 adds, `p`
+//!   rounded, times `p`) and `F_n(T)` amplifies a relative `T` error by
+//!   `T F_{n+1} / F_n <= n + 1/2`: `7 l_tot + 4`;
+//! * Boys `38 + 5 l_tot`: node rounded, 9 Horner steps of 4 roundings, one
+//!   more for the factorial constant; 5 per downward or upward step including
+//!   the f32 `exp`, assumed within 1 ulp = `2 u32`.
+//!
+//! Total `nnz + (2 + 4 + 7 + 5) l_tot + (1 + 1 + 4 + 38 + 3) = nnz + 18 l_tot
+//! + 47` (the constant keeps 3 spare roundings for the `p` and `c` operands).
+//! The Taylor terms sum to at most `e^{1/16} F` and the node value is within
 //! `e^{1/16}` of `F(T)` (`F_{n+1} <= F_n`, `|delta| <= 1/16`), hence the
 //! factor `e^{1/8}`. The `2 gamma_D(u64)` term covers the f64 reference and
-//! the f64 stages. The sum across primitive pairs adds `V`, with
-//! `n_pp` surviving primitive pairs and `A_pp` the exact per-pair block:
+//! the f64 stages. The sum across primitive pairs adds `V`, with `n_pp`
+//! surviving primitive pairs and `A_pp` the per-pair block taken from the
+//! f64 recursion (the kernel's own `A_pp` differ from it by the same first
+//! order terms, so using the exact `|A_pp|` in `V` is a second-order
+//! substitution):
 //!
 //! * `F64`: `gamma_{n_pp}(u64) sum |A_pp|` (f64 accumulator);
 //! * `CompensatedF32`: `2 u32 sum |A_pp|` (the plan's Higham ASNA Thm 4.8
-//!   form; `hi + lo` is returned to f64 unrounded so the realised second
-//!   order term is `n_pp (n_pp - 1) u32^2`, far below it);
+//!   form `(2u + O(n u^2)) sum |x|`; the `O(n_pp u^2)` term is DROPPED here
+//!   (the realised second-order term is `n_pp (n_pp - 1) u32^2` because
+//!   `hi + lo` is returned to f64 unrounded), so this is first order too);
 //! * `F32`: `gamma_{n_pp - 1}(u32) sum |A_pp|` (recursive summation).
 //!
 //! The bound is then pushed through the cart->sph transform with `|C|`.
-//! It is a worst case: it does not claim to be tight (see the measured
-//! margins in `tests/md3c1e_f32_error.rs`).
+//!
+//! # Assumptions
+//!
+//! First order in `u` (second-order terms are dropped throughout, `gamma`
+//! keeps its denominator but `S_pp` and `A_pp` are taken from the exact f64
+//! recursion rather than the perturbed one). No underflow or subnormals in
+//! any f32 intermediate: an operation that underflows adds an absolute error
+//! `<= 2^-150` that no relative bound covers; the guard test
+//! (`tests/md3c1e_f32_error.rs::the_no_underflow_assumption_holds_on_the_probe_set`)
+//! asserts every nonzero `S` element on the probe set is far above that
+//! scale, and an overflowing block is not bounded at all but detected and
+//! recomputed in f64 ([`BlockPrecision::F64Fallback`]). The bound does not
+//! claim to be tight (see the measured margins in
+//! `tests/md3c1e_f32_error.rs`).
 
 use super::*;
 
@@ -347,10 +373,10 @@ pub const U32: f64 = 1.0 / 16_777_216.0;
 pub const U64: f64 = 1.0 / 9_007_199_254_740_992.0;
 
 /// Rounding operations on the longest chain of one element (see the module
-/// doc): `nnz + 16 l_tot + 49`.
+/// doc): `nnz + 18 l_tot + 47`.
 #[doc(hidden)]
 pub fn f32_chain_depth(l_tot: usize, nnz: usize) -> usize {
-    nnz + 16 * l_tot + 49
+    nnz + 18 * l_tot + 47
 }
 
 impl Md3c1e {
