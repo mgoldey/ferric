@@ -29,7 +29,9 @@ use crate::grid::{build_atomic_grid_pruned, AtomicGridConfig, GridPoint};
 use crate::libxc::{xc_def_from_name, xc_def_from_name_nspin, LibxcError, XcDef};
 use crate::vv10::add_vv10_scratch;
 use crate::vxc::VxcScratch;
-use crate::xc_batch::{owned_shells, AoStorage, ScreenedGrid, XcBatchConfig, XcScreeningStats};
+use crate::xc_batch::{
+    owned_shells, AoStorage, DensityInput, ScreenedGrid, XcBatchConfig, XcScreeningStats,
+};
 use crate::xc_trait::{KMix, UksXcContribution, XcContribution};
 
 /// Errors from the Kohn-Sham exchange-correlation integration path.
@@ -567,11 +569,46 @@ impl KsXc {
     }
 }
 
-impl XcContribution for KsXc {
-    fn add_xc(&self, d: &Array2<f64>, f: &mut Array2<f64>) -> f64 {
+/// Largest `|D − scale·C·Cᵀ|` entry allowed before a caller-supplied occupied
+/// block is judged stale and the dense-`D` path is used instead. The SCF forms
+/// `D` from the same `C` with one GEMM, so a consistent pair differs by a few
+/// ulp of `max|D|`; `1e-12` relative is orders above that and orders below any
+/// real density change.
+const OCC_CONSISTENCY_TOL: f64 = 1e-12;
+
+/// `c_occ` as a factored input for `d = scale·c_occ·c_occᵀ`, or the dense
+/// input when `c_occ` is absent or does not reproduce `d` (stale cache,
+/// fractional occupations): the dense path is always correct, the factored one
+/// only for an exact `C·Cᵀ` density.
+fn density_input<'a>(
+    d: &'a Array2<f64>,
+    c_occ: Option<&'a Array2<f64>>,
+    scale: f64,
+) -> DensityInput<'a> {
+    let Some(c) = c_occ else {
+        return DensityInput::Dense(d);
+    };
+    if c.nrows() != d.nrows() || d.nrows() != d.ncols() {
+        return DensityInput::Dense(d);
+    }
+    let mut dc = c.dot(&c.t());
+    dc *= scale;
+    let dmax = d.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+    let err = (&dc - d).iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+    if err <= OCC_CONSISTENCY_TOL * dmax.max(1.0) {
+        DensityInput::Factored { c_occ: c, scale }
+    } else {
+        DensityInput::Dense(d)
+    }
+}
+
+impl KsXc {
+    /// Shared body of [`XcContribution::add_xc`] and `add_xc_occ`: semilocal
+    /// XC from `input`, VV10 (if any) from the dense `d`.
+    fn add_xc_input(&self, d: &Array2<f64>, input: DensityInput, f: &mut Array2<f64>) -> f64 {
         let (e_xc, vxc) = self
             .screened
-            .integrate_closed(&self.grid, d, &self.xc)
+            .integrate_closed(&self.grid, input, &self.xc)
             .expect(
                 "per-shell AO evaluation failed inside a Fock build, but KsXc::new already \
                  evaluated every shell once (ScreenedGrid::build) and the only per-shell \
@@ -600,6 +637,16 @@ impl XcContribution for KsXc {
         };
 
         e_xc + e_nl
+    }
+}
+
+impl XcContribution for KsXc {
+    fn add_xc(&self, d: &Array2<f64>, f: &mut Array2<f64>) -> f64 {
+        self.add_xc_input(d, DensityInput::Dense(d), f)
+    }
+
+    fn add_xc_occ(&self, d: &Array2<f64>, c_occ: &Array2<f64>, f: &mut Array2<f64>) -> f64 {
+        self.add_xc_input(d, density_input(d, Some(c_occ), 2.0), f)
     }
 
     fn k_mix(&self) -> KMix {
@@ -744,11 +791,13 @@ impl KsXcUks {
     }
 }
 
-impl UksXcContribution for KsXcUks {
-    fn add_xc_uks(
+impl KsXcUks {
+    /// Shared body of `add_xc_uks` and `add_xc_uks_occ`: semilocal XC from the
+    /// per-spin `inputs`, VV10 (if any) from the dense `d_a + d_b`.
+    fn add_xc_uks_input(
         &self,
-        d_a: &Array2<f64>,
-        d_b: &Array2<f64>,
+        (d_a, d_b): (&Array2<f64>, &Array2<f64>),
+        (in_a, in_b): (DensityInput, DensityInput),
         f_a: &mut Array2<f64>,
         f_b: &mut Array2<f64>,
     ) -> f64 {
@@ -756,7 +805,7 @@ impl UksXcContribution for KsXcUks {
         // batches, then the polarized libxc kernel.
         let (e_xc, vxc_a, vxc_b) = self
             .screened
-            .integrate_polarized(&self.grid, d_a, d_b, &self.xc)
+            .integrate_polarized(&self.grid, in_a, in_b, &self.xc)
             .expect(
                 "per-shell AO evaluation failed inside a Fock build, but KsXcUks::new already \
                  evaluated every shell once (ScreenedGrid::build) and the only per-shell \
@@ -789,6 +838,30 @@ impl UksXcContribution for KsXcUks {
         };
 
         e_xc + e_nl
+    }
+}
+
+impl UksXcContribution for KsXcUks {
+    fn add_xc_uks(
+        &self,
+        d_a: &Array2<f64>,
+        d_b: &Array2<f64>,
+        f_a: &mut Array2<f64>,
+        f_b: &mut Array2<f64>,
+    ) -> f64 {
+        let inputs = (DensityInput::Dense(d_a), DensityInput::Dense(d_b));
+        self.add_xc_uks_input((d_a, d_b), inputs, f_a, f_b)
+    }
+
+    fn add_xc_uks_occ(
+        &self,
+        (d_a, d_b): (&Array2<f64>, &Array2<f64>),
+        (c_a, c_b): (Option<&Array2<f64>>, Option<&Array2<f64>>),
+        f_a: &mut Array2<f64>,
+        f_b: &mut Array2<f64>,
+    ) -> f64 {
+        let inputs = (density_input(d_a, c_a, 1.0), density_input(d_b, c_b, 1.0));
+        self.add_xc_uks_input((d_a, d_b), inputs, f_a, f_b)
     }
 
     fn k_mix(&self) -> KMix {
@@ -1586,6 +1659,147 @@ mod anchor_tests {
                     "{basis_name} {n0} vs {n}: {e0:e} vs {e:e}"
                 );
                 assert_bits(f0, f, &format!("{basis_name} V {n0} vs {n}"));
+            }
+        }
+    }
+
+    /// A synthetic occupied block `(nbf, nocc)`: only the arithmetic path of
+    /// the factored density pass is under test, not the physics.
+    fn synth_c(nbf: usize, nocc: usize, salt: usize) -> Array2<f64> {
+        Array2::from_shape_fn((nbf, nocc), |(i, j)| {
+            ((i * 7 + j * 3 + salt) % 11) as f64 * 0.05 - 0.2
+        })
+    }
+
+    /// The occupied-factored density pass agrees with the dense-D pass to a
+    /// rounding-derived bound, and is bit-identical across 1 vs 4 rayon
+    /// threads.
+    ///
+    /// Bound: the two forms evaluate `Φ = D·χ` as one length-`nact` dot per
+    /// entry versus two (`nocc` then `nact`) with an exact power-of-two scale.
+    /// Each carries a relative error of at most `γ_nact ≈ nact·u` against
+    /// `Σ|D||χ|` (u = 1.1e-16, nact ≲ 100 here: ≲ 1.1e-14), so ρ, ∇ρ and τ
+    /// differ by a few `γ` of their absolute sums, and `E_xc`, a weighted sum
+    /// of smooth functions of those, by the same relative amount: with
+    /// |E_xc| = O(10) Eh that is ≲ 1e-12 Eh. The asserted 1e-10 is 100× that
+    /// bound. Meta-GGA exercises every ncols branch.
+    ///
+    /// Catches: a wrong scale (2 vs 1), a transposed C, a gather that drops
+    /// the row selection, and a thread-count dependence in the new path.
+    #[test]
+    fn add_xc_occ_matches_dense_density_and_is_thread_invariant_closed_shell() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mol = far_water_dimer();
+        for (basis_name, name) in [("6-31g", "PBE"), ("cc-pvdz", "SCAN")] {
+            let bs = basis::bundled(basis_name).unwrap();
+            let nbf = nbasis(&mol, &bs).unwrap();
+            let c = synth_c(nbf, 5, 0);
+            let d = 2.0 * c.dot(&c.t());
+            let ks = KsXc::new(&mol, &bs, name, &main_grid(), &nlc_grid()).unwrap();
+            let mut f_dense = Array2::<f64>::zeros(d.dim());
+            let e_dense = ks.add_xc(&d, &mut f_dense);
+            let mut results = Vec::new();
+            for threads in [1usize, 4] {
+                let (e, f) = in_pool(threads, || {
+                    let mut f = Array2::<f64>::zeros(d.dim());
+                    let e = ks.add_xc_occ(&d, &c, &mut f);
+                    (e, f)
+                });
+                results.push((e, f));
+            }
+            let (e1, f1) = &results[0];
+            let (e4, f4) = &results[1];
+            assert_eq!(e1.to_bits(), e4.to_bits(), "{name} E 1t vs 4t");
+            assert_bits(f1, f4, &format!("{basis_name} {name} V 1t vs 4t"));
+            assert!(
+                (e1 - e_dense).abs() <= 1e-10,
+                "{basis_name} {name}: dE {:e}",
+                (e1 - e_dense).abs()
+            );
+            let dv = max_abs_diff(f1, &f_dense);
+            assert!(dv <= 1e-10, "{basis_name} {name}: max|dV| {dv:e}");
+            // The factored path really ran: it is NOT the dense bits.
+            assert!(
+                f1.iter()
+                    .zip(f_dense.iter())
+                    .any(|(a, b)| a.to_bits() != b.to_bits()),
+                "{basis_name} {name}: factored result identical to dense bits"
+            );
+        }
+    }
+
+    /// A stale or inconsistent occupied block must fall back to the dense `D`
+    /// (bit-identical to `add_xc`), never be trusted.
+    ///
+    /// Catches: removing the consistency guard (a stale cache would silently
+    /// integrate the wrong density).
+    #[test]
+    fn add_xc_occ_falls_back_to_dense_when_c_does_not_reproduce_d() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mol = far_water_dimer();
+        let bs = basis::bundled("6-31g").unwrap();
+        let nbf = nbasis(&mol, &bs).unwrap();
+        let c_true = synth_c(nbf, 5, 0);
+        let c_stale = synth_c(nbf, 5, 4);
+        let d = 2.0 * c_true.dot(&c_true.t());
+        let ks = KsXc::new(&mol, &bs, "PBE", &main_grid(), &nlc_grid()).unwrap();
+        let mut f_dense = Array2::<f64>::zeros(d.dim());
+        let e_dense = ks.add_xc(&d, &mut f_dense);
+        let mut f_stale = Array2::<f64>::zeros(d.dim());
+        let e_stale = ks.add_xc_occ(&d, &c_stale, &mut f_stale);
+        assert_eq!(e_dense.to_bits(), e_stale.to_bits());
+        assert_bits(&f_dense, &f_stale, "stale-C fallback V");
+        // A wrong scale (D = C·Cᵀ passed as 2·C·Cᵀ) is also rejected.
+        let d1 = c_true.dot(&c_true.t());
+        let mut f1 = Array2::<f64>::zeros(d.dim());
+        let mut f1_dense = Array2::<f64>::zeros(d.dim());
+        let e1 = ks.add_xc_occ(&d1, &c_true, &mut f1);
+        let e1_dense = ks.add_xc(&d1, &mut f1_dense);
+        assert_eq!(e1.to_bits(), e1_dense.to_bits());
+        assert_bits(&f1, &f1_dense, "wrong-scale fallback V");
+    }
+
+    /// Open-shell twin of the closed-shell factored test: per-spin
+    /// `D_σ = C_σ·C_σᵀ` (scale 1), 1 vs 4 threads bit-identical, agreement
+    /// with the dense polarized pass within the same bound, and a `None`
+    /// block for one spin mixes the dense and factored forms.
+    #[test]
+    fn add_xc_uks_occ_matches_dense_density_and_is_thread_invariant() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mol = water_oh_far();
+        let bs = basis::bundled("6-31g").unwrap();
+        let nbf = nbasis(&mol, &bs).unwrap();
+        let (c_a, c_b) = (synth_c(nbf, 5, 0), synth_c(nbf, 4, 2));
+        let (d_a, d_b) = (c_a.dot(&c_a.t()), c_b.dot(&c_b.t()));
+        for name in ["PBE", "SCAN"] {
+            let ks = KsXcUks::new(&mol, &bs, name, &main_grid(), &nlc_grid()).unwrap();
+            let (mut fa0, mut fb0) = (
+                Array2::<f64>::zeros(d_a.dim()),
+                Array2::<f64>::zeros(d_a.dim()),
+            );
+            let e0 = ks.add_xc_uks(&d_a, &d_b, &mut fa0, &mut fb0);
+            let run = |threads: usize, cb: Option<&Array2<f64>>| {
+                in_pool(threads, || {
+                    let mut fa = Array2::<f64>::zeros(d_a.dim());
+                    let mut fb = Array2::<f64>::zeros(d_a.dim());
+                    let e = ks.add_xc_uks_occ((&d_a, &d_b), (Some(&c_a), cb), &mut fa, &mut fb);
+                    (e, fa, fb)
+                })
+            };
+            let (e1, fa1, fb1) = run(1, Some(&c_b));
+            let (e4, fa4, fb4) = run(4, Some(&c_b));
+            assert_eq!(e1.to_bits(), e4.to_bits(), "{name} uks E 1t vs 4t");
+            assert_bits(&fa1, &fa4, &format!("{name} Va 1t vs 4t"));
+            assert_bits(&fb1, &fb4, &format!("{name} Vb 1t vs 4t"));
+            let (em, fam, fbm) = run(1, None);
+            for (what, e, fa, fb) in [("both", e1, &fa1, &fb1), ("alpha-only", em, &fam, &fbm)] {
+                assert!(
+                    (e - e0).abs() <= 1e-10,
+                    "{name} {what}: dE {:e}",
+                    (e - e0).abs()
+                );
+                assert!(max_abs_diff(fa, &fa0) <= 1e-10, "{name} {what}: dVa");
+                assert!(max_abs_diff(fb, &fb0) <= 1e-10, "{name} {what}: dVb");
             }
         }
     }

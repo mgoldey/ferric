@@ -1805,7 +1805,14 @@ fn solve_rhf_once(
         // directly to the total rather than folded into the ½Tr[D·vhf] term).
         let e_elec_no_xc: f64 = 0.5 * (&d * &(&h + &f)).sum();
         let e_xc = if let Some(x) = xc_contrib.as_ref() {
-            x.add_xc(&d, &mut f)
+            // Occupied-factored density pass when `d_occ` caches the C_occ of
+            // the current D = 2·C_occ·C_occᵀ (None under smearing / on the
+            // first iteration); the XC side re-checks the pair and falls back
+            // to the dense D when they disagree.
+            match d_occ.as_ref() {
+                Some(c_occ) => x.add_xc_occ(&d, c_occ, &mut f),
+                None => x.add_xc(&d, &mut f),
+            }
         } else {
             0.0
         };

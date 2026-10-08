@@ -943,7 +943,15 @@ pub fn solve_uhf_fockmod(
         // E_xc is its own integral).
         let e_elec_no_xc: f64 = 0.5 * ((&(&h + &f_a) * &d_a).sum() + (&(&h + &f_b) * &d_b).sum());
         let e_xc = if let Some(x) = xc_contrib.as_ref() {
-            x.add_xc_uks(&d_a, &d_b, &mut f_a, &mut f_b)
+            // Occupied-factored density pass per spin (D_σ = C_σ·C_σᵀ); the XC
+            // side re-checks each pair and falls back to the dense D_σ, which
+            // also covers fractional occupations.
+            x.add_xc_uks_occ(
+                (&d_a, &d_b),
+                (d_occ_a.as_ref(), d_occ_b.as_ref()),
+                &mut f_a,
+                &mut f_b,
+            )
         } else {
             0.0
         };
