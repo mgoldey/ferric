@@ -35,3 +35,6 @@ serde_json = { workspace = true }
 
 [features]
 gpu = ["ferric-core/gpu", "ferric-tensors/gpu", "ferric-mp2/gpu", "ferric-scf/gpu"]
+# Adds the fault-injection / settings-override seams (the unshipped `dfj-pack` arm of
+# dfj_device_split).
+test-seams = ["gpu", "ferric-scf/test-seams"]

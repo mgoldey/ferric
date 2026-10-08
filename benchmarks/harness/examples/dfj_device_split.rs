@@ -12,6 +12,13 @@
 //!    counter deltas, bytes per warm device build vs `expected 8*(pair+naux)` each
 //!    way, and `max|dJ|/max|J|` of the device J against the host J.
 //!
+//!  * An f32-resident arm (`dfj-pack`, the unshipped
+//!    mixed RI-J kernel, allowed through the `MIXED_SETTINGS_OVERRIDE` seam): a
+//!    fresh `DfJ` after the f64 one is dropped, its cold build against the expected
+//!    `4*naux*pair + 8*(pair+naux)` H2D bytes, then the same warm loop as the f64
+//!    device arm. Run it with `FERRIC_DFJ_SMOKE=1` for a wiring check; it is a
+//!    smoke arm, not a measured one.
+//!
 //! The density is a fixed symmetric pattern: a J build's cost does not depend on
 //! the density values. The storage tier is the packed in-core tier (budget midway
 //! between the unpacked and packed footprints) unless `FERRIC_DFJ_BUDGET_GB` says
@@ -27,16 +34,18 @@
 //!
 //!   flock /tmp/ferric-gpu.lock env CUDA_VISIBLE_DEVICES=0 FERRIC_GPU_MEM_GB=7 \
 //!     FERRIC_MOL=alkane_20 OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=6 \
-//!     cargo run --release -p ferric-benchmarks --features gpu --example dfj_device_split
+//!     cargo run --release -p ferric-benchmarks --features test-seams --example dfj_device_split
 //!
-//! Without `--features gpu` this builds to a stub that says so.
+//! Without `--features test-seams` this builds to a stub that says so.
 
-#[cfg(not(feature = "gpu"))]
+#[cfg(not(feature = "test-seams"))]
 fn main() {
-    eprintln!("dfj_device_split needs --features gpu");
+    eprintln!(
+        "dfj_device_split needs --features test-seams (the FORCE_HOST seam toggles host/device)"
+    );
 }
 
-#[cfg(feature = "gpu")]
+#[cfg(feature = "test-seams")]
 mod run {
     use ferric_benchmarks::quiet;
     use ferric_core::basis;
@@ -195,6 +204,59 @@ mod run {
         true
     }
 
+    /// The f32-resident arm: cold build bytes, then warm builds, J against `j_cpu`.
+    fn f32_arm(
+        (obs, auxp, budget): (&PreparedBasis, &PreparedBasis, usize),
+        d: &Array2<f64>,
+        j_cpu: &Array2<f64>,
+        reps: usize,
+    ) {
+        use ferric_core::gpu::config::GpuSettings;
+        use ferric_core::gpu::{MixedKernel, MixedKernelSet, Precision};
+        let n = obs.nbasis();
+        let (naux, pair) = (auxp.nbasis(), n * (n + 1) / 2);
+        let kernels = MixedKernelSet::SHIPPED.with(MixedKernel::DfjPack);
+        let (settings, _) = GpuSettings::resolve_with_default(
+            GpuSettingsExplicit {
+                mode: Some(GpuMode::Auto),
+                precision: Some(Precision::Mixed),
+                mixed_kernels: Some(kernels),
+                ..Default::default()
+            },
+            |_| None,
+            Precision::F64,
+            kernels,
+        )
+        .expect("resolve dfj-pack settings");
+        *ferric_scf::df_k_gpu::MIXED_SETTINGS_OVERRIDE
+            .lock()
+            .unwrap() = Some(settings);
+        let mut dfj = DfJ::new(Operator::coulomb(), obs, auxp, budget).expect("DfJ (f32 arm)");
+        let mut j = Array2::zeros((n, n));
+        let (wall, _, cold) = timed(|| {
+            dfj.build(d, &mut j).expect("cold f32 build");
+        });
+        let expect = 4 * naux * pair + 8 * (pair + naux);
+        println!(
+            "COLD f32-resident device build: {:.2} ms\n  {}\n  expected H2D 4*naux*pair + 8*(pair+naux) = {expect}; measured {} ({})",
+            wall * 1e3,
+            cold.line(),
+            cold.h2d,
+            if cold.h2d as usize == expect { "match" } else { "MISMATCH" }
+        );
+        let mut arm = Arm::default();
+        for _ in 0..reps {
+            arm.record(timed(|| {
+                dfj.build(d, &mut j).expect("f32 build");
+            }));
+            arm.max_rel_vs_cpu = arm.max_rel_vs_cpu.max(max_rel(&j, j_cpu));
+        }
+        arm.print("dev-f32");
+        *ferric_scf::df_k_gpu::MIXED_SETTINGS_OVERRIDE
+            .lock()
+            .unwrap() = None;
+    }
+
     pub fn main() {
         let smoke = std::env::var_os("FERRIC_DFJ_SMOKE").is_some();
         let mol_name = env_or("FERRIC_MOL", "alkane_8");
@@ -295,6 +357,8 @@ mod run {
                 }
             );
         }
+        drop(dfj);
+        f32_arm((&obs, &auxp, budget), &d, &j_cpu, reps);
         let psi_after = quiet::psi_cpu_some_avg10();
         let summary = sampler.finish();
         if !quiet::print_report(psi_before, psi_after, &summary) {
@@ -303,7 +367,7 @@ mod run {
     }
 }
 
-#[cfg(feature = "gpu")]
+#[cfg(feature = "test-seams")]
 fn main() {
     run::main();
 }
