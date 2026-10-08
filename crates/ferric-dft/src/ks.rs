@@ -1728,6 +1728,57 @@ mod anchor_tests {
         }
     }
 
+    /// Real converged densities (water, butane; cc-pVDZ RHF orbitals): the
+    /// factored pass reproduces the dense pass's E_xc and V_xc to 1e-10 for
+    /// GGA, the same bound as the synthetic-C test (rounding of a length-nact
+    /// dot, ~1e-14 relative, times |E_xc| ≲ 1e2 Eh). The SCF feeds V_xc into a
+    /// variational energy, so the SCF energy moves at the same order.
+    ///
+    /// Catches: a factored pass that is only right for synthetic C (wrong
+    /// MO ordering, wrong occupied count, scale mismatch on a real density).
+    #[test]
+    fn add_xc_occ_matches_dense_on_converged_water_and_butane() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let root =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/molecules");
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        for file in ["water.xyz", "alkane_4.xyz"] {
+            let mol = Molecule::load_xyz(root.join(file).to_str().unwrap()).unwrap();
+            let prep = PreparedBasis::new(&mol, &bs).unwrap();
+            let bounds =
+                ferric_scf::screening::SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+            let r = ferric_scf::rhf::solve_rhf(
+                &ParallelContext::default(),
+                &mol,
+                &prep,
+                Operator::coulomb(),
+                &bounds,
+                &ferric_scf::rhf::RhfConfig::default(),
+            )
+            .unwrap();
+            let nocc = (mol.nelec() / 2) as usize;
+            let c = r.mos_alpha.slice(ndarray::s![.., ..nocc]).to_owned();
+            // The result's density can lag its final orbitals by the SCF
+            // convergence error; rebuild D from C so the pair is consistent.
+            let d = 2.0 * c.dot(&c.t());
+            let d = &d;
+            let ks = KsXc::new(&mol, &bs, "PBE", &main_grid(), &nlc_grid()).unwrap();
+            let mut f_dense = Array2::<f64>::zeros(d.dim());
+            let e_dense = ks.add_xc(d, &mut f_dense);
+            let mut f_occ = Array2::<f64>::zeros(d.dim());
+            let e_occ = ks.add_xc_occ(d, &c, &mut f_occ);
+            let (de, dv) = ((e_occ - e_dense).abs(), max_abs_diff(&f_occ, &f_dense));
+            eprintln!("{file}: E_xc {e_dense:.10} dE {de:.2e} max|dV| {dv:.2e}");
+            assert!(de <= 1e-10, "{file}: dE {de:e}");
+            assert!(dv <= 1e-10, "{file}: max|dV| {dv:e}");
+            // The factored path really ran (not the dense fallback).
+            assert!(
+                dv > 0.0,
+                "{file}: factored result is bit-identical to dense"
+            );
+        }
+    }
+
     /// A stale or inconsistent occupied block must fall back to the dense `D`
     /// (bit-identical to `add_xc`), never be trusted.
     ///
