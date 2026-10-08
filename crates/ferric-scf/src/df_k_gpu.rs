@@ -120,21 +120,28 @@ fn dfk_precision() -> DfkPrecision {
     }
 }
 
-#[cfg(feature = "test-seams")]
 fn dfk_occ_allowed() -> bool {
-    let allows = |s: &ferric_core::gpu::GpuSettings| s.mixed_allows(MixedKernel::DfkOcc);
+    mixed_kernel_allowed(MixedKernel::DfkOcc)
+}
+
+/// Is `kernel` in the allowlist this process runs under? With the `test-seams`
+/// feature the [`MIXED_SETTINGS_OVERRIDE`] settings replace the installed ones for
+/// this one decision (the unshipped kernels `dfk-occ` and `dfj-pack` are not in any
+/// installed setting).
+#[cfg(feature = "test-seams")]
+pub(crate) fn mixed_kernel_allowed(kernel: MixedKernel) -> bool {
     let over = MIXED_SETTINGS_OVERRIDE
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     match over.as_ref() {
-        Some(s) => allows(s),
-        None => allows(ferric_core::gpu::settings()),
+        Some(s) => s.mixed_allows(kernel),
+        None => ferric_core::gpu::settings().mixed_allows(kernel),
     }
 }
 
 #[cfg(not(feature = "test-seams"))]
-fn dfk_occ_allowed() -> bool {
-    ferric_core::gpu::settings().mixed_allows(MixedKernel::DfkOcc)
+pub(crate) fn mixed_kernel_allowed(kernel: MixedKernel) -> bool {
+    ferric_core::gpu::settings().mixed_allows(kernel)
 }
 
 /// Aux rows per chunk and the number of chunks.

@@ -223,6 +223,13 @@ impl<'a> DfJ<'a> {
         self.source.packed_flat()
     }
 
+    /// `V⁻¹ d` through the stored Cholesky factor (the solve `build` uses). Test hook.
+    #[cfg(feature = "gpu")]
+    #[doc(hidden)]
+    pub fn solve_metric_for_test(&self, d_p: &Array1<f64>) -> Result<Array1<f64>, FerricError> {
+        self.solve_metric(d_p)
+    }
+
     /// Does this builder currently hold its raw tensor on the device? Test hook.
     #[cfg(feature = "gpu")]
     #[doc(hidden)]
