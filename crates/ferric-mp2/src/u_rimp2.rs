@@ -272,9 +272,13 @@ pub fn u_ri_mp2(
     let eps_a: &[f64] = scf.eps_a();
     let eps_b: &[f64] = scf.eps_b();
 
-    let e_aa = same_spin_pair_energy(&inter_a, eps_a);
-    let e_bb = same_spin_pair_energy(&inter_b, eps_b);
-    let e_ab = opposite_spin_pair_energy(&inter_a, &inter_b, eps_a, eps_b);
+    // The mixed-precision error map (`[gpu] precision = "mixed"`, kernel
+    // `rimp2-energy`) was measured on Coulomb U-RI-MP2 only: any other
+    // operator (the attenuated U-MP2 of `u_att_mp2_vv10`) runs the device in f64.
+    let mixed_ok = config.kappa.is_none() && op == Operator::coulomb();
+    let e_aa = same_spin_pair_energy(&inter_a, eps_a, mixed_ok);
+    let e_bb = same_spin_pair_energy(&inter_b, eps_b, mixed_ok);
+    let e_ab = opposite_spin_pair_energy(&inter_a, &inter_b, eps_a, eps_b, mixed_ok);
 
     let e_total = e_aa + e_bb + e_ab;
     Ok(URiMp2Result {
@@ -553,6 +557,53 @@ pub(crate) fn opposite_spin_block_energy(
     energy_i
 }
 
+/// The energy-only same-spin kernel: the device first (mixed only when
+/// `mixed_ok`, see [`crate::rimp2_gpu::try_u_same_spin_on_device`]), else the
+/// CPU wide-GEMM loop.
+fn same_spin_energy_only(ch: SpinChannel, mixed_ok: bool) -> f64 {
+    use rayon::prelude::*;
+    let SpinChannel { b, nocc, nvir, .. } = ch;
+    #[cfg(feature = "gpu")]
+    if let Some(e) = crate::rimp2_gpu::try_u_same_spin_on_device(ch, mixed_ok) {
+        return e;
+    }
+    #[cfg(not(feature = "gpu"))]
+    let _ = mixed_ok;
+    // Energy-only: no t tensor to write, so the per-i partial is just a
+    // scalar — no allocation/collection of a Vec<Option<..>> needed at all.
+    //
+    // PAIR SYMMETRY (energy-only path only). The summand
+    //   K_iajb^2 / D_ijab,   K_iajb = (ia|jb) - (ib|ja)
+    // is invariant under the JOINT swap (i,j)<->(j,i), (a,b)<->(b,a): K is
+    // antisymmetric under it (K_jbia = (jb|ia) - (ja|ib) = -K_iajb, using
+    // the real-orbital 2-electron symmetry (ia|jb) = (jb|ia)), so K^2 is
+    // symmetric, and D_ijab = e_i + e_j - e_a - e_b is manifestly symmetric.
+    // The (j,i) block therefore contributes exactly what the (i,j) block
+    // does, so we visit only unique pairs j >= i and weight the strictly
+    // off-diagonal ones by 2 — the same argument and the same fac=2/fac=1
+    // convention as `rimp2::spin_components_from_b_ov`.
+    //
+    // That also lets `g_i` be formed over just the j >= i tail rather than
+    // full width, so the discarded lower-triangle GEMM flops
+    // ((nocc-1)/(2*nocc) of the total) are never computed. Both halve the
+    // work; together the stage does ~half the flops it used to.
+    //
+    // The `want_amplitudes` branch of `same_spin_pair_kernel` CANNOT use this: it fills
+    // t[i,j,a,b] for every (i,j) for the U-OO gradient, so it needs the
+    // full j range and the full-width g_i.
+    let partials: Vec<f64> = (0..nocc)
+        .into_par_iter()
+        .map(|i| {
+            let b_i = b.slice(ndarray::s![.., i * nvir..(i + 1) * nvir]);
+            // (nvir, (nocc-i)*nvir); g_i[a, (j-i)*nvir+b] = (ia|jb), j >= i
+            let b_tail = b.slice(ndarray::s![.., i * nvir..]);
+            let g_i = b_i.t().dot(&b_tail);
+            same_spin_block_energy(&g_i.view(), i, ch)
+        })
+        .collect();
+    partials.into_iter().sum()
+}
+
 /// Same-spin (αα or ββ) pair kernel: builds the energy and, optionally, the
 /// antisymmetrized amplitude tensor `t[i,j,a,b] = [(ia|jb) − (ib|ja)] / D`.
 ///
@@ -572,6 +623,8 @@ pub(crate) fn opposite_spin_block_energy(
 /// slab is bit-for-bit identical to the previous two-pass version.
 ///
 /// Returns `(energy, Some(t))` when `want_amplitudes`, else `(energy, None)`.
+/// The energy-only call may run on the device, always in f64 (only `u_ri_mp2`
+/// with the Coulomb operator may use the mixed kernel).
 #[doc(hidden)]
 pub fn same_spin_pair_kernel(ch: SpinChannel, want_amplitudes: bool) -> (f64, Option<Array4<f64>>) {
     use ndarray::Axis;
@@ -587,44 +640,7 @@ pub fn same_spin_pair_kernel(ch: SpinChannel, want_amplitudes: bool) -> (f64, Op
     } = ch;
 
     if !want_amplitudes {
-        #[cfg(feature = "gpu")]
-        if let Some(e) = crate::rimp2_gpu::try_u_same_spin_on_device(ch) {
-            return (e, None);
-        }
-        // Energy-only: no t tensor to write, so the per-i partial is just a
-        // scalar — no allocation/collection of a Vec<Option<..>> needed at all.
-        //
-        // PAIR SYMMETRY (energy-only path only). The summand
-        //   K_iajb^2 / D_ijab,   K_iajb = (ia|jb) - (ib|ja)
-        // is invariant under the JOINT swap (i,j)<->(j,i), (a,b)<->(b,a): K is
-        // antisymmetric under it (K_jbia = (jb|ia) - (ja|ib) = -K_iajb, using
-        // the real-orbital 2-electron symmetry (ia|jb) = (jb|ia)), so K^2 is
-        // symmetric, and D_ijab = e_i + e_j - e_a - e_b is manifestly symmetric.
-        // The (j,i) block therefore contributes exactly what the (i,j) block
-        // does, so we visit only unique pairs j >= i and weight the strictly
-        // off-diagonal ones by 2 — the same argument and the same fac=2/fac=1
-        // convention as `rimp2::spin_components_from_b_ov`.
-        //
-        // That also lets `g_i` be formed over just the j >= i tail rather than
-        // full width, so the discarded lower-triangle GEMM flops
-        // ((nocc-1)/(2*nocc) of the total) are never computed. Both halve the
-        // work; together the stage does ~half the flops it used to.
-        //
-        // The `want_amplitudes` branch below CANNOT use this: it fills
-        // t[i,j,a,b] for every (i,j) for the U-OO gradient, so it needs the
-        // full j range and the full-width g_i.
-        let partials: Vec<f64> = (0..nocc)
-            .into_par_iter()
-            .map(|i| {
-                let b_i = b.slice(ndarray::s![.., i * nvir..(i + 1) * nvir]);
-                // (nvir, (nocc-i)*nvir); g_i[a, (j-i)*nvir+b] = (ia|jb), j >= i
-                let b_tail = b.slice(ndarray::s![.., i * nvir..]);
-                let g_i = b_i.t().dot(&b_tail);
-                same_spin_block_energy(&g_i.view(), i, ch)
-            })
-            .collect();
-        let energy = partials.into_iter().sum();
-        return (energy, None);
+        return (same_spin_energy_only(ch, false), None);
     }
 
     // want_amplitudes: allocate t ONCE, write each i-slab in place (1x peak,
@@ -665,6 +681,29 @@ pub fn same_spin_pair_kernel(ch: SpinChannel, want_amplitudes: bool) -> (f64, Op
     (energy, Some(t))
 }
 
+/// The energy-only opposite-spin kernel: the device first (mixed only when
+/// `mixed_ok`, see [`crate::rimp2_gpu::try_u_opposite_spin_on_device`]), else
+/// the CPU wide-GEMM loop.
+fn opposite_spin_energy_only(ch_a: SpinChannel, ch_b: SpinChannel, mixed_ok: bool) -> f64 {
+    use rayon::prelude::*;
+    #[cfg(feature = "gpu")]
+    if let Some(e) = crate::rimp2_gpu::try_u_opposite_spin_on_device(ch_a, ch_b, mixed_ok) {
+        return e;
+    }
+    #[cfg(not(feature = "gpu"))]
+    let _ = mixed_ok;
+    let (b_a, b_b, nvir_a) = (ch_a.b, ch_b.b, ch_a.nvir);
+    let partials: Vec<f64> = (0..ch_a.nocc)
+        .into_par_iter()
+        .map(|i| {
+            let bi = b_a.slice(ndarray::s![.., i * nvir_a..(i + 1) * nvir_a]);
+            let g_i = bi.t().dot(b_b); // (nvir_a, nocc_b*nvir_b); g_i[a, J*nvir_b+B] = (ia|JB)
+            opposite_spin_block_energy(&g_i.view(), i, ch_a, ch_b)
+        })
+        .collect();
+    partials.into_iter().sum()
+}
+
 /// Opposite-spin (αβ) pair kernel: builds the energy and, optionally, the
 /// (non-antisymmetrized) amplitude tensor `t[i,J,a,B] = (ia|JB) / D`.
 ///
@@ -675,7 +714,8 @@ pub fn same_spin_pair_kernel(ch: SpinChannel, want_amplitudes: bool) -> (f64, Op
 /// Same write-in-place amplitude discipline as [`same_spin_pair_kernel`]: `t`
 /// is allocated ONCE and each rayon worker writes its disjoint `t[i, .., ..,
 /// ..]` slab directly (peak transient 1× the `t` tensor, not 2×); per-`i`
-/// energies are collected in ascending `i` and summed serially.
+/// energies are collected in ascending `i` and summed serially. The
+/// energy-only call may run on the device, always in f64.
 #[doc(hidden)]
 pub fn opposite_spin_pair_kernel(
     ch_a: SpinChannel,
@@ -703,20 +743,7 @@ pub fn opposite_spin_pair_kernel(
     } = ch_b;
 
     if !want_amplitudes {
-        #[cfg(feature = "gpu")]
-        if let Some(e) = crate::rimp2_gpu::try_u_opposite_spin_on_device(ch_a, ch_b) {
-            return (e, None);
-        }
-        let partials: Vec<f64> = (0..nocc_a)
-            .into_par_iter()
-            .map(|i| {
-                let bi = b_a.slice(ndarray::s![.., i * nvir_a..(i + 1) * nvir_a]);
-                let g_i = bi.t().dot(b_b); // (nvir_a, nocc_b*nvir_b); g_i[a, J*nvir_b+B] = (ia|JB)
-                opposite_spin_block_energy(&g_i.view(), i, ch_a, ch_b)
-            })
-            .collect();
-        let energy = partials.into_iter().sum();
-        return (energy, None);
+        return (opposite_spin_energy_only(ch_a, ch_b, false), None);
     }
 
     let mut t = Array4::<f64>::zeros((nocc_a, nocc_b, nvir_a, nvir_b));
@@ -1316,7 +1343,7 @@ pub fn compute_u_mp2_orbital_gradient_blocks(
 
 /// Same-spin contribution:
 ///   ¼ Σ_{ij,ab} [(ia|jb) - (ib|ja)]² / (ε_i+ε_j-ε_a-ε_b)
-fn same_spin_pair_energy(inter: &RpaIntermediates, eps: &[f64]) -> f64 {
+fn same_spin_pair_energy(inter: &RpaIntermediates, eps: &[f64], mixed_ok: bool) -> f64 {
     let ch = SpinChannel {
         b: &inter.b_ov,
         eps,
@@ -1325,8 +1352,7 @@ fn same_spin_pair_energy(inter: &RpaIntermediates, eps: &[f64]) -> f64 {
         first_occ: inter.first_occ,
         nocc_total: inter.nocc_total,
     };
-    let (energy, _) = same_spin_pair_kernel(ch, false);
-    energy
+    same_spin_energy_only(ch, mixed_ok)
 }
 
 /// Opposite-spin contribution:
@@ -1336,6 +1362,7 @@ fn opposite_spin_pair_energy(
     inter_b: &RpaIntermediates,
     eps_a: &[f64],
     eps_b: &[f64],
+    mixed_ok: bool,
 ) -> f64 {
     assert_eq!(inter_a.naux, inter_b.naux);
     let ch_a = SpinChannel {
@@ -1354,8 +1381,7 @@ fn opposite_spin_pair_energy(
         first_occ: inter_b.first_occ,
         nocc_total: inter_b.nocc_total,
     };
-    let (energy, _) = opposite_spin_pair_kernel(ch_a, ch_b, false);
-    energy
+    opposite_spin_energy_only(ch_a, ch_b, mixed_ok)
 }
 
 /// Compute the U-MP2 integral-response energy from given MO coefficients and
@@ -2111,9 +2137,9 @@ mod tests {
 
         // New kernel path (same call as u_ri_mp2 / same_spin_pair_energy /
         // opposite_spin_pair_energy).
-        let e_aa_new = same_spin_pair_energy(&inter_a, eps_a);
-        let e_bb_new = same_spin_pair_energy(&inter_b, eps_b);
-        let e_ab_new = opposite_spin_pair_energy(&inter_a, &inter_b, eps_a, eps_b);
+        let e_aa_new = same_spin_pair_energy(&inter_a, eps_a, false);
+        let e_bb_new = same_spin_pair_energy(&inter_b, eps_b, false);
+        let e_ab_new = opposite_spin_pair_energy(&inter_a, &inter_b, eps_a, eps_b, false);
         let e_total_new = e_aa_new + e_bb_new + e_ab_new;
 
         // Old scalar quintuple-loop path, same intermediates.

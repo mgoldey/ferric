@@ -14,6 +14,13 @@
 //! the perturbation sum; m = nvir² + 2·nocc + 8 (SS: nvir² terms per pair, ≤
 //! nocc pairs, ≤ nocc blocks, +8 for the operations inside one term) and
 //! m = nvir_a·nocc_b·nvir_b + nocc_a + 8 (OS). No machine constant is asserted.
+//!
+//! The same propagation serves any per-element model δ_ab = ε_G·S_ab + η
+//! ([`ElemModel`]): the f64 device gate above is ε_G = 2·γ_naux(u64), η = 0;
+//! the mixed kernel (`gpu_u_rimp2_mixed.rs`) is ε_G = `eps_device(naux, b)`
+//! (`rimp2_eps.rs`, the closed-shell kernel's factor: f32 storage, f32 panel
+//! sums of width b, f64 sum of the panels, plus the f64 reference's own
+//! γ_naux) and η its f32 underflow term.
 use crate::fixture::Chan;
 use ferric_core::gpu::mixed_host::{gamma, U64};
 use ndarray::{s, Array2};
@@ -23,15 +30,38 @@ struct Block {
     d: Array2<f64>,
 }
 
-fn block(left: &Array2<f64>, i: usize, nvl: usize, right: &Array2<f64>, col0: usize) -> Block {
+/// Per-element perturbation model δ_ab = `eps_g`·S_ab + `eta`.
+#[derive(Clone, Copy)]
+pub struct ElemModel {
+    pub eps_g: f64,
+    pub eta: f64,
+}
+
+impl ElemModel {
+    /// Two f64 summation orders of depth `naux`: 2·γ_naux(u64), no absolute term.
+    pub fn f64_orders(naux: usize) -> Self {
+        Self {
+            eps_g: 2.0 * gamma(naux, U64),
+            eta: 0.0,
+        }
+    }
+}
+
+fn block(
+    left: &Array2<f64>,
+    i: usize,
+    nvl: usize,
+    right: &Array2<f64>,
+    col0: usize,
+    m: ElemModel,
+) -> Block {
     let bi = left.slice(s![.., i * nvl..(i + 1) * nvl]);
     let br = right.slice(s![.., col0..]);
     let g = bi.t().dot(&br);
     let sab = bi.mapv(f64::abs).t().dot(&br.mapv(f64::abs));
-    let c = 2.0 * gamma(left.nrows(), U64);
     Block {
         g,
-        d: sab.mapv(|x| c * x),
+        d: sab.mapv(|x| m.eps_g * x + m.eta),
     }
 }
 
@@ -39,11 +69,23 @@ fn finish(pert: f64, abs_t: f64, m: usize) -> f64 {
     pert + gamma(m, U64) * (2.0 * abs_t + pert)
 }
 
-/// Bound on |E_device − E_cpu| of the same-spin block.
+/// Bound on |E_device − E_cpu| of the same-spin block (f64 device gate).
+#[allow(dead_code)] // not every binary that includes this module uses both models
 pub fn same_spin_bound(c: &Chan) -> f64 {
+    same_spin_bound_with(c, ElemModel::f64_orders(c.b.nrows()))
+}
+
+/// Bound on |E_device − E_cpu| of the opposite-spin block (f64 device gate).
+#[allow(dead_code)]
+pub fn opposite_spin_bound(a: &Chan, b: &Chan) -> f64 {
+    opposite_spin_bound_with(a, b, ElemModel::f64_orders(a.b.nrows()))
+}
+
+/// Same-spin bound under the per-element model `m`.
+pub fn same_spin_bound_with(c: &Chan, m: ElemModel) -> f64 {
     let (mut pert, mut abs_t) = (0.0, 0.0);
     for i in 0..c.nocc {
-        let blk = block(&c.b, i, c.nvir, &c.b, i * c.nvir);
+        let blk = block(&c.b, i, c.nvir, &c.b, i * c.nvir, m);
         let ei = c.eps[c.first_occ + i];
         for j in i..c.nocc {
             let fac = if i == j { 1.0 } else { 2.0 };
@@ -63,11 +105,11 @@ pub fn same_spin_bound(c: &Chan) -> f64 {
     finish(pert, abs_t, c.nvir * c.nvir + 2 * c.nocc + 8)
 }
 
-/// Bound on |E_device − E_cpu| of the opposite-spin block.
-pub fn opposite_spin_bound(a: &Chan, b: &Chan) -> f64 {
+/// Opposite-spin bound under the per-element model `m`.
+pub fn opposite_spin_bound_with(a: &Chan, b: &Chan, m: ElemModel) -> f64 {
     let (mut pert, mut abs_t) = (0.0, 0.0);
     for i in 0..a.nocc {
-        let blk = block(&a.b, i, a.nvir, &b.b, 0);
+        let blk = block(&a.b, i, a.nvir, &b.b, 0, m);
         let ei = a.eps[a.first_occ + i];
         for x in 0..a.nvir {
             for jj in 0..b.nocc {

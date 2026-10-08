@@ -62,7 +62,9 @@ impl fmt::Display for Precision {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum MixedKernel {
-    /// RI-MP2 energy: `G_i = B_i^T · B_tail` with f32-resident `B_ov` (Task 4.2b).
+    /// Coulomb RI-MP2 energy, closed-shell and unrestricted: every `G_i` block
+    /// formed from f32-resident `B_ov` (one per spin when unrestricted) with f64
+    /// accumulation (Task 4.2b).
     RiMp2Energy = 1,
     /// Closed-shell CCSD amplitude-update contractions (Task 4.3).
     CcsdAmplitudes = 2,

@@ -57,7 +57,7 @@ Open-shell support is listed only where the dispatch code handles it (see
 | `uhf` | [SCF](../methods/scf.md) | UHF; UKS with `[dft] functional` | ✓ | ✓ analytic (+ D3(BJ) or MBD@rsSCS gradient with `[dft] dispersion` on UKS) | analytic (UHF, exact J/K, no ECP, up to f); FD otherwise; with `[dft] dispersion` on UKS, FD of the KS + dispersion gradient | `run_uhf`, `run_frequencies(reference="uhf", xc=..., dispersion=...)` | `h_uhf.toml` | [Proven](#anchors) | — |
 | `rohf` | [SCF](../methods/scf.md) | ROHF; ROKS with `[dft] functional` | ✓ | ✓ analytic (+ D3(BJ) or MBD@rsSCS gradient with `[dft] dispersion` on ROKS) | FD (+ the dispersion gradient with `[dft] dispersion` on ROKS) | `run_rohf`, `run_frequencies(reference="rohf", xc=..., dispersion=...)` | — | [Proven](#anchors) | — |
 | `ksdft` | [SCF/DFT](../methods/scf.md) | RKS; UKS when multiplicity > 1 | ✓ | ✓ analytic (+ D3(BJ) or MBD@rsSCS gradient with `[dft] dispersion`, RKS and UKS) | FD; with `[dft] dispersion` FD of the KS + dispersion gradient (RKS and UKS); refused with `grid_prune` | `run_dft` / `run_ksdft`, `run_frequencies(xc=..., dispersion=...)` | `benzene-dfb3lyp.toml`, `h2-lda-opt.toml` | [Proven](#anchors) | — |
-| `rimp2` | [MP2](../methods/mp2.md) | RHF; UHF + unrestricted RI-MP2 when multiplicity > 1 (energy only) | ✓ | ✓ analytic (Z-vector; closed shell only) | — | `run_rimp2` (UHF + UMP2 when multiplicity > 1) | `water-rimp2.toml`; local: `water-rimp2-local.toml`, `alkane8-rimp2-local-direct.toml` | [Proven](#anchors) | Exact RI-MP2. With `[local] scheme = "amplitude-threshold"` (`run_rimp2(local=..., eps=...)`): [Proven (narrow)](#anchors) by its exact limit — at ε = 0 the in-core and `integral_direct` paths match PySCF DF-MP2 to ≤1.1e-11 Ha (H2O and n-butane, 6-31G and cc-pVDZ); finite ε is a measured error map, not validated; closed shell and `task = "energy"` only; ε = 0 reproduces exact `rimp2`; the exact reference and the error against it are opt-in (`[local] reference = true`, `compute_reference=True`). `integral_direct = true` never forms the global 3-index tensor; its measured scaling is under [Known limits](#known-limits-and-negatives). On the device (`[gpu]`) the energy stage runs with `B_ov` resident: at `precision = "f64"` (the default) it agrees with the CPU path to within a bound on the difference of summation order (`gpu_rimp2_resident.rs`); with `precision = "mixed"` and `rimp2-energy` in `mixed_kernels` it is a **measured error map, not Proven** (f32-resident `B_ov`, f64 accumulation), graded under [Mixed-precision GPU kernels](#mixed-precision-gpu-kernels). |
+| `rimp2` | [MP2](../methods/mp2.md) | RHF; UHF + unrestricted RI-MP2 when multiplicity > 1 (energy only) | ✓ | ✓ analytic (Z-vector; closed shell only) | — | `run_rimp2` (UHF + UMP2 when multiplicity > 1) | `water-rimp2.toml`; local: `water-rimp2-local.toml`, `alkane8-rimp2-local-direct.toml` | [Proven](#anchors) | Exact RI-MP2. With `[local] scheme = "amplitude-threshold"` (`run_rimp2(local=..., eps=...)`): [Proven (narrow)](#anchors) by its exact limit — at ε = 0 the in-core and `integral_direct` paths match PySCF DF-MP2 to ≤1.1e-11 Ha (H2O and n-butane, 6-31G and cc-pVDZ); finite ε is a measured error map, not validated; closed shell and `task = "energy"` only; ε = 0 reproduces exact `rimp2`; the exact reference and the error against it are opt-in (`[local] reference = true`, `compute_reference=True`). `integral_direct = true` never forms the global 3-index tensor; its measured scaling is under [Known limits](#known-limits-and-negatives). On the device (`[gpu]`) the energy stage runs with `B_ov` resident: at `precision = "f64"` (the default) it agrees with the CPU path to within a bound on the difference of summation order (`gpu_rimp2_resident.rs`); with `precision = "mixed"` and `rimp2-energy` in `mixed_kernels` it is a **measured error map, not Proven** (f32-resident `B_ov`, f64 accumulation; closed-shell and unrestricted Coulomb RI-MP2), graded under [Mixed-precision GPU kernels](#mixed-precision-gpu-kernels). |
 | `mp3` | [MP2](../methods/mp2.md) | RHF | ✓ | — | — | `run_mp3` | `water-mp3.toml` | [Proven](#anchors) | — |
 | `oo-rimp2` | [MP2](../methods/mp2.md) | RHF; UHF + unrestricted OO-RI-MP2 when multiplicity > 1 (energy only) | ✓ | — | — | `run_oo_rimp2` (closed shell only) | `water-oo-rimp2.toml` | [Proven (narrow)](#anchors) | Energy matches an independent numpy OO-RI-MP2 to 7.5e-13 Ha (closed-shell H2O and NH3, UHF CH3 / cc-pVDZ) and the closed-shell analytic gradient matches a finite difference of its own energy to 8e-9 Ha/Bohr. ORCA 6.1.1 stops 3.7e-8 to 7.0e-8 Ha above the same minimum. |
 | `att-rimp2` | [MP2](../methods/mp2.md) | RHF | ✓ | — | — | `run_attenuated_rimp2` | `water-attmp2.toml` | [Proven](#anchors) | — |
@@ -364,6 +364,45 @@ through cancellation. Test files:
 `crates/ferric-mp2/tests/rimp2_f32_storage_error_law.rs` (no device; the name
 predates this wording) and `crates/ferric-mp2/tests/gpu_rimp2_mixed.rs`
 (device).
+
+**`rimp2-energy`, unrestricted** (shipped, same kernel). The unrestricted
+(open-shell) Coulomb RI-MP2 energy keeps one f32 `B_ov` per spin on the device
+and forms every block of E_αα, E_ββ and E_αβ with the same f32 panel products of
+width b = 64 and f64 accumulation; the antisymmetrised same-spin
+K = g_ab − g_ba, the opposite-spin g², the denominators and all sums are f64.
+The refusals and the `mixed_fallback_f64` counter are the closed-shell ones.
+Every other caller of the unrestricted pair kernels (the attenuated
+unrestricted MP2 of att-MP2+VV10, any non-Coulomb operator, and direct calls
+of the pair kernels) runs the f64 device kernel.
+
+| Column | Value |
+|---|---|
+| Accumulation depth | n = naux per element, panels of b = 64 |
+| Bound | the closed-shell per-element factor ε_G·S_ab + η, propagated through the SS term (K = g_ab − g_ba, perturbation δ_ab + δ_ba) and the OS term (g²), plus the f64 summation of the terms |
+| Acceptance | \|ΔE\| ≤ 1.0e-3 Eh per heavy atom and per electron; the derived bound itself is below it on every system below |
+| Mitigation | f64 panel accumulation, f64 pair arithmetic, f64 everything else |
+| Precision | f32 storage, f32 panel products, f64 sums |
+
+The measured error against the f64 CPU energy of the same `B_ov` at b = 64
+(cc-pVDZ / cc-pVDZ-RI, all electrons correlated; every reference is an RI-JK UHF
+with loose thresholds, the same orbitals on both sides):
+
+| System | nocc α/β | nvir α/β | naux | E_corr (Eh) | ΔE_αα (Eh) | ΔE_ββ (Eh) | ΔE_αβ (Eh) | ΔE total (Eh) | per heavy atom | per electron | bound (Eh) | bound per heavy atom |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| O2 triplet | 9 / 7 | 19 / 21 | 112 | −0.348888 | −2.4e-9 | +1.1e-8 | +5.5e-9 | +1.4e-8 | 7.0e-9 | 8.7e-10 | 3.9e-6 | 2.0e-6 |
+| CH3 doublet | 5 / 4 | 24 / 25 | 98 | −0.129040 | +1.5e-10 | +2.3e-10 | +1.3e-10 | +5.0e-10 | 5.0e-10 | 5.5e-11 | 1.6e-6 | 1.6e-6 |
+
+Every block is inside its bound (largest error/bound 1.2e-2, O2 E_ββ). As in the
+closed-shell case the energy bound is blind to a subtle kernel degradation: a
+build that accumulates the whole contraction in f32 (one panel) stays inside it
+on both systems (O2 ΔE +9.2e-9 Eh). That degradation is caught by a
+deterministic construction through both the same-spin and the opposite-spin
+blocks (an element of exact value 1 + 2⁻³⁰ split over two panels: the device
+returns the f64 energy exactly; an f32 sum loses 2⁻²⁹ Eh, against an accepted
+error of 2⁻³⁰) and by the panel counter (⌈naux/b⌉ panels per block). Test files:
+`crates/ferric-mp2/tests/gpu_u_rimp2_mixed.rs` and
+`crates/ferric-mp2/tests/gpu_u_rimp2_mixed_pin.rs` (which callers may use the
+kernel).
 
 ## Known limits and negatives
 

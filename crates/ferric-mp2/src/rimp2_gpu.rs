@@ -495,7 +495,7 @@ pub fn g_block_on_device(
 }
 
 // ---------------------------------------------------------------------------
-// Unrestricted RI-MP2 energy (f64 only).
+// Unrestricted RI-MP2 energy.
 //
 // The same wide GEMM `G_i = B_iᵀ·B_right[:, col0..col0+ncols]` as above, with
 // `B` resident per spin; the pair arithmetic is the shared
@@ -503,45 +503,116 @@ pub fn g_block_on_device(
 // differ ONLY in how `g_i` was formed. The per-i energies are summed serially in
 // ascending i, exactly as the CPU `partials.into_iter().sum()`.
 //
-// Precision is f64: `mixed_allows(RiMp2Energy)` is NOT consulted here (the
-// antisymmetrised K = g_ab - g_ba has no shipped mixed row).
+// Precision. f64 unless the caller passes `mixed_ok` (only `u_ri_mp2` with the
+// Coulomb operator and no kappa does) AND the settings allow `rimp2-energy`:
+// then each spin's `B_ov` is resident as f32 and every block (αα, ββ, αβ) is
+// formed by the same k-panelled SGEMM with f64 accumulation as the closed-shell
+// kernel (`gemm_f32_f64acc_dev`); the pair arithmetic stays f64. A mixed-path
+// refusal (flush kernel unavailable, `B_ov` beyond the f32 arithmetic range)
+// runs the f64 device path, counted in `mixed_fallback_f64`.
 //
 // Zero-size shapes (nocc or nvir of either spin 0, naux 0) are a typed
 // `Layout` refusal from the `u_*_on_device` functions, which the dispatchers
 // turn into the CPU path (counted as a layout fallback): there is no work, and
 // the CPU path owns the value of the empty sum.
 //
-// Counters: every block's download bytes are collected and applied with
-// `note_offloaded` only after the last block succeeded, so a mid-loop failure
-// leaves the counters untouched and the CPU path reruns from scratch.
+// Counters: every block's download bytes (and, mixed, its panel count) are
+// collected and applied only after the last block succeeded, so a mid-loop
+// failure leaves the counters untouched and the fallback reruns from scratch.
 
-/// One spin's `B_ov` resident on the device, with its host twin (the block
-/// views the operand descriptors are derived from).
+/// One spin's `B_ov` resident on the device (f64, or f32 for the mixed
+/// kernel), with its host twin (the block views the operand descriptors are
+/// derived from).
 pub struct ResidentBov<'a> {
-    m: DeviceMatrix<f64>,
+    m: Resident,
     host: &'a Array2<f64>,
 }
 
 impl ResidentBov<'_> {
     /// Rows of `B` (the auxiliary dimension).
     pub fn naux(&self) -> usize {
-        self.m.rows()
+        match &self.m {
+            Resident::F64(m) => m.rows(),
+            Resident::F32(m) => m.rows(),
+        }
     }
     /// Columns of `B` (`nocc·nvir`).
     pub fn cols(&self) -> usize {
-        self.m.cols()
+        match &self.m {
+            Resident::F64(m) => m.cols(),
+            Resident::F32(m) => m.cols(),
+        }
     }
 }
 
-/// Uploads `b_ov` once, charged to `pool` under `label`.
+/// Uploads `b_ov` once as f64, charged to `pool` under `label`.
 pub fn upload_b_ov<'a>(
     dev: &Device,
     pool: &DevicePool,
     label: &str,
     b_ov: &'a Array2<f64>,
 ) -> Result<ResidentBov<'a>, GpuError> {
-    let m = DeviceMatrix::<f64>::upload(dev, pool, label, &b_ov.view())?;
+    upload_b_ov_prec(dev, pool, label, b_ov, Precision::F64)
+}
+
+/// Uploads `b_ov` once in `precision` (`Mixed`: rounded to f32, half the
+/// bytes), charged to `pool` under `label`.
+pub fn upload_b_ov_prec<'a>(
+    dev: &Device,
+    pool: &DevicePool,
+    label: &str,
+    b_ov: &'a Array2<f64>,
+    precision: Precision,
+) -> Result<ResidentBov<'a>, GpuError> {
+    let m = match precision {
+        Precision::F64 => {
+            Resident::F64(DeviceMatrix::<f64>::upload(dev, pool, label, &b_ov.view())?)
+        }
+        Precision::Mixed => Resident::F32(DeviceMatrix::<f32>::upload_rounded(
+            dev,
+            pool,
+            label,
+            &b_ov.view(),
+        )?),
+    };
     Ok(ResidentBov { m, host: b_ov })
+}
+
+/// The `G_i` scratch of one U-RI-MP2 energy: the f64 result, plus the f32
+/// panel for the mixed kernel. Each is charged to the pool under its own label.
+pub struct UScratch {
+    c64: DeviceMatrix<f64>,
+    c32: Option<DeviceMatrix<f32>>,
+}
+
+impl UScratch {
+    /// `rows × cols` elements of each buffer the `precision` needs.
+    pub fn new(
+        dev: &Device,
+        pool: &DevicePool,
+        rows: usize,
+        cols: usize,
+        precision: Precision,
+    ) -> Result<Self, GpuError> {
+        let c64 = DeviceMatrix::<f64>::zeros(
+            dev,
+            pool,
+            "U-RI-MP2 energy (device): G_i scratch",
+            rows,
+            cols,
+        )?;
+        let c32 = match precision {
+            Precision::F64 => None,
+            Precision::Mixed => Some(DeviceMatrix::<f32>::zeros(
+                dev,
+                pool,
+                "U-RI-MP2 energy (device): G_i scratch f32 panel",
+                rows,
+                cols,
+            )?),
+        };
+        Ok(Self { c64, c32 })
+    }
 }
 
 /// Where one `G_i` block comes from: `B_left` rows block `i` against
@@ -554,19 +625,52 @@ pub struct UBlock {
     pub ncols: usize,
 }
 
-/// `out = B_left[:, i·nvir_left..(i+1)·nvir_left]ᵀ · B_right[:, col0..col0+ncols]`
-/// (row-major `nvir_left × ncols`), f64, formed in `scratch` (at least
-/// `nvir_left·ncols` elements) and downloaded into `out`. Returns the bytes
-/// downloaded; the caller counts them (`note_offloaded(0, bytes)`) only when its
-/// whole call succeeds.
-pub fn u_g_block_on_device(
-    dev: &Device,
+/// What one finished block moved: the bytes downloaded and the mixed panels
+/// flushed (0 for an f64 block).
+#[derive(Clone, Copy, Debug)]
+pub struct UBlockTally {
+    pub d2h: usize,
+    pub panels: usize,
+}
+
+/// Applies the tallies of a whole successful call to the counters.
+fn commit_u_tally(tally: Vec<UBlockTally>) {
+    for t in tally {
+        if t.panels > 0 {
+            note_mixed(t.panels, 0, t.d2h);
+        } else {
+            note_offloaded(0, t.d2h);
+        }
+    }
+}
+
+/// The test-seam injection for block `i`: a `Kernel`-class failure models a
+/// MIXED-path failure (an f64 stage is not affected); otherwise a `Cuda`
+/// failure in either precision.
+fn u_injected_failure(i: usize, mixed: bool) -> Result<(), GpuError> {
+    if fail_at_block() != i {
+        return Ok(());
+    }
+    if !fail_as_kernel() {
+        return Err(GpuError::Cuda(format!(
+            "injected failure at block {i} (test)"
+        )));
+    }
+    if mixed {
+        return Err(GpuError::Kernel(format!(
+            "injected failure at block {i} (test)"
+        )));
+    }
+    Ok(())
+}
+
+/// The checked geometry of one block: `(left offset, right end, block length)`.
+fn u_block_geometry(
     left: &ResidentBov<'_>,
     right: &ResidentBov<'_>,
     blk: UBlock,
-    scratch: &mut DeviceMatrix<f64>,
-    out: &mut [f64],
-) -> Result<usize, GpuError> {
+    out_len: usize,
+) -> Result<(usize, usize, usize), GpuError> {
     let UBlock {
         i,
         nvir_left,
@@ -574,11 +678,6 @@ pub fn u_g_block_on_device(
         ncols,
     } = blk;
     let layout = |what: String| GpuError::Layout(format!("U-RI-MP2 block {i}: {what}"));
-    if fail_at_block() == i {
-        return Err(GpuError::Cuda(format!(
-            "injected failure at block {i} (test)"
-        )));
-    }
     if left.naux() != right.naux() {
         return Err(layout(format!("naux {} vs {}", left.naux(), right.naux())));
     }
@@ -603,39 +702,88 @@ pub fn u_g_block_on_device(
     let len = nvir_left
         .checked_mul(ncols)
         .ok_or_else(|| layout("block size overflows usize".into()))?;
-    if out.len() != len {
+    if out_len != len {
         return Err(layout(format!(
-            "host block holds {} elements, needs {len}",
-            out.len()
+            "host block holds {out_len} elements, needs {len}"
         )));
     }
-    let b_i = left.host.slice(s![.., off..off + nvir_left]);
-    let b_r = right.host.slice(s![.., col0..end]);
-    let lop = dev_left_padded(left.m.buf().slice(off..), &b_i.t())?;
-    let rop = dev_right_padded(right.m.buf().slice(col0..), &b_r)?;
-    gemm_f64_dev(
-        dev,
-        nvir_left,
-        left.naux(),
-        ncols,
-        &lop,
-        &rop,
-        scratch.buf_mut(),
-        GEMM_K_BLOCK,
-    )?;
+    Ok((off, end, len))
+}
+
+/// `out = B_left[:, i·nvir_left..(i+1)·nvir_left]ᵀ · B_right[:, col0..col0+ncols]`
+/// (row-major `nvir_left × ncols`), formed in `scratch` and downloaded into
+/// `out`: an f64 GEMM when both tensors are f64, the k-panelled SGEMM with f64
+/// accumulation when both are f32 (mixing the two is a `Layout` refusal).
+/// Returns what the block moved; the caller counts it (`commit_u_tally`) only
+/// when its whole call succeeds.
+pub fn u_g_block_on_device(
+    dev: &Device,
+    left: &ResidentBov<'_>,
+    right: &ResidentBov<'_>,
+    blk: UBlock,
+    scratch: &mut UScratch,
+    out: &mut [f64],
+) -> Result<UBlockTally, GpuError> {
+    let i = blk.i;
+    u_injected_failure(i, matches!(left.m, Resident::F32(_)))?;
+    let (off, end, len) = u_block_geometry(left, right, blk, out.len())?;
+    let (m, k, n) = (blk.nvir_left, left.naux(), blk.ncols);
+    let b_i = left.host.slice(s![.., off..off + m]);
+    let b_r = right.host.slice(s![.., blk.col0..end]);
+    let panels = match (&left.m, &right.m, &mut scratch.c32) {
+        (Resident::F64(l), Resident::F64(r), _) => {
+            let lop = dev_left_padded(l.buf().slice(off..), &b_i.t())?;
+            let rop = dev_right_padded(r.buf().slice(blk.col0..), &b_r)?;
+            gemm_f64_dev(
+                dev,
+                m,
+                k,
+                n,
+                &lop,
+                &rop,
+                scratch.c64.buf_mut(),
+                GEMM_K_BLOCK,
+            )?;
+            0
+        }
+        (Resident::F32(l), Resident::F32(r), Some(c32)) => {
+            let lop = dev_left_padded(l.buf().slice(off..), &b_i.t())?;
+            let rop = dev_right_padded(r.buf().slice(blk.col0..), &b_r)?;
+            gemm_f32_f64acc_dev(
+                dev,
+                m,
+                k,
+                n,
+                &lop,
+                &rop,
+                c32.buf_mut(),
+                scratch.c64.buf_mut(),
+                effective_k_panel(),
+            )?
+        }
+        _ => {
+            return Err(GpuError::Layout(format!(
+                "U-RI-MP2 block {i}: operand precisions differ or the f32 scratch is missing"
+            )))
+        }
+    };
     let cuda = |what: &str, e: &dyn std::fmt::Debug| {
         GpuError::Cuda(format!("{what} U-RI-MP2 G_{i}: {e:?}"))
     };
     dev.stream
-        .memcpy_dtoh(&scratch.buf().slice(..len), out)
+        .memcpy_dtoh(&scratch.c64.buf().slice(..len), out)
         .map_err(|e| cuda("D2H", &e))?;
     dev.stream.synchronize().map_err(|e| cuda("sync", &e))?;
-    Ok(8 * len)
+    Ok(UBlockTally {
+        d2h: 8 * len,
+        panels,
+    })
 }
 
-/// Shared dispatcher prologue: the device and pool, or `None` (CPU path; a
-/// reason is counted unless the mode is off or there is no device at all).
-fn u_dispatch_context() -> Option<(std::sync::Arc<Device>, DevicePool)> {
+/// Shared dispatcher prologue: the device, the pool and the precision to try
+/// first, or `None` (CPU path; a reason is counted unless the mode is off or
+/// there is no device at all).
+fn u_dispatch_context(mixed_ok: bool) -> Option<(std::sync::Arc<Device>, DevicePool, Precision)> {
     let settings = ferric_core::gpu::settings();
     if settings.mode == GpuMode::Off {
         return None;
@@ -652,7 +800,12 @@ fn u_dispatch_context() -> Option<(std::sync::Arc<Device>, DevicePool)> {
         note_cpu(CpuReason::CudaError);
         return None;
     };
-    Some((dev, pool))
+    let precision = if mixed_ok && settings.mixed_allows(MixedKernel::RiMp2Energy) {
+        Precision::Mixed
+    } else {
+        Precision::F64
+    };
+    Some((dev, pool, precision))
 }
 
 /// `nocc·nvir` of a channel after checking its shapes; `Err` for an
@@ -687,7 +840,23 @@ fn u_channel_nov(ch: &SpinChannel<'_>) -> Result<usize, GpuError> {
     Ok(nov)
 }
 
-fn u_finish(r: Result<f64, GpuError>) -> Option<f64> {
+/// Runs `run` at `precision`; a mixed-path refusal (`Kernel`, `F32Range`)
+/// reruns it in f64 on the device (counted, traced), any other failure is the
+/// CPU path (counted).
+fn u_run_with_fallback(
+    precision: Precision,
+    run: impl Fn(Precision) -> Result<f64, GpuError>,
+) -> Option<f64> {
+    let r = match run(precision) {
+        Err(e @ (GpuError::Kernel(_) | GpuError::F32Range(_))) if precision == Precision::Mixed => {
+            if ferric_core::gpu::config::gpu_trace() {
+                eprintln!("[gpu] U-RI-MP2 mixed path unavailable ({e}); running f64 on the device");
+            }
+            note_mixed_fallback();
+            run(Precision::F64)
+        }
+        r => r,
+    };
     match r {
         Ok(e) => Some(e),
         Err(e) => {
@@ -698,34 +867,64 @@ fn u_finish(r: Result<f64, GpuError>) -> Option<f64> {
 }
 
 /// Same-spin (αα or ββ) energy on the device, or `None` for the CPU path.
-pub fn try_u_same_spin_on_device(ch: SpinChannel<'_>) -> Option<f64> {
-    let (dev, pool) = u_dispatch_context()?;
-    u_finish(u_same_spin_on_device(&dev, &pool, ch))
+/// `mixed_ok`: this caller may use the `rimp2-energy` mixed kernel when the
+/// settings allow it (Coulomb U-RI-MP2 only).
+pub fn try_u_same_spin_on_device(ch: SpinChannel<'_>, mixed_ok: bool) -> Option<f64> {
+    let (dev, pool, precision) = u_dispatch_context(mixed_ok)?;
+    u_run_with_fallback(precision, |p| {
+        u_same_spin_on_device_prec(&dev, &pool, ch, p)
+    })
 }
 
-/// Opposite-spin (αβ) energy on the device, or `None` for the CPU path.
-pub fn try_u_opposite_spin_on_device(ch_a: SpinChannel<'_>, ch_b: SpinChannel<'_>) -> Option<f64> {
-    let (dev, pool) = u_dispatch_context()?;
-    u_finish(u_opposite_spin_on_device(&dev, &pool, ch_a, ch_b))
+/// Opposite-spin (αβ) energy on the device, or `None` for the CPU path;
+/// `mixed_ok` as for [`try_u_same_spin_on_device`].
+pub fn try_u_opposite_spin_on_device(
+    ch_a: SpinChannel<'_>,
+    ch_b: SpinChannel<'_>,
+    mixed_ok: bool,
+) -> Option<f64> {
+    let (dev, pool, precision) = u_dispatch_context(mixed_ok)?;
+    u_run_with_fallback(precision, |p| {
+        u_opposite_spin_on_device_prec(&dev, &pool, ch_a, ch_b, p)
+    })
 }
 
-/// The device same-spin energy against an explicit pool (the dispatcher's
-/// body). One scratch and one resident `B` ("U-RI-MP2 B_ov same-spin").
+/// The mixed-path refusals checked before ANY reservation or transfer, so the
+/// dispatcher's f64 fallback wastes nothing: the flush kernel loads and every
+/// tensor is inside the f32 arithmetic range.
+fn u_mixed_preflight(dev: &Device, tensors: &[&Array2<f64>]) -> Result<(), GpuError> {
+    dev.axpy_f32_to_f64()?;
+    for b in tensors {
+        check_f32_arithmetic_range(b)?;
+    }
+    Ok(())
+}
+
+/// The device same-spin energy against an explicit pool, f64.
 pub fn u_same_spin_on_device(
     dev: &Device,
     pool: &DevicePool,
     ch: SpinChannel<'_>,
 ) -> Result<f64, GpuError> {
+    u_same_spin_on_device_prec(dev, pool, ch, Precision::F64)
+}
+
+/// The device same-spin energy against an explicit pool in `precision` (the
+/// dispatcher's body). One scratch and one resident `B` ("U-RI-MP2 B_ov
+/// same-spin").
+pub fn u_same_spin_on_device_prec(
+    dev: &Device,
+    pool: &DevicePool,
+    ch: SpinChannel<'_>,
+    precision: Precision,
+) -> Result<f64, GpuError> {
     let nov = u_channel_nov(&ch)?;
+    if precision == Precision::Mixed {
+        u_mixed_preflight(dev, &[ch.b])?;
+    }
     // scratch first (refuses before the larger upload); widest block is i = 0
-    let mut scratch = DeviceMatrix::<f64>::zeros(
-        dev,
-        pool,
-        "U-RI-MP2 energy (device): G_i scratch",
-        ch.nvir,
-        nov,
-    )?;
-    let bres = upload_b_ov(dev, pool, "U-RI-MP2 B_ov same-spin", ch.b)?;
+    let mut scratch = UScratch::new(dev, pool, ch.nvir, nov, precision)?;
+    let bres = upload_b_ov_prec(dev, pool, "U-RI-MP2 B_ov same-spin", ch.b, precision)?;
     let mut host = vec![0.0f64; ch.nvir * nov];
     let mut partials = Vec::with_capacity(ch.nocc);
     let mut tally = Vec::with_capacity(ch.nocc);
@@ -749,19 +948,29 @@ pub fn u_same_spin_on_device(
         let g_i = ArrayView2::from_shape((ch.nvir, ncols), &*block).expect("shape");
         partials.push(same_spin_block_energy(&g_i, i, ch));
     }
-    for d2h in tally {
-        note_offloaded(0, d2h);
-    }
+    commit_u_tally(tally);
     Ok(partials.into_iter().sum())
 }
 
-/// The device opposite-spin energy against an explicit pool. Uploads `B_α` and
-/// `B_β` once each under "U-RI-MP2 B_ov alpha" / "U-RI-MP2 B_ov beta".
+/// The device opposite-spin energy against an explicit pool, f64.
 pub fn u_opposite_spin_on_device(
     dev: &Device,
     pool: &DevicePool,
     ch_a: SpinChannel<'_>,
     ch_b: SpinChannel<'_>,
+) -> Result<f64, GpuError> {
+    u_opposite_spin_on_device_prec(dev, pool, ch_a, ch_b, Precision::F64)
+}
+
+/// The device opposite-spin energy against an explicit pool in `precision`.
+/// Uploads `B_α` and `B_β` once each under "U-RI-MP2 B_ov alpha" / "U-RI-MP2
+/// B_ov beta" (f32 under `Precision::Mixed`).
+pub fn u_opposite_spin_on_device_prec(
+    dev: &Device,
+    pool: &DevicePool,
+    ch_a: SpinChannel<'_>,
+    ch_b: SpinChannel<'_>,
+    precision: Precision,
 ) -> Result<f64, GpuError> {
     u_channel_nov(&ch_a)?;
     let nov_b = u_channel_nov(&ch_b)?;
@@ -772,24 +981,25 @@ pub fn u_opposite_spin_on_device(
             ch_b.b.nrows()
         )));
     }
-    let mut scratch = DeviceMatrix::<f64>::zeros(
-        dev,
-        pool,
-        "U-RI-MP2 energy (device): G_i scratch",
-        ch_a.nvir,
-        nov_b,
-    )?;
+    if precision == Precision::Mixed {
+        u_mixed_preflight(dev, &[ch_a.b, ch_b.b])?;
+    }
+    let mut scratch = UScratch::new(dev, pool, ch_a.nvir, nov_b, precision)?;
     // Both tensors must fit TOGETHER before either is transferred: a pool that
     // fits B_alpha but not B_beta refuses here, naming the tensor that does not
     // fit, with nothing uploaded and nothing left reserved (the probe leases
     // drop at the end of this block, before the real charges are taken).
     {
-        let bytes = |c: &SpinChannel<'_>| c.b.len().saturating_mul(8);
+        let elem = match precision {
+            Precision::F64 => 8,
+            Precision::Mixed => 4,
+        };
+        let bytes = |c: &SpinChannel<'_>| c.b.len().saturating_mul(elem);
         let _alpha = pool.reserve("U-RI-MP2 B_ov alpha", bytes(&ch_a))?;
         let _beta = pool.reserve("U-RI-MP2 B_ov beta", bytes(&ch_b))?;
     }
-    let ba = upload_b_ov(dev, pool, "U-RI-MP2 B_ov alpha", ch_a.b)?;
-    let bb = upload_b_ov(dev, pool, "U-RI-MP2 B_ov beta", ch_b.b)?;
+    let ba = upload_b_ov_prec(dev, pool, "U-RI-MP2 B_ov alpha", ch_a.b, precision)?;
+    let bb = upload_b_ov_prec(dev, pool, "U-RI-MP2 B_ov beta", ch_b.b, precision)?;
     let mut host = vec![0.0f64; ch_a.nvir * nov_b];
     let mut partials = Vec::with_capacity(ch_a.nocc);
     let mut tally = Vec::with_capacity(ch_a.nocc);
@@ -811,8 +1021,6 @@ pub fn u_opposite_spin_on_device(
         let g_i = ArrayView2::from_shape((ch_a.nvir, nov_b), &host[..]).expect("shape");
         partials.push(opposite_spin_block_energy(&g_i, i, ch_a, ch_b));
     }
-    for d2h in tally {
-        note_offloaded(0, d2h);
-    }
+    commit_u_tally(tally);
     Ok(partials.into_iter().sum())
 }

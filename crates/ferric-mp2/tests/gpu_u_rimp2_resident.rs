@@ -156,11 +156,26 @@ fn u_rimp2_energy_matches_cpu_within_the_summation_order_bound() {
         }
         // the dispatchers reach the same numbers (bit-identical to the direct
         // calls: same code, serial sum)
-        let via_aa = try_u_same_spin_on_device(a.ch()).expect("dispatcher takes the device");
-        let via_ab =
-            try_u_opposite_spin_on_device(a.ch(), b.ch()).expect("dispatcher takes the device");
+        let via_aa = try_u_same_spin_on_device(a.ch(), false).expect("dispatcher takes the device");
+        let via_ab = try_u_opposite_spin_on_device(a.ch(), b.ch(), false)
+            .expect("dispatcher takes the device");
         assert_eq!(
             (via_aa.to_bits(), via_ab.to_bits()),
+            (d_aa.to_bits(), d_ab.to_bits())
+        );
+        // exactness anchor at the default precision f64: a caller that MAY use
+        // the mixed kernel (Coulomb u_ri_mp2) still gets the f64 kernel, bit for
+        // bit, with no mixed GEMM
+        let m0 = stats();
+        let ok_aa = try_u_same_spin_on_device(a.ch(), true).expect("device");
+        let ok_ab = try_u_opposite_spin_on_device(a.ch(), b.ch(), true).expect("device");
+        let m1 = stats();
+        assert_eq!(
+            m1.gemm_mixed, m0.gemm_mixed,
+            "{name}: mixed GEMM at precision f64"
+        );
+        assert_eq!(
+            (ok_aa.to_bits(), ok_ab.to_bits()),
             (d_aa.to_bits(), d_ab.to_bits())
         );
         // end to end, u_ri_mp2 on the main thread (device) vs inside a 1-thread
