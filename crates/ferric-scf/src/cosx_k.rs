@@ -532,6 +532,14 @@ pub struct CosxConfig {
     /// [`Default`]. ROHF/ROKS has no final pass: an explicit request there is
     /// an error, the default one is dropped with a note.
     pub final_pass_explicit: bool,
+    /// Optional SCF grid SCHEDULE (ORCA style): early iterations on
+    /// [`crate::cosx_schedule::CosxGridSchedule::coarse_grid`], then
+    /// [`CosxConfig::grid`] once the incoming `max|ΔD|` falls below its
+    /// `switch_dp_max`; the converged energy is defined by `grid` only (see
+    /// [`crate::cosx_schedule`]). The final pass is unchanged. `None` (the
+    /// default) = every iteration on `grid`, bit-identical to no schedule
+    /// support. RHF/RKS and UHF/UKS only; ROHF/ROKS refuses it.
+    pub schedule: Option<crate::cosx_schedule::CosxGridSchedule>,
 }
 
 /// The record of a COSX final-grid pass ([`CosxConfig::final_grid`]).
@@ -680,6 +688,7 @@ impl CosxConfig {
             f32_route: None,
             final_grid: None,
             final_pass_explicit: false,
+            schedule: None,
         }
     }
 }
@@ -2187,6 +2196,10 @@ impl<'a> KBuilder for CosxK<'a> {
 
     /// No density-dependent state (no pair lists): nothing to update.
     fn update_density(&mut self, _d: &Array2<f64>) {}
+
+    fn exchange_grid_npts(&self) -> Option<usize> {
+        Some(self.npts())
+    }
 
     /// No density-dependent state to drop. The grid, pair bounds and the
     /// `S_num` factor are geometry-only and are kept.

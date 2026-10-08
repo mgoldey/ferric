@@ -141,6 +141,9 @@ pub struct ScfResult {
     /// `e_scf_grid`; the analytic gradients differentiate the SCF-grid energy
     /// (see `crate::cosx_k::CosxFinalPass`). `None` when no final pass ran.
     pub cosx_final: Option<crate::cosx_k::CosxFinalPass>,
+    /// COSX grid schedule (`CosxConfig::schedule`): the grid each iteration's
+    /// K was built on and the switch iteration. `None` when no schedule ran.
+    pub cosx_schedule: Option<crate::cosx_schedule::CosxScheduleRecord>,
 }
 
 /// The density-fitted two-electron builders one SCF actually used.

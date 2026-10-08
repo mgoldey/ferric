@@ -244,6 +244,7 @@ fn make_scf_view(
         df_jk: None,
         rohf_spin_focks: None,
         cosx_final: None,
+        cosx_schedule: None,
     }
 }
 

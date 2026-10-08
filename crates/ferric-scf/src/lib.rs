@@ -110,6 +110,8 @@ pub mod aurora;
 pub mod cosx_gradient;
 /// COSX seminumerical exchange builder (grid-based K, overlap-fitted).
 pub mod cosx_k;
+/// Optional COSX SCF grid schedule (coarse grid early, production grid to convergence).
+pub mod cosx_schedule;
 /// Density-fitted Coulomb (J) matrix builder (RI-J).
 pub mod df_j;
 #[cfg(feature = "gpu")]
