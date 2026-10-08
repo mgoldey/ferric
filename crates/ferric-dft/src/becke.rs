@@ -29,7 +29,7 @@ pub(crate) fn bragg_slater_bohr(z: i32) -> f64 {
         .and_then(|i| BRAGG_ANGSTROM.get(i))
         .copied()
         .unwrap_or(1.0);
-    r_a * 1.8897259886
+    r_a * ferric_core::units::ANGSTROM_TO_BOHR
 }
 
 /// Bragg–Slater radii in Å indexed by Z (index 0 is PySCF's ghost-atom value):
@@ -368,12 +368,12 @@ mod tests {
             (86, 2.1),
         ];
         for (z, r) in pyscf_angstrom {
-            let got = super::bragg_slater_bohr(z) / 1.8897259886;
+            let got = super::bragg_slater_bohr(z) / ferric_core::units::ANGSTROM_TO_BOHR;
             assert!((got - r).abs() < 1e-12, "Z={z}: {got} Å, PySCF {r} Å");
         }
         // The noble gases deliberately keep ferric's values (see BRAGG_ANGSTROM).
         for (z, r) in [(2, 0.3), (10, 0.45), (18, 0.71)] {
-            let got = super::bragg_slater_bohr(z) / 1.8897259886;
+            let got = super::bragg_slater_bohr(z) / ferric_core::units::ANGSTROM_TO_BOHR;
             assert!((got - r).abs() < 1e-12, "Z={z}: {got} Å, ferric's {r} Å");
         }
     }

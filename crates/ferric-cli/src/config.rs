@@ -4595,7 +4595,7 @@ json = [1, 2]
         );
         // 4 Angstrom in Bohr. A unit slip here yields a plausible wrong
         // answer rather than an error, which is why it is asserted.
-        let expect_z = 4.0 / 0.529_177_210_92;
+        let expect_z = 4.0 * ferric_core::units::ANGSTROM_TO_BOHR;
         assert!(
             (na.z - expect_z).abs() < 1e-9,
             "Na z = {} Bohr, expected {expect_z} (4 A)",
@@ -5561,9 +5561,9 @@ mp2v_vv10_damping = "terfc"
 
         let att = cfg.mp2.build_att_vv10_config(&water(), None).unwrap();
         assert!((att.r0_angstrom() - 1.00).abs() < 1e-12);
-        // 1.00 A = 1.8897259886 Bohr; ~0.529 would mean the conversion inverted.
+        // 1.00 A = 1/0.52917721092 Bohr; ~0.529 would mean the conversion inverted.
         assert!(
-            (att.r0_bohr - 1.889_725_988_6).abs() < 1e-9,
+            (att.r0_bohr - ferric_core::units::ANGSTROM_TO_BOHR).abs() < 1e-12,
             "got {}",
             att.r0_bohr
         );
@@ -7228,7 +7228,7 @@ impl QmmmCfg {
         use ferric_core::FerricError;
         use ferric_scf::qmmm::{BoundaryChargeScheme, QmSelection, QmmmAtom, QmmmSystem};
 
-        const ANGSTROM_TO_BOHR: f64 = 1.0 / 0.529_177_210_92;
+        use ferric_core::units::ANGSTROM_TO_BOHR;
 
         let have_indices = !self.qm_indices.is_empty();
         let have_radial = !self.qm_seeds.is_empty() || self.qm_radius_angstrom.is_some();

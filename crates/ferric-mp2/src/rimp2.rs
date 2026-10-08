@@ -2835,7 +2835,7 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
         // r0 = 0.75 Angstrom -> Bohr; historically the worst case (most far-field
         // primitives beyond the table domain).
-        let op = Operator::terfc(0.75 * 1.889_725_988_6);
+        let op = Operator::terfc(0.75 * ferric_core::units::ANGSTROM_TO_BOHR);
 
         let v2c = threeindex::coulomb_metric_2c(op, &dfbs).unwrap();
         let v_inv_sqrt = metric_inverse_sqrt(&v2c, op).expect(
@@ -2922,7 +2922,7 @@ mod tests {
             eprintln!("skipping: FERRIC_TERF_TABLE_DIR not set");
             return;
         }
-        const A2B: f64 = 1.889_725_988_6;
+        const A2B: f64 = ferric_core::units::ANGSTROM_TO_BOHR;
         let mol = Molecule::load_xyz(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../testdata/molecules/alkane_4.xyz"

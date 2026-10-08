@@ -179,8 +179,9 @@ use crate::rimp2::{ri_mp2_spin_components, RiMp2Config, SpinComponents};
 use crate::u_rimp2::{u_ri_mp2, URiMp2Components};
 
 /// Bohr per Ångström. The paper quotes r₀ in Å; every ferric internal length
-/// (grid coordinates, `Operator::terfc`'s `distance`) is in Bohr.
-pub const BOHR_PER_ANG: f64 = 1.8897259886;
+/// (grid coordinates, `Operator::terfc`'s `distance`) is in Bohr. The same
+/// value as [`ferric_core::units::ANGSTROM_TO_BOHR`].
+pub const BOHR_PER_ANG: f64 = ferric_core::units::ANGSTROM_TO_BOHR;
 
 /// Which short-range attenuator multiplies the MP2 correlation operator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

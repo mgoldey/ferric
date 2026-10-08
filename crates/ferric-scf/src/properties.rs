@@ -1945,7 +1945,7 @@ fn solve_resp_restrained(
 /// polarizability partition in `pdep_polarizability_hirshfeld` is less
 /// sensitive to the proatom shape, since its sum rule is enforced numerically.
 pub fn slater_xi_for_z(z: i32) -> f64 {
-    // Bragg-Slater radii in Angstrom (1 Å = 1.8897259886 Bohr).
+    // Bragg-Slater radii in Angstrom (ferric_core::units converts to Bohr).
     // Values from Slater J. Chem. Phys. 41, 3199 (1964) for Z=1..18.
     let r_bs_ang: f64 = match z {
         1 => 0.25,
@@ -1968,7 +1968,7 @@ pub fn slater_xi_for_z(z: i32) -> f64 {
         18 => 0.71,
         _ => 1.00,
     };
-    let r_bs_bohr = r_bs_ang * 1.8897259886;
+    let r_bs_bohr = r_bs_ang * ferric_core::units::ANGSTROM_TO_BOHR;
     1.0 / r_bs_bohr
 }
 

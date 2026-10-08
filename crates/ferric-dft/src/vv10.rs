@@ -980,23 +980,25 @@ mod damping_tests {
         eprintln!("erfc_scalar vs scipy: max relative error {max_rel:.2e}");
     }
 
-    /// terfc against scipy at r₀ = 1.00 Å = 1.8897259886 Bohr (the MP2-V value).
+    /// terfc against a 40-digit mpmath evaluation of
+    /// `1 − ½[erf((r−r₀)/(r₀√2)) + erf((r+r₀)/(r₀√2))]` at r₀ = 1.00 Å (the
+    /// MP2-V value) = 1/0.52917721092 Bohr.
     #[test]
     fn terfc_matches_scipy_at_mp2v_r0() {
-        const R0: f64 = 1.889_725_988_6;
+        const R0: f64 = ferric_core::units::ANGSTROM_TO_BOHR;
         const REF: [(f64, f64); 6] = [
             (0.0, 1.000_000_000_000_000_0e0),
-            (0.5, 8.719_649_184_788_143_0e-1),
-            (1.0, 7.442_265_963_899_724_6e-1),
-            (3.0, 2.832_566_320_214_167_1e-1),
-            (5.0, 5.002_682_661_315_782_7e-2),
-            (8.0, 6.116_754_468_367_124_9e-4),
+            (0.5, 8.719_649_276_879_381_3e-1),
+            (1.0, 7.442_266_147_038_318_1e-1),
+            (3.0, 2.832_566_719_683_937_7e-1),
+            (5.0, 5.002_684_631_245_952_8e-2),
+            (8.0, 6.116_760_991_385_155_9e-4),
         ];
         for (r, expect) in REF {
             let got = terfc_scalar(r, R0);
             assert!(
                 (got - expect).abs() < 1e-13,
-                "terfc({r}, {R0}) = {got}, scipy = {expect}"
+                "terfc({r}, {R0}) = {got}, mpmath = {expect}"
             );
         }
     }
@@ -1008,7 +1010,7 @@ mod damping_tests {
     #[test]
     fn damping_factor_limits() {
         let d = Vv10Damping::Terfc {
-            r0_bohr: 1.889_725_988_6,
+            r0_bohr: ferric_core::units::ANGSTROM_TO_BOHR,
             omega_bohr_inv: None,
         };
         let at_zero = d.factor_from_r2(0.0);
@@ -1046,7 +1048,7 @@ mod damping_tests {
     /// tightens toward a step at r0).
     #[test]
     fn decoupled_damping_matches_linked_at_the_linked_omega() {
-        const R0: f64 = 1.889_725_988_6;
+        const R0: f64 = ferric_core::units::ANGSTROM_TO_BOHR;
         let linked = Vv10Damping::Terfc {
             r0_bohr: R0,
             omega_bohr_inv: None,
@@ -1287,7 +1289,7 @@ mod cutoff_tests {
         for i in 0..NCHAIN {
             xyz.push_str(&format!(
                 "C {:.6} 0.0 0.0\n",
-                i as f64 * BOND_BOHR * 0.529177
+                i as f64 * BOND_BOHR * ferric_core::units::BOHR_TO_ANGSTROM
             ));
         }
         let mol = Molecule::parse_xyz(&xyz, 0, 1).unwrap();

@@ -315,6 +315,8 @@ fn m2_terfc_over_coulomb_ratio_matches_oracle() {
     let max_l = obs.max_l().max(aux.max_l());
 
     // r0 = 1.05 Angstrom in Bohr (the SR-MP2 regime).
+    // The oracle conversion (terf-tables/terfc_lookup_reference.py A2B), not
+    // ferric_core::units: the pinned oracle values were generated at this r0.
     let r0 = 1.05_f64 * 1.8897259886_f64;
     let omega = 1.0 / (r0 * std::f64::consts::SQRT_2);
     let cdir = std::ffi::CString::new(dir.to_string_lossy().as_ref()).unwrap();
@@ -499,6 +501,8 @@ fn m2_abs_controlled_triple_matches_oracle() {
         (1.05_f64, 0.753926499430_f64),
         (2.0_f64, 0.870145962411_f64),
     ] {
+        // The oracle conversion (terf-tables/terfc_lookup_reference.py A2B), not
+        // ferric_core::units: the pinned oracle values were generated at this r0.
         let r0 = r0_ang * 1.8897259886_f64;
         let omega = 1.0 / (r0 * std::f64::consts::SQRT_2);
         let eng_t = unsafe {
@@ -618,6 +622,8 @@ fn m3_p_and_d_aux_terfc_consistent_with_fd() {
         (mol, obs_bs, aux_bs)
     };
 
+    // The oracle conversion (terf-tables/terfc_lookup_reference.py A2B), not
+    // ferric_core::units: the pinned oracle values were generated at this r0.
     let r0 = 1.05_f64 * 1.8897259886_f64;
     let omega = 1.0 / (r0 * std::f64::consts::SQRT_2);
     let cdir = std::ffi::CString::new(dir.to_string_lossy().as_ref()).unwrap();
@@ -867,6 +873,8 @@ fn m4_two_center_terfc_matches_oracle() {
         (1.05_f64, 0.672962887775_f64),
         (2.0_f64, 0.825876172772_f64),
     ] {
+        // The oracle conversion (terf-tables/terfc_lookup_reference.py A2B), not
+        // ferric_core::units: the pinned oracle values were generated at this r0.
         let r0 = r0_ang * 1.8897259886_f64;
         let omega = 1.0 / (r0 * std::f64::consts::SQRT_2);
         let eng_t = unsafe {

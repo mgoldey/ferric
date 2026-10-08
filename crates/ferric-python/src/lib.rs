@@ -3788,19 +3788,18 @@ impl PyConformerEnsemble {
     }
 }
 
-/// The Ångström->Bohr factor `ferric_core::mol` applies when parsing XYZ
-/// (its `ANGSTROM_TO_BOHR`, which is private, hence the duplicate literal —
-/// keep the two in sync).
+/// The Ångström->Bohr factor `ferric_core::mol` applies when parsing XYZ:
+/// ferric's one conversion, [`ferric_core::units::ANGSTROM_TO_BOHR`].
 ///
 /// `coordinates()` inverts the conversion by **dividing** by this constant
-/// rather than multiplying by the literal 0.529_177_210_92. Both are correct
+/// rather than multiplying by `BOHR_TO_ANGSTROM`. Both are correct
 /// to 1 ulp, but the divide is the better inverse: measured over 3e6 random
 /// coordinates in -20..20 Å, `x * A2B / A2B != x` for 5.0% of values whereas
-/// `x * A2B * 0.529_177_210_92 != x` for 15.4%; worst-case error is 3.6e-15 Å
+/// `x * A2B * BOHR_TO_ANGSTROM != x` for 15.4%; worst-case error is 3.6e-15 Å
 /// either way. Floating-point multiplication is not exactly invertible, so a
 /// round-trip through `from_coordinates` -> `coordinates()` is accurate to
 /// ~1 ulp (< 1e-14 Å), NOT bit-exact — do not assert equality on it.
-const ANGSTROM_TO_BOHR: f64 = 1.0 / 0.529_177_210_92;
+use ferric_core::units::ANGSTROM_TO_BOHR;
 
 /// Accept either element symbols (`"C"`, `"@O"`) or atomic numbers (`6`) for
 /// the shared element list — RDKit hands you `GetSymbol()` naturally, but
@@ -5114,14 +5113,21 @@ fn run_linlccd(
 /// `branch_changed` is `False` everywhere because nothing was CHECKED, not
 /// because the states agreed.
 ///
-/// LIMITATION: neither mechanism is a stability verdict. `tune_omega` does not
-/// report the orbital Hessian's lowest eigenvalue, and ferric's stability
-/// analysis refuses wB97X-V (no VV10 response kernel exists), so a converged
-/// cation that is an internal SADDLE is not detected and a returned omega can
-/// sit on a branch that has stopped being a minimum. Continuation keeps the curve on ONE
-/// branch; it does not certify that branch is the lowest one.
+/// `check_cation_stability` (default `True`) runs the UKS internal-stability
+/// analysis on every cation. Each eval dict then carries `cation_lambda_min`
+/// (lowest orbital-Hessian eigenvalue, Ha/rad^2, or `None`), `cation_stability`
+/// (`"stable"`, `"unstable"`, `"marginal"`, `"indeterminate"`, `"not_analysed"`
+/// or `"not_checked"`) and `cation_stability_skip` (the reason when not
+/// analysed). A tuned omega whose cation is an internal SADDLE raises
+/// `RuntimeError` naming omega and lambda_min: it is not a valid result. The
+/// onset is a curvature change that no energy, <S^2> or population observable
+/// can see. Functionals whose Hessian cannot be built (VV10, e.g. wB97X-V;
+/// meta-GGA) are NOT analysed: every eval is `"not_analysed"`, a warning is
+/// printed, `stability_warning` is set, and the returned omega is not
+/// certified stable. `False` skips the analysis and reproduces the previous
+/// results bit for bit.
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, functional, omega_lo=None, omega_hi=None, omega_tol=None, max_evals=None, continuation=None, branch_tol=None))]
+#[pyo3(signature = (mol, basis_set, functional, omega_lo=None, omega_hi=None, omega_tol=None, max_evals=None, continuation=None, branch_tol=None, check_cation_stability=None))]
 #[allow(clippy::too_many_arguments)]
 fn tune_omega(
     py: Python<'_>,
@@ -5134,6 +5140,7 @@ fn tune_omega(
     max_evals: Option<usize>,
     continuation: Option<bool>,
     branch_tol: Option<f64>,
+    check_cation_stability: Option<bool>,
 ) -> PyResult<Py<pyo3::types::PyDict>> {
     use ferric_scf::omega_tuning::{tune_omega as tune, OmegaTuneConfig};
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
@@ -5156,6 +5163,7 @@ fn tune_omega(
             Some(t) if t > 0.0 => Some(t),
             Some(_) => None,
         },
+        check_cation_stability: check_cation_stability.unwrap_or(defaults.check_cation_stability),
         ..defaults
     };
     let r = tune(&ctx, &mol.inner, &prep, &bounds, &cfg).map_err(make_err)?;
@@ -5164,12 +5172,30 @@ fn tune_omega(
     d.set_item("j", r.j)?;
     d.set_item("converged", r.converged)?;
     d.set_item("branch_warning", r.branch_warning.clone())?;
+    d.set_item("stability_warning", r.stability_warning.clone())?;
     let evals = pyo3::types::PyList::empty(py);
     for e in &r.evals {
         evals.append(omega_eval_dict(py, e)?)?;
     }
     d.set_item("evals", evals)?;
     Ok(d.into())
+}
+
+/// The cation-stability keys of an `OmegaEval` dict.
+fn set_stability_items(
+    item: &pyo3::Bound<'_, pyo3::types::PyDict>,
+    cs: &ferric_scf::omega_tuning::CationStability,
+) -> PyResult<()> {
+    item.set_item("cation_stability", cs.label())?;
+    item.set_item("cation_lambda_min", cs.lambda_min())?;
+    item.set_item(
+        "cation_stability_skip",
+        match *cs {
+            ferric_scf::omega_tuning::CationStability::NotAnalysed(sk) => Some(sk.reason()),
+            _ => None,
+        },
+    )?;
+    Ok(())
 }
 
 /// One `OmegaEval` as the dict `tune_omega` returns in its `evals` list.
@@ -5194,6 +5220,7 @@ fn omega_eval_dict<'py>(
         OmegaSeed::Default => ("default", None),
         OmegaSeed::Continued { from_omega } => ("continued", Some(from_omega)),
     };
+    set_stability_items(&item, &e.cation_stability)?;
     item.set_item("seed", seed)?;
     item.set_item("seed_from_omega", from)?;
     Ok(item)
@@ -5722,7 +5749,7 @@ fn run_terfc_rimp2(
         }));
     }
     // r0 supplied in Å; convert to Bohr for the operator.
-    let r0_bohr = r0.unwrap_or(1.05) * 1.8897259886;
+    let r0_bohr = r0.unwrap_or(1.05) * ANGSTROM_TO_BOHR;
     let mp2 = ri_mp2(
         &mol.inner,
         &prep,
@@ -5865,7 +5892,7 @@ fn run_scs_mp2_2terfc(
             last_energy: rhf.energy,
         }));
     }
-    const ANG2BOHR: f64 = 1.8897259886;
+    const ANG2BOHR: f64 = ANGSTROM_TO_BOHR;
     let cfg = ScsMp2TerfcConfig {
         r0_bonded: r0_bonded.unwrap_or(0.75) * ANG2BOHR,
         r0_nonbonded: r0_nonbonded.unwrap_or(1.05) * ANG2BOHR,
@@ -6156,7 +6183,7 @@ fn run_rs_mp2_rpa(
     // supplied in Å (2026-07-21: fixed from Bohr, matching r0_bonded/
     // r0_nonbonded's existing Å convention elsewhere in this file); convert
     // to Bohr for RsMp2RpaConfig, which stays Bohr-native.
-    const ANG2BOHR_R0: f64 = 1.8897259886;
+    const ANG2BOHR_R0: f64 = ANGSTROM_TO_BOHR;
     let mut cfg = ferric_rpa::RsMp2RpaConfig {
         omega: omega.unwrap_or(0.420) * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
         attenuator: atten,
@@ -9231,7 +9258,7 @@ fn run_saddle(
 
     let r = find_saddle(&m, &cfg, energy_gradient, hessian).map_err(make_err)?;
 
-    const BOHR_TO_ANGSTROM: f64 = 0.529_177_210_903;
+    const BOHR_TO_ANGSTROM: f64 = ferric_core::units::BOHR_TO_ANGSTROM;
     Ok(PySaddleResult {
         symbols: r.mol.atoms.iter().map(|a| a.symbol.clone()).collect(),
         coords: r
@@ -9390,9 +9417,9 @@ fn run_irc(
 
     let r = follow_irc(&m, &ndarray::Array1::from_vec(mode), &cfg, eg).map_err(make_err)?;
 
-    // Same value as run_saddle's local const. Both convert Bohr (ferric's
-    // internal unit) to the Angstrom the Python surface uses.
-    const BOHR_TO_ANGSTROM: f64 = 0.529_177_210_903;
+    // Same as run_saddle: Bohr (ferric's internal unit) to the Angstrom the
+    // Python surface uses.
+    const BOHR_TO_ANGSTROM: f64 = ferric_core::units::BOHR_TO_ANGSTROM;
     let to_branch = |b: ferric_scf::irc::IrcBranch| PyIrcBranch {
         symbols: b.mol.atoms.iter().map(|a| a.symbol.clone()).collect(),
         coords: b

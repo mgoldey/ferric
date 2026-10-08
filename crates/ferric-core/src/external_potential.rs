@@ -356,7 +356,7 @@ mod tests {
             field: Some([0.0, 0.0, 0.01]),
         };
         let e = ep.field_nuclear_energy(&mol);
-        let z_bohr = 1.0 / 0.529_177_210_92; // parse_xyz converts Å -> Bohr
+        let z_bohr = crate::units::ANGSTROM_TO_BOHR; // parse_xyz converts Å -> Bohr
         let expected = -0.01 * z_bohr;
         assert!((e - expected).abs() < 1e-10, "got {e}, expected {expected}");
     }

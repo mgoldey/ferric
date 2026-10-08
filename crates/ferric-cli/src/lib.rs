@@ -2522,7 +2522,7 @@ fn run_att_rimp2_terfc(
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
 ) {
-    const ANG2BOHR_R0: f64 = 1.8897259886;
+    const ANG2BOHR_R0: f64 = ferric_core::units::ANGSTROM_TO_BOHR;
     let r0_ang = cfg
         .mp2
         .att_r0
@@ -2618,7 +2618,7 @@ fn run_rs_mp2_rpa(
     // Bohr ⇒ ω≈0.42 Å⁻¹). Converted to Bohr immediately for RsMp2RpaConfig,
     // which stays Bohr-native (Operator::terf/terfc, the FFI shim, and the
     // terf-tables interpolation grids are all hard-Bohr all the way down).
-    const ANG2BOHR_R0: f64 = 1.8897259886;
+    const ANG2BOHR_R0: f64 = ferric_core::units::ANGSTROM_TO_BOHR;
     let r0_ang = cfg.mp2.r0.unwrap_or(3.18 / ANG2BOHR_R0);
     let r0 = r0_ang * ANG2BOHR_R0;
     if matches!(attenuator, ferric_rpa::rs_mp2_rpa::Attenuator::Terf) && cfg.mp2.omega.is_some() {
@@ -2911,7 +2911,7 @@ fn run_scs_mp2_2terfc(
     });
     // r0(1)/r0(2) are given in Å in the TOML (matching the Python
     // binding's convention); the library config wants Bohr.
-    const ANG2BOHR: f64 = 1.8897259886;
+    const ANG2BOHR: f64 = ferric_core::units::ANGSTROM_TO_BOHR;
     let r0_bonded_ang = cfg.mp2.r0_bonded.unwrap_or(0.75);
     let r0_nonbonded_ang = cfg.mp2.r0_nonbonded.unwrap_or(1.05);
     let scs_config = ScsMp2TerfcConfig {

@@ -17,16 +17,16 @@
     "diag_skipped_cartesian": 0
   },
   "rhf": {
-    "energy": -76.0413646377198,
+    "energy": -76.0413646377199,
     "internal_stable": true
   },
   "nw": 40,
   "x0": 0.5,
   "lindep": 1e-10,
   "coulomb": {
-    "e_corr": -0.2486137614277444,
-    "e_corr_pyscf_rpa": -0.2486137614277409,
-    "numpy_vs_pyscf_abs_diff": 3.524958103184872e-15,
+    "e_corr": -0.24861376142795022,
+    "e_corr_pyscf_rpa": -0.24861376142794295,
+    "numpy_vs_pyscf_abs_diff": 7.271960811294775e-15,
     "metric": {
       "metric_min_eigenvalue": 0.00018281062685364502,
       "metric_max_eigenvalue": 432.24663627079735
@@ -35,9 +35,9 @@
   "attenuated": [
     {
       "omega_bohr_inv": 0.2,
-      "omega_angstrom_inv": 0.37794519772,
+      "omega_angstrom_inv": 0.3779452249130124,
       "erf": {
-        "e_corr": -0.0002003805164051251,
+        "e_corr": -0.00020038051642832526,
         "metric": {
           "metric_min_eigenvalue": -2.864898280762525e-14,
           "metric_max_eigenvalue": 265.63782418038494,
@@ -45,55 +45,55 @@
           "smallest_kept_eigenvalue": 1.3293285859076036e-10,
           "nearest_mode_log10_distance_from_cut": 0.1236323439286231
         },
-        "mixed_coulomb_metric": -2.1657353536459086e-05,
+        "mixed_coulomb_metric": -2.1657353536452313e-05,
         "lindep_sensitivity": {
-          "1e-12": 1.284623720333028e-13,
-          "1e-08": 1.988834308829998e-12
+          "1e-12": 2.0671059807429726e-13,
+          "1e-08": 2.0130338910552548e-12
         }
       },
       "erfc": {
-        "e_corr": -0.24356535037999974,
+        "e_corr": -0.24356535038039048,
         "metric": {
           "metric_min_eigenvalue": 0.00017834395574249466,
           "metric_max_eigenvalue": 173.33651668876666
         },
-        "mixed_coulomb_metric": -0.24013036816792652
+        "mixed_coulomb_metric": -0.2401303681682192
       },
-      "non_additivity_info": 0.004848030531339559
+      "non_additivity_info": 0.00484803053113142
     },
     {
-      "omega_bohr_inv": 0.2222544445775211,
+      "omega_bohr_inv": 0.22225442858640002,
       "omega_angstrom_inv": 0.42,
       "erf": {
-        "e_corr": -0.0003372439778231844,
+        "e_corr": -0.0003372438601923294,
         "metric": {
-          "metric_min_eigenvalue": -7.0525189046054195e-15,
-          "metric_max_eigenvalue": 282.43052013728914,
+          "metric_min_eigenvalue": -8.272343184635984e-15,
+          "metric_max_eigenvalue": 282.43050883474075,
           "metric_modes_dropped": 31,
-          "smallest_kept_eigenvalue": 1.0653705501741299e-10,
-          "nearest_mode_log10_distance_from_cut": 0.027500687498895005
+          "smallest_kept_eigenvalue": 1.0654420462942314e-10,
+          "nearest_mode_log10_distance_from_cut": 0.027529831657794546
         },
-        "mixed_coulomb_metric": -4.34132567549953e-05,
+        "mixed_coulomb_metric": -4.341323707993437e-05,
         "lindep_sensitivity": {
-          "1e-12": -5.667830029094933e-13,
-          "1e-08": 1.894725533153202e-12
+          "1e-12": -3.444506507278844e-13,
+          "1e-08": 2.602815369918271e-12
         }
       },
       "erfc": {
-        "e_corr": -0.2418413350269229,
+        "e_corr": -0.24184133637217137,
         "metric": {
-          "metric_min_eigenvalue": 0.00017757266835131952,
-          "metric_max_eigenvalue": 156.9280184131934
+          "metric_min_eigenvalue": 0.00017757266892128162,
+          "metric_max_eigenvalue": 156.928029473489
         },
-        "mixed_coulomb_metric": -0.23742547732543567
+        "mixed_coulomb_metric": -0.2374254794247111
       },
-      "non_additivity_info": 0.006435182422998342
+      "non_additivity_info": 0.006435181195586531
     },
     {
       "omega_bohr_inv": 0.42,
-      "omega_angstrom_inv": 0.7936849152119999,
+      "omega_angstrom_inv": 0.7936849723173259,
       "erf": {
-        "e_corr": -0.005242044242602991,
+        "e_corr": -0.005242044242575686,
         "metric": {
           "metric_min_eigenvalue": -1.5070468952269705e-15,
           "metric_max_eigenvalue": 366.2999776152279,
@@ -101,27 +101,27 @@
           "smallest_kept_eigenvalue": 1.714948637037251e-10,
           "nearest_mode_log10_distance_from_cut": 0.09270496361257585
         },
-        "mixed_coulomb_metric": -0.0012704199891662633,
+        "mixed_coulomb_metric": -0.0012704199891724033,
         "lindep_sensitivity": {
-          "1e-12": -9.630522334463931e-11,
-          "1e-08": 4.3112995291860745e-10
+          "1e-12": -9.638329283995217e-11,
+          "1e-08": 4.3105459479608754e-10
         }
       },
       "erfc": {
-        "e_corr": -0.2142339758883232,
+        "e_corr": -0.21423397588845144,
         "metric": {
           "metric_min_eigenvalue": 0.00016912800044285262,
           "metric_max_eigenvalue": 73.5679440045447
         },
-        "mixed_coulomb_metric": -0.19630275727140675
+        "mixed_coulomb_metric": -0.19630275727150961
       },
-      "non_additivity_info": 0.029137741296818204
+      "non_additivity_info": 0.029137741296923092
     },
     {
       "omega_bohr_inv": 1.0,
-      "omega_angstrom_inv": 1.8897259886,
+      "omega_angstrom_inv": 1.8897261245650618,
       "erf": {
-        "e_corr": -0.061836641899993244,
+        "e_corr": -0.0618366419001695,
         "metric": {
           "metric_min_eigenvalue": 1.0747008766994279e-11,
           "metric_max_eigenvalue": 417.34442628404884,
@@ -129,52 +129,52 @@
           "smallest_kept_eigenvalue": 9.576389784510867e-09,
           "nearest_mode_log10_distance_from_cut": 0.9687356354233891
         },
-        "mixed_coulomb_metric": -0.02780134142077909,
+        "mixed_coulomb_metric": -0.027801341420926218,
         "lindep_sensitivity": {
-          "1e-12": -1.4218789048947578e-08,
-          "1e-08": 9.706762824079895e-09
+          "1e-12": -1.4218853455760794e-08,
+          "1e-08": 9.706772649553663e-09
         }
       },
       "erfc": {
-        "e_corr": -0.09860904124132834,
+        "e_corr": -0.09860904124146175,
         "metric": {
           "metric_min_eigenvalue": 0.0001330898660199667,
           "metric_max_eigenvalue": 18.687922652964104
         },
-        "mixed_coulomb_metric": -0.056792331287150305
+        "mixed_coulomb_metric": -0.056792331287125734
       },
-      "non_additivity_info": 0.08816807828642284
+      "non_additivity_info": 0.08816807828631898
     }
   ],
   "limits": {
     "erfc": {
       "0.01": {
-        "e_corr": -0.2486130755176195,
-        "minus_coulomb": 6.859101249201416e-07,
+        "e_corr": -0.24861307551807998,
+        "minus_coulomb": 6.859098702349797e-07,
         "metric": {
           "metric_min_eigenvalue": 0.00018276748213403497,
           "metric_max_eigenvalue": 415.4239903725102
         }
       },
       "0.001": {
-        "e_corr": -0.2486137610905654,
-        "minus_coulomb": 3.3717900693730485e-10,
+        "e_corr": -0.2486137610908744,
+        "minus_coulomb": 3.3707581170716594e-10,
         "metric": {
           "metric_min_eigenvalue": 0.00018280669608818773,
           "metric_max_eigenvalue": 430.5618051278818
         }
       },
       "0.0001": {
-        "e_corr": -0.2486137614620604,
-        "minus_coulomb": -3.4315994490441426e-11,
+        "e_corr": -0.24861376146235797,
+        "minus_coulomb": -3.4407754423426695e-11,
         "metric": {
           "metric_min_eigenvalue": 0.0001828102362225662,
           "metric_max_eigenvalue": 432.0781401613392
         }
       },
       "1e-05": {
-        "e_corr": -0.2486137614314158,
-        "minus_coulomb": -3.67139652013293e-12,
+        "e_corr": -0.24861376143165434,
+        "minus_coulomb": -3.704120343783757e-12,
         "metric": {
           "metric_min_eigenvalue": 0.00018281058780183438,
           "metric_max_eigenvalue": 432.2297865426142
@@ -183,8 +183,8 @@
     },
     "erf": {
       "100": {
-        "e_corr": -0.24855446480982774,
-        "minus_coulomb": 5.929661791667651e-05,
+        "e_corr": -0.24855446481027063,
+        "minus_coulomb": 5.929661767958838e-05,
         "metric": {
           "metric_min_eigenvalue": 0.00018258529047366295,
           "metric_max_eigenvalue": 432.24502661131055,
@@ -194,8 +194,8 @@
         }
       },
       "1000": {
-        "e_corr": -0.24861316823001503,
-        "minus_coulomb": 5.931977293816004e-07,
+        "e_corr": -0.24861316823023477,
+        "minus_coulomb": 5.931977154483015e-07,
         "metric": {
           "metric_min_eigenvalue": 0.00018280837287095884,
           "metric_max_eigenvalue": 432.2466201740575,
@@ -205,8 +205,8 @@
         }
       },
       "10000": {
-        "e_corr": -0.24861375549622935,
-        "minus_coulomb": 5.931515056900594e-09,
+        "e_corr": -0.24861375549661943,
+        "minus_coulomb": 5.9313307876340815e-09,
         "metric": {
           "metric_min_eigenvalue": 0.0001828106043194924,
           "metric_max_eigenvalue": 432.2466361098297,
@@ -216,8 +216,8 @@
         }
       },
       "100000": {
-        "e_corr": -0.2486137613687872,
-        "minus_coulomb": 5.895720023296747e-11,
+        "e_corr": -0.24861376136905725,
+        "minus_coulomb": 5.88929738309929e-11,
         "metric": {
           "metric_min_eigenvalue": 0.0001828106266220578,
           "metric_max_eigenvalue": 432.24663626918755,
@@ -230,15 +230,15 @@
   },
   "anchors": {
     "erfc_omega": 1e-05,
-    "erfc_e_corr": -0.2486137614314158,
+    "erfc_e_corr": -0.24861376143165434,
     "erf_omega": 100000.0,
-    "erf_e_corr": -0.2486137613687872
+    "erf_e_corr": -0.24861376136905725
   },
   "checks": {
     "erf_plus_erfc_minus_coulomb_max_abs": 9.245493259868454e-12,
-    "numpy_coulomb_vs_pyscf_rpa_abs": 3.524958103184872e-15
+    "numpy_coulomb_vs_pyscf_rpa_abs": 7.271960811294775e-15
   },
-  "generator_seconds": 1.395747673988808,
+  "generator_seconds": 1.0797211290337145,
   "provenance": {
     "code": "PySCF (integrals, RHF, Coulomb RPA anchor) + numpy (attenuated dRPA assembly)",
     "version": "2.13.1",
@@ -293,8 +293,8 @@
     ],
     "bohr_in_angstrom": 0.52917721092,
     "generator": "scripts/validation/gen_attenuated_rpa.py",
-    "git_head": "f6a0e6399aa9580218085a4a10dae18a926ffbaa",
-    "generated_utc": "2026-09-25T17:05:41+00:00",
+    "git_head": "8d6bb4f9bdf45c51b317a971b61ccf1537d84ee2",
+    "generated_utc": "2026-10-06T17:36:11+00:00",
     "aux_basis_json": "crates/ferric-core/src/basis/bundled/aug-cc-pvdz-rifit.json",
     "aux_basis_sha256": "0b64c175a31c523d6ab7e66719b29671eca91a0390e6ecad9ba863ac5cad6ea8"
   }

@@ -74,7 +74,7 @@ crates/ferric-mp2/src/scs.rs `scs_mp2_2terfc`: two calls of
 `ri_mp2_spin_components(.., Operator::terfc(r0), .., RiMp2Config{frozen_core,
 ..Default})` (scs.rs:203-220), then
     E = c_OS E_OS(r0_1) + c_SS [E_SS(r0_2) - E_SS(r0_1)]       (scs.rs:224-226)
-with defaults r0 = 0.75/1.05 A * 1.8897259886, c_OS 1.27, c_SS 4.05.
+with defaults r0 = 0.75/1.05 A * (1/0.52917721092), c_OS 1.27, c_SS 4.05.
 crates/ferric-mp2/src/rimp2.rs `ri_mp2_spin_components` (rimp2.rs:993+):
 metric_op None -> the METRIC is the same terfc operator (rimp2.rs:1025,
 `coulomb_metric_2c(met_op, ..)`), inverted by `metric_inverse_sqrt`, which for
@@ -112,8 +112,8 @@ CASES = (
     ("nh3", "cc-pvdz", "cc-pvdz-ri"),
     ("h2o", "aug-cc-pvdz", "aug-cc-pvdz-rifit"),
 )
-# ferric's Angstrom->Bohr for r0 (crates/ferric-mp2/src/scs.rs ANGSTROM_TO_BOHR).
-FERRIC_R0_ANG_TO_BOHR = 1.8897259886
+# ferric's Angstrom->Bohr for r0 (ferric_core::units::ANGSTROM_TO_BOHR).
+FERRIC_R0_ANG_TO_BOHR = common.ANGSTROM_TO_BOHR
 R0_ANG_INTEGRALS = (0.75, 1.05)
 R0_ANG_ENERGIES = (0.75, 1.00, 1.05)
 C_OS, C_SS = 1.27, 4.05
@@ -349,7 +349,7 @@ def sample_2c(t_ferric, laux, rng):
 # sqrt(gamma) F0(gamma R^2)); terf at r0 = 0 and fixed w gives the erf closed
 # form with 1/gamma' = 1/gamma + 1/w^2; terf on the curvature constraint
 # approaches Coulomb as r0 -> 0.
-ORACLE_R0_BOHR = (0.5, 0.75 * 1.8897259886, 1.05 * 1.8897259886, 4.0)
+ORACLE_R0_BOHR = (0.5, 0.75 * FERRIC_R0_ANG_TO_BOHR, 1.05 * FERRIC_R0_ANG_TO_BOHR, 4.0)
 # Pair atom A (two s primitives), pair atom B (one), aux atom C (two).
 ORACLE_GEOMS = (
     ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)),

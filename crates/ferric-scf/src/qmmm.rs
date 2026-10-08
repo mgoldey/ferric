@@ -2614,7 +2614,7 @@ mod tests {
 
     // ── F2-1: QmmmSystem::with_coordinates ──
 
-    const ANG2BOHR_TEST: f64 = 1.0 / 0.529_177_210_92;
+    const ANG2BOHR_TEST: f64 = ferric_core::units::ANGSTROM_TO_BOHR;
     const ETHANE_CC_TEST: f64 = 1.53 * ANG2BOHR_TEST;
 
     /// Mirrors `crates/ferric-scf/tests/qmmm.rs::ethane_atoms` /

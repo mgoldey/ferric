@@ -5,7 +5,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_integrals::threeindex;
 
-const A2B: f64 = 1.889_725_988_6;
+const A2B: f64 = ferric_core::units::ANGSTROM_TO_BOHR;
 
 fn have_tables() -> bool {
     std::env::var("FERRIC_TERF_TABLE_DIR").is_ok()

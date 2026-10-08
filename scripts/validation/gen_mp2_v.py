@@ -76,7 +76,7 @@ ROW_NAME = "attMP2 + VV10 (MP2-V)"
 GENERATOR = "scripts/validation/gen_mp2_v.py"
 
 # ferric att_vv10.rs BOHR_PER_ANG (the r0 conversion ferric uses).
-BOHR_PER_ANG = 1.8897259886
+BOHR_PER_ANG = common.ANGSTROM_TO_BOHR
 
 VV10_C = 0.0089
 # (r0 / A, b): Table 1 of Goldey, Belzunces & Head-Gordon, JCTC 11, 4159 (2015).
