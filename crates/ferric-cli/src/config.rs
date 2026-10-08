@@ -2309,6 +2309,15 @@ pub struct ScfCfg {
     /// The COSX final grid, same table as `cosx_grid`. Setting it turns the
     /// final pass on.
     pub cosx_final_grid: Option<CosxGridCfg>,
+    /// COSX SCF grid schedule (ORCA style). `true` runs the early iterations
+    /// on the coarse pruned sgx (25,110) grid
+    /// (`ferric_scf::cosx_schedule::COSX_DEFAULT_COARSE_GRID`), switches to
+    /// `cosx_grid` once the incoming max|ΔD| < 1e-3
+    /// (`COSX_DEFAULT_SWITCH_DP_MAX`), and accepts convergence only on the
+    /// `cosx_grid`; the final pass is unchanged. Omitted / `false` = every
+    /// iteration on `cosx_grid`. RHF/RKS and UHF/UKS only (ROHF/ROKS refuse
+    /// it). Setting it with `k_builder != "cosx"` is a hard error.
+    pub cosx_grid_schedule: Option<bool>,
     /// COSX overlap fit (Izsák–Neese). Omitted = `true`. At (50,110) the fit
     /// took the isodesmic reaction-energy error 0.2068 -> 0.0190 kcal/mol
     /// (water-favourable set); it is net-NEGATIVE on grids coarser than
@@ -2502,6 +2511,7 @@ impl Default for ScfCfg {
             cosx_grid: None,
             cosx_final_pass: None,
             cosx_final_grid: None,
+            cosx_grid_schedule: None,
             cosx_overlap_fit: None,
             cosx_backend: None,
             cosx_screen_thresh: None,
@@ -2582,6 +2592,7 @@ impl ScfCfg {
         let any_cosx_knob = self.cosx_grid.is_some()
             || self.cosx_final_pass.is_some()
             || self.cosx_final_grid.is_some()
+            || self.cosx_grid_schedule.is_some()
             || self.cosx_overlap_fit.is_some()
             || self.cosx_backend.is_some()
             || self.cosx_screen_thresh.is_some()
@@ -2589,7 +2600,7 @@ impl ScfCfg {
             || self.cosx_fp64_multiplier.is_some();
         if !is_cosx && any_cosx_knob {
             return Err(format!(
-                "[scf] cosx_grid / cosx_final_pass / cosx_final_grid / cosx_overlap_fit / cosx_backend / cosx_screen_thresh / cosx_half_transform / cosx_fp64_multiplier are set but k_builder = {:?}; they are only read with k_builder = \"cosx\"",
+                "[scf] cosx_grid / cosx_final_pass / cosx_final_grid / cosx_grid_schedule / cosx_overlap_fit / cosx_backend / cosx_screen_thresh / cosx_half_transform / cosx_fp64_multiplier are set but k_builder = {:?}; they are only read with k_builder = \"cosx\"",
                 self.k_builder
             ));
         }
@@ -2607,6 +2618,10 @@ impl ScfCfg {
         ferric_scf::cosx_k::apply_grid_knobs(&mut cfg, grid, self.cosx_final_pass, final_grid)
             .map_err(|e| format!("[scf] {e}"))?;
         validate_grid(&cfg.grid).map_err(|e| format!("[scf] cosx_grid: {e}"))?;
+        cfg.schedule = self
+            .cosx_grid_schedule
+            .unwrap_or(false)
+            .then(ferric_scf::cosx_schedule::CosxGridSchedule::default);
         if let Some(fit) = self.cosx_overlap_fit {
             cfg.overlap_fit = fit;
         }
@@ -5038,6 +5053,64 @@ json = [1, 2]
         .cosx_config(true)
         .unwrap_err();
         assert!(e.contains("cosx_screen_thresh > 0"), "{e}");
+    }
+
+    /// `[scf] cosx_grid_schedule`: off by default, `true` = the library
+    /// schedule defaults, a dead knob (hard error) without k_builder = "cosx"
+    /// even when `false`, and a strict bool.
+    #[test]
+    fn cosx_grid_schedule_key_resolves_strictly() {
+        let parse = |scf: &str| -> Config {
+            toml::from_str(&format!(
+                "[molecule]\nxyz = \"w.xyz\"\n[basis]\nname = \"sto-3g\"\n[method]\nkind = \"rhf\"\n[scf]\n{scf}"
+            ))
+            .unwrap()
+        };
+        // Grid schedule: off by default, on with the library defaults, dead
+        // knob without k_builder = "cosx" (also when set to false).
+        assert!(parse("k_builder = \"cosx\"\n")
+            .scf
+            .cosx_config(false)
+            .unwrap()
+            .schedule
+            .is_none());
+        assert!(parse("k_builder = \"cosx\"\ncosx_grid_schedule = false\n")
+            .scf
+            .cosx_config(false)
+            .unwrap()
+            .schedule
+            .is_none());
+        let s = parse("k_builder = \"cosx\"\ncosx_grid_schedule = true\n")
+            .scf
+            .cosx_config(false)
+            .unwrap()
+            .schedule
+            .expect("schedule on");
+        assert_eq!(
+            (
+                s.coarse_grid.n_radial,
+                s.coarse_grid.n_angular,
+                s.coarse_grid.prune
+            ),
+            ferric_scf::cosx_schedule::COSX_DEFAULT_COARSE_GRID
+        );
+        assert_eq!(
+            s.switch_dp_max,
+            ferric_scf::cosx_schedule::COSX_DEFAULT_SWITCH_DP_MAX
+        );
+        for kb in ["", "k_builder = \"link\"\n", "k_builder = \"direct\"\n"] {
+            for v in ["true", "false"] {
+                let e = parse(&format!("{kb}cosx_grid_schedule = {v}\n"))
+                    .scf
+                    .cosx_config(false)
+                    .unwrap_err();
+                assert!(e.contains("cosx_grid_schedule"), "{e}");
+            }
+        }
+        assert!(toml::from_str::<Config>(
+            "[molecule]\nxyz = \"w.xyz\"\n[basis]\nname = \"sto-3g\"\n[method]\nkind = \"rhf\"\n[scf]\nk_builder = \"cosx\"\ncosx_grid_schedule = \"yes\"\n"
+        )
+        .is_err());
     }
 
     /// `[scf] cosx_grid` / `cosx_overlap_fit`: parse, resolve, and refuse
