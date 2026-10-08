@@ -90,6 +90,7 @@ Read by every kind, because every kind runs an SCF first.
 | `cosx_final_pass` | bool | `true` | | Re-evaluate exchange once on a larger grid at the converged density and report that energy (the SCF-grid energy is printed and logged too). Without `cosx_final_grid` the grid is `{ radial = 50, angular = 302, prune = "sgx" }`. Gradient tasks run without it; ROHF/ROKS skips it with a note (an explicit `true` there is an error). Only with `cosx`. |
 | `cosx_final_grid` | inline table | none | as `cosx_grid` | The final-pass grid; setting it turns the pass on (`cosx_final_pass = false` with it is an error). RHF/RKS and UHF/UKS only. Only with `cosx`. |
 | `cosx_overlap_fit` | bool | `true` | | Only with `cosx`; otherwise it is an error. |
+| `cosx_grid_schedule` | bool | `false` | | Run the first SCF iterations on a coarse pruned `sgx` (25,110) exchange grid and switch to `cosx_grid` once the largest density change falls below 1e-3. Convergence is accepted only on the production grid, DIIS restarts at the switch, and the final-grid pass is unchanged. RHF/RKS and UHF/UKS; ROHF/ROKS refuse it. Only with `cosx`; setting it otherwise is an error. |
 | `cosx_backend` | string | `"md3c1e"` | `md3c1e` `cosx-a` | Only with `cosx`; otherwise it is an error. `cosx-a` is the slower cross-check kernel. |
 | `cosx_screen_thresh` | float | `1e-7` | ≥ 0 | Only with `cosx` and `md3c1e`. `0` disables the screen. |
 | `cosx_half_transform` | string | `"sparse"` | `sparse` `dense` | Only with `cosx`. |

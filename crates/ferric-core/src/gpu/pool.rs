@@ -78,13 +78,26 @@ impl DevicePool {
     /// leaves the ledger untouched.
     pub fn reserve(&self, label: &str, bytes: usize) -> Result<DeviceReservation, GpuError> {
         let cap = self.inner.capacity;
-        let outcome =
-            self.inner
-                .outstanding
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |cur| {
-                    let next = cur.saturating_add(bytes);
-                    (next <= cap).then_some(next)
-                });
+        // A compare-exchange loop rather than `fetch_update`, which newer Rust
+        // deprecates in favour of `try_update`: this builds warning-free on both.
+        let outcome = {
+            let mut cur = self.inner.outstanding.load(Ordering::Acquire);
+            loop {
+                let next = cur.saturating_add(bytes);
+                if next > cap {
+                    break Err(cur);
+                }
+                match self.inner.outstanding.compare_exchange_weak(
+                    cur,
+                    next,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(prev) => break Ok(prev),
+                    Err(actual) => cur = actual,
+                }
+            }
+        };
         match outcome {
             Ok(prev) => {
                 self.inner
