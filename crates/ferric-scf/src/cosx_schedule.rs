@@ -1,17 +1,17 @@
 //! Optional COSX SCF grid SCHEDULE (ORCA style: a coarse exchange grid for the
-//! early iterations, the production grid [`CosxConfig::grid`] once the density
+//! early iterations, the production grid `CosxConfig::grid` once the density
 //! has mostly settled, then the unchanged final-grid pass).
 //!
-//! OFF by default (`CosxConfig::schedule == None`): no [`ScheduleRun`] is
+//! OFF by default (`CosxConfig::schedule == None`): no `ScheduleRun` is
 //! created, every helper below is a pass-through, and the SCF is the
 //! unscheduled one bit for bit (`tests/cosx_grid_schedule.rs` anchors it).
 //!
 //! # What the schedule does, per iteration
 //!
-//! 1. Iterations `1..switch_iter` build K on [`CosxGridSchedule::coarse_grid`].
+//! 1. Iterations `1..switch_iter` build K on `CosxGridSchedule::coarse_grid`.
 //! 2. The iteration after the first one whose incoming density change
 //!    `max|ΔD|` (`ScfMonitor::dp_max`, the quantity the convergence gate
-//!    already tracks) falls below [`CosxGridSchedule::switch_dp_max`] rebuilds
+//!    already tracks) falls below `CosxGridSchedule::switch_dp_max` rebuilds
 //!    the builder on the production grid and builds K there from then on.
 //! 3. The convergence gate is CLOSED while on the coarse grid AND on the first
 //!    production iteration, whose density (and the ΔD/ΔE it is judged by) was
@@ -106,9 +106,9 @@ impl CosxGridSchedule {
 /// Which grid one iteration's K was built on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CosxGridPhase {
-    /// [`CosxGridSchedule::coarse_grid`].
+    /// `CosxGridSchedule::coarse_grid`.
     Coarse,
-    /// [`CosxConfig::grid`].
+    /// `CosxConfig::grid`.
     Production,
 }
 
