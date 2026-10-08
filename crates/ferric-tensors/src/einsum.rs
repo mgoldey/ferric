@@ -217,7 +217,7 @@ pub fn einsum_binary_batched(
     Ok(out)
 }
 
-/// Contraction-axis block size for [`gemm_kblocked`]. Matches
+/// Contraction-axis block size for `gemm_kblocked`. Matches
 /// `three_index_source.rs`'s `DRESS_K_BLOCK`, which the DF dressing work
 /// (`eb895df`) measured as the accuracy knee.
 pub const GEMM_K_BLOCK: usize = 128;

@@ -8772,6 +8772,8 @@ fn configure_gpu<'py>(
     let bad =
         |k: &str, e: String| pyo3::exceptions::PyValueError::new_err(format!("[gpu] {k}: {e}"));
     let explicit = GpuSettingsExplicit {
+        // Python has no command line: the `--gpu` flag slot stays empty.
+        cli_preset: None,
         preset: preset
             .map(|s| s.parse::<GpuPreset>().map_err(|e| bad("preset", e)))
             .transpose()?,
