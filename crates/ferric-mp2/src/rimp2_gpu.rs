@@ -503,8 +503,8 @@ pub fn g_block_on_device(
 // differ ONLY in how `g_i` was formed. The per-i energies are summed serially in
 // ascending i, exactly as the CPU `partials.into_iter().sum()`.
 //
-// Precision. f64 unless the caller passes `mixed_ok` (only `u_ri_mp2` with the
-// Coulomb operator and no kappa does) AND the settings allow `rimp2-energy`:
+// Precision. f64 unless the caller passes `mixed_ok` (only `u_ri_mp2` with a
+// Coulomb, erfc or terfc operator and no kappa does) AND the settings allow `rimp2-energy`:
 // then each spin's `B_ov` is resident as f32 and every block (αα, ββ, αβ) is
 // formed by the same k-panelled SGEMM with f64 accumulation as the closed-shell
 // kernel (`gemm_f32_f64acc_dev`); the pair arithmetic stays f64. A mixed-path
@@ -868,7 +868,7 @@ fn u_run_with_fallback(
 
 /// Same-spin (αα or ββ) energy on the device, or `None` for the CPU path.
 /// `mixed_ok`: this caller may use the `rimp2-energy` mixed kernel when the
-/// settings allow it (Coulomb U-RI-MP2 only).
+/// settings allow it (`u_ri_mp2` under `rimp2::mixed_energy_operator` only).
 pub fn try_u_same_spin_on_device(ch: SpinChannel<'_>, mixed_ok: bool) -> Option<f64> {
     let (dev, pool, precision) = u_dispatch_context(mixed_ok)?;
     u_run_with_fallback(precision, |p| {

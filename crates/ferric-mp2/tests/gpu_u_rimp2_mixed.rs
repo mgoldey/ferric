@@ -387,7 +387,7 @@ fn without_mixed_the_unrestricted_energy_is_the_f64_kernel_bit_for_bit() {
             try_u_opposite_spin_on_device(a.ch(), b.ch(), ok).unwrap(),
         ]
     };
-    // settings allow mixed, the caller says no (every caller but Coulomb u_ri_mp2)
+    // settings allow mixed, the caller says no (every caller but u_ri_mp2 under Coulomb/erfc/terfc)
     let s0 = stats();
     let gated = run(false);
     let s1 = stats();

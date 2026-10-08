@@ -67,3 +67,19 @@ pub fn chans(a: &UMp2Amplitudes) -> (Chan, Chan) {
     };
     (mk(&a.inter_a, &a.eps_a), mk(&a.inter_b, &a.eps_b))
 }
+
+/// The two spin channels of `case` with the RI-MP2 intermediates (and metric)
+/// under `op` instead of Coulomb.
+#[allow(dead_code)] // not every binary that includes this module uses it
+pub fn chans_for_op(case: &Case, op: Operator) -> (Chan, Chan) {
+    let amps = compute_u_mp2_amplitudes(
+        &case.mol,
+        &case.obs,
+        &case.dfbs,
+        op,
+        &case.scf,
+        &RiMp2Config::default(),
+    )
+    .unwrap();
+    chans(&amps)
+}

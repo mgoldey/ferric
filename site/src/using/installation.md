@@ -228,7 +228,7 @@ What runs on the device, under `mode = "auto"` or `"on"`:
 - Dense f64 contractions issued through `einsum!` (the coupled-cluster and MP2-family drivers) above a size threshold.
 - The closed-shell RI-MP2 energy, with `B_ov` resident on the card: f64 by default (`[gpu] precision = "f64"`), or with `precision = "mixed"` `B_ov` stored as f32 and accumulated in f64 (see the [validation page](../reference/validation.md#mixed-precision-gpu-kernels) for its measured error).
 - The unrestricted RI-MP2 energy (open-shell reference, amplitude-free path), with one resident `B_ov` per spin: f64 by default, or with `precision = "mixed"` each spin's `B_ov` stored as f32 and the αα, ββ and αβ blocks accumulated in f64 by the same kernel.
-- Mixed applies to the Coulomb RI-MP2 energy only, closed-shell or unrestricted; attenuated operators (including the unrestricted attenuated MP2), SR-MP2 in RS-MP2+RPA, OO-MP2 and kappa-regularised runs use the f64 device kernel.
+- Mixed applies to the RI-MP2 energy under the Coulomb, erfc and terfc operators, closed-shell or unrestricted (plain RI-MP2, attenuated RI-MP2, SCS-MP2 with two terfc operators, the MP2 half of att-MP2+VV10); the erf operator, composite fitted operators, SR-MP2 in RS-MP2+RPA, OO-MP2 and kappa-regularised runs use the f64 device kernel.
 - The density-fitted Coulomb matrix (RI-J): the raw three-index tensor is stored on the card once per geometry (packed lower triangle, f64) and each J build moves only the density weights and the result.
 - The density-fitted exchange matrix (DF-K, occupied-orbital path): the dressed three-index tensor is stored on the card once per geometry and each K build moves only the occupied coefficients and the result, in f64.
 

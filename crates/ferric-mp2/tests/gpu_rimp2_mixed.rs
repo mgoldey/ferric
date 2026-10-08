@@ -1042,9 +1042,9 @@ fn degenerate_shapes_never_panic_in_the_mixed_arm() {
     assert_eq!(pool.available_bytes(), pool.capacity_bytes());
 }
 
-/// The mixed error map was measured on Coulomb RI-MP2 only. The callers that are
-/// not that entry (`spin_components_from_b_ov`: attenuated MP2, SR-MP2 in RS-MP2+RPA,
-/// OO-MP2) and `spin_components_from_b_ov_kappa_f64` run the device in f64 under
+/// The mixed error map covers the Coulomb, erfc and terfc RI-MP2 energies. The
+/// callers that are not those entries (`spin_components_from_b_ov`: SR-MP2 in
+/// RS-MP2+RPA, OO-MP2) and `spin_components_from_b_ov_kappa_f64` run the device in f64 under
 /// `precision = "mixed"`: no mixed GEMM is counted, the result is the f64 device
 /// result bit for bit, and it differs from the mixed one.
 #[test]

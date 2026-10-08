@@ -273,9 +273,9 @@ pub fn u_ri_mp2(
     let eps_b: &[f64] = scf.eps_b();
 
     // The mixed-precision error map (`[gpu] precision = "mixed"`, kernel
-    // `rimp2-energy`) was measured on Coulomb U-RI-MP2 only: any other
-    // operator (the attenuated U-MP2 of `u_att_mp2_vv10`) runs the device in f64.
-    let mixed_ok = config.kappa.is_none() && op == Operator::coulomb();
+    // `rimp2-energy`) covers the Coulomb, erfc and terfc energies
+    // (`rimp2::mixed_energy_operator`); any other operator runs the device in f64.
+    let mixed_ok = config.kappa.is_none() && crate::rimp2::mixed_energy_operator(op);
     let e_aa = same_spin_pair_energy(&inter_a, eps_a, mixed_ok);
     let e_bb = same_spin_pair_energy(&inter_b, eps_b, mixed_ok);
     let e_ab = opposite_spin_pair_energy(&inter_a, &inter_b, eps_a, eps_b, mixed_ok);
@@ -624,7 +624,7 @@ fn same_spin_energy_only(ch: SpinChannel, mixed_ok: bool) -> f64 {
 ///
 /// Returns `(energy, Some(t))` when `want_amplitudes`, else `(energy, None)`.
 /// The energy-only call may run on the device, always in f64 (only `u_ri_mp2`
-/// with the Coulomb operator may use the mixed kernel).
+/// with a Coulomb, erfc or terfc operator may use the mixed kernel).
 #[doc(hidden)]
 pub fn same_spin_pair_kernel(ch: SpinChannel, want_amplitudes: bool) -> (f64, Option<Array4<f64>>) {
     use ndarray::Axis;

@@ -1162,12 +1162,30 @@ pub fn ri_mp2_spin_components(
             )));
         }
     }
-    // The mixed-precision error map was measured on Coulomb RI-MP2 only: an
-    // attenuated or regularised operator runs the device in f64.
-    let mixed_ok = config.kappa.is_none() && op == Operator::coulomb();
+    // The mixed-precision error map covers the Coulomb, erfc and terfc energies
+    // (`mixed_energy_operator`); any other operator or a kappa-regularised run
+    // keeps the device in f64.
+    let mixed_ok = config.kappa.is_none() && mixed_energy_operator(op);
     let dims = (nocc, nvir, first_occ, nocc_total);
     let sc = dispatch_spin_components(&b_flat, eps, dims, config.kappa, mixed_ok);
     Ok((sc, b_flat))
+}
+
+/// Whether an RI-MP2 ENERGY under `op` may use the `rimp2-energy` mixed kernel
+/// (`[gpu] precision = "mixed"`): the primitive Coulomb, erfc and terfc
+/// operators, whose error maps were measured (validation page, "Mixed-precision
+/// GPU kernels"). The mixed bound is per element ε_G·Σ_P|B_P,ia||B_P,jb|, read
+/// from the operator's own dressed `B_ov`, so it carries that operator's metric
+/// conditioning and `B` magnitudes; it assumes only that the f64 `B_ov` both
+/// sides share is the reference (its own fitting error is not part of it).
+/// erf, composite (fitted) operators and every other kind run the device in f64.
+pub fn mixed_energy_operator(op: Operator) -> bool {
+    use ferric_integrals::operator::OperatorKind;
+    !op.is_composite()
+        && matches!(
+            op.kind,
+            OperatorKind::Coulomb | OperatorKind::ErfcCoulomb | OperatorKind::Terfc
+        )
 }
 
 /// Spin-component MP2 energy from a pre-built dressed `b_ov` (no integral
@@ -1176,9 +1194,9 @@ pub fn ri_mp2_spin_components(
 /// reuse them rather than rebuild the `(P|op|ia)` transform. `eps` is the full
 /// orbital-energy slice `rhf.eps_r()`.
 ///
-/// This is the entry of the attenuated, RS-MP2+RPA and OO-MP2 callers, not of
-/// Coulomb RI-MP2: the device runs f64 even under `[gpu] precision = "mixed"`,
-/// because the mixed error map was measured on Coulomb RI-MP2 only.
+/// This is the entry of the SR-MP2 inside RS-MP2+RPA and of OO-MP2 (an energy
+/// kernel inside a larger algorithm whose sensitivity to the mixed error was
+/// not analysed): the device runs f64 even under `[gpu] precision = "mixed"`.
 pub fn spin_components_from_b_ov(
     b_ov: &Array2<f64>,
     eps: &[f64],
@@ -1212,8 +1230,8 @@ pub fn spin_components_from_b_ov_kappa(
 }
 
 /// [`spin_components_from_b_ov_kappa`] with the device kept in f64 even when
-/// `[gpu] precision = "mixed"` allows the RI-MP2 energy kernel. The mixed error
-/// map was measured on Coulomb RI-MP2 only, so every other caller uses this.
+/// `[gpu] precision = "mixed"` allows the RI-MP2 energy kernel: the entry of
+/// every caller outside [`mixed_energy_operator`]'s energy paths.
 pub fn spin_components_from_b_ov_kappa_f64(
     b_ov: &Array2<f64>,
     eps: &[f64],

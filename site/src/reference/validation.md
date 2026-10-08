@@ -57,7 +57,7 @@ Open-shell support is listed only where the dispatch code handles it (see
 | `uhf` | [SCF](../methods/scf.md) | UHF; UKS with `[dft] functional` | ✓ | ✓ analytic (+ D3(BJ) or MBD@rsSCS gradient with `[dft] dispersion` on UKS) | analytic (UHF, exact J/K, no ECP, up to f); FD otherwise; with `[dft] dispersion` on UKS, FD of the KS + dispersion gradient | `run_uhf`, `run_frequencies(reference="uhf", xc=..., dispersion=...)` | `h_uhf.toml` | [Proven](#anchors) | — |
 | `rohf` | [SCF](../methods/scf.md) | ROHF; ROKS with `[dft] functional` | ✓ | ✓ analytic (+ D3(BJ) or MBD@rsSCS gradient with `[dft] dispersion` on ROKS) | FD (+ the dispersion gradient with `[dft] dispersion` on ROKS) | `run_rohf`, `run_frequencies(reference="rohf", xc=..., dispersion=...)` | — | [Proven](#anchors) | — |
 | `ksdft` | [SCF/DFT](../methods/scf.md) | RKS; UKS when multiplicity > 1 | ✓ | ✓ analytic (+ D3(BJ) or MBD@rsSCS gradient with `[dft] dispersion`, RKS and UKS) | FD; with `[dft] dispersion` FD of the KS + dispersion gradient (RKS and UKS); refused with `grid_prune` | `run_dft` / `run_ksdft`, `run_frequencies(xc=..., dispersion=...)` | `benzene-dfb3lyp.toml`, `h2-lda-opt.toml` | [Proven](#anchors) | — |
-| `rimp2` | [MP2](../methods/mp2.md) | RHF; UHF + unrestricted RI-MP2 when multiplicity > 1 (energy only) | ✓ | ✓ analytic (Z-vector; closed shell only) | — | `run_rimp2` (UHF + UMP2 when multiplicity > 1) | `water-rimp2.toml`; local: `water-rimp2-local.toml`, `alkane8-rimp2-local-direct.toml` | [Proven](#anchors) | Exact RI-MP2. With `[local] scheme = "amplitude-threshold"` (`run_rimp2(local=..., eps=...)`): [Proven (narrow)](#anchors) by its exact limit — at ε = 0 the in-core and `integral_direct` paths match PySCF DF-MP2 to ≤1.1e-11 Ha (H2O and n-butane, 6-31G and cc-pVDZ); finite ε is a measured error map, not validated; closed shell and `task = "energy"` only; ε = 0 reproduces exact `rimp2`; the exact reference and the error against it are opt-in (`[local] reference = true`, `compute_reference=True`). `integral_direct = true` never forms the global 3-index tensor; its measured scaling is under [Known limits](#known-limits-and-negatives). On the device (`[gpu]`) the energy stage runs with `B_ov` resident: at `precision = "f64"` (the default) it agrees with the CPU path to within a bound on the difference of summation order (`gpu_rimp2_resident.rs`); with `precision = "mixed"` and `rimp2-energy` in `mixed_kernels` it is a **measured error map, not Proven** (f32-resident `B_ov`, f64 accumulation; closed-shell and unrestricted Coulomb RI-MP2), graded under [Mixed-precision GPU kernels](#mixed-precision-gpu-kernels). |
+| `rimp2` | [MP2](../methods/mp2.md) | RHF; UHF + unrestricted RI-MP2 when multiplicity > 1 (energy only) | ✓ | ✓ analytic (Z-vector; closed shell only) | — | `run_rimp2` (UHF + UMP2 when multiplicity > 1) | `water-rimp2.toml`; local: `water-rimp2-local.toml`, `alkane8-rimp2-local-direct.toml` | [Proven](#anchors) | Exact RI-MP2. With `[local] scheme = "amplitude-threshold"` (`run_rimp2(local=..., eps=...)`): [Proven (narrow)](#anchors) by its exact limit — at ε = 0 the in-core and `integral_direct` paths match PySCF DF-MP2 to ≤1.1e-11 Ha (H2O and n-butane, 6-31G and cc-pVDZ); finite ε is a measured error map, not validated; closed shell and `task = "energy"` only; ε = 0 reproduces exact `rimp2`; the exact reference and the error against it are opt-in (`[local] reference = true`, `compute_reference=True`). `integral_direct = true` never forms the global 3-index tensor; its measured scaling is under [Known limits](#known-limits-and-negatives). On the device (`[gpu]`) the energy stage runs with `B_ov` resident: at `precision = "f64"` (the default) it agrees with the CPU path to within a bound on the difference of summation order (`gpu_rimp2_resident.rs`); with `precision = "mixed"` and `rimp2-energy` in `mixed_kernels` it is a **measured error map, not Proven** (f32-resident `B_ov`, f64 accumulation; closed-shell and unrestricted, Coulomb, erfc and terfc operators), graded under [Mixed-precision GPU kernels](#mixed-precision-gpu-kernels). |
 | `mp3` | [MP2](../methods/mp2.md) | RHF | ✓ | — | — | `run_mp3` | `water-mp3.toml` | [Proven](#anchors) | — |
 | `oo-rimp2` | [MP2](../methods/mp2.md) | RHF; UHF + unrestricted OO-RI-MP2 when multiplicity > 1 (energy only) | ✓ | — | — | `run_oo_rimp2` (closed shell only) | `water-oo-rimp2.toml` | [Proven (narrow)](#anchors) | Energy matches an independent numpy OO-RI-MP2 to 7.5e-13 Ha (closed-shell H2O and NH3, UHF CH3 / cc-pVDZ) and the closed-shell analytic gradient matches a finite difference of its own energy to 8e-9 Ha/Bohr. ORCA 6.1.1 stops 3.7e-8 to 7.0e-8 Ha above the same minimum. |
 | `att-rimp2` | [MP2](../methods/mp2.md) | RHF | ✓ | — | — | `run_attenuated_rimp2` | `water-attmp2.toml` | [Proven](#anchors) | — |
@@ -371,9 +371,10 @@ and forms every block of E_αα, E_ββ and E_αβ with the same f32 panel produ
 width b = 64 and f64 accumulation; the antisymmetrised same-spin
 K = g_ab − g_ba, the opposite-spin g², the denominators and all sums are f64.
 The refusals and the `mixed_fallback_f64` counter are the closed-shell ones.
-Every other caller of the unrestricted pair kernels (the attenuated
-unrestricted MP2 of att-MP2+VV10, any non-Coulomb operator, and direct calls
-of the pair kernels) runs the f64 device kernel.
+The erfc and terfc unrestricted energies use the same kernel (next
+paragraph); every other caller of the unrestricted pair kernels (the erf
+operator, composite fitted operators, and direct calls of the pair kernels)
+runs the f64 device kernel.
 
 | Column | Value |
 |---|---|
@@ -403,6 +404,45 @@ error of 2⁻³⁰) and by the panel counter (⌈naux/b⌉ panels per block). Te
 `crates/ferric-mp2/tests/gpu_u_rimp2_mixed.rs` and
 `crates/ferric-mp2/tests/gpu_u_rimp2_mixed_pin.rs` (which callers may use the
 kernel).
+
+**`rimp2-energy`, erfc and terfc operators** (shipped, same kernel). The RI-MP2
+energy under the primitive erfc and terfc operators, closed-shell and
+unrestricted, runs the same kernel: plain and attenuated RI-MP2
+(`att-rimp2`, dense and QQR-screened), SCS-MP2 with two terfc operators and the
+MP2 half of att-MP2+VV10. The per-element factor is the Coulomb one (a property
+of the arithmetic), but S_ab = Σ_P |B_P,ia||B_P,jb| and the underflow term are
+read from that operator's own dressed `B_ov`, whose metric is the attenuated
+(P|Q); a worse-conditioned attenuated metric would appear as larger |B| and
+larger S_ab / |g_ab| and is carried element by element. The bound assumes the
+reference is the f64 energy of the same f64 `B_ov`: the attenuated RI fitting
+error is common to both and is not part of it. The erf operator, composite
+fitted operators (`terfc_fit`), SR-MP2 inside RS-MP2+RPA and OO-MP2 (the energy
+kernel inside a larger algorithm whose sensitivity to this error was not
+analysed) and kappa-regularised runs stay on the f64 device kernel.
+
+Measured at the repository defaults (erfc ω = 0.420 Å⁻¹, terfc r₀ = 1.05 Å),
+cc-pVDZ / cc-pVDZ-RI, all electrons correlated, against the f64 CPU energy of
+the same `B_ov` (RI-JK RHF / UHF references). At these parameters the dressed
+`B_ov` is as well scaled as the Coulomb one (water: max|B| 0.209 erfc, 0.211
+terfc, 0.201 Coulomb; κ_E 1.306, 1.305, 1.304):
+
+| System | Operator | naux | E_corr (Eh) | ΔE total (Eh) | per heavy atom | per electron | bound (Eh) | bound per heavy atom |
+|---|---|---|---|---|---|---|---|---|
+| H2O | erfc | 84 | −0.198624 | −1.7e-9 | 1.7e-9 | 1.7e-10 | 4.3e-6 | 4.3e-6 |
+| H2O | terfc | 84 | −0.203297 | +6.1e-9 | 6.1e-9 | 6.1e-10 | 4.3e-6 | 4.3e-6 |
+| O2 triplet | erfc | 112 | −0.337446 | −2.2e-9 | 1.1e-9 | 1.4e-10 | 3.8e-6 | 1.9e-6 |
+| O2 triplet | terfc | 112 | −0.346018 | −4.5e-9 | 2.3e-9 | 2.8e-10 | 3.9e-6 | 2.0e-6 |
+| CH3 doublet | erfc | 98 | −0.122053 | −6.5e-11 | 6.5e-11 | 7.2e-12 | 1.5e-6 | 1.5e-6 |
+| CH3 doublet | terfc | 98 | −0.126625 | −1.8e-9 | 1.8e-9 | 2.1e-10 | 1.6e-6 | 1.6e-6 |
+
+Every component (OS and SS, or αα, ββ and αβ) is inside its bound, and the
+f32-storage part of the error is above the f64 device gate on every one, so a
+caller that must stay f64 is told apart from a mixed one. These are small
+systems at moderate attenuation; a strongly attenuated or poorly conditioned
+metric is not measured here. Test files:
+`crates/ferric-mp2/tests/gpu_rimp2_mixed_attenuated.rs` (needs
+`FERRIC_TERF_TABLE_DIR` for the terfc rows) and
+`crates/ferric-mp2/tests/gpu_u_rimp2_mixed_pin.rs`.
 
 ## Known limits and negatives
 

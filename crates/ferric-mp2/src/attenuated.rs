@@ -120,7 +120,7 @@
 use crate::mo_transform::transform_3center_ov;
 use crate::rimp2::{
     active_occ, cholesky_inverse_sqrt, ri_mp2_spin_components, spin_components_from_b_ov,
-    RiMp2Config, SpinComponents,
+    spin_components_from_b_ov_kappa, RiMp2Config, SpinComponents,
 };
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
@@ -328,8 +328,13 @@ fn attenuated_spin_components_screened(
     // 3-index build differs (QQR-3 screened vs dense). Reuse the shared,
     // i-blocked-GEMM + par-i spin-component assembly instead of the hand-rolled
     // serial (i,j,a,b) O(naux) double-dot loop, which had neither the M4 GEMM
-    // port nor parallelization.
-    let sc = spin_components_from_b_ov(&b_flat, eps, nocc, nvir, first_occ, nocc_total);
+    // port nor parallelization. Like the dense path, an erfc/terfc energy may
+    // use the mixed device kernel (`rimp2::mixed_energy_operator`).
+    let sc = if crate::rimp2::mixed_energy_operator(op) {
+        spin_components_from_b_ov_kappa(&b_flat, eps, nocc, nvir, first_occ, nocc_total, None)
+    } else {
+        spin_components_from_b_ov(&b_flat, eps, nocc, nvir, first_occ, nocc_total)
+    };
     Ok(sc)
 }
 

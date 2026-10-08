@@ -1,16 +1,16 @@
 #![cfg(feature = "gpu")]
 //! Which unrestricted RI-MP2 callers may use the mixed kernel. With
 //! `precision = mixed` and `rimp2-energy` allowed:
-//!  * `u_ri_mp2` with the Coulomb operator (and no kappa) runs the MIXED kernel
-//!    for every occupied block of E_αα, E_ββ and E_αβ;
-//!  * `u_ri_mp2` with any other operator (the attenuated U-MP2 of
-//!    `u_att_mp2_vv10`) and the public pair kernels (`same_spin_pair_kernel`,
+//!  * `u_ri_mp2` with the Coulomb, erfc or terfc operator (and no kappa) runs
+//!    the MIXED kernel for every occupied block of E_αα, E_ββ and E_αβ;
+//!  * `u_ri_mp2` with any other operator (erf, composite fits) and the public
+//!    pair kernels (`same_spin_pair_kernel`,
 //!    `opposite_spin_pair_kernel`: the FD helper and every other direct caller)
 //!    run the f64 device kernel exactly as at `precision = "f64"`: no mixed GEMM,
 //!    one f64 GEMM per occupied block, inside the f64 summation-order bound.
 //!
-//! The mixed error map (`gpu_u_rimp2_mixed.rs`) was measured on Coulomb
-//! U-RI-MP2 only.
+//! The mixed error maps: `gpu_u_rimp2_mixed.rs` (Coulomb) and
+//! `gpu_rimp2_mixed_attenuated.rs` (erfc, terfc).
 use ferric_core::gpu::{
     install, probe, stats, GpuMode, GpuSettingsExplicit, GpuStatus, MixedKernel, MixedKernelSet,
     Precision,
@@ -30,7 +30,7 @@ mod synth;
 use fixture::{cpu_opp, cpu_same};
 
 #[test]
-fn mixed_allowed_coulomb_u_rimp2_runs_mixed_and_every_other_caller_stays_f64() {
+fn mixed_allowed_coulomb_erfc_u_rimp2_runs_mixed_and_every_other_caller_stays_f64() {
     if !matches!(probe(0), GpuStatus::Ready(_)) {
         eprintln!("skipping: no CUDA device");
         assert!(
@@ -96,7 +96,10 @@ fn mixed_allowed_coulomb_u_rimp2_runs_mixed_and_every_other_caller_stays_f64() {
     // Coulomb: the mixed kernel, every block
     let (_, mixed, f64n) = run(Operator::coulomb());
     assert_eq!((mixed, f64n), (blocks, 0), "Coulomb U-RI-MP2 under mixed");
-    // erfc (the attenuated U-MP2 operator class): f64 device kernel only
+    // erfc: widened, the mixed kernel
     let (_, mixed, f64n) = run(Operator::erfc(0.5));
-    assert_eq!((mixed, f64n), (0, blocks), "non-Coulomb U-RI-MP2 stays f64");
+    assert_eq!((mixed, f64n), (blocks, 0), "erfc U-RI-MP2 under mixed");
+    // erf (not widened): f64 device kernel only
+    let (_, mixed, f64n) = run(Operator::erf(0.5));
+    assert_eq!((mixed, f64n), (0, blocks), "erf U-RI-MP2 stays f64");
 }

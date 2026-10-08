@@ -45,6 +45,18 @@ pub fn prepare_scf(
     aux_name: &str,
     frozen: usize,
 ) -> (Prepared, SpinComponents) {
+    prepare_scf_op(sys, obs_name, aux_name, frozen, Operator::coulomb())
+}
+
+/// [`prepare_scf`] with the RI-MP2 (and its metric) under `mp2_op`; the RHF is
+/// always Coulomb.
+pub fn prepare_scf_op(
+    sys: &str,
+    obs_name: &str,
+    aux_name: &str,
+    frozen: usize,
+    mp2_op: Operator,
+) -> (Prepared, SpinComponents) {
     let root = env!("CARGO_MANIFEST_DIR");
     // testdata/molecules/{sys}.xyz first, then testdata/molecules/validation/
     let dir = format!("{root}/../../testdata/molecules");
@@ -78,7 +90,7 @@ pub fn prepare_scf(
         .num_threads(1)
         .build()
         .unwrap()
-        .install(|| ri_mp2_spin_components(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap());
+        .install(|| ri_mp2_spin_components(&mol, &obs, &dfbs, mp2_op, &rhf, &cfg).unwrap());
     let nocc_total = (mol.nelec() as usize) / 2;
     let nocc = nocc_total - frozen;
     let nvir = obs.nbasis() - nocc_total;
