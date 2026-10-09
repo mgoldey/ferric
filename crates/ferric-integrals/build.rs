@@ -31,10 +31,18 @@ fn main() {
     // --- libecpint: configure + build the vendored static library via CMake ---
     let (ecpint_lib_dir, ecpint_include_dirs) = build_libecpint();
 
-    // --- libint2 shim (unchanged) ---
-    cc::Build::new()
-        .cpp(true)
-        .file("shim/shim.cc")
+    // --- libint2 header override (GmEval per-call copy fix) ---
+    let boys_override = libint2_boys_override(&libint_root);
+
+    // --- libint2 shim ---
+    let mut shim_build = cc::Build::new();
+    shim_build.cpp(true).file("shim/shim.cc");
+    if let Some(dir) = &boys_override {
+        // MUST precede every libint2 include dir: shim.cc reaches boys.h via
+        // engine.impl.h's `#include <libint2/boys.h>`, and the first -I wins.
+        shim_build.include(dir);
+    }
+    shim_build
         .include(format!("{libint_root}/include"))
         .include(format!("{libint_root}/include/libint2"))
         // Eigen under the libint2 prefix: a conda build (conda/recipe.yaml)
@@ -100,6 +108,10 @@ fn main() {
 
     println!("cargo:rerun-if-env-changed=LIBINT2_PREFIX");
     println!("cargo:rerun-if-changed={libint_root}/include/libint2/config.h");
+    println!("cargo:rerun-if-env-changed=FERRIC_LIBINT2_STOCK_BOYS");
+    for (version, _) in STOCK_BOYS_H_FNV1A64 {
+        println!("cargo:rerun-if-changed=shim/libint2_overrides/{version}/libint2/boys.h");
+    }
     println!("cargo:rerun-if-changed=shim/shim.h");
     println!("cargo:rerun-if-changed=shim/shim.cc");
     println!("cargo:rerun-if-changed=shim/ecp_shim.h");
@@ -109,8 +121,6 @@ fn main() {
     println!("cargo:rerun-if-changed=shim/libecpint/include");
 }
 
-/// Configure and build the vendored libecpint static library with CMake.
-/// Returns (directory containing libecpint.a + libFaddeeva.a, include dirs for the shim).
 /// The single libint2 install the shim compiles and links against: the
 /// configured prefix if it has libint2 headers, else `/usr/local` if it does.
 /// Panics otherwise, naming both, so a missing install fails the build instead
@@ -135,6 +145,90 @@ fn libint_root(prefix: &str) -> String {
     );
 }
 
+/// FNV-1a 64 of each STOCK libint2 `include/libint2/boys.h` for which
+/// `shim/libint2_overrides/<version>/libint2/boys.h` holds a patched copy.
+/// - 2.7.2: mpqc4 tarball `libint-2.7.2-mpqc4.tgz`
+///   (sha256 880592b9026352c871c96877a43788edd22edb0b1057ab5a73657c40b3a61505).
+/// - 2.13.1: conda-forge `libint-2.13.1-h83f5b4b_0.conda` as installed by
+///   scripts/install-libint.sh
+///   (sha256 890ab0261a2be2517d3d4cedfd7d07e2a1c6be7b6f057dc7ea2ea418e17067c1).
+const STOCK_BOYS_H_FNV1A64: [(&str, u64); 2] = [
+    ("2.7.2", 0x1d51_ac52_f207_6ad8),
+    ("2.13.1", 0x0f6f_0c23_194e_18ad),
+];
+
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in bytes {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+/// Decide whether to put `shim/libint2_overrides/<version>` first on the
+/// shim's include path. Each such directory holds a patched copy of that
+/// libint2 version's `boys.h` in which `GenericGmEval::eval` no longer
+/// copy-constructs the erf/erfc evaluator per primitive quartet (see
+/// shim/libint2_overrides/README.md).
+///
+/// The override is a whole-file replacement, so it is applied ONLY when the
+/// boys.h under `libint_root` (the one root the shim compiles against) is
+/// byte-identical to one of the stock files listed in `STOCK_BOYS_H_FNV1A64`,
+/// and then the override made from THAT version is used. Any other libint2
+/// (another version, the terf-patched prefix, a distro build) gets its own
+/// header untouched plus a warning: silently shadowing a different version's
+/// boys.h would be far worse than the slowdown.
+/// `FERRIC_LIBINT2_STOCK_BOYS=1` forces the stock header (A/B runs).
+fn libint2_boys_override(libint_root: &str) -> Option<PathBuf> {
+    if std::env::var_os("FERRIC_LIBINT2_STOCK_BOYS").is_some() {
+        println!(
+            "cargo:warning=FERRIC_LIBINT2_STOCK_BOYS set: libint2 GmEval copy fix NOT applied"
+        );
+        return None;
+    }
+    let found = PathBuf::from(format!("{libint_root}/include/libint2/boys.h"));
+    println!("cargo:rerun-if-changed={}", found.display());
+    let bytes = match std::fs::read(&found) {
+        Ok(b) => b,
+        Err(e) => {
+            println!(
+                "cargo:warning=cannot read {} ({e}); libint2 GmEval copy fix NOT applied",
+                found.display()
+            );
+            return None;
+        }
+    };
+    let hash = fnv1a64(&bytes);
+    let Some((version, _)) = STOCK_BOYS_H_FNV1A64.iter().find(|(_, h)| *h == hash) else {
+        println!(
+            "cargo:warning={} (FNV-1a 64 {hash:#018x}) is not a stock libint2 boys.h ferric has an override for ({}); libint2 GmEval copy fix NOT applied (erf/erfc integrals scale poorly across threads)",
+            found.display(),
+            STOCK_BOYS_H_FNV1A64
+                .iter()
+                .map(|(v, _)| *v)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        return None;
+    };
+    let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    let dir = manifest_dir.join(format!("shim/libint2_overrides/{version}"));
+    if !dir.join("libint2/boys.h").is_file() {
+        // A stock hash with no override file is a repo-layout bug, not a
+        // user environment problem: fail loudly rather than silently skip.
+        panic!(
+            "{} matches stock libint2 {version} but {} is missing",
+            found.display(),
+            dir.join("libint2/boys.h").display()
+        );
+    }
+    println!("cargo:warning=libint2 {version} boys.h override applied (GmEval copy fix)");
+    Some(dir)
+}
+
+/// Configure and build the vendored libecpint static library with CMake.
+/// Returns (directory containing libecpint.a + libFaddeeva.a, include dirs for the shim).
 fn build_libecpint() -> (PathBuf, Vec<PathBuf>) {
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let src_dir = manifest_dir.join("shim/libecpint");

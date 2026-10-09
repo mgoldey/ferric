@@ -41,6 +41,9 @@ pub mod csb;
 pub mod ecp;
 /// Raw C-ABI bindings to the ECP shim (`shim/ecp_shim.cc`).
 pub mod ecp_ffi;
+/// ferric-owned ECP quadrature (pure Rust): the `Quadrature` backend of
+/// [`ecp`] — analytic angular projection, windowed radial quadrature.
+pub mod ecp_quad;
 /// Low-level integral engine: 2e/3c/2c shell-block compute calls.
 pub mod engine;
 /// Thread-safe pool of integral engines for rayon-parallel Fock builds.

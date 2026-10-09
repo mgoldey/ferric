@@ -384,6 +384,9 @@ pub(crate) struct OccupationGuard {
     nocc_open: usize,
     /// Labels chosen by continuity instead of eigenvalue index.
     locked: bool,
+    /// Whether the continuity lock may engage at all (false on the injected
+    /// periodic path, see [`OccupationGuard::with_continuity_lock`]).
+    lock_enabled: bool,
     swap_streak: usize,
     grad_warned: bool,
     probe: Option<AufbauProbe>,
@@ -401,6 +404,7 @@ impl OccupationGuard {
             nocc_double,
             nocc_open,
             locked: false,
+            lock_enabled: true,
             swap_streak: 0,
             grad_warned: false,
             probe: None,
@@ -408,6 +412,17 @@ impl OccupationGuard {
             restarts: 0,
             probe_iters: 0,
         }
+    }
+
+    /// Disable the continuity lock (the gradient guard and the aufbau swap
+    /// witness stay active). Used by the injected periodic ROHF/ROKS path:
+    /// measured on the triclinic 4H s+p triplet (Gamma, periodic SSF LDA), the
+    /// lock held a hole state 2.4e-2 Ha above the aufbau ground state
+    /// (gap_alpha -0.04) that the unrelaxed single-swap witness could not
+    /// refute; with the lock off the state matches PySCF/the prototype to 1e-12.
+    pub(crate) fn with_continuity_lock(mut self, enabled: bool) -> Self {
+        self.lock_enabled = enabled;
+        self
     }
 
     /// The loop's pass limit: `max_iter` plus the passes probes have used.
@@ -448,7 +463,7 @@ impl OccupationGuard {
         diis: &mut Diis,
         announce: bool,
     ) -> Array2<f64> {
-        if !self.enabled {
+        if !self.enabled || !self.lock_enabled {
             return c_new;
         }
         if !self.locked {
@@ -603,7 +618,7 @@ impl OccupationGuard {
             held.iterations = iter;
             return GuardStep::Stop(held);
         }
-        self.locked = true;
+        self.locked = self.lock_enabled;
         self.swap_streak = 0;
         diis.reset();
         *mon = ScfMonitor::new();

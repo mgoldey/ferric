@@ -1,0 +1,33 @@
+# Periodic k-point RHF: H2 / STO-3G in a 4 Bohr simple-cubic cell on a 2x2x2
+# Gamma-centred k-mesh (the same assembly as the Python run_rhf_kpts).
+#
+# kmesh selects the k-point drivers, which exist for method.kind = "rhf",
+# "uhf", "rimp2" and "pdep-rpa"; any other kind with kmesh is an error. The
+# dense k-point AFT kernels are the toy-scale oracle (2 N_k^2 nao^4 complex
+# entries, capped by max_eri_gb). The k-point SCF converges on [scf]
+# energy_conv (per cell; default 1e-12 here) and [cell] grad_conv (default
+# 1e-9). exxdiv = "ewald" applies the supercell Madelung correction.
+# Energies are Hartree PER CELL.
+#
+# Seconds to run:
+#   OPENBLAS_NUM_THREADS=1 cargo run --release --bin ferric -- examples/h2-cell-kpts-rhf.toml
+
+# PySCF 2.13 FFTDF pin (exxdiv='ewald', precision 1e-12): -1.0554196730 Ha/cell;
+# ferric agrees to 1.4e-9 (measured 2026-09-25).
+
+[molecule]
+xyz = "testdata/molecules/h2.xyz"
+
+[basis]
+name = "sto-3g"
+
+[method]
+kind = "rhf"
+
+[cell]
+unit = "bohr"
+lattice = [[4.0, 0.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 4.0]]
+kmesh = [2, 2, 2]
+centring = "gamma"
+exxdiv = "ewald"
+jk = "dense"

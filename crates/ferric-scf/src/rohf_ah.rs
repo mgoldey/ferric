@@ -46,23 +46,21 @@ pub struct RohfAhInputs<'a, 'b> {
 /// predicted-vs-actual ratio ρ, and can REJECT a step. It is wired into
 /// RHF/RKS and UHF/UKS.
 ///
-/// **ROHF/ROKS is deliberately not on that path**, and the reason is a real
-/// obstacle rather than an oversight: the ROHF rotation is packed as three
-/// blocks with *different* spin content — `vc` sums α+β (Roothaan coupling),
-/// `vo` is α-only, `oc` is β-only (see `crate::rohf_newton::gradient_blocks`).
-/// A trust region needs ΔE_pred to be a true energy, which requires the packed
-/// gradient to differ from the true orbital gradient by a single known scalar.
-/// For RHF that scalar is 4 and for UHF it is 2 (both measured and pinned in
-/// `crate::trah`), but no single scalar exists for this three-block packing —
-/// each block carries its own factor. Wiring ROHF through the same code would
-/// therefore produce a ρ that is a *weighted mixture* of three different
-/// scales, silently mis-classifying steps against Fletcher's thresholds while
-/// looking like it worked.
-///
-/// Deriving the per-block factors is tractable but is a separate piece of work
-/// with its own validation; until it is done, ROHF keeps this clipped AH step,
-/// which is honest about being a damped Newton method rather than a trust
-/// region.
+/// This molecular AH branch is not on that path. The reason once given here —
+/// that the three-block ROHF packing (`vc` α+β, `vo` α-only, `oc` β-only; see
+/// `crate::rohf_newton::gradient_blocks`) admits no single scalar between the
+/// packed and the true orbital gradient — is FALSE: the true gradient is
+/// exactly **2 ×** `gradient_blocks` in every block (FD-measured in
+/// `reference/pbc/pbc_rohf_newton.py`, FINDINGS "Iteration 24"; pinned by
+/// `crate::rohf_trah`'s tests). What does NOT carry over by a scalar is the
+/// Hessian used here: `rohf_newton::hessian_matvec` keeps only the per-spin
+/// Fock DIAGONALS, which differs from the exact Hessian by O(off-diagonal f),
+/// so a ρ formed from it is not a true energy ratio away from a
+/// Roothaan-semicanonical basis. [`crate::rohf_trah`] is the ROHF/ROKS trust
+/// region on the exact gradient and Hessian (stepping from the current
+/// orbitals, no `F_eff` diagonalization); it currently serves the injected
+/// (periodic) path. This function remains the clipped, damped-Newton AH step
+/// of the molecular solver.
 pub fn rohf_ah_step(
     ctx: &ParallelContext,
     inp: &RohfAhInputs,

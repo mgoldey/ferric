@@ -264,13 +264,25 @@ pub fn rohf_newton_step(
 ///   g[v,o] = f_α[v,o]
 ///   g[o,c] = f_β[o,c]
 pub(crate) fn gradient_blocks(inp: &RohfNewtonInputs) -> (Array2<f64>, Array2<f64>, Array2<f64>) {
-    let n = inp.c.nrows();
-    let nc = inp.nocc_double;
-    let no = inp.nocc_open;
+    gradient_blocks_from(inp.f_a_mo, inp.f_b_mo, inp.nocc_double, inp.nocc_open)
+}
+
+/// [`gradient_blocks`] from the MO spin Focks alone (`n` = their dimension,
+/// which equals `inp.c.nrows()` for a square MO set). The TRUE orbital
+/// gradient is exactly 2 × these blocks (`crate::rohf_trah`).
+pub(crate) fn gradient_blocks_from(
+    f_a_mo: &Array2<f64>,
+    f_b_mo: &Array2<f64>,
+    nocc_double: usize,
+    nocc_open: usize,
+) -> (Array2<f64>, Array2<f64>, Array2<f64>) {
+    let n = f_a_mo.nrows();
+    let nc = nocc_double;
+    let no = nocc_open;
     let nocc_a = nc + no;
-    let g_vc = pack_block(inp.f_a_mo, inp.f_b_mo, nocc_a..n, 0..nc, true);
-    let g_vo = pack_block(inp.f_a_mo, inp.f_b_mo, nocc_a..n, nc..nocc_a, false);
-    let g_oc = pack_block(inp.f_b_mo, inp.f_b_mo, nc..nocc_a, 0..nc, false);
+    let g_vc = pack_block(f_a_mo, f_b_mo, nocc_a..n, 0..nc, true);
+    let g_vo = pack_block(f_a_mo, f_b_mo, nocc_a..n, nc..nocc_a, false);
+    let g_oc = pack_block(f_b_mo, f_b_mo, nc..nocc_a, 0..nc, false);
     (g_vc, g_vo, g_oc)
 }
 
