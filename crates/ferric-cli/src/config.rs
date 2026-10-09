@@ -4312,7 +4312,7 @@ fn validate_loaded(cfg: &mut Config, text: &str) -> Result<(), String> {
 
 /// Ångström -> Bohr: the factor ferric-core's XYZ parser uses, so a lattice
 /// given in Å and the atoms read from the XYZ are converted identically.
-pub const ANGSTROM_TO_BOHR: f64 = 1.0 / 0.529_177_210_92;
+pub const ANGSTROM_TO_BOHR: f64 = ferric_core::units::ANGSTROM_TO_BOHR;
 
 /// `[cell]` — a 3-D periodic system. The `[molecule]` XYZ supplies the atoms
 /// of the reference cell (Å, as every XYZ); this section supplies the lattice
@@ -5698,7 +5698,7 @@ kind = "ccsd"
         assert!(!p.unit_bohr);
         let want = 1.0 / ANGSTROM_TO_BOHR;
         assert_eq!(gdf_omega_of(&p), Some(want));
-        assert!((want - 0.529_177_210_92).abs() < 1e-12);
+        assert!((want - ferric_core::units::BOHR_TO_ANGSTROM).abs() < 1e-12);
     }
 
     #[test]
