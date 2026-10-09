@@ -668,6 +668,9 @@ pub fn hess_nuclear_repulsion(mol: &Molecule) -> Array2<f64> {
 /// derivative blocks are computed (libint2 writes them) but discarded.
 const EXTERNAL_CENTRE: usize = usize::MAX;
 
+/// External charges per libint2 call in [`contract_external_deriv2`].
+const EXTERNAL_CHUNK: usize = 4;
+
 /// The configuration's external point charges (empty without a potential).
 fn extra_charges(config: &RhfConfig) -> &[PointCharge] {
     config
@@ -796,7 +799,47 @@ fn skeleton_hess_1e(
     d: &Array2<f64>,
 ) -> Result<Array2<f64>, FerricError> {
     let mut h = contract_1e_deriv2(prep, natoms, &[], ffi::OP_KINETIC, d)?;
-    h += &contract_1e_deriv2(prep, natoms, extra, ffi::OP_NUCLEAR, d)?;
+    h += &contract_1e_deriv2(prep, natoms, &[], ffi::OP_NUCLEAR, d)?;
+    h += &contract_external_deriv2(prep, natoms, extra, d)?;
+    Ok(h)
+}
+
+/// External-charge part of Term 2: `Σ_μν D_μν ∂²V_ext/∂x∂y` over the basis
+/// centres (the charge-centre blocks are MM coordinates and are discarded).
+///
+/// The charges enter the nuclear-attraction operator linearly, and libint2
+/// sizes its second-derivative output by the number of operator centres, so
+/// handing it all `n` charges at once costs O(n²) coordinate pairs per shell
+/// pair. They are instead worked through in chunks of [`EXTERNAL_CHUNK`]
+/// charges (engine holding only that chunk), which is linear in `n`.
+fn contract_external_deriv2(
+    prep: &PreparedBasis,
+    natoms: usize,
+    extra: &[PointCharge],
+    weight: &Array2<f64>,
+) -> Result<Array2<f64>, FerricError> {
+    let mut h = Array2::<f64>::zeros((3 * natoms, 3 * natoms));
+    if extra.is_empty() {
+        return Ok(h);
+    }
+    let mut eng = Engine::new_1e_deriv2(ffi::OP_NUCLEAR, prep, 1e-14)?;
+    let dims = prep.shell_dims();
+    let offs = prep.shell_offsets();
+    let sh2at = prep.shell_to_atom();
+    for chunk in extra.chunks(EXTERNAL_CHUNK) {
+        eng.set_point_charges_only(chunk)?;
+        let mut centres = vec![EXTERNAL_CENTRE; 2 + chunk.len()];
+        for s1 in 0..prep.nshells() {
+            for s2 in 0..=s1 {
+                centres[0] = sh2at[s1];
+                centres[1] = sh2at[s2];
+                let wv = pair_weights(weight, offs[s1], dims[s1], offs[s2], dims[s2], s1 != s2);
+                let blocks = eng.compute_1e_deriv2_block(prep, s1, s2, chunk.len());
+                let vals = contract_blocks(blocks, &wv);
+                scatter_unique_pairs(&mut h, &vals, &centres);
+            }
+        }
+    }
     Ok(h)
 }
 

@@ -94,9 +94,11 @@ fn matrix(r: &Value, key: &str) -> Array2<f64> {
 
 fn max_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
     assert_eq!(a.dim(), b.dim());
-    a.iter()
-        .zip(b)
-        .fold(0.0f64, |m, (x, y)| m.max((x - y).abs()))
+    a.iter().zip(b).fold(0.0f64, |m, (x, y)| {
+        // f64::max would silently ignore a NaN entry.
+        assert!(x.is_finite() && y.is_finite(), "non-finite Hessian entry");
+        m.max((x - y).abs())
+    })
 }
 
 fn system(r: &Value) -> QmmmSystem {

@@ -9,7 +9,7 @@
 //! # MUTATION (each must turn a named test red; see `src/hessian.rs`)
 //!
 //! * drop `charge_nuclear_hessian` from `nuclear_term` → `embedded_hessian_matches_fd_of_embedded_gradient`;
-//! * pass `&[]` instead of `extra` to the nuclear `contract_1e_deriv2` →
+//! * pass `&[]` instead of `extra` to `contract_external_deriv2` →
 //!   same test (skeleton term misses the charges);
 //! * pass `&[]` to the nuclear `deriv1_1e_matrices` in `first_order_ao`
 //!   (∂V_ext/∂x missing from F^x) → same test, response term misses;
@@ -158,9 +158,11 @@ fn fd_hessian(mol: &Molecule, ext: Option<&ExternalPotential>) -> Array2<f64> {
 }
 
 fn max_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
-    a.iter()
-        .zip(b)
-        .fold(0.0f64, |m, (x, y)| m.max((x - y).abs()))
+    a.iter().zip(b).fold(0.0f64, |m, (x, y)| {
+        // f64::max would silently ignore a NaN entry.
+        assert!(x.is_finite() && y.is_finite(), "non-finite Hessian entry");
+        m.max((x - y).abs())
+    })
 }
 
 #[test]
@@ -328,5 +330,32 @@ fn embedded_uhf_hessian_matches_fd_of_embedded_gradient() {
     }
     let d = max_diff(&an, &fd);
     eprintln!("embedded UHF: max|analytic - FD| = {d:.3e}");
+    assert!(d < TOL_FD, "max|analytic - FD| = {d:.3e}");
+}
+
+/// More charges than one libint2 chunk (`EXTERNAL_CHUNK` = 4), so the
+/// chunked external-charge contraction is exercised across chunk boundaries.
+#[test]
+fn many_charges_span_several_chunks() {
+    if !has_deriv2() {
+        return;
+    }
+    let mut ext = embedding();
+    for k in 0..6 {
+        let t = k as f64;
+        ext.point_charges.push(PointCharge {
+            q: if k % 2 == 0 { 0.3 } else { -0.3 },
+            x: 4.0 * (1.3 * t).cos(),
+            y: 4.0 * (0.7 * t).sin(),
+            z: -3.5 + 1.1 * t,
+        });
+    }
+    assert!(ext.point_charges.len() > 2 * 4);
+    let mol = Molecule::parse_xyz(WATER, 0, 1).unwrap();
+    let s = solve(&mol, Some(&ext));
+    let an = analytic(&s, Some(&ext));
+    let fd = fd_hessian(&mol, Some(&ext));
+    let d = max_diff(&an, &fd);
+    eprintln!("9 charges: max|analytic - FD| = {d:.3e}");
     assert!(d < TOL_FD, "max|analytic - FD| = {d:.3e}");
 }
