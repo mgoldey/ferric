@@ -107,6 +107,7 @@ def _case(system, xyz, basis, mm, uhf, charge=0, mult=1):
         scf_conv={"conv_tol": CONV_TOL, "conv_tol_grad": CONV_TOL_GRAD},
         extra_prov={"fd_step_bohr": FD_STEP, "basin_tol": BASIN_TOL},
     )
+    payload["provenance"]["generator"] = GEN
     if charge or mult != 1:
         from pyscf import gto
 

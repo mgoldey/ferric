@@ -156,7 +156,7 @@
       ]
     ],
     "bohr_in_angstrom": 0.52917721092,
-    "generator": "scripts/validation/gen_qmmm.py",
+    "generator": "scripts/validation/gen_qmmm_hessian.py",
     "git_head": "e3665b6258bda568a352099a184780d5e625132a",
     "generated_utc": "2026-10-09T18:59:20+00:00",
     "basis_check": {
