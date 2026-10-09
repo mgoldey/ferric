@@ -13,7 +13,9 @@ import pytest
 
 import ferric
 
-WATER_XYZ = "3\nwater\nO 0.000 0.000 0.117\nH 0.000 0.757 -0.469\nH 0.000 -0.757 -0.469\n"
+WATER_XYZ = (
+    "3\nwater\nO 0.000 0.000 0.117\nH 0.000 0.757 -0.469\nH 0.000 -0.757 -0.469\n"
+)
 
 # From the Rust test (see module docstring).
 RUST_N_POINTS = 154
@@ -35,7 +37,9 @@ def water(tmp_path_factory):
 
 def test_matches_the_rust_surface_esp(water):
     mol, bs, rhf = water
-    pts, esp, n_buried = ferric.esp_on_surface(mol, bs, rhf, vdw_scale=1.4, n_angular=110)
+    pts, esp, n_buried = ferric.esp_on_surface(
+        mol, bs, rhf, vdw_scale=1.4, n_angular=110
+    )
     esp = np.asarray(esp)
     assert pts.shape == (RUST_N_POINTS, 3)
     assert esp.shape == (RUST_N_POINTS,)
