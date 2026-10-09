@@ -351,6 +351,22 @@ pub struct GammaGradConfig {
     /// | 1e11 | —       | 1.4e-6 | 1.28e-5 |
     ///
     /// (The triclinic cell also gave 8.3e-2 at 1e16 and 4.3e-6 at 1e12.)
+    ///
+    /// Further fixtures, same quantity (Ha/Bohr; forces unless noted):
+    ///
+    /// | exponent | LiH cc-pVDZ | OH cc-pVDZ UHF | CO stress | LiH 6-31G stress | HI/LANL2DZ a=24 | no-ECP control |
+    /// |---|---|---|---|---|---|---|
+    /// | 1e7  | 1.3e-8 | 5.3e-7 | 2.4e-6 | 6.0e-8 | 5.9e-9 | 3.3e-8 |
+    /// | 1e8  | 2.3e-9 | 5.5e-8 | 2.2e-7 | 2.1e-8 | 6.9e-9 | 1.4e-9 |
+    /// | 1e9  | 9.3e-9 | 1.4e-8 | 2.1e-7 | 3.9e-7 | 8.5e-8 | 3.7e-8 |
+    /// | 1e10 | 8.5e-8 | 1.1e-7 | 1.5e-6 | 1.3e-6 | 3.6e-7 | 1.0e-6 |
+    ///
+    /// The minimum sits at 1e8 for LiH and the iodine cells and at 1e9 for
+    /// the O/C cells (CO and OH, whose tight cores make 1e7-1e8 the steeper
+    /// side: 1.4e-6 at 1e7 on CO). No single exponent is best everywhere:
+    /// 1e9 is within 1.13x of the best on H and CO forces and 3.8x better
+    /// than 1e8 on OH, but 4-19x worse than 1e8 on the LiH 6-31G and cc-pVDZ cells, 12x worse
+    /// on HI and 27x worse on the no-ECP control.
     pub nucleus_exponent: Option<f64>,
 }
 
