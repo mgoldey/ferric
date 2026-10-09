@@ -1357,6 +1357,213 @@ fn ecp_image_part(
     Ok(part)
 }
 
+// ============================================================ strain
+
+/// Deliberate defects of the ECP strain term (test only).
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EcpStrainMutation {
+    /// Drop the ECP-centre virial `Σ ∂_C X_C`.
+    NoCentre,
+    /// Weight the ket derivative by the home-cell position (drop `L`).
+    NoKetImage,
+    /// Centre virial with the wrong sign.
+    CentreSign,
+}
+
+/// The strain derivative of the periodic-ECP energy `Σ D V_ECP` at fixed `D`:
+///
+/// ```text
+/// dE/dε_ab = Σ_triples Σ_μν D_μν [ ∂_{A,a} A_b + ∂_{B′,a} B′_b + ∂_{C,a} X_b ]
+/// ```
+///
+/// with `A` the home bra shell, `B′ = R_B + L` the ket image and `X = R_C + M`
+/// the ECP-centre image, over EXACTLY the energy's kept triples (the frozen
+/// integer image set; the force term's screen, [`periodic_ecp_gradient`]).
+/// Every triple's energy depends only on the relative vectors, so
+/// `∂_A + ∂_{B′} + ∂_C = 0` (the engine's centre slot is `−(bra + ket)`) and
+/// the sum is origin-free; it equals the per-triple relative-vector form
+/// `∂_A (A − X)_b + ∂_{B′} (B′ − X)_b` of the Gaussian-nucleus SR virial.
+/// Each kept centre image is its own derivative group (its `X` weights it).
+///
+/// Returns `([a][b], kept triples)`; `Ok(None)` without an ECP centre.
+pub fn periodic_ecp_strain(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    cfg: &PeriodicEcpConfig,
+    d: &Array2<f64>,
+) -> Result<Option<([[f64; 3]; 3], usize)>, FerricError> {
+    periodic_ecp_strain_with(cell, prep, cfg, d, None)
+}
+
+/// [`periodic_ecp_strain`] with a test-only [`EcpStrainMutation`].
+#[doc(hidden)]
+pub fn periodic_ecp_strain_with(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    cfg: &PeriodicEcpConfig,
+    d: &Array2<f64>,
+    mutation: Option<EcpStrainMutation>,
+) -> Result<Option<([[f64; 3]; 3], usize)>, FerricError> {
+    let mut ledger = Ledger::new(crate::budget::resolve(cfg.budget_bytes));
+    periodic_ecp_strain_on(cell, prep, cfg, d, mutation, &mut ledger)
+}
+
+/// [`periodic_ecp_strain_with`] on the caller's ledger (the stress
+/// assembly's).
+pub(crate) fn periodic_ecp_strain_on(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    cfg: &PeriodicEcpConfig,
+    d: &Array2<f64>,
+    mutation: Option<EcpStrainMutation>,
+    ledger: &mut Ledger,
+) -> Result<Option<([[f64; 3]; 3], usize)>, FerricError> {
+    let Some(plan) = EcpPlan::build(cell, prep, cfg, ledger)? else {
+        return Ok(None);
+    };
+    let n = plan.nbasis;
+    if d.dim() != (n, n) {
+        return Err(FerricError::General(format!(
+            "periodic ECP strain: density is {:?}, expected ({n}, {n})",
+            d.dim()
+        )));
+    }
+    let offs = prep.shell_offsets();
+    let dims = prep.shell_dims();
+    let mut aopos = vec![[0.0_f64; 3]; n];
+    for (s, sh) in plan.shells.iter().enumerate() {
+        for k in 0..dims[s] {
+            aopos[offs[s] + k] = sh.center;
+        }
+    }
+    let nc: usize = plan
+        .shells
+        .iter()
+        .map(|s| ((s.l + 1) * (s.l + 2) / 2) as usize)
+        .sum();
+    let mut total = [[0.0_f64; 3]; 3];
+    let mut n_triples = 0usize;
+    let ledger_ro: &Ledger = ledger;
+    ordered_units(
+        plan.l_list.len(),
+        window_budget(ledger_ro.remaining()),
+        24 * n * n,
+        |li| ecp_strain_image(&plan, li, d, &aopos, nc, mutation, ledger_ro),
+        |_, part: StrainPart| {
+            n_triples += part.n_triples;
+            for a in 0..3 {
+                for b in 0..3 {
+                    total[a][b] += part.virial[a][b];
+                }
+            }
+            Ok(())
+        },
+    )?;
+    Ok(Some((total, n_triples)))
+}
+
+/// One orbital image's strain virial and kept-triple count.
+struct StrainPart {
+    virial: [[f64; 3]; 3],
+    n_triples: usize,
+}
+
+impl Stored for StrainPart {
+    fn stored_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+/// One orbital image's strain virial (pure; see [`periodic_ecp_strain`]).
+fn ecp_strain_image(
+    plan: &EcpPlan,
+    li: usize,
+    d: &Array2<f64>,
+    aopos: &[[f64; 3]],
+    nc: usize,
+    mutation: Option<EcpStrainMutation>,
+    ledger: &Ledger,
+) -> Result<StrainPart, FerricError> {
+    let n = plan.nbasis;
+    let l = plan.l_list[li];
+    let ket = plan.ket_shells(&l);
+    let kept = plan.kept(&ket);
+    let mut out = [[0.0_f64; 3]; 3];
+    if kept.is_empty() {
+        return Ok(StrainPart {
+            virial: out,
+            n_triples: 0,
+        });
+    }
+    let (centres, site_of, mask) = plan.compact(&kept);
+    let ng = site_of.len();
+    let groups: Vec<usize> = (0..ng).collect();
+    let concurrent = rayon::current_num_threads().saturating_add(1);
+    ledger.check(
+        &format!(
+            "periodic ECP strain derivative blocks for one image ({ng} centre images) × \
+             {concurrent} concurrent images"
+        ),
+        bytes_of(((6 + 3 * ng) * (nc * nc + n * n)) as u64, 8).saturating_mul(concurrent),
+    )?;
+    let blk = ecp_block_deriv_spherical(
+        &plan.shells,
+        &ket,
+        &centres,
+        Some(mask.as_slice()),
+        &groups,
+        ng,
+    )?;
+    if blk.nrow != n || blk.ncol != n {
+        return Err(FerricError::Libint(format!(
+            "periodic ECP strain: derivative block is {}×{}, expected {n}×{n}",
+            blk.nrow, blk.ncol
+        )));
+    }
+    let lk = if mutation == Some(EcpStrainMutation::NoKetImage) {
+        [0.0; 3]
+    } else {
+        l
+    };
+    let csign = match mutation {
+        Some(EcpStrainMutation::CentreSign) => -1.0,
+        _ => 1.0,
+    };
+    for x in 0..3 {
+        let (bx, kx) = (&blk.bra[x], &blk.ket[x]);
+        for mu in 0..n {
+            let (a, row) = (aopos[mu], mu * n);
+            for nu in 0..n {
+                let dmn = d[(mu, nu)];
+                let (wb, wk) = (dmn * bx[row + nu], dmn * kx[row + nu]);
+                let bp = aopos[nu];
+                for b in 0..3 {
+                    out[x][b] += wb * a[b] + wk * (bp[b] + lk[b]);
+                }
+            }
+        }
+        if mutation == Some(EcpStrainMutation::NoCentre) {
+            continue;
+        }
+        for (g, &u) in site_of.iter().enumerate() {
+            let s: f64 = d
+                .iter()
+                .zip(blk.centre[g][x].iter())
+                .map(|(a, b)| a * b)
+                .sum();
+            let xp = plan.sites[u].pos;
+            for b in 0..3 {
+                out[x][b] += csign * s * xp[b];
+            }
+        }
+    }
+    Ok(StrainPart {
+        virial: out,
+        n_triples: kept.len(),
+    })
+}
+
 /// Local centre groups of one image: the distinct cell atoms among its
 /// sites, in first-appearance order, and each local centre's group.
 fn centre_groups(plan: &EcpPlan, site_of: &[usize]) -> (Vec<usize>, Vec<usize>) {
