@@ -59,16 +59,19 @@ pub(crate) const WINDOW_BYTES: usize = 64 << 20;
 
 /// Heap + inline bytes a stored unit result occupies (the window budget).
 pub(crate) trait Stored {
+    /// Heap plus inline bytes of this stored value.
     fn stored_bytes(&self) -> usize;
 }
 
 impl Stored for Vec<f64> {
+    /// Inline size plus 8 bytes per element.
     fn stored_bytes(&self) -> usize {
         std::mem::size_of::<Self>() + 8 * self.len()
     }
 }
 
 impl<const N: usize> Stored for [[f64; 3]; N] {
+    /// Fixed inline size (no heap).
     fn stored_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
     }

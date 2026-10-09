@@ -329,6 +329,36 @@ impl Engine {
         Ok(())
     }
 
+    /// Set the engine's point charges to exactly `charges` (no real atoms).
+    /// Pairs with `n_charges = charges.len()` in the 1e derivative blocks, so
+    /// a consumer that only needs the basis-centre derivatives of a set of
+    /// fixed charges can work through them in small chunks (cost linear, not
+    /// quadratic, in the number of charges for second derivatives).
+    pub fn set_point_charges_only(&mut self, charges: &[PointCharge]) -> Result<(), FerricError> {
+        let atoms: Vec<CAtom> = charges
+            .iter()
+            .map(|pc| CAtom {
+                atomic_number: pc.q,
+                x: pc.x,
+                y: pc.y,
+                z: pc.z,
+            })
+            .collect();
+        for &(_, h) in &self.handles {
+            // SAFETY: `h` is a valid engine handle. `atoms` is a valid CAtom
+            // Vec alive for the duration of this call. The shim copies the data.
+            let ret = unsafe {
+                ffi::scf_engine_set_point_charges(h, atoms.as_ptr(), atoms.len() as c_int)
+            };
+            if ret < 0 {
+                return Err(FerricError::Libint(format!(
+                    "scf_engine_set_point_charges failed: status {ret}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Compute a shell quartet of 4-center ERIs. Returns `None` if screened to zero.
     pub fn compute_quartet(
         &mut self,
