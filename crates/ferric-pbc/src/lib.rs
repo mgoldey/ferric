@@ -148,6 +148,7 @@ pub mod grad;
 pub mod hcore;
 pub mod kcorr;
 pub mod kdense_aft;
+pub mod kdft;
 pub mod kgrad;
 pub mod kpts;
 pub mod kscf;
@@ -197,6 +198,7 @@ pub use kcorr::{
     KMp2Config, KMp2Result,
 };
 pub use kdense_aft::{KDenseAftConfig, KDenseAftEri, KDenseAftJk};
+pub use kdft::{solve_krks, solve_krks_on_grid, KPeriodicXc, KRksConfig, KRksResult};
 pub use kgrad::{
     kpoint_rhf_gradient, kpoint_uhf_gradient, KGradConfig, KGradJk, KGradParts, KGradient,
     KRsGdfGradSource,
@@ -204,7 +206,8 @@ pub use kgrad::{
 pub use kpts::{KPointMesh, MeshCentring};
 pub use kscf::{
     complex_canonical_orthogonalizer, complex_canonical_orthogonalizer_with_stats, solve_krhf,
-    solve_krhf_injected, KJkKind, KPointInjection, KPointJk, KRhfConfig, KScfConfig, KScfResult,
+    solve_krhf_injected, solve_krks_injected, KJkKind, KPointInjection, KPointJk, KPointXc,
+    KRhfConfig, KScfConfig, KScfResult,
 };
 pub use kuscf::{
     kuhf_gap_report, solve_kuhf, solve_kuhf_injected, solve_kuhf_injected_with_guess, KUScfResult,

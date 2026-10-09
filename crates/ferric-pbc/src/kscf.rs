@@ -570,7 +570,56 @@ pub fn solve_krhf_injected(
     cell: &Cell,
     mesh: &KPointMesh,
     cfg: &KScfConfig,
+    inj: KPointInjection<'_>,
+) -> Result<KScfResult, FerricError> {
+    solve_k_closed_shell(cell, mesh, cfg, inj, None)
+}
+
+/// Semilocal exchange-correlation for the k-point closed-shell SCF
+/// ([`solve_krks_injected`]).
+pub trait KPointXc {
+    /// `(E_xc per cell, V_xc(k))` for the Hermitian densities `dm[k]`
+    /// (occupation 2, one per mesh point, `D(k) = 2 C_occ C_occ^H`).
+    fn build(
+        &mut self,
+        dm: &[Array2<Complex64>],
+    ) -> Result<(f64, Vec<Array2<Complex64>>), FerricError>;
+}
+
+/// k-point closed-shell KS on injected `S(k)`, `h(k)`, `E_nn`, J/K and
+/// semilocal XC:
+///
+/// ```text
+/// F(k) = h(k) + J(k) − (a/2) K(k) + V_xc(k)
+/// E/cell = (1/N_k) Σ_k Re tr[D(k) (h(k) + ½ J(k) − (a/4) K(k))] + E_xc + E_nn
+/// ```
+///
+/// `a` is the global exact-exchange fraction (`0` for LDA/GGA, in which case
+/// the builder's K is evaluated but unused). The injected K carries the
+/// Madelung term, so it is scaled by `a` as a whole (as at Gamma). Everything
+/// else is [`solve_krhf_injected`], which is this with `a = 1` and no XC.
+pub fn solve_krks_injected(
+    cell: &Cell,
+    mesh: &KPointMesh,
+    cfg: &KScfConfig,
+    inj: KPointInjection<'_>,
+    xc: &mut dyn KPointXc,
+    exact_exchange: f64,
+) -> Result<KScfResult, FerricError> {
+    if !(0.0..=1.0).contains(&exact_exchange) {
+        return Err(FerricError::General(format!(
+            "solve_krks: exact-exchange fraction {exact_exchange} outside [0, 1]"
+        )));
+    }
+    solve_k_closed_shell(cell, mesh, cfg, inj, Some((xc, exact_exchange)))
+}
+
+fn solve_k_closed_shell(
+    cell: &Cell,
+    mesh: &KPointMesh,
+    cfg: &KScfConfig,
     mut inj: KPointInjection<'_>,
+    mut xc: Option<(&mut dyn KPointXc, f64)>,
 ) -> Result<KScfResult, FerricError> {
     let nk = mesh.nk();
     if inj.s.len() != nk || inj.h.len() != nk {
@@ -637,12 +686,28 @@ pub fn solve_krhf_injected(
 
     for it in 0..cfg.max_iter {
         inj.jk.build(&dm, &mut jm, &mut km)?;
-        let f: Vec<Array2<Complex64>> = (0..nk)
-            .map(|k| hermitize(&(&(&inj.h[k] + &jm[k]) - &km[k].mapv(|z| z * 0.5))))
+        let k_scale = 0.5 * xc.as_ref().map_or(1.0, |(_, a)| *a);
+        // F without V_xc: the energy's one-electron + J + K part.
+        let f_nox: Vec<Array2<Complex64>> = (0..nk)
+            .map(|k| hermitize(&(&(&inj.h[k] + &jm[k]) - &km[k].mapv(|z| z * k_scale))))
             .collect();
+        let (e_xc, f): (f64, Vec<Array2<Complex64>>) = match xc.as_mut() {
+            None => (0.0, f_nox.clone()),
+            Some((b, _)) => {
+                let (e, v) = b.build(&dm)?;
+                if v.len() != nk {
+                    return Err(FerricError::General(format!(
+                        "solve_krks: XC builder returned {} V_xc(k) for {nk} k-points",
+                        v.len()
+                    )));
+                }
+                let f = (0..nk).map(|k| hermitize(&(&f_nox[k] + &v[k]))).collect();
+                (e, f)
+            }
+        };
         let mut e_elec = 0.0;
         for k in 0..nk {
-            let hf = &inj.h[k] + &f[k];
+            let hf = &inj.h[k] + &f_nox[k];
             // Re tr[(h + F) D] = Re Σ_mn (h+F)_mn D_nm
             let mut tr = 0.0;
             for m in 0..n {
@@ -652,7 +717,7 @@ pub fn solve_krhf_injected(
             }
             e_elec += 0.5 * tr;
         }
-        let energy = e_elec * inv_nk + inj.vnn;
+        let energy = e_elec * inv_nk + e_xc + inj.vnn;
         let errs: Vec<Array2<Complex64>> = (0..nk)
             .map(|k| {
                 let fds = f[k].dot(&dm[k]).dot(&inj.s[k]);
