@@ -16,7 +16,7 @@ CPython 3.10–3.13, and for no other platform:
 |---|---|---|
 | Linux x86_64, CPython 3.10–3.13 | yes | yes (the only tested platform) |
 | Linux aarch64 | no | not tested |
-| macOS (x86_64, arm64) | no | not tested |
+| macOS (x86_64, arm64) | not yet (wanted; no wheel is built) | not tested |
 | Windows | no | not supported: `build.rs` hardcodes Unix paths and links Unix static archives |
 
 libint2 and libxc are statically linked into the extension,
@@ -162,10 +162,24 @@ the Rust workspace crates the extension depends on, `Cargo.lock` and the
 vendored libecpint. It does **not** hold libint2, and it is not a
 self-contained build: `pip install` from it needs everything in
 [Prerequisites](#prerequisites) already present, with `LIBINT2_PREFIX` set to a
-libint2 install. ferric does not bundle libint2 because it is a large C++
-library whose integral classes are fixed when its source is generated.
-`scripts/install-libint.sh` is not in the sdist; take it from the repository.
-It fetches a Linux x86-64 build of libint2.
+libint2 install. The libint2 source is generated and too large to bundle (the
+export below is 183 MiB against PyPI's 100 MiB file limit).
+
+Two ways to get a libint2 for an sdist build:
+
+- **Linux x86-64:** `scripts/install-libint.sh` (conda-forge 2.13.1). The
+  script is not in the sdist; take it from the repository.
+- **Any platform with CMake and Eigen3:** build the export the wheels use,
+  `libint-2.7.2-ferric-small-1.tgz` from the
+  [`libint-2.7.2-ferric-small-1` release](https://github.com/mgoldey/ferric/releases/tag/libint-2.7.2-ferric-small-1)
+  (verify its sha256 against `LIBINT_SHA256` in `.github/workflows/wheels.yml`).
+  Configure it with `cmake .. -DCMAKE_INSTALL_PREFIX=$PREFIX
+  -DCMAKE_PREFIX_PATH=$PREFIX -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+  -DCMAKE_BUILD_TYPE=Release`, then `make` and `make install`, and set
+  `LIBINT2_PREFIX=$PREFIX`. The build takes about 30 minutes. It has the
+  wheel's integral classes (see the table below), so F12 methods still need
+  the 2.13.1 build. The recipe is tested only as part of the Linux x86-64
+  wheel build.
 
 On a platform with no wheel, plain `pip install ferric` falls back to this
 sdist and fails at the libint2 step unless those prerequisites are present.
