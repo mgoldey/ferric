@@ -53,9 +53,14 @@
 //! Hessian term by term (`D_α = D_β = D/2`, `U_α = U_β`), which is the
 //! exactness anchor in `tests/uhf_hessian_fd.rs`.
 //!
+//! External point charges (QM/MM, fixed in space) are supported for the QM–QM
+//! block: the charge–nucleus repulsion Hessian, the basis/nucleus second
+//! derivatives of the charge attraction (the charge-centre blocks libint2
+//! writes are discarded), and ∂V_ext/∂x in the CPHF Fock derivative.
+//!
 //! Scope: closed-shell RHF and UHF (any multiplicity), exact four-centre
 //! Coulomb J/K. Everything else — ROHF (PySCF has no ROHF Hessian either), KS,
-//! RI, COSX, ECPs, ghost atoms, external potentials, solvation, polarizable
+//! RI, COSX, ECPs, ghost atoms, uniform fields and smeared external charges, solvation, polarizable
 //! embedding, fractional occupations, cDFT, non-Coulomb operators — is refused
 //! with a typed error naming the feature (the FD Hessian in
 //! [`crate::frequencies::harmonic_frequencies`] covers those).
@@ -72,6 +77,7 @@ use crate::gradient::{
 use crate::result::{ScfResult, Spin};
 use crate::rhf::RhfConfig;
 use crate::screening::SchwarzBounds;
+use ferric_core::external_potential::PointCharge;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
@@ -184,8 +190,9 @@ pub fn rhf_hessian_parts(
     let d = rhf.density_r();
     let w = build_energy_weighted_density(rhf, nocc);
 
-    let nuclear = hess_nuclear_repulsion(mol);
-    let one_electron = skeleton_hess_1e(prep, natoms, d)?;
+    let extra = extra_charges(config);
+    let nuclear = nuclear_term(mol, config);
+    let one_electron = skeleton_hess_1e(prep, natoms, extra, d)?;
     let overlap = skeleton_hess_overlap(prep, natoms, &w)?;
     let gam = |mu, nu, la, sg| gamma(d, mu, nu, la, sg);
     let two_electron = skeleton_hess_2e(prep, op, bounds, natoms, max_abs(d), &gam)?;
@@ -195,7 +202,7 @@ pub fn rhf_hessian_parts(
         exchange: d,
         k_scale: 0.5,
     };
-    let first = first_order_ao(prep, op, bounds, natoms, &[spec])?;
+    let first = first_order_ao(prep, op, bounds, natoms, extra, &[spec])?;
     let resp = cpks_response(ctx, prep, bounds, rhf, nocc, &first)?;
     Ok(parts_from_terms(
         [nuclear, one_electron, overlap, two_electron],
@@ -238,8 +245,9 @@ pub fn uhf_hessian_parts(
     let d = da + db;
     let w = build_energy_weighted_density_uhf(uhf, nocc[0], nocc[1]);
 
-    let nuclear = hess_nuclear_repulsion(mol);
-    let one_electron = skeleton_hess_1e(prep, natoms, &d)?;
+    let extra = extra_charges(config);
+    let nuclear = nuclear_term(mol, config);
+    let one_electron = skeleton_hess_1e(prep, natoms, extra, &d)?;
     let overlap = skeleton_hess_overlap(prep, natoms, &w)?;
     let gam = |mu, nu, la, sg| gamma_uhf(&d, da, db, mu, nu, la, sg);
     let two_electron = skeleton_hess_2e(prep, op, bounds, natoms, max_abs(&d), &gam)?;
@@ -249,7 +257,7 @@ pub fn uhf_hessian_parts(
         exchange: ds,
         k_scale: 1.0,
     });
-    let first = first_order_ao(prep, op, bounds, natoms, &specs)?;
+    let first = first_order_ao(prep, op, bounds, natoms, extra, &specs)?;
     let resp = ucphf_response(ctx, prep, bounds, uhf, nocc, &first)?;
     Ok(parts_from_terms(
         [nuclear, one_electron, overlap, two_electron],
@@ -517,8 +525,15 @@ fn config_refusal(config: &RhfConfig) -> Result<Option<&'static str>, FerricErro
             config
                 .external_potential
                 .as_ref()
-                .is_some_and(|e| !e.is_empty()),
-            "an external potential",
+                .is_some_and(|e| e.field.is_some()),
+            "a uniform external field",
+        ),
+        (
+            config
+                .external_potential
+                .as_ref()
+                .is_some_and(|e| !e.smeared_charges.is_empty()),
+            "Gaussian-smeared external charges",
         ),
         (
             config.cosmo.is_some() || config.pcm.is_some(),
@@ -649,6 +664,27 @@ pub fn hess_nuclear_repulsion(mol: &Molecule) -> Array2<f64> {
 /// so an off-diagonal `i < j` value goes to `(row_i, row_j)` and
 /// `(row_j, row_i)` — which, when two centres share an atom, correctly lands
 /// twice on the same element (`∂²/∂A² f(A₁,A₂)|_{A₁=A₂=A} = f₁₁ + 2f₁₂ + f₂₂`).
+/// Centre→atom table entry for an external point-charge centre, whose
+/// derivative blocks are computed (libint2 writes them) but discarded.
+const EXTERNAL_CENTRE: usize = usize::MAX;
+
+/// The configuration's external point charges (empty without a potential).
+fn extra_charges(config: &RhfConfig) -> &[PointCharge] {
+    config
+        .external_potential
+        .as_ref()
+        .map_or(&[], |e| e.point_charges.as_slice())
+}
+
+/// Nuclear-repulsion Hessian plus the point-charge–nuclear term.
+fn nuclear_term(mol: &Molecule, config: &RhfConfig) -> Array2<f64> {
+    let mut h = hess_nuclear_repulsion(mol);
+    if let Some(e) = config.external_potential.as_ref() {
+        h += &e.charge_nuclear_hessian(mol);
+    }
+    h
+}
+
 fn scatter_unique_pairs(h: &mut Array2<f64>, vals: &[f64], centre_atoms: &[usize]) {
     let ncoord = 3 * centre_atoms.len();
     debug_assert_eq!(vals.len(), ncoord * (ncoord + 1) / 2);
@@ -657,6 +693,11 @@ fn scatter_unique_pairs(h: &mut Array2<f64>, vals: &[f64], centre_atoms: &[usize
         for j in i..ncoord {
             let v = vals[deriv2_pair_index(ncoord, i, j)];
             if v == 0.0 {
+                continue;
+            }
+            // External-charge centres are fixed MM coordinates, not Hessian
+            // variables: their derivative blocks are dropped.
+            if centre_atoms[i / 3] == EXTERNAL_CENTRE || centre_atoms[j / 3] == EXTERNAL_CENTRE {
                 continue;
             }
             let (r, c) = (row(i), row(j));
@@ -705,17 +746,36 @@ fn pair_weights(
 /// only), and the centre→atom table for its coordinates: bra centre, ket
 /// centre, then one centre per nucleus in `prep.atoms()` order (= molecule
 /// order; [`system_refusal`] rejects a mismatch).
-fn one_electron_centres(op_kind: std::os::raw::c_int, prep: &PreparedBasis) -> (usize, Vec<usize>) {
+fn one_electron_centres(
+    op_kind: std::os::raw::c_int,
+    prep: &PreparedBasis,
+    extra: &[PointCharge],
+) -> (usize, Vec<usize>) {
+    let natoms = prep.atoms().len();
     let n_charges = if op_kind == ffi::OP_NUCLEAR {
-        prep.atoms().len()
+        natoms + extra.len()
     } else {
         0
     };
     let mut centres = vec![0usize; 2 + n_charges];
     for (c, slot) in centres[2..].iter_mut().enumerate() {
-        *slot = c;
+        *slot = if c < natoms { c } else { EXTERNAL_CENTRE };
     }
     (n_charges, centres)
+}
+
+/// Load the nuclei (and, for the nuclear-attraction engine, the external
+/// charges after them) into a 1e engine.
+fn load_charges(
+    eng: &mut Engine,
+    prep: &PreparedBasis,
+    extra: &[PointCharge],
+) -> Result<(), FerricError> {
+    if extra.is_empty() {
+        eng.set_point_charges(prep)
+    } else {
+        eng.set_point_charges_extra(prep, extra)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -732,10 +792,11 @@ fn one_electron_centres(op_kind: std::os::raw::c_int, prep: &PreparedBasis) -> (
 fn skeleton_hess_1e(
     prep: &PreparedBasis,
     natoms: usize,
+    extra: &[PointCharge],
     d: &Array2<f64>,
 ) -> Result<Array2<f64>, FerricError> {
-    let mut h = contract_1e_deriv2(prep, natoms, ffi::OP_KINETIC, d)?;
-    h += &contract_1e_deriv2(prep, natoms, ffi::OP_NUCLEAR, d)?;
+    let mut h = contract_1e_deriv2(prep, natoms, &[], ffi::OP_KINETIC, d)?;
+    h += &contract_1e_deriv2(prep, natoms, extra, ffi::OP_NUCLEAR, d)?;
     Ok(h)
 }
 
@@ -746,7 +807,7 @@ fn skeleton_hess_overlap(
     natoms: usize,
     w: &Array2<f64>,
 ) -> Result<Array2<f64>, FerricError> {
-    Ok(-contract_1e_deriv2(prep, natoms, ffi::OP_OVERLAP, w)?)
+    Ok(-contract_1e_deriv2(prep, natoms, &[], ffi::OP_OVERLAP, w)?)
 }
 
 /// `Σ_μν weight_μν ∂²O_μν/∂x∂y` for the 1e operator `op_kind`, over canonical
@@ -754,13 +815,14 @@ fn skeleton_hess_overlap(
 fn contract_1e_deriv2(
     prep: &PreparedBasis,
     natoms: usize,
+    extra: &[PointCharge],
     op_kind: std::os::raw::c_int,
     weight: &Array2<f64>,
 ) -> Result<Array2<f64>, FerricError> {
-    let (n_charges, mut centres) = one_electron_centres(op_kind, prep);
+    let (n_charges, mut centres) = one_electron_centres(op_kind, prep, extra);
     let mut eng = Engine::new_1e_deriv2(op_kind, prep, 1e-14)?;
     if n_charges > 0 {
-        eng.set_point_charges(prep)?;
+        load_charges(&mut eng, prep, extra)?;
     }
     let dims = prep.shell_dims();
     let offs = prep.shell_offsets();
@@ -890,13 +952,14 @@ fn first_order_ao(
     op: Operator,
     bounds: &SchwarzBounds,
     natoms: usize,
+    extra: &[PointCharge],
     specs: &[FockSpec<'_>],
 ) -> Result<FirstOrderAo, FerricError> {
-    let s1 = deriv1_1e_matrices(prep, natoms, ffi::OP_OVERLAP)?;
-    let mut h1 = deriv1_1e_matrices(prep, natoms, ffi::OP_KINETIC)?;
+    let s1 = deriv1_1e_matrices(prep, natoms, &[], ffi::OP_OVERLAP)?;
+    let mut h1 = deriv1_1e_matrices(prep, natoms, &[], ffi::OP_KINETIC)?;
     for (h, v) in h1
         .iter_mut()
-        .zip(deriv1_1e_matrices(prep, natoms, ffi::OP_NUCLEAR)?)
+        .zip(deriv1_1e_matrices(prep, natoms, extra, ffi::OP_NUCLEAR)?)
     {
         *h += &v;
     }
@@ -918,12 +981,13 @@ fn first_order_ao(
 fn deriv1_1e_matrices(
     prep: &PreparedBasis,
     natoms: usize,
+    extra: &[PointCharge],
     op_kind: std::os::raw::c_int,
 ) -> Result<Vec<Array2<f64>>, FerricError> {
-    let (n_charges, mut centres) = one_electron_centres(op_kind, prep);
+    let (n_charges, mut centres) = one_electron_centres(op_kind, prep, extra);
     let mut eng = Engine::new_1e_deriv(op_kind, prep, 1e-14)?;
     if n_charges > 0 {
-        eng.set_point_charges(prep)?;
+        load_charges(&mut eng, prep, extra)?;
     }
     let nbf = prep.nbasis();
     let dims = prep.shell_dims();
@@ -939,6 +1003,9 @@ fn deriv1_1e_matrices(
             };
             let n = dims[s1] * dims[s2];
             for (k, &atom) in centres.iter().enumerate() {
+                if atom == EXTERNAL_CENTRE {
+                    continue;
+                }
                 for a in 0..3 {
                     let src = &blocks[(3 * k + a) * n..(3 * k + a + 1) * n];
                     let pair = (offs[s1], dims[s1], offs[s2], dims[s2]);
