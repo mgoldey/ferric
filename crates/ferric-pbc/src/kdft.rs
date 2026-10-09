@@ -26,15 +26,17 @@
 //!   Madelung term and is scaled as a whole (see
 //!   [`crate::kscf::solve_krks_injected`]).
 //!
-//! Open shell (KUKS), range-separated hybrids, meta-GGA, VV10 and double
-//! hybrids are refused/absent, exactly as at Gamma. Time reversal is NOT used
+//! Range-separated hybrids (HSE06, CAM-B3LYP, wB97X, ...) are supported with
+//! the dense-AFT J/K ([`crate::rsh`]; no Gamma RSH exists to mirror). Open
+//! shell (KUKS), meta-GGA, VV10 and double hybrids are refused/absent, exactly
+//! as at Gamma. Time reversal is NOT used
 //! to halve the XC work (every k gets its own Bloch AO cache).
 
 use crate::budget::{bytes_of, Ledger};
 use crate::dft::{dist3, PeriodicDftError};
 use crate::dft::{
-    image_translations, resolve_periodic_functional, shell_extent, PeriodicGrid,
-    PeriodicGridConfig, PeriodicXcConfig, CHUNK, SORT_BOX,
+    image_translations, shell_extent, PeriodicGrid, PeriodicGridConfig, PeriodicXcConfig, CHUNK,
+    SORT_BOX,
 };
 use crate::hcore::kpoint::periodic_hcore_kpts;
 use crate::kdense_aft::KDenseAftEri;
@@ -44,6 +46,7 @@ use crate::kscf::{
 };
 use crate::lattice::Cell;
 use crate::rsgdf::kpoint::KRsGdf;
+use crate::rsh::{resolve_periodic_functional_rsh, RshParams};
 use crate::timing::{PbcTimings, StageClock};
 use ferric_core::basis::{num_functions, BasisSet};
 use ferric_core::FerricError;
@@ -76,6 +79,7 @@ pub struct KPeriodicXc {
     nbf: usize,
     nk: usize,
     gga: bool,
+    rsh: Option<RshParams>,
 }
 
 impl std::fmt::Debug for KPeriodicXc {
@@ -246,7 +250,7 @@ impl KPeriodicXc {
         mesh: &KPointMesh,
         cfg: &PeriodicXcConfig,
     ) -> Result<Self, FerricError> {
-        let (xc, exx) = resolve_periodic_functional(functional)?;
+        let (xc, exx, rsh) = resolve_periodic_functional_rsh(functional)?;
         let gga = xc
             .funcs
             .iter()
@@ -269,12 +273,19 @@ impl KPeriodicXc {
             nbf,
             nk: mesh.nk(),
             gga,
+            rsh,
         })
     }
 
-    /// The functional's global exact-exchange fraction.
+    /// The functional's global exact-exchange fraction (`0` for a
+    /// range-separated hybrid: see [`Self::rsh`]).
     pub fn exact_exchange_fraction(&self) -> f64 {
         self.exx
+    }
+
+    /// Range-separation parameters if the functional is a CAM hybrid.
+    pub fn rsh(&self) -> Option<RshParams> {
+        self.rsh
     }
 
     /// Grid points cached.
@@ -474,7 +485,8 @@ pub struct KRksResult {
     pub scf: KScfResult,
     /// `E_xc` at the converged densities.
     pub e_xc: f64,
-    /// The functional's global exact-exchange fraction.
+    /// The functional's global exact-exchange fraction (the short-range
+    /// fraction `c_sr` for a range-separated hybrid).
     pub exact_exchange_fraction: f64,
     /// Grid points used.
     pub n_grid_points: usize,
@@ -491,7 +503,7 @@ pub fn solve_krks(
     mesh: &KPointMesh,
     cfg: &KRksConfig,
 ) -> Result<KRksResult, FerricError> {
-    resolve_periodic_functional(&cfg.functional)?;
+    resolve_periodic_functional_rsh(&cfg.functional)?;
     let grid = PeriodicGrid::build(cell, &cfg.grid)?;
     solve_krks_on_grid(cell, prep, aux, mesh, &grid, cfg)
 }
@@ -529,7 +541,26 @@ pub fn solve_krks_on_grid(
         _ => {}
     }
     let mut pxc = KPeriodicXc::new(cell, prep.basis_set(), &cfg.functional, grid, mesh, &cfg.xc)?;
-    let a = pxc.exact_exchange_fraction();
+    let mut a = pxc.exact_exchange_fraction();
+    // Range-separated hybrid: the fractions live inside the K kernel (dense
+    // AFT only), so the SCF scales K by 1.
+    let mut kc = *kc;
+    if let Some(r) = pxc.rsh() {
+        if kc.jk != KJkKind::Dense {
+            return Err(PeriodicDftError::Unsupported {
+                feature: "range-separated hybrid with RS-GDF",
+                reason: format!(
+                    "{}: the attenuated exchange is implemented in the dense-AFT k-point J/K \
+                     only (jk = dense); RS-GDF with an erf-attenuated K is not built",
+                    cfg.functional
+                ),
+            }
+            .into());
+        }
+        kc.dense.rsh = Some(r);
+        a = 1.0;
+    }
+    let kc = &kc;
     let hk = periodic_hcore_kpts(cell, prep, mesh, &kc.hcore)?;
     let mut timings = PbcTimings::default();
     let gdf;
@@ -565,7 +596,7 @@ pub fn solve_krks_on_grid(
     let (e_xc, _) = KPointXc::build(&mut pxc, &scf.densities)?;
     Ok(KRksResult {
         e_xc,
-        exact_exchange_fraction: a,
+        exact_exchange_fraction: pxc.rsh().map_or(a, |r| r.c_sr),
         n_grid_points: grid.len(),
         electrons_on_grid,
         scf,

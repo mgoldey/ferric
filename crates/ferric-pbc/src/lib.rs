@@ -161,6 +161,7 @@ mod ordered;
 pub mod pair_ft;
 pub mod rohf;
 pub mod rsgdf;
+pub mod rsh;
 pub mod sr_rotation;
 pub mod stress;
 pub mod timing;
