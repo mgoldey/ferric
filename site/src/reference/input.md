@@ -426,7 +426,7 @@ or key is an error. A charged cell is an error.
 |---|---|---|---|---|
 | `lattice` | 3×3 float array | **required** | rows are the lattice vectors | In `unit`. |
 | `unit` | string | `"angstrom"` | `angstrom` `bohr` | Applies to `lattice`, `omega` and `gdf_omega` (as their inverse) and `neighbour_cutoff`. |
-| `kmesh` | `[n1, n2, n3]` | none (Gamma point) | each ≥ 1 | Selects the k-point drivers: `rhf`, `uhf` (no functional), `rimp2`, `pdep-rpa` only. |
+| `kmesh` | `[n1, n2, n3]` | none (Gamma point) | each ≥ 1 | Selects the k-point drivers: `rhf`, `uhf` (no functional), closed-shell Kohn-Sham (`ksdft`, or `rhf` with `[dft] functional`: LDA, GGA and global-hybrid functionals), `rimp2` and `pdep-rpa`. Not yet supported with `kmesh`, each an error naming the gap: open-shell Kohn-Sham (UKS/ROKS, including `ksdft` with multiplicity > 1), `rohf`, meta-GGA, range-separated hybrids and VV10 functionals, and k-point forces/stress (`task = "optimize"`). Closed-shell k-point KS-DFT uses the `n_radial`/`n_angular`/`neighbour_cutoff` grid and, with a 1×1×1 mesh, equals the Gamma-point RKS run. |
 | `centring` | string | `"gamma"` | `gamma` `mp` | Requires `kmesh`. |
 | `exxdiv` | string | `"ewald"` | `ewald` `none` | Exchange G = 0 treatment. |
 | `jk` | string | `"dense"` | `dense` `rsgdf` | `dense` is a toy-scale dense AFT tensor. |

@@ -2397,6 +2397,221 @@ fn run_uhf_kpts(
     Ok(out)
 }
 
+// ─────────────────────────────────────────────────── k-point RKS ──
+
+/// Capability check for the k-point Kohn-Sham bindings: the one place that
+/// names what k-point KS-DFT does not support yet. Widen it together with
+/// the driver (open shell, meta-GGA, range-separated hybrids, forces and
+/// stress are the known gaps). Called before any integral is built.
+fn check_kpoint_ks_support(
+    fname: &str,
+    functional: &str,
+    with_gradient: bool,
+    with_stress: bool,
+) -> PyResult<()> {
+    if with_gradient || with_stress {
+        return Err(val_err(format!(
+            "{fname}: k-point forces and stress are not implemented yet \
+             (with_gradient/with_stress are Gamma-point only: run_rks_gamma)"
+        )));
+    }
+    ferric_pbc::dft::resolve_periodic_functional(functional)
+        .map(|_| ())
+        .map_err(|e| {
+            val_err(format!(
+                "{fname}: functional {functional:?}: {e}. k-point RKS supports LDA, GGA \
+                 and global-hybrid functionals only"
+            ))
+        })
+}
+
+/// Result of `run_rks_kpts`. Energies per cell, Hartree.
+#[pyclass]
+#[pyo3(name = "KpointRksResult")]
+struct PyKpointRksResult {
+    #[pyo3(get)]
+    functional: String,
+    #[pyo3(get)]
+    energy: f64,
+    #[pyo3(get)]
+    converged: bool,
+    #[pyo3(get)]
+    iterations: usize,
+    #[pyo3(get)]
+    e_nuc: f64,
+    /// Mesh (supercell) Madelung constant (applied iff exxdiv="ewald").
+    #[pyo3(get)]
+    madelung: f64,
+    #[pyo3(get)]
+    exxdiv: String,
+    #[pyo3(get)]
+    e_xc: f64,
+    #[pyo3(get)]
+    exact_exchange_fraction: f64,
+    #[pyo3(get)]
+    n_grid_points: usize,
+    #[pyo3(get)]
+    electrons_on_grid: f64,
+    #[pyo3(get)]
+    mesh: (usize, usize, usize),
+    #[pyo3(get)]
+    centring: String,
+    #[pyo3(get)]
+    nk: usize,
+    /// Cartesian k-points in Å⁻¹.
+    #[pyo3(get)]
+    kpts: Vec<[f64; 3]>,
+    /// Per-k MO energies.
+    #[pyo3(get)]
+    mo_energy: Vec<Vec<f64>>,
+    /// Global HOMO / LUMO over the mesh.
+    #[pyo3(get)]
+    homo: f64,
+    #[pyo3(get)]
+    lumo: f64,
+    #[pyo3(get)]
+    nao: usize,
+    #[pyo3(get)]
+    jk: String,
+    #[pyo3(get)]
+    auxbasis: Option<String>,
+    timings_data: PbcTimings,
+}
+
+#[pymethods]
+impl PyKpointRksResult {
+    /// Stage timings and counters (see `timings_dict`).
+    #[getter]
+    fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+        timings_dict(py, &self.timings_data)
+    }
+    fn __repr__(&self) -> String {
+        format!(
+            "KpointRksResult(functional={:?}, energy={:.10}, mesh={:?}, exxdiv={:?}, \
+             converged={})",
+            self.functional, self.energy, self.mesh, self.exxdiv, self.converged
+        )
+    }
+}
+
+fn krks_driver(
+    s: &PbcSetup,
+    mesh: &KPointMesh,
+    functional: &str,
+    grid: PeriodicGridConfig,
+    scf: KScfConfig,
+) -> Result<(ferric_pbc::KRksResult, f64), FerricError> {
+    let mut cfg = ferric_pbc::KRksConfig::new(&s.cell, s.exx, functional);
+    cfg.krhf.scf = scf;
+    cfg.krhf.hcore = PeriodicHcoreConfig::with_omega(s.omega_bohr);
+    (cfg.krhf.jk, cfg.krhf.dense, cfg.krhf.rsgdf) =
+        (kjk_kind(s), kdense_config(s), krsgdf_config(s));
+    cfg.grid = grid;
+    let r = ferric_pbc::solve_krks(&s.cell, &s.prep, s.aux.as_ref(), mesh, &cfg)?;
+    let madelung = mesh.madelung(&s.cell)?;
+    Ok((r, madelung))
+}
+
+/// Closed-shell **k-point RKS** (LDA / GGA / global hybrids) on a
+/// `mesh = (n1, n2, n3)` k-mesh. Mesh/centring/jk/SCF-threshold contract as
+/// `run_rhf_kpts`; functional and grid (`n_radial`, `n_angular`,
+/// `neighbour_cutoff` in Å) as `run_rks_gamma`. Refused with a ValueError
+/// naming the gap: open shell (k-point UKS/ROKS not implemented),
+/// meta-GGA, range-separated hybrids, VV10, `with_gradient`/`with_stress`
+/// (k-point forces and stress not implemented). A 1x1x1 Gamma mesh equals
+/// `run_rks_gamma` and an N-point mesh equals the N-fold supercell / N.
+///
+/// Validated vs crates/ferric-pbc/tests/pbc_krks.rs (PySCF 2.13 KRKS).
+#[pyfunction]
+#[pyo3(signature = (
+    mol, lattice, basis_set, functional, mesh, exxdiv="ewald", centring="gamma",
+    omega=None, max_eri_gb=None, max_iter=200, energy_conv=1e-12, grad_conv=1e-9,
+    jk="dense", auxbasis=None, memory_budget_gb=None, n_radial=75, n_angular=302,
+    neighbour_cutoff=None, with_gradient=false, with_stress=false,
+    range_split=None, gdf_omega=None,
+))]
+#[allow(clippy::too_many_arguments)]
+fn run_rks_kpts(
+    py: Python<'_>,
+    mol: &PyMolecule,
+    lattice: Vec<Vec<f64>>,
+    basis_set: &PyBasisSet,
+    functional: &str,
+    mesh: (usize, usize, usize),
+    exxdiv: &str,
+    centring: &str,
+    omega: Option<f64>,
+    max_eri_gb: Option<f64>,
+    max_iter: usize,
+    energy_conv: f64,
+    grad_conv: f64,
+    jk: &str,
+    auxbasis: Option<&Bound<'_, PyAny>>,
+    memory_budget_gb: Option<f64>,
+    n_radial: usize,
+    n_angular: usize,
+    neighbour_cutoff: Option<f64>,
+    with_gradient: bool,
+    with_stress: bool,
+    range_split: Option<&Bound<'_, PyAny>>,
+    gdf_omega: Option<f64>,
+) -> PyResult<PyKpointRksResult> {
+    let fname = "run_rks_kpts";
+    check_kpoint_ks_support(fname, functional, with_gradient, with_stress)?;
+    let mut s = pbc_setup(&PbcArgs {
+        fname,
+        mol,
+        lattice: &lattice,
+        basis: basis_set,
+        exxdiv,
+        omega,
+        gdf_omega,
+        jk,
+        auxbasis,
+        max_eri_gb,
+        memory_budget_gb,
+        closed_shell: true,
+    })?;
+    s.range_split = parse_range_split(fname, range_split, s.aux.is_some(), s.derivs)?;
+    let m = k_mesh(&s, mesh, centring)?;
+    let grid = periodic_grid(fname, n_radial, n_angular, neighbour_cutoff)?;
+    let scf = kscf_config(fname, max_iter, energy_conv, grad_conv)?;
+    let (r, madelung) = py
+        .allow_threads(|| krks_driver(&s, &m, functional, grid, scf))
+        .map_err(pbc_err(fname))?;
+    let n = m.n();
+    let c = ANGSTROM_TO_BOHR;
+    Ok(PyKpointRksResult {
+        functional: functional.to_string(),
+        energy: r.scf.energy,
+        converged: r.scf.converged,
+        iterations: r.scf.iterations,
+        e_nuc: r.scf.e_nuc,
+        madelung,
+        exxdiv: exx_name(s.exx),
+        e_xc: r.e_xc,
+        exact_exchange_fraction: r.exact_exchange_fraction,
+        n_grid_points: r.n_grid_points,
+        electrons_on_grid: r.electrons_on_grid,
+        mesh: (n[0], n[1], n[2]),
+        centring: centring_name(m.centring()),
+        nk: m.nk(),
+        kpts: r
+            .scf
+            .kpts
+            .iter()
+            .map(|k| [k[0] * c, k[1] * c, k[2] * c])
+            .collect(),
+        mo_energy: r.scf.eps.clone(),
+        homo: r.scf.homo,
+        lumo: r.scf.lumo,
+        nao: s.prep.nbasis(),
+        jk: s.jk_name(),
+        auxbasis: s.aux_name.clone(),
+        timings_data: r.scf.timings,
+    })
+}
+
 // ─────────────────────────────────────────────── k-point MP2 / dRPA ──
 
 /// Result of `run_mp2_kpts` / `run_drpa_kpts` (k-point RHF + correlation).
@@ -2834,12 +3049,14 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_drpa_gamma, m)?)?;
     m.add_function(wrap_pyfunction!(run_rhf_kpts, m)?)?;
     m.add_function(wrap_pyfunction!(run_uhf_kpts, m)?)?;
+    m.add_function(wrap_pyfunction!(run_rks_kpts, m)?)?;
     m.add_function(wrap_pyfunction!(run_mp2_kpts, m)?)?;
     m.add_function(wrap_pyfunction!(run_drpa_kpts, m)?)?;
     m.add_class::<PyGammaOpenShellResult>()?;
     m.add_class::<PyGammaRksResult>()?;
     m.add_class::<PyGammaCorrelationResult>()?;
     m.add_class::<PyKpointScfResult>()?;
+    m.add_class::<PyKpointRksResult>()?;
     m.add_class::<PyKpointCorrelationResult>()?;
     Ok(())
 }

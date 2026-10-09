@@ -1,0 +1,29 @@
+# Periodic k-point closed-shell KS-DFT: H2 / STO-3G in a 4 Bohr simple-cubic
+# cell on a 1x1x2 Gamma-centred k-mesh, PBE0 (LDA, GGA and global hybrids are
+# supported with kmesh; open shell, meta-GGA, range-separated hybrids and
+# k-point forces are errors that name the gap). The energy is
+# ferric_pbc::solve_krks bit for bit. Energies are Hartree PER CELL.
+#
+#   OPENBLAS_NUM_THREADS=1 cargo run --release --bin ferric -- examples/h2-cell-kpts-ksdft.toml
+
+[molecule]
+xyz = "testdata/molecules/h2.xyz"
+
+[basis]
+name = "sto-3g"
+
+[method]
+kind = "ksdft"
+
+[dft]
+functional = "PBE0"
+
+[cell]
+unit = "bohr"
+lattice = [[4.0, 0.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 4.0]]
+kmesh = [1, 1, 2]
+centring = "gamma"
+exxdiv = "ewald"
+jk = "dense"
+n_radial = 40
+n_angular = 110

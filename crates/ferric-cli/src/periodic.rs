@@ -26,14 +26,14 @@ use ferric_pbc::rsgdf::DEFAULT_RSGDF_OMEGA;
 use ferric_pbc::SrColumnRotation;
 use ferric_pbc::{
     gamma_drpa, gamma_mp2, gamma_rks, gamma_rohf, gamma_roks, gamma_uhf, gamma_uks, kpoint_drpa,
-    kpoint_mp2, periodic_hcore, periodic_hcore_kpts, solve_krhf, solve_krhf_injected, solve_kuhf,
-    Cell, DenseAftEri, ExxDiv, GammaDrpaConfig, GammaDrpaIntegrals, GammaMp2Config,
+    kpoint_mp2, periodic_hcore, periodic_hcore_kpts, solve_krhf, solve_krhf_injected, solve_krks,
+    solve_kuhf, Cell, DenseAftEri, ExxDiv, GammaDrpaConfig, GammaDrpaIntegrals, GammaMp2Config,
     GammaMp2Integrals, GammaRksConfig, GammaRohfConfig, GammaRoksConfig, GammaUhfConfig,
     GammaUhfIntegrals, GammaUksConfig, KCorrIntegrals, KDenseAftConfig, KDenseAftEri,
     KDenseAftPairs, KDrpaConfig, KDrpaEnergy, KJkKind, KMp2Config, KPointInjection, KPointMesh,
-    KRhfConfig, KRsGdf, KRsGdfConfig, KScfConfig, KScfResult, KUhfConfig, MeshCentring,
-    Mp2Denominators, PbcTimings, PeriodicGridConfig, PeriodicHcore, PeriodicHcoreConfig,
-    RangeSplit, RsGdf, RsGdfConfig, StageClock,
+    KRhfConfig, KRksConfig, KRksResult, KRsGdf, KRsGdfConfig, KScfConfig, KScfResult, KUhfConfig,
+    MeshCentring, Mp2Denominators, PbcTimings, PeriodicGridConfig, PeriodicHcore,
+    PeriodicHcoreConfig, RangeSplit, RsGdf, RsGdfConfig, StageClock,
 };
 use ferric_pbc::{
     gamma_rhf_gradient_rsgdf, gamma_rhf_gradient_with, gamma_rks_gradient_rsgdf,
@@ -114,9 +114,10 @@ pub fn run_periodic(cfg: &Config) {
     } else if plan.kmesh.is_some() {
         match plan.route {
             PeriodicRoute::Rhf => run_krhf(cfg, plan, &s),
+            PeriodicRoute::Rks => run_krks(cfg, plan, &s),
             PeriodicRoute::Uhf => run_kuhf(cfg, plan, &s),
             PeriodicRoute::Mp2 | PeriodicRoute::Drpa => run_kcorr(cfg, plan, &s),
-            // Refused by `periodic_plan` (`PeriodicRoute::has_kpoints`).
+            // Refused by `periodic_plan` (`PeriodicRoute::check_kpoint_support`).
             other => die(format!(
                 "internal: k-point {} reached the periodic dispatcher",
                 other.label()
@@ -1190,6 +1191,58 @@ fn run_krhf(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
     Outcome {
         energy: r.energy,
         converged: r.converged,
+        energy_is: "total",
+    }
+}
+
+/// k-point closed-shell KS-DFT: `(result, mesh Madelung constant)`.
+fn krks_driver(
+    plan: &PeriodicPlan,
+    s: &Setup,
+    mesh: &KPointMesh,
+) -> Result<(KRksResult, f64), FerricError> {
+    let mut c = KRksConfig::new(
+        &s.cell,
+        plan.exxdiv,
+        plan.functional.as_deref().unwrap_or("LDA"),
+    );
+    c.krhf.scf = kscf_config(plan);
+    c.krhf.hcore = PeriodicHcoreConfig::with_omega(s.omega_bohr);
+    (c.krhf.jk, c.krhf.dense, c.krhf.rsgdf) =
+        (kjk_kind(s), kdense_config(plan), krsgdf_config(plan));
+    c.grid = periodic_grid(plan);
+    let r = solve_krks(&s.cell, &s.prep, s.aux.as_ref(), mesh, &c)?;
+    let v_m = mesh.madelung(&s.cell)?;
+    Ok((r, v_m))
+}
+
+fn run_krks(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
+    let mesh = k_mesh(plan, s);
+    let (r, v_m) = krks_driver(plan, s, &mesh).unwrap_or_else(|e| die(e));
+    print_header(cfg, plan, s);
+    print_aux_counts(&r.scf.timings);
+    print_lindep(&r.scf.lindep);
+    println!(
+        "  grid       = {} points ({}x{}), {:.8} electrons",
+        r.n_grid_points, plan.n_radial, plan.n_angular, r.electrons_on_grid
+    );
+    println!("  iterations = {}", r.scf.iterations);
+    println!("  converged  = {}", r.scf.converged);
+    println!("  e_nuc      = {:.10} Hartree/cell (Ewald)", r.scf.e_nuc);
+    print_madelung(plan, v_m);
+    println!(
+        "  E_xc       = {:.10} Hartree/cell (exact exchange a_x = {})",
+        r.e_xc, r.exact_exchange_fraction
+    );
+    println!(
+        "  HOMO/LUMO  = {:.6} / {:.6} Hartree (over the mesh)",
+        r.scf.homo, r.scf.lumo
+    );
+    println!("  energy     = {:.10} Hartree/cell", r.scf.energy);
+    report_timings(&r.scf.timings);
+    Outcome {
+        energy: r.scf.energy,
+        converged: r.scf.converged,
         energy_is: "total",
     }
 }
