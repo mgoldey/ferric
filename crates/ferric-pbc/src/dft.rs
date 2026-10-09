@@ -131,9 +131,9 @@ pub const DEFAULT_AO_THRESHOLD: f64 = 1e-15;
 /// so the config is checked against this list first).
 pub const SUPPORTED_LEBEDEV_ORDERS: [usize; 6] = [6, 14, 26, 50, 110, 302];
 /// Points per AO/XC chunk.
-const CHUNK: usize = 512;
+pub(crate) const CHUNK: usize = 512;
 /// Spatial sort box edge (Bohr) that groups points into compact chunks.
-const SORT_BOX: f64 = 2.0;
+pub(crate) const SORT_BOX: f64 = 2.0;
 
 /// A Stage-2 periodic-DFT refusal or grid-construction error, by name.
 #[derive(Debug, Clone, PartialEq)]
@@ -191,11 +191,11 @@ impl From<PeriodicDftError> for FerricError {
     }
 }
 
-fn dot3(a: &[f64; 3], b: &[f64; 3]) -> f64 {
+pub(crate) fn dot3(a: &[f64; 3], b: &[f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
-fn dist3(a: &[f64; 3], b: &[f64; 3]) -> f64 {
+pub(crate) fn dist3(a: &[f64; 3], b: &[f64; 3]) -> f64 {
     let d = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
     dot3(&d, &d).sqrt()
 }
@@ -463,6 +463,34 @@ impl PeriodicGrid {
             n_generated: total,
             mean_neighbours: 0.0,
         })
+    }
+
+    /// The grid of a supercell built from translated copies of this one:
+    /// every point is repeated at `r + t` for each `t` in `shifts`, weights
+    /// unchanged (so `Σ w` is `shifts.len()` times this grid's). For a
+    /// lattice-periodic integrand `Σ_t Σ_g w_g f(r_g + t) = N Σ_g w_g f(r_g)`
+    /// exactly, which makes a Gamma-point supercell KS calculation on it an
+    /// exact anchor for the k-mesh one on this grid. `home_atom` keeps the
+    /// CELL atom index (energy use only; the gradient bookkeeping is not
+    /// valid for the copies).
+    pub fn replicated(&self, shifts: &[[f64; 3]]) -> Self {
+        let mut points = Vec::with_capacity(self.points.len() * shifts.len());
+        for t in shifts {
+            for p in &self.points {
+                points.push(GridPoint {
+                    xyz: [p.xyz[0] + t[0], p.xyz[1] + t[1], p.xyz[2] + t[2]],
+                    weight: p.weight,
+                    home_atom: p.home_atom,
+                });
+            }
+        }
+        Self {
+            points,
+            neighbour_cutoff: self.neighbour_cutoff,
+            covering_bound: self.covering_bound,
+            n_generated: self.n_generated * shifts.len(),
+            mean_neighbours: self.mean_neighbours,
+        }
     }
 
     /// The weighted points.
@@ -786,7 +814,7 @@ pub(crate) struct AoStrainMoments {
 /// Radius beyond which a shell's value AND gradient are below `thresh`
 /// (every primitive, with the same normalisation as ferric's AO evaluator;
 /// a factor 10 covers the pure-harmonic prefactor).
-fn shell_extent(sh: &LocatedShell, thresh: f64) -> f64 {
+pub(crate) fn shell_extent(sh: &LocatedShell, thresh: f64) -> f64 {
     let l = sh.l;
     let dbl_fact: f64 = match l {
         0 | 1 => 1.0,
@@ -821,6 +849,37 @@ struct AoChunk {
     dchi: Array3<f64>,
     /// Distinct lattice translations with a live shell in this chunk.
     n_images: usize,
+}
+
+/// Lattice translations `L` that can bring an AO image within `r_ao` of any
+/// of `pts` (`|L| <= rho + R_ao + spread`), shared by the Gamma and Bloch AO
+/// caches.
+pub(crate) fn image_translations(
+    cell: &Cell,
+    pts: &[GridPoint],
+    r_ao: f64,
+    ledger: &mut Ledger,
+) -> Result<Vec<[f64; 3]>, FerricError> {
+    let pos = cell.positions();
+    let nat = pos.len() as f64;
+    let c0 = [
+        pos.iter().map(|p| p[0]).sum::<f64>() / nat,
+        pos.iter().map(|p| p[1]).sum::<f64>() / nat,
+        pos.iter().map(|p| p[2]).sum::<f64>() / nat,
+    ];
+    let rho = pts.iter().map(|g| dist3(&g.xyz, &c0)).fold(0.0, f64::max);
+    let spread = pos.iter().map(|p| dist3(p, &c0)).fold(0.0, f64::max);
+    let rcut_l = rho + r_ao + spread;
+    let n_l = cell.translation_count_bound(rcut_l + 2.0 * spread)?;
+    ledger.check(
+        "periodic XC AO translation list",
+        bytes_of(n_l, std::mem::size_of::<[f64; 3]>()),
+    )?;
+    Ok(cell
+        .translations(rcut_l + 2.0 * spread)?
+        .into_iter()
+        .filter(|l| dot3(l, l).sqrt() <= rcut_l + spread)
+        .collect())
 }
 
 /// Build the chunked `χ^Γ`, `∇χ^Γ` cache over `grid` (budget-gated).
@@ -872,27 +931,7 @@ fn lattice_ao_chunks(
     };
     order.sort_by_key(|&i| key(&pts[i].xyz));
 
-    // Lattice translations reaching any point: |L| <= rho + R_ao + spread.
-    let pos = cell.positions();
-    let nat = pos.len() as f64;
-    let c0 = [
-        pos.iter().map(|p| p[0]).sum::<f64>() / nat,
-        pos.iter().map(|p| p[1]).sum::<f64>() / nat,
-        pos.iter().map(|p| p[2]).sum::<f64>() / nat,
-    ];
-    let rho = pts.iter().map(|g| dist3(&g.xyz, &c0)).fold(0.0, f64::max);
-    let spread = pos.iter().map(|p| dist3(p, &c0)).fold(0.0, f64::max);
-    let rcut_l = rho + r_ao + spread;
-    let n_l = cell.translation_count_bound(rcut_l + 2.0 * spread)?;
-    ledger.check(
-        "periodic XC AO translation list",
-        bytes_of(n_l, std::mem::size_of::<[f64; 3]>()),
-    )?;
-    let trans: Vec<[f64; 3]> = cell
-        .translations(rcut_l + 2.0 * spread)?
-        .into_iter()
-        .filter(|l| dot3(l, l).sqrt() <= rcut_l + spread)
-        .collect();
+    let trans = image_translations(cell, pts, r_ao, ledger)?;
 
     let chunk_idx: Vec<Vec<usize>> = order.chunks(CHUNK).map(|c| c.to_vec()).collect();
     let chunks: Result<Vec<AoChunk>, FerricError> = chunk_idx
