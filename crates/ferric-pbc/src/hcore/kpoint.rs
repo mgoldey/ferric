@@ -115,6 +115,7 @@ pub struct PeriodicHcoreK {
     pub budget_bytes: usize,
 }
 
+/// Zeroed `(n, n)` complex matrix.
 fn czero(n: usize) -> Array2<Complex64> {
     Array2::<Complex64>::zeros((n, n))
 }
@@ -238,6 +239,8 @@ pub fn periodic_hcore_kpts_pair_s1_oracle(
     periodic_hcore_kpts_impl(cell, prep, mesh, cfg, true)
 }
 
+/// Shared body of [`periodic_hcore_kpts`] and the `s1_oracle` variant (`true` = frozen pre-s2
+/// pair loop). The column rotation is not implemented here: explicit `On` is refused.
 fn periodic_hcore_kpts_impl(
     cell: &Cell,
     prep: &PreparedBasis,
@@ -637,6 +640,7 @@ impl<'a> SrKCtx<'a> {
         }))
     }
 
+    /// Number of k-points in the mesh.
     fn nk(&self) -> usize {
         self.inp.nk
     }

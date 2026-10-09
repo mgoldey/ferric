@@ -478,6 +478,7 @@ pub(crate) enum JkSource<'a> {
 }
 
 impl JkSource<'_> {
+    /// Build the Coulomb matrix `J[D]` into `out` with whichever backend this source wraps.
     pub(crate) fn build_j(
         &self,
         d: &Array2<f64>,
@@ -490,6 +491,8 @@ impl JkSource<'_> {
         Ok(())
     }
 
+    /// Build `K[D]` into `out` with the Madelung shift `vm` (`v_M`, 0 for `exxdiv = none`),
+    /// on whichever backend this source wraps.
     pub(crate) fn build_k(
         &self,
         vm: f64,
@@ -521,6 +524,7 @@ pub(crate) enum SpinSet {
 }
 
 impl SpinSet {
+    /// Total density `D_α + D_β` (restricted: `D`).
     pub(crate) fn total(&self) -> Array2<f64> {
         match self {
             Self::Restricted { d, .. } => d.clone(),
@@ -687,6 +691,8 @@ pub fn gamma_rhf_gradient_rsgdf(
     )
 }
 
+/// Closed-shell HF gradient driver: validates inputs, builds `F = h + J − K/2` from the total
+/// density and assembles the gradient. `who` labels errors.
 #[allow(clippy::too_many_arguments)]
 fn rhf_gradient(
     who: &str,
@@ -807,6 +813,8 @@ pub fn gamma_uhf_gradient_rsgdf(
     )
 }
 
+/// Unrestricted HF gradient driver: per-spin densities/Focks, then the shared assembly.
+/// `who` labels errors.
 #[allow(clippy::too_many_arguments)]
 fn uhf_gradient(
     who: &str,
@@ -929,6 +937,8 @@ pub fn gamma_rks_gradient_rsgdf(
     )
 }
 
+/// Closed-shell KS gradient driver: HF-like terms scaled by the functional's exact-exchange
+/// fraction plus the XC derivative. `who` labels errors.
 #[allow(clippy::too_many_arguments)]
 fn rks_gradient(
     who: &str,
@@ -1066,6 +1076,8 @@ pub fn gamma_uks_gradient_rsgdf(
     )
 }
 
+/// Unrestricted KS gradient driver: per-spin XC and exact-exchange terms, then the shared
+/// assembly. `who` labels errors.
 #[allow(clippy::too_many_arguments)]
 fn uks_gradient(
     who: &str,
@@ -1472,6 +1484,8 @@ pub(crate) fn ro_gate(
     Ok(og)
 }
 
+/// Restricted-open-shell (ROHF/ROKS) gradient driver; `kind` selects Hartree-Fock or the KS
+/// functional. `who` labels errors.
 #[allow(clippy::too_many_arguments)]
 fn ro_gradient(
     who: &str,
@@ -1753,6 +1767,7 @@ fn open_ledger(
     Ok(ledger)
 }
 
+/// `v_M` for the cell: 0 for `ExxDiv::None`, the Ewald Madelung constant for `ExxDiv::Ewald`.
 pub(crate) fn madelung_for(cell: &Cell, exxdiv: ExxDiv) -> Result<f64, FerricError> {
     Ok(match exxdiv {
         ExxDiv::None => 0.0,
@@ -1760,6 +1775,7 @@ pub(crate) fn madelung_for(cell: &Cell, exxdiv: ExxDiv) -> Result<f64, FerricErr
     })
 }
 
+/// Clone `(D_α, D_β)` from an unrestricted result; errors if the SCF has no beta density.
 pub(crate) fn spin_densities(
     who: &str,
     scf: &ScfResult,

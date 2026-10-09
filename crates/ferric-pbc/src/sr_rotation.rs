@@ -218,6 +218,7 @@ impl SrColumnRotation {
 }
 
 impl Default for ColumnRotation {
+    /// Same as [`ColumnRotation::new`].
     fn default() -> Self {
         Self::new()
     }
@@ -236,6 +237,7 @@ fn contraction_norm2(l: i32, exps: &[f64], coefs: &[f64]) -> f64 {
     s
 }
 
+/// True when two shells have identical `l`, purity and bit-identical exponents.
 fn same_primitives(a: &Shell, b: &Shell) -> bool {
     a.l == b.l
         && a.pure == b.pure
@@ -246,10 +248,12 @@ fn same_primitives(a: &Shell, b: &Shell) -> bool {
             .all(|(x, y)| x.to_bits() == y.to_bits())
 }
 
+/// Indices of the non-zero entries of `c`.
 fn nonzero(c: &[f64]) -> Vec<usize> {
     (0..c.len()).filter(|&p| c[p] != 0.0).collect()
 }
 
+/// Copy of `sh` keeping only the primitives whose coefficient in `coefs` is non-zero.
 fn drop_zeros(sh: &Shell, coefs: &[f64]) -> Shell {
     let (exponents, coefficients): (Vec<f64>, Vec<f64>) = sh
         .exponents

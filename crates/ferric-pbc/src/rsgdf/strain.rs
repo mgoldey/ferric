@@ -105,6 +105,7 @@ pub(crate) struct FitStrain {
     pub(crate) n_chunks: usize,
 }
 
+/// `x` times the 3×3 identity.
 fn diag(x: f64) -> Mat3 {
     [[x, 0.0, 0.0], [0.0, x, 0.0], [0.0, 0.0, x]]
 }

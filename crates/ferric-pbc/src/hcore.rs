@@ -372,6 +372,7 @@ impl PeriodicHcoreConfig {
         }
     }
 
+    /// Reject non-finite or non-positive `omega` / `nucleus_exponent` and `precision` outside `(0, 1)`.
     fn validate(&self) -> Result<(), FerricError> {
         if !(self.omega > 0.0) || !self.omega.is_finite() {
             return Err(FerricError::General(format!(
@@ -468,6 +469,9 @@ struct PrimShell {
     dim: usize,
 }
 
+/// Flatten the located shells into primitive-level records (centres in Bohr, normalised
+/// coefficients). Errors if the `PreparedBasis` atoms do not coincide with the cell's atoms,
+/// or a shell is malformed or above `md3c1e::MAX_L`.
 fn prim_shells(cell: &Cell, prep: &PreparedBasis) -> Result<Vec<PrimShell>, FerricError> {
     let pos = cell.positions();
     let atoms = prep.atoms();
@@ -604,6 +608,7 @@ pub enum SrBound {
 }
 
 impl SrBound {
+    /// Effective decay rate `ω_p` of the bound; `ω` itself for the no-Gaussian-extent mutant.
     fn omega_p(self, omega: f64, pmin: f64) -> f64 {
         match self {
             SrBound::NoGaussianExtent => omega,
@@ -611,6 +616,7 @@ impl SrBound {
         }
     }
 
+    /// Distance margin of the bound: 0 for the no-margin mutant, `SR_MARGIN_BOHR` otherwise.
     fn margin(self) -> f64 {
         match self {
             SrBound::NoMargin => 0.0,
@@ -625,6 +631,7 @@ impl SrBound {
     }
 }
 
+/// `m[o1 + i, o2 + j] += f · blk[i·n2 + j]` for a row-major `(n1, n2)` block.
 fn add_block(m: &mut Array2<f64>, blk: &[f64], o1: usize, n1: usize, o2: usize, n2: usize, f: f64) {
     for i in 0..n1 {
         for j in 0..n2 {
@@ -633,6 +640,7 @@ fn add_block(m: &mut Array2<f64>, blk: &[f64], o1: usize, n1: usize, o2: usize, 
     }
 }
 
+/// `(½(M + Mᵀ), max_ij |M_ij − M_ji|)`: the symmetrised matrix and its largest asymmetry.
 fn symmetrize(m: &Array2<f64>) -> (Array2<f64>, f64) {
     let mt = m.t();
     let asym = m
@@ -680,6 +688,8 @@ struct Reciprocal {
     n_chunks: usize,
 }
 
+/// Reciprocal-space nuclear attraction `V` over the half G sphere `0 < |G| <= gcut`, chunked
+/// under `ledger`; `omega = None` drops the Gaussian damping. See [`Reciprocal`].
 fn reciprocal_nuclear(
     cell: &Cell,
     prep: &PreparedBasis,
@@ -743,6 +753,7 @@ fn reciprocal_nuclear(
     })
 }
 
+/// `2 · max` primitive exponent over all shells (the largest product exponent `p`).
 fn max_pair_exponent(prep: &PreparedBasis) -> f64 {
     2.0 * prep
         .located_shells()
@@ -1344,6 +1355,8 @@ pub fn periodic_hcore_pair_s1_oracle(
     periodic_hcore_impl(cell, prep, cfg, true)
 }
 
+/// Shared body of [`periodic_hcore`] and the `s1_oracle` variant (`true` = frozen pre-s2 pair
+/// loop, unrotated).
 fn periodic_hcore_impl(
     cell: &Cell,
     prep: &PreparedBasis,
@@ -1778,12 +1791,14 @@ struct SrDerivUnit {
 }
 
 impl Stored for SrDerivUnit {
+    /// Heap plus inline bytes of the stored unit (the window budget).
     fn stored_bytes(&self) -> usize {
         std::mem::size_of::<Self>() + 8 * (self.cand.len() + self.data.len())
     }
 }
 
 impl SrDerivSetup {
+    /// Three-centre erfc derivative engine (range-separation `omega`) over `prep` and the site basis.
     fn engine(&self, prep: &PreparedBasis) -> Result<Engine, FerricError> {
         Engine::new_3center_deriv(
             Operator::erfc(self.omega),
@@ -2071,6 +2086,8 @@ where
     sr_attraction_deriv_walk(cell, prep, cfg, ledger, serial, visit)
 }
 
+/// Largest orbital-image distance (Bohr) at which a pair can still exceed `pair_thresh`,
+/// from the smallest primitive exponent (+2 Bohr margin).
 fn pair_radius(shells: &[PrimShell], pair_thresh: f64) -> f64 {
     let amin = shells
         .iter()
@@ -2273,6 +2290,8 @@ struct SrStudySetup {
 }
 
 impl SrStudySetup {
+    /// Build the frozen candidate/image lists of the screening study at `cand_thresh`;
+    /// validates it as an hcore precision.
     fn new(
         cell: &Cell,
         prep: &PreparedBasis,
@@ -2312,6 +2331,8 @@ impl SrStudySetup {
         })
     }
 
+    /// Run the SR attraction walk at screen threshold `screen` (finite, >= 0) with `bound`;
+    /// `track` accumulates the predicted skipped contribution.
     fn run(
         &self,
         prep: &PreparedBasis,

@@ -268,6 +268,7 @@ pub struct GammaStressParts {
 }
 
 impl GammaStressParts {
+    /// The 19 component tensors in a fixed order, as references.
     fn all(&self) -> [&Mat3; 19] {
         [
             &self.overlap,
@@ -377,6 +378,7 @@ impl GammaStress {
     }
 }
 
+/// `t += f · m`.
 fn add_into(t: &mut Mat3, m: &Mat3, f: f64) {
     for a in 0..3 {
         for b in 0..3 {
@@ -385,10 +387,12 @@ fn add_into(t: &mut Mat3, m: &Mat3, f: f64) {
     }
 }
 
+/// `x · 1` as a 3×3 matrix.
 fn diag(x: f64) -> Mat3 {
     [[x, 0.0, 0.0], [0.0, x, 0.0], [0.0, 0.0, x]]
 }
 
+/// `f · m` as a new 3×3 matrix.
 fn scaled(m: &Mat3, f: f64) -> Mat3 {
     let mut o = *m;
     for row in o.iter_mut() {
@@ -676,6 +680,7 @@ struct KsSpec<'a> {
 }
 
 impl<'a> KsSpec<'a> {
+    /// KS spec of a restricted calculation.
     fn of_rks(d: &'a GammaRksConfig) -> Self {
         Self {
             functional: &d.functional,
@@ -686,6 +691,7 @@ impl<'a> KsSpec<'a> {
         }
     }
 
+    /// KS spec of an unrestricted calculation.
     fn of_uks(d: &'a GammaUksConfig) -> Self {
         Self {
             functional: &d.functional,
@@ -696,6 +702,7 @@ impl<'a> KsSpec<'a> {
         }
     }
 
+    /// KS spec of a restricted-open-shell calculation.
     fn of_roks(d: &'a GammaRoksConfig) -> Self {
         Self {
             functional: &d.functional,
@@ -707,6 +714,8 @@ impl<'a> KsSpec<'a> {
     }
 }
 
+/// HF stress driver (`spin` selects restricted, unrestricted or restricted-open); refuses ECP
+/// cells. `who` labels errors.
 #[allow(clippy::too_many_arguments)]
 fn hf_stress(
     who: &str,
@@ -757,6 +766,8 @@ fn hf_stress(
     )
 }
 
+/// KS stress driver for the functional/grid/spin in `ks`; refuses ECP cells. `who` labels
+/// errors.
 #[allow(clippy::too_many_arguments)]
 fn ks_stress(
     who: &str,
@@ -1188,6 +1199,8 @@ type StressFit<'a> = (
     Option<SplitG0>,
 );
 
+/// Set up the RS-GDF stress state (fitted densities, G = 0 charges, split pieces); `None` on
+/// the dense-AFT path.
 #[allow(clippy::too_many_arguments)]
 fn fit_prelude<'a>(
     cell: &Cell,
@@ -1263,6 +1276,8 @@ struct DenseEriStrain {
     n_g: usize,
 }
 
+/// Dense-AFT ERI strain contribution accumulated over G chunks under `ledger`; `terms`
+/// selects which derivative pieces are included.
 #[allow(clippy::too_many_arguments)]
 fn dense_eri_strain(
     cell: &Cell,
