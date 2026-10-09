@@ -29,8 +29,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import common  # noqa: E402
-import gen_qmmm as g  # noqa: E402
+import common
+import gen_qmmm as g
 
 ROW = "qmmm_hessian"
 GEN = "scripts/validation/gen_qmmm_hessian.py"
@@ -136,8 +136,10 @@ def _case(system, xyz, basis, mm, uhf, charge=0, mult=1):
         }
     )
     path = common.write_reference(ROW, system, basis, payload)
-    print(f"{path.name}: max|H| {np.abs(h).max():.4f} asym {asym:.2e} "
-          f"|H - H_gas| {np.abs(h - hg).max():.3e}")
+    print(
+        f"{path.name}: max|H| {np.abs(h).max():.4f} asym {asym:.2e} "
+        f"|H - H_gas| {np.abs(h - hg).max():.3e}"
+    )
     return path
 
 
