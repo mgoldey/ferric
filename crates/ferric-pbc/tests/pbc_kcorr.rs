@@ -84,10 +84,13 @@ const KMP2_H2_112: (f64, f64) = (-2.8883196728367e-02, -1.8228154905146e-02);
 const KMP2_H2_113: (f64, f64) = (-3.2507280126487e-02, -2.6906779192508e-02);
 const PIN_TOL: f64 = 1e-9;
 
+/// Hcore config at the file's `OMEGA` with the default precision.
 fn hcore_cfg() -> PeriodicHcoreConfig {
     PeriodicHcoreConfig::with_omega(OMEGA)
 }
 
+/// k-point SCF config with `energy_conv = 1e-13` and `grad_conv = 1e-11`;
+/// the other fields are the defaults.
 fn kscf_cfg() -> KScfConfig {
     KScfConfig {
         energy_conv: 1e-13,
@@ -96,6 +99,8 @@ fn kscf_cfg() -> KScfConfig {
     }
 }
 
+/// k-point dense-AFT config at `precision` with budget `AMPLE`; the other
+/// fields are the defaults.
 fn kdense_cfg(precision: f64) -> KDenseAftConfig {
     KDenseAftConfig {
         precision,
@@ -104,6 +109,7 @@ fn kdense_cfg(precision: f64) -> KDenseAftConfig {
     }
 }
 
+/// Largest element-wise modulus `|a − b|`; panics if the shapes differ.
 fn cmax(a: &Array2<Complex64>, b: &Array2<Complex64>) -> f64 {
     assert_eq!(a.dim(), b.dim());
     a.iter()
@@ -163,6 +169,8 @@ fn gamma_rhf_tight(
     r
 }
 
+/// k-point MP2 config: no frozen core, reference exchange divergence `exx`,
+/// denominators `den`, budget `AMPLE` and the test-only `mutation`.
 fn mp2_cfg(exx: ExxDiv, den: Mp2Denominators, mutation: Option<KCorrMutation>) -> KMp2Config {
     KMp2Config {
         frozen_core: 0,

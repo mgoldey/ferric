@@ -879,6 +879,9 @@ pub fn gamma_urpa(
 mod tests {
     use super::*;
 
+    /// Three blocks `(aa, bb, ab)` of a random low-rank PSD joint matrix
+    /// `K = Lᵀ L` of size `nova + novb` (fixed seed; `L` is `3 × n`). `aa` is
+    /// `(nova, nova)`, `bb` `(novb, novb)` and `ab` `(nova, novb)`.
     fn rnd_sym_psd_blocks(nova: usize, novb: usize) -> (Array2<f64>, Array2<f64>, Array2<f64>) {
         // A random low-rank PSD joint K = Lᵀ L, split into spin blocks.
         let mut seed = 987654321u64;

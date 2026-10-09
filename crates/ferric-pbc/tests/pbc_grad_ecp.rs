@@ -209,6 +209,8 @@ fn hi_basis(full: bool) -> BasisSet {
     }
 }
 
+/// An atom of `symbol` and atomic number `z` at Cartesian `r` Bohr (not a
+/// ghost, no ECP core).
 fn atom(symbol: &str, z: i32, r: [f64; 3]) -> Atom {
     Atom {
         symbol: symbol.into(),
@@ -232,16 +234,20 @@ fn hi_cell(pos: &[[f64; 3]], lattice: [[f64; 3]; 3], bs: &BasisSet) -> Cell {
     Cell::new(mol, lattice).expect("HI cell")
 }
 
+/// A `PreparedBasis` of `bs` on `cell`'s atoms.
 fn prep(cell: &Cell, bs: &BasisSet) -> PreparedBasis {
     PreparedBasis::new(cell.mol(), bs).expect("prep")
 }
 
+/// `pos` (Bohr) with Cartesian component `x` of atom `a` displaced by `h` Bohr.
 fn moved(pos: &[[f64; 3]], a: usize, x: usize, h: f64) -> Vec<[f64; 3]> {
     let mut p = pos.to_vec();
     p[a][x] += h;
     p
 }
 
+/// Hcore config at the file's `OMEGA` with `precision = HCORE_PRECISION`; the
+/// other fields are the defaults of `with_omega`.
 fn hcore_cfg() -> PeriodicHcoreConfig {
     PeriodicHcoreConfig {
         precision: HCORE_PRECISION,
@@ -265,10 +271,13 @@ fn sym_density(n: usize) -> Array2<f64> {
     })
 }
 
+/// Largest element-wise `|a|` (0 for an empty matrix).
 fn amax(a: &Array2<f64>) -> f64 {
     a.iter().fold(0.0_f64, |m, x| m.max(x.abs()))
 }
 
+/// `max_c |Σ_a g[a, c]|`: the largest net force component of an
+/// `(natoms, 3)` gradient (zero under translation invariance).
 fn net(a: &Array2<f64>) -> f64 {
     (0..3)
         .map(|c| a.column(c).sum().abs())
@@ -626,6 +635,9 @@ fn energies(pos: &[[f64; 3]], bs: &BasisSet, seed: &Array2<f64>) -> [f64; 2] {
     out
 }
 
+/// Largest `|g[a, x] − fd[(a, x)][k]|` over the finite-difference entries:
+/// `g` is the analytic `(natoms, 3)` gradient and `k` selects the energy
+/// column.
 fn max_fd_err(g: &Array2<f64>, fdv: &Fd, k: usize) -> f64 {
     fdv.iter()
         .map(|((a, x), v)| (g[(*a, *x)] - v[k]).abs())

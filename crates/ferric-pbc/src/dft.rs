@@ -333,6 +333,9 @@ impl PeriodicGridConfig {
         }
     }
 
+    /// Rejects configurations the periodic grid does not support: any angular
+    /// pruning, `n_radial == 0`, an `n_angular` outside `SUPPORTED_LEBEDEV_ORDERS`,
+    /// and a non-finite or non-positive `neighbour_cutoff`.
     fn validate(&self) -> Result<(), PeriodicDftError> {
         if self.prune.is_some() {
             return Err(PeriodicDftError::Unsupported {
@@ -1421,6 +1424,7 @@ impl PeriodicXc {
         self.chunks.iter().map(|c| c.n_images as f64).sum::<f64>() / n
     }
 
+    /// Shape guard: errors unless the density is `(nbf, nbf)`.
     fn check_d(&self, d: &Array2<f64>) -> Result<(), FerricError> {
         if d.dim() != (self.nbf, self.nbf) {
             return Err(FerricError::General(format!(
@@ -1472,6 +1476,9 @@ impl PeriodicXc {
         out
     }
 
+    /// Closed-shell `(E_xc, V_xc)` for the total density `d`, summed over the grid
+    /// chunks, with no clock. `V_xc` is `(nbf, nbf)`. Errors if `d` has the wrong
+    /// shape or the energy or any `V_xc` element is non-finite.
     fn eval_untimed(&mut self, d: &Array2<f64>) -> Result<(f64, Array2<f64>), FerricError> {
         self.check_d(d)?;
         let mut e = 0.0;
@@ -1517,6 +1524,9 @@ impl PeriodicXc {
         out
     }
 
+    /// Spin-polarized `(E_xc, V_α, V_β)` for `(d_a, d_b)`, summed over the grid
+    /// chunks, with no clock. Errors on a wrong-shaped density or a non-finite
+    /// energy / potential element.
     fn eval_polarized_untimed(
         &mut self,
         d_a: &Array2<f64>,

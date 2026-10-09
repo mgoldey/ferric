@@ -90,6 +90,8 @@ fn hcore_cfg() -> PeriodicHcoreConfig {
     PeriodicHcoreConfig::with_omega(HCORE_OMEGA)
 }
 
+/// k-point SCF config with `energy_conv = 1e-13` and `grad_conv = 1e-10`; the
+/// other fields (including `max_iter`) are the defaults.
 fn kscf_cfg() -> KScfConfig {
     KScfConfig {
         energy_conv: 1e-13,
@@ -98,6 +100,8 @@ fn kscf_cfg() -> KScfConfig {
     }
 }
 
+/// RS-GDF config at splitting parameter `omega` with `ExxDiv::None` and
+/// budget `AMPLE`; the other fields are the defaults.
 fn gdf_cfg(omega: f64) -> RsGdfConfig {
     RsGdfConfig {
         omega,

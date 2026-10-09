@@ -145,6 +145,8 @@ struct Setup {
     eri: DenseAftEri,
 }
 
+/// A neutral hydrogen cell with atoms at `atoms` (Bohr), lattice rows
+/// `lattice` (Bohr) and spin multiplicity `mult`.
 fn cell_mult(atoms: &[[f64; 3]], lattice: [[f64; 3]; 3], mult: usize) -> Cell {
     let mut mol: Molecule = hydrogens(atoms);
     mol.multiplicity = mult;
@@ -226,6 +228,8 @@ fn same_state(a: &ferric_scf::result::ScfResult, b: &ferric_scf::result::ScfResu
     assert!(da < 1e-6 && db < 1e-6, "{what}: different state");
 }
 
+/// Periodic grid of `n_rad` radial and `n_ang` angular points with neighbour
+/// cutoff `d` Bohr; the other fields are the defaults of `with_size`.
 fn ssf_grid(n_rad: usize, n_ang: usize, d: f64) -> PeriodicGridConfig {
     PeriodicGridConfig {
         neighbour_cutoff: Some(d),

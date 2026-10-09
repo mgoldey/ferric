@@ -1905,6 +1905,8 @@ mod tests {
     use super::*;
     use ferric_core::mol::{Atom, Molecule};
 
+    /// A one-hydrogen doublet test cell (atom at `(0.1, 0.2, 0.3)` Bohr) in the
+    /// Bohr lattice `lat` (rows).
     fn h_cell(lat: [[f64; 3]; 3]) -> Cell {
         let mol = Molecule {
             atoms: vec![Atom {

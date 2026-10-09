@@ -793,6 +793,9 @@ mod tests {
     use ferric_core::mol::{Atom, Molecule};
     use std::collections::HashMap;
 
+    /// A one-hydrogen doublet basis with a single shell of angular momentum
+    /// `l` (`pure` or Cartesian), exponent `a` and coefficient 1 at `at`
+    /// (Bohr).
     fn one_shell(l: i32, pure: bool, a: f64, at: [f64; 3]) -> PreparedBasis {
         let mol = Molecule {
             atoms: vec![Atom {
@@ -825,6 +828,8 @@ mod tests {
         PreparedBasis::new(&mol, &bs).unwrap()
     }
 
+    /// Inverse of a 3×3 matrix by cofactors / determinant (no singularity
+    /// check).
     fn inv3(f: &Mat3) -> Mat3 {
         let det = f[0][0] * (f[1][1] * f[2][2] - f[1][2] * f[2][1])
             - f[0][1] * (f[1][0] * f[2][2] - f[1][2] * f[2][0])

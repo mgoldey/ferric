@@ -91,6 +91,8 @@ const PIN_TOL: f64 = 1e-9;
 const TRAP_112_DIRECT: f64 = -1.7207518511;
 const TRAP_112_STAGED: f64 = -1.8138633926;
 
+/// k-point SCF config with `energy_conv = 1e-13` and `grad_conv = 1e-10`; the
+/// other fields (including `max_iter`) are the defaults.
 fn kscf_cfg() -> KScfConfig {
     KScfConfig {
         energy_conv: 1e-13,
@@ -99,6 +101,7 @@ fn kscf_cfg() -> KScfConfig {
     }
 }
 
+/// Hcore config at the file's `OMEGA` with the default precision.
 fn hcore_cfg() -> PeriodicHcoreConfig {
     PeriodicHcoreConfig::with_omega(OMEGA)
 }

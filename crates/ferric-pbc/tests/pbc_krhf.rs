@@ -173,6 +173,8 @@ const TRI_SK1_ROWS: [(f64, f64); 64] = [
     (-0.032938888188530926, 0.03087253175649998),
 ];
 
+/// k-point SCF config with `energy_conv = 1e-13` and `grad_conv = 1e-10`; the
+/// other fields (including `max_iter`) are the defaults.
 fn kscf_cfg() -> KScfConfig {
     KScfConfig {
         energy_conv: 1e-13,
@@ -181,6 +183,7 @@ fn kscf_cfg() -> KScfConfig {
     }
 }
 
+/// Hcore config at the file's `OMEGA` with the default precision.
 fn hcore_cfg() -> PeriodicHcoreConfig {
     PeriodicHcoreConfig::with_omega(OMEGA)
 }
@@ -193,6 +196,7 @@ fn kdense_cfg(precision: f64, mutation: Option<KMutation>) -> KDenseAftConfig {
     }
 }
 
+/// Largest element-wise modulus `|a − b|`; panics if the shapes differ.
 fn cmax(a: &Array2<Complex64>, b: &Array2<Complex64>) -> f64 {
     assert_eq!(a.dim(), b.dim());
     a.iter()

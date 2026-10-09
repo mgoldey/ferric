@@ -160,12 +160,16 @@ const H_URPA_C6: f64 = 0.79013;
 const NH_C3_UMP2: f64 = 0.761014;
 const NH_C3_URPA: f64 = 1.502486;
 
+/// A neutral hydrogen cell with atoms at `atoms` (Bohr), lattice rows
+/// `lattice` (Bohr) and spin multiplicity `mult`.
 fn cell_mult(atoms: &[[f64; 3]], lattice: [[f64; 3]; 3], mult: usize) -> Cell {
     let mut mol: Molecule = hydrogens(atoms);
     mol.multiplicity = mult;
     Cell::new(mol, lattice).expect("cell")
 }
 
+/// The periodic hcore of `prep` on `cell` at `HCORE_OMEGA` with the default
+/// precision; panics on error.
 fn hcore(cell: &Cell, prep: &PreparedBasis) -> PeriodicHcore {
     periodic_hcore(cell, prep, &PeriodicHcoreConfig::with_omega(HCORE_OMEGA)).expect("hcore")
 }

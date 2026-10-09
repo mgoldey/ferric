@@ -671,10 +671,9 @@ pub(crate) fn half_gvectors(cell: &Cell, gcut: f64) -> Result<Vec<[f64; 3]>, Fer
         .collect())
 }
 
-/// `−(2/Ω) Σ_{G∈half} v(G) Re[P*(G) S(G)]` with `v = 4π/G² · e^{−G²/4ω²}`
-/// (`omega = None`: bare `4π/G²`). Returns the matrix and the G count.
-/// G list: `Cell::gvectors` (bound × 24 B) and the half-sphere copy
-/// (≤ half of it) coexist briefly.
+/// Bytes reserved for the G list of radius `gcut`: the `Cell::gvectors` list
+/// (bound × 24 B) and the half-sphere copy (≤ half of it) coexist briefly;
+/// charged as `36` bytes per bounded G vector.
 pub(crate) fn gvector_list_bytes(cell: &Cell, gcut: f64) -> Result<usize, FerricError> {
     Ok(bytes_of(cell.gvector_count_bound(gcut)?, 36))
 }

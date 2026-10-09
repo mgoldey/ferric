@@ -131,10 +131,14 @@ const BOX_SHIFT_FN_RATIO: [f64; 3] = [0.988, 0.994, 0.996];
 const PROTO_C3_PRED: f64 = 0.922741;
 const PROTO_C3_FIT: f64 = 0.923006;
 
+/// The periodic hcore of `prep` on `cell` at `HCORE_OMEGA` with the default
+/// precision; panics on error.
 fn hcore(cell: &Cell, prep: &PreparedBasis) -> PeriodicHcore {
     periodic_hcore(cell, prep, &PeriodicHcoreConfig::with_omega(HCORE_OMEGA)).expect("hcore")
 }
 
+/// The `ExxDiv::None` dense-AFT ERI tensor of `cell` at the default precision
+/// and byte cap; panics on error.
 fn dense_none(cell: &Cell, prep: &PreparedBasis, hc: &PeriodicHcore) -> DenseAftEri {
     DenseAftEri::build(
         cell,
@@ -147,6 +151,8 @@ fn dense_none(cell: &Cell, prep: &PreparedBasis, hc: &PeriodicHcore) -> DenseAft
     .expect("dense AFT")
 }
 
+/// RS-GDF config at splitting parameter `omega` with `ExxDiv::None` and
+/// budget `AMPLE`; the other fields are the defaults.
 fn gdf_cfg(omega: f64) -> RsGdfConfig {
     RsGdfConfig {
         omega,
@@ -156,6 +162,8 @@ fn gdf_cfg(omega: f64) -> RsGdfConfig {
     }
 }
 
+/// dRPA config: no frozen core, reference exchange divergence `exx`,
+/// denominator convention `den`, `quad_points` nodes, budget `AMPLE`.
 fn drpa_cfg(exx: ExxDiv, den: Mp2Denominators, quad_points: usize) -> GammaDrpaConfig {
     GammaDrpaConfig {
         frozen_core: 0,
@@ -166,6 +174,7 @@ fn drpa_cfg(exx: ExxDiv, den: Mp2Denominators, quad_points: usize) -> GammaDrpaC
     }
 }
 
+/// `gamma_drpa` over `ints` with [`drpa_cfg`]; panics on error.
 fn drpa(
     cell: &Cell,
     rhf: &ScfResult,
@@ -177,6 +186,8 @@ fn drpa(
     gamma_drpa(cell, rhf, ints, &drpa_cfg(exx, den, quad_points)).expect("gamma dRPA")
 }
 
+/// Gamma RHF through `gamma_rhf_jk` with the `j_builder()` and `k_builder()`
+/// of `gdf`.
 fn gdf_rhf(cell: &Cell, prep: &PreparedBasis, hc: &PeriodicHcore, gdf: &RsGdf) -> ScfResult {
     gamma_rhf_jk(
         cell,
@@ -212,6 +223,8 @@ fn anchor_sites(cell: &Cell, classes: &[usize]) -> Vec<[f64; 4]> {
     out
 }
 
+/// Prints `got`, `want` and their difference, then asserts `got` is finite and
+/// `|got − want| < tol`; `what` labels the failure.
 fn close(got: f64, want: f64, tol: f64, what: &str) {
     eprintln!(
         "  {what}: {got:.12e} (want {want:.12e}, diff {:.2e})",

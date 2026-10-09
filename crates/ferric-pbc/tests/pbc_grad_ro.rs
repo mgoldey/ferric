@@ -134,6 +134,8 @@ const ALL9: [(usize, usize); 9] = [
 type Fd = Vec<((usize, usize), Vec<f64>)>;
 type Mat3 = [[f64; 3]; 3];
 
+/// Hcore config at the file's `OMEGA` with `precision = HCORE_PRECISION`; the
+/// other fields are the defaults of `with_omega`.
 fn hcore_cfg() -> PeriodicHcoreConfig {
     PeriodicHcoreConfig {
         precision: HCORE_PRECISION,
@@ -149,18 +151,23 @@ fn grid_cfg() -> PeriodicGridConfig {
     }
 }
 
+/// A neutral hydrogen cell with atoms at `pos` (Bohr), lattice rows `lattice`
+/// (Bohr) and spin multiplicity `mult`.
 fn cell_at(pos: &[[f64; 3]], lattice: [[f64; 3]; 3], mult: usize) -> Cell {
     let mut mol: Molecule = hydrogens(pos);
     mol.multiplicity = mult;
     Cell::new(mol, lattice).expect("cell")
 }
 
+/// `pos` (Bohr) with Cartesian component `x` of atom `a` displaced by `h` Bohr.
 fn moved(pos: &[[f64; 3]], a: usize, x: usize, h: f64) -> Vec<[f64; 3]> {
     let mut p = pos.to_vec();
     p[a][x] += h;
     p
 }
 
+/// The H3 doublet cell: `H3_ATOMS` in a cubic lattice of edge `H3_A` Bohr,
+/// multiplicity 2.
 fn h3_cell() -> Cell {
     cell_at(&H3_ATOMS, cubic(H3_A), 2)
 }
@@ -194,6 +201,8 @@ fn setup(cell: Cell, bs: &BasisSet) -> Setup {
     }
 }
 
+/// ROHF config with exchange divergence `exx` and starting MOs `init`; the
+/// other fields are the defaults.
 fn rohf_cfg(exx: ExxDiv, init: Option<Array2<f64>>) -> GammaRohfConfig {
     GammaRohfConfig {
         exxdiv: exx,
@@ -213,6 +222,8 @@ fn roks_cfg(xc: &str, exx: ExxDiv, init: Option<Array2<f64>>) -> GammaRoksConfig
     }
 }
 
+/// Gamma ROHF on the setup's dense-AFT integrals; panics on error, on an
+/// unconverged SCF, or if the result is not restricted open-shell.
 fn rohf_on(su: &Setup, cfg: &GammaRohfConfig) -> GammaRohfResult {
     let r = gamma_rohf(
         &su.cell,
@@ -227,6 +238,8 @@ fn rohf_on(su: &Setup, cfg: &GammaRohfConfig) -> GammaRohfResult {
     r
 }
 
+/// Gamma ROKS on the setup's dense-AFT integrals; panics on error or if the
+/// SCF does not converge.
 fn roks_on(su: &Setup, cfg: &GammaRoksConfig) -> GammaRoksResult {
     let r = gamma_roks(
         &su.cell,
@@ -240,6 +253,7 @@ fn roks_on(su: &Setup, cfg: &GammaRoksConfig) -> GammaRoksResult {
     r
 }
 
+/// Default Gamma gradient config with the test-only `mutation`.
 fn gcfg(mutation: Option<GradMutation>) -> GammaGradConfig {
     GammaGradConfig {
         mutation,
@@ -247,6 +261,8 @@ fn gcfg(mutation: Option<GradMutation>) -> GammaGradConfig {
     }
 }
 
+/// The dense-AFT Gamma ROHF gradient of `scf` at exchange divergence `exx`
+/// with test-only mutation `m`; panics on error.
 fn rohf_grad(su: &Setup, scf: &ScfResult, exx: ExxDiv, m: Option<GradMutation>) -> GammaGradient {
     gamma_rohf_gradient_with(
         &su.cell,
@@ -280,6 +296,8 @@ fn roks_grad(
     .expect("gamma_roks_gradient")
 }
 
+/// Largest element-wise `|a − b|`. `zip` truncates silently if the shapes
+/// differ.
 fn max_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
     a.iter()
         .zip(b.iter())
@@ -314,6 +332,9 @@ where
         .collect()
 }
 
+/// Largest `|g[a, x] − fd[(a, x)][k]|` over the finite-difference entries:
+/// `g` is the analytic `(natoms, 3)` gradient and `k` selects the energy
+/// column.
 fn max_fd_err(g: &Array2<f64>, fdv: &Fd, k: usize) -> f64 {
     fdv.iter()
         .map(|((a, x), v)| (g[(*a, *x)] - v[k]).abs())
@@ -846,6 +867,8 @@ fn ro_gradients_refuse_wrong_kind_unconverged_and_non_stationary() {
 
 // ------------------------------------------------------------ H3 RS-GDF ROHF
 
+/// RS-GDF config at `GDF_OMEGA` with `DEFAULT_RSGDF_LINDEP`,
+/// `ExxDiv::None` and budget `AMPLE`.
 fn gdf_cfg() -> RsGdfConfig {
     RsGdfConfig {
         omega: GDF_OMEGA,
@@ -856,6 +879,7 @@ fn gdf_cfg() -> RsGdfConfig {
     }
 }
 
+/// The bundled `cc-pvdz-ri` auxiliary basis; panics if it is not bundled.
 fn cc_pvdz_ri() -> BasisSet {
     basis::bundled("cc-pvdz-ri").expect("cc-pvdz-ri")
 }
@@ -1001,12 +1025,15 @@ fn h4_rohf_triplet_force_matches_fd_both_exxdiv() {
 
 // ------------------------------------------------------ H3 ROHF stress (slow)
 
+/// A strain matrix that is zero except `ε[i][j] = h`.
 fn eps_at(i: usize, j: usize, h: f64) -> Mat3 {
     let mut e = [[0.0; 3]; 3];
     e[i][j] = h;
     e
 }
 
+/// Largest element-wise `|a − b|` of two 3×3 matrices; panics on a
+/// non-finite difference.
 fn max_err3(a: &Mat3, b: &Mat3) -> f64 {
     let mut m = 0.0_f64;
     for i in 0..3 {
@@ -1019,6 +1046,7 @@ fn max_err3(a: &Mat3, b: &Mat3) -> f64 {
     m
 }
 
+/// `max_ij |a_ij − a_ji|` of a 3×3 matrix.
 fn antisym3(a: &Mat3) -> f64 {
     let mut m = 0.0_f64;
     for i in 0..3 {

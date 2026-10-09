@@ -87,6 +87,8 @@ const TRI_PROTO_DE: [(&str, f64, f64, usize); 2] = [
 /// jkfit); both codes' SCF energies agree with PySCF AFTDF to < 1e-9.
 const PROTO_DE_TOL: f64 = 1e-9;
 
+/// The periodic hcore of `prep` on `cell` at `HCORE_OMEGA` with the default
+/// precision; panics on error.
 fn hcore(cell: &Cell, prep: &PreparedBasis) -> PeriodicHcore {
     periodic_hcore(cell, prep, &PeriodicHcoreConfig::with_omega(HCORE_OMEGA)).expect("hcore")
 }

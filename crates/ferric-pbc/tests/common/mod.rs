@@ -33,6 +33,7 @@ pub const TRI_ATOMS: [[f64; 3]; 4] = [
     [3.6, 2.9, 2.6],
 ];
 
+/// A hydrogen atom (not a ghost, no ECP core) at Cartesian `r` Bohr.
 pub fn h_atom(r: [f64; 3]) -> Atom {
     Atom {
         symbol: "H".into(),
@@ -45,6 +46,7 @@ pub fn h_atom(r: [f64; 3]) -> Atom {
     }
 }
 
+/// A neutral singlet molecule of hydrogen atoms at `pos` (Bohr).
 pub fn hydrogens(pos: &[[f64; 3]]) -> Molecule {
     Molecule {
         atoms: pos.iter().map(|r| h_atom(*r)).collect(),
@@ -72,6 +74,7 @@ fn renormalized(l: i32, exps: &[f64], coefs: &[f64]) -> Shell {
     }
 }
 
+/// A basis set named `name` holding `shells` for H (`Z = 1`) only, no ECPs.
 fn h_basis(name: &str, shells: Vec<Shell>) -> BasisSet {
     let mut m = HashMap::new();
     m.insert(1, shells);
@@ -128,22 +131,28 @@ pub fn single_s_h(alpha: f64) -> BasisSet {
     h_basis("pbc-anchor-s-H", vec![renormalized(0, &[alpha], &[1.0])])
 }
 
+/// Cubic lattice rows `a·I₃` (Bohr).
 pub fn cubic(a: f64) -> [[f64; 3]; 3] {
     [[a, 0.0, 0.0], [0.0, a, 0.0], [0.0, 0.0, a]]
 }
 
+/// The two-hydrogen cell of [`H2_ATOMS`] in a cubic lattice of edge `a` Bohr.
 pub fn h2_cell(a: f64) -> Cell {
     Cell::new(hydrogens(&H2_ATOMS), cubic(a)).expect("h2 cell")
 }
 
+/// The four-hydrogen cell of [`TRI_ATOMS`] in the triclinic lattice [`TRI_A`].
 pub fn triclinic_cell() -> Cell {
     Cell::new(hydrogens(&TRI_ATOMS), TRI_A).expect("triclinic cell")
 }
 
+/// A `PreparedBasis` of `bs` on `cell`'s atoms.
 pub fn prep_for(cell: &Cell, bs: &BasisSet) -> PreparedBasis {
     PreparedBasis::new(cell.mol(), bs).expect("prep")
 }
 
+/// Largest element-wise `|a − b|`. Panics if the shapes differ or any
+/// difference is non-finite.
 pub fn max_abs_diff(a: &ndarray::Array2<f64>, b: &ndarray::Array2<f64>) -> f64 {
     assert_eq!(a.dim(), b.dim());
     a.iter().zip(b.iter()).fold(0.0_f64, |m, (x, y)| {
@@ -215,6 +224,8 @@ fn test_residue(c: [i64; 3], m: [usize; 3]) -> usize {
     (r[0] * m[1] + r[1]) * m[2] + r[2]
 }
 
+/// Integer coordinates of flat residue index `r` modulo `m` (row-major;
+/// inverse of `test_residue` on `0..m[i]`).
 fn test_coords(r: usize, m: [usize; 3]) -> [i64; 3] {
     [
         (r / (m[1] * m[2])) as i64,
@@ -267,6 +278,8 @@ pub fn kpair_s2_expected(
         .collect()
 }
 
+/// A matrix from a slice of equal-length rows (the width is taken from the
+/// first row; panics on an empty slice).
 pub fn array2(rows: &[&[f64]]) -> ndarray::Array2<f64> {
     let n = rows.len();
     let m = rows[0].len();

@@ -120,6 +120,8 @@ const TRI_MOVED_GRAD_NUC: [[f64; 3]; 4] = [
 const H2_ENUC: f64 = -0.6296103246662934;
 const TRI_MOVED_ENUC: f64 = -1.4485937832181088;
 
+/// Hcore config at the file's `OMEGA` with `precision = HCORE_PRECISION`; the
+/// other fields are the defaults of `with_omega`.
 fn hcore_cfg() -> PeriodicHcoreConfig {
     PeriodicHcoreConfig {
         precision: HCORE_PRECISION,
@@ -127,10 +129,13 @@ fn hcore_cfg() -> PeriodicHcoreConfig {
     }
 }
 
+/// A neutral singlet hydrogen cell with atoms at `pos` (Bohr) and lattice
+/// rows `lattice` (Bohr).
 fn cell_at(pos: &[[f64; 3]], lattice: [[f64; 3]; 3]) -> Cell {
     Cell::new(hydrogens(pos), lattice).expect("cell")
 }
 
+/// `pos` (Bohr) with Cartesian component `x` of atom `a` displaced by `h` Bohr.
 fn moved(pos: &[[f64; 3]], a: usize, x: usize, h: f64) -> Vec<[f64; 3]> {
     let mut p = pos.to_vec();
     p[a][x] += h;
@@ -211,16 +216,24 @@ fn fd(
 
 static H2_FD: OnceLock<Vec<((usize, usize), [f64; 2])>> = OnceLock::new();
 
+/// The cached central-difference reference gradients of the H2 cell
+/// (`GRAD_H2_ATOMS`, cubic edge 4 Bohr, PySCF STO-3G) over `GRAD_COMPS`,
+/// computed on first use.
 fn h2_fd() -> &'static Vec<((usize, usize), [f64; 2])> {
     H2_FD.get_or_init(|| fd(&GRAD_H2_ATOMS, cubic(4.0), &pyscf_sto3g_h(), &GRAD_COMPS))
 }
 
+/// Largest `|g[a, x] − fd[(a, x)][k]|` over the finite-difference entries:
+/// `g` is the analytic `(natoms, 3)` gradient and `k` selects the energy
+/// column.
 fn max_fd_err(g: &Array2<f64>, fdv: &[((usize, usize), [f64; 2])], k: usize) -> f64 {
     fdv.iter()
         .map(|((a, x), v)| (g[(*a, *x)] - v[k]).abs())
         .fold(0.0_f64, f64::max)
 }
 
+/// Largest element-wise `|a − b|`. `zip` truncates silently if the shapes
+/// differ.
 fn max_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
     a.iter()
         .zip(b.iter())

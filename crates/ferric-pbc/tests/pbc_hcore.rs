@@ -61,6 +61,7 @@ H  0.0000  0.7572 -0.4692
 H  0.0000 -0.7572 -0.4692
 ";
 
+/// `(atomic number, [x, y, z])` of every atom of `prep` (coordinates in Bohr).
 fn nuclei_of(prep: &PreparedBasis) -> Vec<(f64, [f64; 3])> {
     prep.atoms()
         .iter()
@@ -338,6 +339,8 @@ const DIAMOND_PRIM_LATTICE: [[f64; 3]; 3] = [
 const DIAMOND_CONV_A: f64 = 6.7406530863235758;
 const DRYICE_A: f64 = 10.627819724553907;
 
+/// The diamond primitive cell: the molecule of `DIAMOND_PRIM_XYZ` (neutral
+/// singlet) in the lattice rows `lattice`.
 fn diamond_cell(lattice: [[f64; 3]; 3]) -> ferric_pbc::lattice::Cell {
     let mol = Molecule::parse_xyz(DIAMOND_PRIM_XYZ, 0, 1).unwrap();
     ferric_pbc::lattice::Cell::new(mol, lattice).unwrap()

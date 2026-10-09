@@ -239,6 +239,7 @@ fn oh() -> System {
 
 // ------------------------------------------------------------------ bases
 
+/// The bundled basis `name`; panics if it is not bundled.
 fn bundled(name: &str) -> BasisSet {
     basis::bundled(name).unwrap_or_else(|e| panic!("bundled {name}: {e}"))
 }
@@ -325,6 +326,8 @@ fn grid_cfg() -> PeriodicGridConfig {
     }
 }
 
+/// Gamma gradient config with the test-only `mutation`, budget `AMPLE` and
+/// the optional `nucleus_exponent`.
 fn gcfg(mutation: Option<GradMutation>, nucleus_exponent: Option<f64>) -> GammaGradConfig {
     GammaGradConfig {
         mutation,
@@ -333,6 +336,8 @@ fn gcfg(mutation: Option<GradMutation>, nucleus_exponent: Option<f64>) -> GammaG
     }
 }
 
+/// Gamma stress config with the test-only `mutation`, budget `AMPLE` and the
+/// optional `nucleus_exponent`.
 fn scfg(mutation: Option<StressMutation>, nucleus_exponent: Option<f64>) -> GammaStressConfig {
     GammaStressConfig {
         mutation,
@@ -341,6 +346,8 @@ fn scfg(mutation: Option<StressMutation>, nucleus_exponent: Option<f64>) -> Gamm
     }
 }
 
+/// RKS config for functional `xc` on `grid_cfg()` with `ExxDiv::None`;
+/// `seed` (if any) is the SCF's initial guess density.
 fn rks_cfg(xc: &str, seed: Option<&Array2<f64>>) -> GammaRksConfig {
     let mut c = GammaRksConfig {
         grid: grid_cfg(),
@@ -353,10 +360,14 @@ fn rks_cfg(xc: &str, seed: Option<&Array2<f64>>) -> GammaRksConfig {
 
 type Mos = Option<(Array2<f64>, Array2<f64>)>;
 
+/// The `(α, β)` MO coefficients of `r` as a starting guess; panics without
+/// beta MOs.
 fn mos_of(r: &ScfResult) -> Mos {
     Some((r.mos_alpha.clone(), r.mos_beta.clone().expect("beta MOs")))
 }
 
+/// UHF config with exchange-divergence treatment `exx` and starting MOs
+/// `init`; the other fields are the defaults.
 fn uhf_cfg(exx: ExxDiv, init: Mos) -> GammaUhfConfig {
     GammaUhfConfig {
         exxdiv: exx,
@@ -365,6 +376,8 @@ fn uhf_cfg(exx: ExxDiv, init: Mos) -> GammaUhfConfig {
     }
 }
 
+/// UKS config for functional `xc` on `grid_cfg()` with `ExxDiv::None` and
+/// starting MOs `init`.
 fn uks_cfg(xc: &str, init: Mos) -> GammaUksConfig {
     GammaUksConfig {
         grid: grid_cfg(),
@@ -466,6 +479,8 @@ fn setup(tag: &str, cell: Cell, bs: &BasisSet, aux_bs: &BasisSet) -> Setup {
     }
 }
 
+/// The RS-GDF gradient source of the setup's `gdf` and `aux`, with no aux
+/// Jacobian (aux centres on the cell's atoms).
 fn src(su: &Setup) -> RsGdfGradSource<'_> {
     RsGdfGradSource {
         gdf: &su.gdf,
@@ -543,6 +558,8 @@ fn rhf_dense(
     )
 }
 
+/// Gamma UHF on the RS-GDF integrals `gdf`; panics on error or if the SCF
+/// does not converge.
 fn uhf_on(
     su_cell: &Cell,
     prep: &PreparedBasis,
@@ -579,6 +596,8 @@ where
         .collect()
 }
 
+/// Largest `|g[a, x] − fd[(a, x)][k]|` over the finite-difference entries;
+/// panics on a non-finite difference.
 fn max_fd_err(g: &Array2<f64>, fdv: &Fd, k: usize) -> f64 {
     fdv.iter()
         .map(|((a, x), v)| {
@@ -589,10 +608,13 @@ fn max_fd_err(g: &Array2<f64>, fdv: &Fd, k: usize) -> f64 {
         .fold(0.0_f64, f64::max)
 }
 
+/// Largest element-wise `|a|` (0 for an empty matrix).
 fn amax(a: &Array2<f64>) -> f64 {
     a.iter().fold(0.0_f64, |m, v| m.max(v.abs()))
 }
 
+/// Largest element-wise `|a − b|`. `zip` truncates silently if the shapes
+/// differ.
 fn max_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
     a.iter()
         .zip(b.iter())
@@ -663,6 +685,9 @@ where
     out
 }
 
+/// Element-wise `(4·fd_h2 − fd_h)/3`: the Richardson combination that
+/// cancels the `O(h²)` term when `fd_h2` is the central difference at half
+/// the step of `fd_h`.
 fn richardson(fd_h: &Mat3, fd_h2: &Mat3) -> Mat3 {
     let mut o = [[0.0; 3]; 3];
     for a in 0..3 {
@@ -673,6 +698,8 @@ fn richardson(fd_h: &Mat3, fd_h2: &Mat3) -> Mat3 {
     o
 }
 
+/// Largest element-wise `|a − b|` of two 3×3 matrices; panics on a
+/// non-finite difference.
 fn max_err3(a: &Mat3, b: &Mat3) -> f64 {
     let mut m = 0.0_f64;
     for i in 0..3 {
@@ -685,6 +712,7 @@ fn max_err3(a: &Mat3, b: &Mat3) -> f64 {
     m
 }
 
+/// `max_ij |a_ij − a_ji|` of a 3×3 matrix.
 fn antisym(a: &Mat3) -> f64 {
     let mut m = 0.0_f64;
     for i in 0..3 {
@@ -695,6 +723,7 @@ fn antisym(a: &Mat3) -> f64 {
     m
 }
 
+/// Formats a 3×3 matrix as three indented `{:+.10e}` rows joined by newlines.
 fn fmt3(a: &Mat3) -> String {
     a.iter()
         .map(|r| format!("  [{:+.10e} {:+.10e} {:+.10e}]", r[0], r[1], r[2]))
@@ -702,6 +731,7 @@ fn fmt3(a: &Mat3) -> String {
         .join("\n")
 }
 
+/// Element-wise `a − b` of two 3×3 matrices.
 fn diff3(a: &Mat3, b: &Mat3) -> Mat3 {
     let mut o = [[0.0; 3]; 3];
     for i in 0..3 {

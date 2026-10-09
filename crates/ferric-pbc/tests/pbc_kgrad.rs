@@ -138,6 +138,8 @@ const FIT_MUTANTS: [KGradMutation; 3] = [
 ];
 const EXX: [ExxDiv; 2] = [ExxDiv::None, ExxDiv::Ewald];
 
+/// Hcore config at the file's `OMEGA` with `precision = HCORE_PRECISION`; the
+/// other fields are the defaults of `with_omega`.
 fn hcore_cfg() -> PeriodicHcoreConfig {
     PeriodicHcoreConfig {
         precision: HCORE_PRECISION,
@@ -145,6 +147,8 @@ fn hcore_cfg() -> PeriodicHcoreConfig {
     }
 }
 
+/// k-point SCF config with `energy_conv = 1e-13`, `grad_conv = 1e-10` and
+/// `max_iter = 400`; the other fields are the defaults.
 fn kscf_cfg() -> KScfConfig {
     KScfConfig {
         energy_conv: 1e-13,
@@ -166,6 +170,8 @@ fn kgdf_cfg() -> KRsGdfConfig {
     }
 }
 
+/// Default k-point gradient config with budget `AMPLE` and the test-only
+/// `mutation`.
 fn gcfg(mutation: Option<KGradMutation>) -> KGradConfig {
     KGradConfig {
         budget_bytes: Some(AMPLE),
@@ -174,6 +180,7 @@ fn gcfg(mutation: Option<KGradMutation>) -> KGradConfig {
     }
 }
 
+/// Default Gamma gradient config with budget `AMPLE`.
 fn gamma_gcfg() -> GammaGradConfig {
     GammaGradConfig {
         budget_bytes: Some(AMPLE),
@@ -210,22 +217,28 @@ fn et_sp_aux() -> BasisSet {
     }
 }
 
+/// A neutral hydrogen cell with atoms at `pos` (Bohr), lattice rows `lattice`
+/// (Bohr) and spin multiplicity `mult`.
 fn cell_at(pos: &[[f64; 3]], lattice: [[f64; 3]; 3], mult: usize) -> Cell {
     let mut mol: Molecule = hydrogens(pos);
     mol.multiplicity = mult;
     Cell::new(mol, lattice).expect("cell")
 }
 
+/// `pos` (Bohr) with Cartesian component `x` of atom `a` displaced by `h` Bohr.
 fn moved(pos: &[[f64; 3]], a: usize, x: usize, h: f64) -> Vec<[f64; 3]> {
     let mut p = pos.to_vec();
     p[a][x] += h;
     p
 }
 
+/// The H2 singlet cell: `H2_ATOMS` in a cubic lattice of edge 4 Bohr.
 fn h2_cell_g() -> Cell {
     cell_at(&H2_ATOMS, cubic(4.0), 1)
 }
 
+/// The H3 doublet cell: `H3_ATOMS` in a cubic lattice of edge `H3_A` Bohr,
+/// multiplicity 2.
 fn h3_cell() -> Cell {
     cell_at(&H3_ATOMS, cubic(H3_A), 2)
 }
@@ -356,6 +369,7 @@ fn real_of(d: &Array2<Complex64>) -> Array2<f64> {
     d.mapv(|z| z.re)
 }
 
+/// Largest element-wise `|a − b|`; panics if the shapes differ.
 fn max_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
     assert_eq!(a.dim(), b.dim());
     a.iter()

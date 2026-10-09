@@ -141,6 +141,7 @@ const H2_RI_DE_NONE: f64 = -1.974228505452e-06;
 const TRI_112_JKFIT_NONE: f64 = -1.5876606977729906;
 const PIN_TOL: f64 = 1e-9;
 
+/// Runs `f` inside a fresh rayon pool of `n` threads and returns its result.
 fn in_pool<R: Send>(n: usize, f: impl FnOnce() -> R + Send) -> R {
     rayon::ThreadPoolBuilder::new()
         .num_threads(n)
@@ -167,6 +168,8 @@ fn bit_diffs(a: &Array2<f64>, b: &Array2<f64>) -> usize {
         .count()
 }
 
+/// Asserts that `a` and `b` agree in every bit (see [`bit_diffs`]); `what`
+/// labels a failure.
 fn assert_bitwise(a: &Array2<f64>, b: &Array2<f64>, what: &str) {
     let d = bit_diffs(a, b);
     assert_eq!(d, 0, "{what}: {d} of {} elements differ in bits", a.len());

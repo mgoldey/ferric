@@ -148,6 +148,8 @@ const SPLIT_STRESS_MUTANTS: [StressMutation; 4] = [
     StressMutation::SplitNoSmoothPair,
 ];
 
+/// Hcore config at the file's `OMEGA` with `precision = HCORE_PRECISION`; the
+/// other fields are the defaults of `with_omega`.
 fn hcore_cfg() -> PeriodicHcoreConfig {
     PeriodicHcoreConfig {
         precision: HCORE_PRECISION,
@@ -155,6 +157,8 @@ fn hcore_cfg() -> PeriodicHcoreConfig {
     }
 }
 
+/// RS-GDF config at splitting `omega` with the optional range split
+/// `split`, `DEFAULT_RSGDF_LINDEP`, `ExxDiv::None` and budget `AMPLE`.
 fn gdf_cfg(omega: f64, split: Option<RangeSplit>) -> RsGdfConfig {
     RsGdfConfig {
         omega,
@@ -166,6 +170,7 @@ fn gdf_cfg(omega: f64, split: Option<RangeSplit>) -> RsGdfConfig {
     }
 }
 
+/// `Some(RangeSplit::new(lambda))`.
 fn split(lambda: f64) -> Option<RangeSplit> {
     Some(RangeSplit::new(lambda))
 }
@@ -198,16 +203,20 @@ fn et40() -> BasisSet {
     et_aux(0.3, 2.5, 5)
 }
 
+/// The bundled `cc-pvdz-ri` auxiliary basis; panics if it is not bundled.
 fn cc_pvdz_ri() -> BasisSet {
     basis::bundled("cc-pvdz-ri").expect("cc-pvdz-ri")
 }
 
+/// A neutral hydrogen cell with atoms at `pos` (Bohr), lattice rows `lattice`
+/// (Bohr) and spin multiplicity `mult`.
 fn cell_at(pos: &[[f64; 3]], lattice: [[f64; 3]; 3], mult: usize) -> Cell {
     let mut mol: Molecule = hydrogens(pos);
     mol.multiplicity = mult;
     Cell::new(mol, lattice).expect("cell")
 }
 
+/// `pos` (Bohr) with Cartesian component `x` of atom `a` displaced by `h` Bohr.
 fn moved_pos(pos: &[[f64; 3]], a: usize, x: usize, h: f64) -> Vec<[f64; 3]> {
     let mut p = pos.to_vec();
     p[a][x] += h;
@@ -222,6 +231,9 @@ struct Setup {
     gdf: RsGdf,
 }
 
+/// Builds the setup: the periodic hcore of `cell` in `bs`, the aux basis
+/// `aux_bs` on the same atoms, and the gradient-capable `RsGdf` at
+/// `GDF_OMEGA` with the optional range split `rs`.
 fn setup(cell: Cell, bs: &BasisSet, aux_bs: &BasisSet, rs: Option<RangeSplit>) -> Setup {
     let prep = prep_for(&cell, bs);
     let hc = periodic_hcore(&cell, &prep, &hcore_cfg()).expect("hcore");
@@ -249,6 +261,8 @@ fn energy_gdf(
     RsGdf::build(cell, prep, &aux, &hc.s, &gdf_cfg(GDF_OMEGA, rs)).expect("RsGdf")
 }
 
+/// The named timing counter of `gdf`; panics, naming the counter, if it is
+/// missing.
 fn counter(gdf: &RsGdf, name: &str) -> u64 {
     gdf.timings()
         .counter(name)
@@ -297,6 +311,8 @@ fn rhf_on(
     )
 }
 
+/// The RS-GDF gradient source of the setup's `gdf` and `aux`, with no aux
+/// Jacobian (aux centres on the cell's atoms).
 fn src(su: &Setup) -> RsGdfGradSource<'_> {
     RsGdfGradSource {
         gdf: &su.gdf,
@@ -305,6 +321,8 @@ fn src(su: &Setup) -> RsGdfGradSource<'_> {
     }
 }
 
+/// Default Gamma gradient config with budget `AMPLE` and the test-only
+/// `mutation`.
 fn gcfg(mutation: Option<GradMutation>) -> GammaGradConfig {
     GammaGradConfig {
         mutation,
@@ -313,6 +331,8 @@ fn gcfg(mutation: Option<GradMutation>) -> GammaGradConfig {
     }
 }
 
+/// Default Gamma stress config with the test-only `mutation` and budget
+/// `AMPLE`.
 fn scfg(mutation: Option<StressMutation>) -> GammaStressConfig {
     GammaStressConfig {
         mutation,
@@ -321,6 +341,8 @@ fn scfg(mutation: Option<StressMutation>) -> GammaStressConfig {
     }
 }
 
+/// The RS-GDF Gamma RHF gradient of `scf` at exchange divergence `exx` with
+/// test-only mutation `m`; panics on error.
 fn rhf_grad(su: &Setup, scf: &ScfResult, exx: ExxDiv, m: Option<GradMutation>) -> GammaGradient {
     gamma_rhf_gradient_rsgdf(
         &su.cell,
@@ -335,6 +357,8 @@ fn rhf_grad(su: &Setup, scf: &ScfResult, exx: ExxDiv, m: Option<GradMutation>) -
     .expect("gamma_rhf_gradient_rsgdf")
 }
 
+/// The RS-GDF Gamma UHF gradient of `scf` at exchange divergence `exx` with
+/// test-only mutation `m`; panics on error.
 fn uhf_grad(su: &Setup, scf: &ScfResult, exx: ExxDiv, m: Option<GradMutation>) -> GammaGradient {
     gamma_uhf_gradient_rsgdf(
         &su.cell,
@@ -349,6 +373,8 @@ fn uhf_grad(su: &Setup, scf: &ScfResult, exx: ExxDiv, m: Option<GradMutation>) -
     .expect("gamma_uhf_gradient_rsgdf")
 }
 
+/// The RS-GDF Gamma RHF stress of `scf` at exchange divergence `exx` with
+/// test-only mutation `m`; panics on error.
 fn rhf_stress(su: &Setup, scf: &ScfResult, exx: ExxDiv, m: Option<StressMutation>) -> GammaStress {
     gamma_rhf_stress_rsgdf(
         &su.cell,
@@ -365,10 +391,14 @@ fn rhf_stress(su: &Setup, scf: &ScfResult, exx: ExxDiv, m: Option<StressMutation
 
 type Mos = Option<(Array2<f64>, Array2<f64>)>;
 
+/// The `(α, β)` MO coefficients of `r` as a starting guess; panics without
+/// beta MOs.
 fn mos_of(r: &ScfResult) -> Mos {
     Some((r.mos_alpha.clone(), r.mos_beta.clone().expect("beta MOs")))
 }
 
+/// UHF config with exchange-divergence treatment `exx` and starting MOs
+/// `init`; the other fields are the defaults.
 fn uhf_cfg(exx: ExxDiv, init: Mos) -> GammaUhfConfig {
     GammaUhfConfig {
         exxdiv: exx,
@@ -377,6 +407,8 @@ fn uhf_cfg(exx: ExxDiv, init: Mos) -> GammaUhfConfig {
     }
 }
 
+/// Gamma UHF on the RS-GDF integrals `gdf`; panics on error or if the SCF
+/// does not converge.
 fn uhf_on(
     cell: &Cell,
     prep: &PreparedBasis,
@@ -389,6 +421,8 @@ fn uhf_on(
     r
 }
 
+/// Largest element-wise `|a − b|`. `zip` truncates silently if the shapes
+/// differ.
 fn max_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
     a.iter()
         .zip(b.iter())
@@ -396,6 +430,8 @@ fn max_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
         .fold(0.0_f64, f64::max)
 }
 
+/// Whether `a` and `b` have equal shape and equal bit patterns in every
+/// element.
 fn bitwise(a: &Array2<f64>, b: &Array2<f64>) -> bool {
     a.dim() == b.dim()
         && a.iter()
@@ -403,6 +439,7 @@ fn bitwise(a: &Array2<f64>, b: &Array2<f64>) -> bool {
             .all(|(x, y)| x.to_bits() == y.to_bits())
 }
 
+/// Largest element-wise `|a|` (0 for an empty matrix).
 fn amax(a: &Array2<f64>) -> f64 {
     a.iter().fold(0.0_f64, |m, v| m.max(v.abs()))
 }
@@ -435,6 +472,9 @@ where
         .collect()
 }
 
+/// Largest `|g[a, x] − fd[(a, x)][k]|` over the finite-difference entries:
+/// `g` is the analytic `(natoms, 3)` gradient and `k` selects the energy
+/// column.
 fn max_fd_err(g: &Array2<f64>, fdv: &Fd, k: usize) -> f64 {
     fdv.iter()
         .map(|((a, x), v)| (g[(*a, *x)] - v[k]).abs())
@@ -461,6 +501,7 @@ fn report(tag: &str, g: &GammaGradient, err: f64) {
 
 // ------------------------------------------------------------ stress helpers
 
+/// `cell` strained by the matrix that is zero except `ε[i][j] = h`.
 fn strained(cell: &Cell, i: usize, j: usize, h: f64) -> Cell {
     let mut e = [[0.0; 3]; 3];
     e[i][j] = h;
@@ -486,10 +527,14 @@ where
     out
 }
 
+/// Element-wise `(4·fd_h2 − fd_h)/3`: the Richardson combination that
+/// cancels the `O(h²)` term when `fd_h2` is the central difference at half
+/// the step of `fd_h`.
 fn richardson(fd_h: &Mat3, fd_h2: &Mat3) -> Mat3 {
     std::array::from_fn(|a| std::array::from_fn(|b| (4.0 * fd_h2[a][b] - fd_h[a][b]) / 3.0))
 }
 
+/// Largest element-wise `|a − b|` of two 3×3 matrices.
 fn max_err(a: &Mat3, b: &Mat3) -> f64 {
     let mut m = 0.0_f64;
     for i in 0..3 {
@@ -500,6 +545,7 @@ fn max_err(a: &Mat3, b: &Mat3) -> f64 {
     m
 }
 
+/// Largest off-diagonal `|a_ij − b_ij|` of two 3×3 matrices.
 fn max_offdiag_err(a: &Mat3, b: &Mat3) -> f64 {
     let mut m = 0.0_f64;
     for i in 0..3 {
@@ -512,6 +558,7 @@ fn max_offdiag_err(a: &Mat3, b: &Mat3) -> f64 {
     m
 }
 
+/// `max_ij |a_ij − a_ji|` of a 3×3 matrix.
 fn antisym(a: &Mat3) -> f64 {
     let mut m = 0.0_f64;
     for i in 0..3 {
@@ -522,6 +569,7 @@ fn antisym(a: &Mat3) -> f64 {
     m
 }
 
+/// Whether two 3×3 matrices agree in the bit pattern of every element.
 fn mat3_bitwise(a: &Mat3, b: &Mat3) -> bool {
     a.iter()
         .flatten()
@@ -531,6 +579,7 @@ fn mat3_bitwise(a: &Mat3, b: &Mat3) -> bool {
 
 // ------------------------------------------------- anchor 1: nothing moved
 
+/// The H2 singlet cell: `H2_ATOMS_G` in a cubic lattice of edge 4 Bohr.
 fn h2_cell() -> Cell {
     cell_at(&H2_ATOMS_G, cubic(4.0), 1)
 }
@@ -651,6 +700,8 @@ fn h2_split_force_matches_fd_and_the_unsplit_force() {
 
 // ------------------------------------------------------------ H3 UHF, λ = 1
 
+/// The H3 doublet setup: `H3_ATOMS` in a cubic cell of edge `H3_A` Bohr,
+/// PySCF STO-3G with `cc-pvdz-ri`, and the optional range split `rs`.
 fn h3_setup(rs: Option<RangeSplit>) -> Setup {
     setup(
         cell_at(&H3_ATOMS, cubic(H3_A), 2),
@@ -964,6 +1015,8 @@ fn h2_split_stress_matches_fd_all_nine_and_catches_the_split_mutants() {
 
 // --------------------------------------------------- triclinic s+p (slow)
 
+/// The triclinic setup: `TRI_MOVED` in the lattice `TRI_A`, singlet, the
+/// s+p hydrogen basis with `cc-pvdz-ri`, and the optional range split `rs`.
 fn tri_setup(rs: Option<RangeSplit>) -> Setup {
     setup(
         cell_at(&TRI_MOVED, TRI_A, 1),
