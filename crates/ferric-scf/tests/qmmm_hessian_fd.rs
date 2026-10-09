@@ -215,13 +215,7 @@ fn empty_potential_is_bit_identical_to_no_potential() {
 }
 
 #[test]
-fn field_and_smeared_charges_are_still_refused() {
-    let field = ExternalPotential {
-        field: Some([0.0, 0.0, 0.01]),
-        ..Default::default()
-    };
-    let err = rhf_hessian_preflight(Operator::coulomb(), &config(Some(&field))).unwrap_err();
-    assert!(err.to_string().contains("uniform external field"), "{err}");
+fn smeared_charges_are_still_refused() {
     let smeared = ExternalPotential {
         smeared_charges: vec![ferric_core::external_potential::SmearedCharge {
             q: 0.3,
