@@ -285,6 +285,9 @@ pub struct RsGdfConfig {
 }
 
 impl Default for RsGdfConfig {
+    /// Defaults: ω = [`DEFAULT_RSGDF_OMEGA`], [`DEFAULT_RSGDF_PRECISION`],
+    /// [`DEFAULT_RSGDF_LINDEP`], Ewald exchange divergence, per-triplet SR screening, ferric's
+    /// unified budget, consistent G = 0, no range split, automatic column rotation.
     fn default() -> Self {
         Self {
             omega: DEFAULT_RSGDF_OMEGA,
@@ -301,6 +304,8 @@ impl Default for RsGdfConfig {
 }
 
 impl RsGdfConfig {
+    /// Rejects a non-finite or non-positive `omega`, a `precision` outside `(0, 1)` and a negative
+    /// or non-finite `lindep` with [`FerricError::General`].
     fn validate(&self) -> Result<(), FerricError> {
         if !(self.omega > 0.0) || !self.omega.is_finite() {
             return Err(FerricError::General(format!(
@@ -446,6 +451,9 @@ struct GShell {
     qbound: f64,
 }
 
+/// Per-shell Rust data of `prep` (ferric normalisation: `prim_norm` folded into the coefficients).
+/// Errors on `l > MAX_L`, a pure p shell, malformed or non-positive exponents, or a function count
+/// that disagrees with libint2; `who` prefixes the message.
 fn gshells(prep: &PreparedBasis, who: &str) -> Result<Vec<GShell>, FerricError> {
     let dims = prep.shell_dims();
     let offs = prep.shell_offsets();
@@ -512,10 +520,12 @@ fn gshells(prep: &PreparedBasis, who: &str) -> Result<Vec<GShell>, FerricError> 
     Ok(out)
 }
 
+/// Euclidean dot product of two Cartesian 3-vectors.
 fn dot3(a: &[f64; 3], b: &[f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
+/// Euclidean norm of a Cartesian 3-vector.
 fn norm3(a: &[f64; 3]) -> f64 {
     dot3(a, a).sqrt()
 }
@@ -693,6 +703,8 @@ struct LatticeWalker {
 }
 
 impl LatticeWalker {
+    /// Walker over `cell`'s lattice; a strained cell selects images in its reference (index) frame,
+    /// see the type doc.
     fn new(cell: &Cell) -> Self {
         match cell.index_reference() {
             None => Self {
@@ -708,6 +720,10 @@ impl LatticeWalker {
         }
     }
 
+    /// Calls `f(T)` for every lattice vector `T` (Bohr, Cartesian, output lattice) with `|T − x0|
+    /// <= r`, in ascending `(n0, n1, n2)` order. `x0` and `r` are in Bohr (`x0` in the output
+    /// Cartesian frame). Errors on a non-finite centre or radius, or when the integer box exceeds
+    /// the size caps; errors from `f` abort the walk.
     fn visit<F>(&self, x0: [f64; 3], r: f64, mut f: F) -> Result<(), FerricError>
     where
         F: FnMut([f64; 3]) -> Result<(), FerricError>,
@@ -811,6 +827,8 @@ fn sr_radius(
     Some((pref / thresh).ln().sqrt() / nu + SR_MARGIN_BOHR)
 }
 
+/// Largest `|m[i,j] − m[j,i]|` over the strict lower triangle (the asymmetry of a nominally
+/// symmetric matrix). Assumes `m` is square.
 fn max_abs_asym(m: &Array2<f64>) -> f64 {
     let mut w = 0.0_f64;
     for i in 0..m.nrows() {
@@ -1005,6 +1023,8 @@ impl<'a> Stage<'a> {
 }
 
 impl Stage<'_> {
+    /// [`sr_radius`] for charge bounds `qa`, `qb` and `(min, max)` exponent ranges `a`, `b`, at
+    /// this stage's `omega` and `thresh`.
     fn radius(&self, qa: f64, qb: f64, a: (f64, f64), b: (f64, f64)) -> Option<f64> {
         sr_radius(qa, qb, a.0, a.1, b.0, b.1, self.omega, self.thresh)
     }
@@ -2021,6 +2041,7 @@ struct SrUnit<V> {
 }
 
 impl<V: Stored> Stored for SrUnit<V> {
+    /// Heap bytes held: the struct plus 32 bytes of bookkeeping and the value's own bytes per item.
     fn stored_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
             + self
@@ -2567,6 +2588,8 @@ impl RsGdf {
         self.range_split
     }
 
+    /// The metric-derivative parts kept by [`RsGdf::build_for_gradient`]; `None` for any other
+    /// build.
     pub(crate) fn gradient_parts(&self) -> Option<&MetricGradParts> {
         self.grad.as_ref()
     }
@@ -2612,6 +2635,9 @@ impl RsGdf {
             .map(|(gdf, _)| gdf)
     }
 
+    /// Shared body of every Gamma build. `retain_parts` also returns the [`PeriodicFitParts`]
+    /// copies, `retain_grad` keeps the [`MetricGradParts`], and `pair_sym` picks the production
+    /// (S2) or frozen ordered (S1) SR 3-centre walk. `s` is the `(nao, nao)` overlap.
     #[allow(clippy::too_many_arguments)]
     fn build_impl(
         cell: &Cell,
@@ -2974,6 +3000,8 @@ impl RsGdf {
         )
     }
 
+    /// Checks that the density `d` and output `out` are both `(nao, nao)`; `who` names the builder
+    /// in the error.
     fn check(&self, d: &Array2<f64>, out: &Array2<f64>, who: &str) -> Result<(), FerricError> {
         let n = self.nao;
         if d.dim() != (n, n) || out.dim() != (n, n) {
@@ -2993,15 +3021,20 @@ pub struct RsGdfJ<'a> {
 }
 
 impl JBuilder for RsGdfJ<'_> {
+    /// `j = Σ_k B_k (B_k · D)` for the `(nao, nao)` density `d`; returns the multiply-add count
+    /// (`B` elements). Time accrues to the build's J clock.
     fn build(&mut self, d: &Array2<f64>, j: &mut Array2<f64>) -> Result<usize, FerricError> {
         let gdf = self.gdf;
         gdf.j_clock.time(|| self.build_untimed(d, j))
     }
 
+    /// Stateless: nothing to reset.
     fn reset(&mut self) {}
 }
 
 impl RsGdfJ<'_> {
+    /// [`JBuilder::build`] without the clock. `B` is `(naux_kept, nao²)` with the AO pair index
+    /// `m·nao + n` (row-major), so `D` is flattened row-major.
     fn build_untimed(
         &mut self,
         d: &Array2<f64>,
@@ -3037,17 +3070,24 @@ pub struct RsGdfK<'a> {
 }
 
 impl KBuilder for RsGdfK<'_> {
+    /// `K = Σ_k B_k D B_kᵀ + v_M S D S` for the `(nao, nao)` density `d`; returns the multiply-add
+    /// count. Time accrues to the build's K clock.
     fn build(&mut self, d: &Array2<f64>, k: &mut Array2<f64>) -> Result<usize, FerricError> {
         let gdf = self.gdf;
         gdf.k_clock.time(|| self.build_untimed(d, k))
     }
 
+    /// No density-dependent state: nothing to update.
     fn update_density(&mut self, _d: &Array2<f64>) {}
 
+    /// Stateless: nothing to reset.
     fn reset(&mut self) {}
 }
 
 impl RsGdfK<'_> {
+    /// [`KBuilder::build`] without the clock: checks shapes and the exchange scratch budget,
+    /// accumulates over the fixed aux groups, then adds the Madelung term `madelung · S D S` when
+    /// nonzero.
     fn build_untimed(
         &mut self,
         d: &Array2<f64>,
