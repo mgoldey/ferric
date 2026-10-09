@@ -58,24 +58,24 @@ use num_complex::Complex64;
 use rayon::prelude::*;
 
 /// Bloch AO values on one spatial chunk, one entry per k.
-struct KAoChunk {
-    points: Vec<GridPoint>,
+pub(crate) struct KAoChunk {
+    pub(crate) points: Vec<GridPoint>,
     /// `chi[k]`: `(nbf, npts)`.
-    chi: Vec<Array2<Complex64>>,
+    pub(crate) chi: Vec<Array2<Complex64>>,
     /// `dchi[k]`: `(3, nbf, npts)`; empty for LDA.
-    dchi: Vec<Array3<Complex64>>,
+    pub(crate) dchi: Vec<Array3<Complex64>>,
 }
 
 /// Semilocal XC on a [`PeriodicGrid`] with Bloch AOs: the [`KPointXc`] of
 /// [`solve_krks`].
 pub struct KPeriodicXc {
-    name: String,
-    xc: XcDef,
+    pub(crate) name: String,
+    pub(crate) xc: XcDef,
     exx: f64,
-    chunks: Vec<KAoChunk>,
-    nbf: usize,
-    nk: usize,
-    gga: bool,
+    pub(crate) chunks: Vec<KAoChunk>,
+    pub(crate) nbf: usize,
+    pub(crate) nk: usize,
+    pub(crate) gga: bool,
 }
 
 impl std::fmt::Debug for KPeriodicXc {
@@ -230,7 +230,7 @@ fn build_k_chunks(
     Ok((chunks?, nbf))
 }
 
-fn conj(m: &Array2<Complex64>) -> Array2<Complex64> {
+pub(crate) fn conj(m: &Array2<Complex64>) -> Array2<Complex64> {
     m.mapv(|z| z.conj())
 }
 
