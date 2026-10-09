@@ -159,6 +159,10 @@ pub mod rohf_ah;
 pub mod rohf_newton;
 /// ROHF occupation guard: hole-swap lock, gradient guard, swap witness (F6).
 pub(crate) mod rohf_occupation;
+/// Second-order (trust-region AH) ROHF/ROKS on the exact orbital Hessian,
+/// stepping from the current orbitals; the injected (periodic) path's
+/// alternative to the DIIS loop.
+pub mod rohf_trah;
 /// Range-separated (SR/LR) exchange response for the orbital-Hessian matvecs.
 pub mod rsh_response;
 /// Internal stability analysis: is a converged SCF solution a minimum or a saddle?

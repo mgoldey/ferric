@@ -3,6 +3,9 @@ libferric*
 libxc*
 !**/src/libxc.rs
 !**/tests/libxc_smoke.rs
+# Vendored patched libint2 header (build.rs puts it first on the shim include path).
+!/crates/ferric-integrals/shim/libint2_overrides/
+!/crates/ferric-integrals/shim/libint2_overrides/**
 build
 target
 .venv/
