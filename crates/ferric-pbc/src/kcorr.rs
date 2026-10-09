@@ -420,6 +420,7 @@ pub enum KCorrIntegrals<'a> {
 }
 
 impl KCorrIntegrals<'_> {
+    /// Number of k-points of the underlying integrals.
     fn nk(&self) -> usize {
         match self {
             KCorrIntegrals::RsGdf(g) => g.nk(),
@@ -427,6 +428,7 @@ impl KCorrIntegrals<'_> {
         }
     }
 
+    /// The mesh (supercell) Madelung constant `ExxDiv::Ewald` applies.
     fn madelung_ewald(&self) -> f64 {
         match self {
             KCorrIntegrals::RsGdf(g) => g.madelung_ewald(),
@@ -448,6 +450,7 @@ impl KCorrIntegrals<'_> {
         }
     }
 
+    /// Owned `B(k, k')` block, `(rows, nao²)`; errors if the column count is not `nao²`.
     fn block(&self, k: usize, kp: usize, nao: usize) -> Result<Array2<C64>, FerricError> {
         let b = match self {
             KCorrIntegrals::RsGdf(g) => g.block(k, kp),
@@ -523,6 +526,9 @@ struct KRef {
     occ_shift: f64,
 }
 
+/// Validate the converged k-point RHF reference against the mesh and integrals (closed shell,
+/// uniform occupation, lowest levels doubly occupied) and split it into active occupied and
+/// virtual blocks per k with the occupied energies shifted.
 #[allow(clippy::too_many_arguments)]
 fn prepare(
     what: &str,
@@ -638,6 +644,7 @@ fn prepare(
     })
 }
 
+/// True when two k-point lists agree element-wise to a relative `1e-12`.
 fn same_kpts(a: &[[f64; 3]], b: &[[f64; 3]]) -> bool {
     a.len() == b.len()
         && a.iter()

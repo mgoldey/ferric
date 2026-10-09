@@ -39,6 +39,7 @@ struct Neumaier {
 }
 
 impl Neumaier {
+    /// Neumaier-compensated add of `x` into the running sum.
     fn add(&mut self, x: f64) {
         let t = self.sum + x;
         if self.sum.abs() >= x.abs() {
@@ -48,6 +49,7 @@ impl Neumaier {
         }
         self.sum = t;
     }
+    /// Compensated total `sum + c`.
     fn value(&self) -> f64 {
         self.sum + self.c
     }

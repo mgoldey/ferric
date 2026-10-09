@@ -229,6 +229,8 @@ pub fn drpa_from_b_ov(
     drpa_from_intermediates(&inter, eps_occ, eps_vir, quad_points, budget_bytes)
 }
 
+/// Package `b_ov` (`(naux, nocc·nvir)`, columns `i·nvir + a`) with the metric factor; `None`
+/// `v_inv_sqrt` means the identity. Errors if the column count is not `nocc·nvir`.
 fn intermediates(
     b_ov: Array2<f64>,
     v_inv_sqrt: Option<Array2<f64>>,
@@ -256,6 +258,8 @@ fn intermediates(
     })
 }
 
+/// Validate `quad_points` and the orbital-energy gaps, then run the PDEP dRPA on prebuilt
+/// intermediates under the resolved memory budget.
 fn drpa_from_intermediates(
     inter: &RpaIntermediates,
     eps_occ: &[f64],
