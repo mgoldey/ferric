@@ -1197,7 +1197,6 @@ pub(crate) fn check_injection_shapes(
     Ok(())
 }
 
-
 /// **Closed-shell RHF/RKS state selection** — the restricted counterpart of
 /// `uhf::stability_descent`, gated by the same
 /// [`RhfConfig::scf_stability_descent`] knob (default off) and needing
