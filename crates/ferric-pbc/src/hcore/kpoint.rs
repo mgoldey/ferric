@@ -1,6 +1,6 @@
 //! Stage 3: per-k complex one-electron matrices `S(k)`, `T(k)`, `V(k)`,
 //! `h(k)` — the SAME shifted-shell lattice sums as
-//! [`periodic_hcore`](super::periodic_hcore), each image weighted by the
+//! [`periodic_hcore`], each image weighted by the
 //! Bloch phase `e^{ik·L}` (PySCF's convention, `KPointMesh` module doc):
 //!
 //! ```text
