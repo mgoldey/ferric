@@ -68,6 +68,10 @@ impl std::fmt::Debug for KPeriodicXcPolarized {
 impl KPeriodicXcPolarized {
     /// Wrap an already built Bloch AO cache.
     pub fn from_closed(inner: KPeriodicXc) -> Result<Self, FerricError> {
+        // KPeriodicXc may accept meta-GGA for the closed-shell solver; the
+        // spin-resolved XC here has no tau term, so refuse it for every
+        // construction path (including `solve_kuks_on_grid`).
+        resolve_periodic_functional(&inner.name)?;
         let xc_pol = xc_def_from_name_nspin(&inner.name, 2).map_err(|e| {
             FerricError::General(format!(
                 "periodic DFT: functional {:?} (spin-polarized): {e:?}",

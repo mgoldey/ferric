@@ -71,6 +71,8 @@ pub(crate) struct KAoChunk {
 pub struct KPeriodicXc {
     pub(crate) name: String,
     pub(crate) xc: XcDef,
+    /// The same functional on `nspin = 2` libxc handles (spin-resolved k-point KS).
+    pub(crate) xc_pol: XcDef,
     exx: f64,
     pub(crate) chunks: Vec<KAoChunk>,
     pub(crate) nbf: usize,
@@ -247,6 +249,11 @@ impl KPeriodicXc {
         cfg: &PeriodicXcConfig,
     ) -> Result<Self, FerricError> {
         let (xc, exx) = resolve_periodic_functional(functional)?;
+        let xc_pol = ferric_dft::libxc::xc_def_from_name_nspin(functional, 2).map_err(|e| {
+            FerricError::General(format!(
+                "periodic DFT: functional {functional:?} (spin-polarized): {e:?}"
+            ))
+        })?;
         let gga = xc
             .funcs
             .iter()
@@ -264,6 +271,7 @@ impl KPeriodicXc {
         Ok(Self {
             name: functional.to_string(),
             xc,
+            xc_pol,
             exx,
             chunks,
             nbf,
@@ -287,7 +295,7 @@ impl KPeriodicXc {
         self.nbf
     }
 
-    fn check(&self, dm: &[Array2<Complex64>]) -> Result<(), FerricError> {
+    pub(crate) fn check(&self, dm: &[Array2<Complex64>]) -> Result<(), FerricError> {
         if dm.len() != self.nk || dm.iter().any(|d| d.dim() != (self.nbf, self.nbf)) {
             return Err(FerricError::General(format!(
                 "KPeriodicXc: expected {} density matrices of shape ({n}, {n})",

@@ -340,3 +340,23 @@ fn uniform_grid_kuks_matches_pinned_pyscf() {
         );
     }
 }
+
+/// The open-shell solver has no tau term, so it must refuse meta-GGA on both
+/// entry points even where the closed-shell XC accepts it.
+#[test]
+fn kuks_refuses_meta_gga() {
+    let cell = cell_mult(&[[0.0, 0.0, 0.0]], 4.0, 2);
+    let bs = pyscf_sto3g_h();
+    let prep = prep_for(&cell, &bs);
+    let mesh = KPointMesh::gamma_centred(&cell, [1, 1, 2]).unwrap();
+    let cfg = kuks_cfg(&cell, "SCAN", ExxDiv::None);
+    let grid = PeriodicGrid::build(&cell, &cfg.grid).unwrap();
+    assert!(
+        solve_kuks_on_grid(&cell, &prep, None, &mesh, &grid, &cfg).is_err(),
+        "solve_kuks_on_grid accepted SCAN"
+    );
+    assert!(
+        ferric_pbc::kuks::solve_kuks(&cell, &prep, None, &mesh, &cfg).is_err(),
+        "solve_kuks accepted SCAN"
+    );
+}
