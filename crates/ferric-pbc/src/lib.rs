@@ -151,6 +151,7 @@ pub mod kdense_aft;
 pub mod kdft;
 pub mod kgrad;
 pub mod kpts;
+pub mod kroks;
 pub mod kscf;
 pub mod kuscf;
 pub mod lattice;
