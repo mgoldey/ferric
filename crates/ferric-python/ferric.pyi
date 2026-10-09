@@ -2393,6 +2393,23 @@ def esp_at_points(
     """Electrostatic potential at arbitrary points (N,3) in Bohr."""
     ...
 
+def esp_on_surface(
+    mol: Molecule,
+    basis_set: BasisSet,
+    result: RhfResult | DftResult,
+    vdw_scale: float = 1.4,
+    n_angular: int = 110,
+) -> tuple[NDArray[np.float64], list[float], int]:
+    """Electrostatic potential on a van der Waals surface.
+
+    A Lebedev sphere of `n_angular` points sits at `vdw_scale` x the Bondi
+    radius of every atom; points inside another atom's scaled radius are
+    dropped. Returns `(points, esp, n_buried)`: points (M,3) in Bohr, ESP in
+    Hartree/e, and the number of sample points dropped as buried (0 for an
+    isolated atom).
+    """
+    ...
+
 def hirshfeld_charges(
     mol: Molecule,
     basis_set: BasisSet,
