@@ -62,24 +62,26 @@ use num_complex::Complex64;
 use rayon::prelude::*;
 
 /// Bloch AO values on one spatial chunk, one entry per k.
-struct KAoChunk {
-    points: Vec<GridPoint>,
+pub(crate) struct KAoChunk {
+    pub(crate) points: Vec<GridPoint>,
     /// `chi[k]`: `(nbf, npts)`.
-    chi: Vec<Array2<Complex64>>,
+    pub(crate) chi: Vec<Array2<Complex64>>,
     /// `dchi[k]`: `(3, nbf, npts)`; empty for LDA.
-    dchi: Vec<Array3<Complex64>>,
+    pub(crate) dchi: Vec<Array3<Complex64>>,
 }
 
 /// Semilocal XC on a [`PeriodicGrid`] with Bloch AOs: the [`KPointXc`] of
 /// [`solve_krks`].
 pub struct KPeriodicXc {
-    name: String,
-    xc: XcDef,
+    pub(crate) name: String,
+    pub(crate) xc: XcDef,
+    /// The same functional on `nspin = 2` libxc handles (spin-resolved k-point KS).
+    pub(crate) xc_pol: XcDef,
     exx: f64,
-    chunks: Vec<KAoChunk>,
-    nbf: usize,
-    nk: usize,
-    gga: bool,
+    pub(crate) chunks: Vec<KAoChunk>,
+    pub(crate) nbf: usize,
+    pub(crate) nk: usize,
+    pub(crate) gga: bool,
     /// Meta-GGA: tau (and its Vxc term) is evaluated from `dchi`.
     mgga: bool,
 }
@@ -236,7 +238,7 @@ fn build_k_chunks(
     Ok((chunks?, nbf))
 }
 
-fn conj(m: &Array2<Complex64>) -> Array2<Complex64> {
+pub(crate) fn conj(m: &Array2<Complex64>) -> Array2<Complex64> {
     m.mapv(|z| z.conj())
 }
 
@@ -257,6 +259,11 @@ impl KPeriodicXc {
             .funcs
             .iter()
             .any(|f| matches!(f.family(), FunctionalFamily::MetaGga));
+        let xc_pol = ferric_dft::libxc::xc_def_from_name_nspin(functional, 2).map_err(|e| {
+            FerricError::General(format!(
+                "periodic DFT: functional {functional:?} (spin-polarized): {e:?}"
+            ))
+        })?;
         let gga = xc
             .funcs
             .iter()
@@ -274,6 +281,7 @@ impl KPeriodicXc {
         Ok(Self {
             name: functional.to_string(),
             xc,
+            xc_pol,
             exx,
             chunks,
             nbf,
@@ -298,7 +306,7 @@ impl KPeriodicXc {
         self.nbf
     }
 
-    fn check(&self, dm: &[Array2<Complex64>]) -> Result<(), FerricError> {
+    pub(crate) fn check(&self, dm: &[Array2<Complex64>]) -> Result<(), FerricError> {
         if dm.len() != self.nk || dm.iter().any(|d| d.dim() != (self.nbf, self.nbf)) {
             return Err(FerricError::General(format!(
                 "KPeriodicXc: expected {} density matrices of shape ({n}, {n})",
