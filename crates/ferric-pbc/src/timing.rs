@@ -86,6 +86,7 @@ pub struct StageTiming {
     pub calls: u64,
 }
 
+/// Sum of two optional values, treating `None` as absent (`None` only if both are).
 fn add_opt(a: Option<f64>, b: Option<f64>) -> Option<f64> {
     match (a, b) {
         (Some(x), Some(y)) => Some(x + y),
@@ -257,6 +258,7 @@ pub struct CallClock {
 }
 
 impl Clone for CallClock {
+    /// Snapshot of the counters (relaxed loads).
     fn clone(&self) -> Self {
         Self {
             wall_ns: AtomicU64::new(self.wall_ns.load(Ordering::Relaxed)),

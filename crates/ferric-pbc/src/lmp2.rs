@@ -214,6 +214,7 @@ pub struct LocalizationConfig {
 }
 
 impl Default for LocalizationConfig {
+    /// `max_sweeps = 1000`, `angle_tol = 1e-11`, no random start.
     fn default() -> Self {
         Self {
             max_sweeps: 1000,
@@ -284,6 +285,8 @@ impl GammaLmp2Config {
         }
     }
 
+    /// Reject negative or non-finite `eps`, non-positive CG tolerance, zero CG iteration cap and
+    /// invalid distance/radius settings.
     fn validate(&self) -> Result<(), FerricError> {
         let bad = |what: String| -> Result<(), FerricError> {
             Err(FerricError::General(format!("gamma_lmp2: {what}")))
@@ -344,6 +347,7 @@ pub struct MinImage {
 }
 
 impl MinImage {
+    /// Distance helper for `cell` under `metric` (stores the lattice rows and reciprocal rows).
     pub fn new(cell: &Cell, metric: PeriodicDistance) -> Self {
         Self {
             a: *cell.lattice(),
@@ -381,6 +385,7 @@ impl MinImage {
         best
     }
 
+    /// `|p − q|` under the convention (see [`MinImage::distance`]); Cartesian points in Bohr.
     pub fn between(&self, p: [f64; 3], q: [f64; 3]) -> f64 {
         self.distance([p[0] - q[0], p[1] - q[1], p[2] - q[2]])
     }
@@ -433,6 +438,7 @@ pub fn resta_operator(cell: &Cell, obs: &PreparedBasis) -> Result<RestaOperator,
     })
 }
 
+/// Euclidean length of a Cartesian vector.
 fn vec_len(v: &[f64; 3]) -> f64 {
     (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
 }
@@ -930,6 +936,7 @@ fn lattice_cross_overlap_with_minimal(
     ))
 }
 
+/// AO index to owning atom index, in the `PreparedBasis` AO order.
 fn ao_to_atom(prep: &PreparedBasis) -> Vec<usize> {
     let mut out = vec![0usize; prep.nbasis()];
     for (sh, &ai) in prep.shell_to_atom().iter().enumerate() {
@@ -941,6 +948,8 @@ fn ao_to_atom(prep: &PreparedBasis) -> Vec<usize> {
     out
 }
 
+/// Upper-triangle symmetric eigendecomposition `(eigenvalues, eigenvectors)`; `who` labels
+/// the LAPACK error.
 fn eigh(m: &Array2<f64>, who: &str) -> Result<(Array1<f64>, Array2<f64>), FerricError> {
     m.eigh(UPLO::Upper)
         .map_err(|e| FerricError::Lapack(format!("gamma_lmp2 {who} eigh: {e}")))
@@ -1131,14 +1140,18 @@ pub struct GammaLocalSpaces {
 }
 
 impl GammaLocalSpaces {
+    /// Number of occupied localized orbitals (columns of `c_occ`).
     pub fn no(&self) -> usize {
         self.c_occ.ncols()
     }
+    /// Number of virtual orbitals (columns of `c_vir`).
     pub fn nv(&self) -> usize {
         self.c_vir.ncols()
     }
 }
 
+/// Require a converged closed-shell RHF result and an even, positive electron count;
+/// returns the occupied count `nelec / 2`.
 fn check_reference(cell: &Cell, rhf: &ScfResult) -> Result<usize, FerricError> {
     if !matches!(rhf.spin, Spin::Restricted) {
         return Err(FerricError::General(
@@ -1299,6 +1312,7 @@ impl GammaPairIntegrals {
         Self::new_on(cell, spaces, gdf, fit, fit_radius, metric, &mut ledger)
     }
 
+    /// `new` with an explicit ledger so the caller owns the budget accounting.
     #[allow(clippy::too_many_arguments)]
     fn new_on(
         cell: &Cell,
@@ -1434,6 +1448,8 @@ impl GammaPairIntegrals {
         Ok((g, n))
     }
 
+    /// `(ia|jb)` for fixed `(i, j)` without the head correction, `(nv, nv)`, plus the aux
+    /// contraction length; errors for `i`/`j >= no`.
     fn raw_block(&self, i: usize, j: usize) -> Result<(Array2<f64>, usize), FerricError> {
         let nv = self.nv;
         if i >= self.no || j >= self.no {

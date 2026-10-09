@@ -115,6 +115,7 @@ pub struct GammaRohfConfig {
 }
 
 impl Default for GammaRohfConfig {
+    /// `exxdiv = Ewald` with a staged start, tight `density_conv = 1e-10`, DIIS, no SAD guess.
     fn default() -> Self {
         Self {
             exxdiv: ExxDiv::Ewald,
@@ -313,6 +314,9 @@ pub fn rohf_spin_square(r: &ScfResult, s: &Array2<f64>, na: usize, nb: usize) ->
 /// level gives a NEGATIVE gap. `None` for a spin with no occupied or no
 /// unoccupied MO, or when the result carries no spin Focks.
 pub fn rohf_occupation_gaps(r: &ScfResult, s: &Array2<f64>, shift: f64) -> SpinGapReport {
+    /// Occupation-aware gap of one spin: `min ε(unoccupied) − max ε(occupied)` over the ROHF MOs,
+    /// with `n_i = c_iᵀ S D S c_i > ½` as occupied and `ε_i = c_iᵀ F c_i`; `None` on a shape
+    /// mismatch or if either side is empty.
     fn gap(c: &Array2<f64>, f: &Array2<f64>, d: &Array2<f64>, s: &Array2<f64>) -> Option<f64> {
         if c.nrows() != s.nrows() || f.dim() != s.dim() || d.dim() != s.dim() {
             return None;
