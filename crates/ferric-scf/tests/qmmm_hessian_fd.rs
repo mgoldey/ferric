@@ -24,10 +24,11 @@ use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_scf::gradient::rhf_gradient;
-use ferric_scf::hessian::{rhf_hessian, rhf_hessian_preflight};
+use ferric_scf::gradient::{rhf_gradient, uhf_gradient};
+use ferric_scf::hessian::{rhf_hessian, rhf_hessian_preflight, uhf_hessian};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
+use ferric_scf::uhf::{solve_uhf, solve_uhf_with_guess};
 use ndarray::Array2;
 
 /// Analytic vs FD of the embedded gradient, Ha/Bohr² (FD floor ~5e-7).
@@ -231,4 +232,101 @@ fn field_and_smeared_charges_are_still_refused() {
     };
     let err = rhf_hessian_preflight(Operator::coulomb(), &config(Some(&smeared))).unwrap_err();
     assert!(err.to_string().contains("smeared"), "{err}");
+}
+
+/// Translational invariance including the charges: shifting every QM atom AND
+/// every charge leaves the energy unchanged, so for each QM coordinate row
+/// the QM–QM row sum plus the QM–MM cross block (central FD of the embedded
+/// QM gradient w.r.t. the charge positions, SCF re-solved) vanishes.
+#[test]
+fn translational_invariance_including_charge_cross_block() {
+    if !has_deriv2() {
+        return;
+    }
+    let ext = embedding();
+    let mol = Molecule::parse_xyz(WATER, 0, 1).unwrap();
+    let h = analytic(&solve(&mol, Some(&ext)), Some(&ext));
+    let mut worst = 0.0f64;
+    for axis in 0..3 {
+        // Row sums of the QM-QM block over the three atoms' `axis` columns.
+        let mut sums = [0.0f64; 9];
+        for (r, sum) in sums.iter_mut().enumerate() {
+            for a in 0..3 {
+                *sum += h[(r, 3 * a + axis)];
+            }
+        }
+        // Cross block: d g_r / d (charge_i, axis), summed over charges.
+        for i in 0..ext.point_charges.len() {
+            let g = |step: f64| {
+                let mut e = ext.clone();
+                match axis {
+                    0 => e.point_charges[i].x += step,
+                    1 => e.point_charges[i].y += step,
+                    _ => e.point_charges[i].z += step,
+                }
+                let s = solve(&mol, Some(&e));
+                rhf_gradient(
+                    &s.mol,
+                    &s.prep,
+                    Operator::coulomb(),
+                    &s.bounds,
+                    &s.rhf,
+                    Some(&e),
+                )
+                .unwrap()
+            };
+            let (gp, gm) = (g(H_FULL), g(-H_FULL));
+            for (r, sum) in sums.iter_mut().enumerate() {
+                *sum += (gp[(r / 3, r % 3)] - gm[(r / 3, r % 3)]) / (2.0 * H_FULL);
+            }
+        }
+        worst = sums.iter().fold(worst, |m, v| m.max(v.abs()));
+    }
+    eprintln!("charge-inclusive translational invariance: max |row sum| = {worst:.3e}");
+    assert!(worst < TOL_FD, "row sum {worst:.3e}");
+}
+
+const OH: &str = "2\nOH tilted\nO 0.0 0.0 0.0\nH 0.35 0.2 0.93\n";
+
+/// UHF (OH radical) with the same style of embedding vs FD of `uhf_gradient`.
+#[test]
+fn embedded_uhf_hessian_matches_fd_of_embedded_gradient() {
+    if !has_deriv2() {
+        return;
+    }
+    let ext = embedding();
+    let mol = Molecule::parse_xyz(OH, 0, 2).unwrap();
+    let bs = basis::bundled("sto-3g").unwrap();
+    let ctx = ParallelContext::default();
+    let op = Operator::coulomb();
+    let prep_for = |m: &Molecule| {
+        let prep = PreparedBasis::new(m, &bs).unwrap();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        (prep, bounds)
+    };
+    let cfg = config(Some(&ext));
+    let (prep, bounds) = prep_for(&mol);
+    let r0 = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
+    assert!(r0.converged);
+    let an = uhf_hessian(&ctx, &mol, &prep, op, &bounds, &r0, &cfg).unwrap();
+    let ca = r0.mos_alpha.clone();
+    let cb = r0.mos_beta.clone().unwrap();
+    let n3 = 6;
+    let mut fd = Array2::<f64>::zeros((n3, n3));
+    for b in 0..n3 {
+        let g = |step: f64| {
+            let m = displaced(&mol, b / 3, b % 3, step);
+            let (prep, bounds) = prep_for(&m);
+            let r = solve_uhf_with_guess(&ctx, &m, &prep, &bounds, &cfg, Some((&ca, &cb))).unwrap();
+            assert!((r.energy - r0.energy).abs() < 0.05, "state changed");
+            uhf_gradient(&m, &prep, op, &bounds, &r, Some(&ext)).unwrap()
+        };
+        let (gp, gm) = (g(H_FULL), g(-H_FULL));
+        for a in 0..n3 {
+            fd[(a, b)] = (gp[(a / 3, a % 3)] - gm[(a / 3, a % 3)]) / (2.0 * H_FULL);
+        }
+    }
+    let d = max_diff(&an, &fd);
+    eprintln!("embedded UHF: max|analytic - FD| = {d:.3e}");
+    assert!(d < TOL_FD, "max|analytic - FD| = {d:.3e}");
 }
