@@ -50,14 +50,17 @@ pub struct Cell {
     frozen: Option<Arc<Cell>>,
 }
 
+/// Euclidean dot product.
 fn dot(a: &[f64; 3], b: &[f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
+/// Euclidean norm.
 fn norm(a: &[f64; 3]) -> f64 {
     dot(a, a).sqrt()
 }
 
+/// Cross product `a × b`.
 fn cross(a: &[f64; 3], b: &[f64; 3]) -> [f64; 3] {
     [
         a[1] * b[2] - a[2] * b[1],

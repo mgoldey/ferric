@@ -178,6 +178,7 @@ impl RangeSplit {
         self.lambda * omega * omega
     }
 
+    /// Rejects a negative or non-finite `lambda` with [`FerricError::General`].
     fn validate(&self) -> Result<(), FerricError> {
         if !(self.lambda >= 0.0) || !self.lambda.is_finite() {
             return Err(FerricError::General(format!(
@@ -190,6 +191,7 @@ impl RangeSplit {
 }
 
 impl Default for RangeSplit {
+    /// Production split at [`DEFAULT_RANGE_SPLIT_LAMBDA`].
     fn default() -> Self {
         Self::new(DEFAULT_RANGE_SPLIT_LAMBDA)
     }
@@ -353,6 +355,7 @@ fn combined_basis(shells: Vec<Shell>, centers: &[[f64; 3]]) -> Result<PreparedBa
     PreparedBasis::new(&mol, &bs)
 }
 
+/// Owned copy of a located shell's `l`, purity, exponents and coefficients.
 fn raw_shell(s: &LocatedShell<'_>) -> Shell {
     Shell {
         l: s.l,
@@ -1396,6 +1399,8 @@ fn kernel_weights(g: &[f64; 3], vol: f64, omega: f64) -> (f64, f64) {
     (full * (-x).exp(), -full * (-x).exp_m1())
 }
 
+/// Accumulates a `(wall, cpu)` clock reading: `wall` always adds; `cpu` becomes `Some` once any
+/// reading carries a CPU time.
 fn add_clock(wall: &mut f64, cpu: &mut Option<f64>, (w, c): (f64, Option<f64>)) {
     *wall += w;
     if let Some(c) = c {

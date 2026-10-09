@@ -41,6 +41,7 @@ pub(crate) struct Ledger {
 }
 
 impl Ledger {
+    /// Ledger with `budget` bytes available and nothing reserved.
     pub(crate) fn new(budget: usize) -> Self {
         Self {
             budget,
@@ -48,6 +49,7 @@ impl Ledger {
         }
     }
 
+    /// Total budget in bytes (fixed at construction).
     pub(crate) fn budget(&self) -> usize {
         self.budget
     }

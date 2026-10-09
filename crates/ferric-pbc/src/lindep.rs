@@ -276,6 +276,7 @@ pub enum ExpToDiscardError {
 }
 
 impl fmt::Display for ExpToDiscardError {
+    /// Human-readable message for each variant.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidThreshold(e) => {
@@ -299,6 +300,7 @@ impl fmt::Display for ExpToDiscardError {
 impl std::error::Error for ExpToDiscardError {}
 
 impl From<ExpToDiscardError> for FerricError {
+    /// Wrap as [`FerricError::Basis`] carrying the error's message.
     fn from(e: ExpToDiscardError) -> Self {
         FerricError::Basis(e.to_string())
     }

@@ -103,6 +103,9 @@ struct FtShell {
     off: usize,
 }
 
+/// Per-shell data of `prep` with `prim_norm` folded into the coefficients. Errors if the basis
+/// atoms are not on the cell's atoms (within 1e-10 Bohr), or on an unsupported `l`, a pure p shell,
+/// malformed exponents, or a function count that disagrees with libint2.
 fn build_shells(cell: &Cell, prep: &PreparedBasis) -> Result<Vec<FtShell>, FerricError> {
     // The lattice images are generated from the cell's atoms, so the basis
     // must sit on exactly those atoms.
@@ -200,6 +203,7 @@ pub fn pair_ft_bytes_per_g(nao: usize, lmax: usize) -> usize {
         + c * 2 * ncart * ncart // cart + pure half-transform
 }
 
+/// Rejects `thresh` outside `(0, 1)` and any non-finite component of `gvecs`.
 fn validate_inputs(gvecs: &[[f64; 3]], thresh: f64) -> Result<(), FerricError> {
     if !(f64::MIN_POSITIVE..1.0).contains(&thresh) {
         return Err(FerricError::General(format!(
@@ -212,6 +216,7 @@ fn validate_inputs(gvecs: &[[f64; 3]], thresh: f64) -> Result<(), FerricError> {
     Ok(())
 }
 
+/// Largest `|G|` (Bohr⁻¹) of `gvecs`; `0` for an empty set.
 fn max_gnorm(gvecs: &[[f64; 3]]) -> f64 {
     gvecs
         .iter()
@@ -220,6 +225,7 @@ fn max_gnorm(gvecs: &[[f64; 3]]) -> f64 {
         .sqrt()
 }
 
+/// Largest shell angular momentum of `prep` (`0` for an empty basis).
 fn basis_lmax(prep: &PreparedBasis) -> usize {
     prep.located_shells()
         .iter()

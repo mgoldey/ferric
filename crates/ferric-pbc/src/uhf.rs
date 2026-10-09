@@ -118,6 +118,7 @@ pub struct GammaUhfConfig {
 }
 
 impl Default for GammaUhfConfig {
+    /// `exxdiv = Ewald` with a staged start, tight `density_conv = 1e-10`, no SAD guess.
     fn default() -> Self {
         Self {
             exxdiv: ExxDiv::Ewald,
@@ -222,6 +223,8 @@ pub fn spin_square(
 /// Padding eigenvalues from the lindep filter (`1e6` sentinels) are not
 /// counted as virtual levels.
 pub fn spin_gaps(r: &ScfResult, na: usize, nb: usize, madelung_applied: f64) -> SpinGapReport {
+    /// Gap `ε[nocc] − ε[nocc−1]`; `None` if `nocc` is 0, no virtual exists, or the first
+    /// virtual is a padding sentinel.
     fn gap(eps: &[f64], nocc: usize) -> Option<f64> {
         if nocc == 0 || nocc >= eps.len() || eps[nocc] >= 1e5 {
             return None;
@@ -256,6 +259,9 @@ pub fn spin_gaps(r: &ScfResult, na: usize, nb: usize, madelung_applied: f64) -> 
 /// `margin = min_σ gap_σ − shift`; [`SpinGapReport::satisfied`] is the
 /// necessary condition `gap_σ ≥ shift` for every spin.
 pub fn occupation_gaps(r: &ScfResult, s: &Array2<f64>, shift: f64) -> SpinGapReport {
+    /// Occupation-aware gap of one spin from the MOs `c`, energies `eps` and density `d`:
+    /// `min ε(unoccupied) − max ε(occupied)` with `n_i = c_iᵀ S D S c_i > ½` as occupied; padding
+    /// sentinels are skipped and a shape mismatch gives `None`.
     fn gap(c: &Array2<f64>, eps: &[f64], d: &Array2<f64>, s: &Array2<f64>) -> Option<f64> {
         if c.dim() != s.dim() || d.dim() != s.dim() || eps.len() != c.ncols() {
             return None;
@@ -290,6 +296,7 @@ pub fn occupation_gaps(r: &ScfResult, s: &Array2<f64>, shift: f64) -> SpinGapRep
     }
 }
 
+/// J and K builders over the chosen integrals; K carries the Madelung shift `madelung`.
 pub(crate) fn builders(
     ints: GammaUhfIntegrals<'_>,
     madelung: f64,
