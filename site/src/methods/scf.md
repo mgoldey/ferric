@@ -312,8 +312,10 @@ Butane, one thread; TZ is def2-TZVP (184 functions), QZ is def2-QZVP (528).
 | RI-JK | — | not measured on these systems |
 
 **Start with density fitting** whenever its three-index tensor fits in memory
-(`n_aux × n_bf² × 8` bytes: 1 GB for butane/QZVP, 7 GB for octane/QZVP). It
-spills to disk when it does not. It is two to three orders of magnitude faster
+(`n_aux × n_bf² × 8` bytes: 1 GB for butane/QZVP, 7 GB for octane/QZVP; half
+that when stored as the packed symmetric triangle). When it does not fit, it is
+spilled to disk or recomputed each iteration, whichever a measurement on the
+machine says is cheaper (`[scf] jk_storage`). It is two to three orders of magnitude faster
 per build than anything else here. Its error is a fitting error, not zero, and
 it grows with system size.
 
@@ -379,7 +381,7 @@ and 2.7e-6 at 590. ferric's COSX follows the same path at 75 radial shells:
 -3.4e-5 at 302, -5.6e-6 at 434 and +1.8e-6 at 590, for 1.8x and 2.2x the
 302-point wall time. Reaction energies cancel
 most of the error (0.02 kcal/mol on an isodesmic alkane reaction at the flat
-(50,110) grid); absolute energies do not. Four knobs, all optional:
+(50,110) grid); absolute energies do not. The knobs, all optional:
 
 - `cosx_grid = { radial = 35, angular = 194, prune = "sgx" }` is the default;
   `{ radial = 50, angular = 110 }` is the flat grid. The angular order
@@ -399,6 +401,16 @@ most of the error (0.02 kcal/mol on an isodesmic alkane reaction at the flat
   self-consistent, but it lands within 1.5e-7 Ha of an SCF converged on the
   final grid (table below). It is energy-only: gradients and geometry tasks
   run without it.
+- `cosx_grid_schedule = false` (default). `true` runs the early SCF
+  iterations on a coarse pruned `{ radial = 25, angular = 110, prune = "sgx" }`
+  grid and switches to `cosx_grid` once the largest density-matrix change
+  between iterations drops below 1e-3, restarting DIIS at the switch.
+  Convergence is only accepted after a full iteration on `cosx_grid`, so the
+  converged energy is the `cosx_grid` energy; the final pass is unchanged.
+  On water/cc-pVDZ the coarse grid has 4062 points against 10866, and the
+  scheduled SCF reaches the unscheduled energy to 1e-13 Ha in 15 iterations
+  (8 coarse, 7 on `cosx_grid`) against 12. Its wall time has not been
+  measured. RHF/UHF and their Kohn–Sham variants; ROHF refuses it.
 - `cosx_overlap_fit = true` (default) applies the Izsák–Neese overlap
   correction. At the default grid it helps; on coarser grids it makes things
   *worse*, and its benefit is strongly molecule-dependent — large on water,

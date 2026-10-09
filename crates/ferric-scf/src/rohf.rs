@@ -543,6 +543,7 @@ pub fn solve_rohf_best_effort(
     )?;
     let pluggable_k_kind =
         crate::fock_assembly::narrow_k_builder_to_supported(pluggable_k_kind, need_k, k_mix.omega);
+    crate::cosx_schedule::refuse(pluggable_k_kind, &config.cosx, "ROHF/ROKS")?;
     if pluggable_k_kind == Some("cosx") && config.cosx.final_grid.is_some() {
         // The COSX final-grid pass is implemented for RHF/RKS and UHF/UKS
         // only. An explicit request is refused; the default one is skipped,
@@ -941,6 +942,7 @@ pub fn solve_rohf_best_effort(
                 df_jk: df_jk_route.clone(),
                 rohf_spin_focks: spin_focks_last.clone(),
                 cosx_final: None,
+                cosx_schedule: None,
             };
             // Swap witness (F6): returned now, or held while its best
             // single-swap neighbours are evaluated on the next passes.
@@ -1179,6 +1181,7 @@ pub fn solve_rohf_best_effort(
         df_jk: df_jk_route,
         rohf_spin_focks: spin_focks_last,
         cosx_final: None,
+        cosx_schedule: None,
     })
 }
 

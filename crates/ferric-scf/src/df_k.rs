@@ -103,6 +103,10 @@ pub struct DfK<'a> {
     /// The memory budget this source was built under — also caps the K
     /// reduction band scratch via `resolve_band_bytes`.
     budget_bytes: usize,
+    /// Device-resident copy state (feature `gpu`); `Untried` until the first
+    /// occupied-path build asks for it. See `crate::df_k_gpu`.
+    #[cfg(feature = "gpu")]
+    device: crate::df_k_gpu::DeviceSlot,
 }
 
 impl<'a> std::fmt::Debug for DfK<'a> {
@@ -255,18 +259,41 @@ impl<'a> DfK<'a> {
         } else {
             ThreeIndexSource::build_dressed_band(raw, &v_inv_sqrt, budget_bytes, p0, p1)?
         };
-        // The caller owns `raw`; DfK retains only the dressed tensor.
+        // The caller owns `raw`; DfK retains only the dressed tensor. Dressing
+        // is the one streaming pass over `raw`; a packed `raw` that moves on
+        // into DfJ must not keep its unpacked scratch block for the whole SCF.
+        raw.release_scratch();
 
         let ctx = ctx.filter(|c| c.size > 1);
         Ok(DfK {
             dressed,
             ctx,
             budget_bytes,
+            #[cfg(feature = "gpu")]
+            device: crate::df_k_gpu::DeviceSlot::default(),
         })
     }
 }
 
 impl DfK<'_> {
+    /// Device bytes this builder's resident tensor needs under `gpu = on`: the
+    /// dressed band plus the K accumulator when the dressed tensor is in core, 0
+    /// when it is spilled or recomputed (the device path declines it).
+    #[cfg(feature = "gpu")]
+    pub fn device_footprint_bytes(&self) -> usize {
+        if !self.dressed.is_incore() {
+            return 0;
+        }
+        crate::df_k_gpu::resident_bytes(self.dressed.band_naux(), self.dressed.nao()).unwrap_or(0)
+    }
+
+    /// The in-core dressed band as `(band_naux × n²)`; `None` when spilled. Test hook.
+    #[cfg(feature = "gpu")]
+    #[doc(hidden)]
+    pub fn dressed_incore_flat_for_test(&self) -> Option<ndarray::ArrayView2<'_, f64>> {
+        self.dressed.incore_flat()
+    }
+
     /// Density-based exchange contraction (O(naux·n³)); see [`KBuilder::build`].
     /// Kept as an inherent method so both the trait `build` and the C_occ-based
     /// `build_from_occ` share one struct-level definition.
@@ -405,6 +432,17 @@ impl DfK<'_> {
         // below are well-defined at nocc = 0 but do no work; short-circuit to
         // avoid a zero-width reshape edge case.
         if nocc == 0 {
+            self.reduce_k_across_ranks(k);
+            return Ok(0);
+        }
+
+        // Device-resident path (opt-in `gpu` feature, `[gpu] mode` != off). Placed AFTER
+        // the FERRIC_DFK_FORCE_DENSITY and nocc == 0 shortcuts so the test switch and the
+        // empty channel never reach the card. `true` = K written; the cross-rank
+        // reduction below is shared with the CPU path.
+        #[cfg(feature = "gpu")]
+        if crate::df_k_gpu::try_build_from_occ(&mut self.device, &self.dressed, self.ctx, c_occ, k)
+        {
             self.reduce_k_across_ranks(k);
             return Ok(0);
         }
@@ -596,6 +634,37 @@ mod tests {
     use ferric_core::basis;
     use ferric_core::mol::Molecule;
     use ferric_core::parallel::ParallelContext;
+
+    /// Dressing is the one streaming pass over a shared packed `raw`; the
+    /// unpacked scratch block it allocated must be gone once `from_full_raw`
+    /// returns, since `raw` then lives on inside DfJ for the whole SCF.
+    #[test]
+    fn dressing_a_packed_raw_releases_its_unpack_scratch() {
+        let mol = Molecule::load_xyz("../../testdata/molecules/alkane_3.xyz").unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("def2-svp").unwrap()).unwrap();
+        let dfbs =
+            PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let (n, naux) = (obs.nbasis(), dfbs.nbasis());
+        let budget = (naux * n * n * 8 + naux * (n * (n + 1) / 2) * 8) / 2;
+        let mut raw = ThreeIndexSource::build(op, &obs, &dfbs, budget).unwrap();
+        assert!(raw.is_packed_incore_for_test(), "must be the packed tier");
+        assert_eq!(raw.scratch_bytes(), 0);
+        let mut probe = ThreeIndexSource::build(op, &obs, &dfbs, budget).unwrap();
+        probe.for_each_block(|_| Ok(())).unwrap();
+        assert!(
+            probe.scratch_bytes() > 0,
+            "a streaming pass allocates scratch"
+        );
+        probe.release_scratch();
+        assert_eq!(probe.scratch_bytes(), 0);
+        DfK::from_full_raw(&mut raw, &obs, &dfbs, op, budget, None).unwrap();
+        assert_eq!(
+            raw.scratch_bytes(),
+            0,
+            "dressing left the scratch allocated"
+        );
+    }
 
     #[test]
     fn df_k_matches_direct_k_with_jkfit() {

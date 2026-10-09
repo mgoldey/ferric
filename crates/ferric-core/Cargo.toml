@@ -15,10 +15,18 @@ ndarray = { workspace = true }
 rayon = { workspace = true }
 lapack-sys = { workspace = true }
 mpi = { workspace = true, optional = true }
+cudarc = { workspace = true, optional = true }
+libloading = { workspace = true, optional = true }
 
 [features]
 default = []
 mpi = ["dep:mpi"]
+# CUDA backend. Compiles and runs (reporting `Unavailable`) on a machine with
+# no driver or toolkit; see src/gpu/mod.rs.
+gpu = ["dep:cudarc", "dep:libloading"]
+# Fault-injection and mutation statics for the device tests (FORCE_KERNEL_FAILURE).
+# Never enabled by a shipped build.
+test-seams = ["gpu"]
 
 [dev-dependencies]
 serde_json = { workspace = true }

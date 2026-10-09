@@ -83,15 +83,18 @@ Read by every kind, because every kind runs an SCF first.
 | `soscf` | bool | `false` | | Enables the second-order (Newton) step in the SCF tail. |
 | `integral_thresh` | float | `1e-12` | | Integral screening threshold. |
 | `eri_precision` | float | `1e-20` | `0` to `1e-8` | libint primitive-screening precision for the SCF J/K integrals. Omitted: `FERRIC_ERI_PRECISION` if set, else `1e-20`. `1e-14` costs up to 6e-9 Ha in E_J for atoms past Ne; `0` disables primitive screening (1.8–5.7× slower per J/K build). |
+| `jk_storage` | string | `"auto"` | `auto` `memory` `disk` `direct` | Where the raw RI-J/K three-index tensor lives. `auto` keeps it in memory when `n_aux × n_bf² × 8` bytes fit `[memory] budget_gb` and the shared memory pool, keeps the packed symmetric half (`n_aux × n_bf(n_bf+1)/2 × 8` bytes plus 64 unpacked aux rows of scratch) when only that fits, and otherwise measures this machine (an untimed warm-up block, four timed integral blocks, and a cold write and read of up to 64 MiB in the spill directory) and picks the cheaper of `disk` and `direct` for a 30-pass SCF. A spill directory without room for the packed tensor plus headroom rules `disk` out. `memory` is an error when even the packed half does not fit. `disk` always spills to `$TMPDIR`. `direct` recomputes each block per pass and writes nothing. Omitted: `FERRIC_JK_STORAGE` if set; an invalid value in either place is an error. J from the packed, spilled and recomputed tensors is bit-identical (all three are consumed through the same packed block stream); the unpacked in-core J differs from them in the last bits (summation order, about 1e-12 Ha in the energy). This holds for J only: K and the other consumers of the tensor (the DF-K dressing follows the tensor's own block order, and the packed tier's aux block size differs from the spill file's) can differ between tiers at the level of summation order. The tier chosen by `auto` depends on the budget (default 0.8 × available RAM) and on the free bytes in the shared memory pool, so the same input can pick a different tier on a busier machine or with a different budget; set `memory`, `disk` or `direct` to pin it. Applies to the RI-J tensor, and to the RI-K tensor when both use the same auxiliary basis on one rank; the RI-K dressed tensor follows `[memory] budget_gb`. |
 | `screening` | string | `"schwarz"` | `schwarz` `csb` `csam` | `csb` is rigorous and never looser than `schwarz`. `csam` is not a bound. It is refused for erfc (short-range) operators. See [SCF: screening](../methods/scf.md). |
 | `k_builder` | string | `"direct"` | `direct` `link` `cosx` | Exchange builder. `cosx` with RI-J active (named, or the Kohn-Sham default) is RIJCOSX: J from RI-J, K from COSX, and the RI-K default is not applied; `cosx` next to an explicitly named `df_k_aux` is an error. `link` is ignored with a warning when DF-J/DF-K is active. Both are ignored with a warning for functionals with no exact exchange and for range-separated functionals. See [SCF: choosing how exchange is built](../methods/scf.md). |
 | `cosx_grid` | inline table | `{ radial = 35, angular = 194, prune = "sgx" }` | `angular` ∈ 6/14/26/50/110/194/302/434/590; `prune` ∈ `none` `sgx` `nwchem` | The COSX SCF grid. A table without `prune` is flat; with `prune = "sgx"`, `angular` is the peak order of the pruned rows (50/110/194/302/434/590). Only with `k_builder = "cosx"`; otherwise it is an error. The inner table is strict. |
 | `cosx_final_pass` | bool | `true` | | Re-evaluate exchange once on a larger grid at the converged density and report that energy (the SCF-grid energy is printed and logged too). Without `cosx_final_grid` the grid is `{ radial = 50, angular = 302, prune = "sgx" }`. Gradient tasks run without it; ROHF/ROKS skips it with a note (an explicit `true` there is an error). Only with `cosx`. |
 | `cosx_final_grid` | inline table | none | as `cosx_grid` | The final-pass grid; setting it turns the pass on (`cosx_final_pass = false` with it is an error). RHF/RKS and UHF/UKS only. Only with `cosx`. |
 | `cosx_overlap_fit` | bool | `true` | | Only with `cosx`; otherwise it is an error. |
+| `cosx_grid_schedule` | bool | `false` | | Run the first SCF iterations on a coarse pruned `sgx` (25,110) exchange grid and switch to `cosx_grid` once the largest density change falls below 1e-3. Convergence is accepted only on the production grid, DIIS restarts at the switch, and the final-grid pass is unchanged. RHF/RKS and UHF/UKS; ROHF/ROKS refuse it. Only with `cosx`; setting it otherwise is an error. |
 | `cosx_backend` | string | `"md3c1e"` | `md3c1e` `cosx-a` | Only with `cosx`; otherwise it is an error. `cosx-a` is the slower cross-check kernel. |
 | `cosx_screen_thresh` | float | `1e-7` | ≥ 0 | Only with `cosx` and `md3c1e`. `0` disables the screen. |
 | `cosx_half_transform` | string | `"sparse"` | `sparse` `dense` | Only with `cosx`. |
+| `cosx_fp64_multiplier` | float | `1e5` with `[gpu] precision = "mixed"` and `cosx-kern` in `mixed_kernels`, else `0` | ≥ 0 | Precision-router threshold: `tau = cosx_fp64_multiplier × cosx_screen_thresh`. A kept (shell pair, sub-batch) unit whose Hölder K bound is below `tau` is counted as f32-eligible; the exchange matrix is unchanged (every unit is still computed in f64), so the key only changes the `route_*` counters. Setting it requires `k_builder = "cosx"`, `[gpu] precision = "mixed"` and `cosx-kern` in `mixed_kernels`, and `cosx-kern` is not in the shipped kernel set, so in this build setting the key is always an error; a value above `0` also needs `md3c1e` and `cosx_screen_thresh > 0`. `1e5` is the multiplier recommended by Laqua, Kussmann and Ochsenfeld, J. Chem. Phys. 154, 214116 (2021). |
 | `df_j_aux` | string | none; `def2-universal-jkfit` for `ksdft`, `pdep-rpa`, `rs-mp2-rpa`, `gw`, `bse-tda`, `tdhf-static-polarizability`, `tda`, `tddft` | aux basis name, or `""` | RI-J. With neither key set, `rhf`/`uhf`/`rohf` use exact 4-index J/K. `df_j_aux = ""` selects exact J for the kinds that default to RI-J (the `SCF J/K` log line then reads `RI-JK via` with a blank name). Unlike Python's `run_dft`, the CLI does not accept `"exact"`, `"none"` or `"off"`: any non-empty value is looked up as a basis name, and an unknown one fails the SCF. |
 | `df_k_aux` | string | as `df_j_aux` | aux basis name, or `""` | RI-K. Use a JK-fit set. `""` selects exact K. |
 | `level_shift` | float | `0.0` | Hartree | Virtual-block shift. Left at 0 with a meta-GGA functional, the library applies 0.5. |
@@ -299,6 +302,42 @@ Read when `task = "frequencies"`.
 |---|---|---|---|---|
 | `budget_gb` | float | auto | finite and > 0 | Precedence: this key, then `FERRIC_MEM_BUDGET_GB`, then the legacy `FERRIC_OOC_BUDGET_GB`/`FERRIC_ERI3_BUDGET_GB`, then 0.8 × available RAM, then 2 GiB. A value of 0, a negative value or NaN is an error; omit the key for auto. It bounds the ledgered allocations, not total process memory. |
 | `three_index_budget_gb` | float | — | | Deprecated alias. `budget_gb` wins if both are set. |
+
+## `[gpu]`
+
+Optional CUDA backend. A default build has no GPU code: there `mode = "on"` is an error and `mode = "auto"` prints a notice and runs on the CPU. A GPU run is deterministic run to run on one device but is not bit-identical to the CPU run (a different summation order, like `FERRIC_BLAS_THREADS` above 1).
+
+| Key | Type | Default | Constraint | Meaning |
+|---|---|---|---|---|
+| `preset` | string | `"off"` | `off`, `auto`, `on`, `mixed`, `auto-mixed` | One word that sets `mode` and `precision` together; see the presets table below. The root-level key `gpu = "mixed"` is the same as `[gpu] preset = "mixed"` (a file cannot hold both a root `gpu` string and a `[gpu]` table). A `mode`, `precision` or `mixed_kernels` key, or its env var, that disagrees with the preset is an error naming both; one that agrees is kept. `device`, `memory_gb` and `min_flops` combine with any preset. Env: `FERRIC_GPU_PRESET`. |
+| `mode` | string | `"off"` | `off`, `auto`, `on` | `auto` uses a device when one is usable and otherwise prints a notice and runs on the CPU; `on` makes an unusable device an error. Env: `FERRIC_GPU`. |
+| `device` | integer | 0 | a CUDA ordinal | Which device to use. Env: `FERRIC_GPU_DEVICE`. |
+| `memory_gb` | float | 0.8 x free | finite and > 0 | Device-memory pool (decimal GB). A GEMM that does not fit runs on the CPU. Env: `FERRIC_GPU_MEM_GB`. |
+| `min_flops` | integer | 549755813888 | | Smallest `2*m*n*k` that an f64 `einsum!` matrix product sends to the device; the default is the rounded-up value of a crossover rule applied to products up to 6144³: the device does not clearly beat 6 CPU cores on a single f64 product at any shape measured (at best a 2-8% median win at 6144³ in two of three runs, a loss in the contested run, and at 4096³ and below the CPU won). Products of 2^39 FLOP or more go to the device, and that region is unmeasured. The device RI-MP2 energy does not consult it. Env: `FERRIC_GPU_MIN_FLOPS`. |
+| `precision` | string | `"f64"` | `f64`, `mixed` | `mixed` runs the kernels in `mixed_kernels` with f32 storage and f32 panels accumulated in f64; every other contraction stays f64. Requires `mode` `auto` or `on`. A mixed result is not an f64 result: its error is bounded, measured and documented on the [validation page](validation.md), not validated against a reference code. Env: `FERRIC_GPU_PRECISION`. |
+| `mixed_kernels` | string array | the kernels this build ships | `rimp2-energy`, `ccsd-amplitudes`, `dfk-occ`, `dfj-pack` | Which kernels may run in mixed precision; requires `precision = "mixed"`. This build ships `rimp2-energy`: with `precision = "mixed"` the device RI-MP2 energy keeps `B_ov` as f32 and accumulates its panels in f64 (the default `precision` stays `"f64"`, so shipping the kernel changes nothing until you ask). `rimp2-energy` covers the RI-MP2 energy under the Coulomb, erfc and terfc operators, closed-shell and unrestricted (open-shell, one f32 `B_ov` per spin); the erf operator, composite fitted operators, SR-MP2 in RS-MP2+RPA, OO-MP2 and kappa-regularised runs use the f64 device kernel. `dfj-pack` (the device RI-J with the packed raw 3-index tensor resident as f32, f64 accumulation) is named in this build but not shipped. Naming a kernel this build does not ship yet is an error, and a build that ships no mixed kernel refuses `precision = "mixed"` ("no mixed-precision kernel is available in this build"). Kernels that are not names here (SCF diagonalisation, DIIS, metric inverses, GW, grids) never run below f64. Env: `FERRIC_GPU_MIXED_KERNELS` (comma-separated). |
+
+```toml
+gpu = "mixed"   # same as [gpu] preset = "mixed": device on, mixed precision for every shipped kernel
+```
+
+### GPU presets
+
+A preset fills in every knob below that is not given; the filled-in knobs print with `[source: preset]` in the audit lines.
+
+| Preset | `mode` | `precision` | `mixed_kernels` |
+|---|---|---|---|
+| `off` | `off` | `f64` | the build default |
+| `auto` | `auto` | `f64` | the build default |
+| `on` | `on` | `f64` | the build default |
+| `mixed` | `on` | `mixed` | every kernel this build ships (`rimp2-energy`: the Coulomb, erfc and terfc RI-MP2 energy, closed-shell and unrestricted) |
+| `auto-mixed` | `auto` | `mixed` | every kernel this build ships (`rimp2-energy`: the Coulomb, erfc and terfc RI-MP2 energy, closed-shell and unrestricted) |
+
+`preset = "off"` is the same as no `[gpu]` key. A narrower `mixed_kernels` list is allowed under `mixed` and `auto-mixed`; naming a kernel the build does not ship is an error. Precedence for the preset itself: the command-line flag `ferric --gpu <preset> input.toml` (or `--gpu=<preset>`), then `[gpu] preset` or the root `gpu` key, then `FERRIC_GPU_PRESET`, then `off`. The flag labels its audit line `[source: command line]`; a `mode`, `precision` or `mixed_kernels` key or env var that disagrees with the flag is an error naming both, and `--gpu` given twice, without a value or with an unknown name is refused (exit code 2).
+
+```
+ferric --gpu mixed input.toml
+```
 
 ## `[output]`
 

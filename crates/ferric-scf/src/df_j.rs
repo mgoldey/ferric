@@ -80,6 +80,15 @@ pub struct DfJ<'a> {
     /// The memory budget this source was built under — also caps the pass-2
     /// reduction band scratch via `resolve_band_bytes`.
     budget_bytes: usize,
+    /// Device-resident copy state (feature `gpu`); `Untried` until the first
+    /// build asks for it. See `crate::df_j_gpu`.
+    #[cfg(feature = "gpu")]
+    device: crate::df_j_gpu::DeviceSlot,
+    /// Device bytes the same SCF's DF-K will want (0 = none): the J upload leaves
+    /// that much of the pool free, so the larger K tensor is not locked out by
+    /// the J build that runs first each iteration.
+    #[cfg(feature = "gpu")]
+    k_reserve_bytes: usize,
 }
 
 impl<'a> std::fmt::Debug for DfJ<'a> {
@@ -122,6 +131,26 @@ impl<'a> DfJ<'a> {
             None => (0, naux),
         };
         let source = ThreeIndexSource::build_band(op, obs, dfbs, budget_bytes, p0, p1)?;
+        Self::from_source(source, op, dfbs, budget_bytes, ctx)
+    }
+
+    /// Same as [`DfJ::new_banded`] but places the raw tensor by the effective
+    /// `[scf] jk_storage` policy (memory, disk spill or recompute), which
+    /// needs the molecule to re-prepare the bases for the recompute backend.
+    pub fn new_for_jk(
+        op: Operator,
+        mol: &ferric_core::mol::Molecule,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        budget_bytes: usize,
+        ctx: Option<&'a ParallelContext>,
+    ) -> Result<Self, FerricError> {
+        let naux = dfbs.nbasis();
+        let band = match ctx {
+            Some(c) => c.aux_band(naux),
+            None => (0, naux),
+        };
+        let source = ThreeIndexSource::build_for_jk(op, mol, obs, dfbs, budget_bytes, band)?;
         Self::from_source(source, op, dfbs, budget_bytes, ctx)
     }
 
@@ -170,7 +199,42 @@ impl<'a> DfJ<'a> {
             v_chol,
             ctx,
             budget_bytes,
+            #[cfg(feature = "gpu")]
+            device: crate::df_j_gpu::DeviceSlot::default(),
+            #[cfg(feature = "gpu")]
+            k_reserve_bytes: 0,
         })
+    }
+
+    /// Leave `bytes` of the device pool free when the RI-J tensor is uploaded
+    /// (the DF-K footprint of the same SCF, see
+    /// [`DfK::device_footprint_bytes`](crate::df_k::DfK::device_footprint_bytes)).
+    /// If J and K together do not fit, J stays on the CPU and K gets the card.
+    #[cfg(feature = "gpu")]
+    pub fn reserve_device_for_k(&mut self, bytes: usize) {
+        self.k_reserve_bytes = bytes;
+    }
+
+    /// The raw packed band as `(naux, n(n+1)/2)`; `None` unless the packed
+    /// in-core tier. Test hook.
+    #[cfg(feature = "gpu")]
+    #[doc(hidden)]
+    pub fn packed_incore_for_test(&self) -> Option<ndarray::ArrayView2<'_, f64>> {
+        self.source.packed_flat()
+    }
+
+    /// `V⁻¹ d` through the stored Cholesky factor (the solve `build` uses). Test hook.
+    #[cfg(feature = "gpu")]
+    #[doc(hidden)]
+    pub fn solve_metric_for_test(&self, d_p: &Array1<f64>) -> Result<Array1<f64>, FerricError> {
+        self.solve_metric(d_p)
+    }
+
+    /// Does this builder currently hold its raw tensor on the device? Test hook.
+    #[cfg(feature = "gpu")]
+    #[doc(hidden)]
+    pub fn device_resident_for_test(&self) -> bool {
+        matches!(self.device, crate::df_j_gpu::DeviceSlot::Ready(_))
     }
 }
 
@@ -192,8 +256,173 @@ fn chunk_width(n: usize) -> usize {
     (4096 / n.max(1)).clamp(4, 64)
 }
 
+/// Weights `w` such that `Σ_{μν} B[μν] D[μν] = Σ_k Bp[k] w[k]` for any
+/// μν-symmetric `B` stored as its packed lower triangle `Bp` in `(μ, ν≤μ)`
+/// row-major order: `w[μμ] = D[μμ]` and `w[μν] = D[μν] + D[νμ]` off the
+/// diagonal. This is the symmetrised density `(D + Dᵀ)/2` with the off-diagonal
+/// doubled, written without the intermediate halving, so a non-symmetric `D`
+/// gives exactly the contraction the unpacked path computes.
+pub(crate) fn packed_density_weights(d: &Array2<f64>, n: usize) -> Array1<f64> {
+    let mut w = Array1::<f64>::zeros(n * (n + 1) / 2);
+    let mut k = 0usize;
+    for mu in 0..n {
+        for nu in 0..mu {
+            w[k] = d[(mu, nu)] + d[(nu, mu)];
+            k += 1;
+        }
+        w[k] = d[(mu, mu)];
+        k += 1;
+    }
+    w
+}
+
+/// Expand a packed lower triangle into the full symmetric matrix `j`.
+pub(crate) fn unpack_symmetric(packed: &[f64], n: usize, j: &mut Array2<f64>) {
+    let mut k = 0usize;
+    for mu in 0..n {
+        for nu in 0..=mu {
+            j[(mu, nu)] = packed[k];
+            j[(nu, mu)] = packed[k];
+            k += 1;
+        }
+    }
+}
+
+impl DfJ<'_> {
+    /// Two-pass J over the packed in-core tensor.
+    ///
+    /// Same structure and determinism as the unpacked path (pass 1: disjoint
+    /// per-chunk GEMV slices of `d_P`; pass 2: `grouped_deterministic_sum` over
+    /// the same fixed chunks) but every GEMV runs over `n(n+1)/2` columns, so
+    /// the resident tensor and the per-iteration bytes are half. Chunk edges
+    /// depend only on the band height and `n`, never on the thread count.
+    ///
+    /// The result equals the unpacked path to summation-order rounding: the
+    /// packed dot product adds each off-diagonal pair `B[μν] (D[μν] + D[νμ])`
+    /// where the unpacked one adds `B[μν] D[μν] + B[νμ] D[νμ]`.
+    fn build_packed(&mut self, d: &Array2<f64>, j: &mut Array2<f64>) -> Result<(), FerricError> {
+        let naux = self.source.naux();
+        let n = self.source.nao();
+        let chunk = chunk_width(n);
+        let w = packed_density_weights(d, n);
+        let pair = n * (n + 1) / 2;
+
+        let mut d_p = Array1::<f64>::zeros(naux);
+        self.source.for_each_packed_block(chunk, |blk| {
+            let b = blk.data.nrows();
+            let parts: Vec<Array1<f64>> = (0..b.div_ceil(chunk))
+                .into_par_iter()
+                .map(|ci| {
+                    let q0 = ci * chunk;
+                    let q1 = (q0 + chunk).min(b);
+                    blk.data.slice(ndarray::s![q0..q1, ..]).dot(&w)
+                })
+                .collect();
+            for (ci, part) in parts.iter().enumerate() {
+                let q0 = blk.p0 + ci * chunk;
+                d_p.slice_mut(ndarray::s![q0..q0 + part.len()]).assign(part);
+            }
+            Ok(())
+        })?;
+        self.reduce_d_p(&mut d_p);
+        let c_p = self.solve_metric(&d_p)?;
+
+        let mut acc = Array2::<f64>::zeros((1, pair));
+        let band_bytes = crate::reduce::resolve_band_bytes(self.budget_bytes);
+        self.source.for_each_packed_block(chunk, |blk| {
+            let b = blk.data.nrows();
+            crate::reduce::grouped_deterministic_sum(
+                &mut acc,
+                b.div_ceil(chunk),
+                n,
+                band_bytes,
+                |ci| -> Result<Array2<f64>, FerricError> {
+                    let q0 = ci * chunk;
+                    let q1 = (q0 + chunk).min(b);
+                    let sub = blk.data.slice(ndarray::s![q0..q1, ..]);
+                    let c_sub = c_p.slice(ndarray::s![blk.p0 + q0..blk.p0 + q1]);
+                    sub.t()
+                        .dot(&c_sub)
+                        .into_shape_with_order((1, pair))
+                        .map_err(|e| FerricError::General(format!("contrib reshape: {e}")))
+                },
+            )
+        })?;
+        let acc_flat = acc
+            .as_slice()
+            .ok_or_else(|| FerricError::General("packed J accumulator not contiguous".into()))?;
+        unpack_symmetric(acc_flat, n, j);
+        Ok(())
+    }
+
+    /// MPI: sum the per-rank partial `d_P` (disjoint bands, zero elsewhere) so
+    /// every rank holds the FULL `d_P` before the global V^{-1} coupling.
+    fn reduce_d_p(&self, d_p: &mut Array1<f64>) {
+        #[cfg(feature = "mpi")]
+        if let Some(ctx) = self.ctx {
+            use mpi::traits::CommunicatorCollectives;
+            if let Some(world) = ctx.world() {
+                let mut d_p_global = Array1::<f64>::zeros(d_p.len());
+                world.all_reduce_into(
+                    d_p.as_slice().unwrap(),
+                    d_p_global.as_slice_mut().unwrap(),
+                    mpi::collective::SystemOperation::sum(),
+                );
+                *d_p = d_p_global;
+            }
+        }
+        #[cfg(not(feature = "mpi"))]
+        let _ = d_p;
+    }
+
+    /// MPI: sum the per-rank partial J matrices into the full J on every rank.
+    fn reduce_j(&self, j: &mut Array2<f64>) {
+        #[cfg(feature = "mpi")]
+        if let Some(ctx) = self.ctx {
+            use mpi::traits::CommunicatorCollectives;
+            if let Some(world) = ctx.world() {
+                let mut j_global = Array2::<f64>::zeros(j.dim());
+                world.all_reduce_into(
+                    j.as_slice().unwrap(),
+                    j_global.as_slice_mut().unwrap(),
+                    mpi::collective::SystemOperation::sum(),
+                );
+                *j = j_global;
+            }
+        }
+        #[cfg(not(feature = "mpi"))]
+        let _ = j;
+    }
+}
+
 impl JBuilder for DfJ<'_> {
     fn build(&mut self, d: &Array2<f64>, j: &mut Array2<f64>) -> Result<usize, FerricError> {
+        // Device-resident path (opt-in `gpu` feature, `[gpu] mode` != off). It
+        // declines to the host path below for every reason it cannot run.
+        #[cfg(feature = "gpu")]
+        {
+            let v_chol = &self.v_chol;
+            let solve = |d_p: &Array1<f64>| {
+                v_chol
+                    .solvec(d_p)
+                    .map_err(|e| FerricError::Lapack(format!("DF-J metric solve failed: {e}")))
+            };
+            if crate::df_j_gpu::try_build(
+                &mut self.device,
+                &mut self.source,
+                (self.ctx, self.k_reserve_bytes),
+                d,
+                j,
+                solve,
+            )? {
+                return Ok(0);
+            }
+        }
+        if self.source.supports_packed_stream() {
+            self.build_packed(d, j)?;
+            self.reduce_j(j);
+            return Ok(0);
+        }
         let naux = self.source.naux();
         let n = self.source.nao();
         let chunk = chunk_width(n);
@@ -233,22 +462,7 @@ impl JBuilder for DfJ<'_> {
             Ok(())
         })?;
 
-        // MPI: this rank filled only its aux band of `d_P` (disjoint bands across
-        // ranks, zero elsewhere). Sum the partials so every rank holds the FULL
-        // `d_P` before the global V^{-1} coupling. Cheap: a naux-vector reduce.
-        #[cfg(feature = "mpi")]
-        if let Some(ctx) = self.ctx {
-            use mpi::traits::CommunicatorCollectives;
-            if let Some(world) = ctx.world() {
-                let mut d_p_global = ndarray::Array1::<f64>::zeros(naux);
-                world.all_reduce_into(
-                    d_p.as_slice().unwrap(),
-                    d_p_global.as_slice_mut().unwrap(),
-                    mpi::collective::SystemOperation::sum(),
-                );
-                d_p = d_p_global;
-            }
-        }
+        self.reduce_d_p(&mut d_p);
 
         // c_P = V^{-1} d_P by Cholesky solve (full d_P → identical c_P on
         // every rank).
@@ -290,21 +504,7 @@ impl JBuilder for DfJ<'_> {
             Ok(())
         })?;
 
-        // MPI: Pass 2 accumulated only this rank's band contribution to J. Sum
-        // the per-rank partial J matrices → the full J on every rank.
-        #[cfg(feature = "mpi")]
-        if let Some(ctx) = self.ctx {
-            use mpi::traits::CommunicatorCollectives;
-            if let Some(world) = ctx.world() {
-                let mut j_global = Array2::<f64>::zeros(j.dim());
-                world.all_reduce_into(
-                    j.as_slice().unwrap(),
-                    j_global.as_slice_mut().unwrap(),
-                    mpi::collective::SystemOperation::sum(),
-                );
-                *j = j_global;
-            }
-        }
+        self.reduce_j(j);
 
         Ok(0)
     }
@@ -460,6 +660,181 @@ mod tests {
             max_diff < 1e-10,
             "chunked DF-J vs naive per-block contraction max diff = {} too large",
             max_diff
+        );
+    }
+
+    /// A zig-zag alkane CnH(2n+2) with approximate geometry; the numbers only
+    /// need to be non-degenerate, not relaxed.
+    fn alkane(nc: usize) -> Molecule {
+        let mut atoms: Vec<(&str, f64, f64, f64)> = Vec::new();
+        for i in 0..nc {
+            let x = 1.27 * i as f64;
+            let y = if i % 2 == 0 { 0.0 } else { 0.5 };
+            atoms.push(("C", x, y, 0.0));
+            let s = if i % 2 == 0 { -1.0 } else { 1.0 };
+            atoms.push(("H", x, y + s * 0.65, 0.9));
+            atoms.push(("H", x, y + s * 0.65, -0.9));
+        }
+        atoms.push(("H", -1.0, 0.0, 0.0));
+        atoms.push((
+            "H",
+            1.27 * (nc - 1) as f64 + 1.0,
+            0.5 * ((nc - 1) % 2) as f64,
+            0.0,
+        ));
+        let mut xyz = format!("{}\nalkane\n", atoms.len());
+        for (e, x, y, z) in atoms {
+            xyz.push_str(&format!("{e} {x} {y} {z}\n"));
+        }
+        Molecule::parse_xyz(&xyz, 0, 1).unwrap()
+    }
+
+    /// A budget that forces the packed in-core tier: above the packed footprint
+    /// plus a scratch row, below the unpacked one.
+    fn packed_tier_budget(obs: &PreparedBasis, dfbs: &PreparedBasis) -> usize {
+        let (n, naux) = (obs.nbasis(), dfbs.nbasis());
+        let unpacked = naux * n * n * 8;
+        let packed = naux * (n * (n + 1) / 2) * 8;
+        (unpacked + packed) / 2
+    }
+
+    fn dense_density(n: usize, symmetric: bool) -> Array2<f64> {
+        let mut d = Array2::<f64>::zeros((n, n));
+        for i in 0..n {
+            for j in 0..n {
+                d[(i, j)] = 0.01 * ((i * 7 + j * 3) % 11) as f64;
+            }
+        }
+        if symmetric {
+            d = 0.5 * (&d + &d.t());
+        }
+        d
+    }
+
+    /// Packed J vs the unpacked in-core J on the same raw tensor.
+    ///
+    /// Tolerance: the two paths differ only in summation order. A dot product
+    /// of m terms of size |B||D| carries a rounding error of at most
+    /// ~m*eps*sum|B||D|; with m = pair ~ 1e3..1e4 and the aux sum on top, that
+    /// bounds the entrywise difference well under 1e-11 for the unit-scale
+    /// densities used here, which `assert_packed_matches` checks relative to
+    /// max|J|.
+    fn assert_packed_matches(mol: &Molecule, orb: &str, aux: &str, symmetric: bool) -> f64 {
+        let obs = PreparedBasis::new(mol, &basis::bundled(orb).unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(mol, &basis::bundled(aux).unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let n = obs.nbasis();
+        let d = dense_density(n, symmetric);
+        let mut j_ref = Array2::zeros((n, n));
+        let mut ref_j = DfJ::new(op, &obs, &dfbs, usize::MAX).unwrap();
+        assert!(ref_j.source.is_incore());
+        ref_j.build(&d, &mut j_ref).unwrap();
+        let mut j_packed = Array2::zeros((n, n));
+        let budget = packed_tier_budget(&obs, &dfbs);
+        let mut pj = DfJ::new(op, &obs, &dfbs, budget).unwrap();
+        assert!(pj.source.is_packed_incore_for_test(), "must be packed tier");
+        pj.build(&d, &mut j_packed).unwrap();
+        let scale = j_ref.iter().fold(1.0_f64, |a, v| a.max(v.abs()));
+        let diff = (&j_packed - &j_ref)
+            .iter()
+            .fold(0.0_f64, |a, v| a.max(v.abs()));
+        assert!(
+            diff < 1e-11 * scale,
+            "packed vs unpacked max|dJ|={diff} scale={scale}"
+        );
+        assert_eq!(j_packed, j_packed.t(), "packed J must be exactly symmetric");
+        diff
+    }
+
+    #[test]
+    fn packed_j_matches_unpacked_propane_symmetric_and_nonsymmetric_density() {
+        let mol = alkane(3);
+        assert_packed_matches(&mol, "def2-svp", "def2-universal-jkfit", true);
+        // The unpacked path contracts the raw D; the symmetric B makes the
+        // antisymmetric part of D drop out of J, which the packed weights
+        // D[μν]+D[νμ] must reproduce.
+        assert_packed_matches(&mol, "def2-svp", "def2-universal-jkfit", false);
+    }
+
+    #[test]
+    fn packed_j_matches_unpacked_c4_and_twenty_atom_alkane() {
+        let d4 = assert_packed_matches(&alkane(4), "def2-svp", "def2-universal-jkfit", true);
+        // C6H14 has 20 atoms.
+        let d6 = assert_packed_matches(&alkane(6), "def2-svp", "def2-universal-jkfit", false);
+        println!("packed vs unpacked max|dJ|: C4 {d4:e}, C6H14 {d6:e}");
+    }
+
+    #[test]
+    fn packed_j_is_bit_identical_across_packed_spilled_and_recompute_sources() {
+        // The packed streaming API hands out blocks whose row counts are
+        // multiples of the chunk width, so the fixed chunks and their ascending
+        // fold are the same for every backend: exact equality, not a tolerance.
+        let mol = alkane(3);
+        let obs = PreparedBasis::new(&mol, &basis::bundled("def2-svp").unwrap()).unwrap();
+        let dfbs =
+            PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let n = obs.nbasis();
+        let d = dense_density(n, false);
+
+        let mut j_packed = Array2::zeros((n, n));
+        let mut pj = DfJ::new(op, &obs, &dfbs, packed_tier_budget(&obs, &dfbs)).unwrap();
+        assert!(pj.source.is_packed_incore_for_test());
+        pj.build(&d, &mut j_packed).unwrap();
+
+        // A budget below the packed footprint forces the spill backend.
+        let tiny = n * n * 8 * 40;
+        let mut j_spill = Array2::zeros((n, n));
+        let mut sj = DfJ::new(op, &obs, &dfbs, tiny).unwrap();
+        assert!(sj.source.is_spilled_for_test());
+        sj.build(&d, &mut j_spill).unwrap();
+        assert_eq!(j_packed, j_spill, "spilled packed J != packed in-core J");
+
+        let src = ferric_integrals::three_index_source::ThreeIndexSource::build_recomputing(
+            op,
+            std::sync::Arc::new(
+                PreparedBasis::new(&mol, &basis::bundled("def2-svp").unwrap()).unwrap(),
+            ),
+            std::sync::Arc::new(
+                PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap(),
+            ),
+            tiny,
+        )
+        .unwrap();
+        assert!(src.is_recompute_for_test());
+        let mut rj = DfJ::from_source(src, op, &dfbs, tiny, None).unwrap();
+        let mut j_re = Array2::zeros((n, n));
+        rj.build(&d, &mut j_re).unwrap();
+        assert_eq!(j_packed, j_re, "recompute packed J != packed in-core J");
+    }
+
+    #[test]
+    fn packed_j_bit_identical_across_worker_counts() {
+        let mol = alkane(3);
+        let obs = PreparedBasis::new(&mol, &basis::bundled("def2-svp").unwrap()).unwrap();
+        let dfbs =
+            PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let n = obs.nbasis();
+        let d = dense_density(n, false);
+        let budget = packed_tier_budget(&obs, &dfbs);
+        let build_j = |threads: usize| -> Array2<f64> {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            pool.install(|| {
+                let mut j = Array2::zeros((n, n));
+                let mut dfj = DfJ::new(op, &obs, &dfbs, budget).unwrap();
+                assert!(dfj.source.is_packed_incore_for_test());
+                dfj.build(&d, &mut j).unwrap();
+                j
+            })
+        };
+        assert_eq!(
+            build_j(1),
+            build_j(4),
+            "packed DfJ must be bit-identical across worker counts"
         );
     }
 

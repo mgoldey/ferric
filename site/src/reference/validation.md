@@ -57,7 +57,7 @@ Open-shell support is listed only where the dispatch code handles it (see
 | `uhf` | [SCF](../methods/scf.md) | UHF; UKS with `[dft] functional` | ✓ | ✓ analytic (+ D3(BJ) or MBD@rsSCS gradient with `[dft] dispersion` on UKS) | analytic (UHF, exact J/K, no ECP, up to f); FD otherwise; with `[dft] dispersion` on UKS, FD of the KS + dispersion gradient | `run_uhf`, `run_frequencies(reference="uhf", xc=..., dispersion=...)` | `h_uhf.toml` | [Proven](#anchors) | — |
 | `rohf` | [SCF](../methods/scf.md) | ROHF; ROKS with `[dft] functional` | ✓ | ✓ analytic (+ D3(BJ) or MBD@rsSCS gradient with `[dft] dispersion` on ROKS) | FD (+ the dispersion gradient with `[dft] dispersion` on ROKS) | `run_rohf`, `run_frequencies(reference="rohf", xc=..., dispersion=...)` | — | [Proven](#anchors) | — |
 | `ksdft` | [SCF/DFT](../methods/scf.md) | RKS; UKS when multiplicity > 1 | ✓ | ✓ analytic (+ D3(BJ) or MBD@rsSCS gradient with `[dft] dispersion`, RKS and UKS) | FD; with `[dft] dispersion` FD of the KS + dispersion gradient (RKS and UKS); refused with `grid_prune` | `run_dft` / `run_ksdft`, `run_frequencies(xc=..., dispersion=...)` | `benzene-dfb3lyp.toml`, `h2-lda-opt.toml` | [Proven](#anchors) | — |
-| `rimp2` | [MP2](../methods/mp2.md) | RHF; UHF + unrestricted RI-MP2 when multiplicity > 1 (energy only) | ✓ | ✓ analytic (Z-vector; closed shell only) | — | `run_rimp2` (UHF + UMP2 when multiplicity > 1) | `water-rimp2.toml`; local: `water-rimp2-local.toml`, `alkane8-rimp2-local-direct.toml` | [Proven](#anchors) | Exact RI-MP2. With `[local] scheme = "amplitude-threshold"` (`run_rimp2(local=..., eps=...)`): [Proven (narrow)](#anchors) by its exact limit — at ε = 0 the in-core and `integral_direct` paths match PySCF DF-MP2 to ≤1.1e-11 Ha (H2O and n-butane, 6-31G and cc-pVDZ); finite ε is a measured error map, not validated; closed shell and `task = "energy"` only; ε = 0 reproduces exact `rimp2`; the exact reference and the error against it are opt-in (`[local] reference = true`, `compute_reference=True`). `integral_direct = true` never forms the global 3-index tensor; its measured scaling is under [Known limits](#known-limits-and-negatives). |
+| `rimp2` | [MP2](../methods/mp2.md) | RHF; UHF + unrestricted RI-MP2 when multiplicity > 1 (energy only) | ✓ | ✓ analytic (Z-vector; closed shell only) | — | `run_rimp2` (UHF + UMP2 when multiplicity > 1) | `water-rimp2.toml`; local: `water-rimp2-local.toml`, `alkane8-rimp2-local-direct.toml` | [Proven](#anchors) | Exact RI-MP2. With `[local] scheme = "amplitude-threshold"` (`run_rimp2(local=..., eps=...)`): [Proven (narrow)](#anchors) by its exact limit — at ε = 0 the in-core and `integral_direct` paths match PySCF DF-MP2 to ≤1.1e-11 Ha (H2O and n-butane, 6-31G and cc-pVDZ); finite ε is a measured error map, not validated; closed shell and `task = "energy"` only; ε = 0 reproduces exact `rimp2`; the exact reference and the error against it are opt-in (`[local] reference = true`, `compute_reference=True`). `integral_direct = true` never forms the global 3-index tensor; its measured scaling is under [Known limits](#known-limits-and-negatives). On the device (`[gpu]`) the energy stage runs with `B_ov` resident: at `precision = "f64"` (the default) it agrees with the CPU path to within a bound on the difference of summation order (`gpu_rimp2_resident.rs`); with `precision = "mixed"` and `rimp2-energy` in `mixed_kernels` it is a **measured error map, not Proven** (f32-resident `B_ov`, f64 accumulation; closed-shell and unrestricted, Coulomb, erfc and terfc operators), graded under [Mixed-precision GPU kernels](#mixed-precision-gpu-kernels). |
 | `mp3` | [MP2](../methods/mp2.md) | RHF | ✓ | — | — | `run_mp3` | `water-mp3.toml` | [Proven](#anchors) | — |
 | `oo-rimp2` | [MP2](../methods/mp2.md) | RHF; UHF + unrestricted OO-RI-MP2 when multiplicity > 1 (energy only) | ✓ | — | — | `run_oo_rimp2` (closed shell only) | `water-oo-rimp2.toml` | [Proven (narrow)](#anchors) | Energy matches an independent numpy OO-RI-MP2 to 7.5e-13 Ha (closed-shell H2O and NH3, UHF CH3 / cc-pVDZ) and the closed-shell analytic gradient matches a finite difference of its own energy to 8e-9 Ha/Bohr. ORCA 6.1.1 stops 3.7e-8 to 7.0e-8 Ha above the same minimum. |
 | `att-rimp2` | [MP2](../methods/mp2.md) | RHF | ✓ | — | — | `run_attenuated_rimp2` | `water-attmp2.toml` | [Proven](#anchors) | — |
@@ -271,6 +271,178 @@ Benchmark sweeps (GW100 and others) are kept in the project's working notes
 and are not reproduced here. Quoting a benchmark statistic from memory rather
 than from the record is the kind of unchecked claim this page exists to
 prevent.
+
+## Mixed-precision GPU kernels
+
+`[gpu] precision = "mixed"` is opt-in (the default is `f64`) and applies only to
+the kernels in `mixed_kernels`. A mixed result is **not Proven**: it is not
+compared with an independent code, and it is not an f64 result. It is graded as
+a **measured error map**: a deterministic bound derived from the operation
+count, and the errors measured against the same run's f64 CPU energy on the
+systems below. Whether that error is acceptable for a given use is not decided
+here.
+
+**`rimp2-energy`** (shipped). `B_ov` is stored on the device as f32 (half the
+bytes of the f64 tensor); each block `G_i = B_iᵀ·B_tail` is formed by f32
+panel products of width b = 64 (the shipped default) summed into an f64
+accumulator; the pair arithmetic, denominators and all sums are f64. A finite
+`B_ov` element beyond the f32 range, or one above sqrt(f32::MAX / b) (an f32
+panel sum of products could overflow), or an unavailable flush kernel, runs the
+f64 device path instead and is counted (`mixed_fallback_f64`); a NaN `B_ov`
+passes through to a NaN energy as on the CPU; a pool too small for the f32
+tensor runs the CPU path unchanged.
+
+| Column | Value |
+|---|---|
+| Accumulation depth | n = naux per element, panels of b = 64 |
+| κ_sum | measured per system (table): the energy-level κ_E = Σ fac\|g\|S/\|D\| / \|E_os\| and the p99 of the element κ = S_ab/\|g_ab\| on the first block (the element maximum is unbounded because g_ab crosses zero) |
+| Bound | per element ε_G·S_ab + η with ε_G = (1+u₃₂)²(1+γ_b(u₃₂))(1+γ_⌈naux/b⌉(u₆₄)) − 1 + γ_naux(u₆₄) (u₃₂ = 2⁻²⁴, u₆₄ = 2⁻⁵³; the last term is the f64 reference's own rounding) and η the f32 underflow term; summed into an energy bound through the OS and SS terms |
+| Mitigation | f64 panel accumulation, f64 pair arithmetic, f64 everything else |
+| Precision | f32 storage, f32 panel products, f64 sums |
+
+The measured error against the f64 CPU energy of the same B_ov at b = 64
+(E_corr is the f64 RI-MP2 correlation energy; every reference is an RI-JK RHF
+with loose thresholds, the same orbitals on both sides of each comparison).
+OS and SS are signed and partly cancel in the total, so all three are given:
+
+| System (frozen core) | nocc / nvir / naux | E_corr (Eh) | ΔE_OS (Eh) | ΔE_SS (Eh) | ΔE total (Eh) | total (kcal/mol) | bound OS / SS (Eh) | κ_E | p99 κ |
+|---|---|---|---|---|---|---|---|---|---|
+| H2O / cc-pVDZ | 5 / 19 / 84 | −0.204009 | −4.9e-9 | −2.1e-9 | −7.0e-9 | −4.4e-6 | 1.6e-6 / 2.8e-6 | 1.30 | 4.8e11 |
+| n-butane / cc-pVDZ | 17 / 89 / 364 | −0.599582 | −2.8e-10 | −3.7e-10 | −6.5e-10 | −4.1e-7 | 7.2e-6 / 1.4e-5 | 1.95 | 4.6e11 |
+| n-octane / cc-pVDZ | 33 / 169 / 700 | −1.183770 | +1.1e-10 | −8.3e-11 | +2.6e-11 | +1.6e-8 | 1.7e-5 / 3.3e-5 | 2.40 | 2.0e11 |
+| n-dodecane / cc-pVDZ | 49 / 249 / 1036 | −1.767936 | −1.7e-10 | −9.1e-11 | −2.6e-10 | −1.6e-7 | 2.9e-5 / 5.6e-5 | 2.76 | 1.2e11 |
+| H2O / aug-cc-pVTZ | 5 / 87 / 198 | −0.283553 | −6.1e-10 | +3.7e-10 | −2.4e-10 | −1.5e-7 | 2.5e-6 / 4.6e-6 | 1.50 | 1.2e11 |
+| benzene / aug-cc-pVDZ (6) | 15 / 171 / 570 | −0.810690 | +5.1e-10 | +4.7e-10 | +9.7e-10 | +6.1e-7 | 7.8e-6 / 1.4e-5 | 1.65 | 2.1e12 |
+| benzene / aug-cc-pVTZ (6) | 15 / 393 / 912 | −0.963520 | −8.7e-10 | −1.0e-10 | −9.7e-10 | −6.1e-7 | 1.0e-5 / 2.0e-5 | 1.84 | 3.0e12 |
+
+Every component is inside its bound. The error splits into an f32-storage part
+(B_ov rounded to nearest through f32, recomputed in f64) and an accumulation
+part (the device minus that), each inside its own bound; at benzene /
+aug-cc-pVTZ the accumulation part (OS −9.4e-10) is the larger.
+
+What the bound can and cannot catch. The energy bound is a worst case over
+rounding signs, three to six decades above the measured energy errors (at the
+worst single element the error reaches 7.1e-2 of its per-element bound at
+benzene / aug-cc-pVTZ and up to 1.2e-1 at dodecane, but those elements carry
+little of the energy). It catches gross defects, such as a wrong operand offset,
+a dropped panel or a dropped pair weight (1e-1 relative error). It does **not**
+catch a subtle degradation of the kernel: a plain SGEMM without the f64 flush,
+an f32 `B_ov` with an f64 GEMM, a truncating instead of round-to-nearest upload,
+or f32 accumulation across panels all stay inside it. They are pinned by other
+checks:
+
+- The rounding mode is guaranteed by a bit-exact test: the device f32 `B_ov`
+  equals `as f32` (round to nearest, ties to even) element for element.
+- The f64 flush across panels is guaranteed by a deterministic construction
+  (panel sums +2²⁰, 2⁻⁹, −2²⁰ give exactly 2⁻⁹ on the device; summing the panels
+  in f32 gives 0).
+- The panel structure is checked by a measurement over every G block of
+  benzene / aug-cc-pVTZ (18.3 million elements): the per-element RMS of err/S is
+  1.80e-8 for the device and 1.78e-8 for the host twin of the same algorithm
+  (ratio 1.007), against 2.79× the twin for a plain SGEMM, 0.24× for an f32
+  `B_ov` with an f64 GEMM, 1.29× for a truncating upload and 1.30× for f32
+  accumulation across panels. The accepted device/twin ratio lies between 0.49
+  and 1.13 (the geometric midpoints to the nearest measured defect on each
+  side). This measurement is supplementary and device and system dependent: its
+  margin (about 13%) is of the size of the device/twin spread between systems
+  (0.87 at water / cc-pVDZ, 1.007 at benzene / aug-cc-pVTZ), so it is not a
+  guarantee on another device or build. Measured against the shipped b = 64, a
+  panel width of 96, 128 or 256 reads 1.27, 1.51 or 2.39 (above the band); a
+  width of 32 reads 0.70 (inside it: a more accurate kernel, a performance
+  difference that is not pinned).
+
+How the error depends on size. The per-element RMS of err/S falls with the
+auxiliary depth over the four cc-pVDZ systems: 4.9e-8, 2.5e-8, 2.1e-8, 1.8e-8
+at naux 84, 364, 700, 1036; the fitted slope of ln RMS against ln naux is
+−0.40 ± 0.03 (2 degrees of freedom; one-sided 95% upper limit −0.32; the
+random-sign model predicts −0.5). This describes the shipped kernel; it is not a
+law and not a defect gate: naux is confounded with the molecule (without water
+the slope is −0.31), and a plain-SGEMM or truncating-upload emulation on the
+same blocks also falls with naux. No size dependence is claimed for the total
+energy error: its signed OS and SS parts scatter by two decades across systems
+through cancellation. Test files:
+`crates/ferric-mp2/tests/rimp2_f32_storage_error_law.rs` (no device; the name
+predates this wording) and `crates/ferric-mp2/tests/gpu_rimp2_mixed.rs`
+(device).
+
+**`rimp2-energy`, unrestricted** (shipped, same kernel). The unrestricted
+(open-shell) Coulomb RI-MP2 energy keeps one f32 `B_ov` per spin on the device
+and forms every block of E_αα, E_ββ and E_αβ with the same f32 panel products of
+width b = 64 and f64 accumulation; the antisymmetrised same-spin
+K = g_ab − g_ba, the opposite-spin g², the denominators and all sums are f64.
+The refusals and the `mixed_fallback_f64` counter are the closed-shell ones.
+The erfc and terfc unrestricted energies use the same kernel (next
+paragraph); every other caller of the unrestricted pair kernels (the erf
+operator, composite fitted operators, and direct calls of the pair kernels)
+runs the f64 device kernel.
+
+| Column | Value |
+|---|---|
+| Accumulation depth | n = naux per element, panels of b = 64 |
+| Bound | the closed-shell per-element factor ε_G·S_ab + η, propagated through the SS term (K = g_ab − g_ba, perturbation δ_ab + δ_ba) and the OS term (g²), plus the f64 summation of the terms |
+| Acceptance | \|ΔE\| ≤ 1.0e-3 Eh per heavy atom and per electron; the derived bound itself is below it on every system below |
+| Mitigation | f64 panel accumulation, f64 pair arithmetic, f64 everything else |
+| Precision | f32 storage, f32 panel products, f64 sums |
+
+The measured error against the f64 CPU energy of the same `B_ov` at b = 64
+(cc-pVDZ / cc-pVDZ-RI, all electrons correlated; every reference is an RI-JK UHF
+with loose thresholds, the same orbitals on both sides):
+
+| System | nocc α/β | nvir α/β | naux | E_corr (Eh) | ΔE_αα (Eh) | ΔE_ββ (Eh) | ΔE_αβ (Eh) | ΔE total (Eh) | per heavy atom | per electron | bound (Eh) | bound per heavy atom |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| O2 triplet | 9 / 7 | 19 / 21 | 112 | −0.348888 | −2.4e-9 | +1.1e-8 | +5.5e-9 | +1.4e-8 | 7.0e-9 | 8.7e-10 | 3.9e-6 | 2.0e-6 |
+| CH3 doublet | 5 / 4 | 24 / 25 | 98 | −0.129040 | +1.5e-10 | +2.3e-10 | +1.3e-10 | +5.0e-10 | 5.0e-10 | 5.5e-11 | 1.6e-6 | 1.6e-6 |
+
+Every block is inside its bound (largest error/bound 1.2e-2, O2 E_ββ). As in the
+closed-shell case the energy bound is blind to a subtle kernel degradation: a
+build that accumulates the whole contraction in f32 (one panel) stays inside it
+on both systems (O2 ΔE +9.2e-9 Eh). That degradation is caught by a
+deterministic construction through both the same-spin and the opposite-spin
+blocks (an element of exact value 1 + 2⁻³⁰ split over two panels: the device
+returns the f64 energy exactly; an f32 sum loses 2⁻²⁹ Eh, against an accepted
+error of 2⁻³⁰) and by the panel counter (⌈naux/b⌉ panels per block). Test files:
+`crates/ferric-mp2/tests/gpu_u_rimp2_mixed.rs` and
+`crates/ferric-mp2/tests/gpu_u_rimp2_mixed_pin.rs` (which callers may use the
+kernel).
+
+**`rimp2-energy`, erfc and terfc operators** (shipped, same kernel). The RI-MP2
+energy under the primitive erfc and terfc operators, closed-shell and
+unrestricted, runs the same kernel: plain and attenuated RI-MP2
+(`att-rimp2`, dense and QQR-screened), SCS-MP2 with two terfc operators and the
+MP2 half of att-MP2+VV10. The per-element factor is the Coulomb one (a property
+of the arithmetic), but S_ab = Σ_P |B_P,ia||B_P,jb| and the underflow term are
+read from that operator's own dressed `B_ov`, whose metric is the attenuated
+(P|Q); a worse-conditioned attenuated metric would appear as larger |B| and
+larger S_ab / |g_ab| and is carried element by element. The bound assumes the
+reference is the f64 energy of the same f64 `B_ov`: the attenuated RI fitting
+error is common to both and is not part of it. The erf operator, composite
+fitted operators (`terfc_fit`), SR-MP2 inside RS-MP2+RPA and OO-MP2 (the energy
+kernel inside a larger algorithm whose sensitivity to this error was not
+analysed) and kappa-regularised runs stay on the f64 device kernel.
+
+Measured at the repository defaults (erfc ω = 0.420 Å⁻¹, terfc r₀ = 1.05 Å),
+cc-pVDZ / cc-pVDZ-RI, all electrons correlated, against the f64 CPU energy of
+the same `B_ov` (RI-JK RHF / UHF references). At these parameters the dressed
+`B_ov` is as well scaled as the Coulomb one (water: max|B| 0.209 erfc, 0.211
+terfc, 0.201 Coulomb; κ_E 1.306, 1.305, 1.304):
+
+| System | Operator | naux | E_corr (Eh) | ΔE total (Eh) | per heavy atom | per electron | bound (Eh) | bound per heavy atom |
+|---|---|---|---|---|---|---|---|---|
+| H2O | erfc | 84 | −0.198624 | −1.7e-9 | 1.7e-9 | 1.7e-10 | 4.3e-6 | 4.3e-6 |
+| H2O | terfc | 84 | −0.203297 | +6.1e-9 | 6.1e-9 | 6.1e-10 | 4.3e-6 | 4.3e-6 |
+| O2 triplet | erfc | 112 | −0.337446 | −2.2e-9 | 1.1e-9 | 1.4e-10 | 3.8e-6 | 1.9e-6 |
+| O2 triplet | terfc | 112 | −0.346018 | −4.5e-9 | 2.3e-9 | 2.8e-10 | 3.9e-6 | 2.0e-6 |
+| CH3 doublet | erfc | 98 | −0.122053 | −6.5e-11 | 6.5e-11 | 7.2e-12 | 1.5e-6 | 1.5e-6 |
+| CH3 doublet | terfc | 98 | −0.126625 | −1.8e-9 | 1.8e-9 | 2.1e-10 | 1.6e-6 | 1.6e-6 |
+
+Every component (OS and SS, or αα, ββ and αβ) is inside its bound, and the
+f32-storage part of the error is above the f64 device gate on every one, so a
+caller that must stay f64 is told apart from a mixed one. These are small
+systems at moderate attenuation; a strongly attenuated or poorly conditioned
+metric is not measured here. Test files:
+`crates/ferric-mp2/tests/gpu_rimp2_mixed_attenuated.rs` (needs
+`FERRIC_TERF_TABLE_DIR` for the terfc rows) and
+`crates/ferric-mp2/tests/gpu_u_rimp2_mixed_pin.rs`.
 
 ## Known limits and negatives
 

@@ -134,8 +134,13 @@ fn build_df_jk_impl<'a>(
             // Multi-rank keeps the independent builds below.
             if ctx.size <= 1 {
                 let naux = dfbs.nbasis();
-                let mut raw = ferric_integrals::three_index_source::ThreeIndexSource::build_band(
-                    op, prep, &dfbs, ooc_budget, 0, naux,
+                let mut raw = ferric_integrals::three_index_source::ThreeIndexSource::build_for_jk(
+                    op,
+                    mol,
+                    prep,
+                    &dfbs,
+                    ooc_budget,
+                    (0, naux),
                 )?;
                 let df_k = Some(DfK::from_full_raw(
                     &mut raw,
@@ -145,18 +150,33 @@ fn build_df_jk_impl<'a>(
                     ooc_budget,
                     Some(ctx),
                 )?);
-                let df_j = Some(DfJ::from_source(raw, op, &dfbs, ooc_budget, Some(ctx))?);
+                let mut df_j = Some(DfJ::from_source(raw, op, &dfbs, ooc_budget, Some(ctx))?);
+                yield_device_to_k(&mut df_j, &df_k);
                 return Ok((df_j, df_k));
             }
-            let df_j = Some(DfJ::new_banded(op, prep, &dfbs, ooc_budget, Some(ctx))?);
+            let df_j = Some(DfJ::new_for_jk(
+                op,
+                mol,
+                prep,
+                &dfbs,
+                ooc_budget,
+                Some(ctx),
+            )?);
             let df_k = Some(DfK::new_banded(op, prep, &dfbs, ooc_budget, Some(ctx))?);
             return Ok((df_j, df_k));
         }
     }
-    let df_j = if let Some(aux_name) = j_aux {
+    let mut df_j = if let Some(aux_name) = j_aux {
         let dfbs_set = ferric_core::basis::bundled(aux_name)?;
         let dfbs = PreparedBasis::new(mol, &dfbs_set)?;
-        Some(DfJ::new_banded(op, prep, &dfbs, ooc_budget, Some(ctx))?)
+        Some(DfJ::new_for_jk(
+            op,
+            mol,
+            prep,
+            &dfbs,
+            ooc_budget,
+            Some(ctx),
+        )?)
     } else {
         None
     };
@@ -167,8 +187,21 @@ fn build_df_jk_impl<'a>(
     } else {
         None
     };
+    yield_device_to_k(&mut df_j, &df_k);
     Ok((df_j, df_k))
 }
+
+/// RI-J is built before DF-K every iteration, so under `gpu = on` its device
+/// upload would take the pool first. Tell it how much DF-K will want.
+#[cfg(feature = "gpu")]
+fn yield_device_to_k(df_j: &mut Option<DfJ<'_>>, df_k: &Option<DfK<'_>>) {
+    if let (Some(j), Some(k)) = (df_j.as_mut(), df_k.as_ref()) {
+        j.reserve_device_for_k(k.device_footprint_bytes());
+    }
+}
+
+#[cfg(not(feature = "gpu"))]
+fn yield_device_to_k(_df_j: &mut Option<DfJ<'_>>, _df_k: &Option<DfK<'_>>) {}
 
 /// Build the geometry-only SR/LR [`DfK`] fitter pair for a range-separated
 /// hybrid: `(K[erfc(ω)], K[erf(ω)])`. Called once before the SCF loop; only

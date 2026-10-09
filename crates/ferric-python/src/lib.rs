@@ -8696,6 +8696,125 @@ fn boys_localize(
     })
 }
 
+/// Report the CUDA backend's state without touching a device unless
+/// `FERRIC_GPU` asks for one (mode defaults to `off`).
+#[pyfunction]
+fn gpu_status(py: Python<'_>) -> PyResult<Bound<'_, pyo3::types::PyDict>> {
+    use ferric_core::gpu::{gpu_compiled, settings, status, GpuStatus};
+    // The first call may probe the device (FERRIC_GPU=auto|on); release the GIL.
+    let (mode, st) = py.allow_threads(|| (settings().mode.to_string(), status()));
+    let d = pyo3::types::PyDict::new(py);
+    d.set_item("compiled", gpu_compiled())?;
+    d.set_item("mode", mode)?;
+    let s = ferric_core::gpu::settings();
+    d.set_item("precision", s.precision.to_string())?;
+    let kernels: Vec<&str> = s.mixed_kernels.iter().map(|k| k.name()).collect();
+    d.set_item("mixed_kernels", kernels)?;
+    match st {
+        GpuStatus::NotCompiled => {
+            d.set_item("status", "not_compiled")?;
+            d.set_item("reason", py.None())?;
+            d.set_item("device", py.None())?;
+        }
+        GpuStatus::Unavailable { reason } => {
+            d.set_item("status", "unavailable")?;
+            d.set_item("reason", reason)?;
+            d.set_item("device", py.None())?;
+        }
+        GpuStatus::Ready(info) => {
+            d.set_item("status", "ready")?;
+            d.set_item("reason", py.None())?;
+            let dev = pyo3::types::PyDict::new(py);
+            dev.set_item("ordinal", info.ordinal)?;
+            dev.set_item("name", &info.name)?;
+            dev.set_item("cc", format!("{}.{}", info.cc_major, info.cc_minor))?;
+            dev.set_item("free_bytes", info.free_bytes)?;
+            dev.set_item("total_bytes", info.total_bytes)?;
+            d.set_item("device", dev)?;
+        }
+    }
+    Ok(d)
+}
+
+/// A non-negative integer GPU key (`device`, `min_flops`): a negative value is
+/// a `ValueError` naming the key rather than pyo3's bare `OverflowError`.
+fn non_negative_gpu_key(key: &str, v: Option<i64>) -> PyResult<Option<usize>> {
+    v.map(|n| {
+        usize::try_from(n).map_err(|_| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "[gpu] {key}: must be a non-negative integer, got {n}"
+            ))
+        })
+    })
+    .transpose()
+}
+
+/// Install the CUDA backend for this process from keyword arguments (the
+/// Python side of `[gpu]`): `preset` is one word, the rest are the fine-grained
+/// keys. Resolved through the same machinery as the CLI (explicit > env >
+/// default); a refusal is a `ValueError` naming the keys. Settings are
+/// process-global: the call must precede the first read of the GPU settings
+/// (`gpu_status()` or any GPU path), and a second call must repeat identical
+/// settings, otherwise `RuntimeError`. Returns `gpu_status()`.
+#[pyfunction]
+#[pyo3(signature = (preset=None, mode=None, precision=None, mixed_kernels=None, device=None, memory_gb=None, min_flops=None))]
+fn configure_gpu<'py>(
+    py: Python<'py>,
+    preset: Option<&str>,
+    mode: Option<&str>,
+    precision: Option<&str>,
+    mixed_kernels: Option<Vec<String>>,
+    device: Option<i64>,
+    memory_gb: Option<f64>,
+    min_flops: Option<i64>,
+) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+    use ferric_core::gpu::{GpuMode, GpuPreset, GpuSettingsExplicit, MixedKernelSet, Precision};
+    let bad =
+        |k: &str, e: String| pyo3::exceptions::PyValueError::new_err(format!("[gpu] {k}: {e}"));
+    let explicit = GpuSettingsExplicit {
+        // Python has no command line: the `--gpu` flag slot stays empty.
+        cli_preset: None,
+        preset: preset
+            .map(|s| s.parse::<GpuPreset>().map_err(|e| bad("preset", e)))
+            .transpose()?,
+        mode: mode
+            .map(|s| s.parse::<GpuMode>().map_err(|e| bad("mode", e)))
+            .transpose()?,
+        device: non_negative_gpu_key("device", device)?,
+        memory_gb,
+        min_flops: non_negative_gpu_key("min_flops", min_flops)?,
+        precision: precision
+            .map(|s| s.parse::<Precision>().map_err(|e| bad("precision", e)))
+            .transpose()?,
+        mixed_kernels: mixed_kernels
+            .map(|ks| {
+                if let Some(item) = ks.iter().find(|k| k.contains(',')) {
+                    return Err(bad(
+                        "mixed_kernels",
+                        format!("kernel names are separate list items, got {item:?}"),
+                    ));
+                }
+                ks.join(",")
+                    .parse::<MixedKernelSet>()
+                    .map_err(|e| bad("mixed_kernels", e))
+            })
+            .transpose()?,
+    };
+    // The device probe may take a while; release the GIL.
+    py.allow_threads(|| ferric_core::gpu::install(explicit).map(|_| ()))
+        .map_err(|e| {
+            if e.starts_with(ferric_core::gpu::SETTINGS_ALREADY_INSTALLED) {
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "{e}; GPU settings are process-global: call configure_gpu once, before \
+                     gpu_status() or any GPU work, and repeat identical settings if called again"
+                ))
+            } else {
+                pyo3::exceptions::PyValueError::new_err(e)
+            }
+        })?;
+    gpu_status(py)
+}
+
 /// Shell geometry of `basis_set` on `mol` (works for orbital AND auxiliary
 /// sets): returns (centers, first_function_offsets, n_functions) with shapes
 /// ((n_shells, 3) in Bohr, (n_shells,), (n_shells,)). Enough to build
@@ -9480,6 +9599,15 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compute_eri3_mo, m)?)?;
     m.add_function(wrap_pyfunction!(compute_metric_2c, m)?)?;
     m.add_function(wrap_pyfunction!(boys_localize, m)?)?;
+    register_device_and_geometry(m)?;
+    Ok(())
+}
+
+/// Registration tail of the module: shell geometry and the CUDA backend
+/// (kept out of `ferric` so the module function's complexity stays bounded).
+fn register_device_and_geometry(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(shell_info, m)?)?;
+    m.add_function(wrap_pyfunction!(gpu_status, m)?)?;
+    m.add_function(wrap_pyfunction!(configure_gpu, m)?)?;
     Ok(())
 }

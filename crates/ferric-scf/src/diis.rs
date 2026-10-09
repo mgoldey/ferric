@@ -211,6 +211,24 @@ pub fn diis_history_bytes(
         .saturating_mul(std::mem::size_of::<f64>())
 }
 
+/// A DIIS history that can be cleared (the COSX grid schedule restarts it at
+/// the coarse -> production switch; see `crate::cosx_schedule`).
+pub(crate) trait HistoryReset {
+    fn reset_history(&mut self);
+}
+
+impl HistoryReset for Diis {
+    fn reset_history(&mut self) {
+        self.reset();
+    }
+}
+
+impl HistoryReset for DiisDriver {
+    fn reset_history(&mut self) {
+        self.reset();
+    }
+}
+
 impl Diis {
     /// Create a DIIS accelerator with the given maximum subspace size.
     pub fn new(max_subspace: usize) -> Self {
@@ -517,6 +535,13 @@ impl EnergyDiis {
         }
     }
 
+    /// Clear the `(F, D, E)` history.
+    pub fn reset(&mut self) {
+        self.fock_hist.clear();
+        self.dens_hist.clear();
+        self.energy_hist.clear();
+    }
+
     /// Push the current `(F, D, E)` and return the energy-DIIS-extrapolated
     /// Fock matrix `Σ c_i F_i`, along with the convex coefficients `c` (for the
     /// caller to blend with a Pulay step if desired). On the first call
@@ -648,6 +673,12 @@ impl DiisDriver {
                 switch_thresh
             },
         }
+    }
+
+    /// Clear both histories (Pulay and energy-DIIS).
+    pub fn reset(&mut self) {
+        self.pulay.reset();
+        self.energy.reset();
     }
 
     /// One combined step. `err_max` is the max-abs commutator error (the SCF

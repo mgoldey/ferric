@@ -731,17 +731,20 @@ pub fn solve_uhf_fockmod(
     // open-shell LinK, since `solve_uhf` has no bound-construction site of its
     // own to consult a config field at.
     let link_bound = crate::screening::LinkBound::SchwarzRef(bounds);
-    let mut pluggable_k: Option<Box<dyn KBuilder>> = crate::fock_assembly::build_pluggable_k(
-        pluggable_k_kind,
+    // Optional COSX grid schedule (default off; see `crate::cosx_schedule`).
+    let k_args = crate::cosx_schedule::KBuilderArgs {
+        kind: pluggable_k_kind,
         ctx,
         mol,
         prep,
-        &link_bound,
-        coulomb_op,
-        &config.cosx,
-        config.integral_thresh,
+        link_bound: &link_bound,
+        op: coulomb_op,
+        cosx: &config.cosx,
+        integral_thresh: config.integral_thresh,
         ooc_budget,
-    )?;
+    };
+    let (mut cosx_sched, mut pluggable_k): (_, Option<Box<dyn KBuilder>>) =
+        crate::cosx_schedule::start_with_builder(&k_args)?;
 
     let combined_direct_jk = df_j.is_none()
         && df_k.is_none()
@@ -823,6 +826,15 @@ pub fn solve_uhf_fockmod(
 
     for iter in 1..=config.max_iter {
         ctx.check_interrupted()?;
+        // COSX grid schedule: a pending coarse -> production switch rebuilds
+        // the builder and restarts DIIS here, before this iteration's K.
+        crate::cosx_schedule::before_k_build(
+            &mut cosx_sched,
+            iter,
+            &mut pluggable_k,
+            &mut diis,
+            &k_args,
+        )?;
         let d_total = &d_a + &d_b;
 
         // On incremental iterations the buffers must KEEP the previous
@@ -943,7 +955,15 @@ pub fn solve_uhf_fockmod(
         // E_xc is its own integral).
         let e_elec_no_xc: f64 = 0.5 * ((&(&h + &f_a) * &d_a).sum() + (&(&h + &f_b) * &d_b).sum());
         let e_xc = if let Some(x) = xc_contrib.as_ref() {
-            x.add_xc_uks(&d_a, &d_b, &mut f_a, &mut f_b)
+            // Occupied-factored density pass per spin (D_σ = C_σ·C_σᵀ); the XC
+            // side re-checks each pair and falls back to the dense D_σ, which
+            // also covers fractional occupations.
+            x.add_xc_uks_occ(
+                (&d_a, &d_b),
+                (d_occ_a.as_ref(), d_occ_b.as_ref()),
+                &mut f_a,
+                &mut f_b,
+            )
         } else {
             0.0
         };
@@ -1030,7 +1050,12 @@ pub fn solve_uhf_fockmod(
         // the naux-dependent RI noise floor and never drains. See
         // rhf::scf_converged. This replaces the old df_noise_floor_ok hack; the
         // `df_active` distinction is gone (ΔP handles DF and direct uniformly).
-        let conv_exit = crate::rhf::scf_converged(sig, config.energy_conv, config.density_conv);
+        let conv_exit = crate::cosx_schedule::gate(
+            &mut cosx_sched,
+            iter,
+            sig.dp_max,
+            crate::rhf::scf_converged(sig, config.energy_conv, config.density_conv),
+        );
 
         // Divergence / stall early exits (shared driver::ScfMonitor; both are
         // no-ops at the None defaults — UHF previously ignored these knobs).
@@ -1131,6 +1156,7 @@ pub fn solve_uhf_fockmod(
                 df_jk: df_jk_route.clone(),
                 rohf_spin_focks: None,
                 cosx_final,
+                cosx_schedule: crate::cosx_schedule::record(&cosx_sched),
             });
         }
         mon.note_energy(energy);
@@ -1596,6 +1622,7 @@ pub fn solve_uhf_fockmod(
         df_jk: df_jk_route,
         rohf_spin_focks: None,
         cosx_final: None,
+        cosx_schedule: crate::cosx_schedule::record(&cosx_sched),
     })
 }
 

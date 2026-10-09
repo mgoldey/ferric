@@ -314,6 +314,30 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+      # The gpu feature must build and run its skip paths on a machine with NO
+      # CUDA toolkit or driver (this runner). cudarc's `dynamic-loading` links
+      # nothing at build time; the probe test proves the missing-driver path
+      # reports `Unavailable` instead of panicking. Package-qualified features
+      # because this is a virtual workspace.
+      - name: gpu feature (no toolkit) — check, clippy, doc, skip-path test
+        env:
+          GPU_FEATURES: ferric-core/gpu,ferric-tensors/gpu,ferric-cli/gpu,ferric-python/gpu,ferric-benchmarks/gpu,ferric-mp2/gpu,ferric-core/test-seams,ferric-scf/test-seams,ferric-mp2/test-seams
+        run: |
+          set -euo pipefail
+          if [ -e /usr/lib/x86_64-linux-gnu/libcuda.so.1 ]; then
+            echo "::error::runner has libcuda; the skip-path test would not exercise the missing-driver branch"
+            exit 1
+          fi
+          cargo check --workspace --all-targets --locked --features "$GPU_FEATURES"
+          cargo clippy --workspace --all-targets --locked --features "$GPU_FEATURES" -- -D warnings
+          RUSTDOCFLAGS='-D warnings' cargo doc -p ferric-core --no-deps --locked --features gpu
+          OPENBLAS_NUM_THREADS=1 cargo test -p ferric-core --features gpu --locked --test gpu_probe --test gpu_config -- --nocapture 2>&1 | tee gpu-probe.log
+          grep -q 'skipping: no CUDA device' gpu-probe.log
+          # The CLI's [gpu] section on a gpu-feature binary with no driver: refusal and
+          # notice paths run; the real-device test skips with a printed notice.
+          OPENBLAS_NUM_THREADS=1 cargo test -p ferric-cli --features gpu --locked --test gpu_section -- --nocapture 2>&1 | tee gpu-section.log
+          grep -q 'skipping: no usable CUDA device' gpu-section.log
+
       # rustdoc is built HERE, not in docs.yml, and the reason is structural:
       # `cargo doc` does not link, but it DOES run build scripts, and
       # ferric-integrals' build.rs compiles shim/shim.cc against libint2.hpp.
@@ -795,7 +819,7 @@ jobs:
                 screening_exactness csam_screening link_scf_anchor link_screen_reachability \
                 grid_prune_live_scf hirshfeld_symmetry \
                 cdft_coupling_hene cdft_state_selection rimp2_qqr3_screening \
-                cosx_group_screen_anchors cosx_sparse_anchors"
+                cosx_group_screen_anchors cosx_sparse_anchors cosx_mixed_error_law"
           EXPR=""
           for b in $SLOW; do
             [ -n "$EXPR" ] && EXPR="$EXPR + "
@@ -893,7 +917,8 @@ jobs:
           # lines that honour it.
           cargo test --no-fail-fast -p ferric-scf \
             --test cdft_coupling_hene --test cdft_state_selection \
-            --test cosx_group_screen_anchors --test cosx_sparse_anchors --locked || rc=1
+            --test cosx_group_screen_anchors --test cosx_sparse_anchors \
+            --test cosx_mixed_error_law --locked || rc=1
           cargo test --no-fail-fast -p ferric-mp2 --test rimp2_qqr3_screening --locked || rc=1
           if [ "$rc" -ne 0 ]; then
             echo "::error::one or more deferred test commands failed -- see the FAILED lines above"

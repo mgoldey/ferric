@@ -85,6 +85,13 @@ use crate::basis_bridge::PreparedBasis;
 use crate::cosx_a::{CosxPoint, CosxScreen, PairBounds};
 use crate::ecp;
 
+mod f32_block;
+use f32_block::F32Scratch;
+pub use f32_block::{
+    f32_chain_depth, trunc_f32, BlockPrecision, F32Fault, PairRoute, PrimPairSum, RoutedCounts,
+    U32, U64,
+};
+
 /// Highest per-shell angular momentum supported (g).
 pub const MAX_L: usize = 4;
 /// Highest total Hermite order `l_a + l_b` supported (g-g).
@@ -485,6 +492,8 @@ pub struct Md3c1e {
     comps: Vec<Vec<[u8; 3]>>,
     c2s: Vec<Vec<f64>>,
     use_fma: bool,
+    /// The Boys node table rounded to f32 once, at construction (f32 block path).
+    boys32: Vec<f32>,
 }
 
 /// Per-thread work buffers for [`Md3c1e`]. Obtain via [`Md3c1e::scratch`];
@@ -500,6 +509,7 @@ pub struct Md3c1eScratch {
     cart: Vec<f64>,
     tmp: Vec<f64>,
     block: Vec<f64>,
+    f32s: F32Scratch,
 }
 
 /// Operation count per grid point for a full unscreened sweep, in the spec's
@@ -728,6 +738,7 @@ impl Md3c1e {
             comps,
             c2s,
             use_fma: detect_fma(),
+            boys32: boys_table().vals.iter().map(|&v| v as f32).collect(),
         })
     }
 
@@ -1066,34 +1077,26 @@ impl Md3c1e {
         pts: &[[f64; 3]],
         mut keep: K,
         scr: &mut Md3c1eScratch,
-        mut f: F,
+        f: F,
     ) -> Result<(usize, usize), FerricError>
     where
         K: FnMut(usize, usize) -> bool,
         F: FnMut(usize, usize, &[f64]),
     {
-        let nsh = self.shells.len();
-        let mut kept = 0usize;
-        let mut total = 0usize;
-        let mut block = std::mem::take(&mut scr.block);
-        let result = (|| {
-            for s1 in 0..nsh {
-                for s2 in 0..=s1 {
-                    total += 1;
-                    if !keep(s1, s2) {
-                        continue;
-                    }
-                    kept += 1;
-                    let need = self.shells[s1].nfun * self.shells[s2].nfun * pts.len();
-                    block.resize(need, 0.0);
-                    self.pair_block(s1, s2, pts, scr, &mut block[..need])?;
-                    f(s1, s2, &block[..need]);
+        self.for_each_pair_routed(
+            pts,
+            |s1, s2| {
+                if keep(s1, s2) {
+                    PairRoute::F64
+                } else {
+                    PairRoute::Drop
                 }
-            }
-            Ok(())
-        })();
-        scr.block = block;
-        result.map(|()| (kept, total))
+            },
+            PrimPairSum::F64,
+            scr,
+            f,
+        )
+        .map(|c| (c.kept, c.total))
     }
 
     /// Dense `(npts, nbf, nbf)` matrices for the batch, symmetric fill.
@@ -1135,40 +1138,72 @@ impl Md3c1e {
     /// so it reflects the actual nonzero-coefficient structure.
     pub fn flops_per_point(&self) -> Md3c1eFlops {
         let mut scr = self.scratch();
-        let mut r_tensor = 0.0_f64;
-        let mut contraction = 0.0_f64;
-        let mut prim_pairs = 0.0_f64;
-        let progs = r_programs();
+        let mut total = Md3c1eFlops {
+            r_tensor: 0.0,
+            contraction: 0.0,
+            prim_pairs: 0.0,
+        };
         for s1 in 0..self.shells.len() {
             for s2 in 0..=s1 {
-                let (sa, sb) = (&self.shells[s1], &self.shells[s2]);
-                let prog = &progs[sa.l + sb.l];
-                let r_flops: f64 = (sa.l as f64)
-                    + prog
-                        .steps
-                        .iter()
-                        .map(|st| if st.src2 == NONE { 1.0 } else { 3.0 })
-                        .sum::<f64>();
-                for (&a, &ca) in sa.exps.iter().zip(&sa.coefs) {
-                    for (&b, &cb) in sb.exps.iter().zip(&sb.coefs) {
-                        if self
-                            .prim_pair_setup(sa, sb, a, ca, b, cb, &mut scr)
-                            .is_none()
-                        {
-                            continue;
-                        }
-                        r_tensor += r_flops;
-                        contraction += 2.0 * scr.coef_vals.len() as f64;
-                        prim_pairs += 1.0;
-                    }
-                }
+                let f = self.pair_flops_with(s1, s2, &mut scr);
+                total.r_tensor += f.r_tensor;
+                total.contraction += f.contraction;
+                total.prim_pairs += f.prim_pairs;
             }
         }
-        Md3c1eFlops {
-            r_tensor,
-            contraction,
-            prim_pairs,
+        total
+    }
+
+    /// Operation count per grid point of ONE shell pair `(s1, s2)`,
+    /// `s1 >= s2`, in the convention of [`Md3c1eFlops`] (R-recursion plus
+    /// contraction flops, summed over the pair's surviving primitive pairs;
+    /// Boys and cart->sph excluded). Invariant: the sum over all
+    /// `s1 >= s2` equals `flops_per_point().total()` exactly (both are sums of
+    /// integers far below 2^53).
+    pub fn pair_flops_per_point(&self, s1: usize, s2: usize) -> u64 {
+        let f = self.pair_flops_with(s1, s2, &mut self.scratch());
+        (f.r_tensor + f.contraction) as u64
+    }
+
+    /// [`Md3c1e::pair_flops_per_point`] for every pair `s1 >= s2`, packed as
+    /// `s1 * (s1 + 1) / 2 + s2`, sharing one scratch.
+    pub fn pair_flops_table(&self) -> Vec<u64> {
+        let mut scr = self.scratch();
+        let mut t = Vec::with_capacity(self.shells.len() * (self.shells.len() + 1) / 2);
+        for s1 in 0..self.shells.len() {
+            for s2 in 0..=s1 {
+                let f = self.pair_flops_with(s1, s2, &mut scr);
+                t.push((f.r_tensor + f.contraction) as u64);
+            }
         }
+        t
+    }
+
+    fn pair_flops_with(&self, s1: usize, s2: usize, scr: &mut Md3c1eScratch) -> Md3c1eFlops {
+        let (sa, sb) = (&self.shells[s1], &self.shells[s2]);
+        let prog = &r_programs()[sa.l + sb.l];
+        let r_flops: f64 = (sa.l as f64)
+            + prog
+                .steps
+                .iter()
+                .map(|st| if st.src2 == NONE { 1.0 } else { 3.0 })
+                .sum::<f64>();
+        let mut out = Md3c1eFlops {
+            r_tensor: 0.0,
+            contraction: 0.0,
+            prim_pairs: 0.0,
+        };
+        for (&a, &ca) in sa.exps.iter().zip(&sa.coefs) {
+            for (&b, &cb) in sb.exps.iter().zip(&sb.coefs) {
+                if self.prim_pair_setup(sa, sb, a, ca, b, cb, scr).is_none() {
+                    continue;
+                }
+                out.r_tensor += r_flops;
+                out.contraction += 2.0 * scr.coef_vals.len() as f64;
+                out.prim_pairs += 1.0;
+            }
+        }
+        out
     }
 }
 

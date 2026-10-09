@@ -100,3 +100,13 @@ cc = "1"
 sprs = "0.11"
 ctrlc = "3"
 mpi = "0.7"
+# GPU backend (opt-in `gpu` feature). `dynamic-loading` dlopens libcuda/libcublas
+# at RUN time, so no CUDA toolkit is needed to build — CI has none. `cuda-12000`
+# matches the local toolkit (Pascal/sm_61 needs CUDA 12.x; 13.x drops it).
+# nvrtc: only for Ptx/load_module of COMMITTED PTX; no compile_ptx call exists in the tree.
+# Override at build with CUDARC_CUDA_VERSION=12080 etc.; never use
+# `cuda-version-from-build-system` (it shells out to nvcc).
+cudarc = { version = "0.19", default-features = false, features = [
+    "std", "driver", "cublas", "cublaslt", "cusolver", "nvrtc", "dynamic-loading", "cuda-12000",
+] }
+libloading = "0.8"

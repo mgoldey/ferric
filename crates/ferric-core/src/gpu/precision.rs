@@ -1,0 +1,298 @@
+//! Mixed-precision knobs. `precision = f64` (default) means every device GEMM is
+//! plain IEEE dgemm. `precision = mixed` enables, FOR THE KERNELS NAMED IN
+//! `mixed_kernels` ONLY, the k-panelled SGEMM with f64 accumulation
+//! (`crate::gpu::mixed`). There is no global f32 flip: a kernel is a name here
+//! only once its error-budget row (see the Phase 4 plan §3.2) has shipped, and
+//! kernels on the never-f32 list (Fock diagonalisation, DIIS, V^{-1/2}, metric
+//! lindep, GW Newton, dielectric log-det, Becke weights, meta-GGA tau) are not
+//! names at all, which is how "cannot opt in" is enforced.
+//!
+//! `einsum!` callers opt a block in with [`MixedScope::enter`]; the dispatch in
+//! `ferric_tensors::einsum::try_device_gemm` consults [`MixedScope::current`]
+//! AND the allowlist. A GEMM outside any scope is f64 even under `mixed`.
+use std::cell::Cell;
+use std::fmt;
+use std::str::FromStr;
+
+use crate::config::{accept_any, ConfigVar};
+
+/// The default precision, in ONE place. Every path that resolves an unset
+/// `precision` (env unset, CLI `[gpu]` without the key, library, Python) reads
+/// this constant. If it is changed to `Mixed`, `GpuSettings::resolve` still
+/// runs f64 (silently, with an audit line saying why) whenever the precision
+/// came from the default and either the mode is `off` or this build ships no
+/// mixed kernel; an EXPLICIT `mixed` in those cases remains an error. The GPU-off
+/// fallback `GpuSettings::degraded_off` is f64 by definition and ignores this.
+pub const PRECISION_DEFAULT: Precision = Precision::F64;
+
+/// Which arithmetic the device GEMMs use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Precision {
+    /// cublasDgemm throughout (the current default, see [`PRECISION_DEFAULT`]).
+    F64,
+    /// f32 storage + k-panelled cublasSgemm with f64 accumulation, for the
+    /// kernels in the allowlist only.
+    Mixed,
+}
+
+impl FromStr for Precision {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "f64" => Ok(Precision::F64),
+            "mixed" => Ok(Precision::Mixed),
+            _ => Err(format!(
+                "invalid GPU precision {s:?} (expected f64 or mixed)"
+            )),
+        }
+    }
+}
+
+impl fmt::Display for Precision {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Precision::F64 => "f64",
+            Precision::Mixed => "mixed",
+        })
+    }
+}
+
+/// A kernel that MAY run in mixed precision. The discriminant is its bit in
+/// [`MixedKernelSet`]; the name is the TOML/env spelling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum MixedKernel {
+    /// Coulomb RI-MP2 energy, closed-shell and unrestricted: every `G_i` block
+    /// formed from f32-resident `B_ov` (one per spin when unrestricted) with f64
+    /// accumulation (Task 4.2b).
+    RiMp2Energy = 1,
+    /// Closed-shell CCSD amplitude-update contractions (Task 4.3).
+    CcsdAmplitudes = 2,
+    /// DF-K occupied path with f32-resident dressed B (Task 4.4).
+    DfkOcc = 4,
+    /// COSX 3-centre kernel (`md3c1e`), routed per (pair, sub-batch) by the
+    /// Hölder bound (Workstream D). Named only: not in `SHIPPED`.
+    CosxKern = 8,
+    /// Device RI-J with the packed raw 3-index tensor resident as f32 and the
+    /// f64-accumulating mixed-storage GEMV (`crate::gpu::gemv::gemv_f32mat_f64_dev`).
+    /// Named only: not in `SHIPPED`, selectable only through the `df_k_gpu`
+    /// settings-override seam until its error map ships.
+    DfjPack = 16,
+}
+
+impl MixedKernel {
+    pub const ALL: [MixedKernel; 5] = [
+        MixedKernel::RiMp2Energy,
+        MixedKernel::CcsdAmplitudes,
+        MixedKernel::DfkOcc,
+        MixedKernel::CosxKern,
+        MixedKernel::DfjPack,
+    ];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            MixedKernel::RiMp2Energy => "rimp2-energy",
+            MixedKernel::CcsdAmplitudes => "ccsd-amplitudes",
+            MixedKernel::DfkOcc => "dfk-occ",
+            MixedKernel::CosxKern => "cosx-kern",
+            MixedKernel::DfjPack => "dfj-pack",
+        }
+    }
+}
+
+impl FromStr for MixedKernel {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        let t = s.trim();
+        MixedKernel::ALL
+            .into_iter()
+            .find(|k| k.name() == t)
+            .ok_or_else(|| {
+                let valid: Vec<&str> = MixedKernel::ALL.iter().map(|k| k.name()).collect();
+                format!(
+                    "unknown mixed-precision kernel {t:?} (valid: {})",
+                    valid.join(", ")
+                )
+            })
+    }
+}
+
+/// A set of [`MixedKernel`]s as a bit mask (so `GpuSettings` stays `Copy`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MixedKernelSet(u8);
+
+impl MixedKernelSet {
+    pub const EMPTY: Self = Self(0);
+    /// The kernels whose error-budget row has shipped. Each Phase 4 task that
+    /// ships a row extends this constant in the same commit as its gates:
+    /// `RiMp2Energy` is shipped (its budget row is in the `gpu_rimp2_mixed`
+    /// test docstring); Task 4.3 adds `CcsdAmplitudes`, Task 4.4 `DfkOcc`.
+    /// It is the default of `FERRIC_GPU_MIXED_KERNELS`; a build whose set is
+    /// empty refuses `precision = mixed`. Shipping a kernel does not change the
+    /// precision default: `PRECISION_DEFAULT` stays f64.
+    pub const SHIPPED: Self = Self::EMPTY.with(MixedKernel::RiMp2Energy);
+
+    pub const fn with(self, k: MixedKernel) -> Self {
+        Self(self.0 | k as u8)
+    }
+    pub const fn contains(self, k: MixedKernel) -> bool {
+        self.0 & (k as u8) != 0
+    }
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+    pub fn iter(self) -> impl Iterator<Item = MixedKernel> {
+        MixedKernel::ALL
+            .into_iter()
+            .filter(move |&k| self.contains(k))
+    }
+}
+
+impl FromStr for MixedKernelSet {
+    type Err = String;
+    /// Comma-separated names; whitespace around names is ignored; an empty
+    /// string or an empty item is an error (an explicit empty list cannot mean
+    /// "default").
+    fn from_str(s: &str) -> Result<Self, String> {
+        let mut set = MixedKernelSet::EMPTY;
+        let mut any = false;
+        for item in s.split(',') {
+            let k: MixedKernel = item.parse()?;
+            set = set.with(k);
+            any = true;
+        }
+        if !any {
+            return Err("empty mixed-precision kernel list".into());
+        }
+        Ok(set)
+    }
+}
+
+impl fmt::Display for MixedKernelSet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_empty() {
+            return f.write_str("none");
+        }
+        let names: Vec<&str> = self.iter().map(|k| k.name()).collect();
+        f.write_str(&names.join(","))
+    }
+}
+
+pub static GPU_PRECISION: ConfigVar<Precision> = ConfigVar {
+    env_name: "FERRIC_GPU_PRECISION",
+    default: PRECISION_DEFAULT,
+    parse: |s| s.parse::<Precision>(),
+    validate: accept_any,
+};
+
+pub static GPU_MIXED_KERNELS: ConfigVar<MixedKernelSet> = ConfigVar {
+    env_name: "FERRIC_GPU_MIXED_KERNELS",
+    default: MixedKernelSet::SHIPPED,
+    parse: |s| s.parse::<MixedKernelSet>(),
+    validate: accept_any,
+};
+
+/// Env-only measurement/mutation knob: the k-panel width of the mixed GEMM
+/// (0 = the compiled `MIXED_K_PANEL_DEFAULT`). It changes the last digits of a
+/// mixed result and exists so the panel sweep and the "f32 accumulator" mutant
+/// (`FERRIC_GPU_MIXED_K_PANEL=1000000000`, i.e. one panel) need no rebuild.
+static GPU_MIXED_K_PANEL: ConfigVar<usize> = ConfigVar {
+    env_name: "FERRIC_GPU_MIXED_K_PANEL",
+    default: 0,
+    parse: |s| {
+        s.trim()
+            .parse::<usize>()
+            .map_err(|e| format!("invalid panel width {s:?}: {e}"))
+    },
+    validate: accept_any,
+};
+
+/// `Some(width)` when `FERRIC_GPU_MIXED_K_PANEL` is set to a non-zero value.
+pub fn mixed_k_panel_override() -> Option<usize> {
+    match GPU_MIXED_K_PANEL.resolve(None, crate::config::env_lookup) {
+        Ok(r) if r.value > 0 => Some(r.value),
+        Err(e) => {
+            static NOTED: std::sync::Once = std::sync::Once::new();
+            NOTED.call_once(|| eprintln!("[ferric] gpu: {e}; FERRIC_GPU_MIXED_K_PANEL ignored"));
+            None
+        }
+        _ => None,
+    }
+}
+
+thread_local! {
+    static SCOPE: Cell<Option<MixedKernel>> = const { Cell::new(None) };
+}
+
+/// RAII marker: while alive on this thread, `einsum!` GEMMs may use the mixed
+/// path if the kernel is allowed. Nests; the previous value is restored on
+/// drop, including during unwinding.
+#[must_use = "the scope ends when this guard is dropped"]
+pub struct MixedScope {
+    prev: Option<MixedKernel>,
+}
+
+impl MixedScope {
+    pub fn enter(k: MixedKernel) -> Self {
+        let prev = SCOPE.replace(Some(k));
+        Self { prev }
+    }
+    pub fn current() -> Option<MixedKernel> {
+        SCOPE.get()
+    }
+}
+
+impl Drop for MixedScope {
+    fn drop(&mut self) {
+        SCOPE.set(self.prev);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn set_round_trips_through_display_and_parse() {
+        let s = MixedKernelSet::EMPTY
+            .with(MixedKernel::DfkOcc)
+            .with(MixedKernel::RiMp2Energy);
+        assert_eq!(s.to_string(), "rimp2-energy,dfk-occ");
+        assert_eq!(s.to_string().parse::<MixedKernelSet>().unwrap(), s);
+    }
+
+    #[test]
+    fn cosx_kern_is_named_in_all_and_not_shipped() {
+        assert_eq!(MixedKernel::CosxKern as u8, 8);
+        assert_eq!(MixedKernel::CosxKern.name(), "cosx-kern");
+        assert_eq!(
+            "cosx-kern".parse::<MixedKernel>().unwrap(),
+            MixedKernel::CosxKern
+        );
+        assert!(MixedKernel::ALL.contains(&MixedKernel::CosxKern));
+        assert!(!MixedKernelSet::SHIPPED.contains(MixedKernel::CosxKern));
+        assert_eq!(MixedKernel::ALL.len(), 5);
+    }
+
+    #[test]
+    fn dfj_pack_is_named_in_all_and_not_shipped() {
+        assert_eq!(MixedKernel::DfjPack as u8, 16);
+        assert_eq!(MixedKernel::DfjPack.name(), "dfj-pack");
+        assert_eq!(
+            "dfj-pack".parse::<MixedKernel>().unwrap(),
+            MixedKernel::DfjPack
+        );
+        assert!(MixedKernel::ALL.contains(&MixedKernel::DfjPack));
+        assert!(!MixedKernelSet::SHIPPED.contains(MixedKernel::DfjPack));
+        let set = MixedKernelSet::SHIPPED.with(MixedKernel::DfjPack);
+        assert_eq!(set.to_string(), "rimp2-energy,dfj-pack");
+        assert_eq!(set.to_string().parse::<MixedKernelSet>().unwrap(), set);
+    }
+
+    #[test]
+    fn shipped_is_a_subset_of_all() {
+        for k in MixedKernelSet::SHIPPED.iter() {
+            assert!(MixedKernel::ALL.contains(&k));
+        }
+    }
+}

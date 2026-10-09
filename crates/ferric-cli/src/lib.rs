@@ -1,4 +1,5 @@
 mod config;
+mod gpu_flag;
 
 use config::{load_config, Config};
 /// The `[local]` model types, re-exported for the Python bindings, which
@@ -38,8 +39,11 @@ use ferric_scf::rohf::solve_rohf;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
 
-fn print_usage() {
-    eprintln!("usage: ferric [--verbose|-v] [--json <path>|--no-json] <input.toml>");
+/// The synopsis and one-line description at the top of `--help`.
+fn print_usage_head() {
+    eprintln!(
+        "usage: ferric [--verbose|-v] [--json <path>|--no-json] [--gpu <preset>] <input.toml>"
+    );
     eprintln!("       ferric --version|-V");
     eprintln!();
     eprintln!("Run a ferric quantum-chemistry calculation from a TOML input file.");
@@ -47,6 +51,10 @@ fn print_usage() {
         "See examples/*.toml for sample inputs and site/src/using/quickstart.md for a walkthrough."
     );
     eprintln!();
+}
+
+fn print_usage() {
+    print_usage_head();
     eprintln!("  --verbose, -v   Print one line per SCF iteration to stdout (energy, dE,");
     eprintln!("                  density/DIIS error) as the job runs. Same effect as setting");
     eprintln!("                  `verbose = true` in the [scf] TOML section.");
@@ -54,6 +62,7 @@ fn print_usage() {
     eprintln!("                  Overrides `[output] json`. A run log is written BY");
     eprintln!("                  DEFAULT to <input-stem>.ferric.jsonl beside the input.");
     eprintln!("  --no-json       Do not write a run log. Same as `[output] json = false`.");
+    gpu_flag::print_help();
     eprintln!("  --version, -V   Print which build this is (version, git commit, dirty");
     eprintln!("                  flag, build profile, libint version) and exit.");
 }
@@ -249,6 +258,37 @@ pub fn main() {
     run(std::env::args().collect())
 }
 
+/// Install the GPU backend from `[gpu]`, or print `error: ...` and exit 1 when
+/// an explicit `on` cannot be honoured. Extracted from `run` to keep its
+/// cyclomatic complexity at the baseline.
+fn install_gpu_or_exit(cfg: &Config, cli_preset: Option<ferric_core::gpu::GpuPreset>) {
+    let explicit = ferric_core::gpu::GpuSettingsExplicit {
+        cli_preset,
+        ..cfg.gpu.explicit()
+    };
+    if let Err(e) = ferric_core::gpu::install(explicit) {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    }
+}
+
+/// Install the process-wide integral settings from `[scf]`. One CLI run is one
+/// job, so these are globals; validated here so a bad value fails before any
+/// work.
+///
+/// * `eri_precision`: libint primitive-screening precision for every SCF J/K
+///   engine.
+/// * `jk_storage`: where the raw RI-J/K three-index tensor lives.
+fn install_integral_settings(scf: &config::ScfCfg) -> Result<(), String> {
+    ferric_integrals::engine_pool::set_eri_precision(scf.eri_precision)
+        .map_err(|e| format!("[scf] {e}"))?;
+    ferric_integrals::three_index_source::set_jk_storage(scf.jk_storage_policy()?);
+    // Refuse a malformed FERRIC_JK_STORAGE here, as a malformed TOML value is,
+    // instead of warning and running as `auto` at the first RI-J build.
+    ferric_integrals::three_index_source::validate_jk_storage()?;
+    Ok(())
+}
+
 /// The actual CLI, taking argv explicitly instead of reading
 /// `std::env::args()` itself. Split out so a caller whose real OS-process
 /// argv does NOT match `[program_name, ...user_args]` can reconstruct that
@@ -293,6 +333,8 @@ pub fn run(args: Vec<String>) {
         print_usage();
         std::process::exit(if args.len() < 2 { 2 } else { 0 });
     }
+    // `--gpu <preset>` is taken out first so it can sit anywhere on the line.
+    let (args, cli_gpu) = gpu_flag::extract_or_exit(args);
     // Accept the positional TOML path plus an optional `--verbose`/`-v` flag,
     // in either order (`ferric -v input.toml` or `ferric input.toml -v`).
     // `-v`/`--verbose` sets RhfConfig.verbose (live per-iteration SCF
@@ -326,7 +368,9 @@ pub fn run(args: Vec<String>) {
         std::process::exit(2);
     }
     let Some(toml_path) = toml_path else {
-        eprintln!("usage: ferric [--verbose|-v] <input.toml>");
+        eprintln!(
+            "usage: ferric [--verbose|-v] [--json <path>|--no-json] [--gpu <preset>] <input.toml>"
+        );
         std::process::exit(2);
     };
     let mut cfg = match load_config(toml_path) {
@@ -337,10 +381,8 @@ pub fn run(args: Vec<String>) {
         }
     };
     cfg.scf.verbose = cfg.scf.verbose || cli_verbose;
-    // libint primitive-screening precision for every SCF J/K engine. Process-wide
-    // (one CLI run is one job); validated here so a bad value fails before any work.
-    if let Err(e) = ferric_integrals::engine_pool::set_eri_precision(cfg.scf.eri_precision) {
-        eprintln!("error: [scf] {e}");
+    if let Err(e) = install_integral_settings(&cfg.scf) {
+        eprintln!("error: {e}");
         std::process::exit(1);
     }
     eprintln!(
@@ -592,6 +634,12 @@ pub fn run(args: Vec<String>) {
         ferric_core::memory::pool::install_global(pool);
         eprintln!("[ferric] {}", resolution.audit_line());
     }
+    // GPU backend: resolve + probe + install the device pool, or refuse an
+    // explicit `on` that cannot be honoured (no device, bad ordinal, or a build
+    // without the gpu feature). Runs before anything calls `gpu::status()` so
+    // the installed settings are the TOML-aware ones. Printed next to the
+    // memory audit so every run states where its GEMMs go.
+    install_gpu_or_exit(&cfg, cli_gpu);
     let rhf_config = RhfConfig {
         xc_omega: None,
         max_iter: cfg.scf.max_iter,
@@ -606,10 +654,15 @@ pub fn run(args: Vec<String>) {
         smearing_sigma: cfg.scf.smearing_sigma,
         integral_thresh: cfg.scf.integral_thresh,
         k_builder: cfg.scf.k_builder.clone(),
-        cosx: cfg.scf.cosx_config().unwrap_or_else(|e| {
-            eprintln!("error: {e}");
-            std::process::exit(1);
-        }),
+        cosx: cfg
+            .scf
+            .cosx_config(
+                ferric_core::gpu::settings().mixed_allows(ferric_core::gpu::MixedKernel::CosxKern),
+            )
+            .unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }),
         // Shared spelling parser: "exact"/"none"/"off"/"conventional" mean
         // the same "" (no density fitting) as in the Python bindings.
         df_j_aux: cfg.scf.df_j_aux_resolved().or(df_j_default),

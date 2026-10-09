@@ -18,6 +18,29 @@
 // the module's own scope. The explicit path is the house convention.
 #![allow(rustdoc::redundant_explicit_links)]
 
+/// A test seam: a `pub static AtomicBool` plus its private getter. With the
+/// `test-seams` feature off neither the static nor any load of it exists and the
+/// getter is a constant `false`, so a shipped build carries no mutable global.
+#[cfg(feature = "gpu")]
+macro_rules! seam_flag {
+    ($(#[$doc:meta])* $name:ident, $getter:ident) => {
+        $(#[$doc])*
+        #[cfg(feature = "test-seams")]
+        #[doc(hidden)]
+        pub static $name: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+        #[cfg(feature = "test-seams")]
+        fn $getter() -> bool {
+            $name.load(std::sync::atomic::Ordering::Relaxed)
+        }
+
+        #[cfg(not(feature = "test-seams"))]
+        fn $getter() -> bool {
+            false
+        }
+    };
+}
+
 // Compile-time guard against the one MPI feature combination that is silently
 // WRONG rather than merely unsupported: `ferric-core/mpi` ON while this crate's
 // own `mpi` is OFF.
@@ -87,10 +110,16 @@ pub mod aurora;
 pub mod cosx_gradient;
 /// COSX seminumerical exchange builder (grid-based K, overlap-fitted).
 pub mod cosx_k;
+/// Optional COSX SCF grid schedule (coarse grid early, production grid to convergence).
+pub mod cosx_schedule;
 /// Density-fitted Coulomb (J) matrix builder (RI-J).
 pub mod df_j;
+#[cfg(feature = "gpu")]
+pub mod df_j_gpu;
 /// Density-fitted exchange (K) matrix builder (RI-K).
 pub mod df_k;
+#[cfg(feature = "gpu")]
+pub mod df_k_gpu;
 /// DIIS convergence accelerator for SCF iterations.
 pub mod diis;
 /// Initial guess generators: core Hamiltonian, SAD, read-in.

@@ -1451,17 +1451,23 @@ fn solve_rhf_once(
     // here with `link_schwarz_opt == None` (COSX, which reads no bound at all).
     let link_bound =
         crate::screening::LinkBound::SchwarzRef(link_schwarz_opt.as_ref().unwrap_or(bounds));
-    let mut k_builder: Option<Box<dyn KBuilder>> = crate::fock_assembly::build_pluggable_k(
-        pluggable_k,
+    // Optional COSX grid schedule (`CosxConfig::schedule`, default off): the
+    // first builder is then on the coarse grid and `before_k_build` swaps in
+    // the production one. Without a schedule this is exactly
+    // `build_pluggable_k(.., &config.cosx, ..)`.
+    let k_args = crate::cosx_schedule::KBuilderArgs {
+        kind: pluggable_k,
         ctx,
         mol,
         prep,
-        &link_bound,
+        link_bound: &link_bound,
         op,
-        &config.cosx,
-        config.integral_thresh,
+        cosx: &config.cosx,
+        integral_thresh: config.integral_thresh,
         ooc_budget,
-    )?;
+    };
+    let (mut cosx_sched, mut k_builder): (_, Option<Box<dyn KBuilder>>) =
+        crate::cosx_schedule::start_with_builder(&k_args)?;
     // LinK's density-pair list must exist before the first build; the loop
     // refreshes it every iteration (`update_density` immediately before
     // `build`). No-op for COSX.
@@ -1526,7 +1532,8 @@ fn solve_rhf_once(
                               energy: f64,
                               iter: usize,
                               cq: usize,
-                              induced_dipoles: Option<Array2<f64>>|
+                              induced_dipoles: Option<Array2<f64>>,
+                              cosx_schedule: Option<crate::cosx_schedule::CosxScheduleRecord>|
      -> ScfResult {
         ScfResult {
             spin: Spin::Restricted,
@@ -1553,6 +1560,7 @@ fn solve_rhf_once(
             df_jk: df_jk_route.clone(),
             rohf_spin_focks: None,
             cosx_final: None,
+            cosx_schedule,
         }
     };
 
@@ -1647,6 +1655,15 @@ fn solve_rhf_once(
 
     for iter in 1..=config.max_iter {
         ctx.check_interrupted()?;
+        // COSX grid schedule: a pending coarse -> production switch rebuilds
+        // the builder and restarts DIIS here, before this iteration's K.
+        crate::cosx_schedule::before_k_build(
+            &mut cosx_sched,
+            iter,
+            &mut k_builder,
+            &mut diis,
+            &k_args,
+        )?;
         // One target-Hamiltonian J/K build happens below, unconditionally, on
         // every pass of this loop. Ticking here (rather than at each of the four
         // builder branches) keeps the count builder-independent, which is what
@@ -1805,7 +1822,14 @@ fn solve_rhf_once(
         // directly to the total rather than folded into the ½Tr[D·vhf] term).
         let e_elec_no_xc: f64 = 0.5 * (&d * &(&h + &f)).sum();
         let e_xc = if let Some(x) = xc_contrib.as_ref() {
-            x.add_xc(&d, &mut f)
+            // Occupied-factored density pass when `d_occ` caches the C_occ of
+            // the current D = 2·C_occ·C_occᵀ (None under smearing / on the
+            // first iteration); the XC side re-checks the pair and falls back
+            // to the dense D when they disagree.
+            match d_occ.as_ref() {
+                Some(c_occ) => x.add_xc_occ(&d, c_occ, &mut f),
+                None => x.add_xc(&d, &mut f),
+            }
         } else {
             0.0
         };
@@ -1915,7 +1939,14 @@ fn solve_rhf_once(
         // so we gate on ΔP and treat the commutator as diagnostic only. See
         // scf_converged. ΔP is INFINITY until the first density rebuild (iter
         // 1), so the `iter > 1` guard below is belt-and-suspenders on top.
-        let conv_exit = scf_converged(sig, config.energy_conv, config.density_conv);
+        // A COSX grid schedule closes the gate until the production grid
+        // defines both this density and its ΔD/ΔE (see `crate::cosx_schedule`).
+        let conv_exit = crate::cosx_schedule::gate(
+            &mut cosx_sched,
+            iter,
+            sig.dp_max,
+            scf_converged(sig, config.energy_conv, config.density_conv),
+        );
 
         // Divergence: energy climbing for consecutive iters (see ScfMonitor).
         if mon.diverging(energy, config.divergence_tol) {
@@ -1935,6 +1966,7 @@ fn solve_rhf_once(
                 iter,
                 total_quartets,
                 last_induced_dipoles.clone(),
+                crate::cosx_schedule::record(&cosx_sched),
             ));
         }
 
@@ -1956,6 +1988,7 @@ fn solve_rhf_once(
                 iter,
                 total_quartets,
                 last_induced_dipoles.clone(),
+                crate::cosx_schedule::record(&cosx_sched),
             ));
         }
 
@@ -2045,6 +2078,7 @@ fn solve_rhf_once(
                     df_jk: df_jk_route.clone(),
                     rohf_spin_focks: None,
                     cosx_final,
+                    cosx_schedule: crate::cosx_schedule::record(&cosx_sched),
                 });
             }
         }
@@ -2558,6 +2592,7 @@ fn solve_rhf_once(
         config.max_iter,
         total_quartets,
         last_induced_dipoles,
+        crate::cosx_schedule::record(&cosx_sched),
     ))
 }
 

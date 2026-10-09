@@ -38,6 +38,8 @@ pub struct Config {
     #[serde(default)]
     pub memory: MemoryCfg,
     #[serde(default)]
+    pub gpu: GpuSection,
+    #[serde(default)]
     pub external_potential: ExternalPotentialCfg,
     /// Optional `[cosmo]` section: COSMO implicit-solvent configuration.
     /// Absent (or explicit `None`) means no solvation — byte-identical to a
@@ -159,6 +161,122 @@ impl Config {
                 )
             })
             .collect()
+    }
+}
+
+/// `[gpu]` — the optional CUDA backend. Mode `off` (default) never loads
+/// CUDA; `auto` uses a device when present and prints a notice otherwise;
+/// `on` makes a missing device an error. All keys also exist as
+/// `FERRIC_GPU*` env vars; TOML wins.
+#[derive(Deserialize, Default, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct GpuCfg {
+    /// One word that sets `mode` and `precision` together (`off`, `auto`, `on`,
+    /// `mixed`, `auto-mixed`). The root key `gpu = "<preset>"` is the same.
+    pub preset: Option<String>,
+    pub mode: Option<String>,
+    pub device: Option<usize>,
+    pub memory_gb: Option<f64>,
+    pub min_flops: Option<usize>,
+    /// `"f64"` (default) or `"mixed"`. See the `[gpu]` table in the input reference.
+    pub precision: Option<String>,
+    /// Kernels allowed to run in mixed precision; requires `precision = "mixed"`.
+    pub mixed_kernels: Option<Vec<String>>,
+}
+
+impl GpuCfg {
+    /// Value checks: `mode`, `precision` and `mixed_kernels` parse and `memory_gb` is finite and > 0.
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(p) = &self.preset {
+            p.parse::<ferric_core::gpu::GpuPreset>()
+                .map_err(|e| format!("[gpu] preset: {e}"))?;
+        }
+        if let Some(s) = &self.mode {
+            s.parse::<ferric_core::gpu::GpuMode>()
+                .map_err(|e| format!("[gpu] mode: {e}"))?;
+        }
+        if let Some(g) = self.memory_gb {
+            if !(g.is_finite() && g > 0.0) {
+                return Err(format!("[gpu] memory_gb must be finite and > 0, got {g}"));
+            }
+        }
+        if let Some(p) = &self.precision {
+            p.parse::<ferric_core::gpu::Precision>()
+                .map_err(|e| format!("[gpu] precision: {e}"))?;
+        }
+        if let Some(ks) = &self.mixed_kernels {
+            ks.join(",")
+                .parse::<ferric_core::gpu::MixedKernelSet>()
+                .map_err(|e| format!("[gpu] mixed_kernels: {e}"))?;
+        }
+        Ok(())
+    }
+
+    /// The typed TOML side of the resolution. Call [`GpuCfg::validate`] first
+    /// (`load_config` does); an unparsable `mode` reads as unset here.
+    pub fn explicit(&self) -> ferric_core::gpu::GpuSettingsExplicit {
+        ferric_core::gpu::GpuSettingsExplicit {
+            cli_preset: None,
+            preset: self.preset.as_deref().and_then(|s| s.parse().ok()),
+            mode: self.mode.as_deref().and_then(|s| s.parse().ok()),
+            device: self.device,
+            memory_gb: self.memory_gb,
+            min_flops: self.min_flops,
+            precision: self.precision.as_deref().and_then(|s| s.parse().ok()),
+            mixed_kernels: self
+                .mixed_kernels
+                .as_ref()
+                .and_then(|ks| ks.join(",").parse().ok()),
+        }
+    }
+}
+
+/// `[gpu]` as a table, or the root shorthand `gpu = "<preset>"`. TOML cannot
+/// hold both under the one key `gpu`, so the parser itself refuses the pair
+/// (duplicate key `gpu`).
+pub enum GpuSection {
+    Preset(String),
+    Table(GpuCfg),
+}
+
+impl Default for GpuSection {
+    fn default() -> Self {
+        GpuSection::Table(GpuCfg::default())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for GpuSection {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let v = toml::Value::deserialize(d)?;
+        match v {
+            toml::Value::String(s) => Ok(GpuSection::Preset(s)),
+            toml::Value::Table(_) => GpuCfg::deserialize(v)
+                .map(GpuSection::Table)
+                .map_err(D::Error::custom),
+            other => Err(D::Error::custom(format!(
+                "gpu: expected a preset string (gpu = \"mixed\") or a [gpu] table, got {}",
+                other.type_str()
+            ))),
+        }
+    }
+}
+
+impl GpuSection {
+    fn as_cfg(&self) -> GpuCfg {
+        match self {
+            GpuSection::Preset(p) => GpuCfg {
+                preset: Some(p.clone()),
+                ..Default::default()
+            },
+            GpuSection::Table(t) => t.clone(),
+        }
+    }
+    pub fn validate(&self) -> Result<(), String> {
+        self.as_cfg().validate()
+    }
+    pub fn explicit(&self) -> ferric_core::gpu::GpuSettingsExplicit {
+        self.as_cfg().explicit()
     }
 }
 
@@ -2099,6 +2217,13 @@ pub struct ScfCfg {
     /// loosest value measured to reach double precision; 1e-14 left up to
     /// 6e-9 Ha in E_J). `0 ≤ p ≤ 1e-8`; 0 disables primitive screening.
     pub eri_precision: Option<f64>,
+    /// Where the raw RI-J/K three-index tensor lives: `"auto"` (default),
+    /// `"memory"`, `"disk"` or `"direct"`. `auto` keeps it in memory when it
+    /// fits `[memory] budget_gb` (packed when only the symmetric half fits),
+    /// and otherwise picks disk or recompute from a rate measured on this
+    /// machine. `memory` errors when it does not fit; `disk` always spills;
+    /// `direct` always recomputes. Omitted: `FERRIC_JK_STORAGE` if set.
+    pub jk_storage: Option<String>,
     /// Exchange builder: "direct" (default), "link", or "cosx" (seminumerical
     /// COSX exchange). Honoured by RHF, UHF and ROHF. Ignored with a warning
     /// when DF-J/DF-K is active, when the functional uses no exact exchange, or
@@ -2184,6 +2309,15 @@ pub struct ScfCfg {
     /// The COSX final grid, same table as `cosx_grid`. Setting it turns the
     /// final pass on.
     pub cosx_final_grid: Option<CosxGridCfg>,
+    /// COSX SCF grid schedule (ORCA style). `true` runs the early iterations
+    /// on the coarse pruned sgx (25,110) grid
+    /// (`ferric_scf::cosx_schedule::COSX_DEFAULT_COARSE_GRID`), switches to
+    /// `cosx_grid` once the incoming max|ΔD| < 1e-3
+    /// (`COSX_DEFAULT_SWITCH_DP_MAX`), and accepts convergence only on the
+    /// `cosx_grid`; the final pass is unchanged. Omitted / `false` = every
+    /// iteration on `cosx_grid`. RHF/RKS and UHF/UKS only (ROHF/ROKS refuse
+    /// it). Setting it with `k_builder != "cosx"` is a hard error.
+    pub cosx_grid_schedule: Option<bool>,
     /// COSX overlap fit (Izsák–Neese). Omitted = `true`. At (50,110) the fit
     /// took the isodesmic reaction-energy error 0.2068 -> 0.0190 kcal/mol
     /// (water-favourable set); it is net-NEGATIVE on grids coarser than
@@ -2210,6 +2344,15 @@ pub struct ScfCfg {
     /// Unknown values and setting this with `k_builder != "cosx"` are hard
     /// errors.
     pub cosx_half_transform: Option<String>,
+    /// COSX precision-router threshold multiplier `m` (`tau = m *
+    /// cosx_screen_thresh`; Laqua/Kussmann/Ochsenfeld JCP 154, 214116 (2021)
+    /// seed `1e5`). Float >= 0. Read only with `k_builder = "cosx"`,
+    /// `[gpu] precision = "mixed"` and `cosx-kern` in `mixed_kernels`;
+    /// set in any other configuration it is a hard error. Omitted = `1e5`
+    /// when those conditions hold (and the md3c1e backend with a positive
+    /// screen is in use), else `0` (router off). It only classifies and
+    /// counts: K is unchanged.
+    pub cosx_fp64_multiplier: Option<f64>,
     /// Aux basis for density-fitted Coulomb (RI-J), or `""` / `"exact"` /
     /// `"none"` / `"off"` / `"conventional"` for conventional four-centre J
     /// (see [`ScfCfg::df_j_aux_resolved`]). Omitted = the method's default.
@@ -2362,15 +2505,18 @@ impl Default for ScfCfg {
             soscf: false,
             integral_thresh: 1e-12,
             eri_precision: None,
+            jk_storage: None,
             k_builder: None,
             screening: None,
             cosx_grid: None,
             cosx_final_pass: None,
             cosx_final_grid: None,
+            cosx_grid_schedule: None,
             cosx_overlap_fit: None,
             cosx_backend: None,
             cosx_screen_thresh: None,
             cosx_half_transform: None,
+            cosx_fp64_multiplier: None,
             df_j_aux: None,
             df_k_aux: None,
             level_shift: None,
@@ -2434,19 +2580,27 @@ impl ScfCfg {
     /// is exactly what the config-honesty convention forbids); an untabulated
     /// Lebedev order is a hard error here rather than a panic inside the grid
     /// builder; an unknown backend name is a hard error, never a default.
-    pub fn cosx_config(&self) -> Result<ferric_scf::cosx_k::CosxConfig, String> {
+    /// `router_allowed` is the resolved `[gpu]` side, true iff `precision = mixed`
+    /// AND `cosx-kern` is in the allowed kernel set
+    /// (`GpuSettings::mixed_allows(MixedKernel::CosxKern)`).
+    pub fn cosx_config(
+        &self,
+        router_allowed: bool,
+    ) -> Result<ferric_scf::cosx_k::CosxConfig, String> {
         use ferric_scf::cosx_k::{validate_grid, CosxBackend, CosxConfig, CosxHalfTransform};
         let is_cosx = self.k_builder.as_deref() == Some("cosx");
         let any_cosx_knob = self.cosx_grid.is_some()
             || self.cosx_final_pass.is_some()
             || self.cosx_final_grid.is_some()
+            || self.cosx_grid_schedule.is_some()
             || self.cosx_overlap_fit.is_some()
             || self.cosx_backend.is_some()
             || self.cosx_screen_thresh.is_some()
-            || self.cosx_half_transform.is_some();
+            || self.cosx_half_transform.is_some()
+            || self.cosx_fp64_multiplier.is_some();
         if !is_cosx && any_cosx_knob {
             return Err(format!(
-                "[scf] cosx_grid / cosx_final_pass / cosx_final_grid / cosx_overlap_fit / cosx_backend / cosx_screen_thresh / cosx_half_transform are set but k_builder = {:?}; they are only read with k_builder = \"cosx\"",
+                "[scf] cosx_grid / cosx_final_pass / cosx_final_grid / cosx_grid_schedule / cosx_overlap_fit / cosx_backend / cosx_screen_thresh / cosx_half_transform / cosx_fp64_multiplier are set but k_builder = {:?}; they are only read with k_builder = \"cosx\"",
                 self.k_builder
             ));
         }
@@ -2464,6 +2618,10 @@ impl ScfCfg {
         ferric_scf::cosx_k::apply_grid_knobs(&mut cfg, grid, self.cosx_final_pass, final_grid)
             .map_err(|e| format!("[scf] {e}"))?;
         validate_grid(&cfg.grid).map_err(|e| format!("[scf] cosx_grid: {e}"))?;
+        cfg.schedule = self
+            .cosx_grid_schedule
+            .unwrap_or(false)
+            .then(ferric_scf::cosx_schedule::CosxGridSchedule::default);
         if let Some(fit) = self.cosx_overlap_fit {
             cfg.overlap_fit = fit;
         }
@@ -2487,7 +2645,30 @@ impl ScfCfg {
             None if cfg.backend == CosxBackend::CosxA => cfg.screen_thresh = None,
             None => {}
         }
+        cfg.fp64_multiplier = self.resolve_fp64_multiplier(&cfg, router_allowed)?;
         Ok(cfg)
+    }
+
+    /// `[scf] cosx_fp64_multiplier`: refused as a dead knob unless the router
+    /// can act, defaulted to the seed only when it can.
+    fn resolve_fp64_multiplier(
+        &self,
+        cfg: &ferric_scf::cosx_k::CosxConfig,
+        router_allowed: bool,
+    ) -> Result<f64, String> {
+        use ferric_scf::cosx_k::{CosxBackend, COSX_DEFAULT_FP64_MULTIPLIER};
+        let acts =
+            cfg.backend == CosxBackend::Md3c1e && matches!(cfg.screen_thresh, Some(t) if t > 0.0);
+        match self.cosx_fp64_multiplier {
+            Some(m) if !(m >= 0.0) || !m.is_finite() => Err(format!(
+                "[scf] cosx_fp64_multiplier = {m}: must be a finite value >= 0 (0 disables the router)"
+            )),
+            Some(_) if !router_allowed => Err("[scf] cosx_fp64_multiplier requires k_builder = \"cosx\" and [gpu] precision = \"mixed\" with cosx-kern in mixed_kernels".into()),
+            Some(m) if m > 0.0 && !acts => Err("[scf] cosx_fp64_multiplier > 0 needs cosx_backend = \"md3c1e\" and cosx_screen_thresh > 0 (the router classifies by the screen's bound)".into()),
+            Some(m) => Ok(m),
+            None if router_allowed && acts => Ok(COSX_DEFAULT_FP64_MULTIPLIER),
+            None => Ok(0.0),
+        }
     }
 
     /// Parse the `diis` string into a `DiisFlavor` (strict — unknown values are a
@@ -2516,6 +2697,16 @@ impl ScfCfg {
                 .map_err(|e| format!("[scf] guess: {e}")),
         }
     }
+    /// The `[scf] jk_storage` policy, strictly parsed.
+    pub fn jk_storage_policy(
+        &self,
+    ) -> Result<Option<ferric_integrals::three_index_source::JkStorage>, String> {
+        self.jk_storage
+            .as_deref()
+            .map(ferric_integrals::three_index_source::JkStorage::parse)
+            .transpose()
+            .map_err(|e| format!("[scf] {e}"))
+    }
     /// Post-parse validation of the `[scf]` string knobs whose resolution is
     /// otherwise deferred to the point of use. Called from [`load_config`] so
     /// every entry point (CLI and `ferric-batch`) fails before any integral is
@@ -2527,6 +2718,7 @@ impl ScfCfg {
             (ferric_integrals::engine_pool::ERI_PRECISION_VAR.validate)(&p)
                 .map_err(|e| format!("[scf] eri_precision {p:e}: {e}"))?;
         }
+        self.jk_storage_policy()?;
         for (i, rung) in self.ladder.iter().enumerate() {
             rung.use_sad_guess()
                 .map_err(|e| format!("[[scf.ladder]] rung {i}: {e}"))?;
@@ -3108,6 +3300,7 @@ impl Config {
     /// CLI-wired keys.
     fn validate_loaded_values(&self) -> Result<(), String> {
         self.memory.validate()?;
+        self.gpu.validate()?;
         self.scf.validate()?;
         self.mp2.linlccd_variant()?;
         self.local_model()?;
@@ -4646,6 +4839,23 @@ json = [1, 2]
         }
     }
 
+    /// `[scf] jk_storage` is strict: the four spellings parse, anything else
+    /// errors at load and lists them.
+    #[test]
+    fn scf_jk_storage_is_strict() {
+        assert_eq!(scf_cfg("").jk_storage_policy().unwrap(), None);
+        for v in ["auto", "memory", "disk", "direct"] {
+            let cfg = scf_cfg(&format!("jk_storage = \"{v}\""));
+            assert!(cfg.validate().is_ok(), "{v}");
+            assert_eq!(cfg.jk_storage_policy().unwrap().unwrap().as_str(), v);
+        }
+        let err = scf_cfg("jk_storage = \"ram\"").validate().unwrap_err();
+        assert!(
+            err.contains("jk_storage") && err.contains("\"direct\""),
+            "{err}"
+        );
+    }
+
     /// `[scf] guess` used to accept ANY string: everything but "hcore" silently
     /// ran MINAO, so `guess = "hcroe"` produced a MINAO run the user did not ask
     /// for. Now: the valid spellings resolve, anything else errors and lists them.
@@ -4783,6 +4993,126 @@ json = [1, 2]
         }
     }
 
+    /// `[scf] cosx_fp64_multiplier`: default 0 (router off), `1e5` only when
+    /// the router is allowed, explicit values honoured, dead knob refused.
+    #[test]
+    fn cosx_fp64_multiplier_resolves_and_refuses_dead_knobs() {
+        let parse = |scf: &str| -> Config {
+            toml::from_str(&format!(
+                "[molecule]\nxyz = \"w.xyz\"\n[basis]\nname = \"sto-3g\"\n[method]\nkind = \"rhf\"\n[scf]\n{scf}"
+            ))
+            .unwrap()
+        };
+        let cosx = "k_builder = \"cosx\"\n";
+        // Router not allowed (f64 / cosx-kern not allowed): off, key absent.
+        let c = parse(cosx).scf.cosx_config(false).unwrap();
+        assert_eq!(c.fp64_multiplier, 0.0);
+        assert_eq!(
+            parse(cosx).scf.cosx_config(false).unwrap().fp64_multiplier,
+            0.0
+        );
+        // Allowed: the seed default; explicit values (including 0) win.
+        let c = parse(cosx).scf.cosx_config(true).unwrap();
+        assert_eq!(c.fp64_multiplier, 1e5);
+        for (v, want) in [("1e4", 1e4), ("0.0", 0.0), ("1e6", 1e6)] {
+            let c = parse(&format!("{cosx}cosx_fp64_multiplier = {v}\n"))
+                .scf
+                .cosx_config(true)
+                .unwrap();
+            assert_eq!(c.fp64_multiplier, want, "{v}");
+        }
+        // Allowed but the screen is off: nothing to route, default stays 0.
+        let c = parse(&format!("{cosx}cosx_screen_thresh = 0.0\n"))
+            .scf
+            .cosx_config(true)
+            .unwrap();
+        assert_eq!(c.fp64_multiplier, 0.0);
+        // Dead knob: any value while not allowed names the three conditions.
+        let e = parse(&format!("{cosx}cosx_fp64_multiplier = 1e5\n"))
+            .scf
+            .cosx_config(false)
+            .unwrap_err();
+        assert_eq!(e, "[scf] cosx_fp64_multiplier requires k_builder = \"cosx\" and [gpu] precision = \"mixed\" with cosx-kern in mixed_kernels");
+        let e = parse("k_builder = \"direct\"\ncosx_fp64_multiplier = 1e5\n")
+            .scf
+            .cosx_config(true)
+            .unwrap_err();
+        assert!(e.contains("only read with k_builder = \"cosx\""), "{e}");
+        // Bad values and a router that cannot act.
+        for bad in ["-1.0", "nan", "inf"] {
+            let e = parse(&format!("{cosx}cosx_fp64_multiplier = {bad}\n"))
+                .scf
+                .cosx_config(true)
+                .unwrap_err();
+            assert!(e.contains("finite value >= 0"), "{bad}: {e}");
+        }
+        let e = parse(&format!(
+            "{cosx}cosx_screen_thresh = 0.0\ncosx_fp64_multiplier = 1e5\n"
+        ))
+        .scf
+        .cosx_config(true)
+        .unwrap_err();
+        assert!(e.contains("cosx_screen_thresh > 0"), "{e}");
+    }
+
+    /// `[scf] cosx_grid_schedule`: off by default, `true` = the library
+    /// schedule defaults, a dead knob (hard error) without k_builder = "cosx"
+    /// even when `false`, and a strict bool.
+    #[test]
+    fn cosx_grid_schedule_key_resolves_strictly() {
+        let parse = |scf: &str| -> Config {
+            toml::from_str(&format!(
+                "[molecule]\nxyz = \"w.xyz\"\n[basis]\nname = \"sto-3g\"\n[method]\nkind = \"rhf\"\n[scf]\n{scf}"
+            ))
+            .unwrap()
+        };
+        // Grid schedule: off by default, on with the library defaults, dead
+        // knob without k_builder = "cosx" (also when set to false).
+        assert!(parse("k_builder = \"cosx\"\n")
+            .scf
+            .cosx_config(false)
+            .unwrap()
+            .schedule
+            .is_none());
+        assert!(parse("k_builder = \"cosx\"\ncosx_grid_schedule = false\n")
+            .scf
+            .cosx_config(false)
+            .unwrap()
+            .schedule
+            .is_none());
+        let s = parse("k_builder = \"cosx\"\ncosx_grid_schedule = true\n")
+            .scf
+            .cosx_config(false)
+            .unwrap()
+            .schedule
+            .expect("schedule on");
+        assert_eq!(
+            (
+                s.coarse_grid.n_radial,
+                s.coarse_grid.n_angular,
+                s.coarse_grid.prune
+            ),
+            ferric_scf::cosx_schedule::COSX_DEFAULT_COARSE_GRID
+        );
+        assert_eq!(
+            s.switch_dp_max,
+            ferric_scf::cosx_schedule::COSX_DEFAULT_SWITCH_DP_MAX
+        );
+        for kb in ["", "k_builder = \"link\"\n", "k_builder = \"direct\"\n"] {
+            for v in ["true", "false"] {
+                let e = parse(&format!("{kb}cosx_grid_schedule = {v}\n"))
+                    .scf
+                    .cosx_config(false)
+                    .unwrap_err();
+                assert!(e.contains("cosx_grid_schedule"), "{e}");
+            }
+        }
+        assert!(toml::from_str::<Config>(
+            "[molecule]\nxyz = \"w.xyz\"\n[basis]\nname = \"sto-3g\"\n[method]\nkind = \"rhf\"\n[scf]\nk_builder = \"cosx\"\ncosx_grid_schedule = \"yes\"\n"
+        )
+        .is_err());
+    }
+
     /// `[scf] cosx_grid` / `cosx_overlap_fit`: parse, resolve, and refuse
     /// when they would be dead knobs (k_builder != "cosx") or name an
     /// untabulated Lebedev order.
@@ -4796,14 +5126,17 @@ json = [1, 2]
         };
         // Defaults: pruned sgx (35,194) plus the sgx (50,302) final pass, fit
         // on, density-driven screen at the library default.
-        let c = parse("k_builder = \"cosx\"\n").scf.cosx_config().unwrap();
+        let c = parse("k_builder = \"cosx\"\n")
+            .scf
+            .cosx_config(false)
+            .unwrap();
         assert_eq!((c.grid.n_radial, c.grid.n_angular), (35, 194));
         assert_eq!(c.grid.prune, Some(ferric_dft::prune::PruneScheme::Sgx));
         assert!(c.final_grid.is_some() && !c.final_pass_explicit);
         // cosx_final_pass = false turns the default pass off.
         let c = parse("k_builder = \"cosx\"\ncosx_final_pass = false\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .unwrap();
         assert!(c.final_grid.is_none());
         assert!(c.overlap_fit);
@@ -4818,7 +5151,7 @@ json = [1, 2]
         // Half transform: both spellings resolve, unknown values and dead knobs error.
         let c = parse("k_builder = \"cosx\"\ncosx_half_transform = \"dense\"\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .unwrap();
         assert_eq!(
             c.half_transform,
@@ -4826,7 +5159,7 @@ json = [1, 2]
         );
         let c = parse("k_builder = \"cosx\"\ncosx_half_transform = \"sparse\"\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .unwrap();
         assert_eq!(
             c.half_transform,
@@ -4835,13 +5168,13 @@ json = [1, 2]
         assert!(
             parse("k_builder = \"cosx\"\ncosx_half_transform = \"Dense\"\n")
                 .scf
-                .cosx_config()
+                .cosx_config(false)
                 .is_err()
         );
         assert!(
             parse("k_builder = \"link\"\ncosx_half_transform = \"dense\"\n")
                 .scf
-                .cosx_config()
+                .cosx_config(false)
                 .is_err()
         );
         // Screen knob: explicit value honoured, 0 disables, negative/NaN refused,
@@ -4849,47 +5182,47 @@ json = [1, 2]
         // (which resolves to None by itself, never a refusal from the default).
         let c = parse("k_builder = \"cosx\"\ncosx_screen_thresh = 1e-9\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .unwrap();
         assert_eq!(c.screen_thresh, Some(1e-9));
         let c = parse("k_builder = \"cosx\"\ncosx_screen_thresh = 0.0\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .unwrap();
         assert_eq!(c.screen_thresh, Some(0.0));
         assert!(parse("k_builder = \"cosx\"\ncosx_screen_thresh = -1e-7\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .is_err());
         assert!(parse("k_builder = \"cosx\"\ncosx_screen_thresh = nan\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .is_err());
         assert!(parse("k_builder = \"link\"\ncosx_screen_thresh = 1e-7\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .is_err());
         assert!(parse(
             "k_builder = \"cosx\"\ncosx_backend = \"cosx-a\"\ncosx_screen_thresh = 1e-7\n"
         )
         .scf
-        .cosx_config()
+        .cosx_config(false)
         .is_err());
         let c = parse("k_builder = \"cosx\"\ncosx_backend = \"cosx-a\"\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .unwrap();
         assert!(c.screen_thresh.is_none());
         let c =
             parse("k_builder = \"cosx\"\ncosx_backend = \"cosx-a\"\ncosx_screen_thresh = 0.0\n")
                 .scf
-                .cosx_config()
+                .cosx_config(false)
                 .unwrap();
         assert_eq!(c.screen_thresh, Some(0.0));
         // Explicit knobs are honoured.
         let c = parse("k_builder = \"cosx\"\ncosx_grid = { radial = 75, angular = 302 }\ncosx_overlap_fit = false\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .unwrap();
         assert_eq!((c.grid.n_radial, c.grid.n_angular), (75, 302));
         assert!(!c.overlap_fit);
@@ -4898,42 +5231,42 @@ json = [1, 2]
         assert_eq!(c.backend, CosxBackend::Md3c1e);
         let c = parse("k_builder = \"cosx\"\ncosx_backend = \"cosx-a\"\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .unwrap();
         assert_eq!(c.backend, CosxBackend::CosxA);
         let c = parse("k_builder = \"cosx\"\ncosx_backend = \"md3c1e\"\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .unwrap();
         assert_eq!(c.backend, CosxBackend::Md3c1e);
         assert!(parse("k_builder = \"cosx\"\ncosx_backend = \"libint\"\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .is_err());
         assert!(parse("k_builder = \"cosx\"\ncosx_backend = \"cosx_a\"\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .is_err());
         // Dead-knob refusal.
         assert!(parse("cosx_overlap_fit = false\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .is_err());
         assert!(parse("cosx_backend = \"md3c1e\"\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .is_err());
         assert!(
             parse("k_builder = \"link\"\ncosx_grid = { radial = 50, angular = 110 }\n")
                 .scf
-                .cosx_config()
+                .cosx_config(false)
                 .is_err()
         );
         // Untabulated angular order is a typed error, not a panic.
         assert!(
             parse("k_builder = \"cosx\"\ncosx_grid = { radial = 50, angular = 146 }\n")
                 .scf
-                .cosx_config()
+                .cosx_config(false)
                 .is_err()
         );
         // Typo inside the inline table hard-errors at parse time.
