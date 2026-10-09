@@ -345,6 +345,7 @@ impl KPointMesh {
     }
 }
 
+/// Reciprocal lattice rows `b_i = 2π (a_j × a_k)/det(a)` (Bohr⁻¹) of lattice rows `a` (Bohr).
 fn reciprocal_of(a: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let cross = |x: &[f64; 3], y: &[f64; 3]| {
         [

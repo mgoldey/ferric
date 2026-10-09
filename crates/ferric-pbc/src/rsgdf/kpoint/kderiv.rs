@@ -147,6 +147,7 @@ pub(in crate::rsgdf) struct KLrForce {
 }
 
 impl KLrForce {
+    /// All-zero accumulators for `n` parent AOs and `naux` aux functions.
     fn zeros(n: usize, naux: usize) -> Self {
         Self {
             orb_ao: vec![[0.0; 3]; n],
@@ -242,6 +243,7 @@ fn loewner(s: &[f64], keep: &[bool]) -> (Vec<f64>, Array2<f64>) {
     (f, lo)
 }
 
+/// Conjugate transpose.
 fn herm(m: &Array2<C64>) -> Array2<C64> {
     m.t().mapv(|z| z.conj())
 }
@@ -1035,6 +1037,7 @@ struct KSrBins<'a> {
 }
 
 impl<'a> KSrBins<'a> {
+    /// Number of `T` residue bins (`∏ mod_t`).
     fn rt(&self) -> usize {
         self.mod_t.iter().product()
     }

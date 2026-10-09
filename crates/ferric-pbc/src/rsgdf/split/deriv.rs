@@ -134,6 +134,7 @@ struct SplitUnit<V> {
 }
 
 impl<V: Stored> Stored for SplitUnit<V> {
+    /// Heap bytes held: the struct plus 32 bytes of bookkeeping and the value's own bytes per item.
     fn stored_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
             + self
@@ -154,6 +155,7 @@ struct Sr3Contrib {
 }
 
 impl Stored for Sr3Contrib {
+    /// Heap bytes held: the struct plus 24 bytes per aux-function force row.
     fn stored_bytes(&self) -> usize {
         std::mem::size_of::<Self>() + 24 * self.gpx.len()
     }
@@ -165,6 +167,8 @@ impl SplitPlan {
         !self.aux.s_sh.is_empty()
     }
 
+    /// Pool of erfc(ω) 3-centre derivative engines over the pair-piece orbital basis and the aux
+    /// pieces, one per rayon worker.
     fn sr3_deriv_pool(&self, st: &Stage<'_>) -> Result<EnginePool, FerricError> {
         EnginePool::from_fn(|| {
             Engine::new_3center_deriv(
@@ -176,6 +180,7 @@ impl SplitPlan {
         })
     }
 
+    /// Pool of erfc(ω) 2-centre derivative engines over the aux pieces, one per rayon worker.
     fn sr2_deriv_pool(&self, st: &Stage<'_>) -> Result<EnginePool, FerricError> {
         EnginePool::from_fn(|| {
             Engine::new_2center_deriv(Operator::erfc(st.omega), &self.aux.x, ENGINE_PRECISION)
@@ -661,6 +666,9 @@ struct AuxChunk {
 }
 
 impl AuxChunk {
+    /// Computes the per-chunk aux FT quantities for the G chunk `gs` (Bohr⁻¹, Cartesian): `X`,
+    /// `X_s`, `X_c` for the full, smooth and compact aux pieces, `Wt` from the `(w_LR, w_SR)`
+    /// weights `w` per G, and the `Wm X` products with the `(naux, naux)` matrix `wm`.
     fn new(
         plan: &SplitPlan,
         st: &Stage<'_>,
@@ -931,6 +939,9 @@ fn v(a: &(Array2<f64>, Array2<f64>)) -> (&Array2<f64>, &Array2<f64>) {
 }
 
 impl AuxStrainChunk {
+    /// Computes the per-chunk aux FT values and their strain derivatives for the G chunk `gs`
+    /// (Bohr⁻¹, Cartesian); `g_shape` is forwarded to `aux_ft_strain_shells`. `wm` is the `(naux,
+    /// naux)` weight matrix.
     fn new(
         plan: &SplitPlan,
         st: &Stage<'_>,

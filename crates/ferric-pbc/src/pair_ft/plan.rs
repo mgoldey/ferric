@@ -386,6 +386,7 @@ struct ShellGroup {
 }
 
 impl ShellGroup {
+    /// Number of shells in the group.
     fn len(&self) -> usize {
         self.s1 - self.s0
     }
@@ -426,10 +427,13 @@ pub(crate) struct PairFtPlan {
     who: &'static str,
 }
 
+/// Squared Euclidean norm of a Cartesian 3-vector.
 fn norm2(g: &[f64; 3]) -> f64 {
     g[0] * g[0] + g[1] * g[1] + g[2] * g[2]
 }
 
+/// Whether two slices have equal length and bitwise-identical elements (distinguishes `-0.0` from
+/// `0.0`).
 fn same_bits(x: &[f64], y: &[f64]) -> bool {
     x.len() == y.len() && x.iter().zip(y).all(|(a, b)| a.to_bits() == b.to_bits())
 }
@@ -1468,6 +1472,8 @@ struct WindowTally {
 }
 
 impl WindowTally {
+    /// Records a shell-pair window: `n_used` of the chunk's `ng` G vectors are accumulated (`0` =
+    /// empty, `< ng` = partial).
     fn count(&mut self, n_used: usize, ng: usize) {
         self.pairs += 1;
         if n_used == 0 {
@@ -1581,6 +1587,9 @@ struct ChunkG {
 }
 
 impl ChunkG {
+    /// Sorts `gvecs` by ascending `|G|²` (stable), then forms `|G|²`, the powers `(−iG_d)^t` for `t
+    /// < 2 lmax + 1`, the exp table over the slots (`slot_p`, `slot_g2max`) and, with a phase
+    /// `split`, the Miller indices.
     fn new(
         gvecs: &[[f64; 3]],
         lmax: usize,
