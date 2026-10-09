@@ -261,7 +261,12 @@ analytic where it applies), `"analytic"` (an error where it does not) or
 `ferric.run_saddle(mol, basis_name, xc=...)` searches for a first-order saddle
 by P-RFO, using two finite-difference Hessians with Bofill updates between
 them; it costs `2(6N + 1) + (n_steps + 1)` gradient evaluations and refuses to
-start from a geometry with no negative mode. `result.is_transition_state()`
+start from a geometry with no negative mode. `hessian="analytic"` (or `"auto"`,
+which falls back to finite differences where the analytic Hessian does not
+apply) swaps in the analytic RHF Hessian, which needs no displaced gradients;
+`"analytic"` raises for KS `xc`, point charges / an external field, ECPs or a
+basis above the libint second-derivative limit, `delta=` is only valid with
+`"fd"`, and `result.hessian_source` says which ran. The default is `"fd"`. `result.is_transition_state()`
 requires both convergence and exactly one imaginary frequency.
 `ferric.run_irc(mol, basis_name, result.imaginary_mode)` then follows the
 reaction path both ways to show which minima the saddle connects (measured

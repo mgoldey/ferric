@@ -17,13 +17,44 @@
 //!
 //! # Which Hessian, and why it is the expensive part
 //!
-//! This driver uses [`crate::frequencies::harmonic_frequencies`] for every
-//! method; the analytic [`crate::hessian::rhf_hessian`] (closed-shell RHF with
-//! exact J/K only) is not wired in. The FD Hessian CENTRAL-DIFFERENCES the
-//! analytic gradient: **6N gradient evaluations** (MEASURED via the gradient
-//! counter: H2 = 12, water = 18 -- exactly 6N, not 6N+1).
+//! [`find_saddle`] takes the Hessian as a callback, so it does not care how it
+//! is built. The default callers (Python `run_saddle`, `hessian="fd"`) use
+//! [`crate::frequencies::harmonic_frequencies`] with
+//! `HessianMethod::FiniteDifference`, which CENTRAL-DIFFERENCES the analytic
+//! gradient: **6N gradient evaluations** (MEASURED via the gradient counter:
+//! H2 = 12, water = 18 -- exactly 6N, not 6N+1; plus the undisplaced one).
 //!
-//! That cost is why [`crate::saddle::SaddleConfig::hessian_recalc_every`] exists and defaults
+//! The callback MAY be analytic: `harmonic_frequencies` with
+//! `HessianMethod::Analytic` (or `Auto`) runs [`crate::hessian::rhf_hessian`]
+//! (closed-shell RHF with exact J/K only, one SCF + CPHF, zero displaced
+//! gradients) and returns `cartesian_hessian` in the same convention, so it
+//! drops straight into the callback. `Analytic` refuses unsupported systems
+//! with a typed error, `Auto` falls back to FD; the callback can read
+//! `FrequencyResult::hessian_source` to report which. Python exposes this as
+//! the opt-in `run_saddle(..., hessian="analytic"|"auto")`; the default stays
+//! FD. `tests/saddle_analytic_hessian.rs` drives it.
+//!
+//! MEASURED gradient counts, NH3 inversion from a near-planar start,
+//! RHF/STO-3G (N = 4, so an FD Hessian costs 6N + 1 = 25 gradients). Counts
+//! include the Hessians' internal gradients; the search itself makes 7:
+//!
+//! ```text
+//!   hessian_recalc_every   FD gradients (Hessians)   analytic gradients   steps
+//!            0 (default)          57  (2)                    7               6
+//!            3                   107  (4)                    7               6
+//!            2                   132  (5)                    7               6
+//!            1                   207  (8)                    7               6
+//! ```
+//!
+//! The analytic and FD searches take the same 6 steps to the same saddle
+//! (geometry within 3e-8 Bohr, energy within 3e-12 Ha), and recalculating the
+//! Hessian more often did NOT reduce the step count on this system -- the
+//! Bofill-updated Hessian is already good enough here -- so
+//! `hessian_recalc_every` stays 0. (An analytic Hessian still costs one SCF
+//! plus CPHF, not zero work; the table counts gradient evaluations only, the
+//! `saddle_cost.rs` convention, not wall time.)
+//!
+//! The FD cost is why [`crate::saddle::SaddleConfig::hessian_recalc_every`] exists and defaults
 //! to 0 (never recompute). Rebuilding the Hessian at every step would make a
 //! 10-atom search cost 60 gradients per step, which is not a search, it is a
 //! Hessian benchmark. Between recomputations the Hessian is carried forward by

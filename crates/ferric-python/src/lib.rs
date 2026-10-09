@@ -9852,6 +9852,10 @@ struct PySaddleResult {
     imaginary_mode: Option<Vec<f64>>,
     #[pyo3(get)]
     lowest_eigenvalue: f64,
+    /// Which construction produced the Hessian of the FINAL geometry (the one
+    /// behind `n_imaginary`): "finite-difference" or "analytic".
+    #[pyo3(get)]
+    hessian_source: String,
 }
 
 #[pymethods]
@@ -9885,11 +9889,21 @@ impl PySaddleResult {
 /// Raises if the starting geometry has NO negative projected mode -- P-RFO from
 /// a minimum's basin has nothing to climb, and returning a result from there
 /// would be a minimum labelled as a transition state.
+///
+/// `hessian`: "fd" (default, unchanged behaviour) builds every Hessian by
+/// central differences of the analytic gradient, honouring `delta`. "analytic"
+/// uses the analytic closed-shell RHF Hessian (one SCF plus CPHF per Hessian,
+/// no displaced gradients) and raises, naming the reason, when it does not
+/// apply (KS `xc`, point charges / external field, ECP, a basis above the
+/// libint second-derivative limit). "auto" uses the analytic Hessian where it
+/// applies and otherwise falls back to "fd"; `.hessian_source` says which ran.
+/// `delta` is only meaningful with "fd": combining it with "auto" or
+/// "analytic" raises rather than being silently ignored.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_name, xc=None, multiplicity=None,
     max_steps=None, trust_radius=None, follow_mode=None, delta=None,
-    point_charges=None, external_field=None,
+    point_charges=None, external_field=None, hessian="fd",
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_saddle(
@@ -9903,6 +9917,7 @@ fn run_saddle(
     delta: Option<f64>,
     point_charges: Option<Vec<(f64, f64, f64, f64)>>,
     external_field: Option<(f64, f64, f64)>,
+    hessian: &str,
 ) -> PyResult<PySaddleResult> {
     use ferric_scf::frequencies::{
         harmonic_frequencies, FrequencyConfig, FrequencyReference, HessianMethod,
@@ -9918,6 +9933,19 @@ fn run_saddle(
                 "trust_radius must be finite and > 0 (got {t})"
             )));
         }
+    }
+
+    let hessian_method = HessianMethod::parse_config_str(hessian)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    // `delta` is the central-difference displacement; an analytic Hessian has
+    // none. Refuse the combination (#214 review: a silently ignored `delta=`
+    // is exactly what pinning to FD was meant to prevent).
+    if delta.is_some() && hessian_method != HessianMethod::FiniteDifference {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "delta= is the finite-difference displacement and is ignored by an \
+             analytic Hessian; it is only valid with hessian=\"fd\" (got \
+             hessian={hessian:?})"
+        )));
     }
 
     let mut m = mol.inner.clone();
@@ -10027,28 +10055,36 @@ fn run_saddle(
 
     let scf_h = scf_cfg.clone();
     let basis_h = basis.clone();
-    let hessian = move |mm: &ferric_core::mol::Molecule| {
+    // Records which construction produced the most recent Hessian, so the
+    // result can report it (the last call is the final-geometry Hessian).
+    let source_cell: std::rc::Rc<std::cell::RefCell<String>> =
+        std::rc::Rc::new(std::cell::RefCell::new(String::new()));
+    let source_w = source_cell.clone();
+    let hessian_cb = move |mm: &ferric_core::mol::Molecule| {
         // `FrequencyReference::Rhf` already means "closed-shell RHF, or
         // closed-shell KS-DFT when RhfConfig::xc is set" -- see its docstring.
         // So this one variant covers both, and the Hessian follows `xc`
         // automatically. (The GRADIENT callback above is not so lucky: it has
         // to pick between rhf_gradient and ks_gradient_closed by hand.)
-        // Pinned to finite differences: the saddle search is documented (and
-        // `delta=` is honoured) as FD for every method. `Auto` would silently
-        // switch closed-shell RHF to the analytic Hessian and ignore `delta`.
+        // Default is finite differences (the #214 decision: `delta=` is
+        // honoured and the documented cost model holds). The analytic Hessian
+        // is OPT-IN via `hessian=`; "analytic" errors when unsupported and
+        // "auto" falls back to FD, reported through `hessian_source`.
         let mut fc = FrequencyConfig {
             reference: FrequencyReference::Rhf,
-            hessian: HessianMethod::FiniteDifference,
+            hessian: hessian_method,
             ..Default::default()
         };
         if let Some(d) = delta {
             fc.delta = d;
         }
         let fr = harmonic_frequencies(&ParallelContext::default(), mm, &basis_h, op, &scf_h, &fc)?;
+        *source_w.borrow_mut() = fr.hessian_source.label().to_string();
         Ok(fr.cartesian_hessian)
     };
 
-    let r = find_saddle(&m, &cfg, energy_gradient, hessian).map_err(make_err)?;
+    let r = find_saddle(&m, &cfg, energy_gradient, hessian_cb).map_err(make_err)?;
+    let hessian_source = source_cell.borrow().clone();
 
     const BOHR_TO_ANGSTROM: f64 = ferric_core::units::BOHR_TO_ANGSTROM;
     Ok(PySaddleResult {
@@ -10071,6 +10107,7 @@ fn run_saddle(
         n_imaginary: r.n_imaginary,
         imaginary_mode: r.imaginary_mode.map(|v| v.to_vec()),
         lowest_eigenvalue: r.lowest_eigenvalue,
+        hessian_source,
     })
 }
 
