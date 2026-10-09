@@ -9878,6 +9878,28 @@ impl PySaddleResult {
     }
 }
 
+/// Parse `run_saddle`'s `hessian=` and refuse `delta=` with a non-FD method.
+///
+/// `delta` is the central-difference displacement; an analytic Hessian has
+/// none. Refusing the combination keeps a silently ignored `delta=` from
+/// returning (#214 review: that is what pinning to FD was meant to prevent).
+fn parse_saddle_hessian(
+    hessian: &str,
+    delta: Option<f64>,
+) -> PyResult<ferric_scf::frequencies::HessianMethod> {
+    use ferric_scf::frequencies::HessianMethod;
+    let method = HessianMethod::parse_config_str(hessian)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    if delta.is_some() && method != HessianMethod::FiniteDifference {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "delta= is the finite-difference displacement and is ignored by an \
+             analytic Hessian; it is only valid with hessian=\"fd\" (got \
+             hessian={hessian:?})"
+        )));
+    }
+    Ok(method)
+}
+
 /// Search for a first-order saddle point by P-RFO.
 ///
 /// Costs `2 * (6N + 1) + (n_steps + 1)` gradient evaluations (MEASURED): two
@@ -9919,9 +9941,7 @@ fn run_saddle(
     external_field: Option<(f64, f64, f64)>,
     hessian: &str,
 ) -> PyResult<PySaddleResult> {
-    use ferric_scf::frequencies::{
-        harmonic_frequencies, FrequencyConfig, FrequencyReference, HessianMethod,
-    };
+    use ferric_scf::frequencies::{harmonic_frequencies, FrequencyConfig, FrequencyReference};
     use ferric_scf::gradient::rhf_gradient;
     use ferric_scf::rhf::solve_rhf;
     use ferric_scf::saddle::{find_saddle, SaddleConfig};
@@ -9935,18 +9955,7 @@ fn run_saddle(
         }
     }
 
-    let hessian_method = HessianMethod::parse_config_str(hessian)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-    // `delta` is the central-difference displacement; an analytic Hessian has
-    // none. Refuse the combination (#214 review: a silently ignored `delta=`
-    // is exactly what pinning to FD was meant to prevent).
-    if delta.is_some() && hessian_method != HessianMethod::FiniteDifference {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "delta= is the finite-difference displacement and is ignored by an \
-             analytic Hessian; it is only valid with hessian=\"fd\" (got \
-             hessian={hessian:?})"
-        )));
-    }
+    let hessian_method = parse_saddle_hessian(hessian, delta)?;
 
     let mut m = mol.inner.clone();
     if let Some(mult) = multiplicity {
