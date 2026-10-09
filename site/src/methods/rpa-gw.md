@@ -48,6 +48,60 @@ The static eigensolve defaults to **Lanczos**, with a dense path for small
 problems. Geometry optimization with `pdep-rpa` is supported
 (`task = "optimize"`) on a closed-shell RHF reference.
 
+## Exact and local dRPA
+
+**What it is.** `method.kind = "drpa"` (Python `ferric.run_drpa`) is dRPA@HF
+computed by the drCCD Riccati equations in the Boys-localized basis,
+closed shell, energy only. It is **exact by default**: no amplitude is
+truncated (`examples/water-drpa.toml`), and the energy equals the canonical
+plasmon formula to ≤ 1e-12 Ha. Riccati, plasmon and full-rank PDEP-RPA are
+algorithms for the same exact dRPA; measured agreement is ≤ 2.6e-14 Ha
+(H2/STO-3G, water/6-31G with and without frozen core, PDEP with
+`trunc_thresh = 0` at 64 Gauss–Legendre points). Proven (narrow).
+
+**Which exact algorithm.** The Riccati solve holds a ring-product plan of
+no³·nv² numbers, `no` times the size of the amplitudes, so it is the
+small-system path: C12 thrashed and was then killed for memory. A run that
+cannot fit the memory budget is refused before the SCF and pointed at
+`pdep-rpa` with `[rpa] trunc_thresh = 0`, which gives the same energy (to its
+frequency-quadrature error) at far lower memory and is faster at every size
+measured (n-alkanes C4–C16).
+
+**The local approximation** (`[local] scheme = "amplitude-threshold"` with
+`eps`, `examples/water-drpa-local.toml`; Python
+`run_drpa(..., local="amplitude-threshold", eps=1e-4)`) drops pair amplitudes
+whose localized `|2(ia|jb)|` is at or below `eps`. `eps` has no default and
+is printed and logged with the kept fraction; `eps = 0` is the exact method.
+dRPA is not variational, so the error is first order in what is dropped. It
+is positive (less correlation) at every point measured, which is a
+measurement, not a guarantee, and grows faster than linearly in `eps`: on
+n-octane / 6-31G it is 6.7e-7, 3.9e-5, 5.5e-4 and 1.0e-2 Ha at `eps` = 1e-6,
+1e-5, 1e-4 and 1e-3, keeping 82%, 50%, 18% and 3% of the amplitudes. `[local] reference = true`
+(Python `compute_reference=True`) also computes the canonical plasmon dRPA and
+prints the error against it. `[local] eps_sweep` (Python `run_drpa_scan`)
+evaluates several `eps` on one SCF and one localized assembly. Proven
+(narrow) through its exact limit.
+
+**What is measured** (n-alkanes, 6-31G / cc-pVDZ-RI, frozen carbon cores,
+Coulomb, single thread; local error against the plasmon formula, PDEP error
+against full-rank PDEP at 32 quadrature points). The fraction of the
+truncated object retained at 1 kcal/mol error:
+
+| Size | Local dRPA (amplitudes kept) | PDEP (modes kept) |
+|---|---|---|
+| C4 | 23.3% | 17.9% |
+| C8 | 10.0% | 21.5% |
+| C12 | 4.9% | 22.6% |
+| C16 | 2.8% | 23.3% |
+
+The amplitude threshold compresses more as the molecule grows, and PDEP's
+fraction stays flat. The two fractions are of different objects (no²nv²
+amplitudes against naux modes), so this is not a cost comparison. In wall
+time at a matched error of about 1 kcal/mol (reference off), truncated PDEP
+stays about 8× faster from C4 to C16 (C16: 165.7 s local at
+`eps = 1e-4` against about 21 s PDEP), and both grow at the same rate in that
+range. **No speedup over PDEP is claimed for local dRPA.**
+
 ## GW
 
 **What it is.** Quasiparticle energies from the GW self-energy: **G0W0**,
@@ -55,8 +109,8 @@ problems. Geometry optimization with `pdep-rpa` is supported
 The starting point is HF by default or a KS functional (`[rpa] xc`). From a
 KS starting point the static term Σx − v_xc enters the G0W0, evGW₀ and evGW
 quasiparticle equation (for U-GW, each spin's own equation with that spin's
-v_xc), so Σc is evaluated at the shifted root; U-COHSEX, which is static, adds
-it to the quasiparticle energy.
+v_xc), so Σc is evaluated at the shifted root; COHSEX and U-COHSEX, which are
+static, add it to the quasiparticle energy.
 
 **Run it.** `method.kind = "gw"` with `[gw] method = "g0w0"`
 (`examples/water-g0w0-pbe.toml`, open shell `examples/oh-ugw.toml`); Python
@@ -131,9 +185,30 @@ polarizabilities \\( \alpha^A(i\omega) \\), and many-body dispersion (MBD).
 Three sources feed the \\( C_6 \\) contraction (`[rpa] c6_source`):
 
 - `ts`: the Tkatchenko–Scheffler single-pole model (default).
-- `mbd`: many-body (coupled-dipole) screening on top of the TS polarizabilities.
+- `mbd`: self-consistent dipole screening of the TS polarizabilities. This is
+  the full-range screening of Tkatchenko et al. 2012 (Gaussian-damped dipole
+  tensor, no Fermi range separation), not the range-separated screening of
+  MBD@rsSCS.
 - `pdep`: dynamic PDEP-RPA polarizabilities (`examples/water-c6-pdep.toml`,
   `examples/argon-c6-rpa-pbe.toml`).
+
+**MBD@rsSCS dispersion energy.** `ferric.mbd_rsscs_energy(mol, volume_ratios,
+functional=... | beta=...)` (Rust: `ferric_rpa::dispersion::mbd_rsscs_energy`)
+computes the MBD@rsSCS energy of Ambrosetti et al. 2014 for a finite molecule,
+standalone (no SCF). Inputs are per-atom Hirshfeld volume ratios, which scale
+the free-atom α, C6 and R_vdW (Z = 1–54). The polarizabilities are screened
+with the short-range part (1 − f) of the Gaussian-damped dipole tensor on
+libMBD's 15-point imaginary-frequency grid; the energy couples the screened
+oscillators through the long-range part f of the bare dipole tensor, with
+the Fermi function f(R) = 1/(1 + exp(−6(R/(β(R_A + R_B)) − 1))). β is
+functional dependent: PBE 0.83, PBE0 and HSE06 0.85; any other functional
+needs an explicit `beta`. It returns the energy and the screened α₀, C6,
+R_vdW and ω per atom, and raises on a polarization catastrophe (a
+non-positive coupled-oscillator eigenvalue). No periodic systems. As a
+dispersion correction on a Kohn–Sham SCF it is `[dft] dispersion = "mbd"` /
+`run_dft(dispersion="mbd")`, which take the volume ratios from the converged
+density (reported as `DftResult.volume_ratios`) and add the energy and its
+analytic gradient (see [SCF and DFT](./scf.md#dispersion-correction-mbdrsscs)).
 
 The `argon-c6-rpa-pbe.toml` header records C6(Ar–Ar) = 56.4 a.u. at
 RPA@PBE/aug-cc-pVTZ against the DOSD value 64.3 (−12%). **Which of TS and
@@ -159,5 +234,6 @@ hits it as shipped, so set `scissor` to about 0.3–0.4 Ha.
 PDEP: Wilson, Gygi & Galli 2008. RI-RPA quadrature: Eshuis, Yarkony & Furche
 2010; minimax grids: Kaltak, Klimeš & Kresse 2014. GW: Hedin 1965; GW100:
 van Setten et al. 2015. TDDFT review: Dreuw & Head-Gordon 2005. TS:
-Tkatchenko & Scheffler 2009; MBD: Tkatchenko et al. 2012. Full entries in
+Tkatchenko & Scheffler 2009; MBD: Tkatchenko et al. 2012; MBD@rsSCS: Ambrosetti
+et al. 2014. Full entries in
 [References](../reference/references.md).

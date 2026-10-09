@@ -42,7 +42,21 @@ pub struct RohfNewtonInputs<'a> {
     pub f_b_mo: &'a Array2<f64>, // β Fock in MO basis
     pub nocc_double: usize,
     pub nocc_open: usize,
-    pub k_mix_sr: f64, // K mixing coefficient (1.0 for HF, c_HF for hybrid; ignored for RSH)
+    /// K mixing coefficient for the plain-Coulomb exchange response
+    /// (1.0 for HF, c_HF for a global hybrid). Read ONLY when `rsh` is `None`.
+    pub k_mix_sr: f64,
+    /// Range-separated exchange response (ω ≠ 0 only). `Some(..)` replaces the
+    /// single Coulomb-kernel `k_mix_sr · δK` with the SR/LR combination
+    /// `c_SR·δK[erfc(ω)] + c_LR·δK[erf(ω)]` built from the SAME `DfK` fitters
+    /// the converged Fock was assembled from — see [`crate::rsh_response`].
+    ///
+    /// Before #314 `solve_rohf` passed `k_mix_sr = 0.0` whenever ω > 0, so a
+    /// range-separated ROKS Newton step built NO exchange response at all. That
+    /// is fixed here. It does NOT make ROKS stability-analysable:
+    /// [`crate::stability::StabilitySkip::Rohf`] is a separate refusal about the
+    /// Roothaan Hessian being a third operator, not about the exchange kernel,
+    /// and it stands.
+    pub rsh: Option<&'a crate::rsh_response::RshResponse<'a>>,
     pub fxc: Option<&'a FxcResponse<'a>>,
     pub thresh: f64,
     /// Solver-resolved memory budget (see `rhf::resolve_three_index_budget`),
@@ -75,7 +89,11 @@ pub fn rohf_newton_step(
     // (3 build_jk calls per matvec), instead of each call constructing its
     // own pool. Reduction order is unchanged, so results stay bit-identical
     // across thread counts.
-    let pool = EnginePool::new(inp.bounds.op, inp.prep, 1e-14)?;
+    let pool = EnginePool::new(
+        inp.bounds.op,
+        inp.prep,
+        ferric_integrals::engine_pool::eri_precision(),
+    )?;
 
     // Pack RHS −g in MO basis from the three blocks.
     //   g[v,c] = f_α[v,c] + f_β[v,c]
@@ -361,21 +379,30 @@ pub(crate) fn hessian_matvec(
         band_bytes,
     )?;
 
-    // δK per spin.
-    let mut dk_a = Array2::<f64>::zeros((n, n));
-    let mut dk_b = Array2::<f64>::zeros((n, n));
-    let mut j_dum = Array2::<f64>::zeros((n, n));
-    build_jk_with_pool(
-        ctx, inp.prep, inp.bounds, inp.thresh, &dd_a_ao, &mut j_dum, &mut dk_a, pool, band_bytes,
-    )?;
-    j_dum.fill(0.0);
-    build_jk_with_pool(
-        ctx, inp.prep, inp.bounds, inp.thresh, &dd_b_ao, &mut j_dum, &mut dk_b, pool, band_bytes,
-    )?;
-
-    let c_k = inp.k_mix_sr;
-    let mut df_a: Array2<f64> = &dj - &(c_k * &dk_a);
-    let mut df_b: Array2<f64> = &dj - &(c_k * &dk_b);
+    // δK per spin. The RSH branch builds c_SR·δK[erfc(ω)] + c_LR·δK[erf(ω)]
+    // from the Fock's own DF-K fitters (per-spin Fock ⇒ no extra factor, as in
+    // `solve_rohf`'s `subtract_rsh_exchange` calls); the ω = 0 branch is the
+    // untouched pre-#314 code, so a non-RSH run is bit-identical.
+    let (mut df_a, mut df_b) = if let Some(rsh) = inp.rsh {
+        let dk_a = rsh.exchange_response(&dd_a_ao)?;
+        let dk_b = rsh.exchange_response(&dd_b_ao)?;
+        (&dj - &dk_a, &dj - &dk_b)
+    } else {
+        let mut dk_a = Array2::<f64>::zeros((n, n));
+        let mut dk_b = Array2::<f64>::zeros((n, n));
+        let mut j_dum = Array2::<f64>::zeros((n, n));
+        build_jk_with_pool(
+            ctx, inp.prep, inp.bounds, inp.thresh, &dd_a_ao, &mut j_dum, &mut dk_a, pool,
+            band_bytes,
+        )?;
+        j_dum.fill(0.0);
+        build_jk_with_pool(
+            ctx, inp.prep, inp.bounds, inp.thresh, &dd_b_ao, &mut j_dum, &mut dk_b, pool,
+            band_bytes,
+        )?;
+        let c_k = inp.k_mix_sr;
+        (&dj - &(c_k * &dk_a), &dj - &(c_k * &dk_b))
+    };
 
     if let Some(fxc) = inp.fxc {
         let (dvxc_a, dvxc_b) = fxc(&dd_a_ao, &dd_b_ao);

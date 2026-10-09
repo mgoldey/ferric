@@ -27,10 +27,14 @@
 //! (`ferric_rpa::properties::hirshfeld_charges` etc.) are unaffected.
 //!
 //! Three siblings — `atomic_effective_volumes_hirshfeld`, `hirshfeld_i_charges`,
-//! and `hirshfeld_charges` — are equally RPA-independent but could NOT move:
-//! they depend on `ferric_integrals::ao_grid::GridSpec` /
-//! `ferric_integrals::ao_grid::eval_basis_on_grid`. They remain defined
-//! here.
+//! and `hirshfeld_charges` — are equally RPA-independent and are defined here.
+//! `hirshfeld_i_charges` integrates on the uniform Cartesian lattice of
+//! `ferric_integrals::ao_grid::GridSpec`; the other two integrate on the
+//! atom-centred Becke–Lebedev grid of `ferric_dft::grid::build_atomic_grid`. Their proatoms come from a caller-supplied
+//! [`ProatomProvider`](ferric_scf::properties::ProatomProvider) — normally
+//! [`ferric_scf::properties::scf_proatom_provider`] — with the single-Slater
+//! proatom of [`slater_xi_for_z`](ferric_scf::properties::slater_xi_for_z) as the
+//! fallback.
 //!
 //! Both routines are closed-shell only.  They return
 //! `FerricError::General(...)` if handed an Unrestricted / RestrictedOpen
@@ -1346,7 +1350,75 @@ fn accumulate_atom_centred_dipoles(
     Ok(d_ai_ao)
 }
 
-/// Closed-shell only. Returns Vec<[[f64; 3]; 3]>, one (3×3) tensor per atom.
+/// Charge-transfer (charge-delocalization) polarizability remainder
+/// α_CT = α_mol − Σ_A α^A for the Krishtal–Senet–Van Alsenoy intrinsic
+/// per-atom tensors (JCP 125, 034312 (2006)).
+///
+/// With α^A = ⟨m^A|R|μ⟩ and α_mol = ⟨μ|R|μ⟩ (same response R: same RI
+/// kernel, same orbitals, frozen_core = 0), linearity gives
+/// α_CT = ⟨Σ_A R_A w_A|R|μ⟩ — the dipole carried by field-induced charge
+/// flow between atoms. `α_CT + Σ_A α^A = α_mol` holds by construction; the
+/// quantity is only meaningful when `molecular` and `per_atom` come from
+/// matching paths (`pdep_polarizability_static` with
+/// `pdep_polarizability_becke`, or `molecular_dynamic_polarizability` with
+/// `pdep_polarizability_becke_dynamic` / `_hirshfeld_dynamic` at the same
+/// frequencies). The atom sum is accumulated in atom order from 0.0.
+pub fn charge_transfer_remainder(
+    molecular: &[[f64; 3]; 3],
+    per_atom: &[[[f64; 3]; 3]],
+) -> [[f64; 3]; 3] {
+    std::array::from_fn(|i| {
+        std::array::from_fn(|j| {
+            let sum: f64 = per_atom.iter().map(|t| t[i][j]).sum();
+            molecular[i][j] - sum
+        })
+    })
+}
+
+/// Frequency-resolved [`charge_transfer_remainder`]: `molecular[k]` is
+/// α_mol(iω_k), `per_atom[A][k]` is α^A(iω_k); returns α_CT(iω_k) for every
+/// k. Errors if the frequency counts disagree (an empty `molecular`, as
+/// returned by the truncated benchmark path, is a mismatch, not a zero).
+pub fn charge_transfer_remainder_dynamic(
+    molecular: &[[[f64; 3]; 3]],
+    per_atom: &[Vec<[[f64; 3]; 3]>],
+) -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
+    let nfreq = molecular.len();
+    if let Some((a, row)) = per_atom.iter().enumerate().find(|(_, r)| r.len() != nfreq) {
+        return Err(FerricError::General(format!(
+            "charge_transfer_remainder_dynamic: atom {a} has {} frequencies, molecular has {nfreq}",
+            row.len()
+        )));
+    }
+    Ok((0..nfreq)
+        .map(|k| {
+            let at_k: Vec<[[f64; 3]; 3]> = per_atom.iter().map(|r| r[k]).collect();
+            charge_transfer_remainder(&molecular[k], &at_k)
+        })
+        .collect())
+}
+
+/// Per-atom static PDEP-RPA polarizability tensors α^A (Bohr³), one 3×3 per
+/// atom, on ferric's Becke-Lebedev grid.
+///
+/// Definition: the Krishtal–Senet–Van Alsenoy "intrinsic" atomic
+/// polarizability (A. Krishtal, P. Senet, C. Van Alsenoy, J. Chem. Phys. 125,
+/// 034312 (2006)),
+///
+/// ```text
+///   α^A_dj = ⟨ m^A_d | R | μ_j ⟩,   m^A = w_A (r − R_A)  (Becke weight w_A),
+/// ```
+///
+/// i.e. the ATOM-CENTRED dipole of atom A on the bra and the true lab-frame
+/// molecular dipole μ (analytic AO integrals) on the field-side ket: the
+/// first-order change of atom A's own dipole in a uniform field.
+/// Charge transfer between atoms is EXCLUDED, so Σ_A α^A ≠ α_mol; the
+/// remainder α_CT = α_mol − Σ_A α^A = ⟨Σ_A R_A w_A | R | μ⟩ is the
+/// charge-transfer (charge-delocalization) polarizability — see
+/// [`charge_transfer_remainder`]. Each α^A is origin-independent.
+///
+/// Closed and open shell (open shell delegates to
+/// [`pdep_polarizability_becke_dynamic`] at ω = 0, the same definition).
 pub fn pdep_polarizability_becke(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -1482,8 +1554,10 @@ pub fn pdep_polarizability_becke(
 
     // Build per-atom Becke-weighted AO dipole using the ATOM-CENTRED position
     // operator (r − R_A). This yields the intrinsic atomic polarizability:
-    // origin-independent and charge-transfer-free, matching
-    // `pdep_polarizability_becke_dynamic`'s ω=0 limit exactly. We deliberately
+    // origin-independent and charge-transfer-free, and the SAME definition as
+    // `pdep_polarizability_becke_dynamic` (atom-centred bra, analytic
+    // molecular-dipole ket), whose ω = 0 value reproduces this one (pinned by
+    // `validation_pdep_c6.rs`, w=0 anchor). We deliberately
     // do NOT renormalize to the global lab-frame analytical dipole — that
     // renormalization is the gauge-breaking step (it scales each atom's
     // contribution by a shared factor derived from a lab-frame quantity and
@@ -1574,11 +1648,18 @@ pub fn pdep_polarizability_becke(
 /// Per-atom Becke polarizability tensors α^A_{ij}(iω) at a list of imaginary
 /// frequencies. Returns `out[a][k]` = 3×3 tensor for atom `a`, frequency `k`.
 ///
-/// This is the frequency generalization of [`pdep_polarizability_becke`]:
-/// the grid, Becke partition, and partition-weighted MO dipoles are built once
-/// (ω-independent); only the χ₀ "denominator" g_ia(ω) = e_ia/(ω²+e_ia²) and the
-/// SMW dielectric ε̃(ω) = I + 4 B̃ diag(g(ω)) B̃^T change per frequency. At ω=0,
-/// g_ia = 1/Δε_ia, so this reproduces `pdep_polarizability_becke` exactly.
+/// This is the frequency generalization of [`pdep_polarizability_becke`],
+/// with the same Krishtal intrinsic definition α^A_dj(iω) = ⟨m^A_d|R(iω)|μ_j⟩
+/// (atom-centred Becke dipole bra, analytic molecular-dipole ket; per spin
+/// for an open-shell reference). The grid, Becke partition, and per-atom MO
+/// dipoles are built once (ω-independent); only the χ₀ "denominator"
+/// g_ia(ω) = e_ia/(ω²+e_ia²) and the SMW dielectric
+/// ε̃(ω) = I + 4 B̃ diag(g(ω)) B̃^T change per frequency. At ω=0,
+/// g_ia = 1/Δε_ia, so a frequency list containing 0.0 reproduces
+/// `pdep_polarizability_becke`. All occupied orbitals respond
+/// (`cfg.frozen_core` is ignored, as in every polarizability path), so
+/// `molecular_dynamic_polarizability(..) − Σ_A out[A]` is the dynamic
+/// charge-transfer remainder.
 ///
 /// The Casimir-Polder C6 follow-up consumes these via
 /// `dispersion::pdep_dynamic_polarizability`.
@@ -1599,8 +1680,14 @@ pub fn pdep_polarizability_becke_dynamic(
 
     let natoms = mol.atoms.len();
     let nfreq = freqs.len();
+    // frozen_core = 0, NOT cfg.frozen_core: the polarizability is the response
+    // of ALL occupied orbitals, and every other α path (static molecular,
+    // static per-atom, molecular dynamic, Hirshfeld) hard-codes 0. Reading
+    // cfg.frozen_core here made the per-atom α^A(iω) and the molecular α(iω)
+    // it is subtracted from (charge-transfer remainder) use different
+    // occupied spaces whenever the RPA energy froze the core.
     let mp2_cfg = ferric_mp2::rimp2::RiMp2Config {
-        frozen_core: cfg.frozen_core,
+        frozen_core: 0,
         memory_budget_bytes: cfg.memory_budget_bytes,
         ..Default::default()
     };
@@ -1793,19 +1880,33 @@ pub fn pdep_polarizability_becke_dynamic(
             })
             .collect();
 
-        // Molecular MO dipoles per spin (sum over atoms).
+        // Field-side (ket) dipole per spin: the analytic lab-frame molecular
+        // dipole (same operator as the closed-shell branch and
+        // `molecular_dynamic_polarizability`'s U branch), NOT Σ_A of the
+        // atom-centred bra pieces.
+        let dip_ao_analytical = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
         let mu_flat_a: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
-            mu_ai_flat_a
-                .iter()
-                .fold(ndarray::Array1::zeros(nov_a), |acc, ai| acc + &ai[d])
+            let mo = c_occ_a.t().dot(&dip_ao_analytical[d]).dot(&c_vir_a);
+            let mut v = ndarray::Array1::<f64>::zeros(nov_a);
+            for i in 0..inter_a.nocc {
+                for ax in 0..inter_a.nvir {
+                    v[i * inter_a.nvir + ax] = mo[(i, ax)];
+                }
+            }
+            v
         });
         let mu_flat_b: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
             if inter_b.nocc == 0 {
                 return ndarray::Array1::zeros(1);
             }
-            mu_ai_flat_b
-                .iter()
-                .fold(ndarray::Array1::zeros(nov_b), |acc, ai| acc + &ai[d])
+            let mo = c_occ_b.t().dot(&dip_ao_analytical[d]).dot(&c_vir_b);
+            let mut v = ndarray::Array1::<f64>::zeros(nov_b);
+            for i in 0..inter_b.nocc {
+                for ax in 0..inter_b.nvir {
+                    v[i * inter_b.nvir + ax] = mo[(i, ax)];
+                }
+            }
+            v
         });
 
         // Frequency loop: each ω is fully independent. Parallelize over
@@ -1938,7 +2039,7 @@ pub fn pdep_polarizability_becke_dynamic(
         return Ok(out);
     }
 
-    // --- Closed-shell path below (unchanged) ---
+    // --- Closed-shell path ---
     let inter = ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
     let b_ov = &inter.b_ov;
     let nocc = inter.nocc;
@@ -1996,10 +2097,9 @@ pub fn pdep_polarizability_becke_dynamic(
     let nbf = obs.nbasis();
     debug_assert_eq!(nbf, obs.nbasis());
 
-    // Atom positions (Bohr) — used to shift dipole to atom-centred coordinates.
-    // Using (r - R_A) instead of the lab-frame r makes each per-atom contribution
-    // to α^A(iω) origin-independent: at all frequencies, α^A and Σ_A α^A are
-    // unchanged by a global translation of the coordinate system.
+    // Atom positions (Bohr) — the bra operator is the atom-centred (r − R_A),
+    // so each α^A(iω) is origin-independent (the occ-vir block of a constant
+    // shift vanishes because occupied and virtual MOs are orthogonal).
     let atom_pos: Vec<[f64; 3]> = mol.atoms.iter().map(|at| [at.x, at.y, at.zpos]).collect();
 
     // No pre-flight gate on this path yet (tracked), so resolve the budget here
@@ -2020,55 +2120,21 @@ pub fn pdep_polarizability_becke_dynamic(
             }
         }
     }
-    // No renormalization of the atom-centred per-atom dipoles.
-    //
-    // The static Becke path renormalizes each AO-pair's grid partition to the
-    // global analytical dipole ⟨μ|r|ν⟩, which fixes grid-quadrature error on the
-    // dipole magnitude. Here we use atom-centred displacements (r − R_A), so the
-    // natural analytical comparison is the atom-centred grid SUM, not the global
-    // dipole — and those differ by Σ_A R_A · q^A_{μν} (charge partition moments).
-    //
-    // For the dynamic path what matters is the *frequency dependence* of α^A(iω),
-    // not the absolute magnitude at ω=0. The grid quadrature error on (r − R_A)
-    // is smooth and does not introduce frequency-dependent artifacts. We therefore
-    // skip renormalization and accept the raw grid integrals. This gives correct
-    // physics for the Casimir-Polder integrand at all ω.
-    //
-    // NOTE: the molecular sum Σ_A α^A(ω=0) from this path will NOT equal
-    // pdep_polarizability_static (which uses a renormalized lab-frame dipole).
-    // The correct comparison for the regression gate is: take the ω=0 dynamic path
-    // result, form the atom-centred MO dipoles, and verify the SMW formula gives
-    // the same α as the lab-frame path scaled by the atom-centred/lab-frame ratio.
-    // For the purposes of C6 correctness, we verify:
-    //   * α_iso_A(ω=0) > 0 for each atom (positive sum rule)
-    //   * α_A(iω) decays monotonically with ω (correct frequency dependence)
-    //   * homonuclear atom pairs give equal C6 (symmetry check)
-    // These are tested in the unit tests.
-    for a in 0..natoms {
-        for d in 0..3 {
-            let m = &mut d_ai_ao[a][d];
-            for i in 0..nbf {
-                for j in (i + 1)..nbf {
-                    let avg = 0.5 * (m[(i, j)] + m[(j, i)]);
-                    m[(i, j)] = avg;
-                    m[(j, i)] = avg;
-                }
-            }
-        }
-    }
 
-    // Transform to MO occ-vir basis (per-atom + molecular sum).
-    let mut mu_ai_mo: Vec<[Array2<f64>; 3]> = (0..natoms)
-        .map(|_| std::array::from_fn(|_| Array2::<f64>::zeros((nocc, nvir))))
+    // Per-atom (bra) MO dipoles from the atom-centred Becke pieces.
+    let mu_ai_mo: Vec<[Array2<f64>; 3]> = (0..natoms)
+        .map(|a| std::array::from_fn(|d| c_occ.t().dot(&d_ai_ao[a][d]).dot(&c_vir)))
         .collect();
-    let mut mu_mo: [Array2<f64>; 3] = std::array::from_fn(|_| Array2::<f64>::zeros((nocc, nvir)));
-    for a in 0..natoms {
-        for d in 0..3 {
-            let m = c_occ.t().dot(&d_ai_ao[a][d]).dot(&c_vir);
-            mu_mo[d] = &mu_mo[d] + &m;
-            mu_ai_mo[a][d] = m;
-        }
-    }
+
+    // Field-side (ket) dipole: the TRUE lab-frame molecular dipole from the
+    // analytic AO integrals — the perturbation a uniform field couples to.
+    // Same operator as `pdep_polarizability_becke` and
+    // `molecular_dynamic_polarizability`, so (a) ω = 0 reproduces the static
+    // per-atom α, and (b) α_mol − Σ_A α^A is the charge-transfer remainder
+    // ⟨Σ_A R_A w_A | R(iω) | μ⟩ (see `charge_transfer_remainder`).
+    let dip_ao_analytical = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
+    let mu_mo: [Array2<f64>; 3] =
+        std::array::from_fn(|d| c_occ.t().dot(&dip_ao_analytical[d]).dot(&c_vir));
 
     // Flatten molecular dipole and per-atom dipoles into (nov,) vectors ONCE.
     let mu_ai_flat: Vec<[ndarray::Array1<f64>; 3]> = (0..natoms)
@@ -2085,7 +2151,6 @@ pub fn pdep_polarizability_becke_dynamic(
         })
         .collect();
 
-    // Flatten the Becke-sum molecular dipole (sum of atom-centred pieces).
     let mu_flat: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
         let mut v = ndarray::Array1::<f64>::zeros(nov);
         for i in 0..nocc {
@@ -2096,14 +2161,13 @@ pub fn pdep_polarizability_becke_dynamic(
         v
     });
 
-    // --- Frequency loop: direct per-atom SMW (symmetric Becke-sum reference) ---
+    // --- Frequency loop: direct per-atom SMW (Krishtal intrinsic α^A) ---
     //
-    // α^A_{ij}(iω) = 4 μ^{A,i}·g·μ^{Becke,j} − 16 (B·μ^{A,i}·g)·ε̃⁻¹·(B·μ^{Becke,j}·g)
+    // α^A_{ij}(iω) = 4 m^{A,i}·g·μ^j − 16 (B·m^{A,i}·g)·ε̃⁻¹·(B·μ^j·g)
     //
-    // Both slots use the same Becke-sum dipole μ^Becke = Σ_A μ^A, so
-    // Σ_A α^A = α_mol(μ^Becke) exactly. This matches pdep_dynamic_polarizability_truncated.
-    // The anisotropy reflects the Becke partition's atom-centred displacements;
-    // for isotropic C6 via Casimir-Polder this is the correct formula.
+    // m^A = atom-centred Becke dipole (bra), μ = analytic molecular dipole
+    // (ket). Σ_A α^A is NOT α_mol: the difference is the charge-transfer
+    // remainder. Same formula as `pdep_dynamic_polarizability_truncated`.
     //
     // Each ω is independent — parallelize over frequencies. The (naux × nov)
     // column-scaled B̃ scratch M9 hoisted out of the loop becomes per-thread
@@ -2137,7 +2201,7 @@ pub fn pdep_polarizability_becke_dynamic(
                         eps_mat[(p, p)] += 1.0;
                     }
 
-                    // Solve ε̃ y^j = B·(g⊙μ^{Becke,j}) once per direction.
+                    // Solve ε̃ y^j = B·(g⊙μ^j) once per direction.
                     let mu_g: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| &mu_flat[d] * &g);
                     let w_mol: [ndarray::Array1<f64>; 3] =
                         std::array::from_fn(|d| b_ov.dot(&mu_g[d]));
@@ -3300,10 +3364,11 @@ pub fn molecular_dynamic_polarizability_pdep(
 /// Basis-function count for `bs` on `mol`, without materializing an AO-on-grid
 /// tensor to read it off `chi.nrows()`.
 ///
-/// `atomic_effective_volumes_hirshfeld`/`hirshfeld_i_charges` need `nbf`
-/// BEFORE calling `eval_basis_on_grid` so their pre-flight gate can run before
-/// `chi` allocates (the point at which refusing is still cheap — the same
-/// convention `preflight_grid_path`'s doc states for the Becke path).
+/// `hirshfeld_i_charges`, `atomic_effective_volumes_hirshfeld` and
+/// `atomic_effective_volumes_hirshfeld_on_grid` need `nbf` BEFORE evaluating
+/// the AOs so their pre-flight gate can run before `chi` allocates (the point
+/// at which refusing is still cheap — the same convention
+/// `preflight_grid_path`'s doc states for the Becke path).
 ///
 /// Delegates to `ferric_integrals::ao_grid::nbasis`, the canonical shell-sum
 /// (already used by `PreparedBasis::nbasis`), rather than re-deriving it —
@@ -3327,7 +3392,14 @@ pub fn nbf_for_basis(
 /// Co-resident terms: `chi` and `d_chi` (both `(nbf, npts)`, genuinely read in
 /// the same loop), `rho_free` (`(natoms, npts)`), and the `O(npts)` side
 /// vectors (`rho`, `rho_sum`, and for `hirshfeld_i_charges` also `gx`/`gy`/
-/// `gz` — 5 vectors covers both callers without under-charging either).
+/// `gz` — 5 vectors covers every caller without under-charging any).
+///
+/// `atomic_effective_volumes_hirshfeld` charges this shape at `npts =
+/// HIRSHFELD_VOLUME_CHUNK_POINTS` (its real peak — it holds no whole-grid
+/// plane) and keeps only a `natoms` proatom scratch rather than a
+/// `(natoms, npts)` block, so for that caller the `rho_free` term is slack,
+/// deliberately: over-charging refuses a run that would have fitted,
+/// under-charging admits one that will not.
 pub fn estimate_hirshfeld_grid_scan_bytes(nbf: usize, npts: usize, natoms: usize) -> usize {
     const F64_BYTES: usize = 8;
     let plane = nbf.saturating_mul(npts).saturating_mul(F64_BYTES);
@@ -3340,10 +3412,11 @@ pub fn estimate_hirshfeld_grid_scan_bytes(nbf: usize, npts: usize, natoms: usize
         .saturating_add(side_vectors)
 }
 
-/// Pre-flight gate for [`atomic_effective_volumes_hirshfeld`] and
-/// [`hirshfeld_i_charges`], called BEFORE `eval_basis_on_grid` allocates `chi`.
+/// Pre-flight gate for [`atomic_effective_volumes_hirshfeld`],
+/// [`atomic_effective_volumes_hirshfeld_on_grid`] and
+/// [`hirshfeld_i_charges`], called BEFORE the AO values allocate `chi`.
 ///
-/// The only gate these two functions had before this was the one INSIDE
+/// The only gate these functions had before this was the one INSIDE
 /// `eval_basis_on_grid` (`ferric_integrals::ao_grid::eval_basis_on_grid` ->
 /// `check_alloc` on `nbf*npts*8`, i.e. `chi` alone) — a callee-gate-cannot-
 /// see-caller defect: the callee has no way to know its caller immediately
@@ -3403,26 +3476,351 @@ pub fn preflight_hirshfeld_grid_scan_reserved(
     ferric_core::memory::pool::reserve_global(label, est)
 }
 
-/// Per-atom effective volume via Hirshfeld (Slater proatom) partitioning:
+/// The Becke–Lebedev grid [`atomic_effective_volumes_hirshfeld`] integrates on.
+///
+/// NOT `AtomicGridConfig::default()` (75 radial × 110 angular, the XC grid).
+/// The volume integrand `w_A ρ |r − R_A|³` is NOT the XC integrand: the `r³`
+/// factor moves its mass outward, into the region where the Hirshfeld weight
+/// `ρ⁰_A/Σ_B ρ⁰_B` and the Becke home-atom factor both vary fastest with
+/// ANGLE, so the volumes need a higher Lebedev order than the energy does.
+///
+/// MEASURED (`tests/measure_volume_grid_convergence.rs`, worst per-atom
+/// relative deviation from the dense (200, 590) reference of
+/// `testdata/reference/validation/hirshfeld/`, over H2O, CO and CH3OH ×
+/// cc-pVDZ, def2-SVP, at 75 radial points):
+///
+/// | Lebedev order | H2O | CO | CH3OH | CH3OH points |
+/// |---|---|---|---|---|
+/// | 110 (the XC default) | 1.5e-5 | 1.7e-5 | 6.9e-4 | 49,500 |
+/// | 194 | 1.0e-6 | 9.7e-7 | 2.0e-4 | 87,300 |
+/// | 302 | 1.0e-7 | 6.6e-8 | 4.4e-5 | 135,900 |
+/// | 434 | 1.3e-7 | 1.1e-7 | 2.6e-6 | 195,300 |
+/// | **590** | **1.1e-7** | **1.1e-7** | **1.1e-7** | **265,500** |
+///
+/// 590 is where all three systems reach one plateau, ~1.1e-7, and that
+/// plateau is the RADIAL floor, not the angular one: 99 radial × 590 drops
+/// CH3OH to 1.8e-8 and 200 × 590 (the reference's own grid) to 3.0e-13, so
+/// ferric's quadrature is an exact reimplementation of the reference
+/// construction and 590 is simply where the cheap axis stops paying.
+///
+/// Raising only the RADIAL count does nothing at all: 75 → 200 radial at
+/// order 110 leaves CH3OH at 6.927e-4 to four digits. The volume error is
+/// ANGULAR because `w_A` and the Becke home-atom factor vary fastest with
+/// angle in the region `r³` weights up — which is exactly why the XC grid's
+/// 110 is not a safe default here even though it is for the energy.
+///
+/// Cost: 5.4x the XC grid's point count on CH3OH, once per volume call (a
+/// post-SCF property, not an SCF iteration), against a 6300x accuracy gain.
+pub fn hirshfeld_volume_grid_config() -> ferric_dft::grid::AtomicGridConfig {
+    ferric_dft::grid::AtomicGridConfig {
+        n_radial: 75,
+        n_angular: 590,
+        // Pruning reduces the angular order exactly where this integrand needs
+        // it most (the far tail, which `r³` weights up), and
+        // `build_atomic_grid_with_response` rejects a pruned config anyway.
+        prune: None,
+    }
+}
+
+/// Grid points per chunk of [`atomic_effective_volumes_hirshfeld`]'s
+/// Becke-grid loop. A constant (not derived from the thread count or the
+/// budget), so the chunk partition — and with it the order of the final fold —
+/// is a pure function of the grid, exactly as
+/// [`HIRSHFELD_GRAD_CHUNK_POINTS`] is for the gradient.
+///
+/// The whole point of chunking here is that `chi` and `D·chi` are both
+/// `(nbf, npts)`: on the 75×110 default grid a 73-atom, 700-function molecule
+/// puts 602,250 points × 700 functions × 8 B = 3.4 GB in EACH, and neither is
+/// bounded by `[memory] budget_gb` (see
+/// `ferric_scf::properties::atomic_effective_volumes_becke_chunked`, which
+/// chunks the same shape for the same reason, and the CLAUDE.md
+/// "memory ceiling" note behind the 2026-07-13 16-17 GB incidents).
+pub const HIRSHFELD_VOLUME_CHUNK_POINTS: usize = 8192;
+
+/// Per-atom effective volume via Hirshfeld partitioning:
 /// ```text
-///   v_A = ∫ w^A_Hirsh(r) ρ(r) |r − R_A|³ dV
+///   v_A = ∫ w^A_Hirsh(r) ρ(r) |r − R_A|³ dV,   w^A = ρ⁰_A / (Σ_B ρ⁰_B + 1e-12)
 /// ```
 /// This is the partition the TS dispersion model was calibrated for.
-/// Uses the same Slater single-exponential proatom as `hirshfeld_charges`.
+///
+/// `proatom` supplies each atom's neutral free-atom density ρ⁰_A (ferric-cli
+/// passes [`ferric_scf::properties::scf_proatom_provider`]); with `None`, or for
+/// an atom the provider returns `None` for, ρ⁰_A is the single-Slater proatom of
+/// [`slater_xi_for_z`].
+///
+/// Integrated on the **atom-centred Becke–Lebedev grid** — the same
+/// [`ferric_dft::grid::build_atomic_grid`] quadrature [`hirshfeld_charges`]
+/// uses, with the home-atom Becke factor already folded into each point's
+/// weight. The grid is radially dense at every nucleus and carries the
+/// molecular point group, so symmetry-equivalent atoms integrate identically.
+///
+/// MEASURED against the dense (200, 590) Becke reference in
+/// `testdata/reference/validation/hirshfeld/`, over H2O, CO and CH3OH ×
+/// cc-pVDZ, def2-SVP, same density and proatoms: worst per-atom deviation
+/// 1.1e-7 relative, ∫ρ within 2.0e-7 e of N_e, and CH3OH's two mirror-image
+/// methyl hydrogens equal to 2.9e-14 relative (not exactly zero: the Lebedev
+/// rules are O_h-invariant and that molecule's mirror plane is not a grid
+/// plane). On the uniform
+/// Cartesian lattice this function used to integrate on — whose nodes land
+/// exactly on nuclei, where ρ has its cusp — the same three figures are
+/// 2.4e-4 relative, 0.70 e (CO/cc-pVDZ) and 2.6e-5. The grid is
+/// [`hirshfeld_volume_grid_config`], which is NOT the XC grid; read its doc
+/// before changing it.
+///
+/// The lattice is still reachable as
+/// [`atomic_effective_volumes_hirshfeld_on_grid`] on
+/// [`hirshfeld_volume_grid`], which is what MBD@rsSCS integrates on (its
+/// gradient's lattice-response term is derived for a lattice; see
+/// [`mbd_volume_grid`]).
+///
+/// Evaluated in [`HIRSHFELD_VOLUME_CHUNK_POINTS`]-point chunks so neither
+/// `chi` nor `D·chi` is ever materialized for the whole grid.
 pub fn atomic_effective_volumes_hirshfeld(
     mol: &Molecule,
     obs_bs: &ferric_core::basis::BasisSet,
     density: &Array2<f64>,
     proatom: Option<&ProatomProvider>,
 ) -> Result<Vec<f64>, FerricError> {
-    use ferric_integrals::ao_grid::eval_basis_on_grid;
-    use ferric_integrals::ao_grid::GridSpec;
+    use ferric_dft::ao_grid::eval_basis_on_points;
+    use ferric_dft::grid::build_atomic_grid;
 
     let natoms = mol.atoms.len();
-    let spacing = hirshfeld_spacing();
+    let grid = build_atomic_grid(mol, &hirshfeld_volume_grid_config());
+    let npts = grid.len();
+
+    let nbf = density.nrows();
+    if density.ncols() != nbf {
+        return Err(FerricError::General(format!(
+            "atomic_effective_volumes_hirshfeld: density shape {:?} is not square",
+            density.dim()
+        )));
+    }
+    let nbf_expected = nbf_for_basis(mol, obs_bs)?;
+    if nbf != nbf_expected {
+        return Err(FerricError::General(format!(
+            "atomic_effective_volumes_hirshfeld: density {:?} != nbf {nbf_expected}",
+            density.dim()
+        )));
+    }
+
+    // Pre-flight the CHUNK, not the whole grid: that is the real peak now
+    // (`chi` and `d_chi` are both (nbf, chunk)), and charging the full-grid
+    // shape would refuse molecules this path can comfortably integrate.
+    let chunk = HIRSHFELD_VOLUME_CHUNK_POINTS.min(npts.max(1));
+    let _charge = preflight_hirshfeld_grid_scan_reserved(
+        &format!(
+            "atomic_effective_volumes_hirshfeld (nbf={nbf}, npts={npts}, chunk={chunk}, \
+             natoms={natoms})"
+        ),
+        nbf,
+        chunk,
+        natoms,
+    )?;
+
+    // Proatom tables are fetched ONCE per atom, outside the point loop: the
+    // provider runs a free-atom SCF behind the scenes on a miss, so calling it
+    // per chunk would re-solve every atom O(npts/chunk) times.
+    let mut fallback_atoms: Vec<usize> = Vec::new();
+    let proatoms: Vec<Option<RadialProatom>> = (0..natoms)
+        .map(|a| {
+            let pa = proatom.and_then(|p| p(mol.atoms[a].z, 0));
+            if pa.is_none() {
+                fallback_atoms.push(a);
+            }
+            pa
+        })
+        .collect();
+    if !fallback_atoms.is_empty() && fallback_atoms.len() < natoms {
+        // Mixing SCF proatoms with the crude Slater model across atoms of one
+        // molecule changes the partitioning, and the returned volumes carry no
+        // sign of it. The all-fallback case is NOT a mixture (it is what
+        // `proatom = None` means — the free-atom TS denominator path uses it on
+        // purpose), so it is not warned about here.
+        eprintln!(
+            "[hirshfeld] WARNING: {} of {natoms} atoms (indices {fallback_atoms:?}) had no \
+             free-atom SCF proatom density and fell back to a crude single-Slater model, so \
+             these volumes mix two different proatom sources.",
+            fallback_atoms.len()
+        );
+    }
+    let xi: Vec<f64> = (0..natoms)
+        .map(|a| slater_xi_for_z(mol.atoms[a].z))
+        .collect();
+    let prefac: Vec<f64> = (0..natoms)
+        .map(|a| mol.atoms[a].z as f64 * xi[a].powi(3) / std::f64::consts::PI)
+        .collect();
+    let pos: Vec<[f64; 3]> = mol.atoms.iter().map(|at| [at.x, at.y, at.zpos]).collect();
+
+    const EPS_FLOOR: f64 = 1e-12;
+    let mut vol = vec![0.0_f64; natoms];
+    let mut g0 = 0usize;
+    // Scratch reused across chunks so the per-atom proatom values are not
+    // reallocated 70+ times per chunk.
+    let mut rho0 = vec![0.0_f64; natoms];
+    while g0 < npts {
+        let g1 = (g0 + chunk).min(npts);
+        let points: Vec<[f64; 3]> = grid[g0..g1].iter().map(|g| g.xyz).collect();
+        let chi = eval_basis_on_points(mol, obs_bs, &points).map_err(|e| {
+            FerricError::General(format!(
+                "atomic_effective_volumes_hirshfeld: chi eval failed: {e}"
+            ))
+        })?;
+        // ρ(r_g) = Σ_μ χ_μ(g) · (D·χ)(μ,g). g is a FREE index of this GEMM
+        // (the reduction is over the shared AO index), so splitting the grid
+        // splits independent output COLUMNS and leaves the accumulation lanes
+        // untouched — the same argument `becke_charges_chunked` spells out.
+        let d_chi = density.dot(&chi);
+        for (gc, pt) in points.iter().enumerate() {
+            let g = g0 + gc;
+            let mut rho = 0.0_f64;
+            for mu in 0..nbf {
+                rho += chi[(mu, gc)] * d_chi[(mu, gc)];
+            }
+            // Σ_B ρ⁰_B(r) first: the Hirshfeld weight needs the whole
+            // promolecule before any atom's share can be taken.
+            let mut rho_sum = 0.0_f64;
+            for a in 0..natoms {
+                let dx = pt[0] - pos[a][0];
+                let dy = pt[1] - pos[a][1];
+                let dz = pt[2] - pos[a][2];
+                let r = (dx * dx + dy * dy + dz * dz).sqrt();
+                let r0 = match &proatoms[a] {
+                    Some(p) => p.at(r),
+                    None => prefac[a] * (-2.0 * xi[a] * r).exp(),
+                };
+                rho0[a] = r0;
+                rho_sum += r0;
+            }
+            let inv = 1.0 / (rho_sum + EPS_FLOOR);
+            let w_rho = grid[g].weight * rho;
+            for a in 0..natoms {
+                let dx = pt[0] - pos[a][0];
+                let dy = pt[1] - pos[a][1];
+                let dz = pt[2] - pos[a][2];
+                let r3 = (dx * dx + dy * dy + dz * dz).powf(1.5);
+                vol[a] += rho0[a] * inv * w_rho * r3;
+            }
+        }
+        g0 = g1;
+    }
+    Ok(vol)
+}
+
+/// A uniform Cartesian lattice around the molecule:
+/// `GridSpec::bounding_box(mol, hirshfeld_margin(), hirshfeld_spacing())`
+/// (`FERRIC_HIRSHFELD_MARGIN`, default 6 Bohr; `FERRIC_HIRSHFELD_SPACING`,
+/// default 0.20 Bohr).
+///
+/// NOT what [`atomic_effective_volumes_hirshfeld`] integrates on — that is the
+/// atom-centred Becke–Lebedev grid. This lattice's origin is `min − margin`
+/// with `margin/h = 30` an integer, so the extreme atom on each axis sits
+/// exactly on a node, where ρ has its cusp: ∫ρ on it misses N_e by 0.64 e for
+/// CO/def2-SVP and the volumes miss a dense Becke reference by 2.4e-4
+/// relative, differently per atom (CH3OH's mirror-image hydrogens by 2.6e-5).
+/// It remains the quadrature `pdep_polarizability_hirshfeld` and
+/// `hirshfeld_i_charges` use, and the lattice
+/// [`atomic_effective_volumes_hirshfeld_on_grid`] accepts.
+pub fn hirshfeld_volume_grid(mol: &Molecule) -> ferric_integrals::ao_grid::GridSpec {
+    ferric_integrals::ao_grid::GridSpec::bounding_box(mol, hirshfeld_margin(), hirshfeld_spacing())
+}
+
+/// The lattice MBD@rsSCS integrates its Hirshfeld volumes on: the same
+/// spacing and margin as [`hirshfeld_volume_grid`], but anchored to the
+/// CENTROID c of the nuclei instead of the bounding box. Points are
+/// `c + i·h` along each axis, `i = −m..=m`, `m = ceil((max_A |R_A − c| + margin)/h)`.
+///
+/// Why: on the bounding-box lattice the points follow whichever atom is
+/// extreme on each axis, so the volumes are not differentiable where two atoms
+/// tie for the extreme (water's two H share z). Here every point moves by
+/// exactly `1/N` of an atom's displacement, so the lattice response of the
+/// volumes is the smooth term `−(1/N) Σ_B ∂v/∂R_B|_lattice fixed` (translation
+/// invariance at fixed D). A change of `m` re-labels the points and adds or
+/// drops an edge row at least `margin` from every nucleus, so the volumes stay
+/// continuous.
+pub fn mbd_volume_grid(mol: &Molecule) -> ferric_integrals::ao_grid::GridSpec {
+    let h = hirshfeld_spacing();
     let margin = hirshfeld_margin();
-    let grid = GridSpec::bounding_box(mol, margin, spacing);
-    let dv = spacing * spacing * spacing;
+    let n = mol.atoms.len().max(1) as f64;
+    let mut c = [0.0_f64; 3];
+    for a in &mol.atoms {
+        c[0] += a.x / n;
+        c[1] += a.y / n;
+        c[2] += a.zpos / n;
+    }
+    let mut origin = [0.0_f64; 3];
+    let mut counts = [1usize; 3];
+    for k in 0..3 {
+        let half = mol
+            .atoms
+            .iter()
+            .map(|a| ([a.x, a.y, a.zpos][k] - c[k]).abs())
+            .fold(0.0_f64, f64::max);
+        let m = ((half + margin) / h).ceil() as usize;
+        origin[k] = c[k] - m as f64 * h;
+        counts[k] = 2 * m + 1;
+    }
+    ferric_integrals::ao_grid::GridSpec {
+        origin,
+        n_x: counts[0],
+        n_y: counts[1],
+        n_z: counts[2],
+        step_x: [h, 0.0, 0.0],
+        step_y: [0.0, h, 0.0],
+        step_z: [0.0, 0.0, h],
+    }
+}
+
+/// Reject a lattice the Hirshfeld volume loops cannot integrate on: they read
+/// only the diagonal step components (`step_x[0]`, `step_y[1]`, `step_z[2]`)
+/// and use their product as the cell volume, so the lattice must be
+/// axis-aligned with positive steps.
+fn check_axis_aligned_grid(
+    label: &str,
+    grid: &ferric_integrals::ao_grid::GridSpec,
+) -> Result<(), FerricError> {
+    let off_diag = [
+        grid.step_x[1],
+        grid.step_x[2],
+        grid.step_y[0],
+        grid.step_y[2],
+        grid.step_z[0],
+        grid.step_z[1],
+    ];
+    let diag = [grid.step_x[0], grid.step_y[1], grid.step_z[2]];
+    if off_diag.iter().any(|&v| v != 0.0) || diag.iter().any(|&h| !(h.is_finite() && h > 0.0)) {
+        return Err(FerricError::General(format!(
+            "{label}: the integration lattice must be axis-aligned with positive steps \
+             (got step_x={:?}, step_y={:?}, step_z={:?})",
+            grid.step_x, grid.step_y, grid.step_z
+        )));
+    }
+    Ok(())
+}
+
+/// The same Hirshfeld volume integral as [`atomic_effective_volumes_hirshfeld`],
+/// but on a caller-supplied uniform **lattice** `grid` (axis-aligned; cell
+/// volume `step_x[0]·step_y[1]·step_z[2]`) instead of the atom-centred
+/// Becke–Lebedev grid. Holding one `grid` fixed while atoms move is the
+/// "lattice fixed" convention of [`hirshfeld_volume_gradient`], which is why
+/// MBD@rsSCS integrates here, on [`mbd_volume_grid`].
+///
+/// A lattice cannot resolve the nuclear cusp and does not carry the molecular
+/// point group, so this quadrature is the less accurate of the two: see
+/// [`hirshfeld_volume_grid`] for the measured errors. Use it only when the
+/// caller needs a geometry-independent point set (i.e. a gradient whose
+/// lattice-response term is derived for one).
+pub fn atomic_effective_volumes_hirshfeld_on_grid(
+    mol: &Molecule,
+    obs_bs: &ferric_core::basis::BasisSet,
+    density: &Array2<f64>,
+    proatom: Option<&ProatomProvider>,
+    grid: &ferric_integrals::ao_grid::GridSpec,
+) -> Result<Vec<f64>, FerricError> {
+    use ferric_integrals::ao_grid::eval_basis_on_grid;
+
+    check_axis_aligned_grid("atomic_effective_volumes_hirshfeld", grid)?;
+    let natoms = mol.atoms.len();
+    let dv = grid.step_x[0] * grid.step_y[1] * grid.step_z[2];
     let npts = grid.n_x * grid.n_y * grid.n_z;
     let hx = grid.step_x[0];
     let hy = grid.step_y[1];
@@ -3443,7 +3841,7 @@ pub fn atomic_effective_volumes_hirshfeld(
         natoms,
     )?;
 
-    let chi = eval_basis_on_grid(mol, obs_bs, &grid).map_err(|e| {
+    let chi = eval_basis_on_grid(mol, obs_bs, grid).map_err(|e| {
         FerricError::General(format!(
             "atomic_effective_volumes_hirshfeld: chi failed: {e}"
         ))
@@ -3518,6 +3916,486 @@ pub fn atomic_effective_volumes_hirshfeld(
         vol[a] = acc;
     }
     Ok(vol)
+}
+
+/// Lattice points per chunk of [`hirshfeld_volume_gradient`]. A constant (not
+/// derived from the thread count or the budget), so the chunk partition — and
+/// with it the order of the final fold — is a pure function of the lattice.
+pub const HIRSHFELD_GRAD_CHUNK_POINTS: usize = 1024;
+
+/// Distance (Bohr) below which [`hirshfeld_volume_gradient`] treats a lattice
+/// point as sitting on a nucleus, where the proatom gradient direction
+/// `d_B / r_B` is undefined (the Slater proatom's cusp).
+const NUCLEUS_TOL: f64 = 1e-9;
+
+/// Bytes [`hirshfeld_volume_gradient`] holds at its peak, split out so the
+/// formula can be checked by hand. Per chunk in flight: `chi`, the three
+/// `∇chi` planes and `D·chi` (5 × `(nbf, chunk)`), plus the point list and
+/// the per-point scalars (`ρ`, `q`, 3 coordinates — 5 × `chunk`). Shared:
+/// the symmetrized density `(nbf, nbf)` and one `(natoms, 3)` partial per
+/// chunk.
+pub fn estimate_hirshfeld_volume_gradient_bytes(
+    nbf: usize,
+    natoms: usize,
+    chunk_points: usize,
+    n_chunks: usize,
+    workers: usize,
+) -> usize {
+    const F64_BYTES: usize = 8;
+    let per_chunk = nbf
+        .saturating_mul(5)
+        .saturating_add(5)
+        .saturating_mul(chunk_points)
+        .saturating_mul(F64_BYTES);
+    let d_sym = nbf.saturating_mul(nbf).saturating_mul(F64_BYTES);
+    let partials = n_chunks
+        .saturating_mul(natoms)
+        .saturating_mul(3)
+        .saturating_mul(F64_BYTES);
+    per_chunk
+        .saturating_mul(workers)
+        .saturating_add(d_sym)
+        .saturating_add(partials)
+}
+
+/// Nuclear derivative of the contracted Hirshfeld volumes of
+/// [`atomic_effective_volumes_hirshfeld_on_grid`]:
+/// ```text
+///   G[B, :] = Σ_A de_dv[A] · ∂v_A/∂R_B
+/// ```
+/// at FIXED AO density matrix `D` and FIXED lattice `grid`: basis functions
+/// and proatoms move with their atoms, the lattice points do not. This is the
+/// exact derivative of the quadrature `atomic_effective_volumes_hirshfeld_on_grid`
+/// evaluates on the same `grid`, not of the continuous
+/// integral: there is no lattice-response term, so Σ_B G[B, :] need not vanish.
+///
+/// With `v_A = Σ_g dV w_A ρ |r−R_A|³`, `w_A = ρ⁰_A / (S + ε)`,
+/// `S = Σ_C ρ⁰_C`, `ε = 1e-12` (the energy's floor), `d_C = r − R_C`,
+/// `r_C = |d_C|` and `q(g) = Σ_A de_dv[A] w_A r_A³`, each lattice point adds
+/// ```text
+///   (i)   −2 dV q Σ_{μ on B} ∇χ_μ (D_s χ)_μ           ∂ρ/∂R_B, D_s = (D + Dᵀ)/2
+///   (ii)  dV ρ (de_dv[B] r_B³ − q) g_B / (S + ε)       ∂w_A/∂R_B = (δ_AB − w_A) g_B/(S+ε)
+///   (iii) −3 dV ρ de_dv[B] w_B r_B d_B                 ∂r_B³/∂R_B
+/// ```
+/// where `g_B = ∂ρ⁰_B/∂R_B = −ρ⁰_B'(r_B) d_B / r_B` (0 at `r_B = 0`, where the
+/// Slater profile has a cusp and the tabulated proatom, an even function of
+/// r, is flat).
+/// `ρ⁰_B'` is [`RadialProatom::deriv`] for a provider proatom and
+/// `−2ξ ρ⁰_B` for the Slater fallback; each atom uses the same proatom the
+/// energy uses (`proatom(z, 0)`, else the [`slater_xi_for_z`] Slater). The
+/// provider is called once per distinct element.
+///
+/// Evaluated in [`HIRSHFELD_GRAD_CHUNK_POINTS`]-point lattice chunks, in
+/// parallel; per-chunk `(natoms, 3)` partials are folded in ascending chunk
+/// order, so the result does not depend on the thread count.
+///
+/// # Errors
+///
+/// `de_dv` or `density` of the wrong size, a non-axis-aligned `grid`, an AO
+/// evaluation failure, or a peak (see
+/// [`estimate_hirshfeld_volume_gradient_bytes`]) above the memory budget.
+pub fn hirshfeld_volume_gradient(
+    mol: &Molecule,
+    obs_bs: &ferric_core::basis::BasisSet,
+    density: &Array2<f64>,
+    proatom: Option<&ProatomProvider>,
+    grid: &ferric_integrals::ao_grid::GridSpec,
+    de_dv: &[f64],
+) -> Result<Array2<f64>, FerricError> {
+    use ferric_integrals::ao_grid::{collect_shells, eval_shell_and_grad};
+    use rayon::prelude::*;
+
+    const LABEL: &str = "hirshfeld_volume_gradient";
+    check_axis_aligned_grid(LABEL, grid)?;
+    let natoms = mol.atoms.len();
+    if de_dv.len() != natoms {
+        return Err(FerricError::General(format!(
+            "{LABEL}: de_dv has {} entries for {natoms} atoms",
+            de_dv.len()
+        )));
+    }
+
+    // AO → atom, in collect_shells' order (atom-major, shell, function).
+    let shells =
+        collect_shells(mol, obs_bs).map_err(|e| FerricError::General(format!("{LABEL}: {e}")))?;
+    let mut ao_atom: Vec<usize> = Vec::new();
+    for (a, atom) in mol.atoms.iter().enumerate() {
+        let atom_shells = obs_bs
+            .for_element(atom.z)
+            .ok_or_else(|| FerricError::General(format!("{LABEL}: no basis for Z={}", atom.z)))?;
+        for sh in atom_shells {
+            let n = ferric_core::basis::num_functions(sh.l, sh.pure);
+            ao_atom.extend(std::iter::repeat_n(a, n));
+        }
+    }
+    let nbf = ao_atom.len();
+    if density.nrows() != nbf || density.ncols() != nbf {
+        return Err(FerricError::General(format!(
+            "{LABEL}: density {:?} does not match nbf {nbf}",
+            density.dim()
+        )));
+    }
+    let shell_nf: Vec<usize> = shells
+        .iter()
+        .map(|s| ferric_core::basis::num_functions(s.l, s.pure))
+        .collect();
+
+    let hx = grid.step_x[0];
+    let hy = grid.step_y[1];
+    let hz = grid.step_z[2];
+    let dv = hx * hy * hz;
+    let npts = grid.n_x * grid.n_y * grid.n_z;
+    let chunk = HIRSHFELD_GRAD_CHUNK_POINTS;
+    let chunk_starts: Vec<usize> = (0..npts).step_by(chunk).collect();
+    let n_chunks = chunk_starts.len();
+
+    // Thread count enters only the memory estimate (how many chunks can be
+    // in flight), never the partition or the fold.
+    let workers = rayon::current_num_threads().max(1).min(n_chunks.max(1));
+    let est = estimate_hirshfeld_volume_gradient_bytes(nbf, natoms, chunk, n_chunks, workers);
+    let label = format!(
+        "{LABEL} (nbf={nbf}, npts={npts}, natoms={natoms}, chunk={chunk}, workers={workers})"
+    );
+    ferric_core::memory::check_alloc(&label, est, ferric_core::memory::resolve_budget_bytes(None))?;
+    // Held for the whole call: every buffer it charges is live until return.
+    let _charge = ferric_core::memory::pool::reserve_global(&label, est)?;
+
+    let d_sym = {
+        let mut d = density.to_owned();
+        d += &density.t();
+        d *= 0.5;
+        d
+    };
+
+    // Per-atom proatom (same choice as the energy), one provider call per Z.
+    let mut by_z: std::collections::BTreeMap<i32, Option<RadialProatom>> =
+        std::collections::BTreeMap::new();
+    let mut pro: Vec<Option<RadialProatom>> = Vec::with_capacity(natoms);
+    let mut slater: Vec<(f64, f64)> = Vec::with_capacity(natoms); // (xi, prefac)
+    let mut pos: Vec<[f64; 3]> = Vec::with_capacity(natoms);
+    for atom in &mol.atoms {
+        let z_a = atom.z;
+        let pa = by_z
+            .entry(z_a)
+            .or_insert_with(|| proatom.and_then(|p| p(z_a, 0)))
+            .clone();
+        pro.push(pa);
+        let xi = slater_xi_for_z(z_a);
+        slater.push((xi, z_a as f64 * xi.powi(3) / std::f64::consts::PI));
+        pos.push([atom.x, atom.y, atom.zpos]);
+    }
+
+    let eps_floor = 1e-12;
+    let (n_y, n_z) = (grid.n_y, grid.n_z);
+    let origin = grid.origin;
+
+    let partials: Vec<Vec<[f64; 3]>> = chunk_starts
+        .par_iter()
+        .map(|&g0| -> Result<Vec<[f64; 3]>, FerricError> {
+            let g1 = (g0 + chunk).min(npts);
+            let c = g1 - g0;
+            // Lattice coordinates, same arithmetic as the energy loops.
+            let pts: Vec<[f64; 3]> = (g0..g1)
+                .map(|g| {
+                    let ix = g / (n_y * n_z);
+                    let rem = g % (n_y * n_z);
+                    let iy = rem / n_z;
+                    let iz = rem % n_z;
+                    [
+                        origin[0] + ix as f64 * hx,
+                        origin[1] + iy as f64 * hy,
+                        origin[2] + iz as f64 * hz,
+                    ]
+                })
+                .collect();
+
+            // χ and ∇χ for this chunk, serially (no nested parallelism, so at
+            // most `workers` chunks are ever resident).
+            let mut chi = Array2::<f64>::zeros((nbf, c));
+            let mut dchi: [Array2<f64>; 3] = std::array::from_fn(|_| Array2::zeros((nbf, c)));
+            let mut buf = [0.0f64; 15];
+            let mut gbuf = [[0.0f64; 15]; 3];
+            for (gc, p) in pts.iter().enumerate() {
+                let mut row0 = 0usize;
+                for (sh, &n) in shells.iter().zip(&shell_nf) {
+                    buf.fill(0.0);
+                    for row in gbuf.iter_mut() {
+                        row.fill(0.0);
+                    }
+                    eval_shell_and_grad(
+                        sh,
+                        p[0] - sh.center[0],
+                        p[1] - sh.center[1],
+                        p[2] - sh.center[2],
+                        &mut buf[..n],
+                        &mut gbuf,
+                    )
+                    .map_err(|e| FerricError::General(format!("{LABEL}: {e}")))?;
+                    for i in 0..n {
+                        chi[(row0 + i, gc)] = buf[i];
+                        for k in 0..3 {
+                            dchi[k][(row0 + i, gc)] = gbuf[k][i];
+                        }
+                    }
+                    row0 += n;
+                }
+            }
+            let d_chi = d_sym.dot(&chi);
+
+            let mut rho = vec![0.0_f64; c];
+            for mu in 0..nbf {
+                for gc in 0..c {
+                    rho[gc] += chi[(mu, gc)] * d_chi[(mu, gc)];
+                }
+            }
+
+            let mut local = vec![[0.0_f64; 3]; natoms];
+            let mut q = vec![0.0_f64; c];
+            let mut rho0 = vec![0.0_f64; natoms];
+            let mut drho0 = vec![0.0_f64; natoms];
+            let mut dvec = vec![[0.0_f64; 3]; natoms];
+            let mut rr = vec![0.0_f64; natoms];
+            for gc in 0..c {
+                let p = pts[gc];
+                let mut s = 0.0;
+                for a in 0..natoms {
+                    let d = [p[0] - pos[a][0], p[1] - pos[a][1], p[2] - pos[a][2]];
+                    let r = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                    let (v, dvdr) = match &pro[a] {
+                        Some(pa) => pa.value_and_deriv(r),
+                        None => {
+                            let (xi, prefac) = slater[a];
+                            let v = prefac * (-2.0 * xi * r).exp();
+                            (v, -2.0 * xi * v)
+                        }
+                    };
+                    dvec[a] = d;
+                    rr[a] = r;
+                    rho0[a] = v;
+                    drho0[a] = dvdr;
+                    s += v;
+                }
+                let den = s + eps_floor;
+                let mut qg = 0.0;
+                for a in 0..natoms {
+                    qg += de_dv[a] * (rho0[a] / den) * rr[a] * rr[a] * rr[a];
+                }
+                q[gc] = qg;
+                let rho_g = rho[gc];
+                for b in 0..natoms {
+                    let r = rr[b];
+                    let d = dvec[b];
+                    let r3 = r * r * r;
+                    // (ii): g_B = −ρ⁰_B'(r_B) d_B / r_B. At the nucleus the
+                    // Slater proatom has a cusp and d_B/r_B no direction; a
+                    // lattice point there is common (the bounding-box lattice
+                    // puts an atom that is extreme in x, y and z on a point)
+                    // and sits at r ~ 1e-16, not 0, so the guard is a distance:
+                    // zero is the symmetric subgradient a central difference
+                    // sees. The tabulated proatom is even in r, so its term
+                    // vanishes there anyway.
+                    if r > NUCLEUS_TOL {
+                        let f = dv * rho_g * (de_dv[b] * r3 - qg) / den * (-drho0[b] / r);
+                        for k in 0..3 {
+                            local[b][k] += f * d[k];
+                        }
+                    }
+                    // (iii)
+                    let f3 = -3.0 * dv * rho_g * de_dv[b] * (rho0[b] / den) * r;
+                    for k in 0..3 {
+                        local[b][k] += f3 * d[k];
+                    }
+                }
+            }
+
+            // (i): −2 dV q Σ_{μ on B} ∇χ_μ (D_s χ)_μ.
+            for mu in 0..nbf {
+                let b = ao_atom[mu];
+                let mut acc = [0.0_f64; 3];
+                for gc in 0..c {
+                    let t = q[gc] * d_chi[(mu, gc)];
+                    for k in 0..3 {
+                        acc[k] += t * dchi[k][(mu, gc)];
+                    }
+                }
+                for k in 0..3 {
+                    local[b][k] += -2.0 * dv * acc[k];
+                }
+            }
+            Ok(local)
+        })
+        .collect::<Result<Vec<_>, FerricError>>()?;
+
+    // Serial fold in ascending chunk order — the determinism anchor.
+    let mut out = Array2::<f64>::zeros((natoms, 3));
+    for part in &partials {
+        for (b, row) in part.iter().enumerate() {
+            for k in 0..3 {
+                out[(b, k)] += row[k];
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Density-matrix derivative of the contracted Hirshfeld volumes of
+/// [`atomic_effective_volumes_hirshfeld_on_grid`]:
+/// ```text
+///   V_μν = ∂(Σ_A c_A v_A)/∂D_μν = Σ_g dV q(r_g) χ_μ(r_g) χ_ν(r_g),
+///   q(r) = Σ_A c_A w_A(r) |r − R_A|³
+/// ```
+/// on the same lattice, proatoms and floor as the volumes (`c` = `de_dv`).
+/// Symmetric. Contracted with a density-matrix change δD it gives the
+/// first-order change of Σ_A c_A v_A at fixed geometry; the MBD nuclear
+/// gradient uses it for the orbital-orthonormality term −½ Tr[V D S^x D].
+pub fn hirshfeld_volume_density_derivative(
+    mol: &Molecule,
+    obs_bs: &ferric_core::basis::BasisSet,
+    proatom: Option<&ProatomProvider>,
+    grid: &ferric_integrals::ao_grid::GridSpec,
+    de_dv: &[f64],
+) -> Result<Array2<f64>, FerricError> {
+    use ferric_integrals::ao_grid::{collect_shells, eval_shell};
+    use rayon::prelude::*;
+
+    const LABEL: &str = "hirshfeld_volume_density_derivative";
+    check_axis_aligned_grid(LABEL, grid)?;
+    let natoms = mol.atoms.len();
+    if de_dv.len() != natoms {
+        return Err(FerricError::General(format!(
+            "{LABEL}: de_dv has {} entries for {natoms} atoms",
+            de_dv.len()
+        )));
+    }
+    let shells =
+        collect_shells(mol, obs_bs).map_err(|e| FerricError::General(format!("{LABEL}: {e}")))?;
+    let shell_nf: Vec<usize> = shells
+        .iter()
+        .map(|s| ferric_core::basis::num_functions(s.l, s.pure))
+        .collect();
+    let nbf: usize = shell_nf.iter().sum();
+
+    let hx = grid.step_x[0];
+    let hy = grid.step_y[1];
+    let hz = grid.step_z[2];
+    let dv = hx * hy * hz;
+    let npts = grid.n_x * grid.n_y * grid.n_z;
+    let chunk = HIRSHFELD_GRAD_CHUNK_POINTS;
+    let chunk_starts: Vec<usize> = (0..npts).step_by(chunk).collect();
+    let n_chunks = chunk_starts.len();
+    let workers = rayon::current_num_threads().max(1).min(n_chunks.max(1));
+    // Chunks are summed in HIRSHFELD_V_GROUPS fixed contiguous groups (a
+    // constant, not the thread count, so the fold order and the result do not
+    // depend on it). Resident: per in-flight group χ, q·χ (2·nbf·chunk) and a
+    // GEMM temporary (nbf²); one nbf² accumulator per group; the output.
+    const HIRSHFELD_V_GROUPS: usize = 16;
+    let est = {
+        const F64_BYTES: usize = 8;
+        let nbf2 = nbf.saturating_mul(nbf);
+        let per = nbf
+            .saturating_mul(2)
+            .saturating_mul(chunk)
+            .saturating_add(nbf2)
+            .saturating_mul(F64_BYTES);
+        per.saturating_mul(workers.min(HIRSHFELD_V_GROUPS))
+            .saturating_add(
+                nbf2.saturating_mul(HIRSHFELD_V_GROUPS + 1)
+                    .saturating_mul(F64_BYTES),
+            )
+    };
+    let label = format!("{LABEL} (nbf={nbf}, npts={npts}, chunk={chunk}, workers={workers})");
+    ferric_core::memory::check_alloc(&label, est, ferric_core::memory::resolve_budget_bytes(None))?;
+    let _charge = ferric_core::memory::pool::reserve_global(&label, est)?;
+
+    let mut by_z: std::collections::BTreeMap<i32, Option<RadialProatom>> =
+        std::collections::BTreeMap::new();
+    let mut pro: Vec<Option<RadialProatom>> = Vec::with_capacity(natoms);
+    let mut slater: Vec<(f64, f64)> = Vec::with_capacity(natoms);
+    let mut pos: Vec<[f64; 3]> = Vec::with_capacity(natoms);
+    for atom in &mol.atoms {
+        let z_a = atom.z;
+        let pa = by_z
+            .entry(z_a)
+            .or_insert_with(|| proatom.and_then(|p| p(z_a, 0)))
+            .clone();
+        pro.push(pa);
+        let xi = slater_xi_for_z(z_a);
+        slater.push((xi, z_a as f64 * xi.powi(3) / std::f64::consts::PI));
+        pos.push([atom.x, atom.y, atom.zpos]);
+    }
+    let eps_floor = 1e-12;
+    let (n_y, n_z) = (grid.n_y, grid.n_z);
+    let origin = grid.origin;
+
+    let per_group = n_chunks.div_ceil(HIRSHFELD_V_GROUPS).max(1);
+    let chunk_contrib = |g0: usize| -> Result<Array2<f64>, FerricError> {
+        let g1 = (g0 + chunk).min(npts);
+        let c = g1 - g0;
+        let mut chi = Array2::<f64>::zeros((nbf, c));
+        let mut qchi = Array2::<f64>::zeros((nbf, c));
+        let mut buf = [0.0f64; 15];
+        for (gc, g) in (g0..g1).enumerate() {
+            let ix = g / (n_y * n_z);
+            let rem = g % (n_y * n_z);
+            let iy = rem / n_z;
+            let iz = rem % n_z;
+            let p = [
+                origin[0] + ix as f64 * hx,
+                origin[1] + iy as f64 * hy,
+                origin[2] + iz as f64 * hz,
+            ];
+            let mut s = 0.0;
+            let mut num = 0.0;
+            for a in 0..natoms {
+                let d = [p[0] - pos[a][0], p[1] - pos[a][1], p[2] - pos[a][2]];
+                let r = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                let r0 = match &pro[a] {
+                    Some(pa) => pa.at(r),
+                    None => {
+                        let (xi, prefac) = slater[a];
+                        prefac * (-2.0 * xi * r).exp()
+                    }
+                };
+                s += r0;
+                num += de_dv[a] * r0 * r * r * r;
+            }
+            let q = dv * num / (s + eps_floor);
+            let mut row0 = 0usize;
+            for (sh, &n) in shells.iter().zip(&shell_nf) {
+                buf.fill(0.0);
+                eval_shell(
+                    sh,
+                    p[0] - sh.center[0],
+                    p[1] - sh.center[1],
+                    p[2] - sh.center[2],
+                    &mut buf[..n],
+                )
+                .map_err(|e| FerricError::General(format!("{LABEL}: {e}")))?;
+                for i in 0..n {
+                    chi[(row0 + i, gc)] = buf[i];
+                    qchi[(row0 + i, gc)] = q * buf[i];
+                }
+                row0 += n;
+            }
+        }
+        Ok(qchi.dot(&chi.t()))
+    };
+    let partials: Vec<Array2<f64>> = chunk_starts
+        .par_chunks(per_group)
+        .map(|group| -> Result<Array2<f64>, FerricError> {
+            let mut acc = Array2::<f64>::zeros((nbf, nbf));
+            for &g0 in group {
+                acc += &chunk_contrib(g0)?;
+            }
+            Ok(acc)
+        })
+        .collect::<Result<Vec<_>, FerricError>>()?;
+
+    let mut out = Array2::<f64>::zeros((nbf, nbf));
+    for part in &partials {
+        out += part;
+    }
+    Ok(out)
 }
 
 /// Iterative Hirshfeld (Hirshfeld-I) charges using ad-hoc same-basis free-atom
@@ -3693,6 +4571,14 @@ pub fn hirshfeld_i_charges(
     Ok(q)
 }
 
+/// Hirshfeld atomic charges q_A = Z_A − ∫ w^A(r) ρ(r) dr, with
+/// w^A = ρ⁰_A / (Σ_B ρ⁰_B + 1e-12), on the atom-centred Becke–Lebedev grid.
+///
+/// `proatom` supplies each atom's neutral free-atom density ρ⁰_A; ferric-cli
+/// and the Python `ferric.hirshfeld_charges` (default `proatom="scf"`) pass
+/// [`ferric_scf::properties::scf_proatom_provider`]. With `None`, or for an atom
+/// the provider returns `None` for, ρ⁰_A is the single-Slater proatom of
+/// [`slater_xi_for_z`], and a warning is printed.
 ///
 /// The total electronic charge is renormalized so Σ_A (Z_A − q_A) = N_e
 /// exactly (compensates for grid quadrature error in the density integral).
@@ -3852,6 +4738,111 @@ pub fn hirshfeld_charges(
 
 #[cfg(test)]
 mod tests {
+
+    /// EXACTNESS ANCHOR for the Becke–Lebedev volume quadrature of
+    /// [`atomic_effective_volumes_hirshfeld`], written BEFORE any accuracy
+    /// sweep was run (CLAUDE.md Experimental Protocol: "EXACTNESS ANCHOR
+    /// FIRST").
+    ///
+    /// The trivial limit of the Hirshfeld partition is ONE atom: `w^A =
+    /// ρ⁰_A/(ρ⁰_A + 1e-12) = 1` everywhere ρ⁰_A ≫ 1e-12, so the volume
+    /// collapses to the plain moment `∫ ρ r³ dV` with no partition left in it.
+    /// Feeding the single-Slater proatom `ρ = Z ξ³/π e^{−2ξr}` as the density
+    /// makes that moment analytic:
+    /// ```text
+    ///   ∫ ρ r³ dV = (Z ξ³/π)·4π·∫₀^∞ r⁵ e^{−2ξr} dr
+    ///             = 4 Z ξ³ · 5!/(2ξ)⁶ = 7.5 Z / ξ³
+    /// ```
+    /// This exercises exactly the pieces an implementation error would break —
+    /// the grid weights, the `r³` factor, and the `Σ_B ρ⁰_B` denominator — with
+    /// no AO evaluation and no SCF in the way. It is deliberately NOT a
+    /// comparison against another of ferric's own quadratures: a construction
+    /// bug reproduces across quadratures (CLAUDE.md "CONSISTENCY IS NOT
+    /// CORROBORATION"), an analytic value does not.
+    ///
+    /// The quadrature is the production one:
+    /// `build_atomic_grid(&AtomicGridConfig::default())`, the 75×110 TA-M4 ×
+    /// Lebedev grid, with the home-atom Becke factor folded into each weight.
+    ///
+    /// Bar DERIVED FROM MEASUREMENT, not guessed: the max relative deviation
+    /// over Z ∈ {1, 6, 8} is 8.2e-7 (H 2.8e-7, C 8.2e-7, O 5.2e-7). That floor
+    /// is the 75-point Treutler–Ahlrichs M4 radial rule against an
+    /// exponential's cusp — the grid is tuned for a contracted Gaussian
+    /// density, and a Slater is a harder radial integrand than anything a
+    /// basis set produces — so it is the quadrature's accuracy, not an error.
+    /// The bar is 1e-5, ~12x that.
+    ///
+    /// The bar is checked from the other side too: replacing this loop's
+    /// `r * r * r` with `r * r` puts the sum 15% (Z=1), 70% (Z=6) and 65%
+    /// (Z=8) off — four to five orders outside the bar.
+    ///
+    /// Two of the three mutations the issue asks for are INVISIBLE to a
+    /// one-atom anchor, by construction, and that is recorded here rather than
+    /// papered over:
+    ///
+    /// * the proatom of atom 0 used for every atom — there is only atom 0, so
+    ///   the mutation is the identity;
+    /// * the home-atom Becke factor not multiplied into the grid weight — on
+    ///   one atom that factor IS 1 (`becke_weights_all` returns `[1.0]`), so
+    ///   again the identity.
+    ///
+    /// Both are carried by the molecular rows of
+    /// `tests/validation_hirshfeld.rs`; see that file's MUTATION ledger for
+    /// the run log. An anchor cannot see a defect proportional to what it
+    /// zeroes (memory `anchor-blind-spots`), and the trivial limit that makes
+    /// this test exact is exactly what zeroes those two.
+    #[test]
+    fn hirshfeld_volume_quadrature_matches_the_closed_form_slater_moment() {
+        use ferric_dft::grid::{build_atomic_grid, AtomicGridConfig};
+
+        /// Measured max 8.2e-7 (C); 12x headroom. See the doc above for the
+        /// mutations that must — and do — exceed it.
+        const BAR: f64 = 1e-5;
+        let mut worst = 0.0_f64;
+        for z in [1_i32, 6, 8] {
+            let sym = ferric_core::elements::z_to_symbol(z).expect("symbol");
+            // Multiplicity only has to be CONSISTENT with Z here (the grid
+            // depends on the nuclear charge and position, not on the state),
+            // so take the parity-legal minimum: a singlet for even Z, a
+            // doublet for odd.
+            let mult = if z % 2 == 0 { 1 } else { 2 };
+            let mol = Molecule::parse_xyz(&format!("1\n{sym}\n{sym} 0 0 0\n"), 0, mult)
+                .expect("one-atom molecule");
+            let xi = slater_xi_for_z(z);
+            let prefac = z as f64 * xi.powi(3) / std::f64::consts::PI;
+            let grid = build_atomic_grid(&mol, &AtomicGridConfig::default());
+            // Σ_g w_g · ρ(r_g) · w^A(r_g) · r_g³ with ρ = ρ⁰ and w^A = 1 by
+            // construction: the one-atom Hirshfeld weight, written out rather
+            // than assumed, so a weight that was NOT 1 would show up here.
+            let mut acc = 0.0_f64;
+            let mut worst_weight_dev = 0.0_f64;
+            for g in &grid {
+                let r = (g.xyz[0] * g.xyz[0] + g.xyz[1] * g.xyz[1] + g.xyz[2] * g.xyz[2]).sqrt();
+                let rho0 = prefac * (-2.0 * xi * r).exp();
+                let w_hirsh = rho0 / (rho0 + 1e-12);
+                // Only where ρ⁰ is above the 1e-12 floor is w == 1; the tail
+                // contributes nothing to the moment either way.
+                if rho0 > 1e-8 {
+                    worst_weight_dev = worst_weight_dev.max((w_hirsh - 1.0).abs());
+                }
+                acc += g.weight * rho0 * w_hirsh * r * r * r;
+            }
+            assert!(
+                worst_weight_dev < 1e-4,
+                "Z={z}: one-atom Hirshfeld weight deviates from 1 by {worst_weight_dev:.2e} \
+                 where ρ⁰ > 1e-8 — the anchor's premise is broken, not the quadrature"
+            );
+            let exact = 7.5 * z as f64 / xi.powi(3);
+            let rel = (acc - exact).abs() / exact;
+            eprintln!("Z={z} xi={xi:.4}: quadrature {acc:.12e} exact {exact:.12e} rel {rel:.2e}");
+            worst = worst.max(rel);
+        }
+        assert!(
+            worst < BAR,
+            "Becke-Lebedev volume quadrature vs the closed-form Slater r³ moment: \
+             max rel {worst:.2e} >= {BAR:.0e}"
+        );
+    }
     use super::*;
     use ferric_core::basis;
     use ferric_core::parallel::ParallelContext;
@@ -4031,11 +5022,8 @@ mod tests {
 
     #[test]
     fn becke_dynamic_alpha_molecular_sum_decays() {
-        // The MOLECULAR dynamic polarizability — Σ_A α^A(iω) — is the robust,
-        // origin-independent quantity. (Per-atom α^A(iω) is origin-dependent at
-        // ω≠0 because the lab-frame partitioned dipole ⟨i|w^A r|a⟩ depends on the
-        // common origin; only the atom SUM and the static ω=0 limit are clean.)
-        // Check the molecular sum decays monotonically with the right tail.
+        // The atom sum Σ_A α^A(iω) of the intrinsic per-atom tensors decays
+        // monotonically with the right tail.
         let (mol, obs, dfbs, op, rhf) = build_h2();
         let bs = basis::bundled("cc-pvdz").unwrap();
         let cfg = PdepRpaConfig {
@@ -4240,6 +5228,99 @@ mod tests {
             );
         }
         assert!(iso(&mol_dyn_r[0]) > 0.0, "static α must be positive");
+    }
+
+    #[test]
+    fn becke_dynamic_at_zero_frequency_is_the_static_per_atom_alpha() {
+        // Exactness anchor: one Krishtal intrinsic definition, two code paths.
+        // The dynamic path evaluated AT ω = 0 must reproduce the static one,
+        // and α_CT closes Σ_A α^A onto the molecular static α.
+        let (mol, obs, dfbs, op, rhf) = build_h2();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let cfg = PdepRpaConfig::default();
+        let dyn0 =
+            pdep_polarizability_becke_dynamic(&mol, &obs, &bs, &dfbs, &rhf, op, &cfg, &[0.0])
+                .unwrap();
+        let st = pdep_polarizability_becke(&mol, &obs, &bs, &dfbs, &rhf, op, &cfg).unwrap();
+        let scale = st
+            .iter()
+            .flatten()
+            .flatten()
+            .fold(0.0_f64, |m, v| m.max(v.abs()));
+        let mut d = 0.0_f64;
+        for a in 0..st.len() {
+            for i in 0..3 {
+                for j in 0..3 {
+                    d = d.max((dyn0[a][0][i][j] - st[a][i][j]).abs());
+                }
+            }
+        }
+        assert!(
+            d / scale < 1e-11,
+            "per-atom dynamic(ω=0) vs static: rel {:.2e}",
+            d / scale
+        );
+
+        let mol_a = pdep_polarizability_static(&mol, &obs, &dfbs, &rhf, op, &cfg)
+            .unwrap()
+            .tensor;
+        let ct = charge_transfer_remainder(&mol_a, &st);
+        // H2 along z: charge flows only along the bond, so α_CT is zz-dominated
+        // and the remainder is a real (non-negligible) fraction of α_zz.
+        assert!(
+            ct[2][2] > 0.05 * mol_a[2][2],
+            "α_CT,zz = {} vs α_zz = {}",
+            ct[2][2],
+            mol_a[2][2]
+        );
+        assert!(
+            ct[0][0].abs() < 1e-3 * mol_a[0][0],
+            "α_CT,xx = {} should vanish (no charge flow perpendicular to the bond)",
+            ct[0][0]
+        );
+        for i in 0..3 {
+            for j in 0..3 {
+                let s_ij: f64 = st.iter().map(|t| t[i][j]).sum();
+                assert!(
+                    (s_ij + ct[i][j] - mol_a[i][j]).abs() < 1e-13 * mol_a[2][2],
+                    "Σ_A α^A + α_CT != α_mol at [{i}][{j}]"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn becke_dynamic_uhf_matches_rhf_per_atom_on_closed_shell() {
+        // The open-shell (U) branch's ket is the analytic dipole per spin, the
+        // same operator as the closed-shell branch. A singlet forced through
+        // UHF must therefore give the SAME per-atom α^A(iω).
+        use ferric_scf::uhf::solve_uhf;
+        let (mol, obs, dfbs, op, rhf) = build_h2();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let cfg = PdepRpaConfig::default();
+        let freqs = [0.0, 0.7];
+        let ctx = ParallelContext::default();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &RhfConfig::default()).unwrap();
+        assert!(!matches!(uhf.spin, Spin::Restricted));
+        let r = pdep_polarizability_becke_dynamic(&mol, &obs, &bs, &dfbs, &rhf, op, &cfg, &freqs)
+            .unwrap();
+        let u = pdep_polarizability_becke_dynamic(&mol, &obs, &bs, &dfbs, &uhf, op, &cfg, &freqs)
+            .unwrap();
+        for a in 0..r.len() {
+            for k in 0..freqs.len() {
+                for i in 0..3 {
+                    for j in 0..3 {
+                        let (x, y) = (r[a][k][i][j], u[a][k][i][j]);
+                        assert!(
+                            (x - y).abs() < 1e-6 * (1.0 + x.abs()),
+                            "atom {a} ω={} [{i}][{j}]: RHF {x} vs UHF {y}",
+                            freqs[k]
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

@@ -354,6 +354,17 @@ else
 fi
 echo
 
+# ---- 2b. optional: clippy with the gpu feature (CI_GATE_GPU=1) ----------
+if [[ "${CI_GATE_GPU:-0}" == "1" ]]; then
+    echo "-- cargo clippy --features gpu --"
+    OPENBLAS_NUM_THREADS=1 cargo clippy --workspace --all-targets --locked -j "$JOBS" \
+        --features ferric-core/gpu,ferric-tensors/gpu,ferric-cli/gpu,ferric-python/gpu,ferric-benchmarks/gpu,ferric-mp2/gpu,ferric-core/test-seams,ferric-scf/test-seams,ferric-mp2/test-seams -- -D warnings \
+        || { echo "RESULT: FAIL (gpu clippy)"; exit 1; }
+    echo "-- cargo test ferric-cli gpu_section (gpu feature) --"
+    OPENBLAS_NUM_THREADS=1 cargo test -p ferric-cli --features gpu --locked --test gpu_section \
+        || { echo "RESULT: FAIL (gpu_section)"; exit 1; }
+fi
+
 # ---- 3. complexity regression (CC/MI vs. checked-in baseline) ----------
 # Soft-skip (does not set FAILED) if the tool isn't installed -- this is a
 # machine-local dev tool (`cargo install rust-code-analysis-cli`), not a
@@ -451,9 +462,44 @@ if [[ -f "$SO_PATH" ]]; then
         fi
     fi
     echo "   paths:     ${PYTEST_PATHS[*]}"
+    # Make the extension we just VALIDATED the one pytest actually imports.
+    #
+    # Finding a .so on disk does not put it on sys.path. `uv run --no-sync`
+    # uses the project venv, and in a linked worktree that venv usually has
+    # no ferric installed at all -- so pytest would import whatever ferric
+    # the interpreter happened to resolve (e.g. a months-old pyenv
+    # site-packages copy) or nothing. Either way the "extension: <path>"
+    # line above was a promise the run did not keep: 180 tests failed in a
+    # worktree with `run_dft() got an unexpected keyword argument
+    # 'dispersion'` -- a kwarg this very tree defines -- which reads as a
+    # code regression and is really a stale import.
+    #
+    # `ferric` is a PACKAGE, so a directory holding the bare .so does not
+    # shadow it; Python needs a `ferric/` dir with an __init__.py beside a
+    # correctly-named extension. Build that in a temp dir and prepend it.
+    GATE_PYSHIM="$(mktemp -d)"
+    mkdir -p "$GATE_PYSHIM/ferric"
+    _gate_init="$(find . -path '*/ferric/__init__.py' -not -path './target/*' 2>/dev/null | head -1)"
+    if [[ -n "$_gate_init" ]]; then
+        cp "$_gate_init" "$GATE_PYSHIM/ferric/__init__.py"
+    else
+        # Minimal re-export: mirrors the wheel's __init__.py.
+        printf 'from .ferric import *  # noqa: F401,F403\n' > "$GATE_PYSHIM/ferric/__init__.py"
+    fi
+    _gate_abi="$(uv run --no-sync python -c 'import sysconfig;print(sysconfig.get_config_var("EXT_SUFFIX"))' 2>/dev/null)"
+    [[ -z "$_gate_abi" ]] && _gate_abi=".cpython-311-x86_64-linux-gnu.so"
+    ln -sf "$(cd "$(dirname "$SO_PATH")" && pwd)/$(basename "$SO_PATH")" \
+           "$GATE_PYSHIM/ferric/ferric${_gate_abi}"
+    trap 'rm -rf "$GATE_PYSHIM"' EXIT
+    if ! PYTHONPATH="$GATE_PYSHIM${PYTHONPATH:+:$PYTHONPATH}" \
+         uv run --no-sync python -c 'import ferric' 2>/dev/null; then
+        echo "   WARNING: the validated extension is NOT importable; pytest"
+        echo "            results below say nothing about this tree's code."
+    fi
     # libxtb resolves from the multiarch subdir; harmless when xtb is absent
     # (those suites skip themselves).
-    if LD_LIBRARY_PATH="$HOME/.local/lib/x86_64-linux-gnu:$HOME/.local/lib:${LD_LIBRARY_PATH:-}" \
+    if PYTHONPATH="$GATE_PYSHIM${PYTHONPATH:+:$PYTHONPATH}" \
+       LD_LIBRARY_PATH="$HOME/.local/lib/x86_64-linux-gnu:$HOME/.local/lib:${LD_LIBRARY_PATH:-}" \
        OPENBLAS_NUM_THREADS=1 uv run --no-sync pytest "${PYTEST_PATHS[@]}" -q 2>&1; then
         echo "-- pytest: PASS --"
     else

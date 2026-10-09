@@ -29,8 +29,8 @@
 //! `[50, 86, 86, 110, 86]`; at `n_ang = 302` it gives `[50, 86, 266, 302, 266]`.
 //!
 //! [`crate::lebedev::lebedev`] only implements the subset
-//! `{6, 14, 26, 50, 110, 302, 434, 590}` — it has no
-//! 74/86/146/170/194/230/266/350 rule. We
+//! `{6, 14, 26, 50, 110, 194, 302, 434, 590}` — it has no
+//! 74/86/146/170/230/266/350 rule. We
 //! therefore SNAP each NWChem-requested order onto a supported one. The snap
 //! direction was **chosen from measurements, not from taste**:
 //!
@@ -82,7 +82,7 @@ type Result<T> = std::result::Result<T, FerricError>;
 
 /// Angular Lebedev orders this crate can actually generate, ascending.
 /// Mirrors the `match` arms in [`crate::lebedev::lebedev`].
-pub const SUPPORTED_LEBEDEV_ORDERS: [usize; 8] = [6, 14, 26, 50, 110, 302, 434, 590];
+pub const SUPPORTED_LEBEDEV_ORDERS: [usize; 9] = [6, 14, 26, 50, 110, 194, 302, 434, 590];
 
 /// The full Lebedev-Laikov ladder PySCF indexes into (`LEBEDEV_NGRID[4:18]`, through 590).
 /// Only used to reproduce NWChem's *requested* per-region orders before
@@ -105,6 +105,47 @@ pub enum PruneScheme {
     /// `nwchem_prune`, with orders snapped onto ferric's supported Lebedev
     /// set (see the module docs for the snapping rule).
     NwchemLike,
+    /// The seminumerical-exchange (COSX/SGX) scheme of ORCA's `GridX` grids
+    /// as transcribed by PySCF's `sgx_prune` (`pyscf/dft/gen_grid.py`,
+    /// `SGX_ANG_MAPPING`, v2.13-2.14): the same five NWChem regions
+    /// (`r / R_bragg` against the element-row boundaries above), but each
+    /// region gets a fixed Lebedev order from one row of [`SGX_REGION_ORDERS`],
+    /// selected by the grid's peak order `n_angular`. At `n_angular = 194`
+    /// the regions are `26/50/110/194/110` — ORCA 6 `GridX3` (its DefGrid2
+    /// FINAL grid) and PySCF's SGX level 2. Every order in the table is
+    /// tabulated, so no snapping happens.
+    Sgx,
+}
+
+/// Region orders (innermost -> outermost) of [`PruneScheme::Sgx`], one row
+/// per peak order. PySCF's `SGX_ANG_MAPPING` lists Lebedev DEGREES
+/// (`[5,7,11,11,7]`, `[5,7,11,17,11]`, `[7,11,17,23,17]`, `[7,17,23,29,23]`,
+/// `[7,23,29,35,29]`, `[11,29,35,41,35]`); these are the matching point
+/// counts (degree 5/7/11/17/23/29/35/41 = 14/26/50/110/194/302/434/590).
+/// ORCA 6.1's manual gives the same per-region orders for AngularGrid 1-3
+/// (14/26/50/50/26, 14/26/50/110/50, 26/50/110/194/110). PySCF's last row
+/// (peak 770) is omitted: ferric has no 770-point rule.
+pub const SGX_REGION_ORDERS: [[usize; 5]; 6] = [
+    [14, 26, 50, 50, 26],
+    [14, 26, 50, 110, 50],
+    [26, 50, 110, 194, 110],
+    [26, 110, 194, 302, 194],
+    [26, 194, 302, 434, 302],
+    [50, 302, 434, 590, 434],
+];
+
+/// The [`PruneScheme::Sgx`] row whose peak (region 3) order is `n_ang`.
+pub fn sgx_region_orders(n_ang: usize) -> Result<[usize; 5]> {
+    SGX_REGION_ORDERS
+        .iter()
+        .find(|row| row[3] == n_ang)
+        .copied()
+        .ok_or_else(|| {
+            FerricError::General(format!(
+                "grid pruning 'sgx': n_angular = {n_ang} is not the peak order of an SGX/ORCA \
+                 GridX row (allowed: 50, 110, 194, 302, 434, 590)"
+            ))
+        })
 }
 
 impl PruneScheme {
@@ -114,8 +155,9 @@ impl PruneScheme {
         match s.trim().to_ascii_lowercase().as_str() {
             "none" | "off" | "flat" => Ok(None),
             "nwchem" | "nwchem-like" | "nwchem_like" => Ok(Some(Self::NwchemLike)),
+            "sgx" => Ok(Some(Self::Sgx)),
             other => Err(FerricError::General(format!(
-                "unknown grid prune scheme '{other}' (expected 'none' or 'nwchem')"
+                "unknown grid prune scheme '{other}' (expected 'none', 'nwchem' or 'sgx')"
             ))),
         }
     }
@@ -230,8 +272,10 @@ pub fn angular_orders_for_atom(
     n_ang: usize,
     scheme: PruneScheme,
 ) -> Result<Vec<usize>> {
-    let PruneScheme::NwchemLike = scheme;
-    let table = region_orders(n_ang)?;
+    let table = match scheme {
+        PruneScheme::NwchemLike => region_orders(n_ang)?,
+        PruneScheme::Sgx => sgx_region_orders(n_ang)?,
+    };
     let alphas = region_alphas(z);
     // bragg_slater_bohr is strictly positive for every Z (fallback 1.0 Angstrom).
     let r_atom = bragg_slater_bohr(z);
@@ -274,10 +318,45 @@ mod tests {
     }
 
     #[test]
+    fn region_table_at_194_uses_the_new_rule() {
+        // NWChem wants [50, 86, 170, 194, 170]; 170 has no ferric rule and
+        // snaps UP to 194.
+        assert_eq!(region_orders(194).unwrap(), [26, 110, 194, 194, 194]);
+    }
+
+    /// The SGX rows are PySCF's `SGX_ANG_MAPPING` (Lebedev degrees) in point
+    /// counts; level 2 (peak 194) is ORCA GridX3's 26/50/110/194/110.
+    #[test]
+    fn sgx_rows_match_pyscf_and_orca() {
+        assert_eq!(sgx_region_orders(194).unwrap(), [26, 50, 110, 194, 110]);
+        assert_eq!(sgx_region_orders(110).unwrap(), [14, 26, 50, 110, 50]);
+        assert_eq!(sgx_region_orders(302).unwrap(), [26, 110, 194, 302, 194]);
+        assert!(sgx_region_orders(146).is_err());
+        assert!(sgx_region_orders(26).is_err());
+        for row in SGX_REGION_ORDERS {
+            for o in row {
+                assert!(SUPPORTED_LEBEDEV_ORDERS.contains(&o), "{o}");
+            }
+            assert_eq!(row.iter().max(), Some(&row[3]), "peak must be region 3");
+        }
+        // Region assignment for carbon (Li-Ne boundaries 0.1667/0.5/0.9/3.5):
+        // x = 0.8 -> region 2, 2.0 -> 3, 0.05 -> 0, 4.0 -> 4.
+        let r_c = crate::becke::bragg_slater_bohr(6);
+        let o = angular_orders_for_atom(
+            6,
+            &[0.8 * r_c, 2.0 * r_c, 0.05 * r_c, 4.0 * r_c],
+            194,
+            PruneScheme::Sgx,
+        )
+        .unwrap();
+        assert_eq!(o, vec![110, 194, 26, 110]);
+    }
+
+    #[test]
     fn unsupported_orders_are_hard_errors_not_silent_defaults() {
         // Not a ferric-supported Lebedev order at all.
         assert!(region_orders(86).is_err());
-        assert!(region_orders(194).is_err());
+        assert!(region_orders(146).is_err());
         // Supported by lebedev() but has no useful pruned table.
         assert!(region_orders(50).is_err());
         // Small orders are left flat rather than errored (NWChem behaviour).
@@ -347,6 +426,10 @@ mod tests {
         assert_eq!(
             PruneScheme::parse_config_str("nwchem").unwrap(),
             Some(PruneScheme::NwchemLike)
+        );
+        assert_eq!(
+            PruneScheme::parse_config_str("sgx").unwrap(),
+            Some(PruneScheme::Sgx)
         );
         assert!(PruneScheme::parse_config_str("sg1").is_err());
         assert!(PruneScheme::parse_config_str("").is_err());

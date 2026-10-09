@@ -50,4 +50,11 @@ pub trait KBuilder {
 
     fn update_density(&mut self, d: &Array2<f64>);
     fn reset(&mut self);
+
+    /// Exchange-grid point count of a grid-based (COSX) builder; `None` for
+    /// the integral-driven builders. Read only by the COSX grid schedule's
+    /// per-iteration record.
+    fn exchange_grid_npts(&self) -> Option<usize> {
+        None
+    }
 }

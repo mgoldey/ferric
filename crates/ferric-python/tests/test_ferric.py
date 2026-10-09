@@ -294,6 +294,25 @@ def test_run_uhf_o2_sto3g_guess_and_stability_descent_kwargs():
     )
 
 
+_N2_160_XYZ = "2\nN2 r = 1.60 A\nN 0.0 0.0 0.0\nN 0.0 0.0 1.60\n"
+
+
+def test_run_rhf_stability_descent_leaves_the_n2_saddle():
+    """N2 at 1.60 A / def2-SVP: the default RHF lands on a saddle 19 mHa above
+    the stable minimum (-108.5016165203, PySCF-validated in
+    ferric-scf/tests/validation_scf_ladder.rs). `stability_descent=True` must
+    reach the minimum; if the kwarg were ignored it would stay on the saddle.
+    """
+    mol = ferric.Molecule.from_xyz_string(_N2_160_XYZ, charge=0, multiplicity=1)
+    bs = ferric.BasisSet.bundled("def2-svp")
+    tight = dict(max_iter=200, energy_conv=1e-10, density_conv=1e-9)
+    default = ferric.run_rhf(mol, bs, **tight)
+    descended = ferric.run_rhf(mol, bs, stability_descent=True, **tight)
+    assert default.converged and descended.converged
+    assert default.energy - descended.energy > 1e-2, (default.energy, descended.energy)
+    assert abs(descended.energy - (-108.5016165203)) < 1e-7, descended.energy
+
+
 def test_run_uhf_rejects_an_unknown_guess():
     mol = ferric.Molecule.from_xyz_string(_O2_XYZ, charge=0, multiplicity=3)
     bs = ferric.BasisSet.bundled("sto-3g")

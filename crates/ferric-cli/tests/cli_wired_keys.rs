@@ -344,8 +344,53 @@ fn stability_descent_reaches_the_library_uhf_minimum() {
     );
 }
 
+/// N2 at 1.60 Å / def2-SVP, RHF: the default SCF lands on the plain-DIIS
+/// SADDLE (-108.48256, internal singlet lambda_min -0.0654); the RHF descent
+/// reaches the stable minimum (-108.5016165203, PySCF-validated in
+/// `ferric-scf/tests/validation_scf_ladder.rs`). The CLI key must give the
+/// library's `check_stability + scf_stability_descent` result and differ from
+/// the run without it by the ~19 mHa saddle-to-minimum gap.
 #[test]
-fn stability_descent_is_refused_off_the_uhf_route() {
+fn stability_descent_reaches_the_library_rhf_minimum() {
+    let l = lib("validation/n2_r1.60.xyz", 1, "def2-svp");
+    let r = solve_rhf(
+        &l.ctx,
+        &l.mol,
+        &l.prep,
+        Operator::coulomb(),
+        &l.bounds,
+        &RhfConfig {
+            check_stability: true,
+            scf_stability_descent: true,
+            ..tight()
+        },
+    )
+    .unwrap();
+    assert!(r.converged);
+    let with = run_ok(
+        "sd_rhf_on",
+        &body(
+            "validation/n2_r1.60.xyz",
+            1,
+            "def2-svp",
+            "rhf",
+            &format!("{TIGHT}stability_descent = true\n"),
+        ),
+    );
+    let without = run_ok(
+        "sd_rhf_off",
+        &body("validation/n2_r1.60.xyz", 1, "def2-svp", "rhf", TIGHT),
+    );
+    let (e_on, e_off) = (value(&with, "energy "), value(&without, "energy "));
+    assert_close("rhf + stability_descent", e_on, r.energy, 1e-8);
+    assert!(
+        e_off - e_on > 1e-2,
+        "the descent must leave the saddle: without {e_off:.10}, with {e_on:.10}"
+    );
+}
+
+#[test]
+fn stability_descent_is_refused_off_the_rhf_uhf_ksdft_route() {
     let sd = "[scf]\nstability_descent = true\n";
     assert_refused(
         "sd_rohf",
@@ -353,9 +398,9 @@ fn stability_descent_is_refused_off_the_uhf_route() {
         &["stability_descent", "ROHF"],
     );
     assert_refused(
-        "sd_rhf",
-        &body("water.xyz", 1, "sto-3g", "rhf", sd),
-        &["stability_descent", "UHF/UKS route only"],
+        "sd_rimp2",
+        &body("water.xyz", 1, "sto-3g", "rimp2", sd),
+        &["stability_descent", "\"rhf\", \"uhf\" and"],
     );
 }
 
@@ -421,7 +466,7 @@ fn dft_grid_keys_are_refused_where_they_cannot_apply() {
             1,
             "sto-3g",
             "ksdft",
-            "[dft]\ngrid_angular = 194\n",
+            "[dft]\ngrid_angular = 146\n",
         ),
         &["grid_angular", "Lebedev"],
     );
@@ -700,7 +745,7 @@ fn att_rimp2_terfc_matches_the_library() {
         &l.mol,
         &l.prep,
         &dfbs,
-        Operator::terfc(1.05 * 1.8897259886),
+        Operator::terfc(1.05 * ferric_core::units::ANGSTROM_TO_BOHR),
         &r,
         &ferric_mp2::rimp2::RiMp2Config::default(),
     )
@@ -739,7 +784,7 @@ fn rs_mp2_rpa_terf_omega_matches_the_library() {
         return;
     };
     let _ = tdir; // the CLI child and the library both read the same env var
-    const ANG2BOHR: f64 = 1.8897259886;
+    const ANG2BOHR: f64 = ferric_core::units::ANGSTROM_TO_BOHR;
     let (r0_ang, w_ang) = (1.2, 2.5);
     let l = lib("water.xyz", 1, "sto-3g");
     let jk = Some("def2-universal-jkfit".to_string());
@@ -890,4 +935,43 @@ fn frequencies_hessian_key_selects_the_construction() {
         assert!((a - f).abs() < 1.0, "analytic {a} vs FD {f} cm^-1");
     }
     assert_refused("freq_bad", &toml("numerical"), &["hessian", "numerical"]);
+}
+
+/// `[scf] jk_storage` places the raw RI-J tensor; it must never change the
+/// answer. Each of the four spellings runs the same PBE job through the real
+/// binary under a budget that forces the packed in-core tier (for `auto` and
+/// `memory`), a spill (`disk`) and recompute (`direct`); all four agree with
+/// the unconstrained run. `memory` under a budget that holds neither the
+/// unpacked nor the packed tensor is refused with the key named.
+#[test]
+fn jk_storage_places_the_tensor_without_changing_the_energy() {
+    let job = |storage: &str, budget: &str| {
+        let extra = format!(
+            "[memory]\nbudget_gb = {budget}\n{TIGHT}jk_storage = \"{storage}\"\n[dft]\nfunctional = \"PBE\"\n"
+        );
+        body("alkane_3.xyz", 1, "def2-svp", "ksdft", &extra)
+    };
+    let reference = run_ok("jk_ref", &job("auto", "4.0"));
+    let e_ref = value(&reference, "energy ");
+    // propane/def2-SVP: unpacked ~20 MB, packed ~10 MB plus 3.4 MB of scratch.
+    for (storage, budget) in [
+        ("auto", "0.015"),
+        ("memory", "0.015"),
+        ("disk", "0.015"),
+        ("direct", "0.015"),
+        ("direct", "4.0"),
+    ] {
+        let out = run_ok(&format!("jk_{storage}_{budget}"), &job(storage, budget));
+        assert_close(
+            &format!("jk_storage={storage} budget={budget}"),
+            value(&out, "energy "),
+            e_ref,
+            1e-8,
+        );
+    }
+    assert_refused(
+        "jk_memory_refused",
+        &job("memory", "0.005"),
+        &["jk_storage", "memory"],
+    );
 }

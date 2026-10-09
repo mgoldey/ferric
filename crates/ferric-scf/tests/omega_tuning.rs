@@ -137,6 +137,11 @@ fn tune_omega_h2_converges_and_improves_j() {
             energy_conv: 1e-9,
             ..Default::default()
         },
+        // Continuation and the branch check at their defaults (continuation
+        // OFF, branch check ON): this test is the end-to-end driver, so it
+        // exercises the driver's shipped configuration, not a stripped one.
+        // The continuation path is covered by `omega_tuning_cation_branch.rs`.
+        ..Default::default()
     };
     let r = tune_omega(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
     eprintln!(
@@ -148,11 +153,18 @@ fn tune_omega_h2_converges_and_improves_j() {
     );
     for e in &r.evals {
         eprintln!(
-            "  w={:.4} eps_HOMO={:+.6} IP={:+.6} J={:+.3e}",
-            e.omega, e.eps_homo, e.ip_delta_scf, e.j
+            "  w={:.4} eps_HOMO={:+.6} IP={:+.6} J={:+.3e} seed={} S2={:.6}",
+            e.omega, e.eps_homo, e.ip_delta_scf, e.j, e.seed, e.cation_s_squared
         );
         assert!(e.eps_homo < 0.0 && e.ip_delta_scf > 0.0);
     }
+    // H2+ has one electron: one branch only, so the branch check must stay
+    // quiet over the whole run.
+    assert!(
+        r.branch_warning.is_none(),
+        "H2 raised a branch flag: {:?}",
+        r.branch_warning
+    );
     assert!(r.converged);
     let j_lo = r
         .evals

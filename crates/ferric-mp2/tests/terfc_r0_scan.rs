@@ -9,7 +9,7 @@ use ferric_mp2::rimp2::{ri_mp2_spin_components, RiMp2Config};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 
-const A2B: f64 = 1.889_725_988_6;
+const A2B: f64 = ferric_core::units::ANGSTROM_TO_BOHR;
 
 #[test]
 #[ignore = "benchmark: terfc r0 scan (metric vs tensor error); --release --ignored --nocapture"]

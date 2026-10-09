@@ -393,11 +393,24 @@ def _hab_reference(a, b, mispair: bool = False) -> tuple[float, float]:
 
     wa = elem(a.weight_matrix(0))
     wb = elem(b.weight_matrix(0))
+
+    def own_pop(st, w):
+        # N_X = sum_spin tr(C_occ^T W_X C_occ): the state's own constraint population.
+        return sum(
+            np.trace(c.T @ w @ c)
+            for c in (st.mo_coeff_alpha()[:, :na], st.mo_coeff_beta()[:, :nb])
+        )
+
+    n_a = own_pop(a, a.weight_matrix(0))
+    n_b = own_pop(b, b.weight_matrix(0))
     e_a, e_b = a.energy, b.energy
     l_a, l_b = a.lambdas[0], b.lambdas[0]
     if mispair:
         l_a, l_b = l_b, l_a
-    h_raw = 0.5 * ((e_b * s_ab - l_b * wb) + (e_a * s_ab - l_a * wa))
+    # Wu-Van Voorhis raw element with F_X = E_X + lambda_X N_X (the
+    # constraint-offset-invariant form; cdft_coupling.rs module docs).
+    f_a, f_b = e_a + l_a * n_a, e_b + l_b * n_b
+    h_raw = 0.5 * ((f_b * s_ab - l_b * wb) + (f_a * s_ab - l_a * wa))
     h_ab = (h_raw - 0.5 * (e_a + e_b) * s_ab) / (1.0 - s_ab * s_ab)
     return h_ab, s_ab
 

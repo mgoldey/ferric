@@ -50,7 +50,7 @@ use ferric_dft::grid::{build_atomic_grid, AtomicGridConfig};
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::oneelectron;
 use ferric_integrals::operator::Operator;
-use ferric_scf::cdft_driver::solve_cdft_uhf;
+use ferric_scf::cdft_driver::{solve_cdft_uhf, solve_cdft_uhf_seeded, CdftSeed};
 use ferric_scf::engine_pool::EnginePool;
 use ferric_scf::rhf::{build_jk, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
@@ -183,10 +183,10 @@ fn hene_cfg() -> RhfConfig {
         // At 64 `cdft_coupling_hene` took 462 s vs 17 s at 30, because its
         // non-convergent sigma points burn the entire cap before failing.
         //
-        // This is NOT a "make it converge eventually" cap: `state A (N_He=1)`
-        // still does not converge at 200 (verified 2026-09-17), and the
-        // catalogue documents it as a genuine non-converger at lines 893/902.
-        // Raising the cap does not rescue it and is not meant to.
+        // This is NOT a "make it converge eventually" cap: at ERI precision
+        // 1e-20 the `state A (N_He=1)` start ends in a period-2 cycle of the
+        // outer loop (see `ScalarStepper` in cdft_driver.rs), which no cap
+        // rescues.
         cdft_max_outer: 40,
         cdft_stability_descent: false,
         use_sad_guess: false,
@@ -387,6 +387,7 @@ fn newton_inputs<'a>(
         nocc_a: sys.nocc_a,
         nocc_b: sys.nocc_b,
         k_mix_sr: 1.0,
+        rsh: None,
         fxc: None,
         thresh: 1e-12,
         ooc_budget: 0,
@@ -467,14 +468,9 @@ fn augmented_stability(
 // The λ-Newton loop, reproduced around an EXPLICIT guess
 // ===========================================================================
 
-/// One constrained run: the driver's λ-Newton loop, but every inner
-/// `solve_uhf_fockmod` starts from `guess` (or hcore when `None`, which is what
-/// the driver does today).
-///
-/// Everything else — grid, weight matrix, residual, FD Jacobian, ±1 clamp,
-/// 30-iteration budget, tolerance — matches `cdft_driver::solve_cdft_uhf`
-/// exactly. `jacobians` records `dc/dλ` at every outer step, which is the
-/// saturation observable.
+/// One constrained solve: λ, energy, population and orbitals, from
+/// [`driver_run`] (the real driver) or [`constrained_run`] (a bare λ-Newton
+/// loop that also records `dc/dλ` at every step).
 #[allow(clippy::type_complexity)]
 #[derive(Clone)]
 struct Run {
@@ -488,6 +484,62 @@ struct Run {
     jacobians: Vec<f64>,
 }
 
+/// One constrained run through the REAL driver, `solve_cdft_uhf_seeded`, with
+/// `guess` seeded into every inner solve (`None` = the driver's own start,
+/// hcore here because `use_sad_guess` is false). This is what the guess
+/// catalogue measures: which state each start reaches, and whether the
+/// driver's outer loop converges from it. `jacobians` is left empty.
+fn driver_run(
+    sys: &Sys,
+    cfg: &RhfConfig,
+    w: &Array2<f64>,
+    guess: Option<(&Array2<f64>, &Array2<f64>)>,
+) -> Result<Run, ferric_core::FerricError> {
+    let r = solve_cdft_uhf_seeded(
+        &sys.ctx,
+        &sys.mol,
+        &sys.prep,
+        &sys.bs,
+        &sys.bounds,
+        cfg,
+        CdftSeed {
+            mos: guess,
+            lambdas: None,
+        },
+    )?;
+    // The driver builds its own W on the same 99x302 grid; a mismatch would
+    // make this file's stability and gradient checks use a different
+    // constraint operator from the one solved.
+    let dw = (&r.weight_matrices[0] - w)
+        .iter()
+        .fold(0.0_f64, |m, &x| m.max(x.abs()));
+    assert!(
+        dw < 1e-12,
+        "driver W differs from this file's W by {dw:.2e}"
+    );
+    let c_b = r
+        .scf
+        .mos_beta
+        .clone()
+        .unwrap_or_else(|| r.scf.mos_alpha.clone());
+    Ok(Run {
+        e_bare: r.scf.energy,
+        lambda: r.lambdas[0],
+        n_final: r.populations[0],
+        outer_iters: r.outer_iters,
+        converged: r.scf.converged,
+        c_a: r.scf.mos_alpha,
+        c_b,
+        jacobians: Vec::new(),
+    })
+}
+
+/// A bare λ-Newton loop (FD Jacobian, ±1 clamp, no bracket or other
+/// safeguards) with every inner solve started from `guess`, kept ONLY because
+/// it records `dc/dλ` at every outer step — the saturation observable of
+/// `constraint_jacobian_does_not_collapse_at_the_integer_target` — and as the
+/// fixed route to state B for the λ ≠ 0 gradient checks. It is NOT the driver:
+/// convergence from a given start is measured with [`driver_run`].
 fn constrained_run(
     sys: &Sys,
     cfg: &RhfConfig,
@@ -704,30 +756,30 @@ fn unconstrained_mos(sys: &Sys) -> (Array2<f64>, Array2<f64>) {
 ///
 /// New on 2026-09-16: before the guess fix this state was not reachable from
 /// any default path, so the catalogue had no entry referencing it.
+///
+/// `use_sad_guess: true` must be set HERE: `hene_cfg` pins it to false, and
+/// inheriting that pin made this entry run the same solve as
+/// [`unconstrained_mos`] (the ²Π state), bit for bit.
 fn unconstrained_sigma_mos(sys: &Sys) -> (Array2<f64>, Array2<f64>) {
-    let scf = solve_uhf_fockmod(
-        &sys.ctx,
-        &sys.mol,
-        &sys.prep,
-        &sys.bounds,
-        &hene_cfg(),
-        None,
-        None,
-    )
-    .unwrap();
+    let cfg = RhfConfig {
+        use_sad_guess: true,
+        ..hene_cfg()
+    };
+    let scf =
+        solve_uhf_fockmod(&sys.ctx, &sys.mol, &sys.prep, &sys.bounds, &cfg, None, None).unwrap();
     let cb = scf.mos_beta.clone().unwrap();
     (scf.mos_alpha, cb)
 }
 
 /// Converged STATE A orbitals (hole on He, N_He → 1).
 fn state_a_mos(sys: &Sys, w: &Array2<f64>) -> (Array2<f64>, Array2<f64>) {
-    let r = constrained_run(sys, &cfg_with_target(1.0), w, None).unwrap();
+    let r = driver_run(sys, &cfg_with_target(1.0), w, None).unwrap();
     (r.c_a, r.c_b)
 }
 
 /// Converged orbitals at the NATURAL promolecule target.
 fn natural_target_mos(sys: &Sys, w: &Array2<f64>) -> (Array2<f64>, Array2<f64>) {
-    let r = constrained_run(sys, &cfg_with_target(NATURAL_N_HE), w, None).unwrap();
+    let r = driver_run(sys, &cfg_with_target(NATURAL_N_HE), w, None).unwrap();
     (r.c_a, r.c_b)
 }
 
@@ -739,7 +791,7 @@ fn natural_target_mos(sys: &Sys, w: &Array2<f64>) -> (Array2<f64>, Array2<f64>) 
 fn post_descent_mos(sys: &Sys, w: &Array2<f64>) -> (Array2<f64>, Array2<f64>) {
     let h = oneelectron::hcore(&sys.prep);
     let cfg = cfg_with_target(2.0);
-    let r = constrained_run(sys, &cfg, w, None).unwrap();
+    let r = driver_run(sys, &cfg, w, None).unwrap();
     let lam_w = r.lambda * w;
     let (fa, fb) = ao_focks(sys, &h, &r.c_a, &r.c_b, Some(&lam_w));
     let f_a_mo = r.c_a.t().dot(&fa).dot(&r.c_a);
@@ -841,7 +893,7 @@ fn sweep_guesses_at(sys: &Sys, w: &Array2<f64>, target: f64, guesses: &[Guess]) 
     let cfg = cfg_with_target(target);
     let mut rows = Vec::new();
     // The driver's OWN run (guess = None), first: this is the lane's answer.
-    match constrained_run(sys, &cfg, w, None) {
+    match driver_run(sys, &cfg, w, None) {
         Ok(r) => {
             // A row from an inner SCF that did not converge is not a
             // measurement of a solution — it would put a non-stationary point
@@ -881,7 +933,7 @@ fn sweep_guesses_at(sys: &Sys, w: &Array2<f64>, target: f64, guesses: &[Guess]) 
         Err(e) => eprintln!("  {:<28} DID NOT CONVERGE: {e:?}", "driver default (None)"),
     }
     for g in guesses {
-        match constrained_run(sys, &cfg, w, Some((&g.c_a, &g.c_b))) {
+        match driver_run(sys, &cfg, w, Some((&g.c_a, &g.c_b))) {
             Ok(r) => {
                 assert!(
                     r.converged,
@@ -985,8 +1037,10 @@ fn state_b_energy_is_multi_valued_across_guesses_at_the_integer_target() {
     eprintln!("\n=== target = {NATURAL_N_HE:.6} (NATURAL promolecule) ===");
     let natural_rows = sweep_guesses_at(&sys, &w, NATURAL_N_HE, &guesses);
 
+    // A coarse floor only; the real reachability check is `n_pairs > 0` below,
+    // and the per-guess assertions further down require seven named rows.
     assert!(
-        integer_rows.len() >= 4,
+        integer_rows.len() >= 7,
         "too few converged runs at the integer target to judge multi-valuedness: {}",
         integer_rows.len()
     );
@@ -1124,48 +1178,19 @@ fn state_b_energy_is_multi_valued_across_guesses_at_the_integer_target() {
             .find(|r| r.guess == g)
             .unwrap_or_else(|| panic!("integer-target run for guess {g:?} is missing"))
     };
-    // `driver default` is REQUIRED: it is the path real callers take, and the
-    // finding is stated about it.
-    //
-    // `SAD` is checked WHEN PRESENT but not required, because whether the
-    // SAD-started lambda-Newton converges at the integer target is
-    // machine-dependent: it converges in 14 outer iters on the dev box and
-    // does not converge at all on CI (verified 2026-09-18 -- raising
-    // `cdft_max_outer` 30 -> 40 did not change it, while every converging
-    // guess kept a bit-identical iteration count, so it is genuine
-    // non-convergence there rather than iteration starvation).
-    //
-    // The claim under test is "guess IDENTITY selects the solution", which
-    // two independent guesses landing on the same measured level already
-    // demonstrate. Requiring a third that is not reachable everywhere would
-    // assert a property of one CPU's arithmetic, which is exactly the defect
-    // this file's `cdft_max_outer` pin exists to avoid.
-    //
-    // `hcore` is in the same position under libint2 2.13.1: driver default
-    // converges in 10 outer iterations, while the hcore-started run (on
-    // 2.7.2 it took 23) does not converge in 40 there, and `state A` DOES
-    // converge at 2.13.1 where it never did at 2.7.2. Which of these
-    // near-saddle loops finishes under the cap is last-bit arithmetic. What
-    // is required instead: at least two of the three saddle-reaching RUN
-    // PATHS converge, and every one that does lands on the measured level.
-    // These are not independent guesses: driver default (guess None, which
-    // falls back to hcore because `use_sad_guess` is false) and the explicit
-    // hcore row start from the same orbitals through different entry points.
-    // Only SAD is an independent start, and it converges on some builds only
-    // (not on 2.7.2). Guess independence is shown by the LOWER level below,
-    // which three distinct starts (pi, natural target, post-descent) reach.
-    const REQUIRED: [&str; 1] = ["driver default (None)"];
-    const OPTIONAL: [&str; 2] = ["hcore (= driver default)", "SAD"];
-    let n_saddle_paths = REQUIRED
-        .iter()
-        .chain(OPTIONAL.iter())
-        .filter(|g| integer_rows.iter().any(|r| r.guess == **g))
-        .count();
-    assert!(
-        n_saddle_paths >= 2,
-        "only {n_saddle_paths} of the driver default / hcore / SAD run paths \
-         converged at the integer target; at least two must land on the saddle"
-    );
+    // Every row runs through the driver (`driver_run`). Measured with
+    // `cdft_guess_catalogue_precision.rs` at ERI precision 1e-14 and 1e-20:
+    // every start below converges and lands on this level at both; the only
+    // start that fails is `state A`, at 1e-20, so it is not listed here.
+    // Driver default and the explicit hcore row start from the same orbitals
+    // through different entry points; SAD and the sigma reference are
+    // independent starts.
+    const REQUIRED: [&str; 4] = [
+        "driver default (None)",
+        "hcore (= driver default)",
+        "SAD",
+        "unconstrained UHF (sigma)",
+    ];
     for g in REQUIRED {
         let r = find(g);
         assert!(
@@ -1187,39 +1212,8 @@ fn state_b_energy_is_multi_valued_across_guesses_at_the_integer_target() {
         // machine-portability trap this file already pins via `hene_cfg`.
         assert!(r.outer <= hene_cfg().cdft_max_outer);
     }
-    // Same assertions for guesses that are allowed to be absent. Present =>
-    // must match the measured baseline; absent => skipped with a note, never
-    // silently ignored.
-    for g in OPTIONAL {
-        let Some(r) = integer_rows.iter().find(|r| r.guess == g) else {
-            eprintln!(
-                "[note] guess {g:?} did not converge at the integer target on \
-                 this machine; its row is skipped (see REQUIRED above for why \
-                 that is allowed)"
-            );
-            continue;
-        };
-        assert!(
-            (r.e_at_target() - (-130.402_190_5)).abs() < 1e-5
-                && (r.lambda - (-2.753_70)).abs() < 1e-3,
-            "{g} converged here, so it must still land on the measured UPPER \
-             (saddle) solution E = -130.4021905, λ = -2.75370; got E (at the \
-             target) = {:.8}, λ = {:+.6}",
-            r.e_at_target(),
-            r.lambda
-        );
-        assert_eq!(r.verdict, "UNSTABLE");
-        assert!((r.target - 2.0).abs() < 1e-12);
-        assert!(r.outer <= hene_cfg().cdft_max_outer);
-    }
-    // "unconstrained UHF (pi)" is the row that used to be called
-    // "unconstrained UHF": before the 2026-09-16 guess fix the unconstrained
-    // solve returned the pi state unconditionally. It still lands on the LOWER
-    // constrained solution, which is the measured fact this pins; only the
-    // label changed, because a SECOND unconstrained reference (the sigma state)
-    // now exists and the two must be distinguishable. The sigma row is NOT
-    // listed here: it does not converge at the integer target (recorded in the
-    // sweep output), so there is no measured baseline to pin it against.
+    // The LOWER level, reached from three independent starts. "unconstrained
+    // UHF (pi)" is the hcore-started unconstrained reference (the ²Π state).
     for g in [
         "unconstrained UHF (pi)",
         "natural target (1.954484)",
@@ -1795,37 +1789,30 @@ fn state_a_is_untouched_by_the_descent() {
     assert!((on.scf.energy - (-130.361_859_5)).abs() < 1e-5);
 }
 
-/// **THE LIMITATION, ASSERTED SO IT CANNOT BE FORGOTTEN.** The fix does NOT
-/// reach NWChem's LOW member, and this test exists to keep that on the record
-/// rather than let the 0.667 eV improvement read as "solved".
+/// **The 0.563 eV to NWChem's native LOW member is a partition offset, not a
+/// missing state.** Pinned here so the cross-partition numbers stay on record.
 ///
-/// External reference (NWChem 7.2.2, same Becke coordinate, same integer target
-/// N_He = 2.000):
+/// External reference (NWChem 7.2.2, NATIVE Becke partition, target N_He = 2.000):
 /// ```text
 ///   NWChem LOW  (default atomic guess)  E = -130.447402218  λ = -2.2808
 ///   NWChem HIGH (hcore guess + swap)    E = -130.423435597  λ = -2.6662
-///   ferric BEFORE this fix              E = -130.40219057   λ = -2.753705
-///   ferric AFTER  this fix              E = -130.42670694   λ = -2.439011
+///   ferric BEFORE the descent           E = -130.40219057   λ = -2.753705
+///   ferric AFTER  the descent           E = -130.42670694   λ = -2.439011
 /// ```
 ///
-/// So the fix moves ferric 0.6671 eV down, past NWChem's HIGH member (by 0.089
-/// eV) and toward — but NOT to — its LOW member, which remains 0.563 eV below.
-/// The λ ordering moves the same way: −2.7537 → −2.4390, heading for NWChem's
-/// LOW λ = −2.2808.
+/// NWChem's Becke size adjustment uses He/Ne radii with ratio 0.700; ferric's
+/// is 0.667, and NWChem has no input to change it. "N_He = 2.000" therefore
+/// constrains different populations in the two codes: NWChem's LOW density has
+/// N_He = 1.99125 under ferric's partition. Rerun with ferric's radius ratio,
+/// NWChem's LOW member is −130.426701846 (λ −2.439043) — ferric's descended
+/// state to 2.6e-6 Ha before a quadrature correction, 4e-10 after — and its
+/// HIGH member is ferric's pre-descent saddle. The matched comparison, with the
+/// per-state numbers and controls, is `validation_cdft_state.rs`.
 ///
-/// **That is consistent with, and corroborated by, the MARGINAL verdict.** The
-/// descended state's λ_min = −1.32e-10 sits AT the noise floor, which is
-/// precisely the report "no downhill direction is resolvable from here" and NOT
-/// "this is the global minimum". A third, lower constrained solution very
-/// likely exists and this fix does not find it: the λ-augmented Hessian is a
-/// LOCAL object, and a saddle-following descent can only reach what is
-/// connected to the current point by a single negative mode.
-///
-/// TOO-CLEAN CHECK: if this ever starts agreeing with NWChem's LOW member to
-/// within a few tenths of a meV, that is a reason to AUDIT before celebrating —
-/// nothing in the current construction earns that agreement.
+/// This test keeps the CROSS-partition offsets: ferric's descended state is
+/// below NWChem's native HIGH member and 0.563 eV above its native LOW member.
 #[test]
-fn the_fix_does_not_reach_nwchems_low_member() {
+fn cross_partition_offsets_to_nwchems_native_states() {
     const NWCHEM_LOW: f64 = -130.447_402_218;
     const NWCHEM_HIGH: f64 = -130.423_435_597;
     let sys = build_sys();
@@ -1859,22 +1846,19 @@ fn the_fix_does_not_reach_nwchems_low_member() {
          now {:.8} vs {NWCHEM_HIGH:.9}",
         r.scf.energy
     );
-    // And it is still ABOVE NWChem's LOW member. This assertion is the POINT of
-    // the test: it FAILS if ferric ever reaches the low member, which would be
-    // a NEW RESULT requiring its own audit rather than a quiet pass.
+    // Above NWChem's NATIVE LOW member by the partition offset (the same state
+    // in ferric's partition; see validation_cdft_state.rs).
     assert!(
         r.scf.energy > NWCHEM_LOW,
-        "ferric now reaches or passes NWChem's LOW member ({:.8} vs \
-         {NWCHEM_LOW:.9}). That is a NEW RESULT, not a pass — the current \
-         construction (a single-negative-mode descent from the hcore basin) does \
-         not earn it, so AUDIT before believing it.",
+        "ferric's state is now below NWChem's native LOW member ({:.8} vs \
+         {NWCHEM_LOW:.9}); the partition offset should keep it 0.563 eV above",
         r.scf.energy
     );
-    // The measured gap, pinned so a drift in either direction is visible.
+    // The measured cross-partition offset, pinned so a drift is visible.
     let gap_ev = (r.scf.energy - NWCHEM_LOW) * ev;
     assert!(
         (gap_ev - 0.5631).abs() < 0.05,
-        "the measured residual gap to NWChem's LOW member was 0.5631 eV; got \
+        "the measured cross-partition offset to NWChem's native LOW member was 0.5631 eV; got \
          {gap_ev:.4} eV"
     );
 }
@@ -1917,7 +1901,7 @@ fn the_fix_does_not_reach_nwchems_low_member() {
 ///
 /// What survives: whether MINAO converges at the integer target is
 /// MACHINE-DEPENDENT, and where it does converge it lands on the same state as
-/// hcore. That second half is the finding worth pinning, and it is what this
+/// the driver-default (hcore-guess) start. That second half is the finding worth pinning, and it is what this
 /// test now asserts. The first half is why the assertion is conditional.
 ///
 /// The original note's warning still stands and is now doubly earned: do not
@@ -1927,14 +1911,17 @@ fn the_fix_does_not_reach_nwchems_low_member() {
 /// # What would make this test fail
 ///
 /// It fails if the default path stops converging here, or if it starts landing
-/// on a DIFFERENT state than hcore does. Either is a real change in what users
+/// on a DIFFERENT state than the driver-default (hcore-guess) start. Either is a real change in what users
 /// get by default, and neither should be discovered by a baseline drifting
 /// silently in some other test.
 #[test]
 fn the_default_minao_path_converges_to_the_same_state_as_hcore() {
-    // The hcore baseline this is compared against, from the guess catalogue
-    // above: E = -130.40219117 at the integer target.
-    const HCORE_UPPER: f64 = -130.40219117;
+    // Energies are compared at the exact target population, E + λ(N − N_target)
+    // (see `Row::e_at_target`): the λ-Newton loop stops anywhere inside its
+    // population tolerance, which leaves up to |λ|·1e-5 ≈ 2.8e-5 Ha in a RAW
+    // energy -- nine times TOL. Comparing a raw energy against a stored raw
+    // baseline passed only while both runs happened to stop at nearly the same
+    // N. The driver-default baseline is therefore run here, on the same build.
     // 3e-6 Ha. The measured hcore-vs-MINAO spread is ~3e-7 (two solvers reaching
     // the same stationary point from different starts, each at its own SCF exit
     // criteria); 10x that is loose enough not to be brittle and still ~4 orders
@@ -1981,19 +1968,42 @@ fn the_default_minao_path_converges_to_the_same_state_as_hcore() {
         }
     };
 
+    let at_target = |e: f64, lam: f64, n: f64| e + lam * (n - 2.0);
+    let e_minao = at_target(r.scf.energy, r.lambdas[0], r.populations[0]);
     eprintln!(
-        "[MINAO start, integer target] E = {:.8}  λ = {:+.6}  N = {:.8}  outer = {}",
+        "[MINAO start, integer target] E = {:.8}  λ = {:+.6}  N = {:.8}  outer = {}  E(N_target) = {e_minao:.8}",
         r.scf.energy, r.lambdas[0], r.populations[0], r.outer_iters
     );
 
+    // The driver-default start (no SAD): the catalogue's "driver default
+    // (None)" row, which converges here at every libint precision measured.
+    let base_cfg = RhfConfig {
+        use_sad_guess: false,
+        ..cfg.clone()
+    };
+    let b = solve_cdft_uhf(
+        &sys.ctx,
+        &sys.mol,
+        &sys.prep,
+        &sys.bs,
+        &sys.bounds,
+        &base_cfg,
+    )
+    .expect("the driver-default start converges at the integer target");
+    let e_base = at_target(b.scf.energy, b.lambdas[0], b.populations[0]);
+    eprintln!(
+        "[driver-default start, integer target] E = {:.8}  λ = {:+.6}  N = {:.8}  outer = {}  E(N_target) = {e_base:.8}",
+        b.scf.energy, b.lambdas[0], b.populations[0], b.outer_iters
+    );
+
     assert!(
-        (r.scf.energy - HCORE_UPPER).abs() < TOL,
-        "the default (MINAO) path reached {:.8}, but hcore reaches \
-         {HCORE_UPPER:.8} (Δ = {:.2e} Ha, tol {TOL:.0e}). The two starts landing \
-         on DIFFERENT states is a real finding about what users get by default -- \
-         audit it, do not widen this tolerance. NB the other constrained state \
-         here is ~0.0245 Ha away, so a Δ of that order means a basin flip.",
-        r.scf.energy,
-        (r.scf.energy - HCORE_UPPER).abs()
+        (e_minao - e_base).abs() < TOL,
+        "the default (MINAO) path reached {e_minao:.8}, but the driver-default start \
+         reaches {e_base:.8} at the target population (Δ = {:.2e} Ha, tol {TOL:.0e}). \
+         The two starts landing on DIFFERENT states is a real finding about what users \
+         get by default -- audit it, do not widen this tolerance. NB the other \
+         constrained state here is ~0.0245 Ha away, so a Δ of that order means a \
+         basin flip.",
+        (e_minao - e_base).abs()
     );
 }

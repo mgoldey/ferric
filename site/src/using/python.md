@@ -234,11 +234,12 @@ oo    = ferric.run_oo_rimp2(water, bs_dz, aux)
 mp3   = ferric.run_mp3(water, bs_dz, aux)
 ```
 
-`frozen_core=` is accepted by every correlated driver. `run_ccd`,
-`run_ccsd_t`, `run_terfc_rimp2` and the amplitude-threshold drivers
-`run_drpa`, `run_drpa_scan` and `run_linlccd_amplitude` have no CLI
-`method.kind`; `run_lmp2` and `run_lmp2_direct` do (`lmp2`, `lmp2-direct`).
-The reference table below marks which drivers have one.
+`frozen_core=` is accepted by every correlated driver. `run_terfc_rimp2` has
+no CLI `method.kind` of its own (the CLI reaches it through `att-rimp2` with
+`att_operator = "terfc"`); the reference table below marks the CLI kind of
+every driver. `run_rimp2`, `run_drpa` and `run_linlccd` compute their method
+exactly unless `local="amplitude-threshold"` and `eps=` are passed (see
+[Exact and local correlation](#exact-and-local-correlation)).
 
 ## Response and excited states
 
@@ -292,8 +293,11 @@ print(np.round(ferric.esp_at_points(water, bs, rhf, pts), 6))
 
 The charge family is `mulliken_charges`, `lowdin_charges`,
 `hirshfeld_charges`, `chelpg_charges` and `resp_charges`, all returning one
-charge per atom in units of e. `resp_charges` is a single-stage restrained fit,
-not the multi-stage, multi-conformer RESP procedure. `esp_at_atoms` gives the
+charge per atom in units of e. `hirshfeld_charges` builds its proatoms from
+free-atom SCF densities in the molecule's basis, as the CLI does;
+`proatom="slater"` selects the single-exponential Slater proatom instead, which
+is 0.23–0.72 e away on H2O, CO and CH3OH. `resp_charges` is a single-stage
+restrained fit, not the multi-stage, multi-conformer RESP procedure. `esp_at_atoms` gives the
 potential at each nucleus. `hirshfeld_polarizability` returns per-atom 3×3
 polarizability tensors (Bohr³) and needs an RI basis.
 
@@ -315,8 +319,8 @@ C = rhf.mo_coefficients()     # numpy.ndarray, (n_bf, n_mo)
 
 Matrices and tensors come back as `numpy.ndarray`. Per-atom lists (charges,
 ESP values) come back as Python lists; wrap them in `np.asarray` if you need
-arrays. `run_lmp2`, `run_lmp2_direct`, `run_drpa`, `run_linlccd_amplitude` and
-`tune_omega` return plain `dict`s, and `run_drpa_scan` returns a list of them.
+arrays. `run_drpa`, `run_linlccd` and `tune_omega` return plain `dict`s, and
+`run_drpa_scan` returns a list of them.
 
 AO-basis matrices follow libint2's basis-function conventions, which are not
 PySCF's. MEASURED on CO/cc-pVDZ: total and orbital energies agree with
@@ -384,14 +388,15 @@ capability is Python-only. How well each one is validated is on
 | `run_rhf` | Closed-shell RHF with the full SCF knob set, point charges, field and IEF-PCM solvent. | `rhf` |
 | `run_uhf` | Unrestricted HF; α/β counts come from the molecule's charge and multiplicity. | `uhf` |
 | `run_rohf` | Restricted open-shell HF (Guest–Saunders coupling); returns a `UhfResult`. | `rohf` |
-| `run_dft` | Closed-shell Kohn–Sham DFT (LDA/GGA/hybrid/RSH/meta-GGA by name), optional D3(BJ) and analytic gradient. | `ksdft` |
+| `run_dft` | Closed-shell Kohn–Sham DFT (LDA/GGA/hybrid/RSH/meta-GGA by name), optional dispersion (`dispersion="d3bj"` or `"mbd"`, added to the energy and, with `with_gradient=True`, to the gradient) and analytic gradient. | `ksdft` |
 | `run_ksdft` | Alias of `run_dft`. | `ksdft` |
 | `d3bj_energy` | Grimme D3(BJ) dispersion energy for a molecule and functional, in Hartree. | `[dft] dispersion` |
-| `tune_omega` | IP-based (Baer/Kronik) tuning of an RSH functional's ω (Bohr⁻¹); closed-shell neutral plus doublet cation. | — |
+| `mbd_rsscs_energy` | MBD@rsSCS dispersion energy (Hartree) from per-atom Hirshfeld volume ratios and β (or a functional with a published β); returns `MbdRsscsResult` with the screened α₀, C6, R_vdW and ω. | — |
+| `tune_omega` | IP-based (Baer/Kronik) tuning of an RSH functional's ω (Bohr⁻¹); closed-shell neutral plus doublet cation. `continuation=True` seeds each evaluation from the nearest already-evaluated ω, which keeps the cation on one branch across an out-of-order golden-section search; `branch_tol` flags an evaluation whose cation spin-population asymmetry jumps. `check_cation_stability` (default `True`) runs the UKS internal-stability analysis on every cation: each eval dict carries `cation_lambda_min` and `cation_stability`, and a tuned ω whose cation is an internal saddle raises `RuntimeError` naming ω and λ_min. Functionals without an orbital-Hessian kernel (VV10 such as ωB97X-V, meta-GGA) are reported `not_analysed` with a `stability_warning`, never as stable. | — |
 | `dft_grid_point_count` | Number of points in the main KS grid `run_dft` would build for the molecule with the same `grid_*` kwargs, without running an SCF (shows what pruning saves). | — |
 | `RhfResult` | Result of `run_rhf`: `energy`, `converged`, `iterations`, `density()`, `orbital_energies()`, `mo_coefficients()`. | |
 | `UhfResult` | Result of `run_uhf`/`run_rohf`: α and β densities and orbital energies. | |
-| `DftResult` | Result of `run_dft`: `total_energy`, `e_scf`, `e_dispersion`, `converged`, `exit_reason()`, `density()`, `gradient()`. | |
+| `DftResult` | Result of `run_dft`: `total_energy` (= `e_scf + e_dispersion`), `e_scf`, `e_dispersion` (`None` when not requested), `dispersion_model` (`"D3(BJ)"`, `"MBD@rsSCS"` or `None`), `volume_ratios` (MBD@rsSCS only), `converged`, `exit_reason()`, `density()`, `gradient()`. | |
 
 ### Constrained DFT
 
@@ -436,7 +441,7 @@ See [QM/MM](./qmmm.md) for a worked example.
 
 | Name | Purpose | CLI |
 |---|---|---|
-| `run_rimp2` | RI-MP2 on an RHF reference; UHF + unrestricted RI-MP2 when `multiplicity > 1` (`reference` says which). | `rimp2` |
+| `run_rimp2` | RI-MP2 on an RHF reference; UHF + unrestricted RI-MP2 when `multiplicity > 1` (`reference` says which). Exact by default; `local=`/`eps=` for the local approximation. | `rimp2` |
 | `run_oo_rimp2` | Orbital-optimized RI-MP2 (level-shifted Newton + DIIS + Cayley rotation). Closed shell only; open-shell OO-RI-MP2 is CLI-only. | `oo-rimp2` |
 | `run_mp3` | MP3 on an RHF reference, with RI integrals. | `mp3` |
 | `run_attenuated_rimp2` | RI-MP2 with the erfc-attenuated operator; ω in Å⁻¹, default 0.420. | `att-rimp2` |
@@ -447,7 +452,7 @@ See [QM/MM](./qmmm.md) for a worked example.
 | `run_double_hybrid` | B2PLYP or DSD-PBEP86 double hybrid. | `b2plyp`, `dsd-pbep86` |
 | `run_laplace_mp2` | Laplace-transform RI-MP2 (default 7 quadrature points). | `laplace-mp2` |
 | `run_laplace_sos_mp2` | Laplace-transform SOS-MP2, `E = c_os · E_OS`; MO, AO or AO-sparse formulations. | `laplace-sos-mp2` |
-| `RiMp2Result` | Result of `run_rimp2` and `run_terfc_rimp2`: `total_energy`, `rhf_energy` (the reference SCF energy, RHF or UHF), `mp2_corr`, `reference`. | |
+| `RiMp2Result` | Result of `run_rimp2` and `run_terfc_rimp2`: `total_energy`, `rhf_energy` (the reference SCF energy, RHF or UHF), `mp2_corr`, `reference`, and `local` (`None` for the exact method, else the local model dict). | |
 | `OoRiMp2Result` | Result of `run_oo_rimp2`, with `converged` and `grad_norm`. | |
 | `Mp3Result` | `e_hf`, `e_mp2`, `e_mp3`, `e_corr`, `e_total`. | |
 | `AttenuatedMp2Result` | Attenuated MP2 total, correlation and spin components. | |
@@ -457,26 +462,39 @@ See [QM/MM](./qmmm.md) for a worked example.
 | `SosMp2Result` | Scaled and unscaled OS energy, `c_os`, `n_quad` and `formulation` echoed back. | |
 | `DoubleHybridResult` | Result of `run_double_hybrid`: `total_energy`, `e_ks`, `e_corr_scaled`, `e_os`, `e_ss`, `c_os`, `c_ss`. | |
 
-### Amplitude-threshold local correlation
+### Exact and local correlation
 
-All closed-shell. `eps = 0` reproduces the canonical method; a finite `eps`
-carries a one-sided truncation error. Each returns a `dict`.
+`run_rimp2`, `run_drpa` and `run_linlccd` name a method and compute it
+**exactly** by default. The local approximation is asked for with keywords
+that mirror the CLI's [`[local]`](../reference/input.md#local) section, under
+the same rules, raised as `ValueError` before any SCF:
 
-The canonical reference is opt-in. `run_lmp2`, `run_lmp2_direct`, `run_drpa`
-and `run_drpa_scan` take `compute_reference` (default `False`); only with
-`compute_reference=True` do they compute it, and otherwise the dict's
-reference key (`e_corr_canonical_ri` for LMP2, `e_corr_plasmon_canonical` for
-dRPA) is present and `None`. The reference is a full canonical calculation
-over global tensors, so switching it on removes any cost saving.
-`run_linlccd_amplitude` computes no canonical reference.
+- `local=` is `None` (exact; `"none"` is the same) or `"amplitude-threshold"`;
+  any other value is an error.
+- `eps=` is **required** with `local="amplitude-threshold"`: the threshold is
+  part of the model and has no default. `eps=0` reproduces the exact method.
+  `eps=` without `local=` is an error, not ignored.
+- `compute_reference=True` (local only) also computes the exact method and
+  reports it: `local["e_corr_canonical_ri"]` (MP2),
+  `e_corr_plasmon_canonical` (dRPA), `local["e_corr_exact"]` (LinLCCD).
+  Off, the key is present and `None`. It is a full exact calculation, so it
+  removes any cost saving.
+- `run_rimp2(integral_direct=True, ...)` selects the integral-direct local
+  MP2, with its locality maps `aux_radius`, `virt_radius` (Bohr), `ao_tail`,
+  `schwarz_skip`, `batch_merge`, `gate_cal` and `virt_schwarz_kappa` (the CLI
+  names and defaults). They are errors without `integral_direct=True`.
+  `kappa` is an error on the local MP2.
+
+Every result says which model it is: `RiMp2Result.local` and the dicts'
+`"local"` key are `None` for the exact method, else a dict with `scheme`,
+`eps`, `keep_fraction` and `integral_direct` plus solver counters. All local
+paths are closed shell.
 
 | Name | Purpose | CLI |
 |---|---|---|
-| `run_lmp2` | Amplitude-threshold local MP2. | `lmp2` |
-| `run_lmp2_direct` | Integral-direct local MP2 that never forms the global 3-index tensor. | `lmp2-direct` |
-| `run_drpa` | Amplitude-threshold direct RPA (drCCD Riccati). | — |
-| `run_drpa_scan` | `run_drpa` over a list of `eps` values, sharing one SCF and localization. | — |
-| `run_linlccd_amplitude` | Amplitude-threshold LinLCCD (`variant` = `"drivers"`, `"hh"`, `"full"`). | — (CLI `linlccd` is canonical LinLCCD(hh)) |
+| `run_drpa` | dRPA@HF by the drCCD Riccati solve. Exact by default (equals the plasmon formula); `MemoryError` before the SCF when the exact solve cannot fit (use `run_pdep_rpa(..., trunc_thresh=0)`). `diis=` (default 8); `eps_rtol_factor=` (local only). | `drpa` |
+| `run_drpa_scan` | The local dRPA over a list of `eps` values, sharing one SCF and localization; each dict carries `"local"`. | `drpa` + `[local] eps_sweep` |
+| `run_linlccd` | Linearized ladder CCD, `variant` = `"hh"` (default), `"drivers-only"`, `"full"`. Exact by default. | `linlccd` |
 
 ### Coupled cluster
 
@@ -521,7 +539,7 @@ Each takes `(mol, basis_set, result)` with a converged closed-shell
 | `esp_at_points` | Electrostatic potential at arbitrary points given in Bohr. | `[rpa] compute_esp_surface` (vdW-surface points only) |
 | `mulliken_charges` | Mulliken population charges. | `[rpa] compute_mulliken_charges` |
 | `lowdin_charges` | Löwdin (symmetric-orthogonalization) charges. | `[rpa] compute_lowdin_charges` |
-| `hirshfeld_charges` | Hirshfeld charges with a single-exponential Slater proatom. | `[rpa] compute_hirshfeld_charges` |
+| `hirshfeld_charges` | Hirshfeld charges. The default `proatom="scf"` uses free-atom SCF densities in the molecule's basis, solved with the result's own SCF settings, as the CLI does; `proatom="slater"` uses a single-exponential Slater proatom. | `[rpa] compute_hirshfeld_charges` |
 | `chelpg_charges` | CHELPG charges fitted to the ESP on a grid. | `[rpa] compute_chelpg_charges` |
 | `resp_charges` | Single-stage RESP (restrained ESP-fit) charges. | `[rpa] compute_resp_charges` |
 | `hirshfeld_polarizability` | Per-atom Hirshfeld-partitioned static polarizability tensors (Bohr³) from PDEP-RPA. | — |

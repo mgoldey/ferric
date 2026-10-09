@@ -68,3 +68,13 @@ pub mod site_basis;
 pub mod three_index_source;
 /// Three-center density-fitting integrals (P|mu nu) with optional batching.
 pub mod threeindex;
+
+/// Version of the libint2 headers the integral shim was compiled against
+/// (e.g. `"2.7.2"`), or `"unknown"` if those headers define no
+/// `LIBINT_VERSION`. Reported by `ferric --version` and `ferric.build_info()`.
+pub fn libint_version() -> &'static str {
+    // SAFETY: the shim returns a pointer to a string literal (static storage,
+    // NUL-terminated, never NULL) and touches no libint state.
+    let s = unsafe { std::ffi::CStr::from_ptr(ffi::scf_libint_version()) };
+    s.to_str().unwrap_or("unknown")
+}

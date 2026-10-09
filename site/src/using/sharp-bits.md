@@ -173,8 +173,14 @@ refused, and together they can reach about twice the budget.
 
 When a charged allocation does not fit, the result depends on the allocation:
 
-- The SCF's three-index tensor is spilled to a file in `$TMPDIR` (`/tmp` by
-  default) and reread on every iteration.
+- The SCF's three-index tensor is stored whole when `n_aux × n_bf² × 8` bytes
+  fit. When only the symmetric half (`n_aux × n_bf(n_bf+1)/2 × 8` bytes, plus
+  64 unpacked aux rows of scratch) fits, it is kept in memory as that packed triangle
+  and the RI-J build reads the packed rows directly. When even that does not
+  fit, it is either spilled to a file in `$TMPDIR` (`/tmp` by default) and
+  reread on every iteration, or recomputed on every iteration without
+  writing anything. `auto` chooses between those two from a rate measured on
+  the machine; `[scf] jk_storage` forces `memory`, `disk` or `direct`.
 - The DFT grid AO cache is recomputed at every Fock build instead of stored.
   The energy is bit-identical.
 - An allocation with no fallback stops the job with an error naming it. For
@@ -198,6 +204,14 @@ a shared machine, also cap the process externally so a runaway job dies in
 its own cgroup, for example with `scripts/ferric-limited -- ferric input.toml`
 (defaults `MemoryMax=12G`, `MemoryHigh=10G`, no swap) or
 `systemd-run --user --scope -p MemoryMax=12G -- ferric input.toml`.
+
+## GPU offload is opt-in and may not help
+
+The CUDA backend is not in the PyPI wheel; it needs a source build with the `gpu` feature (see [GPU (CUDA)](installation.md#gpu-cuda)), and even then it is off by default (`FERRIC_GPU=auto` or `[gpu] mode` turns it on). Consumer GeForce cards run FP64 at 1/32 of their FP32 rate or less, so offloading f64 contractions may be slower than the CPU once transfer time is counted; whether it helps depends on the card and the problem, and has to be measured on your own hardware.
+
+Device memory is a separate pool (`[gpu] memory_gb`); the host `[memory] budget_gb` is not reduced by it. A contraction that does not fit the device pool runs on the CPU and is counted, not refused. `FERRIC_GPU_TRACE=1` prints each fallback.
+
+`[gpu] precision = "mixed"` changes the numbers, not just the speed: the audit line and `ferric.gpu_status()["precision"]` say which precision a run used, and the per-kernel error map is on the [validation page](../reference/validation.md#mixed-precision-gpu-kernels). The one shipped mixed kernel is `rimp2-energy` (f32-resident `B_ov`; closed-shell and unrestricted RI-MP2 under the Coulomb, erfc and terfc operators); its measured energy errors are 3e-11 to 7e-9 Eh closed-shell Coulomb (total, with the OS and SS parts up to 5e-9 Eh each), 5e-10 to 1.4e-8 Eh unrestricted Coulomb (total, with the αα, ββ and αβ blocks up to 1.1e-8 Eh each) and 7e-11 to 6e-9 Eh for erfc and terfc on the systems listed there, graded as a measured error map, not Proven; a mixed run prints `precision mixed` in its `[ferric] gpu:` line, and its energies are not interchangeable with f64 results in a convergence or reference comparison. A tiny problem still pays the device upload when the mode is on, whatever the precision. `gpu = "mixed"` (or `[gpu] preset = "mixed"`) is `mode = "on"` plus `precision = "mixed"`, so it carries the same change in the numbers; a `mode`, `precision` or `mixed_kernels` setting that contradicts the preset is an error, not an override.
 
 ## Implemented is not validated
 

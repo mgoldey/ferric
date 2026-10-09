@@ -1,0 +1,19 @@
+[package]
+name = "ferric-build-info"
+version = "0.1.0"
+license.workspace = true
+edition = "2021"
+description = "Build identity (version, git commit, dirty flag, profile) embedded at compile time"
+
+[lints]
+workspace = true
+
+# No dependencies on purpose. Only the top-level artifacts (ferric-cli and
+# ferric-python) depend on this crate. Its build script re-runs whenever a
+# compiled source file changes, so a dependency from a lower crate (e.g.
+# ferric-scf) would rebuild that crate and everything above it on every edit
+# anywhere in the workspace.
+[dependencies]
+
+[dev-dependencies]
+tempfile = "3"

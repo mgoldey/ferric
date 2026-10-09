@@ -33,10 +33,11 @@
 //! # Grid, blocking, determinism
 //!
 //! The builder owns its OWN Becke–Lebedev grid (`CosxConfig::grid`, default
-//! (50,110) — the measured operating point: the composed-budget audit on this
-//! branch found grids coarser than (50,110) fail the 0.1 kcal/mol isodesmic
-//! reaction-energy bar, and at (50,110) the overlap fit took that error from
-//! 0.2068 to 0.0190 kcal/mol, so the fit defaults ON). Points are processed
+//! the pruned sgx (35,194) grid plus a final pass on sgx (50,302); see
+//! `CosxConfig::grid` for the measurement. Among FLAT grids, the
+//! composed-budget audit found grids coarser than (50,110) fail the 0.1
+//! kcal/mol isodesmic reaction-energy bar, and at (50,110) the overlap fit took
+//! that error from 0.2068 to 0.0190 kcal/mol, so the fit defaults ON). Points are processed
 //! in fixed blocks of `COSX_BLOCK_POINTS` points; per block the three `(nbf, B)`
 //! planes `X`, `F`, `G` are resident. The A-build inside a block is parallel
 //! over points (cosx_a: one libint2 engine per rayon worker) or over fixed
@@ -101,7 +102,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::cosx_a::{a_matrix_at_point_with, CosxScreen, PairBounds};
 use ferric_integrals::engine::Engine;
 use ferric_integrals::ffi;
-use ferric_integrals::md3c1e::{Md3c1e, Md3c1eScratch};
+use ferric_integrals::md3c1e::{Md3c1e, Md3c1eScratch, PrimPairSum};
 use ndarray::Array2;
 use ndarray_linalg::{Cholesky, Diag, SolveTriangular, UPLO};
 use rayon::prelude::*;
@@ -222,9 +223,10 @@ impl CosxHalfTransform {
 /// Lebedev orders ferric's quadrature tables provide. `ferric_quadrature::lebedev`
 /// PANICS on any other order, so a grid config is validated against this list
 /// up front and rejected with a typed error instead.
-pub const SUPPORTED_ANGULAR_ORDERS: [usize; 8] = [6, 14, 26, 50, 110, 302, 434, 590];
+pub const SUPPORTED_ANGULAR_ORDERS: [usize; 9] = [6, 14, 26, 50, 110, 194, 302, 434, 590];
 
-/// Validate a COSX grid config: positive radial count and a tabulated Lebedev order.
+/// Validate a COSX grid config: positive radial count, a tabulated Lebedev
+/// order, and — when pruned — a peak order the scheme has a region table for.
 pub fn validate_grid(grid: &AtomicGridConfig) -> Result<(), FerricError> {
     if grid.n_radial == 0 {
         return Err(FerricError::General(
@@ -237,14 +239,127 @@ pub fn validate_grid(grid: &AtomicGridConfig) -> Result<(), FerricError> {
             grid.n_angular, SUPPORTED_ANGULAR_ORDERS
         )));
     }
+    match grid.prune {
+        None => {}
+        Some(ferric_dft::prune::PruneScheme::Sgx) => {
+            ferric_dft::prune::sgx_region_orders(grid.n_angular)
+                .map_err(|e| FerricError::General(format!("cosx grid: {e}")))?;
+        }
+        Some(ferric_dft::prune::PruneScheme::NwchemLike) => {
+            ferric_dft::prune::region_orders(grid.n_angular)
+                .map_err(|e| FerricError::General(format!("cosx grid: {e}")))?;
+        }
+    }
     Ok(())
 }
+
+/// A COSX grid from its user-facing parts: radial count, peak Lebedev order
+/// and a prune spelling (`None` / `"none"` = flat; `"sgx"` = the pruned COSX
+/// scheme; `"nwchem"` = the XC grids' NWChem-like scheme). Strict: unknown
+/// spellings and orders the scheme has no table for are errors.
+pub fn grid_from_parts(
+    n_radial: usize,
+    n_angular: usize,
+    prune: Option<&str>,
+) -> Result<AtomicGridConfig, FerricError> {
+    let prune = match prune {
+        None => None,
+        Some(s) => ferric_dft::prune::PruneScheme::parse_config_str(s)?,
+    };
+    let grid = AtomicGridConfig {
+        n_radial,
+        n_angular,
+        prune,
+    };
+    validate_grid(&grid)?;
+    Ok(grid)
+}
+
+/// Apply the grid / final-pass knobs (CLI `[scf] cosx_grid`,
+/// `cosx_final_pass`, `cosx_final_grid`; the same Python kwargs) to `cfg`.
+///
+/// * `grid`: replaces the SCF grid.
+/// * `final_pass = Some(false)`: no final pass (an explicit `final_grid` with
+///   it is a contradiction and an error).
+/// * `final_pass = Some(true)`: final pass on `final_grid`, or on
+///   [`COSX_DEFAULT_FINAL_GRID`] when none is given.
+/// * `final_pass = None`: a given `final_grid` turns the pass on; otherwise
+///   the default (`cfg.final_grid` as it came in) is kept.
+pub fn apply_grid_knobs(
+    cfg: &mut CosxConfig,
+    grid: Option<AtomicGridConfig>,
+    final_pass: Option<bool>,
+    final_grid: Option<AtomicGridConfig>,
+) -> Result<(), FerricError> {
+    if let Some(g) = grid {
+        validate_grid(&g)?;
+        cfg.grid = g;
+    }
+    match (final_pass, final_grid) {
+        (Some(false), Some(_)) => {
+            return Err(FerricError::General(
+                "cosx_final_pass = false contradicts an explicit cosx_final_grid; drop one".into(),
+            ))
+        }
+        (Some(false), None) => {
+            cfg.final_grid = None;
+            cfg.final_pass_explicit = false;
+        }
+        (_, Some(g)) => {
+            validate_grid(&g)?;
+            cfg.final_grid = Some(g);
+            cfg.final_pass_explicit = true;
+        }
+        (Some(true), None) => {
+            if cfg.final_grid.is_none() {
+                cfg.final_grid = Some(default_final_grid());
+            }
+            cfg.final_pass_explicit = true;
+        }
+        (None, None) => {}
+    }
+    Ok(())
+}
+
+/// The final grid [`apply_grid_knobs`] uses for `final_pass = true` without an
+/// explicit grid: [`COSX_DEFAULT_FINAL_GRID`] as an `AtomicGridConfig`.
+pub fn default_final_grid() -> AtomicGridConfig {
+    let (n_radial, n_angular, prune) = COSX_DEFAULT_FINAL_GRID;
+    AtomicGridConfig {
+        n_radial,
+        n_angular,
+        prune,
+    }
+}
+
+/// `(radial, peak angular, prune)` of the final grid a bare
+/// `cosx_final_pass = true` selects. See `site/src/methods/scf.md`
+/// ("Choosing how exchange is built") for the measurement behind it.
+pub const COSX_DEFAULT_FINAL_GRID: (usize, usize, Option<ferric_dft::prune::PruneScheme>) =
+    (50, 302, Some(ferric_dft::prune::PruneScheme::Sgx));
+
+/// `(radial, peak angular, prune)` of the default COSX SCF grid. See
+/// [`CosxConfig::grid`] for the measurement behind it.
+pub const COSX_DEFAULT_GRID: (usize, usize, Option<ferric_dft::prune::PruneScheme>) =
+    (35, 194, Some(ferric_dft::prune::PruneScheme::Sgx));
 
 /// User-facing COSX knobs. Carried in `RhfConfig::cosx`.
 #[derive(Debug, Clone)]
 pub struct CosxConfig {
-    /// The exchange grid. Default (50,110), unpruned — see the module doc for
-    /// why not coarser.
+    /// The exchange (SCF) grid. Default: the pruned `sgx` (35,194) grid
+    /// ([`COSX_DEFAULT_GRID`]), together with a final-grid pass on sgx
+    /// (50,302) ([`CosxConfig::final_grid`]).
+    ///
+    /// Measured against exact exchange on eight molecules
+    /// (`scripts/cosx_grid_sweep.py`, table in `site/src/methods/scf.md`):
+    /// with the final pass it is more accurate than flat (50,110) on all eight
+    /// and on the isodesmic C3H8 + CH4 -> 2 C2H6 reaction (+0.003 vs +0.074
+    /// kcal/mol), at 0.80-0.91x its wall time. Geometry drivers run without
+    /// the final pass (it is energy-only), so their energies and gradients use
+    /// the sgx (35,194) grid alone: more accurate than flat (50,110) on seven
+    /// of the eight, 1.15x worse on methane/cc-pVDZ (9.2e-6 vs 8.0e-6 Ha).
+    /// [`CosxConfig::flat_reference`] is the flat (50,110) grid with no final
+    /// pass.
     pub grid: AtomicGridConfig,
     /// Overlap fitting `K = 0.5(S S_num^{-1} Ktilde + h.c.)`. Default `true`.
     /// Measured to be net-negative on grids coarser than (50,110) and a ~10x
@@ -369,6 +484,150 @@ pub struct CosxConfig {
     /// coverage of alignment, and it must be re-mutated before being trusted as
     /// such. See its doc comment and `scripts/queue/out/cosx_subbatch_bound_results.md` §5.1.
     pub screen_group: usize,
+    /// fp64 threshold multiplier of the precision router (Laqua, Kussmann &
+    /// Ochsenfeld, JCP 154, 214116 (2021), Sec. IV A: theta^fp64 = multiplier
+    /// x theta; their recommended value is 1e5, VERIFIED). A kept (pair,
+    /// sub-batch) unit is classified [`Route::F32`] iff its Hölder K-element
+    /// bound `max_q est_q * fmax_q` is below `tau = fp64_multiplier *
+    /// screen_thresh`, else [`Route::F64`]. `0.0` (the default and every f64
+    /// run) disables the router: every kept pair is `F64`. This build
+    /// classifies and counts (`CosxTimings::route_*`); every pair is still
+    /// computed in f64 (K is bit-identical for every multiplier) unless the
+    /// `f32_route` test seam is set. Requires
+    /// the md3c1e backend and `screen_thresh > 0` when nonzero.
+    pub fp64_multiplier: f64,
+    /// Test seam for the unshipped `cosx-kern` kernel: `Some(sum)` computes
+    /// the units the router classifies [`Route::F32`] with the f32 block
+    /// (`Md3c1e::pair_block_f32`, primitive-pair sum `sum`); `None` (the
+    /// default, and the only value any shipped path sets) computes every kept
+    /// unit in f64, so K is bit-identical for every multiplier. Needs
+    /// `fp64_multiplier > 0`. The fold stays f64 either way. HIDDEN AND
+    /// TEST-ONLY: no shipped path (CLI, Python) sets it and the library does
+    /// not consult `[gpu] mixed_kernels`; wiring it behind
+    /// `GpuSettings::mixed_allows(MixedKernel::CosxKern)` is Task D6, in the
+    /// commit that adds `cosx-kern` to `MixedKernelSet::SHIPPED`.
+    #[doc(hidden)]
+    pub f32_route: Option<PrimPairSum>,
+    /// FINAL-GRID PASS (Psi4 `COSX_*_FINAL` + `COSX_MAXITER_FINAL = 1`; ORCA
+    /// `UseFinalGridX`): after the SCF converges on [`CosxConfig::grid`], the
+    /// exchange energy is evaluated ONCE more on this larger grid with the
+    /// converged density, and the run reports
+    ///
+    /// ```text
+    ///   E_final = E_scf + sum_s c_s ( tr[D_s K_final(D_s)] - tr[D_s K_scf(D_s)] )
+    /// ```
+    ///
+    /// (`c = -c_x/4` for the closed-shell total density, `-c_x/2` per spin).
+    /// Non-self-consistent: the orbitals stay those of the SCF grid. Every
+    /// other knob (fit, screens, backend) is shared with the SCF grid. `None`
+    /// = no final pass. The record is [`CosxFinalPass`] on
+    /// `ScfResult::cosx_final`; analytic gradients differentiate the SCF-grid
+    /// energy and the geometry drivers run without the pass (see
+    /// [`CosxFinalPass`]). With `final_grid == grid` the pass reproduces
+    /// `E_scf` bit for bit (anchored).
+    pub final_grid: Option<AtomicGridConfig>,
+    /// `true` when the final pass was asked for explicitly (CLI
+    /// `cosx_final_pass` / `cosx_final_grid`, Python `cosx_final_pass=` /
+    /// `cosx_final_grid=`, via [`apply_grid_knobs`]) rather than coming from
+    /// [`Default`]. ROHF/ROKS has no final pass: an explicit request there is
+    /// an error, the default one is dropped with a note.
+    pub final_pass_explicit: bool,
+    /// Optional SCF grid SCHEDULE (ORCA style): early iterations on
+    /// [`crate::cosx_schedule::CosxGridSchedule::coarse_grid`], then
+    /// [`CosxConfig::grid`] once the incoming `max|ΔD|` falls below its
+    /// `switch_dp_max`; the converged energy is defined by `grid` only (see
+    /// [`crate::cosx_schedule`]). The final pass is unchanged. `None` (the
+    /// default) = every iteration on `grid`, bit-identical to no schedule
+    /// support. RHF/RKS and UHF/UKS only; ROHF/ROKS refuses it.
+    pub schedule: Option<crate::cosx_schedule::CosxGridSchedule>,
+}
+
+/// The record of a COSX final-grid pass ([`CosxConfig::final_grid`]).
+///
+/// What the GRADIENT differentiates: the SCF-grid energy `e_scf_grid`, never
+/// `e_final`. `e_final` is not variational in the orbitals (they were
+/// converged on the SCF grid), so its exact gradient would need an orbital
+/// response on top of the final-grid derivative; ORCA's final-grid gradient
+/// omits that response. ferric keeps the gradient exact for the energy it
+/// differentiates, and the geometry drivers (optimize, finite-difference
+/// frequencies) therefore run WITHOUT the final pass so that energy and
+/// gradient belong to one surface.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CosxFinalPass {
+    /// The SCF energy on the SCF grid (`ScfResult::energy` without the pass).
+    pub e_scf_grid: f64,
+    /// `e_scf_grid` plus the final-grid exchange correction; this is what
+    /// `ScfResult::energy` reports.
+    pub e_final: f64,
+    /// Exchange-grid points of the SCF grid and of the final grid.
+    pub npts_scf: usize,
+    pub npts_final: usize,
+}
+
+/// Run the final-grid pass for converged densities.
+///
+/// `terms` lists `(D_s, K_scf(D_s), c_s)`: each density, the exchange matrix
+/// the SCF grid produced FROM THAT DENSITY (the solver's last K, so the SCF
+/// grid is not rebuilt), and its coefficient in the energy. Returns
+/// `(delta, npts_final)` with `delta = sum_s c_s (tr[D_s K_final] - tr[D_s
+/// K_scf])`. The two traces are accumulated in the same element order, so a
+/// final grid identical to the SCF grid gives `delta == 0.0` exactly.
+pub fn final_pass_delta(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    cfg: &CosxConfig,
+    final_grid: &AtomicGridConfig,
+    mem_budget: usize,
+    terms: &[(&Array2<f64>, &Array2<f64>, f64)],
+) -> Result<(f64, usize), FerricError> {
+    let fcfg = CosxConfig {
+        grid: final_grid.clone(),
+        final_grid: None,
+        ..cfg.clone()
+    };
+    let mut fb = CosxK::new(ctx, mol, prep, fcfg, mem_budget)?;
+    let n = prep.nbasis();
+    let mut kf = Array2::<f64>::zeros((n, n));
+    let mut delta = 0.0;
+    for &(d, ks, c) in terms {
+        kf.fill(0.0);
+        fb.build(d, &mut kf)?;
+        let tf: f64 = (d * &kf).sum();
+        let ts: f64 = (d * ks).sum();
+        delta += c * (tf - ts);
+    }
+    Ok((delta, fb.npts()))
+}
+
+/// [`final_pass_delta`] plus the bookkeeping every solver needs: point
+/// counts, the [`CosxFinalPass`] record and one printed line naming both
+/// energies (`e_scf` is the converged SCF-grid energy).
+#[allow(clippy::too_many_arguments)]
+pub fn run_final_pass(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    cfg: &CosxConfig,
+    final_grid: &AtomicGridConfig,
+    mem_budget: usize,
+    e_scf: f64,
+    terms: &[(&Array2<f64>, &Array2<f64>, f64)],
+) -> Result<CosxFinalPass, FerricError> {
+    let (delta, npts_final) = final_pass_delta(ctx, mol, prep, cfg, final_grid, mem_budget, terms)?;
+    let npts_scf = ferric_dft::grid::atomic_grid_point_count(mol, &cfg.grid, cfg.grid.prune)?;
+    let rec = CosxFinalPass {
+        e_scf_grid: e_scf,
+        e_final: e_scf + delta,
+        npts_scf,
+        npts_final,
+    };
+    eprintln!(
+        "[ferric] COSX final grid: E(SCF grid, {} pts) = {:.10}  E(final grid, {} pts) = {:.10}  \
+         dE = {:+.3e} Ha (non-self-consistent; reported energy = final)",
+        rec.npts_scf, rec.e_scf_grid, rec.npts_final, rec.e_final, delta
+    );
+    Ok(rec)
 }
 
 /// Default density-driven screen threshold (`CosxConfig::screen_thresh`).
@@ -384,8 +643,36 @@ pub struct CosxConfig {
 /// (2.6e-3 of the butane grid error); 1e-6 breaks the bar on butane.
 pub const COSX_DEFAULT_SCREEN_THRESH: f64 = 1e-7;
 
+/// Default `CosxConfig::fp64_multiplier` when the CLI enables the router
+/// (`[gpu] precision = "mixed"` with `cosx-kern` allowed). Source: Laqua,
+/// Kussmann & Ochsenfeld, JCP 154, 214116 (2021), Sec. IV A: "a fp64 threshold
+/// multiplier of 10^5" (VERIFIED, plan section 3.2 V2). A SEED: the shipped
+/// default is decided by Task D2's two-sided sweep, not by this constant.
+/// The library default (`CosxConfig::default`) stays `0.0` (router off).
+pub const COSX_DEFAULT_FP64_MULTIPLIER: f64 = 1e5;
+
 impl Default for CosxConfig {
     fn default() -> Self {
+        let (n_radial, n_angular, prune) = COSX_DEFAULT_GRID;
+        Self {
+            grid: AtomicGridConfig {
+                n_radial,
+                n_angular,
+                prune,
+            },
+            final_grid: Some(default_final_grid()),
+            final_pass_explicit: false,
+            ..Self::flat_reference()
+        }
+    }
+}
+
+impl CosxConfig {
+    /// The flat (50,110) grid with no final pass, and every other knob at its
+    /// default. The grid many COSX accuracy and screening measurements in
+    /// this crate's tests were taken on; tests that measure against it pin it
+    /// here rather than through `Default`.
+    pub fn flat_reference() -> Self {
         Self {
             grid: AtomicGridConfig {
                 n_radial: 50,
@@ -397,6 +684,11 @@ impl Default for CosxConfig {
             backend: CosxBackend::Md3c1e,
             half_transform: CosxHalfTransform::SPARSE_DEFAULT,
             screen_group: 0,
+            fp64_multiplier: 0.0,
+            f32_route: None,
+            final_grid: None,
+            final_pass_explicit: false,
+            schedule: None,
         }
     }
 }
@@ -464,6 +756,32 @@ pub struct CosxTimings {
     /// screen exists to move; see `CosxConfig::screen_group` for what it was
     /// measured to do.
     pub screen_degenerate: usize,
+    /// Kept (shell pair, sub-batch) units the router classified (unscaled by
+    /// the sub-batch's point count, unlike `pairs_kept`). Without a screen
+    /// (`screen_thresh = None`) every pair is kept, so every pair-sub-batch
+    /// unit is tallied as `Route::F64` (the router itself is refused there);
+    /// 0 only for the cosx-a backend, which has no routing.
+    pub route_units: usize,
+    /// Sum over kept units of the sub-batch's point count; equals `pairs_kept`
+    /// exactly (both count kept units x points).
+    pub route_points: usize,
+    /// Of `route_units`, the units classified [`Route::F32`].
+    pub route_f32_units: usize,
+    /// Flop-weighted F32 share: `sum_F32 pair_flops * points / sum_kept
+    /// pair_flops * points` (`Md3c1e::pair_flops_per_point`); 0.0 when the
+    /// router is off or nothing is kept.
+    pub route_f32_flop_share: f64,
+    /// Raw numerator and denominator of `route_f32_flop_share`: flops per
+    /// point x points, summed over F32 units / over all kept units (0 when the
+    /// router is off, the flop table is only built for a nonzero multiplier).
+    pub route_f32_flops: u64,
+    pub route_flops: u64,
+    /// Units actually computed by the f32 block (`CosxConfig::f32_route`).
+    pub f32_blocks: usize,
+    /// `F32` units recomputed in f64 after a non-finite f32 element.
+    pub f32_fallbacks: usize,
+    /// `tau = fp64_multiplier * screen_thresh` in force (0.0 = router off).
+    pub fp64_tau: f64,
 }
 
 /// One `T` per rayon worker (plus a spare for non-pool threads) — same
@@ -521,6 +839,9 @@ pub struct CosxK<'a> {
     snum: Option<SnumFactor>,
     /// md3c1e kernel state (`Some` iff `cfg.backend == Md3c1e`); geometry-only.
     kernel: Option<Md3c1e>,
+    /// Per-pair flops per point (`Md3c1e::pair_flops_table`); empty unless the
+    /// router is on (`fp64_multiplier > 0`).
+    pair_flops: Vec<u64>,
     workers: Option<Workers>,
     /// AO offset of every shell (libint2 order; the sparse masks are shell-granular).
     shell_off: Vec<usize>,
@@ -589,6 +910,11 @@ impl<'a> CosxK<'a> {
                     .into(),
             ));
         }
+        check_router(&cfg)?;
+        let pair_flops = match (&kernel, cfg.fp64_multiplier > 0.0) {
+            (Some(k), true) => k.pair_flops_table(),
+            _ => Vec::new(),
+        };
         let bounds = match cfg.screen_thresh {
             Some(_) => Some(PairBounds::build(prep)?),
             None => None,
@@ -607,6 +933,7 @@ impl<'a> CosxK<'a> {
             bounds,
             s_ao,
             snum: None,
+            pair_flops,
             kernel,
             workers: None,
             shell_off: prep.shell_offsets()[..prep.nshells()].to_vec(),
@@ -758,10 +1085,13 @@ impl<'a> CosxK<'a> {
                 let mut c_ns = 0u64;
                 let t0 = Instant::now();
                 let mut screen = self.batch_screen(kern, sub, &fsub, n);
-                let (kept, total) = scratch.with(|scr| {
-                    kern.for_each_pair_where(
+                let mut tally = RouteTally::default();
+                let sum = self.cfg.f32_route.unwrap_or(PrimPairSum::F64);
+                let counts = scratch.with(|scr| {
+                    kern.for_each_pair_routed(
                         sub,
-                        |s1, s2| screen.as_mut().is_none_or(|sc| sc.keep(s1, s2)),
+                        |s1, s2| self.route_unit(&mut screen, &mut tally, s1, s2, n),
+                        sum,
                         scr,
                         |s1, s2, blk| {
                             let t = Instant::now();
@@ -772,6 +1102,10 @@ impl<'a> CosxK<'a> {
                         },
                     )
                 })?;
+                let (kept, total) = (counts.kept, counts.total);
+                tally.f32_blocks = counts.f32_blocks;
+                tally.f32_fallbacks = counts.f32_fallbacks;
+                tally.flush(acc);
                 let geom = screen.as_ref().map_or(total, |sc| sc.geom_kept);
                 let (bev, deg) = screen
                     .as_ref()
@@ -806,6 +1140,160 @@ impl<'a> CosxK<'a> {
         Ok((g, Some(touched)))
     }
 
+    /// The exchange grid points (error-law diagnostics).
+    #[doc(hidden)]
+    pub fn grid_points(&self) -> &[[f64; 3]] {
+        &self.points
+    }
+
+    /// Entrywise a-priori bound on `|K_f32route - K_f64|` (post-fit) for the
+    /// density `d`: per routed `F32` unit the f32 block's element bound
+    /// (`Md3c1e::pair_block_f32_bound`, primitive-pair sum `sum`) times
+    /// `|F|`, summed into `|dG|`, `|dK~| <= |X| |dG|^T`, then through the fit
+    /// `K = sym(S S_num^-1 K~)` as `0.5 (|Q| B + (|Q| B)^T)`, `|Q| =
+    /// |S S_num^-1|` (the inverse formed in f64). Uses the DENSE half
+    /// transform (`F = D X`, so the bound is exact for the dense path and an
+    /// estimate for a sparse one), the same sub-batches, screen and router as
+    /// `build`. Needs the md3c1e backend, the router on and, with the overlap
+    /// fit, a previous `build` (for the cached `S_num` factor). Not on any
+    /// production path.
+    #[doc(hidden)]
+    pub fn f32_k_bound(
+        &self,
+        d: &Array2<f64>,
+        sum: PrimPairSum,
+    ) -> Result<Array2<f64>, FerricError> {
+        let kern = self.kernel.as_ref().ok_or_else(|| {
+            FerricError::General("CosxK::f32_k_bound: md3c1e backend only".into())
+        })?;
+        if self.fp64_tau() <= 0.0 {
+            return Err(FerricError::General(
+                "CosxK::f32_k_bound: the router is off (fp64_multiplier = 0)".into(),
+            ));
+        }
+        let nbf = self.prep.nbasis();
+        let mut kb = Array2::<f64>::zeros((nbf, nbf));
+        for (pts, sw) in self
+            .points
+            .chunks(COSX_BLOCK_POINTS)
+            .zip(self.sqrt_w.chunks(COSX_BLOCK_POINTS))
+        {
+            let x = self.eval_x_block(pts, sw)?;
+            let f = d.dot(&x);
+            let gb = self.bound_block(kern, pts, &f, sum)?;
+            kb += &x.mapv(f64::abs).dot(&gb.t());
+        }
+        if !self.cfg.overlap_fit {
+            let mut out = kb.clone();
+            out += &kb.t();
+            out *= 0.5;
+            return Ok(out);
+        }
+        let fac = self.snum.as_ref().ok_or_else(|| {
+            FerricError::General("CosxK::f32_k_bound: call build() first (S_num factor)".into())
+        })?;
+        let s_ao = self.s_ao.as_ref().expect("overlap present when fitting");
+        let eye = Array2::<f64>::eye(nbf);
+        let mut sinv = Array2::<f64>::zeros((nbf, nbf));
+        finalize_fitted_inverse(fac, &eye, &mut sinv)?;
+        let q = s_ao.dot(&sinv).mapv(f64::abs);
+        let m = q.dot(&kb);
+        let mut out = m.clone();
+        out += &m.t();
+        out *= 0.5;
+        Ok(out)
+    }
+
+    /// `|dG|` bound `(nbf, B)` of one block: the F32-routed units' element
+    /// bounds times `|F|`, folded like `accumulate_pair`.
+    fn bound_block(
+        &self,
+        kern: &Md3c1e,
+        pts: &[[f64; 3]],
+        f: &Array2<f64>,
+        sum: PrimPairSum,
+    ) -> Result<Array2<f64>, FerricError> {
+        let nbf = self.prep.nbasis();
+        let f_std = f.as_standard_layout();
+        let ys: Vec<Vec<f64>> = pts
+            .par_chunks(COSX_SUB_BATCH_POINTS)
+            .enumerate()
+            .map(|(c, sub)| -> Result<Vec<f64>, FerricError> {
+                let n = sub.len();
+                let fsub = copy_columns(&f_std.view(), c * COSX_SUB_BATCH_POINTS, n);
+                let fabs: Vec<f64> = fsub.iter().map(|v| v.abs()).collect();
+                let mut y = vec![0.0_f64; nbf * n];
+                let mut screen = self.batch_screen(kern, sub, &fsub, n);
+                let mut scr = kern.scratch();
+                let mut blk = Vec::new();
+                let mut sab = Vec::new();
+                for s1 in 0..kern.nshells() {
+                    for s2 in 0..=s1 {
+                        let r = screen.as_mut().map(|sc| sc.classify(s1, s2));
+                        if r != Some(Route::F32) {
+                            continue;
+                        }
+                        let need = kern.shell_dim(s1) * kern.shell_dim(s2) * n;
+                        blk.resize(need, 0.0);
+                        sab.resize(need, 0.0);
+                        kern.pair_block_f32_bound(s1, s2, sub, &mut scr, sum, &mut blk, &mut sab)?;
+                        accumulate_pair(kern, s1, s2, n, &blk, &fabs, &mut y);
+                    }
+                }
+                Ok(y)
+            })
+            .collect::<Result<_, _>>()?;
+        let mut g = Array2::<f64>::zeros((nbf, pts.len()));
+        for (c, y) in ys.iter().enumerate() {
+            let c0 = c * COSX_SUB_BATCH_POINTS;
+            let n = y.len() / nbf;
+            for (mu, row) in y.chunks_exact(n).enumerate() {
+                g.slice_mut(ndarray::s![mu, c0..c0 + n])
+                    .as_slice_mut()
+                    .expect("row segment of a standard-layout matrix is contiguous")
+                    .copy_from_slice(row);
+            }
+        }
+        Ok(g)
+    }
+
+    /// `fp64_multiplier * screen_thresh` (0.0 = router off).
+    fn fp64_tau(&self) -> f64 {
+        match self.cfg.screen_thresh {
+            Some(t) if self.cfg.fp64_multiplier > 0.0 && t > 0.0 => self.cfg.fp64_multiplier * t,
+            _ => 0.0,
+        }
+    }
+
+    /// Route one unit (no screen: kept, F64), tally the CLASSIFIED route and
+    /// return the route the kernel computes: an `F32` classification is
+    /// computed in f64 unless `CosxConfig::f32_route` is set.
+    #[inline]
+    fn route_unit(
+        &self,
+        screen: &mut Option<BatchScreen<'_>>,
+        tally: &mut RouteTally,
+        s1: usize,
+        s2: usize,
+        n: usize,
+    ) -> Route {
+        let route = screen.as_mut().map_or(Route::F64, |sc| sc.classify(s1, s2));
+        tally.note(route, self.unit_flops(s1, s2, n), n);
+        match route {
+            Route::F32 if self.cfg.f32_route.is_none() => Route::F64,
+            r => r,
+        }
+    }
+
+    /// Flops of the unit `(s1, s2)` over a sub-batch of `n` points; 0 when the
+    /// router is off (the table is only built for a nonzero multiplier).
+    #[inline]
+    fn unit_flops(&self, s1: usize, s2: usize, n: usize) -> u64 {
+        self.pair_flops
+            .get(s1 * (s1 + 1) / 2 + s2)
+            .map_or(0, |&f| f * n as u64)
+    }
+
     /// The density-driven screen for one sub-batch (`None` when
     /// `screen_thresh` is `None`): one [`Region`] and one `fmax` vector per
     /// contiguous group of `CosxConfig::screen_group` points (`0` = one group
@@ -838,6 +1326,7 @@ impl<'a> CosxK<'a> {
         Some(BatchScreen {
             bounds,
             thresh,
+            tau: self.fp64_tau(),
             regions,
             fmax,
             nsh,
@@ -927,6 +1416,23 @@ impl<'a> CosxK<'a> {
         t.pairs_total = acc.total.load(Ordering::Relaxed);
         t.bound_evals = acc.bound_evals.load(Ordering::Relaxed);
         t.screen_degenerate = acc.degenerate.load(Ordering::Relaxed);
+        t.route_units = acc.route_units.load(Ordering::Relaxed);
+        t.route_points = acc.route_points.load(Ordering::Relaxed);
+        t.f32_blocks = acc.f32_blocks.load(Ordering::Relaxed);
+        t.f32_fallbacks = acc.f32_fallbacks.load(Ordering::Relaxed);
+        t.route_f32_units = acc.route_f32_units.load(Ordering::Relaxed);
+        let (fl, fl32) = (
+            acc.route_flops.load(Ordering::Relaxed),
+            acc.route_f32_flops.load(Ordering::Relaxed),
+        );
+        t.route_flops = fl;
+        t.route_f32_flops = fl32;
+        t.route_f32_flop_share = if fl == 0 {
+            0.0
+        } else {
+            fl32 as f64 / fl as f64
+        };
+        t.fp64_tau = self.fp64_tau();
         t.total_s = t_start.elapsed().as_secs_f64();
         self.last = t;
         // No shell quartets are computed by this builder; the work counter the
@@ -1283,6 +1789,62 @@ struct BlockCounters {
     total: AtomicUsize,
     bound_evals: AtomicUsize,
     degenerate: AtomicUsize,
+    route_units: AtomicUsize,
+    route_points: AtomicUsize,
+    f32_blocks: AtomicUsize,
+    f32_fallbacks: AtomicUsize,
+    route_f32_units: AtomicUsize,
+    /// Flops (per point) x points, summed over kept units / over F32 units.
+    route_flops: AtomicU64,
+    route_f32_flops: AtomicU64,
+}
+
+/// Precision route of one (shell pair, sub-batch) unit: `Drop` (the screen
+/// drops the pair), `F64` (kept, f64) or `F32` (kept, with a bound below
+/// `fp64_multiplier * screen_thresh`: eligible for the f32 block, computed
+/// there only when [`CosxConfig::f32_route`] is set, else counted only).
+pub use ferric_integrals::md3c1e::PairRoute as Route;
+
+/// Per-sub-batch router bookkeeping, kept out of `contract_block_md3c1e`.
+#[derive(Default)]
+struct RouteTally {
+    units: usize,
+    points: usize,
+    f32_units: usize,
+    flops: u64,
+    f32_flops: u64,
+    f32_blocks: usize,
+    f32_fallbacks: usize,
+}
+
+impl RouteTally {
+    /// Record one classified unit of `flops` (per-point flops x points).
+    #[inline]
+    fn note(&mut self, route: Route, flops: u64, points: usize) {
+        if route == Route::Drop {
+            return;
+        }
+        self.units += 1;
+        self.points += points;
+        self.flops += flops;
+        if route == Route::F32 {
+            self.f32_units += 1;
+            self.f32_flops += flops;
+        }
+    }
+
+    fn flush(&self, acc: &BlockCounters) {
+        acc.route_units.fetch_add(self.units, Ordering::Relaxed);
+        acc.route_points.fetch_add(self.points, Ordering::Relaxed);
+        acc.route_f32_units
+            .fetch_add(self.f32_units, Ordering::Relaxed);
+        acc.route_flops.fetch_add(self.flops, Ordering::Relaxed);
+        acc.route_f32_flops
+            .fetch_add(self.f32_flops, Ordering::Relaxed);
+        acc.f32_blocks.fetch_add(self.f32_blocks, Ordering::Relaxed);
+        acc.f32_fallbacks
+            .fetch_add(self.f32_fallbacks, Ordering::Relaxed);
+    }
 }
 
 /// One screening region: a contiguous group of the sub-batch's points,
@@ -1357,6 +1919,8 @@ impl Region {
 struct BatchScreen<'b> {
     bounds: &'b PairBounds,
     thresh: f64,
+    /// Router threshold `fp64_multiplier * thresh`; `0.0` = router off.
+    tau: f64,
     /// One region per group, in point order.
     regions: Vec<Region>,
     /// `fmax[grp][s] = max_{mu in s, g in group} |F_{mu,g}|`, flattened
@@ -1378,29 +1942,44 @@ struct BatchScreen<'b> {
 }
 
 impl BatchScreen<'_> {
-    /// Keep `(s1, s2)` iff SOME group `q` has
-    /// `min(ball, box)_q(s1, s2) * max(fmax_q[s1], fmax_q[s2]) >= thresh`.
+    /// Route `(s1, s2)`: [`Route::Drop`] unless SOME group `q` has
+    /// `min(ball, box)_q(s1, s2) * max(fmax_q[s1], fmax_q[s2]) >= thresh`
+    /// (the screen); a kept pair is [`Route::F32`] iff `tau > 0` and the
+    /// MAXIMUM of that same product over all groups is `< tau`, else
+    /// [`Route::F64`]. With `tau = 0` (router off) every kept pair is `F64`
+    /// and the scan is exactly the old `keep` rule, so `keep == classify !=
+    /// Drop` bitwise, counters included.
     ///
     /// With one group covering the whole sub-batch this is exactly the old
     /// single-region rule (bar the `min` with the box, which can only tighten
     /// it), which is the trivial limit `screen_group = 0` reproduces bitwise.
     /// For `thresh <= 0` the first group already keeps everything (every
     /// factor is `>= 0`). The `max` over both shells covers both orderings of
-    /// the mirror fold.
+    /// the mirror fold. The scan stops at the first keeping group unless the
+    /// router is on, in which case the remaining groups are scanned for the
+    /// maximum only (their bound evaluations are not added to the diagnostic
+    /// counters, which therefore do not depend on `tau`).
     #[inline]
-    fn keep(&mut self, s1: usize, s2: usize) -> bool {
+    fn classify(&mut self, s1: usize, s2: usize) -> Route {
         let mut kept = false;
         let mut geom = false;
+        let mut max_p = 0.0_f64;
+        // `f64::max` swallows NaN, so a NaN product is tracked on its own.
+        let mut nonfinite = false;
+        let mut scanned = 0;
         for (q, reg) in self.regions.iter().enumerate() {
             let f = self.fmax[q * self.nsh + s1].max(self.fmax[q * self.nsh + s2]);
             let est = reg.bound(self.bounds, s1, s2);
             self.bound_evals += 1;
+            scanned = q + 1;
             if est >= self.bounds.max_estimate(s1, s2) {
                 self.degenerate += 1;
             }
             if est >= self.thresh {
                 geom = true;
             }
+            max_p = max_p.max(est * f);
+            nonfinite |= (est * f).is_nan();
             if est * f >= self.thresh {
                 kept = true;
                 break;
@@ -1409,8 +1988,58 @@ impl BatchScreen<'_> {
         if geom {
             self.geom_kept += 1;
         }
-        kept
+        if !kept {
+            return Route::Drop;
+        }
+        if self.tau > 0.0 {
+            for (q, reg) in self.regions.iter().enumerate().skip(scanned) {
+                let f = self.fmax[q * self.nsh + s1].max(self.fmax[q * self.nsh + s2]);
+                let p = reg.bound(self.bounds, s1, s2) * f;
+                max_p = max_p.max(p);
+                nonfinite |= p.is_nan();
+            }
+            // A non-finite bound proves nothing: such a unit stays F64.
+            if !nonfinite && max_p.is_finite() && max_p < self.tau {
+                return Route::F32;
+            }
+        }
+        Route::F64
     }
+
+    /// The pre-router keep rule (`classify != Drop`).
+    #[cfg(test)]
+    fn keep(&mut self, s1: usize, s2: usize) -> bool {
+        self.classify(s1, s2) != Route::Drop
+    }
+}
+
+/// Refuse a router multiplier that cannot act (the repo's dead-knob rule).
+fn check_router(cfg: &CosxConfig) -> Result<(), FerricError> {
+    let m = cfg.fp64_multiplier;
+    if m.is_nan() || m < 0.0 {
+        return Err(FerricError::General(format!(
+            "CosxK: fp64_multiplier must be >= 0 (got {m}); 0 disables the precision router"
+        )));
+    }
+    if m > 0.0 && cfg.backend != CosxBackend::Md3c1e {
+        return Err(FerricError::General(
+            "CosxK: fp64_multiplier > 0 is implemented for the md3c1e backend only".into(),
+        ));
+    }
+    if cfg.f32_route.is_some() && m <= 0.0 {
+        return Err(FerricError::General(
+            "CosxK: f32_route needs fp64_multiplier > 0 (it computes the router's F32 units)"
+                .into(),
+        ));
+    }
+    if m > 0.0 && !matches!(cfg.screen_thresh, Some(t) if t > 0.0) {
+        return Err(FerricError::General(
+            "CosxK: fp64_multiplier > 0 needs screen_thresh > 0 (the router classifies by the \
+             screen's own bound)"
+                .into(),
+        ));
+    }
+    Ok(())
 }
 
 /// `fmax[s] = max_{mu in shell s, g in [g0, g1)} |f[mu * n + g]|` for `f` in
@@ -1500,6 +2129,26 @@ fn factorize_snum(snum: &Array2<f64>) -> Result<SnumFactor, FerricError> {
     Ok(SnumFactor { l, lt })
 }
 
+/// `out = S_num^{-1} b` via the two triangular solves against the cached factor.
+fn finalize_fitted_inverse(
+    fac: &SnumFactor,
+    b: &Array2<f64>,
+    out: &mut Array2<f64>,
+) -> Result<(), FerricError> {
+    let y = fac
+        .l
+        .solve_triangular(UPLO::Lower, Diag::NonUnit, b)
+        .map_err(|e| {
+            FerricError::General(format!("CosxK overlap fit: forward solve failed: {e}"))
+        })?;
+    let z = fac
+        .lt
+        .solve_triangular(UPLO::Upper, Diag::NonUnit, &y)
+        .map_err(|e| FerricError::General(format!("CosxK overlap fit: back solve failed: {e}")))?;
+    out.assign(&z);
+    Ok(())
+}
+
 /// `K = 0.5 (Q Ktilde + (Q Ktilde)^T)` with `Q Ktilde = S (S_num^{-1} Ktilde)`
 /// via two triangular solves against the cached factor.
 fn finalize_fitted(
@@ -1548,6 +2197,10 @@ impl<'a> KBuilder for CosxK<'a> {
     /// No density-dependent state (no pair lists): nothing to update.
     fn update_density(&mut self, _d: &Array2<f64>) {}
 
+    fn exchange_grid_npts(&self) -> Option<usize> {
+        Some(self.npts())
+    }
+
     /// No density-dependent state to drop. The grid, pair bounds and the
     /// `S_num` factor are geometry-only and are kept.
     fn reset(&mut self) {}
@@ -1560,7 +2213,16 @@ mod tests {
     #[test]
     fn default_grid_is_the_measured_operating_point() {
         let c = CosxConfig::default();
-        assert_eq!((c.grid.n_radial, c.grid.n_angular), (50, 110));
+        assert_eq!((c.grid.n_radial, c.grid.n_angular), (35, 194));
+        assert_eq!(c.grid.prune, Some(ferric_dft::prune::PruneScheme::Sgx));
+        let f = c.final_grid.as_ref().expect("final pass on by default");
+        assert_eq!((f.n_radial, f.n_angular), (50, 302));
+        assert_eq!(f.prune, Some(ferric_dft::prune::PruneScheme::Sgx));
+        assert!(!c.final_pass_explicit);
+        let flat = CosxConfig::flat_reference();
+        assert_eq!((flat.grid.n_radial, flat.grid.n_angular), (50, 110));
+        assert_eq!(flat.grid.prune, None);
+        assert!(flat.final_grid.is_none());
         assert!(c.overlap_fit);
         assert_eq!(c.screen_thresh, Some(COSX_DEFAULT_SCREEN_THRESH));
         assert_eq!(COSX_DEFAULT_SCREEN_THRESH, 1e-7);
@@ -1692,6 +2354,7 @@ mod tests {
         let mk = |fmax: Vec<f64>, thresh: f64| BatchScreen {
             bounds: &bounds,
             thresh,
+            tau: 0.0,
             regions: vec![region],
             fmax,
             nsh: 2,
@@ -1718,6 +2381,61 @@ mod tests {
         let mut sc = mk(vec![0.0, 0.0], t);
         sc.keep(1, 0);
         assert_eq!(sc.geom_kept, 1);
+    }
+
+    /// The router's contract on a toy: Drop iff the old rule drops; F32 iff
+    /// `tau > 0` and the MAX over groups (including groups scanned after the
+    /// first keeping one) is below `tau`; `keep` == `classify != Drop` and the
+    /// diagnostic counters do not depend on `tau`.
+    #[test]
+    fn classify_routes_by_the_max_over_all_groups() {
+        let mol =
+            ferric_core::mol::Molecule::parse_xyz("2\nh2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
+        let bs = ferric_core::basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let bounds = PairBounds::build(&prep).unwrap();
+        let region = Region::of(&[[0.0, 0.0, 0.2], [0.0, 0.0, 1.2]]);
+        let est = region.bound(&bounds, 1, 0);
+        // Two identical regions; group 0 has p0 = 0.5 est, group 1 p1 = 3 est
+        // (fmax rows are [shell0, shell1] per group, flattened).
+        let mk = |tau: f64| BatchScreen {
+            bounds: &bounds,
+            thresh: 0.1 * est,
+            tau,
+            regions: vec![region, region],
+            fmax: vec![0.0, 0.5, 0.0, 3.0],
+            nsh: 2,
+            geom_kept: 0,
+            bound_evals: 0,
+            degenerate: 0,
+        };
+        // Router off: kept pairs are F64.
+        assert_eq!(mk(0.0).classify(1, 0), Route::F64);
+        // The scan stops at group 0 (kept), but p1 = 3 est >= tau = est: F64.
+        assert_eq!(mk(est).classify(1, 0), Route::F64);
+        // tau above the max over both groups: F32.
+        assert_eq!(mk(5.0 * est).classify(1, 0), Route::F32);
+        // tau exactly equal to the max is NOT below it.
+        assert_eq!(mk(3.0 * est).classify(1, 0), Route::F64);
+        // A NaN fmax in a later group must not be swallowed by `f64::max`:
+        // the unit stays F64 whatever tau is (NaN guard).
+        let mut nan = mk(f64::INFINITY);
+        nan.fmax = vec![0.0, 0.5, f64::NAN, f64::NAN];
+        assert_eq!(nan.classify(1, 0), Route::F64);
+        let mut inf = mk(f64::INFINITY);
+        inf.fmax = vec![0.0, 0.5, 0.0, f64::INFINITY];
+        assert_eq!(inf.classify(1, 0), Route::F64);
+        // Dropped by the screen whatever tau is: both groups below thresh.
+        let mut dropped = mk(5.0 * est);
+        dropped.fmax = vec![0.0; 4];
+        assert_eq!(dropped.classify(1, 0), Route::Drop);
+        // keep == classify != Drop, and the counters ignore tau.
+        let (mut a, mut b) = (mk(0.0), mk(5.0 * est));
+        assert_eq!(a.keep(1, 0), b.classify(1, 0) != Route::Drop);
+        assert_eq!(
+            (a.geom_kept, a.bound_evals, a.degenerate),
+            (b.geom_kept, b.bound_evals, b.degenerate)
+        );
     }
 
     #[test]
@@ -1831,13 +2549,25 @@ mod tests {
         assert!(validate_grid(&ok).is_ok());
         let bad_ang = AtomicGridConfig {
             n_radial: 50,
-            n_angular: 194,
+            n_angular: 146,
             ..Default::default()
         };
         assert!(
             validate_grid(&bad_ang).is_err(),
-            "194 is not tabulated and must be refused, not panic"
+            "146 is not tabulated and must be refused, not panic"
         );
+        // 194 is tabulated; as an sgx peak it is valid, as a 26-point sgx peak not.
+        let sgx = AtomicGridConfig {
+            n_radial: 35,
+            n_angular: 194,
+            prune: Some(ferric_dft::prune::PruneScheme::Sgx),
+        };
+        assert!(validate_grid(&sgx).is_ok());
+        assert!(validate_grid(&AtomicGridConfig {
+            n_angular: 26,
+            ..sgx
+        })
+        .is_err());
         let bad_rad = AtomicGridConfig {
             n_radial: 0,
             n_angular: 110,

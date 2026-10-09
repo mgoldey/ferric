@@ -65,14 +65,35 @@ OH through the library-only open-shell path; agreement ≤1.2e-12 Ha). With
 the ladder off it reduces exactly to RI-MP2, and with exact integrals its
 driver terms reproduce canonical MP2.
 
+`[mp2] linlccd_variant` (Python `run_linlccd(variant=...)`) selects the
+method's ladder terms: `hh` (default), `drivers-only` (no ladder, equal to
+RI-MP2) or `full` (hole–hole plus particle–particle, with CCD-like VVVV
+memory). Every variant is computed exactly by default. All three variants
+match an independent numpy solve on the same density-fitted integrals
+(H2O and NH3, 6-31G and cc-pVDZ, ≤ 4.4e-13 Ha); `drivers-only` also matches
+PySCF `DFMP2`.
+
+**Local LinLCCD.** With `[local] scheme = "amplitude-threshold"` and `eps`
+(`examples/water-linlccd-local.toml`; Python
+`run_linlccd(..., local="amplitude-threshold", eps=1e-4)`) the same variant
+is solved in the Boys-localized basis with pair amplitudes at or below `eps`
+dropped (see [Exact and local correlation](./index.md#exact-and-local-correlation)).
+`eps` has no default and is printed and logged with the kept fraction;
+`eps = 0` reproduces the exact LinLCCD of the same variant and the numpy
+reference (≤ 4.4e-13 Ha, every variant), which is how the local path is
+anchored. `[local] reference = true` also runs the exact
+LinLCCD and prints the local error. Closed shell and energy only.
+
 **ωB97X-L-V** is a double-hybrid functional that uses short-range LinLCCD(hh)
 instead of MP2 for its correlation term. It converges its **own** ωB97X-L
 Kohn–Sham reference (a non-converged reference is an error), then adds the
 LinLCCD(hh) correction on those orbitals. `method.kind = "wb97x-l-v"`
 (`examples/water-wb97xlv.toml`). `[dft] lambda` and `omega` override the
 published 0.6 and 0.1 Bohr⁻¹; omitting them gives the published values.
-Smoke: its pieces and limits are checked, but no reference value for the total
-energy exists in ferric.
+λ enters the amplitude equations as well as the energy (the paper's eqn 22), so
+the correlation term is quadratic in λ at leading order. Validated against PySCF
+with the published parameters plus a numpy LinLCCD(hh) on water and OH, and
+against the paper's Be₂ bond energy (2.3 kcal/mol; ferric 2.299).
 
 ## MP2-based double hybrids
 

@@ -104,13 +104,38 @@
 //! while the radius contracts until [`crate::trah::TrahState::collapsed`] and
 //! the run falls back to DIIS (123 iterations / 98 s against DIIS's 69 / 1.5 s).
 //!
-//! The closed-shell loop in `rhf.rs` skips any step whose |predicted change|
-//! is below [`crate::trah::TrahConfig::predicted_min`] (default 1e-12 Ha) and
-//! defers to DIIS. The UHF/UKS loop in `uhf.rs` has no such guard, and whether
-//! it reaches the same cycle has not been measured. No test asserts an RKS
-//! iteration count: the RKS case in `trah_converges.rs` only caps the run at
-//! `max_iter: 200`, and the measured cycle finished in 123 iterations through
-//! the DIIS fallback, so a return of the cycle would still pass.
+//! Both SCF loops (`rhf.rs` and `uhf.rs`) decline any step whose |predicted
+//! change| is below [`crate::trah::TrahConfig::predicted_min`] (default
+//! 1e-12 Ha), count the decline in [`crate::trah::TRAH_NULL_STEPS_DECLINED`],
+//! and fall through to DIIS in the same iteration. The DIIS step moves the
+//! density and records the real change, so convergence is measured on the
+//! next iteration, never declared by the decline itself: a declined step
+//! leaves the density where it was, and an iteration that then saw ΔE = 0 and
+//! ΔP = 0 would pass the convergence test whatever the orbital gradient
+//! (`trah_rks_null_step_is_measured.rs` pins that with `predicted_min` raised
+//! to 1e-6, where the declined step is NOT negligible).
+//!
+//! Each loop's guard is pinned by an iteration bound on a system that cycles
+//! without it:
+//!
+//! - UKS/PBE OH/cc-pVDZ (`trah_converges.rs`, bound 30): without the guard
+//!   the identical step (predicted −6.0e-15, actual 0) is rejected 28 times,
+//!   74 iterations; with it, 15.
+//! - RKS/PBE water/cc-pVDZ at `energy_conv` 1e-10, `density_conv` 1e-8, no
+//!   level shift, `trah_trigger` 1e-3 (`trah_rks_null_step.rs`, bound 20):
+//!   without the guard the step (|predicted| 5.4e-15) is rejected 24 times,
+//!   57 iterations / 99 s; with it, 8 iterations and 1 decline. The same
+//!   test pins RHF water/cc-pVDZ (level shift 0.2): 57 against 8.
+//!
+//! The guard fires on every closed-shell water/cc-pVDZ configuration measured
+//! (RKS/PBE, RKS/B3LYP and RHF; `energy_conv` 1e-9 to 1e-12; level shift 0 and
+//! 0.2; `trah_trigger` 1e-2 and 1e-3: 48 of 48). Whether a run cycles without
+//! it is a different matter: at `density_conv` 1e-7 none does, because the
+//! applied null step already meets the density test; at 1e-8 and tighter 18
+//! of 36 do, in no monotone pattern (most likely because the outcome turns on
+//! the sign of the energy noise the null step produces; inferred, not
+//! measured directly). So the closed-shell test also
+//! asserts the decline counter, which does not depend on that sign.
 //!
 //! # Scope
 //!
@@ -147,6 +172,35 @@ pub static TRAH_STEPS_TAKEN: std::sync::atomic::AtomicUsize =
 /// rejection is reachable on a real system rather than only in unit arithmetic.
 pub static TRAH_STEPS_REJECTED: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
+
+/// Count of TRAH step predictions DISCARDED UNSCORED because the next
+/// iteration handed control back to DIIS, process-wide. Each one is a step
+/// whose ρ was never formed. The hand-off this counts is how tail-mode TRAH
+/// cycled on N2/cc-pVDZ: a hard-case escape raised err_max above the trigger,
+/// DIIS took the next iteration with a saddle-region history and walked back
+/// into the saddle, TRAH re-armed, escaped again -- until max_iter.
+pub static TRAH_PREDICTIONS_DISCARDED: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Count of TRAH steps DECLINED by the null-step guard
+/// ([`TrahConfig::predicted_min`]), process-wide. Each one is an iteration on
+/// which the armed loop computed a step, found |predicted| below the bound,
+/// and did not apply it; both the RHF/RKS and the UHF/UKS loops then fall
+/// through to DIIS in the same iteration. It makes the
+/// guard's branch observable: an iteration count alone cannot tell "the guard
+/// fired and helped" from "the guard was never reached".
+pub static TRAH_NULL_STEPS_DECLINED: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Record that the null-step guard declined a step. Called from the SCF loops.
+pub fn note_trah_null_step_declined() {
+    TRAH_NULL_STEPS_DECLINED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Record that a pending TRAH prediction was dropped at a hand-off to DIIS.
+pub fn note_trah_prediction_discarded() {
+    TRAH_PREDICTIONS_DISCARDED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
 
 /// Record that a TRAH step was applied. Called from the SCF loops.
 pub fn note_trah_step() {
@@ -248,7 +302,7 @@ pub struct TrahConfig {
     /// and the run falls back to DIIS. That cost 123 iterations / 98 s versus
     /// DIIS's 69 / 1.5 s. The ρ bookkeeping itself is correct; the defect is
     /// stepping at all when the predicted gain is below what the energy can
-    /// resolve. Only the closed-shell loop applies this bound.
+    /// resolve. Both the closed- and open-shell loops apply this bound.
     ///
     /// 1e-12 Ha sits well above f64 noise on a total energy of order 1e2 Ha
     /// (~1e-14 relative) and far below any convergence threshold anyone would
@@ -368,8 +422,57 @@ where
         )));
     }
 
+    let mut step = constrained_step(g, matvec as &DynMatvec, diag, radius, cfg, 0)?;
+    step.on_boundary = step.norm >= radius * (1.0 - cfg.step_tol);
+
+    // Predicted reduction, BOTH ways (Helmich-Paris Eqs. 18 and 19). They are
+    // algebraically identical given an exact AH eigenpair, so their difference
+    // measures how well Davidson actually converged — see the module docs.
+    // In the hard case (H − μI)κ = −g still holds with μ = λ_min, so the
+    // identity — and therefore this self-check — carries over unchanged.
+    let hk = matvec(&step.kappa)?;
+    let gk: f64 = g.iter().zip(step.kappa.iter()).map(|(a, b)| a * b).sum();
+    let khk: f64 = step.kappa.iter().zip(hk.iter()).map(|(a, b)| a * b).sum();
+    step.predicted = gk + 0.5 * khk;
+    step.predicted_cheap = 0.5 * (gk + step.level_shift * step.norm * step.norm);
+    let scale = step.predicted.abs().max(1e-300);
+    step.predicted_residual = (step.predicted - step.predicted_cheap).abs() / scale;
+
+    Ok(step)
+}
+
+/// A Hessian matvec behind a trait object. The hard case recurses with a
+/// deflated matvec wrapping the caller's, so a generic parameter would
+/// monomorphize without end.
+type DynMatvec<'a> = dyn Fn(&[f64]) -> Result<Vec<f64>, FerricError> + 'a;
+
+/// Two Hessian eigenvalues closer than this (Ha) are treated as degenerate: a
+/// deflated step whose shift sits within it of λ_min is an admissible hard-case
+/// step along the degenerate partner. Davidson resolves eigenvalues to ~1e-9.
+const DEGENERACY_TOL: f64 = 1e-6;
+
+/// Deepest nesting of hard-case deflations before giving up. Each level
+/// removes one negative mode orthogonal to g; a degenerate pair (the π-type
+/// instabilities of C2/N2) needs two.
+const MAX_HARD_CASE_DEPTH: usize = 4;
+
+/// The trust-region step itself (no predicted-energy bookkeeping), with the
+/// hard case handled. `depth` counts nested deflations.
+fn constrained_step(
+    g: &[f64],
+    matvec: &DynMatvec,
+    diag: &[f64],
+    radius: f64,
+    cfg: &TrahConfig,
+    depth: usize,
+) -> Result<TrahStep, FerricError> {
     // α = α_min first: the plain (unscaled) augmented-Hessian step.
-    let mut best = ah_solve(g, matvec, diag, ALPHA_MIN, cfg)?;
+    let mut best = match ah_solve_classified(g, matvec, diag, ALPHA_MIN, cfg)? {
+        AhRoot::Regular(s) => s,
+        AhRoot::Hard { lambda, v } => {
+            return hard_case_step(g, matvec, diag, radius, cfg, depth, lambda, &v);
+        }
+    };
     let mut n_solves = 1usize;
 
     if best.norm > radius {
@@ -380,7 +483,15 @@ where
         let mut feasible: Option<TrahStep> = None;
         while hi < ALPHA_MAX && n_solves < cfg.max_shift_iter {
             hi = (hi * 8.0).min(ALPHA_MAX);
-            let cand = ah_solve(g, matvec, diag, hi, cfg)?;
+            // At α > α_min the g-coupled root only moves further down, so a
+            // hard root cannot become lowest here; classify anyway and treat
+            // one as "needs the hard-case step" rather than erroring.
+            let cand = match ah_solve_classified(g, matvec, diag, hi, cfg)? {
+                AhRoot::Regular(c) => c,
+                AhRoot::Hard { lambda, v } => {
+                    return hard_case_step(g, matvec, diag, radius, cfg, depth, lambda, &v);
+                }
+            };
             n_solves += 1;
             if cand.norm <= radius {
                 feasible = Some(cand);
@@ -413,7 +524,12 @@ where
                         break;
                     }
                     let mid = (0.5 * (lo_a.ln() + hi_a.ln())).exp();
-                    let cand = ah_solve(g, matvec, diag, mid, cfg)?;
+                    let cand = match ah_solve_classified(g, matvec, diag, mid, cfg)? {
+                        AhRoot::Regular(c) => c,
+                        AhRoot::Hard { lambda, v } => {
+                            return hard_case_step(g, matvec, diag, radius, cfg, depth, lambda, &v);
+                        }
+                    };
                     n_solves += 1;
                     if cand.norm <= radius {
                         feas = cand;
@@ -427,29 +543,188 @@ where
         }
     }
 
-    let mut step = best;
-    step.shift_iterations = n_solves;
-    step.on_boundary = step.norm >= radius * (1.0 - cfg.step_tol);
-
-    // Predicted reduction, BOTH ways (Helmich-Paris Eqs. 18 and 19). They are
-    // algebraically identical given an exact AH eigenpair, so their difference
-    // measures how well Davidson actually converged — see the module docs.
-    let hk = matvec(&step.kappa)?;
-    let gk: f64 = g.iter().zip(step.kappa.iter()).map(|(a, b)| a * b).sum();
-    let khk: f64 = step.kappa.iter().zip(hk.iter()).map(|(a, b)| a * b).sum();
-    step.predicted = gk + 0.5 * khk;
-    step.predicted_cheap = 0.5 * (gk + step.level_shift * step.norm * step.norm);
-    let scale = step.predicted.abs().max(1e-300);
-    step.predicted_residual = (step.predicted - step.predicted_cheap).abs() / scale;
-
-    Ok(step)
+    best.shift_iterations = n_solves;
+    Ok(best)
 }
 
-/// One augmented-Hessian eigensolve at scale factor α.
+/// The trust-region step in the **hard case** (Moré & Sorensen 1983): the
+/// lowest augmented-Hessian root is (0, v) — v the eigenvector of the most
+/// negative Hessian eigenvalue λ, with g·v = 0 — so the AH ansatz has no
+/// leading entry to divide by.
 ///
-/// Builds A(α) = [[0, αgᵀ], [αg, H]] implicitly (matvec only) and takes its
-/// lowest usable eigenpair via [`crate::stability::davidson_lowest`], then
-/// returns the step κ = κ(α)/α.
+/// In SCF this is not a numerical accident: it is EXACT whenever the
+/// instability breaks a symmetry the density still has. The gradient of a
+/// symmetric density is totally symmetric; a symmetry-breaking negative mode
+/// is not; so g·v = 0 identically from the first iteration (measured on C2 and
+/// stretched N2: g·v/|g| ~ 1e-16 with |g| = 0.03-0.2). Erroring here made TRAH
+/// fail on exactly the saddles a trust-region method is supposed to escape.
+///
+/// With g ⟂ v the TR solution is decided by κ_h = −(H − λI)⁺ g, the step at
+/// the boundary of the admissible shifts μ ≤ λ:
+///   * ‖κ_h‖ ≥ Δ: the solution has μ < λ and NO v component. It is the
+///     ordinary AH step of the v-deflated Hessian H + c·vvᵀ (v moved out of
+///     the way), whose lowest g-coupled root is then lowest overall.
+///   * ‖κ_h‖ < Δ: μ = λ and κ = κ_h + τ v with τ = √(Δ² − ‖κ_h‖²). The τ v
+///     part is the symmetry-breaking move; the model credits it ½ λ τ² < 0.
+///
+/// ‖κ(μ)‖ is monotone in μ, so the two cases are told apart WITHOUT forming
+/// κ_h: the deflated step's own shift is ≤ λ exactly in the first case. The
+/// code therefore takes the deflated step first and runs CG only in the
+/// second.
+#[allow(clippy::too_many_arguments)]
+fn hard_case_step(
+    g: &[f64],
+    matvec: &DynMatvec,
+    diag: &[f64],
+    radius: f64,
+    cfg: &TrahConfig,
+    depth: usize,
+    lambda: f64,
+    v: &[f64],
+) -> Result<TrahStep, FerricError> {
+    if depth >= MAX_HARD_CASE_DEPTH {
+        return Err(FerricError::General(format!(
+            "TRAH: {MAX_HARD_CASE_DEPTH} nested hard-case deflations (negative Hessian modes \
+             orthogonal to the gradient) without reaching a gradient-coupled root"
+        )));
+    }
+    let n = g.len();
+    let vn = v.iter().map(|x| x * x).sum::<f64>().sqrt();
+    let v: Vec<f64> = v.iter().map(|x| x / vn).collect();
+    let dot = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>();
+
+    // Move v's eigenvalue from λ to +1: H_d = H + (1 − λ) v vᵀ. Every other
+    // eigenvalue of H is ≥ λ, so H_d − λI is positive semidefinite and
+    // definite off any further mode degenerate with λ (those are handled by
+    // the depth recursion through the AH branch below).
+    let c = 1.0 - lambda;
+    let deflated = |x: &[f64]| -> Result<Vec<f64>, FerricError> {
+        let mut hx = matvec(x)?;
+        let vx = dot(&v, x);
+        for i in 0..n {
+            hx[i] += c * vx * v[i];
+        }
+        Ok(hx)
+    };
+    // g has no v component by hypothesis; remove the rounding-level remainder
+    // so neither branch sees it.
+    let gv = dot(g, &v);
+    let gp: Vec<f64> = g.iter().zip(&v).map(|(gi, vi)| gi - gv * vi).collect();
+
+    // Cheap branch first: the v-free trust-region step of the deflated
+    // problem. If its shift is admissible for the ORIGINAL Hessian (μ ≤ λ, up
+    // to a degeneracy tolerance) it IS the solution, and no CG is needed. This
+    // ordering matters: when λ is degenerate (the π_x/π_y pairs of C2 and
+    // stretched N2) H_d − λI is still singular on the partner, so a CG solve
+    // for κ_h there is ill-conditioned (402 iterations, |κ_h| = 86 measured on
+    // N2/cc-pVDZ) -- while the deflated AH step handles the partner by the
+    // same recursion, as a hard case of its own if it too is orthogonal to g.
+    let s = constrained_step(&gp, &deflated as &DynMatvec, diag, radius, cfg, depth + 1)?;
+    if s.level_shift <= lambda + DEGENERACY_TOL {
+        return Ok(s);
+    }
+
+    // The hard case proper: μ = λ. κ_h = −(H − λI)⁺ g by preconditioned CG on
+    // (H_d − λI) κ = −g_⊥, which has ‖κ_h‖ < Δ by monotonicity of ‖κ(μ)‖ (the
+    // deflated step stayed inside the region with μ > λ).
+    let kh = pcg_shifted(&deflated as &DynMatvec, diag, lambda, &gp, cfg)?;
+    let nh = dot(&kh, &kh).sqrt();
+    let (kh, nh) = if nh > radius {
+        // Monotonicity says this cannot happen; never return a step outside
+        // the region if CG rounding says otherwise.
+        let sc = radius / nh;
+        (kh.iter().map(|x| x * sc).collect::<Vec<_>>(), radius)
+    } else {
+        (kh, nh)
+    };
+
+    let tau = (radius * radius - nh * nh).max(0.0).sqrt();
+    let kappa: Vec<f64> = kh.iter().zip(&v).map(|(k, vi)| k + tau * vi).collect();
+    let norm = dot(&kappa, &kappa).sqrt();
+    Ok(TrahStep {
+        kappa,
+        norm,
+        level_shift: lambda,
+        alpha: ALPHA_MIN,
+        predicted: 0.0,
+        predicted_cheap: 0.0,
+        predicted_residual: 0.0,
+        on_boundary: true,
+        shift_iterations: s.shift_iterations + 1,
+    })
+}
+
+/// Preconditioned CG for (A − σI) x = −b, A symmetric with A − σI positive
+/// semidefinite and b in its range. Preconditioner: diag − σ (positive here
+/// because σ = λ_min < every orbital-gap entry).
+fn pcg_shifted(
+    a: &DynMatvec,
+    diag: &[f64],
+    sigma: f64,
+    b: &[f64],
+    cfg: &TrahConfig,
+) -> Result<Vec<f64>, FerricError> {
+    let n = b.len();
+    let dot = |p: &[f64], q: &[f64]| p.iter().zip(q).map(|(x, y)| x * y).sum::<f64>();
+    let prec = |r: &[f64]| -> Vec<f64> {
+        r.iter()
+            .zip(diag)
+            .map(|(ri, di)| ri / (di - sigma).max(1e-3))
+            .collect()
+    };
+    let bnorm = dot(b, b).sqrt();
+    let mut x = vec![0.0f64; n];
+    if bnorm == 0.0 {
+        return Ok(x);
+    }
+    let mut r: Vec<f64> = b.iter().map(|bi| -bi).collect();
+    let mut z = prec(&r);
+    let mut p = z.clone();
+    let mut rz = dot(&r, &z);
+    let tol = (cfg.davidson_conv * 1e-2).max(1e-14) * bnorm;
+    for _ in 0..(4 * n).clamp(50, 500) {
+        if dot(&r, &r).sqrt() < tol {
+            return Ok(x);
+        }
+        let mut ap = a(&p)?;
+        for i in 0..n {
+            ap[i] -= sigma * p[i];
+        }
+        let pap = dot(&p, &ap);
+        if pap <= 0.0 {
+            // Semidefinite direction (a further mode degenerate with λ that
+            // b does not touch): nothing more to gain along it.
+            break;
+        }
+        let al = rz / pap;
+        for i in 0..n {
+            x[i] += al * p[i];
+            r[i] -= al * ap[i];
+        }
+        z = prec(&r);
+        let rz_new = dot(&r, &z);
+        let be = rz_new / rz;
+        rz = rz_new;
+        for i in 0..n {
+            p[i] = z[i] + be * p[i];
+        }
+    }
+    Ok(x)
+}
+
+/// The lowest augmented-Hessian root, classified.
+enum AhRoot {
+    /// The root couples to g (leading entry usable): κ = κ(α)/α.
+    Regular(TrahStep),
+    /// The root is (0, v): a Hessian eigenpair (λ, v) with g·v = 0 that lies
+    /// below every g-coupled root. The trust-region hard case.
+    Hard { lambda: f64, v: Vec<f64> },
+}
+
+/// One augmented-Hessian eigensolve at scale factor α, returning an error on
+/// a hard-case root (the pre-hard-case contract, kept for direct callers and
+/// the α-limit tests). [`solve_trust_region`] uses [`ah_solve_classified`].
+#[cfg_attr(not(test), allow(dead_code))]
 fn ah_solve<F>(
     g: &[f64],
     matvec: &F,
@@ -459,6 +734,31 @@ fn ah_solve<F>(
 ) -> Result<TrahStep, FerricError>
 where
     F: Fn(&[f64]) -> Result<Vec<f64>, FerricError>,
+{
+    match ah_solve_classified(g, matvec, diag, alpha, cfg)? {
+        AhRoot::Regular(s) => Ok(s),
+        AhRoot::Hard { lambda, .. } => Err(FerricError::General(format!(
+            "TRAH: the augmented-Hessian lowest root is a hard-case root (Hessian eigenvalue \
+             {lambda:.3e} orthogonal to the gradient) at scale α={alpha:.3e}"
+        ))),
+    }
+}
+
+/// One augmented-Hessian eigensolve at scale factor α.
+///
+/// Builds A(α) = [[0, αgᵀ], [αg, H]] implicitly (matvec only) and takes its
+/// lowest usable eigenpair via [`crate::stability::davidson_lowest`], then
+/// returns the step κ = κ(α)/α — or, if that eigenpair is (0, v), reports the
+/// hard case instead of dividing by its zero leading entry.
+fn ah_solve_classified<F>(
+    g: &[f64],
+    matvec: &F,
+    diag: &[f64],
+    alpha: f64,
+    cfg: &TrahConfig,
+) -> Result<AhRoot, FerricError>
+where
+    F: Fn(&[f64]) -> Result<Vec<f64>, FerricError> + ?Sized,
 {
     let n = g.len();
     let n_aug = n + 1;
@@ -498,14 +798,16 @@ where
     // same way (it selects the lowest root with |v[0]| > 0.1, noting "There
     // exists systems that the first eigenvalue of AH is -inf"); here we have a
     // single root from `davidson_lowest`, so we reject rather than reselect.
+    //
+    // A vanishing leading entry is the trust-region HARD CASE, not a failure:
+    // the root is (0, v) with (λ, v) a Hessian eigenpair orthogonal to g.
+    // Report it so the caller can take the Moré-Sorensen step.
     let first = pair.eigenvector[0];
     if first.abs() < 1e-6 {
-        return Err(FerricError::General(format!(
-            "TRAH: the augmented-Hessian eigenvector has a near-zero leading entry \
-             ({first:.3e}) at scale α={alpha:.3e}. The AH ansatz κ = (lower block)/(leading \
-             entry) is not applicable, so no step is taken rather than one scaled by an \
-             arbitrarily small number"
-        )));
+        return Ok(AhRoot::Hard {
+            lambda: pair.eigenvalue,
+            v: pair.eigenvector[1..].to_vec(),
+        });
     }
 
     // κ = κ(α)/α  (Helmich-Paris Eq. 10). NOTE the division: raising α
@@ -517,7 +819,7 @@ where
         .collect();
     let norm = kappa.iter().map(|&x| x * x).sum::<f64>().sqrt();
 
-    Ok(TrahStep {
+    Ok(AhRoot::Regular(TrahStep {
         kappa,
         norm,
         level_shift: pair.eigenvalue,
@@ -527,7 +829,7 @@ where
         predicted_residual: 0.0,
         on_boundary: false,
         shift_iterations: 0,
-    })
+    }))
 }
 
 /// What the trust region decided about the step just assessed.
@@ -625,7 +927,7 @@ impl TrahState {
     pub fn assess(&mut self, energy_now: f64) -> Option<TrahVerdict> {
         let pending = self.pending.take()?;
         let actual = energy_now - pending.energy_before;
-        if std::env::var("FERRIC_TRAH_RHO_TRACE").is_ok() {
+        if trah_rho_trace() {
             eprintln!(
                 "TRAH-RHO-TRACE: E_before={:.12} E_now={:.12} actual={:.6e} \
                  predicted={:.6e} rho={:.6e}",
@@ -824,7 +1126,11 @@ pub fn rhf_trah_step(
     // One EnginePool for the whole step, reused across every matvec — the same
     // hoist `rhf_newton_step` performs, for the same reason (the pool is
     // geometry/basis-only, so rebuilding it per matvec is pure waste).
-    let pool = EnginePool::new(inp.bounds.op, inp.prep, 1e-14)?;
+    let pool = EnginePool::new(
+        inp.bounds.op,
+        inp.prep,
+        ferric_integrals::engine_pool::eri_precision(),
+    )?;
 
     let matvec = |v: &[f64]| -> Result<Vec<f64>, FerricError> {
         let k = Array2::from_shape_vec((nv, no), v.to_vec())
@@ -878,7 +1184,11 @@ pub fn uhf_trah_step(
     let mut diag = gap_diag(&fa_diag, na, n);
     diag.extend(gap_diag(&fb_diag, nb, n));
 
-    let pool = EnginePool::new(inp.bounds.op, inp.prep, 1e-14)?;
+    let pool = EnginePool::new(
+        inp.bounds.op,
+        inp.prep,
+        ferric_integrals::engine_pool::eri_precision(),
+    )?;
 
     let matvec = |v: &[f64]| -> Result<Vec<f64>, FerricError> {
         let ka = Array2::from_shape_vec((nva, na), v[..len_a].to_vec())
@@ -946,6 +1256,145 @@ mod tests {
             }
         }
         (0..n).map(|i| m[i][n]).collect()
+    }
+
+    /// The trust-region HARD CASE (More & Sorensen 1983): the gradient has no
+    /// component along the most negative Hessian mode. In SCF this is exact by
+    /// symmetry whenever the instability is symmetry-breaking (C2, stretched
+    /// N2: the gradient of a symmetric density is totally symmetric, the
+    /// negative mode is not; measured g.v_neg/|g| ~ 1e-16 with |g| ~ 0.03-0.2).
+    ///
+    /// H = diag(-1, 2, 3), g = (0, 1, 1). The lowest augmented-Hessian root is
+    /// (0, e1) with eigenvalue -1 at every alpha <= alpha*, so the AH ansatz
+    /// kappa = (lower block)/(leading entry) divides by zero. The exact TR
+    /// solutions, by hand:
+    ///   kappa_h = -(H + I)^+ g = (0, -1/3, -1/4),  |kappa_h| = 5/12
+    ///   radius 1.0  > 5/12 : kappa = kappa_h + tau e1, tau = sqrt(1 - 25/144)
+    ///                        (on the boundary, mu = lambda_min = -1)
+    ///   radius 0.3  < 5/12 : mu < -1 solves |(H - mu I)^-1 g| = 0.3, no e1
+    ///                        component (the hard case does not apply)
+    fn hard_case_system() -> (Vec<Vec<f64>>, Vec<f64>, Vec<f64>) {
+        let h = vec![
+            vec![-1.0, 0.0, 0.0],
+            vec![0.0, 2.0, 0.0],
+            vec![0.0, 0.0, 3.0],
+        ];
+        (h, vec![0.0, 1.0, 1.0], vec![-1.0, 2.0, 3.0])
+    }
+
+    /// Before the fix this returned Err("near-zero leading entry") and the
+    /// SCF that called it failed outright.
+    #[test]
+    fn hard_case_inside_the_radius_steps_along_the_negative_mode() {
+        let (h, g, diag) = hard_case_system();
+        let mv = dense_matvec(h.clone());
+        let cfg = TrahConfig {
+            davidson_conv: 1e-12,
+            ..TrahConfig::default()
+        };
+        let s = solve_trust_region(&g, &mv, &diag, 1.0, &cfg).expect("hard case must not error");
+        let tau = (1.0f64 - 25.0 / 144.0).sqrt();
+        assert!(
+            (s.norm - 1.0).abs() < 1e-8,
+            "on the boundary: |k| = {}",
+            s.norm
+        );
+        assert!((s.kappa[1] + 1.0 / 3.0).abs() < 1e-7, "k = {:?}", s.kappa);
+        assert!((s.kappa[2] + 0.25).abs() < 1e-7, "k = {:?}", s.kappa);
+        assert!(
+            (s.kappa[0].abs() - tau).abs() < 1e-7,
+            "negative-mode component {} vs {tau}",
+            s.kappa[0]
+        );
+        assert!(
+            (s.level_shift + 1.0).abs() < 1e-8,
+            "mu = lambda_min: {}",
+            s.level_shift
+        );
+        // (H - mu I) k = -g holds exactly in the hard case too.
+        for i in 0..3 {
+            let r = (h[i][i] - s.level_shift) * s.kappa[i] + g[i];
+            assert!(r.abs() < 1e-7, "TR optimality residual row {i}: {r}");
+        }
+        // The model sees the escape: 0.5 * lambda_min * tau^2 < 0 on top of the
+        // ordinary decrease, and both predicted-energy forms agree.
+        assert!(s.predicted < 0.0);
+        assert!(
+            s.predicted_residual < 1e-6,
+            "Eq18 vs Eq19: {}",
+            s.predicted_residual
+        );
+    }
+
+    #[test]
+    fn hard_structure_but_small_radius_takes_the_shifted_step_without_the_mode() {
+        let (h, g, diag) = hard_case_system();
+        let mv = dense_matvec(h.clone());
+        let cfg = TrahConfig {
+            davidson_conv: 1e-12,
+            step_tol: 1e-6,
+            ..TrahConfig::default()
+        };
+        let s = solve_trust_region(&g, &mv, &diag, 0.3, &cfg).expect("must not error");
+        assert!(
+            s.norm <= 0.3 * (1.0 + 1e-9),
+            "inside the radius: {}",
+            s.norm
+        );
+        assert!(
+            s.kappa[0].abs() < 1e-8,
+            "no negative-mode component: {:?}",
+            s.kappa
+        );
+        assert!(
+            s.level_shift < -1.0,
+            "mu below lambda_min: {}",
+            s.level_shift
+        );
+        for i in 0..3 {
+            let r = (h[i][i] - s.level_shift) * s.kappa[i] + g[i];
+            assert!(r.abs() < 1e-6, "level-shifted NR residual row {i}: {r}");
+        }
+    }
+
+    /// Hard case with a DEGENERATE negative pair, both orthogonal to g -- the
+    /// shape of the C2 / stretched-N2 instabilities (a pi_x/pi_y pair). After
+    /// one mode is deflated the partner is still at lambda_min, so a CG solve
+    /// on (H - lambda I) is singular on it; measured on N2/cc-pVDZ that cost
+    /// 402 CG iterations and returned |kappa_h| = 86 before this was handled.
+    /// H = diag(-1, -1, 2, 3), g = (0, 0, 1, 1), radius 1: the TR solution has
+    /// mu = -1, kappa_h = (0, 0, -1/3, -1/4), and the remaining length
+    /// sqrt(1 - 25/144) anywhere in span(e1, e2).
+    #[test]
+    fn hard_case_with_a_degenerate_negative_pair() {
+        let h = vec![
+            vec![-1.0, 0.0, 0.0, 0.0],
+            vec![0.0, -1.0, 0.0, 0.0],
+            vec![0.0, 0.0, 2.0, 0.0],
+            vec![0.0, 0.0, 0.0, 3.0],
+        ];
+        let g = vec![0.0, 0.0, 1.0, 1.0];
+        let diag = vec![-1.0, -1.0, 2.0, 3.0];
+        let mv = dense_matvec(h.clone());
+        let cfg = TrahConfig {
+            davidson_conv: 1e-12,
+            ..TrahConfig::default()
+        };
+        let s = solve_trust_region(&g, &mv, &diag, 1.0, &cfg).expect("degenerate hard case");
+        let tau = (1.0f64 - 25.0 / 144.0).sqrt();
+        assert!((s.norm - 1.0).abs() < 1e-7, "|k| = {}", s.norm);
+        assert!(
+            (s.kappa[2] + 1.0 / 3.0).abs() < 1e-6 && (s.kappa[3] + 0.25).abs() < 1e-6,
+            "k = {:?}",
+            s.kappa
+        );
+        let in_pair = (s.kappa[0] * s.kappa[0] + s.kappa[1] * s.kappa[1]).sqrt();
+        assert!(
+            (in_pair - tau).abs() < 1e-6,
+            "negative-pair length {in_pair} vs {tau}"
+        );
+        assert!((s.level_shift + 1.0).abs() < 1e-6, "mu = {}", s.level_shift);
+        assert!(s.predicted < 0.0);
     }
 
     /// EXACTNESS ANCHOR for the solver: the α → 0 limit of the AH step is the
@@ -1377,6 +1826,43 @@ mod tests {
             predicted_residual: 0.0,
             on_boundary: true,
             shift_iterations: 1,
+        }
+    }
+}
+
+/// `FERRIC_TRAH_RHO_TRACE` descriptor: per-step TRAH trust-ratio trace
+/// (env-only debug toggle). Read in trah.rs and rhf.rs via [`trah_rho_trace`].
+static TRAH_RHO_TRACE: ferric_core::config::ConfigVar<bool> = ferric_core::config::ConfigVar {
+    env_name: "FERRIC_TRAH_RHO_TRACE",
+    default: false,
+    parse: ferric_core::config::parse_toggle,
+    validate: ferric_core::config::accept_any,
+};
+
+/// Whether the TRAH trust-ratio trace is on. `FERRIC_TRAH_RHO_TRACE=1/true/on/yes`,
+/// off for `0/false/off/no`/unset; a malformed value logs a warning and stays off.
+pub(crate) fn trah_rho_trace() -> bool {
+    TRAH_RHO_TRACE.toggle()
+}
+
+#[cfg(test)]
+mod trah_rho_trace_tests {
+    use super::TRAH_RHO_TRACE;
+
+    #[test]
+    fn trah_rho_trace_parses_like_every_other_toggle() {
+        let env = |v: &'static str| move |_: &str| Some(v.to_string());
+        let unset = |_: &str| None;
+        assert!(!TRAH_RHO_TRACE.resolve(None, unset).unwrap().value);
+        for on in ["1", "true", "on", "yes"] {
+            assert!(TRAH_RHO_TRACE.resolve(None, env(on)).unwrap().value, "{on}");
+        }
+        // "0" used to turn the trace ON (the old code tested only is_ok()).
+        for off in ["0", "false", "off", "no"] {
+            assert!(
+                !TRAH_RHO_TRACE.resolve(None, env(off)).unwrap().value,
+                "{off}"
+            );
         }
     }
 }

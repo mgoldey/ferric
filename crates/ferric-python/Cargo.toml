@@ -1,6 +1,6 @@
 [package]
 name = "ferric-python"
-version = "0.1.0"
+version = "0.1.0-dev0"  # SemVer twin of pyproject.toml's 0.1.0.dev0; see the comment there
 license.workspace = true
 edition = "2021"
 
@@ -12,6 +12,7 @@ name = "ferric"
 crate-type = ["cdylib"]
 
 [dependencies]
+ferric-build-info = { path = "../ferric-build-info" }
 ferric-core = { path = "../ferric-core" }
 ferric-integrals = { path = "../ferric-integrals" }
 ferric-mm = { path = "../ferric-mm" }
@@ -110,3 +111,4 @@ default = []
 # ferric-core/mpi alone is the silently-wrong combination a const-assert in
 # ferric-scf/src/lib.rs now rejects at compile time; do not shortcut it here.
 mpi = ["ferric-mp2/mpi", "ferric-scf/mpi", "ferric-core/mpi"]
+gpu = ["ferric-core/gpu", "ferric-cli/gpu"]

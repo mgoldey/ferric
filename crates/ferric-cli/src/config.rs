@@ -1,5 +1,5 @@
 use ferric_core::mol::Molecule;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Correlation (RI) auxiliary basis used when `[mp2] auxbasis` / `[rpa]
 /// auxbasis` is omitted. Named here, not as a literal at each use site, so
@@ -38,6 +38,8 @@ pub struct Config {
     #[serde(default)]
     pub memory: MemoryCfg,
     #[serde(default)]
+    pub gpu: GpuSection,
+    #[serde(default)]
     pub external_potential: ExternalPotentialCfg,
     /// Optional `[cosmo]` section: COSMO implicit-solvent configuration.
     /// Absent (or explicit `None`) means no solvation — byte-identical to a
@@ -61,6 +63,11 @@ pub struct Config {
     /// file) -- logging is ON BY DEFAULT, see [`OutputCfg`].
     #[serde(default)]
     pub output: OutputCfg,
+    /// Optional `[local]` section: the local approximation of a correlated
+    /// method (see [`LocalCfg`]). Absent means the method named by
+    /// `method.kind` is computed exactly.
+    #[serde(default)]
+    pub local: Option<LocalCfg>,
     /// Optional `[qmmm]` section: QM/MM embedding. Absent means no QM/MM --
     /// byte-identical to the plain single-region run, the same convention
     /// `[cosmo]` and `[external_potential]` follow.
@@ -166,6 +173,122 @@ impl Config {
                 )
             })
             .collect()
+    }
+}
+
+/// `[gpu]` — the optional CUDA backend. Mode `off` (default) never loads
+/// CUDA; `auto` uses a device when present and prints a notice otherwise;
+/// `on` makes a missing device an error. All keys also exist as
+/// `FERRIC_GPU*` env vars; TOML wins.
+#[derive(Deserialize, Default, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct GpuCfg {
+    /// One word that sets `mode` and `precision` together (`off`, `auto`, `on`,
+    /// `mixed`, `auto-mixed`). The root key `gpu = "<preset>"` is the same.
+    pub preset: Option<String>,
+    pub mode: Option<String>,
+    pub device: Option<usize>,
+    pub memory_gb: Option<f64>,
+    pub min_flops: Option<usize>,
+    /// `"f64"` (default) or `"mixed"`. See the `[gpu]` table in the input reference.
+    pub precision: Option<String>,
+    /// Kernels allowed to run in mixed precision; requires `precision = "mixed"`.
+    pub mixed_kernels: Option<Vec<String>>,
+}
+
+impl GpuCfg {
+    /// Value checks: `mode`, `precision` and `mixed_kernels` parse and `memory_gb` is finite and > 0.
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(p) = &self.preset {
+            p.parse::<ferric_core::gpu::GpuPreset>()
+                .map_err(|e| format!("[gpu] preset: {e}"))?;
+        }
+        if let Some(s) = &self.mode {
+            s.parse::<ferric_core::gpu::GpuMode>()
+                .map_err(|e| format!("[gpu] mode: {e}"))?;
+        }
+        if let Some(g) = self.memory_gb {
+            if !(g.is_finite() && g > 0.0) {
+                return Err(format!("[gpu] memory_gb must be finite and > 0, got {g}"));
+            }
+        }
+        if let Some(p) = &self.precision {
+            p.parse::<ferric_core::gpu::Precision>()
+                .map_err(|e| format!("[gpu] precision: {e}"))?;
+        }
+        if let Some(ks) = &self.mixed_kernels {
+            ks.join(",")
+                .parse::<ferric_core::gpu::MixedKernelSet>()
+                .map_err(|e| format!("[gpu] mixed_kernels: {e}"))?;
+        }
+        Ok(())
+    }
+
+    /// The typed TOML side of the resolution. Call [`GpuCfg::validate`] first
+    /// (`load_config` does); an unparsable `mode` reads as unset here.
+    pub fn explicit(&self) -> ferric_core::gpu::GpuSettingsExplicit {
+        ferric_core::gpu::GpuSettingsExplicit {
+            cli_preset: None,
+            preset: self.preset.as_deref().and_then(|s| s.parse().ok()),
+            mode: self.mode.as_deref().and_then(|s| s.parse().ok()),
+            device: self.device,
+            memory_gb: self.memory_gb,
+            min_flops: self.min_flops,
+            precision: self.precision.as_deref().and_then(|s| s.parse().ok()),
+            mixed_kernels: self
+                .mixed_kernels
+                .as_ref()
+                .and_then(|ks| ks.join(",").parse().ok()),
+        }
+    }
+}
+
+/// `[gpu]` as a table, or the root shorthand `gpu = "<preset>"`. TOML cannot
+/// hold both under the one key `gpu`, so the parser itself refuses the pair
+/// (duplicate key `gpu`).
+pub enum GpuSection {
+    Preset(String),
+    Table(GpuCfg),
+}
+
+impl Default for GpuSection {
+    fn default() -> Self {
+        GpuSection::Table(GpuCfg::default())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for GpuSection {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let v = toml::Value::deserialize(d)?;
+        match v {
+            toml::Value::String(s) => Ok(GpuSection::Preset(s)),
+            toml::Value::Table(_) => GpuCfg::deserialize(v)
+                .map(GpuSection::Table)
+                .map_err(D::Error::custom),
+            other => Err(D::Error::custom(format!(
+                "gpu: expected a preset string (gpu = \"mixed\") or a [gpu] table, got {}",
+                other.type_str()
+            ))),
+        }
+    }
+}
+
+impl GpuSection {
+    fn as_cfg(&self) -> GpuCfg {
+        match self {
+            GpuSection::Preset(p) => GpuCfg {
+                preset: Some(p.clone()),
+                ..Default::default()
+            },
+            GpuSection::Table(t) => t.clone(),
+        }
+    }
+    pub fn validate(&self) -> Result<(), String> {
+        self.as_cfg().validate()
+    }
+    pub fn explicit(&self) -> ferric_core::gpu::GpuSettingsExplicit {
+        self.as_cfg().explicit()
     }
 }
 
@@ -335,9 +458,13 @@ pub struct DftCfg {
     ///   `"d3bj(<name>)"`  — D3(BJ) using `<name>`'s published parameters
     ///                       instead, for when ferric's XC name and the D3
     ///                       fit's name differ (e.g. a libxc spelling).
+    ///   `"mbd"`           — MBD@rsSCS on Hirshfeld volumes of the SCF
+    ///                       density, with the β published for `functional`
+    ///                       (PBE 0.83, PBE0 0.85, HSE06 0.85).
+    ///   `"mbd(<name>)"`   — MBD@rsSCS with `<name>`'s published β.
     ///
     /// Unknown values are a hard error, and so is a functional with no
-    /// published D3(BJ) fit: the correction is FITTED per functional, so
+    /// published D3(BJ) fit or MBD β: the correction is FITTED per functional, so
     /// substituting another one's parameters would silently change the answer.
     /// There is deliberately no "off" value that reports a 0.0 correction --
     /// absent means absent.
@@ -395,48 +522,72 @@ impl DftCfg {
 pub enum DispersionRequest {
     /// D3(BJ) with the named functional's published damping parameters.
     D3Bj { functional: String },
+    /// MBD@rsSCS (Ambrosetti et al., JCP 140, 18A508 (2014)) with the named
+    /// functional's published range-separation β. Parsing guarantees β exists
+    /// for `functional` (see [`ferric_rpa::dispersion::mbd_rsscs_beta_for_functional`]).
+    Mbd { functional: String },
 }
+
+/// Every accepted `[dft] dispersion` spelling, for error messages.
+const DISPERSION_SPELLINGS: &str =
+    "\"d3bj\", \"d3(bj)\", \"d3bj(<functional>)\", \"mbd\" or \"mbd(<functional>)\"";
 
 impl DispersionRequest {
     /// Parse the `[dft] dispersion` value.
     ///
     /// `xc` is the functional being run, used when the value does not name one
     /// explicitly. Strict by this config's convention: an unknown value is an
-    /// error, never a silent no-op.
+    /// error, never a silent no-op. For MBD the functional must have a
+    /// published β; an unlisted one is an error here, never a default β.
     pub fn parse_config_str(s: &str, xc: Option<&str>) -> Result<Self, ferric_core::FerricError> {
         let v = s.trim();
         let lower = v.to_ascii_lowercase();
-        let named = |f: &str| -> Result<Self, ferric_core::FerricError> {
+        let d3 = |f: &str| -> Result<Self, ferric_core::FerricError> {
             Ok(DispersionRequest::D3Bj {
                 functional: f.to_string(),
             })
         };
-        if lower == "d3bj" || lower == "d3(bj)" {
-            let f = xc.ok_or_else(|| {
-                ferric_core::FerricError::General(
-                    "[dft] dispersion = \"d3bj\" needs [dft] functional to know which \
-                     damping parameters to use, or name one explicitly as \
-                     \"d3bj(pbe)\"."
-                        .to_string(),
-                )
+        let mbd = |f: &str| -> Result<Self, ferric_core::FerricError> {
+            ferric_rpa::dispersion::mbd_rsscs_beta_for_functional(f).map_err(|e| {
+                ferric_core::FerricError::General(format!("[dft] dispersion = {v:?}: {e}"))
             })?;
-            return named(f);
+            Ok(DispersionRequest::Mbd {
+                functional: f.to_string(),
+            })
+        };
+        let running = |spelling: &str, example: &str| {
+            xc.ok_or_else(|| {
+                ferric_core::FerricError::General(format!(
+                    "[dft] dispersion = \"{spelling}\" needs [dft] functional to know which \
+                     parameters to use, or name one explicitly as \"{example}\"."
+                ))
+            })
+        };
+        if lower == "d3bj" || lower == "d3(bj)" {
+            return d3(running("d3bj", "d3bj(pbe)")?);
         }
-        if let Some(rest) = lower
-            .strip_prefix("d3bj(")
-            .and_then(|r| r.strip_suffix(')'))
-        {
-            if rest.trim().is_empty() {
-                return Err(ferric_core::FerricError::General(
-                    "[dft] dispersion = \"d3bj()\" names no functional".to_string(),
-                ));
+        if lower == "mbd" {
+            return mbd(running("mbd", "mbd(pbe)")?);
+        }
+        let named = |prefix: &str| -> Result<Option<String>, ferric_core::FerricError> {
+            match lower.strip_prefix(prefix).and_then(|r| r.strip_suffix(')')) {
+                None => Ok(None),
+                Some(rest) if rest.trim().is_empty() => Err(ferric_core::FerricError::General(
+                    format!("[dft] dispersion = \"{prefix})\" names no functional"),
+                )),
+                Some(rest) => Ok(Some(rest.trim().to_string())),
             }
-            return named(rest.trim());
+        };
+        if let Some(f) = named("d3bj(")? {
+            return d3(&f);
+        }
+        if let Some(f) = named("mbd(")? {
+            return mbd(&f);
         }
         Err(ferric_core::FerricError::General(format!(
-            "unknown [dft] dispersion value {v:?}; expected \"d3bj\" or \
-             \"d3bj(<functional>)\". Omit the key entirely for no dispersion \
-             correction -- there is no value that means \"compute zero\"."
+            "unknown [dft] dispersion value {v:?}; expected {DISPERSION_SPELLINGS}. \
+             Omit the key entirely for no dispersion correction -- there is no value \
+             that means \"compute zero\"."
         )))
     }
 }
@@ -791,7 +942,286 @@ impl<'de> Deserialize<'de> for FrozenCore {
     }
 }
 
-#[derive(Deserialize, Default)]
+/// The `method.kind`s whose correlation can be run under a local
+/// approximation (`[local]`). The kind names the METHOD; `[local]` says
+/// whether and how its amplitudes are truncated.
+pub const LOCAL_KINDS: &[&str] = &["rimp2", "drpa", "linlccd"];
+
+/// `[local] scheme`: the local approximation applied to the method's
+/// amplitudes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalScheme {
+    /// No local approximation: the method is computed exactly (the default).
+    None,
+    /// Single-threshold amplitude truncation in the localized basis (WSHG23
+    /// Eq. 8): pair amplitudes whose localized integral is at or below `eps`
+    /// are dropped. `eps = 0` keeps every amplitude and reproduces the exact
+    /// method.
+    AmplitudeThreshold,
+}
+
+impl LocalScheme {
+    /// The accepted spellings, in the order error messages list them.
+    pub const SPELLINGS: &'static [&'static str] = &["none", "amplitude-threshold"];
+
+    /// Strict parse; an unknown value is an error listing the accepted ones.
+    pub fn parse_config_str(s: &str) -> Result<Self, String> {
+        match s {
+            "none" => Ok(LocalScheme::None),
+            "amplitude-threshold" => Ok(LocalScheme::AmplitudeThreshold),
+            other => Err(format!(
+                "[local] scheme = {other:?} is not recognised; expected one of {}",
+                Self::SPELLINGS
+                    .iter()
+                    .map(|v| format!("\"{v}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LocalScheme::None => "none",
+            LocalScheme::AmplitudeThreshold => "amplitude-threshold",
+        }
+    }
+}
+
+/// Optional `[local]` section: the local approximation of a correlated
+/// method (`method.kind` = `rimp2`, `drpa` or `linlccd`).
+///
+/// Absent (or `scheme = "none"`) means the method is computed EXACTLY. With
+/// `scheme = "amplitude-threshold"` the threshold `eps` is part of the model
+/// and has no default: it must be written, and every printout and run-log
+/// record of the run carries it. See `Config::local_model` for the rules.
+#[derive(Deserialize, Default, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct LocalCfg {
+    /// `"none"` (default) or `"amplitude-threshold"`.
+    pub scheme: Option<String>,
+    /// The amplitude threshold ε (finite, >= 0). REQUIRED with
+    /// `scheme = "amplitude-threshold"` (unless `eps_sweep` is given); an
+    /// error with `scheme = "none"`. `0` keeps every amplitude.
+    pub eps: Option<f64>,
+    /// `kind = "drpa"` only: evaluate several ε in ONE job on one SCF and one
+    /// ε-independent localized assembly. Sorted and de-duplicated; each value
+    /// finite and >= 0. Mutually exclusive with `eps`.
+    pub eps_sweep: Option<Vec<f64>>,
+    /// Also compute the exact (canonical) reference and print the local
+    /// error against it. Default false; an error with `scheme = "none"`.
+    pub reference: Option<bool>,
+    /// `kind = "rimp2"` only: the integral-direct local MP2, which never forms
+    /// the global 3-index tensor. Default false.
+    pub integral_direct: Option<bool>,
+    /// Integral-direct only: aux fit-domain radius, Bohr. Default 10.0.
+    pub aux_radius: Option<f64>,
+    /// Integral-direct only: virtual domain radius on dipole centroids, Bohr.
+    /// Default 12.0.
+    pub virt_radius: Option<f64>,
+    /// Integral-direct only: AO-support shell threshold on max |C|. Default
+    /// 1e-3; 0 keeps every shell.
+    pub ao_tail: Option<f64>,
+    /// Integral-direct only: Cauchy–Schwarz triple cut on the batch integral
+    /// stream. Default 1e-5.
+    pub schwarz_skip: Option<f64>,
+    /// Integral-direct only: nearest-atom batches merged per integral pass
+    /// (>= 1). Default 4.
+    pub batch_merge: Option<usize>,
+    /// Integral-direct only: R⁻⁶ pair-gate calibration constant. Omitted =
+    /// gate off (every pair kept).
+    pub gate_cal: Option<f64>,
+    /// Integral-direct only: ε-linked Schwarz virtual-candidate screen κ.
+    /// Omitted = off.
+    pub virt_schwarz_kappa: Option<f64>,
+}
+
+/// The integral-direct locality knobs of a local MP2 run, with their
+/// defaults applied (every one is a controlled approximation; the run prints
+/// them).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LocalDirectKnobs {
+    pub aux_radius: f64,
+    pub virt_radius: f64,
+    pub ao_tail: f64,
+    pub schwarz_skip: f64,
+    pub batch_merge: usize,
+    pub gate_cal: Option<f64>,
+    pub virt_schwarz_kappa: Option<f64>,
+}
+
+/// A resolved `scheme = "amplitude-threshold"` model. An exact run has none
+/// (`Config::local_model` returns `Ok(None)`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LocalModel {
+    /// The ε points: one for `eps`, the sorted de-duplicated sweep for
+    /// `eps_sweep`.
+    pub eps: Vec<f64>,
+    /// Whether the points came from `eps_sweep`.
+    pub is_sweep: bool,
+    /// `[local] reference`.
+    pub reference: bool,
+    /// `Some` exactly when `integral_direct = true`.
+    pub direct: Option<LocalDirectKnobs>,
+}
+
+impl LocalCfg {
+    fn sets_direct_knobs(&self) -> bool {
+        self.aux_radius.is_some()
+            || self.virt_radius.is_some()
+            || self.ao_tail.is_some()
+            || self.schwarz_skip.is_some()
+            || self.batch_merge.is_some()
+            || self.gate_cal.is_some()
+            || self.virt_schwarz_kappa.is_some()
+    }
+
+    /// The kind-independent rules of `[local]`: values, and which keys go
+    /// with which scheme. `Ok(None)` is an exact run.
+    pub fn model(&self) -> Result<Option<LocalModel>, String> {
+        let scheme = match self.scheme.as_deref() {
+            None => LocalScheme::None,
+            Some(s) => LocalScheme::parse_config_str(s)?,
+        };
+        if scheme == LocalScheme::None {
+            let stray: Vec<&str> = [
+                ("eps", self.eps.is_some()),
+                ("eps_sweep", self.eps_sweep.is_some()),
+                ("reference", self.reference.is_some()),
+                ("integral_direct", self.integral_direct.is_some()),
+                ("aux_radius", self.aux_radius.is_some()),
+                ("virt_radius", self.virt_radius.is_some()),
+                ("ao_tail", self.ao_tail.is_some()),
+                ("schwarz_skip", self.schwarz_skip.is_some()),
+                ("batch_merge", self.batch_merge.is_some()),
+                ("gate_cal", self.gate_cal.is_some()),
+                ("virt_schwarz_kappa", self.virt_schwarz_kappa.is_some()),
+            ]
+            .into_iter()
+            .filter_map(|(k, set)| set.then_some(k))
+            .collect();
+            if !stray.is_empty() {
+                return Err(format!(
+                    "[local] {} set with scheme = \"none\" (the exact method), which would \
+                     silently ignore {}; set scheme = \"amplitude-threshold\" to run the local \
+                     approximation, or remove {}",
+                    stray.join(", "),
+                    if stray.len() == 1 { "it" } else { "them" },
+                    if stray.len() == 1 {
+                        "the key"
+                    } else {
+                        "the keys"
+                    },
+                ));
+            }
+            return Ok(None);
+        }
+        let check_eps = |what: &str, e: f64| -> Result<(), String> {
+            if e.is_finite() && e >= 0.0 {
+                Ok(())
+            } else {
+                Err(format!("[local] {what} must be finite and >= 0 (got {e})"))
+            }
+        };
+        let (eps, is_sweep) = match (self.eps, &self.eps_sweep) {
+            (Some(_), Some(_)) => {
+                return Err(
+                    "[local] eps and eps_sweep are mutually exclusive: give one \
+                            threshold (eps) or a list of them (eps_sweep), not both"
+                        .to_string(),
+                )
+            }
+            (None, None) => {
+                return Err(
+                    "[local] scheme = \"amplitude-threshold\" requires eps (or, for \
+                            kind = \"drpa\", eps_sweep): the threshold is part of the model \
+                            and has no default. eps = 0 keeps every amplitude (the exact \
+                            method); 1e-4 is the value the measured error maps use."
+                        .to_string(),
+                )
+            }
+            (Some(e), None) => {
+                check_eps("eps", e)?;
+                (vec![e], false)
+            }
+            (None, Some(v)) => {
+                let mut s = v.clone();
+                // NaN-tolerant sort, so a `nan` literal reaches the
+                // finiteness check (the lesson `r0_sweep` learned).
+                s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                s.dedup();
+                if s.is_empty() {
+                    return Err("[local] eps_sweep is empty".to_string());
+                }
+                for &e in &s {
+                    check_eps("eps_sweep values", e)?;
+                }
+                (s, true)
+            }
+        };
+        let direct = if self.integral_direct == Some(true) {
+            let pos = |k: &str, v: Option<f64>, d: f64| -> Result<f64, String> {
+                let x = v.unwrap_or(d);
+                if x.is_finite() && x > 0.0 {
+                    Ok(x)
+                } else {
+                    Err(format!("[local] {k} must be finite and > 0 (got {x})"))
+                }
+            };
+            let nonneg = |k: &str, v: Option<f64>, d: f64| -> Result<f64, String> {
+                let x = v.unwrap_or(d);
+                if x.is_finite() && x >= 0.0 {
+                    Ok(x)
+                } else {
+                    Err(format!("[local] {k} must be finite and >= 0 (got {x})"))
+                }
+            };
+            let opt_pos = |k: &str, v: Option<f64>| -> Result<Option<f64>, String> {
+                match v {
+                    Some(x) if !(x.is_finite() && x > 0.0) => {
+                        Err(format!("[local] {k} must be finite and > 0 (got {x})"))
+                    }
+                    other => Ok(other),
+                }
+            };
+            if self.batch_merge == Some(0) {
+                return Err("[local] batch_merge must be >= 1".to_string());
+            }
+            Some(LocalDirectKnobs {
+                aux_radius: pos("aux_radius", self.aux_radius, 10.0)?,
+                virt_radius: pos("virt_radius", self.virt_radius, 12.0)?,
+                ao_tail: nonneg("ao_tail", self.ao_tail, 1e-3)?,
+                schwarz_skip: nonneg("schwarz_skip", self.schwarz_skip, 1e-5)?,
+                batch_merge: self.batch_merge.unwrap_or(4),
+                gate_cal: opt_pos("gate_cal", self.gate_cal)?,
+                virt_schwarz_kappa: opt_pos("virt_schwarz_kappa", self.virt_schwarz_kappa)?,
+            })
+        } else {
+            if self.sets_direct_knobs() {
+                return Err(
+                    "[local] aux_radius / virt_radius / ao_tail / schwarz_skip / \
+                            batch_merge / gate_cal / virt_schwarz_kappa are the integral-direct \
+                            locality maps and are read only with integral_direct = true; \
+                            without it they would be silently ignored"
+                        .to_string(),
+                );
+            }
+            None
+        };
+        Ok(Some(LocalModel {
+            eps,
+            is_sweep,
+            reference: self.reference.unwrap_or(false),
+            direct,
+        }))
+    }
+}
+
+/// `Serialize` is derived for one reason: [`Mp2Cfg::set_keys`] reads the
+/// keys a file actually set from serde's own field table, so the
+/// "[mp2] key the selected method does not read" refusal of the local
+/// correlation path cannot drift from the struct (a hand-kept list would).
+#[derive(Deserialize, Serialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Mp2Cfg {
     pub auxbasis: Option<String>,
@@ -801,7 +1231,7 @@ pub struct Mp2Cfg {
     ///
     /// Shared by the whole MP2 family AND by the CC/double-hybrid methods,
     /// which read this key rather than defining one of their own.
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub frozen_core: FrozenCore,
     // NOTE: `orbital_optimize` used to live here behind `#[allow(dead_code)]`.
     // Nothing ever read it — orbital optimization is selected with
@@ -811,79 +1241,13 @@ pub struct Mp2Cfg {
     // stale key now errors instead of lying.
     /// Range-separation parameter ω in Å⁻¹ (for att-rimp2 and rs-mp2-rpa). Default 0.420.
     pub omega: Option<f64>,
-    /// Amplitude-threshold LMP2 (`kind = "lmp2"`): the single threshold ε on
-    /// localized |(ia|jb)| (WSHG23 Eq. 8). Default 1e-4. The finite-ε energy
-    /// is a controlled approximation — error one-sided and ~linear in ε (see
-    /// wiki/amplitude-threshold-lmp2.md for the measured map).
-    pub lmp2_eps: Option<f64>,
-    /// Amplitude-threshold LMP2 (`kind = "lmp2"` and `"lmp2-direct"`): also
-    /// compute the canonical RI-MP2 reference and print it with the error
-    /// against it. Default false (OPT-IN): the reference is a full N^5
-    /// canonical RI-MP2 that forms the global (naux, nocc·nvir) tensor —
-    /// the very object `lmp2-direct` exists to avoid — so with it on no run
-    /// is reduced-cost. Off, the printout says the reference was not
-    /// computed and the run log's `e_corr_canonical_ri` is null. A bool:
-    /// any other TOML type is a parse error.
-    pub lmp2_reference: Option<bool>,
-    /// Amplitude-threshold direct RPA (`kind = "drpa"`): the threshold ε on
-    /// localized |B_iajb| = |2(ia|jb)|. Default 1e-4. `0` keeps every
-    /// amplitude and reproduces the canonical plasmon-formula dRPA (the
-    /// library's exactness anchor). dRPA is not variational, so the finite-ε
-    /// error is ~linear in ε with no Hylleraas protection. Must be finite and
-    /// ≥ 0. Ignored (with a warning) when `drpa_eps_sweep` is set.
-    pub drpa_eps: Option<f64>,
-    /// Amplitude-threshold dRPA (`kind = "drpa"`): also compute the canonical
-    /// plasmon-formula reference (a dense (no·nv)-dimensional eigensolve over
-    /// a global B) and print the threshold error against it. Default false
-    /// (OPT-IN), mirroring `lmp2_reference`. A bool.
-    pub drpa_reference: Option<bool>,
-    /// Amplitude-threshold dRPA (`kind = "drpa"`): evaluate several ε in ONE
-    /// job, reusing a single SCF and a single ε-independent localized
-    /// assembly (`amplitude_drpa_scan_timed`). Values are sorted and
-    /// de-duplicated; each must be finite and ≥ 0. Same pattern as
-    /// `r0_sweep`: one result block per point.
-    pub drpa_eps_sweep: Option<Vec<f64>>,
-    /// Amplitude-threshold LinLCCD (`kind = "linlccd-amplitude"`) ladder
-    /// variant: `"hh"` (default, LinLCCD(hh)), `"drivers-only"` (no ladder —
-    /// reproduces RI-MP2), or `"full"` (hh + pp ladders). Unknown values are
-    /// a hard error ([`Mp2Cfg::linlccd_variant`]).
+    /// LinLCCD (`kind = "linlccd"`) ladder variant — part of the METHOD, so
+    /// it applies to the exact and the local (`[local]`) run alike: `"hh"`
+    /// (default, LinLCCD(hh)), `"drivers-only"` (no ladder — reproduces
+    /// RI-MP2), or `"full"` (hh + pp ladders, CCD-like VVVV memory). Unknown
+    /// values are a hard error ([`Mp2Cfg::linlccd_variant`]), and so is the
+    /// key on any other kind.
     pub linlccd_variant: Option<String>,
-    /// Amplitude-threshold LinLCCD (`kind = "linlccd-amplitude"`): the
-    /// threshold ε on localized |(ia|jb)|. Default 1e-4. `0` reproduces the
-    /// canonical `linlccd` of the same variant. Must be finite and ≥ 0.
-    pub linlccd_eps: Option<f64>,
-    /// Integral-direct LMP2 (`kind = "lmp2-direct"`): aux fit-domain radius
-    /// in Bohr (pair (i,j) fits in aux functions within this radius of
-    /// either Boys centroid). Default 10.0 — the measured production value
-    /// (wiki/amplitude-threshold-lmp2.md §27-30); ≥1e5 ≈ global fit.
-    pub direct_aux_radius: Option<f64>,
-    /// Integral-direct LMP2: virtual domain radius in Bohr on dipole
-    /// centroids. Default 12.0 (production); omit-able only by setting a
-    /// huge value — every default here is a CONTROLLED approximation, and
-    /// `lmp2_reference = true` prints the canonical reference error alongside.
-    pub direct_virt_radius: Option<f64>,
-    /// Integral-direct LMP2: AO-support shell threshold on max |C|.
-    /// Default 1e-3 (production); 0.0 keeps every shell.
-    pub direct_ao_tail: Option<f64>,
-    /// Integral-direct LMP2: Cauchy–Schwarz triple cut √(P|P)·Q(μν) on the
-    /// batch integral stream. Default 1e-5 (calibrated ~1e-8 Ha at C16);
-    /// MUST be 0.0 for operators without Schwarz support (terfc) — the run
-    /// hard-errors otherwise, naming this knob.
-    pub direct_schwarz_skip: Option<f64>,
-    /// Integral-direct LMP2: nearest-atom batches merged per integral pass.
-    /// Default 4 (measured ~0.4× the evaluations of per-atom batches); 1 =
-    /// per-atom (the anchor limit).
-    pub direct_batch_merge: Option<usize>,
-    /// Integral-direct LMP2: R⁻⁶ pair-gate calibration constant (p95:
-    /// ~0.7 Coulomb, ~0.02 erfc ω=1). Omitted = gate OFF (keep all pairs).
-    pub direct_gate_cal: Option<f64>,
-    /// Integral-direct LMP2: ε-linked Schwarz virtual-candidate screen —
-    /// keep a in C_ij iff q_ia·qmax_j ≥ κ·ε (either orientation), q from
-    /// strip-local fitted diagonals. Omitted = OFF (the validated distance
-    /// candidates alone). κ = 1 is conservative (measured escape-free at
-    /// C8, both operators); larger κ trades bounded sub-dominant error for
-    /// smaller pair blocks (WIKI-APPEND-eps-linked-maps.md).
-    pub direct_virt_schwarz_kappa: Option<f64>,
     /// κ-regularized MP2 (Lee/Head-Gordon JCTC 2018) for `kind = "rimp2"`:
     /// damps every amplitude by (1 − e^{−κΔ})², κ in inverse Hartree
     /// (κ→∞ recovers plain MP2; the paper's recommended value is ~1.45).
@@ -1202,90 +1566,27 @@ impl Mp2Cfg {
         Ok(())
     }
 
-    /// Whether `lmp2`/`lmp2-direct` compute the canonical RI-MP2 reference:
-    /// `[mp2] lmp2_reference`, default FALSE (opt-in — see the field doc).
-    pub fn lmp2_reference(&self) -> bool {
-        self.lmp2_reference.unwrap_or(false)
-    }
-
-    /// Whether `drpa` computes the canonical plasmon reference:
-    /// `[mp2] drpa_reference`, default FALSE (opt-in, like `lmp2_reference`).
-    pub fn drpa_reference(&self) -> bool {
-        self.drpa_reference.unwrap_or(false)
-    }
-
-    /// The ε points `kind = "drpa"` evaluates, and whether they came from
-    /// `drpa_eps_sweep` (`true`) or the single `drpa_eps` (`false`).
-    ///
-    /// A sweep is sorted and de-duplicated (NaN-tolerant sort, so a `nan`
-    /// literal reaches the finiteness check and gets its message rather than a
-    /// panic — the lesson `r0_sweep` learned). Every point must be finite and
-    /// ≥ 0: ε = 0 is the exactness anchor, a negative ε would keep everything
-    /// silently like 0 does.
-    pub fn drpa_eps_points(&self) -> Result<(Vec<f64>, bool), String> {
-        match &self.drpa_eps_sweep {
-            Some(v) => {
-                let mut s = v.clone();
-                s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-                s.dedup();
-                if s.is_empty() {
-                    return Err("[mp2] drpa_eps_sweep is empty".to_string());
-                }
-                if s.iter().any(|x| !(x.is_finite() && *x >= 0.0)) {
-                    return Err(format!(
-                        "[mp2] drpa_eps_sweep values must be finite and >= 0 (got {s:?})"
-                    ));
-                }
-                Ok((s, true))
-            }
-            None => {
-                let eps = self.drpa_eps.unwrap_or(1e-4);
-                if !(eps.is_finite() && eps >= 0.0) {
-                    return Err(format!(
-                        "[mp2] drpa_eps must be finite and >= 0 (got {eps})"
-                    ));
-                }
-                Ok((vec![eps], false))
-            }
-        }
-    }
-
-    /// `[mp2] linlccd_variant` for `kind = "linlccd-amplitude"`, parsed
-    /// strictly: `"hh"` (default), `"drivers-only"`, `"full"`. Anything else
-    /// is an error listing the valid spellings, never a silent default.
+    /// `[mp2] linlccd_variant` for `kind = "linlccd"`, parsed strictly by the
+    /// shared [`ferric_cc::linlccd::LadderVariant::parse_config_str`]:
+    /// `"hh"` (default), `"drivers-only"`, `"full"`. Anything else is an
+    /// error listing the valid spellings, never a silent default.
     pub fn linlccd_variant(&self) -> Result<ferric_cc::linlccd::LadderVariant, String> {
-        use ferric_cc::linlccd::LadderVariant;
         match self.linlccd_variant.as_deref() {
-            None | Some("hh") => Ok(LadderVariant::Hh),
-            Some("drivers-only") => Ok(LadderVariant::DriversOnly),
-            Some("full") => Ok(LadderVariant::Full),
-            Some(other) => Err(format!(
-                "[mp2] linlccd_variant = {other:?} is not recognised; expected one of \
-                 'hh', 'drivers-only', 'full'"
-            )),
+            None => Ok(ferric_cc::linlccd::LadderVariant::Hh),
+            Some(s) => ferric_cc::linlccd::LadderVariant::parse_config_str(s)
+                .map_err(|e| format!("[mp2] linlccd_variant: {e}")),
         }
     }
 
-    /// Strict-parse every `drpa`/`linlccd-amplitude` knob, whatever the kind,
-    /// so a typo'd VALUE (`linlccd_variant = "hhh"`, `drpa_eps = -1`) errors
-    /// at load time rather than after the SCF.
-    pub fn validate_amplitude_knobs(&self) -> Result<(), String> {
-        self.drpa_eps_points()?;
-        self.linlccd_variant()?;
-        self.linlccd_eps()?;
-        Ok(())
-    }
-
-    /// `[mp2] linlccd_eps` for `kind = "linlccd-amplitude"`: default 1e-4,
-    /// must be finite and ≥ 0.
-    pub fn linlccd_eps(&self) -> Result<f64, String> {
-        let eps = self.linlccd_eps.unwrap_or(1e-4);
-        if eps.is_finite() && eps >= 0.0 {
-            Ok(eps)
-        } else {
-            Err(format!(
-                "[mp2] linlccd_eps must be finite and >= 0 (got {eps})"
-            ))
+    /// The `[mp2]` keys this file SET, read from serde's own view of the
+    /// struct (a key is set when it serializes at all: `toml` skips `None`
+    /// fields and, unlike `serde_json`, keeps a non-finite float such as
+    /// `nan`/`inf` instead of mapping it to null). `frozen_core` is never
+    /// listed: every correlated kind reads it.
+    pub fn set_keys(&self) -> Vec<String> {
+        match toml::Value::try_from(self) {
+            Ok(toml::Value::Table(m)) => m.into_iter().map(|(k, _)| k).collect(),
+            _ => Vec::new(),
         }
     }
 
@@ -1495,11 +1796,17 @@ pub struct RpaCfg {
     pub esp_surface_vdw_scale: Option<f64>,
     /// Lebedev order per atom for the `compute_esp_surface` shell (default 110).
     pub esp_surface_n_angular: Option<usize>,
-    /// Compute and include the static polarizability tensor in the NPZ bundle.
-    /// Default: true when `export_npz` is set.
+    /// Compute and include the static polarizability tensor in the NPZ bundle
+    /// (`alpha_tensor`). Together with `compute_alpha_atomic` it also emits
+    /// `alpha_ct` (see there). Default: true when `export_npz` is set.
     pub compute_polarizability: Option<bool>,
-    /// Compute and include the per-atom **Becke** polarizability decomposition
-    /// (`alpha_atomic`, shape (N, 3, 3), additive to `alpha_tensor`).
+    /// Compute and include the per-atom **Becke** intrinsic polarizability
+    /// (`alpha_atomic`, shape (N, 3, 3)): the Krishtal–Senet–Van Alsenoy
+    /// definition (JCP 125, 034312 (2006)), atom-centred dipole w_A (r − R_A)
+    /// on the bra and the molecular dipole on the field-side ket. Charge
+    /// transfer between atoms is excluded, so Σ_A alpha_atomic ≠ alpha_tensor;
+    /// when `compute_polarizability` is also on, the remainder
+    /// `alpha_ct = alpha_tensor − Σ_A alpha_atomic` (3, 3) is exported too.
     ///
     /// This path always uses the Becke partition (`pdep_polarizability_becke`);
     /// it is NOT governed by `c6_partition`, which only selects the partition
@@ -1560,7 +1867,10 @@ pub struct RpaCfg {
     pub compute_resp_charges: Option<bool>,
     /// Compute per-atom anisotropic C6 dispersion coefficients and include them
     /// in the NPZ bundle (`c6_iso`, `c6_aniso`, `alpha_atomic_dynamic`,
-    /// `c6_freqs`, `c6_weights`). Default: true when `export_npz` is set.
+    /// `c6_freqs`, `c6_weights`, `c6_molecular_iso`, `c6_partition`,
+    /// `c6_source`, and — for `c6_source = "pdep"` only — the dynamic
+    /// charge-transfer remainder `alpha_ct_dynamic` (nfreq, 3, 3) =
+    /// molecular α(iω) − Σ_A α^A(iω)). Default: true when `export_npz` is set.
     pub compute_c6: Option<bool>,
     /// Accept an NPZ bundle that is MISSING one or more requested properties,
     /// and still exit 0. Default: false (an incomplete bundle fails the run).
@@ -1914,6 +2224,18 @@ pub struct ScfCfg {
     pub soscf: bool,
     #[serde(default = "default_integral_thresh")]
     pub integral_thresh: f64,
+    /// libint primitive-screening precision for the SCF J/K two-electron
+    /// integrals. Omitted = `FERRIC_ERI_PRECISION` if set, else 1e-20 (the
+    /// loosest value measured to reach double precision; 1e-14 left up to
+    /// 6e-9 Ha in E_J). `0 ≤ p ≤ 1e-8`; 0 disables primitive screening.
+    pub eri_precision: Option<f64>,
+    /// Where the raw RI-J/K three-index tensor lives: `"auto"` (default),
+    /// `"memory"`, `"disk"` or `"direct"`. `auto` keeps it in memory when it
+    /// fits `[memory] budget_gb` (packed when only the symmetric half fits),
+    /// and otherwise picks disk or recompute from a rate measured on this
+    /// machine. `memory` errors when it does not fit; `disk` always spills;
+    /// `direct` always recomputes. Omitted: `FERRIC_JK_STORAGE` if set.
+    pub jk_storage: Option<String>,
     /// Exchange builder: "direct" (default), "link", or "cosx" (seminumerical
     /// COSX exchange). Honoured by RHF, UHF and ROHF. Ignored with a warning
     /// when DF-J/DF-K is active, when the functional uses no exact exchange, or
@@ -1979,12 +2301,35 @@ pub struct ScfCfg {
     /// `k_builder = "cosx"` consumes no Schwarz table at all, so `screening`
     /// has no effect there — a property of COSX, not a gap in this wiring.
     pub screening: Option<String>,
-    /// COSX exchange grid, `cosx_grid = { radial = 50, angular = 110 }`.
-    /// Omitted = (50,110), the measured operating point (coarser grids fail the
-    /// 0.1 kcal/mol isodesmic reaction-energy bar in the composed-budget audit).
-    /// `angular` must be a tabulated Lebedev order (6/14/26/50/110/302/434/590). Setting
-    /// this with any `k_builder` other than "cosx" is a hard error.
+    /// COSX exchange grid (the SCF grid),
+    /// `cosx_grid = { radial = 35, angular = 194, prune = "sgx" }`. Omitted =
+    /// `ferric_scf::cosx_k::CosxConfig::default()` (see `site/src/methods/scf.md`,
+    /// "Choosing how exchange is built"). `angular` is a tabulated Lebedev order
+    /// (6/14/26/50/110/194/302/434/590), and with `prune = "sgx"` the PEAK of an
+    /// ORCA-GridX-like row (50/110/194/302/434/590). A table WITHOUT `prune` is
+    /// a FLAT grid. Unknown prune spellings and setting this with any
+    /// `k_builder` other than "cosx" are hard errors.
     pub cosx_grid: Option<CosxGridCfg>,
+    /// COSX final-grid pass on/off: after convergence, exchange is evaluated
+    /// once more on a larger grid at the converged density (Psi4/ORCA style,
+    /// non-self-consistent) and the run reports that energy. Omitted = on (the
+    /// library default; ROHF/ROKS, which has no final pass, skips it with a
+    /// note). `true` without `cosx_final_grid` uses
+    /// `ferric_scf::cosx_k::COSX_DEFAULT_FINAL_GRID`; `false` with an explicit
+    /// `cosx_final_grid` is a hard error. Gradient tasks run without it.
+    pub cosx_final_pass: Option<bool>,
+    /// The COSX final grid, same table as `cosx_grid`. Setting it turns the
+    /// final pass on.
+    pub cosx_final_grid: Option<CosxGridCfg>,
+    /// COSX SCF grid schedule (ORCA style). `true` runs the early iterations
+    /// on the coarse pruned sgx (25,110) grid
+    /// (`ferric_scf::cosx_schedule::COSX_DEFAULT_COARSE_GRID`), switches to
+    /// `cosx_grid` once the incoming max|ΔD| < 1e-3
+    /// (`COSX_DEFAULT_SWITCH_DP_MAX`), and accepts convergence only on the
+    /// `cosx_grid`; the final pass is unchanged. Omitted / `false` = every
+    /// iteration on `cosx_grid`. RHF/RKS and UHF/UKS only (ROHF/ROKS refuse
+    /// it). Setting it with `k_builder != "cosx"` is a hard error.
+    pub cosx_grid_schedule: Option<bool>,
     /// COSX overlap fit (Izsák–Neese). Omitted = `true`. At (50,110) the fit
     /// took the isodesmic reaction-energy error 0.2068 -> 0.0190 kcal/mol
     /// (water-favourable set); it is net-NEGATIVE on grids coarser than
@@ -2011,6 +2356,15 @@ pub struct ScfCfg {
     /// Unknown values and setting this with `k_builder != "cosx"` are hard
     /// errors.
     pub cosx_half_transform: Option<String>,
+    /// COSX precision-router threshold multiplier `m` (`tau = m *
+    /// cosx_screen_thresh`; Laqua/Kussmann/Ochsenfeld JCP 154, 214116 (2021)
+    /// seed `1e5`). Float >= 0. Read only with `k_builder = "cosx"`,
+    /// `[gpu] precision = "mixed"` and `cosx-kern` in `mixed_kernels`;
+    /// set in any other configuration it is a hard error. Omitted = `1e5`
+    /// when those conditions hold (and the md3c1e backend with a positive
+    /// screen is in use), else `0` (router off). It only classifies and
+    /// counts: K is unchanged.
+    pub cosx_fp64_multiplier: Option<f64>,
     /// Aux basis for density-fitted Coulomb (RI-J), or `""` / `"exact"` /
     /// `"none"` / `"off"` / `"conventional"` for conventional four-centre J
     /// (see [`ScfCfg::df_j_aux_resolved`]). Omitted = the method's default.
@@ -2100,37 +2454,47 @@ pub struct ScfCfg {
     /// `ferric_scf::ladder::DF_GUESS_DEFAULT_AUX` ("def2-universal-jkfit").
     /// Ignored (with a hard error) when `df_increments = false`.
     pub df_increments_aux: Option<String>,
-    /// Run an internal stability analysis after the SCF converges, and report
-    /// whether the converged solution is a minimum or a SADDLE POINT. Default
-    /// `false` — the check costs a Davidson eigensolve whose every matvec is a
-    /// J/K build, and with it off the SCF path is bit-identical to a build with
-    /// no stability support at all.
+    /// Run a stability analysis after the SCF converges, and report whether
+    /// the converged solution is a minimum or a SADDLE POINT. Default `false`
+    /// — the check costs a Davidson eigensolve whose every matvec is a J/K
+    /// build, and with it off the SCF path is bit-identical to a build with no
+    /// stability support at all.
     ///
     /// DIAGNOSTIC ONLY: an instability prints a warning naming λ_min and the
     /// remedy, and never makes the run fail — a deliberately-unstable state (a
     /// cDFT diabat, a MOM excited state) is a legitimate thing to compute.
     ///
-    /// SCOPE: honoured for RHF/RKS (singlet channel) and UHF/UKS (independent
-    /// α/β rotations). ROHF/ROKS, range-separated functionals and meta-GGAs
-    /// are SKIPPED with a printed reason rather than analysed with the wrong
-    /// operator. See `ferric_scf::stability`.
+    /// SCOPE: on an RHF/HF run BOTH checks run and both verdicts are printed —
+    /// INTERNAL (the singlet channel: is this RHF solution an RHF minimum?)
+    /// and EXTERNAL RHF→UHF (the triplet channel: does breaking spin symmetry
+    /// lower the energy?). They routinely disagree, and that disagreement is
+    /// the point: water / 6-31G at r(OH) = 2.0 Å is internally stable
+    /// (+1.97e-2) and externally a saddle (−3.07e-1), with a broken-symmetry
+    /// UHF state 0.22 Ha lower. RKS runs get the internal verdict only (the
+    /// triplet XC kernel f_αα − f_αβ does not exist in this workspace, printed
+    /// as a skip). UHF/UKS get the internal verdict, which already spans the
+    /// independent α/β rotations. ROHF/ROKS, range-separated functionals and
+    /// meta-GGAs are SKIPPED entirely with a printed reason rather than
+    /// analysed with the wrong operator. See `ferric_scf::stability`.
     #[serde(default)]
     pub check_stability: bool,
-    /// UHF state selection: after convergence, check internal stability and,
-    /// if the solution is a SADDLE of the UHF orbital Hessian, follow the
-    /// downhill eigenvector and re-converge, keeping the lowest state
-    /// (`RhfConfig::scf_stability_descent`). Default `false`.
+    /// State selection: after convergence, check internal stability and, if
+    /// the solution is a SADDLE of the orbital Hessian (UHF, or the RHF
+    /// singlet channel), follow the downhill eigenvector and re-converge,
+    /// keeping the lowest state (`RhfConfig::scf_stability_descent`). Default
+    /// `false`.
     ///
     /// Same semantics as the Python `run_uhf(stability_descent=True)`: it
     /// turns on `check_stability` as well, because the descent acts on that
     /// verdict. Costs one Davidson per converged solve plus one SCF per
     /// descent taken. Needed where the default guess lands on a saddle (O2
-    /// triplet/STO-3G, N2+/6-31G).
+    /// triplet/STO-3G and N2+/6-31G with UHF; N2 at 1.6 Å/def2-SVP with RHF).
     ///
-    /// SCOPE: `task = "energy"` on the UHF/UKS route only (`kind = "uhf"`, or
-    /// `ksdft` on an open-shell molecule). ROHF has no implemented orbital
-    /// Hessian and RHF has no descent, so every other kind refuses the key
-    /// (see [`Config::validate_cli_wired_keys`]).
+    /// SCOPE: `task = "energy"` with `kind = "rhf"`, `"uhf"` or `"ksdft"`.
+    /// A KS functional with no stability verdict (range-separated, meta-GGA)
+    /// skips the descent with a printed reason. ROHF has no implemented
+    /// orbital Hessian, so `rohf` and every other kind refuse the key (see
+    /// [`Config::validate_cli_wired_keys`]).
     #[serde(default)]
     pub stability_descent: bool,
 }
@@ -2152,13 +2516,19 @@ impl Default for ScfCfg {
             guess: None,
             soscf: false,
             integral_thresh: 1e-12,
+            eri_precision: None,
+            jk_storage: None,
             k_builder: None,
             screening: None,
             cosx_grid: None,
+            cosx_final_pass: None,
+            cosx_final_grid: None,
+            cosx_grid_schedule: None,
             cosx_overlap_fit: None,
             cosx_backend: None,
             cosx_screen_thresh: None,
             cosx_half_transform: None,
+            cosx_fp64_multiplier: None,
             df_j_aux: None,
             df_k_aux: None,
             level_shift: None,
@@ -2175,12 +2545,22 @@ impl Default for ScfCfg {
     }
 }
 
-/// `[scf] cosx_grid = { radial = .., angular = .. }` — the COSX exchange grid.
-#[derive(Deserialize, Debug, Clone, Copy)]
+/// `[scf] cosx_grid = { radial = .., angular = .., prune = .. }` — a COSX
+/// exchange grid (also the shape of `cosx_final_grid`). `prune` omitted =
+/// flat; `"sgx"` = the pruned COSX scheme; `"none"` = flat.
+#[derive(Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct CosxGridCfg {
     pub radial: usize,
     pub angular: usize,
+    pub prune: Option<String>,
+}
+
+impl CosxGridCfg {
+    fn to_grid(&self, key: &str) -> Result<ferric_dft::grid::AtomicGridConfig, String> {
+        ferric_scf::cosx_k::grid_from_parts(self.radial, self.angular, self.prune.as_deref())
+            .map_err(|e| format!("[scf] {key}: {e}"))
+    }
 }
 
 impl ScfCfg {
@@ -2212,26 +2592,48 @@ impl ScfCfg {
     /// is exactly what the config-honesty convention forbids); an untabulated
     /// Lebedev order is a hard error here rather than a panic inside the grid
     /// builder; an unknown backend name is a hard error, never a default.
-    pub fn cosx_config(&self) -> Result<ferric_scf::cosx_k::CosxConfig, String> {
+    /// `router_allowed` is the resolved `[gpu]` side, true iff `precision = mixed`
+    /// AND `cosx-kern` is in the allowed kernel set
+    /// (`GpuSettings::mixed_allows(MixedKernel::CosxKern)`).
+    pub fn cosx_config(
+        &self,
+        router_allowed: bool,
+    ) -> Result<ferric_scf::cosx_k::CosxConfig, String> {
         use ferric_scf::cosx_k::{validate_grid, CosxBackend, CosxConfig, CosxHalfTransform};
         let is_cosx = self.k_builder.as_deref() == Some("cosx");
         let any_cosx_knob = self.cosx_grid.is_some()
+            || self.cosx_final_pass.is_some()
+            || self.cosx_final_grid.is_some()
+            || self.cosx_grid_schedule.is_some()
             || self.cosx_overlap_fit.is_some()
             || self.cosx_backend.is_some()
             || self.cosx_screen_thresh.is_some()
-            || self.cosx_half_transform.is_some();
+            || self.cosx_half_transform.is_some()
+            || self.cosx_fp64_multiplier.is_some();
         if !is_cosx && any_cosx_knob {
             return Err(format!(
-                "[scf] cosx_grid / cosx_overlap_fit / cosx_backend / cosx_screen_thresh / cosx_half_transform are set but k_builder = {:?}; they are only read with k_builder = \"cosx\"",
+                "[scf] cosx_grid / cosx_final_pass / cosx_final_grid / cosx_grid_schedule / cosx_overlap_fit / cosx_backend / cosx_screen_thresh / cosx_half_transform / cosx_fp64_multiplier are set but k_builder = {:?}; they are only read with k_builder = \"cosx\"",
                 self.k_builder
             ));
         }
         let mut cfg = CosxConfig::default();
-        if let Some(g) = self.cosx_grid {
-            cfg.grid.n_radial = g.radial;
-            cfg.grid.n_angular = g.angular;
-            validate_grid(&cfg.grid).map_err(|e| format!("[scf] cosx_grid: {e}"))?;
-        }
+        let grid = self
+            .cosx_grid
+            .as_ref()
+            .map(|g| g.to_grid("cosx_grid"))
+            .transpose()?;
+        let final_grid = self
+            .cosx_final_grid
+            .as_ref()
+            .map(|g| g.to_grid("cosx_final_grid"))
+            .transpose()?;
+        ferric_scf::cosx_k::apply_grid_knobs(&mut cfg, grid, self.cosx_final_pass, final_grid)
+            .map_err(|e| format!("[scf] {e}"))?;
+        validate_grid(&cfg.grid).map_err(|e| format!("[scf] cosx_grid: {e}"))?;
+        cfg.schedule = self
+            .cosx_grid_schedule
+            .unwrap_or(false)
+            .then(ferric_scf::cosx_schedule::CosxGridSchedule::default);
         if let Some(fit) = self.cosx_overlap_fit {
             cfg.overlap_fit = fit;
         }
@@ -2255,7 +2657,30 @@ impl ScfCfg {
             None if cfg.backend == CosxBackend::CosxA => cfg.screen_thresh = None,
             None => {}
         }
+        cfg.fp64_multiplier = self.resolve_fp64_multiplier(&cfg, router_allowed)?;
         Ok(cfg)
+    }
+
+    /// `[scf] cosx_fp64_multiplier`: refused as a dead knob unless the router
+    /// can act, defaulted to the seed only when it can.
+    fn resolve_fp64_multiplier(
+        &self,
+        cfg: &ferric_scf::cosx_k::CosxConfig,
+        router_allowed: bool,
+    ) -> Result<f64, String> {
+        use ferric_scf::cosx_k::{CosxBackend, COSX_DEFAULT_FP64_MULTIPLIER};
+        let acts =
+            cfg.backend == CosxBackend::Md3c1e && matches!(cfg.screen_thresh, Some(t) if t > 0.0);
+        match self.cosx_fp64_multiplier {
+            Some(m) if !(m >= 0.0) || !m.is_finite() => Err(format!(
+                "[scf] cosx_fp64_multiplier = {m}: must be a finite value >= 0 (0 disables the router)"
+            )),
+            Some(_) if !router_allowed => Err("[scf] cosx_fp64_multiplier requires k_builder = \"cosx\" and [gpu] precision = \"mixed\" with cosx-kern in mixed_kernels".into()),
+            Some(m) if m > 0.0 && !acts => Err("[scf] cosx_fp64_multiplier > 0 needs cosx_backend = \"md3c1e\" and cosx_screen_thresh > 0 (the router classifies by the screen's bound)".into()),
+            Some(m) => Ok(m),
+            None if router_allowed && acts => Ok(COSX_DEFAULT_FP64_MULTIPLIER),
+            None => Ok(0.0),
+        }
     }
 
     /// Parse the `diis` string into a `DiisFlavor` (strict — unknown values are a
@@ -2284,6 +2709,16 @@ impl ScfCfg {
                 .map_err(|e| format!("[scf] guess: {e}")),
         }
     }
+    /// The `[scf] jk_storage` policy, strictly parsed.
+    pub fn jk_storage_policy(
+        &self,
+    ) -> Result<Option<ferric_integrals::three_index_source::JkStorage>, String> {
+        self.jk_storage
+            .as_deref()
+            .map(ferric_integrals::three_index_source::JkStorage::parse)
+            .transpose()
+            .map_err(|e| format!("[scf] {e}"))
+    }
     /// Post-parse validation of the `[scf]` string knobs whose resolution is
     /// otherwise deferred to the point of use. Called from [`load_config`] so
     /// every entry point (CLI and `ferric-batch`) fails before any integral is
@@ -2291,6 +2726,11 @@ impl ScfCfg {
     pub fn validate(&self) -> Result<(), String> {
         self.diis_flavor()?;
         self.use_density_guess()?;
+        if let Some(p) = self.eri_precision {
+            (ferric_integrals::engine_pool::ERI_PRECISION_VAR.validate)(&p)
+                .map_err(|e| format!("[scf] eri_precision {p:e}: {e}"))?;
+        }
+        self.jk_storage_policy()?;
         for (i, rung) in self.ladder.iter().enumerate() {
             rung.use_sad_guess()
                 .map_err(|e| format!("[[scf.ladder]] rung {i}: {e}"))?;
@@ -2535,7 +2975,7 @@ fn open_shell_kinds(task: &str) -> &'static [&'static str] {
 /// stops before the basis is even loaded. (`run_optimize`/`run_frequencies`
 /// also refuse every kind they do not handle, but only after the geometry,
 /// basis and memory pool are set up.)
-const ENERGY_ONLY_KINDS: &[&str] = &["ccd", "ccsd(t)", "drpa", "linlccd-amplitude"];
+const ENERGY_ONLY_KINDS: &[&str] = &["ccd", "ccsd(t)", "drpa"];
 
 /// `method.kind`s whose Kohn-Sham reference is chosen by `[rpa] xc` (the same
 /// list `run()` uses to turn `[rpa] xc` into the SCF functional).
@@ -2768,10 +3208,10 @@ impl Config {
                     _ => "CCSD(T)",
                 }
             ),
-            "drpa" | "linlccd-amplitude" => format!(
-                "the amplitude-threshold kind = \"{kind}\" is closed-shell only (it localizes \
-                 a single restricted occupied space); no open-shell variant exists"
-            ),
+            "drpa" => "dRPA (exact or local) runs the drCCD Riccati solve on a single \
+                       restricted occupied space; no open-shell variant exists in the CLI \
+                       (open-shell RPA is kind = \"pdep-rpa\")"
+                .to_string(),
             "wb97x-l-v" => "open-shell wB97X-L-V is library-only \
                             (ferric_cc::double_hybrid::u_solve_wb97x_l_v)"
                 .to_string(),
@@ -2795,22 +3235,19 @@ impl Config {
     ///   Refused rather than warned: the result is a different method, not a
     ///   slightly different number.
     ///
-    /// * `[scf] k_builder = "cosx"` + any gradient task: every CLI gradient
-    ///   (`rhf_gradient`, `uhf_gradient`, `ks_gradient_*`, and the frequency
-    ///   driver's finite differences of them) is built from exact four-centre
-    ///   derivative integrals, and the RI-MP2/RPA optimizers ignore
-    ///   `k_builder` altogether. An optimize run therefore paired COSX
-    ///   energies with an exact-exchange gradient that is not their
-    ///   derivative: the optimizer steers to the exact-exchange stationary
-    ///   point while its energies (and its energy-change convergence test)
-    ///   come from COSX. MEASURED (water, central FD along one H z,
-    ///   1e-3 Angstrom): dE/dz from COSX energies minus dE/dz from exact-K
-    ///   energies = -8.9e-6 Ha/Bohr at STO-3G and -1.4e-5 at cc-pVDZ. That
-    ///   is under the default g_max (4.5e-4) for water, but it is a grid
-    ///   error that grows with system and basis (the COSX energy error is
-    ///   5e-6 Ha on water/cc-pVDZ and 1.2e-4 Ha on butane/def2-TZVP), and the
-    ///   published docs already list COSX as "no gradients"; this makes the
-    ///   CLI agree with them.
+    /// * `[scf] k_builder = "cosx"` + a gradient task on a kind whose
+    ///   gradient does not differentiate COSX (everything except
+    ///   [`COSX_GRADIENT_KINDS`]: the RI-MP2/RPA optimizers ignore
+    ///   `k_builder`). Pairing COSX energies with an exact-exchange gradient
+    ///   steers the optimizer to the exact-exchange stationary point while its
+    ///   energies come from COSX (measured on water by central FD: -8.9e-6
+    ///   Ha/Bohr at STO-3G, -1.4e-5 at cc-pVDZ). RHF/RKS, UHF/UKS and
+    ///   ROHF/ROKS route through `restricted_scf_gradient` /
+    ///   `unrestricted_scf_gradient` / `restricted_open_scf_gradient`, which
+    ///   differentiate the COSX (and RI-J) energy the SCF built, so they are
+    ///   admitted here; the library refuses the configurations those gradients
+    ///   do not cover (the overlap fit with a functional, or for ROHF/ROKS)
+    ///   before the SCF.
     pub fn validate_task_compat(&self) -> Result<(), String> {
         let kind = self.method.kind.as_str();
         let task = self.method.task.as_str();
@@ -2833,18 +3270,29 @@ impl Config {
             ));
         }
         self.validate_cli_wired_keys()?;
-        if task != "energy" && self.scf.k_builder.as_deref() == Some("cosx") {
+        if task != "energy"
+            && self.scf.k_builder.as_deref() == Some("cosx")
+            && !COSX_GRADIENT_KINDS.contains(&kind)
+        {
             return Err(format!(
-                "[scf] k_builder = \"cosx\" is not supported with method.task = \"{task}\": \
-                 COSX has no analytic gradient, and the gradient used here is built from \
-                 exact exchange (or ignores k_builder), so it would not be the derivative of \
-                 the COSX energy. Use k_builder = \"direct\" or \"link\" for gradient \
-                 tasks, or task = \"energy\" for COSX."
+                "[scf] k_builder = \"cosx\" is not supported with method.kind = \"{kind}\", \
+                 task = \"{task}\": this method's gradient is built from exact exchange (or \
+                 ignores k_builder), so it would not be the derivative of the COSX energy. \
+                 COSX gradients exist for kind = \"rhf\" / \"uhf\" / \"rohf\" / \"ksdft\"; \
+                 use k_builder = \"direct\" or \"link\" here, or task = \"energy\"."
             ));
         }
         Ok(())
     }
 }
+
+/// `method.kind`s whose optimize / frequencies tasks differentiate COSX
+/// exchange (`ferric_scf::gradient::restricted_scf_gradient` /
+/// `unrestricted_scf_gradient` / `restricted_open_scf_gradient` behind
+/// `optimize_geometry*` and the frequency driver): RHF/RKS, UHF/UKS and
+/// ROHF/ROKS (the library refuses the overlap fit with a functional, and for
+/// ROHF/ROKS, before the SCF). Every other kind's gradient ignores `k_builder`.
+const COSX_GRADIENT_KINDS: &[&str] = &["rhf", "ksdft", "uhf", "rohf"];
 
 /// `method.kind`s whose run honours `[pcm]`: the SCF-only kinds (the
 /// reported energy IS the solvated SCF energy; `solve_rhf`/`solve_uhf`/
@@ -2860,11 +3308,14 @@ impl Config {
     /// `[pcm]` section, run by [`load_config`] so a bad value fails at load
     /// time on every entry point.
     /// Every post-parse value check `load_config` runs, in order: memory,
-    /// SCF, the amplitude-threshold knobs, then the CLI-wired keys.
+    /// SCF, `[mp2] linlccd_variant` and the `[local]` values, then the
+    /// CLI-wired keys.
     fn validate_loaded_values(&self) -> Result<(), String> {
         self.memory.validate()?;
+        self.gpu.validate()?;
         self.scf.validate()?;
-        self.mp2.validate_amplitude_knobs()?;
+        self.mp2.linlccd_variant()?;
+        self.local_model()?;
         self.external_potential.validate()?;
         match &self.pcm {
             Some(pcm) => pcm.to_pcm_config().map(|_| ()),
@@ -2930,22 +3381,17 @@ impl Config {
                      steps, so the surface being followed would not be one surface."
                 ));
             }
-            let uhf_route = kind == "uhf" || (kind == "ksdft" && mult > 1);
-            if !uhf_route {
+            if !matches!(kind, "rhf" | "uhf" | "ksdft") {
                 let why = match kind {
                     "rohf" => "ROHF/ROKS has no implemented orbital Hessian (the Roothaan \
                                open-shell Hessian is a third operator), so there is no \
                                descent to follow"
                         .to_string(),
-                    "rhf" | "ksdft" => "the descent follows the UHF orbital Hessian; a \
-                                        restricted solve has none. Use kind = \"uhf\" (it \
-                                        may break spin symmetry, which is the point)"
-                        .to_string(),
-                    _ => format!("kind = \"{kind}\" does not run the UHF/UKS SCF route"),
+                    _ => format!("kind = \"{kind}\" does not run the descent-capable SCF"),
                 };
                 return Err(format!(
-                    "[scf] stability_descent is honoured by the UHF/UKS route only (kind = \
-                     \"uhf\", or \"ksdft\" on an open-shell molecule): {why}."
+                    "[scf] stability_descent is honoured by kind = \"rhf\", \"uhf\" and \
+                     \"ksdft\" only: {why}."
                 ));
             }
         }
@@ -2999,6 +3445,8 @@ impl Config {
             ));
         }
 
+        self.validate_local()?;
+
         if self.gw.reference.is_some() {
             self.gw.parse_reference()?;
             if kind != "gw" {
@@ -3015,6 +3463,133 @@ impl Config {
                         .to_string(),
                 );
             }
+        }
+        Ok(())
+    }
+}
+
+impl Config {
+    /// The local model of this run: `Ok(None)` when the method is computed
+    /// exactly (no `[local]`, or `scheme = "none"`), else the resolved
+    /// amplitude-threshold model. Value rules only; the kind rules are
+    /// [`Config::validate_local`]'s.
+    pub fn local_model(&self) -> Result<Option<LocalModel>, String> {
+        match &self.local {
+            None => Ok(None),
+            Some(l) => l.model(),
+        }
+    }
+
+    /// The kind/task rules of `[local]` and of the `[mp2]` keys a correlated
+    /// kind with a local variant does not read. Every refusal is a key the run
+    /// would otherwise silently ignore, or a combination no code path
+    /// implements:
+    ///
+    /// * `[local]` on a kind outside [`LOCAL_KINDS`];
+    /// * `eps_sweep` on anything but `drpa`, `integral_direct` on anything but
+    ///   `rimp2`;
+    /// * a local run with `task != "energy"` (no local gradient exists) or an
+    ///   open-shell molecule (every local path localizes one restricted
+    ///   occupied space);
+    /// * `[mp2] linlccd_variant` on any kind but `linlccd`;
+    /// * any other `[mp2]` key on `drpa`, `linlccd` or a local `rimp2`, which
+    ///   read only `auxbasis` and `frozen_core` (plus `linlccd_variant` for
+    ///   `linlccd`). The set of keys a file wrote comes from serde
+    ///   ([`Mp2Cfg::set_keys`]), so a new `[mp2]` field is covered without
+    ///   touching this list.
+    pub fn validate_local(&self) -> Result<(), String> {
+        let kind = self.method.kind.as_str();
+        let task = self.method.task.as_str();
+        if self.local.is_some() && !LOCAL_KINDS.contains(&kind) {
+            return Err(format!(
+                "[local] applies to method.kind = {} only; kind = \"{kind}\" has no local \
+                 approximation, so the section would be silently ignored. Remove [local].",
+                LOCAL_KINDS
+                    .iter()
+                    .map(|k| format!("\"{k}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        let model = self.local_model()?;
+        if self.mp2.linlccd_variant.is_some() && kind != "linlccd" {
+            return Err(format!(
+                "[mp2] linlccd_variant is read by method.kind = \"linlccd\" only; kind = \
+                 \"{kind}\" would silently ignore it"
+            ));
+        }
+        let read: Option<&[&str]> = match (kind, &model) {
+            ("drpa", _) => Some(&["auxbasis"][..]),
+            ("linlccd", _) => Some(&["auxbasis", "linlccd_variant"][..]),
+            ("rimp2", Some(_)) => Some(&["auxbasis"][..]),
+            _ => None,
+        };
+        if let Some(read) = read {
+            let stray: Vec<String> = self
+                .mp2
+                .set_keys()
+                .into_iter()
+                .filter(|k| !read.contains(&k.as_str()))
+                .collect();
+            if !stray.is_empty() {
+                let what = match (kind, &model) {
+                    (_, Some(_)) => format!("the local (amplitude-threshold) {kind}"),
+                    _ => format!("kind = \"{kind}\""),
+                };
+                let kappa_hint = if kind == "rimp2" && stray.iter().any(|k| k == "kappa") {
+                    " (kappa-regularized MP2 exists for the exact rimp2 only)"
+                } else {
+                    ""
+                };
+                return Err(format!(
+                    "[mp2] {} {} not read by {what}, which reads only [mp2] auxbasis and \
+                     frozen_core{}; the run would silently ignore {}{kappa_hint}",
+                    stray.join(", "),
+                    if stray.len() == 1 { "is" } else { "are" },
+                    if kind == "linlccd" {
+                        " and linlccd_variant"
+                    } else {
+                        ""
+                    },
+                    if stray.len() == 1 { "it" } else { "them" },
+                ));
+            }
+        }
+        let Some(model) = model else {
+            return Ok(());
+        };
+        if model.is_sweep && kind != "drpa" {
+            return Err(format!(
+                "[local] eps_sweep is supported for method.kind = \"drpa\" only (got \
+                 \"{kind}\"); use a single eps"
+            ));
+        }
+        if self
+            .local
+            .as_ref()
+            .and_then(|l| l.integral_direct)
+            .is_some()
+            && kind != "rimp2"
+        {
+            return Err(format!(
+                "[local] integral_direct is the integral-direct local MP2 and applies to \
+                 method.kind = \"rimp2\" only (got \"{kind}\")"
+            ));
+        }
+        if task != "energy" {
+            return Err(format!(
+                "[local] scheme = \"amplitude-threshold\" supports task = \"energy\" only (got \
+                 \"{task}\"): no local correlation method has a nuclear gradient. Remove \
+                 [local] to run the exact method's {task}."
+            ));
+        }
+        if self.molecule.multiplicity > 1 {
+            return Err(format!(
+                "[local] scheme = \"amplitude-threshold\" is closed-shell only (it localizes a \
+                 single restricted occupied space), but the molecule has multiplicity = {}. \
+                 Remove [local] to run the exact method.",
+                self.molecule.multiplicity
+            ));
         }
         Ok(())
     }
@@ -3231,7 +3806,6 @@ mod compat_guard_tests {
             "ccd",
             "ccsd(t)",
             "drpa",
-            "linlccd-amplitude",
             "linlccd",
             "laplace-sos-mp2",
             "bse-tda",
@@ -3376,14 +3950,14 @@ mod compat_guard_tests {
         );
     }
 
-    /// The CLI kinds with no nuclear gradient (`ccd`, `ccsd(t)`, `drpa`,
-    /// `linlccd-amplitude`) refuse `optimize`/`frequencies` in
-    /// `validate_task_compat`, before any integral. Removing the
-    /// `ENERGY_ONLY_KINDS` branch fails the `expect_err`s; the energy task and
-    /// a gradient-capable kind are the reachability anchors.
+    /// The CLI kinds with no nuclear gradient (`ccd`, `ccsd(t)`, `drpa`)
+    /// refuse `optimize`/`frequencies` in `validate_task_compat`, before any
+    /// integral. Removing the `ENERGY_ONLY_KINDS` branch fails the
+    /// `expect_err`s; the energy task and a gradient-capable kind are the
+    /// reachability anchors.
     #[test]
     fn energy_only_kinds_refuse_gradient_tasks() {
-        for kind in ["ccd", "ccsd(t)", "drpa", "linlccd-amplitude"] {
+        for kind in ["ccd", "ccsd(t)", "drpa"] {
             for task in ["optimize", "frequencies"] {
                 let e = cfg(kind, task, "").validate_task_compat().expect_err(kind);
                 assert!(
@@ -3396,14 +3970,14 @@ mod compat_guard_tests {
         assert_eq!(cfg("rimp2", "optimize", "").validate_task_compat(), Ok(()));
     }
 
-    /// `[mp2] linlccd_variant` is strict, and the eps knobs reject negative
-    /// and non-finite values. Each accepted spelling is checked to map to its
-    /// own variant (a parser that returned `Hh` for everything would pass a
-    /// bare `is_ok`).
+    /// `[mp2] linlccd_variant` is strict. Each accepted spelling is checked
+    /// to map to its own variant (a parser that returned `Hh` for everything
+    /// would pass a bare `is_ok`), and a bad value fails at LOAD (through
+    /// `validate_loaded_values`), not after the SCF.
     #[test]
-    fn amplitude_knobs_parse_strictly() {
+    fn linlccd_variant_parses_strictly() {
         use ferric_cc::linlccd::LadderVariant;
-        let mp2 = |extra: &str| cfg("linlccd-amplitude", "energy", &format!("[mp2]\n{extra}")).mp2;
+        let mp2 = |extra: &str| cfg("linlccd", "energy", &format!("[mp2]\n{extra}")).mp2;
         assert_eq!(mp2("").linlccd_variant(), Ok(LadderVariant::Hh));
         assert_eq!(
             mp2("linlccd_variant = \"hh\"").linlccd_variant(),
@@ -3418,57 +3992,281 @@ mod compat_guard_tests {
             Ok(LadderVariant::Full)
         );
         for bad in ["HH", "drivers", "pp", ""] {
-            let e = mp2(&format!("linlccd_variant = {bad:?}"))
-                .validate_amplitude_knobs()
-                .expect_err(bad);
+            let c = cfg(
+                "linlccd",
+                "energy",
+                &format!("[mp2]\nlinlccd_variant = {bad:?}"),
+            );
+            let e = c.validate_loaded_values().expect_err(bad);
             assert!(
                 e.contains("linlccd_variant") && e.contains("'drivers-only'"),
                 "{e}"
             );
         }
-        assert_eq!(mp2("").linlccd_eps(), Ok(1e-4));
-        assert_eq!(mp2("linlccd_eps = 0.0").linlccd_eps(), Ok(0.0));
-        assert!(mp2("linlccd_eps = -1e-4")
-            .validate_amplitude_knobs()
-            .is_err());
-        assert!(mp2("linlccd_eps = nan").validate_amplitude_knobs().is_err());
+    }
 
-        // dRPA: single point by default, sweep sorted + de-duplicated.
-        assert_eq!(mp2("").drpa_eps_points(), Ok((vec![1e-4], false)));
-        assert_eq!(
-            mp2("drpa_eps = 0.0").drpa_eps_points(),
-            Ok((vec![0.0], false))
+    /// `[local]` rules that do not depend on the kind: the scheme is strict,
+    /// `eps` is REQUIRED with the amplitude threshold (no default), every
+    /// other key is refused under `scheme = "none"`, values are range-checked,
+    /// the sweep is sorted + de-duplicated, and the integral-direct knobs need
+    /// `integral_direct = true`. Each refusal is its own case, so dropping
+    /// any one check fails exactly the case that names it.
+    #[test]
+    fn local_section_values_are_strict() {
+        let model = |body: &str| cfg("drpa", "energy", &format!("[local]\n{body}")).local_model();
+        // exact: absent section, empty section, explicit none
+        assert_eq!(cfg("drpa", "energy", "").local_model(), Ok(None));
+        assert_eq!(model(""), Ok(None));
+        assert_eq!(model("scheme = \"none\""), Ok(None));
+        // strict scheme
+        let e = model("scheme = \"amplitude_threshold\"").unwrap_err();
+        assert!(
+            e.contains("\"amplitude-threshold\"") && e.contains("\"none\""),
+            "{e}"
         );
+        let e = model("scheme = \"dlpno\"").unwrap_err();
+        assert!(e.contains("dlpno"), "{e}");
+        // eps required, no default
+        let e = model("scheme = \"amplitude-threshold\"").unwrap_err();
+        assert!(
+            e.contains("requires eps") && e.contains("no default"),
+            "{e}"
+        );
+        // eps = 0 is allowed (the exactness anchor)
+        let m = model("scheme = \"amplitude-threshold\"\neps = 0.0")
+            .unwrap()
+            .unwrap();
+        assert_eq!((m.eps, m.is_sweep, m.reference), (vec![0.0], false, false));
+        let m = model("scheme = \"amplitude-threshold\"\neps = 1e-4\nreference = true")
+            .unwrap()
+            .unwrap();
+        assert_eq!((m.eps, m.reference), (vec![1e-4], true));
+        for bad in ["-1e-4", "inf", "nan"] {
+            let e = model(&format!("scheme = \"amplitude-threshold\"\neps = {bad}")).unwrap_err();
+            assert!(e.contains("eps must be finite and >= 0"), "{bad}: {e}");
+        }
+        // sweep: sorted, de-duplicated, validated, exclusive with eps
+        let m = model("scheme = \"amplitude-threshold\"\neps_sweep = [1e-3, 0.0, 1e-3, 1e-4]")
+            .unwrap()
+            .unwrap();
+        assert_eq!((m.eps, m.is_sweep), (vec![0.0, 1e-4, 1e-3], true));
+        for bad in ["[]", "[1e-4, nan]", "[-1e-4]"] {
+            assert!(
+                model(&format!(
+                    "scheme = \"amplitude-threshold\"\neps_sweep = {bad}"
+                ))
+                .is_err(),
+                "{bad}"
+            );
+        }
+        let e =
+            model("scheme = \"amplitude-threshold\"\neps = 1e-4\neps_sweep = [1e-4]").unwrap_err();
+        assert!(e.contains("mutually exclusive"), "{e}");
+        // every key is refused under scheme = "none" (and with no scheme)
+        for (key, val) in [
+            ("eps", "1e-4"),
+            ("eps_sweep", "[1e-4]"),
+            ("reference", "true"),
+            ("reference", "false"),
+            ("integral_direct", "true"),
+            ("aux_radius", "10.0"),
+            ("gate_cal", "0.7"),
+        ] {
+            for scheme in ["scheme = \"none\"\n", ""] {
+                let e = model(&format!("{scheme}{key} = {val}")).unwrap_err();
+                assert!(
+                    e.contains(key) && e.contains("scheme = \"none\""),
+                    "{key} under none: {e}"
+                );
+            }
+        }
+        // direct knobs need integral_direct = true
+        for (key, val) in [
+            ("aux_radius", "10.0"),
+            ("virt_radius", "12.0"),
+            ("ao_tail", "1e-3"),
+            ("schwarz_skip", "1e-5"),
+            ("batch_merge", "4"),
+            ("gate_cal", "0.7"),
+            ("virt_schwarz_kappa", "1.0"),
+        ] {
+            for direct in ["", "integral_direct = false\n"] {
+                let e = model(&format!(
+                    "scheme = \"amplitude-threshold\"\neps = 1e-4\n{direct}{key} = {val}"
+                ))
+                .unwrap_err();
+                assert!(e.contains("integral_direct = true"), "{key}: {e}");
+            }
+        }
+        // direct defaults are the measured production values; values checked
+        let m = model("scheme = \"amplitude-threshold\"\neps = 1e-4\nintegral_direct = true")
+            .unwrap()
+            .unwrap();
         assert_eq!(
-            mp2("drpa_eps_sweep = [1e-3, 0.0, 1e-3, 1e-4]").drpa_eps_points(),
-            Ok((vec![0.0, 1e-4, 1e-3], true))
+            m.direct,
+            Some(LocalDirectKnobs {
+                aux_radius: 10.0,
+                virt_radius: 12.0,
+                ao_tail: 1e-3,
+                schwarz_skip: 1e-5,
+                batch_merge: 4,
+                gate_cal: None,
+                virt_schwarz_kappa: None,
+            })
         );
         for bad in [
-            "drpa_eps = -1.0",
-            "drpa_eps = inf",
-            "drpa_eps_sweep = []",
-            "drpa_eps_sweep = [1e-4, nan]",
-            "drpa_eps_sweep = [-1e-4]",
+            "aux_radius = 0.0",
+            "virt_radius = -1.0",
+            "ao_tail = -1e-3",
+            "schwarz_skip = nan",
+            "batch_merge = 0",
+            "gate_cal = 0.0",
+            "virt_schwarz_kappa = -1.0",
         ] {
-            assert!(mp2(bad).validate_amplitude_knobs().is_err(), "{bad}");
+            assert!(
+                model(&format!(
+                    "scheme = \"amplitude-threshold\"\neps = 1e-4\nintegral_direct = true\n{bad}"
+                ))
+                .is_err(),
+                "{bad}"
+            );
         }
-        assert!(!mp2("").drpa_reference());
-        assert!(mp2("drpa_reference = true").drpa_reference());
+        // a typo'd [local] key is a parse error
+        let src = "[molecule]\nxyz = \"w.xyz\"\n[basis]\nname = \"sto-3g\"\n[method]\n\
+                   kind = \"drpa\"\n[local]\nscheme = \"amplitude-threshold\"\nepsilon = 1e-4\n";
+        let e = toml::from_str::<Config>(src)
+            .err()
+            .expect("typo must not parse");
+        assert!(e.to_string().contains("epsilon"), "{e}");
+    }
+
+    /// `[local]` rules that depend on the kind/task/molecule, and the `[mp2]`
+    /// keys the local paths do not read. Each refusal is its own case.
+    #[test]
+    fn unread_mp2_keys_are_refused_even_when_non_finite() {
+        // serde_json maps a non-finite f64 to null, which once made
+        // `omega = nan` look unset and slip past the refusal.
+        for value in ["0.4", "nan", "inf", "-inf"] {
+            let body = format!("[mp2]\nomega = {value}\n");
+            assert_eq!(
+                cfg("drpa", "energy", &body).mp2.set_keys(),
+                vec!["omega".to_string()],
+                "{value}"
+            );
+            let e = cfg("drpa", "energy", &body)
+                .validate_task_compat()
+                .expect_err(value);
+            assert!(e.contains("omega"), "{value}: {e}");
+        }
+        assert!(cfg("drpa", "energy", "").mp2.set_keys().is_empty());
+    }
+
+    #[test]
+    fn local_section_kind_rules() {
+        let at = "[local]\nscheme = \"amplitude-threshold\"\neps = 1e-4\n";
+        let ok = |kind: &str, extra: &str| cfg(kind, "energy", extra).validate_task_compat();
+        // the three kinds accept the scheme
+        for kind in ["rimp2", "drpa", "linlccd"] {
+            assert_eq!(ok(kind, at), Ok(()), "{kind}");
+        }
+        // [local] on any other kind, even scheme = "none"
+        for kind in ["rhf", "ccsd", "pdep-rpa", "oo-rimp2", "scs-mp2"] {
+            for body in [at, "[local]\nscheme = \"none\"\n"] {
+                let e = ok(kind, body).expect_err(kind);
+                assert!(e.contains("[local] applies to") && e.contains(kind), "{e}");
+            }
+        }
+        // eps_sweep: drpa only
+        let sweep = "[local]\nscheme = \"amplitude-threshold\"\neps_sweep = [1e-4, 1e-3]\n";
+        assert_eq!(ok("drpa", sweep), Ok(()));
+        for kind in ["rimp2", "linlccd"] {
+            let e = ok(kind, sweep).expect_err(kind);
+            assert!(e.contains("eps_sweep") && e.contains("drpa"), "{e}");
+        }
+        // integral_direct: rimp2 only (true or false)
+        for flag in ["true", "false"] {
+            let direct = format!("{at}integral_direct = {flag}\n");
+            assert_eq!(ok("rimp2", &direct), Ok(()));
+            for kind in ["drpa", "linlccd"] {
+                let e = ok(kind, &direct).expect_err(kind);
+                assert!(e.contains("integral_direct") && e.contains("rimp2"), "{e}");
+            }
+        }
+        // local is energy-only
+        for task in ["optimize", "frequencies"] {
+            let e = cfg("rimp2", task, at)
+                .validate_task_compat()
+                .expect_err(task);
+            assert!(
+                e.contains("task = \"energy\" only") && e.contains(task),
+                "{e}"
+            );
+            assert_eq!(cfg("rimp2", task, "").validate_task_compat(), Ok(()));
+        }
+        // local is closed-shell only
+        let open = cfg("rimp2", "energy", at);
+        let open = Config {
+            molecule: MoleculeCfg {
+                multiplicity: 3,
+                ..open.molecule
+            },
+            ..open
+        };
+        let e = open.validate_task_compat().unwrap_err();
+        assert!(
+            e.contains("closed-shell only") && e.contains("multiplicity = 3"),
+            "{e}"
+        );
+        // [mp2] keys the local rimp2 does not read
+        let e = ok("rimp2", &format!("{at}[mp2]\nkappa = 1.45\n")).unwrap_err();
+        assert!(e.contains("kappa") && e.contains("exact rimp2 only"), "{e}");
+        assert_eq!(ok("rimp2", "[mp2]\nkappa = 1.45\n"), Ok(()));
+        let e = ok("rimp2", &format!("{at}[mp2]\nc_os = 1.2\n")).unwrap_err();
+        assert!(e.contains("c_os"), "{e}");
+        assert_eq!(
+            ok(
+                "rimp2",
+                &format!("{at}[mp2]\nauxbasis = \"cc-pvdz-ri\"\nfrozen_core = 1\n")
+            ),
+            Ok(())
+        );
+        // drpa and linlccd, exact or local
+        for kind in ["drpa", "linlccd"] {
+            for body in ["", at] {
+                let e = ok(kind, &format!("{body}[mp2]\nomega = 0.4\n")).expect_err(kind);
+                assert!(e.contains("omega"), "{kind}: {e}");
+            }
+        }
+        // linlccd_variant: linlccd only (exact and local)
+        let v = "[mp2]\nlinlccd_variant = \"full\"\n";
+        assert_eq!(ok("linlccd", v), Ok(()));
+        assert_eq!(ok("linlccd", &format!("{at}{v}")), Ok(()));
+        for kind in ["drpa", "rimp2"] {
+            let e = ok(kind, v).expect_err(kind);
+            assert!(e.contains("linlccd_variant"), "{e}");
+        }
     }
 
     /// Pre-fix, `k_builder = "cosx"` + optimize ran silently, pairing COSX
     /// energies with an exact-exchange gradient. Reverting the cosx branch of
     /// `validate_task_compat` fails the `expect_err`s; the `Ok` cases pin
     /// that COSX energies and exact-exchange gradients are both still allowed.
+    /// COSX gradient tasks are admitted exactly for the SCF kinds whose
+    /// library gradient differentiates COSX, and refused for the rest.
     #[test]
-    fn cosx_is_refused_on_every_gradient_task() {
+    fn cosx_gradient_tasks_are_admitted_only_where_a_cosx_gradient_exists() {
         let cosx = "[scf]\nk_builder = \"cosx\"\n";
         for task in ["optimize", "frequencies"] {
-            for kind in ["rhf", "uhf", "ksdft", "rimp2"] {
-                let e = cfg(kind, task, cosx)
-                    .validate_task_compat()
-                    .expect_err(task);
-                assert!(e.contains("cosx") && e.contains(task), "{e}");
+            let e = cfg("rimp2", task, cosx)
+                .validate_task_compat()
+                .expect_err(task);
+            assert!(e.contains("cosx") && e.contains(task), "{e}");
+            for kind in ["rhf", "uhf", "rohf", "ksdft"] {
+                assert_eq!(
+                    cfg(kind, task, cosx).validate_task_compat(),
+                    Ok(()),
+                    "{kind}"
+                );
             }
         }
         assert_eq!(cfg("rhf", "energy", cosx).validate_task_compat(), Ok(()));
@@ -5418,7 +6216,7 @@ json = [1, 2]
         );
         // 4 Angstrom in Bohr. A unit slip here yields a plausible wrong
         // answer rather than an error, which is why it is asserted.
-        let expect_z = 4.0 / 0.529_177_210_92;
+        let expect_z = 4.0 * ferric_core::units::ANGSTROM_TO_BOHR;
         assert!(
             (na.z - expect_z).abs() < 1e-9,
             "Na z = {} Bohr, expected {expect_z} (4 A)",
@@ -5647,6 +6445,38 @@ json = [1, 2]
             .scf
     }
 
+    /// `[scf] eri_precision` is range-checked at load, not first used mid-run.
+    #[test]
+    fn scf_eri_precision_is_validated_at_load() {
+        assert_eq!(scf_cfg("").eri_precision, None);
+        let ok = scf_cfg("eri_precision = 1e-16");
+        assert_eq!(ok.eri_precision, Some(1e-16));
+        assert!(ok.validate().is_ok());
+        for bad in ["1e-6", "-1e-20"] {
+            let err = scf_cfg(&format!("eri_precision = {bad}"))
+                .validate()
+                .unwrap_err();
+            assert!(err.contains("eri_precision"), "{bad}: {err}");
+        }
+    }
+
+    /// `[scf] jk_storage` is strict: the four spellings parse, anything else
+    /// errors at load and lists them.
+    #[test]
+    fn scf_jk_storage_is_strict() {
+        assert_eq!(scf_cfg("").jk_storage_policy().unwrap(), None);
+        for v in ["auto", "memory", "disk", "direct"] {
+            let cfg = scf_cfg(&format!("jk_storage = \"{v}\""));
+            assert!(cfg.validate().is_ok(), "{v}");
+            assert_eq!(cfg.jk_storage_policy().unwrap().unwrap().as_str(), v);
+        }
+        let err = scf_cfg("jk_storage = \"ram\"").validate().unwrap_err();
+        assert!(
+            err.contains("jk_storage") && err.contains("\"direct\""),
+            "{err}"
+        );
+    }
+
     /// `[scf] guess` used to accept ANY string: everything but "hcore" silently
     /// ran MINAO, so `guess = "hcroe"` produced a MINAO run the user did not ask
     /// for. Now: the valid spellings resolve, anything else errors and lists them.
@@ -5784,6 +6614,126 @@ json = [1, 2]
         }
     }
 
+    /// `[scf] cosx_fp64_multiplier`: default 0 (router off), `1e5` only when
+    /// the router is allowed, explicit values honoured, dead knob refused.
+    #[test]
+    fn cosx_fp64_multiplier_resolves_and_refuses_dead_knobs() {
+        let parse = |scf: &str| -> Config {
+            toml::from_str(&format!(
+                "[molecule]\nxyz = \"w.xyz\"\n[basis]\nname = \"sto-3g\"\n[method]\nkind = \"rhf\"\n[scf]\n{scf}"
+            ))
+            .unwrap()
+        };
+        let cosx = "k_builder = \"cosx\"\n";
+        // Router not allowed (f64 / cosx-kern not allowed): off, key absent.
+        let c = parse(cosx).scf.cosx_config(false).unwrap();
+        assert_eq!(c.fp64_multiplier, 0.0);
+        assert_eq!(
+            parse(cosx).scf.cosx_config(false).unwrap().fp64_multiplier,
+            0.0
+        );
+        // Allowed: the seed default; explicit values (including 0) win.
+        let c = parse(cosx).scf.cosx_config(true).unwrap();
+        assert_eq!(c.fp64_multiplier, 1e5);
+        for (v, want) in [("1e4", 1e4), ("0.0", 0.0), ("1e6", 1e6)] {
+            let c = parse(&format!("{cosx}cosx_fp64_multiplier = {v}\n"))
+                .scf
+                .cosx_config(true)
+                .unwrap();
+            assert_eq!(c.fp64_multiplier, want, "{v}");
+        }
+        // Allowed but the screen is off: nothing to route, default stays 0.
+        let c = parse(&format!("{cosx}cosx_screen_thresh = 0.0\n"))
+            .scf
+            .cosx_config(true)
+            .unwrap();
+        assert_eq!(c.fp64_multiplier, 0.0);
+        // Dead knob: any value while not allowed names the three conditions.
+        let e = parse(&format!("{cosx}cosx_fp64_multiplier = 1e5\n"))
+            .scf
+            .cosx_config(false)
+            .unwrap_err();
+        assert_eq!(e, "[scf] cosx_fp64_multiplier requires k_builder = \"cosx\" and [gpu] precision = \"mixed\" with cosx-kern in mixed_kernels");
+        let e = parse("k_builder = \"direct\"\ncosx_fp64_multiplier = 1e5\n")
+            .scf
+            .cosx_config(true)
+            .unwrap_err();
+        assert!(e.contains("only read with k_builder = \"cosx\""), "{e}");
+        // Bad values and a router that cannot act.
+        for bad in ["-1.0", "nan", "inf"] {
+            let e = parse(&format!("{cosx}cosx_fp64_multiplier = {bad}\n"))
+                .scf
+                .cosx_config(true)
+                .unwrap_err();
+            assert!(e.contains("finite value >= 0"), "{bad}: {e}");
+        }
+        let e = parse(&format!(
+            "{cosx}cosx_screen_thresh = 0.0\ncosx_fp64_multiplier = 1e5\n"
+        ))
+        .scf
+        .cosx_config(true)
+        .unwrap_err();
+        assert!(e.contains("cosx_screen_thresh > 0"), "{e}");
+    }
+
+    /// `[scf] cosx_grid_schedule`: off by default, `true` = the library
+    /// schedule defaults, a dead knob (hard error) without k_builder = "cosx"
+    /// even when `false`, and a strict bool.
+    #[test]
+    fn cosx_grid_schedule_key_resolves_strictly() {
+        let parse = |scf: &str| -> Config {
+            toml::from_str(&format!(
+                "[molecule]\nxyz = \"w.xyz\"\n[basis]\nname = \"sto-3g\"\n[method]\nkind = \"rhf\"\n[scf]\n{scf}"
+            ))
+            .unwrap()
+        };
+        // Grid schedule: off by default, on with the library defaults, dead
+        // knob without k_builder = "cosx" (also when set to false).
+        assert!(parse("k_builder = \"cosx\"\n")
+            .scf
+            .cosx_config(false)
+            .unwrap()
+            .schedule
+            .is_none());
+        assert!(parse("k_builder = \"cosx\"\ncosx_grid_schedule = false\n")
+            .scf
+            .cosx_config(false)
+            .unwrap()
+            .schedule
+            .is_none());
+        let s = parse("k_builder = \"cosx\"\ncosx_grid_schedule = true\n")
+            .scf
+            .cosx_config(false)
+            .unwrap()
+            .schedule
+            .expect("schedule on");
+        assert_eq!(
+            (
+                s.coarse_grid.n_radial,
+                s.coarse_grid.n_angular,
+                s.coarse_grid.prune
+            ),
+            ferric_scf::cosx_schedule::COSX_DEFAULT_COARSE_GRID
+        );
+        assert_eq!(
+            s.switch_dp_max,
+            ferric_scf::cosx_schedule::COSX_DEFAULT_SWITCH_DP_MAX
+        );
+        for kb in ["", "k_builder = \"link\"\n", "k_builder = \"direct\"\n"] {
+            for v in ["true", "false"] {
+                let e = parse(&format!("{kb}cosx_grid_schedule = {v}\n"))
+                    .scf
+                    .cosx_config(false)
+                    .unwrap_err();
+                assert!(e.contains("cosx_grid_schedule"), "{e}");
+            }
+        }
+        assert!(toml::from_str::<Config>(
+            "[molecule]\nxyz = \"w.xyz\"\n[basis]\nname = \"sto-3g\"\n[method]\nkind = \"rhf\"\n[scf]\nk_builder = \"cosx\"\ncosx_grid_schedule = \"yes\"\n"
+        )
+        .is_err());
+    }
+
     /// `[scf] cosx_grid` / `cosx_overlap_fit`: parse, resolve, and refuse
     /// when they would be dead knobs (k_builder != "cosx") or name an
     /// untabulated Lebedev order.
@@ -5795,9 +6745,21 @@ json = [1, 2]
             ))
             .unwrap()
         };
-        // Defaults: (50,110), fit on, density-driven screen at the library default.
-        let c = parse("k_builder = \"cosx\"\n").scf.cosx_config().unwrap();
-        assert_eq!((c.grid.n_radial, c.grid.n_angular), (50, 110));
+        // Defaults: pruned sgx (35,194) plus the sgx (50,302) final pass, fit
+        // on, density-driven screen at the library default.
+        let c = parse("k_builder = \"cosx\"\n")
+            .scf
+            .cosx_config(false)
+            .unwrap();
+        assert_eq!((c.grid.n_radial, c.grid.n_angular), (35, 194));
+        assert_eq!(c.grid.prune, Some(ferric_dft::prune::PruneScheme::Sgx));
+        assert!(c.final_grid.is_some() && !c.final_pass_explicit);
+        // cosx_final_pass = false turns the default pass off.
+        let c = parse("k_builder = \"cosx\"\ncosx_final_pass = false\n")
+            .scf
+            .cosx_config(false)
+            .unwrap();
+        assert!(c.final_grid.is_none());
         assert!(c.overlap_fit);
         assert_eq!(
             c.screen_thresh,
@@ -5810,7 +6772,7 @@ json = [1, 2]
         // Half transform: both spellings resolve, unknown values and dead knobs error.
         let c = parse("k_builder = \"cosx\"\ncosx_half_transform = \"dense\"\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .unwrap();
         assert_eq!(
             c.half_transform,
@@ -5818,7 +6780,7 @@ json = [1, 2]
         );
         let c = parse("k_builder = \"cosx\"\ncosx_half_transform = \"sparse\"\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .unwrap();
         assert_eq!(
             c.half_transform,
@@ -5827,13 +6789,13 @@ json = [1, 2]
         assert!(
             parse("k_builder = \"cosx\"\ncosx_half_transform = \"Dense\"\n")
                 .scf
-                .cosx_config()
+                .cosx_config(false)
                 .is_err()
         );
         assert!(
             parse("k_builder = \"link\"\ncosx_half_transform = \"dense\"\n")
                 .scf
-                .cosx_config()
+                .cosx_config(false)
                 .is_err()
         );
         // Screen knob: explicit value honoured, 0 disables, negative/NaN refused,
@@ -5841,47 +6803,47 @@ json = [1, 2]
         // (which resolves to None by itself, never a refusal from the default).
         let c = parse("k_builder = \"cosx\"\ncosx_screen_thresh = 1e-9\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .unwrap();
         assert_eq!(c.screen_thresh, Some(1e-9));
         let c = parse("k_builder = \"cosx\"\ncosx_screen_thresh = 0.0\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .unwrap();
         assert_eq!(c.screen_thresh, Some(0.0));
         assert!(parse("k_builder = \"cosx\"\ncosx_screen_thresh = -1e-7\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .is_err());
         assert!(parse("k_builder = \"cosx\"\ncosx_screen_thresh = nan\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .is_err());
         assert!(parse("k_builder = \"link\"\ncosx_screen_thresh = 1e-7\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .is_err());
         assert!(parse(
             "k_builder = \"cosx\"\ncosx_backend = \"cosx-a\"\ncosx_screen_thresh = 1e-7\n"
         )
         .scf
-        .cosx_config()
+        .cosx_config(false)
         .is_err());
         let c = parse("k_builder = \"cosx\"\ncosx_backend = \"cosx-a\"\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .unwrap();
         assert!(c.screen_thresh.is_none());
         let c =
             parse("k_builder = \"cosx\"\ncosx_backend = \"cosx-a\"\ncosx_screen_thresh = 0.0\n")
                 .scf
-                .cosx_config()
+                .cosx_config(false)
                 .unwrap();
         assert_eq!(c.screen_thresh, Some(0.0));
         // Explicit knobs are honoured.
         let c = parse("k_builder = \"cosx\"\ncosx_grid = { radial = 75, angular = 302 }\ncosx_overlap_fit = false\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .unwrap();
         assert_eq!((c.grid.n_radial, c.grid.n_angular), (75, 302));
         assert!(!c.overlap_fit);
@@ -5890,42 +6852,42 @@ json = [1, 2]
         assert_eq!(c.backend, CosxBackend::Md3c1e);
         let c = parse("k_builder = \"cosx\"\ncosx_backend = \"cosx-a\"\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .unwrap();
         assert_eq!(c.backend, CosxBackend::CosxA);
         let c = parse("k_builder = \"cosx\"\ncosx_backend = \"md3c1e\"\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .unwrap();
         assert_eq!(c.backend, CosxBackend::Md3c1e);
         assert!(parse("k_builder = \"cosx\"\ncosx_backend = \"libint\"\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .is_err());
         assert!(parse("k_builder = \"cosx\"\ncosx_backend = \"cosx_a\"\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .is_err());
         // Dead-knob refusal.
         assert!(parse("cosx_overlap_fit = false\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .is_err());
         assert!(parse("cosx_backend = \"md3c1e\"\n")
             .scf
-            .cosx_config()
+            .cosx_config(false)
             .is_err());
         assert!(
             parse("k_builder = \"link\"\ncosx_grid = { radial = 50, angular = 110 }\n")
                 .scf
-                .cosx_config()
+                .cosx_config(false)
                 .is_err()
         );
         // Untabulated angular order is a typed error, not a panic.
         assert!(
-            parse("k_builder = \"cosx\"\ncosx_grid = { radial = 50, angular = 194 }\n")
+            parse("k_builder = \"cosx\"\ncosx_grid = { radial = 50, angular = 146 }\n")
                 .scf
-                .cosx_config()
+                .cosx_config(false)
                 .is_err()
         );
         // Typo inside the inline table hard-errors at parse time.
@@ -5933,44 +6895,45 @@ json = [1, 2]
         assert!(toml::from_str::<Config>(s).is_err());
     }
 
-    /// `[mp2] lmp2_reference` (opt-in canonical reference for lmp2 and
-    /// lmp2-direct): absent means OFF; `true`/`false` parse; a non-bool value
-    /// and a misspelled key are hard errors (deny_unknown_fields), never a
-    /// silent default.
-    ///
-    /// Fails if reverted: with `lmp2_reference()` defaulting to true (the old
-    /// always-on behaviour) the first assert fails; if the field were removed
-    /// the `lmp2_reference = true` document would stop parsing; if the type
-    /// were loosened to a string the `"yes"` case would parse.
+    /// The kinds and `[mp2]` keys the local approximation used to live
+    /// under are GONE, not aliased: each fails as an unknown kind / unknown
+    /// key. A silently accepted old key would run the exact method under a
+    /// file that asks for a local one (or the reverse).
     #[test]
-    fn lmp2_reference_is_an_opt_in_strict_bool() {
+    fn removed_local_kinds_and_keys_are_rejected() {
         let base = "[molecule]\nxyz = \"w.xyz\"\n[basis]\nname = \"6-31g\"\n\
-                    [method]\nkind = \"lmp2-direct\"\n[mp2]\nauxbasis = \"cc-pvdz-ri\"\n";
-        let absent: Config = toml::from_str(base).unwrap();
-        assert!(
-            !absent.mp2.lmp2_reference(),
-            "the canonical reference must be OFF when the key is absent"
-        );
-        let on: Config = toml::from_str(&format!("{base}lmp2_reference = true\n")).unwrap();
-        assert!(on.mp2.lmp2_reference());
-        let off: Config = toml::from_str(&format!("{base}lmp2_reference = false\n")).unwrap();
-        assert!(!off.mp2.lmp2_reference());
-        // a non-bool value is a parse error, not a coerced default
-        for bad in ["\"yes\"", "\"true\"", "1"] {
+                    [method]\nkind = \"rimp2\"\n[mp2]\n";
+        for key in [
+            "lmp2_eps = 1e-4",
+            "lmp2_reference = true",
+            "drpa_eps = 1e-4",
+            "drpa_reference = true",
+            "drpa_eps_sweep = [1e-4]",
+            "linlccd_eps = 1e-4",
+            "direct_aux_radius = 10.0",
+            "direct_virt_radius = 12.0",
+            "direct_ao_tail = 1e-3",
+            "direct_schwarz_skip = 1e-5",
+            "direct_batch_merge = 4",
+            "direct_gate_cal = 0.7",
+            "direct_virt_schwarz_kappa = 1.0",
+        ] {
+            let name = key.split(' ').next().unwrap();
+            let e = toml::from_str::<Config>(&format!("{base}{key}\n"))
+                .err()
+                .unwrap_or_else(|| panic!("[mp2] {name} must not parse"));
+            assert!(e.to_string().contains(name), "{name}: {e}");
+        }
+        for kind in ["lmp2", "lmp2-direct", "linlccd-amplitude"] {
             assert!(
-                toml::from_str::<Config>(&format!("{base}lmp2_reference = {bad}\n")).is_err(),
-                "lmp2_reference = {bad} must not parse"
+                !crate::SUPPORTED_METHOD_KINDS.contains(&kind),
+                "{kind} must not be a supported kind"
+            );
+            assert!(
+                crate::unsupported_method_message(kind).contains(&format!("\"{kind}\"")),
+                "{kind}"
             );
         }
-        // a typo'd key errors and names itself
-        let err = match toml::from_str::<Config>(&format!("{base}lmp2_referense = true\n")) {
-            Ok(_) => panic!("typo'd lmp2_reference key parsed — deny_unknown_fields regressed"),
-            Err(e) => e.to_string(),
-        };
-        assert!(
-            err.contains("lmp2_referense"),
-            "error should name the bad key: {err}"
-        );
     }
 
     /// Unknown/typo'd keys must be a parse error, not silently ignored. A
@@ -6030,8 +6993,62 @@ trunc_threshold = 1e-12
         assert!(DispersionRequest::parse_config_str("d3bj", None).is_err());
         // An empty parenthesised name is an error, not an empty lookup.
         assert!(DispersionRequest::parse_config_str("d3bj()", Some("PBE")).is_err());
-        // Unknown schemes error.
-        for bad in ["d4", "xdm", "vv10", "yes", "true", "0", "none", "off"] {
+        // MBD@rsSCS: "mbd" takes the running functional, case-insensitively.
+        assert_eq!(
+            DispersionRequest::parse_config_str("mbd", Some("PBE")).unwrap(),
+            DispersionRequest::Mbd {
+                functional: "PBE".to_string()
+            }
+        );
+        assert_eq!(
+            DispersionRequest::parse_config_str("MBD", Some("pbe0")).unwrap(),
+            DispersionRequest::Mbd {
+                functional: "pbe0".to_string()
+            }
+        );
+        // An explicit functional overrides the running one.
+        assert_eq!(
+            DispersionRequest::parse_config_str("MBD(HSE06)", Some("PBE")).unwrap(),
+            DispersionRequest::Mbd {
+                functional: "hse06".to_string()
+            }
+        );
+        // No functional to fall back on, an empty name, and a functional with
+        // no published beta are all errors -- never a default beta.
+        assert!(DispersionRequest::parse_config_str("mbd", None).is_err());
+        assert!(DispersionRequest::parse_config_str("mbd()", Some("PBE")).is_err());
+        let err = DispersionRequest::parse_config_str("mbd", Some("B3LYP"))
+            .expect_err("B3LYP has no published MBD@rsSCS beta");
+        assert!(err.to_string().contains("B3LYP"), "{err}");
+        assert!(DispersionRequest::parse_config_str("mbd(blyp)", Some("PBE")).is_err());
+
+        // Unknown schemes error, and the message lists every accepted spelling.
+        let err = DispersionRequest::parse_config_str("d4", Some("PBE")).unwrap_err();
+        for spelling in [
+            "d3bj",
+            "d3(bj)",
+            "d3bj(<functional>)",
+            "\"mbd\"",
+            "mbd(<functional>)",
+        ] {
+            assert!(
+                err.to_string().contains(spelling),
+                "{spelling} missing: {err}"
+            );
+        }
+        for bad in [
+            "d4",
+            "xdm",
+            "vv10",
+            "yes",
+            "true",
+            "0",
+            "none",
+            "off",
+            "mbd@rsscs",
+            "mbd-nl",
+            "ts",
+        ] {
             assert!(
                 DispersionRequest::parse_config_str(bad, Some("PBE")).is_err(),
                 "{bad:?} must be rejected; omitting the key is the only way to \
@@ -6165,9 +7182,9 @@ mp2v_vv10_damping = "terfc"
 
         let att = cfg.mp2.build_att_vv10_config(&water(), None).unwrap();
         assert!((att.r0_angstrom() - 1.00).abs() < 1e-12);
-        // 1.00 A = 1.8897259886 Bohr; ~0.529 would mean the conversion inverted.
+        // 1.00 A = 1/0.52917721092 Bohr; ~0.529 would mean the conversion inverted.
         assert!(
-            (att.r0_bohr - 1.889_725_988_6).abs() < 1e-9,
+            (att.r0_bohr - ferric_core::units::ANGSTROM_TO_BOHR).abs() < 1e-12,
             "got {}",
             att.r0_bohr
         );
@@ -7832,7 +8849,7 @@ impl QmmmCfg {
         use ferric_core::FerricError;
         use ferric_scf::qmmm::{BoundaryChargeScheme, QmSelection, QmmmAtom, QmmmSystem};
 
-        const ANGSTROM_TO_BOHR: f64 = 1.0 / 0.529_177_210_92;
+        use ferric_core::units::ANGSTROM_TO_BOHR;
 
         let have_indices = !self.qm_indices.is_empty();
         let have_radial = !self.qm_seeds.is_empty() || self.qm_radius_angstrom.is_some();
@@ -8063,25 +9080,26 @@ mod cli_wired_keys_tests {
     // ---- [scf] stability_descent ----
 
     #[test]
-    fn stability_descent_is_the_uhf_route_on_energy_only() {
+    fn stability_descent_is_rhf_uhf_ksdft_on_energy_only() {
         let sd = "[scf]\nstability_descent = true\n";
-        cfg("uhf", "energy", 3, sd)
-            .validate_cli_wired_keys()
-            .unwrap();
-        cfg("uhf", "energy", 1, sd)
-            .validate_cli_wired_keys()
-            .unwrap();
-        cfg("ksdft", "energy", 3, sd)
-            .validate_cli_wired_keys()
-            .unwrap();
+        for (kind, mult) in [
+            ("uhf", 3),
+            ("uhf", 1),
+            ("ksdft", 3),
+            ("ksdft", 1),
+            ("rhf", 1),
+        ] {
+            cfg(kind, "energy", mult, sd)
+                .validate_cli_wired_keys()
+                .unwrap_or_else(|e| panic!("{kind} mult {mult}: {e}"));
+        }
         refused(
             &cfg("rohf", "energy", 3, sd),
             "ROHF/ROKS has no implemented",
         );
-        refused(&cfg("rhf", "energy", 1, sd), "restricted solve has none");
-        refused(&cfg("ksdft", "energy", 1, sd), "restricted solve has none");
-        refused(&cfg("rimp2", "energy", 1, sd), "UHF/UKS route only");
+        refused(&cfg("rimp2", "energy", 1, sd), "\"rhf\", \"uhf\" and");
         refused(&cfg("uhf", "optimize", 3, sd), "task = \"energy\" only");
+        refused(&cfg("rhf", "optimize", 1, sd), "task = \"energy\" only");
         // Default off.
         assert!(!cfg("uhf", "energy", 3, "").scf.stability_descent);
     }
@@ -8115,7 +9133,7 @@ mod cli_wired_keys_tests {
 
     #[test]
     fn grid_keys_are_refused_where_they_cannot_apply() {
-        let bad_ang = cfg("ksdft", "energy", 1, "[dft]\ngrid_angular = 194\n");
+        let bad_ang = cfg("ksdft", "energy", 1, "[dft]\ngrid_angular = 146\n");
         let e = bad_ang.validate_dft_section().unwrap_err();
         assert!(e.contains("not a supported Lebedev order"), "{e}");
         let zero = cfg("ksdft", "energy", 1, "[dft]\ngrid_radial = 0\n");

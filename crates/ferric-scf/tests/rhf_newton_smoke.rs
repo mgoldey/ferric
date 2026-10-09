@@ -251,6 +251,7 @@ fn rhf_hessian_matvec_matches_finite_difference() {
         f_mo: &f_mo,
         nocc,
         k_mix_sr: 1.0, // pure HF
+        rsh: None,
         fxc: None,
         thresh: 1e-12,
         ooc_budget: ferric_core::memory::resolve_budget_bytes(None),

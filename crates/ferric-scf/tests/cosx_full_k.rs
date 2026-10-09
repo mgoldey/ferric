@@ -304,7 +304,14 @@ fn cosx_full_k_cell() {
         overlap_fit: fit,
         screen_thresh,
         half_transform: half,
-        ..CosxConfig::default()
+        // Pinned: the flat (50,110) grid this harness's records were taken on.
+        grid: ferric_dft::grid::AtomicGridConfig {
+            n_radial: 50,
+            n_angular: 110,
+            prune: None,
+        },
+        final_grid: None,
+        ..CosxConfig::flat_reference()
     };
     if let Ok(g) = std::env::var("COSX_FK_GRID") {
         let (r, a) = g

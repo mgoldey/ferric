@@ -1,13 +1,17 @@
 mod config;
+mod gpu_flag;
 mod periodic;
 
 use config::{load_config, Config};
+/// The `[local]` model types, re-exported for the Python bindings, which
+/// apply the SAME rules to their `local=`/`eps=` kwargs.
+pub use config::{LocalCfg, LocalDirectKnobs, LocalModel, LocalScheme};
 use ferric_cc::ccd::ccd;
 use ferric_cc::ccsd::ccsd;
 use ferric_cc::ccsd_closed_shell::ccsd_closed_shell;
 use ferric_cc::ccsd_t_closed_shell::ccsd_t_closed_shell;
 use ferric_cc::double_hybrid::{run_wb97x_l_v, DoubleHybridConfig};
-use ferric_cc::linlccd::{linlccd, LadderVariant};
+use ferric_cc::linlccd::linlccd;
 use ferric_cc::CcConfig;
 use ferric_core::basis;
 use ferric_core::basis::BasisSet;
@@ -28,42 +32,30 @@ use ferric_mp2::scs::{scs_mp2, scs_mp2_2terfc, ScsMp2Config, ScsMp2TerfcConfig};
 use ferric_rpa::config::{QuadratureConfig, SternheimerConfig};
 use ferric_rpa::{run_pdep_rpa, PdepRpaConfig};
 use ferric_scf::optimize::{
-    optimize_geometry_rohf, optimize_geometry_uhf, optimize_geometry_with_correction,
-    OptimizeConfig,
+    optimize_geometry_rohf_with_scf_correction, optimize_geometry_uhf_with_scf_correction,
+    optimize_geometry_with_scf_correction, OptimizeConfig,
 };
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::rohf::solve_rohf;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
 
-/// Run `f` on a private single-thread rayon pool.
-///
-/// Free-atom / proatom SCFs are tiny (one atom, ~10-30 basis functions). On the
-/// global multi-thread pool, rayon's per-task coordination overhead dwarfs the
-/// actual Fock-build work — a single S atom at aug-cc-pVDZ took 179 s with
-/// RAYON_NUM_THREADS=8 vs 9.6 s with 1 (18× slower). Since every TS volume and
-/// Hirshfeld proatom triggers such a solve, the penalty made 2nd-row molecules
-/// (h2s, hcl) take 40-60 min. Confining these inner solves to one thread keeps
-/// the big molecular SCF/RPA fully parallel while making the atoms fast.
-fn run_serial<F, R>(f: F) -> R
-where
-    F: FnOnce() -> R + Send,
-    R: Send,
-{
-    match rayon::ThreadPoolBuilder::new().num_threads(1).build() {
-        Ok(pool) => pool.install(f),
-        Err(_) => f(), // if pool creation fails, just run inline
-    }
-}
-
-fn print_usage() {
-    eprintln!("usage: ferric [--verbose|-v] [--json <path>|--no-json] <input.toml>");
+/// The synopsis and one-line description at the top of `--help`.
+fn print_usage_head() {
+    eprintln!(
+        "usage: ferric [--verbose|-v] [--json <path>|--no-json] [--gpu <preset>] <input.toml>"
+    );
+    eprintln!("       ferric --version|-V");
     eprintln!();
     eprintln!("Run a ferric quantum-chemistry calculation from a TOML input file.");
     eprintln!(
         "See examples/*.toml for sample inputs and site/src/using/quickstart.md for a walkthrough."
     );
     eprintln!();
+}
+
+fn print_usage() {
+    print_usage_head();
     eprintln!("  --verbose, -v   Print one line per SCF iteration to stdout (energy, dE,");
     eprintln!("                  density/DIIS error) as the job runs. Same effect as setting");
     eprintln!("                  `verbose = true` in the [scf] TOML section.");
@@ -71,6 +63,23 @@ fn print_usage() {
     eprintln!("                  Overrides `[output] json`. A run log is written BY");
     eprintln!("                  DEFAULT to <input-stem>.ferric.jsonl beside the input.");
     eprintln!("  --no-json       Do not write a run log. Same as `[output] json = false`.");
+    gpu_flag::print_help();
+    eprintln!("  --version, -V   Print which build this is (version, git commit, dirty");
+    eprintln!("                  flag, build profile, libint version) and exit.");
+}
+
+/// The `ferric --version` text: one `key: value` line per field, the same
+/// fields `ferric.build_info()` returns in Python. Every value is fixed at
+/// compile time (see the `ferric-build-info` crate).
+pub fn version_text() -> String {
+    format!(
+        "ferric {}\ncommit: {}\ndirty: {}\nprofile: {}\nlibint: {}\n",
+        ferric_build_info::VERSION,
+        ferric_build_info::COMMIT,
+        ferric_build_info::dirty_str(),
+        ferric_build_info::PROFILE,
+        ferric_integrals::libint_version(),
+    )
 }
 
 /// The `method.kind`s graded Proven or Proven (narrow). They never appear in
@@ -97,10 +106,10 @@ pub const PROVEN_METHOD_KINDS: &[&str] = &[
     "ccsd(t)",
     "linlccd",
     "drpa",
-    "linlccd-amplitude",
     "tda",
     "tddft",
     "oo-rimp2",
+    "wb97x-l-v",
 ];
 
 /// Epistemic-status warnings for `method.kind` values that are graded Smoke
@@ -134,12 +143,14 @@ pub const EPISTEMIC_WARNINGS: &[(&str, &str)] = &[
     (
         "tdhf-static-polarizability",
         "method.kind = \"tdhf-static-polarizability\" is Smoke-grade (see site/src/reference/validation.md): \
-         static alpha is NOT validated -- the one case checked (water/cc-pVDZ, RPAx@PBE, \
-         [gw] scissor = 0.36 Ha) gives 5.20 a.u. vs the DOSD reference 9.64, 46% low (an \
-         earlier 'matches DOSD' figure came from scissor = 0.0 and a negative alpha diagonal, \
-         and is retracted), and the same dense TDHF/RPAx kernel gives C6 ~63% low regardless \
-         of gap. At the default scissor = 0.0 this kernel is prone to a genuine excitonic \
-         instability that yields a NEGATIVE alpha diagonal; the run hard-errors instead of \
+         the kernel (statically screened RPAx, not bare TDHF) matches an independent numpy build \
+         of the same kernel to 5e-9 relative only at matched settings (exact-J SCF, [rpa] \
+         trunc_thresh = 0; the default is 1e-4). Its PHYSICS is not validated: water/cc-pVDZ, \
+         RPAx@PBE, [gw] scissor = 0.36 Ha gives 5.20 a.u. vs the DOSD reference 9.64, 46% low, \
+         and the independent build gives the same 5.20. The same kernel gives C6 ~63% low \
+         regardless of gap; do not use it for dispersion. At the default scissor = 0.0 this \
+         kernel is prone to a genuine excitonic instability that yields a NEGATIVE alpha \
+         diagonal (the independent build reproduces it); the run hard-errors instead of \
          returning it, so if the job aborts on an unphysical alpha diagonal, set [gw] scissor \
          to ~0.3-0.4 Ha rather than treating it as a crash.",
     ),
@@ -153,22 +164,15 @@ pub const EPISTEMIC_WARNINGS: &[(&str, &str)] = &[
     ),
     (
         "mp2-v",
-        "method.kind = \"mp2-v\" is Smoke-grade (see site/src/reference/validation.md): the VV10 half is proven \
-         bit-identical to the wB97X-V code path and the damping is validated by limits, but there \
+        "method.kind = \"mp2-v\" is Smoke-grade (see site/src/reference/validation.md): the damped VV10 \
+         half and the erfc-attenuator control match PySCF/numpy references, but the published \
+         terfc-attenuated MP2 half has no independent reference, and there \
          is NO comparison to any published MP2-V number (the paper reports only S66/G2 statistics, \
          never a total energy). The defaults (r0 = 1.00 A, b = 11.0, C = 0.0089, terfc, post-HF) \
          are fitted for aug-cc-pVTZ, no counterpoise, frozen core -- running another basis, or \
          with [mp2] frozen_core = 0 (the default here), is unparameterized extrapolation. \
          Open-shell (multiplicity > 1) is DOUBLY unvalidated: S66 is entirely closed-shell, so no \
          open-shell parameterization exists at all.",
-    ),
-    (
-        "wb97x-l-v",
-        "method.kind = \"wb97x-l-v\" is Smoke-grade (see site/src/reference/validation.md): the functional runs \
-         end to end and its pieces (E_KS, E_c, the lambda scaling, the omega range separation) are \
-         separately checked against the paper's structure and limits, but NO reference value for \
-         the TOTAL energy exists in ferric -- nothing compares it to the paper or to another code. \
-         Do not quote a wB97X-L-V total energy as validated.",
     ),
     (
         "b2plyp",
@@ -189,8 +193,8 @@ pub const EPISTEMIC_WARNINGS: &[(&str, &str)] = &[
 ///
 /// SINGLE SOURCE for both the accept check in [`run`] and the error message
 /// ([`unsupported_method_message`]). The two used to be a `matches!` and a
-/// hand-written string, and the string drifted: it omitted `lmp2` and
-/// `lmp2-direct`, which the `matches!` accepted. `tests/method_kinds_are_listed.rs`
+/// hand-written string, and the string drifted: it omitted two kinds the
+/// `matches!` accepted. `tests/method_kinds_are_listed.rs`
 /// checks this list against the dispatch arms in `run`, so a kind added to
 /// one and not the other fails a test.
 pub const SUPPORTED_METHOD_KINDS: &[&str] = &[
@@ -199,8 +203,6 @@ pub const SUPPORTED_METHOD_KINDS: &[&str] = &[
     "rohf",
     "ksdft",
     "rimp2",
-    "lmp2",
-    "lmp2-direct",
     "mp3",
     "oo-rimp2",
     "att-rimp2",
@@ -218,7 +220,6 @@ pub const SUPPORTED_METHOD_KINDS: &[&str] = &[
     "ccd",
     "ccsd(t)",
     "linlccd",
-    "linlccd-amplitude",
     "drpa",
     "wb97x-l-v",
     "b2plyp",
@@ -258,6 +259,37 @@ pub fn main() {
     run(std::env::args().collect())
 }
 
+/// Install the GPU backend from `[gpu]`, or print `error: ...` and exit 1 when
+/// an explicit `on` cannot be honoured. Extracted from `run` to keep its
+/// cyclomatic complexity at the baseline.
+fn install_gpu_or_exit(cfg: &Config, cli_preset: Option<ferric_core::gpu::GpuPreset>) {
+    let explicit = ferric_core::gpu::GpuSettingsExplicit {
+        cli_preset,
+        ..cfg.gpu.explicit()
+    };
+    if let Err(e) = ferric_core::gpu::install(explicit) {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    }
+}
+
+/// Install the process-wide integral settings from `[scf]`. One CLI run is one
+/// job, so these are globals; validated here so a bad value fails before any
+/// work.
+///
+/// * `eri_precision`: libint primitive-screening precision for every SCF J/K
+///   engine.
+/// * `jk_storage`: where the raw RI-J/K three-index tensor lives.
+fn install_integral_settings(scf: &config::ScfCfg) -> Result<(), String> {
+    ferric_integrals::engine_pool::set_eri_precision(scf.eri_precision)
+        .map_err(|e| format!("[scf] {e}"))?;
+    ferric_integrals::three_index_source::set_jk_storage(scf.jk_storage_policy()?);
+    // Refuse a malformed FERRIC_JK_STORAGE here, as a malformed TOML value is,
+    // instead of warning and running as `auto` at the first RI-J build.
+    ferric_integrals::three_index_source::validate_jk_storage()?;
+    Ok(())
+}
+
 /// The actual CLI, taking argv explicitly instead of reading
 /// `std::env::args()` itself. Split out so a caller whose real OS-process
 /// argv does NOT match `[program_name, ...user_args]` can reconstruct that
@@ -294,10 +326,16 @@ pub fn run(args: Vec<String>) {
     // this, running the release binary directly oversubscribes rayon × BLAS.
     ferric_integrals::blas_threads::init_threading();
     let ctx = ParallelContext::new();
+    if args.len() == 2 && (args[1] == "--version" || args[1] == "-V") {
+        print!("{}", version_text());
+        std::process::exit(0);
+    }
     if args.len() < 2 || args[1] == "--help" || args[1] == "-h" {
         print_usage();
         std::process::exit(if args.len() < 2 { 2 } else { 0 });
     }
+    // `--gpu <preset>` is taken out first so it can sit anywhere on the line.
+    let (args, cli_gpu) = gpu_flag::extract_or_exit(args);
     // Accept the positional TOML path plus an optional `--verbose`/`-v` flag,
     // in either order (`ferric -v input.toml` or `ferric input.toml -v`).
     // `-v`/`--verbose` sets RhfConfig.verbose (live per-iteration SCF
@@ -331,7 +369,9 @@ pub fn run(args: Vec<String>) {
         std::process::exit(2);
     }
     let Some(toml_path) = toml_path else {
-        eprintln!("usage: ferric [--verbose|-v] <input.toml>");
+        eprintln!(
+            "usage: ferric [--verbose|-v] [--json <path>|--no-json] [--gpu <preset>] <input.toml>"
+        );
         std::process::exit(2);
     };
     let mut cfg = match load_config(toml_path) {
@@ -342,6 +382,14 @@ pub fn run(args: Vec<String>) {
         }
     };
     cfg.scf.verbose = cfg.scf.verbose || cli_verbose;
+    if let Err(e) = install_integral_settings(&cfg.scf) {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    }
+    eprintln!(
+        "ERI precision: {:e}",
+        ferric_integrals::engine_pool::eri_precision()
+    );
 
     // Machine-readable JSON run log. ON BY DEFAULT (see `config::OutputCfg`):
     // a result whose run left no artifact cannot be checked afterwards, and
@@ -390,48 +438,37 @@ pub fn run(args: Vec<String>) {
         eprintln!("error: unsupported method.task = \"{task}\"; expected energy, optimize, or frequencies");
         std::process::exit(1);
     }
-    // [dft] dispersion — same task guard as grid_prune below, for the same
-    // reason. The correction is applied inside `run_ksdft`, which only the
-    // "energy" task reaches: `optimize` and `frequencies` return above. A
-    // configured correction would therefore be silently DROPPED unless the task
-    // path applies it itself, and the run would report a plain KS-DFT geometry
-    // or Hessian as though it were dispersion-corrected.
-    // `optimize` IS supported: the D3(BJ) analytic gradient is implemented and
-    // threaded through `optimize_geometry_with_correction`, so the energy and
-    // the gradient describe the same surface.
-    //
-    // `frequencies` is NOT, and that is a real gap rather than an oversight: a
-    // Hessian needs the SECOND derivative, which does not exist here. The
-    // frequency driver finite-differences the analytic gradient, so it WOULD
-    // silently produce a dispersion-corrected Hessian if allowed through --
-    // correct in principle, but 6N extra SCF+D3 evaluations whose accuracy has
-    // never been checked against anything. Refused until it is measured.
-    if cfg.dft.dispersion.is_some() && task == "frequencies" {
-        eprintln!(
-            "error: [dft] dispersion is not yet supported with method.task = \
-             \"frequencies\". The D3(BJ) analytic GRADIENT exists (so task = \
-             \"optimize\" works), but the finite-difference Hessian built from it \
-             has not been validated. Use task = \"energy\" or \"optimize\"."
-        );
-        std::process::exit(1);
-    }
+    // [dft] dispersion on `optimize` / `frequencies`: the correction is
+    // applied inside `run_ksdft`, which only the "energy" task reaches, so each
+    // of those tasks applies it itself. Both thread the analytic D3(BJ) or
+    // MBD@rsSCS gradient through a closure that sees the converged SCF at every
+    // geometry (`optimize_geometry_with_scf_correction`,
+    // `harmonic_frequencies_with_scf_correction`), so the energy, the gradient
+    // and the finite-difference Hessian all describe one surface. UKS
+    // `optimize` takes the same correction through
+    // `optimize_geometry_uhf_with_scf_correction` (MBD@rsSCS with the
+    // unrestricted Z-vector) and ROKS `optimize` through
+    // `optimize_geometry_rohf_with_scf_correction` (the ROKS Z-vector);
+    // `frequencies` passes the reference to
+    // `harmonic_frequencies_with_scf_correction`, which solves the matching
+    // UKS/ROKS SCF at every displaced geometry.
     // ...and the same for the METHOD, which the task guard above does not
     // cover. The correction is evaluated only where a Kohn-Sham SCF result is
     // printed (`print_scf_energy`), so a plain `rhf` energy run passes the
     // task check, dispatches to `run_rhf`, and never sees the dispersion key
     // at all -- reporting a plain HF energy from a config that asks for a
-    // corrected one. There is no correct answer to substitute either:
-    // D3(BJ)'s damping parameters are fitted PER FUNCTIONAL, so there is no
-    // such thing as "D3(BJ) for Hartree-Fock" without naming a fit. Any KS
-    // SCF qualifies: `ksdft`, or `rhf`/`uhf`/`rohf` with `[dft] functional`.
+    // corrected one. There is no correct answer to substitute either: D3(BJ)'s
+    // damping parameters and MBD@rsSCS's beta are fitted PER FUNCTIONAL, so
+    // there is no such thing as "D3(BJ) for Hartree-Fock" without naming a
+    // fit. Any KS SCF qualifies: `ksdft`, or `rhf`/`uhf`/`rohf` with `[dft] functional`.
     if cfg.dft.dispersion.is_some() && cfg.ks_functional().is_none() {
         eprintln!(
             "error: [dft] dispersion is only supported on a Kohn-Sham SCF (method.kind = \
              \"ksdft\", or rhf/uhf/rohf with [dft] functional); got kind = \"{method}\" \
-             without one. D3(BJ) is evaluated on the KS-DFT path only, so this run would \
-             silently report an UNCORRECTED energy. Its damping parameters are fitted per \
-             functional, so there is no default fit to apply here -- remove the dispersion \
-             key, or use kind = \"ksdft\"."
+             without one. Dispersion is evaluated on the KS-DFT path only, so this run would \
+             silently report an UNCORRECTED energy. Its parameters (D3(BJ) damping, MBD@rsSCS \
+             beta) are fitted per functional, so there is no default fit to apply here -- \
+             remove the dispersion key, or use kind = \"ksdft\"."
         );
         std::process::exit(1);
     }
@@ -451,6 +488,13 @@ pub fn run(args: Vec<String>) {
             }
         },
     };
+    if grid_prune == Some(ferric_dft::prune::PruneScheme::Sgx) {
+        eprintln!(
+            "error: [dft] grid_prune = \"sgx\" is the COSX exchange grid's scheme \
+             ([scf] cosx_grid); the XC grid is validated with \"nwchem\" or \"none\" only."
+        );
+        std::process::exit(1);
+    }
     if grid_prune.is_some() && task != "energy" {
         eprintln!(
             "error: [dft] grid_prune is supported for method.task = \"energy\" only \
@@ -600,6 +644,12 @@ pub fn run(args: Vec<String>) {
         ferric_core::memory::pool::install_global(pool);
         eprintln!("[ferric] {}", resolution.audit_line());
     }
+    // GPU backend: resolve + probe + install the device pool, or refuse an
+    // explicit `on` that cannot be honoured (no device, bad ordinal, or a build
+    // without the gpu feature). Runs before anything calls `gpu::status()` so
+    // the installed settings are the TOML-aware ones. Printed next to the
+    // memory audit so every run states where its GEMMs go.
+    install_gpu_or_exit(&cfg, cli_gpu);
     let rhf_config = RhfConfig {
         xc_omega: None,
         max_iter: cfg.scf.max_iter,
@@ -614,14 +664,29 @@ pub fn run(args: Vec<String>) {
         smearing_sigma: cfg.scf.smearing_sigma,
         integral_thresh: cfg.scf.integral_thresh,
         k_builder: cfg.scf.k_builder.clone(),
-        cosx: cfg.scf.cosx_config().unwrap_or_else(|e| {
-            eprintln!("error: {e}");
-            std::process::exit(1);
-        }),
+        cosx: cfg
+            .scf
+            .cosx_config(
+                ferric_core::gpu::settings().mixed_allows(ferric_core::gpu::MixedKernel::CosxKern),
+            )
+            .unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }),
         // Shared spelling parser: "exact"/"none"/"off"/"conventional" mean
         // the same "" (no density fitting) as in the Python bindings.
         df_j_aux: cfg.scf.df_j_aux_resolved().or(df_j_default),
-        df_k_aux: cfg.scf.df_k_aux_resolved().or(df_k_default),
+        // RIJCOSX: `k_builder = "cosx"` replaces RI-K, so the RI-K default
+        // is not applied under it (an explicit `df_k_aux` next to COSX is
+        // refused by the SCF as a conflict).
+        df_k_aux: cfg
+            .scf
+            .df_k_aux_resolved()
+            .or(if cfg.scf.k_builder.as_deref() == Some("cosx") {
+                None
+            } else {
+                df_k_default
+            }),
         xc,
         // `None` keeps `AtomicGridConfig::default()` (75x110, unpruned) —
         // byte-identical to the historical path. Only a `[dft] grid_prune`
@@ -648,6 +713,7 @@ pub fn run(args: Vec<String>) {
         // cDFT is not CLI-wired (constraints above are always empty), so this
         // is inert here; it is listed only because the literal is exhaustive.
         cdft_max_outer: 30,
+        cdft_lambda_init: None,
         // SCF accelerators, both opt-in and OFF here. Neither is CLI-wired
         // yet; these are listed only because the literal is exhaustive.
         //
@@ -670,7 +736,7 @@ pub fn run(args: Vec<String>) {
         // field is how a new knob gets noticed here instead of silently
         // acquiring whatever the Default impl says.
         cdft_stability_descent: true,
-        // `[scf] stability_descent` (UHF/UKS route only; other kinds were
+        // `[scf] stability_descent` (rhf, uhf and ksdft; other kinds were
         // refused by `Config::validate_cli_wired_keys`). It needs the
         // stability verdict, so it turns `check_stability` on too, exactly as
         // the Python `run_uhf(stability_descent=True)` does.
@@ -713,6 +779,10 @@ pub fn run(args: Vec<String>) {
     // run, written before any expensive work so it survives even a job killed
     // in the first SCF iteration. No-op when no log is installed.
     if let Some(rl) = ferric_scf::runlog::log() {
+        ferric_scf::runlog::set_build_identity(
+            ferric_build_info::VERSION,
+            ferric_build_info::short_commit().as_deref(),
+        );
         rl.run_start(
             serde_json::json!({
                 "method": method,
@@ -777,7 +847,7 @@ pub fn run(args: Vec<String>) {
     }
 
     if method == "uhf" {
-        run_uhf(&cfg, &ctx, &mol, &bs, &prep, &bounds, &rhf_config);
+        run_uhf(&cfg, &ctx, &mol, &bs, op, &prep, &bounds, &rhf_config);
         return;
     }
 
@@ -825,6 +895,9 @@ pub fn run(args: Vec<String>) {
         );
         return;
     }
+
+    // An exact `drpa` that cannot fit is refused here, before the SCF.
+    preflight_exact_drpa(&cfg, &mol, &prep, budget_bytes);
 
     // RHF and closed-shell KS-DFT both run through `solve_rhf` (KS-DFT is
     // `solve_rhf` with `cfg.xc` set), so both take the level-shift ladder. This
@@ -977,72 +1050,11 @@ pub fn run(args: Vec<String>) {
         })
     };
 
-    // Ad-hoc same-basis Hirshfeld proatom: neutral free-atom densities computed
-    // in the molecule's OWN basis (basis-consistent partition; fixes the legacy
-    // single-Slater H-starvation). Built lazily via atomic SCF; shared by all
-    // Hirshfeld consumers (charges, effective volumes, per-atom polarizability).
-    let proatom_radii: Vec<f64> = (1..=600).map(|k| k as f64 * 0.05).collect(); // 0.05..30 Bohr
-    let proatom_gs_mult = |z: i32| -> usize {
-        match z {
-            // Doublets: H, Li, B, F, Na, Al, Cl, Ga, Br (one unpaired p/s e⁻)
-            1 | 3 | 5 | 9 | 11 | 13 | 17 | 31 | 35 | 53 => 2,
-            // ²S alkali-like heavy atoms + coinage metals (single ns valence e⁻):
-            // K, Cu, Rb, Ag. Kept in sync with guess::atom_ground_state_mult —
-            // without these an odd-electron atom hits `_ => 1` and its closed-shell
-            // proatom RHF fails at iter 0 (breaks the Hirshfeld/TS proatom for any
-            // Cu/K/Rb/Ag-containing molecule).
-            19 | 29 | 37 | 47 => 2,
-            // Triplets (³P): C, O, Si, S, Ge, Se
-            6 | 8 | 14 | 16 | 32 | 34 => 3,
-            // Quartets (⁴S): N, P, As
-            7 | 15 | 33 => 4,
-            // Odd electron count can never be a singlet: default odd Z to a doublet.
-            _ if z % 2 == 1 => 2,
-            _ => 1,
-        }
-    };
-    let proatom = |z: i32, qi: i32| -> Option<ferric_rpa::properties::RadialProatom> {
-        if qi != 0 || z - qi <= 0 {
-            return None; // neutral only; ions via fallback
-        }
-        let sym = ferric_core::elements::z_to_symbol(z).unwrap_or("X");
-        let axyz = format!("1\n{sym}\n{sym} 0 0 0\n");
-        let amol = Molecule::parse_xyz(&axyz, 0, proatom_gs_mult(z)).ok()?;
-        let aobs = PreparedBasis::new(&amol, &bs).ok()?;
-        let abounds = SchwarzBounds::compute(op, &aobs).ok()?;
-        let mut acfg = rhf_config.clone();
-        // Run the single-atom SCF on a 1-thread pool — see run_serial.
-        let adens = run_serial(|| {
-            if proatom_gs_mult(z) == 1 {
-                // `.filter(|r| r.converged)`: solve_rhf returns Ok even when it
-                // hits max_iter (see rhf.rs), so a bare `.ok()` accepts a
-                // NON-CONVERGED free-atom density exactly like a converged one
-                // and silently blends it into the Hirshfeld charges. Reject it
-                // here so this atom falls to the documented fallback instead.
-                solve_rhf(&ctx, &amol, &aobs, op, &abounds, &acfg)
-                    .ok()
-                    .filter(|r| r.converged)
-                    .map(|r| r.density_r().to_owned())
-            } else {
-                acfg.mom_after_iter = 5;
-                // KS-DFT free-atom solve: fractional/ensemble occupation spreads
-                // the open-shell electrons equally over degenerate frontier
-                // orbitals (e.g. Br 4p⁵ ²P, O/S 2p³ ³P), restoring spherical
-                // symmetry so the GGA XC potential doesn't oscillate. Pure HF
-                // free-atom solves don't suffer this (K is orbital-invariant in
-                // the degenerate subspace), so only enable when xc is set.
-                if acfg.xc.is_some() {
-                    acfg.fractional_occ = true;
-                }
-                // Same convergence gate as the closed-shell branch above.
-                solve_uhf(&ctx, &amol, &aobs, &abounds, &acfg)
-                    .ok()
-                    .filter(|r| r.converged)
-                    .map(|r| r.density_total().to_owned())
-            }
-        })?;
-        ferric_rpa::properties::spherically_averaged_proatom(z, &bs, &adens, &proatom_radii).ok()
-    };
+    // Same-basis Hirshfeld proatom: neutral free-atom SCF densities in the
+    // molecule's OWN basis and SCF settings, built lazily per call. Shared by
+    // all Hirshfeld consumers (charges, effective volumes, per-atom
+    // polarizability) and by the Python `ferric.hirshfeld_charges` default.
+    let proatom = ferric_scf::properties::scf_proatom_provider(&ctx, &bs, op, &rhf_config);
 
     // Snapshot the scalars the terminal log record needs BEFORE the dispatch:
     // one arm (`run_pdep_rpa_arm`) takes `result` by value. Three `Copy`
@@ -1053,13 +1065,28 @@ pub fn run(args: Vec<String>) {
     let scf_converged = result.converged;
     let scf_exit = result.exit;
     let scf_iterations = result.iterations;
+    let cosx_final = result.cosx_final;
+    // `[dft] dispersion` is admitted only on a Kohn-Sham SCF (guarded above),
+    // and the closed-shell KS route dispatches as "ksdft". Evaluated ONCE here
+    // and shared by the printout and the terminal `run_end` record.
+    let dispersion = if method == "ksdft" {
+        dispersion_correction(
+            &cfg,
+            &ctx,
+            &mol,
+            &bs,
+            op,
+            &rhf_config,
+            result.density_total(),
+        )
+    } else {
+        None
+    };
 
     match method {
         "rhf" => run_rhf(&cfg, &bs, &prep, &result),
-        "ksdft" => run_ksdft(&cfg, &mol, &bs, &prep, &result),
+        "ksdft" => run_ksdft(&cfg, &bs, &prep, &result, dispersion.as_ref()),
         "rimp2" => run_rimp2(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
-        "lmp2" => run_lmp2(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
-        "lmp2-direct" => run_lmp2_direct(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "mp3" => run_mp3(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "oo-rimp2" => run_oo_rimp2(
             &cfg,
@@ -1082,9 +1109,6 @@ pub fn run(args: Vec<String>) {
         "ccd" => run_ccd(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "ccsd(t)" => run_ccsd_t(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "drpa" => run_drpa(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
-        "linlccd-amplitude" => {
-            run_linlccd_amplitude(&cfg, &mol, &bs, &prep, op, &result, budget_bytes)
-        }
         "laplace-mp2" => run_laplace_mp2(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "laplace-sos-mp2" => run_laplace_sos_mp2(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "pdep-rpa" => run_pdep_rpa_arm(
@@ -1098,7 +1122,6 @@ pub fn run(args: Vec<String>) {
             &rhf_config,
             result,
             budget_bytes,
-            &proatom_gs_mult,
             &proatom,
         ),
         "gw" => run_gw(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
@@ -1145,10 +1168,7 @@ pub fn run(args: Vec<String>) {
         "ccd",
         "ccsd(t)",
         "linlccd",
-        "linlccd-amplitude",
         "drpa",
-        "lmp2",
-        "lmp2-direct",
         "mp2-v",
         "rs-mp2-rpa",
     ];
@@ -1159,25 +1179,61 @@ pub fn run(args: Vec<String>) {
         }
     }
     if let Some(rl) = ferric_scf::runlog::log() {
-        rl.run_end(
-            scf_energy,
-            scf_converged,
-            &format!("{scf_exit:?}"),
-            serde_json::json!({
-                // The kind as written, like the `run_start` header (`method`
-                // is the dispatch kind by now: `rhf` + functional reads
-                // "ksdft" there).
-                "method": cfg.method.kind,
-                "task": task,
-                "scf_iterations": scf_iterations,
-                "energy_is": if method == "rhf" || method == "uhf" || method == "rohf" || method == "ksdft" {
-                    "total"
-                } else {
-                    "scf_reference_only"
-                },
-            }),
+        let mut extra = serde_json::json!({
+            // The kind as written, like the `run_start` header (`method`
+            // is the dispatch kind by now: `rhf` + functional reads
+            // "ksdft" there).
+            "method": cfg.method.kind,
+            "task": task,
+            "scf_iterations": scf_iterations,
+            "energy_is": if method == "rhf" || method == "uhf" || method == "rohf" || method == "ksdft" {
+                "total"
+            } else {
+                "scf_reference_only"
+            },
+        });
+        // With a dispersion correction, `energy` is the corrected TOTAL (what
+        // `energy_is: "total"` promises) and the SCF energy and the correction
+        // are recorded alongside it. Without one, no key is added.
+        let energy = match (&dispersion, extra.as_object_mut()) {
+            (Some(d), Some(obj)) => {
+                obj.insert("scf_energy".to_string(), serde_json::json!(scf_energy));
+                obj.insert("dispersion".to_string(), d.to_json());
+                scf_energy + d.energy
+            }
+            _ => scf_energy,
+        };
+        if let (Some(f), Some(obj)) = (cosx_final, extra.as_object_mut()) {
+            obj.insert("cosx_final_pass".to_string(), cosx_final_json(&f));
+        }
+        rl.run_end(energy, scf_converged, &format!("{scf_exit:?}"), extra);
+    }
+}
+
+/// Print the two COSX energies of a final-grid pass (no-op without one).
+fn print_cosx_final(result: &ferric_scf::result::ScfResult) {
+    if let Some(f) = result.cosx_final {
+        println!(
+            "  COSX final grid: E(SCF grid, {} pts) = {:.10}, E(final grid, {} pts) = {:.10} \
+             Hartree (reported; gradients use the SCF grid)",
+            f.npts_scf, f.e_scf_grid, f.npts_final, f.e_final
         );
     }
+}
+
+/// The run-log record of a COSX final-grid pass: both energies, both point
+/// counts, and which of the two an analytic gradient of this run
+/// differentiates (the SCF-grid one; see `ferric_scf::cosx_k::CosxFinalPass`).
+fn cosx_final_json(f: &ferric_scf::cosx_k::CosxFinalPass) -> serde_json::Value {
+    serde_json::json!({
+        "e_scf_grid": f.e_scf_grid,
+        "e_final": f.e_final,
+        "delta": f.e_final - f.e_scf_grid,
+        "npts_scf_grid": f.npts_scf,
+        "npts_final_grid": f.npts_final,
+        "energy_reported": "e_final",
+        "gradient_differentiates": "e_scf_grid",
+    })
 }
 
 /// `RhfConfig::pcm` from `[pcm]` (`None` when the section is absent). The
@@ -1281,66 +1337,336 @@ fn run_rhf(
     println!("  iterations = {}", result.iterations);
     println!("  converged  = {}", result.converged);
     println!("  energy     = {:.10} Hartree", result.energy);
+    print_cosx_final(result);
 }
 
 /// `method.kind = "ksdft"`. Extracted verbatim from the former `main()`
 /// `"ksdft" => { ... }` match arm.
 fn run_ksdft(
     cfg: &Config,
-    mol: &Molecule,
     bs: &BasisSet,
     prep: &PreparedBasis,
     result: &ferric_scf::result::ScfResult,
+    dispersion: Option<&DispersionCorrection>,
 ) {
     let functional = cfg.dft.functional.as_deref().unwrap_or("LDA");
     println!("KS-DFT[{functional}]/{} on {}", bs.name, cfg.molecule.xyz);
     println!("  nbasis     = {}", prep.nbasis());
     println!("  iterations = {}", result.iterations);
     println!("  converged  = {}", result.converged);
-    print_scf_energy(cfg, mol, result.energy);
+    print_scf_energy(result.energy, dispersion);
+    print_cosx_final(result);
 }
 
-/// The `[dft] dispersion` correction for `mol`, if one was asked for:
-/// `(parameter set, E_disp)`. A failure EXITS rather than letting the caller
-/// print an uncorrected energy under a heading that claims a correction was
-/// applied.
-fn d3_correction(cfg: &Config, mol: &Molecule) -> Option<(String, f64)> {
+/// A `[dft] dispersion` correction evaluated at one geometry.
+///
+/// Computed ONCE per single point and shared by the printout and the JSON run
+/// log, so the two can never disagree and MBD's free-atom SCFs never run twice.
+struct DispersionCorrection {
+    /// Model label as printed and logged: `"D3(BJ)"` or `"MBD@rsSCS"`.
+    model: &'static str,
+    /// The functional whose published parameters were used.
+    params: String,
+    /// Dispersion energy (Hartree), ADDED to the SCF energy.
+    energy: f64,
+    /// MBD@rsSCS only: the range-separation β and the Hirshfeld volume ratios
+    /// v_A / v_A^free the TS inputs were scaled by.
+    mbd: Option<(f64, Vec<f64>)>,
+}
+
+impl DispersionCorrection {
+    /// The dispersion lines of an SCF printout: the uncorrected KS energy, the
+    /// correction, and the corrected total on the `energy` line.
+    fn print(&self, scf_energy: f64) {
+        println!("  E(KS-DFT)  = {scf_energy:.10} Hartree");
+        match &self.mbd {
+            None => {
+                println!(
+                    "  E(D3BJ)    = {:+.10} Hartree [params: {}]",
+                    self.energy, self.params
+                );
+                println!(
+                    "  energy     = {:.10} Hartree (KS-DFT + D3(BJ), two-body)",
+                    scf_energy + self.energy
+                );
+            }
+            Some((beta, _)) => {
+                println!(
+                    "  E(MBD@rsSCS) = {:+.10} Hartree [beta: {beta}, functional: {}]",
+                    self.energy, self.params
+                );
+                println!(
+                    "  energy     = {:.10} Hartree (KS-DFT + MBD@rsSCS)",
+                    scf_energy + self.energy
+                );
+            }
+        }
+    }
+
+    /// The `"dispersion"` object of the JSON run log.
+    fn to_json(&self) -> serde_json::Value {
+        let mut v = serde_json::json!({
+            "model": self.model,
+            "params": self.params,
+            "energy": self.energy,
+        });
+        if let (Some((beta, ratios)), Some(obj)) = (&self.mbd, v.as_object_mut()) {
+            obj.insert("beta".to_string(), serde_json::json!(beta));
+            obj.insert("volume_ratios".to_string(), serde_json::json!(ratios));
+        }
+        v
+    }
+}
+
+/// The parsed `[dft] dispersion` request, if the key is set. A parse error
+/// (unknown spelling, or a functional with no published parameters) EXITS.
+fn dispersion_request(cfg: &Config) -> Option<crate::config::DispersionRequest> {
     let spec = cfg.dft.dispersion.as_deref()?;
-    let req =
+    Some(
         crate::config::DispersionRequest::parse_config_str(spec, cfg.dft.functional.as_deref())
             .unwrap_or_else(|e| {
                 eprintln!("error: {e}");
                 std::process::exit(1);
+            }),
+    )
+}
+
+/// The `[dft] dispersion` correction at `mol`, if one was asked for, given the
+/// converged SCF's spin-summed AO density (MBD@rsSCS takes its per-atom
+/// polarizabilities from Hirshfeld volumes of it; D3(BJ) ignores it).
+///
+/// A failure EXITS rather than letting the caller print an uncorrected energy
+/// under a heading that claims a correction was applied.
+fn dispersion_correction(
+    cfg: &Config,
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    bs: &BasisSet,
+    op: Operator,
+    rhf_config: &RhfConfig,
+    density_total: &ndarray::Array2<f64>,
+) -> Option<DispersionCorrection> {
+    let req = dispersion_request(cfg)?;
+    let evaluated = match req {
+        crate::config::DispersionRequest::D3Bj { functional } => {
+            ferric_d3::d3bj_params_for_functional(&functional)
+                .and_then(|params| ferric_d3::d3bj_energy_for_molecule(mol, &params))
+                .map(|e| DispersionCorrection {
+                    model: "D3(BJ)",
+                    params: functional,
+                    energy: e,
+                    mbd: None,
+                })
+        }
+        crate::config::DispersionRequest::Mbd { functional } => {
+            ferric_rpa::dispersion::mbd_rsscs::MbdRsscsConfig::for_functional(&functional).and_then(
+                |mcfg| {
+                    let cache = mbd_free_atom_cache(ctx, mol, bs, op, rhf_config);
+                    let r = ferric_rpa::dispersion::mbd_scf::mbd_rsscs_for_density(
+                        &cache,
+                        mol,
+                        bs,
+                        density_total,
+                        &mcfg,
+                        false,
+                    )?;
+                    Ok(DispersionCorrection {
+                        model: "MBD@rsSCS",
+                        params: functional,
+                        energy: r.energy,
+                        mbd: Some((mcfg.beta, r.volume_ratios)),
+                    })
+                },
+            )
+        }
+    };
+    Some(evaluated.unwrap_or_else(|e| {
+        eprintln!("error: [dft] dispersion: {e}");
+        std::process::exit(1);
+    }))
+}
+
+/// A `[dft] dispersion` model resolved ONCE for a task that needs its energy
+/// AND gradient at many geometries (`optimize`, `frequencies`).
+///
+/// The energy and the gradient come from the SAME resolved parameters, which
+/// is the property that makes optimizing on (or differentiating) this surface
+/// meaningful -- a mismatched pair describes no surface at all.
+enum DispersionGradientModel {
+    /// D3(BJ) with `functional`'s damping parameters (geometry only).
+    D3Bj {
+        functional: String,
+        params: ferric_d3::D3Params,
+    },
+    /// MBD@rsSCS: the free-atom references are per element, so they are built
+    /// once here, not at every geometry.
+    Mbd {
+        functional: String,
+        cache: ferric_rpa::dispersion::mbd_scf::MbdFreeAtomCache,
+        mcfg: ferric_rpa::dispersion::mbd_rsscs::MbdRsscsConfig,
+    },
+}
+
+impl DispersionGradientModel {
+    /// The correction and its exact analytic nuclear gradient (natoms, 3) at
+    /// `mol`, given the SCF converged there. For MBD@rsSCS the gradient
+    /// includes the orbital relaxation of the Hirshfeld volumes (Z-vector).
+    fn evaluate(
+        &self,
+        ctx: &ParallelContext,
+        mol: &Molecule,
+        bs: &BasisSet,
+        op: Operator,
+        rhf_config: &RhfConfig,
+        scf: &ferric_scf::result::ScfResult,
+    ) -> Result<(DispersionCorrection, ndarray::Array2<f64>), ferric_core::FerricError> {
+        match self {
+            DispersionGradientModel::D3Bj { functional, params } => {
+                let e = ferric_d3::d3bj_energy_for_molecule(mol, params)?;
+                let g = ferric_d3::d3bj_gradient_for_molecule(mol, params)?;
+                let mut arr = ndarray::Array2::<f64>::zeros((g.len(), 3));
+                for (k, row) in g.iter().enumerate() {
+                    for a in 0..3 {
+                        arr[[k, a]] = row[a];
+                    }
+                }
+                let c = DispersionCorrection {
+                    model: "D3(BJ)",
+                    params: functional.clone(),
+                    energy: e,
+                    mbd: None,
+                };
+                Ok((c, arr))
+            }
+            DispersionGradientModel::Mbd {
+                functional,
+                cache,
+                mcfg,
+            } => {
+                let r = ferric_rpa::dispersion::mbd_scf::mbd_rsscs_for_scf(
+                    ctx, cache, mol, bs, op, rhf_config, scf, mcfg,
+                )?;
+                let g = r.gradient.ok_or_else(|| {
+                    ferric_core::FerricError::General(
+                        "MBD@rsSCS returned no gradient although one was requested".to_string(),
+                    )
+                })?;
+                let c = DispersionCorrection {
+                    model: "MBD@rsSCS",
+                    params: functional.clone(),
+                    energy: r.energy,
+                    mbd: Some((mcfg.beta, r.volume_ratios)),
+                };
+                Ok((c, g))
+            }
+        }
+    }
+}
+
+/// The `[dft] dispersion` model for a gradient-consuming `task`, if the key is
+/// set. Every failure EXITS before any molecular SCF: an unknown functional,
+/// or (MBD@rsSCS) a configuration whose exact gradient is unavailable, which
+/// would otherwise fail after the first SCF.
+fn dispersion_gradient_model(
+    cfg: &Config,
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    bs: &BasisSet,
+    op: Operator,
+    rhf_config: &RhfConfig,
+    task: &str,
+    spin: ferric_scf::Spin,
+) -> Option<DispersionGradientModel> {
+    match dispersion_request(cfg)? {
+        crate::config::DispersionRequest::D3Bj { functional } => {
+            let params = ferric_d3::d3bj_params_for_functional(&functional).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
             });
-    let crate::config::DispersionRequest::D3Bj { functional: dfunc } = &req;
-    let params = ferric_d3::d3bj_params_for_functional(dfunc).unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
-    let e = ferric_d3::d3bj_energy_for_molecule(mol, &params).unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
-    Some((dfunc.clone(), e))
+            Some(DispersionGradientModel::D3Bj { functional, params })
+        }
+        crate::config::DispersionRequest::Mbd { functional } => {
+            let mcfg =
+                ferric_rpa::dispersion::mbd_rsscs::MbdRsscsConfig::for_functional(&functional)
+                    .unwrap_or_else(|e| {
+                        eprintln!("error: {e}");
+                        std::process::exit(1);
+                    });
+            // The gradient's orbital-relaxation (Z-vector) term must be
+            // available, or the run would fail after the first SCF.
+            let unsupported = match spin {
+                ferric_scf::Spin::Restricted => {
+                    ferric_scf::zvector_ks::unsupported_reason(rhf_config)
+                }
+                ferric_scf::Spin::Unrestricted => {
+                    ferric_scf::zvector_ks::unsupported_reason_unrestricted(rhf_config)
+                }
+                ferric_scf::Spin::RestrictedOpen => {
+                    ferric_scf::zvector_ks::unsupported_reason_roks(rhf_config)
+                }
+            };
+            if let Some(r) = unsupported {
+                eprintln!(
+                    "error: [dft] dispersion = \"mbd\" with method.task = \"{task}\": \
+                     the exact MBD@rsSCS gradient is not available: {r}"
+                );
+                std::process::exit(1);
+            }
+            let cache = mbd_free_atom_cache(ctx, mol, bs, op, rhf_config);
+            Some(DispersionGradientModel::Mbd {
+                functional,
+                cache,
+                mcfg,
+            })
+        }
+    }
+}
+
+/// The per-element free-atom data (Hirshfeld proatoms and live-SCF free-atom
+/// volumes) MBD@rsSCS needs, built once per run. Its free-atom SCFs are
+/// internal sub-solves, logged as such rather than as the run's SCF.
+fn mbd_free_atom_cache(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    bs: &BasisSet,
+    op: Operator,
+    rhf_config: &RhfConfig,
+) -> ferric_rpa::dispersion::mbd_scf::MbdFreeAtomCache {
+    let _sub = ferric_scf::runlog::SubSolveScope::enter();
+    ferric_rpa::dispersion::mbd_scf::MbdFreeAtomCache::build(ctx, mol, bs, op, rhf_config)
+        .unwrap_or_else(|e| {
+            eprintln!("error: MBD@rsSCS free-atom reference failed: {e}");
+            std::process::exit(1);
+        })
 }
 
 /// The energy line(s) of an SCF printout (RKS, UKS, ROKS, or plain HF).
 ///
-/// Empirical dispersion is added only if `[dft] dispersion` asked for it,
-/// which `run()` admits only on a Kohn-Sham SCF. With the key absent the
-/// output is byte-identical to before the key existed: one "energy" line and
-/// no dispersion line at all.
-fn print_scf_energy(cfg: &Config, mol: &Molecule, energy: f64) {
-    match d3_correction(cfg, mol) {
+/// Dispersion is added only if `[dft] dispersion` asked for it, which `run()`
+/// admits only on a Kohn-Sham SCF. With the key absent the output is
+/// byte-identical to before the key existed: one "energy" line and no
+/// dispersion line at all.
+fn print_scf_energy(energy: f64, dispersion: Option<&DispersionCorrection>) {
+    match dispersion {
         None => println!("  energy     = {energy:.10} Hartree"),
-        Some((dfunc, e_disp)) => {
-            println!("  E(KS-DFT)  = {energy:.10} Hartree");
-            println!("  E(D3BJ)    = {e_disp:+.10} Hartree [params: {dfunc}]");
-            println!(
-                "  energy     = {:.10} Hartree (KS-DFT + D3(BJ), two-body)",
-                energy + e_disp
-            );
-        }
+        Some(d) => d.print(energy),
+    }
+}
+
+/// Runs that return before `run()`'s terminal `run_end` record (open-shell
+/// UKS/ROKS energies, `task = "frequencies"`) log a dispersion correction as
+/// its own `dispersion` record: the SCF energy, the corrected total, and the
+/// model, at the run's input geometry.
+fn log_scf_dispersion(scf_energy: f64, dispersion: Option<&DispersionCorrection>) {
+    if let (Some(d), Some(rl)) = (dispersion, ferric_scf::runlog::log()) {
+        rl.note(
+            "dispersion",
+            serde_json::json!({
+                "scf_energy": scf_energy,
+                "energy": scf_energy + d.energy,
+                "dispersion": d.to_json(),
+            }),
+        );
     }
 }
 
@@ -1369,6 +1695,36 @@ fn log_jk_path(scf: &RhfConfig, open_shell: bool) {
     } else {
         scf.df_j_aux.as_deref()
     };
+    if scf.k_builder.as_deref() == Some("cosx") && exchange_used && !rsh {
+        let j = df_j.filter(|s| !s.is_empty()).map_or_else(
+            || "exact J (four-centre)".to_string(),
+            |a| format!("RI-J via {a}"),
+        );
+        let g = &scf.cosx.grid;
+        let prune = g
+            .prune
+            .map_or("flat".to_string(), |p| format!("{p:?}").to_lowercase());
+        let fin = scf
+            .cosx
+            .final_grid
+            .as_ref()
+            .map_or("no final pass".to_string(), |f| {
+                let fp = f
+                    .prune
+                    .map_or("flat".to_string(), |p| format!("{p:?}").to_lowercase());
+                format!("final pass on ({}, {}, {fp})", f.n_radial, f.n_angular)
+            });
+        let tag = if j.starts_with("RI-J") {
+            " (RIJCOSX)"
+        } else {
+            ""
+        };
+        eprintln!(
+            "[ferric] SCF J/K: {j}, COSX K{tag}; COSX grid ({}, {}, {prune}), {fin}",
+            g.n_radial, g.n_angular
+        );
+        return;
+    }
     eprintln!(
         "[ferric] SCF J/K: {}",
         config::describe_jk_path(df_j, scf.df_k_aux.as_deref(), exchange_used)
@@ -1415,40 +1771,98 @@ fn solve_open_shell_reference(
     })
 }
 
-/// The canonical-reference lines of the `lmp2`/`lmp2-direct` printout.
+/// The value, or print the error and exit 1 (the CLI's config-error path).
+fn or_exit<T>(r: Result<T, String>) -> T {
+    r.unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    })
+}
+
+/// A local (amplitude-threshold) run's model, as every printout and run-log
+/// record of `rimp2`/`drpa`/`linlccd` states it.
+struct LocalPrint {
+    eps: f64,
+    keep_fraction: f64,
+    integral_direct: bool,
+}
+
+/// The first line of a `rimp2`/`drpa`/`linlccd` result block: the method
+/// and its model, `"<method> (exact)"` or `"<method> (local: amplitude
+/// threshold, eps = <eps>; kept <x>% of amplitudes)"`. The threshold is part
+/// of the model, so a local number never prints without it.
+fn model_label(method: &str, local: Option<&LocalPrint>) -> String {
+    match local {
+        None => format!("{method} (exact)"),
+        Some(l) => format!(
+            "{method} (local: amplitude threshold{}, eps = {:.1e}; kept {:.2}% of amplitudes)",
+            if l.integral_direct {
+                ", integral-direct"
+            } else {
+                ""
+            },
+            l.eps,
+            100.0 * l.keep_fraction
+        ),
+    }
+}
+
+/// The run-log `local` component of a `rimp2`/`drpa`/`linlccd` result:
+/// `null` for the exact method, else the scheme, threshold, kept fraction and
+/// whether the integral-direct path ran.
+fn local_json(local: Option<&LocalPrint>) -> serde_json::Value {
+    match local {
+        None => serde_json::Value::Null,
+        Some(l) => serde_json::json!({
+            "scheme": config::LocalScheme::AmplitudeThreshold.as_str(),
+            "eps": l.eps,
+            "keep_fraction": l.keep_fraction,
+            "integral_direct": l.integral_direct,
+        }),
+    }
+}
+
+/// The exact-reference lines of a local run's printout.
 ///
-/// `e_ref` is `None` when the (opt-in, `[mp2] lmp2_reference = true`)
-/// reference was not computed: the output then SAYS so, instead of printing
-/// the library's NaN sentinel and a NaN difference. `err_label` names the
-/// difference line ("threshold error", "total error"); `err_note` is its
+/// `e_ref` is `None` when the (opt-in, `[local] reference = true`) reference
+/// was not computed: the output then SAYS so, instead of printing the
+/// library's NaN sentinel and a NaN difference. `ref_label` names the
+/// reference line, `err_label` the difference line; `err_note` is its
 /// parenthetical.
-fn lmp2_reference_lines(
+fn local_reference_lines(
     e_corr: f64,
     e_ref: Option<f64>,
+    ref_label: &str,
     err_label: &str,
     err_note: &str,
 ) -> Vec<String> {
     match e_ref {
         Some(e_ref) => vec![
-            format!("  E_corr(canonical RI)  = {e_ref:.10} Ha"),
+            format!("  {ref_label:<22}= {e_ref:.10} Ha"),
             format!("  {err_label:<22}= {:+.3e} Ha ({err_note})", e_corr - e_ref),
         ],
-        None => vec![
-            "  E_corr(canonical RI)  = not computed (opt-in: set [mp2] lmp2_reference = true)"
-                .to_string(),
-        ],
+        None => vec![format!(
+            "  {ref_label:<22}= not computed (opt-in: set [local] reference = true)"
+        )],
     }
 }
 
-/// `method.kind = "lmp2"`: amplitude-threshold local MP2
-/// (`ferric_mp2::lmp2_amplitude`, WSHG23 single-threshold; closed-shell).
-/// The ε=0 limit reproduces `rimp2` exactly (library anchor <=1e-9); the
-/// default ε=1e-4 carries a one-sided ~linear-in-ε truncation error. The
-/// canonical reference and the error against it are printed only when
-/// `[mp2] lmp2_reference = true` (OPT-IN: the reference is a full N^5
-/// canonical RI-MP2); otherwise the output states it was not computed.
-fn run_lmp2(
+/// `method.kind = "rimp2"` with `[local] scheme = "amplitude-threshold"`:
+/// amplitude-threshold local MP2 (`ferric_mp2::lmp2_amplitude`, WSHG23
+/// single-threshold; closed-shell), or with `integral_direct = true` the
+/// integral-direct local MP2 (`ferric_mp2::lmp2_direct`), which never forms
+/// the global 3-index tensor and prints every locality map it used.
+///
+/// ε = 0 reproduces the exact RI-MP2 (library anchor <= 1e-9); a finite ε
+/// carries a one-sided, ~linear-in-ε truncation error. The canonical RI-MP2
+/// reference and the error against it are printed only with `[local]
+/// reference = true` (OPT-IN: it is a full N^5 canonical RI-MP2 over the
+/// global 3-index tensor -- the object the integral-direct path exists to
+/// avoid). Measured record of the direct path: wiki/amplitude-threshold-lmp2.md.
+#[allow(clippy::too_many_arguments)]
+fn run_rimp2_local(
     cfg: &Config,
+    model: &config::LocalModel,
     mol: &Molecule,
     bs: &BasisSet,
     prep: &PreparedBasis,
@@ -1457,175 +1871,117 @@ fn run_lmp2(
     budget_bytes: Option<usize>,
 ) {
     use ferric_mp2::lmp2_amplitude::{amplitude_lmp2, AmplitudeLmp2Config};
-    if result.spin != ferric_scf::result::Spin::Restricted {
-        eprintln!("error: lmp2 is closed-shell (RHF/RKS reference) only");
-        std::process::exit(1);
-    }
-    let aux_name = cfg
-        .mp2
-        .auxbasis
-        .as_deref()
-        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
-    let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
-    let dfbs = PreparedBasis::new(mol, &aux_bs).unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
-    let eps = cfg.mp2.lmp2_eps.unwrap_or(1e-4);
-    let want_ref = cfg.mp2.lmp2_reference();
-    let r = amplitude_lmp2(
-        mol,
-        prep,
-        bs,
-        &dfbs,
-        op,
-        result,
-        &AmplitudeLmp2Config {
-            eps,
-            frozen_core: cfg.mp2.frozen_core.resolve(mol),
-            eri3_budget_bytes: budget_bytes,
-            compute_reference: want_ref,
-            ..Default::default()
-        },
-    )
-    .unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
-    println!("Amplitude-threshold LMP2 (aux: {aux_name}, eps = {eps:.1e})");
-    println!("  E_corr(LMP2)          = {:.10} Ha", r.e_corr);
-    let e_ref = want_ref.then_some(r.e_corr_canonical_ri);
-    for line in lmp2_reference_lines(
-        r.e_corr,
-        e_ref,
-        "threshold error",
-        "one-sided; ~linear in eps",
-    ) {
-        println!("{line}");
-    }
-    println!("  total energy          = {:.10} Ha", r.e_total);
-    if let Some(rl) = ferric_scf::runlog::log() {
-        rl.result(
-            "lmp2",
-            r.e_total,
-            serde_json::json!({
-                "e_corr": r.e_corr,
-                // null when the opt-in reference was not computed
-                "e_corr_canonical_ri": e_ref,
-                "e_scf_reference": result.energy,
-                "scf_converged": result.converged,
-            }),
-        );
-    }
-    println!(
-        "  keep {:.4}  pairs {:.3}  dom(mean/max) {:.1}/{}  cg {}",
-        r.keep_fraction, r.pair_fraction, r.dom_mean, r.dom_max, r.cg_iterations
-    );
-}
-
-/// `method.kind = "lmp2-direct"`: INTEGRAL-DIRECT amplitude-threshold local
-/// MP2 (`ferric_mp2::lmp2_direct`; closed-shell). Never forms the global
-/// 3-index tensor: per-atom-batched integral evaluation into per-occupied
-/// sparse strips + per-pair domain-local fits. Every locality knob defaults
-/// to its measured production value and is printed with the run. The
-/// canonical-reference error is printed only with `[mp2] lmp2_reference =
-/// true` (OPT-IN: that reference forms the global 3-index tensor this path
-/// exists to avoid, so a default run stays reduced-cost); otherwise the
-/// output states it was not computed.
-/// Measured record: wiki/amplitude-threshold-lmp2.md §27-30 (C32 crossover
-/// vs canonical ri_mp2; C20→C48 tail N^1.2 erfc / N^1.4 coul).
-fn run_lmp2_direct(
-    cfg: &Config,
-    mol: &Molecule,
-    bs: &BasisSet,
-    prep: &PreparedBasis,
-    op: Operator,
-    result: &ferric_scf::result::ScfResult,
-    budget_bytes: Option<usize>,
-) {
-    use ferric_mp2::lmp2_amplitude::AmplitudeLmp2Config;
     use ferric_mp2::lmp2_direct::{amplitude_lmp2_direct, DirectConfig};
-    if result.spin != ferric_scf::result::Spin::Restricted {
-        eprintln!("error: lmp2-direct is closed-shell (RHF/RKS reference) only");
-        std::process::exit(1);
-    }
-    let aux_name = cfg
-        .mp2
-        .auxbasis
-        .as_deref()
-        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
-    let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
-    let dfbs = PreparedBasis::new(mol, &aux_bs).unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
-    let eps = cfg.mp2.lmp2_eps.unwrap_or(1e-4);
-    let dcfg = DirectConfig {
-        aux_radius_bohr: cfg.mp2.direct_aux_radius.unwrap_or(10.0),
-        virt_radius_bohr: Some(cfg.mp2.direct_virt_radius.unwrap_or(12.0)),
-        ao_tail: cfg.mp2.direct_ao_tail.unwrap_or(1e-3),
-        schwarz_skip: cfg.mp2.direct_schwarz_skip.unwrap_or(1e-5),
-        batch_merge: cfg.mp2.direct_batch_merge.unwrap_or(4),
-        virt_schwarz_kappa: cfg.mp2.direct_virt_schwarz_kappa,
+    require_restricted(result, "rimp2");
+    let (aux_name, dfbs) = correlation_aux(cfg, mol);
+    let eps = model.eps[0];
+    let want_ref = model.reference;
+    let lcfg = AmplitudeLmp2Config {
+        eps,
+        frozen_core: cfg.mp2.frozen_core.resolve(mol),
+        eri3_budget_bytes: budget_bytes,
+        compute_reference: want_ref,
+        pair_gate_cal: model.direct.as_ref().and_then(|d| d.gate_cal),
         ..Default::default()
     };
-    let want_ref = cfg.mp2.lmp2_reference();
-    let (r, st) = amplitude_lmp2_direct(
-        mol,
-        prep,
-        bs,
-        &dfbs,
-        op,
-        result,
-        &AmplitudeLmp2Config {
-            eps,
-            frozen_core: cfg.mp2.frozen_core.resolve(mol),
-            eri3_budget_bytes: budget_bytes,
-            pair_gate_cal: cfg.mp2.direct_gate_cal,
-            compute_reference: want_ref,
-            ..Default::default()
-        },
-        &dcfg,
-    )
-    .unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
-    println!(
-        "Integral-direct amplitude-threshold LMP2 (aux: {aux_name}, eps = {eps:.1e}, \
-         r_aux = {} Bohr, r_virt = {} Bohr, ao_tail = {:.0e}, schwarz_skip = {:.0e}, \
-         batch_merge = {}, gate_cal = {}, virt_schwarz_kappa = {})",
-        dcfg.aux_radius_bohr,
-        dcfg.virt_radius_bohr.unwrap_or(f64::INFINITY),
-        dcfg.ao_tail,
-        dcfg.schwarz_skip,
-        dcfg.batch_merge,
-        cfg.mp2
-            .direct_gate_cal
-            .map_or("off".to_string(), |c| format!("{c}")),
-        dcfg.virt_schwarz_kappa
-            .map_or("off".to_string(), |k| format!("{k}")),
-    );
-    println!("  E_corr(direct LMP2)   = {:.10} Ha", r.e_corr);
+    let (r, maps) = match &model.direct {
+        None => (
+            amplitude_lmp2(mol, prep, bs, &dfbs, op, result, &lcfg).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }),
+            None,
+        ),
+        Some(d) => {
+            let dcfg = DirectConfig {
+                aux_radius_bohr: d.aux_radius,
+                virt_radius_bohr: Some(d.virt_radius),
+                ao_tail: d.ao_tail,
+                schwarz_skip: d.schwarz_skip,
+                batch_merge: d.batch_merge,
+                virt_schwarz_kappa: d.virt_schwarz_kappa,
+                ..Default::default()
+            };
+            let (r, st) = amplitude_lmp2_direct(mol, prep, bs, &dfbs, op, result, &lcfg, &dcfg)
+                .unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                });
+            (r, Some((d, st)))
+        }
+    };
+    let local = LocalPrint {
+        eps,
+        keep_fraction: r.keep_fraction,
+        integral_direct: model.direct.is_some(),
+    };
+    println!("{}", model_label("MP2", Some(&local)));
+    println!("  basis / aux           = {} / {aux_name}", bs.name);
+    if let Some((d, _)) = &maps {
+        println!(
+            "  locality maps         = r_aux {} Bohr, r_virt {} Bohr, ao_tail {:.0e}, \
+             schwarz_skip {:.0e}, batch_merge {}, gate_cal {}, virt_schwarz_kappa {}",
+            d.aux_radius,
+            d.virt_radius,
+            d.ao_tail,
+            d.schwarz_skip,
+            d.batch_merge,
+            d.gate_cal.map_or("off".to_string(), |c| format!("{c}")),
+            d.virt_schwarz_kappa
+                .map_or("off".to_string(), |k| format!("{k}")),
+        );
+    }
+    println!("  RHF energy            = {:.10} Ha", result.energy);
+    println!("  E_corr(local MP2)     = {:.10} Ha", r.e_corr);
     let e_ref = want_ref.then_some(r.e_corr_canonical_ri);
-    for line in lmp2_reference_lines(
-        r.e_corr,
-        e_ref,
-        "total error",
-        "eps truncation + locality maps",
-    ) {
+    let (err_label, err_note) = if maps.is_some() {
+        ("total error", "eps truncation + locality maps")
+    } else {
+        ("threshold error", "one-sided; ~linear in eps")
+    };
+    for line in local_reference_lines(r.e_corr, e_ref, "E_corr(canonical RI)", err_label, err_note)
+    {
         println!("{line}");
     }
     println!("  total energy          = {:.10} Ha", r.e_total);
+    match &maps {
+        None => println!(
+            "  keep {:.4}  pairs {:.3}  dom(mean/max) {:.1}/{}  cg {}",
+            r.keep_fraction, r.pair_fraction, r.dom_mean, r.dom_max, r.cg_iterations
+        ),
+        Some((_, st)) => {
+            println!(
+                "  keep {:.4}  pairs {:.3}  gated {}  dom(mean/max) {:.1}/{}  \
+                 cand(mean/max) {:.1}/{}  cg {}",
+                r.keep_fraction,
+                r.pair_fraction,
+                r.n_pairs_gated,
+                r.dom_mean,
+                r.dom_max,
+                st.virt_cand_mean,
+                st.virt_cand_max,
+                r.cg_iterations
+            );
+            println!(
+                "  strips rows {:.0}/{} cols {:.0}/{}  eri3 {:.1}M evald / {:.1}M skipped  \
+                 t maps/eri3/metric/pairs/solve {:.2}/{:.2}/{:.2}/{:.2}/{:.2} s",
+                st.strip_rows_mean,
+                st.strip_rows_max,
+                st.strip_cols_mean,
+                st.strip_cols_max,
+                st.n_eri3_shell_triples as f64 / 1e6,
+                st.n_eri3_skipped as f64 / 1e6,
+                st.t_maps_s,
+                st.t_eri3_s,
+                st.t_metric_s,
+                st.t_pairs_s,
+                r.timings.t_solve_s,
+            );
+        }
+    }
     if let Some(rl) = ferric_scf::runlog::log() {
         rl.result(
-            "lmp2-direct",
+            "rimp2",
             r.e_total,
             serde_json::json!({
                 "e_corr": r.e_corr,
@@ -1633,36 +1989,17 @@ fn run_lmp2_direct(
                 "e_corr_canonical_ri": e_ref,
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
+                "local": local_json(Some(&local)),
             }),
         );
     }
-    println!(
-        "  keep {:.4}  pairs {:.3}  gated {}  dom(mean/max) {:.1}/{}  \
-         cand(mean/max) {:.1}/{}  cg {}",
-        r.keep_fraction,
-        r.pair_fraction,
-        r.n_pairs_gated,
-        r.dom_mean,
-        r.dom_max,
-        st.virt_cand_mean,
-        st.virt_cand_max,
-        r.cg_iterations
-    );
-    println!(
-        "  strips rows {:.0}/{} cols {:.0}/{}  eri3 {:.1}M evald / {:.1}M skipped  \
-         t maps/eri3/metric/pairs/solve {:.2}/{:.2}/{:.2}/{:.2}/{:.2} s",
-        st.strip_rows_mean,
-        st.strip_rows_max,
-        st.strip_cols_mean,
-        st.strip_cols_max,
-        st.n_eri3_shell_triples as f64 / 1e6,
-        st.n_eri3_skipped as f64 / 1e6,
-        st.t_maps_s,
-        st.t_eri3_s,
-        st.t_metric_s,
-        st.t_pairs_s,
-        r.timings.t_solve_s,
-    );
+    if !result.converged {
+        eprintln!(
+            "warning: SCF did not converge (exit {:?} after {} iterations) — the correlation \
+             energy above is built on an unconverged reference and must not be quoted",
+            result.exit, result.iterations
+        );
+    }
 }
 
 /// `"rimp2" => { ... }` match arm.
@@ -1675,6 +2012,14 @@ fn run_rimp2(
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
 ) {
+    let model = cfg.local_model().unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    if let Some(model) = model {
+        run_rimp2_local(cfg, &model, mol, bs, prep, op, result, budget_bytes);
+        return;
+    }
     // An open-shell molecule arrives with a UHF reference (see
     // `solve_open_shell_reference`) and takes the unrestricted RI-MP2.
     if result.spin != ferric_scf::result::Spin::Restricted {
@@ -1711,6 +2056,7 @@ fn run_rimp2(
         eprintln!("error: {e}");
         std::process::exit(1);
     });
+    println!("{}", model_label("RI-MP2", None));
     println!(
         "RI-MP2/{} (aux: {}) on {}",
         bs.name, aux_name, cfg.molecule.xyz
@@ -1750,6 +2096,7 @@ fn run_rimp2(
                 "e_corr": mp2_result.mp2_corr,
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
+                "local": local_json(None),
             }),
         );
     }
@@ -1822,6 +2169,7 @@ fn run_u_rimp2(
     // Same layout as the closed-shell printout (the "MP2 corr" / "Total"
     // labels are what downstream parsers read), with the reference named and
     // the three spin blocks shown.
+    println!("{}", model_label("U-RI-MP2", None));
     println!(
         "U-RI-MP2/{} (aux: {}) on {}",
         bs.name, aux_name, cfg.molecule.xyz
@@ -1855,6 +2203,7 @@ fn run_u_rimp2(
                 "e_ab": r.components.e_ab,
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
+                "local": local_json(None),
             }),
         );
     }
@@ -2183,7 +2532,7 @@ fn run_att_rimp2_terfc(
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
 ) {
-    const ANG2BOHR_R0: f64 = 1.8897259886;
+    const ANG2BOHR_R0: f64 = ferric_core::units::ANGSTROM_TO_BOHR;
     let r0_ang = cfg
         .mp2
         .att_r0
@@ -2279,7 +2628,7 @@ fn run_rs_mp2_rpa(
     // Bohr ⇒ ω≈0.42 Å⁻¹). Converted to Bohr immediately for RsMp2RpaConfig,
     // which stays Bohr-native (Operator::terf/terfc, the FFI shim, and the
     // terf-tables interpolation grids are all hard-Bohr all the way down).
-    const ANG2BOHR_R0: f64 = 1.8897259886;
+    const ANG2BOHR_R0: f64 = ferric_core::units::ANGSTROM_TO_BOHR;
     let r0_ang = cfg.mp2.r0.unwrap_or(3.18 / ANG2BOHR_R0);
     let r0 = r0_ang * ANG2BOHR_R0;
     if matches!(attenuator, ferric_rpa::rs_mp2_rpa::Attenuator::Terf) && cfg.mp2.omega.is_some() {
@@ -2572,7 +2921,7 @@ fn run_scs_mp2_2terfc(
     });
     // r0(1)/r0(2) are given in Å in the TOML (matching the Python
     // binding's convention); the library config wants Bohr.
-    const ANG2BOHR: f64 = 1.8897259886;
+    const ANG2BOHR: f64 = ferric_core::units::ANGSTROM_TO_BOHR;
     let r0_bonded_ang = cfg.mp2.r0_bonded.unwrap_or(0.75);
     let r0_nonbonded_ang = cfg.mp2.r0_nonbonded.unwrap_or(1.05);
     let scs_config = ScsMp2TerfcConfig {
@@ -2843,14 +3192,17 @@ fn run_ccsd(
     }
 }
 
-/// `method.kind = "linlccd"`. Linearized hole-hole ladder CCD on the converged
-/// closed-shell reference.
+/// `method.kind = "linlccd"`. Linearized ladder CCD on the converged
+/// closed-shell reference, in the ladder variant `[mp2] linlccd_variant`
+/// (`hh` default = LinLCCD(hh); `drivers-only` reproduces RI-MP2; `full`
+/// adds the pp ladder with CCD-like VVVV memory).
 ///
-/// Mirrors [`run_ccsd`]'s aux-basis resolution (`[mp2] auxbasis`, default
-/// `cc-pvdz-ri`) because LinLCCD is RI-based in exactly the same way. The
-/// published [`LadderVariant::Hh`] is what is exposed: `DriversOnly` reproduces
-/// RI-MP2 (already reachable via `method.kind = "rimp2"`) and `Full` carries
-/// CCD-like VVVV memory, so neither earns a CLI knob here.
+/// Exact by default: the canonical `ferric_cc::linlccd::linlccd`, which
+/// supports all three variants. With `[local] scheme = "amplitude-threshold"`
+/// it is the amplitude-threshold LinLCCD in the localized basis
+/// (`ferric_cc::linlccd_amplitude`); `eps = 0` reproduces the exact method of
+/// the same variant. Aux basis as `run_ccsd` (`[mp2] auxbasis`, default
+/// `cc-pvdz-ri`).
 fn run_linlccd(
     cfg: &Config,
     mol: &Molecule,
@@ -2860,24 +3212,6 @@ fn run_linlccd(
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
 ) {
-    let aux_name = cfg
-        .mp2
-        .auxbasis
-        .as_deref()
-        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
-    let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
-    let dfbs = PreparedBasis::new(mol, &aux_bs).unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
-    let cc_config = CcConfig {
-        frozen_core: cfg.mp2.frozen_core.resolve(mol),
-        memory_budget_bytes: budget_bytes,
-        ..Default::default()
-    };
     // `linlccd` is closed-shell (RHF-reference) only — it calls `eps_r()`/`mos_r()`,
     // which assert on `Spin::Restricted`. Reject an open-shell reference here with a
     // clear message instead of letting that assert fire as a panic.
@@ -2888,33 +3222,124 @@ fn run_linlccd(
         );
         std::process::exit(1);
     }
-    let cc_result = linlccd(mol, prep, &dfbs, op, result, &cc_config, LadderVariant::Hh)
-        .unwrap_or_else(|e| {
-            eprintln!("error: {e}");
-            std::process::exit(1);
-        });
+    let variant = or_exit(cfg.mp2.linlccd_variant());
+    let model = or_exit(cfg.local_model());
+    let method = format!("LinLCCD({})", variant.as_str());
+    let (aux_name, dfbs) = correlation_aux(cfg, mol);
+    let frozen_core = cfg.mp2.frozen_core.resolve(mol);
+    let (e_corr, local) = match &model {
+        None => {
+            let cc_config = CcConfig {
+                frozen_core,
+                memory_budget_bytes: budget_bytes,
+                ..Default::default()
+            };
+            let cc =
+                linlccd(mol, prep, &dfbs, op, result, &cc_config, variant).unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                });
+            println!("{}", model_label(&method, None));
+            (cc.correlation_energy, None)
+        }
+        Some(m) => {
+            use ferric_cc::linlccd_amplitude::{amplitude_linlccd, AmplitudeLinLccdConfig};
+            let eps = m.eps[0];
+            let r = amplitude_linlccd(
+                mol,
+                prep,
+                bs,
+                &dfbs,
+                op,
+                result,
+                &AmplitudeLinLccdConfig {
+                    eps,
+                    frozen_core,
+                    eri3_budget_bytes: budget_bytes,
+                    ..Default::default()
+                },
+                variant,
+            )
+            .unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+            let local = LocalPrint {
+                eps,
+                keep_fraction: r.keep_fraction,
+                integral_direct: false,
+            };
+            println!("{}", model_label(&method, Some(&local)));
+            println!(
+                "  keep {:.4}  cg {}  relres {:.2e}  converged {}",
+                r.keep_fraction, r.cg_iterations, r.cg_relres, r.cg_converged
+            );
+            if !r.cg_converged {
+                eprintln!(
+                    "warning: local LinLCCD PCG did not converge (relres {:.2e} after {} \
+                     iterations)",
+                    r.cg_relres, r.cg_iterations
+                );
+            }
+            (r.e_corr, Some(local))
+        }
+    };
+    // `[local] reference = true`: the exact LinLCCD of the same variant (the
+    // canonical solve), and the local error against it.
+    let e_ref = match &model {
+        Some(m) if m.reference => Some(
+            linlccd(
+                mol,
+                prep,
+                &dfbs,
+                op,
+                result,
+                &CcConfig {
+                    frozen_core,
+                    memory_budget_bytes: budget_bytes,
+                    ..Default::default()
+                },
+                variant,
+            )
+            .unwrap_or_else(|e| {
+                eprintln!("error: exact LinLCCD reference: {e}");
+                std::process::exit(1);
+            })
+            .correlation_energy,
+        ),
+        _ => None,
+    };
+    if model.is_some() {
+        for line in local_reference_lines(
+            e_corr,
+            e_ref,
+            "E_corr(exact)",
+            "threshold error",
+            "~linear in eps",
+        ) {
+            println!("{line}");
+        }
+    }
     println!(
-        "LinLCCD(hh)/{} (aux: {}) on {}",
+        "{method}/{} (aux: {}) on {}",
         bs.name, aux_name, cfg.molecule.xyz
     );
     println!("  nbasis     = {}", prep.nbasis());
     println!("  RHF energy = {:.10} Hartree", result.energy);
-    println!(
-        "  LinLCCD corr = {:.10} Hartree",
-        cc_result.correlation_energy
-    );
-    println!(
-        "  Total      = {:.10} Hartree",
-        result.energy + cc_result.correlation_energy
-    );
+    println!("  LinLCCD corr = {e_corr:.10} Hartree");
+    println!("  Total      = {:.10} Hartree", result.energy + e_corr);
     if let Some(rl) = ferric_scf::runlog::log() {
         rl.result(
             "linlccd",
-            result.energy + cc_result.correlation_energy,
+            result.energy + e_corr,
             serde_json::json!({
-                "e_corr": cc_result.correlation_energy,
+                "variant": variant.as_str(),
+                "e_corr": e_corr,
+                // null unless a local run opted in to the exact reference
+                "e_corr_exact": e_ref,
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
+                "local": local_json(local.as_ref()),
             }),
         );
     }
@@ -3060,17 +3485,27 @@ fn run_ccsd_t(
     }
 }
 
-/// `method.kind = "drpa"`: amplitude-threshold direct RPA
-/// (`ferric_mp2::drpa_amplitude`, drCCD Riccati on localized orbitals;
-/// closed-shell). `[mp2] drpa_eps` (default 1e-4; 0 = the canonical plasmon
-/// dRPA), `drpa_reference` (opt-in canonical plasmon reference), and
-/// `drpa_eps_sweep` (several ε on ONE SCF and ONE ε-independent localized
-/// assembly via `amplitude_drpa_scan_timed`, the `r0_sweep` pattern).
+/// `method.kind = "drpa"`: direct RPA correlation (dRPA@HF) by the drCCD
+/// Riccati solve on localized orbitals (`ferric_mp2::drpa_amplitude`;
+/// closed-shell).
+///
+/// EXACT by default: the Riccati solve with nothing truncated (ε = 0), which
+/// the library anchors to the canonical plasmon formula (<= 1e-12). Riccati,
+/// plasmon and full-rank PDEP (`pdep-rpa`) are algorithms for the same exact
+/// dRPA energy. The exact path's memory grows as `no^3·nv^2` (the ring-product
+/// plan), so [`preflight_exact_drpa`] refuses a run that cannot fit before
+/// the SCF.
+///
+/// With `[local] scheme = "amplitude-threshold"`: the amplitude-threshold
+/// dRPA at `eps` (one-sided, ~linear-in-ε error; not variational), `reference`
+/// (opt-in canonical plasmon reference) and `eps_sweep` (several ε on ONE SCF
+/// and ONE ε-independent localized assembly via `amplitude_drpa_scan_timed`,
+/// the `r0_sweep` pattern).
 ///
 /// The fixed-point accelerators match the Python binding's defaults (DIIS
 /// subspace 8, ε-linked stopping tolerance factor 0.1), so a CLI run and
 /// `run_drpa(...)` with default kwargs solve the same equations the same way.
-/// Both are no-ops for the ε = 0 anchor's stopping rule.
+/// The ε-link is a no-op at ε = 0.
 fn run_drpa(
     cfg: &Config,
     mol: &Molecule,
@@ -3084,44 +3519,42 @@ fn run_drpa(
         amplitude_drpa, amplitude_drpa_scan_timed, AmplitudeDrpaConfig,
     };
     require_restricted(result, "drpa");
-    let (points, is_sweep) = cfg.mp2.drpa_eps_points().unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
-    if is_sweep && cfg.mp2.drpa_eps.is_some() {
-        eprintln!("warning: [mp2] drpa_eps is ignored when drpa_eps_sweep is set");
-    }
+    let model = or_exit(cfg.local_model());
+    let (points, is_sweep, want_ref) = match &model {
+        None => (vec![0.0], false, false),
+        Some(m) => (m.eps.clone(), m.is_sweep, m.reference),
+    };
     let (aux_name, dfbs) = correlation_aux(cfg, mol);
-    let want_ref = cfg.mp2.drpa_reference();
     let base = AmplitudeDrpaConfig {
         eps: points[0],
         frozen_core: cfg.mp2.frozen_core.resolve(mol),
         eri3_budget_bytes: budget_bytes,
         compute_reference: want_ref,
-        diis: Some(8),
+        diis: Some(DRPA_DIIS_SUBSPACE),
         eps_rtol_factor: Some(0.1),
         ..Default::default()
     };
+    fn fail(e: ferric_core::FerricError, exact: bool) -> ! {
+        eprintln!("error: {e}");
+        if exact {
+            eprintln!("{EXACT_DRPA_MEMORY_HINT}");
+        }
+        std::process::exit(1);
+    }
+    let exact = model.is_none();
     let results = if is_sweep {
         let (rs, prefix_wall_s, _) =
             amplitude_drpa_scan_timed(mol, prep, bs, &dfbs, op, result, &base, &points)
-                .unwrap_or_else(|e| {
-                    eprintln!("error: {e}");
-                    std::process::exit(1);
-                });
+                .unwrap_or_else(|e| fail(e, exact));
         eprintln!(
-            "[ferric] drpa_eps_sweep: {} points on one SCF + one localized assembly \
+            "[ferric] [local] eps_sweep: {} points on one SCF + one localized assembly \
              ({prefix_wall_s:.2} s shared)",
             points.len()
         );
         rs
     } else {
-        vec![
-            amplitude_drpa(mol, prep, bs, &dfbs, op, result, &base).unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            }),
-        ]
+        vec![amplitude_drpa(mol, prep, bs, &dfbs, op, result, &base)
+            .unwrap_or_else(|e| fail(e, exact))]
     };
     let n_points = points.len();
     for (k, (r, eps)) in results.iter().zip(&points).enumerate() {
@@ -3132,21 +3565,26 @@ fn run_drpa(
                 n_points
             );
         }
-        println!("Amplitude-threshold dRPA (aux: {aux_name}, eps = {eps:.1e})");
+        let local = model.as_ref().map(|m| LocalPrint {
+            eps: *eps,
+            keep_fraction: r.keep_fraction,
+            integral_direct: m.direct.is_some(),
+        });
+        println!("{}", model_label("dRPA", local.as_ref()));
+        println!("  basis / aux           = {} / {aux_name}", bs.name);
         println!("  RHF energy            = {:.10} Ha", result.energy);
         println!("  E_corr(dRPA)          = {:.10} Ha", r.e_corr);
         let e_ref = want_ref.then_some(r.e_corr_plasmon_canonical);
-        match e_ref {
-            Some(e_ref) => {
-                println!("  E_corr(canonical)     = {e_ref:.10} Ha");
-                println!(
-                    "  threshold error       = {:+.3e} Ha (~linear in eps; not variational)",
-                    r.e_corr - e_ref
-                );
+        if model.is_some() {
+            for line in local_reference_lines(
+                r.e_corr,
+                e_ref,
+                "E_corr(canonical)",
+                "threshold error",
+                "~linear in eps; not variational",
+            ) {
+                println!("{line}");
             }
-            None => println!(
-                "  E_corr(canonical)     = not computed (opt-in: set [mp2] drpa_reference = true)"
-            ),
         }
         println!("  total energy          = {:.10} Ha", r.e_total);
         println!(
@@ -3172,88 +3610,53 @@ fn run_drpa(
                     "converged": r.converged,
                     "e_scf_reference": result.energy,
                     "scf_converged": result.converged,
+                    "local": local_json(local.as_ref()),
                 }),
             );
         }
     }
 }
 
-/// `method.kind = "linlccd-amplitude"`: amplitude-threshold LinLCCD
-/// (`ferric_cc::linlccd_amplitude`; closed-shell). `[mp2] linlccd_variant`
-/// (`hh` default, `drivers-only` = RI-MP2, `full`) and `linlccd_eps`
-/// (default 1e-4; 0 reproduces the canonical `linlccd` of that variant).
-/// Same library call as Python `run_linlccd_amplitude`.
-fn run_linlccd_amplitude(
-    cfg: &Config,
-    mol: &Molecule,
-    bs: &BasisSet,
-    prep: &PreparedBasis,
-    op: Operator,
-    result: &ferric_scf::result::ScfResult,
-    budget_bytes: Option<usize>,
-) {
-    use ferric_cc::linlccd_amplitude::{amplitude_linlccd, AmplitudeLinLccdConfig};
-    require_restricted(result, "linlccd-amplitude");
-    let variant = cfg.mp2.linlccd_variant().unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
-    let eps = cfg.mp2.linlccd_eps().unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
-    let variant_name = match variant {
-        LadderVariant::DriversOnly => "drivers-only",
-        LadderVariant::Hh => "hh",
-        LadderVariant::Full => "full",
-    };
-    let (aux_name, dfbs) = correlation_aux(cfg, mol);
-    let r = amplitude_linlccd(
-        mol,
-        prep,
-        bs,
-        &dfbs,
-        op,
-        result,
-        &AmplitudeLinLccdConfig {
-            eps,
-            frozen_core: cfg.mp2.frozen_core.resolve(mol),
-            eri3_budget_bytes: budget_bytes,
-            ..Default::default()
-        },
-        variant,
-    )
-    .unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
-    println!("Amplitude-threshold LinLCCD({variant_name}) (aux: {aux_name}, eps = {eps:.1e})");
-    println!("  RHF energy            = {:.10} Ha", result.energy);
-    println!("  E_corr(LinLCCD)       = {:.10} Ha", r.e_corr);
-    println!("  total energy          = {:.10} Ha", r.e_total);
-    println!(
-        "  keep {:.4}  cg {}  relres {:.2e}  converged {}",
-        r.keep_fraction, r.cg_iterations, r.cg_relres, r.cg_converged
-    );
-    if !r.cg_converged {
-        eprintln!(
-            "warning: linlccd-amplitude PCG did not converge (relres {:.2e} after {} iterations)",
-            r.cg_relres, r.cg_iterations
-        );
+/// DIIS subspace of the CLI's dRPA Riccati solve (the Python binding's
+/// default). Shared by [`run_drpa`] and [`preflight_exact_drpa`], whose
+/// memory estimate depends on it.
+const DRPA_DIIS_SUBSPACE: usize = 8;
+
+/// Where an exact dRPA that does not fit should go instead.
+const EXACT_DRPA_MEMORY_HINT: &str =
+    "hint: exact dRPA through the Riccati solve holds the full no^3*nv^2 ring-product plan. \
+     method.kind = \"pdep-rpa\" with [rpa] trunc_thresh = 0 (full rank) computes the same \
+     exact dRPA energy (to its frequency-quadrature error) at far lower memory; \
+     [local] scheme = \"amplitude-threshold\" with a stated eps is the local approximation.";
+
+/// Refuse an EXACT `drpa` run whose Riccati solve cannot fit the memory
+/// budget, BEFORE the SCF: the ε = 0 path's peak
+/// (`ferric_mp2::drpa_amplitude::exact_drpa_peak_bytes`) is `no` times the
+/// size of B in the ring-product plan alone, which made C12 thrash and then
+/// be OOM-killed. The solve itself also hard-charges the memory pool (the
+/// backstop); this check only moves the refusal ahead of the SCF and points
+/// at the alternatives.
+fn preflight_exact_drpa(cfg: &Config, mol: &Molecule, prep: &PreparedBasis, budget: Option<usize>) {
+    if cfg.method.kind != "drpa" || !matches!(cfg.local_model(), Ok(None)) {
+        return;
     }
-    if let Some(rl) = ferric_scf::runlog::log() {
-        rl.result(
-            "linlccd-amplitude",
-            r.e_total,
-            serde_json::json!({
-                "variant": variant_name,
-                "eps": eps,
-                "e_corr": r.e_corr,
-                "converged": r.cg_converged,
-                "e_scf_reference": result.energy,
-                "scf_converged": result.converged,
-            }),
+    let nocc = (mol.nelec() as usize) / 2;
+    let no = nocc.saturating_sub(cfg.mp2.frozen_core.resolve(mol));
+    let nv = prep.nbasis().saturating_sub(nocc);
+    let need = ferric_mp2::drpa_amplitude::exact_drpa_peak_bytes(no, nv, Some(DRPA_DIIS_SUBSPACE));
+    let have = ferric_core::memory::resolve_budget(budget);
+    if need > have.bytes {
+        let gib = |b: usize| b as f64 / (1024.0 * 1024.0 * 1024.0);
+        eprintln!(
+            "error: exact dRPA (kind = \"drpa\", no [local]) needs ~{:.2} GiB for the Riccati \
+             solve at no = {no}, nv = {nv}, over the {:.2} GiB memory budget [source: {}]; \
+             refused before the SCF.",
+            gib(need),
+            gib(have.bytes),
+            have.source.label()
         );
+        eprintln!("{EXACT_DRPA_MEMORY_HINT}");
+        std::process::exit(1);
     }
 }
 
@@ -3621,7 +4024,6 @@ fn run_pdep_rpa_arm(
     rhf_config: &RhfConfig,
     result: ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
-    proatom_gs_mult: &dyn Fn(i32) -> usize,
     proatom: &dyn Fn(i32, i32) -> Option<ferric_rpa::properties::RadialProatom>,
 ) {
     let aux_name = cfg
@@ -3884,7 +4286,7 @@ fn run_pdep_rpa_arm(
             match pdep_polarizability_becke(mol, prep, bs, &dfbs, &result, op, &rpa_cfg) {
                 Ok(v) => {
                     println!(
-                        "Per-atom Becke α (iso, a.u.): {:?}",
+                        "Per-atom intrinsic Becke α (iso, a.u.): {:?}",
                         v.iter()
                             .map(|t| (t[0][0] + t[1][1] + t[2][2]) / 3.0)
                             .collect::<Vec<_>>()
@@ -3892,7 +4294,7 @@ fn run_pdep_rpa_arm(
                     Some(v)
                 }
                 Err(e) => {
-                    eprintln!("warning: per-atom α (Hirshfeld) failed: {e}");
+                    eprintln!("warning: per-atom α (Becke) failed: {e}");
                     npz_gaps.push(format!("alpha_atomic (per-atom α): {e}"));
                     None
                 }
@@ -3900,6 +4302,24 @@ fn run_pdep_rpa_arm(
         } else {
             None
         };
+
+        // Charge-transfer remainder α_CT = α_mol − Σ_A α^A: emitted exactly
+        // when both inputs were computed. Both come from the same response
+        // (pdep_polarizability_static / pdep_polarizability_becke: same RI
+        // kernel, same orbitals, frozen_core = 0), so the remainder is the
+        // Krishtal charge-delocalization polarizability, not a definition gap.
+        let alpha_ct_arr: Option<[[f64; 3]; 3]> =
+            match (alpha_arr.as_ref(), alpha_atomic_vec.as_deref()) {
+                (Some(mol_a), Some(per_atom)) => {
+                    let ct = ferric_rpa::properties::charge_transfer_remainder(mol_a, per_atom);
+                    println!(
+                        "Charge-transfer α_CT (iso, a.u.): {:.4}",
+                        (ct[0][0] + ct[1][1] + ct[2][2]) / 3.0
+                    );
+                    Some(ct)
+                }
+                _ => None,
+            };
 
         let compute_dm = cfg.rpa.compute_density_matrix.unwrap_or(true);
         let dm_ref = if compute_dm {
@@ -4049,6 +4469,9 @@ fn run_pdep_rpa_arm(
         let mut c6_freqs_v: Vec<f64> = Vec::new();
         let mut c6_weights_v: Vec<f64> = Vec::new();
         let mut alpha_dyn_v: Vec<Vec<[[f64; 3]; 3]>> = Vec::new();
+        // Dynamic charge-transfer remainder; PDEP source only (TS/MBD model
+        // α(iω) has no charge-transfer term to remove).
+        let mut alpha_ct_dyn_v: Option<Vec<[[f64; 3]; 3]>> = None;
         let mut c6_iso_opt: Option<ndarray::Array2<f64>> = None;
         let mut c6_aniso_v: Vec<Vec<[[f64; 3]; 3]>> = Vec::new();
         // Provenance for the per-atom C6 arrays, carried to the NPZ so an
@@ -4172,93 +4595,23 @@ fn run_pdep_rpa_arm(
                     };
                     let z: Vec<usize> = mol.atoms.iter().map(|a| a.z as usize).collect();
 
-                    // Compute free-atom vol_free using Hirshfeld on isolated atoms.
-                    // For a single atom Hirshfeld weight = 1 everywhere (only one
-                    // proatom), so this gives ∫ ρ_free(r) |r|³ dr — same physics
-                    // as the molecular Hirshfeld integral, consistent denominator.
+                    // Free-atom vol_free from a live free-atom SCF in the same
+                    // basis and SCF settings, then Hirshfeld on the isolated
+                    // atom (weight 1 wherever the Slater ρ⁰ is above the 1e-12
+                    // floor) on the SAME atom-centred Becke–Lebedev quadrature
+                    // `atomic_effective_volumes_hirshfeld` just integrated the
+                    // molecular volumes on, so the ratio is scale-consistent. Shared with MBD@rsSCS dispersion
+                    // (`ferric_rpa::dispersion::live_free_atom_volume`, which
+                    // documents the solve and its HF/UHF retry). A failure
+                    // leaves no entry for that Z, and the loop below skips TS
+                    // C6 with a warning.
                     let mut vol_free_computed: std::collections::HashMap<usize, f64> =
                         std::collections::HashMap::new();
                     for &zi in z.iter().collect::<std::collections::HashSet<_>>() {
-                        let sym = ferric_core::elements::z_to_symbol(zi as i32).unwrap_or("X");
-                        let free_xyz = format!("1\n{sym}\n{sym} 0 0 0\n");
-                        // Correct atomic ground-state multiplicities (3P for
-                        // C/O/Si/S, etc.). Reuse the proatom map — the prior
-                        // ad-hoc match here gave C/O/S a singlet, which is
-                        // wrong physics and HANGS the restricted SCF for S.
-                        let mult = proatom_gs_mult(zi as i32);
-                        if let Ok(free_mol) = Molecule::parse_xyz(&free_xyz, 0, mult) {
-                            if let Ok(free_obs) = PreparedBasis::new(&free_mol, bs) {
-                                let free_bounds = SchwarzBounds::compute(op, &free_obs)
-                                    .unwrap_or_else(|_| SchwarzBounds::compute(op, prep).unwrap());
-                                let mut free_cfg = rhf_config.clone();
-                                free_cfg.mom_after_iter = if mult > 1 { 5 } else { 0 };
-                                // Give the tiny free-atom SCF a generous iteration
-                                // budget — this is now the ONLY source of vol_free
-                                // (the hardcoded-table fallback was removed), so a
-                                // near-converged atom that would previously have
-                                // silently degraded to a table value must instead
-                                // actually converge. Cheap: it's a single atom.
-                                free_cfg.max_iter = free_cfg.max_iter.max(200);
-                                // 1-thread pool for the tiny atom solve — see run_serial.
-                                //
-                                // The free-atom volume must be on the SAME scale (same xc) as
-                                // the molecular volume (vols[i]) or the ratio is meaningless.
-                                // Open-shell xc atoms (³P: O/S/Si) do NOT converge under a
-                                // plain UKS-GGA solve — their degenerate p-shell makes the GGA
-                                // potential orientation-dependent and the SCF oscillates
-                                // forever. Fractional/ensemble occupation (fractional_occ)
-                                // spreads the open-shell electrons equally over the degenerate
-                                // p orbitals, restoring spherical symmetry and converging the
-                                // UKS-PBE atom on the *consistent* scale. Pure HF/UHF free-atom
-                                // solves don't suffer this (K is orbital-invariant in the
-                                // degenerate subspace), so — matching the proatom builder above
-                                // — only enable fractional_occ when an xc functional is set.
-                                if mult > 1 && free_cfg.xc.is_some() {
-                                    free_cfg.fractional_occ = true;
-                                }
-                                let solve_free = |cfg: &RhfConfig| -> Option<ndarray::Array2<f64>> {
-                                    if mult > 1 {
-                                        solve_uhf(ctx, &free_mol, &free_obs, &free_bounds, cfg)
-                                            .ok()
-                                            .map(|r| r.density_total().to_owned())
-                                    } else {
-                                        solve_rhf(ctx, &free_mol, &free_obs, op, &free_bounds, cfg)
-                                            .ok()
-                                            .map(|r| r.density_r().to_owned())
-                                    }
-                                };
-                                // Live free-atom SCF is the ONLY source of the TS
-                                // vol_free denominator now. Try the reference-
-                                // consistent xc solve first (scale-matched to the
-                                // molecular volume); if it fails, retry pure HF/UHF
-                                // as a *scale-consistent* fallback (this changes the
-                                // xc convention slightly, but is still a real
-                                // free-atom integral, not a stale table number). If
-                                // both fail, vol_free_computed has no entry for this
-                                // Z and the loop below skips TS C6 with a clear
-                                // warning — no silent scale-mismatched fabrication.
-                                let free_density = run_serial(|| {
-                                    solve_free(&free_cfg).or_else(|| {
-                                        // xc solve failed — retry pure HF/UHF for a converged,
-                                        // scale-consistent density.
-                                        let mut hf_cfg = free_cfg.clone();
-                                        hf_cfg.xc = None;
-                                        hf_cfg.fractional_occ = false;
-                                        solve_free(&hf_cfg)
-                                    })
-                                });
-                                if let Some(d) = free_density {
-                                    // Single free atom: Hirshfeld weight = 1
-                                    // everywhere (one proatom), so the
-                                    // reference volume is partition-independent
-                                    // — None (legacy path) is exact here.
-                                    if let Ok(fv) =
-                                        atomic_effective_volumes_hirshfeld(&free_mol, bs, &d, None)
-                                    {
-                                        vol_free_computed.insert(zi, fv[0]);
-                                    }
-                                }
-                            }
+                        if let Ok(vf) = ferric_rpa::dispersion::live_free_atom_volume(
+                            ctx, zi, bs, op, rhf_config,
+                        ) {
+                            vol_free_computed.insert(zi, vf);
                         }
                     }
 
@@ -4349,6 +4702,21 @@ fn run_pdep_rpa_arm(
             };
 
             if let Some(res) = res_opt {
+                if use_pdep {
+                    // molecular_dynamic_polarizability and the per-atom
+                    // intrinsic α^A(iω) share the RI kernel, orbitals and
+                    // frozen_core = 0, at the same frequencies.
+                    match ferric_rpa::properties::charge_transfer_remainder_dynamic(
+                        &res.per_atom_dynamic.molecular,
+                        &res.per_atom_dynamic.per_atom,
+                    ) {
+                        Ok(ct) => alpha_ct_dyn_v = Some(ct),
+                        Err(e) => {
+                            eprintln!("warning: dynamic charge-transfer α_CT(iω) failed: {e}");
+                            npz_gaps.push(format!("alpha_ct_dynamic: {e}"));
+                        }
+                    }
+                }
                 c6_freqs_v = res.per_atom_dynamic.freqs.clone();
                 c6_weights_v = res.per_atom_dynamic.weights.clone();
                 alpha_dyn_v = res.per_atom_dynamic.per_atom.clone();
@@ -4424,6 +4792,7 @@ fn run_pdep_rpa_arm(
                 alpha_tensor: alpha_arr.as_ref(),
                 electric_field: ef_vec.as_deref(),
                 alpha_atomic: alpha_atomic_vec.as_deref(),
+                alpha_ct: alpha_ct_arr.as_ref(),
             },
             dispersion: DispersionBundle {
                 // All-or-nothing, and the provenance is non-Option inside
@@ -4437,6 +4806,7 @@ fn run_pdep_rpa_arm(
                         c6_freqs: c6_freqs_v.as_slice(),
                         c6_weights: c6_weights_v.as_slice(),
                         alpha_atomic_dynamic: alpha_dyn_v.as_slice(),
+                        alpha_ct_dynamic: alpha_ct_dyn_v.as_deref(),
                         c6_iso: iso,
                         c6_aniso: c6_aniso_v.as_slice(),
                         c6_molecular_iso: c6_molecular_iso_v,
@@ -5132,6 +5502,7 @@ fn run_uhf(
     ctx: &ParallelContext,
     mol: &Molecule,
     bs: &BasisSet,
+    op: Operator,
     prep: &PreparedBasis,
     bounds: &SchwarzBounds,
     rhf_config: &RhfConfig,
@@ -5170,7 +5541,16 @@ fn run_uhf(
     );
     println!("  iterations = {}", result.iterations);
     println!("  converged  = {}", result.converged);
-    print_scf_energy(cfg, mol, result.energy);
+    let dispersion =
+        dispersion_correction(cfg, ctx, mol, bs, op, rhf_config, result.density_total());
+    print_scf_energy(result.energy, dispersion.as_ref());
+    print_cosx_final(&result);
+    log_scf_dispersion(result.energy, dispersion.as_ref());
+    // Open-shell energy runs return before `run()`'s `run_end`, so the final
+    // pass gets its own record (as the dispersion correction does).
+    if let (Some(f), Some(rl)) = (result.cosx_final, ferric_scf::runlog::log()) {
+        rl.note("cosx_final_pass", cosx_final_json(&f));
+    }
     println!("  <S^2>      = {:.6} (ideal {:.6})", s2, s_ideal);
     // task == "optimize" is handled by the top-level dispatch above
     // (optimize_geometry_uhf), which returns before reaching here.
@@ -5213,7 +5593,10 @@ fn run_rohf(
     );
     println!("  iterations = {}", result.iterations);
     println!("  converged  = {}", result.converged);
-    print_scf_energy(cfg, mol, result.energy);
+    let dispersion =
+        dispersion_correction(cfg, ctx, mol, bs, op, rhf_config, result.density_total());
+    print_scf_energy(result.energy, dispersion.as_ref());
+    log_scf_dispersion(result.energy, dispersion.as_ref());
     println!("  <S^2>      = {:.6} (exact by construction)", s_ideal);
     // task == "optimize" is handled by the top-level dispatch above
     // (optimize_geometry_rohf), which returns before reaching here.
@@ -5225,6 +5608,13 @@ fn run_rohf(
 /// translations/rotations projected out. The reference is chosen from
 /// `method.kind` the same way `run_optimize` does; `[dft] xc` promotes RHF/UHF/
 /// ROHF to the corresponding KS variant automatically.
+///
+/// With `[dft] dispersion` (RKS, UKS or ROKS, as in `run_optimize`) the
+/// Hessian is the central difference of the CORRECTED gradient
+/// `g_KS + g_disp`, each evaluated from the SCF converged at that displaced
+/// geometry (`harmonic_frequencies_with_scf_correction`); MBD@rsSCS's density
+/// dependence enters through its exact (Z-vector-relaxed) gradient for the
+/// reference's own spin densities.
 fn run_frequencies(
     method: &str,
     cfg: &Config,
@@ -5234,9 +5624,7 @@ fn run_frequencies(
     op: Operator,
     rhf_config: &RhfConfig,
 ) {
-    use ferric_scf::frequencies::{
-        harmonic_frequencies, FrequencyConfig, FrequencyReference, HessianMethod,
-    };
+    use ferric_scf::frequencies::{FrequencyConfig, FrequencyReference, HessianMethod};
 
     let reference = match method {
         "rhf" | "ksdft" => FrequencyReference::Rhf,
@@ -5270,13 +5658,16 @@ fn run_frequencies(
         });
     }
 
-    let res = harmonic_frequencies(ctx, mol, &bs.name, op, rhf_config, &fcfg).unwrap_or_else(|e| {
+    let (res, at_reference) = frequencies_maybe_dispersion(
+        cfg, ctx, mol, bs, op, rhf_config, &fcfg,
+    )
+    .unwrap_or_else(|e| {
         eprintln!("error computing frequencies: {e}");
         std::process::exit(1);
     });
 
     println!("Harmonic frequencies/{} on {}", bs.name, cfg.molecule.xyz);
-    println!("  energy            = {:.10} Hartree", res.energy);
+    print_frequency_energy(&res, at_reference.as_ref());
     println!("  Hessian           = {}", res.hessian_source.label());
     println!("  gradient evals    = {}", res.n_gradient_evaluations);
     println!("  linear molecule   = {}", res.is_linear);
@@ -5297,6 +5688,100 @@ fn run_frequencies(
             .map(|v| (v * 100.0).round() / 100.0)
             .collect::<Vec<_>>()
     );
+}
+
+/// The frequency run itself: plain, or on the KS + `[dft] dispersion` surface
+/// (`harmonic_frequencies_with_scf_correction`), returning the correction at
+/// the UNDISPLACED geometry for the printout and the run log (the driver
+/// evaluates the closure there first).
+#[allow(clippy::type_complexity)]
+fn frequencies_maybe_dispersion(
+    cfg: &Config,
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    bs: &BasisSet,
+    op: Operator,
+    rhf_config: &RhfConfig,
+    fcfg: &ferric_scf::frequencies::FrequencyConfig,
+) -> Result<
+    (
+        ferric_scf::frequencies::FrequencyResult,
+        Option<DispersionCorrection>,
+    ),
+    ferric_core::FerricError,
+> {
+    use ferric_scf::frequencies::{
+        harmonic_frequencies, harmonic_frequencies_with_scf_correction, FrequencyReference,
+    };
+    // The spin of the SCF the frequency driver solves for this reference; the
+    // MBD@rsSCS model checks that reference's Z-vector is available before
+    // any SCF.
+    let spin = match fcfg.reference {
+        FrequencyReference::Rhf => ferric_scf::Spin::Restricted,
+        FrequencyReference::Uhf => ferric_scf::Spin::Unrestricted,
+        FrequencyReference::Rohf => ferric_scf::Spin::RestrictedOpen,
+    };
+    // Refuse an unsupported configuration (e.g. hessian = "analytic") before
+    // the dispersion model is built (MBD@rsSCS solves free atoms), not after.
+    if dispersion_request(cfg).is_some() {
+        ferric_scf::frequencies::check_scf_correction_config(fcfg)?;
+    }
+    let Some(model) =
+        dispersion_gradient_model(cfg, ctx, mol, bs, op, rhf_config, "frequencies", spin)
+    else {
+        return harmonic_frequencies(ctx, mol, &bs.name, op, rhf_config, fcfg).map(|r| (r, None));
+    };
+    let mut at_reference: Option<DispersionCorrection> = None;
+    let res = harmonic_frequencies_with_scf_correction(
+        ctx,
+        mol,
+        &bs.name,
+        op,
+        rhf_config,
+        fcfg,
+        |m, scf| {
+            let (c, g) = model.evaluate(ctx, m, bs, op, rhf_config, scf)?;
+            let e = c.energy;
+            at_reference.get_or_insert(c);
+            Ok((e, Some(g)))
+        },
+    )?;
+    Ok((res, at_reference))
+}
+
+/// The energy lines of a frequency printout. With `[dft] dispersion` they
+/// carry the corrected total, the KS energy and the correction at the input
+/// geometry, which also go to the JSON run log as a `dispersion` record.
+fn print_frequency_energy(
+    res: &ferric_scf::frequencies::FrequencyResult,
+    at_reference: Option<&DispersionCorrection>,
+) {
+    match at_reference {
+        None => println!("  energy            = {:.10} Hartree", res.energy),
+        Some(d) => {
+            let scf_energy = res.energy - res.correction_energy;
+            println!(
+                "  energy            = {:.10} Hartree (KS-DFT + {})",
+                res.energy, d.model
+            );
+            println!("  E(KS-DFT)         = {scf_energy:.10} Hartree");
+            match &d.mbd {
+                None => println!(
+                    "  E(D3BJ)           = {:+.10} Hartree [params: {}]",
+                    d.energy, d.params
+                ),
+                Some((beta, _)) => println!(
+                    "  E(MBD@rsSCS)      = {:+.10} Hartree [beta: {beta}, functional: {}]",
+                    d.energy, d.params
+                ),
+            }
+            println!(
+                "  dispersion        = in the Hessian (central differences of the KS + \
+                 dispersion analytic gradient)"
+            );
+            log_scf_dispersion(scf_energy, Some(d));
+        }
+    }
 }
 
 /// `task.method = "optimize"` dispatch. Extracted verbatim from the former
@@ -5329,55 +5814,40 @@ fn run_optimize(
     };
     match method {
         "rhf" | "ksdft" => {
-            // D3(BJ) as an ADDITIVE correction on both halves. It is threaded
-            // as a closure rather than as a flag inside `ferric-scf` so that
-            // crate stays free of any empirical dispersion model; see
-            // `optimize_geometry_with_correction`.
+            // Dispersion (D3(BJ) or MBD@rsSCS) as an ADDITIVE correction on
+            // both halves. It is threaded as a closure rather than as a flag
+            // inside `ferric-scf` so that crate stays free of any dispersion
+            // model; see `optimize_geometry_with_scf_correction`, which hands
+            // the closure the converged SCF at each geometry (MBD@rsSCS needs
+            // its density for the Hirshfeld volumes).
             //
             // The energy and the gradient come from the SAME resolved
             // parameters, which is the property that makes optimizing on this
             // surface meaningful -- a mismatched pair converges to a geometry
             // that is a stationary point of neither.
-            let disp = match cfg.dft.dispersion.as_deref() {
-                None => None,
-                Some(spec) => {
-                    let req = crate::config::DispersionRequest::parse_config_str(
-                        spec,
-                        cfg.dft.functional.as_deref(),
-                    )
-                    .unwrap_or_else(|e| {
-                        eprintln!("error: {e}");
-                        std::process::exit(1);
-                    });
-                    let crate::config::DispersionRequest::D3Bj { functional } = req;
-                    Some(
-                        ferric_d3::d3bj_params_for_functional(&functional).unwrap_or_else(|e| {
-                            eprintln!("error: {e}");
-                            std::process::exit(1);
-                        }),
-                    )
-                }
-            };
-            let opt_result = optimize_geometry_with_correction(
+            let model = dispersion_gradient_model(
+                cfg,
+                ctx,
+                mol,
+                bs,
+                op,
+                rhf_config,
+                "optimize",
+                ferric_scf::Spin::Restricted,
+            );
+            let opt_result = optimize_geometry_with_scf_correction(
                 ctx,
                 mol,
                 &bs.name,
                 op,
                 rhf_config,
                 &opt_config,
-                |m| match &disp {
-                    None => Ok((0.0, None)),
-                    Some(params) => {
-                        let e = ferric_d3::d3bj_energy_for_molecule(m, params)?;
-                        let g = ferric_d3::d3bj_gradient_for_molecule(m, params)?;
-                        let mut arr = ndarray::Array2::<f64>::zeros((g.len(), 3));
-                        for (k, row) in g.iter().enumerate() {
-                            for a in 0..3 {
-                                arr[[k, a]] = row[a];
-                            }
-                        }
-                        Ok((e, Some(arr)))
+                |m, scf| match &model {
+                    Some(d) => {
+                        let (c, g) = d.evaluate(ctx, m, bs, op, rhf_config, scf)?;
+                        Ok((c.energy, Some(g)))
                     }
+                    None => Ok((0.0, None)),
                 },
             )
             .unwrap_or_else(|e| {
@@ -5511,15 +5981,41 @@ fn run_optimize(
         }
         "uhf" => {
             // UKS when `rhf_config.xc` is set (`kind = "uhf"` + functional, or
-            // `ksdft` on an open-shell molecule): `optimize_geometry_uhf` then
+            // `ksdft` on an open-shell molecule): `optimize_geometry_uhf_with_scf_correction` then
             // takes `ks_gradient_uks`.
+            // `[dft] dispersion` is applied as on the closed-shell path: D3(BJ)
+            // from the geometry, MBD@rsSCS from the UKS spin densities with the
+            // unrestricted Z-vector relaxation term.
             let label = open_shell_scf_label("UHF", "UKS", rhf_config);
-            refuse_open_shell_dispersion_gradient(cfg, &label);
-            let opt_result = optimize_geometry_uhf(ctx, mol, &bs.name, op, rhf_config, &opt_config)
-                .unwrap_or_else(|e| {
-                    eprintln!("error during {label} optimization: {e}");
-                    std::process::exit(1);
-                });
+            let model = dispersion_gradient_model(
+                cfg,
+                ctx,
+                mol,
+                bs,
+                op,
+                rhf_config,
+                "optimize",
+                ferric_scf::Spin::Unrestricted,
+            );
+            let opt_result = optimize_geometry_uhf_with_scf_correction(
+                ctx,
+                mol,
+                &bs.name,
+                op,
+                rhf_config,
+                &opt_config,
+                |m, scf| match &model {
+                    Some(d) => {
+                        let (c, g) = d.evaluate(ctx, m, bs, op, rhf_config, scf)?;
+                        Ok((c.energy, Some(g)))
+                    }
+                    None => Ok((0.0, None)),
+                },
+            )
+            .unwrap_or_else(|e| {
+                eprintln!("error during {label} optimization: {e}");
+                std::process::exit(1);
+            });
             println!("\nFinal Optimized Geometry (Bohr):");
             for (i, atom) in opt_result.mol.atoms.iter().enumerate() {
                 println!(
@@ -5534,14 +6030,39 @@ fn run_optimize(
         }
         "rohf" => {
             // ROKS (`ks_gradient_roks`) when `[dft] functional` is set.
+            // `[dft] dispersion` as on the UKS path: D3(BJ) from the geometry,
+            // MBD@rsSCS from the ROKS spin densities with the ROKS Z-vector
+            // relaxation term.
             let label = open_shell_scf_label("ROHF", "ROKS", rhf_config);
-            refuse_open_shell_dispersion_gradient(cfg, &label);
-            let opt_result =
-                optimize_geometry_rohf(ctx, mol, &bs.name, op, rhf_config, &opt_config)
-                    .unwrap_or_else(|e| {
-                        eprintln!("error during {label} optimization: {e}");
-                        std::process::exit(1);
-                    });
+            let model = dispersion_gradient_model(
+                cfg,
+                ctx,
+                mol,
+                bs,
+                op,
+                rhf_config,
+                "optimize",
+                ferric_scf::Spin::RestrictedOpen,
+            );
+            let opt_result = optimize_geometry_rohf_with_scf_correction(
+                ctx,
+                mol,
+                &bs.name,
+                op,
+                rhf_config,
+                &opt_config,
+                |m, scf| match &model {
+                    Some(d) => {
+                        let (c, g) = d.evaluate(ctx, m, bs, op, rhf_config, scf)?;
+                        Ok((c.energy, Some(g)))
+                    }
+                    None => Ok((0.0, None)),
+                },
+            )
+            .unwrap_or_else(|e| {
+                eprintln!("error during {label} optimization: {e}");
+                std::process::exit(1);
+            });
             println!("\nFinal Optimized Geometry (Bohr):");
             for (i, atom) in opt_result.mol.atoms.iter().enumerate() {
                 println!(
@@ -5573,24 +6094,6 @@ fn refuse_tddft_xc_without_kernel(cfg: &Config, method: &str) {
     }
     if let Err(e) = ferric_dft::lr_kernel::resolve_singlet_response_xc(xc_name, "[tddft] xc") {
         eprintln!("error: {e}");
-        std::process::exit(1);
-    }
-}
-
-/// `[dft] dispersion` on an open-shell (UKS/ROKS) geometry optimization is
-/// refused: the D3(BJ) correction is threaded through the optimizer only on
-/// the closed-shell path (`optimize_geometry_with_correction`), so the
-/// UKS/ROKS optimizer would walk the UNCORRECTED surface while the config
-/// asks for a corrected one. The single-point energy (task = "energy") does
-/// apply it.
-fn refuse_open_shell_dispersion_gradient(cfg: &Config, label: &str) {
-    if cfg.dft.dispersion.is_some() {
-        eprintln!(
-            "error: [dft] dispersion is not supported with method.task = \"optimize\" on an \
-             open-shell ({label}) reference: the D3(BJ) gradient is only threaded through the \
-             closed-shell optimizer, so this run would optimize the uncorrected surface. Use \
-             task = \"energy\" for a corrected {label} single point, or remove the key."
-        );
         std::process::exit(1);
     }
 }
@@ -5683,39 +6186,79 @@ fn run_tddft_arm(
 }
 
 #[cfg(test)]
-mod lmp2_reference_printout_tests {
-    use super::lmp2_reference_lines;
+mod local_printout_tests {
+    use super::{local_json, local_reference_lines, model_label, LocalPrint};
 
     /// With the opt-in reference OFF the printout must say so and must never
     /// show the library's NaN sentinel or a NaN difference.
     ///
-    /// Fails if reverted: the pre-change code printed `r.e_corr_canonical_ri`
-    /// and `r.e_corr - r.e_corr_canonical_ri` unconditionally, i.e. "NaN"
-    /// twice once the library default went off; a helper that formatted the
+    /// Fails if reverted to printing the raw reference unconditionally (NaN
+    /// twice once the library default is off); a helper that formatted the
     /// raw NaN instead of branching on `None` fails the `!contains("NaN")`
     /// assert, and one that printed nothing fails the "not computed" assert.
     #[test]
     fn reference_off_prints_not_computed_and_no_nan() {
-        let text = lmp2_reference_lines(-0.2, None, "threshold error", "note").join("\n");
+        let text = local_reference_lines(
+            -0.2,
+            None,
+            "E_corr(canonical RI)",
+            "threshold error",
+            "note",
+        )
+        .join("\n");
         assert!(
             !text.contains("NaN"),
             "NaN leaked into the printout:\n{text}"
         );
         assert!(text.contains("not computed"), "{text}");
         assert!(
-            text.contains("[mp2] lmp2_reference = true"),
+            text.contains("[local] reference = true"),
             "the printout must name the opt-in key:\n{text}"
         );
         assert!(!text.contains("threshold error"), "{text}");
     }
 
-    /// With the reference ON the value and the difference are printed in the
-    /// historical layout (labels aligned on the `=` column).
+    /// With the reference ON the value and the difference are printed with
+    /// the labels aligned on the `=` column.
     #[test]
     fn reference_on_prints_value_and_signed_difference() {
-        let lines = lmp2_reference_lines(-0.2, Some(-0.25), "total error", "maps");
+        let lines = local_reference_lines(
+            -0.2,
+            Some(-0.25),
+            "E_corr(canonical RI)",
+            "total error",
+            "maps",
+        );
         assert_eq!(lines.len(), 2, "{lines:?}");
         assert_eq!(lines[0], "  E_corr(canonical RI)  = -0.2500000000 Ha");
         assert_eq!(lines[1], "  total error           = +5.000e-2 Ha (maps)");
+    }
+
+    /// The model line names the model: "(exact)" with no threshold, or the
+    /// scheme, the threshold and the kept fraction. The run-log `local`
+    /// component is `null` exactly for the exact method.
+    #[test]
+    fn model_line_and_log_state_the_model() {
+        assert_eq!(model_label("dRPA", None), "dRPA (exact)");
+        let l = LocalPrint {
+            eps: 1e-4,
+            keep_fraction: 0.023,
+            integral_direct: false,
+        };
+        assert_eq!(
+            model_label("dRPA", Some(&l)),
+            "dRPA (local: amplitude threshold, eps = 1.0e-4; kept 2.30% of amplitudes)"
+        );
+        let d = LocalPrint {
+            integral_direct: true,
+            ..l
+        };
+        assert!(model_label("MP2", Some(&d)).contains("integral-direct, eps = 1.0e-4"));
+        assert!(local_json(None).is_null());
+        let j = local_json(Some(&d));
+        assert_eq!(j["scheme"], "amplitude-threshold");
+        assert_eq!(j["eps"], 1e-4);
+        assert_eq!(j["keep_fraction"], 0.023);
+        assert_eq!(j["integral_direct"], true);
     }
 }

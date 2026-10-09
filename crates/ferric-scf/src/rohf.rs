@@ -116,16 +116,34 @@ impl FxcKernelStore {
     /// the given reference densities. `xc_name` is the functional string that
     /// already produced a live `xc_contrib` upstream, so it is guaranteed
     /// LDA/GGA/hybrid/RSH (meta-GGA rejected at KsXcUks::new).
+    ///
+    /// `omega_override` is `RhfConfig::xc_omega`, and threading it is NOT
+    /// cosmetic. The SCF's own `xc_contrib` is built with the override (see
+    /// `KsXcUks::new`'s `config.xc_omega` argument), so without it here the
+    /// response kernel would be the one for the functional's PUBLISHED ω while
+    /// the converged density came from the overridden one — a wrong-operator
+    /// Hessian of exactly the kind the stability module exists to prevent, and
+    /// the defect `zvector_ks::ks_hessian_unsupported_reason` still refuses an
+    /// `xc_omega` run over. Measured on N2⁺/def2-SVP/ωB97X-V: omitting the
+    /// override put λ_min's zero crossing at ω ≈ 0.468 instead of PySCF's
+    /// ≈ 0.531, i.e. a sign DISAGREEMENT at ω = 0.53 while the energy agreed
+    /// to 1e-9. `None` means "use the functional's published ω", which is
+    /// byte-identical to the former behaviour for every caller that has no
+    /// override set.
     pub(crate) fn build(
         mol: &Molecule,
         prep: &PreparedBasis,
         cfg: &ferric_dft::grid::AtomicGridConfig,
         xc_name: &str,
+        omega_override: Option<f64>,
         d_a: &Array2<f64>,
         d_b: &Array2<f64>,
     ) -> Result<Self, FerricError> {
-        let xc_def = ferric_dft::libxc::xc_def_from_name_nspin(xc_name, 2)
-            .map_err(|e| FerricError::General(format!("fxc def for {xc_name}: {e:?}")))?;
+        let xc_def = match omega_override {
+            Some(w) => ferric_dft::libxc::xc_def_from_name_nspin_omega(xc_name, 2, w),
+            None => ferric_dft::libxc::xc_def_from_name_nspin(xc_name, 2),
+        }
+        .map_err(|e| FerricError::General(format!("fxc def for {xc_name}: {e:?}")))?;
         let is_lda = xc_def
             .funcs
             .iter()
@@ -437,9 +455,26 @@ fn solve_rohf_impl(
         cosmo_cavity,
         pcm_ctx,
         polarizable_site_basis,
-        mut dfk_sr,
-        mut dfk_lr,
+        dfk_sr,
+        dfk_lr,
     } = crate::driver::prepare(ctx, mol, prep, config, &k_mix, pre_env)?;
+
+    // The ONE SR/LR exchange response every Hessian matvec in this solve uses —
+    // Newton steps, TRAH steps and the post-SCF stability eigensolve alike. It
+    // borrows the SAME two fitters `subtract_rsh_exchange` assembles the
+    // converged Fock from and reads the SAME `k_mix`, so the Fock and the
+    // Hessian cannot disagree about the kernel (the #314 defect). `None` at
+    // omega == 0, where the matvecs keep their untouched plain-Coulomb path.
+    let rsh_response = match (dfk_sr.as_ref(), dfk_lr.as_ref()) {
+        (Some(sr), Some(lr)) => Some(crate::rsh_response::RshResponse::new(
+            sr,
+            lr,
+            k_mix.sr,
+            k_mix.lr,
+            k_mix.omega,
+        )),
+        _ => None,
+    };
     let n = prep.nbasis();
     let nelec = mol.nelec() as i64;
     let mult = mol.multiplicity as i64;
@@ -648,7 +683,14 @@ fn solve_rohf_impl(
     } else {
         None
     };
-    let k_aux_eff = if need_k && k_mix.omega == 0.0 {
+    // RIJCOSX: `k_builder = "cosx"` replaces the ω = 0 DF-K (an explicitly
+    // named `df_k_aux` alongside it is refused); DF-J is unaffected.
+    let cosx_k = crate::fock_assembly::cosx_replaces_df_k(
+        config.k_builder.as_deref(),
+        config.df_k_aux.as_deref(),
+        need_k && k_mix.omega == 0.0,
+    )?;
+    let k_aux_eff = if need_k && k_mix.omega == 0.0 && !cosx_k {
         config.df_k_aux.as_deref()
     } else {
         None
@@ -690,13 +732,31 @@ fn solve_rohf_impl(
     // is untouched by this.
     let pluggable_k_kind = crate::fock_assembly::resolve_k_builder(
         config.k_builder.as_deref(),
-        df_j.is_some() || df_k.is_some(),
+        df_j.is_some(),
+        df_k.is_some(),
         df_k.is_some(),
         need_k,
         k_mix.omega,
     )?;
     let pluggable_k_kind =
         crate::fock_assembly::narrow_k_builder_to_supported(pluggable_k_kind, need_k, k_mix.omega);
+    crate::cosx_schedule::refuse(pluggable_k_kind, &config.cosx, "ROHF/ROKS")?;
+    if pluggable_k_kind == Some("cosx") && config.cosx.final_grid.is_some() {
+        // The COSX final-grid pass is implemented for RHF/RKS and UHF/UKS
+        // only. An explicit request is refused; the default one is skipped,
+        // so the reported energy is the SCF-grid energy.
+        if config.cosx.final_pass_explicit {
+            return Err(FerricError::General(
+                "COSX final-grid pass (cosx final_grid) is implemented for RHF/RKS and UHF/UKS, \
+                 not ROHF/ROKS; unset the final grid for ROHF/ROKS runs"
+                    .into(),
+            ));
+        }
+        eprintln!(
+            "[ferric] COSX final-grid pass skipped: not implemented for ROHF/ROKS; the energy is \
+             the SCF-grid energy"
+        );
+    }
     // Same `LinkBound::SchwarzRef` adapter and same rationale as `solve_uhf`'s
     // — see the comment there. No table on `bounds` (the default) makes this
     // byte-identical to passing `bounds` directly.
@@ -858,8 +918,15 @@ fn solve_rohf_impl(
         let mut f_a: Array2<f64> = &h + &j_buf;
         let mut f_b: Array2<f64> = &h + &j_buf;
         if k_mix.omega > 0.0 {
-            let dfk_sr = dfk_sr.as_mut().expect("dfk_sr built when omega>0");
-            let dfk_lr = dfk_lr.as_mut().expect("dfk_lr built when omega>0");
+            let mut dfk_sr = dfk_sr
+                .as_ref()
+                .expect("dfk_sr built when omega>0")
+                .borrow_mut();
+            let mut dfk_lr = dfk_lr
+                .as_ref()
+                .expect("dfk_lr built when omega>0")
+                .borrow_mut();
+            let (dfk_sr, dfk_lr) = (&mut *dfk_sr, &mut *dfk_lr);
             // occ-path DISABLED (always None) — see the matching note in
             // rhf.rs: the DF-K half-transform's B-tensor reassociation differs
             // from the density path at the f64 floor, which measurably
@@ -1112,8 +1179,11 @@ fn solve_rohf_impl(
                 computed_quartets: total_quartets,
                 induced_dipoles: last_induced_dipoles.clone(),
                 stability: None,
+                stability_external: None,
                 df_jk: df_jk_route.clone(),
                 rohf_spin_focks: spin_focks_last.clone(),
+                cosx_final: None,
+                cosx_schedule: None,
             };
             // Swap witness (F6): returned now, or held while its best
             // single-swap neighbours are evaluated on the next passes.
@@ -1164,7 +1234,15 @@ fn solve_rohf_impl(
                     .xc
                     .as_deref()
                     .expect("xc_supports_newton_fxc implies Some(xc)");
-                Some(FxcKernelStore::build(mol, prep, &main, name, &d_a, &d_b)?)
+                Some(FxcKernelStore::build(
+                    mol,
+                    prep,
+                    &main,
+                    name,
+                    config.xc_omega,
+                    &d_a,
+                    &d_b,
+                )?)
             } else {
                 None
             };
@@ -1179,7 +1257,12 @@ fn solve_rohf_impl(
                 f_b_mo: &f_b_mo,
                 nocc_double,
                 nocc_open,
-                k_mix_sr: if k_mix.omega > 0.0 { 0.0 } else { c_k },
+                // Pre-#314 this was `if omega > 0 { 0.0 }`, i.e. a
+                // range-separated ROKS Newton step built NO exchange response
+                // at all. The SR/LR response now comes from `rsh` instead, and
+                // this scalar is read only on the omega == 0 path.
+                k_mix_sr: c_k,
+                rsh: rsh_response.as_ref(),
                 fxc: fxc_ref,
                 thresh: config.integral_thresh,
                 ooc_budget,
@@ -1215,7 +1298,15 @@ fn solve_rohf_impl(
                     .xc
                     .as_deref()
                     .expect("xc_supports_newton_fxc implies Some(xc)");
-                Some(FxcKernelStore::build(mol, prep, &main, name, &d_a, &d_b)?)
+                Some(FxcKernelStore::build(
+                    mol,
+                    prep,
+                    &main,
+                    name,
+                    config.xc_omega,
+                    &d_a,
+                    &d_b,
+                )?)
             } else {
                 None
             };
@@ -1230,7 +1321,12 @@ fn solve_rohf_impl(
                 f_b_mo: &f_b_mo,
                 nocc_double,
                 nocc_open,
-                k_mix_sr: if k_mix.omega > 0.0 { 0.0 } else { c_k },
+                // Pre-#314 this was `if omega > 0 { 0.0 }`, i.e. a
+                // range-separated ROKS Newton step built NO exchange response
+                // at all. The SR/LR response now comes from `rsh` instead, and
+                // this scalar is read only on the omega == 0 path.
+                k_mix_sr: c_k,
+                rsh: rsh_response.as_ref(),
                 fxc: fxc_ref,
                 thresh: config.integral_thresh,
                 ooc_budget,
@@ -1324,8 +1420,11 @@ fn solve_rohf_impl(
         computed_quartets: total_quartets,
         induced_dipoles: last_induced_dipoles,
         stability: None,
+        stability_external: None,
         df_jk: df_jk_route,
         rohf_spin_focks: spin_focks_last,
+        cosx_final: None,
+        cosx_schedule: None,
     })
 }
 

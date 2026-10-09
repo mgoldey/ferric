@@ -11,8 +11,20 @@
 
 pub mod free_atom_ref;
 pub mod mbd;
+pub mod mbd_rsscs;
+pub mod mbd_scf;
 
-pub use mbd::{mbd_dynamic_polarizability, mbd_energy};
+pub use mbd::mbd_dynamic_polarizability;
+pub use mbd_rsscs::{
+    mbd_rsscs_beta_for_functional, mbd_rsscs_energy, mbd_rsscs_energy_from_params,
+    mbd_rsscs_gradient, mbd_rsscs_gradient_from_params, MbdAtomParams, MbdRsscsConfig,
+    MbdRsscsGradient, MbdRsscsResult,
+};
+pub use mbd_scf::{
+    live_free_atom_volume, live_free_atom_volume_with, mbd_rsscs_for_density,
+    mbd_rsscs_for_restricted_open_densities, mbd_rsscs_for_scf, mbd_rsscs_for_spin_densities,
+    FreeAtomVolumeQuadrature, MbdFreeAtomCache, MbdScfResult,
+};
 
 use ndarray::Array2;
 
@@ -32,17 +44,19 @@ pub struct DynamicPolarizability {
     pub freqs: Vec<f64>,
     /// Casimir-Polder quadrature weights w_k (a.u.).
     pub weights: Vec<f64>,
-    /// `per_atom[a][k]` = 3×3 tensor α^A_{ij}(iω_k), a.u. — the ATOM-CENTRED
-    /// *intrinsic* atomic polarizability (operator r − R_A, charge-transfer
-    /// excluded). Origin-independent and ~isotropic per atom; this is the
-    /// correct object for atom-resolved C6 (TS/MBD convention). The molecular
-    /// bond-axis anisotropy is NOT here — it is a coupled property.
+    /// `per_atom[a][k]` = 3×3 tensor α^A_{ij}(iω_k), a.u. — for the PDEP
+    /// source, the Krishtal–Senet–Van Alsenoy *intrinsic* atomic
+    /// polarizability (JCP 125, 034312 (2006)): atom-centred dipole
+    /// w_A (r − R_A) on the bra, analytic molecular dipole on the field-side
+    /// ket; charge transfer between atoms excluded. Origin-independent; this
+    /// is the object for atom-resolved C6 (TS/MBD convention).
     pub per_atom: Vec<Vec<[[f64; 3]; 3]>>,
     /// `molecular[k]` = 3×3 molecular α_{ij}(iω_k), a.u. — the global-origin
     /// total molecular polarizability (origin-independent for the response).
     /// This drives the molecular C6 total (DOSD-comparable); it is NOT the sum
-    /// of the intrinsic per-atom tensors (the difference is inter-atomic
-    /// coupling / charge transfer).
+    /// of the intrinsic per-atom tensors: `molecular[k] − Σ_A per_atom[A][k]`
+    /// is the charge-transfer remainder
+    /// (`properties::charge_transfer_remainder_dynamic`).
     pub molecular: Vec<[[f64; 3]; 3]>,
 }
 
@@ -51,12 +65,12 @@ pub struct DynamicPolarizability {
 /// CONSUMER WARNING (open-work-triage item #9 / S9 spike, 2026-07-17):
 /// `c6_iso_pair.sum()` is **not** an approximation of `c6_molecular_iso`, and
 /// the gap is not a rounding-level effect — measured water/aug-cc-pVDZ/
-/// RPA@PBE: Becke partition -57.6% (16.14 vs 38.05 a.u.), Hirshfeld
-/// partition -19.5% (30.61 vs 38.05 a.u.). This is expected physics, not a
-/// bug: `c6_iso_pair`/`c6_aniso_pair` are built from the atom-centred
-/// (r-R_A) `per_atom` operator (see [`DynamicPolarizability::per_atom`]),
-/// which by construction excludes the inter-atomic charge-transfer/coupling
-/// that the lab-frame `molecular` response captures. See
+/// RPA@PBE, Hirshfeld partition: -19.5% (30.61 vs 38.05 a.u.); the Becke
+/// partition gap is pinned by the same regression test. This is expected
+/// physics, not a bug: `c6_iso_pair`/`c6_aniso_pair` are built from the
+/// intrinsic `per_atom` tensors (see [`DynamicPolarizability::per_atom`]),
+/// which by construction exclude the inter-atomic charge transfer that the
+/// lab-frame `molecular` response captures. See
 /// `crates/ferric-rpa/tests/s9_per_atom_c6_consistency.rs` — both the spike
 /// probes and `bounded_divergence_pair_sum_vs_molecular_c6_water` (the
 /// regression test asserting the gap is bounded, not a bug that got fixed)
@@ -509,8 +523,10 @@ pub fn pdep_dynamic_polarizability_truncated(
     // aux basis — the same basis the eigensolve ran in, so no metric factor
     // enters. `rpa.eigenpotentials` (physical aux coefficients) is not used.
 
+    // frozen_core = 0: all occupied orbitals respond, matching the full path
+    // and every other polarizability path (see pdep_polarizability_becke_dynamic).
     let mp2_cfg = RiMp2Config {
-        frozen_core: cfg.frozen_core,
+        frozen_core: 0,
         memory_budget_bytes: cfg.memory_budget_bytes,
         ..Default::default()
     };
@@ -610,16 +626,15 @@ pub fn pdep_dynamic_polarizability_truncated(
         }
     }
 
-    // Per-atom MO dipoles + molecular sums.
+    // Per-atom (bra) MO dipoles, and the analytic molecular dipole as the
+    // field-side ket — the same Krishtal intrinsic definition as the full
+    // path (`properties::pdep_polarizability_becke_dynamic`).
     let mu_ai_mo: Vec<[Array2<f64>; 3]> = (0..natoms)
         .map(|a| std::array::from_fn(|d| c_occ.t().dot(&d_ai_ao[a][d]).dot(&c_vir)))
         .collect();
-    let mut mu_mo: [Array2<f64>; 3] = std::array::from_fn(|_| Array2::<f64>::zeros((nocc, nvir)));
-    for a in 0..natoms {
-        for d in 0..3 {
-            mu_mo[d] = &mu_mo[d] + &mu_ai_mo[a][d];
-        }
-    }
+    let dip_ao_analytical = ferric_integrals::oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
+    let mu_mo: [Array2<f64>; 3] =
+        std::array::from_fn(|d| c_occ.t().dot(&dip_ao_analytical[d]).dot(&c_vir));
 
     let mu_flat: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
         let mut v = ndarray::Array1::<f64>::zeros(nov);

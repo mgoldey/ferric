@@ -256,9 +256,11 @@ struct FullFixture {
     alpha_tensor: [[f64; 3]; 3],
     electric_field: Vec<[f64; 3]>,
     alpha_atomic: Vec<[[f64; 3]; 3]>,
+    alpha_ct: [[f64; 3]; 3],
     c6_freqs: Vec<f64>,
     c6_weights: Vec<f64>,
     alpha_atomic_dynamic: Vec<Vec<[[f64; 3]; 3]>>,
+    alpha_ct_dynamic: Vec<[[f64; 3]; 3]>,
     c6_iso: Array2<f64>,
     c6_aniso: Vec<Vec<[[f64; 3]; 3]>>,
 }
@@ -352,6 +354,16 @@ impl FullFixture {
             })
             .collect::<Vec<_>>();
 
+        // Asymmetric 3x3 in its own decade (1e-1 band, distinct from
+        // alpha_tensor's 2e1), so an alpha_ct <-> alpha_tensor swap fails on
+        // values and a transpose fails elementwise.
+        let mut alpha_ct = [[0.0f64; 3]; 3];
+        for (i, row) in alpha_ct.iter_mut().enumerate() {
+            for (j, cell) in row.iter_mut().enumerate() {
+                *cell = v(0.19, i * 3 + j);
+            }
+        }
+
         let c6_freqs = (0..NFREQ).map(|i| v(0.9, i)).collect::<Vec<_>>();
         let c6_weights = (0..NFREQ).map(|i| v(0.045, i)).collect::<Vec<_>>();
         let alpha_atomic_dynamic = (0..NAT)
@@ -367,6 +379,19 @@ impl FullFixture {
                         t
                     })
                     .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        // (NFREQ, 3, 3): leading axis != NAT, so an alpha_ct_dynamic written
+        // per-atom instead of per-frequency is a shape error.
+        let alpha_ct_dynamic = (0..NFREQ)
+            .map(|f| {
+                let mut t = [[0.0f64; 3]; 3];
+                for (i, row) in t.iter_mut().enumerate() {
+                    for (j, cell) in row.iter_mut().enumerate() {
+                        *cell = v(0.0037, f * 9 + i * 3 + j);
+                    }
+                }
+                t
             })
             .collect::<Vec<_>>();
         // (NAT, NAT) pair matrix, asymmetric on purpose.
@@ -412,9 +437,11 @@ impl FullFixture {
             alpha_tensor,
             electric_field,
             alpha_atomic,
+            alpha_ct,
             c6_freqs,
             c6_weights,
             alpha_atomic_dynamic,
+            alpha_ct_dynamic,
             c6_iso,
             c6_aniso,
         }
@@ -452,6 +479,7 @@ impl FullFixture {
                 alpha_tensor: Some(&self.alpha_tensor),
                 electric_field: Some(&self.electric_field),
                 alpha_atomic: Some(&self.alpha_atomic),
+                alpha_ct: Some(&self.alpha_ct),
             },
             dispersion: DispersionBundle {
                 c6: Some(C6Export {
@@ -467,6 +495,7 @@ impl FullFixture {
                     c6_freqs: &self.c6_freqs,
                     c6_weights: &self.c6_weights,
                     alpha_atomic_dynamic: &self.alpha_atomic_dynamic,
+                    alpha_ct_dynamic: Some(&self.alpha_ct_dynamic),
                     c6_iso: &self.c6_iso,
                     c6_aniso: &self.c6_aniso,
                     c6_molecular_iso: C6_MOLECULAR_ISO_FIXTURE,
@@ -501,7 +530,7 @@ const C6_MOLECULAR_ISO_FIXTURE: f64 = 137.913_57;
 ///     assertion — the omission cannot pass silently as the struct grows;
 ///   * a writer branch that stops firing (a silent-None passthrough at a call
 ///     site, the originating bug class) FAILS ("missing key").
-const EXPECTED_NPZ_KEYS: [&str; 30] = [
+const EXPECTED_NPZ_KEYS: [&str; 32] = [
     "mo_coeffs",
     "orbital_energies",
     "pdep_eigenvectors",
@@ -518,6 +547,10 @@ const EXPECTED_NPZ_KEYS: [&str; 30] = [
     "electric_field",
     "density_matrix",
     "alpha_atomic",
+    // Charge-transfer remainders (Krishtal intrinsic per-atom α): static
+    // (3, 3) and, inside the C6 block, per-frequency (NFREQ, 3, 3).
+    "alpha_ct",
+    "alpha_ct_dynamic",
     "hirshfeld_charges",
     "lowdin_charges",
     "mulliken_charges",
@@ -705,6 +738,38 @@ fn npz_export_round_trips_every_bundle_field() {
         }
     }
 
+    // --- alpha_ct: (3, 3), elementwise (catches a transpose).
+    let ct: Array2<f64> = r.by_name("alpha_ct").unwrap();
+    assert_eq!(ct.shape(), &[3, 3], "alpha_ct: shape mismatch");
+    for i in 0..3 {
+        for j in 0..3 {
+            assert_eq!(
+                ct[(i, j)],
+                fx.alpha_ct[i][j],
+                "alpha_ct[{i}][{j}] mismatch (transposed?)"
+            );
+        }
+    }
+
+    // --- alpha_ct_dynamic: (NFREQ, 3, 3).
+    let ctd: Array3<f64> = r.by_name("alpha_ct_dynamic").unwrap();
+    assert_eq!(
+        ctd.shape(),
+        &[NFREQ, 3, 3],
+        "alpha_ct_dynamic: shape mismatch"
+    );
+    for (f, t) in fx.alpha_ct_dynamic.iter().enumerate() {
+        for i in 0..3 {
+            for j in 0..3 {
+                assert_eq!(
+                    ctd[(f, i, j)],
+                    t[i][j],
+                    "alpha_ct_dynamic[{f}][{i}][{j}] mismatch"
+                );
+            }
+        }
+    }
+
     // --- alpha_atomic_dynamic: (NAT, NFREQ, 3, 3). Four distinct axis lengths,
     // so ANY axis permutation is a shape failure.
     let ad: Array4<f64> = r.by_name("alpha_atomic_dynamic").unwrap();
@@ -802,7 +867,7 @@ fn npz_export_round_trips_every_bundle_field() {
 /// The PHYSICAL size of the gap on a real molecule is a separate question,
 /// already measured and bounded by
 /// `ferric-rpa/tests/s9_per_atom_c6_consistency.rs::bounded_divergence_pair_sum_vs_molecular_c6_water`
-/// (water/aug-cc-pVDZ/RPA@PBE: Becke -57.6%, Hirshfeld -19.5%). This test is
+/// (water/aug-cc-pVDZ: Hirshfeld -19.5% at RPA@PBE, Becke -46.7% at HF). This test is
 /// the cheap, always-run structural half of that pair — it needs no SCF, so it
 /// runs in the default `cargo test` where the physics test is `#[ignore]`d.
 #[test]
@@ -953,4 +1018,24 @@ fn full_fixture_values_can_actually_distinguish_the_failure_modes() {
             );
         }
     }
+}
+
+/// `alpha_ct_dynamic` must have one tensor per C6 frequency; a mismatch is
+/// REJECTED before any dispersion key is written, never truncated or padded.
+#[test]
+fn npz_alpha_ct_dynamic_rejects_a_frequency_count_mismatch() {
+    let fx = FullFixture::new();
+    let short = &fx.alpha_ct_dynamic[..NFREQ - 1];
+    let mut bundle = fx.bundle();
+    let mut c6 = bundle.dispersion.c6.expect("fixture populates C6");
+    c6.alpha_ct_dynamic = Some(short);
+    bundle.dispersion.c6 = Some(c6);
+    let err = export_npz("test_ct_dyn_bad.npz", &bundle)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("alpha_ct_dynamic has 4 frequencies, c6_freqs has 5"),
+        "got: {err}"
+    );
+    fs::remove_file("test_ct_dyn_bad.npz").ok();
 }

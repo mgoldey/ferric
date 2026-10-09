@@ -23,7 +23,9 @@
 //!    for the same reason.
 //! 2. **Closed-shell second row, triple zeta** (the CLI's `solve_rhf_ladder`
 //!    path, exactly as `dft_pbe.rs`/`dft_b3lyp.rs` drive it): H2S, HCl, SiH4 ×
-//!    PBE, B3LYP × def2-SVP and def2-TZVP.
+//!    PBE, B3LYP, HSE06 × def2-SVP and def2-TZVP. HSE06 (screened,
+//!    short-range-only exact exchange) runs with exact J and K fitted in the
+//!    attenuated metric, and the reference reproduces that construction.
 //!
 //! References: `scripts/validation/gen_ks_energies.py` →
 //! `testdata/reference/validation/ks_energies/<system>_<basis>.json`.
@@ -39,6 +41,7 @@
 //! |---|---|---|
 //! | RKS PBE | RI-J (`df_j_aux`) | `density_fit` |
 //! | RKS B3LYP | RI-J + RI-K | `density_fit` |
+//! | RKS HSE06 | **exact J** (`df_j_aux = ""`) + c_SR K[erfc] fitted in the attenuated metric | exact J + attenuated-metric DF-K (`_uks_exact_j_dfk_class(closed_shell=True)`) |
 //! | UKS PBE | RI-J (`df_j_aux`) | `density_fit` |
 //! | UKS B3LYP | RI-J + RI-K | `density_fit` |
 //! | UKS ωB97X-V | **exact J** (uhf.rs: `j_aux_eff` is `None` for ω > 0) + RI-K as c_SR K[erfc] + c_LR K[erf] | exact J + attenuated-metric DF-K, full-range K served as K_SR + K_LR |
@@ -69,10 +72,12 @@
 //! |---|---:|---:|
 //! | UKS PBE / B3LYP energy | 6.3e-13 / 7.7e-13 Ha | 1e-10 Ha |
 //! | RKS PBE / B3LYP energy (2nd row, def2-SVP, def2-TZVP) | 3.1e-12 / 2.7e-12 Ha | 1e-10 Ha |
+//! | RKS HSE06 energy (2nd row, def2-SVP, def2-TZVP; exact J + attenuated-metric DF-K on both sides) | 4.2e-12 Ha | 1e-10 Ha |
 //! | UKS ωB97X-V energy | 6.0e-6 Ha | 2e-5 Ha |
 //! | ⟨S²⟩ UKS PBE / B3LYP | 4.0e-10 / 4.6e-9 | 5e-8 |
 //! | ⟨S²⟩ UKS ωB97X-V | 1.3e-7 | 1e-6 |
 //! | HOMO/LUMO, PBE and B3LYP (UKS and RKS) | 1.4e-7 Ha | 1e-6 Ha |
+//! | HOMO/LUMO, HSE06 (RKS) | 2.1e-9 Ha | 1e-6 Ha |
 //! | HOMO/LUMO, ωB97X-V (UKS) | 6.1e-5 Ha (α LUMO) | 3e-4 Ha |
 //! | λ_min (UKS PBE/B3LYP) | 9.0e-6 Ha | 5e-5 Ha |
 //! | nuclear repulsion | 1.4e-14 Ha | 1e-9 Ha |
@@ -90,11 +95,14 @@
 //!
 //! * PBE / B3LYP UKS: ferric runs `check_stability` + `scf_stability_descent`
 //!   and must end STABLE; λ_min is compared with PySCF's dense UKS Hessian.
-//! * ωB97X-V UKS: ferric's stability analysis SKIPS range-separated
-//!   functionals (`StabilitySkip::RangeSeparated` — the Hessian's exchange
-//!   response is plain Coulomb). The state is then pinned by the energy and
-//!   ⟨S²⟩ matching a stability-followed reference. If ferric ever returns a
-//!   verdict here it must be STABLE, and this paragraph must be updated.
+//! * ωB97X-V UKS: ferric's stability analysis SKIPS this functional
+//!   (`StabilitySkip::Vv10Kernel` — ωB97X-V carries VV10 nonlocal correlation
+//!   and no VV10 response kernel exists in this workspace). Range separation
+//!   itself is no longer the reason: the Hessian's exchange response is now the
+//!   converged Fock's own `c_SR·K[erfc(ω)] + c_LR·K[erf(ω)]`. The state is
+//!   pinned by the energy and ⟨S²⟩ matching a stability-followed reference. If
+//!   ferric ever returns a verdict here it must be STABLE, and this paragraph
+//!   must be updated.
 //! * O2: ⟨S²⟩ within 0.05 of 2. UKS at multiplicity 3 fixes N_α − N_β = 2, so
 //!   it cannot become a singlet; the state within the triplet manifold is
 //!   pinned by the energy and ⟨S²⟩ matching PySCF's stability-checked
@@ -142,12 +150,13 @@ const AUX: &str = "def2-universal-jkfit";
 const OPEN_SHELL_BASES: [&str; 2] = ["6-31g", "def2-svp"];
 const CLOSED_SHELL_BASES: [&str; 2] = ["def2-svp", "def2-tzvp"];
 const OPEN_SHELL_XC: [&str; 3] = ["pbe", "b3lyp", "wb97x-v"];
-const CLOSED_SHELL_XC: [&str; 2] = ["pbe", "b3lyp"];
+const CLOSED_SHELL_XC: [&str; 3] = ["pbe", "b3lyp", "hse06"];
 
 // Bars from the measured maxima (module doc table), ~10x headroom.
 const TOL_E_PBE: f64 = 1e-10;
 const TOL_E_B3LYP: f64 = 1e-10;
 const TOL_E_WB97XV: f64 = 2e-5;
+const TOL_E_HSE06: f64 = 1e-10;
 const TOL_S2_GGA: f64 = 5e-8;
 const TOL_S2_WB97XV: f64 = 1e-6;
 const TOL_EPS_GGA: f64 = 1e-6;
@@ -208,6 +217,7 @@ fn tol_e(xc: &str) -> f64 {
         "pbe" => TOL_E_PBE,
         "b3lyp" => TOL_E_B3LYP,
         "wb97x-v" => TOL_E_WB97XV,
+        "hse06" => TOL_E_HSE06,
         other => panic!("no energy bar for functional {other}"),
     }
 }
@@ -234,6 +244,7 @@ fn ferric_xc(xc: &str) -> &'static str {
         "pbe" => "PBE",
         "b3lyp" => "B3LYP",
         "wb97x-v" => "wB97X-V",
+        "hse06" => "HSE06",
         other => panic!("unknown functional {other}"),
     }
 }
@@ -327,14 +338,19 @@ fn uks_config(xc: &str) -> RhfConfig {
 /// Closed-shell config: identical to dft_pbe.rs / dft_b3lyp.rs, driven through
 /// the same `default_ladder_from` + `solve_rhf_ladder` path.
 fn rks_config(xc: &str) -> RhfConfig {
-    let df_k_aux = match xc {
-        "pbe" => None,
-        "b3lyp" => Some(AUX.to_string()),
+    // HSE06 (range-separated): EXACT J (df_j_aux = "") with K fitted in the
+    // attenuated metric from the df_k_aux basis — the reference reproduces
+    // exactly that (generator's `_uks_exact_j_dfk_class(closed_shell=True)`),
+    // so the comparison does not measure an RI-J fitting error.
+    let (df_j_aux, df_k_aux) = match xc {
+        "pbe" => (AUX.to_string(), None),
+        "b3lyp" => (AUX.to_string(), Some(AUX.to_string())),
+        "hse06" => (String::new(), Some(AUX.to_string())),
         other => panic!("unknown closed-shell functional {other}"),
     };
     RhfConfig {
         xc: Some(ferric_xc(xc).into()),
-        df_j_aux: Some(AUX.to_string()),
+        df_j_aux: Some(df_j_aux),
         df_k_aux,
         energy_conv: 1e-10,
         density_conv: 1e-8,
@@ -679,4 +695,22 @@ fn rks_sih4_pbe_vs_pyscf() {
 #[ignore = "validation: KS-DFT energies"]
 fn rks_sih4_b3lyp_vs_pyscf() {
     rks_row("sih4", "b3lyp");
+}
+
+#[test]
+#[ignore = "validation: KS-DFT energies"]
+fn rks_h2s_hse06_vs_pyscf() {
+    rks_row("h2s", "hse06");
+}
+
+#[test]
+#[ignore = "validation: KS-DFT energies"]
+fn rks_hcl_hse06_vs_pyscf() {
+    rks_row("hcl", "hse06");
+}
+
+#[test]
+#[ignore = "validation: KS-DFT energies"]
+fn rks_sih4_hse06_vs_pyscf() {
+    rks_row("sih4", "hse06");
 }

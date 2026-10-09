@@ -27,6 +27,9 @@ pub mod elements;
 pub mod error;
 /// Classical external potentials: fixed point charges and uniform electric fields.
 pub mod external_potential;
+/// Optional CUDA backend: device discovery, device-memory ledger, f64 GEMM
+/// (`gpu` feature); always-compiled status surface.
+pub mod gpu;
 /// Redundant internal coordinates: bond perception, the Wilson B-matrix, and
 /// the internal↔Cartesian step transformations used by the geometry optimizer.
 pub mod internal_coords;
@@ -40,6 +43,8 @@ pub mod mol;
 pub mod orbitals;
 /// Parallelism context: thread pools, optional MPI world handle.
 pub mod parallel;
+/// Length units: the one Ångström ↔ Bohr conversion ([`units::ANGSTROM_TO_BOHR`]).
+pub mod units;
 
 pub use error::FerricError;
 pub use orbitals::OrbitalSpace;

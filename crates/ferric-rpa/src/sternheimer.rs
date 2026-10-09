@@ -914,6 +914,22 @@ mod canonical_guard_tests {
     /// the lesson from the union-rank gate, whose GO condition turned out to be
     /// unreachable, and from the AO-Laplace tripwire that only fired after the
     /// bug was fixed.
+    /// The guard is a `debug_assert!` (free in release, see
+    /// `build_scale_factors_with_prefactor`), so the `should_panic` tests below
+    /// run only with debug assertions. This one checks the predicate itself,
+    /// on the same fixtures, in every build profile.
+    #[test]
+    fn guard_predicate_rejects_scrambled_and_reversed_energies() {
+        for eps in [
+            &[-0.5, -0.9, -0.6, -1.1, -0.7, -1.0, -0.8, -1.2][..],
+            &[0.7, 0.2, 0.8, 0.3, 0.9, 0.4, 1.0, 0.5][..],
+            &[-0.5, -0.7, -0.9, -1.1, -1.3][..],
+        ] {
+            assert!(!is_plausibly_diagonal(eps), "{eps:?} must be rejected");
+        }
+        assert!(is_plausibly_diagonal(&[-1.2, -1.0, -0.8, -0.6]));
+    }
+
     /// A Boys/PNO-localized occupied set: `diag(C_locᵀ F C_loc)` is a scrambled
     /// permutation of the energy range, not a sorted eigenvalue list. This is
     /// the shape of the REAL bug fixed in screen.rs (commit 17e994e).
@@ -921,6 +937,7 @@ mod canonical_guard_tests {
     /// Built as an explicit shuffle of a canonical ladder so the values are all
     /// physically plausible orbital energies — only their ORDER is wrong.
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic(expected = "heavily out of ascending order")]
     fn scale_factor_guard_fires_on_localized_occupied_energies() {
         let eps_occ = [-0.5, -0.9, -0.6, -1.1, -0.7, -1.0, -0.8, -1.2];
@@ -933,6 +950,7 @@ mod canonical_guard_tests {
     }
 
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic(expected = "heavily out of ascending order")]
     fn scale_factor_guard_fires_on_localized_virtual_energies() {
         let eps_occ = [-1.2, -1.0, -0.8, -0.6];
@@ -947,6 +965,7 @@ mod canonical_guard_tests {
     /// The relaxation must not swallow the real defect: a fully REVERSED set
     /// (the maximally-unsorted case, n−1 descents) must still fire.
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic(expected = "heavily out of ascending order")]
     fn scale_factor_guard_fires_on_fully_reversed_energies() {
         let eps_occ = [-0.5, -0.7, -0.9, -1.1, -1.3];

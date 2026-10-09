@@ -44,6 +44,9 @@ pub struct CAtom {
 extern "C" {
     pub fn scf_libint_init();
     pub fn scf_libint_finalize();
+    /// Static, NUL-terminated `LIBINT_VERSION` of the compiled-against
+    /// headers, or `"unknown"`. Never NULL.
+    pub fn scf_libint_version() -> *const c_char;
     pub fn scf_basis_create(
         shells: *const CShell,
         nshells: c_int,

@@ -146,7 +146,7 @@ mod tests {
         // ∫_0^∞ 4π r² (Z ξ³/π) exp(-2ξr) dr = Z (integrates to electron count)
         // Using exponential decay rate matching Carbon's TA xi.
         let z = 6_i32; // Carbon
-        let xi_slater: f64 = 1.0 / (0.70 * 1.8897259886);
+        let xi_slater: f64 = 1.0 / (0.70 * ferric_core::units::ANGSTROM_TO_BOHR);
         let zf = z as f64;
         let exact = zf;
         let (rs, ws) = treutler_ahlrichs_m4(z, 80);

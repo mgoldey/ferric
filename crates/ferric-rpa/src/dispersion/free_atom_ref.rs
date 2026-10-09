@@ -36,7 +36,15 @@
 //!
 //! Z=19–54 α_free/C6_free are from Gould & Bučko JCTC 12, 3603 (2016) Table 2
 //! (same Chu-Dalgarno lineage as TS-PRL Table I; cross-checks vs the Z≤18 rows
-//! agree <5% — see docs/superpowers/specs/refs/source-crosscheck.md). Their
+//! agree <5% — see docs/superpowers/specs/refs/source-crosscheck.md), except
+//! Pd. Gould–Bučko's Pd (α 61.7, C6 628) is not the closed-shell 4d¹⁰ ground
+//! state: relativistic CCSDTQP gives α = 26.14(10) a.u. (Jerabek, Schwerdtfeger,
+//! Nagle, PRA 98, 012508 (2018); the 2018/2025 Schwerdtfeger–Nagle tables
+//! recommend the same). Pd therefore takes that α and the free-atom TS C6 = 157.5
+//! a.u. from Gobre's compilation (PhD thesis, TU Berlin 2016, Table A.1; the
+//! `C6(TS)` column of libMBD's `vdw-params.csv`). That C6 was tabulated with
+//! α = 23.68, so the implied TS frequency ω = 4C6/(3α²) is 0.307 here vs 0.374
+//! for Gobre's own pair. Their
 //! vol_free is None (no sourced fallback), same as Z≤18 now: the live free-atom
 //! SCF supplies the volume, and None refuses rather than fabricating a
 //! denominator.
@@ -108,23 +116,117 @@ pub fn ts_free_atom(z: usize) -> Option<(f64, f64, Option<f64>)> {
         43 => (79.6, 939.0, None),   // Tc
         44 => (72.3, 809.0, None),   // Ru
         45 => (66.4, 708.0, None),   // Rh
-        46 => (61.7, 628.0, None),   // Pd   (Chu04/ASE 158 is Ruiz12 in-molecular, NOT free-atom)
-        47 => (46.2, 341.0, None),   // Ag
-        48 => (46.7, 405.0, None),   // Cd
-        49 => (62.1, 643.0, None),   // In
-        50 => (60.0, 715.0, None),   // Sn
-        51 => (44.0, 504.0, None),   // Sb
-        52 => (40.0, 471.0, None),   // Te   Chu04 C6=445  (~6%)
-        53 => (33.6, 389.0, None),   // I
-        54 => (27.2, 302.0, None),   // Xe
+        46 => (26.14, 157.5, None), // Pd   α: Jerabek PRA 98 012508 (2018) CCSDTQP; C6: Gobre 2016 Table A.1 (TS)
+        47 => (46.2, 341.0, None),  // Ag
+        48 => (46.7, 405.0, None),  // Cd
+        49 => (62.1, 643.0, None),  // In
+        50 => (60.0, 715.0, None),  // Sn
+        51 => (44.0, 504.0, None),  // Sb
+        52 => (40.0, 471.0, None),  // Te   Chu04 C6=445  (~6%)
+        53 => (33.6, 389.0, None),  // I
+        54 => (27.2, 302.0, None),  // Xe
         _ => return None,
     };
     Some(row)
 }
 
+/// Free-atom van der Waals radius R_vdW^free (Bohr) used by the TS/MBD Fermi
+/// damping. Indexed by atomic number `z` (1..=54, the same coverage as
+/// [`ts_free_atom`]); `None` outside the table.
+///
+/// Source: the `R_vdw(TS)` column of libMBD's `vdw-params.csv` (pymbd 0.15.0),
+/// which reproduces Gobre, PhD thesis, TU Berlin (2016), Table A.1; for Z ≤ 18
+/// these are the R0 values of Tkatchenko & Scheffler, PRL 102, 073005 (2009),
+/// Table I (H 3.10, C 3.59, N 3.34, O 3.19 Bohr). The values are in Bohr:
+/// libMBD's `vdw-params.SOURCES.md` labels the column Å, but libMBD/pymbd use
+/// the numbers directly as atomic units, and the TS table gives them in Bohr.
+///
+/// Mixed sources for Z = 19–54: R_vdW comes from Gobre's compilation, while
+/// α_free/C6_free in [`ts_free_atom`] come from Gould & Bučko (2016) (and Pd's
+/// α from Jerabek et al. 2018). Gobre tabulated these radii next to his own α
+/// and C6, so for those elements the triple (α, C6, R_vdW) is not from a single
+/// source. For Z ≤ 18 all three are TS PRL 2009 Table I.
+pub fn ts_free_atom_r_vdw(z: usize) -> Option<f64> {
+    let r = match z {
+        1 => 3.10,     // H
+        2 => 2.65,     // He
+        3 => 4.16,     // Li
+        4 => 4.17,     // Be
+        5 => 3.89,     // B
+        6 => 3.59,     // C
+        7 => 3.34,     // N
+        8 => 3.19,     // O
+        9 => 3.04,     // F
+        10 => 2.91,    // Ne
+        11 => 3.73,    // Na
+        12 => 4.27,    // Mg
+        13 => 4.33,    // Al
+        14 => 4.20,    // Si
+        15 => 4.01,    // P
+        16 => 3.86,    // S
+        17 => 3.71,    // Cl
+        18 => 3.55,    // Ar
+        19 => 3.71,    // K
+        20 => 4.65,    // Ca
+        21 => 4.59,    // Sc
+        22 => 4.51,    // Ti
+        23 => 4.44,    // V
+        24 => 3.99,    // Cr
+        25 => 3.97,    // Mn
+        26 => 4.23,    // Fe
+        27 => 4.18,    // Co
+        28 => 3.82,    // Ni
+        29 => 3.76,    // Cu
+        30 => 4.02,    // Zn
+        31 => 4.19,    // Ga
+        32 => 4.20,    // Ge
+        33 => 4.11,    // As
+        34 => 4.04,    // Se
+        35 => 3.93,    // Br
+        36 => 3.82,    // Kr
+        37 => 3.72,    // Rb
+        38 => 4.54,    // Sr
+        39 => 4.8151,  // Y
+        40 => 4.53,    // Zr
+        41 => 4.2365,  // Nb
+        42 => 4.099,   // Mo
+        43 => 4.076,   // Tc
+        44 => 3.9953,  // Ru
+        45 => 3.95,    // Rh
+        46 => 3.66,    // Pd
+        47 => 3.82,    // Ag
+        48 => 3.99,    // Cd
+        49 => 4.23198, // In
+        50 => 4.303,   // Sn
+        51 => 4.276,   // Sb
+        52 => 4.22,    // Te
+        53 => 4.17,    // I
+        54 => 4.08,    // Xe
+        _ => return None,
+    };
+    Some(r)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The R_vdW table must cover exactly the Z range of the α/C6 table, so a
+    /// volume-ratio MBD call can never get an α but no radius (or vice versa).
+    #[test]
+    fn r_vdw_table_covers_the_same_elements_as_alpha_c6() {
+        for z in 0..=120 {
+            assert_eq!(
+                ts_free_atom(z).is_some(),
+                ts_free_atom_r_vdw(z).is_some(),
+                "Z={z}: alpha/C6 and R_vdW tables disagree on coverage"
+            );
+        }
+        // TS PRL 2009 Table I spot values (Bohr).
+        assert_eq!(ts_free_atom_r_vdw(1), Some(3.10));
+        assert_eq!(ts_free_atom_r_vdw(6), Some(3.59));
+        assert_eq!(ts_free_atom_r_vdw(8), Some(3.19));
+    }
 
     #[test]
     fn known_free_atoms_present() {
@@ -145,6 +247,16 @@ mod tests {
         let (_, _, v_o) = ts_free_atom(8).unwrap();
         assert!(v_o.is_none(), "O vol_free must be None: {v_o:?}");
         assert!(ts_free_atom(200).is_none(), "out-of-table should be None");
+    }
+
+    /// Pd is the one Z = 19–54 row NOT taken from Gould–Bučko: their 61.7 a.u.
+    /// is not the closed-shell 4d¹⁰ atom (relativistic CC: 26.14(10)).
+    #[test]
+    fn pd_uses_the_closed_shell_ground_state() {
+        let (a, c6, v) = ts_free_atom(46).unwrap();
+        assert!((a - 26.14).abs() < 1e-9, "Pd alpha: {a}");
+        assert!((c6 - 157.5).abs() < 1e-9, "Pd C6: {c6}");
+        assert!(v.is_none());
     }
 
     #[test]

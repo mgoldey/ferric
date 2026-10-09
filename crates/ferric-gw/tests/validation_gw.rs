@@ -24,6 +24,7 @@
 //! | U-G0W0@UHF | OH, CH3, NH2 / cc-pVDZ, aug-cc-pVDZ; O2 (³Σg⁻), CH2 (³B1) / aug-cc-pVDZ | `ugw_ac` on a stability-checked UHF |
 //! | U-G0W0@UKS/PBE | OH, CH3, NH2 / cc-pVDZ | `ugw_ac` Σc(iω) on a stability-checked exact-J UKS/PBE, textbook Thiele, QP solved in numpy with Σx − v_xc inside the QP equation (block `u_g0w0_uks_pbe`) |
 //! | COHSEX@HF | H2O, N2 / cc-pVDZ | numpy on PySCF's Lpq and Π(0) |
+//! | COHSEX@PBE | H2O, N2 / cc-pVDZ | same numpy on the `g0w0_pbe` RKS orbitals + PySCF Σx(DF) − v_xc (`vhf_df = True`, ferric's density floor) |
 //! | evGW₀@HF, evGW@HF | H2O / cc-pVDZ | PySCF `gw_ac.get_sigma` iterated as ferric iterates |
 //!
 //! PySCF has no evGW; the generator iterates PySCF's own `get_sigma` (it takes
@@ -133,6 +134,7 @@
 //! | QP energies, ECP | 2.5e-6 | `TOL_QP_ECP` 2e-5 |
 //! | QP energies, U-G0W0 | 7.0e-6 (OH/cc-pVDZ, marginal); others ≤ 8.7e-7 | `TOL_QP_U` 3e-5 |
 //! | COHSEX | 9.4e-10 | `TOL_COHSEX` 1e-8 |
+//! | COHSEX@PBE | 1.19e-9 | `TOL_COHSEX_KS` 1e-8 |
 //! | evGW₀ / evGW | 5.7e-7 | `TOL_EV` 5e-6 |
 //! | Σx (DF) | 4.9e-9 | `TOL_SX` 3e-8 |
 //! | Σx (DF), ECP | 4.6e-6 | `TOL_SX_ECP` 2e-5 |
@@ -160,6 +162,9 @@
 //!   and misses the all-electron one.
 //! * Spin: ferric's α HOMO misses the reference β HOMO.
 //! * Self-consistency: evGW₀ misses G0W0 and evGW; COHSEX misses G0W0.
+//! * COHSEX@PBE: ferric with `vxc_diag = None` (the static shift dropped)
+//!   matches the unshifted numpy value and misses the shifted reference by
+//!   0.269 Ha (H2O) / 0.254 Ha (N2); @PBE misses the @HF COHSEX reference.
 //!
 //! * U-G0W0@UKS: the result must miss the @UHF reference (measured 0.80–1.79
 //!   eV apart) and the post-hoc-shift emulation (0.38–0.96 eV apart), so the
@@ -180,6 +185,10 @@
 //! `u_g0w0_uks_pbe_*_sigma_c` too). The cheap non-ignored twin is
 //! `u_gw_ks_shift.rs::g0w0_ks_shift_enters_the_qp_equation`.
 //! Outcome of (E), 2026-09-25: all six `u_g0w0_uks_pbe_*` tests fail.
+//! (F) COHSEX@PBE, 2026-10-02, each fails `cohsex_pbe_h2o_n2_vs_numpy` (and
+//! `cohsex_ks_shift.rs`): v_xc sign flipped in `cohsex.rs` (misses by 1.45 Ha),
+//! Σx added without v_xc (0.73 Ha), shift on occupied MOs only (0.26 Ha on
+//! LUMO+2), and the `GwMethod::Cohsex` dispatch passing `None` (0.27 Ha).
 //!
 //! # Provenance of older numbers
 //!
@@ -232,6 +241,9 @@ const TOL_QP_PBE: f64 = 1e-6;
 const TOL_QP_ECP: f64 = 2e-5;
 // COHSEX is closed form (no Padé, no quadrature): 9.4e-10 Ha.
 const TOL_COHSEX: f64 = 1e-8;
+// COHSEX@PBE (closed form + the static Σx − v_xc): 1.19e-9 Ha (H2O/cc-pVDZ;
+// N2 4.4e-11), the RKS ε_mf / v_xc floor.
+const TOL_COHSEX_KS: f64 = 1e-8;
 // evGW₀/evGW: 5.7e-7 Ha (evGW, H2O MO 7); PySCF's iteration stops at 1e-7 Ha
 // per sweep and ferric's at `EV_CONV`.
 const TOL_EV: f64 = 5e-6;
@@ -1731,6 +1743,148 @@ fn cohsex_case(system: &str) {
 fn cohsex_hf_h2o_n2_vs_numpy() {
     cohsex_case("h2o");
     cohsex_case("n2");
+}
+
+/// COHSEX@PBE: the same closed form on the `g0w0_pbe` RKS orbitals plus the
+/// static KS shift Σx − v_xc (`cohsex_pbe` block). The headline compares
+/// ε_qp; the anchors before it pin the pieces (E_RKS, v_xc, Σx(DF), Σc), so a
+/// miss names the term. The control re-runs ferric WITHOUT `vxc_diag` (the
+/// shift dropped, i.e. the pre-fix closed-shell COHSEX): it must reproduce the
+/// unshifted numpy value and MISS the shifted reference.
+fn cohsex_ks_case(system: &str) {
+    let sys = load_system(system, &format!("{system}.xyz"), "cc-pvdz", false);
+    let ctx = format!("{} COHSEX@PBE", sys.label);
+    let scf = solve_rhf(
+        &sys.ctx,
+        &sys.mol,
+        &sys.obs,
+        Operator::coulomb(),
+        &sys.bounds,
+        &pbe_config(),
+    )
+    .unwrap_or_else(|e| panic!("{ctx}: RKS failed: {e:?}"));
+    assert!(scf.converged, "{ctx}: RKS did not converge");
+    check_close(
+        &ctx,
+        "E_RKS",
+        scf.energy,
+        num(&sys.r, "/cohsex_pbe/rks_energy", &ctx),
+        TOL_E_SCF,
+    );
+    let (vxc, _) = vxc_diagonal_mo(&sys.mol, &sys.obs_bs, "pbe", &scf)
+        .unwrap_or_else(|e| panic!("{ctx}: vxc_diagonal_mo: {e:?}"));
+    let orbs = vec_usize(&sys.r, "/cohsex_pbe/orbs", &ctx);
+    let v_mf_ref = vec_f64(&sys.r, "/cohsex_pbe/v_mf", &ctx);
+    for (k, &p) in orbs.iter().enumerate() {
+        check_close(&ctx, &format!("v_xc[{p}]"), vxc[p], v_mf_ref[k], TOL_EPS_MF);
+    }
+    let res = run_closed(
+        &sys,
+        &scf,
+        GwMethod::Cohsex,
+        window(&orbs, &ctx),
+        N_QUAD,
+        0,
+        Some(&vxc),
+    );
+    assert_eq!(res.mo_indices, orbs, "{ctx}: QP window");
+    check_vec(
+        &ctx,
+        "eps_mf",
+        &orbs,
+        res.eps_mf.as_slice().unwrap(),
+        &vec_f64(&sys.r, "/cohsex_pbe/eps_mf", &ctx),
+        TOL_EPS_MF,
+    );
+    check_vec(
+        &ctx,
+        "sigma_x(DF)",
+        &orbs,
+        res.sigma_x.as_slice().unwrap(),
+        &vec_f64(&sys.r, "/cohsex_pbe/sigma_x_df", &ctx),
+        TOL_SX,
+    );
+    let dsex = vec_f64(&sys.r, "/cohsex_pbe/delta_sigma_sex", &ctx);
+    let coh = vec_f64(&sys.r, "/cohsex_pbe/sigma_coh", &ctx);
+    let sc_ref: Vec<f64> = dsex.iter().zip(&coh).map(|(a, b)| a + b).collect();
+    check_vec(
+        &ctx,
+        "dSEX+COH",
+        &orbs,
+        res.sigma_c.as_slice().unwrap(),
+        &sc_ref,
+        TOL_COHSEX_KS,
+    );
+    let want = vec_f64(&sys.r, "/cohsex_pbe/eps_qp", &ctx);
+    let worst = check_vec(
+        &ctx,
+        "eps_qp",
+        &orbs,
+        res.eps_qp.as_slice().unwrap(),
+        &want,
+        TOL_COHSEX_KS,
+    );
+    eprintln!(
+        "{ctx}: worst |d| {worst:.3e} Ha ({:.4} meV)",
+        worst * HA_TO_EV * 1e3
+    );
+    // Record the size of the shift on HOMO and LUMO.
+    let nocc = (sys.mol.nelec() as usize) / 2;
+    for (name, p) in [("HOMO", nocc - 1), ("LUMO", nocc)] {
+        let k = orbs
+            .iter()
+            .position(|&q| q == p)
+            .expect("frontier MO in window");
+        eprintln!(
+            "{ctx}: {name} (MO {p}) Σx − v_xc = {:+.6} Ha = {:+.4} eV",
+            res.sigma_x[k] - vxc[p],
+            (res.sigma_x[k] - vxc[p]) * HA_TO_EV
+        );
+    }
+    // Negative control: the shift dropped (vxc_diag = None, the pre-fix
+    // closed-shell COHSEX) reproduces the UNshifted numpy value and misses the
+    // shifted reference.
+    let dropped = run_closed(
+        &sys,
+        &scf,
+        GwMethod::Cohsex,
+        window(&orbs, &ctx),
+        N_QUAD,
+        0,
+        None,
+    );
+    check_vec(
+        &ctx,
+        "eps_qp, shift dropped",
+        &orbs,
+        dropped.eps_qp.as_slice().unwrap(),
+        &vec_f64(&sys.r, "/cohsex_pbe/eps_qp_no_shift", &ctx),
+        TOL_COHSEX_KS,
+    );
+    assert_misses(
+        &ctx,
+        "shift dropped vs the COHSEX@PBE reference",
+        dropped.eps_qp.as_slice().unwrap(),
+        &want,
+        TOL_COHSEX_KS,
+        MUST_MISS_FACTOR,
+    );
+    // Control: the starting point matters — @PBE misses the @HF reference.
+    assert_misses(
+        &ctx,
+        "@PBE vs the COHSEX@HF reference",
+        res.eps_qp.as_slice().unwrap(),
+        &vec_f64(&sys.r, "/cohsex_hf/eps_qp", &ctx),
+        TOL_COHSEX_KS,
+        MUST_MISS_FACTOR,
+    );
+}
+
+#[test]
+#[ignore = "validation: COHSEX/evGW0/evGW"]
+fn cohsex_pbe_h2o_n2_vs_numpy() {
+    cohsex_ks_case("h2o");
+    cohsex_ks_case("n2");
 }
 
 #[test]

@@ -107,6 +107,7 @@ PYSCF_XC = {
     "pbe": "PBE,PBE",
     "b3lyp": "B3LYP",
     "wb97x-v": "wB97X_V",
+    "hse06": "HSE06",
 }
 
 OPEN_SHELL = {  # system -> (charge, multiplicity)
@@ -120,12 +121,17 @@ OPEN_SHELL_XC = ("pbe", "b3lyp", "wb97x-v")
 
 CLOSED_SHELL = {"h2s": (0, 1), "hcl": (0, 1), "sih4": (0, 1)}
 CLOSED_SHELL_BASES = ("def2-svp", "def2-tzvp")
-CLOSED_SHELL_XC = ("pbe", "b3lyp")
+CLOSED_SHELL_XC = ("pbe", "b3lyp", "hse06")
 
 # Human-readable J/K recipe per (shell, xc), recorded in provenance.
 JK_RECIPE = {
     ("rks", "pbe"): "RI-J (density_fit, aux fed from ferric JSON); K unused",
     ("rks", "b3lyp"): "RI-J + RI-K (density_fit)",
+    ("rks", "hse06"): (
+        'EXACT J (4-index; ferric df_j_aux = "") + density-fitted short-range K in '
+        "the attenuated metric (== ferric's RKS RSH c_SR K_SR^DF[erfc] + c_LR K_LR^DF[erf], "
+        "c_LR = 0 for HSE06)"
+    ),
     ("uks", "pbe"): "RI-J (density_fit); K unused",
     ("uks", "b3lyp"): "RI-J + RI-K (density_fit)",
     ("uks", "wb97x-v"): (
@@ -171,13 +177,17 @@ def _configure_grids(mf, xc: str):
     return mf
 
 
-def _uks_exact_j_dfk_class():
-    """UKS whose J is exact and whose K is density-fitted in the attenuated
-    metric — ferric's open-shell range-separated construction (see module doc).
+def _uks_exact_j_dfk_class(closed_shell: bool = False):
+    """UKS (or RKS with `closed_shell`) whose J is exact and whose K is
+    density-fitted in the attenuated metric — ferric's range-separated
+    construction (see module doc; ferric's RKS RSH path fits K the same way,
+    and its J is exact when df_j_aux = "").
     """
     from pyscf import df, dft, scf
 
-    class _UksExactJDfK(dft.uks.UKS):
+    base = dft.rks.RKS if closed_shell else dft.uks.UKS
+
+    class _UksExactJDfK(base):
         _keys = {"ferric_dfobj"}
 
         def get_jk(
@@ -239,7 +249,10 @@ def _uks_factory(aux, xc):
 def _rks(mol, aux, xc) -> dict:
     from pyscf import dft
 
-    mf = dft.RKS(mol, xc=PYSCF_XC[xc]).density_fit(auxbasis=aux)
+    if xc == "hse06":
+        mf = _uks_exact_j_dfk_class(closed_shell=True)(mol, aux, xc)
+    else:
+        mf = dft.RKS(mol, xc=PYSCF_XC[xc]).density_fit(auxbasis=aux)
     _configure_grids(mf, xc)
     e = mf.kernel()
     if not mf.converged:

@@ -4,7 +4,14 @@ build-backend = "maturin"
 
 [project]
 name = "ferric"
-version = "0.1.0"
+# A placeholder: main carries the next `.devN` so a local build can never equal
+# a published wheel. Release wheels never ship it: on a `v*` tag the wheel
+# workflow (.github/workflows/wheels.yml) stamps the tag's version into this
+# line and the SemVer twin in crates/ferric-python/Cargo.toml, after verifying
+# the tree is clean and the stamp touches only those lines. Nothing to commit
+# to release. The build's git commit is reported by `ferric.build_info()` /
+# `ferric.__build__` / `ferric --version` (crates/ferric-build-info).
+version = "0.1.0.dev0"
 description = "Python bindings for ferric, a Rust-native quantum chemistry engine"
 readme = "README.md"
 license = { text = "MIT OR Apache-2.0" }
@@ -114,6 +121,7 @@ dev = [
     "pytest-cov>=7.0.0",
 ]
 reference = [
+    "pymbd>=0.15.0",
     "pyscf>=2.10",
 ]
 build = [
@@ -148,6 +156,10 @@ features = ["pyo3/extension-module"]
 # Prevent uv from rebuilding the Rust extension on every `uv run`.
 # The maturin editable install in .venv is the source of truth; cargo is invoked explicitly.
 no-build-isolation-package = ["ferric"]
+# pymbd 0.15.0 declares `mpi4py = "^3 || ^4"`; poetry-core 2.x renders that as
+# `(>=3,<4 || >=4,<5)`, which is not valid PEP 508 and uv refuses the built wheel.
+# poetry-core 1.x renders it as `(>=3,<5)` (the published PKG-INFO).
+build-constraint-dependencies = ["poetry-core<2"]
 
 
 [tool.pytest.ini_options]

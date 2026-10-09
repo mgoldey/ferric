@@ -95,6 +95,24 @@ pub struct ScfResult {
     ///
     /// Purely diagnostic: an instability never makes the SCF return `Err`.
     pub stability: Option<crate::stability::StabilityResult>,
+    /// Post-convergence **EXTERNAL** stability verdict (RHF→UHF, the triplet
+    /// channel), when `RhfConfig::check_stability` was set on an RHF/HF run.
+    ///
+    /// A separate field from [`stability`](Self::stability) because it is a
+    /// separate OPERATOR answering a separate question, and the two verdicts
+    /// routinely disagree — that disagreement is the diagnostic. Water /
+    /// 6-31G at r(OH) = 2.0 Å is internally STABLE (+1.97e-2) and externally
+    /// UNSTABLE (−3.07e-1): a caller reading only `stability` there concludes
+    /// the solution is a minimum when it is a saddle.
+    ///
+    /// **`None` means NOT CHECKED, not stable.** It is `None` whenever the
+    /// flag was off, the reference is not RHF (UHF-internal already spans the
+    /// spin-broken space; ROHF is skipped entirely), the reference is KS (the
+    /// triplet XC kernel does not exist — `StabilitySkip::TripletXcKernel`),
+    /// or the eigensolve errored. Every skip prints its reason.
+    ///
+    /// Purely diagnostic, exactly like [`stability`](Self::stability).
+    pub stability_external: Option<crate::stability::StabilityResult>,
     /// Which density-fitted (RI) Coulomb / exchange builders produced
     /// [`ScfResult::energy`], recorded by the solver that built them.
     ///
@@ -116,6 +134,16 @@ pub struct ScfResult {
     /// needs the spin Focks themselves. `None` for RHF/UHF and hand-built
     /// results.
     pub rohf_spin_focks: Option<(Array2<f64>, Array2<f64>)>,
+    /// COSX final-grid pass (`CosxConfig::final_grid`): the exchange energy
+    /// re-evaluated ONCE on the larger final grid at the converged density
+    /// (non-self-consistent, ORCA/Psi4 style). When `Some`,
+    /// [`ScfResult::energy`] is `e_final` and the SCF-grid energy is kept in
+    /// `e_scf_grid`; the analytic gradients differentiate the SCF-grid energy
+    /// (see `crate::cosx_k::CosxFinalPass`). `None` when no final pass ran.
+    pub cosx_final: Option<crate::cosx_k::CosxFinalPass>,
+    /// COSX grid schedule (`CosxConfig::schedule`): the grid each iteration's
+    /// K was built on and the switch iteration. `None` when no schedule ran.
+    pub cosx_schedule: Option<crate::cosx_schedule::CosxScheduleRecord>,
 }
 
 /// The density-fitted two-electron builders one SCF actually used.

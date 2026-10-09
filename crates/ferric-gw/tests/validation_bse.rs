@@ -177,6 +177,15 @@ const TOL_F: f64 = 3e-8;
 // Carries the ill-conditioned core / high-virtual QP differences.
 // Measured 2.2e-7 Ha (NH3): the ill-conditioned core / high-virtual QP
 // energies move the lowest five excitations by at most this much.
+//
+// 2e-6 is ~9x that measured max, which is already this repo's ~10x rule, so it
+// is NOT loose and is not tightened. The independent evidence: two runs of the
+// generator's own QP stage move individual far-from-Fermi QP energies by up to
+// 3.8e-3 Ha but the lowest five Ω by at most 1.1e-7 Ha — the same order as the
+// 2.2e-7 Ha measured here, which also carries the ferric-vs-generator
+// screening-path difference on top of the QP noise. A bar at the Ω-noise floor
+// would therefore be a bar on the OTHER difference, not on conditioning.
+// Measurement and method: `reference/bse/qp-window-hypotheses.md`.
 const TOL_OMEGA_RAW: f64 = 2e-6;
 
 // QP energies in HOMO−2 … LUMO+2 (the G0W0 row's bar there).

@@ -195,7 +195,7 @@ pub const DEFAULT_LEBEDEV_ORDER: usize = 110;
 /// widely used Bondi table (also the basis PySCF's `pyscf.data.radii.VDW`
 /// draws from for H-Cl; consistent to 3 decimal places against a local PySCF
 /// checkout's `radii.VDW`, spot-checked during development).
-const ANGSTROM_TO_BOHR: f64 = 1.0 / 0.529_177_210_92;
+use ferric_core::units::ANGSTROM_TO_BOHR;
 
 fn bondi_radius_angstrom(z: i32) -> Option<f64> {
     let r = match z {

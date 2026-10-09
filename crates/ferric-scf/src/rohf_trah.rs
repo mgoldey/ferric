@@ -975,7 +975,10 @@ pub fn solve_rohf_injected_second_order<'a>(
         computed_quartets: model.quartets.get(),
         induced_dipoles: None,
         stability: None,
+        stability_external: None,
         df_jk: None,
+        cosx_final: None,
+        cosx_schedule: None,
         rohf_spin_focks: Some((pt.f_a.clone(), pt.f_b.clone())),
     };
     Ok((result, info))

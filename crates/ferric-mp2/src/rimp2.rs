@@ -1162,16 +1162,30 @@ pub fn ri_mp2_spin_components(
             )));
         }
     }
-    let sc = spin_components_from_b_ov_kappa(
-        &b_flat,
-        eps,
-        nocc,
-        nvir,
-        first_occ,
-        nocc_total,
-        config.kappa,
-    );
+    // The mixed-precision error map covers the Coulomb, erfc and terfc energies
+    // (`mixed_energy_operator`); any other operator or a kappa-regularised run
+    // keeps the device in f64.
+    let mixed_ok = config.kappa.is_none() && mixed_energy_operator(op);
+    let dims = (nocc, nvir, first_occ, nocc_total);
+    let sc = dispatch_spin_components(&b_flat, eps, dims, config.kappa, mixed_ok);
     Ok((sc, b_flat))
+}
+
+/// Whether an RI-MP2 ENERGY under `op` may use the `rimp2-energy` mixed kernel
+/// (`[gpu] precision = "mixed"`): the primitive Coulomb, erfc and terfc
+/// operators, whose error maps were measured (validation page, "Mixed-precision
+/// GPU kernels"). The mixed bound is per element ε_G·Σ_P|B_P,ia||B_P,jb|, read
+/// from the operator's own dressed `B_ov`, so it carries that operator's metric
+/// conditioning and `B` magnitudes; it assumes only that the f64 `B_ov` both
+/// sides share is the reference (its own fitting error is not part of it).
+/// erf, composite (fitted) operators and every other kind run the device in f64.
+pub fn mixed_energy_operator(op: Operator) -> bool {
+    use ferric_integrals::operator::OperatorKind;
+    !op.is_composite()
+        && matches!(
+            op.kind,
+            OperatorKind::Coulomb | OperatorKind::ErfcCoulomb | OperatorKind::Terfc
+        )
 }
 
 /// Spin-component MP2 energy from a pre-built dressed `b_ov` (no integral
@@ -1179,6 +1193,10 @@ pub fn ri_mp2_spin_components(
 /// already holds the intermediates (e.g. the fused coupled-rings RPA path) can
 /// reuse them rather than rebuild the `(P|op|ia)` transform. `eps` is the full
 /// orbital-energy slice `rhf.eps_r()`.
+///
+/// This is the entry of the SR-MP2 inside RS-MP2+RPA and of OO-MP2 (an energy
+/// kernel inside a larger algorithm whose sensitivity to the mixed error was
+/// not analysed): the device runs f64 even under `[gpu] precision = "mixed"`.
 pub fn spin_components_from_b_ov(
     b_ov: &Array2<f64>,
     eps: &[f64],
@@ -1187,13 +1205,119 @@ pub fn spin_components_from_b_ov(
     first_occ: usize,
     nocc_total: usize,
 ) -> SpinComponents {
-    spin_components_from_b_ov_kappa(b_ov, eps, nocc, nvir, first_occ, nocc_total, None)
+    spin_components_from_b_ov_kappa_f64(b_ov, eps, nocc, nvir, first_occ, nocc_total, None)
 }
 
 /// [`spin_components_from_b_ov`] with optional κ-regularization. `None`
 /// takes the ORIGINAL inner loop (byte-identical); `Some(κ)` damps every
 /// (i,a,j,b) term by `(1 − e^{−κΔ})²` (Δ = −denom > 0 for a gapped system).
+///
+/// Dispatches to the device-resident path (`rimp2_gpu`) when a GPU is in play
+/// and falls back to [`spin_components_from_b_ov_kappa_cpu`] otherwise; with
+/// the GPU mode off (or in a build without the `gpu` feature) it is exactly
+/// the CPU path.
 pub fn spin_components_from_b_ov_kappa(
+    b_ov: &Array2<f64>,
+    eps: &[f64],
+    nocc: usize,
+    nvir: usize,
+    first_occ: usize,
+    nocc_total: usize,
+    kappa: Option<f64>,
+) -> SpinComponents {
+    let dims = (nocc, nvir, first_occ, nocc_total);
+    dispatch_spin_components(b_ov, eps, dims, kappa, true)
+}
+
+/// [`spin_components_from_b_ov_kappa`] with the device kept in f64 even when
+/// `[gpu] precision = "mixed"` allows the RI-MP2 energy kernel: the entry of
+/// every caller outside [`mixed_energy_operator`]'s energy paths.
+pub fn spin_components_from_b_ov_kappa_f64(
+    b_ov: &Array2<f64>,
+    eps: &[f64],
+    nocc: usize,
+    nvir: usize,
+    first_occ: usize,
+    nocc_total: usize,
+    kappa: Option<f64>,
+) -> SpinComponents {
+    let dims = (nocc, nvir, first_occ, nocc_total);
+    dispatch_spin_components(b_ov, eps, dims, kappa, false)
+}
+
+/// Device first (mixed only when `mixed_ok`), then the CPU path.
+fn dispatch_spin_components(
+    b_ov: &Array2<f64>,
+    eps: &[f64],
+    (nocc, nvir, first_occ, nocc_total): (usize, usize, usize, usize),
+    kappa: Option<f64>,
+    mixed_ok: bool,
+) -> SpinComponents {
+    #[cfg(feature = "gpu")]
+    if let Some(sc) = crate::rimp2_gpu::try_spin_components_on_device(
+        b_ov, eps, nocc, nvir, first_occ, nocc_total, kappa, mixed_ok,
+    ) {
+        return sc;
+    }
+    #[cfg(not(feature = "gpu"))]
+    let _ = mixed_ok;
+    spin_components_from_b_ov_kappa_cpu(b_ov, eps, nocc, nvir, first_occ, nocc_total, kappa)
+}
+
+/// The unweighted (e_os_ij, e_ss_ij) of one pair from the wide block
+/// `g_i[a, (j−i)·nvir + b] = (ia|jb)`. Arithmetic and loop order are exactly
+/// the pre-extraction inner loop (Rust does not reassociate floating point, so
+/// moving the loop into a function changes no bit); it is shared by the CPU
+/// path and the device path (`rimp2_gpu`) so the two differ ONLY in how `g_i`
+/// was formed.
+#[inline]
+pub(crate) fn pair_energy(
+    g_i: &ndarray::ArrayView2<f64>,
+    i: usize,
+    j: usize,
+    nvir: usize,
+    eps: &[f64],
+    first_occ: usize,
+    nocc_total: usize,
+    kappa: Option<f64>,
+) -> (f64, f64) {
+    let jcol = (j - i) * nvir; // column offset within the tail
+    let e_ij = eps[first_occ + i] + eps[first_occ + j];
+    let mut e_os_ij = 0.0;
+    let mut e_ss_ij = 0.0;
+    match kappa {
+        None => {
+            for a in 0..nvir {
+                for b in 0..nvir {
+                    let g_ab = g_i[(a, jcol + b)]; // (ia|jb)
+                    let g_ba = g_i[(b, jcol + a)]; // (ib|ja)
+                    let denom = e_ij - eps[nocc_total + a] - eps[nocc_total + b];
+                    e_os_ij += g_ab * g_ab / denom;
+                    e_ss_ij += g_ab * (g_ab - g_ba) / denom;
+                }
+            }
+        }
+        Some(k) => {
+            for a in 0..nvir {
+                for b in 0..nvir {
+                    let g_ab = g_i[(a, jcol + b)]; // (ia|jb)
+                    let g_ba = g_i[(b, jcol + a)]; // (ib|ja)
+                    let denom = e_ij - eps[nocc_total + a] - eps[nocc_total + b];
+                    // Δ = −denom > 0; damp = (1 − e^{−κΔ})²
+                    let d1 = 1.0 - (k * denom).exp();
+                    let damp = d1 * d1;
+                    e_os_ij += damp * g_ab * g_ab / denom;
+                    e_ss_ij += damp * g_ab * (g_ab - g_ba) / denom;
+                }
+            }
+        }
+    }
+    (e_os_ij, e_ss_ij)
+}
+
+/// The CPU path of [`spin_components_from_b_ov_kappa`] (the dispatcher runs the
+/// device first when one is in play). `None` kappa is the original inner loop.
+pub fn spin_components_from_b_ov_kappa_cpu(
     b_ov: &Array2<f64>,
     eps: &[f64],
     nocc: usize,
@@ -1274,37 +1398,8 @@ pub fn spin_components_from_b_ov_kappa(
             for j in i..nocc {
                 // Symmetry weight: off-diagonal pairs stand in for their mirror.
                 let fac = if i == j { 1.0 } else { 2.0 };
-                let jcol = (j - i) * nvir; // column offset within the tail
-                let e_ij = eps[first_occ + i] + eps[first_occ + j];
-                let mut e_os_ij = 0.0;
-                let mut e_ss_ij = 0.0;
-                match kappa {
-                    None => {
-                        for a in 0..nvir {
-                            for b in 0..nvir {
-                                let g_ab = g_i[(a, jcol + b)]; // (ia|jb)
-                                let g_ba = g_i[(b, jcol + a)]; // (ib|ja)
-                                let denom = e_ij - eps[nocc_total + a] - eps[nocc_total + b];
-                                e_os_ij += g_ab * g_ab / denom;
-                                e_ss_ij += g_ab * (g_ab - g_ba) / denom;
-                            }
-                        }
-                    }
-                    Some(k) => {
-                        for a in 0..nvir {
-                            for b in 0..nvir {
-                                let g_ab = g_i[(a, jcol + b)]; // (ia|jb)
-                                let g_ba = g_i[(b, jcol + a)]; // (ib|ja)
-                                let denom = e_ij - eps[nocc_total + a] - eps[nocc_total + b];
-                                // Δ = −denom > 0; damp = (1 − e^{−κΔ})²
-                                let d1 = 1.0 - (k * denom).exp();
-                                let damp = d1 * d1;
-                                e_os_ij += damp * g_ab * g_ab / denom;
-                                e_ss_ij += damp * g_ab * (g_ab - g_ba) / denom;
-                            }
-                        }
-                    }
-                }
+                let (e_os_ij, e_ss_ij) =
+                    pair_energy(&g_i.view(), i, j, nvir, eps, first_occ, nocc_total, kappa);
                 e_os_i += fac * e_os_ij;
                 e_ss_i += fac * e_ss_ij;
             }
@@ -2758,7 +2853,7 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
         // r0 = 0.75 Angstrom -> Bohr; historically the worst case (most far-field
         // primitives beyond the table domain).
-        let op = Operator::terfc(0.75 * 1.889_725_988_6);
+        let op = Operator::terfc(0.75 * ferric_core::units::ANGSTROM_TO_BOHR);
 
         let v2c = threeindex::coulomb_metric_2c(op, &dfbs).unwrap();
         let v_inv_sqrt = metric_inverse_sqrt(&v2c, op).expect(
@@ -2845,7 +2940,7 @@ mod tests {
             eprintln!("skipping: FERRIC_TERF_TABLE_DIR not set");
             return;
         }
-        const A2B: f64 = 1.889_725_988_6;
+        const A2B: f64 = ferric_core::units::ANGSTROM_TO_BOHR;
         let mol = Molecule::load_xyz(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../testdata/molecules/alkane_4.xyz"

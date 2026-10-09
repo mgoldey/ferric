@@ -111,7 +111,7 @@ fn cosx_config(g: AtomicGridConfig, overlap_fit: bool, screen_thresh: Option<f64
         overlap_fit,
         screen_thresh,
         half_transform: half_transform(),
-        ..CosxConfig::default()
+        ..CosxConfig::flat_reference()
     }
 }
 

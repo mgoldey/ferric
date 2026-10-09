@@ -23,6 +23,7 @@ pip install ferric        # or: uv pip install ferric
 The only releases so far are pre-releases (`0.1.0rc*`). pip and uv both select
 them when no final release exists, so the plain command above works. Pin a
 version (`ferric==0.1.0rc5`) if you need a reproducible environment.
+[Which build am I running](#which-build-am-i-running) shows how to check.
 
 The wheel gives you two things:
 
@@ -164,6 +165,29 @@ mpqc4 tarball (libint2 2.7.2) has no second derivatives and no G12 class: built
 against it, ferric uses finite-difference Hessians and the G12 tests skip with
 an explicit message.
 
+## Which build am I running
+
+```bash
+python -c "import ferric; print(ferric.__version__); print(ferric.build_info()); print(ferric.__build__)"
+ferric --version
+```
+
+`ferric.build_info()` and `ferric --version` report the version, the full git
+commit, whether tracked files differed from that commit (`dirty`), the cargo
+profile and the libint2 version. `ferric.__build__` is the compact stamp
+`{"git_sha": ..., "dirty": ...}`. All of it is fixed when the extension is
+compiled, so it describes the loaded `.so` even if that is a symlink into
+another checkout.
+
+- A released wheel carries the plain version (`0.1.0`), the tagged commit and
+  `dirty: False`. To release, push a `vX.Y.Z` tag; there is nothing to commit,
+  and the build fails rather than ship from a dirty or unidentified tree.
+- A build from a checkout carries a `.devN` version (`0.1.0.dev0`) and the
+  commit it was built from, with `dirty: True` if tracked files had uncommitted
+  changes. Untracked files do not count.
+- A build with no git metadata (an sdist or source tarball) reports
+  `commit: "unknown"`, and `ferric.__build__` is `None`.
+
 ## MPI
 
 MPI is a **source build only**. There is no MPI wheel on PyPI: the wheels
@@ -187,6 +211,30 @@ process.
 `mpirun -np N python script.py` is **not supported**. The bindings expose no
 rank or world-size accessor, so `if rank == 0` cannot be written. Every rank
 runs the whole script, prints N times, and races on the same output files.
+
+## GPU (CUDA)
+
+The CUDA backend is a **source build only** and is off by default even when built in.
+
+```bash
+cargo build --release -p ferric-cli --features ferric-cli/gpu
+FERRIC_GPU=auto ./target/release/ferric examples/water-ccsd.toml
+```
+
+Building needs no CUDA toolkit: the driver and cuBLAS libraries are loaded at run time. Running needs an NVIDIA driver and the CUDA 12 runtime libraries (`libcuda.so.1`, `libcublas.so.12`) on the loader path; without them `mode = "auto"` prints a notice and runs on the CPU, and `mode = "on"` stops the `ferric` binary with the reason. Library and Python callers that set `FERRIC_GPU=on` with no usable device get the same notice and a CPU run, not an error; check `ferric.gpu_status()`. The CUDA 12 libraries support compute capability 5.0 and above; CUDA 13 does not support Pascal (compute capability 6.x), so a Pascal card needs the CUDA 12 libraries.
+
+What runs on the device, under `mode = "auto"` or `"on"`:
+
+- Dense f64 contractions issued through `einsum!` (the coupled-cluster and MP2-family drivers) above a size threshold.
+- The closed-shell RI-MP2 energy, with `B_ov` resident on the card: f64 by default (`[gpu] precision = "f64"`), or with `precision = "mixed"` `B_ov` stored as f32 and accumulated in f64 (see the [validation page](../reference/validation.md#mixed-precision-gpu-kernels) for its measured error).
+- The unrestricted RI-MP2 energy (open-shell reference, amplitude-free path), with one resident `B_ov` per spin: f64 by default, or with `precision = "mixed"` each spin's `B_ov` stored as f32 and the αα, ββ and αβ blocks accumulated in f64 by the same kernel.
+- Mixed applies to the RI-MP2 energy under the Coulomb, erfc and terfc operators, closed-shell or unrestricted (plain RI-MP2, attenuated RI-MP2, SCS-MP2 with two terfc operators, the MP2 half of att-MP2+VV10); the erf operator, composite fitted operators, SR-MP2 in RS-MP2+RPA, OO-MP2 and kappa-regularised runs use the f64 device kernel.
+- The density-fitted Coulomb matrix (RI-J): the raw three-index tensor is stored on the card once per geometry (packed lower triangle, f64) and each J build moves only the density weights and the result.
+- The density-fitted exchange matrix (DF-K, occupied-orbital path): the dressed three-index tensor is stored on the card once per geometry and each K build moves only the occupied coefficients and the result, in f64.
+
+RI-J and DF-K run on the CPU when their tensor does not fit the device pool (or, for DF-K, is spilled or recomputed on the host) and under multi-rank MPI; the notice names the reason. When one SCF has both and the pool cannot hold both, DF-K gets the device. Integrals, SCF diagonalisation, DIIS and grids run on the CPU. Device results are reproducible run to run on one device and agree with the CPU to the accuracy of a different summation order, not bit for bit.
+
+The shortest way to use the device is one line in the input, `gpu = "on"` (f64) or `gpu = "mixed"`, or `ferric --gpu mixed input.toml` on the command line (the flag overrides the input file and `FERRIC_GPU_PRESET`). The [`[gpu]` table](../reference/input.md#gpu) in the input reference lists the keys and what each preset turns on.
 
 ## Threading
 

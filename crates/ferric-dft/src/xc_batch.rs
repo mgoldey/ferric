@@ -87,7 +87,7 @@
 
 use std::borrow::Cow;
 
-use ndarray::{s, Array1, Array2};
+use ndarray::{s, Array1, Array2, ArrayView2};
 use rayon::prelude::*;
 
 use ferric_integrals::blas_threads::with_blas_threads;
@@ -403,6 +403,73 @@ fn gather_sub(d: &Array2<f64>, funcs: &[u32]) -> Array2<f64> {
     Array2::from_shape_fn((n, n), |(i, j)| d[(funcs[i] as usize, funcs[j] as usize)])
 }
 
+/// How one spin density enters pass 1.
+///
+/// `Dense` is the full AO density matrix. `Factored` is `D = scale · C·Cᵀ` with
+/// `C` the occupied MO block `(nbf, nocc)`: pass 1 then forms `D_sub·X` as
+/// `scale · C_sub·(C_subᵀ·X)` — two GEMMs of `nact·nocc·ncols` each instead of
+/// one of `nact²·ncols`, and a `(nact, nocc)` working matrix instead of
+/// `(nact, nact)`.
+#[derive(Clone, Copy)]
+pub(crate) enum DensityInput<'a> {
+    Dense(&'a Array2<f64>),
+    Factored { c_occ: &'a Array2<f64>, scale: f64 },
+}
+
+impl DensityInput<'_> {
+    fn nbf(&self) -> usize {
+        match self {
+            Self::Dense(d) => d.nrows(),
+            Self::Factored { c_occ, .. } => c_occ.nrows(),
+        }
+    }
+
+    fn is_square(&self) -> bool {
+        match self {
+            Self::Dense(d) => d.nrows() == d.ncols(),
+            Self::Factored { .. } => true,
+        }
+    }
+
+    fn gather(&self, funcs: &[u32]) -> SubDensity {
+        match self {
+            Self::Dense(d) => SubDensity::Dense(gather_sub(d, funcs)),
+            Self::Factored { c_occ, scale } => SubDensity::Factored {
+                csub: gather_rows(c_occ, funcs),
+                scale: *scale,
+            },
+        }
+    }
+}
+
+/// Per-batch gathered form of a [`DensityInput`].
+enum SubDensity {
+    Dense(Array2<f64>),
+    Factored { csub: Array2<f64>, scale: f64 },
+}
+
+impl SubDensity {
+    /// `D_sub · X` for the batch's `(nact, ncols)` AO columns.
+    fn apply(&self, x: ArrayView2<f64>) -> Array2<f64> {
+        match self {
+            Self::Dense(dsub) => dsub.dot(&x),
+            Self::Factored { csub, scale } => {
+                let psi = csub.t().dot(&x);
+                let mut phi = csub.dot(&psi);
+                // `scale` is 1 or 2 (exact in binary): no rounding.
+                phi *= *scale;
+                phi
+            }
+        }
+    }
+}
+
+/// `C[funcs, :]` as a dense `(nact, ncols)` matrix.
+fn gather_rows(c: &Array2<f64>, funcs: &[u32]) -> Array2<f64> {
+    let m = c.ncols();
+    Array2::from_shape_fn((funcs.len(), m), |(i, j)| c[(funcs[i] as usize, j)])
+}
+
 /// Number of fixed reduction groups for the pass-2 accumulation: a pure
 /// function of `(nbatches, nbf, nmats)` — NEVER of the rayon thread count —
 /// so the V summation order is identical for every worker count.
@@ -459,7 +526,7 @@ struct BatchDensity {
 /// (`((τx + τy) + τz)·½`).
 fn batch_density_one(
     ao: &Array2<f64>,
-    dsub: &Array2<f64>,
+    dsub: &SubDensity,
     nb: usize,
     need_tau: bool,
 ) -> BatchDensity {
@@ -483,7 +550,7 @@ fn batch_density_one(
     }
     // Φ = D_sub · [χ | (∂χ)] — ONE GEMM, BLAS threads set once by
     // `integrate_*_exec` (1 on rayon workers; see `Exec`).
-    let phi = dsub.dot(&ao.slice(s![.., ..ncols]));
+    let phi = dsub.apply(ao.slice(s![.., ..ncols]));
     let phi = phi.as_standard_layout();
     let p = phi.as_slice().expect("standard layout");
     let a = ao.as_slice().expect("batch AO block is contiguous");
@@ -886,7 +953,7 @@ impl ScreenedGrid {
     pub(crate) fn integrate_closed(
         &self,
         grid: &[GridPoint],
-        d: &Array2<f64>,
+        d: DensityInput,
         xc: &XcDef,
     ) -> Result<(f64, Array2<f64>), GtoEvalError> {
         self.integrate_closed_exec(grid, d, xc, Exec::auto())
@@ -896,7 +963,7 @@ impl ScreenedGrid {
     pub(crate) fn integrate_closed_exec(
         &self,
         grid: &[GridPoint],
-        d: &Array2<f64>,
+        d: DensityInput,
         xc: &XcDef,
         exec: Exec,
     ) -> Result<(f64, Array2<f64>), GtoEvalError> {
@@ -908,13 +975,13 @@ impl ScreenedGrid {
     fn integrate_closed_inner(
         &self,
         grid: &[GridPoint],
-        d: &Array2<f64>,
+        d: DensityInput,
         xc: &XcDef,
         serial: bool,
     ) -> Result<(f64, Array2<f64>), GtoEvalError> {
         let npts = self.npts;
         assert_eq!(grid.len(), npts, "grid does not match the screened grid");
-        assert_eq!(d.dim(), (self.nbf, self.nbf), "density matrix shape");
+        assert!(d.nbf() == self.nbf && d.is_square(), "density matrix shape");
         let has_mgga = xc
             .funcs
             .iter()
@@ -928,7 +995,7 @@ impl ScreenedGrid {
         let parts: Vec<BatchDensity> = map_indexed(serial, self.batches.len(), |bi| {
             let b = &self.batches[bi];
             let ao = self.batch_ao(bi, grid)?;
-            let dsub = gather_sub(d, &b.funcs);
+            let dsub = d.gather(&b.funcs);
             Ok(batch_density_one(&ao, &dsub, b.idx.len(), has_mgga))
         })?;
         let mut rho = Array1::<f64>::zeros(npts);
@@ -1004,8 +1071,8 @@ impl ScreenedGrid {
     pub(crate) fn integrate_polarized(
         &self,
         grid: &[GridPoint],
-        d_a: &Array2<f64>,
-        d_b: &Array2<f64>,
+        d_a: DensityInput,
+        d_b: DensityInput,
         xc: &XcDef,
     ) -> Result<(f64, Array2<f64>, Array2<f64>), GtoEvalError> {
         self.integrate_polarized_exec(grid, d_a, d_b, xc, Exec::auto())
@@ -1015,8 +1082,8 @@ impl ScreenedGrid {
     pub(crate) fn integrate_polarized_exec(
         &self,
         grid: &[GridPoint],
-        d_a: &Array2<f64>,
-        d_b: &Array2<f64>,
+        d_a: DensityInput,
+        d_b: DensityInput,
         xc: &XcDef,
         exec: Exec,
     ) -> Result<(f64, Array2<f64>, Array2<f64>), GtoEvalError> {
@@ -1028,15 +1095,21 @@ impl ScreenedGrid {
     fn integrate_polarized_inner(
         &self,
         grid: &[GridPoint],
-        d_a: &Array2<f64>,
-        d_b: &Array2<f64>,
+        d_a: DensityInput,
+        d_b: DensityInput,
         xc: &XcDef,
         serial: bool,
     ) -> Result<(f64, Array2<f64>, Array2<f64>), GtoEvalError> {
         let npts = self.npts;
         assert_eq!(grid.len(), npts, "grid does not match the screened grid");
-        assert_eq!(d_a.dim(), (self.nbf, self.nbf), "alpha density shape");
-        assert_eq!(d_b.dim(), (self.nbf, self.nbf), "beta density shape");
+        assert!(
+            d_a.nbf() == self.nbf && d_a.is_square(),
+            "alpha density shape"
+        );
+        assert!(
+            d_b.nbf() == self.nbf && d_b.is_square(),
+            "beta density shape"
+        );
         let has_mgga = xc
             .funcs
             .iter()
@@ -1052,8 +1125,8 @@ impl ScreenedGrid {
                 let b = &self.batches[bi];
                 let ao = self.batch_ao(bi, grid)?;
                 let nb = b.idx.len();
-                let pa = batch_density_one(&ao, &gather_sub(d_a, &b.funcs), nb, has_mgga);
-                let pb = batch_density_one(&ao, &gather_sub(d_b, &b.funcs), nb, has_mgga);
+                let pa = batch_density_one(&ao, &d_a.gather(&b.funcs), nb, has_mgga);
+                let pb = batch_density_one(&ao, &d_b.gather(&b.funcs), nb, has_mgga);
                 Ok((pa, pb))
             })?;
         let mut rho_a = Array1::<f64>::zeros(npts);
@@ -1351,10 +1424,15 @@ mod tests {
         for name in ["PBE", "SCAN"] {
             let xc1 = crate::libxc::xc_def_from_name(name).unwrap();
             let (e_p, v_p) = sg
-                .integrate_closed_exec(&grid, &d, &xc1, Exec::parallel())
+                .integrate_closed_exec(&grid, DensityInput::Dense(&d), &xc1, Exec::parallel())
                 .unwrap();
             let (e_s, v_s) = sg
-                .integrate_closed_exec(&grid, &d, &xc1, Exec::serial_single_blas())
+                .integrate_closed_exec(
+                    &grid,
+                    DensityInput::Dense(&d),
+                    &xc1,
+                    Exec::serial_single_blas(),
+                )
                 .unwrap();
             assert_eq!(e_p.to_bits(), e_s.to_bits(), "{name} closed E");
             assert!(v_p
@@ -1363,10 +1441,22 @@ mod tests {
                 .all(|(a, b)| a.to_bits() == b.to_bits()));
             let xc2 = crate::libxc::xc_def_from_name_nspin(name, 2).unwrap();
             let (e_p, a_p, b_p) = sg
-                .integrate_polarized_exec(&grid, &d, &d_b, &xc2, Exec::parallel())
+                .integrate_polarized_exec(
+                    &grid,
+                    DensityInput::Dense(&d),
+                    DensityInput::Dense(&d_b),
+                    &xc2,
+                    Exec::parallel(),
+                )
                 .unwrap();
             let (e_s, a_s, b_s) = sg
-                .integrate_polarized_exec(&grid, &d, &d_b, &xc2, Exec::serial_single_blas())
+                .integrate_polarized_exec(
+                    &grid,
+                    DensityInput::Dense(&d),
+                    DensityInput::Dense(&d_b),
+                    &xc2,
+                    Exec::serial_single_blas(),
+                )
                 .unwrap();
             assert_eq!(e_p.to_bits(), e_s.to_bits(), "{name} uks E");
             assert!(a_p

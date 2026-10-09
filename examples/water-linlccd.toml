@@ -1,4 +1,5 @@
-# LinLCCD(hh) — linearized hole-hole ladder CCD.
+# LinLCCD(hh) — linearized hole-hole ladder CCD, computed exactly (no [local]).
+# [mp2] linlccd_variant selects "hh" (default), "drivers-only" or "full".
 #
 # The ladder resummation is what makes this robust where MP2 diverges: the
 # hole-hole ladder is retained to all orders, so the correlation energy stays

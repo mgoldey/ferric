@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Sequence
+from typing import Any, Sequence, TypedDict
 
 import numpy as np
 from numpy.typing import NDArray
@@ -11,6 +11,100 @@ from numpy.typing import NDArray
 
 DEFAULT_TEMPERATURE_K: float
 BOLTZMANN_HARTREE_PER_K: float
+
+__version__: str
+"""PEP 440 package version. A checkout builds a ``.devN`` version; only a
+release wheel from a ``v*`` tag carries the plain version."""
+
+__build__: dict[str, str | bool] | None
+"""``{"git_sha": <40-char HEAD hash>, "dirty": <tracked files differed from
+HEAD>}`` for the tree this build came from, or ``None`` when the build had no
+git metadata (sdist, tarball). Untracked files never set ``dirty``."""
+
+# ── Build identity ──
+
+class BuildInfo(TypedDict):
+    version: str
+    """Same as ``ferric.__version__``."""
+    commit: str
+    """Full git hash of the compiled source tree, or ``"unknown"``."""
+    dirty: bool | None
+    """Compiled sources differed from ``commit``; ``None`` if unknown."""
+    profile: str
+    """Cargo build profile: ``"release"`` or ``"debug"``."""
+    libint_version: str
+    """libint2 header version the integral shim was compiled against, or ``"unknown"``."""
+
+def build_info() -> BuildInfo:
+    """Which build of ferric is loaded. All values are fixed at compile time."""
+
+class GpuDevice(TypedDict):
+    ordinal: int
+    name: str
+    cc: str
+    """Compute capability, ``"major.minor"``."""
+    free_bytes: int
+    total_bytes: int
+
+class GpuStatus(TypedDict):
+    compiled: bool
+    """Built with the ``gpu`` feature."""
+    mode: str
+    """``"off"`` (default), ``"auto"`` or ``"on"``, from ``FERRIC_GPU``."""
+    status: str
+    """``"not_compiled"``, ``"unavailable"`` or ``"ready"``."""
+    reason: str | None
+    """Why ``unavailable`` (also set for a malformed ``FERRIC_GPU``, which
+    degrades to ``off``); ``None`` otherwise."""
+    device: GpuDevice | None
+    """Set only when ``status == "ready"``."""
+    precision: str
+    """``"f64"`` (default) or ``"mixed"``, from ``FERRIC_GPU_PRECISION``."""
+    mixed_kernels: list[str]
+    """Kernels allowed in mixed precision (``FERRIC_GPU_MIXED_KERNELS``); under ``f64`` it lists the build's shipped kernels (the allowlist is inert there)."""
+
+def gpu_status() -> GpuStatus:
+    """CUDA backend state. Resolved once per process from the environment; touches
+    a device only when ``FERRIC_GPU`` is ``auto`` or ``on``. Unlike the CLI, where
+    ``on`` with no usable device is an error, here it prints a notice and the run
+    stays on the CPU; read the returned status to see which."""
+    ...
+
+def configure_gpu(
+    preset: str | None = None,
+    mode: str | None = None,
+    precision: str | None = None,
+    mixed_kernels: list[str] | None = None,
+    device: int | None = None,
+    memory_gb: float | None = None,
+    min_flops: int | None = None,
+) -> GpuStatus:
+    """Install the CUDA backend settings for this process (the Python side of
+    the ``[gpu]`` input section) and return ``gpu_status()``.
+
+    ``preset`` is one of ``"off"``, ``"auto"``, ``"on"``, ``"mixed"``,
+    ``"auto-mixed"`` and sets ``mode`` and ``precision`` together; ``mode``,
+    ``precision`` and ``mixed_kernels`` may sit beside it only if they agree.
+    Arguments given here override ``FERRIC_GPU*`` environment variables.
+    Unlike ``gpu_status()``, ``mode="on"`` with no usable device (or in a build
+    without the ``gpu`` feature) is an error.
+
+    Settings are process-global. Call this once, before ``gpu_status()`` or any
+    GPU work; a repeated call with identical settings is a no-op, also after
+    ``gpu_status()``. The preset is not a ``GpuStatus`` field: it is visible
+    only in the ``FERRIC_GPU_PRESET`` audit line printed to stderr on the first
+    call. ``mixed_kernels`` takes one kernel name per list item.
+
+    Raises:
+        ValueError: unknown or out-of-range value (negative ``device`` /
+            ``min_flops``, non-positive or non-finite ``memory_gb``), a preset that disagrees with ``mode`` /
+            ``precision``, mixed precision with no shipped kernel or no device
+            mode, or ``mode="on"`` that cannot be satisfied. The message names
+            the keys involved.
+        RuntimeError: the settings were already installed or read with
+            different values.
+    """
+    ...
 
 # ── Classes ──
 
@@ -229,7 +323,9 @@ def run_qmmm(
 
     mm_topology, if given, adds ferric-mm's AMBER-form force field under the additive QM/MM
     convention (MM-MM bonded/nonbonded + QM-MM Lennard-Jones; no QM-MM Coulomb, already inside
-    the embedding). Omitting it is bit-identical to a topology with zero energy/gradient
+    the embedding). QM-MM Lennard-Jones follows the topology's own exclusion rules across the
+    cut: pairs 1-2/1-3 apart through its bond list are skipped and 1-4 pairs are scaled by its
+    LJ 1-4 factor (AMBER 0.5). Omitting it is bit-identical to a topology with zero energy/gradient
     everywhere (QmmmResult.mm_energy reports all-zero, not absent).
 
     thole_a controls Thole damping for polarizable sites (system built with
@@ -335,6 +431,13 @@ class RhfResult:
         """MO coefficient matrix C (n_bf x n_mo), column k = MO k."""
         ...
 
+    @property
+    def cosx_final_pass(self) -> dict[str, float | int | str] | None:
+        """The COSX final-grid pass: ``{"e_scf_grid", "e_final",
+        "npts_scf_grid", "npts_final_grid", "gradient_differentiates"}``, or
+        None when no pass ran. ``energy`` is ``e_final`` when it ran."""
+        ...
+
 class UhfResult:
     """Result of an open-shell UHF or ROHF calculation."""
 
@@ -372,6 +475,13 @@ class UhfResult:
 
     def orbital_energies_beta(self) -> NDArray[np.float64]:
         """Beta-spin orbital energies (Hartree), ascending."""
+        ...
+
+    @property
+    def cosx_final_pass(self) -> dict[str, float | int | str] | None:
+        """The COSX final-grid pass: ``{"e_scf_grid", "e_final",
+        "npts_scf_grid", "npts_final_grid", "gradient_differentiates"}``, or
+        None when no pass ran. ``energy`` is ``e_final`` when it ran."""
         ...
 
 class CdftConstraint:
@@ -584,7 +694,12 @@ class FrequencyResult:
 
     @property
     def energy(self) -> float:
-        """Electronic energy at the undisplaced geometry."""
+        """Electronic energy at the undisplaced geometry (KS + dispersion with `dispersion=`)."""
+        ...
+
+    @property
+    def e_dispersion(self) -> float | None:
+        """Dispersion energy at the undisplaced geometry, included in `energy`; None without `dispersion=`."""
         ...
 
 class WeightedStats:
@@ -802,6 +917,14 @@ class RiMp2Result:
         (unrestricted RI-MP2, for multiplicity > 1)."""
         ...
 
+    @property
+    def local(self) -> dict[str, object] | None:
+        """The local model: None for the exact RI-MP2, else a dict with
+        scheme, eps, keep_fraction, pair_fraction, integral_direct,
+        e_corr_canonical_ri (None unless compute_reference=True) and the
+        solver counters."""
+        ...
+
 class OoRiMp2Result:
     """Result of an orbital-optimized RI-MP2 calculation."""
 
@@ -988,11 +1111,24 @@ class DftResult:
 
     @property
     def e_dispersion(self) -> float | None:
-        """D3(BJ) dispersion correction in Hartree, or None if not requested.
+        """Dispersion correction (D3(BJ) or MBD@rsSCS) in Hartree, or None if
+        not requested.
 
         `None` means UNEVALUATED, not zero: a DFT energy with no dispersion and
         one whose dispersion is small are different claims.
         """
+        ...
+
+    @property
+    def dispersion_model(self) -> str | None:
+        """`"D3(BJ)"`, `"MBD@rsSCS"`, or None when dispersion was not requested."""
+        ...
+
+    @property
+    def volume_ratios(self) -> list[float] | None:
+        """MBD@rsSCS only: per-atom Hirshfeld volume ratios v_A / v_A^free of
+        the converged density (the input `mbd_rsscs_energy` takes). None for
+        D3(BJ) or no dispersion."""
         ...
 
     @property
@@ -1007,6 +1143,13 @@ class DftResult:
 
     def gradient(self) -> NDArray[np.float64] | None:
         """Analytic nuclear gradient (natoms x 3) if with_gradient=True, else None."""
+        ...
+
+    @property
+    def cosx_final_pass(self) -> dict[str, float | int | str] | None:
+        """The COSX final-grid pass: ``{"e_scf_grid", "e_final",
+        "npts_scf_grid", "npts_final_grid", "gradient_differentiates"}``, or
+        None when no pass ran. ``energy`` is ``e_final`` when it ran."""
         ...
 
 class CcResult:
@@ -2061,8 +2204,24 @@ def run_rhf(
     memory_budget_gb: float | None = None,
     solvent: float | str | None = None,
     pcm_lebedev_order: int | None = None,
+    stability_descent: bool | None = None,
+    cosx_grid: tuple[int, int] | tuple[int, int, str] | None = None,
+    cosx_final_pass: bool | None = None,
+    cosx_final_grid: tuple[int, int] | tuple[int, int, str] | None = None,
+    cosx_overlap_fit: bool | None = None,
 ) -> RhfResult:
     """Closed-shell Restricted Hartree-Fock.
+
+
+    cosx_grid / cosx_final_pass / cosx_final_grid / cosx_overlap_fit: COSX
+    knobs, read only with ``k_builder="cosx"`` (any of them with another
+    ``k_builder`` raises ValueError). A grid is ``(radial, angular)`` or
+    ``(radial, angular, prune)`` with prune ``"none"`` / ``"sgx"`` /
+    ``"nwchem"``. The default is the pruned sgx (35, 194) SCF grid plus one
+    final pass on the sgx (50, 302) grid.
+    stability_descent: when True, check internal (singlet) stability and, at a
+    saddle of the orbital Hessian, follow the downhill eigenvector and
+    re-converge, keeping the lowest state. Default False.
 
     df_j_aux / df_k_aux: an aux basis name selects RI-J / RI-K; "" / "exact" /
     "none" / "off" / "conventional" select conventional four-centre integrals
@@ -2096,9 +2255,20 @@ def run_uhf(
     memory_budget_gb: float | None = None,
     guess: str | None = None,
     stability_descent: bool | None = None,
+    cosx_grid: tuple[int, int] | tuple[int, int, str] | None = None,
+    cosx_final_pass: bool | None = None,
+    cosx_final_grid: tuple[int, int] | tuple[int, int, str] | None = None,
+    cosx_overlap_fit: bool | None = None,
 ) -> UhfResult:
     """Unrestricted Hartree-Fock (open-shell).
 
+
+    cosx_grid / cosx_final_pass / cosx_final_grid / cosx_overlap_fit: COSX
+    knobs, read only with ``k_builder="cosx"`` (any of them with another
+    ``k_builder`` raises ValueError). A grid is ``(radial, angular)`` or
+    ``(radial, angular, prune)`` with prune ``"none"`` / ``"sgx"`` /
+    ``"nwchem"``. The default is the pruned sgx (35, 194) SCF grid plus one
+    final pass on the sgx (50, 302) grid.
     ``guess`` is ``"minao"`` (default; ``"sad"`` is an alias) or ``"hcore"``. ``stability_descent=True``
     checks internal stability and follows a downhill orbital-Hessian mode off a
     saddle (e.g. O2 triplet/STO-3G, whose default-guess solution is a saddle
@@ -2183,6 +2353,21 @@ def run_optimize(
     """Geometry optimization (RHF)."""
     ...
 
+def run_optimize_uhf(
+    mol: Molecule,
+    basis_name: str,
+    max_steps: int | None = None,
+    e_conv: float | None = None,
+    point_charges: list[tuple[float, float, float, float]] | None = None,
+    external_field: tuple[float, float, float] | None = None,
+) -> OptimizeResult:
+    """Geometry optimization (UHF) -- for open-shell systems.
+
+    The spin state comes from the `Molecule`'s multiplicity, as in `run_uhf`.
+    `run_optimize` uses an RHF reference and cannot relax a radical.
+    """
+    ...
+
 def run_frequencies(
     mol: Molecule,
     basis_name: str,
@@ -2193,6 +2378,7 @@ def run_frequencies(
     point_charges: list[tuple[float, float, float, float]] | None = None,
     external_field: tuple[float, float, float] | None = None,
     hessian: str = "auto",
+    dispersion: str | None = None,
 ) -> FrequencyResult:
     """Harmonic vibrational frequencies.
 
@@ -2204,6 +2390,11 @@ def run_frequencies(
 
     `point_charges` ((q, x, y, z) in Bohr) and `external_field` embed the QM
     region in an MM field, the same way `run_optimize` does.
+
+    `dispersion` ("d3bj", "d3(bj)", "d3bj(<functional>)", "mbd",
+    "mbd(<functional>)", as in `run_dft`) requires `xc` and works on every
+    reference (RKS, UKS, ROKS); the Hessian is then the finite difference of
+    the KS + dispersion analytic gradient, so `hessian="analytic"` raises.
     """
     ...
 
@@ -2325,12 +2516,32 @@ def run_rimp2(
     k_builder: str | None = None,
     memory_budget_gb: float | None = None,
     kappa: float | None = None,
+    local: str | None = None,
+    eps: float | None = None,
+    compute_reference: bool | None = None,
+    integral_direct: bool | None = None,
+    aux_radius: float | None = None,
+    virt_radius: float | None = None,
+    ao_tail: float | None = None,
+    schwarz_skip: float | None = None,
+    batch_merge: int | None = None,
+    gate_cal: float | None = None,
+    virt_schwarz_kappa: float | None = None,
 ) -> RiMp2Result:
-    """Resolution-of-identity (density-fitted) MP2.
+    """Resolution-of-identity (density-fitted) MP2. Exact by default.
 
     RHF reference for a singlet; UHF reference + unrestricted RI-MP2 (UMP2)
     for multiplicity > 1 (`result.reference` says which). `kappa` is
     closed-shell only and raises ValueError on an open-shell molecule.
+
+    `local="amplitude-threshold"` with `eps` (required, no default) runs the
+    amplitude-threshold local MP2 (closed-shell; eps=0 reproduces the exact
+    RI-MP2); `integral_direct=True` its integral-direct variant with the
+    locality maps aux_radius/virt_radius (Bohr), ao_tail, schwarz_skip,
+    batch_merge, gate_cal and virt_schwarz_kappa. Same rules as the CLI
+    `[local]` section: every local kwarg is a ValueError on the exact method,
+    and `kappa` a ValueError on the local one. `result.local` is None for the
+    exact method, else the local model dict.
     """
     ...
 
@@ -2492,14 +2703,31 @@ def run_dft(
     grid_radial: int | None = None,
     grid_angular: int | None = None,
     grid_prune: str | None = None,
+    cosx_grid: tuple[int, int] | tuple[int, int, str] | None = None,
+    cosx_final_pass: bool | None = None,
+    cosx_final_grid: tuple[int, int] | tuple[int, int, str] | None = None,
+    cosx_overlap_fit: bool | None = None,
 ) -> DftResult:
     """Kohn-Sham DFT (closed-shell).
 
-    `dispersion` adds an empirical dispersion correction to the SCF energy:
-    `"d3bj"` uses the damping parameters published for `functional`, and
-    `"d3bj(<name>)"` uses `<name>`'s instead. `None` (the default) applies no
-    correction and leaves the energy exactly as it was. Any other value raises
-    -- there is no spelling that means "compute a zero correction".
+
+    cosx_grid / cosx_final_pass / cosx_final_grid / cosx_overlap_fit: COSX
+    knobs, read only with ``k_builder="cosx"`` (any of them with another
+    ``k_builder`` raises ValueError). A grid is ``(radial, angular)`` or
+    ``(radial, angular, prune)`` with prune ``"none"`` / ``"sgx"`` /
+    ``"nwchem"``. The default is the pruned sgx (35, 194) SCF grid plus one
+    final pass on the sgx (50, 302) grid.
+    `dispersion` adds a dispersion correction to the SCF energy (and, with
+    `with_gradient=True`, its analytic gradient to the gradient):
+    `"d3bj"` is D3(BJ) with the damping parameters published for
+    `functional`, `"d3bj(<name>)"` uses `<name>`'s instead; `"mbd"` is
+    MBD@rsSCS on Hirshfeld volume ratios of the converged density with the
+    beta published for `functional` (PBE, PBE0, HSE06), `"mbd(<name>)"` uses
+    `<name>`'s beta. Matching is case-insensitive. The MBD@rsSCS gradient
+    is exact, including the orbital relaxation of the volumes (Z-vector). `None` (the default) applies no correction and leaves the energy
+    exactly as it was. Any other value, or a functional with no published
+    parameters, raises ValueError -- there is no spelling that means "compute
+    a zero correction".
 
     `grid_radial` / `grid_angular` / `grid_prune` set the main XC grid. All
     `None` (the default) is the 75x110 unpruned grid, unchanged. `grid_angular`
@@ -2509,9 +2737,11 @@ def run_dft(
     any other value raises ValueError. Pruning has no table at
     `grid_angular=50`. Any grid kwarg with `with_gradient=True` raises
     ValueError: the analytic gradient is built on the default grid.
-    `k_builder="cosx"` with `with_gradient=True` also raises ValueError: COSX
-    has no analytic gradient, and the exact-exchange gradient is not the
-    derivative of a COSX energy.
+    With `k_builder="cosx"` and `with_gradient=True` the gradient
+    differentiates the COSX energy; the overlap fit with a functional is not
+    differentiable (its response needs the XC Fock nuclear derivative), so
+    `cosx_overlap_fit=False` is required there and the fitted case raises
+    ValueError before the SCF.
     """
     ...
 
@@ -2522,6 +2752,14 @@ def dft_grid_point_count(
     grid_prune: str | None = None,
 ) -> int:
     """Number of points in the main XC grid `run_dft` builds with these kwargs."""
+    ...
+
+def cosx_grid_point_count(
+    mol: Molecule,
+    cosx_grid: tuple[int, int] | tuple[int, int, str] | None = None,
+) -> int:
+    """Number of points in the COSX exchange grid `cosx_grid` describes for
+    `mol` (None = the default COSX SCF grid), without building it."""
     ...
 
 def run_ksdft(
@@ -2547,11 +2785,17 @@ def run_ksdft(
 ) -> DftResult:
     """Kohn-Sham DFT (closed-shell). Alias of run_dft (same grid_* kwargs).
 
-    `dispersion` adds an empirical dispersion correction to the SCF energy:
-    `"d3bj"` uses the damping parameters published for `functional`, and
-    `"d3bj(<name>)"` uses `<name>`'s instead. `None` (the default) applies no
-    correction and leaves the energy exactly as it was. Any other value raises
-    -- there is no spelling that means "compute a zero correction".
+    `dispersion` adds a dispersion correction to the SCF energy (and, with
+    `with_gradient=True`, its analytic gradient to the gradient):
+    `"d3bj"` is D3(BJ) with the damping parameters published for
+    `functional`, `"d3bj(<name>)"` uses `<name>`'s instead; `"mbd"` is
+    MBD@rsSCS on Hirshfeld volume ratios of the converged density with the
+    beta published for `functional` (PBE, PBE0, HSE06), `"mbd(<name>)"` uses
+    `<name>`'s beta. Matching is case-insensitive. The MBD@rsSCS gradient
+    is exact, including the orbital relaxation of the volumes (Z-vector). `None` (the default) applies no correction and leaves the energy
+    exactly as it was. Any other value, or a functional with no published
+    parameters, raises ValueError -- there is no spelling that means "compute
+    a zero correction".
     """
     ...
 
@@ -2562,6 +2806,70 @@ def d3bj_energy(mol: Molecule, functional: str) -> float:
     parameters to use; the correction is fitted per functional, so this is
     required. Raises for an unknown functional or for an element outside the
     D3 parameterisation, rather than silently returning a smaller number.
+    """
+    ...
+
+class MbdRsscsResult:
+    """Result of `mbd_rsscs_energy`. Atomic units; per-atom lists in atom order."""
+
+    @property
+    def energy(self) -> float:
+        """MBD@rsSCS dispersion energy (Hartree)."""
+        ...
+
+    @property
+    def beta(self) -> float:
+        """Range-separation parameter used."""
+        ...
+
+    @property
+    def alpha_0_ts(self) -> list[float]:
+        """TS static polarizabilities, ratio * alpha_free."""
+        ...
+
+    @property
+    def c6_ts(self) -> list[float]:
+        """TS C6, ratio^2 * C6_free."""
+        ...
+
+    @property
+    def r_vdw_ts(self) -> list[float]:
+        """TS vdW radii (Bohr), ratio^(1/3) * R_vdW_free."""
+        ...
+
+    @property
+    def alpha_0_rsscs(self) -> list[float]:
+        """Range-separated-screened static polarizabilities."""
+        ...
+
+    @property
+    def c6_rsscs(self) -> list[float]:
+        """Range-separated-screened C6."""
+        ...
+
+    @property
+    def r_vdw_rsscs(self) -> list[float]:
+        """Screened vdW radii (Bohr), R_TS * (alpha_rsscs/alpha_TS)^(1/3)."""
+        ...
+
+    @property
+    def omega_rsscs(self) -> list[float]:
+        """Screened characteristic frequencies, 4 C6 / (3 alpha^2)."""
+        ...
+
+def mbd_rsscs_energy(
+    mol: Molecule,
+    volume_ratios: Sequence[float],
+    beta: float | None = None,
+    functional: str | None = None,
+) -> MbdRsscsResult:
+    """MBD@rsSCS dispersion energy (Ambrosetti et al. 2014), standalone.
+
+    `volume_ratios` are per-atom Hirshfeld volume ratios V_A/V_free, one per
+    atom (`run_dft(dispersion="mbd")` reports those of its converged density
+    as `DftResult.volume_ratios`). Pass exactly one of `beta` or `functional` (PBE 0.83, PBE0 0.85,
+    HSE06 0.85); an unlisted functional raises ValueError. Ghost atoms, Z > 54
+    and a polarization catastrophe raise.
     """
     ...
 
@@ -2748,53 +3056,28 @@ def run_double_hybrid(
     """MP2-based double hybrid: kind="b2plyp" or "dsd-pbep86"."""
     ...
 
-def run_lmp2(
-    mol: Molecule,
-    basis_set: BasisSet,
-    auxbasis: BasisSet,
-    eps: float | None = None,
-    frozen_core: int | None = None,
-    k_builder: str | None = None,
-    memory_budget_gb: float | None = None,
-    compute_reference: bool | None = None,
-) -> dict[str, object]:
-    """Amplitude-threshold local MP2 (closed-shell). Returns a dict."""
-    ...
-
-def run_lmp2_direct(
-    mol: Molecule,
-    basis_set: BasisSet,
-    auxbasis: BasisSet,
-    eps: float | None = None,
-    frozen_core: int | None = None,
-    aux_radius_bohr: float | None = None,
-    virt_radius_bohr: float | None = None,
-    ao_tail: float | None = None,
-    schwarz_skip: float | None = None,
-    batch_merge: int | None = None,
-    pair_gate_cal: float | None = None,
-    virt_schwarz_kappa: float | None = None,
-    k_builder: str | None = None,
-    memory_budget_gb: float | None = None,
-    compute_reference: bool | None = None,
-) -> dict[str, object]:
-    """Integral-direct amplitude-threshold local MP2 (closed-shell). Returns
-    the run_lmp2 dict plus strip/eri3 counters and stage timings."""
-    ...
-
 def run_drpa(
     mol: Molecule,
     basis_set: BasisSet,
     auxbasis: BasisSet,
-    eps: float | None = None,
     frozen_core: int | None = None,
     k_builder: str | None = None,
     memory_budget_gb: float | None = None,
+    local: str | None = None,
+    eps: float | None = None,
     compute_reference: bool | None = None,
     diis: int | None = None,
     eps_rtol_factor: float | None = None,
 ) -> dict[str, object]:
-    """Amplitude-threshold direct RPA (closed-shell). Returns a dict."""
+    """Direct RPA (dRPA@HF) by the drCCD Riccati solve, closed-shell.
+
+    Exact by default (eps = 0, anchored to the canonical plasmon formula);
+    raises MemoryError before the SCF when the exact solve cannot fit (use
+    run_pdep_rpa(..., trunc_thresh=0) instead). local="amplitude-threshold"
+    with eps (required) runs the local approximation; compute_reference and
+    eps_rtol_factor are local-only. The dict carries "local": None (exact)
+    or the local model dict.
+    """
     ...
 
 def run_drpa_scan(
@@ -2809,20 +3092,26 @@ def run_drpa_scan(
     diis: int | None = None,
     eps_rtol_factor: float | None = None,
 ) -> list[dict[str, object]]:
-    """Amplitude-threshold dRPA over a list of eps values. Returns list of dicts."""
+    """The LOCAL (amplitude-threshold) dRPA over a list of eps values, one
+    SCF and one localized assembly. Each dict carries "local"."""
     ...
 
-def run_linlccd_amplitude(
+def run_linlccd(
     mol: Molecule,
     basis_set: BasisSet,
     auxbasis: BasisSet,
     variant: str | None = None,
+    local: str | None = None,
     eps: float | None = None,
+    compute_reference: bool | None = None,
     frozen_core: int | None = None,
     k_builder: str | None = None,
     memory_budget_gb: float | None = None,
 ) -> dict[str, object]:
-    """Amplitude-threshold LinLCCD (closed-shell). Returns a dict."""
+    """Linearized ladder CCD, closed-shell. variant: "hh" (default),
+    "drivers-only" or "full". Exact by default; local="amplitude-threshold"
+    with eps (required) runs the local approximation (compute_reference adds
+    the exact energy as local["e_corr_exact"]). The dict carries "local"."""
     ...
 
 def tune_omega(
@@ -2833,8 +3122,21 @@ def tune_omega(
     omega_hi: float | None = None,
     omega_tol: float | None = None,
     max_evals: int | None = None,
+    continuation: bool | None = None,
+    branch_tol: float | None = None,
+    check_cation_stability: bool | None = None,
 ) -> dict[str, object]:
-    """Optimal tuning of range-separation omega for an RSH functional."""
+    """Optimal tuning of range-separation omega for an RSH functional.
+
+    ``check_cation_stability`` (default True) runs the UKS internal-stability
+    analysis on every cation. Each ``evals`` dict gains ``cation_lambda_min``
+    (Ha/rad^2 or None), ``cation_stability`` ("stable", "unstable",
+    "marginal", "indeterminate", "not_analysed", "not_checked") and
+    ``cation_stability_skip``; the result gains ``stability_warning``. A tuned
+    omega whose cation is an internal saddle raises RuntimeError. Functionals
+    without an orbital-Hessian kernel (VV10, meta-GGA) are reported
+    "not_analysed", never stable. False reproduces earlier results bit for bit.
+    """
     ...
 
 def esp_at_atoms(
@@ -2858,8 +3160,16 @@ def hirshfeld_charges(
     mol: Molecule,
     basis_set: BasisSet,
     result: RhfResult | DftResult,
+    proatom: str = "scf",
 ) -> list[float]:
-    """Hirshfeld partial charges (units of e)."""
+    """Hirshfeld partial charges (units of e).
+
+    proatom="scf" (default): free-atom SCF densities in the molecule's basis,
+    solved with the same SCF settings as `result` -- the proatom the CLI's
+    `[rpa] compute_hirshfeld_charges` uses. proatom="slater": a
+    single-exponential Slater proatom (qualitative; warns). Any other value
+    raises ValueError.
+    """
     ...
 
 def lowdin_charges(

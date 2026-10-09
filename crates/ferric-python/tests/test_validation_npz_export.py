@@ -23,8 +23,9 @@ What this test does, end to end:
    uses by default, and the same convergence thresholds):
    * coords / atomic_numbers: EXACT (both parse the same xyz; a transposed or
      reordered write fails here because coords is not symmetric);
-   * density, orbital energies, ESP at nuclei, Loewdin/Mulliken/CHELPG/RESP
-     charges, orbital centroids and spreads, density second moment: at the
+   * density, orbital energies, ESP at nuclei, Loewdin/Mulliken/Hirshfeld/
+     CHELPG/RESP charges (Hirshfeld: the binding's default free-atom SCF
+     proatom, the CLI's provider), orbital centroids and spreads, density second moment: at the
      SCF-reproducibility bar (two separate SCF runs; not bit-identical by
      construction -- see TOLERANCES);
    * electric_field: against a central difference of the binding's
@@ -33,12 +34,14 @@ What this test does, end to end:
      checks the field's SIGN and AXIS order, not just its magnitude;
    * dipole: against sum_A Z_A R_A - 2 sum_{i occ} <i|r|i> from the binding's
      orbital centroids (an exact identity for a closed shell);
-   * alpha_tensor: symmetric and positive definite; alpha_tensor and the
-     per-atom alpha_atomic are unchanged by a rigid translation of the
-     molecule (origin independence -- what the atom-centred dipole operator
-     guarantees). Sum_A alpha_atomic is NOT the molecular alpha: the
-     charge-transfer part is excluded by construction (72% apart on
-     water/STO-3G), so it is not asserted.
+   * alpha_tensor: symmetric and positive definite; alpha_tensor, the
+     per-atom alpha_atomic and the charge-transfer remainder alpha_ct are
+     unchanged by a rigid translation of the molecule (origin independence --
+     what the atom-centred dipole operator guarantees). alpha_atomic is the
+     Krishtal-Senet-Van Alsenoy intrinsic polarizability (JCP 125, 034312,
+     2006): charge transfer is excluded, so Sum_A alpha_atomic is NOT the
+     molecular alpha; alpha_ct = alpha_tensor - Sum_A alpha_atomic is
+     asserted from the exported arrays.
 
 Artifact hypothesis: if the NPZ were written from a different density (e.g.
 the core guess) every value comparison would miss by >1e-2; if an (N, 3)
@@ -82,10 +85,16 @@ DENSITY_CONV = 1e-8
 TOL_DENSITY = 1e-12
 TOL_EPS = 1e-12
 TOL_PROP = 5e-12
+# Hirshfeld charges: both sides build free-atom SCF proatoms with the same
+# settings via ferric_scf::properties::scf_proatom_provider. Measured
+# 2026-09-30: 4.3e-14 e.
+TOL_HIRSHFELD = 1e-10
 TOL_FIELD_FD = 2e-7
 FD_H = 1e-4  # Bohr
 TOL_DIPOLE = 1e-13
 TOL_ALPHA_TRANSLATION_REL = 1e-11  # measured 3.4e-13 (atomic), 1.9e-13 (tensor)
+# alpha_ct vs alpha_tensor - sum_A alpha_atomic: an f64 subtraction.
+TOL_CT_RECON_REL = 1e-13
 
 EXPECTED_KEYS = {
     "mo_coeffs",
@@ -102,6 +111,7 @@ EXPECTED_KEYS = {
     "electric_field",
     "alpha_tensor",
     "alpha_atomic",
+    "alpha_ct",
     "hirshfeld_charges",
     "lowdin_charges",
     "mulliken_charges",
@@ -243,6 +253,7 @@ def test_shapes_dtypes_layout(bundle, python_side):
         "electric_field": (nat, 3),
         "alpha_tensor": (3, 3),
         "alpha_atomic": (nat, 3, 3),
+        "alpha_ct": (3, 3),
         "hirshfeld_charges": (nat,),
         "lowdin_charges": (nat,),
         "mulliken_charges": (nat,),
@@ -292,6 +303,12 @@ def test_scf_quantities_match_bindings(bundle, python_side):
             bundle["lowdin_charges"],
             ferric.lowdin_charges(mol, bs, rhf),
             TOL_PROP,
+        ),
+        (
+            "hirshfeld_charges",
+            bundle["hirshfeld_charges"],
+            ferric.hirshfeld_charges(mol, bs, rhf),
+            TOL_HIRSHFELD,
         ),
         (
             "mulliken_charges",
@@ -368,17 +385,17 @@ def test_dipole_matches_orbital_centroids(bundle, python_side):
 
 
 def test_alpha_is_physical_and_origin_independent(bundle, bundle_shifted):
-    """alpha_tensor is symmetric positive definite, and both alpha_tensor and
-    the per-atom alpha_atomic are unchanged by a rigid translation.
+    """alpha_tensor is symmetric positive definite; alpha_tensor, the
+    per-atom alpha_atomic and alpha_ct are unchanged by a rigid translation;
+    and alpha_ct == alpha_tensor - sum_A alpha_atomic.
 
     The per-atom partition deliberately uses the ATOM-CENTRED dipole operator
-    (r - R_A) with no renormalisation to the molecular total, because a
+    (r - R_A) on the bra (Krishtal intrinsic definition), because a
     lab-frame operator leaks R_A x (field-induced charge transfer) into each
     atom and breaks origin independence. So sum_A alpha_atomic is NOT the
-    molecular alpha (the charge-transfer part is excluded; measured 72%
-    apart on water/STO-3G) and is not asserted. Origin independence is what
-    the construction guarantees, and a lab-frame regression breaks it by
-    O(|shift| x delta q)."""
+    molecular alpha: the charge-transfer part is exported separately as
+    alpha_ct. Origin independence is what the construction guarantees, and a
+    lab-frame regression breaks it by O(|shift| x delta q)."""
     a = bundle["alpha_tensor"]
     assert _maxdiff(a, a.T) < 1e-12, "alpha_tensor is not symmetric"
     assert np.all(np.linalg.eigvalsh(a) > 0.0), "alpha_tensor is not positive definite"
@@ -391,3 +408,13 @@ def test_alpha_is_physical_and_origin_independent(bundle, bundle_shifted):
     )
     assert d_atomic < TOL_ALPHA_TRANSLATION_REL
     assert d_mol < TOL_ALPHA_TRANSLATION_REL
+    ct = bundle["alpha_ct"]
+    a_scale = float(np.max(np.abs(a)))
+    d_recon = _maxdiff(ct, a - bundle["alpha_atomic"].sum(axis=0)) / a_scale
+    d_ct = _maxdiff(ct, bundle_shifted["alpha_ct"]) / a_scale
+    print(
+        f"alpha_ct: recon rel {d_recon:.2e}, translation rel {d_ct:.2e}; "
+        f"iso {np.trace(ct) / 3:.6f} vs alpha iso {np.trace(a) / 3:.6f}"
+    )
+    assert d_recon < TOL_CT_RECON_REL
+    assert d_ct < TOL_ALPHA_TRANSLATION_REL

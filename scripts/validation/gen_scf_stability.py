@@ -48,6 +48,38 @@ comment lines), all 6-31G from ferric's bundled JSON:
                      Becke grid with Becke-1988 radii, stability-followed; plus an
                      exact UHF control whose lambda_min the UKS one must MISS.
 
+RANGE-SEPARATED block (issue #292), written to a SEPARATE def2-SVP file
+`n2_plus_def2-svp.json` because the row's other systems are 6-31G:
+
+    n2_plus (RSH)    N2+ UKS/wB97X-V, def2-SVP, omega OVERRIDDEN to 0.40 and 0.60
+                     via mf.omega. Exact J, DF-K in the attenuated metric
+                     (K_SR^DF[erfc] + K_LR^DF[erf]) and the (75,110)/(50,50)
+                     grids -- the like-for-like recipe of gen_rsh_omega.py,
+                     because that is how ferric builds RSH exchange (there is no
+                     exact four-centre RSH K in ferric; see driver.rs).
+
+                     The cation is converged from the minao guess and NOT
+                     stability-followed, exactly as gen_rsh_omega.py's
+                     `symmetric_cation_probe` does, because the point of the
+                     comparison is the SYMMETRIC D-inf-h branch: past the onset
+                     (bracketed at 0.53-0.56 by gen_rsh_omega.py) that branch is
+                     a SADDLE, and following it to stability would destroy the
+                     negative control. The block therefore carries no
+                     `stability` key -- `common.write_reference` refuses a block
+                     whose recorded verdict is unstable, and omitting the key is
+                     how a deliberately-unstable reference state is recorded
+                     rather than smuggled past that guard.
+
+                     omega = 0.40 must be STABLE (lowest > 0) and omega = 0.60
+                     UNSTABLE (lowest < 0); the generator asserts both before
+                     writing, so a reference that cannot discriminate is never
+                     produced.
+
+                     CAVEAT recorded in the block: PySCF's KS response omits the
+                     VV10 second derivative, and so does ferric's f_xc kernel.
+                     The comparison is like-for-like ON THAT OMISSION and is not
+                     the complete second derivative of wB97X-V's energy.
+
 Every Hessian here is built DENSE from the PySCF matvec (applied to every unit
 vector, symmetrized, max asymmetry recorded) and the lowest N_SPECTRUM
 eigenvalues are stored, not just the lowest one.
@@ -79,6 +111,17 @@ GUESSES = ("minao", "atom", "huckel")
 MAX_STAB_ROUNDS = 10
 MAIN_GRID = (75, 110)
 UNION_TOL = 1e-9
+
+# --- range-separated block (#292) ---
+RSH_BASIS = "def2-svp"
+RSH_AUX = "def2-universal-jkfit"
+RSH_FUNCTIONAL = "wB97X-V"
+RSH_SYSTEM = ("n2_plus", 1, 2)
+# omega = 0.40 below the 0.53-0.56 onset (STABLE), 0.60 above it (UNSTABLE).
+RSH_OMEGAS = (0.40, 0.60)
+RSH_NLC_GRID = (50, 50)
+RSH_CONV_TOL = 1e-10
+RSH_CONV_TOL_GRAD = 1e-7
 
 OPEN_SHELL_UHF = {"n2_plus": (1, 2), "oh": (0, 2)}
 CLOSED_SHELL = ("water_eq", "water_stretched")
@@ -499,6 +542,187 @@ def gen_uks():
     return common.write_reference(ROW, system, BASIS, payload)
 
 
+# ---------------------------------------------------------------------------
+# Range-separated: N2+ UKS/wB97X-V, omega overridden (#292)
+# ---------------------------------------------------------------------------
+
+
+def _rsh_mf(cmol, aux, omega):
+    """UKS/wB97X-V at `omega`, with gen_rsh_omega.py's OWN exact-J/DF-K recipe.
+
+    Imported rather than reimplemented: a second copy of the `_ExactJDfK`
+    get_jk override is precisely the Fock/response divergence #292 is about, one
+    level up. `gen_rsh_omega._make` already encodes exact J, DF-K in the
+    attenuated metric served as K_SR^DF[erfc] + K_LR^DF[erf], the (75,110) main
+    grid with Becke radii, the (50,50) VV10 grid, and the `mf.omega` override --
+    the like-for-like recipe against ferric's uhf.rs + fock_assembly.rs.
+    """
+    from pyscf import dft
+
+    import gen_rsh_omega
+
+    return gen_rsh_omega._make(dft.uks.UKS, cmol, aux, omega, conv_tol=RSH_CONV_TOL)
+
+
+def gen_rsh():
+    """N2+ UKS/wB97X-V dense UKS-internal Hessian spectra at omega 0.40 / 0.60.
+
+    The cation is converged from the DEFAULT (minao) guess and NOT
+    stability-followed: the comparison is about the SYMMETRIC D-inf-h branch,
+    which past the onset is a saddle. Following it to stability would converge a
+    symmetry-broken state and destroy the negative control.
+    """
+    import gen_rsh_omega
+
+    system, charge, mult = RSH_SYSTEM
+    xyz = common.MOL_DIR / f"{system}.xyz"
+    symbols, coords = common.read_xyz(xyz)
+    cmol = common.build_pyscf_mol(xyz, RSH_BASIS, charge=charge, multiplicity=mult)
+    basis_check = common.check_basis_like_for_like(cmol, RSH_BASIS, symbols)
+    aux, cart = common.pyscf_basis(RSH_AUX, symbols)
+    if cart:
+        raise ValueError(f"{RSH_AUX}: Cartesian l>=2 aux shells; not like-for-like")
+    from pyscf.df import addons
+
+    aux_nao = addons.make_auxmol(cmol, aux).nao_nr()
+    assert aux_nao == common.ferric_nao(RSH_AUX, symbols), "aux nao mismatch"
+    basis_check["aux_nao"] = aux_nao
+
+    # ANCHOR, before any measurement: mf.omega at wB97X-V's PUBLISHED value must
+    # be a no-op, and another omega must move the energy. Without this an
+    # override that never reached the functional would produce two identical
+    # "spectra" and look like a clean result.
+    probe = _rsh_mf(cmol, aux, None)
+    w_pub, _, _ = probe._numint.rsh_and_hybrid_coeff(probe.xc, spin=cmol.spin)
+    e_default = float(probe.kernel())
+    e_pub = float(_rsh_mf(cmol, aux, w_pub).kernel())
+    e_other = float(_rsh_mf(cmol, aux, w_pub + 0.1).kernel())
+    d_pub, d_other = abs(e_pub - e_default), abs(e_other - e_default)
+    if d_pub > 1e-9 or d_other < 1e-5:
+        raise RuntimeError(
+            f"omega override anchor failed: |E(w_pub)-E(default)|={d_pub:.2e} "
+            f"(want <=1e-9), |E(w_pub+0.1)-E(default)|={d_other:.2e} (want >=1e-5)"
+        )
+
+    points = []
+    for w in RSH_OMEGAS:
+        mf = _rsh_mf(cmol, aux, w)
+        e = float(mf.kernel())
+        if not mf.converged:
+            raise RuntimeError(f"N2+ UKS/wB97X-V did not converge at omega={w}")
+        evals, asym, gmax = uhf_spectrum(mf)
+        lam = common.uhf_lambda_min(mf)
+        assert abs(evals[0] - lam) < 1e-12, (
+            f"omega={w}: dense spectrum low {evals[0]:.12e} disagrees with "
+            f"uhf_lambda_min {lam:.12e}"
+        )
+        points.append(
+            {
+                "omega": float(w),
+                "energy": e,
+                "s_squared": float(mf.spin_square()[0]),
+                "selected_guess": "minao (default; NOT stability-followed)",
+                "hessian": {
+                    "construction": (
+                        "dense newton_ah.gen_g_hop_uhf h_op on dft.UKS "
+                        "(== ferric uhf_internal_stability, factor 1); "
+                        "f_xc via gen_response"
+                    ),
+                    "dim": int(len(evals)),
+                    "lowest": [float(x) for x in evals[:N_SPECTRUM]],
+                    "max_asymmetry": asym,
+                    "max_orbital_gradient": gmax,
+                },
+            }
+        )
+        print(
+            f"{system:16s} RSH w={w:.2f} E={e:.10f} <S2>={points[-1]['s_squared']:.6f} "
+            f"lowest={evals[:3]} gmax={gmax:.2e}",
+            flush=True,
+        )
+
+    # The REACHABILITY assertion: a reference that does not straddle zero cannot
+    # discriminate, so refuse to write one rather than let the Rust test assert
+    # arithmetic. 0.40 is below the 0.53-0.56 onset, 0.60 above it.
+    lo, hi = points[0], points[1]
+    if not (lo["hessian"]["lowest"][0] > 0.0 > hi["hessian"]["lowest"][0]):
+        raise RuntimeError(
+            f"the RSH reference does not straddle zero: lambda_min "
+            f"{lo['hessian']['lowest'][0]:+.6e} at omega={lo['omega']} and "
+            f"{hi['hessian']['lowest'][0]:+.6e} at omega={hi['omega']}. "
+            "omega=0.40 should be STABLE and 0.60 UNSTABLE (onset 0.53-0.56, "
+            "gen_rsh_omega.py). Without the straddle the negative control is "
+            "vacuous, so no reference is written."
+        )
+
+    payload = {
+        "row": ROW_NAME,
+        "system": system,
+        "basis": RSH_BASIS,
+        "charge": charge,
+        "multiplicity": mult,
+        "nao": cmol.nao_nr(),
+        "nuclear_repulsion": float(cmol.energy_nuc()),
+        "functional": RSH_FUNCTIONAL,
+        "omega_override_anchor": {
+            "published_omega": float(w_pub),
+            "abs_e_override_at_published_minus_default": d_pub,
+            "abs_e_override_plus_0p1_minus_default": d_other,
+        },
+        "rsh_uks_omega_scan": points,
+        "caveat": (
+            "PySCF's KS response omits the VV10 second derivative, and so does "
+            "ferric's f_xc kernel; this comparison is like-for-like ON THAT "
+            "OMISSION and is not the complete second derivative of wB97X-V's "
+            "energy. The cation is NOT stability-followed: these are the "
+            "symmetric D-inf-h branch's spectra, which is the point (past the "
+            "onset that branch is a saddle)."
+        ),
+    }
+    payload["provenance"] = common.provenance(
+        code="PySCF",
+        version=__import__("pyscf").__version__,
+        keywords={
+            "method": "dft.UKS wB97X-V with mf.omega overridden",
+            "xc": gen_rsh_omega.XC_PYSCF,
+            "jk": gen_rsh_omega.JK_RECIPE,
+            "init_guess": "minao (default), NOT stability-followed",
+            "stability": (
+                "dense gen_g_hop_uhf (includes f_xc); PySCF KS response omits "
+                "the VV10 kernel"
+            ),
+            "normalization": (
+                "stored 'lowest' arrays are in FERRIC's convention: gen_g_hop_uhf x1"
+            ),
+            "numpy": __import__("numpy").__version__,
+        },
+        basis_name=RSH_BASIS,
+        xyz_path=xyz,
+        coords_bohr=coords,
+        symbols=symbols,
+        grid={
+            "main": {
+                "atom_grid": list(MAIN_GRID),
+                "prune": None,
+                "partition": "Becke (original_becke)",
+                "radii_adjust": "becke_atomic_radii_adjust",
+            },
+            "nlc_vv10": {"atom_grid": list(RSH_NLC_GRID), "prune": None},
+        },
+        aux={"name": RSH_AUX},
+        frozen_core=None,
+        scf_conv={"conv_tol": RSH_CONV_TOL, "conv_tol_grad": RSH_CONV_TOL_GRAD},
+        stability={
+            "note": (
+                "no stability-following; verdicts are read from the dense spectra above"
+            )
+        },
+        generator="scripts/validation/gen_scf_stability.py",
+        extra={"basis_self_check": basis_check},
+    )
+    return common.write_reference(ROW, system, RSH_BASIS, payload)
+
+
 def main() -> int:
     only = set(sys.argv[1:])
     written = []
@@ -510,6 +734,10 @@ def main() -> int:
             written.append(gen_closed(system))
     if not only or UKS_SYSTEM[0] in only:
         written.append(gen_uks())
+    # Selected by name "rsh" (not by system name: n2_plus already names the
+    # 6-31G UHF block, and the two write different files).
+    if not only or "rsh" in only:
+        written.append(gen_rsh())
     print(f"GEN_SCF_STABILITY_DONE written={len(written)}")
     return 0
 

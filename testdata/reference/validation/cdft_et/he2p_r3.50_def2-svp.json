@@ -1,0 +1,489 @@
+{
+  "row": "cDFT-ET coupling (Wu-Van Voorhis)",
+  "system": "he2p_r3.50",
+  "r_angstrom": 3.5,
+  "basis": "def2-svp",
+  "charge": 1,
+  "multiplicity": 2,
+  "n_electrons": 3,
+  "functional": "PBE",
+  "nuclear_repulsion": 0.604773955337,
+  "nao": 10,
+  "mo_layout": "AO rows in FERRIC/NWChem order (each atom's shells in BSE-file order, general contractions split, p as x,y,z; NOT PySCF's l-grouped order), occupied columns only, unit-normalized contracted AOs",
+  "grids": {
+    "matched": {
+      "radial": 99,
+      "nwchem_lebedev_index": 11,
+      "angular": 302
+    },
+    "converged": {
+      "radial": 300,
+      "nwchem_lebedev_index": 16,
+      "angular": 974
+    }
+  },
+  "results": {
+    "matched": {
+      "unconstrained": {
+        "energy": -4.990128769001
+      },
+      "state_a": {
+        "constrained_atom": 0,
+        "target": 1.0,
+        "energy": -4.869160961772,
+        "lambda": 2.4570637296,
+        "mo_occ_alpha": [
+          [
+            1.0609010084874143e-05,
+            0.7598938979784858
+          ],
+          [
+            1.3936344577103244e-06,
+            0.32630629761308255
+          ],
+          [
+            3.354559582437338e-17,
+            -9.653335847228852e-15
+          ],
+          [
+            1.2811395506987695e-17,
+            1.2402842096978717e-14
+          ],
+          [
+            1.574671155294727e-05,
+            0.0003613458146821646
+          ],
+          [
+            0.5932479191225647,
+            -0.04544530340529822
+          ],
+          [
+            0.5123689526143138,
+            0.046652182882261396
+          ],
+          [
+            3.822620476439152e-17,
+            -8.657691629914638e-16
+          ],
+          [
+            -9.208711113125278e-17,
+            3.269828636781506e-15
+          ],
+          [
+            -0.004371772776903305,
+            -0.0005613203995398417
+          ]
+        ],
+        "mo_occ_beta": [
+          [
+            1.53570192333471e-06
+          ],
+          [
+            -5.809994017946197e-06
+          ],
+          [
+            3.1981107285881666e-10
+          ],
+          [
+            -3.903714643115177e-10
+          ],
+          [
+            -8.042955559164911e-07
+          ],
+          [
+            0.5931528954063189
+          ],
+          [
+            0.5124671407819683
+          ],
+          [
+            -3.3174576358419717e-18
+          ],
+          [
+            2.369294000145178e-17
+          ],
+          [
+            -0.004372484163617072
+          ]
+        ]
+      },
+      "state_b": {
+        "constrained_atom": 1,
+        "target": 1.0,
+        "energy": -4.869160961632,
+        "lambda": 2.4570637245,
+        "mo_occ_alpha": [
+          [
+            0.5932479205454455,
+            -0.04544530396548196
+          ],
+          [
+            0.5123689511442288,
+            0.046652183516741795
+          ],
+          [
+            -8.699849791962934e-18,
+            -3.1378674721536975e-15
+          ],
+          [
+            2.0860677071859992e-17,
+            1.2812275077034784e-15
+          ],
+          [
+            0.004371772740925794,
+            0.0005613204050030574
+          ],
+          [
+            1.0609010277296595e-05,
+            0.7598938976109849
+          ],
+          [
+            1.3936339146466706e-06,
+            0.326306298027299
+          ],
+          [
+            2.6418649401104208e-17,
+            -4.562151042950294e-15
+          ],
+          [
+            -1.8418077729175932e-17,
+            1.4672180128943257e-15
+          ],
+          [
+            -1.5746711501843816e-05,
+            -0.00036134581284048557
+          ]
+        ],
+        "mo_occ_beta": [
+          [
+            0.5931528973833478
+          ],
+          [
+            0.5124671387383268
+          ],
+          [
+            -5.129378913657507e-18
+          ],
+          [
+            -6.197511764395204e-17
+          ],
+          [
+            0.004372484262103526
+          ],
+          [
+            1.535528755886201e-06
+          ],
+          [
+            -5.809484532156831e-06
+          ],
+          [
+            -9.490363704748438e-11
+          ],
+          [
+            3.342193207519998e-11
+          ],
+          [
+            8.040611067125377e-07
+          ]
+        ]
+      },
+      "s2_printed": [
+        0.751,
+        0.75,
+        0.75
+      ],
+      "lambda_final_printed_zero_states": [],
+      "et_nwchem": {
+        "h_rr": -5.4739349171,
+        "h_pp": -5.473934917,
+        "s_rp_printed_3sf": -0.000384,
+        "h1_rp": 0.0028386463,
+        "h2_rp": -0.0002904225,
+        "h_rp": 0.0025482238,
+        "v_rp_abs": 0.0004450934
+      },
+      "et_pyscf_recompute": {
+        "s_rp": -0.00038420815397509876,
+        "h1_rp": 0.0028386462648417898,
+        "h2_rp": -0.0002904224563246428,
+        "h_rp": 0.002548223808517147,
+        "v_rp_signed": 0.0004450934447646293,
+        "v_rp_abs": 0.0004450934447646293,
+        "singular_values": [
+          [
+            0.9936530639028355,
+            0.9817794773863848
+          ],
+          [
+            0.0003938382127861313
+          ]
+        ],
+        "max_mo_orthonormality_error_pyscf_overlap": 4.218847493575595e-15
+      },
+      "wu_vv_from_nwchem_ingredients": {
+        "note": "derived, not computed by NWChem; symmetric-dimer identity (lam_a = lam_b, partition of unity); see module docstring",
+        "lambda_mean": 2.4570637270500004,
+        "lambda_asymmetry": 5.099999977886682e-09,
+        "h_ab_textbook_F_eq_E_plus_lamN": 0.0004720120290610114,
+        "h_ab_E_only_form": 0.0014160360871830343
+      }
+    },
+    "converged": {
+      "unconstrained": {
+        "energy": -4.990128684842
+      },
+      "state_a": {
+        "constrained_atom": 0,
+        "target": 1.0,
+        "energy": -4.869160186436,
+        "lambda": 2.457063813,
+        "mo_occ_alpha": [
+          [
+            1.0602127598987433e-05,
+            0.7598934703971421
+          ],
+          [
+            1.4096097108513745e-06,
+            0.32630661970655833
+          ],
+          [
+            1.3061837924877589e-17,
+            3.808417064615799e-16
+          ],
+          [
+            -3.031158264201061e-17,
+            -2.7718247244516735e-15
+          ],
+          [
+            1.5747545736706056e-05,
+            0.00036123240860488773
+          ],
+          [
+            0.5932483355372917,
+            -0.04544970140767684
+          ],
+          [
+            0.5123685220441891,
+            0.046656737375093606
+          ],
+          [
+            1.0833332520788224e-17,
+            -3.98710217307141e-15
+          ],
+          [
+            -1.361347913237417e-17,
+            -6.292846145982018e-16
+          ],
+          [
+            -0.004371828642955414,
+            -0.0005611030825460067
+          ]
+        ],
+        "mo_occ_beta": [
+          [
+            1.5387676092006447e-06
+          ],
+          [
+            -5.807373542820998e-06
+          ],
+          [
+            -3.2555354217848595e-11
+          ],
+          [
+            7.07441327659506e-12
+          ],
+          [
+            -8.05603545181738e-07
+          ],
+          [
+            0.5931531757163279
+          ],
+          [
+            0.5124668508807617
+          ],
+          [
+            -2.0613039200726792e-17
+          ],
+          [
+            5.768691152009292e-17
+          ],
+          [
+            -0.004372540538168278
+          ]
+        ]
+      },
+      "state_b": {
+        "constrained_atom": 1,
+        "target": 1.0,
+        "energy": -4.869160186454,
+        "lambda": 2.4570638129,
+        "mo_occ_alpha": [
+          [
+            0.5932483355394875,
+            -0.04544970126422064
+          ],
+          [
+            0.5123685220418379,
+            0.04665673722693198
+          ],
+          [
+            -2.1556138808621377e-17,
+            8.956044992739395e-16
+          ],
+          [
+            -6.011825164945026e-17,
+            -1.2698428430140247e-15
+          ],
+          [
+            0.004371828660090406,
+            0.0005611030815223241
+          ],
+          [
+            1.0602127589677175e-05,
+            0.759893470404353
+          ],
+          [
+            1.4096097353949948e-06,
+            0.3263066197041168
+          ],
+          [
+            -2.00781025255301e-17,
+            3.390881833710488e-15
+          ],
+          [
+            2.5103333253371266e-17,
+            -3.115307889244889e-17
+          ],
+          [
+            -1.5747545738306024e-05,
+            -0.0003612324086665536
+          ]
+        ],
+        "mo_occ_beta": [
+          [
+            0.5931531757013252
+          ],
+          [
+            0.5124668508960255
+          ],
+          [
+            -6.630283334662591e-18
+          ],
+          [
+            -4.242404242503286e-17
+          ],
+          [
+            0.004372540539766822
+          ],
+          [
+            1.5386496734992108e-06
+          ],
+          [
+            -5.807107754953481e-06
+          ],
+          [
+            4.424088540149792e-11
+          ],
+          [
+            -2.3862775770795408e-11
+          ],
+          [
+            8.055983106179368e-07
+          ]
+        ]
+      },
+      "s2_printed": [
+        0.751,
+        0.75,
+        0.75
+      ],
+      "lambda_final_printed_zero_states": [],
+      "et_nwchem": {
+        "h_rr": -5.4739341418,
+        "h_pp": -5.4739341418,
+        "s_rp_printed_3sf": -0.000384,
+        "h1_rp": 0.0028387102,
+        "h2_rp": -0.0002904357,
+        "h_rp": 0.0025482745,
+        "v_rp_abs": 0.0004450929
+      },
+      "et_pyscf_recompute": {
+        "s_rp": -0.00038421755337489925,
+        "h1_rp": 0.002838710180449911,
+        "h2_rp": -0.0002904357224430905,
+        "h_rp": 0.0025482744580068205,
+        "v_rp_signed": 0.0004450929404220239,
+        "v_rp_abs": 0.0004450929404220239,
+        "singular_values": [
+          [
+            0.9936535697716605,
+            0.9817788817615053
+          ],
+          [
+            0.0003938478862103271
+          ]
+        ],
+        "max_mo_orthonormality_error_pyscf_overlap": 1.6431300764452317e-14
+      },
+      "wu_vv_from_nwchem_ingredients": {
+        "note": "derived, not computed by NWChem; symmetric-dimer identity (lam_a = lam_b, partition of unity); see module docstring",
+        "lambda_mean": 2.45706381295,
+        "lambda_asymmetry": 1.000000082740371e-10,
+        "h_ab_textbook_F_eq_E_plus_lamN": 0.0004720235930304244,
+        "h_ab_E_only_form": 0.0014160707790912732
+      }
+    }
+  },
+  "provenance": {
+    "code": "NWChem",
+    "version": "7.2.2",
+    "keywords": {
+      "module": "dft (odft) x3 then et",
+      "xc": "xpbe96 cpbe96",
+      "cdft": "cdft <atom> <atom> charge 1.0 pop becke, convergence 1e-10, cdft_maxiter 200",
+      "et": "vectors reactants a.movecs products b.movecs; tol2e 1e-14; fock (default 2e method)",
+      "grid": "lebedev <nrad> <iang> becke treutler; set dft:no_prune T",
+      "integrals": "direct, tolerances tight, no density fitting",
+      "inputs": "scripts/validation/nwchem/cdft_et/he2p_r3.50_def2-svp_*.nw"
+    },
+    "grid": {
+      "matched": "99x302 Treutler(Perez-Jorda Chebyshev) x Lebedev, Becke, unpruned",
+      "converged": "300x974 Treutler(Perez-Jorda Chebyshev) x Lebedev, Becke, unpruned"
+    },
+    "aux_basis": "none",
+    "frozen_core": "none",
+    "scf_convergence": {
+      "energy": 1e-11,
+      "density": 1e-09,
+      "cdft_multiplier": 1e-10
+    },
+    "stability": null,
+    "basis": "def2-svp",
+    "basis_json": "crates/ferric-core/src/basis/bundled/def2-svp.json",
+    "basis_sha256": "bfad5f58ceac74a9ac2766b39f510654cea29fb9408e966bb0dfcf14e1302d4f",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/he2p_r3.50.xyz",
+    "geometry_xyz_sha256": "2ce0dff08160269ce278e3bb340c127b7659428c4f51ffdc51f2abec34029319",
+    "geometry_bohr": [
+      [
+        "He",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "He",
+        0.0,
+        0.0,
+        6.614041435977716
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_cdft_et.py",
+    "git_head": "c371b71d8427b0a9734130ee962a7492b17d8759",
+    "generated_utc": "2026-10-01T02:00:34+00:00",
+    "stability_note": "not run: NWChem has no stability analysis for cdft-constrained states; the ferric test checks mirror symmetry and <S^2> instead",
+    "et_recompute_check": "PySCF explicit-inverse Slater-Condon, agreement with NWChem printout required < 1e-08 Ha"
+  }
+}

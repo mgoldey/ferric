@@ -47,6 +47,16 @@ pub trait XcContribution: Send + Sync {
     /// Returns the corresponding energy contribution E_xc + E_nl in Ha.
     fn add_xc(&self, d: &Array2<f64>, f: &mut Array2<f64>) -> f64;
 
+    /// [`Self::add_xc`] for a closed-shell density known to be
+    /// `d = 2·c_occ·c_occᵀ` (`c_occ`: the `(nbf, nocc)` occupied MO block).
+    /// An implementation may use the factored form to cut the density-pass
+    /// cost; the result agrees with `add_xc(d, f)` to rounding. The default
+    /// ignores `c_occ`.
+    fn add_xc_occ(&self, d: &Array2<f64>, c_occ: &Array2<f64>, f: &mut Array2<f64>) -> f64 {
+        let _ = c_occ;
+        self.add_xc(d, f)
+    }
+
     /// How to build the exact-exchange contribution for this functional.
     fn k_mix(&self) -> KMix;
 }
@@ -63,6 +73,20 @@ pub trait UksXcContribution: Send + Sync {
         f_a: &mut Array2<f64>,
         f_b: &mut Array2<f64>,
     ) -> f64;
+
+    /// [`Self::add_xc_uks`] with the per-spin occupied MO blocks
+    /// (`d_σ = c_σ·c_σᵀ`) when the caller has them. `None` for a spin means
+    /// no factored form for that spin. The default ignores them.
+    fn add_xc_uks_occ(
+        &self,
+        d: (&Array2<f64>, &Array2<f64>),
+        c_occ: (Option<&Array2<f64>>, Option<&Array2<f64>>),
+        f_a: &mut Array2<f64>,
+        f_b: &mut Array2<f64>,
+    ) -> f64 {
+        let _ = c_occ;
+        self.add_xc_uks(d.0, d.1, f_a, f_b)
+    }
 
     /// How to build the exact-exchange contribution for this functional. Same
     /// semantics as `XcContribution::k_mix` — applies per-spin in the UKS Fock.

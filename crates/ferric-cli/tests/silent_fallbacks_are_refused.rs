@@ -352,17 +352,21 @@ fn ksdft_optimize_on_a_doublet_runs_on_the_uks_surface() {
 }
 
 /// D3(BJ) on the UKS route: the single point applies it (E = E(KS) +
-/// E(D3BJ)), and the geometry optimization -- whose open-shell optimizer
-/// has no correction hook -- is refused rather than walking the
-/// uncorrected surface. Removing `refuse_open_shell_dispersion_gradient`
-/// lets the optimize run succeed and fails the refusal.
+/// E(D3BJ)), and the geometry optimization applies it too, through
+/// `optimize_geometry_uhf_with_scf_correction`: its final energy is the
+/// uncorrected optimum shifted by E(D3BJ) (D3 barely moves an OH bond, so the
+/// shift is E(D3BJ) to second order in the geometry change). A dropped
+/// correction leaves the two optima equal and fails the bar; restoring the old
+/// refusal fails `run_ok`. The ROKS route (NH2, `kind = "rohf"`) is checked
+/// the same way through `optimize_geometry_rohf_with_scf_correction`.
 #[test]
-fn open_shell_ks_applies_d3_to_energies_and_refuses_it_on_optimize() {
-    let xyz = oh_097_xyz("open_shell_ks_applies_d3_to_energies_and_refuses_it_on_optimize");
-    let d3 = "[dft]\nfunctional = \"PBE\"\ndispersion = \"d3bj(pbe)\"\n";
+fn open_shell_ks_applies_d3_to_energies_and_optimizations() {
+    let xyz = oh_097_xyz("open_shell_ks_applies_d3_to_energies_and_optimizations");
+    let pbe = format!("[dft]\nfunctional = \"PBE\"\n\n{TIGHT_SCF}");
+    let d3 = format!("[dft]\nfunctional = \"PBE\"\ndispersion = \"d3bj(pbe)\"\n\n{TIGHT_SCF}");
     let out = run_ok(
         "oh_uks_d3",
-        &body_at(&xyz, 2, "sto-3g", "ksdft", "energy", d3),
+        &body_at(&xyz, 2, "sto-3g", "ksdft", "energy", &d3),
     );
     let e_ks = stdout_value(&out, "E(KS-DFT)");
     let e_d3 = stdout_value(&out, "E(D3BJ)");
@@ -371,11 +375,132 @@ fn open_shell_ks_applies_d3_to_energies_and_refuses_it_on_optimize() {
         e_d3 != 0.0 && (e - (e_ks + e_d3)).abs() < 1e-9,
         "{e} {e_ks} {e_d3}"
     );
-    let opt = run_toml(
+    let opt_d3 = run_ok(
         "oh_uks_d3_opt",
-        &body_at(&xyz, 2, "sto-3g", "ksdft", "optimize", d3),
+        &body_at(&xyz, 2, "sto-3g", "ksdft", "optimize", &d3),
     );
-    assert_refused(&opt, &["[dft] dispersion", "UKS[PBE]", "optimize"]);
+    let stdout = String::from_utf8_lossy(&opt_d3.stdout);
+    assert!(stdout.contains("UKS[PBE] Optimization Result"), "{stdout}");
+    assert!(stdout.contains("converged  = true"), "{stdout}");
+    let e_opt_d3 = stdout_value(&opt_d3, "final E");
+    let e_opt = stdout_value(
+        &run_ok(
+            "oh_uks_plain_opt",
+            &body_at(&xyz, 2, "sto-3g", "ksdft", "optimize", &pbe),
+        ),
+        "final E",
+    );
+    let shift = e_opt_d3 - e_opt;
+    println!("E(D3BJ) at the start = {e_d3:.6e}; optimum shift = {shift:.6e}");
+    assert!(
+        (shift - e_d3).abs() < D3_OPT_SHIFT_TOL,
+        "D3 optimum {e_opt_d3:.10} - plain optimum {e_opt:.10} = {shift:.6e}, \
+         expected E(D3BJ) = {e_d3:.6e}"
+    );
+
+    let nh2 = nh2_xyz("open_shell_ks_applies_d3_to_energies_and_optimizations");
+    let e_d3_roks = stdout_value(
+        &run_ok(
+            "nh2_roks_d3",
+            &body_at(&nh2, 2, "sto-3g", "rohf", "energy", &d3),
+        ),
+        "E(D3BJ)",
+    );
+    let roks_d3 = run_ok(
+        "nh2_roks_d3_opt",
+        &body_at(&nh2, 2, "sto-3g", "rohf", "optimize", &d3),
+    );
+    let stdout = String::from_utf8_lossy(&roks_d3.stdout);
+    assert!(stdout.contains("ROKS[PBE] Optimization Result"), "{stdout}");
+    assert!(stdout.contains("converged  = true"), "{stdout}");
+    let roks_plain = run_ok(
+        "nh2_roks_plain_opt",
+        &body_at(&nh2, 2, "sto-3g", "rohf", "optimize", &pbe),
+    );
+    let shift_roks = stdout_value(&roks_d3, "final E") - stdout_value(&roks_plain, "final E");
+    println!("ROKS: E(D3BJ) at the start = {e_d3_roks:.6e}; optimum shift = {shift_roks:.6e}");
+    assert!(
+        e_d3_roks != 0.0 && (shift_roks - e_d3_roks).abs() < D3_OPT_SHIFT_TOL,
+        "ROKS D3 optimum shift {shift_roks:.6e}, expected E(D3BJ) = {e_d3_roks:.6e}"
+    );
+}
+
+/// Bar on |(D3 optimum − plain optimum) − E(D3BJ) at the start| in Hartree.
+/// Measured 5.6e-7 (E(D3BJ) = −1.520e-4, shift −1.526e-4); a dropped
+/// correction misses by 1.5e-4.
+const D3_OPT_SHIFT_TOL: f64 = 1e-5;
+
+/// MBD@rsSCS on the UKS route, `task = "optimize"`: the run takes the exact
+/// UKS MBD gradient (unrestricted Z-vector) and converges. Restoring the
+/// open-shell refusal fails `run_ok`; an MBD gradient that is not the
+/// derivative of the reported energy would not converge the BFGS walk
+/// cleanly at the default thresholds. The MBD gradient itself is
+/// FD-validated in `ferric-rpa/tests/mbd_scf_gradient_uks.rs`.
+#[test]
+fn open_shell_ks_runs_an_mbd_optimization() {
+    // NH2 (²B1, non-degenerate SOMO) from a distorted start. Not OH: its ²Π
+    // π pair is degenerate, so the UKS orbital Hessian has a near-null
+    // rotation mode and the Z-vector solve is ill-conditioned there (the
+    // KS validation excludes degenerate-SOMO radicals for the same reason).
+    let xyz = "testdata/molecules/validation/nh2_opt_start.xyz";
+    let mbd = format!("[dft]\nfunctional = \"PBE\"\ndispersion = \"mbd\"\n\n{TIGHT_SCF}");
+    let out = run_ok(
+        "nh2_uks_mbd_opt",
+        &body_at(xyz, 2, "sto-3g", "ksdft", "optimize", &mbd),
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("UKS[PBE] Optimization Result"), "{stdout}");
+    assert!(stdout.contains("converged  = true"), "{stdout}");
+}
+
+/// MBD@rsSCS on the ROKS route (`kind = "rohf"` + functional), `task =
+/// "optimize"`: the run takes the exact ROKS MBD gradient (ROKS Z-vector) and
+/// converges. Restoring the ROKS refusal fails `run_ok`. The MBD gradient itself
+/// is FD-validated in `ferric-rpa/tests/mbd_scf_gradient_roks.rs`.
+#[test]
+fn roks_runs_an_mbd_optimization() {
+    let nh2 = nh2_xyz("roks_runs_an_mbd_optimization");
+    let mbd = format!("[dft]\nfunctional = \"PBE\"\ndispersion = \"mbd\"\n\n{TIGHT_SCF}");
+    let plain = format!("[dft]\nfunctional = \"PBE\"\n\n{TIGHT_SCF}");
+    // The ROKS energy run applies MBD: total = E(KS-DFT) + E(MBD@rsSCS) ≠ 0.
+    let energy = run_ok(
+        "nh2_roks_mbd_energy",
+        &body_at(&nh2, 2, "sto-3g", "rohf", "energy", &mbd),
+    );
+    let e_ks = stdout_value(&energy, "E(KS-DFT)");
+    let e_mbd = stdout_value(&energy, "E(MBD@rsSCS)");
+    let e_total = stdout_value(&energy, "energy ");
+    assert!(
+        e_mbd < -1e-6,
+        "E(MBD@rsSCS) = {e_mbd:.3e} is not a correction"
+    );
+    assert!(
+        (e_total - (e_ks + e_mbd)).abs() < 1e-9,
+        "total {e_total:.10} != E(KS-DFT) {e_ks:.10} + E(MBD) {e_mbd:.10}"
+    );
+    // The optimizer applies it too: the corrected optimum sits about E(MBD)
+    // below the plain one. NH2 starts distorted, so E(MBD) at the start is not
+    // E(MBD) at the optimum (measured shift / start E(MBD) = 0.91); the band
+    // [0.5, 1.5] x E(MBD) still fails a dropped correction (shift ~0), a sign
+    // flip and a doubled term.
+    let out = run_ok(
+        "nh2_roks_mbd_opt",
+        &body_at(&nh2, 2, "sto-3g", "rohf", "optimize", &mbd),
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("ROKS[PBE] Optimization Result"), "{stdout}");
+    assert!(stdout.contains("converged  = true"), "{stdout}");
+    let opt_plain = run_ok(
+        "nh2_roks_plain_opt",
+        &body_at(&nh2, 2, "sto-3g", "rohf", "optimize", &plain),
+    );
+    let shift = stdout_value(&out, "final E") - stdout_value(&opt_plain, "final E");
+    println!("ROKS E(MBD) at the start = {e_mbd:.6e}; optimum shift = {shift:.6e}");
+    let ratio = shift / e_mbd;
+    assert!(
+        (0.5..1.5).contains(&ratio),
+        "MBD optimum shift {shift:.6e} is {ratio:.3} x E(MBD@rsSCS) at the start {e_mbd:.6e}"
+    );
 }
 
 // ─── Open-shell RI-MP2 ──────────────────────────────────────────────────────
@@ -594,14 +719,44 @@ fn rpa_optimize_with_a_ks_reference_is_refused() {
 
 /// Pre-fix: water/STO-3G, rhf, task = "optimize", `k_builder = "cosx"` ran
 /// to completion with COSX energies and an exact-exchange gradient (FD
-/// mismatch -8.9e-6 Ha/Bohr on one H z at STO-3G, -1.4e-5 at cc-pVDZ).
-/// Removing the cosx branch of `validate_task_compat` lets it run again. The
-/// anchor is the same molecule with COSX on task = "energy", which must run.
+/// mismatch -8.9e-6 Ha/Bohr on one H z at STO-3G, -1.4e-5 at cc-pVDZ). The
+/// RHF/RKS, UHF/UKS and ROHF/ROKS gradients now differentiate COSX, so those
+/// COSX optimizations RUN; a kind whose gradient ignores `k_builder`
+/// (RI-MP2) stays refused by `validate_task_compat`, and the ROHF overlap fit
+/// (no restricted-open-shell response) is refused by the library before the
+/// SCF. Removing the cosx branch of `validate_task_compat` lets the rimp2 run
+/// start; dropping the ROHF fit refusal lets the fitted rohf run finish.
 #[test]
-fn cosx_with_optimize_is_refused_but_a_cosx_energy_runs() {
+fn cosx_optimize_runs_where_differentiated_and_is_refused_elsewhere() {
     let cosx = "[scf]\nk_builder = \"cosx\"\n";
-    let out = run_toml("cosx_opt", &body("h2.xyz", 1, "rhf", "optimize", cosx));
+    let fit_off = "[scf]\nk_builder = \"cosx\"\ncosx_overlap_fit = false\n";
+    let out = run_toml(
+        "cosx_opt_rimp2",
+        &body(
+            "h2.xyz",
+            1,
+            "rimp2",
+            "optimize",
+            "[scf]\nk_builder = \"cosx\"\n\n[mp2]\nauxbasis = \"cc-pvdz-ri\"\n",
+        ),
+    );
     assert_refused(&out, &["k_builder = \"cosx\"", "optimize"]);
+    let out = run_toml(
+        "cosx_opt_rohf_fit",
+        &body("h2.xyz", 1, "rohf", "optimize", cosx),
+    );
+    assert_refused(&out, &["overlap_fit", "ROHF"]);
+    assert_runs(
+        &run_toml(
+            "cosx_opt_rohf",
+            &body("h2.xyz", 1, "rohf", "optimize", fit_off),
+        ),
+        "a fit-off rohf COSX optimization",
+    );
+    assert_runs(
+        &run_toml("cosx_opt", &body("h2.xyz", 1, "rhf", "optimize", cosx)),
+        "an rhf COSX optimization",
+    );
     assert_runs(
         &run_toml("cosx_energy", &body("h2.xyz", 1, "rhf", "energy", cosx)),
         "an rhf COSX energy",

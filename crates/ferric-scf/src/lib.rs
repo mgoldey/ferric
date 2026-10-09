@@ -13,6 +13,33 @@
 // needless_range_loop: DIIS coefficient and MO-index loops read clearer with
 // explicit indices than with iterator/enumerate chains.
 #![allow(clippy::needless_range_loop)]
+// Module docs link items by full `crate::` path so they resolve wherever the
+// text is rendered; rustdoc 1.99 reports some of those paths as redundant in
+// the module's own scope. The explicit path is the house convention.
+#![allow(rustdoc::redundant_explicit_links)]
+
+/// A test seam: a `pub static AtomicBool` plus its private getter. With the
+/// `test-seams` feature off neither the static nor any load of it exists and the
+/// getter is a constant `false`, so a shipped build carries no mutable global.
+#[cfg(feature = "gpu")]
+macro_rules! seam_flag {
+    ($(#[$doc:meta])* $name:ident, $getter:ident) => {
+        $(#[$doc])*
+        #[cfg(feature = "test-seams")]
+        #[doc(hidden)]
+        pub static $name: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+        #[cfg(feature = "test-seams")]
+        fn $getter() -> bool {
+            $name.load(std::sync::atomic::Ordering::Relaxed)
+        }
+
+        #[cfg(not(feature = "test-seams"))]
+        fn $getter() -> bool {
+            false
+        }
+    };
+}
 
 // Compile-time guard against the one MPI feature combination that is silently
 // WRONG rather than merely unsupported: `ferric-core/mpi` ON while this crate's
@@ -83,10 +110,16 @@ pub mod aurora;
 pub mod cosx_gradient;
 /// COSX seminumerical exchange builder (grid-based K, overlap-fitted).
 pub mod cosx_k;
+/// Optional COSX SCF grid schedule (coarse grid early, production grid to convergence).
+pub mod cosx_schedule;
 /// Density-fitted Coulomb (J) matrix builder (RI-J).
 pub mod df_j;
+#[cfg(feature = "gpu")]
+pub mod df_j_gpu;
 /// Density-fitted exchange (K) matrix builder (RI-K).
 pub mod df_k;
+#[cfg(feature = "gpu")]
+pub mod df_k_gpu;
 /// DIIS convergence accelerator for SCF iterations.
 pub mod diis;
 /// Initial guess generators: core Hamiltonian, SAD, read-in.
@@ -104,7 +137,7 @@ pub mod uhf;
 pub use uhf::{solve_uhf, solve_uhf_fockmod, UhfConfig};
 /// Constrained DFT solver: charge/spin constraints via Becke-weight operator.
 pub mod cdft_driver;
-pub use cdft_driver::{solve_cdft_uhf, CdftResult};
+pub use cdft_driver::{solve_cdft_uhf, solve_cdft_uhf_seeded, CdftResult, CdftSeed};
 /// cDFT electronic coupling (H_ab) via the Wu–Van Voorhis scheme.
 pub mod cdft_coupling;
 pub use cdft_coupling::{coupling_hab, DiabaticState, HabResult};
@@ -130,6 +163,8 @@ pub(crate) mod rohf_occupation;
 /// stepping from the current orbitals; the injected (periodic) path's
 /// alternative to the DIIS loop.
 pub mod rohf_trah;
+/// Range-separated (SR/LR) exchange response for the orbital-Hessian matvecs.
+pub mod rsh_response;
 /// Internal stability analysis: is a converged SCF solution a minimum or a saddle?
 pub mod stability;
 /// Trust-region augmented-Hessian (TRAH) orbital optimization.
@@ -138,11 +173,14 @@ pub mod trah;
 pub mod uhf_newton;
 pub use gradient::{rhf_gradient, rohf_gradient, uhf_gradient};
 pub use stability::{
-    rhf_internal_stability, uhf_internal_stability, StabilityConfig, StabilityKind,
-    StabilityResult, StabilitySkip, StabilityVerdict,
+    rhf_external_stability, rhf_internal_stability, uhf_internal_stability, StabilityConfig,
+    StabilityKind, StabilityResult, StabilitySkip, StabilityVerdict,
 };
 /// Analytical nuclear gradients for Kohn-Sham DFT (XC + grid response).
 pub mod ks_gradient;
+/// Closed-shell KS Z-vector: orbital-relaxation term of a post-SCF quantity's
+/// nuclear gradient.
+pub mod zvector_ks;
 pub use ks_gradient::ks_gradient_closed;
 /// Harmonic vibrational frequencies from finite-difference Hessian.
 pub mod frequencies;

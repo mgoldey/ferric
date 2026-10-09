@@ -155,6 +155,11 @@ forces to 3e-10**. An empty or all-zero MM region is **bit-identical** to a gas
 phase calculation — the trivial limit is a genuine no-op, not an approximation
 that happens to be small.
 
+The QM–MM Lennard-Jones term across a covalent cut is checked against OpenMM's
+own exclusion and 1-4 handling (ethanol cut at C–C, realistic LJ): **energy and
+gradient agree to ~1e-18 Ha**. With no bond path between the regions it is
+bit-identical to the plain every-pair sum.
+
 Not validated: periodic boundary conditions (absent), and the solvation
 droplet, which is a hard-sphere packing at roughly bulk density rather than an
 equilibrated box.
@@ -259,8 +264,19 @@ difference — `dE_statistics` does that and refuses fewer than two seeds.
 - **The pocket field is fixed unless you ask otherwise.** `move_mm="none"` is
   the default in `run_optimize_qmmm`; the MM sites do not relax with the QM
   region until you widen it.
-- **No QM/MM dispersion.** D3/D4/XDM/VV10 are all QM-atom-pairwise, so
-  dispersion between the QM region and the MM charges is absent. The MM crate
-  supplies Lennard-Jones terms for the MM-MM part only.
+- **QM/MM dispersion is the force field's Lennard-Jones only.** D3/D4/XDM/VV10
+  are QM-atom-pairwise and never see the MM atoms. With `mm_topology=` set, the
+  MM force field supplies Lennard-Jones between every QM real atom and every MM
+  atom (link atoms and boundary charges carry none). Without it there is no
+  QM–MM van der Waals term at all.
+- **QM–MM Lennard-Jones follows the force field's exclusion rules across the
+  cut.** Pairs 1-2 or 1-3 apart through the topology's bond list (the cut bond
+  included) get no LJ, and 1-4 pairs are scaled by the topology's
+  `scale_lj_14` (AMBER default 0.5). This is the same bond graph the MM–MM
+  terms use, so the cut bond has to be in the topology's bonds. QM–MM
+  electrostatics do not use these exclusions or `scale_coul_14`. The
+  embedding puts every MM charge in the QM Hamiltonian, and the boundary
+  scheme (`keep`/`delete-host`/`rc`/`rcd`) is what handles the charges next
+  to the cut.
 - The MM crate is AMBER-form (harmonic bonds and angles, periodic torsions,
   Lennard-Jones, Coulomb), validated against OpenMM.

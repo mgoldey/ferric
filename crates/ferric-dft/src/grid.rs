@@ -365,7 +365,7 @@ pub fn build_atomic_grid_with_response(
     mol: &Molecule,
     cfg: &AtomicGridConfig,
 ) -> Result<(Vec<GridPoint>, Vec<Vec<[f64; 3]>>), FerricError> {
-    // Pruning is NOT implemented on the grid-response path, and silently
+    // Pruning is NOT validated on the XC grid-response path, and silently
     // ignoring `cfg.prune` here would be worse than not supporting it: the
     // energy would be evaluated on a pruned grid while its gradient was
     // evaluated on a flat one, so the returned vector would not be the
@@ -373,10 +373,12 @@ pub fn build_atomic_grid_with_response(
     // is invisible in the output — it shows up only as a finite-difference
     // mismatch — so it is a hard error rather than a silent fallback.
     //
-    // Lifting this means giving `weight1` the same per-shell angular orders
-    // (the Becke weight-derivative algebra itself is order-agnostic, so it is
-    // a plumbing change, not a physics one) and re-validating the XC gradient
-    // against finite difference of the *pruned* energy.
+    // The weight-response ALGEBRA is order-agnostic (each point's derivative
+    // depends only on its own position and home atom), and
+    // [`build_atomic_grid_with_response_pruned`] honours `cfg.prune`; the COSX
+    // exchange gradient uses it and is FD-validated on the pruned `sgx` grid.
+    // Lifting this refusal for XC means re-validating the XC gradient against
+    // finite difference of the *pruned* XC energy.
     if cfg.prune.is_some() {
         return Err(FerricError::General(
             "DFT grid pruning is not supported on the gradient (grid-response) path: \
@@ -386,20 +388,40 @@ pub fn build_atomic_grid_with_response(
                 .to_string(),
         ));
     }
-    let (lebedev_pts, lebedev_w) = lebedev(cfg.n_angular);
+    build_atomic_grid_with_response_pruned(mol, cfg)
+}
+
+/// [`build_atomic_grid_with_response`] honouring `cfg.prune`: the same points
+/// (in the same order) and weights as [`build_atomic_grid_pruned`]`(mol, cfg,
+/// cfg.prune)`, plus `weight1`. With `cfg.prune = None` it is exactly the
+/// flat-grid response builder. Per-shell Lebedev orders change only WHICH
+/// points exist; each point's weight derivative is the same Becke expression
+/// (`weight1` treats every point as riding its home atom rigidly, whatever
+/// its angular rule), so no extra term arises from pruning.
+pub fn build_atomic_grid_with_response_pruned(
+    mol: &Molecule,
+    cfg: &AtomicGridConfig,
+) -> Result<(Vec<GridPoint>, Vec<Vec<[f64; 3]>>), FerricError> {
     let natoms = mol.atoms.len();
-    // Exact, not an estimate: this routine does not prune, so every atom
-    // contributes the same `n_radial × n_angular` product.
-    let npts = natoms
-        .saturating_mul(cfg.n_radial)
-        .saturating_mul(lebedev_pts.len());
+    // Exact: the builder applies no weight screening.
+    let npts = atomic_grid_point_count(mol, cfg, cfg.prune)?;
     grid_response_plan(npts, natoms).check()?;
 
+    let mut cache: Vec<(usize, Vec<[f64; 3]>, Vec<f64>)> = Vec::new();
     let mut pre: Vec<(usize, [f64; 3], f64)> = Vec::with_capacity(npts);
 
     for (a_idx, atom) in mol.atoms.iter().enumerate() {
         let (rs, ws) = treutler_ahlrichs_m4(atom.z, cfg.n_radial);
-        for (r, w_r) in rs.iter().zip(ws.iter()) {
+        let orders = shell_angular_orders(atom.z, &rs, cfg, cfg.prune)?;
+        for ((r, w_r), &order) in rs.iter().zip(ws.iter()).zip(orders.iter()) {
+            if !cache.iter().any(|(o, _, _)| *o == order) {
+                let (p, w) = lebedev(order);
+                cache.push((order, p, w));
+            }
+            let (_, lebedev_pts, lebedev_w) = cache
+                .iter()
+                .find(|(o, _, _)| *o == order)
+                .expect("just inserted");
             for (pt, w_l) in lebedev_pts.iter().zip(lebedev_w.iter()) {
                 let xyz = [
                     atom.x + r * pt[0],
@@ -416,8 +438,11 @@ pub fn build_atomic_grid_with_response(
     // (bit-identical to the serial loop; no reduction).
     let build_point =
         |&(a_idx, xyz, scale): &(usize, [f64; 3], f64)| -> (GridPoint, Vec<[f64; 3]>) {
-            let (becke, dw_lab) = becke_weights_and_grad(mol, xyz);
-            let weight = scale * becke[a_idx];
+            let (_, dw_lab) = becke_weights_and_grad(mol, xyz);
+            // The weight VALUE comes from the same `becke_weights_all` the
+            // energy grids use, so this grid is the energy grid bit for bit
+            // (`becke_weights_and_grad`'s own value differs by ulps).
+            let weight = scale * becke_weights_all(mol, xyz)[a_idx];
             let gp = GridPoint {
                 xyz,
                 weight,
@@ -463,6 +488,78 @@ pub fn build_atomic_grid_with_response(
 mod tests {
     use super::*;
     use ferric_core::mol::{Atom, Molecule};
+
+    /// Distorted water (Bohr) for the grid-identity anchors.
+    fn water() -> Molecule {
+        let at = |symbol: &str, z: i32, x: f64, y: f64, zpos: f64| Atom {
+            symbol: symbol.into(),
+            z,
+            x,
+            y,
+            zpos,
+            ghost: false,
+            n_core_ecp: 0,
+        };
+        Molecule {
+            atoms: vec![
+                at("O", 8, 0.0, 0.04, 0.21),
+                at("H", 1, 0.06, 1.44, -0.89),
+                at("H", 1, -0.04, -1.42, -0.85),
+            ],
+            charge: 0,
+            multiplicity: 1,
+        }
+    }
+
+    /// EXACTNESS ANCHOR: the response builder returns the energy builder's
+    /// grid BIT FOR BIT — flat (the pre-pruning response grid, now routed
+    /// through the pruned builder) and pruned (`sgx`, peak 194). A gradient
+    /// built on a different grid than the energy would miss FD by the grid
+    /// difference; this pins that it cannot. Fails if the response builder
+    /// ignores `prune` (point count differs) or orders points differently.
+    #[test]
+    fn response_grid_is_the_energy_grid_bit_for_bit() {
+        let mol = water();
+        for prune in [None, Some(PruneScheme::Sgx)] {
+            let cfg = AtomicGridConfig {
+                n_radial: 35,
+                n_angular: 194,
+                prune,
+            };
+            let e = build_atomic_grid_pruned(&mol, &cfg, cfg.prune).unwrap();
+            let (g, w1) = build_atomic_grid_with_response_pruned(&mol, &cfg).unwrap();
+            assert_eq!(e.len(), g.len(), "{prune:?}: point counts differ");
+            assert_eq!(w1.len(), g.len());
+            assert_eq!(
+                e.len(),
+                atomic_grid_point_count(&mol, &cfg, cfg.prune).unwrap()
+            );
+            for (a, b) in e.iter().zip(&g) {
+                assert_eq!(a.home_atom, b.home_atom);
+                for k in 0..3 {
+                    assert_eq!(a.xyz[k].to_bits(), b.xyz[k].to_bits(), "{prune:?}");
+                }
+                assert_eq!(a.weight.to_bits(), b.weight.to_bits(), "{prune:?} weight");
+            }
+        }
+        // The pruned grid really is smaller (the scheme is live).
+        let flat = AtomicGridConfig {
+            n_radial: 35,
+            n_angular: 194,
+            prune: None,
+        };
+        let sgx = AtomicGridConfig {
+            prune: Some(PruneScheme::Sgx),
+            ..flat.clone()
+        };
+        let (nf, ns) = (
+            atomic_grid_point_count(&mol, &flat, flat.prune).unwrap(),
+            atomic_grid_point_count(&mol, &sgx, sgx.prune).unwrap(),
+        );
+        assert!(ns < nf, "sgx {ns} vs flat {nf}");
+        // The XC-path wrapper still refuses a pruned config.
+        assert!(build_atomic_grid_with_response(&mol, &sgx).is_err());
+    }
 
     fn h2() -> Molecule {
         Molecule {
@@ -605,8 +702,9 @@ mod tests {
                         atom.y + r * pt[1],
                         atom.zpos + r * pt[2],
                     ];
-                    let (becke, dw_lab) = becke_weights_and_grad(&mol, xyz);
-                    let weight = w_r * w_l * becke[a_idx];
+                    let (_, dw_lab) = becke_weights_and_grad(&mol, xyz);
+                    // Weight value from `becke_weights_all`, as the energy grids.
+                    let weight = w_r * w_l * becke_weights_all(&mol, xyz)[a_idx];
                     ser_grid.push(GridPoint {
                         xyz,
                         weight,

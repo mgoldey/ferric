@@ -128,7 +128,9 @@ impl<'a, B: Bound + Sync> KBuilder for LinkK<'a, B> {
         // global libint2 ctor mutex.
         if self.pool.is_none() {
             self.pool = Some(crate::engine_pool::EnginePool::new(
-                self.op, self.prep, 1e-14,
+                self.op,
+                self.prep,
+                ferric_integrals::engine_pool::eri_precision(),
             )?);
         }
         let pool = self.pool.as_ref().expect("pool initialized above");

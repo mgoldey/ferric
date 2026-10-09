@@ -1474,8 +1474,8 @@ H 0.000000 -0.900000 -0.500000
         assert_eq!(mols[0].atoms.len(), 3);
         assert_eq!(mols[1].atoms.len(), 3);
         // Frame 1's oxygen is at a different z (0.2 Å -> Bohr).
-        assert!((mols[0].atoms[0].zpos - 0.117_790 / 0.529_177_210_92).abs() < 1e-10);
-        assert!((mols[1].atoms[0].zpos - 0.200_000 / 0.529_177_210_92).abs() < 1e-10);
+        assert!((mols[0].atoms[0].zpos - 0.117_790 * crate::units::ANGSTROM_TO_BOHR).abs() < 1e-10);
+        assert!((mols[1].atoms[0].zpos - 0.200_000 * crate::units::ANGSTROM_TO_BOHR).abs() < 1e-10);
     }
 
     #[test]

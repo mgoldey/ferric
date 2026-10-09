@@ -39,12 +39,19 @@ use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
 
-/// Zero-rotation OO reference energy vs the SCF energy. Both use exact J/K on
-/// the same orbitals; the residual is the SCF's final-density convergence
-/// (second order) and J/K screening.
+/// Zero-rotation OO quantities vs their SCF / RI-MP2 counterparts. Both sides
+/// use exact J/K on the same orbitals; the residual is the SCF's final-density
+/// convergence (second order) and J/K screening.
 const TOL_ANCHOR: f64 = 1e-10;
-/// tr(D V_ECP) must exceed this, so the anchor above resolves an ECP-less
-/// hcore by > 1e10 x its bar.
+/// Zero-rotation OO reference energy vs the energy `solve_rhf` REPORTS. The RHF
+/// loop accumulates J/K incrementally from a density-screened ΔD, so its
+/// reported energy carries that build's floor; the OO side rebuilds J/K in full.
+/// Measured on HI/def2-SVP: |d| 5.8e-11 locally, 1.3e-10 on CI (the same OO
+/// energy, different last-bit SCF paths), 1.7e-13 with
+/// `FERRIC_SCF_INCREMENTAL=0`. The bar sits above that floor.
+const TOL_RHF_REF: f64 = 1e-9;
+/// tr(D V_ECP) must exceed this, so the anchors above resolve an ECP-less
+/// hcore by > 1e9 x their bar.
 const MIN_TR_D_VECP: f64 = 1.0;
 
 /// HI stretched to 1.75 A (testdata/molecules/validation/ecp/hi.xyz); def2-SVP
@@ -142,7 +149,7 @@ fn zero_rotation_closed(s: &Sys, ctx: &str) {
         oo.hf_energy, rhf.energy
     );
     assert!(
-        d < TOL_ANCHOR,
+        d < TOL_RHF_REF,
         "{ctx}: zero-rotation OO reference energy {:.12} != RHF {:.12} (|d| {d:.2e}) — \
          the OO functional's hcore is not the SCF's",
         oo.hf_energy,

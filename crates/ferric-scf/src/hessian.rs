@@ -1194,7 +1194,11 @@ impl<'a> TwoElectronBuilder<'a> {
         prep: &'a PreparedBasis,
         bounds: &'a SchwarzBounds,
     ) -> Result<Self, FerricError> {
-        let pool = EnginePool::new(bounds.op, prep, 1e-14)?;
+        let pool = EnginePool::new(
+            bounds.op,
+            prep,
+            ferric_integrals::engine_pool::eri_precision(),
+        )?;
         Ok(TwoElectronBuilder {
             ctx,
             prep,
@@ -1612,7 +1616,7 @@ mod tests {
         // H2 along z: only zz blocks are nonzero
         // d²(1/r)/dz1 dz2 = d²(1/|z1-z2|)/dz1 dz2 = -2/r³ (off-diag)
         // d²(1/r)/dz1 dz1 = +2/r³ (diagonal, from -sum rule)
-        let r = 0.74 * 1.8897259886; // Angstrom -> Bohr
+        let r = 0.74 * ferric_core::units::ANGSTROM_TO_BOHR; // Angstrom -> Bohr
         let expected = 2.0 / (r * r * r);
 
         // h[z1,z1] should be positive (restoring force)

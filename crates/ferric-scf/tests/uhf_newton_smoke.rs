@@ -313,6 +313,7 @@ fn uhf_hessian_matvec_matches_finite_difference() {
         nocc_a,
         nocc_b,
         k_mix_sr: 1.0, // pure HF
+        rsh: None,
         fxc: None,
         thresh: 1e-12,
         ooc_budget: ferric_core::memory::resolve_budget_bytes(None),

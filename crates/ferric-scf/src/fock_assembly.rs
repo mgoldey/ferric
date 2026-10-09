@@ -134,8 +134,13 @@ fn build_df_jk_impl<'a>(
             // Multi-rank keeps the independent builds below.
             if ctx.size <= 1 {
                 let naux = dfbs.nbasis();
-                let mut raw = ferric_integrals::three_index_source::ThreeIndexSource::build_band(
-                    op, prep, &dfbs, ooc_budget, 0, naux,
+                let mut raw = ferric_integrals::three_index_source::ThreeIndexSource::build_for_jk(
+                    op,
+                    mol,
+                    prep,
+                    &dfbs,
+                    ooc_budget,
+                    (0, naux),
                 )?;
                 let df_k = Some(DfK::from_full_raw(
                     &mut raw,
@@ -145,18 +150,33 @@ fn build_df_jk_impl<'a>(
                     ooc_budget,
                     Some(ctx),
                 )?);
-                let df_j = Some(DfJ::from_source(raw, op, &dfbs, ooc_budget, Some(ctx))?);
+                let mut df_j = Some(DfJ::from_source(raw, op, &dfbs, ooc_budget, Some(ctx))?);
+                yield_device_to_k(&mut df_j, &df_k);
                 return Ok((df_j, df_k));
             }
-            let df_j = Some(DfJ::new_banded(op, prep, &dfbs, ooc_budget, Some(ctx))?);
+            let df_j = Some(DfJ::new_for_jk(
+                op,
+                mol,
+                prep,
+                &dfbs,
+                ooc_budget,
+                Some(ctx),
+            )?);
             let df_k = Some(DfK::new_banded(op, prep, &dfbs, ooc_budget, Some(ctx))?);
             return Ok((df_j, df_k));
         }
     }
-    let df_j = if let Some(aux_name) = j_aux {
+    let mut df_j = if let Some(aux_name) = j_aux {
         let dfbs_set = ferric_core::basis::bundled(aux_name)?;
         let dfbs = PreparedBasis::new(mol, &dfbs_set)?;
-        Some(DfJ::new_banded(op, prep, &dfbs, ooc_budget, Some(ctx))?)
+        Some(DfJ::new_for_jk(
+            op,
+            mol,
+            prep,
+            &dfbs,
+            ooc_budget,
+            Some(ctx),
+        )?)
     } else {
         None
     };
@@ -167,8 +187,21 @@ fn build_df_jk_impl<'a>(
     } else {
         None
     };
+    yield_device_to_k(&mut df_j, &df_k);
     Ok((df_j, df_k))
 }
+
+/// RI-J is built before DF-K every iteration, so under `gpu = on` its device
+/// upload would take the pool first. Tell it how much DF-K will want.
+#[cfg(feature = "gpu")]
+fn yield_device_to_k(df_j: &mut Option<DfJ<'_>>, df_k: &Option<DfK<'_>>) {
+    if let (Some(j), Some(k)) = (df_j.as_mut(), df_k.as_ref()) {
+        j.reserve_device_for_k(k.device_footprint_bytes());
+    }
+}
+
+#[cfg(not(feature = "gpu"))]
+fn yield_device_to_k(_df_j: &mut Option<DfJ<'_>>, _df_k: &Option<DfK<'_>>) {}
 
 /// Build the geometry-only SR/LR [`DfK`] fitter pair for a range-separated
 /// hybrid: `(K[erfc(ω)], K[erf(ω)])`. Called once before the SCF loop; only
@@ -224,19 +257,30 @@ pub(crate) fn build_rsh_dfk_pair<'a>(
 ///
 /// * `Err` — the value is not one of `direct` / `link` / `cosx`.
 /// * `Ok(None)` — no pluggable builder: the field is unset, is `"direct"`, or
-///   is overridden by an active density-fitted J/K path (warned about, below).
+///   is overridden by an active density-fitted path (warned about, below).
 /// * `Ok(Some(kind))` — construct that builder.
 ///
-/// `df_active` is `df_j.is_some() || df_k.is_some()` AFTER the solver's own
-/// auto-defaulting (a hybrid/RSH functional silently turns DF-K on), plus, in
-/// `solve_rhf`, a requested DF-K that was dropped because its K is never read.
-/// A pluggable K would then be built and thrown away, so it is skipped WITH A
-/// WARNING rather than silently no-op'ing. `df_k_present`, `need_k` (the
-/// functional consumes exact exchange at all) and `omega` only pick the
-/// wording — see [`exchange_route_when_df_active`].
+/// The precedence rule (RIJCOSX):
+///
+/// * an active DF-K (`df_k_active`) always wins — a pluggable K would be
+///   built and thrown away, so it is skipped WITH A WARNING;
+/// * an active DF-J alone skips `"link"` (its J comes from the combined
+///   four-centre pass, which DF-J replaces), but NOT `"cosx"`: COSX supplies
+///   only K, so DF-J + COSX is the RIJCOSX composite (Neese et al. 2009;
+///   ORCA RIJCOSX, Psi4 `DFDIRJ+COSX`). The solvers then take J from `DfJ`
+///   and K from COSX.
+///
+/// `df_k_active` is `df_k.is_some()` AFTER the solver's own auto-defaulting,
+/// plus, in `solve_rhf`, a requested DF-K that was dropped because its K is
+/// never read (pure / RSH functionals). With `k_builder = "cosx"` the solvers
+/// never build the ω = 0 DF-K in the first place (see
+/// [`cosx_replaces_df_k`]). `df_k_present`, `need_k` (the functional consumes
+/// exact exchange at all) and `omega` only pick the wording — see
+/// [`exchange_route_when_df_active`].
 pub(crate) fn resolve_k_builder(
     k_builder: Option<&str>,
-    df_active: bool,
+    df_j_active: bool,
+    df_k_active: bool,
     df_k_present: bool,
     need_k: bool,
     omega: f64,
@@ -250,7 +294,8 @@ pub(crate) fn resolve_k_builder(
         )));
     }
     let pluggable = matches!(kb, "link" | "cosx").then_some(kb);
-    if df_active {
+    let overridden = df_k_active || (df_j_active && kb != "cosx");
+    if overridden {
         if let Some(kind) = pluggable {
             eprintln!(
                 "[ferric] warning: k_builder = \"{kind}\" is IGNORED because density-fitted J/K is active \
@@ -261,6 +306,42 @@ pub(crate) fn resolve_k_builder(
         return Ok(None);
     }
     Ok(pluggable)
+}
+
+/// RIJCOSX: does `k_builder = "cosx"` REPLACE the ω = 0 density-fitted
+/// exchange (DF-K) for this run?
+///
+/// `k_consumed_w0` is whether the SCF consumes a plain (ω = 0) exact-exchange
+/// matrix at all: Hartree–Fock and global hybrids yes; pure functionals (no
+/// exact exchange) and range-separated hybrids (exchange from the SR/LR DF
+/// fitters, which have no COSX form) no — those keep their existing routing
+/// and warnings.
+///
+/// * `Ok(true)` — COSX supplies K: the solver must NOT build the ω = 0 DF-K
+///   (neither auto-defaulted nor requested) and takes J from DF-J if one is
+///   active, else from the four-centre builder.
+/// * `Ok(false)` — not a COSX run, or COSX does not apply to this exchange.
+/// * `Err` — `k_builder = "cosx"` together with an EXPLICITLY NAMED `df_k_aux`
+///   (a non-empty name): two exchange builders were requested for one K. A
+///   hard error rather than a silent pick, per the config-honesty convention;
+///   `df_k_aux = ""` (the exact sentinel) or unset are accepted.
+pub(crate) fn cosx_replaces_df_k(
+    k_builder: Option<&str>,
+    df_k_aux: Option<&str>,
+    k_consumed_w0: bool,
+) -> Result<bool, FerricError> {
+    if k_builder != Some("cosx") || !k_consumed_w0 {
+        return Ok(false);
+    }
+    if let Some(name) = df_k_aux.filter(|s| !s.is_empty()) {
+        return Err(FerricError::General(format!(
+            "k_builder = \"cosx\" conflicts with df_k_aux = \"{name}\": both name a builder for the \
+             same exchange matrix. COSX is the exchange builder of the RIJCOSX composite (DF-J for \
+             Coulomb, COSX for exchange); leave df_k_aux unset (or \"\") with k_builder = \"cosx\", \
+             or drop k_builder to use RI-K"
+        )));
+    }
+    Ok(true)
 }
 
 /// Where exchange actually comes from when [`resolve_k_builder`] skips a

@@ -170,6 +170,33 @@ pub struct RhfConfig {
     /// rather than inherit the default, so the assertion is about convergence
     /// and not about how many iterations one particular CPU happened to need.
     pub cdft_max_outer: usize,
+    /// cDFT outer-loop STARTING multipliers, one per constraint. `None` (the
+    /// default) starts the outer loop at λ = 0.
+    ///
+    /// # When a caller may want this (He₂⁺/PBE): cost, not correctness
+    ///
+    /// On a SYMMETRIC donor–acceptor pair λ = 0 is the delocalized state
+    /// (N = 1.5 on either He) while the root is at λ ≈ 1.6–2.5, and the Newton
+    /// step is clamped to 1 per outer iteration, so λ = 0 costs 11–21 outer
+    /// iterations where a start near the root costs 3–4. Measured on the six
+    /// He₂⁺ diabats of `tests/validation_cdft_et.rs`
+    /// (`he2_plus_diabats_converge_from_lambda_zero`), BOTH starts reach the
+    /// same root, to ≤ 3.5e-10 in λ and ≤ 1.6e-10 Ha in E. Supplying a start
+    /// (a previous geometry's λ, or a reference value) buys iterations, and on
+    /// a system with several constrained solutions it also selects which branch
+    /// the solve begins on. Either way the result is the root of c(λ) = 0 to
+    /// `cdft_lambda_tol`.
+    ///
+    /// A λ = 0 start does need the outer budget to reach the root: the default
+    /// `cdft_max_outer` of 30 covers every measured He₂⁺ point (deepest 21),
+    /// but a caller who lowers it below the distance to the root divided by the
+    /// step clamp will see a bare "did not converge" from a loop that was on a
+    /// monotone trajectory.
+    ///
+    /// Length must equal `constraints.len()` and every entry must be finite
+    /// (an error otherwise). A `CdftSeed` with explicit multipliers takes
+    /// precedence over this value.
+    pub cdft_lambda_init: Option<Vec<f64>>,
     /// cDFT **state selection**: after the λ-Newton loop converges, check the
     /// λ-augmented orbital Hessian and, if the constrained solution is a
     /// SADDLE, follow the downhill eigenvector and re-converge the whole λ
@@ -196,10 +223,13 @@ pub struct RhfConfig {
     /// MARGINAL solution the descent is not taken and only the eigensolve is
     /// paid.
     pub cdft_stability_descent: bool,
-    /// UNCONSTRAINED open-shell **state selection**: after a UHF solve
-    /// converges, check the orbital Hessian and, if the solution is a SADDLE,
-    /// follow the downhill eigenvector and re-converge from there — keeping the
-    /// lower-energy solution. Default **`false`**.
+    /// UNCONSTRAINED **state selection**: after a UHF solve — or, since
+    /// 2026-09-30, a closed-shell RHF/RKS `solve_rhf` — converges, check the
+    /// orbital Hessian and, if the solution is a SADDLE, follow the downhill
+    /// eigenvector and re-converge from there — keeping the lower-energy
+    /// solution. Default **`false`**. For RHF the check is the internal
+    /// (singlet) one; RHF→UHF symmetry breaking is never followed. See
+    /// `rhf_stability_descent` in rhf.rs.
     ///
     /// # Why this defaults OFF, unlike `cdft_stability_descent`
     ///
@@ -437,6 +467,7 @@ impl Default for RhfConfig {
             constraints: Vec::new(),
             cdft_lambda_tol: 1e-5,
             cdft_max_outer: 30,
+            cdft_lambda_init: None,
             cdft_stability_descent: true,
             scf_stability_descent: false,
             fractional_occ: false,
@@ -510,12 +541,26 @@ impl RhfConfig {
     }
 }
 
-/// Post-convergence internal stability analysis for an RHF/RKS solution.
+/// Post-convergence stability analysis for an RHF/RKS solution: BOTH the
+/// internal (singlet) and the external (RHF→UHF, triplet) verdict.
+///
+/// Returns `(internal, external)` for
+/// [`ScfResult::stability`](crate::result::ScfResult::stability) and
+/// [`ScfResult::stability_external`](crate::result::ScfResult::stability_external).
+///
+/// Both are run because they are different operators answering different
+/// questions, and a solution can be internally stable while externally a
+/// saddle — water / 6-31G at r(OH) = 2.0 Å is exactly that (singlet
+/// +1.9710e-2, triplet −3.0724e-1). Reporting only the internal verdict there
+/// tells the user STABLE about a saddle point.
 ///
 /// Called ONLY from `solve_rhf`'s converged exit and ONLY when
-/// `config.check_stability` is set. Returns `None` — meaning "not checked", per
-/// [`crate::result::ScfResult::stability`] — whenever the reference is not
-/// analysable with the operator that exists, ALWAYS after printing why.
+/// `config.check_stability` is set. A `None` means "not checked", per
+/// [`crate::result::ScfResult::stability`] — the reference was not analysable
+/// with the operator that exists — ALWAYS after printing why. The external
+/// verdict is additionally `None` on any KS reference (no triplet XC kernel;
+/// see [`crate::stability::StabilitySkip::TripletXcKernel`]) while the
+/// internal verdict there is still computed.
 ///
 /// # The KS trap this function exists to avoid
 ///
@@ -532,7 +577,7 @@ impl RhfConfig {
 /// `solve_rhf`'s own Newton branch uses. Proven, not asserted, by
 /// `ks_reference_is_analysed_with_the_xc_kernel_not_the_hf_hessian`.
 #[allow(clippy::too_many_arguments)]
-fn stability_rhf(
+fn stability_rhf<'r>(
     ctx: &ParallelContext,
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -545,16 +590,21 @@ fn stability_rhf(
     has_xc: bool,
     k_mix: ferric_dft::xc_trait::KMix,
     ooc_budget: usize,
-) -> Option<crate::stability::StabilityResult> {
+    rsh: Option<&'r crate::rsh_response::RshResponse<'r>>,
+) -> (
+    Option<crate::stability::StabilityResult>,
+    Option<crate::stability::StabilityResult>,
+) {
     if let Err(skip) =
         crate::stability::ks_reference_is_analysable(config.xc.as_deref(), k_mix.omega)
     {
         eprintln!(
             "SCF stability: check requested but SKIPPED — {}. \
-             ScfResult::stability is None (not checked), which does NOT mean stable.",
+             ScfResult::stability and ScfResult::stability_external are both None (not \
+             checked), which does NOT mean stable.",
             skip.reason()
         );
-        return None;
+        return (None, None);
     }
 
     // The f_xc response kernel, at the same restricted reference the RKS Newton
@@ -563,15 +613,24 @@ fn stability_rhf(
         let grid = config.dft_grid.clone().unwrap_or_default();
         let name = config.xc.as_deref().expect("has_xc implies Some(xc)");
         let d_half = 0.5 * d;
-        match crate::rohf::FxcKernelStore::build(mol, prep, &grid, name, &d_half, &d_half) {
+        match crate::rohf::FxcKernelStore::build(
+            mol,
+            prep,
+            &grid,
+            name,
+            config.xc_omega,
+            &d_half,
+            &d_half,
+        ) {
             Ok(s) => Some(s),
             Err(e) => {
                 eprintln!(
                     "SCF stability: check requested but SKIPPED — the f_xc response kernel could \
                      not be built ({e}), and analysing the HF Hessian at a KS density instead \
-                     would be a wrong-operator verdict. ScfResult::stability is None."
+                     would be a wrong-operator verdict. ScfResult::stability and \
+                     ScfResult::stability_external are both None."
                 );
-                return None;
+                return (None, None);
             }
         }
     } else {
@@ -588,11 +647,12 @@ fn stability_rhf(
         f_mo: &f_mo,
         nocc,
         k_mix_sr: if has_xc { k_mix.sr } else { 1.0 },
+        rsh,
         fxc: fxc_ref,
         thresh: config.integral_thresh,
         ooc_budget,
     };
-    match crate::stability::rhf_internal_stability(
+    let internal = match crate::stability::rhf_internal_stability(
         ctx,
         &inputs,
         &crate::stability::StabilityConfig::default(),
@@ -609,7 +669,50 @@ fn stability_rhf(
             );
             None
         }
-    }
+    };
+
+    // ── EXTERNAL (RHF→UHF, triplet) ──────────────────────────────────────
+    // Run UNCONDITIONALLY alongside the internal check, never instead of it:
+    // the two answer different questions and routinely disagree. Water/6-31G
+    // at r(OH) = 2.0 Å is internally STABLE (+1.97e-2) and externally UNSTABLE
+    // (−3.07e-1), so an internal-only `check_stability` reports a saddle as a
+    // minimum. That is the defect this branch exists to close, pinned by
+    // `scf_stability_external.rs::check_stability_populates_both_verdicts`.
+    //
+    // KS references are refused by `rhf_external_stability` itself (the
+    // triplet XC kernel f_aa − f_ab does not exist here); the skip is printed
+    // and the INTERNAL verdict above still stands.
+    let external = if has_xc {
+        eprintln!(
+            "SCF stability: the RHF->UHF (external, triplet) check was SKIPPED — {}. \
+             ScfResult::stability_external is None (not checked), which does NOT mean \
+             stable. The internal (singlet) verdict above is unaffected.",
+            crate::stability::StabilitySkip::TripletXcKernel.reason()
+        );
+        None
+    } else {
+        match crate::stability::rhf_external_stability(
+            ctx,
+            &inputs,
+            &crate::stability::StabilityConfig::default(),
+        ) {
+            Ok(res) => {
+                crate::stability::report_stability(&res, config.verbose);
+                Some(res)
+            }
+            Err(e) => {
+                eprintln!(
+                    "SCF stability: the RHF->UHF (external, triplet) check was requested but \
+                     FAILED — {}: {e}. ScfResult::stability_external is None (not checked). \
+                     The SCF result itself is unaffected.",
+                    crate::stability::StabilitySkip::AnalysisFailed.reason()
+                );
+                None
+            }
+        }
+    };
+
+    (internal, external)
 }
 
 /// Resolve the 3-index memory budget in bytes by delegating to the single
@@ -825,7 +928,14 @@ pub fn solve_rhf(
     bounds: &SchwarzBounds,
     config: &RhfConfig,
 ) -> Result<ScfResult, FerricError> {
-    solve_rhf_impl(ctx, mol, prep, op, bounds, config, None)
+    let first = solve_rhf_once(ctx, mol, prep, op, bounds, config)?;
+    if !config.scf_stability_descent {
+        // Knob off (the default): the single solve, returned untouched.
+        return Ok(first);
+    }
+    Ok(rhf_stability_descent(
+        ctx, mol, prep, op, bounds, config, first,
+    ))
 }
 
 /// Externally built one-electron matrices, nuclear energy and J/K builders
@@ -1087,6 +1197,170 @@ pub(crate) fn check_injection_shapes(
     Ok(())
 }
 
+
+/// **Closed-shell RHF/RKS state selection** — the restricted counterpart of
+/// `uhf::stability_descent`, gated by the same
+/// [`RhfConfig::scf_stability_descent`] knob (default off) and needing
+/// [`RhfConfig::check_stability`] for the verdict it acts on.
+///
+/// Given a converged solution whose RHF-internal (singlet) verdict is
+/// UNSTABLE, rotate the MOs along the downhill eigenvector by each of
+/// [`crate::uhf::DESCENT_STEPS`] radians (Cayley transform), rebuild the
+/// closed-shell density `2 C_occ C_occᵀ` from the rotated MOs, re-converge from
+/// it with an otherwise identical config, and keep the LOWEST converged result
+/// strictly below the incumbent. Repeats up to
+/// [`crate::uhf::MAX_DESCENT_ROUNDS`] times. The step sizes are the UHF ones and
+/// carry the same measured caveat: steps of ≤ 0.5 rad were seen to fall back
+/// into the saddle's own DIIS basin, so the sweep reaches ~1 rad and takes the
+/// lowest result, not the first success.
+///
+/// This is internal (singlet) state selection only: it never breaks spin
+/// symmetry. An RHF→UHF (triplet) instability is a different operator, not
+/// analysed here.
+///
+/// MEASURED motivation: N2 at r = 1.60 Å / def2-SVP. MINAO + every rung of the
+/// default ladder converges to a saddle at −108.4825600107 (singlet λ_min
+/// −0.0654, doubly degenerate) that is 19.06 mHa above the stable RHF minimum
+/// −108.5016165203 PySCF reaches with `newton()` + `stability()`
+/// (`tests/validation_scf_ladder.rs`).
+///
+/// # Failure policy (same as UHF)
+///
+/// Every failure mode returns the INPUT solution unchanged after printing why:
+/// not converged, no verdict, smeared occupations, a step that does not
+/// converge, or one that lands higher. The descent can only lower the energy or
+/// leave the result bit-identical.
+fn rhf_stability_descent(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    config: &RhfConfig,
+    first: ScfResult,
+) -> ScfResult {
+    use crate::stability::StabilityVerdict;
+    use crate::uhf::{accepts_candidate, rotate_mos, DESCENT_STEPS, MAX_DESCENT_ROUNDS};
+
+    if !first.converged {
+        eprintln!(
+            "RHF stability descent: SKIPPED — the SCF did not converge, so the orbital \
+             Hessian would be evaluated at a non-stationary point."
+        );
+        return first;
+    }
+    if config.smearing_sigma.is_some() {
+        eprintln!(
+            "RHF stability descent: SKIPPED — Fermi smearing is on, so the occupations are \
+             fractional and the integer-occupation orbital Hessian does not describe this state."
+        );
+        return first;
+    }
+    let nocc = (mol.nelec() / 2) as usize;
+    let mut best = first;
+    for round in 1..=MAX_DESCENT_ROUNDS {
+        let Some(st) = best.stability.as_ref() else {
+            eprintln!(
+                "RHF stability descent: SKIPPED — no stability verdict is available \
+                 (RhfConfig::check_stability is off, or the analysis was skipped for a \
+                 stated reason). Set check_stability = true alongside \
+                 scf_stability_descent. The solution is returned as converged, which does \
+                 NOT mean it is the lowest state."
+            );
+            return best;
+        };
+        let verdict = st.verdict();
+        let lmin = st.lowest_eigenvalue;
+        if verdict != StabilityVerdict::Unstable {
+            if round == 1 && config.verbose {
+                eprintln!(
+                    "RHF stability descent: the converged solution is {} (lambda_min = \
+                     {lmin:+.4e}); no descent taken.",
+                    verdict.label()
+                );
+            }
+            return best;
+        }
+        let v = st.eigenvector_alpha.clone();
+        eprintln!(
+            "RHF stability descent (round {round}): the converged solution at E = {:.8} is \
+             a SADDLE (lambda_min = {lmin:+.4e}); following the downhill eigenvector.",
+            best.energy
+        );
+
+        let mut improved: Option<ScfResult> = None;
+        for &step in &DESCENT_STEPS {
+            let c_rot = rotate_mos(&best.mos_alpha, &v, nocc, step);
+            let c_occ = c_rot.slice(ndarray::s![.., ..nocc]);
+            let d0 = 2.0 * c_occ.dot(&c_occ.t());
+            let mut cfg = config.clone();
+            cfg.init_guess_density = Some(d0);
+            let cand = match solve_rhf_once(ctx, mol, prep, op, bounds, &cfg) {
+                Ok(c) if c.converged => c,
+                Ok(c) => {
+                    eprintln!(
+                        "RHF stability descent: step {step} did not converge (E = {:.8}); \
+                         discarded.",
+                        c.energy
+                    );
+                    continue;
+                }
+                Err(e) => {
+                    eprintln!("RHF stability descent: step {step} failed ({e:?}); discarded.");
+                    continue;
+                }
+            };
+            if accepts_candidate(
+                cand.energy,
+                best.energy,
+                improved.as_ref().map(|b| b.energy),
+            ) {
+                improved = Some(cand);
+            }
+        }
+
+        match improved {
+            Some(c) => {
+                eprintln!(
+                    "RHF stability descent (round {round}): reached a LOWER state, \
+                     E = {:.8} (was {:.8}, dE = {:.8} Ha)",
+                    c.energy,
+                    best.energy,
+                    best.energy - c.energy
+                );
+                best = c;
+            }
+            None => {
+                eprintln!(
+                    "RHF stability descent (round {round}): the solution is a saddle \
+                     (lambda_min = {lmin:+.4e}) but NO step reached a lower state. Returning \
+                     the saddle, which is therefore NOT established as the lowest state."
+                );
+                return best;
+            }
+        }
+    }
+    eprintln!(
+        "RHF stability descent: still descending after {MAX_DESCENT_ROUNDS} rounds; \
+         returning the lowest found (E = {:.8}). It is NOT established as the bottom.",
+        best.energy
+    );
+    best
+}
+
+/// One closed-shell SCF solve, no state selection. [`solve_rhf`] is this plus
+/// the opt-in [`rhf_stability_descent`].
+fn solve_rhf_once(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    config: &RhfConfig,
+) -> Result<ScfResult, FerricError> {
+    solve_rhf_impl(ctx, mol, prep, op, bounds, config, None)
+}
+
 /// Shared body of [`solve_rhf`] (`inj = None`, byte-identical to the
 /// pre-injection solver) and [`solve_rhf_injected`] (`inj = Some`, config
 /// already validated).
@@ -1194,9 +1468,26 @@ fn solve_rhf_impl(
         cosmo_cavity,
         pcm_ctx,
         polarizable_site_basis,
-        mut dfk_sr,
-        mut dfk_lr,
+        dfk_sr,
+        dfk_lr,
     } = crate::driver::prepare(ctx, mol, prep, config, &k_mix, pre_env)?;
+
+    // The ONE SR/LR exchange response every Hessian matvec in this solve uses —
+    // Newton steps, TRAH steps and the post-SCF stability eigensolve alike. It
+    // borrows the SAME two fitters `subtract_rsh_exchange` assembles the
+    // converged Fock from and reads the SAME `k_mix`, so the Fock and the
+    // Hessian cannot disagree about the kernel (the #314 defect). `None` at
+    // omega == 0, where the matvecs keep their untouched plain-Coulomb path.
+    let rsh_response = match (dfk_sr.as_ref(), dfk_lr.as_ref()) {
+        (Some(sr), Some(lr)) => Some(crate::rsh_response::RshResponse::new(
+            sr,
+            lr,
+            k_mix.sr,
+            k_mix.lr,
+            k_mix.omega,
+        )),
+        _ => None,
+    };
 
     let n = prep.nbasis();
     let nelec = mol.nelec();
@@ -1286,7 +1577,14 @@ fn solve_rhf_impl(
     // (`df_active = false` here is only about which branch reports the error;
     // the whitelist check is unconditional). The DF-vs-pluggable decision is
     // re-resolved below once `build_df_jk` has said what is actually active.
-    crate::fock_assembly::resolve_k_builder(config.k_builder.as_deref(), false, false, true, 0.0)?;
+    crate::fock_assembly::resolve_k_builder(
+        config.k_builder.as_deref(),
+        false,
+        false,
+        false,
+        true,
+        0.0,
+    )?;
 
     // Meta-GGA default virtual-block level shift (see driver::effective_level_shift).
     let effective_level_shift = crate::driver::effective_level_shift(config);
@@ -1340,7 +1638,21 @@ fn solve_rhf_impl(
     let k_buf_consumed = k_consumed && k_mix.omega == 0.0;
     // The DF-K the caller asked for (explicitly, or via the functional
     // auto-default), BEFORE the consumption gate.
-    let df_k_aux_requested: Option<String> = resolve_aux(&config.df_k_aux, needs_k);
+    // RIJCOSX: with `k_builder = "cosx"` and a consumed ω = 0 exchange, COSX
+    // replaces the ω = 0 DF-K (auto-defaulted or not); an explicitly named
+    // `df_k_aux` alongside it is refused (`cosx_replaces_df_k`). DF-J keeps
+    // its own resolution, so a functional's RI-J auto-default stays on and the
+    // run is the RIJCOSX composite.
+    let cosx_k = crate::fock_assembly::cosx_replaces_df_k(
+        config.k_builder.as_deref(),
+        config.df_k_aux.as_deref(),
+        k_buf_consumed,
+    )?;
+    let df_k_aux_requested: Option<String> = if cosx_k {
+        None
+    } else {
+        resolve_aux(&config.df_k_aux, needs_k)
+    };
     // Do not build a DF-K whose K is thrown away. `resolve_aux` honours an
     // explicit `Some(name)` regardless of `needs_k`, and `run_dft` passes
     // `def2-universal-jkfit` for every functional, so a pure GGA used to
@@ -1403,13 +1715,19 @@ fn solve_rhf_impl(
     // DF-K is active it would be built and then silently ignored — a
     // pre-existing silent no-op for "link" — so warn and skip construction.
     let df_any = df_j.is_some() || df_k.is_some() || df_k_skipped;
+    // DF-J alone does not override COSX (RIJCOSX: J from DfJ, K from COSX);
+    // an active or dropped DF-K does. A pure / RSH functional cannot consume a
+    // pluggable K at all (`narrow_k_builder_to_supported` warns).
     let pluggable_k = crate::fock_assembly::resolve_k_builder(
         config.k_builder.as_deref(),
-        df_any,
+        df_j.is_some(),
+        df_k.is_some() || df_k_skipped,
         df_k.is_some(),
         k_consumed,
         k_mix.omega,
     )?;
+    let pluggable_k =
+        crate::fock_assembly::narrow_k_builder_to_supported(pluggable_k, k_consumed, k_mix.omega);
     // Build the pluggable builder once — LinK's SignificantPairs and COSX's
     // grid/overlap-fit factor are geometry-only and expensive per iteration.
     // When using "link", compute a fresh screening bound to own the lifetime.
@@ -1448,17 +1766,23 @@ fn solve_rhf_impl(
     // here with `link_schwarz_opt == None` (COSX, which reads no bound at all).
     let link_bound =
         crate::screening::LinkBound::SchwarzRef(link_schwarz_opt.as_ref().unwrap_or(bounds));
-    let mut k_builder: Option<Box<dyn KBuilder>> = crate::fock_assembly::build_pluggable_k(
-        pluggable_k,
+    // Optional COSX grid schedule (`CosxConfig::schedule`, default off): the
+    // first builder is then on the coarse grid and `before_k_build` swaps in
+    // the production one. Without a schedule this is exactly
+    // `build_pluggable_k(.., &config.cosx, ..)`.
+    let k_args = crate::cosx_schedule::KBuilderArgs {
+        kind: pluggable_k,
         ctx,
         mol,
         prep,
-        &link_bound,
+        link_bound: &link_bound,
         op,
-        &config.cosx,
-        config.integral_thresh,
+        cosx: &config.cosx,
+        integral_thresh: config.integral_thresh,
         ooc_budget,
-    )?;
+    };
+    let (mut cosx_sched, mut k_builder): (_, Option<Box<dyn KBuilder>>) =
+        crate::cosx_schedule::start_with_builder(&k_args)?;
     // LinK's density-pair list must exist before the first build; the loop
     // refreshes it every iteration (`update_density` immediately before
     // `build`). No-op for COSX.
@@ -1527,7 +1851,8 @@ fn solve_rhf_impl(
                               energy: f64,
                               iter: usize,
                               cq: usize,
-                              induced_dipoles: Option<Array2<f64>>|
+                              induced_dipoles: Option<Array2<f64>>,
+                              cosx_schedule: Option<crate::cosx_schedule::CosxScheduleRecord>|
      -> ScfResult {
         ScfResult {
             spin: Spin::Restricted,
@@ -1550,8 +1875,11 @@ fn solve_rhf_impl(
             // stability is a property of a STATIONARY point, and these are not
             // stationary. `None` = not checked, as documented on the field.
             stability: None,
+            stability_external: None,
             df_jk: df_jk_route.clone(),
             rohf_spin_focks: None,
+            cosx_final: None,
+            cosx_schedule,
         }
     };
 
@@ -1578,17 +1906,18 @@ fn solve_rhf_impl(
     // grid work was ~0.4 s. HF and ω = 0 hybrids are unaffected. Gated on
     // `k_buf_consumed`, not `k_consumed`: an RSH run whose main DF-K the gate
     // above dropped must not fall through to a 4-centre K it would also discard.
-    let mut direct_k: Option<DirectK> = if df_any && df_k.is_none() && k_buf_consumed {
-        Some(DirectK::new(
-            ctx,
-            prep,
-            bounds,
-            config.integral_thresh,
-            ooc_budget,
-        ))
-    } else {
-        None
-    };
+    let mut direct_k: Option<DirectK> =
+        if df_any && df_k.is_none() && k_buf_consumed && k_builder.is_none() {
+            Some(DirectK::new(
+                ctx,
+                prep,
+                bounds,
+                config.integral_thresh,
+                ooc_budget,
+            ))
+        } else {
+            None
+        };
     // Not built on the injected path: J/K come from `inj_jk`, and with no
     // DirectJK the incremental-Fock machinery below stays off.
     let mut direct_jk: Option<DirectJK> = if !df_any && k_builder.is_none() && inj_jk.is_none() {
@@ -1647,6 +1976,15 @@ fn solve_rhf_impl(
 
     for iter in 1..=config.max_iter {
         ctx.check_interrupted()?;
+        // COSX grid schedule: a pending coarse -> production switch rebuilds
+        // the builder and restarts DIIS here, before this iteration's K.
+        crate::cosx_schedule::before_k_build(
+            &mut cosx_sched,
+            iter,
+            &mut k_builder,
+            &mut diis,
+            &k_args,
+        )?;
         // One target-Hamiltonian J/K build happens below, unconditionally, on
         // every pass of this loop. Ticking here (rather than at each of the four
         // builder branches) keeps the count builder-independent, which is what
@@ -1684,7 +2022,13 @@ fn solve_rhf_impl(
                 let dj = direct_j.as_mut().expect("DirectJ built before loop");
                 total_quartets += dj.build(&d, &mut j_buf)?;
             }
-            if let Some(dfk) = df_k.as_mut() {
+            if let Some(kb) = k_builder.as_mut() {
+                // RIJCOSX: J came from DF-J above, K from the pluggable
+                // builder (COSX — the only one `resolve_k_builder` admits next
+                // to an active DF-J). No density-dependent state to refresh.
+                kb.update_density(&d);
+                total_quartets += kb.build(&d, &mut k_buf)?;
+            } else if let Some(dfk) = df_k.as_mut() {
                 // O(naux·n²·nocc) C_occ half-transform instead of the
                 // O(naux·n³) density contraction. `d_occ` is None on iteration 1
                 // (no diagonalization yet) and whenever fractional occupations
@@ -1770,8 +2114,15 @@ fn solve_rhf_impl(
         if k_mix.omega > 0.0 {
             // Range-separated: SR/LR DfK fitters were built once before the
             // loop (geometry-only). Only the D-dependent contraction runs here.
-            let dfk_sr = dfk_sr.as_mut().expect("dfk_sr built when omega>0");
-            let dfk_lr = dfk_lr.as_mut().expect("dfk_lr built when omega>0");
+            let mut dfk_sr = dfk_sr
+                .as_ref()
+                .expect("dfk_sr built when omega>0")
+                .borrow_mut();
+            let mut dfk_lr = dfk_lr
+                .as_ref()
+                .expect("dfk_lr built when omega>0")
+                .borrow_mut();
+            let (dfk_sr, dfk_lr) = (&mut *dfk_sr, &mut *dfk_lr);
             // occ path when available: `occ_factor = 2.0` supplies the RHF
             // D = 2·C_occ·C_occᵀ factor that `build_from_occ` does not apply,
             // so eff_scale = 0.5·2.0 = 1.0 matches the density path's
@@ -1801,7 +2152,14 @@ fn solve_rhf_impl(
         // directly to the total rather than folded into the ½Tr[D·vhf] term).
         let e_elec_no_xc: f64 = 0.5 * (&d * &(&h + &f)).sum();
         let e_xc = if let Some(x) = xc_contrib.as_ref() {
-            x.add_xc(&d, &mut f)
+            // Occupied-factored density pass when `d_occ` caches the C_occ of
+            // the current D = 2·C_occ·C_occᵀ (None under smearing / on the
+            // first iteration); the XC side re-checks the pair and falls back
+            // to the dense D when they disagree.
+            match d_occ.as_ref() {
+                Some(c_occ) => x.add_xc_occ(&d, c_occ, &mut f),
+                None => x.add_xc(&d, &mut f),
+            }
         } else if let Some(ix) = inj_xc.as_mut() {
             let (e, v) = ix.build(&d)?;
             if v.dim() != f.dim() {
@@ -1926,7 +2284,14 @@ fn solve_rhf_impl(
         // so we gate on ΔP and treat the commutator as diagnostic only. See
         // scf_converged. ΔP is INFINITY until the first density rebuild (iter
         // 1), so the `iter > 1` guard below is belt-and-suspenders on top.
-        let conv_exit = scf_converged(sig, config.energy_conv, config.density_conv);
+        // A COSX grid schedule closes the gate until the production grid
+        // defines both this density and its ΔD/ΔE (see `crate::cosx_schedule`).
+        let conv_exit = crate::cosx_schedule::gate(
+            &mut cosx_sched,
+            iter,
+            sig.dp_max,
+            scf_converged(sig, config.energy_conv, config.density_conv),
+        );
 
         // Divergence: energy climbing for consecutive iters (see ScfMonitor).
         if mon.diverging(energy, config.divergence_tol) {
@@ -1946,6 +2311,7 @@ fn solve_rhf_impl(
                 iter,
                 total_quartets,
                 last_induced_dipoles.clone(),
+                crate::cosx_schedule::record(&cosx_sched),
             ));
         }
 
@@ -1967,6 +2333,7 @@ fn solve_rhf_impl(
                 iter,
                 total_quartets,
                 last_induced_dipoles.clone(),
+                crate::cosx_schedule::record(&cosx_sched),
             ));
         }
 
@@ -1996,7 +2363,7 @@ fn solve_rhf_impl(
                 // with `check_stability = false` (the default) nothing below is
                 // constructed, so this branch is bit-identical to a build with
                 // no stability support. Diagnostic: it warns, it never Errs.
-                let stability = if config.check_stability {
+                let (stability, stability_external) = if config.check_stability {
                     stability_rhf(
                         ctx,
                         mol,
@@ -2010,9 +2377,29 @@ fn solve_rhf_impl(
                         xc_contrib.is_some(),
                         k_mix,
                         ooc_budget,
+                        rsh_response.as_ref(),
                     )
                 } else {
-                    None
+                    (None, None)
+                };
+                // COSX final-grid pass (opt-in, `CosxConfig::final_grid`):
+                // `k_buf` holds K_scf(d) from this iteration's build, so only
+                // the final grid is built here.
+                let (energy, cosx_final) = match (pluggable_k, config.cosx.final_grid.as_ref()) {
+                    (Some("cosx"), Some(fg)) => {
+                        let rec = crate::cosx_k::run_final_pass(
+                            ctx,
+                            mol,
+                            prep,
+                            &config.cosx,
+                            fg,
+                            ooc_budget,
+                            energy,
+                            &[(&d, &k_buf, -0.25 * k_mix.sr)],
+                        )?;
+                        (rec.e_final, Some(rec))
+                    }
+                    _ => (energy, None),
                 };
                 return Ok(ScfResult {
                     spin: Spin::Restricted,
@@ -2032,13 +2419,16 @@ fn solve_rhf_impl(
                     computed_quartets: total_quartets,
                     induced_dipoles: last_induced_dipoles,
                     stability,
+                    stability_external,
                     df_jk: df_jk_route.clone(),
                     rohf_spin_focks: None,
+                    cosx_final,
+                    cosx_schedule: crate::cosx_schedule::record(&cosx_sched),
                 });
             }
         }
         mon.note_energy(energy);
-        if std::env::var("FERRIC_TRAH_RHO_TRACE").is_ok() {
+        if crate::trah::trah_rho_trace() {
             let dnorm = d.iter().map(|x| x * x).sum::<f64>().sqrt();
             eprintln!(
                 "TRAH-ITER-TRACE: iter={iter} E={energy:.12} |D|={dnorm:.12} err_max={err_max:.3e}"
@@ -2069,7 +2459,19 @@ fn solve_rhf_impl(
         //
         // Phase 2 (step): solve the level-shifted AH equations inside the
         // current radius and apply the rotation.
-        let trah_armed = config.trah_trigger.is_some_and(|t| err_max < t)
+        // Armed below the trigger -- OR while a TRAH step still awaits its ρ
+        // verdict. A step may legitimately RAISE err_max (a hard-case escape
+        // moves along negative curvature, away from a stationary point), and
+        // re-deciding on err_max alone then handed the next iteration to DIIS,
+        // which discarded the prediction unscored and, with a history built at
+        // the saddle, walked straight back into it: tail-mode TRAH cycled to
+        // max_iter on N2/cc-pVDZ (`tests/trah_hard_case.rs`). Every TRAH step
+        // leaves a prediction pending, so TRAH keeps control until it stops
+        // stepping (nothing left to gain) or its radius collapses.
+        let trah_pending = trah_state.as_ref().is_some_and(|s| s.has_pending());
+        let trah_armed = config
+            .trah_trigger
+            .is_some_and(|t| err_max < t || trah_pending)
             && iter > 3
             && k_mix.omega == 0.0
             && !crate::rohf::xc_is_metagga(config.xc.as_deref());
@@ -2083,6 +2485,9 @@ fn solve_rhf_impl(
         let trah_runs = trah_armed && !trah_state.as_ref().is_some_and(|s| s.collapsed());
         if let Some(st) = trah_state.as_mut() {
             if !trah_runs {
+                if st.has_pending() {
+                    crate::trah::note_trah_prediction_discarded();
+                }
                 st.clear_pending();
                 trah_undo = None;
             }
@@ -2138,6 +2543,14 @@ fn solve_rhf_impl(
                         c_prev = Some(last_c.clone());
                     }
                 }
+                // The rejected iteration must `continue` (as the Phase 2 comment
+                // below says, and as the UHF loop does): `f` here is the Fock
+                // of the density just discarded. Falling through let DIIS
+                // extrapolate from its own history and overwrite the restored
+                // density -- on N2/STO-3G from the core guess one rejection
+                // threw TRAH back to its first step's saddle, it retraced the
+                // same path deterministically, and was rejected again.
+                trah_took_step = true;
             }
 
             // Phase 2: step from the (possibly restored) point.
@@ -2161,7 +2574,13 @@ fn solve_rhf_impl(
                     let name = config.xc.as_deref().expect("xc_contrib implies Some(xc)");
                     let d_half = 0.5 * &d;
                     Some(crate::rohf::FxcKernelStore::build(
-                        mol, prep, &main, name, &d_half, &d_half,
+                        mol,
+                        prep,
+                        &main,
+                        name,
+                        config.xc_omega,
+                        &d_half,
+                        &d_half,
                     )?)
                 } else {
                     None
@@ -2176,6 +2595,7 @@ fn solve_rhf_impl(
                     f_mo: &f_mo,
                     nocc,
                     k_mix_sr: if xc_contrib.is_some() { k_mix.sr } else { 1.0 },
+                    rsh: rsh_response.as_ref(),
                     fxc: fxc_ref,
                     thresh: config.integral_thresh,
                     ooc_budget,
@@ -2191,9 +2611,15 @@ fn solve_rhf_impl(
                 // noise over a vanishing denominator (measured on RKS/PBE
                 // water: pred=-1.4e-15, actual=+2.7e-9, rho=-1.9e6). Stepping
                 // there cannot help and costs two Fock builds per cycle -- see
-                // `TrahConfig::predicted_min`. Falling through to DIIS lets the
-                // normal convergence test end the run.
+                // `TrahConfig::predicted_min`. A declined step falls through to
+                // DIIS in this same iteration, as the UHF loop does: DIIS moves
+                // the density from this F and records the real change, so the
+                // next iteration's convergence test MEASURES the state instead
+                // of seeing an unchanged density (`tests/trah_rks_null_step.rs`
+                // pins the guard; `tests/trah_rks_null_step_is_measured.rs`
+                // pins that a decline cannot declare convergence).
                 if step.predicted.abs() < config.trah.predicted_min {
+                    crate::trah::note_trah_null_step_declined();
                     if scf_trace() {
                         eprintln!(
                             "TRAH iter={iter}: predicted |{:.3e}| < {:.0e}, \
@@ -2205,27 +2631,14 @@ fn solve_rhf_impl(
                         st.clear_pending();
                     }
                     trah_undo = None;
-                    // `trah_took_step` is already false here -- it is only set true in
-                    // the else-branch below -- so leaving it is what makes the loop
-                    // fall through to DIIS.
-                    // Record that the density did NOT move.
-                    //
-                    // `record_density_change` is a SETTER, not an accumulator:
-                    // `dp_rms`/`dp_max` keep whatever was last written. TRAH
-                    // `continue`s past the DIIS path, so on the iterations it
-                    // drives it is the ONLY writer -- and the moment it stops
-                    // writing, the last value it wrote is frozen in.
-                    //
-                    // That froze `dp_rms` at 2.059e-6 (above the 1e-8 bar) for
-                    // 200 iterations on RKS/PBE water while dE was exactly 0,
-                    // |g|_rms 4.9e-9 and err_max 2.2e-8 -- every other signal
-                    // converged, the run declared failure, and it reached an
-                    // energy matching DIIS to 1.9e-10. The solve was DONE; only
-                    // the bookkeeping said otherwise.
-                    //
-                    // Writing the true (zero) change here lets the ordinary
-                    // convergence test see the state the solver is actually in.
-                    mon.record_density_change(&d, &d);
+                    // `trah_took_step` stays false, so the DIIS path below
+                    // takes this iteration and writes the density change. No
+                    // zero change is recorded here: `record_density_change` is
+                    // a setter, and a zero written by a step that did not move
+                    // the density would let the NEXT iteration pass the
+                    // density test at an unchanged density whatever the
+                    // orbital gradient (#315: converged 4.4e-7 Ha above DIIS
+                    // with `predicted_min` 1e-6).
                 } else {
                     if scf_trace() {
                         eprintln!(
@@ -2242,7 +2655,7 @@ fn solve_rhf_impl(
                     }
 
                     // Save the pre-step point so a rejection can undo it exactly.
-                    if std::env::var("FERRIC_TRAH_RHO_TRACE").is_ok() {
+                    if crate::trah::trah_rho_trace() {
                         let dnorm = d.iter().map(|x| x * x).sum::<f64>().sqrt();
                         let cnorm = c_cur.iter().map(|x| x * x).sum::<f64>().sqrt();
                         let gnorm = {
@@ -2272,8 +2685,8 @@ fn solve_rhf_impl(
                     if effective_level_shift > 0.0 {
                         c_prev = Some(last_c.clone());
                     }
+                    trah_took_step = true;
                 }
-                trah_took_step = true;
             }
         }
         if trah_took_step {
@@ -2378,7 +2791,13 @@ fn solve_rhf_impl(
                 let name = config.xc.as_deref().expect("xc_contrib implies Some(xc)");
                 let d_half = 0.5 * &d;
                 Some(crate::rohf::FxcKernelStore::build(
-                    mol, prep, &main, name, &d_half, &d_half,
+                    mol,
+                    prep,
+                    &main,
+                    name,
+                    config.xc_omega,
+                    &d_half,
+                    &d_half,
                 )?)
             } else {
                 None
@@ -2393,6 +2812,7 @@ fn solve_rhf_impl(
                 f_mo: &f_mo,
                 nocc,
                 k_mix_sr: if xc_contrib.is_some() { k_mix.sr } else { 1.0 },
+                rsh: rsh_response.as_ref(),
                 fxc: fxc_ref,
                 thresh: config.integral_thresh,
                 ooc_budget,
@@ -2517,6 +2937,7 @@ fn solve_rhf_impl(
         config.max_iter,
         total_quartets,
         last_induced_dipoles,
+        crate::cosx_schedule::record(&cosx_sched),
     ))
 }
 
@@ -2539,7 +2960,11 @@ pub fn build_jk(
     j: &mut Array2<f64>,
     k: &mut Array2<f64>,
 ) -> Result<usize, FerricError> {
-    let pool = crate::engine_pool::EnginePool::new(bounds.op, prep, 1e-14)?;
+    let pool = crate::engine_pool::EnginePool::new(
+        bounds.op,
+        prep,
+        ferric_integrals::engine_pool::eri_precision(),
+    )?;
     build_jk_with_pool(
         ctx,
         prep,

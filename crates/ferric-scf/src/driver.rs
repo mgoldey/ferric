@@ -46,6 +46,7 @@ use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::oneelectron;
 use ndarray::Array2;
 use ndarray_linalg::Eigh;
+use std::cell::RefCell;
 
 /// Geometry-only SCF environment, built once before the iteration loop.
 /// Everything here depends only on (molecule, basis, config) — never on the
@@ -70,8 +71,15 @@ pub(crate) struct ScfEnv<'a> {
     /// embedding is off OR configured with an empty site list.
     pub polarizable_site_basis: Option<ferric_integrals::site_basis::SiteBasis>,
     /// RSH SR/LR exchange fitters (ω > 0 only) — see `fock_assembly`.
-    pub dfk_sr: Option<DfK<'a>>,
-    pub dfk_lr: Option<DfK<'a>>,
+    ///
+    /// Behind a `RefCell` so the ONE pair that assembles the converged Fock can
+    /// also be handed to the orbital-Hessian matvec (`crate::rsh_response`)
+    /// without the solver giving up ownership for the rest of the loop. A
+    /// second pair built with the same arguments would pay the DF build twice
+    /// and reopen the Fock/Hessian divergence #314 closed; `DfK::build` needs
+    /// `&mut self`, so shared read-only borrows alone will not do.
+    pub dfk_sr: Option<RefCell<DfK<'a>>>,
+    pub dfk_lr: Option<RefCell<DfK<'a>>>,
 }
 
 /// Build the shared [`ScfEnv`]. `k_mix` comes from the solver's XC contribution
@@ -154,7 +162,7 @@ pub(crate) fn prepare<'a>(
             k_mix.omega,
             ooc_budget,
         )?;
-        (Some(sr), Some(lr))
+        (Some(RefCell::new(sr)), Some(RefCell::new(lr)))
     } else {
         (None, None)
     };

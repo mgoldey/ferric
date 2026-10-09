@@ -114,6 +114,16 @@ fn pdep_cfg() -> PdepRpaConfig {
         sternheimer: SternheimerConfig::default(),
         memory_budget_bytes: None,
         need_inv_dielectric_freq: true, // GW's Σ_c requires this
+        // `true` is PdepRpaConfig's own default and is what every GW caller
+        // needs (ferric-gw shape-checks `eigenvalues_freq`); it is spelled out
+        // rather than left to `..Default::default()` only because this literal
+        // is exhaustive, which is deliberate -- an exhaustive literal makes a
+        // NEW config field a compile error here instead of a silently
+        // defaulted one. That tripwire did fire: this file is
+        // `#![cfg(feature = "mpi")]`, so no default-feature build compiles its
+        // body, and the error sat unseen on main until the CI mpi job was
+        // extended to build this binary.
+        need_eigenvalues_freq: true,
         verbose: false,
     }
 }

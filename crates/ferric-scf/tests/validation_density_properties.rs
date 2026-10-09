@@ -15,8 +15,9 @@
 //! `scripts/validation/gen_properties.py` (references in
 //! `testdata/reference/validation/density_properties/` and
 //! `.../free_atom_volumes/`). Systems: H2O and CH3OH (RHF) and the HO2 radical
-//! (UHF, stability-checked) at cc-pVDZ AND def2-SVP; free H, C, N, O atoms
-//! (UKS-PBE, C/O as the fractional-occupation ensemble) at aug-cc-pVDZ.
+//! (UHF, stability-checked) at cc-pVDZ AND def2-SVP; free atoms Z = 1-18
+//! (UKS-PBE; B, C, O, F, Al, Si, S, Cl as the fractional-occupation
+//! ensemble) at aug-cc-pVDZ.
 //!
 //! Two comparisons per case, against the SAME reference numbers:
 //!
@@ -65,8 +66,9 @@
 //! | ESP, full chain | 4.6e-9 a.u. | 5e-8 a.u. |
 //! | field, full chain | 2.7e-9 a.u. | 3e-8 a.u. |
 //! | Becke volume, full chain (relative) | 7.1e-9 | 5e-8 |
-//! | free atom UKS energy | 4.3e-14 Ha | 1e-10 Ha |
-//! | free atom volume, full chain (relative) | 4.8e-9 | 5e-8 |
+//! | free atom UKS energy, Z = 1-18 | 3.1e-12 Ha (Li) | 1e-10 Ha |
+//! | free atom volume, full chain (relative) | 3.5e-8 (F) | 5e-8 |
+//! | free atom volume, full chain, Li/Be/Na/Al (relative) | 1.5e-6 (Na; XC density floor) | 2e-6 |
 //!
 //! Set each bar to 3-10x the measured maximum (protocol §3.4) and record the
 //! measured column here and on the site page.
@@ -128,6 +130,15 @@ const TOL_FIELD_CHAIN: f64 = 3e-8;
 const TOL_VOL_CHAIN_REL: f64 = 5e-8;
 const TOL_E_ATOM: f64 = 1e-10;
 const TOL_VOL_ATOM_CHAIN_REL: f64 = 5e-8;
+/// Atoms whose ferric-chain volume is moved by ferric's XC density floor
+/// (e_xc = v_xc = 0 where rho <= 1e-10, `ferric-dft` vxc.rs DENSITY_FLOOR), which
+/// the PySCF reference does not apply. The floor reshapes the diffuse tail, and the
+/// r^3 weight makes the volume far more tail-sensitive than the energy (which
+/// agrees to <= 3e-12 Ha for these atoms). Measured 2026-09-30: Li 1.2e-6, Na
+/// 1.5e-6, Be 1.2e-7, Al 7.8e-8 relative; with the floor lowered to 1e-14 the same
+/// four fall to 2.8e-11 .. 5.4e-9, so the floor is the whole effect.
+const FLOOR_SENSITIVE_ATOMS: [&str; 4] = ["li", "be", "na", "al"];
+const TOL_VOL_ATOM_CHAIN_REL_FLOOR: f64 = 2e-6;
 const TOL_ENUC: f64 = 1e-9;
 const TOL_ANCHOR: f64 = 1e-12;
 /// A control must move a quantity by at least this multiple of its bar.
@@ -549,7 +560,11 @@ fn atom_row(symbol_lc: &str) {
         &ctx,
         "volume full chain (rel)",
         max_rel_diff(&v2, &vol_ref),
-        TOL_VOL_ATOM_CHAIN_REL,
+        if FLOOR_SENSITIVE_ATOMS.contains(&symbol_lc) {
+            TOL_VOL_ATOM_CHAIN_REL_FLOOR
+        } else {
+            TOL_VOL_ATOM_CHAIN_REL
+        },
     );
 }
 
@@ -593,4 +608,88 @@ fn free_atom_volume_n_vs_pyscf() {
 #[ignore = "validation: Becke volumes"]
 fn free_atom_volume_o_vs_pyscf() {
     atom_row("o");
+}
+
+#[test]
+#[ignore = "validation: Becke volumes"]
+fn free_atom_volume_he_vs_pyscf() {
+    atom_row("he");
+}
+
+#[test]
+#[ignore = "validation: Becke volumes"]
+fn free_atom_volume_li_vs_pyscf() {
+    atom_row("li");
+}
+
+#[test]
+#[ignore = "validation: Becke volumes"]
+fn free_atom_volume_be_vs_pyscf() {
+    atom_row("be");
+}
+
+#[test]
+#[ignore = "validation: Becke volumes"]
+fn free_atom_volume_b_vs_pyscf() {
+    atom_row("b");
+}
+
+#[test]
+#[ignore = "validation: Becke volumes"]
+fn free_atom_volume_f_vs_pyscf() {
+    atom_row("f");
+}
+
+#[test]
+#[ignore = "validation: Becke volumes"]
+fn free_atom_volume_ne_vs_pyscf() {
+    atom_row("ne");
+}
+
+#[test]
+#[ignore = "validation: Becke volumes"]
+fn free_atom_volume_na_vs_pyscf() {
+    atom_row("na");
+}
+
+#[test]
+#[ignore = "validation: Becke volumes"]
+fn free_atom_volume_mg_vs_pyscf() {
+    atom_row("mg");
+}
+
+#[test]
+#[ignore = "validation: Becke volumes"]
+fn free_atom_volume_al_vs_pyscf() {
+    atom_row("al");
+}
+
+#[test]
+#[ignore = "validation: Becke volumes"]
+fn free_atom_volume_si_vs_pyscf() {
+    atom_row("si");
+}
+
+#[test]
+#[ignore = "validation: Becke volumes"]
+fn free_atom_volume_p_vs_pyscf() {
+    atom_row("p");
+}
+
+#[test]
+#[ignore = "validation: Becke volumes"]
+fn free_atom_volume_s_vs_pyscf() {
+    atom_row("s");
+}
+
+#[test]
+#[ignore = "validation: Becke volumes"]
+fn free_atom_volume_cl_vs_pyscf() {
+    atom_row("cl");
+}
+
+#[test]
+#[ignore = "validation: Becke volumes"]
+fn free_atom_volume_ar_vs_pyscf() {
+    atom_row("ar");
 }

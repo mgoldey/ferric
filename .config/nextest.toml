@@ -55,6 +55,22 @@ path = "junit.xml"
 [test-groups]
 memory-pool = { max-threads = 2 }
 
+# Tests that touch the CUDA device. One device, one cuBLAS handle per process
+# is fine (the handle is mutex-guarded), but two PROCESSES racing on device
+# memory make the pool tests' tight/ample budgets meaningless. Serialize them.
+[test-groups.gpu]
+max-threads = 1
+
+[[profile.ci.overrides]]
+filter = 'binary_id(/gpu_/) or test(/gpu/)'
+test-group = 'gpu'
+#
+# This override is FIRST in the file on purpose: nextest applies the first
+# matching override per test for a given setting, so a gpu test whose name also
+# matches /pool/, /budget/ or /scf|rimp2|.../ must meet this one before the
+# memory-pool and numerics overrides, or it would be capped at 2 instead of
+# serialised.
+
 #
 # MEASURED match counts (cargo nextest list -E '<filter>', this workspace,
 # --workspace --all-targets), because a filterset that silently matches

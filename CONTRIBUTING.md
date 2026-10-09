@@ -177,6 +177,13 @@ cargo check --workspace --all-targets --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo fmt --all --check
 
+# Optional CUDA backend (builds with no toolkit; needs a driver only to run):
+cargo clippy --workspace --all-targets --features ferric-core/gpu,ferric-tensors/gpu,ferric-cli/gpu,ferric-python/gpu,ferric-benchmarks/gpu,ferric-mp2/gpu,ferric-core/test-seams,ferric-scf/test-seams,ferric-mp2/test-seams -- -D warnings
+# The device tests that inject faults or mutants need `--features gpu,test-seams` on their crate, e.g.
+# CUDA_VISIBLE_DEVICES=0 cargo test -p ferric-scf --features test-seams --test gpu_dfj_scf
+OPENBLAS_NUM_THREADS=1 FERRIC_GPU_TESTS_REQUIRED=1 cargo test -p ferric-core --features gpu --test gpu_probe
+OPENBLAS_NUM_THREADS=1 cargo test -p ferric-cli --features gpu --locked --test gpu_section -- --nocapture
+
 # Python: formatting and security
 uvx ruff@0.15.8 format --check .
 uvx bandit@1.9.4 -ll -q -r . -x terf-tables/generate_interpolation_tables.py

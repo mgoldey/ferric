@@ -74,9 +74,12 @@ WHAT EACH REFERENCE IS
   exact 4-index integrals (`alpha_drpa_exact_eri`, the RI error size) and the
   coupled-perturbed HF alpha with the exchange kernel (`alpha_cphf`), which the
   Rust test asserts ferric MISSES — so the row cannot be re-read as "CPHF".
-* Free atoms (Z = 1, 6, 7, 8, aug-cc-pVDZ): UKS-PBE on ferric's (75, 110)
-  TA-M4 grid, exact J (ferric's `RhfConfig` default). H and N are integer-
-  occupation states followed through a `stability()` loop; C and O are the
+* Free atoms (Z = 1-18, aug-cc-pVDZ, the multiplicities of ferric's TS
+  free-atom branch): UKS-PBE on ferric's (75, 110) TA-M4 grid, exact J
+  (ferric's `RhfConfig` default). Atoms whose valence p shell is not partially
+  filled in either spin (H, He, Li, Be, N, Ne, Na, Mg, P, Ar) are integer-
+  occupation states followed through a `stability()` loop; B, C, O, F, Al, Si,
+  S and Cl are the
   spherically averaged fractional-occupation ensemble ferric's TS branch uses
   (`fractional_occ`), reproduced with `scf.addons.frac_occ(tol=0.05)` — ferric's
   `density_fractional` grouping tolerance. An ensemble has no stability
@@ -117,7 +120,26 @@ DENSITY_SYSTEMS = {
 DENSITY_BASES = ("cc-pvdz", "def2-svp")
 
 # symbol -> multiplicity (ferric's gs_mult for the TS free-atom branch)
-FREE_ATOMS = {"h": 2, "c": 3, "n": 4, "o": 3}
+FREE_ATOMS = {
+    "h": 2,
+    "he": 1,
+    "li": 2,
+    "be": 1,
+    "b": 2,
+    "c": 3,
+    "n": 4,
+    "o": 3,
+    "f": 2,
+    "ne": 1,
+    "na": 2,
+    "mg": 1,
+    "al": 2,
+    "si": 3,
+    "p": 4,
+    "s": 3,
+    "cl": 2,
+    "ar": 1,
+}
 FREE_ATOM_BASIS = "aug-cc-pvdz"
 FREE_ATOM_XC = "PBE"
 FRAC_OCC_TOL = 0.05  # ferric-scf uhf.rs density_fractional EPS_TOL
@@ -257,15 +279,27 @@ def ferric_like_grids(mol, level):
     return g
 
 
+def partially_filled_p(z: int) -> bool:
+    """True iff a spin's valence p shell is partially filled in the high-spin
+    ground state (B, C, O, F and Al, Si, S, Cl for Z <= 18). Those atoms take
+    the spherically averaged fractional-occupation ensemble; s-shell and
+    half/full p-shell atoms (H, Li, N, Na, P and the closed shells) are
+    integer-occupation states."""
+    if z <= 4 or 10 <= z <= 12 or z > 18:
+        return False
+    n_p = z - (4 if z <= 10 else 12)  # valence p electrons
+    n_alpha = min(n_p, 3)
+    n_beta = n_p - n_alpha
+    return n_alpha in (1, 2) or n_beta in (1, 2)
+
+
 def run_uks_atom(mol, mult: int) -> tuple[dict, object]:
     """Free-atom UKS-PBE, integer occupation + stability loop, or the
     fractional-occupation ensemble when the frontier shell is degenerate."""
     from pyscf import dft, scf
 
     na, nb = mol.nelec
-    # Ensemble iff a spin's valence p shell is partially filled (C: a 2/3,
-    # O: b 2/3). H (1s1) and N (p3 alpha, p0 beta) are integer states.
-    use_frac = mol.atom_charge(0) in (6, 8)
+    use_frac = partially_filled_p(mol.atom_charge(0))
 
     def make():
         mf = dft.UKS(mol)

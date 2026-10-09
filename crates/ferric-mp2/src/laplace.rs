@@ -1618,13 +1618,34 @@ mod tests {
         eprintln!("H2O Laplace RI-MP2 MO: {e_mo:.10}");
         eprintln!("H2O Laplace RI-MP2 AO: {e_ao:.10}");
 
-        assert!((e_mo - e_ao).abs() < 1e-8);
-
-        // Reference RI-MP2 for H2O/cc-pVDZ is -0.20403347
-        let ri_mp2_ref = -0.20403347;
+        // MO vs AO: two independent assemblies over the SAME nodes, so this is
+        // a round-off bar, not a method bar. Measured 1.3e-15 (release,
+        // OPENBLAS_NUM_THREADS=1); bar set ~1000x above it to leave room for
+        // summation-order drift across thread counts.
         assert!(
-            (e_mo - ri_mp2_ref).abs() < 1e-3,
-            "Laplace RI-MP2 ({e_mo:.6}) should be close to RI-MP2 ({ri_mp2_ref:.6})"
+            (e_mo - e_ao).abs() < 1e-12,
+            "MO ({e_mo:.14}) and AO ({e_ao:.14}) assemble the same quadrature and must \
+             agree to round-off"
+        );
+
+        // EXACT density-fitted MP2 for this geometry/basis/aux, at full
+        // precision: PySCF mp.dfmp2.DFMP2 fed ferric's own cc-pVDZ and
+        // cc-pVDZ-RI JSON, reproduced by an independent dense numpy (i,a,j,b)
+        // sum to 1.4e-16. Provenance and the generator:
+        // testdata/reference/validation/laplace_mp2/h2o_cc-pvdz.json,
+        // scripts/validation/gen_laplace_mp2.py. This replaces a 1e-3-era
+        // hard-coded -0.20403347.
+        let df_mp2_exact = -0.20403345705528;
+        // The residual is minimax-QUADRATURE error at n_quad=7 for this
+        // system's range R = 36.40, not implementation error: the same number
+        // (-8.307e-8) is reproduced by a numpy sum using the identical nodes
+        // (see crates/ferric-mp2/tests/validation_laplace_mp2.rs, which pins
+        // ferric against that quadrature-isolated reference at 3.3e-12).
+        // Measured |d| = 8.27e-8; bar ~10x above.
+        assert!(
+            (e_mo - df_mp2_exact).abs() < 1e-6,
+            "Laplace RI-MP2 ({e_mo:.10}) vs exact DF-MP2 ({df_mp2_exact:.10}): the gap is \
+             n_quad=7 minimax error, measured 8.3e-8"
         );
     }
 
@@ -1704,9 +1725,21 @@ mod tests {
 
         eprintln!("H2/cc-pVDZ Laplace MP2: k=3: {e3:.10}, k=5: {e5:.10}, k=7: {e7:.10}");
 
-        // They should all be within ~0.001 Ha of each other for H2
-        assert!((e3 - e5).abs() < 1e-3);
-        assert!((e5 - e7).abs() < 1e-4);
+        // Successive quadrature refinements must CONVERGE, and the step must
+        // shrink. Measured on H2/cc-pVDZ (release, OPENBLAS_NUM_THREADS=1):
+        // |e3-e5| = 3.99e-6 and |e5-e7| = 3.50e-8, i.e. the 5->7 step is ~114x
+        // smaller than the 3->5 step. Bars ~10x above each measurement.
+        let d35 = (e3 - e5).abs();
+        let d57 = (e5 - e7).abs();
+        assert!(d35 < 4e-5, "|e3-e5| = {d35:.3e} (measured 3.99e-6)");
+        assert!(d57 < 4e-7, "|e5-e7| = {d57:.3e} (measured 3.50e-8)");
+        // The step must actually be shrinking: a flat sequence would pass the
+        // two bars above while telling us nothing about convergence.
+        assert!(
+            d57 < 0.1 * d35,
+            "the 5->7 refinement step ({d57:.3e}) must be far smaller than the 3->5 step \
+             ({d35:.3e}); measured ratio 1/114"
+        );
     }
 
     /// Widen the AO-Laplace-vs-RI-MP2 cross-check beyond H2/cc-pVDZ (see
@@ -1764,12 +1797,17 @@ mod tests {
             ri.mp2_corr
         );
 
+        // Round-off bar: same nodes, two assemblies. Measured < 1e-14.
         assert!(
-            (e_mo - e_ao).abs() < 1e-8,
-            "MO and AO Laplace methods should agree on methane: {e_mo} vs {e_ao}"
+            (e_mo - e_ao).abs() < 1e-12,
+            "MO and AO Laplace methods should agree on methane to round-off: {e_mo:.14} vs {e_ao:.14}"
         );
-        assert!((e_mo - ri.mp2_corr).abs() < 1e-3,
-            "Laplace RI-MP2 ({e_mo:.6}) should be within 1e-3 Ha of live RI-MP2 ({:.6}) on methane/cc-pVDZ",
+        // vs live canonical RI-MP2: pure n_quad=7 minimax error for CH4's
+        // range R = 19.04, the smallest of the validated set. Measured
+        // |d| = 8.0e-9 (release, OPENBLAS_NUM_THREADS=1); bar ~10x above.
+        let d = (e_mo - ri.mp2_corr).abs();
+        assert!(d < 1e-7,
+            "Laplace RI-MP2 ({e_mo:.10}) vs live RI-MP2 ({:.10}) on methane/cc-pVDZ: |d| = {d:.3e}, measured 8.0e-9",
             ri.mp2_corr);
     }
 
@@ -1821,12 +1859,19 @@ mod tests {
             ri.mp2_corr
         );
 
+        // Round-off bar: same nodes, two assemblies. Measured < 1e-14.
         assert!(
-            (e_mo - e_ao).abs() < 1e-8,
-            "MO and AO Laplace methods should agree on water/aug-cc-pVDZ: {e_mo} vs {e_ao}"
+            (e_mo - e_ao).abs() < 1e-12,
+            "MO and AO Laplace methods should agree on water/aug-cc-pVDZ to round-off: \
+             {e_mo:.14} vs {e_ao:.14}"
         );
-        assert!((e_mo - ri.mp2_corr).abs() < 1e-3,
-            "Laplace RI-MP2 ({e_mo:.6}) should be within 1e-3 Ha of live RI-MP2 ({:.6}) on water/aug-cc-pVDZ",
+        // vs live canonical RI-MP2: n_quad=7 minimax error at R = 45.67, the
+        // WIDEST range of the validated set (deep O 1s core AND a diffuse
+        // basis), hence the largest error of the set. Measured |d| = 2.22e-7
+        // (release, OPENBLAS_NUM_THREADS=1); bar ~10x above.
+        let d = (e_mo - ri.mp2_corr).abs();
+        assert!(d < 2e-6,
+            "Laplace RI-MP2 ({e_mo:.10}) vs live RI-MP2 ({:.10}) on water/aug-cc-pVDZ: |d| = {d:.3e}, measured 2.22e-7",
             ri.mp2_corr);
     }
 

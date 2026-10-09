@@ -5,8 +5,7 @@
 //! either Cartesian coordinates (the default) or redundant internal
 //! coordinates ([`CoordSystem`](crate::optimize::CoordSystem)).
 
-use crate::gradient::rohf_gradient;
-use crate::ks_gradient::ks_gradient_roks;
+use crate::result::ScfResult;
 use crate::rhf::{solve_rhf, RhfConfig};
 use crate::rohf::solve_rohf;
 use crate::screening::SchwarzBounds;
@@ -182,31 +181,74 @@ pub fn optimize_geometry_with_correction(
     opt_config: &OptimizeConfig,
     mut correction: impl FnMut(&Molecule) -> Result<(f64, Option<Array2<f64>>), FerricError>,
 ) -> Result<OptimizeResult, FerricError> {
+    optimize_geometry_with_scf_correction(
+        ctx,
+        mol,
+        basis_name,
+        op,
+        rhf_config,
+        opt_config,
+        |m, _scf| correction(m),
+    )
+}
+
+/// [`optimize_geometry_with_correction`] whose correction also sees the
+/// converged closed-shell SCF result at the geometry being evaluated.
+///
+/// For corrections that depend on the electron density, not only on the
+/// nuclear positions -- MBD@rsSCS takes its per-atom polarizabilities from
+/// Hirshfeld volumes of the SCF density. `correction(mol, scf)` is called once
+/// per evaluated geometry, after the SCF and its gradient, with the
+/// [`ScfResult`] that produced the SCF energy; its return value is combined
+/// exactly as in [`optimize_geometry_with_correction`] (same guard, same
+/// refusals), which delegates here.
+pub fn optimize_geometry_with_scf_correction(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    basis_name: &str,
+    op: Operator,
+    rhf_config: &RhfConfig,
+    opt_config: &OptimizeConfig,
+    mut correction: impl FnMut(&Molecule, &ScfResult) -> Result<(f64, Option<Array2<f64>>), FerricError>,
+) -> Result<OptimizeResult, FerricError> {
     run_bfgs(mol, opt_config, |m| {
-        let (e, mut g) = compute_energy_and_gradient(ctx, m, basis_name, op, rhf_config)?;
-        let (de, dg) = correction(m)?;
-        if de != 0.0 || dg.is_some() {
-            let dg = dg.ok_or_else(|| {
-                FerricError::General(
-                    "geometry optimization: the energy correction returned a value but no \
-                     gradient. Optimizing would follow the UNCORRECTED surface while \
-                     reporting corrected energies, converging to a geometry that is a \
-                     stationary point of neither."
-                        .to_string(),
-                )
-            })?;
-            if dg.shape() != g.shape() {
-                return Err(FerricError::General(format!(
-                    "geometry optimization: correction gradient is {:?} but the SCF \
-                     gradient is {:?}",
-                    dg.shape(),
-                    g.shape()
-                )));
-            }
-            g = g + dg;
-        }
-        Ok((e + de, g))
+        let (e, g, scf) = compute_energy_gradient_and_result(ctx, m, basis_name, op, rhf_config)?;
+        let (de, dg) = correction(m, &scf)?;
+        add_correction(e, g, de, dg)
     })
+}
+
+/// Combine an SCF (energy, gradient) with an additive correction under the
+/// rules of [`optimize_geometry_with_correction`]: `(0.0, None)` adds nothing
+/// (no floating-point operation), an energy without a gradient and a
+/// mis-shaped gradient are errors.
+fn add_correction(
+    e: f64,
+    mut g: Array2<f64>,
+    de: f64,
+    dg: Option<Array2<f64>>,
+) -> Result<(f64, Array2<f64>), FerricError> {
+    if de != 0.0 || dg.is_some() {
+        let dg = dg.ok_or_else(|| {
+            FerricError::General(
+                "geometry optimization: the energy correction returned a value but no \
+                 gradient. Optimizing would follow the UNCORRECTED surface while \
+                 reporting corrected energies, converging to a geometry that is a \
+                 stationary point of neither."
+                    .to_string(),
+            )
+        })?;
+        if dg.shape() != g.shape() {
+            return Err(FerricError::General(format!(
+                "geometry optimization: correction gradient is {:?} but the SCF \
+                 gradient is {:?}",
+                dg.shape(),
+                g.shape()
+            )));
+        }
+        g = g + dg;
+    }
+    Ok((e + de, g))
 }
 
 /// Optimize the molecular geometry using UHF analytical gradients.
@@ -223,8 +265,36 @@ pub fn optimize_geometry_uhf(
     uhf_config: &RhfConfig,
     opt_config: &OptimizeConfig,
 ) -> Result<OptimizeResult, FerricError> {
+    optimize_geometry_uhf_with_scf_correction(
+        ctx,
+        mol,
+        basis_name,
+        op,
+        uhf_config,
+        opt_config,
+        |_, _| Ok((0.0, None)),
+    )
+}
+
+/// [`optimize_geometry_uhf`] plus an additive correction that sees the
+/// converged UHF/UKS result at each geometry: the open-shell sibling of
+/// [`optimize_geometry_with_scf_correction`], with the same combination rules
+/// (an energy without a gradient is an error; `(0.0, None)` is byte-identical
+/// to no correction). Dispersion is the motivating case — D3(BJ) uses only
+/// the geometry, MBD@rsSCS the UKS spin densities.
+pub fn optimize_geometry_uhf_with_scf_correction(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    basis_name: &str,
+    op: Operator,
+    uhf_config: &RhfConfig,
+    opt_config: &OptimizeConfig,
+    mut correction: impl FnMut(&Molecule, &ScfResult) -> Result<(f64, Option<Array2<f64>>), FerricError>,
+) -> Result<OptimizeResult, FerricError> {
     run_bfgs(mol, opt_config, |m| {
-        compute_energy_and_gradient_uhf(ctx, m, basis_name, op, uhf_config)
+        let (e, g, scf) = compute_energy_and_gradient_uhf(ctx, m, basis_name, op, uhf_config)?;
+        let (de, dg) = correction(m, &scf)?;
+        add_correction(e, g, de, dg)
     })
 }
 
@@ -237,8 +307,36 @@ pub fn optimize_geometry_rohf(
     rohf_config: &RhfConfig,
     opt_config: &OptimizeConfig,
 ) -> Result<OptimizeResult, FerricError> {
+    optimize_geometry_rohf_with_scf_correction(
+        ctx,
+        mol,
+        basis_name,
+        op,
+        rohf_config,
+        opt_config,
+        |_, _| Ok((0.0, None)),
+    )
+}
+
+/// [`optimize_geometry_rohf`] plus an additive correction that sees the
+/// converged ROHF/ROKS result at each geometry: the restricted-open-shell
+/// sibling of [`optimize_geometry_uhf_with_scf_correction`], with the same
+/// combination rules (an energy without a gradient is an error; `(0.0, None)`
+/// is byte-identical to no correction). Dispersion is the motivating case —
+/// D3(BJ) uses only the geometry, MBD@rsSCS the ROKS spin densities.
+pub fn optimize_geometry_rohf_with_scf_correction(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    basis_name: &str,
+    op: Operator,
+    rohf_config: &RhfConfig,
+    opt_config: &OptimizeConfig,
+    mut correction: impl FnMut(&Molecule, &ScfResult) -> Result<(f64, Option<Array2<f64>>), FerricError>,
+) -> Result<OptimizeResult, FerricError> {
     run_bfgs(mol, opt_config, |m| {
-        compute_energy_and_gradient_rohf(ctx, m, basis_name, op, rohf_config)
+        let (e, g, scf) = compute_energy_and_gradient_rohf(ctx, m, basis_name, op, rohf_config)?;
+        let (de, dg) = correction(m, &scf)?;
+        add_correction(e, g, de, dg)
     })
 }
 
@@ -724,13 +822,15 @@ pub fn optimize_coordinates(
     Ok((x.to_vec(), energy, step_idx, converged))
 }
 
-fn compute_energy_and_gradient(
+/// Closed-shell SCF energy, its nuclear gradient, and the converged SCF
+/// result that produced both (handed to density-dependent corrections).
+fn compute_energy_gradient_and_result(
     ctx: &ParallelContext,
     mol: &Molecule,
     basis_name: &str,
     op: Operator,
     rhf_config: &RhfConfig,
-) -> Result<(f64, Array2<f64>), FerricError> {
+) -> Result<(f64, Array2<f64>, ScfResult), FerricError> {
     let bs = ferric_core::basis::bundled(basis_name)?;
     let prep = PreparedBasis::new(mol, &bs)?;
     // Honour `[scf] screening` here too: geometry optimization rebuilds the
@@ -749,13 +849,14 @@ fn compute_energy_and_gradient(
     // Fail before the SCF if the exchange will come from a COSX setup whose
     // gradient is refused (pruned grid, or overlap fit with a KS functional) — not after it.
     crate::gradient::preflight_cosx_restricted(rhf_config)?;
+    let rhf_config = &*crate::gradient::gradient_task_config(rhf_config);
     let res = solve_rhf(ctx, mol, &prep, op, &bounds, rhf_config)?;
     // Differentiates the exchange the SCF actually built: exactly
     // `ks_gradient_closed` / `rhf_gradient` unless `k_builder = "cosx"` is in
     // effect, in which case the exchange term is the COSX derivative.
     let grad =
         crate::gradient::restricted_scf_gradient(mol, &prep, &bs, op, &bounds, rhf_config, &res)?;
-    Ok((res.energy, grad))
+    Ok((res.energy, grad, res))
 }
 
 fn compute_energy_and_gradient_uhf(
@@ -764,7 +865,7 @@ fn compute_energy_and_gradient_uhf(
     basis_name: &str,
     op: Operator,
     uhf_config: &RhfConfig,
-) -> Result<(f64, Array2<f64>), FerricError> {
+) -> Result<(f64, Array2<f64>, ScfResult), FerricError> {
     // `uhf_gradient` is HF-only (no XC term), so an `xc` run must route to
     // `ks_gradient_uks` instead. That function IS implemented (LDA/GGA/hybrid/
     // RSH/meta-GGA + VV10) and is FD- and PySCF-validated by
@@ -786,12 +887,13 @@ fn compute_energy_and_gradient_uhf(
     // recorded as a known gap rather than silently assumed to be covered.
     let bounds = SchwarzBounds::compute_for_screening(op, &prep, uhf_config.screening)?;
     crate::gradient::preflight_cosx_unrestricted(uhf_config)?;
+    let uhf_config = &*crate::gradient::gradient_task_config(uhf_config);
     let res = solve_uhf(ctx, mol, &prep, &bounds, uhf_config)?;
     // Exactly `ks_gradient_uks` / `uhf_gradient` unless the SCF's exchange
-    // came from COSX (UHF: COSX derivative; UKS: refused).
+    // came from COSX (then the COSX derivative; a fitted setup is refused).
     let grad =
         crate::gradient::unrestricted_scf_gradient(mol, &prep, &bs, op, &bounds, uhf_config, &res)?;
-    Ok((res.energy, grad))
+    Ok((res.energy, grad, res))
 }
 
 fn compute_energy_and_gradient_rohf(
@@ -800,11 +902,11 @@ fn compute_energy_and_gradient_rohf(
     basis_name: &str,
     op: Operator,
     rohf_config: &RhfConfig,
-) -> Result<(f64, Array2<f64>), FerricError> {
-    // `rohf_gradient` is HF-only (no XC term); an `xc` run routes to
-    // `ks_gradient_roks`, which is implemented and FD-validated by
-    // tests/roks_gradient.rs (LDA/PBE/B3LYP/wB97X-V). Same shape as the UHF
-    // path above.
+) -> Result<(f64, Array2<f64>, ScfResult), FerricError> {
+    // `restricted_open_scf_gradient` routes HF to `rohf_gradient` and an `xc`
+    // run to `ks_gradient_roks` (FD-validated by tests/roks_gradient.rs,
+    // LDA/PBE/B3LYP/wB97X-V), or to their COSX forms when the SCF built its
+    // exchange with COSX. Same shape as the UHF path above.
     let bs = ferric_core::basis::bundled(basis_name)?;
     let prep = PreparedBasis::new(mol, &bs)?;
     // Honour `[scf] screening` here too: geometry optimization rebuilds the
@@ -820,17 +922,22 @@ fn compute_energy_and_gradient_rohf(
     // sound (plain Schwarz is still a rigorous bound, just looser) and is
     // recorded as a known gap rather than silently assumed to be covered.
     let bounds = SchwarzBounds::compute_for_screening(op, &prep, rohf_config.screening)?;
-    // No COSX gradient for ROHF/ROKS: refuse BEFORE the SCF rather than pair a
-    // COSX energy with the exact-K gradient below.
-    crate::gradient::refuse_cosx_restricted_open(rohf_config)?;
+    // A COSX setup whose ROHF/ROKS gradient is not implemented (the overlap
+    // fit) is refused BEFORE the SCF; the gradient differentiates the
+    // exchange the SCF actually built.
+    crate::gradient::preflight_cosx_restricted_open(rohf_config)?;
+    let rohf_config = &*crate::gradient::gradient_task_config(rohf_config);
     let res = solve_rohf(ctx, mol, &prep, op, &bounds, rohf_config)?;
-    let ext = rohf_config.external_potential.as_ref();
-    let grad = if let Some(xc_name) = rohf_config.xc.as_deref() {
-        ks_gradient_roks(mol, &prep, &bs, op, &bounds, xc_name, &res, ext)?
-    } else {
-        rohf_gradient(mol, &prep, op, &bounds, &res, ext)?
-    };
-    Ok((res.energy, grad))
+    let grad = crate::gradient::restricted_open_scf_gradient(
+        mol,
+        &prep,
+        &bs,
+        op,
+        &bounds,
+        rohf_config,
+        &res,
+    )?;
+    Ok((res.energy, grad, res))
 }
 
 fn flatten_gradient(grad: &Array2<f64>) -> Array1<f64> {
@@ -1061,7 +1168,7 @@ mod tests {
         // Final gradient norm must be below the configured convergence
         // thresholds -- re-derive it directly rather than trusting the
         // driver's internal bookkeeping.
-        let (_, grad_arr) =
+        let (_, grad_arr, _) =
             compute_energy_and_gradient_uhf(&ctx, &result.mol, "sto-3g", op, &uhf_config).unwrap();
         let grad = flatten_gradient(&grad_arr);
         let g_max = grad.iter().map(|g| g.abs()).fold(0.0f64, f64::max);
@@ -1112,7 +1219,7 @@ mod tests {
         );
 
         let dist_bohr = (result.mol.atoms[0].zpos - result.mol.atoms[1].zpos).abs();
-        let dist_ang = dist_bohr * 0.529_177_210_92;
+        let dist_ang = dist_bohr * ferric_core::units::BOHR_TO_ANGSTROM;
         eprintln!(
             "OH/ROHF/STO-3G optimized distance: {:.6} Bohr ({:.4} Ang), energy: {:.10} Ha",
             dist_bohr, dist_ang, result.energy
@@ -1144,7 +1251,7 @@ mod tests {
             result.energy
         );
 
-        let (_, grad_arr) =
+        let (_, grad_arr, _) =
             compute_energy_and_gradient_rohf(&ctx, &result.mol, "sto-3g", op, &rohf_config)
                 .unwrap();
         let grad = flatten_gradient(&grad_arr);

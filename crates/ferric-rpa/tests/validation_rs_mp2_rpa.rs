@@ -126,7 +126,7 @@ const N_QUAD: usize = 40;
 const U0: f64 = 0.5;
 /// ω grid in Bohr⁻¹; `OMEGAS[I_DEFAULT]` is asserted equal to the production
 /// default, `OMEGAS[I_UNIT_SLIP]` is its Å⁻¹ digits read as Bohr⁻¹.
-const OMEGAS: [f64; 2] = [0.420 / 1.8897259886, 0.42];
+const OMEGAS: [f64; 2] = [0.420 * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV, 0.42];
 const I_DEFAULT: usize = 0;
 const I_UNIT_SLIP: usize = 1;
 /// Limit anchors: (reference key, formulation, ω in Bohr⁻¹) — generator

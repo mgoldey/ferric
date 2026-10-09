@@ -240,8 +240,11 @@ fn make_scf_view(
         computed_quartets: 0,
         induced_dipoles: None,
         stability: None,
+        stability_external: None,
         df_jk: None,
         rohf_spin_focks: None,
+        cosx_final: None,
+        cosx_schedule: None,
     }
 }
 

@@ -56,8 +56,9 @@ use ferric_scf::cosx_k::{CosxConfig, CosxHalfTransform, CosxK};
 use ferric_scf::fock::KBuilder;
 use ferric_scf::gradient::{
     build_energy_weighted_density, build_energy_weighted_density_uhf, oneelectron_gradient,
-    preflight_cosx_restricted, restricted_scf_gradient, rhf_gradient, rhf_gradient_cosx,
-    rhf_gradient_cosx_with_q, twoelectron_j_gradient, uhf_gradient, unrestricted_scf_gradient,
+    preflight_cosx_restricted, preflight_cosx_restricted_open, preflight_cosx_unrestricted,
+    restricted_scf_gradient, rhf_gradient, rhf_gradient_cosx, rhf_gradient_cosx_with_q,
+    twoelectron_j_gradient, uhf_gradient, unrestricted_scf_gradient,
 };
 use ferric_scf::ks_gradient::{ks_gradient_closed, ks_gradient_closed_with_exchange};
 use ferric_scf::result::ScfResult;
@@ -100,7 +101,13 @@ fn cosx_exact() -> CosxConfig {
         overlap_fit: false,
         screen_thresh: None,
         half_transform: CosxHalfTransform::Dense,
-        ..CosxConfig::default()
+        grid: ferric_dft::grid::AtomicGridConfig {
+            n_radial: 50,
+            n_angular: 110,
+            prune: None,
+        },
+        final_grid: None,
+        ..CosxConfig::flat_reference()
     }
 }
 
@@ -109,7 +116,10 @@ fn cosx_exact() -> CosxConfig {
 fn cosx_production_nofit() -> CosxConfig {
     CosxConfig {
         overlap_fit: false,
-        ..CosxConfig::default()
+        // The default SCF grid; no final pass (its energy is not the one the
+        // gradient differentiates, and the dispatcher refuses such a result).
+        final_grid: None,
+        ..CosxConfig::flat_reference()
     }
 }
 
@@ -508,11 +518,10 @@ fn exact_k_gradients_are_bit_identical_through_the_dispatch() {
     let b = rhf_gradient(&mol, &prep, op, &bounds, &r, None).unwrap();
     assert!(a == b, "RHF dispatch differs from rhf_gradient");
 
-    // B3LYP with the default DF auto-default AND k_builder = "cosx": the SCF
-    // ignores COSX (RI-J/RI-K active), so must the gradient.
-    // Loose-ish convergence on purpose: this compares two runs bit for bit, and
-    // under DF the energy random-walks at ~1e-8 (cosx_scf.rs::tight), so a
-    // tighter energy_conv would make convergence a coin flip.
+    // B3LYP with the DF auto-default and no k_builder: the dispatcher and
+    // `_with_exchange(None)` are exactly `ks_gradient_closed`. (With
+    // k_builder = "cosx" the same config is RIJCOSX now — RI-J + COSX K, see
+    // `tests/cosx_rijcosx.rs` — so it no longer belongs to the exact-K set.)
     let plain = RhfConfig {
         xc: Some("B3LYP".into()),
         energy_conv: 1e-6,
@@ -520,39 +529,38 @@ fn exact_k_gradients_are_bit_identical_through_the_dispatch() {
         max_iter: 300,
         ..Default::default()
     };
-    let with_cosx = RhfConfig {
-        k_builder: Some("cosx".into()),
-        cosx: cosx_production_nofit(),
-        ..plain.clone()
-    };
-    assert!(!scf_exchange_is_cosx(&with_cosx, false).unwrap());
+    assert!(!scf_exchange_is_cosx(&plain, false).unwrap());
     let r_plain = solve_restricted(&mol, basis, &plain);
-    let r_cosx = solve_restricted(&mol, basis, &with_cosx);
-    assert!(
-        r_plain.energy.to_bits() == r_cosx.energy.to_bits(),
-        "SCF did not ignore COSX under DF: {} vs {} — scf_exchange_is_cosx disagrees with solve_rhf",
-        r_plain.energy,
-        r_cosx.energy
-    );
-    let a = restricted_scf_gradient(&mol, &prep, &bs, op, &bounds, &with_cosx, &r_cosx).unwrap();
-    let b = ks_gradient_closed(&mol, &prep, &bs, op, &bounds, "B3LYP", &r_cosx, None).unwrap();
+    let a = restricted_scf_gradient(&mol, &prep, &bs, op, &bounds, &plain, &r_plain).unwrap();
+    let b = ks_gradient_closed(&mol, &prep, &bs, op, &bounds, "B3LYP", &r_plain, None).unwrap();
     let c = ks_gradient_closed_with_exchange(
-        &mol, &prep, &bs, op, &bounds, "B3LYP", &r_cosx, None, None,
+        &mol, &prep, &bs, op, &bounds, "B3LYP", &r_plain, None, None,
     )
     .unwrap();
     assert!(
         a == b && b == c,
         "KS dispatch / _with_exchange(None) differ from ks_gradient_closed"
     );
+    let with_cosx = RhfConfig {
+        k_builder: Some("cosx".into()),
+        cosx: cosx_production_nofit(),
+        ..plain
+    };
+    assert!(
+        scf_exchange_is_cosx(&with_cosx, false).unwrap(),
+        "RI-J auto-default + cosx is RIJCOSX, not exact K"
+    );
 }
 
 /// REFUSALS, never a silent approximate gradient. The overlap fit itself is
 /// now SUPPORTED for Hartree-Fock (RHF/UHF, Z-vector); what stays refused:
-/// fitted COSX with a KS functional (its Z-vector needs the XC Fock-matrix
-/// nuclear derivative, which ferric lacks), pruned COSX grids, UKS, ROHF/ROKS.
+/// fitted COSX with a KS functional (RKS/UKS/ROKS: its Z-vector needs the XC
+/// Fock-matrix nuclear derivative, which ferric lacks), fitted COSX for ROHF
+/// (no restricted-open-shell response), and pruned grids without a region
+/// table.
 ///
 /// Fails if the fitted-HF refusal is restored (the first two asserts), or if
-/// the KS/pruned/UKS/ROHF refusals are dropped.
+/// the fitted-KS / fitted-ROHF / pruned refusals are dropped.
 #[test]
 fn unsupported_cosx_gradients_are_refused() {
     // The default (fitted) config is accepted by the HF-level check ...
@@ -563,11 +571,15 @@ fn unsupported_cosx_gradients_are_refused() {
     assert!(format!("{err}").contains("overlap_fit"), "{err}");
     assert!(check_fitted_ks_supported(&cosx_exact(), Some("B3LYP")).is_ok());
 
-    // A pruned COSX grid has no weight response.
+    // A pruned COSX grid is differentiated (per-point weight response); a
+    // pruned grid without a region table for its peak order is refused.
     let mut pruned = cosx_exact();
-    pruned.grid.prune = Some(ferric_dft::prune::PruneScheme::NwchemLike);
+    pruned.grid.n_angular = 194;
+    pruned.grid.prune = Some(ferric_dft::prune::PruneScheme::Sgx);
+    check_gradient_supported(&pruned).expect("pruned sgx grid is supported");
+    pruned.grid.n_angular = 26;
     let err = check_gradient_supported(&pruned).unwrap_err();
-    assert!(format!("{err}").contains("pruned"), "{err}");
+    assert!(format!("{err}").contains("sgx"), "{err}");
 
     let basis = "sto-3g";
     let mol = mol_of(WATER, 1);
@@ -600,14 +612,22 @@ fn unsupported_cosx_gradients_are_refused() {
     preflight_cosx_restricted(&scf_cfg(None, Some(CosxConfig::default())))
         .expect("fitted HF passes the preflight");
 
-    // UKS with COSX in effect is refused before any gradient work.
-    let uks = RhfConfig {
+    // UKS: fit-off COSX is differentiated (`uks_cosx_*` below); the overlap
+    // fit with a functional is refused by the gradient and the preflight.
+    let uks_fitted = RhfConfig {
         k_builder: Some("cosx".into()),
-        cosx: cosx_exact(),
+        cosx: CosxConfig::default(),
         xc: Some("B3LYP".into()),
         ..Default::default()
     };
-    assert!(scf_exchange_is_cosx(&uks, true).unwrap());
+    assert!(scf_exchange_is_cosx(&uks_fitted, true).unwrap());
+    let err = preflight_cosx_unrestricted(&uks_fitted).unwrap_err();
+    assert!(format!("{err}").contains("overlap_fit"), "{err}");
+    preflight_cosx_unrestricted(&RhfConfig {
+        cosx: cosx_exact(),
+        ..uks_fitted.clone()
+    })
+    .expect("fit-off UKS passes the preflight");
     let oh = mol_of(OH, 2);
     let prep_oh = PreparedBasis::new(&oh, &bs).expect("prep");
     let bounds_oh = SchwarzBounds::compute(op, &prep_oh).expect("schwarz");
@@ -619,16 +639,28 @@ fn unsupported_cosx_gradients_are_refused() {
         &scf_cfg(None, None),
     )
     .expect("uhf");
-    let err =
-        unrestricted_scf_gradient(&oh, &prep_oh, &bs, op, &bounds_oh, &uks, &r_oh).unwrap_err();
-    assert!(format!("{err}").contains("UKS"), "{err}");
-    assert!(
-        ferric_scf::gradient::refuse_cosx_restricted_open(&RhfConfig {
-            k_builder: Some("cosx".into()),
-            ..Default::default()
+    let err = unrestricted_scf_gradient(&oh, &prep_oh, &bs, op, &bounds_oh, &uks_fitted, &r_oh)
+        .unwrap_err();
+    assert!(format!("{err}").contains("overlap_fit"), "{err}");
+
+    // ROHF/ROKS: fit-off passes, the overlap fit is refused for HF and KS.
+    let rohf_fitted = RhfConfig {
+        k_builder: Some("cosx".into()),
+        ..Default::default()
+    };
+    for xc in [None, Some("B3LYP")] {
+        let c = RhfConfig {
+            xc: xc.map(str::to_string),
+            ..rohf_fitted.clone()
+        };
+        let err = preflight_cosx_restricted_open(&c).unwrap_err();
+        assert!(format!("{err}").contains("ROHF/ROKS"), "{xc:?}: {err}");
+        preflight_cosx_restricted_open(&RhfConfig {
+            cosx: cosx_exact(),
+            ..c
         })
-        .is_err()
-    );
+        .expect("fit-off ROHF/ROKS passes the preflight");
+    }
 }
 
 /// The open-shell solvers treat `df_j_aux = Some("")` / `df_k_aux = Some("")`
@@ -638,7 +670,8 @@ fn unsupported_cosx_gradients_are_refused() {
 /// Mutation: restoring the old `df_j_aux.is_some() || df_k_aux.is_some()`
 /// open-shell predicate makes the first two asserts fail (it reported "not
 /// COSX", and `unrestricted_scf_gradient` then paired an exact-K gradient with
-/// a COSX energy). The last two asserts keep a real DF name switching COSX off.
+/// a COSX energy). The last two asserts pin RIJCOSX: a named RI-J keeps COSX,
+/// a named RI-K next to it is an error.
 #[test]
 fn open_shell_empty_df_name_keeps_cosx_active() {
     let base = RhfConfig {
@@ -665,8 +698,10 @@ fn open_shell_empty_df_name_keeps_cosx_active() {
         df_k_aux: Some("def2-universal-jkfit".into()),
         ..base
     };
-    assert!(!scf_exchange_is_cosx(&named_j, true).unwrap());
-    assert!(!scf_exchange_is_cosx(&named_k, true).unwrap());
+    // A named RI-J keeps COSX on (RIJCOSX); a named RI-K next to COSX is a
+    // conflict, refused rather than silently resolved.
+    assert!(scf_exchange_is_cosx(&named_j, true).unwrap());
+    assert!(scf_exchange_is_cosx(&named_k, true).is_err());
 }
 
 // ---------------------------------------------------------------------------
@@ -680,7 +715,13 @@ fn cosx_fitted() -> CosxConfig {
         overlap_fit: true,
         screen_thresh: None,
         half_transform: CosxHalfTransform::Dense,
-        ..CosxConfig::default()
+        grid: ferric_dft::grid::AtomicGridConfig {
+            n_radial: 50,
+            n_angular: 110,
+            prune: None,
+        },
+        final_grid: None,
+        ..CosxConfig::flat_reference()
     };
     c.grid.n_radial = 30;
     c.grid.n_angular = 110;

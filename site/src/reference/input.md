@@ -63,7 +63,7 @@ same table: `cc-pvdz-ri`, `cc-pvtz-rifit`, `aug-cc-pv{d,t,q}z-rifit`,
 
 | Key | Type | Default | Allowed values | Notes |
 |---|---|---|---|---|
-| `kind` | string | **required** | `rhf` `uhf` `rohf` `ksdft` `rimp2` `lmp2` `lmp2-direct` `mp3` `oo-rimp2` `att-rimp2` `mp2-v` `scs-mp2` `scs-mp2-2terfc` `laplace-mp2` `laplace-sos-mp2` `pdep-rpa` `rs-mp2-rpa` `gw` `bse-tda` `tdhf-static-polarizability` `ccsd` `ccd` `ccsd(t)` `linlccd` `linlccd-amplitude` `drpa` `wb97x-l-v` `b2plyp` `dsd-pbep86` `tda` `tddft` | Any other value is an error. Smoke- and Spike-grade kinds print a `[warning]` grade line on stderr; Proven kinds and the ungraded `lmp2`, `lmp2-direct` and `laplace-sos-mp2` print none (see [Capabilities and validation](./validation.md#grades)). |
+| `kind` | string | **required** | `rhf` `uhf` `rohf` `ksdft` `rimp2` `mp3` `oo-rimp2` `att-rimp2` `mp2-v` `scs-mp2` `scs-mp2-2terfc` `laplace-mp2` `laplace-sos-mp2` `pdep-rpa` `rs-mp2-rpa` `gw` `bse-tda` `tdhf-static-polarizability` `ccsd` `ccd` `ccsd(t)` `linlccd` `drpa` `wb97x-l-v` `b2plyp` `dsd-pbep86` `tda` `tddft` | Any other value is an error. Smoke- and Spike-grade kinds print a `[warning]` grade line on stderr; Proven kinds and the ungraded `laplace-sos-mp2` print none. `rimp2`, `drpa` and `linlccd` name the method and are computed exactly unless [`[local]`](#local) sets a local approximation (see [Capabilities and validation](./validation.md#grades)). |
 | `task` | string | `"energy"` | `energy` `optimize` `frequencies` | `optimize`: `rhf` `ksdft` `uhf` `rohf` `rimp2` `pdep-rpa` only. `frequencies`: `rhf` `ksdft` `uhf` `rohf` only. |
 
 ## `[scf]`
@@ -82,13 +82,19 @@ Read by every kind, because every kind runs an SCF first.
 | `guess` | string | `"minao"` | `minao` `sad` `hcore` (case-insensitive) | `"sad"` is an alias of `"minao"` (the MINAO projection guess); the free-atom-SCF SAD guess is not selectable from config. Any other value is an error. |
 | `soscf` | bool | `false` | | Enables the second-order (Newton) step in the SCF tail. |
 | `integral_thresh` | float | `1e-12` | | Integral screening threshold. |
+| `eri_precision` | float | `1e-20` | `0` to `1e-8` | libint primitive-screening precision for the SCF J/K integrals. Omitted: `FERRIC_ERI_PRECISION` if set, else `1e-20`. `1e-14` costs up to 6e-9 Ha in E_J for atoms past Ne; `0` disables primitive screening (1.8–5.7× slower per J/K build). |
+| `jk_storage` | string | `"auto"` | `auto` `memory` `disk` `direct` | Where the raw RI-J/K three-index tensor lives. `auto` keeps it in memory when `n_aux × n_bf² × 8` bytes fit `[memory] budget_gb` and the shared memory pool, keeps the packed symmetric half (`n_aux × n_bf(n_bf+1)/2 × 8` bytes plus 64 unpacked aux rows of scratch) when only that fits, and otherwise measures this machine (an untimed warm-up block, four timed integral blocks, and a cold write and read of up to 64 MiB in the spill directory) and picks the cheaper of `disk` and `direct` for a 30-pass SCF. A spill directory without room for the packed tensor plus headroom rules `disk` out. `memory` is an error when even the packed half does not fit. `disk` always spills to `$TMPDIR`. `direct` recomputes each block per pass and writes nothing. Omitted: `FERRIC_JK_STORAGE` if set; an invalid value in either place is an error. J from the packed, spilled and recomputed tensors is bit-identical (all three are consumed through the same packed block stream); the unpacked in-core J differs from them in the last bits (summation order, about 1e-12 Ha in the energy). This holds for J only: K and the other consumers of the tensor (the DF-K dressing follows the tensor's own block order, and the packed tier's aux block size differs from the spill file's) can differ between tiers at the level of summation order. The tier chosen by `auto` depends on the budget (default 0.8 × available RAM) and on the free bytes in the shared memory pool, so the same input can pick a different tier on a busier machine or with a different budget; set `memory`, `disk` or `direct` to pin it. Applies to the RI-J tensor, and to the RI-K tensor when both use the same auxiliary basis on one rank; the RI-K dressed tensor follows `[memory] budget_gb`. |
 | `screening` | string | `"schwarz"` | `schwarz` `csb` `csam` | `csb` is rigorous and never looser than `schwarz`. `csam` is not a bound. It is refused for erfc (short-range) operators. See [SCF: screening](../methods/scf.md). |
-| `k_builder` | string | `"direct"` | `direct` `link` `cosx` | Exchange builder. Ignored with a warning when DF-K is active, for functionals with no exact exchange, or for range-separated functionals. See [SCF: choosing how exchange is built](../methods/scf.md). |
-| `cosx_grid` | inline table | `{ radial = 50, angular = 110 }` | `angular` ∈ 6/14/26/50/110/302/434/590 | Only with `k_builder = "cosx"`; otherwise it is an error. The inner table is strict. |
+| `k_builder` | string | `"direct"` | `direct` `link` `cosx` | Exchange builder. `cosx` with RI-J active (named, or the Kohn-Sham default) is RIJCOSX: J from RI-J, K from COSX, and the RI-K default is not applied; `cosx` next to an explicitly named `df_k_aux` is an error. `link` is ignored with a warning when DF-J/DF-K is active. Both are ignored with a warning for functionals with no exact exchange and for range-separated functionals. See [SCF: choosing how exchange is built](../methods/scf.md). |
+| `cosx_grid` | inline table | `{ radial = 35, angular = 194, prune = "sgx" }` | `angular` ∈ 6/14/26/50/110/194/302/434/590; `prune` ∈ `none` `sgx` `nwchem` | The COSX SCF grid. A table without `prune` is flat; with `prune = "sgx"`, `angular` is the peak order of the pruned rows (50/110/194/302/434/590). Only with `k_builder = "cosx"`; otherwise it is an error. The inner table is strict. |
+| `cosx_final_pass` | bool | `true` | | Re-evaluate exchange once on a larger grid at the converged density and report that energy (the SCF-grid energy is printed and logged too). Without `cosx_final_grid` the grid is `{ radial = 50, angular = 302, prune = "sgx" }`. Gradient tasks run without it; ROHF/ROKS skips it with a note (an explicit `true` there is an error). Only with `cosx`. |
+| `cosx_final_grid` | inline table | none | as `cosx_grid` | The final-pass grid; setting it turns the pass on (`cosx_final_pass = false` with it is an error). RHF/RKS and UHF/UKS only. Only with `cosx`. |
 | `cosx_overlap_fit` | bool | `true` | | Only with `cosx`; otherwise it is an error. |
+| `cosx_grid_schedule` | bool | `false` | | Run the first SCF iterations on a coarse pruned `sgx` (25,110) exchange grid and switch to `cosx_grid` once the largest density change falls below 1e-3. Convergence is accepted only on the production grid, DIIS restarts at the switch, and the final-grid pass is unchanged. RHF/RKS and UHF/UKS; ROHF/ROKS refuse it. Only with `cosx`; setting it otherwise is an error. |
 | `cosx_backend` | string | `"md3c1e"` | `md3c1e` `cosx-a` | Only with `cosx`; otherwise it is an error. `cosx-a` is the slower cross-check kernel. |
 | `cosx_screen_thresh` | float | `1e-7` | ≥ 0 | Only with `cosx` and `md3c1e`. `0` disables the screen. |
 | `cosx_half_transform` | string | `"sparse"` | `sparse` `dense` | Only with `cosx`. |
+| `cosx_fp64_multiplier` | float | `1e5` with `[gpu] precision = "mixed"` and `cosx-kern` in `mixed_kernels`, else `0` | ≥ 0 | Precision-router threshold: `tau = cosx_fp64_multiplier × cosx_screen_thresh`. A kept (shell pair, sub-batch) unit whose Hölder K bound is below `tau` is counted as f32-eligible; the exchange matrix is unchanged (every unit is still computed in f64), so the key only changes the `route_*` counters. Setting it requires `k_builder = "cosx"`, `[gpu] precision = "mixed"` and `cosx-kern` in `mixed_kernels`, and `cosx-kern` is not in the shipped kernel set, so in this build setting the key is always an error; a value above `0` also needs `md3c1e` and `cosx_screen_thresh > 0`. `1e5` is the multiplier recommended by Laqua, Kussmann and Ochsenfeld, J. Chem. Phys. 154, 214116 (2021). |
 | `df_j_aux` | string | none; `def2-universal-jkfit` for `ksdft`, `pdep-rpa`, `rs-mp2-rpa`, `gw`, `bse-tda`, `tdhf-static-polarizability`, `tda`, `tddft` | aux basis name, or `""` | RI-J. With neither key set, `rhf`/`uhf`/`rohf` use exact 4-index J/K. `df_j_aux = ""` selects exact J for the kinds that default to RI-J (the `SCF J/K` log line then reads `RI-JK via` with a blank name). Unlike Python's `run_dft`, the CLI does not accept `"exact"`, `"none"` or `"off"`: any non-empty value is looked up as a basis name, and an unknown one fails the SCF. |
 | `df_k_aux` | string | as `df_j_aux` | aux basis name, or `""` | RI-K. Use a JK-fit set. `""` selects exact K. |
 | `level_shift` | float | `0.0` | Hartree | Virtual-block shift. Left at 0 with a meta-GGA functional, the library applies 0.5. |
@@ -98,8 +104,8 @@ Read by every kind, because every kind runs an SCF first.
 | `df_guess_aux` | string | `def2-universal-jkfit` | aux basis name | It is an error when `df_guess` is off. |
 | `df_increments` | bool | `false` | | DF-corrected incremental Fock SCF. Same scope as `df_guess`, and warned and ignored on `rhf`/`ksdft`. |
 | `df_increments_aux` | string | `def2-universal-jkfit` | aux basis name | It is an error when `df_increments` is off. |
-| `check_stability` | bool | `false` | | Diagnostic only: warns if the solution is a saddle point and never fails the run. It covers RHF/RKS and UHF/UKS. ROHF/ROKS, range-separated and meta-GGA are skipped with a printed reason. |
-| `stability_descent` | bool | `false` | | UHF state selection: at a saddle of the UHF orbital Hessian, follow the downhill eigenvector and re-converge, keeping the lowest state. Turns `check_stability` on as well. Same as Python `run_uhf(stability_descent=True)`. Only `kind = "uhf"` (or `ksdft` on an open-shell molecule) with `task = "energy"`; any other kind or task is an error. Costs one Davidson per converged solve plus one SCF per descent. See `examples/o2-uhf-stability-descent.toml`. |
+| `check_stability` | bool | `false` | | Diagnostic only: warns if the solution is a saddle point and never fails the run. On an RHF/HF run it reports TWO verdicts — internal (the singlet channel, is this RHF solution an RHF minimum?) and external RHF→UHF (the triplet channel, does breaking spin symmetry lower the energy?) — because a stretched geometry is routinely internally stable and externally a saddle: water / 6-31G at r(OH) = 2.0 Å gives +1.97e-2 and −3.07e-1. An external instability's remedy is to run `kind = "uhf"`, not to re-converge RHF. RKS gets the internal verdict only (no triplet XC kernel, printed as a skip); UHF/UKS get the internal verdict, which already spans the independent α/β rotations. ROHF/ROKS, range-separated and meta-GGA are skipped entirely with a printed reason. |
+| `stability_descent` | bool | `false` | | State selection: at a saddle of the orbital Hessian (UHF, or the RHF singlet channel), follow the downhill eigenvector and re-converge, keeping the lowest state. Turns `check_stability` on as well. Same as Python `run_uhf(stability_descent=True)`. Only `kind = "rhf"`, `"uhf"` or `"ksdft"` with `task = "energy"`; any other kind or task is an error. A KS functional with no stability verdict (range-separated, meta-GGA) skips the descent with a printed reason. Costs one Davidson per converged solve plus one SCF per descent. See `examples/o2-uhf-stability-descent.toml`. |
 | `ladder` | array of tables | built-in ladder | see below | `[[scf.ladder]]` rungs. Read only by `rhf` and `ksdft`. |
 
 ### `[[scf.ladder]]` rungs
@@ -126,22 +132,24 @@ as elsewhere.
 | `grid_prune` | string | `"none"` | `none` `off` `flat`; `nwchem` `nwchem-like` `nwchem_like` | Prunes the main grid only. Accepted only with `task = "energy"`. |
 | `grid_radial` | integer | `75` | > 0 | Radial points per atom on the main grid. Only on a run with a Kohn–Sham grid, only with `task = "energy"` (the XC gradient uses the default grid), and not with `kind = "gw"`. Same as Python `grid_radial=`. |
 | `grid_angular` | integer | `110` | `6` `14` `26` `50` `110` `302` `434` `590` | Lebedev order on the main grid. Same scope as `grid_radial`. An unsupported order is an error. Same as Python `grid_angular=`. |
-| `dispersion` | string | absent | `d3bj`, `d3(bj)`, `d3bj(<functional>)` | Only with `kind = "ksdft"`, and not with `task = "frequencies"`. There is no "off" value; omit the key instead. A functional with no published D3(BJ) fit is an error. |
+| `dispersion` | string | absent | `d3bj`, `d3(bj)`, `d3bj(<functional>)`, `mbd`, `mbd(<functional>)` (case-insensitive) | Only on a Kohn–Sham SCF (`kind = "ksdft"`, or `rhf`/`uhf`/`rohf` with `functional`). `task = "optimize"` and `task = "frequencies"` run on RKS, UKS and ROKS references; `frequencies` uses finite differences of the KS + dispersion gradient, so `[frequencies] hessian = "analytic"` is an error. There is no "off" value; omit the key instead. A functional with no published D3(BJ) fit or MBD@rsSCS β (PBE, PBE0, HSE06) is an error. |
 | `lambda` | float | `0.6` | | Only for `wb97x-l-v`. |
 | `omega` | float | `0.1` | Bohr⁻¹ | Only for `wb97x-l-v`. Note the unit differs from `[mp2] omega`. |
 
 ## `[mp2]`
 
 This section is shared by the whole MP2 family, `ccsd`, `ccd`, `ccsd(t)`,
-`linlccd`, `linlccd-amplitude`, `drpa`, the double hybrids and `tda`/`tddft`,
-all of which read `auxbasis` and `frozen_core` from here.
+`linlccd`, `drpa`, the double hybrids and `tda`/`tddft`, all of which read
+`auxbasis` and `frozen_core` from here. `drpa`, `linlccd` and a local `rimp2`
+read nothing else from it (plus `linlccd_variant` for `linlccd`); any other
+`[mp2]` key on them is an error.
 
 | Key | Type | Default | Allowed values | Notes |
 |---|---|---|---|---|
 | `auxbasis` | string | `"cc-pvdz-ri"`; `"cc-pvdz-rifit"` for `tda`/`tddft` | aux basis name | The two defaults name the same bundled set (`cc-pvdz-rifit` is an alias of `cc-pvdz-ri`). |
 | `frozen_core` | int, string or bool | `0` | integer ≥ 0, `"auto"`, `"none"`, `true` (= auto), `false` (= 0) | `"auto"` gives the standard small core for this molecule after the ECP is applied, and the run prints the resolved count. |
 | `omega` | float | `0.420` | Å⁻¹ | `att-rimp2` (erfc), `rs-mp2-rpa`. Ignored with a warning when `attenuator = "terf"`. An error on `att-rimp2` with `att_operator = "terfc"`. |
-| `kappa` | float | none | κ > 0, Hartree⁻¹ | κ-regularized MP2 for `rimp2`. Absent = plain MP2. |
+| `kappa` | float | none | κ > 0, Hartree⁻¹ | κ-regularized MP2 for the exact `rimp2`; an error with `[local]`. Absent = plain MP2. |
 | `c_os` | float | `1.2` (`scs-mp2`), `1.27` (`scs-mp2-2terfc`), `1.3` (`laplace-sos-mp2`) | | |
 | `c_ss` | float | `1/3` (`scs-mp2`), `4.05` (`scs-mp2-2terfc`) | | `laplace-sos-mp2` warns and ignores it. |
 | `n_quad` | integer | `7` | `3` `5` `7` | `laplace-mp2`, `laplace-sos-mp2`. Any other value is an error. |
@@ -156,20 +164,7 @@ all of which read `auxbasis` and `frozen_core` from here.
 | `r0_sweep` | array of floats | none | Å, > 0 | `rs-mp2-rpa` with `terf` only. Reuses one SCF for several r0 values. `r0` is then ignored with a warning. |
 | `r0_bonded` | float | `0.75` | Å | `scs-mp2-2terfc`. |
 | `r0_nonbonded` | float | `1.05` | Å, > `r0_bonded` | `scs-mp2-2terfc`. |
-| `lmp2_eps` | float | `1e-4` | | `lmp2`, `lmp2-direct`. `0` reproduces `rimp2`. |
-| `lmp2_reference` | bool | `false` | | `lmp2`, `lmp2-direct`. Also compute the canonical RI-MP2 reference and print the local error against it. Costs a full RI-MP2 and forms the global 3-index tensor. |
-| `drpa_eps` | float | `1e-4` | ≥ 0 | `drpa`. `0` reproduces the canonical plasmon-formula dRPA. Ignored with a warning when `drpa_eps_sweep` is set. |
-| `drpa_reference` | bool | `false` | | `drpa`. Also compute the canonical plasmon-formula dRPA (a dense eigensolve) and print the threshold error against it. |
-| `drpa_eps_sweep` | array of floats | none | each ≥ 0 | `drpa`. Several ε on one SCF and one localized assembly; sorted and de-duplicated, one result block per point. |
-| `linlccd_variant` | string | `"hh"` | `hh` `drivers-only` `full` | `linlccd-amplitude`. `drivers-only` equals RI-MP2. Any other value is an error. |
-| `linlccd_eps` | float | `1e-4` | ≥ 0 | `linlccd-amplitude`. `0` reproduces the canonical LinLCCD of the same variant. |
-| `direct_aux_radius` | float | `10.0` | Bohr | `lmp2-direct`. |
-| `direct_virt_radius` | float | `12.0` | Bohr | `lmp2-direct`. |
-| `direct_ao_tail` | float | `1e-3` | | `lmp2-direct`. `0.0` keeps every shell. |
-| `direct_schwarz_skip` | float | `1e-5` | | `lmp2-direct`. Must be `0.0` for terfc operators, or the run errors. |
-| `direct_batch_merge` | integer | `4` | ≥ 1 | `lmp2-direct`. |
-| `direct_gate_cal` | float | none (gate off) | | `lmp2-direct` pair gate. |
-| `direct_virt_schwarz_kappa` | float | none (off) | | `lmp2-direct`. |
+| `linlccd_variant` | string | `"hh"` | `hh` `drivers-only` `full` | `linlccd` only (an error on any other kind), exact and local alike: it selects the method. `drivers-only` equals RI-MP2; `full` adds the pp ladder (CCD-like VVVV memory). Any other value is an error. |
 | `mp2v_r0` | float | `1.00` | Å, > 0 | `mp2-v`. Also sets the VV10 damping r0. It is correlated with `mp2v_b` in the published fit. |
 | `mp2v_b` | float | `11.0` | | `mp2-v`. |
 | `mp2v_c` | float | `0.0089` | | `mp2-v`. Fixed in the paper. Changing it leaves the published parameterization. |
@@ -182,6 +177,33 @@ all of which read `auxbasis` and `frozen_core` from here.
 | `oo_grad_conv` | float | `1e-4` | > 0 | `oo-rimp2` only. Convergence threshold on the orbital-gradient norm. |
 | `oo_level_shift` | float | `0.1` | Hartree, ≥ 0 | `oo-rimp2` only. Level shift on the approximate diagonal orbital Hessian. |
 | `oo_diis_size` | integer | `6` | ≥ 1 | `oo-rimp2` only. DIIS subspace for the orbital rotations. The four `oo_*` keys match Python `run_oo_rimp2(max_iter=, grad_conv=, level_shift=, diis_size=)`; on any other kind they are an error. |
+
+## `[local]`
+
+The local approximation of a correlated method. `method.kind` names the
+method (`rimp2`, `drpa` or `linlccd`); this section says whether and how its
+amplitudes are truncated. Without it (or with `scheme = "none"`) the method is
+computed exactly. On any other kind the section is an error. The local runs
+are closed shell and `task = "energy"` only, and every printout and run-log
+`result` carries the model: `"<method> (exact)"` with `"local": null`, or the
+scheme, `eps` and kept fraction. See
+[The MP2 family](../methods/mp2.md#exact-and-local-mp2) and
+[Exact and local correlation](../methods/index.md#exact-and-local-correlation).
+
+| Key | Type | Default | Allowed values | Notes |
+|---|---|---|---|---|
+| `scheme` | string | `"none"` | `none` `amplitude-threshold` | `amplitude-threshold`: drop pair amplitudes whose localized integral is at or below `eps` (single threshold). Any other value is an error. |
+| `eps` | float | **required** with `amplitude-threshold` | ≥ 0, finite | The threshold is part of the model and has no default. `0` keeps every amplitude and reproduces the exact method. An error with `scheme = "none"`. |
+| `eps_sweep` | array of floats | none | each ≥ 0 | `drpa` only. Several ε on one SCF and one localized assembly; sorted and de-duplicated, one result block per point. Instead of `eps`, not with it. |
+| `reference` | bool | `false` | | Also compute the exact method (canonical RI-MP2, canonical plasmon dRPA, exact LinLCCD) and print the local error against it. Costs the full exact calculation. An error with `scheme = "none"`. |
+| `integral_direct` | bool | `false` | | `rimp2` only. The integral-direct local MP2: never forms the global 3-index tensor. |
+| `aux_radius` | float | `10.0` | Bohr, > 0 | Integral-direct only (an error otherwise). Aux fit-domain radius. |
+| `virt_radius` | float | `12.0` | Bohr, > 0 | Integral-direct only. Virtual domain radius. |
+| `ao_tail` | float | `1e-3` | ≥ 0 | Integral-direct only. `0.0` keeps every shell. |
+| `schwarz_skip` | float | `1e-5` | ≥ 0 | Integral-direct only. Must be `0.0` for terfc operators, or the run errors. |
+| `batch_merge` | integer | `4` | ≥ 1 | Integral-direct only. |
+| `gate_cal` | float | none (gate off) | > 0 | Integral-direct only. Pair-gate calibration (~0.7 Coulomb, ~0.02 erfc ω = 1). |
+| `virt_schwarz_kappa` | float | none (off) | > 0 | Integral-direct only. ε-linked Schwarz virtual-candidate screen. |
 
 ## `[rpa]`
 
@@ -209,17 +231,17 @@ Read by `pdep-rpa`, `gw`, `bse-tda`, `tdhf-static-polarizability`, and, for
 | `compute_esp_surface` | bool | `false` | | ESP on a vdW shell. |
 | `esp_surface_vdw_scale` | float | `1.4` | | |
 | `esp_surface_n_angular` | integer | `110` | Lebedev order | |
-| `compute_polarizability` | bool | `true` | | |
-| `compute_alpha_atomic` | bool | `true` | | Always Becke-partitioned. `c6_partition` does not affect it. |
+| `compute_polarizability` | bool | `true` | | `alpha_tensor`, the molecular static α. |
+| `compute_alpha_atomic` | bool | `true` | | `alpha_atomic`: the Krishtal–Senet–Van Alsenoy intrinsic per-atom α (JCP 125, 034312 (2006)), always Becke-partitioned; `c6_partition` does not affect it. Charge transfer between atoms is excluded; with `compute_polarizability` also on, the remainder `alpha_ct` = `alpha_tensor` − Σ_A `alpha_atomic` is exported. |
 | `compute_electric_field` | bool | `true` | | |
 | `compute_density_matrix` | bool | `true` | | |
 | `compute_dipole` | bool | `true` | | |
-| `compute_hirshfeld_charges` | bool | `true` | | |
+| `compute_hirshfeld_charges` | bool | `true` | | Proatoms are free-atom SCF densities in the molecule's basis and SCF settings, as in Python's `hirshfeld_charges`. |
 | `compute_lowdin_charges` | bool | `true` | | |
 | `compute_mulliken_charges` | bool | `true` | | |
 | `compute_chelpg_charges` | bool | `true` | | |
 | `compute_resp_charges` | bool | `true` | | |
-| `compute_c6` | bool | `true` | | |
+| `compute_c6` | bool | `true` | | With `c6_source = "pdep"`, also exports `alpha_ct_dynamic` (nfreq, 3, 3): molecular α(iω) − Σ_A α^A(iω). |
 | `allow_partial_npz` | bool | `false` | | By default a bundle missing a requested property fails the run. |
 | `c6_source` | string | `"ts"` | `ts` `pdep` `mbd` | |
 | `c6_partition` | string | `hirshfeld` for `pdep`, `becke` for `ts`/`mbd` | `becke` `hirshfeld` | |
@@ -280,6 +302,42 @@ Read when `task = "frequencies"`.
 |---|---|---|---|---|
 | `budget_gb` | float | auto | finite and > 0 | Precedence: this key, then `FERRIC_MEM_BUDGET_GB`, then the legacy `FERRIC_OOC_BUDGET_GB`/`FERRIC_ERI3_BUDGET_GB`, then 0.8 × available RAM, then 2 GiB. A value of 0, a negative value or NaN is an error; omit the key for auto. It bounds the ledgered allocations, not total process memory. |
 | `three_index_budget_gb` | float | — | | Deprecated alias. `budget_gb` wins if both are set. |
+
+## `[gpu]`
+
+Optional CUDA backend. A default build has no GPU code: there `mode = "on"` is an error and `mode = "auto"` prints a notice and runs on the CPU. A GPU run is deterministic run to run on one device but is not bit-identical to the CPU run (a different summation order, like `FERRIC_BLAS_THREADS` above 1).
+
+| Key | Type | Default | Constraint | Meaning |
+|---|---|---|---|---|
+| `preset` | string | `"off"` | `off`, `auto`, `on`, `mixed`, `auto-mixed` | One word that sets `mode` and `precision` together; see the presets table below. The root-level key `gpu = "mixed"` is the same as `[gpu] preset = "mixed"` (a file cannot hold both a root `gpu` string and a `[gpu]` table). A `mode`, `precision` or `mixed_kernels` key, or its env var, that disagrees with the preset is an error naming both; one that agrees is kept. `device`, `memory_gb` and `min_flops` combine with any preset. Env: `FERRIC_GPU_PRESET`. |
+| `mode` | string | `"off"` | `off`, `auto`, `on` | `auto` uses a device when one is usable and otherwise prints a notice and runs on the CPU; `on` makes an unusable device an error. Env: `FERRIC_GPU`. |
+| `device` | integer | 0 | a CUDA ordinal | Which device to use. Env: `FERRIC_GPU_DEVICE`. |
+| `memory_gb` | float | 0.8 x free | finite and > 0 | Device-memory pool (decimal GB). A GEMM that does not fit runs on the CPU. Env: `FERRIC_GPU_MEM_GB`. |
+| `min_flops` | integer | 549755813888 | | Smallest `2*m*n*k` that an f64 `einsum!` matrix product sends to the device; the default is the rounded-up value of a crossover rule applied to products up to 6144³: the device does not clearly beat 6 CPU cores on a single f64 product at any shape measured (at best a 2-8% median win at 6144³ in two of three runs, a loss in the contested run, and at 4096³ and below the CPU won). Products of 2^39 FLOP or more go to the device, and that region is unmeasured. The device RI-MP2 energy does not consult it. Env: `FERRIC_GPU_MIN_FLOPS`. |
+| `precision` | string | `"f64"` | `f64`, `mixed` | `mixed` runs the kernels in `mixed_kernels` with f32 storage and f32 panels accumulated in f64; every other contraction stays f64. Requires `mode` `auto` or `on`. A mixed result is not an f64 result: its error is bounded, measured and documented on the [validation page](validation.md), not validated against a reference code. Env: `FERRIC_GPU_PRECISION`. |
+| `mixed_kernels` | string array | the kernels this build ships | `rimp2-energy`, `ccsd-amplitudes`, `dfk-occ`, `dfj-pack` | Which kernels may run in mixed precision; requires `precision = "mixed"`. This build ships `rimp2-energy`: with `precision = "mixed"` the device RI-MP2 energy keeps `B_ov` as f32 and accumulates its panels in f64 (the default `precision` stays `"f64"`, so shipping the kernel changes nothing until you ask). `rimp2-energy` covers the RI-MP2 energy under the Coulomb, erfc and terfc operators, closed-shell and unrestricted (open-shell, one f32 `B_ov` per spin); the erf operator, composite fitted operators, SR-MP2 in RS-MP2+RPA, OO-MP2 and kappa-regularised runs use the f64 device kernel. `dfj-pack` (the device RI-J with the packed raw 3-index tensor resident as f32, f64 accumulation) is named in this build but not shipped. Naming a kernel this build does not ship yet is an error, and a build that ships no mixed kernel refuses `precision = "mixed"` ("no mixed-precision kernel is available in this build"). Kernels that are not names here (SCF diagonalisation, DIIS, metric inverses, GW, grids) never run below f64. Env: `FERRIC_GPU_MIXED_KERNELS` (comma-separated). |
+
+```toml
+gpu = "mixed"   # same as [gpu] preset = "mixed": device on, mixed precision for every shipped kernel
+```
+
+### GPU presets
+
+A preset fills in every knob below that is not given; the filled-in knobs print with `[source: preset]` in the audit lines.
+
+| Preset | `mode` | `precision` | `mixed_kernels` |
+|---|---|---|---|
+| `off` | `off` | `f64` | the build default |
+| `auto` | `auto` | `f64` | the build default |
+| `on` | `on` | `f64` | the build default |
+| `mixed` | `on` | `mixed` | every kernel this build ships (`rimp2-energy`: the Coulomb, erfc and terfc RI-MP2 energy, closed-shell and unrestricted) |
+| `auto-mixed` | `auto` | `mixed` | every kernel this build ships (`rimp2-energy`: the Coulomb, erfc and terfc RI-MP2 energy, closed-shell and unrestricted) |
+
+`preset = "off"` is the same as no `[gpu]` key. A narrower `mixed_kernels` list is allowed under `mixed` and `auto-mixed`; naming a kernel the build does not ship is an error. Precedence for the preset itself: the command-line flag `ferric --gpu <preset> input.toml` (or `--gpu=<preset>`), then `[gpu] preset` or the root `gpu` key, then `FERRIC_GPU_PRESET`, then `off`. The flag labels its audit line `[source: command line]`; a `mode`, `precision` or `mixed_kernels` key or env var that disagrees with the flag is an error naming both, and `--gpu` given twice, without a value or with an unknown name is refused (exit code 2).
+
+```
+ferric --gpu mixed input.toml
+```
 
 ## `[output]`
 

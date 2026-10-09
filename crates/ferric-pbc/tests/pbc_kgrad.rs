@@ -314,7 +314,10 @@ fn gamma_restricted(d: Array2<f64>) -> ScfResult {
         computed_quartets: 0,
         induced_dipoles: None,
         stability: None,
+        stability_external: None,
         df_jk: None,
+        cosx_final: None,
+        cosx_schedule: None,
         rohf_spin_focks: None,
     }
 }
@@ -339,7 +342,10 @@ fn gamma_unrestricted(da: Array2<f64>, db: Array2<f64>) -> ScfResult {
         computed_quartets: 0,
         induced_dipoles: None,
         stability: None,
+        stability_external: None,
         df_jk: None,
+        cosx_final: None,
+        cosx_schedule: None,
         rohf_spin_focks: None,
     }
 }

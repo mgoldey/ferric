@@ -52,19 +52,11 @@ STILL OPEN, and these are the real remaining gaps:
   uncorrected vs 6.6418 with d3bj -- the attraction shortens the bond, which is
   the direction that shows the correction reached the GRADIENT and not only the
   energy.
-  STILL REFUSED: `task="frequencies"`, on narrower grounds than before. The
-  gradient exists; the finite-difference Hessian built from it has never been
-  validated against anything, and 6N unvalidated SCF+D3 evaluations is not a
-  number to hand back silently.
-  HOW it is refused, checked 2026-09-20: STRUCTURALLY, not at runtime.
-  `dispersion=` is a `run_dft` argument (the correction surfaces as
-  `DftResult.e_dispersion`); `run_frequencies` has no such parameter, so
-  `run_frequencies(mol, "sto-3g", dispersion="d3bj")` is a TypeError from
-  Python's own argument binding. Plain `run_frequencies(mol, "sto-3g")` works
-  and is what C4 uses. That is a stronger guarantee than a runtime check --
-  there is no code path to reach -- but it also means the refusal carries no
-  explanation, so a reader who does not know dispersion is DFT-path-only sees
-  only "unexpected keyword argument".
+  `task="frequencies"` and `run_frequencies(xc=..., dispersion=...)` also
+  WORK on a closed-shell KS reference: the Hessian is the finite difference of
+  the KS + dispersion gradient, validated against second differences of the
+  D3(BJ) energy and of the full SCF + MBD@rsSCS energy (see
+  [Validation](./validation.md)). Open-shell references are refused.
 - **QM/MM dispersion.** D3/D4/XDM/VV10 are all QM-atom-pairwise; MM point
   charges carry none. Needs LJ terms in `ferric-mm`.
 - **Pose noise.** MEASURED per-pose sd 29.07 kcal/mol against 1-2 kcal/mol
@@ -386,8 +378,15 @@ from tools.pipeline import run_funnel, Stage
 from tools.pipeline.tiers import tier1_dock, tier2_forcefield, tier3_gfn2, tier4_dft
 from tools.campaign.hierarchy import Tier
 
+# The analogues have DIFFERENT FORMULAS, so no total energy can order them:
+# a total tracks electron count, and run_funnel raises IncomparableError
+# rather than cut such a population on one. So the force-field stage keeps
+# everyone (a declash pass), and tiers 3-4 rank on
+#     score="interaction":  E(in pocket field) - E(vacuum), same geometry
+# which is a difference against a common reference and compares across
+# formulas. It costs two single points per candidate.
 stages = [
-    Stage(Tier.FORCE_FIELD,   tier2_forcefield, keep=2, name="ff"),
+    Stage(Tier.FORCE_FIELD,   tier2_forcefield, keep=len(props), name="ff"),
     Stage(Tier.SEMIEMPIRICAL, tier3_gfn2,       keep=2, name="xtb"),
     Stage(Tier.QUANTUM,       tier4_dft,        keep=1, name="dft"),
 ]
@@ -404,26 +403,40 @@ candidates = [
     )
     for p in props
 ]
-rep = run_funnel(candidates, stages, {"seed": 0xF00D, "basis": "sto-3g"})
+# A PLACEHOLDER field: one -1 charge 10 Bohr from the origin, (q, x, y, z)
+# with coordinates in BOHR. For a real pocket use
+# tools.active_site.pocket_charges.derive_pocket_charges(pdb).charges, and add
+# tier 1 so the poses sit in the pocket's frame.
+field = [(-1.0, 0.0, 0.0, 10.0)]
+rep = run_funnel(
+    candidates,
+    stages,
+    {"seed": 0xF00D, "basis": "sto-3g", "point_charges": field, "score": "interaction"},
+)
 #   tier 1 is omitted above only because it needs the `docking` extra and a
 #   receptor; add Stage(Tier.EMPIRICAL, tier1_dock, ...) with
-#   context["receptor_pdbqt"] and ["box_center"] to run it.
+#   context["receptor_pdbqt"] and ["box_center"] to run it. With a receptor
+#   configured, tiers 3-4 REFUSE to run without context["point_charges"].
 ```
 
-MEASURED 2026-09-19, two small candidates, STO-3G, one process:
+MEASURED 2026-09-19, two small candidates, STO-3G, one process (timings only;
+the funnel ranked total energies in that run, which carries no information
+across these two formulas):
 
 ```
 funnel wall: 1.58 s
   FORCE_FIELD    in=2 out=2 failed=0   0.03 s
   SEMIEMPIRICAL  in=2 out=2 failed=0   0.04 s
   QUANTUM        in=2 out=1 failed=0   1.51 s     <- 96% of the wall
-survivors: ['CC(=O)O']   dft = -225.76133078 Ha
+acetic acid (CC(=O)O): dft total = -225.76133078 Ha
 ```
 
 **96% of the wall in the last tier on TWO candidates** is the funnel's whole
 argument in one line, and it gets worse with candidate count: the cheap tiers
 scale with the population, tier 4 scales with what reaches it. That is why
-`keep=` matters more than any per-call cost in this note.
+`keep=` matters more than any per-call cost in this note. Under
+`score="interaction"` tiers 3 and 4 run two single points per candidate, so
+their rows double.
 
 Note the DFT total (-225.76133078) is 4.18 mHa BELOW the SCF energy the ladder
 logs (-225.7571497). That difference is the D3(BJ) correction, -2.62 kcal/mol
@@ -830,6 +843,13 @@ idle at low exhaustiveness".
 | 4 | ferric DFT via `tier4_dft` | **0.66 s @ 9, 8.7 s @ 19** (STO-3G); 96.1 s @ 32 (**def2-SVP**, ~450 bf) | MEASURED 2026-09-19 / RESULTS.md |
 | 4 | ferric DFT | 612.4 s @ 71 atoms, **STO-3G**/PBE (~234 bf), 18 iters, converged | RESULTS.md |
 
+**Tiers 3 and 4 cost TWICE these rows when ranking analogues.** Each row is ONE
+single point. Analogues of differing formula cannot be ranked on a total energy
+(`run_funnel` raises `IncomparableError`), so they are ranked on
+`score="interaction"` = E(in pocket field) − E(vacuum) at the same pose: two
+single points per candidate at tier 3 and at tier 4. Isomer campaigns may keep
+the default `score="total"` at one single point.
+
 **DO NOT DERIVE A SCALING LAW FROM THOSE TWO ROWS.** They differ in BASIS as
 well as size, and in the unhelpful direction: the BIGGER system used the
 SMALLER basis. Fitting them gives p = 2.32, which UNDERSTATES pure N-scaling
@@ -1070,8 +1090,11 @@ STO-3G and the split inverts at the default basis.
 
 Not a model of the shares -- the actual pipeline, 10 substitution candidates of
 benzoic acid through dock -> FF -> xtb -> DFT against the 7LCJ pocket, keeping
-6/4/2/1. Zero failures at either basis, same survivor
-(`O=C(O)c1cccc(F)c1`):
+6/4/2/1, zero failures at either basis. These are COST measurements only: that
+run ranked the analogues on total energies, which order differing formulas by
+electron count, so its survivor is not a selection. `run_funnel` refuses
+that cut; the comparable score is `score="interaction"` (in-pocket minus
+vacuum), which doubles the xtb and DFT rows.
 
 | basis | total | dock | FF | xtb | DFT |
 |---|---:|---:|---:|---:|---:|
@@ -1104,6 +1127,16 @@ table moves:
 |---|---:|---:|---:|---:|---:|
 | STO-3G (the rows above) | 1% | **79%** | 3% | **18%** | 9.3 h |
 | **def2-svp (the default)** | 0% | **30%** | 1% | **69%** | 24.4 h |
+
+Those rows are ONE single point per candidate at xtb and DFT, i.e. `score="total"`
+(isomers). An ANALOGUE campaign ranks on `score="interaction"`, which runs two;
+doubling the xtb and DFT columns of the rows above (derived, not separately
+measured):
+
+| `score="interaction"` | cheap | dock | xtb | DFT | total |
+|---|---:|---:|---:|---:|---:|
+| STO-3G | 1% | **65%** | 5% | **30%** | 11.3 h |
+| **def2-svp (the default)** | 0% | **18%** | 1% | **81%** | 41.5 h |
 
 So "docking dominates, not DFT" is true of a DEMONSTRATION basis and false of
 the default. The M11 conclusion below stands for what it measured -- tier 1 at
@@ -1801,7 +1834,10 @@ it is the first call in the process -- the RDKit/ETKDG warm-up documented under
 
 So the budget for N ligands through G0-G3 is
 
-    N * (26.4 s docking + ~0.02 s FF + ~0.05 s xtb) + N_survivors * DFT
+    N * (26.4 s docking + ~0.02 s FF + k * ~0.05 s xtb) + N_survivors * k * DFT
+
+with k = 1 for `score="total"` (isomers) and **k = 2 for `score="interaction"`**,
+the in-pocket minus vacuum score that analogues of differing formula require.
 
 and **DFT is the only term whose exponent hurts**: 2.6 -> 62.6 -> 265.3 s across
 9 -> 21 -> 34 atoms. Fitted on ATOM COUNT the exponent is **3.0 (21->34), 3.75

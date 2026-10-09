@@ -69,6 +69,8 @@ pub mod pair_energy_screen;
 pub mod ragged;
 /// Resolution-of-identity MP2 (density-fitted) using 3-center integrals.
 pub mod rimp2;
+#[cfg(feature = "gpu")]
+pub mod rimp2_gpu;
 /// Spin-component-scaled MP2 (SCS-MP2 and 2-terfc variants).
 pub mod scs;
 /// Spin-orbital integral/amplitude helpers for closed-shell references.

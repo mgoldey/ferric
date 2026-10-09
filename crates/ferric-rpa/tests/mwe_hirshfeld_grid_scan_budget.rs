@@ -1,9 +1,16 @@
-//! MWE: `atomic_effective_volumes_hirshfeld` / `hirshfeld_i_charges` must be
-//! gated on `chi` AND `d_chi` AND `rho_free`, not on `chi` alone.
+//! MWE: `hirshfeld_i_charges` /
+//! `atomic_effective_volumes_hirshfeld_on_grid` must be gated on `chi` AND
+//! `d_chi` AND `rho_free`, not on `chi` alone.
 //!
 //! # The defect
 //!
-//! Both functions call `ferric_integrals::ao_grid::eval_basis_on_grid` to
+//! `atomic_effective_volumes_hirshfeld` integrates on the atom-centred
+//! Becke-Lebedev grid in `HIRSHFELD_VOLUME_CHUNK_POINTS`-point chunks and
+//! charges this same estimate at the CHUNK shape — its real peak — so the
+//! arithmetic pinned here is production arithmetic for it too, just at a
+//! smaller `npts`.
+//!
+//! Both lattice functions call `ferric_integrals::ao_grid::eval_basis_on_grid` to
 //! build `chi`, a `(nbf, npts)` AO-on-grid matrix. That function's own
 //! internal gate charges exactly `nbf*npts*8` bytes (`chi` alone) against
 //! `resolve_budget_bytes(None)` — it has no way to see what its CALLER does

@@ -1,0 +1,268 @@
+{
+  "row": "COSX seminumerical exchange",
+  "system": "h2o",
+  "basis": "aug-cc-pvdz",
+  "charge": 0,
+  "multiplicity": 1,
+  "nao": 41,
+  "nuclear_repulsion": 9.189193229309746,
+  "basis_check": {
+    "nao": 41,
+    "replica_self_overlap_max_dev": 4.440892098500626e-16,
+    "pyscf_diag_max_dev": 4.440892098500626e-16,
+    "diag_checked": 41,
+    "diag_skipped_cartesian": 0
+  },
+  "methods": {
+    "hf": {
+      "xc": "HF",
+      "exact": {
+        "energy": -76.04136463771974
+      },
+      "sgx_matched_nofit": {
+        "75_110": {
+          "radial": 75,
+          "angular": 110,
+          "n_points": 24710,
+          "energy": -76.04135932991899,
+          "minus_exact": 5.307800748255431e-06,
+          "scf_cycles": 6,
+          "wall_s": 1.6
+        },
+        "75_302": {
+          "radial": 75,
+          "angular": 302,
+          "n_points": 67850,
+          "energy": -76.04136493631954,
+          "minus_exact": -2.98599800885313e-07,
+          "scf_cycles": 2,
+          "wall_s": 1.9
+        },
+        "75_434": {
+          "radial": 75,
+          "angular": 434,
+          "n_points": 97522,
+          "energy": -76.04136459011312,
+          "minus_exact": 4.7606619091311586e-08,
+          "scf_cycles": 1,
+          "wall_s": 2.0
+        },
+        "75_590": {
+          "radial": 75,
+          "angular": 590,
+          "n_points": 132580,
+          "energy": -76.04136462136887,
+          "minus_exact": 1.6350867326764273e-08,
+          "scf_cycles": 1,
+          "wall_s": 2.6
+        }
+      },
+      "sgx_pyscf_fit": {
+        "75_110": {
+          "radial": 75,
+          "angular": 110,
+          "n_points": 24710,
+          "energy": -76.0413585090081,
+          "minus_exact": 6.128711632413797e-06,
+          "scf_cycles": 5,
+          "wall_s": 1.4
+        },
+        "75_302": {
+          "radial": 75,
+          "angular": 302,
+          "n_points": 67850,
+          "energy": -76.04136464499479,
+          "minus_exact": -7.275048119481653e-09,
+          "scf_cycles": 1,
+          "wall_s": 1.6
+        },
+        "75_434": {
+          "radial": 75,
+          "angular": 434,
+          "n_points": 97522,
+          "energy": -76.04136463384562,
+          "minus_exact": 3.874120579894225e-09,
+          "scf_cycles": 1,
+          "wall_s": 2.2
+        },
+        "75_590": {
+          "radial": 75,
+          "angular": 590,
+          "n_points": 132580,
+          "energy": -76.04136463998856,
+          "minus_exact": -2.2688197987008607e-09,
+          "scf_cycles": 1,
+          "wall_s": 2.9
+        },
+        "75_974": {
+          "radial": 75,
+          "angular": 974,
+          "n_points": 218846,
+          "energy": -76.04136463743455,
+          "minus_exact": 2.851834324246738e-10,
+          "scf_cycles": 1,
+          "wall_s": 5.2
+        }
+      }
+    },
+    "b3lyp": {
+      "xc": "B3LYP",
+      "exact": {
+        "energy": -76.44453195970952
+      },
+      "sgx_matched_nofit": {
+        "75_110": {
+          "radial": 75,
+          "angular": 110,
+          "n_points": 24710,
+          "energy": -76.44453084826483,
+          "minus_exact": 1.1114446891724583e-06,
+          "scf_cycles": 4,
+          "wall_s": 1.6
+        },
+        "75_302": {
+          "radial": 75,
+          "angular": 302,
+          "n_points": 67850,
+          "energy": -76.44453202042364,
+          "minus_exact": -6.071411462471588e-08,
+          "scf_cycles": 1,
+          "wall_s": 1.6
+        },
+        "75_434": {
+          "radial": 75,
+          "angular": 434,
+          "n_points": 97522,
+          "energy": -76.44453194975385,
+          "minus_exact": 9.955670066119637e-09,
+          "scf_cycles": 1,
+          "wall_s": 2.1
+        },
+        "75_590": {
+          "radial": 75,
+          "angular": 590,
+          "n_points": 132580,
+          "energy": -76.44453195634466,
+          "minus_exact": 3.3648603903202456e-09,
+          "scf_cycles": 1,
+          "wall_s": 2.8
+        }
+      },
+      "sgx_pyscf_fit": {
+        "75_110": {
+          "radial": 75,
+          "angular": 110,
+          "n_points": 24710,
+          "energy": -76.44453088814575,
+          "minus_exact": 1.0715637728253569e-06,
+          "scf_cycles": 4,
+          "wall_s": 1.3
+        },
+        "75_302": {
+          "radial": 75,
+          "angular": 302,
+          "n_points": 67850,
+          "energy": -76.44453196108596,
+          "minus_exact": -1.3764349660050357e-09,
+          "scf_cycles": 1,
+          "wall_s": 1.6
+        },
+        "75_434": {
+          "radial": 75,
+          "angular": 434,
+          "n_points": 97522,
+          "energy": -76.44453195874115,
+          "minus_exact": 9.683702728580101e-10,
+          "scf_cycles": 1,
+          "wall_s": 2.1
+        },
+        "75_590": {
+          "radial": 75,
+          "angular": 590,
+          "n_points": 132580,
+          "energy": -76.44453196017895,
+          "minus_exact": -4.694271638072678e-10,
+          "scf_cycles": 1,
+          "wall_s": 2.8
+        },
+        "75_974": {
+          "radial": 75,
+          "angular": 974,
+          "n_points": 218846,
+          "energy": -76.44453195970081,
+          "minus_exact": 8.711253940418828e-12,
+          "scf_cycles": 1,
+          "wall_s": 4.5
+        }
+      }
+    }
+  },
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "scf": "RHF / RKS(B3LYP), exact direct J; conv_tol 1e-11, conv_tol_grad 1e-07, direct_scf_tol 1e-14",
+      "sgx": "sgx_fit(pjs=False); dfj=False, direct_j=True, optk=False (get_jk_favorj), grids_thrd=0, rebuild_nsteps=1, fit_ovlp False (matched) / True (pyscf_fit)",
+      "sgx_grid": "flat (75, N) Treutler radial x Lebedev, Becke partition, becke_atomic_radii_adjust (get_gridss replaced)",
+      "xc_grid": "(75, 110) flat, becke_atomic_radii_adjust (B3LYP only)"
+    },
+    "grid": {
+      "sgx_radial": 75,
+      "sgx_angular_matched": [
+        110,
+        302,
+        434,
+        590
+      ],
+      "sgx_angular_pyscf_fit": [
+        110,
+        302,
+        434,
+        590,
+        974
+      ],
+      "xc": [
+        75,
+        110
+      ]
+    },
+    "aux_basis": "none",
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-11,
+      "conv_tol_grad": 1e-07
+    },
+    "stability": null,
+    "basis": "aug-cc-pvdz",
+    "basis_json": "crates/ferric-core/src/basis/bundled/aug-cc-pvdz.json",
+    "basis_sha256": "911303b754cd16032f762811f2193796eaf67070bdb40bcdc0c59d422f8c8dd1",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/h2o.xyz",
+    "geometry_xyz_sha256": "284b6da243e9abcf0aa2d6e13ad7204946feecb55d27b7819f12097095fdd6ae",
+    "geometry_bohr": [
+      [
+        "O",
+        0.0,
+        0.0,
+        0.22259084021251865
+      ],
+      [
+        "H",
+        0.0,
+        1.4275992699810498,
+        -0.8903652505761991
+      ],
+      [
+        "H",
+        0.0,
+        -1.4275992699810498,
+        -0.8903652505761991
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_cosx.py",
+    "git_head": "c371b71d8427b0a9734130ee962a7492b17d8759",
+    "generated_utc": "2026-10-01T01:13:26+00:00"
+  }
+}

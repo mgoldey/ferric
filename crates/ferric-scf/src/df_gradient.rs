@@ -562,6 +562,31 @@ fn aux_basis(mol: &Molecule, name: &str) -> Result<PreparedBasis, FerricError> {
     PreparedBasis::new(mol, &bs)
 }
 
+/// RI-J gradient `∂E_J^DF(D)/∂R` alone, with the aux basis, operator and
+/// budget the SCF recorded in `route` — the Coulomb half of a RIJCOSX
+/// gradient (exchange from COSX, see `crate::cosx_gradient`). Errors if the
+/// route has no RI-J (the caller must then use the four-centre J gradient).
+pub(crate) fn df_j_gradient(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    route: &DfJkRoute,
+    d: &Array2<f64>,
+) -> Result<Array2<f64>, FerricError> {
+    let ja = route.j_aux.as_deref().ok_or_else(|| {
+        FerricError::General("df_j_gradient: the SCF route has no RI-J aux basis".into())
+    })?;
+    let dfbs = aux_basis(mol, ja)?;
+    df_jk_gradient(
+        mol.atoms.len(),
+        prep,
+        &dfbs,
+        route.op,
+        Some(d),
+        &[],
+        route.budget_bytes,
+    )
+}
+
 /// Two-electron (J + exact-exchange) gradient of the energy an SCF computed,
 /// routed by the builders it recorded in [`crate::result::ScfResult::df_jk`].
 ///

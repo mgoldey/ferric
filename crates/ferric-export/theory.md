@@ -20,7 +20,10 @@ When the RPA/export pipeline is executed (driven by the `export_npz` configurati
 | `esp_atoms` | $(N_{\text{atoms}},)$ | `float64` | Hartree / $e$ | Electrostatic potential $V(R_A)$ evaluated exactly at the coordinates of each atomic nucleus. |
 | `electric_field` | $(N_{\text{atoms}}, 3)$ | `float64` | a.u. | Vector components of the electric field $\vec{E}(R_A)$ evaluated at each nucleus. |
 | `alpha_tensor` | $(3, 3)$ | `float64` | Bohr$^3$ | Static molecular polarizability tensor $\alpha_{ij}$ at $\omega=0$. |
-| `alpha_atomic` | $(N_{\text{atoms}}, 3, 3)$| `float64` | Bohr$^3$ | Per-atom Hirshfeld-decomposed polarizability contribution tensors (additive: $\sum_A \alpha^A = \alpha$). |
+| `alpha_atomic` | $(N_{\text{atoms}}, 3, 3)$| `float64` | Bohr$^3$ | Per-atom Becke intrinsic polarizability (Krishtal, Senet, Van Alsenoy, J. Chem. Phys. 125, 034312 (2006)): $\alpha^A_{dj} = \langle w_A (r - R_A)_d \,\vert\, R \,\vert\, \mu_j \rangle$, atom-centred dipole on the bra, molecular dipole on the field-side ket. Charge transfer is excluded, so $\sum_A \alpha^A \neq \alpha$. |
+| `alpha_ct` | $(3, 3)$ | `float64` | Bohr$^3$ | Charge-transfer polarizability $\alpha_{\text{CT}} = \alpha - \sum_A \alpha^A$ (same response as both), so `alpha_ct + alpha_atomic.sum(0) == alpha_tensor`. Present when both `alpha_tensor` and `alpha_atomic` are. |
+| `alpha_atomic_dynamic` | $(N_{\text{atoms}}, N_\omega, 3, 3)$ | `float64` | Bohr$^3$ | Per-atom $\alpha^A(i\omega_k)$ at the C6 quadrature nodes `c6_freqs`; intrinsic definition for `c6_source = "pdep"`, the TS/MBD model otherwise (`c6_source`, `c6_partition` record which). |
+| `alpha_ct_dynamic` | $(N_\omega, 3, 3)$ | `float64` | Bohr$^3$ | Dynamic charge-transfer remainder $\alpha(i\omega_k) - \sum_A \alpha^A(i\omega_k)$; `c6_source = "pdep"` only. |
 | `hirshfeld_charges` | $(N_{\text{atoms}},)$ | `float64` | $e$ | Atomic charges computed via Hirshfeld population analysis relative to a spherical proatom baseline. |
 | `lowdin_charges` | $(N_{\text{atoms}},)$ | `float64` | $e$ | Atomic charges computed via Löwdin symmetric orthogonalization. recommended for CM5 charge models. |
 

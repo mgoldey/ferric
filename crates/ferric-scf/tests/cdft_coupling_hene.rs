@@ -653,7 +653,24 @@ fn he2_plus_s_ab_is_monotone_and_unchanged() {
             w: &w1,
         };
         let res = coupling_hab(&sa, &sb, &s);
-        (res.h_ab.abs(), res.s_ab)
+        // `coupling_hab` now uses F_X = E_X + λ_X N_X in the raw element
+        // (constraint-offset invariant; see cdft_coupling.rs module docs). The
+        // pins below were measured on the superseded E-only element, which is
+        // recovered EXACTLY from the new value by removing that term:
+        //   H_old = H_new − ½(λ_a N_a + λ_b N_b) S_ab / (1 − S_ab²)
+        // with N_X the driver's own converged population. So this guard still
+        // checks the same thing (the constrained states did not move).
+        let corr = 0.5
+            * (ra.lambdas[0] * ra.populations[0] + rb.lambdas[0] * rb.populations[0])
+            * res.s_ab
+            / (1.0 - res.s_ab * res.s_ab);
+        eprintln!(
+            "[He2+ R={r_ang}] |H_ab| (F form) = {:.6}  lambda_a/b = {:.6}/{:.6}",
+            res.h_ab.abs(),
+            ra.lambdas[0],
+            rb.lambdas[0]
+        );
+        ((res.h_ab - corr).abs(), res.s_ab)
     };
 
     let (h25, s25) = run(2.5);
@@ -664,7 +681,9 @@ fn he2_plus_s_ab_is_monotone_and_unchanged() {
          S_ab = {s25:.6} / {s30:.6} / {s35:.6}   at R = 2.5 / 3.0 / 3.5 A"
     );
 
-    // The pinned |H_ab| values from cdft_coupling.rs, unchanged by this branch.
+    // The pinned E-only-element |H_ab| values (reconstructed above), unchanged
+    // by this branch. They predate the libint 1e-20 precision change (#226);
+    // if they move by more than the bar, re-measure rather than widen.
     for (got, want, r) in [
         (h25, 0.018_629_f64, 2.5),
         (h30, 0.005_216, 3.0),

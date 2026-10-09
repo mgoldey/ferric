@@ -1,0 +1,201 @@
+{
+  "row": "Hirshfeld volumes (free-atom TS denominator)",
+  "system": "h_atom",
+  "basis": "cc-pvdz",
+  "charge": 0,
+  "multiplicity": 2,
+  "nao": 5,
+  "scf": {
+    "energy": -0.49927840341958285,
+    "converged": true,
+    "s_squared": 0.75,
+    "multiplicity_from_s2": 2.0,
+    "nelec_alpha": 1,
+    "nelec_beta": 0,
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF UHF internal (real)",
+      "rounds": 0,
+      "selected_guess": "minao",
+      "lambda_min": 0.6812109769783596
+    },
+    "guess_scan": [
+      {
+        "guess": "minao",
+        "energy": -0.49927840341958285,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -0.49927840341958285
+        ]
+      },
+      {
+        "guess": "atom",
+        "energy": -0.49927840341958285,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -0.49927840341958285
+        ]
+      },
+      {
+        "guess": "huckel",
+        "energy": -0.49927840341958285,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -0.49927840341958285
+        ]
+      }
+    ],
+    "multiple_stable_minima": false,
+    "homo_alpha": -0.49927840341958285,
+    "lumo_alpha": 0.1819325735587772,
+    "homo_beta": null,
+    "lumo_beta": -0.49927840341958285,
+    "somo_alpha": [
+      -0.49927840341958285
+    ]
+  },
+  "overlap_ferric_order": [
+    [
+      1.0,
+      0.9036869020509604,
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.9036869020509604,
+      1.0000000000000002,
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      1.0000000000000004,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0000000000000004,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0000000000000004
+    ]
+  ],
+  "density_total_ferric_order": [
+    [
+      1.000001523865954,
+      -8.431386254140855e-07,
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      -8.431386254140855e-07,
+      7.10881658376797e-13,
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  ],
+  "volume_ferric_none_lattice": 7.291495432503318,
+  "volume_weight_one_lattice": 7.297685404181981,
+  "volume_dense_grid": 7.303957026154419,
+  "measurements": {
+    "floor_loss_rel": 0.0008482102661092606,
+    "lattice_vs_dense_rel": -0.0017061427944438342
+  },
+  "provenance": {
+    "code": "PySCF + numpy",
+    "version": "2.13.1",
+    "keywords": {
+      "scf": "scf.UHF + stability loop",
+      "numpy": "1.26.4"
+    },
+    "grid": {
+      "lattice": [
+        0.2,
+        6.0
+      ],
+      "dense": [
+        200,
+        590
+      ]
+    },
+    "aux_basis": "none",
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-09
+    },
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF UHF internal (real)",
+      "rounds": 0,
+      "selected_guess": "minao",
+      "lambda_min": 0.6812109769783596
+    },
+    "basis": "cc-pvdz",
+    "basis_json": "crates/ferric-core/src/basis/bundled/cc-pvdz.json",
+    "basis_sha256": "ae48fcca0d533addd60dbd48490153130e697121767ba607e1d70f3b341eeef7",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/h_atom.xyz",
+    "geometry_xyz_sha256": "7200852c4bf932fe2b5f78eefed180dfa82a732399503869f019c89cb526f064",
+    "geometry_bohr": [
+      [
+        "H",
+        0.0,
+        0.0,
+        0.0
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_hirshfeld.py",
+    "git_head": "761d5507dc118c34d7a666217e5830da10c123eb",
+    "generated_utc": "2026-10-02T00:58:21+00:00",
+    "basis_self_check": {
+      "nao": 5,
+      "replica_self_overlap_max_dev": 2.220446049250313e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 5,
+      "diag_skipped_cartesian": 0
+    }
+  }
+}
