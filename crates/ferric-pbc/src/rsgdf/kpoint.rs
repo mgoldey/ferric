@@ -227,6 +227,7 @@ pub struct KRsGdfConfig {
 }
 
 impl Default for KRsGdfConfig {
+    /// No mutation, default Gamma [`RsGdfConfig`].
     fn default() -> Self {
         Self {
             gdf: RsGdfConfig::default(),
@@ -354,6 +355,7 @@ pub struct KRsGdf {
     stats: KRsGdfStats,
 }
 
+/// Saturating `u64` product of the factors.
 fn sat_prod(xs: &[usize]) -> u64 {
     xs.iter().fold(1u64, |a, &x| a.saturating_mul(x as u64))
 }
@@ -1171,6 +1173,9 @@ impl KRsGdf {
         Self::build_impl(cell, obs, aux, mesh, s_k, cfg, KPairWalk::S1Oracle)
     }
 
+    /// Shared body of [`KRsGdf::build`] and [`KRsGdf::build_pair_s1_oracle`]; `walk` selects the
+    /// production unordered-pair SR 3-centre walk or the frozen ordered one. `s_k` holds one `(nao,
+    /// nao)` overlap per mesh k-point, in mesh order.
     fn build_impl(
         cell: &Cell,
         obs: &PreparedBasis,
@@ -1833,6 +1838,8 @@ pub struct KRsGdfJk<'a> {
 }
 
 impl KPointJk for KRsGdfJk<'_> {
+    /// Builds J and K for per-k densities `dm` (one `(nao, nao)` matrix per mesh k-point, mesh
+    /// order), including the Madelung shift of K.
     fn build(
         &mut self,
         dm: &[Array2<C64>],

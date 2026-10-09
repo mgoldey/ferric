@@ -185,6 +185,7 @@ pub enum PeriodicEcpError {
 }
 
 impl fmt::Display for PeriodicEcpError {
+    /// Human-readable message naming the offending atom and the `apply_ecp` remedy.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EcpNotApplied {
@@ -221,6 +222,7 @@ impl fmt::Display for PeriodicEcpError {
 impl std::error::Error for PeriodicEcpError {}
 
 impl From<PeriodicEcpError> for FerricError {
+    /// Wrap as [`FerricError::Basis`] carrying the error's message.
     fn from(e: PeriodicEcpError) -> Self {
         FerricError::Basis(e.to_string())
     }
@@ -295,6 +297,7 @@ impl PeriodicEcpConfig {
         }
     }
 
+    /// Reject a `precision` outside `(0, 1)` and a non-finite or negative radius cap.
     fn validate(&self) -> Result<(), FerricError> {
         if !(f64::MIN_POSITIVE..1.0).contains(&self.precision) {
             return Err(FerricError::General(format!(
@@ -319,6 +322,7 @@ impl PeriodicEcpConfig {
 }
 
 impl Default for PeriodicEcpConfig {
+    /// [`PeriodicEcpConfig::with_precision`] at [`DEFAULT_ECP_PRECISION`].
     fn default() -> Self {
         Self::with_precision(DEFAULT_ECP_PRECISION)
     }
@@ -432,11 +436,13 @@ fn radial_k(al: f64, be: f64, ze: f64, ra: f64, rb: f64) -> f64 {
     (al * be * (ra - rb) * (ra - rb) + al * ze * ra * ra + be * ze * rb * rb) / (al + be + ze)
 }
 
+/// Reduced exponent `x y / (x + y)` of two Gaussian exponents.
 #[inline]
 fn mu(x: f64, y: f64) -> f64 {
     x * y / (x + y)
 }
 
+/// Squared Euclidean distance (Bohr²) between two Cartesian points.
 #[inline]
 fn dist2(a: [f64; 3], b: [f64; 3]) -> f64 {
     (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)
@@ -1215,6 +1221,7 @@ struct EcpImagePart {
 }
 
 impl Stored for EcpImagePart {
+    /// Heap plus inline bytes of the stored image part (the window budget).
     fn stored_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
             + 8 * (self.ket.len() + self.bra.len() + self.centre.len() + self.centre_atom.len())

@@ -361,6 +361,7 @@ impl DenseAftEri {
         }
     }
 
+    /// Shape guard: `d` and `out` must both be `(nao, nao)`; `who` names the builder in the error.
     fn check(&self, d: &Array2<f64>, out: &Array2<f64>, who: &str) -> Result<(), FerricError> {
         let n = self.nao;
         if d.dim() != (n, n) || out.dim() != (n, n) {
@@ -380,15 +381,19 @@ pub struct DenseAftJ<'a> {
 }
 
 impl JBuilder for DenseAftJ<'_> {
+    /// Overwrite `j` with `J_{mk} = Σ_{ls} (mk|ls) D_{ls}`; returns the `nao⁴` contraction length.
+    /// Timed on the tensor's J clock.
     fn build(&mut self, d: &Array2<f64>, j: &mut Array2<f64>) -> Result<usize, FerricError> {
         let eri = self.eri;
         eri.j_clock.time(|| self.build_untimed(d, j))
     }
 
+    /// No per-iteration state to reset.
     fn reset(&mut self) {}
 }
 
 impl DenseAftJ<'_> {
+    /// The J contraction without the clock; errors if `d`/`j` are not `(nao, nao)`.
     fn build_untimed(
         &mut self,
         d: &Array2<f64>,
@@ -427,17 +432,22 @@ pub struct DenseAftK<'a> {
 }
 
 impl KBuilder for DenseAftK<'_> {
+    /// Overwrite `k` with `K_{mν} = Σ_{ls} (ml|νs) D_{ls}` plus the Madelung term
+    /// `v_M S D S` (when `v_M != 0`); returns `nao⁴`. Timed on the tensor's K clock.
     fn build(&mut self, d: &Array2<f64>, k: &mut Array2<f64>) -> Result<usize, FerricError> {
         let eri = self.eri;
         eri.k_clock.time(|| self.build_untimed(d, k))
     }
 
+    /// No-op: the dense kernel keeps no density-dependent state.
     fn update_density(&mut self, _d: &Array2<f64>) {}
 
+    /// No per-iteration state to reset.
     fn reset(&mut self) {}
 }
 
 impl DenseAftK<'_> {
+    /// The K contraction without the clock; errors if `d`/`k` are not `(nao, nao)`.
     fn build_untimed(
         &mut self,
         d: &Array2<f64>,

@@ -592,18 +592,17 @@ pub fn solve_krks_on_grid(
     let mut timings = PbcTimings::default();
     let gdf;
     let eri;
-    let jk: Box<dyn crate::kscf::KPointJk + '_>;
-    match aux {
+    let jk: Box<dyn crate::kscf::KPointJk + '_> = match aux {
         None => {
             eri = KDenseAftEri::build(cell, prep, mesh, &hk.s, kc.exxdiv, &kc.dense)?;
-            jk = Box::new(eri.jk_builder());
+            Box::new(eri.jk_builder())
         }
         Some(aux) => {
             gdf = KRsGdf::build(cell, prep, aux, mesh, &hk.s, &kc.rsgdf)?.with_exxdiv(kc.exxdiv);
             crate::rsgdf::kpoint::record_stats(&mut timings, gdf.stats());
-            jk = Box::new(gdf.jk_builder());
+            Box::new(gdf.jk_builder())
         }
-    }
+    };
     let inj = KPointInjection {
         s: hk.s,
         h: hk.h,

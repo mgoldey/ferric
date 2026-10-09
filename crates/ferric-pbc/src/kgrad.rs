@@ -283,15 +283,18 @@ enum KSpins {
     },
 }
 
+/// Conjugate transpose.
 fn herm(m: &Array2<C64>) -> Array2<C64> {
     m.t().mapv(|z| z.conj())
 }
 
+/// Real number as `Complex64`.
 fn cr(x: f64) -> C64 {
     C64::new(x, 0.0)
 }
 
 impl KSpins {
+    /// Number of k-points.
     fn nk(&self) -> usize {
         match self {
             Self::Restricted { d, .. } => d.len(),
@@ -299,6 +302,7 @@ impl KSpins {
         }
     }
 
+    /// Total density `D(k)` (restricted: `D`; unrestricted: `D_α + D_β`).
     fn total(&self, k: usize) -> Array2<C64> {
         match self {
             Self::Restricted { d, .. } => d[k].clone(),
@@ -491,6 +495,8 @@ pub fn kpoint_uhf_gradient(
     )
 }
 
+/// Shape and consistency guard: converged SCF, matching `omega`, no ECP, `S`/`h`/`D` shapes
+/// `(nbasis, nbasis)` for all `N_k`, SCF k-points equal to the mesh's, and J/K source k-count.
 #[allow(clippy::too_many_arguments)]
 fn check_inputs(
     who: &str,
@@ -574,6 +580,8 @@ fn check_inputs(
     Ok(())
 }
 
+/// Open the memory ledger and reserve the per-k matrices, residue-folded weights and
+/// per-term arrays of the k-point gradient.
 fn open_ledger(
     cell: &Cell,
     prep: &PreparedBasis,
@@ -606,6 +614,7 @@ fn open_ledger(
     Ok(ledger)
 }
 
+/// `v_M` of the mesh: 0 for `ExxDiv::None`, the mesh Madelung constant for `ExxDiv::Ewald`.
 fn madelung_for(cell: &Cell, mesh: &KPointMesh, exxdiv: ExxDiv) -> Result<f64, FerricError> {
     Ok(match exxdiv {
         ExxDiv::None => 0.0,
@@ -736,6 +745,7 @@ fn add_pair_deriv(
     }
 }
 
+/// Sum the per-AO Cartesian gradient `g_ao` into a `(natoms, 3)` array by owning atom `aoat[μ]`.
 fn fold_ao(g_ao: &[[f64; 3]], aoat: &[usize], natoms: usize) -> Array2<f64> {
     let mut g = Array2::<f64>::zeros((natoms, 3));
     for (mu, v) in g_ao.iter().enumerate() {
@@ -746,6 +756,8 @@ fn fold_ao(g_ao: &[[f64; 3]], aoat: &[usize], natoms: usize) -> Array2<f64> {
     g
 }
 
+/// Assemble the k-point gradient from the per-spin `D(k)`/`F(k)`, hcore and J/K derivative
+/// pieces; `vm` is the Madelung shift.
 #[allow(clippy::too_many_arguments)]
 fn assemble(
     cell: &Cell,

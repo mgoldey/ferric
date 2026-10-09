@@ -573,6 +573,7 @@ pub(super) struct Sr3Contrib {
 }
 
 impl Stored for Sr3Contrib {
+    /// Heap bytes held: the struct plus 24 bytes per aux-function force row.
     fn stored_bytes(&self) -> usize {
         std::mem::size_of::<Self>() + 24 * self.gpx.len()
     }
