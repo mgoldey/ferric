@@ -168,6 +168,36 @@ impl ExternalPotential {
         e
     }
 
+    /// d²E/dR_A dR_B for the point-charge–nuclear term, QM–QM block only,
+    /// shape `(3N, 3N)`. The charges are fixed in space, so the result is
+    /// block diagonal: `E = Σ Z_A q_i / r` gives
+    /// `Z_A q_i (3 d_x d_y / r⁵ − δ_xy / r³)` on atom A's diagonal block,
+    /// `d = R_A − R_i`. Smeared charges and the field do not contribute
+    /// (the analytic Hessian refuses them).
+    pub fn charge_nuclear_hessian(&self, mol: &Molecule) -> Array2<f64> {
+        let natoms = mol.atoms.len();
+        let mut h = Array2::zeros((3 * natoms, 3 * natoms));
+        for (i, atom) in mol.atoms.iter().enumerate() {
+            if atom.ghost {
+                continue;
+            }
+            let za = atom.effective_z() as f64;
+            for pc in &self.point_charges {
+                let d = [atom.x - pc.x, atom.y - pc.y, atom.zpos - pc.z];
+                let r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+                let r3 = r2 * r2.sqrt();
+                let r5 = r3 * r2;
+                for x in 0..3 {
+                    for y in 0..3 {
+                        let kron = if x == y { 1.0 / r3 } else { 0.0 };
+                        h[(3 * i + x, 3 * i + y)] += za * pc.q * (3.0 * d[x] * d[y] / r5 - kron);
+                    }
+                }
+            }
+        }
+        h
+    }
+
     /// dE/dR for the charge-nuclear term, QM-atom rows only (no rows for
     /// the external charges — they are fixed, not gradient variables).
     /// Sign/convention matches `gradient::oneelectron_gradient`'s nuclear

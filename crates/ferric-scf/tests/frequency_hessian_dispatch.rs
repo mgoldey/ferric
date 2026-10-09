@@ -95,19 +95,16 @@ fn auto_falls_back_for_unsupported_configurations() {
         df_k_aux: Some("def2-universal-jkfit".into()),
         ..Default::default()
     };
-    let embedded = RhfConfig {
+    // Point charges are analytic (see `embedded_point_charges_are_analytic`);
+    // a uniform field is not.
+    let field = RhfConfig {
         external_potential: Some(ExternalPotential {
-            point_charges: vec![PointCharge {
-                q: 0.5,
-                x: 0.0,
-                y: 0.0,
-                z: 6.0,
-            }],
+            field: Some([0.0, 0.0, 0.01]),
             ..Default::default()
         }),
         ..Default::default()
     };
-    for (what, scf) in [("RI J/K", ri), ("external potential", embedded)] {
+    for (what, scf) in [("RI J/K", ri), ("uniform field", field)] {
         let r = run(&scf, &FrequencyConfig::default());
         assert_eq!(r.hessian_source, HessianSource::FiniteDifference, "{what}");
         assert_eq!(r.n_gradient_evaluations, 18, "{what}");
@@ -127,6 +124,28 @@ fn auto_falls_back_for_unsupported_configurations() {
             "{what}: Analytic must refuse, not fall back"
         );
     }
+}
+
+#[test]
+fn embedded_point_charges_are_analytic() {
+    if !has_deriv2() {
+        return;
+    }
+    let scf = RhfConfig {
+        external_potential: Some(ExternalPotential {
+            point_charges: vec![PointCharge {
+                q: 0.5,
+                x: 0.0,
+                y: 0.0,
+                z: 6.0,
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let r = run(&scf, &FrequencyConfig::default());
+    assert_eq!(r.hessian_source, HessianSource::Analytic);
+    assert_eq!(r.n_gradient_evaluations, 0);
 }
 
 /// NH2 ²B1 at the CCCBDB experimental geometry.
