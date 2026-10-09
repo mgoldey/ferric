@@ -10,7 +10,16 @@ There are two ways in. Most people want the first.
 ## Fastest: the prebuilt wheel
 
 Wheels are published to PyPI for **Linux x86_64** (`manylinux_2_28`),
-CPython 3.10–3.13. libint2 and libxc are statically linked into the extension,
+CPython 3.10–3.13, and for no other platform:
+
+| Platform | Wheel | Source build |
+|---|---|---|
+| Linux x86_64, CPython 3.10–3.13 | yes | yes (the only tested platform) |
+| Linux aarch64 | no | not tested |
+| macOS (x86_64, arm64) | not yet (wanted; no wheel is built) | not tested |
+| Windows | no | not supported: `build.rs` hardcodes Unix paths and links Unix static archives |
+
+libint2 and libxc are statically linked into the extension,
 and OpenBLAS ships inside the wheel as a bundled shared library, so nothing
 needs compiling. The wheel's libint2 carries second derivatives, so analytic
 Hessians work from a plain `pip install`; see
@@ -57,7 +66,8 @@ so run example files from the repository root.
 ## Building from source
 
 Build from source if you are changing ferric, need the MPI build, or are on a
-platform without a wheel. `ferric` links **libint2**, a C++ integral library;
+platform without a wheel (only Linux x86_64 is tested; see the table above).
+`ferric` links **libint2**, a C++ integral library;
 `scripts/install-libint.sh` installs a prebuilt copy in seconds.
 
 ### Prerequisites
@@ -143,6 +153,38 @@ uv run python -c "import ferric; print(ferric.__file__)"
 Use `uv run maturin develop`, not a bare `maturin develop`. A bare one can
 install into a different interpreter from the one `uv run python` loads, and the
 stale build keeps getting imported.
+
+### Building from the sdist
+
+Each release publishes an sdist next to the wheels, so
+`pip download ferric==<version> --no-binary :all:` succeeds. The sdist holds
+the Rust workspace crates the extension depends on, `Cargo.lock` and the
+vendored libecpint. It does **not** hold libint2, and it is not a
+self-contained build: `pip install` from it needs everything in
+[Prerequisites](#prerequisites) already present, with `LIBINT2_PREFIX` set to a
+libint2 install. The libint2 source is generated and too large to bundle (the
+export below is 183 MiB against PyPI's 100 MiB file limit).
+
+Two ways to get a libint2 for an sdist build:
+
+- **Linux x86-64:** `scripts/install-libint.sh` (conda-forge 2.13.1). The
+  script is not in the sdist; take it from the repository.
+- **Any platform with CMake and Eigen3:** build the export the wheels use,
+  `libint-2.7.2-ferric-small-1.tgz` from the
+  [`libint-2.7.2-ferric-small-1` release](https://github.com/mgoldey/ferric/releases/tag/libint-2.7.2-ferric-small-1)
+  (verify its sha256 against `LIBINT_SHA256` in `.github/workflows/wheels.yml`).
+  Configure it with `cmake .. -DCMAKE_INSTALL_PREFIX=$PREFIX
+  -DCMAKE_PREFIX_PATH=$PREFIX -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+  -DCMAKE_BUILD_TYPE=Release`, then `make` and `make install`, and set
+  `LIBINT2_PREFIX=$PREFIX`. The build takes about 30 minutes. It has the
+  wheel's integral classes (see the table below), so F12 methods still need
+  the 2.13.1 build. The recipe is tested only as part of the Linux x86-64
+  wheel build.
+
+On a platform with no wheel, plain `pip install ferric` falls back to this
+sdist and fails at the libint2 step unless those prerequisites are present.
+An sdist build carries no git metadata, so
+[the build identity](#which-build-am-i-running) reports `commit: "unknown"`.
 
 ### What the libint2 build carries
 

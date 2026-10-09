@@ -10,7 +10,7 @@ name: Wheels
 # on -- a `.so`/`.a` built on one is not guaranteed loadable/linkable on the
 # other, so this workflow builds its own native deps inside the container.
 #
-# Linux x86_64 ONLY. No macOS, no Windows -- ferric's build.rs hardcodes
+# Wheels: Linux x86_64 ONLY (plus one sdist, see build-sdist). No macOS, no Windows -- ferric's build.rs hardcodes
 # `/usr/include/eigen3` and links `libint2`/`libecpint` as Unix static
 # archives (`cargo:rustc-link-lib=static=...`) with a C++ shim compiled by
 # `cc`; none of that is portable to a MSVC or Apple-clang toolchain without
@@ -834,6 +834,92 @@ jobs:
           path: dist/*.whl
           if-no-files-found: error
 
+  # Source distribution. NOT a self-contained build: it carries ferric's own
+  # sources (the whole Cargo workspace, Cargo.lock and the vendored libecpint)
+  # but NOT libint2, which build.rs links from an external install
+  # (LIBINT2_PREFIX). `pip install` from it therefore only works where
+  # libint2 2.13.1 (with second derivatives), OpenBLAS/LAPACK, libxc, Eigen3,
+  # Boost headers, CMake and a Rust toolchain are already installed; see
+  # site/src/using/installation.md. It exists for `pip download --no-binary`,
+  # distro packagers and platforms with no wheel; it is NOT build-tested here
+  # (no libint2 on this job), only inspected for completeness.
+  # `maturin sdist` compiles nothing, so this job needs no native deps.
+  build-sdist:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # Same stamp as build-wheels' "Stamp the version from the tag" (that step
+      # holds the rationale and the fuller verification; keep the two in step).
+      - name: Stamp the version from the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          tag_version="${GITHUB_REF#refs/tags/v}"
+          if ! [[ "$tag_version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)((a|b|rc)[0-9]+)?(\.post[0-9]+)?(\.dev[0-9]+)?$ ]]; then
+            echo "::error::tag 'v${tag_version}' is not canonical PEP 440 -- refusing to stamp"
+            exit 1
+          fi
+          base="${BASH_REMATCH[1]}"
+          semver_extra=""
+          for part in "${BASH_REMATCH[2]}" "${BASH_REMATCH[4]#.}" "${BASH_REMATCH[5]#.}"; do
+            [[ -n "$part" ]] && semver_extra="${semver_extra:+$semver_extra.}$part"
+          done
+          semver_version="$base"
+          [[ -n "$semver_extra" ]] && semver_version="$semver_version-$semver_extra"
+          sed -i "0,/^version = /s/^version = .*/version = \"${tag_version}\"/" pyproject.toml
+          sed -i "0,/^version = /s/^version = .*/version = \"${semver_version}\"/" crates/ferric-python/Cargo.toml
+          files="$(git diff --name-only | sort | tr '\n' ' ')"
+          if [ "$files" != "crates/ferric-python/Cargo.toml pyproject.toml " ]; then
+            echo "::error::stamping changed unexpected files: $files"; exit 1
+          fi
+          if [ "$(git diff --numstat | awk '{a+=$1; d+=$2} END {print a" "d}')" != "2 2" ]; then
+            echo "::error::stamp must change exactly one line in each of the two files"; exit 1
+          fi
+          echo "stamp verified: only the two version lines changed"
+
+      - name: Build sdist
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          command: sdist
+          args: --out dist
+
+      # Completeness gate: a path dependency or vendored tree that fell out of
+      # the archive would otherwise only show up as a failed user build.
+      - name: Inspect the sdist
+        run: |
+          set -euo pipefail
+          ls -lh dist/
+          [ "$(ls dist/*.tar.gz | wc -l)" -eq 1 ]
+          sdist="$(ls dist/*.tar.gz)"
+          tar tzf "$sdist" > sdist-files.txt
+          for need in PKG-INFO Cargo.toml Cargo.lock pyproject.toml LICENSE-MIT LICENSE-APACHE \
+                      crates/ferric-python/src/lib.rs \
+                      crates/ferric-integrals/build.rs \
+                      crates/ferric-integrals/shim/shim.cc \
+                      crates/ferric-integrals/shim/libecpint/CMakeLists.txt; do
+            grep -qE "^[^/]+/${need}\$" sdist-files.txt || { echo "::error::sdist is missing ${need}"; exit 1; }
+          done
+          # The archive's own workspace must load: every member and path
+          # dependency its manifests name has to be inside it. (It holds only
+          # ferric-python's dependency closure, not every crates/* member.)
+          mkdir unpacked
+          tar xzf "$sdist" -C unpacked --strip-components=1
+          (cd unpacked && cargo metadata --no-deps --locked --format-version 1 > /dev/null)
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            tag_version="${GITHUB_REF#refs/tags/v}"
+            [ "$(basename "$sdist")" = "ferric-${tag_version}.tar.gz" ] || { echo "::error::$sdist does not match tag version ${tag_version}"; exit 1; }
+          fi
+          size=$(stat -c %s "$sdist"); echo "size: $size bytes"
+          [ "$size" -lt 104857600 ] || { echo "::error::sdist over PyPI's 100 MiB limit"; exit 1; }
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
   # Installs each BUILT WHEEL (never the source tree -- a wheel that builds
   # but does not import/run is worse than no wheel, since it fails silently
   # at `pip install` time for a real user rather than loudly here) into a
@@ -1473,7 +1559,7 @@ jobs:
   # cheapest available brake on an accidental tag push publishing a bad
   # wheel -- consider turning that on before the first real release.
   publish:
-    needs: [build-wheels, smoke-test]
+    needs: [build-wheels, build-sdist, smoke-test]
     # THIS GUARD IS THE ONLY THING STANDING BETWEEN A NIGHTLY CRON RUN AND A
     # REAL PYPI UPLOAD -- treat any change near it as a publish-safety change,
     # not a cosmetic one. On a `schedule` (or `workflow_dispatch`) event,
@@ -1505,6 +1591,12 @@ jobs:
           path: dist
           merge-multiple: true
 
+      # The sdist (build-sdist) goes out in the same upload as the wheels.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: sdist
+          path: dist
+
       - name: Sanity-check what is about to be uploaded
         run: |
           set -euo pipefail
@@ -1535,6 +1627,12 @@ jobs:
           echo "wheel count: $count (expect 4: cp310, cp311, cp312, cp313)"
           if [[ "$count" -ne 4 ]]; then
             echo "::error::expected 4 wheels, found $count -- refusing to publish a partial release"
+            exit 1
+          fi
+          # Exactly one sdist, named for the tag.
+          if [[ ! -f "dist/ferric-${tag_version}.tar.gz" || "$(ls dist/*.tar.gz | wc -l)" -ne 1 ]]; then
+            echo "::error::expected exactly dist/ferric-${tag_version}.tar.gz as the sdist"
+            ls -la dist/
             exit 1
           fi
           for whl in dist/*.whl; do
