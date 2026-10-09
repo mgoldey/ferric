@@ -1770,6 +1770,54 @@ class GammaCorrelationResult:
     @property
     def auxbasis(self) -> str | None: ...
 
+class KpointRksResult:
+    """Result of run_rks_kpts (closed-shell k-point RKS, energies per cell)."""
+
+    @property
+    def timings(self) -> dict[str, Any]: ...
+    @property
+    def functional(self) -> str: ...
+    @property
+    def energy(self) -> float: ...
+    @property
+    def converged(self) -> bool: ...
+    @property
+    def iterations(self) -> int: ...
+    @property
+    def e_nuc(self) -> float: ...
+    @property
+    def madelung(self) -> float: ...
+    @property
+    def exxdiv(self) -> str: ...
+    @property
+    def e_xc(self) -> float: ...
+    @property
+    def exact_exchange_fraction(self) -> float: ...
+    @property
+    def n_grid_points(self) -> int: ...
+    @property
+    def electrons_on_grid(self) -> float: ...
+    @property
+    def mesh(self) -> tuple[int, int, int]: ...
+    @property
+    def centring(self) -> str: ...
+    @property
+    def nk(self) -> int: ...
+    @property
+    def kpts(self) -> list[list[float]]: ...
+    @property
+    def mo_energy(self) -> list[list[float]]: ...
+    @property
+    def homo(self) -> float: ...
+    @property
+    def lumo(self) -> float: ...
+    @property
+    def nao(self) -> int: ...
+    @property
+    def jk(self) -> str: ...
+    @property
+    def auxbasis(self) -> str | None: ...
+
 class KpointScfResult:
     """Result of run_rhf_kpts / run_uhf_kpts (energies per cell)."""
 
@@ -2132,6 +2180,35 @@ def run_uhf_kpts(
 ) -> KpointScfResult:
     """k-point UHF; s2 is the giant (supercell) determinant's <S^2>.
     range_split as run_rhf_kpts."""
+    ...
+
+def run_rks_kpts(
+    mol: Molecule,
+    lattice: Sequence[Sequence[float]],
+    basis_set: BasisSet,
+    functional: str,
+    mesh: tuple[int, int, int],
+    exxdiv: str = "ewald",
+    centring: str = "gamma",
+    omega: float | None = None,
+    max_eri_gb: float | None = None,
+    max_iter: int = 200,
+    energy_conv: float = 1e-12,
+    grad_conv: float = 1e-9,
+    jk: str = "dense",
+    auxbasis: BasisSet | str | None = None,
+    memory_budget_gb: float | None = None,
+    n_radial: int = 75,
+    n_angular: int = 302,
+    neighbour_cutoff: float | None = None,
+    with_gradient: bool = False,
+    with_stress: bool = False,
+    range_split: float | bool | None = None,
+    gdf_omega: float | None = None,
+) -> KpointRksResult:
+    """Closed-shell k-point RKS (LDA / GGA / global hybrids). Open shell,
+    meta-GGA, range-separated hybrids and with_gradient/with_stress raise
+    ValueError naming the unsupported feature."""
     ...
 
 def run_mp2_kpts(
