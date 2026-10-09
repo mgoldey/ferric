@@ -84,6 +84,7 @@ pub struct KDenseAftConfig {
 }
 
 impl Default for KDenseAftConfig {
+    /// [`DEFAULT_DENSE_AFT_PRECISION`], [`DEFAULT_DENSE_AFT_MAX_BYTES`], unified budget, no mutation.
     fn default() -> Self {
         Self {
             precision: DEFAULT_DENSE_AFT_PRECISION,
@@ -499,6 +500,7 @@ pub struct KDenseAftJk<'a> {
 }
 
 impl KPointJk for KDenseAftJk<'_> {
+    /// Contract the per-k densities `dm` into `j` and `k` (Madelung shift included in `k`).
     fn build(
         &mut self,
         dm: &[Array2<Complex64>],

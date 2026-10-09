@@ -171,26 +171,34 @@ struct USpaces<'r> {
 }
 
 impl USpaces<'_> {
+    /// Active occupied MOs of spin `s` (`0` = α, `1` = β), `(nao, nact[s])`.
     fn c_occ(&self, s: usize) -> ArrayView2<'_, f64> {
         self.c[s].slice(s![.., self.first..self.ntot[s]])
     }
+    /// Virtual MOs of spin `s`, `(nao, nvir[s])`.
     fn c_vir(&self, s: usize) -> ArrayView2<'_, f64> {
         self.c[s].slice(s![.., self.ntot[s]..])
     }
+    /// Shifted active occupied orbital energies of spin `s`.
     fn eps_occ(&self, s: usize) -> &[f64] {
         &self.eps[s][self.first..self.ntot[s]]
     }
+    /// Virtual orbital energies of spin `s`.
     fn eps_vir(&self, s: usize) -> &[f64] {
         &self.eps[s][self.ntot[s]..]
     }
+    /// Number of occupied-virtual pairs `nact[s] · nvir[s]` of spin `s`.
     fn nov(&self, s: usize) -> usize {
         self.nact[s] * self.nvir[s]
     }
+    /// True when spin `s` has at least one occupied-virtual pair.
     fn live(&self, s: usize) -> bool {
         self.nov(s) > 0
     }
 }
 
+/// Build the per-spin spaces from a converged UHF result: errors for restricted/ROHF input or
+/// missing beta data; occupied energies are shifted by the reference-dependent `occ_shift`.
 fn spaces<'r>(
     who: &str,
     cell: &Cell,
@@ -270,6 +278,7 @@ fn b_ov_spin(b: &Array2<f64>, sp: &USpaces<'_>, s: usize) -> Result<Array2<f64>,
     b_ov_from_ao_b(b, sp.nao, sp.c_occ(s), sp.c_vir(s))
 }
 
+/// Per-spin dRPA intermediates from `b_ov` and the metric factor.
 fn intermediates(
     b_ov: Array2<f64>,
     v_inv_sqrt: Array2<f64>,
@@ -379,6 +388,7 @@ fn dense_blocks(
     Ok((blk(0, 0)?, blk(1, 1)?, blk(0, 1)?))
 }
 
+/// Error unless `x` has shape `(rows, cols)`; `what` names the block.
 fn check_block(
     who: &str,
     x: &Array2<f64>,
