@@ -5,7 +5,7 @@ mod periodic;
 use config::{load_config, Config};
 /// The `[local]` model types, re-exported for the Python bindings, which
 /// apply the SAME rules to their `local=`/`eps=` kwargs.
-pub use config::{LocalCfg, LocalDirectKnobs, LocalModel, LocalScheme};
+pub use config::{LocalCfg, LocalDirectKnobs, LocalModel, LocalScheme, Mp2Cfg};
 use ferric_cc::ccd::ccd;
 use ferric_cc::ccsd::ccsd;
 use ferric_cc::ccsd_closed_shell::ccsd_closed_shell;
@@ -1917,6 +1917,19 @@ fn run_rimp2_local(
     };
     println!("{}", model_label("MP2", Some(&local)));
     println!("  basis / aux           = {} / {aux_name}", bs.name);
+    if cfg.method.kind == "att-rimp2" {
+        // Name the correlation operator: a local number from the attenuated
+        // MP2 must not read like the Coulomb one. Bohr units, as the operator
+        // carries them (r0 in `distance`, omega in Bohr^-1).
+        println!(
+            "  correlation operator  = {:?} (r0 = {:.4} Bohr, omega = {:.5} Bohr^-1, \
+             r0*omega = {:.4}); SCF reference is full Coulomb",
+            op.kind,
+            op.distance,
+            op.omega,
+            op.distance * op.omega
+        );
+    }
     if let Some((d, _)) = &maps {
         println!(
             "  locality maps         = r_aux {} Bohr, r_virt {} Bohr, ao_tail {:.0e}, \
@@ -1981,7 +1994,7 @@ fn run_rimp2_local(
     }
     if let Some(rl) = ferric_scf::runlog::log() {
         rl.result(
-            "rimp2",
+            cfg.method.kind.as_str(),
             r.e_total,
             serde_json::json!({
                 "e_corr": r.e_corr,
@@ -2434,6 +2447,33 @@ fn run_u_oo_rimp2(
     }
 }
 
+/// `[local]` on att-rimp2: the amplitude-threshold local MP2 of the
+/// ATTENUATED correlation. The SCF (already solved, full Coulomb) is the
+/// reference; only the correlation operator is `[mp2] att_operator`. Returns
+/// true when it ran (a `[local]` model was configured).
+fn run_att_rimp2_local(
+    cfg: &Config,
+    mol: &Molecule,
+    bs: &BasisSet,
+    prep: &PreparedBasis,
+    result: &ferric_scf::result::ScfResult,
+    budget_bytes: Option<usize>,
+) -> bool {
+    let local_model = cfg.local_model().unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let Some(model) = local_model else {
+        return false;
+    };
+    let att_operator = cfg.mp2.att_rimp2_operator().unwrap_or_else(|e| {
+        eprintln!("config error: {e}");
+        std::process::exit(1);
+    });
+    run_rimp2_local(cfg, &model, mol, bs, prep, att_operator, result, budget_bytes);
+    true
+}
+
 /// `method.kind = "att-rimp2"`. Extracted verbatim from the former `main()`
 /// `"att-rimp2" => { ... }` match arm.
 fn run_att_rimp2(
@@ -2444,6 +2484,9 @@ fn run_att_rimp2(
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
 ) {
+    if run_att_rimp2_local(cfg, mol, bs, prep, result, budget_bytes) {
+        return;
+    }
     let aux_name = cfg
         .mp2
         .auxbasis
@@ -2532,11 +2575,14 @@ fn run_att_rimp2_terfc(
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
 ) {
-    const ANG2BOHR_R0: f64 = ferric_core::units::ANGSTROM_TO_BOHR;
     let r0_ang = cfg
         .mp2
         .att_r0
         .unwrap_or(config::ATT_RIMP2_TERFC_DEFAULT_R0_ANG);
+    let terfc_op = cfg.mp2.att_rimp2_operator().unwrap_or_else(|e| {
+        eprintln!("config error: {e}");
+        std::process::exit(1);
+    });
     let mp2_config = RiMp2Config {
         frozen_core: cfg.mp2.frozen_core.resolve(mol),
         memory_budget_bytes: budget_bytes,
@@ -2546,7 +2592,7 @@ fn run_att_rimp2_terfc(
         mol,
         prep,
         dfbs,
-        Operator::terfc(r0_ang * ANG2BOHR_R0),
+        terfc_op,
         result,
         &mp2_config,
     )
@@ -2556,8 +2602,14 @@ fn run_att_rimp2_terfc(
     });
     let total = result.energy + sc.e_total;
     println!(
-        "Attenuated RI-MP2 (terfc)/{} (aux: {}, r0={:.3} Å) on {}",
-        bs.name, aux_name, r0_ang, cfg.molecule.xyz
+        "Attenuated RI-MP2 (terfc)/{} (aux: {}, r0={:.3} Å{}) on {}",
+        bs.name,
+        aux_name,
+        r0_ang,
+        cfg.mp2
+            .att_omega
+            .map_or(String::new(), |w| format!(", omega={w:.4} Å⁻¹ (decoupled)")),
+        cfg.molecule.xyz
     );
     println!("  nbasis     = {}", prep.nbasis());
     println!("  RHF energy = {:.10} Hartree", result.energy);
@@ -2572,6 +2624,7 @@ fn run_att_rimp2_terfc(
             serde_json::json!({
                 "operator": "terfc",
                 "r0_angstrom": r0_ang,
+                "omega_inv_angstrom": cfg.mp2.att_omega,
                 "e_corr": sc.e_total,
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,

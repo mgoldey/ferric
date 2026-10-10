@@ -945,7 +945,7 @@ impl<'de> Deserialize<'de> for FrozenCore {
 /// The `method.kind`s whose correlation can be run under a local
 /// approximation (`[local]`). The kind names the METHOD; `[local]` says
 /// whether and how its amplitudes are truncated.
-pub const LOCAL_KINDS: &[&str] = &["rimp2", "drpa", "linlccd"];
+pub const LOCAL_KINDS: &[&str] = &["rimp2", "att-rimp2", "drpa", "linlccd"];
 
 /// `[local] scheme`: the local approximation applied to the method's
 /// amplitudes.
@@ -1464,6 +1464,13 @@ pub struct Mp2Cfg {
     /// the paper aDZ-optimal value and the Python `run_terfc_rimp2` default).
     /// Must be finite and > 0; an error with the erfc operator.
     pub att_r0: Option<f64>,
+    /// Decoupled terfc seam sharpness ω in **Å⁻¹** for
+    /// `att_operator = "terfc"` (`Operator::terfc_with_omega`, the same
+    /// decoupling as `mp2v_omega`). Omitted = the Dutoi curvature link
+    /// ω = 1/(r₀√2) (byte-identical to a run without the key). The sharp
+    /// setting measured sparser integrals at r₀ω = 4. Must be finite and
+    /// > 0; an error with the erfc operator (use `omega` there).
+    pub att_omega: Option<f64>,
 }
 
 /// The short-range operator `method.kind = "att-rimp2"` attenuates the MP2
@@ -1513,7 +1520,27 @@ impl Mp2Cfg {
                 ))
             }
         };
+        self.check_att_key_combination(op).map(|()| op)
+    }
+
+    /// Refuse the att-rimp2 key combinations that would be silently ignored
+    /// (or are out of range) for the already-parsed operator.
+    fn check_att_key_combination(&self, op: AttRimp2Op) -> Result<(), String> {
         match (op, self.att_r0) {
+            (AttRimp2Op::Erfc, _) if self.att_omega.is_some() => Err(
+                "[mp2] att_omega is the decoupled terfc seam sharpness and is not read by \
+                 att-rimp2's default erfc operator (whose sharpness is omega); set \
+                 att_operator = \"terfc\" or remove att_omega"
+                    .to_string(),
+            ),
+            (AttRimp2Op::Terfc, _)
+                if self.att_omega.is_some_and(|w| !(w.is_finite() && w > 0.0)) =>
+            {
+                Err(format!(
+                    "[mp2] att_omega must be finite and > 0 (Å⁻¹), got {}",
+                    self.att_omega.unwrap_or(f64::NAN)
+                ))
+            }
             (AttRimp2Op::Erfc, Some(_)) => Err(
                 "[mp2] att_r0 is the terfc cutoff and is not read by att-rimp2's default \
                  erfc operator (which uses omega); set att_operator = \"terfc\" or remove \
@@ -1522,14 +1549,36 @@ impl Mp2Cfg {
             ),
             (AttRimp2Op::Terfc, _) if self.omega.is_some() => Err(
                 "[mp2] omega is not read by att-rimp2 with att_operator = \"terfc\" (its \
-                 sharpness is derived from att_r0); remove omega"
+                 sharpness is derived from att_r0, or set decoupled by att_omega); remove omega"
                     .to_string(),
             ),
             (AttRimp2Op::Terfc, Some(r0)) if !(r0.is_finite() && r0 > 0.0) => {
                 Err(format!("[mp2] att_r0 must be finite and > 0 (Å), got {r0}"))
             }
-            _ => Ok(op),
+            _ => Ok(()),
         }
+    }
+
+    /// The correlation [`Operator`] an `att-rimp2` run attenuates with, built
+    /// from the strictly validated `att_operator` / `omega` / `att_r0` /
+    /// `att_omega` keys ([`Mp2Cfg::att_rimp2_op`] has already refused the
+    /// combinations that would be silently ignored). Å and Å⁻¹ at the TOML
+    /// boundary, Bohr in the operator. The SCF operator is NOT this one.
+    pub fn att_rimp2_operator(&self) -> Result<ferric_integrals::operator::Operator, String> {
+        use ferric_integrals::operator::Operator;
+        let ang_to_bohr = ferric_core::units::ANGSTROM_TO_BOHR;
+        // Å⁻¹ -> Bohr⁻¹ multiplies by BOHR_TO_ANGSTROM (Å per Bohr).
+        let inv_ang_to_inv_bohr = ferric_core::units::BOHR_TO_ANGSTROM;
+        Ok(match self.att_rimp2_op()? {
+            AttRimp2Op::Erfc => Operator::erfc(self.omega.unwrap_or(0.420) * inv_ang_to_inv_bohr),
+            AttRimp2Op::Terfc => {
+                let r0 = self.att_r0.unwrap_or(ATT_RIMP2_TERFC_DEFAULT_R0_ANG) * ang_to_bohr;
+                match self.att_omega {
+                    None => Operator::terfc(r0),
+                    Some(w) => Operator::terfc_with_omega(r0, w * inv_ang_to_inv_bohr),
+                }
+            }
+        })
     }
 
     /// True when any `oo_*` orbital-optimization key is set.
@@ -3323,6 +3372,41 @@ impl Config {
         }
     }
 
+    /// The integral-direct-specific `[local]` rules: the kind, and the
+    /// explicit `schwarz_skip = 0.0` the Schwarz-less terfc operator needs.
+    fn validate_local_direct(&self, kind: &str, model: &LocalModel) -> Result<(), String> {
+        if self
+            .local
+            .as_ref()
+            .and_then(|l| l.integral_direct)
+            .is_some()
+            && kind != "rimp2"
+            && kind != "att-rimp2"
+        {
+            return Err(format!(
+                "[local] integral_direct is the integral-direct local MP2 and applies to \
+                 method.kind = \"rimp2\" or \"att-rimp2\" only (got \"{kind}\")"
+            ));
+        }
+        // The table-engine terfc has no shell-pair Schwarz bound
+        // (SchwarzBounds::compute refuses it), and the integral-direct default
+        // schwarz_skip = 1e-5 would only fail after the SCF. Require the
+        // explicit 0.0 at load time instead of a silent default flip.
+        if kind == "att-rimp2"
+            && model.direct.as_ref().is_some_and(|d| d.schwarz_skip > 0.0)
+            && self.mp2.att_rimp2_op()? == AttRimp2Op::Terfc
+        {
+            return Err(
+                "[local] integral_direct with [mp2] att_operator = \"terfc\" needs \
+                 schwarz_skip = 0.0: the table-engine terfc has no Cauchy-Schwarz shell-pair \
+                 bound, so the default 1e-5 cut cannot be built. Set schwarz_skip = 0.0 \
+                 explicitly (nothing is skipped; integral cost is the unscreened one)."
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+
     /// Kind/task/value checks for the keys that wire Python-only library
     /// capabilities into the CLI: `[pcm]`, `[scf] stability_descent`,
     /// `[dft] grid_radial`/`grid_angular` (task side; the kind side is in
@@ -3433,14 +3517,17 @@ impl Config {
 
         if kind == "att-rimp2" {
             self.mp2.att_rimp2_op()?;
-        } else if self.mp2.att_operator.is_some() || self.mp2.att_r0.is_some() {
+        } else if self.mp2.att_operator.is_some()
+            || self.mp2.att_r0.is_some()
+            || self.mp2.att_omega.is_some()
+        {
             let hint = if kind == "rs-mp2-rpa" {
                 " (rs-mp2-rpa's range split is attenuator = \"erf\" | \"terf\" with r0)"
             } else {
                 ""
             };
             return Err(format!(
-                "[mp2] att_operator / att_r0 are read by method.kind = \"att-rimp2\" only; \
+                "[mp2] att_operator / att_r0 / att_omega are read by method.kind = \"att-rimp2\" only; \
                  kind = \"{kind}\" would silently ignore them{hint}"
             ));
         }
@@ -3522,6 +3609,9 @@ impl Config {
             ("drpa", _) => Some(&["auxbasis"][..]),
             ("linlccd", _) => Some(&["auxbasis", "linlccd_variant"][..]),
             ("rimp2", Some(_)) => Some(&["auxbasis"][..]),
+            ("att-rimp2", Some(_)) => {
+                Some(&["auxbasis", "omega", "att_operator", "att_r0", "att_omega"][..])
+            }
             _ => None,
         };
         if let Some(read) = read {
@@ -3564,18 +3654,7 @@ impl Config {
                  \"{kind}\"); use a single eps"
             ));
         }
-        if self
-            .local
-            .as_ref()
-            .and_then(|l| l.integral_direct)
-            .is_some()
-            && kind != "rimp2"
-        {
-            return Err(format!(
-                "[local] integral_direct is the integral-direct local MP2 and applies to \
-                 method.kind = \"rimp2\" only (got \"{kind}\")"
-            ));
-        }
+        self.validate_local_direct(kind, &model)?;
         if task != "energy" {
             return Err(format!(
                 "[local] scheme = \"amplitude-threshold\" supports task = \"energy\" only (got \
@@ -9347,6 +9426,92 @@ mod cli_wired_keys_tests {
             assert!(e.contains(needle), "{body}: {e}");
             refused(&cfg("att-rimp2", "energy", 1, body), needle);
         }
+    }
+
+    #[test]
+    fn att_omega_decouples_terfc_and_is_strict() {
+        use ferric_integrals::operator::{Operator, OperatorKind};
+        let bohr_per_ang = ferric_core::units::ANGSTROM_TO_BOHR;
+        let op = |body: &str| cfg("att-rimp2", "energy", 1, body).mp2.att_rimp2_operator();
+        // Linked default: byte-identical to Operator::terfc(r0).
+        let linked = op("[mp2]\natt_operator = \"terfc\"\natt_r0 = 1.0\n").unwrap();
+        let want = Operator::terfc(bohr_per_ang);
+        assert_eq!(linked.kind, OperatorKind::Terfc);
+        assert_eq!(linked.omega, want.omega);
+        assert_eq!(linked.distance, want.distance);
+        // Decoupled: att_omega in Å⁻¹ reaches the operator in Bohr⁻¹.
+        let sharp = op("[mp2]\natt_operator = \"terfc\"\natt_r0 = 1.0\natt_omega = 4.0\n").unwrap();
+        assert_eq!(sharp.distance, bohr_per_ang);
+        assert!((sharp.omega - 4.0 / bohr_per_ang).abs() < 1e-12);
+        assert!((sharp.omega * sharp.distance - 4.0).abs() < 1e-12);
+        // erfc: omega Å⁻¹ -> Bohr⁻¹ (default 0.420).
+        let e = op("").unwrap();
+        assert_eq!(e.kind, OperatorKind::ErfcCoulomb);
+        assert!((e.omega - 0.420 / bohr_per_ang).abs() < 1e-12);
+        for (body, needle) in [
+            (
+                "[mp2]\natt_omega = 1.0\n",
+                "not read by att-rimp2's default erfc",
+            ),
+            (
+                "[mp2]\natt_operator = \"terfc\"\natt_omega = -1.0\n",
+                "att_omega must be finite and > 0",
+            ),
+            (
+                "[mp2]\natt_operator = \"terfc\"\natt_omega = 1.0\nomega = 0.4\n",
+                "omega is not read",
+            ),
+        ] {
+            let e = op(body).unwrap_err();
+            assert!(e.contains(needle), "{body}: {e}");
+        }
+        refused(
+            &cfg("rimp2", "energy", 1, "[mp2]\natt_omega = 1.0\n"),
+            "\"att-rimp2\" only",
+        );
+    }
+
+    #[test]
+    fn att_rimp2_local_is_wired_and_terfc_direct_needs_explicit_no_schwarz() {
+        let loc = "[local]\nscheme = \"amplitude-threshold\"\neps = 1e-3\nintegral_direct = true\n";
+        // erfc + direct: the default Schwarz skip is fine (erfc has bounds).
+        cfg(
+            "att-rimp2",
+            "energy",
+            1,
+            &format!("[mp2]\natt_operator = \"erfc\"\nomega = 1.0\n{loc}"),
+        )
+        .validate_local()
+        .unwrap();
+        // terfc + direct without schwarz_skip = 0 is refused AT LOAD, not
+        // after the SCF.
+        refused(
+            &cfg(
+                "att-rimp2",
+                "energy",
+                1,
+                &format!("[mp2]\natt_operator = \"terfc\"\n{loc}"),
+            ),
+            "needs schwarz_skip = 0.0",
+        );
+        cfg(
+            "att-rimp2",
+            "energy",
+            1,
+            &format!("[mp2]\natt_operator = \"terfc\"\natt_omega = 4.0\n{loc}schwarz_skip = 0.0\n"),
+        )
+        .validate_local()
+        .unwrap();
+        // [mp2] keys the local path does not read are still hard errors.
+        refused(
+            &cfg(
+                "att-rimp2",
+                "energy",
+                1,
+                &format!("[mp2]\nc_os = 1.0\n{loc}schwarz_skip = 0.0\n"),
+            ),
+            "not read by the local",
+        );
     }
 
     #[test]

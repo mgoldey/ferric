@@ -5204,6 +5204,71 @@ fn rimp2_energies(
     }
 }
 
+/// The attenuated-correlation kwargs of `run_rimp2` as the CLI's `[mp2]`
+/// keys, plus whether any was set.
+fn att_keys_from_kwargs(
+    att_operator: Option<String>,
+    omega: Option<f64>,
+    att_r0: Option<f64>,
+    att_omega: Option<f64>,
+) -> (ferric_cli::Mp2Cfg, bool) {
+    let keys = ferric_cli::Mp2Cfg {
+        att_operator,
+        omega,
+        att_r0,
+        att_omega,
+        ..Default::default()
+    };
+    let sets = keys.att_operator.is_some()
+        || keys.omega.is_some()
+        || keys.att_r0.is_some()
+        || keys.att_omega.is_some();
+    (keys, sets)
+}
+
+fn att_keys_on_exact_error() -> PyErr {
+    pyo3::exceptions::PyValueError::new_err(
+        "run_rimp2: att_operator / omega / att_r0 / att_omega select the attenuated \
+         correlation operator of the LOCAL (amplitude-threshold) MP2 and are not read \
+         by the exact method; use run_terfc_rimp2 / run_attenuated_rimp2 for exact \
+         attenuated RI-MP2, or set local=\"amplitude-threshold\"",
+    )
+}
+
+/// Correlation operator of a local `run_rimp2`: Coulomb unless an attenuator
+/// was selected (the SCF is always full Coulomb). Strict, shared with the
+/// CLI's `Mp2Cfg::att_rimp2_operator`.
+fn local_correlation_operator(
+    att_keys: Option<&ferric_cli::Mp2Cfg>,
+    model: &ferric_cli::LocalModel,
+) -> PyResult<Operator> {
+    let value_err = pyo3::exceptions::PyValueError::new_err;
+    let Some(k) = att_keys else {
+        return Ok(Operator::coulomb());
+    };
+    if k.att_operator.is_none() {
+        return Err(value_err(
+            "run_rimp2: omega / att_r0 / att_omega parameterize an attenuated operator and \
+             would be silently ignored without att_operator; set att_operator=\"erfc\" \
+             (omega) or \"terfc\" (att_r0, att_omega), or remove them"
+                .to_string(),
+        ));
+    }
+    let op = k
+        .att_rimp2_operator()
+        .map_err(|e| value_err(format!("run_rimp2: {e}")))?;
+    let direct_schwarz = model.direct.as_ref().is_some_and(|d| d.schwarz_skip > 0.0);
+    if matches!(op.kind, ferric_integrals::operator::OperatorKind::Terfc) && direct_schwarz {
+        return Err(value_err(
+            "run_rimp2: integral_direct with att_operator=\"terfc\" needs schwarz_skip=0.0 \
+             (the table-engine terfc has no Schwarz bound; the default 1e-5 cannot be \
+             built). Pass schwarz_skip=0.0 explicitly."
+                .to_string(),
+        ));
+    }
+    Ok(op)
+}
+
 /// Resolution-of-identity (density-fitted) MP2. Runs its own internal SCF
 /// first (via `k_builder`, same convention as `run_rhf`'s `k_builder`
 /// kwarg), then the RI-MP2 correlation energy using `auxbasis` as the
@@ -5223,6 +5288,17 @@ fn rimp2_energies(
 /// `[local]` keys. The rules are the CLI's: every local kwarg is a
 /// `ValueError` on the exact method, and `kappa` is a `ValueError` on the
 /// local one (it reads only `frozen_core` and `auxbasis`).
+///
+/// Local runs only: `att_operator="erfc"|"terfc"` runs the local MP2 of the
+/// ATTENUATED correlation (SCF stays full Coulomb) with the CLI's
+/// `[mp2]` keys of the same names: `omega` (A^-1, erfc, default 0.420),
+/// `att_r0` (A, terfc, default 1.05) and `att_omega` (A^-1, terfc only: the
+/// decoupled seam sharpness, `Operator::terfc_with_omega`; omitted = the
+/// linked 1/(r0*sqrt2)). Omitted `att_operator` is the Coulomb operator.
+/// terfc needs `FERRIC_TERF_TABLE_DIR` and `schwarz_skip=0.0` with
+/// `integral_direct=True` (no Schwarz bound exists for it). These four are a
+/// `ValueError` on the exact method (use `run_terfc_rimp2` /
+/// `run_attenuated_rimp2` there).
 ///
 /// The reference follows the molecule's multiplicity: RHF + closed-shell
 /// RI-MP2 for a singlet, UHF + unrestricted RI-MP2 (UMP2, as PySCF's
@@ -5247,7 +5323,7 @@ fn rimp2_energies(
 /// ("RHF" or "UHF") and `local` (`None` for the exact method, else the
 /// local model dict).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, kappa=None, local=None, eps=None, compute_reference=None, integral_direct=None, aux_radius=None, virt_radius=None, ao_tail=None, schwarz_skip=None, batch_merge=None, gate_cal=None, virt_schwarz_kappa=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, kappa=None, local=None, eps=None, compute_reference=None, integral_direct=None, aux_radius=None, virt_radius=None, ao_tail=None, schwarz_skip=None, batch_merge=None, gate_cal=None, virt_schwarz_kappa=None, att_operator=None, omega=None, att_r0=None, att_omega=None))]
 #[allow(clippy::too_many_arguments)]
 fn run_rimp2(
     py: Python<'_>,
@@ -5269,7 +5345,12 @@ fn run_rimp2(
     batch_merge: Option<usize>,
     gate_cal: Option<f64>,
     virt_schwarz_kappa: Option<f64>,
+    att_operator: Option<String>,
+    omega: Option<f64>,
+    att_r0: Option<f64>,
+    att_omega: Option<f64>,
 ) -> PyResult<PyRiMp2Result> {
+    let (att_keys, sets_att) = att_keys_from_kwargs(att_operator, omega, att_r0, att_omega);
     let model = local_model_from_kwargs(
         "run_rimp2",
         ferric_cli::LocalCfg {
@@ -5298,7 +5379,11 @@ fn run_rimp2(
             memory_budget_gb,
             kappa,
             &model,
+            if sets_att { Some(&att_keys) } else { None },
         );
+    }
+    if sets_att {
+        return Err(att_keys_on_exact_error());
     }
     let emol = mol.inner.clone();
     let ebasis = basis_set.inner.clone();
@@ -5378,6 +5463,7 @@ fn run_rimp2_local(
     memory_budget_gb: Option<f64>,
     kappa: Option<f64>,
     model: &ferric_cli::LocalModel,
+    att_keys: Option<&ferric_cli::Mp2Cfg>,
 ) -> PyResult<PyRiMp2Result> {
     use ferric_mp2::lmp2_amplitude::{amplitude_lmp2, AmplitudeLmp2Config};
     use ferric_mp2::lmp2_direct::{amplitude_lmp2_direct, DirectConfig};
@@ -5395,10 +5481,10 @@ fn run_rimp2_local(
              kappa-regularized MP2 exists for the exact rimp2 only. Omit kappa or local=."
         )));
     }
+    let op = local_correlation_operator(att_keys, model)?;
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let rhf = local_rhf_reference(&mol.inner, &prep, k_builder, memory_budget_gb)?;
-    let op = Operator::coulomb();
     let eps = model.eps[0];
     let lcfg = AmplitudeLmp2Config {
         eps,

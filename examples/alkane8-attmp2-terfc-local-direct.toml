@@ -1,0 +1,34 @@
+# Local (amplitude-threshold, integral-direct) MP2 of the ATTENUATED
+# correlation: terfc(r; r0, omega)/r, the MP2-V modernization operator. The
+# SCF reference stays full Coulomb; only the correlation kernel is attenuated.
+#
+# att_omega decouples the seam sharpness from r0 (Operator::terfc_with_omega).
+# Omit it for the published curvature-linked omega = 1/(r0*sqrt2) (r0*omega =
+# 0.707); att_omega = 4.0 with att_r0 = 1.0 is r0*omega = 4 (sharp).
+# Needs the terf tables:  FERRIC_TERF_TABLE_DIR=$PWD/terf-tables
+#
+# schwarz_skip = 0.0 is REQUIRED for terfc: the table-engine operator has no
+# Cauchy-Schwarz shell-pair bound, and the config refuses the default 1e-5 at
+# load time rather than after the SCF.
+[molecule]
+xyz = "testdata/molecules/alkane_8.xyz"
+
+[basis]
+name = "6-31g"
+
+[method]
+kind = "att-rimp2"
+
+[mp2]
+auxbasis = "cc-pvdz-ri"
+frozen_core = 8
+att_operator = "terfc"
+att_r0 = 1.0          # Angstrom
+att_omega = 4.0       # Angstrom^-1; omit for the linked 1/(r0*sqrt2)
+
+[local]
+scheme = "amplitude-threshold"
+eps = 1e-3
+integral_direct = true
+schwarz_skip = 0.0
+# reference = true    # opt-in exact attenuated RI-MP2 reference (N^5)
