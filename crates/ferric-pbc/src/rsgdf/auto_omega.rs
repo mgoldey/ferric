@@ -28,7 +28,7 @@
 //! The predicted SR3 + LR time is minimised over a fixed log-spaced
 //! candidate set; ω moves to a candidate only if it predicts a saving of at
 //! least [`AUTO_OMEGA_SWITCH_MARGIN`] over the status quo
-//! [`DEFAULT_RSGDF_OMEGA`](super::DEFAULT_RSGDF_OMEGA), so a flat optimum
+//! `DEFAULT_RSGDF_OMEGA`, so a flat optimum
 //! keeps today's build bit for bit. Everything else in a run (hcore, SCF,
 //! the metric solve) is ω-independent except the default hcore split, whose
 //! cap follows ω (a second-order term the model leaves out).
