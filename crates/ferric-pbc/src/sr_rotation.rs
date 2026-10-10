@@ -73,7 +73,7 @@
 //! ```
 //!
 //! so the derivative blocks are evaluated on the ROTATED shells and
-//! contracted with the forward-transformed weight ([`AoTranspose`]); no
+//! contracted with the forward-transformed weight (`AoTranspose`); no
 //! derivative block is back-transformed, and the screen is the energy's own
 //! rotated screen. The aux basis, the metric, the LR and G = 0 terms stay in
 //! the parent basis. Forces/stress with the rotation on equal those with it
