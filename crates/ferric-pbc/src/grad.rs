@@ -190,7 +190,7 @@
 //!
 //! * **Stress** — lives in [`crate::stress`] (FINDINGS "Iteration 19"); it
 //!   reuses this module's `SpinSet`, `JkSource` and input checks. Stress
-//!   with an ECP is refused there (`refuse_ecp`).
+//!   with an ECP is differentiated in `stress.rs` (`periodic_ecp_strain`).
 //! * meta-GGA, range-separated hybrids, VV10, k-points (k-point forces with
 //!   an ECP are refused in [`crate::kgrad`]): rejected or not provided.
 
@@ -1677,18 +1677,6 @@ pub(crate) fn refuse_rotated_hcore(
              and stress walks differentiate the unrotated walk. Build the hcore for a force or \
              stress run with PeriodicHcoreConfig::for_derivatives (sr_column_rotation Off)",
             hc.sr_rotated_columns
-        )));
-    }
-    Ok(())
-}
-
-/// Refusal for the callers that have no ECP term (the Gamma stress): the
-/// forces carry one ([`crate::ecp::periodic_ecp_gradient`]), the strain
-/// derivative of `V_ECP` is not implemented.
-pub(crate) fn refuse_ecp(who: &str, hc: &PeriodicHcore, what: &str) -> Result<(), FerricError> {
-    if hc.v_ecp.is_some() {
-        return Err(FerricError::General(format!(
-            "{who}: periodic ECP {what} is not implemented"
         )));
     }
     Ok(())

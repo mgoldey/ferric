@@ -42,7 +42,7 @@
 //! 2.5e-5), RS-GDF H2 ET-40.
 //!
 //! NOT covered here: PySCF `rks_stress` end-to-end (the uniform KS grid is
-//! not an energy path in Rust), k-points, ECPs, ROHF/ROKS.
+//! not an energy path in Rust), k-points, ROHF/ROKS. ECPs: `pbc_grad_ecp.rs`.
 
 mod common;
 

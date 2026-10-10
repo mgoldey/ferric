@@ -44,6 +44,11 @@
 //! 2. `V_SR` (Gaussian nuclei, erfc): per triplet `(g_{C,M}|m_0 n_L)`,
 //!    `∂_A (A − X)_b + ∂_{B′} (B′ − X)_b`, `X = R_C + M`, `B′ = B + L`, from
 //!    the two directly computed ket blocks (`hcore::sr_attraction_strain`).
+//! 2b. `V_ECP` (periodic ECP lattice sum, real space only): per kept
+//!    (bra, ket image `L`, centre image `M`) triple `∂_A A_b + ∂_{B′} B′_b +
+//!    ∂_C X_b` with `X = R_C + M`, the centre derivative `−(bra + ket)` per
+//!    triple ([`crate::ecp::periodic_ecp_strain`]); the SAME kept-triple set
+//!    as the energy and the forces (count checked against hcore's).
 //! 3. Pair FT (per primitive, `P = e^{−iG·P_c} R(G, A − B′)`):
 //!    `dP/dε_ab = [Q_a + iG_a (α/p) P](A − B′)_b + G_a G_b/(2p) P − G_a P^g_b`
 //!    ([`crate::pair_ft::pair_ft_strain_chunked`]).
@@ -88,9 +93,7 @@
 //! up to ½ × the closed–open β orbital gradient (`crate::grad` module doc,
 //! "ROHF / ROKS"): exact at the stationary point, as for the forces.
 //!
-//! Not covered (refused or not provided): ECPs (refused here; the FORCES do
-//! carry the periodic-ECP term, the strain derivative of `V_ECP` is not
-//! implemented), meta-GGA, range-separated hybrids, VV10, k-points, the uniform KS grid
+//! Not covered (refused or not provided): meta-GGA, range-separated hybrids, VV10, k-points, the uniform KS grid
 //! (the energy path does not offer it), aux centres that do not strain
 //! homogeneously with the cell.
 
@@ -100,12 +103,13 @@ use crate::dft::{
     build_strain_grid, resolve_periodic_functional, GammaRksConfig, GammaUksConfig, LatticeAoHess,
     PeriodicGridConfig,
 };
+use crate::ecp::{periodic_ecp_strain_on, EcpStrainMutation};
 use crate::ewald::{
     default_ewald_omega, ewald_nuclear_strain, madelung_strain, DEFAULT_EWALD_PRECISION,
 };
 use crate::grad::{
-    check_inputs, fit_g0_charges, madelung_for, refuse_ecp, ro_gate, spin_densities,
-    unrestricted_focks, JkSource, RsGdfGradSource, SpinSet, GRAD_NUCLEUS_EXPONENT,
+    check_inputs, fit_g0_charges, madelung_for, ro_gate, spin_densities, unrestricted_focks,
+    JkSource, RsGdfGradSource, SpinSet, GRAD_NUCLEUS_EXPONENT,
 };
 use crate::hcore::{
     gvector_list_bytes, half_gvectors, hcore_pair_images, lr_gcut, sr_attraction_strain,
@@ -152,6 +156,12 @@ const XC_STRESS_CHUNK: usize = 64;
 pub enum StressMutation {
     /// Drop `Σ M dS` (overlap / Pulay term).
     NoPulay,
+    /// ECP strain: drop the centre-image virial.
+    EcpNoCentre,
+    /// ECP strain: ket derivative weighted without its image `L`.
+    EcpNoKetImage,
+    /// ECP strain: centre-image virial with the wrong sign.
+    EcpCentreSign,
     /// Pair FT: drop the basis-centre (pair-vector) part of `dP`.
     FtNoCentres,
     /// G treated as unstrained: drop the G parts of `dP`, `dv` and `dX`.
@@ -238,6 +248,8 @@ pub struct GammaStressParts {
     pub kinetic: Mat3,
     /// `Σ D dV_SR` (basis centres and nuclei).
     pub vsr: Mat3,
+    /// `Σ D dV_ECP` (periodic ECP lattice sum; zero without an ECP).
+    pub ecp: Mat3,
     /// `Σ D dV_LR`, including its `−δ E` volume term.
     pub vlr: Mat3,
     /// `−δ c0 Z_tot N`.
@@ -268,12 +280,13 @@ pub struct GammaStressParts {
 }
 
 impl GammaStressParts {
-    /// The 19 component tensors in a fixed order, as references.
-    fn all(&self) -> [&Mat3; 19] {
+    /// The 20 component tensors in a fixed order, as references.
+    fn all(&self) -> [&Mat3; 20] {
         [
             &self.overlap,
             &self.kinetic,
             &self.vsr,
+            &self.ecp,
             &self.vlr,
             &self.c0_volume,
             &self.eri,
@@ -714,8 +727,7 @@ impl<'a> KsSpec<'a> {
     }
 }
 
-/// HF stress driver (`spin` selects restricted, unrestricted or restricted-open); refuses ECP
-/// cells. `who` labels errors.
+/// HF stress driver (`spin` selects restricted, unrestricted or restricted-open). `who` labels errors.
 #[allow(clippy::too_many_arguments)]
 fn hf_stress(
     who: &str,
@@ -730,7 +742,6 @@ fn hf_stress(
     cfg: &GammaStressConfig,
 ) -> Result<GammaStress, FerricError> {
     check_inputs(who, cell, prep, hcore_cfg, hc, &jk, scf, spin)?;
-    refuse_ecp(who, hc, "stress")?;
     let unrestricted = spin != Spin::Restricted;
     let mut ledger = open_ledger(prep, cfg, unrestricted)?;
     let vm = madelung_for(cell, exxdiv)?;
@@ -766,7 +777,7 @@ fn hf_stress(
     )
 }
 
-/// KS stress driver for the functional/grid/spin in `ks`; refuses ECP cells. `who` labels
+/// KS stress driver for the functional/grid/spin in `ks`. `who` labels
 /// errors.
 #[allow(clippy::too_many_arguments)]
 fn ks_stress(
@@ -781,7 +792,6 @@ fn ks_stress(
     cfg: &GammaStressConfig,
 ) -> Result<GammaStress, FerricError> {
     check_inputs(who, cell, prep, hcore_cfg, hc, &jk, scf, ks.spin)?;
-    refuse_ecp(who, hc, "stress")?;
     let (_, alpha) = resolve_periodic_functional(ks.functional)?;
     let unrestricted = ks.spin != Spin::Restricted;
     let mut ledger = open_ledger(prep, cfg, unrestricted)?;
@@ -854,6 +864,48 @@ fn ks_stress(
             cfg,
             &mut ledger,
         )
+    }
+}
+
+/// `Σ D dV_ECP/dε` (zero for an all-electron cell); errors when hcore's
+/// `V_ECP` and the strain screen disagree (another ECP precision/geometry).
+fn ecp_strain_term(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hcore_cfg: &PeriodicHcoreConfig,
+    hc: &PeriodicHcore,
+    d: &Array2<f64>,
+    mutation: Option<StressMutation>,
+    ledger: &mut Ledger,
+) -> Result<Mat3, FerricError> {
+    let m = match mutation {
+        Some(StressMutation::EcpNoCentre) => Some(EcpStrainMutation::NoCentre),
+        Some(StressMutation::EcpNoKetImage) => Some(EcpStrainMutation::NoKetImage),
+        Some(StressMutation::EcpCentreSign) => Some(EcpStrainMutation::CentreSign),
+        _ => None,
+    };
+    let r = periodic_ecp_strain_on(cell, prep, &hcore_cfg.ecp_config(), d, m, ledger)?;
+    match (&hc.v_ecp, r) {
+        (Some(_), Some((v, n))) => {
+            if n != hc.n_ecp_triples {
+                return Err(FerricError::General(format!(
+                    "gamma stress: the ECP strain screen keeps {n} triples but hcore's V_ECP \
+                     kept {}; hcore was built with a different ECP precision/config than \
+                     hcore_cfg (or at another geometry)",
+                    hc.n_ecp_triples
+                )));
+            }
+            Ok(v)
+        }
+        (None, None) => Ok(ZERO3),
+        (Some(_), None) => Err(FerricError::General(
+            "gamma stress: hcore carries V_ECP but the basis/cell has no ECP centre".into(),
+        )),
+        (None, Some(_)) => Err(FerricError::General(
+            "gamma stress: the basis carries an ECP for a cell atom but hcore has no V_ECP; \
+             build hcore from this PreparedBasis"
+                .into(),
+        )),
     }
 }
 
@@ -985,6 +1037,10 @@ fn assemble(
     let (vsr, n_sr_triplets) =
         sr_attraction_strain(cell, prep, &sr_cfg, &d, drop_images, serial, ledger)?;
     parts.vsr = vsr;
+
+    // --- V_ECP: the strain derivative of the periodic ECP lattice sum on the
+    // energy's frozen kept-triple set.
+    parts.ecp = ecp_strain_term(cell, prep, hcore_cfg, hc, &d, mutation, ledger)?;
 
     let ft_terms = PairFtStrainTerms {
         centres: !is(StressMutation::FtNoCentres),

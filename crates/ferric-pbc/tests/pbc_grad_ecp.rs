@@ -32,7 +32,7 @@
 //! * WIRING (fast): the RHF force's `parts.ecp` IS `periodic_ecp_gradient`
 //!   at the SCF density; its triple count is the hcore's; the UHF path on
 //!   the same closed-shell density gives the same force (all six Gamma
-//!   entry points share `grad::assemble`); stress refuses an ECP cell; a
+//!   entry points share `grad::assemble`); stress carries the ECP strain term; a
 //!   hcore built at another ECP precision is refused.
 //! * SCF FD ANCHOR (slow, #[ignore]): analytic RHF force vs central FD (h =
 //!   1e-4) of ferric's OWN Gamma energy, both exxdiv, every displaced SCF
@@ -63,15 +63,15 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_pbc::dense_aft::{DenseAftEri, ExxDiv, DEFAULT_DENSE_AFT_MAX_BYTES};
 use ferric_pbc::ecp::{
-    periodic_ecp_gradient, periodic_ecp_gradient_with, periodic_ecp_images, EcpGradMutation,
-    PeriodicEcpConfig,
+    periodic_ecp_gradient, periodic_ecp_gradient_with, periodic_ecp_images, periodic_ecp_strain,
+    periodic_ecp_strain_with, EcpGradMutation, EcpStrainMutation, PeriodicEcpConfig,
 };
 use ferric_pbc::grad::{
     gamma_rhf_gradient_with, gamma_uhf_gradient_with, GammaGradConfig, GammaGradient, GradMutation,
 };
 use ferric_pbc::hcore::{periodic_hcore, PeriodicHcore, PeriodicHcoreConfig};
 use ferric_pbc::lattice::Cell;
-use ferric_pbc::stress::{gamma_rhf_stress, GammaStressConfig};
+use ferric_pbc::stress::{gamma_rhf_stress, GammaStressConfig, StressMutation};
 use ferric_scf::result::{ScfResult, Spin};
 use ferric_scf::rhf::{solve_rhf_injected, PeriodicInjection, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
@@ -522,14 +522,174 @@ fn ecp_term_matches_fd_of_its_energy_at_fixed_density() {
     }
 }
 
+// ============================================================ strain
+
+type Mat3 = [[f64; 3]; 3];
+
+fn strain_at(i: usize, j: usize, h: f64) -> Mat3 {
+    let mut e = [[0.0; 3]; 3];
+    e[i][j] = h;
+    e
+}
+
+fn mat_err(a: &Mat3, b: &Mat3) -> f64 {
+    let mut m = 0.0_f64;
+    for i in 0..3 {
+        for j in 0..3 {
+            m = m.max((a[i][j] - b[i][j]).abs());
+        }
+    }
+    m
+}
+
+fn mat_max(a: &Mat3) -> f64 {
+    a.iter().flatten().fold(0.0_f64, |m, x| m.max(x.abs()))
+}
+
+/// `Σ D V_ECP` on the strained cell (index sets frozen at `cell`).
+fn e_ecp_strained(cell: &Cell, bs: &BasisSet, d: &Array2<f64>, eps: &Mat3) -> f64 {
+    let c = cell.strained(eps).expect("strained cell");
+    let pc = prep(&c, bs);
+    let v = periodic_ecp_images(&c, &pc, &ecp_cfg())
+        .unwrap()
+        .unwrap()
+        .gamma();
+    (d * &v).sum()
+}
+
+/// Bar for the fixed-density ECP strain term vs FD. MEASURED 2026-10-09: Richardson
+/// 5.9e-12 (FD(1e-3) 5.9e-6, FD(5e-4) 1.5e-6: clean h^2); mutants miss by >= 0.6.
+const STRAIN_TERM_BAR: f64 = 1e-8;
+
+/// The ECP STRAIN term at a FIXED density vs central FD of `Σ D V_ECP(ε)`
+/// (ferric's own lattice sum on `Cell::strained` cells: lattice AND atoms
+/// strained, image lists frozen at the reference), ALL NINE components,
+/// Richardson of FD(1e-3, 5e-4). Each ECP-strain mutant must miss by > 10x
+/// the bar. The all-electron trivial limit is `pbc_stress.rs` (an ECP-free
+/// cell has `parts.ecp == 0` and its stress is unchanged).
+#[test]
+fn ecp_strain_term_matches_fd_of_its_energy_at_fixed_density() {
+    let bs = hi_basis(false);
+    let cell = hi_cell(&MOVED, HI_A, &bs);
+    let p = prep(&cell, &bs);
+    let d = sym_density(p.nbasis());
+    let (an, nt) = periodic_ecp_strain(&cell, &p, &ecp_cfg(), &d)
+        .unwrap()
+        .unwrap();
+    assert!(mat_max(&an) > 1e-3, "vacuous strain term");
+    let fd = |h: f64| -> Mat3 {
+        let mut o = [[0.0; 3]; 3];
+        for (i, row) in o.iter_mut().enumerate() {
+            for (j, v) in row.iter_mut().enumerate() {
+                let ep = e_ecp_strained(&cell, &bs, &d, &strain_at(i, j, h));
+                let em = e_ecp_strained(&cell, &bs, &d, &strain_at(i, j, -h));
+                *v = (ep - em) / (2.0 * h);
+            }
+        }
+        o
+    };
+    let (f1, f2) = (fd(1e-3), fd(5e-4));
+    let mut rich = [[0.0; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            rich[i][j] = (4.0 * f2[i][j] - f1[i][j]) / 3.0;
+        }
+    }
+    let (e1, e2, er) = (mat_err(&an, &f1), mat_err(&an, &f2), mat_err(&an, &rich));
+    eprintln!(
+        "ECP strain term ({nt} triples, max {:.3e}): |an - FD(1e-3)| {e1:.2e}, \
+         |an - FD(5e-4)| {e2:.2e}, |an - Richardson| {er:.2e}",
+        mat_max(&an)
+    );
+    assert!(er < STRAIN_TERM_BAR, "{er:e}");
+    for m in [
+        EcpStrainMutation::NoCentre,
+        EcpStrainMutation::NoKetImage,
+        EcpStrainMutation::CentreSign,
+    ] {
+        let (v, _) = periodic_ecp_strain_with(&cell, &p, &ecp_cfg(), &d, Some(m))
+            .unwrap()
+            .unwrap();
+        let miss = mat_err(&v, &rich);
+        eprintln!("  strain mutant {m:?}: misses FD by {miss:.2e}");
+        assert!(miss > 10.0 * STRAIN_TERM_BAR, "{m:?} escaped: {miss:e}");
+    }
+}
+
+/// Bar for the total RHF stress vs FD of the SCF energy. MEASURED 2026-10-09
+/// (compact HI, release): 6.3e-8 (the forces' SCF anchor floor is 2.5e-7,
+/// libecpint/libint jitter); the ECP-strain mutants miss by >= 0.11.
+const STRESS_FD_BAR: f64 = 5e-7;
+
+/// Total RHF stress `dE/dε` of the compact HI cell vs central FD (h = 1e-4)
+/// of ferric's OWN Gamma energy on strained cells, every displaced SCF
+/// seeded from the reference density; the stress ECP-strain mutants must
+/// miss by > 10x the bar.
+#[test]
+#[ignore = "slow: compact HI 6x6x7, 18 strained periodic hcore (ECP lattice sum) + dense-AFT builds, 18 SCFs; run in release with --ignored, serially"]
+fn hi_compact_rhf_stress_matches_fd_of_own_energy_and_catches_ecp_mutants() {
+    let bs = hi_basis(false);
+    let cell = hi_cell(&MOVED, HI_A, &bs);
+    let (p, hc, eri) = build(&cell, &bs);
+    let scf = rhf(&cell, &p, &hc, &eri, None);
+    let seed = scf.density_total.clone();
+    let stress = |mutation: Option<StressMutation>| {
+        gamma_rhf_stress(
+            &cell,
+            &p,
+            &hcore_cfg(),
+            &hc,
+            &eri,
+            &scf,
+            ExxDiv::None,
+            &GammaStressConfig {
+                mutation,
+                ..Default::default()
+            },
+        )
+        .expect("stress")
+    };
+    let st = stress(None);
+    let mut fdm = [[0.0; 3]; 3];
+    for (i, row) in fdm.iter_mut().enumerate() {
+        for (j, v) in row.iter_mut().enumerate() {
+            let e = |h: f64| {
+                let c = cell.strained(&strain_at(i, j, h)).unwrap();
+                let (pc, hcs, base) = build(&c, &bs);
+                let er = base.with_exxdiv(&c, ExxDiv::None).unwrap();
+                rhf(&c, &pc, &hcs, &er, Some(&seed)).energy
+            };
+            *v = (e(FD_H) - e(-FD_H)) / (2.0 * FD_H);
+        }
+    }
+    let err = mat_err(&st.de_deps, &fdm);
+    eprintln!(
+        "HI compact RHF stress: max|analytic - FD| = {err:.2e}; ECP part max {:.3e}\n\
+         analytic {:.8?}\nFD       {fdm:.8?}",
+        mat_max(&st.parts.ecp),
+        st.de_deps
+    );
+    assert!(err < STRESS_FD_BAR, "{err:e}");
+    for m in [
+        StressMutation::EcpNoCentre,
+        StressMutation::EcpNoKetImage,
+        StressMutation::EcpCentreSign,
+    ] {
+        let sm = stress(Some(m));
+        let miss = mat_err(&sm.de_deps, &fdm);
+        eprintln!("  stress mutant {m:?}: misses FD by {miss:.2e}");
+        assert!(miss > 10.0 * STRESS_FD_BAR, "{m:?} escaped: {miss:e}");
+    }
+}
+
 // ============================================================ wiring
 
 /// The RHF force carries exactly `periodic_ecp_gradient` at the SCF density
 /// over the hcore's own triples; the UHF path on the same density gives the
-/// same force; the stress refuses the ECP cell; a hcore built at another ECP
+/// same force; the stress carries `periodic_ecp_strain`; a hcore built at another ECP
 /// precision is refused.
 #[test]
-fn gamma_forces_carry_the_ecp_term_and_stress_refuses_it() {
+fn gamma_forces_carry_the_ecp_term_and_stress_carries_its_strain() {
     let bs = hi_basis(false);
     let cell = hi_cell(&MOVED, HI_A, &bs);
     let (p, hc, eri) = build(&cell, &bs);
@@ -585,7 +745,9 @@ fn gamma_forces_carry_the_ecp_term_and_stress_refuses_it() {
     assert!(du < 1e-10, "{du:e}");
     assert!(max_abs_diff(&u.parts.ecp, &g.parts.ecp) < 1e-14);
 
-    // Stress with an ECP: refused (no strain derivative of V_ECP).
+    // Stress with an ECP: carries `periodic_ecp_strain` at the SCF density,
+    // over the hcore's own triples (the strain value itself is anchored
+    // against FD below).
     let st = gamma_rhf_stress(
         &cell,
         &p,
@@ -595,9 +757,18 @@ fn gamma_forces_carry_the_ecp_term_and_stress_refuses_it() {
         &scf,
         ExxDiv::None,
         &GammaStressConfig::default(),
+    )
+    .expect("stress on an ECP cell");
+    let (v, nt) = periodic_ecp_strain(&cell, &p, &ecp_cfg(), &scf.density_total)
+        .unwrap()
+        .unwrap();
+    assert_eq!(nt, hc.n_ecp_triples);
+    assert_eq!(
+        st.parts.ecp, v,
+        "stress ECP part is not periodic_ecp_strain"
     );
-    let msg = st.expect_err("stress must refuse an ECP cell").to_string();
-    assert!(msg.contains("ECP"), "{msg}");
+    let vmax = v.iter().flatten().fold(0.0_f64, |m, x| m.max(x.abs()));
+    assert!(vmax > 1e-3, "ECP strain part ~0");
 
     // A hcore whose V_ECP came from another screen: refused, not mixed.
     let other = PeriodicHcoreConfig {
