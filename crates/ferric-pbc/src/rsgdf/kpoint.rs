@@ -109,6 +109,32 @@
 //!   `(pair, r_L)` walk, bitwise the pre-s2 build). The SR metric bins and
 //!   the force walks (`kderiv`) keep their ordered loops.
 //!
+//! # Column rotation at k (on by default in the energy build)
+//!
+//! [`RsGdfConfig::sr_column_rotation`] = `Auto` (default) or `On` evaluates
+//! the SR 3-centre walk (unsplit, or the kept calls of a range split) on the
+//! column-rotated orbital basis of [`crate::sr_rotation`], exactly as at
+//! Gamma, and back-transforms the finished residue bins into the parent AO
+//! basis, `J3[r_L, r_T][μν] = Σ_{mn} T_μm T_νn J3'[r_L, r_T][mn]`, BEFORE the
+//! phase contraction, the LR terms and the G = 0 term (those stay in the
+//! parent basis). `T` is real, geometry- and k-independent and acts on the AO
+//! indices only, so it commutes with the bin phases `e^{ik'·r_L}`,
+//! `e^{−iq·r_T}` (applying it after the phase contraction but before the LR
+//! is the same number to round-off; applying it after the LR is WRONG,
+//! [`KRsGdfMutation::RotationLate`]). It composes with the pair symmetry
+//! because the s2 walk runs on the rotated shells (same layout, same shell
+//! pairs): the rotated bins satisfy `B'[b][mn] = B'[M(b)][nm]`, and `T ⊗ T`
+//! is symmetric under the swap, so the transformed bins satisfy it too, to
+//! round-off (the back-transform is a general, non-symmetric pass: the two
+//! halves live in different bins).
+//! The kept triplet set is the rotated shells' own screen, so the result
+//! matches the unrotated build to the screening precision, not bitwise;
+//! [`KRsGdfStats::n_sr3_triplets`] counts the rotated walk's calls and
+//! [`KRsGdfStats::sr_rotated_columns`] the rotated columns (0 = nothing
+//! rotates, the identity: today's build bit for bit). The frozen s1 oracle
+//! runs unrotated under `Auto`; the k-point FORCE builds (`kderiv`)
+//! differentiate the unrotated walk and refuse an explicit `On`.
+//!
 //! # Memory
 //!
 //! Every big buffer is reserved on a [`crate::budget`] ledger first: S(k)
@@ -120,8 +146,8 @@
 use super::split::{check_metric_guard, SplitPlan};
 use super::{
     aux_ft_shells, check_obs_on_cell, dot3, exchange_aux_groups, exchange_group_scratch_bytes,
-    gshells, pair_image_radius, subtract_g0, unordered_pairs, G0Handling, GShell, LatticeWalker,
-    RsGdfConfig, Sr3Ctx, SrBinning, Stage,
+    gshells, pair_image_radius, sr3_rotation, subtract_g0, unordered_pairs, G0Handling, GShell,
+    LatticeWalker, RsGdfConfig, Sr3Ctx, Sr3Rotation, SrBinning, Stage,
 };
 use crate::budget::{bytes_of, Ledger};
 use crate::dense_aft::ExxDiv;
@@ -169,6 +195,11 @@ pub enum KRsGdfMutation {
     /// A defect of the orbital-pair symmetric (s2) SR 3-centre walk (module
     /// doc "Orbital-pair symmetry at k"; `tests/pbc_kpair_symmetry.rs`).
     PairSym(KPairSymMutant),
+    /// The column rotation's back-transform applied to the finished
+    /// `J3(k, k')` AFTER the LR and G = 0 terms (parent basis) were added,
+    /// instead of to the SR bins before the phase contraction: `T` hits
+    /// parts that were never rotated. Only visible where something rotates.
+    RotationLate,
 }
 
 /// TEST-ONLY defects of the k-point s2 SR 3-centre walk (module doc
@@ -292,6 +323,10 @@ pub struct KRsGdfStats {
     /// The range split's partition counters (the Gamma build's names);
     /// empty without a split.
     pub split_counters: Vec<(&'static str, usize)>,
+    /// Orbital columns the SR 3-centre walk ran rotated (module doc "Column
+    /// rotation at k"); 0 = the unrotated walk (rotation off, or nothing in
+    /// the basis rotates).
+    pub sr_rotated_columns: usize,
 }
 
 /// Copy a k-point RS-GDF build's counts into `t` (the k-point drivers'
@@ -307,6 +342,7 @@ pub fn record_stats(t: &mut crate::timing::PbcTimings, st: &KRsGdfStats) {
         ("k rsgdf q classes built", st.n_q_built),
         ("k rsgdf naux", st.naux),
         ("k rsgdf aux dropped (max over q)", dropped_max),
+        ("k rsgdf SR3 rotated columns", st.sr_rotated_columns),
     ] {
         t.set_counter(name, v as u64);
     }
@@ -315,18 +351,107 @@ pub fn record_stats(t: &mut crate::timing::PbcTimings, st: &KRsGdfStats) {
     }
 }
 
-/// The k-point builds do not implement [`RsGdfConfig::sr_column_rotation`]
-/// (a Gamma option): the default `Auto` runs unrotated, an explicit
-/// `On` is a typed refusal instead of being silently ignored.
+/// The k-point builds that do NOT implement [`RsGdfConfig::sr_column_rotation`]
+/// (the derivative builds of [`kderiv`]: they differentiate the unrotated
+/// walk): the default `Auto` runs unrotated, an explicit `On` is a typed
+/// refusal instead of being silently ignored.
 pub(in crate::rsgdf) fn refuse_column_rotation(
     g: &RsGdfConfig,
     who: &str,
 ) -> Result<(), FerricError> {
     g.sr_column_rotation.refuse_explicit(
         who,
-        "the column rotation applies to the Gamma RS-GDF build only; the k-point build does \
-         not implement it",
+        "the k-point forces differentiate the unrotated SR walk; the column rotation is \
+         implemented in the k-point ENERGY build only",
     )
+}
+
+/// The column rotation of a k-point energy build ([`KRsGdf::build`]) and the
+/// rotated SR walk's stage and plan (module doc "Column rotation at k"):
+/// `None` when it is off or nothing in the basis rotates (the caller then
+/// runs today's walk bit for bit). The frozen s1 oracle walks the parent
+/// shells (`Auto` resolves off, explicit `On` is refused).
+fn kpoint_rotation<'a>(
+    st: &Stage<'a>,
+    g: &RsGdfConfig,
+    walk: KPairWalk,
+) -> Result<Option<Sr3Rotation>, FerricError> {
+    if walk == KPairWalk::S1Oracle {
+        g.sr_column_rotation
+            .refuse_explicit("KRsGdf", "the frozen s1 oracle walks the unrotated shells")?;
+        return Ok(None);
+    }
+    sr3_rotation(st.cell, st.obs, st.aux, g)
+}
+
+/// Rotated columns of a build's rotation (0 without one).
+fn rotated_columns(rotation: Option<&Sr3Rotation>) -> usize {
+    rotation.map_or(0, |r| r.obs.n_rotated_columns)
+}
+
+/// MUTATION ([`KRsGdfMutation::RotationLate`]): the back-transform of the
+/// finished complex `J3(k, k')` `(nao², naux)` AFTER the LR and G = 0 terms
+/// (parent basis) were added, instead of the SR bins before the phase
+/// contraction. A no-op in production and when nothing rotates.
+fn late_back_transform(
+    rotation: Option<&Sr3Rotation>,
+    mutation: Option<KRsGdfMutation>,
+    j3: &mut Array2<C64>,
+) -> Result<(), FerricError> {
+    let (Some(r), Some(KRsGdfMutation::RotationLate)) = (rotation, mutation) else {
+        return Ok(());
+    };
+    let w = j3.ncols();
+    let data = j3.as_slice_mut().ok_or_else(|| {
+        FerricError::General("KRsGdf column rotation: J3 is not contiguous".into())
+    })?;
+    r.obs.back_transform_complex_rows(data, w)
+}
+
+/// [`sr_bins_of`] with the column rotation of a k-point energy build
+/// (module doc "Column rotation at k"): the J3 walk runs on the rotated
+/// stage (and its [`SplitPlan::sr3_plan_on`] plan) and its bins are
+/// back-transformed into the parent AO basis (unless the
+/// [`KRsGdfMutation::RotationLate`] mutant moves that to the finished
+/// `J3`); the metric bins are the parent's. `(st, plan, rotation, mutation)`
+/// are the build's stage, split plan, rotation and test mutation.
+fn sr_bins_rotated(
+    (st, plan, rotation, mutation): (
+        &Stage<'_>,
+        Option<&SplitPlan>,
+        Option<&Sr3Rotation>,
+        Option<KRsGdfMutation>,
+    ),
+    images: &[[f64; 3]],
+    moduli: ([usize; 3], [usize; 3]),
+    ledger: &Ledger,
+    walk: KPairWalk,
+) -> Result<(SrBinsParts, usize), FerricError> {
+    let Some(r) = rotation else {
+        return sr_bins_of(st, plan, images, moduli, ledger, "KRsGdf", walk, None);
+    };
+    let st_rot = st.with_bases(&r.obs.prep, r.aux_prep(st.aux))?;
+    let plan_rot = plan.map(|p| p.sr3_plan_on(&st_rot)).transpose()?;
+    let rotated = Some((&st_rot, plan_rot.as_ref()));
+    let (mut parts, ordered) =
+        sr_bins_of(st, plan, images, moduli, ledger, "KRsGdf", walk, rotated)?;
+    if mutation != Some(KRsGdfMutation::RotationLate) {
+        back_transform_bins(r, &mut parts.1)?;
+    }
+    Ok((parts, ordered))
+}
+
+/// `J3 = (T ⊗ T) J3'` of every SR residue bin (real `(nao², naux)`, rows
+/// `μ n + ν`), in parallel over bins: each bin is transformed by one serial
+/// pass, so the result is bitwise independent of the thread count.
+fn back_transform_bins(rot: &Sr3Rotation, bins: &mut [Array2<f64>]) -> Result<(), FerricError> {
+    bins.par_iter_mut().try_for_each(|b| {
+        let w = b.ncols();
+        let data = b.as_slice_mut().ok_or_else(|| {
+            FerricError::General("KRsGdf column rotation: an SR bin is not contiguous".into())
+        })?;
+        rot.obs.back_transform_rows(data, w)
+    })
 }
 
 /// One built q class: `b[k']` is `B(k'−q, k')`, `(naux_kept, nao²)`.
@@ -662,6 +787,7 @@ fn sr3_bins(
 /// triplets computed), ordered-equivalent triplets)`): the unsplit walks, or
 /// the range split's kept calls / compact pairs on the same bins; the J3
 /// walk per `walk`. The per-thread scratch is checked on `ledger`.
+#[allow(clippy::too_many_arguments)]
 fn sr_bins_of(
     st: &Stage<'_>,
     plan: Option<&SplitPlan>,
@@ -670,6 +796,7 @@ fn sr_bins_of(
     ledger: &Ledger,
     who: &str,
     walk: KPairWalk,
+    rotated: Option<(&Stage<'_>, Option<&SplitPlan>)>,
 ) -> Result<(SrBinsParts, usize), FerricError> {
     let bins = SrBinning { mod_l, mod_t };
     st.check_sr_scratch(ledger, who, bins)?;
@@ -677,7 +804,8 @@ fn sr_bins_of(
         None => st.sr_metric_binned(mod_t)?,
         Some(p) => p.sr_metric_binned(st, mod_t)?,
     };
-    let (j3, n3, n3_ordered) = sr3_bins(st, plan, images, bins, walk)?;
+    let (j3_st, j3_plan) = rotated.unwrap_or((st, plan));
+    let (j3, n3, n3_ordered) = sr3_bins(j3_st, j3_plan, images, bins, walk)?;
     Ok(((j2, j3, n2, n3), n3_ordered))
 }
 
@@ -875,6 +1003,50 @@ pub fn sr_bins_parallel_and_serial(
     let (j2s, n2s) = sr_metric_binned_serial_oracle(&st, mod_t)?;
     let (j3s, n3s) = sr_three_index_binned_serial_oracle(&st, &images, mod_l, mod_t)?;
     Ok([(j2p, j3p, n2p, n3p), (j2s, j3s, n2s, n3s)])
+}
+
+/// TEST ORACLE for the k-point column rotation (module doc "Column rotation
+/// at k"): `[rotated, parent]` = the SR 3-index bins of [`KRsGdf::build`] at
+/// `cfg` (range split honoured, s2 walk) with the rotation `cfg` asks for
+/// (walk on the rotated shells, bins back-transformed, counts of the rotated
+/// walk) and the same bins from the parent shells (`cfg` with the rotation
+/// off). `cfg.sr_column_rotation` of `Off`, or a basis with nothing to
+/// rotate, makes the two identical bit for bit. Also the number of rotated
+/// columns.
+#[doc(hidden)]
+pub fn sr3_kbins_rotated_and_parent(
+    cell: &Cell,
+    obs: &PreparedBasis,
+    aux: &PreparedBasis,
+    mesh: &KPointMesh,
+    cfg: &RsGdfConfig,
+) -> Result<([KSr3Parts; 2], usize), FerricError> {
+    super::require_pure_aux(aux, "KRsGdf")?;
+    let (st, images) = diagnostic_stage(cell, obs, aux, cfg)?;
+    let bins = SrBinning {
+        mod_l: mesh.residue_moduli(),
+        mod_t: mesh.n(),
+    };
+    let mut ledger = Ledger::new(crate::budget::resolve(cfg.budget_bytes));
+    let plan = SplitPlan::for_kpoint(&st, cfg, &images, (bins.n_l(), mesh.nk()), &mut ledger)?;
+    st.check_sr_scratch(&ledger, "KRsGdf diagnostic", bins)?;
+    let parent = sr3_bins(&st, plan.as_ref(), &images, bins, KPairWalk::S2(None))?;
+    let rotation = kpoint_rotation(&st, cfg, KPairWalk::S2(None))?;
+    let Some(r) = rotation else {
+        return Ok(([parent.clone(), parent], 0));
+    };
+    let st_rot = st.with_bases(&r.obs.prep, r.aux_prep(aux))?;
+    let plan_rot = plan.as_ref().map(|p| p.sr3_plan_on(&st_rot)).transpose()?;
+    let (mut b, c, o) = sr3_bins(
+        &st_rot,
+        plan_rot.as_ref(),
+        &images,
+        bins,
+        KPairWalk::S2(None),
+    )?;
+    back_transform_bins(&r, &mut b)?;
+    let nrot = r.obs.n_rotated_columns;
+    Ok(([(b, c, o), parent], nrot))
 }
 
 /// TEST ORACLE for the k-point s2 SR 3-centre walk (module doc "Orbital-pair
@@ -1187,7 +1359,6 @@ impl KRsGdf {
     ) -> Result<Self, FerricError> {
         let g = &cfg.gdf;
         g.validate()?;
-        refuse_column_rotation(g, "KRsGdf")?;
         super::require_pure_aux(aux, "KRsGdf")?;
         let n = obs.nbasis();
         let n2 = n * n;
@@ -1264,6 +1435,10 @@ impl KRsGdf {
         )?;
         let images = cell.translations(rpair)?;
         let plan = SplitPlan::for_kpoint(&st, g, &images, (rl, nk), &mut ledger)?;
+        // Column rotation of the SR 3-centre walk (module doc "Column
+        // rotation at k"): the walk runs on the rotated shells, its bins are
+        // transformed back in `sr_bins_rotated`.
+        let rotation = kpoint_rotation(&st, g, walk)?;
         let gcut = 2.0 * g.omega * (1.0 / g.precision).ln().sqrt();
         let qmax = (0..nk)
             .map(|iq| {
@@ -1281,8 +1456,13 @@ impl KRsGdf {
         // --- SR, once for every q: residue bins (parallel; per-thread
         // scratch checked after `chunk_budget` is fixed).
         let plan = plan.as_ref();
-        let ((j2res, j3res, n_sr2, n_sr3), n_sr3_ordered) =
-            sr_bins_of(&st, plan, &images, (mod_l, mod_t), &ledger, "KRsGdf", walk)?;
+        let ((j2res, j3res, n_sr2, n_sr3), n_sr3_ordered) = sr_bins_rotated(
+            (&st, plan, rotation.as_ref(), cfg.mutation),
+            &images,
+            (mod_l, mod_t),
+            &ledger,
+            walk,
+        )?;
 
         let (qv, s_kept) = g0_inputs(&st, plan, &images, mesh, s_k)?;
         let s_g0 = s_kept.as_deref().unwrap_or(s_k);
@@ -1403,6 +1583,7 @@ impl KRsGdf {
                     // q = 0: k = k', a_ml(0) = S_ml(k').
                     subtract_g0_three_index(&mut j3, &s_g0[j], &qv, c0, g.g0);
                 }
+                late_back_transform(rotation.as_ref(), cfg.mutation, &mut j3)?;
                 if mq == [0, 0, 0] {
                     asym_j3 = asym_j3.max(pair_herm_asym(&j3, n));
                     if cfg.mutation != Some(KRsGdfMutation::NoHermQ0) {
@@ -1495,6 +1676,7 @@ impl KRsGdf {
             budget_bytes: ledger.budget(),
             resident_bytes,
             split_counters: plan.map(SplitPlan::counters).unwrap_or_default(),
+            sr_rotated_columns: rotated_columns(rotation.as_ref()),
         };
         Ok(Self {
             nao: n,

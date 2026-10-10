@@ -1561,7 +1561,7 @@ def run_rhf_gamma(
     jk="dense". False: off (the unrotated build bit for bit). True: on;
     ValueError with jk="dense".
     Every Gamma binding below takes it; the k-point bindings do not
-    (TypeError; their builds never rotate).
+    (TypeError; their RS-GDF energy builds run the library default, rotated).
     """
     ...
 

@@ -160,10 +160,11 @@
 //! screening precision, not bitwise; `n_sr3_triplets` counts the rotated
 //! walk's calls. [`SrColumnRotation::Off`] is the unrotated build bit for
 //! bit, and so is a basis with nothing to rotate (detection returns the
-//! identity; counter `rsgdf SR3 rotated columns` = 0). Gamma builds only
-//! ([`RsGdf::build`], [`RsGdf::build_for_gradient`]): the frozen s1 oracle
-//! runs unrotated under `Auto` and refuses an explicit `On`, and so does the
-//! k-point build ([`kpoint`]).
+//! identity; counter `rsgdf SR3 rotated columns` = 0). The Gamma builds
+//! ([`RsGdf::build`], [`RsGdf::build_for_gradient`]) and the k-point ENERGY
+//! build ([`kpoint`], module doc "Column rotation at k") rotate; the frozen
+//! s1 oracle runs unrotated under `Auto` and refuses an explicit `On`, and
+//! so do the k-point force builds.
 //!
 //! The Gamma FORCES and STRESS differentiate the walk the energy ran: a
 //! build that rotated ([`RsGdf::build_for_gradient`] IS the energy build of a
@@ -287,11 +288,12 @@ pub struct RsGdfConfig {
     /// bit for bit. The k-point build refuses it.
     pub range_split: Option<RangeSplit>,
     /// Column rotation of generally contracted orbital shells inside the
-    /// Gamma SR 3-centre walk (module doc "Column rotation"). Default
+    /// SR 3-centre walk (module doc "Column rotation"). Default
     /// [`SrColumnRotation::Auto`]: on in the Gamma builds (energy and
-    /// [`RsGdf::build_for_gradient`]; the forces and stress follow it), off
-    /// in the s1 oracle and the k-point build (each refuses an explicit
-    /// `On`). `Off` = the unrotated construction, bit for bit.
+    /// [`RsGdf::build_for_gradient`]; the forces and stress follow it) and
+    /// the k-point energy build, off in the s1 oracles and the k-point force
+    /// builds (each refuses an explicit `On`). `Off` = the unrotated
+    /// construction, bit for bit.
     pub sr_column_rotation: SrColumnRotation,
 }
 

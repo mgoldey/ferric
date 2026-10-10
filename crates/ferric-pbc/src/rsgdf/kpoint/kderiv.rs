@@ -344,6 +344,7 @@ pub(crate) fn kpoint_fit_gradient(
         ledger,
         who,
         KPairWalk::S2(None),
+        None,
     )?;
     let (qv, s_kept) = g0_inputs(&st, plan.as_ref(), &images, mesh, s_k)?;
     // M_g0's charges: the build's (q_c with a split), or every aux charge

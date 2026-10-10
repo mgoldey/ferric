@@ -50,12 +50,25 @@
 //!
 //! # Where it applies
 //!
-//! Only inside the Gamma SR 3-centre walk of [`crate::rsgdf::RsGdf::build`]
-//! (unsplit and range split) and the Gamma hcore SR attraction of
+//! Only inside the SR 3-centre walk of [`crate::rsgdf::RsGdf::build`]
+//! (unsplit and range split) and the hcore SR attraction of
 //! [`crate::hcore::periodic_hcore`]: the rotated blocks are back-transformed
 //! into the parent AO basis right after the walk. The SCF, S/T, the LR and
 //! G = 0 parts, the metric and every exposed matrix stay in the parent
-//! basis. The k-point builds do not apply it.
+//! basis.
+//!
+//! # At k points
+//!
+//! The k-point ENERGY builds ([`crate::rsgdf::kpoint::KRsGdf::build`],
+//! [`crate::hcore::kpoint::periodic_hcore_kpts`]) rotate the same way. `T` is
+//! real and k-independent and acts on the AO indices only, so it commutes
+//! with the Bloch phase sums: the SR residue bins `J3[r_L, r_T][μν]` and the
+//! SR attraction `V_SR(k)` are back-transformed (a general pass,
+//! `RotatedBasis::back_transform_rows`: the two orientations of a pair sit
+//! in different bins, so the input is not symmetric under `μ ↔ ν`) before
+//! the phase contraction, the LR and the G = 0 terms. The k-point FORCE
+//! builds differentiate the unrotated walk (a k-resolved `Tᵀ W T` weight per
+//! residue is the open extension).
 //!
 //! # Forces and stress
 //!
@@ -80,8 +93,9 @@
 //! off to the screening precision (`tests/pbc_sr_rotation.rs`).
 //!
 //! It is ON BY DEFAULT ([`SrColumnRotation::Auto`]) in the Gamma builds
-//! (energy and gradient) and silently off in every build that does not
-//! implement it (k-point builds, the frozen s1 oracles); an explicit
+//! (energy and gradient) and the k-point energy builds, and silently off in
+//! every build that does not implement it (k-point force builds, the frozen
+//! s1 oracles); an explicit
 //! [`SrColumnRotation::On`] is refused by name there. Measured (FINDINGS, "Full
 //! timing series on libint 2.13.1", Γ RHF cc-pVDZ / cc-pvdz-ri, range
 //! split, gdf ω = 1, 6 threads): dry ice 25.9 → 22.4 s, diamond 7.84 →
@@ -107,6 +121,7 @@ use ferric_core::basis::{BasisSet, Shell};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ndarray::Array2;
+use num_complex::Complex64;
 use std::collections::HashMap;
 
 /// Smallest diagonal `T_kk` a rotated column may have (below it the rotated
@@ -137,6 +152,11 @@ pub enum ColumnRotationMutant {
     /// segmented aux basis (cc-pvdz-ri) this is a no-op; the test uses a
     /// generally contracted aux basis. `periodic_hcore` refuses it.
     RotateAux,
+    /// MUTATION: the back-transform is skipped (`T` dropped; the rotated
+    /// blocks are used as if they were the parent's).
+    NoBackTransform,
+    /// MUTATION: `Tᵀ` where `T` belongs (each row of `T` read as a column).
+    TransposedBackTransform,
 }
 
 /// The column rotation a Gamma SR walk runs
@@ -161,11 +181,11 @@ impl ColumnRotation {
 /// [`crate::hcore::PeriodicHcoreConfig::sr_column_rotation`]).
 ///
 /// * [`SrColumnRotation::Auto`] (the default): ON in the builds that
-///   implement it — the Gamma builds [`crate::rsgdf::RsGdf::build`]
+///   implement it — the k-point energy builds and the Gamma builds [`crate::rsgdf::RsGdf::build`]
 ///   (and `build_with_fit_parts`, [`crate::rsgdf::sr_walk_counts`],
 ///   [`crate::rsgdf::RsGdf::build_for_gradient`]) and
 ///   [`crate::hcore::periodic_hcore`] — and silently OFF in every build that
-///   does not: the k-point builds and the frozen s1 oracles. A basis with
+///   does not: the k-point FORCE builds and the frozen s1 oracles. A basis with
 ///   nothing to rotate runs the unrotated walk bit for bit either way.
 /// * [`SrColumnRotation::Off`]: the unrotated walk everywhere, bit for bit.
 /// * [`SrColumnRotation::On`]: an explicit request; the builds that cannot
@@ -430,6 +450,9 @@ pub(crate) struct RotatedBasis {
     /// Columns rotated (over all atoms).
     pub(crate) n_rotated_columns: usize,
     one_sided: bool,
+    /// MUTATION ([`ColumnRotationMutant::NoBackTransform`]): the
+    /// back-transforms are no-ops.
+    skip_back: bool,
 }
 
 /// TEST-ONLY defects of the DERIVATIVE paths' forward transform
@@ -602,6 +625,16 @@ impl RotatedBasis {
                 }
             }
         }
+        if rot.mutant == ColumnRotationMutant::TransposedBackTransform {
+            // MUTATION: read every row of T as a column (T where Tᵀ belongs).
+            let mut cols: Vec<Vec<(usize, f64)>> = vec![Vec::new(); nsh];
+            for (k, row) in rows.iter().enumerate() {
+                for &(m, t) in row {
+                    cols[m].push((k, t));
+                }
+            }
+            rows = cols;
+        }
         Ok(Some(Self {
             prep: rprep,
             rows,
@@ -613,6 +646,7 @@ impl RotatedBasis {
             nbasis: prep.nbasis(),
             n_rotated_columns: n_rot,
             one_sided: rot.mutant == ColumnRotationMutant::OneSidedBackTransform,
+            skip_back: rot.mutant == ColumnRotationMutant::NoBackTransform,
         }))
     }
 
@@ -640,6 +674,50 @@ impl RotatedBasis {
         data: &mut [f64],
         w: usize,
     ) -> Result<(), FerricError> {
+        self.back_transform_impl(data, w, true)
+    }
+
+    /// [`RotatedBasis::back_transform_pair_rows`] for a tensor that is NOT
+    /// symmetric under `μ ↔ ν` (the k-point SR bins, `B[r_L, r_T][μν] =
+    /// B[M(r_L, r_T)][νμ]` relates two DIFFERENT bins; Bloch-summed
+    /// matrices): `out[μν] = Σ_{m,n} T_μm T_νn data[mn]`, each element
+    /// formed from its own two rows with the same fixed addend order (row of
+    /// `μ`, then row of `ν`), serial and deterministic. The pair-orientation
+    /// relation between bins survives to round-off only (the sums run in a
+    /// different order for the two halves).
+    pub(crate) fn back_transform_rows(
+        &self,
+        data: &mut [f64],
+        w: usize,
+    ) -> Result<(), FerricError> {
+        self.back_transform_impl(data, w, false)
+    }
+
+    /// [`RotatedBasis::back_transform_rows`] of a COMPLEX `(n², w)` row-major
+    /// tensor (`w` complex columns; an `(n, n)` matrix is `w = 1`): real and
+    /// imaginary parts transform alike because `T` is real.
+    pub(crate) fn back_transform_complex_rows(
+        &self,
+        data: &mut [Complex64],
+        w: usize,
+    ) -> Result<(), FerricError> {
+        let mut flat: Vec<f64> = data.iter().flat_map(|z| [z.re, z.im]).collect();
+        self.back_transform_rows(&mut flat, 2 * w)?;
+        for (z, i) in data.iter_mut().zip((0..).step_by(2)) {
+            *z = Complex64::new(flat[i], flat[i + 1]);
+        }
+        Ok(())
+    }
+
+    /// Shared body: `symmetric` = exactly symmetric input, unordered pairs
+    /// written into both rows; otherwise every ordered pair is its own
+    /// output element.
+    fn back_transform_impl(
+        &self,
+        data: &mut [f64],
+        w: usize,
+        symmetric: bool,
+    ) -> Result<(), FerricError> {
         let n = self.nbasis;
         if data.len() != n * n * w {
             return Err(FerricError::General(format!(
@@ -647,12 +725,15 @@ impl RotatedBasis {
                 data.len()
             )));
         }
+        if self.skip_back {
+            return Ok(());
+        }
         let ng = self.groups.len();
         let mut scratch: Vec<f64> = Vec::new();
         let mut out = vec![0.0_f64; w];
         for g1 in 0..ng {
             let f1 = self.group_aos(g1);
-            for g2 in g1..ng {
+            for g2 in if symmetric { g1 } else { 0 }..ng {
                 if self.identity[g1] && self.identity[g2] {
                     continue;
                 }
@@ -668,7 +749,7 @@ impl RotatedBasis {
                 }
                 for (i1, &k1) in self.groups[g1].iter().enumerate() {
                     for (i2, &k2) in self.groups[g2].iter().enumerate() {
-                        if g1 == g2 && i2 < i1 {
+                        if symmetric && g1 == g2 && i2 < i1 {
                             continue;
                         }
                         let ident = [(k2, 1.0)];
@@ -679,7 +760,7 @@ impl RotatedBasis {
                         };
                         for i in 0..self.dims[k1] {
                             for j in 0..self.dims[k2] {
-                                if k1 == k2 && j < i {
+                                if symmetric && k1 == k2 && j < i {
                                     continue;
                                 }
                                 out.iter_mut().for_each(|x| *x = 0.0);
@@ -695,9 +776,12 @@ impl RotatedBasis {
                                     }
                                 }
                                 let (mu, nu) = (self.offs[k1] + i, self.offs[k2] + j);
-                                let (ra, rb) = ((mu * n + nu) * w, (nu * n + mu) * w);
+                                let ra = (mu * n + nu) * w;
                                 data[ra..ra + w].copy_from_slice(&out);
-                                data[rb..rb + w].copy_from_slice(&out);
+                                if symmetric {
+                                    let rb = (nu * n + mu) * w;
+                                    data[rb..rb + w].copy_from_slice(&out);
+                                }
                             }
                         }
                     }

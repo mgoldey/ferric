@@ -119,10 +119,11 @@
 //!   filter (`prepare_cell_basis`); FINDINGS "Iteration 15".
 //!
 //! * [`sr_rotation`] — column rotation of generally contracted orbital
-//!   shells inside the Gamma SR 3-centre walk (RS-GDF) and the hcore SR
+//!   shells inside the SR 3-centre walk (RS-GDF) and the hcore SR
 //!   attraction ([`SrColumnRotation`] on `RsGdfConfig` /
 //!   `PeriodicHcoreConfig`, default `Auto` = on in the Gamma energy and
-//!   gradient builds, off in the k-point and oracle builds): subtract each
+//!   gradient builds and the k-point energy builds, off in the k-point
+//!   force builds and the frozen oracles): subtract each
 //!   shell group's single-primitive columns from the others, compute the SR
 //!   blocks on the rotated shells, back-transform exactly (design
 //!   `reference/pbc/sr-general-contraction-design.md`); the Gamma forces and

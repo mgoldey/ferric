@@ -22,8 +22,9 @@ honoured:
   precision; the Rust suite owns the finite-difference and mutant anchors)
   and resolves OFF, silently, with jk="dense".
 * Refusal of an explicit True: jk="dense" (ValueError, by name); the
-  k-point bindings do not take the kwarg (TypeError) and run unrotated with
-  their defaults.
+  k-point bindings do not take the kwarg (TypeError) and run the library
+  default, which ROTATES their RS-GDF energy builds (counter
+  "k rsgdf SR3 rotated columns").
 """
 
 from __future__ import annotations
@@ -202,11 +203,14 @@ def test_kpoint_bindings_do_not_take_it(h2, ccpvdz, flag):
         ferric.run_mp2_kpts(h2, lat, ccpvdz, (1, 1, 2), "ewald", "shifted", **kw)
 
 
-def test_kpoint_default_runs_unrotated(h2, ccpvdz):
-    # The library default (Auto) resolves off in the k-point builds: no
-    # refusal on a basis that WOULD rotate at Gamma.
+def test_kpoint_default_rotates(h2, ccpvdz):
+    # The library default (Auto) rotates the k-point RS-GDF energy build on a
+    # basis that rotates at Gamma (one s column per H, two H atoms). The
+    # k-point counters carry their own name; the Gamma names stay absent.
     r = ferric.run_rhf_kpts(
         h2, _cubic(6.0), ccpvdz, (1, 1, 2), jk="rsgdf", auxbasis=AUX
     )
     assert r.converged
-    assert _rotated_columns(r) == (0, 0), r.timings["counters"]
+    c = r.timings["counters"]
+    assert c.get("k rsgdf SR3 rotated columns") == 2, c
+    assert _rotated_columns(r) == (0, 0), c
