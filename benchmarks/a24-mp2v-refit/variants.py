@@ -75,7 +75,7 @@ def report(vpath, ipaths):
     for p in ipaths:
         inc.update(json.loads(Path(p).read_text()))
     keys = sorted({tuple(k.split("|")[:2]) for k in v if "mono" not in k})
-    print("sys f   | paper S18 | V_C err  V_A err  V_B err  bare err  V_D err | incr(V_C-bare) vs paper(S18-S17)")
+    print("sys f   | paper S18 | MP2-V total error vs S18 (ferric - paper): V_C  V_A  V_B  bare  V_D | ferric VV10 contribution (same-r0)")
     for s, f in keys:
         sid, f = int(s), float(f)
         i = stretch.FACTORS.index(f)
@@ -90,7 +90,7 @@ def report(vpath, ipaths):
         print(
             f"{sid:2d} {f:.1f} | {p18:+8.4f} | "
             + " ".join(f"{tot[n]-p18:+8.4f}" for n in ("V_C", "V_A", "V_B", "bare", "V_D"))
-            + f" | inc_ferric(V_C)={e('V_C'):+.4f} bare={e('bare'):+.4f} V_A={e('V_A'):+.4f} V_B={e('V_B'):+.4f}"
+            + f" | vv10_contrib V_C={e('V_C'):+.4f} bare={e('bare'):+.4f} V_A={e('V_A'):+.4f} V_B={e('V_B'):+.4f}"
             + f" | anchor dimer {anchor:+.2e} Ha, terf(Rcc)={w:.3f}"
         )
 

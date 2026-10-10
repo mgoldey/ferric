@@ -284,3 +284,33 @@ Hypotheses for the operator behind table 17, predictions stated now:
   table 17 at f=1.0; one factor cannot separate H1/H3, the stretch profile (f = 0.9, 1.3, 1.6, 2.0) of table 17 decides.
 * H4: RI vs exact integrals: predicted irrelevant (O(0.01) kcal/mol vs the observed 0.13-0.40).
 b, C and the published MP2-V r0 are not tuned; r0/omega are scanned only for the VV10-free attMP2 half.
+
+## Addendum D (target correction, user/coordinator-confirmed after reading the numbers)
+
+The "increment = S18 - S17" target (Addendum A Steps 2-4, the V0-V5 sign-pattern criterion) is WITHDRAWN: S17 (MP2(terfc, aTZ)
+alone) is evidently computed at its own optimal r0 (~1.35 A, no explicit statement in the SI text; the SI has no
+r0 line for the attMP2-only column), so S18 - S17 compares different operators and is not a VV10 contribution. The valid
+targets are: (1) the MP2-V TOTAL, table 18, at r0 = 1.00 A / b = 11.0 / C = 0.0089 (all variants scored on totals; attMP2 half at r0=1.00),
+at factors 0.9, 1.0, 1.1, 1.3, 1.6, 2.0 (water dimer and ammonia dimer for the stretched ones), and (2) table 17 as an independent check of
+the attMP2 operator at its own r0 (Addendum C). Match criterion for (1): |ferric - paper| within 0.02 kcal/mol (the noise level seen
+at factor 1.0 is +0.006..+0.019 with a constant sign) AND the offset is constant (+-0.01) across factors rather than growing with the
+damping-sensitive short-range factors 0.9-1.1. The earlier sign predictions for V_A/V_B ("increment > 0") are scored as
+refuted by their own wording (observed ferric VV10 contributions are about -0.2 kcal/mol for every variant); the more informative outcome is whether any
+variant's TOTAL tracks table 18 across factors.
+
+## Addendum E: results summary (all aTZ, non-CP, G1 rigid-monomer geometries, no parameter tuned)
+
+* Geometry: HF/aTZ non-CP vs table 3 (SCF/a5Z) at f=1.0 deviates -0.016..-0.029 kcal/mol on #2,4,5,8,19 (basis offset, same sign).
+  G1 (COM-scaled) reproduces table 3 at f = 0.9-2.0 (deviation shrinks with f; water dimer f=0.9: -0.070, the only point beyond the
+  pre-registered T = 0.058); G2 (closest-atom vector) is rejected (0.05-1.5 kcal/mol off).
+* MP2-V total (r0=1.00, linked, b=11.0, C=0.0089, Eq. 11 damping) vs table 18, ferric - paper, f=1.0: +0.017 (#2), +0.019 (#4),
+  +0.0145 (#5), +0.006 (#8), +0.009 (#19) kcal/mol. Stretch (#2 / #5): f=0.9 +0.022/+0.022, 1.1 +0.013/+0.012, 1.3 +0.008/+0.007,
+  1.6 +0.004/+0.003, 2.0 +0.001/+0.001: the offset is NOT constant; it grows toward short range.
+* Variants on totals, #2 / #5, f=0.9: V_C +0.022/+0.022, bare +0.005/+0.008, V_A +0.057/+0.056, V_B +0.092/+0.090, V_D +0.021/+0.018;
+  at f>=1.6 all coincide (to 0.0003). Bare VV10 tracks table 18 with a near-constant +0.005..+0.008; V_A and V_B are worse than V_C.
+  The V_C-vs-bare difference (<= 0.017 kcal/mol at f=0.9) is at the level of unquantified differences (SG-1 vs ferric NLC grid
+  [grid effect on the dimer E_nl total ~1e-6 Ha], RI vs exact attMP2, Q-Chem HF) and is not interpreted as evidence against Eq. 11.
+  Pre-registered sign predictions for V_A/V_B (increment > 0) are refuted (all ferric VV10 contributions are ~ -0.2 kcal/mol at f=1.0).
+* Table 17 operator: per-system r0_eff (linked omega) = 1.365 (#2), 1.355 (#5), 1.351 (#8), 1.354 (#19), and > 1.45 (#4, ill-conditioned:
+  E saturates at ~0.002 kcal/mol per 0.05 A). H1 (r0 ~ 1.35) supported (1.35 is the paper's own non-CP optimum, not a fit here); H2 (sqrt2 = 1.414)
+  not supported; H3 (r0=1.00 with a different omega) gives a system-dependent r0*omega (#19 ~0.35-0.4, #8 ~0.3, #2 below 0.25) so no single operator.

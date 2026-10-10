@@ -71,7 +71,7 @@ def report(paths):
     for p in paths:
         db = json.loads(Path(p).read_text())
         print(f"== {p}")
-        print("sys  f    ferric: attMP2   MP2-V    incr  | paper: S17     S18     incr  | d(att)  d(V)   d(incr)")
+        print("sys  f    ferric: attMP2   MP2-V    vv10(same r0) | paper: S17(own r0, see Addendum C)  S18 | d(att)  d(V)   [paper S18-S17 is NOT a VV10 increment]")
         keys = sorted({tuple(k.split("|")[:2]) for k in db if "mono" not in k})
         for s, f in keys:
             sid, f = int(s), float(f)
@@ -84,7 +84,7 @@ def report(paths):
                     continue
                 print(
                     f"{sid:2d} {f:.1f} {'CP ' if cp else 'nCP'} {att:+8.4f} {v:+8.4f} {v-att:+8.4f} | "
-                    f"{p17:+8.4f} {p18:+8.4f} {p18-p17:+8.4f} | {att-p17:+7.4f} {v-p18:+7.4f} {(v-att)-(p18-p17):+7.4f}"
+                    f"{p17:+8.4f} {p18:+8.4f} | {att-p17:+7.4f} {v-p18:+7.4f}"
                 )
 
 
