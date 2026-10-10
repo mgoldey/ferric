@@ -416,7 +416,7 @@ See [Constrained DFT](../methods/cdft.md) for a worked example.
 |---|---|---|
 | `run_optimize` | RHF geometry optimization (basis by name). | `task = "optimize"` |
 | `run_frequencies` | Harmonic frequencies by finite differences of the analytic gradient; RHF/UHF/ROHF or their KS variants. | `task = "frequencies"` |
-| `run_saddle` | First-order saddle-point (transition-state) search by P-RFO; closed-shell. | — |
+| `run_saddle` | First-order saddle-point (transition-state) search by P-RFO; closed-shell. `hessian="fd"` (default) / `"analytic"` / `"auto"`; `.hessian_source` reports which ran. | — |
 | `run_irc` | Intrinsic reaction coordinate in both directions from a saddle; closed-shell. | — |
 | `OptimizeResult` | `energy`, `converged`, `steps`, `energy_trace`, `mol()`. | |
 | `FrequencyResult` | Frequencies in cm⁻¹ (negative = imaginary), normal modes, `asymmetry` diagnostic. | |

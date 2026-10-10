@@ -2489,6 +2489,11 @@ class SaddleResult:
     @property
     def lowest_eigenvalue(self) -> float: ...
     @property
+    def hessian_source(self) -> str:
+        """`"finite-difference"` or `"analytic"`: which construction produced
+        the final-geometry Hessian behind `n_imaginary`."""
+        ...
+    @property
     def symbols(self) -> list[str]: ...
     @property
     def coords(self) -> list[tuple[float, float, float]]: ...
@@ -2555,12 +2560,20 @@ def run_saddle(
     delta: float | None = None,
     point_charges: list[tuple[float, float, float, float]] | None = None,
     external_field: tuple[float, float, float] | None = None,
+    hessian: str = "fd",
 ) -> SaddleResult:
     """Partitioned rational function optimization to a first-order saddle.
 
     Closed-shell references only. Starting with no negative projected Hessian
     eigenvalue is a hard error naming that eigenvalue, rather than a converged
     minimum labelled as a transition state.
+
+    `hessian`: `"fd"` (default) central-differences the analytic gradient and
+    honours `delta`; `"analytic"` uses the analytic RHF Hessian and raises when
+    it does not apply (KS `xc`, point charges / field, ECP, basis too high in
+    angular momentum); `"auto"` uses it where it applies and otherwise falls
+    back to FD. `delta=` with `"analytic"` or `"auto"` raises. The result's
+    `hessian_source` reports which ran.
     """
     ...
 

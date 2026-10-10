@@ -446,3 +446,100 @@ def test_a_minimum_basin_never_yields_a_mode_to_follow():
     assert (
         "negative" in str(exc.value).lower() or "eigenvalue" in str(exc.value).lower()
     )
+
+
+# --- opt-in analytic Hessian (issue #293) ------------------------------------
+#
+# `run_saddle` is pinned to finite-difference Hessians by default (#214: `Auto`
+# silently ignored `delta=`). `hessian="analytic"|"auto"` is OPT-IN; the default
+# must stay bit-identical to explicit `hessian="fd"`.
+
+
+def _analytic_hessian_available() -> bool:
+    try:
+        ferric.run_frequencies(_h2(0.74), "sto-3g", hessian="analytic")
+    except Exception:  # libint built without second derivatives
+        return False
+    return True
+
+
+needs_analytic = pytest.mark.skipif(
+    not _analytic_hessian_available(),
+    reason="libint2 was generated without second derivatives",
+)
+
+
+def test_default_hessian_is_finite_difference_and_bit_identical_to_fd():
+    mol = _near_planar_ammonia()
+    default = ferric.run_saddle(mol, "sto-3g", max_steps=40)
+    fd = ferric.run_saddle(mol, "sto-3g", max_steps=40, hessian="fd")
+    assert default.hessian_source == "finite-difference"
+    assert fd.hessian_source == "finite-difference"
+    assert default.steps == fd.steps
+    assert default.energy == fd.energy
+    assert default.coords == fd.coords
+    assert default.lowest_eigenvalue == fd.lowest_eigenvalue
+
+
+@needs_analytic
+def test_analytic_hessian_finds_the_same_saddle_as_fd():
+    mol = _near_planar_ammonia()
+    fd = ferric.run_saddle(mol, "sto-3g", max_steps=40, hessian="fd")
+    an = ferric.run_saddle(mol, "sto-3g", max_steps=40, hessian="analytic")
+    # The kwarg must reach the callback: a Hessian callback that ignored it
+    # (always FD) would report "finite-difference" here.
+    assert an.hessian_source == "analytic"
+    assert fd.is_transition_state() and an.is_transition_state()
+    assert an.n_imaginary == 1
+    assert an.energy == pytest.approx(fd.energy, abs=1e-6)
+    bohr = 0.529177210903
+    dx = max(abs(a - b) for ca, cb in zip(an.coords, fd.coords) for a, b in zip(ca, cb))
+    # Gradient-convergence-limited (|g| < 4.5e-4), not machine precision.
+    assert dx / bohr < 5e-3
+    assert an.lowest_eigenvalue == pytest.approx(fd.lowest_eigenvalue, rel=1e-2)
+
+
+@needs_analytic
+def test_auto_uses_analytic_where_it_applies():
+    r = ferric.run_saddle(
+        _near_planar_ammonia(), "sto-3g", max_steps=40, hessian="auto"
+    )
+    assert r.hessian_source == "analytic"
+    assert r.is_transition_state()
+
+
+def test_analytic_is_refused_not_silently_downgraded_when_unsupported():
+    mol = _near_planar_ammonia()
+    # The refusal comes from the analytic-Hessian preflight (before any SCF),
+    # so it does not depend on libint's second-derivative support.
+    # KS-DFT: point charges are analytic-supported (#343), so use a config the
+    # preflight still refuses.
+    for kwargs in ({"xc": "pbe"},):
+        with pytest.raises(Exception) as exc:
+            ferric.run_saddle(mol, "sto-3g", max_steps=40, hessian="analytic", **kwargs)
+        assert "hessian" in str(exc.value).lower(), str(exc.value)
+
+
+def test_auto_falls_back_to_fd_and_says_so():
+    r = ferric.run_saddle(
+        _near_planar_ammonia(),
+        "sto-3g",
+        max_steps=40,
+        hessian="auto",
+        xc="pbe",
+    )
+    assert r.hessian_source == "finite-difference"
+    assert r.n_imaginary == 1
+
+
+def test_delta_is_refused_with_a_non_fd_hessian():
+    for h in ("analytic", "auto"):
+        with pytest.raises(Exception) as exc:
+            ferric.run_saddle(_h2(0.74), "sto-3g", hessian=h, delta=0.01)
+        assert "delta" in str(exc.value)
+
+
+def test_unknown_hessian_method_is_an_error():
+    with pytest.raises(Exception) as exc:
+        ferric.run_saddle(_h2(0.74), "sto-3g", hessian="exact")
+    assert "hessian" in str(exc.value).lower()
