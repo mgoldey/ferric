@@ -93,6 +93,11 @@ const NLC_CUTOFF_BOHR: f64 = 40.0;
 /// threshold are bit-identical to the pre-cutoff dense code.
 const CELL_LIST_MIN_PTS: usize = PAR_MIN_PTS;
 
+/// Distance (in units of the seam width) past `r0` beyond which the Eq-11
+/// damping factor `1 - terfc^2` is exactly 1.0 in double precision. At z = 5
+/// seam widths terfc ~ erfc(5)/2 ~ 8e-13.
+const DAMP_ONE_SIGMAS: f64 = 5.0;
+
 /// Test-only global counter of retained pair visits in the energy pair sum,
 /// so a test can quantify the cell-list reduction versus dense O(npts²).
 #[cfg(test)]
@@ -190,19 +195,25 @@ impl CellList {
     /// ascending index order, into the caller-owned `buf` (cleared first).
     /// Serial and allocation-free per call (buf is reused across a row).
     fn neighbors_into(&self, p: [f64; 3], buf: &mut Vec<usize>) {
+        self.neighbors_radius_into(p, 1, true, buf);
+    }
+
+    /// Same as [`Self::neighbors_into`] for a (2k+1)^3 block of cells around `p`
+    /// (Chebyshev cell distance <= `k`); `k = 1` is the historical 3x3x3 scan.
+    fn neighbors_radius_into(&self, p: [f64; 3], k: i64, sorted: bool, buf: &mut Vec<usize>) {
         buf.clear();
         let c = Self::cell_coord(&self.origin, self.inv_edge, &self.dims, p);
-        for dz in -1..=1i64 {
+        for dz in -k..=k {
             let iz = c[2] + dz;
             if iz < 0 || iz >= self.dims[2] {
                 continue;
             }
-            for dy in -1..=1i64 {
+            for dy in -k..=k {
                 let iy = c[1] + dy;
                 if iy < 0 || iy >= self.dims[1] {
                     continue;
                 }
-                for dx in -1..=1i64 {
+                for dx in -k..=k {
                     let ix = c[0] + dx;
                     if ix < 0 || ix >= self.dims[0] {
                         continue;
@@ -215,7 +226,9 @@ impl CellList {
         // Neighbor cells were appended cell-by-cell (not globally sorted); sort
         // so the per-row inner loop visits partners in ascending index order —
         // identical float summation order to the dense loop for retained pairs.
-        buf.sort_unstable();
+        if sorted {
+            buf.sort_unstable();
+        }
     }
 }
 
@@ -275,6 +288,210 @@ pub fn compute_vv10_damped_energy_and_potentials(
 ) -> (f64, Vec<f64>, Vec<f64>) {
     let out = vv10_internal_cutoff(grid, dens, params, Some(NLC_CUTOFF_BOHR), damping);
     (out.e_nl, out.vrho, out.vsig)
+}
+
+/// Opt-in, user-controlled distance screen for the VV10 pair sum (post-HF
+/// MP2-V use; the default path never constructs one).
+///
+/// Space is binned into cubic cells of edge `r_cut_bohr / near_shells`. For an
+/// outer point `i`, partners in cells within Chebyshev cell distance
+/// `near_shells` of `i`'s cell are evaluated EXACTLY (point-point); every
+/// other (far) cell, guaranteed at least `r_cut_bohr` away from `i`, is either
+/// dropped (`far_field = false`, pure truncation) or replaced by ONE kernel
+/// evaluation against the cell's monopole (`far_field = true`): total
+/// weighted density Q_c = sum w rho, Q-weighted centroid, Q-weighted mean
+/// omega0 and kappa.
+///
+/// Trivial limit (anchor): when `r_cut_bohr` exceeds the bounding box of the
+/// active points, no cell is far and every pair is evaluated, so the result
+/// equals the dense exact pair sum TO ROUNDING (relative 1e-13 in the energy,
+/// 1e-12 in the potentials), not bitwise: screened rows skip the per-row index
+/// sort and add partners in cell order, so the summation order differs.
+///
+/// Potentials: with `far_field = false` the potentials are the exact
+/// derivatives of the truncated (symmetric) pair sum. With `far_field = true`
+/// the energy depends on the far cells' aggregate charge, centroid, omega0 and
+/// kappa, whose derivatives with respect to the source densities are NOT
+/// propagated, so `vrho`/`vsig` would not match the energy; they are returned
+/// EMPTY in that mode (energy only; use truncation for potentials).
+///
+/// Error structure: truncation drops pairs whose kernel is bounded by the R^-6
+/// envelope documented at `NLC_CUTOFF_BOHR`; the monopole far field replaces
+/// the dropped tail by its zeroth-order multipole, leaving an error of relative
+/// order (cell extent / R)^2 plus the Jensen error of using mean omega0, kappa.
+/// Cost: per outer point about (near-block points) + (occupied cells), instead
+/// of all points. With the far field the total is still O(N * N_cells): a
+/// large constant-factor cut, not an O(N) algorithm (that needs a hierarchy).
+#[derive(Debug, Clone, Copy)]
+pub struct Vv10Screen {
+    /// Minimum separation (Bohr) of any pair that is not evaluated exactly.
+    pub r_cut_bohr: f64,
+    /// Cells per `r_cut_bohr` (>= 1). Larger gives a tighter near block.
+    pub near_shells: usize,
+    /// Replace dropped far cells by their monopole instead of discarding.
+    pub far_field: bool,
+    /// Evaluate the Eq-11 damping factor by 4-point Lagrange interpolation on
+    /// a 0.01 Bohr table instead of two `erf` per pair (about 20x cheaper per
+    /// pair). NOT bit-identical to the direct evaluation (interpolation error
+    /// <~ 1e-10 relative in the factor); ignored when undamped.
+    pub fast_damping: bool,
+}
+
+/// Tabulated `1 - terfc(r)^2` on a uniform grid (node k at r = (k-1)*h).
+struct DampTable {
+    inv_h: f64,
+    r_one2: f64,
+    vals: Vec<f64>,
+}
+
+impl DampTable {
+    const H: f64 = 0.01;
+
+    fn build(d: &Vv10Damping) -> Self {
+        let (r0, om) = match *d {
+            Vv10Damping::Terfc {
+                r0_bohr,
+                omega_bohr_inv,
+            } => (r0_bohr, omega_bohr_inv),
+            Vv10Damping::None => unreachable!("table built for Terfc only"),
+        };
+        let r_one = damping_r_one(r0, om);
+        let n = (r_one / Self::H).ceil() as usize + 4;
+        // Direct evaluation at the nodes via the exact (non-skipping) formula.
+        let vals = (0..n)
+            .map(|k| {
+                let r = (k as f64 - 1.0) * Self::H;
+                let tc = terfc_dispatch(r, r0, om);
+                1.0 - tc * tc
+            })
+            .collect();
+        DampTable {
+            inv_h: 1.0 / Self::H,
+            r_one2: r_one * r_one,
+            vals,
+        }
+    }
+
+    #[inline]
+    fn eval(&self, r2: f64) -> f64 {
+        if r2 > self.r_one2 {
+            return 1.0;
+        }
+        let x = r2.sqrt() * self.inv_h + 1.0;
+        let i = x.floor();
+        let t = x - i;
+        let i = i as usize;
+        let (a, b, c, d) = (
+            self.vals[i - 1],
+            self.vals[i],
+            self.vals[i + 1],
+            self.vals[i + 2],
+        );
+        let wa = -t * (t - 1.0) * (t - 2.0) * (1.0 / 6.0);
+        let wb = (t + 1.0) * (t - 1.0) * (t - 2.0) * 0.5;
+        let wc = -(t + 1.0) * t * (t - 2.0) * 0.5;
+        let wd = (t + 1.0) * t * (t - 1.0) * (1.0 / 6.0);
+        wa * a + wb * b + wc * c + wd * d
+    }
+}
+
+impl Vv10Screen {
+    fn cell_edge(&self) -> f64 {
+        (self.r_cut_bohr / self.near_shells.max(1) as f64).max(1.0)
+    }
+}
+
+/// Energy, potentials and work counters from a screened VV10 evaluation.
+#[derive(Debug, Clone)]
+pub struct Vv10ScreenedResult {
+    pub e_nl: f64,
+    /// d(E_nl)/d(rho) per grid point (per unit weight). EMPTY when the screen
+    /// has `far_field = true` (energy-only mode, see [`Vv10Screen`]).
+    pub vrho: Vec<f64>,
+    /// d(E_nl)/d(sigma) per grid point (per unit weight); EMPTY with the far
+    /// field, like `vrho`.
+    pub vsig: Vec<f64>,
+    /// Active (rho >= 1e-8) grid points.
+    pub n_active: usize,
+    /// Exact point-point kernel evaluations.
+    pub pairs_near: u64,
+    /// Point-cell monopole kernel evaluations.
+    pub pairs_far: u64,
+}
+
+/// Damped/undamped VV10 energy with an explicit [`Vv10Screen`].
+///
+/// `screen = None` is the EXACT dense pair sum (no cutoff at all, not the
+/// production 40 Bohr cell list): the reference for the anchors and error
+/// tables. Production callers wanting the historical behaviour use
+/// [`compute_vv10_damped_energy_and_potentials`].
+pub fn compute_vv10_screened(
+    grid: &[GridPoint],
+    dens: &DensityGrid,
+    params: &Vv10Params,
+    damping: Vv10Damping,
+    screen: Option<Vv10Screen>,
+) -> Vv10ScreenedResult {
+    let out = vv10_internal_screened(grid, dens, params, None, damping, screen);
+    // The far-field energy depends on the far cells' aggregates, whose
+    // derivatives are not propagated: the potentials would not be its
+    // derivatives, so they are withheld rather than returned wrong.
+    let energy_only = screen.is_some_and(|sc| sc.far_field);
+    Vv10ScreenedResult {
+        e_nl: out.e_nl,
+        n_active: out.active.iter().filter(|&&a| a).count(),
+        vrho: if energy_only { Vec::new() } else { out.vrho },
+        vsig: if energy_only { Vec::new() } else { out.vsig },
+        pairs_near: out.pairs_near,
+        pairs_far: out.pairs_far,
+    }
+}
+
+/// Per-occupied-cell monopole aggregates for the far field.
+struct FarCells {
+    coord: Vec<[i64; 3]>,
+    q: Vec<f64>,
+    xyz: Vec<[f64; 3]>,
+    w0: Vec<f64>,
+    kp: Vec<f64>,
+}
+
+impl FarCells {
+    fn build(cl: &CellList, xyz: &[[f64; 3]], rho_w: &[f64], w0: &[f64], kp: &[f64]) -> Self {
+        let mut f = FarCells {
+            coord: vec![],
+            q: vec![],
+            xyz: vec![],
+            w0: vec![],
+            kp: vec![],
+        };
+        let (nx, ny) = (cl.dims[0], cl.dims[1]);
+        for (idx, pts) in cl.cell_points.iter().enumerate() {
+            if pts.is_empty() {
+                continue;
+            }
+            let (mut q, mut cx, mut cw, mut ck) = (0.0, [0.0; 3], 0.0, 0.0);
+            for &p in pts {
+                let m = rho_w[p];
+                q += m;
+                for d in 0..3 {
+                    cx[d] += m * xyz[p][d];
+                }
+                cw += m * w0[p];
+                ck += m * kp[p];
+            }
+            if q <= 0.0 {
+                continue;
+            }
+            let i = idx as i64;
+            f.coord.push([i % nx, (i / nx) % ny, i / (nx * ny)]);
+            f.q.push(q);
+            f.xyz.push([cx[0] / q, cx[1] / q, cx[2] / q]);
+            f.w0.push(cw / q);
+            f.kp.push(ck / q);
+        }
+        f
+    }
 }
 
 /// Compute the per-grid-point VV10 energy density ε_nl(g) = β + ½ · f(g)
@@ -511,17 +728,16 @@ impl Vv10Damping {
                 r0_bohr,
                 omega_bohr_inv,
             } => {
-                let r = r2.sqrt();
-                // The `None` arm goes through the original linked-width
-                // arithmetic untouched (byte-identical to the pre-decoupling
-                // code path), not through `terfc_scalar_decoupled` with a
-                // derived ω — multiply-by-reciprocal vs divide differ in the
-                // last ulp and "None means exactly the old behavior" is a
-                // regression-tested promise.
-                let tc = match omega_bohr_inv {
-                    None => terfc_scalar(r, r0_bohr),
-                    Some(omega) => terfc_scalar_decoupled(r, r0_bohr, omega),
-                };
+                // Beyond `r_one` the factor is EXACTLY 1.0 in f64 (see
+                // `damping_r_one`): skipping the two erf evaluations is
+                // byte-identical, not an approximation.
+                let r_one = damping_r_one(r0_bohr, omega_bohr_inv);
+                if r2 > r_one * r_one {
+                    return 1.0;
+                }
+                // The `None` arm keeps the original linked-width arithmetic
+                // (byte-identical to the pre-decoupling code path).
+                let tc = terfc_dispatch(r2.sqrt(), r0_bohr, omega_bohr_inv);
                 1.0 - tc * tc
             }
         }
@@ -532,6 +748,27 @@ impl Vv10Damping {
     #[inline]
     fn is_none(&self) -> bool {
         matches!(self, Vv10Damping::None)
+    }
+}
+
+/// Distance beyond which `1 - terfc^2` is exactly 1.0 in double precision:
+/// terfc < 1e-12 there, so tc*tc << ulp(1)/2 and `1 - tc*tc` rounds to 1.0
+/// bit-for-bit. Asserted by `damping_skip_beyond_r_one_is_bit_exact`.
+fn damping_r_one(r0: f64, omega: Option<f64>) -> f64 {
+    let width = match omega {
+        None => r0 * std::f64::consts::SQRT_2,
+        Some(w) => 1.0 / w,
+    };
+    r0 + DAMP_ONE_SIGMAS * width
+}
+
+/// terfc with the linked (`None`) or decoupled (`Some(omega)`) seam width;
+/// the `None` arm is the original linked arithmetic, untouched.
+#[inline]
+fn terfc_dispatch(r: f64, r0: f64, omega: Option<f64>) -> f64 {
+    match omega {
+        None => terfc_scalar(r, r0),
+        Some(w) => terfc_scalar_decoupled(r, r0, w),
     }
 }
 
@@ -637,6 +874,10 @@ struct Vv10Internal {
     /// Per-grid-point energy density ε_nl(g) = β + ½ · f(g); 0.0 on inactive points.
     exc: Vec<f64>,
     active: Vec<bool>,
+    /// Exact point-point kernel evaluations in the pair sum.
+    pairs_near: u64,
+    /// Point-cell (aggregated far-field) kernel evaluations.
+    pairs_far: u64,
 }
 
 /// Internal: compute (E_nl, vrho, vsig, ε_nl, active) on a single grid, using
@@ -656,6 +897,21 @@ fn vv10_internal_cutoff(
     params: &Vv10Params,
     cutoff: Option<f64>,
     damping: Vv10Damping,
+) -> Vv10Internal {
+    vv10_internal_screened(grid, dens, params, cutoff, damping, None)
+}
+
+/// Core pair-sum. `screen = None` is the historical behaviour (dense below
+/// `CELL_LIST_MIN_PTS`, 3x3x3 cell list of edge `cutoff` above) and is
+/// byte-identical to the pre-`Vv10Screen` code. `screen = Some(_)` OVERRIDES
+/// `cutoff` and always uses the explicit near/far scheme of [`Vv10Screen`].
+fn vv10_internal_screened(
+    grid: &[GridPoint],
+    dens: &DensityGrid,
+    params: &Vv10Params,
+    cutoff: Option<f64>,
+    damping: Vv10Damping,
+    screen: Option<Vv10Screen>,
 ) -> Vv10Internal {
     let npts = dens.rho.len();
     let b_vv = params.b;
@@ -746,10 +1002,17 @@ fn vv10_internal_cutoff(
     // per-row summation is bit-identical between dense and cell-list — the only
     // difference is the (bounded, < 1e-8 Ha) omission of R > R_cut pairs.
     let use_cells = matches!(cutoff, Some(_)) && npts >= CELL_LIST_MIN_PTS;
-    let cells = match cutoff {
-        Some(edge) if use_cells => Some(CellList::build(&xyz, &active, edge)),
+    let cells = match (screen, cutoff) {
+        (Some(sc), _) => Some(CellList::build(&xyz, &active, sc.cell_edge())),
+        (None, Some(edge)) if use_cells => Some(CellList::build(&xyz, &active, edge)),
         _ => None,
     };
+    // Far-field aggregates (only for `Vv10Screen { far_field: true }`).
+    let far = match (screen, &cells) {
+        (Some(sc), Some(cl)) if sc.far_field => Some(FarCells::build(cl, &xyz, &rho_w, &w0, &kp)),
+        _ => None,
+    };
+    let near_k: i64 = screen.map_or(1, |s| s.near_shells.max(1) as i64);
 
     // Per-pair kernel accumulation into (fi, ui, wi) for outer point i and
     // partner p. Shared by the dense and cell-list paths so the arithmetic is
@@ -762,6 +1025,18 @@ fn vv10_internal_cutoff(
     // The `Vv10Damping::None` branch skips the multiply entirely, so the
     // undamped path is bit-identical to the pre-damping code.
     let damped = !damping.is_none();
+    let table = match (screen, damping) {
+        (Some(sc), Vv10Damping::Terfc { .. }) if sc.fast_damping => {
+            Some(DampTable::build(&damping))
+        }
+        _ => None,
+    };
+    let factor = |r2: f64| -> f64 {
+        match &table {
+            Some(t) => t.eval(r2),
+            None => damping.factor_from_r2(r2),
+        }
+    };
     let accum =
         |p: usize, w0i: f64, ki: f64, xi: [f64; 3], fi: &mut f64, ui: &mut f64, wi: &mut f64| {
             #[cfg(test)]
@@ -777,7 +1052,7 @@ fn vv10_internal_cutoff(
                 return;
             }
             let t = if damped {
-                rho_w[p] * damping.factor_from_r2(r2) / (gi_val * gp_val * gt_val)
+                rho_w[p] * factor(r2) / (gi_val * gp_val * gt_val)
             } else {
                 rho_w[p] / (gi_val * gp_val * gt_val)
             };
@@ -787,9 +1062,9 @@ fn vv10_internal_cutoff(
             *wi += t_u * r2;
         };
 
-    let row_fn = |i: usize| -> (f64, f64, f64) {
+    let row_fn = |i: usize| -> (f64, f64, f64, u64, u64) {
         if !active[i] {
-            return (0.0_f64, 0.0_f64, 0.0_f64);
+            return (0.0_f64, 0.0_f64, 0.0_f64, 0, 0);
         }
         let xi = xyz[i];
         let w0i = w0[i];
@@ -797,12 +1072,15 @@ fn vv10_internal_cutoff(
         let mut fi = 0.0_f64;
         let mut ui = 0.0_f64;
         let mut wi = 0.0_f64;
+        let mut n_near = 0u64;
+        let mut n_far = 0u64;
         match &cells {
             None => {
                 for p in 0..npts {
                     if !active[p] {
                         continue;
                     }
+                    n_near += 1;
                     accum(p, w0i, ki, xi, &mut fi, &mut ui, &mut wi);
                 }
             }
@@ -810,14 +1088,44 @@ fn vv10_internal_cutoff(
                 // Per-row neighbor buffer (thread-local by construction: this
                 // closure body runs on one row at a time within a thread).
                 let mut buf: Vec<usize> = Vec::new();
-                cl.neighbors_into(xi, &mut buf);
+                cl.neighbors_radius_into(xi, near_k, screen.is_none(), &mut buf);
+                n_near = buf.len() as u64;
                 for &p in &buf {
                     // active[p] is guaranteed (only active points are binned).
                     accum(p, w0i, ki, xi, &mut fi, &mut ui, &mut wi);
                 }
+                if let Some(fc) = &far {
+                    let ci = CellList::cell_coord(&cl.origin, cl.inv_edge, &cl.dims, xi);
+                    for c in 0..fc.q.len() {
+                        let cc = fc.coord[c];
+                        if (cc[0] - ci[0]).abs() <= near_k
+                            && (cc[1] - ci[1]).abs() <= near_k
+                            && (cc[2] - ci[2]).abs() <= near_k
+                        {
+                            continue; // handled exactly above
+                        }
+                        n_far += 1;
+                        let dx = fc.xyz[c][0] - xi[0];
+                        let dy = fc.xyz[c][1] - xi[1];
+                        let dz = fc.xyz[c][2] - xi[2];
+                        let r2 = dx * dx + dy * dy + dz * dz;
+                        let gp_val = r2 * fc.w0[c] + fc.kp[c];
+                        let gi_val = r2 * w0i + ki;
+                        let gt_val = gi_val + gp_val;
+                        let t = if damped {
+                            fc.q[c] * factor(r2) / (gi_val * gp_val * gt_val)
+                        } else {
+                            fc.q[c] / (gi_val * gp_val * gt_val)
+                        };
+                        fi += t;
+                        let t_u = t * (1.0 / gi_val + 1.0 / gt_val);
+                        ui += t_u;
+                        wi += t_u * r2;
+                    }
+                }
             }
         }
-        (-1.5 * fi, ui, wi)
+        (-1.5 * fi, ui, wi, n_near, n_far)
     };
     let fuw = map_rows(npts, row_fn);
 
@@ -828,11 +1136,15 @@ fn vv10_internal_cutoff(
     let mut vsig = vec![0.0_f64; npts];
     let mut exc = vec![0.0_f64; npts];
     let mut e_nl = 0.0_f64;
+    let mut pairs_near = 0u64;
+    let mut pairs_far = 0u64;
     for g in 0..npts {
         if !active[g] {
             continue;
         }
-        let (f_g, u_g, w_g) = fuw[g];
+        let (f_g, u_g, w_g, nn, nf) = fuw[g];
+        pairs_near += nn;
+        pairs_far += nf;
         let exc_g = beta + 0.5 * f_g;
         exc[g] = exc_g;
         vrho[g] = beta + f_g + 1.5 * (u_g * dk_dr[g] + w_g * dw0_dr[g]);
@@ -845,6 +1157,8 @@ fn vv10_internal_cutoff(
         vsig,
         exc,
         active,
+        pairs_near,
+        pairs_far,
     }
 }
 
@@ -1588,5 +1902,243 @@ mod cutoff_tests {
         assert!((scan[0][1] - scan[1][1]).abs() > 1e-6);
         assert!((scan[1][1] - scan[2][1]).abs() > 1e-7);
         assert!((scan[1][0] - scan[1][2]).abs() > 1e-6);
+    }
+
+    fn chain(n: usize) -> Molecule {
+        let mut xyz = format!("{n}\nchain\n");
+        for i in 0..n {
+            xyz.push_str(&format!(
+                "C {:.6} 0.0 0.0\n",
+                i as f64 * 2.9 * ferric_core::units::BOHR_TO_ANGSTROM
+            ));
+        }
+        Molecule::parse_xyz(&xyz, 0, 1).unwrap()
+    }
+
+    const TERFC: Vv10Damping = Vv10Damping::Terfc {
+        r0_bohr: ferric_core::units::ANGSTROM_TO_BOHR,
+        omega_bohr_inv: None,
+    };
+
+    /// EXACTNESS ANCHOR for `Vv10Screen`: with the cut beyond the molecular
+    /// extent no cell is far, so the energy (and, without the far field, both
+    /// potentials) must equal the dense sum to rounding (not bitwise: screened
+    /// rows skip the index sort), for every `near_shells` and with the far
+    /// field on or off, damped and undamped.
+    #[test]
+    fn screen_matches_dense_exactly_in_the_trivial_limit() {
+        let mol = chain(8); // span ~20 Bohr
+        let (params, grid, dens) = synthetic_density_on_grid(&mol, 12, 14);
+        for damping in [Vv10Damping::None, TERFC] {
+            let dense = compute_vv10_screened(&grid, &dens, &params, damping, None);
+            for k in [1usize, 2, 3] {
+                for far in [false, true] {
+                    let sc = Vv10Screen {
+                        r_cut_bohr: 1.0e3,
+                        near_shells: k,
+                        far_field: far,
+                        fast_damping: false,
+                    };
+                    let s = compute_vv10_screened(&grid, &dens, &params, damping, Some(sc));
+                    // Screened rows skip the per-row index sort (it cost as much
+                    // as the kernel), so the partner summation ORDER differs from
+                    // the dense loop: agreement is to rounding, not bitwise.
+                    let rel = (s.e_nl - dense.e_nl).abs() / dense.e_nl.abs();
+                    assert!(rel < 1e-13, "k={k} far={far} rel={rel:e}");
+                    if far {
+                        assert!(
+                            s.vrho.is_empty() && s.vsig.is_empty(),
+                            "far field is energy-only"
+                        );
+                    } else {
+                        assert_eq!(s.vrho.len(), dense.vrho.len());
+                        for (a, b) in s.vrho.iter().zip(&dense.vrho) {
+                            assert!((a - b).abs() <= 1e-12 * (1.0 + b.abs()));
+                        }
+                        for (a, b) in s.vsig.iter().zip(&dense.vsig) {
+                            assert!((a - b).abs() <= 1e-12 * (1.0 + b.abs()));
+                        }
+                    }
+                    assert_eq!(s.pairs_far, 0);
+                    assert_eq!(s.pairs_near, dense.pairs_near);
+                }
+            }
+        }
+    }
+
+    /// The truncated potentials are the derivatives of the truncated energy
+    /// (the pair drop is symmetric): central differences of `e_nl` in rho and
+    /// sigma at a few points agree with `w * vrho` / `w * vsig` for a cut that
+    /// really drops pairs. (The far-field mode is energy-only; see
+    /// `Vv10Screen`.)
+    #[test]
+    fn truncated_potentials_are_the_derivative_of_the_truncated_energy() {
+        let mol = chain(8);
+        let (params, grid, dens) = synthetic_density_on_grid(&mol, 8, 14);
+        let sc = Vv10Screen {
+            r_cut_bohr: 3.0,
+            near_shells: 1,
+            far_field: false,
+            fast_damping: false,
+        };
+        let base = compute_vv10_screened(&grid, &dens, &params, TERFC, Some(sc));
+        let dense = compute_vv10_screened(&grid, &dens, &params, TERFC, None);
+        assert!(
+            base.pairs_near < dense.pairs_near,
+            "the cut must drop pairs"
+        );
+        // points with the largest weight*rho carry the signal
+        let mut order: Vec<usize> = (0..grid.len()).collect();
+        order.sort_by(|&a, &b| {
+            (grid[b].weight * dens.rho[b])
+                .partial_cmp(&(grid[a].weight * dens.rho[a]))
+                .unwrap()
+        });
+        for &g in order.iter().take(3) {
+            let w = grid[g].weight;
+            for which in 0..2 {
+                let h = 1e-5
+                    * (1.0
+                        + if which == 0 {
+                            dens.rho[g]
+                        } else {
+                            dens.sigma[g]
+                        });
+                let eval = |sign: f64| {
+                    let mut d = dens.clone();
+                    if which == 0 {
+                        d.rho[g] += sign * h;
+                    } else {
+                        d.sigma[g] += sign * h;
+                    }
+                    compute_vv10_screened(&grid, &d, &params, TERFC, Some(sc)).e_nl
+                };
+                let fd = (eval(1.0) - eval(-1.0)) / (2.0 * h);
+                let an = w * if which == 0 {
+                    base.vrho[g]
+                } else {
+                    base.vsig[g]
+                };
+                assert!(
+                    (fd - an).abs() <= 1e-8 * (1.0 + an.abs()),
+                    "point {g} {}: fd {fd:e} vs analytic {an:e}",
+                    if which == 0 { "rho" } else { "sigma" }
+                );
+            }
+        }
+    }
+
+    /// The anchor's complement: a cut INSIDE the molecule must actually drop
+    /// pairs (else the anchor above is vacuous), and truncation-only error
+    /// must fall monotonically as the cut grows.
+    #[test]
+    fn screen_error_is_monotone_in_the_cut_and_pairs_are_dropped() {
+        let mol = chain(12); // span ~32 Bohr
+        let (params, grid, dens) = synthetic_density_on_grid(&mol, 12, 14);
+        let dense = compute_vv10_screened(&grid, &dens, &params, TERFC, None);
+        let mut prev_err = f64::INFINITY;
+        let mut prev_pairs = 0u64;
+        for r in [6.0, 10.0, 16.0, 24.0] {
+            let sc = Vv10Screen {
+                r_cut_bohr: r,
+                near_shells: 2,
+                far_field: false,
+                fast_damping: false,
+            };
+            let s = compute_vv10_screened(&grid, &dens, &params, TERFC, Some(sc));
+            let err = (s.e_nl - dense.e_nl).abs();
+            eprintln!("[screen] R={r} err={err:.3e} near={}", s.pairs_near);
+            assert!(s.pairs_near < dense.pairs_near, "R={r} dropped nothing");
+            assert!(s.pairs_near >= prev_pairs);
+            assert!(err <= prev_err, "error not monotone at R={r}");
+            prev_err = err;
+            prev_pairs = s.pairs_near;
+        }
+    }
+
+    /// The `r > r_one` shortcut in `factor_from_r2` must be bit-exact: compare
+    /// against the unskipped formula over a dense scan across the threshold,
+    /// for both the linked and a decoupled seam.
+    #[test]
+    fn damping_skip_beyond_r_one_is_bit_exact() {
+        for (r0, om) in [
+            (ferric_core::units::ANGSTROM_TO_BOHR, None),
+            (ferric_core::units::ANGSTROM_TO_BOHR, Some(0.5)),
+            (3.0, Some(2.0)),
+        ] {
+            let d = Vv10Damping::Terfc {
+                r0_bohr: r0,
+                omega_bohr_inv: om,
+            };
+            let width = match om {
+                None => r0 * std::f64::consts::SQRT_2,
+                Some(w) => 1.0 / w,
+            };
+            let r_one = r0 + DAMP_ONE_SIGMAS * width;
+            let mut n_skipped = 0;
+            let mut r = 0.0;
+            while r < r_one + 40.0 {
+                let tc = match om {
+                    None => terfc_scalar(r, r0),
+                    Some(w) => terfc_scalar_decoupled(r, r0, w),
+                };
+                let direct = 1.0 - tc * tc;
+                let f = d.factor_from_r2(r * r);
+                assert_eq!(f.to_bits(), direct.to_bits(), "r={r} r0={r0} om={om:?}");
+                if r * r > r_one * r_one {
+                    n_skipped += 1;
+                    assert_eq!(f, 1.0);
+                }
+                r += 0.0137;
+            }
+            assert!(n_skipped > 100, "skip region never exercised");
+        }
+    }
+
+    /// Table interpolation accuracy vs direct evaluation.
+    #[test]
+    fn damping_table_matches_direct() {
+        for om in [None, Some(0.8)] {
+            let d = Vv10Damping::Terfc {
+                r0_bohr: ferric_core::units::ANGSTROM_TO_BOHR,
+                omega_bohr_inv: om,
+            };
+            let t = DampTable::build(&d);
+            let mut worst = 0.0f64;
+            let mut r = 0.0;
+            while r < 25.0 {
+                let e = (t.eval(r * r) - d.factor_from_r2(r * r)).abs();
+                worst = worst.max(e);
+                r += 0.00371;
+            }
+            eprintln!("[damp table] om={om:?} max abs err {worst:.3e}");
+            assert!(worst < 1e-9, "table error {worst:.3e}");
+        }
+    }
+
+    /// The monopole far field must not be worse than discarding the tail.
+    #[test]
+    fn far_field_improves_on_truncation() {
+        let mol = chain(12);
+        let (params, grid, dens) = synthetic_density_on_grid(&mol, 12, 14);
+        let dense = compute_vv10_screened(&grid, &dens, &params, TERFC, None);
+        let mk = |far_field| Vv10Screen {
+            r_cut_bohr: 8.0,
+            near_shells: 2,
+            far_field,
+            fast_damping: false,
+        };
+        let cut = compute_vv10_screened(&grid, &dens, &params, TERFC, Some(mk(false)));
+        let tail = compute_vv10_screened(&grid, &dens, &params, TERFC, Some(mk(true)));
+        let (e_cut, e_tail) = (
+            (cut.e_nl - dense.e_nl).abs(),
+            (tail.e_nl - dense.e_nl).abs(),
+        );
+        eprintln!("[far] trunc err={e_cut:.3e} tail err={e_tail:.3e}");
+        assert!(tail.pairs_far > 0);
+        assert!(
+            e_tail < 0.5 * e_cut,
+            "monopole must recover most of the tail"
+        );
     }
 }
