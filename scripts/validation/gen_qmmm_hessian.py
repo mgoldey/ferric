@@ -173,7 +173,12 @@ def main() -> int:
     # Gaussian-smeared MM charges (#358): widths cycle 0.7 / 1.1 / 1.6 Bohr.
     widths = [(0.7, 1.1, 1.6)[i % 3] for i in range(len(g.water_mm()))]
     cases["h2o_q10_smeared"] = lambda: _case(
-        "h2o_q10_smeared", g._xyz("h2o.xyz"), "cc-pvdz", g.water_mm(), False, radii=widths
+        "h2o_q10_smeared",
+        g._xyz("h2o.xyz"),
+        "cc-pvdz",
+        g.water_mm(),
+        False,
+        radii=widths,
     )
     cases["h2o_q10_cation_smeared"] = lambda: _case(
         "h2o_q10_cation_smeared",
