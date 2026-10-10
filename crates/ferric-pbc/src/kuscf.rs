@@ -479,19 +479,18 @@ fn global_gap(eps: &[Vec<f64>], occ: &[Vec<f64>]) -> Option<f64> {
 /// scaling K.
 pub(crate) type KUksHook<'a> = Option<(&'a mut dyn KPointXcPolarized, f64)>;
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn run_kuhf(
+type SpinMats = Vec<Array2<Complex64>>;
+
+/// Input validation preamble of [`run_kuhf`]: shapes, E_nn, electron count
+/// and config. Returns the AO dimension `n`.
+fn validate_kuhf_inputs(
     cell: &Cell,
     mesh: &KPointMesh,
     cfg: &KScfConfig,
-    mut inj: KPointInjection<'_>,
+    inj: &KPointInjection<'_>,
     na: usize,
     nb: usize,
-    guess: Option<(&[Array2<Complex64>], &[Array2<Complex64>])>,
-    budget_bytes: Option<usize>,
-    mutation: Option<KUhfMutation>,
-    mut xc: KUksHook<'_>,
-) -> Result<KUScfResult, FerricError> {
+) -> Result<usize, FerricError> {
     let nk = mesh.nk();
     if inj.s.len() != nk || inj.h.len() != nk {
         return Err(FerricError::General(format!(
@@ -525,9 +524,199 @@ pub(crate) fn run_kuhf(
             cfg.lindep, cfg.min_gap, cfg.max_iter
         )));
     }
-    // Work arrays: per spin D, J/K, F, commutators, extrapolated F, MOs,
-    // new D (~16 Nk n² in flight), X (1), DIIS history (2 spins × Fock+error
-    // × cap).
+    Ok(n)
+}
+
+/// Every k must keep at least `nmax` orthonormal orbitals after the lindep
+/// cut (global aufbau then always has N_σ N_k levels over the mesh).
+fn check_orthogonalizer_rank(
+    x: &[Array2<Complex64>],
+    nmax: usize,
+    n: usize,
+) -> Result<(), FerricError> {
+    for (k, xk) in x.iter().enumerate() {
+        if xk.ncols() < nmax {
+            return Err(FerricError::General(format!(
+                "solve_kuhf: {nmax} occupied orbitals of one spin but S(k={k}) keeps only {} of {n} \
+                 after the lindep cut",
+                xk.ncols()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Starting densities `(D_α, D_β)`: validated user guess or zeros (core guess).
+fn initial_densities(
+    guess: Option<(&[Array2<Complex64>], &[Array2<Complex64>])>,
+    nk: usize,
+    n: usize,
+) -> Result<(SpinMats, SpinMats), FerricError> {
+    let zeros = || -> SpinMats { (0..nk).map(|_| Array2::zeros((n, n))).collect() };
+    match guess {
+        None => Ok((zeros(), zeros())),
+        Some((ga, gb)) => {
+            if ga.len() != nk
+                || gb.len() != nk
+                || ga.iter().chain(gb.iter()).any(|m| m.dim() != (n, n))
+            {
+                return Err(FerricError::General(format!(
+                    "solve_kuhf: guess needs {nk} ({n}, {n}) densities per spin"
+                )));
+            }
+            Ok((ga.to_vec(), gb.to_vec()))
+        }
+    }
+}
+
+/// Per-spin J/K tensors of one SCF iteration (mutated in place).
+struct SpinJk {
+    ja: SpinMats,
+    jb: SpinMats,
+    ka: SpinMats,
+    kb: SpinMats,
+}
+
+/// J/K per spin (linear builder, called with D_σ), honouring the
+/// `KFromTotalDensity` mutant and `N_β = 0` (J_β = K_β = 0 exactly).
+fn build_spin_jk(
+    inj: &mut KPointInjection<'_>,
+    mutation: Option<KUhfMutation>,
+    nb: usize,
+    da: &[Array2<Complex64>],
+    db: &[Array2<Complex64>],
+    jk: &mut SpinJk,
+) -> Result<(), FerricError> {
+    let nk = da.len();
+    let SpinJk { ja, jb, ka, kb } = jk;
+    if mutation == Some(KUhfMutation::KFromTotalDensity) {
+        let dt: SpinMats = da.iter().zip(db).map(|(a, b)| a + b).collect();
+        inj.jk.build(&dt, ja, ka)?;
+        for k in 0..nk {
+            jb[k].fill(Complex64::new(0.0, 0.0));
+            kb[k].assign(&ka[k]);
+        }
+    } else {
+        inj.jk.build(da, ja, ka)?;
+        if nb > 0 {
+            inj.jk.build(db, jb, kb)?;
+        } else {
+            for k in 0..nk {
+                jb[k].fill(Complex64::new(0.0, 0.0));
+                kb[k].fill(Complex64::new(0.0, 0.0));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `(F_α, F_β, E_elec)` from J/K at exact-exchange fraction `a_x` (1 for UHF,
+/// `a` for a hybrid KS); `E_elec` is the sum over k (not yet divided by N_k).
+fn hf_focks_and_energy(
+    inj: &KPointInjection<'_>,
+    jk: &SpinJk,
+    da: &[Array2<Complex64>],
+    db: &[Array2<Complex64>],
+    a_x: f64,
+) -> (SpinMats, SpinMats, f64) {
+    let nk = da.len();
+    let jt: SpinMats = (0..nk).map(|k| &jk.ja[k] + &jk.jb[k]).collect();
+    let fock = |kx: &[Array2<Complex64>]| -> SpinMats {
+        (0..nk)
+            .map(|k| hermitize(&(&(&inj.h[k] + &jt[k]) - &kx[k].mapv(|z| z * a_x))))
+            .collect()
+    };
+    let fa = fock(&jk.ka);
+    let fb = fock(&jk.kb);
+    let mut e_elec = 0.0;
+    for k in 0..nk {
+        e_elec += 0.5 * re_tr_prod(&(&inj.h[k] + &fa[k]), &da[k]);
+        e_elec += 0.5 * re_tr_prod(&(&inj.h[k] + &fb[k]), &db[k]);
+    }
+    (fa, fb, e_elec)
+}
+
+/// Add the XC potential to the Fock matrices in place; returns `E_xc`.
+fn add_xc_potential(
+    xcb: &mut dyn KPointXcPolarized,
+    da: &[Array2<Complex64>],
+    db: &[Array2<Complex64>],
+    fa: &mut [Array2<Complex64>],
+    fb: &mut [Array2<Complex64>],
+) -> Result<f64, FerricError> {
+    let nk = da.len();
+    let (e_xc, va, vb) = xcb.build_polarized(da, db)?;
+    if va.len() != nk || vb.len() != nk {
+        return Err(FerricError::General(
+            "solve_kuks: XC builder returned the wrong number of k blocks".into(),
+        ));
+    }
+    for k in 0..nk {
+        fa[k] = hermitize(&(&fa[k] + &va[k]));
+        fb[k] = hermitize(&(&fb[k] + &vb[k]));
+    }
+    Ok(e_xc)
+}
+
+/// Stacked (spin, k) orthogonalised commutators `[α(k0..), β(k0..)]` and
+/// their max-abs element.
+fn stacked_commutators(
+    fa: &[Array2<Complex64>],
+    fb: &[Array2<Complex64>],
+    da: &[Array2<Complex64>],
+    db: &[Array2<Complex64>],
+    s: &[Array2<Complex64>],
+    x: &[Array2<Complex64>],
+) -> (SpinMats, f64) {
+    let nk = da.len();
+    let mut errs: SpinMats = Vec::with_capacity(2 * nk);
+    for (f, d) in [(fa, da), (fb, db)] {
+        for k in 0..nk {
+            let fds = f[k].dot(&d[k]).dot(&s[k]);
+            let comm = &fds - &herm_t(&fds);
+            errs.push(herm_t(&x[k]).dot(&comm).dot(&x[k]));
+        }
+    }
+    let emax = errs
+        .iter()
+        .flat_map(|e| e.iter())
+        .fold(0.0_f64, |a, z| a.max(z.norm()));
+    (errs, emax)
+}
+
+/// Diagonalise the (extrapolated, stacked) Fock matrices, fill per spin and
+/// return the new `(D_α, D_β)`.
+fn next_densities(
+    mesh: &KPointMesh,
+    f_use: &[Array2<Complex64>],
+    x: &[Array2<Complex64>],
+    cfg: &KScfConfig,
+    (na, nb): (usize, usize),
+    per_k: bool,
+) -> Result<(SpinMats, SpinMats), FerricError> {
+    let nk = mesh.nk();
+    let (eps_a, ca) = diagonalize_all(mesh, &f_use[..nk], x)?;
+    let (eps_b, cb) = diagonalize_all(mesh, &f_use[nk..], x)?;
+    let occ_a = spin_occupations(&eps_a, na, cfg.min_gap, per_k, "alpha")?;
+    let occ_b = spin_occupations(&eps_b, nb, cfg.min_gap, per_k, "beta")?;
+    let new_da: SpinMats = (0..nk)
+        .map(|k| occupied_projector(&ca[k], &occ_a[k]))
+        .collect();
+    let new_db: SpinMats = (0..nk)
+        .map(|k| occupied_projector(&cb[k], &occ_b[k]))
+        .collect();
+    Ok((new_da, new_db))
+}
+
+/// Memory-ledger reservation for the SCF work arrays.
+fn reserve_work_arrays(
+    cfg: &KScfConfig,
+    budget_bytes: Option<usize>,
+    nk: usize,
+    n: usize,
+) -> Result<(), FerricError> {
+    // Per spin D, J/K, F, commutators, extrapolated F, MOs, new D
+    // (~16 Nk n² in flight), X (1), DIIS history (2 spins × Fock+error × cap).
     let per = (nk * n * n) as u64;
     let n_mats = 17 + 4 * cfg.diis_space as u64;
     let mut ledger = Ledger::new(crate::budget::resolve(budget_bytes));
@@ -538,120 +727,58 @@ pub(crate) fn run_kuhf(
         ),
         bytes_of(per.saturating_mul(n_mats), 16),
     )?;
+    Ok(())
+}
+
+/// Latest evaluation: (energy, F_α, F_β, D_α, D_β, emax).
+type LastEval = (f64, SpinMats, SpinMats, SpinMats, SpinMats, f64);
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_kuhf(
+    cell: &Cell,
+    mesh: &KPointMesh,
+    cfg: &KScfConfig,
+    mut inj: KPointInjection<'_>,
+    na: usize,
+    nb: usize,
+    guess: Option<(&[Array2<Complex64>], &[Array2<Complex64>])>,
+    budget_bytes: Option<usize>,
+    mutation: Option<KUhfMutation>,
+    mut xc: KUksHook<'_>,
+) -> Result<KUScfResult, FerricError> {
+    let nk = mesh.nk();
+    let n = validate_kuhf_inputs(cell, mesh, cfg, &inj, na, nb)?;
+    reserve_work_arrays(cfg, budget_bytes, nk, n)?;
 
     // Orthogonalisers once per k (shared by both spins); partners by
     // conjugation.
     let (x, lindep_report) = orthogonalizers_with_report(mesh, &inj.s, cfg.lindep, "solve_kuhf")?;
-    let nmax = na.max(nb);
-    for (k, xk) in x.iter().enumerate() {
-        if xk.ncols() < nmax {
-            return Err(FerricError::General(format!(
-                "solve_kuhf: {nmax} occupied orbitals of one spin but S(k={k}) keeps only {} of {n} \
-                 after the lindep cut",
-                xk.ncols()
-            )));
-        }
-    }
-    // Global aufbau needs N_σ N_k levels over the mesh (always satisfied
-    // when every k keeps >= N_σ, checked above).
+    check_orthogonalizer_rank(&x, na.max(nb), n)?;
 
-    let zero = || Array2::<Complex64>::zeros((n, n));
-    let zeros = || -> Vec<Array2<Complex64>> { (0..nk).map(|_| zero()).collect() };
-    let (mut da, mut db) = match guess {
-        None => (zeros(), zeros()),
-        Some((ga, gb)) => {
-            if ga.len() != nk
-                || gb.len() != nk
-                || ga.iter().chain(gb.iter()).any(|m| m.dim() != (n, n))
-            {
-                return Err(FerricError::General(format!(
-                    "solve_kuhf: guess needs {nk} ({n}, {n}) densities per spin"
-                )));
-            }
-            (ga.to_vec(), gb.to_vec())
-        }
+    let (mut da, mut db) = initial_densities(guess, nk, n)?;
+    let zeros = || -> SpinMats { (0..nk).map(|_| Array2::zeros((n, n))).collect() };
+    let mut jk = SpinJk {
+        ja: zeros(),
+        jb: zeros(),
+        ka: zeros(),
+        kb: zeros(),
     };
-    let mut ja = zeros();
-    let mut jb = zeros();
-    let mut ka = zeros();
-    let mut kb = zeros();
     let mut diis = KDiis::new(cfg.diis_space);
     let mut e_old = f64::NAN;
     let inv_nk = 1.0 / nk as f64;
     let per_k = mutation == Some(KUhfMutation::PerKAufbau);
-    // (energy, F_α, F_β, D_α, D_β, emax, iteration) of the latest evaluation.
-    #[allow(clippy::type_complexity)]
-    let mut last: Option<(
-        f64,
-        Vec<Array2<Complex64>>,
-        Vec<Array2<Complex64>>,
-        Vec<Array2<Complex64>>,
-        Vec<Array2<Complex64>>,
-        f64,
-    )> = None;
+    let mut last: Option<LastEval> = None;
 
     for it in 0..cfg.max_iter {
-        // ---- J/K per spin (linear builder, called with D_σ).
-        if mutation == Some(KUhfMutation::KFromTotalDensity) {
-            let dt: Vec<Array2<Complex64>> = da.iter().zip(&db).map(|(a, b)| a + b).collect();
-            inj.jk.build(&dt, &mut ja, &mut ka)?;
-            for k in 0..nk {
-                jb[k].fill(Complex64::new(0.0, 0.0));
-                kb[k].assign(&ka[k]);
-            }
-        } else {
-            inj.jk.build(&da, &mut ja, &mut ka)?;
-            if nb > 0 {
-                inj.jk.build(&db, &mut jb, &mut kb)?;
-            } else {
-                for k in 0..nk {
-                    jb[k].fill(Complex64::new(0.0, 0.0));
-                    kb[k].fill(Complex64::new(0.0, 0.0));
-                }
-            }
-        }
-        let jt: Vec<Array2<Complex64>> = (0..nk).map(|k| &ja[k] + &jb[k]).collect();
+        build_spin_jk(&mut inj, mutation, nb, &da, &db, &mut jk)?;
         // Exact-exchange fraction: 1 for UHF, `a` for a hybrid KS.
         let a_x = xc.as_ref().map_or(1.0, |(_, a)| *a);
-        let fock = |kx: &[Array2<Complex64>]| -> Vec<Array2<Complex64>> {
-            (0..nk)
-                .map(|k| hermitize(&(&(&inj.h[k] + &jt[k]) - &kx[k].mapv(|z| z * a_x))))
-                .collect()
-        };
-        let mut fa = fock(&ka);
-        let mut fb = fock(&kb);
-        let mut e_elec = 0.0;
-        for k in 0..nk {
-            e_elec += 0.5 * re_tr_prod(&(&inj.h[k] + &fa[k]), &da[k]);
-            e_elec += 0.5 * re_tr_prod(&(&inj.h[k] + &fb[k]), &db[k]);
-        }
+        let (mut fa, mut fb, e_elec) = hf_focks_and_energy(&inj, &jk, &da, &db, a_x);
         let mut energy = e_elec * inv_nk + inj.vnn;
-        if let Some((x, _)) = xc.as_mut() {
-            let (e_xc, va, vb) = x.build_polarized(&da, &db)?;
-            if va.len() != nk || vb.len() != nk {
-                return Err(FerricError::General(
-                    "solve_kuks: XC builder returned the wrong number of k blocks".into(),
-                ));
-            }
-            energy += e_xc;
-            for k in 0..nk {
-                fa[k] = hermitize(&(&fa[k] + &va[k]));
-                fb[k] = hermitize(&(&fb[k] + &vb[k]));
-            }
+        if let Some((xcb, _)) = xc.as_mut() {
+            energy += add_xc_potential(&mut **xcb, &da, &db, &mut fa, &mut fb)?;
         }
-        // ---- stacked (spin, k) commutators [α(k0..), β(k0..)].
-        let mut errs: Vec<Array2<Complex64>> = Vec::with_capacity(2 * nk);
-        for (f, d) in [(&fa, &da), (&fb, &db)] {
-            for k in 0..nk {
-                let fds = f[k].dot(&d[k]).dot(&inj.s[k]);
-                let comm = &fds - &herm_t(&fds);
-                errs.push(herm_t(&x[k]).dot(&comm).dot(&x[k]));
-            }
-        }
-        let emax = errs
-            .iter()
-            .flat_map(|e| e.iter())
-            .fold(0.0_f64, |a, z| a.max(z.norm()));
+        let (errs, emax) = stacked_commutators(&fa, &fb, &da, &db, &inj.s, &x);
         if it > 0 && (energy - e_old).abs() < cfg.energy_conv && emax < cfg.grad_conv {
             return finish(
                 mesh,
@@ -671,7 +798,7 @@ pub(crate) fn run_kuhf(
             );
         }
         e_old = energy;
-        let mut stacked: Vec<Array2<Complex64>> = Vec::with_capacity(2 * nk);
+        let mut stacked: SpinMats = Vec::with_capacity(2 * nk);
         stacked.extend(fa.iter().cloned());
         stacked.extend(fb.iter().cloned());
         let f_use = if it > 0 {
@@ -679,16 +806,7 @@ pub(crate) fn run_kuhf(
         } else {
             stacked
         };
-        let (eps_a, ca) = diagonalize_all(mesh, &f_use[..nk], &x)?;
-        let (eps_b, cb) = diagonalize_all(mesh, &f_use[nk..], &x)?;
-        let occ_a = spin_occupations(&eps_a, na, cfg.min_gap, per_k, "alpha")?;
-        let occ_b = spin_occupations(&eps_b, nb, cfg.min_gap, per_k, "beta")?;
-        let new_da: Vec<Array2<Complex64>> = (0..nk)
-            .map(|k| occupied_projector(&ca[k], &occ_a[k]))
-            .collect();
-        let new_db: Vec<Array2<Complex64>> = (0..nk)
-            .map(|k| occupied_projector(&cb[k], &occ_b[k]))
-            .collect();
+        let (new_da, new_db) = next_densities(mesh, &f_use, &x, cfg, (na, nb), per_k)?;
         let old_da = std::mem::replace(&mut da, new_da);
         let old_db = std::mem::replace(&mut db, new_db);
         last = Some((energy, fa, fb, old_da, old_db, emax));
