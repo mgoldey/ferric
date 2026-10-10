@@ -73,7 +73,7 @@
 //! refusal test pass).
 
 use ferric_core::basis;
-use ferric_core::external_potential::ExternalPotential;
+use ferric_core::external_potential::{ExternalPotential, SmearedCharge};
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -498,14 +498,22 @@ fn unsupported_configurations_are_refused() {
     };
     refused(&s.rhf, &ks, op, "KS config");
 
-    let ext = RhfConfig {
+    // A uniform field is analytic since #286 (see field_hessian.rs); Gaussian-smeared
+    // external charges are still refused (#358).
+    let smeared = RhfConfig {
         external_potential: Some(ExternalPotential {
-            field: Some([0.0, 0.0, 1e-3]),
+            smeared_charges: vec![SmearedCharge {
+                q: -0.4,
+                x: 0.0,
+                y: 0.0,
+                z: 6.0,
+                width: 1.0,
+            }],
             ..Default::default()
         }),
         ..scf_config()
     };
-    refused(&s.rhf, &ext, op, "external field");
+    refused(&s.rhf, &smeared, op, "smeared external charges");
 
     refused(&s.rhf, &scf_config(), Operator::erf(0.4), "erf operator");
 
