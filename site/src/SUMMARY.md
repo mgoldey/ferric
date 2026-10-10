@@ -15,7 +15,6 @@
 - [For PySCF users](./using/pyscf-users.md)
 - [QM/MM](./using/qmmm.md)
 - [End-to-end applications](./using/applications.md)
-- [Toxicity screening](./using/toxicity.md)
 - [For automated agents](./using/agents.md)
 
 # Methods
@@ -41,17 +40,4 @@
 - [Examples](./reference/examples.md)
 - [Run logs](./using/run-logs.md)
 - [Rust API](./reference/api.md)
-- [Pharma use-case coverage](./reference/pharma-use-case-coverage.md)
 - [References and citing](./reference/references.md)
-
-# Project notebooks
-
-These are working notes, not tutorials. Every claim is labelled MEASURED (with
-its source) or ESTIMATED (with its reasoning), and several record a RETRACTION
-where a first measurement turned out to be an artifact. They are published
-because the numbers in them are expensive to reproduce. Where they disagree
-with the pages above, the pages above are current.
-
-- [Golden path: formats to docking to xtb to DFT](./reference/pipeline-golden-path.md)
-- [Proposing substitutions at an active site](./reference/substitution-pipeline.md)
-- [Substitution pipeline: resolved shape](./reference/substitution-pipeline-resolved.md)

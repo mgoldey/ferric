@@ -423,24 +423,17 @@ echo
 # compiled extension is available; if not, it prints a note and moves on
 # without setting FAILED (soft gate -- does not block the push).
 #
-# SCOPE: crates/ferric-python/tests/ (the binding suite), tools/ (the reusable
-# libraries) and experiments/ (per-campaign hypothesis sets and their tests).
-# tools/ was previously covered by NOTHING -- .github/workflows/ci.yml is Rust-only, and this step used to
-# name only the binding path, so every test under tools/ ran solely when someone
-# invoked pytest by hand. Individual suites skip themselves when their optional
-# dependency is absent (rdkit, pdb2pqr30, the xtb binary), so adding the path is
-# safe on a machine that has none of them.
+# SCOPE: crates/ferric-python/tests/ (the binding suite). The Python `tools/` libraries and
+# `experiments/` live in the smeltery repository now (mgoldey/smeltery); this repo no longer has them.
 if [[ "${CI_GATE_SKIP_PYTEST:-0}" == "1" ]]; then
     echo "-- pytest: SKIPPED (CI_GATE_SKIP_PYTEST=1) --"
 else
-echo "-- pytest (Python bindings + tools/, soft gate) --"
+echo "-- pytest (Python bindings, soft gate) --"
 SO_PATH="$(find .venv -name '*.so' -path '*/ferric/*' 2>/dev/null | head -1)"
 if [[ -z "$SO_PATH" ]]; then
     SO_PATH="target/release/libferric.so"
 fi
 PYTEST_PATHS=(crates/ferric-python/tests/)
-[[ -d tools ]] && PYTEST_PATHS+=(tools/)
-[[ -d experiments ]] && PYTEST_PATHS+=(experiments/)
 if [[ -f "$SO_PATH" ]]; then
     # Report what the extension RESOLVES to, not the symlink. In a git
     # worktree the .venv entry is a symlink into the MAIN checkout's

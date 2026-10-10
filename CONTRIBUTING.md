@@ -217,9 +217,6 @@ on them):
 - `ty check`: type-check debt, not yet gated.
 - Rust coverage and the `ferric-python` bindings coverage (nightly-only, via
   `schedule`/`workflow_dispatch`): no coverage threshold is set.
-- The `tools/`/`experiments/` pytest suite run under coverage in
-  `python-quality`: provisional, `continue-on-error` until a run has been
-  observed green in CI.
 
 **`--locked`.** Every `cargo` invocation in CI passes `--locked`, so a
 `Cargo.lock` that has drifted from the manifests fails the build instead of

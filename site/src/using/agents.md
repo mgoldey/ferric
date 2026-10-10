@@ -11,7 +11,7 @@ about a minute. A source build takes ~30 minutes, most of it libint2.
 
 ```bash
 pip install ferric
-git clone https://github.com/mgoldey/ferric && cd ferric   # for examples/, testdata/, tools/, scripts/
+git clone https://github.com/mgoldey/ferric && cd ferric   # for examples/, testdata/, scripts/
 ferric examples/water-rhf.toml
 ```
 
@@ -21,7 +21,7 @@ else will work, and the failures will be confusing.
 
 `pip install` puts a `ferric` command on `PATH` that runs the same CLI as the
 source build. The wheel holds only the compiled library and that command. The
-`examples/`, `testdata/`, `scripts/` and `tools/` directories need the clone.
+`examples/`, `testdata/` and `scripts/` directories need the clone.
 
 ### Which wheel
 
@@ -41,17 +41,12 @@ source-only (see [Installation](installation.md)).
 | You want | Use | Where it's documented |
 |---|---|---|
 | Which methods exist, with which tasks and validation grade | — | [Capabilities and validation](../reference/validation.md) |
-| An energy from a SMILES string | `tools.structure.from_smiles` + `ferric.run_dft` | [Recipes](recipes.md) §0 |
 | An energy from a TOML file | CLI, `method.kind` | [Recipes](recipes.md) §1, [input reference](../reference/input.md) |
 | An ion, radical or metal center | `[molecule] charge`, `multiplicity` (Python: on `Molecule.from_xyz`) | [Recipes](recipes.md) §2 |
 | An optimized geometry | `method.task = "optimize"` | [Recipes](recipes.md) §3 |
 | Harmonic frequencies | `method.task = "frequencies"`, `ferric.run_frequencies` | Finite differences of analytic gradients; `examples/water-frequencies.toml` |
 | A transition state and its reaction path | `ferric.run_saddle`, `ferric.run_irc` (Python only, closed shell) | [Golden paths](applications.md) Step 5 |
-| A screen of many ligands | `tools.pipeline.run_funnel` | [Recipes](recipes.md) §4 |
-| A pose relaxation or binding energy | `tools/active_site/` | [Pipeline notes](../reference/pipeline-golden-path.md) |
-| A residue ranking for mutation | `pocket_charges` + `pocket_field`, then QM/MM | [Recipes](recipes.md) §5. It ranks hypotheses and doesn't design mutations. |
 | QM/MM embedding | `ferric.QmmmSystem`, `ferric.run_qmmm`, CLI `[qmmm]` | [QM/MM](qmmm.md) |
-| Toxicity and liability flags | `python -m tools.tox` | [Toxicity screening](toxicity.md) |
 | A machine-readable record of a run | `<input>.ferric.jsonl`, written by default | [Run logs](run-logs.md) |
 | Python instead of TOML | the `ferric` module | [Python API](python.md) |
 
@@ -68,7 +63,7 @@ energy. In the run log, read `run_end.converged`, and for correlated methods
 read the `result` record ([Run logs](run-logs.md)).
 
 **When comparing to another code, check density fitting and the grid.**
-[Recipes](recipes.md) §6 covers both.
+[Recipes](recipes.md) §4 covers both.
 
 ## Failure modes that cost the most time
 
@@ -94,7 +89,7 @@ read the `result` record ([Run logs](run-logs.md)).
 6. **Serialize QM jobs.** Two concurrent ferric runs don't just halve
    throughput. MEASURED: a pair of them pushed a single point that normally
    takes seconds past a 15-minute timeout. Each run wants all the cores and
-   several GB. Run one at a time, or use the funnel, which times each tier.
+   several GB. Run one at a time.
 
 ### Memory: the budget predicts, the cgroup enforces
 
@@ -153,8 +148,7 @@ confirms a kill. A truncated log doesn't prove one. As a rule of thumb, plan on
 
 ferric is a quantum chemistry engine: energies, gradients, finite-difference
 Hessians and properties. It isn't a protein-engineering tool, a docking
-program or an MD code. The `tools/` layer connects it to RDKit, xtb and
-docking for screening, but the QM is the product.
+program or an MD code. The QM is the product.
 
 Its analytic Hessian covers RHF and UHF only (other frequencies are finite
 differences of the gradient), and it has no thermochemistry (entropy, enthalpy,

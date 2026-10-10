@@ -7,7 +7,7 @@
 //! caller), it computes the AMBER-form bonded + nonbonded energy and its
 //! analytic gradient. Parameter *assignment* — mapping a PDB structure to a
 //! real force field like `amber14-all.xml` — is a separate, external step
-//! (see `tools/active_site/mm_topology.py::topology_from_openmm`, which reads
+//! (see `scripts/validation/mm_topology.py::topology_from_openmm`, which reads
 //! parameters out of an actual OpenMM `System` built with a real force
 //! field).
 //!

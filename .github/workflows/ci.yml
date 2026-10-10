@@ -1680,7 +1680,6 @@ jobs:
       # --check .` reports 7 files would change (all *.md, from a Markdown
       # fenced-code-block formatting behaviour that changed between those
       # two releases -- README.md, crates/ferric-python/README.md,
-      # experiments/danuglipron/plans/2026-08-30-isomer-pipeline.md,
       # scripts/gw100/basis_gaps/CONVERSION_NOTES.md, site/src/methods/cc.md,
       # site/src/using/python.md, site/src/using/quickstart.md). 0.15.8 is
       # therefore the version pinned HERE, and .pre-commit-config.yaml's
@@ -1741,25 +1740,6 @@ jobs:
         run: |
           echo "## ty check -- report only, see step comment for exit criterion" >> "$GITHUB_STEP_SUMMARY"
           uvx ty@0.0.81 check --exclude 'terf-tables/generate_interpolation_tables.py' 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
-
-      - name: pytest -- tools/ and experiments/ (no compiled extension needed), with coverage
-        # PROVISIONAL, continue-on-error. These suites run in NO workflow at
-        # all today (CI is Rust-only), so simply executing them here is
-        # worth more than the coverage number. But nobody has watched a full
-        # run go green in CI yet: this job installs only the `dev` extra, and
-        # several tools/ modules import rdkit at MODULE scope rather than
-        # lazily, so -- verified 2026-09-16 -- tools/active_site/tests/*,
-        # tools/pipeline/tests/test_funnel.py and
-        # experiments/danuglipron/tests/test_design.py fail at COLLECTION
-        # with `ModuleNotFoundError: No module named 'rdkit'` rather than
-        # skipping cleanly (224 of 232 collected tests were unaffected).
-        # Exit criterion to flip to BLOCKING: either install the `docking`
-        # extra here too, or fix those modules to import their optional
-        # dependency lazily (matching the suites that already do, per
-        # scripts/ci-gate.sh's "skip themselves" comment) -- AND a run has
-        # actually been observed green in CI.
-        continue-on-error: true
-        run: uv run pytest tools/ experiments/ --cov=tools --cov=experiments --cov-report=term-missing -q
 
   # ---------------------------------------------------------------------
   # Nightly-only coverage. NON-BLOCKING (both steps below are
@@ -1909,9 +1889,8 @@ jobs:
 
       - name: pytest -- Python bindings, with coverage
         # PROVISIONAL, continue-on-error: this suite has never been run in
-        # CI before (see python-quality's tools/+experiments pytest step for
-        # the same caveat, which applies here identically) -- nobody has
-        # observed a green run yet, so this must not be asserted to pass.
+        # CI before -- nobody has observed a green run yet, so this must not be
+        # asserted to pass.
         # Flip to BLOCKING once a run has actually gone green here.
         continue-on-error: true
         run: |

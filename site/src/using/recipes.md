@@ -5,10 +5,9 @@ and **rough runtime**, so you can tell "still running" from "silently wrong".
 That confusion is the most common failure when you drive a QC code you haven't
 used before.
 
-Recipes 0, 1, 3 and 4 were executed as written for this page, on 2026-09-23.
-Recipe 2's output is quoted from an earlier run. Recipe 5 is a **sketch**,
-marked as such where it appears. Numbers labelled MEASURED came out of the
-program.
+Recipes 1 and 3 were executed as written for this page, on 2026-09-23.
+Recipe 2's output is quoted from an earlier run. Numbers labelled MEASURED came
+out of the program.
 
 **Prerequisite:** a working `ferric`. The fast path is the prebuilt wheel
 (about a minute). A source build takes ~30 minutes, most of it libint2:
@@ -21,19 +20,16 @@ See [Installation](installation.md). Build from source only if you are changing
 ferric itself or need MPI.
 
 **Which recipes need a git clone.** The wheel contains the compiled library and
-the `ferric` command, nothing else. `examples/`, `testdata/`, `scripts/` and the
-`tools/` Python package live in the repository
+the `ferric` command, nothing else. `examples/`, `testdata/` and `scripts/`
+live in the repository
 ([what the wheel does not contain](installation.md#what-the-wheel-does-not-contain)).
 Run those recipes from the repository root:
 
 | Recipe | Needs a clone? | Extra dependencies |
 |---|---|---|
-| 0. SMILES → energy | yes (`tools.structure`) | RDKit |
 | 1. Single point | only for `examples/water-rhf.toml`; your own `.xyz` + TOML works anywhere | — |
 | 2. Ions and radicals | no | — |
 | 3. Optimize | only for `examples/h2-lda-opt.toml` | — |
-| 4. Ligand funnel | yes (`tools.pipeline`) | RDKit, `xtb` on `PATH` |
-| 5. Residue ranking | yes (`tools.active_site`) | pdb2pqr |
 
 **On a shared machine, run anything real under a memory cap.** ferric's
 memory budget charges only the large, size-dependent tensors; basis-sized
@@ -49,42 +45,6 @@ and [For agents](agents.md#memory-the-budget-predicts-the-cgroup-enforces).
 ```bash
 scripts/ferric-limited --max=8G --high=7G -- ferric input.toml
 ```
-
----
-
-## 0. From a SMILES to an energy
-
-```python
-import ferric
-from tools.structure import from_smiles        # needs a clone + RDKit
-
-mol = from_smiles("CCO")                        # ethanol
-res = ferric.run_dft(mol, ferric.BasisSet.bundled("def2-svp"),
-                     functional="PBE", dispersion="d3bj")
-assert res.converged                            # always check this first
-print(res.total_energy, res.e_scf, res.e_dispersion)
-```
-
-MEASURED (2026-09-23, 4 threads on a loaded machine, about 4 s):
-
-```text
--154.72507297  -154.72071374  -0.00435923
-```
-
-- `from_smiles` returns an RDKit ETKDG embedding plus an MMFF cleanup, seeded so
-  it is reproducible. That is a **starting structure, not a minimum**. For
-  anything you will report, relax it (xtb, then a ferric optimization) first.
-  See recipe 3 and [Golden paths](applications.md) Step 1b.
-- `total_energy` is `e_scf + e_dispersion`. `dispersion=None` (the default)
-  leaves `e_dispersion` as `None`, meaning "not evaluated", never `0.0`.
-- `run_dft` density-fits the Coulomb term by default. That matters when you
-  compare against a code using exact Coulomb (recipe 6).
-- `from_smiles` reads the charge from the SMILES. Spin is never inferred:
-  pass `multiplicity=2` for a radical.
-
-For a file instead of a SMILES, `tools.structure.read("x.sdf")` returns the same
-kind of `Molecule` (PDB, mmCIF, PQR, SDF, mol2, `.gro` and XYZ are supported).
-A PDB must already carry explicit hydrogens.
 
 ---
 
@@ -228,8 +188,7 @@ of the analytic gradient; see `examples/water-frequencies.toml`).
 optimization at drug-like size has not been timed on this page. For scale,
 two single-point measurements:
 
-- 32 atoms, PBE/def2-SVP: 96 s (the figure recorded in the
-  `tools.pipeline.tiers.tier4_dft` docstring).
+- 32 atoms, PBE/def2-SVP: 96 s.
 - A 27-atom delocalised cation, PBE/6-31G: 4.9 min, because it needed 173 SCF
   iterations. At B3LYP/def2-SVP the same molecule was killed for memory after
   22 min ([Golden paths](applications.md), Step 2).
@@ -239,132 +198,7 @@ Measure one species before you queue many.
 
 ---
 
-## 4. Ligand screening: force field → xtb → DFT
-
-`tools.pipeline.run_funnel` runs a **tiered funnel**: cheap scoring on many
-candidates, and expensive QM only on the few that survive. Use it when you have
-N molecules and want DFT numbers on the good ones. Don't write your own loop.
-
-This was run exactly as shown, from the repository root:
-
-```python
-from tools.campaign.hierarchy import Tier
-from tools.isomers.model import Isomer
-from tools.pipeline import Stage, run_funnel
-from tools.pipeline.tiers import tier2_forcefield, tier3_gfn2, tier4_dft
-
-# Three isomers of C3H6O2, so comparing absolute energies is meaningful.
-smiles = ["CCC(=O)O", "COC(C)=O", "CCOC=O"]
-candidates = [
-    Isomer(smiles=s, kind="structural", transform=s, parent_smiles=smiles[0])
-    for s in smiles
-]
-stages = [
-    Stage(Tier.FORCE_FIELD,   tier2_forcefield, keep=3, name="ff"),
-    Stage(Tier.SEMIEMPIRICAL, tier3_gfn2,       keep=2, name="xtb"),
-    Stage(Tier.QUANTUM,       tier4_dft,        keep=1, name="dft"),
-]
-rep = run_funnel(candidates, stages, {"seed": 0xF00D, "basis": "sto-3g"})
-print(rep.table())
-for iso in rep.survivors:
-    print(iso.canonical, rep.value("dft", iso.canonical))
-```
-
-MEASURED (2026-09-23, one process):
-
-```text
-tier  stage           in   out  failed     secs   s/cand  note
-   2  ff               3     3       0      0.4     0.13  ff: kept 3 of 3 scored
-   3  xtb              3     2       0      0.1     0.04  xtb: kept 2 of 3 scored
-   4  dft              2     1       0      4.8     2.38  dft: kept 1 of 2 scored
-      TOTAL                                 5.3
-      dominant tier 4 (dft) = 90% of wall
-COC(C)=O -264.5628932123858
-```
-
-**STO-3G is a smoke-test basis, so don't read chemistry into which isomer
-survived.** The run shows the plumbing works. Change `"basis"` in the context
-for real work.
-
-What the funnel does that a hand-written loop usually doesn't:
-
-* **Ranks ascending at every tier.** Lower is better, because every tier
-  reports an energy or an energy-like score. For the same reason, **rank only
-  candidates that share a molecular formula**. An absolute energy of a larger
-  molecule is lower because it has more electrons, not because it is better. For
-  substituent series, rank against the parent (`parent_smiles`). The
-  [pipeline notes](../reference/pipeline-golden-path.md) §0b cover that.
-* **Drops failures instead of ranking them.** A candidate that a tier failed on
-  is counted as failed. It is never treated as having scored well. That's easy
-  to get wrong by hand, and it silently corrupts a screen.
-* **Times each tier.** The tier that actually costs the run is often not the one
-  the cost table predicts.
-* **Stops early** when the population is empty, instead of running an expensive
-  tier on nothing.
-
-`tier4_dft` adds D3(BJ) dispersion by default. Pass
-`context["dispersion"] = None` for the bare SCF energy. Docking
-(`tier1_dock`) needs the `ferric[docking]` extra, a receptor
-(`context["receptor_pdbqt"]`) and a box centre (`context["box_center"]`). The
-[pipeline notes](../reference/pipeline-golden-path.md) §0b show the substituent
-version, with liability flags and parent-relative gating.
-
-**Before you rank anything by the DFT tier, read the noise measurement.**
-MEASURED on a real campaign: the best available ΔΔE noise over a pose ensemble
-was 4.07 kcal/mol, against substituent effects of 1–2 kcal/mol. See the
-[pharma coverage notes](../reference/pharma-use-case-coverage.md).
-
-Related modules in `tools/active_site/`: `ligand_embedding`, `pose_relaxation`,
-`binding_energy`, `prescreen`, `pocket_charges`, `pocket_field`.
-
----
-
-## 5. Rank residues for mutation (electrostatic pre-screen)
-
-ferric does **not** design mutations. It can rank which active-site residues
-most influence a reactive center, which gives you a short list worth testing
-instead of a guess.
-
-> **Sketch, not executed for this page.** The two library calls are real.
-> The per-residue split is ordinary Python written for this page, and
-> `derive_pocket_charges` needs `pdb2pqr` and a pocket PDB.
-
-```python
-from collections import defaultdict
-from tools.active_site.pocket_charges import PocketCharges, derive_pocket_charges
-from tools.active_site.pocket_field import pocket_field_at_atoms
-
-pocket = derive_pocket_charges("pocket.pdb")   # runs pdb2pqr; fills residue_ids
-site_xyz = [(x, y, z)]                         # reactive-center atom(s), Angstrom
-
-# pocket_field_at_atoms returns the TOTAL field. To rank residues, split the
-# charges by residue and evaluate each group on its own.
-by_res = defaultdict(list)
-for q, rid in zip(pocket.charges, pocket.residue_ids):
-    by_res[rid].append(q)
-contrib = {
-    rid: pocket_field_at_atoms(PocketCharges(qs, pocket.source_pdb, pocket.ff), site_xyz)
-    for rid, qs in by_res.items()
-}   # each value: (N_sites, 4) array of [phi, Ex, Ey, Ez], atomic units
-```
-
-The method:
-
-1. Compute the field each residue produces at the reactive center.
-2. Rank residues by their contribution. That's your candidate list.
-3. **Check the top few with QM/MM** ([QM/MM](qmmm.md); the embedding matches
-   `pyscf.qmmm.mm_charge` to <1e-8 Ha). This step is what turns the ranking
-   into physics rather than electrostatic hand-waving.
-
-**Limits. Include these in any write-up that uses this method.** It's a
-classical point-charge pre-screen, so it has no polarization response of the
-protein, no sterics, no conformational change on mutation, and no ΔΔG. It
-ranks *hypotheses*. A residue it flags is a candidate for QM/MM, not a designed
-mutation.
-
----
-
-## 6. Comparing against another code
+## 4. Comparing against another code
 
 Three causes account for most spurious "ferric disagrees" reports:
 

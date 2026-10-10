@@ -21,7 +21,7 @@ reintroducing a multi-hour stall.
 import re
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = Path(__file__).resolve().parents[3]
 GATE = REPO / "scripts" / "ci-gate.sh"
 CLEAR = "ferric_clear_stale_sccache_lock"
 
