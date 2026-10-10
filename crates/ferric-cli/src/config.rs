@@ -4919,7 +4919,7 @@ fn resolve_sr_column_rotation(
 
 /// Resolve the short-range knobs of `[cell]` once the J/K, the mesh and the
 /// task are known: the range split (installed into an RS-GDF `jk`) and the
-/// Gamma column rotation (`(on, note)`).
+/// SR column rotation (`(on, note)`).
 fn resolve_sr_knobs(
     c: &CellCfg,
     jk: PeriodicJk,

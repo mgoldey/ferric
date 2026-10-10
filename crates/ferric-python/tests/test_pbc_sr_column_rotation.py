@@ -23,8 +23,8 @@ honoured:
   and resolves OFF, silently, with jk="dense".
 * Refusal of an explicit True: jk="dense" (ValueError, by name); the
   k-point bindings do not take the kwarg (TypeError) and run the library
-  default, which ROTATES their RS-GDF energy builds (counter
-  "k rsgdf SR3 rotated columns").
+  default, which ROTATES their RS-GDF energy builds and hcore (counters
+  "k rsgdf SR3 rotated columns", "k hcore SR rotated columns").
 """
 
 from __future__ import annotations
@@ -213,4 +213,5 @@ def test_kpoint_default_rotates(h2, ccpvdz):
     assert r.converged
     c = r.timings["counters"]
     assert c.get("k rsgdf SR3 rotated columns") == 2, c
+    assert c.get("k hcore SR rotated columns") == 2, c
     assert _rotated_columns(r) == (0, 0), c

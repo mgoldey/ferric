@@ -104,11 +104,16 @@
 //!
 //! # Numerics
 //!
-//! * The back-transform is a fixed serial loop over (group, group) pairs on
-//!   an exactly symmetric input; it writes each unordered function pair once
-//!   and COPIES it into both `(μ, ν)` and `(ν, μ)`, so the output is exactly
-//!   symmetric and bitwise identical across thread counts (the walks already
-//!   are).
+//! * The Gamma back-transform is a fixed serial loop over (group, group)
+//!   pairs on an exactly symmetric input; it writes each unordered function
+//!   pair once and COPIES it into both `(μ, ν)` and `(ν, μ)`, so the output
+//!   is exactly symmetric and bitwise identical across thread counts (the
+//!   walks already are). The k-point back-transform (`back_transform_rows`)
+//!   takes a non-symmetric input and forms every ordered element from its
+//!   own two rows with the same fixed addend order; it is serial per tensor
+//!   (the SR bins are processed in parallel, one bin per task), so it is
+//!   bitwise across thread counts too, and its output is symmetric (or
+//!   Hermitian) to round-off only.
 //! * Identity: when nothing in the basis rotates (segmented bases, STO-3G,
 //!   Pople sp shells — no group has a single-primitive column), detection
 //!   returns `None` and the build runs today's code path bit for bit.

@@ -280,6 +280,7 @@ pub fn solve_kuhf(
     let clock = StageClock::start();
     let hk = periodic_hcore_kpts(cell, prep, mesh, &cfg.hcore)?;
     timings.stop("k hcore", &clock);
+    hk.record_stats(&mut timings);
     let v_m = mesh.madelung(cell)?;
     let applied = match cfg.exxdiv {
         ExxDiv::None => 0.0,

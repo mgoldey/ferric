@@ -430,9 +430,9 @@ fn print_rsgdf_knobs(plan: &PeriodicPlan) {
     println!("  gdf_omega  = {} Bohr^-1{note}", rsgdf_omega(plan));
 }
 
-/// The resolved SR column rotation of the Gamma hcore and RS-GDF builds,
-/// passed EXPLICITLY (`On` / `Off`, never the library's `Auto`): the plan
-/// only turns it on for a Gamma-point `jk = "rsgdf"` run
+/// The resolved SR column rotation of the hcore and RS-GDF builds (Gamma and
+/// k-point), passed EXPLICITLY (`On` / `Off`, never the library's `Auto`):
+/// the plan only turns it on for a `jk = "rsgdf"` run
 /// (`resolve_sr_column_rotation`); an optimize run's hcore, fit and gradient
 /// all walk the same rotated shells.
 fn sr_column_rotation(plan: &PeriodicPlan) -> SrColumnRotation {
@@ -1416,6 +1416,7 @@ fn krhf_with_ints(
     let clock = StageClock::start();
     let hk = periodic_hcore_kpts(&s.cell, &s.prep, mesh, &khcore_config(plan, s))?;
     t.stop("k hcore", &clock);
+    hk.record_stats(t);
     let clock = StageClock::start();
     match &s.aux {
         None => {

@@ -133,6 +133,14 @@ pub struct PeriodicHcoreK {
     pub budget_bytes: usize,
 }
 
+impl PeriodicHcoreK {
+    /// Record the SR-rotation counter `k hcore SR rotated columns` (0 = the
+    /// unrotated walk) on `t`.
+    pub fn record_stats(&self, t: &mut crate::timing::PbcTimings) {
+        t.set_counter("k hcore SR rotated columns", self.sr_rotated_columns as u64);
+    }
+}
+
 /// Zeroed `(n, n)` complex matrix.
 fn czero(n: usize) -> Array2<Complex64> {
     Array2::<Complex64>::zeros((n, n))
@@ -258,7 +266,7 @@ pub fn periodic_hcore_kpts_pair_s1_oracle(
 }
 
 /// Shared body of [`periodic_hcore_kpts`] and the `s1_oracle` variant (`true` = frozen pre-s2
-/// pair loop). The column rotation is not implemented here: explicit `On` is refused.
+/// pair loop). The column rotation (module doc "Column rotation at k") runs under `Auto`/`On`; the frozen s1 oracle refuses an explicit `On`.
 fn periodic_hcore_kpts_impl(
     cell: &Cell,
     prep: &PreparedBasis,

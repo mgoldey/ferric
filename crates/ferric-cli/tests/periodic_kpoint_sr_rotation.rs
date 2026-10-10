@@ -9,7 +9,8 @@
 //! * absent (default) and `true`: the stage-table counter `k rsgdf SR3
 //!   rotated columns` is 2 and the SR 3-centre triplet count is the rotated
 //!   walk's;
-//! * `false`: the counter is 0 and the triplet count is the unrotated
+//! * the same for `k hcore SR rotated columns`;
+//! * `false`: the counters are 0 and the triplet count is the unrotated
 //!   walk's, strictly larger (negative control: the key CHANGES the run);
 //! * the three energies agree to the printed precision (the rotation is
 //!   exact to the screening precision).
@@ -110,6 +111,7 @@ fn energy(stdout: &str) -> f64 {
 #[test]
 fn kpoint_sr_column_rotation_key_reaches_the_builds() {
     const ROT: &str = "k rsgdf SR3 rotated columns";
+    const HROT: &str = "k hcore SR rotated columns";
     const TRIP: &str = "k rsgdf SR3 triplets";
     let default = run("default", "");
     let on = run("on", "sr_column_rotation = true");
@@ -118,6 +120,10 @@ fn kpoint_sr_column_rotation_key_reaches_the_builds() {
     assert!(off.contains("sr_column_rotation = off"));
     assert_eq!(counter(&default, ROT), 2);
     assert_eq!(counter(&on, ROT), 2);
+    // The hcore gets the plan's rotation too (not just the fit).
+    assert_eq!(counter(&default, HROT), 2);
+    assert_eq!(counter(&on, HROT), 2);
+    assert_eq!(counter(&off, HROT), 0, "false must reach the k-point hcore");
     assert_eq!(counter(&off, ROT), 0, "false must reach the k-point fit");
     assert_eq!(counter(&default, TRIP), counter(&on, TRIP));
     assert!(

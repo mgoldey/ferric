@@ -20,6 +20,8 @@ jk = "rsgdf"
 auxbasis = "cc-pvdz-ri"
 kmesh = [2, 2, 2]
 centring = "gamma"
+# The unrotated baseline (the rotation is on by default at a kmesh with jk = "rsgdf").
+sr_column_rotation = false
 
 [memory]
 budget_gb = 10

@@ -235,6 +235,7 @@ pub fn solve_krhf(
     let clock = StageClock::start();
     let hk = periodic_hcore_kpts(cell, prep, mesh, &cfg.hcore)?;
     timings.stop("k hcore", &clock);
+    hk.record_stats(&mut timings);
     let clock = StageClock::start();
     let mut r = match aux {
         None => {

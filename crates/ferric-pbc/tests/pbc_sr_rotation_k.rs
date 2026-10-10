@@ -70,6 +70,9 @@ const THREADS: [usize; 3] = [1, 2, 6];
 const HCORE_OMEGA: f64 = 0.8;
 /// (b): the tight truncation of the covariance anchor (the Gamma file's).
 const P_TIGHT: f64 = 1e-16;
+/// (d): truncation of the mutant sweeps (they miss by O(|T_ks|), far above
+/// any truncation; a looser screen keeps the sweep cheap).
+const P_MUTANT: f64 = 1e-11;
 /// (b): relative covariance bar (the Gamma file's derivation: truncation
 /// ≲ 1e3 · P_TIGHT absolute, round-off ≲ 1e-14 · (1 + Σ|T_ks|)).
 const TOL_COV: f64 = 1e-13;
@@ -397,8 +400,8 @@ fn back_transform_mutants_fail_the_bin_level_anchor() {
     for split in [None, Some(RangeSplit::default())] {
         let (mod_l, mod_t, n) = (mesh.residue_moduli(), mesh.n(), prep.nbasis());
         // (relative miss against the parent bins, relative pair-symmetry violation)
-        let rel_of = |rot: SrColumnRotation| -> (f64, f64) {
-            let cfg = gdf_cfg(split, rot, P_TIGHT);
+        let rel_of = |rot: SrColumnRotation, prec: f64| -> (f64, f64) {
+            let cfg = gdf_cfg(split, rot, prec);
             let ([r, p], _) =
                 sr3_kbins_rotated_and_parent(&cell, &prep, &aux, &mesh, &cfg).expect("bins");
             let scale = p.0.iter().fold(0.0_f64, |m, b| {
@@ -411,18 +414,21 @@ fn back_transform_mutants_fail_the_bin_level_anchor() {
             });
             (d / scale, pair_asymmetry(&r.0, n, mod_l, mod_t) / scale)
         };
-        let (good, good_sym) = rel_of(production());
+        let (good, good_sym) = rel_of(production(), P_TIGHT);
         assert!(good <= TOL_COV, "production {good:.3e}");
         assert!(good_sym <= SYM_BAR, "production symmetry {good_sym:.3e}");
         // The symmetry diagnostic must itself be able to fail: a one-sided
         // back-transform breaks `bin[b][μν] = bin[M(b)][νμ]`.
-        let (_, one_sided_sym) = rel_of(rotation(ColumnRotationMutant::OneSidedBackTransform));
+        let (_, one_sided_sym) = rel_of(
+            rotation(ColumnRotationMutant::OneSidedBackTransform),
+            P_MUTANT,
+        );
         eprintln!(
             "one-sided mutant: pair-symmetry violation {one_sided_sym:.3e} (bar {SYM_BAR:e})"
         );
         assert!(one_sided_sym >= MUTANT_FLOOR, "{one_sided_sym:.3e}");
         for m in MUTANTS {
-            let (bad, _) = rel_of(rotation(m));
+            let (bad, _) = rel_of(rotation(m), P_MUTANT);
             eprintln!(
                 "split {:?} {m:?}: rel miss {bad:.3e} (production {good:.2e})",
                 split.map(|s| s.lambda)

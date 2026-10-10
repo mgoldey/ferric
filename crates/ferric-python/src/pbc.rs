@@ -2744,6 +2744,7 @@ fn krhf_with_ints(
     let clock = StageClock::start();
     let hk = periodic_hcore_kpts(&s.cell, &s.prep, mesh, &khcore_config(s))?;
     t.stop("k hcore", &clock);
+    hk.record_stats(t);
     let clock = StageClock::start();
     match &s.aux {
         None => {

@@ -321,7 +321,10 @@ pub struct KRsGdfStats {
     pub budget_bytes: usize,
     pub resident_bytes: usize,
     /// The range split's partition counters (the Gamma build's names);
-    /// empty without a split.
+    /// empty without a split. They describe the PARENT-basis partition (the
+    /// build's own plan: LR, `S_ss`, G = 0); with a column rotation the SR
+    /// 3-centre walk ran on the rotated shells' own partition, whose size is
+    /// [`KRsGdfStats::n_sr3_triplets`].
     pub split_counters: Vec<(&'static str, usize)>,
     /// Orbital columns the SR 3-centre walk ran rotated (module doc "Column
     /// rotation at k"); 0 = the unrotated walk (rotation off, or nothing in
