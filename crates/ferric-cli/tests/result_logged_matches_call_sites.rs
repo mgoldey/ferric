@@ -67,6 +67,14 @@ fn result_logged_names_exactly_the_methods_that_emit_a_result() {
     let mut rest = src.as_str();
     while let Some(i) = rest.find("rl.result(") {
         rest = &rest[i + "rl.result(".len()..];
+        // A call whose kind is not a string literal (e.g. the shared local-MP2
+        // path passes `cfg.method.kind.as_str()` for rimp2 AND att-rimp2) names
+        // no kind here; its kinds are covered by their own literal call sites.
+        // Without this guard the first quoted string after the paren would be
+        // a key of the result JSON, not a kind.
+        if !rest.trim_start().starts_with('"') {
+            continue;
+        }
         // The kind is the first quoted string after the open paren.
         if let Some(q) = rest.find('"') {
             // ...but only if no `)` or `;` intervenes, which would mean this

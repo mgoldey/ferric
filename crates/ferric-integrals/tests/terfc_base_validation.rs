@@ -1124,3 +1124,219 @@ fn free_omega_terf_plus_terfc_is_coulomb() {
         "linked vs free-at-linked-omega not bit-identical"
     );
 }
+
+// ---------------------------------------------------------------------------
+// M4b: DECOUPLED (r0, omega) 2-center oracle — sharp seam, near AND far field.
+//   m4 pins only the curvature-LINKED r0*omega = 1/sqrt2, and
+//   `free_omega_terf_plus_terfc_is_coulomb` is a tautology for the shim (it
+//   assembles terfc = coulomb - terf), so before this test NO anchor
+//   independent of the table engine covered r0*omega != 1/sqrt2.
+//   Oracle (mpmath, 40 digits, direct radial quadrature of the DEFINING
+//   kernel terfc(r)/r = (1 - [erf(w(r+r0)) + erf(w(r-r0))]/2)/r against the
+//   Gaussian product of exponent p q/(p+q)):
+//     scripts-free: see the generator in the commit message of this test.
+//   p = 1.3 at the origin, q = 0.8 at (D, 0, 0) Bohr. D = 12 puts
+//   S = phi^2 D^2 = 64 (beyond every table's S <= 20, the series/tail
+//   fallback) at s = phi^2 r0^2 up to ~1.6, i.e. OUTSIDE the s <= 1/2 regime
+//   the fallback was derived and validated for. The far-field oracle values
+//   are 1e-6..1e-28 of Coulomb: an inflated far field (the ea7fee6 bug class)
+//   would be O(1) off, so the absolute bound below resolves it completely.
+// ---------------------------------------------------------------------------
+#[test]
+// The oracle table carries the linked r0*omega as the 12-digit literal the oracle
+// values were generated at; substituting FRAC_1_SQRT_2 would change omega by ~5e-13.
+#[allow(clippy::approx_constant)]
+fn m4b_decoupled_omega_two_center_matches_oracle_near_and_far_field() {
+    let dir = match table_dir() {
+        Some(d) => d,
+        None => {
+            eprintln!("SKIP m4b: no terf tables");
+            return;
+        }
+    };
+    unsafe { scf_libint_init() };
+    // (r0 Angstrom, r0*omega, D Bohr, oracle terfc/coulomb)
+    let cases: &[(f64, f64, f64, f64)] = &[
+        (1.0, 0.707106781187, 0.7, 0.6575601710739529),
+        (1.0, 0.707106781187, 5.0, 0.07372258717926792),
+        (1.0, 0.707106781187, 12.0, 1.157033196574743e-6),
+        (1.0, 4.0, 0.7, 0.7599762706450717),
+        (1.0, 4.0, 5.0, 0.001654530841226377),
+        (1.0, 4.0, 12.0, 6.601657757511639e-22),
+        (1.0, 2.0, 0.7, 0.7156631515544338),
+        (1.0, 2.0, 5.0, 0.004973586098141512),
+        (1.0, 2.0, 12.0, 2.673217522350403e-17),
+        (0.5, 4.0, 0.7, 0.3154635676519393),
+        (0.5, 4.0, 5.0, 3.364542459787482e-5),
+        (0.5, 4.0, 12.0, 9.603707305443462e-28),
+    ];
+    let cdir = std::ffi::CString::new(dir.to_string_lossy().as_ref()).unwrap();
+    let mut worst = 0.0f64;
+    for &(r0_ang, r0w, d, oracle) in cases {
+        let mol = Molecule {
+            atoms: vec![atom("Li", 3, 0.0, 0.0, 0.0), atom("Be", 4, d, 0.0, 0.0)],
+            charge: 0,
+            multiplicity: 1,
+        };
+        let mut aux_shells: HashMap<i32, Vec<Shell>> = HashMap::new();
+        aux_shells.insert(3, single_s_basis(3, 1.3).1);
+        aux_shells.insert(4, single_s_basis(4, 0.8).1);
+        let aux_bs = BasisSet {
+            name: "m4b-aux".into(),
+            shells: aux_shells,
+            ecps: HashMap::new(),
+        };
+        let aux = PreparedBasis::new(&mol, &aux_bs).unwrap();
+        let sh_p = (0..aux.nshells())
+            .find(|&i| aux.shell_to_atom()[i] == 0)
+            .unwrap();
+        let sh_q = (0..aux.nshells())
+            .find(|&i| aux.shell_to_atom()[i] == 1)
+            .unwrap();
+        let (max_nprim, max_l) = (aux.max_nprim(), aux.max_l());
+        let aux_h = aux.handle();
+        let r0 = r0_ang * 1.8897259886_f64;
+        let omega = r0w / r0;
+        let eng_c = unsafe { scf_engine_create_2center(0, 0.0, max_nprim, max_l, 1e-16) };
+        let eng_t = unsafe {
+            scf_engine_create_terfc_2center(r0, omega, max_nprim, max_l, 1e-16, cdir.as_ptr())
+        };
+        assert!(!eng_c.is_null() && !eng_t.is_null());
+        let (mut bt, mut bc) = ([0.0f64; 1], [0.0f64; 1]);
+        let rt = unsafe {
+            scf_compute_terfc_eri2(eng_t, aux_h, sh_p as c_int, sh_q as c_int, bt.as_mut_ptr())
+        };
+        let rc = unsafe {
+            scf_compute_eri2(eng_c, aux_h, sh_p as c_int, sh_q as c_int, bc.as_mut_ptr())
+        };
+        assert!(rt == 1 && rc == 1);
+        let ratio = bt[0] / bc[0];
+        let err = (ratio - oracle).abs();
+        worst = worst.max(err);
+        eprintln!(
+            "M4b r0={r0_ang}A r0*w={r0w:.4} D={d}: ratio={ratio:.6e} oracle={oracle:.6e} |err|={err:.2e}"
+        );
+        unsafe {
+            scf_engine_destroy(eng_t);
+            scf_engine_destroy(eng_c);
+        }
+        assert!(
+            err < 1e-9,
+            "decoupled terfc 2-center vs oracle: r0={r0_ang}A r0*w={r0w} D={d}: ratio {ratio:.6e} \
+             vs {oracle:.6e} (|err| {err:.2e})"
+        );
+    }
+    eprintln!("M4b worst |err| = {worst:.2e}");
+}
+
+// ---------------------------------------------------------------------------
+// M4c: 2-center oracle at SHARPER decoupled omega (r0*omega = 8, 16) and
+// TIGHT exponents. ARTIFACT HYPOTHESIS (written before the run): the far-field
+// fallback and table domain were derived for the linked s <= 1/2 regime; the
+// tables stop at s = phi^2 r0^2 = 80 and the large-s path (terf_G_tail) loses
+// all relative digits of G (F - Delta cancellation). If that matters, tight
+// aux pairs (p, q ~ 1e2, s up to ~(r0 w)^2 = 256) would miss the oracle by
+// O(1) (terfc ~ Coulomb there, so a G error of 1e-16 is harmless but a
+// skipped/garbled terf pass is not). Oracle = mpmath real-space quadrature of
+// the defining kernel (no tables, no series, no Fourier).
+// Columns: (p, q, r0 A, r0*omega, D Bohr, oracle terfc/coulomb).
+// ---------------------------------------------------------------------------
+#[test]
+fn m4c_sharper_omega_two_center_matches_oracle() {
+    let dir = match table_dir() {
+        Some(d) => d,
+        None => {
+            eprintln!("SKIP m4c: no terf tables");
+            return;
+        }
+    };
+    unsafe { scf_libint_init() };
+    let cases: &[(f64, f64, f64, f64, f64, f64)] = &[
+        (1.3, 0.8, 1.0, 8.0, 0.4, 0.8076950762322024),
+        (1.3, 0.8, 1.0, 8.0, 2.0, 0.4304537282497255),
+        (1.3, 0.8, 1.0, 8.0, 5.0, 0.0011301982521452786),
+        (1.3, 0.8, 1.0, 8.0, 12.0, 1.6074393172027907e-23),
+        (1.3, 0.8, 1.0, 8.0, 20.0, 5.079554692994842e-71),
+        (1.3, 0.8, 1.0, 16.0, 0.4, 0.8119370041904836),
+        (1.3, 0.8, 1.0, 16.0, 2.0, 0.4299823047560952),
+        (1.3, 0.8, 1.0, 16.0, 5.0, 0.0010178290460056713),
+        (1.3, 0.8, 1.0, 16.0, 12.0, 5.773699718032364e-24),
+        (1.3, 0.8, 1.0, 16.0, 20.0, 1.87024110175805e-72),
+        (30.0, 45.0, 1.0, 8.0, 0.4, 0.9999999998613215),
+        (30.0, 45.0, 1.0, 8.0, 2.0, 0.32012701012680556),
+        (30.0, 45.0, 1.0, 8.0, 5.0, 5.604202897438518e-40),
+        (30.0, 45.0, 1.0, 8.0, 12.0, 0.0),
+        (30.0, 45.0, 1.0, 8.0, 20.0, 0.0),
+        (30.0, 45.0, 1.0, 16.0, 0.4, 0.9999999999999993),
+        (30.0, 45.0, 1.0, 16.0, 2.0, 0.2770811784246104),
+        (30.0, 45.0, 1.0, 16.0, 5.0, 8.523794005096419e-63),
+        (30.0, 45.0, 1.0, 16.0, 12.0, 0.0),
+        (30.0, 45.0, 1.0, 16.0, 20.0, 0.0),
+        (300.0, 250.0, 1.0, 8.0, 0.4, 1.0),
+        (300.0, 250.0, 1.0, 8.0, 2.0, 0.2674058706844551),
+        (300.0, 250.0, 1.0, 8.0, 5.0, 8.577630661553442e-84),
+        (300.0, 250.0, 1.0, 8.0, 12.0, 0.0),
+        (300.0, 250.0, 1.0, 8.0, 20.0, 0.0),
+        (300.0, 250.0, 1.0, 16.0, 0.4, 1.0),
+        (300.0, 250.0, 1.0, 16.0, 2.0, 0.1425370252335318),
+        (300.0, 250.0, 1.0, 16.0, 5.0, 1.13194440043803e-309),
+        (300.0, 250.0, 1.0, 16.0, 12.0, 0.0),
+        (300.0, 250.0, 1.0, 16.0, 20.0, 0.0),
+    ];
+    let cdir = std::ffi::CString::new(dir.to_string_lossy().as_ref()).unwrap();
+    let mut worst = 0.0f64;
+    for &(p, q, r0_ang, r0w, d, oracle) in cases {
+        let mol = Molecule {
+            atoms: vec![atom("Li", 3, 0.0, 0.0, 0.0), atom("Be", 4, d, 0.0, 0.0)],
+            charge: 0,
+            multiplicity: 1,
+        };
+        let mut aux_shells: HashMap<i32, Vec<Shell>> = HashMap::new();
+        aux_shells.insert(3, single_s_basis(3, p).1);
+        aux_shells.insert(4, single_s_basis(4, q).1);
+        let aux_bs = BasisSet {
+            name: "m4c-aux".into(),
+            shells: aux_shells,
+            ecps: HashMap::new(),
+        };
+        let aux = PreparedBasis::new(&mol, &aux_bs).unwrap();
+        let sh_p = (0..aux.nshells())
+            .find(|&i| aux.shell_to_atom()[i] == 0)
+            .unwrap();
+        let sh_q = (0..aux.nshells())
+            .find(|&i| aux.shell_to_atom()[i] == 1)
+            .unwrap();
+        let (max_nprim, max_l) = (aux.max_nprim(), aux.max_l());
+        let aux_h = aux.handle();
+        let r0 = r0_ang * 1.8897259886_f64;
+        let omega = r0w / r0;
+        let eng_c = unsafe { scf_engine_create_2center(0, 0.0, max_nprim, max_l, 1e-16) };
+        let eng_t = unsafe {
+            scf_engine_create_terfc_2center(r0, omega, max_nprim, max_l, 1e-16, cdir.as_ptr())
+        };
+        assert!(!eng_c.is_null() && !eng_t.is_null());
+        let (mut bt, mut bc) = ([0.0f64; 1], [0.0f64; 1]);
+        let rt = unsafe {
+            scf_compute_terfc_eri2(eng_t, aux_h, sh_p as c_int, sh_q as c_int, bt.as_mut_ptr())
+        };
+        let rc = unsafe {
+            scf_compute_eri2(eng_c, aux_h, sh_p as c_int, sh_q as c_int, bc.as_mut_ptr())
+        };
+        assert!(rt == 1 && rc == 1);
+        let ratio = bt[0] / bc[0];
+        let err = (ratio - oracle).abs();
+        worst = worst.max(err);
+        eprintln!(
+            "M4c p={p} q={q} r0*w={r0w} D={d}: ratio={ratio:.6e} oracle={oracle:.6e} |err|={err:.2e}"
+        );
+        unsafe {
+            scf_engine_destroy(eng_t);
+            scf_engine_destroy(eng_c);
+        }
+        assert!(
+            err < 1e-9,
+            "sharper-omega terfc 2c misses oracle: p={p} q={q} r0w={r0w} D={d}"
+        );
+    }
+    eprintln!("M4c worst |err| = {worst:.2e}");
+}
