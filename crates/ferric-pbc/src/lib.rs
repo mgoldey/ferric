@@ -121,11 +121,12 @@
 //! * [`sr_rotation`] — column rotation of generally contracted orbital
 //!   shells inside the Gamma SR 3-centre walk (RS-GDF) and the hcore SR
 //!   attraction ([`SrColumnRotation`] on `RsGdfConfig` /
-//!   `PeriodicHcoreConfig`, default `Auto` = on in those Gamma energy builds,
-//!   off in the k-point, gradient and oracle builds): subtract each shell
-//!   group's single-primitive columns from the others, compute the SR blocks
-//!   on the rotated shells, back-transform exactly (design
-//!   `reference/pbc/sr-general-contraction-design.md`).
+//!   `PeriodicHcoreConfig`, default `Auto` = on in the Gamma energy and
+//!   gradient builds, off in the k-point and oracle builds): subtract each
+//!   shell group's single-primitive columns from the others, compute the SR
+//!   blocks on the rotated shells, back-transform exactly (design
+//!   `reference/pbc/sr-general-contraction-design.md`); the Gamma forces and
+//!   stress differentiate the same rotated walks (weights `Tᵀ W T`).
 //!
 //! * [`timing`] — stage timers (wall + process CPU) and counters on
 //!   `PeriodicHcore`, `RsGdf`, `DenseAftEri`, the KS results and the k-point

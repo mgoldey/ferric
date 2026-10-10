@@ -283,7 +283,7 @@ struct PbcSetup {
     range_split: Option<RangeSplit>,
     /// SR column rotation of the Gamma hcore and RS-GDF builds, RESOLVED by
     /// [`parse_sr_column_rotation`] (`On` / `Off`; on by default for a Gamma
-    /// rsgdf energy run). `Off` for the k-point bindings, whose builds never
+    /// rsgdf run, forces and stress included). `Off` for the k-point bindings, whose builds never
     /// rotate.
     sr_column_rotation: SrColumnRotation,
 }
@@ -308,8 +308,7 @@ impl PbcSetup {
     ) -> PyResult<()> {
         let rsgdf = self.aux.is_some();
         self.range_split = parse_range_split(self.fname, range_split, rsgdf, self.derivs)?;
-        self.sr_column_rotation =
-            parse_sr_column_rotation(self.fname, sr_column_rotation, rsgdf, self.derivs)?;
+        self.sr_column_rotation = parse_sr_column_rotation(self.fname, sr_column_rotation, rsgdf)?;
         Ok(())
     }
 }
@@ -524,26 +523,24 @@ pub(crate) fn parse_range_split(
 /// hcore SR attraction and the RS-GDF SR 3-centre walk on column-rotated
 /// generally contracted shells (`ferric_pbc::SrColumnRotation`; same energy
 /// to the screening precision, fewer SR integral calls); `False` is the
-/// unrotated build bit for bit.
+/// unrotated build bit for bit. The analytic forces and stress
+/// (with_gradient / with_stress) differentiate the same rotated walks.
 ///
-/// * `None` (the default): on for a jk="rsgdf" energy run; silently off
-///   with jk="dense" (the dense oracle stays unrotated) and with
-///   with_gradient / with_stress (the force and stress walks use the
-///   unrotated shells, so the energy must too).
-/// * `True`: a `ValueError` in exactly those cases (the rotation is an
-///   RS-GDF cost knob and is not half-applied to the dense oracle; a
-///   rotated energy would not be what the forces differentiate).
+/// * `None` (the default): on for a jk="rsgdf" run (energy, forces and
+///   stress alike); silently off with jk="dense" (the dense oracle stays
+///   unrotated).
+/// * `True`: a `ValueError` with jk="dense" (the rotation is an RS-GDF cost
+///   knob and is not half-applied to the dense oracle).
 ///
 /// The k-point bindings do not take it (their builds never rotate).
 pub(crate) fn parse_sr_column_rotation(
     fname: &str,
     on: Option<bool>,
     rsgdf: bool,
-    derivs: DerivRequest,
 ) -> PyResult<SrColumnRotation> {
     match on {
         Some(false) => return Ok(SrColumnRotation::Off),
-        None if !rsgdf || derivs.any() => return Ok(SrColumnRotation::Off),
+        None if !rsgdf => return Ok(SrColumnRotation::Off),
         None => return Ok(SrColumnRotation::on()),
         Some(true) => {}
     }
@@ -551,13 +548,6 @@ pub(crate) fn parse_sr_column_rotation(
         return Err(val_err(format!(
             "{fname}: sr_column_rotation rotates the RS-GDF short-range walks and requires \
              jk=\"rsgdf\" (with auxbasis); jk=\"dense\" would ignore it"
-        )));
-    }
-    if derivs.any() {
-        return Err(val_err(format!(
-            "{fname}: sr_column_rotation is not supported with with_gradient / with_stress: \
-             the Gamma force and stress walks use the unrotated shells, so they would not \
-             differentiate the rotated energy"
         )));
     }
     Ok(SrColumnRotation::on())

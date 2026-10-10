@@ -316,7 +316,7 @@ pub fn record_stats(t: &mut crate::timing::PbcTimings, st: &KRsGdfStats) {
 }
 
 /// The k-point builds do not implement [`RsGdfConfig::sr_column_rotation`]
-/// (a Gamma energy option): the default `Auto` runs unrotated, an explicit
+/// (a Gamma option): the default `Auto` runs unrotated, an explicit
 /// `On` is a typed refusal instead of being silently ignored.
 pub(in crate::rsgdf) fn refuse_column_rotation(
     g: &RsGdfConfig,

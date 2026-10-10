@@ -160,12 +160,22 @@
 //! screening precision, not bitwise; `n_sr3_triplets` counts the rotated
 //! walk's calls. [`SrColumnRotation::Off`] is the unrotated build bit for
 //! bit, and so is a basis with nothing to rotate (detection returns the
-//! identity; counter `rsgdf SR3 rotated columns` = 0). Gamma energy builds
-//! only: [`RsGdf::build_for_gradient`] and the frozen s1 oracle run
-//! unrotated under `Auto` and refuse an explicit `On` (the forces must
-//! differentiate exactly the walk the energy ran, and the gradient build IS
-//! the energy build of a force run), and so does the k-point build
-//! ([`kpoint`]).
+//! identity; counter `rsgdf SR3 rotated columns` = 0). Gamma builds only
+//! ([`RsGdf::build`], [`RsGdf::build_for_gradient`]): the frozen s1 oracle
+//! runs unrotated under `Auto` and refuses an explicit `On`, and so does the
+//! k-point build ([`kpoint`]).
+//!
+//! The Gamma FORCES and STRESS differentiate the walk the energy ran: a
+//! build that rotated ([`RsGdf::build_for_gradient`] IS the energy build of a
+//! force run) is differentiated on the same rotated shells. `T` depends on
+//! the contraction coefficients only, so `∂χ_k = Σ_m T_km ∂χ'_m` at every
+//! geometry (a shell and its rotated column share a centre and an exponent
+//! list), hence `Σ_{μν} Y_μν ∂J3[μν] = Σ_{mn} Y'_mn ∂J3'[mn]` with
+//! `Y' = Tᵀ Y T`: the SR 3-centre derivative blocks and strain addends are
+//! contracted on the rotated shells with `Y'` (formed per element from `Y`,
+//! `Y3::Rotated`), and nothing is back-transformed. The LR terms, the metric,
+//! the G = 0 terms and the aux-centre derivative of the SR sum are
+//! untouched (the aux basis is never rotated).
 //!
 //! # Forces
 //!
@@ -188,7 +198,7 @@ use crate::lattice::Cell;
 use crate::ordered::{ordered_units, Stored};
 use crate::pair_ft::residues::residue_index;
 use crate::pair_ft::{pair_ft_chunked_serial_oracle, pair_ft_chunked_timed};
-use crate::sr_rotation::{ColumnRotationMutant, RotatedBasis, SrColumnRotation};
+use crate::sr_rotation::{ColumnRotation, ColumnRotationMutant, RotatedBasis, SrColumnRotation};
 use crate::timing::{CallClock, PbcTimings, StageClock};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -278,10 +288,10 @@ pub struct RsGdfConfig {
     pub range_split: Option<RangeSplit>,
     /// Column rotation of generally contracted orbital shells inside the
     /// Gamma SR 3-centre walk (module doc "Column rotation"). Default
-    /// [`SrColumnRotation::Auto`]: on in the Gamma energy builds, off in
-    /// [`RsGdf::build_for_gradient`], the s1 oracle and the k-point build
-    /// (each refuses an explicit `On`). `Off` = the unrotated construction,
-    /// bit for bit.
+    /// [`SrColumnRotation::Auto`]: on in the Gamma builds (energy and
+    /// [`RsGdf::build_for_gradient`]; the forces and stress follow it), off
+    /// in the s1 oracle and the k-point build (each refuses an explicit
+    /// `On`). `Off` = the unrotated construction, bit for bit.
     pub sr_column_rotation: SrColumnRotation,
 }
 
@@ -397,6 +407,10 @@ pub struct RsGdf {
     /// The build's [`RsGdfConfig::range_split`] (the derivative walks
     /// rebuild the same partition from it).
     range_split: Option<RangeSplit>,
+    /// The column rotation the build's Gamma SR 3-centre walk actually ran
+    /// (`None`: unrotated, or nothing in the basis rotates). The Gamma forces
+    /// and stress walk the same rotated shells.
+    sr_rotation: Option<ColumnRotation>,
 }
 
 /// The pre-solve pieces of an RS-GDF build ([`RsGdf::build_with_fit_parts`]),
@@ -2292,6 +2306,8 @@ fn gamma_sr_three_index(
 pub(super) struct Sr3Rotation {
     pub(super) obs: RotatedBasis,
     aux: Option<RotatedBasis>,
+    /// The request this rotation resolved from.
+    rot: ColumnRotation,
 }
 
 impl Sr3Rotation {
@@ -2324,13 +2340,15 @@ pub(super) fn sr3_rotation(
     Ok(Some(Sr3Rotation {
         obs: obs_rot,
         aux: aux_rot,
+        rot,
     }))
 }
 
 /// The build's SR plans: the range split ([`split::SplitPlan::maybe`]) and
 /// the column rotation ([`sr3_rotation`]; `Auto` resolves off on the
-/// gradient build and the frozen s1 oracle, which must walk the parent
-/// shells, and an explicit `On` is refused there), with the `rsgdf SR3
+/// frozen s1 oracle, which must walk the parent shells, and an explicit `On`
+/// is refused there; the gradient build rotates like the energy build, the
+/// forces and stress differentiate the rotated walk), with the `rsgdf SR3
 /// rotated columns` counter set on `timings` whenever the rotation ran
 /// (0 = nothing rotates, the identity).
 #[allow(clippy::too_many_arguments)]
@@ -2339,17 +2357,13 @@ fn sr_plans(
     cfg: &RsGdfConfig,
     images: &[[f64; 3]],
     ledger: &mut Ledger,
-    retain_grad: bool,
     pair_sym: PairSym,
     timings: &mut PbcTimings,
 ) -> Result<(Option<split::SplitPlan>, Option<Sr3Rotation>), FerricError> {
     let plan = split::SplitPlan::maybe(st, cfg, images, ledger)?;
-    if retain_grad || pair_sym != PairSym::S2 {
-        cfg.sr_column_rotation.refuse_explicit(
-            "RsGdf",
-            "the column rotation applies to the Gamma energy build only; the gradient build \
-             and the frozen s1 oracle walk the unrotated shells",
-        )?;
+    if pair_sym != PairSym::S2 {
+        cfg.sr_column_rotation
+            .refuse_explicit("RsGdf", "the frozen s1 oracle walks the unrotated shells")?;
         return Ok((plan, None));
     }
     if cfg.sr_column_rotation.resolve_supported().is_none() {
@@ -2589,6 +2603,12 @@ impl RsGdf {
         self.range_split
     }
 
+    /// The column rotation B's SR 3-centre walk ran (`None`: unrotated). The
+    /// Gamma forces and stress differentiate the same rotated walk.
+    pub(crate) fn sr_rotation(&self) -> Option<ColumnRotation> {
+        self.sr_rotation
+    }
+
     /// The metric-derivative parts kept by [`RsGdf::build_for_gradient`]; `None` for any other
     /// build.
     pub(crate) fn gradient_parts(&self) -> Option<&MetricGradParts> {
@@ -2724,15 +2744,7 @@ impl RsGdf {
         // Opt-in range split (`split`) and column rotation of the SR
         // 3-centre walk (module doc "Column rotation"): `None` leaves every
         // stage below as it was, bit for bit.
-        let (plan, rotation) = sr_plans(
-            &st,
-            cfg,
-            &images,
-            &mut ledger,
-            retain_grad,
-            pair_sym,
-            &mut timings,
-        )?;
+        let (plan, rotation) = sr_plans(&st, cfg, &images, &mut ledger, pair_sym, &mut timings)?;
         let resident_bytes = ledger.resident();
         let chunk_budget = ledger.remaining().min(G_CHUNK_BYTES);
         timings.stop("rsgdf setup (shells, pair images, G list)", &clock);
@@ -2884,6 +2896,7 @@ impl RsGdf {
                 j_clock: CallClock::default(),
                 k_clock: CallClock::default(),
                 range_split: cfg.range_split,
+                sr_rotation: rotation.as_ref().map(|r| r.rot),
             },
             parts,
         ))

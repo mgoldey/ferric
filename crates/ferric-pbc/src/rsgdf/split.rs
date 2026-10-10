@@ -641,6 +641,13 @@ impl SplitPlan {
         })
     }
 
+    /// This plan's [`RangeSplit`] for the SR 3-centre derivative walk on the
+    /// column-rotated stage `st` ([`SplitPlan::sr3_only`]; the forces and
+    /// stress of a rotated build, `super::deriv`).
+    pub(super) fn sr3_plan_on(&self, st: &Stage<'_>) -> Result<Self, FerricError> {
+        Self::sr3_only(st, self.rs)
+    }
+
     /// The plan of `rs` with its resident buffers reserved on `ledger` and
     /// `S_ss` formed over the pair `images`.
     fn new(

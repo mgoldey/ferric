@@ -108,8 +108,8 @@ use crate::ewald::{
     default_ewald_omega, ewald_nuclear_strain, madelung_strain, DEFAULT_EWALD_PRECISION,
 };
 use crate::grad::{
-    check_inputs, fit_g0_charges, madelung_for, ro_gate, spin_densities, unrestricted_focks,
-    JkSource, RsGdfGradSource, SpinSet, GRAD_NUCLEUS_EXPONENT,
+    check_inputs, fit_g0_charges, hcore_rotation, madelung_for, ro_gate, spin_densities,
+    unrestricted_focks, JkSource, RsGdfGradSource, SpinSet, GRAD_NUCLEUS_EXPONENT,
 };
 use crate::hcore::{
     gvector_list_bytes, half_gvectors, hcore_pair_images, lr_gcut, sr_attraction_strain,
@@ -121,6 +121,7 @@ use crate::rohf::GammaRoksConfig;
 use crate::rsgdf::deriv::{fit_densities, FitDensities};
 use crate::rsgdf::strain::{fit_strain, FitStrainTerms};
 use crate::rsgdf::{split_g0, RsGdfFitDiagnostics, SplitG0};
+use crate::sr_rotation::DerivRotMutant;
 use ferric_core::FerricError;
 use ferric_dft::density_on_grid::{eval_density_closed, eval_density_uks};
 use ferric_dft::grid::GridPoint;
@@ -223,6 +224,29 @@ pub enum StressMutation {
     /// RS-GDF range split: drop the smooth-pair `dP̄_ss` / `dX_c` strain
     /// terms.
     SplitNoSmoothPair,
+    /// COLUMN ROTATION (rotated builds only): the rotated SR walks contracted
+    /// with the UNROTATED weights (no `Tᵀ · T` forward transform).
+    RotDropT,
+    /// COLUMN ROTATION: `T W Tᵀ` instead of `Tᵀ W T`.
+    RotUseT,
+    /// COLUMN ROTATION: the forward transform on the first AO index only.
+    RotOneSided,
+    /// COLUMN ROTATION: the off-diagonal `T_ks` with the wrong sign.
+    RotFlipSign,
+}
+
+impl StressMutation {
+    /// The forward-transform defect this mutation asks for
+    /// ([`DerivRotMutant::None`] for every other mutation).
+    fn rot_mutant(m: Option<Self>) -> DerivRotMutant {
+        match m {
+            Some(Self::RotDropT) => DerivRotMutant::DropT,
+            Some(Self::RotUseT) => DerivRotMutant::UseT,
+            Some(Self::RotOneSided) => DerivRotMutant::OneSided,
+            Some(Self::RotFlipSign) => DerivRotMutant::FlipSign,
+            _ => DerivRotMutant::None,
+        }
+    }
 }
 
 /// Settings for the stress entry points.
@@ -1034,8 +1058,19 @@ fn assemble(
         ..*hcore_cfg
     };
     let serial = is(StressMutation::SerialDerivWalks);
-    let (vsr, n_sr_triplets) =
-        sr_attraction_strain(cell, prep, &sr_cfg, &d, drop_images, serial, ledger)?;
+    let rot = hcore_rotation("gamma stress", cell, prep, hcore_cfg, hc)?;
+    let rot_mutant = StressMutation::rot_mutant(mutation);
+    let (vsr, n_sr_triplets) = sr_attraction_strain(
+        cell,
+        prep,
+        rot.as_ref(),
+        rot_mutant,
+        &sr_cfg,
+        &d,
+        drop_images,
+        serial,
+        ledger,
+    )?;
     parts.vsr = vsr;
 
     // --- V_ECP: the strain derivative of the periodic ECP lattice sum on the
@@ -1150,6 +1185,7 @@ fn assemble(
                 sr_kernel: !is(StressMutation::SplitNoSrKernelStrain),
                 smooth_pair: !is(StressMutation::SplitNoSmoothPair),
                 kept_g0: !is(StressMutation::SplitFullG0),
+                rot_mutant,
             };
             let fs = fit_strain(src.gdf, cell, prep, src.aux, &fd.y, &fd.wm, terms, ledger)?;
             parts.fit_j3_sr = fs.j3_sr;

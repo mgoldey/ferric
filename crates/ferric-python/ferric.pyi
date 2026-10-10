@@ -1555,10 +1555,11 @@ def run_rhf_gamma(
     gdf_omega >= 0.7) with fewer SR integral calls
     (timings["counters"]["hcore SR rotated columns"] and ["rsgdf SR3 rotated
     columns"], present whenever the rotation was on, 0 = nothing in the basis
-    rotates; absent when it was off). None: ON for a jk="rsgdf" energy run, OFF with jk="dense" and
-    with with_gradient/with_stress (the forces and stress walk the unrotated
-    shells, so the energy does too). False: off (the unrotated build bit for
-    bit). True: on; ValueError with jk="dense" or with_gradient/with_stress.
+    rotates; absent when it was off). with_gradient / with_stress
+    differentiate the same rotated walks (forces/stress equal the unrotated
+    ones to the screening precision). None: ON for a jk="rsgdf" run, OFF with
+    jk="dense". False: off (the unrotated build bit for bit). True: on;
+    ValueError with jk="dense".
     Every Gamma binding below takes it; the k-point bindings do not
     (TypeError; their builds never rotate).
     """

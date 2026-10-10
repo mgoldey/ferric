@@ -432,9 +432,9 @@ fn print_rsgdf_knobs(plan: &PeriodicPlan) {
 
 /// The resolved SR column rotation of the Gamma hcore and RS-GDF builds,
 /// passed EXPLICITLY (`On` / `Off`, never the library's `Auto`): the plan
-/// only turns it on for a Gamma-point `jk = "rsgdf"` energy run
-/// (`resolve_sr_column_rotation`), so an optimize run's hcore and gradient
-/// build both walk the unrotated shells.
+/// only turns it on for a Gamma-point `jk = "rsgdf"` run
+/// (`resolve_sr_column_rotation`); an optimize run's hcore, fit and gradient
+/// all walk the same rotated shells.
 fn sr_column_rotation(plan: &PeriodicPlan) -> SrColumnRotation {
     if plan.sr_column_rotation {
         SrColumnRotation::on()

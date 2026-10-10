@@ -213,6 +213,7 @@ use crate::pair_ft::pair_ft_deriv_chunked;
 use crate::rohf::GammaRoksConfig;
 use crate::rsgdf::deriv::{check_aux_map, fit_densities, fit_derivatives, fold_aux, FitDensities};
 use crate::rsgdf::{aux_ft, split_g0, RsGdf, RsGdfFitDiagnostics, SplitG0};
+use crate::sr_rotation::{ColumnRotation, ColumnRotationMutant, DerivRotMutant, RotatedBasis};
 use ferric_core::FerricError;
 use ferric_dft::density_on_grid::{eval_density_closed, eval_density_uks};
 use ferric_dft::grid::GridPoint;
@@ -322,6 +323,32 @@ pub enum GradMutation {
     /// RS-GDF range split: drop the smooth-pair LR derivative (`(P_ss|X_c)`,
     /// orbital and aux). Blind when `X_c = 0` (everything-moved span).
     SplitNoSmoothPair,
+    /// COLUMN ROTATION (rotated builds only; module `sr_rotation`, "Forces
+    /// and stress"): the rotated SR walks (hcore attraction and RS-GDF SR
+    /// 3-centre) contracted with the UNROTATED weights (`D`, `Y`), i.e. no
+    /// `Tᵀ · T` forward transform. Blind on a basis with nothing to rotate.
+    RotDropT,
+    /// COLUMN ROTATION: `T W Tᵀ` instead of `Tᵀ W T` (T where its transpose
+    /// belongs).
+    RotUseT,
+    /// COLUMN ROTATION: the forward transform on the first AO index only.
+    RotOneSided,
+    /// COLUMN ROTATION: the off-diagonal `T_ks` with the wrong sign.
+    RotFlipSign,
+}
+
+impl GradMutation {
+    /// The forward-transform defect this mutation asks for
+    /// ([`DerivRotMutant::None`] for every other mutation).
+    pub(crate) fn rot_mutant(m: Option<Self>) -> DerivRotMutant {
+        match m {
+            Some(Self::RotDropT) => DerivRotMutant::DropT,
+            Some(Self::RotUseT) => DerivRotMutant::UseT,
+            Some(Self::RotOneSided) => DerivRotMutant::OneSided,
+            Some(Self::RotFlipSign) => DerivRotMutant::FlipSign,
+            _ => DerivRotMutant::None,
+        }
+    }
 }
 
 /// Settings for the `gamma_*_gradient_with` entry points.
@@ -1632,7 +1659,7 @@ pub(crate) fn check_inputs(
             hc.omega, hcore_cfg.omega
         )));
     }
-    refuse_rotated_hcore(who, hcore_cfg, hc)?;
+    hcore_rotation(who, cell, prep, hcore_cfg, hc)?;
     if scf.spin != spin {
         let want = match spin {
             Spin::Restricted => "a restricted closed-shell",
@@ -1670,32 +1697,59 @@ pub(crate) fn check_inputs(
     Ok(())
 }
 
-/// The Gamma force and stress walks differentiate the UNROTATED SR
-/// attraction ([`crate::sr_rotation`]): refuse an explicit
-/// `SrColumnRotation::On` in `hcore_cfg` and a `hc` whose SR walk ran
-/// rotated (the default `Auto` on a generally contracted basis), whose
-/// truncated energy differs from the unrotated one at the screening
-/// precision. Build the hcore with
-/// [`PeriodicHcoreConfig::for_derivatives`] for a force or stress run.
-pub(crate) fn refuse_rotated_hcore(
+/// The column rotation the Gamma force and stress walks differentiate in the
+/// hcore SR attraction (module `sr_rotation`, "Forces and stress"): the one
+/// the energy's `hc` ran. `Ok(None)` when `hc`'s SR walk was unrotated
+/// (`hc.sr_rotated_columns == 0`; `Off`, or nothing in the basis rotates).
+/// Typed refusals: a rotated `hc` with `hcore_cfg` asking for no rotation,
+/// a rotation mutant (a deliberately wrong energy has no derivative), a
+/// basis that rotates another number of columns than `hc` ran, and an
+/// explicit `On` over an UNROTATED `hc` of a basis that does rotate.
+pub(crate) fn hcore_rotation(
     who: &str,
+    cell: &Cell,
+    prep: &PreparedBasis,
     hcore_cfg: &PeriodicHcoreConfig,
     hc: &PeriodicHcore,
-) -> Result<(), FerricError> {
-    hcore_cfg.sr_column_rotation.refuse_explicit(
-        who,
-        "the Gamma force and stress builders walk the unrotated shells",
-    )?;
-    if hc.sr_rotated_columns != 0 {
-        return Err(FerricError::General(format!(
-            "{who}: the hcore's SR attraction was built with {} column-rotated orbital columns \
-             (sr_column_rotation Auto, the default, on a generally contracted basis); the force \
-             and stress walks differentiate the unrotated walk. Build the hcore for a force or \
-             stress run with PeriodicHcoreConfig::for_derivatives (sr_column_rotation Off)",
-            hc.sr_rotated_columns
-        )));
+) -> Result<Option<RotatedBasis>, FerricError> {
+    let built = hc.sr_rotated_columns;
+    let want = hcore_cfg.sr_column_rotation.resolve_supported();
+    if let Some(r) = want {
+        if r.mutant != ColumnRotationMutant::Production {
+            return Err(FerricError::General(format!(
+                "{who}: hcore_cfg carries the column-rotation mutant {:?}; forces/stress exist \
+                 only for ColumnRotationMutant::Production",
+                r.mutant
+            )));
+        }
     }
-    Ok(())
+    if built == 0 {
+        if hcore_cfg.sr_column_rotation.is_explicit_on() {
+            let rb = RotatedBasis::detect(cell, prep, ColumnRotation::new(), who)?;
+            if rb.is_some() {
+                return Err(FerricError::General(format!(
+                    "{who}: sr_column_rotation was requested explicitly, but the hcore's SR \
+                     attraction was built unrotated (rebuild it with the same hcore_cfg)"
+                )));
+            }
+        }
+        return Ok(None);
+    }
+    let Some(rot) = want else {
+        return Err(FerricError::General(format!(
+            "{who}: the hcore's SR attraction was built with {built} column-rotated orbital \
+             columns but hcore_cfg.sr_column_rotation is Off; pass the config the hcore was \
+             built with"
+        )));
+    };
+    match RotatedBasis::detect(cell, prep, rot, who)? {
+        Some(rb) if rb.n_rotated_columns == built => Ok(Some(rb)),
+        other => Err(FerricError::General(format!(
+            "{who}: the hcore's SR attraction rotated {built} columns but this basis rotates {} \
+             (another basis or cell than the hcore's)",
+            other.map_or(0, |r| r.n_rotated_columns)
+        ))),
+    }
 }
 
 /// `(shape ok, shape)` of the dense ERI (`n² × n²`) or the fitted B
@@ -1946,8 +2000,18 @@ fn assemble(
         ..*hcore_cfg
     };
     let serial = mutation == Some(GradMutation::SerialDerivWalks);
-    let (mut g_vsr_basis, g_vsr_nuc, n_sr_triplets) =
-        sr_attraction_gradient(cell, prep, &sr_cfg, &d, serial, ledger)?;
+    // The energy's SR walk: rotated shells when `hc` ran rotated.
+    let rot = hcore_rotation("gamma gradient", cell, prep, hcore_cfg, hc)?;
+    let (mut g_vsr_basis, g_vsr_nuc, n_sr_triplets) = sr_attraction_gradient(
+        cell,
+        prep,
+        rot.as_ref(),
+        GradMutation::rot_mutant(mutation),
+        &sr_cfg,
+        &d,
+        serial,
+        ledger,
+    )?;
 
     // --- V_ECP: the energy's own triples (same plan at the same config).
     let (g_ecp, n_ecp_triples) =
@@ -2393,6 +2457,7 @@ fn fit_two_electron(
         &fd.wm,
         serial,
         drop_smooth_pair,
+        GradMutation::rot_mutant(mutation),
         ledger,
     )?;
     let fold = |x: &Array2<f64>| fold_aux(x, src.aux, src.aux_jac, natoms);

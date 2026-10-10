@@ -390,21 +390,10 @@ impl SplitPlan {
     }
 
     /// Kept SR 3-centre force pieces `(orbital natoms × 3, aux naux × 3,
-    /// count)`: `Σ Y · d(kept call)` routed to the parent atoms and aux rows.
-    pub(in crate::rsgdf) fn sr3_force(
-        &self,
-        st: &Stage<'_>,
-        images: &[[f64; 3]],
-        y: &Array2<f64>,
-        natoms: usize,
-        budget: usize,
-    ) -> Result<(Array2<f64>, Array2<f64>, usize), FerricError> {
-        self.sr3_force_with(st, images, natoms, budget, |_, _| Y3::AuxMajor(y))
-    }
-
-    /// [`SplitPlan::sr3_force`] with the weight of each triplet from
-    /// `weights(L, T)` (the k-point forces: the phase-folded residue bin of
-    /// `(L, T)`, pair-major).
+    /// count)`: `Σ Y · d(kept call)` routed to the parent atoms and aux rows,
+    /// the weight of each triplet from `weights(L, T)` (Gamma: the aux-major
+    /// `Y`, or its column-rotated form; the k-point forces: the phase-folded
+    /// residue bin of `(L, T)`, pair-major).
     pub(in crate::rsgdf) fn sr3_force_with<'w, W>(
         &self,
         st: &Stage<'_>,
@@ -462,7 +451,7 @@ impl SplitPlan {
         &self,
         st: &Stage<'_>,
         images: &[[f64; 3]],
-        y: &Array2<f64>,
+        y: Y3<'_>,
         imgs: f64,
         budget: usize,
     ) -> Result<(Mat3, usize), FerricError> {
@@ -486,7 +475,7 @@ impl SplitPlan {
                 else {
                     return Ok(None);
                 };
-                let c = self.sr3_contract(blk, (x1, x2, xp), n, Y3::AuxMajor(y));
+                let c = self.sr3_contract(blk, (x1, x2, xp), n, y);
                 let (a, b, p) = (&self.obs.xsh[x1], &self.obs.xsh[x2], &self.aux.xsh[xp]);
                 let cp: [f64; 3] = std::array::from_fn(|k| p.center[k] + imgs * t[k]);
                 let ra: [f64; 3] = std::array::from_fn(|k| a.center[k] - cp[k]);

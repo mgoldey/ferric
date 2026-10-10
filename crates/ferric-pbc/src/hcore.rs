@@ -174,11 +174,15 @@
 //! the unrotated build bit for bit, and so is a basis with nothing to rotate
 //! (0 rotated columns). Gamma only: the k-point sums (`kpoint`) and the
 //! frozen s1 oracle run unrotated under `Auto` and refuse an explicit `On`
-//! (as does the `RotateAux` mutant). The SR force/strain walks do not apply
-//! it (the forces differentiate the unrotated `V_SR`, which differs at the
-//! screening precision), so a run that computes forces or stress builds the
-//! hcore with the rotation off ([`SrColumnRotation::for_derivatives`]); the
-//! Gamma force and stress builders refuse a rotated `PeriodicHcore`.
+//! (as does the `RotateAux` mutant).
+//!
+//! The Gamma force and stress walks differentiate the walk the energy ran
+//! (`crate::grad`'s `hcore_rotation`, keyed on [`PeriodicHcore::sr_rotated_columns`]):
+//! `T` depends on the contraction coefficients only, so `∂χ_k = Σ_m T_km ∂χ'_m`
+//! and `Σ D_μν ∂V_SR[μν] = Σ (Tᵀ D T)_mn ∂V'_SR[mn]` — the derivative blocks
+//! are evaluated on the rotated shells (over the parent images and
+//! candidates, as the energy) and contracted with `D' = Tᵀ D T`; nothing is
+//! back-transformed.
 
 use crate::budget::{bytes_of, Ledger};
 use crate::ewald::{default_ewald_omega, ewald_nuclear_repulsion};
@@ -186,7 +190,7 @@ use crate::lattice::Cell;
 use crate::ordered::{ordered_units, window_budget, Stored};
 use crate::pair_ft::{pair_ft_bytes_per_g, pair_ft_chunked};
 use crate::rsgdf::unordered_pairs;
-use crate::sr_rotation::{ColumnRotationMutant, RotatedBasis, SrColumnRotation};
+use crate::sr_rotation::{ColumnRotationMutant, DerivRotMutant, RotatedBasis, SrColumnRotation};
 use crate::timing::{PbcTimings, StageClock};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -304,8 +308,8 @@ pub struct PeriodicHcoreConfig {
     /// Gamma SR attraction walk (module doc "Column rotation"). Default
     /// [`SrColumnRotation::Auto`]: on in [`periodic_hcore`], off in the
     /// k-point build and the s1 oracle. `Off` = the unrotated construction,
-    /// bit for bit. A run that computes forces or stress needs it off
-    /// ([`PeriodicHcoreConfig::for_derivatives`]).
+    /// bit for bit. The Gamma forces and stress differentiate whichever walk
+    /// the hcore ran.
     pub sr_column_rotation: SrColumnRotation,
 }
 
@@ -328,17 +332,6 @@ impl PeriodicHcoreConfig {
             sr_column_rotation: r,
             ..self
         }
-    }
-
-    /// `self` for a run that computes forces or stress: the column rotation
-    /// resolved OFF (`Auto`/`Off`; an explicit `On` is refused by name), so
-    /// the hcore energy walks the same unrotated shells the Gamma force and
-    /// stress builders differentiate.
-    pub fn for_derivatives(self) -> Result<Self, FerricError> {
-        let r = self
-            .sr_column_rotation
-            .for_derivatives("PeriodicHcoreConfig::for_derivatives")?;
-        Ok(self.with_sr_column_rotation(r))
     }
 
     /// Defaults with the default split of `cell`:
@@ -452,8 +445,8 @@ pub struct PeriodicHcore {
     pub n_lr_chunks: usize,
     /// Orbital columns the SR attraction walk ran rotated (module doc
     /// "Column rotation"); 0 = the unrotated walk (rotation off, or nothing
-    /// in the basis rotates). The Gamma force and stress builders refuse a
-    /// nonzero value.
+    /// in the basis rotates). The Gamma force and stress builders
+    /// differentiate the same rotated walk.
     pub sr_rotated_columns: usize,
     /// Stage timings (setup, S/T, SR attraction, LR attraction, ECP, Ewald)
     /// and counters ([`crate::timing`]; observation only).
@@ -1582,9 +1575,18 @@ pub(crate) fn hcore_pair_images(
 /// Returns `(basis part, nucleus part, n_triplets)`, each `natoms × 3`.
 /// Ordered-parallel and bit-identical to the serial walk
 /// ([`sr_attraction_deriv_walk`]); `serial` runs the frozen oracle loop.
+///
+/// `rot`: the column rotation the energy's SR attraction ran (`None`:
+/// unrotated). The walk then evaluates the blocks on the rotated shells over
+/// the PARENT pair images and candidates, contracted with `Tᵀ D T`
+/// (`V_SR = T V' Tᵀ`, module doc "Column rotation"); `rot_mutant` is a TEST
+/// defect of that forward transform.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn sr_attraction_gradient(
     cell: &Cell,
     prep: &PreparedBasis,
+    rot: Option<&RotatedBasis>,
+    rot_mutant: DerivRotMutant,
     cfg: &PeriodicHcoreConfig,
     d: &Array2<f64>,
     serial: bool,
@@ -1593,7 +1595,10 @@ pub(crate) fn sr_attraction_gradient(
     let natoms = cell.positions().len();
     let mut g_basis = Array2::<f64>::zeros((natoms, 3));
     let mut g_nuc = Array2::<f64>::zeros((natoms, 3));
-    let n_triplets = sr_attraction_deriv_walk(cell, prep, cfg, ledger, serial, |t| {
+    // `Σ D V_SR = Σ (Tᵀ D T) V'_SR` on the rotated shells (`V_SR = T V' Tᵀ`).
+    let d_rot = rot.map(|r| r.ao_transpose(rot_mutant).matrix(d));
+    let d = d_rot.as_ref().unwrap_or(d);
+    let n_triplets = sr_attraction_deriv_walk(cell, prep, rot, cfg, ledger, serial, |t| {
         for i in 0..t.dim1 {
             for j in 0..t.dim2 {
                 let coeff = t.f * d[(t.off1 + i, t.off2 + j)];
@@ -1630,9 +1635,12 @@ pub(crate) fn sr_attraction_gradient(
 /// un-translated `B` and `R_C` in the pair vectors. Returns `(dE/dε, n_triplets)`.
 /// Ordered-parallel and bit-identical to the serial walk; `serial` runs the
 /// frozen oracle loop.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn sr_attraction_strain(
     cell: &Cell,
     prep: &PreparedBasis,
+    rot: Option<&RotatedBasis>,
+    rot_mutant: DerivRotMutant,
     cfg: &PeriodicHcoreConfig,
     d: &Array2<f64>,
     drop_images: bool,
@@ -1640,7 +1648,9 @@ pub(crate) fn sr_attraction_strain(
     ledger: &mut Ledger,
 ) -> Result<([[f64; 3]; 3], usize), FerricError> {
     let mut out = [[0.0_f64; 3]; 3];
-    let n_triplets = sr_attraction_deriv_walk(cell, prep, cfg, ledger, serial, |t| {
+    let d_rot = rot.map(|r| r.ao_transpose(rot_mutant).matrix(d));
+    let d = d_rot.as_ref().unwrap_or(d);
+    let n_triplets = sr_attraction_deriv_walk(cell, prep, rot, cfg, ledger, serial, |t| {
         let (bb, xx) = if drop_images {
             (
                 [
@@ -1734,38 +1744,48 @@ struct SrDerivSetup {
     omega: f64,
 }
 
+/// Cell atom of each nucleus [`nonzero_nuclei`] keeps (the cell order of the
+/// Z != 0 atoms).
+fn nuclear_atom_indices(cell: &Cell) -> Vec<usize> {
+    let z = cell.nuclear_charges();
+    (0..z.len()).filter(|&i| z[i] != 0.0).collect()
+}
+
+/// The Gaussian-nucleus sites `[x, y, z, exponent]` of `nuc`.
+fn nucleus_sites(nuc: &[(f64, [f64; 3])], exponent: f64) -> Vec<[f64; 4]> {
+    nuc.iter()
+        .map(|(_, r)| [r[0], r[1], r[2], exponent])
+        .collect()
+}
+
 /// `Ok(None)` when the cell has no nonzero nuclear charge (no triplets).
+/// Pair images and nucleus candidates come from the PARENT shells (the
+/// energy's); the walk itself runs on the rotated shells of `rot` when the
+/// energy's SR attraction ran rotated (`periodic_hcore`).
 fn sr_deriv_setup(
     cell: &Cell,
     prep: &PreparedBasis,
+    rot: Option<&RotatedBasis>,
     cfg: &PeriodicHcoreConfig,
     ledger: &mut Ledger,
 ) -> Result<Option<SrDerivSetup>, FerricError> {
     cfg.validate()?;
-    let shells = prim_shells(cell, prep)?;
-    let thresh = cfg.precision;
-    let pair_thresh = 0.1 * thresh;
-    let images = pair_images(cell, &shells, pair_thresh, ledger)?;
-    let rpair = pair_radius(&shells, pair_thresh);
+    let parent = prim_shells(cell, prep)?;
+    let pair_thresh = 0.1 * cfg.precision;
+    let images = pair_images(cell, &parent, pair_thresh, ledger)?;
     let (nuc, zmax) = nonzero_nuclei(cell);
     if nuc.is_empty() {
         return Ok(None);
     }
-    // nonzero_nuclei keeps the cell order of the Z != 0 atoms.
-    let nuc_atom: Vec<usize> = cell
-        .nuclear_charges()
-        .iter()
-        .enumerate()
-        .filter(|(_, z)| **z != 0.0)
-        .map(|(i, _)| i)
-        .collect();
-    let omega = cfg.omega;
-    let cands = sr_candidates(cell, &shells, &nuc, omega, zmax, thresh, rpair, ledger)?;
-    let sites: Vec<[f64; 4]> = nuc
-        .iter()
-        .map(|(_, r)| [r[0], r[1], r[2], cfg.nucleus_exponent])
-        .collect();
-    let site = SiteBasis::new(&sites, 0)?;
+    let (omega, thresh) = (cfg.omega, cfg.precision);
+    let rpair = pair_radius(&parent, pair_thresh);
+    let cands = sr_candidates(cell, &parent, &nuc, omega, zmax, thresh, rpair, ledger)?;
+    let shells = match rot {
+        Some(r) => prim_shells(cell, &r.prep)?,
+        None => parent,
+    };
+    let site = SiteBasis::new(&nucleus_sites(&nuc, cfg.nucleus_exponent), 0)?;
+    let nuc_atom = nuclear_atom_indices(cell);
     Ok(Some(SrDerivSetup {
         shells,
         images,
@@ -1964,6 +1984,7 @@ impl SrDerivSetup {
 fn sr_attraction_deriv_walk<F>(
     cell: &Cell,
     prep: &PreparedBasis,
+    rot: Option<&RotatedBasis>,
     cfg: &PeriodicHcoreConfig,
     ledger: &mut Ledger,
     serial: bool,
@@ -1972,9 +1993,12 @@ fn sr_attraction_deriv_walk<F>(
 where
     F: FnMut(&SrDerivTriplet<'_>),
 {
-    let Some(s) = sr_deriv_setup(cell, prep, cfg, ledger)? else {
+    let Some(s) = sr_deriv_setup(cell, prep, rot, cfg, ledger)? else {
         return Ok(0);
     };
+    // The libint basis the blocks are evaluated on: the rotated one when
+    // the energy's walk was rotated (same shell order and AO layout).
+    let prep = rot.map_or(prep, |r| &r.prep);
     if serial {
         return sr_attraction_deriv_walk_serial(&s, prep, visit);
     }
@@ -2084,7 +2108,7 @@ pub(crate) fn sr_attraction_deriv_visit<F>(
 where
     F: FnMut(&SrDerivTriplet<'_>),
 {
-    sr_attraction_deriv_walk(cell, prep, cfg, ledger, serial, visit)
+    sr_attraction_deriv_walk(cell, prep, None, cfg, ledger, serial, visit)
 }
 
 /// Largest orbital-image distance (Bohr) at which a pair can still exceed `pair_thresh`,

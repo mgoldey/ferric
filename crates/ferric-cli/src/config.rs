@@ -4445,7 +4445,8 @@ pub struct CellCfg {
     /// Column rotation of generally contracted shells in the Gamma
     /// short-range walks (`ferric_pbc::SrColumnRotation` on both the RS-GDF
     /// SR 3-centre sum and the hcore SR attraction). Absent (default): on for
-    /// a Gamma-point `jk = "rsgdf"` energy run, off everywhere else. `false`:
+    /// a Gamma-point `jk = "rsgdf"` run (energy and `task = "optimize"`: the
+    /// forces differentiate the same rotated walks), off everywhere else. `false`:
     /// off (the unrotated build bit for bit). `true`: on, refused by name
     /// where it cannot be honoured (see `resolve_sr_column_rotation`). Same
     /// energy to the screening precision, fewer SR integral calls on
@@ -4885,9 +4886,8 @@ fn resolve_range_split(
 /// Resolve the `[cell] sr_column_rotation` key to `(on, note)`. `false` is
 /// the unrotated build, which every route runs, so it is accepted anywhere.
 /// Absent (the default) is ON exactly where `true` is accepted and silently
-/// OFF elsewhere (the note says why), so the energy and any force build
-/// always walk the same shells. `true` is refused by name wherever it
-/// cannot be honoured consistently:
+/// OFF elsewhere (the note says why). `true` is refused by name wherever it
+/// cannot be honoured:
 ///
 /// * `jk = "dense"`: the rotation is a cost knob of the RS-GDF SR 3-centre
 ///   walk; the dense AFT oracle has no such walk, and rotating only the
@@ -4896,15 +4896,13 @@ fn resolve_range_split(
 ///   oracle unrotated).
 /// * `kmesh`: the k-point hcore and RS-GDF builders do not implement it
 ///   (they refuse it themselves; this names the key up front).
-/// * `task = "optimize"`: the gradient builders walk the UNROTATED shells,
-///   whose truncated energy differs from the rotated one at the screening
-///   precision. Running the energy rotated and the forces unrotated would
-///   hand the optimizer a gradient that is not the derivative of its energy.
+///
+/// `task = "optimize"` accepts it: the Gamma force builders differentiate
+/// the same rotated walks the energy runs.
 fn resolve_sr_column_rotation(
     key: Option<bool>,
     rsgdf: bool,
     kpoints: bool,
-    optimize: bool,
 ) -> Result<(bool, &'static str), String> {
     match key {
         Some(false) => return Ok((false, "off (sr_column_rotation = false)")),
@@ -4915,11 +4913,6 @@ fn resolve_sr_column_rotation(
                 (
                     false,
                     "off (default: the k-point builds do not implement it)",
-                )
-            } else if optimize {
-                (
-                    false,
-                    "off (default: task = \"optimize\"; the forces walk the unrotated shells)",
                 )
             } else {
                 (true, "on (default)")
@@ -4942,15 +4935,6 @@ fn resolve_sr_column_rotation(
                 .into(),
         );
     }
-    if optimize {
-        return Err(
-            "[cell] sr_column_rotation is not supported with method.task = \"optimize\": \
-             the Gamma force builders walk the unrotated shells, so the gradient would not \
-             be the derivative of the rotated energy. Use task = \"energy\" or remove \
-             sr_column_rotation"
-                .into(),
-        );
-    }
     Ok((true, "on (sr_column_rotation = true)"))
 }
 
@@ -4965,7 +4949,7 @@ fn resolve_sr_knobs(
     optimize: bool,
 ) -> Result<(PeriodicJk, (bool, &'static str)), String> {
     let range_split = resolve_range_split(c.range_split, rsgdf, optimize)?;
-    let rotation = resolve_sr_column_rotation(c.sr_column_rotation, rsgdf, kpoints, optimize)?;
+    let rotation = resolve_sr_column_rotation(c.sr_column_rotation, rsgdf, kpoints)?;
     let auto = resolve_gdf_omega_auto(c.gdf_omega, kpoints, optimize)?;
     Ok((jk_with_sr_knobs(jk, range_split, auto), rotation))
 }
@@ -6101,15 +6085,18 @@ kind = "ccsd"
                 "{kind}: {e}"
             );
         }
-        // task = "optimize": the forces walk the unrotated shells.
+        // task = "optimize" accepts it with RS-GDF: the forces differentiate
+        // the same rotated walks the energy runs (dense stays refused).
         for kind in ["rhf", "uhf", "rohf", "ksdft"] {
-            let e = err(&opt(
+            let p = ok(&opt(
                 kind,
                 &format!("{RSGDF}\nsr_column_rotation = true"),
                 "",
             ));
+            assert!(p.optimize && p.sr_column_rotation, "{kind}");
+            let e = err(&opt(kind, "jk = \"dense\"\nsr_column_rotation = true", ""));
             assert!(
-                e.contains("sr_column_rotation") && e.contains("optimize"),
+                e.contains("sr_column_rotation") && e.contains("dense"),
                 "{kind}: {e}"
             );
         }
@@ -6162,19 +6149,19 @@ kind = "ccsd"
                 p.sr_column_rotation_note
             );
         }
-        // task = "optimize", both J/K.
+        // task = "optimize": ON with RS-GDF (default), off with dense.
         for kind in ["rhf", "uhf", "rohf", "ksdft"] {
-            for cell in [RSGDF, ""] {
-                let p = ok(&opt(kind, cell, ""));
-                assert!(p.optimize && !p.sr_column_rotation, "{kind} {cell}");
-                assert!(
-                    p.sr_column_rotation_note.starts_with("off (default"),
-                    "{kind} {cell}: {}",
-                    p.sr_column_rotation_note
-                );
-            }
             let p = ok(&opt(kind, RSGDF, ""));
-            assert!(p.sr_column_rotation_note.contains("optimize"), "{kind}");
+            assert!(p.optimize && p.sr_column_rotation, "{kind}");
+            assert_eq!(p.sr_column_rotation_note, "on (default)", "{kind}");
+            let p = ok(&opt(kind, "", ""));
+            assert!(p.optimize && !p.sr_column_rotation, "{kind} dense");
+            assert!(
+                p.sr_column_rotation_note.starts_with("off (default")
+                    && p.sr_column_rotation_note.contains("dense"),
+                "{kind}: {}",
+                p.sr_column_rotation_note
+            );
         }
         // Explicit false is reported as such.
         let p = ok(&h2(
