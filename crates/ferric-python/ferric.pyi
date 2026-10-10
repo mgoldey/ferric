@@ -1987,6 +1987,35 @@ def run_uhf_gamma(
     exxdiv="ewald" only (ValueError with "none")."""
     ...
 
+def auto_gdf_omega(
+    mol: Molecule,
+    lattice: Sequence[Sequence[float]],
+    basis_set: BasisSet,
+    auxbasis: BasisSet | str,
+    range_split: float | bool | None = None,
+    sr_column_rotation: bool | None = None,
+    memory_budget_gb: float | None = None,
+) -> dict[str, Any]:
+    """Choose the RS-GDF Ewald split for a Gamma-point RS-GDF energy build of
+    this cell from a cost model, without running it (issue #227). Pass the
+    returned `omega` (1/Angstrom) as `gdf_omega=` to the `run_*_gamma` energy
+    bindings; nothing is applied implicitly and an explicit `gdf_omega` is
+    never overridden.
+
+    The model prices the SR 3-centre walk (the build's own triplet count at
+    each candidate omega 0.25..2 Bohr^-1, integral-free and sampled above 1 M
+    triplets) against the LR G sum and keeps the default 1 Bohr^-1 unless a
+    candidate is predicted at least 10% cheaper. `range_split`,
+    `sr_column_rotation` and `memory_budget_gb` mean what they do on the run
+    bindings and should match the run. Calibrated for Gamma energy runs
+    (cc-pVDZ-class bases); not for k-point builds or forces.
+
+    Returns a dict: `omega` (1/Angstrom, the value to pass), `omega_bohr`,
+    `candidates` (list of dicts: `omega`, `omega_bohr`, `n_sr3`, `n_g`,
+    `predicted_s`).
+    """
+    ...
+
 def run_rohf_gamma(
     mol: Molecule,
     lattice: Sequence[Sequence[float]],

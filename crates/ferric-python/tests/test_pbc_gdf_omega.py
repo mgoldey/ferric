@@ -189,3 +189,51 @@ def test_nonpositive_or_nonfinite_gdf_omega_is_refused(h2, basis, bad):
         _rhf(h2, basis, gdf_omega=bad)
     with pytest.raises(ValueError, match="gdf_omega"):
         _krhf(h2, basis, gdf_omega=bad)
+
+
+# ---------------------------------------------------------------- auto ----
+# `ferric.auto_gdf_omega` prices the SR walk against the LR sphere from the
+# cell and returns the omega to pass as `gdf_omega=` (issue #227). The cost
+# model itself is tested in crates/ferric-pbc/tests/pbc_auto_omega.rs and the
+# module's unit tests; this checks the binding: units, shape, determinism,
+# that nothing is applied implicitly, and that the value it returns drives a
+# run that agrees with the default energy.
+
+CANDIDATES_BOHR = [0.25, 0.35, 0.5, 0.7, 1.0, 1.4, 2.0]
+
+
+def _auto(h2, basis, **kw):
+    return ferric.auto_gdf_omega(h2, _lattice(), basis, AUX, **kw)
+
+
+def test_auto_gdf_omega_returns_a_candidate_in_inverse_angstrom(h2, basis):
+    r = _auto(h2, basis)
+    cands = r["candidates"]
+    assert [c["omega_bohr"] for c in cands] == CANDIDATES_BOHR
+    assert r["omega_bohr"] in CANDIDATES_BOHR
+    # omega is the kwarg value: 1/Angstrom, the Bohr value converted back.
+    assert math.isclose(r["omega"], r["omega_bohr"] / BOHR_IN_ANGSTROM, rel_tol=1e-12)
+    assert all(c["predicted_s"] > 0 and c["n_sr3"] > 0 and c["n_g"] > 0 for c in cands)
+    assert _auto(h2, basis) == r  # deterministic
+
+
+def test_auto_gdf_omega_value_drives_a_run_that_matches_the_default(h2, basis, default):
+    r = _auto(h2, basis)
+    run = _rhf(h2, basis, gdf_omega=r["omega"])
+    assert run.converged
+    assert abs(run.energy - default.energy) <= 1e-9
+    # the value reached the build: the LR sphere moves with it (cubic in omega)
+    g, g1 = _counters(run)["rsgdf LR half-G"], _counters(default)["rsgdf LR half-G"]
+    w = r["omega_bohr"]
+    assert (g < g1) if w < 1.0 else (g > g1) if w > 1.0 else (g == g1)
+
+
+def test_auto_gdf_omega_does_not_change_later_default_runs(h2, basis, default):
+    _auto(h2, basis)
+    again = _rhf(h2, basis)
+    assert again.energy == default.energy
+
+
+def test_auto_gdf_omega_needs_an_rsgdf_auxbasis(h2, basis):
+    with pytest.raises((ValueError, TypeError)):
+        ferric.auto_gdf_omega(h2, _lattice(), basis, None)

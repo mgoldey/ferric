@@ -1596,6 +1596,129 @@ pub fn sr_walk_counts(
     walk_counts(&st, plan.as_ref(), &images)
 }
 
+/// An ESTIMATE of [`SrWalkCounts::n_sr3_triplets`] (the s2 count the build
+/// reports) that walks at most about `budget` triplets: the cells
+/// `(unordered shell pair, pair image)` are visited in a fixed
+/// full-cycle pseudo-random order (stride permutation, no RNG) in waves, and
+/// the count of the visited cells is scaled by `cells / visited` once the
+/// budget is spent. A problem with at most `budget` triplets is counted
+/// EXACTLY (every cell visited; equal to `sr_walk_counts(..).n_sr3_triplets`).
+/// Deterministic and independent of the thread count (wave sums are taken
+/// in cell order). Used by the RS-GDF ω chooser (`auto_omega`), where an
+/// exact walk would cost a large fraction of the build it is choosing for.
+pub fn sr_triplet_estimate(
+    cell: &Cell,
+    obs: &PreparedBasis,
+    aux: &PreparedBasis,
+    cfg: &RsGdfConfig,
+    budget: u64,
+) -> Result<f64, FerricError> {
+    let (st, images) = super::kpoint::diagnostic_stage(cell, obs, aux, cfg)?;
+    if let Some(rot) = super::sr3_rotation(cell, obs, aux, cfg)? {
+        let st_rot = st.with_bases(&rot.obs.prep, rot.aux_prep(aux))?;
+        let plan = match cfg.range_split {
+            None => None,
+            Some(rs) => Some(SplitPlan::sr3_only(&st_rot, rs)?),
+        };
+        return estimate_walk(&st_rot, plan.as_ref(), &images, budget);
+    }
+    let mut ledger = Ledger::new(crate::budget::resolve(cfg.budget_bytes));
+    let plan = SplitPlan::maybe(&st, cfg, &images, &mut ledger)?;
+    estimate_walk(&st, plan.as_ref(), &images, budget)
+}
+
+/// Cells per wave of [`sample_total`]: a multiple of every plausible thread
+/// count, small enough that a wave is a few million triplets at most.
+const ESTIMATE_WAVE: usize = 4096;
+
+/// [`sr_triplet_estimate`] of the stage `st` under `plan`.
+fn estimate_walk(
+    st: &Stage<'_>,
+    plan: Option<&SplitPlan>,
+    images: &[[f64; 3]],
+    budget: u64,
+) -> Result<f64, FerricError> {
+    let pairs = unordered_pairs(st.obs_sh.len());
+    let n_img = images.len();
+    if pairs.is_empty() || n_img == 0 {
+        return Ok(0.0);
+    }
+    if let Some(p) = split_walks(plan) {
+        let global = p.sr3_global_radius(st);
+        return sample_total(pairs.len() * n_img, budget, |c| {
+            let (lo, hi) = pairs[c / n_img];
+            let (i1, i2) = p.orient(lo, hi);
+            let mut n = 0usize;
+            for &call in p.calls(i1, i2).iter().flatten() {
+                p.sr3_call(
+                    st,
+                    call,
+                    &images[c % n_img],
+                    global,
+                    &mut n,
+                    &mut |_, _, _| Ok(()),
+                )?;
+            }
+            Ok(n)
+        });
+    }
+    let global = st.sr3_global_radius();
+    sample_total(pairs.len() * n_img, budget, |c| {
+        let (lo, hi) = pairs[c / n_img];
+        let mut n = 0usize;
+        st.sr3_pair_image(
+            lo,
+            hi,
+            &images[c % n_img],
+            global,
+            &mut n,
+            &mut |_, _, _, _, _| Ok(()),
+        )?;
+        Ok(n)
+    })
+}
+
+/// A stride coprime to `n` near `0.618 n`: `i -> i * stride mod n` is a
+/// permutation of `0..n` that scatters consecutive indices.
+fn scatter_stride(n: usize) -> usize {
+    fn gcd(a: usize, b: usize) -> usize {
+        if b == 0 {
+            a
+        } else {
+            gcd(b, a % b)
+        }
+    }
+    let mut s = ((n as f64) * 0.618_033_988_749_895) as usize;
+    s = s.max(1);
+    while gcd(s, n) != 1 {
+        s += 1;
+    }
+    s
+}
+
+/// `Σ_c count(c)` over `n_cells` cells, estimated from the cells visited
+/// before the running total reaches `budget` (module doc of
+/// [`sr_triplet_estimate`]); exact when the budget is never reached.
+fn sample_total<F>(n_cells: usize, budget: u64, count: F) -> Result<f64, FerricError>
+where
+    F: Fn(usize) -> Result<usize, FerricError> + Sync,
+{
+    let stride = scatter_stride(n_cells);
+    let (mut visited, mut total) = (0usize, 0u64);
+    while visited < n_cells && total < budget {
+        let end = (visited + ESTIMATE_WAVE).min(n_cells);
+        let wave: Vec<Result<usize, FerricError>> = (visited..end)
+            .into_par_iter()
+            .map(|i| count(((i as u128 * stride as u128) % n_cells as u128) as usize))
+            .collect();
+        for x in wave {
+            total += x? as u64;
+        }
+        visited = end;
+    }
+    Ok(total as f64 * n_cells as f64 / visited as f64)
+}
+
 /// [`sr_walk_counts`] of the stage `st` under `plan`.
 fn walk_counts(
     st: &Stage<'_>,

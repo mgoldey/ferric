@@ -4437,8 +4437,11 @@ pub struct CellCfg {
     /// energy up to the fit's truncation; it moves work between the SR
     /// lattice sums (radii ∝ 1/ω) and the LR G sphere (|G| ≤ 2ω√ln(1/p)).
     /// With `omega` absent, the default hcore split's cap follows it
-    /// (`ferric_pbc::hcore::default_hcore_omega_for_gdf`).
-    pub gdf_omega: Option<f64>,
+    /// (`ferric_pbc::hcore::default_hcore_omega_for_gdf`). The string
+    /// `"auto"` (opt-in; the default stays 1 Bohr⁻¹) lets ferric pick ω from
+    /// a cost model of this cell (`ferric_pbc::rsgdf::auto_omega`): Gamma
+    /// point, task = "energy" only, refused elsewhere by name.
+    pub gdf_omega: Option<GdfOmegaKey>,
     /// Column rotation of generally contracted shells in the Gamma
     /// short-range walks (`ferric_pbc::SrColumnRotation` on both the RS-GDF
     /// SR 3-centre sum and the hcore SR attraction). Absent (default): on for
@@ -4473,6 +4476,56 @@ pub struct CellCfg {
     /// Periodic XC grid image cutoff in `unit` (Kohn-Sham routes only; absent
     /// = max(10 Bohr, covering-radius bound)).
     pub neighbour_cutoff: Option<f64>,
+}
+
+/// The raw `[cell] gdf_omega` value: a positive number (in `unit`⁻¹) or the
+/// string `"auto"`. Any other string is a parse error.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GdfOmegaKey {
+    Value(f64),
+    Auto,
+}
+
+impl GdfOmegaKey {
+    /// The explicit value; `None` for `"auto"`.
+    fn value(self) -> Option<f64> {
+        match self {
+            GdfOmegaKey::Value(w) => Some(w),
+            GdfOmegaKey::Auto => None,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for GdfOmegaKey {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl serde::de::Visitor<'_> for V {
+            type Value = GdfOmegaKey;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a positive number (the RS-GDF omega) or the string \"auto\"")
+            }
+            fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<GdfOmegaKey, E> {
+                Ok(GdfOmegaKey::Value(v))
+            }
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<GdfOmegaKey, E> {
+                Ok(GdfOmegaKey::Value(v as f64))
+            }
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<GdfOmegaKey, E> {
+                Ok(GdfOmegaKey::Value(v as f64))
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<GdfOmegaKey, E> {
+                if v == "auto" {
+                    Ok(GdfOmegaKey::Auto)
+                } else {
+                    Err(E::custom(format!(
+                        "gdf_omega = {v:?}: the only accepted string is \"auto\" (or give a \
+                         positive number)"
+                    )))
+                }
+            }
+        }
+        d.deserialize_any(V)
+    }
 }
 
 /// The raw `[cell] range_split` value: a flag or an explicit λ. Resolved
@@ -4605,11 +4658,15 @@ pub enum PeriodicJk {
     /// split's λ (`None` = off, today's construction bit for bit); only ever
     /// `Some` on an energy run. `gdf_omega_bohr`: the RS-GDF Ewald split
     /// (Bohr⁻¹; `None` = `DEFAULT_RSGDF_OMEGA`, bit for bit).
+    /// `gdf_omega_auto`: `[cell] gdf_omega = "auto"` (then `gdf_omega_bohr`
+    /// is `None` until `crate::periodic` resolves it from the cell; only
+    /// ever `true` on a Gamma-point energy run).
     RsGdf {
         auxbasis: String,
         budget_bytes: Option<usize>,
         range_split: Option<f64>,
         gdf_omega_bohr: Option<f64>,
+        gdf_omega_auto: bool,
     },
 }
 
@@ -4732,19 +4789,65 @@ fn cell_positive(name: &str, v: f64) -> Result<f64, String> {
 
 /// Resolve `[cell] gdf_omega` (in `unit`⁻¹) to Bohr⁻¹. RS-GDF only: the
 /// dense J/K has no RS-GDF split, so a value there is refused by name
-/// (checked before the value, which that path never reads).
-fn resolve_gdf_omega(key: Option<f64>, rsgdf: bool, to_bohr: f64) -> Result<Option<f64>, String> {
-    let Some(w) = key else {
+/// (checked before the value, which that path never reads). `"auto"` is
+/// `Ok(None)` here (no explicit value; `ferric_pbc::rsgdf::auto_omega`
+/// chooses it from the cell at run time, see [`resolve_gdf_omega_auto`]).
+fn resolve_gdf_omega(
+    key: Option<GdfOmegaKey>,
+    rsgdf: bool,
+    to_bohr: f64,
+) -> Result<Option<f64>, String> {
+    let Some(key) = key else {
         return Ok(None);
     };
     if !rsgdf {
-        return Err(format!(
-            "[cell] gdf_omega = {w} is the RS-GDF Ewald split and is ignored by jk = \
-             \"dense\"; set jk = \"rsgdf\" (with an auxbasis) or drop gdf_omega. The \
-             nuclear-attraction split is [cell] omega"
-        ));
+        return Err(gdf_omega_dense_message(key));
     }
-    Ok(Some(cell_positive("gdf_omega", w)? / to_bohr))
+    key.value()
+        .map(|w| cell_positive("gdf_omega", w).map(|v| v / to_bohr))
+        .transpose()
+}
+
+/// The refusal of any `gdf_omega` value with `jk = "dense"`.
+fn gdf_omega_dense_message(key: GdfOmegaKey) -> String {
+    let shown = match key {
+        GdfOmegaKey::Value(w) => w.to_string(),
+        GdfOmegaKey::Auto => "\"auto\"".into(),
+    };
+    format!(
+        "[cell] gdf_omega = {shown} is the RS-GDF Ewald split and is ignored by jk = \
+         \"dense\"; set jk = \"rsgdf\" (with an auxbasis) or drop gdf_omega. The \
+         nuclear-attraction split is [cell] omega"
+    )
+}
+
+/// `gdf_omega = "auto"` is calibrated for the Gamma-point energy build only:
+/// the k-point builds (full G sphere, different walk) and the optimizer's
+/// derivative builds (unrotated walk, no range split) were not measured, so
+/// it is refused there by name rather than half-applied.
+fn resolve_gdf_omega_auto(
+    key: Option<GdfOmegaKey>,
+    kpoints: bool,
+    optimize: bool,
+) -> Result<bool, String> {
+    if key != Some(GdfOmegaKey::Auto) {
+        return Ok(false);
+    }
+    if kpoints {
+        return Err(
+            "[cell] gdf_omega = \"auto\" is calibrated for the Gamma-point build; \
+                    with kmesh set a number (or drop gdf_omega for the default 1 Bohr^-1)"
+                .into(),
+        );
+    }
+    if optimize {
+        return Err(
+            "[cell] gdf_omega = \"auto\" is calibrated for energy runs; with task = \
+                    \"optimize\" set a number (or drop gdf_omega for the default 1 Bohr^-1)"
+                .into(),
+        );
+    }
+    Ok(true)
 }
 
 /// Resolve the opt-in `[cell] range_split` key. Energy runs (Gamma or
@@ -4863,12 +4966,14 @@ fn resolve_sr_knobs(
 ) -> Result<(PeriodicJk, (bool, &'static str)), String> {
     let range_split = resolve_range_split(c.range_split, rsgdf, optimize)?;
     let rotation = resolve_sr_column_rotation(c.sr_column_rotation, rsgdf, kpoints, optimize)?;
-    Ok((jk_with_range_split(jk, range_split), rotation))
+    let auto = resolve_gdf_omega_auto(c.gdf_omega, kpoints, optimize)?;
+    Ok((jk_with_sr_knobs(jk, range_split, auto), rotation))
 }
 
-/// Install the resolved range split into an RS-GDF J/K choice; the dense
-/// builder has no range split and passes through unchanged.
-fn jk_with_range_split(jk: PeriodicJk, range_split: Option<f64>) -> PeriodicJk {
+/// Install the resolved range split and the `gdf_omega = "auto"` flag into an
+/// RS-GDF J/K choice; the dense builder has neither and passes through
+/// unchanged.
+fn jk_with_sr_knobs(jk: PeriodicJk, range_split: Option<f64>, auto: bool) -> PeriodicJk {
     match jk {
         PeriodicJk::RsGdf {
             auxbasis,
@@ -4880,6 +4985,7 @@ fn jk_with_range_split(jk: PeriodicJk, range_split: Option<f64>) -> PeriodicJk {
             budget_bytes,
             range_split,
             gdf_omega_bohr,
+            gdf_omega_auto: auto,
         },
         dense => dense,
     }
@@ -5058,6 +5164,8 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
             // Resolved below, once the mesh and the task are known.
             range_split: None,
             gdf_omega_bohr: resolve_gdf_omega(c.gdf_omega, rsgdf, to_bohr)?,
+            // Set with the range split in `resolve_sr_knobs`.
+            gdf_omega_auto: false,
         }
     } else {
         resolve_gdf_omega(c.gdf_omega, rsgdf, to_bohr)?;
@@ -5852,6 +5960,49 @@ kind = "ccsd"
         // A string is a type error from the typed parse.
         let e = err(&h2("rhf", &format!("{RSGDF}\ngdf_omega = \"1.0\""), ""));
         assert!(e.contains("gdf_omega") || e.contains("invalid type"), "{e}");
+    }
+
+    /// `gdf_omega = "auto"` as the plan carries it: `(value, auto)`.
+    fn gdf_omega_auto_of(p: &PeriodicPlan) -> (Option<f64>, bool) {
+        match p.jk {
+            PeriodicJk::RsGdf {
+                gdf_omega_bohr,
+                gdf_omega_auto,
+                ..
+            } => (gdf_omega_bohr, gdf_omega_auto),
+            PeriodicJk::Dense { .. } => panic!("expected jk = rsgdf"),
+        }
+    }
+
+    #[test]
+    fn gdf_omega_auto_is_opt_in_and_only_on_gamma_energy_runs() {
+        // Absent and an explicit number are today's builds: not auto.
+        let p = ok(&h2("rhf", RSGDF, ""));
+        assert_eq!(gdf_omega_auto_of(&p), (None, false));
+        let p = ok(&h2("rhf", &format!("{RSGDF}\ngdf_omega = 1.0"), ""));
+        assert_eq!(gdf_omega_auto_of(&p), (Some(1.0), false));
+        // "auto" has no value until the run resolves it from the cell.
+        for kind in ["rhf", "uhf", "rohf", "ksdft"] {
+            let p = ok(&h2(kind, &format!("{RSGDF}\ngdf_omega = \"auto\""), ""));
+            assert_eq!(gdf_omega_auto_of(&p), (None, true), "{kind}");
+        }
+        // Not calibrated for k-points or forces: refused by name.
+        let e = err(&h2(
+            "rhf",
+            &format!("{RSGDF}\nkmesh = [1, 1, 2]\ngdf_omega = \"auto\""),
+            "",
+        ));
+        assert!(e.contains("gdf_omega") && e.contains("Gamma"), "{e}");
+        let e = err(&opt("rhf", &format!("{RSGDF}\ngdf_omega = \"auto\""), ""));
+        assert!(e.contains("gdf_omega") && e.contains("optimize"), "{e}");
+        // The dense J/K has no RS-GDF split.
+        let e = err(&h2("rhf", "jk = \"dense\"\ngdf_omega = \"auto\"", ""));
+        assert!(e.contains("gdf_omega") && e.contains("dense"), "{e}");
+        // Only the exact word, lower case.
+        for bad in ["\"Auto\"", "\"automatic\"", "\"\"", "true"] {
+            let e = err(&h2("rhf", &format!("{RSGDF}\ngdf_omega = {bad}"), ""));
+            assert!(e.contains("gdf_omega") || e.contains("auto"), "{bad}: {e}");
+        }
     }
 
     #[test]
