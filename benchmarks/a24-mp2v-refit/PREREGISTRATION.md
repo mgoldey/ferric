@@ -113,3 +113,90 @@ OR (c) the sharp arm matches on A24 but its S22 hold-out RMSD exceeds the linked
 ## Not decided here
 
 Whether CP-fitted parameters should replace the published non-CP convention (reported side by side).
+
+---
+
+# Addendum A (pre-registered before any run): paper-SI check of the Eq. 11 reading
+
+Data: `paper_si/a21x12.json` (see its PROVENANCE.md). Observation to test: the
+paper's VV10 contribution to the binding energy, increment I(f) = S18(f) - S17(f)
+(MP2-V minus MP2(terfc), both aTZ, non-CP per the paper's fit convention; the SI
+does not state CP for these tables, so we compute both and report both), is
+small and changes sign with the stretch factor f. This is the first comparison of
+ferric's reading of Eq. 11 (Phi * [1 - terfc(R, r0)^2]) against any paper number.
+
+## Systems (scope fixed by the user: a few small geometries, not the suite)
+
+#2 water-dimer (I = +0.0088 at f=1.0, -0.0287 at 1.6, -0.0177 at 2.0),
+#4 HF-dimer (I < 0 at every f), #5 ammonia-dimer (+0.1152 at 1.0, sign change near 1.2),
+#8 water-methane (+0.0388 at 1.0), #19 methane-dimer (+0.0416 at 1.0),
+#20 Ar-methane only if cost allows (Ar core = 5). Chosen because they are the cheapest
+and span the increment's sign pattern (positive-then-negative; always negative).
+SMALL SAMPLE: n = 5 (6) systems; nothing beyond sign and magnitude agreement on
+THESE systems can be claimed, and no RMSD over them is a population statistic.
+Large dimers (ethene-dimer, formaldehyde-dimer, borane-methane, ...) are skipped.
+
+## Step 1: geometry check (cheapest, first)
+
+HF/aug-cc-pVTZ non-CP binding energy at f = 1.0 vs table '3' (SCF/aV5Z non-CP).
+The basis differs (aTZ vs a5Z), so a basis offset is expected; criterion: agreement
+within 0.03 kcal/mol (coordinator), diagnosed per system. If the A24 geometry is NOT
+the f=1.0 geometry the HF energies will disagree by >> 0.03 (water dimer scale: tenths).
+If it fails: report and STOP. (Water-dimer SCF/a5Z non-CP at 1.0 is -3.668.)
+
+## Step 2: factor 1.0, published linked parameters
+
+terfc, r0 = 1.00 A, b = 11.0, C = 0.0089, omega = None, frozen core (H,He 0; Li-Ne 1;
+Na-Ar 5), aug-cc-pVTZ, aug-cc-pvtz-rifit, DF-JK def2-universal-jkfit, VV10 on the HF
+density, NLC (50,50). Compute attMP2-only and MP2-V E_int (non-CP primary, CP stored).
+Compare vs S17, S18 and the increment.
+
+Hypotheses and outcomes:
+* H_read (ferric's Eq. 11 reading is the paper's): |I_ferric - I_paper| <= tol and sign
+  agrees on all systems, with tol = max(0.01, 2 x the largest increment change under
+  the sensitivity checks below) kcal/mol.
+* H_diff (reading differs): sign or magnitude disagrees beyond tol, systematically
+  (same direction or pattern across systems), while S17 itself agrees (attMP2 half fine).
+* If S17 (attMP2) disagrees beyond ~0.05 kcal/mol the failure is in the MP2 half
+  (RI aux, frozen core, terfc operator) not VV10, and the increment test is confounded;
+  the increment I is computed difference-wise within ferric so MP2-half errors cancel
+  from I but not from S18 itself.
+* Increment is also computed as ferric's own (MP2-V minus attMP2) from the same SCF, so
+  it depends on no MP2-half agreement.
+
+Artifact hypotheses (each quantified, not assumed): (a) NLC grid: paper used SG-1,
+ferric (50,50); repeat I on (30,50), (75,110), (99,302); required for "grid-insensitive":
+variation < 0.005 kcal/mol; else the grid enters the comparison. (b) RI aux:
+aug-cc-pvtz-rifit vs def2-tzvpp-rifit (attMP2 half only; affects S17 and S18, not I).
+(c) SCF convergence/DF-JK vs exact J/K on one system. (d) post-HF vs self-consistent VV10 (paper
+Table 1: 0.202 vs 0.199 RMSD): the paper's S18 may be self-consistent; ferric is post-HF;
+the expected effect is small but not measured, so it is listed as UNVERIFIED unless
+bounded here. (e) CP vs non-CP choice of the paper's table (not stated).
+A genuine reading difference would give a systematic, density-independent pattern
+(same sign flip location error across systems); a grid/aux artifact would be
+system-dependent and shrink with the refined grid.
+
+## Step 3: stretched geometries
+
+Hypothesis G1: rigid monomers, intermolecular centre-of-mass vector scaled by f (monomer
+orientations fixed). G2: same with the scale applied to the minimum-distance (closest
+atom-atom) vector. Acceptance: HF/aTZ non-CP binding energies reproduce table '3' across
+f in {0.9, 1.3, 1.6, 2.0} to tolerance T = max(0.03, 2 x the largest |deviation| seen at
+f=1.0 on these systems) kcal/mol, per system. If neither G1 nor G2 meets T, the stretched
+extension is NOT done and stated as such. If accepted: attMP2 / MP2-V / I at those f.
+Discriminating features: sign change location and long-range decay of I.
+
+## Step 4: variant constructions (only if Step 2 or 3 says H_diff)
+
+One-line variants, each with the anchor "r0 -> 0 (damping -> only the R=0 self-pair
+floor) equals bare VV10 to the documented floor", compared against the SAME targets
+(I at f=1.0 and the stretched f). b, r0, C are NOT tuned. Variants, fixed now:
+V0 baseline (Phi * [1 - terfc^2]); V1 damping factor [1 - terfc] (single power);
+V2 damping factor terf^2-complement form [1 - (1-terf)]... i.e. terf (no square);
+V3 damping inside g,kappa (R^2 -> R^2 * D) rather than on Phi; V4 beta term damped
+along with the kernel; V5 no damping (bare VV10, sanity: expected wrong sign at
+short range). A variant "reproduces" only if the sign pattern matches on ALL selected
+systems and |I - I_paper| <= tol on all stretched points tested; a variant that matches
+by construction (e.g. V5 matching one system) is not credited. Honest "none do" is a
+permitted outcome. Artifact hypothesis: a construction bug would match at f=1.0 but
+fail the long-range decay (I(2.0)) or vice versa, and would not anchor at r0->0.
