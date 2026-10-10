@@ -1019,6 +1019,158 @@ impl SplitPlan {
 }
 
 // ---------------------------------------------------------------------------
+// TEST ORACLE: the FROZEN pre-parallel serial LR force pass (one chunk at a
+// time, accumulating straight into the shared rows), kept verbatim so the
+// chunk-parallel pass can be compared against it bit for bit at run time on
+// whatever machine runs the tests.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+/// `acc[atom(μ)] += 2 Σ_ν Re[Q*_μν A_μν]` at column `g` (`a` = `(re, im)`
+/// of `Σ_P Y_Pμν W_P`, rows `μ·n+ν`).
+fn add_orbital_serial(
+    orb: &mut Array2<f64>,
+    q: &[Array3<Complex64>; 3],
+    a: &(Array2<f64>, Array2<f64>),
+    aoat: &[usize],
+    g: usize,
+) {
+    let n = aoat.len();
+    for mu in 0..n {
+        let mut acc = [0.0_f64; 3];
+        for nu in 0..n {
+            let mn = mu * n + nu;
+            let (ar, ai) = (a.0[(mn, g)], a.1[(mn, g)]);
+            for (c, qc) in q.iter().enumerate() {
+                let qz = qc[[mu, nu, g]];
+                acc[c] += qz.re * ar + qz.im * ai;
+            }
+        }
+        for c in 0..3 {
+            orb[(aoat[mu], c)] += 2.0 * acc[c];
+        }
+    }
+}
+
+#[cfg(test)]
+impl SplitPlan {
+    /// The moved-aux LR force pass over the FULL orbital pairs (module doc):
+    /// orbital weight `Y (w_LR X + w_SR X_s)`, aux `−iG` on the same weight,
+    /// metric of the split J2 form.
+    pub(in crate::rsgdf) fn lr_force_serial_oracle(
+        &self,
+        st: &Stage<'_>,
+        gv: &[[f64; 3]],
+        y: &Array2<f64>,
+        wm: &Array2<f64>,
+        natoms: usize,
+        chunk_budget: usize,
+    ) -> Result<LrForce, FerricError> {
+        let n = st.obs.nbasis();
+        let n2 = n * n;
+        let naux = st.aux.nbasis();
+        let (vol, omega) = (st.cell.volume(), st.omega);
+        let aoat = ao_atoms(st.obs);
+        let pair_thresh = (0.01 * st.thresh).min(DEFAULT_PAIR_FT_THRESH);
+        // P re/im + Σ_P Y Wt re/im (4 × 8 n²); X, X_s, X_c complex + their
+        // re/im, Wt, Σ Y P, and the three Wm products (≈ 26 × 8 naux).
+        let extra_per_g = n2
+            .saturating_mul(32)
+            .saturating_add(naux.saturating_mul(208))
+            .saturating_add(64);
+        let mut out = LrForce::zeros(natoms, naux);
+        let n_chunks = crate::pair_ft::pair_ft_deriv_chunked(
+            st.cell,
+            st.obs,
+            gv,
+            pair_thresh,
+            chunk_budget,
+            extra_per_g,
+            |_g0, gs, p, q| {
+                let w: Vec<(f64, f64)> = gs.iter().map(|g| kernel_weights(g, vol, omega)).collect();
+                let ac = AuxChunk::new(self, st, gs, &w, wm);
+                let (pr, pim) = pair_reim(p);
+                let xy = (mm(y.t(), ac.wt.0.view()), mm(y.t(), ac.wt.1.view()));
+                let (pyr, pyi) = (mm(y.view(), pr.view()), mm(y.view(), pim.view()));
+                for (g, gvec) in gs.iter().enumerate() {
+                    add_orbital_serial(&mut out.orb, q, &xy, &aoat, g);
+                    for pp in 0..naux {
+                        // J3 aux: Re[(ΣYP)* (−iG Wt)] = G (PY.re Wt.im − PY.im Wt.re)
+                        let t3 = pyr[(pp, g)] * ac.wt.1[(pp, g)] - pyi[(pp, g)] * ac.wt.0[(pp, g)];
+                        let t2 = ac.metric_coef(pp, g, w[g]);
+                        for c in 0..3 {
+                            out.aux3[(pp, c)] += t3 * gvec[c];
+                            out.metric[(pp, c)] += t2 * gvec[c];
+                        }
+                    }
+                }
+                Ok(())
+            },
+        )?;
+        out.n_chunks = n_chunks;
+        Ok(out)
+    }
+
+    pub(in crate::rsgdf) fn lr_smooth_pair_force_serial_oracle(
+        &self,
+        st: &Stage<'_>,
+        gv: &[[f64; 3]],
+        y: &Array2<f64>,
+        chunk_budget: usize,
+        out: &mut LrForce,
+    ) -> Result<(), FerricError> {
+        let Some(sm) = self
+            .smooth_obs
+            .as_ref()
+            .filter(|_| !self.aux.c_sh.is_empty())
+        else {
+            return Ok(());
+        };
+        let naux = st.aux.nbasis();
+        let ns2 = sm.prep.nbasis() * sm.prep.nbasis();
+        let (vol, omega) = (st.cell.volume(), st.omega);
+        let yss = Self::smooth_y(sm, y, st.obs.nbasis());
+        let aoat = ao_atoms(&sm.prep);
+        let pair_thresh = (0.01 * st.thresh).min(DEFAULT_PAIR_FT_THRESH);
+        let extra_per_g = ns2
+            .saturating_mul(32)
+            .saturating_add(naux.saturating_mul(64))
+            .saturating_add(64);
+        let n_chunks = crate::pair_ft::pair_ft_deriv_chunked(
+            st.cell,
+            &sm.prep,
+            gv,
+            pair_thresh,
+            chunk_budget,
+            extra_per_g,
+            |_g0, gs, p, q| {
+                let w_sr: Vec<f64> = gs.iter().map(|g| kernel_weights(g, vol, omega).1).collect();
+                let xc = aux_ft_shells(&self.aux.c_sh, naux, gs);
+                let wc = (
+                    Array2::from_shape_fn(xc.dim(), |(pp, g)| w_sr[g] * xc[(pp, g)].re),
+                    Array2::from_shape_fn(xc.dim(), |(pp, g)| w_sr[g] * xc[(pp, g)].im),
+                );
+                let (pr, pim) = pair_reim(p);
+                let xy = (mm(yss.t(), wc.0.view()), mm(yss.t(), wc.1.view()));
+                let (pyr, pyi) = (mm(yss.view(), pr.view()), mm(yss.view(), pim.view()));
+                for (g, gvec) in gs.iter().enumerate() {
+                    add_orbital_serial(&mut out.orb, q, &xy, &aoat, g);
+                    for pp in 0..naux {
+                        let t3 = pyr[(pp, g)] * wc.1[(pp, g)] - pyi[(pp, g)] * wc.0[(pp, g)];
+                        for c in 0..3 {
+                            out.aux3[(pp, c)] += t3 * gvec[c];
+                        }
+                    }
+                }
+                Ok(())
+            },
+        )?;
+        out.n_chunks += n_chunks;
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // G space: stress
 // ---------------------------------------------------------------------------
 

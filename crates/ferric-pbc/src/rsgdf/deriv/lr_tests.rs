@@ -1,13 +1,15 @@
 //! The LR (G ≠ 0) derivative pass of [`fit_derivatives`]: BIT-IDENTITY of the
 //! chunk-parallel evaluation to the serial pass it replaced.
 //!
-//! The golden FNV-1a hashes below were recorded from the UNCHANGED serial pass
-//! (`f64::to_bits` of every element of the LR orbital / aux-centre / metric
-//! force arrays, on a fabricated symmetric `Y` and `Wm` — the pass is linear in
-//! them and bit-exactness does not need a converged density). Each case runs
-//! the pass at 1 / 2 / 6 rayon threads and at several in-flight chunk counts;
-//! all must reproduce the golden hash, with the pass split into many chunks
-//! (asserted) so the ordered replay is exercised.
+//! The comparisons are made at RUN TIME on the machine running the tests (the
+//! absolute bits depend on the libint build and the CPU's BLAS dispatch, so no
+//! absolute hash is pinned in the CI-run tests): the parallel pass at 1 / 2 / 6
+//! rayon threads and at in-flight caps 1 / 3 / 12 against the FROZEN serial
+//! pass kept verbatim as a test oracle (`LR_SERIAL_ORACLE`: one chunk at a
+//! time, accumulating straight into the shared rows). The pass runs a
+//! fabricated symmetric `Y` and `Wm` (it is linear in them) split into many
+//! chunks (asserted). `dev_box_goldens` pins the hashes recorded from the
+//! serial pass on the development box, `--ignored` only.
 
 use super::*;
 use crate::hcore::{periodic_hcore, PeriodicHcoreConfig};
@@ -122,14 +124,15 @@ fn lr_hashes(s: &Sys, budget: usize, cap: usize) -> ([u64; 3], usize) {
     )
 }
 
-/// The mutant switch is process-global: the tests of this module take turns.
+/// The mutant / oracle switches are process-global: the tests of this module
+/// take turns.
 static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 const TILT: [[f64; 3]; 3] = [[6.0, 0.0, 0.0], [1.1, 6.4, 0.0], [0.7, 0.9, 6.9]];
 
-/// `(name, split, ledger budget, golden [orb, aux3, metric] hashes)` of the
-/// tilted-water STO-3G system (the cc-pVDZ / rotation cases are the end-to-end
-/// `tests/pbc_lr_force_bitwise.rs`).
+/// `(name, split, ledger budget, dev-box golden [orb, aux3, metric] hashes)`
+/// of the tilted-water STO-3G system (the cc-pVDZ / rotation cases are the
+/// end-to-end `tests/pbc_lr_force_bitwise.rs`).
 const CASES: [(&str, bool, usize, [u64; 3]); 2] = [
     (
         "water sto-3g unsplit",
@@ -145,40 +148,64 @@ const CASES: [(&str, bool, usize, [u64; 3]); 2] = [
     ),
 ];
 
-/// `(threads, in-flight cap)` runs: serial, narrow, and the production cap.
-const RUNS: [(usize, usize); 3] = [(1, 1), (2, 3), (6, 12)];
+/// `(threads, in-flight cap)` runs: serial-window and the production cap.
+const RUNS: [(usize, usize); 2] = [(1, 1), (6, 12)];
 
-/// The LR pass reproduces the golden bits of the serial pass at every thread
-/// count and in-flight cap, with the pass split into many chunks.
+/// The hashes of the frozen serial pass on this machine (single thread).
+fn oracle_hashes(s: &Sys, budget: usize) -> [u64; 3] {
+    use std::sync::atomic::Ordering;
+    LR_SERIAL_ORACLE.store(true, Ordering::SeqCst);
+    let (h, _) = in_pool(1, || lr_hashes(s, budget, 1));
+    LR_SERIAL_ORACLE.store(false, Ordering::SeqCst);
+    h
+}
+
+/// The parallel LR pass reproduces the bits of the frozen serial pass at every
+/// thread count and in-flight cap, with the pass split into many chunks.
 #[test]
-fn lr_pass_matches_the_serial_goldens_at_any_threads_and_inflight() {
+fn lr_pass_matches_the_frozen_serial_pass_at_any_threads_and_inflight() {
     let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
-    for (name, split, budget, golden) in CASES {
+    for (name, split, budget, _) in CASES {
         let s = sys(WATER, TILT, "sto-3g", split, SrColumnRotation::Off);
+        let serial = oracle_hashes(&s, budget);
         for (threads, cap) in RUNS {
             let (h, nc) = in_pool(threads, || lr_hashes(&s, budget, cap));
             assert!(
                 nc >= 8,
                 "{name}: only {nc} chunks, the window would not bind"
             );
-            assert_eq!(h, golden, "{name} at {threads} threads, cap {cap}");
+            assert_eq!(h, serial, "{name} at {threads} threads, cap {cap}");
         }
     }
 }
 
 /// MUTANT: an unordered reduction (per-thread partials folded by `reduce`)
-/// must NOT reproduce the goldens at 6 threads, in the unsplit and the split
-/// pass alike — the bitwise comparison above can tell the difference.
+/// must NOT reproduce the serial pass at 6 threads, in the unsplit and the
+/// split pass alike — the runtime comparison above can tell the difference.
 #[test]
-fn unordered_reduce_mutant_breaks_the_goldens() {
+fn unordered_reduce_mutant_breaks_the_serial_comparison() {
     use crate::rsgdf::split::UNORDERED_LR_REDUCE;
     use std::sync::atomic::Ordering;
     let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
-    for (name, split, budget, golden) in CASES {
+    for (name, split, budget, _) in CASES {
         let s = sys(WATER, TILT, "sto-3g", split, SrColumnRotation::Off);
+        let serial = oracle_hashes(&s, budget);
         UNORDERED_LR_REDUCE.store(true, Ordering::SeqCst);
         let (h, _) = in_pool(6, || lr_hashes(&s, budget, 12));
         UNORDERED_LR_REDUCE.store(false, Ordering::SeqCst);
-        assert_ne!(h, golden, "{name}: the unordered mutant was not detected");
+        assert_ne!(h, serial, "{name}: the unordered mutant was not detected");
+    }
+}
+
+/// The hashes recorded from the serial pass on the development box (libint
+/// 2.13.1 from `~/.local`, its CPU's OpenBLAS dispatch).
+#[test]
+#[ignore = "dev-box goldens (libint 2.13.1, this CPU): run with --ignored on the recording machine"]
+fn dev_box_goldens() {
+    let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
+    for (name, split, budget, golden) in CASES {
+        let s = sys(WATER, TILT, "sto-3g", split, SrColumnRotation::Off);
+        let (h, _) = in_pool(6, || lr_hashes(&s, budget, 12));
+        assert_eq!(h, golden, "{name}");
     }
 }

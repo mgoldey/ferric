@@ -437,13 +437,14 @@ pub(crate) fn fit_derivatives_with(
     let gv = half_gvectors(cell, gcut)?;
     let chunk_budget = ledger.remaining().min(G_CHUNK_BYTES);
     let inflight = lr_inflight(ledger, chunk_budget, inflight_cap)?;
-    let mut lr = match plan.as_ref().filter(|p| p.moves_aux()) {
-        Some(p) => p.lr_force(&st, &gv, y, wm, natoms, chunk_budget, inflight)?,
-        None => lr_force_unsplit(&st, &gv, (y, wm), natoms, (chunk_budget, inflight))?,
-    };
-    if let Some(p) = plan.as_ref().filter(|_| !drop_smooth_pair) {
-        p.lr_smooth_pair_force(&st, &gv, y, chunk_budget, inflight, &mut lr)?;
-    }
+    let lr = lr_pass(
+        plan.as_ref(),
+        &st,
+        &gv,
+        (y, wm),
+        natoms,
+        (chunk_budget, inflight, drop_smooth_pair),
+    )?;
     let (orb_sr, aux3_sr, metric_sr) = (sr.orb, sr.aux3, sr.metric);
     let (orb_lr, aux3_lr, metric_lr, n_chunks) = (lr.orb, lr.aux3, lr.metric, lr.n_chunks);
     let (n_sr3, n_sr2) = (sr.n_sr3, sr.n_sr2);
@@ -466,6 +467,43 @@ pub(crate) fn fit_derivatives_with(
         n_g_half: gv.len(),
         n_chunks,
     })
+}
+
+/// TEST switch: run the frozen serial LR oracle instead of the parallel pass.
+#[cfg(test)]
+pub(crate) static LR_SERIAL_ORACLE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// The LR force pass (moved-aux split pass or unsplit, plus the smooth-pair
+/// pass): chunk-parallel, or the frozen serial oracle under test.
+fn lr_pass(
+    plan: Option<&SplitPlan>,
+    st: &Stage<'_>,
+    gv: &[[f64; 3]],
+    (y, wm): (&Array2<f64>, &Array2<f64>),
+    natoms: usize,
+    (chunk_budget, inflight, drop_smooth_pair): (usize, usize, bool),
+) -> Result<LrForce, FerricError> {
+    let moved = plan.filter(|p| p.moves_aux());
+    #[cfg(test)]
+    if LR_SERIAL_ORACLE.load(std::sync::atomic::Ordering::Relaxed) {
+        let mut lr = match moved {
+            Some(p) => p.lr_force_serial_oracle(st, gv, y, wm, natoms, chunk_budget)?,
+            None => lr_force_unsplit_serial_oracle(st, gv, y, wm, natoms, chunk_budget)?,
+        };
+        if let Some(p) = plan.filter(|_| !drop_smooth_pair) {
+            p.lr_smooth_pair_force_serial_oracle(st, gv, y, chunk_budget, &mut lr)?;
+        }
+        return Ok(lr);
+    }
+    let mut lr = match moved {
+        Some(p) => p.lr_force(st, gv, y, wm, natoms, chunk_budget, inflight)?,
+        None => lr_force_unsplit(st, gv, (y, wm), natoms, (chunk_budget, inflight))?,
+    };
+    if let Some(p) = plan.filter(|_| !drop_smooth_pair) {
+        p.lr_smooth_pair_force(st, gv, y, chunk_budget, inflight, &mut lr)?;
+    }
+    Ok(lr)
 }
 
 /// The column-rotated SR 3-centre stage of a derivative of a build that ran
@@ -680,6 +718,115 @@ fn lr_force_unsplit(
         },
     )?;
     acc.finish();
+    out.n_chunks = n_chunks;
+    Ok(out)
+}
+
+/// TEST ORACLE: the frozen serial unsplit LR pass (see `lr_tests`).
+#[cfg(test)]
+/// The unsplit LR force pass (Iteration 18): orbital `2 w Re[Q* (Y X)]`,
+/// aux `w Re[(Y P)* (−iG X)]`, metric `2 w Re[(−iG X)* (Wm X)]`.
+fn lr_force_unsplit_serial_oracle(
+    st: &Stage<'_>,
+    gv: &[[f64; 3]],
+    y: &Array2<f64>,
+    wm: &Array2<f64>,
+    natoms: usize,
+    chunk_budget: usize,
+) -> Result<LrForce, FerricError> {
+    let (cell, obs) = (st.cell, st.obs);
+    let n = obs.nbasis();
+    let n2 = n * n;
+    let naux = st.aux.nbasis();
+    let omega = st.omega;
+    let vol = cell.volume();
+    let pair_thresh = (0.01 * st.thresh).min(DEFAULT_PAIR_FT_THRESH);
+    // Per G: P re/im + Σ_P Y X re/im (4 × 8 n²); X (16 naux) + its re/im,
+    // Σ_μν Y P re/im and Wm X re/im (6 × 8 naux).
+    let extra_per_g = n2
+        .saturating_mul(32)
+        .saturating_add(naux.saturating_mul(64))
+        .saturating_add(64);
+    let sh2at = obs.shell_to_atom().to_vec();
+    let mut aoat = vec![0usize; n];
+    {
+        let dims = obs.shell_dims();
+        let offs = obs.shell_offsets();
+        for sh in 0..obs.nshells() {
+            for k in 0..dims[sh] {
+                aoat[offs[sh] + k] = sh2at[sh];
+            }
+        }
+    }
+    let mut out = LrForce::zeros(natoms, naux);
+    let (orb_lr, aux3_lr, metric_lr) = (&mut out.orb, &mut out.aux3, &mut out.metric);
+    let aux_sh = &st.aux_sh;
+    let n_chunks = crate::pair_ft::pair_ft_deriv_chunked(
+        cell,
+        obs,
+        gv,
+        pair_thresh,
+        chunk_budget,
+        extra_per_g,
+        |_g0, gs, p, q| {
+            let ng = gs.len();
+            let x = aux_ft_shells(aux_sh, naux, gs);
+            let xr = x.mapv(|z| z.re);
+            let xi = x.mapv(|z| z.im);
+            drop(x);
+            let pr = Array2::from_shape_fn((n2, ng), |(mn, g)| p[[mn / n, mn % n, g]].re);
+            let pim = Array2::from_shape_fn((n2, ng), |(mn, g)| p[[mn / n, mn % n, g]].im);
+            // Σ_P Y[P,μν] X_P(G), (n², ng)
+            let mut xyr = Array2::<f64>::zeros((n2, ng));
+            let mut xyi = Array2::<f64>::zeros((n2, ng));
+            general_mat_mul(1.0, &y.t(), &xr, 0.0, &mut xyr);
+            general_mat_mul(1.0, &y.t(), &xi, 0.0, &mut xyi);
+            // Σ_μν Y[P,μν] P_μν(G), (naux, ng)
+            let mut pyr = Array2::<f64>::zeros((naux, ng));
+            let mut pyi = Array2::<f64>::zeros((naux, ng));
+            general_mat_mul(1.0, y, &pr, 0.0, &mut pyr);
+            general_mat_mul(1.0, y, &pim, 0.0, &mut pyi);
+            drop(pr);
+            drop(pim);
+            // (Wm X)_R(G), (naux, ng)
+            let mut zr = Array2::<f64>::zeros((naux, ng));
+            let mut zi = Array2::<f64>::zeros((naux, ng));
+            general_mat_mul(1.0, wm, &xr, 0.0, &mut zr);
+            general_mat_mul(1.0, wm, &xi, 0.0, &mut zi);
+            for (g, gvec) in gs.iter().enumerate() {
+                let g2 = gvec[0] * gvec[0] + gvec[1] * gvec[1] + gvec[2] * gvec[2];
+                let w = 2.0 / vol * 4.0 * PI / g2 * (-g2 / (4.0 * omega * omega)).exp();
+                // Orbital: 2 w Σ_{μ∈A,ν} Re[Q* (Σ_P Y X)].
+                for mu in 0..n {
+                    let a = aoat[mu];
+                    let mut acc = [0.0_f64; 3];
+                    for nu in 0..n {
+                        let mn = mu * n + nu;
+                        let (ar, ai) = (xyr[(mn, g)], xyi[(mn, g)]);
+                        for (c, qc) in q.iter().enumerate() {
+                            let qz = qc[[mu, nu, g]];
+                            acc[c] += qz.re * ar + qz.im * ai;
+                        }
+                    }
+                    for c in 0..3 {
+                        orb_lr[(a, c)] += 2.0 * w * acc[c];
+                    }
+                }
+                for pp in 0..naux {
+                    let (xre, xim) = (xr[(pp, g)], xi[(pp, g)]);
+                    // J3 aux: w Re[(ΣYP)* (−iG X)] = w G (PY.re X.im − PY.im X.re)
+                    let t3 = w * (pyr[(pp, g)] * xim - pyi[(pp, g)] * xre);
+                    // J2: 2 w Re[(−iG X)* Z] = 2 w G (X.im Z.re − X.re Z.im)
+                    let t2 = 2.0 * w * (xim * zr[(pp, g)] - xre * zi[(pp, g)]);
+                    for c in 0..3 {
+                        aux3_lr[(pp, c)] += t3 * gvec[c];
+                        metric_lr[(pp, c)] += t2 * gvec[c];
+                    }
+                }
+            }
+            Ok(())
+        },
+    )?;
     out.n_chunks = n_chunks;
     Ok(out)
 }
