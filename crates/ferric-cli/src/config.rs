@@ -1219,7 +1219,7 @@ impl LocalCfg {
 
 /// `Serialize` is derived for one reason: [`Mp2Cfg::set_keys`] reads the
 /// keys a file actually set from serde's own field table, so the
-/// "[mp2] key the selected method does not read" refusal of the local
+/// "\[mp2\] key the selected method does not read" refusal of the local
 /// correlation path cannot drift from the struct (a hand-kept list would).
 #[derive(Deserialize, Serialize, Default)]
 #[serde(deny_unknown_fields)]
@@ -1227,7 +1227,7 @@ pub struct Mp2Cfg {
     pub auxbasis: Option<String>,
     /// Core orbitals excluded from the correlation treatment: an explicit
     /// count, or `"auto"` for the standard small-core count of this molecule.
-    /// Default 0 (all-electron correlation). See [`FrozenCore`].
+    /// Default 0 (all-electron correlation). See `FrozenCore`.
     ///
     /// Shared by the whole MP2 family AND by the CC/double-hybrid methods,
     /// which read this key rather than defining one of their own.
@@ -1450,7 +1450,7 @@ pub struct Mp2Cfg {
     // the short-range one and the terfc r0 defaults to 1.05 Å. One key must
     // not mean two things depending on `method.kind`.
     /// Short-range operator on the att-rimp2 MP2 correlation (see
-    /// [`AttRimp2Op`]; the SCF stays full Coulomb):
+    /// `AttRimp2Op`; the SCF stays full Coulomb):
     ///
     ///   "erfc"  (default) — erfc(ωr)/r at ω = `omega` (Å⁻¹).
     ///   "terfc"           — the exact tempered erfc terfc(r, `att_r0`)/r,
@@ -1559,7 +1559,7 @@ impl Mp2Cfg {
         }
     }
 
-    /// The correlation [`Operator`] an `att-rimp2` run attenuates with, built
+    /// The correlation `Operator` an `att-rimp2` run attenuates with, built
     /// from the strictly validated `att_operator` / `omega` / `att_r0` /
     /// `att_omega` keys ([`Mp2Cfg::att_rimp2_op`] has already refused the
     /// combinations that would be silently ignored). Å and Å⁻¹ at the TOML
@@ -1652,7 +1652,7 @@ impl Mp2Cfg {
     /// `frozen_core` and `memory_budget_bytes` come from the shared `[mp2]
     /// frozen_core` key and `[memory]`, matching every other MP2-family method.
     /// `mol` is needed only to resolve a `frozen_core = "auto"` against this
-    /// molecule (see [`FrozenCore::resolve`]).
+    /// molecule (see `FrozenCore::resolve`).
     pub fn build_att_vv10_config(
         &self,
         mol: &Molecule,
