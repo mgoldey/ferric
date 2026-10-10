@@ -21,7 +21,10 @@ use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_mp2::att_vv10::{att_mp2_vv10, AttVv10Attenuator, AttVv10Config, AttVv10SpinComponents};
+use ferric_mp2::att_vv10::{
+    att_mp2_vv10, att_mp2_vv10_scan, AttVv10Attenuator, AttVv10Config, AttVv10ScanArm,
+    AttVv10SpinComponents,
+};
 use ferric_mp2::attenuated::{attenuated_ri_mp2, AttenuatedMp2Config};
 use ferric_mp2::double_hybrid::{mp2_double_hybrid, DoubleHybridKind};
 use ferric_mp2::laplace::{laplace_ri_mp2, laplace_sos_mp2, SosFormulation, SosMp2Config};
@@ -6947,6 +6950,109 @@ fn run_mp2_v(
     })
 }
 
+/// MP2-V scan on ONE converged RHF reference: the attenuated-MP2 half for
+/// every `(r0, omega)` arm and the damped VV10 half for every arm x `b`.
+///
+/// `arms` is a list of `(r0_angstrom, omega_inverse_angstrom_or_None)`; `None`
+/// is the published linked width. `bs` is the list of VV10 `b` values. SCF is
+/// run once. Returns a dict with `rhf_energy`, `n_nlc_points`, and `arms`: a
+/// list (same order) of dicts `{r0, omega, att_mp2_corr, e_os, e_ss,
+/// vv10_e_nl: [per b]}`. `total(arm, k) = rhf_energy + att_mp2_corr +
+/// vv10_e_nl[k]`. Same units/semantics as `run_mp2_v`; closed shell, terfc
+/// only. `nlc_grid=(n_radial, n_angular)` (default (50, 50), the ferric NLC
+/// default). `df_j_aux`/`df_k_aux` default to def2-universal-jkfit (the A24
+/// grid convention); "exact" selects four-centre J/K. `include_coulomb_mp2=True`
+/// adds `mp2_coulomb_corr` (plain RI-MP2 correlation, same SCF/aux/frozen core).
+#[pyfunction]
+#[pyo3(signature = (mol, basis_set, auxbasis, arms, bs, c=None, frozen_core=None, nlc_grid=None, df_j_aux=None, df_k_aux=None, k_builder=None, memory_budget_gb=None, include_coulomb_mp2=false))]
+#[allow(clippy::too_many_arguments)]
+fn run_mp2_v_scan(
+    py: Python<'_>,
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+    auxbasis: &PyBasisSet,
+    arms: Vec<(f64, Option<f64>)>,
+    bs: Vec<f64>,
+    c: Option<f64>,
+    frozen_core: Option<usize>,
+    nlc_grid: Option<(usize, usize)>,
+    df_j_aux: Option<&str>,
+    df_k_aux: Option<&str>,
+    k_builder: Option<&str>,
+    memory_budget_gb: Option<f64>,
+    include_coulomb_mp2: bool,
+) -> PyResult<Py<pyo3::types::PyDict>> {
+    use pyo3::types::{PyDict, PyList};
+    for (r0, _) in &arms {
+        if !r0.is_finite() || *r0 <= 0.0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "r0 must be finite and > 0 (got {r0} A)"
+            )));
+        }
+    }
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
+    let coul = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(coul, &prep).map_err(make_err)?;
+    let ctx = ParallelContext::default();
+    let mut rcfg = rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb));
+    rcfg.df_j_aux = resolve_df_aux(df_j_aux, "def2-universal-jkfit");
+    rcfg.df_k_aux = resolve_df_aux(df_k_aux, "def2-universal-jkfit");
+    let rhf = solve_rhf(&ctx, &mol.inner, &prep, coul, &bounds, &rcfg).map_err(make_err)?;
+    if !rhf.converged {
+        return Err(make_err(ferric_core::FerricError::ScfConvergence {
+            iterations: rhf.iterations,
+            last_energy: rhf.energy,
+        }));
+    }
+    let mut base = AttVv10Config::mp2_v_terfc_atz();
+    if let Some(c) = c {
+        base.vv10.c = c;
+    }
+    base.frozen_core = frozen_core.unwrap_or(0);
+    base.memory_budget_bytes = budget_bytes_from_gb(memory_budget_gb);
+    if let Some((nr, na)) = nlc_grid {
+        base.nlc_grid.n_radial = nr;
+        base.nlc_grid.n_angular = na;
+    }
+    let scan_arms: Vec<AttVv10ScanArm> = arms
+        .iter()
+        .map(|(r0, w)| AttVv10ScanArm {
+            r0_bohr: r0 * ferric_mp2::att_vv10::BOHR_PER_ANG,
+            omega: w.map(|w| w * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV),
+        })
+        .collect();
+    let r = att_mp2_vv10_scan(
+        &mol.inner,
+        &prep,
+        &basis_set.inner,
+        &dfbs,
+        &rhf,
+        &base,
+        &scan_arms,
+        &bs,
+        include_coulomb_mp2,
+    )
+    .map_err(make_err)?;
+    let out = PyDict::new(py);
+    out.set_item("rhf_energy", r.e_hf)?;
+    out.set_item("n_nlc_points", r.n_nlc_points)?;
+    out.set_item("mp2_coulomb_corr", r.e_c_mp2_coulomb)?;
+    let lst = PyList::empty(py);
+    for (arm, res) in arms.iter().zip(r.arms.iter()) {
+        let d = PyDict::new(py);
+        d.set_item("r0", arm.0)?;
+        d.set_item("omega", arm.1)?;
+        d.set_item("att_mp2_corr", res.e_c_att_mp2)?;
+        d.set_item("e_os", res.e_os)?;
+        d.set_item("e_ss", res.e_ss)?;
+        d.set_item("vv10_e_nl", res.e_nl_vv10.clone())?;
+        lst.append(d)?;
+    }
+    out.set_item("arms", lst)?;
+    Ok(out.unbind())
+}
+
 // ── RS-MP2-RPA (SR-MP2 + LR-dRPA, Δ-form B or coupled-rings T) ──
 
 #[pyclass]
@@ -10497,6 +10603,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_scs_mp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_scs_mp2_2terfc, m)?)?;
     m.add_function(wrap_pyfunction!(run_mp2_v, m)?)?;
+    m.add_function(wrap_pyfunction!(run_mp2_v_scan, m)?)?;
     m.add_function(wrap_pyfunction!(run_double_hybrid, m)?)?;
 
     m.add_function(wrap_pyfunction!(run_laplace_mp2, m)?)?;
