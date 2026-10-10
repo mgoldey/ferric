@@ -122,6 +122,38 @@ where
     Ok(())
 }
 
+/// Units `0..n_units` in windows of exactly `width` units (the last one
+/// shorter): `compute(u)` (pure, parallel within a window) then `apply(u,
+/// value)` (serial, in unit order). The same ordered replay as
+/// [`ordered_units`], for units whose WORKING SET (not their stored result)
+/// is what bounds the window: `width` is the number of units in flight, chosen
+/// by the caller from its memory ledger. It never changes a bit, only how many
+/// units are evaluated at once. Returns the first error in unit order.
+pub(crate) fn ordered_fixed_window<V, C, A>(
+    n_units: usize,
+    width: usize,
+    compute: C,
+    mut apply: A,
+) -> Result<(), FerricError>
+where
+    V: Send,
+    C: Fn(usize) -> Result<V, FerricError> + Sync,
+    A: FnMut(usize, V) -> Result<(), FerricError>,
+{
+    let width = width.max(1);
+    let mut start = 0usize;
+    while start < n_units {
+        let end = start.saturating_add(width).min(n_units);
+        let vals: Vec<Result<V, FerricError>> =
+            (start..end).into_par_iter().map(&compute).collect();
+        for (u, v) in (start..end).zip(vals) {
+            apply(u, v?)?;
+        }
+        start = end;
+    }
+    Ok(())
+}
+
 /// The next window from the last one's measured bytes per unit.
 fn next_width(budget: usize, bytes: usize, units: usize) -> usize {
     let per_unit = (bytes / units.max(1)).max(1);
@@ -171,6 +203,49 @@ mod tests {
                     got.to_bits(),
                     serial.to_bits(),
                     "{threads} threads, budget {budget}"
+                );
+            }
+        }
+    }
+
+    /// The fixed-window replay equals the serial fold at any thread count and
+    /// window width, and applies in unit order.
+    #[test]
+    fn ordered_fixed_window_reproduces_the_serial_fold() {
+        let n = 3000usize;
+        let term =
+            |u: usize| -> f64 { ((u as f64) * 0.4137).cos() * 10f64.powi((u % 13) as i32 - 6) };
+        let mut serial = 0.0_f64;
+        for u in 0..n {
+            serial += term(u);
+        }
+        for threads in [1usize, 2, 6] {
+            for width in [0usize, 1, 5, 12, 5000] {
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .build()
+                    .unwrap();
+                let got = pool.install(|| {
+                    let mut acc = 0.0_f64;
+                    let mut order = Vec::new();
+                    ordered_fixed_window(
+                        n,
+                        width,
+                        |u| Ok(term(u)),
+                        |u, v: f64| {
+                            order.push(u);
+                            acc += v;
+                            Ok(())
+                        },
+                    )
+                    .unwrap();
+                    assert!(order.iter().copied().eq(0..n), "apply order");
+                    acc
+                });
+                assert_eq!(
+                    got.to_bits(),
+                    serial.to_bits(),
+                    "{threads} thr, width {width}"
                 );
             }
         }

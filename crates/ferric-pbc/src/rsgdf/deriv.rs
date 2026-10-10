@@ -59,23 +59,45 @@
 //! G sphere, so the force is the derivative of the truncated energy up to the
 //! screens (`≤ precision`).
 //!
+//! # Parallelism of the LR pass
+//!
+//! A G chunk's work (the pair-FT derivative producer, the `n² × naux × ng`
+//! GEMMs, the per-G contractions) is a pure function of the chunk, while the
+//! accumulation into the shared force rows (`natoms × 3` orbital, `naux × 3`
+//! aux-centre and metric) is order-dependent. The chunks are therefore
+//! evaluated in parallel, up to [`MAX_LR_INFLIGHT`] at a time, into small
+//! per-chunk values ([`LrChunk`]: the exact scalars the serial pass added) and
+//! replayed into the rows serially in ascending chunk order
+//! ([`crate::ordered`]), so the forces are BIT-IDENTICAL to the serial pass at
+//! any thread count. The chunk width is that of the serial pass (a function of
+//! the memory budget and the basis only) and the in-flight count is a function
+//! of the ledger only, never of the thread count.
+//!
 //! # Memory
+//!
+//! Each chunk in flight holds up to the chunk budget (`min(remaining,
+//! G_CHUNK_BYTES)`); [`lr_inflight`] charges `in-flight × chunk budget` to the
+//! ledger and narrows the in-flight count (down to the serial pass's one chunk)
+//! rather than exceed it.
+//!
+//! # Memory (resident fit densities)
 //!
 //! `Y` (`naux × nao²`) and the transient `Y^B` (`naux_kept × nao²`) are
 //! reserved on the caller's ledger, with the `naux²` metric weights; the LR
 //! chunk's `P`, three `Q`, `X` and the per-G GEMM outputs are bounded by the
 //! chunk budget.
 
-use super::split::{LrForce, SplitPlan};
+use super::split::{LrAcc, LrChunk, LrForce, SplitPlan};
 use super::{
     aux_ft_shells, check_obs_on_cell, gshells, pair_image_radius, require_pure_aux, LatticeWalker,
     RsGdf, Stage, ENGINE_PRECISION,
 };
 use crate::budget::{bytes_of, Ledger};
+use crate::grad::ao_atoms;
 use crate::hcore::{gvector_list_bytes, half_gvectors, G_CHUNK_BYTES};
 use crate::lattice::Cell;
 use crate::ordered::{window_budget, Stored};
-use crate::pair_ft::{pair_ft_deriv_chunked, DEFAULT_PAIR_FT_THRESH};
+use crate::pair_ft::{pair_ft_deriv_chunked_ordered, DEFAULT_PAIR_FT_THRESH};
 use crate::sr_rotation::{AoTranspose, ColumnRotationMutant, DerivRotMutant, RotatedBasis};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -303,6 +325,52 @@ pub(crate) fn fit_derivatives(
     rot_mutant: DerivRotMutant,
     ledger: &mut Ledger,
 ) -> Result<FitDerivatives, FerricError> {
+    fit_derivatives_with(
+        gdf,
+        cell,
+        obs,
+        aux,
+        (y, wm),
+        (serial, drop_smooth_pair, rot_mutant),
+        MAX_LR_INFLIGHT,
+        ledger,
+    )
+}
+
+/// Most LR G chunks in flight at once ([`lr_inflight`]). A constant, never a
+/// function of the thread count (the in-flight count only bounds memory and
+/// never changes a bit; 12 keeps a 6-core box busy across window barriers).
+pub(crate) const MAX_LR_INFLIGHT: usize = 12;
+
+/// How many LR chunks may be in flight: `min(cap, remaining / chunk_budget)`,
+/// at least 1 (one chunk is what the serial pass already held). The in-flight
+/// chunks are CHARGED to a scratch copy of the ledger (they are freed when
+/// the pass ends, so the caller's ledger is not consumed), so a tight
+/// `[memory]` budget narrows the parallelism instead of overrunning
+/// `budget_gb`.
+fn lr_inflight(ledger: &Ledger, chunk_budget: usize, cap: usize) -> Result<usize, FerricError> {
+    let n = (ledger.remaining() / chunk_budget.max(1)).min(cap).max(1);
+    if n > 1 {
+        ledger.clone().reserve(
+            &format!("RS-GDF force LR chunks in flight ({n} x {chunk_budget} bytes)"),
+            n.saturating_mul(chunk_budget),
+        )?;
+    }
+    Ok(n)
+}
+
+/// [`fit_derivatives`] with an explicit cap on the LR chunks in flight.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn fit_derivatives_with(
+    gdf: &RsGdf,
+    cell: &Cell,
+    obs: &PreparedBasis,
+    aux: &PreparedBasis,
+    (y, wm): (&Array2<f64>, &Array2<f64>),
+    (serial, drop_smooth_pair, rot_mutant): (bool, bool, DerivRotMutant),
+    inflight_cap: usize,
+    ledger: &mut Ledger,
+) -> Result<FitDerivatives, FerricError> {
     let gp = gdf
         .gradient_parts()
         .ok_or_else(|| FerricError::General("RS-GDF forces: RsGdf has no gradient parts".into()))?;
@@ -368,12 +436,13 @@ pub(crate) fn fit_derivatives(
     )?;
     let gv = half_gvectors(cell, gcut)?;
     let chunk_budget = ledger.remaining().min(G_CHUNK_BYTES);
+    let inflight = lr_inflight(ledger, chunk_budget, inflight_cap)?;
     let mut lr = match plan.as_ref().filter(|p| p.moves_aux()) {
-        Some(p) => p.lr_force(&st, &gv, y, wm, natoms, chunk_budget)?,
-        None => lr_force_unsplit(&st, &gv, y, wm, natoms, chunk_budget)?,
+        Some(p) => p.lr_force(&st, &gv, y, wm, natoms, chunk_budget, inflight)?,
+        None => lr_force_unsplit(&st, &gv, (y, wm), natoms, (chunk_budget, inflight))?,
     };
     if let Some(p) = plan.as_ref().filter(|_| !drop_smooth_pair) {
-        p.lr_smooth_pair_force(&st, &gv, y, chunk_budget, &mut lr)?;
+        p.lr_smooth_pair_force(&st, &gv, y, chunk_budget, inflight, &mut lr)?;
     }
     let (orb_sr, aux3_sr, metric_sr) = (sr.orb, sr.aux3, sr.metric);
     let (orb_lr, aux3_lr, metric_lr, n_chunks) = (lr.orb, lr.aux3, lr.metric, lr.n_chunks);
@@ -527,14 +596,15 @@ fn sr_force_parts(
 }
 
 /// The unsplit LR force pass (Iteration 18): orbital `2 w Re[Q* (Y X)]`,
-/// aux `w Re[(Y P)* (−iG X)]`, metric `2 w Re[(−iG X)* (Wm X)]`.
+/// aux `w Re[(Y P)* (−iG X)]`, metric `2 w Re[(−iG X)* (Wm X)]`. G chunks
+/// are evaluated `inflight` at a time and added in chunk order
+/// ([`LrChunk`]): bit-identical to the serial pass at any thread count.
 fn lr_force_unsplit(
     st: &Stage<'_>,
     gv: &[[f64; 3]],
-    y: &Array2<f64>,
-    wm: &Array2<f64>,
+    (y, wm): (&Array2<f64>, &Array2<f64>),
     natoms: usize,
-    chunk_budget: usize,
+    (chunk_budget, inflight): (usize, usize),
 ) -> Result<LrForce, FerricError> {
     let (cell, obs) = (st.cell, st.obs);
     let n = obs.nbasis();
@@ -549,28 +619,19 @@ fn lr_force_unsplit(
         .saturating_mul(32)
         .saturating_add(naux.saturating_mul(64))
         .saturating_add(64);
-    let sh2at = obs.shell_to_atom().to_vec();
-    let mut aoat = vec![0usize; n];
-    {
-        let dims = obs.shell_dims();
-        let offs = obs.shell_offsets();
-        for sh in 0..obs.nshells() {
-            for k in 0..dims[sh] {
-                aoat[offs[sh] + k] = sh2at[sh];
-            }
-        }
-    }
+    let aoat = ao_atoms(obs);
     let mut out = LrForce::zeros(natoms, naux);
-    let (orb_lr, aux3_lr, metric_lr) = (&mut out.orb, &mut out.aux3, &mut out.metric);
+    let mut acc = LrAcc::new(&mut out, &aoat);
     let aux_sh = &st.aux_sh;
-    let n_chunks = pair_ft_deriv_chunked(
+    let n_chunks = pair_ft_deriv_chunked_ordered(
         cell,
         obs,
         gv,
         pair_thresh,
         chunk_budget,
         extra_per_g,
-        |_g0, gs, p, q| {
+        inflight,
+        |gs, p, q| {
             let ng = gs.len();
             let x = aux_ft_shells(aux_sh, naux, gs);
             let xr = x.mapv(|z| z.re);
@@ -595,40 +656,30 @@ fn lr_force_unsplit(
             let mut zi = Array2::<f64>::zeros((naux, ng));
             general_mat_mul(1.0, wm, &xr, 0.0, &mut zr);
             general_mat_mul(1.0, wm, &xi, 0.0, &mut zi);
+            let xyc = (xyr, xyi);
+            let mut ck = LrChunk::new(ng, n, naux, true);
             for (g, gvec) in gs.iter().enumerate() {
                 let g2 = gvec[0] * gvec[0] + gvec[1] * gvec[1] + gvec[2] * gvec[2];
                 let w = 2.0 / vol * 4.0 * PI / g2 * (-g2 / (4.0 * omega * omega)).exp();
                 // Orbital: 2 w Σ_{μ∈A,ν} Re[Q* (Σ_P Y X)].
-                for mu in 0..n {
-                    let a = aoat[mu];
-                    let mut acc = [0.0_f64; 3];
-                    for nu in 0..n {
-                        let mn = mu * n + nu;
-                        let (ar, ai) = (xyr[(mn, g)], xyi[(mn, g)]);
-                        for (c, qc) in q.iter().enumerate() {
-                            let qz = qc[[mu, nu, g]];
-                            acc[c] += qz.re * ar + qz.im * ai;
-                        }
-                    }
-                    for c in 0..3 {
-                        orb_lr[(a, c)] += 2.0 * w * acc[c];
-                    }
-                }
+                ck.set_orbital(q, &xyc, g, 2.0 * w);
                 for pp in 0..naux {
                     let (xre, xim) = (xr[(pp, g)], xi[(pp, g)]);
                     // J3 aux: w Re[(ΣYP)* (−iG X)] = w G (PY.re X.im − PY.im X.re)
                     let t3 = w * (pyr[(pp, g)] * xim - pyi[(pp, g)] * xre);
                     // J2: 2 w Re[(−iG X)* Z] = 2 w G (X.im Z.re − X.re Z.im)
                     let t2 = 2.0 * w * (xim * zr[(pp, g)] - xre * zi[(pp, g)]);
-                    for c in 0..3 {
-                        aux3_lr[(pp, c)] += t3 * gvec[c];
-                        metric_lr[(pp, c)] += t2 * gvec[c];
-                    }
+                    ck.set_aux(g, pp, t3, Some(t2));
                 }
             }
+            ck
+        },
+        |gs, ck| {
+            acc.push(gs, ck);
             Ok(())
         },
     )?;
+    acc.finish();
     out.n_chunks = n_chunks;
     Ok(out)
 }
@@ -1026,3 +1077,5 @@ pub(crate) fn fold_aux(
         }
     }
 }
+#[cfg(test)]
+mod lr_tests;
