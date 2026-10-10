@@ -750,3 +750,171 @@ pub fn vv10_energy_on_density(
         ferric_dft::vv10::compute_vv10_damped_energy_and_potentials(&grid, &dens, params, damping);
     Ok((e_nl, grid.len()))
 }
+
+/// One (r₀, ω) attenuation arm of an [`att_mp2_vv10_scan`].
+#[derive(Debug, Clone, Copy)]
+pub struct AttVv10ScanArm {
+    /// r₀ in **Bohr**.
+    pub r0_bohr: f64,
+    /// Decoupled seam sharpness in Bohr⁻¹; `None` = the published linked width.
+    pub omega: Option<f64>,
+}
+
+/// Per-arm output of [`att_mp2_vv10_scan`].
+#[derive(Debug, Clone)]
+pub struct AttVv10ScanArmResult {
+    /// Attenuated-MP2 correlation energy for this arm (frozen core per config).
+    pub e_c_att_mp2: f64,
+    /// Opposite-spin part of `e_c_att_mp2`.
+    pub e_os: f64,
+    /// Same-spin part of `e_c_att_mp2`.
+    pub e_ss: f64,
+    /// Damped VV10 energy, one entry per requested `b` (same order).
+    pub e_nl_vv10: Vec<f64>,
+}
+
+/// Result of [`att_mp2_vv10_scan`].
+#[derive(Debug, Clone)]
+pub struct AttVv10ScanResult {
+    /// Reference HF total energy.
+    pub e_hf: f64,
+    /// One entry per requested arm, in order.
+    pub arms: Vec<AttVv10ScanArmResult>,
+    /// VV10 grid size.
+    pub n_nlc_points: usize,
+    /// Plain Coulomb RI-MP2 correlation energy on the same reference / aux /
+    /// frozen core, when requested (the MP2 baseline of a benchmark run
+    /// without a second SCF).
+    pub e_c_mp2_coulomb: Option<f64>,
+}
+
+/// Closed-shell MP2-V over a set of (r₀, ω) arms and a grid of `b` values on
+/// ONE converged RHF reference, in one call.
+///
+/// The attenuated-MP2 half is evaluated once per arm (it depends on r₀, ω, not
+/// on `b`). The VV10 half depends on (r₀, ω, b, C) and the density only, so
+/// all `arms × bs` combinations share one AO-on-grid evaluation, one density
+/// and one pair-sum traversal
+/// ([`ferric_dft::vv10::compute_vv10_damped_energy_scan`]). Eq. 11 lockstep is
+/// preserved: each arm's damping is built from that arm's own (r₀, ω).
+///
+/// `base` supplies C (`base.vv10.c`), frozen core, NLC grid and memory budget;
+/// its `r0_bohr`/`omega`/`vv10.b` are ignored. A single arm with a single `b`
+/// reproduces [`att_mp2_vv10`] with the same settings exactly (asserted in the
+/// tests).
+pub fn att_mp2_vv10_scan(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    obs_bs: &ferric_core::basis::BasisSet,
+    dfbs: &PreparedBasis,
+    rhf: &ScfResult,
+    base: &AttVv10Config,
+    arms: &[AttVv10ScanArm],
+    bs: &[f64],
+    include_coulomb_mp2: bool,
+) -> Result<AttVv10ScanResult, FerricError> {
+    if !matches!(rhf.spin, Spin::Restricted) {
+        return Err(FerricError::General(format!(
+            "att_mp2_vv10_scan requires a closed-shell restricted reference, got {:?}",
+            rhf.spin
+        )));
+    }
+    if base.attenuator != AttVv10Attenuator::Terfc {
+        return Err(FerricError::General(
+            "att_mp2_vv10_scan: terfc attenuator only (the erfc control has no decoupled width)"
+                .into(),
+        ));
+    }
+    if bs.iter().any(|b| !(*b > 0.0 && b.is_finite())) {
+        return Err(FerricError::General(
+            "att_mp2_vv10_scan: every b must be finite and > 0".into(),
+        ));
+    }
+    let mut dampings = Vec::with_capacity(arms.len());
+    let mut arm_out = Vec::with_capacity(arms.len());
+    for arm in arms {
+        let mut cfg = base.clone();
+        cfg.r0_bohr = arm.r0_bohr;
+        cfg.omega = arm.omega;
+        cfg.vv10_damping = Vv10Damping::Terfc {
+            r0_bohr: arm.r0_bohr,
+            omega_bohr_inv: None,
+        };
+        validate_config(&cfg, "att_mp2_vv10_scan")?;
+        let (sc, _) = ri_mp2_spin_components(
+            mol,
+            obs,
+            dfbs,
+            cfg.mp2_operator(),
+            rhf,
+            &cfg.ri_mp2_config(),
+        )?;
+        dampings.push(cfg.effective_vv10_damping()?);
+        arm_out.push(AttVv10ScanArmResult {
+            e_c_att_mp2: sc.e_total,
+            e_os: sc.e_os,
+            e_ss: sc.e_ss,
+            e_nl_vv10: Vec::new(),
+        });
+    }
+
+    let e_c_mp2_coulomb = if include_coulomb_mp2 {
+        let (sc, _) = ri_mp2_spin_components(
+            mol,
+            obs,
+            dfbs,
+            Operator::coulomb(),
+            rhf,
+            &base.ri_mp2_config(),
+        )?;
+        Some(sc.e_total)
+    } else {
+        None
+    };
+
+    let grid = build_atomic_grid(mol, &base.nlc_grid);
+    let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
+    let (chi, dchi) = ferric_dft::ao_grid::eval_basis_and_grad_on_points(mol, obs_bs, &pts)
+        .map_err(|e| {
+            FerricError::General(format!("att_mp2_vv10_scan AO grid evaluation: {e:?}"))
+        })?;
+    let dens = ferric_dft::density_on_grid::eval_density_closed(rhf.density_total(), &chi, &dchi);
+    let e =
+        ferric_dft::vv10::compute_vv10_damped_energy_scan(&grid, &dens, base.vv10.c, bs, &dampings);
+    for (a, row) in e.into_iter().enumerate() {
+        arm_out[a].e_nl_vv10 = row;
+    }
+    Ok(AttVv10ScanResult {
+        e_hf: rhf.energy,
+        arms: arm_out,
+        n_nlc_points: grid.len(),
+        e_c_mp2_coulomb,
+    })
+}
+
+/// RESEARCH ONLY (benchmarks/a24-mp2v-refit Addendum A): VV10 energy on a given
+/// closed-shell density for alternative short-range pair-kernel weights, at one
+/// (b, C). `weights` as in [`ferric_dft::vv10::Vv10Weight`]. Returns one E_nl per
+/// weight (same grid/density/pair sum as [`vv10_energy_on_density`]).
+pub fn vv10_weighted_energies_on_density(
+    mol: &Molecule,
+    obs_bs: &ferric_core::basis::BasisSet,
+    d_total: &ndarray::Array2<f64>,
+    params: &Vv10Params,
+    weights: &[ferric_dft::vv10::Vv10Weight],
+    grid_cfg: &AtomicGridConfig,
+) -> Result<Vec<f64>, FerricError> {
+    let grid = build_atomic_grid(mol, grid_cfg);
+    let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
+    let (chi, dchi) = ferric_dft::ao_grid::eval_basis_and_grad_on_points(mol, obs_bs, &pts)
+        .map_err(|e| FerricError::General(format!("variant AO grid evaluation: {e:?}")))?;
+    let dens = ferric_dft::density_on_grid::eval_density_closed(d_total, &chi, &dchi);
+    let e = ferric_dft::vv10::compute_vv10_weighted_energy_scan(
+        &grid,
+        &dens,
+        params.c,
+        &[params.b],
+        weights,
+    );
+    Ok(e.into_iter().map(|r| r[0]).collect())
+}

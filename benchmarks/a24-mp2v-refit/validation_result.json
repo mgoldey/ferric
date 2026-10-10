@@ -1,0 +1,43 @@
+{
+ "V1 split==all-in-one": {
+  "pass": true,
+  "detail": "max |dE| = 0.000e+00 Ha over 7 combos (tol 1e-09)"
+ },
+ "V3 omega=None == published (bitwise parts)": {
+  "pass": true,
+  "detail": "att -0.4360070695616123 vs -0.4360070695616123; nl 0.036856538950482076 vs 0.036856538950482076; |dtotal|=0.0e+00"
+ },
+ "V4 mutation caught": {
+  "pass": true,
+  "detail": "mutated (r0_damp=0.90 vs r0_MP2=1.00) differs from run_mp2_v by 1.143e-04 Ha (must exceed 1e-6; the V1 tolerance is 1e-09)"
+ },
+ "V2 CP bookkeeping == hand-built ghosts": {
+  "pass": true,
+  "detail": "max |dE_int| = 0.000e+00 kcal/mol (tol 6.3e-07); water dimer MP2-V(published) CP=-4.4059, nonCP=-5.2399 kcal/mol, ref -5.014"
+ },
+ "V5a fit recovers known b*": {
+  "pass": true,
+  "detail": "b*=10.33 (true 10.3, grid 0.5)"
+ },
+ "V5b edge minimum flagged": {
+  "pass": true,
+  "detail": "edge=True b*=12.0"
+ },
+ "V6": {
+  "(30, 50)": [
+   0.03685685484519833,
+   0.037247130385569115,
+   9000
+  ],
+  "(50, 50)": [
+   0.036856538950482076,
+   0.037246876711002144,
+   15000
+  ],
+  "(75, 110)": [
+   0.03685768281163729,
+   0.03724841224837234,
+   49500
+  ]
+ }
+}

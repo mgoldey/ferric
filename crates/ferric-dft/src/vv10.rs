@@ -848,6 +848,191 @@ fn vv10_internal_cutoff(
     }
 }
 
+/// Energy-only VV10 pair sum for MANY `(damping, b)` combinations at once.
+///
+/// Returns `e[a][k]` = E_nl for `dampings[a]` and `bs[k]` at fixed `C` on the
+/// same grid/density. One cell-list traversal serves every combination: the
+/// pair geometry (`r²`, neighbor search) is shared, the damping factor `D_a(R)`
+/// (two `erf` evaluations — the dominant per-pair cost) is evaluated once per
+/// damping per pair, and the b-dependent `g_i·g_p·g_t` denominators once per b
+/// per pair. This is what makes refitting `b` along a valley cost one pair sum
+/// instead of `len(bs)`.
+///
+/// Arithmetic per `(a, k)` is the SAME expression, in the SAME summation order,
+/// as [`compute_vv10_damped_energy_and_potentials`], so a 1×1 call is
+/// bit-identical to it (the exactness anchor, asserted in the tests). No
+/// potentials are produced — energy only, post-HF use.
+pub fn compute_vv10_damped_energy_scan(
+    grid: &[GridPoint],
+    dens: &DensityGrid,
+    c: f64,
+    bs: &[f64],
+    dampings: &[Vv10Damping],
+) -> Vec<Vec<f64>> {
+    let w: Vec<Vv10Weight> = dampings.iter().map(|d| Vv10Weight::Damping(*d)).collect();
+    compute_vv10_weighted_energy_scan(grid, dens, c, bs, &w)
+}
+
+/// A multiplicative pair-kernel weight for RESEARCH comparisons of alternative
+/// short-range VV10 constructions (benchmarks/a24-mp2v-refit, Addendum A).
+/// `Damping` is the production Eq. 11 path; `TerfPower` multiplies the kernel
+/// by `terf(R; r0, ω)^power` with `terf = 1 - terfc` (power 1: V_A, power 2:
+/// V_B). Not used by any production path.
+#[derive(Debug, Clone, Copy)]
+pub enum Vv10Weight {
+    Damping(Vv10Damping),
+    TerfPower {
+        r0_bohr: f64,
+        omega_bohr_inv: Option<f64>,
+        power: i32,
+    },
+}
+
+impl Vv10Weight {
+    #[inline]
+    fn factor_from_r2(&self, r2: f64) -> f64 {
+        match *self {
+            Vv10Weight::Damping(d) => d.factor_from_r2(r2),
+            Vv10Weight::TerfPower {
+                r0_bohr,
+                omega_bohr_inv,
+                power,
+            } => {
+                let r = r2.sqrt();
+                let tc = match omega_bohr_inv {
+                    None => terfc_scalar(r, r0_bohr),
+                    Some(w) => terfc_scalar_decoupled(r, r0_bohr, w),
+                };
+                (1.0 - tc).powi(power)
+            }
+        }
+    }
+    #[inline]
+    fn is_identity(&self) -> bool {
+        matches!(self, Vv10Weight::Damping(d) if d.is_none())
+    }
+}
+
+/// [`compute_vv10_damped_energy_scan`] generalised to [`Vv10Weight`] kernels.
+pub fn compute_vv10_weighted_energy_scan(
+    grid: &[GridPoint],
+    dens: &DensityGrid,
+    c: f64,
+    bs: &[f64],
+    dampings: &[Vv10Weight],
+) -> Vec<Vec<f64>> {
+    let npts = dens.rho.len();
+    let nb = bs.len();
+    let na = dampings.len();
+    let pi = std::f64::consts::PI;
+    let pi43 = 4.0 * pi / 3.0;
+    let k_vv: Vec<f64> = bs
+        .iter()
+        .map(|&b| b * 1.5 * pi * (9.0 * pi).powf(-1.0 / 6.0))
+        .collect();
+    let beta: Vec<f64> = bs
+        .iter()
+        .map(|&b| (3.0 / (b * b)).powf(0.75) / 32.0)
+        .collect();
+
+    let mut active = vec![false; npts];
+    let mut w0 = vec![0.0_f64; npts];
+    let mut kp = vec![vec![0.0_f64; npts]; nb];
+    let mut xyz = vec![[0.0_f64; 3]; npts];
+    let mut rho_w = vec![0.0_f64; npts];
+    for g in 0..npts {
+        let r = dens.rho[g];
+        if r < RHO_THRESH {
+            continue;
+        }
+        let s = dens.sigma[g];
+        active[g] = true;
+        xyz[g] = grid[g].xyz;
+        rho_w[g] = r * grid[g].weight;
+        let w0sq = c * (s / (r * r)).powi(2) + pi43 * r;
+        w0[g] = w0sq.sqrt();
+        for k in 0..nb {
+            kp[k][g] = k_vv[k] * r.powf(1.0 / 6.0);
+        }
+    }
+    let cells =
+        (npts >= CELL_LIST_MIN_PTS).then(|| CellList::build(&xyz, &active, NLC_CUTOFF_BOHR));
+
+    let row_fn = |i: usize| -> Vec<f64> {
+        let mut acc = vec![0.0_f64; na * nb];
+        if !active[i] {
+            return acc;
+        }
+        let xi = xyz[i];
+        let w0i = w0[i];
+        let mut den = vec![0.0_f64; nb];
+        let mut ok = vec![false; nb];
+        let mut visit = |p: usize, acc: &mut Vec<f64>| {
+            let dx = xyz[p][0] - xi[0];
+            let dy = xyz[p][1] - xi[1];
+            let dz = xyz[p][2] - xi[2];
+            let r2 = dx * dx + dy * dy + dz * dz;
+            let mut any = false;
+            for k in 0..nb {
+                let gp_val = r2 * w0[p] + kp[k][p];
+                let gi_val = r2 * w0i + kp[k][i];
+                let gt_val = gi_val + gp_val;
+                ok[k] = !(gi_val < 1e-30 || gp_val < 1e-30 || gt_val < 1e-30);
+                den[k] = gi_val * gp_val * gt_val;
+                any |= ok[k];
+            }
+            if !any {
+                return;
+            }
+            for (a, d) in dampings.iter().enumerate() {
+                let t_num = if d.is_identity() {
+                    rho_w[p]
+                } else {
+                    rho_w[p] * d.factor_from_r2(r2)
+                };
+                for k in 0..nb {
+                    if ok[k] {
+                        acc[a * nb + k] += t_num / den[k];
+                    }
+                }
+            }
+        };
+        match &cells {
+            None => {
+                for p in 0..npts {
+                    if active[p] {
+                        visit(p, &mut acc);
+                    }
+                }
+            }
+            Some(cl) => {
+                let mut buf: Vec<usize> = Vec::new();
+                cl.neighbors_into(xi, &mut buf);
+                for &p in &buf {
+                    visit(p, &mut acc);
+                }
+            }
+        }
+        acc
+    };
+    let rows = map_rows(npts, row_fn);
+
+    let mut e = vec![vec![0.0_f64; nb]; na];
+    for g in 0..npts {
+        if !active[g] {
+            continue;
+        }
+        for a in 0..na {
+            for k in 0..nb {
+                let f_g = -1.5 * rows[g][a * nb + k];
+                let exc_g = beta[k] + 0.5 * f_g;
+                e[a][k] += grid[g].weight * dens.rho[g] * exc_g;
+            }
+        }
+    }
+    e
+}
+
 /// Compute the VV10 energy contribution and add the matrix V_nl to `f`.
 ///
 /// Convenience wrapper over [`add_vv10_scratch`] that allocates a fresh scratch
@@ -1351,5 +1536,57 @@ mod cutoff_tests {
             visits_cut < visits_dense,
             "cutoff should visit strictly fewer pairs (dense={visits_dense}, cutoff={visits_cut})"
         );
+    }
+    /// EXACTNESS ANCHOR for the multi-(damping, b) energy scan: every entry
+    /// must equal the single-combination production path BIT-FOR-BIT (same
+    /// expression, same summation order), for the undamped, linked-damped and
+    /// decoupled-damped kernels — on a grid large enough to take the
+    /// cell-list branch. A mutated scan (damping factor applied to the wrong
+    /// arm, b index swapped) fails this immediately.
+    #[test]
+    fn energy_scan_matches_single_combination_bitwise() {
+        let mol = Molecule::parse_xyz(
+            "3\nwater\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let (params, grid, dens) = synthetic_density_on_grid(&mol, 16, 14);
+        assert!(grid.len() >= CELL_LIST_MIN_PTS);
+        let r0 = ferric_core::units::ANGSTROM_TO_BOHR;
+        let dampings = [
+            Vv10Damping::None,
+            Vv10Damping::Terfc {
+                r0_bohr: r0,
+                omega_bohr_inv: None,
+            },
+            Vv10Damping::Terfc {
+                r0_bohr: r0,
+                omega_bohr_inv: Some(4.0 / (r0 * std::f64::consts::SQRT_2)),
+            },
+            Vv10Damping::Terfc {
+                r0_bohr: 1.1 * r0,
+                omega_bohr_inv: Some(2.0),
+            },
+        ];
+        let bs = [8.0, 11.0, 14.5];
+        let scan = compute_vv10_damped_energy_scan(&grid, &dens, params.c, &bs, &dampings);
+        for (a, d) in dampings.iter().enumerate() {
+            for (k, &b) in bs.iter().enumerate() {
+                let p = Vv10Params { c: params.c, b };
+                let single = compute_vv10_damped_energy_and_potentials(&grid, &dens, &p, *d).0;
+                assert_eq!(
+                    scan[a][k].to_bits(),
+                    single.to_bits(),
+                    "scan[{a}][{k}] = {} vs single {}",
+                    scan[a][k],
+                    single
+                );
+            }
+        }
+        // Not vacuous: arms and b values must actually differ.
+        assert!((scan[0][1] - scan[1][1]).abs() > 1e-6);
+        assert!((scan[1][1] - scan[2][1]).abs() > 1e-7);
+        assert!((scan[1][0] - scan[1][2]).abs() > 1e-6);
     }
 }
