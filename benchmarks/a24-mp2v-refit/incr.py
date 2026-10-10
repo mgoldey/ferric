@@ -31,6 +31,7 @@ def run(a):
     out = Path(a.out)
     db = json.loads(out.read_text()) if out.exists() else {}
     nlc = [int(x) for x in a.nlc.split(",")]
+    arms = [{"r0": a.r0, "r0omega": None}]
     for sid in [int(x) for x in a.systems.split(",")]:
         rec = sets[str(sid)]
         for f in [float(x) for x in a.factors.split(",")]:
@@ -42,7 +43,7 @@ def run(a):
                 if key in db:
                     continue
                 r = harness.run_fragment(
-                    ferric, atoms, "atz", ARMS, BS, nlc, False, df_exact=a.exact_jk,
+                    ferric, atoms, "atz", arms, BS, nlc, False, df_exact=a.exact_jk,
                 )
                 db[key] = {
                     "rhf": r["rhf_energy"],
@@ -95,6 +96,7 @@ if __name__ == "__main__":
     ap.add_argument("--factors", default="1.0")
     ap.add_argument("--nlc", default="50,50")
     ap.add_argument("--exact-jk", action="store_true")
+    ap.add_argument("--r0", type=float, default=1.00)
     ap.add_argument("--cp", action="store_true")
     ap.add_argument("--out")
     a = ap.parse_args()
