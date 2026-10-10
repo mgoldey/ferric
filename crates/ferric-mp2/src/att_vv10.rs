@@ -918,3 +918,48 @@ pub fn vv10_weighted_energies_on_density(
     );
     Ok(e.into_iter().map(|r| r[0]).collect())
 }
+
+/// Work and result of a screened VV10 evaluation ([`vv10_energy_on_density_screened`]).
+#[derive(Debug, Clone, Copy)]
+pub struct Vv10ScreenedEnergy {
+    /// E_nl (Hartree).
+    pub e_nl: f64,
+    /// Grid points generated (before the density threshold).
+    pub n_grid: usize,
+    /// Grid points that passed the density threshold (the pair-sum size).
+    pub n_active: usize,
+    /// Exact point-point kernel evaluations.
+    pub pairs_near: u64,
+    /// Point-cell monopole kernel evaluations.
+    pub pairs_far: u64,
+}
+
+/// [`vv10_energy_on_density`] with an explicit pair screen.
+///
+/// `screen = None` is the exact dense pair sum (NOT the production 40 Bohr
+/// cell-list path used by [`vv10_energy_on_density`], which is vacuous below
+/// roughly 3 cells = 120 Bohr of molecular extent); it is the reference the
+/// screened energies are measured against.
+pub fn vv10_energy_on_density_screened(
+    mol: &Molecule,
+    obs_bs: &ferric_core::basis::BasisSet,
+    d_total: &ndarray::Array2<f64>,
+    params: &Vv10Params,
+    damping: Vv10Damping,
+    grid_cfg: &AtomicGridConfig,
+    screen: Option<ferric_dft::vv10::Vv10Screen>,
+) -> Result<Vv10ScreenedEnergy, FerricError> {
+    let grid = build_atomic_grid(mol, grid_cfg);
+    let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
+    let (chi, dchi) = ferric_dft::ao_grid::eval_basis_and_grad_on_points(mol, obs_bs, &pts)
+        .map_err(|e| FerricError::General(format!("vv10 screened AO grid evaluation: {e:?}")))?;
+    let dens = ferric_dft::density_on_grid::eval_density_closed(d_total, &chi, &dchi);
+    let r = ferric_dft::vv10::compute_vv10_screened(&grid, &dens, params, damping, screen);
+    Ok(Vv10ScreenedEnergy {
+        e_nl: r.e_nl,
+        n_grid: grid.len(),
+        n_active: r.n_active,
+        pairs_near: r.pairs_near,
+        pairs_far: r.pairs_far,
+    })
+}
