@@ -938,6 +938,116 @@ mod tests {
         }
     }
 
+    /// The projection decides the VERDICT on a real, non-stationary geometry.
+    ///
+    /// Physics hypothesis: an RHF Hessian taken away from a stationary point is
+    /// not translation/rotation invariant -- the rigid rotations carry the
+    /// gradient (`v^T H v = -g . x''`), so with forces pushing outward (a
+    /// compressed molecule) they come out NEGATIVE and masquerade as imaginary
+    /// modes. Projecting must remove them: a minimum's basin must still be
+    /// refused. Artifact hypothesis: the test passes only because the injected
+    /// contamination is arbitrary. Guarded by building it the way it arises
+    /// (a finite-difference Hessian of NH3/STO-3G compressed to 0.85 A) and by
+    /// asserting the geometry is genuinely far from stationary.
+    ///
+    /// MEASURED (this geometry): see the `MEASURED` line the test prints; the
+    /// unprojected spectrum has spurious negatives orders of magnitude above
+    /// EIG_TOL while the projected one has none.
+    #[test]
+    fn projection_decides_the_verdict_on_a_compressed_nh3_hessian() {
+        use crate::frequencies::{
+            harmonic_frequencies, FrequencyConfig, FrequencyReference, HessianMethod,
+        };
+        use crate::gradient::rhf_gradient;
+        use crate::rhf::{solve_rhf, RhfConfig};
+        use crate::screening::SchwarzBounds;
+        use ferric_core::parallel::ParallelContext;
+        use ferric_integrals::basis_bridge::PreparedBasis;
+        use ferric_integrals::operator::Operator;
+
+        let mol = Molecule::parse_xyz(
+            "4\ncompressed nh3\nN 0 0 0\nH 0 0.85 -0.35\n\
+             H 0.8747 -0.505 -0.35\nH -0.8747 -0.505 -0.35\n",
+            0,
+            1,
+        )
+        .expect("parse NH3");
+        let op = Operator::coulomb();
+        let scf = RhfConfig::default();
+        let ctx = ParallelContext::default();
+        let fc = FrequencyConfig {
+            reference: FrequencyReference::Rhf,
+            hessian: HessianMethod::FiniteDifference,
+            ..Default::default()
+        };
+        let hess = harmonic_frequencies(&ctx, &mol, "sto-3g", op, &scf, &fc)
+            .expect("FD Hessian")
+            .cartesian_hessian;
+        let eg = |m: &Molecule| -> Result<(f64, Array1<f64>), FerricError> {
+            let bs = ferric_core::basis::bundled("sto-3g")?;
+            let prep = PreparedBasis::new(m, &bs)?;
+            let b = SchwarzBounds::compute(op, &prep)?;
+            let res = solve_rhf(&ctx, m, &prep, op, &b, &scf)?;
+            let g = rhf_gradient(m, &prep, op, &b, &res, None)?;
+            Ok((res.energy, Array1::from_iter(g.iter().copied())))
+        };
+        let g_max = eg(&mol)
+            .unwrap()
+            .1
+            .iter()
+            .fold(0.0f64, |a, &b| a.max(b.abs()));
+        assert!(
+            g_max > 10.0 * SaddleConfig::default().g_max_thresh,
+            "geometry must be far from stationary or there is no gradient to \
+             contaminate the rotations; max|g| = {g_max:.3e}"
+        );
+
+        // Unprojected spectrum: the same mass-weighting and symmetrization as
+        // `projected_eigen`, minus `P H P` and the shift.
+        let mass = atom_masses(&mol).unwrap();
+        let n = 12;
+        let sm: Vec<f64> = (0..n).map(|i| mass[i / 3].sqrt()).collect();
+        let mut hw = Array2::<f64>::zeros((n, n));
+        for i in 0..n {
+            for j in 0..n {
+                hw[[i, j]] = 0.5 * (hess[[i, j]] + hess[[j, i]]) / (sm[i] * sm[j]);
+            }
+        }
+        let (raw, _) = hw.eigh(UPLO::Lower).unwrap();
+        let (proj, _, _) = projected_eigen(&mol, &mass, &hess).unwrap();
+        let (n_raw, n_proj) = (count_negative(&raw, 1e-6), count_negative(&proj, 1e-6));
+        eprintln!(
+            "MEASURED max|g| = {g_max:.3e}; unprojected lowest 3 = {:?}, {n_raw} negative; \
+             projected lowest = {:.4e}, {n_proj} negative",
+            &raw.to_vec()[..3],
+            proj.iter().cloned().fold(f64::INFINITY, f64::min)
+        );
+        // Vacuity guard: the contamination is large, not a rounding-level wobble.
+        assert!(
+            n_raw >= 1 && raw[0] < -1e-3,
+            "unprojected spectrum is clean: {raw:?}"
+        );
+        assert_eq!(
+            n_proj, 0,
+            "projection must leave no negative mode: {proj:?}"
+        );
+
+        // The verdict: this is a minimum's basin, so the search must refuse.
+        // Skipping the projection leaves spurious negatives and the search
+        // would instead start climbing a rigid rotation.
+        let cfg = SaddleConfig {
+            max_steps: 1,
+            ..Default::default()
+        };
+        let h = hess.clone();
+        let out = find_saddle(&mol, &cfg, eg, move |_| Ok(h.clone()));
+        let msg = format!("{:?}", out.as_ref().err());
+        assert!(
+            out.is_err() && msg.contains("NO negative eigenvalue"),
+            "a minimum's basin must be refused on the projected spectrum, got {msg}"
+        );
+    }
+
     #[test]
     fn is_transition_state_requires_both_halves() {
         // A gradient-converged point with the wrong number of imaginary modes
