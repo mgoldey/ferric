@@ -87,6 +87,7 @@ See [The MP2 family](../methods/mp2.md).
 | `water-oo-rimp2.toml` | H2O / cc-pVDZ | `oo-rimp2` | — | Proven (narrow) grade. |
 | `water-attmp2.toml` | H2O / aug-cc-pVDZ | `att-rimp2` | — | ω = 0.420 Å⁻¹. |
 | `water-attmp2-terfc.toml` | H2O / aug-cc-pVDZ | `att-rimp2` | — | `att_operator = "terfc"`, `att_r0` = 1.05 Å. Needs the terf tables. |
+| `alkane8-attmp2-terfc-local-direct.toml` | C8H18 / 6-31G | `att-rimp2` | `[local]` | Integral-direct amplitude-threshold LMP2 with a decoupled terfc seam (`att_omega`, r0·ω = 4). Needs the terf tables; `schwarz_skip = 0.0`. |
 | `water-scs-mp2.toml` | H2O / cc-pVDZ | `scs-mp2` | — | Grimme coefficients (defaults). |
 | `water-scs-mp2-2terfc.toml` | H2O / cc-pVDZ | `scs-mp2-2terfc` | — | Thesis defaults r0 = 0.75/1.05 Å. Needs the terf tables. |
 | `water-laplace-rimp2.toml` | H2O / cc-pVDZ | `laplace-mp2` | — | |
