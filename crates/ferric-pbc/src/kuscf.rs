@@ -237,6 +237,8 @@ enum KInts {
     RsGdf(KRsGdf),
 }
 
+/// The k-point J/K builder of the stored integrals with the Madelung shift
+/// `madelung` folded into K.
 fn jk_of(ints: &KInts, madelung: f64) -> Box<dyn KPointJk + '_> {
     match ints {
         KInts::Dense(e) => Box::new(e.jk_builder_with_madelung(madelung)),
@@ -400,6 +402,7 @@ pub fn solve_kuhf_injected_with_guess(
     run_kuhf(cell, mesh, cfg, inj, nalpha, nbeta, guess, None, None, None)
 }
 
+/// `Re tr[A B] = Re Σ_{mn} A_{mn} B_{nm}` for square complex matrices.
 fn re_tr_prod(a: &Array2<Complex64>, b: &Array2<Complex64>) -> f64 {
     // Re tr[A B] = Re Σ_mn A_mn B_nm
     let n = a.nrows();
@@ -461,6 +464,9 @@ fn actual_occupations(
         .collect()
 }
 
+/// The global gap `min(virtual ε) − max(occupied ε)` over all k, where a level
+/// is occupied when its occupation exceeds 0.5. `None` when there is no
+/// occupied or no virtual level. Negative when the spaces overlap.
 fn global_gap(eps: &[Vec<f64>], occ: &[Vec<f64>]) -> Option<f64> {
     let (mut omax, mut vmin) = (f64::NEG_INFINITY, f64::INFINITY);
     for (e, o) in eps.iter().zip(occ) {
@@ -832,6 +838,11 @@ pub(crate) fn run_kuhf(
     )
 }
 
+/// Assembles a [`KUScfResult`] from the final Fock and density blocks:
+/// diagonalises per spin with the orthogonaliser `x`, counts occupations
+/// (`> 0.5`) per k, forms the per-spin global gaps and the giant-determinant
+/// `<S²> = S_z(S_z+1) + N_β N_k − Σ_k Re tr(D_α S D_β S)` with
+/// `S_z = ½ (N_α − N_β) N_k`.
 #[allow(clippy::too_many_arguments)]
 fn finish(
     mesh: &KPointMesh,

@@ -671,12 +671,13 @@ pub(crate) fn half_gvectors(cell: &Cell, gcut: f64) -> Result<Vec<[f64; 3]>, Fer
         .collect())
 }
 
-/// `−(2/Ω) Σ_{G∈half} v(G) Re[P*(G) S(G)]` with `v = 4π/G² · e^{−G²/4ω²}`
-/// (`omega = None`: bare `4π/G²`). Returns the matrix and the G count.
-/// G list: `Cell::gvectors` (bound × 24 B) and the half-sphere copy
-/// (≤ half of it) coexist briefly.
+/// Bytes reserved for the G list of radius `gcut`, charged as `56` bytes per
+/// bounded G vector. The peak is `Cell::select_gvector_indices`: its
+/// `(index, |G|²)` buffer (32 B) and the index list collected from it (24 B)
+/// are live together. That peak exceeds the 36 B the finished list needs (the
+/// 24 B `Cell::gvectors` list plus a half-sphere copy of at most 12 B).
 pub(crate) fn gvector_list_bytes(cell: &Cell, gcut: f64) -> Result<usize, FerricError> {
-    Ok(bytes_of(cell.gvector_count_bound(gcut)?, 36))
+    Ok(bytes_of(cell.gvector_count_bound(gcut)?, 56))
 }
 
 /// Output of [`reciprocal_nuclear`].

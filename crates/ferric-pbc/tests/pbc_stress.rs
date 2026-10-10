@@ -124,6 +124,8 @@ const ALL9: [(usize, usize); 9] = [
     (2, 2),
 ];
 
+/// Hcore config at the file's `OMEGA` with `precision = HCORE_PRECISION`; the
+/// other fields are the defaults of `with_omega`.
 fn hcore_cfg() -> PeriodicHcoreConfig {
     PeriodicHcoreConfig {
         precision: HCORE_PRECISION,
@@ -131,12 +133,15 @@ fn hcore_cfg() -> PeriodicHcoreConfig {
     }
 }
 
+/// A neutral hydrogen cell with atoms at `pos` (Bohr), lattice rows `lattice`
+/// (Bohr) and spin multiplicity `mult`.
 fn cell_at(pos: &[[f64; 3]], lattice: [[f64; 3]; 3], mult: usize) -> Cell {
     let mut mol: Molecule = hydrogens(pos);
     mol.multiplicity = mult;
     Cell::new(mol, lattice).expect("cell")
 }
 
+/// A strain matrix that is zero except `ε[i][j] = h`.
 fn eps_at(i: usize, j: usize, h: f64) -> Mat3 {
     let mut e = [[0.0; 3]; 3];
     e[i][j] = h;
@@ -191,6 +196,7 @@ fn max_err(a: &Mat3, b: &Mat3) -> f64 {
     m
 }
 
+/// Largest off-diagonal `|a_ij − b_ij|` of two 3×3 matrices.
 fn max_offdiag_err(a: &Mat3, b: &Mat3) -> f64 {
     let mut m = 0.0_f64;
     for i in 0..3 {
@@ -203,6 +209,7 @@ fn max_offdiag_err(a: &Mat3, b: &Mat3) -> f64 {
     m
 }
 
+/// `max_ij |a_ij − a_ji|` of a 3×3 matrix.
 fn antisym(a: &Mat3) -> f64 {
     let mut m = 0.0_f64;
     for i in 0..3 {
@@ -227,6 +234,7 @@ fn trace(a: &Mat3) -> f64 {
     a[0][0] + a[1][1] + a[2][2]
 }
 
+/// Formats a 3×3 matrix as three indented `{:+.10e}` rows joined by newlines.
 fn fmt3(a: &Mat3) -> String {
     a.iter()
         .map(|r| format!("  [{:+.10e} {:+.10e} {:+.10e}]", r[0], r[1], r[2]))
@@ -326,10 +334,14 @@ fn uhf_stress(su: &Setup, scf: &ScfResult, exx: ExxDiv, m: Option<StressMutation
 
 type Mos = Option<(Array2<f64>, Array2<f64>)>;
 
+/// The `(α, β)` MO coefficients of `r` as a starting guess; panics without
+/// beta MOs.
 fn mos_of(r: &ScfResult) -> Mos {
     Some((r.mos_alpha.clone(), r.mos_beta.clone().expect("beta MOs")))
 }
 
+/// UHF config with exchange-divergence treatment `exx` and starting MOs
+/// `init`; the other fields are the defaults.
 fn uhf_cfg(exx: ExxDiv, init: Mos) -> GammaUhfConfig {
     GammaUhfConfig {
         exxdiv: exx,
@@ -364,10 +376,13 @@ fn as_unrestricted(r: &ScfResult) -> ScfResult {
     u
 }
 
+/// The H2 singlet cell: `H2_ATOMS` in a cubic lattice of edge 4 Bohr.
 fn h2_cell_g() -> Cell {
     cell_at(&H2_ATOMS, cubic(4.0), 1)
 }
 
+/// The H3 doublet cell: `H3_ATOMS` in a cubic lattice of edge `H3_A` Bohr,
+/// multiplicity 2.
 fn h3_cell() -> Cell {
     cell_at(&H3_ATOMS, cubic(H3_A), 2)
 }

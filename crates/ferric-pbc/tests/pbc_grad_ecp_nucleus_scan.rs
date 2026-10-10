@@ -272,12 +272,15 @@ fn ref_positions() -> Vec<[f64; 3]> {
         .collect()
 }
 
+/// `pos` (Bohr) with Cartesian component `x` of atom `a` displaced by `h` Bohr.
 fn moved(pos: &[[f64; 3]], a: usize, x: usize, h: f64) -> Vec<[f64; 3]> {
     let mut p = pos.to_vec();
     p[a][x] += h;
     p
 }
 
+/// Hcore config at the file's `OMEGA` with `precision = HCORE_PRECISION`; the
+/// other fields are the defaults of `with_omega`.
 fn hcore_cfg() -> PeriodicHcoreConfig {
     PeriodicHcoreConfig {
         precision: HCORE_PRECISION,
@@ -285,6 +288,9 @@ fn hcore_cfg() -> PeriodicHcoreConfig {
     }
 }
 
+/// The nucleus exponents to scan: the comma-separated
+/// `FERRIC_NUC_EXP_SCAN` list when set and non-empty (panics on an
+/// unparsable entry), else `SCAN_DEFAULT`.
 fn scan_exponents() -> Vec<f64> {
     match std::env::var("FERRIC_NUC_EXP_SCAN") {
         Ok(s) if !s.trim().is_empty() => s
@@ -299,10 +305,12 @@ fn scan_exponents() -> Vec<f64> {
     }
 }
 
+/// Largest element-wise `|a|` (0 for an empty matrix).
 fn amax(a: &Array2<f64>) -> f64 {
     a.iter().fold(0.0_f64, |m, x| m.max(x.abs()))
 }
 
+/// `Σ_ij d_ij x_ij`: the element-wise product sum, i.e. `tr(d xᵀ)`.
 fn tr(d: &Array2<f64>, x: &Array2<f64>) -> f64 {
     (d * x).sum()
 }
@@ -320,6 +328,9 @@ struct Built {
     hc: PeriodicHcore,
 }
 
+/// Builds the system's cell at `pos` and its periodic hcore; asserts that
+/// the ECP is really present (`HiEcp`: `n_ecp_triples > 0`) or absent
+/// (`NoEcpControl`: no `v_ecp`).
 fn build_hcore(sys: Sys, pos: &[[f64; 3]], bs: &BasisSet) -> Built {
     let cell = sys.cell(pos, bs);
     let prep = PreparedBasis::new(cell.mol(), bs).expect("prep");
@@ -331,6 +342,8 @@ fn build_hcore(sys: Sys, pos: &[[f64; 3]], bs: &BasisSet) -> Built {
     Built { cell, prep, hc }
 }
 
+/// The `ExxDiv::Ewald` dense-AFT ERI tensor of the built system at
+/// `AFT_PRECISION`; panics on error.
 fn aft(b: &Built) -> DenseAftEri {
     DenseAftEri::build(
         &b.cell,
@@ -366,6 +379,9 @@ fn gamma_rhf(b: &Built, eri: &DenseAftEri, seed: Option<&Array2<f64>>) -> ScfRes
     r
 }
 
+/// The molecular (non-periodic) RHF of the cell's molecule, starting from
+/// the optional `seed` density, with `max_iter = 300`; panics if it does not
+/// converge.
 fn molecular_energy(b: &Built, seed: Option<&Array2<f64>>) -> ScfResult {
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();

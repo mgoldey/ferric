@@ -121,6 +121,8 @@ const FIT_MUTANTS: [GradMutation; 5] = [
     GradMutation::FitNoLr3,
 ];
 
+/// Hcore config at the file's `OMEGA` with `precision = HCORE_PRECISION`; the
+/// other fields are the defaults of `with_omega`.
 fn hcore_cfg() -> PeriodicHcoreConfig {
     PeriodicHcoreConfig {
         precision: HCORE_PRECISION,
@@ -128,6 +130,8 @@ fn hcore_cfg() -> PeriodicHcoreConfig {
     }
 }
 
+/// RS-GDF config at splitting `omega` and `lindep` with `ExxDiv::None` and
+/// budget `AMPLE`.
 fn gdf_cfg(omega: f64, lindep: f64) -> RsGdfConfig {
     RsGdfConfig {
         omega,
@@ -175,16 +179,20 @@ fn et40() -> BasisSet {
     et_aux(0.3, 2.5, 5)
 }
 
+/// The bundled `cc-pvdz-ri` auxiliary basis; panics if it is not bundled.
 fn cc_pvdz_ri() -> BasisSet {
     basis::bundled("cc-pvdz-ri").expect("cc-pvdz-ri")
 }
 
+/// A neutral hydrogen cell with atoms at `pos` (Bohr), lattice rows `lattice`
+/// (Bohr) and spin multiplicity `mult`.
 fn cell_at(pos: &[[f64; 3]], lattice: [[f64; 3]; 3], mult: usize) -> Cell {
     let mut mol: Molecule = hydrogens(pos);
     mol.multiplicity = mult;
     Cell::new(mol, lattice).expect("cell")
 }
 
+/// `pos` (Bohr) with Cartesian component `x` of atom `a` displaced by `h` Bohr.
 fn moved(pos: &[[f64; 3]], a: usize, x: usize, h: f64) -> Vec<[f64; 3]> {
     let mut p = pos.to_vec();
     p[a][x] += h;
@@ -201,6 +209,9 @@ struct Setup {
     gdf: RsGdf,
 }
 
+/// Builds the setup: the periodic hcore of `cell` in `bs`, the aux basis
+/// `aux_bs` on the same atoms, and the gradient-capable `RsGdf` at
+/// `GDF_OMEGA` and `lindep`.
 fn setup(cell: Cell, bs: &BasisSet, aux_bs: &BasisSet, lindep: f64) -> Setup {
     let prep = prep_for(&cell, bs);
     let hc = periodic_hcore(&cell, &prep, &hcore_cfg()).expect("hcore");
@@ -246,6 +257,8 @@ fn rhf_on(
     )
 }
 
+/// The RS-GDF gradient source of the setup's `gdf` and `aux`, with no aux
+/// Jacobian (aux centres on the cell's atoms).
 fn src(su: &Setup) -> RsGdfGradSource<'_> {
     RsGdfGradSource {
         gdf: &su.gdf,
@@ -254,6 +267,8 @@ fn src(su: &Setup) -> RsGdfGradSource<'_> {
     }
 }
 
+/// Default Gamma gradient config with budget `AMPLE` and the test-only
+/// `mutation`.
 fn gcfg(mutation: Option<GradMutation>) -> GammaGradConfig {
     GammaGradConfig {
         mutation,
@@ -262,6 +277,8 @@ fn gcfg(mutation: Option<GradMutation>) -> GammaGradConfig {
     }
 }
 
+/// The RS-GDF Gamma RHF gradient of `scf` at exchange divergence `exx` with
+/// test-only mutation `m`; panics on error.
 fn rhf_grad(su: &Setup, scf: &ScfResult, exx: ExxDiv, m: Option<GradMutation>) -> GammaGradient {
     gamma_rhf_gradient_rsgdf(
         &su.cell,
@@ -276,6 +293,8 @@ fn rhf_grad(su: &Setup, scf: &ScfResult, exx: ExxDiv, m: Option<GradMutation>) -
     .expect("gamma_rhf_gradient_rsgdf")
 }
 
+/// The RS-GDF Gamma UHF gradient of `scf` at exchange divergence `exx` with
+/// test-only mutation `m`; panics on error.
 fn uhf_grad(su: &Setup, scf: &ScfResult, exx: ExxDiv, m: Option<GradMutation>) -> GammaGradient {
     gamma_uhf_gradient_rsgdf(
         &su.cell,
@@ -311,10 +330,14 @@ fn uks_grad(
 
 type Mos = Option<(Array2<f64>, Array2<f64>)>;
 
+/// The `(α, β)` MO coefficients of `r` as a starting guess; panics without
+/// beta MOs.
 fn mos_of(r: &ScfResult) -> Mos {
     Some((r.mos_alpha.clone(), r.mos_beta.clone().expect("beta MOs")))
 }
 
+/// UHF config with exchange-divergence treatment `exx` and starting MOs
+/// `init`; the other fields are the defaults.
 fn uhf_cfg(exx: ExxDiv, init: Mos) -> GammaUhfConfig {
     GammaUhfConfig {
         exxdiv: exx,
@@ -323,6 +346,8 @@ fn uhf_cfg(exx: ExxDiv, init: Mos) -> GammaUhfConfig {
     }
 }
 
+/// UKS config for functional `xc` on `grid_cfg()` with exchange
+/// divergence `exx` and starting MOs `init`.
 fn uks_cfg(xc: &str, exx: ExxDiv, init: Mos) -> GammaUksConfig {
     GammaUksConfig {
         grid: grid_cfg(),
@@ -332,6 +357,8 @@ fn uks_cfg(xc: &str, exx: ExxDiv, init: Mos) -> GammaUksConfig {
     }
 }
 
+/// Gamma UHF on the RS-GDF integrals `gdf`; panics on error or if the SCF
+/// does not converge.
 fn uhf_on(
     cell: &Cell,
     prep: &PreparedBasis,
@@ -344,6 +371,8 @@ fn uhf_on(
     r
 }
 
+/// Gamma UKS on the RS-GDF integrals `gdf`; panics on error or if the SCF
+/// does not converge.
 fn uks_on(
     cell: &Cell,
     prep: &PreparedBasis,
@@ -370,6 +399,8 @@ fn as_unrestricted(r: &ScfResult) -> ScfResult {
     u
 }
 
+/// Largest element-wise `|a − b|`. `zip` truncates silently if the shapes
+/// differ.
 fn max_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
     a.iter()
         .zip(b.iter())
@@ -406,6 +437,9 @@ where
         .collect()
 }
 
+/// Largest `|g[a, x] − fd[(a, x)][k]|` over the finite-difference entries:
+/// `g` is the analytic `(natoms, 3)` gradient and `k` selects the energy
+/// column.
 fn max_fd_err(g: &Array2<f64>, fdv: &Fd, k: usize) -> f64 {
     fdv.iter()
         .map(|((a, x), v)| (g[(*a, *x)] - v[k]).abs())
@@ -439,6 +473,7 @@ fn report(tag: &str, g: &GammaGradient, err: f64) {
     );
 }
 
+/// Largest element-wise `|a|` (0 for an empty matrix).
 fn amax(a: &Array2<f64>) -> f64 {
     a.iter().fold(0.0_f64, |m, v| m.max(v.abs()))
 }
@@ -496,6 +531,8 @@ fn h2_fd() -> &'static Fd {
     })
 }
 
+/// The H2 setup: `H2_ATOMS_G` in a cubic cell of edge 4 Bohr, singlet,
+/// PySCF STO-3G with the `et40` aux basis.
 fn h2_setup() -> Setup {
     setup(
         cell_at(&H2_ATOMS_G, cubic(4.0), 1),
@@ -606,6 +643,8 @@ fn closed_shell_uks_rsgdf_gradient_is_the_rks_gradient() {
 
 // ------------------------------------------------------------------ H3 UHF
 
+/// The H3 doublet setup: `H3_ATOMS` in a cubic cell of edge `H3_A` Bohr,
+/// PySCF STO-3G with `cc-pvdz-ri`.
 fn h3_setup() -> Setup {
     setup(
         cell_at(&H3_ATOMS, cubic(H3_A), 2),
@@ -701,6 +740,8 @@ fn h3_uhf_rsgdf_ewald_and_none_forces_agree_on_one_density() {
 
 static H3_UKS_FD: OnceLock<Fd> = OnceLock::new();
 
+/// The Gamma UKS PBE0 reference of the setup at `ExxDiv::Ewald` on its
+/// RS-GDF integrals.
 fn h3_pbe0_ref(su: &Setup) -> GammaUksResult {
     uks_on(
         &su.cell,

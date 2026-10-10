@@ -154,6 +154,8 @@ fn rks(su: &Setup, functional: &str, grid: PeriodicGridConfig) -> ferric_pbc::Ga
     .unwrap_or_else(|e| panic!("gamma_rks {functional}: {e}"))
 }
 
+/// Periodic grid of `n_rad` radial and `n_ang` angular points with neighbour
+/// cutoff `d` Bohr; the other fields are the defaults of `with_size`.
 fn ssf_grid(n_rad: usize, n_ang: usize, d: f64) -> PeriodicGridConfig {
     PeriodicGridConfig {
         neighbour_cutoff: Some(d),

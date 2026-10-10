@@ -526,6 +526,7 @@ mod tests {
     use super::*;
     use ferric_core::mol::Atom;
 
+    /// A hydrogen atom (not a ghost, no ECP core) at Cartesian `(x, y, z)` Bohr.
     fn h_atom(x: f64, y: f64, z: f64) -> Atom {
         Atom {
             symbol: "H".into(),
@@ -538,6 +539,8 @@ mod tests {
         }
     }
 
+    /// A two-hydrogen test cell (neutral singlet) in the Bohr triclinic lattice
+    /// with rows `[4,0,0]`, `[0.8,4.2,0]`, `[0.5,0.6,4.5]`.
     fn cell() -> Cell {
         let mol = Molecule {
             atoms: vec![h_atom(0.1, 0.2, 0.3), h_atom(0.4, 0.5, 1.6)],

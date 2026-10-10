@@ -146,6 +146,7 @@ const HCORE_MUTANTS: [KHcorePairMutant; 3] = [
 const H3_ATOMS: [[f64; 3]; 3] = [[0.3, 0.2, 0.1], [0.35, 0.12, 1.5], [1.6, 0.9, 0.7]];
 const H3_A: f64 = 4.5;
 
+/// Runs `f` inside a fresh rayon pool of `n` threads and returns its result.
 fn in_pool<R: Send>(n: usize, f: impl FnOnce() -> R + Send) -> R {
     rayon::ThreadPoolBuilder::new()
         .num_threads(n)
@@ -161,6 +162,8 @@ fn hcore_cfg() -> PeriodicHcoreConfig {
     }
 }
 
+/// k-point SCF config with `energy_conv = 1e-13`, `grad_conv = 1e-10` and
+/// `max_iter = 400`; the other fields are the defaults.
 fn kscf_cfg() -> KScfConfig {
     KScfConfig {
         energy_conv: 1e-13,
@@ -180,6 +183,8 @@ fn gdf_cfg(split: Option<RangeSplit>) -> RsGdfConfig {
     }
 }
 
+/// k-point RS-GDF config wrapping `gdf_cfg(split)` with the test-only
+/// `mutation`.
 fn kgdf_cfg(split: Option<RangeSplit>, mutation: Option<KRsGdfMutation>) -> KRsGdfConfig {
     KRsGdfConfig {
         gdf: gdf_cfg(split),
@@ -220,6 +225,8 @@ fn tri_sp() -> (Cell, PreparedBasis, PreparedBasis) {
     (cell, prep, aux)
 }
 
+/// A neutral hydrogen cell with atoms at `pos` (Bohr), lattice rows `lattice`
+/// (Bohr) and spin multiplicity `mult`.
 fn cell_at(pos: &[[f64; 3]], lattice: [[f64; 3]; 3], mult: usize) -> Cell {
     let mut mol: Molecule = hydrogens(pos);
     mol.multiplicity = mult;

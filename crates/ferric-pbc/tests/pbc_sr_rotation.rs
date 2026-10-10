@@ -115,6 +115,7 @@ H  0.0000  0.9430 -1.1160
 H  0.0000 -0.9430 -1.1160
 ";
 
+/// Runs `f` inside a fresh rayon pool of `n` threads and returns its result.
 fn in_pool<R: Send>(n: usize, f: impl FnOnce() -> R + Send) -> R {
     rayon::ThreadPoolBuilder::new()
         .num_threads(n)
@@ -175,6 +176,8 @@ fn gdf_j3(
     (g, parts.j3)
 }
 
+/// The number of elements whose bit patterns differ; panics if the shapes
+/// differ.
 fn bit_diffs(a: &Array2<f64>, b: &Array2<f64>) -> usize {
     assert_eq!(a.dim(), b.dim());
     a.iter()
@@ -183,11 +186,14 @@ fn bit_diffs(a: &Array2<f64>, b: &Array2<f64>) -> usize {
         .count()
 }
 
+/// Asserts that `a` and `b` agree in every bit (see [`bit_diffs`]); `what`
+/// labels a failure.
 fn assert_bitwise(a: &Array2<f64>, b: &Array2<f64>, what: &str) {
     let d = bit_diffs(a, b);
     assert_eq!(d, 0, "{what}: {d} of {} elements differ in bits", a.len());
 }
 
+/// Largest element-wise `|m|` (0 for an empty matrix).
 fn max_abs(m: &Array2<f64>) -> f64 {
     m.iter().fold(0.0_f64, |a, x| a.max(x.abs()))
 }

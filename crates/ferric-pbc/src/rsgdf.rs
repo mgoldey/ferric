@@ -3249,6 +3249,9 @@ mod tests {
     use ferric_core::mol::{Atom, Molecule};
     use std::collections::HashMap;
 
+    /// A one-hydrogen doublet orbital basis with a single shell of angular
+    /// momentum `l` (`pure` or Cartesian), exponent `a` and coefficient 1, on
+    /// the atom at `at` (Bohr).
     fn one_shell_prep(l: i32, pure: bool, a: f64, at: [f64; 3]) -> PreparedBasis {
         let mut shells = HashMap::new();
         shells.insert(

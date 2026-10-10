@@ -76,6 +76,8 @@ const DIAMOND_PRIM_LATTICE: [[f64; 3]; 3] = [
 /// the prototype's split reproduces it to all 10 printed digits.
 const DIAMOND_STO3G_E: f64 = -74.0034040288;
 
+/// The periodic hcore of `prep` on `cell` at `HCORE_OMEGA` with the default
+/// precision; panics on error.
 fn hcore(cell: &Cell, prep: &PreparedBasis) -> PeriodicHcore {
     periodic_hcore(cell, prep, &PeriodicHcoreConfig::with_omega(HCORE_OMEGA)).expect("hcore")
 }
@@ -115,6 +117,8 @@ fn energy(cell: &Cell, prep: &PreparedBasis, hc: &PeriodicHcore, gdf: &RsGdf) ->
     .energy
 }
 
+/// The named timing counter of `gdf`; panics, naming the counter, if it is
+/// missing.
 fn counter(gdf: &RsGdf, name: &str) -> u64 {
     gdf.timings()
         .counter(name)

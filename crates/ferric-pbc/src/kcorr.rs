@@ -1163,6 +1163,8 @@ pub fn kpoint_drpa(
 mod tests {
     use super::*;
 
+    /// A uniform complex number with real and imaginary parts in `[-0.5, 0.5)`
+    /// drawn from the 64-bit LCG state `seed` (advanced twice; real part first).
     fn rnd_c(seed: &mut u64) -> C64 {
         let mut next = || {
             *seed = seed

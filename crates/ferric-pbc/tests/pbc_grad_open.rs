@@ -99,6 +99,8 @@ const TRI_MOVED: [[f64; 3]; 4] = [
 ];
 const TRI_COMPS: [(usize, usize); 2] = [(2, 1), (0, 2)];
 
+/// Hcore config at the file's `OMEGA` with `precision = HCORE_PRECISION`; the
+/// other fields are the defaults of `with_omega`.
 fn hcore_cfg() -> PeriodicHcoreConfig {
     PeriodicHcoreConfig {
         precision: HCORE_PRECISION,
@@ -114,12 +116,15 @@ fn grid_cfg() -> PeriodicGridConfig {
     }
 }
 
+/// A neutral hydrogen cell with atoms at `pos` (Bohr), lattice rows `lattice`
+/// (Bohr) and spin multiplicity `mult`.
 fn cell_at(pos: &[[f64; 3]], lattice: [[f64; 3]; 3], mult: usize) -> Cell {
     let mut mol: Molecule = hydrogens(pos);
     mol.multiplicity = mult;
     Cell::new(mol, lattice).expect("cell")
 }
 
+/// `pos` (Bohr) with Cartesian component `x` of atom `a` displaced by `h` Bohr.
 fn moved(pos: &[[f64; 3]], a: usize, x: usize, h: f64) -> Vec<[f64; 3]> {
     let mut p = pos.to_vec();
     p[a][x] += h;
@@ -157,10 +162,14 @@ fn setup(cell: Cell, bs: &BasisSet) -> Setup {
 
 type Mos = Option<(Array2<f64>, Array2<f64>)>;
 
+/// The `(α, β)` MO coefficients of `r` as a starting guess; panics without
+/// beta MOs.
 fn mos_of(r: &ScfResult) -> Mos {
     Some((r.mos_alpha.clone(), r.mos_beta.clone().expect("beta MOs")))
 }
 
+/// UHF config with exchange-divergence treatment `exx` and starting MOs
+/// `init`; the other fields are the defaults.
 fn uhf_cfg(exx: ExxDiv, init: Mos) -> GammaUhfConfig {
     GammaUhfConfig {
         exxdiv: exx,
@@ -169,6 +178,8 @@ fn uhf_cfg(exx: ExxDiv, init: Mos) -> GammaUhfConfig {
     }
 }
 
+/// UKS config for functional `xc` on `grid_cfg()` with exchange
+/// divergence `exx` and starting MOs `init`.
 fn uks_cfg(xc: &str, exx: ExxDiv, init: Mos) -> GammaUksConfig {
     GammaUksConfig {
         grid: grid_cfg(),
@@ -178,6 +189,8 @@ fn uks_cfg(xc: &str, exx: ExxDiv, init: Mos) -> GammaUksConfig {
     }
 }
 
+/// RKS config for functional `xc` on `grid_cfg()` with exchange
+/// divergence `exx`.
 fn rks_cfg(xc: &str, exx: ExxDiv) -> GammaRksConfig {
     GammaRksConfig {
         grid: grid_cfg(),
@@ -186,6 +199,8 @@ fn rks_cfg(xc: &str, exx: ExxDiv) -> GammaRksConfig {
     }
 }
 
+/// Gamma UHF on the setup's dense-AFT integrals; panics on error or if the
+/// SCF does not converge.
 fn uhf(su: &Setup, cfg: &GammaUhfConfig) -> GammaUhfResult {
     let r = gamma_uhf(
         &su.cell,
@@ -199,6 +214,8 @@ fn uhf(su: &Setup, cfg: &GammaUhfConfig) -> GammaUhfResult {
     r
 }
 
+/// Gamma UKS on the setup's dense-AFT integrals; panics on error or if the
+/// SCF does not converge.
 fn uks(su: &Setup, cfg: &GammaUksConfig) -> GammaUksResult {
     let r = gamma_uks(
         &su.cell,
@@ -212,6 +229,8 @@ fn uks(su: &Setup, cfg: &GammaUksConfig) -> GammaUksResult {
     r
 }
 
+/// Gamma RKS on the setup's dense-AFT integrals; returns the SCF result and
+/// panics on error.
 fn rks(su: &Setup, cfg: &GammaRksConfig) -> ScfResult {
     gamma_rks(
         &su.cell,
@@ -224,6 +243,7 @@ fn rks(su: &Setup, cfg: &GammaRksConfig) -> ScfResult {
     .scf
 }
 
+/// Default Gamma gradient config with the test-only `mutation`.
 fn gcfg(mutation: Option<GradMutation>) -> GammaGradConfig {
     GammaGradConfig {
         mutation,
@@ -231,6 +251,8 @@ fn gcfg(mutation: Option<GradMutation>) -> GammaGradConfig {
     }
 }
 
+/// The dense-AFT Gamma UHF gradient of `scf` at exchange divergence `exx`
+/// with test-only mutation `m`; panics on error.
 fn uhf_grad(su: &Setup, scf: &ScfResult, exx: ExxDiv, m: Option<GradMutation>) -> GammaGradient {
     gamma_uhf_gradient_with(
         &su.cell,
@@ -296,6 +318,8 @@ fn as_unrestricted(r: &ScfResult) -> ScfResult {
     u
 }
 
+/// Largest element-wise `|a − b|`. `zip` truncates silently if the shapes
+/// differ.
 fn max_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
     a.iter()
         .zip(b.iter())
@@ -331,12 +355,17 @@ where
         .collect()
 }
 
+/// Largest `|g[a, x] − fd[(a, x)][k]|` over the finite-difference entries:
+/// `g` is the analytic `(natoms, 3)` gradient and `k` selects the energy
+/// column.
 fn max_fd_err(g: &Array2<f64>, fdv: &[((usize, usize), Vec<f64>)], k: usize) -> f64 {
     fdv.iter()
         .map(|((a, x), v)| (g[(*a, *x)] - v[k]).abs())
         .fold(0.0_f64, f64::max)
 }
 
+/// The H3 doublet cell: `H3_ATOMS` in a cubic lattice of edge `H3_A` Bohr,
+/// multiplicity 2.
 fn h3_cell() -> Cell {
     cell_at(&H3_ATOMS, cubic(H3_A), 2)
 }
@@ -652,6 +681,9 @@ static H2_RKS_FD: OnceLock<Vec<((usize, usize), Vec<f64>)>> = OnceLock::new();
 
 const H2_RKS_XCS: [&str; 2] = ["LDA", "PBE0"];
 
+/// The cached finite-difference RKS energies for the H2 cell
+/// (`GRAD_H2_ATOMS`, cubic edge 4 Bohr) over `H2_COMPS` and every
+/// functional of `H2_RKS_XCS`, computed on first use.
 fn h2_rks_fd() -> &'static Vec<((usize, usize), Vec<f64>)> {
     H2_RKS_FD.get_or_init(|| {
         let bs = pyscf_sto3g_h();

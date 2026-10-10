@@ -273,6 +273,7 @@ pub fn solve_krhf(
     Ok(r)
 }
 
+/// Conjugate transpose `Mᴴ`.
 pub(crate) fn herm_t(m: &Array2<Complex64>) -> Array2<Complex64> {
     m.t().mapv(|z| z.conj())
 }
@@ -364,6 +365,8 @@ pub(crate) struct KDiis {
     errs: VecDeque<Vec<Array2<Complex64>>>,
 }
 
+/// Real inner product `Σ_blocks Re tr(Aᴴ B)` over stacked k blocks (the DIIS
+/// Gram element).
 fn gram(a: &[Array2<Complex64>], b: &[Array2<Complex64>]) -> f64 {
     a.iter()
         .zip(b)
@@ -434,6 +437,8 @@ fn diis_coeffs(b: &[Vec<f64>]) -> Option<Vec<f64>> {
 }
 
 impl KDiis {
+    /// An empty DIIS history keeping at most `cap` vectors; `cap < 2` disables
+    /// extrapolation (`step` returns its input).
     pub(crate) fn new(cap: usize) -> Self {
         Self {
             cap,
@@ -442,6 +447,10 @@ impl KDiis {
         }
     }
 
+    /// Pushes the Fock blocks `f` and error blocks `e`, drops the oldest beyond
+    /// `cap`, and returns the DIIS-extrapolated Fock. Returns `f` unchanged when
+    /// fewer than two vectors are stored or every subspace down to size 2 is
+    /// singular (the oldest vector is dropped on each singular attempt).
     pub(crate) fn step(
         &mut self,
         f: &[Array2<Complex64>],
@@ -546,6 +555,8 @@ pub(crate) fn aufbau(
     Ok((occ, homo, lumo))
 }
 
+/// The RHF density at one k: `2 · C_occ C_occᴴ` over the columns with
+/// `occ[i] > 0` (see [`occupied_projector`]).
 fn density(c: &Array2<Complex64>, occ: &[f64]) -> Array2<Complex64> {
     occupied_projector(c, occ).mapv(|z| z * 2.0)
 }
@@ -787,6 +798,10 @@ fn solve_k_closed_shell(
     ))
 }
 
+/// Assembles a [`KScfResult`] from the converged (or last) iterate;
+/// `nocc_per_k` counts the levels with `occupations > 0` at each k, and
+/// `kpts` is the mesh's list. `timings` is left at its default for the caller
+/// to fill.
 #[allow(clippy::too_many_arguments)]
 fn finish(
     mesh: &KPointMesh,

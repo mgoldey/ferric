@@ -198,6 +198,8 @@ fn hi_basis(full: bool) -> BasisSet {
     }
 }
 
+/// An atom of `symbol` and atomic number `z` at Cartesian `r` Bohr (not a
+/// ghost, no ECP core).
 fn atom(symbol: &str, z: i32, r: [f64; 3]) -> Atom {
     Atom {
         symbol: symbol.into(),
@@ -235,6 +237,8 @@ fn hi_molecule(pos: &[[f64; 3]], bs: &BasisSet, apply: bool) -> Molecule {
     mol
 }
 
+/// The HI test cell: `hi_molecule(&HI_ATOMS, bs, true)` in the lattice
+/// `HI_A`.
 fn hi_cell(bs: &BasisSet) -> Cell {
     Cell::new(hi_molecule(&HI_ATOMS, bs, true), HI_A).expect("HI cell")
 }
@@ -265,14 +269,17 @@ fn supercell(cell: &Cell, bs: &BasisSet, n: [usize; 3]) -> Cell {
     Cell::new(hi_molecule(&pos, bs, true), lat).expect("supercell")
 }
 
+/// A `PreparedBasis` of `bs` on `cell`'s atoms.
 fn prep(cell: &Cell, bs: &BasisSet) -> PreparedBasis {
     PreparedBasis::new(cell.mol(), bs).expect("prep")
 }
 
+/// Hcore config at the file's `OMEGA` with the default precision.
 fn hcore_cfg() -> PeriodicHcoreConfig {
     PeriodicHcoreConfig::with_omega(OMEGA)
 }
 
+/// Largest element-wise modulus `|a − b|`; panics if the shapes differ.
 fn cmax(a: &Array2<Complex64>, b: &Array2<Complex64>) -> f64 {
     assert_eq!(a.dim(), b.dim());
     a.iter()
@@ -280,6 +287,8 @@ fn cmax(a: &Array2<Complex64>, b: &Array2<Complex64>) -> f64 {
         .fold(0.0_f64, |m, (x, y)| m.max((x - y).norm()))
 }
 
+/// The Gamma-point periodic ECP matrix of `cell` in basis `p`; panics if
+/// the ECP build fails or the basis carries no ECP.
 fn gamma_ecp(cell: &Cell, p: &PreparedBasis, cfg: &PeriodicEcpConfig) -> Array2<f64> {
     periodic_ecp_images(cell, p, cfg)
         .expect("periodic ECP")
@@ -289,6 +298,8 @@ fn gamma_ecp(cell: &Cell, p: &PreparedBasis, cfg: &PeriodicEcpConfig) -> Array2<
 
 // ------------------------------------------------------------ SCF drivers
 
+/// RHF config without the SAD guess, `density_conv = 1e-10` and the given
+/// `max_iter`.
 fn scf_cfg(max_iter: usize) -> RhfConfig {
     RhfConfig {
         use_sad_guess: false,
@@ -613,6 +624,7 @@ fn ecp_lattice_sum_converges_like_a_gaussian_in_the_cutoff() {
 
 // ============================================================ (b) Bloch sum
 
+/// The Gamma-centred `1 × 1 × 3` k-mesh of `cell`.
 fn mesh_113(cell: &Cell) -> KPointMesh {
     KPointMesh::gamma_centred(cell, [1, 1, 3]).unwrap()
 }
@@ -733,6 +745,9 @@ fn molecular_ecp_h_k(
         .collect()
 }
 
+/// The Gamma hcore with its periodic ECP part replaced by the
+/// molecular-only ECP matrix (`EcpMutation::MolecularOnly`):
+/// `h − v_ecp + V_mol`.
 fn molecular_ecp_h_gamma(cell: &Cell, p: &PreparedBasis, hc: &PeriodicHcore) -> Array2<f64> {
     let cfg = PeriodicEcpConfig {
         mutation: Some(EcpMutation::MolecularOnly),

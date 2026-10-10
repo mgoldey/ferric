@@ -112,6 +112,8 @@ const BOX_UNSHIFTED: [f64; 3] = [-1.980e-3, -1.589e-3, -1.321e-3];
 const PROTO_C3_FIT: f64 = 0.671358;
 const PROTO_C3_PRED: f64 = 0.67109405;
 
+/// The periodic hcore of `prep` on `cell` at `HCORE_OMEGA` with the default
+/// precision; panics on error.
 fn hcore(cell: &Cell, prep: &PreparedBasis) -> PeriodicHcore {
     periodic_hcore(cell, prep, &PeriodicHcoreConfig::with_omega(HCORE_OMEGA)).expect("hcore")
 }
@@ -128,6 +130,8 @@ fn dense_none(cell: &Cell, prep: &PreparedBasis, hc: &PeriodicHcore) -> DenseAft
     .expect("dense AFT")
 }
 
+/// RS-GDF config at splitting parameter `omega` with `ExxDiv::None` and
+/// budget `AMPLE`; the other fields are the defaults.
 fn gdf_cfg(omega: f64) -> RsGdfConfig {
     RsGdfConfig {
         omega,

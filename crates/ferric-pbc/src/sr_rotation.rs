@@ -659,6 +659,8 @@ impl RotatedBasis {
 mod tests {
     use super::*;
 
+    /// A Cartesian (non-pure) shell of angular momentum `l` with the given
+    /// exponents `e` and coefficients `c`.
     fn sh(l: i32, e: &[f64], c: &[f64]) -> Shell {
         Shell {
             l,
