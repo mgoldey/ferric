@@ -2142,6 +2142,23 @@ pub fn esp_on_surface(
     vdw_scale: f64,
     n_angular: usize,
 ) -> Result<(Vec<[f64; 3]>, Vec<f64>), FerricError> {
+    let (points, esp, _n_buried) =
+        esp_on_surface_counted(mol, prep, density, vdw_scale, n_angular)?;
+    Ok((points, esp))
+}
+
+/// [`esp_on_surface`] that also reports how many Lebedev sample points were
+/// dropped for lying inside a neighbouring atom's scaled radius.
+///
+/// Returns `(points, esp, n_buried)`. `points.len() + n_buried` equals
+/// `n_atoms * n_angular`; an isolated atom always has `n_buried == 0`.
+pub fn esp_on_surface_counted(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    density: &Array2<f64>,
+    vdw_scale: f64,
+    n_angular: usize,
+) -> Result<(Vec<[f64; 3]>, Vec<f64>, usize), FerricError> {
     use ferric_pcm::radii::bondi_radius_bohr;
     use ferric_quadrature::lebedev::lebedev;
 
@@ -2159,6 +2176,7 @@ pub fn esp_on_surface(
         .collect();
 
     let mut points: Vec<[f64; 3]> = Vec::with_capacity(pos.len() * unit.len());
+    let mut n_buried = 0usize;
     for (a, c) in pos.iter().enumerate() {
         for u in &unit {
             let p = [
@@ -2175,7 +2193,9 @@ pub fn esp_on_surface(
                 let d2 = (p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2);
                 d2 < radii[b] * radii[b]
             });
-            if !buried {
+            if buried {
+                n_buried += 1;
+            } else {
                 points.push(p);
             }
         }
@@ -2186,7 +2206,7 @@ pub fn esp_on_surface(
         ));
     }
     let esp = esp_at_points(mol, prep, density, &points)?;
-    Ok((points, esp))
+    Ok((points, esp, n_buried))
 }
 
 #[cfg(test)]

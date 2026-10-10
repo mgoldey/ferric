@@ -4782,6 +4782,42 @@ fn esp_at_points(
         .map_err(make_err)
 }
 
+/// Electrostatic potential on a molecular van der Waals surface.
+///
+/// A Lebedev sphere of `n_angular` points is placed at `vdw_scale` x the Bondi
+/// radius of every atom; points inside another atom's scaled radius are
+/// dropped. Returns `(points, esp, n_buried)`: `points` is an (M, 3) array in
+/// **Bohr**, `esp` the potential there in Hartree/e (same sign convention as
+/// `esp_at_points`), and `n_buried` the number of sample points dropped as
+/// buried. `result` is an `RhfResult` or `DftResult` from a converged SCF.
+#[pyfunction]
+#[pyo3(signature = (mol, basis_set, result, vdw_scale=1.4, n_angular=110))]
+fn esp_on_surface<'py>(
+    py: Python<'py>,
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+    result: DensitySource,
+    vdw_scale: f64,
+    n_angular: usize,
+) -> PyResult<(Bound<'py, PyArray2<f64>>, Vec<f64>, usize)> {
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    let (pts, esp, n_buried) = ferric_scf::properties::esp_on_surface_counted(
+        &mol.inner,
+        &prep,
+        result.density(),
+        vdw_scale,
+        n_angular,
+    )
+    .map_err(make_err)?;
+    let mut arr = ndarray::Array2::<f64>::zeros((pts.len(), 3));
+    for (i, p) in pts.iter().enumerate() {
+        for (k, v) in p.iter().enumerate() {
+            arr[(i, k)] = *v;
+        }
+    }
+    Ok((PyArray2::from_array(py, &arr), esp, n_buried))
+}
+
 /// Hirshfeld partial charges (units of e). `result` is an `RhfResult` or
 /// `DftResult` from a converged SCF.
 ///
@@ -10311,6 +10347,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyIrcResult>()?;
     m.add_function(wrap_pyfunction!(esp_at_atoms, m)?)?;
     m.add_function(wrap_pyfunction!(esp_at_points, m)?)?;
+    m.add_function(wrap_pyfunction!(esp_on_surface, m)?)?;
     m.add_function(wrap_pyfunction!(hirshfeld_charges, m)?)?;
     m.add_function(wrap_pyfunction!(lowdin_charges, m)?)?;
     m.add_function(wrap_pyfunction!(run_drpa, m)?)?;
