@@ -75,6 +75,12 @@ pub struct KDenseAftConfig {
     pub budget_bytes: Option<usize>,
     #[doc(hidden)]
     pub mutation: Option<KMutation>,
+    /// Range-separated exchange ([`crate::rsh`]): when set, the K kernel is
+    /// `4π/K² [c_sr + (c_lr − c_sr) e^{−K²/4ω²}]` (the fractions are INSIDE
+    /// the kernel, so the SCF must use an exact-exchange fraction of 1) and
+    /// the `ExxDiv::Ewald` constant is the mixed supercell Madelung constant.
+    /// J is unaffected.
+    pub rsh: Option<crate::rsh::RshParams>,
 }
 
 impl Default for KDenseAftConfig {
@@ -85,6 +91,7 @@ impl Default for KDenseAftConfig {
             max_bytes: DEFAULT_DENSE_AFT_MAX_BYTES,
             budget_bytes: None,
             mutation: None,
+            rsh: None,
         }
     }
 }
@@ -136,6 +143,9 @@ impl KDenseAftEri {
             return Err(FerricError::General(format!(
                 "KDenseAftEri: need {nk} overlap matrices of shape ({nao}, {nao})"
             )));
+        }
+        if let Some(r) = &cfg.rsh {
+            r.validate()?;
         }
         if !(f64::MIN_POSITIVE..1.0).contains(&cfg.precision) {
             return Err(FerricError::General(format!(
@@ -221,6 +231,7 @@ impl KDenseAftEri {
             let kof: Vec<usize> = (0..nk).map(|j| mesh.k_minus_q(j, mq)).collect();
             let minus: Vec<usize> = (0..nk).map(|k| mesh.minus(k)).collect();
             let kernel_at_g = cfg.mutation == Some(KMutation::KernelAtG);
+            let rsh = cfg.rsh;
             let chunk_budget = ledger.remaining().min(G_CHUNK_BYTES);
             let jref = &mut jker;
             let kref = &mut kker;
@@ -263,16 +274,33 @@ impl KDenseAftEri {
                         p
                     })
                     .collect();
-                let scaled = |p: &Array2<Complex64>| {
+                // K kernel: v(K) times the range-separation factor (if any).
+                let vk_w: Vec<f64> = match rsh {
+                    None => vv.clone(),
+                    Some(r) => kv
+                        .iter()
+                        .zip(&vv)
+                        .map(|(k, v)| {
+                            let x = if kernel_at_g {
+                                [k[0] - q[0], k[1] - q[1], k[2] - q[2]]
+                            } else {
+                                *k
+                            };
+                            v * r.kernel_factor(x[0] * x[0] + x[1] * x[1] + x[2] * x[2])
+                        })
+                        .collect(),
+                };
+                let scale_by = |p: &Array2<Complex64>, w: &[f64]| {
                     let mut pv = p.clone();
-                    for (mut col, v) in pv.columns_mut().into_iter().zip(&vv) {
+                    for (mut col, v) in pv.columns_mut().into_iter().zip(w) {
                         col.mapv_inplace(|z| z * *v);
                     }
                     pv
                 };
+                let scaled = |p: &Array2<Complex64>| scale_by(p, &vv);
                 let herm = |p: &Array2<Complex64>| p.t().mapv(|z| z.conj());
                 for j in 0..nk {
-                    let blk = scaled(&pj[j]).dot(&herm(&pj[j]));
+                    let blk = scale_by(&pj[j], &vk_w).dot(&herm(&pj[j]));
                     let k = kof[j];
                     kref[k * nk + j] += &blk;
                     if iqm != iq {
@@ -300,10 +328,17 @@ impl KDenseAftEri {
                 sink,
             )?;
         }
-        let madelung_ewald = if cfg.mutation == Some(KMutation::PrimitiveMadelung) {
-            madelung_constant(cell)?
-        } else {
-            mesh.madelung(cell)?
+        let madelung_ewald = match cfg.rsh {
+            Some(r) => {
+                let lat = if cfg.mutation == Some(KMutation::PrimitiveMadelung) {
+                    *cell.lattice()
+                } else {
+                    mesh.supercell_lattice()
+                };
+                r.madelung(&Cell::new(cell.mol().clone(), lat)?)?
+            }
+            None if cfg.mutation == Some(KMutation::PrimitiveMadelung) => madelung_constant(cell)?,
+            None => mesh.madelung(cell)?,
         };
         let madelung = match exxdiv {
             ExxDiv::None => 0.0,
