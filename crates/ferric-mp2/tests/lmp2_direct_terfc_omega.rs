@@ -95,12 +95,27 @@ fn have_tables() -> bool {
 }
 
 /// (label, r0 Bohr, omega Bohr^-1) for r0 = 1.0 A: linked and sharp.
-fn settings(r0_ang: f64) -> [(&'static str, f64, f64); 2] {
+fn settings(r0_ang: f64) -> [(&'static str, f64, f64); 4] {
     let r0 = r0_ang * ANG;
+    // r0*omega = 8, 16: the "much sharper omega" direction. Their integrals
+    // are validated separately (m4c in ferric-integrals,
+    // scripts/validation/terfc_omega_fourier_check.py) before any energy here
+    // is trusted.
     [
         ("linked r0w=1/sqrt2", r0, (0.5f64).sqrt() / r0),
         ("sharp  r0w=4", r0, 4.0 / r0),
+        ("sharp  r0w=8", r0, 8.0 / r0),
+        ("sharp  r0w=16", r0, 16.0 / r0),
     ]
+}
+
+/// Smallest eigenvalue of the terfc 2-index aux metric (positive-definiteness
+/// witness for the robust fit; the terfc metric inverse is Cholesky).
+fn min_metric_eig(su: &Setup, op: Operator) -> f64 {
+    use ndarray_linalg::Eigh;
+    let v = ferric_integrals::threeindex::coulomb_metric_2c(op, &su.dfbs).unwrap();
+    let (w, _) = v.eigh(ndarray_linalg::UPLO::Lower).unwrap();
+    w.iter().cloned().fold(f64::INFINITY, f64::min)
 }
 
 fn direct_e(su: &Setup, op: Operator, eps: f64, fc: usize, maps: &DirectConfig) -> f64 {
@@ -110,9 +125,10 @@ fn direct_e(su: &Setup, op: Operator, eps: f64, fc: usize, maps: &DirectConfig) 
         compute_reference: false,
         ..Default::default()
     };
-    let (r, _) =
-        amplitude_lmp2_direct(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &cfg, maps)
-            .unwrap();
+    let (r, _) = amplitude_lmp2_direct(
+        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &cfg, maps,
+    )
+    .unwrap();
     assert!(r.cg_converged);
     r.e_corr
 }
@@ -144,6 +160,9 @@ fn anchor(xyz: &str, fc: usize) {
         let e_ri = ri_e(&su, op, fc);
         let e_dir = direct_e(&su, op, 0.0, fc, &trivial_maps());
         let d = (e_dir - e_ri).abs();
+        let lam_min = min_metric_eig(&su, op);
+        eprintln!("TERFC-OMEGA PD {xyz} {label}: min eig(P|Q) = {lam_min:.3e}");
+        assert!(lam_min > 0.0, "{xyz} {label}: terfc metric not PD");
         eprintln!(
             "TERFC-OMEGA ANCHOR {xyz} {label}: direct {e_dir:.10} ri_mp2 {e_ri:.10} |d|={d:.3e} \
              (coulomb {e_coul:.10}, ratio {:.4})",
@@ -204,7 +223,7 @@ fn terfc_omega_linked_is_monotone_and_both_settings_reach_coulomb_at_large_r0() 
     }
     let su = setup("water.xyz", "6-31g");
     let e_coul = ri_e(&su, Operator::coulomb(), 0);
-    for ratio in [(0.5f64).sqrt(), 4.0] {
+    for ratio in [(0.5f64).sqrt(), 4.0, 8.0, 16.0] {
         let mut prev = 0.0f64;
         let mut line = String::new();
         // 0.5 .. 4 A; omega = ratio / r0 keeps r0*omega fixed.

@@ -2470,7 +2470,16 @@ fn run_att_rimp2_local(
         eprintln!("config error: {e}");
         std::process::exit(1);
     });
-    run_rimp2_local(cfg, &model, mol, bs, prep, att_operator, result, budget_bytes);
+    run_rimp2_local(
+        cfg,
+        &model,
+        mol,
+        bs,
+        prep,
+        att_operator,
+        result,
+        budget_bytes,
+    );
     true
 }
 
@@ -2588,18 +2597,12 @@ fn run_att_rimp2_terfc(
         memory_budget_bytes: budget_bytes,
         ..Default::default()
     };
-    let (sc, _) = ferric_mp2::rimp2::ri_mp2_spin_components(
-        mol,
-        prep,
-        dfbs,
-        terfc_op,
-        result,
-        &mp2_config,
-    )
-    .unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
+    let (sc, _) =
+        ferric_mp2::rimp2::ri_mp2_spin_components(mol, prep, dfbs, terfc_op, result, &mp2_config)
+            .unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
     let total = result.energy + sc.e_total;
     println!(
         "Attenuated RI-MP2 (terfc)/{} (aux: {}, r0={:.3} Å{}) on {}",

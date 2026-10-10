@@ -1770,8 +1770,23 @@ void boys_upto(int mmax, double T, double *F) {
 // quadrature instead. See wiki/perf-tasks/terf-closed-form-asymptotic.md.
 constexpr double TERF_ASYMPTOTIC_S = 50.0;
 
+// Far-field test for the G_m -> F_m(S) shortcut. The S > 50 cut alone was
+// derived on the curvature-linked s <= 1/2 regime. terf = 1/2[erf(w(r+r0)) +
+// erf(w(r-r0))] only collapses to the Coulomb-form Boys function when the
+// pair is beyond the r0 shell by many 1/w, i.e. when sqrt(S) - sqrt(s) =
+// phi (R - r0) >> 1 (the neglected piece is ~erfc(sqrt(S) - sqrt(s))). With
+// decoupled omega (Operator::terfc_with_omega) s = phi^2 r0^2 reaches
+// ~(r0*omega)^2, so S in (50, (6+sqrt(s))^2) is NOT far field: measured miss
+// of O(1) in terfc/coulomb (2-center oracle, p=30 q=45 D=2 Bohr, r0*omega=16)
+// before this guard. The 6.0 margin keeps every linked-regime call
+// (s <= 1/2, S > 50 => sqrt(S) - sqrt(s) >= 6.36) on the old Boys shortcut,
+// so linked results are bit-identical.
+inline bool terf_far_field(double S, double s) {
+    return S > TERF_ASYMPTOTIC_S && std::sqrt(S) - std::sqrt(s) > 6.0;
+}
+
 void terf_G_series(double S, double s, int mmax, double *G) {
-    if (S > TERF_ASYMPTOTIC_S) {
+    if (terf_far_field(S, s)) {
         boys_upto(mmax, S, G);
         return;
     }
@@ -2120,7 +2135,7 @@ void terf_delta(double S, double s, int mmax, double *D) {
 // AND s is small (the curvature-constrained case), and keep terf_G_series for
 // the large-s regime if raw G is ever needed there.
 void terf_G_tail(double S, double s, int mmax, double *G) {
-    if (S > TERF_ASYMPTOTIC_S) {
+    if (terf_far_field(S, s)) {
         // Same far-field shortcut the series takes: G_m -> F_m(S).
         boys_upto(mmax, S, G);
         return;
