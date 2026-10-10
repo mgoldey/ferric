@@ -137,8 +137,21 @@ const ORBITAL_LINDEP: f64 = 1e-6;
 /// across it.
 const S_MARGIN: f64 = 1e-5;
 /// Gradient-only nucleus exponents printed (not asserted) next to the
-/// default 1e10: the libint floor moves with it, a missing term does not.
-const NUC_SCAN: [f64; 3] = [1e8, 1e9, 1e11];
+/// default: the libint floor moves with it, a missing term does not.
+/// `FERRIC_NUC_EXP_SCAN="1e7,1e8,1e9"` overrides the list.
+fn nuc_scan() -> Vec<f64> {
+    match std::env::var("FERRIC_NUC_EXP_SCAN") {
+        Ok(s) if !s.trim().is_empty() => s
+            .split(',')
+            .map(|t| {
+                t.trim()
+                    .parse::<f64>()
+                    .unwrap_or_else(|e| panic!("FERRIC_NUC_EXP_SCAN entry {t:?}: {e}"))
+            })
+            .collect(),
+        _ => vec![1e8, 1e9, 1e11],
+    }
+}
 
 const ALL9: [(usize, usize); 9] = [
     (0, 0),
@@ -927,7 +940,7 @@ fn lih_sto3g_dense_aft_rhf_forces_match_fd_and_catch_wsign() {
         assert!(g.net_force < NET_FORCE_BAR, "ΣF {:e}", g.net_force);
         gs.push(g);
     }
-    for nuc in NUC_SCAN {
+    for nuc in nuc_scan() {
         let e = max_fd_err(&grad(&scf_n, ExxDiv::None, None, Some(nuc)).grad, &fdv, 0);
         eprintln!("  nucleus exponent {nuc:e}: max|analytic − FD| = {e:.2e}");
     }
@@ -1018,7 +1031,7 @@ fn rhf_rsgdf_force_case(
         assert_eq!(g.fit.as_ref().unwrap().n_dropped, n_drop_ref);
         gs.push(g);
     }
-    for nuc in NUC_SCAN {
+    for nuc in nuc_scan() {
         let e = max_fd_err(&grad(&scf_n, ExxDiv::None, None, Some(nuc)).grad, &fdv, 0);
         eprintln!("  {tag} nucleus exponent {nuc:e}: max|analytic − FD| = {e:.2e}");
     }
@@ -1181,7 +1194,7 @@ fn rhf_rsgdf_stress_case(
             "{tag}: J2 G = 0 volume term must be live: {j2g0:e}"
         );
     }
-    for nuc in NUC_SCAN {
+    for nuc in nuc_scan() {
         let rich = richardson(&fd_h[0], &fd_h2[0]);
         let st = stress(&scf_n, ExxDiv::None, None, Some(nuc));
         eprintln!(
@@ -1391,7 +1404,7 @@ fn oh_ccpvdz_uhf_rsgdf_forces_match_fd() {
         assert!(g.net_force < NET_FORCE_BAR, "{tag}: ΣF {:e}", g.net_force);
         gs.push(g);
     }
-    for nuc in NUC_SCAN {
+    for nuc in nuc_scan() {
         let e = max_fd_err(&grad(&none, ExxDiv::None, None, Some(nuc)).grad, &fdv, 0);
         eprintln!("  {tag} nucleus exponent {nuc:e}: max|analytic − FD| = {e:.2e}");
     }

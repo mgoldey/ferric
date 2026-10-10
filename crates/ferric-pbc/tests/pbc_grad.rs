@@ -623,6 +623,36 @@ fn triclinic_sp_force_matches_fd_of_own_energy() {
         assert!(err < 5e-7, "exxdiv {k}: {err:e}");
         assert!(rr.net_force < 1e-10, "ΣF {:e}", rr.net_force);
     }
+    // Gradient-only nucleus-exponent scan (printed, not asserted); override
+    // with FERRIC_NUC_EXP_SCAN="1e7,1e8,...".
+    let scan: Vec<f64> = match std::env::var("FERRIC_NUC_EXP_SCAN") {
+        Ok(s) if !s.trim().is_empty() => s
+            .split(',')
+            .map(|t| t.trim().parse::<f64>().expect("FERRIC_NUC_EXP_SCAN entry"))
+            .collect(),
+        _ => vec![1e7, 1e8, 1e9, 1e10],
+    };
+    {
+        let (prep, hc, base) = build(&cell, &bs);
+        for nuc in scan {
+            for (k, exx) in [ExxDiv::None, ExxDiv::Ewald].into_iter().enumerate() {
+                let eri = base.clone().with_exxdiv(&cell, exx).unwrap();
+                let scf = gamma_rhf(&cell, &prep, &hc, &eri);
+                let cfg = GammaGradConfig {
+                    nucleus_exponent: Some(nuc),
+                    ..Default::default()
+                };
+                let g =
+                    gamma_rhf_gradient_with(&cell, &prep, &hcore_cfg(), &hc, &eri, &scf, exx, &cfg)
+                        .expect("gamma gradient");
+                eprintln!(
+                    "  triclinic s+p nucleus exponent {nuc:e} exxdiv {}: max|analytic - FD| = {:.2e}",
+                    ["none", "ewald"][k],
+                    max_fd_err(&g.grad, &fdv, k)
+                );
+            }
+        }
+    }
     let d = max_diff(&r[0].grad, &r[1].grad);
     eprintln!("triclinic: |F_ewald − F_none| = {d:.2e}");
     // Two INDEPENDENT SCFs (commutators 4e-12 / 6e-11 here): measured
