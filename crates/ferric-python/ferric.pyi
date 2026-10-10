@@ -2617,6 +2617,10 @@ def run_rimp2(
     batch_merge: int | None = None,
     gate_cal: float | None = None,
     virt_schwarz_kappa: float | None = None,
+    att_operator: str | None = None,
+    omega: float | None = None,
+    att_r0: float | None = None,
+    att_omega: float | None = None,
 ) -> RiMp2Result:
     """Resolution-of-identity (density-fitted) MP2. Exact by default.
 
@@ -2632,6 +2636,15 @@ def run_rimp2(
     `[local]` section: every local kwarg is a ValueError on the exact method,
     and `kappa` a ValueError on the local one. `result.local` is None for the
     exact method, else the local model dict.
+
+    Local runs only: `att_operator="erfc"|"terfc"` runs the local MP2 of the
+    attenuated correlation (the SCF stays full Coulomb) with the CLI's `[mp2]`
+    keys of the same names: `omega` (1/Angstrom, erfc, default 0.420),
+    `att_r0` (Angstrom, terfc, default 1.05) and `att_omega` (1/Angstrom,
+    terfc only: the decoupled seam sharpness; omitted = the linked
+    1/(r0*sqrt(2))). terfc needs `FERRIC_TERF_TABLE_DIR` and `schwarz_skip=0.0`
+    with `integral_direct=True`. These four are a ValueError on the exact
+    method (use `run_terfc_rimp2` / `run_attenuated_rimp2` there).
     """
     ...
 
