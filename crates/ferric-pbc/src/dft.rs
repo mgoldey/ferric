@@ -1267,6 +1267,16 @@ impl LatticeAoHess<'_> {
 /// fraction)`. Refuses RSH, meta-GGA, VV10 and scaled composites (double
 /// hybrids) by name.
 pub fn resolve_periodic_functional(name: &str) -> Result<(XcDef, f64), FerricError> {
+    resolve_periodic_functional_mgga(name, false)
+}
+
+/// [`resolve_periodic_functional`] with the meta-GGA refusal optional
+/// (`allow_mgga = true` lets SCAN / r2SCAN / TPSS through; the k-point path
+/// supplies tau, [`crate::kdft`]). Every other refusal is unchanged.
+pub fn resolve_periodic_functional_mgga(
+    name: &str,
+    allow_mgga: bool,
+) -> Result<(XcDef, f64), FerricError> {
     let def = xc_def_from_name(name)
         .map_err(|e| FerricError::General(format!("periodic DFT: functional {name:?}: {e:?}")))?;
     if def.cam.is_some() {
@@ -1279,10 +1289,11 @@ pub fn resolve_periodic_functional(name: &str) -> Result<(XcDef, f64), FerricErr
         }
         .into());
     }
-    if def
-        .funcs
-        .iter()
-        .any(|f| matches!(f.family(), FunctionalFamily::MetaGga))
+    if !allow_mgga
+        && def
+            .funcs
+            .iter()
+            .any(|f| matches!(f.family(), FunctionalFamily::MetaGga))
     {
         return Err(PeriodicDftError::Unsupported {
             feature: "meta-GGA",

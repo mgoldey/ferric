@@ -496,6 +496,10 @@ pub fn solve_kroks_on_grid(
     grid: &PeriodicGrid,
     cfg: &KRoksConfig,
 ) -> Result<KRoksResult, FerricError> {
+    // KPeriodicXc accepts meta-GGA for the closed-shell solver, but the
+    // spin-resolved XC here has no tau term: refuse it on this entry point
+    // too, not only in `solve_kroks`.
+    resolve_periodic_functional(&cfg.functional)?;
     let mut pxc = KPeriodicXc::new(cell, prep.basis_set(), &cfg.functional, grid, mesh, &cfg.xc)?;
     let a = pxc.exact_exchange_fraction();
     let mut r = drive(
