@@ -1899,7 +1899,7 @@ mod cutoff_tests {
     }
 
     const TERFC: Vv10Damping = Vv10Damping::Terfc {
-        r0_bohr: 1.8897,
+        r0_bohr: ferric_core::units::ANGSTROM_TO_BOHR,
         omega_bohr_inv: None,
     };
 
@@ -1973,7 +1973,11 @@ mod cutoff_tests {
     /// for both the linked and a decoupled seam.
     #[test]
     fn damping_skip_beyond_r_one_is_bit_exact() {
-        for (r0, om) in [(1.8897, None), (1.8897, Some(0.5)), (3.0, Some(2.0))] {
+        for (r0, om) in [
+            (ferric_core::units::ANGSTROM_TO_BOHR, None),
+            (ferric_core::units::ANGSTROM_TO_BOHR, Some(0.5)),
+            (3.0, Some(2.0)),
+        ] {
             let d = Vv10Damping::Terfc {
                 r0_bohr: r0,
                 omega_bohr_inv: om,
@@ -2008,7 +2012,7 @@ mod cutoff_tests {
     fn damping_table_matches_direct() {
         for om in [None, Some(0.8)] {
             let d = Vv10Damping::Terfc {
-                r0_bohr: 1.8897,
+                r0_bohr: ferric_core::units::ANGSTROM_TO_BOHR,
                 omega_bohr_inv: om,
             };
             let t = DampTable::build(&d);
