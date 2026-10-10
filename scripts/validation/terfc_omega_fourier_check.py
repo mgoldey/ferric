@@ -31,8 +31,12 @@ def main(dump: str) -> int:
     import numpy as np
     from pyscf import gto
 
-    symbols, coords = common.read_xyz(Path(__file__).resolve().parents[2] / "testdata/molecules/water.xyz")
-    mol = common.build_pyscf_mol(Path(__file__).resolve().parents[2] / "testdata/molecules/water.xyz", "cc-pvdz")
+    symbols, coords = common.read_xyz(
+        Path(__file__).resolve().parents[2] / "testdata/molecules/water.xyz"
+    )
+    mol = common.build_pyscf_mol(
+        Path(__file__).resolve().parents[2] / "testdata/molecules/water.xyz", "cc-pvdz"
+    )
     auxb, _ = common.pyscf_basis("cc-pvdz-ri", symbols)
     auxmol = gto.M(
         atom=common.pyscf_atom_bohr(symbols, coords),
@@ -47,8 +51,6 @@ def main(dump: str) -> int:
     lobs = g.ferric_l_list("cc-pvdz", symbols)
     laux = g.ferric_l_list("cc-pvdz-ri", symbols)
     c3, c2 = g.pyscf_3c2c(mol, auxmol)
-    c3f = c3[np.ix_(aperm, perm, perm)]
-    c2f = c2[np.ix_(aperm, aperm)]
     r0 = g.r0_bohr(1.0)
     print(f"nao={nao} naux={naux} r0={r0:.6f} Bohr")
     worst_all = 0.0
