@@ -20,7 +20,7 @@
 use std::cell::{Cell, RefCell};
 
 use ferric_core::error::FerricError;
-use ferric_core::external_potential::{ExternalPotential, PointCharge};
+use ferric_core::external_potential::{ExternalPotential, SmearedCharge};
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -227,21 +227,26 @@ fn recalc_every_with_analytic_hessian_costs_no_extra_gradients() {
     }
 }
 
-fn charged_scf() -> RhfConfig {
+/// Gaussian-smeared external charges: the analytic Hessian refuses them
+/// (#358), so this is the config that exercises the refusal and `Auto`'s FD
+/// fallback. Point charges are analytic-supported since #343.
+fn smeared_scf() -> RhfConfig {
     RhfConfig {
         external_potential: Some(ExternalPotential {
-            point_charges: vec![
-                PointCharge {
+            smeared_charges: vec![
+                SmearedCharge {
                     q: -0.4,
                     x: 0.0,
                     y: 0.0,
                     z: 6.0,
+                    width: 1.0,
                 },
-                PointCharge {
+                SmearedCharge {
                     q: -0.4,
                     x: 0.0,
                     y: 0.0,
                     z: -6.0,
+                    width: 1.0,
                 },
             ],
             ..Default::default()
@@ -251,11 +256,11 @@ fn charged_scf() -> RhfConfig {
 }
 
 #[test]
-fn analytic_is_refused_with_a_point_charge_field_and_auto_falls_back() {
+fn analytic_is_refused_with_smeared_charges_and_auto_falls_back() {
     if !has_deriv2() {
         return;
     }
-    let scf = charged_scf();
+    let scf = smeared_scf();
     let err = match search(HessianMethod::Analytic, 0, &scf) {
         Ok(_) => panic!("Analytic must refuse an external potential, not fall back"),
         Err(e) => e.to_string(),

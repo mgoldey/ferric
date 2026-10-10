@@ -512,7 +512,9 @@ def test_analytic_is_refused_not_silently_downgraded_when_unsupported():
     mol = _near_planar_ammonia()
     # The refusal comes from the analytic-Hessian preflight (before any SCF),
     # so it does not depend on libint's second-derivative support.
-    for kwargs in ({"point_charges": _SYMMETRIC_CHARGES}, {"xc": "pbe"}):
+    # KS-DFT: point charges are analytic-supported (#343), so use a config the
+    # preflight still refuses.
+    for kwargs in ({"xc": "pbe"},):
         with pytest.raises(Exception) as exc:
             ferric.run_saddle(mol, "sto-3g", max_steps=40, hessian="analytic", **kwargs)
         assert "hessian" in str(exc.value).lower(), str(exc.value)
@@ -524,7 +526,7 @@ def test_auto_falls_back_to_fd_and_says_so():
         "sto-3g",
         max_steps=40,
         hessian="auto",
-        point_charges=_SYMMETRIC_CHARGES,
+        xc="pbe",
     )
     assert r.hessian_source == "finite-difference"
     assert r.n_imaginary == 1
