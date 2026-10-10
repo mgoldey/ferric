@@ -1143,6 +1143,9 @@ fn free_omega_terf_plus_terfc_is_coulomb() {
 //   would be O(1) off, so the absolute bound below resolves it completely.
 // ---------------------------------------------------------------------------
 #[test]
+// The oracle table carries the linked r0*omega as the 12-digit literal the oracle
+// values were generated at; substituting FRAC_1_SQRT_2 would change omega by ~5e-13.
+#[allow(clippy::approx_constant)]
 fn m4b_decoupled_omega_two_center_matches_oracle_near_and_far_field() {
     let dir = match table_dir() {
         Some(d) => d,
