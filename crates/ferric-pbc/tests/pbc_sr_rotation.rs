@@ -1176,6 +1176,38 @@ fn force_path_refuses_inconsistent_rotation_requests() {
     assert!(msg.contains("column-rotation mutant"), "{msg}");
 }
 
+/// The rotated force and stress are BITWISE identical across thread counts
+/// (the ordered-parallel derivative walks and the per-element `Tᵀ Y T`
+/// read are deterministic), and the frozen serial hcore oracle
+/// (`SerialDerivWalks`) agrees bitwise with the ordered walk on the rotated
+/// shells.
+#[test]
+fn rotated_forces_and_stress_are_bitwise_across_thread_counts() {
+    for split in [None, Some(RangeSplit::default())] {
+        let cell = h2_off_axis(&H2_OFF_AXIS);
+        let fx = cc_fixture(cell, production(), split);
+        assert_rotates(&fx, "H2");
+        let ref_g = in_pool(1, || grad_at(&fx, &fx.scf, None));
+        let ref_s = in_pool(1, || stress_at(&fx, &fx.scf, None));
+        for n in [2, 6] {
+            let g = in_pool(n, || grad_at(&fx, &fx.scf, None));
+            let s = in_pool(n, || stress_at(&fx, &fx.scf, None));
+            assert_bitwise(&g.grad, &ref_g.grad, &format!("force, {n} threads"));
+            assert!(
+                mat3_bits_equal(&s.de_deps, &ref_s.de_deps),
+                "stress, {n} threads, split={split:?}"
+            );
+        }
+        let serial = grad_at(&fx, &fx.scf, Some(GradMutation::SerialDerivWalks));
+        assert_bitwise(&serial.grad, &ref_g.grad, "SerialDerivWalks vs ordered");
+        let serial = stress_at(&fx, &fx.scf, Some(StressMutation::SerialDerivWalks));
+        assert!(
+            mat3_bits_equal(&serial.de_deps, &ref_s.de_deps),
+            "stress SerialDerivWalks vs ordered, split={split:?}"
+        );
+    }
+}
+
 /// The k-point builds run unrotated under the default `Auto` (no refusal;
 /// bitwise the explicit-Off build). Explicit `On` is refused there
 /// (`pbc_kpair_symmetry::kpoint_builds_refuse_the_gamma_column_rotation`).
