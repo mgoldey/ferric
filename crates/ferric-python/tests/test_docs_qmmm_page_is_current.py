@@ -1,9 +1,11 @@
 """The QM/MM page must not claim absent what the repo now has.
 
-`site/src/using/qmmm.md` said "no PDB / prmtop / GRO reader, no solvation" and
-"not wired into the CLI TOML" for days after all three landed. Nothing checked
-it, so the page went stale in the one direction that matters: it told a reader
-a capability was missing when it was not.
+`site/src/using/qmmm.md` said "not wired into the CLI TOML" for days after the `[qmmm]` section
+landed. Nothing checked it, so the page went stale in the one direction that matters: it told a
+reader a capability was missing when it was not.
+
+(Moved from `tools/pipeline/tests/` when `tools/` left this repository. The checks that the Python
+`tools/` readers and solvation helper exist went with them; what remains checks ferric's own code.)
 
 These assert the NEGATIVE claims against the code, because that is the
 direction that rots. A doc understating what exists costs a user the feature;
@@ -30,12 +32,6 @@ def test_no_stale_absence_claims(doc):
 
     # Each entry: the phrase, and what now makes it false.
     forbidden = [
-        ("no PDB", "tools/structure reads PDB/mmCIF via gemmi"),
-        ("No PDB", "tools/structure reads PDB/mmCIF via gemmi"),
-        ("GRO reader", "tools/structure reads GROMACS .gro"),
-        ("GRO parsing", "tools/structure reads GROMACS .gro"),
-        ("no solvation", "tools/active_site/solvate.py builds a TIP3P droplet"),
-        ("No solvation", "tools/active_site/solvate.py builds a TIP3P droplet"),
         ("not wired into the CLI", "config.rs has a [qmmm] TOML section"),
         ("Not wired into the CLI", "config.rs has a [qmmm] TOML section"),
     ]
@@ -55,8 +51,6 @@ def test_the_capabilities_the_page_claims_actually_exist():
     text = PAGE.read_text()
 
     checks = [
-        (".gro", REPO / "tools/structure/__init__.py", '".gro": "gro"'),
-        ("solvation droplet", REPO / "tools/active_site/solvate.py", "def solvate("),
         (
             "[qmmm]",
             REPO / "crates/ferric-cli/src/config.rs",

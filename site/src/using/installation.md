@@ -51,7 +51,7 @@ Then run [your first calculation](./quickstart.md). It takes under a second.
 ### What the wheel does *not* contain
 
 The wheel holds the compiled library and nothing else. The `examples/` input
-files, the `testdata/` molecules and the `tools/` pipeline scripts live in the
+files and the `testdata/` molecules live in the
 git repository. Pages that use them say so. To have them locally:
 
 ```bash

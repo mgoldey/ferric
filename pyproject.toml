@@ -56,49 +56,6 @@ dependencies = [
 ferric = "ferric:_cli_main"
 
 [project.optional-dependencies]
-# Docking (tier 1 of the cost hierarchy -- see tools/campaign/hierarchy.py).
-# Vina SEARCHES pose space; nothing else in this repo does. Apache-2.0
-# engine, LGPL-2.1 prep layer.
-#
-# These are an EXTRA rather than a core dependency because the compiled
-# `ferric` extension does not use them -- only `tools/docking` does, and it
-# imports them at call time. Keeping them core made `pip install ferric`
-# fail outright on Python 3.13: PyPI's vina 1.2.7 ships wheels for cp38-cp312
-# only, so 3.13 falls back to the sdist, which needs Boost headers that are
-# not present on a stock runner. That broke the wheel smoke test for a
-# reason having nothing to do with the wheel.
-#
-# rdkit and scipy are listed explicitly even though only meeko imports them
-# directly: meeko 0.8.0 declares zero dependencies on PyPI (`pip show meeko`
-# reports an empty `Requires:`) despite needing several at import time.
-# Chased to the end in an isolated venv carrying ONLY docking's own declared
-# deps (not dev's): `import meeko` fails first on rdkit (preparation.py),
-# then on scipy (receptor_pdbqt.py), then on gemmi (chemtempgen.py) -- gemmi
-# is not re-listed here because it is already a core dependency above, so it
-# is always present alongside this extra, but rdkit and scipy are not.
-# Installing rdkit alone still fails on scipy: the extra is not usable until
-# all of its own gaps are filled, so guessing one fix and stopping there
-# would still leave `pip install 'ferric[docking]'` broken. Verified end to
-# end against the published wheel (ferric core + this extra, no [dev]):
-# meeko preparing a real RDKit molecule to PDBQT, and a bare `Vina(...)`
-# construction. Both rdkit and scipy ship wheels across cp310-cp313 (rdkit
-# also cp314), so neither reintroduces the source-build problem vina itself
-# had on 3.13.
-docking = [
-    "vina>=1.2.7",
-    "meeko>=0.8.0",
-    "rdkit>=2024.3",
-    "scipy>=1.11",
-]
-# Figures for pipeline outputs (tools/viz). matplotlib renders the energy
-# plots; RDKit renders the 2-D structure depictions and arrives via `docking`,
-# which is why that extra is not duplicated here -- `pip install
-# 'ferric[viz,docking]'` gets both halves. `tools.viz.molecules` raises an
-# actionable ImportError naming the docking extra when RDKit is absent, and its
-# tests skip rather than fail, so `viz` on its own is a usable install.
-viz = [
-    "matplotlib>=3.8",
-]
 dev = [
     # Was ">=9.13.0". ipython 9.x requires Python>=3.11 (PyPI's own
     # requires_python metadata for every 9.x release, checked directly:
@@ -166,19 +123,6 @@ build-constraint-dependencies = ["poetry-core<2"]
 
 
 [tool.pytest.ini_options]
-# Make the repo root importable so `tools.tox`, `tools.morph`, `tools.campaign`
-# and `tools.active_site` resolve regardless of HOW pytest is invoked.
-#
-# Without this, `python -m pytest` works (it prepends the cwd to sys.path) while
-# a bare `pytest` does NOT, so the suites passed by hand and failed under
-# scripts/ci-gate.sh, which calls `uv run --no-sync pytest`. That cost all 17
-# tools/ suites -- including the pre-existing active_site ones -- with
-# `ModuleNotFoundError: No module named 'tools'` at collection time.
-#
-# `tools/` is a namespace package (no __init__.py at its root) by design, so
-# pythonpath is the fix rather than adding package markers.
-pythonpath = ["."]
-
 # The validation tier (external-reference comparisons, design
 # wiki/superpowers/specs/2026-09-24-validation-campaign-design.md §2.1) is
 # excluded from every default run and selected explicitly with

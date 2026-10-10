@@ -3,7 +3,7 @@
 Consumer: crates/ferric-mm/tests/validation_mm.rs
 Output:   testdata/reference/validation/mm/<system>.json
 Inputs:   testdata/molecules/validation/mm/*.pdb (committed; built by the
-          `build-inputs` group below) and tools/active_site/tests/ala_ala.pdb
+          `build-inputs` group below) and testdata/molecules/validation/mm/ala_ala.pdb
 
 WHAT IS COMPARED
     ferric-mm (crates/ferric-mm) evaluates AMBER-form bonded + nonbonded
@@ -11,7 +11,7 @@ WHAT IS COMPARED
     here come from a REAL force field (amber14-all.xml = ff14SB, plus
     amber14/tip3p.xml) applied by OpenMM, and are read out of the OpenMM
     System by the production extraction code,
-    tools/active_site/mm_topology.py::topology_from_system (the half of
+    scripts/validation/mm_topology.py::topology_from_system (the half of
     topology_from_openmm that does not build the System). The Rust test feeds
     that dict to MmTopology::from_amber_units, i.e. the same path the Python
     bindings use. ferric derives its OWN 1-2/1-3 exclusions and 1-4 pairs from
@@ -45,7 +45,7 @@ PER-TERM ENERGIES AND FORCES
 
 SYSTEMS
     ala_ala          zwitterionic ALA-ALA (23 atoms), the committed
-                     tools/active_site/tests/ala_ala.pdb fixture.
+                     testdata/molecules/validation/mm/ala_ala.pdb fixture.
     ace_phe_nme      capped dipeptide ACE-PHE-NME (6-ring: para pairs are
                      1-4, meta pairs excluded). Heavy atoms from 7LCJ chain R
                      60-62 (LEU60 C/O/CA -> ACE C/O/CH3, PHE61, CYS62 N/CA ->
@@ -109,8 +109,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import common  # noqa: E402
 
-sys.path.insert(0, str(common.ROOT))
-from tools.active_site.mm_topology import (  # noqa: E402
+from mm_topology import (  # noqa: E402
     topology_from_openmm,
     topology_from_system,
 )
@@ -120,7 +119,7 @@ ROW_NAME = "ferric-mm vs OpenMM"
 GEN = "scripts/validation/gen_mm.py"
 INPUT_DIR = common.MOL_DIR / "mm"
 SOURCE_PDB = common.ROOT / "testdata/molecules/c9_systems/danuglipron/7LCJ.pdb"
-ALA_ALA_PDB = common.ROOT / "tools/active_site/tests/ala_ala.pdb"
+ALA_ALA_PDB = common.ROOT / "testdata/molecules/validation/mm/ala_ala.pdb"
 
 FORCEFIELD = ("amber14-all.xml", "amber14/tip3p.xml")
 PERTURB_SEED = 20260925
@@ -147,7 +146,7 @@ FORCE_GROUP = {
 
 # (system, input pdb, torsion phase shift, description)
 SYSTEMS = [
-    ("ala_ala", ALA_ALA_PDB, 0.0, "zwitterionic ALA-ALA (committed tools fixture)"),
+    ("ala_ala", ALA_ALA_PDB, 0.0, "zwitterionic ALA-ALA (committed fixture)"),
     ("ace_phe_nme", INPUT_DIR / "ace_phe_nme.pdb", 0.0, "capped dipeptide ACE-PHE-NME"),
     (
         "trp_pro_asp",
@@ -594,7 +593,7 @@ def write_references():
                 "create_system": "nonbondedMethod=NoCutoff, constraints=None, "
                 "rigidWater=False, removeCMMotion=False",
                 "torsion_phase_shift_deg": phase_shift,
-                "extraction": "tools/active_site/mm_topology.py::topology_from_system",
+                "extraction": "scripts/validation/mm_topology.py::topology_from_system",
                 "coulomb_lj_split": "XmlSerializer clones of the NonbondedForce: "
                 "coulomb = particle and exception epsilons zeroed; lj = charges and "
                 "chargeProds zeroed; each in its own System",

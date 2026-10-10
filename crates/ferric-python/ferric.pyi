@@ -231,7 +231,7 @@ class QmmmSystem:
 class MmTopology:
     """Explicit-parameter AMBER-form MM force field topology (ferric-mm). Assigns no
     parameters of its own -- every number is caller-supplied data (see
-    tools/active_site/mm_topology.py::topology_from_openmm for one source of that data).
+    scripts/validation/mm_topology.py::topology_from_openmm for one source of that data).
     """
 
     @staticmethod

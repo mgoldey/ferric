@@ -1,4 +1,4 @@
-"""Tests for tools/active_site/mm_topology.py::topology_from_openmm — the
+"""Tests for scripts/validation/mm_topology.py::topology_from_openmm — the
 parameter ASSIGNMENT path (a real force field, amber14-all.xml, applied to a
 real structure) feeding ferric-mm's explicit-parameter MmTopology.
 
@@ -8,18 +8,22 @@ Skips itself with an actionable message if OpenMM is not importable, per the
 repo convention for optional-dependency test files.
 """
 
+import sys
 from pathlib import Path
 
 import pytest
+
+REPO = Path(__file__).resolve().parents[3]
 
 openmm = pytest.importorskip(
     "openmm",
     reason="OpenMM not installed — see scripts/gen_openmm_mm_refs.py docstring",
 )
 
-from tools.active_site.mm_topology import topology_from_openmm, topology_from_system
+sys.path.insert(0, str(REPO / "scripts" / "validation"))
+from mm_topology import topology_from_openmm, topology_from_system  # noqa: E402
 
-FIXTURE = Path(__file__).parent / "ala_ala.pdb"
+FIXTURE = REPO / "testdata/molecules/validation/mm/ala_ala.pdb"
 
 KCAL_TO_KJ = 4.184
 ANGSTROM_TO_NM = 0.1
@@ -118,10 +122,7 @@ def test_topology_from_openmm_feeds_ferric_mm_topology():
     assert top.n_atoms() == 23
 
 
-WATERS_PDB = (
-    Path(__file__).resolve().parents[3]
-    / "testdata/molecules/validation/mm/ace_phe_nme_3wat.pdb"
-)
+WATERS_PDB = REPO / "testdata/molecules/validation/mm/ace_phe_nme_3wat.pdb"
 WATER_FF = ("amber14-all.xml", "amber14/tip3p.xml")
 
 

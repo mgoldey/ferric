@@ -150,8 +150,8 @@ The CLI runs the `method.kind`s in the
 
 ## Examples need the repository
 
-`examples/*.toml` point at molecules under `testdata/`, and the pipeline tools
-live under `tools/`. Neither ships in the wheel. Clone the repository and run
+`examples/*.toml` point at molecules under `testdata/`. Neither ships in the
+wheel. Clone the repository and run
 from its root; see [Installation](./installation.md#what-the-wheel-does-not-contain).
 
 ## `[memory] budget_gb` does not cap the whole process

@@ -1534,7 +1534,7 @@ fn run_rhf_gamma(
 /// An explicit-parameter AMBER-form MM force field topology. Thin wrapper
 /// over `ferric_mm::MmTopology`; this class assigns no parameters of its
 /// own (see `ferric-mm`'s crate docs) — every number here is caller-supplied
-/// data, typically produced by `tools/active_site/mm_topology.py::topology_from_openmm`
+/// data, typically produced by `scripts/validation/mm_topology.py::topology_from_openmm`
 /// or a hand-built toy system.
 ///
 /// Units: constructor takes AMBER-convention units (kcal/mol, Angstrom,

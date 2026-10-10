@@ -22,14 +22,14 @@ mechanism.
 
 ```bash
 pip install ferric
-git clone https://github.com/mgoldey/ferric && cd ferric   # examples/, testdata/, tools/, scripts/
+git clone https://github.com/mgoldey/ferric && cd ferric   # examples/, testdata/, scripts/
 ferric examples/water-rhf.toml    # expect converged = true, energy = -74.9631468000
 ```
 
 Don't skip this, and **don't build from source first**. The wheel installs in
 about a minute, and a source build takes ~30 minutes. If the install is broken,
 every later failure will look like a chemistry problem. The clone is needed
-because the wheel doesn't ship `examples/`, `testdata/`, `scripts/` or `tools/`.
+because the wheel doesn't ship `examples/`, `testdata/` or `scripts/`.
 
 Run the study itself under `scripts/ferric-limited --max=8G --high=7G --`.
 These can be multi-hour jobs, and an OOM kill leaves a truncated log with no
@@ -233,7 +233,7 @@ State these in any write-up. They aren't hedging. They define the scope of
 the claim.
 
 * **Gas-phase cluster models.** There's no enzyme environment unless you add
-  QM/MM (golden path B, and [QM/MM](qmmm.md)).
+  QM/MM ([QM/MM](qmmm.md)).
 * **Analytic Hessians for RHF and UHF only.** RHF and UHF frequencies use the
   analytic Hessian; ROHF, KS-DFT and embedded frequencies, and every TS search,
   use finite differences of analytic gradients (Step 5). That costs 6N
@@ -246,72 +246,6 @@ the claim.
   `FrequencyResult` doesn't provide one.
 * **Relative energies only.** Absolute totals carry basis-set and functional
   errors far larger than the differences you are interpreting.
-
----
-
-## Golden path B — Which residue should I mutate?
-
-**Answers:** which active-site residues most influence a reactive center, so
-you have a ranked short list.
-
-**Does not answer:** what mutation to make. ferric ranks hypotheses. It does
-not design, and it does not predict ΔΔG.
-
-### Step 1 — classical pre-screen (cheap, all residues)
-
-`derive_pocket_charges` (in `tools/active_site/pocket_charges.py`) runs
-pdb2pqr on the pocket and records each charge's residue
-(`residue_ids`, `res_names`). `pocket_field_at_atoms` returns the potential and
-field `[phi, Ex, Ey, Ez]` (atomic units) at the sites you give it. It returns
-the *total*. To rank residues, group the charges by residue and evaluate each
-group separately. [Recipes](recipes.md) §5 has a sketch of the code.
-
-### Step 2 — QM/MM the top few (expensive, short list only)
-
-Use [QM/MM](qmmm.md) (`ferric.QmmmSystem` + `ferric.run_qmmm`). The embedding
-energy shift matches `pyscf.qmmm.mm_charge` to <1e-8 Ha. This step is what
-turns the answer into physics rather than electrostatics.
-
-The pre-screen exists to make this step affordable. Running QM/MM on every
-residue is the thing the funnel pattern is designed to avoid.
-
-### Limits
-
-Classical point charges: no protein polarization response, no sterics, no
-conformational change on mutation, no ΔΔG. A flagged residue is a **candidate
-for QM/MM**, not a designed mutation.
-
----
-
-## Golden path C — Screen many ligands down to DFT
-
-**Answers:** of N candidates, which few deserve expensive QM.
-
-Use `tools.pipeline.run_funnel` (repository `tools/`, not the wheel). Don't
-write your own loop. [Recipes](recipes.md) §4 has a funnel you can run
-(force field → xtb → DFT on three isomers, with its measured output). The
-[pipeline notes](../reference/pipeline-golden-path.md) §0b show the
-substituent version: parent-relative gating, liability flags and the optional
-docking tier.
-
-Why use it instead of your own loop:
-
-* **Failed candidates are dropped and counted, never ranked.** A hand-written
-  screen that sorts ascending on a sentinel value silently promotes its
-  failures to the top. The funnel exists to prevent that bug.
-* **Per-tier wall times.** The tier that actually dominates is often not the
-  one the cost table predicts. MEASURED in both recorded runs: the DFT tier
-  took 90–96% of the wall time.
-* **Early stop** on an empty population.
-* **Ascending rank** at every tier, since each tier reports an energy-like
-  score. Rank only candidates with the same formula, or rank relative to a
-  parent.
-
-**The funnel will produce an ordering that the noise doesn't support.**
-MEASURED on a real campaign: the best available ΔΔE noise over a pose ensemble
-was 4.07 kcal/mol, against substituent effects of 1–2. Read the
-[pharma coverage notes](../reference/pharma-use-case-coverage.md) before you
-rank anything.
 
 ---
 

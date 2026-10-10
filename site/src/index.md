@@ -18,8 +18,8 @@ Install the wheel and compute a checked number in under a minute. Then read
 the [sharp bits](./using/sharp-bits.md) that catch new users.
 
 **[How-to guides →](./using/recipes.md)**
-Task recipes: charged and open-shell molecules, optimization, SMILES input,
-QM/MM, ligand pipelines. [Choosing a method](./using/choosing-a-method.md)
+Task recipes: charged and open-shell molecules, optimization,
+QM/MM. [Choosing a method](./using/choosing-a-method.md)
 maps a chemistry question to a method.
 
 **[Methods →](./methods/index.md)**

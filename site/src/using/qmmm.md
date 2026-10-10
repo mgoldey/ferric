@@ -9,12 +9,10 @@ polarize it.
 residue), link atoms across covalent cuts with four boundary-charge schemes,
 Gaussian-smeared charges, Thole polarizable embedding, an AMBER-form MM crate,
 analytic QM and MM forces, a full-structure gradient across the cut, geometry
-optimization, and a TIP3P solvation droplet. Structures come from PDB, mmCIF,
-PQR, SDF, mol2, GROMACS `.gro`, XYZ or SMILES.
+optimization.
 
 **What is missing:** no AMBER `prmtop` reader (go through OpenMM), and no
-periodic boundary conditions — the solvation droplet is finite, with a vacuum
-boundary.
+periodic boundary conditions.
 
 ---
 
@@ -42,8 +40,7 @@ ferric single_point.toml                     # then the expensive step
 
 Use it for the initial geometry of anything you did not get from a crystal
 structure or a previous optimization — hand-built ligands, docked poses,
-edited residues, anything from a SMILES string. See
-[Applications](applications.md) for the full docking → xtb → DFT funnel.
+edited residues, anything from a SMILES string.
 
 > **Build note:** xtb built with `-O3` miscompiles gradients on this platform.
 > Build with `-Doptimization=2`.
@@ -160,26 +157,7 @@ own exclusion and 1-4 handling (ethanol cut at C–C, realistic LJ): **energy an
 gradient agree to ~1e-18 Ha**. With no bond path between the regions it is
 bit-identical to the plain every-pair sum.
 
-Not validated: periodic boundary conditions (absent), and the solvation
-droplet, which is a hard-sphere packing at roughly bulk density rather than an
-equilibrated box.
-
-## Reading a structure
-
-Every format lands in the same place, so a PDB and an XYZ of one molecule give
-a bit-identical `Molecule`:
-
-```python
-from tools.structure import read, from_smiles
-
-mol = read("ligand.pdb")        # or .cif .pqr .sdf .mol2 .gro .xyz
-mol = from_smiles("CCO")        # ETKDG geometry -- tier-2 grade, NOT optimized
-```
-
-A PQR carries MM charges as well as coordinates, which is why the CLI's
-`[qmmm]` section reads one. Note that a docked pose from Vina is **united-atom**
-— nonpolar hydrogens are merged into their carbons — so it is not a QM geometry
-until those are restored; `tier1_dock` does that for you.
+Not validated: periodic boundary conditions (absent).
 
 ## From the CLI
 
@@ -234,33 +212,14 @@ unknown scheme name is an error.
 contribution twice.
 
 **Scope of the CLI section.** It reads only a PQR, because it needs charges
-and geometry together. Use Python (`tools.structure`, below) for the other
-formats. `tools.active_site.solvate` can write a solvated system straight to a
-PQR for this section. The CLI section does electrostatic embedding only.
+and geometry together. The CLI section does electrostatic embedding only.
 Polarizable sites, smeared charges, the MM force field and MM relaxation are
 Python-only.
 
-## Solvating a solute
-
-```python
-from tools.active_site.solvate import solvate, write_pqr
-
-drop = solvate(symbols, coords_angstrom, radius_angstrom=12.0)
-write_pqr("solvated.pqr", symbols, coords_angstrom, charges, drop)
-```
-
-The solute is written **first**, so its indices are `0 .. n-1` and can go
-straight into `[qmmm] qm_indices`. Waters are TIP3P at roughly bulk density;
-this is a starting structure, not an equilibrated one, and a droplet has a
-vacuum boundary. Repeat over several `seed=` values before trusting a
-difference — `dE_statistics` does that and refuses fewer than two seeds.
-
 ## Known limits, stated plainly
 
-- **No AMBER `prmtop` reader.** Go through OpenMM
-  (`active_site.mm_topology.topology_from_openmm`), or build the arrays.
-- **No periodic boundary conditions.** `solvate()` gives a finite droplet with
-  a vacuum boundary — adequate for a local environment, not for bulk.
+- **No AMBER `prmtop` reader.** Go through OpenMM, or build the arrays.
+- **No periodic boundary conditions.**
 - **The pocket field is fixed unless you ask otherwise.** `move_mm="none"` is
   the default in `run_optimize_qmmm`; the MM sites do not relax with the QM
   region until you widen it.
