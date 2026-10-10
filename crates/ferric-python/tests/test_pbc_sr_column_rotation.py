@@ -17,11 +17,13 @@ honoured:
   dropped".
 * sr_column_rotation=False sets no counter.
 * An open-shell Gamma binding (pbc.rs path) resolves it too (H2 / cc-pVDZ).
-* Default resolves OFF, silently, with with_gradient / with_stress (bitwise
-  the explicit False run, no counters) and with jk="dense".
-* Refusals of an explicit True: jk="dense", with_gradient / with_stress
-  (ValueError, by name); the k-point bindings do not take the kwarg
-  (TypeError) and run unrotated with their defaults.
+* The default ROTATES with with_gradient / with_stress too (counters set,
+  energy, forces and stress equal the explicit False run to the screening
+  precision; the Rust suite owns the finite-difference and mutant anchors)
+  and resolves OFF, silently, with jk="dense".
+* Refusal of an explicit True: jk="dense" (ValueError, by name); the
+  k-point bindings do not take the kwarg (TypeError) and run unrotated with
+  their defaults.
 """
 
 from __future__ import annotations
@@ -33,6 +35,7 @@ import ferric
 BOHR_IN_ANGSTROM = 0.52917721092  # 1 / ferric's ANGSTROM_TO_BOHR
 AUX = "cc-pvdz-ri"
 E_BAR = 1e-10  # Ha; the Rust test's RHF bar (pbc_sr_rotation.rs E_BAR)
+D_BAR = 1e-8  # forces (Ha/Bohr) and stress (Ha/Bohr^3), rotated vs unrotated
 HCORE_OMEGA_BOHR = 0.8  # pbc_sr_rotation.rs HCORE_OMEGA
 HCORE_ROT = "hcore SR rotated columns"
 RSGDF_ROT = "rsgdf SR3 rotated columns"
@@ -141,22 +144,31 @@ def test_gamma_open_shell_binding_resolves_it(h2, ccpvdz):
     assert abs(e1.energy - e0.energy) <= E_BAR, e1.energy - e0.energy
 
 
+def _deriv_kw(deriv):
+    return {"jk": "rsgdf", "auxbasis": AUX, deriv: True}
+
+
 @pytest.mark.parametrize("deriv", ["with_gradient", "with_stress"])
-def test_default_resolves_off_with_derivatives(h2, ccpvdz, deriv):
-    # No refusal; the energy AND the force/stress build walk the unrotated
-    # shells: bitwise the explicit False run, no rotation counters.
-    kw = {"jk": "rsgdf", "auxbasis": AUX, deriv: True}
+def test_default_rotates_with_derivatives(h2, ccpvdz, deriv):
+    # The force/stress builds differentiate the rotated walks: counters set
+    # (one s column per H), and the derivative equals the unrotated run's.
+    kw = _deriv_kw(deriv)
     auto = ferric.run_rhf_gamma(h2, _cubic(6.0), ccpvdz, **kw)
     off = ferric.run_rhf_gamma(h2, _cubic(6.0), ccpvdz, sr_column_rotation=False, **kw)
     assert auto.converged and off.converged
-    assert _rotated_columns(auto) == (0, 0), auto.timings["counters"]
-    assert auto.energy == off.energy
+    assert _rotated_columns(auto) == (2, 2), auto.timings["counters"]
+    assert _rotated_columns(off) == (0, 0), off.timings["counters"]
+    assert abs(auto.energy - off.energy) <= E_BAR, auto.energy - off.energy
+    got, ref = (
+        (auto.gradient(), off.gradient())
+        if deriv == "with_gradient"
+        else (auto.stress(), off.stress())
+    )
+    assert got is not None and ref is not None
+    assert abs(ref).max() > 0.0
+    assert abs(got - ref).max() <= D_BAR, abs(got - ref).max()
     uauto = ferric.run_uhf_gamma(h2, _cubic(6.0), ccpvdz, **kw)
-    assert _rotated_columns(uauto) == (0, 0), uauto.timings["counters"]
-    # ... and the energy-only default DOES rotate on this basis, so the
-    # (0, 0) above is the resolution, not a basis with nothing to rotate.
-    energy = ferric.run_rhf_gamma(h2, _cubic(6.0), ccpvdz, jk="rsgdf", auxbasis=AUX)
-    assert _rotated_columns(energy) == (2, 2), energy.timings["counters"]
+    assert _rotated_columns(uauto) == (2, 2), uauto.timings["counters"]
 
 
 def test_default_resolves_off_with_dense_jk(h2, ccpvdz):
@@ -178,15 +190,6 @@ def test_dense_jk_refuses_it(h2, ccpvdz):
         ferric.run_mp2_gamma(
             h2, lat, ccpvdz, "ewald", "shifted", sr_column_rotation=True
         )
-
-
-@pytest.mark.parametrize("deriv", ["with_gradient", "with_stress"])
-def test_derivatives_refuse_it(h2, ccpvdz, deriv):
-    kw = {"jk": "rsgdf", "auxbasis": AUX, "sr_column_rotation": True, deriv: True}
-    with pytest.raises(ValueError, match="sr_column_rotation.*with_gradient"):
-        ferric.run_rhf_gamma(h2, _cubic(6.0), ccpvdz, **kw)
-    with pytest.raises(ValueError, match="sr_column_rotation.*with_gradient"):
-        ferric.run_uhf_gamma(h2, _cubic(6.0), ccpvdz, **kw)
 
 
 @pytest.mark.parametrize("flag", [True, False, None])

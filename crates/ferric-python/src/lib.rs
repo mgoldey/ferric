@@ -999,8 +999,8 @@ enum GammaJk {
     /// `pbc::parse_range_split`). `gdf_omega_bohr`: the RS-GDF Ewald split
     /// (Bohr⁻¹; `None` = `DEFAULT_RSGDF_OMEGA`, bit for bit).
     /// `sr_column_rotation`: the RESOLVED column rotation of the hcore and
-    /// RS-GDF SR walks (`On` / `Off`, never `Auto`; on by default for an
-    /// energy run, off with with_gradient/with_stress, see
+    /// RS-GDF SR walks (`On` / `Off`, never `Auto`; on by default, forces
+    /// and stress differentiate the same walks, see
     /// `pbc::parse_sr_column_rotation`).
     RsGdf {
         aux: Box<PreparedBasis>,
@@ -1376,12 +1376,12 @@ fn parse_gamma_options(
 ///                hcore SR attraction and RS-GDF SR 3-centre walks
 ///                (`ferric_pbc::SrColumnRotation`), back-transformed exactly.
 ///                Same energy to the screening precision, fewer SR integral
-///                calls. None: ON for a jk="rsgdf" energy run, OFF with
-///                jk="dense" or with_gradient/with_stress (so the energy and
-///                the forces walk the same shells). False: off (the unrotated
-///                build bit for bit, as is any setting on a basis with
-///                nothing to rotate). True: on, a ValueError with jk="dense"
-///                or with_gradient/with_stress. Counters
+///                calls; with_gradient / with_stress differentiate the same
+///                rotated walks (forces/stress equal the unrotated ones to the
+///                screening precision). None: ON for a jk="rsgdf" run, OFF
+///                with jk="dense". False: off (the unrotated build bit for
+///                bit, as is any setting on a basis with nothing to rotate).
+///                True: on, a ValueError with jk="dense". Counters
 ///                `timings["counters"]["hcore SR rotated columns"]` and
 ///                `["rsgdf SR3 rotated columns"]` (present whenever the
 ///                rotation was on, 0 = nothing in the basis rotates; absent
@@ -1448,12 +1448,8 @@ fn run_rhf_gamma(
     let range_split =
         pbc::parse_range_split("run_rhf_gamma", range_split, auxbasis.is_some(), want)?;
     let gdf_omega_bohr = pbc::parse_gdf_omega("run_rhf_gamma", gdf_omega, auxbasis.is_some())?;
-    let sr_column_rotation = pbc::parse_sr_column_rotation(
-        "run_rhf_gamma",
-        sr_column_rotation,
-        auxbasis.is_some(),
-        want,
-    )?;
+    let sr_column_rotation =
+        pbc::parse_sr_column_rotation("run_rhf_gamma", sr_column_rotation, auxbasis.is_some())?;
     let emol = validate_gamma_cell("run_rhf_gamma", &mol.inner, &basis_set.inner)?;
     let cell = ferric_pbc::Cell::new(emol, a).map_err(|e| val_err(format!("{e}")))?;
     let prep = PreparedBasis::new(cell.mol(), &basis_set.inner).map_err(make_err)?;

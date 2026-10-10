@@ -76,6 +76,7 @@ use crate::hcore::{gvector_list_bytes, half_gvectors, G_CHUNK_BYTES};
 use crate::lattice::Cell;
 use crate::ordered::{window_budget, Stored};
 use crate::pair_ft::{pair_ft_deriv_chunked, DEFAULT_PAIR_FT_THRESH};
+use crate::sr_rotation::{AoTranspose, ColumnRotationMutant, DerivRotMutant, RotatedBasis};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::engine::Engine;
@@ -299,6 +300,7 @@ pub(crate) fn fit_derivatives(
     wm: &Array2<f64>,
     serial: bool,
     drop_smooth_pair: bool,
+    rot_mutant: DerivRotMutant,
     ledger: &mut Ledger,
 ) -> Result<FitDerivatives, FerricError> {
     let gp = gdf
@@ -343,7 +345,20 @@ pub(crate) fn fit_derivatives(
     // A range-split build: the same partition (`split`'s `deriv`).
     let plan = SplitPlan::for_derivatives(&st, gdf, &images, ledger)?;
     let budget = window_budget(ledger.remaining());
-    let sr = sr_force_parts(&st, plan.as_ref(), &images, y, wm, natoms, budget, serial)?;
+    // A build whose energy walked the column-rotated shells is differentiated
+    // on the same rotated shells (module doc "Column rotation").
+    let rotd = SrRotatedDeriv::new(gdf, cell, obs, rot_mutant)?;
+    let sr = sr_force_stage(
+        &st,
+        plan.as_ref(),
+        rotd.as_ref(),
+        &images,
+        y,
+        wm,
+        natoms,
+        budget,
+        serial,
+    )?;
 
     // --- LR: the energy's half G sphere; P, Q, X per chunk.
     let gcut = 2.0 * st.omega * (1.0 / st.thresh).ln().sqrt();
@@ -384,6 +399,87 @@ pub(crate) fn fit_derivatives(
     })
 }
 
+/// The column-rotated SR 3-centre stage of a derivative of a build that ran
+/// its energy walk rotated (module doc "Column rotation"; shared by the
+/// force and stress walks): the rotated orbital basis and the AO transpose
+/// map of its weights.
+pub(super) struct SrRotatedDeriv {
+    pub(super) rot: RotatedBasis,
+    tr: AoTranspose,
+}
+
+impl SrRotatedDeriv {
+    /// `Ok(None)` when `gdf`'s energy walk was unrotated. A build made with a
+    /// rotation MUTANT has a deliberately wrong energy and no derivative here.
+    /// `mutant` is a TEST defect of the forward transform only.
+    pub(super) fn new(
+        gdf: &RsGdf,
+        cell: &Cell,
+        obs: &PreparedBasis,
+        mutant: DerivRotMutant,
+    ) -> Result<Option<Self>, FerricError> {
+        let Some(rot) = gdf.sr_rotation() else {
+            return Ok(None);
+        };
+        if rot.mutant != ColumnRotationMutant::Production {
+            return Err(FerricError::General(format!(
+                "RS-GDF derivatives: the RsGdf was built with the column-rotation mutant {:?}; \
+                 forces/stress exist only for ColumnRotationMutant::Production",
+                rot.mutant
+            )));
+        }
+        let Some(rb) = RotatedBasis::detect(cell, obs, rot, "RS-GDF derivatives")? else {
+            return Err(FerricError::General(
+                "RS-GDF derivatives: the build rotated its SR walk but the orbital basis given \
+                 to the derivative has nothing to rotate (another basis than the build's)"
+                    .into(),
+            ));
+        };
+        let tr = rb.ao_transpose(mutant);
+        Ok(Some(Self { rot: rb, tr }))
+    }
+
+    /// `Y' = Tᵀ Y T` as a lazily evaluated weight on the rotated shells.
+    pub(super) fn weights<'w>(&'w self, y: &'w Array2<f64>, n: usize) -> RotY<'w> {
+        RotY { y, tr: &self.tr, n }
+    }
+}
+
+/// The SR force pieces on the energy's walk: the rotated stage (rotated
+/// orbital shells, its own split pieces, `Y' = Tᵀ Y T`) when `rotd` is set,
+/// else [`sr_force_parts`] on `st`.
+#[allow(clippy::too_many_arguments)]
+fn sr_force_stage(
+    st: &Stage<'_>,
+    plan: Option<&SplitPlan>,
+    rotd: Option<&SrRotatedDeriv>,
+    images: &[[f64; 3]],
+    y: &Array2<f64>,
+    wm: &Array2<f64>,
+    natoms: usize,
+    budget: usize,
+    serial: bool,
+) -> Result<SrForce, FerricError> {
+    let Some(r) = rotd else {
+        let y3 = Y3::AuxMajor(y);
+        return sr_force_parts(st, plan, images, (y, y3), wm, natoms, budget, serial);
+    };
+    let st_rot = st.with_bases(&r.rot.prep, st.aux)?;
+    let plan_rot = plan.map(|p| p.sr3_plan_on(&st_rot)).transpose()?;
+    let ry = r.weights(y, st.obs.nbasis());
+    let y3 = Y3::Rotated(&ry);
+    sr_force_parts(
+        &st_rot,
+        plan_rot.as_ref(),
+        images,
+        (y, y3),
+        wm,
+        natoms,
+        budget,
+        false,
+    )
+}
+
 /// SR force pieces of [`fit_derivatives`].
 struct SrForce {
     orb: Array2<f64>,
@@ -401,7 +497,7 @@ fn sr_force_parts(
     st: &Stage<'_>,
     plan: Option<&SplitPlan>,
     images: &[[f64; 3]],
-    y: &Array2<f64>,
+    (y, y3): (&Array2<f64>, Y3<'_>),
     wm: &Array2<f64>,
     natoms: usize,
     budget: usize,
@@ -409,7 +505,7 @@ fn sr_force_parts(
 ) -> Result<SrForce, FerricError> {
     let ((orb, aux3, n_sr3), (metric, n_sr2)) = match (plan, serial) {
         (Some(p), _) => (
-            p.sr3_force(st, images, y, natoms, budget)?,
+            p.sr3_force_with(st, images, natoms, budget, |_, _| y3)?,
             p.sr2_force(st, wm, budget)?,
         ),
         (None, true) => (
@@ -417,7 +513,7 @@ fn sr_force_parts(
             sr2_force_serial(st, wm)?,
         ),
         (None, false) => (
-            sr3_force(st, images, natoms, budget, |_, _| Y3::AuxMajor(y))?,
+            sr3_force(st, images, natoms, budget, |_, _| y3)?,
             sr2_force(st, budget, |_| wm)?,
         ),
     };
@@ -549,6 +645,29 @@ fn lr_force_unsplit(
 pub(super) enum Y3<'w> {
     AuxMajor(&'w Array2<f64>),
     PairMajor(&'w Array2<f64>),
+    /// Gamma `Y` on the COLUMN-ROTATED orbital basis (module doc, "Column
+    /// rotation"): `Y'[P, mn] = Σ_{μν} T_μm T_νn Y[P, μν]`, read element by
+    /// element from the parent `Y`.
+    Rotated(&'w RotY<'w>),
+}
+
+/// `Y` (aux-major, parent AO basis) and the forward transform onto the
+/// rotated AO basis of a rotated SR derivative walk.
+pub(super) struct RotY<'w> {
+    pub(super) y: &'w Array2<f64>,
+    pub(super) tr: &'w AoTranspose,
+    /// Orbital AOs.
+    pub(super) n: usize,
+}
+
+impl RotY<'_> {
+    /// `Y'[P, mn]` at `row = m·n + n'` (rotated AO indices).
+    #[inline]
+    fn at(&self, prow: usize, row: usize) -> f64 {
+        let n = self.n;
+        self.tr
+            .pair(row / n, row % n, |a, b| self.y[(prow, a * n + b)])
+    }
 }
 
 impl Y3<'_> {
@@ -557,6 +676,7 @@ impl Y3<'_> {
         match self {
             Y3::AuxMajor(y) => y[(prow, row)],
             Y3::PairMajor(z) => z[(row, prow)],
+            Y3::Rotated(r) => r.at(prow, row),
         }
     }
 }

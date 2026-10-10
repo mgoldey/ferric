@@ -55,15 +55,34 @@
 //! [`crate::hcore::periodic_hcore`]: the rotated blocks are back-transformed
 //! into the parent AO basis right after the walk. The SCF, S/T, the LR and
 //! G = 0 parts, the metric and every exposed matrix stay in the parent
-//! basis. The k-point builds and the force / stress walks do not apply it.
+//! basis. The k-point builds do not apply it.
 //!
-//! It is ON BY DEFAULT ([`SrColumnRotation::Auto`]) in those two Gamma
-//! energy builds and silently off in every build that does not implement it
-//! (k-point builds, the gradient build, the frozen s1 oracles); an explicit
-//! [`SrColumnRotation::On`] is refused by name there. A run that computes
-//! forces or stress builds its hcore with the rotation off
-//! ([`SrColumnRotation::for_derivatives`]); the Gamma force and stress
-//! builders refuse a rotated `PeriodicHcore`. Measured (FINDINGS, "Full
+//! # Forces and stress
+//!
+//! The Gamma force and stress walks differentiate the walk the energy ran.
+//! `T` depends on the contraction coefficients only (no geometry), a rotated
+//! column shares its centre and exponent list with its parent, so at every
+//! geometry `χ_k = Σ_m T_km χ'_m` and `∂χ_k = Σ_m T_km ∂χ'_m` (a nuclear
+//! derivative, and the strain derivative through the centres, act on the
+//! centre only). Every SR block is bilinear in the two orbitals, hence for
+//! any weight `W` over AO pairs (the fitted `Y[P, μν]` of the RS-GDF SR
+//! 3-centre sum, the density of the hcore SR attraction)
+//!
+//! ```text
+//! Σ_{μν} W_μν ∂J[μν] = Σ_{mn} W'_mn ∂J'[mn],     W' = Tᵀ W T,
+//! ```
+//!
+//! so the derivative blocks are evaluated on the ROTATED shells and
+//! contracted with the forward-transformed weight (`AoTranspose`); no
+//! derivative block is back-transformed, and the screen is the energy's own
+//! rotated screen. The aux basis, the metric, the LR and G = 0 terms stay in
+//! the parent basis. Forces/stress with the rotation on equal those with it
+//! off to the screening precision (`tests/pbc_sr_rotation.rs`).
+//!
+//! It is ON BY DEFAULT ([`SrColumnRotation::Auto`]) in the Gamma builds
+//! (energy and gradient) and silently off in every build that does not
+//! implement it (k-point builds, the frozen s1 oracles); an explicit
+//! [`SrColumnRotation::On`] is refused by name there. Measured (FINDINGS, "Full
 //! timing series on libint 2.13.1", Γ RHF cc-pVDZ / cc-pvdz-ri, range
 //! split, gdf ω = 1, 6 threads): dry ice 25.9 → 22.4 s, diamond 7.84 →
 //! 3.08 s; energies move ≤ 1.5e-11 Ha/cell at ω ≥ 0.7; bitwise across
@@ -142,22 +161,20 @@ impl ColumnRotation {
 /// [`crate::hcore::PeriodicHcoreConfig::sr_column_rotation`]).
 ///
 /// * [`SrColumnRotation::Auto`] (the default): ON in the builds that
-///   implement it — the Gamma energy builds [`crate::rsgdf::RsGdf::build`]
-///   (and `build_with_fit_parts`, [`crate::rsgdf::sr_walk_counts`]) and
+///   implement it — the Gamma builds [`crate::rsgdf::RsGdf::build`]
+///   (and `build_with_fit_parts`, [`crate::rsgdf::sr_walk_counts`],
+///   [`crate::rsgdf::RsGdf::build_for_gradient`]) and
 ///   [`crate::hcore::periodic_hcore`] — and silently OFF in every build that
-///   does not: the k-point builds, [`crate::rsgdf::RsGdf::build_for_gradient`]
-///   and the frozen s1 oracles. A basis with nothing to rotate runs the
-///   unrotated walk bit for bit either way.
+///   does not: the k-point builds and the frozen s1 oracles. A basis with
+///   nothing to rotate runs the unrotated walk bit for bit either way.
 /// * [`SrColumnRotation::Off`]: the unrotated walk everywhere, bit for bit.
 /// * [`SrColumnRotation::On`]: an explicit request; the builds that cannot
 ///   honour it refuse it by name instead of ignoring it.
 ///
-/// A run that computes forces or stress must build its Gamma hcore with the
-/// rotation OFF ([`SrColumnRotation::for_derivatives`]): `periodic_hcore`
-/// cannot know a gradient will follow, and the Gamma force and stress
-/// builders refuse a `PeriodicHcore` whose SR attraction was rotated (they
-/// differentiate the unrotated walk, whose truncated energy differs at the
-/// screening precision).
+/// The Gamma force and stress builders differentiate the walk the energy ran
+/// (module doc, "Forces and stress"): the hcore's
+/// [`crate::hcore::PeriodicHcore::sr_rotated_columns`] and the
+/// [`crate::rsgdf::RsGdf`]'s rotation say which.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SrColumnRotation {
     /// On where implemented, off elsewhere (see the type doc).
@@ -202,18 +219,6 @@ impl SrColumnRotation {
                 r.mutant
             ))),
         }
-    }
-
-    /// The request for a run that will compute forces or stress: `Auto` and
-    /// `Off` → `Off` (so the energy and the derivative walk the same
-    /// unrotated shells); an explicit `On` is refused (`who` names the run).
-    pub fn for_derivatives(self, who: &str) -> Result<Self, FerricError> {
-        self.refuse_explicit(
-            who,
-            "the Gamma force and stress builders walk the unrotated shells, so they would \
-             not differentiate the rotated energy",
-        )?;
-        Ok(Self::Off)
     }
 }
 
@@ -427,6 +432,68 @@ pub(crate) struct RotatedBasis {
     one_sided: bool,
 }
 
+/// TEST-ONLY defects of the DERIVATIVE paths' forward transform
+/// (`Y' = Tᵀ Y T`, `D' = Tᵀ D T`); the energy was built with the production
+/// rotation, so each of these makes force / stress differ from the unrotated
+/// one by an O(|T_ks|) amount (`tests/pbc_sr_rotation.rs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum DerivRotMutant {
+    /// Production.
+    #[default]
+    None,
+    /// MUTATION: no transform at all (rotated walk, unrotated weights).
+    DropT,
+    /// MUTATION: `T Y Tᵀ` (T where Tᵀ belongs).
+    UseT,
+    /// MUTATION: only the first AO index transformed.
+    OneSided,
+    /// MUTATION: off-diagonal `T_ks` with the wrong sign.
+    FlipSign,
+}
+
+/// The forward (transpose) transform of a weight over AO pairs onto the
+/// rotated AO basis: `W'[m, n] = Σ_{μν} T_μm T_νn W[μ, ν]`, evaluated per
+/// element from the parent entries (no `n²`-sized copy of `W`). An AO whose
+/// column of `T` is the identity (nothing rotates there) reads its parent
+/// entry through `1.0 · 1.0 · W` — bitwise `W`.
+pub(crate) struct AoTranspose {
+    /// `start[m]..start[m+1]` indexes `idx` / `t` for rotated AO `m`.
+    start: Vec<usize>,
+    /// Parent AOs and their `T_μm`.
+    idx: Vec<usize>,
+    t: Vec<f64>,
+    /// TEST mutant: the second index is not transformed.
+    one_sided: bool,
+}
+
+impl AoTranspose {
+    /// `Σ_{μν} T_μm T_νn f(μ, ν)` for rotated AOs `(m, n)`.
+    #[inline]
+    pub(crate) fn pair<F: Fn(usize, usize) -> f64>(&self, m: usize, n: usize, f: F) -> f64 {
+        let (a0, a1) = (self.start[m], self.start[m + 1]);
+        let mut acc = 0.0;
+        if self.one_sided {
+            for a in a0..a1 {
+                acc += self.t[a] * f(self.idx[a], n);
+            }
+            return acc;
+        }
+        let (b0, b1) = (self.start[n], self.start[n + 1]);
+        for a in a0..a1 {
+            for b in b0..b1 {
+                acc += self.t[a] * self.t[b] * f(self.idx[a], self.idx[b]);
+            }
+        }
+        acc
+    }
+
+    /// `Tᵀ D T` of an `(n, n)` matrix (the hcore SR derivative's density).
+    pub(crate) fn matrix(&self, d: &Array2<f64>) -> Array2<f64> {
+        let n = d.nrows();
+        Array2::from_shape_fn((n, n), |(m, k)| self.pair(m, k, |a, b| d[(a, b)]))
+    }
+}
+
 impl RotatedBasis {
     /// The rotation of `prep` (built from `cell.mol()` and its own
     /// `basis_set()`), or `None` when nothing rotates (the identity: the
@@ -638,6 +705,60 @@ impl RotatedBasis {
             }
         }
         Ok(())
+    }
+
+    /// The AO-level transpose map of the DERIVATIVE paths (module doc,
+    /// "Forces and stress"): for each rotated AO `m`, the parent AOs `μ`
+    /// whose row of `T` holds `m`, with `T_μm`. `mutant` is a TEST-ONLY
+    /// defect of the forward transform ([`DerivRotMutant`]).
+    pub(crate) fn ao_transpose(&self, mutant: DerivRotMutant) -> AoTranspose {
+        let nsh = self.rows.len();
+        let mut cols: Vec<Vec<(usize, f64)>> = vec![Vec::new(); nsh];
+        match mutant {
+            DerivRotMutant::DropT => {
+                for (m, c) in cols.iter_mut().enumerate() {
+                    c.push((m, 1.0));
+                }
+            }
+            DerivRotMutant::UseT => {
+                // MUTATION: T applied where Tᵀ belongs (row read as column).
+                for (m, c) in cols.iter_mut().enumerate() {
+                    c.extend(self.rows[m].iter().copied());
+                }
+            }
+            DerivRotMutant::None | DerivRotMutant::OneSided | DerivRotMutant::FlipSign => {
+                for (k, row) in self.rows.iter().enumerate() {
+                    for &(m, t) in row {
+                        let t = if mutant == DerivRotMutant::FlipSign && m != k {
+                            -t
+                        } else {
+                            t
+                        };
+                        cols[m].push((k, t));
+                    }
+                }
+            }
+        }
+        let mut start = Vec::with_capacity(self.nbasis + 1);
+        let (mut idx, mut t) = (Vec::new(), Vec::new());
+        for (m, c) in cols.iter().enumerate() {
+            for i in 0..self.dims[m] {
+                start.push(idx.len());
+                for &(k, tk) in c {
+                    debug_assert_eq!(self.dims[k], self.dims[m]);
+                    idx.push(self.offs[k] + i);
+                    t.push(tk);
+                }
+            }
+        }
+        start.push(idx.len());
+        debug_assert_eq!(start.len(), self.nbasis + 1);
+        AoTranspose {
+            start,
+            idx,
+            t,
+            one_sided: mutant == DerivRotMutant::OneSided,
+        }
     }
 
     /// [`RotatedBasis::back_transform_pair_rows`] of an exactly symmetric

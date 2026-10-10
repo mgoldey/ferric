@@ -38,6 +38,7 @@
 //! Every sum uses the build's ω, precision, SR screen mode, pair images, G
 //! sphere and pair-FT threshold (the energy's truncation).
 
+use super::deriv::{SrRotatedDeriv, Y3};
 use super::split::{LrStrain, SplitPlan};
 use super::{
     check_obs_on_cell, gshells, pair_image_radius, require_pure_aux, GShell, LatticeWalker, RsGdf,
@@ -48,6 +49,7 @@ use crate::hcore::{gvector_list_bytes, half_gvectors, G_CHUNK_BYTES};
 use crate::lattice::Cell;
 use crate::ordered::window_budget;
 use crate::pair_ft::{pair_ft_strain_chunked, PairFtStrainTerms, DEFAULT_PAIR_FT_THRESH};
+use crate::sr_rotation::DerivRotMutant;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::engine::Engine;
@@ -87,6 +89,9 @@ pub(crate) struct FitStrainTerms {
     /// Range split: the G = 0 volume terms with the KEPT inputs `(q_c, S −
     /// S_ss)` (`false`: the full `(q, S)`, the `SplitFullG0` mutant).
     pub(crate) kept_g0: bool,
+    /// TEST defect of the rotated SR 3-centre strain's forward transform
+    /// (builds whose energy ran the column rotation only).
+    pub(crate) rot_mutant: DerivRotMutant,
 }
 
 /// The RS-GDF strain pieces (each `dE/dε`, Hartree).
@@ -167,20 +172,19 @@ pub(crate) fn fit_strain(
     // A range-split build: the same partition (`split`'s `deriv`).
     let plan = SplitPlan::for_derivatives(&st, gdf, &images, ledger)?;
     let budget = window_budget(ledger.remaining());
-    let ((j3_sr, n_sr3), (j2_sr, n_sr2)) = match (plan.as_ref(), terms.serial) {
-        (Some(p), _) => (
-            p.sr3_strain(&st, &images, y, imgs, budget)?,
-            p.sr2_strain(&st, wm, imgs, budget)?,
-        ),
-        (None, true) => (
-            sr3_strain_serial(&st, &images, y, imgs)?,
-            sr2_strain_serial(&st, wm, imgs)?,
-        ),
-        (None, false) => (
-            sr3_strain(&st, &images, y, imgs, budget)?,
-            sr2_strain(&st, wm, imgs, budget)?,
-        ),
-    };
+    // A build whose energy walked the column-rotated shells: the SR 3-centre
+    // strain runs on the same rotated shells with `Y' = Tᵀ Y T` (`deriv`).
+    let rotd = SrRotatedDeriv::new(gdf, cell, obs, terms.rot_mutant)?;
+    let ((j3_sr, n_sr3), (j2_sr, n_sr2)) = sr_strain_stage(
+        &st,
+        plan.as_ref(),
+        rotd.as_ref(),
+        &images,
+        (y, wm),
+        &terms,
+        imgs,
+        budget,
+    )?;
 
     // --- LR: the energy's half G sphere.
     let gcut = 2.0 * st.omega * (1.0 / st.thresh).ln().sqrt();
@@ -239,6 +243,54 @@ pub(crate) fn fit_strain(
         n_sr2,
         n_g_half: gv.len(),
         n_chunks,
+    })
+}
+
+/// The SR strain pieces `((J3, count), (J2, count))` on the energy's walk:
+/// the rotated stage (rotated orbital shells, its own split pieces,
+/// `Y' = Tᵀ Y T`) for the 3-centre sum when `rotd` is set; the metric sum
+/// never rotates (the aux basis is not rotated).
+#[allow(clippy::too_many_arguments)]
+fn sr_strain_stage(
+    st: &Stage<'_>,
+    plan: Option<&SplitPlan>,
+    rotd: Option<&SrRotatedDeriv>,
+    images: &[[f64; 3]],
+    (y, wm): (&Array2<f64>, &Array2<f64>),
+    terms: &FitStrainTerms,
+    imgs: f64,
+    budget: usize,
+) -> Result<((Mat3, usize), (Mat3, usize)), FerricError> {
+    if let Some(r) = rotd {
+        let st_rot = st.with_bases(&r.rot.prep, st.aux)?;
+        let ry = r.weights(y, st.obs.nbasis());
+        let y3 = Y3::Rotated(&ry);
+        let sr3 = match plan {
+            Some(p) => p
+                .sr3_plan_on(&st_rot)?
+                .sr3_strain(&st_rot, images, y3, imgs, budget)?,
+            None => sr3_strain(&st_rot, images, y3, imgs, budget)?,
+        };
+        let sr2 = match plan {
+            Some(p) => p.sr2_strain(st, wm, imgs, budget)?,
+            None => sr2_strain(st, wm, imgs, budget)?,
+        };
+        return Ok((sr3, sr2));
+    }
+    let y3 = Y3::AuxMajor(y);
+    Ok(match (plan, terms.serial) {
+        (Some(p), _) => (
+            p.sr3_strain(st, images, y3, imgs, budget)?,
+            p.sr2_strain(st, wm, imgs, budget)?,
+        ),
+        (None, true) => (
+            sr3_strain_serial(st, images, y, imgs)?,
+            sr2_strain_serial(st, wm, imgs)?,
+        ),
+        (None, false) => (
+            sr3_strain(st, images, y3, imgs, budget)?,
+            sr2_strain(st, wm, imgs, budget)?,
+        ),
     })
 }
 
@@ -404,7 +456,7 @@ fn lr_strain_unsplit(
 fn sr3_strain(
     st: &Stage<'_>,
     images: &[[f64; 3]],
-    y: &Array2<f64>,
+    y: Y3<'_>,
     imgs: f64,
     budget: usize,
 ) -> Result<(Mat3, usize), FerricError> {
@@ -444,7 +496,7 @@ fn sr3_strain_addend(
     (i1, i2, ip): (usize, usize, usize),
     l: [f64; 3],
     t: [f64; 3],
-    y: &Array2<f64>,
+    y: Y3<'_>,
     imgs: f64,
 ) -> Mat3 {
     let n = st.obs.nbasis();
@@ -457,7 +509,7 @@ fn sr3_strain_addend(
         for i in 0..a.nfun {
             let r0 = (a.off + i) * n + b.off;
             for j in 0..b.nfun {
-                let yv = y[(prow, r0 + j)];
+                let yv = y.at(prow, r0 + j);
                 if yv == 0.0 {
                     continue;
                 }
