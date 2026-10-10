@@ -58,7 +58,7 @@
 //! derivatives of the charge attraction (the charge-centre blocks libint2
 //! writes are discarded), and ∂V_ext/∂x in the CPHF Fock derivative.
 //!
-//! A uniform external field is supported too (see [`crate::hessian_field`]):
+//! A uniform external field is supported too (see `crate::hessian_field`):
 //! the field–nuclear energy is linear in the coordinates (zero Hessian) and
 //! the electronic `E·r` dipole integrals are differentiated by a fourth-order
 //! stencil on the integrals themselves (libint2 here has no `emultipole1`
@@ -677,7 +677,7 @@ fn extra_charges(config: &RhfConfig) -> &[PointCharge] {
 }
 
 /// Uniform-field skeleton term (zero without a nonzero field); see
-/// [`crate::hessian_field`].
+/// `crate::hessian_field`.
 fn field_skeleton(
     mol: &Molecule,
     prep: &PreparedBasis,
