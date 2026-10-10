@@ -1389,7 +1389,9 @@ fn parse_gamma_options(
 ///                `["rsgdf SR3 rotated columns"]` (present whenever the
 ///                rotation was on, 0 = nothing in the basis rotates; absent
 ///                when it was off). The Gamma bindings take it; the k-point
-///                bindings do not (their builds never rotate).
+///                bindings do not take the kwarg, and their RS-GDF energy
+///                builds run the library default (rotated, counter
+///                `["k rsgdf SR3 rotated columns"]`).
 ///
 /// Hard errors (ValueError): charged cell (charge != 0; no neutralising-
 /// background correction for electrons), multiplicity != 1 or an odd

@@ -54,6 +54,20 @@
 //! WITHOUT the conjugation ([`KHcorePairMutant::NoConj`](crate::hcore::kpoint::KHcorePairMutant::NoConj)) is an identity on a
 //! mesh whose phases are all ±1 (every k TRIM), so it is only visible on a
 //! non-TRIM mesh (`tests/pbc_kpair_symmetry.rs`).
+//!
+//! # Column rotation at k
+//!
+//! [`PeriodicHcoreConfig::sr_column_rotation`] = `Auto` (default) or `On`
+//! runs the `V_SR(k)` walk on the column-rotated orbital shells of
+//! [`crate::sr_rotation`] (nucleus candidates, sites and pair images from
+//! the PARENT shells; the screen is the rotated pairs' own) and transforms
+//! each finished `V'(k)` back, `V_SR(k) = T V'(k) Tᵀ`: `T` is real and
+//! k-independent, so it commutes with the Bloch phases. `S(k)`, `T(k)`, the
+//! LR and G = 0 parts and the ECP stay in the parent basis. The result
+//! matches the unrotated build to the screening precision (not bitwise);
+//! `PeriodicHcoreK::sr_rotated_columns` counts the rotated columns (0 =
+//! unrotated, bit for bit). The frozen s1 oracle runs unrotated under
+//! `Auto`; the k-point forces (`kgrad`) differentiate the unrotated walk.
 
 use super::{
     gvector_list_bytes, max_pair_exponent, nonzero_nuclei, nucleus_radius_m, pair_bound,
@@ -67,6 +81,7 @@ use crate::kpts::{lattice_coords, KPointMesh};
 use crate::lattice::Cell;
 use crate::pair_ft::residues::{pair_ft_residues_chunked, residue_coords};
 use crate::rsgdf::unordered_pairs;
+use crate::sr_rotation::{ColumnRotationMutant, RotatedBasis};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::engine::Engine;
@@ -111,8 +126,19 @@ pub struct PeriodicHcoreK {
     pub n_ecp_triples: usize,
     /// Full-sphere G vectors in the LR attraction.
     pub n_g_lr: usize,
+    /// Orbital columns the SR attraction walk ran rotated (module doc
+    /// "Column rotation at k"); 0 = the unrotated walk.
+    pub sr_rotated_columns: usize,
     /// Resolved memory budget (bytes).
     pub budget_bytes: usize,
+}
+
+impl PeriodicHcoreK {
+    /// Record the SR-rotation counter `k hcore SR rotated columns` (0 = the
+    /// unrotated walk) on `t`.
+    pub fn record_stats(&self, t: &mut crate::timing::PbcTimings) {
+        t.set_counter("k hcore SR rotated columns", self.sr_rotated_columns as u64);
+    }
 }
 
 /// Zeroed `(n, n)` complex matrix.
@@ -240,7 +266,7 @@ pub fn periodic_hcore_kpts_pair_s1_oracle(
 }
 
 /// Shared body of [`periodic_hcore_kpts`] and the `s1_oracle` variant (`true` = frozen pre-s2
-/// pair loop). The column rotation is not implemented here: explicit `On` is refused.
+/// pair loop). The column rotation (module doc "Column rotation at k") runs under `Auto`/`On`; the frozen s1 oracle refuses an explicit `On`.
 fn periodic_hcore_kpts_impl(
     cell: &Cell,
     prep: &PreparedBasis,
@@ -249,12 +275,8 @@ fn periodic_hcore_kpts_impl(
     s1_oracle: bool,
 ) -> Result<PeriodicHcoreK, FerricError> {
     cfg.validate()?;
-    // `Auto` (the default) runs unrotated here; an explicit `On` is refused.
-    cfg.sr_column_rotation.refuse_explicit(
-        "periodic_hcore_kpts",
-        "the column rotation applies to the Gamma hcore only; the k-point build does not \
-         implement it",
-    )?;
+    let rotation = kpoint_sr_rotation(cell, prep, cfg, s1_oracle)?;
+    let sr_rotated_columns = rotated_columns(rotation.as_ref());
     // Z_eff guard first: a bare Z is silent for the k-mesh ≡ supercell anchor.
     crate::ecp::check_ecp_applied(cell, prep.basis_set())?;
     let shells = prim_shells(cell, prep)?;
@@ -304,7 +326,7 @@ fn periodic_hcore_kpts_impl(
             let (v, c) = ctx.serial_oracle()?;
             (v, c, c)
         }
-        Some(ctx) => ctx.parallel(&ledger, None)?,
+        Some(ctx) => ctx.parallel_maybe_rotated(&ledger, cell, rotation.as_ref())?,
         None => ((0..nk).map(|_| czero(n)).collect(), 0, 0),
     };
     let v_sr: Vec<Array2<Complex64>> = v_sr.iter().map(hermitize).collect();
@@ -406,8 +428,45 @@ fn periodic_hcore_kpts_impl(
         n_sr_triplets_ordered,
         n_ecp_triples,
         n_g_lr: gv.len(),
+        sr_rotated_columns,
         budget_bytes: ledger.budget(),
     })
+}
+
+/// Rotated columns of a rotation (0 without one).
+fn rotated_columns(rot: Option<&RotatedBasis>) -> usize {
+    rot.map_or(0, |r| r.n_rotated_columns)
+}
+
+/// The column rotation of the k-point SR attraction (module doc "Column
+/// rotation at k"): `Auto`/`On` rotate, `Off` and the frozen s1 oracle (which
+/// refuses an explicit `On`) do not; `None` also when nothing in the basis
+/// rotates (the identity: today's walk bit for bit). The `RotateAux` mutant
+/// has no aux basis here and is refused.
+fn kpoint_sr_rotation(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    cfg: &PeriodicHcoreConfig,
+    s1_oracle: bool,
+) -> Result<Option<RotatedBasis>, FerricError> {
+    if s1_oracle {
+        cfg.sr_column_rotation.refuse_explicit(
+            "periodic_hcore_kpts_pair_s1_oracle",
+            "the frozen s1 oracle walks the unrotated shells",
+        )?;
+        return Ok(None);
+    }
+    let Some(rot) = cfg.sr_column_rotation.resolve_supported() else {
+        return Ok(None);
+    };
+    if rot.mutant == ColumnRotationMutant::RotateAux {
+        return Err(FerricError::General(format!(
+            "periodic_hcore_kpts: sr_column_rotation {:?} is not available on the SR \
+             attraction (no aux basis; build without it)",
+            rot.mutant
+        )));
+    }
+    RotatedBasis::detect(cell, prep, rot, "periodic_hcore_kpts")
 }
 
 /// Unhermitised `S(k)`, `T(k)` (one per mesh point).
@@ -694,6 +753,66 @@ impl<'a> SrKCtx<'a> {
             n_triplets,
             n_ordered,
         ))
+    }
+
+    /// [`SrKCtx::parallel`] when `rot` is `None`, else
+    /// [`SrKCtx::parallel_rotated`].
+    fn parallel_maybe_rotated(
+        self,
+        ledger: &Ledger,
+        cell: &Cell,
+        rot: Option<&RotatedBasis>,
+    ) -> Result<SrKS2, FerricError> {
+        match rot {
+            None => self.parallel(ledger, None),
+            Some(r) => self.parallel_rotated(ledger, cell, r),
+        }
+    }
+
+    /// [`SrKCtx::parallel`] on the column-rotated shells of `rot`, transformed
+    /// back into the parent AO basis: `V_SR(k) = T V'(k) Tᵀ` per mesh point
+    /// (`T` is k-independent and real, so it commutes with the Bloch phase
+    /// sum). The nucleus candidates, sites and pair images stay the parent's
+    /// (every rotated primitive set is a subset of its parent's); the
+    /// screen is the rotated shells' own, so the result matches the
+    /// unrotated one to the screening precision, not bitwise. The matrices
+    /// are returned unhermitised-in-the-roundoff sense, as
+    /// [`SrKCtx::parallel`]'s (the caller Hermitises).
+    fn parallel_rotated(
+        self,
+        ledger: &Ledger,
+        cell: &Cell,
+        rot: &RotatedBasis,
+    ) -> Result<SrKS2, FerricError> {
+        let rot_shells = prim_shells(cell, &rot.prep)?;
+        let inp = self.inp;
+        let winp = SrKInputs {
+            cell: inp.cell,
+            prep: &rot.prep,
+            cfg: inp.cfg,
+            shells: &rot_shells,
+            images: inp.images,
+            ph: inp.ph,
+            rpair: inp.rpair,
+            nk: inp.nk,
+        };
+        let walk = SrKCtx {
+            inp: &winp,
+            cands: self.cands,
+            nuc: self.nuc,
+            site: self.site,
+            zmax: self.zmax,
+        };
+        let (mut v, n_triplets, n_ordered) = walk.parallel(ledger, None)?;
+        let n = rot.prep.nbasis();
+        for m in &mut v {
+            let data = m.as_slice_mut().ok_or_else(|| {
+                FerricError::General("periodic_hcore_kpts: V_SR(k) is not contiguous".into())
+            })?;
+            rot.back_transform_complex_rows(data, 1)?;
+            debug_assert_eq!(m.dim(), (n, n));
+        }
+        Ok((v, n_triplets, n_ordered))
     }
 
     /// One [`SrKCtx::parallel`] task: unordered pair `(i1 <= i2)` over every

@@ -430,9 +430,9 @@ fn print_rsgdf_knobs(plan: &PeriodicPlan) {
     println!("  gdf_omega  = {} Bohr^-1{note}", rsgdf_omega(plan));
 }
 
-/// The resolved SR column rotation of the Gamma hcore and RS-GDF builds,
-/// passed EXPLICITLY (`On` / `Off`, never the library's `Auto`): the plan
-/// only turns it on for a Gamma-point `jk = "rsgdf"` run
+/// The resolved SR column rotation of the hcore and RS-GDF builds (Gamma and
+/// k-point), passed EXPLICITLY (`On` / `Off`, never the library's `Auto`):
+/// the plan only turns it on for a `jk = "rsgdf"` run
 /// (`resolve_sr_column_rotation`); an optimize run's hcore, fit and gradient
 /// all walk the same rotated shells.
 fn sr_column_rotation(plan: &PeriodicPlan) -> SrColumnRotation {
@@ -1184,8 +1184,16 @@ fn rsgdf_config(plan: &PeriodicPlan) -> RsGdfConfig {
         omega: rsgdf_omega(plan),
         budget_bytes: budget_bytes(plan),
         range_split: range_split_lambda(plan).map(RangeSplit::new),
+        sr_column_rotation: sr_column_rotation(plan),
         ..Default::default()
     }
+}
+
+/// The k-point hcore settings of a run: the Ewald split of the setup and the
+/// plan's resolved column rotation (on only with `jk = "rsgdf"`), so the
+/// hcore and the RS-GDF fit of one run always agree.
+fn khcore_config(plan: &PeriodicPlan, s: &Setup) -> PeriodicHcoreConfig {
+    PeriodicHcoreConfig::with_omega(s.omega_bohr).with_sr_column_rotation(sr_column_rotation(plan))
 }
 
 fn krsgdf_config(plan: &PeriodicPlan) -> KRsGdfConfig {
@@ -1226,7 +1234,7 @@ fn krhf_driver(
 ) -> Result<(KScfResult, f64), FerricError> {
     let mut c = KRhfConfig::for_cell(&s.cell, plan.exxdiv);
     c.scf = kscf_config(plan);
-    c.hcore = PeriodicHcoreConfig::with_omega(s.omega_bohr);
+    c.hcore = khcore_config(plan, s);
     (c.jk, c.dense, c.rsgdf) = (kjk_kind(s), kdense_config(plan), krsgdf_config(plan));
     let r = solve_krhf(&s.cell, &s.prep, s.aux.as_ref(), mesh, &c)?;
     let v_m = mesh.madelung(&s.cell)?;
@@ -1271,7 +1279,7 @@ fn krks_driver(
         plan.functional.as_deref().unwrap_or("LDA"),
     );
     c.krhf.scf = kscf_config(plan);
-    c.krhf.hcore = PeriodicHcoreConfig::with_omega(s.omega_bohr);
+    c.krhf.hcore = khcore_config(plan, s);
     (c.krhf.jk, c.krhf.dense, c.krhf.rsgdf) =
         (kjk_kind(s), kdense_config(plan), krsgdf_config(plan));
     c.grid = periodic_grid(plan);
@@ -1318,7 +1326,7 @@ fn kuhf_driver(
 ) -> Result<ferric_pbc::KUhfResult, FerricError> {
     let mut c = KUhfConfig::for_cell(&s.cell, plan.exxdiv);
     (c.scf, c.ewald_start) = (kscf_config(plan), plan.ewald_start);
-    c.hcore = PeriodicHcoreConfig::with_omega(s.omega_bohr);
+    c.hcore = khcore_config(plan, s);
     (c.jk, c.dense, c.rsgdf) = (kjk_kind(s), kdense_config(plan), krsgdf_config(plan));
     c.budget_bytes = budget_bytes(plan);
     solve_kuhf(&s.cell, &s.prep, s.aux.as_ref(), mesh, &c)
@@ -1406,13 +1414,9 @@ fn krhf_with_ints(
 ) -> Result<(KScfResult, KInts), FerricError> {
     let scf = kscf_config(plan);
     let clock = StageClock::start();
-    let hk = periodic_hcore_kpts(
-        &s.cell,
-        &s.prep,
-        mesh,
-        &PeriodicHcoreConfig::with_omega(s.omega_bohr),
-    )?;
+    let hk = periodic_hcore_kpts(&s.cell, &s.prep, mesh, &khcore_config(plan, s))?;
     t.stop("k hcore", &clock);
+    hk.record_stats(t);
     let clock = StageClock::start();
     match &s.aux {
         None => {

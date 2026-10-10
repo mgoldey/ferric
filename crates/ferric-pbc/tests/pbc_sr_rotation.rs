@@ -53,10 +53,10 @@
 //!     and the mutant would be a no-op there; production on the same aux
 //!     passes (b)'s bar).
 //! (g) Default resolution (`SrColumnRotation::Auto`): the Gamma energy and
-//!     gradient builds rotate (bitwise explicit `On`); the s1 oracles and the
-//!     k-point builds run unrotated (bitwise explicit `Off`); explicit `On`
-//!     on those paths is refused by name. The unrotated references of
-//!     (a)-(f) are explicit `Off`.
+//!     gradient builds rotate (bitwise explicit `On`); the s1 oracles run
+//!     unrotated (bitwise explicit `Off`); explicit `On` on those paths is
+//!     refused by name. The unrotated references of (a)-(f) are explicit
+//!     `Off`. (The k-point energy builds rotate too: `pbc_sr_rotation_k.rs`.)
 //! (h) FORCES AND STRESS (module `sr_rotation`, "Forces and stress"): the
 //!     derivative walks run on the rotated shells with `Tᵀ W T` weights.
 //!     * EXACTNESS ANCHOR: rotation on vs off equal to `D_BAR` = 1e-10,
@@ -100,13 +100,10 @@ use ferric_pbc::dense_aft::ExxDiv;
 use ferric_pbc::grad::{
     gamma_rhf_gradient_rsgdf, GammaGradConfig, GammaGradient, GradMutation, RsGdfGradSource,
 };
-use ferric_pbc::hcore::kpoint::periodic_hcore_kpts;
 use ferric_pbc::hcore::{
     periodic_hcore, periodic_hcore_pair_s1_oracle, PeriodicHcore, PeriodicHcoreConfig,
 };
-use ferric_pbc::kpts::KPointMesh;
 use ferric_pbc::lattice::Cell;
-use ferric_pbc::rsgdf::kpoint::{KRsGdf, KRsGdfConfig};
 use ferric_pbc::rsgdf::{sr_walk_counts, RangeSplit, RsGdf, RsGdfConfig};
 use ferric_pbc::sr_rotation::{ColumnRotation, ColumnRotationMutant, SrColumnRotation};
 use ferric_pbc::stress::{
@@ -632,15 +629,6 @@ fn builds_that_must_walk_the_parent_shells_refuse_the_rotation() {
 }
 
 // ------------------------------------------- default resolution (Auto)
-
-/// H2 / cc-pVDZ: the cheapest cell with something to rotate (one s column
-/// per H: the diffuse 0.122 primitive is its own column).
-fn h2_ccpvdz() -> (Cell, PreparedBasis, PreparedBasis) {
-    let cell = h2_cell(5.0);
-    let prep = bundled(&cell, "cc-pvdz");
-    let aux = bundled(&cell, "cc-pvdz-ri");
-    (cell, prep, aux)
-}
 
 /// The library default (`SrColumnRotation::Auto`) rotates the Gamma energy
 /// builds: bitwise the explicit `On` build, counters set.
@@ -1233,35 +1221,4 @@ fn rotated_forces_and_stress_are_bitwise_across_thread_counts() {
             "stress SerialDerivWalks vs ordered, split={split:?}"
         );
     }
-}
-
-/// The k-point builds run unrotated under the default `Auto` (no refusal;
-/// bitwise the explicit-Off build). Explicit `On` is refused there
-/// (`pbc_kpair_symmetry::kpoint_builds_refuse_the_gamma_column_rotation`).
-#[test]
-fn kmesh_default_runs_unrotated() {
-    let (cell, prep, aux) = h2_ccpvdz();
-    let mesh = KPointMesh::gamma_centred(&cell, [1, 1, 2]).expect("mesh");
-    let hdef = PeriodicHcoreConfig::with_omega(HCORE_OMEGA);
-    let hk = periodic_hcore_kpts(&cell, &prep, &mesh, &hdef).expect("k hcore, Auto");
-    let hk_off = periodic_hcore_kpts(&cell, &prep, &mesh, &hdef.with_sr_column_rotation(OFF))
-        .expect("k hcore, Off");
-    for (k, (a, b)) in hk.h.iter().zip(&hk_off.h).enumerate() {
-        let d = a
-            .iter()
-            .zip(b.iter())
-            .filter(|(x, y)| x.re.to_bits() != y.re.to_bits() || x.im.to_bits() != y.im.to_bits())
-            .count();
-        assert_eq!(d, 0, "h(k = {k}): Auto vs Off");
-    }
-    let kcfg = KRsGdfConfig {
-        gdf: RsGdfConfig {
-            exxdiv: ExxDiv::None,
-            budget_bytes: Some(1 << 30),
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-    assert_eq!(kcfg.gdf.sr_column_rotation, SrColumnRotation::Auto);
-    KRsGdf::build(&cell, &prep, &aux, &mesh, &hk.s, &kcfg).expect("KRsGdf, Auto");
 }

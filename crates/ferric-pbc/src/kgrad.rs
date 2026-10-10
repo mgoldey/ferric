@@ -523,12 +523,13 @@ fn check_inputs(
             hk.omega, hcore_cfg.omega
         )));
     }
-    // The k-point hcore runs unrotated (`Auto` resolves off there); an
-    // explicit request is refused, never ignored.
+    // The k-point force walks are unrotated (`Auto` resolves off here, the
+    // energy's rotation agrees to the screening precision); an explicit
+    // request is refused, never ignored.
     hcore_cfg.sr_column_rotation.refuse_explicit(
         who,
-        "the column rotation applies to the Gamma hcore only; the k-point forces walk the \
-         unrotated shells",
+        "the k-point forces walk the unrotated shells (the column rotation is implemented \
+         in the k-point energy builds only)",
     )?;
     if hk.v_ecp.is_some() {
         return Err(FerricError::General(format!(
@@ -575,6 +576,13 @@ fn check_inputs(
                 )));
             }
             check_aux_map(cell, s.aux, None)?;
+            // The fit the forces rebuild is unrotated too (refused here, before
+            // any derivative walk, as the hcore request above).
+            s.cfg.gdf.sr_column_rotation.refuse_explicit(
+                who,
+                "the k-point forces walk the unrotated shells (the column rotation is \
+                 implemented in the k-point energy builds only)",
+            )?;
         }
     }
     Ok(())

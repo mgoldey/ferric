@@ -629,6 +629,7 @@ pub fn solve_krks_on_grid(
     let kc = &kc;
     let hk = periodic_hcore_kpts(cell, prep, mesh, &kc.hcore)?;
     let mut timings = PbcTimings::default();
+    hk.record_stats(&mut timings);
     let gdf;
     let eri;
     let jk: Box<dyn crate::kscf::KPointJk + '_> = match aux {

@@ -172,9 +172,10 @@
 //! walk and [`PeriodicHcore::sr_rotated_columns`] / the counter `hcore SR
 //! rotated columns` how many columns rotated. [`SrColumnRotation::Off`] is
 //! the unrotated build bit for bit, and so is a basis with nothing to rotate
-//! (0 rotated columns). Gamma only: the k-point sums (`kpoint`) and the
-//! frozen s1 oracle run unrotated under `Auto` and refuse an explicit `On`
-//! (as does the `RotateAux` mutant).
+//! (0 rotated columns). The k-point energy sums (`kpoint`) rotate too
+//! (`V_SR(k) = T V'(k) Tᵀ`, module doc "Column rotation at k"); the frozen s1
+//! oracles run unrotated under `Auto` and refuse an explicit `On` (as does
+//! the `RotateAux` mutant), and so do the k-point forces.
 //!
 //! The Gamma force and stress walks differentiate the walk the energy ran
 //! (`crate::grad`'s `hcore_rotation`, keyed on [`PeriodicHcore::sr_rotated_columns`]):
@@ -306,8 +307,8 @@ pub struct PeriodicHcoreConfig {
     pub budget_bytes: Option<usize>,
     /// Column rotation of generally contracted orbital shells inside the
     /// Gamma SR attraction walk (module doc "Column rotation"). Default
-    /// [`SrColumnRotation::Auto`]: on in [`periodic_hcore`], off in the
-    /// k-point build and the s1 oracle. `Off` = the unrotated construction,
+    /// [`SrColumnRotation::Auto`]: on in [`periodic_hcore`] and the k-point
+    /// energy build, off in the s1 oracles. `Off` = the unrotated construction,
     /// bit for bit. The Gamma forces and stress differentiate whichever walk
     /// the hcore ran.
     pub sr_column_rotation: SrColumnRotation,

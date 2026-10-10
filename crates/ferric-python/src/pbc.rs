@@ -283,8 +283,9 @@ struct PbcSetup {
     range_split: Option<RangeSplit>,
     /// SR column rotation of the Gamma hcore and RS-GDF builds, RESOLVED by
     /// [`parse_sr_column_rotation`] (`On` / `Off`; on by default for a Gamma
-    /// rsgdf run, forces and stress included). `Off` for the k-point bindings, whose builds never
-    /// rotate.
+    /// rsgdf run, forces and stress included). Unused by the k-point bindings,
+    /// which take no such kwarg and run the library default (`Auto`: rotated
+    /// k-point energy builds).
     sr_column_rotation: SrColumnRotation,
 }
 
@@ -532,7 +533,8 @@ pub(crate) fn parse_range_split(
 /// * `True`: a `ValueError` with jk="dense" (the rotation is an RS-GDF cost
 ///   knob and is not half-applied to the dense oracle).
 ///
-/// The k-point bindings do not take it (their builds never rotate).
+/// The k-point bindings do not take it (their energy builds run the library
+/// default, `Auto` = rotated).
 pub(crate) fn parse_sr_column_rotation(
     fname: &str,
     on: Option<bool>,
@@ -2113,6 +2115,18 @@ fn kdense_config(s: &PbcSetup) -> KDenseAftConfig {
     }
 }
 
+/// The k-point hcore settings: with an RS-GDF aux basis the library default
+/// (`Auto`: the SR attraction runs column-rotated, like the fit), with the
+/// dense J/K unrotated (as the Gamma bindings).
+fn khcore_config(s: &PbcSetup) -> PeriodicHcoreConfig {
+    let rot = if s.aux.is_some() {
+        SrColumnRotation::Auto
+    } else {
+        SrColumnRotation::Off
+    };
+    PeriodicHcoreConfig::with_omega(s.omega_bohr).with_sr_column_rotation(rot)
+}
+
 fn krsgdf_config(s: &PbcSetup) -> KRsGdfConfig {
     KRsGdfConfig {
         gdf: RsGdfConfig {
@@ -2205,7 +2219,7 @@ fn krhf_driver(
 ) -> Result<(KScfResult, f64), FerricError> {
     let mut cfg = KRhfConfig::for_cell(&s.cell, s.exx);
     cfg.scf = scf;
-    cfg.hcore = PeriodicHcoreConfig::with_omega(s.omega_bohr);
+    cfg.hcore = khcore_config(s);
     (cfg.jk, cfg.dense, cfg.rsgdf) = (kjk_kind(s), kdense_config(s), krsgdf_config(s));
     let r = solve_krhf(&s.cell, &s.prep, s.aux.as_ref(), mesh, &cfg)?;
     let madelung = mesh.madelung(&s.cell)?;
@@ -2301,7 +2315,7 @@ fn kuhf_driver(
 ) -> Result<ferric_pbc::KUhfResult, FerricError> {
     let mut cfg = KUhfConfig::for_cell(&s.cell, s.exx);
     (cfg.scf, cfg.ewald_start) = (scf, start);
-    cfg.hcore = PeriodicHcoreConfig::with_omega(s.omega_bohr);
+    cfg.hcore = khcore_config(s);
     (cfg.jk, cfg.dense, cfg.rsgdf) = (kjk_kind(s), kdense_config(s), krsgdf_config(s));
     cfg.budget_bytes = s.budget_bytes;
     solve_kuhf(&s.cell, &s.prep, s.aux.as_ref(), mesh, &cfg)
@@ -2494,7 +2508,7 @@ fn krks_driver(
 ) -> Result<(ferric_pbc::KRksResult, f64), FerricError> {
     let mut cfg = ferric_pbc::KRksConfig::new(&s.cell, s.exx, functional);
     cfg.krhf.scf = scf;
-    cfg.krhf.hcore = PeriodicHcoreConfig::with_omega(s.omega_bohr);
+    cfg.krhf.hcore = khcore_config(s);
     (cfg.krhf.jk, cfg.krhf.dense, cfg.krhf.rsgdf) =
         (kjk_kind(s), kdense_config(s), krsgdf_config(s));
     cfg.grid = grid;
@@ -2728,13 +2742,9 @@ fn krhf_with_ints(
     t: &mut PbcTimings,
 ) -> Result<(KScfResult, KInts), FerricError> {
     let clock = StageClock::start();
-    let hk = periodic_hcore_kpts(
-        &s.cell,
-        &s.prep,
-        mesh,
-        &PeriodicHcoreConfig::with_omega(s.omega_bohr),
-    )?;
+    let hk = periodic_hcore_kpts(&s.cell, &s.prep, mesh, &khcore_config(s))?;
     t.stop("k hcore", &clock);
+    hk.record_stats(t);
     let clock = StageClock::start();
     match &s.aux {
         None => {
