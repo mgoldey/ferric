@@ -303,8 +303,17 @@ pub fn compute_vv10_damped_energy_and_potentials(
 /// omega0 and kappa.
 ///
 /// Trivial limit (anchor): when `r_cut_bohr` exceeds the bounding box of the
-/// active points, no cell is far, so the result is bit-identical to the dense
-/// exact pair sum (partners are visited in ascending index order either way).
+/// active points, no cell is far and every pair is evaluated, so the result
+/// equals the dense exact pair sum TO ROUNDING (relative 1e-13 in the energy,
+/// 1e-12 in the potentials), not bitwise: screened rows skip the per-row index
+/// sort and add partners in cell order, so the summation order differs.
+///
+/// Potentials: with `far_field = false` the potentials are the exact
+/// derivatives of the truncated (symmetric) pair sum. With `far_field = true`
+/// the energy depends on the far cells' aggregate charge, centroid, omega0 and
+/// kappa, whose derivatives with respect to the source densities are NOT
+/// propagated, so `vrho`/`vsig` would not match the energy; they are returned
+/// EMPTY in that mode (energy only; use truncation for potentials).
 ///
 /// Error structure: truncation drops pairs whose kernel is bounded by the R^-6
 /// envelope documented at `NLC_CUTOFF_BOHR`; the monopole far field replaces
@@ -396,7 +405,11 @@ impl Vv10Screen {
 #[derive(Debug, Clone)]
 pub struct Vv10ScreenedResult {
     pub e_nl: f64,
+    /// d(E_nl)/d(rho) per grid point (per unit weight). EMPTY when the screen
+    /// has `far_field = true` (energy-only mode, see [`Vv10Screen`]).
     pub vrho: Vec<f64>,
+    /// d(E_nl)/d(sigma) per grid point (per unit weight); EMPTY with the far
+    /// field, like `vrho`.
     pub vsig: Vec<f64>,
     /// Active (rho >= 1e-8) grid points.
     pub n_active: usize,
@@ -420,11 +433,15 @@ pub fn compute_vv10_screened(
     screen: Option<Vv10Screen>,
 ) -> Vv10ScreenedResult {
     let out = vv10_internal_screened(grid, dens, params, None, damping, screen);
+    // The far-field energy depends on the far cells' aggregates, whose
+    // derivatives are not propagated: the potentials would not be its
+    // derivatives, so they are withheld rather than returned wrong.
+    let energy_only = screen.is_some_and(|sc| sc.far_field);
     Vv10ScreenedResult {
         e_nl: out.e_nl,
         n_active: out.active.iter().filter(|&&a| a).count(),
-        vrho: out.vrho,
-        vsig: out.vsig,
+        vrho: if energy_only { Vec::new() } else { out.vrho },
+        vsig: if energy_only { Vec::new() } else { out.vsig },
         pairs_near: out.pairs_near,
         pairs_far: out.pairs_far,
     }
@@ -1904,9 +1921,10 @@ mod cutoff_tests {
     };
 
     /// EXACTNESS ANCHOR for `Vv10Screen`: with the cut beyond the molecular
-    /// extent no cell is far, so energy AND both potentials must be
-    /// bit-identical to the dense sum, for every `near_shells` and with the
-    /// far field on or off, damped and undamped.
+    /// extent no cell is far, so the energy (and, without the far field, both
+    /// potentials) must equal the dense sum to rounding (not bitwise: screened
+    /// rows skip the index sort), for every `near_shells` and with the far
+    /// field on or off, damped and undamped.
     #[test]
     fn screen_matches_dense_exactly_in_the_trivial_limit() {
         let mol = chain(8); // span ~20 Bohr
@@ -1927,15 +1945,85 @@ mod cutoff_tests {
                     // the dense loop: agreement is to rounding, not bitwise.
                     let rel = (s.e_nl - dense.e_nl).abs() / dense.e_nl.abs();
                     assert!(rel < 1e-13, "k={k} far={far} rel={rel:e}");
-                    for (a, b) in s.vrho.iter().zip(&dense.vrho) {
-                        assert!((a - b).abs() <= 1e-12 * (1.0 + b.abs()));
-                    }
-                    for (a, b) in s.vsig.iter().zip(&dense.vsig) {
-                        assert!((a - b).abs() <= 1e-12 * (1.0 + b.abs()));
+                    if far {
+                        assert!(
+                            s.vrho.is_empty() && s.vsig.is_empty(),
+                            "far field is energy-only"
+                        );
+                    } else {
+                        assert_eq!(s.vrho.len(), dense.vrho.len());
+                        for (a, b) in s.vrho.iter().zip(&dense.vrho) {
+                            assert!((a - b).abs() <= 1e-12 * (1.0 + b.abs()));
+                        }
+                        for (a, b) in s.vsig.iter().zip(&dense.vsig) {
+                            assert!((a - b).abs() <= 1e-12 * (1.0 + b.abs()));
+                        }
                     }
                     assert_eq!(s.pairs_far, 0);
                     assert_eq!(s.pairs_near, dense.pairs_near);
                 }
+            }
+        }
+    }
+
+    /// The truncated potentials are the derivatives of the truncated energy
+    /// (the pair drop is symmetric): central differences of `e_nl` in rho and
+    /// sigma at a few points agree with `w * vrho` / `w * vsig` for a cut that
+    /// really drops pairs. (The far-field mode is energy-only; see
+    /// `Vv10Screen`.)
+    #[test]
+    fn truncated_potentials_are_the_derivative_of_the_truncated_energy() {
+        let mol = chain(8);
+        let (params, grid, dens) = synthetic_density_on_grid(&mol, 8, 14);
+        let sc = Vv10Screen {
+            r_cut_bohr: 3.0,
+            near_shells: 1,
+            far_field: false,
+            fast_damping: false,
+        };
+        let base = compute_vv10_screened(&grid, &dens, &params, TERFC, Some(sc));
+        let dense = compute_vv10_screened(&grid, &dens, &params, TERFC, None);
+        assert!(
+            base.pairs_near < dense.pairs_near,
+            "the cut must drop pairs"
+        );
+        // points with the largest weight*rho carry the signal
+        let mut order: Vec<usize> = (0..grid.len()).collect();
+        order.sort_by(|&a, &b| {
+            (grid[b].weight * dens.rho[b])
+                .partial_cmp(&(grid[a].weight * dens.rho[a]))
+                .unwrap()
+        });
+        for &g in order.iter().take(3) {
+            let w = grid[g].weight;
+            for which in 0..2 {
+                let h = 1e-5
+                    * (1.0
+                        + if which == 0 {
+                            dens.rho[g]
+                        } else {
+                            dens.sigma[g]
+                        });
+                let eval = |sign: f64| {
+                    let mut d = dens.clone();
+                    if which == 0 {
+                        d.rho[g] += sign * h;
+                    } else {
+                        d.sigma[g] += sign * h;
+                    }
+                    compute_vv10_screened(&grid, &d, &params, TERFC, Some(sc)).e_nl
+                };
+                let fd = (eval(1.0) - eval(-1.0)) / (2.0 * h);
+                let an = w * if which == 0 {
+                    base.vrho[g]
+                } else {
+                    base.vsig[g]
+                };
+                assert!(
+                    (fd - an).abs() <= 1e-8 * (1.0 + an.abs()),
+                    "point {g} {}: fd {fd:e} vs analytic {an:e}",
+                    if which == 0 { "rho" } else { "sigma" }
+                );
             }
         }
     }
