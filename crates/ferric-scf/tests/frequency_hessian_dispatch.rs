@@ -95,23 +95,14 @@ fn auto_falls_back_for_unsupported_configurations() {
         df_k_aux: Some("def2-universal-jkfit".into()),
         ..Default::default()
     };
-    // Point charges and a uniform field are analytic (see
-    // `embedded_point_charges_are_analytic`, `uniform_field_is_analytic_and_matches_fd`);
-    // smeared charges are not.
-    let field = RhfConfig {
-        external_potential: Some(ExternalPotential {
-            smeared_charges: vec![ferric_core::external_potential::SmearedCharge {
-                q: 0.3,
-                x: 0.0,
-                y: 0.0,
-                z: 6.0,
-                width: 1.0,
-            }],
-            ..Default::default()
-        }),
+    // Point charges, smeared charges and a uniform field are analytic (see
+    // `embedded_point_charges_are_analytic`, `smeared_charges_are_analytic_and_match_fd`,
+    // `uniform_field_is_analytic_and_matches_fd`); implicit solvation is not.
+    let solvated = RhfConfig {
+        cosmo: Some(ferric_scf::cosmo::CosmoConfig::default()),
         ..Default::default()
     };
-    for (what, scf) in [("RI J/K", ri), ("smeared charges", field)] {
+    for (what, scf) in [("RI J/K", ri), ("implicit solvation", solvated)] {
         let r = run(&scf, &FrequencyConfig::default());
         assert_eq!(r.hessian_source, HessianSource::FiniteDifference, "{what}");
         assert_eq!(r.n_gradient_evaluations, 18, "{what}");
@@ -153,6 +144,43 @@ fn embedded_point_charges_are_analytic() {
     let r = run(&scf, &FrequencyConfig::default());
     assert_eq!(r.hessian_source, HessianSource::Analytic);
     assert_eq!(r.n_gradient_evaluations, 0);
+}
+
+#[test]
+fn smeared_charges_are_analytic_and_match_fd() {
+    if !has_deriv2() {
+        return;
+    }
+    let scf = RhfConfig {
+        external_potential: Some(ExternalPotential {
+            smeared_charges: vec![ferric_core::external_potential::SmearedCharge {
+                q: 0.5,
+                x: 0.0,
+                y: 0.0,
+                z: 4.0,
+                width: 1.0,
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let an = run(&scf, &FrequencyConfig::default());
+    assert_eq!(an.hessian_source, HessianSource::Analytic);
+    assert_eq!(an.n_gradient_evaluations, 0);
+    let fd = run(
+        &scf,
+        &FrequencyConfig {
+            hessian: HessianMethod::FiniteDifference,
+            ..Default::default()
+        },
+    );
+    let dev = an
+        .frequencies
+        .iter()
+        .zip(&fd.frequencies)
+        .fold(0.0f64, |m, (a, b)| m.max((a - b).abs()));
+    eprintln!("water/STO-3G smeared: analytic vs FD frequencies max |d| {dev:.3e} cm^-1");
+    assert!(dev < 1.0, "frequencies differ by {dev} cm^-1");
 }
 
 #[test]

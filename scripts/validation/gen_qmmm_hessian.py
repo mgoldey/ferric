@@ -51,21 +51,22 @@ def _mf(mol, uhf):
     return mf
 
 
-def _scf(mol, mm, uhf, dm0=None):
+def _scf(mol, mm, uhf, dm0=None, radii=None):
     from pyscf import qmmm
 
     mf = _mf(mol, uhf)
     if mm is not None:
         coords, charges = g._mm_arrays(mm)
-        mf = qmmm.mm_charge(mf, coords, charges, unit="Bohr")
+        kw = {} if radii is None else {"radii": np.asarray(radii, dtype=float)}
+        mf = qmmm.mm_charge(mf, coords, charges, unit="Bohr", **kw)
     mf.kernel(dm0=dm0)
     if not mf.converged:
         raise RuntimeError("SCF did not converge")
     return mf
 
 
-def _fd_hessian(mol, mm, uhf):
-    mf0 = _scf(mol, mm, uhf)
+def _fd_hessian(mol, mm, uhf, radii=None):
+    mf0 = _scf(mol, mm, uhf, radii=radii)
     if uhf:
         # Refuse a reference on an unstable UHF state.
         _, _, stable, _ = mf0.stability(return_status=True)
@@ -84,7 +85,7 @@ def _fd_hessian(mol, mm, uhf):
             x[b // 3, b % 3] += sgn * FD_STEP
             m = mol.copy()
             m.set_geom_(x, unit="Bohr")
-            mf = _scf(m, mm, uhf, dm0=dm0)
+            mf = _scf(m, mm, uhf, dm0=dm0, radii=radii)
             worst = max(worst, abs(mf.e_tot - e0))
             if worst > BASIN_TOL:
                 raise RuntimeError(f"displaced SCF changed state: dE {worst:.3e}")
@@ -94,7 +95,7 @@ def _fd_hessian(mol, mm, uhf):
     return 0.5 * (h + h.T), asym, worst, float(e0)
 
 
-def _case(system, xyz, basis, mm, uhf, charge=0, mult=1):
+def _case(system, xyz, basis, mm, uhf, charge=0, mult=1, radii=None):
     mol, payload = g.common_payload(
         "QM/MM Hessian",
         system,
@@ -108,6 +109,12 @@ def _case(system, xyz, basis, mm, uhf, charge=0, mult=1):
         extra_prov={"fd_step_bohr": FD_STEP, "basin_tol": BASIN_TOL},
     )
     payload["provenance"]["generator"] = GEN
+    if radii is not None:
+        # Gaussian-smeared charges: width in Bohr == PySCF `radii` with unit="Bohr"
+        # (see gen_qmmm.py's SMEARED-CHARGE UNIT CONVENTION).
+        for c, w in zip(payload["mm_charges"], radii):
+            c["width"] = float(w)
+        payload["provenance"]["keywords"] += f"; radii (Bohr) {list(map(float, radii))}"
     if charge or mult != 1:
         from pyscf import gto
 
@@ -124,7 +131,7 @@ def _case(system, xyz, basis, mm, uhf, charge=0, mult=1):
         )
         payload["charge"], payload["multiplicity"] = charge, mult
         payload["nuclear_repulsion"] = float(mol.energy_nuc())
-    h, asym, basin, e0 = _fd_hessian(mol, mm, uhf)
+    h, asym, basin, e0 = _fd_hessian(mol, mm, uhf, radii)
     hg, asym_g, _, _ = _fd_hessian(mol, None, uhf)
     payload.update(
         {
@@ -163,6 +170,21 @@ def main() -> int:
             "h2o_q10_cation", g._xyz("h2o.xyz"), "cc-pvdz", g.water_mm(), True, 1, 2
         ),
     }
+    # Gaussian-smeared MM charges (#358): widths cycle 0.7 / 1.1 / 1.6 Bohr.
+    widths = [(0.7, 1.1, 1.6)[i % 3] for i in range(len(g.water_mm()))]
+    cases["h2o_q10_smeared"] = lambda: _case(
+        "h2o_q10_smeared", g._xyz("h2o.xyz"), "cc-pvdz", g.water_mm(), False, radii=widths
+    )
+    cases["h2o_q10_cation_smeared"] = lambda: _case(
+        "h2o_q10_cation_smeared",
+        g._xyz("h2o.xyz"),
+        "cc-pvdz",
+        g.water_mm(),
+        True,
+        1,
+        2,
+        radii=widths,
+    )
     for name, fn in cases.items():
         if not only or name in only:
             fn()

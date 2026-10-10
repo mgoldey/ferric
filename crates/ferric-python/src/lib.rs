@@ -3718,8 +3718,10 @@ impl PyFrequencyResult {
 ///
 /// `hessian`: "auto" (default) uses the analytic Hessian for RHF (closed
 /// shell) or UHF (any multiplicity) with exact J/K, no ECP and a basis up to f
-/// functions and fixed external point charges (QM/MM; a uniform field or
-/// smeared charges are not covered) (one SCF plus CPHF), and a finite difference of the ANALYTIC
+/// functions and fixed external point charges or a uniform field (QM/MM,
+/// QM-QM block; this binding takes `point_charges=` / `external_field=` only,
+/// the Gaussian-smeared charges the Hessian also covers are reachable from the
+/// CLI and Rust API) (one SCF plus CPHF), and a finite difference of the ANALYTIC
 /// gradient (6N gradient evaluations) otherwise, including every ROHF and KS
 /// reference; "analytic" raises if the analytic Hessian does not apply; "fd"
 /// always differences gradients. `.hessian_source` says which ran.

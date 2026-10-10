@@ -188,6 +188,7 @@ pub mod frequencies;
 /// electronic terms stubbed pending LIBINT2_MAX_DERIV_ORDER >= 2.
 pub mod hessian;
 mod hessian_field;
+mod hessian_smeared;
 /// Transition-state search by partitioned rational function optimization.
 /// `optimize` MINIMIZES; a saddle needs one direction climbed, so it is a
 /// separate driver rather than a flag.

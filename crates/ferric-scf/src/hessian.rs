@@ -58,6 +58,11 @@
 //! derivatives of the charge attraction (the charge-centre blocks libint2
 //! writes are discarded), and ∂V_ext/∂x in the CPHF Fock derivative.
 //!
+//! Gaussian-smeared external charges (QM/MM, `smeared_charges`) are supported
+//! for the QM–QM block as well (see `crate::hessian_smeared`): the closed-form
+//! smeared charge–nucleus Hessian, a stencil of the first-derivative
+//! three-centre blocks for `Σ D ∂²V/∂x∂y`, and `∂V/∂x` in `F^x`.
+//!
 //! A uniform external field is supported too (see `crate::hessian_field`):
 //! the field–nuclear energy is linear in the coordinates (zero Hessian) and
 //! the electronic `E·r` dipole integrals are differentiated by a fourth-order
@@ -66,7 +71,7 @@
 //!
 //! Scope: closed-shell RHF and UHF (any multiplicity), exact four-centre
 //! Coulomb J/K. Everything else — ROHF (PySCF has no ROHF Hessian either), KS,
-//! RI, COSX, ECPs, ghost atoms, smeared external charges, solvation, polarizable
+//! RI, COSX, ECPs, ghost atoms, solvation, polarizable
 //! embedding, fractional occupations, cDFT, non-Coulomb operators — is refused
 //! with a typed error naming the feature (the FD Hessian in
 //! [`crate::frequencies::harmonic_frequencies`] covers those).
@@ -83,6 +88,7 @@ use crate::gradient::{
 use crate::hessian_field::{
     field_first_derivative_matrices, field_skeleton_hessian, nonzero_field,
 };
+use crate::hessian_smeared::{smeared_first_derivative_matrices, smeared_skeleton_hessian};
 use crate::result::{ScfResult, Spin};
 use crate::rhf::RhfConfig;
 use crate::screening::SchwarzBounds;
@@ -202,7 +208,7 @@ pub fn rhf_hessian_parts(
     let extra = extra_charges(config);
     let nuclear = nuclear_term(mol, config);
     let one_electron =
-        skeleton_hess_1e(prep, natoms, extra, d)? + field_skeleton(mol, prep, config, d)?;
+        skeleton_hess_1e(prep, natoms, extra, d)? + extra_skeleton(mol, prep, config, d)?;
     let overlap = skeleton_hess_overlap(prep, natoms, &w)?;
     let gam = |mu, nu, la, sg| gamma(d, mu, nu, la, sg);
     let two_electron = skeleton_hess_2e(prep, op, bounds, natoms, max_abs(d), &gam)?;
@@ -213,7 +219,7 @@ pub fn rhf_hessian_parts(
         k_scale: 0.5,
     };
     let mut first = first_order_ao(prep, op, bounds, natoms, extra, &[spec])?;
-    add_field_first_order(&mut first, mol, prep, config)?;
+    add_extra_first_order(&mut first, mol, prep, config)?;
     let resp = cpks_response(ctx, prep, bounds, rhf, nocc, &first)?;
     Ok(parts_from_terms(
         [nuclear, one_electron, overlap, two_electron],
@@ -259,7 +265,7 @@ pub fn uhf_hessian_parts(
     let extra = extra_charges(config);
     let nuclear = nuclear_term(mol, config);
     let one_electron =
-        skeleton_hess_1e(prep, natoms, extra, &d)? + field_skeleton(mol, prep, config, &d)?;
+        skeleton_hess_1e(prep, natoms, extra, &d)? + extra_skeleton(mol, prep, config, &d)?;
     let overlap = skeleton_hess_overlap(prep, natoms, &w)?;
     let gam = |mu, nu, la, sg| gamma_uhf(&d, da, db, mu, nu, la, sg);
     let two_electron = skeleton_hess_2e(prep, op, bounds, natoms, max_abs(&d), &gam)?;
@@ -270,7 +276,7 @@ pub fn uhf_hessian_parts(
         k_scale: 1.0,
     });
     let mut first = first_order_ao(prep, op, bounds, natoms, extra, &specs)?;
-    add_field_first_order(&mut first, mol, prep, config)?;
+    add_extra_first_order(&mut first, mol, prep, config)?;
     let resp = ucphf_response(ctx, prep, bounds, uhf, nocc, &first)?;
     Ok(parts_from_terms(
         [nuclear, one_electron, overlap, two_electron],
@@ -535,13 +541,6 @@ fn config_refusal(config: &RhfConfig) -> Result<Option<&'static str>, FerricErro
             "density-fitted J/K (RI)",
         ),
         (
-            config
-                .external_potential
-                .as_ref()
-                .is_some_and(|e| !e.smeared_charges.is_empty()),
-            "Gaussian-smeared external charges",
-        ),
-        (
             config.cosmo.is_some() || config.pcm.is_some(),
             "implicit solvation",
         ),
@@ -676,42 +675,58 @@ fn extra_charges(config: &RhfConfig) -> &[PointCharge] {
         .map_or(&[], |e| e.point_charges.as_slice())
 }
 
-/// Uniform-field skeleton term (zero without a nonzero field); see
-/// `crate::hessian_field`.
-fn field_skeleton(
+/// Uniform-field and smeared-charge skeleton terms (zero without either); see
+/// `crate::hessian_field` and `crate::hessian_smeared`.
+fn extra_skeleton(
     mol: &Molecule,
     prep: &PreparedBasis,
     config: &RhfConfig,
     d: &Array2<f64>,
 ) -> Result<Array2<f64>, FerricError> {
     let n3 = 3 * mol.atoms.len();
-    match nonzero_field(config.external_potential.as_ref()) {
-        Some(f) => field_skeleton_hessian(prep, mol, f, d),
-        None => Ok(Array2::zeros((n3, n3))),
+    let mut h = match nonzero_field(config.external_potential.as_ref()) {
+        Some(f) => field_skeleton_hessian(prep, mol, f, d)?,
+        None => Array2::zeros((n3, n3)),
+    };
+    if let Some(e) = config.external_potential.as_ref() {
+        if !e.smeared_charges.is_empty() {
+            h += &smeared_skeleton_hessian(prep, &e.smeared_charges, d)?;
+        }
     }
+    Ok(h)
 }
 
 /// Add `∂(E·r)/∂x` to every spin's first-derivative Fock matrix (the field
-/// is part of `h`, so it enters `F^x` exactly like `∂V_ext/∂x`).
-fn add_field_first_order(
+/// is part of `h`, so it enters `F^x` exactly like `∂V_ext/∂x`), and the
+/// smeared-charge attraction derivative `∂V_smeared/∂x`.
+fn add_extra_first_order(
     first: &mut FirstOrderAo,
     mol: &Molecule,
     prep: &PreparedBasis,
     config: &RhfConfig,
 ) -> Result<(), FerricError> {
-    let Some(f) = nonzero_field(config.external_potential.as_ref()) else {
-        return Ok(());
-    };
-    let dm = field_first_derivative_matrices(prep, mol, f)?;
-    for spin in &mut first.f1 {
-        for (fx, m) in spin.iter_mut().zip(&dm) {
-            *fx += m;
+    if let Some(f) = nonzero_field(config.external_potential.as_ref()) {
+        add_to_every_spin(first, &field_first_derivative_matrices(prep, mol, f)?);
+    }
+    if let Some(e) = config.external_potential.as_ref() {
+        if !e.smeared_charges.is_empty() {
+            let dm = smeared_first_derivative_matrices(prep, &e.smeared_charges)?;
+            add_to_every_spin(first, &dm);
         }
     }
     Ok(())
 }
 
-/// Nuclear-repulsion Hessian plus the point-charge–nuclear term.
+/// `F^x += dm[x]` for every spin.
+fn add_to_every_spin(first: &mut FirstOrderAo, dm: &[Array2<f64>]) {
+    for spin in &mut first.f1 {
+        for (fx, m) in spin.iter_mut().zip(dm) {
+            *fx += m;
+        }
+    }
+}
+
+/// Nuclear-repulsion Hessian plus the point- and smeared-charge–nuclear terms.
 fn nuclear_term(mol: &Molecule, config: &RhfConfig) -> Array2<f64> {
     let mut h = hess_nuclear_repulsion(mol);
     if let Some(e) = config.external_potential.as_ref() {
