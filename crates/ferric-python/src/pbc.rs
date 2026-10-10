@@ -25,6 +25,7 @@ use ferric_core::FerricError;
 use ferric_pbc::dense_aft::{DEFAULT_DENSE_AFT_MAX_BYTES, DEFAULT_DENSE_AFT_PRECISION};
 use ferric_pbc::drpa::DEFAULT_GAMMA_DRPA_QUAD_POINTS;
 use ferric_pbc::kcorr::DEFAULT_KDRPA_QUAD_POINTS;
+use ferric_pbc::rsgdf::auto_omega::auto_rsgdf_omega;
 use ferric_pbc::rsgdf::{DEFAULT_RANGE_SPLIT_LAMBDA, DEFAULT_RSGDF_OMEGA};
 use ferric_pbc::SrColumnRotation;
 use ferric_pbc::{
@@ -3036,7 +3037,91 @@ fn run_drpa_kpts(
     run_kcorr(py, s, m, o)
 }
 
+// ───────────────────────────────────────────────────── auto gdf_omega ──
+
+/// Choose the RS-GDF Ewald split for a Gamma-point RS-GDF energy build of
+/// this cell from a cost model (`ferric_pbc::rsgdf::auto_omega`), without
+/// running it. Pass the returned `omega` (Å⁻¹) as `gdf_omega=` to the
+/// `run_*_gamma` energy bindings; nothing is applied implicitly, and an
+/// explicit `gdf_omega` is never overridden.
+///
+/// The model prices the SR 3-centre walk (the build's own triplet count at
+/// each candidate omega, integral-free) against the LR G sum, and leaves the
+/// default 1 Bohr⁻¹ unless a candidate is predicted at least 10% cheaper.
+/// `range_split` / `sr_column_rotation` / `memory_budget_gb` mean what they
+/// do on the run bindings and should match the run. Calibrated for Gamma
+/// energy runs (cc-pVDZ-class bases, 6 threads); not for k-point builds or
+/// forces.
+///
+/// Returns a dict: `omega` (Å⁻¹, the value to pass), `omega_bohr`,
+/// `candidates` (list of dicts: `omega` Å⁻¹, `omega_bohr`, `n_sr3`, `n_g`,
+/// `predicted_s`).
+#[pyfunction]
+#[pyo3(signature = (
+    mol, lattice, basis_set, auxbasis, range_split=None, sr_column_rotation=None,
+    memory_budget_gb=None,
+))]
+fn auto_gdf_omega(
+    py: Python<'_>,
+    mol: &PyMolecule,
+    lattice: Vec<Vec<f64>>,
+    basis_set: &PyBasisSet,
+    auxbasis: &Bound<'_, PyAny>,
+    range_split: Option<&Bound<'_, PyAny>>,
+    sr_column_rotation: Option<bool>,
+    memory_budget_gb: Option<f64>,
+) -> PyResult<Py<pyo3::types::PyDict>> {
+    let fname = "auto_gdf_omega";
+    let mut s = pbc_setup(&PbcArgs {
+        fname,
+        mol,
+        lattice: &lattice,
+        basis: basis_set,
+        exxdiv: "ewald",
+        omega: None,
+        gdf_omega: None,
+        jk: "rsgdf",
+        auxbasis: Some(auxbasis),
+        max_eri_gb: None,
+        memory_budget_gb,
+        closed_shell: false,
+    })?;
+    s.set_sr_knobs(range_split, sr_column_rotation)?;
+    let Some(aux) = s.aux.as_ref() else {
+        return Err(val_err(format!("{fname}: an RS-GDF auxbasis is required")));
+    };
+    let base = RsGdfConfig {
+        exxdiv: s.exx,
+        budget_bytes: s.budget_bytes,
+        range_split: s.range_split,
+        sr_column_rotation: s.sr_column_rotation,
+        ..Default::default()
+    };
+    let r = auto_rsgdf_omega(&s.cell, &s.prep, aux, &base).map_err(pbc_err(fname))?;
+    let d = pyo3::types::PyDict::new(py);
+    d.set_item("omega", r.omega * ANGSTROM_TO_BOHR)?;
+    d.set_item("omega_bohr", r.omega)?;
+    let cands = pyo3::types::PyList::empty(py);
+    for c in &r.candidates {
+        let e = pyo3::types::PyDict::new(py);
+        e.set_item("omega", c.omega * ANGSTROM_TO_BOHR)?;
+        e.set_item("omega_bohr", c.omega)?;
+        e.set_item("n_sr3", c.n_sr3)?;
+        e.set_item("n_g", c.n_g)?;
+        e.set_item("predicted_s", c.predicted_s)?;
+        cands.append(e)?;
+    }
+    d.set_item("candidates", cands)?;
+    Ok(d.unbind())
+}
+
 // ─────────────────────────────────────────────────────────── register ──
+
+/// Register the RS-GDF omega chooser (kept out of [`register`] so that
+/// function's branch count stays where the complexity baseline has it).
+pub(crate) fn register_omega_chooser(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(auto_gdf_omega, m)?)
+}
 
 /// Register the periodic bindings on the `ferric` module.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {

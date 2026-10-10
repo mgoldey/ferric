@@ -188,6 +188,31 @@ pub fn pair_ft(
     pair_ft_with_thresh(cell, prep, gvecs, DEFAULT_PAIR_FT_THRESH)
 }
 
+/// Work proxy of ONE G column of the Gamma pair FT: the plan's
+/// `Σ survivors × ncart(bra) × ncart(ket)` (the `"pair FT cost total"`
+/// counter), from the primitive-pair screen of the whole set `gvecs` and no
+/// FT evaluation. The survivors are those reaching `min |G|`, so it does not
+/// depend on how far the sphere extends; the RS-GDF ω chooser
+/// (`rsgdf::auto_omega`) multiplies it by the G count. `gvecs` must be
+/// non-empty.
+pub fn pair_ft_work(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    gvecs: &[[f64; 3]],
+    thresh: f64,
+) -> Result<u64, FerricError> {
+    validate_inputs(gvecs, thresh)?;
+    if gvecs.is_empty() {
+        return Err(FerricError::General(
+            "pair_ft_work: the G set is empty".into(),
+        ));
+    }
+    let plan = gamma_plan(cell, prep, gvecs, thresh)?;
+    let mut t = PbcTimings::default();
+    plan.record_stats(&mut t);
+    Ok(t.counter("pair FT cost total").unwrap_or(0))
+}
+
 /// Bytes [`pair_ft_with_thresh`] holds per G vector: the output column
 /// (`16 nao²`) plus its per-G scratch (sort order, sorted copy, `|G|²`, the
 /// `(−iG)^t` powers, the common factor, the three `F` rows, the Cartesian and

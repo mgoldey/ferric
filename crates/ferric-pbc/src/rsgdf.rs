@@ -207,14 +207,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 
+pub mod auto_omega;
 pub(crate) mod deriv;
 pub mod kpoint;
 mod split;
 pub(crate) mod strain;
 
 pub use split::{
-    sr_walk_counts, RangeSplit, RangeSplitMutant, SrWalkCounts, DEFAULT_RANGE_SPLIT_LAMBDA,
-    RANGE_SPLIT_NEG_EIG_GUARD,
+    sr_triplet_estimate, sr_walk_counts, RangeSplit, RangeSplitMutant, SrWalkCounts,
+    DEFAULT_RANGE_SPLIT_LAMBDA, RANGE_SPLIT_NEG_EIG_GUARD,
 };
 
 pub use deriv::RsGdfFitDiagnostics;

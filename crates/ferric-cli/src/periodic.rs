@@ -22,6 +22,7 @@ use ferric_integrals::operator::Operator;
 use ferric_pbc::dense_aft::DEFAULT_DENSE_AFT_PRECISION;
 use ferric_pbc::drpa::DEFAULT_GAMMA_DRPA_QUAD_POINTS;
 use ferric_pbc::kcorr::DEFAULT_KDRPA_QUAD_POINTS;
+use ferric_pbc::rsgdf::auto_omega::auto_rsgdf_omega;
 use ferric_pbc::rsgdf::DEFAULT_RSGDF_OMEGA;
 use ferric_pbc::SrColumnRotation;
 use ferric_pbc::{
@@ -76,10 +77,14 @@ fn effective_max_iter(plan: &PeriodicPlan) -> usize {
 }
 
 pub fn run_periodic(cfg: &Config) {
-    let Some(plan) = cfg.periodic.as_ref() else {
+    let Some(plan0) = cfg.periodic.as_ref() else {
         die("internal: run_periodic called without a periodic plan");
     };
-    let s = setup(cfg, plan);
+    // `gdf_omega = "auto"`: price the cell, then run as if the chosen value
+    // had been written (an explicit `gdf_omega` never reaches this).
+    let mut s = setup(cfg, plan0);
+    let resolved = resolve_auto_gdf_omega(plan0, &mut s);
+    let plan = resolved.as_ref().unwrap_or(plan0);
     if let Some(rl) = ferric_scf::runlog::log() {
         rl.run_start(
             serde_json::json!({
@@ -235,12 +240,7 @@ fn setup(cfg: &Config, plan: &PeriodicPlan) -> Setup {
             (Some(p), Some(a))
         }
     };
-    // The default hcore split is capped by the RS-GDF LR sphere, so it
-    // follows an explicit gdf_omega (absent: `for_cell`, bit for bit).
-    let omega_bohr = match plan.omega_bohr {
-        Some(w) => w,
-        None => PeriodicHcoreConfig::for_cell_and_gdf_omega(&cell, gdf_omega_bohr(plan)).omega,
-    };
+    let omega_bohr = default_hcore_omega(plan, &cell);
     Setup {
         bs,
         cell,
@@ -248,6 +248,16 @@ fn setup(cfg: &Config, plan: &PeriodicPlan) -> Setup {
         aux,
         aux_bs,
         omega_bohr,
+    }
+}
+
+/// The nuclear-attraction split: an explicit `[cell] omega`, else the
+/// default, whose cap follows an explicit RS-GDF ω (absent: `for_cell`, bit
+/// for bit).
+fn default_hcore_omega(plan: &PeriodicPlan, cell: &Cell) -> f64 {
+    match plan.omega_bohr {
+        Some(w) => w,
+        None => PeriodicHcoreConfig::for_cell_and_gdf_omega(cell, gdf_omega_bohr(plan)).omega,
     }
 }
 
@@ -285,6 +295,59 @@ fn gdf_omega_bohr(plan: &PeriodicPlan) -> Option<f64> {
 /// The RS-GDF Ewald split every build of this run uses (Bohr⁻¹).
 fn rsgdf_omega(plan: &PeriodicPlan) -> f64 {
     gdf_omega_bohr(plan).unwrap_or(DEFAULT_RSGDF_OMEGA)
+}
+
+/// `[cell] gdf_omega = "auto"` was written (kept `true` after resolution so
+/// the header can say where the value came from).
+fn gdf_omega_is_auto(plan: &PeriodicPlan) -> bool {
+    match &plan.jk {
+        PeriodicJk::Dense { .. } => false,
+        PeriodicJk::RsGdf { gdf_omega_auto, .. } => *gdf_omega_auto,
+    }
+}
+
+/// Resolve `gdf_omega = "auto"` to a number with the cost model of
+/// `ferric_pbc::rsgdf::auto_omega` (Gamma-point energy runs only; the plan
+/// refuses it elsewhere). `None` = nothing to resolve. The returned plan is
+/// the input with `gdf_omega_bohr` filled in, and `s.omega_bohr` (the hcore
+/// default, which follows the RS-GDF ω through its cap) is recomputed
+/// exactly as for an explicit value; the cell and bases do not depend on ω.
+fn resolve_auto_gdf_omega(plan: &PeriodicPlan, s: &mut Setup) -> Option<PeriodicPlan> {
+    if !gdf_omega_is_auto(plan) || gdf_omega_bohr(plan).is_some() {
+        return None;
+    }
+    let Some(aux) = s.aux.as_ref() else {
+        die("internal: gdf_omega = \"auto\" without an RS-GDF aux basis");
+    };
+    // `rsgdf_config` would refuse (the value is not resolved yet); the
+    // chooser ignores `omega` anyway.
+    let base = RsGdfConfig {
+        exxdiv: plan.exxdiv,
+        sr_column_rotation: sr_column_rotation(plan),
+        budget_bytes: budget_bytes(plan),
+        range_split: range_split_lambda(plan).map(RangeSplit::new),
+        ..Default::default()
+    };
+    let t0 = std::time::Instant::now();
+    let chosen = auto_rsgdf_omega(&s.cell, &s.prep, aux, &base)
+        .unwrap_or_else(|e| die(format!("[cell] gdf_omega = \"auto\": {e}")));
+    let table: Vec<String> = chosen
+        .candidates
+        .iter()
+        .map(|c| format!("{}:{:.1}s", c.omega, c.predicted_s))
+        .collect();
+    eprintln!(
+        "[ferric] gdf_omega = \"auto\" -> {} Bohr^-1 in {:.2} s (predicted SR3+LR: {})",
+        chosen.omega,
+        t0.elapsed().as_secs_f64(),
+        table.join(" ")
+    );
+    let mut out = plan.clone();
+    if let PeriodicJk::RsGdf { gdf_omega_bohr, .. } = &mut out.jk {
+        *gdf_omega_bohr = Some(chosen.omega);
+    }
+    s.omega_bohr = default_hcore_omega(&out, &s.cell);
+    Some(out)
 }
 
 fn budget_bytes(plan: &PeriodicPlan) -> Option<usize> {
@@ -359,9 +422,10 @@ fn print_rsgdf_knobs(plan: &PeriodicPlan) {
         Some(l) => println!("  range_split= on (lambda = {l})"),
         None => println!("  range_split= off"),
     }
-    let note = match gdf_omega_bohr(plan) {
-        Some(_) => "",
-        None => " (default)",
+    let note = match (gdf_omega_bohr(plan), gdf_omega_is_auto(plan)) {
+        (Some(_), true) => " (auto: chosen from the cell's cost model)",
+        (Some(_), false) => "",
+        (None, _) => " (default)",
     };
     println!("  gdf_omega  = {} Bohr^-1{note}", rsgdf_omega(plan));
 }
