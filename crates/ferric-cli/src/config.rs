@@ -404,7 +404,7 @@ impl MemoryCfg {
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct DftCfg {
-    /// XC functional name: "LDA", "PBE", "B3LYP", "wB97X-V", or any libxc name.
+    /// XC functional name: "LDA", "PBE", "B3LYP", "HSE06-V", or any libxc name.
     pub functional: Option<String>,
     /// Double-hybrid adiabatic-connection parameter λ scaling the WFT
     /// correlation (ωB97X-L-V, paper eqn 27). `None` → the published value
@@ -1418,7 +1418,7 @@ pub struct Mp2Cfg {
     pub mp2v_vv10_damping: Option<String>,
     /// Radial points in the VV10 nonlocal-correlation grid. Default 50 (ferric's
     /// own NLC grid shape, the same one `ferric_scf`'s KS drivers pass for
-    /// wB97X-V). The paper used SG-1, which ferric does not have — a documented
+    /// HSE06-V). The paper used SG-1, which ferric does not have — a documented
     /// convention mismatch, not a silent one.
     pub mp2v_nlc_n_radial: Option<usize>,
     /// Angular points in the VV10 nonlocal-correlation grid. Default 50.
@@ -3118,7 +3118,7 @@ impl Config {
         }
         if (self.dft.lambda.is_some() || self.dft.omega.is_some()) && kind != "wb97x-l-v" {
             return Err(format!(
-                "[dft] lambda / omega are the wB97X-L-V double-hybrid parameters and are only \
+                "[dft] lambda / omega are the HSE06-L-V double-hybrid parameters and are only \
                  read by method.kind = \"wb97x-l-v\"; got kind = \"{kind}\", which would \
                  silently ignore them"
             ));
@@ -3212,7 +3212,7 @@ impl Config {
                        restricted occupied space; no open-shell variant exists in the CLI \
                        (open-shell RPA is kind = \"pdep-rpa\")"
                 .to_string(),
-            "wb97x-l-v" => "open-shell wB97X-L-V is library-only \
+            "wb97x-l-v" => "open-shell HSE06-L-V is library-only \
                             (ferric_cc::double_hybrid::u_solve_wb97x_l_v)"
                 .to_string(),
             _ => format!("no open-shell variant of kind = \"{kind}\" is available from the CLI"),
@@ -4476,12 +4476,43 @@ impl PeriodicRoute {
     pub fn correlated(self) -> bool {
         matches!(self, PeriodicRoute::Mp2 | PeriodicRoute::Drpa)
     }
-    /// Routes with a k-point driver in ferric-pbc.
-    pub fn has_kpoints(self) -> bool {
-        matches!(
-            self,
-            PeriodicRoute::Rhf | PeriodicRoute::Uhf | PeriodicRoute::Mp2 | PeriodicRoute::Drpa
-        )
+    /// Single k-point capability check: `Ok(())` when a `[cell] kmesh` run
+    /// of this route (with `functional` on a Kohn-Sham route) has a driver,
+    /// else a typed refusal naming what is not yet supported. This is the
+    /// one place to widen when a k-point driver lands (open-shell KS, ROHF,
+    /// range-separated hybrids, meta-GGA, ...); the dispatcher in
+    /// `periodic.rs` must gain the matching arm.
+    pub fn check_kpoint_support(self, functional: Option<&str>) -> Result<(), String> {
+        match self {
+            PeriodicRoute::Rhf | PeriodicRoute::Uhf | PeriodicRoute::Mp2 | PeriodicRoute::Drpa => {
+                Ok(())
+            }
+            PeriodicRoute::Rks => {
+                // LDA / GGA / global hybrids only: the library resolver names
+                // the unsupported feature (RSH, meta-GGA, VV10, composites).
+                let f = functional.unwrap_or("LDA");
+                ferric_pbc::dft::resolve_periodic_functional(f)
+                    .map(|_| ())
+                    .map_err(|e| {
+                        format!(
+                            "[cell] kmesh with functional {f:?}: {e}. k-point RKS supports \
+                             LDA, GGA and global-hybrid functionals only"
+                        )
+                    })
+            }
+            PeriodicRoute::Uks | PeriodicRoute::Roks => Err(format!(
+                "[cell] kmesh is not supported for the open-shell Kohn-Sham route {}: \
+                 k-point UKS/ROKS is not implemented yet (k-point KS-DFT is closed-shell \
+                 RKS only). Remove kmesh for a Gamma-point run.",
+                self.label()
+            )),
+            PeriodicRoute::Rohf => Err(
+                "[cell] kmesh is not supported for periodic ROHF: k-point ROHF is not \
+                 implemented yet (k-point drivers: rhf, uhf, closed-shell ksdft/rhf+[dft] \
+                 functional, rimp2, pdep-rpa). Remove kmesh for a Gamma-point run."
+                    .to_string(),
+            ),
+        }
     }
 }
 
@@ -4982,15 +5013,7 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
             if n.contains(&0) {
                 return Err(format!("[cell] kmesh = {n:?}: every entry must be >= 1"));
             }
-            if !route.has_kpoints() {
-                return Err(format!(
-                    "[cell] kmesh is not supported for the periodic {} route: k-point meshes \
-                     are implemented for method.kind = \"rhf\", \"uhf\" (Hartree-Fock, no \
-                     [dft] functional), \"rimp2\" and \"pdep-rpa\" only. Remove kmesh for a \
-                     Gamma-point run.",
-                    route.label()
-                ));
-            }
+            route.check_kpoint_support(functional.as_deref())?;
             let centring = match c
                 .centring
                 .as_deref()
@@ -5340,12 +5363,41 @@ kind = "ccsd"
     #[test]
     fn kmesh_with_an_unsupported_method_errors() {
         for (kind, extra) in [
-            ("ksdft", ""),
             ("rohf", ""),
-            ("rhf", "[dft]\nfunctional = \"PBE\""),
+            ("uhf", "[dft]\nfunctional = \"PBE\""),
+            ("rohf", "[dft]\nfunctional = \"PBE\""),
         ] {
             let e = err(&h2(kind, "kmesh = [2, 2, 2]", extra));
-            assert!(e.contains("kmesh"), "{kind}: {e}");
+            assert!(
+                e.contains("kmesh") && e.contains("not implemented"),
+                "{kind}: {e}"
+            );
+        }
+        // Open-shell ksdft (triplet) -> UKS: refused by name.
+        let e = err(&h2("ksdft", "kmesh = [2, 2, 2]", "")
+            .replace("[molecule]\n", "[molecule]\nmultiplicity = 3\n"));
+        assert!(e.contains("UKS") && e.contains("not implemented"), "{e}");
+        // Meta-GGA and range-separated hybrids are refused by name.
+        for (f, what) in [("SCAN", "meta-GGA"), ("HSE06", "range-separated")] {
+            let e = err(&h2(
+                "ksdft",
+                "kmesh = [2, 2, 2]",
+                &format!("[dft]\nfunctional = \"{f}\""),
+            ));
+            assert!(e.contains(what), "{f}: {e}");
+        }
+    }
+
+    #[test]
+    fn kmesh_ksdft_resolves_to_krks() {
+        for (kind, extra) in [
+            ("ksdft", ""),
+            ("ksdft", "[dft]\nfunctional = \"PBE0\""),
+            ("rhf", "[dft]\nfunctional = \"PBE\""),
+        ] {
+            let p = ok(&h2(kind, "kmesh = [1, 1, 2]", extra));
+            assert_eq!(p.route, PeriodicRoute::Rks, "{kind} {extra}");
+            assert!(p.kmesh.is_some());
         }
     }
 

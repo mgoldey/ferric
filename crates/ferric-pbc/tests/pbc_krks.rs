@@ -283,3 +283,162 @@ fn uniform_grid_krks_matches_pinned_pyscf() {
         );
     }
 }
+
+// ------------------------------------------------------------- meta-GGA
+
+// PySCF 2.13 pbc.dft.KRKS, same setup as `PYSCF` above, xc = SCAN / R2SCAN
+// (scratchpad `ref/kmgga.py`, 2026-10-09).
+const PYSCF_MGGA: [(&str, [usize; 3], f64); 6] = [
+    ("SCAN", [1, 1, 1], -1.557880049858),
+    ("SCAN", [1, 1, 2], -1.343585556975),
+    ("SCAN", [2, 2, 2], -1.085236512624),
+    ("R2SCAN", [1, 1, 1], -1.557880049858),
+    ("R2SCAN", [1, 1, 2], -1.343079341892),
+    ("R2SCAN", [2, 2, 2], -1.084507483367),
+];
+
+#[test]
+fn mgga_uniform_grid_krks_matches_pinned_pyscf() {
+    let cell = h2_cell(4.0);
+    let bs = pyscf_sto3g_h();
+    for &(functional, n, e_ref) in &PYSCF_MGGA {
+        let mesh = KPointMesh::gamma_centred(&cell, n).unwrap();
+        let r = krks_uniform(&cell, &bs, &mesh, functional, 61);
+        eprintln!(
+            "H2 {functional} {n:?}: {:.12} PySCF {e_ref:.12} dE {:.2e}",
+            r.scf.energy,
+            r.scf.energy - e_ref
+        );
+        assert!(
+            (r.scf.energy - e_ref).abs() < 1e-7,
+            "{functional} {n:?}: {} vs {e_ref}",
+            r.scf.energy
+        );
+    }
+}
+
+/// Meta-GGA k-mesh == supercell / N: the supercell is solved by the same
+/// k-point code at a 1x1x1 mesh on the replicated grid (the Gamma periodic
+/// path has no meta-GGA).
+#[test]
+fn mgga_k_mesh_is_the_supercell() {
+    let cell = h2_cell(4.0);
+    let bs = pyscf_sto3g_h();
+    let prep = prep_for(&cell, &bs);
+    let cell_grid = PeriodicGrid::build(&cell, &grid_cfg(40, 110)).unwrap();
+    for (functional, n) in [("SCAN", [1, 1, 3]), ("R2SCAN", [2, 1, 1])] {
+        let nk = (n[0] * n[1] * n[2]) as f64;
+        let (sc, shifts) = supercell(&cell, n);
+        let sc_grid = cell_grid.replicated(&shifts);
+        let sprep = prep_for(&sc, &bs);
+        let one = KPointMesh::gamma_centred(&sc, [1, 1, 1]).unwrap();
+        let es = solve_krks_on_grid(
+            &sc,
+            &sprep,
+            None,
+            &one,
+            &sc_grid,
+            &krks_cfg(&sc, functional, ExxDiv::Ewald),
+        )
+        .unwrap()
+        .scf
+        .energy
+            / nk;
+        let mesh = KPointMesh::gamma_centred(&cell, n).unwrap();
+        let r = solve_krks_on_grid(
+            &cell,
+            &prep,
+            None,
+            &mesh,
+            &cell_grid,
+            &krks_cfg(&cell, functional, ExxDiv::Ewald),
+        )
+        .unwrap();
+        eprintln!(
+            "{functional} {n:?}: E_k {:.12} E_super/N {es:.12} dE {:.2e}",
+            r.scf.energy,
+            r.scf.energy - es
+        );
+        assert!((r.scf.energy - es).abs() < 1e-8, "{functional} {n:?}");
+    }
+}
+
+/// `V_xc(k)` is the derivative of `E_xc` w.r.t. `D(k)`: central finite
+/// difference of `E_xc` along a Hermitian perturbation against `Re Tr(V Δ)`.
+/// Exercises the tau term of `V` independently of any SCF.
+#[test]
+fn mgga_vxc_is_the_derivative_of_exc() {
+    use ferric_pbc::kscf::KPointXc;
+    use ndarray::Array2;
+    use num_complex::Complex64;
+    let cell = h2_cell(4.0);
+    let bs = pyscf_sto3g_h();
+    let prep = prep_for(&cell, &bs);
+    let mesh = KPointMesh::gamma_centred(&cell, [1, 1, 3]).unwrap();
+    let grid = PeriodicGrid::build(&cell, &grid_cfg(30, 110)).unwrap();
+    for functional in ["SCAN", "R2SCAN"] {
+        let r = solve_krks_on_grid(
+            &cell,
+            &prep,
+            None,
+            &mesh,
+            &grid,
+            &krks_cfg(&cell, functional, ExxDiv::Ewald),
+        )
+        .unwrap();
+        let mut pxc = KPeriodicXc::new(
+            &cell,
+            &bs,
+            functional,
+            &grid,
+            &mesh,
+            &PeriodicXcConfig::default(),
+        )
+        .unwrap();
+        let d0 = r.scf.densities.clone();
+        let (_, v) = pxc.build(&d0).unwrap();
+        // Deterministic Hermitian perturbation.
+        let delta: Vec<Array2<Complex64>> = d0
+            .iter()
+            .enumerate()
+            .map(|(k, d)| {
+                let n = d.nrows();
+                let mut m = Array2::<Complex64>::zeros((n, n));
+                for i in 0..n {
+                    for j in 0..n {
+                        let a = ((i * 7 + j * 3 + k * 5) % 11) as f64 - 5.0;
+                        let b = ((i * 2 + j * 9 + k) % 7) as f64 - 3.0;
+                        m[(i, j)] += Complex64::new(a, b);
+                        m[(j, i)] += Complex64::new(a, -b);
+                    }
+                }
+                m
+            })
+            .collect();
+        let eps = 1e-4;
+        let shift = |s: f64| -> Vec<Array2<Complex64>> {
+            d0.iter()
+                .zip(&delta)
+                .map(|(d, x)| d + &x.mapv(|z| z * s))
+                .collect()
+        };
+        let ep = pxc.build(&shift(eps)).unwrap().0;
+        let em = pxc.build(&shift(-eps)).unwrap().0;
+        let fd = (ep - em) / (2.0 * eps);
+        // V carries no 1/N_k (k-point Fock convention); dE/dD(k) = V/N_k.
+        let mut an = 0.0;
+        for (vk, xk) in v.iter().zip(&delta) {
+            for i in 0..vk.nrows() {
+                for j in 0..vk.ncols() {
+                    an += (vk[(i, j)] * xk[(j, i)]).re;
+                }
+            }
+        }
+        let an = an / mesh.nk() as f64;
+        eprintln!(
+            "{functional}: FD {fd:.10} analytic {an:.10} diff {:.2e}",
+            fd - an
+        );
+        assert!((fd - an).abs() < 1e-6 * an.abs().max(1.0), "{functional}");
+    }
+}

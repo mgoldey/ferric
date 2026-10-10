@@ -86,6 +86,19 @@ pub enum KUhfMutation {
     PerKAufbau,
 }
 
+/// Spin-polarized semilocal exchange-correlation for the k-point open-shell
+/// SCF ([`crate::kuks`]).
+pub trait KPointXcPolarized {
+    /// `(E_xc per cell, V_alpha(k), V_beta(k))` for the Hermitian
+    /// unit-occupation densities `(D_alpha(k), D_beta(k))`.
+    #[allow(clippy::type_complexity)]
+    fn build_polarized(
+        &mut self,
+        da: &[Array2<Complex64>],
+        db: &[Array2<Complex64>],
+    ) -> Result<(f64, Vec<Array2<Complex64>>, Vec<Array2<Complex64>>), FerricError>;
+}
+
 /// Result of a k-point UHF SCF (one stage).
 #[derive(Debug, Clone)]
 pub struct KUScfResult {
@@ -312,6 +325,7 @@ pub fn solve_kuhf(
             guess,
             cfg.budget_bytes,
             cfg.mutation,
+            None,
         )?;
         if !r.converged {
             return Err(FerricError::General(format!(
@@ -368,7 +382,7 @@ pub fn solve_kuhf_injected(
     nalpha: usize,
     nbeta: usize,
 ) -> Result<KUScfResult, FerricError> {
-    run_kuhf(cell, mesh, cfg, inj, nalpha, nbeta, None, None, None)
+    run_kuhf(cell, mesh, cfg, inj, nalpha, nbeta, None, None, None, None)
 }
 
 /// [`solve_kuhf_injected`] from starting densities `(D_α(k), D_β(k))`
@@ -383,7 +397,7 @@ pub fn solve_kuhf_injected_with_guess(
     nbeta: usize,
     guess: Option<(&[Array2<Complex64>], &[Array2<Complex64>])>,
 ) -> Result<KUScfResult, FerricError> {
-    run_kuhf(cell, mesh, cfg, inj, nalpha, nbeta, guess, None, None)
+    run_kuhf(cell, mesh, cfg, inj, nalpha, nbeta, guess, None, None, None)
 }
 
 fn re_tr_prod(a: &Array2<Complex64>, b: &Array2<Complex64>) -> f64 {
@@ -461,8 +475,12 @@ fn global_gap(eps: &[Vec<f64>], occ: &[Vec<f64>]) -> Option<f64> {
     (omax.is_finite() && vmin.is_finite()).then_some(vmin - omax)
 }
 
+/// XC hook of [`run_kuhf`]: the builder and the exact-exchange fraction `a`
+/// scaling K.
+pub(crate) type KUksHook<'a> = Option<(&'a mut dyn KPointXcPolarized, f64)>;
+
 #[allow(clippy::too_many_arguments)]
-fn run_kuhf(
+pub(crate) fn run_kuhf(
     cell: &Cell,
     mesh: &KPointMesh,
     cfg: &KScfConfig,
@@ -472,6 +490,7 @@ fn run_kuhf(
     guess: Option<(&[Array2<Complex64>], &[Array2<Complex64>])>,
     budget_bytes: Option<usize>,
     mutation: Option<KUhfMutation>,
+    mut xc: KUksHook<'_>,
 ) -> Result<KUScfResult, FerricError> {
     let nk = mesh.nk();
     if inj.s.len() != nk || inj.h.len() != nk {
@@ -592,19 +611,34 @@ fn run_kuhf(
             }
         }
         let jt: Vec<Array2<Complex64>> = (0..nk).map(|k| &ja[k] + &jb[k]).collect();
+        // Exact-exchange fraction: 1 for UHF, `a` for a hybrid KS.
+        let a_x = xc.as_ref().map_or(1.0, |(_, a)| *a);
         let fock = |kx: &[Array2<Complex64>]| -> Vec<Array2<Complex64>> {
             (0..nk)
-                .map(|k| hermitize(&(&(&inj.h[k] + &jt[k]) - &kx[k])))
+                .map(|k| hermitize(&(&(&inj.h[k] + &jt[k]) - &kx[k].mapv(|z| z * a_x))))
                 .collect()
         };
-        let fa = fock(&ka);
-        let fb = fock(&kb);
+        let mut fa = fock(&ka);
+        let mut fb = fock(&kb);
         let mut e_elec = 0.0;
         for k in 0..nk {
             e_elec += 0.5 * re_tr_prod(&(&inj.h[k] + &fa[k]), &da[k]);
             e_elec += 0.5 * re_tr_prod(&(&inj.h[k] + &fb[k]), &db[k]);
         }
-        let energy = e_elec * inv_nk + inj.vnn;
+        let mut energy = e_elec * inv_nk + inj.vnn;
+        if let Some((x, _)) = xc.as_mut() {
+            let (e_xc, va, vb) = x.build_polarized(&da, &db)?;
+            if va.len() != nk || vb.len() != nk {
+                return Err(FerricError::General(
+                    "solve_kuks: XC builder returned the wrong number of k blocks".into(),
+                ));
+            }
+            energy += e_xc;
+            for k in 0..nk {
+                fa[k] = hermitize(&(&fa[k] + &va[k]));
+                fb[k] = hermitize(&(&fb[k] + &vb[k]));
+            }
+        }
         // ---- stacked (spin, k) commutators [α(k0..), β(k0..)].
         let mut errs: Vec<Array2<Complex64>> = Vec::with_capacity(2 * nk);
         for (f, d) in [(&fa, &da), (&fb, &db)] {

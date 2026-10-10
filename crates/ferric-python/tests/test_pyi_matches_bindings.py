@@ -54,6 +54,7 @@ REQUIRED_FUNCTIONS = [
     "run_drpa_gamma",
     "run_rhf_kpts",
     "run_uhf_kpts",
+    "run_rks_kpts",
     "run_mp2_kpts",
     "run_drpa_kpts",
 ]

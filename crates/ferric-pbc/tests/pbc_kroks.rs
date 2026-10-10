@@ -589,3 +589,20 @@ fn pyscf_krohf_kroks_pins() {
         );
     }
 }
+
+/// KPeriodicXc accepts meta-GGA for the closed-shell solver; the open-shell
+/// solver has no tau term, so it must refuse SCAN on BOTH entry points
+/// rather than return a wrong energy.
+#[test]
+fn kroks_refuses_meta_gga() {
+    let cell = h3_cell();
+    let bs = pyscf_sto3g_h();
+    let prep = prep_for(&cell, &bs);
+    let mesh = KPointMesh::gamma_centred(&cell, [1, 1, 2]).unwrap();
+    let cfg = roks_cfg(&cell, ExxDiv::None, "SCAN", None);
+    let grid = PeriodicGrid::build(&cell, &cfg.grid).unwrap();
+    let on_grid = solve_kroks_on_grid(&cell, &prep, None, &mesh, &grid, &cfg);
+    assert!(on_grid.is_err(), "solve_kroks_on_grid accepted SCAN");
+    let plain = ferric_pbc::kroks::solve_kroks(&cell, &prep, None, &mesh, &cfg);
+    assert!(plain.is_err(), "solve_kroks accepted SCAN");
+}

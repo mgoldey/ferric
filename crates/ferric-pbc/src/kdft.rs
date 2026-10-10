@@ -26,10 +26,14 @@
 //!   Madelung term and is scaled as a whole (see
 //!   [`crate::kscf::solve_krks_injected`]).
 //!
+//! Meta-GGA (SCAN / r2SCAN): `τ = (1/N_k) Σ_k ½ Σ_ax Re Σ D(k) ∂φ^k_μ (∂φ^k_ν)*`
+//! and `V^τ(k)_{μν} = Σ_g ½ w v_τ Σ_ax (∂_ax φ^k_μ)* ∂_ax φ^k_ν` (the Gamma
+//! periodic path has no meta-GGA; the molecular `semilocal_vxc` is mirrored).
+//!
 //! Range-separated hybrids (HSE06, CAM-B3LYP, wB97X, ...) are supported with
 //! the dense-AFT J/K ([`crate::rsh`]; no Gamma RSH exists to mirror). Open
-//! shell (KUKS), meta-GGA, VV10 and double hybrids are refused/absent, exactly
-//! as at Gamma. Time reversal is NOT used
+//! shell (KUKS), range-separated meta-GGAs, VV10 and double hybrids are
+//! refused/absent, exactly as at Gamma. Time reversal is NOT used
 //! to halve the XC work (every k gets its own Bloch AO cache).
 
 use crate::budget::{bytes_of, Ledger};
@@ -82,6 +86,8 @@ pub struct KPeriodicXc {
     pub(crate) nk: usize,
     pub(crate) gga: bool,
     rsh: Option<RshParams>,
+    /// Meta-GGA: tau (and its Vxc term) is evaluated from `dchi`.
+    mgga: bool,
 }
 
 impl std::fmt::Debug for KPeriodicXc {
@@ -253,6 +259,10 @@ impl KPeriodicXc {
         cfg: &PeriodicXcConfig,
     ) -> Result<Self, FerricError> {
         let (xc, exx, rsh) = resolve_periodic_functional_rsh(functional)?;
+        let mgga = xc
+            .funcs
+            .iter()
+            .any(|f| matches!(f.family(), FunctionalFamily::MetaGga));
         let xc_pol = ferric_dft::libxc::xc_def_from_name_nspin(functional, 2).map_err(|e| {
             FerricError::General(format!(
                 "periodic DFT: functional {functional:?} (spin-polarized): {e:?}"
@@ -282,6 +292,7 @@ impl KPeriodicXc {
             nk: mesh.nk(),
             gga,
             rsh,
+            mgga,
         })
     }
 
@@ -349,6 +360,28 @@ impl KPeriodicXc {
         DensityGrid { rho, grad, sigma }
     }
 
+    /// Total kinetic-energy density of one chunk,
+    /// `τ = (1/N_k) Σ_k ½ Σ_ax Re Σ_{μν} D(k)_{μν} ∂_ax φ^k_μ (∂_ax φ^k_ν)*`.
+    fn chunk_tau(&self, c: &KAoChunk, dm: &[Array2<Complex64>]) -> Array1<f64> {
+        let np = c.points.len();
+        let w = 0.5 / self.nk as f64;
+        let mut tau = Array1::<f64>::zeros(np);
+        for k in 0..self.nk {
+            for ax in 0..3 {
+                let d_ax = c.dchi[k].index_axis(ndarray::Axis(0), ax).to_owned();
+                let p = dm[k].dot(&conj(&d_ax));
+                for g in 0..np {
+                    let mut t = Complex64::new(0.0, 0.0);
+                    for mu in 0..self.nbf {
+                        t += d_ax[(mu, g)] * p[(mu, g)];
+                    }
+                    tau[g] += w * t.re;
+                }
+            }
+        }
+        tau
+    }
+
     /// `∫_cell ρ` of the k densities (`= N_e` up to the grid error).
     pub fn integrate_density(&self, dm: &[Array2<Complex64>]) -> Result<f64, FerricError> {
         self.check(dm)?;
@@ -394,7 +427,8 @@ impl KPointXc for KPeriodicXc {
             .collect();
         for c in &self.chunks {
             let dens = self.chunk_density(c, dm);
-            let kern = closed_kernel(&dens, None, &self.xc);
+            let tau = self.mgga.then(|| self.chunk_tau(c, dm));
+            let kern = closed_kernel(&dens, tau.as_ref(), &self.xc);
             let np = c.points.len();
             for g in 0..np {
                 e += c.points[g].weight * dens.rho[g] * kern.exc[g];
@@ -425,6 +459,19 @@ impl KPointXc for KPeriodicXc {
             } else {
                 Vec::new()
             };
+            let f_tau: Vec<f64> = if self.mgga {
+                (0..np)
+                    .map(|g| {
+                        if dens.rho[g] > DENSITY_FLOOR {
+                            0.5 * c.points[g].weight * kern.vtau[g]
+                        } else {
+                            0.0
+                        }
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
             for k in 0..self.nk {
                 let scale = |fac: &[f64]| {
                     let mut m = conj(&c.chi[k]);
@@ -441,6 +488,17 @@ impl KPointXc for KPeriodicXc {
                         let mh = conj(&m).t().to_owned();
                         v[k] += &m;
                         v[k] += &mh;
+                    }
+                }
+                if self.mgga {
+                    // V^tau(k)_{μν} = Σ_g ½ w v_tau Σ_ax (∂φ_μ)* ∂φ_ν
+                    for ax in 0..3 {
+                        let d_ax = c.dchi[k].index_axis(ndarray::Axis(0), ax).to_owned();
+                        let mut m = conj(&d_ax);
+                        for g in 0..np {
+                            m.column_mut(g).mapv_inplace(|z| z * f_tau[g]);
+                        }
+                        v[k] += &m.dot(&d_ax.t());
                     }
                 }
             }

@@ -153,6 +153,7 @@ pub mod kgrad;
 pub mod kpts;
 pub mod kroks;
 pub mod kscf;
+pub mod kuks;
 pub mod kuscf;
 pub mod lattice;
 pub mod lindep;
@@ -211,6 +212,7 @@ pub use kscf::{
     solve_krhf_injected, solve_krks_injected, KJkKind, KPointInjection, KPointJk, KPointXc,
     KRhfConfig, KScfConfig, KScfResult,
 };
+pub use kuks::{solve_kuks, solve_kuks_on_grid, KUksConfig, KUksResult};
 pub use kuscf::{
     kuhf_gap_report, solve_kuhf, solve_kuhf_injected, solve_kuhf_injected_with_guess, KUScfResult,
     KUhfConfig, KUhfResult,

@@ -290,3 +290,27 @@ fn rsh_with_rsgdf_is_refused_not_silently_wrong() {
         .expect_err("RSH + RS-GDF must be refused");
     assert!(err.to_string().contains("range-separated"), "{err}");
 }
+
+/// `KPeriodicXc` accepts range-separated hybrids for the closed-shell solver,
+/// but the spin-resolved k-point solvers have no range-separated exchange:
+/// they must refuse HSE06 on every entry point, not run it as a global hybrid.
+#[test]
+fn open_shell_solvers_refuse_rsh() {
+    use ferric_pbc::kroks::{solve_kroks_on_grid, KRoksConfig};
+    use ferric_pbc::kuks::{solve_kuks_on_grid, KUksConfig};
+    let cell = h2_cell(4.0);
+    let bs = pyscf_sto3g_h();
+    let prep = prep_for(&cell, &bs);
+    let mesh = KPointMesh::gamma_centred(&cell, [1, 1, 1]).unwrap();
+    let grid = PeriodicGrid::uniform(&cell, [24; 3]).unwrap();
+    let roks = KRoksConfig::new(&cell, ExxDiv::Ewald, "HSE06");
+    assert!(
+        solve_kroks_on_grid(&cell, &prep, None, &mesh, &grid, &roks).is_err(),
+        "solve_kroks_on_grid accepted HSE06"
+    );
+    let uks = KUksConfig::new(&cell, ExxDiv::Ewald, "HSE06");
+    assert!(
+        solve_kuks_on_grid(&cell, &prep, None, &mesh, &grid, &uks).is_err(),
+        "solve_kuks_on_grid accepted HSE06"
+    );
+}

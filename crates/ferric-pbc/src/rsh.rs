@@ -111,15 +111,18 @@ pub fn madelung_lr(cell: &Cell, omega: f64) -> Result<f64, FerricError> {
 /// [`crate::dft::resolve_periodic_functional`] that ACCEPTS range-separated
 /// hybrids: `(XcDef, global exact-exchange fraction, Some(RshParams) for a
 /// CAM functional)`. For a CAM functional the global fraction is `0.0` (the
-/// exchange is described by the returned [`RshParams`]). Meta-GGA, VV10 and
-/// double hybrids are still refused.
+/// exchange is described by the returned [`RshParams`]). A meta-GGA without
+/// range separation (SCAN, r2SCAN) is accepted; a range-separated meta-GGA,
+/// VV10 and double hybrids are still refused.
 pub fn resolve_periodic_functional_rsh(
     name: &str,
 ) -> Result<(XcDef, f64, Option<RshParams>), FerricError> {
     let def = xc_def_from_name(name)
         .map_err(|e| FerricError::General(format!("periodic DFT: functional {name:?}: {e:?}")))?;
     let Some(cam) = def.cam else {
-        let (def, a) = crate::dft::resolve_periodic_functional(name)?;
+        // Not range-separated: the global-exchange rules, with meta-GGA
+        // allowed (the k-point path supplies tau, see `crate::kdft`).
+        let (def, a) = crate::dft::resolve_periodic_functional_mgga(name, true)?;
         return Ok((def, a, None));
     };
     if def
