@@ -655,15 +655,6 @@ pub fn hess_nuclear_repulsion(mol: &Molecule) -> Array2<f64> {
 // Shared scatter of unique second-derivative blocks
 // ---------------------------------------------------------------------------
 
-/// Add libint2's unique second-derivative values to the Cartesian Hessian.
-///
-/// `vals[deriv2_pair_index(ncoord, i, j)]` is `∂²X/∂q_i∂q_j` (i ≤ j) over
-/// `ncoord = 3·centre_atoms.len()` coordinates, `q_{3k+a}` being axis `a` of
-/// centre `k`, which sits on atom `centre_atoms[k]`. The Hessian element for
-/// atoms (A, B) is the sum over every centre pair on (A, B) of BOTH orders,
-/// so an off-diagonal `i < j` value goes to `(row_i, row_j)` and
-/// `(row_j, row_i)` — which, when two centres share an atom, correctly lands
-/// twice on the same element (`∂²/∂A² f(A₁,A₂)|_{A₁=A₂=A} = f₁₁ + 2f₁₂ + f₂₂`).
 /// Centre→atom table entry for an external point-charge centre, whose
 /// derivative blocks are computed (libint2 writes them) but discarded.
 const EXTERNAL_CENTRE: usize = usize::MAX;
@@ -688,6 +679,32 @@ fn nuclear_term(mol: &Molecule, config: &RhfConfig) -> Array2<f64> {
     h
 }
 
+/// Add libint2's unique second-derivative values to the Cartesian Hessian.
+///
+/// `vals[deriv2_pair_index(ncoord, i, j)]` is `∂²X/∂q_i∂q_j` (i ≤ j) over
+/// `ncoord = 3·centre_atoms.len()` coordinates, `q_{3k+a}` being axis `a` of
+/// centre `k`, which sits on atom `centre_atoms[k]`. The Hessian element for
+/// atoms (A, B) is the sum over every centre pair on (A, B) of BOTH orders,
+/// so an off-diagonal `i < j` value goes to `(row_i, row_j)` and
+/// `(row_j, row_i)` — which, when two centres share an atom, correctly lands
+/// twice on the same element (`∂²/∂A² f(A₁,A₂)|_{A₁=A₂=A} = f₁₁ + 2f₁₂ + f₂₂`).
+/// Whether either centre of the coordinate pair `(i, j)` is an external
+/// point charge. Those are fixed MM coordinates, not Hessian variables: their
+/// derivative blocks are dropped.
+fn involves_external_centre(centre_atoms: &[usize], i: usize, j: usize) -> bool {
+    centre_atoms[i / 3] == EXTERNAL_CENTRE || centre_atoms[j / 3] == EXTERNAL_CENTRE
+}
+
+/// `h[(r, c)] += v`, and `h[(c, r)] += v` too when `mirror` (an off-diagonal
+/// coordinate pair; tested on the coordinate indices, not on `r != c`, because
+/// two centres on one atom must land twice on the same element).
+fn add_symmetric(h: &mut Array2<f64>, r: usize, c: usize, v: f64, mirror: bool) {
+    h[(r, c)] += v;
+    if mirror {
+        h[(c, r)] += v;
+    }
+}
+
 fn scatter_unique_pairs(h: &mut Array2<f64>, vals: &[f64], centre_atoms: &[usize]) {
     let ncoord = 3 * centre_atoms.len();
     debug_assert_eq!(vals.len(), ncoord * (ncoord + 1) / 2);
@@ -695,19 +712,10 @@ fn scatter_unique_pairs(h: &mut Array2<f64>, vals: &[f64], centre_atoms: &[usize
     for i in 0..ncoord {
         for j in i..ncoord {
             let v = vals[deriv2_pair_index(ncoord, i, j)];
-            if v == 0.0 {
+            if v == 0.0 || involves_external_centre(centre_atoms, i, j) {
                 continue;
             }
-            // External-charge centres are fixed MM coordinates, not Hessian
-            // variables: their derivative blocks are dropped.
-            if centre_atoms[i / 3] == EXTERNAL_CENTRE || centre_atoms[j / 3] == EXTERNAL_CENTRE {
-                continue;
-            }
-            let (r, c) = (row(i), row(j));
-            h[(r, c)] += v;
-            if i != j {
-                h[(c, r)] += v;
-            }
+            add_symmetric(h, row(i), row(j), v, i != j);
         }
     }
 }
@@ -745,6 +753,31 @@ fn pair_weights(
     out
 }
 
+/// Number of point charges a 1e engine of `op_kind` differentiates: the
+/// nuclei (plus any external charges) for nuclear attraction, none otherwise.
+fn one_electron_charge_count(
+    op_kind: std::os::raw::c_int,
+    natoms: usize,
+    extra: &[PointCharge],
+) -> usize {
+    if op_kind == ffi::OP_NUCLEAR {
+        natoms + extra.len()
+    } else {
+        0
+    }
+}
+
+/// Centre→atom table of a 1e engine with `n_charges` operator centres: bra
+/// centre, ket centre (both overwritten per shell pair), then one centre per
+/// nucleus in `prep.atoms()` order, then the external charges.
+fn centre_table(natoms: usize, n_charges: usize) -> Vec<usize> {
+    let mut centres = vec![0usize; 2 + n_charges];
+    for (c, slot) in centres[2..].iter_mut().enumerate() {
+        *slot = if c < natoms { c } else { EXTERNAL_CENTRE };
+    }
+    centres
+}
+
 /// Number of point charges a 1e engine of `op_kind` differentiates (nuclear
 /// only), and the centre→atom table for its coordinates: bra centre, ket
 /// centre, then one centre per nucleus in `prep.atoms()` order (= molecule
@@ -755,16 +788,8 @@ fn one_electron_centres(
     extra: &[PointCharge],
 ) -> (usize, Vec<usize>) {
     let natoms = prep.atoms().len();
-    let n_charges = if op_kind == ffi::OP_NUCLEAR {
-        natoms + extra.len()
-    } else {
-        0
-    };
-    let mut centres = vec![0usize; 2 + n_charges];
-    for (c, slot) in centres[2..].iter_mut().enumerate() {
-        *slot = if c < natoms { c } else { EXTERNAL_CENTRE };
-    }
-    (n_charges, centres)
+    let n_charges = one_electron_charge_count(op_kind, natoms, extra);
+    (n_charges, centre_table(natoms, n_charges))
 }
 
 /// Load the nuclei (and, for the nuclear-attraction engine, the external
@@ -798,9 +823,19 @@ fn skeleton_hess_1e(
     extra: &[PointCharge],
     d: &Array2<f64>,
 ) -> Result<Array2<f64>, FerricError> {
+    let h = skeleton_hess_1e_nuclei(prep, natoms, d)?;
+    Ok(h + &contract_external_deriv2(prep, natoms, extra, d)?)
+}
+
+/// Kinetic + nuclear-attraction part of Term 2 (nuclei only, no external
+/// charges), accumulated in that order.
+fn skeleton_hess_1e_nuclei(
+    prep: &PreparedBasis,
+    natoms: usize,
+    d: &Array2<f64>,
+) -> Result<Array2<f64>, FerricError> {
     let mut h = contract_1e_deriv2(prep, natoms, &[], ffi::OP_KINETIC, d)?;
     h += &contract_1e_deriv2(prep, natoms, &[], ffi::OP_NUCLEAR, d)?;
-    h += &contract_external_deriv2(prep, natoms, extra, d)?;
     Ok(h)
 }
 

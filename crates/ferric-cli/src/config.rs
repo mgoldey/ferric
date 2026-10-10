@@ -5360,31 +5360,39 @@ kind = "ccsd"
         );
     }
 
+    /// (kind, extra TOML, triplet?, fragments the refusal must contain).
+    /// The triplet ksdft row is open-shell -> UKS, refused by name; SCAN /
+    /// HSE06 are refused by name as meta-GGA / range-separated.
+    type KmeshRefusal = (&'static str, &'static str, bool, &'static [&'static str]);
+    const PBE: &str = "[dft]\nfunctional = \"PBE\"";
+    const SCAN: &str = "[dft]\nfunctional = \"SCAN\"";
+    const HSE: &str = "[dft]\nfunctional = \"HSE06\"";
+    const KMESH_REFUSALS: &[KmeshRefusal] = &[
+        ("rohf", "", false, &["kmesh", "not implemented"]),
+        ("uhf", PBE, false, &["kmesh", "not implemented"]),
+        ("rohf", PBE, false, &["kmesh", "not implemented"]),
+        ("ksdft", "", true, &["UKS", "not implemented"]),
+        ("ksdft", SCAN, false, &["meta-GGA"]),
+        ("ksdft", HSE, false, &["range-separated"]),
+    ];
+
+    /// Error text for a k-mesh run of `kind` with `extra` TOML.
+    fn kmesh_refusal(kind: &str, extra: &str, triplet: bool) -> String {
+        let src = h2(kind, "kmesh = [2, 2, 2]", extra);
+        let mol = "[molecule]\n";
+        err(&match triplet {
+            true => src.replace(mol, &format!("{mol}multiplicity = 3\n")),
+            false => src,
+        })
+    }
+
     #[test]
     fn kmesh_with_an_unsupported_method_errors() {
-        for (kind, extra) in [
-            ("rohf", ""),
-            ("uhf", "[dft]\nfunctional = \"PBE\""),
-            ("rohf", "[dft]\nfunctional = \"PBE\""),
-        ] {
-            let e = err(&h2(kind, "kmesh = [2, 2, 2]", extra));
-            assert!(
-                e.contains("kmesh") && e.contains("not implemented"),
-                "{kind}: {e}"
-            );
-        }
-        // Open-shell ksdft (triplet) -> UKS: refused by name.
-        let e = err(&h2("ksdft", "kmesh = [2, 2, 2]", "")
-            .replace("[molecule]\n", "[molecule]\nmultiplicity = 3\n"));
-        assert!(e.contains("UKS") && e.contains("not implemented"), "{e}");
-        // Meta-GGA and range-separated hybrids are refused by name.
-        for (f, what) in [("SCAN", "meta-GGA"), ("HSE06", "range-separated")] {
-            let e = err(&h2(
-                "ksdft",
-                "kmesh = [2, 2, 2]",
-                &format!("[dft]\nfunctional = \"{f}\""),
-            ));
-            assert!(e.contains(what), "{f}: {e}");
+        for &(kind, extra, triplet, frags) in KMESH_REFUSALS {
+            let e = kmesh_refusal(kind, extra, triplet);
+            for f in frags {
+                assert!(e.contains(f), "{kind} {extra:?} missing {f:?}: {e}");
+            }
         }
     }
 

@@ -116,6 +116,314 @@ pub struct KDenseAftEri {
     pair_thresh: f64,
 }
 
+/// Input validation of [`KDenseAftEri::build`]; returns the kernel byte count.
+fn validate_build_inputs(
+    nao: usize,
+    nk: usize,
+    s_k: &[Array2<Complex64>],
+    cfg: &KDenseAftConfig,
+) -> Result<u128, FerricError> {
+    let n2 = nao * nao;
+    let kbytes = 2u128 * (nk as u128).pow(2) * (n2 as u128).pow(2) * 16;
+    if kbytes > cfg.max_bytes as u128 {
+        return Err(FerricError::General(format!(
+            "KDenseAftEri: dense k-point kernels need {kbytes} bytes (nao = {nao}, N_k = {nk}) \
+             > cap {} bytes; this is a toy-cell oracle (use jk = rsgdf)",
+            cfg.max_bytes
+        )));
+    }
+    if s_k.len() != nk || s_k.iter().any(|s| s.dim() != (nao, nao)) {
+        return Err(FerricError::General(format!(
+            "KDenseAftEri: need {nk} overlap matrices of shape ({nao}, {nao})"
+        )));
+    }
+    if let Some(r) = &cfg.rsh {
+        r.validate()?;
+    }
+    if !(f64::MIN_POSITIVE..1.0).contains(&cfg.precision) {
+        return Err(FerricError::General(format!(
+            "KDenseAftEri: precision must lie in (0, 1), got {}",
+            cfg.precision
+        )));
+    }
+    Ok(kbytes)
+}
+
+/// K-sphere radius `2 sqrt(p_max ln(1/precision))`.
+fn k_sphere_radius(prep: &PreparedBasis, precision: f64) -> f64 {
+    let pmax = 2.0
+        * prep
+            .located_shells()
+            .iter()
+            .flat_map(|sh| sh.exponents.iter().copied())
+            .fold(0.0_f64, f64::max);
+    2.0 * (pmax * (1.0 / precision).ln()).sqrt()
+}
+
+/// Reserve the build's memory on a fresh ledger (kernels, overlap copies, K list).
+fn reserve_build_memory(
+    cell: &Cell,
+    mesh: &KPointMesh,
+    nao: usize,
+    kbytes: u128,
+    gcut: f64,
+    cfg: &KDenseAftConfig,
+) -> Result<Ledger, FerricError> {
+    let nk = mesh.nk();
+    let n2 = nao * nao;
+    let mut ledger = Ledger::new(crate::budget::resolve(cfg.budget_bytes));
+    ledger.reserve(
+        &format!("KDenseAftEri J/K kernels (nao = {nao}, N_k = {nk})"),
+        usize::try_from(kbytes).unwrap_or(usize::MAX),
+    )?;
+    ledger.reserve(
+        &format!("KDenseAftEri overlap copies + per-block GEMM output (nao = {nao})"),
+        bytes_of((nk * n2 + n2 * n2) as u64, 16),
+    )?;
+    let qmax = (0..nk)
+        .map(|iq| norm3(mesh.q_class(iq).0))
+        .fold(0.0_f64, f64::max);
+    // Cell::gvectors at gcut + |q| plus the K copy (same bound).
+    ledger.reserve(
+        &format!("KDenseAftEri K list (|K| <= {gcut:.3}, |q| <= {qmax:.3})"),
+        gvector_list_bytes(cell, gcut + qmax)?.saturating_mul(2),
+    )?;
+    Ok(ledger)
+}
+
+fn norm3(q: [f64; 3]) -> f64 {
+    (q[0] * q[0] + q[1] * q[1] + q[2] * q[2]).sqrt()
+}
+
+/// Mesh phases per `(k, residue)`; conjugated for the
+/// [`KMutation::PhaseSignInPairFt`] defect.
+fn residue_phases(mesh: &KPointMesh, moduli: [usize; 3], flip: bool) -> Vec<Vec<Complex64>> {
+    let nr = moduli[0] * moduli[1] * moduli[2];
+    (0..mesh.nk())
+        .map(|k| {
+            (0..nr)
+                .map(|r| {
+                    let p = mesh.phase(k, residue_coords(r, moduli));
+                    if flip {
+                        p.conj()
+                    } else {
+                        p
+                    }
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// The `ExxDiv::Ewald` constant: mixed supercell Madelung for RSH, else the mesh's.
+fn ewald_madelung(
+    cell: &Cell,
+    mesh: &KPointMesh,
+    cfg: &KDenseAftConfig,
+) -> Result<f64, FerricError> {
+    let primitive = cfg.mutation == Some(KMutation::PrimitiveMadelung);
+    match cfg.rsh {
+        Some(r) => {
+            let lat = if primitive {
+                *cell.lattice()
+            } else {
+                mesh.supercell_lattice()
+            };
+            r.madelung(&Cell::new(cell.mol().clone(), lat)?)
+        }
+        None if primitive => madelung_constant(cell),
+        None => mesh.madelung(cell),
+    }
+}
+
+/// Everything one momentum-transfer pass needs (shared across passes).
+struct QPass<'a> {
+    cell: &'a Cell,
+    prep: &'a PreparedBasis,
+    mesh: &'a KPointMesh,
+    cfg: &'a KDenseAftConfig,
+    phr: &'a [Vec<Complex64>],
+    moduli: [usize; 3],
+    gcut: f64,
+    thresh: f64,
+    chunk_budget: usize,
+    extra_per_g: usize,
+}
+
+impl QPass<'_> {
+    /// Run pass `iq`, accumulating into `jker`/`kker`; returns the pass's K count.
+    fn run(
+        &self,
+        iq: usize,
+        jker: &mut [Array2<Complex64>],
+        kker: &mut [Array2<Complex64>],
+    ) -> Result<usize, FerricError> {
+        let (mesh, nk) = (self.mesh, self.mesh.nk());
+        let (q, mq) = mesh.q_class(iq);
+        let ks = shifted_k_vectors(self.cell, q, self.gcut)?;
+        let chunk = ChunkCtx {
+            q,
+            vol: self.cell.volume(),
+            kernel_at_g: self.cfg.mutation == Some(KMutation::KernelAtG),
+            rsh: self.cfg.rsh,
+            nao: self.prep.nbasis(),
+            nk,
+            iq,
+            time_reversal: mesh.q_minus(iq) != iq,
+            kof: (0..nk).map(|j| mesh.k_minus_q(j, mq)).collect(),
+            minus: (0..nk).map(|k| mesh.minus(k)).collect(),
+            phr: self.phr,
+        };
+        let sink =
+            |_k0: usize, kv: &[[f64; 3]], qs: &[Array3<Complex64>]| -> Result<(), FerricError> {
+                chunk.accumulate(kv, qs, jker, kker);
+                Ok(())
+            };
+        pair_ft_residues_chunked(
+            self.cell,
+            self.prep,
+            &ks,
+            self.moduli,
+            self.thresh,
+            self.chunk_budget,
+            self.extra_per_g,
+            sink,
+        )?;
+        Ok(ks.len())
+    }
+}
+
+/// `K = G + q` with `0 < |K| <= gcut` (`Cell::gvectors` at `gcut + |q|`).
+fn shifted_k_vectors(cell: &Cell, q: [f64; 3], gcut: f64) -> Result<Vec<[f64; 3]>, FerricError> {
+    let g2cut = gcut * gcut;
+    Ok(cell
+        .gvectors(gcut + norm3(q))?
+        .into_iter()
+        .map(|g| [g[0] + q[0], g[1] + q[1], g[2] + q[2]])
+        .filter(|k| {
+            let k2 = k[0] * k[0] + k[1] * k[1] + k[2] * k[2];
+            k2 > 0.0 && k2 <= g2cut
+        })
+        .collect())
+}
+
+/// Per-pass context of the chunk accumulation.
+struct ChunkCtx<'a> {
+    q: [f64; 3],
+    vol: f64,
+    kernel_at_g: bool,
+    rsh: Option<crate::rsh::RshParams>,
+    nao: usize,
+    nk: usize,
+    iq: usize,
+    /// `-q` is a different class: fill the mirrored block by conjugation.
+    time_reversal: bool,
+    kof: Vec<usize>,
+    minus: Vec<usize>,
+    phr: &'a [Vec<Complex64>],
+}
+
+impl ChunkCtx<'_> {
+    /// `|K|^2` of the kernel argument (`K - q` under the `KernelAtG` defect).
+    fn kernel_arg_sq(&self, k: &[f64; 3]) -> f64 {
+        let x = if self.kernel_at_g {
+            [k[0] - self.q[0], k[1] - self.q[1], k[2] - self.q[2]]
+        } else {
+            *k
+        };
+        x[0] * x[0] + x[1] * x[1] + x[2] * x[2]
+    }
+
+    /// Coulomb weights `4 pi / (K^2 Omega)` (0 at the head).
+    fn coulomb_weights(&self, kv: &[[f64; 3]]) -> Vec<f64> {
+        kv.iter()
+            .map(|k| {
+                let x2 = self.kernel_arg_sq(k);
+                if x2 > 1e-20 {
+                    4.0 * PI / x2 / self.vol
+                } else {
+                    0.0
+                }
+            })
+            .collect()
+    }
+
+    /// Exchange weights: `v(K)` times the range-separation factor (if any).
+    fn exchange_weights(&self, kv: &[[f64; 3]], vv: &[f64]) -> Vec<f64> {
+        match self.rsh {
+            None => vv.to_vec(),
+            Some(r) => kv
+                .iter()
+                .zip(vv)
+                .map(|(k, v)| v * r.kernel_factor(self.kernel_arg_sq(k)))
+                .collect(),
+        }
+    }
+
+    /// `P^{k'}(K)` for every `k'`, each `(nao^2, n_K)`.
+    fn pair_ft_per_k(&self, qs: &[Array3<Complex64>], ng: usize) -> Vec<Array2<Complex64>> {
+        let nao = self.nao;
+        (0..self.nk)
+            .map(|j| {
+                let mut p = Array2::<Complex64>::zeros((nao * nao, ng));
+                for (qr, ph) in qs.iter().zip(&self.phr[j]) {
+                    for m in 0..nao {
+                        for l in 0..nao {
+                            let row = m * nao + l;
+                            for g in 0..ng {
+                                p[(row, g)] += *ph * qr[[m, l, g]];
+                            }
+                        }
+                    }
+                }
+                p
+            })
+            .collect()
+    }
+
+    /// Fold one K chunk into the J/K kernels.
+    fn accumulate(
+        &self,
+        kv: &[[f64; 3]],
+        qs: &[Array3<Complex64>],
+        jker: &mut [Array2<Complex64>],
+        kker: &mut [Array2<Complex64>],
+    ) {
+        let nk = self.nk;
+        let vv = self.coulomb_weights(kv);
+        let pj = self.pair_ft_per_k(qs, kv.len());
+        let vk_w = self.exchange_weights(kv, &vv);
+        for j in 0..nk {
+            let blk = scale_columns(&pj[j], &vk_w).dot(&herm(&pj[j]));
+            let k = self.kof[j];
+            kker[k * nk + j] += &blk;
+            if self.time_reversal {
+                kker[self.minus[k] * nk + self.minus[j]] += &blk.mapv(|z| z.conj());
+            }
+        }
+        if self.iq == 0 {
+            for k in 0..nk {
+                let pv = scale_columns(&pj[k], &vv);
+                for j in 0..nk {
+                    jker[k * nk + j] += &pv.dot(&herm(&pj[j]));
+                }
+            }
+        }
+    }
+}
+
+fn scale_columns(p: &Array2<Complex64>, w: &[f64]) -> Array2<Complex64> {
+    let mut pv = p.clone();
+    for (mut col, v) in pv.columns_mut().into_iter().zip(w) {
+        col.mapv_inplace(|z| z * *v);
+    }
+    pv
+}
+
+fn herm(p: &Array2<Complex64>) -> Array2<Complex64> {
+    p.t().mapv(|z| z.conj())
+}
+
 impl KDenseAftEri {
     /// Build the kernels for `mesh` on `cell` in the AO basis `prep` (built
     /// from `cell.mol()`); `s_k` = `S(k)` per mesh point (for the Madelung
@@ -131,215 +439,42 @@ impl KDenseAftEri {
         let nao = prep.nbasis();
         let nk = mesh.nk();
         let n2 = nao * nao;
-        let kbytes = 2u128 * (nk as u128).pow(2) * (n2 as u128).pow(2) * 16;
-        if kbytes > cfg.max_bytes as u128 {
-            return Err(FerricError::General(format!(
-                "KDenseAftEri: dense k-point kernels need {kbytes} bytes (nao = {nao}, N_k = {nk}) \
-                 > cap {} bytes; this is a toy-cell oracle (use jk = rsgdf)",
-                cfg.max_bytes
-            )));
-        }
-        if s_k.len() != nk || s_k.iter().any(|s| s.dim() != (nao, nao)) {
-            return Err(FerricError::General(format!(
-                "KDenseAftEri: need {nk} overlap matrices of shape ({nao}, {nao})"
-            )));
-        }
-        if let Some(r) = &cfg.rsh {
-            r.validate()?;
-        }
-        if !(f64::MIN_POSITIVE..1.0).contains(&cfg.precision) {
-            return Err(FerricError::General(format!(
-                "KDenseAftEri: precision must lie in (0, 1), got {}",
-                cfg.precision
-            )));
-        }
-        let pmax = 2.0
-            * prep
-                .located_shells()
-                .iter()
-                .flat_map(|sh| sh.exponents.iter().copied())
-                .fold(0.0_f64, f64::max);
-        let gcut = 2.0 * (pmax * (1.0 / cfg.precision).ln()).sqrt();
-        let mut ledger = Ledger::new(crate::budget::resolve(cfg.budget_bytes));
-        ledger.reserve(
-            &format!("KDenseAftEri J/K kernels (nao = {nao}, N_k = {nk})"),
-            usize::try_from(kbytes).unwrap_or(usize::MAX),
-        )?;
-        ledger.reserve(
-            &format!("KDenseAftEri overlap copies + per-block GEMM output (nao = {nao})"),
-            bytes_of((nk * n2 + n2 * n2) as u64, 16),
-        )?;
-        let qmax = (0..nk)
-            .map(|iq| {
-                let q = mesh.q_class(iq).0;
-                (q[0] * q[0] + q[1] * q[1] + q[2] * q[2]).sqrt()
-            })
-            .fold(0.0_f64, f64::max);
-        // Cell::gvectors at gcut + |q| plus the K copy (same bound).
-        ledger.reserve(
-            &format!("KDenseAftEri K list (|K| <= {gcut:.3}, |q| <= {qmax:.3})"),
-            gvector_list_bytes(cell, gcut + qmax)?.saturating_mul(2),
-        )?;
+        let kbytes = validate_build_inputs(nao, nk, s_k, cfg)?;
+        let gcut = k_sphere_radius(prep, cfg.precision);
+        let ledger = reserve_build_memory(cell, mesh, nao, kbytes, gcut, cfg)?;
 
         let moduli = mesh.residue_moduli();
-        let nr = moduli[0] * moduli[1] * moduli[2];
         let flip = cfg.mutation == Some(KMutation::PhaseSignInPairFt);
-        let phr: Vec<Vec<Complex64>> = (0..nk)
-            .map(|k| {
-                (0..nr)
-                    .map(|r| {
-                        let p = mesh.phase(k, residue_coords(r, moduli));
-                        if flip {
-                            p.conj()
-                        } else {
-                            p
-                        }
-                    })
-                    .collect()
-            })
-            .collect();
+        let phr = residue_phases(mesh, moduli, flip);
 
         let zero_blk = || Array2::<Complex64>::zeros((n2, n2));
         let mut jker: Vec<Array2<Complex64>> = (0..nk * nk).map(|_| zero_blk()).collect();
         let mut kker: Vec<Array2<Complex64>> = (0..nk * nk).map(|_| zero_blk()).collect();
-        let vol = cell.volume();
         let thresh = 0.1 * cfg.precision;
-        // per K: N_k P columns + scaled copy + conjugate transpose.
-        let extra_per_g = bytes_of(((nk + 2) * n2) as u64, 16);
+        let pass = QPass {
+            cell,
+            prep,
+            mesh,
+            cfg,
+            phr: &phr,
+            moduli,
+            gcut,
+            thresh,
+            chunk_budget: ledger.remaining().min(G_CHUNK_BYTES),
+            // per K: N_k P columns + scaled copy + conjugate transpose.
+            extra_per_g: bytes_of(((nk + 2) * n2) as u64, 16),
+        };
         let mut n_k_total = 0usize;
         let mut n_q_passes = 0usize;
-        let g2cut = gcut * gcut;
 
         for iq in 0..nk {
-            let iqm = mesh.q_minus(iq);
-            if iqm < iq {
+            if mesh.q_minus(iq) < iq {
                 continue; // filled by time reversal from pass iqm
             }
-            let (q, mq) = mesh.q_class(iq);
-            let qn = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2]).sqrt();
-            let ks: Vec<[f64; 3]> = cell
-                .gvectors(gcut + qn)?
-                .into_iter()
-                .map(|g| [g[0] + q[0], g[1] + q[1], g[2] + q[2]])
-                .filter(|k| {
-                    let k2 = k[0] * k[0] + k[1] * k[1] + k[2] * k[2];
-                    k2 > 0.0 && k2 <= g2cut
-                })
-                .collect();
-            n_k_total += ks.len();
+            n_k_total += pass.run(iq, &mut jker, &mut kker)?;
             n_q_passes += 1;
-            let kof: Vec<usize> = (0..nk).map(|j| mesh.k_minus_q(j, mq)).collect();
-            let minus: Vec<usize> = (0..nk).map(|k| mesh.minus(k)).collect();
-            let kernel_at_g = cfg.mutation == Some(KMutation::KernelAtG);
-            let rsh = cfg.rsh;
-            let chunk_budget = ledger.remaining().min(G_CHUNK_BYTES);
-            let jref = &mut jker;
-            let kref = &mut kker;
-            let phr = &phr;
-            let sink = |_k0: usize,
-                        kv: &[[f64; 3]],
-                        qs: &[Array3<Complex64>]|
-             -> Result<(), FerricError> {
-                let ng = kv.len();
-                let vv: Vec<f64> = kv
-                    .iter()
-                    .map(|k| {
-                        let x = if kernel_at_g {
-                            [k[0] - q[0], k[1] - q[1], k[2] - q[2]]
-                        } else {
-                            *k
-                        };
-                        let x2 = x[0] * x[0] + x[1] * x[1] + x[2] * x[2];
-                        if x2 > 1e-20 {
-                            4.0 * PI / x2 / vol
-                        } else {
-                            0.0
-                        }
-                    })
-                    .collect();
-                // P^{k'}(K) for every k', as (nao², n_K).
-                let pj: Vec<Array2<Complex64>> = (0..nk)
-                    .map(|j| {
-                        let mut p = Array2::<Complex64>::zeros((n2, ng));
-                        for (qr, ph) in qs.iter().zip(&phr[j]) {
-                            for m in 0..nao {
-                                for l in 0..nao {
-                                    let row = m * nao + l;
-                                    for g in 0..ng {
-                                        p[(row, g)] += *ph * qr[[m, l, g]];
-                                    }
-                                }
-                            }
-                        }
-                        p
-                    })
-                    .collect();
-                // K kernel: v(K) times the range-separation factor (if any).
-                let vk_w: Vec<f64> = match rsh {
-                    None => vv.clone(),
-                    Some(r) => kv
-                        .iter()
-                        .zip(&vv)
-                        .map(|(k, v)| {
-                            let x = if kernel_at_g {
-                                [k[0] - q[0], k[1] - q[1], k[2] - q[2]]
-                            } else {
-                                *k
-                            };
-                            v * r.kernel_factor(x[0] * x[0] + x[1] * x[1] + x[2] * x[2])
-                        })
-                        .collect(),
-                };
-                let scale_by = |p: &Array2<Complex64>, w: &[f64]| {
-                    let mut pv = p.clone();
-                    for (mut col, v) in pv.columns_mut().into_iter().zip(w) {
-                        col.mapv_inplace(|z| z * *v);
-                    }
-                    pv
-                };
-                let scaled = |p: &Array2<Complex64>| scale_by(p, &vv);
-                let herm = |p: &Array2<Complex64>| p.t().mapv(|z| z.conj());
-                for j in 0..nk {
-                    let blk = scale_by(&pj[j], &vk_w).dot(&herm(&pj[j]));
-                    let k = kof[j];
-                    kref[k * nk + j] += &blk;
-                    if iqm != iq {
-                        kref[minus[k] * nk + minus[j]] += &blk.mapv(|z| z.conj());
-                    }
-                }
-                if iq == 0 {
-                    for k in 0..nk {
-                        let pv = scaled(&pj[k]);
-                        for j in 0..nk {
-                            jref[k * nk + j] += &pv.dot(&herm(&pj[j]));
-                        }
-                    }
-                }
-                Ok(())
-            };
-            pair_ft_residues_chunked(
-                cell,
-                prep,
-                &ks,
-                moduli,
-                thresh,
-                chunk_budget,
-                extra_per_g,
-                sink,
-            )?;
         }
-        let madelung_ewald = match cfg.rsh {
-            Some(r) => {
-                let lat = if cfg.mutation == Some(KMutation::PrimitiveMadelung) {
-                    *cell.lattice()
-                } else {
-                    mesh.supercell_lattice()
-                };
-                r.madelung(&Cell::new(cell.mol().clone(), lat)?)?
-            }
-            None if cfg.mutation == Some(KMutation::PrimitiveMadelung) => madelung_constant(cell)?,
-            None => mesh.madelung(cell)?,
-        };
+        let madelung_ewald = ewald_madelung(cell, mesh, cfg)?;
         let madelung = match exxdiv {
             ExxDiv::None => 0.0,
             ExxDiv::Ewald => madelung_ewald,
