@@ -186,17 +186,42 @@ f=1.0 on these systems) kcal/mol, per system. If neither G1 nor G2 meets T, the 
 extension is NOT done and stated as such. If accepted: attMP2 / MP2-V / I at those f.
 Discriminating features: sign change location and long-range decay of I.
 
-## Step 4: variant constructions (only if Step 2 or 3 says H_diff)
+## Step 4: variant constructions (REVISED before any VV10 variant was run; supersedes the earlier V0-V5 list)
 
-One-line variants, each with the anchor "r0 -> 0 (damping -> only the R=0 self-pair
-floor) equals bare VV10 to the documented floor", compared against the SAME targets
-(I at f=1.0 and the stretched f). b, r0, C are NOT tuned. Variants, fixed now:
-V0 baseline (Phi * [1 - terfc^2]); V1 damping factor [1 - terfc] (single power);
-V2 damping factor terf^2-complement form [1 - (1-terf)]... i.e. terf (no square);
-V3 damping inside g,kappa (R^2 -> R^2 * D) rather than on Phi; V4 beta term damped
-along with the kernel; V5 no damping (bare VV10, sanity: expected wrong sign at
-short range). A variant "reproduces" only if the sign pattern matches on ALL selected
-systems and |I - I_paper| <= tol on all stretched points tested; a variant that matches
-by construction (e.g. V5 matching one system) is not credited. Honest "none do" is a
-permitted outcome. Artifact hypothesis: a construction bug would match at f=1.0 but
-fail the long-range decay (I(2.0)) or vice versa, and would not anchor at r0->0.
+Triggered only if Step 2 or 3 shows a disagreement beyond tol. Written down BEFORE reading any
+MP2-V / increment number (the factor-1.0 run was in progress but its output had not been read).
+Notation: terf(R) = 1 - terfc(R; r0, omega); Eq. 11 factor D_C = 1 - terfc^2 = terf*(2 - terf) >= terf >= terf^2.
+No tuning of b, r0, C (published 11.0, 1.00 A, 0.0089; b "was tuned" in the paper per the user's recollection,
+which is consistent with the published valley and is NOT retuned here).
+
+* V_A: pair kernel Phi * terf(R).  (This is the single-power form; identical to the earlier "V1".)
+* V_B: pair kernel Phi * terf(R)^2.
+* V_C: pair kernel Phi * (1 - terfc^2)  = current ferric Eq. 11 reading (observed, not predicted).
+* V_D: E_nl-level weight: I_D = I_bare * terf(R_cc), with I_bare the UNDAMPED VV10 contribution to
+  the binding energy (dimer - monomers, Vv10Damping::None) and R_cc the COM-COM distance of the two
+  monomers (rigid, G1 geometry). This is the only definition of a "weight on the assembled E_nl" that does not need
+  information the paper does not give; a monomer's E_nl has no intermolecular distance, so V_D is defined for
+  interaction energies only and is NOT the same object as a weight inside the density integral. If the paper
+  meant another argument (e.g. a size of the whole system) V_D cannot be defined without more information; that
+  case is recorded as UNDEFINED, not scored.
+* V_5 (bare): no damping, reference for sign.
+* Conditional, only if all of the above fail: V_3 damping inside g,kappa; V_4 beta term damped with the kernel.
+
+Anchor for each pair-kernel variant: r0 -> 0 (1e-3 Bohr) must reproduce bare VV10 up to the documented
+R=0 self-pair floor (water/cc-pVDZ: 9.05e-6 Ha); a variant failing the anchor is a construction bug and unscored.
+(V_D anchor: terf(R_cc) -> 1 gives I_bare exactly.)
+
+PREDICTIONS (stated before running; ordering is from the damping strength, signs are my guess from the paper's
+own pattern, and a wrong sign is a refutation, not something to be explained afterwards):
+* Damping strength D_B < D_A < D_C pointwise, so removing more short-range attraction: the increment I (positive = VV10
+  reduces binding) should satisfy I(V_B) > I(V_A) > I(V_C) at every f where the short-range kernel matters (0.9, 1.0).
+* V_5 (bare) and V_D: I negative at f = 0.9 and 1.0 for water dimer (bare VV10 only adds binding; V_D at
+  f=1.0 has terf(R_cc) ~ 1 so I_D ~ I_bare), i.e. WRONG sign vs the paper (+0.0005, +0.0088).
+* V_A, V_B: predict I > 0 at f = 0.9 and 1.0 for water dimer (strong short-range removal) -- the prediction that
+  could pass; V_B more positive than V_A.
+* V_C: no prior prediction (it is the existing reading; its numbers will be read once, after this text is committed).
+* Long-range (f >= 1.6): all pair-kernel variants -> terf -> 1 so I -> I_bare asymptote, same sign and decay;
+  the paper's negative decaying I at f = 1.6-2.0 is predicted by every pair-kernel variant, so f >= 1.6 does not
+  discriminate between them; f = 0.9-1.3 does.
+A variant "matches" only if the sign agrees on all five systems at f = 0.9 and 1.0 AND |I - I_paper| <= tol on
+all stretched points tested. Honest outcome "none match" is permitted and will be reported as such.
