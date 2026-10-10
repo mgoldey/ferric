@@ -211,6 +211,7 @@ use crate::hcore::{
     ONE_E_ENGINE_PRECISION,
 };
 use crate::lattice::Cell;
+use crate::ordered::{ordered_units, window_budget, Stored};
 use crate::pair_ft::pair_ft_deriv_chunked;
 use crate::rohf::GammaRoksConfig;
 use crate::rsgdf::deriv::{check_aux_map, fit_densities, fit_derivatives, fold_aux, FitDensities};
@@ -225,6 +226,7 @@ use ferric_dft::vxc::{
 };
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::engine::Engine;
+use ferric_integrals::engine_pool::EnginePool;
 use ferric_integrals::ffi;
 use ferric_scf::fock::{JBuilder, KBuilder};
 use ferric_scf::result::{ScfResult, Spin};
@@ -308,7 +310,8 @@ pub enum GradMutation {
     /// a test can pin that identity. Never list it as a must-fail mutant.
     RoWUhfForm,
     /// NOT a defect: run the FROZEN pre-parallel serial derivative walks
-    /// (SR attraction, RS-GDF SR 3-centre and metric, periodic ECP) instead
+    /// (overlap/kinetic, SR attraction, RS-GDF SR 3-centre and metric,
+    /// periodic ECP) instead
     /// of the ordered-parallel ones ([`crate::ordered`]). The force must be
     /// BIT-IDENTICAL either way (`tests/pbc_parallel_bitwise.rs`). Never list
     /// it as a must-fail mutant. (A range-split build has no serial oracle;
@@ -1974,32 +1977,9 @@ fn assemble(
 
     // --- dS, dT over the energy's pair images (bra and ket blocks).
     let images = hcore_pair_images(cell, prep, hcore_cfg.precision, ledger)?;
-    let sh2at = prep.shell_to_atom().to_vec();
-    let dims = prep.shell_dims().to_vec();
-    let offs = prep.shell_offsets().to_vec();
-    let nsh = prep.nshells();
-    let mut g_s = Array2::<f64>::zeros((natoms, 3));
-    let mut g_t = Array2::<f64>::zeros((natoms, 3));
-    let mut g_fit_g0 = Array2::<f64>::zeros((natoms, 3));
-    {
-        let mut eng_s = Engine::new_1e_deriv(ffi::OP_OVERLAP, prep, ONE_E_ENGINE_PRECISION)?;
-        let mut eng_t = Engine::new_1e_deriv(ffi::OP_KINETIC, prep, ONE_E_ENGINE_PRECISION)?;
-        for l in &images {
-            for s1 in 0..nsh {
-                for s2 in 0..nsh {
-                    if let Some(blk) = eng_s.compute_1e_deriv_block_shifted(prep, s1, s2, *l)? {
-                        add_pair_deriv(&mut g_s, blk, &m, &dims, &offs, &sh2at, s1, s2);
-                        if let Some(mg) = m_g0 {
-                            add_pair_deriv(&mut g_fit_g0, blk, mg, &dims, &offs, &sh2at, s1, s2);
-                        }
-                    }
-                    if let Some(blk) = eng_t.compute_1e_deriv_block_shifted(prep, s1, s2, *l)? {
-                        add_pair_deriv(&mut g_t, blk, &d, &dims, &offs, &sh2at, s1, s2);
-                    }
-                }
-            }
-        }
-    }
+    let serial_st = mutation == Some(GradMutation::SerialDerivWalks);
+    let (g_s, g_t, mut g_fit_g0) =
+        overlap_kinetic_force(prep, &images, &m, &d, m_g0, natoms, serial_st, ledger)?;
     if let Some((_, _, Some(mg), Some(sg))) = &fit {
         g_fit_g0 -= &sg.overlap_force(mg, natoms)?;
     }
@@ -2821,4 +2801,146 @@ fn add_pair_deriv(
             }
         }
     }
+}
+
+/// One `(L, s1, s2)` unit of the overlap/kinetic derivative walk: the
+/// overlap and kinetic derivative blocks (`None` = libint2 screened the
+/// pair), copied out of the per-thread engines.
+struct StUnit {
+    s: Option<Vec<f64>>,
+    t: Option<Vec<f64>>,
+}
+
+impl Stored for StUnit {
+    /// Inline size plus the two optional block buffers.
+    fn stored_bytes(&self) -> usize {
+        let heap = |b: &Option<Vec<f64>>| b.as_ref().map_or(0, |v| 8 * v.len());
+        std::mem::size_of::<Self>() + heap(&self.s) + heap(&self.t)
+    }
+}
+
+/// Borrowed blocks of one overlap/kinetic unit: what the serial and the
+/// ordered walk both feed the shared accumulation of
+/// [`overlap_kinetic_force`].
+struct StUnitRef<'a> {
+    s: Option<&'a [f64]>,
+    t: Option<&'a [f64]>,
+}
+
+/// The overlap and kinetic derivative contributions of [`assemble`] over
+/// the energy's pair images: `(Σ M dS, Σ D dT, Σ M_g0 dS)`, each
+/// `natoms × 3`, the last zeros without `m_g0`.
+///
+/// The walk is `for L in images { for s1 { for s2 { .. } } }` (units
+/// `u = (L·nsh + s1)·nsh + s2`, one derivative block per unit and operator,
+/// no screen but libint2's own primitive screen, so the cost is
+/// `images × nshells²` engine calls). It is ORDERED-PARALLEL
+/// ([`crate::ordered`]): the blocks of a window of units are evaluated in
+/// parallel with one engine per rayon worker, then `add_pair_deriv` replays
+/// them serially in unit order, so every force element receives the serial
+/// walk's addends in the serial order and the result is bit-identical to it
+/// at any thread count. `serial` runs the frozen pre-parallel loop
+/// ([`GradMutation::SerialDerivWalks`]).
+#[allow(clippy::too_many_arguments)]
+fn overlap_kinetic_force(
+    prep: &PreparedBasis,
+    images: &[[f64; 3]],
+    m: &Array2<f64>,
+    d: &Array2<f64>,
+    m_g0: Option<&Array2<f64>>,
+    natoms: usize,
+    serial: bool,
+    ledger: &Ledger,
+) -> Result<(Array2<f64>, Array2<f64>, Array2<f64>), FerricError> {
+    let sh2at = prep.shell_to_atom().to_vec();
+    let dims = prep.shell_dims().to_vec();
+    let offs = prep.shell_offsets().to_vec();
+    let nsh = prep.nshells();
+    let mut g_s = Array2::<f64>::zeros((natoms, 3));
+    let mut g_t = Array2::<f64>::zeros((natoms, 3));
+    let mut g_g0 = Array2::<f64>::zeros((natoms, 3));
+    let mut apply = |s1: usize, s2: usize, su: &StUnitRef<'_>| {
+        if let Some(blk) = su.s {
+            add_pair_deriv(&mut g_s, blk, m, &dims, &offs, &sh2at, s1, s2);
+            if let Some(mg) = m_g0 {
+                add_pair_deriv(&mut g_g0, blk, mg, &dims, &offs, &sh2at, s1, s2);
+            }
+        }
+        if let Some(blk) = su.t {
+            add_pair_deriv(&mut g_t, blk, d, &dims, &offs, &sh2at, s1, s2);
+        }
+    };
+    if serial {
+        let mut eng_s = Engine::new_1e_deriv(ffi::OP_OVERLAP, prep, ONE_E_ENGINE_PRECISION)?;
+        let mut eng_t = Engine::new_1e_deriv(ffi::OP_KINETIC, prep, ONE_E_ENGINE_PRECISION)?;
+        for l in images {
+            for s1 in 0..nsh {
+                for s2 in 0..nsh {
+                    let sb = eng_s.compute_1e_deriv_block_shifted(prep, s1, s2, *l)?;
+                    apply(s1, s2, &StUnitRef { s: sb, t: None });
+                    let tb = eng_t.compute_1e_deriv_block_shifted(prep, s1, s2, *l)?;
+                    apply(s1, s2, &StUnitRef { s: None, t: tb });
+                }
+            }
+        }
+    } else {
+        let pool_s = EnginePool::from_fn(|| {
+            Engine::new_1e_deriv(ffi::OP_OVERLAP, prep, ONE_E_ENGINE_PRECISION)
+        })?;
+        let pool_t = EnginePool::from_fn(|| {
+            Engine::new_1e_deriv(ffi::OP_KINETIC, prep, ONE_E_ENGINE_PRECISION)
+        })?;
+        let indices = |u: usize| (u / (nsh * nsh), (u / nsh) % nsh, u % nsh);
+        ordered_units(
+            images.len() * nsh * nsh,
+            window_budget(ledger.remaining()),
+            0,
+            |u| {
+                let (li, s1, s2) = indices(u);
+                let l = images[li];
+                let s = pool_s.with(|e| {
+                    e.compute_1e_deriv_block_shifted(prep, s1, s2, l)
+                        .map(|b| b.map(<[f64]>::to_vec))
+                })?;
+                let t = pool_t.with(|e| {
+                    e.compute_1e_deriv_block_shifted(prep, s1, s2, l)
+                        .map(|b| b.map(<[f64]>::to_vec))
+                })?;
+                Ok(StUnit { s, t })
+            },
+            |u, unit: StUnit| {
+                let (_, s1, s2) = indices(u);
+                apply(
+                    s1,
+                    s2,
+                    &StUnitRef {
+                        s: unit.s.as_deref(),
+                        t: unit.t.as_deref(),
+                    },
+                );
+                Ok(())
+            },
+        )?;
+    }
+    Ok((g_s, g_t, g_g0))
+}
+
+/// TEST ORACLE for [`overlap_kinetic_force`]: `(Σ M dS, Σ D dT, Σ M_g0 dS)`
+/// for caller-chosen weights over caller-chosen pair `images`, by the
+/// ordered-parallel walk (`serial = false`) or the frozen pre-parallel loop
+/// (`serial = true`; `tests/pbc_parallel_bitwise.rs`). The two must agree BIT
+/// FOR BIT at any thread count.
+#[doc(hidden)]
+#[allow(clippy::type_complexity)]
+pub fn overlap_kinetic_force_walk(
+    prep: &PreparedBasis,
+    images: &[[f64; 3]],
+    m: &Array2<f64>,
+    d: &Array2<f64>,
+    m_g0: Option<&Array2<f64>>,
+    natoms: usize,
+    serial: bool,
+) -> Result<(Array2<f64>, Array2<f64>, Array2<f64>), FerricError> {
+    let ledger = Ledger::new(crate::budget::resolve(None));
+    overlap_kinetic_force(prep, images, m, d, m_g0, natoms, serial, &ledger)
 }

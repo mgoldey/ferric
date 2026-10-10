@@ -92,8 +92,8 @@ use ferric_pbc::ecp::{
     periodic_ecp_gradient_with, EcpGradMutation, PeriodicEcpConfig, PeriodicEcpGradient,
 };
 use ferric_pbc::grad::{
-    gamma_rhf_gradient_rsgdf, gamma_uks_gradient_rsgdf, GammaGradConfig, GammaGradient,
-    GradMutation, RsGdfGradSource,
+    gamma_rhf_gradient_rsgdf, gamma_uks_gradient_rsgdf, overlap_kinetic_force_walk,
+    GammaGradConfig, GammaGradient, GradMutation, RsGdfGradSource,
 };
 use ferric_pbc::hcore::kpoint::{
     overlap_kinetic_kpts_parallel_and_serial, periodic_hcore_kpts,
@@ -2469,4 +2469,205 @@ fn rsgdf_k_builder_is_the_grouped_exchange_on_a_real_b() {
         "RsGdfK real B (nao = {n}, naux_kept = {naux}, {groups} groups): max |Δ| vs serial = \
          {err:e}, max |Δ| / bound = {ratio:e}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The overlap/kinetic derivative walk of the Gamma force (`grad.rs`
+// `overlap_kinetic_force`): `for L { for s1 { for s2 } }` over the energy's
+// pair images, ordered-parallel since the dry-ice force profile
+// (`images x nshells^2` libint calls on ONE core). Its outputs are
+// `parts.overlap` (M dS), `parts.kinetic` (D dT) and `parts.fit_g0`
+// (M_g0 dS, plus the split smooth-overlap term). The frozen oracle is the
+// verbatim pre-parallel loop (`GradMutation::SerialDerivWalks`).
+// ---------------------------------------------------------------------------
+
+/// FNV-1a over the IEEE bits, row-major: a printable fingerprint of a force
+/// piece, recorded from the UNCHANGED serial loop before it was parallelised.
+fn bits_hash(a: &Array2<f64>) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325_u64;
+    for x in a.iter() {
+        for byte in x.to_bits().to_le_bytes() {
+            h = (h ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    h
+}
+
+/// The force hcore config on the unrotated SR walk (a generally contracted
+/// basis would otherwise be built column-rotated, which the force refuses).
+fn unrotated_hcore_cfg() -> PeriodicHcoreConfig {
+    grad_hcore_cfg().with_sr_column_rotation(SrColumnRotation::Off)
+}
+
+/// A compact generally contracted H (two s columns and two p columns on
+/// shared primitive sets, one sign-changing): the contraction structure of
+/// [`gc_basis_h`] without its diffuse primitives, whose image set makes an
+/// unrotated force cell cost minutes.
+fn gc_light_basis_h() -> BasisSet {
+    let mut s = BasisSet {
+        name: "pbc-bitwise-gc-light-H".into(),
+        shells: HashMap::new(),
+        ecps: HashMap::new(),
+    };
+    let se = [3.42525091, 0.62391373, 0.1688554];
+    let pe = [1.2, 0.8];
+    s.shells.insert(
+        1,
+        vec![
+            norm_shell(0, &se, &[0.15432897, 0.53532814, 0.44463454]),
+            norm_shell(0, &se, &[-0.3, 0.2, 1.0]),
+            norm_shell(1, &pe, &[0.6, 0.5]),
+            norm_shell(1, &pe, &[-0.4, 1.0]),
+        ],
+    );
+    s
+}
+
+/// `gdf_sys` at an arbitrary RS-GDF config (so a range-split fit can be
+/// driven through the same helper).
+fn gdf_sys_with(cell: Cell, bs: &BasisSet, cfg: &RsGdfConfig) -> GdfSys {
+    let prep = prep_for(&cell, bs);
+    let hc = periodic_hcore(&cell, &prep, &unrotated_hcore_cfg()).expect("hcore");
+    let aux = prep_for(&cell, &basis::bundled("cc-pvdz-ri").unwrap());
+    let gdf = RsGdf::build_for_gradient(&cell, &prep, &aux, &hc.s, cfg)
+        .expect("RsGdf::build_for_gradient");
+    GdfSys {
+        cell,
+        prep,
+        hc,
+        aux,
+        gdf,
+    }
+}
+
+#[test]
+fn overlap_kinetic_force_end_to_end_is_bitwise_across_threads_and_vs_serial_loop() {
+    let split = RsGdfConfig {
+        range_split: Some(RangeSplit::default()),
+        sr_column_rotation: SrColumnRotation::Off,
+        ..gdf_cfg()
+    };
+    let cases: [(&str, BasisSet, RsGdfConfig); 1] = [("tri4H sp range-split", sp_basis_h(), split)];
+    for (name, bs, cfg) in cases {
+        let sys = gdf_sys_with(cell_of(&TRI_MOVED, TRI_A, 1), &bs, &cfg);
+        let g = sys
+            .gdf
+            .clone()
+            .with_exxdiv(&sys.cell, ExxDiv::None)
+            .unwrap();
+        let scf = gamma_rhf_jk(
+            &sys.cell,
+            &sys.prep,
+            &sys.hc,
+            Box::new(g.j_builder()),
+            Box::new(g.k_builder()),
+        );
+        let run = |serial: bool| {
+            let m = serial.then_some(GradMutation::SerialDerivWalks);
+            gamma_rhf_gradient_rsgdf(
+                &sys.cell,
+                &sys.prep,
+                &unrotated_hcore_cfg(),
+                &sys.hc,
+                &sys.src(),
+                &scf,
+                ExxDiv::None,
+                &ggcfg(m),
+            )
+            .expect("gamma_rhf_gradient_rsgdf")
+        };
+        let (par, ser) = thread_runs(run);
+        let r = &ser[0];
+        let p = &r.parts;
+        assert!(
+            nonzero(&p.overlap) && nonzero(&p.kinetic) && nonzero(&p.fit_g0),
+            "{name}: a vacuous overlap/kinetic/g0 piece"
+        );
+        // Reachability: far more units than one 6-thread window's width.
+        let units = r.n_images * sys.prep.nshells() * sys.prep.nshells();
+        assert!(units >= 64 * 6, "{name}: only {units} units");
+        eprintln!(
+            "ANCHOR {name}: units {units} overlap {:016x} kinetic {:016x} fit_g0 {:016x} grad {:016x}",
+            bits_hash(&p.overlap),
+            bits_hash(&p.kinetic),
+            bits_hash(&p.fit_g0),
+            bits_hash(&r.grad)
+        );
+        let check = |g: &GammaGradient, what: &str| {
+            assert_bitwise(&g.parts.overlap, &p.overlap, &format!("{name} {what}: dS"));
+            assert_bitwise(&g.parts.kinetic, &p.kinetic, &format!("{name} {what}: dT"));
+            assert_bitwise(&g.parts.fit_g0, &p.fit_g0, &format!("{name} {what}: g0"));
+            assert_bitwise(&g.grad, &r.grad, &format!("{name} {what}: grad"));
+        };
+        check(&ser[1], "serial oracle at 6 vs 1 thread");
+        for (&n, g) in THREADS.iter().zip(&par) {
+            check(g, &format!("ordered-parallel at {n} threads vs serial"));
+        }
+    }
+}
+
+/// The overlap/kinetic derivative walk ALONE (the end-to-end force above
+/// spends minutes elsewhere): `(Σ M dS, Σ D dT, Σ M_g0 dS)` of the
+/// ordered-parallel walk at 1/2/6 threads equals the frozen serial loop bit
+/// for bit, on s+p, a pure-d basis and two generally contracted ones, with
+/// and without the `M_g0` contraction, over a pair-image list long enough
+/// that every window is split across threads. The weights are synthetic and
+/// order-sensitive (sign- and magnitude-varying), so a re-associated sum
+/// changes bits.
+#[test]
+fn overlap_kinetic_force_walk_is_bitwise_across_threads_and_vs_serial_loop() {
+    let cell = cell_of(&TRI_MOVED, TRI_A, 1);
+    let natoms = cell.positions().len();
+    let bases: [(&str, BasisSet); 4] = [
+        ("sp", sp_basis_h()),
+        ("spd pure d", spd_basis_h()),
+        ("gen-contracted light", gc_light_basis_h()),
+        ("gen-contracted diffuse", gc_basis_h()),
+    ];
+    for (name, bs) in bases {
+        let prep = prep_for(&cell, &bs);
+        let n = prep.nbasis();
+        // A fixed radius (not the energy's screen): the walk's own libint
+        // screen decides which units survive.
+        let images = cell.translations(7.0).expect("images");
+        assert!(images.len() > 20, "{name}: {} images", images.len());
+        let units = images.len() * prep.nshells() * prep.nshells();
+        assert!(units >= 64 * 6, "{name}: {units} units: windows not split");
+        let (m, d, mg) = (synth_d(n, 0.3), synth_d(n, 1.1), synth_d(n, 2.7));
+        for with_g0 in [true, false] {
+            let m_g0 = with_g0.then_some(&mg);
+            let runs: Vec<_> = THREADS
+                .iter()
+                .map(|&t| {
+                    in_pool(t, || {
+                        [false, true].map(|serial| {
+                            overlap_kinetic_force_walk(&prep, &images, &m, &d, m_g0, natoms, serial)
+                                .expect("overlap/kinetic walk")
+                        })
+                    })
+                })
+                .collect();
+            let [(s0, t0, g0), _] = &runs[0];
+            assert!(nonzero(s0) && nonzero(t0), "{name}: vacuous dS/dT");
+            assert_eq!(nonzero(g0), with_g0, "{name}: g0 presence");
+            eprintln!(
+                "WALK {name} g0={with_g0}: units {units} dS {:016x} dT {:016x} g0 {:016x}",
+                bits_hash(s0),
+                bits_hash(t0),
+                bits_hash(g0)
+            );
+            for (&t, [par, ser]) in THREADS.iter().zip(&runs) {
+                for (what, (a, b)) in [
+                    ("dS", (&par.0, s0)),
+                    ("dT", (&par.1, t0)),
+                    ("g0", (&par.2, g0)),
+                    ("dS serial", (&ser.0, s0)),
+                    ("dT serial", (&ser.1, t0)),
+                    ("g0 serial", (&ser.2, g0)),
+                ] {
+                    assert_bitwise(a, b, &format!("{name} g0={with_g0} {what} at {t} threads"));
+                }
+            }
+        }
+    }
 }
