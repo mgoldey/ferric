@@ -10,7 +10,11 @@
 //!
 //! Env: MOL (xyz file name under testdata/molecules), FC (frozen core count),
 //! OPS ("coul;terfc:r0_ang:r0w;erfc:omega_inv_ang;..."), EPS (comma list),
-//! MAPS ("trivial" | "prod"), ANCHOR ("1"), FERRIC_TERF_TABLE_DIR.
+//! MAPS ("trivial" | "prod"), ANCHOR ("1"), FERRIC_TERF_TABLE_DIR, PATHM
+//! ("dense" = amplitude_lmp2, global 3-index, ~40x cheaper for terfc and
+//! identical to the direct path with trivial maps to every printed digit on
+//! C8; "direct" = amplitude_lmp2_direct), REPS (eri3 timing repeats, min),
+//! SKIP_RI ("1" skips the eps=0 ri_mp2 reference: timing-only runs).
 //!   FERRIC_TERF_TABLE_DIR=$PWD/terf-tables OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=3 \
 //!   MOL=alkane_8.xyz FC=8 OPS="coul;terfc:1.0:0.7071" EPS=1e-3,1e-4 ANCHOR=1 \
 //!   cargo test -p ferric-mp2 --release --test terfc_locality_map -- --ignored --nocapture
@@ -83,6 +87,9 @@ fn terfc_locality_map() {
         .collect();
     let mapkind = std::env::var("MAPS").unwrap_or("trivial".into());
     let anchor = std::env::var("ANCHOR").map(|v| v == "1").unwrap_or(false);
+    let dense = std::env::var("PATHM")
+        .map(|v| v == "dense")
+        .unwrap_or(false);
     let skip_ri = std::env::var("SKIP_RI").map(|v| v == "1").unwrap_or(false);
 
     let mol = Molecule::load_xyz(&format!(
@@ -108,7 +115,11 @@ fn terfc_locality_map() {
     )
     .unwrap();
     let no = (mol.nelec() as usize) / 2 - fc;
-    eprintln!("SETUP {molf} nbas={} naux={} no={no} fc={fc} maps={mapkind}", obs.nbasis(), dfbs.nbasis());
+    eprintln!(
+        "SETUP {molf} nbas={} naux={} no={no} fc={fc} maps={mapkind}",
+        obs.nbasis(),
+        dfbs.nbasis()
+    );
 
     let ri = |op: Operator| -> (f64, f64) {
         let t = Instant::now();
@@ -128,10 +139,20 @@ fn terfc_locality_map() {
         (e, t.elapsed().as_secs_f64())
     };
     let t3 = |op: Operator| -> f64 {
-        let t = Instant::now();
-        let x = ferric_integrals::threeindex::eri3_tensor(op, &obs, &dfbs).unwrap();
-        std::hint::black_box(&x);
-        t.elapsed().as_secs_f64()
+        // min of REPS (default 1) wall times: the box is shared, so a single
+        // timing is contention-noisy.
+        let reps: usize = std::env::var("REPS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1);
+        (0..reps)
+            .map(|_| {
+                let t = Instant::now();
+                let x = ferric_integrals::threeindex::eri3_tensor(op, &obs, &dfbs).unwrap();
+                std::hint::black_box(&x);
+                t.elapsed().as_secs_f64()
+            })
+            .fold(f64::INFINITY, f64::min)
     };
     let (e_coul, _) = ri(c);
     let t3_coul = t3(c);
@@ -162,15 +183,27 @@ fn terfc_locality_map() {
                 ..Default::default()
             };
             let t = Instant::now();
-            let (r, _) =
-                amplitude_lmp2_direct(&mol, &obs, &obs_bs, &dfbs, op, &rhf, &cfg, mp).unwrap();
+            let r = if dense {
+                // Same mask, global 3-index B (no maps): the cheap path.
+                ferric_mp2::lmp2_amplitude::amplitude_lmp2(
+                    &mol, &obs, &obs_bs, &dfbs, op, &rhf, &cfg,
+                )
+                .unwrap()
+            } else {
+                amplitude_lmp2_direct(&mol, &obs, &obs_bs, &dfbs, op, &rhf, &cfg, mp)
+                    .unwrap()
+                    .0
+            };
             assert!(r.cg_converged, "CG not converged {spec} eps {eps}");
             (r, t.elapsed().as_secs_f64())
         };
         if anchor {
             let (r, w) = run(0.0, &maps("trivial"));
             let d = (r.e_corr - e0).abs();
-            println!("ANCHOR {molf} {spec} direct_eps0 {:.10} ri {e0:.10} |d| {d:.3e} wall {w:.1}", r.e_corr);
+            println!(
+                "ANCHOR {molf} {spec} direct_eps0 {:.10} ri {e0:.10} |d| {d:.3e} wall {w:.1}",
+                r.e_corr
+            );
             assert!(d < 1e-9, "{spec}: eps=0 direct vs ri_mp2 {d:.3e}");
         }
         let mp = maps(&mapkind);

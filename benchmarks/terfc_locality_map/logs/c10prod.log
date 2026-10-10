@@ -1,0 +1,21 @@
+
+running 1 test
+SETUP alkane_10.xyz nbas=134 naux=868 no=31 fc=10 maps=prod
+ROWOP alkane_10.xyz coul e0 -0.9175374302 ecoul -0.9175374302 ratio 1.00000 t_ri 0.0 t_eri3 0.38 t_eri3_coul 0.38 cost_ratio 1.00
+ROW alkane_10.xyz coul eps 1e-4 e_corr -0.9149114630 relerr 2.8620e-3 keep 6.368 pairs 883.0 dom_mean 78.26 dom_max 93 wall 6.9
+ROW alkane_10.xyz coul eps 3e-5 e_corr -0.9169932958 relerr 5.9304e-4 keep 13.694 pairs 961.0 dom_mean 90.42 dom_max 93 wall 10.3
+test terfc_locality_map has been running for over 60 seconds
+ROWOP alkane_10.xyz terfc:1.0:0.70710678 e0 -0.8766761327 ecoul -0.9175374302 ratio 0.95547 t_ri 11.4 t_eri3 9.47 t_eri3_coul 0.38 cost_ratio 25.04
+ROW alkane_10.xyz terfc:1.0:0.70710678 eps 1e-4 e_corr -0.8747210923 relerr 2.2301e-3 keep 5.395 pairs 693.0 dom_mean 69.71 dom_max 93 wall 97.1
+ROW alkane_10.xyz terfc:1.0:0.70710678 eps 3e-5 e_corr -0.8762359985 relerr 5.0205e-4 keep 11.075 pairs 843.0 dom_mean 78.48 dom_max 93 wall 66.4
+ROWOP alkane_10.xyz terfc:1.0:2 e0 -1.4494548763 ecoul -0.9175374302 ratio 1.57972 t_ri 7.9 t_eri3 6.91 t_eri3_coul 0.38 cost_ratio 18.28
+ROW alkane_10.xyz terfc:1.0:2 eps 1e-4 e_corr -1.4473466685 relerr 1.4545e-3 keep 5.488 pairs 705.0 dom_mean 71.06 dom_max 93 wall 64.9
+ROW alkane_10.xyz terfc:1.0:2 eps 3e-5 e_corr -1.4490895500 relerr 2.5204e-4 keep 10.941 pairs 843.0 dom_mean 78.55 dom_max 93 wall 93.7
+ROWOP alkane_10.xyz terfc:0.5:4 e0 -0.6174047617 ecoul -0.9175374302 ratio 0.67289 t_ri 9.7 t_eri3 9.31 t_eri3_coul 0.38 cost_ratio 24.61
+ROW alkane_10.xyz terfc:0.5:4 eps 1e-4 e_corr -0.6164320075 relerr 1.5756e-3 keep 2.741 pairs 705.0 dom_mean 67.84 dom_max 91 wall 84.7
+ROW alkane_10.xyz terfc:0.5:4 eps 3e-5 e_corr -0.6171760226 relerr 3.7048e-4 keep 6.181 pairs 807.0 dom_mean 73.26 dom_max 93 wall 132.2
+test terfc_locality_map ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 636.74s
+
+done

@@ -1,0 +1,21 @@
+
+running 1 test
+SETUP alkane_8.xyz nbas=108 naux=700 no=25 fc=8 maps=trivial
+ROWOP alkane_8.xyz coul e0 -0.7350538762 ecoul -0.7350538762 ratio 1.00000 t_ri 0.0 t_eri3 0.13 t_eri3_coul 0.13 cost_ratio 1.00
+ROWOP alkane_8.xyz erfc:0.42 e0 NaN ecoul -0.7350538762 ratio NaN t_ri 0.0 t_eri3 0.17 t_eri3_coul 0.13 cost_ratio 1.23
+ROWOP alkane_8.xyz erfc:1.0 e0 NaN ecoul -0.7350538762 ratio NaN t_ri 0.0 t_eri3 0.14 t_eri3_coul 0.13 cost_ratio 1.04
+ROWOP alkane_8.xyz terfc:1.0:0.35 e0 NaN ecoul -0.7350538762 ratio NaN t_ri 0.0 t_eri3 3.23 t_eri3_coul 0.13 cost_ratio 24.00
+ROWOP alkane_8.xyz terfc:1.0:0.70710678 e0 NaN ecoul -0.7350538762 ratio NaN t_ri 0.0 t_eri3 3.33 t_eri3_coul 0.13 cost_ratio 24.75
+test terfc_locality_map has been running for over 60 seconds
+ROWOP alkane_8.xyz terfc:1.0:2 e0 NaN ecoul -0.7350538762 ratio NaN t_ri 0.0 t_eri3 3.52 t_eri3_coul 0.13 cost_ratio 26.16
+ROWOP alkane_8.xyz terfc:1.0:4 e0 NaN ecoul -0.7350538762 ratio NaN t_ri 0.0 t_eri3 3.83 t_eri3_coul 0.13 cost_ratio 28.48
+ROWOP alkane_8.xyz terfc:0.7:4 e0 NaN ecoul -0.7350538762 ratio NaN t_ri 0.0 t_eri3 4.06 t_eri3_coul 0.13 cost_ratio 30.16
+ROWOP alkane_8.xyz terfc:0.5:0.70710678 e0 NaN ecoul -0.7350538762 ratio NaN t_ri 0.0 t_eri3 3.50 t_eri3_coul 0.13 cost_ratio 26.00
+ROWOP alkane_8.xyz terfc:0.5:2 e0 NaN ecoul -0.7350538762 ratio NaN t_ri 0.0 t_eri3 3.74 t_eri3_coul 0.13 cost_ratio 27.74
+ROWOP alkane_8.xyz terfc:0.5:4 e0 NaN ecoul -0.7350538762 ratio NaN t_ri 0.0 t_eri3 5.42 t_eri3_coul 0.13 cost_ratio 40.26
+ROWOP alkane_8.xyz terfc:1.35:4 e0 NaN ecoul -0.7350538762 ratio NaN t_ri 0.0 t_eri3 3.70 t_eri3_coul 0.13 cost_ratio 27.45
+test terfc_locality_map ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 210.17s
+
+done

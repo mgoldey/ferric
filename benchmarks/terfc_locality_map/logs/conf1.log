@@ -1,0 +1,10 @@
+
+running 1 test
+SETUP alkane_8.xyz nbas=108 naux=700 no=25 fc=8 maps=trivial
+ROWOP alkane_8.xyz terfc:1.0:0.70710678 e0 -0.7031164436 ecoul -0.7350538762 ratio 0.95655 t_ri 4.7 t_eri3 5.23 t_eri3_coul 0.19 cost_ratio 27.38
+ROW alkane_8.xyz terfc:1.0:0.70710678 eps 5.59e-5 e_corr -0.7024255152 relerr 9.8267e-4 keep 13.771 pairs 577.0 dom_mean 71.24 dom_max 75 wall 7.2
+test terfc_locality_map ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 33.31s
+
+done
