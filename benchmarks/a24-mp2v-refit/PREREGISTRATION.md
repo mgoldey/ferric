@@ -262,3 +262,25 @@ response signals grid noise, not physics). Water-dimer/aDZ at r0*omega=4 shows E
 hold-out (S22) and leave-one-system-out. Report the fitted (r0*omega, b) SURFACE (RMSD on the full grid) and
 whether the optimum is interior or on the arm-grid edge. An edge optimum means the sharpness set is too small,
 not that the optimum is found. Differences below the RI noise floor (0.02 kcal/mol) are not interpreted.
+
+
+---
+
+# Addendum C (written AFTER the factor-1.0 numbers were read; the hypotheses below are therefore post hoc and labelled so)
+
+Observation (committed `incr_f1.json`, `incr_f1_r0_1p35.json`): ferric terfc attMP2 at r0=1.00 A (linked) is less bound than
+paper table 17 by 0.13-0.40 kcal/mol (non-CP, systems 2,4,5,8,19), but at r0=1.35 A matches to 0.0003-0.008. r0=1.35 A was
+NOT fitted here: it is the paper's own optimal r0 for UNcorrected MP2(terfc, aTZ) non-CP, quoted in the `att_vv10.rs` module
+docs (1.35 A non-CP, 1.75 A CP). Moreover ferric MP2-V at the published (r0=1.00, b=11) matches table 18 to 0.006-0.019.
+Consequence: S18 - S17 is NOT the VV10 contribution (the columns use different r0); the increment test as framed in Step 2
+is invalid. The valid test of the Eq. 11 reading is the MP2-V TOTAL vs S18; the VV10 contribution is ferric's MP2-V minus
+attMP2 at the SAME r0.
+Hypotheses for the operator behind table 17, predictions stated now:
+* H1: table 17 is terfc(r0=1.35, linked omega). Predict r0_eff from a per-system fine scan (1.25-1.45 step 0.05, interpolated to the
+  paper value) is system-independent, 1.35 +- 0.03.
+* H2: a convention factor between the paper's r0 and ferric's (sqrt2 = 1.414; Bohr/A 1.89): predicts r0_eff = 1.414 at paper r0=1.00 --
+  resolvable from 1.35 by the scan.
+* H3: different omega linkage at r0=1.00: predicts a system-independent r0*omega in the scanned set {0.25,0.35,0.5,1.0} reproducing
+  table 17 at f=1.0; one factor cannot separate H1/H3, the stretch profile (f = 0.9, 1.3, 1.6, 2.0) of table 17 decides.
+* H4: RI vs exact integrals: predicted irrelevant (O(0.01) kcal/mol vs the observed 0.13-0.40).
+b, C and the published MP2-V r0 are not tuned; r0/omega are scanned only for the VV10-free attMP2 half.
