@@ -891,3 +891,30 @@ pub fn att_mp2_vv10_scan(
         e_c_mp2_coulomb,
     })
 }
+
+/// RESEARCH ONLY (benchmarks/a24-mp2v-refit Addendum A): VV10 energy on a given
+/// closed-shell density for alternative short-range pair-kernel weights, at one
+/// (b, C). `weights` as in [`ferric_dft::vv10::Vv10Weight`]. Returns one E_nl per
+/// weight (same grid/density/pair sum as [`vv10_energy_on_density`]).
+pub fn vv10_weighted_energies_on_density(
+    mol: &Molecule,
+    obs_bs: &ferric_core::basis::BasisSet,
+    d_total: &ndarray::Array2<f64>,
+    params: &Vv10Params,
+    weights: &[ferric_dft::vv10::Vv10Weight],
+    grid_cfg: &AtomicGridConfig,
+) -> Result<Vec<f64>, FerricError> {
+    let grid = build_atomic_grid(mol, grid_cfg);
+    let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
+    let (chi, dchi) = ferric_dft::ao_grid::eval_basis_and_grad_on_points(mol, obs_bs, &pts)
+        .map_err(|e| FerricError::General(format!("variant AO grid evaluation: {e:?}")))?;
+    let dens = ferric_dft::density_on_grid::eval_density_closed(d_total, &chi, &dchi);
+    let e = ferric_dft::vv10::compute_vv10_weighted_energy_scan(
+        &grid,
+        &dens,
+        params.c,
+        &[params.b],
+        weights,
+    );
+    Ok(e.into_iter().map(|r| r[0]).collect())
+}

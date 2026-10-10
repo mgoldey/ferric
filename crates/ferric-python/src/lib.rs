@@ -7053,6 +7053,82 @@ fn run_mp2_v_scan(
     Ok(out.unbind())
 }
 
+/// RESEARCH: VV10 E_nl on the plain-HF density of `mol` for alternative pair-kernel
+/// weights (benchmarks/a24-mp2v-refit Addendum A). `specs` = list of
+/// `(kind, r0_angstrom, r0_times_omega_or_None, power)` with kind "none" (bare VV10),
+/// "eq11" (1 - terfc^2, the production Eq. 11 factor) or "terf" (terf^power,
+/// terf = 1 - terfc). `r0_times_omega=None` is the linked width. Returns one E_nl
+/// (Ha) per spec. Closed shell, post-HF; no MP2 is run.
+#[pyfunction]
+#[pyo3(signature = (mol, basis_set, specs, b=11.0, c=0.0089, nlc_grid=None, df_j_aux=None, df_k_aux=None))]
+#[allow(clippy::too_many_arguments)]
+fn run_vv10_variants(
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+    specs: Vec<(String, f64, Option<f64>, i32)>,
+    b: f64,
+    c: f64,
+    nlc_grid: Option<(usize, usize)>,
+    df_j_aux: Option<&str>,
+    df_k_aux: Option<&str>,
+) -> PyResult<Vec<f64>> {
+    use ferric_dft::vv10::{Vv10Damping, Vv10Weight};
+    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    let coul = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(coul, &prep).map_err(make_err)?;
+    let ctx = ParallelContext::default();
+    let mut rcfg = rhf_config_budgeted(None, None);
+    rcfg.df_j_aux = resolve_df_aux(df_j_aux, "def2-universal-jkfit");
+    rcfg.df_k_aux = resolve_df_aux(df_k_aux, "def2-universal-jkfit");
+    let rhf = solve_rhf(&ctx, &mol.inner, &prep, coul, &bounds, &rcfg).map_err(make_err)?;
+    if !rhf.converged {
+        return Err(make_err(ferric_core::FerricError::ScfConvergence {
+            iterations: rhf.iterations,
+            last_energy: rhf.energy,
+        }));
+    }
+    let mut weights = Vec::new();
+    for (kind, r0, rw, power) in &specs {
+        let r0_bohr = r0 * ferric_mp2::att_vv10::BOHR_PER_ANG;
+        let omega = rw.map(|x| x / r0_bohr);
+        weights.push(match kind.as_str() {
+            "none" => Vv10Weight::Damping(Vv10Damping::None),
+            "eq11" => Vv10Weight::Damping(Vv10Damping::Terfc {
+                r0_bohr,
+                omega_bohr_inv: omega,
+            }),
+            "terf" => Vv10Weight::TerfPower {
+                r0_bohr,
+                omega_bohr_inv: omega,
+                power: *power,
+            },
+            other => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "unknown kind \"{other}\"; expected none|eq11|terf"
+                )))
+            }
+        });
+    }
+    let mut grid = ferric_dft::grid::AtomicGridConfig {
+        n_radial: 50,
+        n_angular: 50,
+        prune: None,
+    };
+    if let Some((nr, na)) = nlc_grid {
+        grid.n_radial = nr;
+        grid.n_angular = na;
+    }
+    ferric_mp2::att_vv10::vv10_weighted_energies_on_density(
+        &mol.inner,
+        &basis_set.inner,
+        rhf.density_total(),
+        &ferric_dft::libxc::Vv10Params { c, b },
+        &weights,
+        &grid,
+    )
+    .map_err(make_err)
+}
+
 // ── RS-MP2-RPA (SR-MP2 + LR-dRPA, Δ-form B or coupled-rings T) ──
 
 #[pyclass]
@@ -10604,6 +10680,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_scs_mp2_2terfc, m)?)?;
     m.add_function(wrap_pyfunction!(run_mp2_v, m)?)?;
     m.add_function(wrap_pyfunction!(run_mp2_v_scan, m)?)?;
+    m.add_function(wrap_pyfunction!(run_vv10_variants, m)?)?;
     m.add_function(wrap_pyfunction!(run_double_hybrid, m)?)?;
 
     m.add_function(wrap_pyfunction!(run_laplace_mp2, m)?)?;

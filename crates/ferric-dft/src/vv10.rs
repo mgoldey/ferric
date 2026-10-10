@@ -869,6 +869,58 @@ pub fn compute_vv10_damped_energy_scan(
     bs: &[f64],
     dampings: &[Vv10Damping],
 ) -> Vec<Vec<f64>> {
+    let w: Vec<Vv10Weight> = dampings.iter().map(|d| Vv10Weight::Damping(*d)).collect();
+    compute_vv10_weighted_energy_scan(grid, dens, c, bs, &w)
+}
+
+/// A multiplicative pair-kernel weight for RESEARCH comparisons of alternative
+/// short-range VV10 constructions (benchmarks/a24-mp2v-refit, Addendum A).
+/// `Damping` is the production Eq. 11 path; `TerfPower` multiplies the kernel
+/// by `terf(R; r0, ω)^power` with `terf = 1 - terfc` (power 1: V_A, power 2:
+/// V_B). Not used by any production path.
+#[derive(Debug, Clone, Copy)]
+pub enum Vv10Weight {
+    Damping(Vv10Damping),
+    TerfPower {
+        r0_bohr: f64,
+        omega_bohr_inv: Option<f64>,
+        power: i32,
+    },
+}
+
+impl Vv10Weight {
+    #[inline]
+    fn factor_from_r2(&self, r2: f64) -> f64 {
+        match *self {
+            Vv10Weight::Damping(d) => d.factor_from_r2(r2),
+            Vv10Weight::TerfPower {
+                r0_bohr,
+                omega_bohr_inv,
+                power,
+            } => {
+                let r = r2.sqrt();
+                let tc = match omega_bohr_inv {
+                    None => terfc_scalar(r, r0_bohr),
+                    Some(w) => terfc_scalar_decoupled(r, r0_bohr, w),
+                };
+                (1.0 - tc).powi(power)
+            }
+        }
+    }
+    #[inline]
+    fn is_identity(&self) -> bool {
+        matches!(self, Vv10Weight::Damping(d) if d.is_none())
+    }
+}
+
+/// [`compute_vv10_damped_energy_scan`] generalised to [`Vv10Weight`] kernels.
+pub fn compute_vv10_weighted_energy_scan(
+    grid: &[GridPoint],
+    dens: &DensityGrid,
+    c: f64,
+    bs: &[f64],
+    dampings: &[Vv10Weight],
+) -> Vec<Vec<f64>> {
     let npts = dens.rho.len();
     let nb = bs.len();
     let na = dampings.len();
@@ -933,7 +985,7 @@ pub fn compute_vv10_damped_energy_scan(
                 return;
             }
             for (a, d) in dampings.iter().enumerate() {
-                let t_num = if d.is_none() {
+                let t_num = if d.is_identity() {
                     rho_w[p]
                 } else {
                     rho_w[p] * d.factor_from_r2(r2)

@@ -43,9 +43,12 @@ Not trustworthy / flagged:
   `-rifit` aux, SCF DF-JK `def2-universal-jkfit` (A24 grid convention), VV10 on
   the plain-HF density (post-HF variant), NLC grid (50,50).
 * Arms: r0 in {0.85, 0.90, 0.95, 1.00, 1.05, 1.10} A (Table 1 points) x
-  r0*omega in {linked (omega=None, = 0.7071), 2.0, 4.0} = 18 arms
-  (`arms_primary.json`). 2.0 is the intermediate robustness arm (Dutoi-safe
-  bound 2.07); 4.0 is the sharp arm. (omega = (r0*omega)/r0.)
+  r0*omega in {linked (omega=None, = 0.7071), 2, 4, 8, 16, 32} = 36 arms
+  (`arms_primary.json`; the sharpness set was extended from {linked,2,4} on the user's
+  direction, "freedom to fine-tune with a much sharper omega"; wave 2, NOT yet run).
+  2.0 is the Dutoi-safe bound (2.07); 4..32 are progressively harder steps.
+  (omega = (r0*omega)/r0.) omega enters both halves in lockstep (MP2 attenuator
+  AND the VV10 damping weight); `effective_vv10_damping` enforces it.
 * b grid: 5.00 .. 20.00 step 0.25 (61 values; `bgrid.json`), parabola refinement
   at the minimum; a minimum on the grid edge is reported as NOT FITTED.
 * Objective: RMSD of CP-corrected interaction energies vs CCSD(T)/CBS,
@@ -225,3 +228,37 @@ own pattern, and a wrong sign is a refutation, not something to be explained aft
   discriminate between them; f = 0.9-1.3 does.
 A variant "matches" only if the sign agrees on all five systems at f = 0.9 and 1.0 AND |I - I_paper| <= tol on
 all stretched points tested. Honest outcome "none match" is permitted and will be reported as such.
+
+
+---
+
+# Addendum B (pre-registered, wave 2; nothing in it has been run)
+
+## Hard-step limit and anchor
+As r0*omega -> infinity terf(R) -> step(R > r0): terfc = 1 for R < r0 and 0 beyond, i.e. exact 1/r MP2
+inside r0 and (damped) VV10 outside. Required anchors before trusting any wave-2 energy:
+(i) monotone approach: for one dimer, E_corr(attMP2) as a function of r0*omega in {2,4,8,16,32}
+must change monotonically and by decreasing steps; (ii) a toy check where the hard-cut MP2 energy
+equals the sum of pair contributions with R < r0 (analytic two-centre s-type test of the 2-centre
+terfc integral against quadrature of the step kernel); (iii) as r0 -> large at fixed sharpness the
+operator -> Coulomb (existing anchor, r0 = 8 Bohr to 1.4e-4 Ha).
+
+## Sharp-omega artifact hypotheses (each must be tested BEFORE its energies are used)
+(a) Integral validity domain. The terfc 2-centre/3-centre integrals use tables/series whose far-field
+fallback was derived under the linked s <= 1/2 assumption (valid S > 20 only there). At r0*omega >> 4 they may
+leave the validity domain. REQUIRED: an exactness anchor against the independent Fourier-space generator
+(`validation_terfc_integrals` and its generator under `crates/ferric-integrals/tests`) at EACH new r0*omega
+(8, 16, 32) and each r0 on the valley grid, BEFORE any energy at that arm is trusted. An arm that fails is
+excluded and reported, not fixed silently. If real, errors grow with r0*omega; a physics effect would converge.
+(b) Metric conditioning. (P|Q) positive definiteness / Dunlap-fit conditioning at sharp omega on the A24 dimers:
+report the minimum eigenvalue of the terfc metric per dimer/arm and require r0-monotonicity of E_corr toward the
+Coulomb value. A negative or near-zero eigenvalue invalidates the arm.
+(c) NLC grid noise from a near-step pair weight. Converge the NLC grid per arm: E_nl and the b-fit must be
+stable between (50,50) and a larger grid (required: interaction-energy change < 0.005 kcal/mol, same b*); also
+check smoothness of E_nl versus a small geometry displacement (finite step 0.01 A of one monomer; a non-smooth
+response signals grid noise, not physics). Water-dimer/aDZ at r0*omega=4 shows E_nl changes 1.5e-6 Ha across
+(30,50)->(75,110); a step weight is expected to be worse.
+(d) Overfitting. omega is now a free parameter alongside b: fit on the TRAIN set (A24) only and judge on the
+hold-out (S22) and leave-one-system-out. Report the fitted (r0*omega, b) SURFACE (RMSD on the full grid) and
+whether the optimum is interior or on the arm-grid edge. An edge optimum means the sharpness set is too small,
+not that the optimum is found. Differences below the RI noise floor (0.02 kcal/mol) are not interpreted.

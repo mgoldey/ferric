@@ -7,8 +7,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 R0S = [0.85, 0.90, 0.95, 1.00, 1.05, 1.10]  # Table-1 r0 points (Angstrom)
 # r0*omega: None = published linked width (1/sqrt2, omega=None path);
-# 2.0 = intermediate (Dutoi-safe bound 2.07); 4.0 = sharp.
-SHARP = [None, 2.0, 4.0]
+# 2.0 = intermediate (Dutoi-safe bound 2.07); 4.0, 8, 16, 32 = increasingly hard step
+# (user direction: freedom to fine-tune with a much sharper omega).
+SHARP = [None, 2.0, 4.0, 8.0, 16.0, 32.0]
 arms = [{"r0": r, "r0omega": w} for w in SHARP for r in R0S]
 (HERE / "arms_primary.json").write_text(json.dumps({"arms": arms}, indent=1))
 bs = [round(5.0 + 0.25 * i, 2) for i in range(int((20.0 - 5.0) / 0.25) + 1)]
