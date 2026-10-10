@@ -757,6 +757,67 @@ where
     Ok(n_chunks)
 }
 
+/// [`pair_ft_deriv_chunked`] with the chunks evaluated in parallel and their
+/// results consumed serially in chunk order: `compute(g0, gs, P, Q)` is PURE
+/// (the producer [`pair_ft_deriv_block`] and everything the caller derives
+/// from `P`, `Q` that is a function of the chunk alone) and runs for up to
+/// `inflight` chunks at once; `apply(g0, gs, value)` then runs for every
+/// chunk in ascending order, so every shared accumulation sees the serial
+/// pass's addends in the serial pass's order — the result is BIT-IDENTICAL to
+/// [`pair_ft_deriv_chunked`] with the same `compute` + `apply` folded into
+/// its sink, at any thread count and any `inflight`
+/// ([`crate::ordered::ordered_fixed_window`]).
+///
+/// The chunk width is that of [`pair_ft_deriv_chunked`] (a function of
+/// `chunk_budget_bytes`, `extra_bytes_per_g` and the basis only — never of the
+/// thread count or of `inflight`). Each chunk in flight holds up to
+/// `chunk_budget_bytes`, so the caller must have charged `inflight ×
+/// chunk_budget_bytes` to its memory ledger. Returns the number of chunks.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn pair_ft_deriv_chunked_ordered<V, C, A>(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    gvecs: &[[f64; 3]],
+    thresh: f64,
+    chunk_budget_bytes: usize,
+    extra_bytes_per_g: usize,
+    inflight: usize,
+    compute: C,
+    mut apply: A,
+) -> Result<usize, FerricError>
+where
+    V: Send,
+    C: Fn(&[[f64; 3]], &Array3<Complex64>, &[Array3<Complex64>; 3]) -> V + Sync,
+    A: FnMut(&[[f64; 3]], V) -> Result<(), FerricError>,
+{
+    validate_inputs(gvecs, thresh)?;
+    if gvecs.is_empty() {
+        return Ok(0);
+    }
+    let nao = prep.nbasis();
+    let lmax = basis_lmax(prep);
+    let per_g = pair_ft_deriv_bytes_per_g(nao, lmax).saturating_add(extra_bytes_per_g);
+    Ledger::new(chunk_budget_bytes).check(
+        &format!("pair_ft_deriv chunk, one G vector (nao = {nao}, lmax = {lmax})"),
+        per_g,
+    )?;
+    let chunk = (chunk_budget_bytes / per_g).max(1);
+    let gmax = max_gnorm(gvecs);
+    let n_chunks = gvecs.len().div_ceil(chunk);
+    let slice = |c: usize| &gvecs[c * chunk..((c + 1) * chunk).min(gvecs.len())];
+    crate::ordered::ordered_fixed_window(
+        n_chunks,
+        inflight,
+        |c| {
+            let gs = slice(c);
+            let (p, q) = pair_ft_deriv_block(cell, prep, gs, thresh, gmax)?;
+            Ok(compute(gs, &p, &q))
+        },
+        |c, v| apply(slice(c), v),
+    )?;
+    Ok(n_chunks)
+}
+
 /// Cartesian `[nca][ncb][ng]` shell block -> AO `[nfa][nfb]`, scattered into
 /// `out[.., .., order[g]]` (pure shells through `ferric_cart2sph`).
 fn scatter_shell_block(

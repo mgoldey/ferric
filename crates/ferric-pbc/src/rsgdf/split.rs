@@ -105,8 +105,10 @@ use std::sync::Mutex;
 
 mod deriv;
 mod ksplit;
+#[cfg(test)]
+pub(super) use deriv::UNORDERED_LR_REDUCE;
 pub(crate) use deriv::{split_g0, SplitG0};
-pub(super) use deriv::{LrForce, LrStrain};
+pub(super) use deriv::{LrAcc, LrChunk, LrForce, LrStrain};
 pub(super) use ksplit::check_metric_guard;
 
 /// The rigorous criterion (FINDINGS "Iteration 23": each of the two

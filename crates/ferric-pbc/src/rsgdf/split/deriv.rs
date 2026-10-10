@@ -56,7 +56,9 @@ use crate::budget::{bytes_of, Ledger};
 use crate::hcore::ONE_E_ENGINE_PRECISION;
 use crate::lattice::Cell;
 use crate::ordered::{ordered_units, Stored};
-use crate::pair_ft::{pair_ft_deriv_chunked, pair_ft_strain_chunked, DEFAULT_PAIR_FT_THRESH};
+use crate::pair_ft::{
+    pair_ft_deriv_chunked_ordered, pair_ft_strain_chunked, DEFAULT_PAIR_FT_THRESH,
+};
 use crate::rsgdf::deriv::Y3;
 use crate::rsgdf::strain::{aux_ft_strain_shells, FitStrainTerms};
 use crate::rsgdf::{
@@ -706,9 +708,327 @@ impl AuxChunk {
     }
 }
 
+/// One G chunk's contributions to an [`LrForce`], evaluated from the chunk
+/// alone (a pure value, so chunks can be computed in parallel) and added into
+/// the shared rows afterwards by [`LrChunk::add_into`] in chunk order: every
+/// row receives the scalars of the serial pass in the serial pass's order.
+pub(in crate::rsgdf) struct LrChunk {
+    n: usize,
+    naux: usize,
+    /// `[g][μ][c]`: the value the serial pass adds to `orb[(atom(μ), c)]`.
+    orb: Vec<f64>,
+    /// `[g][P]`: `t3`, the J3 aux-centre coefficient (times `G_c` when added).
+    aux3: Vec<f64>,
+    /// `[g][P]`: `t2`, the metric coefficient; empty when the pass has none.
+    metric: Vec<f64>,
+}
+
+impl LrChunk {
+    /// Zeroed storage for `ng` G vectors of an `n`-AO, `naux`-aux pass.
+    pub(in crate::rsgdf) fn new(ng: usize, n: usize, naux: usize, with_metric: bool) -> Self {
+        Self {
+            n,
+            naux,
+            orb: vec![0.0; ng * n * 3],
+            aux3: vec![0.0; ng * naux],
+            metric: if with_metric {
+                vec![0.0; ng * naux]
+            } else {
+                Vec::new()
+            },
+        }
+    }
+
+    /// Column `g`'s orbital terms `scale · Σ_ν Re[Q*_μν A_μν]` (`a` = `(re,
+    /// im)` of `Σ_P Y_Pμν W_P`, rows `μ·n+ν`), per AO `μ` and direction.
+    pub(in crate::rsgdf) fn set_orbital(
+        &mut self,
+        q: &[Array3<Complex64>; 3],
+        a: &(Array2<f64>, Array2<f64>),
+        g: usize,
+        scale: f64,
+    ) {
+        let n = self.n;
+        for mu in 0..n {
+            let mut acc = [0.0_f64; 3];
+            for nu in 0..n {
+                let mn = mu * n + nu;
+                let (ar, ai) = (a.0[(mn, g)], a.1[(mn, g)]);
+                for (c, qc) in q.iter().enumerate() {
+                    let qz = qc[[mu, nu, g]];
+                    acc[c] += qz.re * ar + qz.im * ai;
+                }
+            }
+            for c in 0..3 {
+                self.orb[(g * n + mu) * 3 + c] = scale * acc[c];
+            }
+        }
+    }
+
+    /// Column `g`'s aux-centre coefficient `t3` of aux function `pp` (and the
+    /// metric coefficient `t2` where the pass has one).
+    pub(in crate::rsgdf) fn set_aux(&mut self, g: usize, pp: usize, t3: f64, t2: Option<f64>) {
+        self.aux3[g * self.naux + pp] = t3;
+        if let Some(t2) = t2 {
+            self.metric[g * self.naux + pp] = t2;
+        }
+    }
+
+    /// Adds the chunk into `out` for the G vectors `gs`, in the serial pass's
+    /// order (per G: orbital rows by AO then direction, then aux rows by
+    /// function then direction).
+    pub(in crate::rsgdf) fn add_into(&self, out: &mut LrForce, gs: &[[f64; 3]], aoat: &[usize]) {
+        let (n, naux) = (self.n, self.naux);
+        for (g, gvec) in gs.iter().enumerate() {
+            for mu in 0..n {
+                for c in 0..3 {
+                    out.orb[(aoat[mu], c)] += self.orb[(g * n + mu) * 3 + c];
+                }
+            }
+            for pp in 0..naux {
+                let t3 = self.aux3[g * naux + pp];
+                for c in 0..3 {
+                    out.aux3[(pp, c)] += t3 * gvec[c];
+                }
+                if !self.metric.is_empty() {
+                    let t2 = self.metric[g * naux + pp];
+                    for c in 0..3 {
+                        out.metric[(pp, c)] += t2 * gvec[c];
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// TEST MUTANT switch: fold the chunks into per-thread partial sums and
+/// `reduce` them (an UNORDERED reduction, the natural but wrong way to
+/// parallelise this pass) instead of replaying them in chunk order.
+#[cfg(test)]
+pub(in crate::rsgdf) static UNORDERED_LR_REDUCE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// The serial, chunk-ordered accumulation of [`LrChunk`]s into an
+/// [`LrForce`] (the only place the shared rows are written).
+pub(in crate::rsgdf) struct LrAcc<'a> {
+    out: &'a mut LrForce,
+    aoat: &'a [usize],
+    #[cfg(test)]
+    held: Vec<(Vec<[f64; 3]>, LrChunk)>,
+}
+
+impl<'a> LrAcc<'a> {
+    pub(in crate::rsgdf) fn new(out: &'a mut LrForce, aoat: &'a [usize]) -> Self {
+        Self {
+            out,
+            aoat,
+            #[cfg(test)]
+            held: Vec::new(),
+        }
+    }
+
+    /// Adds chunk `ck` of G vectors `gs`; call in ascending chunk order.
+    pub(in crate::rsgdf) fn push(&mut self, gs: &[[f64; 3]], ck: LrChunk) {
+        #[cfg(test)]
+        if UNORDERED_LR_REDUCE.load(std::sync::atomic::Ordering::Relaxed) {
+            self.held.push((gs.to_vec(), ck));
+            return;
+        }
+        ck.add_into(self.out, gs, self.aoat);
+    }
+
+    /// Completes the accumulation (a no-op outside the test mutant).
+    pub(in crate::rsgdf) fn finish(self) {
+        #[cfg(test)]
+        if !self.held.is_empty() {
+            use rayon::prelude::*;
+            let (natoms, naux) = (self.out.orb.nrows(), self.out.aux3.nrows());
+            let aoat = self.aoat;
+            let part = self
+                .held
+                .par_iter()
+                .fold(
+                    || LrForce::zeros(natoms, naux),
+                    |mut acc, (gs, ck)| {
+                        ck.add_into(&mut acc, gs, aoat);
+                        acc
+                    },
+                )
+                .reduce(
+                    || LrForce::zeros(natoms, naux),
+                    |mut a, b| {
+                        a.orb += &b.orb;
+                        a.aux3 += &b.aux3;
+                        a.metric += &b.metric;
+                        a
+                    },
+                );
+            self.out.orb += &part.orb;
+            self.out.aux3 += &part.aux3;
+            self.out.metric += &part.metric;
+        }
+    }
+}
+
+impl SplitPlan {
+    /// The moved-aux LR force pass over the FULL orbital pairs (module doc):
+    /// orbital weight `Y (w_LR X + w_SR X_s)`, aux `−iG` on the same weight,
+    /// metric of the split J2 form. G chunks are evaluated `inflight` at a
+    /// time and added in chunk order ([`LrChunk`]): bit-identical to the
+    /// serial pass at any thread count.
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::rsgdf) fn lr_force(
+        &self,
+        st: &Stage<'_>,
+        gv: &[[f64; 3]],
+        y: &Array2<f64>,
+        wm: &Array2<f64>,
+        natoms: usize,
+        chunk_budget: usize,
+        inflight: usize,
+    ) -> Result<LrForce, FerricError> {
+        let n = st.obs.nbasis();
+        let n2 = n * n;
+        let naux = st.aux.nbasis();
+        let (vol, omega) = (st.cell.volume(), st.omega);
+        let aoat = ao_atoms(st.obs);
+        let pair_thresh = (0.01 * st.thresh).min(DEFAULT_PAIR_FT_THRESH);
+        // P re/im + Σ_P Y Wt re/im (4 × 8 n²); X, X_s, X_c complex + their
+        // re/im, Wt, Σ Y P, and the three Wm products (≈ 26 × 8 naux).
+        let extra_per_g = n2
+            .saturating_mul(32)
+            .saturating_add(naux.saturating_mul(208))
+            .saturating_add(64);
+        let mut out = LrForce::zeros(natoms, naux);
+        let mut acc = LrAcc::new(&mut out, &aoat);
+        let n_chunks = pair_ft_deriv_chunked_ordered(
+            st.cell,
+            st.obs,
+            gv,
+            pair_thresh,
+            chunk_budget,
+            extra_per_g,
+            inflight,
+            |gs, p, q| {
+                let w: Vec<(f64, f64)> = gs.iter().map(|g| kernel_weights(g, vol, omega)).collect();
+                let ac = AuxChunk::new(self, st, gs, &w, wm);
+                let (pr, pim) = pair_reim(p);
+                let xy = (mm(y.t(), ac.wt.0.view()), mm(y.t(), ac.wt.1.view()));
+                let (pyr, pyi) = (mm(y.view(), pr.view()), mm(y.view(), pim.view()));
+                let mut ck = LrChunk::new(gs.len(), n, naux, true);
+                for g in 0..gs.len() {
+                    ck.set_orbital(q, &xy, g, 2.0);
+                    for pp in 0..naux {
+                        // J3 aux: Re[(ΣYP)* (−iG Wt)] = G (PY.re Wt.im − PY.im Wt.re)
+                        let t3 = pyr[(pp, g)] * ac.wt.1[(pp, g)] - pyi[(pp, g)] * ac.wt.0[(pp, g)];
+                        let t2 = ac.metric_coef(pp, g, w[g]);
+                        ck.set_aux(g, pp, t3, Some(t2));
+                    }
+                }
+                ck
+            },
+            |gs, ck| {
+                acc.push(gs, ck);
+                Ok(())
+            },
+        )?;
+        acc.finish();
+        out.n_chunks = n_chunks;
+        Ok(out)
+    }
+
+    /// `Y` restricted to the smooth AO pairs, `(naux, n_s²)`.
+    fn smooth_y(sm: &SmoothObs, y: &Array2<f64>, n: usize) -> Array2<f64> {
+        let ns = sm.prep.nbasis();
+        Array2::from_shape_fn((y.nrows(), ns * ns), |(p, ab)| {
+            y[(p, sm.ao_map[ab / ns] * n + sm.ao_map[ab % ns])]
+        })
+    }
+
+    /// The NEW smooth-pair force pass (FINDINGS "Iteration 26"): the pair-FT
+    /// derivative of the smooth orbital pieces with weight `w_SR X_c`
+    /// (orbital), and `−iG` on `w_SR X_c` (aux). Added into `out`; a no-op
+    /// when no orbital primitive is smooth or no aux primitive is compact
+    /// (the build then has no `(ss | X_c)` block either).
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::rsgdf) fn lr_smooth_pair_force(
+        &self,
+        st: &Stage<'_>,
+        gv: &[[f64; 3]],
+        y: &Array2<f64>,
+        chunk_budget: usize,
+        inflight: usize,
+        out: &mut LrForce,
+    ) -> Result<(), FerricError> {
+        let Some(sm) = self
+            .smooth_obs
+            .as_ref()
+            .filter(|_| !self.aux.c_sh.is_empty())
+        else {
+            return Ok(());
+        };
+        let naux = st.aux.nbasis();
+        let ns = sm.prep.nbasis();
+        let ns2 = ns * ns;
+        let (vol, omega) = (st.cell.volume(), st.omega);
+        let yss = Self::smooth_y(sm, y, st.obs.nbasis());
+        let aoat = ao_atoms(&sm.prep);
+        let pair_thresh = (0.01 * st.thresh).min(DEFAULT_PAIR_FT_THRESH);
+        let extra_per_g = ns2
+            .saturating_mul(32)
+            .saturating_add(naux.saturating_mul(64))
+            .saturating_add(64);
+        let mut acc = LrAcc::new(out, &aoat);
+        let n_chunks = pair_ft_deriv_chunked_ordered(
+            st.cell,
+            &sm.prep,
+            gv,
+            pair_thresh,
+            chunk_budget,
+            extra_per_g,
+            inflight,
+            |gs, p, q| {
+                let w_sr: Vec<f64> = gs.iter().map(|g| kernel_weights(g, vol, omega).1).collect();
+                let xc = aux_ft_shells(&self.aux.c_sh, naux, gs);
+                let wc = (
+                    Array2::from_shape_fn(xc.dim(), |(pp, g)| w_sr[g] * xc[(pp, g)].re),
+                    Array2::from_shape_fn(xc.dim(), |(pp, g)| w_sr[g] * xc[(pp, g)].im),
+                );
+                let (pr, pim) = pair_reim(p);
+                let xy = (mm(yss.t(), wc.0.view()), mm(yss.t(), wc.1.view()));
+                let (pyr, pyi) = (mm(yss.view(), pr.view()), mm(yss.view(), pim.view()));
+                let mut ck = LrChunk::new(gs.len(), ns, naux, false);
+                for g in 0..gs.len() {
+                    ck.set_orbital(q, &xy, g, 2.0);
+                    for pp in 0..naux {
+                        let t3 = pyr[(pp, g)] * wc.1[(pp, g)] - pyi[(pp, g)] * wc.0[(pp, g)];
+                        ck.set_aux(g, pp, t3, None);
+                    }
+                }
+                ck
+            },
+            |gs, ck| {
+                acc.push(gs, ck);
+                Ok(())
+            },
+        )?;
+        acc.finish();
+        out.n_chunks += n_chunks;
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TEST ORACLE: the FROZEN pre-parallel serial LR force pass (one chunk at a
+// time, accumulating straight into the shared rows), kept verbatim so the
+// chunk-parallel pass can be compared against it bit for bit at run time on
+// whatever machine runs the tests.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
 /// `acc[atom(μ)] += 2 Σ_ν Re[Q*_μν A_μν]` at column `g` (`a` = `(re, im)`
 /// of `Σ_P Y_Pμν W_P`, rows `μ·n+ν`).
-fn add_orbital(
+fn add_orbital_serial(
     orb: &mut Array2<f64>,
     q: &[Array3<Complex64>; 3],
     a: &(Array2<f64>, Array2<f64>),
@@ -732,11 +1052,12 @@ fn add_orbital(
     }
 }
 
+#[cfg(test)]
 impl SplitPlan {
     /// The moved-aux LR force pass over the FULL orbital pairs (module doc):
     /// orbital weight `Y (w_LR X + w_SR X_s)`, aux `−iG` on the same weight,
     /// metric of the split J2 form.
-    pub(in crate::rsgdf) fn lr_force(
+    pub(in crate::rsgdf) fn lr_force_serial_oracle(
         &self,
         st: &Stage<'_>,
         gv: &[[f64; 3]],
@@ -758,7 +1079,7 @@ impl SplitPlan {
             .saturating_add(naux.saturating_mul(208))
             .saturating_add(64);
         let mut out = LrForce::zeros(natoms, naux);
-        let n_chunks = pair_ft_deriv_chunked(
+        let n_chunks = crate::pair_ft::pair_ft_deriv_chunked(
             st.cell,
             st.obs,
             gv,
@@ -772,7 +1093,7 @@ impl SplitPlan {
                 let xy = (mm(y.t(), ac.wt.0.view()), mm(y.t(), ac.wt.1.view()));
                 let (pyr, pyi) = (mm(y.view(), pr.view()), mm(y.view(), pim.view()));
                 for (g, gvec) in gs.iter().enumerate() {
-                    add_orbital(&mut out.orb, q, &xy, &aoat, g);
+                    add_orbital_serial(&mut out.orb, q, &xy, &aoat, g);
                     for pp in 0..naux {
                         // J3 aux: Re[(ΣYP)* (−iG Wt)] = G (PY.re Wt.im − PY.im Wt.re)
                         let t3 = pyr[(pp, g)] * ac.wt.1[(pp, g)] - pyi[(pp, g)] * ac.wt.0[(pp, g)];
@@ -790,20 +1111,7 @@ impl SplitPlan {
         Ok(out)
     }
 
-    /// `Y` restricted to the smooth AO pairs, `(naux, n_s²)`.
-    fn smooth_y(sm: &SmoothObs, y: &Array2<f64>, n: usize) -> Array2<f64> {
-        let ns = sm.prep.nbasis();
-        Array2::from_shape_fn((y.nrows(), ns * ns), |(p, ab)| {
-            y[(p, sm.ao_map[ab / ns] * n + sm.ao_map[ab % ns])]
-        })
-    }
-
-    /// The NEW smooth-pair force pass (FINDINGS "Iteration 26"): the pair-FT
-    /// derivative of the smooth orbital pieces with weight `w_SR X_c`
-    /// (orbital), and `−iG` on `w_SR X_c` (aux). Added into `out`; a no-op
-    /// when no orbital primitive is smooth or no aux primitive is compact
-    /// (the build then has no `(ss | X_c)` block either).
-    pub(in crate::rsgdf) fn lr_smooth_pair_force(
+    pub(in crate::rsgdf) fn lr_smooth_pair_force_serial_oracle(
         &self,
         st: &Stage<'_>,
         gv: &[[f64; 3]],
@@ -828,7 +1136,7 @@ impl SplitPlan {
             .saturating_mul(32)
             .saturating_add(naux.saturating_mul(64))
             .saturating_add(64);
-        let n_chunks = pair_ft_deriv_chunked(
+        let n_chunks = crate::pair_ft::pair_ft_deriv_chunked(
             st.cell,
             &sm.prep,
             gv,
@@ -846,7 +1154,7 @@ impl SplitPlan {
                 let xy = (mm(yss.t(), wc.0.view()), mm(yss.t(), wc.1.view()));
                 let (pyr, pyi) = (mm(yss.view(), pr.view()), mm(yss.view(), pim.view()));
                 for (g, gvec) in gs.iter().enumerate() {
-                    add_orbital(&mut out.orb, q, &xy, &aoat, g);
+                    add_orbital_serial(&mut out.orb, q, &xy, &aoat, g);
                     for pp in 0..naux {
                         let t3 = pyr[(pp, g)] * wc.1[(pp, g)] - pyi[(pp, g)] * wc.0[(pp, g)];
                         for c in 0..3 {
