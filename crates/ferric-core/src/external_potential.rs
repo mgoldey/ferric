@@ -118,6 +118,18 @@ pub struct ExternalPotential {
     pub field: Option<[f64; 3]>,
 }
 
+/// `f'(R)` and `f''(R)` of the smeared-charge potential `f(R) = erf(R/w)/R`.
+///
+/// With `g = erf(R/w)`, `g' = 2 e^{-R²/w²}/(√π w)`, `g'' = −2R g'/w²`:
+/// `f' = g'/R − g/R²` and `f'' = −g'(2/w² + 2/R²) + 2g/R³`.
+fn smeared_radial_derivs(r: f64, width: f64) -> (f64, f64) {
+    let g = erf(r / width);
+    let gp = 2.0 / (std::f64::consts::PI.sqrt() * width) * (-(r * r) / (width * width)).exp();
+    let f1 = gp / r - g / (r * r);
+    let f2 = -gp * (2.0 / (width * width) + 2.0 / (r * r)) + 2.0 * g / (r * r * r);
+    (f1, f2)
+}
+
 impl ExternalPotential {
     /// Returns `true` if there are no point charges, no smeared charges, and
     /// no external field.
@@ -172,8 +184,10 @@ impl ExternalPotential {
     /// shape `(3N, 3N)`. The charges are fixed in space, so the result is
     /// block diagonal: `E = Σ Z_A q_i / r` gives
     /// `Z_A q_i (3 d_x d_y / r⁵ − δ_xy / r³)` on atom A's diagonal block,
-    /// `d = R_A − R_i`. Smeared charges and the field do not contribute
-    /// (the analytic Hessian refuses them).
+    /// `d = R_A − R_i`. A smeared charge adds `Z_A q (f'' d dᵀ/R² + (f'/R)(I −
+    /// d dᵀ/R²))` for `f(R) = erf(R/w)/R` (closed forms in `smeared_radial_derivs`),
+    /// which tends to the point-charge block as `w → 0`. The field is linear
+    /// in the coordinates and contributes nothing.
     pub fn charge_nuclear_hessian(&self, mol: &Molecule) -> Array2<f64> {
         let natoms = mol.atoms.len();
         let mut h = Array2::zeros((3 * natoms, 3 * natoms));
@@ -191,6 +205,19 @@ impl ExternalPotential {
                     for y in 0..3 {
                         let kron = if x == y { 1.0 / r3 } else { 0.0 };
                         h[(3 * i + x, 3 * i + y)] += za * pc.q * (3.0 * d[x] * d[y] / r5 - kron);
+                    }
+                }
+            }
+            for sc in &self.smeared_charges {
+                let d = [atom.x - sc.x, atom.y - sc.y, atom.zpos - sc.z];
+                let r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+                let (f1, f2) = smeared_radial_derivs(r2.sqrt(), sc.width);
+                let (a, b) = (f2 / r2, f1 / r2.sqrt() / r2);
+                for x in 0..3 {
+                    for y in 0..3 {
+                        let kron = if x == y { f1 / r2.sqrt() } else { 0.0 };
+                        let dd = d[x] * d[y];
+                        h[(3 * i + x, 3 * i + y)] += za * sc.q * (a * dd + kron - b * dd);
                     }
                 }
             }
@@ -671,5 +698,102 @@ mod tests {
                 g_smeared[(0, k)]
             );
         }
+    }
+
+    fn two_site_potential(w: [f64; 2]) -> super::ExternalPotential {
+        super::ExternalPotential {
+            point_charges: vec![],
+            smeared_charges: vec![
+                super::SmearedCharge {
+                    q: 1.7,
+                    x: 1.1,
+                    y: -0.6,
+                    z: 2.3,
+                    width: w[0],
+                },
+                super::SmearedCharge {
+                    q: -0.9,
+                    x: -1.4,
+                    y: 0.7,
+                    z: 1.2,
+                    width: w[1],
+                },
+            ],
+            field: None,
+        }
+    }
+
+    fn two_atoms() -> Molecule {
+        Molecule::parse_xyz("2\nOH\nO 0.3 -0.2 0.5\nH -0.4 0.5 1.3\n", 0, 2).unwrap()
+    }
+
+    /// Anchor for the smeared charge-nucleus Hessian: central differences of
+    /// the ANALYTIC `charge_nuclear_gradient` (itself pinned against energy
+    /// differences above). Widths 0.8 and 1.5 Bohr put both sites well inside
+    /// the Gaussian-dominated regime, where a missing `e^{-R^2/w^2}` term in
+    /// `f''` would be O(1) wrong.
+    #[test]
+    fn smeared_charge_nuclear_hessian_matches_gradient_difference() {
+        let mol = two_atoms();
+        let ep = two_site_potential([0.8, 1.5]);
+        let h = ep.charge_nuclear_hessian(&mol);
+        let step = 1e-5;
+        let mut worst = 0.0f64;
+        for col in 0..6 {
+            let (atom, axis) = (col / 3, col % 3);
+            let mut gs = Vec::new();
+            for sgn in [1.0, -1.0] {
+                let mut m = mol.clone();
+                let a = &mut m.atoms[atom];
+                match axis {
+                    0 => a.x += sgn * step,
+                    1 => a.y += sgn * step,
+                    _ => a.zpos += sgn * step,
+                }
+                gs.push(ep.charge_nuclear_gradient(&m));
+            }
+            for row in 0..6 {
+                let fd = (gs[0][(row / 3, row % 3)] - gs[1][(row / 3, row % 3)]) / (2.0 * step);
+                worst = worst.max((fd - h[(row, col)]).abs());
+            }
+        }
+        eprintln!("smeared nuclear Hessian vs FD of gradient: {worst:.3e}");
+        assert!(worst < 1e-8, "analytic vs FD of gradient: {worst:.3e}");
+        assert!(h.iter().any(|v| v.abs() > 1e-3), "vacuous: Hessian ~ 0");
+    }
+
+    /// `width -> 0` anchor: the smeared Hessian equals the point-charge one
+    /// (measured agreement below the bar), while a wrong width (1.0 Bohr
+    /// instead of 1e-3) misses it by orders of magnitude.
+    #[test]
+    fn smeared_charge_nuclear_hessian_tight_width_is_point_charge() {
+        let mol = two_atoms();
+        let smeared = two_site_potential([1e-3, 1e-3]);
+        let point = super::ExternalPotential {
+            point_charges: smeared
+                .smeared_charges
+                .iter()
+                .map(|s| super::PointCharge {
+                    q: s.q,
+                    x: s.x,
+                    y: s.y,
+                    z: s.z,
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let hp = point.charge_nuclear_hessian(&mol);
+        let dist = |ep: &super::ExternalPotential| {
+            let h = ep.charge_nuclear_hessian(&mol);
+            h.iter()
+                .zip(hp.iter())
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0, f64::max)
+        };
+        let tight = dist(&smeared);
+        let wrong = dist(&two_site_potential([1.0, 1.0]));
+        eprintln!("tight {tight:.3e}, wrong width {wrong:.3e}");
+        assert!(tight < 1e-12, "tight-width limit: {tight:.3e}");
+        assert!(wrong > 1e-3, "wrong width must be visible: {wrong:.3e}");
     }
 }

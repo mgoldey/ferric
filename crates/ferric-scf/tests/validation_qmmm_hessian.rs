@@ -19,7 +19,10 @@
 //!   `deriv1_1e_matrices` (∂V_ext/∂x missing from F^x);
 //! * the external-centre blocks kept in `scatter_unique_pairs`;
 //! * `n_charges` sized with `prep.atoms().len()` only;
-//! * a flipped charge sign.
+//! * a flipped charge sign;
+//! * (smeared rows, #358) `smeared_skeleton_hessian` or
+//!   `smeared_first_derivative_matrices` dropped, the smeared term dropped from
+//!   `charge_nuclear_hessian`, a single-shell stencil displacement.
 
 use std::path::{Path, PathBuf};
 
@@ -115,7 +118,12 @@ fn system(r: &Value) -> QmmmSystem {
     let nqm = atoms.len();
     for c in r["mm_charges"].as_array().unwrap() {
         let [x, y, z] = xyz3(&c["xyz_bohr"]);
-        atoms.push(QmmmAtom::new("X", 0, x, y, z, c["q"].as_f64().unwrap()));
+        let q = c["q"].as_f64().unwrap();
+        atoms.push(match c["width"].as_f64() {
+            // Gaussian-smeared site: width in Bohr == PySCF mm_charge radii (unit="Bohr").
+            Some(w) => QmmmAtom::new_smeared("X", 0, x, y, z, q, w),
+            None => QmmmAtom::new("X", 0, x, y, z, q),
+        });
     }
     QmmmSystem::new(
         &atoms,
@@ -196,4 +204,16 @@ fn ch3oh_q20_rhf_def2svp() {
 #[ignore = "validation: analytic QM/MM Hessian"]
 fn h2o_q10_cation_uhf_ccpvdz() {
     check("h2o_q10_cation_cc-pvdz", true);
+}
+
+#[test]
+#[ignore = "validation: analytic QM/MM Hessian"]
+fn h2o_q10_smeared_rhf_ccpvdz() {
+    check("h2o_q10_smeared_cc-pvdz", false);
+}
+
+#[test]
+#[ignore = "validation: analytic QM/MM Hessian"]
+fn h2o_q10_cation_smeared_uhf_ccpvdz() {
+    check("h2o_q10_cation_smeared_cc-pvdz", true);
 }

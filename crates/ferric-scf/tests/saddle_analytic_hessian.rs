@@ -227,9 +227,8 @@ fn recalc_every_with_analytic_hessian_costs_no_extra_gradients() {
     }
 }
 
-/// Gaussian-smeared external charges: the analytic Hessian refuses them
-/// (#358), so this is the config that exercises the refusal and `Auto`'s FD
-/// fallback. Point charges are analytic-supported since #343.
+/// Gaussian-smeared external charges (QM/MM): analytic-supported since #358,
+/// like point charges since #343.
 fn smeared_scf() -> RhfConfig {
     RhfConfig {
         external_potential: Some(ExternalPotential {
@@ -256,27 +255,19 @@ fn smeared_scf() -> RhfConfig {
 }
 
 #[test]
-fn analytic_is_refused_with_smeared_charges_and_auto_falls_back() {
+fn smeared_charges_use_the_analytic_hessian_in_a_saddle_search() {
     if !has_deriv2() {
         return;
     }
     let scf = smeared_scf();
-    let err = match search(HessianMethod::Analytic, 0, &scf) {
-        Ok(_) => panic!("Analytic must refuse an external potential, not fall back"),
-        Err(e) => e.to_string(),
-    };
-    println!("REFUSAL: {err}");
-    assert!(
-        err.to_lowercase().contains("hessian") && err.to_lowercase().contains("external"),
-        "the refusal must name the analytic Hessian and the external potential: {err}"
-    );
-
-    let auto = search(HessianMethod::Auto, 0, &scf).expect("Auto must fall back to FD");
-    assert!(
-        auto.sources
-            .iter()
-            .all(|s| *s == HessianSource::FiniteDifference),
-        "Auto fell back, so every Hessian must report finite-difference"
-    );
-    assert_eq!(auto.result.n_imaginary, 1);
+    let an = search(HessianMethod::Analytic, 0, &scf).expect("Analytic accepts smeared charges");
+    let auto = search(HessianMethod::Auto, 0, &scf).expect("Auto");
+    let fd = search(HessianMethod::FiniteDifference, 0, &scf).expect("FD");
+    assert!(an.sources.iter().all(|s| *s == HessianSource::Analytic));
+    assert!(auto.sources.iter().all(|s| *s == HessianSource::Analytic));
+    assert_eq!(an.n_hessian_grad, 0);
+    assert_eq!(an.result.n_imaginary, 1);
+    let dx = max_coord_diff(&fd.result.mol, &an.result.mol);
+    println!("MEASURED smeared NH3 saddle: analytic vs FD max|dx| = {dx:.2e} Bohr");
+    assert!(dx < 5e-3, "saddle geometries differ by {dx:.3e} Bohr");
 }

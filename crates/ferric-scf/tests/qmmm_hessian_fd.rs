@@ -214,20 +214,16 @@ fn empty_potential_is_bit_identical_to_no_potential() {
     assert_eq!(max_diff(&a, &b), 0.0);
 }
 
+/// Smeared charges are analytic since #358 (`smeared_hessian.rs`); the Thole
+/// polarizable embedding is still refused with a typed error.
 #[test]
-fn smeared_charges_are_still_refused() {
-    let smeared = ExternalPotential {
-        smeared_charges: vec![ferric_core::external_potential::SmearedCharge {
-            q: 0.3,
-            x: 3.0,
-            y: 0.0,
-            z: 0.0,
-            width: 1.0,
-        }],
-        ..Default::default()
+fn polarizable_embedding_is_still_refused() {
+    let pol = RhfConfig {
+        polarizable: Some(Default::default()),
+        ..config(Some(&embedding()))
     };
-    let err = rhf_hessian_preflight(Operator::coulomb(), &config(Some(&smeared))).unwrap_err();
-    assert!(err.to_string().contains("smeared"), "{err}");
+    let err = rhf_hessian_preflight(Operator::coulomb(), &pol).unwrap_err();
+    assert!(err.to_string().contains("polarizable"), "{err}");
 }
 
 /// Translational invariance including the charges: shifting every QM atom AND
