@@ -1053,38 +1053,65 @@ fn rotated_stress_equals_the_unrotated_stress_and_matches_fd() {
 /// TRIVIAL LIMIT: a basis with nothing to rotate. Force and stress with the
 /// rotation requested (and every forward-transform mutant, which cannot act)
 /// are BITWISE the unrotated ones.
+///
+/// The unmutated check runs on the triclinic cell (non-orthogonal images);
+/// the mutants cannot act on a basis with nothing to rotate, so they are
+/// checked on the cheap cubic H2 cell (the full triclinic mutant sweep took
+/// ~4.5 min and timed out the CI shard).
 #[test]
 fn identity_rotation_forces_and_stress_are_bitwise_unrotated() {
-    let cell = triclinic_cell();
-    for split in [None, Some(RangeSplit::default())] {
-        let on = fixture(
-            cell.clone(),
-            prep_for(&cell, &sp_basis_h()),
-            production(),
-            split,
-        );
-        let off = fixture(cell.clone(), prep_for(&cell, &sp_basis_h()), OFF, split);
-        assert_eq!(on.hc.sr_rotated_columns, 0);
-        assert_eq!(
-            on.gdf.timings().counter("rsgdf SR3 rotated columns"),
-            Some(0)
-        );
-        let g_off = grad_at(&off, &off.scf, None);
-        let s_off = stress_at(&off, &off.scf, None);
-        for m in std::iter::once(None).chain(GRAD_MUTANTS.iter().map(|&m| Some(m))) {
-            let g = grad_at(&on, &on.scf, m);
-            assert_bitwise(
-                &g.grad,
-                &g_off.grad,
-                &format!("force {m:?} split={split:?}"),
+    for (cell, mutants, splits) in [
+        (triclinic_cell(), false, vec![None]),
+        (
+            h2_off_axis(&H2_OFF_AXIS),
+            true,
+            vec![None, Some(RangeSplit::default())],
+        ),
+    ] {
+        for split in splits {
+            let on = fixture(
+                cell.clone(),
+                prep_for(&cell, &sp_basis_h()),
+                production(),
+                split,
             );
-        }
-        for m in std::iter::once(None).chain(STRESS_MUTANTS.iter().map(|&m| Some(m))) {
-            let s = stress_at(&on, &on.scf, m);
-            assert!(
-                mat3_bits_equal(&s.de_deps, &s_off.de_deps),
-                "stress {m:?} split={split:?}"
+            let off = fixture(cell.clone(), prep_for(&cell, &sp_basis_h()), OFF, split);
+            assert_eq!(on.hc.sr_rotated_columns, 0);
+            assert_eq!(
+                on.gdf.timings().counter("rsgdf SR3 rotated columns"),
+                Some(0)
             );
+            let g_off = grad_at(&off, &off.scf, None);
+            let s_off = stress_at(&off, &off.scf, None);
+            let gm: Vec<Option<GradMutation>> = if mutants {
+                std::iter::once(None)
+                    .chain(GRAD_MUTANTS.iter().map(|&m| Some(m)))
+                    .collect()
+            } else {
+                vec![None]
+            };
+            for m in gm {
+                let g = grad_at(&on, &on.scf, m);
+                assert_bitwise(
+                    &g.grad,
+                    &g_off.grad,
+                    &format!("force {m:?} split={split:?}"),
+                );
+            }
+            let sm: Vec<Option<StressMutation>> = if mutants {
+                std::iter::once(None)
+                    .chain(STRESS_MUTANTS.iter().map(|&m| Some(m)))
+                    .collect()
+            } else {
+                vec![None]
+            };
+            for m in sm {
+                let s = stress_at(&on, &on.scf, m);
+                assert!(
+                    mat3_bits_equal(&s.de_deps, &s_off.de_deps),
+                    "stress {m:?} split={split:?}"
+                );
+            }
         }
     }
 }
