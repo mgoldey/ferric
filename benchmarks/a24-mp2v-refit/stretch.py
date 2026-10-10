@@ -95,7 +95,10 @@ def main():
             e = (d - mono["mA"] - mono["mB"]) * K
             p = paper("3", sid)[FACTORS.index(f)]
             res[sid][f] = {"hf_ncp": e, "paper_s3": p, "dev": e - p}
-            print(f"{sid} f={f} {a.mode} HF/{a.basis} nonCP {e:+.4f} paper {p:+.4f} dev {e-p:+.4f}", flush=True)
+            print(
+                f"{sid} f={f} {a.mode} HF/{a.basis} nonCP {e:+.4f} paper {p:+.4f} dev {e - p:+.4f}",
+                flush=True,
+            )
         Path(a.out).write_text(json.dumps(res, indent=1))
 
 

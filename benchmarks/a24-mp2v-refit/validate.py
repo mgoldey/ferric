@@ -22,7 +22,6 @@ Run:  PYTHONPATH=<shim containing ferric built from this tree> \
 
 import json
 import sys
-import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -64,7 +63,9 @@ def main():
     nlc = (50, 50)
 
     # ---- V1: split vs all-in-one on the dimer --------------------------------
-    scan = harness.run_fragment(ferric, frs["dimer"], basis, arms, bs, nlc, True, df_exact=True)
+    scan = harness.run_fragment(
+        ferric, frs["dimer"], basis, arms, bs, nlc, True, df_exact=True
+    )
     fc = scan["frozen_core"]
     mol = mol_of(frs["dimer"])
     worst = 0.0
@@ -79,14 +80,28 @@ def main():
                 mol, obs, aux, r0=arm["r0"], b=b, c=0.0089, omega=w,
                 frozen_core=fc,
             )  # fmt: skip
-            tot = scan["rhf_energy"] + scan["arms"][a]["att_mp2_corr"] + scan["arms"][a]["vv10_e_nl"][k]
+            tot = (
+                scan["rhf_energy"]
+                + scan["arms"][a]["att_mp2_corr"]
+                + scan["arms"][a]["vv10_e_nl"][k]
+            )
             worst = max(worst, abs(tot - ref.total_energy))
-    check("V1 split==all-in-one", worst <= TOL, f"max |dE| = {worst:.3e} Ha over {n_v1} combos (tol {TOL:.0e})")
+    check(
+        "V1 split==all-in-one",
+        worst <= TOL,
+        f"max |dE| = {worst:.3e} Ha over {n_v1} combos (tol {TOL:.0e})",
+    )
 
     # ---- V3: omega=None bitwise equal to the published linked path -----------
-    ref_pub = ferric.run_mp2_v(mol, obs, aux, frozen_core=fc)  # r0=1.00, b=11.0, omega unset
+    ref_pub = ferric.run_mp2_v(
+        mol, obs, aux, frozen_core=fc
+    )  # r0=1.00, b=11.0, omega unset
     k11 = bs.index(11.0)
-    tot_none = scan["rhf_energy"] + scan["arms"][0]["att_mp2_corr"] + scan["arms"][0]["vv10_e_nl"][k11]
+    tot_none = (
+        scan["rhf_energy"]
+        + scan["arms"][0]["att_mp2_corr"]
+        + scan["arms"][0]["vv10_e_nl"][k11]
+    )
     d_bits = abs(tot_none - ref_pub.total_energy)
     check("V3 omega=None == published (bitwise parts)",
           scan["arms"][0]["att_mp2_corr"] == ref_pub.att_mp2_corr
@@ -103,7 +118,11 @@ def main():
         if b != 11.0:
             continue
         ref = ferric.run_mp2_v(mol, obs, aux, r0=1.00, b=b, c=0.0089, frozen_core=fc)
-        tot_mut = scan["rhf_energy"] + scan["arms"][0]["att_mp2_corr"] + scan["arms"][2]["vv10_e_nl"][k]
+        tot_mut = (
+            scan["rhf_energy"]
+            + scan["arms"][0]["att_mp2_corr"]
+            + scan["arms"][2]["vv10_e_nl"][k]
+        )
         mut_worst = max(mut_worst, abs(tot_mut - ref.total_energy))
     check("V4 mutation caught", mut_worst > 1e-6,
           f"mutated (r0_damp=0.90 vs r0_MP2=1.00) differs from run_mp2_v by {mut_worst:.3e} Ha "
@@ -123,13 +142,22 @@ def main():
     # (A = first 3 atoms, B = last 3), no use of harness.ghost/fragments.
     A = sets["frag_a"]
     B = sets["frag_b"]
+
     def lines(atoms, ghost):
-        return [f"{'@' if ghost else ''}{s} {x:.8f} {y:.8f} {z:.8f}" for s, x, y, z in atoms]
+        return [
+            f"{'@' if ghost else ''}{s} {x:.8f} {y:.8f} {z:.8f}" for s, x, y, z in atoms
+        ]
+
     def mk(ls):
-        return ferric.Molecule.from_xyz_string(f"{len(ls)}\nhand\n" + "\n".join(ls) + "\n", 0, 1)
+        return ferric.Molecule.from_xyz_string(
+            f"{len(ls)}\nhand\n" + "\n".join(ls) + "\n", 0, 1
+        )
+
     def e(m, fcnt, r0, b, w=None):
-        return ferric.run_mp2_v(m, obs, aux, r0=r0, b=b, c=0.0089, omega=w,
-                                frozen_core=fcnt).total_energy
+        return ferric.run_mp2_v(
+            m, obs, aux, r0=r0, b=b, c=0.0089, omega=w, frozen_core=fcnt
+        ).total_energy
+
     worst_cp = 0.0
     for a, arm in enumerate(arms[:2]):
         for k, b in enumerate(bs):
@@ -162,7 +190,11 @@ def main():
         off = rng.normal(0, 0.02)
         e_int = refs_s[i] + sign * slope * (bgrid - b_true) + off
         # distribute onto fragments: dimer carries it all, monomers zero.
-        for tag, val in (("dimer", e_int / analyze.K), ("mA_cp", 0 * e_int), ("mB_cp", 0 * e_int)):
+        for tag, val in (
+            ("dimer", e_int / analyze.K),
+            ("mA_cp", 0 * e_int),
+            ("mB_cp", 0 * e_int),
+        ):
             frs_s[f"a24-{i:02d}|{tag}"] = {
                 "rhf_energy": 0.0, "mp2_coulomb_corr": None,
                 "arms": [{"att_mp2_corr": 0.0, "vv10_e_nl": (val).tolist(), "e_os": 0, "e_ss": 0}],
@@ -171,28 +203,44 @@ def main():
                     "nlc": [1, 1], "coulomb_mp2": False}, "fragments": frs_s}  # fmt: skip
     res = analyze.analyze(syn, [], "cp", analyze.A24_CLASS)
     bfit = res["arms"][0]["fit"]["b"]
-    check("V5a fit recovers known b*", abs(bfit - b_true) < 0.6, f"b*={bfit:.2f} (true {b_true}, grid 0.5)")
+    check(
+        "V5a fit recovers known b*",
+        abs(bfit - b_true) < 0.6,
+        f"b*={bfit:.2f} (true {b_true}, grid 0.5)",
+    )
     # edge: true minimum outside the grid
     syn2 = json.loads(json.dumps(syn))
     syn2["meta"]["bs"] = np.arange(12.0, 16.01, 0.5).tolist()
     for k, f in syn2["fragments"].items():
-        f["arms"][0]["vv10_e_nl"] = f["arms"][0]["vv10_e_nl"][-len(syn2["meta"]["bs"]):]
+        f["arms"][0]["vv10_e_nl"] = f["arms"][0]["vv10_e_nl"][
+            -len(syn2["meta"]["bs"]) :
+        ]
     res2 = analyze.analyze(syn2, [], "cp", analyze.A24_CLASS)
     check("V5b edge minimum flagged", res2["arms"][0]["fit"]["edge"], f"edge={res2['arms'][0]['fit']['edge']} b*={res2['arms'][0]['fit']['b']}")  # fmt: skip
 
     # ---- V6: NLC grid sensitivity (informational) ---------------------------
     out6 = {}
     for g in ((30, 50), (50, 50), (75, 110)):
-        r = harness.run_fragment(ferric, frs["dimer"], basis, arms[:2], [11.0], g, False, df_exact=True)
-        out6[str(g)] = [r["arms"][0]["vv10_e_nl"][0], r["arms"][1]["vv10_e_nl"][0], r["n_nlc_points"]]
-    print("V6 NLC grid sensitivity (water dimer aDZ, b=11): grid -> [E_nl linked, E_nl sharp(4), npts]")
+        r = harness.run_fragment(
+            ferric, frs["dimer"], basis, arms[:2], [11.0], g, False, df_exact=True
+        )
+        out6[str(g)] = [
+            r["arms"][0]["vv10_e_nl"][0],
+            r["arms"][1]["vv10_e_nl"][0],
+            r["n_nlc_points"],
+        ]
+    print(
+        "V6 NLC grid sensitivity (water dimer aDZ, b=11): grid -> [E_nl linked, E_nl sharp(4), npts]"
+    )
     for g, v in out6.items():
         print(f"    {g}: {v[0]:.8f} {v[1]:.8f} {int(v[2])}")
     RESULTS["V6"] = out6
 
     ok = all(v["pass"] for k, v in RESULTS.items() if k != "V6")
     if "--json" in sys.argv:
-        Path(sys.argv[sys.argv.index("--json") + 1]).write_text(json.dumps(RESULTS, indent=1))
+        Path(sys.argv[sys.argv.index("--json") + 1]).write_text(
+            json.dumps(RESULTS, indent=1)
+        )
     return 0 if ok else 1
 
 

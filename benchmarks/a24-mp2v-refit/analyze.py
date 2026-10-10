@@ -13,7 +13,6 @@ edge -- an edge minimum is not a fit).
 
 import argparse
 import json
-import math
 import sys
 from pathlib import Path
 
@@ -74,9 +73,7 @@ def interaction(db, convention="cp"):
                "att": (d["att"] - a["att"] - b["att"]) * K,
                "mp2v": (d["mp2v"] - a["mp2v"] - b["mp2v"]) * K}  # fmt: skip
         rec["mp2c"] = (
-            None
-            if d["mp2c"] is None
-            else (d["mp2c"] - a["mp2c"] - b["mp2c"]) * K
+            None if d["mp2c"] is None else (d["mp2c"] - a["mp2c"] - b["mp2c"]) * K
         )
         out[i] = rec
     return out
@@ -207,7 +204,9 @@ def analyze(train, holdouts, convention, class_map=None):
 
 
 def fmt_table(res):
-    L = [f"# {res['set']} {res['basis']} convention={res['convention']} n={res['n_systems']}"]
+    L = [
+        f"# {res['set']} {res['basis']} convention={res['convention']} n={res['n_systems']}"
+    ]
     L.append("baselines: " + "; ".join(
         f"{k}: RMSD {v['rmsd']:.3f} MAE {v['mae']:.3f} max {v['max']:.3f}"
         for k, v in res["baselines"].items()))  # fmt: skip

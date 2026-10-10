@@ -38,12 +38,22 @@ def run(a):
             frs = stretch.frags_for(rec, f, "G1")
             tags = ["dimer", "mA_cp", "mB_cp"] if a.cp else ["dimer"]
             todo = [(f"{sid}|{f}|{t}", frs[t]) for t in tags]
-            todo += [(f"{sid}|mono|{t}", stretch.frags_for(rec, 1.0, "G1")[t]) for t in ("mA", "mB")]
+            todo += [
+                (f"{sid}|mono|{t}", stretch.frags_for(rec, 1.0, "G1")[t])
+                for t in ("mA", "mB")
+            ]
             for key, atoms in todo:
                 if key in db:
                     continue
                 r = harness.run_fragment(
-                    ferric, atoms, "atz", arms, BS, nlc, False, df_exact=a.exact_jk,
+                    ferric,
+                    atoms,
+                    "atz",
+                    arms,
+                    BS,
+                    nlc,
+                    False,
+                    df_exact=a.exact_jk,
                 )
                 db[key] = {
                     "rhf": r["rhf_energy"],
@@ -58,7 +68,11 @@ def run(a):
 
 
 def eint(db, sid, f, cp):
-    pa, pb = (f"{sid}|{f}|mA_cp", f"{sid}|{f}|mB_cp") if cp else (f"{sid}|mono|mA", f"{sid}|mono|mB")
+    pa, pb = (
+        (f"{sid}|{f}|mA_cp", f"{sid}|{f}|mB_cp")
+        if cp
+        else (f"{sid}|mono|mA", f"{sid}|mono|mB")
+    )
     d = db[f"{sid}|{f}|dimer"]
     A, B = db[pa], db[pb]
     g = lambda r: (r["rhf"] + r["att"], r["rhf"] + r["att"] + r["nl"])  # noqa: E731
@@ -71,7 +85,9 @@ def report(paths):
     for p in paths:
         db = json.loads(Path(p).read_text())
         print(f"== {p}")
-        print("sys  f    ferric: attMP2   MP2-V    vv10(same r0) | paper: S17(own r0, see Addendum C)  S18 | d(att)  d(V)   [paper S18-S17 is NOT a VV10 increment]")
+        print(
+            "sys  f    ferric: attMP2   MP2-V    vv10(same r0) | paper: S17(own r0, see Addendum C)  S18 | d(att)  d(V)   [paper S18-S17 is NOT a VV10 increment]"
+        )
         keys = sorted({tuple(k.split("|")[:2]) for k in db if "mono" not in k})
         for s, f in keys:
             sid, f = int(s), float(f)
@@ -83,8 +99,8 @@ def report(paths):
                 except KeyError:
                     continue
                 print(
-                    f"{sid:2d} {f:.1f} {'CP ' if cp else 'nCP'} {att:+8.4f} {v:+8.4f} {v-att:+8.4f} | "
-                    f"{p17:+8.4f} {p18:+8.4f} | {att-p17:+7.4f} {v-p18:+7.4f}"
+                    f"{sid:2d} {f:.1f} {'CP ' if cp else 'nCP'} {att:+8.4f} {v:+8.4f} {v - att:+8.4f} | "
+                    f"{p17:+8.4f} {p18:+8.4f} | {att - p17:+7.4f} {v - p18:+7.4f}"
                 )
 
 

@@ -25,10 +25,10 @@ import stretch  # noqa: E402
 
 K = harness.K
 SPECS = [
-    ("none", 1.0, None, 1),     # bare VV10
-    ("eq11", 1.0, None, 1),     # V_C (current Eq. 11 reading)
-    ("terf", 1.0, None, 1),     # V_A
-    ("terf", 1.0, None, 2),     # V_B
+    ("none", 1.0, None, 1),  # bare VV10
+    ("eq11", 1.0, None, 1),  # V_C (current Eq. 11 reading)
+    ("terf", 1.0, None, 1),  # V_A
+    ("terf", 1.0, None, 2),  # V_B
     ("eq11", 5.29177e-4, None, 1),  # anchor: r0 -> 0 (1e-3 Bohr) == bare
 ]
 NAMES = ["bare", "V_C", "V_A", "V_B", "anchor"]
@@ -46,12 +46,17 @@ def run(a):
         rec = sets[str(sid)]
         for f in [float(x) for x in a.factors.split(",")]:
             todo = [(f"{sid}|{f}|dimer", stretch.frags_for(rec, f, "G1")["dimer"])]
-            todo += [(f"{sid}|mono|{t}", stretch.frags_for(rec, 1.0, "G1")[t]) for t in ("mA", "mB")]
+            todo += [
+                (f"{sid}|mono|{t}", stretch.frags_for(rec, 1.0, "G1")[t])
+                for t in ("mA", "mB")
+            ]
             for key, atoms in todo:
                 if key in db and db[key].get("nlc") == list(nlc):
                     continue
                 mol = ferric.Molecule.from_xyz_string(harness.xyz_text(atoms), 0, 1)
-                e = ferric.run_vv10_variants(mol, obs, SPECS, b=11.0, c=0.0089, nlc_grid=nlc)
+                e = ferric.run_vv10_variants(
+                    mol, obs, SPECS, b=11.0, c=0.0089, nlc_grid=nlc
+                )
                 db[key] = {"nlc": list(nlc), "e": dict(zip(NAMES, e))}
                 out.write_text(json.dumps(db, indent=1))
                 print(key, flush=True)
@@ -75,21 +80,36 @@ def report(vpath, ipaths):
     for p in ipaths:
         inc.update(json.loads(Path(p).read_text()))
     keys = sorted({tuple(k.split("|")[:2]) for k in v if "mono" not in k})
-    print("sys f   | paper S18 | MP2-V total error vs S18 (ferric - paper): V_C  V_A  V_B  bare  V_D | ferric VV10 contribution (same-r0)")
+    print(
+        "sys f   | paper S18 | MP2-V total error vs S18 (ferric - paper): V_C  V_A  V_B  bare  V_D | ferric VV10 contribution (same-r0)"
+    )
     for s, f in keys:
         sid, f = int(s), float(f)
         i = stretch.FACTORS.index(f)
         d, A, B = inc[f"{sid}|{f}|dimer"], inc[f"{sid}|mono|mA"], inc[f"{sid}|mono|mB"]
-        base = ((d["rhf"] + d["att"]) - (A["rhf"] + A["att"]) - (B["rhf"] + B["att"])) * K
-        e = lambda n: (v[f"{sid}|{f}|dimer"]["e"][n] - v[f"{sid}|mono|mA"]["e"][n] - v[f"{sid}|mono|mB"]["e"][n]) * K  # noqa: E731
+        base = (
+            (d["rhf"] + d["att"]) - (A["rhf"] + A["att"]) - (B["rhf"] + B["att"])
+        ) * K
+        e = lambda n: (
+            (
+                v[f"{sid}|{f}|dimer"]["e"][n]
+                - v[f"{sid}|mono|mA"]["e"][n]
+                - v[f"{sid}|mono|mB"]["e"][n]
+            )
+            * K
+        )  # noqa: E731
         tot = {n: base + e(n) for n in ("V_C", "V_A", "V_B", "bare")}
         w = terf(rcc_ang(sid, f))
         tot["V_D"] = base + e("bare") * w
         p18 = stretch.paper("18", sid)[i]
-        anchor = (v[f"{sid}|{f}|dimer"]["e"]["anchor"] - v[f"{sid}|{f}|dimer"]["e"]["bare"])
+        anchor = (
+            v[f"{sid}|{f}|dimer"]["e"]["anchor"] - v[f"{sid}|{f}|dimer"]["e"]["bare"]
+        )
         print(
             f"{sid:2d} {f:.1f} | {p18:+8.4f} | "
-            + " ".join(f"{tot[n]-p18:+8.4f}" for n in ("V_C", "V_A", "V_B", "bare", "V_D"))
+            + " ".join(
+                f"{tot[n] - p18:+8.4f}" for n in ("V_C", "V_A", "V_B", "bare", "V_D")
+            )
             + f" | vv10_contrib V_C={e('V_C'):+.4f} bare={e('bare'):+.4f} V_A={e('V_A'):+.4f} V_B={e('V_B'):+.4f}"
             + f" | anchor dimer {anchor:+.2e} Ha, terf(Rcc)={w:.3f}"
         )

@@ -31,7 +31,23 @@ SETS = {
 GEO_PAT = (
     r"GEOS\['%s-%s-dimer' % \(dbse, '?(\d+)'?\)\] = qcdb\.Molecule\(\"\"\"(.*?)\"\"\"\)"
 )
-ELEM = {"H", "He", "Li", "Be", "B", "C", "N", "O", "F", "Ne", "Ar", "Cl", "S", "P", "Si"}
+ELEM = {
+    "H",
+    "He",
+    "Li",
+    "Be",
+    "B",
+    "C",
+    "N",
+    "O",
+    "F",
+    "Ne",
+    "Ar",
+    "Cl",
+    "S",
+    "P",
+    "Si",
+}
 
 
 def parse(path, bind_re):
@@ -61,7 +77,9 @@ def parse(path, bind_re):
 
 def main():
     d = Path(sys.argv[1])
-    out = Path(sys.argv[2]) if len(sys.argv) > 2 else Path(__file__).parent / "sets.json"
+    out = (
+        Path(sys.argv[2]) if len(sys.argv) > 2 else Path(__file__).parent / "sets.json"
+    )
     res = {}
     for name, (fn, rx) in SETS.items():
         geos, refs, sha = parse(d / fn, rx)

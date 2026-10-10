@@ -10569,6 +10569,15 @@ fn run_irc(
 /// comment placed directly above `#[pymodule] fn ferric`, not a file-level
 /// `//!` — without this, `help(ferric)` / `ferric.__doc__` return empty even
 /// though the `//!` content renders fine in `cargo doc`. Keep both in sync.
+/// Registers the MP2-V research bindings (the one-SCF multi-arm scan and the
+/// VV10 weight variants), kept out of `ferric()` so the module initialiser
+/// stays under its complexity baseline.
+fn register_mp2v_research(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(run_mp2_v_scan, m)?)?;
+    m.add_function(wrap_pyfunction!(run_vv10_variants, m)?)?;
+    Ok(())
+}
+
 #[pymodule]
 fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Safe-by-default threading: pin OpenBLAS to 1 thread (rayon owns ferric's
@@ -10679,8 +10688,6 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_scs_mp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_scs_mp2_2terfc, m)?)?;
     m.add_function(wrap_pyfunction!(run_mp2_v, m)?)?;
-    m.add_function(wrap_pyfunction!(run_mp2_v_scan, m)?)?;
-    m.add_function(wrap_pyfunction!(run_vv10_variants, m)?)?;
     m.add_function(wrap_pyfunction!(run_double_hybrid, m)?)?;
 
     m.add_function(wrap_pyfunction!(run_laplace_mp2, m)?)?;
@@ -10707,7 +10714,8 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compute_metric_2c, m)?)?;
     m.add_function(wrap_pyfunction!(boys_localize, m)?)?;
     register_device_and_geometry(m)?;
-    Ok(())
+    // Tail call (no `?`): the module initialiser sits at its complexity baseline.
+    register_mp2v_research(m)
 }
 
 /// Registration tail of the module: shell geometry and the CUDA backend

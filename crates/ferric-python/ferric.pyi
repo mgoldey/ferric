@@ -2800,6 +2800,45 @@ def run_mp2_v(
     """MP2-V: attenuated MP2 + Eq-11-damped VV10. r0 in Angstrom, omega in Angstrom^-1."""
     ...
 
+def run_mp2_v_scan(
+    mol: Molecule,
+    basis_set: BasisSet,
+    auxbasis: BasisSet,
+    arms: Sequence[tuple[float, float | None]],
+    bs: Sequence[float],
+    c: float | None = None,
+    frozen_core: int | None = None,
+    nlc_grid: tuple[int, int] | None = None,
+    df_j_aux: str | None = None,
+    df_k_aux: str | None = None,
+    k_builder: str | None = None,
+    memory_budget_gb: float | None = None,
+    include_coulomb_mp2: bool = False,
+) -> dict[str, Any]:
+    """EXPERIMENTAL (research harness). MP2-V scan on ONE converged RHF reference:
+    the attenuated-MP2 half for every `(r0, omega)` arm (Angstrom, Angstrom^-1;
+    omega None = the published linked width) and the Eq-11-damped VV10 half for
+    every arm x `b`. Returns `{rhf_energy, n_nlc_points, arms: [{r0, omega,
+    att_mp2_corr, e_os, e_ss, vv10_e_nl: [per b]}]}`; `total(arm, k) = rhf_energy
+    + att_mp2_corr + vv10_e_nl[k]`. Closed shell, terfc only."""
+    ...
+
+def run_vv10_variants(
+    mol: Molecule,
+    basis_set: BasisSet,
+    specs: Sequence[tuple[str, float, float | None, int]],
+    b: float = 11.0,
+    c: float = 0.0089,
+    nlc_grid: tuple[int, int] | None = None,
+    df_j_aux: str | None = None,
+    df_k_aux: str | None = None,
+) -> list[float]:
+    """EXPERIMENTAL (research harness). Post-HF VV10 E_nl (Ha) for alternative
+    short-range weights: each spec is `(kind, r0_angstrom, r0_times_omega_or_None,
+    power)` with kind "none" (bare VV10), "eq11" (1 - terfc^2) or "terf" (terf^power,
+    terf = 1 - terfc). No MP2 is run. Closed shell."""
+    ...
+
 def run_rs_mp2_rpa(
     mol: Molecule,
     basis_set: BasisSet,

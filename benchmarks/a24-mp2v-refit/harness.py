@@ -26,7 +26,6 @@ skipped. Run under scripts/ferric-limited with OPENBLAS_NUM_THREADS=1.
 
 import argparse
 import json
-import math
 import os
 import sys
 import time
@@ -141,7 +140,9 @@ def main(argv=None):
     bs = bs["bs"] if isinstance(bs, dict) else bs
     nlc = [int(x) for x in a.nlc.split(",")]
     sets = load_sets()[a.set]["systems"]
-    ids = [int(x) for x in a.systems.split(",")] if a.systems else sorted(map(int, sets))
+    ids = (
+        [int(x) for x in a.systems.split(",")] if a.systems else sorted(map(int, sets))
+    )
     want = a.fragments.split(",")
 
     out = Path(a.out)
