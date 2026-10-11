@@ -72,13 +72,20 @@
 //!
 //! # Scope
 //!
-//! HF only (no KS-DFT / ROHF at k), no ECPs, RS-GDF aux on the cell's atoms
-//! (no ghost sites). The full per-q Loewner metric weight is used, so an
-//! active lindep cut at any q is differentiated consistently (reported as
+//! HF only (no KS-DFT / ROHF at k), RS-GDF aux on the cell's atoms (no ghost
+//! sites). A scalar periodic ECP is differentiated by the Gamma ECP walk
+//! ([`crate::ecp::periodic_ecp_gradient`]) with the SR walk's image weight
+//! `Re Δ_nm(L)` in place of the density (`parts.ecp`; derivation in the
+//! [`crate::ecp`] module doc, "k-points"); the walk is driven by the basis and
+//! cross-checked against `hk.v_ecp`. The energy-weighted Pulay term already
+//! carries the ECP through the rebuilt `F = hk.h + ...`.
+//!
+//! The full per-q Loewner metric weight is used, so an active lindep cut at any q is differentiated consistently (reported as
 //! [`KGradient::fit_dropped_max`]).
 
 use crate::budget::{bytes_of, Ledger};
 use crate::dense_aft::ExxDiv;
+use crate::ecp::{periodic_ecp_gradient_weighted, EcpGradMutation, EcpWeights};
 use crate::ewald::{
     default_ewald_omega, ewald_nuclear_gradient_parts, madelung_constant, DEFAULT_EWALD_PRECISION,
 };
@@ -148,6 +155,25 @@ pub enum KGradMutation {
     /// RS-GDF range split: the unsplit G = 0 term in the derivative (every
     /// aux charge `q` and `dS`, not `(q_c, d(S − S_ss))`).
     SplitFullG0,
+    /// ECP: drop the ECP force term altogether.
+    NoEcp,
+    /// ECP: the centre derivative `∂_C` dropped.
+    EcpNoCentre,
+    /// ECP: the centre derivative with the wrong sign.
+    EcpCentreSign,
+    /// ECP: the centre derivative folded onto the next cell atom.
+    EcpCentreWrongAtom,
+    /// ECP: the image weight read at the residue of `−L` (the transposed
+    /// weight `W_{−L} = W_Lᵀ`).
+    EcpWrongResidue,
+    /// ECP: orbital image `L = 0` only.
+    EcpL0Only,
+    /// ECP: home ECP image `M = 0` only.
+    EcpM0Only,
+    /// ECP: the image weight's residue taken modulo the mesh counts `n`
+    /// instead of the residue moduli (aliases images that differ by half a
+    /// supercell on a shifted mesh; identity on a Gamma-centred mesh).
+    EcpMeshCountModuli,
 }
 
 /// Settings for [`kpoint_rhf_gradient`] / [`kpoint_uhf_gradient`].
@@ -219,6 +245,8 @@ pub struct KGradParts {
     pub fit_metric_lr: Array2<f64>,
     /// RS-GDF `J3` G = 0 term through `dS`.
     pub fit_g0: Array2<f64>,
+    /// Periodic ECP (`Σ_L W_L ∘ dV_L`, [`crate::ecp`]); zeros without an ECP.
+    pub ecp: Array2<f64>,
 }
 
 /// Output of the k-point force entry points.
@@ -234,12 +262,18 @@ pub struct KGradient {
     pub commutator: f64,
     /// `v_M` used in K and M (0 for `exxdiv = none`).
     pub madelung: f64,
+    /// `max |F_rebuilt − F_stored|` over k (and spins): the input consistency
+    /// measure, refused above [`FOCK_CONSISTENCY_BAR`].
+    pub fock_mismatch: f64,
     /// `max_x |Σ_A dE/dR_{A,x}|` (sanity only; blind to most mutants).
     pub net_force: f64,
     /// Pair images summed for `dS`/`dT`.
     pub n_images: usize,
     /// SR attraction derivative triplets.
     pub n_sr_triplets: usize,
+    /// Kept ECP triples of the screen the walk differentiates (checked equal to
+    /// the energy's `PeriodicHcoreK::n_ecp_triples`; 0 without an ECP).
+    pub n_ecp_triples: usize,
     /// Full-sphere G vectors in the `V_LR` derivative.
     pub n_g_lr: usize,
     /// K vectors (all q classes) in the two-electron derivative.
@@ -427,7 +461,11 @@ pub fn kpoint_rhf_gradient(
     let f: Vec<Array2<C64>> = (0..mesh.nk())
         .map(|q| &(&hk.h[q] + &j[q]) - &k[q].mapv(|z| z * 0.5))
         .collect();
-    assemble(
+    let sds: Vec<Array2<C64>> = (0..mesh.nk())
+        .map(|q| hk.s[q].dot(&d[q]).dot(&hk.s[q]))
+        .collect();
+    let mismatch = check_fock_mod_madelung(who, &[("fock", &f, &scf.fock, sds)])?;
+    let mut out = assemble(
         cell,
         prep,
         mesh,
@@ -438,7 +476,9 @@ pub fn kpoint_rhf_gradient(
         vm,
         cfg,
         &mut ledger,
-    )
+    )?;
+    out.fock_mismatch = mismatch;
+    Ok(out)
 }
 
 /// k-point UHF nuclear gradient (module doc) of a converged
@@ -481,7 +521,8 @@ pub fn kpoint_uhf_gradient(
     let base: Vec<Array2<C64>> = (0..nk).map(|q| &(&hk.h[q] + &ja[q]) + &jb[q]).collect();
     let fa: Vec<Array2<C64>> = (0..nk).map(|q| &base[q] - &ka[q]).collect();
     let fb: Vec<Array2<C64>> = (0..nk).map(|q| &base[q] - &kb[q]).collect();
-    assemble(
+    let mismatch = check_fock_uhf(who, hk, &da, &db, &fa, &fb, scf)?;
+    let mut out = assemble(
         cell,
         prep,
         mesh,
@@ -492,7 +533,9 @@ pub fn kpoint_uhf_gradient(
         vm,
         cfg,
         &mut ledger,
-    )
+    )?;
+    out.fock_mismatch = mismatch;
+    Ok(out)
 }
 
 /// Shape and consistency guard: converged SCF, matching `omega`, no ECP, `S`/`h`/`D` shapes
@@ -531,11 +574,6 @@ pub(crate) fn check_inputs(
         "the k-point forces walk the unrotated shells (the column rotation is implemented \
          in the k-point energy builds only)",
     )?;
-    if hk.v_ecp.is_some() {
-        return Err(FerricError::General(format!(
-            "{who}: periodic ECP gradients are not implemented"
-        )));
-    }
     if hk.s.len() != nk
         || hk.h.len() != nk
         || hk.s.iter().chain(&hk.h).any(|x| x.dim() != (n, n))
@@ -937,6 +975,10 @@ fn assemble(
         }
     })?;
 
+    // --- V_ECP: the Gamma ECP walk with the SR walk's image weight W_L = w_d[r(L)].
+    let (g_ecp, n_ecp_triples) =
+        ecp_force_term(cell, prep, mesh, hcore_cfg, hk, &w_d, mutation, ledger)?;
+
     // --- V_LR: full G sphere of periodic_hcore_kpts, residue pair-FT
     // derivative at q = 0.
     let aoat = ao_atoms(prep);
@@ -1055,6 +1097,7 @@ fn assemble(
         + &g_t
         + &g_vsr_basis
         + &g_vsr_nuc
+        + &g_ecp
         + &g_vlr_basis
         + &g_vlr_nuc
         + &g_j
@@ -1095,12 +1138,15 @@ fn assemble(
             fit_metric_sr: f_met_sr,
             fit_metric_lr: f_met_lr,
             fit_g0: g_fit_g0,
+            ecp: g_ecp,
         },
         commutator,
         madelung: vm,
+        fock_mismatch: 0.0,
         net_force,
         n_images: images.len(),
         n_sr_triplets,
+        n_ecp_triples,
         n_g_lr: gv_lr.len(),
         n_k_eri,
         n_chunks,
@@ -1108,6 +1154,309 @@ fn assemble(
         fit_dropped_max,
         fit_checks,
     })
+}
+
+/// Largest `|F_rebuilt − F_stored|` the entry points accept (Hartree). The
+/// forces and the stress rebuild `F = h + J − αK` from the density and the dense kernels;
+/// the SCF's stored (non-extrapolated) Fock must agree, which fails for a KS
+/// result (the XC potential is not in the rebuilt `F`) or a wrong `exxdiv`
+/// (`v_M S D S` shift) or an SCF run without the ECP that `hk.h` carries.
+/// Measured on H2 1x1x2: matching inputs 2e-16 (none) and 2e-16 (ewald); the
+/// wrong `exxdiv` 7.9e-1 either way; an LDA result 3.4e-1; HI 1x1x3 matching
+/// 5.7e-17, an ECP-free SCF 6.9.
+pub const FOCK_CONSISTENCY_BAR: f64 = 1e-8;
+
+pub(crate) fn check_fock(
+    who: &str,
+    what: &str,
+    rebuilt: &[Array2<C64>],
+    stored: &[Array2<C64>],
+) -> Result<f64, FerricError> {
+    let mut worst = 0.0_f64;
+    for (a, b) in rebuilt.iter().zip(stored) {
+        if a.dim() != b.dim() {
+            return Err(FerricError::General(format!(
+                "{who}: stored {what} has a different shape than the rebuilt one"
+            )));
+        }
+        for (x, y) in a.iter().zip(b.iter()) {
+            worst = worst.max((x - y).norm());
+        }
+    }
+    if rebuilt.len() != stored.len() || !(worst <= FOCK_CONSISTENCY_BAR) {
+        return Err(FerricError::General(format!(
+            "{who}: the Fock matrix rebuilt from the density and the J/K source differs from \
+             the SCF's stored {what} by {worst:.2e} (bar {FOCK_CONSISTENCY_BAR:.0e}); the analytic \
+             derivative covers pure Hartree-Fock only with the SAME exxdiv and kernels the SCF used (not a \
+             KS-DFT result, not a different exxdiv, not an extrapolated state)"
+        )));
+    }
+    Ok(worst)
+}
+
+/// Force-side Fock guard. The force does not depend on `exxdiv` (the mesh
+/// `v_M` shift of `K` is cancelled by the M-term), so an SCF run at another
+/// `exxdiv` is legitimate: its stored Fock differs from the rebuilt one by
+/// exactly `c · S D_σ S` with one scalar `c` (the `v_M` difference). The check
+/// therefore removes the best-fit `c · S D_σ S` (shared by all k and spins)
+/// before applying [`FOCK_CONSISTENCY_BAR`]; what survives (a missing ECP, a
+/// KS potential, a different J/K source) is not of that form. Each group is
+/// `(what, rebuilt F, stored F, S D_σ S)`. Returns the surviving mismatch.
+pub(crate) fn check_fock_mod_madelung(
+    who: &str,
+    groups: &[(&str, &[Array2<C64>], &[Array2<C64>], Vec<Array2<C64>>)],
+) -> Result<f64, FerricError> {
+    let (mut num, mut den) = (0.0_f64, 0.0_f64);
+    for (what, rebuilt, stored, x) in groups {
+        if rebuilt.len() != stored.len() || x.len() != stored.len() {
+            return Err(FerricError::General(format!(
+                "{who}: stored {what} has {} k-points, the rebuilt one {}",
+                stored.len(),
+                rebuilt.len()
+            )));
+        }
+        for ((a, b), xk) in rebuilt.iter().zip(stored.iter()).zip(x) {
+            if a.dim() != b.dim() {
+                return Err(FerricError::General(format!(
+                    "{who}: stored {what} has a different shape than the rebuilt one"
+                )));
+            }
+            for ((ra, sb), xv) in a.iter().zip(b.iter()).zip(xk.iter()) {
+                num += ((sb - ra) * xv.conj()).re;
+                den += xv.norm_sqr();
+            }
+        }
+    }
+    let c = if den > 0.0 { num / den } else { 0.0 };
+    let mut worst = 0.0_f64;
+    for (_, rebuilt, stored, x) in groups {
+        for ((a, b), xk) in rebuilt.iter().zip(stored.iter()).zip(x) {
+            for ((ra, sb), xv) in a.iter().zip(b.iter()).zip(xk.iter()) {
+                worst = worst.max((sb - ra - xv * c).norm());
+            }
+        }
+    }
+    if !(worst <= FOCK_CONSISTENCY_BAR) {
+        return Err(FerricError::General(format!(
+            "{who}: the Fock matrix rebuilt from the density and the J/K source differs from \
+             the SCF's stored Fock by {worst:.2e} beyond a Madelung (exxdiv) shift (bar \
+             {FOCK_CONSISTENCY_BAR:.0e}); the analytic derivative covers pure Hartree-Fock \
+             with the SAME J/K kernels and hcore the SCF used (not a KS-DFT result, not an SCF \
+             run without the ECP, not an extrapolated state)"
+        )));
+    }
+    Ok(worst)
+}
+
+/// UHF form of the force-side Fock guard ([`check_fock_mod_madelung`]).
+fn check_fock_uhf(
+    who: &str,
+    hk: &PeriodicHcoreK,
+    da: &[Array2<C64>],
+    db: &[Array2<C64>],
+    fa: &[Array2<C64>],
+    fb: &[Array2<C64>],
+    scf: &KUScfResult,
+) -> Result<f64, FerricError> {
+    let sds = |dm: &[Array2<C64>]| -> Vec<Array2<C64>> {
+        (0..dm.len())
+            .map(|q| hk.s[q].dot(&dm[q]).dot(&hk.s[q]))
+            .collect()
+    };
+    check_fock_mod_madelung(
+        who,
+        &[
+            ("fock_alpha", fa, &scf.fock_alpha, sds(da)),
+            ("fock_beta", fb, &scf.fock_beta, sds(db)),
+        ],
+    )
+}
+
+/// Largest `|h − T − V − V_ECP|` over k that `hk` may show (Hartree): `h` is
+/// assembled from exactly these pieces, so anything above roundoff means the
+/// ECP was stripped from (or added to) one of them after the build.
+const HK_ECP_CONSISTENCY_BAR: f64 = 1e-10;
+
+/// Presence/count cross-check of the ECP walk against `hk`: `kept` is the
+/// walk's kept-triple count (`None` when the basis has no ECP centre).
+/// Errors when the walk and `hk.v_ecp` disagree in presence or count, or when
+/// `hk.h` is not `T + V (+ V_ECP)` (an `hk` whose `h` lost its ECP but kept
+/// the marker, or the reverse). Returns the count (0 without an ECP).
+pub(crate) fn ecp_presence(
+    who: &str,
+    hk: &PeriodicHcoreK,
+    kept: Option<usize>,
+) -> Result<usize, FerricError> {
+    let mut worst = 0.0_f64;
+    for k in 0..hk.h.len() {
+        let mut r = &hk.h[k] - &hk.t[k] - &hk.v[k];
+        if let Some(ve) = &hk.v_ecp {
+            r -= &ve[k];
+        }
+        worst = worst.max(r.iter().fold(0.0_f64, |m, z| m.max(z.norm())));
+    }
+    match (&hk.v_ecp, kept) {
+        (Some(_), Some(n)) => {
+            if n != hk.n_ecp_triples {
+                return Err(FerricError::General(format!(
+                    "{who}: the ECP screen keeps {n} triples but hcore's V_ECP kept {}; hcore \
+                     was built with a different ECP precision/config than hcore_cfg (or at \
+                     another geometry)",
+                    hk.n_ecp_triples
+                )));
+            }
+            if !(worst <= HK_ECP_CONSISTENCY_BAR) {
+                return Err(FerricError::General(format!(
+                    "{who}: hcore's h differs from T + V + V_ECP by {worst:.2e} (bar \
+                     {HK_ECP_CONSISTENCY_BAR:.0e}); pass the PeriodicHcoreK the SCF used"
+                )));
+            }
+            Ok(n)
+        }
+        (None, None) => {
+            if !(worst <= HK_ECP_CONSISTENCY_BAR) {
+                return Err(FerricError::General(format!(
+                    "{who}: hcore's h differs from T + V by {worst:.2e} (bar \
+                     {HK_ECP_CONSISTENCY_BAR:.0e}); pass the PeriodicHcoreK the SCF used"
+                )));
+            }
+            Ok(0)
+        }
+        (Some(_), None) => Err(FerricError::General(format!(
+            "{who}: hcore carries V_ECP but the basis/cell has no ECP centre"
+        ))),
+        (None, Some(_)) => Err(FerricError::General(format!(
+            "{who}: the basis carries an ECP for a cell atom but hcore has no V_ECP; pass the \
+             PeriodicHcoreK the SCF used"
+        ))),
+    }
+}
+
+/// The ECP force walk at k with the image weight `w_d` (residue-resolved,
+/// [`fold_real`]); `None` when the basis has no ECP centre. Shared by the
+/// production term and the fixed-density entry.
+fn ecp_force_walk(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    mesh: &KPointMesh,
+    hcore_cfg: &PeriodicHcoreConfig,
+    w_d: &[Array2<f64>],
+    mutation: Option<KGradMutation>,
+    ledger: &mut Ledger,
+) -> Result<Option<crate::ecp::PeriodicEcpGradient>, FerricError> {
+    let ecp_mut = match mutation {
+        Some(KGradMutation::EcpNoCentre) => Some(EcpGradMutation::NoCentre),
+        Some(KGradMutation::EcpCentreSign) => Some(EcpGradMutation::CentreSign),
+        Some(KGradMutation::EcpCentreWrongAtom) => Some(EcpGradMutation::CentreWrongAtom),
+        Some(KGradMutation::EcpL0Only) => Some(EcpGradMutation::L0Only),
+        Some(KGradMutation::EcpM0Only) => Some(EcpGradMutation::M0Only),
+        Some(KGradMutation::SerialDerivWalks) => Some(EcpGradMutation::SerialImages),
+        _ => None,
+    };
+    let weights = EcpWeights::Residue {
+        w: w_d,
+        recip: cell.reciprocal(),
+        moduli: if mutation == Some(KGradMutation::EcpMeshCountModuli) {
+            mesh.n()
+        } else {
+            mesh.residue_moduli()
+        },
+        flip_l: mutation == Some(KGradMutation::EcpWrongResidue),
+    };
+    periodic_ecp_gradient_weighted(
+        cell,
+        prep,
+        &hcore_cfg.ecp_config(),
+        &weights,
+        ecp_mut,
+        ledger,
+    )
+}
+
+/// TEST/DIAGNOSTIC: the periodic-ECP force of the k energy `(1/N_k) Σ_k
+/// Re tr[D(k) V_ECP(k)]` at a FIXED total density `dtot` (one `n × n` matrix
+/// per mesh point, Hermitian). No SCF: the hcore gate that isolates the ECP
+/// term before anything else is trusted. `None` when the basis has no ECP.
+#[doc(hidden)]
+pub fn kpoint_ecp_gradient_fixed_d(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    mesh: &KPointMesh,
+    hcore_cfg: &PeriodicHcoreConfig,
+    dtot: &[Array2<C64>],
+) -> Result<Option<crate::ecp::PeriodicEcpGradient>, FerricError> {
+    kpoint_ecp_gradient_fixed_d_with(cell, prep, mesh, hcore_cfg, dtot, None)
+}
+
+/// [`kpoint_ecp_gradient_fixed_d`] with a test-only [`KGradMutation`] (the ECP
+/// ones, `NoPhase` and `ConjD` act here; the rest are ignored).
+#[doc(hidden)]
+pub fn kpoint_ecp_gradient_fixed_d_with(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    mesh: &KPointMesh,
+    hcore_cfg: &PeriodicHcoreConfig,
+    dtot: &[Array2<C64>],
+    mutation: Option<KGradMutation>,
+) -> Result<Option<crate::ecp::PeriodicEcpGradient>, FerricError> {
+    let n = prep.nbasis();
+    if dtot.len() != mesh.nk() || dtot.iter().any(|d| d.dim() != (n, n)) {
+        return Err(FerricError::General(format!(
+            "kpoint_ecp_gradient_fixed_d: expected {} density matrices of {n}×{n}",
+            mesh.nk()
+        )));
+    }
+    let moduli = mesh.residue_moduli();
+    let nr = moduli[0] * moduli[1] * moduli[2];
+    let ph: Vec<Vec<C64>> = (0..mesh.nk())
+        .map(|k| {
+            (0..nr)
+                .map(|r| {
+                    if mutation == Some(KGradMutation::NoPhase) {
+                        cr(1.0)
+                    } else {
+                        mesh.phase(k, residue_coords(r, moduli))
+                    }
+                })
+                .collect()
+        })
+        .collect();
+    let dens: Vec<Array2<C64>> = if mutation == Some(KGradMutation::ConjD) {
+        dtot.iter().map(|d| d.mapv(|z| z.conj())).collect()
+    } else {
+        dtot.to_vec()
+    };
+    let w_d = fold_real(&dens, &ph, 1.0 / mesh.nk() as f64);
+    let mut ledger = Ledger::new(crate::budget::resolve(None));
+    ecp_force_walk(cell, prep, mesh, hcore_cfg, &w_d, mutation, &mut ledger)
+}
+
+/// The periodic-ECP force term at k: `(Σ_L W_L ∘ dV_L, kept triples)`, zeros
+/// for an all-electron cell. `w_d[r]` is the SR walk's image weight
+/// (`Re (1/N_k) Σ_k e^{ik·L} D(k)ᵀ`, residue `r` of `L`); errors when hcore's
+/// `V_ECP` and the force screen disagree ([`ecp_presence`]).
+#[allow(clippy::too_many_arguments)]
+fn ecp_force_term(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    mesh: &KPointMesh,
+    hcore_cfg: &PeriodicHcoreConfig,
+    hk: &PeriodicHcoreK,
+    w_d: &[Array2<f64>],
+    mutation: Option<KGradMutation>,
+    ledger: &mut Ledger,
+) -> Result<(Array2<f64>, usize), FerricError> {
+    let natoms = cell.positions().len();
+    let zeros = || Array2::<f64>::zeros((natoms, 3));
+    if mutation == Some(KGradMutation::NoEcp) && hk.v_ecp.is_some() {
+        return Ok((zeros(), 0));
+    }
+    let ecp = ecp_force_walk(cell, prep, mesh, hcore_cfg, w_d, mutation, ledger)?;
+    let n = ecp_presence("k gradient", hk, ecp.as_ref().map(|e| e.n_triples))?;
+    match ecp {
+        Some(e) => Ok((e.grad, n)),
+        None => Ok((zeros(), 0)),
+    }
 }
 
 /// The range split's `J3` G = 0 term through `d S_ss`: the image-resolved

@@ -63,17 +63,23 @@
 //!
 //! # Scope
 //!
-//! Dense pure-AFT and RS-GDF (unsplit or range-split) J/K, HF, RHF and UHF.
-//! NOT covered, each refused with a typed error naming the missing piece: ECP
-//! at k (the k energy
-//! supports ECPs, the k forces and stress do not), an explicit SR column
-//! rotation request (`Auto` resolves to the unrotated walk, as
-//! [`crate::kgrad`]; measured on H2 cc-pVDZ 1×1×2 RS-GDF, where the rotation
-//! is active, the Auto-pipeline and Off-pipeline stresses differ by 1.6e-13;
-//! a segmented basis does not rotate at all). The ECP refusal reads
-//! `hk.v_ecp`: an `hk` whose `v_ecp` was cleared while its `h` still carries
-//! the ECP bypasses it (the Fock guard cannot see it either), so pass the
-//! `hk` the SCF used.
+//! Dense pure-AFT and RS-GDF (unsplit or range-split) J/K, HF, RHF and UHF,
+//! with or without a scalar periodic ECP. NOT covered, each refused with a
+//! typed error naming the missing piece: an explicit SR column rotation
+//! request (`Auto` resolves to the unrotated walk, as [`crate::kgrad`];
+//! measured on H2 cc-pVDZ 1×1×2 RS-GDF, where the rotation is active, the
+//! Auto-pipeline and Off-pipeline stresses differ by 1.6e-13; a segmented
+//! basis does not rotate at all).
+//!
+//! ECP ([`KStressParts::ecp`]): the Gamma ECP strain walk
+//! ([`crate::ecp::periodic_ecp_strain`]) with the SR walk's image weight
+//! `W_L = w_d[residue(L)]` in place of the density (module doc of
+//! [`crate::ecp`], "k-points"); the phases and residues are strain-invariant,
+//! so there is no k term. The ECP walk is driven by the BASIS, then
+//! cross-checked against `hk.v_ecp` (kept-triple count, presence): an `hk`
+//! whose `v_ecp` was cleared while the basis carries an ECP, or the reverse,
+//! is refused. The Fock guard rebuilds `F` from `hk.h`, which carries `V_ECP`,
+//! so an SCF run without the ECP is refused by the guard.
 //!
 //! Range split: the config must agree with the build about whether a split ran
 //! (typed refusal otherwise) and `lambda > 1` is refused (moved blocks whose FT
@@ -93,7 +99,7 @@
 //!
 //! The stress rebuilds `F = h + J − αK` from the density and the J/K source
 //! (dense kernels or the RS-GDF build) and refuses (typed [`FerricError`]) unless it reproduces the SCF's
-//! stored Fock to [`FOCK_CONSISTENCY_BAR`]: a KS result (no `V_xc` in the
+//! stored Fock to [`FOCK_CONSISTENCY_BAR`] (defined in [`crate::kgrad`], which applies the same guard): a KS result (no `V_xc` in the
 //! rebuilt `F`), an SCF run at another `exxdiv`, or an RS-GDF source on
 //! another aux basis than the SCF's would otherwise give a finite but wrong
 //! σ (the RS-GDF energy is ω-independent: a fit at another ω reproduces the
@@ -117,6 +123,7 @@
 
 use crate::budget::{bytes_of, Ledger};
 use crate::dense_aft::ExxDiv;
+use crate::ecp::{periodic_ecp_strain_weighted, EcpStrainMutation, EcpWeights};
 use crate::ewald::{
     default_ewald_omega, ewald_nuclear_strain, madelung_constant, madelung_strain,
     DEFAULT_EWALD_PRECISION,
@@ -128,9 +135,10 @@ use crate::hcore::{
     G_CHUNK_BYTES, ONE_E_ENGINE_PRECISION,
 };
 use crate::kdense_aft::KDenseAftEri;
+pub use crate::kgrad::FOCK_CONSISTENCY_BAR;
 use crate::kgrad::{
-    check_inputs, cr, fold_complex, fold_real, herm, jk_build, residue_trace, KFitChecks, KGradJk,
-    KRsGdfGradSource, KSpins,
+    check_fock, check_inputs, cr, ecp_presence, fold_complex, fold_real, herm, jk_build,
+    residue_trace, KFitChecks, KGradJk, KRsGdfGradSource, KSpins,
 };
 use crate::kpts::{lattice_coords, KPointMesh};
 use crate::kscf::KScfResult;
@@ -241,6 +249,23 @@ pub enum KStressMutation {
     /// RS-GDF range split: the smooth-pair LR energy left out of the
     /// `−δ E_LR` volume term (diagonal only).
     SplitNoSmoothVolume,
+    /// ECP: drop the ECP strain term altogether.
+    NoEcp,
+    /// ECP: drop the ECP-centre virial `Σ ∂_C X_C`.
+    EcpNoCentre,
+    /// ECP: the centre virial with the wrong sign.
+    EcpCentreSign,
+    /// ECP: the ket derivative weighted by the home-cell position (the
+    /// orbital image `L` dropped from the pair vector).
+    EcpNoKetImage,
+    /// ECP: a unit vector `δ_ab` in place of the pair vector (a force, not a
+    /// strain; diagonal only).
+    EcpUnitPairVector,
+    /// ECP: the image weight read at the residue of `−L` (transposed weight).
+    EcpWrongResidue,
+    /// ECP: the image weight's residue taken modulo the mesh counts instead
+    /// of the residue moduli (identity on a Gamma-centred mesh).
+    EcpMeshCountModuli,
 }
 
 /// Settings for the k-point stress entry points.
@@ -318,6 +343,11 @@ pub struct KOneElectronStress {
     pub vlr: Mat3,
     /// `−δ c0 Z_tot N`.
     pub c0_volume: Mat3,
+    /// `Σ_L W_L ∘ dV_L` strain of the periodic ECP ([`crate::ecp`]); zero
+    /// without an ECP.
+    pub ecp: Mat3,
+    /// Kept ECP triples differentiated (0 without an ECP).
+    pub n_ecp_triples: usize,
     /// Virial of each overlap weight set handed in (`Σ w dS`), in order.
     pub overlap: Vec<Mat3>,
     /// Ewald `E_nn`: real space, reciprocal (with volume), background.
@@ -333,6 +363,52 @@ pub struct KOneElectronStress {
     pub n_sr_triplets: usize,
     pub n_g_lr: usize,
     pub n_chunks: usize,
+}
+
+/// The periodic-ECP strain term at k: `(Σ_L W_L ∘ dV_L strain, triples)`, zeros
+/// for an all-electron cell; `w_d[r]` is the SR walk's image weight. Errors
+/// when hcore's `V_ECP` and the strain screen disagree.
+#[allow(clippy::too_many_arguments)]
+fn ecp_strain_term(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    mesh: &KPointMesh,
+    hcore_cfg: &PeriodicHcoreConfig,
+    hk: &PeriodicHcoreK,
+    w_d: &[Array2<f64>],
+    mutation: Option<KStressMutation>,
+    ledger: &mut Ledger,
+) -> Result<(Mat3, usize), FerricError> {
+    if mutation == Some(KStressMutation::NoEcp) && hk.v_ecp.is_some() {
+        return Ok((ZERO3, 0));
+    }
+    let ecp_mut = match mutation {
+        Some(KStressMutation::EcpNoCentre) => Some(EcpStrainMutation::NoCentre),
+        Some(KStressMutation::EcpCentreSign) => Some(EcpStrainMutation::CentreSign),
+        Some(KStressMutation::EcpNoKetImage) => Some(EcpStrainMutation::NoKetImage),
+        Some(KStressMutation::EcpUnitPairVector) => Some(EcpStrainMutation::UnitPairVector),
+        _ => None,
+    };
+    let weights = EcpWeights::Residue {
+        w: w_d,
+        recip: cell.reciprocal(),
+        moduli: if mutation == Some(KStressMutation::EcpMeshCountModuli) {
+            mesh.n()
+        } else {
+            mesh.residue_moduli()
+        },
+        flip_l: mutation == Some(KStressMutation::EcpWrongResidue),
+    };
+    let r = periodic_ecp_strain_weighted(
+        cell,
+        prep,
+        &hcore_cfg.ecp_config(),
+        &weights,
+        ecp_mut,
+        ledger,
+    )?;
+    let n = ecp_presence("k stress", hk, r.as_ref().map(|x| x.1))?;
+    Ok((r.map_or(ZERO3, |x| x.0), n))
 }
 
 /// Resolved ledger for the stress passes (per-k matrices and residue weights).
@@ -502,6 +578,11 @@ pub(crate) fn one_electron_pass(
     })?;
     out.vsr = vsr;
 
+    // --- V_ECP: the Gamma ECP strain walk with the SR walk's image weight.
+    let (e_ecp, n_ecp) = ecp_strain_term(cell, prep, mesh, hcore_cfg, hk, &w_d, mutation, ledger)?;
+    out.ecp = e_ecp;
+    out.n_ecp_triples = n_ecp;
+
     // --- V_LR: full G sphere, residue pair-FT strain kernel.
     let zs = cell.nuclear_charges();
     let ztot: f64 = zs.iter().sum();
@@ -600,6 +681,7 @@ impl KOneElectronStress {
         for m in [
             &self.kinetic,
             &self.vsr,
+            &self.ecp,
             &self.vlr,
             &self.c0_volume,
             &self.nn_sr,
@@ -633,12 +715,6 @@ pub fn kpoint_hcore_stress_fixed_d(
     let who = "kpoint_hcore_stress_fixed_d";
     let n = prep.nbasis();
     let nk = mesh.nk();
-    if hk.v_ecp.is_some() {
-        return Err(FerricError::General(format!(
-            "{who}: periodic ECP strain at k is not implemented (the k energy supports ECPs; \
-             the k forces and stress do not)"
-        )));
-    }
     if hk.omega != hcore_cfg.omega {
         return Err(FerricError::General(format!(
             "{who}: hcore was built at omega = {} but hcore_cfg.omega = {}",
@@ -722,6 +798,8 @@ pub struct KStressParts {
     pub kinetic: Mat3,
     /// `Σ D dV_SR`.
     pub vsr: Mat3,
+    /// `Σ_L W_L ∘ dV_L` of the periodic ECP (zero without an ECP).
+    pub ecp: Mat3,
     /// `Σ D dV_LR`, including its `−δ E_LR` volume term.
     pub vlr: Mat3,
     /// `−δ c0 Z_tot N`.
@@ -750,13 +828,14 @@ pub struct KStressParts {
 }
 
 impl KStressParts {
-    fn all(&self) -> [&Mat3; 20] {
+    fn all(&self) -> [&Mat3; 21] {
         [
             &self.overlap_pulay,
             &self.overlap_c0,
             &self.overlap_madelung,
             &self.kinetic,
             &self.vsr,
+            &self.ecp,
             &self.vlr,
             &self.c0_volume,
             &self.coulomb,
@@ -833,6 +912,8 @@ pub struct KStress {
     /// Pair images, SR triplets, V_LR G count, ERI K count, pair-FT chunks.
     pub n_images: usize,
     pub n_sr_triplets: usize,
+    /// ECP triples differentiated (the energy's `PeriodicHcoreK::n_ecp_triples`).
+    pub n_ecp_triples: usize,
     pub n_g_lr: usize,
     pub n_k_eri: usize,
     pub n_chunks: usize,
@@ -890,19 +971,10 @@ fn grad_jk<'a>(jk: &KStressJk<'a>) -> KGradJk<'a> {
     }
 }
 
-/// The typed refusals shared by every entry point: ECP at k and a
-/// range-separated dense kernel (a range-split RS-GDF build is supported).
-fn refuse_unsupported(
-    who: &str,
-    hk: &PeriodicHcoreK,
-    jk: &KStressJk<'_>,
-) -> Result<(), FerricError> {
-    if hk.v_ecp.is_some() {
-        return Err(FerricError::General(format!(
-            "{who}: periodic ECP strain at k is not implemented (the k energy supports ECPs; \
-             the k forces and stress do not)"
-        )));
-    }
+/// The typed refusals shared by every entry point: a range-separated dense
+/// kernel and an inconsistent range split (a range-split RS-GDF build is
+/// supported; so is an ECP).
+fn refuse_unsupported(who: &str, jk: &KStressJk<'_>) -> Result<(), FerricError> {
     if let KStressJk::Dense(e) = jk {
         if e.rsh().is_some() {
             return Err(FerricError::General(format!(
@@ -953,42 +1025,6 @@ fn refuse_split_mismatch(who: &str, src: &KRsGdfGradSource<'_>) -> Result<(), Fe
     Ok(())
 }
 
-/// Largest `|F_rebuilt − F_stored|` the entry points accept (Hartree). The
-/// stress rebuilds `F = h + J − αK` from the density and the dense kernels;
-/// the SCF's stored (non-extrapolated) Fock must agree, which fails for a KS
-/// result (the XC potential is not in the rebuilt `F`) or a wrong `exxdiv`
-/// (`v_M S D S` shift). Measured on H2 1x1x2: matching inputs 2e-16 (none) and
-/// 2e-16 (ewald); the wrong `exxdiv` 7.9e-1 either way; an LDA result 3.4e-1.
-pub const FOCK_CONSISTENCY_BAR: f64 = 1e-8;
-
-fn check_fock(
-    who: &str,
-    what: &str,
-    rebuilt: &[Array2<C64>],
-    stored: &[Array2<C64>],
-) -> Result<f64, FerricError> {
-    let mut worst = 0.0_f64;
-    for (a, b) in rebuilt.iter().zip(stored) {
-        if a.dim() != b.dim() {
-            return Err(FerricError::General(format!(
-                "{who}: stored {what} has a different shape than the rebuilt one"
-            )));
-        }
-        for (x, y) in a.iter().zip(b.iter()) {
-            worst = worst.max((x - y).norm());
-        }
-    }
-    if rebuilt.len() != stored.len() || !(worst <= FOCK_CONSISTENCY_BAR) {
-        return Err(FerricError::General(format!(
-            "{who}: the Fock matrix rebuilt from the density and the J/K source differs from \
-             the SCF's stored {what} by {worst:.2e} (bar {FOCK_CONSISTENCY_BAR:.0e}); the stress \
-             covers pure Hartree-Fock only with the SAME exxdiv and kernels the SCF used (not a \
-             KS-DFT result, not a different exxdiv, not an extrapolated state)"
-        )));
-    }
-    Ok(worst)
-}
-
 /// k-point RHF stress (module doc) of a converged
 /// [`crate::kscf::solve_krhf_injected`] / [`crate::kscf::solve_krhf`] result.
 /// Arguments as [`crate::kgrad::kpoint_rhf_gradient`]; `exxdiv` is the
@@ -1006,7 +1042,7 @@ pub fn kpoint_rhf_stress(
     cfg: &KStressConfig,
 ) -> Result<KStress, FerricError> {
     let who = "kpoint_rhf_stress";
-    refuse_unsupported(who, hk, &jk)?;
+    refuse_unsupported(who, &jk)?;
     let gj = grad_jk(&jk);
     check_inputs(
         who,
@@ -1061,7 +1097,7 @@ pub fn kpoint_uhf_stress(
     cfg: &KStressConfig,
 ) -> Result<KStress, FerricError> {
     let who = "kpoint_uhf_stress";
-    refuse_unsupported(who, hk, &jk)?;
+    refuse_unsupported(who, &jk)?;
     let gj = grad_jk(&jk);
     check_inputs(
         who,
@@ -1199,6 +1235,7 @@ fn assemble(
         overlap_madelung: one.overlap[2],
         kinetic: one.kinetic,
         vsr: one.vsr,
+        ecp: one.ecp,
         vlr: one.vlr,
         c0_volume: one.c0_volume,
         nn_sr: one.nn_sr,
@@ -1353,6 +1390,7 @@ fn assemble(
         e_madelung,
         n_images: one.n_images,
         n_sr_triplets: one.n_sr_triplets,
+        n_ecp_triples: one.n_ecp_triples,
         n_g_lr: one.n_g_lr,
         n_k_eri: two.n_kv,
         n_chunks: one.n_chunks + two.n_chunks,

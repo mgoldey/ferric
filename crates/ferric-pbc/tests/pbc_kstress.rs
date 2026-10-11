@@ -1306,7 +1306,8 @@ fn stress_refuses_unconverged_scf_ecp_and_explicit_rotation() {
     .to_string();
     assert!(e.contains("did not converge"), "{e}");
     scf.converged = true;
-    // An ECP in the hcore (the k energy supports ECPs, the stress does not).
+    // An hcore carrying V_ECP for a cell whose basis has no ECP centre: the ECP walk is
+    // driven by the basis and cross-checked against hk.v_ecp.
     let mut hk_ecp = ks.hk.clone();
     hk_ecp.v_ecp = Some(hk_ecp.h.clone());
     let e = kpoint_rhf_stress(
@@ -1322,7 +1323,7 @@ fn stress_refuses_unconverged_scf_ecp_and_explicit_rotation() {
     )
     .unwrap_err()
     .to_string();
-    assert!(e.contains("ECP strain at k is not implemented"), "{e}");
+    assert!(e.contains("carries V_ECP but the basis"), "{e}");
     // Explicit column rotation request.
     let rot = hcore_cfg().with_sr_column_rotation(SrColumnRotation::On(ColumnRotation::new()));
     let e = kpoint_rhf_stress(
@@ -2454,7 +2455,7 @@ fn rsgdf_stress_refuses_ecp_and_explicit_rotation() {
     let mut hk_ecp = ks.hk.clone();
     hk_ecp.v_ecp = Some(hk_ecp.h.clone());
     let e = run(&hk_ecp, &hcore_cfg(), fs.src());
-    assert!(e.contains("ECP strain at k is not implemented"), "{e}");
+    assert!(e.contains("carries V_ECP but the basis"), "{e}");
     // Explicit rotation on the hcore config and on the fit config.
     let rot = hcore_cfg().with_sr_column_rotation(SrColumnRotation::On(ColumnRotation::new()));
     let e = run(&ks.hk, &rot, fs.src());
@@ -2477,7 +2478,7 @@ fn rsgdf_stress_refuses_ecp_and_explicit_rotation() {
     // unsplit one: the refusals fire before the Fock guard).
     let sp = fitsys_cfg(&ks, split_kcfg(1.0));
     let e = run(&hk_ecp, &hcore_cfg(), sp.src());
-    assert!(e.contains("ECP strain at k is not implemented"), "{e}");
+    assert!(e.contains("carries V_ECP but the basis"), "{e}");
     let e = run(&ks.hk, &rot, sp.src());
     assert!(e.contains("column rotation"), "{e}");
 }
