@@ -34,17 +34,57 @@
 //!    volume term.
 //! 4. `c0` volume `−δ c0 Z_tot N`, `N = (1/N_k) Σ_k tr[D(k) S(k)]`.
 //! 5. Ewald `E_nn` ([`crate::ewald::ewald_nuclear_strain`]).
+//! 6. Dense-AFT J (q = 0) and K (every q, `K = G + q`): per `K` the same
+//!    `(1/Ω)[dv Φ + v dΦ]` as the Gamma ERI with `dΦ` through the residue
+//!    strain kernel and the force's `Yt_r`; `−δ E_2e` volume term.
+//! 7. Madelung (`exxdiv = ewald`): `−½ (1/N_k) Σ_s Σ_k tr[D_s S D_s S] dv_M/dε`
+//!    with `dv_M/dε` the Ewald strain of the `diag(N)` SUPERCELL lattice (`v_M`
+//!    is the mesh constant, [`KPointMesh::madelung`]); its `S` part is in the
+//!    overlap weights.
+//!
+//! # Scope
+//!
+//! Dense pure-AFT J/K, HF, RHF and UHF. NOT covered, each refused with a
+//! typed error naming the missing piece: RS-GDF J/K (SR 3-centre and metric
+//! walks, LR, G = 0 volume terms; range split), ECP at k (the k energy
+//! supports ECPs, the k forces and stress do not), an explicit SR column
+//! rotation request (`Auto` resolves to the unrotated walk, as
+//! [`crate::kgrad`]; the energy's rotation agrees to the screening
+//! precision).
+//!
+//! # Supercell mapping
+//!
+//! For a Gamma-centred mesh the k stress per cell equals the Gamma stress of
+//! the explicit `diag(N)` supercell divided by `N` in `dE/dε` (`E_cell =
+//! E_sc/N`) and EQUAL in `σ` (`Ω_sc = N Ω`).
+//!
+//! # Anchor blind spots
+//!
+//! As [`crate::kgrad`]: on TRIM-only meshes (every `n_i <= 2`) [`KStressMutation::ConjD`]
+//! and [`KStressMutation::WrongQ`] are identities; [`KStressMutation::GammaMadelung`]
+//! and [`KStressMutation::GammaMadelungStrain`] are blind for `exxdiv = none`
+//! and at 1×1×1. The volume-only mutants are diagonal by construction.
 
 use crate::budget::{bytes_of, Ledger};
-use crate::ewald::{default_ewald_omega, ewald_nuclear_strain, DEFAULT_EWALD_PRECISION};
+use crate::dense_aft::ExxDiv;
+use crate::ewald::{
+    default_ewald_omega, ewald_nuclear_strain, madelung_constant, madelung_strain,
+    DEFAULT_EWALD_PRECISION,
+};
 use crate::grad::GRAD_NUCLEUS_EXPONENT;
 use crate::hcore::kpoint::PeriodicHcoreK;
 use crate::hcore::{
     gvector_list_bytes, hcore_pair_images, lr_gcut, sr_attraction_deriv_visit, PeriodicHcoreConfig,
     G_CHUNK_BYTES, ONE_E_ENGINE_PRECISION,
 };
-use crate::kgrad::{cr, fold_complex, fold_real};
+use crate::kdense_aft::KDenseAftEri;
+use crate::kgrad::{
+    check_inputs, cr, fold_complex, fold_real, herm, jk_build, residue_trace, KGradJk,
+    KRsGdfGradSource, KSpins,
+};
 use crate::kpts::{lattice_coords, KPointMesh};
+use crate::kscf::KScfResult;
+use crate::kuscf::KUScfResult;
 use crate::lattice::Cell;
 use crate::pair_ft::residues::{pair_ft_strain_residues_chunked, residue_coords, residue_index};
 use crate::pair_ft::PairFtStrainTerms;
@@ -412,7 +452,7 @@ pub(crate) fn one_electron_pass(
                     sre += z * a.cos();
                     sim -= z * a.sin();
                 }
-                let rho = crate::kgrad::residue_trace(p, gi, &delta_true);
+                let rho = residue_trace(p, gi, &delta_true);
                 let phi = -(rho.re * sre + rho.im * sim);
                 e_vlr += fac * v * phi;
                 for a in 0..3 {
@@ -532,4 +572,650 @@ pub fn kpoint_hcore_stress_fixed_d(
         cfg,
         &mut ledger,
     )
+}
+
+// ----------------------------------------------------------------- full stress
+
+/// Where the k-point J/K come from.
+#[derive(Clone, Copy)]
+pub enum KStressJk<'a> {
+    /// Dense pure-AFT oracle (the only strain-capable source so far).
+    Dense(&'a KDenseAftEri),
+    /// k-point RS-GDF: REFUSED (strain of the SR 3-centre / metric walks, the
+    /// LR per-q residue strain and the G = 0 volume terms are not written).
+    RsGdf(KRsGdfGradSource<'a>),
+}
+
+/// Per-term breakdown of `dE/dε` (each 3 × 3, Hartree per cell; NOT divided by Ω).
+#[derive(Debug, Clone, Default)]
+pub struct KStressParts {
+    /// `Σ w_pulay dS`, `w = −W`.
+    pub overlap_pulay: Mat3,
+    /// `Σ w dS`, `w = c0 Z_tot D` (h's G = 0 term, overlap part).
+    pub overlap_c0: Mat3,
+    /// `Σ w dS`, `w = −v_M Σ_s D_s S D_s` (Madelung S-term).
+    pub overlap_madelung: Mat3,
+    /// `Σ D dT`.
+    pub kinetic: Mat3,
+    /// `Σ D dV_SR`.
+    pub vsr: Mat3,
+    /// `Σ D dV_LR`, including its `−δ E_LR` volume term.
+    pub vlr: Mat3,
+    /// `−δ c0 Z_tot N`.
+    pub c0_volume: Mat3,
+    /// Dense-AFT Coulomb, including its `−δ E_J` volume term.
+    pub coulomb: Mat3,
+    /// Dense-AFT exchange, including its `−δ E_K` volume term.
+    pub exchange: Mat3,
+    /// `−½ (1/N_k) Σ_s Σ_k tr[D_s S D_s S] dv_M/dε` (zero for exxdiv = none).
+    pub madelung: Mat3,
+    /// Ewald `E_nn`: real space, reciprocal (with volume), background.
+    pub nn_sr: Mat3,
+    pub nn_lr: Mat3,
+    pub nn_background: Mat3,
+}
+
+impl KStressParts {
+    fn all(&self) -> [&Mat3; 13] {
+        [
+            &self.overlap_pulay,
+            &self.overlap_c0,
+            &self.overlap_madelung,
+            &self.kinetic,
+            &self.vsr,
+            &self.vlr,
+            &self.c0_volume,
+            &self.coulomb,
+            &self.exchange,
+            &self.madelung,
+            &self.nn_sr,
+            &self.nn_lr,
+            &self.nn_background,
+        ]
+    }
+
+    /// `Σ M dS` (Pulay + c0 + Madelung S-term), the Gamma `overlap` part.
+    pub fn overlap(&self) -> Mat3 {
+        let mut t = ZERO3;
+        for m in [
+            &self.overlap_pulay,
+            &self.overlap_c0,
+            &self.overlap_madelung,
+        ] {
+            add_into(&mut t, m, 1.0);
+        }
+        t
+    }
+
+    /// Sum of every part (`dE/dε`).
+    pub fn total(&self) -> Mat3 {
+        let mut t = ZERO3;
+        for m in self.all() {
+            add_into(&mut t, m, 1.0);
+        }
+        t
+    }
+}
+
+/// Output of the k-point stress entry points.
+#[derive(Debug, Clone)]
+pub struct KStress {
+    /// `dE/dε_ab` (Hartree per cell).
+    pub de_deps: Mat3,
+    /// `σ_ab = (1/Ω) dE/dε_ab` (Hartree/Bohr³). Not symmetrised.
+    pub sigma: Mat3,
+    /// Per-term breakdown of `de_deps`.
+    pub parts: KStressParts,
+    /// Cell volume Ω (Bohr³).
+    pub volume: f64,
+    /// `max_{σ,k} max |F_σ D_σ S − S D_σ F_σ|` of the rebuilt Focks.
+    pub commutator: f64,
+    /// `v_M` used in `K` and `M` (0 for exxdiv = none).
+    pub madelung: f64,
+    /// `dv_M/dε` of the mesh (supercell) lattice (reported for every exxdiv).
+    pub madelung_strain: Mat3,
+    /// `N = (1/N_k) Σ_k tr[D(k) S(k)]`.
+    pub electrons: f64,
+    /// `Σ D V_LR` recomputed from the strain kernel's `P`.
+    pub e_vlr: f64,
+    /// Dense-AFT Coulomb energy `(1/2Ω) Σ_{G≠0} v |ρ|²`, per cell.
+    pub e_coulomb: f64,
+    /// Dense-AFT exchange energy `−(1/(2Ω N_k²)) Σ ...` (without the Madelung term).
+    pub e_exchange: f64,
+    /// Madelung energy `−(v_M/2)(1/N_k) Σ_s Σ_k tr[D_s S D_s S]`.
+    pub e_madelung: f64,
+    /// Pair images, SR triplets, V_LR G count, ERI K count, pair-FT chunks.
+    pub n_images: usize,
+    pub n_sr_triplets: usize,
+    pub n_g_lr: usize,
+    pub n_k_eri: usize,
+    pub n_chunks: usize,
+    /// Resolved memory budget (bytes).
+    pub budget_bytes: usize,
+}
+
+impl KStress {
+    /// `(σ + σᵀ)/2`.
+    pub fn symmetric(&self) -> Mat3 {
+        let mut o = ZERO3;
+        for a in 0..3 {
+            for b in 0..3 {
+                o[a][b] = 0.5 * (self.sigma[a][b] + self.sigma[b][a]);
+            }
+        }
+        o
+    }
+
+    /// `max_ab |σ_ab − σ_ba|` (Hartree/Bohr³): roundoff for HF.
+    pub fn antisymmetry(&self) -> f64 {
+        let mut m = 0.0_f64;
+        for a in 0..3 {
+            for b in 0..3 {
+                m = m.max((self.sigma[a][b] - self.sigma[b][a]).abs());
+            }
+        }
+        m
+    }
+
+    /// Pressure `P = −tr(σ)/3 = −dE/dΩ` (Hartree/Bohr³).
+    pub fn pressure(&self) -> f64 {
+        -(self.sigma[0][0] + self.sigma[1][1] + self.sigma[2][2]) / 3.0
+    }
+}
+
+/// `v_M` of the energy: 0 for `ExxDiv::None`, the mesh (supercell) Madelung
+/// constant for `ExxDiv::Ewald`.
+fn mesh_madelung(cell: &Cell, mesh: &KPointMesh, exxdiv: ExxDiv) -> Result<f64, FerricError> {
+    Ok(match exxdiv {
+        ExxDiv::None => 0.0,
+        ExxDiv::Ewald => mesh.madelung(cell)?,
+    })
+}
+
+/// `x · m` as a new matrix.
+fn scale_mat(m: &Mat3, f: f64) -> Mat3 {
+    let mut o = *m;
+    for row in o.iter_mut() {
+        for v in row.iter_mut() {
+            *v *= f;
+        }
+    }
+    o
+}
+
+/// The typed refusals shared by every entry point: ECP at k and RS-GDF J/K.
+fn refuse_unsupported(
+    who: &str,
+    hk: &PeriodicHcoreK,
+    jk: &KStressJk<'_>,
+) -> Result<(), FerricError> {
+    if hk.v_ecp.is_some() {
+        return Err(FerricError::General(format!(
+            "{who}: periodic ECP strain at k is not implemented (the k energy supports ECPs; \
+             the k forces and stress do not)"
+        )));
+    }
+    if matches!(jk, KStressJk::RsGdf(_)) {
+        return Err(FerricError::General(format!(
+            "{who}: RS-GDF J/K strain at k is not implemented (missing: SR 3-centre and metric \
+             strain walks with per-residue weights, the per-q LR residue strain and the G = 0 \
+             volume terms; then the range split). Use the dense-AFT source"
+        )));
+    }
+    Ok(())
+}
+
+/// k-point RHF stress (module doc) of a converged
+/// [`crate::kscf::solve_krhf_injected`] / [`crate::kscf::solve_krhf`] result.
+/// Arguments as [`crate::kgrad::kpoint_rhf_gradient`]; `exxdiv` is the
+/// energy's (the Madelung strain is present only for `ewald`).
+#[allow(clippy::too_many_arguments)]
+pub fn kpoint_rhf_stress(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    mesh: &KPointMesh,
+    hcore_cfg: &PeriodicHcoreConfig,
+    hk: &PeriodicHcoreK,
+    jk: KStressJk<'_>,
+    scf: &KScfResult,
+    exxdiv: ExxDiv,
+    cfg: &KStressConfig,
+) -> Result<KStress, FerricError> {
+    let who = "kpoint_rhf_stress";
+    refuse_unsupported(who, hk, &jk)?;
+    let KStressJk::Dense(eri) = jk else {
+        unreachable!("refused above")
+    };
+    let gj = KGradJk::Dense(eri);
+    check_inputs(
+        who,
+        cell,
+        prep,
+        mesh,
+        hcore_cfg,
+        hk,
+        &gj,
+        &[&scf.densities[..]],
+        scf.converged,
+        &scf.kpts,
+    )?;
+    let mut ledger = open_ledger(cell, prep, mesh, cfg, false)?;
+    let vm = mesh_madelung(cell, mesh, exxdiv)?;
+    let d = scf.densities.clone();
+    let (j, k) = jk_build(&gj, vm, &d)?;
+    let f: Vec<Array2<C64>> = (0..mesh.nk())
+        .map(|q| &(&hk.h[q] + &j[q]) - &k[q].mapv(|z| z * 0.5))
+        .collect();
+    assemble(
+        cell,
+        prep,
+        mesh,
+        hcore_cfg,
+        hk,
+        eri,
+        KSpins::Restricted { d, f },
+        vm,
+        cfg,
+        &mut ledger,
+    )
+}
+
+/// k-point UHF stress (module doc) of a converged
+/// [`crate::kuscf::solve_kuhf`] stage (`KUhfResult::scf`) or
+/// [`crate::kuscf::solve_kuhf_injected`] result. Arguments as
+/// [`kpoint_rhf_stress`].
+#[allow(clippy::too_many_arguments)]
+pub fn kpoint_uhf_stress(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    mesh: &KPointMesh,
+    hcore_cfg: &PeriodicHcoreConfig,
+    hk: &PeriodicHcoreK,
+    jk: KStressJk<'_>,
+    scf: &KUScfResult,
+    exxdiv: ExxDiv,
+    cfg: &KStressConfig,
+) -> Result<KStress, FerricError> {
+    let who = "kpoint_uhf_stress";
+    refuse_unsupported(who, hk, &jk)?;
+    let KStressJk::Dense(eri) = jk else {
+        unreachable!("refused above")
+    };
+    let gj = KGradJk::Dense(eri);
+    check_inputs(
+        who,
+        cell,
+        prep,
+        mesh,
+        hcore_cfg,
+        hk,
+        &gj,
+        &[&scf.density_alpha[..], &scf.density_beta[..]],
+        scf.converged,
+        &scf.kpts,
+    )?;
+    let mut ledger = open_ledger(cell, prep, mesh, cfg, true)?;
+    let vm = mesh_madelung(cell, mesh, exxdiv)?;
+    let da = scf.density_alpha.clone();
+    let db = scf.density_beta.clone();
+    let (ja, ka) = jk_build(&gj, vm, &da)?;
+    let (jb, kb) = jk_build(&gj, vm, &db)?;
+    let nk = mesh.nk();
+    let base: Vec<Array2<C64>> = (0..nk).map(|q| &(&hk.h[q] + &ja[q]) + &jb[q]).collect();
+    let fa: Vec<Array2<C64>> = (0..nk).map(|q| &base[q] - &ka[q]).collect();
+    let fb: Vec<Array2<C64>> = (0..nk).map(|q| &base[q] - &kb[q]).collect();
+    assemble(
+        cell,
+        prep,
+        mesh,
+        hcore_cfg,
+        hk,
+        eri,
+        KSpins::Unrestricted { da, db, fa, fb },
+        vm,
+        cfg,
+        &mut ledger,
+    )
+}
+
+/// Assemble the k-point stress from the per-spin `D(k)`/`F(k)`; `vm` is the
+/// Madelung shift of the energy.
+#[allow(clippy::too_many_arguments)]
+fn assemble(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    mesh: &KPointMesh,
+    hcore_cfg: &PeriodicHcoreConfig,
+    hk: &PeriodicHcoreK,
+    eri: &KDenseAftEri,
+    spins: KSpins,
+    vm: f64,
+    cfg: &KStressConfig,
+    ledger: &mut Ledger,
+) -> Result<KStress, FerricError> {
+    let nk = mesh.nk();
+    let mutation = cfg.mutation;
+    let is = |m: KStressMutation| mutation == Some(m);
+    let s_k = &hk.s;
+    let commutator = spins.commutator(s_k);
+    let mut spins = spins;
+    if is(KStressMutation::ConjD) {
+        spins.conjugate();
+    }
+    let ph = Phases::new(mesh, mutation);
+    let inv_nk = 1.0 / nk as f64;
+    let nrm1 = if is(KStressMutation::NoInvNk) {
+        1.0
+    } else {
+        inv_nk
+    };
+    let dtot: Vec<Array2<C64>> = (0..nk).map(|k| spins.total(k)).collect();
+    let zs = cell.nuclear_charges();
+    let ztot: f64 = zs.iter().sum();
+    let omega = hcore_cfg.omega;
+    let vol = cell.volume();
+    let c0 = PI / (omega * omega * vol);
+    let vm_m = if is(KStressMutation::GammaMadelung) && vm != 0.0 {
+        madelung_constant(cell)?
+    } else {
+        vm
+    };
+
+    // --- The forces' overlap weights M(k), split into its three pieces.
+    let w_pulay = fold_real(
+        &(0..nk)
+            .map(|k| spins.energy_weighted(k).mapv(|z| -z))
+            .collect::<Vec<_>>(),
+        &ph.d,
+        nrm1,
+    );
+    let w_c0 = fold_real(
+        &dtot
+            .iter()
+            .map(|d| d.mapv(|z| z * (c0 * ztot)))
+            .collect::<Vec<_>>(),
+        &ph.d,
+        nrm1,
+    );
+    let w_mad = fold_real(
+        &(0..nk)
+            .map(|k| spins.sandwich(k, &s_k[k]).mapv(|z| z * (-vm_m)))
+            .collect::<Vec<_>>(),
+        &ph.d,
+        nrm1,
+    );
+    let one = one_electron_pass(
+        cell,
+        prep,
+        mesh,
+        hcore_cfg,
+        hk,
+        &dtot,
+        &ph,
+        &[&w_pulay, &w_c0, &w_mad],
+        cfg,
+        ledger,
+    )?;
+    let mut parts = KStressParts {
+        overlap_pulay: one.overlap[0],
+        overlap_c0: one.overlap[1],
+        overlap_madelung: one.overlap[2],
+        kinetic: one.kinetic,
+        vsr: one.vsr,
+        vlr: one.vlr,
+        c0_volume: one.c0_volume,
+        nn_sr: one.nn_sr,
+        nn_lr: one.nn_lr,
+        nn_background: one.nn_background,
+        ..Default::default()
+    };
+    if is(KStressMutation::NoPulay) {
+        parts.overlap_pulay = ZERO3;
+        parts.overlap_c0 = ZERO3;
+        parts.overlap_madelung = ZERO3;
+    }
+    if is(KStressMutation::NoC0Overlap) {
+        parts.overlap_c0 = ZERO3;
+    }
+    if is(KStressMutation::MadelungS) {
+        parts.overlap_madelung = ZERO3;
+    }
+
+    // --- Two-electron: dense AFT J and K.
+    let delta = fold_complex(&dtot, &ph.d, inv_nk);
+    let delta_true = fold_complex(&dtot, &ph.true_, inv_nk);
+    let ft_terms = PairFtStrainTerms {
+        centres: !is(KStressMutation::FtNoCentres),
+        g_shape: !is(KStressMutation::GUnstrained),
+    };
+    let two = dense_two_electron_strain(
+        cell,
+        prep,
+        mesh,
+        eri,
+        &spins,
+        &delta,
+        &delta_true,
+        &ph,
+        ft_terms,
+        mutation,
+        ledger,
+    )?;
+    parts.coulomb = two.coulomb;
+    parts.exchange = two.exchange;
+    if !is(KStressMutation::NoVolume) {
+        add_into(&mut parts.coulomb, &diag(-two.e_j), 1.0);
+        add_into(&mut parts.exchange, &diag(-two.e_k), 1.0);
+    }
+
+    // --- Madelung: −½ (1/N_k) Σ_s Σ_k tr[D_s S D_s S] dv_M/dε, the strain of
+    // the diag(N) SUPERCELL lattice's Madelung constant.
+    let sc_cell = Cell::new(cell.mol().clone(), mesh.supercell_lattice())?;
+    let vm_strain = if is(KStressMutation::GammaMadelungStrain) {
+        madelung_strain(cell)?
+    } else {
+        madelung_strain(&sc_cell)?
+    };
+    let mut t_m = 0.0_f64;
+    for k in 0..nk {
+        let sd = spins.sandwich(k, &s_k[k]);
+        let n = sd.nrows();
+        for m in 0..n {
+            for q in 0..n {
+                t_m += (sd[(m, q)] * s_k[k][(q, m)]).re;
+            }
+        }
+    }
+    t_m *= inv_nk;
+    if vm != 0.0 && !is(KStressMutation::NoMadelung) {
+        parts.madelung = scale_mat(&vm_strain, -0.5 * t_m);
+    }
+    let e_madelung = -0.5 * vm * t_m;
+
+    let de_deps = parts.total();
+    if de_deps.iter().flatten().any(|v| !v.is_finite()) {
+        return Err(FerricError::General(
+            "k stress: non-finite strain derivative".into(),
+        ));
+    }
+    let sigma = scale_mat(&de_deps, 1.0 / vol);
+    ferric_core::memory::warn_if_rss_over("ferric-pbc k stress", ledger.budget(), 1.1);
+    Ok(KStress {
+        de_deps,
+        sigma,
+        parts,
+        volume: vol,
+        commutator,
+        madelung: vm,
+        madelung_strain: vm_strain,
+        electrons: one.electrons,
+        e_vlr: one.e_vlr,
+        e_coulomb: two.e_j,
+        e_exchange: two.e_k,
+        e_madelung,
+        n_images: one.n_images,
+        n_sr_triplets: one.n_sr_triplets,
+        n_g_lr: one.n_g_lr,
+        n_k_eri: two.n_kv,
+        n_chunks: one.n_chunks + two.n_chunks,
+        budget_bytes: ledger.budget(),
+    })
+}
+
+/// Dense-AFT J and K strain (before the `−δ E` volume terms) and the energies.
+struct DenseStrain {
+    coulomb: Mat3,
+    exchange: Mat3,
+    e_j: f64,
+    e_k: f64,
+    n_chunks: usize,
+    n_kv: usize,
+}
+
+/// Dense-AFT Coulomb and exchange strain over every q class (the strain twin
+/// of `kgrad::dense_two_electron`): per `K = G + q`
+///
+/// ```text
+/// J (q = 0):  (1/Ω)[ ½ dv |ρ|² + v Re(ρ̄ dρ) ],        ρ = Σ_r tr[P_r Δtrue_r],  dρ = Σ_r tr[dP_r Δ_r]
+/// K:          c [ dv Φ + v dΦ ],  c = −1/(2Ω N_k²),    Φ = Σ_k' Re tr[P^{k'} Y^{k'}],  dΦ = 2 Re Σ_r tr[dP_r Yt_r]
+/// ```
+///
+/// with `dv = v'(K²)(−2 K_a K_b)` (the G shape; frozen Miller index) and the
+/// force's `Y`, `Yt_r`.
+#[allow(clippy::too_many_arguments)]
+fn dense_two_electron_strain(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    mesh: &KPointMesh,
+    eri: &KDenseAftEri,
+    spins: &KSpins,
+    delta: &[Array2<C64>],
+    delta_true: &[Array2<C64>],
+    ph: &Phases,
+    terms: PairFtStrainTerms,
+    mutation: Option<KStressMutation>,
+    ledger: &mut Ledger,
+) -> Result<DenseStrain, FerricError> {
+    let n = prep.nbasis();
+    let nk = mesh.nk();
+    let moduli = ph.moduli;
+    let nr = moduli[0] * moduli[1] * moduli[2];
+    let vol = cell.volume();
+    let gcut = eri.gcut();
+    let g2cut = gcut * gcut;
+    let qmax = (0..nk)
+        .map(|iq| {
+            let q = mesh.q_class(iq).0;
+            (q[0] * q[0] + q[1] * q[1] + q[2] * q[2]).sqrt()
+        })
+        .fold(0.0_f64, f64::max);
+    ledger.reserve(
+        &format!("k stress ERI K list (|K| <= {gcut:.3}, |q| <= {qmax:.3})"),
+        gvector_list_bytes(cell, gcut + qmax)?.saturating_mul(2),
+    )?;
+    let exch = spins.exch_terms();
+    let c_k = -1.0 / (2.0 * vol * (nk * nk) as f64);
+    let mut out = DenseStrain {
+        coulomb: ZERO3,
+        exchange: ZERO3,
+        e_j: 0.0,
+        e_k: 0.0,
+        n_chunks: 0,
+        n_kv: 0,
+    };
+    // Per K: Yt (R n²), P^{k'} and its adjoint, Y (4 n²), complex.
+    let extra_per_g = bytes_of(((nr + 4) * n * n) as u64, 16);
+    for iq in 0..nk {
+        let (q, mq) = mesh.q_class(iq);
+        let qn = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2]).sqrt();
+        let ks: Vec<[f64; 3]> = cell
+            .gvectors(gcut + qn)?
+            .into_iter()
+            .map(|g| [g[0] + q[0], g[1] + q[1], g[2] + q[2]])
+            .filter(|k| {
+                let k2 = k[0] * k[0] + k[1] * k[1] + k[2] * k[2];
+                k2 > 0.0 && k2 <= g2cut
+            })
+            .collect();
+        out.n_kv += ks.len();
+        let mq_used = if mutation == Some(KStressMutation::WrongQ) {
+            [-mq[0], -mq[1], -mq[2]]
+        } else {
+            mq
+        };
+        let kof: Vec<usize> = (0..nk).map(|j| mesh.k_minus_q(j, mq_used)).collect();
+        let is_q0 = mq == [0, 0, 0];
+        let chunk_budget = ledger.remaining().min(G_CHUNK_BYTES);
+        out.n_chunks += pair_ft_strain_residues_chunked(
+            cell,
+            prep,
+            &ks,
+            moduli,
+            eri.pair_thresh(),
+            chunk_budget,
+            extra_per_g,
+            terms,
+            |_k0, kv, p, dp| {
+                for (gi, kvec) in kv.iter().enumerate() {
+                    let k2 = kvec[0] * kvec[0] + kvec[1] * kvec[1] + kvec[2] * kvec[2];
+                    let v = 4.0 * PI / k2;
+                    let dvdk2 = -v / k2;
+                    let dv = |a: usize, b: usize| {
+                        if terms.g_shape {
+                            dvdk2 * (-2.0 * kvec[a] * kvec[b])
+                        } else {
+                            0.0
+                        }
+                    };
+                    if is_q0 {
+                        let rho = residue_trace(p, gi, delta_true);
+                        let rho2 = rho.norm_sqr();
+                        out.e_j += 0.5 / vol * v * rho2;
+                        for a in 0..3 {
+                            for b in 0..3 {
+                                let drho = residue_trace_d(dp, 3 * a + b, gi, delta);
+                                out.coulomb[a][b] +=
+                                    (0.5 * dv(a, b) * rho2 + v * (rho.conj() * drho).re) / vol;
+                            }
+                        }
+                    }
+                    // Exchange: Yt_r = Σ_k' e^{ik'·t_r} Σ_s D_s(k') P^{k'H} D_s(k'−q).
+                    let mut yt: Vec<Array2<C64>> = (0..nr).map(|_| Array2::zeros((n, n))).collect();
+                    let mut phi = 0.0_f64;
+                    for j in 0..nk {
+                        let mut pj = Array2::<C64>::zeros((n, n));
+                        for (pr, phs) in p.iter().zip(&ph.true_[j]) {
+                            for m in 0..n {
+                                for l in 0..n {
+                                    pj[(m, l)] += *phs * pr[[m, l, gi]];
+                                }
+                            }
+                        }
+                        let pjh = herm(&pj);
+                        let mut y = Array2::<C64>::zeros((n, n));
+                        for (c, ds) in &exch {
+                            y.scaled_add(cr(*c), &ds[j].dot(&pjh).dot(&ds[kof[j]]));
+                        }
+                        for m in 0..n {
+                            for l in 0..n {
+                                phi += (pj[(m, l)] * y[(l, m)]).re;
+                            }
+                        }
+                        for (r, ytr) in yt.iter_mut().enumerate() {
+                            ytr.scaled_add(ph.d[j][r], &y);
+                        }
+                    }
+                    out.e_k += c_k * v * phi;
+                    for a in 0..3 {
+                        for b in 0..3 {
+                            let dphi = 2.0 * residue_trace_d(dp, 3 * a + b, gi, &yt).re;
+                            out.exchange[a][b] += c_k * (dv(a, b) * phi + v * dphi);
+                        }
+                    }
+                }
+                Ok(())
+            },
+        )?;
+    }
+    Ok(out)
 }

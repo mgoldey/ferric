@@ -623,11 +623,7 @@ fn open_ledger(
 }
 
 /// `v_M` of the mesh: 0 for `ExxDiv::None`, the mesh Madelung constant for `ExxDiv::Ewald`.
-pub(crate) fn madelung_for(
-    cell: &Cell,
-    mesh: &KPointMesh,
-    exxdiv: ExxDiv,
-) -> Result<f64, FerricError> {
+fn madelung_for(cell: &Cell, mesh: &KPointMesh, exxdiv: ExxDiv) -> Result<f64, FerricError> {
     Ok(match exxdiv {
         ExxDiv::None => 0.0,
         ExxDiv::Ewald => mesh.madelung(cell)?,
