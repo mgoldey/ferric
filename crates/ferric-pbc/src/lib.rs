@@ -104,6 +104,15 @@
 //!   derivative (ket from `−iK p − Q_bra`), the mesh Madelung constant in the
 //!   overlap weight; equals the Gamma force on ONE copy of each atom in the
 //!   diag(N) supercell. FINDINGS "Iteration 21".
+//! * [`kstress`] — the k-point RHF / UHF stress tensor
+//!   (`kpoint_rhf_stress`, `kpoint_uhf_stress`) on the dense-AFT J/K:
+//!   the Gamma stress terms with the force's phase-folded weights times the
+//!   pair vector (k at fixed fractional coordinates, so no k-strain term),
+//!   the residue-resolved pair-FT strain kernel for `V_LR` and the per-q
+//!   J/K, and the Madelung strain of the diag(N) supercell lattice; equals
+//!   the Gamma stress of the explicit supercell per cell. Refuses RS-GDF,
+//!   ECP, explicit column rotation, range-separated kernels and any SCF
+//!   result whose Fock it cannot reproduce (KS, other `exxdiv`).
 //! * [`stress`] — the Gamma-point stress tensor `σ = (1/Ω) dE/dε` of the
 //!   same eight energies (`gamma_{rhf,uhf,rks,uks}_stress[_rsgdf]`): the
 //!   force derivative blocks contracted with image-resolved pair vectors,
@@ -123,7 +132,7 @@
 //!   attraction ([`SrColumnRotation`] on `RsGdfConfig` /
 //!   `PeriodicHcoreConfig`, default `Auto` = on in the Gamma energy and
 //!   gradient builds and the k-point energy builds, off in the k-point
-//!   force builds and the frozen oracles): subtract each
+//!   force and stress builds and the frozen oracles): subtract each
 //!   shell group's single-primitive columns from the others, compute the SR
 //!   blocks on the rotated shells, back-transform exactly (design
 //!   `reference/pbc/sr-general-contraction-design.md`); the Gamma forces and
@@ -155,6 +164,7 @@ pub mod kgrad;
 pub mod kpts;
 pub mod kroks;
 pub mod kscf;
+pub mod kstress;
 pub mod kuks;
 pub mod kuscf;
 pub mod lattice;

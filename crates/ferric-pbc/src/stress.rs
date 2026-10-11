@@ -141,7 +141,7 @@ use std::f64::consts::PI;
 /// A 3 × 3 tensor, row-major `[a][b]`.
 pub type Mat3 = [[f64; 3]; 3];
 
-const ZERO3: Mat3 = [[0.0; 3]; 3];
+pub(crate) const ZERO3: Mat3 = [[0.0; 3]; 3];
 
 /// Points per chunk of the XC stress (AO values, gradients, 9 first-moment
 /// planes and, for GGA, 27 Hessian-moment planes live per chunk).
@@ -416,7 +416,7 @@ impl GammaStress {
 }
 
 /// `t += f · m`.
-fn add_into(t: &mut Mat3, m: &Mat3, f: f64) {
+pub(crate) fn add_into(t: &mut Mat3, m: &Mat3, f: f64) {
     for a in 0..3 {
         for b in 0..3 {
             t[a][b] += f * m[a][b];
@@ -425,12 +425,12 @@ fn add_into(t: &mut Mat3, m: &Mat3, f: f64) {
 }
 
 /// `x · 1` as a 3×3 matrix.
-fn diag(x: f64) -> Mat3 {
+pub(crate) fn diag(x: f64) -> Mat3 {
     [[x, 0.0, 0.0], [0.0, x, 0.0], [0.0, 0.0, x]]
 }
 
 /// `f · m` as a new 3×3 matrix.
-fn scaled(m: &Mat3, f: f64) -> Mat3 {
+pub(crate) fn scaled(m: &Mat3, f: f64) -> Mat3 {
     let mut o = *m;
     for row in o.iter_mut() {
         for v in row.iter_mut() {
@@ -1327,7 +1327,7 @@ fn fit_prelude<'a>(
 /// shifted 1e derivative block (`[bra xyz, ket xyz]`, each `n1 × n2`),
 /// `rel = A − B − L`. With exact translation invariance `½(bra − ket) = bra`.
 #[allow(clippy::too_many_arguments)]
-fn add_pair_virial(
+pub(crate) fn add_pair_virial(
     out: &mut Mat3,
     blk: &[f64],
     w: &Array2<f64>,

@@ -114,6 +114,8 @@ pub struct KDenseAftEri {
     gcut: f64,
     /// Primitive-pair screen of the ERI pair FT (`0.1 · precision`).
     pair_thresh: f64,
+    /// Range separation of the K kernel the build used (`None`: bare `4π/K²`).
+    rsh: Option<crate::rsh::RshParams>,
 }
 
 /// Input validation of [`KDenseAftEri::build`]; returns the kernel byte count.
@@ -492,6 +494,7 @@ impl KDenseAftEri {
             n_q_passes,
             gcut,
             pair_thresh: thresh,
+            rsh: cfg.rsh,
         })
     }
 
@@ -532,6 +535,11 @@ impl KDenseAftEri {
     /// K-sphere radius (Bohr⁻¹).
     pub fn gcut(&self) -> f64 {
         self.gcut
+    }
+
+    /// Range separation the K kernel was built with (`None`: bare `4π/K²`).
+    pub fn rsh(&self) -> Option<crate::rsh::RshParams> {
+        self.rsh
     }
 
     /// Primitive-pair screen of the ERI pair FT (`0.1 · precision`); the

@@ -269,7 +269,7 @@ pub struct KFitChecks {
 }
 
 /// Per-spin `D_s(k)`, `F_s(k)`.
-enum KSpins {
+pub(crate) enum KSpins {
     /// `D` total (occupation 2), `F`.
     Restricted {
         d: Vec<Array2<C64>>,
@@ -284,18 +284,18 @@ enum KSpins {
 }
 
 /// Conjugate transpose.
-fn herm(m: &Array2<C64>) -> Array2<C64> {
+pub(crate) fn herm(m: &Array2<C64>) -> Array2<C64> {
     m.t().mapv(|z| z.conj())
 }
 
 /// Real number as `Complex64`.
-fn cr(x: f64) -> C64 {
+pub(crate) fn cr(x: f64) -> C64 {
     C64::new(x, 0.0)
 }
 
 impl KSpins {
     /// Number of k-points.
-    fn nk(&self) -> usize {
+    pub(crate) fn nk(&self) -> usize {
         match self {
             Self::Restricted { d, .. } => d.len(),
             Self::Unrestricted { da, .. } => da.len(),
@@ -303,7 +303,7 @@ impl KSpins {
     }
 
     /// Total density `D(k)` (restricted: `D`; unrestricted: `D_α + D_β`).
-    fn total(&self, k: usize) -> Array2<C64> {
+    pub(crate) fn total(&self, k: usize) -> Array2<C64> {
         match self {
             Self::Restricted { d, .. } => d[k].clone(),
             Self::Unrestricted { da, db, .. } => &da[k] + &db[k],
@@ -311,7 +311,7 @@ impl KSpins {
     }
 
     /// `Σ_s D_s X D_s` at k (restricted `½ D X D`).
-    fn sandwich(&self, k: usize, x: &Array2<C64>) -> Array2<C64> {
+    pub(crate) fn sandwich(&self, k: usize, x: &Array2<C64>) -> Array2<C64> {
         match self {
             Self::Restricted { d, .. } => d[k].dot(x).dot(&d[k]).mapv(|z| z * 0.5),
             Self::Unrestricted { da, db, .. } => {
@@ -321,7 +321,7 @@ impl KSpins {
     }
 
     /// `W(k) = Σ_s D_s F_s D_s` (restricted `½ D F D`).
-    fn energy_weighted(&self, k: usize) -> Array2<C64> {
+    pub(crate) fn energy_weighted(&self, k: usize) -> Array2<C64> {
         match self {
             Self::Restricted { d, f } => d[k].dot(&f[k]).dot(&d[k]).mapv(|z| z * 0.5),
             Self::Unrestricted { da, db, fa, fb } => {
@@ -331,7 +331,7 @@ impl KSpins {
     }
 
     /// `Σ_s D_s X D_s = Σ (c, D) c·D X D` terms.
-    fn exch_terms(&self) -> Vec<(f64, &[Array2<C64>])> {
+    pub(crate) fn exch_terms(&self) -> Vec<(f64, &[Array2<C64>])> {
         match self {
             Self::Restricted { d, .. } => vec![(0.5, &d[..])],
             Self::Unrestricted { da, db, .. } => vec![(1.0, &da[..]), (1.0, &db[..])],
@@ -339,7 +339,7 @@ impl KSpins {
     }
 
     /// `max_{s,k} |F D S − S D F|`.
-    fn commutator(&self, s: &[Array2<C64>]) -> f64 {
+    pub(crate) fn commutator(&self, s: &[Array2<C64>]) -> f64 {
         let one = |f: &Array2<C64>, d: &Array2<C64>, sk: &Array2<C64>| {
             let fds = f.dot(d).dot(sk);
             let sdf = sk.dot(d).dot(f);
@@ -362,7 +362,7 @@ impl KSpins {
     }
 
     /// MUTANT ConjD: every `D_s(k)`, `F_s(k)` conjugated.
-    fn conjugate(&mut self) {
+    pub(crate) fn conjugate(&mut self) {
         let cj = |v: &mut Vec<Array2<C64>>| {
             for m in v.iter_mut() {
                 m.mapv_inplace(|z| z.conj());
@@ -498,7 +498,7 @@ pub fn kpoint_uhf_gradient(
 /// Shape and consistency guard: converged SCF, matching `omega`, no ECP, `S`/`h`/`D` shapes
 /// `(nbasis, nbasis)` for all `N_k`, SCF k-points equal to the mesh's, and J/K source k-count.
 #[allow(clippy::too_many_arguments)]
-fn check_inputs(
+pub(crate) fn check_inputs(
     who: &str,
     cell: &Cell,
     prep: &PreparedBasis,
@@ -633,7 +633,7 @@ fn madelung_for(cell: &Cell, mesh: &KPointMesh, exxdiv: ExxDiv) -> Result<f64, F
 type KJk = (Vec<Array2<C64>>, Vec<Array2<C64>>);
 
 /// `J(k)`, `K(k)` (K with `v_M S D S`) of `dm` from the source.
-fn jk_build(jk: &KGradJk<'_>, vm: f64, dm: &[Array2<C64>]) -> Result<KJk, FerricError> {
+pub(crate) fn jk_build(jk: &KGradJk<'_>, vm: f64, dm: &[Array2<C64>]) -> Result<KJk, FerricError> {
     let nk = dm.len();
     let n = dm[0].nrows();
     let mut j: Vec<Array2<C64>> = (0..nk).map(|_| Array2::zeros((n, n))).collect();
@@ -647,7 +647,7 @@ fn jk_build(jk: &KGradJk<'_>, vm: f64, dm: &[Array2<C64>]) -> Result<KJk, Ferric
 
 /// Per residue `r`: `w[r][m, n] = Re(scale Σ_k ph[k][r] X(k)[n, m])` — the
 /// real weight of the derivative block `(m_0, n_L)`, `L ≡ r`.
-fn fold_real(mats: &[Array2<C64>], ph: &[Vec<C64>], scale: f64) -> Vec<Array2<f64>> {
+pub(crate) fn fold_real(mats: &[Array2<C64>], ph: &[Vec<C64>], scale: f64) -> Vec<Array2<f64>> {
     let nr = ph[0].len();
     let n = mats[0].nrows();
     (0..nr)
@@ -662,7 +662,7 @@ fn fold_real(mats: &[Array2<C64>], ph: &[Vec<C64>], scale: f64) -> Vec<Array2<f6
 }
 
 /// Per residue `r`: `(1/N_k) Σ_k ph[k][r] X(k)` (complex, `[n, m]` as `X`).
-fn fold_complex(mats: &[Array2<C64>], ph: &[Vec<C64>], scale: f64) -> Vec<Array2<C64>> {
+pub(crate) fn fold_complex(mats: &[Array2<C64>], ph: &[Vec<C64>], scale: f64) -> Vec<Array2<C64>> {
     let nr = ph[0].len();
     let n = mats[0].nrows();
     (0..nr)
@@ -677,7 +677,7 @@ fn fold_complex(mats: &[Array2<C64>], ph: &[Vec<C64>], scale: f64) -> Vec<Array2
 }
 
 /// `ρ = Σ_r Σ_mn P[r]_mn(g) w[r]_nm`.
-fn residue_trace(p: &[Array3<C64>], gi: usize, w: &[Array2<C64>]) -> C64 {
+pub(crate) fn residue_trace(p: &[Array3<C64>], gi: usize, w: &[Array2<C64>]) -> C64 {
     let n = w[0].nrows();
     let mut acc = C64::new(0.0, 0.0);
     for (pr, wr) in p.iter().zip(w) {
