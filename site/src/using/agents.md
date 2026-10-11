@@ -44,7 +44,7 @@ source-only (see [Installation](installation.md)).
 | An energy from a TOML file | CLI, `method.kind` | [Recipes](recipes.md) §1, [input reference](../reference/input.md) |
 | An ion, radical or metal center | `[molecule] charge`, `multiplicity` (Python: on `Molecule.from_xyz`) | [Recipes](recipes.md) §2 |
 | An optimized geometry | `method.task = "optimize"` | [Recipes](recipes.md) §3 |
-| Harmonic frequencies | `method.task = "frequencies"`, `ferric.run_frequencies` | Finite differences of analytic gradients; `examples/water-frequencies.toml` |
+| Harmonic frequencies | `method.task = "frequencies"`, `ferric.run_frequencies` | Analytic Hessian for RHF/UHF/ROHF, otherwise finite differences of analytic gradients; `examples/water-frequencies.toml` |
 | A transition state and its reaction path | `ferric.run_saddle`, `ferric.run_irc` (Python only, closed shell) | [Golden paths](applications.md) Step 5 |
 | QM/MM embedding | `ferric.QmmmSystem`, `ferric.run_qmmm`, CLI `[qmmm]` | [QM/MM](qmmm.md) |
 | A machine-readable record of a run | `<input>.ferric.jsonl`, written by default | [Run logs](run-logs.md) |
@@ -150,7 +150,7 @@ ferric is a quantum chemistry engine: energies, gradients, finite-difference
 Hessians and properties. It isn't a protein-engineering tool, a docking
 program or an MD code. The QM is the product.
 
-Its analytic Hessian covers RHF and UHF only (other frequencies are finite
+Its analytic Hessian covers RHF, UHF and ROHF only (other frequencies are finite
 differences of the gradient), and it has no thermochemistry (entropy, enthalpy,
 free energy). Transition-state search and IRC are Python-only and closed-shell only
 ([Golden paths](applications.md) Step 5). If a task asks for something ferric

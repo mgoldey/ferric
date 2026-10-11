@@ -1,8 +1,8 @@
 """PySCF-based FD references for the analytic ROHF Hessian (issue #291).
 
-Consumer: crates/ferric-scf/tests/rohf_hessian_skeleton.rs (energy and
-gradient sanity checks) and, once the response lands, the validation test for
-the ROHF Hessian.
+Consumers: crates/ferric-scf/tests/rohf_hessian_skeleton.rs (energy and
+gradient sanity checks), rohf_hessian_response.rs and
+validation_rohf_hessian.rs (the Hessian and frequencies).
 Output:   testdata/reference/validation/rohf_hessian/<system>_<basis>.json
 
 WHY A FINITE DIFFERENCE: PySCF has NO analytic ROHF Hessian (`scf.ROHF(mol)`

@@ -18,12 +18,13 @@
 //!
 //! [`harmonic_frequencies_analytic`](crate::frequencies::harmonic_frequencies_analytic) instead calls
 //! [`crate::hessian::rhf_hessian`] (one SCF, no displacements) and shares steps
-//! 3-5 of the pipeline below; [`harmonic_frequencies_analytic_uhf`](crate::frequencies::harmonic_frequencies_analytic_uhf) does the
-//! same with [`crate::hessian::uhf_hessian`]. They cover closed-shell RHF and
-//! UHF (any multiplicity) with exact four-centre J/K and refuse everything
-//! else with a typed error before the SCF, so the finite-difference path stays
-//! the general one. ROHF has no analytic Hessian (nor does PySCF) and always
-//! uses finite differences.
+//! 3-5 of the pipeline below; [`harmonic_frequencies_analytic_uhf`](crate::frequencies::harmonic_frequencies_analytic_uhf) and
+//! [`harmonic_frequencies_analytic_rohf`](crate::frequencies::harmonic_frequencies_analytic_rohf) do the
+//! same with [`crate::hessian::uhf_hessian`] and [`crate::hessian::rohf_hessian`].
+//! They cover closed-shell RHF, UHF (any multiplicity) and ROHF with exact
+//! four-centre J/K and refuse everything else (ROKS and every other KS
+//! reference included) with a typed error before the SCF, so the
+//! finite-difference path stays the general one.
 //!
 //! [`harmonic_frequencies_with_scf_correction`](crate::frequencies::harmonic_frequencies_with_scf_correction)
 //! is the finite-difference path on the surface `E_SCF + E_corr` for a
@@ -149,25 +150,16 @@ pub enum FrequencyReference {
     Rohf,
 }
 
-impl FrequencyReference {
-    fn label(&self) -> &'static str {
-        match self {
-            FrequencyReference::Rhf => "RHF/RKS",
-            FrequencyReference::Uhf => "UHF",
-            FrequencyReference::Rohf => "ROHF",
-        }
-    }
-}
-
 /// How [`harmonic_frequencies`] obtains the Cartesian Hessian.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HessianMethod {
-    /// The analytic RHF or UHF Hessian ([`crate::hessian`]) when
-    /// [`crate::hessian::analytic_hessian_available`] (RHF) or
-    /// [`crate::hessian::analytic_uhf_hessian_available`] (UHF) accepts the
+    /// The analytic RHF, UHF or ROHF Hessian ([`crate::hessian`]) when
+    /// [`crate::hessian::analytic_hessian_available`] (RHF),
+    /// [`crate::hessian::analytic_uhf_hessian_available`] (UHF) or
+    /// [`crate::hessian::analytic_rohf_hessian_available`] (ROHF) accepts the
     /// system, otherwise central differences of the analytic gradient (always
-    /// for ROHF). An error inside the analytic path is returned, never retried
-    /// with finite differences.
+    /// for ROKS and the other KS references). An error inside the analytic path
+    /// is returned, never retried with finite differences.
     #[default]
     Auto,
     /// The analytic Hessian; an unsupported configuration is an error.
@@ -194,7 +186,7 @@ impl HessianMethod {
 /// Which construction produced a [`FrequencyResult`]'s Hessian.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HessianSource {
-    /// The analytic RHF or UHF Hessian.
+    /// The analytic RHF, UHF or ROHF Hessian.
     Analytic,
     /// Central differences of the analytic gradient.
     FiniteDifference,
@@ -550,6 +542,9 @@ fn analytic_if_selected(
             FrequencyReference::Uhf => {
                 harmonic_frequencies_analytic_uhf(ctx, mol, basis_name, op, scf_config).map(Some)
             }
+            FrequencyReference::Rohf => {
+                harmonic_frequencies_analytic_rohf(ctx, mol, basis_name, op, scf_config).map(Some)
+            }
             _ => harmonic_frequencies_analytic(ctx, mol, basis_name, op, scf_config).map(Some),
         },
         (Err(e), HessianMethod::Analytic) => Err(e),
@@ -564,15 +559,11 @@ fn analytic_available(
     scf_config: &RhfConfig,
     reference: FrequencyReference,
 ) -> Result<(), FerricError> {
-    if reference == FrequencyReference::Rohf {
-        return Err(FerricError::General(format!(
-            "analytic Hessian: no analytic {} Hessian is implemented (PySCF has none \
-             either); ROHF frequencies use finite differences of the analytic gradient",
-            reference.label()
-        )));
-    }
     let bs = ferric_core::basis::bundled(basis_name)?;
     let prep = PreparedBasis::new(mol, &bs)?;
+    if reference == FrequencyReference::Rohf {
+        return crate::hessian::analytic_rohf_hessian_available(mol, &prep, op, scf_config);
+    }
     if reference == FrequencyReference::Uhf {
         return crate::hessian::analytic_uhf_hessian_available(mol, &prep, op, scf_config);
     }
@@ -636,6 +627,34 @@ pub fn harmonic_frequencies_analytic_uhf(
     let bounds = SchwarzBounds::compute(op, &prep)?;
     let res = solve_uhf(ctx, mol, &prep, &bounds, scf_config)?;
     crate::hessian::analytic_frequencies_uhf(ctx, mol, &prep, op, &bounds, &res, scf_config)
+}
+
+/// Harmonic frequencies from the ANALYTIC ROHF Hessian
+/// ([`crate::hessian::rohf_hessian`]): [`harmonic_frequencies_analytic`] with
+/// one [`solve_rohf`] in place of the RHF SCF. Any configuration the ROHF
+/// Hessian does not support (ROKS and every other KS reference included) is
+/// refused by [`crate::hessian::rohf_hessian_preflight`] BEFORE the SCF runs.
+pub fn harmonic_frequencies_analytic_rohf(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    basis_name: &str,
+    op: Operator,
+    scf_config: &RhfConfig,
+) -> Result<FrequencyResult, FerricError> {
+    let natoms = mol.atoms.len();
+    if natoms < 2 {
+        return Err(FerricError::General(format!(
+            "harmonic frequencies require at least 2 atoms, got {natoms}"
+        )));
+    }
+    crate::hessian::rohf_hessian_preflight(op, scf_config)?;
+    atom_masses(mol)?;
+    let bs = ferric_core::basis::bundled(basis_name)?;
+    let prep = PreparedBasis::new(mol, &bs)?;
+    crate::hessian::analytic_rohf_hessian_available(mol, &prep, op, scf_config)?;
+    let bounds = SchwarzBounds::compute(op, &prep)?;
+    let res = solve_rohf(ctx, mol, &prep, op, &bounds, scf_config)?;
+    crate::hessian::analytic_frequencies_rohf(ctx, mol, &prep, op, &bounds, &res, scf_config)
 }
 
 /// Mass-weight, project out translations/rotations, diagonalize, and convert to

@@ -14,7 +14,7 @@ has no validated option for a task, the row says so.
 | Task | Recommended | Where | Grade | Scaling | Example |
 |---|---|---|---|---|---|
 | Geometry optimization | KS-DFT (e.g. PBE, B3LYP) or RHF, `task = "optimize"` | CLI, Python (`run_optimize` is RHF) | Proven | N⁴ | `h2-lda-opt.toml`, `h2_opt.toml` |
-| Harmonic frequencies | KS-DFT or RHF/UHF/ROHF, `task = "frequencies"` (finite differences of the analytic gradient, 6N gradients) | CLI, Python `run_frequencies` | energies Proven; check the printed Hessian asymmetry | 6N × N⁴ | `water-frequencies.toml` |
+| Harmonic frequencies | KS-DFT or RHF/UHF/ROHF, `task = "frequencies"` (analytic Hessian for RHF/UHF/ROHF with exact J/K; otherwise finite differences of the analytic gradient, 6N gradients) | CLI, Python `run_frequencies` | energies Proven; check the printed Hessian asymmetry | 6N × N⁴ | `water-frequencies.toml` |
 | Transition state | `run_saddle` (P-RFO), then `run_irc` to confirm which minima it connects | Python only, closed shell | see [Capabilities and validation](../reference/validation.md#python-entry-points) | ~2(6N+1) gradients + steps | — |
 | Conformer or reaction energies, routine | KS-DFT + D3(BJ) | CLI `ksdft` + `[dft] dispersion = "d3bj"`, Python `run_dft(dispersion=...)` | DFT Proven; D3(BJ) matches simple-dftd3 to <1e-12 Ha | N⁴ (DFT) | `water-pbe-d3bj.toml` |
 | Correlated energies, small to medium | RI-MP2 | CLI `rimp2`, Python `run_rimp2` | Proven | N⁵ | `water-rimp2.toml` |
@@ -69,9 +69,10 @@ through `[basis] path` as a Gaussian-94 file (orbital basis only).
 
 ## When nothing here fits
 
-- **Analytic Hessians** cover RHF and UHF (exact J/K, no ECP, basis up to f
-  functions); ROHF, KS-DFT and correlated methods' frequencies are by finite
-  differences of the analytic gradient.
+- **Analytic Hessians** cover RHF, UHF and ROHF (exact J/K, basis up to f
+  functions; ROHF without an ECP or external potential); KS-DFT (ROKS
+  included) and correlated methods' frequencies are by finite differences of
+  the analytic gradient.
 - **Open-shell coupled cluster and open-shell TS search** are not available
   (the one open-shell CC-type method, LinLCCD(hh), is library-only). Open-shell
   KS-DFT is available from the CLI: `ksdft` with `multiplicity > 1` runs UKS,

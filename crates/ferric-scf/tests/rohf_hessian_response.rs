@@ -1,9 +1,9 @@
 //! Analytic ROHF Hessian (`ferric_scf::hessian::rohf_hessian`, issue #291):
 //! the orbital response and the full matrix, against independent
 //! constructions. The derivation is in the module doc of
-//! `crates/ferric-scf/src/hessian/rohf.rs`. The public entry points still
-//! refuse ROHF, so everything here goes through the test-visible
-//! functions.
+//! `crates/ferric-scf/src/hessian/rohf.rs`. The mutants go through the hidden
+//! `hessian::rohf_support` module; everything else uses the public
+//! `rohf_hessian`.
 //!
 //! ```text
 //! OPENBLAS_NUM_THREADS=1 cargo test -p ferric-scf --release --test rohf_hessian_response
@@ -59,10 +59,8 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::frequencies::frequencies_from_cartesian_hessian;
 use ferric_scf::gradient::rohf_gradient;
-use ferric_scf::hessian::{
-    rhf_hessian, rohf_hessian, rohf_hessian_parts, rohf_hessian_parts_mutated, uhf_hessian,
-    RohfMutation,
-};
+use ferric_scf::hessian::rohf_support::{rohf_hessian_parts_mutated, RohfMutation};
+use ferric_scf::hessian::{rhf_hessian, rohf_hessian, rohf_hessian_parts, uhf_hessian};
 use ferric_scf::result::{ScfResult, Spin};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::rohf::solve_rohf;
@@ -73,9 +71,11 @@ use serde_json::Value;
 /// Analytic vs ferric FD of `rohf_gradient`, Ha/Bohr^2.
 /// Measured max 3.2e-10 (HO2/STO-3G), FD self-floor up to 5.7e-10; bar ~30x that.
 const TOL_FD: f64 = 1e-8;
-/// Singlet ROHF vs RHF full Hessian, Ha/Bohr^2.
-/// Measured 1.2e-11.
-const TOL_ANCHOR: f64 = 1e-8;
+/// Singlet ROHF vs RHF full Hessian, Ha/Bohr^2. Measured 1.06e-11 (real
+/// `solve_rohf`) and 1.04e-11 (relabelled RHF result); the issue asked for
+/// 1e-12, which is NOT met (the floor is the two SCFs' convergence and the
+/// different CG solves). Bar ~10x the worst measured.
+const TOL_ANCHOR: f64 = 1e-10;
 /// Row sums / symmetry of the full Hessian.
 /// Measured <= 1.1e-11 (translation and rotation); the UNSYMMETRISED response
 /// asymmetry, the real consistency probe, measured <= 2.7e-11.
@@ -407,7 +407,7 @@ fn rohf_hessian_skeleton_only(
     bounds: &SchwarzBounds,
     rohf: &ScfResult,
 ) -> Array2<f64> {
-    ferric_scf::hessian::rohf_skeleton_parts(
+    ferric_scf::hessian::rohf_support::rohf_skeleton_parts(
         mol,
         prep,
         Operator::coulomb(),
@@ -577,7 +577,8 @@ fn uhf_at_rohf_orbitals(
 
 /// The UHF-at-ROHF-orbitals control: a miss by > 10x the bar, OR a typed error
 /// (its spin-diagonal CPHF is not positive definite at an ROHF point: seen on
-/// HO2/cc-pVDZ, where the control is caught by refusing to answer).
+/// HO2/cc-pVDZ vs PySCF, where the control is caught by refusing to answer;
+/// against ferric's own FD at HO2/STO-3G it answers and misses by 3.9e-2).
 fn assert_uhf_control(
     ctx: &str,
     got: Result<Array2<f64>, ferric_core::FerricError>,
@@ -887,8 +888,10 @@ fn public_uhf_hessian_refuses_a_semicanonicalized_rohf_result() {
     .expect_err("a semicanonicalized ROHF result must be refused by uhf_hessian");
     eprintln!("uhf_hessian on a semicanonicalized ROHF result: {err}");
     assert!(err.to_string().contains("semicanonicalized"), "{err}");
-    // rohf_hessian wants the ROHF result itself.
-    assert!(hessian_of(c, &semi, &scf_config()).is_err());
+    // rohf_hessian maps it back to the ROHF result: same Hessian.
+    let direct = hessian_of(c, &c.rohf, &scf_config()).unwrap();
+    let mapped = hessian_of(c, &semi, &scf_config()).unwrap();
+    assert!(max_abs_diff(&direct, &mapped) < 1e-8);
 }
 
 #[test]

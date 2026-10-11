@@ -1,10 +1,9 @@
 //! Analytic ROHF Hessian: the orbital response (term 5) and the assembly of
-//! the full matrix (issue #291). The entry points are `#[doc(hidden)]`: the
-//! public `rhf_hessian`/`uhf_hessian` refuse ROHF results and `frequencies`
-//! does not dispatch to this module. A dispatch must send a ROHF result here,
-//! and must map a semicanonicalized one (`Spin::Unrestricted` with
-//! `rohf_spin_focks` set, which `uhf_hessian` refuses) back to its ROHF result
-//! first.
+//! the full matrix (issue #291). [`rohf_hessian`] is the public entry point;
+//! `rhf_hessian`/`uhf_hessian` refuse ROHF results, and `frequencies`
+//! dispatches ROHF here. A semicanonicalized result (`Spin::Unrestricted` with
+//! `rohf_spin_focks` set, which `uhf_hessian` refuses) is mapped back to ROHF
+//! orbitals first ([`rohf_from_semicanonical`]).
 //!
 //! # Setup
 //!
@@ -121,10 +120,10 @@
 
 use super::{
     add_extra_first_order, extra_charges, first_order_ao, max_abs, parts_from_terms, pcg,
-    rohf_skeleton_parts, uhf_occupations, uhf_spin_densities_for, FirstOrderAo, FockSpec,
-    Reference, ResponseTerm, RhfHessianParts, TwoElectronBuilder, OCC_CONSISTENCY_TOL,
+    rohf_support::rohf_skeleton_parts, uhf_occupations, uhf_spin_densities_for, FirstOrderAo,
+    FockSpec, Reference, ResponseTerm, RhfHessianParts, TwoElectronBuilder, OCC_CONSISTENCY_TOL,
 };
-use crate::result::ScfResult;
+use crate::result::{ScfResult, Spin};
 use crate::rhf::RhfConfig;
 use crate::screening::SchwarzBounds;
 use ferric_core::mol::Molecule;
@@ -133,11 +132,12 @@ use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ndarray::{Array1, Array2};
+use ndarray_linalg::{Eigh, UPLO};
 use std::ops::Range;
 
 /// Deliberate defects of the response, for mutation tests only
 /// ([`rohf_hessian_parts_mutated`]); production uses [`RohfMutation::None`].
-#[doc(hidden)]
+/// Reachable only through `hessian::rohf_support` (hidden, not API).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RohfMutation {
     /// The correct response.
@@ -514,33 +514,72 @@ impl Response<'_> {
     }
 }
 
-/// Features whose Fock/first-order terms the response reuses from the UHF
-/// path but that no ROHF Hessian test covers: refused, not guessed.
-fn refuse_unvalidated(
+/// A `Spin::Unrestricted` result that kept the ROHF spin Focks: the output of
+/// [`crate::semicanonical::unrestricted_reference`].
+fn is_semicanonicalized(res: &ScfResult) -> bool {
+    res.spin == Spin::Unrestricted && res.rohf_spin_focks.is_some()
+}
+
+/// Rebuild the ROHF result (one orbital set `closed | open | virtual`) from a
+/// semicanonicalized one. The block-diagonal rotations of semicanonicalization
+/// keep the spans: the closed orbitals are the occupied β orbitals, the
+/// virtuals are the virtual α orbitals, and the open ones are the part of the
+/// occupied α span S-orthogonal to the closed span. The Hessian depends on the
+/// orbitals only through these spans (it is invariant to rotations within each
+/// block), so the particular open orbitals are immaterial.
+fn rohf_from_semicanonical(
     mol: &Molecule,
     prep: &PreparedBasis,
-    rohf: &ScfResult,
-    config: &RhfConfig,
-) -> Result<(), FerricError> {
-    let ext = config.external_potential.as_ref();
-    let what = if rohf.cosx_final.is_some() {
-        Some("a COSX-converged result (its spin Focks carry the seminumerical exchange)")
-    } else if ext.is_some_and(|e| {
-        !e.point_charges.is_empty() || !e.smeared_charges.is_empty() || e.field.is_some()
-    }) {
-        Some("an external potential (point charges, smeared charges or a field)")
-    } else if super::has_ecp(mol, prep.basis_set()) {
-        Some("an effective core potential")
-    } else {
-        None
+    semi: &ScfResult,
+) -> Result<ScfResult, FerricError> {
+    let fail = |what: &str| {
+        FerricError::General(format!(
+            "analytic ROHF Hessian: cannot map a semicanonicalized result back to ROHF \
+             orbitals: {what}"
+        ))
     };
-    match what {
-        Some(w) => Err(FerricError::General(format!(
-            "analytic ROHF Hessian: {w} is not supported (no ROHF Hessian validation covers it); \
-             use ferric_scf::frequencies::harmonic_frequencies"
-        ))),
-        None => Ok(()),
+    let cb = semi
+        .mos_beta
+        .as_ref()
+        .ok_or_else(|| fail("no β orbitals"))?;
+    let ca = &semi.mos_alpha;
+    let [na, nb] = uhf_occupations(mol);
+    if na < nb || na > ca.ncols() || nb > cb.ncols() || ca.ncols() != cb.ncols() {
+        return Err(fail("occupations do not fit the MO count"));
     }
+    let (nmo, no) = (ca.ncols(), na - nb);
+    let s = ferric_integrals::oneelectron::overlap(prep);
+    let c_closed = cb.slice(ndarray::s![.., ..nb]).to_owned();
+    let c_occ_a = ca.slice(ndarray::s![.., ..na]).to_owned();
+    // The α-occupied span with its closed component removed.
+    let x = &c_occ_a - &c_closed.dot(&c_closed.t().dot(&s).dot(&c_occ_a));
+    let gram = x.t().dot(&s).dot(&x);
+    let (evals, evecs) = gram
+        .eigh(UPLO::Lower)
+        .map_err(|e| fail(&format!("overlap eigendecomposition failed: {e}")))?;
+    let mut c = Array2::<f64>::zeros((c_closed.nrows(), nmo));
+    c.slice_mut(ndarray::s![.., ..nb]).assign(&c_closed);
+    for k in 0..no {
+        // The top `no` eigenvalues (ascending order) span the open orbitals.
+        let idx = na - no + k;
+        let lam = evals[idx];
+        if lam < 1e-6 {
+            return Err(fail(&format!(
+                "the α-occupied span has no {no} orbitals outside the closed span \
+                 (eigenvalue {lam:.1e}); the result does not come from an aufbau ROHF"
+            )));
+        }
+        let v = evecs.column(idx).to_owned();
+        c.column_mut(nb + k).assign(&(x.dot(&v) / lam.sqrt()));
+    }
+    c.slice_mut(ndarray::s![.., na..])
+        .assign(&ca.slice(ndarray::s![.., na..]));
+    let mut out = semi.clone();
+    out.spin = Spin::RestrictedOpen;
+    out.mos_alpha = c;
+    out.mos_beta = None;
+    out.eps_beta = None;
+    Ok(out)
 }
 
 /// `W = sym(D_α F_α D_α + D_α F_β D_β)` from the given Focks.
@@ -564,7 +603,7 @@ fn trusted_focks(
     g: &TwoElectronBuilder<'_>,
     prep: &PreparedBasis,
     rohf: &ScfResult,
-    dens: &super::RohfSkeletonDensities,
+    dens: &super::rohf_support::RohfSkeletonDensities,
     mutation: RohfMutation,
 ) -> Result<[Array2<f64>; 2], FerricError> {
     let (sa, sb) = rohf
@@ -590,8 +629,14 @@ fn trusted_focks(
 }
 
 /// The full ROHF Hessian, (3N, 3N) Hartree/Bohr², from a converged
-/// [`crate::rohf::solve_rohf`] result. Test-visible only (`#[doc(hidden)]`).
-#[doc(hidden)]
+/// [`crate::rohf::solve_rohf`] result (or its semicanonicalized form).
+///
+/// `bounds` is the Schwarz table for `op` on `prep`; `config` is the
+/// configuration the SCF was converged with, read to refuse what the Hessian
+/// does not implement: Kohn-Sham, RI, COSX, solvation, an external potential,
+/// an ECP, non-Coulomb operators. See `hessian::rohf` (module doc) for the
+/// equations and [`analytic_rohf_hessian_available`](super::analytic_rohf_hessian_available)
+/// for the pre-SCF probe.
 pub fn rohf_hessian(
     ctx: &ParallelContext,
     mol: &Molecule,
@@ -605,7 +650,6 @@ pub fn rohf_hessian(
 }
 
 /// [`rohf_hessian`] with the per-term breakdown and CPHF diagnostics.
-#[doc(hidden)]
 pub fn rohf_hessian_parts(
     ctx: &ParallelContext,
     mol: &Molecule,
@@ -620,7 +664,6 @@ pub fn rohf_hessian_parts(
 
 /// [`rohf_hessian_parts`] with a deliberate defect in the response (mutation
 /// tests); [`RohfMutation::None`] is the production path.
-#[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
 pub fn rohf_hessian_parts_mutated(
     ctx: &ParallelContext,
@@ -632,7 +675,13 @@ pub fn rohf_hessian_parts_mutated(
     config: &RhfConfig,
     mutation: RohfMutation,
 ) -> Result<RhfHessianParts, FerricError> {
-    refuse_unvalidated(mol, prep, rohf, config)?;
+    let mapped;
+    let rohf = if is_semicanonicalized(rohf) {
+        mapped = rohf_from_semicanonical(mol, prep, rohf)?;
+        &mapped
+    } else {
+        rohf
+    };
     let mut skel = rohf_skeleton_parts(mol, prep, op, bounds, rohf, config)?;
     let g = TwoElectronBuilder::new(ctx, prep, bounds)?;
     let dens = &skel.densities;

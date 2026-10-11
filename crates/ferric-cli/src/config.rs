@@ -796,16 +796,21 @@ pub fn parse_coord_system(s: &str) -> Result<ferric_scf::optimize::CoordSystem, 
 }
 
 /// `[frequencies]` — harmonic vibrational frequencies (`method.task =
-/// "frequencies"`): the analytic RHF or UHF Hessian where it applies,
+/// "frequencies"`): the analytic RHF, UHF or ROHF Hessian where it applies,
 /// otherwise a finite difference of the ANALYTIC gradient.
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct FrequenciesCfg {
-    /// `"auto"` (default): analytic Hessian for RHF (closed shell) or UHF (any
-    /// multiplicity) with exact J/K, an optional ECP and a basis up to f functions,
-    /// finite differences otherwise (always for ROHF and KS).
-    /// `"analytic"`: error if the analytic Hessian does not apply. `"fd"`:
-    /// always finite differences.
+    /// `"auto"` (default): analytic Hessian for RHF (closed shell), UHF (any
+    /// multiplicity) or ROHF with exact J/K and a basis up to f functions (RHF
+    /// and UHF also with an optional ECP, external charges or field; ROHF with
+    /// none of those), finite differences otherwise (always for ROKS and the
+    /// other KS references). An error raised by the analytic path after the SCF
+    /// (a stored-versus-rebuilt Fock mismatch, a non-converged or
+    /// non-positive-curvature response, a very large first-order rotation) is
+    /// returned, never retried with finite differences; a loose
+    /// `density_conv` can trigger the Fock check. `"analytic"`: error if the
+    /// analytic Hessian does not apply. `"fd"`: always finite differences.
     pub hessian: Option<String>,
     /// Central-difference displacement in Bohr, finite-difference Hessians only.
     ///

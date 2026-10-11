@@ -2,9 +2,11 @@
 //!
 //! `Auto` must take the analytic RHF Hessian exactly where
 //! `analytic_hessian_available` accepts the system, the analytic UHF Hessian
-//! for a UHF reference where `analytic_uhf_hessian_available` accepts it, and
-//! fall back to finite differences everywhere else (always for ROHF, which has
-//! no analytic Hessian); `Analytic` must refuse instead of falling back.
+//! for a UHF reference where `analytic_uhf_hessian_available` accepts it, the
+//! analytic ROHF Hessian for a ROHF reference where
+//! `analytic_rohf_hessian_available` accepts it, and fall back to finite
+//! differences everywhere else (always for ROKS and the other KS references);
+//! `Analytic` must refuse instead of falling back.
 //! The probe is checked on its own for the cases that need no SCF: an ECP
 //! molecule whose core charge was never applied (`Molecule::apply_ecp` not run),
 //! and a basis with g functions (above the 4-centre second-derivative
@@ -26,7 +28,9 @@ use ferric_integrals::operator::Operator;
 use ferric_scf::frequencies::{
     harmonic_frequencies, FrequencyConfig, FrequencyReference, HessianMethod, HessianSource,
 };
-use ferric_scf::hessian::analytic_hessian_available;
+use ferric_scf::hessian::{
+    analytic_hessian_available, analytic_rohf_hessian_available, rohf_hessian, uhf_hessian,
+};
 use ferric_scf::rhf::RhfConfig;
 
 fn water() -> Molecule {
@@ -269,16 +273,210 @@ fn auto_is_analytic_for_a_uhf_doublet_and_matches_fd() {
 }
 
 #[test]
-fn rohf_stays_finite_difference_and_analytic_refuses_it() {
-    let auto = open_shell(FrequencyReference::Rohf, HessianMethod::Auto).expect("ROHF auto");
+fn auto_is_analytic_for_a_rohf_doublet_and_matches_fd() {
+    if !has_deriv2() {
+        return;
+    }
+    let an = open_shell(FrequencyReference::Rohf, HessianMethod::Auto).expect("ROHF auto");
+    assert_eq!(an.hessian_source, HessianSource::Analytic);
+    assert_eq!(an.n_gradient_evaluations, 0);
+    let explicit =
+        open_shell(FrequencyReference::Rohf, HessianMethod::Analytic).expect("ROHF analytic");
+    assert_eq!(explicit.hessian_source, HessianSource::Analytic);
+    let fd =
+        open_shell(FrequencyReference::Rohf, HessianMethod::FiniteDifference).expect("ROHF FD");
+    assert_eq!(fd.hessian_source, HessianSource::FiniteDifference);
+    assert_eq!(fd.n_gradient_evaluations, 18);
+    let dev = an
+        .frequencies
+        .iter()
+        .zip(&fd.frequencies)
+        .fold(0.0f64, |m, (a, b)| m.max((a - b).abs()));
+    eprintln!("NH2/STO-3G ROHF analytic vs FD frequencies: max |d| {dev:.3e} cm^-1");
+    assert!(
+        dev < 1.0,
+        "ROHF analytic and FD frequencies differ by {dev} cm^-1"
+    );
+    // The ROHF Hessian is not the UHF one: the two references have different
+    // orbitals and energies, so a dispatch that sent ROHF to the UHF path
+    // would reproduce the UHF number, not this one.
+    let uhf = open_shell(FrequencyReference::Uhf, HessianMethod::Analytic).expect("UHF analytic");
+    let split = an
+        .frequencies
+        .iter()
+        .zip(&uhf.frequencies)
+        .fold(0.0f64, |m, (a, b)| m.max((a - b).abs()));
+    eprintln!("NH2/STO-3G ROHF vs UHF analytic frequencies: max |d| {split:.3e} cm^-1");
+    assert!(
+        split > 5.0 * dev,
+        "ROHF {split} cm^-1 from UHF vs FD gap {dev}"
+    );
+}
+
+/// ROKS and every other KS reference stay finite-difference: `Auto` falls back,
+/// `Analytic` refuses (before any SCF).
+#[test]
+fn roks_stays_finite_difference_and_analytic_refuses_it() {
+    let scf = RhfConfig {
+        xc: Some("PBE".into()),
+        ..Default::default()
+    };
+    let run_roks = |hessian| {
+        harmonic_frequencies(
+            &ParallelContext::default(),
+            &nh2(),
+            "sto-3g",
+            Operator::coulomb(),
+            &scf,
+            &FrequencyConfig {
+                reference: FrequencyReference::Rohf,
+                hessian,
+                ..Default::default()
+            },
+        )
+    };
+    let auto = run_roks(HessianMethod::Auto).expect("ROKS auto");
     assert_eq!(auto.hessian_source, HessianSource::FiniteDifference);
     assert_eq!(auto.n_gradient_evaluations, 18);
-    let err = open_shell(FrequencyReference::Rohf, HessianMethod::Analytic)
-        .expect_err("ROHF with Analytic must be refused");
-    eprintln!("ROHF analytic refusal: {err}");
+    let err = run_roks(HessianMethod::Analytic).expect_err("ROKS with Analytic must be refused");
+    eprintln!("ROKS analytic refusal: {err}");
+    let msg = err.to_string();
+    assert!(msg.contains("ROHF") && msg.contains("Kohn-Sham"), "{msg}");
+}
+
+/// The probe and the entry point agree on what ROHF refuses, with no SCF for
+/// the probe.
+#[test]
+fn rohf_probe_refuses_what_the_hessian_does_not_cover() {
+    if !has_deriv2() {
+        return;
+    }
+    let mol = nh2();
+    let prep = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+    let op = Operator::coulomb();
+    analytic_rohf_hessian_available(&mol, &prep, op, &RhfConfig::default())
+        .expect("NH2/STO-3G ROHF is supported");
+    let charges = RhfConfig {
+        external_potential: Some(ExternalPotential {
+            point_charges: vec![PointCharge {
+                q: 0.5,
+                x: 0.0,
+                y: 0.0,
+                z: 6.0,
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let cosx = RhfConfig {
+        k_builder: Some("cosx".into()),
+        ..Default::default()
+    };
+    let ks = RhfConfig {
+        xc: Some("PBE".into()),
+        ..Default::default()
+    };
+    for (what, cfg) in [("external charges", charges), ("COSX", cosx), ("KS", ks)] {
+        let err = analytic_rohf_hessian_available(&mol, &prep, op, &cfg)
+            .expect_err(&format!("{what} must be refused by the ROHF probe"));
+        eprintln!("ROHF probe, {what}: {err}");
+        assert!(err.to_string().contains("ROHF"), "{what}: {err}");
+    }
+    // An ECP molecule with its core charge applied: analytic for RHF/UHF, but
+    // not validated for ROHF.
+    let svp = basis::bundled("def2-svp").unwrap();
+    let mut hi = Molecule::parse_xyz("2\nHI\nH 0 0 0\nI 0 0 1.61\n", 0, 3).unwrap();
+    hi.apply_ecp(&svp);
+    let hi_prep = PreparedBasis::new(&hi, &svp).unwrap();
+    let err = analytic_rohf_hessian_available(&hi, &hi_prep, op, &RhfConfig::default())
+        .expect_err("an ECP must be refused by the ROHF probe");
+    eprintln!("ROHF probe, ECP: {err}");
     assert!(
-        err.to_string().contains("ROHF"),
-        "refusal does not name ROHF: {err}"
+        err.to_string().contains("effective core potential"),
+        "{err}"
+    );
+}
+
+/// A semicanonicalized ROHF result (`Spin::Unrestricted` with the ROHF spin
+/// Focks) is mapped back to ROHF orbitals by `rohf_hessian`; a plain UHF
+/// result is refused rather than treated as one. NH2 has one open orbital, the
+/// CH2 triplet two (the open block is a rotation, not a single vector).
+#[test]
+fn semicanonicalized_result_gives_the_rohf_hessian_and_uhf_is_refused() {
+    if !has_deriv2() {
+        return;
+    }
+    let ch2 = Molecule::parse_xyz(
+        "3\nCH2 triplet\nC 0.0 0.0 0.0\nH 0.0 0.98 -0.55\nH 0.01 -0.97 -0.56\n",
+        0,
+        3,
+    )
+    .unwrap();
+    for (name, mol) in [("NH2", nh2()), ("CH2 triplet", ch2)] {
+        let op = Operator::coulomb();
+        let prep = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+        let bounds = ferric_scf::screening::SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+        let cfg = RhfConfig {
+            density_conv: 1e-10,
+            energy_conv: 1e-12,
+            ..Default::default()
+        };
+        let rohf = ferric_scf::rohf::solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
+        let direct = rohf_hessian(&ctx, &mol, &prep, op, &bounds, &rohf, &cfg).unwrap();
+        let semi = ferric_scf::semicanonical::unrestricted_reference(&mol, &rohf).unwrap();
+        assert_eq!(semi.spin, ferric_scf::result::Spin::Unrestricted);
+        let mapped = rohf_hessian(&ctx, &mol, &prep, op, &bounds, &semi, &cfg).unwrap();
+        let dev = (&direct - &mapped)
+            .iter()
+            .fold(0.0f64, |m, v| m.max(v.abs()));
+        eprintln!("{name}: semicanonicalized vs ROHF Hessian max |d| {dev:.3e}");
+        assert!(dev < 1e-8, "{name}: mapped-back Hessian differs by {dev}");
+        // Negative controls: uhf_hessian refuses it, and the Hessian is not zero.
+        assert!(uhf_hessian(&ctx, &mol, &prep, op, &bounds, &semi, &cfg).is_err());
+        assert!(direct.iter().any(|v| v.abs() > 0.1));
+        // A semicanonicalized result without beta orbitals cannot be mapped: a
+        // typed error with a readable message.
+        let mut broken = semi.clone().into_owned();
+        broken.mos_beta = None;
+        let err = rohf_hessian(&ctx, &mol, &prep, op, &bounds, &broken, &cfg)
+            .expect_err("no beta orbitals");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("cannot map a semicanonicalized result back to ROHF orbitals: no β"),
+            "{msg}"
+        );
+        assert!(!msg.contains("  "), "stray whitespace in: {msg}");
+        let uhf = ferric_scf::uhf::solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
+        let err = rohf_hessian(&ctx, &mol, &prep, op, &bounds, &uhf, &cfg)
+            .expect_err("a UHF result is not a ROHF result");
+        assert!(err.to_string().contains("ROHF"), "{err}");
+    }
+}
+
+/// The ROHF frequency driver runs the full availability probe BEFORE the SCF:
+/// an ECP molecule is refused without solving anything.
+#[test]
+fn rohf_frequency_driver_refuses_an_ecp_before_the_scf() {
+    let svp = basis::bundled("def2-svp").unwrap();
+    let mut hi = Molecule::parse_xyz("2\nHI\nH 0 0 0\nI 0 0 1.61\n", 0, 3).unwrap();
+    hi.apply_ecp(&svp);
+    let t0 = std::time::Instant::now();
+    let err = ferric_scf::frequencies::harmonic_frequencies_analytic_rohf(
+        &ParallelContext::default(),
+        &hi,
+        "def2-svp",
+        Operator::coulomb(),
+        &RhfConfig::default(),
+    )
+    .expect_err("ROHF analytic frequencies with an ECP must be refused");
+    assert!(
+        err.to_string().contains("effective core potential"),
+        "{err}"
+    );
+    assert!(
+        t0.elapsed().as_secs_f64() < 5.0,
+        "refusal came after an SCF"
     );
 }
 

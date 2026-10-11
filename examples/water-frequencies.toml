@@ -9,6 +9,9 @@ kind = "rhf"
 task = "frequencies"
 
 [frequencies]
+# Force the finite-difference Hessian so `delta` below applies; without this
+# key "auto" runs the analytic RHF Hessian and `delta` is unused.
+hessian = "fd"
 # Central-difference displacement in Bohr. The printed "Hessian asymmetry" is
 # the diagnostic for whether this is well chosen: it is zero in exact
 # arithmetic, so a large value means delta or the SCF thresholds are wrong for

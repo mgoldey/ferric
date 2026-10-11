@@ -236,18 +236,24 @@ shell only (there is no unrestricted MP2 nuclear gradient).
 `ksdft`. Python `ferric.run_optimize` is RHF.
 
 **Harmonic frequencies.** `method.task = "frequencies"` for `rhf`, `uhf`,
-`rohf` and `ksdft` (`examples/water-frequencies.toml`); Python
+`rohf` and `ksdft` (`examples/water-frequencies.toml`,
+`examples/nh2-rohf-frequencies.toml`); Python
 `ferric.run_frequencies(mol, basis_name, reference="rhf", xc=...)`. Mass-weighted,
 translations and rotations projected out. The Hessian is:
 
-- **Analytic** for closed-shell RHF, and for UHF of any multiplicity, with
-  exact four-centre J/K, no ECP, no external potential or solvent, and a basis
-  up to f functions: one SCF plus a coupled-perturbed HF solve per nuclear
-  coordinate (for UHF, one solve coupling the α and β orbital rotations). This
+- **Analytic** for closed-shell RHF and for UHF of any multiplicity, with
+  exact four-centre J/K, no solvent or polarizable embedding, and a basis up to
+  f functions (RHF and UHF also with an ECP, fixed external point or smeared
+  charges, or a uniform field), and for ROHF with exact four-centre J/K, no
+  ECP, no external potential and a basis up to f functions:
+  one SCF plus a coupled-perturbed HF solve per nuclear coordinate (for UHF,
+  one solve coupling the α and β orbital rotations; for ROHF, one solve over
+  the closed-virtual, open-virtual and closed-open rotations). This
   needs a libint2 with second derivatives (the build
   `scripts/install-libint.sh` installs).
 - **Central finite differences of the analytic gradient** everywhere else
-  (ROHF, KS-DFT, RI J/K, ECPs, embedding, g functions): 6N gradient
+  (ROKS and every other KS-DFT reference, RI J/K, solvent, polarizable
+  embedding, g functions, ROHF with an ECP or external potential): 6N gradient
   evaluations. The displacement `[frequencies] delta` (default 5e-3 Bohr) is a
   real accuracy knob; the printed Hessian asymmetry, zero in exact arithmetic,
   is the check that it and the SCF thresholds suit the system.
@@ -256,6 +262,13 @@ translations and rotations projected out. The Hessian is:
 analytic where it applies), `"analytic"` (an error where it does not) or
 `"fd"`. The output names the one that ran (`Hessian = analytic`; Python
 `.hessian_source`).
+
+The choice is made before the SCF. An error the analytic path raises after the
+SCF (for ROHF: the stored spin Fock matrices differing from those rebuilt from
+the final densities by more than 1e-4 Ha, which a loose `density_conv` can
+cause; a response solve that does not converge; non-positive orbital curvature;
+a first-order rotation above 10 rad/Bohr) is returned as an error under
+`"auto"` too, never retried with finite differences.
 
 **Transition states and IRC (Python only, closed shell).**
 `ferric.run_saddle(mol, basis_name, xc=...)` searches for a first-order saddle

@@ -221,7 +221,7 @@ the CLI's `method.task`:
 |---|---|---|
 | `ferric.run_saddle(mol, basis, xc=...)` | P-RFO search for a first-order saddle point | Closed shell only (multiplicity 1), HF or KS. It raises if the start has no negative Hessian mode, so start from a guessed TS, not a minimum. The Hessian is built twice by central differences and Bofill-updated in between: `2(6N+1) + (steps+1)` gradients. |
 | `ferric.run_irc(mol, basis, mode=...)` | Follows the reaction path downhill in both directions, from the saddle to the two minima it connects | Closed shell only. Pass `SaddleResult.imaginary_mode` as `mode`. MEASURED ~71 gradients per direction on NH3 inversion. |
-| `ferric.run_frequencies(mol, basis, reference=..., xc=...)` (CLI: `task = "frequencies"`) | Harmonic frequencies from finite differences of the analytic gradient (6N gradients). Negative entries are imaginary modes. `.normal_modes` gives the vectors. | RHF/UHF/ROHF and their KS variants. Check `.asymmetry` to judge whether the step size suited the system. `dispersion="d3bj"` or `"mbd"` (CLI: `[dft] dispersion`) adds the dispersion Hessian on RKS, UKS and ROKS. |
+| `ferric.run_frequencies(mol, basis, reference=..., xc=...)` (CLI: `task = "frequencies"`) | Harmonic frequencies from the analytic Hessian where it applies (RHF, UHF, ROHF), otherwise finite differences of the analytic gradient (6N gradients). Negative entries are imaginary modes. `.normal_modes` gives the vectors. | RHF/UHF/ROHF and their KS variants. Check `.asymmetry` to judge whether the step size suited the system. `dispersion="d3bj"` or `"mbd"` (CLI: `[dft] dispersion`) adds the dispersion Hessian on RKS, UKS and ROKS. |
 
 One imaginary frequency is necessary but not sufficient for a transition state:
 a methyl rotor also gives one. Use `run_irc` to confirm that the saddle connects
@@ -234,8 +234,10 @@ the claim.
 
 * **Gas-phase cluster models.** There's no enzyme environment unless you add
   QM/MM ([QM/MM](qmmm.md)).
-* **Analytic Hessians for RHF and UHF only.** RHF and UHF frequencies use the
-  analytic Hessian; ROHF, KS-DFT and embedded frequencies, and every TS search,
+* **Analytic Hessians for RHF, UHF and ROHF only.** Their frequencies use the
+  analytic Hessian (RHF and UHF also with an ECP or fixed external charges or
+  field; ROHF with neither); KS-DFT (ROKS included), implicit solvent and
+  polarizable embedding frequencies, and every TS search,
   use finite differences of analytic gradients (Step 5). That costs 6N
   gradients per Hessian, so a C10 cation Hessian is hundreds of gradient
   evaluations. Without Step 5 you

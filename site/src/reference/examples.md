@@ -54,7 +54,8 @@ See [SCF and DFT](../methods/scf.md).
 | `water-rhf-cosx.toml` | H2O / cc-pVDZ | `rhf` | "E(COSX) − E(direct) is reported in crates/ferric-scf/tests/cosx_scf.rs" | COSX exchange. |
 | `h_uhf.toml` | H atom / STO-3G, doublet | `uhf` | — | |
 | `h2_opt.toml` | stretched H2 / STO-3G | `rhf` / optimize | — | |
-| `water-frequencies.toml` | H2O / STO-3G | `rhf` / frequencies | — | FD Hessian. Check `Hessian asymmetry`. |
+| `water-frequencies.toml` | H2O / STO-3G | `rhf` / frequencies | — | Finite-difference Hessian (`hessian = "fd"`). Check `Hessian asymmetry`. |
+| `nh2-rohf-frequencies.toml` | NH2 doublet / cc-pVDZ | `rohf` / frequencies | `crates/ferric-scf/tests/validation_rohf_hessian.rs` | Analytic ROHF Hessian. |
 | `benzene-dfb3lyp.toml` | benzene / def2-SVP | `ksdft` B3LYP | — | RI-JK is on automatically for `ksdft`. |
 | `benzene-dfb3lyp-mpi.toml` | benzene / cc-pVDZ | `ksdft` B3LYP | — | Run under `mpirun` with the MPI build (see its header). |
 | `water-wb97xv.toml` | H2O / cc-pVDZ | `ksdft` wB97X-V | — | |
