@@ -487,7 +487,9 @@ def test_run_frequencies_rohf_is_analytic_and_roks_is_not():
     assert fd.hessian_source == "finite-difference"
     assert fd.n_gradient_evaluations == 18
     dev = max(abs(a - b) for a, b in zip(an.frequencies, fd.frequencies))
-    assert dev < 1.0, f"ROHF analytic vs FD: {dev:.3f} cm^-1: {an.frequencies} {fd.frequencies}"
+    assert dev < 1.0, (
+        f"ROHF analytic vs FD: {dev:.3f} cm^-1: {an.frequencies} {fd.frequencies}"
+    )
 
     roks = ferric.run_frequencies(mol, "sto-3g", reference="rohf", xc="pbe")
     assert roks.hessian_source == "finite-difference"

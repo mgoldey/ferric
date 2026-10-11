@@ -76,7 +76,7 @@
 //!
 //! # ROHF
 //!
-//! [`rohf_hessian`] / [`rohf_hessian_parts`] (module `hessian::rohf`, which
+//! [`rohf_hessian`](crate::hessian::rohf_hessian) / [`rohf_hessian_parts`](crate::hessian::rohf_hessian_parts) (module `hessian::rohf`, which
 //! carries the derivation) evaluate the full ROHF Hessian from a converged
 //! [`crate::rohf::solve_rohf`] result: the skeleton terms 1-4 (the UHF
 //! skeleton with the ROHF `D_α`, `D_β` and the ROHF energy-weighted density
@@ -86,8 +86,8 @@
 //! coordinate (commutator-form orbital Hessian, spin Focks in the overlap
 //! terms) and `W^y` built from the AO densities and Focks. A semicanonicalized
 //! result (`Spin::Unrestricted` carrying `rohf_spin_focks`) is mapped back to
-//! ROHF orbitals first; [`uhf_hessian`] refuses it, because its orbitals are
-//! not a UHF stationary point. [`analytic_rohf_hessian_available`] is the
+//! ROHF orbitals first; [`uhf_hessian`](crate::hessian::uhf_hessian) refuses it, because its orbitals are
+//! not a UHF stationary point. [`analytic_rohf_hessian_available`](crate::hessian::analytic_rohf_hessian_available) is the
 //! pre-SCF probe.
 //!
 //! Scope: closed-shell RHF, UHF (any multiplicity) and ROHF, exact four-centre
