@@ -796,14 +796,15 @@ pub fn parse_coord_system(s: &str) -> Result<ferric_scf::optimize::CoordSystem, 
 }
 
 /// `[frequencies]` — harmonic vibrational frequencies (`method.task =
-/// "frequencies"`): the analytic RHF or UHF Hessian where it applies,
+/// "frequencies"`): the analytic RHF, UHF or ROHF Hessian where it applies,
 /// otherwise a finite difference of the ANALYTIC gradient.
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct FrequenciesCfg {
-    /// `"auto"` (default): analytic Hessian for RHF (closed shell) or UHF (any
-    /// multiplicity) with exact J/K, an optional ECP and a basis up to f functions,
-    /// finite differences otherwise (always for ROHF and KS).
+    /// `"auto"` (default): analytic Hessian for RHF (closed shell), UHF (any
+    /// multiplicity) or ROHF with exact J/K and a basis up to f functions (RHF
+    /// and UHF also with an optional ECP), finite differences otherwise (always
+    /// for ROKS and the other KS references).
     /// `"analytic"`: error if the analytic Hessian does not apply. `"fd"`:
     /// always finite differences.
     pub hessian: Option<String>,

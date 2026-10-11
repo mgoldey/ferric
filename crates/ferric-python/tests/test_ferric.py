@@ -466,6 +466,37 @@ def test_run_frequencies_water_matches_pyscf():
     )
 
 
+def test_run_frequencies_rohf_is_analytic_and_roks_is_not():
+    """`hessian="auto"` takes the analytic ROHF Hessian; ROKS stays finite-difference.
+
+    NH2 (doublet) / STO-3G. The analytic and finite-difference frequencies are
+    two constructions of one Hessian and agree to the FD step's truncation; a
+    dispatch that sent ROHF to a different path would differ by tens of cm^-1.
+    ROKS (`xc` set) has no analytic Hessian: "analytic" raises and "auto"
+    differences gradients.
+    """
+    mol = ferric.Molecule.from_xyz_string(
+        "3\nNH2\nN 0.0 0.0 0.0\nH 0.0 0.803611 -0.634654\nH 0.0 -0.803611 -0.634654\n",
+        charge=0,
+        multiplicity=2,
+    )
+    an = ferric.run_frequencies(mol, "sto-3g", reference="rohf")
+    assert an.hessian_source == "analytic"
+    assert an.n_gradient_evaluations == 0
+    fd = ferric.run_frequencies(mol, "sto-3g", reference="rohf", hessian="fd")
+    assert fd.hessian_source == "finite-difference"
+    assert fd.n_gradient_evaluations == 18
+    dev = max(abs(a - b) for a, b in zip(an.frequencies, fd.frequencies))
+    assert dev < 1.0, f"ROHF analytic vs FD: {dev:.3f} cm^-1: {an.frequencies} {fd.frequencies}"
+
+    roks = ferric.run_frequencies(mol, "sto-3g", reference="rohf", xc="pbe")
+    assert roks.hessian_source == "finite-difference"
+    with pytest.raises(Exception, match="Kohn-Sham"):
+        ferric.run_frequencies(
+            mol, "sto-3g", reference="rohf", xc="pbe", hessian="analytic"
+        )
+
+
 def test_run_frequencies_rejects_bad_arguments():
     """A typo'd reference must RAISE, not silently run RHF.
 

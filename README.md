@@ -78,7 +78,7 @@ and the [Sharp bits](https://matthew.thegoldeys.com/ferric/using/sharp-bits.html
 
 | Family | Examples | Page |
 |---|---|---|
-| SCF and DFT | RHF/UHF/ROHF, RKS/UKS/ROKS via libxc (LDA to meta-GGA, range-separated hybrids, VV10, D3(BJ)), analytic gradients, optimization, finite-difference frequencies, PCM/COSMO solvation | [SCF and DFT](https://matthew.thegoldeys.com/ferric/methods/scf.html) |
+| SCF and DFT | RHF/UHF/ROHF, RKS/UKS/ROKS via libxc (LDA to meta-GGA, range-separated hybrids, VV10, D3(BJ)), analytic gradients, optimization, frequencies (analytic Hessian for RHF/UHF/ROHF, finite differences otherwise), PCM/COSMO solvation | [SCF and DFT](https://matthew.thegoldeys.com/ferric/methods/scf.html) |
 | MP2 family | RI-MP2, attenuated MP2, SCS-MP2 and SCS-MP2(2terfc), OO-MP2, Laplace and SOS-MP2, MP3, local MP2, MP2-V | [The MP2 family](https://matthew.thegoldeys.com/ferric/methods/mp2.html) |
 | Coupled cluster | CCD, CCSD, CCSD(T), LinLCCD, double hybrids | [Coupled cluster](https://matthew.thegoldeys.com/ferric/methods/cc.html) |
 | Response | PDEP-RPA, GW (G0W0, COHSEX, evGW), BSE-TDA, TDDFT/TDA, polarizabilities and C6 | [RPA and GW](https://matthew.thegoldeys.com/ferric/methods/rpa-gw.html) |

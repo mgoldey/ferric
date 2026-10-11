@@ -1,9 +1,9 @@
 //! Analytic ROHF Hessian (`ferric_scf::hessian::rohf_hessian`, issue #291):
 //! the orbital response and the full matrix, against independent
 //! constructions. The derivation is in the module doc of
-//! `crates/ferric-scf/src/hessian/rohf.rs`. The public entry points still
-//! refuse ROHF, so everything here goes through the test-visible
-//! functions.
+//! `crates/ferric-scf/src/hessian/rohf.rs`. The mutants go through the hidden
+//! `hessian::rohf_support` module; everything else uses the public
+//! `rohf_hessian`.
 //!
 //! ```text
 //! OPENBLAS_NUM_THREADS=1 cargo test -p ferric-scf --release --test rohf_hessian_response
@@ -59,10 +59,8 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::frequencies::frequencies_from_cartesian_hessian;
 use ferric_scf::gradient::rohf_gradient;
-use ferric_scf::hessian::{
-    rhf_hessian, rohf_hessian, rohf_hessian_parts, rohf_hessian_parts_mutated, uhf_hessian,
-    RohfMutation,
-};
+use ferric_scf::hessian::rohf_support::{rohf_hessian_parts_mutated, RohfMutation};
+use ferric_scf::hessian::{rhf_hessian, rohf_hessian, rohf_hessian_parts, uhf_hessian};
 use ferric_scf::result::{ScfResult, Spin};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::rohf::solve_rohf;
@@ -407,7 +405,7 @@ fn rohf_hessian_skeleton_only(
     bounds: &SchwarzBounds,
     rohf: &ScfResult,
 ) -> Array2<f64> {
-    ferric_scf::hessian::rohf_skeleton_parts(
+    ferric_scf::hessian::rohf_support::rohf_skeleton_parts(
         mol,
         prep,
         Operator::coulomb(),

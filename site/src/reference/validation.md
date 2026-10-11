@@ -42,8 +42,9 @@ ungraded kind print nothing. The warning text is the
 Symbols: ✓ = supported. — = not supported (the CLI refuses it with an error).
 **FD** = finite differences of the *analytic* gradient (6N gradient
 evaluations). The analytic Hessian covers closed-shell RHF and UHF of any
-multiplicity with exact J/K, with or without ECPs, and a basis up to f functions; `rhf` and
-`uhf` frequencies use it there by default.
+multiplicity with exact J/K, with or without ECPs, and ROHF with exact J/K and
+no ECP or external potential, with a basis up to f functions; `rhf`, `uhf` and
+`rohf` frequencies use it there by default.
 
 ## CLI `method.kind` matrix
 
@@ -55,7 +56,7 @@ Open-shell support is listed only where the dispatch code handles it (see
 |---|---|---|---|---|---|---|---|---|---|
 | `rhf` | [SCF](../methods/scf.md) | RHF; RKS with `[dft] functional` (refuses multiplicity > 1) | ✓ | ✓ analytic | analytic (RHF, exact J/K, ECPs included, up to f); FD otherwise | `run_rhf`, `run_optimize`, `run_frequencies` | `water-rhf.toml` | [Proven](#anchors) | — |
 | `uhf` | [SCF](../methods/scf.md) | UHF; UKS with `[dft] functional` | ✓ | ✓ analytic (+ D3(BJ) or MBD@rsSCS gradient with `[dft] dispersion` on UKS) | analytic (UHF, exact J/K, ECPs included, up to f); FD otherwise; with `[dft] dispersion` on UKS, FD of the KS + dispersion gradient | `run_uhf`, `run_frequencies(reference="uhf", xc=..., dispersion=...)` | `h_uhf.toml` | [Proven](#anchors) | — |
-| `rohf` | [SCF](../methods/scf.md) | ROHF; ROKS with `[dft] functional` | ✓ | ✓ analytic (+ D3(BJ) or MBD@rsSCS gradient with `[dft] dispersion` on ROKS) | FD (+ the dispersion gradient with `[dft] dispersion` on ROKS) | `run_rohf`, `run_frequencies(reference="rohf", xc=..., dispersion=...)` | — | [Proven](#anchors) | — |
+| `rohf` | [SCF](../methods/scf.md) | ROHF; ROKS with `[dft] functional` | ✓ | ✓ analytic (+ D3(BJ) or MBD@rsSCS gradient with `[dft] dispersion` on ROKS) | analytic (ROHF, exact J/K, no ECP or external potential, up to f); FD otherwise, and for ROKS (+ the dispersion gradient with `[dft] dispersion` on ROKS) | `run_rohf`, `run_frequencies(reference="rohf", xc=..., dispersion=...)` | — | [Proven](#anchors) | — |
 | `ksdft` | [SCF/DFT](../methods/scf.md) | RKS; UKS when multiplicity > 1 | ✓ | ✓ analytic (+ D3(BJ) or MBD@rsSCS gradient with `[dft] dispersion`, RKS and UKS) | FD; with `[dft] dispersion` FD of the KS + dispersion gradient (RKS and UKS); refused with `grid_prune` | `run_dft` / `run_ksdft`, `run_frequencies(xc=..., dispersion=...)` | `benzene-dfb3lyp.toml`, `h2-lda-opt.toml` | [Proven](#anchors) | — |
 | `rimp2` | [MP2](../methods/mp2.md) | RHF; UHF + unrestricted RI-MP2 when multiplicity > 1 (energy only) | ✓ | ✓ analytic (Z-vector; closed shell only) | — | `run_rimp2` (UHF + UMP2 when multiplicity > 1) | `water-rimp2.toml`; local: `water-rimp2-local.toml`, `alkane8-rimp2-local-direct.toml` | [Proven](#anchors) | Exact RI-MP2. With `[local] scheme = "amplitude-threshold"` (`run_rimp2(local=..., eps=...)`): [Proven (narrow)](#anchors) by its exact limit — at ε = 0 the in-core and `integral_direct` paths match PySCF DF-MP2 to ≤1.1e-11 Ha (H2O and n-butane, 6-31G and cc-pVDZ); finite ε is a measured error map, not validated; closed shell and `task = "energy"` only; ε = 0 reproduces exact `rimp2`; the exact reference and the error against it are opt-in (`[local] reference = true`, `compute_reference=True`). `integral_direct = true` never forms the global 3-index tensor; its measured scaling is under [Known limits](#known-limits-and-negatives). On the device (`[gpu]`) the energy stage runs with `B_ov` resident: at `precision = "f64"` (the default) it agrees with the CPU path to within a bound on the difference of summation order (`gpu_rimp2_resident.rs`); with `precision = "mixed"` and `rimp2-energy` in `mixed_kernels` it is a **measured error map, not Proven** (f32-resident `B_ov`, f64 accumulation; closed-shell and unrestricted, Coulomb, erfc and terfc operators), graded under [Mixed-precision GPU kernels](#mixed-precision-gpu-kernels). |
 | `mp3` | [MP2](../methods/mp2.md) | RHF | ✓ | — | — | `run_mp3` | `water-mp3.toml` | [Proven](#anchors) | — |
@@ -451,11 +452,12 @@ metric is not measured here. Test files:
 
 Reported rather than omitted:
 
-- **Analytic Hessians**: closed-shell RHF and UHF only (exact J/K, ECPs
-  supported with shells up to f, no solvent, no embedding, basis up to f
-  functions). ROHF has none (PySCF has no
-  ROHF Hessian either). Every other method's frequencies take central finite
-  differences of the analytic gradient.
+- **Analytic Hessians**: closed-shell RHF, UHF and ROHF only (exact J/K, basis
+  up to f functions, no solvent, no polarizable embedding; ECPs and external
+  potentials for RHF and UHF but not ROHF). PySCF has no ROHF Hessian, so the
+  ROHF reference is a finite difference of PySCF's analytic gradient. ROKS and
+  every other method's frequencies take central finite differences of the
+  analytic gradient.
 - **Local MP2**: the integral-direct local MP2 (`rimp2` with `[local]
   integral_direct = true`) has its correlation stage measured at about
   N<sup>1.24</sup> (erfc) and N<sup>1.4</sup> (Coulomb) on n-alkanes C20–C48

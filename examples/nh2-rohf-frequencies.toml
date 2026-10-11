@@ -1,0 +1,22 @@
+# Harmonic frequencies of the NH2 radical (doublet) from the analytic ROHF
+# Hessian (`[frequencies] hessian = "auto"` picks it for exact-J/K ROHF; ROKS
+# and the other Kohn-Sham references use finite differences). The printed
+# "Hessian" line says which construction ran.
+[molecule]
+xyz = "testdata/molecules/validation/nh2.xyz"
+charge = 0
+multiplicity = 2
+
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "rohf"
+task = "frequencies"
+
+[frequencies]
+hessian = "analytic"
+
+[scf]
+energy_conv = 1e-10
+density_conv = 1e-9

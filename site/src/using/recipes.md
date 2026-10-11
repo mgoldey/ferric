@@ -181,8 +181,8 @@ max_steps = 30
 ```
 
 [Capabilities and validation](../reference/validation.md) lists which methods have analytic
-gradients. Harmonic frequencies use `task = "frequencies"` (finite differences
-of the analytic gradient; see `examples/water-frequencies.toml`).
+gradients. Harmonic frequencies use `task = "frequencies"` (the analytic Hessian
+where it applies, otherwise finite differences of the analytic gradient; see `examples/water-frequencies.toml`).
 
 **Runtime depends on the system, so measure before you plan.** A whole
 optimization at drug-like size has not been timed on this page. For scale,

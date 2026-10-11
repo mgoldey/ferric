@@ -1,7 +1,7 @@
-//! ROHF Hessian SKELETON (`ferric_scf::hessian::rohf_skeleton_parts`, terms
-//! 1-4 of issue #291) against independent constructions. The orbital response
-//! (term 5) does not exist yet, so the public Hessian entry points REFUSE ROHF
-//! and nothing here is a Hessian: each test compares a skeleton piece to the
+//! ROHF Hessian SKELETON (`ferric_scf::hessian::rohf_support::rohf_skeleton_parts`, terms
+//! 1-4 of issue #291) against independent constructions. The skeleton is not a
+//! Hessian (the orbital response, term 5, is in `rohf_hessian_response`): each
+//! test compares a skeleton piece to the
 //! derivative of the matching piece of `rohf_gradient` at FROZEN densities and
 //! frozen energy-weighted density `W`.
 //!
@@ -81,10 +81,10 @@ use ferric_scf::gradient::{
     build_energy_weighted_density_uhf, oneelectron_gradient, rohf_gradient,
     twoelectron_gradient_uhf,
 };
-use ferric_scf::hessian::{
-    rhf_hessian, rhf_hessian_parts, rohf_skeleton_from_densities, rohf_skeleton_parts, uhf_hessian,
-    RohfSkeletonDensities, RohfSkeletonParts,
+use ferric_scf::hessian::rohf_support::{
+    rohf_skeleton_from_densities, rohf_skeleton_parts, RohfSkeletonDensities, RohfSkeletonParts,
 };
+use ferric_scf::hessian::{rhf_hessian, rhf_hessian_parts, uhf_hessian};
 use ferric_scf::result::{ScfResult, Spin};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::rohf::solve_rohf;
