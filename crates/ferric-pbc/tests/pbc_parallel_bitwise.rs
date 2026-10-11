@@ -975,6 +975,18 @@ fn kpoint_rhf_rsgdf_force_is_bitwise_across_threads_and_vs_serial_walks() {
 /// ordering.
 #[test]
 fn kpoint_rhf_rsgdf_stress_is_bitwise_across_threads() {
+    kpoint_rhf_rsgdf_stress_bitwise(None);
+}
+
+/// The same with the RANGE SPLIT (kept-call SR strain walks of the split plan
+/// with the phase-folded weights, the moved-aux and smooth-pair LR strain
+/// passes): bit-identical across 1/2/6 threads.
+#[test]
+fn kpoint_rhf_split_rsgdf_stress_is_bitwise_across_threads() {
+    kpoint_rhf_rsgdf_stress_bitwise(Some(RangeSplit::new(1.0)));
+}
+
+fn kpoint_rhf_rsgdf_stress_bitwise(split: Option<RangeSplit>) {
     let cell = cell_of(&[[0.3, 0.2, 0.1], [0.35, 0.12, 1.5]], cubic(4.0), 1);
     let prep = prep_for(&cell, &pyscf_sto3g_h());
     let aux = prep_for(&cell, &et_sp_aux());
@@ -984,11 +996,17 @@ fn kpoint_rhf_rsgdf_stress_is_bitwise_across_threads() {
     let kcfg = KRsGdfConfig {
         gdf: RsGdfConfig {
             sr_column_rotation: SrColumnRotation::Off,
+            range_split: split,
             ..gdf_cfg()
         },
         mutation: None,
     };
     let gdf = KRsGdf::build(&cell, &prep, &aux, &mesh, &hk.s, &kcfg).expect("KRsGdf");
+    assert_eq!(
+        !gdf.stats().split_counters.is_empty(),
+        split.is_some(),
+        "the split path must run exactly when requested"
+    );
     let inj = KPointInjection {
         s: hk.s.clone(),
         h: hk.h.clone(),

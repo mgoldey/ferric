@@ -75,7 +75,11 @@
 //!   the `J3` overlap part through the caller's `dS` pass, and `+δ c0 qᵀ
 //!   Wm(0) q` for `J2` (constant under atom motion).
 //!
-//! A range-split build is refused (typed error).
+//! A range-split build runs the split twins of the same passes
+//! (`split::kstrain`: the moved-aux and smooth-pair LR strain at `|K| =
+//! |G + q|`, the plan's kept-call SR strain walks) with the kept `(q_c, S −
+//! S_ss)` G = 0 inputs; the caller subtracts the smooth-overlap virial
+//! ([`KFitGrad::smooth_g0`]).
 //!
 //! # Scope
 //!
@@ -147,7 +151,7 @@ pub(crate) struct KFitMutation {
 }
 
 /// `3 × 3` strain tensor.
-type Mat3 = [[f64; 3]; 3];
+pub(in crate::rsgdf) type Mat3 = [[f64; 3]; 3];
 
 /// Which terms of the fitted strain are included (production sets every
 /// field; the k stress mutation seams clear one each).
@@ -164,6 +168,21 @@ pub(crate) struct KFitStrainTerms {
     /// Aux-FT strain in `J3` / in `J2`.
     pub(crate) aux_ft3: bool,
     pub(crate) aux_ft2: bool,
+    /// Range split: the SR kernel-weight strain `dv_SR(|K|)/dε` of the moved
+    /// blocks (`false`: the `SplitNoSrKernelStrain` mutant).
+    pub(crate) sr_kernel: bool,
+    /// Range split: the smooth-pair `dP̄_ss` / `dX_c` strain terms (`false`:
+    /// the `SplitNoSmoothPair` mutant).
+    pub(crate) smooth_pair: bool,
+    /// Range split: the G = 0 volume terms with the KEPT `(q_c, S − S_ss)`
+    /// (`false`: the full `(q, S)`, the `SplitFullG0` mutant).
+    pub(crate) kept_g0: bool,
+    /// Range split: the sign of the SR kernel slope flipped (the
+    /// `SplitFlipSrSlope` mutant).
+    pub(crate) flip_slope: bool,
+    /// Range split: the smooth-pair energy in the `−δ E_LR` volume term
+    /// (`false`: the `SplitNoSmoothVolume` mutant).
+    pub(crate) smooth_volume: bool,
 }
 
 /// The fitted two-electron strain pieces (each `dE/dε`, Hartree per cell, at
@@ -181,11 +200,11 @@ pub(crate) struct KFitStrain {
 
 /// The LR strain accumulators over the q classes.
 #[derive(Default)]
-struct LrStrainAcc {
-    s3: Mat3,
-    s2: Mat3,
-    e3: f64,
-    e2: f64,
+pub(in crate::rsgdf) struct LrStrainAcc {
+    pub(in crate::rsgdf) s3: Mat3,
+    pub(in crate::rsgdf) s2: Mat3,
+    pub(in crate::rsgdf) e3: f64,
+    pub(in crate::rsgdf) e2: f64,
 }
 
 /// The fitted two-electron force pieces. Orbital parts per cell atom; aux
@@ -352,8 +371,8 @@ pub(crate) fn kpoint_fit_gradient(
 
 /// The k-point RS-GDF STRAIN pieces (module doc, "Strain"): the same per-q
 /// passes as [`kpoint_fit_gradient`] (same rebuilt fit, same `Z`, `Wm`, phase
-/// bins) with the derivative walks replaced by their strain twins. Unsplit
-/// builds only (a range split is refused with a typed error).
+/// bins) with the derivative walks replaced by their strain twins (range
+/// split included).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn kpoint_fit_strain(
     gdf: &KRsGdf,
@@ -460,13 +479,6 @@ fn kpoint_fit_core(
     )?;
     let images = cell.translations(rpair)?;
     let plan = SplitPlan::for_kpoint(&st, g, &images, (rl, nk), ledger)?;
-    if strain.is_some() && (plan.is_some() || g.range_split.is_some()) {
-        return Err(FerricError::General(format!(
-            "{who}: the range-split RS-GDF strain at k is not implemented (missing: per-q v_SR(|K|) \
-             kernel slopes, the smooth-pair strain and the kept (q_c, S - S_ss) volume terms); \
-             use an unsplit build"
-        )));
-    }
     let gcut = 2.0 * g.omega * (1.0 / g.precision).ln().sqrt();
     let qmax = (0..nk)
         .map(|iq| {
@@ -517,6 +529,7 @@ fn kpoint_fit_core(
         qv: &qv,
         q_g0: &q_g0,
         s_g0: s_kept.as_deref().unwrap_or(s_k),
+        s_full: s_k,
         phk: &phk,
         d_total,
         exch,
@@ -571,7 +584,7 @@ fn kpoint_fit_core(
             n_sr2: fs.2,
             n_chunks: acc.n_chunks,
             n_k_lr: acc.n_k_lr,
-            smooth_g0: None,
+            smooth_g0: plan.map(|p| p.into_split_g0(naux, images)),
             strain: Some(fs.0),
         });
     }
@@ -685,6 +698,8 @@ struct FitCtx<'a> {
     q_g0: &'a [f64],
     /// The build's G = 0 overlaps (`S(k)`, or `S(k) − S_ss(k)`).
     s_g0: &'a [Array2<C64>],
+    /// The full `S(k)` (the `SplitFullG0` stress mutant's volume term).
+    s_full: &'a [Array2<C64>],
     phk: &'a [Vec<C64>],
     d_total: &'a [Array2<C64>],
     exch: &'a [(f64, &'a [Array2<C64>])],
@@ -1041,7 +1056,7 @@ fn q_class_pass(
     }
 
     if is_q0 {
-        acc.qwq += qwq_of(ctx.qv, &wm);
+        acc.qwq += qwq_of(ctx.q_g0, &wm);
     }
 
     // --- LR on the FULL {G + q} set.
@@ -1093,9 +1108,49 @@ fn k_lr_q(
     acc: &mut FitAcc,
 ) -> Result<usize, FerricError> {
     match ctx.strain {
-        Some(t) => k_lr_strain_unsplit(ctx, kfull, zr, wm, chunk_budget, &t, &mut acc.lr_strain),
+        Some(t) => k_lr_strain_q(
+            ctx,
+            kfull,
+            q,
+            (zr, wm),
+            chunk_budget,
+            &t,
+            &mut acc.lr_strain,
+        ),
         None => k_lr_force_q(ctx, kfull, q, zr, wm, chunk_budget, &mut acc.lr),
     }
+}
+
+/// The LR STRAIN passes of one q class: the unsplit pass when no aux primitive
+/// moved, else the split full-pair pass; plus the split's smooth-pair pass
+/// (the strain twin of [`k_lr_force_q`]). Returns the chunk count.
+fn k_lr_strain_q(
+    ctx: &FitCtx<'_>,
+    kfull: &[[f64; 3]],
+    q: [f64; 3],
+    (zr, wm): (&[Array2<C64>], &Array2<C64>),
+    chunk_budget: usize,
+    terms: &KFitStrainTerms,
+    out: &mut LrStrainAcc,
+) -> Result<usize, FerricError> {
+    let moduli = ctx.mesh.residue_moduli();
+    let mut n_chunks = match ctx.plan.filter(|p| p.moves_aux()) {
+        Some(p) => p.k_lr_strain_moved(
+            ctx.st,
+            kfull,
+            (q, moduli),
+            (zr, wm),
+            chunk_budget,
+            terms,
+            out,
+        )?,
+        None => k_lr_strain_unsplit(ctx, kfull, zr, wm, chunk_budget, terms, out)?,
+    };
+    if let Some(p) = ctx.plan {
+        n_chunks +=
+            p.k_lr_strain_smooth(ctx.st, kfull, (q, moduli), zr, chunk_budget, terms, out)?;
+    }
+    Ok(n_chunks)
 }
 
 /// `R_T` of the aux-image residues.
@@ -1235,13 +1290,15 @@ fn finish_strain(
     budget: usize,
 ) -> Result<(KFitStrain, usize, usize), FerricError> {
     let imgs = if terms.images { 1.0 } else { 0.0 };
-    let (j3_sr, n_sr3) = sr3_strain_with(ctx.st, images, imgs, budget, |l, t| {
-        Y3::PairMajor(bins.z(l, t))
-    })?;
-    let (j2_sr, n_sr2) = if ctx.mutation.no_metric {
-        ([[0.0; 3]; 3], 0)
-    } else {
-        sr2_strain_with(ctx.st, imgs, budget, |t| bins.wm(t))?
+    let z = |l: [f64; 3], t: [f64; 3]| Y3::PairMajor(bins.z(l, t));
+    let (j3_sr, n_sr3) = match ctx.plan {
+        Some(p) => p.sr3_strain_with(ctx.st, images, imgs, budget, z)?,
+        None => sr3_strain_with(ctx.st, images, imgs, budget, z)?,
+    };
+    let (j2_sr, n_sr2) = match (ctx.mutation.no_metric, ctx.plan) {
+        (true, _) => ([[0.0; 3]; 3], 0),
+        (false, Some(p)) => p.sr2_strain_with(ctx.st, imgs, budget, |t| bins.wm(t))?,
+        (false, None) => sr2_strain_with(ctx.st, imgs, budget, |t| bins.wm(t))?,
     };
     let (mut j3_lr, mut j2_lr) = (acc.lr_strain.s3, acc.lr_strain.s2);
     if terms.volume {
@@ -1252,7 +1309,8 @@ fn finish_strain(
     }
     // J3 G = 0 energy E_g0 = Re Σ_k tr[S(k) M_g0(k)] (linear in c0 ∝ 1/Ω).
     let mut e_g0 = 0.0_f64;
-    for (s, m) in ctx.s_g0.iter().zip(&acc.mg0) {
+    let s_vol = if terms.kept_g0 { ctx.s_g0 } else { ctx.s_full };
+    for (s, m) in s_vol.iter().zip(&acc.mg0) {
         for (a, row) in s.rows().into_iter().enumerate() {
             for (b, z) in row.iter().enumerate() {
                 e_g0 += (*z * m[(b, a)]).re;
@@ -1284,7 +1342,7 @@ fn finish_strain(
 /// `φ3 = Re Σ_r Σ_ml p_r[ml] Σ_P Zr[r][ml, P] conj(X_P)` and its nine pair-FT
 /// strain derivatives `Re Σ dp_r[ab][ml] yv_r[ml]`; also `az_P = Σ_r Σ_ml
 /// Zr[r][ml, P] p_r[ml]` for the aux-FT strain.
-fn j3_strain_at_k(
+pub(in crate::rsgdf) fn j3_strain_at_k(
     zr: &[Array2<C64>],
     p: &[Array3<C64>],
     dp: &[[Array3<C64>; 9]],

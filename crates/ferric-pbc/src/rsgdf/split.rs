@@ -69,9 +69,9 @@
 //!
 //! Gamma energy, forces and stress (the derivative walks follow the same
 //! partition: the child module `deriv`, FINDINGS "Iteration 26"), and the
-//! k-point energy and forces ([`super::kpoint::KRsGdf`] and its `kderiv`;
-//! the moved blocks at `K = G + q` with `v_SR(|G + q|)`: the child module
-//! `ksplit`). No k-point stress. A derivative of a build made with a
+//! k-point energy, forces and stress ([`super::kpoint::KRsGdf`] and its
+//! `kderiv`; the moved blocks at `K = G + q` with `v_SR(|G + q|)`: the child
+//! modules `ksplit` and, for the strain, `kstrain`). A derivative of a build made with a
 //! [`RangeSplitMutant`] other than `Production` is refused (the mutants
 //! exist for the Gamma energy anchors), and the k-point build takes
 //! `Production` only.
@@ -105,6 +105,7 @@ use std::sync::Mutex;
 
 mod deriv;
 mod ksplit;
+mod kstrain;
 #[cfg(test)]
 pub(super) use deriv::UNORDERED_LR_REDUCE;
 pub(crate) use deriv::{split_g0, SplitG0};

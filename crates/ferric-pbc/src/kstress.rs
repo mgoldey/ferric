@@ -1,6 +1,7 @@
 //! Analytic stress tensor of the k-point RHF and UHF (Gamma-centred or
-//! shifted meshes) on the dense pure-AFT J/K or the unsplit RS-GDF J/K — the
-//! strain twin of [`crate::kgrad`], built from the same phase-folded weights.
+//! shifted meshes) on the dense pure-AFT J/K or the RS-GDF J/K (unsplit or
+//! range-split) — the strain twin of [`crate::kgrad`], built from the same
+//! phase-folded weights.
 //!
 //! # Convention (the Gamma stress's, [`crate::stress`])
 //!
@@ -37,7 +38,7 @@
 //! 6. Dense-AFT J (q = 0) and K (every q, `K = G + q`): per `K` the same
 //!    `(1/Ω)[dv Φ + v dΦ]` as the Gamma ERI with `dΦ` through the residue
 //!    strain kernel and the force's `Yt_r`; `−δ E_2e` volume term.
-//! 7. RS-GDF J/K ([`KStressJk::RsGdf`], unsplit builds): the SR 3-centre and
+//! 7. RS-GDF J/K ([`KStressJk::RsGdf`]): the SR 3-centre and
 //!    metric strain walks with the force's per-`(L, T)` / per-`T` phase-folded
 //!    weights (`Re Zbin[r_L, r_T]`, `Re Σ_q e^{iq·t} Wm(q)ᵀ`) times the pair
 //!    vector; the LR pass per q class on the full `{G + q}` set with the
@@ -46,7 +47,15 @@
 //!    G = 0 term through `dS` (`M_g0(k)`, in the overlap pass) and its volume
 //!    term `−δ E_g0`; the strain-only `J2` G = 0 volume term `+δ c0 qᵀ Wm(0) q`
 //!    (constant under atom motion, so the forces never see it). All at FIXED
-//!    `Z`, `Wm` (the k force's Loewner metric weights).
+//!    `Z`, `Wm` (the k force's Loewner metric weights). A RANGE-SPLIT build
+//!    follows the same partition (`rsgdf::split::kstrain`): the SR walks over
+//!    the kept calls / compact pairs, the moved blocks with the kernel
+//!    `v_SR(|G + q|)` and its slope `dv_SR/dK² = −v_SR/K² + v_LR/4ω²`, a
+//!    smooth-pair pass (`conj(v_SR X_c)` on the smooth orbital pieces), the
+//!    volume terms with the smooth-pair energy and the kept `(q_c, S − S_ss)`
+//!    G = 0 inputs, and the smooth-piece overlap virial `dS_ss/dε` (image
+//!    resolved, residue-weighted by `M_g0`) SUBTRACTED from the G = 0 overlap
+//!    term.
 //! 8. Madelung (`exxdiv = ewald`): `−½ (1/N_k) Σ_s Σ_k tr[D_s S D_s S] dv_M/dε`
 //!    with `dv_M/dε` the Ewald strain of the `diag(N)` SUPERCELL lattice (`v_M`
 //!    is the mesh constant, [`KPointMesh::madelung`]); its `S` part is in the
@@ -54,10 +63,9 @@
 //!
 //! # Scope
 //!
-//! Dense pure-AFT and unsplit RS-GDF J/K, HF, RHF and UHF. NOT covered, each
-//! refused with a typed error naming the missing piece: a range-split RS-GDF
-//! build (per-q `v_SR(|K|)` kernel slopes, smooth-pair strain, kept
-//! `(q_c, S − S_ss)` volume terms), ECP at k (the k energy
+//! Dense pure-AFT and RS-GDF (unsplit or range-split) J/K, HF, RHF and UHF.
+//! NOT covered, each refused with a typed error naming the missing piece: ECP
+//! at k (the k energy
 //! supports ECPs, the k forces and stress do not), an explicit SR column
 //! rotation request (`Auto` resolves to the unrotated walk, as
 //! [`crate::kgrad`]; measured on H2 cc-pVDZ 1×1×2 RS-GDF, where the rotation
@@ -203,6 +211,22 @@ pub enum KStressMutation {
     /// RS-GDF, UHF only (identity for RHF): the fitted exchange `Z` pairs
     /// `D_α` with `D_β` (`D_α J3^H D_β + D_β J3^H D_α`).
     FitCrossSpin,
+    /// RS-GDF range split: drop the SR kernel-weight strain `dv_SR(|K|)/dε`
+    /// of the moved G-space blocks.
+    SplitNoSrKernelStrain,
+    /// RS-GDF range split: drop the smooth-pair `dP̄_ss` / `dXc` strain terms.
+    SplitNoSmoothPair,
+    /// RS-GDF range split: the unsplit G = 0 inputs `(q, S)` in the volume
+    /// terms and `M_g0`, and no `dS_ss` virial.
+    SplitFullG0,
+    /// RS-GDF range split: omit the smooth-piece overlap virial `dS_ss/dε`
+    /// of the `J3` G = 0 term.
+    SplitNoSmoothOverlap,
+    /// RS-GDF range split: the sign of the SR kernel slope `dv_SR/dK²` flipped.
+    SplitFlipSrSlope,
+    /// RS-GDF range split: the smooth-pair LR energy left out of the
+    /// `−δ E_LR` volume term (diagonal only).
+    SplitNoSmoothVolume,
 }
 
 /// Settings for the k-point stress entry points.
@@ -852,8 +876,8 @@ fn grad_jk<'a>(jk: &KStressJk<'a>) -> KGradJk<'a> {
     }
 }
 
-/// The typed refusals shared by every entry point: ECP at k, a range-split
-/// RS-GDF build, and a range-separated dense kernel.
+/// The typed refusals shared by every entry point: ECP at k and a
+/// range-separated dense kernel (a range-split RS-GDF build is supported).
 fn refuse_unsupported(
     who: &str,
     hk: &PeriodicHcoreK,
@@ -871,15 +895,6 @@ fn refuse_unsupported(
                 "{who}: the dense source was built with a range-separated exchange kernel \
                  (KDenseAftConfig::rsh); its strain (screened kernel at K = G + q) is not \
                  implemented"
-            )));
-        }
-    }
-    if let KStressJk::RsGdf(src) = jk {
-        if src.cfg.gdf.range_split.is_some() {
-            return Err(FerricError::General(format!(
-                "{who}: the range-split RS-GDF strain at k is not implemented (missing: per-q \
-                 v_SR(|K|) kernel slopes, the smooth-pair strain and the kept (q_c, S - S_ss) \
-                 volume terms). Use an unsplit RS-GDF build or the dense-AFT source"
             )));
         }
     }
@@ -1200,6 +1215,20 @@ fn assemble(
         parts.fit_j3_g0_volume = fs.j3_g0_volume;
         parts.fit_j2_g0_volume = fs.j2_g0_volume;
         parts.fit_g0_overlap = one.overlap[3];
+        // Range split: J3 -= c0 (S - S_ss) q_c, so the smooth-piece overlap
+        // virial (over the build's pair images, residue-weighted by M_g0) is
+        // SUBTRACTED; none unsplit and under the two mutants.
+        if let (Some(sg), Some(w)) = (f.smooth_g0.as_ref(), w_g0.as_ref()) {
+            if !is(KStressMutation::SplitNoSmoothOverlap) && !is(KStressMutation::SplitFullG0) {
+                let b = cell.reciprocal();
+                let moduli = ph.moduli;
+                let sv = sg.overlap_virial_by(
+                    |l| &w[residue_index(lattice_coords(&b, &l), moduli)],
+                    is(KStressMutation::NoSrImages),
+                )?;
+                add_into(&mut parts.fit_g0_overlap, &sv, -1.0);
+            }
+        }
         if is(KStressMutation::NoMetric) {
             parts.fit_j2_sr = ZERO3;
             parts.fit_j2_lr = ZERO3;
@@ -1302,6 +1331,7 @@ fn fit_pass(
         lr_wrong_q: is(KStressMutation::FitLrWrongQ),
         no_loewner_kd: is(KStressMutation::FitNoLoewnerKd),
         cross_spin: is(KStressMutation::FitCrossSpin),
+        split_full_g0: is(KStressMutation::SplitFullG0),
         ..Default::default()
     };
     let terms = KFitStrainTerms {
@@ -1314,6 +1344,11 @@ fn fit_pass(
         images: !is(KStressMutation::NoSrImages),
         aux_ft3: !is(KStressMutation::NoAuxFt) && !is(KStressMutation::NoAuxFt3),
         aux_ft2: !is(KStressMutation::NoAuxFt),
+        sr_kernel: !is(KStressMutation::SplitNoSrKernelStrain),
+        smooth_pair: !is(KStressMutation::SplitNoSmoothPair),
+        kept_g0: !is(KStressMutation::SplitFullG0),
+        flip_slope: is(KStressMutation::SplitFlipSrSlope),
+        smooth_volume: !is(KStressMutation::SplitNoSmoothVolume),
     };
     kpoint_fit_strain(
         src.gdf, src.cfg, cell, prep, src.aux, mesh, s_k, dtot, &exch, fm, terms, ledger,
