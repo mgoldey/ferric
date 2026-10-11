@@ -105,7 +105,8 @@
 //!   overlap weight; equals the Gamma force on ONE copy of each atom in the
 //!   diag(N) supercell. FINDINGS "Iteration 21".
 //! * [`kstress`] — the k-point RHF / UHF stress tensor
-//!   (`kpoint_rhf_stress`, `kpoint_uhf_stress`) on the dense-AFT J/K:
+//!   (`kpoint_rhf_stress`, `kpoint_uhf_stress`) on the dense-AFT and the
+//!   unsplit RS-GDF J/K:
 //!   the Gamma stress terms with the force's phase-folded weights times the
 //!   pair vector (k at fixed fractional coordinates, so no k-strain term),
 //!   the residue-resolved pair-FT strain kernel for `V_LR` and the per-q

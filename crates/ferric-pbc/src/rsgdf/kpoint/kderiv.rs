@@ -55,6 +55,28 @@
 //! `Re tr[Wm dJ2h] = Re tr[½(Wm + Wm^H) dJ2]` for the Hermitised metric;
 //! the `v_SR`-weighted terms amplify its roundoff asymmetry, FINDINGS (e)).
 //!
+//! # Strain
+//!
+//! [`kpoint_fit_strain`] runs the SAME per-q passes (rebuilt `J2(q)`, `J3`,
+//! `Z`, `Wm`, the phase bins `Zbin`, `Wmbin`) and contracts them with the
+//! strain derivative instead of the nuclear one, at fixed `Z`, `Wm`. k-points
+//! sit at FIXED fractional coordinates, so every Bloch / aux-image phase is
+//! strain-invariant and the bins are reused unchanged:
+//!
+//! * SR: the ordered-parallel strain walks of [`crate::rsgdf::strain`]
+//!   ([`sr3_strain_with`], [`sr2_strain_with`]) with the bin of each `(L, T)`
+//!   / `T`: `∂_A,x (A − C′)_z + ∂_B′,x (B′ − C′)_z` per triplet.
+//! * LR per q on `K = G + q`: `(1/Ω) Σ_K [dv φ + v dφ]` with `φ3 = Re Σ_r
+//!   p_r · Zr conj(X)`, `φ2 = Re Σ conj(X) Wmᵀ X`, `dv = v′(K²)(−2 K_a K_b)`,
+//!   the residue pair-FT strain kernel for `dp_r` and
+//!   [`crate::rsgdf::strain::aux_ft_strain_shells`] for `dX`; `−δ E` of both
+//!   LR energies.
+//! * G = 0: `−δ E_g0` with `E_g0 = Re Σ_k tr[S(k) M_g0(k)]` (`c0 ∝ 1/Ω`),
+//!   the `J3` overlap part through the caller's `dS` pass, and `+δ c0 qᵀ
+//!   Wm(0) q` for `J2` (constant under atom motion).
+//!
+//! A range-split build is refused (typed error).
+//!
 //! # Scope
 //!
 //! Aux centres must be the cell's atoms (no `aux_jac`); the energy build must
@@ -999,44 +1021,61 @@ fn q_class_pass(
     }
 
     if is_q0 {
-        for (p, qp) in ctx.qv.iter().enumerate() {
-            for (qq, qr) in ctx.qv.iter().enumerate() {
-                acc.qwq += qp * wm[(qq, p)].re * qr;
-            }
-        }
+        acc.qwq += qwq_of(ctx.qv, &wm);
     }
 
     // --- LR on the FULL {G + q} set.
+    let kfull = lr_full_set(ctx, q)?;
+    acc.n_k_lr += kfull.len();
+    let chunk_budget = ledger.remaining().min(G_CHUNK_BYTES);
+    acc.n_chunks += k_lr_q(ctx, &kfull, q, (&zr, &wm), chunk_budget, acc)?;
+    Ok(())
+}
+
+/// `Re qᵀ Wm q` (the J2 G = 0 volume term's contraction).
+fn qwq_of(qv: &[f64], wm: &Array2<C64>) -> f64 {
+    let mut t = 0.0_f64;
+    for (p, qp) in qv.iter().enumerate() {
+        for (qq, qr) in qv.iter().enumerate() {
+            t += qp * wm[(qq, p)].re * qr;
+        }
+    }
+    t
+}
+
+/// The full LR `K = G + q` set of one q class (`K ≠ 0`, `|K| <= gcut`; the
+/// `FitLrWrongQ` test mutant builds `G − q`).
+fn lr_full_set(ctx: &FitCtx<'_>, q: [f64; 3]) -> Result<Vec<[f64; 3]>, FerricError> {
     let qn = dot3(&q, &q).sqrt();
     let g2cut = ctx.gcut * ctx.gcut;
-    let kfull: Vec<[f64; 3]> = st
+    let sg = if ctx.mutation.lr_wrong_q { -1.0 } else { 1.0 };
+    Ok(ctx
+        .st
         .cell
         .gvectors(ctx.gcut + qn)?
         .into_iter()
-        .map(|gv| {
-            let sg = if ctx.mutation.lr_wrong_q { -1.0 } else { 1.0 };
-            [gv[0] + sg * q[0], gv[1] + sg * q[1], gv[2] + sg * q[2]]
-        })
+        .map(|gv| [gv[0] + sg * q[0], gv[1] + sg * q[1], gv[2] + sg * q[2]])
         .filter(|k| {
             let k2 = dot3(k, k);
             k2 > 0.0 && k2 <= g2cut
         })
-        .collect();
-    acc.n_k_lr += kfull.len();
-    let chunk_budget = ledger.remaining().min(G_CHUNK_BYTES);
-    acc.n_chunks += match ctx.strain {
-        Some(terms) => k_lr_strain_unsplit(
-            ctx,
-            &kfull,
-            &zr,
-            &wm,
-            chunk_budget,
-            &terms,
-            &mut acc.lr_strain,
-        )?,
-        None => k_lr_force_q(ctx, &kfull, q, &zr, &wm, chunk_budget, &mut acc.lr)?,
-    };
-    Ok(())
+        .collect())
+}
+
+/// One q class's LR pass: the force accumulators, or (strain mode) the strain
+/// ones. Returns the chunk count.
+fn k_lr_q(
+    ctx: &FitCtx<'_>,
+    kfull: &[[f64; 3]],
+    q: [f64; 3],
+    (zr, wm): (&[Array2<C64>], &Array2<C64>),
+    chunk_budget: usize,
+    acc: &mut FitAcc,
+) -> Result<usize, FerricError> {
+    match ctx.strain {
+        Some(t) => k_lr_strain_unsplit(ctx, kfull, zr, wm, chunk_budget, &t, &mut acc.lr_strain),
+        None => k_lr_force_q(ctx, kfull, q, zr, wm, chunk_budget, &mut acc.lr),
+    }
 }
 
 /// `R_T` of the aux-image residues.

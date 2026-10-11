@@ -1,6 +1,6 @@
 //! Analytic stress tensor of the k-point RHF and UHF (Gamma-centred or
-//! shifted meshes) on the dense pure-AFT J/K — the strain twin of
-//! [`crate::kgrad`], built from the same phase-folded weights.
+//! shifted meshes) on the dense pure-AFT J/K or the unsplit RS-GDF J/K — the
+//! strain twin of [`crate::kgrad`], built from the same phase-folded weights.
 //!
 //! # Convention (the Gamma stress's, [`crate::stress`])
 //!
@@ -37,16 +37,27 @@
 //! 6. Dense-AFT J (q = 0) and K (every q, `K = G + q`): per `K` the same
 //!    `(1/Ω)[dv Φ + v dΦ]` as the Gamma ERI with `dΦ` through the residue
 //!    strain kernel and the force's `Yt_r`; `−δ E_2e` volume term.
-//! 7. Madelung (`exxdiv = ewald`): `−½ (1/N_k) Σ_s Σ_k tr[D_s S D_s S] dv_M/dε`
+//! 7. RS-GDF J/K ([`KStressJk::RsGdf`], unsplit builds): the SR 3-centre and
+//!    metric strain walks with the force's per-`(L, T)` / per-`T` phase-folded
+//!    weights (`Re Zbin[r_L, r_T]`, `Re Σ_q e^{iq·t} Wm(q)ᵀ`) times the pair
+//!    vector; the LR pass per q class on the full `{G + q}` set with the
+//!    complex per-residue weights `Zr`, the residue pair-FT strain kernel and
+//!    the aux-FT strain; `−δ E_LR` volume terms for `J3` and `J2`; the `J3`
+//!    G = 0 term through `dS` (`M_g0(k)`, in the overlap pass) and its volume
+//!    term `−δ E_g0`; the strain-only `J2` G = 0 volume term `+δ c0 qᵀ Wm(0) q`
+//!    (constant under atom motion, so the forces never see it). All at FIXED
+//!    `Z`, `Wm` (the k force's Loewner metric weights).
+//! 8. Madelung (`exxdiv = ewald`): `−½ (1/N_k) Σ_s Σ_k tr[D_s S D_s S] dv_M/dε`
 //!    with `dv_M/dε` the Ewald strain of the `diag(N)` SUPERCELL lattice (`v_M`
 //!    is the mesh constant, [`KPointMesh::madelung`]); its `S` part is in the
 //!    overlap weights.
 //!
 //! # Scope
 //!
-//! Dense pure-AFT J/K, HF, RHF and UHF. NOT covered, each refused with a
-//! typed error naming the missing piece: RS-GDF J/K (SR 3-centre and metric
-//! walks, LR, G = 0 volume terms; range split), ECP at k (the k energy
+//! Dense pure-AFT and unsplit RS-GDF J/K, HF, RHF and UHF. NOT covered, each
+//! refused with a typed error naming the missing piece: a range-split RS-GDF
+//! build (per-q `v_SR(|K|)` kernel slopes, smooth-pair strain, kept
+//! `(q_c, S − S_ss)` volume terms), ECP at k (the k energy
 //! supports ECPs, the k forces and stress do not), an explicit SR column
 //! rotation request (`Auto` resolves to the unrotated walk, as
 //! [`crate::kgrad`]; the energy's rotation agrees to the screening
@@ -54,11 +65,13 @@
 //!
 //! # Input guards
 //!
-//! The stress rebuilds `F = h + J − αK` from the density and the dense
-//! kernels and refuses (typed [`FerricError`]) unless it reproduces the SCF's
+//! The stress rebuilds `F = h + J − αK` from the density and the J/K source
+//! (dense kernels or the RS-GDF build) and refuses (typed [`FerricError`]) unless it reproduces the SCF's
 //! stored Fock to [`FOCK_CONSISTENCY_BAR`]: a KS result (no `V_xc` in the
-//! rebuilt `F`) or an SCF run at another `exxdiv` would otherwise give a
-//! finite but wrong σ. A dense source built with a range-separated K kernel is
+//! rebuilt `F`), an SCF run at another `exxdiv`, or an RS-GDF source on
+//! another aux basis than the SCF's would otherwise give a finite but wrong
+//! σ (the RS-GDF energy is ω-independent to ~1e-10, so another ω is not an
+//! inconsistency). A dense source built with a range-separated K kernel is
 //! refused outright. Anchored meshes: Gamma-centred (explicit supercell and
 //! FD) and Monkhorst-Pack (FD only; an even MP mesh is a twisted supercell).
 //!
@@ -641,7 +654,7 @@ pub fn kpoint_hcore_stress_fixed_d(
 /// Where the k-point J/K come from.
 #[derive(Clone, Copy)]
 pub enum KStressJk<'a> {
-    /// Dense pure-AFT oracle (bare `4π/K²` kernels; the only source the stress supports).
+    /// Dense pure-AFT oracle (bare `4π/K²` kernels).
     Dense(&'a KDenseAftEri),
     /// k-point RS-GDF (UNSPLIT builds; a range split is refused with a typed error).
     RsGdf(KRsGdfGradSource<'a>),
@@ -826,7 +839,8 @@ fn grad_jk<'a>(jk: &KStressJk<'a>) -> KGradJk<'a> {
     }
 }
 
-/// The typed refusals shared by every entry point: ECP at k and RS-GDF J/K.
+/// The typed refusals shared by every entry point: ECP at k, a range-split
+/// RS-GDF build, and a range-separated dense kernel.
 fn refuse_unsupported(
     who: &str,
     hk: &PeriodicHcoreK,
@@ -886,7 +900,7 @@ fn check_fock(
     }
     if rebuilt.len() != stored.len() || !(worst <= FOCK_CONSISTENCY_BAR) {
         return Err(FerricError::General(format!(
-            "{who}: the Fock matrix rebuilt from the density and the dense kernels differs from \
+            "{who}: the Fock matrix rebuilt from the density and the J/K source differs from \
              the SCF's stored {what} by {worst:.2e} (bar {FOCK_CONSISTENCY_BAR:.0e}); the stress \
              covers pure Hartree-Fock only with the SAME exxdiv and kernels the SCF used (not a \
              KS-DFT result, not a different exxdiv, not an extrapolated state)"

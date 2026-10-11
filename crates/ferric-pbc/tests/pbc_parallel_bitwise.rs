@@ -67,6 +67,9 @@
 //!   3-centre and metric strain walks.
 //! * `kpoint_rhf_rsgdf_force_…` — the L-weighted SR attraction visitor and
 //!   the phase-folded k-point SR 3-centre / metric walks (H2 1×1×3).
+//! * `kpoint_rhf_rsgdf_stress_…` — the k-point RS-GDF STRESS (phase-folded
+//!   SR 3-centre / metric strain walks, per-q LR strain, G = 0 terms, the
+//!   one-electron pass), bitwise across threads (H2 1×1×3).
 //! * `ecp_force_term_…` — the periodic-ECP image loop (compact H–I,
 //!   LANL2DZ), fixed density.
 //!
@@ -107,6 +110,7 @@ use ferric_pbc::kpts::KPointMesh;
 use ferric_pbc::kscf::{
     solve_krhf, solve_krhf_injected, KJkKind, KPointInjection, KRhfConfig, KScfConfig,
 };
+use ferric_pbc::kstress::{kpoint_rhf_stress, KStress, KStressConfig, KStressJk};
 use ferric_pbc::lattice::Cell;
 use ferric_pbc::pair_ft::residues::{
     pair_ft_residues_chunked_serial_oracle, pair_ft_residues_chunked_timed,
@@ -124,6 +128,7 @@ use ferric_pbc::rsgdf::{
     exchange_aux_groups, exchange_grouped_and_serial, lr_sums_parallel_and_serial, RangeSplit,
     RsGdf, RsGdfConfig, EXCHANGE_AUX_GROUPS,
 };
+use ferric_pbc::sr_rotation::SrColumnRotation;
 use ferric_pbc::stress::{gamma_rhf_stress_rsgdf, GammaStress, GammaStressConfig, StressMutation};
 use ferric_pbc::timing::PbcTimings;
 use ferric_pbc::uhf::GammaUhfIntegrals;
@@ -956,6 +961,99 @@ fn kpoint_rhf_rsgdf_force_is_bitwise_across_threads_and_vs_serial_walks() {
     check(&ser[1], "serial oracle at 6 vs 1 thread");
     for (&n, g) in THREADS.iter().zip(&par) {
         check(g, &format!("k-point RS-GDF force at {n} threads vs serial"));
+    }
+}
+
+/// k-point RS-GDF RHF STRESS (the phase-folded SR 3-centre / metric strain
+/// walks, the per-q LR strain, the G = 0 volume terms, plus the one-electron
+/// pass) on H2 1×1×3 at 1/2/6 rayon threads: every part and the total are
+/// bit-identical. The SR strain walks are the ordered-parallel ones
+/// ([`ferric_pbc::ordered`]; their Gamma twins are compared with the frozen
+/// serial walks in `gamma_rhf_rsgdf_stress_…`; at k the weights are per-(l,t)
+/// / per-t bins of the SAME walk), and the LR strain pass is serial by
+/// construction, so any thread-count dependence would be a regression of that
+/// ordering.
+#[test]
+fn kpoint_rhf_rsgdf_stress_is_bitwise_across_threads() {
+    let cell = cell_of(&[[0.3, 0.2, 0.1], [0.35, 0.12, 1.5]], cubic(4.0), 1);
+    let prep = prep_for(&cell, &pyscf_sto3g_h());
+    let aux = prep_for(&cell, &et_sp_aux());
+    let mesh = KPointMesh::gamma_centred(&cell, [1, 1, 3]).unwrap();
+    let hcfg = grad_hcore_cfg().with_sr_column_rotation(SrColumnRotation::Off);
+    let hk = periodic_hcore_kpts(&cell, &prep, &mesh, &hcfg).expect("hcore k");
+    let kcfg = KRsGdfConfig {
+        gdf: RsGdfConfig {
+            sr_column_rotation: SrColumnRotation::Off,
+            ..gdf_cfg()
+        },
+        mutation: None,
+    };
+    let gdf = KRsGdf::build(&cell, &prep, &aux, &mesh, &hk.s, &kcfg).expect("KRsGdf");
+    let inj = KPointInjection {
+        s: hk.s.clone(),
+        h: hk.h.clone(),
+        vnn: hk.enn,
+        jk: Box::new(gdf.jk_builder_with_madelung(0.0)),
+    };
+    let scf_cfg = KScfConfig {
+        energy_conv: 1e-13,
+        grad_conv: 1e-10,
+        max_iter: 400,
+        ..Default::default()
+    };
+    let scf = solve_krhf_injected(&cell, &mesh, &scf_cfg, inj).expect("k-RHF");
+    assert!(scf.converged);
+    let src = KRsGdfGradSource {
+        gdf: &gdf,
+        cfg: &kcfg,
+        aux: &aux,
+    };
+    let run = || {
+        kpoint_rhf_stress(
+            &cell,
+            &prep,
+            &mesh,
+            &hcfg,
+            &hk,
+            KStressJk::RsGdf(src),
+            &scf,
+            ExxDiv::None,
+            &KStressConfig {
+                budget_bytes: Some(AMPLE),
+                ..Default::default()
+            },
+        )
+        .expect("kpoint_rhf_stress")
+    };
+    let runs: Vec<KStress> = THREADS.iter().map(|&n| in_pool(n, run)).collect();
+    let r = &runs[0];
+    let nz = |m: &[[f64; 3]; 3]| m.iter().flatten().any(|x| *x != 0.0);
+    assert!(
+        nz(&r.parts.vsr) && nz(&r.parts.fit_j3_sr) && nz(&r.parts.fit_j2_sr),
+        "the SR strain walks must be reachable"
+    );
+    let named = |s: &KStress| {
+        [
+            ("dE/dε", s.de_deps),
+            ("vsr", s.parts.vsr),
+            ("vlr", s.parts.vlr),
+            ("fit_j3_sr", s.parts.fit_j3_sr),
+            ("fit_j3_lr", s.parts.fit_j3_lr),
+            ("fit_j2_sr", s.parts.fit_j2_sr),
+            ("fit_j2_lr", s.parts.fit_j2_lr),
+            ("fit_g0_overlap", s.parts.fit_g0_overlap),
+            ("fit_j3_g0_volume", s.parts.fit_j3_g0_volume),
+            ("fit_j2_g0_volume", s.parts.fit_j2_g0_volume),
+        ]
+    };
+    for (&n, s) in THREADS.iter().zip(&runs).skip(1) {
+        for ((name, a), (_, b)) in named(s).iter().zip(named(r)) {
+            assert_mat3_bitwise(
+                a,
+                &b,
+                &format!("k RS-GDF stress {name} at {n} threads vs 1"),
+            );
+        }
     }
 }
 
