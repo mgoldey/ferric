@@ -460,6 +460,24 @@ fn sr3_strain(
     imgs: f64,
     budget: usize,
 ) -> Result<(Mat3, usize), FerricError> {
+    sr3_strain_with(st, images, imgs, budget, |_, _| y)
+}
+
+/// [`sr3_strain`] with a per-`(L, T)` weight `weights(l, t)` (the k-point
+/// strain: the phase-folded `Re Zbin[r_L, r_T]` of the pair image `L` and aux
+/// image `T`; the Gamma weight is one `Y` for every triplet). Same ordered
+/// walk, same addend, so the result is bit-identical to [`sr3_strain`] when
+/// `weights` is constant.
+pub(in crate::rsgdf) fn sr3_strain_with<'w, W>(
+    st: &Stage<'_>,
+    images: &[[f64; 3]],
+    imgs: f64,
+    budget: usize,
+    weights: W,
+) -> Result<(Mat3, usize), FerricError>
+where
+    W: Fn([f64; 3], [f64; 3]) -> Y3<'w> + Sync,
+{
     let mut j3_sr = [[0.0_f64; 3]; 3];
     let pool = st.sr3_deriv_pool()?;
     let count = st.sr_three_index_ordered(
@@ -469,7 +487,7 @@ fn sr3_strain(
         |eng, i1, i2, ip, l, t| {
             Ok(eng
                 .compute_eri3_deriv_shifted(st.obs, st.aux, ip, i1, i2, [t, [0.0; 3], l])?
-                .map(|blk| sr3_strain_addend(st, blk, (i1, i2, ip), l, t, y, imgs)))
+                .map(|blk| sr3_strain_addend(st, blk, (i1, i2, ip), l, t, weights(l, t), imgs)))
         },
         |_, _, _, _, _, add: Mat3| {
             add_mat3(&mut j3_sr, &add);
@@ -556,6 +574,20 @@ fn sr2_strain(
     imgs: f64,
     budget: usize,
 ) -> Result<(Mat3, usize), FerricError> {
+    sr2_strain_with(st, imgs, budget, |_| wm)
+}
+
+/// [`sr2_strain`] with a per-aux-image weight `weights(t)` (the k-point
+/// strain: the phase-folded `Wm` bin of the aux image `T`).
+pub(in crate::rsgdf) fn sr2_strain_with<'w, W>(
+    st: &Stage<'_>,
+    imgs: f64,
+    budget: usize,
+    weights: W,
+) -> Result<(Mat3, usize), FerricError>
+where
+    W: Fn([f64; 3]) -> &'w Array2<f64> + Sync,
+{
     let mut j2_sr = [[0.0_f64; 3]; 3];
     let pool = st.sr2_deriv_pool()?;
     let count = st.sr_metric_ordered(
@@ -564,7 +596,7 @@ fn sr2_strain(
         |eng, ip, iq, t| {
             Ok(eng
                 .compute_eri2_deriv_shifted(st.aux, ip, iq, t)?
-                .map(|blk| sr2_strain_addend(st, blk, (ip, iq), t, wm, imgs)))
+                .map(|blk| sr2_strain_addend(st, blk, (ip, iq), t, weights(t), imgs)))
         },
         |_, _, _, add: Mat3| {
             add_mat3(&mut j2_sr, &add);
@@ -729,7 +761,7 @@ fn sr2_strain_serial(
 /// ```
 ///
 /// `g_shape = false` (mutation seam) returns `dX = 0`.
-pub(super) fn aux_ft_strain_shells(
+pub(in crate::rsgdf) fn aux_ft_strain_shells(
     shells: &[GShell],
     naux: usize,
     gvecs: &[[f64; 3]],
