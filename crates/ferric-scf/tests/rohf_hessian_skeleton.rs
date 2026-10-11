@@ -724,7 +724,7 @@ fn density_mutants_are_caught_ho2_doublet_sto3g() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn public_hessian_entry_points_refuse_rohf_and_name_the_gap() {
+fn public_hessian_entry_points_refuse_rohf_and_name_the_entry_point() {
     if !has_deriv2() {
         return;
     }
@@ -746,8 +746,8 @@ fn public_hessian_entry_points_refuse_rohf_and_name_the_gap() {
         eprintln!("{name}: {msg}");
         assert!(msg.contains("ROHF"), "{name}: {msg}");
         assert!(
-            msg.contains("orbital response"),
-            "{name}: the refusal must name the missing piece: {msg}"
+            msg.contains("rohf_hessian"),
+            "{name}: the refusal must point at the ROHF entry point: {msg}"
         );
     }
     // And the skeleton builder refuses non-ROHF results.
