@@ -1473,10 +1473,12 @@ fn ecp_fock_guard_refuses_an_scf_run_without_the_ecp() {
     // SCF without the ECP.
     let hk0 = strip_ecp(&ks.hk);
     let bad = krhf_with(&ks, &hk0, Box::new(eri.jk_builder_with_madelung(0.0)), None);
-    for e in [stress_err(&ks.hk, &bad), force_err(&ks.hk, &bad)] {
-        eprintln!("ECP-free SCF: {e}");
-        assert!(e.contains("differs from the SCF's stored"), "{e}");
-    }
+    let e = stress_err(&ks.hk, &bad);
+    eprintln!("ECP-free SCF, stress: {e}");
+    assert!(e.contains("differs from the SCF's stored"), "{e}");
+    let e = force_err(&ks.hk, &bad);
+    eprintln!("ECP-free SCF, force: {e}");
+    assert!(e.contains("beyond a Madelung (exxdiv) shift"), "{e}");
     // hk with the v_ecp marker cleared (h still carries the ECP).
     let mut hk_lost = ks.hk.clone();
     hk_lost.v_ecp = None;

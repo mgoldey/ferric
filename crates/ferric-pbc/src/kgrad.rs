@@ -461,7 +461,10 @@ pub fn kpoint_rhf_gradient(
     let f: Vec<Array2<C64>> = (0..mesh.nk())
         .map(|q| &(&hk.h[q] + &j[q]) - &k[q].mapv(|z| z * 0.5))
         .collect();
-    let mismatch = check_fock(who, "fock", &f, &scf.fock)?;
+    let sds: Vec<Array2<C64>> = (0..mesh.nk())
+        .map(|q| hk.s[q].dot(&d[q]).dot(&hk.s[q]))
+        .collect();
+    let mismatch = check_fock_mod_madelung(who, &[("fock", &f, &scf.fock, sds)])?;
     let mut out = assemble(
         cell,
         prep,
@@ -518,12 +521,16 @@ pub fn kpoint_uhf_gradient(
     let base: Vec<Array2<C64>> = (0..nk).map(|q| &(&hk.h[q] + &ja[q]) + &jb[q]).collect();
     let fa: Vec<Array2<C64>> = (0..nk).map(|q| &base[q] - &ka[q]).collect();
     let fb: Vec<Array2<C64>> = (0..nk).map(|q| &base[q] - &kb[q]).collect();
-    let mismatch = check_fock(who, "fock_alpha", &fa, &scf.fock_alpha)?.max(check_fock(
+    let sds = |dm: &[Array2<C64>]| -> Vec<Array2<C64>> {
+        (0..nk).map(|q| hk.s[q].dot(&dm[q]).dot(&hk.s[q])).collect()
+    };
+    let mismatch = check_fock_mod_madelung(
         who,
-        "fock_beta",
-        &fb,
-        &scf.fock_beta,
-    )?);
+        &[
+            ("fock_alpha", &fa, &scf.fock_alpha, sds(&da)),
+            ("fock_beta", &fb, &scf.fock_beta, sds(&db)),
+        ],
+    )?;
     let mut out = assemble(
         cell,
         prep,
@@ -1191,6 +1198,60 @@ pub(crate) fn check_fock(
              the SCF's stored {what} by {worst:.2e} (bar {FOCK_CONSISTENCY_BAR:.0e}); the analytic \
              derivative covers pure Hartree-Fock only with the SAME exxdiv and kernels the SCF used (not a \
              KS-DFT result, not a different exxdiv, not an extrapolated state)"
+        )));
+    }
+    Ok(worst)
+}
+
+/// Force-side Fock guard. The force does not depend on `exxdiv` (the mesh
+/// `v_M` shift of `K` is cancelled by the M-term), so an SCF run at another
+/// `exxdiv` is legitimate: its stored Fock differs from the rebuilt one by
+/// exactly `c · S D_σ S` with one scalar `c` (the `v_M` difference). The check
+/// therefore removes the best-fit `c · S D_σ S` (shared by all k and spins)
+/// before applying [`FOCK_CONSISTENCY_BAR`]; what survives (a missing ECP, a
+/// KS potential, a different J/K source) is not of that form. Each group is
+/// `(what, rebuilt F, stored F, S D_σ S)`. Returns the surviving mismatch.
+pub(crate) fn check_fock_mod_madelung(
+    who: &str,
+    groups: &[(&str, &[Array2<C64>], &[Array2<C64>], Vec<Array2<C64>>)],
+) -> Result<f64, FerricError> {
+    let (mut num, mut den) = (0.0_f64, 0.0_f64);
+    for (what, rebuilt, stored, x) in groups {
+        if rebuilt.len() != stored.len() || x.len() != stored.len() {
+            return Err(FerricError::General(format!(
+                "{who}: stored {what} has {} k-points, the rebuilt one {}",
+                stored.len(),
+                rebuilt.len()
+            )));
+        }
+        for ((a, b), xk) in rebuilt.iter().zip(stored.iter()).zip(x) {
+            if a.dim() != b.dim() {
+                return Err(FerricError::General(format!(
+                    "{who}: stored {what} has a different shape than the rebuilt one"
+                )));
+            }
+            for ((ra, sb), xv) in a.iter().zip(b.iter()).zip(xk.iter()) {
+                num += ((sb - ra) * xv.conj()).re;
+                den += xv.norm_sqr();
+            }
+        }
+    }
+    let c = if den > 0.0 { num / den } else { 0.0 };
+    let mut worst = 0.0_f64;
+    for (_, rebuilt, stored, x) in groups {
+        for ((a, b), xk) in rebuilt.iter().zip(stored.iter()).zip(x) {
+            for ((ra, sb), xv) in a.iter().zip(b.iter()).zip(xk.iter()) {
+                worst = worst.max((sb - ra - xv * c).norm());
+            }
+        }
+    }
+    if !(worst <= FOCK_CONSISTENCY_BAR) {
+        return Err(FerricError::General(format!(
+            "{who}: the Fock matrix rebuilt from the density and the J/K source differs from \
+             the SCF's stored Fock by {worst:.2e} beyond a Madelung (exxdiv) shift (bar \
+             {FOCK_CONSISTENCY_BAR:.0e}); the analytic derivative covers pure Hartree-Fock \
+             with the SAME J/K kernels and hcore the SCF used (not a KS-DFT result, not an SCF \
+             run without the ECP, not an extrapolated state)"
         )));
     }
     Ok(worst)
