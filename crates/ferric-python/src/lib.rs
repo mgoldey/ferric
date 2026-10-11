@@ -3719,8 +3719,8 @@ impl PyFrequencyResult {
 /// rotations projected out.
 ///
 /// `hessian`: "auto" (default) uses the analytic Hessian for RHF (closed
-/// shell) or UHF (any multiplicity) with exact J/K, no ECP and a basis up to f
-/// functions and fixed external point charges or a uniform field (QM/MM,
+/// shell) or UHF (any multiplicity) with exact J/K, with or without an ECP,
+/// and a basis up to f functions and fixed external point charges or a uniform field (QM/MM,
 /// QM-QM block; this binding takes `point_charges=` / `external_field=` only,
 /// the Gaussian-smeared charges the Hessian also covers are reachable from the
 /// CLI and Rust API) (one SCF plus CPHF), and a finite difference of the ANALYTIC

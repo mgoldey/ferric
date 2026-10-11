@@ -802,7 +802,7 @@ pub fn parse_coord_system(s: &str) -> Result<ferric_scf::optimize::CoordSystem, 
 #[serde(deny_unknown_fields)]
 pub struct FrequenciesCfg {
     /// `"auto"` (default): analytic Hessian for RHF (closed shell) or UHF (any
-    /// multiplicity) with exact J/K, no ECP and a basis up to f functions,
+    /// multiplicity) with exact J/K, an optional ECP and a basis up to f functions,
     /// finite differences otherwise (always for ROHF and KS).
     /// `"analytic"`: error if the analytic Hessian does not apply. `"fd"`:
     /// always finite differences.

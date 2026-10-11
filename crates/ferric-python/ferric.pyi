@@ -2490,7 +2490,7 @@ def run_frequencies(
     """Harmonic vibrational frequencies.
 
     `hessian="auto"` uses the analytic Hessian for RHF (closed shell) or UHF
-    (any multiplicity) with exact J/K, no ECP and a basis up to f functions,
+    (any multiplicity) with exact J/K, with or without an ECP, and a basis up to f functions,
     and a finite difference of analytic gradients otherwise (always for ROHF
     and KS); `"analytic"` raises if it does not apply;
     `"fd"` always differences gradients. `.hessian_source` says which ran.
@@ -2600,7 +2600,7 @@ def run_saddle(
 
     `hessian`: `"fd"` (default) central-differences the analytic gradient and
     honours `delta`; `"analytic"` uses the analytic RHF Hessian and raises when
-    it does not apply (KS `xc`, point charges / field, ECP, basis too high in
+    it does not apply (KS `xc`, point charges / field, basis too high in
     angular momentum); `"auto"` uses it where it applies and otherwise falls
     back to FD. `delta=` with `"analytic"` or `"auto"` raises. The result's
     `hessian_source` reports which ran.

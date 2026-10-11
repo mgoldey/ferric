@@ -187,6 +187,7 @@ pub mod frequencies;
 /// Analytic RHF second derivatives (Hessian) — nuclear term implemented,
 /// electronic terms stubbed pending LIBINT2_MAX_DERIV_ORDER >= 2.
 pub mod hessian;
+pub mod hessian_ecp;
 mod hessian_field;
 mod hessian_smeared;
 /// Transition-state search by partitioned rational function optimization.

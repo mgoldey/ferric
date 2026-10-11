@@ -69,9 +69,14 @@
 //! stencil on the integrals themselves (libint2 here has no `emultipole1`
 //! derivatives), feeding both the skeleton 1e term and `F^x`.
 //!
+//! Effective core potentials are supported (see `crate::hessian_ecp`): the
+//! skeleton `Σ D ∂²V_ECP` is a fourth-order stencil of the first-derivative
+//! ECP blocks and `∂V_ECP/∂x` joins `F^x`, on whichever ECP backend the
+//! gradient uses.
+//!
 //! Scope: closed-shell RHF and UHF (any multiplicity), exact four-centre
 //! Coulomb J/K. Everything else — ROHF (PySCF has no ROHF Hessian either), KS,
-//! RI, COSX, ECPs, ghost atoms, solvation, polarizable
+//! RI, COSX, ghost atoms, solvation, polarizable
 //! embedding, fractional occupations, cDFT, non-Coulomb operators — is refused
 //! with a typed error naming the feature (the FD Hessian in
 //! [`crate::frequencies::harmonic_frequencies`] covers those).
@@ -84,6 +89,10 @@
 use crate::gradient::{
     build_energy_weighted_density, build_energy_weighted_density_uhf, gamma, gamma_uhf,
     screened_quartets_with, sum_equivalent_perms, QuartetBlock,
+};
+use crate::hessian_ecp::{
+    ecp_first_derivative_matrices, ecp_inconsistent, ecp_skeleton_hessian, has_ecp,
+    MAX_L as MAX_ECP_HESSIAN_L,
 };
 use crate::hessian_field::{
     field_first_derivative_matrices, field_skeleton_hessian, nonzero_field,
@@ -467,7 +476,8 @@ fn state_refusal(reference: Reference, mol: &Molecule, uhf: &ScfResult) -> Optio
 /// Whether [`rhf_hessian`] can run for this molecule, basis, operator and SCF
 /// configuration, decided BEFORE any SCF: the configuration checks of
 /// [`rhf_hessian_preflight`], a closed-shell (multiplicity 1) molecule, the
-/// system checks (ghost atoms, ECPs, odd electron count), and that libint2 can
+/// system checks (ghost atoms, an ECP not applied to the molecule, an ECP
+/// system with shells above f, odd electron count), and that libint2 can
 /// build the second-derivative engines for this basis — which fails for a
 /// library generated without second derivatives (the mpqc4 2.7.2 export) and
 /// for shells above the library's second-derivative angular momentum (f for
@@ -570,10 +580,13 @@ fn system_refusal(
     let checks = [
         (mol.atoms.iter().any(|a| a.ghost), "ghost atoms"),
         (
-            mol.atoms
-                .iter()
-                .any(|a| a.n_core_ecp > 0 || bs.ecp_for_element(a.z).is_some()),
-            "an effective core potential",
+            has_ecp(mol, bs) && prep.max_l() > MAX_ECP_HESSIAN_L,
+            "an ECP system with shells above f (the ECP skeleton is a stencil of \
+             first-derivative blocks limited to l <= 3)",
+        ),
+        (
+            ecp_inconsistent(mol, bs),
+            "an ECP not applied consistently to the molecule (Molecule::apply_ecp)",
         ),
         (
             reference == Reference::Rhf && mol.nelec() % 2 != 0,
@@ -675,8 +688,9 @@ fn extra_charges(config: &RhfConfig) -> &[PointCharge] {
         .map_or(&[], |e| e.point_charges.as_slice())
 }
 
-/// Uniform-field and smeared-charge skeleton terms (zero without either); see
-/// `crate::hessian_field` and `crate::hessian_smeared`.
+/// Uniform-field, smeared-charge and ECP skeleton terms (zero without any);
+/// see `crate::hessian_field`, `crate::hessian_smeared` and
+/// `crate::hessian_ecp`.
 fn extra_skeleton(
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -693,12 +707,16 @@ fn extra_skeleton(
             h += &smeared_skeleton_hessian(prep, &e.smeared_charges, d)?;
         }
     }
+    if has_ecp(mol, prep.basis_set()) {
+        h += &ecp_skeleton_hessian(mol, prep.basis_set(), d)?;
+    }
     Ok(h)
 }
 
 /// Add `∂(E·r)/∂x` to every spin's first-derivative Fock matrix (the field
 /// is part of `h`, so it enters `F^x` exactly like `∂V_ext/∂x`), and the
-/// smeared-charge attraction derivative `∂V_smeared/∂x`.
+/// smeared-charge attraction derivative `∂V_smeared/∂x` and the ECP
+/// derivative `∂V_ECP/∂x`.
 fn add_extra_first_order(
     first: &mut FirstOrderAo,
     mol: &Molecule,
@@ -713,6 +731,10 @@ fn add_extra_first_order(
             let dm = smeared_first_derivative_matrices(prep, &e.smeared_charges)?;
             add_to_every_spin(first, &dm);
         }
+    }
+    if has_ecp(mol, prep.basis_set()) {
+        let dm = ecp_first_derivative_matrices(mol, prep.basis_set())?;
+        add_to_every_spin(first, &dm);
     }
     Ok(())
 }
