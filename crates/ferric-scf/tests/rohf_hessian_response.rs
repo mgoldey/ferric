@@ -885,8 +885,10 @@ fn public_uhf_hessian_refuses_a_semicanonicalized_rohf_result() {
     .expect_err("a semicanonicalized ROHF result must be refused by uhf_hessian");
     eprintln!("uhf_hessian on a semicanonicalized ROHF result: {err}");
     assert!(err.to_string().contains("semicanonicalized"), "{err}");
-    // rohf_hessian wants the ROHF result itself.
-    assert!(hessian_of(c, &semi, &scf_config()).is_err());
+    // rohf_hessian maps it back to the ROHF result: same Hessian.
+    let direct = hessian_of(c, &c.rohf, &scf_config()).unwrap();
+    let mapped = hessian_of(c, &semi, &scf_config()).unwrap();
+    assert!(max_abs_diff(&direct, &mapped) < 1e-8);
 }
 
 #[test]
