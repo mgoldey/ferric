@@ -521,16 +521,7 @@ pub fn kpoint_uhf_gradient(
     let base: Vec<Array2<C64>> = (0..nk).map(|q| &(&hk.h[q] + &ja[q]) + &jb[q]).collect();
     let fa: Vec<Array2<C64>> = (0..nk).map(|q| &base[q] - &ka[q]).collect();
     let fb: Vec<Array2<C64>> = (0..nk).map(|q| &base[q] - &kb[q]).collect();
-    let sds = |dm: &[Array2<C64>]| -> Vec<Array2<C64>> {
-        (0..nk).map(|q| hk.s[q].dot(&dm[q]).dot(&hk.s[q])).collect()
-    };
-    let mismatch = check_fock_mod_madelung(
-        who,
-        &[
-            ("fock_alpha", &fa, &scf.fock_alpha, sds(&da)),
-            ("fock_beta", &fb, &scf.fock_beta, sds(&db)),
-        ],
-    )?;
+    let mismatch = check_fock_uhf(who, hk, &da, &db, &fa, &fb, scf)?;
     let mut out = assemble(
         cell,
         prep,
@@ -1255,6 +1246,30 @@ pub(crate) fn check_fock_mod_madelung(
         )));
     }
     Ok(worst)
+}
+
+/// UHF form of the force-side Fock guard ([`check_fock_mod_madelung`]).
+fn check_fock_uhf(
+    who: &str,
+    hk: &PeriodicHcoreK,
+    da: &[Array2<C64>],
+    db: &[Array2<C64>],
+    fa: &[Array2<C64>],
+    fb: &[Array2<C64>],
+    scf: &KUScfResult,
+) -> Result<f64, FerricError> {
+    let sds = |dm: &[Array2<C64>]| -> Vec<Array2<C64>> {
+        (0..dm.len())
+            .map(|q| hk.s[q].dot(&dm[q]).dot(&hk.s[q]))
+            .collect()
+    };
+    check_fock_mod_madelung(
+        who,
+        &[
+            ("fock_alpha", fa, &scf.fock_alpha, sds(da)),
+            ("fock_beta", fb, &scf.fock_beta, sds(db)),
+        ],
+    )
 }
 
 /// Largest `|h − T − V − V_ECP|` over k that `hk` may show (Hartree): `h` is
