@@ -853,6 +853,9 @@ fn assemble(
                 serial_sr: mutation == Some(KGradMutation::SerialDerivWalks),
                 split_gamma_kernel: mutation == Some(KGradMutation::SplitGammaKernel),
                 split_full_g0: mutation == Some(KGradMutation::SplitFullG0),
+                lr_wrong_q: false,
+                no_loewner_kd: false,
+                cross_spin: false,
             };
             Some(kpoint_fit_gradient(
                 src.gdf, src.cfg, cell, prep, src.aux, mesh, s_k, &dtot, &exch, fm, ledger,

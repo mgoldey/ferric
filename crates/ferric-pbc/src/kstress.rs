@@ -1,6 +1,6 @@
 //! Analytic stress tensor of the k-point RHF and UHF (Gamma-centred or
-//! shifted meshes) on the dense pure-AFT J/K — the strain twin of
-//! [`crate::kgrad`], built from the same phase-folded weights.
+//! shifted meshes) on the dense pure-AFT J/K or the unsplit RS-GDF J/K — the
+//! strain twin of [`crate::kgrad`], built from the same phase-folded weights.
 //!
 //! # Convention (the Gamma stress's, [`crate::stress`])
 //!
@@ -37,28 +37,46 @@
 //! 6. Dense-AFT J (q = 0) and K (every q, `K = G + q`): per `K` the same
 //!    `(1/Ω)[dv Φ + v dΦ]` as the Gamma ERI with `dΦ` through the residue
 //!    strain kernel and the force's `Yt_r`; `−δ E_2e` volume term.
-//! 7. Madelung (`exxdiv = ewald`): `−½ (1/N_k) Σ_s Σ_k tr[D_s S D_s S] dv_M/dε`
+//! 7. RS-GDF J/K ([`KStressJk::RsGdf`], unsplit builds): the SR 3-centre and
+//!    metric strain walks with the force's per-`(L, T)` / per-`T` phase-folded
+//!    weights (`Re Zbin[r_L, r_T]`, `Re Σ_q e^{iq·t} Wm(q)ᵀ`) times the pair
+//!    vector; the LR pass per q class on the full `{G + q}` set with the
+//!    complex per-residue weights `Zr`, the residue pair-FT strain kernel and
+//!    the aux-FT strain; `−δ E_LR` volume terms for `J3` and `J2`; the `J3`
+//!    G = 0 term through `dS` (`M_g0(k)`, in the overlap pass) and its volume
+//!    term `−δ E_g0`; the strain-only `J2` G = 0 volume term `+δ c0 qᵀ Wm(0) q`
+//!    (constant under atom motion, so the forces never see it). All at FIXED
+//!    `Z`, `Wm` (the k force's Loewner metric weights).
+//! 8. Madelung (`exxdiv = ewald`): `−½ (1/N_k) Σ_s Σ_k tr[D_s S D_s S] dv_M/dε`
 //!    with `dv_M/dε` the Ewald strain of the `diag(N)` SUPERCELL lattice (`v_M`
 //!    is the mesh constant, [`KPointMesh::madelung`]); its `S` part is in the
 //!    overlap weights.
 //!
 //! # Scope
 //!
-//! Dense pure-AFT J/K, HF, RHF and UHF. NOT covered, each refused with a
-//! typed error naming the missing piece: RS-GDF J/K (SR 3-centre and metric
-//! walks, LR, G = 0 volume terms; range split), ECP at k (the k energy
+//! Dense pure-AFT and unsplit RS-GDF J/K, HF, RHF and UHF. NOT covered, each
+//! refused with a typed error naming the missing piece: a range-split RS-GDF
+//! build (per-q `v_SR(|K|)` kernel slopes, smooth-pair strain, kept
+//! `(q_c, S − S_ss)` volume terms), ECP at k (the k energy
 //! supports ECPs, the k forces and stress do not), an explicit SR column
 //! rotation request (`Auto` resolves to the unrotated walk, as
-//! [`crate::kgrad`]; the energy's rotation agrees to the screening
-//! precision).
+//! [`crate::kgrad`]; measured on H2 cc-pVDZ 1×1×2 RS-GDF, where the rotation
+//! is active, the Auto-pipeline and Off-pipeline stresses differ by 1.6e-13;
+//! a segmented basis does not rotate at all). The ECP refusal reads
+//! `hk.v_ecp`: an `hk` whose `v_ecp` was cleared while its `h` still carries
+//! the ECP bypasses it (the Fock guard cannot see it either), so pass the
+//! `hk` the SCF used.
 //!
 //! # Input guards
 //!
-//! The stress rebuilds `F = h + J − αK` from the density and the dense
-//! kernels and refuses (typed [`FerricError`]) unless it reproduces the SCF's
+//! The stress rebuilds `F = h + J − αK` from the density and the J/K source
+//! (dense kernels or the RS-GDF build) and refuses (typed [`FerricError`]) unless it reproduces the SCF's
 //! stored Fock to [`FOCK_CONSISTENCY_BAR`]: a KS result (no `V_xc` in the
-//! rebuilt `F`) or an SCF run at another `exxdiv` would otherwise give a
-//! finite but wrong σ. A dense source built with a range-separated K kernel is
+//! rebuilt `F`), an SCF run at another `exxdiv`, or an RS-GDF source on
+//! another aux basis than the SCF's would otherwise give a finite but wrong
+//! σ (the RS-GDF energy is ω-independent: a fit at another ω reproduces the
+//! Fock to 1e-14 and the stress to 2.6e-12 on H2 1×1×3, so another ω is not
+//! an inconsistency). A dense source built with a range-separated K kernel is
 //! refused outright. Anchored meshes: Gamma-centred (explicit supercell and
 //! FD) and Monkhorst-Pack (FD only; an even MP mesh is a twisted supercell).
 //!
@@ -89,7 +107,7 @@ use crate::hcore::{
 };
 use crate::kdense_aft::KDenseAftEri;
 use crate::kgrad::{
-    check_inputs, cr, fold_complex, fold_real, herm, jk_build, residue_trace, KGradJk,
+    check_inputs, cr, fold_complex, fold_real, herm, jk_build, residue_trace, KFitChecks, KGradJk,
     KRsGdfGradSource, KSpins,
 };
 use crate::kpts::{lattice_coords, KPointMesh};
@@ -98,6 +116,7 @@ use crate::kuscf::KUScfResult;
 use crate::lattice::Cell;
 use crate::pair_ft::residues::{pair_ft_strain_residues_chunked, residue_coords, residue_index};
 use crate::pair_ft::PairFtStrainTerms;
+use crate::rsgdf::kpoint::kderiv::{kpoint_fit_strain, KFitMutation, KFitStrain, KFitStrainTerms};
 use crate::stress::{add_into, add_pair_virial, diag, scaled, Mat3, ZERO3};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -159,6 +178,31 @@ pub enum KStressMutation {
     NoEwaldLr,
     /// Drop the Ewald background volume term (diagonal only).
     NoEwaldBg,
+    /// RS-GDF: drop `Σ Wm dJ2` (SR, LR and its G = 0 volume term).
+    NoMetric,
+    /// RS-GDF: aux FT strain-free in J3 AND J2 (nearly blind on an accurate
+    /// aux set: it errs by the fit error only; see [`KStressMutation::NoAuxFt3`]).
+    NoAuxFt,
+    /// RS-GDF: aux FT strain-free in J3 only.
+    NoAuxFt3,
+    /// RS-GDF: drop the strain-only J2 G = 0 volume term `+δ c0 qᵀ Wm(0) q`
+    /// (diagonal only).
+    NoJ2G0Vol,
+    /// RS-GDF: drop the J3 G = 0 volume term `−δ E_g0` (diagonal only).
+    NoJ3G0Vol,
+    /// RS-GDF: drop the J3 G = 0 overlap term `Σ M_g0 dS`.
+    NoG0,
+    /// RS-GDF: `e^{+iq·T}` on the SR aux images of `Z` (the energy has `e^{−iq·T}`).
+    FitAuxPhase,
+    /// RS-GDF: the LR `K` set built as `G − q` (IDENTITY at q = 0, so blind at
+    /// 1×1×1; the Z weight of class q then meets the kernel of class −q).
+    FitLrWrongQ,
+    /// RS-GDF: the kept-dropped Loewner entries zeroed (identity for an exact
+    /// null vector, sharp for a near-dependent dropped mode).
+    FitNoLoewnerKd,
+    /// RS-GDF, UHF only (identity for RHF): the fitted exchange `Z` pairs
+    /// `D_α` with `D_β` (`D_α J3^H D_β + D_β J3^H D_α`).
+    FitCrossSpin,
 }
 
 /// Settings for the k-point stress entry points.
@@ -621,10 +665,9 @@ pub fn kpoint_hcore_stress_fixed_d(
 /// Where the k-point J/K come from.
 #[derive(Clone, Copy)]
 pub enum KStressJk<'a> {
-    /// Dense pure-AFT oracle (bare `4π/K²` kernels; the only source the stress supports).
+    /// Dense pure-AFT oracle (bare `4π/K²` kernels).
     Dense(&'a KDenseAftEri),
-    /// k-point RS-GDF: always refused (its SR 3-centre / metric strain walks,
-    /// per-q LR residue strain and G = 0 volume terms do not exist).
+    /// k-point RS-GDF (UNSPLIT builds; a range split is refused with a typed error).
     RsGdf(KRsGdfGradSource<'a>),
 }
 
@@ -645,7 +688,7 @@ pub struct KStressParts {
     pub vlr: Mat3,
     /// `−δ c0 Z_tot N`.
     pub c0_volume: Mat3,
-    /// Dense-AFT Coulomb, including its `−δ E_J` volume term.
+    /// Dense-AFT Coulomb, including its `−δ E_J` volume term (zero on RS-GDF).
     pub coulomb: Mat3,
     /// Dense-AFT exchange, including its `−δ E_K` volume term.
     pub exchange: Mat3,
@@ -655,10 +698,21 @@ pub struct KStressParts {
     pub nn_sr: Mat3,
     pub nn_lr: Mat3,
     pub nn_background: Mat3,
+    /// RS-GDF `Σ Z dJ3`: SR, LR (with volume).
+    pub fit_j3_sr: Mat3,
+    pub fit_j3_lr: Mat3,
+    /// RS-GDF `Σ Wm dJ2`: SR, LR (with volume).
+    pub fit_j2_sr: Mat3,
+    pub fit_j2_lr: Mat3,
+    /// RS-GDF J3 G = 0 through `dS` (`Σ M_g0 dS`).
+    pub fit_g0_overlap: Mat3,
+    /// RS-GDF `−δ E_g0` and `+δ c0 qᵀ Wm(0) q`.
+    pub fit_j3_g0_volume: Mat3,
+    pub fit_j2_g0_volume: Mat3,
 }
 
 impl KStressParts {
-    fn all(&self) -> [&Mat3; 13] {
+    fn all(&self) -> [&Mat3; 20] {
         [
             &self.overlap_pulay,
             &self.overlap_c0,
@@ -673,6 +727,13 @@ impl KStressParts {
             &self.nn_sr,
             &self.nn_lr,
             &self.nn_background,
+            &self.fit_j3_sr,
+            &self.fit_j3_lr,
+            &self.fit_j2_sr,
+            &self.fit_j2_lr,
+            &self.fit_g0_overlap,
+            &self.fit_j3_g0_volume,
+            &self.fit_j2_g0_volume,
         ]
     }
 
@@ -723,10 +784,12 @@ pub struct KStress {
     pub electrons: f64,
     /// `Σ D V_LR` recomputed from the strain kernel's `P`.
     pub e_vlr: f64,
-    /// Dense-AFT Coulomb energy `(1/2Ω) Σ_{G≠0} v |ρ|²`, per cell.
-    pub e_coulomb: f64,
-    /// Dense-AFT exchange energy `−(1/(2Ω N_k²)) Σ ...` (without the Madelung term).
-    pub e_exchange: f64,
+    /// Dense-AFT Coulomb energy `(1/2Ω) Σ_{G≠0} v |ρ|²`, per cell (`None` on
+    /// RS-GDF: the fitted energy is not split into J and K pieces here).
+    pub e_coulomb: Option<f64>,
+    /// Dense-AFT exchange energy `−(1/(2Ω N_k²)) Σ ...` (without the Madelung
+    /// term; `None` on RS-GDF).
+    pub e_exchange: Option<f64>,
     /// Madelung energy `−(v_M/2)(1/N_k) Σ_s Σ_k tr[D_s S D_s S]`.
     pub e_madelung: f64,
     /// Pair images, SR triplets, V_LR G count, ERI K count, pair-FT chunks.
@@ -737,6 +800,10 @@ pub struct KStress {
     pub n_chunks: usize,
     /// Resolved memory budget (bytes).
     pub budget_bytes: usize,
+    /// RS-GDF: largest number of metric eigenvalues dropped at any q (`None` dense).
+    pub fit_dropped_max: Option<usize>,
+    /// RS-GDF: rebuild consistency and strain-walk counters (`None` dense).
+    pub fit_checks: Option<KFitChecks>,
 }
 
 impl KStress {
@@ -777,7 +844,16 @@ fn mesh_madelung(cell: &Cell, mesh: &KPointMesh, exxdiv: ExxDiv) -> Result<f64, 
     })
 }
 
-/// The typed refusals shared by every entry point: ECP at k and RS-GDF J/K.
+/// The source in the force module's form (one J/K builder for both).
+fn grad_jk<'a>(jk: &KStressJk<'a>) -> KGradJk<'a> {
+    match jk {
+        KStressJk::Dense(e) => KGradJk::Dense(e),
+        KStressJk::RsGdf(s) => KGradJk::RsGdf(*s),
+    }
+}
+
+/// The typed refusals shared by every entry point: ECP at k, a range-split
+/// RS-GDF build, and a range-separated dense kernel.
 fn refuse_unsupported(
     who: &str,
     hk: &PeriodicHcoreK,
@@ -798,13 +874,14 @@ fn refuse_unsupported(
             )));
         }
     }
-    if matches!(jk, KStressJk::RsGdf(_)) {
-        return Err(FerricError::General(format!(
-            "{who}: RS-GDF J/K strain at k is not implemented (missing: SR 3-centre and metric \
-             strain walks with per-residue weights, the per-q LR residue strain and the G = 0 \
-             volume terms; range-split builds additionally need the split strain terms). Use the \
-             dense-AFT source"
-        )));
+    if let KStressJk::RsGdf(src) = jk {
+        if src.cfg.gdf.range_split.is_some() {
+            return Err(FerricError::General(format!(
+                "{who}: the range-split RS-GDF strain at k is not implemented (missing: per-q \
+                 v_SR(|K|) kernel slopes, the smooth-pair strain and the kept (q_c, S - S_ss) \
+                 volume terms). Use an unsplit RS-GDF build or the dense-AFT source"
+            )));
+        }
     }
     Ok(())
 }
@@ -836,7 +913,7 @@ fn check_fock(
     }
     if rebuilt.len() != stored.len() || !(worst <= FOCK_CONSISTENCY_BAR) {
         return Err(FerricError::General(format!(
-            "{who}: the Fock matrix rebuilt from the density and the dense kernels differs from \
+            "{who}: the Fock matrix rebuilt from the density and the J/K source differs from \
              the SCF's stored {what} by {worst:.2e} (bar {FOCK_CONSISTENCY_BAR:.0e}); the stress \
              covers pure Hartree-Fock only with the SAME exxdiv and kernels the SCF used (not a \
              KS-DFT result, not a different exxdiv, not an extrapolated state)"
@@ -863,10 +940,7 @@ pub fn kpoint_rhf_stress(
 ) -> Result<KStress, FerricError> {
     let who = "kpoint_rhf_stress";
     refuse_unsupported(who, hk, &jk)?;
-    let KStressJk::Dense(eri) = jk else {
-        unreachable!("refused above")
-    };
-    let gj = KGradJk::Dense(eri);
+    let gj = grad_jk(&jk);
     check_inputs(
         who,
         cell,
@@ -893,7 +967,7 @@ pub fn kpoint_rhf_stress(
         mesh,
         hcore_cfg,
         hk,
-        eri,
+        &gj,
         KSpins::Restricted { d, f },
         vm,
         cfg,
@@ -921,10 +995,7 @@ pub fn kpoint_uhf_stress(
 ) -> Result<KStress, FerricError> {
     let who = "kpoint_uhf_stress";
     refuse_unsupported(who, hk, &jk)?;
-    let KStressJk::Dense(eri) = jk else {
-        unreachable!("refused above")
-    };
-    let gj = KGradJk::Dense(eri);
+    let gj = grad_jk(&jk);
     check_inputs(
         who,
         cell,
@@ -959,7 +1030,7 @@ pub fn kpoint_uhf_stress(
         mesh,
         hcore_cfg,
         hk,
-        eri,
+        &gj,
         KSpins::Unrestricted { da, db, fa, fb },
         vm,
         cfg,
@@ -978,7 +1049,7 @@ fn assemble(
     mesh: &KPointMesh,
     hcore_cfg: &PeriodicHcoreConfig,
     hk: &PeriodicHcoreK,
-    eri: &KDenseAftEri,
+    jk: &KGradJk<'_>,
     spins: KSpins,
     vm: f64,
     cfg: &KStressConfig,
@@ -1040,17 +1111,20 @@ fn assemble(
         &ph.d,
         nrm1,
     );
+    // --- RS-GDF fitted strain pieces first (M_g0 enters the dS pass).
+    let fit = match jk {
+        KGradJk::Dense(_) => None,
+        KGradJk::RsGdf(src) => Some(fit_pass(
+            src, cell, prep, mesh, s_k, &dtot, &spins, cfg, ledger,
+        )?),
+    };
+    let w_g0 = fit.as_ref().map(|f| fold_real(&f.mg0, &ph.d, 1.0));
+    let mut sets: Vec<&[Array2<f64>]> = vec![&w_pulay, &w_c0, &w_mad];
+    if let Some(w) = &w_g0 {
+        sets.push(w);
+    }
     let one = one_electron_pass(
-        cell,
-        prep,
-        mesh,
-        hcore_cfg,
-        hk,
-        &dtot,
-        &ph,
-        &[&w_pulay, &w_c0, &w_mad],
-        cfg,
-        ledger,
+        cell, prep, mesh, hcore_cfg, hk, &dtot, &ph, &sets, cfg, ledger,
     )?;
     let mut parts = KStressParts {
         overlap_pulay: one.overlap[0],
@@ -1077,31 +1151,77 @@ fn assemble(
         parts.overlap_madelung = ZERO3;
     }
 
-    // --- Two-electron: dense AFT J and K.
-    let delta = fold_complex(&dtot, &ph.d, inv_nk);
-    let delta_true = fold_complex(&dtot, &ph.true_, inv_nk);
+    // --- Two-electron: dense AFT J and K, or the fitted RS-GDF pieces.
     let ft_terms = PairFtStrainTerms {
         centres: !is(KStressMutation::FtNoCentres),
         g_shape: !is(KStressMutation::GUnstrained),
     };
-    let two = dense_two_electron_strain(
-        cell,
-        prep,
-        mesh,
-        eri,
-        &spins,
-        &delta,
-        &delta_true,
-        &ph,
-        ft_terms,
-        mutation,
-        ledger,
-    )?;
-    parts.coulomb = two.coulomb;
-    parts.exchange = two.exchange;
-    if !is(KStressMutation::NoVolume) {
-        add_into(&mut parts.coulomb, &diag(-two.e_j), 1.0);
-        add_into(&mut parts.exchange, &diag(-two.e_k), 1.0);
+    let mut two = DenseStrain {
+        coulomb: ZERO3,
+        exchange: ZERO3,
+        e_j: 0.0,
+        e_k: 0.0,
+        n_chunks: 0,
+        n_kv: 0,
+    };
+    let mut fit_dropped_max = None;
+    let mut fit_checks = None;
+    if let (KGradJk::Dense(eri), None) = (jk, &fit) {
+        let delta = fold_complex(&dtot, &ph.d, inv_nk);
+        let delta_true = fold_complex(&dtot, &ph.true_, inv_nk);
+        two = dense_two_electron_strain(
+            cell,
+            prep,
+            mesh,
+            eri,
+            &spins,
+            &delta,
+            &delta_true,
+            &ph,
+            ft_terms,
+            mutation,
+            ledger,
+        )?;
+        parts.coulomb = two.coulomb;
+        parts.exchange = two.exchange;
+        if !is(KStressMutation::NoVolume) {
+            add_into(&mut parts.coulomb, &diag(-two.e_j), 1.0);
+            add_into(&mut parts.exchange, &diag(-two.e_k), 1.0);
+        }
+    }
+    if let Some(f) = &fit {
+        let fs: &KFitStrain = f.strain.as_ref().ok_or_else(|| {
+            FerricError::General("k stress: RS-GDF strain pieces missing (internal)".into())
+        })?;
+        parts.fit_j3_sr = fs.j3_sr;
+        parts.fit_j3_lr = fs.j3_lr;
+        parts.fit_j2_sr = fs.j2_sr;
+        parts.fit_j2_lr = fs.j2_lr;
+        parts.fit_j3_g0_volume = fs.j3_g0_volume;
+        parts.fit_j2_g0_volume = fs.j2_g0_volume;
+        parts.fit_g0_overlap = one.overlap[3];
+        if is(KStressMutation::NoMetric) {
+            parts.fit_j2_sr = ZERO3;
+            parts.fit_j2_lr = ZERO3;
+            parts.fit_j2_g0_volume = ZERO3;
+        }
+        if is(KStressMutation::NoJ2G0Vol) {
+            parts.fit_j2_g0_volume = ZERO3;
+        }
+        if is(KStressMutation::NoJ3G0Vol) {
+            parts.fit_j3_g0_volume = ZERO3;
+        }
+        if is(KStressMutation::NoG0) {
+            parts.fit_g0_overlap = ZERO3;
+        }
+        two.n_chunks = f.n_chunks;
+        two.n_kv = f.n_k_lr;
+        fit_dropped_max = Some(f.n_dropped_max);
+        fit_checks = Some(KFitChecks {
+            b_norm_mismatch: f.b_norm_mismatch,
+            n_sr3: f.n_sr3,
+            n_sr2: f.n_sr2,
+        });
     }
 
     // --- Madelung: −½ (1/N_k) Σ_s Σ_k tr[D_s S D_s S] dv_M/dε, the strain of
@@ -1147,8 +1267,8 @@ fn assemble(
         madelung_strain: vm_strain,
         electrons: one.electrons,
         e_vlr: one.e_vlr,
-        e_coulomb: two.e_j,
-        e_exchange: two.e_k,
+        e_coulomb: fit.is_none().then_some(two.e_j),
+        e_exchange: fit.is_none().then_some(two.e_k),
         e_madelung,
         n_images: one.n_images,
         n_sr_triplets: one.n_sr_triplets,
@@ -1156,7 +1276,48 @@ fn assemble(
         n_k_eri: two.n_kv,
         n_chunks: one.n_chunks + two.n_chunks,
         budget_bytes: ledger.budget(),
+        fit_dropped_max,
+        fit_checks,
     })
+}
+
+/// The RS-GDF strain pass of [`assemble`] (the fitted `Z`, `Wm`, phase bins).
+#[allow(clippy::too_many_arguments)]
+fn fit_pass(
+    src: &KRsGdfGradSource<'_>,
+    cell: &Cell,
+    prep: &PreparedBasis,
+    mesh: &KPointMesh,
+    s_k: &[Array2<C64>],
+    dtot: &[Array2<C64>],
+    spins: &KSpins,
+    cfg: &KStressConfig,
+    ledger: &mut Ledger,
+) -> Result<crate::rsgdf::kpoint::kderiv::KFitGrad, FerricError> {
+    let is = |m: KStressMutation| cfg.mutation == Some(m);
+    let exch = spins.exch_terms();
+    let fm = KFitMutation {
+        aux_phase: is(KStressMutation::FitAuxPhase),
+        no_metric: is(KStressMutation::NoMetric),
+        lr_wrong_q: is(KStressMutation::FitLrWrongQ),
+        no_loewner_kd: is(KStressMutation::FitNoLoewnerKd),
+        cross_spin: is(KStressMutation::FitCrossSpin),
+        ..Default::default()
+    };
+    let terms = KFitStrainTerms {
+        pair: PairFtStrainTerms {
+            centres: !is(KStressMutation::FtNoCentres),
+            g_shape: !is(KStressMutation::GUnstrained),
+        },
+        g_shape: !is(KStressMutation::GUnstrained),
+        volume: !is(KStressMutation::NoVolume),
+        images: !is(KStressMutation::NoSrImages),
+        aux_ft3: !is(KStressMutation::NoAuxFt) && !is(KStressMutation::NoAuxFt3),
+        aux_ft2: !is(KStressMutation::NoAuxFt),
+    };
+    kpoint_fit_strain(
+        src.gdf, src.cfg, cell, prep, src.aux, mesh, s_k, dtot, &exch, fm, terms, ledger,
+    )
 }
 
 /// Dense-AFT J and K strain (before the `−δ E` volume terms) and the energies.

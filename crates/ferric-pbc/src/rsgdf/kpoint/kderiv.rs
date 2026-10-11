@@ -55,6 +55,28 @@
 //! `Re tr[Wm dJ2h] = Re tr[½(Wm + Wm^H) dJ2]` for the Hermitised metric;
 //! the `v_SR`-weighted terms amplify its roundoff asymmetry, FINDINGS (e)).
 //!
+//! # Strain
+//!
+//! [`kpoint_fit_strain`] runs the SAME per-q passes (rebuilt `J2(q)`, `J3`,
+//! `Z`, `Wm`, the phase bins `Zbin`, `Wmbin`) and contracts them with the
+//! strain derivative instead of the nuclear one, at fixed `Z`, `Wm`. k-points
+//! sit at FIXED fractional coordinates, so every Bloch / aux-image phase is
+//! strain-invariant and the bins are reused unchanged:
+//!
+//! * SR: the ordered-parallel strain walks of [`crate::rsgdf::strain`]
+//!   ([`sr3_strain_with`], [`sr2_strain_with`]) with the bin of each `(L, T)`
+//!   / `T`: `∂_A,x (A − C′)_z + ∂_B′,x (B′ − C′)_z` per triplet.
+//! * LR per q on `K = G + q`: `(1/Ω) Σ_K [dv φ + v dφ]` with `φ3 = Re Σ_r
+//!   p_r · Zr conj(X)`, `φ2 = Re Σ conj(X) Wmᵀ X`, `dv = v′(K²)(−2 K_a K_b)`,
+//!   the residue pair-FT strain kernel for `dp_r` and
+//!   [`crate::rsgdf::strain::aux_ft_strain_shells`] for `dX`; `−δ E` of both
+//!   LR energies.
+//! * G = 0: `−δ E_g0` with `E_g0 = Re Σ_k tr[S(k) M_g0(k)]` (`c0 ∝ 1/Ω`),
+//!   the `J3` overlap part through the caller's `dS` pass, and `+δ c0 qᵀ
+//!   Wm(0) q` for `J2` (constant under atom motion).
+//!
+//! A range-split build is refused (typed error).
+//!
 //! # Scope
 //!
 //! Aux centres must be the cell's atoms (no `aux_jac`); the energy build must
@@ -74,10 +96,13 @@ use crate::kpts::{lattice_coords, unit_root, KPointMesh};
 use crate::kscf::eigh_herm;
 use crate::lattice::Cell;
 use crate::ordered::window_budget;
-use crate::pair_ft::residues::{pair_ft_deriv_residues_chunked, residue_coords, residue_index};
-use crate::pair_ft::DEFAULT_PAIR_FT_THRESH;
+use crate::pair_ft::residues::{
+    pair_ft_deriv_residues_chunked, pair_ft_strain_residues_chunked, residue_coords, residue_index,
+};
+use crate::pair_ft::{PairFtStrainTerms, DEFAULT_PAIR_FT_THRESH};
 use crate::rsgdf::deriv::{sr2_force, sr3_force, Y3};
 use crate::rsgdf::split::SplitPlan;
+use crate::rsgdf::strain::{aux_ft_strain_shells, sr2_strain_with, sr3_strain_with};
 use crate::rsgdf::{
     aux_ft_shells, check_obs_on_cell, dot3, gshells, pair_image_radius, require_pure_aux,
     subtract_g0, G0Handling, LatticeWalker, RsGdfConfig, SplitG0, Stage, ENGINE_PRECISION,
@@ -110,6 +135,57 @@ pub(crate) struct KFitMutation {
     /// caller also drops the smooth-overlap derivative: the unsplit G = 0
     /// term).
     pub(crate) split_full_g0: bool,
+    /// Strain only: the LR `K` set built as `G − q` instead of `G + q`.
+    pub(crate) lr_wrong_q: bool,
+    /// Strain only: the kept-dropped entries of the Loewner matrix zeroed
+    /// (they vanish for an exact null vector but not for a near-dependent
+    /// dropped mode).
+    pub(crate) no_loewner_kd: bool,
+    /// Strain only, UHF: the fitted exchange `Z` built from `D_α J3^H D_β +
+    /// D_β J3^H D_α` instead of each spin with itself.
+    pub(crate) cross_spin: bool,
+}
+
+/// `3 × 3` strain tensor.
+type Mat3 = [[f64; 3]; 3];
+
+/// Which terms of the fitted strain are included (production sets every
+/// field; the k stress mutation seams clear one each).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct KFitStrainTerms {
+    /// Pair-FT parts (basis centres, G shape).
+    pub(crate) pair: PairFtStrainTerms,
+    /// The G-shape strain of the kernel `v(K)` and of the aux FT.
+    pub(crate) g_shape: bool,
+    /// The `−δ E_LR` volume terms of both LR parts.
+    pub(crate) volume: bool,
+    /// Image translations in the SR pair vectors.
+    pub(crate) images: bool,
+    /// Aux-FT strain in `J3` / in `J2`.
+    pub(crate) aux_ft3: bool,
+    pub(crate) aux_ft2: bool,
+}
+
+/// The fitted two-electron strain pieces (each `dE/dε`, Hartree per cell, at
+/// FIXED `Z` / `Wm`).
+pub(crate) struct KFitStrain {
+    pub(crate) j3_sr: Mat3,
+    pub(crate) j3_lr: Mat3,
+    pub(crate) j2_sr: Mat3,
+    pub(crate) j2_lr: Mat3,
+    /// `−δ E_g0`, `E_g0 = Re Σ_k tr[S(k) M_g0(k)]` the `J3` G = 0 energy.
+    pub(crate) j3_g0_volume: Mat3,
+    /// `+δ c0 qᵀ Wm(0) q`.
+    pub(crate) j2_g0_volume: Mat3,
+}
+
+/// The LR strain accumulators over the q classes.
+#[derive(Default)]
+struct LrStrainAcc {
+    s3: Mat3,
+    s2: Mat3,
+    e3: f64,
+    e2: f64,
 }
 
 /// The fitted two-electron force pieces. Orbital parts per cell atom; aux
@@ -135,6 +211,9 @@ pub(crate) struct KFitGrad {
     /// whose derivative the caller contracts with the phase-folded `M_g0`
     /// and SUBTRACTS (`J3 −= c0 (S − S_ss) q_c`); `None` unsplit.
     pub(crate) smooth_g0: Option<SplitG0>,
+    /// Strain mode only ([`kpoint_fit_strain`]): the strain pieces (the force
+    /// fields above are then zero).
+    pub(crate) strain: Option<KFitStrain>,
 }
 
 /// The LR (K ≠ 0) force accumulators of the k-point fit derivative: per
@@ -223,7 +302,7 @@ fn column_matrix(x: &Array2<C64>, p: usize, n: usize) -> Array2<C64> {
 }
 
 /// Loewner (Daleckii–Krein) matrix of `f(s) = 1/s` (kept) / 0 (dropped).
-fn loewner(s: &[f64], keep: &[bool]) -> (Vec<f64>, Array2<f64>) {
+fn loewner(s: &[f64], keep: &[bool], zero_kd: bool) -> (Vec<f64>, Array2<f64>) {
     let na = s.len();
     let f: Vec<f64> = (0..na)
         .map(|i| if keep[i] { 1.0 / s[i] } else { 0.0 })
@@ -233,7 +312,7 @@ fn loewner(s: &[f64], keep: &[bool]) -> (Vec<f64>, Array2<f64>) {
             -f[i] * f[j]
         } else {
             let ds = s[i] - s[j];
-            if ds.abs() < 1e-300 {
+            if zero_kd || ds.abs() < 1e-300 {
                 0.0
             } else {
                 (f[i] - f[j]) / ds
@@ -266,7 +345,66 @@ pub(crate) fn kpoint_fit_gradient(
     mutation: KFitMutation,
     ledger: &mut Ledger,
 ) -> Result<KFitGrad, FerricError> {
-    let who = "k-point RS-GDF forces";
+    kpoint_fit_core(
+        gdf, cfg, cell, obs, aux, mesh, s_k, d_total, exch, mutation, None, ledger,
+    )
+}
+
+/// The k-point RS-GDF STRAIN pieces (module doc, "Strain"): the same per-q
+/// passes as [`kpoint_fit_gradient`] (same rebuilt fit, same `Z`, `Wm`, phase
+/// bins) with the derivative walks replaced by their strain twins. Unsplit
+/// builds only (a range split is refused with a typed error).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn kpoint_fit_strain(
+    gdf: &KRsGdf,
+    cfg: &KRsGdfConfig,
+    cell: &Cell,
+    obs: &PreparedBasis,
+    aux: &PreparedBasis,
+    mesh: &KPointMesh,
+    s_k: &[Array2<C64>],
+    d_total: &[Array2<C64>],
+    exch: &[(f64, &[Array2<C64>])],
+    mutation: KFitMutation,
+    terms: KFitStrainTerms,
+    ledger: &mut Ledger,
+) -> Result<KFitGrad, FerricError> {
+    kpoint_fit_core(
+        gdf,
+        cfg,
+        cell,
+        obs,
+        aux,
+        mesh,
+        s_k,
+        d_total,
+        exch,
+        mutation,
+        Some(terms),
+        ledger,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn kpoint_fit_core(
+    gdf: &KRsGdf,
+    cfg: &KRsGdfConfig,
+    cell: &Cell,
+    obs: &PreparedBasis,
+    aux: &PreparedBasis,
+    mesh: &KPointMesh,
+    s_k: &[Array2<C64>],
+    d_total: &[Array2<C64>],
+    exch: &[(f64, &[Array2<C64>])],
+    mutation: KFitMutation,
+    strain: Option<KFitStrainTerms>,
+    ledger: &mut Ledger,
+) -> Result<KFitGrad, FerricError> {
+    let who = if strain.is_some() {
+        "k-point RS-GDF stress"
+    } else {
+        "k-point RS-GDF forces"
+    };
     let g = &cfg.gdf;
     check_fit_inputs(gdf, cfg, cell, obs, aux, mesh, s_k, d_total, exch)?;
     let n = obs.nbasis();
@@ -277,8 +415,8 @@ pub(crate) fn kpoint_fit_gradient(
         cell,
         obs,
         aux,
-        obs_sh: gshells(obs, "k-point RS-GDF forces orbital basis")?,
-        aux_sh: gshells(aux, "k-point RS-GDF forces aux basis")?,
+        obs_sh: gshells(obs, "k-point RS-GDF orbital basis")?,
+        aux_sh: gshells(aux, "k-point RS-GDF aux basis")?,
         omega: g.omega,
         thresh: g.precision,
         sr_screen: g.sr_screen,
@@ -322,6 +460,13 @@ pub(crate) fn kpoint_fit_gradient(
     )?;
     let images = cell.translations(rpair)?;
     let plan = SplitPlan::for_kpoint(&st, g, &images, (rl, nk), ledger)?;
+    if strain.is_some() && (plan.is_some() || g.range_split.is_some()) {
+        return Err(FerricError::General(format!(
+            "{who}: the range-split RS-GDF strain at k is not implemented (missing: per-q v_SR(|K|) \
+             kernel slopes, the smooth-pair strain and the kept (q_c, S - S_ss) volume terms); \
+             use an unsplit build"
+        )));
+    }
     let gcut = 2.0 * g.omega * (1.0 / g.precision).ln().sqrt();
     let qmax = (0..nk)
         .map(|iq| {
@@ -376,6 +521,7 @@ pub(crate) fn kpoint_fit_gradient(
         d_total,
         exch,
         mutation,
+        strain,
         gcut,
         c0: PI / (g.omega * g.omega * cell.volume()),
     };
@@ -383,6 +529,8 @@ pub(crate) fn kpoint_fit_gradient(
         zbin: (0..rl * rt).map(|_| Array2::zeros((n2, naux))).collect(),
         wmbin: (0..rt).map(|_| Array2::zeros((naux, naux))).collect(),
         lr: KLrForce::zeros(n, naux),
+        lr_strain: LrStrainAcc::default(),
+        qwq: 0.0,
         mg0: (0..nk).map(|_| Array2::zeros((n, n))).collect(),
         n_dropped_max: 0,
         b_norm_mismatch: 0.0,
@@ -405,6 +553,28 @@ pub(crate) fn kpoint_fit_gradient(
         wmbin: &acc.wmbin,
     };
     let budget = window_budget(ledger.remaining());
+    if let Some(terms) = strain {
+        let fs = finish_strain(&ctx, &acc, &bins, &images, terms, budget)?;
+        let zeros = || Array2::<f64>::zeros((natoms, 3));
+        let zaux = || Array2::<f64>::zeros((naux, 3));
+        return Ok(KFitGrad {
+            orb_sr: zeros(),
+            orb_lr: zeros(),
+            aux_sr: zaux(),
+            aux_lr: zaux(),
+            metric_sr: zaux(),
+            metric_lr: zaux(),
+            mg0: acc.mg0,
+            n_dropped_max: acc.n_dropped_max,
+            b_norm_mismatch: acc.b_norm_mismatch,
+            n_sr3: fs.1,
+            n_sr2: fs.2,
+            n_chunks: acc.n_chunks,
+            n_k_lr: acc.n_k_lr,
+            smooth_g0: None,
+            strain: Some(fs.0),
+        });
+    }
     let ((orb_sr, aux_sr, n_sr3), (metric_sr, n_sr2)) =
         k_sr_force_parts(&st, plan.as_ref(), &images, &bins, natoms, budget, mutation)?;
 
@@ -442,6 +612,7 @@ pub(crate) fn kpoint_fit_gradient(
         n_chunks: acc.n_chunks,
         n_k_lr: acc.n_k_lr,
         smooth_g0: plan.map(|p| p.into_split_g0(naux, images)),
+        strain: None,
     })
 }
 
@@ -458,7 +629,7 @@ fn check_fit_inputs(
     d_total: &[Array2<C64>],
     exch: &[(f64, &[Array2<C64>])],
 ) -> Result<(), FerricError> {
-    let who = "k-point RS-GDF forces";
+    let who = "k-point RS-GDF fit";
     let g = &cfg.gdf;
     g.validate()?;
     refuse_column_rotation(g, who)?;
@@ -518,6 +689,7 @@ struct FitCtx<'a> {
     d_total: &'a [Array2<C64>],
     exch: &'a [(f64, &'a [Array2<C64>])],
     mutation: KFitMutation,
+    strain: Option<KFitStrainTerms>,
     gcut: f64,
     c0: f64,
 }
@@ -527,6 +699,9 @@ struct FitAcc {
     zbin: Vec<Array2<f64>>,
     wmbin: Vec<Array2<f64>>,
     lr: KLrForce,
+    lr_strain: LrStrainAcc,
+    /// `Re q^T Wm(0) q` of the q = 0 class (the J2 G = 0 volume term).
+    qwq: f64,
     mg0: Vec<Array2<C64>>,
     n_dropped_max: usize,
     b_norm_mismatch: f64,
@@ -646,6 +821,23 @@ fn b_mismatch(
     worst
 }
 
+/// `Σ_s c_s D_s(k') J3^H D_s(k)` of one `(k', k)` pair (the `T` weight of the
+/// fitted exchange); the `cross_spin` test mutant pairs the two spins.
+fn exch_pair_term(ctx: &FitCtx<'_>, j: usize, k: usize, jqh: &Array2<C64>) -> Array2<C64> {
+    let n = jqh.nrows();
+    let mut t = Array2::<C64>::zeros((n, n));
+    if ctx.mutation.cross_spin && ctx.exch.len() == 2 {
+        let ((c0, a), (c1, b)) = (ctx.exch[0], ctx.exch[1]);
+        t.scaled_add(C64::new(c0, 0.0), &a[j].dot(jqh).dot(&b[k]));
+        t.scaled_add(C64::new(c1, 0.0), &b[j].dot(jqh).dot(&a[k]));
+        return t;
+    }
+    for (cf, ds) in ctx.exch {
+        t.scaled_add(C64::new(*cf, 0.0), &ds[j].dot(jqh).dot(&ds[k]));
+    }
+    t
+}
+
 /// `H(q)` (exchange part) and `Z^{k'}` for every `k'` (module doc).
 fn exchange_h_and_z(
     ctx: &FitCtx<'_>,
@@ -665,11 +857,7 @@ fn exchange_h_and_z(
         let mut tt = Array2::<C64>::zeros((n * n, naux));
         for p in 0..naux {
             let jqh = herm(&column_matrix(&j3[j], p, n));
-            let mut t = Array2::<C64>::zeros((n, n));
-            for (cf, ds) in ctx.exch {
-                let x = ds[j].dot(&jqh).dot(&ds[k]);
-                t.scaled_add(C64::new(*cf, 0.0), &x);
-            }
+            let t = exch_pair_term(ctx, j, k, &jqh);
             for m in 0..n {
                 for l in 0..n {
                     tt[(m * n + l, p)] = t[(l, m)];
@@ -748,7 +936,7 @@ fn q_class_pass(
     ledger: &Ledger,
     acc: &mut FitAcc,
 ) -> Result<(), FerricError> {
-    let who = "k-point RS-GDF forces";
+    let who = "k-point RS-GDF fit";
     let (st, mesh, g) = (ctx.st, ctx.mesh, ctx.g);
     let naux = st.aux.nbasis();
     let n2 = st.obs.nbasis() * st.obs.nbasis();
@@ -795,7 +983,7 @@ fn q_class_pass(
     }
 
     // --- f(J2), T, H, Z.
-    let (f, lo) = loewner(&s, &keep);
+    let (f, lo) = loewner(&s, &keep, ctx.mutation.no_loewner_kd);
     let mut uf = u.clone();
     for (col, fv) in uf.columns_mut().into_iter().zip(&f) {
         let fv = *fv;
@@ -852,23 +1040,62 @@ fn q_class_pass(
         }
     }
 
+    if is_q0 {
+        acc.qwq += qwq_of(ctx.qv, &wm);
+    }
+
     // --- LR on the FULL {G + q} set.
+    let kfull = lr_full_set(ctx, q)?;
+    acc.n_k_lr += kfull.len();
+    let chunk_budget = ledger.remaining().min(G_CHUNK_BYTES);
+    acc.n_chunks += k_lr_q(ctx, &kfull, q, (&zr, &wm), chunk_budget, acc)?;
+    Ok(())
+}
+
+/// `Re qᵀ Wm q` (the J2 G = 0 volume term's contraction).
+fn qwq_of(qv: &[f64], wm: &Array2<C64>) -> f64 {
+    let mut t = 0.0_f64;
+    for (p, qp) in qv.iter().enumerate() {
+        for (qq, qr) in qv.iter().enumerate() {
+            t += qp * wm[(qq, p)].re * qr;
+        }
+    }
+    t
+}
+
+/// The full LR `K = G + q` set of one q class (`K ≠ 0`, `|K| <= gcut`; the
+/// `FitLrWrongQ` test mutant builds `G − q`).
+fn lr_full_set(ctx: &FitCtx<'_>, q: [f64; 3]) -> Result<Vec<[f64; 3]>, FerricError> {
     let qn = dot3(&q, &q).sqrt();
     let g2cut = ctx.gcut * ctx.gcut;
-    let kfull: Vec<[f64; 3]> = st
+    let sg = if ctx.mutation.lr_wrong_q { -1.0 } else { 1.0 };
+    Ok(ctx
+        .st
         .cell
         .gvectors(ctx.gcut + qn)?
         .into_iter()
-        .map(|gv| [gv[0] + q[0], gv[1] + q[1], gv[2] + q[2]])
+        .map(|gv| [gv[0] + sg * q[0], gv[1] + sg * q[1], gv[2] + sg * q[2]])
         .filter(|k| {
             let k2 = dot3(k, k);
             k2 > 0.0 && k2 <= g2cut
         })
-        .collect();
-    acc.n_k_lr += kfull.len();
-    let chunk_budget = ledger.remaining().min(G_CHUNK_BYTES);
-    acc.n_chunks += k_lr_force_q(ctx, &kfull, q, &zr, &wm, chunk_budget, &mut acc.lr)?;
-    Ok(())
+        .collect())
+}
+
+/// One q class's LR pass: the force accumulators, or (strain mode) the strain
+/// ones. Returns the chunk count.
+fn k_lr_q(
+    ctx: &FitCtx<'_>,
+    kfull: &[[f64; 3]],
+    q: [f64; 3],
+    (zr, wm): (&[Array2<C64>], &Array2<C64>),
+    chunk_budget: usize,
+    acc: &mut FitAcc,
+) -> Result<usize, FerricError> {
+    match ctx.strain {
+        Some(t) => k_lr_strain_unsplit(ctx, kfull, zr, wm, chunk_budget, &t, &mut acc.lr_strain),
+        None => k_lr_force_q(ctx, kfull, q, zr, wm, chunk_budget, &mut acc.lr),
+    }
 }
 
 /// `R_T` of the aux-image residues.
@@ -989,6 +1216,172 @@ fn k_lr_force_unsplit(
                             metric_lr[(pp, xx)] += (xc * ik * wx[pp] * vlr).re;
                             metric_lr[(pp, xx)] += (xg[pp] * (-ik) * wcx[pp] * vlr).re;
                         }
+                    }
+                }
+            }
+            Ok(())
+        },
+    )
+}
+
+/// The SR strain walks, the LR strain accumulators, and the G = 0 volume
+/// terms of [`kpoint_fit_strain`]: `(strain pieces, n_sr3, n_sr2)`.
+fn finish_strain(
+    ctx: &FitCtx<'_>,
+    acc: &FitAcc,
+    bins: &KSrBins<'_>,
+    images: &[[f64; 3]],
+    terms: KFitStrainTerms,
+    budget: usize,
+) -> Result<(KFitStrain, usize, usize), FerricError> {
+    let imgs = if terms.images { 1.0 } else { 0.0 };
+    let (j3_sr, n_sr3) = sr3_strain_with(ctx.st, images, imgs, budget, |l, t| {
+        Y3::PairMajor(bins.z(l, t))
+    })?;
+    let (j2_sr, n_sr2) = if ctx.mutation.no_metric {
+        ([[0.0; 3]; 3], 0)
+    } else {
+        sr2_strain_with(ctx.st, imgs, budget, |t| bins.wm(t))?
+    };
+    let (mut j3_lr, mut j2_lr) = (acc.lr_strain.s3, acc.lr_strain.s2);
+    if terms.volume {
+        for a in 0..3 {
+            j3_lr[a][a] -= acc.lr_strain.e3;
+            j2_lr[a][a] -= acc.lr_strain.e2;
+        }
+    }
+    // J3 G = 0 energy E_g0 = Re Σ_k tr[S(k) M_g0(k)] (linear in c0 ∝ 1/Ω).
+    let mut e_g0 = 0.0_f64;
+    for (s, m) in ctx.s_g0.iter().zip(&acc.mg0) {
+        for (a, row) in s.rows().into_iter().enumerate() {
+            for (b, z) in row.iter().enumerate() {
+                e_g0 += (*z * m[(b, a)]).re;
+            }
+        }
+    }
+    let diag = |x: f64| [[x, 0.0, 0.0], [0.0, x, 0.0], [0.0, 0.0, x]];
+    let fs = KFitStrain {
+        j3_sr,
+        j3_lr,
+        j2_sr,
+        j2_lr,
+        j3_g0_volume: diag(-e_g0),
+        j2_g0_volume: diag(ctx.c0 * acc.qwq),
+    };
+    let all = [&fs.j3_sr, &fs.j3_lr, &fs.j2_sr, &fs.j2_lr];
+    if all
+        .iter()
+        .any(|m| m.iter().flatten().any(|v| !v.is_finite()))
+    {
+        return Err(FerricError::General(
+            "k-point RS-GDF stress: non-finite strain contraction".into(),
+        ));
+    }
+    Ok((fs, n_sr3, n_sr2))
+}
+
+/// Per-K strain contraction of the `J3` LR term at FIXED `Z`:
+/// `φ3 = Re Σ_r Σ_ml p_r[ml] Σ_P Zr[r][ml, P] conj(X_P)` and its nine pair-FT
+/// strain derivatives `Re Σ dp_r[ab][ml] yv_r[ml]`; also `az_P = Σ_r Σ_ml
+/// Zr[r][ml, P] p_r[ml]` for the aux-FT strain.
+fn j3_strain_at_k(
+    zr: &[Array2<C64>],
+    p: &[Array3<C64>],
+    dp: &[[Array3<C64>; 9]],
+    gi: usize,
+    xc: &Array1<C64>,
+) -> (f64, [f64; 9], Array1<C64>) {
+    let n = p[0].dim().0;
+    let n2 = n * n;
+    let mut az = Array1::<C64>::zeros(xc.len());
+    let mut phi = 0.0_f64;
+    let mut dphi = [0.0_f64; 9];
+    for (r, zrr) in zr.iter().enumerate() {
+        let yv = zrr.dot(xc);
+        let pr = &p[r];
+        let pv = Array1::from_shape_fn(n2, |ml| pr[[ml / n, ml % n, gi]]);
+        az += &zrr.t().dot(&pv);
+        for ml in 0..n2 {
+            phi += (pv[ml] * yv[ml]).re;
+            for (k, d) in dphi.iter_mut().enumerate() {
+                *d += (dp[r][k][[ml / n, ml % n, gi]] * yv[ml]).re;
+            }
+        }
+    }
+    (phi, dphi, az)
+}
+
+/// The unsplit LR STRAIN pass of one q class: per `K = G + q` (full set),
+/// `(1/Ω)[dv φ + v dφ]` for `J3` (`φ3`, [`j3_strain_at_k`]) and `J2`
+/// (`φ2 = Re Σ conj(X_P) (Wmᵀ X)_P`), with the aux-FT strain
+/// ([`aux_ft_strain_shells`]; phase-invariant, G shape only) and the
+/// residue pair-FT strain kernel. Accumulates the LR energies `E3 = (1/Ω) Σ v
+/// φ3`, `E2` for the caller's `−δ E` volume terms. Returns the chunk count.
+#[allow(clippy::too_many_arguments)]
+fn k_lr_strain_unsplit(
+    ctx: &FitCtx<'_>,
+    kfull: &[[f64; 3]],
+    zr: &[Array2<C64>],
+    wm: &Array2<C64>,
+    chunk_budget: usize,
+    terms: &KFitStrainTerms,
+    out: &mut LrStrainAcc,
+) -> Result<usize, FerricError> {
+    let st = ctx.st;
+    let (cell, obs) = (st.cell, st.obs);
+    let n2 = obs.nbasis() * obs.nbasis();
+    let naux = st.aux.nbasis();
+    let fac = 1.0 / cell.volume();
+    let omega = st.omega;
+    let pair_thresh = (0.01 * st.thresh).min(DEFAULT_PAIR_FT_THRESH);
+    let wmt = wm.t().to_owned();
+    // Per K: X, dX (10 × 16 naux), the weight vectors (6 × 16 naux, 2 × 16 n²).
+    let extra_per_g = naux
+        .saturating_mul(16 * 16)
+        .saturating_add(n2.saturating_mul(16 * 2));
+    pair_ft_strain_residues_chunked(
+        cell,
+        obs,
+        kfull,
+        ctx.mesh.residue_moduli(),
+        pair_thresh,
+        chunk_budget,
+        extra_per_g,
+        terms.pair,
+        |_k0, ks, p, dp| {
+            let (x, dx) = aux_ft_strain_shells(&st.aux_sh, naux, ks, terms.g_shape);
+            for (gi, kvec) in ks.iter().enumerate() {
+                let k2 = dot3(kvec, kvec);
+                let v = 4.0 * PI / k2 * (-k2 / (4.0 * omega * omega)).exp();
+                let dvdk2 = -v * (1.0 / k2 + 1.0 / (4.0 * omega * omega));
+                let xg: Array1<C64> = x.column(gi).to_owned();
+                let xc = xg.mapv(|z| z.conj());
+                let (phi3, dphi3, az) = j3_strain_at_k(zr, p, dp, gi, &xc);
+                let wx = wmt.dot(&xg);
+                let wcx = wm.dot(&xc);
+                let phi2: f64 = (0..naux).map(|pp| (xc[pp] * wx[pp]).re).sum();
+                out.e3 += fac * v * phi3;
+                out.e2 += fac * v * phi2;
+                for a in 0..3 {
+                    for b in 0..3 {
+                        let kk = 3 * a + b;
+                        let dv = if terms.g_shape {
+                            dvdk2 * (-2.0 * kvec[a] * kvec[b])
+                        } else {
+                            0.0
+                        };
+                        let (mut d3, mut d2) = (dphi3[kk], 0.0_f64);
+                        for pp in 0..naux {
+                            let dz = dx[[kk, pp, gi]];
+                            if terms.aux_ft3 {
+                                d3 += (az[pp] * dz.conj()).re;
+                            }
+                            if terms.aux_ft2 {
+                                d2 += (dz.conj() * wx[pp]).re + (dz * wcx[pp]).re;
+                            }
+                        }
+                        out.s3[a][b] += fac * (dv * phi3 + v * d3);
+                        out.s2[a][b] += fac * (dv * phi2 + v * d2);
                     }
                 }
             }
