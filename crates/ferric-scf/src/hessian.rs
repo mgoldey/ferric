@@ -74,8 +74,20 @@
 //! ECP blocks and `∂V_ECP/∂x` joins `F^x`, on whichever ECP backend the
 //! gradient uses.
 //!
+//! # ROHF (skeleton only)
+//!
+//! `rohf_skeleton_parts` evaluates terms 1-4 for a converged ROHF result:
+//! the UHF skeleton with the ROHF `D_α`, `D_β` and the ROHF energy-weighted
+//! density `W = sym(D_α F_α D_α + D_α F_β D_β)` of
+//! [`crate::gradient::rohf_gradient`] (NOT the UHF eigenvalue `W`). It is the
+//! derivative of the corresponding `rohf_gradient` pieces at fixed densities
+//! and `W`. The orbital response (term 5: rotations in the closed-virtual,
+//! open-virtual and closed-open blocks, with the spin Focks in the overlap
+//! terms and `W^y` from the response) is not implemented, so the public
+//! entry points refuse ROHF with a message saying so.
+//!
 //! Scope: closed-shell RHF and UHF (any multiplicity), exact four-centre
-//! Coulomb J/K. Everything else — ROHF (PySCF has no ROHF Hessian either), KS,
+//! Coulomb J/K. Everything else — ROHF (skeleton only; PySCF has no ROHF Hessian either), KS,
 //! RI, COSX, ghost atoms, solvation, polarizable
 //! embedding, fractional occupations, cDFT, non-Coulomb operators — is refused
 //! with a typed error naming the feature (the FD Hessian in
@@ -293,6 +305,115 @@ pub fn uhf_hessian_parts(
     ))
 }
 
+/// The fixed-density inputs of the ROHF skeleton (terms 1-4): the total and
+/// per-spin densities and the energy-weighted density. Public (hidden) so the
+/// tests can hand the skeleton deliberately wrong inputs (mutation tests); the
+/// production path builds it from the SCF result in [`rohf_skeleton_parts`].
+#[doc(hidden)]
+#[derive(Debug, Clone)]
+pub struct RohfSkeletonDensities {
+    /// `D = D_α + D_β`, contracted with the one-electron second derivatives
+    /// and the Coulomb half of Γ.
+    pub d_total: Array2<f64>,
+    /// `D_α = C_closed C_closedᵀ + C_open C_openᵀ`, the exchange half of Γ.
+    pub d_alpha: Array2<f64>,
+    /// `D_β = C_closed C_closedᵀ`, the exchange half of Γ.
+    pub d_beta: Array2<f64>,
+    /// `W = sym(D_α F_α D_α + D_α F_β D_β)`, contracted with `∂²S`.
+    pub w: Array2<f64>,
+}
+
+/// Terms 1-4 of the ROHF Hessian (the second derivative at FIXED AO densities
+/// and fixed energy-weighted density), plus the inputs they were built from.
+/// The orbital response (term 5) is NOT part of this and is not implemented:
+/// see [`rohf_skeleton_parts`].
+#[doc(hidden)]
+#[derive(Debug, Clone)]
+pub struct RohfSkeletonParts {
+    /// Term 1, `∂²V_nn`.
+    pub nuclear: Array2<f64>,
+    /// Term 2, `Σ D·∂²(T + V)`.
+    pub one_electron: Array2<f64>,
+    /// Term 3, `−Σ W·∂²S`.
+    pub overlap: Array2<f64>,
+    /// Term 4, `Σ Γ_UHF(D, D_α, D_β)·∂²(μν|λσ)`.
+    pub two_electron: Array2<f64>,
+    /// The densities and `W` the terms were contracted with.
+    pub densities: RohfSkeletonDensities,
+}
+
+impl RohfSkeletonParts {
+    /// Terms 1-4.
+    pub fn skeleton(&self) -> Array2<f64> {
+        &self.nuclear + &self.one_electron + &self.overlap + &self.two_electron
+    }
+}
+
+/// The ROHF skeleton (terms 1-4) from a converged [`crate::rohf::solve_rohf`]
+/// result. NOT a Hessian: the orbital response is missing, so
+/// [`rhf_hessian`]/[`uhf_hessian`] keep refusing ROHF results; this is the
+/// building block the ROHF response will be added to.
+///
+/// The ROHF densities are `D_β = C_c C_cᵀ`, `D_α = D_β + C_o C_oᵀ`, and the
+/// energy-weighted density is the one [`crate::gradient::rohf_gradient`] uses,
+/// `W = sym(D_α F_α D_α + D_α F_β D_β)` from the converged spin Focks. It is
+/// NOT the UHF eigenvalue form ([`build_energy_weighted_density_uhf`]), which
+/// has no meaning for a single orbital set with two Fock matrices.
+///
+/// The two-electron skeleton reuses the UHF Γ with these densities: the ROHF
+/// energy is the UHF functional evaluated on a constrained `(D_α, D_β)`.
+#[doc(hidden)]
+pub fn rohf_skeleton_parts(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    rohf: &ScfResult,
+    config: &RhfConfig,
+) -> Result<RohfSkeletonParts, FerricError> {
+    check_supported(Reference::Rohf, mol, prep, op, bounds, rohf, config)?;
+    let (da, db) = uhf_spin_densities_for(Reference::Rohf, rohf)?;
+    let w = crate::gradient::rohf_energy_weighted_density(rohf)?;
+    let densities = RohfSkeletonDensities {
+        d_total: da + db,
+        d_alpha: da.clone(),
+        d_beta: db.clone(),
+        w,
+    };
+    rohf_skeleton_from_densities(mol, prep, op, bounds, config, densities)
+}
+
+/// [`rohf_skeleton_parts`] with caller-supplied densities and `W` (the
+/// support checks are the caller's). Exists so that tests can contract the
+/// same machinery with deliberately wrong inputs.
+#[doc(hidden)]
+pub fn rohf_skeleton_from_densities(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    config: &RhfConfig,
+    densities: RohfSkeletonDensities,
+) -> Result<RohfSkeletonParts, FerricError> {
+    let natoms = mol.atoms.len();
+    let extra = extra_charges(config);
+    let d = &densities.d_total;
+    let nuclear = nuclear_term(mol, config);
+    let one_electron =
+        skeleton_hess_1e(prep, natoms, extra, d)? + extra_skeleton(mol, prep, config, d)?;
+    let overlap = skeleton_hess_overlap(prep, natoms, &densities.w)?;
+    let (da, db) = (&densities.d_alpha, &densities.d_beta);
+    let gam = |mu, nu, la, sg| gamma_uhf(d, da, db, mu, nu, la, sg);
+    let two_electron = skeleton_hess_2e(prep, op, bounds, natoms, max_abs(d), &gam)?;
+    Ok(RohfSkeletonParts {
+        nuclear,
+        one_electron,
+        overlap,
+        two_electron,
+        densities,
+    })
+}
+
 /// Symmetrize the response and bundle the five terms.
 fn parts_from_terms(skeleton: [Array2<f64>; 4], resp: ResponseTerm) -> RhfHessianParts {
     let [nuclear, one_electron, overlap, two_electron] = skeleton;
@@ -321,11 +442,20 @@ fn uhf_occupations(mol: &Molecule) -> [usize; 2] {
 }
 
 fn uhf_spin_densities(uhf: &ScfResult) -> Result<(&Array2<f64>, &Array2<f64>), FerricError> {
-    let db = uhf
-        .density_beta
-        .as_ref()
-        .ok_or_else(|| refusal(Reference::Uhf, "a UHF result without a β density"))?;
-    Ok((&uhf.density_alpha, db))
+    uhf_spin_densities_for(Reference::Uhf, uhf)
+}
+
+fn uhf_spin_densities_for(
+    reference: Reference,
+    res: &ScfResult,
+) -> Result<(&Array2<f64>, &Array2<f64>), FerricError> {
+    let db = res.density_beta.as_ref().ok_or_else(|| {
+        refusal(
+            reference,
+            &format!("a {} result without a β density", reference.label()),
+        )
+    })?;
+    Ok((&res.density_alpha, db))
 }
 
 /// Which SCF reference a Hessian differentiates.
@@ -333,6 +463,9 @@ fn uhf_spin_densities(uhf: &ScfResult) -> Result<(&Array2<f64>, &Array2<f64>), F
 enum Reference {
     Rhf,
     Uhf,
+    /// Only the skeleton ([`rohf_skeleton_parts`]); the public Hessian entry
+    /// points never take this path.
+    Rohf,
 }
 
 impl Reference {
@@ -340,6 +473,7 @@ impl Reference {
         match self {
             Reference::Rhf => "RHF",
             Reference::Uhf => "UHF",
+            Reference::Rohf => "ROHF",
         }
     }
 
@@ -347,6 +481,7 @@ impl Reference {
         match self {
             Reference::Rhf => "closed-shell RHF with exact four-centre Coulomb J/K only",
             Reference::Uhf => "UHF of any multiplicity with exact four-centre Coulomb J/K only",
+            Reference::Rohf => "ROHF with exact four-centre Coulomb J/K only",
         }
     }
 }
@@ -421,28 +556,40 @@ fn check_supported(
     }
 }
 
+/// Why the public RHF/UHF entry points refuse an ROHF result: what exists and
+/// what is missing.
+const ROHF_RESPONSE_MISSING: &str = "an ROHF reference (only the skeleton terms 1-4 exist, as \
+    hessian::rohf_skeleton_parts; the closed/open/virtual orbital response and its \
+    energy-weighted-density derivative are not implemented, and PySCF has no ROHF \
+    Hessian either; ROHF frequencies use finite differences)";
+
 fn spin_refusal(reference: Reference, spin: Spin) -> Option<&'static str> {
     match (reference, spin) {
-        (Reference::Rhf, Spin::Restricted) | (Reference::Uhf, Spin::Unrestricted) => None,
-        (_, Spin::RestrictedOpen) => Some(
-            "an ROHF reference (no analytic ROHF Hessian is implemented, nor in PySCF; \
-             ROHF frequencies use finite differences)",
-        ),
-        (Reference::Rhf, Spin::Unrestricted) => {
-            Some("an open-shell (UHF) reference (use uhf_hessian)")
-        }
-        (Reference::Uhf, Spin::Restricted) => {
-            Some("a restricted (RHF) SCF result (use rhf_hessian)")
-        }
+        (Reference::Rhf, Spin::Restricted)
+        | (Reference::Uhf, Spin::Unrestricted)
+        | (Reference::Rohf, Spin::RestrictedOpen) => None,
+        (Reference::Rohf, _) => Some("a non-ROHF (RHF/UHF) result"),
+        (_, Spin::RestrictedOpen) => Some(ROHF_RESPONSE_MISSING),
+        (Reference::Rhf, _) => Some("an open-shell (UHF) reference (use uhf_hessian)"),
+        (Reference::Uhf, _) => Some("a restricted (RHF) SCF result (use rhf_hessian)"),
     }
+}
+
+/// A ROHF skeleton needs the β density and the converged spin Focks (the
+/// energy-weighted density is built from them).
+fn rohf_state_refusal(res: &ScfResult) -> Option<&'static str> {
+    (res.density_beta.is_none() || res.rohf_spin_focks.is_none())
+        .then_some("an ROHF result without β density or spin Fock matrices")
 }
 
 /// A UHF result must carry β orbitals, and each spin's density must be built
 /// from its first `nocc_σ` MOs (aufbau), which the response assumes. (The RHF
 /// path reads `nocc = nelec/2` and its closed-shell density directly.)
 fn state_refusal(reference: Reference, mol: &Molecule, uhf: &ScfResult) -> Option<&'static str> {
-    if reference == Reference::Rhf {
-        return None;
+    match reference {
+        Reference::Rhf => return None,
+        Reference::Rohf => return rohf_state_refusal(uhf),
+        Reference::Uhf => {}
     }
     let (Some(cb), Some(eb), Some(db)) = (
         uhf.mos_beta.as_ref(),
