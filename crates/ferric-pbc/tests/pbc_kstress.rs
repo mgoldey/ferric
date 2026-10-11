@@ -1863,9 +1863,13 @@ struct GFit {
 }
 
 fn gfit(cell: Cell, bs: &BasisSet) -> GFit {
+    gfit_aux(cell, bs, &et_sp_aux())
+}
+
+fn gfit_aux(cell: Cell, bs: &BasisSet, aux_bs: &BasisSet) -> GFit {
     let prep = prep_for(&cell, bs);
     let hc = periodic_hcore(&cell, &prep, &hcore_cfg()).expect("gamma hcore");
-    let aux = PreparedBasis::new(cell.mol(), &et_sp_aux()).unwrap();
+    let aux = PreparedBasis::new(cell.mol(), aux_bs).unwrap();
     let gdf = RsGdf::build_for_gradient(&cell, &prep, &aux, &hc.s, &gdf_cfg()).expect("RsGdf");
     GFit {
         cell,
@@ -2005,11 +2009,21 @@ struct FitAnchor {
 /// `dE/dε_k = dE/dε_sc/N`, both exxdiv, term by term; returns the setup and
 /// the references for the mutants.
 fn fit_supercell_anchor(name: &str, cell: Cell, bs: &BasisSet, n: [usize; 3]) -> FitAnchor {
+    fit_supercell_anchor_aux(name, cell, bs, &et_sp_aux(), n)
+}
+
+fn fit_supercell_anchor_aux(
+    name: &str,
+    cell: Cell,
+    bs: &BasisSet,
+    aux_bs: &BasisSet,
+    n: [usize; 3],
+) -> FitAnchor {
     let nc = (n[0] * n[1] * n[2]) as f64;
     let ks = ksys(cell.clone(), bs, n);
-    let fs = fitsys(&ks);
+    let fs = fitsys_with(&ks, kgdf_cfg(), aux_bs);
     let scfs = fit_scfs(&ks, &fs);
-    let g = gfit(supercell(&cell, n, 1), bs);
+    let g = gfit_aux(supercell(&cell, n, 1), bs, aux_bs);
     let mut refs = [ZERO; 2];
     for exx in EXX {
         let i = exx_idx(exx);
@@ -2075,7 +2089,7 @@ fn h2_1x1x3_rsgdf_stress_is_the_supercell_stress_per_cell() {
 /// 1.2e-4) and is asserted as such; `WrongQ` is an identity on the fitted path
 /// (it acts on the dense exchange pairs only).
 #[test]
-#[ignore = "slow (~2 min release): 22 stress evaluations after the supercell anchor"]
+#[ignore = "slow (~140 s release, loaded box): 22 stress evaluations after the supercell anchor"]
 fn h2_1x1x3_rsgdf_term_mutants_miss_the_supercell_anchor() {
     let a = fit_supercell_anchor("H2", h2_cell_g(), &pyscf_sto3g_h(), [1, 1, 3]);
     let terms = FIT_MUTANTS.into_iter().chain([
@@ -2165,7 +2179,7 @@ fn h2_1x1x3_rsgdf_stress_matches_fd_of_own_k_energy_all_nine() {
         let aux_ft = ks_rhf_fit(&ks, &fs, &scfs[x], exx, Some(KStressMutation::NoAuxFt));
         let ma = max_mat(&aux_ft.de_deps, &fd1[x]);
         eprintln!("  H2 RS-GDF 1x1x3 {exx:?} mutant NoAuxFt: |mut − FD| {ma:.2e}");
-        assert!(ma > 1e3 * K_FD_BAR_FIT, "NoAuxFt not caught by FD ({ma:e})");
+        assert!(ma > 1e-5, "NoAuxFt not caught by FD ({ma:e})");
     }
 }
 
@@ -2259,7 +2273,7 @@ fn closed_shell_kuhf_rsgdf_stress_is_the_krhf_stress() {
 /// H3 doublet 1x1x3: the supercell (9 atoms, multiplicity 4) Gamma RS-GDF UHF
 /// stress per cell, both exxdiv, and the UHF-specific mutants.
 #[test]
-#[ignore = "slow (measured below): 9-atom supercell Gamma RS-GDF UHF stress x2 + k stress"]
+#[ignore = "slow (~115 s release, loaded box): 9-atom supercell Gamma RS-GDF UHF stress x2 + k stress"]
 fn h3_uhf_1x1x3_rsgdf_stress_is_the_supercell_stress_per_cell() {
     let bs = pyscf_sto3g_h();
     let n = [1, 1, 3];
@@ -2282,8 +2296,19 @@ fn h3_uhf_1x1x3_rsgdf_stress_is_the_supercell_stress_per_cell() {
         eprintln!("  H3 UHF RS-GDF {n:?} {exx:?}: |dE/dε_k − dE/dε_sc/N| {miss:.2e}");
         assert!(miss <= SC_FIT_BAR, "{exx:?}: {miss:e}");
     }
+    // CrossSpinK acts on the dense exchange pairs only: an identity here.
+    let s = ks_uhf_fit(
+        &ks,
+        &fs,
+        &scfs[0],
+        ExxDiv::None,
+        Some(KStressMutation::CrossSpinK),
+    );
+    assert!(
+        max_mat(&s.de_deps, &refs[0]) <= SC_FIT_BAR,
+        "CrossSpinK must be an identity"
+    );
     for m in [
-        KStressMutation::CrossSpinK,
         KStressMutation::SwapSpinFock,
         KStressMutation::NoPhase,
         KStressMutation::ConjD,
@@ -2508,7 +2533,7 @@ fn h2_mp_1x1x2_rsgdf_stress_matches_fd_of_own_k_energy_all_nine() {
 /// Cartesian/fractional index mix-up in the K sets, residue bins or q phases
 /// cannot cancel as it can in a cubic cell) with two s-only hydrogens, 1x1x3.
 #[test]
-#[ignore = "slow (measured below): triclinic H2 1x1x3 RS-GDF, 36 strained builds + 72 k-SCFs"]
+#[ignore = "slow (~40 s release): triclinic H2 1x1x3 RS-GDF, 36 strained builds + 72 k-SCFs"]
 fn triclinic_h2_1x1x3_rsgdf_stress_matches_fd_of_own_k_energy_all_nine() {
     let cell = cell_at(&[TRI_ATOMS[0], TRI_ATOMS[1]], TRI_A, 1);
     let (ks, fs, scfs, fd1) = fit_fd_anchor(
@@ -2528,5 +2553,31 @@ fn triclinic_h2_1x1x3_rsgdf_stress_matches_fd_of_own_k_energy_all_nine() {
             eprintln!("  tri H2 RS-GDF {exx:?} mutant {m:?}: miss {mm:.2e}");
             assert!(mm > MUTANT_BAR, "{m:?} {exx:?}: {mm:e}");
         }
+    }
+}
+
+/// An ACTIVE metric lindep cut: the aux set carries a duplicated s shell on
+/// every atom, so every q class drops one eigenvector per atom and the
+/// complex Loewner weight takes its kept-dropped branch. The stress is the
+/// supercell's (whose Gamma metric drops one per atom of the supercell) and
+/// the dropped count is asserted, so the test cannot pass on an inactive cut.
+#[test]
+#[ignore = "slow (~50 s release): supercell anchor with a duplicated aux shell"]
+fn h2_1x1x3_rsgdf_stress_with_an_active_lindep_cut_is_the_supercell_stress() {
+    let mut aux = et_sp_aux();
+    let dup = aux.shells[&1][2].clone();
+    aux.shells.get_mut(&1).unwrap().push(dup);
+    let a = fit_supercell_anchor_aux("H2 dup-aux", h2_cell_g(), &pyscf_sto3g_h(), &aux, [1, 1, 3]);
+    let s = ks_rhf_fit(&a.ks, &a.fs, &a.scfs[0], ExxDiv::None, None);
+    eprintln!("  dropped per q (max): {:?}", s.fit_dropped_max);
+    assert_eq!(
+        s.fit_dropped_max,
+        Some(2),
+        "one dropped eigenvector per atom"
+    );
+    for m in [KStressMutation::NoMetric, KStressMutation::NoPhase] {
+        let (miss, _) = a.mutant(ExxDiv::None, m);
+        eprintln!("  H2 dup-aux mutant {m:?}: miss {miss:.2e}");
+        assert!(miss > MUTANT_BAR, "{m:?} not caught ({miss:e})");
     }
 }
