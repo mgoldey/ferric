@@ -60,8 +60,12 @@
 //! `(q_c, S − S_ss)` volume terms), ECP at k (the k energy
 //! supports ECPs, the k forces and stress do not), an explicit SR column
 //! rotation request (`Auto` resolves to the unrotated walk, as
-//! [`crate::kgrad`]; the energy's rotation agrees to the screening
-//! precision).
+//! [`crate::kgrad`]; measured on H2 cc-pVDZ 1×1×2 RS-GDF, where the rotation
+//! is active, the Auto-pipeline and Off-pipeline stresses differ by 1.6e-13;
+//! a segmented basis does not rotate at all). The ECP refusal reads
+//! `hk.v_ecp`: an `hk` whose `v_ecp` was cleared while its `h` still carries
+//! the ECP bypasses it (the Fock guard cannot see it either), so pass the
+//! `hk` the SCF used.
 //!
 //! # Input guards
 //!
@@ -70,8 +74,9 @@
 //! stored Fock to [`FOCK_CONSISTENCY_BAR`]: a KS result (no `V_xc` in the
 //! rebuilt `F`), an SCF run at another `exxdiv`, or an RS-GDF source on
 //! another aux basis than the SCF's would otherwise give a finite but wrong
-//! σ (the RS-GDF energy is ω-independent to ~1e-10, so another ω is not an
-//! inconsistency). A dense source built with a range-separated K kernel is
+//! σ (the RS-GDF energy is ω-independent: a fit at another ω reproduces the
+//! Fock to 1e-14 and the stress to 2.6e-12 on H2 1×1×3, so another ω is not
+//! an inconsistency). A dense source built with a range-separated K kernel is
 //! refused outright. Anchored meshes: Gamma-centred (explicit supercell and
 //! FD) and Monkhorst-Pack (FD only; an even MP mesh is a twisted supercell).
 //!
@@ -192,6 +197,12 @@ pub enum KStressMutation {
     /// RS-GDF: the LR `K` set built as `G − q` (IDENTITY at q = 0, so blind at
     /// 1×1×1; the Z weight of class q then meets the kernel of class −q).
     FitLrWrongQ,
+    /// RS-GDF: the kept-dropped Loewner entries zeroed (identity for an exact
+    /// null vector, sharp for a near-dependent dropped mode).
+    FitNoLoewnerKd,
+    /// RS-GDF, UHF only (identity for RHF): the fitted exchange `Z` pairs
+    /// `D_α` with `D_β` (`D_α J3^H D_β + D_β J3^H D_α`).
+    FitCrossSpin,
 }
 
 /// Settings for the k-point stress entry points.
@@ -773,10 +784,12 @@ pub struct KStress {
     pub electrons: f64,
     /// `Σ D V_LR` recomputed from the strain kernel's `P`.
     pub e_vlr: f64,
-    /// Dense-AFT Coulomb energy `(1/2Ω) Σ_{G≠0} v |ρ|²`, per cell.
-    pub e_coulomb: f64,
-    /// Dense-AFT exchange energy `−(1/(2Ω N_k²)) Σ ...` (without the Madelung term).
-    pub e_exchange: f64,
+    /// Dense-AFT Coulomb energy `(1/2Ω) Σ_{G≠0} v |ρ|²`, per cell (`None` on
+    /// RS-GDF: the fitted energy is not split into J and K pieces here).
+    pub e_coulomb: Option<f64>,
+    /// Dense-AFT exchange energy `−(1/(2Ω N_k²)) Σ ...` (without the Madelung
+    /// term; `None` on RS-GDF).
+    pub e_exchange: Option<f64>,
     /// Madelung energy `−(v_M/2)(1/N_k) Σ_s Σ_k tr[D_s S D_s S]`.
     pub e_madelung: f64,
     /// Pair images, SR triplets, V_LR G count, ERI K count, pair-FT chunks.
@@ -1254,8 +1267,8 @@ fn assemble(
         madelung_strain: vm_strain,
         electrons: one.electrons,
         e_vlr: one.e_vlr,
-        e_coulomb: two.e_j,
-        e_exchange: two.e_k,
+        e_coulomb: fit.is_none().then_some(two.e_j),
+        e_exchange: fit.is_none().then_some(two.e_k),
         e_madelung,
         n_images: one.n_images,
         n_sr_triplets: one.n_sr_triplets,
@@ -1287,6 +1300,8 @@ fn fit_pass(
         aux_phase: is(KStressMutation::FitAuxPhase),
         no_metric: is(KStressMutation::NoMetric),
         lr_wrong_q: is(KStressMutation::FitLrWrongQ),
+        no_loewner_kd: is(KStressMutation::FitNoLoewnerKd),
+        cross_spin: is(KStressMutation::FitCrossSpin),
         ..Default::default()
     };
     let terms = KFitStrainTerms {

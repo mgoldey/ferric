@@ -32,7 +32,7 @@ use ferric_pbc::kpts::{KPointMesh, MeshCentring};
 use ferric_pbc::kscf::{solve_krhf_injected, KPointInjection, KPointJk, KScfConfig, KScfResult};
 use ferric_pbc::kstress::{
     kpoint_hcore_stress_fixed_d, kpoint_rhf_stress, kpoint_uhf_stress, KStress, KStressConfig,
-    KStressJk, KStressMutation,
+    KStressJk, KStressMutation, FOCK_CONSISTENCY_BAR,
 };
 use ferric_pbc::kuscf::{solve_kuhf_injected, KUScfResult};
 use ferric_pbc::lattice::Cell;
@@ -861,7 +861,7 @@ fn assert_one_point(name: &str, ksres: &KStress, gs: &GammaStress, exx: ExxDiv, 
     }
     let eri = max_mat(&two, &gs.parts.eri);
     let mad = max_mat(&ksres.parts.madelung, &gs.parts.madelung);
-    let e2 = (ksres.e_coulomb + ksres.e_exchange - gs.e_eri).abs();
+    let e2 = (ksres.e_coulomb.unwrap() + ksres.e_exchange.unwrap() - gs.e_eri).abs();
     let evlr = (ksres.e_vlr - gs.e_vlr).abs();
     eprintln!(
         "  {name} 1x1x1 {exx:?}: |dE/dε k − Gamma| {total:.2e} (overlap {ov:.2e}, J+K {eri:.2e}, \
@@ -960,13 +960,14 @@ fn stress_energy_pieces_sum_to_the_scf_energy_h2_1x1x3() {
             }
         }
         e1 /= nk as f64;
-        let e = e1 + st.e_coulomb + st.e_exchange + st.e_madelung + ks.hk.enn;
+        let (ej, ek) = (st.e_coulomb.unwrap(), st.e_exchange.unwrap());
+        let e = e1 + ej + ek + st.e_madelung + ks.hk.enn;
         eprintln!(
             "  {exx:?}: E_pieces {e:.12} vs SCF {:.12} (diff {:.2e}); E_J {:.8} E_K {:.8} E_M {:.8}",
             scf.energy,
             e - scf.energy,
-            st.e_coulomb,
-            st.e_exchange,
+            ej,
+            ek,
             st.e_madelung
         );
         assert!(
@@ -1716,8 +1717,9 @@ const K_FD_BAR_P: f64 = 5e-8;
 use ferric_pbc::grad::RsGdfGradSource;
 use ferric_pbc::rsgdf::{RangeSplit, RsGdf};
 
-/// A deliberately COARSE aux on H: s(1.9), s(0.5) (2 functions per H). The
-/// fit error is then large, so aux-FT-strain defects are not sub-threshold.
+/// A deliberately COARSE aux on H: s(1.9), s(0.5) (2 functions per H). Used
+/// by the Fock-guard test as "a fit on another aux basis than the SCF's" (its
+/// energy differs from the ET-sp fit at the 1e-3 level).
 fn coarse_aux() -> BasisSet {
     let shells = [1.9, 0.5]
         .iter()
@@ -1863,14 +1865,14 @@ struct GFit {
 }
 
 fn gfit(cell: Cell, bs: &BasisSet) -> GFit {
-    gfit_aux(cell, bs, &et_sp_aux())
+    gfit_aux(cell, bs, &et_sp_aux(), &gdf_cfg())
 }
 
-fn gfit_aux(cell: Cell, bs: &BasisSet, aux_bs: &BasisSet) -> GFit {
+fn gfit_aux(cell: Cell, bs: &BasisSet, aux_bs: &BasisSet, cfg: &RsGdfConfig) -> GFit {
     let prep = prep_for(&cell, bs);
     let hc = periodic_hcore(&cell, &prep, &hcore_cfg()).expect("gamma hcore");
     let aux = PreparedBasis::new(cell.mol(), aux_bs).unwrap();
-    let gdf = RsGdf::build_for_gradient(&cell, &prep, &aux, &hc.s, &gdf_cfg()).expect("RsGdf");
+    let gdf = RsGdf::build_for_gradient(&cell, &prep, &aux, &hc.s, cfg).expect("RsGdf");
     GFit {
         cell,
         prep,
@@ -1917,7 +1919,10 @@ fn gamma_fit_stress(g: &GFit, scf: &ScfResult, exx: ExxDiv) -> GammaStress {
 }
 
 /// Bar of the fitted 1x1x1 = Gamma anchor (the same energy functional built
-/// two ways; both sides at libint2's SR-derivative precision).
+/// two ways; both sides at libint2's SR-derivative precision). Measured floor:
+/// total 6.5e-14, worst single part 1.1e-12 (H2 RHF), 2.6e-13 (H3 UHF); the
+/// smallest mutant miss at 1x1x1 is printed by the test (>= 3e-2), so the bar
+/// sits 10x above the floor and >= 9 orders below the mutants.
 const GAMMA_FIT_BAR: f64 = 1e-11;
 
 fn fit_parts(p: &ferric_pbc::kstress::KStressParts) -> [(&'static str, Mat3); 7] {
@@ -1975,6 +1980,20 @@ fn one_point_mesh_rsgdf_stress_is_the_gamma_rsgdf_stress() {
         }
         assert!(total <= GAMMA_FIT_BAR, "{exx:?}: {total:e}");
         assert!(k.antisymmetry() <= ANTISYM_BAR);
+        if exx == ExxDiv::None {
+            for m in [
+                KStressMutation::NoMetric,
+                KStressMutation::NoAuxFt3,
+                KStressMutation::NoJ2G0Vol,
+                KStressMutation::NoJ3G0Vol,
+                KStressMutation::NoG0,
+            ] {
+                let x = ks_rhf_fit(&ks, &fs, scf, exx, Some(m));
+                let miss = max_mat(&x.de_deps, &gs.de_deps);
+                eprintln!("  1x1x1 mutant {m:?}: miss vs Gamma {miss:.2e}");
+                assert!(miss > MUTANT_BAR, "{m:?} not caught ({miss:e})");
+            }
+        }
     }
 }
 
@@ -2003,6 +2022,18 @@ struct FitAnchor {
     scfs: [KScfResult; 2],
     /// Gamma supercell `dE/dε / N` per exxdiv.
     refs: [Mat3; 2],
+    /// Its seven fitted parts (`fit_parts` order) per exxdiv, `/ N`.
+    ref_parts: [[Mat3; 7]; 2],
+}
+
+/// Miss of a mutated run against the supercell: all nine components of the
+/// total, the off-diagonal of the total, and the worst of the seven FITTED
+/// PARTS individually (a part-level defect whose total is hidden by aux
+/// stationarity is a sharp miss here).
+struct Miss {
+    total: f64,
+    off: f64,
+    part: f64,
 }
 
 /// Supercell anchor of an RS-GDF k-RHF system (H2 or any closed-shell cell):
@@ -2019,12 +2050,28 @@ fn fit_supercell_anchor_aux(
     aux_bs: &BasisSet,
     n: [usize; 3],
 ) -> FitAnchor {
+    fit_supercell_anchor_cfg(name, cell, bs, aux_bs, &gdf_cfg(), n)
+}
+
+fn fit_supercell_anchor_cfg(
+    name: &str,
+    cell: Cell,
+    bs: &BasisSet,
+    aux_bs: &BasisSet,
+    gdf: &RsGdfConfig,
+    n: [usize; 3],
+) -> FitAnchor {
     let nc = (n[0] * n[1] * n[2]) as f64;
     let ks = ksys(cell.clone(), bs, n);
-    let fs = fitsys_with(&ks, kgdf_cfg(), aux_bs);
+    let kcfg = KRsGdfConfig {
+        gdf: *gdf,
+        mutation: None,
+    };
+    let fs = fitsys_with(&ks, kcfg, aux_bs);
     let scfs = fit_scfs(&ks, &fs);
-    let g = gfit_aux(supercell(&cell, n, 1), bs, aux_bs);
+    let g = gfit_aux(supercell(&cell, n, 1), bs, aux_bs, gdf);
     let mut refs = [ZERO; 2];
+    let mut ref_parts = [[ZERO; 7]; 2];
     for exx in EXX {
         let i = exx_idx(exx);
         let gscf = gamma_restricted(unfold(&ks.mesh, &scfs[i].densities));
@@ -2036,26 +2083,43 @@ fn fit_supercell_anchor_aux(
         eprintln!("  {name} RS-GDF {n:?} {exx:?}: |dE/dε_k − dE/dε_sc/N| {miss:.2e}");
         // Term by term: at the same fit (Z, Wm agree to 1e-12 across the two
         // constructions) each fitted piece is individually the supercell's.
-        for ((pn, kp), gp) in fit_parts(&k.parts).iter().zip(gamma_fit_parts(&gs.parts)) {
-            let d = max_mat(kp, &scale3(&gp, 1.0 / nc));
+        for (pi, ((pn, kp), gp)) in fit_parts(&k.parts)
+            .iter()
+            .zip(gamma_fit_parts(&gs.parts))
+            .enumerate()
+        {
+            ref_parts[i][pi] = scale3(&gp, 1.0 / nc);
+            let d = max_mat(kp, &ref_parts[i][pi]);
             eprintln!("    {pn}: |k − sc/N| {d:.2e}");
             assert!(d <= SC_FIT_BAR, "{name} {exx:?} {pn}: {d:e}");
         }
         assert!(miss <= SC_FIT_BAR, "{name} {exx:?}: {miss:e}");
         assert!(k.antisymmetry() <= ANTISYM_BAR);
     }
-    FitAnchor { ks, fs, scfs, refs }
+    FitAnchor {
+        ks,
+        fs,
+        scfs,
+        refs,
+        ref_parts,
+    }
 }
 
 impl FitAnchor {
-    /// Miss (all nine / off-diagonal) of a mutated run against the supercell.
-    fn mutant(&self, exx: ExxDiv, m: KStressMutation) -> (f64, f64) {
+    /// [`Miss`] of a mutated run against the supercell.
+    fn mutant(&self, exx: ExxDiv, m: KStressMutation) -> Miss {
         let i = exx_idx(exx);
         let s = ks_rhf_fit(&self.ks, &self.fs, &self.scfs[i], exx, Some(m));
-        (
-            max_mat(&s.de_deps, &self.refs[i]),
-            offdiag_miss(&s.de_deps, &self.refs[i]),
-        )
+        let part = fit_parts(&s.parts)
+            .iter()
+            .zip(&self.ref_parts[i])
+            .map(|((_, p), r)| max_mat(p, r))
+            .fold(0.0_f64, f64::max);
+        Miss {
+            total: max_mat(&s.de_deps, &self.refs[i]),
+            off: offdiag_miss(&s.de_deps, &self.refs[i]),
+            part,
+        }
     }
 }
 
@@ -2076,18 +2140,24 @@ fn h2_1x1x3_rsgdf_stress_is_the_supercell_stress_per_cell() {
         KStressMutation::FitLrWrongQ,
     ];
     for m in k_defects {
-        let (miss, off) = a.mutant(ExxDiv::None, m);
-        eprintln!("  H2 RS-GDF mutant {m:?}: miss {miss:.2e} (off-diagonal {off:.2e})");
-        assert!(miss > MUTANT_BAR, "{m:?} not caught ({miss:e})");
+        let x = a.mutant(ExxDiv::None, m);
+        eprintln!(
+            "  H2 RS-GDF mutant {m:?}: miss {:.2e} (off-diagonal {:.2e})",
+            x.total, x.off
+        );
+        assert!(x.total > MUTANT_BAR, "{m:?} not caught ({:e})", x.total);
     }
 }
 
 /// The remaining fit-term defects against the same anchor, both exxdiv. The
-/// volume-only mutants must leave the off-diagonal at the floor; `NoAuxFt`
-/// (aux FT strain-free in J3 and J2) is BLIND on an accurate aux set (it errs
-/// by the fit error only: measured 5.0e-5 here, the Gamma prototype 7.7e-6 to
-/// 1.2e-4) and is asserted as such; `WrongQ` is an identity on the fitted path
-/// (it acts on the dense exchange pairs only).
+/// volume-only mutants must leave the off-diagonal at the floor. `NoAuxFt`
+/// (aux FT strain-free in J3 and J2) errs by the fit error only in the TOTAL
+/// (aux stationarity: measured 5.0e-5, the Gamma prototype 7.7e-6 to 1.2e-4),
+/// but each of the J3-LR and J2-LR parts misses its supercell value sharply,
+/// so the per-part comparison catches it (and any other defect in the shared
+/// `aux_ft_strain_shells`). `WrongQ` is an identity on the fitted path (it
+/// acts on the dense exchange pairs only). Aux coverage: s and Cartesian p
+/// shells here; pure-d aux is in `h2_1x1x3_rsgdf_stress_with_a_d_aux_*`.
 #[test]
 #[ignore = "slow (~140 s release, loaded box): 22 stress evaluations after the supercell anchor"]
 fn h2_1x1x3_rsgdf_term_mutants_miss_the_supercell_anchor() {
@@ -2101,24 +2171,42 @@ fn h2_1x1x3_rsgdf_term_mutants_miss_the_supercell_anchor() {
     ]);
     for m in terms {
         for exx in EXX {
-            let (miss, off) = a.mutant(exx, m);
-            eprintln!("  H2 RS-GDF mutant {m:?} {exx:?}: miss {miss:.2e} (off-diagonal {off:.2e})");
-            assert!(miss > MUTANT_BAR, "{m:?} {exx:?} not caught ({miss:e})");
+            let x = a.mutant(exx, m);
+            eprintln!(
+                "  H2 RS-GDF mutant {m:?} {exx:?}: miss {:.2e} (off-diagonal {:.2e}, worst part {:.2e})",
+                x.total, x.off, x.part
+            );
+            assert!(
+                x.total > MUTANT_BAR,
+                "{m:?} {exx:?} not caught ({:e})",
+                x.total
+            );
+            assert!(x.part > MUTANT_BAR, "{m:?} {exx:?}: parts ({:e})", x.part);
             if FIT_DIAGONAL_ONLY.contains(&m) || m == KStressMutation::NoVolume {
-                assert!(off <= SC_FIT_BAR, "{m:?} must be diagonal-only ({off:e})");
+                assert!(x.off <= SC_FIT_BAR, "{m:?} diagonal-only ({:e})", x.off);
             }
         }
     }
-    let (miss, _) = a.mutant(ExxDiv::None, KStressMutation::NoAuxFt);
-    eprintln!("  H2 RS-GDF mutant NoAuxFt: miss {miss:.2e} (blind spot: fit error only)");
-    assert!(
-        miss > SC_FIT_BAR && miss < MUTANT_BAR,
-        "NoAuxFt should be a sub-{MUTANT_BAR:e} blind spot ({miss:e})"
+    let x = a.mutant(ExxDiv::None, KStressMutation::NoAuxFt);
+    eprintln!(
+        "  H2 RS-GDF mutant NoAuxFt: total miss {:.2e}, worst part {:.2e}",
+        x.total, x.part
     );
-    let (miss, _) = a.mutant(ExxDiv::None, KStressMutation::WrongQ);
     assert!(
-        miss <= SC_FIT_BAR,
-        "WrongQ must be an identity here ({miss:e})"
+        x.total < MUTANT_BAR,
+        "total hidden by aux stationarity ({:e})",
+        x.total
+    );
+    assert!(
+        x.part > MUTANT_BAR,
+        "NoAuxFt not caught per part ({:e})",
+        x.part
+    );
+    let x = a.mutant(ExxDiv::None, KStressMutation::WrongQ);
+    assert!(
+        x.total <= SC_FIT_BAR,
+        "WrongQ must be an identity ({:e})",
+        x.total
     );
 }
 
@@ -2420,9 +2508,8 @@ fn rsgdf_stress_fock_guard_refuses_inconsistent_inputs() {
     let e = stress(&scf, &fs, ExxDiv::Ewald).unwrap_err().to_string();
     eprintln!("  wrong exxdiv: {e}");
     assert!(e.contains("Fock matrix rebuilt"), "{e}");
-    // A different fit (another aux basis) than the SCF's. (Another omega
-    // would NOT be refused: the fitted energy is omega-independent to ~1e-10,
-    // and its stress is then the right one.)
+    // A different fit (another aux basis) than the SCF's. (Another omega is
+    // NOT refused, see `rsgdf_stress_accepts_a_fit_at_another_omega`.)
     let other = fitsys_with(&ks, kgdf_cfg(), &coarse_aux());
     let e = stress(&scf, &other, ExxDiv::None).unwrap_err().to_string();
     eprintln!("  wrong aux basis: {e}");
@@ -2556,28 +2643,265 @@ fn triclinic_h2_1x1x3_rsgdf_stress_matches_fd_of_own_k_energy_all_nine() {
     }
 }
 
-/// An ACTIVE metric lindep cut: the aux set carries a duplicated s shell on
-/// every atom, so every q class drops one eigenvector per atom and the
-/// complex Loewner weight takes its kept-dropped branch. The stress is the
-/// supercell's (whose Gamma metric drops one per atom of the supercell) and
-/// the dropped count is asserted, so the test cannot pass on an inactive cut.
+/// An ACTIVE metric lindep cut with a NEAR-dependent dropped mode: every atom
+/// carries s(0.75) and s(0.76) aux shells, so each q class has one small but
+/// NONZERO metric eigenvalue per atom (asserted below the cut, the rest above
+/// it). An exact duplicate would make the dropped mode an exact null vector of
+/// `J3`, multiplying the kept-dropped Loewner weight by zero; here that branch
+/// carries weight (at the ~1e-8 level, see below), and `FitNoLoewnerKd` (kept-dropped entries zeroed) must miss
+/// the supercell anchor. The Gamma supercell side drops the same modes.
 #[test]
-#[ignore = "slow (~50 s release): supercell anchor with a duplicated aux shell"]
+#[ignore = "slow (~50 s release): supercell anchor with a near-duplicate aux shell"]
 fn h2_1x1x3_rsgdf_stress_with_an_active_lindep_cut_is_the_supercell_stress() {
     let mut aux = et_sp_aux();
-    let dup = aux.shells[&1][2].clone();
-    aux.shells.get_mut(&1).unwrap().push(dup);
-    let a = fit_supercell_anchor_aux("H2 dup-aux", h2_cell_g(), &pyscf_sto3g_h(), &aux, [1, 1, 3]);
-    let s = ks_rhf_fit(&a.ks, &a.fs, &a.scfs[0], ExxDiv::None, None);
-    eprintln!("  dropped per q (max): {:?}", s.fit_dropped_max);
-    assert_eq!(
-        s.fit_dropped_max,
-        Some(2),
-        "one dropped eigenvector per atom"
+    let mut near = aux.shells[&1][2].clone();
+    near.exponents = vec![0.95];
+    aux.shells.get_mut(&1).unwrap().push(near);
+    let gdf = RsGdfConfig {
+        lindep: NEAR_DUP_LINDEP,
+        ..gdf_cfg()
+    };
+    let a = fit_supercell_anchor_cfg(
+        "H2 near-dup aux",
+        h2_cell_g(),
+        &pyscf_sto3g_h(),
+        &aux,
+        &gdf,
+        [1, 1, 3],
     );
-    for m in [KStressMutation::NoMetric, KStressMutation::NoPhase] {
-        let (miss, _) = a.mutant(ExxDiv::None, m);
-        eprintln!("  H2 dup-aux mutant {m:?}: miss {miss:.2e}");
-        assert!(miss > MUTANT_BAR, "{m:?} not caught ({miss:e})");
+    let per_q = &a.fs.gdf.stats().per_q;
+    for q in per_q {
+        eprintln!(
+            "  q class {}: dropped {} (min eig {:.2e}), kept {}",
+            q.iq, q.n_dropped, q.metric_eig_min, q.naux_kept
+        );
+        assert_eq!(q.n_dropped, 2, "one near-dependent mode per atom");
+        assert!(
+            q.metric_eig_min > 1e-14 && q.metric_eig_min < NEAR_DUP_LINDEP,
+            "the dropped mode must be small but NONZERO"
+        );
+    }
+    for m in [
+        KStressMutation::FitNoLoewnerKd,
+        KStressMutation::NoMetric,
+        KStressMutation::NoPhase,
+    ] {
+        let x = a.mutant(ExxDiv::None, m);
+        eprintln!(
+            "  H2 near-dup aux mutant {m:?}: miss {:.2e} (worst part {:.2e})",
+            x.total, x.part
+        );
+        // The kept-dropped weight multiplies the dropped component of H, which
+        // is small for a near-dependent mode, so this defect is inherently a
+        // ~1e-8 effect on the total (measured 3.6e-8; worst part 3.2e-6) -
+        // far above the 1e-12 anchor floor but below MUTANT_BAR.
+        let bar = if m == KStressMutation::FitNoLoewnerKd {
+            100.0 * SC_FIT_BAR
+        } else {
+            MUTANT_BAR
+        };
+        assert!(x.total > bar, "{m:?} not caught ({:e})", x.total);
+    }
+}
+
+/// Lindep of the near-duplicate test: above the small eigenvalue of the
+/// s(0.75)/s(0.76) pair, below the rest of the spectrum (asserted).
+const NEAR_DUP_LINDEP: f64 = 1e-3;
+
+// -------------------------------------------------- aux l >= 2, omega, rotation
+
+/// ET-sp aux plus one PURE d shell (exponent 0.8): 15 functions per H, the
+/// l = 2 aux case of `aux_ft_strain_shells` and of the SR 3-centre / metric
+/// derivative blocks (the production path at k; the unit test covers the FT
+/// alone).
+fn et_spd_aux() -> BasisSet {
+    let mut aux = et_sp_aux();
+    aux.shells.get_mut(&1).unwrap().push(Shell {
+        l: 2,
+        pure: true,
+        exponents: vec![0.8],
+        coefficients: vec![1.0],
+    });
+    aux
+}
+
+/// PHYSICS/ARTIFACT as the main supercell anchor, with a pure-d aux shell so
+/// the l = 2 aux-FT strain (`aux_ft_strain_shells`, pure cart2sph) and the l = 2
+/// SR derivative blocks are on the production path at k. `NoAuxFt` must be a
+/// sharp per-part miss here too.
+#[test]
+#[ignore = "slow (~45 s release): supercell anchor with a pure-d aux shell"]
+fn h2_1x1x3_rsgdf_stress_with_a_d_aux_is_the_supercell_stress() {
+    let a = fit_supercell_anchor_aux(
+        "H2 spd-aux",
+        h2_cell_g(),
+        &pyscf_sto3g_h(),
+        &et_spd_aux(),
+        [1, 1, 3],
+    );
+    for m in [KStressMutation::NoAuxFt, KStressMutation::NoAuxFt3] {
+        let x = a.mutant(ExxDiv::None, m);
+        eprintln!(
+            "  H2 spd-aux mutant {m:?}: total miss {:.2e}, worst part {:.2e}",
+            x.total, x.part
+        );
+        assert!(
+            x.part > MUTANT_BAR,
+            "{m:?} not caught per part ({:e})",
+            x.part
+        );
+    }
+}
+
+/// The energy is omega-independent (the fit of the same aux basis, SR + LR
+/// split at another omega), so an SCF run at omega 1.0 and a stress with a fit
+/// at omega 1.3 is NOT inconsistent: the guard must accept it (mismatch far
+/// below the bar) and the stress must agree with the omega-1.0 stress to the
+/// measured level (printed; the two splits differ by the SR/LR truncation).
+#[test]
+fn rsgdf_stress_accepts_a_fit_at_another_omega() {
+    let bs = pyscf_sto3g_h();
+    let ks = ksys(h2_cell_g(), &bs, [1, 1, 3]);
+    let fs = fitsys(&ks);
+    let scf = krhf(&ks, fs.jk(&ks, ExxDiv::None));
+    let base = ks_rhf_fit(&ks, &fs, &scf, ExxDiv::None, None);
+    let other = fitsys_cfg(
+        &ks,
+        KRsGdfConfig {
+            gdf: RsGdfConfig {
+                omega: 1.3,
+                ..gdf_cfg()
+            },
+            mutation: None,
+        },
+    );
+    let s = ks_rhf_fit(&ks, &other, &scf, ExxDiv::None, None);
+    let d = max_mat(&s.de_deps, &base.de_deps);
+    eprintln!(
+        "  omega 1.3 fit on an omega 1.0 SCF: Fock mismatch {:.2e}, |dE/dε − dE/dε(omega 1.0)| {d:.2e}",
+        s.fock_mismatch
+    );
+    assert!(s.fock_mismatch < FOCK_CONSISTENCY_BAR);
+    assert!(d <= OMEGA_STRESS_BAR, "{d:e}");
+}
+
+/// Measured max abs difference of dE/dε between the omega 1.0 and 1.3 fits: 2.6e-12 (H2 1x1x3).
+const OMEGA_STRESS_BAR: f64 = 1e-10;
+
+/// Auto column rotation: the energy builds MAY rotate the SR columns (`Auto`),
+/// the stress walks the unrotated shells. On a p-bearing, GENERALLY CONTRACTED k cell (cc-pVDZ / cc-pvdz-ri H2; a
+/// segmented basis such as STO-3G or the s+p test basis has no rotating
+/// column, so Auto is bit-identical to Off there), the stress
+/// of a fully-Auto pipeline (hcore, fit, SCF) vs the fully-Off one is printed
+/// together with the energy difference (zero energy difference would mean Auto
+/// resolved to off here).
+#[test]
+#[ignore = "slow (~80 s release, loaded box): H2 cc-pVDZ 1x1x2 RS-GDF, two full pipelines"]
+fn rsgdf_stress_under_auto_rotation_agrees_with_off_on_a_p_cell() {
+    let bs = ferric_core::basis::bundled("cc-pvdz").unwrap();
+    let aux_bs = ferric_core::basis::bundled("cc-pvdz-ri").unwrap();
+    let n = [1, 1, 2];
+    let run = |auto: bool| {
+        let cell = h2_cell_g();
+        let prep = prep_for(&cell, &bs);
+        let mesh = KPointMesh::new(&cell, n, MeshCentring::Gamma).unwrap();
+        let hc = if auto {
+            hcore_cfg().with_sr_column_rotation(SrColumnRotation::Auto)
+        } else {
+            hcore_cfg()
+        };
+        let hk = periodic_hcore_kpts(&cell, &prep, &mesh, &hc).unwrap();
+        let ks = KSys {
+            cell,
+            prep,
+            mesh,
+            hk,
+        };
+        let cfg = KRsGdfConfig {
+            gdf: RsGdfConfig {
+                sr_column_rotation: if auto {
+                    SrColumnRotation::Auto
+                } else {
+                    SrColumnRotation::Off
+                },
+                ..gdf_cfg()
+            },
+            mutation: None,
+        };
+        let fs = fitsys_with(&ks, cfg, &aux_bs);
+        let scf = krhf(&ks, fs.jk(&ks, ExxDiv::None));
+        let st = kpoint_rhf_stress(
+            &ks.cell,
+            &ks.prep,
+            &ks.mesh,
+            &hc,
+            &ks.hk,
+            KStressJk::RsGdf(fs.src()),
+            &scf,
+            ExxDiv::None,
+            &scfg(None),
+        )
+        .expect("stress");
+        (scf.energy, st)
+    };
+    let (e_auto, s_auto) = run(true);
+    let (e_off, s_off) = run(false);
+    let d = max_mat(&s_auto.de_deps, &s_off.de_deps);
+    eprintln!(
+        "  H2 cc-pVDZ 1x1x2 RS-GDF: |E(Auto) − E(Off)| {:.2e}, |dE/dε(Auto) − dE/dε(Off)| {d:.2e}",
+        (e_auto - e_off).abs()
+    );
+    assert!(d <= AUTO_ROT_BAR, "{d:e}");
+}
+
+/// Measured |Δ dE/dε| Auto vs Off: 1.6e-13 (energies differ by 7.9e-14, so
+/// the rotation is active).
+const AUTO_ROT_BAR: f64 = 1e-11;
+
+// ------------------------------------------------------------- RS-GDF UHF FD
+
+/// k-UHF RS-GDF energy (exxdiv none) of the H3 doublet (2, 1) on a strained
+/// cell, with the per-q kept counts.
+fn k_fit_energy_uhf(cell: &Cell, bs: &BasisSet, n: [usize; 3]) -> (f64, Vec<usize>) {
+    let ks = ksys(cell.clone(), bs, n);
+    let fs = fitsys(&ks);
+    let kept = fs.gdf.stats().per_q.iter().map(|q| q.naux_kept).collect();
+    (kuhf(&ks, fs.jk(&ks, ExxDiv::None), 2, 1).energy, kept)
+}
+
+/// PHYSICS: analytic UHF `dE/dε` on the fitted path vs central FD (h = 1e-4,
+/// fresh fit and SCF per point, all nine components, exxdiv none) of the own
+/// k-UHF RS-GDF energy: a spin-specific anchor that does not rest on the
+/// supercell. The fit-path spin mutant `FitCrossSpin` (exchange pairing
+/// D_α J3^H D_β) and `SwapSpinFock` must miss it.
+#[test]
+#[ignore = "slow (~50 s release): 18 strained RS-GDF builds + 18 k-UHF SCFs on H3"]
+fn h3_uhf_1x1x3_rsgdf_stress_matches_fd_of_own_k_energy_all_nine() {
+    let bs = pyscf_sto3g_h();
+    let n = [1, 1, 3];
+    let ks = ksys(h3_cell(), &bs, n);
+    let fs = fitsys(&ks);
+    let scf = kuhf(&ks, fs.jk(&ks, ExxDiv::None), 2, 1);
+    let kept0: Vec<usize> = fs.gdf.stats().per_q.iter().map(|q| q.naux_kept).collect();
+    let mut fd = ZERO;
+    for (i, j) in ALL9 {
+        let at = |h: f64| {
+            let (e, kept) = k_fit_energy_uhf(&strained(&ks.cell, i, j, h), &bs, n);
+            assert_eq!(kept, kept0, "the metric cut changed under strain");
+            e
+        };
+        fd[i][j] = (at(FD_H) - at(-FD_H)) / (2.0 * FD_H);
+    }
+    let s = ks_uhf_fit(&ks, &fs, &scf, ExxDiv::None, None);
+    let miss = max_mat(&s.de_deps, &fd);
+    eprintln!("  H3 UHF RS-GDF 1x1x3: |analytic − FD| {miss:.2e}");
+    assert!(miss <= K_FD_BAR_FIT, "{miss:e}");
+    for m in [KStressMutation::FitCrossSpin, KStressMutation::SwapSpinFock] {
+        let mm = max_mat(
+            &ks_uhf_fit(&ks, &fs, &scf, ExxDiv::None, Some(m)).de_deps,
+            &fd,
+        );
+        eprintln!("  H3 UHF RS-GDF mutant {m:?}: |mut − FD| {mm:.2e}");
+        assert!(mm > MUTANT_BAR, "{m:?} not caught ({mm:e})");
     }
 }

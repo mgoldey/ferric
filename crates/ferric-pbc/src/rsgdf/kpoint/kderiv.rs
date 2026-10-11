@@ -137,6 +137,13 @@ pub(crate) struct KFitMutation {
     pub(crate) split_full_g0: bool,
     /// Strain only: the LR `K` set built as `G − q` instead of `G + q`.
     pub(crate) lr_wrong_q: bool,
+    /// Strain only: the kept-dropped entries of the Loewner matrix zeroed
+    /// (they vanish for an exact null vector but not for a near-dependent
+    /// dropped mode).
+    pub(crate) no_loewner_kd: bool,
+    /// Strain only, UHF: the fitted exchange `Z` built from `D_α J3^H D_β +
+    /// D_β J3^H D_α` instead of each spin with itself.
+    pub(crate) cross_spin: bool,
 }
 
 /// `3 × 3` strain tensor.
@@ -295,7 +302,7 @@ fn column_matrix(x: &Array2<C64>, p: usize, n: usize) -> Array2<C64> {
 }
 
 /// Loewner (Daleckii–Krein) matrix of `f(s) = 1/s` (kept) / 0 (dropped).
-fn loewner(s: &[f64], keep: &[bool]) -> (Vec<f64>, Array2<f64>) {
+fn loewner(s: &[f64], keep: &[bool], zero_kd: bool) -> (Vec<f64>, Array2<f64>) {
     let na = s.len();
     let f: Vec<f64> = (0..na)
         .map(|i| if keep[i] { 1.0 / s[i] } else { 0.0 })
@@ -305,7 +312,7 @@ fn loewner(s: &[f64], keep: &[bool]) -> (Vec<f64>, Array2<f64>) {
             -f[i] * f[j]
         } else {
             let ds = s[i] - s[j];
-            if ds.abs() < 1e-300 {
+            if zero_kd || ds.abs() < 1e-300 {
                 0.0
             } else {
                 (f[i] - f[j]) / ds
@@ -408,8 +415,8 @@ fn kpoint_fit_core(
         cell,
         obs,
         aux,
-        obs_sh: gshells(obs, "k-point RS-GDF forces orbital basis")?,
-        aux_sh: gshells(aux, "k-point RS-GDF forces aux basis")?,
+        obs_sh: gshells(obs, "k-point RS-GDF orbital basis")?,
+        aux_sh: gshells(aux, "k-point RS-GDF aux basis")?,
         omega: g.omega,
         thresh: g.precision,
         sr_screen: g.sr_screen,
@@ -622,7 +629,7 @@ fn check_fit_inputs(
     d_total: &[Array2<C64>],
     exch: &[(f64, &[Array2<C64>])],
 ) -> Result<(), FerricError> {
-    let who = "k-point RS-GDF forces";
+    let who = "k-point RS-GDF fit";
     let g = &cfg.gdf;
     g.validate()?;
     refuse_column_rotation(g, who)?;
@@ -814,6 +821,23 @@ fn b_mismatch(
     worst
 }
 
+/// `Σ_s c_s D_s(k') J3^H D_s(k)` of one `(k', k)` pair (the `T` weight of the
+/// fitted exchange); the `cross_spin` test mutant pairs the two spins.
+fn exch_pair_term(ctx: &FitCtx<'_>, j: usize, k: usize, jqh: &Array2<C64>) -> Array2<C64> {
+    let n = jqh.nrows();
+    let mut t = Array2::<C64>::zeros((n, n));
+    if ctx.mutation.cross_spin && ctx.exch.len() == 2 {
+        let ((c0, a), (c1, b)) = (ctx.exch[0], ctx.exch[1]);
+        t.scaled_add(C64::new(c0, 0.0), &a[j].dot(jqh).dot(&b[k]));
+        t.scaled_add(C64::new(c1, 0.0), &b[j].dot(jqh).dot(&a[k]));
+        return t;
+    }
+    for (cf, ds) in ctx.exch {
+        t.scaled_add(C64::new(*cf, 0.0), &ds[j].dot(jqh).dot(&ds[k]));
+    }
+    t
+}
+
 /// `H(q)` (exchange part) and `Z^{k'}` for every `k'` (module doc).
 fn exchange_h_and_z(
     ctx: &FitCtx<'_>,
@@ -833,11 +857,7 @@ fn exchange_h_and_z(
         let mut tt = Array2::<C64>::zeros((n * n, naux));
         for p in 0..naux {
             let jqh = herm(&column_matrix(&j3[j], p, n));
-            let mut t = Array2::<C64>::zeros((n, n));
-            for (cf, ds) in ctx.exch {
-                let x = ds[j].dot(&jqh).dot(&ds[k]);
-                t.scaled_add(C64::new(*cf, 0.0), &x);
-            }
+            let t = exch_pair_term(ctx, j, k, &jqh);
             for m in 0..n {
                 for l in 0..n {
                     tt[(m * n + l, p)] = t[(l, m)];
@@ -916,7 +936,7 @@ fn q_class_pass(
     ledger: &Ledger,
     acc: &mut FitAcc,
 ) -> Result<(), FerricError> {
-    let who = "k-point RS-GDF forces";
+    let who = "k-point RS-GDF fit";
     let (st, mesh, g) = (ctx.st, ctx.mesh, ctx.g);
     let naux = st.aux.nbasis();
     let n2 = st.obs.nbasis() * st.obs.nbasis();
@@ -963,7 +983,7 @@ fn q_class_pass(
     }
 
     // --- f(J2), T, H, Z.
-    let (f, lo) = loewner(&s, &keep);
+    let (f, lo) = loewner(&s, &keep, ctx.mutation.no_loewner_kd);
     let mut uf = u.clone();
     for (col, fv) in uf.columns_mut().into_iter().zip(&f) {
         let fv = *fv;
