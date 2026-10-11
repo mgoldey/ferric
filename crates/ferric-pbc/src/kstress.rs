@@ -99,7 +99,7 @@
 //!
 //! The stress rebuilds `F = h + J − αK` from the density and the J/K source
 //! (dense kernels or the RS-GDF build) and refuses (typed [`FerricError`]) unless it reproduces the SCF's
-//! stored Fock to [`FOCK_CONSISTENCY_BAR`]: a KS result (no `V_xc` in the
+//! stored Fock to [`FOCK_CONSISTENCY_BAR`] (defined in [`crate::kgrad`], which applies the same guard): a KS result (no `V_xc` in the
 //! rebuilt `F`), an SCF run at another `exxdiv`, or an RS-GDF source on
 //! another aux basis than the SCF's would otherwise give a finite but wrong
 //! σ (the RS-GDF energy is ω-independent: a fit at another ω reproduces the
@@ -135,9 +135,10 @@ use crate::hcore::{
     G_CHUNK_BYTES, ONE_E_ENGINE_PRECISION,
 };
 use crate::kdense_aft::KDenseAftEri;
+pub use crate::kgrad::FOCK_CONSISTENCY_BAR;
 use crate::kgrad::{
-    check_inputs, cr, fold_complex, fold_real, herm, jk_build, residue_trace, KFitChecks, KGradJk,
-    KRsGdfGradSource, KSpins,
+    check_fock, check_inputs, cr, ecp_presence, fold_complex, fold_real, herm, jk_build,
+    residue_trace, KFitChecks, KGradJk, KRsGdfGradSource, KSpins,
 };
 use crate::kpts::{lattice_coords, KPointMesh};
 use crate::kscf::KScfResult;
@@ -262,6 +263,9 @@ pub enum KStressMutation {
     EcpUnitPairVector,
     /// ECP: the image weight read at the residue of `−L` (transposed weight).
     EcpWrongResidue,
+    /// ECP: the image weight's residue taken modulo the mesh counts instead
+    /// of the residue moduli (identity on a Gamma-centred mesh).
+    EcpMeshCountModuli,
 }
 
 /// Settings for the k-point stress entry points.
@@ -388,7 +392,11 @@ fn ecp_strain_term(
     let weights = EcpWeights::Residue {
         w: w_d,
         recip: cell.reciprocal(),
-        moduli: mesh.residue_moduli(),
+        moduli: if mutation == Some(KStressMutation::EcpMeshCountModuli) {
+            mesh.n()
+        } else {
+            mesh.residue_moduli()
+        },
         flip_l: mutation == Some(KStressMutation::EcpWrongResidue),
     };
     let r = periodic_ecp_strain_weighted(
@@ -399,28 +407,8 @@ fn ecp_strain_term(
         ecp_mut,
         ledger,
     )?;
-    match (&hk.v_ecp, r) {
-        (Some(_), Some((m, n))) => {
-            if n != hk.n_ecp_triples {
-                return Err(FerricError::General(format!(
-                    "k stress: the ECP strain screen keeps {n} triples but hcore's V_ECP kept \
-                     {}; hcore was built with a different ECP precision/config than hcore_cfg \
-                     (or at another geometry)",
-                    hk.n_ecp_triples
-                )));
-            }
-            Ok((m, n))
-        }
-        (None, None) => Ok((ZERO3, 0)),
-        (Some(_), None) => Err(FerricError::General(
-            "k stress: hcore carries V_ECP but the basis/cell has no ECP centre".into(),
-        )),
-        (None, Some(_)) => Err(FerricError::General(
-            "k stress: the basis carries an ECP for a cell atom but hcore has no V_ECP; pass the \
-             PeriodicHcoreK the SCF used"
-                .into(),
-        )),
-    }
+    let n = ecp_presence("k stress", hk, r.as_ref().map(|x| x.1))?;
+    Ok((r.map_or(ZERO3, |x| x.0), n))
 }
 
 /// Resolved ledger for the stress passes (per-k matrices and residue weights).
@@ -1035,42 +1023,6 @@ fn refuse_split_mismatch(who: &str, src: &KRsGdfGradSource<'_>) -> Result<(), Fe
         }
     }
     Ok(())
-}
-
-/// Largest `|F_rebuilt − F_stored|` the entry points accept (Hartree). The
-/// stress rebuilds `F = h + J − αK` from the density and the dense kernels;
-/// the SCF's stored (non-extrapolated) Fock must agree, which fails for a KS
-/// result (the XC potential is not in the rebuilt `F`) or a wrong `exxdiv`
-/// (`v_M S D S` shift). Measured on H2 1x1x2: matching inputs 2e-16 (none) and
-/// 2e-16 (ewald); the wrong `exxdiv` 7.9e-1 either way; an LDA result 3.4e-1.
-pub const FOCK_CONSISTENCY_BAR: f64 = 1e-8;
-
-fn check_fock(
-    who: &str,
-    what: &str,
-    rebuilt: &[Array2<C64>],
-    stored: &[Array2<C64>],
-) -> Result<f64, FerricError> {
-    let mut worst = 0.0_f64;
-    for (a, b) in rebuilt.iter().zip(stored) {
-        if a.dim() != b.dim() {
-            return Err(FerricError::General(format!(
-                "{who}: stored {what} has a different shape than the rebuilt one"
-            )));
-        }
-        for (x, y) in a.iter().zip(b.iter()) {
-            worst = worst.max((x - y).norm());
-        }
-    }
-    if rebuilt.len() != stored.len() || !(worst <= FOCK_CONSISTENCY_BAR) {
-        return Err(FerricError::General(format!(
-            "{who}: the Fock matrix rebuilt from the density and the J/K source differs from \
-             the SCF's stored {what} by {worst:.2e} (bar {FOCK_CONSISTENCY_BAR:.0e}); the stress \
-             covers pure Hartree-Fock only with the SAME exxdiv and kernels the SCF used (not a \
-             KS-DFT result, not a different exxdiv, not an extrapolated state)"
-        )));
-    }
-    Ok(worst)
 }
 
 /// k-point RHF stress (module doc) of a converged

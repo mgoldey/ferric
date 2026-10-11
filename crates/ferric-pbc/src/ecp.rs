@@ -137,9 +137,9 @@
 //!   so a capped or enlarged image list changes nothing but which `L`
 //!   participate. The derivative keeps the energy's kept triples (`n_triples`
 //!   is cross-checked against `PeriodicHcoreK::n_ecp_triples`).
-//! * `W_{−L} = W_Lᵀ` and `V_{−L} = V_Lᵀ`, so the (un-symmetrised) derivative
-//!   of the sum is the derivative of the Hermitised energy up to the
-//!   energy's own asymmetry residual ([`PeriodicEcpImages::asymmetry`]).
+//! * `W_{−L} = W_Lᵀ` and `V_{−L} = V_Lᵀ`, so the un-symmetrised sum and the
+//!   Hermitised energy have the same derivative: for Hermitian `D` the
+//!   Hermitisation drops out of `Re tr[D X]` exactly.
 //!
 //! # Forces
 //!

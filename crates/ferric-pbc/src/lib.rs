@@ -111,9 +111,10 @@
 //!   pair vector (k at fixed fractional coordinates, so no k-strain term),
 //!   the residue-resolved pair-FT strain kernel for `V_LR` and the per-q
 //!   J/K, and the Madelung strain of the diag(N) supercell lattice; equals
-//!   the Gamma stress of the explicit supercell per cell. Refuses a
-//!   range-split RS-GDF build, ECP, explicit column rotation, range-separated kernels and any SCF
-//!   result whose Fock it cannot reproduce (KS, other `exxdiv`).
+//!   the Gamma stress of the explicit supercell per cell. Supports the
+//!   range-split build and a scalar periodic ECP; refuses explicit column
+//!   rotation, range-separated kernels and any SCF result whose Fock it
+//!   cannot reproduce (KS, other `exxdiv`, an SCF run without the ECP).
 //! * [`stress`] — the Gamma-point stress tensor `σ = (1/Ω) dE/dε` of the
 //!   same eight energies (`gamma_{rhf,uhf,rks,uks}_stress[_rsgdf]`): the
 //!   force derivative blocks contracted with image-resolved pair vectors,
