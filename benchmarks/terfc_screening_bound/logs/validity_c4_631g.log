@@ -1,0 +1,177 @@
+warning: ferric-integrals@0.1.0: libint2 headers and library from /home/matt/.local/libint2-2.13.1
+warning: ferric-integrals@0.1.0: libint2 2.13.1 boys.h override applied (GmEval copy fix)
+warning: ferric-integrals@0.1.0: In file included from /home/matt/.local/libint2-2.13.1/include/libint2/./engine.impl.h:34,
+warning: ferric-integrals@0.1.0:                  from /home/matt/.local/libint2-2.13.1/include/libint2/engine.h:1113,
+warning: ferric-integrals@0.1.0:                  from /home/matt/.local/libint2-2.13.1/include/libint2/cxxapi.h:46,
+warning: ferric-integrals@0.1.0:                  from /home/matt/.local/libint2-2.13.1/include/libint2.hpp:24,
+warning: ferric-integrals@0.1.0:                  from shim/shim.cc:5:
+warning: ferric-integrals@0.1.0: /home/matt/qc/ferric/.claude/worktrees/agent-aff8a3d240a209043/crates/ferric-integrals/shim/libint2_overrides/2.13.1/libint2/boys.h: In constructor 'libint2::TennoGmEval<Real>::TennoGmEval(unsigned int, Real)':
+warning: ferric-integrals@0.1.0: /home/matt/qc/ferric/.claude/worktrees/agent-aff8a3d240a209043/crates/ferric-integrals/shim/libint2_overrides/2.13.1/libint2/boys.h:1025: note: '-Wmisleading-indentation' is disabled from this point onwards, since column-tracking was disabled due to the size of the code/headers
+warning: ferric-integrals@0.1.0:  1025 |     if (precision_ < maxabsprecision)
+warning: ferric-integrals@0.1.0:       |
+warning: ferric-integrals@0.1.0: /home/matt/qc/ferric/.claude/worktrees/agent-aff8a3d240a209043/crates/ferric-integrals/shim/libint2_overrides/2.13.1/libint2/boys.h:1025: note: adding '-flarge-source-files' will allow for more column-tracking support, at the expense of compilation time and memory
+warning: ferric-integrals@0.1.0: shim/shim.cc: In function 'void {anonymous}::tform_axis(int, int, const std::vector<double>&, std::vector<double>&)':
+warning: ferric-integrals@0.1.0: shim/shim.cc:3064: warning: comparison of integer expressions of different signedness: 'int' and 'const unsigned int' [-Wsign-compare]
+warning: ferric-integrals@0.1.0:  3064 |         for (int ic = 0; ic < nc; ++ic) {
+warning: ferric-integrals@0.1.0:       |
+warning: ferric-integrals@0.1.0: shim/shim.cc: In function 'void {anonymous}::transform_cart_to_pure3(const libint2::Shell&, const libint2::Shell&, const libint2::Shell&, const std::vector<double>&, std::vector<double>&)':
+warning: ferric-integrals@0.1.0: shim/shim.cc:3125: warning: comparison of integer expressions of different signedness: 'int' and 'const unsigned int' [-Wsign-compare]
+warning: ferric-integrals@0.1.0:  3125 |                 for (int ic = 0; ic < nc; ++ic) acc += cval[ic] * src[cidx[ic]];
+warning: ferric-integrals@0.1.0:       |
+warning: ferric-integrals@0.1.0: shim/shim.cc: In function 'void {anonymous}::transform_cart_to_pure2(const libint2::Shell&, const libint2::Shell&, const std::vector<double>&, std::vector<double>&)':
+warning: ferric-integrals@0.1.0: shim/shim.cc:3161: warning: comparison of integer expressions of different signedness: 'int' and 'const unsigned int' [-Wsign-compare]
+warning: ferric-integrals@0.1.0:  3161 |                 for (int ic = 0; ic < nc; ++ic) acc += cval[ic] * src[cidx[ic]];
+warning: ferric-integrals@0.1.0:       |
+warning: ferric-integrals@0.1.0: shim/shim.cc: In function 'void {anonymous}::transform_cart_to_pure4(const libint2::Shell&, const libint2::Shell&, const libint2::Shell&, const libint2::Shell&, const std::vector<double>&, std::vector<double>&)':
+warning: ferric-integrals@0.1.0: shim/shim.cc:3243: warning: comparison of integer expressions of different signedness: 'int' and 'const unsigned int' [-Wsign-compare]
+warning: ferric-integrals@0.1.0:  3243 |                 for (int ic = 0; ic < nc; ++ic) acc += cval[ic] * src[cidx[ic]];
+warning: ferric-integrals@0.1.0:       |
+warning: ferric-integrals@0.1.0: In file included from /usr/include/c++/12/cassert:44,
+warning: ferric-integrals@0.1.0:                  from /home/matt/.local/libint2-2.13.1/include/libint2/shell.h:34,
+warning: ferric-integrals@0.1.0:                  from /home/matt/.local/libint2-2.13.1/include/libint2/basis.h:53,
+warning: ferric-integrals@0.1.0:                  from /home/matt/.local/libint2-2.13.1/include/libint2/cxxapi.h:44:
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/shell.h: In instantiation of 'constexpr Real libint2::math::df_Kminus1_real(Int) [with Real = double; Int = int; <template-parameter-1-3> = void]':
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/shell.h:925:54:   required from here
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/shell.h:655:12: warning: comparison of integer expressions of different signedness: 'int' and 'std::array<long int, 35>::size_type' {aka 'long unsigned int'} [-Wsign-compare]
+warning: ferric-integrals@0.1.0:   655 |   assert(k < df_Kminus1.size() || k < df_Kminus1_ld.size());
+warning: ferric-integrals@0.1.0:       |          ~~^~~~~~~~~~~~~~~~~~~
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/shell.h:655:37: warning: comparison of integer expressions of different signedness: 'int' and 'std::array<long double, 302>::size_type' {aka 'long unsigned int'} [-Wsign-compare]
+warning: ferric-integrals@0.1.0:   655 |   assert(k < df_Kminus1.size() || k < df_Kminus1_ld.size());
+warning: ferric-integrals@0.1.0:       |                                   ~~^~~~~~~~~~~~~~~~~~~~~~
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/shell.h:657:12: warning: comparison of integer expressions of different signedness: 'int' and 'std::array<long int, 35>::size_type' {aka 'long unsigned int'} [-Wsign-compare]
+warning: ferric-integrals@0.1.0:   657 |   assert(k < df_Kminus1.size() || (std::is_same<Real, double>::value ||
+warning: ferric-integrals@0.1.0:       |          ~~^~~~~~~~~~~~~~~~~~~
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/shell.h:661:13: warning: comparison of integer expressions of different signedness: 'int' and 'std::array<long int, 35>::size_type' {aka 'long unsigned int'} [-Wsign-compare]
+warning: ferric-integrals@0.1.0:   661 |   return (k < df_Kminus1.size()) ? static_cast<Real>(df_Kminus1[k])
+warning: ferric-integrals@0.1.0:       |          ~~~^~~~~~~~~~~~~~~~~~~~
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/shell.h: In instantiation of 'constexpr Real libint2::math::fac_real(Int) [with Real = double; Int = int; <template-parameter-1-3> = void]':
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/shell.h:1218:35:   required from 'void libint2::ShellPair::init(const libint2::Shell&, const libint2::Shell&, Real, libint2::ScreeningMethod) [with Real = double]'
+warning: ferric-integrals@0.1.0: shim/shim.cc:196:0:   required from here
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/shell.h:271:12: warning: comparison of integer expressions of different signedness: 'int' and 'std::array<long int, 21>::size_type' {aka 'long unsigned int'} [-Wsign-compare]
+warning: ferric-integrals@0.1.0:   271 |   assert(k < fac.size() || k < fac_ld.size());
+warning: ferric-integrals@0.1.0:       |          ~~^~~~~~~~~~~~
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/shell.h:271:30: warning: comparison of integer expressions of different signedness: 'int' and 'std::array<long double, 171>::size_type' {aka 'long unsigned int'} [-Wsign-compare]
+warning: ferric-integrals@0.1.0:   271 |   assert(k < fac.size() || k < fac_ld.size());
+warning: ferric-integrals@0.1.0:       |                            ~~^~~~~~~~~~~~~~~
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/shell.h:273:12: warning: comparison of integer expressions of different signedness: 'int' and 'std::array<long int, 21>::size_type' {aka 'long unsigned int'} [-Wsign-compare]
+warning: ferric-integrals@0.1.0:   273 |   assert(k < fac.size() || (std::is_same<Real, double>::value ||
+warning: ferric-integrals@0.1.0:       |          ~~^~~~~~~~~~~~
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/shell.h:278:13: warning: comparison of integer expressions of different signedness: 'int' and 'std::array<long int, 21>::size_type' {aka 'long unsigned int'} [-Wsign-compare]
+warning: ferric-integrals@0.1.0:   278 |   return (k < fac.size()) ? static_cast<Real>(fac[k])
+warning: ferric-integrals@0.1.0:       |          ~~~^~~~~~~~~~~~~
+warning: ferric-integrals@0.1.0: In file included from /home/matt/.local/libint2-2.13.1/include/libint2/engine.h:41:
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/solidharmonics.h: In instantiation of 'void libint2::solidharmonics::SolidHarmonicsCoefficients<Real>::init() [with Real = double]':
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/solidharmonics.h:66:9:   required from 'libint2::solidharmonics::SolidHarmonicsCoefficients<Real>::SolidHarmonicsCoefficients(unsigned char) [with Real = double]'
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/solidharmonics.h:271:43:   required from 'libint2::solidharmonics::SolidHarmonicsCoefficients<Real>::CtorHelperIter::value_type libint2::solidharmonics::SolidHarmonicsCoefficients<Real>::CtorHelperIter::operator*() const [with Real = double; value_type = libint2::solidharmonics::SolidHarmonicsCoefficients<double>]'
+warning: ferric-integrals@0.1.0: /usr/include/c++/12/bits/stl_vector.h:1670:21:   required from 'void std::vector<_Tp, _Alloc>::_M_range_initialize(_InputIterator, _InputIterator, std::input_iterator_tag) [with _InputIterator = libint2::solidharmonics::SolidHarmonicsCoefficients<double>::CtorHelperIter; _Tp = libint2::solidharmonics::SolidHarmonicsCoefficients<double>; _Alloc = std::allocator<libint2::solidharmonics::SolidHarmonicsCoefficients<double> >]'
+warning: ferric-integrals@0.1.0: /usr/include/c++/12/bits/stl_vector.h:708:23:   required from 'std::vector<_Tp, _Alloc>::vector(_InputIterator, _InputIterator, const allocator_type&) [with _InputIterator = libint2::solidharmonics::SolidHarmonicsCoefficients<double>::CtorHelperIter; <template-parameter-2-2> = void; _Tp = libint2::solidharmonics::SolidHarmonicsCoefficients<double>; _Alloc = std::allocator<libint2::solidharmonics::SolidHarmonicsCoefficients<double> >; allocator_type = std::allocator<libint2::solidharmonics::SolidHarmonicsCoefficients<double> >]'
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/solidharmonics.h:84:52:   required from 'static const libint2::solidharmonics::SolidHarmonicsCoefficients<Real>& libint2::solidharmonics::SolidHarmonicsCoefficients<Real>::instance(unsigned int) [with Real = double]'
+warning: ferric-integrals@0.1.0: shim/shim.cc:3059:0:   required from here
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/solidharmonics.h:191:55: warning: comparison of integer expressions of different signedness: 'int' and 'const unsigned int' [-Wsign-compare]
+warning: ferric-integrals@0.1.0:   191 |       for (signed int pure_idx = 0, m = -l_; pure_idx != npure; ++pure_idx, ++m)
+warning: ferric-integrals@0.1.0:       |                                              ~~~~~~~~~^~~~~~~~
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/solidharmonics.h:195:53: warning: comparison of integer expressions of different signedness: 'int' and 'const unsigned int' [-Wsign-compare]
+warning: ferric-integrals@0.1.0:   195 |       for (signed int pure_idx = 0, m = 0; pure_idx != npure;
+warning: ferric-integrals@0.1.0:       |                                            ~~~~~~~~~^~~~~~~~
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/solidharmonics.h:203:44: warning: comparison of integer expressions of different signedness: 'int' and 'const unsigned int' [-Wsign-compare]
+warning: ferric-integrals@0.1.0:   203 |     for (signed int pure_idx = 0; pure_idx != npure; ++pure_idx) {
+warning: ferric-integrals@0.1.0:       |                                   ~~~~~~~~~^~~~~~~~
+warning: function `PI_` should have a snake case name
+   --> crates/ferric-mp2/tests/terfc_screen_probe.rs:246:4
+    |
+246 | fn PI_() -> f64 {
+    |    ^^^ help: convert the identifier to snake case: `pi`
+    |
+    = note: `#[warn(non_snake_case)]` (part of `#[warn(nonstandard_style)]`) on by default
+
+warning: `ferric-mp2` (test "terfc_screen_probe") generated 1 warning
+    Finished `release` profile [optimized] target(s) in 0.10s
+     Running tests/terfc_screen_probe.rs (target/release/deps/terfc_screen_probe-2df9602a907fa43f)
+
+running 1 test
+SETUP alkane_4.xyz nsh_obs=40 nbf=56 nsh_aux=132 naux=364 pairs=820 f=0.9
+OP terfc:1.0:0.70710678 triples=108240 sig(>1e-12)=105310
+VALID terfc:1.0:0.70710678 triple schwarz n=105310 violations=0 vacuous(inf)=0 minratio=1.0004e0 q10=2.770e0 q50=1.592e1 q90=3.613e2
+VALID terfc:1.0:0.70710678 triple B1 delta=1e-2 n=105310 violations=0 vacuous(inf)=70758 minratio=2.7469e0 q10=3.019e1 q50=4.320e2 q90=7.957e3
+VALID terfc:1.0:0.70710678 triple min(S,B1) delta=1e-2 n=105310 violations=0 vacuous(inf)=0 minratio=1.0004e0 q10=2.769e0 q50=1.462e1 q90=2.009e2
+VALID terfc:1.0:0.70710678 triple MUTANT B1 extents*0.5 delta=1e-2 n=105310 violations=0 vacuous(inf)=27580 minratio=1.6514e0 q10=6.639e0 q50=4.649e1 q90=9.932e2
+VALID terfc:1.0:0.70710678 triple B1 delta=1e-4 n=105310 violations=0 vacuous(inf)=88966 minratio=4.7281e0 q10=4.623e1 q50=1.299e3 q90=3.051e4
+VALID terfc:1.0:0.70710678 triple min(S,B1) delta=1e-4 n=105310 violations=0 vacuous(inf)=0 minratio=1.0004e0 q10=2.770e0 q50=1.568e1 q90=2.802e2
+VALID terfc:1.0:0.70710678 triple MUTANT B1 extents*0.5 delta=1e-4 n=105310 violations=0 vacuous(inf)=44930 minratio=2.1161e0 q10=1.162e1 q50=1.158e2 q90=2.437e3
+VALID terfc:1.0:0.70710678 triple B1 delta=1e-6 n=105310 violations=0 vacuous(inf)=96102 minratio=7.5685e0 q10=7.831e1 q50=2.290e3 q90=9.034e4
+VALID terfc:1.0:0.70710678 triple min(S,B1) delta=1e-6 n=105310 violations=0 vacuous(inf)=0 minratio=1.0004e0 q10=2.770e0 q50=1.585e1 q90=3.218e2
+VALID terfc:1.0:0.70710678 triple MUTANT B1 extents*0.5 delta=1e-6 n=105310 violations=0 vacuous(inf)=57586 minratio=2.5428e0 q10=1.851e1 q50=2.098e2 q90=4.050e3
+VALID terfc:1.0:0.70710678 triple B1 delta=1e-8 n=105310 violations=0 vacuous(inf)=99670 minratio=1.0691e1 q10=1.316e2 q50=3.833e3 q90=1.191e5
+VALID terfc:1.0:0.70710678 triple min(S,B1) delta=1e-8 n=105310 violations=0 vacuous(inf)=0 minratio=1.0004e0 q10=2.770e0 q50=1.591e1 q90=3.397e2
+VALID terfc:1.0:0.70710678 triple MUTANT B1 extents*0.5 delta=1e-8 n=105310 violations=0 vacuous(inf)=66604 minratio=2.9682e0 q10=2.582e1 q50=3.466e2 q90=6.843e3
+VALID terfc:1.0:0.70710678 triple B2 (sample 3009) n=3009 violations=0 vacuous(inf)=0 minratio=1.0603e0 q10=2.755e0 q50=1.621e1 q90=3.856e2
+VALID terfc:1.0:0.70710678 triple MUTANT B2*0.5 n=3009 violations=92 vacuous(inf)=0 minratio=5.3014e-1 q10=1.378e0 q50=8.103e0 q90=1.928e2
+OP terfc:0.991:1.354 triples=108240 sig(>1e-12)=104868
+VALID terfc:0.991:1.354 triple schwarz n=104868 violations=0 vacuous(inf)=0 minratio=1.0004e0 q10=2.889e0 q50=2.250e1 q90=5.401e3
+VALID terfc:0.991:1.354 triple B1 delta=1e-2 n=104868 violations=0 vacuous(inf)=70710 minratio=5.2061e0 q10=1.877e2 q50=4.097e3 q90=6.822e4
+VALID terfc:0.991:1.354 triple min(S,B1) delta=1e-2 n=104868 violations=0 vacuous(inf)=0 minratio=1.0004e0 q10=2.889e0 q50=2.215e1 q90=2.586e3
+VALID terfc:0.991:1.354 triple MUTANT B1 extents*0.5 delta=1e-2 n=104868 violations=144 vacuous(inf)=27584 minratio=1.3701e-2 q10=1.325e1 q50=6.821e1 q90=8.111e2
+VALID terfc:0.991:1.354 triple B1 delta=1e-4 n=104868 violations=0 vacuous(inf)=88856 minratio=1.0040e1 q10=5.848e2 q50=7.371e4 q90=2.603e6
+VALID terfc:0.991:1.354 triple min(S,B1) delta=1e-4 n=104868 violations=0 vacuous(inf)=0 minratio=1.0004e0 q10=2.889e0 q50=2.247e1 q90=4.534e3
+VALID terfc:0.991:1.354 triple MUTANT B1 extents*0.5 delta=1e-4 n=104868 violations=0 vacuous(inf)=44914 minratio=3.5384e0 q10=4.348e1 q50=3.466e2 q90=2.970e3
+VALID terfc:0.991:1.354 triple B1 delta=1e-6 n=104868 violations=0 vacuous(inf)=95940 minratio=1.6339e1 q10=1.345e3 q50=4.462e5 q90=3.589e7
+VALID terfc:0.991:1.354 triple min(S,B1) delta=1e-6 n=104868 violations=0 vacuous(inf)=0 minratio=1.0004e0 q10=2.889e0 q50=2.249e1 q90=4.866e3
+VALID terfc:0.991:1.354 triple MUTANT B1 extents*0.5 delta=1e-6 n=104868 violations=0 vacuous(inf)=57566 minratio=4.6855e0 q10=7.993e1 q50=1.071e3 q90=1.059e4
+VALID terfc:0.991:1.354 triple B1 delta=1e-8 n=104868 violations=0 vacuous(inf)=99478 minratio=2.6475e1 q10=3.855e3 q50=1.987e6 q90=1.679e8
+VALID terfc:0.991:1.354 triple min(S,B1) delta=1e-8 n=104868 violations=0 vacuous(inf)=0 minratio=1.0004e0 q10=2.889e0 q50=2.250e1 q90=5.157e3
+VALID terfc:0.991:1.354 triple MUTANT B1 extents*0.5 delta=1e-8 n=104868 violations=0 vacuous(inf)=66568 minratio=5.7678e0 q10=1.442e2 q50=2.763e3 q90=3.739e4
+VALID terfc:0.991:1.354 triple B2 (sample 3085) n=3085 violations=0 vacuous(inf)=0 minratio=1.0315e0 q10=3.131e0 q50=1.522e1 q90=4.520e2
+VALID terfc:0.991:1.354 triple MUTANT B2*0.5 n=3085 violations=75 vacuous(inf)=0 minratio=5.1574e-1 q10=1.565e0 q50=7.608e0 q90=2.260e2
+OP terfc:1.0:2 triples=108240 sig(>1e-12)=103622
+VALID terfc:1.0:2 triple schwarz n=103622 violations=0 vacuous(inf)=0 minratio=1.0004e0 q10=2.899e0 q50=2.623e1 q90=2.302e4
+VALID terfc:1.0:2 triple B1 delta=1e-2 n=103622 violations=0 vacuous(inf)=70708 minratio=1.0678e1 q10=5.541e2 q50=1.270e4 q90=2.676e5
+VALID terfc:1.0:2 triple min(S,B1) delta=1e-2 n=103622 violations=0 vacuous(inf)=0 minratio=1.0004e0 q10=2.899e0 q50=2.590e1 q90=9.805e3
+VALID terfc:1.0:2 triple MUTANT B1 extents*0.5 delta=1e-2 n=103622 violations=5252 vacuous(inf)=27584 minratio=2.2273e-10 q10=3.919e0 q50=7.137e1 q90=7.646e2
+VALID terfc:1.0:2 triple B1 delta=1e-4 n=103622 violations=0 vacuous(inf)=88800 minratio=2.2824e1 q10=3.235e3 q50=7.566e5 q90=7.173e7
+VALID terfc:1.0:2 triple min(S,B1) delta=1e-4 n=103622 violations=0 vacuous(inf)=0 minratio=1.0004e0 q10=2.899e0 q50=2.623e1 q90=1.807e4
+VALID terfc:1.0:2 triple MUTANT B1 extents*0.5 delta=1e-4 n=103622 violations=238 vacuous(inf)=44914 minratio=3.6614e-5 q10=5.465e1 q50=4.563e2 q90=3.459e3
+VALID terfc:1.0:2 triple B1 delta=1e-6 n=103622 violations=0 vacuous(inf)=95866 minratio=3.6654e1 q10=9.311e3 q50=1.223e7 q90=2.524e9
+VALID terfc:1.0:2 triple min(S,B1) delta=1e-6 n=103622 violations=0 vacuous(inf)=0 minratio=1.0004e0 q10=2.899e0 q50=2.623e1 q90=2.104e4
+VALID terfc:1.0:2 triple MUTANT B1 extents*0.5 delta=1e-6 n=103622 violations=2 vacuous(inf)=57566 minratio=9.7263e-2 q10=1.685e2 q50=2.113e3 q90=1.671e4
+VALID terfc:1.0:2 triple B1 delta=1e-8 n=103622 violations=0 vacuous(inf)=99342 minratio=5.7541e1 q10=4.279e4 q50=1.193e8 q90=3.057e10
+VALID terfc:1.0:2 triple min(S,B1) delta=1e-8 n=103622 violations=0 vacuous(inf)=0 minratio=1.0004e0 q10=2.899e0 q50=2.623e1 q90=2.177e4
+VALID terfc:1.0:2 triple MUTANT B1 extents*0.5 delta=1e-8 n=103622 violations=0 vacuous(inf)=66566 minratio=7.6688e0 q10=3.796e2 q50=7.420e3 q90=9.756e4
+VALID terfc:1.0:2 triple B2 (sample 3048) n=3048 violations=0 vacuous(inf)=0 minratio=1.0065e0 q10=3.023e0 q50=1.493e1 q90=5.067e2
+VALID terfc:1.0:2 triple MUTANT B2*0.5 n=3048 violations=87 vacuous(inf)=0 minratio=5.0325e-1 q10=1.511e0 q50=7.463e0 q90=2.533e2
+OP erfc:0.42 triples=108240 sig(>1e-12)=105390
+VALID erfc:0.42 triple schwarz n=105390 violations=3444 vacuous(inf)=0 minratio=0.0000e0 q10=2.207e0 q50=1.290e1 q90=1.680e2
+VALID erfc:0.42 triple B1 delta=1e-2 n=105390 violations=0 vacuous(inf)=70788 minratio=2.3023e0 q10=1.448e1 q50=2.139e2 q90=6.412e3
+VALID erfc:0.42 triple min(S,B1) delta=1e-2 n=105390 violations=3444 vacuous(inf)=0 minratio=0.0000e0 q10=2.207e0 q50=1.158e1 q90=1.068e2
+VALID erfc:0.42 triple MUTANT B1 extents*0.5 delta=1e-2 n=105390 violations=0 vacuous(inf)=27580 minratio=1.5183e0 q10=4.551e0 q50=4.003e1 q90=1.119e3
+VALID erfc:0.42 triple B1 delta=1e-4 n=105390 violations=0 vacuous(inf)=89010 minratio=3.4623e0 q10=2.036e1 q50=4.011e2 q90=1.731e4
+VALID erfc:0.42 triple min(S,B1) delta=1e-4 n=105390 violations=3444 vacuous(inf)=0 minratio=0.0000e0 q10=2.207e0 q50=1.254e1 q90=1.312e2
+VALID erfc:0.42 triple MUTANT B1 extents*0.5 delta=1e-4 n=105390 violations=0 vacuous(inf)=44934 minratio=1.8644e0 q10=7.201e0 q50=7.847e1 q90=2.440e3
+VALID erfc:0.42 triple B1 delta=1e-6 n=105390 violations=0 vacuous(inf)=96162 minratio=4.6805e0 q10=2.816e1 q50=5.391e2 q90=3.479e4
+VALID erfc:0.42 triple min(S,B1) delta=1e-6 n=105390 violations=3444 vacuous(inf)=0 minratio=0.0000e0 q10=2.207e0 q50=1.274e1 q90=1.451e2
+VALID erfc:0.42 triple MUTANT B1 extents*0.5 delta=1e-6 n=105390 violations=0 vacuous(inf)=57606 minratio=2.1645e0 q10=1.038e1 q50=1.196e2 q90=3.764e3
+VALID erfc:0.42 triple B1 delta=1e-8 n=105390 violations=0 vacuous(inf)=99738 minratio=6.0358e0 q10=4.151e1 q50=6.799e2 q90=3.577e4
+VALID erfc:0.42 triple min(S,B1) delta=1e-8 n=105390 violations=3444 vacuous(inf)=0 minratio=0.0000e0 q10=2.207e0 q50=1.284e1 q90=1.546e2
+VALID erfc:0.42 triple MUTANT B1 extents*0.5 delta=1e-8 n=105390 violations=0 vacuous(inf)=66624 minratio=2.4476e0 q10=1.309e1 q50=1.766e2 q90=5.851e3
+VALID erfc:0.42 triple B2 (sample 3012) n=3012 violations=0 vacuous(inf)=0 minratio=1.0553e0 q10=1.777e0 q50=1.168e1 q90=3.432e2
+VALID erfc:0.42 triple MUTANT B2*0.5 n=3012 violations=479 vacuous(inf)=0 minratio=5.2766e-1 q10=8.885e-1 q50=5.842e0 q90=1.716e2
+OP coul triples=108240 sig(>1e-12)=105606
+VALID coul triple schwarz n=105606 violations=3660 vacuous(inf)=0 minratio=0.0000e0 q10=1.734e0 q50=6.372e0 q90=6.824e1
+VALID coul triple B1 delta=1e-2 n=105606 violations=0 vacuous(inf)=70846 minratio=1.1688e0 q10=2.485e0 q50=9.620e1 q90=6.779e3
+VALID coul triple min(S,B1) delta=1e-2 n=105606 violations=3660 vacuous(inf)=0 minratio=0.0000e0 q10=1.650e0 q50=5.121e0 q90=6.730e1
+VALID coul triple MUTANT B1 extents*0.5 delta=1e-2 n=105606 violations=0 vacuous(inf)=27584 minratio=1.0778e0 q10=1.739e0 q50=4.452e1 q90=1.873e3
+VALID coul triple B1 delta=1e-4 n=105606 violations=0 vacuous(inf)=89128 minratio=1.2747e0 q10=2.850e0 q50=1.147e2 q90=1.230e4
+VALID coul triple min(S,B1) delta=1e-4 n=105606 violations=3660 vacuous(inf)=0 minratio=0.0000e0 q10=1.705e0 q50=5.713e0 q90=6.823e1
+VALID coul triple MUTANT B1 extents*0.5 delta=1e-4 n=105606 violations=0 vacuous(inf)=44948 minratio=1.1207e0 q10=2.033e0 q50=6.094e1 q90=3.503e3
+VALID coul triple B1 delta=1e-6 n=105606 violations=0 vacuous(inf)=96306 minratio=1.3650e0 q10=3.244e0 q50=1.094e2 q90=1.725e4
+VALID coul triple min(S,B1) delta=1e-6 n=105606 violations=3660 vacuous(inf)=0 minratio=0.0000e0 q10=1.728e0 q50=5.999e0 q90=6.824e1
+VALID coul triple MUTANT B1 extents*0.5 delta=1e-6 n=105606 violations=0 vacuous(inf)=57636 minratio=1.1543e0 q10=2.248e0 q50=7.555e1 q90=4.762e3
+VALID coul triple B1 delta=1e-8 n=105606 violations=0 vacuous(inf)=99898 minratio=1.4497e0 q10=3.267e0 q50=1.169e2 q90=1.357e4
+VALID coul triple min(S,B1) delta=1e-8 n=105606 violations=3660 vacuous(inf)=0 minratio=0.0000e0 q10=1.733e0 q50=6.170e0 q90=6.824e1
+VALID coul triple MUTANT B1 extents*0.5 delta=1e-8 n=105606 violations=0 vacuous(inf)=66674 minratio=1.1836e0 q10=2.403e0 q50=8.926e1 q90=6.251e3
+VALID coul triple B2 (sample 3018) n=3018 violations=0 vacuous(inf)=0 minratio=1.0000e0 q10=1.000e0 q50=1.558e1 q90=6.644e2
+VALID coul triple MUTANT B2*0.5 n=3018 violations=1089 vacuous(inf)=0 minratio=5.0000e-1 q10=5.002e-1 q50=7.790e0 q90=3.322e2
+test terfc_screen_probe ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.48s
+
+WALL 5 s

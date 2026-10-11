@@ -731,6 +731,11 @@ pub fn assemble_ragged_direct_local(
                                     continue;
                                 }
                             }
+                            // THROWAWAY PROBE hook (research/terfc-screening-bound)
+                            if crate::probe_terfc_bound::probe_skip(sp, ua, ub) {
+                                n_skipped += 1;
+                                continue;
+                            }
                             n_triples += 1;
                             if let Some(block) = eng.compute_eri3(obs, dfbs, sp, ua, ub) {
                                 let (n1, n2) = (dims_obs[ua], dims_obs[ub]);
