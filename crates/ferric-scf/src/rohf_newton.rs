@@ -286,10 +286,20 @@ pub(crate) fn gradient_blocks_from(
     (g_vc, g_vo, g_oc)
 }
 
+/// Normalisation and exactness (measured by `tests/rohf_hessian_matvec_fd.rs`):
+/// the result is d/dκ of the HALF gradient `gradient_blocks_from`, i.e. half
+/// the true orbital Hessian. The J/K(+XC) response part is exact in every
+/// block. The Fock part is only the DIAGONAL gap `F[p,p] - F[q,q]`, not the
+/// full commutator `F κ - κ F`, so the matvec equals the true derivative only
+/// when the per-spin Focks have no off-diagonal terms in the rotated
+/// sub-blocks (the vc block at a converged point is exact; the vo/oc blocks
+/// and every block away from convergence are not). Adequate as a Newton/PCG
+/// operator; NOT an exact Hessian.
+//
 // Returns the three coupling blocks (vc, vo, oc) of the Hessian-vector product;
 // the tuple mirrors the three input blocks and reads clearer than an alias.
 #[allow(clippy::type_complexity)]
-pub(crate) fn hessian_matvec(
+pub fn hessian_matvec(
     ctx: &ParallelContext,
     inp: &RohfNewtonInputs,
     k_vc: &Array2<f64>,
