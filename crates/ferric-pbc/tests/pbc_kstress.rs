@@ -2061,6 +2061,20 @@ fn fit_supercell_anchor_cfg(
     gdf: &RsGdfConfig,
     n: [usize; 3],
 ) -> FitAnchor {
+    fit_supercell_anchor_bars(name, cell, bs, aux_bs, gdf, n, SC_FIT_BAR)
+}
+
+/// [`fit_supercell_anchor_cfg`] with the bar of the PER-PART comparison
+/// (`part_bar`; the total keeps `SC_FIT_BAR`).
+fn fit_supercell_anchor_bars(
+    name: &str,
+    cell: Cell,
+    bs: &BasisSet,
+    aux_bs: &BasisSet,
+    gdf: &RsGdfConfig,
+    n: [usize; 3],
+    part_bar: f64,
+) -> FitAnchor {
     let nc = (n[0] * n[1] * n[2]) as f64;
     let ks = ksys(cell.clone(), bs, n);
     let kcfg = KRsGdfConfig {
@@ -2091,7 +2105,7 @@ fn fit_supercell_anchor_cfg(
             ref_parts[i][pi] = scale3(&gp, 1.0 / nc);
             let d = max_mat(kp, &ref_parts[i][pi]);
             eprintln!("    {pn}: |k − sc/N| {d:.2e}");
-            assert!(d <= SC_FIT_BAR, "{name} {exx:?} {pn}: {d:e}");
+            assert!(d <= part_bar, "{name} {exx:?} {pn}: {d:e}");
         }
         assert!(miss <= SC_FIT_BAR, "{name} {exx:?}: {miss:e}");
         assert!(k.antisymmetry() <= ANTISYM_BAR);
@@ -2412,10 +2426,11 @@ fn h3_uhf_1x1x3_rsgdf_stress_is_the_supercell_stress_per_cell() {
 
 // ----------------------------------------------------------- guards
 
-/// Typed refusals of the fitted path: a range-split build, an ECP in the
-/// hcore, an explicit column-rotation request on the fit or the hcore.
+/// Typed refusals of the fitted path: an ECP in the hcore, an explicit
+/// column-rotation request on the fit or the hcore, on the unsplit AND the
+/// range-split source (a range-split build itself is supported).
 #[test]
-fn rsgdf_stress_refuses_range_split_ecp_and_explicit_rotation() {
+fn rsgdf_stress_refuses_ecp_and_explicit_rotation() {
     let bs = pyscf_sto3g_h();
     let ks = ksys(h2_cell_g(), &bs, [1, 1, 3]);
     let fs = fitsys(&ks);
@@ -2435,20 +2450,6 @@ fn rsgdf_stress_refuses_range_split_ecp_and_explicit_rotation() {
         .unwrap_err()
         .to_string()
     };
-    // Range split: the typed refusal names the missing split pieces.
-    let split_cfg = KRsGdfConfig {
-        gdf: RsGdfConfig {
-            range_split: Some(RangeSplit::new(0.5)),
-            ..gdf_cfg()
-        },
-        mutation: None,
-    };
-    let split = fitsys_cfg(&ks, split_cfg);
-    let e = run(&ks.hk, &hcore_cfg(), split.src());
-    assert!(
-        e.contains("range-split RS-GDF strain at k is not implemented"),
-        "{e}"
-    );
     // ECP in the hcore.
     let mut hk_ecp = ks.hk.clone();
     hk_ecp.v_ecp = Some(hk_ecp.h.clone());
@@ -2471,6 +2472,13 @@ fn rsgdf_stress_refuses_range_split_ecp_and_explicit_rotation() {
         aux: &fs.aux,
     };
     let e = run(&ks.hk, &hcore_cfg(), src);
+    assert!(e.contains("column rotation"), "{e}");
+    // The same two refusals on a range-split source (the SCF density is the
+    // unsplit one: the refusals fire before the Fock guard).
+    let sp = fitsys_cfg(&ks, split_kcfg(1.0));
+    let e = run(&hk_ecp, &hcore_cfg(), sp.src());
+    assert!(e.contains("ECP strain at k is not implemented"), "{e}");
+    let e = run(&ks.hk, &rot, sp.src());
     assert!(e.contains("column rotation"), "{e}");
 }
 
@@ -2904,4 +2912,853 @@ fn h3_uhf_1x1x3_rsgdf_stress_matches_fd_of_own_k_energy_all_nine() {
         eprintln!("  H3 UHF RS-GDF mutant {m:?}: |mut − FD| {mm:.2e}");
         assert!(mm > MUTANT_BAR, "{m:?} not caught ({mm:e})");
     }
+}
+
+// ================================================== RANGE-SPLIT RS-GDF (k)
+//
+// The range split moves the smooth primitives of the SR sums to G
+// space with the kernel v_SR(|G + q|) at each momentum transfer. Anchors, in
+// the order they were written (each BEFORE the sweep that uses it):
+//  (a) 1x1x1 == the Gamma split stress, term by term;
+//  (b) 1x1x3 == the explicit split supercell / N, term by term, both exxdiv;
+//  (c) split k stress vs the UNSPLIT k stress (the split is an exact
+//      decomposition up to its tolerance: the difference is MEASURED and the
+//      bar derived from it);
+//  (d) FD of the split k energy (h^2 floor), MP [1,1,2] included;
+//  (e) the Fock-consistency guard on a split source; thread bit-identity
+//      lives in `pbc_parallel_bitwise.rs`.
+// ARTIFACT hypothesis shared by (a)-(d): "the split stress passes because it
+// silently ran the unsplit code" would make split == unsplit to 1e-13; every
+// test asserts the split counters (moved primitives, shrunk SR walks), and the
+// mutants delete only the NEW split terms.
+
+/// lambda = 1 at omega = 1 moves the aux primitives s(0.75), s(0.3), p(0.5)
+/// and the STO-3G orbital primitive 0.1689.
+fn split_gdf_cfg(lambda: f64) -> RsGdfConfig {
+    RsGdfConfig {
+        range_split: Some(RangeSplit::new(lambda)),
+        ..gdf_cfg()
+    }
+}
+
+fn split_kcfg(lambda: f64) -> KRsGdfConfig {
+    KRsGdfConfig {
+        gdf: split_gdf_cfg(lambda),
+        mutation: None,
+    }
+}
+
+/// Panics unless the split path ran, primitives moved on both sides and the
+/// SR walks shrank against the unsplit build (the artifact guard).
+fn assert_moved(tag: &str, gdf: &KRsGdf, unsplit: &KRsGdf) {
+    let c = |name: &str| {
+        gdf.stats()
+            .split_counters
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|&(_, v)| v)
+            .unwrap_or_else(|| panic!("{tag}: counter {name:?} missing (split path did not run)"))
+    };
+    let (os, as_) = (
+        c("rsgdf split orbital prims smooth"),
+        c("rsgdf split aux prims smooth"),
+    );
+    let (s, u) = (gdf.stats(), unsplit.stats());
+    eprintln!(
+        "  {tag}: moved orbital {os}, aux {as_}; SR3 {} -> {}, SR2 {} -> {}",
+        u.n_sr3_triplets, s.n_sr3_triplets, u.n_sr2_pairs, s.n_sr2_pairs
+    );
+    assert!(os > 0 && as_ > 0, "{tag}: nothing moved");
+    assert!(s.n_sr3_triplets < u.n_sr3_triplets, "{tag}: SR3 not shrunk");
+    assert!(u.split_counters.is_empty(), "{tag}: unsplit ran split path");
+}
+
+/// The NEW split terms and hooks of the k stress.
+const SPLIT_MUTANTS: [KStressMutation; 6] = [
+    KStressMutation::SplitNoSrKernelStrain,
+    KStressMutation::SplitNoSmoothPair,
+    KStressMutation::SplitFullG0,
+    KStressMutation::SplitNoSmoothOverlap,
+    KStressMutation::SplitFlipSrSlope,
+    KStressMutation::SplitNoSmoothVolume,
+];
+
+/// PHYSICS: at 1x1x1 the k split stress is the Gamma split stress, part by
+/// part (SR3, SR2, LR3, LR2, G0 overlap incl. the smooth-overlap virial, both
+/// G0 volumes). ARTIFACT: independent constructions (half sphere real with
+/// weight 2 vs full sphere complex), but BLIND to phases, 1/N_k and q != 0.
+#[test]
+fn one_point_mesh_split_rsgdf_stress_is_the_gamma_split_stress() {
+    let bs = pyscf_sto3g_h();
+    let ks = ksys(h2_cell_g(), &bs, [1, 1, 1]);
+    let fs = fitsys_cfg(&ks, split_kcfg(1.0));
+    let un = fitsys(&ks);
+    assert_moved("H2 1x1x1", &fs.gdf, &un.gdf);
+    let scfs = fit_scfs(&ks, &fs);
+    let g = gfit_aux(h2_cell_g(), &bs, &et_sp_aux(), &split_gdf_cfg(1.0));
+    for exx in EXX {
+        let scf = &scfs[exx_idx(exx)];
+        let gscf = gamma_restricted(real_of(&scf.densities[0]));
+        let k = ks_rhf_fit(&ks, &fs, scf, exx, None);
+        let gs = gamma_fit_stress(&g, &gscf, exx);
+        let total = max_mat(&k.de_deps, &gs.de_deps);
+        eprintln!("  H2 split 1x1x1 {exx:?}: |dE/dε k − Gamma| {total:.2e}");
+        for ((name, kp), gp) in fit_parts(&k.parts).iter().zip(gamma_fit_parts(&gs.parts)) {
+            let d = max_mat(kp, &gp);
+            eprintln!(
+                "    {name}: |k − Gamma| {d:.2e} (|part| {:.2e})",
+                max_mat(kp, &ZERO)
+            );
+            assert!(d <= GAMMA_FIT_BAR, "{exx:?} {name}: {d:e}");
+        }
+        assert!(total <= GAMMA_FIT_BAR, "{exx:?}: {total:e}");
+        if exx == ExxDiv::None {
+            for m in SPLIT_MUTANTS {
+                let x = ks_rhf_fit(&ks, &fs, scf, exx, Some(m));
+                let miss = max_mat(&x.de_deps, &gs.de_deps);
+                eprintln!("  1x1x1 split mutant {m:?}: miss vs Gamma {miss:.2e}");
+                assert!(miss > MUTANT_BAR, "{m:?} not caught ({miss:e})");
+            }
+        }
+    }
+}
+
+// ----------------------------------------------- supercell anchor (split)
+
+/// PHYSICS: a Gamma-centred k mesh IS the diag(N) supercell, so per cell
+/// `dE/dε = dE/dε_sc/N`, here with the RANGE-SPLIT fit on both sides (the
+/// k-point kernel v_SR(|G + q|) per q vs the supercell's Gamma kernel).
+/// ARTIFACT: a split stress that used the Gamma kernel at every q (the
+/// k-specific defect of the energy, 1.05e-3 Ha) or mis-binned the smooth
+/// pairs could not reproduce an explicit supercell; the 1x1x1 anchor cannot
+/// see either (q = 0 only). NON-TRIM mesh (n_2 = 3).
+#[test]
+fn h2_1x1x3_split_rsgdf_stress_is_the_supercell_stress_per_cell() {
+    let bs = pyscf_sto3g_h();
+    let a = fit_supercell_anchor_cfg(
+        "H2 split",
+        h2_cell_g(),
+        &bs,
+        &et_sp_aux(),
+        &split_gdf_cfg(1.0),
+        [1, 1, 3],
+    );
+    assert_moved("H2 1x1x3", &a.fs.gdf, &fitsys(&a.ks).gdf);
+    for m in [
+        KStressMutation::NoPhase,
+        KStressMutation::ConjD,
+        KStressMutation::FitAuxPhase,
+        KStressMutation::FitLrWrongQ,
+        KStressMutation::SplitNoSrKernelStrain,
+        KStressMutation::SplitNoSmoothPair,
+    ] {
+        let x = a.mutant(ExxDiv::None, m);
+        eprintln!(
+            "  H2 split mutant {m:?}: miss {:.2e} (off-diagonal {:.2e}, worst part {:.2e})",
+            x.total, x.off, x.part
+        );
+        assert!(x.total > MUTANT_BAR, "{m:?} not caught ({:e})", x.total);
+    }
+}
+
+/// Every NEW split hook against the supercell anchor, both exxdiv, per part
+/// (a part-level defect hidden in the total by aux stationarity is sharp
+/// per part). `SplitNoSmoothVolume` and `SplitFullG0` carry diagonal volume
+/// terms: asserted diagonal-only for the volume one.
+#[test]
+#[ignore = "slow (~90 s release, 55 s on a quiet box): 26 stress evaluations after the supercell anchor"]
+fn h2_1x1x3_split_mutants_miss_the_supercell_anchor() {
+    let bs = pyscf_sto3g_h();
+    let a = fit_supercell_anchor_cfg(
+        "H2 split",
+        h2_cell_g(),
+        &bs,
+        &et_sp_aux(),
+        &split_gdf_cfg(1.0),
+        [1, 1, 3],
+    );
+    for m in SPLIT_MUTANTS.into_iter().chain([
+        KStressMutation::NoInvNk,
+        KStressMutation::NoMetric,
+        KStressMutation::NoAuxFt3,
+        KStressMutation::NoJ2G0Vol,
+        KStressMutation::NoJ3G0Vol,
+        KStressMutation::NoG0,
+        KStressMutation::NoVolume,
+    ]) {
+        for exx in EXX {
+            let x = a.mutant(exx, m);
+            eprintln!(
+                "  H2 split mutant {m:?} {exx:?}: miss {:.2e} (off-diagonal {:.2e}, worst part {:.2e})",
+                x.total, x.off, x.part
+            );
+            assert!(
+                x.total > MUTANT_BAR,
+                "{m:?} {exx:?} not caught ({:e})",
+                x.total
+            );
+            // NoInvNk acts on the one-electron overlap weights, not on the
+            // seven fitted parts (its part miss is the 1e-12 floor).
+            if m != KStressMutation::NoInvNk {
+                assert!(x.part > MUTANT_BAR, "{m:?} {exx:?}: parts ({:e})", x.part);
+            }
+            if m == KStressMutation::SplitNoSmoothVolume {
+                assert!(x.off <= SC_FIT_BAR, "{m:?} diagonal-only ({:e})", x.off);
+            }
+        }
+    }
+}
+
+/// PHYSICS: the split is an exact decomposition of the same fitted energy, so
+/// the split k stress equals the UNSPLIT k stress up to the split's
+/// own tolerance (each side at its own converged density). ARTIFACT: equality
+/// to 1e-13 would mean the split ran the unsplit path (the moved counters are
+/// asserted); the difference is the split's truncation, MEASURED here.
+#[test]
+fn h2_1x1x3_split_k_stress_matches_the_unsplit_k_stress() {
+    let bs = pyscf_sto3g_h();
+    let ks = ksys(h2_cell_g(), &bs, [1, 1, 3]);
+    let sp = fitsys_cfg(&ks, split_kcfg(1.0));
+    let un = fitsys(&ks);
+    assert_moved("H2 1x1x3", &sp.gdf, &un.gdf);
+    let (scf_s, scf_u) = (fit_scfs(&ks, &sp), fit_scfs(&ks, &un));
+    for exx in EXX {
+        let i = exx_idx(exx);
+        let s = ks_rhf_fit(&ks, &sp, &scf_s[i], exx, None);
+        let u = ks_rhf_fit(&ks, &un, &scf_u[i], exx, None);
+        let d = max_mat(&s.de_deps, &u.de_deps);
+        eprintln!(
+            "  H2 1x1x3 {exx:?}: |split − unsplit| dE/dε {d:.2e}, energies {:.3e}",
+            (scf_s[i].energy - scf_u[i].energy).abs()
+        );
+        assert!(d <= SPLIT_UNSPLIT_BAR, "{exx:?}: {d:e}");
+        assert!(d > 1e-15, "{exx:?}: split ran the unsplit path ({d:e})");
+    }
+}
+
+/// Measured on H2 1x1x3 (lambda 1, omega 1, each side at its own density):
+/// 2.6e-12 (none) / 5.9e-13 (ewald); the split-vs-unsplit energy differs by
+/// 4e-15. The bar is 40x above the floor and 7+ orders below the smallest
+/// split mutant (7.8e-4).
+const SPLIT_UNSPLIT_BAR: f64 = 1e-10;
+
+// ------------------------------------------------ FD of the split k energy
+
+/// Split k-RHF energies `[none, ewald]` on `(cell, bs, n, centring)` with the
+/// per-q kept metric counts.
+fn k_split_energies(
+    cell: &Cell,
+    bs: &BasisSet,
+    n: [usize; 3],
+    centring: MeshCentring,
+) -> ([f64; 2], Vec<usize>) {
+    let ks = ksys_c(cell.clone(), bs, n, centring);
+    let fs = fitsys_cfg(&ks, split_kcfg(1.0));
+    let kept = fs.gdf.stats().per_q.iter().map(|q| q.naux_kept).collect();
+    let e = [
+        krhf(&ks, fs.jk(&ks, ExxDiv::None)).energy,
+        krhf(&ks, fs.jk(&ks, ExxDiv::Ewald)).energy,
+    ];
+    (e, kept)
+}
+
+/// FD anchor of a split k-RHF system at h and 2h, all nine components, both
+/// exxdiv (the metric cut count is asserted frozen).
+fn split_fd_anchor(
+    name: &str,
+    cell: Cell,
+    bs: &BasisSet,
+    n: [usize; 3],
+    c: MeshCentring,
+) -> (KSys, FitSys, [KScfResult; 2], [Mat3; 2]) {
+    let ks = ksys_c(cell, bs, n, c);
+    let fs = fitsys_cfg(&ks, split_kcfg(1.0));
+    let scfs = fit_scfs(&ks, &fs);
+    let kept0: Vec<usize> = fs.gdf.stats().per_q.iter().map(|q| q.naux_kept).collect();
+    let e = |cell: &Cell| {
+        let (e, kept) = k_split_energies(cell, bs, n, c);
+        assert_eq!(kept, kept0, "the metric cut changed under strain");
+        e
+    };
+    let fd1 = fd_all9(&ks.cell, FD_H, &e);
+    let fd2 = fd_all9(&ks.cell, 2.0 * FD_H, &e);
+    for exx in EXX {
+        let x = exx_idx(exx);
+        let s = ks_rhf_fit(&ks, &fs, &scfs[x], exx, None);
+        let (m1, m2) = (max_mat(&s.de_deps, &fd1[x]), max_mat(&s.de_deps, &fd2[x]));
+        eprintln!(
+            "  {name} split {n:?} {exx:?}: |analytic − FD| h {m1:.2e}, 2h {m2:.2e} (ratio {:.2}), \
+             antisym(σ) {:.1e}",
+            m2 / m1,
+            s.antisymmetry()
+        );
+        assert!(m1 <= K_FD_BAR_FIT, "{name} {exx:?}: FD miss {m1:e}");
+        assert!((3.0..5.0).contains(&(m2 / m1)), "not h²: {}", m2 / m1);
+        assert!(s.antisymmetry() <= ANTISYM_BAR);
+    }
+    (ks, fs, scfs, fd1)
+}
+
+/// PHYSICS: analytic split `dE/dε` vs central FD of ferric's own split k
+/// energy (fresh split build + SCF at every strained point; lattice and atoms
+/// strained, index sets frozen, k at fixed fractional coordinates). ARTIFACT:
+/// the split's partition is geometry-dependent (primitive criteria are
+/// strain-invariant, the pair screens are not); FD(h) vs FD(2h) must stay at
+/// h² (asserted) or the split energy is piecewise under strain.
+#[test]
+#[ignore = "slow (~37 s release): 36 strained split RS-GDF builds + 72 k-SCFs (h and 2h)"]
+fn h2_1x1x3_split_stress_matches_fd_of_own_k_energy_all_nine() {
+    let (ks, fs, scfs, fd1) = split_fd_anchor(
+        "H2",
+        h2_cell_g(),
+        &pyscf_sto3g_h(),
+        [1, 1, 3],
+        MeshCentring::Gamma,
+    );
+    for m in SPLIT_MUTANTS {
+        let s = ks_rhf_fit(&ks, &fs, &scfs[0], ExxDiv::None, Some(m));
+        let mm = max_mat(&s.de_deps, &fd1[0]);
+        eprintln!("  H2 split FD mutant {m:?}: |mut − FD| {mm:.2e}");
+        assert!(mm > MUTANT_BAR, "{m:?} not caught by FD ({mm:e})");
+    }
+}
+
+/// An even MP mesh (twisted supercell, no supercell anchor; pair-image modulus
+/// 4 vs aux modulus 2) with the split: only the FD pins it.
+#[test]
+#[ignore = "slow (~16 s release): 36 strained split RS-GDF builds + 72 k-SCFs (h and 2h)"]
+fn h2_mp_1x1x2_split_stress_matches_fd_of_own_k_energy_all_nine() {
+    let (ks, ..) = split_fd_anchor(
+        "H2 MP",
+        h2_cell_g(),
+        &pyscf_sto3g_h(),
+        [1, 1, 2],
+        MeshCentring::MonkhorstPack,
+    );
+    assert_eq!(ks.mesh.residue_moduli(), [1, 1, 4]);
+}
+
+// ------------------------------------------------------------ split UHF
+
+/// 1x1x1 H3 doublet: the k split UHF stress is the Gamma split UHF stress.
+#[test]
+fn one_point_mesh_split_rsgdf_uhf_stress_is_the_gamma_split_stress() {
+    let bs = pyscf_sto3g_h();
+    let ks = ksys(h3_cell(), &bs, [1, 1, 1]);
+    let fs = fitsys_cfg(&ks, split_kcfg(1.0));
+    assert_moved("H3 1x1x1", &fs.gdf, &fitsys(&ks).gdf);
+    let scfs = fit_uscfs(&ks, &fs, 2, 1);
+    let g = gfit_aux(h3_cell(), &bs, &et_sp_aux(), &split_gdf_cfg(1.0));
+    for exx in EXX {
+        let scf = &scfs[exx_idx(exx)];
+        let gscf = gamma_unrestricted(
+            real_of(&scf.density_alpha[0]),
+            real_of(&scf.density_beta[0]),
+        );
+        let k = ks_uhf_fit(&ks, &fs, scf, exx, None);
+        let gs = gamma_fit_stress(&g, &gscf, exx);
+        let total = max_mat(&k.de_deps, &gs.de_deps);
+        eprintln!("  H3 UHF split 1x1x1 {exx:?}: |dE/dε k − Gamma| {total:.2e}");
+        for ((name, kp), gp) in fit_parts(&k.parts).iter().zip(gamma_fit_parts(&gs.parts)) {
+            let d = max_mat(kp, &gp);
+            eprintln!("    {name}: |k − Gamma| {d:.2e}");
+            assert!(d <= GAMMA_FIT_BAR, "{exx:?} {name}: {d:e}");
+        }
+        assert!(total <= GAMMA_FIT_BAR, "{exx:?}: {total:e}");
+    }
+}
+
+/// H3 doublet 1x1x3: the split supercell (9 atoms, multiplicity 4) Gamma UHF
+/// stress per cell, both exxdiv, per part, and the split + spin mutants.
+#[test]
+#[ignore = "slow (~98 s release): 9-atom split supercell Gamma RS-GDF UHF stress x2 + k stress"]
+fn h3_uhf_1x1x3_split_stress_is_the_supercell_stress_per_cell() {
+    let bs = pyscf_sto3g_h();
+    let n = [1, 1, 3];
+    let ks = ksys(h3_cell(), &bs, n);
+    let fs = fitsys_cfg(&ks, split_kcfg(1.0));
+    assert_moved("H3 1x1x3", &fs.gdf, &fitsys(&ks).gdf);
+    let scfs = fit_uscfs(&ks, &fs, 2, 1);
+    let g = gfit_aux(
+        supercell(&h3_cell(), n, 4),
+        &bs,
+        &et_sp_aux(),
+        &split_gdf_cfg(1.0),
+    );
+    let mut refs = [ZERO; 2];
+    let mut ref_parts = [[ZERO; 7]; 2];
+    for exx in EXX {
+        let i = exx_idx(exx);
+        let gscf = gamma_unrestricted(
+            unfold(&ks.mesh, &scfs[i].density_alpha),
+            unfold(&ks.mesh, &scfs[i].density_beta),
+        );
+        let k = ks_uhf_fit(&ks, &fs, &scfs[i], exx, None);
+        let gs = gamma_fit_stress(&g, &gscf, exx);
+        refs[i] = scale3(&gs.de_deps, 1.0 / 3.0);
+        let miss = max_mat(&k.de_deps, &refs[i]);
+        eprintln!("  H3 UHF split {n:?} {exx:?}: |dE/dε_k − dE/dε_sc/N| {miss:.2e}");
+        for (pi, ((pn, kp), gp)) in fit_parts(&k.parts)
+            .iter()
+            .zip(gamma_fit_parts(&gs.parts))
+            .enumerate()
+        {
+            ref_parts[i][pi] = scale3(&gp, 1.0 / 3.0);
+            let d = max_mat(kp, &ref_parts[i][pi]);
+            eprintln!("    {pn}: |k − sc/N| {d:.2e}");
+            assert!(d <= SC_FIT_BAR, "{exx:?} {pn}: {d:e}");
+        }
+        assert!(miss <= SC_FIT_BAR, "{exx:?}: {miss:e}");
+    }
+    for m in SPLIT_MUTANTS.into_iter().chain([
+        KStressMutation::SwapSpinFock,
+        KStressMutation::FitCrossSpin,
+        KStressMutation::NoPhase,
+        KStressMutation::ConjD,
+    ]) {
+        let s = ks_uhf_fit(&ks, &fs, &scfs[0], ExxDiv::None, Some(m));
+        let miss = max_mat(&s.de_deps, &refs[0]);
+        eprintln!("  H3 UHF split mutant {m:?}: miss {miss:.2e}");
+        assert!(miss > MUTANT_BAR, "{m:?} not caught ({miss:e})");
+    }
+}
+
+/// A pure-d aux shell (l = 2) with the split, 1x1x3 supercell anchor, both
+/// exxdiv, per part. MEASURED at the default `lindep`: total 7.4e-12 / 7.2e-12
+/// but the two J2 parts (SR and LR) are 7.7e-11..1.1e-10 and cancel in the
+/// total (unsplit d-aux J2 parts: 1.7e-12..2.5e-12); the floor does not move
+/// with the build precision. With the single near-null metric direction
+/// (eigenvalue 2.1e-4) dropped on both sides (`lindep` 1e-3) every part is
+/// <= `SC_FIT_BAR` (2.6e-12, see
+/// `d_aux_part_floor_collapses_when_the_near_null_mode_is_dropped`): the floor
+/// is the fit's sensitivity along that mode, not a defect. Both are asserted.
+#[test]
+#[ignore = "slow (~35 s release): two supercell anchors with a pure-d aux shell and the split"]
+fn h2_1x1x3_split_stress_with_a_d_aux_is_the_supercell_stress() {
+    let split = split_gdf_cfg(1.0);
+    let bs = pyscf_sto3g_h();
+    let _ = fit_supercell_anchor_bars(
+        "H2 split d-aux",
+        h2_cell_g(),
+        &bs,
+        &et_spd_aux(),
+        &split,
+        [1, 1, 3],
+        5e-10,
+    );
+    let _ = fit_supercell_anchor_cfg(
+        "H2 split d-aux lindep 1e-3",
+        h2_cell_g(),
+        &bs,
+        &et_spd_aux(),
+        &RsGdfConfig {
+            lindep: 1e-3,
+            ..split
+        },
+        [1, 1, 3],
+    );
+}
+
+// ----------------------------------------------------------------- guard
+
+/// The Fock-consistency guard on a SPLIT source: accepts the matching SCF,
+/// refuses the wrong exxdiv and a perturbed Fock. The split SCF against the
+/// UNSPLIT source is NOT inconsistent (an exact decomposition): the printed
+/// mismatch is the split tolerance, far below the 1e-8 bar.
+#[test]
+fn split_stress_fock_guard_accepts_matching_and_refuses_inconsistent_inputs() {
+    let bs = pyscf_sto3g_h();
+    let ks = ksys(h2_cell_g(), &bs, [1, 1, 3]);
+    let sp = fitsys_cfg(&ks, split_kcfg(1.0));
+    let un = fitsys(&ks);
+    let scf = krhf(&ks, sp.jk(&ks, ExxDiv::None));
+    let ok = ks_rhf_fit(&ks, &sp, &scf, ExxDiv::None, None);
+    eprintln!(
+        "  matching split inputs: Fock mismatch {:.2e}",
+        ok.fock_mismatch
+    );
+    assert!(ok.fock_mismatch < 1e-12);
+    let cross = ks_rhf_fit(&ks, &un, &scf, ExxDiv::None, None);
+    eprintln!(
+        "  split SCF vs unsplit source: Fock mismatch {:.2e}",
+        cross.fock_mismatch
+    );
+    assert!(cross.fock_mismatch < FOCK_CONSISTENCY_BAR);
+    let stress = |scf: &KScfResult, exx: ExxDiv| {
+        kpoint_rhf_stress(
+            &ks.cell,
+            &ks.prep,
+            &ks.mesh,
+            &hcore_cfg(),
+            &ks.hk,
+            KStressJk::RsGdf(sp.src()),
+            scf,
+            exx,
+            &scfg(None),
+        )
+    };
+    let e = stress(&scf, ExxDiv::Ewald).unwrap_err().to_string();
+    assert!(e.contains("Fock matrix rebuilt"), "{e}");
+    let mut bad = scf.clone();
+    bad.fock[0][(0, 0)] += Complex64::new(1e-6, 0.0);
+    let e = stress(&bad, ExxDiv::None).unwrap_err().to_string();
+    assert!(e.contains("Fock matrix rebuilt"), "{e}");
+}
+
+// ----------------------------------------------- d-aux part floor (split)
+
+/// The ET-sp aux plus one pure-d shell at exponent `a` (lambda 1, omega 1
+/// moves the d shell iff `a <= 1`).
+fn et_sp_d_aux(a: f64) -> BasisSet {
+    let mut aux = et_sp_aux();
+    aux.shells.get_mut(&1).unwrap().push(Shell {
+        l: 2,
+        pure: true,
+        exponents: vec![a],
+        coefficients: vec![1.0],
+    });
+    aux
+}
+
+/// Worst fitted-part and total miss of the 1x1x3 supercell anchor at a config
+/// (both exxdiv; the identity mutant `WrongQ` reads the miss), and the
+/// smallest metric eigenvalue over the q classes of the k build.
+fn d_aux_floor(aux_bs: &BasisSet, gdf: &RsGdfConfig) -> (f64, f64, f64) {
+    let a = fit_supercell_anchor_bars(
+        "diag",
+        h2_cell_g(),
+        &pyscf_sto3g_h(),
+        aux_bs,
+        gdf,
+        [1, 1, 3],
+        1.0,
+    );
+    let (mut part, mut total) = (0.0_f64, 0.0_f64);
+    for exx in EXX {
+        let x = a.mutant(exx, KStressMutation::WrongQ);
+        part = part.max(x.part);
+        total = total.max(x.total);
+    }
+    let eig =
+        a.fs.gdf
+            .stats()
+            .per_q
+            .iter()
+            .map(|q| q.metric_eig_min)
+            .fold(f64::INFINITY, f64::min);
+    (part, total, eig)
+}
+
+/// The pure-d aux PART floor of the split supercell anchor (totals agree to
+/// 7e-12; the J2 SR / J2 LR parts differ by 1e-10 and cancel). The smallest
+/// metric eigenvalue is 2.1e-4 (> `lindep`, so nothing is dropped by default).
+/// MEASURED discriminators (release, H2 1x1x3): the floor does NOT move with
+/// the build PRECISION (1.1e-10 at 1e-13, 5.1e-11 at 1e-15, 1.05e-10 at 1e-17,
+/// so it is not a truncation floor), is 4.4e-11 with a COMPACT (unmoved) d
+/// exponent 1.6 and 2.9e-12 unsplit; but dropping the single near-null metric
+/// direction (`lindep` 1e-3, on BOTH sides) collapses it (asserted below). A
+/// defect independent of that one mode would not move; this floor is the
+/// fit's sensitivity along it, amplified by the split's larger SR/LR parts.
+#[test]
+#[ignore = "slow (~75 s release): 3 supercell anchors on H2 1x1x3"]
+fn d_aux_part_floor_collapses_when_the_near_null_mode_is_dropped() {
+    let split = split_gdf_cfg(1.0);
+    let run = |tag: &str, g: &RsGdfConfig| {
+        let r = d_aux_floor(&et_sp_d_aux(0.8), g);
+        eprintln!(
+            "  [{tag}] worst part {:.2e}, worst total {:.2e}, min metric eig {:.2e}",
+            r.0, r.1, r.2
+        );
+        r
+    };
+    let u = run("unsplit lindep 1e-10", &gdf_cfg());
+    let s = run("split   lindep 1e-10", &split);
+    let l = run(
+        "split   lindep 1e-3 ",
+        &RsGdfConfig {
+            lindep: 1e-3,
+            ..split
+        },
+    );
+    assert!(s.0 > 10.0 * u.0, "the split carries the larger part floor");
+    assert!(
+        l.0 < 0.1 * s.0,
+        "floor must collapse when the mode is dropped"
+    );
+    assert!(l.0 <= SC_FIT_BAR, "{:e}", l.0);
+}
+
+/// 1x1x1 d-aux split vs the Gamma split, part by part (q = 0 only: the sphere
+/// is the same set on both sides, so edge-set differences cannot enter).
+/// MEASURED at the default `lindep`: total <= 4.6e-13 but the J2 SR / LR parts
+/// differ by 8e-12 / 1.1e-11 (ET-sp aux without d: <= 1e-13), cancelling; with
+/// the single near-null metric direction (eigenvalue 2.1e-4) dropped by
+/// `lindep` = 1e-3 on both sides every part collapses to <= 4.3e-14, so the
+/// floor is that mode's sensitivity, not a defect. Both are asserted.
+#[test]
+fn one_point_mesh_split_d_aux_stress_is_the_gamma_split_stress() {
+    let (part, total, dropped, emin) = one_point_part_floor(&et_spd_aux(), &split_gdf_cfg(1.0));
+    eprintln!(
+        "  d-aux 1x1x1 default lindep: part {part:.2e}, total {total:.2e}, min eig {emin:.2e}"
+    );
+    assert_eq!(dropped, 0);
+    assert!(total <= GAMMA_FIT_BAR, "{total:e}");
+    assert!(part <= 5e-11, "{part:e}");
+    let g = RsGdfConfig {
+        lindep: 1e-3,
+        ..split_gdf_cfg(1.0)
+    };
+    let (part, total, dropped, _) = one_point_part_floor(&et_spd_aux(), &g);
+    eprintln!("  d-aux 1x1x1 lindep 1e-3 (dropped {dropped}): part {part:.2e}, total {total:.2e}");
+    assert_eq!(dropped, 1);
+    assert!(
+        total <= GAMMA_FIT_BAR && part <= GAMMA_FIT_BAR,
+        "{part:e} {total:e}"
+    );
+}
+
+// ------------------------------------- split vs unsplit: other omega/lambda
+
+/// `(orbital smooth, aux smooth)` primitive counts of a split build.
+fn moved_counts(gdf: &KRsGdf) -> (usize, usize) {
+    let c = |name: &str| {
+        gdf.stats()
+            .split_counters
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|&(_, v)| v)
+            .unwrap_or_else(|| panic!("counter {name:?} missing (split path did not run)"))
+    };
+    (
+        c("rsgdf split orbital prims smooth"),
+        c("rsgdf split aux prims smooth"),
+    )
+}
+
+/// `|split − unsplit|` of the k stress (`max` over the nine components) for
+/// both exxdiv on H2 1x1x3 at `aux_bs`, each build at its own SCF density,
+/// the split config `sp` against the unsplit config `un`.
+fn split_vs_unsplit(aux_bs: &BasisSet, sp: &RsGdfConfig, un: &RsGdfConfig) -> ([f64; 2], FitSys) {
+    let bs = pyscf_sto3g_h();
+    let ks = ksys(h2_cell_g(), &bs, [1, 1, 3]);
+    let kc = |g: &RsGdfConfig| KRsGdfConfig {
+        gdf: *g,
+        mutation: None,
+    };
+    let fs_s = fitsys_with(&ks, kc(sp), aux_bs);
+    let fs_u = fitsys_with(&ks, kc(un), aux_bs);
+    let (scf_s, scf_u) = (fit_scfs(&ks, &fs_s), fit_scfs(&ks, &fs_u));
+    let mut d = [0.0; 2];
+    for exx in EXX {
+        let i = exx_idx(exx);
+        let s = ks_rhf_fit(&ks, &fs_s, &scf_s[i], exx, None);
+        let u = ks_rhf_fit(&ks, &fs_u, &scf_u[i], exx, None);
+        d[i] = max_mat(&s.de_deps, &u.de_deps);
+    }
+    (d, fs_s)
+}
+
+/// The split is an exact decomposition at ANY omega and lambda <= 1: the
+/// split k stress equals the unsplit one at omega 1.3, lambda 0.7 (the
+/// omega-1 / lambda-1 test cannot see an omega or lambda that is hard-wired
+/// somewhere in the new passes). Measured 3.6e-12 / 3.7e-12 (none / ewald).
+#[test]
+#[ignore = "slow-ish (~17 s release): 2 split + 2 unsplit builds and 4 SCFs at omega 1.3"]
+fn h2_1x1x3_split_k_stress_matches_the_unsplit_one_at_omega_1p3_lambda_0p7() {
+    let at = |split: Option<RangeSplit>| RsGdfConfig {
+        omega: 1.3,
+        range_split: split,
+        ..gdf_cfg()
+    };
+    let (d, fs) = split_vs_unsplit(&et_sp_aux(), &at(Some(RangeSplit::new(0.7))), &at(None));
+    let (o, a) = moved_counts(&fs.gdf);
+    eprintln!(
+        "  omega 1.3, lambda 0.7: moved orbital {o}, aux {a}; |split − unsplit| {:?}",
+        d
+    );
+    assert!(o > 0 && a > 0, "nothing moved");
+    for x in d {
+        assert!(x <= SPLIT_UNSPLIT_BAR, "{x:e}");
+        assert!(x > 1e-15, "split ran the unsplit path ({x:e})");
+    }
+}
+
+/// The two partial-move branches of the LR strain dispatch. AUX moves, no
+/// orbital does (ET-sp aux, lambda 0.32: aux s(0.3) <= 0.32 but the orbital
+/// primitive 0.1689 > 0.16): the moved pass runs without a smooth-pair pass.
+/// ORBITALS move, aux does not (aux s(1.9, 0.5), lambda 0.4: orbital 0.1689
+/// <= 0.2 but the smallest aux exponent 0.5 > 0.4): the unsplit LR pass plus
+/// the smooth-pair pass with `Xc = X`. Each agrees with the unsplit stress.
+#[test]
+fn split_k_stress_partial_move_branches_match_the_unsplit_stress() {
+    let split = |l: f64| Some(RangeSplit::new(l));
+    let at = |s: Option<RangeSplit>| RsGdfConfig {
+        range_split: s,
+        ..gdf_cfg()
+    };
+    let (d, fs) = split_vs_unsplit(&et_sp_aux(), &at(split(0.32)), &at(None));
+    let (o, a) = moved_counts(&fs.gdf);
+    eprintln!(
+        "  aux-only move (lambda 0.32): orbital {o}, aux {a}; diff {:?}",
+        d
+    );
+    assert_eq!(o, 0, "an orbital primitive moved");
+    assert!(a > 0, "no aux primitive moved");
+    for x in d {
+        assert!(x <= SPLIT_UNSPLIT_BAR, "aux-only: {x:e}");
+        assert!(x > 1e-15, "aux-only: split ran the unsplit path ({x:e})");
+    }
+    let (d, fs) = split_vs_unsplit(&coarse_aux(), &at(split(0.4)), &at(None));
+    let (o, a) = moved_counts(&fs.gdf);
+    eprintln!(
+        "  orbital-only move (lambda 0.4): orbital {o}, aux {a}; diff {:?}",
+        d
+    );
+    assert!(o > 0, "no orbital primitive moved");
+    assert_eq!(a, 0, "an aux primitive moved");
+    for x in d {
+        assert!(x <= SPLIT_UNSPLIT_BAR, "orbital-only: {x:e}");
+        assert!(
+            x > 1e-15,
+            "orbital-only: split ran the unsplit path ({x:e})"
+        );
+    }
+}
+
+/// TRIVIAL LIMIT: lambda = 0 builds the split plan but moves nothing, so the
+/// k stress (every part and the total) is the unsplit one BIT FOR BIT (the
+/// LR strain is the unsplit pass, every libint factor is 1, `q_c` is `q`, no
+/// smooth overlap).
+#[test]
+fn nothing_moved_split_k_stress_is_the_unsplit_stress_bitwise() {
+    let bs = pyscf_sto3g_h();
+    let ks = ksys(h2_cell_g(), &bs, [1, 1, 3]);
+    let un = fitsys(&ks);
+    let sp = fitsys_cfg(&ks, split_kcfg(0.0));
+    assert_eq!(moved_counts(&sp.gdf), (0, 0), "lambda = 0 moved something");
+    let scfs = fit_scfs(&ks, &un);
+    for exx in EXX {
+        let i = exx_idx(exx);
+        let u = ks_rhf_fit(&ks, &un, &scfs[i], exx, None);
+        let s = ks_rhf_fit(&ks, &sp, &scfs[i], exx, None);
+        let bits = |m: &Mat3| m.iter().flatten().map(|x| x.to_bits()).collect::<Vec<_>>();
+        let d = max_mat(&s.de_deps, &u.de_deps);
+        eprintln!("  lambda 0 {exx:?}: |split − unsplit| {d:.2e}");
+        assert_eq!(bits(&s.de_deps), bits(&u.de_deps), "{exx:?} total ({d:e})");
+        for ((n, a), (_, b)) in fit_parts(&s.parts).iter().zip(fit_parts(&u.parts)) {
+            assert_eq!(bits(a), bits(&b), "{exx:?} {n}");
+        }
+    }
+}
+
+/// Typed refusals of the split source: a build and a config that disagree
+/// about the split (either way), and lambda > 1.
+#[test]
+fn split_stress_refuses_a_mismatched_config_and_lambda_above_one() {
+    let bs = pyscf_sto3g_h();
+    let ks = ksys(h2_cell_g(), &bs, [1, 1, 3]);
+    let sp = fitsys_cfg(&ks, split_kcfg(1.0));
+    let un = fitsys(&ks);
+    let scf = krhf(&ks, un.jk(&ks, ExxDiv::None));
+    let run = |gdf: &KRsGdf, cfg: &KRsGdfConfig, aux: &PreparedBasis| {
+        kpoint_rhf_stress(
+            &ks.cell,
+            &ks.prep,
+            &ks.mesh,
+            &hcore_cfg(),
+            &ks.hk,
+            KStressJk::RsGdf(KRsGdfGradSource { gdf, cfg, aux }),
+            &scf,
+            ExxDiv::None,
+            &scfg(None),
+        )
+    };
+    // Split build, unsplit config; unsplit build, split config.
+    let e = run(&sp.gdf, &kgdf_cfg(), &sp.aux).unwrap_err().to_string();
+    assert!(
+        e.contains("ran the range split but the config does not"),
+        "{e}"
+    );
+    let e = run(&un.gdf, &split_kcfg(1.0), &un.aux)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        e.contains("did not run the range split but the config requests"),
+        "{e}"
+    );
+    // Matching split build and config is accepted (an SCF on the split build
+    // is not needed: the refusals fire first, the accept path is covered by
+    // the anchors).
+    // lambda = 2 (build and config agree): refused with the reason.
+    let l2 = fitsys_cfg(&ks, split_kcfg(2.0));
+    let e = run(&l2.gdf, &split_kcfg(2.0), &l2.aux)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("lambda = 2 > 1"), "{e}");
+}
+
+// ----------------------------------- cheap q != 0 split FD (non-ignored)
+
+/// Central FD of the split k energy at h for two components of the H2 1x1x3
+/// non-TRIM mesh: zz (the mesh direction) and xz (off-diagonal), both exxdiv.
+/// A reduced version of the all-nine FD (which stays ignored) so the q != 0
+/// split strain is pinned by an independent anchor in the default test run.
+#[test]
+fn h2_1x1x3_split_stress_matches_fd_for_zz_and_xz() {
+    let bs = pyscf_sto3g_h();
+    let n = [1, 1, 3];
+    let ks = ksys(h2_cell_g(), &bs, n);
+    let fs = fitsys_cfg(&ks, split_kcfg(1.0));
+    let scfs = fit_scfs(&ks, &fs);
+    let kept0: Vec<usize> = fs.gdf.stats().per_q.iter().map(|q| q.naux_kept).collect();
+    for (i, j) in [(2, 2), (0, 2)] {
+        let at = |h: f64| {
+            let (e, kept) =
+                k_split_energies(&strained(&ks.cell, i, j, h), &bs, n, MeshCentring::Gamma);
+            assert_eq!(kept, kept0, "the metric cut changed under strain");
+            e
+        };
+        let (ep, em) = (at(FD_H), at(-FD_H));
+        for exx in EXX {
+            let x = exx_idx(exx);
+            let fd = (ep[x] - em[x]) / (2.0 * FD_H);
+            let s = ks_rhf_fit(&ks, &fs, &scfs[x], exx, None);
+            let miss = (s.de_deps[i][j] - fd).abs();
+            eprintln!(
+                "  split FD ({i},{j}) {exx:?}: analytic {:.8e}, |analytic − FD| {miss:.2e}",
+                s.de_deps[i][j]
+            );
+            assert!(miss <= K_FD_BAR_FIT, "({i},{j}) {exx:?}: {miss:e}");
+        }
+    }
+}
+
+/// Worst fitted-part and total `|k − Gamma|` of the 1x1x1 split anchor (none
+/// exxdiv) at `gdf`, with the number of metric eigenvalues dropped by `lindep`
+/// and the smallest metric eigenvalue.
+fn one_point_part_floor(aux_bs: &BasisSet, gdf: &RsGdfConfig) -> (f64, f64, usize, f64) {
+    let bs = pyscf_sto3g_h();
+    let ks = ksys(h2_cell_g(), &bs, [1, 1, 1]);
+    let kc = KRsGdfConfig {
+        gdf: *gdf,
+        mutation: None,
+    };
+    let fs = fitsys_with(&ks, kc, aux_bs);
+    let scf = krhf(&ks, fs.jk(&ks, ExxDiv::None));
+    let g = gfit_aux(h2_cell_g(), &bs, aux_bs, gdf);
+    let gscf = gamma_restricted(real_of(&scf.densities[0]));
+    let k = ks_rhf_fit(&ks, &fs, &scf, ExxDiv::None, None);
+    let gs = gamma_fit_stress(&g, &gscf, ExxDiv::None);
+    let part = fit_parts(&k.parts)
+        .iter()
+        .zip(gamma_fit_parts(&gs.parts))
+        .map(|((_, a), b)| max_mat(a, &b))
+        .fold(0.0_f64, f64::max);
+    let q = &fs.gdf.stats().per_q[0];
+    (
+        part,
+        max_mat(&k.de_deps, &gs.de_deps),
+        q.n_dropped,
+        q.metric_eig_min,
+    )
 }

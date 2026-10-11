@@ -457,6 +457,25 @@ impl SplitPlan {
         imgs: f64,
         budget: usize,
     ) -> Result<(Mat3, usize), FerricError> {
+        self.sr3_strain_with(st, images, imgs, budget, |_, _| y)
+    }
+
+    /// [`SplitPlan::sr3_strain`] with the weight of each triplet from
+    /// `weights(L, T)` (the k-point stress: the phase-folded residue bin of
+    /// `(L, T)`, pair-major; the Gamma weight is one `Y` for every triplet).
+    /// The same ordered walk and addend: bit-identical to the Gamma strain
+    /// when `weights` is constant.
+    pub(in crate::rsgdf) fn sr3_strain_with<'w, W>(
+        &self,
+        st: &Stage<'_>,
+        images: &[[f64; 3]],
+        imgs: f64,
+        budget: usize,
+        weights: W,
+    ) -> Result<(Mat3, usize), FerricError>
+    where
+        W: Fn([f64; 3], [f64; 3]) -> Y3<'w> + Sync,
+    {
         let n = st.obs.nbasis();
         let mut out = [[0.0_f64; 3]; 3];
         let pool = self.sr3_deriv_pool(st)?;
@@ -477,7 +496,7 @@ impl SplitPlan {
                 else {
                     return Ok(None);
                 };
-                let c = self.sr3_contract(blk, (x1, x2, xp), n, y);
+                let c = self.sr3_contract(blk, (x1, x2, xp), n, weights(l, t));
                 let (a, b, p) = (&self.obs.xsh[x1], &self.obs.xsh[x2], &self.aux.xsh[xp]);
                 let cp: [f64; 3] = std::array::from_fn(|k| p.center[k] + imgs * t[k]);
                 let ra: [f64; 3] = std::array::from_fn(|k| a.center[k] - cp[k]);
@@ -576,6 +595,22 @@ impl SplitPlan {
         imgs: f64,
         budget: usize,
     ) -> Result<(Mat3, usize), FerricError> {
+        self.sr2_strain_with(st, imgs, budget, |_| wm)
+    }
+
+    /// [`SplitPlan::sr2_strain`] with the weight of each pair image from
+    /// `weights(T)` (the k-point stress: `Re Σ_q e^{iq·T} Wm(q)ᵀ` binned by
+    /// the residue of `T`).
+    pub(in crate::rsgdf) fn sr2_strain_with<'w, W>(
+        &self,
+        st: &Stage<'_>,
+        imgs: f64,
+        budget: usize,
+        weights: W,
+    ) -> Result<(Mat3, usize), FerricError>
+    where
+        W: Fn([f64; 3]) -> &'w Array2<f64> + Sync,
+    {
         let mut out = [[0.0_f64; 3]; 3];
         let pool = self.sr2_deriv_pool(st)?;
         let count = self.sr2_ordered(
@@ -588,6 +623,7 @@ impl SplitPlan {
                 };
                 let (p, q) = (&self.aux.xsh[xp], &self.aux.xsh[xq]);
                 let nb = p.nfun * q.nfun;
+                let wm = weights(t);
                 let mut gp3 = [0.0_f64; 3];
                 for i in 0..p.nfun {
                     for j in 0..q.nfun {
@@ -1646,6 +1682,20 @@ impl SplitG0 {
         w: &Array2<f64>,
         drop_images: bool,
     ) -> Result<Mat3, FerricError> {
+        self.overlap_virial_by(|_| w, drop_images)
+    }
+
+    /// [`SplitG0::overlap_virial`] with the weight of image `L` from
+    /// `weight(L)` (the k-point stress passes the phase-folded weight of
+    /// `L`'s residue, as [`SplitG0::overlap_force_by`]).
+    pub(crate) fn overlap_virial_by<'w, F>(
+        &self,
+        weight: F,
+        drop_images: bool,
+    ) -> Result<Mat3, FerricError>
+    where
+        F: Fn([f64; 3]) -> &'w Array2<f64>,
+    {
         let mut out = [[0.0_f64; 3]; 3];
         let Some(sm) = &self.smooth else {
             return Ok(out);
@@ -1653,6 +1703,7 @@ impl SplitG0 {
         let (dims, offs) = (sm.prep.shell_dims(), sm.prep.shell_offsets());
         let centers: Vec<[f64; 3]> = sm.prep.located_shells().iter().map(|s| s.center).collect();
         self.each_block(sm, |s1, s2, l, f, blk| {
+            let w = weight(l);
             let (n1, n2) = (dims[s1], dims[s2]);
             let bs = n1 * n2;
             let li = if drop_images { [0.0; 3] } else { l };

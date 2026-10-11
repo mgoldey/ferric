@@ -70,7 +70,7 @@ use std::sync::Mutex;
 /// `(scale v_LR(|K|), scale v_SR(|K|))`. `gamma_kernel` (TEST mutant):
 /// `v_SR` at `|K − q|` (the Gamma kernel with the FTs still at `K`; limit
 /// `π/ω²` at `K = q`).
-fn k_kernel_weights(
+pub(super) fn k_kernel_weights(
     k: &[f64; 3],
     q: &[f64; 3],
     scale: f64,
