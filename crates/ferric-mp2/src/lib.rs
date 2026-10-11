@@ -83,3 +83,5 @@ pub mod u_oo_rimp2;
 pub mod u_rimp2;
 /// Z-vector response equations for MP2 relaxed density and gradients.
 pub mod zvector;
+/// THROWAWAY probe (research/terfc-screening-bound): distance-aware screening bounds.
+pub mod probe_terfc_bound;
