@@ -75,6 +75,20 @@
 //! the ECP bypasses it (the Fock guard cannot see it either), so pass the
 //! `hk` the SCF used.
 //!
+//! Range split: the config must agree with the build about whether a split ran
+//! (typed refusal otherwise) and `lambda > 1` is refused (moved blocks whose FT
+//! need not converge in the sphere, and a K set filtered in the strained frame
+//! makes the energy piecewise). A config whose `lambda`, `omega` or `precision`
+//! differs from the build's changes the stress only at the split tolerance
+//! (~1e-11 for `lambda <= 1`; `lambda = 2` is ~1e-8, at the Fock-guard bar).
+//! Tested: single-primitive aux shells (a contracted aux shell split partway,
+//! and a split that moves part of a contracted orbital shell, are untested at
+//! k), s/p/d aux, H2 and H3 STO-3G; the pure-d aux supercell anchor carries a
+//! per-part floor of ~1e-10 in the two J2 parts at the default `lindep` (the
+//! fit's sensitivity along one near-null metric mode; it collapses to ~3e-12
+//! when that mode is dropped, see
+//! `d_aux_part_floor_collapses_when_the_near_null_mode_is_dropped`).
+//!
 //! # Input guards
 //!
 //! The stress rebuilds `F = h + J − αK` from the density and the J/K source
@@ -895,6 +909,44 @@ fn refuse_unsupported(
                 "{who}: the dense source was built with a range-separated exchange kernel \
                  (KDenseAftConfig::rsh); its strain (screened kernel at K = G + q) is not \
                  implemented"
+            )));
+        }
+    }
+    if let KStressJk::RsGdf(src) = jk {
+        refuse_split_mismatch(who, src)?;
+    }
+    Ok(())
+}
+
+/// Range-split consistency of an RS-GDF source: the config must say "split"
+/// exactly when the build ran the split path, and a split above `lambda = 1`
+/// is refused for the stress. The strain differentiates the build's own
+/// partition from the CONFIG's, so a config that disagrees with the build in
+/// lambda, omega or precision changes the result only at the split tolerance
+/// (~1e-11 measured for lambda <= 1; lambda = 2 is ~1e-8, at the Fock-guard
+/// bar), but split vs unsplit would differentiate a different partition.
+fn refuse_split_mismatch(who: &str, src: &KRsGdfGradSource<'_>) -> Result<(), FerricError> {
+    let built = !src.gdf.stats().split_counters.is_empty();
+    let cfg_split = src.cfg.gdf.range_split;
+    if built != cfg_split.is_some() {
+        return Err(FerricError::General(format!(
+            "{who}: the RS-GDF build {} the range split but the config {}; pass the config the \
+             build used",
+            if built { "ran" } else { "did not run" },
+            if cfg_split.is_some() {
+                "requests one"
+            } else {
+                "does not"
+            }
+        )));
+    }
+    if let Some(rs) = cfg_split {
+        if rs.lambda > 1.0 {
+            return Err(FerricError::General(format!(
+                "{who}: range split lambda = {} > 1 is not supported by the k stress (it moves \
+                 blocks whose FT need not converge in the sphere, and the K set is filtered in \
+                 the strained frame, so the energy is piecewise under strain)",
+                rs.lambda
             )));
         }
     }
