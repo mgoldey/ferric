@@ -19,8 +19,19 @@
 //!     term of the supercell at the unfolded density (force: the same atom in
 //!     any copy; strain: `dE/dε_sc / N`). 1x1x3 is NON-TRIM (ConjD and a
 //!     transposed weight are identities on meshes with every `n_i <= 2`).
-//! (3) SCF level (RHF/UHF, forces and stress, both exxdiv): 1x1x1 mesh vs the
-//!     Gamma code, supercell/N per part and in total, FD of the k energy.
+//! (3) SCF level: 1x1x1 mesh vs the Gamma code; the 1x1x3 mesh vs the explicit
+//!     supercell per part and in total (RHF, both exxdiv); FD of the k energy
+//!     (force and all nine stress components, dense AFT; RS-GDF force and
+//!     three strain components); closed-shell UHF == RHF and a spin-polarised
+//!     H2I doublet's ECP parts vs the supercell.
+//! (4) The Fock-consistency guard with the ECP in the rebuilt `F`, thread
+//!     bit-identity (1/2/6 threads) and the serial image-loop oracle, a
+//!     shifted (Monkhorst-Pack) mesh at fixed density, and 17 production-wired
+//!     mutants of the ECP walk against the supercell anchor of the ECP part.
+//!
+//! Measured times are in each `#[ignore]` reason; the non-ignored set is the
+//! two fixed-density gates, the fixed-density supercell anchor, the guard, the
+//! thread test, the dense force FD and the RS-GDF test.
 //!
 //! ARTIFACT vs PHYSICS hypotheses are stated next to each test.
 
@@ -41,9 +52,9 @@ use ferric_pbc::hcore::{periodic_hcore, PeriodicHcore, PeriodicHcoreConfig};
 use ferric_pbc::kdense_aft::{KDenseAftConfig, KDenseAftEri};
 use ferric_pbc::kgrad::{
     kpoint_ecp_gradient_fixed_d, kpoint_rhf_gradient, kpoint_uhf_gradient, KGradConfig, KGradJk,
-    KGradMutation, KGradient,
+    KGradMutation, KGradient, KRsGdfGradSource,
 };
-use ferric_pbc::kpts::KPointMesh;
+use ferric_pbc::kpts::{KPointMesh, MeshCentring};
 use ferric_pbc::kscf::{solve_krhf_injected, KPointInjection, KPointJk, KScfConfig, KScfResult};
 use ferric_pbc::kstress::{
     kpoint_hcore_stress_fixed_d, kpoint_rhf_stress, kpoint_uhf_stress, KStress, KStressConfig,
@@ -51,6 +62,8 @@ use ferric_pbc::kstress::{
 };
 use ferric_pbc::kuscf::{solve_kuhf_injected, KUScfResult};
 use ferric_pbc::lattice::Cell;
+use ferric_pbc::rsgdf::kpoint::{KRsGdf, KRsGdfConfig};
+use ferric_pbc::rsgdf::RsGdfConfig;
 use ferric_pbc::sr_rotation::SrColumnRotation;
 use ferric_pbc::stress::{gamma_rhf_stress, GammaStress, GammaStressConfig};
 use ferric_scf::result::{ScfExit, ScfResult, Spin};
@@ -344,8 +357,19 @@ fn unfold_z(mesh: &KPointMesh, dk: &[Array2<Complex64>]) -> Array2<f64> {
 /// `(1/N_k) Σ_k Re tr[D(k) V_ECP(k)]`: ferric's own k-point ECP lattice sum
 /// on `cell` with the mesh rebuilt from the integer numerators `n`.
 fn e_ecp_k(cell: &Cell, bs: &BasisSet, n: [usize; 3], dk: &[Array2<Complex64>]) -> f64 {
+    e_ecp_k_c(cell, bs, n, MeshCentring::Gamma, dk)
+}
+
+/// [`e_ecp_k`] on a mesh of any centring.
+fn e_ecp_k_c(
+    cell: &Cell,
+    bs: &BasisSet,
+    n: [usize; 3],
+    centring: MeshCentring,
+    dk: &[Array2<Complex64>],
+) -> f64 {
     let p = prep_for(cell, bs);
-    let mesh = KPointMesh::gamma_centred(cell, n).expect("mesh");
+    let mesh = KPointMesh::new(cell, n, centring).expect("mesh");
     let v = periodic_ecp_images(cell, &p, &ecp_cfg())
         .expect("ecp images")
         .expect("ECP centre present")
@@ -370,8 +394,12 @@ struct KSys {
 }
 
 fn ksys(cell: Cell, bs: &BasisSet, n: [usize; 3]) -> KSys {
+    ksys_c(cell, bs, n, MeshCentring::Gamma)
+}
+
+fn ksys_c(cell: Cell, bs: &BasisSet, n: [usize; 3], centring: MeshCentring) -> KSys {
     let prep = prep_for(&cell, bs);
-    let mesh = KPointMesh::gamma_centred(&cell, n).expect("mesh");
+    let mesh = KPointMesh::new(&cell, n, centring).expect("mesh");
     let hk = periodic_hcore_kpts(&cell, &prep, &mesh, &hcore_cfg()).expect("hcore(k)");
     assert!(hk.n_ecp_triples > 0, "no ECP triples: the cell is vacuous");
     KSys {
@@ -822,6 +850,7 @@ fn amax(a: &Array2<f64>) -> f64 {
 /// the real Gamma walk), but BLIND to the k-specific defects (every phase is
 /// 1 on a one-point mesh): the supercell anchor carries those.
 #[test]
+#[ignore = "slow (24 s release, loaded box): HI 1x1x1 k SCFs + Gamma hcore/dense AFT/force/stress, both exxdiv"]
 fn one_point_mesh_ecp_force_and_stress_are_the_gamma_ones() {
     let bs = hi_basis();
     let ks = ksys(hi_cell(&MOVED, &bs), &bs, [1, 1, 1]);
@@ -891,7 +920,7 @@ fn supercell_anchor() -> (
 }
 
 #[test]
-#[ignore = "slow (~2.5 min release, loaded box): HI 1x1x3 k SCFs + the 3-cell Gamma supercell (6 atoms) hcore/dense AFT/force/stress x2 exxdiv"]
+#[ignore = "slow (104 s release, loaded box): HI 1x1x3 k SCFs + the 3-cell Gamma supercell (6 atoms) hcore/dense AFT/force/stress, both exxdiv"]
 fn hi_1x1x3_force_and_stress_are_the_supercell_ones_per_cell() {
     let t0 = std::time::Instant::now();
     let (ks, eri, scfs, gf, gs) = supercell_anchor();
@@ -991,7 +1020,7 @@ fn ecp_refs(ks: &KSys, scf: &KScfResult, bs: &BasisSet) -> EcpRefs {
 /// ones (`NoPhase`, `ConjD`, `EcpWrongResidue`) need the non-TRIM mesh.
 /// Blind spots are asserted where they exist, with their measured size.
 #[test]
-#[ignore = "slow (~3-4 min release, loaded box): HI 1x1x3 k SCF + 9 force and 8 stress mutant evaluations"]
+#[ignore = "slow (257 s release, loaded box): HI 1x1x3 k SCF + 9 force and 8 stress mutant evaluations"]
 fn ecp_mutants_miss_the_supercell_anchor() {
     let bs = hi_basis();
     let ks = ksys(hi_cell(&MOVED, &bs), &bs, [1, 1, 3]);
@@ -1180,7 +1209,15 @@ fn ecp_k_force_and_strain_are_thread_bit_identical() {
         assert!(bits_equal(&g, &g1), "force differs at {n} threads");
         assert_eq!(s, s1, "strain differs at {n} threads");
     }
-    // Serial oracle vs ordered-parallel, through the production entry.
+}
+
+/// The frozen serial image loop (`SerialDerivWalks`) is the bit-identity
+/// oracle of the ordered-parallel ECP force, through the production entry.
+#[test]
+#[ignore = "slow (~10 s release, loaded box): HI 1x1x3 k-SCF + two force evaluations"]
+fn ecp_k_force_serial_image_loop_is_the_parallel_one_bitwise() {
+    let bs = hi_basis();
+    let ks = ksys(hi_cell(&MOVED, &bs), &bs, [1, 1, 3]);
     let eri = kdense(&ks, 1e-10);
     let scf = krhf(&ks, Box::new(eri.jk_builder_with_madelung(0.0)));
     let par = in_pool(6, || kforce(&ks, &eri, &scf, ExxDiv::None, None));
@@ -1220,7 +1257,6 @@ const FD_H: f64 = 1e-4;
 /// value is at the converged density, so the density response drops out).
 /// Components: H z (no ECP centre of its own) and I x (bra + ket + centre).
 #[test]
-#[ignore = "slow (~3 min release, loaded box): 8 displaced HI 1x1x3 k hcore (ECP lattice sum) + dense AFT + 16 k-RHF SCFs"]
 fn hi_1x1x3_force_matches_fd_of_own_k_energy() {
     let bs = hi_basis();
     let n = [1, 1, 3];
@@ -1261,7 +1297,7 @@ fn hi_1x1x3_force_matches_fd_of_own_k_energy() {
 /// 1e-4) of the k energy on `Cell::strained` cells, mesh rebuilt from the same
 /// integer numerators, fresh SCF per point, both exxdiv.
 #[test]
-#[ignore = "slow (~6 min release, loaded box): 18 strained HI 1x1x3 k hcore + dense AFT builds + 36 k-RHF SCFs"]
+#[ignore = "slow (80 s release, loaded box): 18 strained HI 1x1x3 k hcore + dense AFT builds + 36 k-RHF SCFs"]
 fn hi_1x1x3_stress_matches_fd_of_own_k_energy_all_nine() {
     let bs = hi_basis();
     let n = [1, 1, 3];
@@ -1336,6 +1372,7 @@ fn kstress_u(ks: &KSys, eri: &KDenseAftEri, scf: &KUScfResult) -> KStress {
 /// part included (they share `assemble`; the ECP weight is built from
 /// `D_α + D_β`).
 #[test]
+#[ignore = "slow (45 s release, loaded box): HI 1x1x3 k-RHF and k-UHF SCFs, 2 forces, 2 stresses"]
 fn closed_shell_kuhf_ecp_force_and_stress_are_the_krhf_ones() {
     let bs = hi_basis();
     let ks = ksys(hi_cell(&MOVED, &bs), &bs, [1, 1, 3]);
@@ -1369,7 +1406,7 @@ fn closed_shell_kuhf_ecp_force_and_stress_are_the_krhf_ones() {
 /// terms at the unfolded TOTAL density (`D_α + D_β`): an α-only weight, or a
 /// half-weight, would miss.
 #[test]
-#[ignore = "slow (~2 min release, loaded box): H2I doublet 1x1x3 k-UHF + force + stress, supercell ECP terms at fixed density"]
+#[ignore = "slow (48 s release, loaded box): H2I doublet 1x1x3 k-UHF + force + stress, supercell ECP terms at fixed density"]
 fn h2i_doublet_uhf_ecp_parts_are_the_supercell_ecp_terms() {
     let bs = hi_basis();
     let species: [(&str, i32); 3] = [("H", 1), ("H", 1), ("I", 53)];
@@ -1423,4 +1460,224 @@ fn h2i_doublet_uhf_ecp_parts_are_the_supercell_ecp_terms() {
         .map(|c| f.parts.ecp.column(c).sum().abs())
         .fold(0.0_f64, f64::max);
     assert!(net < 1e-11, "ΣF_ecp {net:e}");
+}
+
+// ============================================================ RS-GDF
+
+/// Even-tempered s/p aux on H and I (one unit-normalised primitive per
+/// shell). The fit quality is irrelevant here: forces and stress are the
+/// exact derivatives of the FITTED energy, whatever the aux.
+fn hi_aux() -> BasisSet {
+    let sh = |l: i32, a: f64| Shell {
+        l,
+        pure: false,
+        exponents: vec![a],
+        coefficients: vec![1.0],
+    };
+    let mut m = HashMap::new();
+    m.insert(
+        1,
+        vec![
+            sh(0, 4.7),
+            sh(0, 1.9),
+            sh(0, 0.75),
+            sh(0, 0.3),
+            sh(1, 1.25),
+            sh(1, 0.5),
+        ],
+    );
+    m.insert(
+        53,
+        vec![
+            sh(0, 2.0),
+            sh(0, 0.8),
+            sh(0, 0.3),
+            sh(1, 1.2),
+            sh(1, 0.5),
+            sh(1, 0.2),
+        ],
+    );
+    BasisSet {
+        name: "hi-aux".into(),
+        shells: m,
+        ecps: HashMap::new(),
+    }
+}
+
+fn krgdf_cfg() -> KRsGdfConfig {
+    KRsGdfConfig {
+        gdf: RsGdfConfig {
+            omega: 1.0,
+            exxdiv: ExxDiv::None,
+            budget_bytes: Some(AMPLE),
+            sr_column_rotation: SrColumnRotation::Off,
+            ..Default::default()
+        },
+        mutation: None,
+    }
+}
+
+struct FitSys {
+    cfg: KRsGdfConfig,
+    aux: PreparedBasis,
+    gdf: KRsGdf,
+}
+
+fn fitsys(ks: &KSys, bs_aux: &BasisSet) -> FitSys {
+    let cfg = krgdf_cfg();
+    let aux = PreparedBasis::new(ks.cell.mol(), bs_aux).expect("aux prep");
+    let gdf = KRsGdf::build(&ks.cell, &ks.prep, &aux, &ks.mesh, &ks.hk.s, &cfg).expect("KRsGdf");
+    FitSys { cfg, aux, gdf }
+}
+
+impl FitSys {
+    fn src(&self) -> KRsGdfGradSource<'_> {
+        KRsGdfGradSource {
+            gdf: &self.gdf,
+            cfg: &self.cfg,
+            aux: &self.aux,
+        }
+    }
+}
+
+fn fit_scf(ks: &KSys, fs: &FitSys) -> KScfResult {
+    krhf(ks, Box::new(fs.gdf.jk_builder_with_madelung(0.0)))
+}
+
+fn k_fit_energy(cell: &Cell, bs: &BasisSet, n: [usize; 3]) -> f64 {
+    let ks = ksys(cell.clone(), bs, n);
+    let fs = fitsys(&ks, &hi_aux());
+    fit_scf(&ks, &fs).energy
+}
+
+/// RS-GDF (unsplit) k force and stress with an ECP. PHYSICS: the ECP part is
+/// the same lattice walk as with the dense kernels; here the density comes
+/// from the FITTED SCF. ANCHORS: (a) the ECP part equals the Gamma
+/// supercell ECP term at the unfolded density (1e-15 level); (b) the
+/// total force (I x) and the zz / xz stress components match central FD of
+/// the k energy built on the same fit (fresh `KRsGdf` per displaced / strained
+/// cell). ARTIFACT: a fit-specific slip (e.g. dropping the ECP from the
+/// rebuilt `F` of the Pulay weight) is invisible to (a) and caught by (b).
+#[test]
+fn hi_1x1x3_rsgdf_ecp_force_and_stress() {
+    let bs = hi_basis();
+    let n = [1, 1, 3];
+    let cell = hi_cell(&MOVED, &bs);
+    let ks = ksys(cell.clone(), &bs, n);
+    let t0 = std::time::Instant::now();
+    let fs = fitsys(&ks, &hi_aux());
+    let scf = fit_scf(&ks, &fs);
+    eprintln!("RS-GDF build + SCF {:.1} s", t0.elapsed().as_secs_f64());
+    let f = kpoint_rhf_gradient(
+        &ks.cell,
+        &ks.prep,
+        &ks.mesh,
+        &hcore_cfg(),
+        &ks.hk,
+        KGradJk::RsGdf(fs.src()),
+        &scf,
+        ExxDiv::None,
+        &gcfg(None),
+    )
+    .expect("fit force");
+    let s = kpoint_rhf_stress(
+        &ks.cell,
+        &ks.prep,
+        &ks.mesh,
+        &hcore_cfg(),
+        &ks.hk,
+        KStressJk::RsGdf(fs.src()),
+        &scf,
+        ExxDiv::None,
+        &scfg(None),
+    )
+    .expect("fit stress");
+    // (a) supercell ECP part at fixed density.
+    let sc = hi_supercell(&MOVED, 3, &bs);
+    let psc = prep_for(&sc, &bs);
+    let dsc = unfold_z(&ks.mesh, &scf.densities);
+    let g = periodic_ecp_gradient(&sc, &psc, &ecp_cfg(), &dsc)
+        .unwrap()
+        .unwrap();
+    let (ss, _) = periodic_ecp_strain(&sc, &psc, &ecp_cfg(), &dsc)
+        .unwrap()
+        .unwrap();
+    let fm = grad_miss(
+        &f.parts.ecp,
+        &g.grad.slice(ndarray::s![0..2, ..]).to_owned(),
+    );
+    let sm = max_mat(&s.parts.ecp, &mat_scaled(&ss, 1.0 / 3.0));
+    eprintln!("RS-GDF ECP parts vs supercell: force {fm:.2e}, strain {sm:.2e}");
+    assert!(fm < SC_BAR_PART && sm < SC_BAR_PART);
+    // (b) FD of the fitted k energy.
+    for (a, x) in [(1usize, 0usize), (0, 2)] {
+        let ep = k_fit_energy(&hi_cell(&moved(&MOVED, a, x, FD_H), &bs), &bs, n);
+        let em = k_fit_energy(&hi_cell(&moved(&MOVED, a, x, -FD_H), &bs), &bs, n);
+        let fd = (ep - em) / (2.0 * FD_H);
+        let miss = (f.grad[(a, x)] - fd).abs();
+        eprintln!(
+            "  force ({a},{x}): analytic {:.10e} FD {fd:.10e} miss {miss:.2e}",
+            f.grad[(a, x)]
+        );
+        assert!(miss < SCF_FD_BAR, "force FD miss {miss:e}");
+    }
+    for (i, j) in [(2usize, 2usize), (0, 2), (1, 1)] {
+        let ep = k_fit_energy(&cell.strained(&eps_at(i, j, FD_H)).unwrap(), &bs, n);
+        let em = k_fit_energy(&cell.strained(&eps_at(i, j, -FD_H)).unwrap(), &bs, n);
+        let fd = (ep - em) / (2.0 * FD_H);
+        let miss = (s.de_deps[i][j] - fd).abs();
+        eprintln!(
+            "  strain ({i},{j}): analytic {:.10e} FD {fd:.10e} miss {miss:.2e}",
+            s.de_deps[i][j]
+        );
+        assert!(miss < SCF_FD_BAR, "strain FD miss {miss:e}");
+    }
+}
+
+/// A SHIFTED (Monkhorst-Pack, even) mesh: a twisted supercell with no
+/// explicit-supercell anchor, so only the FD anchors it. The residue moduli
+/// differ from the mesh counts here (the pair-image modulus is twice the
+/// mesh's), so this exercises the residue bins of `W_L` that a Gamma-centred
+/// mesh cannot. Fixed Hermitian `D(k)`; force (I x) and the zz / xz strain.
+#[test]
+#[ignore = "slow (~20 s release, loaded box): HI MP [1,1,2] fixed-density ECP force + strain FD (10 ECP lattice sums, Richardson)"]
+fn ecp_terms_on_a_shifted_mesh_match_fd_at_fixed_density() {
+    let bs = hi_basis();
+    let n = [1, 1, 2];
+    let cell = hi_cell(&MOVED, &bs);
+    let ks = ksys_c(cell.clone(), &bs, n, MeshCentring::MonkhorstPack);
+    let moduli = ks.mesh.residue_moduli();
+    eprintln!("MP mesh {n:?}: residue moduli {moduli:?}");
+    let dk = fixed_dk(&ks.mesh, ks.prep.nbasis());
+    let g = kpoint_ecp_gradient_fixed_d(&ks.cell, &ks.prep, &ks.mesh, &hcore_cfg(), &dk)
+        .unwrap()
+        .unwrap();
+    let s = kpoint_hcore_stress_fixed_d(
+        &ks.cell,
+        &ks.prep,
+        &ks.mesh,
+        &hcore_cfg(),
+        &ks.hk,
+        &dk,
+        &kstress_cfg(),
+    )
+    .unwrap();
+    let e = |c: &Cell| e_ecp_k_c(c, &bs, n, MeshCentring::MonkhorstPack, &dk);
+    let fd_f = |h: f64| {
+        (e(&hi_cell(&moved(&MOVED, 1, 0, h), &bs)) - e(&hi_cell(&moved(&MOVED, 1, 0, -h), &bs)))
+            / (2.0 * h)
+    };
+    let rich = richardson(fd_f(1e-3), fd_f(5e-4));
+    let miss_f = (g.grad[(1, 0)] - rich).abs();
+    let mut miss_s = 0.0_f64;
+    for (i, j) in [(2usize, 2usize), (0, 2)] {
+        let fd = |h: f64| {
+            let cp = cell.strained(&eps_at(i, j, h)).unwrap();
+            let cm = cell.strained(&eps_at(i, j, -h)).unwrap();
+            (e(&cp) - e(&cm)) / (2.0 * h)
+        };
+        miss_s = miss_s.max((s.ecp[i][j] - richardson(fd(1e-3), fd(5e-4))).abs());
+    }
+    eprintln!("MP fixed-D ECP: force miss {miss_f:.2e}, strain miss {miss_s:.2e}");
+    assert!(miss_f < 1e-8 && miss_s < 1e-8);
 }

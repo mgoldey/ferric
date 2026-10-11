@@ -191,8 +191,9 @@
 //! * **Stress** — lives in [`crate::stress`] (FINDINGS "Iteration 19"); it
 //!   reuses this module's `SpinSet`, `JkSource` and input checks. Stress
 //!   with an ECP is differentiated in `stress.rs` (`periodic_ecp_strain`).
-//! * meta-GGA, range-separated hybrids, VV10, k-points (k-point forces with
-//!   an ECP are refused in [`crate::kgrad`]): rejected or not provided.
+//! * meta-GGA, range-separated hybrids, VV10: rejected or not provided.
+//!   (k-point forces with an ECP live in [`crate::kgrad`]: the same walk with
+//!   an image-dependent weight.)
 
 use crate::budget::{bytes_of, Ledger};
 use crate::dense_aft::{DenseAftEri, ExxDiv};
