@@ -187,6 +187,10 @@ pub mod frequencies;
 /// Analytic RHF second derivatives (Hessian) — nuclear term implemented,
 /// electronic terms stubbed pending LIBINT2_MAX_DERIV_ORDER >= 2.
 pub mod hessian;
+/// Fourth-order stencil of the first-derivative DF integral blocks: the
+/// `(P|μν)` and `(P|Q)` second derivatives of the RI Hessian.
+#[doc(hidden)]
+pub mod hessian_df_stencil;
 pub mod hessian_ecp;
 mod hessian_field;
 mod hessian_smeared;
