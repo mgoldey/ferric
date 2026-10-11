@@ -295,12 +295,35 @@ fn build_ecp_inputs(
     mol: &Molecule,
     bs: &BasisSet,
 ) -> Option<(Vec<EcpGaussianShell>, Vec<EcpCenter>)> {
+    let inp = ecp_inputs_with_atoms(mol, bs)?;
+    Some((inp.shells, inp.ecps))
+}
+
+/// The ECP integral inputs of [`ecp_potential`] together with the molecule
+/// atom each Gaussian shell and each ECP centre sits on (the Hessian's
+/// per-atom fold of the block derivatives, `ferric-scf::hessian_ecp`).
+pub struct EcpInputs {
+    /// Gaussian shells in [`PreparedBasis::new`] order.
+    pub shells: Vec<EcpGaussianShell>,
+    /// ECP centres (one per ECP-carrying atom, in atom order).
+    pub ecps: Vec<EcpCenter>,
+    /// `shell_atom[i]` = index into `mol.atoms` of shell `i`.
+    pub shell_atom: Vec<usize>,
+    /// `ecp_atom[u]` = index into `mol.atoms` of ECP centre `u`.
+    pub ecp_atom: Vec<usize>,
+}
+
+/// [`ecp_potential`]'s shells and ECP centres plus their atom indices;
+/// `None` when the basis carries no ECPs.
+pub fn ecp_inputs_with_atoms(mol: &Molecule, bs: &BasisSet) -> Option<EcpInputs> {
     if bs.ecps.is_empty() {
         return None;
     }
     let mut shells: Vec<EcpGaussianShell> = Vec::new();
     let mut ecps: Vec<EcpCenter> = Vec::new();
-    for atom in &mol.atoms {
+    let mut shell_atom: Vec<usize> = Vec::new();
+    let mut ecp_atom: Vec<usize> = Vec::new();
+    for (ia, atom) in mol.atoms.iter().enumerate() {
         let center = [atom.x, atom.y, atom.zpos];
         // Gaussian shells (real Z → real basis), gto_norm folded per primitive.
         if let Some(tmpls) = bs.for_element(atom.z) {
@@ -311,6 +334,7 @@ fn build_ecp_inputs(
                     .zip(sh.coefficients.iter())
                     .map(|(&a, &c)| c * gto_norm(sh.l, a))
                     .collect();
+                shell_atom.push(ia);
                 shells.push(EcpGaussianShell {
                     l: sh.l,
                     center,
@@ -334,6 +358,7 @@ fn build_ecp_inputs(
                     coefficients.push(t.coef);
                 }
             }
+            ecp_atom.push(ia);
             ecps.push(EcpCenter {
                 center,
                 ams,
@@ -346,7 +371,12 @@ fn build_ecp_inputs(
     if ecps.is_empty() {
         return None;
     }
-    Some((shells, ecps))
+    Some(EcpInputs {
+        shells,
+        ecps,
+        shell_atom,
+        ecp_atom,
+    })
 }
 
 /// First derivatives of the spherical ECP matrix with respect to each atomic

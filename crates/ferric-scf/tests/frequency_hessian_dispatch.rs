@@ -6,8 +6,10 @@
 //! fall back to finite differences everywhere else (always for ROHF, which has
 //! no analytic Hessian); `Analytic` must refuse instead of falling back.
 //! The probe is checked on its own for the cases that need no SCF: an ECP
-//! molecule, and a basis with g functions (above the 4-centre second-derivative
-//! angular momentum of the conda-forge libint2 2.13.1 build, f).
+//! molecule whose core charge was never applied (`Molecule::apply_ecp` not run),
+//! and a basis with g functions (above the 4-centre second-derivative
+//! angular momentum of the conda-forge libint2 2.13.1 build, f). An ECP molecule
+//! with the ECP applied is analytic (`ecp_molecule_is_analytic_and_matches_fd`).
 //!
 //! If the dispatch were broken the way it most plausibly could be — always
 //! analytic, or always finite difference — `hessian_source` and
@@ -281,7 +283,7 @@ fn rohf_stays_finite_difference_and_analytic_refuses_it() {
 }
 
 #[test]
-fn probe_refuses_g_functions_and_ecps_without_an_scf() {
+fn probe_refuses_g_functions_and_unapplied_ecps_without_an_scf() {
     if !has_deriv2() {
         return;
     }
@@ -302,11 +304,57 @@ fn probe_refuses_g_functions_and_ecps_without_an_scf() {
     eprintln!("def2-QZVP refusal: {err}");
 
     let svp = basis::bundled("def2-svp").unwrap();
-    let mut hi = Molecule::parse_xyz("2\nHI\nH 0 0 0\nI 0 0 1.61\n", 0, 1).unwrap();
+    let hi_xyz = "2\nHI\nH 0 0 0\nI 0 0 1.61\n";
+    let mut hi = Molecule::parse_xyz(hi_xyz, 0, 1).unwrap();
     hi.apply_ecp(&svp);
     let hi_prep = PreparedBasis::new(&hi, &svp).unwrap();
+    analytic_hessian_available(&hi, &hi_prep, Operator::coulomb(), &cfg)
+        .expect("an ECP molecule with its core charge applied is supported");
+
+    // The ECP basis without `apply_ecp` would use bare nuclear charges against
+    // an ECP potential: refused, never a silent wrong Hessian.
+    let bare = Molecule::parse_xyz(hi_xyz, 0, 1).unwrap();
+    let bare_prep = PreparedBasis::new(&bare, &svp).unwrap();
+    let err = analytic_hessian_available(&bare, &bare_prep, Operator::coulomb(), &cfg)
+        .expect_err("an ECP not applied to the molecule must be refused");
+    assert!(err.to_string().contains("apply_ecp"), "{err}");
+}
+
+#[test]
+fn ecp_molecule_is_analytic_and_matches_fd() {
+    if !has_deriv2() {
+        return;
+    }
+    let svp = basis::bundled("def2-svp").unwrap();
+    let mut hi = Molecule::parse_xyz("2\nHI\nH 0 0 0\nI 0 0 1.75\n", 0, 1).unwrap();
+    hi.apply_ecp(&svp);
+    let freq = |hessian| {
+        harmonic_frequencies(
+            &ParallelContext::default(),
+            &hi,
+            "def2-svp",
+            Operator::coulomb(),
+            &RhfConfig::default(),
+            &FrequencyConfig {
+                hessian,
+                ..Default::default()
+            },
+        )
+        .expect("HI frequencies")
+    };
+    let auto = freq(HessianMethod::Auto);
+    assert_eq!(auto.hessian_source, HessianSource::Analytic);
+    assert_eq!(auto.n_gradient_evaluations, 0);
+    let fd = freq(HessianMethod::FiniteDifference);
+    assert_eq!(fd.hessian_source, HessianSource::FiniteDifference);
+    assert_eq!(fd.n_gradient_evaluations, 12);
+    let dev = (auto.frequencies[0] - fd.frequencies[0]).abs();
+    eprintln!(
+        "HI/def2-SVP analytic {:.3} vs FD {:.3} cm^-1",
+        auto.frequencies[0], fd.frequencies[0]
+    );
     assert!(
-        analytic_hessian_available(&hi, &hi_prep, Operator::coulomb(), &cfg).is_err(),
-        "an ECP molecule must be refused"
+        dev < 0.5,
+        "analytic and FD HI frequencies differ by {dev} cm^-1"
     );
 }
