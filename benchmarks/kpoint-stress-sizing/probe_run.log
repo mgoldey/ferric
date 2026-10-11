@@ -1,0 +1,19 @@
+
+running 1 test
+test probe ... E0 k [-1.1709293639728247, -1.3605974175472966] sc/3 [-1.1709293639727536, -1.3605974175472255] diff -7.105427357601002e-14 -7.105427357601002e-14
+  pointwise E_k - E_sc/3 at +h: -6.94999613415348e-14 -6.88338275267597e-14
+eps(2,2) exx0: FD_k(h) -8.0362810783e-1 FD_k(2h) -8.0362814068e-1 Rich -8.0362809688e-1 | FD_sc/3 -8.0362810781e-1 | analytic Gamma-sc/3 -8.0362809759e-1 | FDk-an -1.02e-8 Rich-an +7.05e-10
+eps(2,2) exx1: FD_k(h) -1.8230190048e-2 FD_k(2h) -1.8230222897e-2 Rich -1.8230179098e-2 | FD_sc/3 -1.8230190024e-2 | analytic Gamma-sc/3 -1.8230179803e-2 | FDk-an -1.02e-8 Rich-an +7.05e-10
+  pointwise E_k - E_sc/3 at +h: -6.328271240363392e-14 -6.283862319378386e-14
+eps(0,2) exx0: FD_k(h) -5.6675770610e-3 FD_k(2h) -5.6675765325e-3 Rich -5.6675772372e-3 | FD_sc/3 -5.6675770684e-3 | analytic Gamma-sc/3 -5.6675772337e-3 | FDk-an +1.73e-10 Rich-an -3.44e-12
+eps(0,2) exx1: FD_k(h) -5.6675770588e-3 FD_k(2h) -5.6675765320e-3 Rich -5.6675772344e-3 | FD_sc/3 -5.6675770669e-3 | analytic Gamma-sc/3 -5.6675772337e-3 | FDk-an +1.75e-10 Rich-an -6.62e-13
+  pointwise E_k - E_sc/3 at +h: -5.995204332975845e-14 -6.017408793468348e-14
+eps(2,0) exx0: FD_k(h) -5.6675771898e-3 FD_k(2h) -5.6675770643e-3 Rich -5.6675772316e-3 | FD_sc/3 -5.6675771979e-3 | analytic Gamma-sc/3 -5.6675772337e-3 | FDk-an +4.39e-11 Rich-an +2.11e-12
+eps(2,0) exx1: FD_k(h) -5.6675771898e-3 FD_k(2h) -5.6675770638e-3 Rich -5.6675772318e-3 | FD_sc/3 -5.6675771957e-3 | analytic Gamma-sc/3 -5.6675772337e-3 | FDk-an +4.39e-11 Rich-an +1.93e-12
+  pointwise E_k - E_sc/3 at +h: -6.572520305780927e-14 -6.550315845288424e-14
+eps(0,0) exx0: FD_k(h) +6.4542603498e-1 FD_k(2h) +6.4542605448e-1 Rich +6.4542602848e-1 | FD_sc/3 +6.4542603494e-1 | analytic Gamma-sc/3 +6.4542602820e-1 | FDk-an +6.78e-9 Rich-an +2.78e-10
+eps(0,0) exx1: FD_k(h) +3.4756109569e-1 FD_k(2h) +3.4756109364e-1 Rich +3.4756109638e-1 | FD_sc/3 +3.4756109565e-1 | analytic Gamma-sc/3 +3.4756109610e-1 | FDk-an -4.05e-10 Rich-an +2.79e-10
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 74.21s
+
