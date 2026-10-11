@@ -22,11 +22,13 @@ use ferric_core::basis::{BasisSet, Shell};
 use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_pbc::dense_aft::{DenseAftEri, ExxDiv, DEFAULT_DENSE_AFT_MAX_BYTES};
+use ferric_pbc::dft::PeriodicGridConfig;
 use ferric_pbc::hcore::kpoint::{periodic_hcore_kpts, PeriodicHcoreK};
 use ferric_pbc::hcore::{periodic_hcore, PeriodicHcore, PeriodicHcoreConfig};
 use ferric_pbc::kdense_aft::{KDenseAftConfig, KDenseAftEri};
+use ferric_pbc::kdft::{solve_krks, KRksConfig};
 use ferric_pbc::kgrad::KRsGdfGradSource;
-use ferric_pbc::kpts::KPointMesh;
+use ferric_pbc::kpts::{KPointMesh, MeshCentring};
 use ferric_pbc::kscf::{solve_krhf_injected, KPointInjection, KPointJk, KScfConfig, KScfResult};
 use ferric_pbc::kstress::{
     kpoint_hcore_stress_fixed_d, kpoint_rhf_stress, kpoint_uhf_stress, KStress, KStressConfig,
@@ -138,8 +140,12 @@ struct KSys {
 }
 
 fn ksys(cell: Cell, bs: &BasisSet, n: [usize; 3]) -> KSys {
+    ksys_c(cell, bs, n, MeshCentring::Gamma)
+}
+
+fn ksys_c(cell: Cell, bs: &BasisSet, n: [usize; 3], centring: MeshCentring) -> KSys {
     let prep = prep_for(&cell, bs);
-    let mesh = KPointMesh::gamma_centred(&cell, n).expect("mesh");
+    let mesh = KPointMesh::new(&cell, n, centring).expect("mesh");
     let hk = periodic_hcore_kpts(&cell, &prep, &mesh, &hcore_cfg()).expect("hcore(k)");
     KSys {
         cell,
@@ -692,6 +698,31 @@ fn gamma_unrestricted(da: Array2<f64>, db: Array2<f64>) -> ScfResult {
     }
 }
 
+fn exx_idx(e: ExxDiv) -> usize {
+    match e {
+        ExxDiv::None => 0,
+        ExxDiv::Ewald => 1,
+    }
+}
+
+/// The k-RHF SCF of each exxdiv `[none, ewald]` (the stress guards that the
+/// SCF's exxdiv is the one it is asked for).
+fn scf_pair(ks: &KSys, eri: &KDenseAftEri) -> [KScfResult; 2] {
+    let vm = ks.mesh.madelung(&ks.cell).unwrap();
+    [
+        krhf(ks, Box::new(eri.jk_builder_with_madelung(0.0))),
+        krhf(ks, Box::new(eri.jk_builder_with_madelung(vm))),
+    ]
+}
+
+fn uscf_pair(ks: &KSys, eri: &KDenseAftEri, na: usize, nb: usize) -> [KUScfResult; 2] {
+    let vm = ks.mesh.madelung(&ks.cell).unwrap();
+    [
+        kuhf(ks, Box::new(eri.jk_builder_with_madelung(0.0)), na, nb),
+        kuhf(ks, Box::new(eri.jk_builder_with_madelung(vm)), na, nb),
+    ]
+}
+
 fn kuhf(ks: &KSys, jk: Box<dyn KPointJk + '_>, na: usize, nb: usize) -> KUScfResult {
     let inj = KPointInjection {
         s: ks.hk.s.clone(),
@@ -871,11 +902,12 @@ fn one_point_rhf((name, cell, bs, asym): (&str, Cell, BasisSet, f64)) {
     {
         let ks = ksys(cell.clone(), &bs, [1, 1, 1]);
         let eri = kdense(&ks, ANCHOR_PRECISION);
-        let scf = krhf(&ks, Box::new(eri.jk_builder_with_madelung(0.0)));
+        let scfs = scf_pair(&ks, &eri);
         let g = gsys(cell, &bs);
-        let gscf = gamma_restricted(real_of(&scf.densities[0]));
         for exx in EXX {
-            let k = ks_rhf(&ks, &eri, &scf, exx, None);
+            let scf = &scfs[exx_idx(exx)];
+            let gscf = gamma_restricted(real_of(&scf.densities[0]));
+            let k = ks_rhf(&ks, &eri, scf, exx, None);
             let gs = gamma_stress(&g, &gscf, exx);
             assert_one_point(name, &k, &gs, exx, asym);
         }
@@ -887,14 +919,15 @@ fn one_point_mesh_uhf_stress_is_the_gamma_stress() {
     let bs = pyscf_sto3g_h();
     let ks = ksys(h3_cell(), &bs, [1, 1, 1]);
     let eri = kdense(&ks, ANCHOR_PRECISION);
-    let scf = kuhf(&ks, Box::new(eri.jk_builder_with_madelung(0.0)), 2, 1);
+    let scfs = uscf_pair(&ks, &eri, 2, 1);
     let g = gsys(h3_cell(), &bs);
-    let gscf = gamma_unrestricted(
-        real_of(&scf.density_alpha[0]),
-        real_of(&scf.density_beta[0]),
-    );
     for exx in EXX {
-        let k = ks_uhf(&ks, &eri, &scf, exx, None);
+        let scf = &scfs[exx_idx(exx)];
+        let gscf = gamma_unrestricted(
+            real_of(&scf.density_alpha[0]),
+            real_of(&scf.density_beta[0]),
+        );
+        let k = ks_uhf(&ks, &eri, scf, exx, None);
         let gs = gamma_stress(&g, &gscf, exx);
         assert_one_point("H3 UHF", &k, &gs, exx, ANTISYM_BAR);
     }
@@ -960,16 +993,16 @@ fn rhf_supercell_anchor(
     cell: Cell,
     bs: &BasisSet,
     n: [usize; 3],
-) -> (KSys, KDenseAftEri, KScfResult, ScRef) {
+) -> (KSys, KDenseAftEri, [KScfResult; 2], ScRef) {
     let nc = (n[0] * n[1] * n[2]) as f64;
     let ks = ksys(cell.clone(), bs, n);
     let eri = kdense(&ks, ANCHOR_PRECISION);
-    let scf = krhf(&ks, Box::new(eri.jk_builder_with_madelung(0.0)));
+    let scfs = scf_pair(&ks, &eri);
     let g = gsys(supercell(&cell, n, 1), bs);
-    let gscf = gamma_restricted(unfold(&ks.mesh, &scf.densities));
     let mut de = [ZERO; 2];
     for (i, exx) in EXX.into_iter().enumerate() {
-        let k = ks_rhf(&ks, &eri, &scf, exx, None);
+        let gscf = gamma_restricted(unfold(&ks.mesh, &scfs[i].densities));
+        let k = ks_rhf(&ks, &eri, &scfs[i], exx, None);
         let gs = gamma_stress(&g, &gscf, exx);
         let r = scale3(&gs.de_deps, 1.0 / nc);
         let miss = max_mat(&k.de_deps, &r);
@@ -988,7 +1021,7 @@ fn rhf_supercell_anchor(
         assert!(k.antisymmetry() <= ANTISYM_BAR, "σ not symmetric");
         de[i] = r;
     }
-    (ks, eri, scf, ScRef { de })
+    (ks, eri, scfs, ScRef { de })
 }
 
 const ZERO: Mat3 = [[0.0; 3]; 3];
@@ -1005,9 +1038,9 @@ const K_EWALD_MUTANTS: [KStressMutation; 2] = [
     KStressMutation::GammaMadelung,
     KStressMutation::GammaMadelungStrain,
 ];
-/// The Gamma-style term defects (the 1x1x1 Gamma anchor already pins these
-/// terms; they are re-asserted against the supercell in the `#[ignore]`d
-/// sweep to keep CI cheap).
+/// The Gamma-style term defects. Measured against the 1x1x1 Gamma anchor
+/// (`term_mutants_miss_the_one_point_gamma_anchor`) and the hcore gate; also
+/// swept against the supercell in the `#[ignore]`d `h2_1x1x3_term_mutants_*`.
 const TERM_MUTANTS: [KStressMutation; 9] = [
     KStressMutation::NoPulay,
     KStressMutation::NoC0Overlap,
@@ -1081,26 +1114,25 @@ fn assert_mutants_fail(
 #[test]
 fn h2_1x1x3_stress_is_the_supercell_stress_per_cell() {
     let bs = pyscf_sto3g_h();
-    let (ks, eri, scf, refs) = rhf_supercell_anchor("H2", h2_cell_g(), &bs, [1, 1, 3]);
+    let (ks, eri, scfs, refs) = rhf_supercell_anchor("H2", h2_cell_g(), &bs, [1, 1, 3]);
     assert_mutants_fail(
         "H2 1x1x3",
-        &|exx, m| ks_rhf(&ks, &eri, &scf, exx, m),
+        &|exx, m| ks_rhf(&ks, &eri, &scfs[exx_idx(exx)], exx, m),
         &refs,
         &K_MUTANTS,
         &K_EWALD_MUTANTS,
     );
 }
 
-/// The Gamma-style term mutants against the same supercell anchor (the
-/// 1x1x1 Gamma anchor and the hcore gate already catch them in CI).
+/// The Gamma-style term mutants against the same supercell anchor.
 #[test]
 #[ignore = "slow (~2 min release): 22 more stress evaluations after the supercell anchor"]
 fn h2_1x1x3_term_mutants_miss_the_supercell_anchor() {
     let bs = pyscf_sto3g_h();
-    let (ks, eri, scf, refs) = rhf_supercell_anchor("H2", h2_cell_g(), &bs, [1, 1, 3]);
+    let (ks, eri, scfs, refs) = rhf_supercell_anchor("H2", h2_cell_g(), &bs, [1, 1, 3]);
     assert_mutants_fail(
         "H2 1x1x3",
-        &|exx, m| ks_rhf(&ks, &eri, &scf, exx, m),
+        &|exx, m| ks_rhf(&ks, &eri, &scfs[exx_idx(exx)], exx, m),
         &refs,
         &TERM_MUTANTS,
         &TERM_EWALD_MUTANTS,
@@ -1115,15 +1147,15 @@ fn h3_uhf_1x1x3_stress_is_the_supercell_stress_per_cell() {
     let n = [1, 1, 3];
     let ks = ksys(h3_cell(), &bs, n);
     let eri = kdense(&ks, ANCHOR_PRECISION);
-    let scf = kuhf(&ks, Box::new(eri.jk_builder_with_madelung(0.0)), 2, 1);
+    let scfs = uscf_pair(&ks, &eri, 2, 1);
     let g = gsys(supercell(&h3_cell(), n, 4), &bs);
-    let gscf = gamma_unrestricted(
-        unfold(&ks.mesh, &scf.density_alpha),
-        unfold(&ks.mesh, &scf.density_beta),
-    );
     let mut de = [ZERO; 2];
     for (i, exx) in EXX.into_iter().enumerate() {
-        let k = ks_uhf(&ks, &eri, &scf, exx, None);
+        let gscf = gamma_unrestricted(
+            unfold(&ks.mesh, &scfs[i].density_alpha),
+            unfold(&ks.mesh, &scfs[i].density_beta),
+        );
+        let k = ks_uhf(&ks, &eri, &scfs[i], exx, None);
         let gs = gamma_stress(&g, &gscf, exx);
         let r = scale3(&gs.de_deps, 1.0 / 3.0);
         let miss = max_mat(&k.de_deps, &r);
@@ -1134,7 +1166,7 @@ fn h3_uhf_1x1x3_stress_is_the_supercell_stress_per_cell() {
         de[i] = r;
     }
     let refs = ScRef { de };
-    let run = |exx, m| ks_uhf(&ks, &eri, &scf, exx, m);
+    let run = |exx, m| ks_uhf(&ks, &eri, &scfs[exx_idx(exx)], exx, m);
     assert_mutants_fail("H3 UHF 1x1x3", &run, &refs, &K_MUTANTS, &K_EWALD_MUTANTS);
     assert_mutants_fail(
         "H3 UHF 1x1x3",
@@ -1153,11 +1185,12 @@ fn h2_2x2x2_trim_mesh_is_blind_to_phase_mutants() {
     let bs = pyscf_sto3g_h();
     let ks = ksys(h2_cell_g(), &bs, [2, 2, 2]);
     let eri = kdense(&ks, ANCHOR_PRECISION);
-    let scf = krhf(&ks, Box::new(eri.jk_builder_with_madelung(0.0)));
+    let scfs = scf_pair(&ks, &eri);
     for exx in EXX {
-        let f0 = ks_rhf(&ks, &eri, &scf, exx, None);
+        let scf = &scfs[exx_idx(exx)];
+        let f0 = ks_rhf(&ks, &eri, scf, exx, None);
         for m in [KStressMutation::ConjD, KStressMutation::WrongQ] {
-            let f = ks_rhf(&ks, &eri, &scf, exx, Some(m));
+            let f = ks_rhf(&ks, &eri, scf, exx, Some(m));
             let d = max_mat(&f.de_deps, &f0.de_deps);
             eprintln!("  H2 2x2x2 {exx:?} {m:?}: |mut − ref| {d:.2e} (identity on TRIM meshes)");
             assert!(
@@ -1166,7 +1199,7 @@ fn h2_2x2x2_trim_mesh_is_blind_to_phase_mutants() {
             );
         }
         for m in [KStressMutation::NoPhase, KStressMutation::NoInvNk] {
-            let f = ks_rhf(&ks, &eri, &scf, exx, Some(m));
+            let f = ks_rhf(&ks, &eri, scf, exx, Some(m));
             let d = max_mat(&f.de_deps, &f0.de_deps);
             eprintln!("  H2 2x2x2 {exx:?} {m:?}: |mut − ref| {d:.2e}");
             assert!(d > MUTANT_BAR, "{m:?} not caught on 2x2x2 ({d:e})");
@@ -1181,14 +1214,16 @@ fn closed_shell_kuhf_stress_is_the_krhf_stress() {
     let bs = pyscf_sto3g_h();
     let ks = ksys(h2_cell_g(), &bs, [1, 1, 3]);
     let eri = kdense(&ks, ANCHOR_PRECISION);
-    let r = krhf(&ks, Box::new(eri.jk_builder_with_madelung(0.0)));
-    let mut u = kuhf(&ks, Box::new(eri.jk_builder_with_madelung(0.0)), 1, 1);
-    let half: Vec<Array2<Complex64>> = r.densities.iter().map(|d| d.mapv(|z| z * 0.5)).collect();
-    u.density_alpha = half.clone();
-    u.density_beta = half;
+    let rs = scf_pair(&ks, &eri);
+    let mut us = uscf_pair(&ks, &eri, 1, 1);
     for exx in EXX {
-        let sr = ks_rhf(&ks, &eri, &r, exx, None);
-        let su = ks_uhf(&ks, &eri, &u, exx, None);
+        let (r, u) = (&rs[exx_idx(exx)], &mut us[exx_idx(exx)]);
+        let half: Vec<Array2<Complex64>> =
+            r.densities.iter().map(|d| d.mapv(|z| z * 0.5)).collect();
+        u.density_alpha = half.clone();
+        u.density_beta = half;
+        let sr = ks_rhf(&ks, &eri, r, exx, None);
+        let su = ks_uhf(&ks, &eri, u, exx, None);
         let d = max_mat(&sr.de_deps, &su.de_deps);
         eprintln!("  H2 1x1x3 {exx:?}: |σ_kUHF(D/2,D/2) − σ_kRHF(D)| {d:.2e}");
         assert!(d <= IDENTITY_BAR, "{exx:?}: {d:e}");
@@ -1305,6 +1340,30 @@ fn stress_refuses_unconverged_scf_ecp_and_explicit_rotation() {
     assert!(e.contains("column rotation"), "{e}");
 }
 
+/// FD `dE/dε` of `energies` (`[none, ewald]`) on `cell`, all nine components, step `h`.
+fn fd_all9(cell: &Cell, h: f64, energies: &dyn Fn(&Cell) -> [f64; 2]) -> [Mat3; 2] {
+    let mut fd = [[[0.0; 3]; 3]; 2];
+    for (i, j) in ALL9 {
+        let ep = energies(&strained(cell, i, j, h));
+        let em = energies(&strained(cell, i, j, -h));
+        for x in 0..2 {
+            fd[x][i][j] = (ep[x] - em[x]) / (2.0 * h);
+        }
+    }
+    fd
+}
+
+/// k-RHF energies `[none, ewald]` on `(cell, bs, n, centring)`.
+fn k_energies_c(cell: &Cell, bs: &BasisSet, n: [usize; 3], centring: MeshCentring) -> [f64; 2] {
+    let ks = ksys_c(cell.clone(), bs, n, centring);
+    let eri = kdense(&ks, ANCHOR_PRECISION);
+    let vm = ks.mesh.madelung(&ks.cell).unwrap();
+    [
+        krhf(&ks, Box::new(eri.jk_builder_with_madelung(0.0))).energy,
+        krhf(&ks, Box::new(eri.jk_builder_with_madelung(vm))).energy,
+    ]
+}
+
 /// k-UHF energy of the H3 doublet (2, 1) on a (strained) cell, exxdiv none and ewald.
 fn k_energies_uhf(cell: &Cell, bs: &BasisSet, n: [usize; 3]) -> [f64; 2] {
     let ks = ksys(cell.clone(), bs, n);
@@ -1316,8 +1375,12 @@ fn k_energies_uhf(cell: &Cell, bs: &BasisSet, n: [usize; 3]) -> [f64; 2] {
     ]
 }
 
-/// The UHF twin of the FD anchor (H3 doublet 1x1x3, both exxdiv).
+/// The UHF twin of the FD anchor (H3 doublet 1x1x3, both exxdiv), at h and 2h:
+/// the h = 1e-4 miss is the central-FD h² truncation (Richardson removes it),
+/// and the two UHF-specific mutants (alpha/beta cross-paired exchange, swapped
+/// spin in the Pulay weight; both identities for RHF) must miss.
 #[test]
+#[ignore = "slow (~90 s release): 36 strained dense-AFT builds + 72 k-UHF SCFs (h and 2h)"]
 fn h3_uhf_1x1x3_stress_matches_fd_of_own_k_energy_all_nine() {
     let bs = pyscf_sto3g_h();
     let n = [1, 1, 3];
@@ -1328,27 +1391,50 @@ fn h3_uhf_1x1x3_stress_matches_fd_of_own_k_energy_all_nine() {
         kuhf(&ks, Box::new(eri.jk_builder_with_madelung(0.0)), 2, 1),
         kuhf(&ks, Box::new(eri.jk_builder_with_madelung(vm)), 2, 1),
     ];
-    let mut fd = [[[0.0; 3]; 3]; 2];
-    for (i, j) in ALL9 {
-        let ep = k_energies_uhf(&strained(&ks.cell, i, j, FD_H), &bs, n);
-        let em = k_energies_uhf(&strained(&ks.cell, i, j, -FD_H), &bs, n);
-        for x in 0..2 {
-            fd[x][i][j] = (ep[x] - em[x]) / (2.0 * FD_H);
-        }
-    }
+    let e = |c: &Cell| k_energies_uhf(c, &bs, n);
+    let fd1 = fd_all9(&ks.cell, FD_H, &e);
+    let fd2 = fd_all9(&ks.cell, 2.0 * FD_H, &e);
     for (x, exx) in EXX.into_iter().enumerate() {
         let s = ks_uhf(&ks, &eri, &scf[x], exx, None);
-        let miss = max_mat(&s.de_deps, &fd[x]);
-        eprintln!("  H3 UHF 1x1x3 {exx:?}: |analytic − FD| {miss:.2e}");
+        let mut rich = ZERO;
+        for a in 0..3 {
+            for b in 0..3 {
+                rich[a][b] = (4.0 * fd1[x][a][b] - fd2[x][a][b]) / 3.0;
+            }
+        }
+        let miss = max_mat(&s.de_deps, &fd1[x]);
+        let miss2 = max_mat(&s.de_deps, &fd2[x]);
+        let missr = max_mat(&s.de_deps, &rich);
+        eprintln!(
+            "  H3 UHF 1x1x3 {exx:?}: |analytic − FD| h {miss:.2e}, 2h {miss2:.2e} (ratio {:.2}), \
+             Richardson {missr:.2e}",
+            miss2 / miss
+        );
         assert!(miss <= K_FD_BAR_UHF, "{exx:?}: FD miss {miss:e}");
+        // h² scaling: the miss is truncation, not a formula error.
+        assert!(
+            (3.0..5.0).contains(&(miss2 / miss)),
+            "not h²: {}",
+            miss2 / miss
+        );
+        assert!(missr <= K_FD_BAR_UHF / 10.0, "Richardson miss {missr:e}");
+        for m in [KStressMutation::CrossSpinK, KStressMutation::SwapSpinFock] {
+            let sm = ks_uhf(&ks, &eri, &scf[x], exx, Some(m));
+            let mm = max_mat(&sm.de_deps, &fd1[x]);
+            eprintln!("  H3 UHF 1x1x3 {exx:?} mutant {m:?}: miss vs FD {mm:.2e}");
+            assert!(mm > MUTANT_BAR, "{m:?} {exx:?} not caught ({mm:e})");
+        }
     }
 }
 
-/// H3 has a larger h² truncation than H2 (Gamma H3 UHF prototype 5.4e-8).
-const K_FD_BAR_UHF: f64 = 2e-7;
+/// This test's own measured floor: 2.7e-8 at h = 1e-4, 1.2e-7 at 2h (ratio
+/// 4.2, i.e. h² truncation), 2e-9 after Richardson. The bar is ~4x the floor
+/// and 6 orders below the smallest mutant miss (CrossSpinK 7.9e-1,
+/// SwapSpinFock 5.8e-1).
+const K_FD_BAR_UHF: f64 = 1e-7;
 
 /// The RS-GDF source is REFUSED with a typed error naming the missing piece
-/// (PR-2 of #236), for RHF and UHF, before any work is done.
+/// before any work is done.
 #[test]
 fn stress_refuses_rsgdf_naming_the_missing_piece() {
     let bs = pyscf_sto3g_h();
@@ -1402,3 +1488,276 @@ fn stress_refuses_rsgdf_naming_the_missing_piece() {
     .to_string();
     assert!(e.contains("RS-GDF") && e.contains("not implemented"), "{e}");
 }
+
+// ====================================================== input consistency
+
+fn rhf_stress_result(
+    ks: &KSys,
+    eri: &KDenseAftEri,
+    scf: &KScfResult,
+    exx: ExxDiv,
+) -> Result<KStress, ferric_core::FerricError> {
+    kpoint_rhf_stress(
+        &ks.cell,
+        &ks.prep,
+        &ks.mesh,
+        &hcore_cfg(),
+        &ks.hk,
+        KStressJk::Dense(eri),
+        scf,
+        exx,
+        &scfg(None),
+    )
+}
+
+/// PHYSICS: a stress is only meaningful for the energy whose SCF produced
+/// `D`; the stored Fock tells which one that was. ARTIFACT: a wrong `exxdiv`
+/// or a KS result both give a FINITE σ (nothing else fails), so the guard is
+/// the stored-Fock comparison. Measured mismatches are printed below; the
+/// matching case sits at the 1e-12 level (see `FOCK_CONSISTENCY_BAR`).
+#[test]
+fn stress_refuses_a_wrong_exxdiv_and_a_ks_result() {
+    let bs = pyscf_sto3g_h();
+    let n = [1, 1, 2];
+    let ks = ksys(h2_cell_g(), &bs, n);
+    let eri = kdense(&ks, ANCHOR_PRECISION);
+    let vm = ks.mesh.madelung(&ks.cell).unwrap();
+    let scf_none = krhf(&ks, Box::new(eri.jk_builder_with_madelung(0.0)));
+    let scf_ewald = krhf(&ks, Box::new(eri.jk_builder_with_madelung(vm)));
+    // Matching inputs pass (and the match is far below the bar).
+    let a = rhf_stress_result(&ks, &eri, &scf_none, ExxDiv::None).expect("none/none");
+    let b = rhf_stress_result(&ks, &eri, &scf_ewald, ExxDiv::Ewald).expect("ewald/ewald");
+    eprintln!(
+        "  matching inputs: Fock mismatch {:.2e} (none), {:.2e} (ewald)",
+        a.fock_mismatch, b.fock_mismatch
+    );
+    assert!(a.fock_mismatch < 1e-11 && b.fock_mismatch < 1e-11);
+    // (a) wrong exxdiv, both directions.
+    for (tag, scf, exx) in [
+        ("SCF none, stress ewald", &scf_none, ExxDiv::Ewald),
+        ("SCF ewald, stress none", &scf_ewald, ExxDiv::None),
+    ] {
+        let e = rhf_stress_result(&ks, &eri, scf, exx)
+            .unwrap_err()
+            .to_string();
+        eprintln!("  {tag}: {e}");
+        assert!(e.contains("differs from the SCF's stored fock"), "{e}");
+    }
+    // (b) a KS-DFT (LDA) result on the same mesh: its Fock carries V_xc.
+    let mut kcfg = KRksConfig::new(&ks.cell, ExxDiv::None, "LDA");
+    kcfg.krhf.hcore = hcore_cfg();
+    kcfg.krhf.scf.energy_conv = 1e-10;
+    kcfg.krhf.scf.grad_conv = 1e-7;
+    kcfg.grid = PeriodicGridConfig::with_size(30, 50);
+    let kres = solve_krks(&ks.cell, &ks.prep, None, &ks.mesh, &kcfg).expect("k-LDA");
+    let e = rhf_stress_result(&ks, &eri, &kres.scf, ExxDiv::None)
+        .unwrap_err()
+        .to_string();
+    eprintln!("  KS (LDA) result: {e}");
+    assert!(e.contains("differs from the SCF's stored fock"), "{e}");
+}
+
+/// A dense source built with a range-separated K kernel is refused (its
+/// strain is not implemented), even though its own SCF/Fock are consistent.
+#[test]
+fn stress_refuses_a_range_separated_dense_source() {
+    let bs = pyscf_sto3g_h();
+    let ks = ksys(h2_cell_g(), &bs, [1, 1, 2]);
+    let eri = KDenseAftEri::build(
+        &ks.cell,
+        &ks.prep,
+        &ks.mesh,
+        &ks.hk.s,
+        ExxDiv::None,
+        &KDenseAftConfig {
+            precision: ANCHOR_PRECISION,
+            rsh: Some(ferric_pbc::rsh::RshParams {
+                omega: 0.4,
+                c_sr: 1.0,
+                c_lr: 0.25,
+            }),
+            ..Default::default()
+        },
+    )
+    .expect("rsh dense kernels");
+    let scf = krhf(&ks, Box::new(eri.jk_builder_with_madelung(0.0)));
+    let e = rhf_stress_result(&ks, &eri, &scf, ExxDiv::None)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("range-separated"), "{e}");
+}
+
+/// The fixed-D hcore entry applies the same input checks.
+#[test]
+fn hcore_fixed_d_entry_checks_its_inputs() {
+    let bs = pyscf_sto3g_h();
+    let ks = ksys(h2_cell_g(), &bs, [1, 1, 2]);
+    let eri = kdense(&ks, ANCHOR_PRECISION);
+    let scf = krhf(&ks, Box::new(eri.jk_builder_with_madelung(0.0)));
+    let call = |cfg: &PeriodicHcoreConfig, hk: &PeriodicHcoreK, d: &[Array2<Complex64>]| {
+        kpoint_hcore_stress_fixed_d(&ks.cell, &ks.prep, &ks.mesh, cfg, hk, d, &scfg(None))
+            .err()
+            .map(|e| e.to_string())
+    };
+    assert!(call(&hcore_cfg(), &ks.hk, &scf.densities).is_none());
+    let mut other = hcore_cfg();
+    other.omega = 0.9;
+    assert!(call(&other, &ks.hk, &scf.densities)
+        .unwrap()
+        .contains("omega"));
+    let rot = hcore_cfg().with_sr_column_rotation(SrColumnRotation::On(ColumnRotation::new()));
+    assert!(call(&rot, &ks.hk, &scf.densities)
+        .unwrap()
+        .contains("column rotation"));
+    assert!(call(&hcore_cfg(), &ks.hk, &scf.densities[..1])
+        .unwrap()
+        .contains("shape mismatch"));
+    let mut hk_ecp = ks.hk.clone();
+    hk_ecp.v_ecp = Some(hk_ecp.h.clone());
+    assert!(call(&hcore_cfg(), &hk_ecp, &scf.densities)
+        .unwrap()
+        .contains("ECP"));
+}
+
+// ====================================================== measured mutant claims
+
+/// The Gamma-style term mutants against the 1x1x1 Gamma anchor (H2): each
+/// must miss it, and the k-specific ones (phases, q, 1/N_k, mesh Madelung)
+/// are BLIND there (asserted) — which is why the 1x1x3 supercell anchor, not
+/// this one, carries them.
+#[test]
+#[ignore = "slow-ish (~1 min release): ~30 stress evaluations on H2 1x1x1"]
+fn term_mutants_miss_the_one_point_gamma_anchor() {
+    let bs = pyscf_sto3g_h();
+    let ks = ksys(h2_cell_g(), &bs, [1, 1, 1]);
+    let eri = kdense(&ks, ANCHOR_PRECISION);
+    let scfs = scf_pair(&ks, &eri);
+    let g = gsys(h2_cell_g(), &bs);
+    for (i, exx) in EXX.into_iter().enumerate() {
+        let scf = &scfs[i];
+        let gscf = gamma_restricted(real_of(&scf.densities[0]));
+        let gs = gamma_stress(&g, &gscf, exx);
+        let mut all: Vec<KStressMutation> = TERM_MUTANTS.to_vec();
+        all.extend(TERM_EWALD_MUTANTS);
+        for m in all {
+            if TERM_EWALD_MUTANTS.contains(&m) && i == 0 {
+                continue;
+            }
+            let miss = max_mat(&ks_rhf(&ks, &eri, scf, exx, Some(m)).de_deps, &gs.de_deps);
+            eprintln!("  1x1x1 anchor, mutant {m:?} {exx:?}: miss {miss:.2e}");
+            assert!(miss > MUTANT_BAR, "{m:?} {exx:?}: {miss:e}");
+        }
+        let mut blind: Vec<KStressMutation> = K_MUTANTS.to_vec();
+        blind.extend(K_EWALD_MUTANTS);
+        for m in blind {
+            let miss = max_mat(&ks_rhf(&ks, &eri, scf, exx, Some(m)).de_deps, &gs.de_deps);
+            eprintln!("  1x1x1 anchor, k-mutant {m:?} {exx:?}: miss {miss:.2e} (blind)");
+            // Identities at N_k = 1 (phases 1, 1/N_k = 1, mesh = primitive v_M).
+            assert!(miss <= GAMMA_BAR * 100.0, "{m:?} {exx:?}: {miss:e}");
+        }
+    }
+}
+
+// ====================================================== MP mesh, p shells
+
+/// PHYSICS: a Monkhorst-Pack even mesh (k = ±b3/4 for N = 2, residue modulus
+/// 4) is a twisted-boundary supercell with NO explicit-supercell anchor, so
+/// only the FD of ferric's own k energy pins it. Non-TRIM (2k ∉ G).
+#[test]
+fn h2_mp_1x1x2_stress_matches_fd_of_own_k_energy_all_nine() {
+    let bs = pyscf_sto3g_h();
+    let n = [1, 1, 2];
+    let c = MeshCentring::MonkhorstPack;
+    let ks = ksys_c(h2_cell_g(), &bs, n, c);
+    assert_eq!(ks.mesh.residue_moduli(), [1, 1, 4]);
+    let eri = kdense(&ks, ANCHOR_PRECISION);
+    let vm = ks.mesh.madelung(&ks.cell).unwrap();
+    let scf = [
+        krhf(&ks, Box::new(eri.jk_builder_with_madelung(0.0))),
+        krhf(&ks, Box::new(eri.jk_builder_with_madelung(vm))),
+    ];
+    let e = |cell: &Cell| k_energies_c(cell, &bs, n, c);
+    let fd1 = fd_all9(&ks.cell, FD_H, &e);
+    let fd2 = fd_all9(&ks.cell, 2.0 * FD_H, &e);
+    for (x, exx) in EXX.into_iter().enumerate() {
+        let s = ks_rhf(&ks, &eri, &scf[x], exx, None);
+        let (m1, m2) = (max_mat(&s.de_deps, &fd1[x]), max_mat(&s.de_deps, &fd2[x]));
+        eprintln!("  H2 MP 1x1x2 {exx:?}: |analytic − FD| h {m1:.2e}, 2h {m2:.2e}");
+        assert!(m1 <= K_FD_BAR, "{exx:?}: {m1:e}");
+        assert!(s.antisymmetry() <= ANTISYM_BAR);
+        for m in [KStressMutation::NoPhase, KStressMutation::NoInvNk] {
+            let mm = max_mat(&ks_rhf(&ks, &eri, &scf[x], exx, Some(m)).de_deps, &fd1[x]);
+            eprintln!("  H2 MP 1x1x2 {exx:?} mutant {m:?}: miss {mm:.2e}");
+            assert!(mm > MUTANT_BAR, "{m:?} {exx:?}: {mm:e}");
+        }
+        for m in K_EWALD_MUTANTS {
+            let mm = max_mat(&ks_rhf(&ks, &eri, &scf[x], exx, Some(m)).de_deps, &fd1[x]);
+            eprintln!("  H2 MP 1x1x2 {exx:?} mutant {m:?}: miss {mm:.2e}");
+            if exx == ExxDiv::Ewald {
+                assert!(mm > MUTANT_BAR, "{m:?}: {mm:e}");
+            }
+        }
+    }
+}
+
+/// l > 0 at N_k > 1: H2 with an s+p basis (nao 8), Gamma-centred 1x1x3
+/// (non-TRIM), FD of the own k energy, analytic at the default gradient
+/// nucleus exponent and at 1e8 (libint2's SR-derivative floor for p shells
+/// tracks that exponent, see `pbc_kgrad.rs` `SC_BAR_P`).
+#[test]
+#[ignore = "slow: s+p H2 1x1x3, 18 strained dense-AFT builds + 36 k-SCFs"]
+fn h2_sp_1x1x3_stress_matches_fd_of_own_k_energy_all_nine() {
+    let bs = sp_basis_h();
+    let n = [1, 1, 3];
+    let c = MeshCentring::Gamma;
+    let ks = ksys_c(h2_cell_g(), &bs, n, c);
+    let eri = kdense(&ks, ANCHOR_PRECISION);
+    let vm = ks.mesh.madelung(&ks.cell).unwrap();
+    let scf = [
+        krhf(&ks, Box::new(eri.jk_builder_with_madelung(0.0))),
+        krhf(&ks, Box::new(eri.jk_builder_with_madelung(vm))),
+    ];
+    let e = |cell: &Cell| k_energies_c(cell, &bs, n, c);
+    let fd1 = fd_all9(&ks.cell, FD_H, &e);
+    for (x, exx) in EXX.into_iter().enumerate() {
+        for nuc in [None, Some(1e8)] {
+            let s = kpoint_rhf_stress(
+                &ks.cell,
+                &ks.prep,
+                &ks.mesh,
+                &hcore_cfg(),
+                &ks.hk,
+                KStressJk::Dense(&eri),
+                &scf[x],
+                exx,
+                &KStressConfig {
+                    nucleus_exponent: nuc,
+                    ..scfg(None)
+                },
+            )
+            .unwrap();
+            let m1 = max_mat(&s.de_deps, &fd1[x]);
+            eprintln!(
+                "  H2 s+p 1x1x3 {exx:?} nucleus exponent {nuc:?}: |analytic − FD| {m1:.2e}, \
+                 antisym(σ) {:.2e}",
+                s.antisymmetry()
+            );
+            assert!(m1 <= K_FD_BAR_P, "{exx:?} {nuc:?}: {m1:e}");
+        }
+        for m in [
+            KStressMutation::NoPhase,
+            KStressMutation::WrongQ,
+            KStressMutation::ConjD,
+        ] {
+            let mm = max_mat(&ks_rhf(&ks, &eri, &scf[x], exx, Some(m)).de_deps, &fd1[x]);
+            eprintln!("  H2 s+p 1x1x3 {exx:?} mutant {m:?}: miss {mm:.2e}");
+            assert!(mm > MUTANT_BAR, "{m:?} {exx:?}: {mm:e}");
+        }
+    }
+}
+
+/// Measured s+p floor: 9.8e-9 at the default nucleus exponent, 9.4e-9 / 3.5e-9
+/// at 1e8 (the p-shell libint floor is invisible under the h = 1e-4 central-FD
+/// truncation, which dominates exactly as for s shells); smallest mutant miss
+/// 4.6e-2. Bar 5e-8 = the s-shell bar.
+const K_FD_BAR_P: f64 = 5e-8;

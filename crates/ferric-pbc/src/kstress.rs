@@ -52,6 +52,16 @@
 //! [`crate::kgrad`]; the energy's rotation agrees to the screening
 //! precision).
 //!
+//! # Input guards
+//!
+//! The stress rebuilds `F = h + J − αK` from the density and the dense
+//! kernels and refuses (typed [`FerricError`]) unless it reproduces the SCF's
+//! stored Fock to [`FOCK_CONSISTENCY_BAR`]: a KS result (no `V_xc` in the
+//! rebuilt `F`) or an SCF run at another `exxdiv` would otherwise give a
+//! finite but wrong σ. A dense source built with a range-separated K kernel is
+//! refused outright. Anchored meshes: Gamma-centred (explicit supercell and
+//! FD) and Monkhorst-Pack (FD only; an even MP mesh is a twisted supercell).
+//!
 //! # Supercell mapping
 //!
 //! For a Gamma-centred mesh the k stress per cell equals the Gamma stress of
@@ -88,7 +98,7 @@ use crate::kuscf::KUScfResult;
 use crate::lattice::Cell;
 use crate::pair_ft::residues::{pair_ft_strain_residues_chunked, residue_coords, residue_index};
 use crate::pair_ft::PairFtStrainTerms;
-use crate::stress::{add_into, add_pair_virial, diag, Mat3, ZERO3};
+use crate::stress::{add_into, add_pair_virial, diag, scaled, Mat3, ZERO3};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::engine::Engine;
@@ -134,6 +144,12 @@ pub enum KStressMutation {
     GUnstrained,
     /// Drop the `−δ E_LR` volume terms (V_LR, J, K; diagonal only).
     NoVolume,
+    /// UHF only (identity for RHF): the exchange pairs `D_α` with `D_β`
+    /// (`D_α P^H D_β + D_β P^H D_α`) instead of each spin with itself.
+    CrossSpinK,
+    /// UHF only (identity for RHF): the Pulay weight `W` built with the
+    /// opposite spin's Fock (`D_α F_β D_α + D_β F_α D_β`).
+    SwapSpinFock,
     /// Drop `−δ c0 Z_tot N` (diagonal only).
     NoC0Volume,
     /// SR / overlap virials with the image translations dropped from the
@@ -239,7 +255,6 @@ pub struct KOneElectronStress {
 
 /// Resolved ledger for the stress passes (per-k matrices and residue weights).
 pub(crate) fn open_ledger(
-    cell: &Cell,
     prep: &PreparedBasis,
     mesh: &KPointMesh,
     cfg: &KStressConfig,
@@ -249,7 +264,6 @@ pub(crate) fn open_ledger(
     let nk = mesh.nk();
     let m = mesh.residue_moduli();
     let nr = m[0] * m[1] * m[2];
-    let _ = cell;
     let mut ledger = Ledger::new(crate::budget::resolve(cfg.budget_bytes));
     let per_k = if unrestricted { 16 } else { 10 };
     ledger.reserve(
@@ -285,8 +299,6 @@ pub(crate) fn one_electron_pass(
     let is = |m: KStressMutation| mutation == Some(m);
     let n = prep.nbasis();
     let nk = mesh.nk();
-    let natoms = cell.positions().len();
-    let _ = natoms;
     let inv_nk = 1.0 / nk as f64;
     let moduli = ph.moduli;
     let b = cell.reciprocal();
@@ -536,14 +548,44 @@ pub fn kpoint_hcore_stress_fixed_d(
     dtot: &[Array2<C64>],
     cfg: &KStressConfig,
 ) -> Result<KOneElectronStress, FerricError> {
+    let who = "kpoint_hcore_stress_fixed_d";
+    let n = prep.nbasis();
+    let nk = mesh.nk();
     if hk.v_ecp.is_some() {
-        return Err(FerricError::General(
-            "kpoint stress: periodic ECP strain at k is not implemented (the k energy supports \
-             ECPs; the k forces and stress do not)"
-                .into(),
-        ));
+        return Err(FerricError::General(format!(
+            "{who}: periodic ECP strain at k is not implemented (the k energy supports ECPs; \
+             the k forces and stress do not)"
+        )));
     }
-    let mut ledger = open_ledger(cell, prep, mesh, cfg, false)?;
+    if hk.omega != hcore_cfg.omega {
+        return Err(FerricError::General(format!(
+            "{who}: hcore was built at omega = {} but hcore_cfg.omega = {}",
+            hk.omega, hcore_cfg.omega
+        )));
+    }
+    hcore_cfg.sr_column_rotation.refuse_explicit(
+        who,
+        "the k stress walks the unrotated shells (the column rotation is implemented in the \
+         k-point energy builds only)",
+    )?;
+    if hk.s.len() != nk
+        || hk.h.len() != nk
+        || dtot.len() != nk
+        || hk
+            .s
+            .iter()
+            .chain(&hk.h)
+            .chain(dtot)
+            .any(|x| x.dim() != (n, n))
+    {
+        return Err(FerricError::General(format!(
+            "{who}: shape mismatch (nbasis {n}, N_k {nk}: S(k) {}, h(k) {}, D(k) {})",
+            hk.s.len(),
+            hk.h.len(),
+            dtot.len()
+        )));
+    }
+    let mut ledger = open_ledger(prep, mesh, cfg, false)?;
     let ph = Phases::new(mesh, cfg.mutation);
     let omega = hcore_cfg.omega;
     let c0 = PI / (omega * omega * cell.volume());
@@ -579,10 +621,10 @@ pub fn kpoint_hcore_stress_fixed_d(
 /// Where the k-point J/K come from.
 #[derive(Clone, Copy)]
 pub enum KStressJk<'a> {
-    /// Dense pure-AFT oracle (the only strain-capable source so far).
+    /// Dense pure-AFT oracle (bare `4π/K²` kernels; the only source the stress supports).
     Dense(&'a KDenseAftEri),
-    /// k-point RS-GDF: REFUSED (strain of the SR 3-centre / metric walks, the
-    /// LR per-q residue strain and the G = 0 volume terms are not written).
+    /// k-point RS-GDF: always refused (its SR 3-centre / metric strain walks,
+    /// per-q LR residue strain and G = 0 volume terms do not exist).
     RsGdf(KRsGdfGradSource<'a>),
 }
 
@@ -672,6 +714,9 @@ pub struct KStress {
     pub commutator: f64,
     /// `v_M` used in `K` and `M` (0 for exxdiv = none).
     pub madelung: f64,
+    /// `max |F_rebuilt − F_stored|` over k (and spins): the input
+    /// consistency measure refused above [`FOCK_CONSISTENCY_BAR`].
+    pub fock_mismatch: f64,
     /// `dv_M/dε` of the mesh (supercell) lattice (reported for every exxdiv).
     pub madelung_strain: Mat3,
     /// `N = (1/N_k) Σ_k tr[D(k) S(k)]`.
@@ -732,17 +777,6 @@ fn mesh_madelung(cell: &Cell, mesh: &KPointMesh, exxdiv: ExxDiv) -> Result<f64, 
     })
 }
 
-/// `x · m` as a new matrix.
-fn scale_mat(m: &Mat3, f: f64) -> Mat3 {
-    let mut o = *m;
-    for row in o.iter_mut() {
-        for v in row.iter_mut() {
-            *v *= f;
-        }
-    }
-    o
-}
-
 /// The typed refusals shared by every entry point: ECP at k and RS-GDF J/K.
 fn refuse_unsupported(
     who: &str,
@@ -755,14 +789,60 @@ fn refuse_unsupported(
              the k forces and stress do not)"
         )));
     }
+    if let KStressJk::Dense(e) = jk {
+        if e.rsh().is_some() {
+            return Err(FerricError::General(format!(
+                "{who}: the dense source was built with a range-separated exchange kernel \
+                 (KDenseAftConfig::rsh); its strain (screened kernel at K = G + q) is not \
+                 implemented"
+            )));
+        }
+    }
     if matches!(jk, KStressJk::RsGdf(_)) {
         return Err(FerricError::General(format!(
             "{who}: RS-GDF J/K strain at k is not implemented (missing: SR 3-centre and metric \
              strain walks with per-residue weights, the per-q LR residue strain and the G = 0 \
-             volume terms; then the range split). Use the dense-AFT source"
+             volume terms; range-split builds additionally need the split strain terms). Use the \
+             dense-AFT source"
         )));
     }
     Ok(())
+}
+
+/// Largest `|F_rebuilt − F_stored|` the entry points accept (Hartree). The
+/// stress rebuilds `F = h + J − αK` from the density and the dense kernels;
+/// the SCF's stored (non-extrapolated) Fock must agree, which fails for a KS
+/// result (the XC potential is not in the rebuilt `F`) or a wrong `exxdiv`
+/// (`v_M S D S` shift). Measured on H2 1x1x2: matching inputs 2e-16 (none) and
+/// 2e-16 (ewald); the wrong `exxdiv` 7.9e-1 either way; an LDA result 3.4e-1.
+pub const FOCK_CONSISTENCY_BAR: f64 = 1e-8;
+
+fn check_fock(
+    who: &str,
+    what: &str,
+    rebuilt: &[Array2<C64>],
+    stored: &[Array2<C64>],
+) -> Result<f64, FerricError> {
+    let mut worst = 0.0_f64;
+    for (a, b) in rebuilt.iter().zip(stored) {
+        if a.dim() != b.dim() {
+            return Err(FerricError::General(format!(
+                "{who}: stored {what} has a different shape than the rebuilt one"
+            )));
+        }
+        for (x, y) in a.iter().zip(b.iter()) {
+            worst = worst.max((x - y).norm());
+        }
+    }
+    if rebuilt.len() != stored.len() || !(worst <= FOCK_CONSISTENCY_BAR) {
+        return Err(FerricError::General(format!(
+            "{who}: the Fock matrix rebuilt from the density and the dense kernels differs from \
+             the SCF's stored {what} by {worst:.2e} (bar {FOCK_CONSISTENCY_BAR:.0e}); the stress \
+             covers pure Hartree-Fock only with the SAME exxdiv and kernels the SCF used (not a \
+             KS-DFT result, not a different exxdiv, not an extrapolated state)"
+        )));
+    }
+    Ok(worst)
 }
 
 /// k-point RHF stress (module doc) of a converged
@@ -799,14 +879,15 @@ pub fn kpoint_rhf_stress(
         scf.converged,
         &scf.kpts,
     )?;
-    let mut ledger = open_ledger(cell, prep, mesh, cfg, false)?;
+    let mut ledger = open_ledger(prep, mesh, cfg, false)?;
     let vm = mesh_madelung(cell, mesh, exxdiv)?;
     let d = scf.densities.clone();
     let (j, k) = jk_build(&gj, vm, &d)?;
     let f: Vec<Array2<C64>> = (0..mesh.nk())
         .map(|q| &(&hk.h[q] + &j[q]) - &k[q].mapv(|z| z * 0.5))
         .collect();
-    assemble(
+    let mismatch = check_fock(who, "fock", &f, &scf.fock)?;
+    let mut out = assemble(
         cell,
         prep,
         mesh,
@@ -817,7 +898,9 @@ pub fn kpoint_rhf_stress(
         vm,
         cfg,
         &mut ledger,
-    )
+    )?;
+    out.fock_mismatch = mismatch;
+    Ok(out)
 }
 
 /// k-point UHF stress (module doc) of a converged
@@ -854,7 +937,7 @@ pub fn kpoint_uhf_stress(
         scf.converged,
         &scf.kpts,
     )?;
-    let mut ledger = open_ledger(cell, prep, mesh, cfg, true)?;
+    let mut ledger = open_ledger(prep, mesh, cfg, true)?;
     let vm = mesh_madelung(cell, mesh, exxdiv)?;
     let da = scf.density_alpha.clone();
     let db = scf.density_beta.clone();
@@ -864,7 +947,13 @@ pub fn kpoint_uhf_stress(
     let base: Vec<Array2<C64>> = (0..nk).map(|q| &(&hk.h[q] + &ja[q]) + &jb[q]).collect();
     let fa: Vec<Array2<C64>> = (0..nk).map(|q| &base[q] - &ka[q]).collect();
     let fb: Vec<Array2<C64>> = (0..nk).map(|q| &base[q] - &kb[q]).collect();
-    assemble(
+    let mismatch = check_fock(who, "fock_alpha", &fa, &scf.fock_alpha)?.max(check_fock(
+        who,
+        "fock_beta",
+        &fb,
+        &scf.fock_beta,
+    )?);
+    let mut out = assemble(
         cell,
         prep,
         mesh,
@@ -875,7 +964,9 @@ pub fn kpoint_uhf_stress(
         vm,
         cfg,
         &mut ledger,
-    )
+    )?;
+    out.fock_mismatch = mismatch;
+    Ok(out)
 }
 
 /// Assemble the k-point stress from the per-spin `D(k)`/`F(k)`; `vm` is the
@@ -924,7 +1015,12 @@ fn assemble(
     // --- The forces' overlap weights M(k), split into its three pieces.
     let w_pulay = fold_real(
         &(0..nk)
-            .map(|k| spins.energy_weighted(k).mapv(|z| -z))
+            .map(|k| match &spins {
+                KSpins::Unrestricted { da, db, fa, fb } if is(KStressMutation::SwapSpinFock) => {
+                    -(&da[k].dot(&fb[k]).dot(&da[k]) + &db[k].dot(&fa[k]).dot(&db[k]))
+                }
+                _ => spins.energy_weighted(k).mapv(|z| -z),
+            })
             .collect::<Vec<_>>(),
         &ph.d,
         nrm1,
@@ -1028,7 +1124,7 @@ fn assemble(
     }
     t_m *= inv_nk;
     if vm != 0.0 && !is(KStressMutation::NoMadelung) {
-        parts.madelung = scale_mat(&vm_strain, -0.5 * t_m);
+        parts.madelung = scaled(&vm_strain, -0.5 * t_m);
     }
     let e_madelung = -0.5 * vm * t_m;
 
@@ -1038,7 +1134,7 @@ fn assemble(
             "k stress: non-finite strain derivative".into(),
         ));
     }
-    let sigma = scale_mat(&de_deps, 1.0 / vol);
+    let sigma = scaled(&de_deps, 1.0 / vol);
     ferric_core::memory::warn_if_rss_over("ferric-pbc k stress", ledger.budget(), 1.1);
     Ok(KStress {
         de_deps,
@@ -1047,6 +1143,7 @@ fn assemble(
         volume: vol,
         commutator,
         madelung: vm,
+        fock_mismatch: 0.0,
         madelung_strain: vm_strain,
         electrons: one.electrons,
         e_vlr: one.e_vlr,
@@ -1193,8 +1290,18 @@ fn dense_two_electron_strain(
                         }
                         let pjh = herm(&pj);
                         let mut y = Array2::<C64>::zeros((n, n));
-                        for (c, ds) in &exch {
-                            y.scaled_add(cr(*c), &ds[j].dot(&pjh).dot(&ds[kof[j]]));
+                        match spins {
+                            KSpins::Unrestricted { da, db, .. }
+                                if mutation == Some(KStressMutation::CrossSpinK) =>
+                            {
+                                y += &da[j].dot(&pjh).dot(&db[kof[j]]);
+                                y += &db[j].dot(&pjh).dot(&da[kof[j]]);
+                            }
+                            _ => {
+                                for (c, ds) in &exch {
+                                    y.scaled_add(cr(*c), &ds[j].dot(&pjh).dot(&ds[kof[j]]));
+                                }
+                            }
                         }
                         for m in 0..n {
                             for l in 0..n {

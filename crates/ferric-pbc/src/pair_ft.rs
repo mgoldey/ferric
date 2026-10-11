@@ -1166,6 +1166,8 @@ where
     Ok(n_chunks)
 }
 
+/// (Its residue-bucketed twin `residues::residue_strain_block` repeats this
+/// arithmetic; keep the two in step.)
 /// The strain kernel: [`pair_ft_deriv_block`]'s loop with the G-derivative
 /// rows added and the nine `dP/dε_ab` accumulated per primitive pair.
 fn pair_ft_strain_block(
