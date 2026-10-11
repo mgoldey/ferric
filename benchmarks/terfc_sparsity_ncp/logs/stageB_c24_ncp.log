@@ -1,0 +1,11 @@
+
+running 1 test
+test terfc_locality_map has been running for over 60 seconds
+SETUP alkane_24.xyz nbas=316 naux=2044 no=73 fc=24 maps=prod
+ROWOP alkane_24.xyz terfc:0.991:1.354 e0 -2.7462720161 ecoul -2.1949393448 ratio 1.25118 t_ri 139.0 t_eri3 121.17 t_eri3_coul 3.16 cost_ratio 38.31
+ROW alkane_24.xyz terfc:0.991:1.354 eps 1e-4 e_corr -2.7411034092 relerr 1.8820e-3 keep 0.484 pairs 2007.0 dom_mean 84.26 dom_max 104 wall 1411.9
+ROW alkane_24.xyz terfc:0.991:1.354 eps 4e-5 e_corr -2.7446221161 relerr 6.0078e-4 keep 0.870 pairs 2417.0 dom_mean 92.88 dom_max 120 wall 946.9
+test terfc_locality_map ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2818.59s
+

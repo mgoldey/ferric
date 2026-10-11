@@ -1,0 +1,13 @@
+SETUP alkane_16.xyz nbas=212 naux=1372 no=49 fc=16 maps=prod
+ROWOP alkane_16.xyz coul e0 -1.4649941551 ecoul -1.4649941551 ratio 1.00000 t_ri 0.0 t_eri3 0.70 t_eri3_coul 0.70 cost_ratio 1.00
+ROW alkane_16.xyz coul eps 6e-4 e_corr -1.4259213845 relerr 2.6671e-2 keep 0.346 pairs 1069.0 dom_mean 57.90 dom_max 72 wall 14.3
+ROW alkane_16.xyz coul eps 2.5e-4 e_corr -1.4503757955 relerr 9.9784e-3 keep 0.863 pairs 1427.0 dom_mean 77.61 dom_max 101 wall 14.8
+ROW alkane_16.xyz coul eps 1e-4 e_corr -1.4601346033 relerr 3.3171e-3 keep 1.809 pairs 1693.0 dom_mean 92.18 dom_max 121 wall 16.9
+ROW alkane_16.xyz coul eps 4e-5 e_corr -1.4634300388 relerr 1.0677e-3 keep 3.405 pairs 2127.0 dom_mean 114.59 dom_max 145 wall 20.5
+ROW alkane_16.xyz coul eps 1.6e-5 e_corr -1.4645138564 relerr 3.2785e-4 keep 5.839 pairs 2337.0 dom_mean 131.53 dom_max 147 wall 26.8
+ROWOP alkane_16.xyz erfc:0.42 e0 -1.3556232965 ecoul -1.4649941551 ratio 0.92534 t_ri 2.7 t_eri3 0.72 t_eri3_coul 0.70 cost_ratio 1.02
+ROW alkane_16.xyz erfc:0.42 eps 6e-4 e_corr -1.3245221513 relerr 2.2942e-2 keep 0.302 pairs 893.0 dom_mean 54.18 dom_max 69 wall 14.0
+ROW alkane_16.xyz erfc:0.42 eps 2.5e-4 e_corr -1.3440638478 relerr 8.5270e-3 keep 0.736 pairs 1227.0 dom_mean 70.51 dom_max 92 wall 15.3
+ROW alkane_16.xyz erfc:0.42 eps 1e-4 e_corr -1.3519367560 relerr 2.7194e-3 keep 1.544 pairs 1227.0 dom_mean 77.98 dom_max 103 wall 16.3
+ROW alkane_16.xyz erfc:0.42 eps 4e-5 e_corr -1.3545299180 relerr 8.0655e-4 keep 2.815 pairs 1501.0 dom_mean 89.16 dom_max 121 wall 18.1
+ROW alkane_16.xyz erfc:0.42 eps 1.6e-5 e_corr -1.3552513053 relerr 2.7441e-4 keep 4.609 pairs 1633.0 dom_mean 95.78 dom_max 131 wall 22.0

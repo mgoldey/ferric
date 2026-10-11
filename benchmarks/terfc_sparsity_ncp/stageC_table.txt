@@ -1,0 +1,19 @@
+mol op E/Ecoul cost | tol eps* keep% pairs dom_mean
+alkane_8.xyz erfc:0.7031                0.7545 1.2x | 1e-03 5.69e-05 11.55 566 68.8 wall 3s
+alkane_8.xyz erfc:0.7031                0.7545 1.2x | 1e-02 3.51e-04 2.88 475 51.7 wall 2s
+alkane_8.xyz erfc:0.5091                0.8816 1.1x | 1e-03 5.90e-05 13.19 564 68.9 wall 4s
+alkane_8.xyz erfc:0.5091                0.8816 1.1x | 1e-02 3.52e-04 3.47 474 53.3 wall 2s
+alkane_8.xyz erfc:0.4812                0.8971 1.1x | 1e-03 5.88e-05 13.51 564 69.0 wall 4s
+alkane_8.xyz erfc:0.4812                0.8971 1.1x | 1e-02 3.44e-04 3.61 476 53.8 wall 2s
+alkane_10.xyz erfc:0.7031                0.7529 1.4x | 1e-03 5.30e-05 6.91 806 77.6 wall 8s
+alkane_10.xyz erfc:0.7031                0.7529 1.4x | 1e-02 3.33e-04 1.64 633 55.5 wall 3s
+alkane_10.xyz erfc:0.5091                0.8803 1.0x | 1e-03 5.44e-05 7.97 803 77.8 wall 11s
+alkane_10.xyz erfc:0.5091                0.8803 1.0x | 1e-02 3.31e-04 2.00 633 57.1 wall 3s
+alkane_10.xyz erfc:0.4812                0.8960 1.0x | 1e-03 5.42e-05 8.18 803 77.9 wall 7s
+alkane_10.xyz erfc:0.4812                0.8960 1.0x | 1e-02 3.24e-04 2.07 636 57.6 wall 3s
+alkane_12.xyz erfc:0.7031                0.7518 1.1x | 1e-03 5.07e-05 4.42 1047 83.6 wall 10s
+alkane_12.xyz erfc:0.7031                0.7518 1.1x | 1e-02 3.22e-04 1.02 792 57.8 wall 4s
+alkane_12.xyz erfc:0.5091                0.8795 1.2x | 1e-03 5.15e-05 5.14 1047 84.1 wall 11s
+alkane_12.xyz erfc:0.5091                0.8795 1.2x | 1e-02 3.18e-04 1.25 793 59.5 wall 5s
+alkane_12.xyz erfc:0.4812                0.8952 1.0x | 1e-03 5.13e-05 5.27 1048 84.2 wall 9s
+alkane_12.xyz erfc:0.4812                0.8952 1.0x | 1e-02 3.11e-04 1.29 796 60.1 wall 5s

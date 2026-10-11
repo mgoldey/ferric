@@ -1,0 +1,174 @@
+   Compiling libc v0.2.186
+   Compiling proc-macro2 v1.0.106
+   Compiling quote v1.0.45
+   Compiling unicode-ident v1.0.24
+   Compiling find-msvc-tools v0.1.9
+   Compiling shlex v1.3.0
+   Compiling cc v1.2.62
+   Compiling autocfg v1.5.0
+   Compiling syn v2.0.117
+   Compiling thiserror v2.0.18
+   Compiling cfg-if v1.0.4
+   Compiling zerocopy v0.8.48
+   Compiling thiserror-impl v2.0.18
+   Compiling num-traits v0.2.19
+   Compiling serde_core v1.0.228
+   Compiling getrandom v0.2.17
+   Compiling ring v0.17.14
+   Compiling crossbeam-utils v0.8.21
+   Compiling rand_core v0.6.4
+   Compiling ppv-lite86 v0.2.21
+   Compiling serde v1.0.228
+   Compiling zeroize v1.8.2
+   Compiling rustls-pki-types v1.14.1
+   Compiling rand_chacha v0.3.1
+   Compiling serde_derive v1.0.228
+   Compiling httparse v1.10.1
+   Compiling untrusted v0.9.0
+   Compiling rustix v1.1.4
+   Compiling crossbeam-epoch v0.9.18
+   Compiling rand v0.8.6
+   Compiling rayon-core v1.13.0
+   Compiling linux-raw-sys v0.12.1
+   Compiling crc32fast v1.5.0
+   Compiling rustls v0.23.40
+   Compiling bitflags v2.11.1
+   Compiling itoa v1.0.18
+   Compiling bytes v1.11.1
+   Compiling log v0.4.29
+   Compiling http v1.4.0
+   Compiling crossbeam-deque v0.8.6
+   Compiling rustls-webpki v0.103.13
+   Compiling matrixmultiply v0.3.10
+   Compiling adler2 v2.0.1
+   Compiling subtle v2.6.1
+   Compiling base64 v0.22.1
+   Compiling once_cell v1.21.4
+   Compiling simd-adler32 v0.3.9
+   Compiling anyhow v1.0.102
+   Compiling miniz_oxide v0.8.9
+   Compiling num-complex v0.4.6
+   Compiling ureq-proto v0.6.0
+   Compiling xattr v1.6.1
+   Compiling webpki-roots v1.0.7
+   Compiling filetime v0.2.28
+   Compiling zmij v1.0.21
+   Compiling either v1.15.0
+   Compiling utf8-zero v0.8.1
+   Compiling rawpointer v0.2.1
+   Compiling percent-encoding v2.3.2
+   Compiling option-ext v0.2.0
+   Compiling ureq v3.3.0
+   Compiling dirs-sys v0.5.0
+   Compiling rayon v1.12.0
+   Compiling tar v0.4.45
+   Compiling flate2 v1.1.9
+   Compiling num-integer v0.1.46
+   Compiling approx v0.5.1
+   Compiling cblas-sys v0.1.4
+   Compiling lapack-sys v0.14.0
+   Compiling serde_json v1.0.149
+   Compiling ndarray v0.16.1
+   Compiling openblas-build v0.10.16
+   Compiling dirs v6.0.0
+   Compiling ferric-core v0.1.0 (/home/matt/qc/ferric/.claude/worktrees/agent-a3ea64fad5c125c9c/crates/ferric-core)
+   Compiling pkg-config v0.3.33
+   Compiling memchr v2.8.0
+   Compiling openblas-src v0.10.16
+   Compiling getrandom v0.4.2
+   Compiling cauchy v0.4.0
+   Compiling katexit v0.1.5
+   Compiling ferric-integrals v0.1.0 (/home/matt/qc/ferric/.claude/worktrees/agent-a3ea64fad5c125c9c/crates/ferric-integrals)
+   Compiling fastrand v2.4.1
+   Compiling lax v0.17.0
+   Compiling tempfile v3.27.0
+   Compiling bytemuck v1.25.0
+   Compiling ferric-dft v0.1.0 (/home/matt/qc/ferric/.claude/worktrees/agent-a3ea64fad5c125c9c/crates/ferric-dft)
+   Compiling ferric-tensors v0.1.0 (/home/matt/qc/ferric/.claude/worktrees/agent-a3ea64fad5c125c9c/crates/ferric-tensors)
+   Compiling ferric-tensor-macro v0.1.0 (/home/matt/qc/ferric/.claude/worktrees/agent-a3ea64fad5c125c9c/crates/ferric-tensor-macro)
+   Compiling ndarray-linalg v0.17.0
+   Compiling ferric-quadrature v0.1.0 (/home/matt/qc/ferric/.claude/worktrees/agent-a3ea64fad5c125c9c/crates/ferric-quadrature)
+   Compiling ferric-mm v0.1.0 (/home/matt/qc/ferric/.claude/worktrees/agent-a3ea64fad5c125c9c/crates/ferric-mm)
+warning: ferric-integrals@0.1.0: libint2 headers and library from /home/matt/.local/libint2-2.13.1
+warning: ferric-integrals@0.1.0: libint2 2.13.1 boys.h override applied (GmEval copy fix)
+warning: ferric-integrals@0.1.0: In file included from /home/matt/.local/libint2-2.13.1/include/libint2/./engine.impl.h:34,
+warning: ferric-integrals@0.1.0:                  from /home/matt/.local/libint2-2.13.1/include/libint2/engine.h:1113,
+warning: ferric-integrals@0.1.0:                  from /home/matt/.local/libint2-2.13.1/include/libint2/cxxapi.h:46,
+warning: ferric-integrals@0.1.0:                  from /home/matt/.local/libint2-2.13.1/include/libint2.hpp:24,
+warning: ferric-integrals@0.1.0:                  from shim/shim.cc:5:
+warning: ferric-integrals@0.1.0: /home/matt/qc/ferric/.claude/worktrees/agent-a3ea64fad5c125c9c/crates/ferric-integrals/shim/libint2_overrides/2.13.1/libint2/boys.h: In constructor 'libint2::TennoGmEval<Real>::TennoGmEval(unsigned int, Real)':
+warning: ferric-integrals@0.1.0: /home/matt/qc/ferric/.claude/worktrees/agent-a3ea64fad5c125c9c/crates/ferric-integrals/shim/libint2_overrides/2.13.1/libint2/boys.h:1025: note: '-Wmisleading-indentation' is disabled from this point onwards, since column-tracking was disabled due to the size of the code/headers
+warning: ferric-integrals@0.1.0:  1025 |     if (precision_ < maxabsprecision)
+warning: ferric-integrals@0.1.0:       |
+warning: ferric-integrals@0.1.0: /home/matt/qc/ferric/.claude/worktrees/agent-a3ea64fad5c125c9c/crates/ferric-integrals/shim/libint2_overrides/2.13.1/libint2/boys.h:1025: note: adding '-flarge-source-files' will allow for more column-tracking support, at the expense of compilation time and memory
+warning: ferric-integrals@0.1.0: shim/shim.cc: In function 'void {anonymous}::tform_axis(int, int, const std::vector<double>&, std::vector<double>&)':
+warning: ferric-integrals@0.1.0: shim/shim.cc:3064: warning: comparison of integer expressions of different signedness: 'int' and 'const unsigned int' [-Wsign-compare]
+warning: ferric-integrals@0.1.0:  3064 |         for (int ic = 0; ic < nc; ++ic) {
+warning: ferric-integrals@0.1.0:       |
+warning: ferric-integrals@0.1.0: shim/shim.cc: In function 'void {anonymous}::transform_cart_to_pure3(const libint2::Shell&, const libint2::Shell&, const libint2::Shell&, const std::vector<double>&, std::vector<double>&)':
+warning: ferric-integrals@0.1.0: shim/shim.cc:3125: warning: comparison of integer expressions of different signedness: 'int' and 'const unsigned int' [-Wsign-compare]
+warning: ferric-integrals@0.1.0:  3125 |                 for (int ic = 0; ic < nc; ++ic) acc += cval[ic] * src[cidx[ic]];
+warning: ferric-integrals@0.1.0:       |
+warning: ferric-integrals@0.1.0: shim/shim.cc: In function 'void {anonymous}::transform_cart_to_pure2(const libint2::Shell&, const libint2::Shell&, const std::vector<double>&, std::vector<double>&)':
+warning: ferric-integrals@0.1.0: shim/shim.cc:3161: warning: comparison of integer expressions of different signedness: 'int' and 'const unsigned int' [-Wsign-compare]
+warning: ferric-integrals@0.1.0:  3161 |                 for (int ic = 0; ic < nc; ++ic) acc += cval[ic] * src[cidx[ic]];
+warning: ferric-integrals@0.1.0:       |
+warning: ferric-integrals@0.1.0: shim/shim.cc: In function 'void {anonymous}::transform_cart_to_pure4(const libint2::Shell&, const libint2::Shell&, const libint2::Shell&, const libint2::Shell&, const std::vector<double>&, std::vector<double>&)':
+warning: ferric-integrals@0.1.0: shim/shim.cc:3243: warning: comparison of integer expressions of different signedness: 'int' and 'const unsigned int' [-Wsign-compare]
+warning: ferric-integrals@0.1.0:  3243 |                 for (int ic = 0; ic < nc; ++ic) acc += cval[ic] * src[cidx[ic]];
+warning: ferric-integrals@0.1.0:       |
+warning: ferric-integrals@0.1.0: In file included from /usr/include/c++/12/cassert:44,
+warning: ferric-integrals@0.1.0:                  from /home/matt/.local/libint2-2.13.1/include/libint2/shell.h:34,
+warning: ferric-integrals@0.1.0:                  from /home/matt/.local/libint2-2.13.1/include/libint2/basis.h:53,
+warning: ferric-integrals@0.1.0:                  from /home/matt/.local/libint2-2.13.1/include/libint2/cxxapi.h:44:
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/shell.h: In instantiation of 'constexpr Real libint2::math::df_Kminus1_real(Int) [with Real = double; Int = int; <template-parameter-1-3> = void]':
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/shell.h:925:54:   required from here
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/shell.h:655:12: warning: comparison of integer expressions of different signedness: 'int' and 'std::array<long int, 35>::size_type' {aka 'long unsigned int'} [-Wsign-compare]
+warning: ferric-integrals@0.1.0:   655 |   assert(k < df_Kminus1.size() || k < df_Kminus1_ld.size());
+warning: ferric-integrals@0.1.0:       |          ~~^~~~~~~~~~~~~~~~~~~
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/shell.h:655:37: warning: comparison of integer expressions of different signedness: 'int' and 'std::array<long double, 302>::size_type' {aka 'long unsigned int'} [-Wsign-compare]
+warning: ferric-integrals@0.1.0:   655 |   assert(k < df_Kminus1.size() || k < df_Kminus1_ld.size());
+warning: ferric-integrals@0.1.0:       |                                   ~~^~~~~~~~~~~~~~~~~~~~~~
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/shell.h:657:12: warning: comparison of integer expressions of different signedness: 'int' and 'std::array<long int, 35>::size_type' {aka 'long unsigned int'} [-Wsign-compare]
+warning: ferric-integrals@0.1.0:   657 |   assert(k < df_Kminus1.size() || (std::is_same<Real, double>::value ||
+warning: ferric-integrals@0.1.0:       |          ~~^~~~~~~~~~~~~~~~~~~
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/shell.h:661:13: warning: comparison of integer expressions of different signedness: 'int' and 'std::array<long int, 35>::size_type' {aka 'long unsigned int'} [-Wsign-compare]
+warning: ferric-integrals@0.1.0:   661 |   return (k < df_Kminus1.size()) ? static_cast<Real>(df_Kminus1[k])
+warning: ferric-integrals@0.1.0:       |          ~~~^~~~~~~~~~~~~~~~~~~~
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/shell.h: In instantiation of 'constexpr Real libint2::math::fac_real(Int) [with Real = double; Int = int; <template-parameter-1-3> = void]':
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/shell.h:1218:35:   required from 'void libint2::ShellPair::init(const libint2::Shell&, const libint2::Shell&, Real, libint2::ScreeningMethod) [with Real = double]'
+warning: ferric-integrals@0.1.0: shim/shim.cc:196:0:   required from here
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/shell.h:271:12: warning: comparison of integer expressions of different signedness: 'int' and 'std::array<long int, 21>::size_type' {aka 'long unsigned int'} [-Wsign-compare]
+warning: ferric-integrals@0.1.0:   271 |   assert(k < fac.size() || k < fac_ld.size());
+warning: ferric-integrals@0.1.0:       |          ~~^~~~~~~~~~~~
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/shell.h:271:30: warning: comparison of integer expressions of different signedness: 'int' and 'std::array<long double, 171>::size_type' {aka 'long unsigned int'} [-Wsign-compare]
+warning: ferric-integrals@0.1.0:   271 |   assert(k < fac.size() || k < fac_ld.size());
+warning: ferric-integrals@0.1.0:       |                            ~~^~~~~~~~~~~~~~~
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/shell.h:273:12: warning: comparison of integer expressions of different signedness: 'int' and 'std::array<long int, 21>::size_type' {aka 'long unsigned int'} [-Wsign-compare]
+warning: ferric-integrals@0.1.0:   273 |   assert(k < fac.size() || (std::is_same<Real, double>::value ||
+warning: ferric-integrals@0.1.0:       |          ~~^~~~~~~~~~~~
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/shell.h:278:13: warning: comparison of integer expressions of different signedness: 'int' and 'std::array<long int, 21>::size_type' {aka 'long unsigned int'} [-Wsign-compare]
+warning: ferric-integrals@0.1.0:   278 |   return (k < fac.size()) ? static_cast<Real>(fac[k])
+warning: ferric-integrals@0.1.0:       |          ~~~^~~~~~~~~~~~~
+warning: ferric-integrals@0.1.0: In file included from /home/matt/.local/libint2-2.13.1/include/libint2/engine.h:41:
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/solidharmonics.h: In instantiation of 'void libint2::solidharmonics::SolidHarmonicsCoefficients<Real>::init() [with Real = double]':
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/solidharmonics.h:66:9:   required from 'libint2::solidharmonics::SolidHarmonicsCoefficients<Real>::SolidHarmonicsCoefficients(unsigned char) [with Real = double]'
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/solidharmonics.h:271:43:   required from 'libint2::solidharmonics::SolidHarmonicsCoefficients<Real>::CtorHelperIter::value_type libint2::solidharmonics::SolidHarmonicsCoefficients<Real>::CtorHelperIter::operator*() const [with Real = double; value_type = libint2::solidharmonics::SolidHarmonicsCoefficients<double>]'
+warning: ferric-integrals@0.1.0: /usr/include/c++/12/bits/stl_vector.h:1670:21:   required from 'void std::vector<_Tp, _Alloc>::_M_range_initialize(_InputIterator, _InputIterator, std::input_iterator_tag) [with _InputIterator = libint2::solidharmonics::SolidHarmonicsCoefficients<double>::CtorHelperIter; _Tp = libint2::solidharmonics::SolidHarmonicsCoefficients<double>; _Alloc = std::allocator<libint2::solidharmonics::SolidHarmonicsCoefficients<double> >]'
+warning: ferric-integrals@0.1.0: /usr/include/c++/12/bits/stl_vector.h:708:23:   required from 'std::vector<_Tp, _Alloc>::vector(_InputIterator, _InputIterator, const allocator_type&) [with _InputIterator = libint2::solidharmonics::SolidHarmonicsCoefficients<double>::CtorHelperIter; <template-parameter-2-2> = void; _Tp = libint2::solidharmonics::SolidHarmonicsCoefficients<double>; _Alloc = std::allocator<libint2::solidharmonics::SolidHarmonicsCoefficients<double> >; allocator_type = std::allocator<libint2::solidharmonics::SolidHarmonicsCoefficients<double> >]'
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/solidharmonics.h:84:52:   required from 'static const libint2::solidharmonics::SolidHarmonicsCoefficients<Real>& libint2::solidharmonics::SolidHarmonicsCoefficients<Real>::instance(unsigned int) [with Real = double]'
+warning: ferric-integrals@0.1.0: shim/shim.cc:3059:0:   required from here
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/solidharmonics.h:191:55: warning: comparison of integer expressions of different signedness: 'int' and 'const unsigned int' [-Wsign-compare]
+warning: ferric-integrals@0.1.0:   191 |       for (signed int pure_idx = 0, m = -l_; pure_idx != npure; ++pure_idx, ++m)
+warning: ferric-integrals@0.1.0:       |                                              ~~~~~~~~~^~~~~~~~
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/solidharmonics.h:195:53: warning: comparison of integer expressions of different signedness: 'int' and 'const unsigned int' [-Wsign-compare]
+warning: ferric-integrals@0.1.0:   195 |       for (signed int pure_idx = 0, m = 0; pure_idx != npure;
+warning: ferric-integrals@0.1.0:       |                                            ~~~~~~~~~^~~~~~~~
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/solidharmonics.h:203:44: warning: comparison of integer expressions of different signedness: 'int' and 'const unsigned int' [-Wsign-compare]
+warning: ferric-integrals@0.1.0:   203 |     for (signed int pure_idx = 0; pure_idx != npure; ++pure_idx) {
+warning: ferric-integrals@0.1.0:       |                                   ~~~~~~~~~^~~~~~~~
+   Compiling ferric-pcm v0.1.0 (/home/matt/qc/ferric/.claude/worktrees/agent-a3ea64fad5c125c9c/crates/ferric-pcm)
+   Compiling ferric-scf v0.1.0 (/home/matt/qc/ferric/.claude/worktrees/agent-a3ea64fad5c125c9c/crates/ferric-scf)
+   Compiling ferric-mp2 v0.1.0 (/home/matt/qc/ferric/.claude/worktrees/agent-a3ea64fad5c125c9c/crates/ferric-mp2)
+    Finished `release` profile [optimized] target(s) in 3m 39s
+  Executable tests/terfc_locality_map.rs (target/release/deps/terfc_locality_map-f4280a0a13031143)
