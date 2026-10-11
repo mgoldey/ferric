@@ -591,9 +591,28 @@ fn rohf_state_refusal(res: &ScfResult) -> Option<&'static str> {
 /// path reads `nocc = nelec/2` and its closed-shell density directly.)
 fn state_refusal(reference: Reference, mol: &Molecule, uhf: &ScfResult) -> Option<&'static str> {
     match reference {
-        Reference::Rhf => return None,
-        Reference::Rohf => return rohf_state_refusal(uhf),
-        Reference::Uhf => {}
+        Reference::Rhf => None,
+        Reference::Rohf => rohf_state_refusal(uhf),
+        Reference::Uhf => uhf_state_refusal(mol, uhf),
+    }
+}
+
+/// A semicanonicalized ROHF/ROKS result is `Spin::Unrestricted` but keeps its
+/// `rohf_spin_focks`. Its orbitals are ROHF orbitals, for which the per-spin
+/// occupied-virtual Fock blocks do NOT vanish, and the UHF CPHF assumes they
+/// do: it would return a wrong Hessian silently (measured 7.8e-2 Ha/Bohr^2 on
+/// NH2/cc-pVDZ). `hessian::rohf_hessian` is the Hessian for these results.
+fn semicanonical_refusal(uhf: &ScfResult) -> Option<&'static str> {
+    uhf.rohf_spin_focks.is_some().then_some(
+        "a semicanonicalized ROHF/ROKS result (UHF-form orbitals that are not a UHF \
+         stationary point: the per-spin occupied-virtual Fock blocks do not vanish; use \
+         hessian::rohf_hessian on the ROHF result)",
+    )
+}
+
+fn uhf_state_refusal(mol: &Molecule, uhf: &ScfResult) -> Option<&'static str> {
+    if let Some(what) = semicanonical_refusal(uhf) {
+        return Some(what);
     }
     let (Some(cb), Some(eb), Some(db)) = (
         uhf.mos_beta.as_ref(),

@@ -299,6 +299,7 @@ pub(crate) fn gradient_blocks_from(
 // Returns the three coupling blocks (vc, vo, oc) of the Hessian-vector product;
 // the tuple mirrors the three input blocks and reads clearer than an alias.
 #[allow(clippy::type_complexity)]
+#[doc(hidden)]
 pub fn hessian_matvec(
     ctx: &ParallelContext,
     inp: &RohfNewtonInputs,

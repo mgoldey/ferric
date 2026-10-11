@@ -1,6 +1,10 @@
 //! Analytic ROHF Hessian: the orbital response (term 5) and the assembly of
-//! the full matrix (issue #291, PR-3). Entry points are `#[doc(hidden)]`;
-//! the public wiring (`frequencies`, Python/CLI) is PR-4.
+//! the full matrix (issue #291). The entry points are `#[doc(hidden)]`: the
+//! public `rhf_hessian`/`uhf_hessian` refuse ROHF results and `frequencies`
+//! does not dispatch to this module. A dispatch must send a ROHF result here,
+//! and must map a semicanonicalized one (`Spin::Unrestricted` with
+//! `rohf_spin_focks` set, which `uhf_hessian` refuses) back to its ROHF result
+//! first.
 //!
 //! # Setup
 //!
@@ -57,9 +61,9 @@
 //! ```
 //!
 //! Zero blocks by symmetry: `D_α^y` has no `vv` block; `D_β^y` has no `oo`,
-//! `ov`, `vv` block (the open orbitals are β-unoccupied); `D^κ_α` has no `cc`
-//! or `oo` block (they cancel in `κ n − n κ`), `D^κ_β` is non-zero only in
-//! `vc` and `oc`. The overlap part `D^S_σ` is non-zero in every occupied-
+//! `ov`, `vv` block (the open orbitals are β-unoccupied); `D^κ_α` has no `cc`,
+//! `oo`, `oc` or `vv` block (they cancel in `κ n − n κ`: both indices occupied
+//! in α, or both empty), `D^κ_β` is non-zero only in `vc` and `oc`. The overlap part `D^S_σ` is non-zero in every occupied-
 //! occupied block and in the occupied-virtual blocks (half weight): it is the
 //! generalisation of RHF/UHF's `D_oo^x` (there the `−½S_vo` part is absorbed
 //! into `U_vo`; here it is kept explicit so that `κ` is the pure rotation).
@@ -82,8 +86,30 @@
 //! ...) that the diagonal-gap form of `hessian_matvec` omits (measured by
 //! `tests/rohf_hessian_matvec_fd.rs`). It is solved per nuclear coordinate by
 //! the same Jacobi-preconditioned CG as the UHF response, in the stacked
-//! `(κ_vc, κ_vo, κ_oc)` vector. A non-positive curvature (a saddle or
-//! unstable ROHF point) or non-convergence is a typed error.
+//! `(κ_vc, κ_vo, κ_oc)` vector.
+//!
+//! # What is detected, and what is not
+//!
+//! A typed error is returned when a CG search direction has non-positive
+//! curvature `pᵀAp ≤ 0`, when CG does not converge, or when a solved rotation
+//! exceeds `KAPPA_MAX` (a nearly singular mode that the nuclear displacement
+//! drives). These are properties of the directions the nuclear perturbations
+//! generate, NOT a stability analysis: a saddle point of the ROHF energy whose
+//! unstable orbital mode is not driven by any nuclear displacement (for example
+//! one of a different symmetry from every perturbation) returns the valid
+//! Hessian of that stationary state with no warning. Use the ROHF stability
+//! analysis, not this function, to establish that the state is a minimum.
+//!
+//! # Trust in the Focks
+//!
+//! The response uses the spin Focks REBUILT from the final densities
+//! (`h + G_σ(D)`), and `W` is rebuilt from them too, so the Hessian is a
+//! function of the final densities alone; the stored `rohf_spin_focks` (from
+//! the last SCF iteration's density) are only compared with them and refused
+//! if they differ by more than `FOCK_TRUST_TOL` (a ROKS, COSX or otherwise
+//! different Hamiltonian). COSX-converged results, external potentials
+//! (point charges, smeared charges, a field) and ECPs are refused: no ROHF
+//! Hessian validation covers them.
 //!
 //! # Assembly
 //!
@@ -135,11 +161,30 @@ pub enum RohfMutation {
     OneSpinFockX,
     /// `F_α^x ↔ F_β^x` swapped (response contraction and right-hand side).
     SwapSpinFockX,
-    /// `G(D^S)` (the overlap part of the density change) dropped everywhere.
+    /// `G(D^S)` (the overlap part of the density change) dropped from the
+    /// right-hand side AND from `G(D^y)` in `F^y` (so `W^y` sees it too).
     DropOverlapDensityG,
+    /// Not a defect: the stored `rohf_spin_focks` instead of the Focks rebuilt
+    /// from the final densities (used to measure the effect of the SCF
+    /// tolerance on the stored ones).
+    UseStoredFocks,
+    /// Not a defect: the rotation bound lowered to 0.1, to show the bound is
+    /// wired to a typed error (no real system exceeds the production bound).
+    ProbeKappaBound,
     /// Sign of `−½(S f + f S)` in the right-hand side flipped.
     FlipOverlapFockSign,
 }
+
+/// Largest first-order rotation `|κ|` (radians per Bohr of nuclear displacement)
+/// accepted. Measured on the validation systems: <= 0.75 (NH2 0.74, CH2, HO2, OH 0.45).
+/// A gap `Δ` in the orbital Hessian gives `κ ~ F^x/Δ` with `|F^x| ~ 0.5`, so
+/// `KAPPA_MAX = 10` flags effective gaps below ~0.05 Ha, where the harmonic
+/// (linear-response) picture needs displacements far below the FD step anyway.
+const KAPPA_MAX: f64 = 10.0;
+
+/// Largest `max|F_stored − F_rebuilt|` (Ha) for which the stored spin Focks are
+/// trusted to be those of the final densities.
+const FOCK_TRUST_TOL: f64 = 1e-4;
 
 /// Row/column ranges of the closed, open and virtual MOs.
 struct Blocks {
@@ -163,7 +208,11 @@ struct Frame {
 }
 
 impl Frame {
-    fn new(mol: &Molecule, rohf: &ScfResult) -> Result<Frame, FerricError> {
+    fn new(
+        mol: &Molecule,
+        rohf: &ScfResult,
+        focks: [Array2<f64>; 2],
+    ) -> Result<Frame, FerricError> {
         let fail = |what: &str| {
             FerricError::General(format!(
                 "analytic ROHF Hessian: {what} (the response needs closed|open|virtual \
@@ -177,10 +226,7 @@ impl Frame {
             return Err(fail("occupations do not fit the MO count"));
         }
         let (da, db) = uhf_spin_densities_for(Reference::Rohf, rohf)?;
-        let (fa, fb) = rohf
-            .rohf_spin_focks
-            .as_ref()
-            .ok_or_else(|| fail("no converged spin Fock matrices"))?;
+        let [fa, fb] = &focks;
         let occ_density = |k: usize| {
             let co = c.slice(ndarray::s![.., ..k]);
             co.dot(&co.t())
@@ -402,6 +448,20 @@ impl Response<'_> {
         if self.mutation == RohfMutation::DropOcBlock {
             fr.drop_oc(&mut kvec);
         }
+        let kmax = max_abs(&kvec);
+        let bound = if self.mutation == RohfMutation::ProbeKappaBound {
+            0.1
+        } else {
+            KAPPA_MAX
+        };
+        if kmax > bound {
+            return Err(FerricError::Convergence(format!(
+                "first-order orbital rotation is not small (max |κ| = {kmax:.3e} > {bound}): \
+                 the orbital Hessian is nearly singular along a mode the nuclear displacement \
+                 drives (a near-degenerate open shell or a near-instability); the Hessian of \
+                 this state is not meaningful"
+            )));
+        }
         let kappa = fr.kappa_matrix(&kvec);
         let (s_mo, _) = self.overlap_densities(y);
         let u = &kappa - &(0.5 * &s_mo);
@@ -411,7 +471,12 @@ impl Response<'_> {
                 u[(p, q)] * n[q] + n[p] * u[(q, p)]
             }))
         });
-        let gy = self.g.g_uhf(&dy)?;
+        let gy = if self.mutation == RohfMutation::DropOverlapDensityG {
+            let dk = fr.kappa_densities(&kappa).map(|m| fr.to_ao(&m));
+            self.g.g_uhf(&dk)?
+        } else {
+            self.g.g_uhf(&dy)?
+        };
         let fy = [0, 1].map(|s| &self.first.f1[s][y] + &gy[s]);
         let w = self.w_response(&dy, &fy);
 
@@ -449,8 +514,83 @@ impl Response<'_> {
     }
 }
 
+/// Features whose Fock/first-order terms the response reuses from the UHF
+/// path but that no ROHF Hessian test covers: refused, not guessed.
+fn refuse_unvalidated(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    rohf: &ScfResult,
+    config: &RhfConfig,
+) -> Result<(), FerricError> {
+    let ext = config.external_potential.as_ref();
+    let what = if rohf.cosx_final.is_some() {
+        Some("a COSX-converged result (its spin Focks carry the seminumerical exchange)")
+    } else if ext.is_some_and(|e| {
+        !e.point_charges.is_empty() || !e.smeared_charges.is_empty() || e.field.is_some()
+    }) {
+        Some("an external potential (point charges, smeared charges or a field)")
+    } else if super::has_ecp(mol, prep.basis_set()) {
+        Some("an effective core potential")
+    } else {
+        None
+    };
+    match what {
+        Some(w) => Err(FerricError::General(format!(
+            "analytic ROHF Hessian: {w} is not supported (no ROHF Hessian validation covers it); \
+             use ferric_scf::frequencies::harmonic_frequencies"
+        ))),
+        None => Ok(()),
+    }
+}
+
+/// `W = sym(D_α F_α D_α + D_α F_β D_β)` from the given Focks.
+fn fock_energy_weighted_density(
+    da: &Array2<f64>,
+    db: &Array2<f64>,
+    f: &[Array2<f64>; 2],
+) -> Array2<f64> {
+    let w = da.dot(&f[0]).dot(da) + da.dot(&f[1]).dot(db);
+    0.5 * (&w + &w.t())
+}
+
+/// The spin Focks `h + J(D) − K(D_σ)` rebuilt from the final densities. The
+/// stored `rohf_spin_focks` are accepted only if they agree with these to
+/// [`FOCK_TRUST_TOL`] (they are refused for a result converged with another
+/// Hamiltonian: ROKS, COSX, a different operator, ...), and the REBUILT ones
+/// are used in the response (the stored ones come from the last SCF
+/// iteration's density, which differs from the final one by the SCF
+/// tolerance).
+fn trusted_focks(
+    g: &TwoElectronBuilder<'_>,
+    prep: &PreparedBasis,
+    rohf: &ScfResult,
+    dens: &super::RohfSkeletonDensities,
+    mutation: RohfMutation,
+) -> Result<[Array2<f64>; 2], FerricError> {
+    let (sa, sb) = rohf
+        .rohf_spin_focks
+        .as_ref()
+        .ok_or_else(|| FerricError::General("analytic ROHF Hessian: no spin Focks".into()))?;
+    let h = ferric_integrals::oneelectron::hcore(prep);
+    let v = g.g_uhf(&[dens.d_alpha.clone(), dens.d_beta.clone()])?;
+    let rebuilt = [&h + &v[0], &h + &v[1]];
+    let dev = max_abs(&(&rebuilt[0] - sa)).max(max_abs(&(&rebuilt[1] - sb)));
+    if dev > FOCK_TRUST_TOL {
+        return Err(FerricError::General(format!(
+            "analytic ROHF Hessian: the stored spin Focks differ from h + G(D) of the final \
+             densities by {dev:.3e} (> {FOCK_TRUST_TOL:.0e}); the result was not converged with \
+             the exact-exchange Hamiltonian this Hessian differentiates"
+        )));
+    }
+    Ok(if mutation == RohfMutation::UseStoredFocks {
+        [sa.clone(), sb.clone()]
+    } else {
+        rebuilt
+    })
+}
+
 /// The full ROHF Hessian, (3N, 3N) Hartree/Bohr², from a converged
-/// [`crate::rohf::solve_rohf`] result. Test-visible only until PR-4.
+/// [`crate::rohf::solve_rohf`] result. Test-visible only (`#[doc(hidden)]`).
 #[doc(hidden)]
 pub fn rohf_hessian(
     ctx: &ParallelContext,
@@ -492,8 +632,18 @@ pub fn rohf_hessian_parts_mutated(
     config: &RhfConfig,
     mutation: RohfMutation,
 ) -> Result<RhfHessianParts, FerricError> {
-    let skel = rohf_skeleton_parts(mol, prep, op, bounds, rohf, config)?;
-    let frame = Frame::new(mol, rohf)?;
+    refuse_unvalidated(mol, prep, rohf, config)?;
+    let mut skel = rohf_skeleton_parts(mol, prep, op, bounds, rohf, config)?;
+    let g = TwoElectronBuilder::new(ctx, prep, bounds)?;
+    let dens = &skel.densities;
+    let focks = trusted_focks(&g, prep, rohf, dens, mutation)?;
+    if mutation != RohfMutation::UseStoredFocks {
+        // W of the rebuilt Focks, so the whole Hessian is a function of the
+        // final densities alone.
+        let w = fock_energy_weighted_density(&dens.d_alpha, &dens.d_beta, &focks);
+        skel.overlap = super::skeleton_hess_overlap(prep, mol.atoms.len(), &w)?;
+    }
+    let frame = Frame::new(mol, rohf, focks)?;
     let natoms = mol.atoms.len();
     let dens = &skel.densities;
     let specs = [&dens.d_alpha, &dens.d_beta].map(|ds| FockSpec {
@@ -504,7 +654,6 @@ pub fn rohf_hessian_parts_mutated(
     let mut first = first_order_ao(prep, op, bounds, natoms, extra_charges(config), &specs)?;
     add_extra_first_order(&mut first, mol, prep, config)?;
 
-    let g = TwoElectronBuilder::new(ctx, prep, bounds)?;
     let resp = Response {
         frame: &frame,
         g: &g,

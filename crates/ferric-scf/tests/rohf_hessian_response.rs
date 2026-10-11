@@ -1,8 +1,8 @@
-//! Analytic ROHF Hessian (`ferric_scf::hessian::rohf_hessian`, issue #291
-//! PR-3): the orbital response and the full matrix, against independent
+//! Analytic ROHF Hessian (`ferric_scf::hessian::rohf_hessian`, issue #291):
+//! the orbital response and the full matrix, against independent
 //! constructions. The derivation is in the module doc of
 //! `crates/ferric-scf/src/hessian/rohf.rs`. The public entry points still
-//! refuse ROHF (PR-4), so everything here goes through the test-visible
+//! refuse ROHF, so everything here goes through the test-visible
 //! functions.
 //!
 //! ```text
@@ -32,7 +32,7 @@
 //! * Artifact (the comparison cannot see the response): the skeleton alone (no
 //!   response) would already agree. It does not: the response is the dominant
 //!   part of the matrix, asserted below, so agreement is a statement about the
-//!   response and not about the skeleton PR-2 already validated.
+//!   response and not about the skeleton (validated separately in `rohf_hessian_skeleton`).
 //! * Artifact (FD shares a defect with the analytic code): both use the same
 //!   `rohf_gradient`, whose own validation is against PySCF's analytic
 //!   gradient (<= 6.6e-11, in `rohf_hessian_skeleton`); the independent
@@ -42,7 +42,7 @@
 //!
 //! Each must miss the FD reference by more than `MUST_MISS_FACTOR` x the bar.
 //! The UHF Hessian evaluated at the ROHF orbitals (eigenvalue-form `W`,
-//! spin-diagonal CPHF) is the control the skeleton PR did not run.
+//! spin-diagonal CPHF) is a further control.
 //!
 //! IDENTITY (blind) candidates, algebra first: `D_a F_b D_b -> D_b F_b D_b` in
 //! `W`: the difference is `sym(P_o F_b P_c)`, the closed-open block of `F_b`,
@@ -260,10 +260,10 @@ struct Case {
     bounds: SchwarzBounds,
     rohf: ScfResult,
     analytic: ferric_scf::hessian::RhfHessianParts,
-    /// Richardson FD (h = 1e-3, 5e-4) of the re-converged analytic gradient.
-    fd: Array2<f64>,
-    /// The FD's own self-disagreement: Richardson (1e-3, 5e-4) vs (2e-3, 1e-3).
-    fd_floor: f64,
+    /// Central FD stencils of the re-converged gradient at h = 2e-3 and 1e-3,
+    /// computed on first use only (the invariance and refusal tests never
+    /// need them).
+    stencils: OnceLock<[Array2<f64>; 2]>,
 }
 
 fn build_case(xyz: &str, mult: usize, basis_name: &'static str) -> Case {
@@ -275,13 +275,9 @@ fn build_case(xyz: &str, mult: usize, basis_name: &'static str) -> Case {
     assert!(rohf.converged);
     let analytic =
         rohf_hessian_parts(&ctx, &mol, &prep, op, &bounds, &rohf, &scf_config()).unwrap();
-    let mut grad = |m: &Molecule| scf_gradient(m, basis_name);
-    let fd = fd_richardson(&mol, H_FD, &mut grad);
-    let fd_fine = fd_richardson(&mol, 0.5 * H_FD, &mut grad);
-    let fd_floor = max_abs_diff(&fd, &fd_fine);
     eprintln!(
-        "{basis_name}/{}atoms mult {mult}: FD self-floor (Richardson 2e-3 vs 1e-3) {fd_floor:.3e}, \
-         response CPHF iterations max {}, residual {:.2e}, asymmetry {:.2e}",
+        "{basis_name}/{}atoms mult {mult}: response CPHF iterations max {}, residual {:.2e}, \
+         asymmetry {:.2e}",
         mol.atoms.len(),
         analytic.cphf_iterations.iter().max().unwrap(),
         analytic.cphf_max_residual,
@@ -294,8 +290,7 @@ fn build_case(xyz: &str, mult: usize, basis_name: &'static str) -> Case {
         bounds,
         rohf,
         analytic,
-        fd: fd_fine,
-        fd_floor,
+        stencils: OnceLock::new(),
     }
 }
 
@@ -315,6 +310,28 @@ fn ho2() -> &'static Case {
 }
 
 impl Case {
+    /// Richardson FD Hessian (h = 2e-3, 1e-3): 36 SCF + gradient runs.
+    fn fd(&self) -> Array2<f64> {
+        let [coarse, fine] = self.stencils.get_or_init(|| {
+            let mut grad = |m: &Molecule| scf_gradient(m, self.basis_name);
+            [
+                fd_hessian(&self.mol, H_FD, &mut grad),
+                fd_hessian(&self.mol, 0.5 * H_FD, &mut grad),
+            ]
+        });
+        (4.0 * fine - coarse) / 3.0
+    }
+
+    /// The FD's own floor: Richardson (1e-3, 5e-4) vs Richardson (2e-3, 1e-3),
+    /// reusing the cached h = 1e-3 stencil (18 further runs for h = 5e-4).
+    fn fd_floor(&self) -> f64 {
+        let fd = self.fd();
+        let fine = &self.stencils.get().expect("fd() filled the cache")[1];
+        let mut grad = |m: &Molecule| scf_gradient(m, self.basis_name);
+        let finer = fd_hessian(&self.mol, 0.25 * H_FD, &mut grad);
+        max_abs_diff(&fd, &((4.0 * finer - fine) / 3.0))
+    }
+
     fn total(&self) -> Array2<f64> {
         self.analytic.total()
     }
@@ -408,13 +425,13 @@ fn rohf_hessian_skeleton_only(
 
 fn check_fd(c: &Case) {
     let h = c.total();
-    let per_atom = per_atom_column_miss(&h, &c.fd);
+    let per_atom = per_atom_column_miss(&h, &c.fd());
     eprintln!(
         "{}: per-perturbed-atom max|H - FD| = {per_atom:?}, FD floor {:.3e}",
         c.tag(),
-        c.fd_floor
+        c.fd_floor()
     );
-    assert_close(&format!("{} analytic vs FD", c.tag()), &h, &c.fd, TOL_FD);
+    assert_close(&format!("{} analytic vs FD", c.tag()), &h, &c.fd(), TOL_FD);
     assert!(
         c.analytic.response_asymmetry < TOL_INVARIANCE,
         "{}: unsymmetrised response asymmetry {:.3e}",
@@ -543,6 +560,10 @@ fn uhf_at_rohf_orbitals(
     u.mos_beta = Some(cm.clone());
     u.eps_alpha = diag(&fa);
     u.eps_beta = Some(diag(&fb));
+    // The public path refuses a result that still carries ROHF spin Focks
+    // (`public_uhf_hessian_refuses_a_semicanonicalized_rohf_result`); dropping
+    // them takes the internal route so the MEASURED miss stays a control.
+    u.rohf_spin_focks = None;
     uhf_hessian(
         &ParallelContext::default(),
         mol,
@@ -575,13 +596,13 @@ fn check_controls(c: &Case) {
     assert_miss(
         &format!("{tag} NO response (skeleton only)"),
         &skeleton_only,
-        &c.fd,
+        &c.fd(),
         TOL_FD,
     );
     assert_uhf_control(
         &format!("{tag} UHF Hessian at ROHF orbitals"),
         uhf_at_rohf_orbitals(&c.mol, &c.prep, &c.bounds, &c.rohf),
-        &c.fd,
+        &c.fd(),
         TOL_FD,
     );
 }
@@ -621,7 +642,7 @@ fn check_mutants(c: &Case) {
         ),
     ];
     for (name, m) in real {
-        assert_miss(&format!("{tag} {name}"), &c.mutated(m), &c.fd, TOL_FD);
+        assert_miss(&format!("{tag} {name}"), &c.mutated(m), &c.fd(), TOL_FD);
     }
     // Identity candidate: recorded, never counted.
     let delta = max_abs_diff(&c.mutated(RohfMutation::DbFbDbInW), &c.total());
@@ -796,23 +817,253 @@ fn analytic_matches_pyscf_fd_ch2_triplet() {
 }
 
 #[test]
-#[ignore = "HO2/cc-pVDZ analytic Hessian + two control Hessians: ~15 s release, minutes in debug; run once"]
+#[ignore = "HO2/cc-pVDZ analytic Hessian + two control Hessians: 13 s in the test profile (7 s Hessian alone); the largest case, kept out of the default set"]
 fn analytic_matches_pyscf_fd_ho2() {
     check_pyscf("ho2");
 }
 
 // ---------------------------------------------------------------------------
-// Degenerate open shell and typed errors
+// Guards: what the Hessian refuses, and what it does not detect
 // ---------------------------------------------------------------------------
+
+/// `h + J(D) - K(D_s)` for both spins, built here (not by the code under test).
+fn rebuild_focks(c: &Case, da: &Array2<f64>, db: &Array2<f64>) -> (Array2<f64>, Array2<f64>) {
+    let ctx = ParallelContext::default();
+    let h = ferric_integrals::oneelectron::hcore(&c.prep);
+    let n = h.nrows();
+    let jk = |d: &Array2<f64>| {
+        let (mut j, mut k) = (Array2::<f64>::zeros((n, n)), Array2::<f64>::zeros((n, n)));
+        ferric_scf::rhf::build_jk(&ctx, &c.prep, &c.bounds, 1e-14, d, &mut j, &mut k).unwrap();
+        (j, k)
+    };
+    let (j, _) = jk(&(da + db));
+    let (_, ka) = jk(da);
+    let (_, kb) = jk(db);
+    (&h + &j - &ka, &h + &j - &kb)
+}
+
+fn fock_deviation(c: &Case, res: &ScfResult) -> f64 {
+    let (fa, fb) = rebuild_focks(c, &res.density_alpha, res.density_beta.as_ref().unwrap());
+    let (sa, sb) = res.rohf_spin_focks.clone().unwrap();
+    max_abs_diff(&fa, &sa).max(max_abs_diff(&fb, &sb))
+}
+
+fn hessian_of(
+    c: &Case,
+    res: &ScfResult,
+    cfg: &RhfConfig,
+) -> Result<Array2<f64>, ferric_core::FerricError> {
+    rohf_hessian(
+        &ParallelContext::default(),
+        &c.mol,
+        &c.prep,
+        Operator::coulomb(),
+        &c.bounds,
+        res,
+        cfg,
+    )
+}
+
+/// `semicanonical::unrestricted_reference` returns a `Spin::Unrestricted`
+/// result that KEEPS the ROHF spin Focks; `uhf_hessian` must refuse it.
+#[test]
+fn public_uhf_hessian_refuses_a_semicanonicalized_rohf_result() {
+    if !has_deriv2() {
+        return;
+    }
+    let c = nh2();
+    let semi = ferric_scf::semicanonical::unrestricted_reference(&c.mol, &c.rohf).unwrap();
+    assert!(matches!(semi.spin, Spin::Unrestricted));
+    assert!(semi.rohf_spin_focks.is_some());
+    let err = uhf_hessian(
+        &ParallelContext::default(),
+        &c.mol,
+        &c.prep,
+        Operator::coulomb(),
+        &c.bounds,
+        &semi,
+        &scf_config(),
+    )
+    .expect_err("a semicanonicalized ROHF result must be refused by uhf_hessian");
+    eprintln!("uhf_hessian on a semicanonicalized ROHF result: {err}");
+    assert!(err.to_string().contains("semicanonicalized"), "{err}");
+    // rohf_hessian wants the ROHF result itself.
+    assert!(hessian_of(c, &semi, &scf_config()).is_err());
+}
+
+#[test]
+fn stored_focks_are_checked_against_the_rebuilt_ones() {
+    if !has_deriv2() {
+        return;
+    }
+    let c = nh2();
+    let cfg = scf_config();
+    let ctx = ParallelContext::default();
+    let op = Operator::coulomb();
+    // Matching: at the tight tolerance and at the default one.
+    let dev_tight = fock_deviation(c, &c.rohf);
+    let default_cfg = RhfConfig {
+        density_conv: RhfConfig::default().density_conv,
+        energy_conv: RhfConfig::default().energy_conv,
+        ..scf_config()
+    };
+    let loose = solve_rohf(&ctx, &c.mol, &c.prep, op, &c.bounds, &default_cfg).unwrap();
+    let dev_default = fock_deviation(c, &loose);
+    // Perturbed stored Fock, and a ROKS/PBE result handed an HF config.
+    let mut bad = c.rohf.clone();
+    let (mut fa, fb) = bad.rohf_spin_focks.clone().unwrap();
+    fa[(0, 0)] += 1e-3;
+    bad.rohf_spin_focks = Some((fa, fb));
+    let dev_bad = fock_deviation(c, &bad);
+    let roks_cfg = RhfConfig {
+        xc: Some("PBE".into()),
+        ..scf_config()
+    };
+    let roks = solve_rohf(&ctx, &c.mol, &c.prep, op, &c.bounds, &roks_cfg).unwrap();
+    let dev_roks = fock_deviation(c, &roks);
+    eprintln!(
+        "stored-vs-rebuilt Fock: tight SCF {dev_tight:.2e}, default-tolerance SCF \
+         {dev_default:.2e}; perturbed {dev_bad:.2e}, ROKS/PBE result {dev_roks:.2e} \
+         (production bar 1e-4)"
+    );
+    // The bar (1e-4) separates the two families with margin on both sides.
+    assert!(
+        dev_tight < 1e-6 && dev_default < 1e-5,
+        "matching Focks too far apart"
+    );
+    assert!(
+        dev_bad > 5e-4 && dev_roks > 1e-2,
+        "perturbed Focks too close"
+    );
+    hessian_of(c, &loose, &default_cfg).expect("default-tolerance result must be accepted");
+    for (what, res) in [("perturbed", &bad), ("ROKS result, HF config", &roks)] {
+        let err = hessian_of(c, res, &cfg).expect_err(what);
+        eprintln!("{what}: {err}");
+        assert!(
+            err.to_string().contains("stored spin Focks"),
+            "{what}: {err}"
+        );
+    }
+}
+
+#[test]
+fn cosx_and_external_potential_results_are_refused() {
+    if !has_deriv2() {
+        return;
+    }
+    let c = nh2();
+    let mut cosx = c.rohf.clone();
+    cosx.cosx_final = Some(ferric_scf::cosx_k::CosxFinalPass {
+        e_scf_grid: 0.0,
+        e_final: 0.0,
+        npts_scf: 0,
+        npts_final: 0,
+    });
+    let err = hessian_of(c, &cosx, &scf_config()).expect_err("COSX");
+    assert!(err.to_string().contains("COSX"), "{err}");
+
+    let ext_cfg = RhfConfig {
+        external_potential: Some(ferric_core::external_potential::ExternalPotential {
+            point_charges: vec![ferric_core::external_potential::PointCharge {
+                q: 0.5,
+                x: 6.0,
+                y: 0.0,
+                z: 0.0,
+            }],
+            ..Default::default()
+        }),
+        ..scf_config()
+    };
+    let err = hessian_of(c, &c.rohf, &ext_cfg).expect_err("external potential");
+    eprintln!("{err}");
+    assert!(err.to_string().contains("external potential"), "{err}");
+}
+
+/// ROHF result with the open orbital swapped with the highest closed one:
+/// densities and Focks rebuilt consistently, but NOT a stationary point and not
+/// a minimum (the open orbital now lies below a closed one).
+fn swapped_occupation(c: &Case) -> ScfResult {
+    let mut res = c.rohf.clone();
+    let nb = (c.mol.nelec() as usize - (c.mol.multiplicity - 1)) / 2;
+    let na = nb + c.mol.multiplicity - 1;
+    let mut cm = res.mos_alpha.clone();
+    for r in 0..cm.nrows() {
+        let t = cm[(r, nb - 1)];
+        cm[(r, nb - 1)] = cm[(r, nb)];
+        cm[(r, nb)] = t;
+    }
+    let occ = |k: usize| {
+        let co = cm.slice(ndarray::s![.., ..k]);
+        co.dot(&co.t())
+    };
+    let (da, db) = (occ(na), occ(nb));
+    let (fa, fb) = rebuild_focks(c, &da, &db);
+    res.mos_alpha = cm;
+    res.density_total = &da + &db;
+    res.density_alpha = da;
+    res.density_beta = Some(db);
+    res.rohf_spin_focks = Some((fa, fb));
+    res
+}
+
+/// What the Hessian detects (module doc of `hessian::rohf`): a point whose
+/// orbital Hessian has negative curvature along a DRIVEN direction is a typed
+/// error. The BLIND case (an unstable mode no nuclear displacement drives)
+/// returns the valid Hessian of that state with no warning; no such system was
+/// constructed here, so it is documented, not tested.
+#[test]
+fn a_non_minimum_point_is_a_typed_error_when_the_instability_is_driven() {
+    if !has_deriv2() {
+        return;
+    }
+    let c = nh2();
+    let res = swapped_occupation(c);
+    match hessian_of(c, &res, &scf_config()) {
+        Err(e) => {
+            eprintln!("swapped-occupation point: {e}");
+            assert!(
+                e.to_string().contains("not positive definite")
+                    || e.to_string().contains("did not converge")
+                    || e.to_string().contains("not small"),
+                "{e}"
+            );
+        }
+        Ok(h) => panic!(
+            "a non-minimum point returned a Hessian (max {:.3e}): the instability was not driven \
+             and therefore not detected",
+            max_abs(&h)
+        ),
+    }
+}
+
+#[test]
+fn the_rotation_bound_is_a_typed_error() {
+    if !has_deriv2() {
+        return;
+    }
+    let c = nh2();
+    let err = rohf_hessian_parts_mutated(
+        &ParallelContext::default(),
+        &c.mol,
+        &c.prep,
+        Operator::coulomb(),
+        &c.bounds,
+        &c.rohf,
+        &scf_config(),
+        RohfMutation::ProbeKappaBound,
+    )
+    .expect_err("a lowered bound must trip on the measured rotations (~0.3)");
+    eprintln!("{err}");
+    assert!(err.to_string().contains("not small"), "{err}");
+}
 
 /// Linear OH (2Pi): the open pi orbital is degenerate with the empty one. The
 /// orbital Hessian has a zero mode (the hole rotating about the axis), but no
 /// nuclear perturbation of the A' hole state drives it (the A' and A''
 /// components do not couple), so the response is well defined and must equal
 /// the FD of the gradient. Artifact hypothesis: the CG would stall or return a
-/// huge rotation if the zero mode were excited; it converges in 11-14 CG
-/// iterations with max |kappa| <= 0.45 per Bohr (measured, linear and slightly
-/// bent geometries).
+/// huge rotation if the zero mode were excited; measured 11 to 14 CG
+/// iterations (bounded below with margin) and the match to FD below.
 #[test]
 fn linear_oh_zero_mode_is_not_driven_and_matches_fd() {
     if !has_deriv2() {
@@ -823,40 +1074,58 @@ fn linear_oh_zero_mode_is_not_driven_and_matches_fd() {
     let op = Operator::coulomb();
     let ctx = ParallelContext::default();
     let rohf = solve_rohf(&ctx, &mol, &prep, op, &bounds, &scf_config()).unwrap();
-    let h = rohf_hessian(&ctx, &mol, &prep, op, &bounds, &rohf, &scf_config()).unwrap();
+    let parts = rohf_hessian_parts(&ctx, &mol, &prep, op, &bounds, &rohf, &scf_config()).unwrap();
+    let iters = *parts.cphf_iterations.iter().max().unwrap();
+    eprintln!("linear OH: max CG iterations {iters}");
+    assert!(iters <= 20, "zero mode excited? {iters} CG iterations");
     let mut grad = |m: &Molecule| scf_gradient(m, "6-31g");
     let fd = fd_richardson(&mol, H_FD, &mut grad);
-    assert_close("linear OH analytic vs FD", &h, &fd, TOL_FD);
+    assert_close("linear OH analytic vs FD", &parts.total(), &fd, TOL_FD);
 }
 
-/// The typed-error path of the response solve. No physical near-singular ROHF
-/// reference was found (linear OH above is benign), so this exercises it on an
-/// artificially indefinite operator: spin Focks with the sign flipped make
-/// every orbital-Hessian diagonal negative, so the CG must report
-/// non-positive curvature instead of returning a Hessian.
+/// Effect of the SCF tolerance (item: the default density_conv is 1e-6, the other
+/// tests use 1e-10). The Hessian uses Focks rebuilt from the final densities;
+/// the stored ones (previous iteration's density) are compared as a knob.
+/// Hypotheses: physics, the Hessian error is first order in the density error
+/// (~1e-6 x O(1) coupling); artifact, the stored Focks add a further error of
+/// the same order.
 #[test]
-fn an_indefinite_orbital_hessian_is_a_typed_error() {
+fn default_scf_tolerance_error_of_the_hessian() {
     if !has_deriv2() {
         return;
     }
-    let c = ch2();
-    let mut bad = c.rohf.clone();
-    let (fa, fb) = bad.rohf_spin_focks.clone().unwrap();
-    bad.rohf_spin_focks = Some((-fa, -fb));
-    let err = rohf_hessian(
-        &ParallelContext::default(),
-        &c.mol,
-        &c.prep,
-        Operator::coulomb(),
-        &c.bounds,
-        &bad,
-        &scf_config(),
-    )
-    .expect_err("an indefinite orbital Hessian must not return a Hessian");
-    eprintln!("typed error: {err}");
+    let c = nh2();
+    let ctx = ParallelContext::default();
+    let op = Operator::coulomb();
+    let default_cfg = RhfConfig {
+        density_conv: RhfConfig::default().density_conv,
+        energy_conv: RhfConfig::default().energy_conv,
+        ..scf_config()
+    };
+    let loose = solve_rohf(&ctx, &c.mol, &c.prep, op, &c.bounds, &default_cfg).unwrap();
+    let go = |m: RohfMutation| {
+        rohf_hessian_parts_mutated(
+            &ctx,
+            &c.mol,
+            &c.prep,
+            op,
+            &c.bounds,
+            &loose,
+            &default_cfg,
+            m,
+        )
+        .unwrap()
+        .total()
+    };
+    let tight = c.total();
+    let rebuilt = max_abs_diff(&go(RohfMutation::None), &tight);
+    let stored = max_abs_diff(&go(RohfMutation::UseStoredFocks), &tight);
+    eprintln!(
+        "NH2/6-31G at the default SCF tolerance (density_conv {:.0e}): max|H - H_tight|          {rebuilt:.3e} with rebuilt Focks, {stored:.3e} with the stored Focks",
+        default_cfg.density_conv
+    );
     assert!(
-        err.to_string().contains("not positive definite")
-            || err.to_string().contains("did not converge"),
-        "{err}"
+        rebuilt < 1e-5,
+        "default-tolerance Hessian error {rebuilt:.3e}"
     );
 }
