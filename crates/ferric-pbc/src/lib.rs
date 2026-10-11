@@ -155,6 +155,7 @@ pub mod kgrad;
 pub mod kpts;
 pub mod kroks;
 pub mod kscf;
+pub mod kstress;
 pub mod kuks;
 pub mod kuscf;
 pub mod lattice;
