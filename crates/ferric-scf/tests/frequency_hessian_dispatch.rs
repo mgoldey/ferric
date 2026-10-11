@@ -399,41 +399,85 @@ fn rohf_probe_refuses_what_the_hessian_does_not_cover() {
 
 /// A semicanonicalized ROHF result (`Spin::Unrestricted` with the ROHF spin
 /// Focks) is mapped back to ROHF orbitals by `rohf_hessian`; a plain UHF
-/// result is refused rather than treated as one.
+/// result is refused rather than treated as one. NH2 has one open orbital, the
+/// CH2 triplet two (the open block is a rotation, not a single vector).
 #[test]
 fn semicanonicalized_result_gives_the_rohf_hessian_and_uhf_is_refused() {
     if !has_deriv2() {
         return;
     }
-    let (mol, op) = (nh2(), Operator::coulomb());
-    let prep = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
-    let bounds = ferric_scf::screening::SchwarzBounds::compute(op, &prep).unwrap();
-    let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        density_conv: 1e-10,
-        energy_conv: 1e-12,
-        ..Default::default()
-    };
-    let rohf = ferric_scf::rohf::solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
-    let direct = rohf_hessian(&ctx, &mol, &prep, op, &bounds, &rohf, &cfg).unwrap();
-    let semi = ferric_scf::semicanonical::unrestricted_reference(&mol, &rohf).unwrap();
-    assert_eq!(semi.spin, ferric_scf::result::Spin::Unrestricted);
-    let mapped = rohf_hessian(&ctx, &mol, &prep, op, &bounds, &semi, &cfg).unwrap();
-    let dev = (&direct - &mapped)
-        .iter()
-        .fold(0.0f64, |m, v| m.max(v.abs()));
-    eprintln!("semicanonicalized vs ROHF Hessian: max |d| {dev:.3e}");
-    assert!(dev < 1e-8, "mapped-back Hessian differs by {dev}");
-    // Negative control: the mapped Hessian is not the UHF Hessian on the same
-    // orbitals (uhf_hessian refuses it), nor is it trivially zero.
-    assert!(uhf_hessian(&ctx, &mol, &prep, op, &bounds, &semi, &cfg).is_err());
-    assert!(direct.iter().any(|v| v.abs() > 0.1));
+    let ch2 = Molecule::parse_xyz(
+        "3\nCH2 triplet\nC 0.0 0.0 0.0\nH 0.0 0.98 -0.55\nH 0.01 -0.97 -0.56\n",
+        0,
+        3,
+    )
+    .unwrap();
+    for (name, mol) in [("NH2", nh2()), ("CH2 triplet", ch2)] {
+        let op = Operator::coulomb();
+        let prep = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+        let bounds = ferric_scf::screening::SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+        let cfg = RhfConfig {
+            density_conv: 1e-10,
+            energy_conv: 1e-12,
+            ..Default::default()
+        };
+        let rohf = ferric_scf::rohf::solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
+        let direct = rohf_hessian(&ctx, &mol, &prep, op, &bounds, &rohf, &cfg).unwrap();
+        let semi = ferric_scf::semicanonical::unrestricted_reference(&mol, &rohf).unwrap();
+        assert_eq!(semi.spin, ferric_scf::result::Spin::Unrestricted);
+        let mapped = rohf_hessian(&ctx, &mol, &prep, op, &bounds, &semi, &cfg).unwrap();
+        let dev = (&direct - &mapped)
+            .iter()
+            .fold(0.0f64, |m, v| m.max(v.abs()));
+        eprintln!("{name}: semicanonicalized vs ROHF Hessian max |d| {dev:.3e}");
+        assert!(dev < 1e-8, "{name}: mapped-back Hessian differs by {dev}");
+        // Negative controls: uhf_hessian refuses it, and the Hessian is not zero.
+        assert!(uhf_hessian(&ctx, &mol, &prep, op, &bounds, &semi, &cfg).is_err());
+        assert!(direct.iter().any(|v| v.abs() > 0.1));
+        // A semicanonicalized result without beta orbitals cannot be mapped: a
+        // typed error with a readable message.
+        let mut broken = semi.clone().into_owned();
+        broken.mos_beta = None;
+        let err = rohf_hessian(&ctx, &mol, &prep, op, &bounds, &broken, &cfg)
+            .expect_err("no beta orbitals");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("cannot map a semicanonicalized result back to ROHF orbitals: no β"),
+            "{msg}"
+        );
+        assert!(!msg.contains("  "), "stray whitespace in: {msg}");
+        let uhf = ferric_scf::uhf::solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
+        let err = rohf_hessian(&ctx, &mol, &prep, op, &bounds, &uhf, &cfg)
+            .expect_err("a UHF result is not a ROHF result");
+        assert!(err.to_string().contains("ROHF"), "{err}");
+    }
+}
 
-    let uhf = ferric_scf::uhf::solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
-    let err = rohf_hessian(&ctx, &mol, &prep, op, &bounds, &uhf, &cfg)
-        .expect_err("a UHF result is not a ROHF result");
-    eprintln!("rohf_hessian on a UHF result: {err}");
-    assert!(err.to_string().contains("ROHF"), "{err}");
+/// The ROHF frequency driver runs the full availability probe BEFORE the SCF:
+/// an ECP molecule is refused without solving anything.
+#[test]
+fn rohf_frequency_driver_refuses_an_ecp_before_the_scf() {
+    let svp = basis::bundled("def2-svp").unwrap();
+    let mut hi = Molecule::parse_xyz("2\nHI\nH 0 0 0\nI 0 0 1.61\n", 0, 3).unwrap();
+    hi.apply_ecp(&svp);
+    let t0 = std::time::Instant::now();
+    let err = ferric_scf::frequencies::harmonic_frequencies_analytic_rohf(
+        &ParallelContext::default(),
+        &hi,
+        "def2-svp",
+        Operator::coulomb(),
+        &RhfConfig::default(),
+    )
+    .expect_err("ROHF analytic frequencies with an ECP must be refused");
+    assert!(
+        err.to_string().contains("effective core potential"),
+        "{err}"
+    );
+    assert!(
+        t0.elapsed().as_secs_f64() < 5.0,
+        "refusal came after an SCF"
+    );
 }
 
 #[test]

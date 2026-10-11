@@ -33,9 +33,12 @@
 //!   own error (`|H_h − H_2h|`, 0.7e-6..2.6e-6) and the frequencies to
 //!   ~3e-3 cm⁻¹.
 //! * Response wrong (rotation blocks, commutator form, `W^y`): the skeleton
-//!   matches in `rohf_hessian_skeleton`, the total misses here by 0.3-1.1.
-//! * UHF-type response at ROHF orbitals (the wrong operator): the total misses
-//!   by 4e-2..8e-2.
+//!   matches in `rohf_hessian_skeleton`; with no response at all the total
+//!   misses this reference by 0.35 (NH2), 0.47 (CH2), 0.83 (HO2).
+//! * UHF-type response at ROHF orbitals (the wrong operator), asserted in
+//!   `rohf_hessian_response.rs`: misses this reference by 7.8e-2 (NH2) and
+//!   6.0e-2 (CH2); on HO2 that UHF Hessian REFUSES with a typed error
+//!   (non-positive-definite CPHF), so no number exists for it there.
 //! * Different state (ferric on another ROHF solution): the SCF energy check
 //!   fails first. Harness wrong (geometry, basis, masses): nuclear repulsion
 //!   or the AO count fails first.
@@ -76,6 +79,11 @@ const TOL_ENUC: f64 = 1e-9;
 const TOL_ENERGY: f64 = 1e-8;
 /// Total Hessian vs PySCF's FD-of-analytic-gradient Hessian, Ha/Bohr².
 /// Measured 5.6e-7..1.0e-6 against PySCF's own h-vs-2h gap of 0.7e-6..2.6e-6.
+/// DEVIATION from the "bar about 10x the measured maximum" criterion of the
+/// issue: 3e-6 is about 3x the largest measured value (1.0e-6, HO2). A 10x bar
+/// (1e-5) would sit above the reference's own noise (up to 2.6e-6), so it
+/// would be a weaker test than the reference can support, not a stronger one;
+/// the controls still miss by 1e5x this bar.
 const TOL_HESS_FD: f64 = 3e-6;
 /// Frequencies vs the reference's, cm⁻¹. Measured <= 0.0032; PySCF's own
 /// h-vs-2h frequency gap is 0.0096.

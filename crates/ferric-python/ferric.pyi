@@ -2494,7 +2494,10 @@ def run_frequencies(
     exact J/K and no ECP or external potential (`point_charges` /
     `external_field` are analytic for RHF and UHF only), and a basis up to f
     functions, and a finite difference of analytic gradients otherwise (always
-    for KS, ROKS included); `"analytic"` raises if it does not apply;
+    for KS, ROKS included). The choice is made before the SCF; an error the
+    analytic path raises after it (for ROHF a Fock-consistency failure from a
+    loose convergence threshold, a non-converging response, non-positive
+    curvature) is raised, not retried with finite differences; `"analytic"` raises if it does not apply;
     `"fd"` always differences gradients. `.hessian_source` says which ran.
 
     `point_charges` ((q, x, y, z) in Bohr) and `external_field` embed the QM

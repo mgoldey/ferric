@@ -803,10 +803,14 @@ pub fn parse_coord_system(s: &str) -> Result<ferric_scf::optimize::CoordSystem, 
 pub struct FrequenciesCfg {
     /// `"auto"` (default): analytic Hessian for RHF (closed shell), UHF (any
     /// multiplicity) or ROHF with exact J/K and a basis up to f functions (RHF
-    /// and UHF also with an optional ECP), finite differences otherwise (always
-    /// for ROKS and the other KS references).
-    /// `"analytic"`: error if the analytic Hessian does not apply. `"fd"`:
-    /// always finite differences.
+    /// and UHF also with an optional ECP, external charges or field; ROHF with
+    /// none of those), finite differences otherwise (always for ROKS and the
+    /// other KS references). An error raised by the analytic path after the SCF
+    /// (a stored-versus-rebuilt Fock mismatch, a non-converged or
+    /// non-positive-curvature response, a very large first-order rotation) is
+    /// returned, never retried with finite differences; a loose
+    /// `density_conv` can trigger the Fock check. `"analytic"`: error if the
+    /// analytic Hessian does not apply. `"fd"`: always finite differences.
     pub hessian: Option<String>,
     /// Central-difference displacement in Bohr, finite-difference Hessians only.
     ///

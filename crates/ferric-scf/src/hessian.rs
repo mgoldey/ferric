@@ -201,11 +201,6 @@ impl RhfHessianParts {
 /// `Γ`, and the coupled α/β CPHF response (see the module doc).
 pub type UhfHessianParts = RhfHessianParts;
 
-/// Per-term breakdown of the analytic ROHF Hessian: the same five terms and
-/// diagnostics as [`RhfHessianParts`]; the response column per coordinate is one
-/// coupled closed-virtual / open-virtual / closed-open rotation solve.
-pub type RohfHessianParts = RhfHessianParts;
-
 /// Compute the full analytic RHF Hessian, (3N, 3N) in Hartree/Bohr².
 ///
 /// `bounds` must be the Schwarz table for `op` on `prep`; `config` is the
@@ -641,8 +636,8 @@ fn state_refusal(reference: Reference, mol: &Molecule, uhf: &ScfResult) -> Optio
 /// A semicanonicalized ROHF/ROKS result is `Spin::Unrestricted` but keeps its
 /// `rohf_spin_focks`. Its orbitals are ROHF orbitals, for which the per-spin
 /// occupied-virtual Fock blocks do NOT vanish, and the UHF CPHF assumes they
-/// do: it would return a wrong Hessian silently (measured 7.8e-2 Ha/Bohr^2 on
-/// NH2/cc-pVDZ). `hessian::rohf_hessian` is the Hessian for these results
+/// do: it would return a wrong Hessian silently (measured 7.8e-2 Ha/Bohr^2 against
+/// PySCF's FD Hessian on NH2/cc-pVDZ). `hessian::rohf_hessian` is the Hessian for these results
 /// (it maps them back to ROHF orbitals).
 fn semicanonical_refusal(uhf: &ScfResult) -> Option<&'static str> {
     uhf.rohf_spin_focks.is_some().then_some(

@@ -1,7 +1,8 @@
 # Harmonic frequencies of the NH2 radical (doublet) from the analytic ROHF
-# Hessian (`[frequencies] hessian = "auto"` picks it for exact-J/K ROHF; ROKS
-# and the other Kohn-Sham references use finite differences). The printed
-# "Hessian" line says which construction ran.
+# Hessian. `hessian = "analytic"` makes that explicit and is an error where it
+# does not apply; the default "auto" picks it for exact-J/K ROHF and falls back
+# to finite differences for ROKS and the other Kohn-Sham references. The
+# printed "Hessian" line says which construction ran.
 [molecule]
 xyz = "testdata/molecules/validation/nh2.xyz"
 charge = 0

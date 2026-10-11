@@ -534,7 +534,8 @@ fn rohf_from_semicanonical(
 ) -> Result<ScfResult, FerricError> {
     let fail = |what: &str| {
         FerricError::General(format!(
-            "analytic ROHF Hessian: cannot map a semicanonicalized result back to ROHF              orbitals: {what}"
+            "analytic ROHF Hessian: cannot map a semicanonicalized result back to ROHF \
+             orbitals: {what}"
         ))
     };
     let cb = semi

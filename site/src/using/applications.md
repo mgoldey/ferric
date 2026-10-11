@@ -234,8 +234,10 @@ the claim.
 
 * **Gas-phase cluster models.** There's no enzyme environment unless you add
   QM/MM ([QM/MM](qmmm.md)).
-* **Analytic Hessians for RHF and UHF only.** RHF and UHF frequencies use the
-  analytic Hessian; ROHF, KS-DFT and embedded frequencies, and every TS search,
+* **Analytic Hessians for RHF, UHF and ROHF only.** Their frequencies use the
+  analytic Hessian (RHF and UHF also with an ECP or fixed external charges or
+  field; ROHF with neither); KS-DFT (ROKS included), implicit solvent and
+  polarizable embedding frequencies, and every TS search,
   use finite differences of analytic gradients (Step 5). That costs 6N
   gradients per Hessian, so a C10 cation Hessian is hundreds of gradient
   evaluations. Without Step 5 you

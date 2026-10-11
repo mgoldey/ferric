@@ -3726,7 +3726,10 @@ impl PyFrequencyResult {
 /// the Gaussian-smeared charges the Hessian also covers are reachable from the
 /// CLI and Rust API) (one SCF plus CPHF), and a finite difference of the ANALYTIC
 /// gradient (6N gradient evaluations) otherwise, including every KS
-/// reference (ROKS included); "analytic" raises if the analytic Hessian does not apply; "fd"
+/// reference (ROKS included). The choice is made before the SCF; an error the
+/// analytic path raises after it (for ROHF a Fock-consistency failure from a
+/// loose convergence threshold, a non-converging response, non-positive
+/// curvature) is raised, not retried with finite differences; "analytic" raises if the analytic Hessian does not apply; "fd"
 /// always differences gradients. `.hessian_source` says which ran.
 ///
 /// `reference` selects the SCF: "rhf" (default), "uhf", or "rohf". Setting

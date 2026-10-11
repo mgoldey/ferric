@@ -651,6 +651,7 @@ pub fn harmonic_frequencies_analytic_rohf(
     atom_masses(mol)?;
     let bs = ferric_core::basis::bundled(basis_name)?;
     let prep = PreparedBasis::new(mol, &bs)?;
+    crate::hessian::analytic_rohf_hessian_available(mol, &prep, op, scf_config)?;
     let bounds = SchwarzBounds::compute(op, &prep)?;
     let res = solve_rohf(ctx, mol, &prep, op, &bounds, scf_config)?;
     crate::hessian::analytic_frequencies_rohf(ctx, mol, &prep, op, &bounds, &res, scf_config)
