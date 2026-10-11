@@ -72,13 +72,19 @@
 //!
 //! # Scope
 //!
-//! HF only (no KS-DFT / ROHF at k), no ECPs, RS-GDF aux on the cell's atoms
-//! (no ghost sites). The full per-q Loewner metric weight is used, so an
+//! HF only (no KS-DFT / ROHF at k), RS-GDF aux on the cell's atoms (no ghost
+//! sites). A scalar periodic ECP is differentiated by the Gamma ECP walk
+//! ([`crate::ecp::periodic_ecp_gradient`]) with the SR walk's image weight
+//! `Re Δ_nm(L)` in place of the density (`parts.ecp`; derivation in the
+//! [`crate::ecp`] module doc, "k-points"); the walk is driven by the basis and
+//! cross-checked against `hk.v_ecp`. The energy-weighted Pulay term already
+//! carries the ECP through the rebuilt `F = hk.h + ...`. The full per-q Loewner metric weight is used, so an
 //! active lindep cut at any q is differentiated consistently (reported as
 //! [`KGradient::fit_dropped_max`]).
 
 use crate::budget::{bytes_of, Ledger};
 use crate::dense_aft::ExxDiv;
+use crate::ecp::{periodic_ecp_gradient_weighted, EcpGradMutation, EcpWeights};
 use crate::ewald::{
     default_ewald_omega, ewald_nuclear_gradient_parts, madelung_constant, DEFAULT_EWALD_PRECISION,
 };
@@ -148,6 +154,21 @@ pub enum KGradMutation {
     /// RS-GDF range split: the unsplit G = 0 term in the derivative (every
     /// aux charge `q` and `dS`, not `(q_c, d(S − S_ss))`).
     SplitFullG0,
+    /// ECP: drop the ECP force term altogether.
+    NoEcp,
+    /// ECP: the centre derivative `∂_C` dropped.
+    EcpNoCentre,
+    /// ECP: the centre derivative with the wrong sign.
+    EcpCentreSign,
+    /// ECP: the centre derivative folded onto the next cell atom.
+    EcpCentreWrongAtom,
+    /// ECP: the image weight read at the residue of `−L` (the transposed
+    /// weight `W_{−L} = W_Lᵀ`).
+    EcpWrongResidue,
+    /// ECP: orbital image `L = 0` only.
+    EcpL0Only,
+    /// ECP: home ECP image `M = 0` only.
+    EcpM0Only,
 }
 
 /// Settings for [`kpoint_rhf_gradient`] / [`kpoint_uhf_gradient`].
@@ -219,6 +240,8 @@ pub struct KGradParts {
     pub fit_metric_lr: Array2<f64>,
     /// RS-GDF `J3` G = 0 term through `dS`.
     pub fit_g0: Array2<f64>,
+    /// Periodic ECP (`Σ_L W_L ∘ dV_L`, [`crate::ecp`]); zeros without an ECP.
+    pub ecp: Array2<f64>,
 }
 
 /// Output of the k-point force entry points.
@@ -240,6 +263,9 @@ pub struct KGradient {
     pub n_images: usize,
     /// SR attraction derivative triplets.
     pub n_sr_triplets: usize,
+    /// ECP triples differentiated (the energy's `PeriodicHcoreK::n_ecp_triples`; 0
+    /// without an ECP).
+    pub n_ecp_triples: usize,
     /// Full-sphere G vectors in the `V_LR` derivative.
     pub n_g_lr: usize,
     /// K vectors (all q classes) in the two-electron derivative.
@@ -531,11 +557,6 @@ pub(crate) fn check_inputs(
         "the k-point forces walk the unrotated shells (the column rotation is implemented \
          in the k-point energy builds only)",
     )?;
-    if hk.v_ecp.is_some() {
-        return Err(FerricError::General(format!(
-            "{who}: periodic ECP gradients are not implemented"
-        )));
-    }
     if hk.s.len() != nk
         || hk.h.len() != nk
         || hk.s.iter().chain(&hk.h).any(|x| x.dim() != (n, n))
@@ -937,6 +958,10 @@ fn assemble(
         }
     })?;
 
+    // --- V_ECP: the Gamma ECP walk with the SR walk's image weight W_L = w_d[r(L)].
+    let (g_ecp, n_ecp_triples) =
+        ecp_force_term(cell, prep, mesh, hcore_cfg, hk, &w_d, mutation, ledger)?;
+
     // --- V_LR: full G sphere of periodic_hcore_kpts, residue pair-FT
     // derivative at q = 0.
     let aoat = ao_atoms(prep);
@@ -1055,6 +1080,7 @@ fn assemble(
         + &g_t
         + &g_vsr_basis
         + &g_vsr_nuc
+        + &g_ecp
         + &g_vlr_basis
         + &g_vlr_nuc
         + &g_j
@@ -1095,12 +1121,14 @@ fn assemble(
             fit_metric_sr: f_met_sr,
             fit_metric_lr: f_met_lr,
             fit_g0: g_fit_g0,
+            ecp: g_ecp,
         },
         commutator,
         madelung: vm,
         net_force,
         n_images: images.len(),
         n_sr_triplets,
+        n_ecp_triples,
         n_g_lr: gv_lr.len(),
         n_k_eri,
         n_chunks,
@@ -1108,6 +1136,119 @@ fn assemble(
         fit_dropped_max,
         fit_checks,
     })
+}
+
+/// TEST/DIAGNOSTIC: the periodic-ECP force of the k energy `(1/N_k) Σ_k
+/// Re tr[D(k) V_ECP(k)]` at a FIXED total density `dtot` (one `n × n` matrix
+/// per mesh point, Hermitian). No SCF: the hcore gate that isolates the ECP
+/// term before anything else is trusted. `None` when the basis has no ECP.
+#[doc(hidden)]
+pub fn kpoint_ecp_gradient_fixed_d(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    mesh: &KPointMesh,
+    hcore_cfg: &PeriodicHcoreConfig,
+    dtot: &[Array2<C64>],
+) -> Result<Option<crate::ecp::PeriodicEcpGradient>, FerricError> {
+    let n = prep.nbasis();
+    if dtot.len() != mesh.nk() || dtot.iter().any(|d| d.dim() != (n, n)) {
+        return Err(FerricError::General(format!(
+            "kpoint_ecp_gradient_fixed_d: expected {} density matrices of {n}×{n}",
+            mesh.nk()
+        )));
+    }
+    let moduli = mesh.residue_moduli();
+    let nr = moduli[0] * moduli[1] * moduli[2];
+    let ph: Vec<Vec<C64>> = (0..mesh.nk())
+        .map(|k| {
+            (0..nr)
+                .map(|r| mesh.phase(k, residue_coords(r, moduli)))
+                .collect()
+        })
+        .collect();
+    let w_d = fold_real(dtot, &ph, 1.0 / mesh.nk() as f64);
+    let weights = EcpWeights::Residue {
+        w: &w_d,
+        recip: cell.reciprocal(),
+        moduli,
+        flip_l: false,
+    };
+    let mut ledger = Ledger::new(crate::budget::resolve(None));
+    periodic_ecp_gradient_weighted(
+        cell,
+        prep,
+        &hcore_cfg.ecp_config(),
+        &weights,
+        None,
+        &mut ledger,
+    )
+}
+
+/// The periodic-ECP force term at k: `(Σ_L W_L ∘ dV_L, triples differentiated)`,
+/// zeros for an all-electron cell. `w_d[r]` is the SR walk's image weight
+/// (`Re (1/N_k) Σ_k e^{ik·L} D(k)ᵀ`, residue `r` of `L`); errors when hcore's
+/// `V_ECP` and the force screen disagree.
+#[allow(clippy::too_many_arguments)]
+fn ecp_force_term(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    mesh: &KPointMesh,
+    hcore_cfg: &PeriodicHcoreConfig,
+    hk: &PeriodicHcoreK,
+    w_d: &[Array2<f64>],
+    mutation: Option<KGradMutation>,
+    ledger: &mut Ledger,
+) -> Result<(Array2<f64>, usize), FerricError> {
+    let natoms = cell.positions().len();
+    let zeros = || Array2::<f64>::zeros((natoms, 3));
+    if mutation == Some(KGradMutation::NoEcp) && hk.v_ecp.is_some() {
+        return Ok((zeros(), 0));
+    }
+    let ecp_mut = match mutation {
+        Some(KGradMutation::EcpNoCentre) => Some(EcpGradMutation::NoCentre),
+        Some(KGradMutation::EcpCentreSign) => Some(EcpGradMutation::CentreSign),
+        Some(KGradMutation::EcpCentreWrongAtom) => Some(EcpGradMutation::CentreWrongAtom),
+        Some(KGradMutation::EcpL0Only) => Some(EcpGradMutation::L0Only),
+        Some(KGradMutation::EcpM0Only) => Some(EcpGradMutation::M0Only),
+        Some(KGradMutation::SerialDerivWalks) => Some(EcpGradMutation::SerialImages),
+        _ => None,
+    };
+    let weights = EcpWeights::Residue {
+        w: w_d,
+        recip: cell.reciprocal(),
+        moduli: mesh.residue_moduli(),
+        flip_l: mutation == Some(KGradMutation::EcpWrongResidue),
+    };
+    let ecp = periodic_ecp_gradient_weighted(
+        cell,
+        prep,
+        &hcore_cfg.ecp_config(),
+        &weights,
+        ecp_mut,
+        ledger,
+    )?;
+    match (&hk.v_ecp, ecp) {
+        (Some(_), Some(e)) => {
+            if e.n_triples != hk.n_ecp_triples {
+                return Err(FerricError::General(format!(
+                    "k gradient: the ECP force screen keeps {} triples but hcore's V_ECP kept {}; \
+                     hcore was built with a different ECP precision/config than hcore_cfg (or at \
+                     another geometry)",
+                    e.n_triples, hk.n_ecp_triples
+                )));
+            }
+            Ok((e.grad, e.n_triples_evaluated))
+        }
+        (None, None) => Ok((zeros(), 0)),
+        (Some(_), None) => Err(FerricError::General(
+            "k gradient: hcore carries V_ECP but the basis/cell has no ECP centre".into(),
+        )),
+        (None, Some(_)) => Err(FerricError::General(
+            "k gradient: the basis carries an ECP for a cell atom but hcore has no V_ECP; pass \
+             the PeriodicHcoreK the SCF used"
+                .into(),
+        )),
+    }
 }
 
 /// The range split's `J3` G = 0 term through `d S_ss`: the image-resolved

@@ -97,12 +97,49 @@
 //!
 //! # Scope
 //!
-//! Scalar (spin-free) ECPs: energies (Gamma and k) and the Gamma force term
+//! Scalar (spin-free) ECPs: energies (Gamma and k), the Gamma force term
 //! ([`periodic_ecp_gradient`], FINDINGS "Iteration 22"; added to every Gamma
-//! force by `crate::grad`). Stress and k-point forces with an ECP are
-//! refused by their callers. Ghost atoms carry no ECP (no nucleus); the
+//! force by `crate::grad`), the Gamma strain term ([`periodic_ecp_strain`],
+//! `crate::stress`) and both at k-points (`crate::kgrad`, `crate::kstress`,
+//! module doc "k-points"). Ghost atoms carry no ECP (no nucleus); the
 //! molecular `ecp_potential` includes a ghost's ECP, which is a
 //! molecular-path quirk not reproduced here.
+//!
+//! # k-points (forces and stress)
+//!
+//! The k-point operator is the same image sum with a Bloch phase per orbital
+//! image, `V_ECP(k) = ½(X + X^H)`, `X(k) = Σ_L e^{ik·L} V_L`, and the energy
+//! is `E = (1/N_k) Σ_k tr[D(k) V_ECP(k)] = Σ_L Σ_μν W_L[μ,ν] V_L[μ,ν]` with
+//! the REAL image weight
+//!
+//! ```text
+//! W_L[μ, ν] = Re (1/N_k) Σ_k e^{ik·L} D(k)[ν, μ]          (Hermitian D, Hermitised V)
+//! ```
+//!
+//! (`Re` because `tr[D ½(X + X^H)] = Re tr[D X]` for Hermitian `D`; it is the
+//! SR attraction walk's weight `w_d[residue(L)]`, [`crate::kgrad`]). The
+//! lattice-summed matrix therefore differentiates exactly as at Gamma, with
+//! the density `D` replaced by an image-dependent `W_L`:
+//!
+//! * Forces: the Gamma triple derivatives (bra, ket image, ECP-centre image
+//!   `−(bra + ket)`) contracted with `W_L` per orbital image `L`. The phases
+//!   do not depend on the atoms, so no phase derivative appears.
+//! * Stress: the same per-triple derivatives times the relative vectors
+//!   (`∂_A (A − X) + ∂_{B′} (B′ − X)`), contracted with `W_L`. A k-point is
+//!   held at fixed fractional coordinates, so `e^{ik·L}` (a function of the
+//!   integer lattice coordinates of `L`) is strain-invariant and so is `W_L`:
+//!   there is no k-strain term.
+//! * The image sets are FROZEN integer indices exactly as at Gamma: one
+//!   `EcpPlan` (orbital images `L`, ECP-centre images `M`, the screen) is
+//!   shared by the energy, the force and the strain, and the plan is built
+//!   from the unstrained cell. `L` enters `W_L` only through its residue
+//!   modulo the mesh (`W_{L + M·T} = W_L` for a supercell translation `T`),
+//!   so a capped or enlarged image list changes nothing but which `L`
+//!   participate. The derivative keeps the energy's kept triples (`n_triples`
+//!   is cross-checked against `PeriodicHcoreK::n_ecp_triples`).
+//! * `W_{−L} = W_Lᵀ` and `V_{−L} = V_Lᵀ`, so the (un-symmetrised) derivative
+//!   of the sum is the derivative of the Hermitised energy up to the
+//!   energy's own asymmetry residual ([`PeriodicEcpImages::asymmetry`]).
 //!
 //! # Forces
 //!
@@ -1019,6 +1056,61 @@ fn images_reporting(
     )))
 }
 
+// ============================================================ weights
+
+/// The density weight of orbital image `L` in the ECP derivative walks: the
+/// walks contract `X_L[μ, ν]` (a derivative of `V_L`) with `W_L[μ, ν]`.
+///
+/// * `Gamma`: one matrix, `W_L = D` for every `L`.
+/// * `Residue`: the k-point weight `W_L[μ, ν] = Re (1/N_k) Σ_k e^{ik·L} D(k)[ν, μ]`
+///   (the k force's `w_d`, [`crate::kgrad`]), one real matrix per residue of
+///   the mesh. The Bloch phase depends on `L` only through its integer
+///   lattice coordinates modulo the mesh moduli, so the image list stays an
+///   integer-frozen set and the walks themselves are unchanged.
+#[derive(Clone, Copy)]
+pub(crate) enum EcpWeights<'a> {
+    /// `W_L = D` for every `L`.
+    Gamma(&'a Array2<f64>),
+    /// `W_L = w[residue(L)]`.
+    Residue {
+        /// Weights per residue (row-major residue order).
+        w: &'a [Array2<f64>],
+        /// Reciprocal lattice rows (to take `L`'s integer coordinates).
+        recip: [[f64; 3]; 3],
+        /// Residue moduli of the mesh.
+        moduli: [usize; 3],
+        /// Test only: index the residue of `−L` (the transposed weight).
+        flip_l: bool,
+    },
+}
+
+impl<'a> EcpWeights<'a> {
+    fn dim(&self) -> (usize, usize) {
+        match self {
+            Self::Gamma(d) => d.dim(),
+            Self::Residue { w, .. } => w[0].dim(),
+        }
+    }
+
+    fn at(&self, l: &[f64; 3]) -> &'a Array2<f64> {
+        match *self {
+            Self::Gamma(d) => d,
+            Self::Residue {
+                w,
+                ref recip,
+                moduli,
+                flip_l,
+            } => {
+                let mut nl = lattice_coords(recip, l);
+                if flip_l {
+                    nl = [-nl[0], -nl[1], -nl[2]];
+                }
+                &w[crate::pair_ft::residues::residue_index(nl, moduli)]
+            }
+        }
+    }
+}
+
 // ============================================================ forces
 
 /// Deliberate defects of the ECP force term (test only; FINDINGS
@@ -1039,6 +1131,9 @@ pub enum EcpGradMutation {
     L0Only,
     /// Home ECP image `M = 0` only in the derivative.
     M0Only,
+    /// The centre derivative folded onto the NEXT cell atom (`(C + 1) mod
+    /// natoms`) instead of the centre's own atom.
+    CentreWrongAtom,
     /// NOT a defect: the FROZEN pre-parallel serial image loop instead of
     /// the ordered-parallel one ([`crate::ordered`]); the force must be
     /// BIT-IDENTICAL either way. Never list it as a must-fail mutant.
@@ -1121,6 +1216,19 @@ pub(crate) fn periodic_ecp_gradient_on(
     prep: &PreparedBasis,
     cfg: &PeriodicEcpConfig,
     d: &Array2<f64>,
+    mutation: Option<EcpGradMutation>,
+    ledger: &mut Ledger,
+) -> Result<Option<PeriodicEcpGradient>, FerricError> {
+    periodic_ecp_gradient_weighted(cell, prep, cfg, &EcpWeights::Gamma(d), mutation, ledger)
+}
+
+/// [`periodic_ecp_gradient_on`] with an image-dependent density weight
+/// ([`EcpWeights`]): the k-point force's walk.
+pub(crate) fn periodic_ecp_gradient_weighted(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    cfg: &PeriodicEcpConfig,
+    d: &EcpWeights<'_>,
     mutation: Option<EcpGradMutation>,
     ledger: &mut Ledger,
 ) -> Result<Option<PeriodicEcpGradient>, FerricError> {
@@ -1264,13 +1372,14 @@ impl EcpGradAcc {
 fn ecp_image_part(
     plan: &EcpPlan,
     li: usize,
-    d: &Array2<f64>,
+    w: &EcpWeights<'_>,
     nc: usize,
     mutation: Option<EcpGradMutation>,
     ledger: &Ledger,
 ) -> Result<EcpImagePart, FerricError> {
     let n = plan.nbasis;
     let l = &plan.l_list[li];
+    let d = w.at(l);
     let ket = plan.ket_shells(l);
     let kept = plan.kept(&ket);
     let mut part = EcpImagePart {
@@ -1353,6 +1462,12 @@ fn ecp_image_part(
     if !no_centre {
         // `centre` was pushed x-major, group-minor: `[x · ng + g]`.
         part.centre_atom = group_atom;
+        if mutation == Some(EcpGradMutation::CentreWrongAtom) {
+            let na = plan.shell_atom.iter().max().map_or(1, |m| m + 1);
+            for a in &mut part.centre_atom {
+                *a = (*a + 1) % na;
+            }
+        }
     }
     Ok(part)
 }
@@ -1369,6 +1484,9 @@ pub enum EcpStrainMutation {
     NoKetImage,
     /// Centre virial with the wrong sign.
     CentreSign,
+    /// The bra/ket virial with a unit vector `δ_ab` in place of the
+    /// position (`out[x][x] += ∂_x` only): a force, not a strain.
+    UnitPairVector,
 }
 
 /// The strain derivative of the periodic-ECP energy `Σ D V_ECP` at fixed `D`:
@@ -1416,6 +1534,19 @@ pub(crate) fn periodic_ecp_strain_on(
     prep: &PreparedBasis,
     cfg: &PeriodicEcpConfig,
     d: &Array2<f64>,
+    mutation: Option<EcpStrainMutation>,
+    ledger: &mut Ledger,
+) -> Result<Option<([[f64; 3]; 3], usize)>, FerricError> {
+    periodic_ecp_strain_weighted(cell, prep, cfg, &EcpWeights::Gamma(d), mutation, ledger)
+}
+
+/// [`periodic_ecp_strain_on`] with an image-dependent density weight
+/// ([`EcpWeights`]): the k-point stress's walk.
+pub(crate) fn periodic_ecp_strain_weighted(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    cfg: &PeriodicEcpConfig,
+    d: &EcpWeights<'_>,
     mutation: Option<EcpStrainMutation>,
     ledger: &mut Ledger,
 ) -> Result<Option<([[f64; 3]; 3], usize)>, FerricError> {
@@ -1479,7 +1610,7 @@ impl Stored for StrainPart {
 fn ecp_strain_image(
     plan: &EcpPlan,
     li: usize,
-    d: &Array2<f64>,
+    w: &EcpWeights<'_>,
     aopos: &[[f64; 3]],
     nc: usize,
     mutation: Option<EcpStrainMutation>,
@@ -1487,6 +1618,7 @@ fn ecp_strain_image(
 ) -> Result<StrainPart, FerricError> {
     let n = plan.nbasis;
     let l = plan.l_list[li];
+    let d = w.at(&l);
     let ket = plan.ket_shells(&l);
     let kept = plan.kept(&ket);
     let mut out = [[0.0_f64; 3]; 3];
@@ -1538,6 +1670,10 @@ fn ecp_strain_image(
                 let dmn = d[(mu, nu)];
                 let (wb, wk) = (dmn * bx[row + nu], dmn * kx[row + nu]);
                 let bp = aopos[nu];
+                if mutation == Some(EcpStrainMutation::UnitPairVector) {
+                    out[x][x] += wb + wk;
+                    continue;
+                }
                 for b in 0..3 {
                     out[x][b] += wb * a[b] + wk * (bp[b] + lk[b]);
                 }
@@ -1588,7 +1724,7 @@ fn centre_groups(plan: &EcpPlan, site_of: &[usize]) -> (Vec<usize>, Vec<usize>) 
 #[allow(clippy::too_many_arguments)]
 fn ecp_gradient_serial(
     plan: &EcpPlan,
-    d: &Array2<f64>,
+    w: &EcpWeights<'_>,
     aoat: &[usize],
     nc: usize,
     natoms: usize,
@@ -1601,6 +1737,7 @@ fn ecp_gradient_serial(
     let mut g_cen = Array2::<f64>::zeros((natoms, 3));
     let (mut n_triples, mut n_eval, mut n_calls) = (0usize, 0usize, 0usize);
     for l in &plan.l_list {
+        let d = w.at(l);
         let ket = plan.ket_shells(l);
         let kept = plan.kept(&ket);
         n_triples += kept.len();
