@@ -107,7 +107,11 @@ fn setup(mol: &Molecule, basis_name: &str, j_aux: &str, k_aux: &str) -> Setup {
     let rhf = solve_rhf(&ParallelContext::default(), mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(rhf.converged, "{basis_name}/{k_aux}: SCF did not converge");
     let route = rhf.df_jk.as_ref().expect("a DF route");
-    assert_eq!(route.k_aux.as_deref(), Some(k_aux), "RI-K must be on");
+    assert_eq!(
+        route.k_aux.as_deref(),
+        Some(k_aux).filter(|k| !k.is_empty()),
+        "RI-K route"
+    );
     assert_eq!(
         route.j_aux.as_deref(),
         Some(j_aux).filter(|j| !j.is_empty()),
@@ -480,10 +484,13 @@ fn check_full(mol: &Molecule, basis_name: &str, j_aux: &str, k_aux: &str, tol: f
 /// (worst; the same value as the RI-J Hessian on this basis, i.e. the FD
 /// reference's own floor); RI-J + RI-K cc-pVDZ/jkfit 4.4e-10.
 const BAR_OWN: f64 = 1e-8;
-/// Bar of the mutation suite, which runs on water 6-31G/cc-pVDZ-RI (floor
-/// 1.4e-10): 36x that floor. The closest mutant (stencil step x10) misses by
-/// 6.8e-8, 13.5 bars; every other mutant by >= 5.6e-2.
-const BAR_MUT: f64 = 5e-9;
+/// Bar of the mutation suite, which runs on water 6-31G/cc-pVDZ-RI. Derived
+/// from both sides: the production agreement with the differenced own gradient
+/// on this system is 1.4e-10 (1.6e-10 with RI-J), so a bar of 1e-9 is 7x above
+/// what a correct Hessian shows; the closest mutant (stencil step x10) misses
+/// by 6.8e-8, i.e. 68 bars = 6.8x the 10-bar pass line (the margin stated, not
+/// assumed); every other mutant misses by >= 5.6e-2.
+const BAR_MUT: f64 = 1e-9;
 
 #[test]
 fn full_hessian_matches_fd_of_df_gradient_sto3g() {
@@ -795,7 +802,138 @@ fn all_mutants() -> Vec<(&'static str, RikMutants)> {
                 ..d
             },
         ),
+        (
+            "CPHF kernel: exact K where the SCF fitted it",
+            RikMutants {
+                cphf_exact_k: true,
+                ..d
+            },
+        ),
+        (
+            "CPHF kernel: J and K swapped",
+            RikMutants {
+                cphf_swap_jk: true,
+                ..d
+            },
+        ),
     ]
+}
+
+#[test]
+fn cphf_kernel_mutants_fail_the_finite_difference_test() {
+    // The kernel G of the CPHF is not touched by the skeleton or K^x tests; a
+    // wrong kernel changes only the orbital response. Hypothesis: production
+    // agrees with the differenced own gradient at the FD floor, each kernel
+    // mutant misses it by > 10 bars.
+    if !has_deriv2() {
+        return;
+    }
+    let s = setup(&water(), "6-31g", "", "cc-pvdz-ri");
+    let fd = fd_hessian_richardson(&s.mol, 2e-3, |m| {
+        df_gradient_at(m, "6-31g", "", "cc-pvdz-ri")
+    });
+    let prod = max_abs_diff(&parts(&s).total(), &fd);
+    eprintln!("production vs FD: {prod:.2e} (bar {BAR_MUT:.0e})");
+    assert!(prod < BAR_MUT);
+    let d = RikMutants::default();
+    for (name, m) in [
+        (
+            "exact K inside G",
+            RikMutants {
+                cphf_exact_k: true,
+                ..d
+            },
+        ),
+        (
+            "J and K swapped in G",
+            RikMutants {
+                cphf_swap_jk: true,
+                ..d
+            },
+        ),
+    ] {
+        let miss = max_abs_diff(&mutant_total(&s, &m), &fd);
+        eprintln!(
+            "CPHF mutant {name}: FD miss {miss:.3e} ({:.1e} bars)",
+            miss / BAR_MUT
+        );
+        assert!(miss > 10.0 * BAR_MUT, "{name}: {miss:.3e}");
+    }
+}
+
+#[test]
+fn an_inconsistent_density_is_refused_for_the_exchange_factor() {
+    // RI-K builds X from the first nocc MOs; a result whose density is not
+    // that (here: the occupied and a virtual MO exchanged) must be a typed
+    // error, never a Hessian of the wrong state.
+    if !has_deriv2() {
+        return;
+    }
+    let s = setup(&water(), "sto-3g", "", "def2-universal-jkfit");
+    let nocc = (s.mol.nelec() / 2) as usize;
+    let mut bad = s.rhf.clone();
+    let (a, b) = (
+        bad.mos_alpha.column(0).to_owned(),
+        bad.mos_alpha.column(nocc).to_owned(),
+    );
+    bad.mos_alpha.column_mut(0).assign(&b);
+    bad.mos_alpha.column_mut(nocc).assign(&a);
+    let e = rhf_hessian(
+        &ParallelContext::default(),
+        &s.mol,
+        &s.prep,
+        Operator::coulomb(),
+        &s.bounds,
+        &bad,
+        &s.cfg,
+    )
+    .unwrap_err()
+    .to_string();
+    eprintln!("inconsistent density: {e}");
+    assert!(e.contains("first nocc MOs"), "{e}");
+}
+
+#[test]
+fn the_probe_that_auto_consults_is_stricter_than_the_hessian_itself() {
+    // Twin-augmented cc-pVDZ-RI (a near-duplicate s function on each H):
+    // eps 1e-2 -> cond 7e7 (accepted), 3e-3 -> lambda_min 1.7e-7, cond 7.9e8
+    // (cond above 1e8: probe refuses, the Hessian still runs with a warning),
+    // 1e-3 -> lambda_min ~2e-8 (a kept mode in [1e-10, 1e-7): probe refuses),
+    // 1e-5 -> modes below 1e-10 (both refuse, naming the count).
+    use ferric_scf::hessian::rij_support::{probe_exchange_metric, rik_terms_with_aux};
+    if !has_deriv1() {
+        return;
+    }
+    let mol = water();
+    let prep = prep_at(&mol, "sto-3g");
+    let x = dense_column(prep.nbasis());
+    let op = Operator::coulomb();
+    let run = |eps: f64| {
+        rik_terms_with_aux(
+            3,
+            &prep,
+            twin_aux(&mol, "cc-pvdz-ri", eps),
+            op,
+            usize::MAX,
+            &x,
+            &RikMutants::default(),
+        )
+    };
+    let probe = |eps: f64| probe_exchange_metric(&twin_aux(&mol, "cc-pvdz-ri", eps), op);
+    probe(1e-2).expect("cond 7e7 is accepted");
+    run(1e-2).expect("and the Hessian runs");
+    let e = probe(3e-3).unwrap_err().to_string();
+    eprintln!("probe cond: {e}");
+    assert!(e.contains("cond"), "{e}");
+    run(3e-3).expect("Analytic is strict: the Hessian itself runs (with a warning)");
+    let e = probe(1e-3).unwrap_err().to_string();
+    eprintln!("probe band: {e}");
+    assert!(e.contains("lie in"), "{e}");
+    run(1e-3).expect("the Hessian itself runs with a kept mode in the band");
+    for f in [probe(1e-5).map(|_| ()), run(1e-5).map(|_| ())] {
+        let e = f.unwrap_err().to_string();
+        assert!(e.contains("dropped mode"), "{e}");
+    }
 }
 
 #[test]
@@ -1235,4 +1373,203 @@ fn explicit_inverse_mutant_on_an_ill_conditioned_metric() {
         sk > 100.0 * sk_w.max(1e-14),
         "skeleton {sk:.3e} vs water {sk_w:.3e}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Beyond the warning threshold: more points, and the RI-J analogue
+// ---------------------------------------------------------------------------
+
+/// `(lambda_min, lambda_max, modes below 1e-10, modes in [1e-10, 1e-7))`.
+fn spectrum_of(mol: &Molecule, aux: &str) -> (f64, f64, usize, usize) {
+    let v = coulomb_metric_2c(Operator::coulomb(), &aux_at(mol, aux)).unwrap();
+    let (lam, _) = v.eigh(UPLO::Upper).unwrap();
+    (
+        lam[0],
+        lam[lam.len() - 1],
+        lam.iter().filter(|&&l| l < 1e-10).count(),
+        lam.iter().filter(|&&l| (1e-10..1e-7).contains(&l)).count(),
+    )
+}
+
+#[test]
+#[ignore = "survey: metric spectra of every bundled fitting basis on water; a few seconds"]
+fn survey_metric_conditioning_of_bundled_fitting_bases() {
+    for aux in [
+        "cc-pvdz-ri",
+        "def2-universal-jkfit",
+        "aug-cc-pvdz-rifit",
+        "aug-cc-pvtz-rifit",
+        "aug-cc-pvqz-rifit",
+        "cc-pvtz-rifit",
+        "def2-svp-rifit",
+        "def2-tzvp-rifit",
+        "def2-tzvpp-rifit",
+        "def2-qzvp-rifit",
+        "def2-qzvpp-rifit",
+    ] {
+        let (lmin, lmax, dropped, band) = spectrum_of(&water(), aux);
+        eprintln!(
+            "SURVEY {aux}: lambda_min {lmin:.2e} cond {:.2e} dropped {dropped} band {band}",
+            lmax / lmin
+        );
+    }
+}
+
+/// One scan row: the K Hessian against two Richardson references (h = 2e-3
+/// and 4e-3: their difference is the reference's own noise scale), and the J
+/// analogue (RI-J with the same fitting basis, exact K) against the same.
+fn scan_row(aux: &str) {
+    let t0 = std::time::Instant::now();
+    let mol = water();
+    let (lmin, lmax, dropped, band) = spectrum_of(&mol, aux);
+    if dropped > 0 || band > 0 {
+        eprintln!(
+            "SCAN {aux}: cond {:.2e}: {dropped} dropped, {band} band -> refused/invalid reference",
+            lmax / lmin
+        );
+        return;
+    }
+    let refs = |j: &str, k: &str| {
+        let h_an = parts(&setup(&mol, "6-31g", j, k)).total();
+        let f2 = fd_hessian_richardson(&mol, 2e-3, |m| df_gradient_at(m, "6-31g", j, k));
+        let f4 = fd_hessian_richardson(&mol, 4e-3, |m| df_gradient_at(m, "6-31g", j, k));
+        (
+            max_abs_diff(&h_an, &f2),
+            max_abs_diff(&h_an, &f4),
+            max_abs_diff(&f2, &f4),
+        )
+    };
+    let (k2, k4, kref) = refs("", aux);
+    let (j2, j4, jref) = refs(aux, "");
+    eprintln!(
+        "SCAN {aux}: lambda_min {lmin:.2e} cond {:.2e} | K miss vs FD(2e-3) {k2:.2e}, FD(4e-3) \
+         {k4:.2e}, FD refs differ {kref:.2e} | J analogue {j2:.2e}, {j4:.2e}, {jref:.2e} ({:.0}s)",
+        lmax / lmin,
+        t0.elapsed().as_secs_f64()
+    );
+}
+
+#[test]
+#[ignore = "slow: RI-K accuracy above cond 1e8 with the RI-J analogue; see the measured times in the module notes"]
+fn accuracy_above_the_warning_threshold() {
+    // Hypothesis (physics): the Hessian is the derivative of the energy, so its
+    // error is the FD reference's noise plus roundoff ~ eps*cond(V); the RI-J
+    // analogue (full inverse, same metric) shares the roundoff but not the
+    // K-specific amplification. Artifact: if K misses by much more than J and
+    // than the spread between the two FD references, the K path loses accuracy
+    // by itself above the threshold.
+    if !has_deriv2() {
+        return;
+    }
+    for aux in ["aug-cc-pvqz-rifit"] {
+        scan_row(aux);
+    }
+}
+
+/// A water fitting basis (`base` on every atom) with a near-duplicate s
+/// function (exponent x (1 + eps)) added on each hydrogen.
+fn twin_aux(mol: &Molecule, base: &str, eps: f64) -> PreparedBasis {
+    use ferric_core::basis::Shell;
+    let mut aux = basis::bundled(base).unwrap();
+    let h = aux.shells.get_mut(&1).unwrap();
+    let first = h.iter().find(|s| s.l == 0).unwrap().clone();
+    let a = first.exponents[0];
+    h.push(Shell {
+        exponents: vec![a * (1.0 + eps)],
+        coefficients: vec![(2.0 * a / std::f64::consts::PI).powf(0.75)],
+        ..first
+    });
+    PreparedBasis::new(mol, &aux).unwrap()
+}
+
+/// `m` dense non-orthogonal columns over all basis functions.
+fn dense_columns(n: usize, m: usize) -> Array2<f64> {
+    Array2::from_shape_fn((n, m), |(i, c)| {
+        let t = (i + 3 * c) as f64;
+        (0.8 + 0.5 * (1.1 * t + c as f64).sin()) / (1.0 + 0.12 * t)
+    })
+}
+
+#[test]
+#[ignore = "slow: K and J skeleton accuracy on twin-augmented fitting bases above cond 1e8; fixed-density FD of the DF gradient"]
+fn skeleton_accuracy_on_near_dependent_fitting_bases() {
+    // Fixed density, no SCF: the K skeleton against the FD of df_jk_gradient
+    // (RI-K channel) at two steps, and the RI-J skeleton against the FD of the
+    // J gradient with the SAME metric. Hypothesis (physics): both are exact
+    // derivatives, so both agree with their references to the reference's own
+    // roundoff, which grows with cond(V) identically for J and K (same V, same
+    // 3c integrals). Artifact: K misses by much more than J at equal cond (a
+    // K-specific amplification: M = W W built from the eigenvectors).
+    use ferric_scf::hessian::rij_support::{rij_terms_with_aux, rik_terms_with_aux, RijMutants};
+    if !has_deriv1() {
+        return;
+    }
+    let mol = water();
+    let prep = prep_at(&mol, "6-31g");
+    let n = prep.nbasis();
+    let x = dense_columns(n, 5);
+    let d = x.dot(&x.t());
+    let op = Operator::coulomb();
+    let alpha = ferric_scf::hessian_df_k::RIK_ALPHA;
+    for base in ["cc-pvdz-ri", "def2-universal-jkfit"] {
+        for eps in [1e-1, 3e-2, 1e-2, 3e-3] {
+            let v = coulomb_metric_2c(op, &twin_aux(&mol, base, eps)).unwrap();
+            let (lam, _) = v.eigh(UPLO::Upper).unwrap();
+            let (lmin, cond) = (lam[0], lam[lam.len() - 1] / lam[0]);
+            let below = lam.iter().filter(|&&l| l < 1e-10).count();
+            let band = lam.iter().filter(|&&l| (1e-10..1e-7).contains(&l)).count();
+            if below > 0 || band > 0 {
+                eprintln!(
+                    "TWIN {base} eps {eps:.0e}: lambda_min {lmin:.2e} cond {cond:.2e}: {below} \
+                     dropped, {band} band -> refused/invalid reference"
+                );
+                continue;
+            }
+            let k = rik_terms_with_aux(
+                3,
+                &prep,
+                twin_aux(&mol, base, eps),
+                op,
+                usize::MAX,
+                &x,
+                &RikMutants::default(),
+            )
+            .unwrap();
+            let j = rij_terms_with_aux(
+                3,
+                &prep,
+                twin_aux(&mol, base, eps),
+                op,
+                usize::MAX,
+                &d,
+                &RijMutants::default(),
+            )
+            .unwrap();
+            let fd = |h: f64, kchan: bool| {
+                fd_hessian(&mol, h, |m| {
+                    let p = prep_at(m, "6-31g");
+                    let aux = twin_aux(m, base, eps);
+                    let ch = [DfKChannel { density: &d, alpha }];
+                    if kchan {
+                        df_jk_gradient(3, &p, &aux, op, None, &ch, usize::MAX).unwrap()
+                    } else {
+                        df_jk_gradient(3, &p, &aux, op, Some(&d), &[], usize::MAX).unwrap()
+                    }
+                })
+            };
+            let (k1, k3) = (fd(1e-4, true), fd(3e-4, true));
+            let (j1, j3) = (fd(1e-4, false), fd(3e-4, false));
+            eprintln!(
+                "TWIN {base} eps {eps:.0e}: lambda_min {lmin:.2e} cond {cond:.2e} | K skeleton miss \
+                 {:.2e} (h 1e-4), {:.2e} (h 3e-4), FD spread {:.2e} | J skeleton miss {:.2e}, \
+                 {:.2e}, FD spread {:.2e}",
+                max_abs_diff(&k.skeleton, &k1),
+                max_abs_diff(&k.skeleton, &k3),
+                max_abs_diff(&k1, &k3),
+                max_abs_diff(&j.skeleton, &j1),
+                max_abs_diff(&j.skeleton, &j3),
+                max_abs_diff(&j1, &j3),
+            );
+        }
+    }
 }

@@ -298,7 +298,7 @@ fn rhf_hessian_parts_with(
     let rik = route_k
         .map(|r| {
             // D = X Xᵀ with X = √2 C_occ (the RI-K fit is built from the factor).
-            let x = rhf.mos_r().slice(s![.., ..nocc]).to_owned() * std::f64::consts::SQRT_2;
+            let x = rik_occupied_factor(rhf, nocc, d)?;
             crate::hessian_df_k::rik_terms(mol, prep, r, &x, rik_mutants)
         })
         .transpose()?;
@@ -346,8 +346,12 @@ fn rhf_hessian_parts_with(
     }
     add_extra_first_order(&mut first, mol, prep, config)?;
     let df_j = route_j.map(|r| df_j_builder(mol, prep, r)).transpose()?;
-    let df_k = route_k.map(|r| df_k_builder(mol, prep, r)).transpose()?;
-    let resp = cpks_response(ctx, prep, bounds, rhf, nocc, &first, df_j, df_k)?;
+    let df_k = route_k
+        .filter(|_| !rik_mutants.cphf_exact_k)
+        .map(|r| df_k_builder(mol, prep, r))
+        .transpose()?;
+    let swap_jk = rik_mutants.cphf_swap_jk;
+    let resp = cpks_response(ctx, prep, bounds, rhf, nocc, &first, (df_j, df_k), swap_jk)?;
     Ok(parts_from_terms(
         [nuclear, one_electron, overlap, two_electron],
         resp,
@@ -1092,11 +1096,63 @@ fn ri_engine_check(
         Engine::new_2center_deriv(op, &dfbs, 1e-14).map_err(fail)?;
         if exchange {
             crate::hessian_df::probe_exchange_metric(&dfbs, op)?;
+            rik_memory_probe(reference, mol, prep, dfbs.nbasis())?;
         } else {
             crate::hessian_df::probe_metric(&dfbs, op)?;
         }
     }
     Ok(())
+}
+
+/// The RI-K Hessian keeps `~3N` copies of an `(naux, nocc²)` tensor and a dense
+/// `(3N, naux, naux)` metric derivative resident (see `hessian_df_k`), which
+/// grows like `N⁴`. Decided BEFORE the SCF from the sizes alone: when a global
+/// memory pool is installed and the estimate does not fit, the probe refuses
+/// (`Auto` falls back to finite differences; `Analytic` reports the same typed
+/// error from the reservation itself). With no pool installed (library use)
+/// there is no budget to check against and nothing is refused.
+fn rik_memory_probe(
+    reference: Reference,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    naux: usize,
+) -> Result<(), FerricError> {
+    let nocc = (mol.nelec() / 2) as usize;
+    let bytes = crate::hessian_df_k::rik_peak_bytes(mol.atoms.len(), prep.nbasis(), nocc, naux);
+    match ferric_core::memory::pool::try_reserve_global("RI-K Hessian memory probe", bytes) {
+        Some(_inert_or_released) => Ok(()),
+        None => Err(refusal(
+            reference,
+            &format!(
+                "an RI-K Hessian whose resident tensors (about {:.2} GB for {} atoms, {} basis \
+                 functions, {} occupied orbitals, {} auxiliary functions) do not fit the memory \
+                 pool",
+                bytes as f64 / 1e9,
+                mol.atoms.len(),
+                prep.nbasis(),
+                nocc,
+                naux
+            ),
+        )),
+    }
+}
+
+/// `X = √2 C_occ` for the RI-K fit, checked to reproduce the density the rest
+/// of the Hessian uses (the UHF path makes the same aufbau-occupation check).
+fn rik_occupied_factor(
+    rhf: &ScfResult,
+    nocc: usize,
+    d: &Array2<f64>,
+) -> Result<Array2<f64>, FerricError> {
+    let x = rhf.mos_r().slice(s![.., ..nocc]).to_owned() * std::f64::consts::SQRT_2;
+    if max_abs(&(x.dot(&x.t()) - d)) > OCC_CONSISTENCY_TOL {
+        return Err(refusal(
+            Reference::Rhf,
+            "an RHF result whose density is not built from its first nocc MOs (RI-K needs the \
+             occupied factor)",
+        ));
+    }
+    Ok(x)
 }
 
 fn operator_refusal(op: Operator) -> Option<String> {
@@ -2000,6 +2056,8 @@ struct TwoElectronBuilder<'a> {
     /// RI-K: the SCF's `DfK` replaces the exact exchange matrix (its density
     /// path takes the indefinite response densities).
     df_k: Option<std::cell::RefCell<crate::df_k::DfK<'static>>>,
+    /// Mutation tests only: build `K − ½J` instead of `J − ½K`.
+    swap_jk: bool,
 }
 
 impl<'a> TwoElectronBuilder<'a> {
@@ -2020,6 +2078,7 @@ impl<'a> TwoElectronBuilder<'a> {
             pool,
             df_j: None,
             df_k: None,
+            swap_jk: false,
         })
     }
 
@@ -2029,9 +2088,11 @@ impl<'a> TwoElectronBuilder<'a> {
         mut self,
         df_j: Option<crate::df_j::DfJ<'static>>,
         df_k: Option<crate::df_k::DfK<'static>>,
+        swap_jk: bool,
     ) -> Self {
         self.df_j = df_j.map(std::cell::RefCell::new);
         self.df_k = df_k.map(std::cell::RefCell::new);
+        self.swap_jk = swap_jk;
         self
     }
 
@@ -2067,7 +2128,7 @@ impl<'a> TwoElectronBuilder<'a> {
     /// discarding one costs nothing extra; it is skipped when both are fitted).
     fn g_rhf(&self, d: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
         use crate::fock::{JBuilder, KBuilder};
-        if self.df_j.is_none() && self.df_k.is_none() {
+        if self.df_j.is_none() && self.df_k.is_none() && !self.swap_jk {
             return self.g(d);
         }
         let (mut j, mut k) = if self.df_j.is_some() && self.df_k.is_some() {
@@ -2080,6 +2141,9 @@ impl<'a> TwoElectronBuilder<'a> {
         }
         if let Some(df) = &self.df_k {
             df.borrow_mut().build(d, &mut k)?;
+        }
+        if self.swap_jk {
+            std::mem::swap(&mut j, &mut k);
         }
         j.scaled_add(-0.5, &k);
         Ok(j)
@@ -2110,14 +2174,17 @@ fn cpks_response(
     rhf: &ScfResult,
     nocc: usize,
     first: &FirstOrderAo,
-    df_j: Option<crate::df_j::DfJ<'static>>,
-    df_k: Option<crate::df_k::DfK<'static>>,
+    fitted: (
+        Option<crate::df_j::DfJ<'static>>,
+        Option<crate::df_k::DfK<'static>>,
+    ),
+    swap_jk: bool,
 ) -> Result<ResponseTerm, FerricError> {
     let frame = MoFrame::new(rhf.mos_r(), rhf.eps_r(), nocc, 2.0);
     let h1_mo = frame.to_mo_all(&first.f1[0]);
     let s1_mo = frame.to_mo_all(&first.s1);
 
-    let g = TwoElectronBuilder::new(ctx, prep, bounds)?.fitted(df_j, df_k);
+    let g = TwoElectronBuilder::new(ctx, prep, bounds)?.fitted(fitted.0, fitted.1, swap_jk);
     let mut sols = Vec::with_capacity(h1_mo.len());
     for (x, (h1, s1)) in h1_mo.iter().zip(&s1_mo).enumerate() {
         sols.push(solve_cphf_one(&g, &frame, h1, s1).map_err(|e| at_coordinate(x, e))?);

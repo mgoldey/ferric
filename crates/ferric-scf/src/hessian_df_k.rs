@@ -20,7 +20,9 @@
 //! is refused with a typed error naming the count (the energy is then a
 //! spectral function of `V` and its second derivative needs the
 //! Daleckii–Krein formula to second order, which is not implemented). Modes in
-//! `[1e-10, 1e-8)` are kept and warned about.
+//! `[1e-10, 1e-7)` are kept (the Hessian warns above cond 1e8; the pre-SCF
+//! probe that `Auto` consults refuses them and cond above 1e8, see
+//! `probe_exchange_metric`).
 //!
 //! # Derivation (fixed `D`, i.e. fixed `X`; derivatives of integrals only)
 //!
@@ -98,14 +100,26 @@
 //! ## Memory and cost
 //!
 //! With `A = naux`, `n = nbf`, `m` = occupied count, `3N` coordinates, the
-//! resident arrays are `B, Ĉ` (`2·A·n·m`), `L, Γ` (`2·A·m²`), `L_x → Z_x` and
-//! `∂_xΓ` (`2·3N·A·m²`), the dense `V_x` (`3N·A²`), plus the `K^x` matrices
-//! (`3·3N·n²`) and `chunk` per-aux-shell partials of one `3N·n²` matrix. All of
-//! it is charged to the global pool up front (`rik_peak_bytes`); a typed error
-//! when it does not fit. Peak: 3.4 MB for water cc-pVDZ / def2-universal-jkfit
-//! (3 atoms, `A = 113`, `m = 5`); 10.5 GB for 30 atoms with 300 basis
-//! functions, `m = 60`, `A = 1500` (of which `L_x` and `∂_xΓ` are 3.9 GB each
-//! and `V_x` 1.6 GB). Everything is built once per Hessian, not per CPHF
+//! arrays alive together at the widest point are `M` and `V_x` (`A² + 3N·A²`),
+//! `Γ` and `Ĉ` (`A·m² + A·n·m`), then per phase: `L_x` (`3N·A·m²`) with the
+//! `K1` matrices (`3N·n²`) in the first-derivative pass; `L_x → Z_x` and
+//! `∂_xΓ` (`2·3N·A·m²`) in the cross term; five `A·n·m` copies of `Ĉ` (the
+//! stored layout, its flat and row views, the product with `V_x` and its
+//! standard-layout copy) with `K^x` and its Fock-scaled copy in the exchange
+//! Fock matrices; the metric factorization (`6·A²`) before them; and the CPHF
+//! after them (`F^x`, `K^x` and the `G^x` accumulators, plus the dressed
+//! `A·n²` tensors of the `DfJ` and `DfK` rebuilt there). The charge
+//! (`rik_peak_bytes`) is the largest phase, reserved BEFORE the metric
+//! factorization allocates; a typed error when it does not fit the global pool.
+//! The pre-SCF probe `Auto` consults applies the same estimate (sizes alone), so
+//! an over-budget job runs finite differences instead of failing after the SCF;
+//! with no pool installed (library use) there is no budget and nothing is
+//! checked. Peak: 2.7 MB for water cc-pVDZ / def2-universal-jkfit (3 atoms,
+//! `A = 113`, `m = 5`); 9.8 GB for 30 atoms with 300 basis functions, `m = 60`,
+//! `A = 1500` (`L_x` and `∂_xΓ` 3.9 GB each, `V_x` 1.6 GB). It grows like
+//! **N⁴** (the `3N·A·m²` terms; fitted exponent 3.85 between 30 and 71 atoms at
+//! 50 auxiliary functions, 10 basis functions and 2 occupied orbitals per
+//! atom): about 270 GB for 71 atoms of that shape. Everything is built once per Hessian, not per CPHF
 //! iteration; the integral work is one streamed `(P|μν)` pass, one
 //! first-derivative 3c pass (`L_x` and `K1` together), one 2c pass, and the two
 //! stencil contractions (about 30 times the engine calls of a gradient pass).
@@ -120,14 +134,25 @@
 //! cond 2.5e5 (cc-pVDZ-RI) 1.4e-10, 2.4e6 (aug-cc-pVDZ-RIFIT) 1.6e-10, 9.1e6
 //! (aug-cc-pVTZ-RIFIT) 2.5e-10, 2.5e7 (def2-universal-jkfit) 1.3e-10, 2.4e7
 //! (def2-QZVPP-RIFIT) 4.4e-10, **2.0e8 (aug-cc-pVQZ-RIFIT) 6.7e-9**: the error
-//! begins to grow near cond 1e8, hence the warning above `RIK_COND_WARN`. A
+//! begins to differ near cond 1e8, hence the warning above `RIK_COND_WARN`.
+//! The RI-J analogue on the same fit (same metric, 3c integrals) stays at
+//! 1.7e-10 there, and the two finite-difference references (h = 2e-3 and 4e-3,
+//! Richardson) differ by only 3e-10, but PySCF's analytic DF Hessian agrees
+//! with ferric as well at cond 2e8 (2.7e-8) as at cond 2.5e5 (2.2e-8), at its own
+//! raw-asymmetry floor of 1.8e-8: the larger miss against the differenced
+//! K gradient is attributed to that gradient's Daleckii–Krein roundoff
+//! (unproven; no K-specific loss is established for the Hessian). Fixed-density
+//! twin-augmented bases up to cond 7.9e8 show K and J skeletons with the same
+//! 8e-8 (h = 1e-4) finite-difference truncation floor, so they cannot see 1e-9
+//! effects. One real point above the threshold, hence the conservative
+//! refusal in the probe. A
 //! metric with a mode below the DF-K cut is refused (see Scope). The
 //! reference gradient itself treats kept modes in `[1e-10, 1e-7)` as dropped
 //! (its noise floor), so a basis with such a mode has no valid finite-difference
 //! reference and yields no accuracy datum.
 
 use crate::df_gradient::aux_basis;
-use crate::hessian_df::{check_metric_conditioning_for, chunk_len, MetricUse};
+use crate::hessian_df::{check_metric_spectrum, chunk_len, MetricUse};
 use crate::hessian_df_stencil::{
     eri2_deriv2_contract, eri3_deriv2_contract, weight_matrix, StencilConfig,
 };
@@ -135,6 +160,7 @@ use crate::result::DfJkRoute;
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::engine::Engine;
 use ferric_integrals::operator::Operator;
 use ferric_integrals::three_index_source::ThreeIndexSource;
@@ -143,9 +169,15 @@ use ndarray::{s, Array1, Array2, Array3, Axis};
 use ndarray_linalg::{Eigh, Inverse, UPLO};
 use rayon::prelude::*;
 
-/// Condition number of the exchange metric above which the Hessian warns: the
-/// error against the finite difference of the DF-K gradient (water 6-31G) is
-/// 1.3e-10 .. 4.4e-10 for cond 2.5e5 .. 2.5e7 and 6.7e-9 at cond 2e8.
+/// Condition number of the exchange metric above which the Hessian warns and
+/// the pre-SCF probe (`Auto`) falls back to finite differences. Measured (water
+/// 6-31G, Hessian vs the differenced DF-K gradient): 1.3e-10 .. 4.4e-10 for
+/// cond 2.5e5 .. 2.5e7 and 6.7e-9 at cond 2e8 (the RI-J analogue on the same
+/// metric: 1.7e-10; the two differenced references differ by 3e-10). Against
+/// PySCF's analytic DF Hessian the agreement is 2.2e-8 at cond 2.5e5 and
+/// 2.7e-8 at 2e8 (PySCF's own raw asymmetry is 1.8e-8), so the larger
+/// disagreement with the differenced gradient is not established as an error
+/// of the Hessian; above 1e8 accuracy is simply not established.
 pub const RIK_COND_WARN: f64 = 1e8;
 
 /// Closed-shell exchange weight `α` of `E_K = α Σ_ij L_ij · M L_ij`.
@@ -175,6 +207,11 @@ pub struct RikMutants {
     pub explicit_inverse: bool,
     /// Multiplier on the exchange weight `α` everywhere (1 = production).
     pub alpha_factor: f64,
+    /// CPHF kernel mutant: the exact four-centre `K` inside `G` where the SCF
+    /// used the fitted one.
+    pub cphf_exact_k: bool,
+    /// CPHF kernel mutant: `G = K − ½J` (J and K swapped).
+    pub cphf_swap_jk: bool,
     /// Stencil construction (step, order, shell displacement).
     pub stencil: StencilConfig,
     /// Skip the conditioning refusal (measurement only).
@@ -193,6 +230,8 @@ impl Default for RikMutants {
             swap_metric: false,
             explicit_inverse: false,
             alpha_factor: 1.0,
+            cphf_exact_k: false,
+            cphf_swap_jk: false,
             stencil: StencilConfig::default(),
             allow_ill_conditioned: false,
         }
@@ -255,8 +294,12 @@ impl Fit {
             op
         };
         let v = coulomb_metric_2c(metric_op, &dfbs)?;
+        // ONE eigendecomposition, the (BLAS-thread-wrapped) call DfK makes, so
+        // the dropped-mode classification and M come from the same numbers.
+        let (lam, u) = with_blas_threads(opt_in_blas_threads(), || v.eigh(UPLO::Upper))
+            .map_err(|e| FerricError::Lapack(format!("analytic RI-K Hessian: eigh: {e}")))?;
         if !mutants.allow_ill_conditioned {
-            check_metric_conditioning_for(&v, MetricUse::ExchangeFit)?;
+            check_metric_spectrum(&lam, MetricUse::ExchangeFit)?;
         }
         let m = if mutants.explicit_inverse {
             v.inv()
@@ -264,9 +307,6 @@ impl Fit {
         } else {
             // The SCF's own construction (DfK::v_inv_sqrt_lindep) with nothing
             // dropped: W = U Λ^{-1/2} Uᵀ, M = W W.
-            let (lam, u) = v
-                .eigh(UPLO::Upper)
-                .map_err(|e| FerricError::Lapack(format!("analytic RI-K Hessian: eigh: {e}")))?;
             let mut us = u.clone();
             for k in 0..lam.len() {
                 let sc = 1.0 / lam[k].sqrt();
@@ -289,15 +329,28 @@ impl Fit {
 /// tensor (see the module doc); charged to the pool before allocation.
 #[doc(hidden)]
 pub fn rik_peak_bytes(natoms: usize, nbf: usize, nocc: usize, naux: usize) -> usize {
-    let n3 = 3 * natoms;
-    let m2 = nocc * nocc;
-    let doubles = 2 * naux * nbf * nocc
-        + 3 * naux * m2
-        + 2 * n3 * naux * m2
-        + n3 * naux * naux
-        + 3 * naux * naux
-        + (3 + chunk_len(n3, nbf)) * n3 * nbf * nbf;
-    8usize.saturating_mul(doubles)
+    let (n3, a, n, m) = (3 * natoms, naux, nbf, nocc);
+    let m2 = m * m;
+    // Alive from the end of the first-derivative passes to the outputs: M,
+    // V_x, Γ and Ĉ in (A, m, n) layout.
+    let base = a * a + n3 * a * a + a * m2 + a * n * m;
+    let k1 = n3 * n * n;
+    // Phases, in order (the peak is the largest, they do not overlap):
+    // the metric factorization (V, eigenvectors, scaled copy, W, M, check),
+    let fit = 6 * a * a;
+    // B/Ĉ construction (B, B flat, Ĉ flat, permuted copy; L, Γ; M, W),
+    let pre = 4 * a * n * m + 4 * a * m2 + 2 * a * a;
+    // the first-derivative 3c pass (L_x, K1 and the per-chunk partials),
+    let pass2 = base + n3 * a * m2 + k1 + chunk_len(n3, nbf) * n3 * n * n;
+    // Z_x and ∂_xΓ (plus two (A, m²) temporaries),
+    let cross = base + 2 * n3 * a * m2 + 2 * a * m2 + k1;
+    // K^x: Ĉ, its flat and row copies, W and its standard-layout copy, and
+    // K1, K^x, the unscaled and the Fock-scaled output matrices,
+    let kx = base + k1 + 5 * a * n * m + 3 * n3 * n * n;
+    // and the CPHF that follows: F^x, K^x, G^x accumulators and the SCF's
+    // DfJ and DfK rebuilt with the full budget (dressed A n² each).
+    let cphf = 3 * n3 * n * n + 2 * a * n * n;
+    8usize.saturating_mul(fit.max(pre).max(pass2).max(cross).max(kx).max(cphf))
 }
 
 /// The RI-K Hessian pieces at the occupied factor `x` (`D = X Xᵀ`).
@@ -415,15 +468,16 @@ pub fn rik_terms_with_aux(
     x: &Array2<f64>,
     mutants: &RikMutants,
 ) -> Result<RikTerms, FerricError> {
-    let fit = Fit::new(dfbs, op, budget, mutants)?;
-    let (n, naux, m) = (obs.nbasis(), fit.dfbs.nbasis(), x.ncols());
-    let n3 = 3 * natoms;
-    let m2 = m * m;
-    let alpha = RIK_ALPHA * mutants.alpha_factor;
+    let (n, naux, m) = (obs.nbasis(), dfbs.nbasis(), x.ncols());
+    // Charged BEFORE the metric factorization allocates its (A, A) work arrays.
     let _charge = ferric_core::memory::pool::reserve_global(
         "RI-K Hessian fit tensors, L^x/Z^x, V^x and K^x matrices",
         rik_peak_bytes(natoms, n, m, naux),
     )?;
+    let fit = Fit::new(dfbs, op, budget, mutants)?;
+    let n3 = 3 * natoms;
+    let m2 = m * m;
+    let alpha = RIK_ALPHA * mutants.alpha_factor;
 
     let mut core = build_core(natoms, obs, fit, x, mutants, true)?;
     let gamma = core.gamma.clone();

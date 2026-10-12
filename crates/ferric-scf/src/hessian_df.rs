@@ -8,6 +8,12 @@
 //!   E_K    = −¼ Σ D_μλ D_νσ (μν|λσ)                (exact four-centre)
 //! ```
 //!
+//! This module derives the RI-J part only; the "exact K" below describes the
+//! configuration THIS module handles alone. The RI-K part (and the combined
+//! RI-J + RI-K case, where the four-centre skeleton disappears entirely) is
+//! `crate::hessian_df_k`, which reuses this module's stencil contractions and
+//! conditioning check; `crate::hessian` combines them.
+//!
 //! # What changes against the exact-integral Hessian, and what does not
 //!
 //! The exact Hessian ([`crate::hessian`]) is `skeleton (fixed D and W) +
@@ -125,6 +131,7 @@ use crate::result::DfJkRoute;
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::engine::Engine;
 use ferric_integrals::operator::Operator;
 use ferric_integrals::three_index_source::ThreeIndexSource;
@@ -286,13 +293,25 @@ pub(crate) fn check_metric_conditioning_for(
     v: &Array2<f64>,
     what: MetricUse,
 ) -> Result<(), FerricError> {
-    let label = match what {
+    let label = metric_label(what);
+    // The same (BLAS-thread-wrapped) eigh DfK classifies its modes with.
+    let (lam, _) = with_blas_threads(opt_in_blas_threads(), || v.eigh(UPLO::Upper))
+        .map_err(|e| FerricError::Lapack(format!("analytic {label} Hessian: V eigh: {e}")))?;
+    check_metric_spectrum(&lam, what)
+}
+
+fn metric_label(what: MetricUse) -> &'static str {
+    match what {
         MetricUse::CoulombFit => "RI-J",
         MetricUse::ExchangeFit => "RI-K",
-    };
-    let (lam, _) = v
-        .eigh(UPLO::Upper)
-        .map_err(|e| FerricError::Lapack(format!("analytic {label} Hessian: V eigh: {e}")))?;
+    }
+}
+
+/// The refusal and the warnings of [`check_metric_conditioning_for`] on an
+/// already computed ascending spectrum (so a caller that needs the
+/// eigenvectors too classifies the modes with the SAME eigendecomposition).
+pub(crate) fn check_metric_spectrum(lam: &Array1<f64>, what: MetricUse) -> Result<(), FerricError> {
+    let label = metric_label(what);
     let modes = lam.iter().filter(|&&l| l < DFK_LINDEP_THRESH).count();
     if modes > 0 {
         return Err(FerricError::General(match what {
@@ -313,10 +332,12 @@ pub(crate) fn check_metric_conditioning_for(
     if what == MetricUse::ExchangeFit && cond > crate::hessian_df_k::RIK_COND_WARN {
         eprintln!(
             "[ferric] warning: analytic RI-K Hessian: the exchange metric has cond {cond:.1e} \
-             (smallest eigenvalue {:.2e}); the measured Hessian error against the finite \
-             difference of the DF-K gradient grows with cond(V) from about 1e8 (6.7e-9 at \
-             2e8, against 1e-10 at 2e5 .. 2e7), so the result is less accurate than usual",
-            lam[0]
+             (smallest eigenvalue {:.2e}), above the {:.0e} up to which accuracy was measured \
+             (one measured point above: agreement with the differenced DF-K gradient 6.7e-9 at \
+             2e8 against 1e-10 at 2e5 .. 2e7, while the agreement with PySCF's analytic \
+             Hessian does not change)",
+            lam[0],
+            crate::hessian_df_k::RIK_COND_WARN
         );
     }
     if what == MetricUse::CoulombFit && lam[0] < RIJ_METRIC_WARN {
@@ -340,9 +361,44 @@ pub fn probe_metric(dfbs: &PreparedBasis, op: Operator) -> Result<(), FerricErro
 
 /// [`probe_metric`] for the exchange fit (refusal wording names the dropped
 /// modes of `DfK`'s truncated inverse).
+///
+/// Stricter than the Hessian's own check (which is also what `Analytic`
+/// runs, with a warning): this probe is what `Auto` consults, so it also
+/// refuses a metric the RI-K Hessian can differentiate but not reliably,
+/// namely cond(V) above [`crate::hessian_df_k::RIK_COND_WARN`] (measured error
+/// grows there) and any kept mode in `[DFK_LINDEP_THRESH,
+/// DFK_GRADIENT_NOISE_FLOOR)` (the analytic DF-K gradient treats such a mode as
+/// dropped, so the Hessian would differentiate a different function than the
+/// gradient). `Auto` then runs finite differences of the gradient.
 #[doc(hidden)]
 pub fn probe_exchange_metric(dfbs: &PreparedBasis, op: Operator) -> Result<(), FerricError> {
-    check_metric_conditioning_for(&coulomb_metric_2c(op, dfbs)?, MetricUse::ExchangeFit)
+    let v = coulomb_metric_2c(op, dfbs)?;
+    let (lam, _) = with_blas_threads(opt_in_blas_threads(), || v.eigh(UPLO::Upper))
+        .map_err(|e| FerricError::Lapack(format!("analytic RI-K Hessian: V eigh: {e}")))?;
+    let dropped = lam.iter().filter(|&&l| l < DFK_LINDEP_THRESH).count();
+    if dropped > 0 {
+        return check_metric_spectrum(&lam, MetricUse::ExchangeFit);
+    }
+    let floor = crate::df_gradient::DFK_GRADIENT_NOISE_FLOOR;
+    let band = lam.iter().filter(|&&l| l < floor).count();
+    if band > 0 {
+        return Err(FerricError::General(format!(
+            "analytic RI-K Hessian: {band} metric mode(s) lie in [{DFK_LINDEP_THRESH:.0e}, \
+             {floor:.0e}): DfK keeps them but the analytic DF-K gradient treats them as dropped, \
+             so the Hessian would differentiate a different function than the gradient \
+             (use finite differences)"
+        )));
+    }
+    let cond = lam[lam.len() - 1] / lam[0];
+    if cond > crate::hessian_df_k::RIK_COND_WARN {
+        return Err(FerricError::General(format!(
+            "analytic RI-K Hessian: the exchange metric has cond {cond:.1e}, above {:.0e} where \
+             accuracy is no longer established (use finite differences, or request the analytic \
+             Hessian explicitly to accept the warning)",
+            crate::hessian_df_k::RIK_COND_WARN
+        )));
+    }
+    Ok(())
 }
 
 /// Chunk width for the per-aux-shell partial reductions.
