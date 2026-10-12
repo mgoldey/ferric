@@ -57,7 +57,19 @@ Run (light; under two minutes per block):
     OPENBLAS_NUM_THREADS=1 uv run --no-sync python \\
         scripts/validation/gen_df_hessian.py          # RI-J block
     ... gen_df_hessian.py --jk                       # RI-J + RI-K block
+    ... gen_df_hessian.py --uhf                      # UHF RI-J + RI-K block
 Restrict to systems by name:  ... gen_df_hessian.py nh3_distorted
+
+UHF block (`--uhf`, see _run_uhf): PySCF's standard density-fitted UHF
+(`scf.UHF(mol).density_fit(auxbasis)`, J and K fitted with the same auxiliary
+basis) and its analytic Hessian (`pyscf.df.hessian.uhf`), a DIRECT reference.
+Stored beside it: `hessian_fd` (central FD of PySCF's analytic DF UHF
+gradient, the reference's own self-consistency), `hessian_exact` (the exact
+integral UHF Hessian, the NEGATIVE CONTROL) and `hessian_fd_ri_j_only` (FD of
+the `only_dfj` gradient, the fitted-J-only negative control). Each SCF is the
+lowest internally stable UHF over the guesses of common.run_open_shell.
+Systems: nh2 (doublet), ch2_triplet, ch3 (doublet) x cc-pVDZ and nh2 x
+def2-SVP, all with def2-universal-jkfit.
 """
 
 from __future__ import annotations
@@ -74,6 +86,9 @@ ROW = "df_hessian"
 ROW_NAME = "Analytic RHF Hessian, RI-J with exact K"
 ROW_JK = "df_hessian_jk"
 ROW_JK_NAME = "Analytic RHF Hessian, RI-J + RI-K"
+ROW_UHF = "df_hessian_uhf"
+ROW_UHF_NAME = "Analytic UHF Hessian, RI-J + RI-K"
+BASIN_TOL = 1e-3
 CONV_TOL = 1e-12
 CONV_TOL_GRAD = 1e-9
 CPHF_TOL = 1e-12
@@ -95,6 +110,17 @@ SYSTEMS_JK = (
     ("ch2o", "cc-pvdz", "def2-universal-jkfit"),
     ("nh3_distorted", "cc-pvdz", "def2-universal-jkfit"),
     ("h2o_distorted", "def2-svp", "def2-universal-jkfit"),
+)
+
+
+# (system, basis, auxiliary basis, multiplicity): UHF RI-J + RI-K block.
+# Genuinely open-shell, non-degenerate singly occupied orbital (OH is a
+# near-degenerate 2Pi and is left out), one more basis for NH2.
+SYSTEMS_UHF = (
+    ("nh2", "cc-pvdz", "def2-universal-jkfit", 2),
+    ("ch2_triplet", "cc-pvdz", "def2-universal-jkfit", 3),
+    ("ch3", "cc-pvdz", "def2-universal-jkfit", 2),
+    ("nh2", "def2-svp", "def2-universal-jkfit", 2),
 )
 
 
@@ -487,8 +513,219 @@ def _run_jk(system: str, basis_name: str, aux_name: str) -> Path:
     return _write_compact(system, basis_name, payload, ROW_JK)
 
 
+def _uhf_factory(aux, only_dfj=False):
+    """SCF-object factory for common.run_open_shell: UHF, fitted with `aux`
+    (J and K both, PySCF's standard density_fit, or only J) or exact."""
+    from pyscf import scf
+
+    def make(mol):
+        mf = scf.UHF(mol)
+        if aux is not None:
+            mf = mf.density_fit(auxbasis=aux, only_dfj=only_dfj)
+        return mf
+
+    return make
+
+
+def _uhf_displaced(mol, aux, dm0, only_dfj):
+    mf = _uhf_factory(aux, only_dfj)(mol)
+    mf.conv_tol = CONV_TOL
+    mf.conv_tol_grad = CONV_TOL_GRAD
+    mf.max_cycle = 500
+    mf.verbose = 0
+    mf.kernel(dm0=dm0)
+    if not mf.converged:
+        raise RuntimeError("displaced UHF did not converge")
+    return mf
+
+
+def _fd_uhf(mol, mf0, aux, only_dfj):
+    """Central FD of PySCF's analytic (DF) UHF gradient; every displaced SCF
+    starts from the centre densities and must stay in the centre's basin."""
+    import numpy as np
+
+    n = 3 * mol.natm
+    x0 = mol.atom_coords(unit="Bohr")
+    dm0 = mf0.make_rdm1()
+    e0 = mf0.e_tot
+    h = np.zeros((n, n))
+    worst = 0.0
+    for b in range(n):
+        grads = []
+        for sgn in (+1.0, -1.0):
+            x = x0.copy()
+            x[b // 3, b % 3] += sgn * FD_STEP
+            m = mol.copy()
+            m.set_geom_(x, unit="Bohr")
+            mf = _uhf_displaced(m, aux, dm0, only_dfj)
+            de = abs(mf.e_tot - e0)
+            if de > BASIN_TOL:
+                raise RuntimeError(f"displaced UHF changed state: dE {de:.3e}")
+            worst = max(worst, de)
+            grads.append(mf.nuc_grad_method().kernel().ravel())
+        h[:, b] = (grads[0] - grads[1]) / (2.0 * FD_STEP)
+    asym = float(np.max(np.abs(h - h.T)))
+    return 0.5 * (h + h.T), asym, worst
+
+
+def _run_uhf(system: str, basis_name: str, aux_name: str, mult: int) -> Path:
+    import numpy as np
+    import pyscf
+
+    xyz = common.MOL_DIR / f"{system}.xyz"
+    symbols, coords = common.read_xyz(xyz)
+    mol = common.build_pyscf_mol(xyz, basis_name, multiplicity=mult)
+    basis_check = common.check_basis_like_for_like(mol, basis_name, symbols)
+    aux = _aux(symbols, aux_name)
+    aux_check = _check_aux(mol, aux, aux_name, symbols)
+    masses = [FERRIC_MASSES[s.capitalize()] for s in symbols]
+
+    # The lowest internally STABLE solution of each Hamiltonian (a reference on
+    # an unstable state is refused by run_open_shell).
+    scf_jk, mf = common.run_open_shell(
+        mol,
+        "uhf",
+        conv_tol=CONV_TOL,
+        conv_tol_grad=CONV_TOL_GRAD,
+        mf_factory=_uhf_factory(aux),
+        return_mf=True,
+    )
+    scf_ex, mf_exact = common.run_open_shell(
+        mol, "uhf", conv_tol=CONV_TOL, conv_tol_grad=CONV_TOL_GRAD, return_mf=True
+    )
+    scf_j, mf_j = common.run_open_shell(
+        mol,
+        "uhf",
+        conv_tol=CONV_TOL,
+        conv_tol_grad=CONV_TOL_GRAD,
+        mf_factory=_uhf_factory(aux, only_dfj=True),
+        return_mf=True,
+    )
+    mf.conv_tol_cpscf = CPHF_TOL
+    h_an, an_asym = _analytic_standard(mf)
+    h_fd, fd_asym, basin = _fd_uhf(mol, mf, aux, False)
+    mf_exact.conv_tol_cpscf = CPHF_TOL
+    h_ex, ex_asym = _analytic_exact(mf_exact)
+    h_fd_j, fdj_asym, basin_j = _fd_uhf(mol, mf_j, aux, True)
+    f_an = _frequencies(mol, h_an, masses)
+    f_fd = _frequencies(mol, h_fd, masses)
+    f_ex = _frequencies(mol, h_ex, masses)
+    f_fd_j = _frequencies(mol, h_fd_j, masses)
+    gap_h = float(np.max(np.abs(h_fd - h_an)))
+    gap_f = float(max(abs(a - b) for a, b in zip(f_an, f_fd)))
+    fit_h = float(np.max(np.abs(h_ex - h_an)))
+    fit_f = float(max(abs(a - b) for a, b in zip(f_ex, f_an)))
+    j_only_h = float(np.max(np.abs(h_fd_j - h_an)))
+    print(
+        f"UHF-JK {system:12s} {basis_name:8s} E {mf.e_tot:.10f} <S2> {scf_jk['s_squared']:.4f} "
+        f"freqs {['%.1f' % f for f in f_an]} | FD-vs-analytic H {gap_h:.2e} freq {gap_f:.3f} cm-1 "
+        f"| exact-vs-RIJK H {fit_h:.2e} freq {fit_f:.2f} cm-1 | RIJ-only-vs-RIJK H {j_only_h:.2e} "
+        f"| an asym {an_asym:.1e} | lambda_min {scf_jk['stability']['lambda_min']:.3e}",
+        flush=True,
+    )
+    payload = {
+        "row": ROW_UHF_NAME,
+        "system": system,
+        "basis": basis_name,
+        "aux_basis": aux_name,
+        "charge": 0,
+        "multiplicity": mult,
+        "nao": mol.nao_nr(),
+        "nuclear_repulsion": float(mol.energy_nuc()),
+        "masses_amu": masses,
+        "hessian_layout": "3N x 3N Cartesian, row/col = 3*atom + xyz, Hartree/Bohr^2",
+        "frequency_convention": (
+            "harmonic_analysis(mass=masses_amu, imaginary_freq=False): ascending, "
+            "imaginary reported as negative, translations+rotations projected out"
+        ),
+        "energy": float(mf.e_tot),
+        "energy_exact": float(mf_exact.e_tot),
+        "energy_ri_j_only": float(mf_j.e_tot),
+        "scf": scf_jk,
+        "scf_exact": scf_ex,
+        "scf_ri_j_only": scf_j,
+        "gradient": np.asarray(mf.nuc_grad_method().kernel()).tolist(),
+        "hessian_analytic": h_an.tolist(),
+        "hessian_analytic_asymmetry": an_asym,
+        "freq_analytic_cm": f_an,
+        "hessian_fd": h_fd.tolist(),
+        "freq_fd_cm": f_fd,
+        "hessian_exact": h_ex.tolist(),
+        "hessian_exact_asymmetry": ex_asym,
+        "freq_exact_cm": f_ex,
+        "hessian_fd_ri_j_only": h_fd_j.tolist(),
+        "freq_fd_ri_j_only_cm": f_fd_j,
+        "fd": {
+            "fd_step_bohr": FD_STEP,
+            "fd_asymmetry_max": fd_asym,
+            "fd_ri_j_only_asymmetry_max": fdj_asym,
+            "fd_n_gradients": 6 * mol.natm,
+            "fd_worst_abs_energy_change": basin,
+            "fd_ri_j_only_worst_abs_energy_change": basin_j,
+        },
+        "pyscf_fd_vs_analytic_hessian_max_abs": gap_h,
+        "pyscf_fd_vs_analytic_freq_max_abs_cm": gap_f,
+        "exact_vs_ri_jk_hessian_max_abs": fit_h,
+        "exact_vs_ri_jk_freq_max_abs_cm": fit_f,
+        "ri_j_only_vs_ri_jk_hessian_max_abs": j_only_h,
+        "provenance": common.provenance(
+            code="PySCF",
+            version=pyscf.__version__,
+            keywords={
+                "method": "uhf",
+                "conv_tol": CONV_TOL,
+                "conv_tol_grad": CONV_TOL_GRAD,
+                "conv_tol_cpscf": CPHF_TOL,
+                "max_cycle": 500,
+                "eri": "RI-J + RI-K (UHF.density_fit(auxbasis), same auxiliary basis for J and K)",
+                "state": "common.run_open_shell: lowest internally stable UHF over guesses, "
+                "for each of the three Hamiltonians (fitted JK, exact, fitted J only)",
+                "analytic_hessian": (
+                    "mf.Hessian().kernel() of the density-fitted UHF "
+                    "(pyscf.df.hessian.uhf, auxbasis_response = 2), symmetrized"
+                ),
+                "fd_hessian": (
+                    f"central FD of the analytic DF UHF gradient, step {FD_STEP} Bohr, "
+                    f"displaced SCFs from the centre densities, |dE| <= {BASIN_TOL}, "
+                    "symmetrized"
+                ),
+                "fd_hessian_ri_j_only": (
+                    "the same FD for UHF.density_fit(only_dfj=True) (fitted J, exact K)"
+                ),
+                "negative_control": "plain exact-integral UHF mf.Hessian()",
+                "masses": "ferric_core::elements::ATOMIC_MASSES (IUPAC 2013 averages)",
+                "numpy": np.__version__,
+            },
+            basis_name=basis_name,
+            xyz_path=xyz,
+            coords_bohr=coords,
+            symbols=symbols,
+            grid=None,
+            aux=aux_name,
+            frozen_core=None,
+            scf_conv={"conv_tol": CONV_TOL, "conv_tol_grad": CONV_TOL_GRAD},
+            stability=scf_jk["stability"],
+            generator="scripts/validation/gen_df_hessian.py --uhf",
+            extra={"basis_self_check": basis_check, "aux_self_check": aux_check},
+        ),
+    }
+    if payload["scf"]["stability"]["internal_stable"] is not True:
+        raise RuntimeError(f"refusing to write {system}/{basis_name}: UNSTABLE state")
+    return _write_compact(system, basis_name, payload, ROW_UHF)
+
+
 def main() -> int:
     args = sys.argv[1:]
+    if "--uhf" in args:
+        args = [a for a in args if a != "--uhf"]
+        only = set(args)
+        written = [
+            _run_uhf(s, b, a, m) for s, b, a, m in SYSTEMS_UHF if not only or s in only
+        ]
+        for p in written:
+            print(f"  {p.relative_to(common.ROOT)} ({p.stat().st_size} bytes)")
+        print(f"GEN_DF_HESSIAN_UHF_DONE written={len(written)}")
+        return 0
     if "--jk" in args:
         args = [a for a in args if a != "--jk"]
         only = set(args)
