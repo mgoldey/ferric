@@ -25,6 +25,7 @@ use ferric_core::FerricError;
 use ferric_pbc::dense_aft::{DEFAULT_DENSE_AFT_MAX_BYTES, DEFAULT_DENSE_AFT_PRECISION};
 use ferric_pbc::drpa::DEFAULT_GAMMA_DRPA_QUAD_POINTS;
 use ferric_pbc::kcorr::DEFAULT_KDRPA_QUAD_POINTS;
+use ferric_pbc::kxcgrad::{kpoint_rks_gradient, KRksGradConfig, KXcGrid};
 use ferric_pbc::kstress::{kpoint_rhf_stress, kpoint_uhf_stress, KStressConfig};
 use ferric_pbc::rsgdf::auto_omega::auto_rsgdf_omega;
 use ferric_pbc::rsgdf::{DEFAULT_RANGE_SPLIT_LAMBDA, DEFAULT_RSGDF_OMEGA};
@@ -2227,6 +2228,14 @@ fn kpoint_result_base(
 enum KScfRef<'a> {
     Rhf(&'a KScfResult),
     Uhf(&'a KUScfResult),
+    /// Closed-shell KS: the SCF, the functional name and the energy's own grid
+    /// and AO truncation (the force rebuilds exactly that grid).
+    Rks {
+        scf: &'a KScfResult,
+        functional: &'a str,
+        grid: &'a PeriodicGridConfig,
+        ao_threshold: f64,
+    },
 }
 
 /// Analytic k-point forces / stress (`ferric_pbc::kgrad`, `::kstress`) of a
@@ -2259,15 +2268,36 @@ fn k_derivatives(
     };
     if s.derivs.gradient {
         let jk = kept.grad_jk(aux, rcfg)?;
-        let g = match scf {
+        let grad = match scf {
             KScfRef::Rhf(r) => {
                 kpoint_rhf_gradient(&s.cell, &s.prep, mesh, hcfg, &kept.hk, jk, r, s.exx, &gcfg)?
+                    .grad
             }
             KScfRef::Uhf(r) => {
                 kpoint_uhf_gradient(&s.cell, &s.prep, mesh, hcfg, &kept.hk, jk, r, s.exx, &gcfg)?
+                    .grad
+            }
+            KScfRef::Rks {
+                scf,
+                functional,
+                grid,
+                ao_threshold,
+            } => {
+                let rcfg = KRksGradConfig {
+                    grad: gcfg,
+                    grid: KXcGrid::Atom(grid.clone()),
+                    ao_threshold,
+                    // The SCF's own exxdiv: a hybrid's exact exchange feels it.
+                    exxdiv: Some(s.exx),
+                    ..Default::default()
+                };
+                kpoint_rks_gradient(
+                    &s.cell, &s.prep, mesh, hcfg, &kept.hk, jk, scf, functional, &rcfg,
+                )?
+                .grad
             }
         };
-        out.gradient = Some(g.grad);
+        out.gradient = Some(grad);
     }
     if s.derivs.stress {
         let jk = kept.stress_jk(aux, rcfg)?;
@@ -2277,6 +2307,11 @@ fn k_derivatives(
             }
             KScfRef::Uhf(r) => {
                 kpoint_uhf_stress(&s.cell, &s.prep, mesh, hcfg, &kept.hk, jk, r, s.exx, &scfg)?
+            }
+            KScfRef::Rks { .. } => {
+                return Err(FerricError::General(
+                    "internal: k-point RKS stress is not implemented".into(),
+                ))
             }
         };
         out.stress = Some(Array2::from_shape_fn((3, 3), |(a, b)| st.sigma[a][b]));
@@ -2507,18 +2542,14 @@ fn run_uhf_kpts(
 
 /// Capability check for the k-point Kohn-Sham bindings: the one place that
 /// names what k-point KS-DFT does not support yet. Widen it together with
-/// the driver (open shell, meta-GGA, range-separated hybrids, forces and
-/// stress are the known gaps). Called before any integral is built.
-fn check_kpoint_ks_support(
-    fname: &str,
-    functional: &str,
-    with_gradient: bool,
-    with_stress: bool,
-) -> PyResult<()> {
-    if with_gradient || with_stress {
+/// the driver (open shell, meta-GGA, range-separated hybrids and stress are
+/// the known gaps). Called before any integral is built.
+fn check_kpoint_ks_support(fname: &str, functional: &str, with_stress: bool) -> PyResult<()> {
+    if with_stress {
         return Err(val_err(format!(
-            "{fname}: k-point forces and stress are not implemented yet \
-             (with_gradient/with_stress are Gamma-point only: run_rks_gamma)"
+            "{fname}: with_stress is not implemented for k-point Kohn-Sham (the analytic \
+             k-point stress exists for run_rhf_kpts / run_uhf_kpts and, at the Gamma point, \
+             run_rks_gamma); with_gradient=True is supported"
         )));
     }
     ferric_pbc::dft::resolve_periodic_functional(functional)
@@ -2582,10 +2613,18 @@ struct PyKpointRksResult {
     #[pyo3(get)]
     auxbasis: Option<String>,
     timings_data: PbcTimings,
+    gradient_data: Option<Array2<f64>>,
 }
 
 #[pymethods]
 impl PyKpointRksResult {
+    /// Analytic nuclear gradient `dE/dR` (natoms x 3, Hartree/Bohr per cell,
+    /// rows in the Molecule's atom order; the force on ONE copy of each atom
+    /// in the supercell of the mesh) of the converged SCF, including the XC
+    /// term on the energy's own grid; `None` unless `with_gradient=True`.
+    fn gradient<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
+        opt_array(py, &self.gradient_data)
+    }
     /// Stage timings and counters (see `timings_dict`).
     #[getter]
     fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
@@ -2606,16 +2645,29 @@ fn krks_driver(
     functional: &str,
     grid: PeriodicGridConfig,
     scf: KScfConfig,
-) -> Result<(ferric_pbc::KRksResult, f64), FerricError> {
+) -> Result<(ferric_pbc::KRksResult, f64, Derivs), FerricError> {
     let mut cfg = ferric_pbc::KRksConfig::new(&s.cell, s.exx, functional);
     cfg.krhf.scf = scf;
     cfg.krhf.hcore = khcore_config(s);
     (cfg.krhf.jk, cfg.krhf.dense, cfg.krhf.rsgdf) =
         (kjk_kind(s), kdense_config(s), krsgdf_config(s));
     cfg.grid = grid;
-    let r = ferric_pbc::solve_krks(&s.cell, &s.prep, s.aux.as_ref(), mesh, &cfg)?;
+    let (r, kept) = ferric_pbc::solve_krks_keep(&s.cell, &s.prep, s.aux.as_ref(), mesh, &cfg)?;
     let madelung = mesh.madelung(&s.cell)?;
-    Ok((r, madelung))
+    let derivs = k_derivatives(
+        s,
+        mesh,
+        &kept,
+        &cfg.krhf.hcore,
+        &cfg.krhf.rsgdf,
+        KScfRef::Rks {
+            scf: &r.scf,
+            functional,
+            grid: &cfg.grid,
+            ao_threshold: cfg.xc.ao_threshold,
+        },
+    )?;
+    Ok((r, madelung, derivs))
 }
 
 /// Closed-shell **k-point RKS** (LDA / GGA / global hybrids) on a
@@ -2623,8 +2675,12 @@ fn krks_driver(
 /// `run_rhf_kpts`; functional and grid (`n_radial`, `n_angular`,
 /// `neighbour_cutoff` in Å) as `run_rks_gamma`. Refused with a ValueError
 /// naming the gap: open shell (k-point UKS/ROKS not implemented),
-/// meta-GGA, range-separated hybrids, VV10, `with_gradient`/`with_stress`
-/// (k-point forces and stress not implemented). A 1x1x1 Gamma mesh equals
+/// meta-GGA, range-separated hybrids, VV10 and `with_stress` (the k-point KS
+/// stress is not implemented). `with_gradient=True` computes the analytic
+/// nuclear gradient (`result.gradient()`, natoms x 3, dE/dR in Hartree/Bohr
+/// per cell, the force on ONE copy of each atom of the mesh's supercell; XC on
+/// the energy's own grid; a hybrid uses the SCF's exxdiv) on the J/K the SCF
+/// ran on; `range_split` with it is a ValueError. A 1x1x1 Gamma mesh equals
 /// `run_rks_gamma` and an N-point mesh equals the N-fold supercell / N.
 ///
 /// Validated vs crates/ferric-pbc/tests/pbc_krks.rs (PySCF 2.13 KRKS).
@@ -2663,7 +2719,7 @@ fn run_rks_kpts(
     gdf_omega: Option<f64>,
 ) -> PyResult<PyKpointRksResult> {
     let fname = "run_rks_kpts";
-    check_kpoint_ks_support(fname, functional, with_gradient, with_stress)?;
+    check_kpoint_ks_support(fname, functional, with_stress)?;
     let mut s = pbc_setup(&PbcArgs {
         fname,
         mol,
@@ -2678,11 +2734,15 @@ fn run_rks_kpts(
         memory_budget_gb,
         closed_shell: true,
     })?;
+    s.derivs = DerivRequest {
+        gradient: with_gradient,
+        stress: false,
+    };
     s.range_split = parse_range_split(fname, range_split, s.aux.is_some(), s.derivs)?;
     let m = k_mesh(&s, mesh, centring)?;
     let grid = periodic_grid(fname, n_radial, n_angular, neighbour_cutoff)?;
     let scf = kscf_config(fname, max_iter, energy_conv, grad_conv)?;
-    let (r, madelung) = py
+    let (r, madelung, derivs) = py
         .allow_threads(|| krks_driver(&s, &m, functional, grid, scf))
         .map_err(pbc_err(fname))?;
     let n = m.n();
@@ -2715,6 +2775,7 @@ fn run_rks_kpts(
         jk: s.jk_name(),
         auxbasis: s.aux_name.clone(),
         timings_data: r.scf.timings,
+        gradient_data: derivs.gradient,
     })
 }
 

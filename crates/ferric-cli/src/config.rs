@@ -5312,22 +5312,15 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
             if route.correlated() {
                 return Err(format!(
                     "method.task = \"optimize\" with [cell] is implemented for the SCF routes \
-                     (rhf, uhf, rohf, ksdft at the Gamma point; rhf, uhf at a k-point mesh) \
-                     only: periodic {} has no analytic gradient",
+                     (rhf, uhf, rohf, ksdft at the Gamma point; rhf, uhf, ksdft (closed-shell \
+                     RKS) at a k-point mesh) only: periodic {} has no analytic gradient",
                     route.label()
                 ));
             }
-            // The other k-point routes are refused at the energy level
-            // (`check_kpoint_support`) or are correlated (refused above), so
-            // closed-shell Kohn-Sham is the one that reaches this point.
-            if kpoints && route == PeriodicRoute::Rks {
-                return Err(
-                    "method.task = \"optimize\" with [cell] kmesh is implemented for the k-point \
-                     HF routes (rhf, uhf) only: k-point Kohn-Sham (RKS) has no analytic force. \
-                     Remove kmesh to optimize at the Gamma point"
-                        .into(),
-                );
-            }
+            // The other k-point routes (UKS, ROKS, ROHF, meta-GGA, range-separated
+            // hybrids) are refused at the energy level (`check_kpoint_support`)
+            // or are correlated (refused above), so k-point RHF, UHF and
+            // closed-shell RKS are what reach this point.
             if let Some(s) = cfg.optimize.coordinates.as_deref() {
                 if parse_coord_system(s)? != ferric_scf::optimize::CoordSystem::Cartesian {
                     return Err(
@@ -5721,21 +5714,51 @@ kind = "ccsd"
     }
 
     #[test]
-    fn k_point_optimize_resolves_for_hf_routes() {
-        for (kind, route) in [("rhf", PeriodicRoute::Rhf), ("uhf", PeriodicRoute::Uhf)] {
+    fn k_point_optimize_resolves_for_hf_and_closed_shell_ks_routes() {
+        for (kind, route) in [
+            ("rhf", PeriodicRoute::Rhf),
+            ("uhf", PeriodicRoute::Uhf),
+            ("ksdft", PeriodicRoute::Rks),
+        ] {
             let p = ok(&opt(kind, "kmesh = [1, 1, 2]", ""));
             assert!(p.optimize && p.kmesh.is_some(), "{kind}");
             assert_eq!(p.route, route, "{kind}");
+        }
+        // Global hybrids and GGAs, dense or RS-GDF J/K.
+        let rsgdf = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"\nkmesh = [1, 1, 2]";
+        for f in ["PBE", "PBE0", "B3LYP"] {
+            let dft = format!("[dft]\nfunctional = \"{f}\"");
+            for cell in ["kmesh = [1, 1, 2]", rsgdf] {
+                let p = ok(&opt("ksdft", cell, &dft));
+                assert!(p.optimize && p.kmesh.is_some(), "{f} {cell}");
+                assert_eq!(p.route, PeriodicRoute::Rks, "{f} {cell}");
+                assert_eq!(p.functional.as_deref(), Some(f), "{f} {cell}");
+            }
         }
     }
 
     #[test]
     fn k_point_optimize_refusals_stay() {
-        let e = err(&opt("ksdft", "kmesh = [1, 1, 2]", ""));
-        assert!(
-            e.contains("k-point Kohn-Sham (RKS) has no analytic force"),
-            "{e}"
-        );
+        // Meta-GGA and range-separated hybrids at a mesh keep their energy-level
+        // refusals under task = "optimize" (named by the library resolver).
+        let e = err(&opt(
+            "ksdft",
+            "kmesh = [1, 1, 2]",
+            "[dft]\nfunctional = \"SCAN\"",
+        ));
+        assert!(e.contains("meta-GGA") && e.contains("kmesh"), "{e}");
+        let e = err(&opt(
+            "ksdft",
+            "kmesh = [1, 1, 2]",
+            "[dft]\nfunctional = \"HSE06\"",
+        ));
+        assert!(e.contains("range-separated") && e.contains("kmesh"), "{e}");
+        let e = err(&opt(
+            "rohf",
+            "kmesh = [1, 1, 2]",
+            "[dft]\nfunctional = \"PBE\"",
+        ));
+        assert!(e.contains("ROKS") && e.contains("not implemented"), "{e}");
         // ROHF and open-shell KS at a mesh are refused at the energy level.
         let e = err(&opt("rohf", "kmesh = [1, 1, 2]", ""));
         assert!(e.contains("not supported for periodic ROHF"), "{e}");

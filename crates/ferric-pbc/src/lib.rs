@@ -231,7 +231,10 @@ pub use kcorr::{
     KMp2Config, KMp2Result,
 };
 pub use kdense_aft::{KDenseAftConfig, KDenseAftEri, KDenseAftJk};
-pub use kdft::{solve_krks, solve_krks_on_grid, KPeriodicXc, KRksConfig, KRksResult};
+pub use kdft::{
+    solve_krks, solve_krks_keep, solve_krks_keep_on_grid, solve_krks_on_grid, KPeriodicXc,
+    KRksConfig, KRksResult,
+};
 pub use kgrad::{
     kpoint_rhf_gradient, kpoint_uhf_gradient, KGradConfig, KGradJk, KGradParts, KGradient,
     KRsGdfGradSource,
