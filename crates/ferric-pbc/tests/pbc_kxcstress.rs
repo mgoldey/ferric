@@ -1209,8 +1209,7 @@ fn refusals_and_the_fock_guard() {
     let ok = run("PBE", &fx.res.scf).unwrap();
     assert!(ok.hf.fock_mismatch < 1e-12, "{:e}", ok.hf.fock_mismatch);
     let wrong = run("LDA", &fx.res.scf)
-        .err()
-        .expect("wrong functional")
+        .expect_err("wrong functional")
         .to_string();
     eprintln!("wrong functional: {wrong}");
     assert!(wrong.contains("differs"));
@@ -1580,7 +1579,7 @@ fn rotated_case(
     cfg.krhf.jk = KJkKind::RsGdf;
     let mut kc = kgdf_cfg();
     kc.gdf.sr_column_rotation = rot;
-    cfg.krhf.rsgdf = kc.clone();
+    cfg.krhf.rsgdf = kc;
     let grid = PeriodicGrid::uniform(cell, [30; 3]).unwrap();
     let res = solve_krks_on_grid(cell, &prep, Some(&aux), &mesh, &grid, &cfg).unwrap();
     if !want_stress {

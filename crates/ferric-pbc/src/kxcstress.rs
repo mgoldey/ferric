@@ -60,7 +60,7 @@
 //! * **Atom-centred grid** ([`crate::dft::PeriodicGrid::build`]): the anchor is
 //!   the home atom (the point moves with it, offset unstrained, so `w_rl` is
 //!   unchanged) and the weight response is the SSF partition derivative of
-//!   [`crate::dft::build_strain_grid`] (k-independent, `m(W)`/`dW/dε` per point).
+//!   `dft::build_strain_grid` (k-independent, `dW/dε` per point).
 //!   The grid is built from lab-fixed Lebedev offsets, so the ENERGY is not
 //!   invariant under a rigid rotation of the cell and the stress carries an
 //!   antisymmetric part `σ_ab − σ_ba` that vanishes only as the grid is
@@ -68,7 +68,13 @@
 //!   of the nine components reproduces it, the antisymmetric part included);
 //!   [`KRksStress::sigma`] is returned UNSYMMETRISED and
 //!   [`KRksStress::symmetric`] / [`KRksStress::antisymmetry`] are the
-//!   diagnostics (the Gamma convention).
+//!   diagnostics (the Gamma convention). Measured `max|σ_ab − σ_ba|` for H2 in
+//!   the 4 Bohr cube (1x1x3, PBE; `|σ|` is about 6e-3 Ha/Bohr³): 1.1e-4 on a
+//!   (20, 50) grid, 7.1e-5 (30, 110), 7.8e-5 (40, 110), 7.6e-6 on the default
+//!   (75, 302); 4e-19 on a uniform grid. The 1x1x3 mesh and the explicit
+//!   supercell give the identical number (1.14e-4 at (20, 50)), so it is a
+//!   property of the grid, not of the k sampling. A cell optimizer should use
+//!   [`KRksStress::symmetric`] on a grid at least as fine as the default.
 //!
 //! The grid, its weights and `dW/dε` do not depend on `k`; the AO list, the
 //! per-shell extents, the density gates (`ρ > DENSITY_FLOOR`) and the `ε_g`
@@ -85,7 +91,7 @@
 //! `40·nbf·N_k·chunk` complex values (`φ`, `∇φ`, `m1` (9), `m2` (27) for every
 //! k) plus six `nbf·chunk` work planes and a partial `V_xc`; the chunk shrinks
 //! with `N_k·nbf`, the number of concurrent chunks with the remaining budget,
-//! and the pass is pre-flighted on a [`crate::budget::Ledger`] (typed error
+//! and the pass is pre-flighted on the memory ledger (typed error
 //! when not even one chunk fits). The strain-grid derivatives (`npts·96` B) are
 //! reserved with the points.
 //!
