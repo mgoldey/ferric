@@ -130,7 +130,6 @@ fn value(stdout: &str, key: &str) -> String {
         .split('=')
         .nth(1)
         .unwrap()
-        .trim()
         .split_whitespace()
         .next()
         .unwrap()

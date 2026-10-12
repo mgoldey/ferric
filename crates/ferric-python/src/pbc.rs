@@ -2243,6 +2243,9 @@ fn k_derivatives(
     scf: KScfRef<'_>,
 ) -> Result<Derivs, FerricError> {
     let mut out = Derivs::default();
+    if !s.derivs.any() {
+        return Ok(out);
+    }
     let aux = s.aux.as_ref();
     let gcfg = KGradConfig {
         budget_bytes: s.budget_bytes,
@@ -2302,11 +2305,7 @@ fn krhf_driver(
     (cfg.jk, cfg.dense, cfg.rsgdf) = (kjk_kind(s), kdense_config(s), krsgdf_config(s));
     let (r, kept) = solve_krhf_keep(&s.cell, &s.prep, s.aux.as_ref(), mesh, &cfg)?;
     let madelung = mesh.madelung(&s.cell)?;
-    let derivs = if s.derivs.any() {
-        k_derivatives(s, mesh, &kept, &cfg.hcore, &cfg.rsgdf, KScfRef::Rhf(&r))?
-    } else {
-        Derivs::default()
-    };
+    let derivs = k_derivatives(s, mesh, &kept, &cfg.hcore, &cfg.rsgdf, KScfRef::Rhf(&r))?;
     Ok((r, madelung, derivs))
 }
 
@@ -2410,11 +2409,7 @@ fn kuhf_driver(
     (cfg.jk, cfg.dense, cfg.rsgdf) = (kjk_kind(s), kdense_config(s), krsgdf_config(s));
     cfg.budget_bytes = s.budget_bytes;
     let (r, kept) = solve_kuhf_keep(&s.cell, &s.prep, s.aux.as_ref(), mesh, &cfg)?;
-    let derivs = if s.derivs.any() {
-        k_derivatives(s, mesh, &kept, &cfg.hcore, &cfg.rsgdf, KScfRef::Uhf(&r.scf))?
-    } else {
-        Derivs::default()
-    };
+    let derivs = k_derivatives(s, mesh, &kept, &cfg.hcore, &cfg.rsgdf, KScfRef::Uhf(&r.scf))?;
     Ok((r, derivs))
 }
 

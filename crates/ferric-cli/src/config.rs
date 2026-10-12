@@ -5718,19 +5718,26 @@ kind = "ccsd"
     }
 
     #[test]
-    fn optimize_is_refused_with_a_kmesh_and_for_correlated_routes() {
-        // k-point RHF/UHF optimize resolves (analytic k-point forces); KS has none.
+    fn k_point_optimize_resolves_for_hf_routes() {
         for (kind, route) in [("rhf", PeriodicRoute::Rhf), ("uhf", PeriodicRoute::Uhf)] {
             let p = ok(&opt(kind, "kmesh = [1, 1, 2]", ""));
             assert!(p.optimize && p.kmesh.is_some(), "{kind}");
             assert_eq!(p.route, route, "{kind}");
         }
+    }
+
+    #[test]
+    fn k_point_optimize_refusals_stay() {
         let e = err(&opt("ksdft", "kmesh = [1, 1, 2]", ""));
         assert!(e.contains("optimize") && e.contains("kmesh"), "ksdft: {e}");
         assert!(e.contains("no analytic force"), "ksdft: {e}");
-        // A range split and an "auto" ω stay refused with optimize at a mesh.
+        // A range split stays refused with optimize at a mesh.
         let rs = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"\nkmesh = [1, 1, 2]\nrange_split = true";
         assert!(err(&opt("rhf", rs, "")).contains("optimize"));
+    }
+
+    #[test]
+    fn optimize_is_refused_for_correlated_routes_and_frequencies() {
         for kind in ["rimp2", "pdep-rpa"] {
             let e = err(&opt(kind, "denominators = \"shifted\"", ""));
             assert!(
@@ -5742,25 +5749,24 @@ kind = "ccsd"
         assert!(err(&freq).contains("not implemented for periodic"));
     }
 
-    #[test]
-    fn shipped_periodic_examples_resolve() {
+    fn shipped_plan(name: &str) -> PeriodicPlan {
         let root = super::tests::runtime_workspace_root();
-        for name in ["h2-cell-rhf.toml", "h2-cell-kpts-rhf.toml"] {
-            let src = std::fs::read_to_string(root.join("examples").join(name))
-                .unwrap_or_else(|e| panic!("{name}: {e}"));
-            let p = ok(&src);
-            assert_eq!(p.route, PeriodicRoute::Rhf, "{name}");
-        }
-        let name = "h2-cell-rks-opt.toml";
         let src = std::fs::read_to_string(root.join("examples").join(name))
             .unwrap_or_else(|e| panic!("{name}: {e}"));
-        let p = ok(&src);
+        ok(&src)
+    }
+
+    #[test]
+    fn shipped_periodic_examples_resolve() {
+        for name in ["h2-cell-rhf.toml", "h2-cell-kpts-rhf.toml"] {
+            assert_eq!(shipped_plan(name).route, PeriodicRoute::Rhf, "{name}");
+        }
+        let name = "h2-cell-rks-opt.toml";
+        let p = shipped_plan(name);
         assert_eq!(p.route, PeriodicRoute::Rks, "{name}");
         assert!(p.optimize && p.kmesh.is_none(), "{name}");
         let name = "h2-cell-kpts-rhf-opt.toml";
-        let src = std::fs::read_to_string(root.join("examples").join(name))
-            .unwrap_or_else(|e| panic!("{name}: {e}"));
-        let p = ok(&src);
+        let p = shipped_plan(name);
         assert_eq!(p.route, PeriodicRoute::Rhf, "{name}");
         assert!(p.optimize && p.kmesh.is_some(), "{name}");
     }
