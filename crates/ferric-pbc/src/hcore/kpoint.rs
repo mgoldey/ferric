@@ -135,6 +135,17 @@ pub struct PeriodicHcoreK {
 }
 
 impl PeriodicHcoreK {
+    /// Bytes the per-k matrices (`S`, `T`, `V`, `V_ECP`, `h`) keep resident.
+    pub fn resident_bytes(&self) -> usize {
+        let c = std::mem::size_of::<Complex64>();
+        let sum = |v: &[Array2<Complex64>]| v.iter().map(|m| m.len() * c).sum::<usize>();
+        sum(&self.s)
+            + sum(&self.t)
+            + sum(&self.v)
+            + sum(&self.h)
+            + self.v_ecp.as_deref().map_or(0, sum)
+    }
+
     /// Record the SR-rotation counter `k hcore SR rotated columns` (0 = the
     /// unrotated walk) on `t`.
     pub fn record_stats(&self, t: &mut crate::timing::PbcTimings) {

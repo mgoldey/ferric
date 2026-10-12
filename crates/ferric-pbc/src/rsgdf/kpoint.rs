@@ -1300,6 +1300,18 @@ fn hermitize_pairs(j3: &mut Array2<C64>, n: usize) {
 }
 
 impl KRsGdf {
+    /// Bytes the fitted 3-index tensors and the overlaps keep resident.
+    pub fn resident_bytes(&self) -> usize {
+        let c = std::mem::size_of::<C64>();
+        let b: usize = self
+            .blocks
+            .iter()
+            .flat_map(|q| q.b.iter())
+            .map(|m| m.len() * c)
+            .sum();
+        b + self.s.iter().map(|m| m.len() * c).sum::<usize>()
+    }
+
     /// Build the per-q fitted tensors for `mesh` on `cell`: orbital basis
     /// `obs` (built from `cell.mol()`), aux `aux` (any centres, as
     /// [`super::RsGdf::build`]), `s_k` = `S(k)` per mesh point (G = 0 term

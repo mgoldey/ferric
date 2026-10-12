@@ -223,13 +223,13 @@ pub use kgrad::{
 pub use kpts::{KPointMesh, MeshCentring};
 pub use kscf::{
     complex_canonical_orthogonalizer, complex_canonical_orthogonalizer_with_stats, solve_krhf,
-    solve_krhf_injected, solve_krks_injected, KJkKind, KPointInjection, KPointJk, KPointXc,
-    KRhfConfig, KScfConfig, KScfResult,
+    solve_krhf_injected, solve_krhf_keep, solve_krks_injected, KJkKind, KPointInjection, KPointJk,
+    KPointXc, KRetained, KRetainedJk, KRhfConfig, KScfConfig, KScfResult,
 };
 pub use kuks::{solve_kuks, solve_kuks_on_grid, KUksConfig, KUksResult};
 pub use kuscf::{
-    kuhf_gap_report, solve_kuhf, solve_kuhf_injected, solve_kuhf_injected_with_guess, KUScfResult,
-    KUhfConfig, KUhfResult,
+    kuhf_gap_report, solve_kuhf, solve_kuhf_injected, solve_kuhf_injected_with_guess,
+    solve_kuhf_keep, KUScfResult, KUhfConfig, KUhfResult,
 };
 pub use lattice::Cell;
 pub use lindep::{

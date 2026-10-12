@@ -43,6 +43,10 @@ use ferric_pbc::{
     gamma_uhf_gradient_with, gamma_uks_gradient_rsgdf, gamma_uks_gradient_with, GammaGradConfig,
     RsGdfGradSource,
 };
+use ferric_pbc::{
+    kpoint_rhf_gradient, kpoint_uhf_gradient, solve_krhf_keep, solve_kuhf_keep, KGradConfig,
+    KRetained,
+};
 use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::RhfConfig;
 use ferric_scf::screening::SchwarzBounds;
@@ -115,7 +119,7 @@ pub fn run_periodic(cfg: &Config) {
         );
     }
     let out = if plan.optimize {
-        run_gamma_optimize(cfg, plan, &s)
+        run_periodic_optimize(cfg, plan, &s)
     } else if plan.kmesh.is_some() {
         match plan.route {
             PeriodicRoute::Rhf => run_krhf(cfg, plan, &s),
@@ -1227,15 +1231,20 @@ fn print_lindep(l: &ferric_pbc::LindepReport) {
 }
 
 /// k-point RHF: `(result, mesh Madelung constant)`.
+fn krhf_config(plan: &PeriodicPlan, s: &Setup) -> KRhfConfig {
+    let mut c = KRhfConfig::for_cell(&s.cell, plan.exxdiv);
+    c.scf = kscf_config(plan);
+    c.hcore = khcore_config(plan, s);
+    (c.jk, c.dense, c.rsgdf) = (kjk_kind(s), kdense_config(plan), krsgdf_config(plan));
+    c
+}
+
 fn krhf_driver(
     plan: &PeriodicPlan,
     s: &Setup,
     mesh: &KPointMesh,
 ) -> Result<(KScfResult, f64), FerricError> {
-    let mut c = KRhfConfig::for_cell(&s.cell, plan.exxdiv);
-    c.scf = kscf_config(plan);
-    c.hcore = khcore_config(plan, s);
-    (c.jk, c.dense, c.rsgdf) = (kjk_kind(s), kdense_config(plan), krsgdf_config(plan));
+    let c = krhf_config(plan, s);
     let r = solve_krhf(&s.cell, &s.prep, s.aux.as_ref(), mesh, &c)?;
     let v_m = mesh.madelung(&s.cell)?;
     Ok((r, v_m))
@@ -1319,17 +1328,99 @@ fn run_krks(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
     }
 }
 
-fn kuhf_driver(
-    plan: &PeriodicPlan,
-    s: &Setup,
-    mesh: &KPointMesh,
-) -> Result<ferric_pbc::KUhfResult, FerricError> {
+fn kuhf_config(plan: &PeriodicPlan, s: &Setup) -> KUhfConfig {
     let mut c = KUhfConfig::for_cell(&s.cell, plan.exxdiv);
     (c.scf, c.ewald_start) = (kscf_config(plan), plan.ewald_start);
     c.hcore = khcore_config(plan, s);
     (c.jk, c.dense, c.rsgdf) = (kjk_kind(s), kdense_config(plan), krsgdf_config(plan));
     c.budget_bytes = budget_bytes(plan);
-    solve_kuhf(&s.cell, &s.prep, s.aux.as_ref(), mesh, &c)
+    c
+}
+
+fn kuhf_driver(
+    plan: &PeriodicPlan,
+    s: &Setup,
+    mesh: &KPointMesh,
+) -> Result<ferric_pbc::KUhfResult, FerricError> {
+    solve_kuhf(
+        &s.cell,
+        &s.prep,
+        s.aux.as_ref(),
+        mesh,
+        &kuhf_config(plan, s),
+    )
+}
+
+/// k-point energy and analytic force (`kpoint_rhf_gradient` /
+/// `kpoint_uhf_gradient`) of one geometry, through the hcore output and J/K
+/// object the SCF ran on (`solve_k*_keep`). The SCF must converge: a force at
+/// a non-stationary density is meaningless.
+fn k_energy_and_gradient(
+    plan: &PeriodicPlan,
+    s: &Setup,
+) -> Result<(f64, ndarray::Array2<f64>), FerricError> {
+    let Some((n, c)) = plan.kmesh else {
+        return Err(FerricError::General(
+            "internal: k-point gradient without kmesh".into(),
+        ));
+    };
+    let mesh = KPointMesh::new(&s.cell, n, c)?;
+    // The retained hcore and J/K are charged against the same budget.
+    let gcfg_for = |kept: &KRetained| KGradConfig {
+        budget_bytes: Some(kept.derivative_budget(budget_bytes(plan))),
+        ..Default::default()
+    };
+    let not_converged = |it: usize, e: f64| {
+        FerricError::Convergence(format!(
+            "the k-point {} SCF did not converge in {it} iterations during the optimization \
+             (last E = {e}); a gradient at a non-stationary density is meaningless",
+            plan.route.label()
+        ))
+    };
+    match plan.route {
+        PeriodicRoute::Rhf => {
+            let c = krhf_config(plan, s);
+            let (r, kept) = solve_krhf_keep(&s.cell, &s.prep, s.aux.as_ref(), &mesh, &c)?;
+            if !r.converged {
+                return Err(not_converged(r.iterations, r.energy));
+            }
+            let g = kpoint_rhf_gradient(
+                &s.cell,
+                &s.prep,
+                &mesh,
+                &c.hcore,
+                &kept.hk,
+                kept.grad_jk(s.aux.as_ref(), &c.rsgdf)?,
+                &r,
+                plan.exxdiv,
+                &gcfg_for(&kept),
+            )?;
+            Ok((r.energy, g.grad))
+        }
+        PeriodicRoute::Uhf => {
+            let c = kuhf_config(plan, s);
+            let (r, kept) = solve_kuhf_keep(&s.cell, &s.prep, s.aux.as_ref(), &mesh, &c)?;
+            if !r.scf.converged {
+                return Err(not_converged(r.scf.iterations, r.scf.energy));
+            }
+            let g = kpoint_uhf_gradient(
+                &s.cell,
+                &s.prep,
+                &mesh,
+                &c.hcore,
+                &kept.hk,
+                kept.grad_jk(s.aux.as_ref(), &c.rsgdf)?,
+                &r.scf,
+                plan.exxdiv,
+                &gcfg_for(&kept),
+            )?;
+            Ok((r.scf.energy, g.grad))
+        }
+        other => Err(FerricError::General(format!(
+            "internal: k-point {} has no analytic force",
+            other.label()
+        ))),
+    }
 }
 
 fn run_kuhf(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
@@ -1743,14 +1834,14 @@ fn gamma_energy_and_gradient(
     Ok((energy, g.grad))
 }
 
-/// `task = "optimize"` at the Gamma point: the analytic periodic force of the
+/// `task = "optimize"`: at the Gamma point the analytic periodic force of the
 /// route (`ferric_pbc::grad`: RHF/UHF/ROHF/RKS/UKS/ROKS on dense-AFT or
-/// RS-GDF J/K) fed to ferric's Cartesian BFGS (`optimize_coordinates`) at a
-/// FIXED lattice (atoms only; no stress / lattice relaxation). Each step
+/// RS-GDF J/K); with `kmesh` the k-point RHF/UHF force (`ferric_pbc::kgrad`) fed to ferric's
+/// Cartesian BFGS (`optimize_coordinates`) at a FIXED lattice (atoms only; no stress / lattice relaxation). Each step
 /// rebuilds the cell, basis, hcore and J/K at the new positions and runs a
-/// fresh SCF, which must converge. k-point meshes are refused by
-/// `periodic_plan` (k-point forces are not wired).
-fn run_gamma_optimize(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
+/// fresh SCF, which must converge. `periodic_plan` refuses every route without
+/// an analytic force at the requested point (k-point KS, ROHF, correlation).
+fn run_periodic_optimize(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
     use ferric_scf::optimize::{optimize_coordinates, CoordSystem, OptimizeConfig};
     let opt_config = OptimizeConfig {
         max_steps: cfg.optimize.max_steps.unwrap_or(100),
@@ -1774,15 +1865,24 @@ fn run_gamma_optimize(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
     let mut evaluated: Vec<(Vec<f64>, Vec<f64>)> = Vec::new();
     let energy_and_gradient = |x: &[f64]| -> Result<(f64, Vec<f64>), FerricError> {
         let st = setup_at(plan, s, at(x))?;
-        let sys = gamma_system(plan, &st, true)?;
-        let (e, g) = gamma_energy_and_gradient(plan, &st, &sys)?;
+        let (e, g) = if plan.kmesh.is_some() {
+            k_energy_and_gradient(plan, &st)?
+        } else {
+            let sys = gamma_system(plan, &st, true)?;
+            gamma_energy_and_gradient(plan, &st, &sys)?
+        };
         let g: Vec<f64> = g.iter().copied().collect();
         evaluated.push((x.to_vec(), g.clone()));
         Ok((e, g))
     };
     print_header(cfg, plan, s);
     println!(
-        "  task       = optimize (Cartesian BFGS, fixed lattice, analytic Gamma {} gradient)",
+        "  task       = optimize (Cartesian BFGS, fixed lattice, analytic {} {} gradient)",
+        if plan.kmesh.is_some() {
+            "k-point"
+        } else {
+            "Gamma"
+        },
         plan.route.label()
     );
     let (x, energy, steps, converged) =

@@ -170,7 +170,7 @@ fn unsupported_kpoint_ks_combinations_are_refused_by_name() {
     assert!(!out.status.success());
     let e = String::from_utf8_lossy(&out.stderr);
     assert!(
-        e.contains("optimize") && e.contains("k-point forces"),
+        e.contains("optimize") && e.contains("has no analytic force"),
         "{e}"
     );
 }

@@ -427,6 +427,13 @@ fn herm(p: &Array2<Complex64>) -> Array2<Complex64> {
 }
 
 impl KDenseAftEri {
+    /// Bytes the two kernels and the overlaps keep resident.
+    pub fn resident_bytes(&self) -> usize {
+        let c = std::mem::size_of::<Complex64>();
+        let sum = |v: &[Array2<Complex64>]| v.iter().map(|m| m.len() * c).sum::<usize>();
+        sum(&self.jker) + sum(&self.kker) + sum(&self.s)
+    }
+
     /// Build the kernels for `mesh` on `cell` in the AO basis `prep` (built
     /// from `cell.mol()`); `s_k` = `S(k)` per mesh point (for the Madelung
     /// term only).

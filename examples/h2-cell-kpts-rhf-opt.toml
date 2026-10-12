@@ -1,0 +1,33 @@
+# Periodic k-point RHF geometry optimization: stretched H2 / STO-3G (1.0
+# Angstrom) in a 4 Angstrom simple-cubic cell on a 1x1x3 Gamma-centred k-mesh.
+#
+# task = "optimize" with [cell] kmesh relaxes the ATOMS at a FIXED lattice with
+# the analytic k-point force (ferric_pbc::kgrad: kmesh with method.kind = "rhf"
+# or "uhf", dense or rsgdf J/K) and ferric's Cartesian BFGS. Every step
+# rebuilds the lattice sums and J/K at the new positions and runs a fresh k-point
+# SCF, which must converge. The run prints the final geometry and the final
+# gradient dE/dR (Hartree/Bohr per cell). k-point Kohn-Sham, ROHF and the
+# correlated routes have no k-point force and are refused; there is no lattice
+# relaxation.
+#
+# Seconds to run:
+#   OPENBLAS_NUM_THREADS=1 cargo run --release --bin ferric -- examples/h2-cell-kpts-rhf-opt.toml
+
+[molecule]
+xyz = "testdata/molecules/h2_stretched.xyz"
+
+[basis]
+name = "sto-3g"
+
+[method]
+kind = "rhf"
+task = "optimize"
+
+[cell]
+lattice = [[4.0, 0.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 4.0]]
+kmesh = [1, 1, 3]
+exxdiv = "ewald"
+jk = "dense"
+
+[optimize]
+max_steps = 30
