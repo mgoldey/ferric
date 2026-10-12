@@ -147,11 +147,47 @@ fn aux_at(m: &Molecule, aux: &str) -> PreparedBasis {
 }
 
 fn setup(mol: &Molecule, basis_name: &str, j_aux: &str, k_aux: &str) -> Setup {
+    setup_with(mol, basis_name, j_aux, k_aux, false)
+}
+
+/// With `break_symmetry`, the SCF is restarted from the symmetric solution's
+/// HOMO/LUMO mixed with opposite signs for the two spins and must land on a
+/// broken-symmetry solution (lower energy, D_alpha != D_beta).
+fn setup_with(
+    mol: &Molecule,
+    basis_name: &str,
+    j_aux: &str,
+    k_aux: &str,
+    break_symmetry: bool,
+) -> Setup {
     let prep = prep_at(mol, basis_name);
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let cfg = scf_config(j_aux, k_aux);
-    let uhf = solve_uhf(&ParallelContext::default(), mol, &prep, &bounds, &cfg).unwrap();
+    let ctx = ParallelContext::default();
+    let mut uhf = solve_uhf(&ctx, mol, &prep, &bounds, &cfg).unwrap();
+    if break_symmetry {
+        let e_sym = uhf.energy;
+        let occ = nocc(mol);
+        assert_eq!(occ[0], occ[1], "a singlet");
+        let h = std::f64::consts::FRAC_1_SQRT_2;
+        let mut ca = uhf.mos_alpha.clone();
+        let mut cb = uhf.mos_beta.clone().unwrap();
+        let (homo, lumo) = (occ[0] - 1, occ[0]);
+        let (a, b) = (ca.column(homo).to_owned(), ca.column(lumo).to_owned());
+        ca.column_mut(homo).assign(&((&a + &b) * h));
+        cb.column_mut(homo).assign(&((&a - &b) * h));
+        uhf = solve_uhf_with_guess(&ctx, mol, &prep, &bounds, &cfg, Some((&ca, &cb))).unwrap();
+        let dd = max_abs_diff(&uhf.density_alpha, uhf.density_beta.as_ref().unwrap());
+        eprintln!(
+            "broken symmetry: E {:.10} vs symmetric {e_sym:.10}, max|D_a - D_b| {dd:.3}",
+            uhf.energy
+        );
+        assert!(
+            uhf.energy < e_sym - 1e-3 && dd > 0.05,
+            "not broken symmetry"
+        );
+    }
     assert!(uhf.converged, "{basis_name}: UHF did not converge");
     if j_aux.is_empty() && k_aux.is_empty() {
         assert!(uhf.df_jk.is_none(), "exact SCF carries no route");
@@ -770,10 +806,21 @@ fn fd_own_gradient(s: &Setup) -> Array2<f64> {
 const BAR_OWN: f64 = 1e-8;
 
 fn check_full(mol: &Molecule, basis_name: &str, j_aux: &str, k_aux: &str, tol: f64) -> f64 {
+    check_full_with(mol, basis_name, j_aux, k_aux, tol, false)
+}
+
+fn check_full_with(
+    mol: &Molecule,
+    basis_name: &str,
+    j_aux: &str,
+    k_aux: &str,
+    tol: f64,
+    break_symmetry: bool,
+) -> f64 {
     if !has_deriv2() {
         return 0.0;
     }
-    let s = setup(mol, basis_name, j_aux, k_aux);
+    let s = setup_with(mol, basis_name, j_aux, k_aux, break_symmetry);
     for aux in [&j_aux, &k_aux] {
         if !aux.is_empty() {
             let (lmin, lmax, clean) = clean_gap(mol, aux);
@@ -873,6 +920,29 @@ fn full_hessian_matches_fd_ch3_ccpvdz_jkfit() {
         "def2-universal-jkfit",
         BAR_OWN,
     );
+}
+
+#[test]
+fn broken_symmetry_singlet_with_unequal_spin_densities() {
+    // Stretched H2 (2.4 A, tilted): n_alpha = n_beta but D_alpha != D_beta.
+    // The closed-shell anchor cannot see this state; the per-spin channels,
+    // the Coulomb of the total density and the coupled CPHF must still match
+    // the differenced own gradient. Seeded displaced SCFs stay on the
+    // broken-symmetry solution (basin check).
+    let mol = Molecule::parse_xyz("2\nH2 stretched\nH 0.0 0.0 0.0\nH 0.3 0.1 2.4\n", 0, 1).unwrap();
+    let k = "def2-universal-jkfit";
+    check_full_with(&mol, "6-31g", k, k, BAR_OWN, true);
+}
+
+#[test]
+fn high_spin_quartet_with_many_more_alpha_than_beta_electrons() {
+    // CH 4-Sigma-: n_alpha = 5, n_beta = 2 (three unpaired).
+    let mol = Molecule::parse_xyz("2\nCH quartet\nC 0.0 0.0 0.0\nH 0.0 0.0 1.12\n", 0, 4).unwrap();
+    assert_eq!(nocc(&mol), [5, 2]);
+    let k = "def2-universal-jkfit";
+    for (j, kk) in [(k, k), ("", k)] {
+        check_full(&mol, "6-31g", j, kk, BAR_OWN);
+    }
 }
 
 #[test]
@@ -1178,6 +1248,18 @@ fn all_mutants() -> Vec<Mutant> {
             uh,
         ),
         (
+            "stencil step x20 (K)",
+            rj,
+            RikMutants {
+                stencil: StencilConfig {
+                    step: 2.0 * StencilConfig::default().step,
+                    ..st(Variant::Step10)
+                },
+                ..rk
+            },
+            uh,
+        ),
+        (
             "one-shell displacement (K)",
             rj,
             RikMutants {
@@ -1231,7 +1313,17 @@ fn every_wired_mutant_misses_by_more_than_ten_bars() {
                 );
             }
             Err(e) => {
-                eprintln!("MUTANT {}: typed error {e}", m.0);
+                // Only the indefinite-orbital-Hessian mutant may be caught by
+                // the solver; any other typed error is a harness failure, not
+                // a detection.
+                let msg = e.to_string();
+                eprintln!("MUTANT {}: typed error {msg}", m.0);
+                assert!(
+                    m.0 == "CPHF: Coulomb from the alpha response density only"
+                        && msg.contains("not positive definite"),
+                    "mutant {} failed with an unexpected error: {msg}",
+                    m.0
+                );
                 caught_by_error.push(m.0);
             }
         }
@@ -1484,10 +1576,15 @@ fn route_and_state_inconsistencies_are_refused() {
 }
 
 #[test]
-fn df_off_uhf_is_unchanged_by_the_density_fitting_branches() {
-    // Exact SCFs carry no route, never enter the RI code, and give the same
-    // Hessian bit for bit with df_*_aux unset or "". The hash of every part
-    // against origin/main is recorded in the PR description.
+fn an_unset_and_an_empty_fitting_name_give_the_same_exact_uhf_hessian() {
+    // What this proves: df_j_aux/df_k_aux unset or "" both mean "exact", carry
+    // no route, never enter the density-fitting code, and give the same UHF
+    // Hessian bit for bit. It is NOT a regression anchor against the previous
+    // release: bit-identity with origin/main of the DF-off UHF Hessian and of
+    // the RHF RI-J / RI-K / RI-JK Hessians was established once by comparing
+    // FNV hashes of every part on both builds (not stored here: the hashes of
+    // the CPHF response depend on the BLAS and CPU, so a constant would fail
+    // on another machine).
     if !has_deriv2() {
         return;
     }
