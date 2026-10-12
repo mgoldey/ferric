@@ -30,7 +30,7 @@
 //!   (`J` keeps its coefficient);
 //! * the RS-GDF fit, shared by `J` and `K`: its gradient is bilinear in the
 //!   fitted objects and the density terms. `J` enters through the total
-//!   density (`ρ_P = Σ_k D_k·B_P`, [`crate::rsgdf::kpoint::kderiv`]'s
+//!   density (`ρ_P = Σ_k D_k·B_P`, `crate::rsgdf::kpoint::kderiv`'s
 //!   `coulomb_q0`), `K` through `Σ_s c_s D_s(k') J3^H D_s(k)` in `H(q)` and
 //!   `Z`. Only the `c_s` multiply: `a` scales the exchange part of `H` (so of
 //!   the metric weight `Wm = U (Lo ∘ U^H H U) U^H`) and of `Z` (so of the
@@ -175,8 +175,8 @@ use crate::grad::ao_atoms;
 use crate::hcore::kpoint::PeriodicHcoreK;
 use crate::hcore::PeriodicHcoreConfig;
 use crate::kgrad::{
-    assemble, check_fock, check_inputs, jk_build, madelung_for, open_ledger, KGradConfig, KGradJk,
-    KGradient, KSpins,
+    assemble, check_fock, check_inputs, jk_build, open_ledger, KGradConfig, KGradJk, KGradient,
+    KSpins,
 };
 use crate::kpts::KPointMesh;
 use crate::kscf::KScfResult;
@@ -855,7 +855,10 @@ fn rks_gradient_with(
                  Madelung shift)"
             ))
         })?;
-        madelung_for(cell, mesh, exxdiv)?
+        match exxdiv {
+            ExxDiv::None => 0.0,
+            ExxDiv::Ewald => mesh.madelung(cell)?,
+        }
     };
     let mut ledger = open_ledger(cell, prep, mesh, &cfg.grad, false)?;
     let d = scf.densities.clone();

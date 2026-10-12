@@ -750,11 +750,7 @@ pub(crate) fn open_ledger(
 }
 
 /// `v_M` of the mesh: 0 for `ExxDiv::None`, the mesh Madelung constant for `ExxDiv::Ewald`.
-pub(crate) fn madelung_for(
-    cell: &Cell,
-    mesh: &KPointMesh,
-    exxdiv: ExxDiv,
-) -> Result<f64, FerricError> {
+fn madelung_for(cell: &Cell, mesh: &KPointMesh, exxdiv: ExxDiv) -> Result<f64, FerricError> {
     Ok(match exxdiv {
         ExxDiv::None => 0.0,
         ExxDiv::Ewald => mesh.madelung(cell)?,
@@ -911,6 +907,53 @@ fn m_term_madelung(
     Ok(exch_scale * base)
 }
 
+/// The scale each exchange-bearing piece of [`assemble`] carries: the
+/// exchange fraction `a` everywhere, except where a test defect leaves one
+/// piece wrong (`KGradMutation::Exch*`).
+struct ExchScales {
+    /// Dense-AFT K walks (coefficient scale).
+    dense: f64,
+    /// RS-GDF fit exchange pieces (coefficient scale).
+    fit: f64,
+    /// Madelung M-term.
+    madelung: f64,
+    /// Dense-AFT Coulomb derivative (1 in production).
+    coulomb: f64,
+}
+
+impl ExchScales {
+    fn of(a: f64, mutation: Option<KGradMutation>) -> Self {
+        use KGradMutation as M;
+        let coeff = match mutation {
+            Some(M::ExchScaledTwice) => a * a,
+            Some(M::ExchSpinFactor) => 2.0 * a,
+            _ => a,
+        };
+        // An unscaled piece is only meaningful when exchange exists at all.
+        let pick = |wrong: M| {
+            if mutation == Some(wrong) && a != 0.0 {
+                1.0
+            } else {
+                coeff
+            }
+        };
+        Self {
+            dense: pick(M::ExchDenseUnscaled),
+            fit: pick(M::ExchFitUnscaled),
+            madelung: if mutation == Some(M::ExchMadelungUnscaled) {
+                1.0
+            } else {
+                a
+            },
+            coulomb: if mutation == Some(M::ExchJScaled) {
+                a
+            } else {
+                1.0
+            },
+        }
+    }
+}
+
 /// The exchange terms `Σ_s c D_s X D_s` of `spins`, coefficients scaled by the
 /// exchange fraction (`1` is bitwise the unscaled terms; empty for `0`).
 fn scaled_exch_terms(spins: &KSpins, exch_scale: f64) -> Vec<(f64, &[Array2<C64>])> {
@@ -981,35 +1024,14 @@ pub(crate) fn assemble(
     let omega = hcore_cfg.omega;
     let vol = cell.volume();
     let c0 = PI / (omega * omega * vol);
-    let madelung_scale = if mutation == Some(KGradMutation::ExchMadelungUnscaled) {
-        1.0
-    } else {
-        exch_scale
-    };
-    let vm_m = m_term_madelung(cell, vm, madelung_scale, mutation)?;
+    let sc = ExchScales::of(exch_scale, mutation);
+    let vm_m = m_term_madelung(cell, vm, sc.madelung, mutation)?;
     // The exchange coefficients, scaled by the exact-exchange fraction. The
     // dense walks and the RS-GDF fit take them separately so a test defect can
     // leave exactly one of the two unscaled.
-    let coeff_scale = match mutation {
-        Some(KGradMutation::ExchScaledTwice) => exch_scale * exch_scale,
-        Some(KGradMutation::ExchSpinFactor) => 2.0 * exch_scale,
-        _ => exch_scale,
-    };
-    let exch_dense = if mutation == Some(KGradMutation::ExchDenseUnscaled) && exch_scale != 0.0 {
-        scaled_exch_terms(&spins, 1.0)
-    } else {
-        scaled_exch_terms(&spins, coeff_scale)
-    };
-    let exch_fit = if mutation == Some(KGradMutation::ExchFitUnscaled) && exch_scale != 0.0 {
-        scaled_exch_terms(&spins, 1.0)
-    } else {
-        scaled_exch_terms(&spins, coeff_scale)
-    };
-    let j_scale = if mutation == Some(KGradMutation::ExchJScaled) {
-        exch_scale
-    } else {
-        1.0
-    };
+    let exch_dense = scaled_exch_terms(&spins, sc.dense);
+    let exch_fit = scaled_exch_terms(&spins, sc.fit);
+    let j_scale = sc.coulomb;
     let mk: Vec<Array2<C64>> = (0..nk)
         .map(|k| {
             let mut m = spins.energy_weighted(k).mapv(|z| -z);

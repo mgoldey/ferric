@@ -102,10 +102,6 @@ fn kgdf_cfg_of(jk: Jk) -> KRsGdfConfig {
     }
 }
 
-fn kgdf_cfg() -> KRsGdfConfig {
-    kgdf_cfg_of(Jk::Gdf)
-}
-
 thread_local! {
     /// (radial, angular) of the XC grid on THIS test thread (default (20, 50);
     /// only the ignored production-class test changes it).
@@ -886,8 +882,7 @@ fn refusals_and_the_hybrid_fock_guard() {
     }
     // A hybrid needs the exxdiv: a typed error, not a silent default.
     let e = run("PBE0", &fx.res.scf, &gcfg(None, None, None))
-        .err()
-        .expect("no exxdiv")
+        .expect_err("no exxdiv")
         .to_string();
     eprintln!("no exxdiv: {e}");
     assert!(e.contains("exxdiv"));
@@ -927,7 +922,7 @@ fn refusals_and_the_hybrid_fock_guard() {
             &z.cell, &z.prep, &z.mesh, &hcfg, &z.hk, j, &z.scf, 0.5, &ok_cfg,
         )
     });
-    let e = r.err().expect("wrong a accepted").to_string();
+    let e = r.expect_err("wrong a accepted").to_string();
     eprintln!("wrong a: {e}");
     assert!(e.contains("differs"));
     let mut t = fx.res.scf.clone();
