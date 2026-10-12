@@ -473,7 +473,16 @@ fn gamma_side(
     functional: &str,
     grid: &PeriodicGridConfig,
 ) -> ferric_pbc::grad::GammaGradient {
-    let prep = prep_for(cell, &pyscf_sto3g_h());
+    gamma_side_bs(cell, functional, grid, &pyscf_sto3g_h())
+}
+
+fn gamma_side_bs(
+    cell: &Cell,
+    functional: &str,
+    grid: &PeriodicGridConfig,
+    bs: &BasisSet,
+) -> ferric_pbc::grad::GammaGradient {
+    let prep = prep_for(cell, bs);
     let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
     let hc = periodic_hcore(cell, &prep, &hcfg).unwrap();
     let eri = DenseAftEri::build(
@@ -1011,5 +1020,293 @@ fn production_grid_forces_match_fd() {
         }
         eprintln!("{f} {jk:?} {mesh:?} (40,110): analytic vs FD worst {worst:.2e}");
         assert!(worst < 1e-8, "{f} {jk:?} {mesh:?}: {worst:e}");
+    }
+}
+
+/// cc-pVDZ rotation fixture energy with optional neighbour cutoff / AO
+/// threshold / uniform grid (probe of the FD step discontinuity).
+fn cc_energy(
+    pos: &[[f64; 3]],
+    neighbour: Option<f64>,
+    ao_thr: f64,
+    uniform: Option<usize>,
+) -> f64 {
+    let cell = Cell::new(hydrogens(pos), cubic(5.0)).unwrap();
+    let bs = ferric_core::basis::bundled("cc-pvdz").unwrap();
+    let abs = ferric_core::basis::bundled("cc-pvdz-ri").unwrap();
+    let prep = prep_for(&cell, &bs);
+    let aux = prep_for(&cell, &abs);
+    let mesh = KPointMesh::gamma_centred(&cell, [1, 1, 3]).unwrap();
+    let mut cfg = KRksConfig::new(&cell, ExxDiv::None, "PBE");
+    cfg.krhf.hcore = PeriodicHcoreConfig::with_omega(OMEGA);
+    cfg.krhf.scf.energy_conv = 1e-13;
+    cfg.krhf.scf.grad_conv = 1e-10;
+    cfg.krhf.scf.max_iter = 300;
+    cfg.krhf.jk = KJkKind::RsGdf;
+    cfg.krhf.rsgdf = kgdf_cfg();
+    cfg.grid = PeriodicGridConfig::with_size(20, 50);
+    cfg.grid.neighbour_cutoff = neighbour;
+    cfg.xc.ao_threshold = ao_thr;
+    match uniform {
+        None => solve_krks(&cell, &prep, Some(&aux), &mesh, &cfg),
+        Some(n) => {
+            let g = PeriodicGrid::uniform(&cell, [n; 3]).unwrap();
+            solve_krks_on_grid(&cell, &prep, Some(&aux), &mesh, &g, &cfg)
+        }
+    }
+    .unwrap()
+    .scf
+    .energy
+}
+
+/// PROBE (not a regression test): where does the one-step energy
+/// discontinuity of the cc-pVDZ fixture (atom 1, y) come from? Scan the odd
+/// part (E(h) - E(-h))/(2h) and the even part against h for the default
+/// settings, a larger neighbour cutoff, tighter / looser AO thresholds and a
+/// uniform grid, and see which one moves or removes the step.
+#[test]
+#[ignore = "probe, ~3 min"]
+fn probe_cc_pvdz_fd_step() {
+    let pos = [[0.3, 0.2, 0.1], [0.35, 0.12, 1.5]];
+    let settings: [(&str, Option<f64>, f64, Option<usize>); 5] = [
+        ("default", None, 1e-15, None),
+        ("neighbour 14", Some(14.0), 1e-15, None),
+        ("ao 1e-12", None, 1e-12, None),
+        ("ao 1e-18", None, 1e-18, None),
+        ("uniform 32^3", None, 1e-15, Some(32)),
+    ];
+    for (name, nb, thr, uni) in settings {
+        let e0 = cc_energy(&pos, nb, thr, uni);
+        let mut prev_odd = 0.0;
+        let mut line = String::new();
+        for i in 1..=8 {
+            let h = 2.5e-5 * i as f64;
+            let ep = cc_energy(&moved(&pos, 1, 1, h), nb, thr, uni);
+            let em = cc_energy(&moved(&pos, 1, 1, -h), nb, thr, uni);
+            let odd = (ep - em) / (2.0 * h);
+            let even = (ep + em - 2.0 * e0) / (h * h);
+            line += &format!(" h={h:.1e}: odd {odd:.10} (d {:+.2e}) even/h2 {even:.4};", odd - prev_odd);
+            prev_odd = odd;
+        }
+        eprintln!("{name}:{line}");
+    }
+}
+
+// ------------------------------------------------------------ exxdiv = Ewald
+
+fn ks_force_exx(jk: Jk, exx: ExxDiv) -> (f64, KRksGradient) {
+    let cell = cell_of(&H2);
+    let bs = pyscf_sto3g_h();
+    let prep = prep_for(&cell, &bs);
+    let aux = prep_for(&cell, &et_sp_aux());
+    let mesh = KPointMesh::gamma_centred(&cell, [1, 1, 3]).unwrap();
+    let grid = atom_grid(20, 50);
+    let mut cfg = krks_cfg(&cell, "PBE", jk, &grid);
+    cfg.krhf.exxdiv = exx;
+    let res = solve_krks(&cell, &prep, (jk == Jk::Gdf).then_some(&aux), &mesh, &cfg).unwrap();
+    let hk = periodic_hcore_kpts(&cell, &prep, &mesh, &cfg.krhf.hcore).unwrap();
+    let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
+    let gc = gcfg(&grid, None);
+    let g = match jk {
+        Jk::Dense => {
+            let eri = KDenseAftEri::build(&cell, &prep, &mesh, &hk.s, exx, &Default::default())
+                .unwrap();
+            kpoint_rks_gradient(
+                &cell,
+                &prep,
+                &mesh,
+                &hcfg,
+                &hk,
+                KGradJk::Dense(&eri),
+                &res.scf,
+                "PBE",
+                &gc,
+            )
+        }
+        Jk::Gdf => {
+            let kc = kgdf_cfg();
+            let gdf = KRsGdf::build(&cell, &prep, &aux, &mesh, &hk.s, &kc)
+                .unwrap()
+                .with_exxdiv(exx);
+            kpoint_rks_gradient(
+                &cell,
+                &prep,
+                &mesh,
+                &hcfg,
+                &hk,
+                KGradJk::RsGdf(KRsGdfGradSource {
+                    gdf: &gdf,
+                    cfg: &kc,
+                    aux: &aux,
+                }),
+                &res.scf,
+                "PBE",
+                &gc,
+            )
+        }
+    }
+    .unwrap();
+    (res.scf.energy, g)
+}
+
+/// A pure functional has no exchange, so the exchange-divergence treatment of
+/// the SCF must not matter: the PBE energy, density and force from an
+/// Ewald-exxdiv SCF equal the exxdiv = none ones (dense and RS-GDF). The
+/// force entry takes no exxdiv at all (a = 0 removes K and the Madelung
+/// M-term), so a force that still depended on it would show here.
+#[test]
+fn ewald_exxdiv_scf_gives_the_same_pure_functional_force() {
+    for jk in [Jk::Dense, Jk::Gdf] {
+        let (e0, g0) = ks_force_exx(jk, ExxDiv::None);
+        let (e1, g1) = ks_force_exx(jk, ExxDiv::Ewald);
+        let dg = parts_diff(&g0.grad, &g1.grad);
+        eprintln!(
+            "{jk:?}: Ewald vs none: |dE| {:.2e}, force diff {dg:.2e}, bitwise {}",
+            (e0 - e1).abs(),
+            g0.grad == g1.grad
+        );
+        assert!((e0 - e1).abs() < 1e-11);
+        assert!(dg < 1e-11, "{dg:e}");
+    }
+}
+
+// ------------------------------------------- triclinic cell, s + p + d basis
+
+/// H basis with an s contraction, a Cartesian p and a Cartesian d primitive
+/// (the d shell exercises the AO Hessian beyond l = 1; single primitives with
+/// coefficient 1 are already unit-normalised).
+fn spd_basis_h() -> BasisSet {
+    let mut bs = sp_basis_h();
+    bs.shells.get_mut(&1).unwrap().push(Shell {
+        l: 2,
+        pure: false,
+        exponents: vec![0.9],
+        coefficients: vec![1.0],
+    });
+    bs
+}
+
+/// Two H atoms of the triclinic `TRI_A` lattice (as `pbc_kgrad.rs` tri2).
+const TRI2: [[f64; 3]; 2] = [[0.13, 0.25, 0.31], [0.02, 0.27, 1.66]];
+/// Explicit shared neighbour cutoff: both the cell and its supercell need a
+/// cutoff above their covering radii, and a cutoff larger than the default
+/// removes the hard-mask energy steps from the FD (see the cc-pVDZ probe).
+const TRI_CUTOFF: f64 = 14.0;
+
+fn tri_cell(pos: &[[f64; 3]]) -> Cell {
+    Cell::new(hydrogens(pos), TRI_A).expect("triclinic cell")
+}
+
+fn tri_case(
+    pos: &[[f64; 3]],
+    mesh_n: [usize; 3],
+    functional: &str,
+    want_force: bool,
+) -> (f64, Option<KRksGradient>) {
+    let cell = tri_cell(pos);
+    let bs = spd_basis_h();
+    let prep = prep_for(&cell, &bs);
+    let mesh = KPointMesh::gamma_centred(&cell, mesh_n).unwrap();
+    let mut cfg = KRksConfig::new(&cell, ExxDiv::None, functional);
+    cfg.krhf.hcore = PeriodicHcoreConfig::with_omega(OMEGA);
+    cfg.krhf.scf.energy_conv = 1e-13;
+    cfg.krhf.scf.grad_conv = 1e-10;
+    cfg.krhf.scf.max_iter = 300;
+    cfg.grid = PeriodicGridConfig::with_size(20, 50);
+    cfg.grid.neighbour_cutoff = Some(TRI_CUTOFF);
+    let res = solve_krks(&cell, &prep, None, &mesh, &cfg).unwrap();
+    if !want_force {
+        return (res.scf.energy, None);
+    }
+    let hk = periodic_hcore_kpts(&cell, &prep, &mesh, &cfg.krhf.hcore).unwrap();
+    let eri = KDenseAftEri::build(
+        &cell,
+        &prep,
+        &mesh,
+        &hk.s,
+        ExxDiv::None,
+        &Default::default(),
+    )
+    .unwrap();
+    let g = kpoint_rks_gradient(
+        &cell,
+        &prep,
+        &mesh,
+        &cfg.krhf.hcore,
+        &hk,
+        KGradJk::Dense(&eri),
+        &res.scf,
+        functional,
+        &gcfg(&KXcGrid::Atom(cfg.grid.clone()), None),
+    )
+    .unwrap();
+    (res.scf.energy, Some(g))
+}
+
+/// Triclinic (non-orthogonal) cell with s, p and d functions on a mesh with
+/// two non-TRIM directions: force vs central FD of the energy (h = 1e-4 is
+/// inside the smooth window at the larger neighbour cutoff). Covers the
+/// non-orthogonal lattice phases, the p and d AO derivatives and Hessians and
+/// a nonzero off-diagonal force, none of which the cubic STO-3G fixtures do.
+#[test]
+#[ignore = "triclinic s+p+d 1x2x3 FD, 7 SCFs; measured below in the report"]
+fn triclinic_spd_force_matches_fd() {
+    let mesh = [1, 2, 3];
+    let (_, g) = tri_case(&TRI2, mesh, "PBE", true);
+    let g = g.unwrap();
+    let mut worst = 0.0_f64;
+    for (a, x) in [(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2)] {
+        let h = 1e-4;
+        let ep = tri_case(&moved(&TRI2, a, x, h), mesh, "PBE", false).0;
+        let em = tri_case(&moved(&TRI2, a, x, -h), mesh, "PBE", false).0;
+        let d = g.grad[(a, x)] - (ep - em) / (2.0 * h);
+        eprintln!("tri ({a},{x}) analytic {:.9} diff {d:.2e}", g.grad[(a, x)]);
+        worst = worst.max(d.abs());
+    }
+    eprintln!("triclinic s+p+d 1x2x3: analytic vs FD worst {worst:.2e}");
+    assert!(max_abs(&g.grad) > 1e-3);
+    assert!(worst < 1e-7, "{worst:e}");
+}
+
+/// The same cell on the non-TRIM 1x1x3 mesh against the Gamma force of the
+/// explicit supercell (copy 0), per XC part, with the shared cutoff.
+#[test]
+#[ignore = "triclinic s+p+d 1x1x3 vs Gamma supercell; measured below in the report"]
+fn triclinic_spd_k_mesh_matches_the_gamma_supercell() {
+    let mut grid = PeriodicGridConfig::with_size(20, 50);
+    grid.neighbour_cutoff = Some(TRI_CUTOFF);
+    let bs = spd_basis_h();
+    // Supercell along a3.
+    let a3 = TRI_A[2];
+    let mut atoms = Vec::new();
+    for m in 0..3 {
+        for p in TRI2 {
+            atoms.push([
+                p[0] + m as f64 * a3[0],
+                p[1] + m as f64 * a3[1],
+                p[2] + m as f64 * a3[2],
+            ]);
+        }
+    }
+    let lat = [TRI_A[0], TRI_A[1], [3.0 * a3[0], 3.0 * a3[1], 3.0 * a3[2]]];
+    let sc = Cell::new(hydrogens(&atoms), lat).unwrap();
+    let gam = gamma_side_bs(&sc, "PBE", &grid, &bs);
+    let (_, k) = tri_case(&TRI2, [1, 1, 3], "PBE", true);
+    let k = k.unwrap();
+    let first = |a: &Array2<f64>| a.slice(ndarray::s![0..2, ..]).to_owned();
+    for (n, d) in [
+        ("xc_ao", parts_diff(&k.xc_ao, &first(&gam.parts.xc_ao))),
+        (
+            "xc_point",
+            parts_diff(&k.xc_point, &first(&gam.parts.xc_point)),
+        ),
+        (
+            "xc_weight",
+            parts_diff(&k.xc_weight, &first(&gam.parts.xc_weight)),
+        ),
+        ("total", parts_diff(&k.grad, &first(&gam.grad))),
+    ] {
+        eprintln!("triclinic s+p+d 1x1x3 vs supercell: {n:<10} {d:.2e}");
+        assert!(d < 1e-8, "{n}: {d:e}");
     }
 }
