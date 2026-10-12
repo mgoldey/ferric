@@ -566,9 +566,9 @@ impl KXcResponse for GridXc<'_> {
                 .chain(weight.iter())
                 .any(|x| !x.is_finite())
         {
-            return Err(FerricError::General(format!(
-                "k-point XC force: non-finite E_xc/V_xc/force"
-            )));
+            return Err(FerricError::General(
+                "k-point XC force: non-finite E_xc/V_xc/force".into(),
+            ));
         }
         // Hermitise (as `KPeriodicXc::build`).
         for m in v.iter_mut() {

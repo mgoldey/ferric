@@ -277,7 +277,7 @@ impl KPointXc for ZeroXc {
     ) -> Result<(f64, Vec<Array2<Complex64>>), ferric_core::FerricError> {
         Ok((
             0.0,
-            dm.iter().map(|d| Array2::zeros((self.0, self.0))).collect(),
+            dm.iter().map(|_| Array2::zeros((self.0, self.0))).collect(),
         ))
     }
 }
@@ -382,8 +382,8 @@ fn null_xc_equals_the_exchange_free_machinery_exactly() {
     for jk in [Jk::Dense, Jk::Gdf] {
         let h = hartree(&H2, [1, 1, 3], jk);
         let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
-        let (a, b) = with_jk(&h, |j| {
-            let a = kpoint_null_xc_gradient(
+        let a = with_jk(&h, |j| {
+            kpoint_null_xc_gradient(
                 &h.cell,
                 &h.prep,
                 &h.mesh,
@@ -393,14 +393,12 @@ fn null_xc_equals_the_exchange_free_machinery_exactly() {
                 &h.scf,
                 &gcfg(&KXcGrid::default(), None),
             )
-            .unwrap();
-            (a, ())
+            .unwrap()
         });
         let g = with_jk(&h, |j| {
             kpoint_hartree_gradient(&h.cell, &h.prep, &h.mesh, &hcfg, &h.hk, j, &h.scf, &kcfg())
                 .unwrap()
         });
-        let _ = b;
         let d = (&a.grad - &g.grad)
             .iter()
             .fold(0.0_f64, |m, x| m.max(x.abs()));
@@ -805,8 +803,7 @@ fn refusals_and_the_fock_guard() {
     let ok = run("PBE", &fx.res.scf).unwrap();
     assert!(ok.hf.fock_mismatch < 1e-12, "{:e}", ok.hf.fock_mismatch);
     let wrong = run("LDA", &fx.res.scf)
-        .err()
-        .expect("wrong functional")
+        .expect_err("wrong functional")
         .to_string();
     eprintln!("wrong functional: {wrong}");
     assert!(wrong.contains("differs"));
@@ -925,7 +922,7 @@ fn rotated_case(
     cfg.krhf.jk = KJkKind::RsGdf;
     let mut kc = kgdf_cfg();
     kc.gdf.sr_column_rotation = rot;
-    cfg.krhf.rsgdf = kc.clone();
+    cfg.krhf.rsgdf = kc;
     cfg.grid = PeriodicGridConfig::with_size(20, 50);
     let res = solve_krks(&cell, &prep, Some(&aux), &mesh, &cfg).unwrap();
     if !want_force {
@@ -975,7 +972,8 @@ fn rotated_and_unrotated_sr_walks_are_consistent_with_the_energy() {
             // h = 2.5e-5: the Gamma atom-grid precedent. At 1e-4 one component
             // measured -3.6e-6 (grid points crossing the hard neighbour mask),
             // at 4e-4 -9e-7: noise, not the derivative (both walks alike).
-            for h in [2.5e-5] {
+            {
+                let h = 2.5e-5;
                 let ep = rotated_case(&moved(&pos, a, x, h), rot, false).0;
                 let em = rotated_case(&moved(&pos, a, x, -h), rot, false).0;
                 let d = g.grad[(a, x)] - (ep - em) / (2.0 * h);

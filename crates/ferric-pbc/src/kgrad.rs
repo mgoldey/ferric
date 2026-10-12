@@ -875,6 +875,35 @@ fn fold_ao(g_ao: &[[f64; 3]], aoat: &[usize], natoms: usize) -> Array2<f64> {
     g
 }
 
+/// The Madelung constant of the M-term: the mesh `v_M` scaled by the exchange
+/// fraction (`GammaMadelung` mutant: the primitive-cell constant).
+fn m_term_madelung(
+    cell: &Cell,
+    vm: f64,
+    exch_scale: f64,
+    mutation: Option<KGradMutation>,
+) -> Result<f64, FerricError> {
+    let base = if mutation == Some(KGradMutation::GammaMadelung) && vm != 0.0 {
+        madelung_constant(cell)?
+    } else {
+        vm
+    };
+    Ok(exch_scale * base)
+}
+
+/// The exchange terms `Σ_s c D_s X D_s` of `spins`, coefficients scaled by the
+/// exchange fraction (`1` is bitwise the unscaled terms; empty for `0`).
+fn scaled_exch_terms(spins: &KSpins, exch_scale: f64) -> Vec<(f64, &[Array2<C64>])> {
+    if exch_scale == 0.0 {
+        return Vec::new();
+    }
+    spins
+        .exch_terms()
+        .into_iter()
+        .map(|(c, d)| (c * exch_scale, d))
+        .collect()
+}
+
 /// Assemble the k-point gradient from the per-spin `D(k)`/`F(k)`, hcore and J/K derivative
 /// pieces; `vm` is the Madelung shift and `exch_scale` the exact-exchange
 /// fraction `a` of the energy (`1` = Hartree-Fock, bitwise the unscaled
@@ -930,23 +959,8 @@ pub(crate) fn assemble(
     let omega = hcore_cfg.omega;
     let vol = cell.volume();
     let c0 = PI / (omega * omega * vol);
-    let vm_m = exch_scale
-        * if mutation == Some(KGradMutation::GammaMadelung) && vm != 0.0 {
-            madelung_constant(cell)?
-        } else {
-            vm
-        };
-    // The exchange terms Σ_s c D_s X D_s, scaled by the exchange fraction
-    // (empty for a pure functional).
-    let exch: Vec<(f64, &[Array2<C64>])> = if exch_scale == 0.0 {
-        Vec::new()
-    } else {
-        spins
-            .exch_terms()
-            .into_iter()
-            .map(|(c, d)| (c * exch_scale, d))
-            .collect()
-    };
+    let vm_m = m_term_madelung(cell, vm, exch_scale, mutation)?;
+    let exch = scaled_exch_terms(&spins, exch_scale);
     let mk: Vec<Array2<C64>> = (0..nk)
         .map(|k| {
             let mut m = spins.energy_weighted(k).mapv(|z| -z);
