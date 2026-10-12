@@ -15,7 +15,17 @@ use ferric_pbc::kdense_aft::KDenseAftEri;
 use ferric_pbc::kdft::{solve_krks, solve_krks_on_grid, KRksConfig, KRksResult};
 use ferric_pbc::kgrad::{KGradConfig, KGradJk, KRsGdfGradSource};
 use ferric_pbc::kpts::KPointMesh;
-use ferric_pbc::kscf::KJkKind;
+use ferric_pbc::dense_aft::{DenseAftEri, DEFAULT_DENSE_AFT_MAX_BYTES};
+use ferric_pbc::dft::{gamma_rks, GammaRksConfig};
+use ferric_pbc::grad::{gamma_rks_gradient_with, GammaGradConfig};
+use ferric_pbc::hcore::periodic_hcore;
+use ferric_pbc::kdense_aft::KDenseAftConfig;
+use ferric_pbc::kscf::{
+    solve_krks_injected, KJkKind, KPointInjection, KPointJk, KPointXc, KScfResult,
+};
+use ferric_pbc::kxcgrad::{kpoint_hartree_gradient, kpoint_null_xc_gradient};
+use ferric_pbc::uhf::GammaUhfIntegrals;
+use num_complex::Complex64;
 use ferric_pbc::kxcgrad::{
     kpoint_rks_gradient, KRksGradConfig, KRksGradient, KXcGrid, KXcMutation,
 };
@@ -279,5 +289,186 @@ fn probe_force_vs_fd() {
             worst = worst.max((g.grad[(a, x)] - d).abs());
         }
         eprintln!("  worst {worst:.2e}");
+    }
+}
+
+// ------------------------------------------------------------------ anchors
+
+/// Fixed (tight) precision of the dense kernels for the Gamma-side anchors.
+const ANCHOR_PRECISION: f64 = 1e-12;
+
+fn dense_cfg() -> KDenseAftConfig {
+    KDenseAftConfig {
+        precision: ANCHOR_PRECISION,
+        ..Default::default()
+    }
+}
+
+/// Zero XC: the exactness-anchor builder (E_xc = 0, V_xc = 0).
+struct ZeroXc(usize);
+impl KPointXc for ZeroXc {
+    fn build(
+        &mut self,
+        dm: &[Array2<Complex64>],
+    ) -> Result<(f64, Vec<Array2<Complex64>>), ferric_core::FerricError> {
+        Ok((0.0, dm.iter().map(|d| Array2::zeros((self.0, self.0))).collect()))
+    }
+}
+
+struct Hartree {
+    cell: Cell,
+    prep: ferric_integrals::basis_bridge::PreparedBasis,
+    aux: ferric_integrals::basis_bridge::PreparedBasis,
+    mesh: KPointMesh,
+    hk: PeriodicHcoreK,
+    scf: KScfResult,
+    jk: Jk,
+}
+
+/// Hartree-only k SCF (F = h + J; exchange fraction 0, no XC).
+fn hartree(pos: &[[f64; 3]], mesh_n: [usize; 3], jk: Jk) -> Hartree {
+    let cell = cell_of(pos);
+    let prep = prep_for(&cell, &pyscf_sto3g_h());
+    let aux = prep_for(&cell, &et_sp_aux());
+    let mesh = KPointMesh::gamma_centred(&cell, mesh_n).unwrap();
+    let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
+    let hk = periodic_hcore_kpts(&cell, &prep, &mesh, &hcfg).unwrap();
+    let mut scfcfg = ferric_pbc::kscf::KScfConfig::default();
+    scfcfg.energy_conv = 1e-13;
+    scfcfg.grad_conv = 1e-10;
+    scfcfg.max_iter = 200;
+    let eri;
+    let gdf;
+    let jkb: Box<dyn KPointJk + '_> = match jk {
+        Jk::Dense => {
+            eri = KDenseAftEri::build(&cell, &prep, &mesh, &hk.s, ExxDiv::None, &dense_cfg())
+                .unwrap();
+            Box::new(eri.jk_builder())
+        }
+        Jk::Gdf => {
+            gdf = KRsGdf::build(&cell, &prep, &aux, &mesh, &hk.s, &kgdf_cfg()).unwrap();
+            Box::new(gdf.jk_builder())
+        }
+    };
+    let inj = KPointInjection {
+        s: hk.s.clone(),
+        h: hk.h.clone(),
+        vnn: hk.enn,
+        jk: jkb,
+    };
+    let mut z = ZeroXc(prep.nbasis());
+    let scf = solve_krks_injected(&cell, &mesh, &scfcfg, inj, &mut z, 0.0).unwrap();
+    assert!(scf.converged);
+    Hartree {
+        cell,
+        prep,
+        aux,
+        mesh,
+        hk,
+        scf,
+        jk,
+    }
+}
+
+fn with_jk<R>(h: &Hartree, f: impl FnOnce(KGradJk<'_>) -> R) -> R {
+    match h.jk {
+        Jk::Dense => {
+            let eri = KDenseAftEri::build(&h.cell, &h.prep, &h.mesh, &h.hk.s, ExxDiv::None, &dense_cfg())
+                .unwrap();
+            f(KGradJk::Dense(&eri))
+        }
+        Jk::Gdf => {
+            let kc = kgdf_cfg();
+            let gdf = KRsGdf::build(&h.cell, &h.prep, &h.aux, &h.mesh, &h.hk.s, &kc).unwrap();
+            f(KGradJk::RsGdf(KRsGdfGradSource {
+                gdf: &gdf,
+                cfg: &kc,
+                aux: &h.aux,
+            }))
+        }
+    }
+}
+
+fn kcfg() -> KGradConfig {
+    KGradConfig {
+        budget_bytes: Some(AMPLE),
+        ..Default::default()
+    }
+}
+
+/// (a) NULL-XC EXACTNESS ANCHOR. With E_xc = 0, V_xc = 0 and exchange fraction
+/// 0 the KS entry is the exchange-free HF machinery plus zero XC terms: it must
+/// equal `kpoint_hartree_gradient` (same `assemble`, none of the XC plumbing or
+/// KS guard) EXACTLY, part by part, dense and RS-GDF. Artifact hypothesis: an
+/// XC leak (a stray add of a zero-initialised array with the wrong shape, a
+/// guard that mutates F) would show as a nonzero difference; physics predicts
+/// exactly 0.
+#[test]
+fn null_xc_equals_the_exchange_free_machinery_exactly() {
+    for jk in [Jk::Dense, Jk::Gdf] {
+        let h = hartree(&H2, [1, 1, 3], jk);
+        let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
+        let (a, b) = with_jk(&h, |j| {
+            let a = kpoint_null_xc_gradient(
+                &h.cell, &h.prep, &h.mesh, &hcfg, &h.hk, j, &h.scf, &gcfg(&KXcGrid::default(), None),
+            )
+            .unwrap();
+            (a, ())
+        });
+        let g = with_jk(&h, |j| {
+            kpoint_hartree_gradient(&h.cell, &h.prep, &h.mesh, &hcfg, &h.hk, j, &h.scf, &kcfg())
+                .unwrap()
+        });
+        let _ = b;
+        let d = (&a.grad - &g.grad).iter().fold(0.0_f64, |m, x| m.max(x.abs()));
+        let dp = (&a.hf.parts.coulomb - &g.parts.coulomb)
+            .iter()
+            .fold(0.0_f64, |m, x| m.max(x.abs()));
+        eprintln!("{jk:?}: null-XC vs Hartree machinery: total {d:.1e}, coulomb {dp:.1e}; |F| {:.3e}", max_abs(&g.grad));
+        assert_eq!(d, 0.0);
+        assert_eq!(dp, 0.0);
+        assert!(max_abs(&g.parts.exchange) == 0.0, "no exchange part");
+        assert!(max_abs(&g.grad) > 1e-3, "force is not trivially zero");
+    }
+}
+
+/// Independent anchor of the exchange-fraction-0 plumbing: central FD of the
+/// Hartree-only k energy (fresh SCF per point; no grid, so smooth).
+#[test]
+fn hartree_only_force_matches_fd_of_its_own_energy() {
+    for jk in [Jk::Dense, Jk::Gdf] {
+        let h = hartree(&H2, [1, 1, 3], jk);
+        let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
+        let g = with_jk(&h, |j| {
+            kpoint_hartree_gradient(&h.cell, &h.prep, &h.mesh, &hcfg, &h.hk, j, &h.scf, &kcfg())
+                .unwrap()
+        });
+        let mut worst = 0.0_f64;
+        for (a, x) in [(0, 0), (0, 2), (1, 1)] {
+            let hh = 1e-4;
+            let ep = hartree(&moved(&H2, a, x, hh), [1, 1, 3], jk).scf.energy;
+            let em = hartree(&moved(&H2, a, x, -hh), [1, 1, 3], jk).scf.energy;
+            let d = (ep - em) / (2.0 * hh);
+            worst = worst.max((g.grad[(a, x)] - d).abs());
+        }
+        eprintln!("{jk:?}: Hartree-only analytic vs FD worst {worst:.2e}");
+        assert!(worst < 1e-7, "{jk:?}: {worst:e}");
+    }
+}
+
+/// Analytic vs central FD of the k RKS energy: dense AFT and RS-GDF, PBE.
+#[test]
+fn pbe_force_matches_fd_dense_and_rsgdf() {
+    for jk in [Jk::Dense, Jk::Gdf] {
+        let grid = atom_grid(20, 50);
+        let fx = fixture(&H2, [1, 1, 3], "PBE", jk, grid.clone());
+        let g = force(&fx, None);
+        let mut worst = 0.0_f64;
+        for (a, x) in [(0, 0), (0, 2), (1, 1)] {
+            let d = fd(&H2, a, x, 1e-4, [1, 1, 3], "PBE", jk, &grid);
+            worst = worst.max((g.grad[(a, x)] - d).abs());
+        }
+        eprintln!("{jk:?}: PBE analytic vs FD worst {worst:.2e}");
+        assert!(worst < 1e-7, "{jk:?}: {worst:e}");
     }
 }
