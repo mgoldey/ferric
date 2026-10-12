@@ -823,7 +823,7 @@ const FD_BAR: f64 = 5e-8;
 /// explicit ones. A smooth energy shows the h^2 truncation trend; the hard
 /// neighbour mask shows an isolated jump (a miss that is not monotone in h).
 #[test]
-#[ignore = "probe: 3 cutoffs x 3 components x 6 steps x 2 SCFs"]
+#[ignore = "probe: 3 cutoffs x 3 components x 6 steps x 2 SCFs; measured 93 s"]
 fn fd_smoothness_probe_under_strain() {
     for cutoff in [None, Some(10.0), Some(14.0)] {
         let grid = atom_grid(20, 50, cutoff);
@@ -968,7 +968,7 @@ fn rotation_covariance_holds_on_the_uniform_grid() {
 /// The atom-grid half of the rotation test: the violation is grid sized
 /// (reported, bounded by the antisymmetry scale, not asserted to vanish).
 #[test]
-#[ignore = "atom-grid rotation violation report (2 fixtures, ~15 s)"]
+#[ignore = "atom-grid rotation violation report (2 fixtures); measured 9 s"]
 fn rotation_violation_on_the_atom_grid_is_grid_sized() {
     rotation_case("atom (20,50)", atom_grid(20, 50, Some(CUTOFF)), 5e-2);
 }
@@ -1265,7 +1265,7 @@ fn smoke_mutants_are_caught() {
 /// PROBE: the all-nine FD miss against the step on the atom grid (chooses the
 /// window of `FD_H_ATOM`).
 #[test]
-#[ignore = "probe: 3 steps x 18 SCFs"]
+#[ignore = "probe: 4 steps x 18 SCFs; measured 43 s"]
 fn fd_window_probe_all_nine_atom_grid() {
     let grid = atom_grid(20, 50, Some(CUTOFF));
     let fx = fixture(&H2, [1, 1, 3], "PBE", Jk::Dense, grid.clone());
@@ -1312,7 +1312,7 @@ fn uniform_grid_stress_matches_pyscf_fftdf_krks_stress_pbe() {
 
 /// The LDA row of the PySCF anchor (a second 61^3 SCF).
 #[test]
-#[ignore = "second 61^3 PySCF-anchor row (~25 s)"]
+#[ignore = "second 61^3 PySCF-anchor row; measured 12 s"]
 fn uniform_grid_stress_matches_pyscf_fftdf_krks_stress_lda() {
     pyscf_case(0);
 }
@@ -1390,7 +1390,7 @@ fn miss_of(rows: &[(KXcStressMutation, f64, f64)], m: KXcStressMutation) -> (f64
 /// a live one must miss by more than the bar). Smallest live miss on the
 /// anchored configuration is printed.
 #[test]
-#[ignore = "full mutant sweep: 12 mutants x 5 configurations (see the #[ignore] timing in the PR)"]
+#[ignore = "full mutant sweep: 12 mutants x 5 configurations; measured 260 s"]
 fn full_mutant_sweep() {
     // Atom grid, PBE, non-TRIM 1x1x3: every mutant live except none.
     let fx = fixture(
@@ -1474,7 +1474,7 @@ fn full_mutant_sweep() {
 /// LDA FD on the uniform grid (no GGA terms: the AO strain is the first-moment
 /// term alone), dense AFT, all nine.
 #[test]
-#[ignore = "second all-nine FD (18 SCFs, ~20 s)"]
+#[ignore = "second all-nine FD (18 SCFs); measured 16 s"]
 fn uniform_grid_lda_stress_matches_fd_all_nine_dense() {
     fd_anchor(Jk::Dense, "LDA", FD_BAR);
 }
@@ -1483,7 +1483,7 @@ fn uniform_grid_lda_stress_matches_fd_all_nine_dense() {
 /// own strain is exercised by `pbc_kstress`; here the XC stress sits on the
 /// RS-GDF density/Fock.
 #[test]
-#[ignore = "RS-GDF all-nine FD (18 SCFs with 18 fits)"]
+#[ignore = "RS-GDF all-nine FD (18 SCFs with 18 fits); measured 22 s"]
 fn uniform_grid_pbe_stress_matches_fd_all_nine_rsgdf() {
     fd_anchor(Jk::Gdf, "PBE", FD_BAR);
 }
@@ -1491,7 +1491,7 @@ fn uniform_grid_pbe_stress_matches_fd_all_nine_rsgdf() {
 /// RS-GDF vs dense AFT: the XC parts are J-route independent up to the density
 /// difference; the total differs by a fit-sized amount (not 0, not O(1)).
 #[test]
-#[ignore = "two SCFs + stresses"]
+#[ignore = "two SCFs + stresses; measured 12 s"]
 fn rsgdf_stress_differs_from_dense_by_a_fit_sized_amount() {
     let grid = KXcGrid::Uniform([24; 3]);
     let a = stress(
@@ -1507,7 +1507,7 @@ fn rsgdf_stress_differs_from_dense_by_a_fit_sized_amount() {
 /// The 2x2x2 Gamma-centred (TRIM-only) mesh against FD of its own energy: the
 /// uniform grid, so smooth; eight k-points, all real phases.
 #[test]
-#[ignore = "8-point mesh, 18 SCFs"]
+#[ignore = "8-point mesh, 3 components, 6 SCFs; measured 24 s"]
 fn uniform_grid_pbe_stress_matches_fd_on_the_2x2x2_mesh_three_components() {
     let grid = KXcGrid::Uniform([24; 3]);
     let fx = fixture(&H2, [2, 2, 2], "PBE", Jk::Dense, grid.clone());
@@ -1538,7 +1538,7 @@ fn uniform_grid_pbe_stress_matches_fd_on_the_2x2x2_mesh_three_components() {
 /// term): halving h divides it by four. (Artifact hypothesis: a stress error
 /// would not depend on h.)
 #[test]
-#[ignore = "3 steps x 18 SCFs (~50 s)"]
+#[ignore = "3 steps x 18 SCFs; measured 44 s"]
 fn uniform_grid_fd_miss_scales_as_h_squared() {
     let grid = KXcGrid::Uniform([24; 3]);
     let fx = fixture(&H2, [1, 1, 3], "PBE", Jk::Dense, grid.clone());
@@ -1614,7 +1614,7 @@ fn rotated_case(
 /// (the rotated-vs-unrotated defects are blind at the default screen, as in
 /// `pbc_kstress.rs`).
 #[test]
-#[ignore = "cc-pVDZ RS-GDF, 2 modes x (1 + 6) SCFs; see the timing in the PR"]
+#[ignore = "cc-pVDZ RS-GDF, 2 modes x (1 + 6) SCFs; measured 91 s"]
 fn rotated_and_unrotated_sr_walks_are_consistent_with_the_energy() {
     use ferric_pbc::sr_rotation::SrColumnRotation::{Auto, Off};
     let cell = Cell::new(hydrogens(&[[0.3, 0.2, 0.1], [0.35, 0.12, 1.5]]), cubic(5.0)).unwrap();
@@ -1651,7 +1651,7 @@ fn rotated_and_unrotated_sr_walks_are_consistent_with_the_energy() {
 /// uniform grid. Artifact hypothesis: a bug in the point-anchor terms would
 /// not shrink with the grid.
 #[test]
-#[ignore = "4 SCFs up to (75,302) grids"]
+#[ignore = "4 SCFs up to (75,302) grids; measured 26 s"]
 fn atom_grid_antisymmetry_shrinks_with_the_grid() {
     let mut prev = f64::INFINITY;
     for (nr, na) in [(20, 50), (30, 110), (40, 110), (75, 302)] {
