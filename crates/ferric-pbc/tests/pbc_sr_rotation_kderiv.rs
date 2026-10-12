@@ -472,6 +472,14 @@ fn rotation_mutants_miss_the_rotated_stress() {
     r.assert_rotates("1x1x3");
     let scf = r.scf(ExxDiv::None);
     let s0 = r.stress(&scf, ExxDiv::None, None);
+    // The transposed-pair defect on the NON-TRIM mesh (n_2 = 3): on a TRIM
+    // mesh (1x1x2) r == -r (mod 2), so a transposed bin is nearly the same
+    // bin and the defect is weak; here the force miss is printed and bounded.
+    let f0 = r.force(&scf, ExxDiv::None, None);
+    let fs = r.force(&scf, ExxDiv::None, Some(KGradMutation::RotSwapPair));
+    let miss = max_abs_diff(&fs.grad, &f0.grad);
+    eprintln!("force RotSwapPair on 1x1x3 (non-TRIM): miss {miss:.2e}");
+    assert!(miss > MUTANT_FLOOR, "{miss:e}");
     for m in STRESS_MUTANTS {
         let s = r.stress(&scf, ExxDiv::None, Some(m));
         let tot = mdiff(&s.de_deps, &s0.de_deps);

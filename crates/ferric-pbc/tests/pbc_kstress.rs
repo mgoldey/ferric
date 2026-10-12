@@ -2811,6 +2811,9 @@ fn rsgdf_stress_under_auto_rotation_agrees_with_off_on_a_p_cell() {
             &scfg(None),
         )
         .expect("stress");
+        // The stress walked the columns the energy rotated (nonzero under Auto).
+        assert_eq!(st.hcore_rotated_columns, ks.hk.sr_rotated_columns);
+        assert_eq!(st.hcore_rotated_columns > 0, auto);
         (scf.energy, st)
     };
     let (e_auto, s_auto) = run(true);
@@ -2823,8 +2826,9 @@ fn rsgdf_stress_under_auto_rotation_agrees_with_off_on_a_p_cell() {
     assert!(d <= AUTO_ROT_BAR, "{d:e}");
 }
 
-/// Measured |Δ dE/dε| Auto vs Off: 1.6e-13 (energies differ by 7.9e-14, so
-/// the rotation is active).
+/// Measured |Δ dE/dε| rotated pipeline vs unrotated pipeline (hcore precision
+/// 1e-14, default fit precision): 3.7e-13 (energies differ by 7.9e-14, so the
+/// rotation is active and the stress walks are rotated too).
 const AUTO_ROT_BAR: f64 = 1e-11;
 
 // ------------------------------------------------------------- RS-GDF UHF FD
