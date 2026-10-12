@@ -832,3 +832,94 @@ fn full_mutant_sweep() {
         assert_eq!(miss(&uni, m, &ub), 0.0);
     }
 }
+
+// ------------------------------------------------- column rotation (Auto/Off)
+
+/// cc-pVDZ H2, a = 5 Bohr, RS-GDF with cc-pvdz-ri, PBE: the cell where the
+/// SR column rotation actually runs. Returns (energy, force when asked,
+/// hcore rotated columns, fit rotated columns).
+fn rotated_case(
+    pos: &[[f64; 3]],
+    rot: ferric_pbc::sr_rotation::SrColumnRotation,
+    want_force: bool,
+) -> (f64, Option<KRksGradient>, usize, usize) {
+    let cell = Cell::new(hydrogens(pos), cubic(5.0)).unwrap();
+    let bs = ferric_core::basis::bundled("cc-pvdz").unwrap();
+    let abs = ferric_core::basis::bundled("cc-pvdz-ri").unwrap();
+    let prep = prep_for(&cell, &bs);
+    let aux = prep_for(&cell, &abs);
+    let mesh = KPointMesh::gamma_centred(&cell, [1, 1, 3]).unwrap();
+    let mut cfg = KRksConfig::new(&cell, ExxDiv::None, "PBE");
+    cfg.krhf.hcore = PeriodicHcoreConfig::with_omega(OMEGA).with_sr_column_rotation(rot);
+    cfg.krhf.scf.energy_conv = 1e-13;
+    cfg.krhf.scf.grad_conv = 1e-10;
+    cfg.krhf.scf.max_iter = 300;
+    cfg.krhf.jk = KJkKind::RsGdf;
+    let mut kc = kgdf_cfg();
+    kc.gdf.sr_column_rotation = rot;
+    cfg.krhf.rsgdf = kc.clone();
+    cfg.grid = PeriodicGridConfig::with_size(20, 50);
+    let res = solve_krks(&cell, &prep, Some(&aux), &mesh, &cfg).unwrap();
+    if !want_force {
+        return (res.scf.energy, None, 0, 0);
+    }
+    let hk = periodic_hcore_kpts(&cell, &prep, &mesh, &cfg.krhf.hcore).unwrap();
+    let gdf = KRsGdf::build(&cell, &prep, &aux, &mesh, &hk.s, &kc).unwrap();
+    let g = kpoint_rks_gradient(
+        &cell,
+        &prep,
+        &mesh,
+        &cfg.krhf.hcore,
+        &hk,
+        KGradJk::RsGdf(KRsGdfGradSource {
+            gdf: &gdf,
+            cfg: &kc,
+            aux: &aux,
+        }),
+        &res.scf,
+        "PBE",
+        &gcfg(&KXcGrid::Atom(cfg.grid.clone()), None),
+    )
+    .unwrap();
+    let hc = g.hf.hcore_rotated_columns;
+    let fc = g.hf.fit_checks.map_or(0, |c| c.rotated_columns);
+    (res.scf.energy, Some(g), hc, fc)
+}
+
+/// The derivative walks follow the walks the energy ran: with the rotation
+/// ON (Auto) the force matches FD of the ROTATED energy; with Off it matches
+/// FD of the unrotated one; the two forces agree to the screening precision
+/// (RotOff-type defects are blind by construction at the default screen, as in
+/// `pbc_sr_rotation_kderiv.rs`).
+#[test]
+fn rotated_and_unrotated_sr_walks_are_consistent_with_the_energy() {
+    use ferric_pbc::sr_rotation::SrColumnRotation::{Auto, Off};
+    let pos = [[0.3, 0.2, 0.1], [0.35, 0.12, 1.5]];
+    let mut forces = Vec::new();
+    for (name, rot) in [("Auto", Auto), ("Off", Off)] {
+        let (_, g, hc, fc) = rotated_case(&pos, rot, true);
+        let g = g.unwrap();
+        eprintln!("{name}: rotated columns hcore {hc} fit {fc}");
+        assert_eq!(hc > 0, name == "Auto");
+        assert_eq!(fc > 0, name == "Auto");
+        let mut worst = 0.0_f64;
+        for (a, x) in [(0, 2), (1, 1)] {
+            // h = 2.5e-5: the Gamma atom-grid precedent. At 1e-4 one component
+            // measured -3.6e-6 (grid points crossing the hard neighbour mask),
+            // at 4e-4 -9e-7: noise, not the derivative (both walks alike).
+            for h in [2.5e-5] {
+                let ep = rotated_case(&moved(&pos, a, x, h), rot, false).0;
+                let em = rotated_case(&moved(&pos, a, x, -h), rot, false).0;
+                let d = g.grad[(a, x)] - (ep - em) / (2.0 * h);
+                eprintln!("  ({a},{x}) h={h:e} diff {d:.3e}");
+                worst = worst.max(d.abs());
+            }
+        }
+        eprintln!("{name}: analytic vs FD of its own energy {worst:.2e}");
+        assert!(worst < 1e-8, "{name}: {worst:e}");
+        forces.push(g.grad);
+    }
+    let d = parts_diff(&forces[0], &forces[1]);
+    eprintln!("Auto vs Off force difference {d:.2e}");
+    assert!(d < 1e-6);
+}
