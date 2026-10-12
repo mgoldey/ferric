@@ -256,42 +256,6 @@ fn max_abs(a: &Array2<f64>) -> f64 {
     a.iter().fold(0.0_f64, |m, x| m.max(x.abs()))
 }
 
-#[test]
-#[ignore]
-fn probe_force_vs_fd() {
-    for (f, grid) in [
-        ("LDA", atom_grid(20, 50)),
-        ("PBE", atom_grid(20, 50)),
-        ("PBE", KXcGrid::Uniform([24, 24, 24])),
-    ] {
-        let t = std::time::Instant::now();
-        let fx = fixture(&H2, [1, 1, 3], f, Jk::Dense, grid.clone());
-        let g = force(&fx, None);
-        eprintln!(
-            "{f} {:?}: fixture+force {:?}; e_xc {:.8} ne {:.8} fock_mismatch {:.2e}",
-            matches!(grid, KXcGrid::Uniform(_)),
-            t.elapsed(),
-            g.e_xc,
-            g.electrons_on_grid,
-            g.hf.fock_mismatch
-        );
-        eprintln!(
-            "  parts |ao| {:.3e} |point| {:.3e} |weight| {:.3e} net {:.2e}",
-            max_abs(&g.xc_ao),
-            max_abs(&g.xc_point),
-            max_abs(&g.xc_weight),
-            (0..3).map(|c| g.grad.column(c).sum().abs()).fold(0.0, f64::max)
-        );
-        let mut worst = 0.0_f64;
-        for (a, x) in [(0, 0), (0, 2), (1, 1), (1, 2)] {
-            let d = fd(&H2, a, x, 1e-4, [1, 1, 3], f, Jk::Dense, &grid);
-            eprintln!("  ({a},{x}) analytic {:.10} fd {:.10} diff {:.2e}", g.grad[(a, x)], d, g.grad[(a, x)] - d);
-            worst = worst.max((g.grad[(a, x)] - d).abs());
-        }
-        eprintln!("  worst {worst:.2e}");
-    }
-}
-
 // ------------------------------------------------------------------ anchors
 
 /// Fixed (tight) precision of the dense kernels for the Gamma-side anchors.
@@ -452,13 +416,14 @@ fn hartree_only_force_matches_fd_of_its_own_energy() {
             worst = worst.max((g.grad[(a, x)] - d).abs());
         }
         eprintln!("{jk:?}: Hartree-only analytic vs FD worst {worst:.2e}");
-        assert!(worst < 1e-7, "{jk:?}: {worst:e}");
+        assert!(worst < 1e-8, "{jk:?}: {worst:e}");
     }
 }
 
 /// Analytic vs central FD of the k RKS energy: dense AFT and RS-GDF, PBE.
 #[test]
 fn pbe_force_matches_fd_dense_and_rsgdf() {
+    let mut forces = Vec::new();
     for jk in [Jk::Dense, Jk::Gdf] {
         let grid = atom_grid(20, 50);
         let fx = fixture(&H2, [1, 1, 3], "PBE", jk, grid.clone());
@@ -469,8 +434,14 @@ fn pbe_force_matches_fd_dense_and_rsgdf() {
             worst = worst.max((g.grad[(a, x)] - d).abs());
         }
         eprintln!("{jk:?}: PBE analytic vs FD worst {worst:.2e}");
-        assert!(worst < 1e-7, "{jk:?}: {worst:e}");
+        assert!(worst < 1e-8, "{jk:?}: {worst:e}");
+        forces.push(g.grad);
     }
+    // The RS-GDF route is really wired: its fit differs from the dense AFT
+    // force by a fit-sized amount (not 0, not O(1)).
+    let d = parts_diff(&forces[0], &forces[1]);
+    eprintln!("dense vs RS-GDF force difference {d:.2e}");
+    assert!(d > 1e-9 && d < 1e-2);
 }
 
 fn parts_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
@@ -541,7 +512,7 @@ fn one_point_mesh_matches_the_gamma_ks_gradient_per_part() {
         ];
         for (n, d) in rows {
             eprintln!("{f} 1x1x1 vs Gamma: {n:<10} {d:.2e}");
-            assert!(d < 1e-9, "{f} {n}: {d:e}");
+            assert!(d < 1e-12, "{f} {n}: {d:e}");
         }
         assert!(max_abs(&k.xc_weight) > 1e-3 && max_abs(&k.xc_point) > 1e-3);
     }
@@ -594,7 +565,7 @@ fn k_mesh_force_is_the_gamma_supercell_force_per_part() {
     ];
     for (n, d) in rows {
         eprintln!("{f} 1x1x3 vs supercell: {n:<10} {d:.2e}");
-        assert!(d < 1e-8, "{f} {n}: {d:e}");
+        assert!(d < 1e-10, "{f} {n}: {d:e}");
     }
 }
 
@@ -619,7 +590,7 @@ fn uniform_grid_force_has_no_grid_terms_and_matches_fd() {
         worst = worst.max((g.grad[(a, x)] - d).abs());
     }
     eprintln!("uniform 24^3 PBE: analytic vs FD worst {worst:.2e}");
-    assert!(worst < 1e-7, "{worst:e}");
+    assert!(worst < 1e-8, "{worst:e}");
 }
 
 // ------------------------------------------------------- invariants / bitwise
@@ -802,7 +773,7 @@ fn smoke_mutants_are_caught() {
 /// The full sweep, with the blind spots asserted (artifact hypotheses: a
 /// mutant that is an IDENTITY on a mesh or functional must show exactly 0).
 #[test]
-#[ignore = "full mutant sweep, 10 mutants x ~3 s + LDA/TRIM rows; measured ~60 s"]
+#[ignore = "full mutant sweep, 10 mutants + LDA/TRIM/uniform rows; measured 45 s"]
 fn full_mutant_sweep() {
     let fx = fixture(&H2, [1, 1, 3], "PBE", Jk::Dense, atom_grid(20, 50));
     let base = force(&fx, None);
@@ -922,4 +893,28 @@ fn rotated_and_unrotated_sr_walks_are_consistent_with_the_energy() {
     let d = parts_diff(&forces[0], &forces[1]);
     eprintln!("Auto vs Off force difference {d:.2e}");
     assert!(d < 1e-6);
+}
+
+/// Production-class grid (40,110): LDA and PBE, dense and RS-GDF, 1x1x3 and a
+/// 2x2x2 mesh, force vs FD at h = 2.5e-5 (the atom-grid step window).
+#[test]
+#[ignore = "production-class grid FD, 4 fixtures x 7 SCFs; measured 45 s"]
+fn production_grid_forces_match_fd() {
+    let grid = atom_grid(40, 110);
+    for (f, jk, mesh) in [
+        ("LDA", Jk::Dense, [1, 1, 3]),
+        ("PBE", Jk::Dense, [1, 1, 3]),
+        ("PBE", Jk::Gdf, [1, 1, 3]),
+        ("PBE", Jk::Dense, [2, 2, 2]),
+    ] {
+        let fx = fixture(&H2, mesh, f, jk, grid.clone());
+        let g = force(&fx, None);
+        let mut worst = 0.0_f64;
+        for (a, x) in [(0, 0), (0, 2), (1, 1)] {
+            let d = fd(&H2, a, x, 2.5e-5, mesh, f, jk, &grid);
+            worst = worst.max((g.grad[(a, x)] - d).abs());
+        }
+        eprintln!("{f} {jk:?} {mesh:?} (40,110): analytic vs FD worst {worst:.2e}");
+        assert!(worst < 1e-8, "{f} {jk:?} {mesh:?}: {worst:e}");
+    }
 }
