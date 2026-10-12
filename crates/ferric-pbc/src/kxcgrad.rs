@@ -1,27 +1,89 @@
 //! Analytic nuclear forces of the k-point closed-shell KS-DFT energy
-//! ([`crate::kdft::solve_krks`]) for LDA and GGA functionals (exact-exchange
-//! fraction 0), dense-AFT and RS-GDF J.
+//! ([`crate::kdft::solve_krks`]) for LDA, GGA and GLOBAL HYBRID functionals
+//! (exact-exchange fraction `a`, `0 ≤ a ≤ 1`), dense-AFT and RS-GDF J/K.
 //!
 //! # Energy (per cell; [`crate::kdft`] conventions)
 //!
 //! ```text
-//! E = (1/N_k) Σ_k Re tr[(h(k) + ½ J(k)) D(k)] + E_xc[D] + E_nn
+//! E = (1/N_k) Σ_k Re tr[(h(k) + ½ J(k) − (a/4) K(k)) D(k)] + E_xc^rem[D] + E_nn
 //! E_xc = Σ_g w_g ε(ρ_g, σ_g),     ρ_g   = (1/N_k) Σ_k Σ_μν D(k)_μν φ^k_μ(r_g) φ^k_ν(r_g)*
 //!                                 ∇ρ_g  = (1/N_k) Σ_k 2 Re Σ_μν D(k)_μν ∇φ^k_μ φ^k_ν*
 //! φ^k_μ(r) = Σ_L e^{ik·L} χ_μ(r − R_A − L)        (μ on atom A)
 //! ```
 //!
 //! `ε = ρ ε_xc`, `σ = |∇ρ|²`, `V_xc(k)_μν = ∂E_xc/∂D(k)_νμ`-equivalent as in
-//! [`crate::kdft::KPeriodicXc`].
+//! [`crate::kdft::KPeriodicXc`]. `E_xc^rem` is libxc's functional for the
+//! hybrid's SEMILOCAL REMAINDER (PBE0: `0.75 E_x^PBE + E_c^PBE`); the force
+//! resolves the same [`XcDef`] as the energy, so `V_xc` is the remainder's
+//! potential and the Fock guard refuses any other functional.
+//!
+//! # Global hybrids: the exchange fraction `a`
+//!
+//! `K(k)` is the energy's injected exchange, Madelung shift included
+//! (`K = K_AFT + v_M S D S`, `v_M` the mesh constant for `exxdiv = ewald`, 0
+//! for `none`); [`crate::kscf::solve_krks_injected`] scales the whole of it by
+//! `a`. At fixed `D` the nuclear derivative is therefore the HF derivative
+//! with the exchange-bearing pieces multiplied by `a` and the Coulomb pieces
+//! untouched (`assemble(.., exch_scale = a)`):
+//!
+//! * the dense-AFT K derivative walks: the exchange coefficients `c_s → a c_s`
+//!   (`J` keeps its coefficient);
+//! * the RS-GDF fit, shared by `J` and `K`: its gradient is bilinear in the
+//!   fitted objects and the density terms. `J` enters through the total
+//!   density (`ρ_P = Σ_k D_k·B_P`, `crate::rsgdf::kpoint::kderiv`'s
+//!   `coulomb_q0`), `K` through `Σ_s c_s D_s(k') J3^H D_s(k)` in `H(q)` and
+//!   `Z`. Only the `c_s` multiply: `a` scales the exchange part of `H` (so of
+//!   the metric weight `Wm = U (Lo ∘ U^H H U) U^H`) and of `Z` (so of the
+//!   fitted 3-centre weights, the SR bins and the LR line), never the
+//!   Coulomb `ρ ρ^H` / `c` pieces, never the Löwdin metric `f(J2)` itself
+//!   (it depends on the fit, not on `a`). The fit is the SAME for every `a`
+//!   (it does not know `a`), so the lindep cut and the rebuild check are
+//!   `a`-independent;
+//! * the Madelung M-term `−v_M Σ_s D_s S D_s` in the overlap weight, from the
+//!   energy's `−(a v_M/2)(1/N_k) Σ_s Σ_k tr[D_s S D_s S]`: `v_M → a v_M`;
+//! * the energy-weighted Pulay term `W = Σ_s D_s F_s D_s`, `F = h + J −
+//!   (a/2) K + V_xc^rem` (K with the shift).
+//!
+//! The force at fixed `D` is AFFINE in `a` (checked in
+//! `tests/pbc_kxcgrad_hybrid.rs`, residual ≤ 1e-15 dense, ≤ 1.3e-13 RS-GDF).
+//! That check catches ONLY `a`-nonlinear defects (`a` applied twice); a `J`
+//! scaled by `a`, an unscaled piece, a `2a` spin factor or an unscaled
+//! Madelung are all still affine. What pins the scaling instead: the
+//! `a = 1` HF anchor (blind to every `a`-scaling defect except a spin
+//! factor), the Gamma hybrid gradient at 1×1×1 per part (dense AND RS-GDF,
+//! `gamma_rks_gradient{,_rsgdf}`, which scale `J` and `K` independently), the
+//! Gamma supercell identity on the non-TRIM 1×1×3 mesh (dense), central FD of
+//! the energy, and the production-wired mutants of the test file.
+//!
+//! ## exxdiv
+//!
+//! At a FIXED density the force does not depend on `exxdiv`: the shift
+//! `−(a v_M/2) S D S` in `F` enters the Pulay weight `D F D` as
+//! `−(a v_M/2) D S D S D = −a v_M D S D` (using `D S D = 2 D` for the
+//! idempotent closed-shell density), which cancels the M-term
+//! `−a v_M D S D` exactly, as for HF (`kpoint_rhf_gradient` is
+//! exxdiv-independent). The SCFs run with `none` and `ewald` reached the same
+//! density here and gave the same force (2e-15 dense, 3e-13 RS-GDF), each
+//! equal to the FD of its OWN energy. That the DENSITIES coincide is not
+//! guaranteed in general: the shift moves occupied levels down by `a v_M`
+//! only, so with aufbau across k the two fixed points coincide when the gap
+//! exceeds `a v_M`; a small-gap cell can converge to different densities,
+//! and each force is still the exact derivative of its own energy.
+//!
+//! The force still needs the SCF's `exxdiv` to REBUILD `K` for the Fock guard
+//! ([`KRksGradConfig::exxdiv`]; required for a hybrid, ignored for a pure
+//! functional). Unlike the HF force's guard (which fits the `S D S` group out
+//! and accepts any exxdiv), this guard demands an exact match, so a wrong
+//! exxdiv is a refusal, not a silent pass.
 //!
 //! # What is new relative to the k-point HF force ([`crate::kgrad`])
 //!
-//! A pure functional has no exchange: the whole HF derivative is reused with
-//! the exchange fraction `a = 0` (`assemble(.., exch_scale = 0)`: the K
-//! derivative walks, the RS-GDF fitted-exchange weights and the Madelung
-//! M-term are absent; the Coulomb parts are unchanged) and the energy-weighted
-//! Pulay term built from the Fock matrix INCLUDING `V_xc(k)`. The only new
-//! derivative terms are those of `E_xc` at fixed density matrix:
+//! For `a = 0` the whole HF derivative is reused with the exchange absent
+//! (the K walks, the fitted-exchange weights and the M-term vanish; the
+//! Coulomb parts are unchanged), and the energy-weighted Pulay term is built
+//! from the Fock matrix INCLUDING `V_xc(k)`. The only new derivative terms
+//! are those of `E_xc` at fixed density matrix (identical for hybrids, with
+//! the remainder functional):
 //!
 //! ```text
 //! dE_xc/dR_{A,j} =  X1 (AO motion)  +  X3 (grid-point motion)  +  X4 (weight response)
@@ -72,11 +134,12 @@
 //!
 //! # Fock guard
 //!
-//! The Pulay term needs `F(k) = h + J + V_xc`. The entry rebuilds it from the
-//! density and compares with the SCF's stored (non-extrapolated) Fock against
-//! [`crate::kgrad::FOCK_CONSISTENCY_BAR`], with NO Madelung-shift allowance
-//! (a pure functional has no `K`). A result from another functional, grid or
-//! J route does not match.
+//! The Pulay term needs `F(k) = h + J − (a/2) K + V_xc`. The entry rebuilds it
+//! from the density and compares with the SCF's stored (non-extrapolated)
+//! Fock against [`crate::kgrad::FOCK_CONSISTENCY_BAR`], with NO Madelung-shift
+//! allowance (the shift is rebuilt from [`KRksGradConfig::exxdiv`]). A result
+//! from another functional (other `a` or other remainder), grid, J/K route or
+//! `exxdiv` does not match (measured 3.9e-2 .. 6.2e-1 against the 1e-8 bar).
 //!
 //! # Memory
 //!
@@ -93,15 +156,22 @@
 //!
 //! # Scope
 //!
-//! Pure LDA/GGA only. Global hybrids (exchange fraction ≠ 0), range-separated
-//! hybrids, meta-GGA, VV10/double hybrids are refused with typed errors
-//! ([`PeriodicDftError::Unsupported`]); unrestricted/open-shell k-point KS
-//! (`solve_kuks`) has no FORCE entry point.
+//! LDA, GGA and global hybrids (`0 ≤ a ≤ 1`: PBE0, B3LYP; dense AFT, unsplit
+//! and range-split RS-GDF). Range-separated hybrids (the erf-kernel K walks
+//! and their Madelung are not differentiated), meta-GGA, VV10 and double
+//! hybrids are refused with typed errors ([`PeriodicDftError::Unsupported`]);
+//! unrestricted/open-shell k-point KS (`solve_kuks`) has no FORCE entry
+//! point.
 //!
 //! # Cost and budget notes
 //!
 //! * `jk_build` computes a full `K` and discards it for a pure functional (an
-//!   `O(N_k²)` waste on the dense AFT path); only `J` is used.
+//!   `O(N_k²)` waste on the dense AFT path); only `J` is used. For a hybrid the
+//!   Fock-guard matrices `D, J, K, F, V_xc` (`5 · N_k n² · 16 B`) are resident
+//!   next to the assembly's arrays and are charged to the ledger after the XC
+//!   pass; the K derivative walks themselves are charged inside `assemble`
+//!   (`(R + 4) n²` complex per pair-FT chunk column on the dense path, the
+//!   fit's `Z`/`H` blocks on RS-GDF), exactly as for HF.
 //! * The weight derivatives take `npts·natoms·24 B` (about 2 GB for 64 atoms at
 //!   (75, 302)); they are reserved, so an oversize system is a typed error, not
 //!   an out-of-memory kill.
@@ -111,6 +181,7 @@
 //!   retained-state derivative budget.
 
 use crate::budget::{bytes_of, Ledger};
+use crate::dense_aft::ExxDiv;
 use crate::dft::{
     build_response_grid, BlochAoHess, BlochPhase, LatticeAoHess, PeriodicDftError, PeriodicGrid,
     PeriodicGridConfig, DEFAULT_AO_THRESHOLD,
@@ -137,7 +208,14 @@ use num_complex::Complex64 as C64;
 use rayon::prelude::*;
 
 /// Remedy text of the KS force's Fock guard.
-const KS_REMEDY: &str = "the functional, grid, AO threshold and J/K route must be the SCF's own (a different functional gives a different V_xc)";
+///
+/// Stricter than the HF force's guard on purpose: the HF guard fits the
+/// `S D S` (Madelung-shift) group out of the comparison, so any `exxdiv`
+/// passes; this one rebuilds `K` with [`KRksGradConfig::exxdiv`] and demands
+/// an exact match, so the exxdiv given must be the one the SCF ran (a wrong
+/// one is the commonest refusal of a hybrid force). A pure functional has no
+/// `K`, so the setting is irrelevant there.
+const KS_REMEDY: &str = "the functional, grid, AO threshold and J/K route must be the SCF's own (a different functional gives a different V_xc), and for a hybrid KRksGradConfig::exxdiv must be the exxdiv the SCF ran";
 
 /// Upper bound on points per derivative chunk (the Gamma `XC_GRAD_CHUNK`).
 const MAX_CHUNK: usize = 128;
@@ -191,6 +269,15 @@ pub enum KXcMutation {
     /// The Pulay term built from a Fock matrix WITHOUT `V_xc` (the guard is
     /// skipped for this defect: it would refuse it).
     PulayNoVxc,
+    /// Hybrid: a WRONG semilocal part. The XC terms (X1/X3/X4) AND the `V_xc`
+    /// in the Pulay Fock both use the pure parent (PBE for PBE0, BLYP for
+    /// B3LYP; any other hybrid is an error) instead of the hybrid's
+    /// remainder: the wrong-remainder defect ALONE. Only the Fock guard is
+    /// skipped (it would refuse it); nothing else is dropped.
+    WrongRemainder,
+    /// The Fock guard skipped, nothing else changed (isolates the effect of
+    /// the guard-skip used by `PulayNoVxc` / `WrongRemainder`; must be 0).
+    GuardSkippedOnly,
 }
 
 /// Settings of [`kpoint_rks_gradient`].
@@ -205,6 +292,12 @@ pub struct KRksGradConfig {
     /// Cap on concurrently live derivative chunks (`None` = the thread count,
     /// further limited by the remaining budget). The result does not depend on it.
     pub max_live_chunks: Option<usize>,
+    /// The exchange-divergence treatment of the SCF (`solve_krks`'s
+    /// `krhf.exxdiv`). Needed only by a global hybrid (the exact exchange feels
+    /// the Madelung shift, and the Fock guard rebuilds `K` with it); a pure
+    /// functional ignores it. `None` with a hybrid is a typed error: the
+    /// force cannot guess what the SCF ran.
+    pub exxdiv: Option<ExxDiv>,
     /// TEST ONLY: a deliberate XC-force defect.
     #[doc(hidden)]
     pub mutation: Option<KXcMutation>,
@@ -217,6 +310,7 @@ impl Default for KRksGradConfig {
             grid: KXcGrid::default(),
             ao_threshold: DEFAULT_AO_THRESHOLD,
             max_live_chunks: None,
+            exxdiv: None,
             mutation: None,
         }
     }
@@ -617,30 +711,26 @@ fn hermitize(m: &Array2<C64>) -> Array2<C64> {
     (m + &h).mapv(|z| z * 0.5)
 }
 
-/// Refuse what the pure-functional force does not cover; returns the
-/// resolved functional.
-fn resolve_pure(functional: &str) -> Result<XcDef, FerricError> {
+/// Resolve the functional and its global exact-exchange fraction `a`; refuse
+/// what the force does not cover (range-separated hybrids, meta-GGA, VV10 and
+/// double hybrids).
+fn resolve_global(functional: &str) -> Result<(XcDef, f64), FerricError> {
     let (xc, exx, rsh) = resolve_periodic_functional_rsh(functional)?;
     if rsh.is_some() {
         return Err(PeriodicDftError::Unsupported {
             feature: "range-separated hybrid force at k",
             reason: format!(
-                "{functional}: the k-point XC force covers LDA and GGA functionals with no exact \
-                 exchange; the screened-exchange derivative is not implemented"
+                "{functional}: the k-point XC force covers LDA, GGA and GLOBAL hybrid functionals; \
+                 the attenuated-exchange derivative (erf-kernel K walks and Madelung) is not \
+                 implemented"
             ),
         }
         .into());
     }
-    if exx != 0.0 {
-        return Err(PeriodicDftError::Unsupported {
-            feature: "global hybrid force at k",
-            reason: format!(
-                "{functional} has exact-exchange fraction {exx}; the k-point XC force covers pure \
-                 LDA/GGA functionals only (the exchange derivative with a scaled K is not \
-                 validated)"
-            ),
-        }
-        .into());
+    if !(0.0..=1.0).contains(&exx) {
+        return Err(FerricError::General(format!(
+            "{functional}: exact-exchange fraction {exx} outside [0, 1]"
+        )));
     }
     if xc
         .funcs
@@ -655,11 +745,12 @@ fn resolve_pure(functional: &str) -> Result<XcDef, FerricError> {
         }
         .into());
     }
-    Ok(xc)
+    Ok((xc, exx))
 }
 
 /// k-point closed-shell RKS nuclear gradient (module doc) of a converged
-/// [`crate::kdft::solve_krks`] result for a PURE LDA/GGA `functional`.
+/// [`crate::kdft::solve_krks`] result for an LDA, GGA or global-hybrid
+/// `functional` (a hybrid also needs [`KRksGradConfig::exxdiv`]).
 ///
 /// * `hcore_cfg`, `hk`, `jk` — the config/output of the hcore and the J source
 ///   the SCF used (dense AFT or RS-GDF), as for [`crate::kgrad::kpoint_rhf_gradient`]
@@ -667,9 +758,9 @@ fn resolve_pure(functional: &str) -> Result<XcDef, FerricError> {
 /// * `scf` — `KRksResult::scf`.
 /// * `cfg.grid`/`cfg.ao_threshold` — the grid and AO truncation of the energy.
 ///
-/// Refuses (typed errors) hybrids, range-separated hybrids, meta-GGA,
-/// VV10/double hybrids, and an SCF whose Fock the rebuilt `h + J + V_xc` does
-/// not reproduce.
+/// Refuses (typed errors) range-separated hybrids, meta-GGA, VV10/double
+/// hybrids, a hybrid without `cfg.exxdiv`, and an SCF whose Fock the rebuilt
+/// `h + J − (a/2) K + V_xc` does not reproduce.
 #[allow(clippy::too_many_arguments)]
 pub fn kpoint_rks_gradient(
     cell: &Cell,
@@ -682,7 +773,21 @@ pub fn kpoint_rks_gradient(
     functional: &str,
     cfg: &KRksGradConfig,
 ) -> Result<KRksGradient, FerricError> {
-    let xc = resolve_pure(functional)?;
+    let (mut xc, exch) = resolve_global(functional)?;
+    if cfg.mutation == Some(KXcMutation::WrongRemainder) {
+        // TEST ONLY: the pure parent in place of the hybrid's remainder.
+        let parent = match functional.to_ascii_uppercase().as_str() {
+            "PBE0" => "PBE",
+            "B3LYP" => "BLYP",
+            other => {
+                return Err(FerricError::General(format!(
+                    "WrongRemainder mutant: no pure parent registered for {other}"
+                )))
+            }
+        };
+        xc = ferric_dft::libxc::xc_def_from_name(parent)
+            .map_err(|e| FerricError::General(format!("{functional}: pure parent: {e:?}")))?;
+    }
     let gga = xc
         .funcs
         .iter()
@@ -709,14 +814,18 @@ pub fn kpoint_rks_gradient(
         jk,
         scf,
         &resp,
+        exch,
         cfg,
     )
 }
 
-/// TEST/DIAGNOSTIC: the exchange-free machinery with a zero XC (`E_xc = 0`,
-/// `V_xc = 0`) on a Hartree-only SCF (`solve_krks_injected` with a zero XC
-/// builder and `a = 0`). The exactness anchor of the XC plumbing against
-/// [`kpoint_hartree_gradient`].
+/// TEST/DIAGNOSTIC: the KS machinery with a zero XC (`E_xc = 0`, `V_xc = 0`)
+/// and exact-exchange fraction `exch` on an SCF run by `solve_krks_injected`
+/// with a zero XC builder and the same `exch`. With `exch = 0` it is the
+/// Hartree-only anchor against [`kpoint_hartree_gradient`]; with `exch = 1`
+/// it is k-point HF ([`crate::kgrad::kpoint_rhf_gradient`]). A hybrid
+/// (`exch != 0`) needs `cfg.exxdiv`. `exch` outside `[0, 1]` (or NaN) is a
+/// typed error.
 #[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
 pub fn kpoint_null_xc_gradient(
@@ -727,6 +836,7 @@ pub fn kpoint_null_xc_gradient(
     hk: &PeriodicHcoreK,
     jk: KGradJk<'_>,
     scf: &KScfResult,
+    exch: f64,
     cfg: &KRksGradConfig,
 ) -> Result<KRksGradient, FerricError> {
     rks_gradient_with(
@@ -739,6 +849,7 @@ pub fn kpoint_null_xc_gradient(
         jk,
         scf,
         &NullXc,
+        exch,
         cfg,
     )
 }
@@ -755,6 +866,7 @@ fn rks_gradient_with(
     jk: KGradJk<'_>,
     scf: &KScfResult,
     xc: &dyn KXcResponse,
+    exch: f64,
     cfg: &KRksGradConfig,
 ) -> Result<KRksGradient, FerricError> {
     check_inputs(
@@ -769,8 +881,29 @@ fn rks_gradient_with(
         scf.converged,
         &scf.kpts,
     )?;
+    if !(0.0..=1.0).contains(&exch) {
+        return Err(FerricError::General(format!(
+            "{who}: exact-exchange fraction {exch} outside [0, 1]"
+        )));
+    }
     let natoms = cell.positions().len();
     let nk = mesh.nk();
+    // The Madelung shift of the SCF's K (0 for a pure functional: no K).
+    let vm = if exch == 0.0 {
+        0.0
+    } else {
+        let exxdiv = cfg.exxdiv.ok_or_else(|| {
+            FerricError::General(format!(
+                "{who}: a hybrid functional (exact exchange {exch}) needs \
+                 KRksGradConfig::exxdiv, the treatment the SCF ran (its K carries the \
+                 Madelung shift)"
+            ))
+        })?;
+        match exxdiv {
+            ExxDiv::None => 0.0,
+            ExxDiv::Ewald => mesh.madelung(cell)?,
+        }
+    };
     let mut ledger = open_ledger(cell, prep, mesh, &cfg.grad, false)?;
     let d = scf.densities.clone();
     let mut xo = xc.evaluate(&d, &ledger)?;
@@ -779,12 +912,33 @@ fn rks_gradient_with(
         xo.point = Array2::zeros((natoms, 3));
         xo.weight = Array2::zeros((natoms, 3));
     }
-    // F = h + J + V_xc (no exchange); the stored Fock of the SCF must agree.
-    let (j, _k) = jk_build(&jk, 0.0, &d)?;
+    // Peak of the guard stage, beyond `open_ledger`'s own arrays: D (kept by
+    // `KSpins` through `assemble`), J, K, F and V_xc, each N_k n² complex. J
+    // and K are dropped once F is built, so the charge (held to the end of
+    // `assemble`) is conservative for the assembly itself. The XC chunk
+    // transient was already released with its ledger clone.
+    ledger.reserve(
+        &format!(
+            "k KS force Fock-guard matrices D, J, K, F, V_xc (n = {}, N_k = {nk})",
+            prep.nbasis()
+        ),
+        bytes_of((nk * prep.nbasis() * prep.nbasis()) as u64, 16 * 5),
+    )?;
+    // F = h + J - (a/2) K + V_xc; the stored Fock of the SCF must agree. K
+    // carries the Madelung shift and is scaled as a whole (the energy's
+    // convention); a = 0 contributes exactly nothing.
+    let (j, kmat) = jk_build(&jk, vm, &d)?;
     let with_vxc = cfg.mutation != Some(KXcMutation::PulayNoVxc);
+    let guard = with_vxc
+        && cfg.mutation != Some(KXcMutation::WrongRemainder)
+        && cfg.mutation != Some(KXcMutation::GuardSkippedOnly);
     let f: Vec<Array2<C64>> = (0..nk)
         .map(|q| {
-            let base = hermitize(&(&hk.h[q] + &j[q]));
+            let mut base = &hk.h[q] + &j[q];
+            if exch != 0.0 {
+                base.scaled_add(C64::new(-0.5 * exch, 0.0), &kmat[q]);
+            }
+            let base = hermitize(&base);
             if with_vxc {
                 hermitize(&(&base + &xo.v[q]))
             } else {
@@ -792,7 +946,8 @@ fn rks_gradient_with(
             }
         })
         .collect();
-    let mismatch = if with_vxc {
+    drop((j, kmat));
+    let mismatch = if guard {
         check_fock(who, "fock", &f, &scf.fock, KS_REMEDY)?
     } else {
         0.0
@@ -805,8 +960,8 @@ fn rks_gradient_with(
         hk,
         &jk,
         KSpins::Restricted { d, f },
-        0.0,
-        0.0,
+        vm,
+        exch,
         &cfg.grad,
         &mut ledger,
     )?;

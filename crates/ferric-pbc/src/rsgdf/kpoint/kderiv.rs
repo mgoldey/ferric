@@ -253,6 +253,10 @@ pub(crate) struct KFitMutation {
     /// Strain only, UHF: the fitted exchange `Z` built from `D_α J3^H D_β +
     /// D_β J3^H D_α` instead of each spin with itself.
     pub(crate) cross_spin: bool,
+    /// Hybrid scale defect: the Coulomb pieces of the fit gradient (the
+    /// `ρ ρ^H` part of `H`, the `c` part of `Z`, hence `M_g0`) multiplied by
+    /// this factor (production: `None`).
+    pub(crate) coulomb_scale: Option<f64>,
 }
 
 /// `3 × 3` strain tensor.
@@ -1108,10 +1112,12 @@ fn coulomb_q0(
         rho += &x.t().dot(&v);
     }
     rho.mapv_inplace(|z| z * inv_nk);
-    let cvec = jinv.dot(&rho);
+    let mut cvec = jinv.dot(&rho);
+    let js = ctx.mutation.coulomb_scale.unwrap_or(1.0);
+    cvec.mapv_inplace(|z| z * js);
     for p in 0..naux {
         for qq in 0..naux {
-            hq[(p, qq)] += rho[p] * rho[qq].conj() * 0.5;
+            hq[(p, qq)] += rho[p] * rho[qq].conj() * (0.5 * js);
         }
     }
     for (j, z) in zt.iter_mut().enumerate() {
