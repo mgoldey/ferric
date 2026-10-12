@@ -388,7 +388,7 @@ pub fn probe_skip(sp: usize, ua: usize, ub: usize) -> bool {
         }
     }
     let seen = CNT[0].fetch_add(1, Ordering::Relaxed);
-    if p.b2_stride > 0 && seen % p.b2_stride == 0 {
+    if p.b2_stride > 0 && seen.is_multiple_of(p.b2_stride) {
         let v = b2(&p.pp[sp], &p.pm[k], &p.kern) < p.tau;
         CNT[8].fetch_add(1, Ordering::Relaxed);
         if s {
