@@ -81,13 +81,27 @@
 //! `DfK::v_inv_sqrt_lindep`, i.e. the SCF's own construction (no explicit
 //! `V⁻¹` from LU). With nothing dropped it agrees with `V⁻¹` to `~ε·cond(V)`.
 //!
+//! ## What the tests establish (and what they cannot see)
+//!
+//! * No exactly-spanning auxiliary basis exists for exchange: the pair
+//!   densities `φ_i φ_j` of orbitals on different atoms are two-centre
+//!   products, and with both on one atom every integral is one-centre (zero
+//!   Hessian), so the RI-J exact-span anchor has no K analogue.
+//! * For ONE occupied column `E_K = 2α E_J^DF`: every skeleton piece equals
+//!   `2α` times the RI-J piece through an independent code path (blind to the
+//!   pair index `ij`, i.e. to `m > 1`).
+//! * `K^x` against the SCF's own `DfK` differenced; the skeleton pieces and the
+//!   whole skeleton against differences of the first-derivative pieces and of
+//!   `df_jk_gradient` at fixed density; the total against the differenced DF
+//!   gradient with the SCF re-converged; PySCF's analytic DF Hessian.
+//!
 //! ## Memory and cost
 //!
 //! With `A = naux`, `n = nbf`, `m` = occupied count, `3N` coordinates, the
 //! resident arrays are `B, Ĉ` (`2·A·n·m`), `L, Γ` (`2·A·m²`), `L_x → Z_x` and
 //! `∂_xΓ` (`2·3N·A·m²`), the dense `V_x` (`3N·A²`), plus the `K^x` matrices
 //! (`3·3N·n²`) and `chunk` per-aux-shell partials of one `3N·n²` matrix. All of
-//! it is charged to the global pool up front ([`rik_peak_bytes`]); a typed error
+//! it is charged to the global pool up front (`rik_peak_bytes`); a typed error
 //! when it does not fit. Peak: 3.4 MB for water cc-pVDZ / def2-universal-jkfit
 //! (3 atoms, `A = 113`, `m = 5`); 10.5 GB for 30 atoms with 300 basis
 //! functions, `m = 60`, `A = 1500` (of which `L_x` and `∂_xΓ` are 3.9 GB each
@@ -106,7 +120,7 @@
 //! cond 2.5e5 (cc-pVDZ-RI) 1.4e-10, 2.4e6 (aug-cc-pVDZ-RIFIT) 1.6e-10, 9.1e6
 //! (aug-cc-pVTZ-RIFIT) 2.5e-10, 2.5e7 (def2-universal-jkfit) 1.3e-10, 2.4e7
 //! (def2-QZVPP-RIFIT) 4.4e-10, **2.0e8 (aug-cc-pVQZ-RIFIT) 6.7e-9**: the error
-//! begins to grow near cond 1e8, hence the warning above [`RIK_COND_WARN`]. A
+//! begins to grow near cond 1e8, hence the warning above `RIK_COND_WARN`. A
 //! metric with a mode below the DF-K cut is refused (see Scope). The
 //! reference gradient itself treats kept modes in `[1e-10, 1e-7)` as dropped
 //! (its noise floor), so a basis with such a mode has no valid finite-difference

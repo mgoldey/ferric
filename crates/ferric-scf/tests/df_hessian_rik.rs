@@ -1066,7 +1066,7 @@ H      0.810000    -0.480000    -0.340000\n\
 H     -0.830000    -0.460000    -0.310000\n";
 
 #[test]
-#[ignore = "slow: water cc-pVDZ/def2-universal-jkfit RI-K own-gradient FD"]
+#[ignore = "slow: water cc-pVDZ/def2-universal-jkfit RI-K own-gradient FD; measured 26 s (box load ~8)"]
 fn full_hessian_matches_fd_of_df_gradient_ccpvdz_jkfit() {
     if !has_deriv2() {
         return;
@@ -1075,7 +1075,7 @@ fn full_hessian_matches_fd_of_df_gradient_ccpvdz_jkfit() {
 }
 
 #[test]
-#[ignore = "slow: water def2-SVP/def2-universal-jkfit RI-K own-gradient FD"]
+#[ignore = "slow: water def2-SVP/def2-universal-jkfit RI-K own-gradient FD; measured 6.7 s (box load ~8)"]
 fn full_hessian_matches_fd_of_df_gradient_def2svp_jkfit() {
     if !has_deriv2() {
         return;
@@ -1084,7 +1084,7 @@ fn full_hessian_matches_fd_of_df_gradient_def2svp_jkfit() {
 }
 
 #[test]
-#[ignore = "slow: water cc-pVDZ RI-J + RI-K (both jkfit) own-gradient FD"]
+#[ignore = "slow: water cc-pVDZ RI-J + RI-K (both jkfit) own-gradient FD; measured 16 s (box load ~8)"]
 fn full_hessian_matches_fd_of_df_gradient_ccpvdz_ri_jk() {
     if !has_deriv1() {
         return;
@@ -1099,7 +1099,7 @@ fn full_hessian_matches_fd_of_df_gradient_ccpvdz_ri_jk() {
 }
 
 #[test]
-#[ignore = "slow: NH3 cc-pVDZ/def2-universal-jkfit RI-K own-gradient FD"]
+#[ignore = "slow: NH3 cc-pVDZ/def2-universal-jkfit RI-K own-gradient FD; measured 33 s (box load ~8)"]
 fn full_hessian_matches_fd_of_df_gradient_nh3_ccpvdz_jkfit() {
     if !has_deriv2() {
         return;
@@ -1130,7 +1130,7 @@ fn the_memory_charge_scales_as_documented() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "slow: accuracy-vs-cond(V) scan for the RI-K path, own-gradient FD per aux basis"]
+#[ignore = "slow: accuracy-vs-cond(V) scan for the RI-K path, own-gradient FD per aux basis; measured 86 s for six bases (box load ~8)"]
 fn accuracy_versus_metric_conditioning() {
     // Hypothesis: like RI-J, the RI-K Hessian does not degrade with cond(V) up
     // to the dropped-mode refusal. The reference (FD of ferric's own DF-K
@@ -1211,7 +1211,7 @@ fn explicit_inverse_difference(s: &Setup) -> (f64, f64) {
 }
 
 #[test]
-#[ignore = "slow: benzene STO-3G/def2-universal-jkfit RI-K pieces"]
+#[ignore = "slow: benzene STO-3G/def2-universal-jkfit RI-K pieces; measured 8.2 s (box load ~8)"]
 fn explicit_inverse_mutant_on_an_ill_conditioned_metric() {
     // Hypothesis: physics predicts no difference (same algebra); a numerical
     // artifact predicts a difference that grows with cond(V). The assertion is
