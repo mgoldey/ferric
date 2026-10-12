@@ -59,7 +59,7 @@ use crate::kdense_aft::{KDenseAftConfig, KDenseAftEri};
 use crate::kpts::KPointMesh;
 use crate::kscf::{
     aufbau, diagonalize_all, herm_t, occupied_projector, orthogonalizers_with_report, KDiis,
-    KJkKind, KPointInjection, KPointJk, KScfConfig,
+    KJkKind, KPointInjection, KPointJk, KRetained, KRetainedJk, KScfConfig,
 };
 use crate::lattice::Cell;
 use crate::rsgdf::kpoint::{KRsGdf, KRsGdfConfig};
@@ -232,17 +232,12 @@ pub struct KUhfResult {
     pub timings: PbcTimings,
 }
 
-enum KInts {
-    Dense(KDenseAftEri),
-    RsGdf(KRsGdf),
-}
-
 /// The k-point J/K builder of the stored integrals with the Madelung shift
 /// `madelung` folded into K.
-fn jk_of(ints: &KInts, madelung: f64) -> Box<dyn KPointJk + '_> {
+fn jk_of(ints: &KRetainedJk, madelung: f64) -> Box<dyn KPointJk + '_> {
     match ints {
-        KInts::Dense(e) => Box::new(e.jk_builder_with_madelung(madelung)),
-        KInts::RsGdf(g) => Box::new(g.jk_builder_with_madelung(madelung)),
+        KRetainedJk::Dense(e) => Box::new(e.jk_builder_with_madelung(madelung)),
+        KRetainedJk::RsGdf(g) => Box::new(g.jk_builder_with_madelung(madelung)),
     }
 }
 
@@ -259,6 +254,21 @@ pub fn solve_kuhf(
     mesh: &KPointMesh,
     cfg: &KUhfConfig,
 ) -> Result<KUhfResult, FerricError> {
+    Ok(solve_kuhf_keep(cell, prep, aux, mesh, cfg)?.0)
+}
+
+/// [`solve_kuhf`] that also returns the hcore output and J/K object the SCF
+/// ran on ([`KRetained`]) for the analytic forces and stress. `solve_kuhf`
+/// delegates here, so the energy is bit-identical. The dense object is built
+/// with `ExxDiv::None` (the Madelung term is applied per stage by the builder,
+/// and by the force/stress entry points from their `exxdiv` argument).
+pub fn solve_kuhf_keep(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    aux: Option<&PreparedBasis>,
+    mesh: &KPointMesh,
+    cfg: &KUhfConfig,
+) -> Result<(KUhfResult, KRetained), FerricError> {
     match (cfg.jk, aux) {
         (KJkKind::Dense, Some(_)) => {
             return Err(FerricError::General(
@@ -294,7 +304,7 @@ pub fn solve_kuhf(
     };
     let clock = StageClock::start();
     let ints = match aux {
-        None => KInts::Dense(KDenseAftEri::build(
+        None => KRetainedJk::Dense(KDenseAftEri::build(
             cell,
             prep,
             mesh,
@@ -302,10 +312,10 @@ pub fn solve_kuhf(
             ExxDiv::None,
             &cfg.dense,
         )?),
-        Some(aux) => KInts::RsGdf(KRsGdf::build(cell, prep, aux, mesh, &hk.s, &cfg.rsgdf)?),
+        Some(aux) => KRetainedJk::RsGdf(KRsGdf::build(cell, prep, aux, mesh, &hk.s, &cfg.rsgdf)?),
     };
     timings.stop("k J/K build", &clock);
-    if let KInts::RsGdf(g) = &ints {
+    if let KRetainedJk::RsGdf(g) = &ints {
         crate::rsgdf::kpoint::record_stats(&mut timings, g.stats());
     }
     let clock = StageClock::start();
@@ -362,14 +372,15 @@ pub fn solve_kuhf(
         );
     }
     timings.finish(&total);
-    Ok(KUhfResult {
+    let result = KUhfResult {
         scf,
         none_stage,
         madelung: v_m,
         nocc: (na, nb),
         gaps,
         timings,
-    })
+    };
+    Ok((result, KRetained { hk, jk: ints }))
 }
 
 /// k-point UHF on injected `S(k)`, `h(k)`, `E_nn` and J/K (module doc), from

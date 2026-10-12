@@ -39,10 +39,12 @@
 //! have no supercell anchor.
 
 use crate::dense_aft::ExxDiv;
-use crate::hcore::kpoint::{hermitize, periodic_hcore_kpts};
+use crate::hcore::kpoint::{hermitize, periodic_hcore_kpts, PeriodicHcoreK};
 use crate::hcore::PeriodicHcoreConfig;
 use crate::kdense_aft::{KDenseAftConfig, KDenseAftEri};
+use crate::kgrad::{KGradJk, KRsGdfGradSource};
 use crate::kpts::KPointMesh;
+use crate::kstress::KStressJk;
 use crate::lattice::Cell;
 use crate::lindep::{overlap_abs_row_sum, KLindep, LindepReport};
 use crate::rsgdf::kpoint::{KRsGdf, KRsGdfConfig};
@@ -204,6 +206,62 @@ impl KRhfConfig {
     }
 }
 
+/// The J/K object an SCF ran on, kept alive past the SCF for the analytic
+/// forces and stress.
+pub enum KRetainedJk {
+    /// Dense pure-AFT oracle.
+    Dense(KDenseAftEri),
+    /// k-point RS-GDF.
+    RsGdf(KRsGdf),
+}
+
+/// What [`solve_krhf_keep`] / [`crate::kuscf::solve_kuhf_keep`] retain: the
+/// hcore output and the J/K object the SCF ran on. The force and stress entry
+/// points ([`crate::kgrad`], [`crate::kstress`]) differentiate exactly these,
+/// so they are never rebuilt.
+pub struct KRetained {
+    /// `S(k)`, `h(k)` and the Ewald `E_nn` of the SCF.
+    pub hk: PeriodicHcoreK,
+    /// The J/K the SCF ran on.
+    pub jk: KRetainedJk,
+}
+
+impl KRetained {
+    /// The force entry points' J/K source. `aux` and `cfg` are the aux basis
+    /// and RS-GDF config the build used (ignored for the dense oracle); a
+    /// missing aux basis for an RS-GDF build is an error.
+    pub fn grad_jk<'a>(
+        &'a self,
+        aux: Option<&'a PreparedBasis>,
+        cfg: &'a KRsGdfConfig,
+    ) -> Result<KGradJk<'a>, FerricError> {
+        Ok(match &self.jk {
+            KRetainedJk::Dense(e) => KGradJk::Dense(e),
+            KRetainedJk::RsGdf(g) => KGradJk::RsGdf(KRsGdfGradSource {
+                gdf: g,
+                cfg,
+                aux: aux.ok_or_else(|| {
+                    FerricError::General(
+                        "KRetained::grad_jk: RS-GDF J/K needs its aux basis".into(),
+                    )
+                })?,
+            }),
+        })
+    }
+
+    /// The stress entry points' J/K source (as [`KRetained::grad_jk`]).
+    pub fn stress_jk<'a>(
+        &'a self,
+        aux: Option<&'a PreparedBasis>,
+        cfg: &'a KRsGdfConfig,
+    ) -> Result<KStressJk<'a>, FerricError> {
+        Ok(match self.grad_jk(aux, cfg)? {
+            KGradJk::Dense(e) => KStressJk::Dense(e),
+            KGradJk::RsGdf(s) => KStressJk::RsGdf(s),
+        })
+    }
+}
+
 /// k-point RHF: builds `S(k)`, `h(k)` ([`periodic_hcore_kpts`]) and the J/K
 /// source selected by `cfg.jk` — the dense pure-AFT kernels
 /// ([`KDenseAftEri`], `aux` must be `None`) or k-point RS-GDF ([`KRsGdf`],
@@ -215,6 +273,20 @@ pub fn solve_krhf(
     mesh: &KPointMesh,
     cfg: &KRhfConfig,
 ) -> Result<KScfResult, FerricError> {
+    Ok(solve_krhf_keep(cell, prep, aux, mesh, cfg)?.0)
+}
+
+/// [`solve_krhf`] that also returns the hcore output and J/K object the SCF
+/// ran on ([`KRetained`]) for the analytic forces and stress. The SCF is the
+/// same code path as [`solve_krhf`] (which delegates here), so the energy is
+/// bit-identical.
+pub fn solve_krhf_keep(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    aux: Option<&PreparedBasis>,
+    mesh: &KPointMesh,
+    cfg: &KRhfConfig,
+) -> Result<(KScfResult, KRetained), FerricError> {
     match (cfg.jk, aux) {
         (KJkKind::Dense, Some(_)) => {
             return Err(FerricError::General(
@@ -237,20 +309,20 @@ pub fn solve_krhf(
     timings.stop("k hcore", &clock);
     hk.record_stats(&mut timings);
     let clock = StageClock::start();
-    let mut r = match aux {
+    let (mut r, jk) = match aux {
         None => {
             let eri = KDenseAftEri::build(cell, prep, mesh, &hk.s, cfg.exxdiv, &cfg.dense)?;
             timings.stop("k J/K build", &clock);
             let inj = KPointInjection {
-                s: hk.s,
-                h: hk.h,
+                s: hk.s.clone(),
+                h: hk.h.clone(),
                 vnn: hk.enn,
                 jk: Box::new(eri.jk_builder()),
             };
             let clock = StageClock::start();
             let r = solve_krhf_injected(cell, mesh, &cfg.scf, inj)?;
             timings.stop("k SCF", &clock);
-            r
+            (r, KRetainedJk::Dense(eri))
         }
         Some(aux) => {
             let gdf =
@@ -258,20 +330,20 @@ pub fn solve_krhf(
             timings.stop("k J/K build", &clock);
             crate::rsgdf::kpoint::record_stats(&mut timings, gdf.stats());
             let inj = KPointInjection {
-                s: hk.s,
-                h: hk.h,
+                s: hk.s.clone(),
+                h: hk.h.clone(),
                 vnn: hk.enn,
                 jk: Box::new(gdf.jk_builder()),
             };
             let clock = StageClock::start();
             let r = solve_krhf_injected(cell, mesh, &cfg.scf, inj)?;
             timings.stop("k SCF", &clock);
-            r
+            (r, KRetainedJk::RsGdf(gdf))
         }
     };
     timings.finish(&total);
     r.timings = timings;
-    Ok(r)
+    Ok((r, KRetained { hk, jk }))
 }
 
 /// Conjugate transpose `Mᴴ`.
