@@ -217,8 +217,15 @@ pub enum KRetainedJk {
 
 /// What [`solve_krhf_keep`] / [`crate::kuscf::solve_kuhf_keep`] retain: the
 /// hcore output and the J/K object the SCF ran on. The force and stress entry
-/// points ([`crate::kgrad`], [`crate::kstress`]) differentiate exactly these,
-/// so they are never rebuilt.
+/// points ([`crate::kgrad`], [`crate::kstress`]) differentiate exactly these;
+/// the hcore and the dense kernels are not rebuilt (the RS-GDF force rebuilds
+/// its per-q tensors and checks them against the retained fit).
+///
+/// Memory: the retained object stays resident through the derivative. Each
+/// derivative entry opens its own ledger, so pass
+/// [`KRetained::derivative_budget`] as the derivative `budget_bytes` to charge
+/// the retained bytes against the same budget; during the SCF itself the
+/// injected `S(k)`/`h(k)` are copies (`2 N_k n² × 16` bytes, transient).
 pub struct KRetained {
     /// `S(k)`, `h(k)` and the Ewald `E_nn` of the SCF.
     pub hk: PeriodicHcoreK,
@@ -227,6 +234,25 @@ pub struct KRetained {
 }
 
 impl KRetained {
+    /// Bytes the retained hcore and J/K keep resident.
+    pub fn resident_bytes(&self) -> usize {
+        self.hk.resident_bytes()
+            + match &self.jk {
+                KRetainedJk::Dense(e) => e.resident_bytes(),
+                KRetainedJk::RsGdf(g) => g.resident_bytes(),
+            }
+    }
+
+    /// The memory budget left for a force or stress after the retained
+    /// objects: the resolved `explicit` budget (`None` = ferric's unified
+    /// budget) minus [`KRetained::resident_bytes`], floored at 1 byte (0 would mean "unset"; a
+    /// derivative that then needs memory fails its ledger with a typed error).
+    pub fn derivative_budget(&self, explicit: Option<usize>) -> usize {
+        crate::budget::resolve(explicit)
+            .saturating_sub(self.resident_bytes())
+            .max(1)
+    }
+
     /// The force entry points' J/K source. `aux` and `cfg` are the aux basis
     /// and RS-GDF config the build used (ignored for the dense oracle); a
     /// missing aux basis for an RS-GDF build is an error.

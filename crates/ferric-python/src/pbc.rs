@@ -2247,12 +2247,14 @@ fn k_derivatives(
         return Ok(out);
     }
     let aux = s.aux.as_ref();
+    // The retained hcore and J/K are charged against the same budget.
+    let budget = Some(kept.derivative_budget(s.budget_bytes));
     let gcfg = KGradConfig {
-        budget_bytes: s.budget_bytes,
+        budget_bytes: budget,
         ..Default::default()
     };
     let scfg = KStressConfig {
-        budget_bytes: s.budget_bytes,
+        budget_bytes: budget,
         ..Default::default()
     };
     if s.derivs.gradient {

@@ -203,3 +203,38 @@ fn retained_force_matches_fd_and_a_stale_hcore_does_not() {
         }
     }
 }
+
+#[test]
+fn retained_bytes_are_charged_against_the_derivative_budget() {
+    let cell = cell_at(&ATOMS);
+    let m = mesh(&cell);
+    let prep = prep_for(&cell, &pyscf_sto3g_h());
+    let c = rhf_cfg(&cell, ExxDiv::Ewald, KJkKind::Dense);
+    let (scf, kept) = solve_krhf_keep(&cell, &prep, None, &m, &c).expect("keep");
+    let resident = kept.resident_bytes();
+    // nk = 3, nao = 2: the dense kernels alone are 2 * 9 * 16 * 16 bytes.
+    assert!(resident >= 2 * 9 * 16 * 16, "resident {resident}");
+    let ample = 1usize << 31;
+    assert_eq!(kept.derivative_budget(Some(ample)), ample - resident);
+    assert_eq!(kept.derivative_budget(Some(1)), 1);
+    let grad = |budget: usize| {
+        kpoint_rhf_gradient(
+            &cell,
+            &prep,
+            &m,
+            &c.hcore,
+            &kept.hk,
+            kept.grad_jk(None, &c.rsgdf).unwrap(),
+            &scf,
+            ExxDiv::Ewald,
+            &KGradConfig {
+                budget_bytes: Some(budget),
+                ..Default::default()
+            },
+        )
+    };
+    assert!(grad(kept.derivative_budget(Some(ample))).is_ok());
+    // A budget that only covers the retained objects leaves the derivative none.
+    let e = grad(kept.derivative_budget(Some(resident))).unwrap_err();
+    eprintln!("budget-exhausted derivative: {e}");
+}

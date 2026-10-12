@@ -45,6 +45,7 @@ use ferric_pbc::{
 };
 use ferric_pbc::{
     kpoint_rhf_gradient, kpoint_uhf_gradient, solve_krhf_keep, solve_kuhf_keep, KGradConfig,
+    KRetained,
 };
 use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::RhfConfig;
@@ -1364,8 +1365,9 @@ fn k_energy_and_gradient(
         ));
     };
     let mesh = KPointMesh::new(&s.cell, n, c)?;
-    let gcfg = KGradConfig {
-        budget_bytes: budget_bytes(plan),
+    // The retained hcore and J/K are charged against the same budget.
+    let gcfg_for = |kept: &KRetained| KGradConfig {
+        budget_bytes: Some(kept.derivative_budget(budget_bytes(plan))),
         ..Default::default()
     };
     let not_converged = |it: usize, e: f64| {
@@ -1391,7 +1393,7 @@ fn k_energy_and_gradient(
                 kept.grad_jk(s.aux.as_ref(), &c.rsgdf)?,
                 &r,
                 plan.exxdiv,
-                &gcfg,
+                &gcfg_for(&kept),
             )?;
             Ok((r.energy, g.grad))
         }
@@ -1410,7 +1412,7 @@ fn k_energy_and_gradient(
                 kept.grad_jk(s.aux.as_ref(), &c.rsgdf)?,
                 &r.scf,
                 plan.exxdiv,
-                &gcfg,
+                &gcfg_for(&kept),
             )?;
             Ok((r.scf.energy, g.grad))
         }
