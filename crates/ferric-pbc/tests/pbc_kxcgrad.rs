@@ -641,7 +641,16 @@ fn net_force_vanishes_on_the_atom_grid() {
         .map(|c| nw.grad.column(c).sum().abs())
         .fold(0.0_f64, f64::max);
     eprintln!("net force without X4 {net_nw:.2e}");
-    assert!(net_nw > 1e-3, "translation invariance must see X4: {net_nw:e}");
+    // BLIND SPOT, asserted: on this cell X1, X3 and X4 each sum to zero over
+    // the atoms individually (measured ~1e-17), so the net force cannot see a
+    // dropped XC term; only the per-atom anchors (FD, Gamma, supercell) can.
+    assert!(net_nw < 1e-10, "{net_nw:e}");
+    let np = force(&fx, Some(KXcMutation::NoPointMotion));
+    let net_np = (0..3)
+        .map(|c| np.grad.column(c).sum().abs())
+        .fold(0.0_f64, f64::max);
+    eprintln!("net force without X3 {net_np:.2e}");
+    assert!(net_np < 1e-10, "{net_np:e}");
 }
 
 /// The result does not depend on the thread count or on how many chunks run
@@ -683,27 +692,26 @@ fn xc_chunks_are_budgeted_and_the_result_is_budget_independent() {
         )
     };
     let full = at(AMPLE).unwrap();
+    // Budgets just above the fixed arrays: the XC chunk gate trips first.
     let mut saw_err = false;
-    let mut one_live = None;
-    for e in 18..30 {
-        match at(1usize << e) {
-            Err(err) => {
-                let m = err.to_string();
-                if m.contains("k-point XC force") {
-                    saw_err = true;
-                }
-            }
-            Ok(r) => {
-                if r.live_chunks == 1 && one_live.is_none() {
-                    one_live = Some((e, r));
-                }
-            }
+    let mut b = 300_000usize;
+    while b < 500_000 {
+        if let Err(err) = at(b) {
+            saw_err |= err.to_string().contains("k-point XC force AO/Hessian chunk");
         }
+        b += b / 8;
     }
     assert!(saw_err, "some budget must fail on the XC chunk gate");
-    let (e, r) = one_live.expect("some budget runs exactly one live chunk");
-    eprintln!("budget 2^{e}: one live chunk (of {}), chunk {} points", full.live_chunks, r.chunk_points);
-    assert_eq!(r.grad, full.grad);
+    // Live-chunk cap: bit-identical result with one chunk at a time.
+    let mut cfg = gcfg(&fx.grid, None);
+    cfg.max_live_chunks = Some(1);
+    let one = kpoint_rks_gradient(
+        &fx.cell, &fx.prep, &fx.mesh, &hcfg, &fx.hk, KGradJk::Dense(&eri), &fx.res.scf, "PBE", &cfg,
+    )
+    .unwrap();
+    assert_eq!(one.live_chunks, 1);
+    eprintln!("live chunks {} -> 1, chunk {} points", full.live_chunks, one.chunk_points);
+    assert_eq!(one.grad, full.grad);
 }
 
 // ------------------------------------------------- refusals and Fock guard

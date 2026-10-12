@@ -185,6 +185,9 @@ pub struct KRksGradConfig {
     pub grid: KXcGrid,
     /// AO truncation of the energy ([`crate::dft::PeriodicXcConfig::ao_threshold`]).
     pub ao_threshold: f64,
+    /// Cap on concurrently live derivative chunks (`None` = the thread count,
+    /// further limited by the remaining budget). The result does not depend on it.
+    pub max_live_chunks: Option<usize>,
     /// TEST ONLY: a deliberate XC-force defect.
     #[doc(hidden)]
     pub mutation: Option<KXcMutation>,
@@ -196,6 +199,7 @@ impl Default for KRksGradConfig {
             grad: KGradConfig::default(),
             grid: KXcGrid::default(),
             ao_threshold: DEFAULT_AO_THRESHOLD,
+            max_live_chunks: None,
             mutation: None,
         }
     }
@@ -280,6 +284,7 @@ struct GridXc<'a> {
     aoat: Vec<usize>,
     grid: &'a KXcGrid,
     ao_threshold: f64,
+    max_live_chunks: Option<usize>,
     mutation: Option<KXcMutation>,
 }
 
@@ -384,6 +389,7 @@ impl KXcResponse for GridXc<'_> {
         )?;
         let par = rayon::current_num_threads()
             .max(1)
+            .min(self.max_live_chunks.unwrap_or(usize::MAX).max(1))
             .min((led.remaining() / per_chunk.max(1)).max(1));
         led.reserve(
             &format!("k-point XC force chunks ({par} x {chunk_points} points)"),
@@ -668,6 +674,7 @@ pub fn kpoint_rks_gradient(
         aoat: ao_atoms(prep),
         grid: &cfg.grid,
         ao_threshold: cfg.ao_threshold,
+        max_live_chunks: cfg.max_live_chunks,
         mutation: cfg.mutation,
     };
     rks_gradient_with(

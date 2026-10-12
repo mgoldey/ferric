@@ -1284,8 +1284,9 @@ pub(crate) fn check_fock(
         return Err(FerricError::General(format!(
             "{who}: the Fock matrix rebuilt from the density and the J/K source differs from \
              the SCF's stored {what} by {worst:.2e} (bar {FOCK_CONSISTENCY_BAR:.0e}); the analytic \
-             derivative covers pure Hartree-Fock only with the SAME exxdiv and kernels the SCF used (not a \
-             KS-DFT result, not a different exxdiv, not an extrapolated state)"
+             derivative needs the SCF's own Fock: the same J/K kernels, hcore and exxdiv (not a \
+             different exxdiv, not an extrapolated state), and for a KS result the same \
+             functional and grid with the KS entry point (the HF entries do not add V_xc)"
         )));
     }
     Ok(worst)
