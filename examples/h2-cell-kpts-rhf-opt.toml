@@ -6,7 +6,8 @@
 # or "uhf", dense or rsgdf J/K) and ferric's Cartesian BFGS. Every step
 # rebuilds the lattice sums and J/K at the new positions and runs a fresh k-point
 # SCF, which must converge. The run prints the final geometry and the final
-# gradient dE/dR (Hartree/Bohr per cell). k-point Kohn-Sham, ROHF and the
+# gradient dE/dR (Hartree/Bohr per cell). Closed-shell k-point Kohn-Sham has its
+# own example (h2-cell-kpts-rks-opt.toml); open-shell Kohn-Sham, ROHF and the
 # correlated routes have no k-point force and are refused; there is no lattice
 # relaxation.
 #

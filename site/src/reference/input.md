@@ -416,10 +416,14 @@ RKS/UKS/ROKS. Any other kind is an error. `task = "optimize"` works at the
 Gamma point for the SCF routes (RHF, UHF, ROHF, RKS, UKS, ROKS) with either
 `jk`: it moves the atoms at a fixed lattice using the analytic periodic
 force, and prints the final gradient (Hartree/Bohr per cell). With `kmesh` it
-works for `rhf` and `uhf` (no functional) using the analytic k-point force,
-with either `jk`; it is an error for k-point Kohn-Sham and `rohf`, and for
+works for `rhf` and `uhf` (no functional) and for closed-shell Kohn-Sham (`ksdft`
+or `rhf` with `[dft] functional`: LDA, GGA and global hybrids such as PBE0 and
+B3LYP) using the analytic k-point force, with either `jk`; the Kohn-Sham force
+differentiates the energy's own XC grid (`n_radial`/`n_angular`/`neighbour_cutoff`)
+and, for a hybrid, its `exxdiv`. It is an error for `rohf`, for open-shell
+Kohn-Sham, for meta-GGA, range-separated and VV10 functionals, and for
 `rimp2`/`pdep-rpa`. The lattice is fixed and no stress is printed (the Python
-`run_rhf_kpts`/`run_uhf_kpts` return both). Each optimizer step runs a fresh SCF from the core guess; at a k-point mesh with `uhf` it can land in a different spin solution between steps, which shows as a visible jump in the step energies (nothing is hidden). The force is taken through the hcore and J/K objects the SCF built, which stay in memory for the force: their bytes are charged against the same memory budget (`[memory] budget_gb` with `jk = "rsgdf"`), and with `jk = "dense"` the kernels count against `max_eri_gb` while they exist. `task = "frequencies"` is an error.
+`run_rhf_kpts`/`run_uhf_kpts` return both; `run_rks_kpts` returns the force only). Each optimizer step runs a fresh SCF from the core guess; at a k-point mesh with `uhf` it can land in a different spin solution between steps, which shows as a visible jump in the step energies (nothing is hidden). The force is taken through the hcore and J/K objects the SCF built, which stay in memory for the force: their bytes are charged against the same memory budget (`[memory] budget_gb` with `jk = "rsgdf"`), and with `jk = "dense"` the kernels count against `max_eri_gb` while they exist. `task = "frequencies"` is an error.
 
 The periodic run reads only `[cell]`, `[scf]` `max_iter`, `[scf]`
 `density_conv` (Gamma point) or `energy_conv` (k-point mesh), `[dft]`
@@ -430,7 +434,7 @@ or key is an error. A charged cell is an error.
 |---|---|---|---|---|
 | `lattice` | 3×3 float array | **required** | rows are the lattice vectors | In `unit`. |
 | `unit` | string | `"angstrom"` | `angstrom` `bohr` | Applies to `lattice`, `omega` and `gdf_omega` (as their inverse) and `neighbour_cutoff`. |
-| `kmesh` | `[n1, n2, n3]` | none (Gamma point) | each ≥ 1 | Selects the k-point drivers: `rhf`, `uhf` (no functional), closed-shell Kohn-Sham (`ksdft`, or `rhf` with `[dft] functional`: LDA, GGA and global-hybrid functionals), `rimp2` and `pdep-rpa`. Not yet supported with `kmesh`, each an error naming the gap: open-shell Kohn-Sham (UKS/ROKS, including `ksdft` with multiplicity > 1), `rohf`, meta-GGA, range-separated hybrids and VV10 functionals, and `task = "optimize"` for every k-point route except `rhf` and `uhf` (no k-point forces; see `task`). Closed-shell k-point KS-DFT uses the `n_radial`/`n_angular`/`neighbour_cutoff` grid and, with a 1×1×1 mesh, equals the Gamma-point RKS run. |
+| `kmesh` | `[n1, n2, n3]` | none (Gamma point) | each ≥ 1 | Selects the k-point drivers: `rhf`, `uhf` (no functional), closed-shell Kohn-Sham (`ksdft`, or `rhf` with `[dft] functional`: LDA, GGA and global-hybrid functionals), `rimp2` and `pdep-rpa`. Not yet supported with `kmesh`, each an error naming the gap: open-shell Kohn-Sham (UKS/ROKS, including `ksdft` with multiplicity > 1), `rohf`, meta-GGA, range-separated hybrids and VV10 functionals, and `task = "optimize"` for every k-point route except `rhf`, `uhf` and closed-shell Kohn-Sham (no k-point forces for the rest; see `task`). Closed-shell k-point KS-DFT uses the `n_radial`/`n_angular`/`neighbour_cutoff` grid and, with a 1×1×1 mesh, equals the Gamma-point RKS run. |
 | `centring` | string | `"gamma"` | `gamma` `mp` | Requires `kmesh`. |
 | `exxdiv` | string | `"ewald"` | `ewald` `none` | Exchange G = 0 treatment. |
 | `jk` | string | `"dense"` | `dense` `rsgdf` | `dense` is a toy-scale dense AFT tensor. |
