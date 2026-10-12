@@ -1280,10 +1280,6 @@ pub(crate) fn assemble(
 /// entry with the wrong functional 5.9e-3.
 pub const FOCK_CONSISTENCY_BAR: f64 = 1e-8;
 
-/// Remedy text of the HF entries' Fock guard.
-pub(crate) const HF_REMEDY: &str =
-    "a KS result needs kpoint_rks_gradient (the HF entries rebuild no V_xc)";
-
 pub(crate) fn check_fock(
     who: &str,
     what: &str,

@@ -2,6 +2,21 @@
 //! functionals (`ferric_pbc::kxcgrad`; derivation in its module doc).
 //!
 //! Artifact hypotheses next to physics hypotheses are written at each test.
+//!
+//! Anchors: null-XC exactness, Hartree-only FD, FD of the PBE energy (dense,
+//! RS-GDF, uniform grid, production grid (40,110), 2x2x2), 1x1x1 and 1x1x3
+//! supercell identities against the Gamma KS gradient per part, Ewald-exxdiv
+//! equality, SR column rotation Auto/Off, a triclinic s+p+d cell (1x2x3 FD
+//! and the 1x1x3 supercell), thread/chunk bit-identity, the budget gates, the
+//! Fock guard from both sides, refusals and production-wired mutants.
+//!
+//! NOT covered: heavy atoms and ECPs (the k-point HF ECP force has its own
+//! suites; the XC term does not see the ECP, but no KS+ECP cell is run), the
+//! default (75, 302) grid (the energy and force use the same grid builder, but
+//! no FD is run at that size), shifted meshes, metals/fractional occupations,
+//! and anything open shell. The FD smooth-window caveat: the energy has hard
+//! one-step discontinuities from the neighbour cutoff (default 10 Bohr), so FD
+//! tests use h = 2.5e-5, or a larger explicit cutoff where noted.
 
 mod common;
 
@@ -38,6 +53,12 @@ use std::collections::HashMap;
 
 const OMEGA: f64 = 0.8;
 const AMPLE: usize = 1 << 31;
+/// FD bar. Both sides: every correct force measured here is within 2.3e-9 of
+/// the central FD at h = 1e-4 (h = 2.5e-5 where noted: <= 1.4e-9), while the
+/// smallest production-wired mutant misses by 8.4e-3 (NoHessian). 1e-7 sits
+/// ~40x above the worst correct residual and ~5 orders below the smallest
+/// mutant, and equals the k-point HF force FD bar of `pbc_kgrad.rs`.
+const FD_BAR: f64 = 1e-7;
 const H2: [[f64; 3]; 2] = [[0.3, 0.2, 0.1], [0.35, 0.12, 1.5]];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -436,7 +457,7 @@ fn hartree_only_force_matches_fd_of_its_own_energy() {
             worst = worst.max((g.grad[(a, x)] - d).abs());
         }
         eprintln!("{jk:?}: Hartree-only analytic vs FD worst {worst:.2e}");
-        assert!(worst < 1e-8, "{jk:?}: {worst:e}");
+        assert!(worst < FD_BAR, "{jk:?}: {worst:e}");
     }
 }
 
@@ -454,7 +475,7 @@ fn pbe_force_matches_fd_dense_and_rsgdf() {
             worst = worst.max((g.grad[(a, x)] - d).abs());
         }
         eprintln!("{jk:?}: PBE analytic vs FD worst {worst:.2e}");
-        assert!(worst < 1e-8, "{jk:?}: {worst:e}");
+        assert!(worst < FD_BAR, "{jk:?}: {worst:e}");
         forces.push(g.grad);
     }
     // The RS-GDF route is really wired: its fit differs from the dense AFT
@@ -625,7 +646,7 @@ fn uniform_grid_force_has_no_grid_terms_and_matches_fd() {
         worst = worst.max((g.grad[(a, x)] - d).abs());
     }
     eprintln!("uniform 24^3 PBE: analytic vs FD worst {worst:.2e}");
-    assert!(worst < 1e-8, "{worst:e}");
+    assert!(worst < FD_BAR, "{worst:e}");
 }
 
 // ------------------------------------------------------- invariants / bitwise
@@ -856,10 +877,14 @@ fn smoke_mutants_are_caught() {
     let fx = fixture(&H2, [1, 1, 3], "PBE", Jk::Dense, atom_grid(20, 50));
     let base = force(&fx, None);
     for m in [
+        KXcMutation::NoAo,
+        KXcMutation::NoPointMotion,
         KXcMutation::NoWeightDeriv,
         KXcMutation::NoHessian,
         KXcMutation::NoPhase,
+        KXcMutation::ConjPhase,
         KXcMutation::WrongFactor,
+        KXcMutation::NoInvNk,
     ] {
         let d = miss(&fx, m, &base);
         eprintln!("{m:?}: miss {d:.2e}");
@@ -916,6 +941,7 @@ fn rotated_case(
     pos: &[[f64; 3]],
     rot: ferric_pbc::sr_rotation::SrColumnRotation,
     want_force: bool,
+    neighbour: Option<f64>,
 ) -> (f64, Option<KRksGradient>, usize, usize) {
     let cell = Cell::new(hydrogens(pos), cubic(5.0)).unwrap();
     let bs = ferric_core::basis::bundled("cc-pvdz").unwrap();
@@ -933,6 +959,7 @@ fn rotated_case(
     kc.gdf.sr_column_rotation = rot;
     cfg.krhf.rsgdf = kc;
     cfg.grid = PeriodicGridConfig::with_size(20, 50);
+    cfg.grid.neighbour_cutoff = neighbour;
     let res = solve_krks(&cell, &prep, Some(&aux), &mesh, &cfg).unwrap();
     if !want_force {
         return (res.scf.energy, None, 0, 0);
@@ -971,27 +998,32 @@ fn rotated_and_unrotated_sr_walks_are_consistent_with_the_energy() {
     let pos = [[0.3, 0.2, 0.1], [0.35, 0.12, 1.5]];
     let mut forces = Vec::new();
     for (name, rot) in [("Auto", Auto), ("Off", Off)] {
-        let (_, g, hc, fc) = rotated_case(&pos, rot, true);
+        let (_, g, hc, fc) = rotated_case(&pos, rot, true, None);
         let g = g.unwrap();
         eprintln!("{name}: rotated columns hcore {hc} fit {fc}");
         assert_eq!(hc > 0, name == "Auto");
         assert_eq!(fc > 0, name == "Auto");
         let mut worst = 0.0_f64;
         for (a, x) in [(0, 2), (1, 1)] {
-            // h = 2.5e-5: the Gamma atom-grid precedent. At 1e-4 one component
-            // measured -3.6e-6 (grid points crossing the hard neighbour mask),
-            // at 4e-4 -9e-7: noise, not the derivative (both walks alike).
+            // h = 2.5e-5 (inside the smooth window at the DEFAULT neighbour
+            // cutoff of 10 Bohr). A probe (`probe_cc_pvdz_fd_step`) found a
+            // one-step energy discontinuity of ~7e-10 Ha between h = 5e-5 and
+            // 7.5e-5 on this fixture that disappears at a 14 Bohr neighbour
+            // cutoff and on a uniform grid and does not move with the AO
+            // threshold (1e-12 .. 1e-18): it is the energy's hard neighbour
+            // cutoff, not a derivative term. The cutoff-14 6-component check is
+            // `rotated_force_all_components_at_larger_cutoff`.
             {
                 let h = 2.5e-5;
-                let ep = rotated_case(&moved(&pos, a, x, h), rot, false).0;
-                let em = rotated_case(&moved(&pos, a, x, -h), rot, false).0;
+                let ep = rotated_case(&moved(&pos, a, x, h), rot, false, None).0;
+                let em = rotated_case(&moved(&pos, a, x, -h), rot, false, None).0;
                 let d = g.grad[(a, x)] - (ep - em) / (2.0 * h);
                 eprintln!("  ({a},{x}) h={h:e} diff {d:.3e}");
                 worst = worst.max(d.abs());
             }
         }
         eprintln!("{name}: analytic vs FD of its own energy {worst:.2e}");
-        assert!(worst < 1e-8, "{name}: {worst:e}");
+        assert!(worst < FD_BAR, "{name}: {worst:e}");
         forces.push(g.grad);
     }
     let d = parts_diff(&forces[0], &forces[1]);
@@ -1019,18 +1051,13 @@ fn production_grid_forces_match_fd() {
             worst = worst.max((g.grad[(a, x)] - d).abs());
         }
         eprintln!("{f} {jk:?} {mesh:?} (40,110): analytic vs FD worst {worst:.2e}");
-        assert!(worst < 1e-8, "{f} {jk:?} {mesh:?}: {worst:e}");
+        assert!(worst < FD_BAR, "{f} {jk:?} {mesh:?}: {worst:e}");
     }
 }
 
 /// cc-pVDZ rotation fixture energy with optional neighbour cutoff / AO
 /// threshold / uniform grid (probe of the FD step discontinuity).
-fn cc_energy(
-    pos: &[[f64; 3]],
-    neighbour: Option<f64>,
-    ao_thr: f64,
-    uniform: Option<usize>,
-) -> f64 {
+fn cc_energy(pos: &[[f64; 3]], neighbour: Option<f64>, ao_thr: f64, uniform: Option<usize>) -> f64 {
     let cell = Cell::new(hydrogens(pos), cubic(5.0)).unwrap();
     let bs = ferric_core::basis::bundled("cc-pvdz").unwrap();
     let abs = ferric_core::basis::bundled("cc-pvdz-ri").unwrap();
@@ -1085,7 +1112,10 @@ fn probe_cc_pvdz_fd_step() {
             let em = cc_energy(&moved(&pos, 1, 1, -h), nb, thr, uni);
             let odd = (ep - em) / (2.0 * h);
             let even = (ep + em - 2.0 * e0) / (h * h);
-            line += &format!(" h={h:.1e}: odd {odd:.10} (d {:+.2e}) even/h2 {even:.4};", odd - prev_odd);
+            line += &format!(
+                " h={h:.1e}: odd {odd:.10} (d {:+.2e}) even/h2 {even:.4};",
+                odd - prev_odd
+            );
             prev_odd = odd;
         }
         eprintln!("{name}:{line}");
@@ -1109,8 +1139,8 @@ fn ks_force_exx(jk: Jk, exx: ExxDiv) -> (f64, KRksGradient) {
     let gc = gcfg(&grid, None);
     let g = match jk {
         Jk::Dense => {
-            let eri = KDenseAftEri::build(&cell, &prep, &mesh, &hk.s, exx, &Default::default())
-                .unwrap();
+            let eri =
+                KDenseAftEri::build(&cell, &prep, &mesh, &hk.s, exx, &Default::default()).unwrap();
             kpoint_rks_gradient(
                 &cell,
                 &prep,
@@ -1249,7 +1279,7 @@ fn tri_case(
 /// non-orthogonal lattice phases, the p and d AO derivatives and Hessians and
 /// a nonzero off-diagonal force, none of which the cubic STO-3G fixtures do.
 #[test]
-#[ignore = "triclinic s+p+d 1x2x3 FD, 7 SCFs; measured below in the report"]
+#[ignore = "triclinic s+p+d 1x2x3 FD, 13 SCFs; measured ~24 min wall when run concurrently with the supercell test (each <= 24 min)"]
 fn triclinic_spd_force_matches_fd() {
     let mesh = [1, 2, 3];
     let (_, g) = tri_case(&TRI2, mesh, "PBE", true);
@@ -1265,13 +1295,13 @@ fn triclinic_spd_force_matches_fd() {
     }
     eprintln!("triclinic s+p+d 1x2x3: analytic vs FD worst {worst:.2e}");
     assert!(max_abs(&g.grad) > 1e-3);
-    assert!(worst < 1e-7, "{worst:e}");
+    assert!(worst < FD_BAR, "{worst:e}");
 }
 
 /// The same cell on the non-TRIM 1x1x3 mesh against the Gamma force of the
 /// explicit supercell (copy 0), per XC part, with the shared cutoff.
 #[test]
-#[ignore = "triclinic s+p+d 1x1x3 vs Gamma supercell; measured below in the report"]
+#[ignore = "triclinic s+p+d 1x1x3 vs the 6-atom Gamma supercell; measured ~24 min wall when run concurrently with the FD test (each <= 24 min)"]
 fn triclinic_spd_k_mesh_matches_the_gamma_supercell() {
     let mut grid = PeriodicGridConfig::with_size(20, 50);
     grid.neighbour_cutoff = Some(TRI_CUTOFF);
@@ -1309,4 +1339,30 @@ fn triclinic_spd_k_mesh_matches_the_gamma_supercell() {
         eprintln!("triclinic s+p+d 1x1x3 vs supercell: {n:<10} {d:.2e}");
         assert!(d < 1e-8, "{n}: {d:e}");
     }
+}
+
+/// All six force components of the rotated cc-pVDZ fixture at h = 1e-4, made
+/// possible by the 14 Bohr neighbour cutoff (smooth energy, see the probe).
+#[test]
+#[ignore = "cc-pVDZ rotated RS-GDF, 13 SCFs; measured below in the report"]
+fn rotated_force_all_components_at_larger_cutoff() {
+    use ferric_pbc::sr_rotation::SrColumnRotation::Auto;
+    let pos = [[0.3, 0.2, 0.1], [0.35, 0.12, 1.5]];
+    let nb = Some(14.0);
+    let (_, g, hc, fc) = rotated_case(&pos, Auto, true, nb);
+    let g = g.unwrap();
+    assert!(hc > 0 && fc > 0);
+    let mut worst = 0.0_f64;
+    for a in 0..2 {
+        for x in 0..3 {
+            let h = 1e-4;
+            let ep = rotated_case(&moved(&pos, a, x, h), Auto, false, nb).0;
+            let em = rotated_case(&moved(&pos, a, x, -h), Auto, false, nb).0;
+            let d = g.grad[(a, x)] - (ep - em) / (2.0 * h);
+            eprintln!("rotated cc-pVDZ ({a},{x}) diff {d:.2e}");
+            worst = worst.max(d.abs());
+        }
+    }
+    eprintln!("rotated cc-pVDZ, cutoff 14, all components: worst {worst:.2e}");
+    assert!(worst < FD_BAR, "{worst:e}");
 }
