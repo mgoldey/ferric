@@ -472,3 +472,355 @@ fn pbe_force_matches_fd_dense_and_rsgdf() {
         assert!(worst < 1e-7, "{jk:?}: {worst:e}");
     }
 }
+
+fn parts_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
+    (a - b).iter().fold(0.0_f64, |m, x| m.max(x.abs()))
+}
+
+fn gamma_side(
+    cell: &Cell,
+    functional: &str,
+    grid: &PeriodicGridConfig,
+) -> ferric_pbc::grad::GammaGradient {
+    let prep = prep_for(cell, &pyscf_sto3g_h());
+    let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
+    let hc = periodic_hcore(cell, &prep, &hcfg).unwrap();
+    let eri = DenseAftEri::build(
+        cell,
+        &prep,
+        &hc.s,
+        ExxDiv::None,
+        ANCHOR_PRECISION,
+        DEFAULT_DENSE_AFT_MAX_BYTES,
+    )
+    .unwrap();
+    let mut gc = GammaRksConfig::new(functional);
+    gc.grid = grid.clone();
+    gc.exxdiv = ExxDiv::None;
+    gc.scf.energy_conv = 1e-13;
+    gc.scf.density_conv = 1e-10;
+    gc.scf.max_iter = 200;
+    let r = gamma_rks(cell, &prep, &hc, GammaUhfIntegrals::DenseAft(&eri), &gc).unwrap();
+    gamma_rks_gradient_with(
+        cell,
+        &prep,
+        &hcfg,
+        &hc,
+        &eri,
+        &r.scf,
+        &gc,
+        &GammaGradConfig {
+            budget_bytes: Some(AMPLE),
+            ..Default::default()
+        },
+    )
+    .unwrap()
+}
+
+/// (c) 1x1x1 mesh == the Gamma KS gradient, PER PART (the total can hide a
+/// defect of the size of a fit error). Independent construction: real
+/// lattice-summed AOs vs complex Bloch AOs; Gamma's own SCF. Floor: both SCFs
+/// converge to ~1e-10 in the density.
+#[test]
+fn one_point_mesh_matches_the_gamma_ks_gradient_per_part() {
+    for f in ["LDA", "PBE"] {
+        let grid = PeriodicGridConfig::with_size(20, 50);
+        let gam = gamma_side(&cell_of(&H2), f, &grid);
+        let fx = fixture(&H2, [1, 1, 1], f, Jk::Dense, KXcGrid::Atom(grid));
+        let k = force(&fx, None);
+        let p = &gam.parts;
+        let kp = &k.hf.parts;
+        let rows = [
+            ("xc_ao", parts_diff(&k.xc_ao, &p.xc_ao)),
+            ("xc_point", parts_diff(&k.xc_point, &p.xc_point)),
+            ("xc_weight", parts_diff(&k.xc_weight, &p.xc_weight)),
+            ("overlap", parts_diff(&kp.overlap, &p.overlap)),
+            ("kinetic", parts_diff(&kp.kinetic, &p.kinetic)),
+            ("coulomb", parts_diff(&kp.coulomb, &p.eri)),
+            ("total", parts_diff(&k.grad, &gam.grad)),
+        ];
+        for (n, d) in rows {
+            eprintln!("{f} 1x1x1 vs Gamma: {n:<10} {d:.2e}");
+            assert!(d < 1e-9, "{f} {n}: {d:e}");
+        }
+        assert!(max_abs(&k.xc_weight) > 1e-3 && max_abs(&k.xc_point) > 1e-3);
+    }
+}
+
+/// Explicit diag(n) supercell of `pos` (copy-major, copy 0 first).
+fn supercell_pos(pos: &[[f64; 3]], a: f64, n: [usize; 3]) -> Cell {
+    let mut atoms = Vec::new();
+    for m0 in 0..n[0] {
+        for m1 in 0..n[1] {
+            for m2 in 0..n[2] {
+                for p in pos {
+                    atoms.push([
+                        p[0] + m0 as f64 * a,
+                        p[1] + m1 as f64 * a,
+                        p[2] + m2 as f64 * a,
+                    ]);
+                }
+            }
+        }
+    }
+    let lat = [
+        [a * n[0] as f64, 0.0, 0.0],
+        [0.0, a * n[1] as f64, 0.0],
+        [0.0, 0.0, a * n[2] as f64],
+    ];
+    Cell::new(hydrogens(&atoms), lat).unwrap()
+}
+
+/// (d) SUPERCELL ANCHOR on the non-TRIM 1x1x3 mesh: the k force on atom A is
+/// the Gamma force of the explicit supercell on ONE copy of A (not the sum).
+/// Both sides use the same explicit `neighbour_cutoff` (the default depends on
+/// the cell). Carries the Bloch phases (ConjPhase is an identity on TRIM
+/// meshes, not here).
+#[test]
+fn k_mesh_force_is_the_gamma_supercell_force_per_part() {
+    let mut grid = PeriodicGridConfig::with_size(20, 50);
+    grid.neighbour_cutoff = Some(10.0);
+    let f = "PBE";
+    let sc = supercell_pos(&H2, 4.0, [1, 1, 3]);
+    let gam = gamma_side(&sc, f, &grid);
+    let fx = fixture(&H2, [1, 1, 3], f, Jk::Dense, KXcGrid::Atom(grid.clone()));
+    let k = force(&fx, None);
+    let first = |a: &Array2<f64>| a.slice(ndarray::s![0..2, ..]).to_owned();
+    let rows = [
+        ("xc_ao", parts_diff(&k.xc_ao, &first(&gam.parts.xc_ao))),
+        ("xc_point", parts_diff(&k.xc_point, &first(&gam.parts.xc_point))),
+        ("xc_weight", parts_diff(&k.xc_weight, &first(&gam.parts.xc_weight))),
+        ("total", parts_diff(&k.grad, &first(&gam.grad))),
+    ];
+    for (n, d) in rows {
+        eprintln!("{f} 1x1x3 vs supercell: {n:<10} {d:.2e}");
+        assert!(d < 1e-8, "{f} {n}: {d:e}");
+    }
+}
+
+// ------------------------------------------------------------- uniform grid
+
+/// On a uniform grid the points are fixed in space and the weights constant:
+/// X3 and X4 are absent EXACTLY (not small), and the remaining AO-derivative
+/// term alone reproduces FD of the energy. Artifact hypothesis: a force that
+/// kept the atom-grid terms on a uniform grid would miss by ~0.17 (their size
+/// on the atom grid); physics predicts exactly 0 for both.
+#[test]
+fn uniform_grid_force_has_no_grid_terms_and_matches_fd() {
+    let grid = KXcGrid::Uniform([24, 24, 24]);
+    let fx = fixture(&H2, [1, 1, 3], "PBE", Jk::Dense, grid.clone());
+    let g = force(&fx, None);
+    assert_eq!(max_abs(&g.xc_point), 0.0);
+    assert_eq!(max_abs(&g.xc_weight), 0.0);
+    assert!(max_abs(&g.xc_ao) > 1e-2);
+    let mut worst = 0.0_f64;
+    for (a, x) in [(0, 0), (0, 2), (1, 1)] {
+        let d = fd(&H2, a, x, 1e-4, [1, 1, 3], "PBE", Jk::Dense, &grid);
+        worst = worst.max((g.grad[(a, x)] - d).abs());
+    }
+    eprintln!("uniform 24^3 PBE: analytic vs FD worst {worst:.2e}");
+    assert!(worst < 1e-7, "{worst:e}");
+}
+
+// ------------------------------------------------------- invariants / bitwise
+
+/// Translation invariance on the atom grid (sees the weight response: without
+/// X4 the net force is grid-error sized) and a nonzero-force sanity check.
+#[test]
+fn net_force_vanishes_on_the_atom_grid() {
+    let fx = fixture(&H2, [1, 1, 3], "PBE", Jk::Dense, atom_grid(20, 50));
+    let g = force(&fx, None);
+    let net = (0..3)
+        .map(|c| g.grad.column(c).sum().abs())
+        .fold(0.0_f64, f64::max);
+    eprintln!("net force {net:.2e}, max |F| {:.3e}", max_abs(&g.grad));
+    assert!(net < 1e-10, "{net:e}");
+    assert!(max_abs(&g.grad) > 1e-2);
+    let nw = force(&fx, Some(KXcMutation::NoWeightDeriv));
+    let net_nw = (0..3)
+        .map(|c| nw.grad.column(c).sum().abs())
+        .fold(0.0_f64, f64::max);
+    eprintln!("net force without X4 {net_nw:.2e}");
+    assert!(net_nw > 1e-3, "translation invariance must see X4: {net_nw:e}");
+}
+
+/// The result does not depend on the thread count or on how many chunks run
+/// concurrently (chunk-order reduction): bit-identical.
+#[test]
+fn force_is_bit_identical_across_threads_and_live_chunks() {
+    let fx = fixture(&H2, [1, 1, 3], "PBE", Jk::Dense, atom_grid(20, 50));
+    let run = |threads: usize| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap()
+            .install(|| force(&fx, None))
+    };
+    let a = run(1);
+    let b = run(4);
+    assert_eq!(a.grad, b.grad);
+    assert_eq!(a.e_xc, b.e_xc);
+    eprintln!("1 vs 4 threads: bit-identical; live chunks {} / {}", a.live_chunks, b.live_chunks);
+}
+
+// ------------------------------------------------------------------- memory
+
+/// The derivative pass is pre-flighted on the ledger: a budget that holds the
+/// fixed HF arrays but not one AO/Hessian chunk is a typed error naming the
+/// quantity; a budget for ONE live chunk gives the bit-identical force of the
+/// unconstrained run.
+#[test]
+fn xc_chunks_are_budgeted_and_the_result_is_budget_independent() {
+    let fx = fixture(&H2, [1, 1, 3], "PBE", Jk::Dense, atom_grid(20, 50));
+    let eri = KDenseAftEri::build(&fx.cell, &fx.prep, &fx.mesh, &fx.hk.s, ExxDiv::None, &Default::default())
+        .unwrap();
+    let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
+    let at = |budget: usize| {
+        let mut cfg = gcfg(&fx.grid, None);
+        cfg.grad.budget_bytes = Some(budget);
+        kpoint_rks_gradient(
+            &fx.cell, &fx.prep, &fx.mesh, &hcfg, &fx.hk, KGradJk::Dense(&eri), &fx.res.scf, "PBE", &cfg,
+        )
+    };
+    let full = at(AMPLE).unwrap();
+    let mut saw_err = false;
+    let mut one_live = None;
+    for e in 18..30 {
+        match at(1usize << e) {
+            Err(err) => {
+                let m = err.to_string();
+                if m.contains("k-point XC force") {
+                    saw_err = true;
+                }
+            }
+            Ok(r) => {
+                if r.live_chunks == 1 && one_live.is_none() {
+                    one_live = Some((e, r));
+                }
+            }
+        }
+    }
+    assert!(saw_err, "some budget must fail on the XC chunk gate");
+    let (e, r) = one_live.expect("some budget runs exactly one live chunk");
+    eprintln!("budget 2^{e}: one live chunk (of {}), chunk {} points", full.live_chunks, r.chunk_points);
+    assert_eq!(r.grad, full.grad);
+}
+
+// ------------------------------------------------- refusals and Fock guard
+
+#[test]
+fn refusals_and_the_fock_guard() {
+    let fx = fixture(&H2, [1, 1, 3], "PBE", Jk::Dense, atom_grid(20, 50));
+    let eri = KDenseAftEri::build(&fx.cell, &fx.prep, &fx.mesh, &fx.hk.s, ExxDiv::None, &Default::default())
+        .unwrap();
+    let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
+    let cfg = gcfg(&fx.grid, None);
+    let run = |f: &str, scf: &KScfResult| {
+        kpoint_rks_gradient(
+            &fx.cell, &fx.prep, &fx.mesh, &hcfg, &fx.hk, KGradJk::Dense(&eri), scf, f, &cfg,
+        )
+    };
+    for (name, key) in [
+        ("PBE0", "global hybrid"),
+        ("HSE06", "range-separated"),
+        ("SCAN", "meta-GGA"),
+        ("wB97X-V", "VV10"),
+    ] {
+        let e = run(name, &fx.res.scf).err().unwrap_or_else(|| panic!("{name} accepted")).to_string();
+        eprintln!("{name}: {e}");
+        assert!(e.contains(key), "{name}: {e}");
+    }
+    // The HF entry still refuses a KS result (and says what covers it).
+    let hf = ferric_pbc::kgrad::kpoint_rhf_gradient(
+        &fx.cell, &fx.prep, &fx.mesh, &hcfg, &fx.hk, KGradJk::Dense(&eri), &fx.res.scf, ExxDiv::None, &kcfg(),
+    );
+    assert!(hf.is_err());
+    // Guard, both sides: the matching Fock passes at roundoff; a wrong
+    // functional (V_xc of LDA vs the stored PBE Fock) and a 1e-6 tamper refuse;
+    // a 1e-10 tamper (below the 1e-8 bar) passes.
+    let ok = run("PBE", &fx.res.scf).unwrap();
+    assert!(ok.hf.fock_mismatch < 1e-12, "{:e}", ok.hf.fock_mismatch);
+    let wrong = run("LDA", &fx.res.scf).err().expect("wrong functional").to_string();
+    eprintln!("wrong functional: {wrong}");
+    assert!(wrong.contains("differs"));
+    let mut t = fx.res.scf.clone();
+    t.fock[1][(0, 1)] += Complex64::new(1e-6, 0.0);
+    assert!(run("PBE", &t).is_err(), "1e-6 tamper must be refused");
+    let mut t = fx.res.scf.clone();
+    t.fock[1][(0, 1)] += Complex64::new(1e-10, 0.0);
+    let tamp = run("PBE", &t).expect("1e-10 tamper is below the bar");
+    eprintln!("guard: matching {:.1e}, 1e-10 tamper {:.1e} passes, 1e-6 refused", ok.hf.fock_mismatch, tamp.hf.fock_mismatch);
+}
+
+// ------------------------------------------------------------------ mutants
+
+const ALL_MUTANTS: [KXcMutation; 10] = [
+    KXcMutation::NoAo,
+    KXcMutation::NoPointMotion,
+    KXcMutation::NoWeightDeriv,
+    KXcMutation::NoGga,
+    KXcMutation::NoHessian,
+    KXcMutation::NoPhase,
+    KXcMutation::ConjPhase,
+    KXcMutation::WrongFactor,
+    KXcMutation::NoInvNk,
+    KXcMutation::PulayNoVxc,
+];
+const MUTANT_BAR: f64 = 1e-5;
+
+fn miss(fx: &Fx, m: KXcMutation, base: &KRksGradient) -> f64 {
+    parts_diff(&force(fx, Some(m)).grad, &base.grad)
+}
+
+/// Smoke mutants on the non-TRIM 1x1x3 mesh (production-wired seams in
+/// `KRksGradConfig::mutation`): each must miss the unmutated (FD- and
+/// supercell-anchored) force by far more than the bar.
+#[test]
+fn smoke_mutants_are_caught() {
+    let fx = fixture(&H2, [1, 1, 3], "PBE", Jk::Dense, atom_grid(20, 50));
+    let base = force(&fx, None);
+    for m in [
+        KXcMutation::NoWeightDeriv,
+        KXcMutation::NoHessian,
+        KXcMutation::NoPhase,
+        KXcMutation::WrongFactor,
+    ] {
+        let d = miss(&fx, m, &base);
+        eprintln!("{m:?}: miss {d:.2e}");
+        assert!(d > MUTANT_BAR, "{m:?} survives: {d:e}");
+    }
+}
+
+/// The full sweep, with the blind spots asserted (artifact hypotheses: a
+/// mutant that is an IDENTITY on a mesh or functional must show exactly 0).
+#[test]
+#[ignore = "full mutant sweep, 10 mutants x ~3 s + LDA/TRIM rows; measured ~60 s"]
+fn full_mutant_sweep() {
+    let fx = fixture(&H2, [1, 1, 3], "PBE", Jk::Dense, atom_grid(20, 50));
+    let base = force(&fx, None);
+    for m in ALL_MUTANTS {
+        let d = miss(&fx, m, &base);
+        eprintln!("PBE 1x1x3 {m:?}: miss {d:.2e}");
+        assert!(d > MUTANT_BAR, "{m:?} survives: {d:e}");
+    }
+    // LDA: the GGA mutants are identities.
+    let lda = fixture(&H2, [1, 1, 3], "LDA", Jk::Dense, atom_grid(20, 50));
+    let lb = force(&lda, None);
+    for m in [KXcMutation::NoGga, KXcMutation::NoHessian] {
+        let d = miss(&lda, m, &lb);
+        eprintln!("LDA 1x1x3 {m:?}: miss {d:.2e} (identity)");
+        assert_eq!(d, 0.0);
+    }
+    // TRIM-only mesh 1x1x2: D(k) real, so the conjugate phase is an identity.
+    let trim = fixture(&H2, [1, 1, 2], "PBE", Jk::Dense, atom_grid(20, 50));
+    let tb = force(&trim, None);
+    let d = miss(&trim, KXcMutation::ConjPhase, &tb);
+    eprintln!("PBE 1x1x2 ConjPhase: miss {d:.2e} (TRIM identity)");
+    assert!(d < 1e-12);
+    // Uniform grid: the grid-term mutants are identities.
+    let uni = fixture(&H2, [1, 1, 3], "PBE", Jk::Dense, KXcGrid::Uniform([24, 24, 24]));
+    let ub = force(&uni, None);
+    for m in [KXcMutation::NoPointMotion, KXcMutation::NoWeightDeriv] {
+        assert_eq!(miss(&uni, m, &ub), 0.0);
+    }
+}
