@@ -11,7 +11,7 @@
 //! * A real optimization (stretched H2, 1x1x3) converges to the optimizer's
 //!   gradient thresholds, lowers the energy, and the printed final gradient
 //!   equals the library force at the printed final geometry.
-//! * Refusals: k-point Kohn-Sham, ROHF.
+//! * Refusals: ROHF (k-point Kohn-Sham: periodic_kpoint_ks_optimize.rs).
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -324,11 +324,9 @@ fn k_point_optimize_converges_and_the_final_force_is_the_library_force() {
 }
 
 #[test]
-fn k_point_kohn_sham_and_rohf_optimize_are_refused() {
-    for (kind, message) in [
-        ("ksdft", "k-point Kohn-Sham (RKS) has no analytic force"),
-        ("rohf", "not supported for periodic ROHF"),
-    ] {
+fn k_point_rohf_optimize_is_refused() {
+    // (closed-shell k-point Kohn-Sham is wired: periodic_kpoint_ks_optimize.rs)
+    for (kind, message) in [("rohf", "not supported for periodic ROHF")] {
         let o = run("refuse", &xyz(&H2_OFFAXIS), kind, 1, "[1, 1, 2]", LOOSE);
         assert!(!o.status.success(), "{kind}");
         let err = String::from_utf8_lossy(&o.stderr);
