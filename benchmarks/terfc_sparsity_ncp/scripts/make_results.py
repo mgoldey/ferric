@@ -7,7 +7,9 @@ C = open("stageC_table.txt").read()
 T = open("stageB_tail.txt").read()
 conf = subprocess.run(
     "grep -E '^ROW ' logs/confirm.log | awk '{print $2,$3,$5,$9,$11,$13,$15}'",
-    shell=True, capture_output=True, text=True,
+    shell=True,
+    capture_output=True,
+    text=True,
 ).stdout
 
 BODY = """# Does the non-CP MP2-V operator buy sparsity? (2026-10-11): measurements first, interpretation after
@@ -89,5 +91,8 @@ or reduced pairs/domains (5-7%, below resolution). The sparsity comes from the s
 * Production-map relerr uses the trivial-map ri_mp2 E(0).
 """
 open("RESULTS.md", "w").write(
-    BODY.replace("@@A@@", A).replace("@@CONF@@", conf).replace("@@C@@", C).replace("@@T@@", T)
+    BODY.replace("@@A@@", A)
+    .replace("@@CONF@@", conf)
+    .replace("@@C@@", C)
+    .replace("@@T@@", T)
 )

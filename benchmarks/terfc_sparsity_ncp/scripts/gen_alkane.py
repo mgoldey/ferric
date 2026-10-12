@@ -42,7 +42,10 @@ if __name__ == "__main__":
     a = gen(n)
     if "--check" in sys.argv:
         r = read(sys.argv[sys.argv.index("--check") + 1])
-        key = lambda x: (x[0], round(x[1], 3), round(x[2], 3), round(x[3], 3))
+
+        def key(x):
+            return (x[0], round(x[1], 3), round(x[2], 3), round(x[3], 3))
+
         assert len(a) == len(r), (len(a), len(r))
         sa, sr = sorted(a, key=key), sorted(r, key=key)
         d = max(abs(p - q) for u, v in zip(sa, sr) for p, q in zip(u[1:], v[1:]))
@@ -51,6 +54,8 @@ if __name__ == "__main__":
         assert d < 3e-5
     else:
         with open(sys.argv[2], "w") as fh:
-            fh.write(f"{len(a)}\nn-alkane C{n}H{2*n+2}, all-anti conformer (generated like alkane_20)\n")
+            fh.write(
+                f"{len(a)}\nn-alkane C{n}H{2 * n + 2}, all-anti conformer (generated like alkane_20)\n"
+            )
             for s, x, y, z in a:
                 fh.write(f"{s:<2} {x:12.6f} {y:12.6f} {z:12.6f}\n")

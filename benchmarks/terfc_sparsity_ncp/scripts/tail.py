@@ -10,7 +10,6 @@ Tail exponents: last-3-point and last-2-point log-log slopes vs N, plus all-poin
 from __future__ import annotations
 
 import glob
-import math
 import re
 import sys
 from pathlib import Path
@@ -21,7 +20,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "terfc_locality_map
 import analyze as A
 
 OPS = ["coul", "erfc:0.42", "terfc:1.0:0.70710678", "terfc:0.991:1.354"]
-NAME = {"coul": "Coulomb", "erfc:0.42": "erfc 0.42", "terfc:1.0:0.70710678": "terfc linked", "terfc:0.991:1.354": "terfc NCP"}
+NAME = {
+    "coul": "Coulomb",
+    "erfc:0.42": "erfc 0.42",
+    "terfc:1.0:0.70710678": "terfc linked",
+    "terfc:0.991:1.354": "terfc NCP",
+}
 
 
 def main(logdir):
@@ -51,7 +55,9 @@ def main(logdir):
                     continue
                 no, nv = 3 * n + 1, 9 * n + 3
                 ka = r["keep"] / 100 * (no * nv) ** 2
-                print(f"{NAME[spec]:<13} {n:>3} {r['eps']:.2e} {r['keep']:6.3f} {ka:10.0f} {r['pairs']:6.0f} {r['dom']:6.1f} {wall.get((n, spec), float('nan')):7.1f}")
+                print(
+                    f"{NAME[spec]:<13} {n:>3} {r['eps']:.2e} {r['keep']:6.3f} {ka:10.0f} {r['pairs']:6.0f} {r['dom']:6.1f} {wall.get((n, spec), float('nan')):7.1f}"
+                )
         print("-- tail exponents (log-log vs N)")
         for spec in OPS:
             pts = [(n, res[(n, spec, tol)]) for n in ns if res.get((n, spec, tol))]
@@ -62,7 +68,9 @@ def main(logdir):
                 return np.polyfit(np.log(xs), np.log(ys), 1)[0]
 
             N = [p[0] for p in pts]
-            KA = [p[1]["keep"] / 100 * ((3 * p[0] + 1) * (9 * p[0] + 3)) ** 2 for p in pts]
+            KA = [
+                p[1]["keep"] / 100 * ((3 * p[0] + 1) * (9 * p[0] + 3)) ** 2 for p in pts
+            ]
             PR = [p[1]["pairs"] for p in pts]
             W = [wall[(p[0], spec)] for p in pts]
             out = f"{NAME[spec]:<13}"
@@ -71,9 +79,14 @@ def main(logdir):
             print(out)
         print("-- NCP / linked ratios")
         for n in ns:
-            a, b = res.get((n, "terfc:0.991:1.354", tol)), res.get((n, "terfc:1.0:0.70710678", tol))
+            a, b = (
+                res.get((n, "terfc:0.991:1.354", tol)),
+                res.get((n, "terfc:1.0:0.70710678", tol)),
+            )
             if a and b:
-                print(f"N={n}: keep {a['keep']/b['keep']:.3f} pairs {a['pairs']/b['pairs']:.3f} dom {a['dom']/b['dom']:.3f}")
+                print(
+                    f"N={n}: keep {a['keep'] / b['keep']:.3f} pairs {a['pairs'] / b['pairs']:.3f} dom {a['dom'] / b['dom']:.3f}"
+                )
 
 
 if __name__ == "__main__":
