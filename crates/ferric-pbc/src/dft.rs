@@ -115,6 +115,7 @@ use ferric_scf::rhf::{
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf_injected;
 use ndarray::{Array2, Array3, Array4};
+use num_complex::Complex64;
 use rayon::prelude::*;
 
 /// Default radial shells (see the module doc's table).
@@ -1263,6 +1264,137 @@ impl LatticeAoHess<'_> {
             }
         }
         Ok(AoStrainMoments { chi, dchi, m1, m2 })
+    }
+}
+
+/// Which Bloch phase [`LatticeAoHess::eval_bloch`] applies to an image
+/// translation `L` at wave vector `k`: the energy's `e^{+ik·L}`, or one of the
+/// two deliberate defects of the k-point XC force tests.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BlochPhase {
+    /// `e^{+ik·L}` ([`crate::kdft`]'s convention).
+    True,
+    /// `1` (no phase).
+    None,
+    /// `e^{-ik·L}`.
+    Conj,
+}
+
+/// Bloch AOs on one point chunk, one entry per k (`φ^k_μ = Σ_L e^{ik·L}
+/// χ_μ(r − L)` and its derivatives).
+pub(crate) struct BlochAoHess {
+    /// `chi[k]`: `(nbf, np)`.
+    pub(crate) chi: Vec<Array2<Complex64>>,
+    /// `dchi[k]`: `(3, nbf, np)`.
+    pub(crate) dchi: Vec<Array3<Complex64>>,
+    /// `ddchi[k]`: `(3, 3, nbf, np)`; empty without `hess`.
+    pub(crate) ddchi: Vec<Array4<Complex64>>,
+}
+
+impl LatticeAoHess<'_> {
+    /// Bloch-phased AOs, gradients and (with `hess`) Hessians at `pts` for
+    /// every wave vector in `kpts`. The live image-shell list, the per-shell
+    /// extents and the image translations are those of [`Self::eval`] (and so
+    /// of the energy's Bloch AO cache, [`crate::kdft`]); the phase of an image
+    /// shell centred at `c_s + L` is applied once per image and looped over k.
+    pub(crate) fn eval_bloch(
+        &self,
+        pts: &[[f64; 3]],
+        kpts: &[[f64; 3]],
+        phase: BlochPhase,
+        hess: bool,
+    ) -> Result<BlochAoHess, FerricError> {
+        let np = pts.len();
+        let nbf = self.nbf;
+        let nk = kpts.len();
+        let mut chi = vec![Array2::<Complex64>::zeros((nbf, np)); nk];
+        let mut dchi = vec![Array3::<Complex64>::zeros((3, nbf, np)); nk];
+        let mut ddchi = if hess {
+            vec![Array4::<Complex64>::zeros((3, 3, nbf, np)); nk]
+        } else {
+            Vec::new()
+        };
+        if np == 0 {
+            return Ok(BlochAoHess { chi, dchi, ddchi });
+        }
+        let m = np as f64;
+        let cen = [
+            pts.iter().map(|p| p[0]).sum::<f64>() / m,
+            pts.iter().map(|p| p[1]).sum::<f64>() / m,
+            pts.iter().map(|p| p[2]).sum::<f64>() / m,
+        ];
+        let rad = pts.iter().map(|p| dist3(p, &cen)).fold(0.0, f64::max);
+        // e^{ik·L} per (translation, k), filled for translations with a live
+        // shell; live = (shell, shifted centre, translation index).
+        let mut table: Vec<Vec<Complex64>> = vec![Vec::new(); self.trans.len()];
+        let mut live: Vec<(usize, [f64; 3], usize)> = Vec::new();
+        for (il, l) in self.trans.iter().enumerate() {
+            for (s, sh) in self.shells.iter().enumerate() {
+                let c = [
+                    sh.center[0] + l[0],
+                    sh.center[1] + l[1],
+                    sh.center[2] + l[2],
+                ];
+                if dist3(&c, &cen) <= rad + self.ext[s] {
+                    if table[il].is_empty() {
+                        table[il] = kpts
+                            .iter()
+                            .map(|k| {
+                                let a = k[0] * l[0] + k[1] * l[1] + k[2] * l[2];
+                                match phase {
+                                    BlochPhase::True => Complex64::new(a.cos(), a.sin()),
+                                    BlochPhase::None => Complex64::new(1.0, 0.0),
+                                    BlochPhase::Conj => Complex64::new(a.cos(), -a.sin()),
+                                }
+                            })
+                            .collect();
+                    }
+                    live.push((s, c, il));
+                }
+            }
+        }
+        let mut buf = [0.0_f64; 15];
+        let mut gbuf = [[0.0_f64; 15]; 3];
+        let mut hbuf = [[0.0_f64; 15]; 9];
+        for (g, p) in pts.iter().enumerate() {
+            for &(s, c, il) in &live {
+                let ph = &table[il];
+                let (dx, dy, dz) = (p[0] - c[0], p[1] - c[1], p[2] - c[2]);
+                if dx * dx + dy * dy + dz * dz > self.ext[s] * self.ext[s] {
+                    continue;
+                }
+                let sh = &self.shells[s];
+                let n = num_functions(sh.l, sh.pure);
+                buf.fill(0.0);
+                for row in gbuf.iter_mut() {
+                    row.fill(0.0);
+                }
+                if hess {
+                    for row in hbuf.iter_mut() {
+                        row.fill(0.0);
+                    }
+                    eval_shell_grad_hess(sh, dx, dy, dz, &mut buf[..n], &mut gbuf, &mut hbuf)?;
+                } else {
+                    eval_shell_and_grad(sh, dx, dy, dz, &mut buf[..n], &mut gbuf)?;
+                }
+                let o = self.offsets[s];
+                for (k, f) in ph.iter().enumerate() {
+                    for i in 0..n {
+                        chi[k][(o + i, g)] += *f * buf[i];
+                        for a in 0..3 {
+                            dchi[k][(a, o + i, g)] += *f * gbuf[a][i];
+                            if hess {
+                                for b in 0..3 {
+                                    ddchi[k][(a, b, o + i, g)] += *f * hbuf[a * 3 + b][i];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(BlochAoHess { chi, dchi, ddchi })
     }
 }
 

@@ -104,6 +104,12 @@
 //!   derivative (ket from `−iK p − Q_bra`), the mesh Madelung constant in the
 //!   overlap weight; equals the Gamma force on ONE copy of each atom in the
 //!   diag(N) supercell. FINDINGS "Iteration 21".
+//! * [`kxcgrad`] — analytic nuclear forces of the k-point closed-shell RKS
+//!   energy for pure LDA/GGA functionals (`kpoint_rks_gradient`) on the
+//!   dense-AFT or RS-GDF J: the k-point HF force assembly with exchange
+//!   fraction 0 plus the XC AO-derivative, grid-point-motion and weight-
+//!   response terms on Bloch AOs; global hybrids, RSH, meta-GGA and open shell
+//!   are refused.
 //! * [`kstress`] — the k-point RHF / UHF stress tensor
 //!   (`kpoint_rhf_stress`, `kpoint_uhf_stress`) on the dense-AFT and the
 //!   unsplit RS-GDF J/K:
@@ -169,6 +175,7 @@ pub mod kscf;
 pub mod kstress;
 pub mod kuks;
 pub mod kuscf;
+pub mod kxcgrad;
 pub mod lattice;
 pub mod lindep;
 pub mod lmp2;
@@ -231,6 +238,7 @@ pub use kuscf::{
     kuhf_gap_report, solve_kuhf, solve_kuhf_injected, solve_kuhf_injected_with_guess,
     solve_kuhf_keep, KUScfResult, KUhfConfig, KUhfResult,
 };
+pub use kxcgrad::{kpoint_rks_gradient, KRksGradConfig, KRksGradient, KXcGrid};
 pub use lattice::Cell;
 pub use lindep::{
     exp_to_discard, prepare_cell_basis, DiscardedShell, ExpToDiscardError, ExpToDiscardReport,

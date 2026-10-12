@@ -80,8 +80,9 @@
 //!
 //! # Scope
 //!
-//! HF only (no KS-DFT / ROHF at k), RS-GDF aux on the cell's atoms (no ghost
-//! sites). A scalar periodic ECP is differentiated by the Gamma ECP walk
+//! HF here (no ROHF at k); pure LDA/GGA RKS reuses this assembly with the
+//! exchange fraction 0 plus the XC terms ([`crate::kxcgrad`]). RS-GDF aux on the
+//! cell's atoms (no ghost sites). A scalar periodic ECP is differentiated by the Gamma ECP walk
 //! ([`crate::ecp::periodic_ecp_gradient`]) with the SR walk's image weight
 //! `Re Δ_nm(L)` in place of the density (`parts.ecp`; derivation in the
 //! [`crate::ecp`] module doc, "k-points"); the walk is driven by the basis and
@@ -555,6 +556,7 @@ pub fn kpoint_rhf_gradient(
         &jk,
         KSpins::Restricted { d, f },
         vm,
+        1.0,
         cfg,
         &mut ledger,
     )?;
@@ -612,6 +614,7 @@ pub fn kpoint_uhf_gradient(
         &jk,
         KSpins::Unrestricted { da, db, fa, fb },
         vm,
+        1.0,
         cfg,
         &mut ledger,
     )?;
@@ -697,7 +700,7 @@ pub(crate) fn check_inputs(
 
 /// Open the memory ledger and reserve the per-k matrices, residue-folded weights and
 /// per-term arrays of the k-point gradient.
-fn open_ledger(
+pub(crate) fn open_ledger(
     cell: &Cell,
     prep: &PreparedBasis,
     mesh: &KPointMesh,
@@ -872,10 +875,43 @@ fn fold_ao(g_ao: &[[f64; 3]], aoat: &[usize], natoms: usize) -> Array2<f64> {
     g
 }
 
+/// The Madelung constant of the M-term: the mesh `v_M` scaled by the exchange
+/// fraction (`GammaMadelung` mutant: the primitive-cell constant).
+fn m_term_madelung(
+    cell: &Cell,
+    vm: f64,
+    exch_scale: f64,
+    mutation: Option<KGradMutation>,
+) -> Result<f64, FerricError> {
+    let base = if mutation == Some(KGradMutation::GammaMadelung) && vm != 0.0 {
+        madelung_constant(cell)?
+    } else {
+        vm
+    };
+    Ok(exch_scale * base)
+}
+
+/// The exchange terms `Σ_s c D_s X D_s` of `spins`, coefficients scaled by the
+/// exchange fraction (`1` is bitwise the unscaled terms; empty for `0`).
+fn scaled_exch_terms(spins: &KSpins, exch_scale: f64) -> Vec<(f64, &[Array2<C64>])> {
+    if exch_scale == 0.0 {
+        return Vec::new();
+    }
+    spins
+        .exch_terms()
+        .into_iter()
+        .map(|(c, d)| (c * exch_scale, d))
+        .collect()
+}
+
 /// Assemble the k-point gradient from the per-spin `D(k)`/`F(k)`, hcore and J/K derivative
-/// pieces; `vm` is the Madelung shift.
+/// pieces; `vm` is the Madelung shift and `exch_scale` the exact-exchange
+/// fraction `a` of the energy (`1` = Hartree-Fock, bitwise the unscaled
+/// terms; `0` = no exchange at all: the K-derivative walks are skipped, the
+/// RS-GDF fit differentiates the Coulomb part only and the Madelung M-term
+/// vanishes; any other value is not validated and not exposed).
 #[allow(clippy::too_many_arguments)]
-fn assemble(
+pub(crate) fn assemble(
     cell: &Cell,
     prep: &PreparedBasis,
     mesh: &KPointMesh,
@@ -884,6 +920,7 @@ fn assemble(
     jk: &KGradJk<'_>,
     spins: KSpins,
     vm: f64,
+    exch_scale: f64,
     cfg: &KGradConfig,
     ledger: &mut Ledger,
 ) -> Result<KGradient, FerricError> {
@@ -922,11 +959,8 @@ fn assemble(
     let omega = hcore_cfg.omega;
     let vol = cell.volume();
     let c0 = PI / (omega * omega * vol);
-    let vm_m = if mutation == Some(KGradMutation::GammaMadelung) && vm != 0.0 {
-        madelung_constant(cell)?
-    } else {
-        vm
-    };
+    let vm_m = m_term_madelung(cell, vm, exch_scale, mutation)?;
+    let exch = scaled_exch_terms(&spins, exch_scale);
     let mk: Vec<Array2<C64>> = (0..nk)
         .map(|k| {
             let mut m = spins.energy_weighted(k).mapv(|z| -z);
@@ -953,7 +987,6 @@ fn assemble(
     let fit = match jk {
         KGradJk::Dense(_) => None,
         KGradJk::RsGdf(src) => {
-            let exch = spins.exch_terms();
             let fm = KFitMutation {
                 rot: KRotKind::defect(rot_kind(mutation)),
                 aux_phase: mutation == Some(KGradMutation::FitAuxPhase),
@@ -1125,7 +1158,7 @@ fn assemble(
                 prep,
                 mesh,
                 eri,
-                &spins,
+                &exch,
                 &delta,
                 &delta_true,
                 &ph_true,
@@ -1236,13 +1269,15 @@ fn assemble(
 }
 
 /// Largest `|F_rebuilt − F_stored|` the entry points accept (Hartree). The
-/// forces and the stress rebuild `F = h + J − αK` from the density and the dense kernels;
-/// the SCF's stored (non-extrapolated) Fock must agree, which fails for a KS
-/// result (the XC potential is not in the rebuilt `F`) or a wrong `exxdiv`
-/// (`v_M S D S` shift) or an SCF run without the ECP that `hk.h` carries.
-/// Measured on H2 1x1x2: matching inputs 2e-16 (none) and 2e-16 (ewald); the
-/// wrong `exxdiv` 7.9e-1 either way; an LDA result 3.4e-1; HI 1x1x3 matching
-/// 5.7e-17, an ECP-free SCF 6.9.
+/// forces and the stress rebuild the Fock matrix from the density and the
+/// J/K source (`h + J − αK`, plus `V_xc` in the KS force entry); the SCF's
+/// stored (non-extrapolated) Fock must agree, which fails for a wrong `exxdiv`
+/// (`v_M S D S` shift), an SCF run without the ECP that `hk.h` carries, a
+/// different J/K source, and (for the HF entries, which rebuild no `V_xc`) a
+/// KS result. Measured on H2 1x1x2: matching inputs 2e-16 (none) and 2e-16
+/// (ewald); the wrong `exxdiv` 7.9e-1 either way; an LDA result given to an HF
+/// entry 3.4e-1; HI 1x1x3 matching 5.7e-17, an ECP-free SCF 6.9; the KS force
+/// entry with the wrong functional 5.9e-3.
 pub const FOCK_CONSISTENCY_BAR: f64 = 1e-8;
 
 pub(crate) fn check_fock(
@@ -1250,6 +1285,7 @@ pub(crate) fn check_fock(
     what: &str,
     rebuilt: &[Array2<C64>],
     stored: &[Array2<C64>],
+    remedy: &str,
 ) -> Result<f64, FerricError> {
     let mut worst = 0.0_f64;
     for (a, b) in rebuilt.iter().zip(stored) {
@@ -1266,8 +1302,8 @@ pub(crate) fn check_fock(
         return Err(FerricError::General(format!(
             "{who}: the Fock matrix rebuilt from the density and the J/K source differs from \
              the SCF's stored {what} by {worst:.2e} (bar {FOCK_CONSISTENCY_BAR:.0e}); the analytic \
-             derivative covers pure Hartree-Fock only with the SAME exxdiv and kernels the SCF used (not a \
-             KS-DFT result, not a different exxdiv, not an extrapolated state)"
+             derivative needs the SCF's own Fock (same J/K kernels, hcore and exxdiv, not an \
+             extrapolated state); {remedy}"
         )));
     }
     Ok(worst)
@@ -1319,9 +1355,9 @@ pub(crate) fn check_fock_mod_madelung(
         return Err(FerricError::General(format!(
             "{who}: the Fock matrix rebuilt from the density and the J/K source differs from \
              the SCF's stored Fock by {worst:.2e} beyond a Madelung (exxdiv) shift (bar \
-             {FOCK_CONSISTENCY_BAR:.0e}); the analytic derivative covers pure Hartree-Fock \
-             with the SAME J/K kernels and hcore the SCF used (not a KS-DFT result, not an SCF \
-             run without the ECP, not an extrapolated state)"
+             {FOCK_CONSISTENCY_BAR:.0e}); the analytic derivative covers Hartree-Fock with the \
+             SAME J/K kernels and hcore the SCF used (not an SCF run without the ECP, not an \
+             extrapolated state); a KS result needs `kpoint_rks_gradient`"
         )));
     }
     Ok(worst)
@@ -1577,7 +1613,7 @@ fn dense_two_electron(
     prep: &PreparedBasis,
     mesh: &KPointMesh,
     eri: &KDenseAftEri,
-    spins: &KSpins,
+    exch: &[(f64, &[Array2<C64>])],
     delta: &[Array2<C64>],
     delta_true: &[Array2<C64>],
     ph_true: &[Vec<C64>],
@@ -1602,7 +1638,6 @@ fn dense_two_electron(
         &format!("k gradient ERI K list (|K| <= {gcut:.3}, |q| <= {qmax:.3})"),
         gvector_list_bytes(cell, gcut + qmax)?.saturating_mul(2),
     )?;
-    let exch = spins.exch_terms();
     let cx_base = -1.0 / (vol * (nk * nk) as f64);
     let mut jao = vec![[0.0_f64; 3]; n];
     let mut kao = vec![[0.0_f64; 3]; n];
@@ -1612,6 +1647,10 @@ fn dense_two_electron(
     let extra_per_g = bytes_of(((nr + 4) * n * n) as u64, 16);
     for iq in 0..nk {
         let (q, mq) = mesh.q_class(iq);
+        // Coulomb only (a pure functional): the q != 0 classes carry exchange.
+        if exch.is_empty() && mq != [0, 0, 0] {
+            continue;
+        }
         let qn = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2]).sqrt();
         let ks: Vec<[f64; 3]> = cell
             .gvectors(gcut + qn)?
@@ -1655,6 +1694,9 @@ fn dense_two_electron(
                             rho.conj() * (v / vol),
                         );
                     }
+                    if exch.is_empty() {
+                        continue;
+                    }
                     // Exchange: Yt_r = Σ_k' e^{ik'·t_r} Σ_s D_s(k') P^{k'H} D_s(k'−q).
                     let mut yt: Vec<Array2<C64>> = (0..nr).map(|_| Array2::zeros((n, n))).collect();
                     for j in 0..nk {
@@ -1668,7 +1710,7 @@ fn dense_two_electron(
                         }
                         let pjh = herm(&pj);
                         let mut y = Array2::<C64>::zeros((n, n));
-                        for (c, ds) in &exch {
+                        for (c, ds) in exch {
                             y.scaled_add(cr(*c), &ds[j].dot(&pjh).dot(&ds[kof[j]]));
                         }
                         for (r, ytr) in yt.iter_mut().enumerate() {
