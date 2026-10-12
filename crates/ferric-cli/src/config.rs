@@ -5757,6 +5757,12 @@ kind = "ccsd"
         let p = ok(&src);
         assert_eq!(p.route, PeriodicRoute::Rks, "{name}");
         assert!(p.optimize && p.kmesh.is_none(), "{name}");
+        let name = "h2-cell-kpts-rhf-opt.toml";
+        let src = std::fs::read_to_string(root.join("examples").join(name))
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        let p = ok(&src);
+        assert_eq!(p.route, PeriodicRoute::Rhf, "{name}");
+        assert!(p.optimize && p.kmesh.is_some(), "{name}");
     }
 
     /// The resolved RS-GDF range-split λ (`None` = off); panics on dense.
