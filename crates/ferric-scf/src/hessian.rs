@@ -503,7 +503,7 @@ pub mod rohf_support {
 pub mod rij_support {
     use super::*;
     pub use crate::hessian_df::{
-        rij_first, rij_terms, rij_terms_with_aux, RijFirst, RijMutants, RijTerms,
+        probe_metric, rij_first, rij_terms, rij_terms_with_aux, RijFirst, RijMutants, RijTerms,
     };
 
     /// Exact four-centre J skeleton `Σ ½ D_μν D_λσ ∂²(μν|λσ)` at fixed `d`
@@ -911,8 +911,13 @@ fn available(
 }
 
 /// RI-J (RHF only; the other references were refused by the preflight): the
+/// pre-SCF checks that need the molecule and the fitting basis, so that `Auto`
+/// falls back to finite differences instead of failing after the SCF. The
 /// first-derivative three- and two-centre engines for the named fitting basis
-/// must exist, since the second derivatives are a stencil of their blocks.
+/// must exist (the second derivatives are a stencil of their blocks); an ECP
+/// system is refused (untested); and the Coulomb metric must have no
+/// eigenvalue below the DF-K cut (it depends on the geometry and the fitting
+/// basis only).
 fn ri_j_engine_check(
     reference: Reference,
     mol: &Molecule,
@@ -923,6 +928,12 @@ fn ri_j_engine_check(
     let Some(name) = config.df_j_aux.as_deref().filter(|n| !n.is_empty()) else {
         return Ok(());
     };
+    if has_ecp(mol, prep.basis_set()) {
+        return Err(refusal(
+            reference,
+            "density-fitted J (RI-J) combined with an effective core potential",
+        ));
+    }
     let fail = |e: FerricError| {
         FerricError::General(format!(
             "analytic {} Hessian: the RI-J fitting basis {name:?} or its first-derivative \
@@ -933,7 +944,7 @@ fn ri_j_engine_check(
     let dfbs = crate::df_gradient::aux_basis(mol, name).map_err(fail)?;
     Engine::new_3center_deriv(op, prep, &dfbs, 1e-14).map_err(fail)?;
     Engine::new_2center_deriv(op, &dfbs, 1e-14).map_err(fail)?;
-    Ok(())
+    crate::hessian_df::probe_metric(&dfbs, op)
 }
 
 fn operator_refusal(op: Operator) -> Option<String> {

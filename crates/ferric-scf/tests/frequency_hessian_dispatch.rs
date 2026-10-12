@@ -580,6 +580,49 @@ fn probe_refuses_g_functions_and_unapplied_ecps_without_an_scf() {
 }
 
 #[test]
+fn ri_j_with_an_ecp_falls_back_before_the_scf() {
+    // RI-J combined with an ECP is refused by the PRE-SCF probe (it needs only
+    // the molecule and the basis), so Auto runs finite differences of the DF
+    // gradient instead of failing after the SCF, and Analytic is an error.
+    // Hypothesis: the probe refuses -> Auto = FD with 12 gradients; had the
+    // refusal been post-SCF, Auto would return the error instead.
+    if !has_deriv2() {
+        return;
+    }
+    let svp = basis::bundled("def2-svp").unwrap();
+    let mut hi = Molecule::parse_xyz("2\nHI\nH 0 0 0\nI 0 0 1.75\n", 0, 1).unwrap();
+    hi.apply_ecp(&svp);
+    let scf = RhfConfig {
+        df_j_aux: Some("def2-universal-jkfit".into()),
+        df_k_aux: Some(String::new()),
+        ..Default::default()
+    };
+    let prep = PreparedBasis::new(&hi, &svp).unwrap();
+    let probe = analytic_hessian_available(&hi, &prep, Operator::coulomb(), &scf);
+    let msg = probe
+        .expect_err("RI-J + ECP must be refused by the probe")
+        .to_string();
+    assert!(msg.contains("effective core potential"), "{msg}");
+    let run = |hessian| {
+        harmonic_frequencies(
+            &ParallelContext::default(),
+            &hi,
+            "def2-svp",
+            Operator::coulomb(),
+            &scf,
+            &FrequencyConfig {
+                hessian,
+                ..Default::default()
+            },
+        )
+    };
+    let auto = run(HessianMethod::Auto).expect("Auto must fall back, not fail");
+    assert_eq!(auto.hessian_source, HessianSource::FiniteDifference);
+    assert_eq!(auto.n_gradient_evaluations, 12);
+    assert!(run(HessianMethod::Analytic).is_err());
+}
+
+#[test]
 fn ecp_molecule_is_analytic_and_matches_fd() {
     if !has_deriv2() {
         return;

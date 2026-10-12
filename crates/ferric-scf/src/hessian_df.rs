@@ -87,8 +87,15 @@
 //! ## Conditioning
 //!
 //! The 2c stencil and the Cholesky solves amplify noise by `cond(V)`.
-//! RI-J uses the FULL inverse, so there are no dropped modes; but a metric
-//! whose smallest eigenvalue is below the DF-K cut
+//! RI-J uses the FULL inverse, so there are no dropped modes. Measured
+//! accuracy against the cond(V) of the fit (6-31G water, own-gradient FD):
+//! cond 2.5e5 (cc-pVDZ-RI), 2.5e7 (def2-universal-jkfit), 2.4e6 / 9.1e6 / 2.0e8
+//! (aug-cc-pV{D,T,Q}Z-RIFIT) all agree to 1.6e-10 .. 2.0e-10, i.e. no
+//! degradation; an exactly-spanning fit stays exact (skeleton 2e-13, `J^x`
+//! 6e-13) up to cond 2e14 (a benign case: the data are consistent with the
+//! metric). Between cond 2e8 and the refusal threshold (about 3e12 for
+//! `λ_max` ~ 3e2) a generic density is unmeasured, hence a warning below
+//! `RIJ_METRIC_WARN`. A metric whose smallest eigenvalue is below the DF-K cut
 //! (`crate::df_k::DFK_LINDEP_THRESH`) is numerically singular for this
 //! purpose and is refused with a typed error naming the count of such modes.
 //!
@@ -98,8 +105,16 @@
 //! and the `c`-weighted AO matrices `J^x`), one 2c first-derivative pass
 //! (`V_x c`), one more streamed pass for the `y_x`-weighted `J^x`, and the
 //! two stencil contractions (about 30 times the engine calls of a gradient
-//! pass). Memory beyond the budget-bounded raw tensor: `3N · nbf²` for `J^x`
-//! and `3N · naux` for each of `d_x`, `V_x c`, `y_x`.
+//! pass). Memory beyond the budget-bounded raw tensor, charged to the global
+//! pool up front (a typed error when it does not fit): inside `rij_terms`,
+//! `j1`, `j2` and the output `J^x` are alive together (`3 · 8 · 3N · nbf²`
+//! bytes) plus `chunk` per-aux-shell partials of the same size, where
+//! `chunk = clamp(256 MB / (8 · 3N · nbf²), 1, 32)` (so it is 1 beyond about
+//! 40 atoms with 400 basis functions: the first-derivative 3c pass then runs
+//! one aux shell at a time), and `8 · (3 · 3N · naux + 2 · naux²)` bytes of
+//! metric-sized work arrays. After it returns, `J^x` stays resident next to
+//! the exact path's first-order Fock matrices and the `G^x` accumulators
+//! (about three more `3N · nbf²` matrices), which are not charged here.
 
 use crate::df_gradient::aux_basis;
 use crate::df_k::DFK_LINDEP_THRESH;
@@ -144,6 +159,9 @@ pub struct RijMutants {
     pub explicit_inverse: bool,
     /// Stencil construction (step, order, shell displacement).
     pub stencil: StencilConfig,
+    /// Skip the conditioning refusal (measurement of the accuracy of a
+    /// deliberately ill-conditioned fit; never set in production).
+    pub allow_ill_conditioned: bool,
 }
 
 /// The RI-J pieces of the Hessian.
@@ -183,7 +201,6 @@ pub struct RijFirst {
 /// Metric, its Cholesky factor and the operators of one fit.
 struct Fit {
     dfbs: PreparedBasis,
-    v: Array2<f64>,
     chol: CholeskyFactorized<ndarray::OwnedRepr<f64>>,
     v_inv: Option<Array2<f64>>,
     op: Operator,
@@ -204,6 +221,9 @@ impl Fit {
             op
         };
         let v = coulomb_metric_2c(metric_op, &dfbs)?;
+        if !mutants.allow_ill_conditioned {
+            check_metric_conditioning(&v)?;
+        }
         let chol = v.factorizec(UPLO::Lower).map_err(|e| {
             FerricError::Lapack(format!(
                 "analytic RI-J Hessian: Cholesky of the Coulomb metric failed: {e}"
@@ -218,7 +238,6 @@ impl Fit {
         };
         Ok(Fit {
             dfbs,
-            v,
             chol,
             v_inv,
             op,
@@ -238,13 +257,45 @@ impl Fit {
     }
 }
 
-/// Number of metric eigenvalues below the DF-K cut: modes a full inverse
-/// amplifies without bound. Zero for every healthy fitting basis.
-fn near_singular_modes(v: &Array2<f64>) -> Result<usize, FerricError> {
+/// Metric eigenvalue below which the fit is still accepted but warned about:
+/// the full inverse the energy uses amplifies integral noise by `1/λ_min`.
+/// Measured accuracy (module doc): no degradation up to cond(V) = 2e8 for real
+/// fitting bases, and none up to cond(V) = 2e14 for an exactly-spanning fit,
+/// so this is a precaution, not a measured failure.
+pub const RIJ_METRIC_WARN: f64 = 1e-8;
+
+/// Refuse a Coulomb metric with eigenvalues below the DF-K cut (a typed error
+/// naming the count) and warn in the band below [`RIJ_METRIC_WARN`]. Zero
+/// refusals for every healthy fitting basis.
+fn check_metric_conditioning(v: &Array2<f64>) -> Result<(), FerricError> {
     let (lam, _) = v
         .eigh(UPLO::Upper)
         .map_err(|e| FerricError::Lapack(format!("analytic RI-J Hessian: V eigh: {e}")))?;
-    Ok(lam.iter().filter(|&&l| l < DFK_LINDEP_THRESH).count())
+    let modes = lam.iter().filter(|&&l| l < DFK_LINDEP_THRESH).count();
+    if modes > 0 {
+        return Err(FerricError::General(format!(
+            "analytic RI-J Hessian: the Coulomb metric of the fitting basis has {modes} \
+             eigenvalue(s) below {DFK_LINDEP_THRESH:.0e}; the full inverse the energy uses is \
+             numerically singular, so its second derivative is refused (use finite differences)"
+        )));
+    }
+    if lam[0] < RIJ_METRIC_WARN {
+        eprintln!(
+            "[ferric] warning: analytic RI-J Hessian: the smallest eigenvalue of the Coulomb \
+             metric is {:.2e} (cond {:.1e}); the full inverse amplifies integral noise by \
+             1/lambda_min and the Hessian accuracy is unmeasured in this band",
+            lam[0],
+            lam[lam.len() - 1] / lam[0]
+        );
+    }
+    Ok(())
+}
+
+/// The pre-SCF probe's conditioning check: the metric depends on the geometry
+/// and the fitting basis only, so it can be decided before any SCF.
+#[doc(hidden)]
+pub fn probe_metric(dfbs: &PreparedBasis, op: Operator) -> Result<(), FerricError> {
+    check_metric_conditioning(&coulomb_metric_2c(op, dfbs)?)
 }
 
 /// Chunk width for the per-aux-shell partial reductions.
@@ -290,16 +341,21 @@ pub fn rij_terms_with_aux(
     mutants: &RijMutants,
 ) -> Result<RijTerms, FerricError> {
     let fit = Fit::new(dfbs, op, budget, mutants)?;
-    let modes = near_singular_modes(&fit.v)?;
-    if modes > 0 {
-        return Err(FerricError::General(format!(
-            "analytic RI-J Hessian: the Coulomb metric of the fitting basis has {modes} \
-             eigenvalue(s) below {DFK_LINDEP_THRESH:.0e}; the full inverse the energy uses is \
-             numerically singular, so its second derivative is refused (use finite differences)"
-        )));
-    }
     let n3 = 3 * natoms;
     let nbf = obs.nbasis();
+    // Peak inside this function: j1, j2 and the output `first_order_j` are
+    // alive together (3 x 3N nbf^2), plus the chunk of per-shell partials;
+    // the metric-sized work arrays are d_x, V_x c, y_x and the 2c stencil
+    // weight (naux^2). Charged to the global budget up front: a typed error
+    // when it does not fit.
+    let naux = fit.dfbs.nbasis();
+    let per_matrix = 8 * n3 * nbf * nbf;
+    let _charge = ferric_core::memory::pool::reserve_global(
+        "RI-J Hessian J^x matrices, first-derivative partials and metric work",
+        per_matrix
+            .saturating_mul(3 + chunk_len(n3, nbf))
+            .saturating_add(8 * (3 * n3 * naux + 2 * naux * naux)),
+    )?;
     let mut source = ThreeIndexSource::build(fit.op, obs, &fit.dfbs, fit.budget)?;
     let d_p = d_vector(&mut source, d, fit.dfbs.nbasis())?;
     let c = fit.solve(&d_p)?;
@@ -454,10 +510,6 @@ fn first_derivative_3c(
     let (nbf, naux) = (obs.nbasis(), fit.dfbs.nbasis());
     let dfbs = &fit.dfbs;
     Engine::new_3center_deriv(fit.op, obs, dfbs, 1e-14)?;
-    let _charge = ferric_core::memory::pool::reserve_global(
-        "RI-J Hessian first-derivative partials",
-        chunk_len(n3, nbf) * 8 * n3 * nbf * nbf,
-    )?;
     let mut dx = Array2::<f64>::zeros((n3, naux));
     let mut j1 = Array2::<f64>::zeros((n3, nbf * nbf));
     let shells: Vec<usize> = (0..dfbs.nshells()).collect();

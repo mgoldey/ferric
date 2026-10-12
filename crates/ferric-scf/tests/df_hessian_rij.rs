@@ -72,6 +72,16 @@ fn has_deriv2() -> bool {
     order >= 2
 }
 
+/// The RI-J pieces that need only first-derivative engines (a stencil of
+/// their blocks) run on a first-derivative libint too.
+fn has_deriv1() -> bool {
+    let order = ferric_integrals::engine::libint_max_deriv_order();
+    if order < 1 {
+        eprintln!("SKIP: libint2 generated without first derivatives");
+    }
+    order >= 1
+}
+
 fn water() -> Molecule {
     Molecule::parse_xyz(WATER_DISTORTED, 0, 1).unwrap()
 }
@@ -241,7 +251,7 @@ fn dc_at(s: &Setup, x: usize) -> Array1<f64> {
 // ---------------------------------------------------------------------------
 
 fn check_first_pieces(basis_name: &str, aux: &str) {
-    if !has_deriv2() {
+    if !has_deriv1() {
         return;
     }
     let s = setup(&water(), basis_name, aux);
@@ -294,7 +304,7 @@ fn first_derivative_pieces_match_fd_631g() {
 
 /// `E_xy` pieces = d/dy of the matching piece of `E_x` at fixed density.
 fn check_skeleton_pieces(basis_name: &str, aux: &str) {
-    if !has_deriv2() {
+    if !has_deriv1() {
         return;
     }
     let s = setup(&water(), basis_name, aux);
@@ -357,6 +367,16 @@ fn check_skeleton_pieces(basis_name: &str, aux: &str) {
     });
     assert_close(&format!("{tag}: J skeleton"), &terms.skeleton, &fd, tol);
 
+    assert!(
+        terms.skeleton_asymmetry < 1e-9,
+        "raw skeleton asymmetry {:.3e}",
+        terms.skeleton_asymmetry
+    );
+
+    // The exact-K skeleton needs the four-centre second derivatives.
+    if !has_deriv2() {
+        return;
+    }
     // The exact-K skeleton: total two-electron term minus the RI-J piece.
     let p = parts(&s);
     let k_skel = &p.two_electron - &terms.skeleton;
@@ -383,7 +403,7 @@ fn skeleton_pieces_match_fd_631g() {
 // ---------------------------------------------------------------------------
 
 fn check_first_order_j(basis_name: &str, aux: &str) {
-    if !has_deriv2() {
+    if !has_deriv1() {
         return;
     }
     let s = setup(&water(), basis_name, aux);
@@ -566,6 +586,17 @@ fn mutant_total(s: &Setup, m: &RijMutants) -> Array2<f64> {
 // misses by the fitting error, and every mutant misses.
 
 fn exact_span_aux(mol: &Molecule, orbital_basis: &str) -> PreparedBasis {
+    exact_span_aux_with_twin(mol, orbital_basis, None)
+}
+
+/// [`exact_span_aux`] plus, optionally, a near-duplicate of a middle function
+/// on each hydrogen (exponent x (1 + eps)). The span (and so the exact answer)
+/// is unchanged; only cond(V) grows.
+fn exact_span_aux_with_twin(
+    mol: &Molecule,
+    orbital_basis: &str,
+    twin: Option<f64>,
+) -> PreparedBasis {
     use ferric_core::basis::Shell;
     let orbital = basis::bundled(orbital_basis).unwrap();
     let mut exps: Vec<f64> = Vec::new();
@@ -590,6 +621,16 @@ fn exact_span_aux(mol: &Molecule, orbital_basis: &str) -> PreparedBasis {
             coefficients: vec![(2.0 * a / std::f64::consts::PI).powf(0.75)],
         })
         .collect();
+    let mut shells = shells;
+    if let Some(eps) = twin {
+        let a = sums[sums.len() / 2] * (1.0 + eps);
+        shells.push(Shell {
+            l: 0,
+            pure: false,
+            exponents: vec![a],
+            coefficients: vec![(2.0 * a / std::f64::consts::PI).powf(0.75)],
+        });
+    }
     aux.shells.insert(1, shells);
     PreparedBasis::new(mol, &aux).unwrap()
 }
@@ -1108,23 +1149,9 @@ fn the_fitting_error_is_visible_to_the_exact_j_hessian() {
     );
 }
 
-#[test]
-fn explicit_inverse_mutant_on_an_ill_conditioned_metric() {
-    // cond(V) = 7.1e8 for benzene/def2-universal-jkfit (df_j.rs). The explicit
-    // inverse is blind on the well-conditioned water metric (above) but is
-    // detected here, on the RI-J pieces (skeleton and J^x; measured 6.4 s
-    // with 4 threads on a loaded box). Hypothesis: physics predicts no
-    // difference (same exact algebra); an artifact of the numerics predicts a
-    // miss that grows with cond(V) -- which is what is measured.
-    if !has_deriv2() {
-        return;
-    }
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../testdata/molecules/benzene.xyz"
-    );
-    let mol = Molecule::load_xyz(path).unwrap();
-    let s = setup(&mol, "sto-3g", "def2-universal-jkfit");
+/// `max|skeleton(explicit inverse) - skeleton(Cholesky)|` and the same for
+/// `J^x`, for the RI-J pieces at the converged density of `s`.
+fn explicit_inverse_difference(s: &Setup) -> (f64, f64) {
     let route = s.rhf.df_jk.as_ref().unwrap();
     let d = s.rhf.density_r();
     let good = rij_terms(&s.mol, &s.prep, route, d, &RijMutants::default()).unwrap();
@@ -1139,16 +1166,43 @@ fn explicit_inverse_mutant_on_an_ill_conditioned_metric() {
         },
     )
     .unwrap();
-    let sk = max_abs_diff(&good.skeleton, &bad.skeleton);
     let jx = good
         .first_order_j
         .iter()
         .zip(&bad.first_order_j)
         .fold(0.0f64, |m, (a, b)| m.max(max_abs_diff(a, b)));
-    eprintln!("benzene explicit inverse: skeleton miss {sk:.3e}, J^x miss {jx:.3e}");
-    // Measured 9.0e-7 / 1.3e-7 against the 1e-8 bar.
-    assert!(sk > 10.0 * BAR_OWN, "skeleton miss {sk:.3e}");
-    assert!(jx > 10.0 * BAR_OWN, "J^x miss {jx:.3e}");
+    (max_abs_diff(&good.skeleton, &bad.skeleton), jx)
+}
+
+#[test]
+#[ignore = "slow: benzene STO-3G/def2-universal-jkfit RI-J pieces; measured 6.4 s (4 threads, box load ~10)"]
+fn explicit_inverse_mutant_on_an_ill_conditioned_metric() {
+    // cond(V) = 7.1e8 for benzene/def2-universal-jkfit (df_j.rs). The explicit
+    // inverse is blind on the well-conditioned water metric but is detected
+    // here, on the RI-J pieces (skeleton and J^x). Hypothesis: physics
+    // predicts no difference (same algebra); a numerical artifact predicts a
+    // difference that grows with cond(V) -- which is what is measured.
+    // The assertion is RELATIVE to the water difference, measured in the same
+    // run, not an absolute number: skeleton 9.0e-7 vs water 1.4e-11 (about
+    // 6.5e4x); the J^x difference is only 1.3x a 1e-7 absolute bar, so it is
+    // reported but not asserted.
+    if !has_deriv2() {
+        return;
+    }
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../testdata/molecules/benzene.xyz"
+    );
+    let benzene = Molecule::load_xyz(path).unwrap();
+    let (sk, jx) = explicit_inverse_difference(&setup(&benzene, "sto-3g", "def2-universal-jkfit"));
+    let (sk_w, jx_w) = explicit_inverse_difference(&setup(&water(), "6-31g", "cc-pvdz-ri"));
+    eprintln!(
+        "explicit inverse: benzene skeleton {sk:.3e} J^x {jx:.3e}; water skeleton {sk_w:.3e} J^x {jx_w:.3e}"
+    );
+    assert!(
+        sk > 100.0 * sk_w.max(1e-14),
+        "skeleton {sk:.3e} vs water {sk_w:.3e}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1192,10 +1246,151 @@ fn a_nearly_dependent_fitting_basis_is_refused_naming_the_mode_count() {
             &RijMutants::default(),
         )
     };
-    try_twin(1e-3).expect("a well-separated twin must be accepted");
+    // Accepted AND accurate: the skeleton of the twin-augmented basis agrees
+    // with the finite difference of the validated DF gradient at fixed D built
+    // with the same basis (bar 2e-6, the piece-test bar).
+    let accepted = try_twin(1e-3).expect("a well-separated twin must be accepted");
+    let route_budget = usize::MAX;
+    let fd = fd_hessian(&mol, H_PIECE, |m| {
+        let p = prep_at(m, "sto-3g");
+        let mut aux = basis::bundled("cc-pvdz-ri").unwrap();
+        let h = aux.shells.get_mut(&1).unwrap();
+        let first = h.iter().find(|s| s.l == 0).unwrap().clone();
+        let a = first.exponents[0];
+        h.push(Shell {
+            exponents: vec![a * (1.0 + 1e-3)],
+            coefficients: vec![(2.0 * a / std::f64::consts::PI).powf(0.75)],
+            ..first
+        });
+        df_jk_gradient(
+            3,
+            &p,
+            &PreparedBasis::new(m, &aux).unwrap(),
+            Operator::coulomb(),
+            Some(&d),
+            &[],
+            route_budget,
+        )
+        .unwrap()
+    });
+    let acc = assert_close(
+        "twin 1e-3 accepted: J skeleton",
+        &accepted.skeleton,
+        &fd,
+        2e-6,
+    );
+    eprintln!("twin 1e-3: accuracy {acc:.2e}");
     for eps in [1e-5, 1e-7] {
         let msg = try_twin(eps).expect_err("near-singular metric").to_string();
         eprintln!("twin {eps:.0e}: {msg}");
         assert!(msg.contains("2 eigenvalue(s) below 1e-10"), "{msg}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Accuracy as a function of the conditioning of the Coulomb metric
+// ---------------------------------------------------------------------------
+
+/// `(lambda_min, lambda_max)` of the Coulomb metric of `aux` on `mol`.
+fn metric_extremes(mol: &Molecule, aux: &str) -> (f64, f64) {
+    use ndarray_linalg::{Eigh, UPLO};
+    let v = coulomb_metric_2c(Operator::coulomb(), &aux_at(mol, aux)).unwrap();
+    let (lam, _) = v.eigh(UPLO::Upper).unwrap();
+    (lam[0], lam[lam.len() - 1])
+}
+
+#[test]
+#[ignore = "slow: accuracy-vs-cond(V) scan, own-gradient FD per aux basis; measured 46 s for six bases (4 threads, box load ~10)"]
+fn accuracy_versus_metric_conditioning() {
+    if !has_deriv2() {
+        return;
+    }
+    for aux in [
+        "cc-pvdz-ri",
+        "def2-universal-jkfit",
+        "aug-cc-pvdz-rifit",
+        "aug-cc-pvtz-rifit",
+        "aug-cc-pvqz-rifit",
+        "def2-qzvpp-rifit",
+    ] {
+        let t0 = std::time::Instant::now();
+        let (lmin, lmax) = metric_extremes(&water(), aux);
+        let s = setup(&water(), "6-31g", aux);
+        let total = parts(&s).total();
+        let fd = fd_hessian_richardson(&s.mol, 2e-3, |m| df_gradient_at(m, "6-31g", aux));
+        eprintln!(
+            "COND {aux}: lambda_min {lmin:.2e} lambda_max {lmax:.2e} cond {:.2e} miss vs own FD {:.3e} ({:.1}s)",
+            lmax / lmin,
+            max_abs_diff(&total, &fd),
+            t0.elapsed().as_secs_f64()
+        );
+    }
+}
+
+#[test]
+fn exact_span_fit_stays_exact_at_extreme_conditioning() {
+    // The truth is conditioning-independent: with the exact-span auxiliary
+    // basis the fitted skeleton and J^x must equal the exact four-centre ones
+    // whatever near-duplicate functions are added. The 6-31G span itself has
+    // cond(V) = 8.7e11 (lambda_min 1.8e-10); twins at 1e-1, 1e-2, 1e-3 take it
+    // to 3.6e12, 4.8e12, 2.0e14 (measured). Misses stay at 2.2e-13 (skeleton)
+    // and 6e-13 .. 2.9e-12 (J^x). Benign case: the data are consistent with
+    // the metric. The generic-density accuracy is measured separately
+    // (accuracy_versus_metric_conditioning, ignored).
+    use ferric_scf::hessian::rij_support::{exact_j_first_order, exact_j_skeleton};
+    if !has_deriv2() {
+        return;
+    }
+    let mol = water();
+    let prep = prep_at(&mol, "6-31g");
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    let d = hydrogens_density(&prep);
+    let skel = exact_j_skeleton(&prep, op, &bounds, 3, &d).unwrap();
+    let jx = exact_j_first_order(&prep, op, &bounds, 3, &d).unwrap();
+    for eps in [None, Some(1e-1), Some(1e-2), Some(1e-3)] {
+        let r = ferric_scf::hessian::rij_support::rij_terms_with_aux(
+            3,
+            &prep,
+            exact_span_aux_with_twin(&mol, "6-31g", eps),
+            op,
+            usize::MAX,
+            &d,
+            &RijMutants {
+                allow_ill_conditioned: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let jx_miss = r
+            .first_order_j
+            .iter()
+            .zip(&jx)
+            .fold(0.0f64, |m, (a, b)| m.max(max_abs_diff(a, b)));
+        let sk_miss = max_abs_diff(&r.skeleton, &skel);
+        eprintln!("twin {eps:?}: skeleton miss {sk_miss:.2e}, J^x miss {jx_miss:.2e}");
+        assert!(
+            sk_miss < 1e-10 && jx_miss < 1e-10,
+            "{eps:?}: {sk_miss:.2e} {jx_miss:.2e}"
+        );
+    }
+}
+
+#[test]
+fn the_pre_scf_probe_sees_an_ill_conditioned_metric() {
+    // The metric depends on geometry and fitting basis only, so the probe the
+    // frequency dispatch consults before the SCF refuses it (Auto then runs
+    // finite differences instead of failing after the SCF). The exact-span
+    // 6-31G set with a 1e-2 twin has lambda_min 3.3e-11 < 1e-10; a healthy
+    // fitting basis passes.
+    let mol = water();
+    let op = Operator::coulomb();
+    let bad = exact_span_aux_with_twin(&mol, "6-31g", Some(1e-2));
+    let msg = ferric_scf::hessian::rij_support::probe_metric(&bad, op)
+        .expect_err("ill-conditioned metric")
+        .to_string();
+    eprintln!("probe: {msg}");
+    assert!(msg.contains("eigenvalue(s) below 1e-10"), "{msg}");
+    ferric_scf::hessian::rij_support::probe_metric(&aux_at(&mol, "cc-pvdz-ri"), op)
+        .expect("a healthy fitting basis passes the probe");
 }
