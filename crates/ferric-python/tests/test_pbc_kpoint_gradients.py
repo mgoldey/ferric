@@ -18,6 +18,10 @@ stress Hartree/Bohr^3, atoms and lattice in Angstrom in, Bohr derivatives out).
   - Omega tr(sigma) = dE/de for the isotropic strain of lattice and atoms.
 * Flags off: gradient() / stress() are None; the derivatives do not move the
   energy.
+* Monkhorst-Pack meshes (even ones are twisted supercells, residue moduli 2N)
+  against FD of the binding's own energies, both exxdiv.
+* RS-GDF with a ROTATING basis (cc-pVDZ: the rotated-column counters are > 0),
+  RS-GDF UHF, and a 1x1x3 mesh, against FD.
 * Refusals: range_split with forces/stress (as Gamma), k-point KS.
 """
 
@@ -30,7 +34,11 @@ import pytest
 
 import ferric
 
-BOHR_IN_ANGSTROM = 0.52917721092  # 1 / ferric's ANGSTROM_TO_BOHR
+# 1 / ferric's ANGSTROM_TO_BOHR, read back from the binding (1 Angstrom in Bohr).
+_PROBE = ferric.Molecule.from_xyz_string(
+    "1\nunit probe\nH 1.0 0.0 0.0\n", multiplicity=2
+)
+BOHR_IN_ANGSTROM = 1.0 / _PROBE.coords_bohr()[0][0]
 
 # Off-axis so every Cartesian component of the force is non-trivial.
 H2_ATOMS = [(0.3, 0.2, 0.1), (0.35, 0.12, 1.5)]
@@ -258,3 +266,71 @@ def test_refusals(basis):
         ferric.run_rks_kpts(
             _mol(H2_ATOMS), _lat(H2_A), basis, "LDA", (1, 1, 2), with_stress=True
         )
+
+
+@pytest.mark.parametrize("mesh", [(1, 1, 2), (2, 2, 2)])
+@pytest.mark.parametrize("exx", ["none", "ewald"])
+def test_monkhorst_pack_gradient_matches_fd_of_own_energy(basis, mesh, exx):
+    kw = dict(centring="mp", exxdiv=exx)
+    r = _krhf(H2_ATOMS, basis, mesh=mesh, with_gradient=True, **kw)
+    assert r.centring == "mp"
+    comps = [(0, 0), (0, 2), (1, 1), (1, 2)]
+    fd = _fd(lambda at: _krhf(at, basis, mesh=mesh, **kw).energy, H2_ATOMS, comps, FD_H)
+    _assert_matches_fd(r.gradient(), fd, f"KRHF mp {mesh} {exx}")
+
+
+def test_krhf_rsgdf_1x1x3_force_and_stress_match_fd(basis):
+    kw = dict(jk="rsgdf", auxbasis="cc-pvdz-ri")
+    r = _krhf(H2_ATOMS, basis, with_gradient=True, with_stress=True, **kw)
+    fd = _fd(
+        lambda at: _krhf(at, basis, **kw).energy,
+        H2_ATOMS,
+        [(0, 0), (0, 2), (1, 1)],
+        FD_H,
+    )
+    _assert_matches_fd(r.gradient(), fd, "KRHF rsgdf 1x1x3")
+
+    def e_scaled(s):
+        f = 1.0 + s
+        atoms = [tuple(f * c for c in p) for p in H2_ATOMS]
+        return ferric.run_rhf_kpts(
+            _mol(atoms), _lat(f * H2_A), basis, (1, 1, 3), omega=OMEGA, **SCF, **kw
+        ).energy
+
+    de = (e_scaled(FD_H) - e_scaled(-FD_H)) / (2.0 * FD_H)
+    analytic = H2_A**3 * np.trace(r.stress())
+    assert abs(analytic) > 1e-3
+    assert abs(analytic - de) < FD_BAR, f"Omega tr(sigma) {analytic!r} vs FD {de!r}"
+
+
+def test_kuhf_rsgdf_gradient_matches_fd(basis):
+    kw = dict(jk="rsgdf", auxbasis="cc-pvdz-ri")
+    r = _kuhf(H3_ATOMS, basis, with_gradient=True, with_stress=True, **kw)
+    assert r.converged and r.stress().shape == (3, 3)
+    fd = _fd(
+        lambda at: _kuhf(at, basis, **kw).energy,
+        H3_ATOMS,
+        [(0, 0), (1, 2), (2, 1)],
+        FD_H,
+    )
+    _assert_matches_fd(r.gradient(), fd, "KUHF rsgdf 1x1x3")
+
+
+def test_rotating_basis_rsgdf_force_matches_fd():
+    """cc-pVDZ H has a generally contracted s shell: the hcore SR walk and the
+    RS-GDF SR 3-centre sum run column-rotated (counters > 0), and the force
+    differentiates those rotated walks."""
+    ccpvdz = ferric.BasisSet.bundled("cc-pvdz")
+    kw = dict(jk="rsgdf", auxbasis="cc-pvdz-ri")
+
+    def run(at, **extra):
+        return ferric.run_rhf_kpts(
+            _mol(at), _lat(H2_A), ccpvdz, (1, 1, 2), omega=OMEGA, **SCF, **kw, **extra
+        )
+
+    r = run(H2_ATOMS, with_gradient=True, with_stress=True)
+    counters = r.timings["counters"]
+    assert counters["k hcore SR rotated columns"] > 0, counters
+    assert counters["k rsgdf SR3 rotated columns"] > 0, counters
+    fd = _fd(lambda at: run(at).energy, H2_ATOMS, [(0, 0), (0, 2), (1, 1)], FD_H)
+    _assert_matches_fd(r.gradient(), fd, "KRHF rsgdf cc-pVDZ (rotated)")
