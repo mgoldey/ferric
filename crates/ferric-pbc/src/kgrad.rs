@@ -80,8 +80,9 @@
 //!
 //! # Scope
 //!
-//! HF only (no KS-DFT / ROHF at k), RS-GDF aux on the cell's atoms (no ghost
-//! sites). A scalar periodic ECP is differentiated by the Gamma ECP walk
+//! HF here (no ROHF at k); pure LDA/GGA RKS reuses this assembly with the
+//! exchange fraction 0 plus the XC terms ([`crate::kxcgrad`]). RS-GDF aux on the
+//! cell's atoms (no ghost sites). A scalar periodic ECP is differentiated by the Gamma ECP walk
 //! ([`crate::ecp::periodic_ecp_gradient`]) with the SR walk's image weight
 //! `Re Δ_nm(L)` in place of the density (`parts.ecp`; derivation in the
 //! [`crate::ecp`] module doc, "k-points"); the walk is driven by the basis and
