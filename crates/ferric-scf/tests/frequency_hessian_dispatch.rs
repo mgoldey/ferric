@@ -96,9 +96,19 @@ fn auto_is_analytic_for_plain_rhf_and_matches_fd() {
 
 #[test]
 fn auto_falls_back_for_unsupported_configurations() {
+    // Fitted J/K next to an external potential is untested and refused.
     let ri = RhfConfig {
         df_j_aux: Some("def2-universal-jkfit".into()),
         df_k_aux: Some("def2-universal-jkfit".into()),
+        external_potential: Some(ExternalPotential {
+            point_charges: vec![PointCharge {
+                q: 0.3,
+                x: 5.0,
+                y: 0.0,
+                z: 0.0,
+            }],
+            ..Default::default()
+        }),
         ..Default::default()
     };
     // Point charges, smeared charges and a uniform field are analytic (see
@@ -108,7 +118,10 @@ fn auto_falls_back_for_unsupported_configurations() {
         cosmo: Some(ferric_scf::cosmo::CosmoConfig::default()),
         ..Default::default()
     };
-    for (what, scf) in [("RI J/K (RI-K)", ri), ("implicit solvation", solvated)] {
+    for (what, scf) in [
+        ("RI J/K with an external potential", ri),
+        ("implicit solvation", solvated),
+    ] {
         let r = run(&scf, &FrequencyConfig::default());
         assert_eq!(r.hessian_source, HessianSource::FiniteDifference, "{what}");
         assert_eq!(r.n_gradient_evaluations, 18, "{what}");
@@ -172,23 +185,53 @@ fn ri_j_with_exact_k_is_analytic_where_the_engines_exist_and_falls_back_otherwis
         .fold(0.0f64, |m, (a, b)| m.max((a - b).abs()));
     eprintln!("water/STO-3G RI-J: Auto vs FD frequencies max |d| {dev:.3e} cm^-1");
     assert!(dev < 1.0, "frequencies differ by {dev} cm^-1");
-    // The unsupported neighbour, RI-K, is still refused by Analytic.
-    let ri_k = RhfConfig {
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        ..scf
-    };
-    let refused = harmonic_frequencies(
-        &ParallelContext::default(),
-        &water(),
-        "sto-3g",
-        Operator::coulomb(),
-        &ri_k,
-        &FrequencyConfig {
-            hessian: HessianMethod::Analytic,
+}
+
+#[test]
+fn ri_k_is_analytic_alone_and_with_ri_j_and_matches_fd() {
+    // Both routes need a libint with second derivatives (one-electron and
+    // overlap skeletons; RI-K with exact J also the four-centre Coulomb
+    // skeleton). On a first-derivative libint the probe refuses and Auto runs
+    // finite differences; either branch checks the frequencies against finite
+    // differences of the DF gradient.
+    let bs = basis::bundled("sto-3g").unwrap();
+    let prep = PreparedBasis::new(&water(), &bs).unwrap();
+    for (what, j_aux) in [
+        ("RI-K, exact J", String::new()),
+        ("RI-J + RI-K", "def2-universal-jkfit".to_string()),
+    ] {
+        let scf = RhfConfig {
+            df_j_aux: Some(j_aux),
+            df_k_aux: Some("def2-universal-jkfit".into()),
             ..Default::default()
-        },
-    );
-    assert!(refused.is_err(), "RI-K must be refused by Analytic");
+        };
+        let probe = analytic_hessian_available(&water(), &prep, Operator::coulomb(), &scf);
+        let auto = run(&scf, &FrequencyConfig::default());
+        let fd = run(
+            &scf,
+            &FrequencyConfig {
+                hessian: HessianMethod::FiniteDifference,
+                ..Default::default()
+            },
+        );
+        match &probe {
+            Ok(()) => {
+                assert_eq!(auto.hessian_source, HessianSource::Analytic, "{what}");
+                assert_eq!(auto.n_gradient_evaluations, 0, "{what}");
+            }
+            Err(e) => {
+                eprintln!("{what}: probe refused on this libint: {e}");
+                assert_eq!(auto.hessian_source, HessianSource::FiniteDifference);
+            }
+        }
+        let dev = auto
+            .frequencies
+            .iter()
+            .zip(&fd.frequencies)
+            .fold(0.0f64, |m, (a, b)| m.max((a - b).abs()));
+        eprintln!("water/STO-3G {what}: Auto vs FD frequencies max |d| {dev:.3e} cm^-1");
+        assert!(dev < 1.0, "{what}: frequencies differ by {dev} cm^-1");
+    }
 }
 
 #[test]

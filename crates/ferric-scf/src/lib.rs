@@ -187,9 +187,13 @@ pub mod frequencies;
 /// Analytic RHF, UHF and ROHF second derivatives (Hessian); needs libint2 with
 /// second derivatives (`LIBINT2_MAX_DERIV_ORDER >= 2`) for the four-centre terms.
 pub mod hessian;
-/// Analytic RHF Hessian for RI-J with exact exchange (derivation in the module doc).
+/// Analytic RHF Hessian for RI-J (derivation in the module doc); the RI-K
+/// counterpart, which combines with it, is `hessian_df_k`.
 #[doc(hidden)]
 pub mod hessian_df;
+/// Analytic RHF Hessian pieces for RI-K exchange (derivation in the module doc).
+#[doc(hidden)]
+pub mod hessian_df_k;
 /// Fourth-order stencil of the first-derivative DF integral blocks: the
 /// `(P|μν)` and `(P|Q)` second derivatives of the RI Hessian.
 #[doc(hidden)]
