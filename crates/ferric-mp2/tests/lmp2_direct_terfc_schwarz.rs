@@ -153,14 +153,22 @@ fn check(xyz: &str, nc: usize, min_frac: f64, which: &[usize]) {
             "{xyz} {name}: E0 {e0:.10} skipped {frac5:.3} (1e-5) rel dE {rel5:.2e} | \
              mutant 1e-2: skipped {frac2:.3} rel dE {rel2:.2e}"
         );
+        // Thresholds derive from measured values on both sides (2026-10-11,
+        // release): C4 linked skipped 0.080, rel dE 3.8e-8, mutant 1e-2:
+        // 0.311 / 4.8e-1; C8 linked 0.361 / 8.0e-8, NCP 0.360 / 1.2e-7, mutant
+        // 5.2 / 1.8. Skip floors are half the measured fraction; the error
+        // ceiling 1e-6 is >8x the largest production error and >1e5x below the
+        // smallest mutant error; the mutant must exceed 1e-3.
         assert!(
             frac5 > min_frac,
             "{name}: production cut skipped only {frac5:.3}"
         );
-        assert!(rel5 < 1e-5, "{name}: production cut moved E by {rel5:.2e}");
+        assert!(rel5 > 0.0, "{name}: the cut never reached the energy");
+        assert!(rel5 < 1e-6, "{name}: production cut moved E by {rel5:.2e}");
+        assert!(rel2 > 1e-3, "{name}: mutant cut not loud: {rel2:.2e}");
         assert!(
             frac2 > frac5 && rel2 > 100.0 * rel5,
-            "{name}: mutant not loud: {rel2:.2e}"
+            "{name}: mutant not ordered"
         );
     }
 }

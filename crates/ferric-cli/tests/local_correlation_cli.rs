@@ -85,6 +85,11 @@ fn run(tag: &str, kind: &str, extra: &str) -> Run {
         .current_dir(&root)
         .env("OPENBLAS_NUM_THREADS", "1")
         .env("RAYON_NUM_THREADS", "2")
+        .env(
+            "FERRIC_TERF_TABLE_DIR",
+            std::env::var("FERRIC_TERF_TABLE_DIR")
+                .unwrap_or_else(|_| root.join("terf-tables").display().to_string()),
+        )
         .output()
         .expect("failed to run ferric-cli binary");
     let records: Vec<serde_json::Value> = std::fs::read_to_string(&log_path)
@@ -305,4 +310,42 @@ fn refusals_fail_before_the_scf() {
             r.stdout
         );
     }
+}
+
+/// terfc + integral_direct takes the default Schwarz cut (1e-5), and a terfc
+/// r0 outside the validated box is refused at load, before the SCF, with the
+/// `schwarz_skip = 0.0` opt-out named. Water/6-31G, a few seconds.
+#[test]
+fn terfc_direct_default_schwarz_runs_and_out_of_box_r0_is_refused_at_load() {
+    let body = |r0: f64, skip: &str| {
+        format!(
+            "{MP2}att_operator = \"terfc\"\natt_r0 = {r0}\n\n\
+             [local]\nscheme = \"amplitude-threshold\"\neps = 1e-3\nintegral_direct = true\n{skip}\n"
+        )
+    };
+    let ok = ok_run("terfc_direct_default", "att-rimp2", &body(1.0, ""));
+    assert!(
+        ok.results
+            .iter()
+            .all(|r| r["components"]["local"]["integral_direct"] == true),
+        "{:?}",
+        ok.results
+    );
+
+    let bad = run("terfc_direct_r0_out_of_box", "att-rimp2", &body(3.0, ""));
+    assert!(!bad.ok);
+    assert!(!bad.scf_started, "must be refused before the SCF");
+    assert!(
+        bad.stderr.contains("outside the validated range")
+            && bad.stderr.contains("schwarz_skip = 0.0"),
+        "{}",
+        bad.stderr
+    );
+    // the explicit opt-out accepts the same r0
+    let off = ok_run(
+        "terfc_direct_r0_optout",
+        "att-rimp2",
+        &body(3.0, "schwarz_skip = 0.0"),
+    );
+    assert!(!off.results.is_empty());
 }
