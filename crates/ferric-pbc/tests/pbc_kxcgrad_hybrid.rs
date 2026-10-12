@@ -9,7 +9,8 @@
 //! ewald; Ewald == None force equality; thread bit-identity; the Fock guard
 //! from every side; typed refusals; production-wired mutants.
 //!
-//! NOT covered: range-separated hybrids (refused), meta-GGA, VV10/double
+//! NOT covered: p/d shells on the hybrid K walks (every fixture here is
+//! H2/STO-3G, s functions only), range-separated hybrids (refused), meta-GGA, VV10/double
 //! hybrids (refused), range-split RS-GDF with a hybrid, heavy atoms / ECP with a
 //! hybrid, shifted meshes, open shell, stress.
 
@@ -793,31 +794,25 @@ fn b3lyp_force_matches_fd() {
     }
     eprintln!("B3LYP analytic vs FD worst {worst:.2e}");
     assert!(worst < FD_BAR, "{worst:e}");
-    // FLOOR IS TRUNCATION, NOT A FORCE ERROR. The residual (2.3e-9 at h = 1e-4)
-    // is the same for PBE0 and B3LYP, dense and RS-GDF, exxdiv none and ewald:
-    // a functional-independent h^2 term. Artifact hypothesis: a force error
-    // would not shrink with h; truncation shrinks >= 4x per halving (measured 12x: h^2 plus
-    // higher orders).
-    let h2 = 5e-5;
-    let d2 = fd(&H2, 0, 2, h2, [1, 1, 3], "B3LYP", Jk::Dense, ExxDiv::Ewald);
-    let e1 = (g.grad[(0, 2)]
-        - fd(
-            &H2,
-            0,
-            2,
-            1e-4,
-            [1, 1, 3],
-            "B3LYP",
-            Jk::Dense,
-            ExxDiv::Ewald,
-        ))
-    .abs();
-    let e2 = (g.grad[(0, 2)] - d2).abs();
+    // FD FLOOR, MEASURED (component (0,2), signed residual FD - analytic):
+    //   h = 2e-4: +1.08e-8   1e-4: +2.31e-9   5e-5: +1.9e-10   2.5e-5: -2.5e-10
+    // The two largest h give a ratio of 4.7 (c h^2, c ~ 0.23-0.27 Ha/Bohr^3: the
+    // third derivative of the energy along the H-H bond); below h ~ 5e-5 the
+    // residual is the SCF-energy noise eps/(2h) with eps ~ 1.2e-14 Ha (it
+    // changes sign and does not shrink). The 2.31e-9 is the SAME component in
+    // every row (PBE0/B3LYP, dense/RS-GDF, none/ewald): the bond-direction
+    // third derivative is almost purely electrostatic, so it barely depends on
+    // the functional (plain PBE: 2.22e-9); every other component is <= 1.2e-10.
+    // Artifact hypothesis: a force error would not follow h^2; here it does
+    // until the noise floor.
+    let r =
+        |h: f64| fd(&H2, 0, 2, h, [1, 1, 3], "B3LYP", Jk::Dense, ExxDiv::Ewald) - g.grad[(0, 2)];
+    let (r2, r1) = (r(2e-4), r(1e-4));
     eprintln!(
-        "B3LYP FD residual h=1e-4 {e1:.2e}, h=5e-5 {e2:.2e}, ratio {:.2}",
-        e1 / e2
+        "B3LYP (0,2) residual h=2e-4 {r2:+.2e}, h=1e-4 {r1:+.2e}, ratio {:.2}",
+        r2 / r1
     );
-    assert!(e1 / e2 > 3.0, "ratio {}", e1 / e2); // measured 12: >= h^2 (4x), the residual is not a force error
+    assert!(r2 / r1 > 3.5 && r2 / r1 < 6.0, "not h^2: ratio {}", r2 / r1);
 }
 
 /// Range-split RS-GDF (lambda = 1) with a hybrid: the exchange coefficients go
@@ -1053,19 +1048,32 @@ fn smoke_mutants_are_caught() {
 
 // ------------------------------------------------------------------ ignored
 
+/// FD step of the production-grid test. At (40, 110) the energy has a hard
+/// one-step discontinuity of ~9e-11 Ha along x that a step of 5e-5 or more
+/// crosses (the residual of the lateral components then scales as 1/h: 2.2e-7
+/// at 2e-4, 4.4e-7 at 1e-4, 8.8e-7 at 5e-5, PBE0; plain PBE the same, 2.9e-7
+/// .. 1.2e-6, so it is not a hybrid effect); 2.5e-5 stays inside the smooth
+/// window (residual 1e-10), which the SCF noise floor eps/2h ~ 2.4e-10 bounds.
+const H_STEP: f64 = 2.5e-5;
+
 /// Production-class grid (40, 110) and a 2x2x2 mesh (TRIM-only: phases are
 /// real there; the 1x1x3 row carries them), dense AFT PBE0 with Ewald, FD of
 /// the energy.
 #[test]
-#[ignore = "production-class grid + 2x2x2 mesh FD, PBE0 dense; measured 34 s"]
+#[ignore = "production-class grid + 2x2x2 mesh FD, PBE0 dense, all 6 components at h = 2.5e-5; measured 55 s"]
 fn pbe0_force_matches_fd_on_the_production_grid_and_a_2x2x2_mesh() {
     GRID.with(|g| g.set((40, 110)));
     for mesh_n in [[1, 1, 3], [2, 2, 2]] {
         let fx = fixture(&H2, mesh_n, "PBE0", Jk::Dense, ExxDiv::Ewald);
         let g = force(&fx);
         let mut worst = 0.0_f64;
-        for (a, x) in [(0, 2), (1, 1)] {
-            let d = fd(&H2, a, x, 1e-4, mesh_n, "PBE0", Jk::Dense, ExxDiv::Ewald);
+        for (a, x) in (0..2).flat_map(|a| (0..3).map(move |x| (a, x))) {
+            let d = fd(&H2, a, x, H_STEP, mesh_n, "PBE0", Jk::Dense, ExxDiv::Ewald);
+            eprintln!(
+                "  comp ({a},{x}): analytic {:+.9e} FD {d:+.9e} diff {:+.2e}",
+                g.grad[(a, x)],
+                g.grad[(a, x)] - d
+            );
             worst = worst.max((g.grad[(a, x)] - d).abs());
         }
         eprintln!("(40,110) {mesh_n:?}: PBE0 analytic vs FD worst {worst:.2e}");
@@ -1082,7 +1090,8 @@ fn gamma_rsgdf_hybrid(cell: &Cell, f: &str, exxdiv: ExxDiv) -> ferric_pbc::grad:
     let auxp = prep_for(cell, &et_sp_aux());
     let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
     let hc = periodic_hcore(cell, &prep, &hcfg).unwrap();
-    let gdf = RsGdf::build_for_gradient(cell, &prep, &auxp, &hc.s, &kgdf_cfg_of(Jk::Gdf).gdf).unwrap();
+    let gdf =
+        RsGdf::build_for_gradient(cell, &prep, &auxp, &hc.s, &kgdf_cfg_of(Jk::Gdf).gdf).unwrap();
     let mut gc = GammaRksConfig::new(f);
     gc.grid = grid_cfg();
     gc.exxdiv = exxdiv;
@@ -1119,8 +1128,14 @@ fn fit_rows(k: &KRksGradient, g: &ferric_pbc::grad::GammaGradient) -> Vec<(&'sta
         ("fit_orb_lr", parts_diff(&kp.fit_orb_lr, &gp.fit_orb_lr)),
         ("fit_aux_sr", parts_diff(&kp.fit_aux_sr, &gp.fit_aux_sr)),
         ("fit_aux_lr", parts_diff(&kp.fit_aux_lr, &gp.fit_aux_lr)),
-        ("fit_metric_sr", parts_diff(&kp.fit_metric_sr, &gp.fit_metric_sr)),
-        ("fit_metric_lr", parts_diff(&kp.fit_metric_lr, &gp.fit_metric_lr)),
+        (
+            "fit_metric_sr",
+            parts_diff(&kp.fit_metric_sr, &gp.fit_metric_sr),
+        ),
+        (
+            "fit_metric_lr",
+            parts_diff(&kp.fit_metric_lr, &gp.fit_metric_lr),
+        ),
         ("fit_g0", parts_diff(&kp.fit_g0, &gp.fit_g0)),
         ("total", parts_diff(&k.grad, &gp_total(g))),
     ]
@@ -1160,7 +1175,12 @@ fn gamma_rsgdf_anchor_catches_the_fit_scale_mutants() {
     let gam = gamma_rsgdf_hybrid(&cell_of(&H2), "PBE0", ExxDiv::Ewald);
     let fx = fixture(&H2, [1, 1, 1], "PBE0", Jk::Gdf, ExxDiv::Ewald);
     let base = parts_diff(&force(&fx).grad, &gam.grad);
-    for m in [G::ExchJScaled, G::ExchFitUnscaled, G::ExchScaledTwice, G::ExchSpinFactor] {
+    for m in [
+        G::ExchJScaled,
+        G::ExchFitUnscaled,
+        G::ExchScaledTwice,
+        G::ExchSpinFactor,
+    ] {
         let d = parts_diff(&force_mut(&fx, None, Some(m)).grad, &gam.grad);
         eprintln!("{m:?}: miss vs the Gamma RS-GDF gradient {d:.2e} (unmutated {base:.1e})");
         assert!(d > MUTANT_BAR, "{m:?} survives the Gamma anchor: {d:e}");
@@ -1181,7 +1201,10 @@ fn hybrid_net_force_vanishes() {
         let net = (0..3)
             .map(|c| g.grad.column(c).sum().abs())
             .fold(0.0_f64, f64::max);
-        eprintln!("{jk:?}: hybrid net force {net:.2e}, max |F| {:.3e}", max_abs(&g.grad));
+        eprintln!(
+            "{jk:?}: hybrid net force {net:.2e}, max |F| {:.3e}",
+            max_abs(&g.grad)
+        );
         assert!(net < 1e-10, "{jk:?}: {net:e}");
         assert!(max_abs(&g.grad) > 1e-2);
     }
@@ -1196,10 +1219,12 @@ fn dense_kernels_with_rsh_are_refused() {
     let fx = fixture(&H2, [1, 1, 3], "PBE0", Jk::Dense, ExxDiv::Ewald);
     let mut dc = KDenseAftConfig::default();
     dc.rsh = Some(ferric_pbc::rsh::RshParams::from_cam(
-        &ferric_dft::libxc::xc_def_from_name("HSE06").unwrap().cam.unwrap(),
+        &ferric_dft::libxc::xc_def_from_name("HSE06")
+            .unwrap()
+            .cam
+            .unwrap(),
     ));
-    let eri =
-        KDenseAftEri::build(&fx.cell, &fx.prep, &fx.mesh, &fx.hk.s, fx.exxdiv, &dc).unwrap();
+    let eri = KDenseAftEri::build(&fx.cell, &fx.prep, &fx.mesh, &fx.hk.s, fx.exxdiv, &dc).unwrap();
     assert!(eri.rsh().is_some());
     let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
     let e = kpoint_rks_gradient(
