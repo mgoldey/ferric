@@ -805,7 +805,13 @@ fn fd_anchor(jk: Jk, f: &str, bar: f64) {
     assert!(miss < bar, "{jk:?} {f}: {miss:e}");
 }
 
-/// Floor: measured on the uniform grid, central FD h = 1e-4 (see the test log).
+/// Uniform-grid FD step and bar. Floor MEASURED: 1.02e-8 over all nine
+/// components at h = 1e-4 for PBE and LDA, dense and RS-GDF (the central-FD
+/// h^2 truncation: 4.3e-8 at 2e-4, 1.0e-8 at 1e-4, 1.8e-9 at 5e-5,
+/// `uniform_grid_fd_miss_scales_as_h_squared`); the smallest production-wired
+/// mutant misses by 1.2e-2 (NoHessian / NoStrainMoment). The bar 5e-8 is 5x
+/// the floor and 2e5x below the smallest mutant, and equals the k HF stress
+/// FD bar of `pbc_kstress.rs`.
 const FD_H: f64 = 1e-4;
 const FD_BAR: f64 = 5e-8;
 
@@ -856,9 +862,11 @@ fn fd_smoothness_probe_under_strain() {
 /// h = 1e-4 up the h^2 truncation (8e-9 .. 1.6e-7) and, at cutoff 10, the hard
 /// neighbour-mask jump (5e-8 at h = 2e-4 on eps_02) dominate.
 const FD_H_ATOM: f64 = 2.5e-5;
-/// Atom-grid FD bar: the measured floor over all nine components is in the
-/// test log; the smallest production-wired mutant misses by far more (see the
-/// mutant tests).
+/// Atom-grid FD bar. Floor MEASURED over all nine components (h = 2.5e-5,
+/// cutoff 10): 7.0e-9 (`fd_window_probe_all_nine_atom_grid`; 1.5e-9 at 1e-5,
+/// 5.7e-9 at 5e-5, and 2.0e-6 at 1e-4 where eps_11 crosses the mask). The
+/// smallest production-wired mutant misses by 1.2e-2 (NoHessian). The bar is
+/// 4x the floor and 4e5x below the smallest mutant.
 const FD_BAR_ATOM: f64 = 3e-8;
 
 /// (e) FD of the energy on the ATOM-CENTRED grid, PBE (20,50), explicit shared
@@ -1329,5 +1337,342 @@ fn pyscf_case(row: usize) {
             s.sigma[0][0], s.sigma[2][2], s.antisymmetry()
         );
         assert!(d < PYSCF_STRESS_BAR, "{f}: {d:e}");
+    }
+}
+
+// ----------------------------------------------------------- full mutant sweep
+
+const ALL_MUTANTS: [KXcStressMutation; 12] = [
+    KXcStressMutation::NoAo,
+    KXcStressMutation::NoPointMotion,
+    KXcStressMutation::PointSelf,
+    KXcStressMutation::NoWeightDeriv,
+    KXcStressMutation::NoGga,
+    KXcStressMutation::NoHessian,
+    KXcStressMutation::NoStrainMoment,
+    KXcStressMutation::NoPhase,
+    KXcStressMutation::ConjPhase,
+    KXcStressMutation::WrongFactor,
+    KXcStressMutation::NoInvNk,
+    KXcStressMutation::PulayNoVxc,
+];
+
+fn sweep(fx: &Fx, tag: &str) -> Vec<(KXcStressMutation, f64, f64)> {
+    let base = stress(fx, None);
+    ALL_MUTANTS
+        .iter()
+        .map(|&m| {
+            let s = stress(fx, Some(m));
+            let all = mdiff(&s.de_deps, &base.de_deps);
+            // Largest OFF-diagonal miss (volume-only defects have none).
+            let mut off = 0.0_f64;
+            for i in 0..3 {
+                for j in 0..3 {
+                    if i != j {
+                        off = off.max((s.de_deps[i][j] - base.de_deps[i][j]).abs());
+                    }
+                }
+            }
+            eprintln!("{tag}: {m:?}: miss {all:.2e} (off-diagonal {off:.2e})");
+            (m, all, off)
+        })
+        .collect()
+}
+
+fn miss_of(rows: &[(KXcStressMutation, f64, f64)], m: KXcStressMutation) -> (f64, f64) {
+    rows.iter()
+        .find(|r| r.0 == m)
+        .map(|r| (r.1, r.2))
+        .expect("mutant swept")
+}
+
+/// The full sweep with the blind spots ASSERTED (artifact hypotheses: a mutant
+/// that is an identity on a mesh, grid or functional must show exactly 0 there;
+/// a live one must miss by more than the bar). Smallest live miss on the
+/// anchored configuration is printed.
+#[test]
+#[ignore = "full mutant sweep: 12 mutants x 5 configurations (see the #[ignore] timing in the PR)"]
+fn full_mutant_sweep() {
+    // Atom grid, PBE, non-TRIM 1x1x3: every mutant live except none.
+    let fx = fixture(
+        &H2,
+        [1, 1, 3],
+        "PBE",
+        Jk::Dense,
+        atom_grid(20, 50, Some(CUTOFF)),
+    );
+    let rows = sweep(&fx, "atom PBE 1x1x3");
+    let mut smallest = f64::INFINITY;
+    for (m, d, _) in &rows {
+        assert!(*d > MUTANT_BAR, "{m:?} survives on atom PBE 1x1x3: {d:e}");
+        smallest = smallest.min(*d);
+    }
+    eprintln!("smallest mutant miss, atom PBE 1x1x3: {smallest:.2e}");
+
+    // Uniform grid: PointSelf is an IDENTITY (the point is its own anchor),
+    // NoWeightDeriv (the volume term) is diagonal only.
+    let fx = fixture(&H2, [1, 1, 3], "PBE", Jk::Dense, KXcGrid::Uniform([24; 3]));
+    let rows = sweep(&fx, "uniform PBE 1x1x3");
+    assert_eq!(miss_of(&rows, KXcStressMutation::PointSelf).0, 0.0);
+    let (d, off) = miss_of(&rows, KXcStressMutation::NoWeightDeriv);
+    assert!(d > MUTANT_BAR && off == 0.0, "volume term: {d:e} / {off:e}");
+    for m in ALL_MUTANTS {
+        if m != KXcStressMutation::PointSelf {
+            assert!(miss_of(&rows, m).0 > MUTANT_BAR, "{m:?} survives (uniform)");
+        }
+    }
+
+    // LDA: the GGA-only mutants are identities (c = 0).
+    let fx = fixture(
+        &H2,
+        [1, 1, 3],
+        "LDA",
+        Jk::Dense,
+        atom_grid(20, 50, Some(CUTOFF)),
+    );
+    let rows = sweep(&fx, "atom LDA 1x1x3");
+    for m in [
+        KXcStressMutation::NoGga,
+        KXcStressMutation::NoHessian,
+        KXcStressMutation::NoStrainMoment,
+    ] {
+        assert_eq!(miss_of(&rows, m).0, 0.0, "{m:?} is an identity for LDA");
+    }
+
+    // TRIM-only mesh (1x1x2): ConjPhase is an identity (phases are +-1),
+    // NoPhase is live.
+    let fx = fixture(
+        &H2,
+        [1, 1, 2],
+        "PBE",
+        Jk::Dense,
+        atom_grid(20, 50, Some(CUTOFF)),
+    );
+    let rows = sweep(&fx, "atom PBE 1x1x2 (TRIM)");
+    assert_eq!(miss_of(&rows, KXcStressMutation::ConjPhase).0, 0.0);
+    assert!(miss_of(&rows, KXcStressMutation::NoPhase).0 > MUTANT_BAR);
+
+    // One-point mesh: phase and 1/N_k mutants are identities.
+    let fx = fixture(
+        &H2,
+        [1, 1, 1],
+        "PBE",
+        Jk::Dense,
+        atom_grid(20, 50, Some(CUTOFF)),
+    );
+    let rows = sweep(&fx, "atom PBE 1x1x1");
+    for m in [
+        KXcStressMutation::NoPhase,
+        KXcStressMutation::ConjPhase,
+        KXcStressMutation::NoInvNk,
+    ] {
+        assert_eq!(miss_of(&rows, m).0, 0.0, "{m:?} is an identity at k = 0");
+    }
+}
+
+// ------------------------------------------------- further FD / mesh anchors
+
+/// LDA FD on the uniform grid (no GGA terms: the AO strain is the first-moment
+/// term alone), dense AFT, all nine.
+#[test]
+#[ignore = "second all-nine FD (18 SCFs, ~20 s)"]
+fn uniform_grid_lda_stress_matches_fd_all_nine_dense() {
+    fd_anchor(Jk::Dense, "LDA", FD_BAR);
+}
+
+/// RS-GDF J (unsplit): the same FD anchor with the fitted Coulomb. The fit's
+/// own strain is exercised by `pbc_kstress`; here the XC stress sits on the
+/// RS-GDF density/Fock.
+#[test]
+#[ignore = "RS-GDF all-nine FD (18 SCFs with 18 fits)"]
+fn uniform_grid_pbe_stress_matches_fd_all_nine_rsgdf() {
+    fd_anchor(Jk::Gdf, "PBE", FD_BAR);
+}
+
+/// RS-GDF vs dense AFT: the XC parts are J-route independent up to the density
+/// difference; the total differs by a fit-sized amount (not 0, not O(1)).
+#[test]
+#[ignore = "two SCFs + stresses"]
+fn rsgdf_stress_differs_from_dense_by_a_fit_sized_amount() {
+    let grid = KXcGrid::Uniform([24; 3]);
+    let a = stress(
+        &fixture(&H2, [1, 1, 3], "PBE", Jk::Dense, grid.clone()),
+        None,
+    );
+    let b = stress(&fixture(&H2, [1, 1, 3], "PBE", Jk::Gdf, grid), None);
+    let d = mdiff(&a.de_deps, &b.de_deps);
+    eprintln!("dense vs RS-GDF dE/de: {d:.2e}");
+    assert!(d > 1e-9 && d < 1e-2);
+}
+
+/// The 2x2x2 Gamma-centred (TRIM-only) mesh against FD of its own energy: the
+/// uniform grid, so smooth; eight k-points, all real phases.
+#[test]
+#[ignore = "8-point mesh, 18 SCFs"]
+fn uniform_grid_pbe_stress_matches_fd_on_the_2x2x2_mesh_three_components() {
+    let grid = KXcGrid::Uniform([24; 3]);
+    let fx = fixture(&H2, [2, 2, 2], "PBE", Jk::Dense, grid.clone());
+    let s = stress(&fx, None);
+    let mut worst = 0.0_f64;
+    for (i, j) in [(0, 0), (1, 2), (2, 2)] {
+        let ep = energy_on(
+            &strained(&fx.cell, i, j, FD_H),
+            [2, 2, 2],
+            "PBE",
+            Jk::Dense,
+            &grid,
+        );
+        let em = energy_on(
+            &strained(&fx.cell, i, j, -FD_H),
+            [2, 2, 2],
+            "PBE",
+            Jk::Dense,
+            &grid,
+        );
+        worst = worst.max(((ep - em) / (2.0 * FD_H) - s.de_deps[i][j]).abs());
+    }
+    eprintln!("2x2x2 PBE uniform: worst FD miss {worst:.2e}");
+    assert!(worst < FD_BAR, "{worst:e}");
+}
+
+/// The uniform-grid FD miss is the central-FD h^2 truncation (not a missing
+/// term): halving h divides it by four. (Artifact hypothesis: a stress error
+/// would not depend on h.)
+#[test]
+#[ignore = "3 steps x 18 SCFs (~50 s)"]
+fn uniform_grid_fd_miss_scales_as_h_squared() {
+    let grid = KXcGrid::Uniform([24; 3]);
+    let fx = fixture(&H2, [1, 1, 3], "PBE", Jk::Dense, grid.clone());
+    let s = stress(&fx, None);
+    let mut prev = f64::NAN;
+    for h in [2e-4, 1e-4, 5e-5] {
+        let fd = fd_all9(&fx.cell, [1, 1, 3], "PBE", Jk::Dense, &grid, h);
+        let m = mdiff(&fd, &s.de_deps);
+        eprintln!(
+            "h={h:.1e}: worst miss {m:.3e} (ratio to previous {:.2})",
+            prev / m
+        );
+        prev = m;
+    }
+}
+
+// ------------------------------------------------- column rotation (Auto/Off)
+
+/// cc-pVDZ H2, a = 5 Bohr, RS-GDF with cc-pvdz-ri, PBE on a 30^3 uniform grid
+/// (smooth under strain): the cell where the SR column rotation actually runs.
+/// Returns (energy, stress when asked, hcore rotated columns, fit rotated
+/// columns).
+fn rotated_case(
+    cell: &Cell,
+    rot: ferric_pbc::sr_rotation::SrColumnRotation,
+    want_stress: bool,
+) -> (f64, Option<KRksStress>, usize, usize) {
+    let bs = ferric_core::basis::bundled("cc-pvdz").unwrap();
+    let abs = ferric_core::basis::bundled("cc-pvdz-ri").unwrap();
+    let prep = prep_for(cell, &bs);
+    let aux = prep_for(cell, &abs);
+    let mesh = KPointMesh::gamma_centred(cell, [1, 1, 3]).unwrap();
+    let mut cfg = KRksConfig::new(cell, ExxDiv::None, "PBE");
+    cfg.krhf.hcore = PeriodicHcoreConfig::with_omega(OMEGA).with_sr_column_rotation(rot);
+    cfg.krhf.scf.energy_conv = 1e-13;
+    cfg.krhf.scf.grad_conv = 1e-10;
+    cfg.krhf.scf.max_iter = 300;
+    cfg.krhf.jk = KJkKind::RsGdf;
+    let mut kc = kgdf_cfg();
+    kc.gdf.sr_column_rotation = rot;
+    cfg.krhf.rsgdf = kc.clone();
+    let grid = PeriodicGrid::uniform(cell, [30; 3]).unwrap();
+    let res = solve_krks_on_grid(cell, &prep, Some(&aux), &mesh, &grid, &cfg).unwrap();
+    if !want_stress {
+        return (res.scf.energy, None, 0, 0);
+    }
+    let hk = periodic_hcore_kpts(cell, &prep, &mesh, &cfg.krhf.hcore).unwrap();
+    let gdf = KRsGdf::build(cell, &prep, &aux, &mesh, &hk.s, &kc).unwrap();
+    let s = kpoint_rks_stress(
+        cell,
+        &prep,
+        &mesh,
+        &cfg.krhf.hcore,
+        &hk,
+        KStressJk::RsGdf(KRsGdfGradSource {
+            gdf: &gdf,
+            cfg: &kc,
+            aux: &aux,
+        }),
+        &res.scf,
+        "PBE",
+        &scfg(&KXcGrid::Uniform([30; 3]), None),
+    )
+    .unwrap();
+    let hc = s.hf.hcore_rotated_columns;
+    let fc = s.hf.fit_checks.map_or(0, |c| c.rotated_columns);
+    (res.scf.energy, Some(s), hc, fc)
+}
+
+/// The strain walks follow the walks the energy ran: with the rotation ON
+/// (Auto) the stress matches FD of the ROTATED energy; with Off it matches FD
+/// of the unrotated one; the two stresses agree to the screening precision
+/// (the rotated-vs-unrotated defects are blind at the default screen, as in
+/// `pbc_kstress.rs`).
+#[test]
+#[ignore = "cc-pVDZ RS-GDF, 2 modes x (1 + 6) SCFs; see the timing in the PR"]
+fn rotated_and_unrotated_sr_walks_are_consistent_with_the_energy() {
+    use ferric_pbc::sr_rotation::SrColumnRotation::{Auto, Off};
+    let cell = Cell::new(hydrogens(&[[0.3, 0.2, 0.1], [0.35, 0.12, 1.5]]), cubic(5.0)).unwrap();
+    let mut st = Vec::new();
+    for (name, rot) in [("Auto", Auto), ("Off", Off)] {
+        let (_, s, hc, fc) = rotated_case(&cell, rot, true);
+        let s = s.unwrap();
+        eprintln!("{name}: rotated columns hcore {hc} fit {fc}");
+        assert_eq!(hc > 0, name == "Auto");
+        assert_eq!(fc > 0, name == "Auto");
+        let mut worst = 0.0_f64;
+        for (i, j) in [(2, 2), (0, 2), (1, 0)] {
+            let h = FD_H;
+            let ep = rotated_case(&strained(&cell, i, j, h), rot, false).0;
+            let em = rotated_case(&strained(&cell, i, j, -h), rot, false).0;
+            let d = s.de_deps[i][j] - (ep - em) / (2.0 * h);
+            eprintln!("  ({i},{j}) h={h:e} diff {d:.3e}");
+            worst = worst.max(d.abs());
+        }
+        eprintln!("{name}: analytic vs FD of its own energy {worst:.2e}");
+        assert!(worst < FD_BAR, "{name}: {worst:e}");
+        st.push(s.de_deps);
+    }
+    let d = mdiff(&st[0], &st[1]);
+    eprintln!("Auto vs Off dE/de difference {d:.2e}");
+    assert!(d < 1e-6);
+}
+
+// ------------------------------------------- antisymmetric part vs grid size
+
+/// The antisymmetric part of the atom-grid stress against the grid size
+/// (ROTATION non-invariance of the lab-fixed Lebedev grid; module doc of
+/// `kxcstress`). It must shrink as the grid is refined and be roundoff on the
+/// uniform grid. Artifact hypothesis: a bug in the point-anchor terms would
+/// not shrink with the grid.
+#[test]
+#[ignore = "4 SCFs up to (75,302) grids"]
+fn atom_grid_antisymmetry_shrinks_with_the_grid() {
+    let mut prev = f64::INFINITY;
+    for (nr, na) in [(20, 50), (30, 110), (40, 110), (75, 302)] {
+        let fx = fixture(
+            &H2,
+            [1, 1, 3],
+            "PBE",
+            Jk::Dense,
+            atom_grid(nr, na, Some(CUTOFF)),
+        );
+        let s = stress(&fx, None);
+        eprintln!(
+            "({nr},{na}) PBE 1x1x3: sigma antisymmetry {:.3e}, E_xc {:.10}, {} points",
+            s.antisymmetry(),
+            s.e_xc,
+            s.n_grid_points
+        );
+        if (nr, na) == (75, 302) {
+            assert!(s.antisymmetry() < prev);
+        }
+        prev = prev.min(s.antisymmetry());
     }
 }
