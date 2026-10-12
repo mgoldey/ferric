@@ -234,7 +234,10 @@ def _fd(mol, mf0, aux, full_df=False):
             m = mol.copy()
             m.set_geom_(x, unit="Bohr")
             grads.append(
-                _rhf(m, aux, dm0=dm0, full_df=full_df).nuc_grad_method().kernel().ravel()
+                _rhf(m, aux, dm0=dm0, full_df=full_df)
+                .nuc_grad_method()
+                .kernel()
+                .ravel()
             )
         h[:, b] = (grads[0] - grads[1]) / (2.0 * FD_STEP)
     asym = float(np.max(np.abs(h - h.T)))
@@ -253,9 +256,7 @@ def _frequencies(mol, h, masses):
     return sorted(float(v) for v in np.asarray(res["freq_wavenumber"]).real)
 
 
-def _write_compact(
-    system: str, basis_name: str, payload: dict, row: str = ROW
-) -> Path:
+def _write_compact(system: str, basis_name: str, payload: dict, row: str = ROW) -> Path:
     """common.write_reference's contract (provenance required), compact JSON."""
     if "provenance" not in payload:
         raise ValueError("refusing to write a reference with no provenance block")

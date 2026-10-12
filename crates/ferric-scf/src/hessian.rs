@@ -1008,6 +1008,29 @@ pub fn analytic_uhf_hessian_available(
     available(Reference::Uhf, mol, prep, op, config)
 }
 
+/// With both J and K fitted no four-centre integral is differentiated twice
+/// (the skeleton is the DF stencil, the first-order Fock matrices the DF
+/// builders), so the four-centre second-derivative engine is not required.
+fn fully_fitted(reference: Reference, config: &RhfConfig) -> bool {
+    let named = |n: &Option<String>| n.as_deref().is_some_and(|v| !v.is_empty());
+    reference == Reference::Rhf && named(&config.df_j_aux) && named(&config.df_k_aux)
+}
+
+/// Build the one- and (when `four_centre`) two-electron second-derivative
+/// engines: the probe of `available`.
+fn second_derivative_engines(
+    prep: &PreparedBasis,
+    op: Operator,
+    four_centre: bool,
+) -> Result<(), FerricError> {
+    Engine::new_1e_deriv2(ffi::OP_NUCLEAR, prep, 1e-14)?;
+    Engine::new_1e_deriv2(ffi::OP_OVERLAP, prep, 1e-14)?;
+    if four_centre {
+        Engine::new_2e_deriv2(op, prep, 1e-14)?;
+    }
+    Ok(())
+}
+
 fn available(
     reference: Reference,
     mol: &Molecule,
@@ -1026,21 +1049,7 @@ fn available(
         return Err(refusal(reference, what));
     }
     ri_engine_check(reference, mol, prep, op, config)?;
-    // With both J and K fitted no four-centre integral is differentiated twice
-    // (the skeleton is the DF stencil, the first-order Fock matrices the DF
-    // builders), so the four-centre second-derivative engine is not required.
-    let fully_fitted = reference == Reference::Rhf
-        && config.df_j_aux.as_deref().is_some_and(|n| !n.is_empty())
-        && config.df_k_aux.as_deref().is_some_and(|n| !n.is_empty());
-    let engines = Engine::new_1e_deriv2(ffi::OP_NUCLEAR, prep, 1e-14)
-        .and_then(|_| Engine::new_1e_deriv2(ffi::OP_OVERLAP, prep, 1e-14))
-        .and_then(|_| {
-            if fully_fitted {
-                Ok(())
-            } else {
-                Engine::new_2e_deriv2(op, prep, 1e-14).map(|_| ())
-            }
-        });
+    let engines = second_derivative_engines(prep, op, !fully_fitted(reference, config));
     engines.map(|_| ()).map_err(|e| {
         FerricError::General(format!(
             "analytic {} Hessian: libint2 cannot build second-derivative engines for \
@@ -2008,8 +2017,6 @@ impl<'a> TwoElectronBuilder<'a> {
         ctx: &'a ParallelContext,
         prep: &'a PreparedBasis,
         bounds: &'a SchwarzBounds,
-        df_j: Option<crate::df_j::DfJ<'static>>,
-        df_k: Option<crate::df_k::DfK<'static>>,
     ) -> Result<Self, FerricError> {
         let pool = EnginePool::new(
             bounds.op,
@@ -2021,9 +2028,21 @@ impl<'a> TwoElectronBuilder<'a> {
             prep,
             bounds,
             pool,
-            df_j: df_j.map(std::cell::RefCell::new),
-            df_k: df_k.map(std::cell::RefCell::new),
+            df_j: None,
+            df_k: None,
         })
+    }
+
+    /// Replace the exact Coulomb and/or exchange matrix of `G` by the SCF's
+    /// own fitted builders.
+    fn fitted(
+        mut self,
+        df_j: Option<crate::df_j::DfJ<'static>>,
+        df_k: Option<crate::df_k::DfK<'static>>,
+    ) -> Self {
+        self.df_j = df_j.map(std::cell::RefCell::new);
+        self.df_k = df_k.map(std::cell::RefCell::new);
+        self
     }
 
     /// Exact `(J(D), K(D))` for a symmetric `D`.
@@ -2108,7 +2127,7 @@ fn cpks_response(
     let h1_mo = frame.to_mo_all(&first.f1[0]);
     let s1_mo = frame.to_mo_all(&first.s1);
 
-    let g = TwoElectronBuilder::new(ctx, prep, bounds, df_j, df_k)?;
+    let g = TwoElectronBuilder::new(ctx, prep, bounds)?.fitted(df_j, df_k);
     let mut sols = Vec::with_capacity(h1_mo.len());
     for (x, (h1, s1)) in h1_mo.iter().zip(&s1_mo).enumerate() {
         sols.push(solve_cphf_one(&g, &frame, h1, s1).map_err(|e| at_coordinate(x, e))?);
@@ -2140,7 +2159,7 @@ fn ucphf_response(
         frames[1].to_mo_all(&first.s1),
     ];
 
-    let g = TwoElectronBuilder::new(ctx, prep, bounds, None, None)?;
+    let g = TwoElectronBuilder::new(ctx, prep, bounds)?;
     let mut sols: [Vec<CphfSolution>; 2] = [Vec::new(), Vec::new()];
     for x in 0..first.s1.len() {
         let [sa, sb] = solve_ucphf_one(

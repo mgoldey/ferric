@@ -50,7 +50,7 @@ use ferric_scf::hessian::{rhf_hessian, rhf_hessian_parts, RhfHessianParts};
 use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
-use ndarray::{s, Array1, Array2};
+use ndarray::{s, Array2};
 use ndarray_linalg::{Eigh, UPLO};
 
 const WATER_DISTORTED: &str = "3\nH2O distorted off C2v\n\
@@ -96,8 +96,6 @@ struct Setup {
     bounds: SchwarzBounds,
     rhf: ScfResult,
     cfg: RhfConfig,
-    basis: String,
-    aux: String,
 }
 
 fn setup(mol: &Molecule, basis_name: &str, j_aux: &str, k_aux: &str) -> Setup {
@@ -121,8 +119,6 @@ fn setup(mol: &Molecule, basis_name: &str, j_aux: &str, k_aux: &str) -> Setup {
         bounds,
         rhf,
         cfg,
-        basis: basis_name.to_string(),
-        aux: k_aux.to_string(),
     }
 }
 
@@ -868,8 +864,6 @@ fn setup_mixed(basis_name: &str, j_aux: &str, k_aux: &str) -> Setup {
         bounds,
         rhf,
         cfg,
-        basis: basis_name.to_string(),
-        aux: k_aux.to_string(),
     }
 }
 
