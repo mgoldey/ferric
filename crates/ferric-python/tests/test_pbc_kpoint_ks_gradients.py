@@ -44,9 +44,13 @@ from test_pbc_kpoint_gradients import (  # noqa: E402,F401  (fixtures re-exporte
 )
 
 FD_H = 1e-4
-FD_BAR = 2e-6
-# 10 Bohr, written in Angstrom (the binding's unit for neighbour_cutoff).
-CUTOFF = 10.0 * BOHR_IN_ANGSTROM
+FD_BAR = 2e-8
+# 14 Bohr, written in Angstrom (the binding's unit for neighbour_cutoff). Not the
+# default (10 Bohr in this 4 Bohr cell): a force that dropped the energy's cutoff
+# moves by ~3e-6, far above the bar (FD_BAR = 2e-8 is ~10x the measured 1.5e-9 to
+# 2.4e-9 h^2 residual of every fixture here). At 10 Bohr a ~9e-11 Ha one-step energy
+# discontinuity is crossed by the x displacement and fakes a 4e-7 miss.
+CUTOFF = 14.0 * BOHR_IN_ANGSTROM
 GRID = dict(n_radial=40, n_angular=110, neighbour_cutoff=CUTOFF)
 SCF = dict(energy_conv=1e-13, grad_conv=1e-10, max_iter=400)
 
@@ -92,6 +96,7 @@ def test_gradient_is_none_unless_requested_and_does_not_move_the_energy(basis):
         ("PBE", "none"),
         ("PBE0", "ewald"),
         ("PBE0", "none"),
+        ("B3LYP", "ewald"),
     ],
 )
 def test_force_matches_fd_of_own_k_energy(basis, functional, exx):
@@ -170,17 +175,17 @@ def test_memory_budget_smaller_than_the_retained_objects_is_a_typed_error(basis)
     # The retained hcore and J/K count against memory_budget_gb; a budget that
     # covers only them leaves ~1 byte for the derivative, which must fail its
     # ledger with a typed error instead of running unbounded (budget 0 would
-    # mean "unset").
-    with pytest.raises((ValueError, RuntimeError), match="budget|memory"):
-        _krks(
-            H2_ATOMS,
-            basis,
-            "PBE",
-            with_gradient=True,
-            jk="rsgdf",
-            auxbasis="cc-pvdz-ri",
-            memory_budget_gb=1e-9,
-        )
+    # mean "unset"). 1e6 bytes: the energy-only run fits at that budget (it must
+    # SUCCEED, so the failure below is the derivative's, not the SCF build's);
+    # the gradient run has 1e6 minus the retained bytes left and fails on its
+    # first allocation.
+    kw = dict(jk="rsgdf", auxbasis="cc-pvdz-ri", memory_budget_gb=1e6 / 2**30)
+    assert _krks(H2_ATOMS, basis, "PBE", **kw).converged
+    with pytest.raises(
+        (ValueError, RuntimeError),
+        match=r"byte budget\) requires|of the \d+ byte budget",
+    ):
+        _krks(H2_ATOMS, basis, "PBE", with_gradient=True, **kw)
 
 
 def test_refusals_have_exact_wording(basis):
@@ -201,7 +206,13 @@ def test_refusals_have_exact_wording(basis):
             range_split=True,
             with_gradient=True,
         )
-    with pytest.raises(ValueError, match="meta-GGA"):
+    with pytest.raises(
+        ValueError,
+        match=r'^run_rks_kpts: functional "SCAN": General error: periodic DFT: meta-GGA is not supported: SCAN: the tau path was not prototyped periodically\. k-point RKS supports LDA, GGA and global-hybrid functionals only$',
+    ):
         _krks(H2_ATOMS, basis, "SCAN", with_gradient=True)
-    with pytest.raises(ValueError, match="range-separated"):
+    with pytest.raises(
+        ValueError,
+        match=r'^run_rks_kpts: functional "HSE06": .*range-separated.*\. k-point RKS supports LDA, GGA and global-hybrid functionals only$',
+    ):
         _krks(H2_ATOMS, basis, "HSE06", with_gradient=True)
