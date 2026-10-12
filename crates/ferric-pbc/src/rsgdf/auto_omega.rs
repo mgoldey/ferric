@@ -42,7 +42,7 @@
 //! are 6-thread-wall seconds; the choice depends on their RATIOS, which the
 //! 1-thread timings of the issue (dry ice 98.5 s vs 55.4 s) keep to ~10%.
 //! The model is for the Gamma-point energy build; the k-point builds (full
-//! sphere, different walk) and the derivative builds (unrotated walk) are
+//! sphere, different walk) and the derivative builds (no range split) are
 //! not calibrated, and the bindings refuse `"auto"` there.
 
 use super::split::sr_triplet_estimate;

@@ -68,8 +68,13 @@
 //! refused with a typed error naming the missing piece. The SR column rotation is
 //! differentiated: when the energy builds ran the rotated SR walks (hcore and
 //! fit) the strain walks run on the rotated shells with `Tᵀ W T` residue
-//! weights, so the stress is that of the energy the SCF used (the config must
-//! agree with the build, [`crate::kgrad`]'s refusals apply).
+//! weights, so the stress follows the walk the SCF's energy ran (the config
+//! must agree with the build, [`crate::kgrad`]'s refusals apply). The SR
+//! derivative walks use the Gaussian-nucleus exponent `min(1e9, cfg)` rather
+//! than the energy walk's nuclear model, so neither the rotated nor the
+//! unrotated derivative is the exact derivative of the SCREENED energy: both
+//! sit within the screening-and-nucleus-model floor of it (stress rotated vs
+//! unrotated 6.5e-9 Ha at hcore precision 1e-9, shrinking with the screen).
 //!
 //! ECP ([`KStressParts::ecp`]): the Gamma ECP strain walk
 //! ([`crate::ecp::periodic_ecp_strain`]) with the SR walk's image weight
