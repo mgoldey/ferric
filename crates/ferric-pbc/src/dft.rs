@@ -1398,6 +1398,146 @@ impl LatticeAoHess<'_> {
     }
 }
 
+/// Bloch AOs and their image-resolved strain moments on one point chunk, one
+/// entry per k ([`LatticeAoHess::eval_bloch_strain`]).
+pub(crate) struct BlochAoStrain {
+    /// `chi[k]`: `(nbf, np)`.
+    pub(crate) chi: Vec<Array2<Complex64>>,
+    /// `dchi[k]`: `(3, nbf, np)`; `(3, nbf, 0)` without `hess`.
+    pub(crate) dchi: Vec<Array3<Complex64>>,
+    /// `m1[k][(a, b, μ, g)] = Σ_L e^{ik·L} ∂_aχ_μ(r_g − X_L) (O_g − X_L)_b`
+    /// `(3, 3, nbf, np)` = `dφ^k_μ(r_g)/dε_ab` at fixed fractional `k`.
+    pub(crate) m1: Vec<Array4<Complex64>>,
+    /// `m2[k][(3i + a, b, μ, g)] = Σ_L e^{ik·L} ∂_i∂_aχ_μ(r_g − X_L) (O_g − X_L)_b`
+    /// `(9, 3, nbf, np)` = `d(∂_iφ^k_μ)/dε_ab`; empty without `hess`.
+    pub(crate) m2: Vec<Array4<Complex64>>,
+}
+
+impl LatticeAoHess<'_> {
+    /// Bloch-phased AOs and strain moments at `pts` with anchors `anchors`
+    /// (`O_g`: the home atom of an atom-centred grid point, the point itself on
+    /// a uniform grid) for every wave vector in `kpts`: the complex twin of
+    /// [`Self::eval_strain`] with the phase `e^{ik·L}` applied once per image
+    /// (the phase is strain-invariant at fixed fractional k, so it multiplies
+    /// the moments unchanged). Same live-shell list, extents and translations
+    /// as [`Self::eval`] and [`Self::eval_bloch`]. `hess` adds `∇φ` and the
+    /// Hessian moments (GGA).
+    pub(crate) fn eval_bloch_strain(
+        &self,
+        pts: &[[f64; 3]],
+        anchors: &[[f64; 3]],
+        kpts: &[[f64; 3]],
+        phase: BlochPhase,
+        hess: bool,
+    ) -> Result<BlochAoStrain, FerricError> {
+        let np = pts.len();
+        let nbf = self.nbf;
+        let nk = kpts.len();
+        if anchors.len() != np {
+            return Err(FerricError::General(format!(
+                "LatticeAoHess::eval_bloch_strain: {np} points but {} anchors",
+                anchors.len()
+            )));
+        }
+        let nd = if hess { np } else { 0 };
+        let mut chi = vec![Array2::<Complex64>::zeros((nbf, np)); nk];
+        let mut dchi = vec![Array3::<Complex64>::zeros((3, nbf, nd)); nk];
+        let mut m1 = vec![Array4::<Complex64>::zeros((3, 3, nbf, np)); nk];
+        let mut m2 = if hess {
+            vec![Array4::<Complex64>::zeros((9, 3, nbf, np)); nk]
+        } else {
+            Vec::new()
+        };
+        if np == 0 {
+            return Ok(BlochAoStrain { chi, dchi, m1, m2 });
+        }
+        let m = np as f64;
+        let cen = [
+            pts.iter().map(|p| p[0]).sum::<f64>() / m,
+            pts.iter().map(|p| p[1]).sum::<f64>() / m,
+            pts.iter().map(|p| p[2]).sum::<f64>() / m,
+        ];
+        let rad = pts.iter().map(|p| dist3(p, &cen)).fold(0.0, f64::max);
+        let mut table: Vec<Vec<Complex64>> = vec![Vec::new(); self.trans.len()];
+        let mut live: Vec<(usize, [f64; 3], usize)> = Vec::new();
+        for (il, l) in self.trans.iter().enumerate() {
+            for (s, sh) in self.shells.iter().enumerate() {
+                let c = [
+                    sh.center[0] + l[0],
+                    sh.center[1] + l[1],
+                    sh.center[2] + l[2],
+                ];
+                if dist3(&c, &cen) <= rad + self.ext[s] {
+                    if table[il].is_empty() {
+                        table[il] = kpts
+                            .iter()
+                            .map(|k| {
+                                let a = k[0] * l[0] + k[1] * l[1] + k[2] * l[2];
+                                match phase {
+                                    BlochPhase::True => Complex64::new(a.cos(), a.sin()),
+                                    BlochPhase::None => Complex64::new(1.0, 0.0),
+                                    BlochPhase::Conj => Complex64::new(a.cos(), -a.sin()),
+                                }
+                            })
+                            .collect();
+                    }
+                    live.push((s, c, il));
+                }
+            }
+        }
+        let mut buf = [0.0_f64; 15];
+        let mut gbuf = [[0.0_f64; 15]; 3];
+        let mut hbuf = [[0.0_f64; 15]; 9];
+        for (g, p) in pts.iter().enumerate() {
+            let o = anchors[g];
+            for &(s, c, il) in &live {
+                let (dx, dy, dz) = (p[0] - c[0], p[1] - c[1], p[2] - c[2]);
+                if dx * dx + dy * dy + dz * dz > self.ext[s] * self.ext[s] {
+                    continue;
+                }
+                let rel = [o[0] - c[0], o[1] - c[1], o[2] - c[2]];
+                let sh = &self.shells[s];
+                let n = num_functions(sh.l, sh.pure);
+                buf.fill(0.0);
+                for row in gbuf.iter_mut() {
+                    row.fill(0.0);
+                }
+                for row in hbuf.iter_mut() {
+                    row.fill(0.0);
+                }
+                eval_shell_grad_hess(sh, dx, dy, dz, &mut buf[..n], &mut gbuf, &mut hbuf)?;
+                let off = self.offsets[s];
+                for (k, f) in table[il].iter().enumerate() {
+                    for i in 0..n {
+                        let mu = off + i;
+                        chi[k][(mu, g)] += *f * buf[i];
+                        for a in 0..3 {
+                            let da = gbuf[a][i];
+                            if hess {
+                                dchi[k][(a, mu, g)] += *f * da;
+                            }
+                            for b in 0..3 {
+                                m1[k][(a, b, mu, g)] += *f * (da * rel[b]);
+                            }
+                        }
+                        if hess {
+                            for kk in 0..3 {
+                                for a in 0..3 {
+                                    let h = hbuf[kk * 3 + a][i];
+                                    for b in 0..3 {
+                                        m2[k][(3 * kk + a, b, mu, g)] += *f * (h * rel[b]);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(BlochAoStrain { chi, dchi, m1, m2 })
+    }
+}
+
 /// Resolve a functional name for the periodic path: `(XcDef, exact-exchange
 /// fraction)`. Refuses RSH, meta-GGA, VV10 and scaled composites (double
 /// hybrids) by name.

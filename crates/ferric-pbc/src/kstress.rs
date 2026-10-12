@@ -144,7 +144,7 @@ use crate::kdense_aft::KDenseAftEri;
 pub use crate::kgrad::FOCK_CONSISTENCY_BAR;
 use crate::kgrad::{
     check_fock, check_inputs, cr, ecp_presence, fold_complex, fold_real, herm, jk_build,
-    residue_trace, KFitChecks, KGradJk, KRsGdfGradSource, KSpins,
+    residue_trace, scaled_exch_terms, KFitChecks, KGradJk, KRsGdfGradSource, KSpins,
 };
 use crate::kpts::{lattice_coords, KPointMesh};
 use crate::kscf::KScfResult;
@@ -1025,7 +1025,7 @@ fn mesh_madelung(cell: &Cell, mesh: &KPointMesh, exxdiv: ExxDiv) -> Result<f64, 
 }
 
 /// The source in the force module's form (one J/K builder for both).
-fn grad_jk<'a>(jk: &KStressJk<'a>) -> KGradJk<'a> {
+pub(crate) fn grad_jk<'a>(jk: &KStressJk<'a>) -> KGradJk<'a> {
     match jk {
         KStressJk::Dense(e) => KGradJk::Dense(e),
         KStressJk::RsGdf(s) => KGradJk::RsGdf(*s),
@@ -1035,7 +1035,7 @@ fn grad_jk<'a>(jk: &KStressJk<'a>) -> KGradJk<'a> {
 /// The typed refusals shared by every entry point: a range-separated dense
 /// kernel and an inconsistent range split (a range-split RS-GDF build is
 /// supported; so is an ECP).
-fn refuse_unsupported(who: &str, jk: &KStressJk<'_>) -> Result<(), FerricError> {
+pub(crate) fn refuse_unsupported(who: &str, jk: &KStressJk<'_>) -> Result<(), FerricError> {
     if let KStressJk::Dense(e) = jk {
         if e.rsh().is_some() {
             return Err(FerricError::General(format!(
@@ -1134,6 +1134,7 @@ pub fn kpoint_rhf_stress(
         &gj,
         KSpins::Restricted { d, f },
         vm,
+        1.0,
         cfg,
         &mut ledger,
     )?;
@@ -1194,6 +1195,7 @@ pub fn kpoint_uhf_stress(
         &gj,
         KSpins::Unrestricted { da, db, fa, fb },
         vm,
+        1.0,
         cfg,
         &mut ledger,
     )?;
@@ -1202,9 +1204,13 @@ pub fn kpoint_uhf_stress(
 }
 
 /// Assemble the k-point stress from the per-spin `D(k)`/`F(k)`; `vm` is the
-/// Madelung shift of the energy.
+/// Madelung shift of the energy and `exch_scale` the exact-exchange fraction
+/// `a` ([`crate::kgrad`]'s convention: `1` is Hartree-Fock, bitwise the
+/// unscaled terms; `0` is no exchange at all: the K strain walks (dense and
+/// fitted) are skipped and the Madelung M-term and its strain vanish; other
+/// values are not validated and not exposed).
 #[allow(clippy::too_many_arguments)]
-fn assemble(
+pub(crate) fn assemble(
     cell: &Cell,
     prep: &PreparedBasis,
     mesh: &KPointMesh,
@@ -1213,6 +1219,7 @@ fn assemble(
     jk: &KGradJk<'_>,
     spins: KSpins,
     vm: f64,
+    exch_scale: f64,
     cfg: &KStressConfig,
     ledger: &mut Ledger,
 ) -> Result<KStress, FerricError> {
@@ -1238,11 +1245,12 @@ fn assemble(
     let omega = hcore_cfg.omega;
     let vol = cell.volume();
     let c0 = PI / (omega * omega * vol);
-    let vm_m = if is(KStressMutation::GammaMadelung) && vm != 0.0 {
-        madelung_constant(cell)?
-    } else {
-        vm
-    };
+    let vm_m = exch_scale
+        * if is(KStressMutation::GammaMadelung) && vm != 0.0 {
+            madelung_constant(cell)?
+        } else {
+            vm
+        };
 
     // --- The forces' overlap weights M(k), split into its three pieces.
     let w_pulay = fold_real(
@@ -1276,7 +1284,7 @@ fn assemble(
     let fit = match jk {
         KGradJk::Dense(_) => None,
         KGradJk::RsGdf(src) => Some(fit_pass(
-            src, cell, prep, mesh, s_k, &dtot, &spins, cfg, ledger,
+            src, cell, prep, mesh, s_k, &dtot, &spins, exch_scale, cfg, ledger,
         )?),
     };
     let w_g0 = fit.as_ref().map(|f| fold_real(&f.mg0, &ph.d, 1.0));
@@ -1341,6 +1349,7 @@ fn assemble(
             &delta_true,
             &ph,
             ft_terms,
+            exch_scale,
             mutation,
             ledger,
         )?;
@@ -1420,10 +1429,10 @@ fn assemble(
         }
     }
     t_m *= inv_nk;
-    if vm != 0.0 && !is(KStressMutation::NoMadelung) {
-        parts.madelung = scaled(&vm_strain, -0.5 * t_m);
+    if vm != 0.0 && exch_scale != 0.0 && !is(KStressMutation::NoMadelung) {
+        parts.madelung = scaled(&vm_strain, -0.5 * exch_scale * t_m);
     }
-    let e_madelung = -0.5 * vm * t_m;
+    let e_madelung = -0.5 * exch_scale * vm * t_m;
 
     let de_deps = parts.total();
     if de_deps.iter().flatten().any(|v| !v.is_finite()) {
@@ -1470,11 +1479,12 @@ fn fit_pass(
     s_k: &[Array2<C64>],
     dtot: &[Array2<C64>],
     spins: &KSpins,
+    exch_scale: f64,
     cfg: &KStressConfig,
     ledger: &mut Ledger,
 ) -> Result<crate::rsgdf::kpoint::kderiv::KFitGrad, FerricError> {
     let is = |m: KStressMutation| cfg.mutation == Some(m);
-    let exch = spins.exch_terms();
+    let exch = scaled_exch_terms(spins, exch_scale);
     let fm = KFitMutation {
         rot: KRotKind::defect(rot_kind(cfg.mutation)),
         aux_phase: is(KStressMutation::FitAuxPhase),
@@ -1537,6 +1547,7 @@ fn dense_two_electron_strain(
     delta_true: &[Array2<C64>],
     ph: &Phases,
     terms: PairFtStrainTerms,
+    exch_scale: f64,
     mutation: Option<KStressMutation>,
     ledger: &mut Ledger,
 ) -> Result<DenseStrain, FerricError> {
@@ -1557,7 +1568,7 @@ fn dense_two_electron_strain(
         &format!("k stress ERI K list (|K| <= {gcut:.3}, |q| <= {qmax:.3})"),
         gvector_list_bytes(cell, gcut + qmax)?.saturating_mul(2),
     )?;
-    let exch = spins.exch_terms();
+    let exch = scaled_exch_terms(spins, exch_scale);
     let c_k = -1.0 / (2.0 * vol * (nk * nk) as f64);
     let mut out = DenseStrain {
         coulomb: ZERO3,
@@ -1571,6 +1582,10 @@ fn dense_two_electron_strain(
     let extra_per_g = bytes_of(((nr + 4) * n * n) as u64, 16);
     for iq in 0..nk {
         let (q, mq) = mesh.q_class(iq);
+        // Without exchange only the q = 0 Coulomb class contributes.
+        if exch.is_empty() && mq != [0, 0, 0] {
+            continue;
+        }
         let qn = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2]).sqrt();
         let ks: Vec<[f64; 3]> = cell
             .gvectors(gcut + qn)?
@@ -1622,6 +1637,9 @@ fn dense_two_electron_strain(
                                     (0.5 * dv(a, b) * rho2 + v * (rho.conj() * drho).re) / vol;
                             }
                         }
+                    }
+                    if exch.is_empty() {
+                        continue;
                     }
                     // Exchange: Yt_r = Σ_k' e^{ik'·t_r} Σ_s D_s(k') P^{k'H} D_s(k'−q).
                     let mut yt: Vec<Array2<C64>> = (0..nr).map(|_| Array2::zeros((n, n))).collect();

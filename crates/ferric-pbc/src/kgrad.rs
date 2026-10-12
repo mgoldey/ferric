@@ -963,7 +963,7 @@ impl ExchScales {
 
 /// The exchange terms `Σ_s c D_s X D_s` of `spins`, coefficients scaled by the
 /// exchange fraction (`1` is bitwise the unscaled terms; empty for `0`).
-fn scaled_exch_terms(spins: &KSpins, exch_scale: f64) -> Vec<(f64, &[Array2<C64>])> {
+pub(crate) fn scaled_exch_terms(spins: &KSpins, exch_scale: f64) -> Vec<(f64, &[Array2<C64>])> {
     if exch_scale == 0.0 {
         return Vec::new();
     }

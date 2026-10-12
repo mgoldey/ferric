@@ -400,7 +400,7 @@ struct GridXc<'a> {
 }
 
 /// `ρ`, `∇ρ`, `σ` of one chunk (the arithmetic of `KPeriodicXc::chunk_density`).
-fn chunk_density(
+pub(crate) fn chunk_density(
     d: &[Array2<C64>],
     chi: &[Array2<C64>],
     dchi: &[Array3<C64>],
@@ -437,7 +437,46 @@ fn chunk_density(
     DensityGrid { rho, grad, sigma }
 }
 
-fn conj(m: &Array2<C64>) -> Array2<C64> {
+/// `V_xc(k)` of one chunk from the Bloch AOs, the point weights, the gated
+/// `v_ρ` (`vr`) and the gated GGA vector `c = 2 v_σ ∇ρ` (the arithmetic of
+/// `KPeriodicXc::build`; shared by the force and the stress).
+pub(crate) fn chunk_vxc(
+    chi: &[Array2<C64>],
+    dchi: &[Array3<C64>],
+    w: &[f64],
+    vr: &[f64],
+    c: &Array2<f64>,
+    gga: bool,
+) -> Vec<Array2<C64>> {
+    let nk = chi.len();
+    let np = w.len();
+    let a: Vec<f64> = (0..np).map(|g| w[g] * vr[g]).collect();
+    let mut v: Vec<Array2<C64>> = Vec::with_capacity(nk);
+    for k in 0..nk {
+        let scale = |fac: &[f64]| {
+            let mut m = conj(&chi[k]);
+            for g in 0..np {
+                m.column_mut(g).mapv_inplace(|z| z * fac[g]);
+            }
+            m
+        };
+        let mut vk = scale(&a).dot(&chi[k].t());
+        if gga {
+            for ax in 0..3 {
+                let f: Vec<f64> = (0..np).map(|g| w[g] * c[(ax, g)]).collect();
+                let d_ax = dchi[k].index_axis(Axis(0), ax);
+                let m = scale(&f).dot(&d_ax.t());
+                let mh = conj(&m).t().to_owned();
+                vk += &m;
+                vk += &mh;
+            }
+        }
+        v.push(vk);
+    }
+    v
+}
+
+pub(crate) fn conj(m: &Array2<C64>) -> Array2<C64> {
     m.mapv(|z| z.conj())
 }
 
@@ -544,29 +583,8 @@ impl KXcResponse for GridXc<'_> {
                 }
             });
             // --- V_xc(k) (the arithmetic of `KPeriodicXc::build`).
-            let a: Vec<f64> = (0..np).map(|g| pts[g].weight * vr[g]).collect();
-            let mut v: Vec<Array2<C64>> = Vec::with_capacity(nk);
-            for k in 0..nk {
-                let scale = |fac: &[f64]| {
-                    let mut m = conj(&bl.chi[k]);
-                    for g in 0..np {
-                        m.column_mut(g).mapv_inplace(|z| z * fac[g]);
-                    }
-                    m
-                };
-                let mut vk = scale(&a).dot(&bl.chi[k].t());
-                if self.gga {
-                    for ax in 0..3 {
-                        let f: Vec<f64> = (0..np).map(|g| pts[g].weight * c[(ax, g)]).collect();
-                        let d_ax = bl.dchi[k].index_axis(Axis(0), ax);
-                        let m = scale(&f).dot(&d_ax.t());
-                        let mh = conj(&m).t().to_owned();
-                        vk += &m;
-                        vk += &mh;
-                    }
-                }
-                v.push(vk);
-            }
+            let wts: Vec<f64> = pts.iter().map(|p| p.weight).collect();
+            let v = chunk_vxc(&bl.chi, &bl.dchi, &wts, &vr, &c, self.gga);
             // --- Force: a[g, A, j] (module doc, X1).
             let alt: Option<BlochAoHess> = alt_phase
                 .map(|ph| ev.eval_bloch(&xyz, &self.kpts, ph, self.gga))
@@ -706,7 +724,7 @@ impl KXcResponse for GridXc<'_> {
 }
 
 /// Hermitian part.
-fn hermitize(m: &Array2<C64>) -> Array2<C64> {
+pub(crate) fn hermitize(m: &Array2<C64>) -> Array2<C64> {
     let h = conj(m).t().to_owned();
     (m + &h).mapv(|z| z * 0.5)
 }
