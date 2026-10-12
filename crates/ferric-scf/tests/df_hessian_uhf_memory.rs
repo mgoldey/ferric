@@ -337,7 +337,7 @@ fn bound_check(
 }
 
 #[test]
-#[ignore = "measurement: peak allocation of the RI-K terms against the charge (counting allocator); measured 31 s (box load ~8)"]
+#[ignore = "measurement: peak allocation of the RI-K terms against the charge (counting allocator; run the ignored tests of this binary with --test-threads 1, the counters are global); measured 31 s (box load ~8)"]
 fn the_charge_bounds_the_measured_peak_allocation() {
     // Hypothesis (right): the peak live allocation of the RI-K terms stays below
     // charge + raw three-index tensor (slack 0: the estimate carries its own
@@ -430,7 +430,7 @@ fn whole_hessian_peak(label: &str, basis_name: &str, aux: &str) {
 }
 
 #[test]
-#[ignore = "measurement: peak allocation of the WHOLE UHF Hessian (RI-JK, CPHF included) against the estimate (counting allocator); measured 39 s (box load ~8)"]
+#[ignore = "measurement: peak allocation of the WHOLE UHF Hessian (RI-JK, CPHF included) against the estimate (counting allocator; run with --test-threads 1); measured 39 s (box load ~8)"]
 fn the_estimate_bounds_the_measured_whole_hessian_allocation() {
     if ferric_integrals::engine::libint_max_deriv_order() < 2 {
         eprintln!("SKIP: libint2 without second derivatives");

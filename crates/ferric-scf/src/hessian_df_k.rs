@@ -187,7 +187,7 @@
 //! rebuilt `DfJ` / `DfK` (whose general-density `build` peaks at three `A·n²`).
 //!
 //! Checked against the process's own allocator (`tests/df_hessian_uhf_memory.rs`,
-//! a counting global allocator, ignored tests): the RI-K terms alone peak at 0.92
+//! a counting global allocator, ignored tests): the RI-K terms alone peak at 0.91
 //! to 0.98 of charge + raw three-index tensor over butane/jkfit shapes with one,
 //! two and unequal channels (no allowance for threads is needed: 1 and 6 threads
 //! differ by under 1 MB); the whole UHF Hessian, CPHF included, peaks at 0.99 of
