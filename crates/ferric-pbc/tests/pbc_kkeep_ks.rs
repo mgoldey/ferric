@@ -95,7 +95,11 @@ fn keep_is_bitwise_the_plain_solve_krks() {
         let c = cfg(&cell, functional, ExxDiv::Ewald, KJkKind::Dense);
         let a = solve_krks(&cell, &prep, None, &m, &c).expect("plain");
         let (b, _) = solve_krks_keep(&cell, &prep, None, &m, &c).expect("keep");
-        assert_eq!(a.scf.energy.to_bits(), b.scf.energy.to_bits(), "{functional}");
+        assert_eq!(
+            a.scf.energy.to_bits(),
+            b.scf.energy.to_bits(),
+            "{functional}"
+        );
         assert_eq!(a.e_xc.to_bits(), b.e_xc.to_bits(), "{functional}");
         assert_eq!(a.scf.iterations, b.scf.iterations, "{functional}");
     }

@@ -165,7 +165,11 @@ fn unsupported_kpoint_ks_combinations_are_refused_by_name() {
     // LDA / GGA / global hybrids; periodic_kpoint_ks_optimize.rs).
     for (tag, dft, key) in [
         ("opt-scan", "[dft]\nfunctional = \"SCAN\"", "meta-GGA"),
-        ("opt-hse", "[dft]\nfunctional = \"HSE06\"", "range-separated"),
+        (
+            "opt-hse",
+            "[dft]\nfunctional = \"HSE06\"",
+            "range-separated",
+        ),
     ] {
         let toml = input(tag, "ksdft", 1, dft, "");
         let src = std::fs::read_to_string(&toml)

@@ -22,6 +22,7 @@ use ferric_integrals::operator::Operator;
 use ferric_pbc::dense_aft::DEFAULT_DENSE_AFT_PRECISION;
 use ferric_pbc::drpa::DEFAULT_GAMMA_DRPA_QUAD_POINTS;
 use ferric_pbc::kcorr::DEFAULT_KDRPA_QUAD_POINTS;
+use ferric_pbc::kxcgrad::{kpoint_rks_gradient, KRksGradConfig, KXcGrid};
 use ferric_pbc::rsgdf::auto_omega::auto_rsgdf_omega;
 use ferric_pbc::rsgdf::DEFAULT_RSGDF_OMEGA;
 use ferric_pbc::SrColumnRotation;
@@ -43,7 +44,6 @@ use ferric_pbc::{
     gamma_uhf_gradient_with, gamma_uks_gradient_rsgdf, gamma_uks_gradient_with, GammaGradConfig,
     RsGdfGradSource,
 };
-use ferric_pbc::kxcgrad::{kpoint_rks_gradient, KRksGradConfig, KXcGrid};
 use ferric_pbc::{
     kpoint_rhf_gradient, kpoint_uhf_gradient, solve_krhf_keep, solve_krks_keep, solve_kuhf_keep,
     KGradConfig, KRetained,
