@@ -207,6 +207,22 @@ pub enum KGradMutation {
     /// instead of the residue moduli (aliases images that differ by half a
     /// supercell on a shifted mesh; identity on a Gamma-centred mesh).
     EcpMeshCountModuli,
+    /// Hybrid scale: the dense-AFT K derivative walks run with the full
+    /// (unscaled, `a = 1`) exchange coefficients while everything else uses `a`.
+    ExchDenseUnscaled,
+    /// Hybrid scale: the RS-GDF fit's exchange pieces (`H`, `Z`, hence the
+    /// metric weight and the fitted 3-centre weights) use the unscaled
+    /// coefficients while everything else uses `a`.
+    ExchFitUnscaled,
+    /// Hybrid scale: the Madelung M-term keeps the unscaled `v_M`.
+    ExchMadelungUnscaled,
+    /// Hybrid scale: `a` also multiplies the dense-AFT Coulomb derivative.
+    ExchJScaled,
+    /// Hybrid scale: the exchange coefficients scaled by `a` twice (`a²`).
+    ExchScaledTwice,
+    /// Hybrid scale: a closed-shell spin-factor slip on the exchange
+    /// coefficients (`D_s X D_s` weight 1 instead of ½).
+    ExchSpinFactor,
 }
 
 /// The hcore SR derivative walk's rotation and forward-transformed image
@@ -734,7 +750,7 @@ pub(crate) fn open_ledger(
 }
 
 /// `v_M` of the mesh: 0 for `ExxDiv::None`, the mesh Madelung constant for `ExxDiv::Ewald`.
-fn madelung_for(cell: &Cell, mesh: &KPointMesh, exxdiv: ExxDiv) -> Result<f64, FerricError> {
+pub(crate) fn madelung_for(cell: &Cell, mesh: &KPointMesh, exxdiv: ExxDiv) -> Result<f64, FerricError> {
     Ok(match exxdiv {
         ExxDiv::None => 0.0,
         ExxDiv::Ewald => mesh.madelung(cell)?,
@@ -959,8 +975,35 @@ pub(crate) fn assemble(
     let omega = hcore_cfg.omega;
     let vol = cell.volume();
     let c0 = PI / (omega * omega * vol);
-    let vm_m = m_term_madelung(cell, vm, exch_scale, mutation)?;
-    let exch = scaled_exch_terms(&spins, exch_scale);
+    let madelung_scale = if mutation == Some(KGradMutation::ExchMadelungUnscaled) {
+        1.0
+    } else {
+        exch_scale
+    };
+    let vm_m = m_term_madelung(cell, vm, madelung_scale, mutation)?;
+    // The exchange coefficients, scaled by the exact-exchange fraction. The
+    // dense walks and the RS-GDF fit take them separately so a test defect can
+    // leave exactly one of the two unscaled.
+    let coeff_scale = match mutation {
+        Some(KGradMutation::ExchScaledTwice) => exch_scale * exch_scale,
+        Some(KGradMutation::ExchSpinFactor) => 2.0 * exch_scale,
+        _ => exch_scale,
+    };
+    let exch_dense = if mutation == Some(KGradMutation::ExchDenseUnscaled) && exch_scale != 0.0 {
+        scaled_exch_terms(&spins, 1.0)
+    } else {
+        scaled_exch_terms(&spins, coeff_scale)
+    };
+    let exch_fit = if mutation == Some(KGradMutation::ExchFitUnscaled) && exch_scale != 0.0 {
+        scaled_exch_terms(&spins, 1.0)
+    } else {
+        scaled_exch_terms(&spins, coeff_scale)
+    };
+    let j_scale = if mutation == Some(KGradMutation::ExchJScaled) {
+        exch_scale
+    } else {
+        1.0
+    };
     let mk: Vec<Array2<C64>> = (0..nk)
         .map(|k| {
             let mut m = spins.energy_weighted(k).mapv(|z| -z);
@@ -1000,7 +1043,8 @@ pub(crate) fn assemble(
                 cross_spin: false,
             };
             Some(kpoint_fit_gradient(
-                src.gdf, src.cfg, cell, prep, src.aux, mesh, s_k, &dtot, &exch, fm, ledger,
+                src.gdf, src.cfg, cell, prep, src.aux, mesh, s_k, &dtot, &exch_fit, fm,
+                ledger,
             )?)
         }
     };
@@ -1158,7 +1202,8 @@ pub(crate) fn assemble(
                 prep,
                 mesh,
                 eri,
-                &exch,
+                &exch_dense,
+                j_scale,
                 &delta,
                 &delta_true,
                 &ph_true,
@@ -1614,6 +1659,7 @@ fn dense_two_electron(
     mesh: &KPointMesh,
     eri: &KDenseAftEri,
     exch: &[(f64, &[Array2<C64>])],
+    j_scale: f64,
     delta: &[Array2<C64>],
     delta_true: &[Array2<C64>],
     ph_true: &[Vec<C64>],
@@ -1691,7 +1737,7 @@ fn dense_two_electron(
                             p,
                             qd,
                             delta,
-                            rho.conj() * (v / vol),
+                            rho.conj() * (v / vol * j_scale),
                         );
                     }
                     if exch.is_empty() {

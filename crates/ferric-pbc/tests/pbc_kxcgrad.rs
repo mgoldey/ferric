@@ -412,6 +412,7 @@ fn null_xc_equals_the_exchange_free_machinery_exactly() {
                 &h.hk,
                 j,
                 &h.scf,
+                0.0,
                 &gcfg(&KXcGrid::default(), None),
             )
             .unwrap()
@@ -802,7 +803,6 @@ fn refusals_and_the_fock_guard() {
         )
     };
     for (name, key) in [
-        ("PBE0", "global hybrid"),
         ("HSE06", "range-separated"),
         ("SCAN", "meta-GGA"),
         ("wB97X-V", "VV10"),

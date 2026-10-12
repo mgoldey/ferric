@@ -111,6 +111,7 @@
 //!   retained-state derivative budget.
 
 use crate::budget::{bytes_of, Ledger};
+use crate::dense_aft::ExxDiv;
 use crate::dft::{
     build_response_grid, BlochAoHess, BlochPhase, LatticeAoHess, PeriodicDftError, PeriodicGrid,
     PeriodicGridConfig, DEFAULT_AO_THRESHOLD,
@@ -119,8 +120,8 @@ use crate::grad::ao_atoms;
 use crate::hcore::kpoint::PeriodicHcoreK;
 use crate::hcore::PeriodicHcoreConfig;
 use crate::kgrad::{
-    assemble, check_fock, check_inputs, jk_build, open_ledger, KGradConfig, KGradJk, KGradient,
-    KSpins,
+    assemble, check_fock, check_inputs, jk_build, madelung_for, open_ledger, KGradConfig, KGradJk,
+    KGradient, KSpins,
 };
 use crate::kpts::KPointMesh;
 use crate::kscf::KScfResult;
@@ -191,6 +192,10 @@ pub enum KXcMutation {
     /// The Pulay term built from a Fock matrix WITHOUT `V_xc` (the guard is
     /// skipped for this defect: it would refuse it).
     PulayNoVxc,
+    /// Hybrid: the semilocal part taken at full strength (the pure parent
+    /// functional, e.g. PBE for PBE0, instead of the hybrid's remainder).
+    /// The Fock guard is skipped for this defect (it would refuse it).
+    FullStrengthXc,
 }
 
 /// Settings of [`kpoint_rks_gradient`].
@@ -205,6 +210,12 @@ pub struct KRksGradConfig {
     /// Cap on concurrently live derivative chunks (`None` = the thread count,
     /// further limited by the remaining budget). The result does not depend on it.
     pub max_live_chunks: Option<usize>,
+    /// The exchange-divergence treatment of the SCF (`solve_krks`'s
+    /// `krhf.exxdiv`). Needed only by a global hybrid (the exact exchange feels
+    /// the Madelung shift, and the Fock guard rebuilds `K` with it); a pure
+    /// functional ignores it. `None` with a hybrid is a typed error: the
+    /// force cannot guess what the SCF ran.
+    pub exxdiv: Option<ExxDiv>,
     /// TEST ONLY: a deliberate XC-force defect.
     #[doc(hidden)]
     pub mutation: Option<KXcMutation>,
@@ -217,6 +228,7 @@ impl Default for KRksGradConfig {
             grid: KXcGrid::default(),
             ao_threshold: DEFAULT_AO_THRESHOLD,
             max_live_chunks: None,
+            exxdiv: None,
             mutation: None,
         }
     }
@@ -617,30 +629,26 @@ fn hermitize(m: &Array2<C64>) -> Array2<C64> {
     (m + &h).mapv(|z| z * 0.5)
 }
 
-/// Refuse what the pure-functional force does not cover; returns the
-/// resolved functional.
-fn resolve_pure(functional: &str) -> Result<XcDef, FerricError> {
+/// Resolve the functional and its global exact-exchange fraction `a`; refuse
+/// what the force does not cover (range-separated hybrids, meta-GGA, VV10 and
+/// double hybrids).
+fn resolve_global(functional: &str) -> Result<(XcDef, f64), FerricError> {
     let (xc, exx, rsh) = resolve_periodic_functional_rsh(functional)?;
     if rsh.is_some() {
         return Err(PeriodicDftError::Unsupported {
             feature: "range-separated hybrid force at k",
             reason: format!(
-                "{functional}: the k-point XC force covers LDA and GGA functionals with no exact \
-                 exchange; the screened-exchange derivative is not implemented"
+                "{functional}: the k-point XC force covers LDA, GGA and GLOBAL hybrid functionals; \
+                 the attenuated-exchange derivative (erf-kernel K walks and Madelung) is not \
+                 implemented"
             ),
         }
         .into());
     }
-    if exx != 0.0 {
-        return Err(PeriodicDftError::Unsupported {
-            feature: "global hybrid force at k",
-            reason: format!(
-                "{functional} has exact-exchange fraction {exx}; the k-point XC force covers pure \
-                 LDA/GGA functionals only (the exchange derivative with a scaled K is not \
-                 validated)"
-            ),
-        }
-        .into());
+    if !(0.0..=1.0).contains(&exx) {
+        return Err(FerricError::General(format!(
+            "{functional}: exact-exchange fraction {exx} outside [0, 1]"
+        )));
     }
     if xc
         .funcs
@@ -655,7 +663,7 @@ fn resolve_pure(functional: &str) -> Result<XcDef, FerricError> {
         }
         .into());
     }
-    Ok(xc)
+    Ok((xc, exx))
 }
 
 /// k-point closed-shell RKS nuclear gradient (module doc) of a converged
@@ -682,7 +690,13 @@ pub fn kpoint_rks_gradient(
     functional: &str,
     cfg: &KRksGradConfig,
 ) -> Result<KRksGradient, FerricError> {
-    let xc = resolve_pure(functional)?;
+    let (mut xc, exch) = resolve_global(functional)?;
+    if cfg.mutation == Some(KXcMutation::FullStrengthXc) {
+        // TEST ONLY: the pure parent in place of the hybrid's remainder.
+        xc = ferric_dft::libxc::xc_def_from_name(functional.trim_end_matches('0')).map_err(
+            |e| FerricError::General(format!("{functional}: pure parent: {e:?}")),
+        )?;
+    }
     let gga = xc
         .funcs
         .iter()
@@ -709,6 +723,7 @@ pub fn kpoint_rks_gradient(
         jk,
         scf,
         &resp,
+        exch,
         cfg,
     )
 }
@@ -727,6 +742,7 @@ pub fn kpoint_null_xc_gradient(
     hk: &PeriodicHcoreK,
     jk: KGradJk<'_>,
     scf: &KScfResult,
+    exch: f64,
     cfg: &KRksGradConfig,
 ) -> Result<KRksGradient, FerricError> {
     rks_gradient_with(
@@ -739,6 +755,7 @@ pub fn kpoint_null_xc_gradient(
         jk,
         scf,
         &NullXc,
+        exch,
         cfg,
     )
 }
@@ -755,6 +772,7 @@ fn rks_gradient_with(
     jk: KGradJk<'_>,
     scf: &KScfResult,
     xc: &dyn KXcResponse,
+    exch: f64,
     cfg: &KRksGradConfig,
 ) -> Result<KRksGradient, FerricError> {
     check_inputs(
@@ -771,6 +789,19 @@ fn rks_gradient_with(
     )?;
     let natoms = cell.positions().len();
     let nk = mesh.nk();
+    // The Madelung shift of the SCF's K (0 for a pure functional: no K).
+    let vm = if exch == 0.0 {
+        0.0
+    } else {
+        let exxdiv = cfg.exxdiv.ok_or_else(|| {
+            FerricError::General(format!(
+                "{who}: a hybrid functional (exact exchange {exch}) needs \
+                 KRksGradConfig::exxdiv, the treatment the SCF ran (its K carries the \
+                 Madelung shift)"
+            ))
+        })?;
+        madelung_for(cell, mesh, exxdiv)?
+    };
     let mut ledger = open_ledger(cell, prep, mesh, &cfg.grad, false)?;
     let d = scf.densities.clone();
     let mut xo = xc.evaluate(&d, &ledger)?;
@@ -779,12 +810,30 @@ fn rks_gradient_with(
         xo.point = Array2::zeros((natoms, 3));
         xo.weight = Array2::zeros((natoms, 3));
     }
-    // F = h + J + V_xc (no exchange); the stored Fock of the SCF must agree.
-    let (j, _k) = jk_build(&jk, 0.0, &d)?;
-    let with_vxc = cfg.mutation != Some(KXcMutation::PulayNoVxc);
+    // Resident between here and the end of `assemble`, beyond `open_ledger`'s
+    // own arrays: D (kept by `KSpins`), J, K, F and V_xc, each N_k n² complex.
+    // (The XC chunk transient above was released with its ledger clone; K was
+    // formerly built and dropped without a charge even for a pure functional.)
+    ledger.reserve(
+        &format!(
+            "k KS force Fock-guard matrices D, J, K, F, V_xc (n = {}, N_k = {nk})",
+            prep.nbasis()
+        ),
+        bytes_of((nk * prep.nbasis() * prep.nbasis()) as u64, 16 * 5),
+    )?;
+    // F = h + J - (a/2) K + V_xc; the stored Fock of the SCF must agree. K
+    // carries the Madelung shift and is scaled as a whole (the energy's
+    // convention); a = 0 contributes exactly nothing.
+    let (j, kmat) = jk_build(&jk, vm, &d)?;
+    let with_vxc = cfg.mutation != Some(KXcMutation::PulayNoVxc)
+        && cfg.mutation != Some(KXcMutation::FullStrengthXc);
     let f: Vec<Array2<C64>> = (0..nk)
         .map(|q| {
-            let base = hermitize(&(&hk.h[q] + &j[q]));
+            let mut base = &hk.h[q] + &j[q];
+            if exch != 0.0 {
+                base.scaled_add(C64::new(-0.5 * exch, 0.0), &kmat[q]);
+            }
+            let base = hermitize(&base);
             if with_vxc {
                 hermitize(&(&base + &xo.v[q]))
             } else {
@@ -792,6 +841,7 @@ fn rks_gradient_with(
             }
         })
         .collect();
+    drop((j, kmat));
     let mismatch = if with_vxc {
         check_fock(who, "fock", &f, &scf.fock, KS_REMEDY)?
     } else {
@@ -805,8 +855,8 @@ fn rks_gradient_with(
         hk,
         &jk,
         KSpins::Restricted { d, f },
-        0.0,
-        0.0,
+        vm,
+        exch,
         &cfg.grad,
         &mut ledger,
     )?;
