@@ -974,25 +974,33 @@ fn unsupported_density_fitted_configurations_are_refused() {
     let hess = |rhf: &ScfResult, cfg: &RhfConfig| {
         rhf_hessian(&ctx, &s.mol, &s.prep, op, &s.bounds, rhf, cfg)
     };
-    // RI-K requested in the configuration.
+    // RI-K requested in the configuration is supported for closed-shell RHF
+    // (tests/df_hessian_rik.rs) and refused for open-shell references.
     let ri_k = RhfConfig {
         df_k_aux: Some("def2-universal-jkfit".into()),
         ..scf_config("def2-universal-jkfit")
     };
-    let e = rhf_hessian_preflight(op, &ri_k).unwrap_err().to_string();
-    eprintln!("RI-K config: {e}");
-    assert!(e.contains("RI-K"), "{e}");
-    // A route that fitted exchange too.
+    rhf_hessian_preflight(op, &ri_k).expect("RHF RI-J + RI-K preflight");
+    let e = uhf_hessian_preflight(op, &ri_k).unwrap_err().to_string();
+    eprintln!("UHF RI-K config: {e}");
+    assert!(e.contains("RI"), "{e}");
+    // A route that fitted exchange although the configuration did not.
     let mut with_k = s.rhf.clone();
     let route = with_k.df_jk.as_mut().unwrap();
     route.k_aux = Some("def2-universal-jkfit".into());
     let e = hess(&with_k, &s.cfg).unwrap_err().to_string();
     eprintln!("RI-K route: {e}");
-    assert!(e.contains("RI-K"), "{e}");
+    assert!(
+        e.contains("RI-K") && e.contains("differs from the configuration"),
+        "{e}"
+    );
     // Range-separated fitted exchange in the route.
     let mut rsh = s.rhf.clone();
     rsh.df_jk.as_mut().unwrap().rsh_k = Some(("def2-universal-jkfit".into(), 0.3));
-    assert!(hess(&rsh, &s.cfg).unwrap_err().to_string().contains("RI-K"));
+    assert!(hess(&rsh, &s.cfg)
+        .unwrap_err()
+        .to_string()
+        .contains("range-separated"));
     // Open-shell reference with RI-J.
     let e = uhf_hessian_preflight(op, &s.cfg).unwrap_err().to_string();
     eprintln!("UHF RI-J config: {e}");
