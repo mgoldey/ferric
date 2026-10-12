@@ -184,6 +184,8 @@ pub enum KGradMutation {
     /// Column rotation: the derivative walks unrotated although the energy
     /// ran rotated (the behaviour before the k rotation derivative existed).
     RotOff,
+    /// Column rotation: only the hcore SR derivative walk unrotated.
+    RotHcoreOff,
     /// ECP: drop the ECP force term altogether.
     NoEcp,
     /// ECP: the centre derivative `∂_C` dropped.
@@ -216,6 +218,7 @@ fn rot_kind(m: Option<KGradMutation>) -> Option<KRotKind> {
         Some(KGradMutation::RotFitWrongResidue) => Some(KRotKind::FitWrongResidue),
         Some(KGradMutation::RotHcoreWrongResidue) => Some(KRotKind::HcoreWrongResidue),
         Some(KGradMutation::RotOff) => Some(KRotKind::Off),
+        Some(KGradMutation::RotHcoreOff) => Some(KRotKind::HcoreOff),
         _ => None,
     }
 }
@@ -315,6 +318,9 @@ pub struct KGradient {
     pub n_images: usize,
     /// SR attraction derivative triplets.
     pub n_sr_triplets: usize,
+    /// Orbital columns the hcore SR attraction derivative walk ran rotated
+    /// (equals `PeriodicHcoreK::sr_rotated_columns`; 0 = unrotated).
+    pub hcore_rotated_columns: usize,
     /// Kept ECP triples of the screen the walk differentiates (checked equal to
     /// the energy's `PeriodicHcoreK::n_ecp_triples`; 0 without an ECP).
     pub n_ecp_triples: usize,
@@ -344,6 +350,9 @@ pub struct KFitChecks {
     pub n_sr3: usize,
     /// SR metric derivative pairs.
     pub n_sr2: usize,
+    /// Orbital columns the SR 3-centre derivative walk ran rotated (equals
+    /// the build's `KRsGdfStats::sr_rotated_columns`; 0 = unrotated).
+    pub rotated_columns: usize,
 }
 
 /// Per-spin `D_s(k)`, `F_s(k)`.
@@ -610,6 +619,9 @@ pub(crate) fn check_inputs(
             hk.omega, hcore_cfg.omega
         )));
     }
+    // The hcore SR derivative follows the walk the hcore ran: a config that
+    // disagrees with it is refused here, before any pass.
+    hcore_rotation_built(who, cell, prep, hcore_cfg, hk.sr_rotated_columns)?;
     if hk.s.len() != nk
         || hk.h.len() != nk
         || hk.s.iter().chain(&hk.h).any(|x| x.dim() != (n, n))
@@ -677,10 +689,11 @@ fn open_ledger(
         &format!("k gradient per-k complex n×n matrices (n = {n}, N_k = {nk})"),
         bytes_of((nk * n * n) as u64, 16 * per_k),
     )?;
-    // Per residue: Δ, Δ_true (complex), and four real weight sets.
+    // Per residue: Δ, Δ_true (complex), and five real weight sets (the sixth
+    // slot is the column-rotated copy of the SR image weight).
     ledger.reserve(
         &format!("k gradient residue-folded weights (R = {nr}, n = {n})"),
-        bytes_of((nr * n * n) as u64, 16 * 2 + 8 * 5),
+        bytes_of((nr * n * n) as u64, 16 * 2 + 8 * 6),
     )?;
     ledger.reserve(
         &format!("k gradient per-term arrays (natoms = {natoms}, nao = {n})"),
@@ -1123,6 +1136,7 @@ fn assemble(
                 b_norm_mismatch: f.b_norm_mismatch,
                 n_sr3: f.n_sr3,
                 n_sr2: f.n_sr2,
+                rotated_columns: f.rotated_columns,
             });
         }
     }
@@ -1188,6 +1202,7 @@ fn assemble(
         net_force,
         n_images: images.len(),
         n_sr_triplets,
+        hcore_rotated_columns: rot_walk.map_or(0, |r| r.n_rotated_columns),
         n_ecp_triples,
         n_g_lr: gv_lr.len(),
         n_k_eri,

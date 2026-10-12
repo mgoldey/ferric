@@ -224,7 +224,27 @@ impl Run {
     }
 
     fn force(&self, scf: &KScfResult, exx: ExxDiv, m: Option<KGradMutation>) -> KGradient {
-        self.try_force(scf, exx, m).expect("k force")
+        let f = self.try_force(scf, exx, m).expect("k force");
+        if m.is_none() {
+            // The walks ACTUALLY run rotate the columns the energy rotated.
+            assert!(
+                self.walked_ok(
+                    f.hcore_rotated_columns,
+                    f.fit_checks.map(|c| c.rotated_columns)
+                ),
+                "force walked hcore {} fit {:?}",
+                f.hcore_rotated_columns,
+                f.fit_checks.map(|c| c.rotated_columns)
+            );
+        }
+        f
+    }
+
+    /// Whether the derivative walks' rotated-column counts equal the energy
+    /// build's (hcore always; the fit when the source is an RS-GDF fit).
+    fn walked_ok(&self, hcore: usize, fit: Option<usize>) -> bool {
+        hcore == self.hk.sr_rotated_columns
+            && fit.is_none_or(|f| f == self.gdf.stats().sr_rotated_columns)
     }
 
     fn try_stress(
@@ -262,7 +282,19 @@ impl Run {
     }
 
     fn stress(&self, scf: &KScfResult, exx: ExxDiv, m: Option<KStressMutation>) -> KStress {
-        self.try_stress(scf, exx, m).expect("k stress")
+        let s = self.try_stress(scf, exx, m).expect("k stress");
+        if m.is_none() {
+            assert!(
+                self.walked_ok(
+                    s.hcore_rotated_columns,
+                    s.fit_checks.map(|c| c.rotated_columns)
+                ),
+                "stress walked hcore {} fit {:?}",
+                s.hcore_rotated_columns,
+                s.fit_checks.map(|c| c.rotated_columns)
+            );
+        }
+        s
     }
 
     /// The rotation really ran in the energy (so comparisons are not vacuous).
@@ -305,23 +337,29 @@ const D_BAR: f64 = 1e-7;
 /// sizes (the bar is derived from them in the test doc).
 #[test]
 fn rotated_k_derivative_walks_equal_the_unrotated_walks_per_part() {
-    walk_anchor(&[(None, ExxDiv::None)]);
+    walk_anchor(&[([1, 1, 3], None, ExxDiv::None)]);
+}
+
+/// (a) on the range-split build (1x1x2, exxdiv none): the split derivative
+/// walks have a non-ignored correctness test.
+#[test]
+fn rotated_k_derivative_walks_equal_the_unrotated_walks_per_part_split() {
+    walk_anchor(&[([1, 1, 2], Some(RangeSplit::default()), ExxDiv::None)]);
 }
 
 /// (a) on the range-split build at the Ewald exxdiv.
 #[test]
 #[ignore = "slow (~1 min release): range-split walks, force and stress, 1x1x3"]
 fn rotated_k_derivative_walks_equal_the_unrotated_walks_per_part_split_ewald() {
-    walk_anchor(&[(Some(RangeSplit::default()), ExxDiv::Ewald)]);
+    walk_anchor(&[([1, 1, 3], Some(RangeSplit::default()), ExxDiv::Ewald)]);
 }
 
-fn walk_anchor(cases: &[(Option<RangeSplit>, ExxDiv)]) {
-    let n = [1, 1, 3];
-    for &(split, exx) in cases {
+fn walk_anchor(cases: &[([usize; 3], Option<RangeSplit>, ExxDiv)]) {
+    for &(n, split, exx) in cases {
         let r = run(cell_h2(&H2_ATOMS), n, split, on(), DEFAULT_PREC);
-        r.assert_rotates("1x1x3");
+        r.assert_rotates("rotated build");
         {
-            let tag = format!("1x1x3 split {:?} {exx:?}", split.map(|s| s.lambda));
+            let tag = format!("{n:?} split {:?} {exx:?}", split.map(|s| s.lambda));
             let scf = r.scf(exx);
             let f_on = r.force(&scf, exx, None);
             let f_off = r.force(&scf, exx, Some(KGradMutation::RotOff));
@@ -344,6 +382,20 @@ fn walk_anchor(cases: &[(Option<RangeSplit>, ExxDiv)]) {
                 f_off.n_sr_triplets,
                 f_on.fit_checks.map(|c| c.n_sr3),
                 f_off.fit_checks.map(|c| c.n_sr3),
+            );
+            // The walks really differ (counters from the walk ACTUALLY run):
+            // the rotated one rotates the energy's columns and does fewer
+            // calls; the RotOff walk rotates none.
+            assert_eq!(f_off.hcore_rotated_columns, 0, "{tag}");
+            assert_eq!(f_off.fit_checks.unwrap().rotated_columns, 0, "{tag}");
+            assert_eq!(s_off.hcore_rotated_columns, 0, "{tag}");
+            assert!(
+                f_on.n_sr_triplets < f_off.n_sr_triplets,
+                "{tag}: hcore calls"
+            );
+            assert!(
+                f_on.fit_checks.unwrap().n_sr3 < f_off.fit_checks.unwrap().n_sr3,
+                "{tag}: SR3 calls"
             );
             assert!(d_tot < D_BAR && d_hc < D_BAR && d_fit < D_BAR, "{tag}");
             assert!(ds_tot < D_BAR && ds_hc < D_BAR && ds_fit < D_BAR, "{tag}");
@@ -972,4 +1024,86 @@ fn closed_shell_kuhf_rotated_force_and_stress_are_the_krhf_ones() {
     let ds = mdiff(&sr.de_deps, &su.de_deps);
     eprintln!("closed-shell kUHF vs kRHF (rotated, split): force {df:.2e}, stress {ds:.2e}");
     assert!(df < 1e-9 && ds < 1e-9, "{df:e} {ds:e}");
+}
+
+/// The hcore-only fall-through (`rot_walk = None` in the derivative while the
+/// energy rotated) is invisible to every numerical comparison at the default
+/// screen, so the walks' ACTUAL rotated-column counters are the guard:
+/// production reports the energy's counts, the hcore-only defect reports 0
+/// on the hcore side with the fit still rotated, and `RotOff` reports 0 on
+/// both. Force and stress. Cheap (1x1x1 mesh): the rotated-column plumbing
+/// does not depend on the mesh.
+#[test]
+fn hcore_only_unrotated_walk_is_caught_by_the_walked_column_counters() {
+    let r = run(cell_h2(&H2_ATOMS), [1, 1, 1], None, on(), DEFAULT_PREC);
+    r.assert_rotates("1x1x1");
+    let scf = r.scf(ExxDiv::None);
+    let exx = ExxDiv::None;
+    let fp = r.force(&scf, exx, None);
+    let sp = r.stress(&scf, exx, None);
+    let fh = r.force(&scf, exx, Some(KGradMutation::RotHcoreOff));
+    let sh = r.stress(&scf, exx, Some(KStressMutation::RotHcoreOff));
+    let fo = r.force(&scf, exx, Some(KGradMutation::RotOff));
+    let so = r.stress(&scf, exx, Some(KStressMutation::RotOff));
+    let fit = |c: Option<ferric_pbc::kgrad::KFitChecks>| c.map(|c| c.rotated_columns);
+    // Production walks the energy's columns.
+    assert!(r.walked_ok(fp.hcore_rotated_columns, fit(fp.fit_checks)));
+    assert!(r.walked_ok(sp.hcore_rotated_columns, fit(sp.fit_checks)));
+    // The hcore-only defect: hcore 0, fit still 2 -> the check REJECTS it.
+    assert_eq!((fh.hcore_rotated_columns, fit(fh.fit_checks)), (0, Some(2)));
+    assert_eq!((sh.hcore_rotated_columns, fit(sh.fit_checks)), (0, Some(2)));
+    assert!(!r.walked_ok(fh.hcore_rotated_columns, fit(fh.fit_checks)));
+    assert!(!r.walked_ok(sh.hcore_rotated_columns, fit(sh.fit_checks)));
+    // Full RotOff: both sides 0.
+    assert_eq!((fo.hcore_rotated_columns, fit(fo.fit_checks)), (0, Some(0)));
+    assert_eq!((so.hcore_rotated_columns, fit(so.fit_checks)), (0, Some(0)));
+    assert!(!r.walked_ok(fo.hcore_rotated_columns, fit(fo.fit_checks)));
+    // The numbers the counters stand in for (default screen): the hcore-only
+    // defect moves the force by only the screening gap.
+    let gap = max_abs_diff(&fp.grad, &fh.grad);
+    eprintln!("default screen, hcore-only RotOff: force gap {gap:.2e} (blind to any bar > this)");
+}
+
+/// Hcore-side gap at a LOOSE screen (hcore 1e-5, fit 1e-6): the rotated
+/// hcore derivative walk vs the hcore-only unrotated one (`RotHcoreOff`; the
+/// fit stays rotated, so the `‖B‖` guard does not refuse it) vs FD of the
+/// rotated energy. The SR derivative walk uses the nucleus exponent
+/// `min(1e9, cfg)`, not the energy walk's nuclear model, so NEITHER walk is
+/// the exact derivative of the screened energy; the FD miss of each is the
+/// nucleus-model floor plus the screen, and what separates the two walks is
+/// printed, not asserted beyond a sanity bound.
+#[test]
+fn loose_screen_hcore_side_gap_rotated_vs_unrotated_vs_fd() {
+    let n = [1, 1, 2];
+    let prec = (1e-5, 1e-6);
+    let h = 1e-3;
+    let r = run(cell_h2(&H2_ATOMS), n, None, on(), prec);
+    r.assert_rotates("loose");
+    let scf = r.scf(ExxDiv::None);
+    let f_on = r.force(&scf, ExxDiv::None, None);
+    let f_off = r.force(&scf, ExxDiv::None, Some(KGradMutation::RotHcoreOff));
+    assert_eq!(f_off.hcore_rotated_columns, 0);
+    let hc = |f: &KGradient| msum(&f.parts.vsr_basis, &f.parts.vsr_nuc);
+    let gap = max_abs_diff(&hc(&f_on), &hc(&f_off));
+    let gap_tot = max_abs_diff(&f_on.grad, &f_off.grad);
+    let (mut m_on, mut m_off) = (0.0_f64, 0.0_f64);
+    for (a, x) in [(0usize, 0usize), (0, 2), (1, 1)] {
+        let mut p = H2_ATOMS;
+        p[a][x] += h;
+        let ep = run(cell_h2(&p), n, None, on(), prec)
+            .scf(ExxDiv::None)
+            .energy;
+        p[a][x] -= 2.0 * h;
+        let em = run(cell_h2(&p), n, None, on(), prec)
+            .scf(ExxDiv::None)
+            .energy;
+        let fd = (ep - em) / (2.0 * h);
+        m_on = m_on.max((f_on.grad[(a, x)] - fd).abs());
+        m_off = m_off.max((f_off.grad[(a, x)] - fd).abs());
+    }
+    eprintln!(
+        "loose {prec:?} hcore side: rotated-vs-unrotated hcore term {gap:.2e}, total {gap_tot:.2e}; \
+         FD miss rotated {m_on:.2e}, unrotated hcore walk {m_off:.2e}"
+    );
+    assert!(gap_tot < 1e-3 && m_on < 2e-6, "{gap_tot:e} {m_on:e}");
 }

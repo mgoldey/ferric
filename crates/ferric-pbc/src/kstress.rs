@@ -272,6 +272,8 @@ pub enum KStressMutation {
     /// Column rotation: the strain walks unrotated although the energy ran
     /// rotated (the behaviour before the k rotation derivative existed).
     RotOff,
+    /// Column rotation: only the hcore SR strain walk unrotated.
+    RotHcoreOff,
     /// ECP: drop the ECP-centre virial `Σ ∂_C X_C`.
     EcpNoCentre,
     /// ECP: the centre virial with the wrong sign.
@@ -382,6 +384,8 @@ pub struct KOneElectronStress {
     /// Pair images, SR triplets, V_LR G count and pair-FT chunks.
     pub n_images: usize,
     pub n_sr_triplets: usize,
+    /// Orbital columns the hcore SR derivative walk ran rotated.
+    pub hcore_rotated_columns: usize,
     pub n_g_lr: usize,
     pub n_chunks: usize,
 }
@@ -562,6 +566,7 @@ pub(crate) fn one_electron_pass(
     );
     let w_sr = w_rot.as_deref().unwrap_or(&w_d);
     let rot_walk = rot.as_ref().filter(|_| w_rot.is_some());
+    out.hcore_rotated_columns = rot_walk.map_or(0, |r| r.n_rotated_columns);
     out.n_sr_triplets =
         sr_attraction_deriv_visit(cell, prep, rot_walk, &sr_cfg, ledger, false, |t| {
             let wd = &w_sr[residue_index(lattice_coords(&b, &t.l), moduli)];
@@ -741,6 +746,7 @@ fn rot_kind(m: Option<KStressMutation>) -> Option<KRotKind> {
         Some(KStressMutation::RotFitWrongResidue) => Some(KRotKind::FitWrongResidue),
         Some(KStressMutation::RotHcoreWrongResidue) => Some(KRotKind::HcoreWrongResidue),
         Some(KStressMutation::RotOff) => Some(KRotKind::Off),
+        Some(KStressMutation::RotHcoreOff) => Some(KRotKind::HcoreOff),
         _ => None,
     }
 }
@@ -955,6 +961,9 @@ pub struct KStress {
     /// Pair images, SR triplets, V_LR G count, ERI K count, pair-FT chunks.
     pub n_images: usize,
     pub n_sr_triplets: usize,
+    /// Orbital columns the hcore SR derivative walk ran rotated (equals
+    /// `PeriodicHcoreK::sr_rotated_columns`; 0 = unrotated).
+    pub hcore_rotated_columns: usize,
     /// ECP triples differentiated (the energy's `PeriodicHcoreK::n_ecp_triples`).
     pub n_ecp_triples: usize,
     pub n_g_lr: usize,
@@ -1382,6 +1391,7 @@ fn assemble(
             b_norm_mismatch: f.b_norm_mismatch,
             n_sr3: f.n_sr3,
             n_sr2: f.n_sr2,
+            rotated_columns: f.rotated_columns,
         });
     }
 
@@ -1433,6 +1443,7 @@ fn assemble(
         e_madelung,
         n_images: one.n_images,
         n_sr_triplets: one.n_sr_triplets,
+        hcore_rotated_columns: one.hcore_rotated_columns,
         n_ecp_triples: one.n_ecp_triples,
         n_g_lr: one.n_g_lr,
         n_k_eri: two.n_kv,

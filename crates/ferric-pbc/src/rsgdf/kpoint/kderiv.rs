@@ -152,6 +152,9 @@ pub(crate) struct KRotDefect {
     /// The derivative walks run UNROTATED although the energy ran rotated
     /// (the pre-rotation behaviour; fit and, through the callers, hcore).
     pub(crate) off: bool,
+    /// The hcore SR derivative walk alone runs unrotated (the fit stays
+    /// rotated).
+    pub(crate) hcore_off: bool,
 }
 
 /// The column-rotation test defects a k-point force / stress mutation enum
@@ -174,6 +177,8 @@ pub(crate) enum KRotKind {
     HcoreWrongResidue,
     /// Derivative walks unrotated although the energy rotated.
     Off,
+    /// Only the hcore SR derivative walk unrotated.
+    HcoreOff,
 }
 
 impl KRotKind {
@@ -187,7 +192,11 @@ impl KRotKind {
             Some(Self::FlipSign) => d.deriv = DerivRotMutant::FlipSign,
             Some(Self::SwapPair) => d.swap_pair = true,
             Some(Self::FitWrongResidue) => d.fit_wrong_residue = true,
-            Some(Self::Off) => d.off = true,
+            Some(Self::Off) => {
+                d.off = true;
+                d.hcore_off = true;
+            }
+            Some(Self::HcoreOff) => d.hcore_off = true,
             Some(Self::HcoreWrongResidue) | None => {}
         }
         d
@@ -204,7 +213,7 @@ pub(crate) fn rotate_hcore_weights(
     wrong_residue: bool,
     w: &[Array2<f64>],
 ) -> Option<Vec<Array2<f64>>> {
-    let r = rot.filter(|_| !defect.off)?;
+    let r = rot.filter(|_| !defect.hcore_off)?;
     let tr = r.ao_transpose(defect.deriv);
     let mut out: Vec<Array2<f64>> = w.par_iter().map(|m| tr.matrix(m)).collect();
     if wrong_residue {
@@ -320,6 +329,9 @@ pub(crate) struct KFitGrad {
     pub(crate) b_norm_mismatch: f64,
     pub(crate) n_sr3: usize,
     pub(crate) n_sr2: usize,
+    /// Orbital columns the SR 3-centre derivative walk ACTUALLY ran rotated
+    /// (0 = the unrotated walk); the callers check it against the build's.
+    pub(crate) rotated_columns: usize,
     pub(crate) n_chunks: usize,
     pub(crate) n_k_lr: usize,
     /// Range split: the smooth-piece overlap over the build's pair images,
@@ -522,6 +534,8 @@ fn kpoint_fit_core(
     };
     let g = &cfg.gdf;
     check_fit_inputs(gdf, cfg, cell, obs, aux, mesh, s_k, d_total, exch)?;
+    // The config / build rotation consistency is checked BEFORE any pass.
+    let rotation = fit_rotation(gdf, g, (cell, obs, aux), mutation.rot.off, who)?;
     let n = obs.nbasis();
     let n2 = n * n;
     let naux = aux.nbasis();
@@ -589,7 +603,6 @@ fn kpoint_fit_core(
 
     // --- The energy's SR bins (same walk, same order; the kept calls of a
     // range split) and G = 0 inputs.
-    let rotation = fit_rotation(gdf, g, (cell, obs, aux), mutation.rot.off, who)?;
     let ((j2res, j3res, _, _), _) = sr_bins_rotated(
         (&st, plan.as_ref(), rotation.as_ref(), cfg.mutation),
         &images,
@@ -662,6 +675,9 @@ fn kpoint_fit_core(
             let plan_rot = plan.as_ref().map(|p| p.sr3_plan_on(&st_rot)).transpose()?;
             let tr = r.obs.ao_transpose(mutation.rot.deriv);
             let swap = mutation.rot.swap_pair;
+            // Memory: `acc.zbin` is reserved up front; the in-place transform
+            // holds ONE extra bin (n² × naux reals) per rayon thread at a
+            // time, a transient bounded by threads × bin size.
             acc.zbin
                 .par_iter_mut()
                 .for_each(|b| *b = tr.pair_rows(b, n, swap));
@@ -671,6 +687,12 @@ fn kpoint_fit_core(
             Some((st_rot, plan_rot))
         }
     };
+    // What the SR 3-centre derivative walk will actually run (checked by the
+    // callers against the energy build's count).
+    let walked_columns = rot_stage
+        .as_ref()
+        .and(rotation.as_ref())
+        .map_or(0, |r| r.obs.n_rotated_columns);
     let sr3 = match &rot_stage {
         Some((s, p)) => (s, p.as_ref()),
         None => (&st, plan.as_ref()),
@@ -699,6 +721,7 @@ fn kpoint_fit_core(
             b_norm_mismatch: acc.b_norm_mismatch,
             n_sr3: fs.1,
             n_sr2: fs.2,
+            rotated_columns: walked_columns,
             n_chunks: acc.n_chunks,
             n_k_lr: acc.n_k_lr,
             smooth_g0: plan.map(|p| p.into_split_g0(naux, images)),
@@ -746,6 +769,7 @@ fn kpoint_fit_core(
         b_norm_mismatch: acc.b_norm_mismatch,
         n_sr3,
         n_sr2,
+        rotated_columns: walked_columns,
         n_chunks: acc.n_chunks,
         n_k_lr: acc.n_k_lr,
         smooth_g0: plan.map(|p| p.into_split_g0(naux, images)),
