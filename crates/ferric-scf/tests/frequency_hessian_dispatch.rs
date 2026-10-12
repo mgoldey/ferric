@@ -435,7 +435,10 @@ fn uhf_density_fitting_is_analytic_and_matches_fd() {
             .zip(&fd.frequencies)
             .fold(0.0f64, |m, (a, b)| m.max((a - b).abs()));
         eprintln!("NH2/STO-3G UHF {what}: Auto vs FD frequencies max |d| {dev:.3e} cm^-1");
-        assert!(dev < 1.0, "{what}: frequencies differ by {dev} cm^-1");
+        // Measured 8.6e-2 cm^-1 for every route (the same as the exact-integral
+        // UHF test above): the truncation of the central difference at the
+        // default step, not an analytic error. Bar 2x the measured level.
+        assert!(dev < 0.2, "{what}: frequencies differ by {dev} cm^-1");
     }
 }
 
@@ -470,6 +473,30 @@ fn uhf_density_fitting_falls_back_before_the_scf_for_rohf_and_ecp() {
         .expect_err("UHF RI + ECP must be refused by the probe")
         .to_string();
     assert!(e.contains("effective core potential"), "{e}");
+
+    // Auto runs the probe BEFORE the SCF and falls back to finite differences
+    // of the DF gradient (no error); Analytic stays an error.
+    let auto = open_shell_with(&scf, FrequencyReference::Rohf, HessianMethod::Auto)
+        .expect("Auto must fall back for ROHF + RI");
+    assert_eq!(auto.hessian_source, HessianSource::FiniteDifference);
+    let run_hi = |hessian| {
+        harmonic_frequencies(
+            &ParallelContext::default(),
+            &hi,
+            "def2-svp",
+            Operator::coulomb(),
+            &scf,
+            &FrequencyConfig {
+                reference: FrequencyReference::Uhf,
+                hessian,
+                ..Default::default()
+            },
+        )
+    };
+    let auto = run_hi(HessianMethod::Auto).expect("Auto must fall back for UHF RI + ECP");
+    assert_eq!(auto.hessian_source, HessianSource::FiniteDifference);
+    assert_eq!(auto.n_gradient_evaluations, 12);
+    assert!(run_hi(HessianMethod::Analytic).is_err());
 }
 
 fn open_shell_with(

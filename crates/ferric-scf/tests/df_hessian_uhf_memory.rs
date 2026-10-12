@@ -190,6 +190,37 @@ fn the_two_channel_charge_gates_the_run_and_the_probe() {
     let auto = auto.expect("Auto must fall back to finite differences");
     assert_eq!(auto.hessian_source, HessianSource::FiniteDifference);
     assert!(strict.is_err(), "Analytic must stay an error");
+
+    // --- the first-order Fock / CPHF phase is reserved by the real Hessian ----
+    // A small fit on a larger basis (A < n, where the n^2 terms of that phase
+    // dominate the RI-K terms' own peak): a pool one byte below the estimate is
+    // refused by the Hessian itself with a typed error, a pool of twice the
+    // estimate runs.
+    if ferric_integrals::engine::libint_max_deriv_order() >= 2 {
+        use ferric_scf::hessian::uhf_hessian_parts;
+        use ferric_scf::screening::SchwarzBounds;
+        use ferric_scf::uhf::solve_uhf;
+        let big = PreparedBasis::new(&mol, &basis::bundled("def2-tzvp").unwrap()).unwrap();
+        let bounds = SchwarzBounds::compute(op, &big).unwrap();
+        let cfg = RhfConfig {
+            max_iter: 300,
+            df_j_aux: Some("cc-pvdz-ri".into()),
+            df_k_aux: Some("cc-pvdz-ri".into()),
+            ..Default::default()
+        };
+        let ctx = ParallelContext::default();
+        clear_global();
+        let uhf = solve_uhf(&ctx, &mol, &big, &bounds, &cfg).unwrap();
+        let est = rik_peak_bytes_channels(3, big.nbasis(), &[5, 4], naux);
+        let run = || uhf_hessian_parts(&ctx, &mol, &big, op, &bounds, &uhf, &cfg);
+        install_global(MemoryPool::with_capacity_bytes(est - 1));
+        let e = run().expect_err("below the estimate").to_string();
+        eprintln!("whole Hessian, pool at estimate - 1: {e}");
+        assert!(e.contains("RI-K Hessian"), "{e}");
+        install_global(MemoryPool::with_capacity_bytes(2 * est));
+        run().expect("twice the estimate must run");
+        clear_global();
+    }
 }
 
 /// Live and peak bytes the process has allocated through the global allocator.
@@ -399,7 +430,7 @@ fn whole_hessian_peak(label: &str, basis_name: &str, aux: &str) {
 }
 
 #[test]
-#[ignore = "measurement: peak allocation of the WHOLE UHF Hessian (RI-JK, CPHF included) against the estimate (counting allocator)"]
+#[ignore = "measurement: peak allocation of the WHOLE UHF Hessian (RI-JK, CPHF included) against the estimate (counting allocator); measured 39 s (box load ~8)"]
 fn the_estimate_bounds_the_measured_whole_hessian_allocation() {
     if ferric_integrals::engine::libint_max_deriv_order() < 2 {
         eprintln!("SKIP: libint2 without second derivatives");
