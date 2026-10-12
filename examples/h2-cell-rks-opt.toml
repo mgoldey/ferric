@@ -6,8 +6,8 @@
 # RKS, UKS or ROKS, on jk = "dense" or "rsgdf") and ferric's Cartesian BFGS.
 # Every step rebuilds the lattice sums and J/K at the new positions and runs a
 # fresh SCF, which must converge. The run prints the final geometry and the
-# final gradient dE/dR (Hartree/Bohr per cell). k-point meshes are refused
-# (k-point forces are not wired into the CLI); there is no lattice relaxation.
+# final gradient dE/dR (Hartree/Bohr per cell). A k-point mesh with RHF/UHF has
+# its own example (h2-cell-kpts-rhf-opt.toml); there is no lattice relaxation.
 #
 # Seconds to run:
 #   OPENBLAS_NUM_THREADS=1 cargo run --release --bin ferric -- examples/h2-cell-rks-opt.toml

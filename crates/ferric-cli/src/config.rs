@@ -5317,11 +5317,11 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
                     route.label()
                 ));
             }
-            if kpoints {
+            if kpoints && !matches!(route, PeriodicRoute::Rhf | PeriodicRoute::Uhf) {
                 return Err(format!(
-                    "method.task = \"optimize\" with [cell] kmesh is not implemented: \
-                     k-point forces are not wired into the CLI. Remove kmesh to optimize \
-                     at the Gamma point (the {} route has analytic Gamma forces)",
+                    "method.task = \"optimize\" with [cell] kmesh is implemented for the k-point \
+                     HF routes (rhf, uhf) only: periodic {} at a k-point mesh has no analytic \
+                     force. Remove kmesh to optimize at the Gamma point where the route has one",
                     route.label()
                 ));
             }
@@ -5719,11 +5719,18 @@ kind = "ccsd"
 
     #[test]
     fn optimize_is_refused_with_a_kmesh_and_for_correlated_routes() {
-        for kind in ["rhf", "uhf"] {
-            let e = err(&opt(kind, "kmesh = [1, 1, 2]", ""));
-            assert!(e.contains("optimize") && e.contains("kmesh"), "{kind}: {e}");
-            assert!(e.contains("k-point forces"), "{kind}: {e}");
+        // k-point RHF/UHF optimize resolves (analytic k-point forces); KS has none.
+        for (kind, route) in [("rhf", PeriodicRoute::Rhf), ("uhf", PeriodicRoute::Uhf)] {
+            let p = ok(&opt(kind, "kmesh = [1, 1, 2]", ""));
+            assert!(p.optimize && p.kmesh.is_some(), "{kind}");
+            assert_eq!(p.route, route, "{kind}");
         }
+        let e = err(&opt("ksdft", "kmesh = [1, 1, 2]", ""));
+        assert!(e.contains("optimize") && e.contains("kmesh"), "ksdft: {e}");
+        assert!(e.contains("no analytic force"), "ksdft: {e}");
+        // A range split and an "auto" ω stay refused with optimize at a mesh.
+        let rs = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"\nkmesh = [1, 1, 2]\nrange_split = true";
+        assert!(err(&opt("rhf", rs, "")).contains("optimize"));
         for kind in ["rimp2", "pdep-rpa"] {
             let e = err(&opt(kind, "denominators = \"shifted\"", ""));
             assert!(
