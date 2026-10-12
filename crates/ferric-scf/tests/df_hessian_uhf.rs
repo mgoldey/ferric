@@ -876,6 +876,22 @@ fn full_hessian_matches_fd_ch3_ccpvdz_jkfit() {
 }
 
 #[test]
+fn a_spin_with_no_electrons_has_no_exchange_channel() {
+    // H2+ (one alpha electron, no beta): the beta channel is empty, its K^x is
+    // zero and the fitted CPHF still couples through the total Coulomb density.
+    // Hypothesis: the Hessian matches the differenced own gradient like any
+    // other system; artifact: an empty channel panics or contributes a stray
+    // term (an out-of-range channel index would swap or drop the alpha channel).
+    let mol = Molecule::parse_xyz("2\nH2+\nH 0.0 0.0 0.0\nH 0.1 0.05 0.95\n", 1, 2).unwrap();
+    for (j, k) in [
+        ("", "def2-universal-jkfit"),
+        ("def2-universal-jkfit", "def2-universal-jkfit"),
+    ] {
+        check_full(&mol, "sto-3g", j, k, BAR_OWN);
+    }
+}
+
+#[test]
 fn translational_and_rotational_invariance() {
     if !has_deriv2() {
         return;
@@ -1328,6 +1344,33 @@ fn rohf_with_ri_and_other_unsupported_configurations_are_refused() {
         ..ri("def2-universal-jkfit", "def2-universal-jkfit")
     };
     assert!(uhf_hessian_preflight(op, &cosmo).is_err());
+}
+
+#[test]
+fn the_pre_scf_probe_refuses_an_ill_conditioned_exchange_metric_for_uhf() {
+    // The metric depends on the geometry and the fitting basis only, so the UHF
+    // probe (what `Auto` consults before any SCF) applies the same RI-K metric
+    // checks as the RHF one: aug-cc-pVQZ-RIFIT on a water-size molecule has
+    // cond(V) ~ 2e8 (above RIK_COND_WARN = 1e8): refused by the probe, hence
+    // `Auto` runs finite differences; RI-J alone accepts it (the full inverse
+    // measured no degradation there). Needs only the first-derivative engines
+    // for the engine checks before the metric one, and the second-derivative
+    // ones for the final probe.
+    if !has_deriv2() {
+        return;
+    }
+    let mol = nh2();
+    let prep = prep_at(&mol, "sto-3g");
+    let op = Operator::coulomb();
+    let k_cfg = scf_config("", "aug-cc-pvqz-rifit");
+    let e = ferric_scf::hessian::analytic_uhf_hessian_available(&mol, &prep, op, &k_cfg)
+        .expect_err("cond above 1e8 must be refused for Auto")
+        .to_string();
+    eprintln!("UHF RI-K ill-conditioned probe: {e}");
+    assert!(e.contains("cond") || e.contains("lie in"), "{e}");
+    let j_cfg = scf_config("aug-cc-pvqz-rifit", "");
+    ferric_scf::hessian::analytic_uhf_hessian_available(&mol, &prep, op, &j_cfg)
+        .expect("RI-J on the same fit is accepted");
 }
 
 #[test]
