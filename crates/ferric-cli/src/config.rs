@@ -5325,9 +5325,8 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
             // the k-point energy path cannot silently enable an optimize.
             if kpoints && route == PeriodicRoute::Rks {
                 let f = functional.as_deref().unwrap_or("LDA");
-                ferric_pbc::kxcgrad::check_force_functional(f).map_err(|e| {
-                    format!("method.task = \"optimize\" with [cell] kmesh: {e}")
-                })?;
+                ferric_pbc::kxcgrad::check_force_functional(f)
+                    .map_err(|e| format!("method.task = \"optimize\" with [cell] kmesh: {e}"))?;
             }
             if let Some(s) = cfg.optimize.coordinates.as_deref() {
                 if parse_coord_system(s)? != ferric_scf::optimize::CoordSystem::Cartesian {
