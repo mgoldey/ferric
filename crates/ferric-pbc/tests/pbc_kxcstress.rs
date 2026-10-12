@@ -156,8 +156,19 @@ fn scf_on(
     grid: &KXcGrid,
     exxdiv: ExxDiv,
 ) -> KRksResult {
-    let bs = pyscf_sto3g_h();
-    let prep = prep_for(cell, &bs);
+    scf_bs(cell, mesh_n, functional, jk, grid, exxdiv, &pyscf_sto3g_h())
+}
+
+fn scf_bs(
+    cell: &Cell,
+    mesh_n: [usize; 3],
+    functional: &str,
+    jk: Jk,
+    grid: &KXcGrid,
+    exxdiv: ExxDiv,
+    bs: &BasisSet,
+) -> KRksResult {
+    let prep = prep_for(cell, bs);
     let mesh = KPointMesh::gamma_centred(cell, mesh_n).unwrap();
     let cfg = krks_cfg(cell, functional, jk, grid, exxdiv);
     let aux_bs = et_sp_aux();
@@ -201,10 +212,21 @@ fn fixture_exx(
     grid: KXcGrid,
     exxdiv: ExxDiv,
 ) -> Fx {
-    let bs = pyscf_sto3g_h();
-    let prep = prep_for(&cell, &bs);
+    fixture_bs(cell, mesh_n, functional, jk, grid, exxdiv, &pyscf_sto3g_h())
+}
+
+fn fixture_bs(
+    cell: Cell,
+    mesh_n: [usize; 3],
+    functional: &str,
+    jk: Jk,
+    grid: KXcGrid,
+    exxdiv: ExxDiv,
+    bs: &BasisSet,
+) -> Fx {
+    let prep = prep_for(&cell, bs);
     let mesh = KPointMesh::gamma_centred(&cell, mesh_n).unwrap();
-    let res = scf_on(&cell, mesh_n, functional, jk, &grid, exxdiv);
+    let res = scf_bs(&cell, mesh_n, functional, jk, &grid, exxdiv, bs);
     let cfg = krks_cfg(&cell, functional, jk, &grid, exxdiv);
     let hk = periodic_hcore_kpts(&cell, &prep, &mesh, &cfg.krhf.hcore).unwrap();
     let aux = prep_for(&cell, &et_sp_aux());
@@ -238,7 +260,7 @@ fn scfg(grid: &KXcGrid, mutation: Option<KXcStressMutation>) -> KRksStressConfig
     }
 }
 
-fn stress_cfg(fx: &Fx, cfg: &KRksStressConfig) -> KRksStress {
+fn try_stress_cfg(fx: &Fx, cfg: &KRksStressConfig) -> Result<KRksStress, ferric_core::FerricError> {
     let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
     match fx.jk {
         Jk::Dense => {
@@ -262,7 +284,6 @@ fn stress_cfg(fx: &Fx, cfg: &KRksStressConfig) -> KRksStress {
                 &fx.functional,
                 cfg,
             )
-            .unwrap()
         }
         Jk::Gdf => {
             let kc = kgdf_cfg();
@@ -284,9 +305,12 @@ fn stress_cfg(fx: &Fx, cfg: &KRksStressConfig) -> KRksStress {
                 &fx.functional,
                 cfg,
             )
-            .unwrap()
         }
     }
+}
+
+fn stress_cfg(fx: &Fx, cfg: &KRksStressConfig) -> KRksStress {
+    try_stress_cfg(fx, cfg).expect("kpoint_rks_stress")
 }
 
 fn stress(fx: &Fx, mutation: Option<KXcStressMutation>) -> KRksStress {
@@ -807,8 +831,9 @@ fn fd_anchor(jk: Jk, f: &str, bar: f64) {
 
 /// Uniform-grid FD step and bar. Floor MEASURED: 1.02e-8 over all nine
 /// components at h = 1e-4 for PBE and LDA, dense and RS-GDF (the central-FD
-/// h^2 truncation: 4.3e-8 at 2e-4, 1.0e-8 at 1e-4, 1.8e-9 at 5e-5,
-/// `uniform_grid_fd_miss_scales_as_h_squared`); the smallest production-wired
+/// h^2 truncation: 4.3e-8 at 2e-4, 1.0e-8 at 1e-4, then 1.8e-9 at 5e-5 where
+/// roundoff starts to matter; `uniform_grid_fd_miss_scales_as_h_squared`
+/// asserts the 2e-4 -> 1e-4 ratio is in [3, 5.5]); the smallest production-wired
 /// mutant misses by 1.2e-2 (NoHessian / NoStrainMoment). The bar 5e-8 is 5x
 /// the floor and 2e5x below the smallest mutant, and equals the k HF stress
 /// FD bar of `pbc_kstress.rs`.
@@ -865,8 +890,10 @@ const FD_H_ATOM: f64 = 2.5e-5;
 /// Atom-grid FD bar. Floor MEASURED over all nine components (h = 2.5e-5,
 /// cutoff 10): 7.0e-9 (`fd_window_probe_all_nine_atom_grid`; 1.5e-9 at 1e-5,
 /// 5.7e-9 at 5e-5, and 2.0e-6 at 1e-4 where eps_11 crosses the mask). The
-/// smallest production-wired mutant misses by 1.2e-2 (NoHessian). The bar is
-/// 4x the floor and 4e5x below the smallest mutant.
+/// floor is NOT monotone in h: it is roundoff plus mask jumps, not h^2
+/// truncation. The bar is only ~4x that floor; the both-sides argument rests
+/// on the smallest production-wired mutant missing by 1.2e-2 (NoHessian),
+/// 4e5x above the bar.
 const FD_BAR_ATOM: f64 = 3e-8;
 
 /// (e) FD of the energy on the ATOM-CENTRED grid, PBE (20,50), explicit shared
@@ -1016,35 +1043,40 @@ fn rotation_case(name: &str, grid: KXcGrid, bar: f64) {
 
 // ---------------------------------------------------------------- exxdiv
 
-/// A pure functional has no exchange, so the exxdiv choice of the SCF is
-/// irrelevant: energy and stress under `ewald` equal those under `none`
-/// (artifact hypothesis: a Madelung leak into the KS path shows as a
-/// v_M-sized difference, ~0.1 Ha; physics predicts equality to SCF noise).
+/// For a pure functional the SCF builds no `K`, so the exxdiv it ran under
+/// cannot matter, and `kpoint_rks_stress` takes no exxdiv (it passes `vm = 0`
+/// and exchange scale 0 to the HF assembly). This test checks that the SCF
+/// energy and the stress computed from a `ewald` SCF (dense AFT and RS-GDF
+/// built with the Ewald shift) equal those from a `none` SCF; it is a
+/// wiring check (a Madelung leak into the KS SCF or into the stress Fock guard
+/// would be v_M-sized, ~0.1 Ha), not an independent physics anchor.
 #[test]
 fn ewald_and_none_exxdiv_agree_for_a_pure_functional() {
     let grid = KXcGrid::Uniform([24, 24, 24]);
-    let a = fixture_exx(
-        cell_of(&H2),
-        [1, 1, 3],
-        "PBE",
-        Jk::Dense,
-        grid.clone(),
-        ExxDiv::None,
-    );
-    let b = fixture_exx(
-        cell_of(&H2),
-        [1, 1, 3],
-        "PBE",
-        Jk::Dense,
-        grid,
-        ExxDiv::Ewald,
-    );
-    let (sa, sb) = (stress(&a, None), stress(&b, None));
-    let de = (a.res.scf.energy - b.res.scf.energy).abs();
-    let ds = mdiff(&sa.de_deps, &sb.de_deps);
-    eprintln!("exxdiv none vs ewald: energy {de:.2e}, dE/de {ds:.2e}");
-    assert!(de < 1e-11, "{de:e}");
-    assert!(ds < 1e-9, "{ds:e}");
+    for jk in [Jk::Dense, Jk::Gdf] {
+        let a = fixture_exx(
+            cell_of(&H2),
+            [1, 1, 3],
+            "PBE",
+            jk,
+            grid.clone(),
+            ExxDiv::None,
+        );
+        let b = fixture_exx(
+            cell_of(&H2),
+            [1, 1, 3],
+            "PBE",
+            jk,
+            grid.clone(),
+            ExxDiv::Ewald,
+        );
+        let (sa, sb) = (stress(&a, None), stress(&b, None));
+        let de = (a.res.scf.energy - b.res.scf.energy).abs();
+        let ds = mdiff(&sa.de_deps, &sb.de_deps);
+        eprintln!("{jk:?} exxdiv none vs ewald: energy {de:.2e}, dE/de {ds:.2e}");
+        assert!(de < 1e-11, "{jk:?} {de:e}");
+        assert!(ds < 1e-9, "{jk:?} {ds:e}");
+    }
 }
 
 // ---------------------------------------------------------------- bitwise
@@ -1124,15 +1156,27 @@ fn xc_chunks_are_budgeted() {
         )
     };
     let full = at(AMPLE).unwrap();
-    let mut saw = false;
+    // Every budget either reproduces the stress bitwise or fails with a typed
+    // error; the XC chunk gate and the Fock-guard reservation both trip.
+    let (mut saw, mut saw_guard, mut n_ok) = (false, false, 0);
     let mut b = 20_000usize;
-    while b < 2_000_000 {
-        if let Err(e) = at(b) {
-            saw |= e.to_string().contains("k-point XC stress AO moment chunk");
+    while b < 80_000_000 {
+        match at(b) {
+            Ok(s) => {
+                assert_eq!(s.de_deps, full.de_deps, "budget {b}");
+                n_ok += 1;
+            }
+            Err(e) => {
+                let m = e.to_string();
+                saw |= m.contains("k-point XC stress AO moment chunk");
+                saw_guard |= m.contains("k KS stress Fock-guard matrices");
+            }
         }
-        b += b / 8;
+        b += b / 2;
     }
+    eprintln!("budget sweep: {n_ok} bitwise-equal, chunk gate {saw} (the 768-byte guard reservation never trips alone: {saw_guard})");
     assert!(saw, "some budget must fail on the XC chunk gate");
+    assert!(n_ok > 0);
     let mut cfg = scfg(&fx.grid, None);
     cfg.max_live_chunks = Some(1);
     let one = stress_cfg(&fx, &cfg);
@@ -1293,10 +1337,13 @@ fn fd_window_probe_all_nine_atom_grid() {
 /// to 6.5e-13 at this mesh, and ferric's dense-AFT energy on the same uniform
 /// grid matches PySCF's (`pbc_krks.rs` pins), so this is the stress of the
 /// same energy. Diagonal values; the off-diagonals are symmetric zeros
-/// (|.| < 1e-13). Reference: `scripts/gen_pyscf_kks_stress_refs.py`.
+/// (|.| < 1e-13). The `LDA` row is PySCF's `LDA,VWN` (ferric's LDA is SVWN;
+/// PySCF's bare `LDA` is exchange only). The constants block below is the
+/// verbatim output of `scripts/gen_pyscf_kks_stress_refs.py`, which asserts
+/// the PySCF version cited here.
 const PYSCF_STRESS: [(&str, f64, f64); 2] = [
-    ("LDA", 6.102756319e-3, -5.161318677e-3),
-    ("PBE", 5.824134026e-3, -5.078720384e-3),
+    ("LDA", 6.102756319e-03, -5.161318677e-03),
+    ("PBE", 5.824134026e-03, -5.078720384e-03),
 ];
 const PYSCF_STRESS_BAR: f64 = 1e-9;
 
@@ -1551,6 +1598,9 @@ fn uniform_grid_fd_miss_scales_as_h_squared() {
             "h={h:.1e}: worst miss {m:.3e} (ratio to previous {:.2})",
             prev / m
         );
+        if h == 1e-4 {
+            assert!((3.0..5.5).contains(&(prev / m)), "ratio {}", prev / m);
+        }
         prev = m;
     }
 }
@@ -1647,9 +1697,10 @@ fn rotated_and_unrotated_sr_walks_are_consistent_with_the_energy() {
 
 /// The antisymmetric part of the atom-grid stress against the grid size
 /// (ROTATION non-invariance of the lab-fixed Lebedev grid; module doc of
-/// `kxcstress`). It must shrink as the grid is refined and be roundoff on the
-/// uniform grid. Artifact hypothesis: a bug in the point-anchor terms would
-/// not shrink with the grid.
+/// `kxcstress`). Reported for four grids (not monotone: 1.1e-4, 7.1e-5,
+/// 7.8e-5, 7.6e-6); ASSERTED: the default (75,302) value is below the minimum
+/// of the coarser grids. Artifact hypothesis: a bug in the point-anchor terms
+/// would not drop on the fine grid.
 #[test]
 #[ignore = "4 SCFs up to (75,302) grids; measured 26 s"]
 fn atom_grid_antisymmetry_shrinks_with_the_grid() {
@@ -1674,4 +1725,81 @@ fn atom_grid_antisymmetry_shrinks_with_the_grid() {
         }
         prev = prev.min(s.antisymmetry());
     }
+}
+
+// ------------------------------------------- p shell on a triclinic cell
+
+/// Two H atoms of the triclinic `TRI_A` lattice.
+const TRI2: [[f64; 3]; 2] = [[0.13, 0.25, 0.31], [0.02, 0.27, 1.66]];
+
+/// s + Cartesian p on the non-orthogonal `TRI_A` cell, uniform 24^3 grid
+/// (smooth under strain), PBE, dense AFT, 1x1x3 mesh: analytic stress vs
+/// central FD of the energy for three components including off-diagonal ones.
+/// This is the cheap non-ignored cover of `eval_bloch_strain` with n > 1
+/// functions per shell (`mu = off + i`), p-shell first AND Hessian moments
+/// (m1, m2) and non-orthogonal lattice phases, none of which the cubic s-only
+/// fixtures reach. Artifact hypothesis: a wrong function offset or a p-shell
+/// Hessian-moment index error misses by the p-term size (>1e-4), not 5e-8.
+#[test]
+fn p_shell_triclinic_uniform_grid_stress_matches_fd() {
+    let bs = sp_basis_h();
+    let cell = Cell::new(hydrogens(&TRI2), TRI_A).expect("triclinic cell");
+    let grid = KXcGrid::Uniform([24; 3]);
+    let fx = fixture_bs(
+        cell,
+        [1, 1, 3],
+        "PBE",
+        Jk::Dense,
+        grid.clone(),
+        ExxDiv::None,
+        &bs,
+    );
+    let s = stress(&fx, None);
+    let mut worst = 0.0_f64;
+    for (i, j) in [(0, 2), (1, 1), (2, 0)] {
+        let e = |h: f64| {
+            scf_bs(
+                &strained(&fx.cell, i, j, h),
+                [1, 1, 3],
+                "PBE",
+                Jk::Dense,
+                &grid,
+                ExxDiv::None,
+                &bs,
+            )
+            .scf
+            .energy
+        };
+        let d = (e(FD_H) - e(-FD_H)) / (2.0 * FD_H);
+        worst = worst.max((d - s.de_deps[i][j]).abs());
+    }
+    eprintln!(
+        "triclinic s+p uniform: worst FD miss {worst:.2e}; |dE/de| max {:.3e}; antisymmetry {:.1e}",
+        mmax(&s.de_deps),
+        s.antisymmetry()
+    );
+    assert!(worst < 2.0 * FD_BAR, "{worst:e}");
+    // The p-shell moment terms matter here: dropping the Hessian moment misses.
+    let nh = mdiff(
+        &stress(&fx, Some(KXcStressMutation::NoHessian)).de_deps,
+        &s.de_deps,
+    );
+    eprintln!("NoHessian miss on the p-shell cell: {nh:.2e}");
+    assert!(nh > MUTANT_BAR);
+}
+
+// ------------------------------------------------- hybrid SCF, pure stress
+
+/// A PBE0 SCF handed to the PBE stress: the rebuilt F has no `K`, so the
+/// exact Fock guard refuses (artifact hypothesis: a guard that only compared
+/// the XC part would pass this and return a finite wrong stress).
+#[test]
+fn a_hybrid_scf_is_refused_by_the_pure_stress() {
+    let mut fx = fixture(&H2, [1, 1, 3], "PBE0", Jk::Dense, KXcGrid::Uniform([24; 3]));
+    fx.functional = "PBE".to_string();
+    let e = try_stress_cfg(&fx, &scfg(&fx.grid, None))
+        .expect_err("must refuse")
+        .to_string();
+    eprintln!("PBE0 SCF -> PBE stress: {e}");
+    assert!(e.contains("differs"), "{e}");
 }

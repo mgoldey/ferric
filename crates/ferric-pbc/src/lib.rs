@@ -113,8 +113,10 @@
 //!   refused.
 //! * [`kxcstress`] — the stress of the same energy (`kpoint_rks_stress`): the
 //!   exchange-free k HF stress plus the XC strain terms on Bloch AOs (AO
-//!   strain with point motion, SSF weight response on an atom grid or the
-//!   volume term on a uniform grid); same refusals.
+//!   strain with point motion, the partition-weight response on an atom grid
+//!   or the volume term on a uniform grid). Pure LDA/GGA only: global
+//!   hybrids, range-separated hybrids, meta-GGA, VV10 and open shell are
+//!   refused. The stress is returned unsymmetrised (the Gamma convention).
 //! * [`kstress`] — the k-point RHF / UHF stress tensor
 //!   (`kpoint_rhf_stress`, `kpoint_uhf_stress`) on the dense-AFT and the
 //!   unsplit RS-GDF J/K:

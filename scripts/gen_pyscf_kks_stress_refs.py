@@ -49,13 +49,25 @@ def run(c, xc, n=(1, 1, 2)):
     return mf
 
 
+PYSCF_VERSION = "2.13.1"  # the version cited by tests/pbc_kxcstress.rs
+# ferric's "LDA" functional is SVWN (LDA_X + LDA_C_VWN) = PySCF "LDA,VWN"
+# (PySCF's bare "LDA" is exchange only).
+ROWS = (("LDA", "LDA,VWN"), ("PBE", "PBE"))
+
+
 def main(check_fd):
-    for xc in ("LDA,VWN", "PBE"):
+    import pyscf
+
+    assert pyscf.__version__ == PYSCF_VERSION, (pyscf.__version__, PYSCF_VERSION)
+    print(f"// PySCF {pyscf.__version__}; paste into PYSCF_STRESS (name, xx, zz)")
+    rows = []
+    for name, xc in ROWS:
         c = make_cell()
         mf = run(c, xc)
         s = krks_stress.kernel(kg.Gradients(mf))
         print(xc, "E", mf.e_tot)
         print(np.array2string(s, precision=9))
+        rows.append(f'    ("{name}", {s[0, 0]:.9e}, {s[2, 2]:.9e}),')
         if check_fd:
             h = 1e-4
             fd = np.zeros((3, 3))
@@ -67,6 +79,9 @@ def main(check_fd):
                     e2 = run(make_cell(-ep), xc).e_tot
                     fd[a, b] = (e1 - e2) / (2 * h) / c.vol
             print(xc, "max|analytic - FD|", np.abs(s - fd).max())
+    print("const PYSCF_STRESS: [(&str, f64, f64); 2] = [")
+    print("\n".join(rows))
+    print("];")
 
 
 if __name__ == "__main__":

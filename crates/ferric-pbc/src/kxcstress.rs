@@ -59,8 +59,10 @@
 //!   no home atom; the rotation-invariant energy gives a symmetric stress.
 //! * **Atom-centred grid** ([`crate::dft::PeriodicGrid::build`]): the anchor is
 //!   the home atom (the point moves with it, offset unstrained, so `w_rl` is
-//!   unchanged) and the weight response is the SSF partition derivative of
-//!   `dft::build_strain_grid` (k-independent, `dW/dε` per point).
+//!   unchanged) and the weight response is the partition derivative of
+//!   `dft::build_strain_grid` for the configured partition (SSF is the
+//!   default and the only one tested; Becke is accepted but untested;
+//!   k-independent, `dW/dε` per point).
 //!   The grid is built from lab-fixed Lebedev offsets, so the ENERGY is not
 //!   invariant under a rigid rotation of the cell and the stress carries an
 //!   antisymmetric part `σ_ab − σ_ba` that vanishes only as the grid is
@@ -83,13 +85,23 @@
 //! # Fock guard
 //!
 //! As [`crate::kxcgrad`]: `F = h + J + V_xc` is rebuilt and compared with the
-//! SCF's stored Fock at [`crate::kgrad::FOCK_CONSISTENCY_BAR`].
+//! SCF's stored Fock at [`crate::kgrad::FOCK_CONSISTENCY_BAR`]. A result of
+//! another functional (tested for a wrong pure functional and for a PBE0 SCF
+//! handed in as PBE: the missing `K` is caught), grid, AO threshold or J route
+//! is refused. The entry takes no `exxdiv`: a pure functional builds no `K`, so
+//! the stress is independent of the exxdiv the SCF ran under by construction
+//! (`vm = 0`, exchange scale 0 are passed to the HF assembly).
+//!
+//! `sigma` is returned UNSYMMETRISED; a Python/CLI export should use
+//! [`KRksStress::symmetric`].
 //!
 //! # Memory
 //!
 //! The Bloch AO cache of the energy is never retained. A live chunk holds
 //! `40·nbf·N_k·chunk` complex values (`φ`, `∇φ`, `m1` (9), `m2` (27) for every
-//! k) plus six `nbf·chunk` work planes and a partial `V_xc`; the chunk shrinks
+//! k) plus six `nbf·chunk` work planes and a partial `V_xc` (the 40 planes are
+//! the GGA count; an LDA run needs 30 fewer and is over-charged, harmlessly);
+//! the chunk shrinks
 //! with `N_k·nbf`, the number of concurrent chunks with the remaining budget,
 //! and the pass is pre-flighted on the memory ledger (typed error
 //! when not even one chunk fits). The strain-grid derivatives (`npts·96` B) are
@@ -743,6 +755,16 @@ fn rks_stress_with(
     let mut ledger = open_ledger(prep, mesh, &cfg.stress, false)?;
     let d = scf.densities.clone();
     let xo = xc.evaluate(&d, &ledger)?;
+    // Guard-stage peak beyond `open_ledger`'s arrays: D (kept by `KSpins`
+    // through `assemble`), J, F and V_xc, each N_k n² complex. The XC chunk
+    // transient was released with its ledger clone.
+    ledger.reserve(
+        &format!(
+            "k KS stress Fock-guard matrices D, J, F, V_xc (n = {}, N_k = {nk})",
+            prep.nbasis()
+        ),
+        bytes_of((nk * prep.nbasis() * prep.nbasis()) as u64, 16 * 4),
+    )?;
     // F = h + J + V_xc (no exchange); the stored Fock of the SCF must agree.
     let (j, _k) = jk_build(&gj, 0.0, &d)?;
     let with_vxc = cfg.mutation != Some(KXcStressMutation::PulayNoVxc);
