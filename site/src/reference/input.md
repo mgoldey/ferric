@@ -419,7 +419,7 @@ force, and prints the final gradient (Hartree/Bohr per cell). With `kmesh` it
 works for `rhf` and `uhf` (no functional) using the analytic k-point force,
 with either `jk`; it is an error for k-point Kohn-Sham and `rohf`, and for
 `rimp2`/`pdep-rpa`. The lattice is fixed and no stress is printed (the Python
-`run_rhf_kpts`/`run_uhf_kpts` return both). `task = "frequencies"` is an error.
+`run_rhf_kpts`/`run_uhf_kpts` return both). Each optimizer step runs a fresh SCF from the core guess; at a k-point mesh with `uhf` it can land in a different spin solution between steps, which shows as a visible jump in the step energies (nothing is hidden). The force is taken through the hcore and J/K objects the SCF built, which stay in memory for the force: their bytes are charged against the same memory budget (`[memory] budget_gb` with `jk = "rsgdf"`), and with `jk = "dense"` the kernels count against `max_eri_gb` while they exist. `task = "frequencies"` is an error.
 
 The periodic run reads only `[cell]`, `[scf]` `max_iter`, `[scf]`
 `density_conv` (Gamma point) or `energy_conv` (k-point mesh), `[dft]`

@@ -2201,7 +2201,10 @@ def run_rhf_kpts(
     range_split: the Gamma bindings' opt-in RS-GDF range split (jk="rsgdf").
     with_gradient / with_stress (default False) add the analytic forces and
     stress of the converged SCF (result.gradient() / result.stress(), units as
-    the Gamma bindings); range_split with either is a ValueError."""
+    the Gamma bindings); range_split with either is a ValueError. The hcore and
+    J/K the SCF built stay in memory for the derivative and are charged
+    against memory_budget_gb (jk="rsgdf"), so a derivative run needs the
+    energy's tensors plus the derivative's own working set."""
     ...
 
 def run_uhf_kpts(

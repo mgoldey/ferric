@@ -280,11 +280,11 @@ struct PbcSetup {
     max_eri_bytes: usize,
     /// RS-GDF / correlation budget (`None` = ferric's unified budget).
     budget_bytes: Option<usize>,
-    /// Analytic derivatives requested (Gamma SCF bindings only; all-false
-    /// everywhere else).
+    /// Analytic derivatives requested (the Gamma SCF bindings and the k-point
+    /// `run_rhf_kpts` / `run_uhf_kpts`; all-false everywhere else).
     derivs: DerivRequest,
-    /// Opt-in RS-GDF range split (Gamma energy bindings only, resolved by
-    /// [`parse_range_split`]; `None` everywhere else).
+    /// Opt-in RS-GDF range split (the Gamma and k-point energy runs, resolved
+    /// by [`parse_range_split`]; refused together with `derivs`).
     range_split: Option<RangeSplit>,
     /// SR column rotation of the Gamma hcore and RS-GDF builds, RESOLVED by
     /// [`parse_sr_column_rotation`] (`On` / `Off`; on by default for a Gamma

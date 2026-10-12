@@ -4715,7 +4715,7 @@ pub struct PeriodicPlan {
     /// e.g. `"on (default)"` or `"off (default: kmesh ...)"`.
     pub sr_column_rotation_note: &'static str,
     /// `method.task = "optimize"`: Gamma-point SCF routes (RHF/UHF/ROHF/RKS/
-    /// UKS/ROKS), either J/K, atoms only at a fixed lattice.
+    /// UKS/ROKS) and k-point RHF/UHF, either J/K, atoms only at a fixed lattice.
     pub optimize: bool,
 }
 
@@ -4897,8 +4897,8 @@ fn resolve_range_split(
 ///
 /// `kmesh` accepts it: the k-point hcore and RS-GDF energy builders run the
 /// same rotated walks, back-transformed before the phase contraction.
-/// `task = "optimize"` accepts it (Gamma only): the Gamma force builders
-/// differentiate the same rotated walks the energy runs.
+/// `task = "optimize"` accepts it (Gamma point and k-point RHF/UHF): the force
+/// builders differentiate the same rotated walks the energy runs.
 fn resolve_sr_column_rotation(
     key: Option<bool>,
     rsgdf: bool,
@@ -5311,19 +5311,22 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
         "optimize" => {
             if route.correlated() {
                 return Err(format!(
-                    "method.task = \"optimize\" with [cell] is implemented for the Gamma-point \
-                     SCF routes (rhf, uhf, rohf, ksdft; RHF/UHF/ROHF/RKS/UKS/ROKS) only: \
-                     periodic {} has no analytic gradient",
+                    "method.task = \"optimize\" with [cell] is implemented for the SCF routes \
+                     (rhf, uhf, rohf, ksdft at the Gamma point; rhf, uhf at a k-point mesh) \
+                     only: periodic {} has no analytic gradient",
                     route.label()
                 ));
             }
-            if kpoints && !matches!(route, PeriodicRoute::Rhf | PeriodicRoute::Uhf) {
-                return Err(format!(
+            // The other k-point routes are refused at the energy level
+            // (`check_kpoint_support`) or are correlated (refused above), so
+            // closed-shell Kohn-Sham is the one that reaches this point.
+            if kpoints && route == PeriodicRoute::Rks {
+                return Err(
                     "method.task = \"optimize\" with [cell] kmesh is implemented for the k-point \
-                     HF routes (rhf, uhf) only: periodic {} at a k-point mesh has no analytic \
-                     force. Remove kmesh to optimize at the Gamma point where the route has one",
-                    route.label()
-                ));
+                     HF routes (rhf, uhf) only: k-point Kohn-Sham (RKS) has no analytic force. \
+                     Remove kmesh to optimize at the Gamma point"
+                        .into(),
+                );
             }
             if let Some(s) = cfg.optimize.coordinates.as_deref() {
                 if parse_coord_system(s)? != ferric_scf::optimize::CoordSystem::Cartesian {
@@ -5729,8 +5732,19 @@ kind = "ccsd"
     #[test]
     fn k_point_optimize_refusals_stay() {
         let e = err(&opt("ksdft", "kmesh = [1, 1, 2]", ""));
-        assert!(e.contains("optimize") && e.contains("kmesh"), "ksdft: {e}");
-        assert!(e.contains("no analytic force"), "ksdft: {e}");
+        assert!(
+            e.contains("k-point Kohn-Sham (RKS) has no analytic force"),
+            "{e}"
+        );
+        // ROHF and open-shell KS at a mesh are refused at the energy level.
+        let e = err(&opt("rohf", "kmesh = [1, 1, 2]", ""));
+        assert!(e.contains("not supported for periodic ROHF"), "{e}");
+        let e = err(&opt(
+            "uhf",
+            "kmesh = [1, 1, 2]",
+            "[dft]\nfunctional = \"PBE\"",
+        ));
+        assert!(e.contains("open-shell Kohn-Sham"), "{e}");
         // A range split stays refused with optimize at a mesh.
         let rs = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"\nkmesh = [1, 1, 2]\nrange_split = true";
         assert!(err(&opt("rhf", rs, "")).contains("optimize"));

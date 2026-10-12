@@ -15,10 +15,12 @@
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
+use ferric_core::units::BOHR_RADIUS_ANGSTROM;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_pbc::{
     kpoint_rhf_gradient, kpoint_uhf_gradient, solve_krhf_keep, solve_kuhf_keep, Cell, ExxDiv,
-    KGradConfig, KPointMesh, KRhfConfig, KUhfConfig, MeshCentring, PeriodicHcoreConfig,
+    KGradConfig, KJkKind, KPointMesh, KRhfConfig, KUhfConfig, MeshCentring, PeriodicHcoreConfig,
+    SrColumnRotation,
 };
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -52,8 +54,31 @@ fn scratch(tag: &str) -> PathBuf {
     dir
 }
 
-/// Runs an optimize input and returns the process output.
+/// Runs an optimize input (STO-3G, dense J/K) and returns the process output.
 fn run(tag: &str, xyz: &str, kind: &str, mult: usize, kmesh: &str, optimize: &str) -> Output {
+    run_with(
+        tag,
+        xyz,
+        kind,
+        mult,
+        kmesh,
+        optimize,
+        "sto-3g",
+        "jk = \"dense\"",
+    )
+}
+
+/// [`run`] with an explicit basis and J/K lines.
+fn run_with(
+    tag: &str,
+    xyz: &str,
+    kind: &str,
+    mult: usize,
+    kmesh: &str,
+    optimize: &str,
+    basis_name: &str,
+    jk: &str,
+) -> Output {
     let dir = scratch(tag);
     let xyz_path = dir.join("m.xyz");
     std::fs::write(&xyz_path, xyz).unwrap();
@@ -65,7 +90,7 @@ fn run(tag: &str, xyz: &str, kind: &str, mult: usize, kmesh: &str, optimize: &st
 xyz = "{xyz}"
 multiplicity = {mult}
 [basis]
-name = "sto-3g"
+name = "{basis_name}"
 [method]
 kind = "{kind}"
 task = "optimize"
@@ -75,13 +100,15 @@ lattice = [[{a}, 0.0, 0.0], [0.0, {a}, 0.0], [0.0, 0.0, {a}]]
 kmesh = {kmesh}
 exxdiv = "ewald"
 omega = {omega}
-jk = "dense"
+{jk}
 [optimize]
 {optimize}
 "#,
             xyz = xyz_path.display(),
             a = A_BOHR,
             omega = OMEGA,
+            basis_name = basis_name,
+            jk = jk,
         ),
     )
     .unwrap();
@@ -137,7 +164,7 @@ fn value(stdout: &str, key: &str) -> String {
 }
 
 fn xyz(atoms_bohr: &[[f64; 3]]) -> String {
-    let b = 0.52917721092_f64;
+    let b = BOHR_RADIUS_ANGSTROM;
     let mut s = format!("{}\nk-point optimize test (Angstrom)\n", atoms_bohr.len());
     for p in atoms_bohr {
         s += &format!("H {:.12} {:.12} {:.12}\n", p[0] * b, p[1] * b, p[2] * b);
@@ -218,7 +245,7 @@ fn printed_gradient(stdout: &str, n: usize) -> Vec<f64> {
 
 /// The printed final geometry (Angstrom, 8 decimals) in Bohr.
 fn printed_atoms(stdout: &str, n: usize) -> Vec<[f64; 3]> {
-    let b = 0.52917721092_f64;
+    let b = BOHR_RADIUS_ANGSTROM;
     rows(stdout, "final geometry", n)
         .into_iter()
         .map(|r| [r[0] / b, r[1] / b, r[2] / b])
@@ -272,11 +299,11 @@ fn printed_k_point_force_equals_the_library_force_uhf() {
 
 #[test]
 fn k_point_optimize_converges_and_the_final_force_is_the_library_force() {
-    let start = [[0.0, 0.0, 0.0], [0.0, 0.0, 1.0 / 0.52917721092]];
+    let start = [[0.0, 0.0, 0.0], [0.0, 0.0, 1.0 / BOHR_RADIUS_ANGSTROM]];
     let o = run("opt", &xyz(&start), "rhf", 1, "[1, 1, 3]", "max_steps = 30");
     let out = ok(&o, "opt");
     assert_eq!(value(&out, "converged"), "true", "{out}");
-    let b = 0.52917721092_f64;
+    let b = BOHR_RADIUS_ANGSTROM;
     let fin = rows(&out, "final geometry", 2);
     let atoms: Vec<[f64; 3]> = fin.iter().map(|r| [r[0] / b, r[1] / b, r[2] / b]).collect();
     let bond = ((atoms[1][2] - atoms[0][2]).powi(2)
@@ -298,10 +325,81 @@ fn k_point_optimize_converges_and_the_final_force_is_the_library_force() {
 
 #[test]
 fn k_point_kohn_sham_and_rohf_optimize_are_refused() {
-    for kind in ["ksdft", "rohf"] {
+    for (kind, message) in [
+        ("ksdft", "k-point Kohn-Sham (RKS) has no analytic force"),
+        ("rohf", "not supported for periodic ROHF"),
+    ] {
         let o = run("refuse", &xyz(&H2_OFFAXIS), kind, 1, "[1, 1, 2]", LOOSE);
         assert!(!o.status.success(), "{kind}");
         let err = String::from_utf8_lossy(&o.stderr);
-        assert!(err.contains("kmesh"), "{kind}: {err}");
+        assert!(err.contains(message), "{kind}: {err}");
     }
+}
+
+/// Library RS-GDF RHF force with the configs the CLI builds for
+/// `jk = "rsgdf"`, `auxbasis = "cc-pvdz-ri"` (default column rotation ON and
+/// default RS-GDF omega); also returns the rotated hcore column count.
+fn library_gradient_rsgdf_ccpvdz(atoms_bohr: &[[f64; 3]]) -> (Vec<f64>, usize) {
+    let dir = scratch("lib-gdf");
+    let p = dir.join("l.xyz");
+    std::fs::write(&p, xyz(atoms_bohr)).unwrap();
+    let mol = Molecule::load_xyz_with_charge(p.to_str().unwrap(), 0, 1).expect("xyz");
+    let bs = basis::bundled("cc-pvdz").unwrap();
+    let aux = basis::bundled("cc-pvdz-ri").unwrap();
+    let lat = [[A_BOHR, 0.0, 0.0], [0.0, A_BOHR, 0.0], [0.0, 0.0, A_BOHR]];
+    let cell = Cell::new(mol, lat).expect("cell");
+    let prep = PreparedBasis::new(cell.mol(), &bs).unwrap();
+    let auxp = PreparedBasis::new(cell.mol(), &aux).unwrap();
+    let mesh = KPointMesh::new(&cell, [1, 1, 2], MeshCentring::Gamma).unwrap();
+    let mut c = KRhfConfig::for_cell(&cell, ExxDiv::Ewald);
+    c.scf.energy_conv = 1e-12;
+    c.scf.grad_conv = 1e-9;
+    c.hcore =
+        PeriodicHcoreConfig::with_omega(OMEGA).with_sr_column_rotation(SrColumnRotation::on());
+    c.jk = KJkKind::RsGdf;
+    c.rsgdf.gdf.sr_column_rotation = SrColumnRotation::on();
+    let (r, kept) = solve_krhf_keep(&cell, &prep, Some(&auxp), &mesh, &c).expect("scf");
+    let rotated = kept.hk.sr_rotated_columns;
+    let g = kpoint_rhf_gradient(
+        &cell,
+        &prep,
+        &mesh,
+        &c.hcore,
+        &kept.hk,
+        kept.grad_jk(Some(&auxp), &c.rsgdf).unwrap(),
+        &r,
+        ExxDiv::Ewald,
+        &KGradConfig::default(),
+    )
+    .expect("gradient");
+    (g.grad.iter().copied().collect(), rotated)
+}
+
+#[test]
+fn rotating_basis_rsgdf_k_point_force_equals_the_library_force() {
+    let o = run_with(
+        "rsgdf-rot",
+        &xyz(&H2_OFFAXIS),
+        "rhf",
+        1,
+        "[1, 1, 2]",
+        LOOSE,
+        "cc-pvdz",
+        "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"",
+    );
+    let out = ok(&o, "rsgdf-rot");
+    // The default column rotation is on (the optimizer prints no stage table,
+    // so the rotated-column count is read from the library run below).
+    assert!(out.contains("sr_column_rotation = on (default)"), "{out}");
+    let g = printed_gradient(&out, 2);
+    let at = printed_atoms(&out, 2);
+    let (lib, lib_rotated) = library_gradient_rsgdf_ccpvdz(&at);
+    assert!(lib_rotated > 0);
+    assert!(
+        g.iter().fold(0.0_f64, |m, v| m.max(v.abs())) > 1e-3,
+        "trivial"
+    );
+    let d = max_diff(&g, &lib);
+    eprintln!("RS-GDF rotated CLI vs library force: {d:.2e}");
+    assert!(d < BAR, "{d:e}\n{g:?}\n{lib:?}");
 }
