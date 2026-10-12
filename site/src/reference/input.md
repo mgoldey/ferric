@@ -423,7 +423,7 @@ differentiates the energy's own XC grid (`n_radial`/`n_angular`/`neighbour_cutof
 and, for a hybrid, its `exxdiv`. It is an error for `rohf`, for open-shell
 Kohn-Sham, for meta-GGA, range-separated and VV10 functionals, and for
 `rimp2`/`pdep-rpa`. The lattice is fixed and no stress is printed (the Python
-`run_rhf_kpts`/`run_uhf_kpts` return both; `run_rks_kpts` returns the force only). Each optimizer step runs a fresh SCF from the core guess; at a k-point mesh with `uhf` it can land in a different spin solution between steps, which shows as a visible jump in the step energies (nothing is hidden). The force is taken through the hcore and J/K objects the SCF built, which stay in memory for the force: their bytes are charged against the same memory budget (`[memory] budget_gb` with `jk = "rsgdf"`), and with `jk = "dense"` the kernels count against `max_eri_gb` while they exist. `task = "frequencies"` is an error.
+`run_rhf_kpts`/`run_uhf_kpts` return both; `run_rks_kpts` returns the force only). The k-point force is available for LDA, GGA and global-hybrid functionals only, through an explicit allowlist that is separate from the energy gate. `solve_krks_keep` (and so every `run_rks_kpts` call) clones `S(k)` and `h(k)` transiently during the SCF (`2 N_k n² × 16` bytes, not charged to the budget); the periodic XC Bloch AO cache of the SCF does not follow `[memory] budget_gb`. Each optimizer step runs a fresh SCF from the core guess; at a k-point mesh with `uhf` it can land in a different spin solution between steps, which shows as a visible jump in the step energies (nothing is hidden). The force is taken through the hcore and J/K objects the SCF built, which stay in memory for the force: their bytes are charged against the same memory budget (`[memory] budget_gb` with `jk = "rsgdf"`), and with `jk = "dense"` the kernels count against `max_eri_gb` while they exist. `task = "frequencies"` is an error.
 
 The periodic run reads only `[cell]`, `[scf]` `max_iter`, `[scf]`
 `density_conv` (Gamma point) or `energy_conv` (k-point mesh), `[dft]`
@@ -452,7 +452,7 @@ or key is an error. A charged cell is an error.
 | `grad_conv` | float | `1e-9` | > 0 | k-point SCF orbital-gradient threshold. Requires `kmesh`. |
 | `n_radial` | integer | `75` | | Periodic XC grid. Kohn-Sham only. |
 | `n_angular` | integer | `302` | Lebedev order | Periodic XC grid. Kohn-Sham only. |
-| `neighbour_cutoff` | float | max(10 Bohr, covering-radius bound) | > 0, in `unit` | Periodic XC grid image cutoff. Kohn-Sham only. |
+| `neighbour_cutoff` | float | max(10 Bohr, covering-radius bound) | > 0, in `unit` | Periodic XC grid image cutoff. Kohn-Sham only. The XC energy has a hard cutoff: the default depends on the atom positions in a large sparse cell, and the analytic force omits that dependence, so set it explicitly for `task = "optimize"` and for finite-difference checks (a value above the default also avoids one-step energy discontinuities of ~1e-10 Ha under a displacement). |
 
 Periodic `[scf]` defaults are `max_iter = 200`, `density_conv = 1e-10` and
 `energy_conv = 1e-12`, not the molecular ones.
