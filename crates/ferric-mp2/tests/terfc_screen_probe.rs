@@ -29,18 +29,36 @@ fn flist(s: &str) -> Vec<f64> {
 fn parse_op(s: &str) -> (Operator, Kern) {
     let p: Vec<&str> = s.split(':').collect();
     match p[0] {
-        "coul" => (Operator::coulomb(), Kern { kind: KKind::Coul, r0: 0.0, w: 0.0 }),
+        "coul" => (
+            Operator::coulomb(),
+            Kern {
+                kind: KKind::Coul,
+                r0: 0.0,
+                w: 0.0,
+            },
+        ),
         "terfc" => {
             let r0 = p[1].parse::<f64>().unwrap() * ANG;
             let s: f64 = p[2].parse().unwrap();
             (
                 Operator::terfc_with_omega(r0, s / r0),
-                Kern { kind: KKind::Terfc, r0, w: s / r0 },
+                Kern {
+                    kind: KKind::Terfc,
+                    r0,
+                    w: s / r0,
+                },
             )
         }
         "erfc" => {
             let w = p[1].parse::<f64>().unwrap() / ANG;
-            (Operator::erfc(w), Kern { kind: KKind::Erfc, r0: 0.0, w })
+            (
+                Operator::erfc(w),
+                Kern {
+                    kind: KKind::Erfc,
+                    r0: 0.0,
+                    w,
+                },
+            )
         }
         o => panic!("op {o}"),
     }
@@ -64,10 +82,19 @@ fn setup() -> Ctx {
     ))
     .unwrap();
     let obs = PreparedBasis::new(&mol, &basis::bundled(&env("OBS", "6-31g")).unwrap()).unwrap();
-    let dfbs = PreparedBasis::new(&mol, &basis::bundled(&env("AUX", "cc-pvdz-ri")).unwrap()).unwrap();
+    let dfbs =
+        PreparedBasis::new(&mol, &basis::bundled(&env("AUX", "cc-pvdz-ri")).unwrap()).unwrap();
     let f: f64 = env("FMAJ", "0.9").parse().unwrap();
-    let omaj: Vec<ShellMaj> = obs.located_shells().iter().map(|s| shell_maj(s, f)).collect();
-    let dmaj: Vec<ShellMaj> = dfbs.located_shells().iter().map(|s| shell_maj(s, f)).collect();
+    let omaj: Vec<ShellMaj> = obs
+        .located_shells()
+        .iter()
+        .map(|s| shell_maj(s, f))
+        .collect();
+    let dmaj: Vec<ShellMaj> = dfbs
+        .located_shells()
+        .iter()
+        .map(|s| shell_maj(s, f))
+        .collect();
     let n = obs.nshells();
     let mut pairs = vec![];
     for a in 0..n {
@@ -75,7 +102,10 @@ fn setup() -> Ctx {
             pairs.push((a, b));
         }
     }
-    let pm: Vec<PairMaj> = pairs.par_iter().map(|&(a, b)| pair_maj(&omaj[a], &omaj[b])).collect();
+    let pm: Vec<PairMaj> = pairs
+        .par_iter()
+        .map(|&(a, b)| pair_maj(&omaj[a], &omaj[b]))
+        .collect();
     let pp: Vec<PairMaj> = dmaj.iter().map(single_maj).collect();
     eprintln!(
         "SETUP {molf} nsh_obs={n} nbf={} nsh_aux={} naux={} pairs={} f={f}",
@@ -84,7 +114,15 @@ fn setup() -> Ctx {
         dfbs.nbasis(),
         pairs.len()
     );
-    Ctx { obs, dfbs, omaj, dmaj, pairs, pm, pp }
+    Ctx {
+        obs,
+        dfbs,
+        omaj,
+        dmaj,
+        pairs,
+        pm,
+        pp,
+    }
 }
 
 fn qpair(c: &Ctx, op: Operator) -> Vec<f64> {
@@ -117,7 +155,10 @@ fn qaux(c: &Ctx, op: Operator) -> Vec<f64> {
         .map(|p| {
             let n = dims[p];
             let v = eng.compute_eri2(&c.dfbs, p, p);
-            (0..n).map(|i| v[i * n + i].abs()).fold(0.0, f64::max).sqrt()
+            (0..n)
+                .map(|i| v[i * n + i].abs())
+                .fold(0.0, f64::max)
+                .sqrt()
         })
         .collect()
 }
@@ -236,7 +277,12 @@ fn unit() {
         (5.0, 1.5374597944280349e-12),
         (-1.0, 1.8427007929497148),
     ] {
-        println!("erfc({x}) = {:.16e} ref {:.16e} rel {:.2e}", erfc(x), r, (erfc(x) / r - 1.0).abs());
+        println!(
+            "erfc({x}) = {:.16e} ref {:.16e} rel {:.2e}",
+            erfc(x),
+            r,
+            (erfc(x) / r - 1.0).abs()
+        );
     }
     // gd_ssss with kappa=0 and p,q: Coulomb of two unnormalised Gaussians:
     // int int e^{-p r1^2} e^{-q r2^2}/r12 = pi^3 /(pq)^{3/2} * (2/sqrt(pi))*sqrt(a)*F0(a R^2)*... use ratio test vs
@@ -244,13 +290,13 @@ fn unit() {
     let (p, q, r2) = (0.7f64, 1.3f64, 2.0f64);
     let a = p * q / (p + q);
     let x = a * r2;
-    let f0 = 0.5 * (PI_().sqrt() / x.sqrt()) * erf_via(x.sqrt());
-    let exact = 2.0 * PI_().powf(2.5) / (p * q * (p + q).sqrt()) * f0;
+    let f0 = 0.5 * (std::f64::consts::PI.sqrt() / x.sqrt()) * erf_via(x.sqrt());
+    let exact = 2.0 * std::f64::consts::PI.powf(2.5) / (p * q * (p + q).sqrt()) * f0;
     let got = gd_ssss(p, q, r2, 0.0);
-    println!("gd_ssss coulomb check got {got:.12e} exact {exact:.12e} rel {:.2e}", (got / exact - 1.0).abs());
-}
-fn PI_() -> f64 {
-    std::f64::consts::PI
+    println!(
+        "gd_ssss coulomb check got {got:.12e} exact {exact:.12e} rel {:.2e}",
+        (got / exact - 1.0).abs()
+    );
 }
 fn erf_via(x: f64) -> f64 {
     1.0 - erfc(x)
@@ -294,13 +340,18 @@ fn validity() {
                         let b = b1(&c.pp[p], ext_p[p], &c.pm[k], ext_k[k], &kern);
                         s_b1.add(b, t);
                         s_cmb.add(b.min(qa[p] * qp[k]), t);
-                        s_mut.add(b1(&c.pp[p], 0.5 * ext_p[p], &c.pm[k], 0.5 * ext_k[k], &kern), t);
+                        s_mut.add(
+                            b1(&c.pp[p], 0.5 * ext_p[p], &c.pm[k], 0.5 * ext_k[k], &kern),
+                            t,
+                        );
                     }
                 }
             }
             s_b1.line(&format!("{ops_s} triple B1 delta={delta:e}"));
             s_cmb.line(&format!("{ops_s} triple min(S,B1) delta={delta:e}"));
-            s_mut.line(&format!("{ops_s} triple MUTANT B1 extents*0.5 delta={delta:e}"));
+            s_mut.line(&format!(
+                "{ops_s} triple MUTANT B1 extents*0.5 delta={delta:e}"
+            ));
         }
         // B2 on a stride sample of significant triples
         let sig: Vec<usize> = (0..t3.len()).filter(|&i| t3[i] > 1e-12).collect();
@@ -349,7 +400,9 @@ fn validity() {
                 }
                 s1.line(&format!("{ops_s} quartet B1 delta={delta:e}"));
                 sc.line(&format!("{ops_s} quartet min(S,B1) delta={delta:e}"));
-                sm.line(&format!("{ops_s} quartet MUTANT B1 extents*0.5 delta={delta:e}"));
+                sm.line(&format!(
+                    "{ops_s} quartet MUTANT B1 extents*0.5 delta={delta:e}"
+                ));
             }
             let sig: Vec<(usize, usize)> = (0..np)
                 .flat_map(|i| (0..=i).map(move |j| (i, j)))
@@ -387,8 +440,11 @@ fn count() {
         let qa = qaux(&c, op);
         let t3 = if oracle { true_triples(&c, op) } else { vec![] };
         // cost weight per triple: nprim(P)*nprim(pair)*nfn(P)*nfn(pair)
-        let w = |p: usize, k: usize| (c.pp[p].nprim * c.pm[k].nprim * c.pp[p].nfn * c.pm[k].nfn) as f64;
-        let wtot: f64 = (0..nsa).map(|p| (0..np).map(|k| w(p, k)).sum::<f64>()).sum();
+        let w =
+            |p: usize, k: usize| (c.pp[p].nprim * c.pm[k].nprim * c.pp[p].nfn * c.pm[k].nfn) as f64;
+        let wtot: f64 = (0..nsa)
+            .map(|p| (0..np).map(|k| w(p, k)).sum::<f64>())
+            .sum();
         let ntot = (nsa * np) as f64;
         for &delta in &deltas {
             let ext_p: Vec<f64> = c.pp.iter().map(|x| x.extent(delta)).collect();
@@ -430,8 +486,16 @@ fn count() {
                     "COUNT3 {ops_s} delta={delta:e} tau={tau:e} total={ntot:.0} \
                      frac[oracle,schwarz,B1,min(S,B1)]=[{:.4},{:.4},{:.4},{:.4}] \
                      wfrac=[{:.4},{:.4},{:.4},{:.4}] miss[S,B1,cmb]={:?} falsepos[S,B1,cmb]={:?}",
-                    n[0] / ntot, n[1] / ntot, n[2] / ntot, n[3] / ntot,
-                    wn[0] / wtot, wn[1] / wtot, wn[2] / wtot, wn[3] / wtot, miss, fp
+                    n[0] / ntot,
+                    n[1] / ntot,
+                    n[2] / ntot,
+                    n[3] / ntot,
+                    wn[0] / wtot,
+                    wn[1] / wtot,
+                    wn[2] / wtot,
+                    wn[3] / wtot,
+                    miss,
+                    fp
                 );
             }
         }
@@ -526,7 +590,9 @@ fn count() {
                         (0..ndat)
                             .map(|q| {
                                 let _ = dims;
-                                eng.compute_eri2(&c.dfbs, p, q).iter().fold(0.0f64, |m, x| m.max(x.abs()))
+                                eng.compute_eri2(&c.dfbs, p, q)
+                                    .iter()
+                                    .fold(0.0f64, |m, x| m.max(x.abs()))
                             })
                             .collect()
                     },
@@ -562,9 +628,15 @@ fn count() {
             }
         }
         if env("QUARTETS", "0") == "1" {
-            let t4 = if oracle { true_quartets(&c, op) } else { vec![] };
+            let t4 = if oracle {
+                true_quartets(&c, op)
+            } else {
+                vec![]
+            };
             let idx = |i: usize, j: usize| i * (i + 1) / 2 + j;
-            let wq = |i: usize, j: usize| (c.pm[i].nprim * c.pm[j].nprim * c.pm[i].nfn * c.pm[j].nfn) as f64;
+            let wq = |i: usize, j: usize| {
+                (c.pm[i].nprim * c.pm[j].nprim * c.pm[i].nfn * c.pm[j].nfn) as f64
+            };
             for &delta in &deltas {
                 let ext: Vec<f64> = c.pm.iter().map(|x| x.extent(delta)).collect();
                 for &tau in &taus {
@@ -638,14 +710,35 @@ fn lmp2() {
         &c.obs,
         coul,
         &bounds,
-        &RhfConfig { energy_conv: 1e-10, ..Default::default() },
+        &RhfConfig {
+            energy_conv: 1e-10,
+            ..Default::default()
+        },
     )
     .unwrap();
     let mp = match env("MAPS", "prod").as_str() {
-        "trivial" => DirectConfig { aux_radius_bohr: 1e6, virt_radius_bohr: None, ao_tail: 0.0, schwarz_skip: 0.0, ..Default::default() },
-        _ => DirectConfig { aux_radius_bohr: env("AUXR", "10").parse().unwrap(), virt_radius_bohr: Some(env("VIRTR", "12").parse().unwrap()), ao_tail: env("AOTAIL", "1e-3").parse().unwrap(), schwarz_skip: 0.0, batch_merge: 4, ..Default::default() },
+        "trivial" => DirectConfig {
+            aux_radius_bohr: 1e6,
+            virt_radius_bohr: None,
+            ao_tail: 0.0,
+            schwarz_skip: 0.0,
+            ..Default::default()
+        },
+        _ => DirectConfig {
+            aux_radius_bohr: env("AUXR", "10").parse().unwrap(),
+            virt_radius_bohr: Some(env("VIRTR", "12").parse().unwrap()),
+            ao_tail: env("AOTAIL", "1e-3").parse().unwrap(),
+            schwarz_skip: 0.0,
+            batch_merge: 4,
+            ..Default::default()
+        },
     };
-    let cfg = AmplitudeLmp2Config { eps, frozen_core: fc, compute_reference: false, ..Default::default() };
+    let cfg = AmplitudeLmp2Config {
+        eps,
+        frozen_core: fc,
+        compute_reference: false,
+        ..Default::default()
+    };
     for ops_s in env("OPS", "terfc:1.0:0.70710678").split(';') {
         let (op, kern) = parse_op(ops_s);
         let qp = qpair(&c, op);
@@ -688,7 +781,10 @@ fn lmp2() {
             let (r, st) = match res {
                 Ok(x) => x,
                 Err(e) => {
-                    let n: Vec<f64> = CNT.iter().map(|x| x.load(Ordering::Relaxed) as f64).collect();
+                    let n: Vec<f64> = CNT
+                        .iter()
+                        .map(|x| x.load(Ordering::Relaxed) as f64)
+                        .collect();
                     let (u, us, uc) = uniq_counts();
                     println!(
                         "UNIQ {molf} {ops_s} tau={tau:e} global_triples={} unique_map_survivors={u} ({:.4} of global) uniq S-skippable={:.4} uniq S|B1-skippable={:.4}",
@@ -706,7 +802,10 @@ fn lmp2() {
             if ti == 0 {
                 e_base = r.e_corr;
             }
-            let n: Vec<f64> = CNT.iter().map(|x| x.load(Ordering::Relaxed) as f64).collect();
+            let n: Vec<f64> = CNT
+                .iter()
+                .map(|x| x.load(Ordering::Relaxed) as f64)
+                .collect();
             let (u, us, uc) = uniq_counts();
             println!(
                 "UNIQ {molf} {ops_s} tau={tau:e} global_triples={} unique_map_survivors={u} ({:.4} of global) uniq S-skippable={:.4} uniq S|B1-skippable={:.4}",
