@@ -167,6 +167,7 @@ pub mod kpts;
 pub mod kroks;
 pub mod kscf;
 pub mod kstress;
+pub mod kxcgrad;
 pub mod kuks;
 pub mod kuscf;
 pub mod lattice;
@@ -221,6 +222,7 @@ pub use kgrad::{
     KRsGdfGradSource,
 };
 pub use kpts::{KPointMesh, MeshCentring};
+pub use kxcgrad::{kpoint_rks_gradient, KRksGradConfig, KRksGradient, KXcGrid};
 pub use kscf::{
     complex_canonical_orthogonalizer, complex_canonical_orthogonalizer_with_stats, solve_krhf,
     solve_krhf_injected, solve_krhf_keep, solve_krks_injected, KJkKind, KPointInjection, KPointJk,

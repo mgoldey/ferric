@@ -555,6 +555,7 @@ pub fn kpoint_rhf_gradient(
         &jk,
         KSpins::Restricted { d, f },
         vm,
+        1.0,
         cfg,
         &mut ledger,
     )?;
@@ -612,6 +613,7 @@ pub fn kpoint_uhf_gradient(
         &jk,
         KSpins::Unrestricted { da, db, fa, fb },
         vm,
+        1.0,
         cfg,
         &mut ledger,
     )?;
@@ -697,7 +699,7 @@ pub(crate) fn check_inputs(
 
 /// Open the memory ledger and reserve the per-k matrices, residue-folded weights and
 /// per-term arrays of the k-point gradient.
-fn open_ledger(
+pub(crate) fn open_ledger(
     cell: &Cell,
     prep: &PreparedBasis,
     mesh: &KPointMesh,
@@ -873,9 +875,13 @@ fn fold_ao(g_ao: &[[f64; 3]], aoat: &[usize], natoms: usize) -> Array2<f64> {
 }
 
 /// Assemble the k-point gradient from the per-spin `D(k)`/`F(k)`, hcore and J/K derivative
-/// pieces; `vm` is the Madelung shift.
+/// pieces; `vm` is the Madelung shift and `exch_scale` the exact-exchange
+/// fraction `a` of the energy (`1` = Hartree-Fock, bitwise the unscaled
+/// terms; `0` = no exchange at all: the K-derivative walks are skipped, the
+/// RS-GDF fit differentiates the Coulomb part only and the Madelung M-term
+/// vanishes; any other value is not validated and not exposed).
 #[allow(clippy::too_many_arguments)]
-fn assemble(
+pub(crate) fn assemble(
     cell: &Cell,
     prep: &PreparedBasis,
     mesh: &KPointMesh,
@@ -884,6 +890,7 @@ fn assemble(
     jk: &KGradJk<'_>,
     spins: KSpins,
     vm: f64,
+    exch_scale: f64,
     cfg: &KGradConfig,
     ledger: &mut Ledger,
 ) -> Result<KGradient, FerricError> {
@@ -922,10 +929,22 @@ fn assemble(
     let omega = hcore_cfg.omega;
     let vol = cell.volume();
     let c0 = PI / (omega * omega * vol);
-    let vm_m = if mutation == Some(KGradMutation::GammaMadelung) && vm != 0.0 {
-        madelung_constant(cell)?
+    let vm_m = exch_scale
+        * if mutation == Some(KGradMutation::GammaMadelung) && vm != 0.0 {
+            madelung_constant(cell)?
+        } else {
+            vm
+        };
+    // The exchange terms Σ_s c D_s X D_s, scaled by the exchange fraction
+    // (empty for a pure functional).
+    let exch: Vec<(f64, &[Array2<C64>])> = if exch_scale == 0.0 {
+        Vec::new()
     } else {
-        vm
+        spins
+            .exch_terms()
+            .into_iter()
+            .map(|(c, d)| (c * exch_scale, d))
+            .collect()
     };
     let mk: Vec<Array2<C64>> = (0..nk)
         .map(|k| {
@@ -953,7 +972,6 @@ fn assemble(
     let fit = match jk {
         KGradJk::Dense(_) => None,
         KGradJk::RsGdf(src) => {
-            let exch = spins.exch_terms();
             let fm = KFitMutation {
                 rot: KRotKind::defect(rot_kind(mutation)),
                 aux_phase: mutation == Some(KGradMutation::FitAuxPhase),
@@ -1125,7 +1143,7 @@ fn assemble(
                 prep,
                 mesh,
                 eri,
-                &spins,
+                &exch,
                 &delta,
                 &delta_true,
                 &ph_true,
@@ -1577,7 +1595,7 @@ fn dense_two_electron(
     prep: &PreparedBasis,
     mesh: &KPointMesh,
     eri: &KDenseAftEri,
-    spins: &KSpins,
+    exch: &[(f64, &[Array2<C64>])],
     delta: &[Array2<C64>],
     delta_true: &[Array2<C64>],
     ph_true: &[Vec<C64>],
@@ -1602,7 +1620,6 @@ fn dense_two_electron(
         &format!("k gradient ERI K list (|K| <= {gcut:.3}, |q| <= {qmax:.3})"),
         gvector_list_bytes(cell, gcut + qmax)?.saturating_mul(2),
     )?;
-    let exch = spins.exch_terms();
     let cx_base = -1.0 / (vol * (nk * nk) as f64);
     let mut jao = vec![[0.0_f64; 3]; n];
     let mut kao = vec![[0.0_f64; 3]; n];
@@ -1612,6 +1629,10 @@ fn dense_two_electron(
     let extra_per_g = bytes_of(((nr + 4) * n * n) as u64, 16);
     for iq in 0..nk {
         let (q, mq) = mesh.q_class(iq);
+        // Coulomb only (a pure functional): the q != 0 classes carry exchange.
+        if exch.is_empty() && mq != [0, 0, 0] {
+            continue;
+        }
         let qn = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2]).sqrt();
         let ks: Vec<[f64; 3]> = cell
             .gvectors(gcut + qn)?
@@ -1655,6 +1676,9 @@ fn dense_two_electron(
                             rho.conj() * (v / vol),
                         );
                     }
+                    if exch.is_empty() {
+                        continue;
+                    }
                     // Exchange: Yt_r = Σ_k' e^{ik'·t_r} Σ_s D_s(k') P^{k'H} D_s(k'−q).
                     let mut yt: Vec<Array2<C64>> = (0..nr).map(|_| Array2::zeros((n, n))).collect();
                     for j in 0..nk {
@@ -1668,7 +1692,7 @@ fn dense_two_electron(
                         }
                         let pjh = herm(&pj);
                         let mut y = Array2::<C64>::zeros((n, n));
-                        for (c, ds) in &exch {
+                        for (c, ds) in exch {
                             y.scaled_add(cr(*c), &ds[j].dot(&pjh).dot(&ds[kof[j]]));
                         }
                         for (r, ytr) in yt.iter_mut().enumerate() {
