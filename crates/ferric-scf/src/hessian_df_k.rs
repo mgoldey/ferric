@@ -116,12 +116,12 @@
 //!   energy; every piece above reduces to the closed-shell piece, which is the
 //!   exactness anchor of `tests/df_hessian_uhf.rs`.
 //!
-//! The channel code is [`rik_channel_terms`]; the closed-shell [`rik_terms`] is
+//! The channel code is `rik_channel_terms`; the closed-shell `rik_terms` is
 //! the one-channel case `(X = √2 C_occ, α = −¼)`. Channels are processed one
 //! after the other: `M` and `V_x` are built once, each channel's `L^σ`, `Γ_σ`,
 //! `L^σ_x`, `Z^σ_x` and `K^x_σ` are built and (but for `Γ_σ`, `K^x_σ`) released
 //! before the next, and what a finished channel leaves behind is charged by
-//! [`rik_peak_bytes_channels`].
+//! `rik_peak_bytes_channels`.
 //!
 //! ## Factorization
 //!
@@ -401,7 +401,11 @@ impl Fit {
         let m_cut = mutants.channel_metric_cut.map(|(channel, cut)| {
             let mut us = u.clone();
             for k in 0..lam.len() {
-                let sc = if lam[k] >= cut { 1.0 / lam[k].sqrt() } else { 0.0 };
+                let sc = if lam[k] >= cut {
+                    1.0 / lam[k].sqrt()
+                } else {
+                    0.0
+                };
                 us.column_mut(k).mapv_inplace(|x| x * sc);
             }
             let w = us.dot(&u.t());
@@ -440,12 +444,7 @@ pub fn rik_peak_bytes(natoms: usize, nbf: usize, nocc: usize, naux: usize) -> us
 /// behind (`Γ_s`, `K^x_s` and its Fock-scaled copy) stays resident for the
 /// later channels and the CPHF.
 #[doc(hidden)]
-pub fn rik_peak_bytes_channels(
-    natoms: usize,
-    nbf: usize,
-    noccs: &[usize],
-    naux: usize,
-) -> usize {
+pub fn rik_peak_bytes_channels(natoms: usize, nbf: usize, noccs: &[usize], naux: usize) -> usize {
     let (n3, a, n) = (3 * natoms, naux, nbf);
     let k1 = n3 * n * n;
     // The metric factorization (V, eigenvectors, scaled copy, W, M, check),
@@ -607,7 +606,7 @@ fn build_core(
     })
 }
 
-/// [`rik_terms`] with an explicit auxiliary basis (the exactness anchors hand
+/// `rik_terms` with an explicit auxiliary basis (the exactness anchors hand
 /// it a basis that spans the pair densities exactly).
 #[doc(hidden)]
 pub fn rik_terms_with_aux(
@@ -802,7 +801,15 @@ pub fn rik_channel_terms_with_aux(
                 weight_gamma(obs, dfbs, &gammas[ci], ch.x, scale, (sp, s1, s2), w);
             } else {
                 let mut extra = Vec::new();
-                weight_gamma(obs, dfbs, &gammas[ci], ch.x, scale, (sp, s1, s2), &mut extra);
+                weight_gamma(
+                    obs,
+                    dfbs,
+                    &gammas[ci],
+                    ch.x,
+                    scale,
+                    (sp, s1, s2),
+                    &mut extra,
+                );
                 for (a, b) in w.iter_mut().zip(&extra) {
                     *a += *b;
                 }

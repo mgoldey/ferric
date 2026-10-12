@@ -342,8 +342,16 @@ fn the_charge_bounds_the_measured_peak_allocation() {
     let big_aux =
         PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
     bound_check("butane 6-31G/jkfit", 14, &big, big_aux, &[15, 14], 0);
-    let aux = || PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+    let aux =
+        || PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
     bound_check("butane 6-31G/jkfit, one channel", 14, &big, aux(), &[15], 0);
     bound_check("butane 6-31G/jkfit, m = 1 + 3", 14, &big, aux(), &[1, 3], 0);
-    bound_check("butane 6-31G/jkfit, m = 3 + 30", 14, &big, aux(), &[3, 30], 0);
+    bound_check(
+        "butane 6-31G/jkfit, m = 3 + 30",
+        14,
+        &big,
+        aux(),
+        &[3, 30],
+        0,
+    );
 }

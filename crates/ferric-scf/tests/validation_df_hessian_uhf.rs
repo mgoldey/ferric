@@ -234,7 +234,11 @@ fn check_system(system: &str, basis_name: &str, mult: u64) {
     let r = reference(system, basis_name);
     let ctx = format!("{system}/{basis_name}/{AUX}");
     assert_eq!(r["aux_basis"].as_str(), Some(AUX), "{ctx}: aux basis");
-    assert_eq!(r["multiplicity"].as_u64(), Some(mult), "{ctx}: multiplicity");
+    assert_eq!(
+        r["multiplicity"].as_u64(),
+        Some(mult),
+        "{ctx}: multiplicity"
+    );
     assert_eq!(
         r["scf"]["stability"]["internal_stable"].as_bool(),
         Some(true),
@@ -431,11 +435,10 @@ fn check_system(system: &str, basis_name: &str, mult: u64) {
         ),
     ];
     for (name, mj, mk, mu) in mutants {
-        let h = uhf_hessian_parts_mutated(
-            &ctxp, &mol, &prep, op, &bounds, &uhf, &cfg, &mj, &mk, &mu,
-        )
-        .unwrap()
-        .total();
+        let h =
+            uhf_hessian_parts_mutated(&ctxp, &mol, &prep, op, &bounds, &uhf, &cfg, &mj, &mk, &mu)
+                .unwrap()
+                .total();
         must_miss(&ctx, name, &h, &h_an, TOL_HESS_ANALYTIC);
     }
 }

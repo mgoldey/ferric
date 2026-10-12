@@ -53,9 +53,7 @@ use ferric_scf::hessian::rij_support::{
     rik_channel_terms, rik_first, uhf_hessian_parts_mutated, RijMutants, RikChannel, RikMutants,
     UhfDfMutants, RIK_ALPHA_SPIN,
 };
-use ferric_scf::hessian::{
-    rhf_hessian_parts, uhf_hessian_parts, RhfHessianParts, UhfHessianParts,
-};
+use ferric_scf::hessian::{rhf_hessian_parts, uhf_hessian_parts, UhfHessianParts};
 use ferric_scf::result::{ScfResult, Spin};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
@@ -138,8 +136,6 @@ struct Setup {
     bounds: SchwarzBounds,
     uhf: ScfResult,
     cfg: RhfConfig,
-    j_aux: String,
-    k_aux: String,
 }
 
 fn prep_at(m: &Molecule, basis_name: &str) -> PreparedBasis {
@@ -161,8 +157,14 @@ fn setup(mol: &Molecule, basis_name: &str, j_aux: &str, k_aux: &str) -> Setup {
         assert!(uhf.df_jk.is_none(), "exact SCF carries no route");
     } else {
         let route = uhf.df_jk.as_ref().expect("a DF route");
-        assert_eq!(route.j_aux.as_deref(), Some(j_aux).filter(|v| !v.is_empty()));
-        assert_eq!(route.k_aux.as_deref(), Some(k_aux).filter(|v| !v.is_empty()));
+        assert_eq!(
+            route.j_aux.as_deref(),
+            Some(j_aux).filter(|v| !v.is_empty())
+        );
+        assert_eq!(
+            route.k_aux.as_deref(),
+            Some(k_aux).filter(|v| !v.is_empty())
+        );
     }
     Setup {
         mol: mol.clone(),
@@ -171,8 +173,6 @@ fn setup(mol: &Molecule, basis_name: &str, j_aux: &str, k_aux: &str) -> Setup {
         bounds,
         uhf,
         cfg,
-        j_aux: j_aux.to_string(),
-        k_aux: k_aux.to_string(),
     }
 }
 
@@ -340,14 +340,14 @@ fn closed_shell_anchor(basis_name: &str, j_aux: &str, k_aux: &str) {
         ("two_electron", &u.two_electron, &r.two_electron),
         ("response", &u.response, &r.response),
     ] {
-        worst = worst.max(assert_close(&format!("{tag} {what}"), got, want, TOL_ANCHOR));
+        worst = worst.max(assert_close(
+            &format!("{tag} {what}"),
+            got,
+            want,
+            TOL_ANCHOR,
+        ));
     }
-    assert_close(
-        &format!("{tag} total"),
-        &u.total(),
-        &r.total(),
-        TOL_ANCHOR,
-    );
+    assert_close(&format!("{tag} total"), &u.total(), &r.total(), TOL_ANCHOR);
     eprintln!("{tag}: worst term {worst:.3e}");
 }
 
@@ -417,8 +417,14 @@ fn multi_channel_terms_are_the_sum_of_one_channel_terms() {
         &s.prep,
         route,
         &[
-            RikChannel { x: &xa, alpha: -0.5 },
-            RikChannel { x: &xb, alpha: -0.3 },
+            RikChannel {
+                x: &xa,
+                alpha: -0.5,
+            },
+            RikChannel {
+                x: &xb,
+                alpha: -0.3,
+            },
         ],
         &mu,
     )
@@ -428,8 +434,16 @@ fn multi_channel_terms_are_the_sum_of_one_channel_terms() {
     };
     let (ta, tb) = (one(&xa, -0.5), one(&xb, -0.3));
     for (what, got, want) in [
-        ("3c", &both.three_centre, &(&ta.three_centre + &tb.three_centre)),
-        ("2c", &both.metric_second, &(&ta.metric_second + &tb.metric_second)),
+        (
+            "3c",
+            &both.three_centre,
+            &(&ta.three_centre + &tb.three_centre),
+        ),
+        (
+            "2c",
+            &both.metric_second,
+            &(&ta.metric_second + &tb.metric_second),
+        ),
         ("cross", &both.cross, &(&ta.cross + &tb.cross)),
         ("skeleton", &both.skeleton, &(&ta.skeleton + &tb.skeleton)),
     ] {
@@ -451,8 +465,14 @@ fn multi_channel_terms_are_the_sum_of_one_channel_terms() {
         &s.prep,
         route,
         &[
-            RikChannel { x: &xa, alpha: -0.2 },
-            RikChannel { x: &xa, alpha: -0.3 },
+            RikChannel {
+                x: &xa,
+                alpha: -0.2,
+            },
+            RikChannel {
+                x: &xa,
+                alpha: -0.3,
+            },
         ],
         &mu,
     )
@@ -590,8 +610,18 @@ fn check_skeleton_pieces(mol: &Molecule, basis_name: &str, aux: &str) {
     }
     let tol = 2e-6;
     let tag = format!("{basis_name}/{aux}");
-    assert_close(&format!("{tag}: 3c piece"), &terms.three_centre, &three, tol);
-    assert_close(&format!("{tag}: 2c piece"), &terms.metric_second, &metric, tol);
+    assert_close(
+        &format!("{tag}: 3c piece"),
+        &terms.three_centre,
+        &three,
+        tol,
+    );
+    assert_close(
+        &format!("{tag}: 2c piece"),
+        &terms.metric_second,
+        &metric,
+        tol,
+    );
     assert_close(&format!("{tag}: cross piece"), &terms.cross, &cross, tol);
     for (name, m) in [("3c", &three), ("2c", &metric), ("cross", &cross)] {
         assert!(max_abs(m) > 1e-3, "vacuous: {name} piece ~ 0");
@@ -780,7 +810,13 @@ fn check_full(mol: &Molecule, basis_name: &str, j_aux: &str, k_aux: &str, tol: f
 
 #[test]
 fn full_hessian_matches_fd_nh2_sto3g_ri_jk() {
-    check_full(&nh2(), "sto-3g", "def2-universal-jkfit", "def2-universal-jkfit", BAR_OWN);
+    check_full(
+        &nh2(),
+        "sto-3g",
+        "def2-universal-jkfit",
+        "def2-universal-jkfit",
+        BAR_OWN,
+    );
 }
 
 #[test]
@@ -806,19 +842,37 @@ fn full_hessian_matches_fd_nh2_631g_ri_k() {
 #[test]
 #[ignore = "slow: NH2 cc-pVDZ / def2-universal-jkfit RI-JK own-gradient FD; measured 53 s for the three cc-pVDZ tests run together (3 test threads, box load ~8)"]
 fn full_hessian_matches_fd_nh2_ccpvdz_jkfit() {
-    check_full(&nh2(), "cc-pvdz", "def2-universal-jkfit", "def2-universal-jkfit", BAR_OWN);
+    check_full(
+        &nh2(),
+        "cc-pvdz",
+        "def2-universal-jkfit",
+        "def2-universal-jkfit",
+        BAR_OWN,
+    );
 }
 
 #[test]
 #[ignore = "slow: CH2 triplet cc-pVDZ / def2-universal-jkfit RI-JK own-gradient FD; measured 53 s for the three cc-pVDZ tests run together (3 test threads, box load ~8)"]
 fn full_hessian_matches_fd_ch2_ccpvdz_jkfit() {
-    check_full(&ch2(), "cc-pvdz", "def2-universal-jkfit", "def2-universal-jkfit", BAR_OWN);
+    check_full(
+        &ch2(),
+        "cc-pvdz",
+        "def2-universal-jkfit",
+        "def2-universal-jkfit",
+        BAR_OWN,
+    );
 }
 
 #[test]
 #[ignore = "slow: CH3 doublet cc-pVDZ / def2-universal-jkfit RI-JK own-gradient FD; measured 53 s for the three cc-pVDZ tests run together (3 test threads, box load ~8)"]
 fn full_hessian_matches_fd_ch3_ccpvdz_jkfit() {
-    check_full(&ch3(), "cc-pvdz", "def2-universal-jkfit", "def2-universal-jkfit", BAR_OWN);
+    check_full(
+        &ch3(),
+        "cc-pvdz",
+        "def2-universal-jkfit",
+        "def2-universal-jkfit",
+        BAR_OWN,
+    );
 }
 
 #[test]
@@ -888,12 +942,7 @@ fn translational_and_rotational_invariance() {
 /// solver's typed error instead of a number.
 const BAR_MUT: f64 = 3e-9;
 
-type Mutant = (
-    &'static str,
-    RijMutants,
-    RikMutants,
-    UhfDfMutants,
-);
+type Mutant = (&'static str, RijMutants, RikMutants, UhfDfMutants);
 
 fn mutated_total(s: &Setup, m: &Mutant) -> Result<Array2<f64>, ferric_core::FerricError> {
     uhf_hessian_parts_mutated(
@@ -1246,7 +1295,9 @@ fn rohf_with_ri_and_other_unsupported_configurations_are_refused() {
             analytic_uhf_hessian_available(&mol, &prep, op, &ri(j, k)).expect("UHF RI probe");
         }
         // ROHF with RI is refused by both.
-        let e = rohf_hessian_preflight(op, &ri(j, k)).unwrap_err().to_string();
+        let e = rohf_hessian_preflight(op, &ri(j, k))
+            .unwrap_err()
+            .to_string();
         eprintln!("ROHF RI config: {e}");
         assert!(e.contains("ROHF") && e.contains("RI"), "{e}");
         assert!(analytic_rohf_hessian_available(&mol, &prep, op, &ri(j, k)).is_err());
@@ -1262,7 +1313,9 @@ fn rohf_with_ri_and_other_unsupported_configurations_are_refused() {
         }],
         ..Default::default()
     });
-    let e = uhf_hessian_preflight(op, &with_ext).unwrap_err().to_string();
+    let e = uhf_hessian_preflight(op, &with_ext)
+        .unwrap_err()
+        .to_string();
     eprintln!("UHF RI + external potential: {e}");
     assert!(e.contains("external potential"), "{e}");
     let ks = RhfConfig {
@@ -1282,16 +1335,32 @@ fn route_and_state_inconsistencies_are_refused() {
     if !has_deriv2() {
         return;
     }
-    let s = setup(&nh2(), "sto-3g", "def2-universal-jkfit", "def2-universal-jkfit");
+    let s = setup(
+        &nh2(),
+        "sto-3g",
+        "def2-universal-jkfit",
+        "def2-universal-jkfit",
+    );
     let ctx = ParallelContext::default();
     let hess = |r: &ScfResult, cfg: &RhfConfig| {
-        uhf_hessian_parts(&ctx, &s.mol, &s.prep, Operator::coulomb(), &s.bounds, r, cfg)
+        uhf_hessian_parts(
+            &ctx,
+            &s.mol,
+            &s.prep,
+            Operator::coulomb(),
+            &s.bounds,
+            r,
+            cfg,
+        )
     };
     // A route whose RI-K basis differs from the configuration's.
     let mut bad = s.uhf.clone();
     bad.df_jk.as_mut().unwrap().k_aux = Some("cc-pvdz-ri".into());
     let e = hess(&bad, &s.cfg).unwrap_err().to_string();
-    assert!(e.contains("RI-K") && e.contains("differs from the configuration"), "{e}");
+    assert!(
+        e.contains("RI-K") && e.contains("differs from the configuration"),
+        "{e}"
+    );
     // Range-separated fitted exchange in the route.
     let mut rsh = s.uhf.clone();
     rsh.df_jk.as_mut().unwrap().rsh_k = Some(("def2-universal-jkfit".into(), 0.3));
@@ -1334,8 +1403,16 @@ fn df_off_uhf_is_unchanged_by_the_density_fitting_branches() {
         };
         let uhf = solve_uhf(&ParallelContext::default(), &mol, &prep, &bounds, &cfg).unwrap();
         assert!(uhf.df_jk.is_none());
-        uhf_hessian_parts(&ParallelContext::default(), &mol, &prep, op, &bounds, &uhf, &cfg)
-            .unwrap()
+        uhf_hessian_parts(
+            &ParallelContext::default(),
+            &mol,
+            &prep,
+            op,
+            &bounds,
+            &uhf,
+            &cfg,
+        )
+        .unwrap()
     };
     let (a, b) = (hess(None), hess(Some(String::new())));
     assert_eq!(max_abs_diff(&a.total(), &b.total()), 0.0);
