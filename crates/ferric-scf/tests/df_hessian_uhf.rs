@@ -308,7 +308,11 @@ fn rhf_as_uhf(rhf: &ScfResult) -> ScfResult {
     u
 }
 
-/// Closed-shell limit bar. Measured (release): see the test output.
+/// Closed-shell limit bar (per term and total). Measured (release, water
+/// 6-31G / cc-pVDZ-RI): RI-J 5.6e-17, RI-K 2.9e-13, RI-JK 1.2e-13 (worst term;
+/// the K and JK differences are the summation order of the two channels against
+/// one). The bar is 350x the worst; a spin-channel defect moves the open-shell
+/// Hessian by >= 5e-2 (see the mutants), which this anchor cannot see.
 const TOL_ANCHOR: f64 = 1e-10;
 
 fn closed_shell_anchor(basis_name: &str, j_aux: &str, k_aux: &str) {
@@ -725,8 +729,14 @@ fn fd_own_gradient(s: &Setup) -> Array2<f64> {
 }
 
 /// Agreement bar of the production Hessian with the Richardson FD of the own
-/// UHF DF gradient (SCF re-converged at every displaced geometry). Floors
-/// measured with this test file are in the PR notes next to each system.
+/// UHF DF gradient (SCF re-converged at every displaced geometry, to
+/// energy_conv 1e-14 / density_conv 1e-12: at 1e-12 / 1e-10 the FD reference
+/// itself carries ~5e-8 of SCF noise and every configuration, exact K included,
+/// misses at that level). Floors measured (release): CH2 triplet STO-3G RI-J
+/// 6.6e-11, RI-K 7.2e-10, 6-31G RI-JK 3.2e-10; NH2 STO-3G RI-JK 5.0e-10, 6-31G
+/// RI-K 7.3e-10; cc-pVDZ / def2-universal-jkfit RI-JK: CH2 7.1e-10, NH2 2.8e-9
+/// (worst, 3.6x below the bar), CH3 9.4e-10. Metric lambda_min >= 9.6e-6 (cond
+/// <= 3.5e7), no mode in the gradient's noise band.
 const BAR_OWN: f64 = 1e-8;
 
 fn check_full(mol: &Molecule, basis_name: &str, j_aux: &str, k_aux: &str, tol: f64) -> f64 {
@@ -794,19 +804,19 @@ fn full_hessian_matches_fd_nh2_631g_ri_k() {
 }
 
 #[test]
-#[ignore = "slow: NH2 cc-pVDZ / def2-universal-jkfit RI-JK own-gradient FD"]
+#[ignore = "slow: NH2 cc-pVDZ / def2-universal-jkfit RI-JK own-gradient FD; measured 53 s for the three cc-pVDZ tests run together (3 test threads, box load ~8)"]
 fn full_hessian_matches_fd_nh2_ccpvdz_jkfit() {
     check_full(&nh2(), "cc-pvdz", "def2-universal-jkfit", "def2-universal-jkfit", BAR_OWN);
 }
 
 #[test]
-#[ignore = "slow: CH2 triplet cc-pVDZ / def2-universal-jkfit RI-JK own-gradient FD"]
+#[ignore = "slow: CH2 triplet cc-pVDZ / def2-universal-jkfit RI-JK own-gradient FD; measured 53 s for the three cc-pVDZ tests run together (3 test threads, box load ~8)"]
 fn full_hessian_matches_fd_ch2_ccpvdz_jkfit() {
     check_full(&ch2(), "cc-pvdz", "def2-universal-jkfit", "def2-universal-jkfit", BAR_OWN);
 }
 
 #[test]
-#[ignore = "slow: CH3 doublet cc-pVDZ / def2-universal-jkfit RI-JK own-gradient FD"]
+#[ignore = "slow: CH3 doublet cc-pVDZ / def2-universal-jkfit RI-JK own-gradient FD; measured 53 s for the three cc-pVDZ tests run together (3 test threads, box load ~8)"]
 fn full_hessian_matches_fd_ch3_ccpvdz_jkfit() {
     check_full(&ch3(), "cc-pvdz", "def2-universal-jkfit", "def2-universal-jkfit", BAR_OWN);
 }
@@ -867,8 +877,15 @@ fn translational_and_rotational_invariance() {
 // Negative controls and mutants
 // ---------------------------------------------------------------------------
 
-/// Bar of the mutation suite (NH2 6-31G / cc-pVDZ-RI, RI-JK): set from the
-/// measured production agreement of this system, see the test output.
+/// Bar of the mutation suite (NH2 6-31G / cc-pVDZ-RI, RI-JK). Derived from
+/// both sides: the production agreement with the differenced own gradient on
+/// this system is 7.0e-10, so 3e-9 is 4x above what a correct Hessian shows;
+/// the closest mutants are the stencil-step-x10 ones (K 4.8e-8 = 16 bars, J
+/// 2.4e-7 = 81 bars, i.e. 1.6x and 8x the 10-bar pass line, margins stated, not
+/// assumed); every other mutant misses by >= 2.1e-5 (the CPHF exact-K one) and
+/// mostly by > 5e-2. One mutant (the CPHF Coulomb matrix from the alpha response
+/// density only) makes the orbital Hessian indefinite and is caught by the
+/// solver's typed error instead of a number.
 const BAR_MUT: f64 = 3e-9;
 
 type Mutant = (
