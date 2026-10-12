@@ -179,9 +179,9 @@ fn terfc_schwarz_trivial_limit_and_mutant_c4() {
     check("alkane_4.xyz", 4, 0.04, &[0]);
 }
 
-/// C8, linked and NCP; 215 s release on a loaded box (2026-10-11).
+/// C8, linked and NCP; 215-410 s release on a loaded box (2026-10-11).
 #[test]
-#[ignore = "C8 x 2 operators x 4 runs, ~215 s release"]
+#[ignore = "C8 x 2 operators x 4 runs, 215-410 s release depending on box load"]
 fn terfc_schwarz_trivial_limit_and_mutant_c8() {
     check("alkane_8.xyz", 8, 0.18, &[0, 1]);
 }

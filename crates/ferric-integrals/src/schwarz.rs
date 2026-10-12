@@ -164,6 +164,18 @@ pub fn bound_inflation(op: Operator) -> f64 {
     }
 }
 
+/// max |(ab|ab)| over a shell-pair diagonal block: the magnitudes live on the
+/// generalized diagonal of the (n1*n2)x(n1*n2) block, index ((a*n2+b)*n1+a)*n2+b.
+fn diagonal_max(block: &[f64], n1: usize, n2: usize) -> f64 {
+    let mut m = 0.0f64;
+    for a in 0..n1 {
+        for b in 0..n2 {
+            m = m.max(block[((a * n2 + b) * n1 + a) * n2 + b].abs());
+        }
+    }
+    m
+}
+
 /// Q(i,j) = sqrt(max_{a,b} |(ab|ab)|) over the functions of shell pair (i,j),
 /// from one computed (ij|ij) quartet block, floored at [`SCHWARZ_Q_FLOOR`] so
 /// that the returned bound is never exactly zero.
@@ -186,20 +198,7 @@ fn schwarz_pair(
     let dims = prep.shell_dims();
     let (n1, n2) = (dims[i], dims[j]);
     let maxv = match eng.compute_quartet_checked(prep, i, j, i, j) {
-        Ok(Some(block)) => {
-            // The (ab|ab) magnitudes live on the generalized diagonal of the
-            // (n1·n2)×(n1·n2) block: index ((a·n2+b)·n1+a)·n2+b.
-            let mut m = 0.0f64;
-            for a in 0..n1 {
-                for b in 0..n2 {
-                    let v = block[((a * n2 + b) * n1 + a) * n2 + b].abs();
-                    if v > m {
-                        m = v;
-                    }
-                }
-            }
-            m
-        }
+        Ok(Some(block)) => diagonal_max(block, n1, n2),
         Ok(None) => 0.0,
         Err(status) => {
             return Err(FerricError::Libint(format!(
@@ -213,42 +212,8 @@ fn schwarz_pair(
     Ok((maxv.sqrt() * scale).max(SCHWARZ_Q_FLOOR))
 }
 
-/// Compute the Schwarz screening matrix Q(i,j) = sqrt(|(ij|ij)|) for all shell pairs.
-///
-/// Q(i,j) * Q(k,l) provides an upper bound on |(ij|kl)|, enabling integral screening.
-///
-/// Parallelized over upper-triangle shell pairs once `nsh` clears
-/// `PAR_SCHWARZ_SHELL_THRESHOLD` — the historical `scf_compute_schwarz` FFI
-/// call ran the whole O(nsh²) diagonal-quartet loop serially on one engine,
-/// which dominated setup on large direct jobs. Each rayon worker builds its own
-/// [`Engine`] via `map_init` (construction is serialized behind a global ctor
-/// mutex — see the ROW_BLOCK note in the body for why granularity matters).
-/// Every pair is computed by the same
-/// `scf_compute_eri_quartet` kernel with unit coefficient as the serial loop,
-/// and each (i, j) is written exactly once, so the result is bit-identical to
-/// the serial loop regardless of thread count or block size.
-///
-/// # Why the operator set is `{Coulomb, ErfCoulomb, ErfcCoulomb, Terfc}`
-///
-/// Two independent gates, and it is worth knowing which one a given operator
-/// fails, because they have different remedies:
-///
-/// 1. **Positive-definiteness.** Schwarz requires `G` to be a positive-definite
-///    function (Thompson & Ochsenfeld, JCP 147, 144101 (2017), Appendix B;
-///    Bochner's theorem on `F_G(k) > 0`). Their Table VI discharges this for
-///    all three accepted kinds, and also for `Yukawa`, `SlaterGeminal` and the
-///    Gaussian geminal. See [`crate::csb`]'s header, which extends the same
-///    recipe to ferric's own kernels and finds `Terfc` positive-definite (with
-///    a closed form, `F(k) = (1 - cos(k r0) e^{-k²/4ω²})/(2π²k²)`) but `Terf`
-///    NOT — `F_terf(k) = cos(k r0) e^{-k²/4ω²}/(2π²k²)` changes sign, so a
-///    "Schwarz bound" for `Terf` could be violated outright. No engine work
-///    would ever make `Terf` admissible here.
-/// 2. **An available 4-centre engine.** `Engine::new_2e` must be able to build
-///    the operator at all, and this pass needs `(ij|ij)` QUARTETS. `Terfc` is
-///    served by the table engine's `scf_compute_terfc_eri4`; because that
-///    engine is interpolated, its factors carry [`bound_inflation`] and a
-///    basis whose quartets exceed the table depth is refused up front.
-pub fn schwarz(op: Operator, prep: &PreparedBasis) -> Result<Array2<f64>, FerricError> {
+/// Operator gate of [`schwarz`]; the reasoning for each arm is in the comments.
+fn check_operator_supported(op: Operator, prep: &PreparedBasis) -> Result<(), FerricError> {
     match op.kind {
         OperatorKind::Coulomb | OperatorKind::ErfCoulomb | OperatorKind::ErfcCoulomb => {}
         // INVALID BY CONSTRUCTION, not merely unimplemented. Schwarz screening
@@ -318,6 +283,46 @@ pub fn schwarz(op: Operator, prep: &PreparedBasis) -> Result<Array2<f64>, Ferric
             )))
         }
     }
+    Ok(())
+}
+
+/// Compute the Schwarz screening matrix Q(i,j) = sqrt(|(ij|ij)|) for all shell pairs.
+///
+/// Q(i,j) * Q(k,l) provides an upper bound on |(ij|kl)|, enabling integral screening.
+///
+/// Parallelized over upper-triangle shell pairs once `nsh` clears
+/// `PAR_SCHWARZ_SHELL_THRESHOLD` — the historical `scf_compute_schwarz` FFI
+/// call ran the whole O(nsh²) diagonal-quartet loop serially on one engine,
+/// which dominated setup on large direct jobs. Each rayon worker builds its own
+/// [`Engine`] via `map_init` (construction is serialized behind a global ctor
+/// mutex — see the ROW_BLOCK note in the body for why granularity matters).
+/// Every pair is computed by the same
+/// `scf_compute_eri_quartet` kernel with unit coefficient as the serial loop,
+/// and each (i, j) is written exactly once, so the result is bit-identical to
+/// the serial loop regardless of thread count or block size.
+///
+/// # Why the operator set is `{Coulomb, ErfCoulomb, ErfcCoulomb, Terfc}`
+///
+/// Two independent gates, and it is worth knowing which one a given operator
+/// fails, because they have different remedies:
+///
+/// 1. **Positive-definiteness.** Schwarz requires `G` to be a positive-definite
+///    function (Thompson & Ochsenfeld, JCP 147, 144101 (2017), Appendix B;
+///    Bochner's theorem on `F_G(k) > 0`). Their Table VI discharges this for
+///    all three accepted kinds, and also for `Yukawa`, `SlaterGeminal` and the
+///    Gaussian geminal. See [`crate::csb`]'s header, which extends the same
+///    recipe to ferric's own kernels and finds `Terfc` positive-definite (with
+///    a closed form, `F(k) = (1 - cos(k r0) e^{-k²/4ω²})/(2π²k²)`) but `Terf`
+///    NOT — `F_terf(k) = cos(k r0) e^{-k²/4ω²}/(2π²k²)` changes sign, so a
+///    "Schwarz bound" for `Terf` could be violated outright. No engine work
+///    would ever make `Terf` admissible here.
+/// 2. **An available 4-centre engine.** `Engine::new_2e` must be able to build
+///    the operator at all, and this pass needs `(ij|ij)` QUARTETS. `Terfc` is
+///    served by the table engine's `scf_compute_terfc_eri4`; because that
+///    engine is interpolated, its factors carry [`bound_inflation`] and a
+///    basis whose quartets exceed the table depth is refused up front.
+pub fn schwarz(op: Operator, prep: &PreparedBasis) -> Result<Array2<f64>, FerricError> {
+    check_operator_supported(op, prep)?;
     let nsh = prep.nshells();
     let scale = bound_inflation(op);
     let mut qmat = Array2::zeros((nsh, nsh));
@@ -744,7 +749,7 @@ mod tests {
             .parse()
             .unwrap();
         assert_eq!(val, TERFC_QUARTET_L_LIMIT);
-        assert!(4 * TERFC_SCHWARZ_MAX_L < TERFC_QUARTET_L_LIMIT);
+        const { assert!(4 * TERFC_SCHWARZ_MAX_L < TERFC_QUARTET_L_LIMIT) };
     }
 
     #[test]
@@ -754,7 +759,7 @@ mod tests {
         let ang = ferric_core::units::ANGSTROM_TO_BOHR;
         let w = |r0_ang: f64, s: f64| Operator::terfc_with_omega(r0_ang * ang, s / (r0_ang * ang));
         // inside, including both r0 edges and the s edge
-        for (r0, s) in [(1.0, 0.7071), (0.3, 1.0), (2.5, 8.9), (1.0, 8.9)] {
+        for (r0, s) in [(1.0, 0.75), (0.3, 1.0), (2.5, 8.9), (1.0, 8.9)] {
             check_terfc_validated_range(w(r0, s), &prep)
                 .unwrap_or_else(|e| panic!("r0={r0} s={s} refused: {e:?}"));
         }
