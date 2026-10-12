@@ -70,6 +70,14 @@
 //! G = 0 term enters through `d(S − S_ss)`, the smooth-piece part over the
 //! build's pair images (`smooth_g0_force`).
 //!
+//! # Column rotation
+//!
+//! A k energy that ran the rotated SR walks (hcore `V_SR(k)`, RS-GDF SR
+//! 3-centre sum) is differentiated on the rotated shells: the hcore image
+//! weights `Re Δ(L)` and the fit's `Zbin` enter as `Tᵀ W T`
+//! ([`crate::sr_rotation`], "Forces and stress"; `kderiv` module doc). The
+//! configs must say what the build ran (typed errors otherwise).
+//!
 //! # Scope
 //!
 //! HF only (no KS-DFT / ROHF at k), RS-GDF aux on the cell's atoms (no ghost

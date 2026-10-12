@@ -64,12 +64,12 @@
 //! # Scope
 //!
 //! Dense pure-AFT and RS-GDF (unsplit or range-split) J/K, HF, RHF and UHF,
-//! with or without a scalar periodic ECP. NOT covered, each refused with a
-//! typed error naming the missing piece: an explicit SR column rotation
-//! request (`Auto` resolves to the unrotated walk, as [`crate::kgrad`];
-//! measured on H2 cc-pVDZ 1×1×2 RS-GDF, where the rotation is active, the
-//! Auto-pipeline and Off-pipeline stresses differ by 1.6e-13; a segmented
-//! basis does not rotate at all).
+//! with or without a scalar periodic ECP. A range-separated dense source is
+//! refused with a typed error naming the missing piece. The SR column rotation is
+//! differentiated: when the energy builds ran the rotated SR walks (hcore and
+//! fit) the strain walks run on the rotated shells with `Tᵀ W T` residue
+//! weights, so the stress is that of the energy the SCF used (the config must
+//! agree with the build, [`crate::kgrad`]'s refusals apply).
 //!
 //! ECP ([`KStressParts::ecp`]): the Gamma ECP strain walk
 //! ([`crate::ecp::periodic_ecp_strain`]) with the SR walk's image weight

@@ -93,8 +93,10 @@
 //! off to the screening precision (`tests/pbc_sr_rotation.rs`).
 //!
 //! It is ON BY DEFAULT ([`SrColumnRotation::Auto`]) in the Gamma builds
-//! (energy and gradient) and the k-point energy builds, and silently off in
-//! every build that does not implement it (k-point force builds, the frozen
+//! (energy, force and stress) and the k-point energy, force and stress builds
+//! (at k the derivative walks contract the rotated shells with `Tᵀ W[r] T`
+//! per-residue weights, `rsgdf::kpoint::kderiv`), and silently off in
+//! every build that does not implement it (the frozen
 //! s1 oracles); an explicit
 //! [`SrColumnRotation::On`] is refused by name there. Measured (FINDINGS, "Full
 //! timing series on libint 2.13.1", Γ RHF cc-pVDZ / cc-pvdz-ri, range

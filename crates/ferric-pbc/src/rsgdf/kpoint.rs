@@ -132,8 +132,9 @@
 //! [`KRsGdfStats::n_sr3_triplets`] counts the rotated walk's calls and
 //! [`KRsGdfStats::sr_rotated_columns`] the rotated columns (0 = nothing
 //! rotates, the identity: today's build bit for bit). The frozen s1 oracle
-//! runs unrotated under `Auto`; the k-point FORCE builds (`kderiv`)
-//! differentiate the unrotated walk and refuse an explicit `On`.
+//! runs unrotated under `Auto`; the k-point force and stress builds
+//! (`kderiv`) differentiate the rotated walk (module doc there, "Column
+//! rotation").
 //!
 //! # Memory
 //!

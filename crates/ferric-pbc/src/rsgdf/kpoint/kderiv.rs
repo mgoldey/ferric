@@ -81,6 +81,23 @@
 //! S_ss)` G = 0 inputs; the caller subtracts the smooth-overlap virial
 //! ([`KFitGrad::smooth_g0`]).
 //!
+//! # Column rotation
+//!
+//! When the energy build ran the rotated SR 3-centre walk
+//! ([`super::KRsGdfStats::sr_rotated_columns`] > 0) the derivative differentiates
+//! THAT energy: the rebuilt SR `J3` bins are the rotated walk's back-transformed
+//! bins (so `Z`, `Wm` and the Fock rebuild see the energy's own `B`), and the
+//! SR 3-centre derivative / strain walks run on the rotated orbital shells (and
+//! the split plan's rotated pieces) against the forward-transformed bins
+//! `Zbin'[r_L, r_T][mn] = Σ_{μν} T_μm T_νn Zbin[r_L, r_T][μν]` (`T` is real,
+//! geometry- and k-independent, so it acts on each residue bin separately and
+//! commutes with the phase folding). The metric, LR and G = 0 pieces stay on
+//! the parent basis. The config must say what the build ran: a rotated build
+//! over an `Off` config, an explicit `On` over an unrotated build of a basis
+//! that rotates, a different rotated-column count and a rotation mutant are
+//! typed errors. A basis with nothing to rotate is the unrotated code bit for
+//! bit.
+//!
 //! # Scope
 //!
 //! Aux centres must be the cell's atoms (no `aux_jac`); the energy build must

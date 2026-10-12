@@ -827,13 +827,14 @@ fn krhf_scf(ks: &KSys, hk: &PeriodicHcoreK, gdf: &KRsGdf) -> KScfResult {
     r
 }
 
-/// The k-point FORCE builds stay unrotated: a rotated energy build (hcore AND
-/// fit, `Auto`) is differentiated by the unrotated derivative walks (the
-/// force path rebuilds the fit and checks it against the given one), and the
-/// force equals the all-unrotated force to the screening precision. An
-/// explicit `On` on either force input is refused by name, never ignored.
+/// The k-point FORCE builds follow the energy build: a rotated energy build
+/// (hcore AND fit, `Auto`) is differentiated by the rotated derivative walks
+/// (the force path rebuilds the fit and checks it against the given one), the
+/// force equals the all-unrotated force to the screening precision, and an
+/// explicit `On` over the rotated build is the same walk as `Auto`
+/// (`pbc_sr_rotation_kderiv.rs` anchors it against FD and the Gamma code).
 #[test]
-fn k_forces_follow_the_rotated_energy_and_refuse_an_explicit_rotation() {
+fn k_forces_follow_the_rotated_energy() {
     let (cell, obs, aux_bs) = h2_ccpvdz();
     let ks = ksys(cell, &obs, &aux_bs, [1, 1, 2]);
     // Energy builds at `energy_rot` (built and converged once); the force
@@ -877,17 +878,10 @@ fn k_forces_follow_the_rotated_energy_and_refuse_an_explicit_rotation() {
         .fold(0.0_f64, |m, (x, y)| m.max((x - y).abs()));
     eprintln!("k force, rotated energy vs unrotated: max|dF| {d:.2e}");
     assert!(d <= F_BAR, "force dF {d:.3e}");
-    for (name, h_rot, g_rot) in [
-        ("hcore config", production(), auto),
-        ("fit config", auto, production()),
-    ] {
-        let err = force(&rot_run, h_rot, g_rot)
-            .err()
-            .unwrap_or_else(|| panic!("{name}: explicit On not refused"));
-        let msg = err.to_string();
-        assert!(
-            msg.contains("sr_column_rotation") && msg.contains("explicitly"),
-            "{name}: {msg}"
-        );
-    }
+    let f_on =
+        force(&rot_run, production(), production()).expect("explicit On over a rotated build");
+    assert_eq!(
+        f_on.grad, f_rot.grad,
+        "explicit On is the Auto walk on a rotated build"
+    );
 }

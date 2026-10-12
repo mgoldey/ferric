@@ -40,7 +40,7 @@ use ferric_pbc::pair_ft::residues::{pair_ft_residues_chunked, pair_ft_strain_res
 use ferric_pbc::pair_ft::{pair_ft_strain_chunked, PairFtStrainTerms};
 use ferric_pbc::rsgdf::kpoint::{KRsGdf, KRsGdfConfig};
 use ferric_pbc::rsgdf::RsGdfConfig;
-use ferric_pbc::sr_rotation::{ColumnRotation, SrColumnRotation};
+use ferric_pbc::sr_rotation::SrColumnRotation;
 use ferric_pbc::stress::{gamma_rhf_stress, gamma_uhf_stress, GammaStress, GammaStressConfig};
 use ferric_scf::result::{ScfExit, ScfResult, Spin};
 use ndarray::{Array2, Array3};
@@ -72,9 +72,8 @@ const ALL9: [(usize, usize); 9] = [
     (2, 2),
 ];
 
-/// Rotation OFF: the stress walks the unrotated shells (as the k forces); the
-/// energy's Auto rotation agrees to the screening precision, but the FD
-/// anchors are exact only against the unrotated energy.
+/// Rotation pinned OFF so these anchors do not depend on the default: the
+/// column-rotated stress is anchored in `pbc_sr_rotation_kderiv.rs`.
 fn hcore_cfg() -> PeriodicHcoreConfig {
     PeriodicHcoreConfig {
         precision: HCORE_PRECISION,
@@ -1284,7 +1283,7 @@ const K_FD_BAR: f64 = 5e-8;
 // ====================================================== refusals
 
 #[test]
-fn stress_refuses_unconverged_scf_ecp_and_explicit_rotation() {
+fn stress_refuses_unconverged_scf_and_ecp() {
     let bs = pyscf_sto3g_h();
     let ks = ksys(h2_cell_g(), &bs, [1, 1, 3]);
     let eri = kdense(&ks, ANCHOR_PRECISION);
@@ -1324,22 +1323,6 @@ fn stress_refuses_unconverged_scf_ecp_and_explicit_rotation() {
     .unwrap_err()
     .to_string();
     assert!(e.contains("carries V_ECP but the basis"), "{e}");
-    // Explicit column rotation request.
-    let rot = hcore_cfg().with_sr_column_rotation(SrColumnRotation::On(ColumnRotation::new()));
-    let e = kpoint_rhf_stress(
-        &ks.cell,
-        &ks.prep,
-        &ks.mesh,
-        &rot,
-        &ks.hk,
-        KStressJk::Dense(&eri),
-        &scf,
-        ExxDiv::None,
-        &scfg(None),
-    )
-    .unwrap_err()
-    .to_string();
-    assert!(e.contains("column rotation"), "{e}");
 }
 
 /// FD `dE/dε` of `energies` (`[none, ewald]`) on `cell`, all nine components, step `h`.
@@ -1551,10 +1534,6 @@ fn hcore_fixed_d_entry_checks_its_inputs() {
     assert!(call(&other, &ks.hk, &scf.densities)
         .unwrap()
         .contains("omega"));
-    let rot = hcore_cfg().with_sr_column_rotation(SrColumnRotation::On(ColumnRotation::new()));
-    assert!(call(&rot, &ks.hk, &scf.densities)
-        .unwrap()
-        .contains("column rotation"));
     assert!(call(&hcore_cfg(), &ks.hk, &scf.densities[..1])
         .unwrap()
         .contains("shape mismatch"));
@@ -1769,8 +1748,7 @@ fn et_sp_aux() -> BasisSet {
     }
 }
 
-/// Rotation OFF (the stress walks the unrotated shells; the FD and Gamma
-/// anchors are exact only against the unrotated energy).
+/// Rotation pinned OFF (see `hcore_cfg`).
 fn gdf_cfg() -> RsGdfConfig {
     RsGdfConfig {
         omega: 1.0,
@@ -2427,11 +2405,12 @@ fn h3_uhf_1x1x3_rsgdf_stress_is_the_supercell_stress_per_cell() {
 
 // ----------------------------------------------------------- guards
 
-/// Typed refusals of the fitted path: an ECP in the hcore, an explicit
-/// column-rotation request on the fit or the hcore, on the unsplit AND the
-/// range-split source (a range-split build itself is supported).
+/// Typed refusal of the fitted path: an ECP in the hcore the basis does not
+/// carry, on the unsplit AND the range-split source (a range-split build
+/// itself is supported). Column-rotation request refusals live in
+/// `pbc_sr_rotation_kderiv.rs`.
 #[test]
-fn rsgdf_stress_refuses_ecp_and_explicit_rotation() {
+fn rsgdf_stress_refuses_ecp() {
     let bs = pyscf_sto3g_h();
     let ks = ksys(h2_cell_g(), &bs, [1, 1, 3]);
     let fs = fitsys(&ks);
@@ -2456,31 +2435,11 @@ fn rsgdf_stress_refuses_ecp_and_explicit_rotation() {
     hk_ecp.v_ecp = Some(hk_ecp.h.clone());
     let e = run(&hk_ecp, &hcore_cfg(), fs.src());
     assert!(e.contains("carries V_ECP but the basis"), "{e}");
-    // Explicit rotation on the hcore config and on the fit config.
-    let rot = hcore_cfg().with_sr_column_rotation(SrColumnRotation::On(ColumnRotation::new()));
-    let e = run(&ks.hk, &rot, fs.src());
-    assert!(e.contains("column rotation"), "{e}");
-    let rot_cfg = KRsGdfConfig {
-        gdf: RsGdfConfig {
-            sr_column_rotation: SrColumnRotation::On(ColumnRotation::new()),
-            ..gdf_cfg()
-        },
-        mutation: None,
-    };
-    let src = KRsGdfGradSource {
-        gdf: &fs.gdf,
-        cfg: &rot_cfg,
-        aux: &fs.aux,
-    };
-    let e = run(&ks.hk, &hcore_cfg(), src);
-    assert!(e.contains("column rotation"), "{e}");
-    // The same two refusals on a range-split source (the SCF density is the
-    // unsplit one: the refusals fire before the Fock guard).
+    // The same refusal on a range-split source (the SCF density is the
+    // unsplit one: the refusal fires before the Fock guard).
     let sp = fitsys_cfg(&ks, split_kcfg(1.0));
     let e = run(&hk_ecp, &hcore_cfg(), sp.src());
     assert!(e.contains("carries V_ECP but the basis"), "{e}");
-    let e = run(&ks.hk, &rot, sp.src());
-    assert!(e.contains("column rotation"), "{e}");
 }
 
 /// The Fock-consistency guard on the fitted source: it must refuse an SCF run
@@ -2797,8 +2756,9 @@ fn rsgdf_stress_accepts_a_fit_at_another_omega() {
 /// Measured max abs difference of dE/dε between the omega 1.0 and 1.3 fits: 2.6e-12 (H2 1x1x3).
 const OMEGA_STRESS_BAR: f64 = 1e-10;
 
-/// Auto column rotation: the energy builds MAY rotate the SR columns (`Auto`),
-/// the stress walks the unrotated shells. On a p-bearing, GENERALLY CONTRACTED k cell (cc-pVDZ / cc-pvdz-ri H2; a
+/// Auto column rotation: the energy builds and the stress walks rotate the SR
+/// columns (`Auto`) and agree with the unrotated pipeline to the screening
+/// precision. On a p-bearing, GENERALLY CONTRACTED k cell (cc-pVDZ / cc-pvdz-ri H2; a
 /// segmented basis such as STO-3G or the s+p test basis has no rotating
 /// column, so Auto is bit-identical to Off there), the stress
 /// of a fully-Auto pipeline (hcore, fit, SCF) vs the fully-Off one is printed
