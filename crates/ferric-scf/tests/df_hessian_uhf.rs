@@ -157,9 +157,13 @@ fn setup(mol: &Molecule, basis_name: &str, j_aux: &str, k_aux: &str) -> Setup {
     let cfg = scf_config(j_aux, k_aux);
     let uhf = solve_uhf(&ParallelContext::default(), mol, &prep, &bounds, &cfg).unwrap();
     assert!(uhf.converged, "{basis_name}: UHF did not converge");
-    let route = uhf.df_jk.as_ref().expect("a DF route");
-    assert_eq!(route.j_aux.as_deref(), Some(j_aux).filter(|v| !v.is_empty()));
-    assert_eq!(route.k_aux.as_deref(), Some(k_aux).filter(|v| !v.is_empty()));
+    if j_aux.is_empty() && k_aux.is_empty() {
+        assert!(uhf.df_jk.is_none(), "exact SCF carries no route");
+    } else {
+        let route = uhf.df_jk.as_ref().expect("a DF route");
+        assert_eq!(route.j_aux.as_deref(), Some(j_aux).filter(|v| !v.is_empty()));
+        assert_eq!(route.k_aux.as_deref(), Some(k_aux).filter(|v| !v.is_empty()));
+    }
     Setup {
         mol: mol.clone(),
         basis_name: basis_name.to_string(),
@@ -865,7 +869,7 @@ fn translational_and_rotational_invariance() {
 
 /// Bar of the mutation suite (NH2 6-31G / cc-pVDZ-RI, RI-JK): set from the
 /// measured production agreement of this system, see the test output.
-const BAR_MUT: f64 = 1e-9;
+const BAR_MUT: f64 = 3e-9;
 
 type Mutant = (
     &'static str,
@@ -874,7 +878,7 @@ type Mutant = (
     UhfDfMutants,
 );
 
-fn mutated_total(s: &Setup, m: &Mutant) -> Array2<f64> {
+fn mutated_total(s: &Setup, m: &Mutant) -> Result<Array2<f64>, ferric_core::FerricError> {
     uhf_hessian_parts_mutated(
         &ParallelContext::default(),
         &s.mol,
@@ -887,8 +891,7 @@ fn mutated_total(s: &Setup, m: &Mutant) -> Array2<f64> {
         &m.2,
         &m.3,
     )
-    .unwrap()
-    .total()
+    .map(|p| p.total())
 }
 
 fn all_mutants() -> Vec<Mutant> {
@@ -1066,6 +1069,24 @@ fn all_mutants() -> Vec<Mutant> {
             uh,
         ),
         (
+            "stencil step x10 (J)",
+            RijMutants {
+                stencil: st(Variant::Step10),
+                ..rj
+            },
+            rk,
+            uh,
+        ),
+        (
+            "one-shell displacement (J)",
+            RijMutants {
+                stencil: st(Variant::SingleShell),
+                ..rj
+            },
+            rk,
+            uh,
+        ),
+        (
             "stencil step x10 (K)",
             rj,
             RikMutants {
@@ -1101,21 +1122,39 @@ fn every_wired_mutant_misses_by_more_than_ten_bars() {
             RikMutants::default(),
             UhfDfMutants::default(),
         ),
-    );
+    )
+    .unwrap();
     assert_eq!(
         max_abs_diff(&prod, &again),
         0.0,
         "production is not reproducible"
     );
+    let mut caught_by_error = Vec::new();
     for m in all_mutants() {
-        let miss = max_abs_diff(&mutated_total(&s, &m), &prod);
-        eprintln!("MUTANT {}: miss {miss:.3e} ({:.1e} bars)", m.0, miss / BAR_MUT);
-        assert!(
-            miss > 10.0 * BAR_MUT,
-            "mutant {} misses by only {miss:.3e}",
-            m.0
-        );
+        // A mutant whose broken kernel makes the CPHF solver refuse (a
+        // non-positive-definite orbital Hessian, no convergence) is caught by
+        // a typed error: reported, and counted as caught, not as a number.
+        match mutated_total(&s, &m) {
+            Ok(h) => {
+                let miss = max_abs_diff(&h, &prod);
+                eprintln!(
+                    "MUTANT {}: miss {miss:.3e} ({:.1e} bars)",
+                    m.0,
+                    miss / BAR_MUT
+                );
+                assert!(
+                    miss > 10.0 * BAR_MUT,
+                    "mutant {} misses by only {miss:.3e}",
+                    m.0
+                );
+            }
+            Err(e) => {
+                eprintln!("MUTANT {}: typed error {e}", m.0);
+                caught_by_error.push(m.0);
+            }
+        }
     }
+    eprintln!("mutants caught by a typed error: {caught_by_error:?}");
 }
 
 #[test]
