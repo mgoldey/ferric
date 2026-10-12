@@ -1461,9 +1461,7 @@ fn accuracy_above_the_warning_threshold() {
     if !has_deriv2() {
         return;
     }
-    for aux in ["aug-cc-pvqz-rifit"] {
-        scan_row(aux);
-    }
+    scan_row("aug-cc-pvqz-rifit");
 }
 
 /// A water fitting basis (`base` on every atom) with a near-duplicate s
