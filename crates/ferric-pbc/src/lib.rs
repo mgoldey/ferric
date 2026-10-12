@@ -105,11 +105,12 @@
 //!   overlap weight; equals the Gamma force on ONE copy of each atom in the
 //!   diag(N) supercell. FINDINGS "Iteration 21".
 //! * [`kxcgrad`] — analytic nuclear forces of the k-point closed-shell RKS
-//!   energy for pure LDA/GGA functionals (`kpoint_rks_gradient`) on the
-//!   dense-AFT or RS-GDF J: the k-point HF force assembly with exchange
-//!   fraction 0 plus the XC AO-derivative, grid-point-motion and weight-
-//!   response terms on Bloch AOs; global hybrids, RSH, meta-GGA and open shell
-//!   are refused.
+//!   energy for LDA/GGA and global-hybrid functionals (`kpoint_rks_gradient`)
+//!   on the dense-AFT or RS-GDF (unsplit or range-split) J/K: the k-point HF
+//!   force assembly with the exact-exchange fraction `a` plus the XC
+//!   AO-derivative, grid-point-motion and weight-response terms on Bloch
+//!   AOs; range-separated hybrids, meta-GGA, VV10 and open shell are
+//!   refused.
 //! * [`kstress`] — the k-point RHF / UHF stress tensor
 //!   (`kpoint_rhf_stress`, `kpoint_uhf_stress`) on the dense-AFT and the
 //!   unsplit RS-GDF J/K:

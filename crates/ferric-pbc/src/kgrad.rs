@@ -750,7 +750,11 @@ pub(crate) fn open_ledger(
 }
 
 /// `v_M` of the mesh: 0 for `ExxDiv::None`, the mesh Madelung constant for `ExxDiv::Ewald`.
-pub(crate) fn madelung_for(cell: &Cell, mesh: &KPointMesh, exxdiv: ExxDiv) -> Result<f64, FerricError> {
+pub(crate) fn madelung_for(
+    cell: &Cell,
+    mesh: &KPointMesh,
+    exxdiv: ExxDiv,
+) -> Result<f64, FerricError> {
     Ok(match exxdiv {
         ExxDiv::None => 0.0,
         ExxDiv::Ewald => mesh.madelung(cell)?,
@@ -925,7 +929,9 @@ fn scaled_exch_terms(spins: &KSpins, exch_scale: f64) -> Vec<(f64, &[Array2<C64>
 /// fraction `a` of the energy (`1` = Hartree-Fock, bitwise the unscaled
 /// terms; `0` = no exchange at all: the K-derivative walks are skipped, the
 /// RS-GDF fit differentiates the Coulomb part only and the Madelung M-term
-/// vanishes; any other value is not validated and not exposed).
+/// vanishes; `0 < a < 1` scales the exchange coefficients of the K walks and
+/// of the fit's exchange pieces and the Madelung M-term by `a`, validated by
+/// the global-hybrid KS force, [`crate::kxcgrad`]).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn assemble(
     cell: &Cell,
@@ -1043,8 +1049,7 @@ pub(crate) fn assemble(
                 cross_spin: false,
             };
             Some(kpoint_fit_gradient(
-                src.gdf, src.cfg, cell, prep, src.aux, mesh, s_k, &dtot, &exch_fit, fm,
-                ledger,
+                src.gdf, src.cfg, cell, prep, src.aux, mesh, s_k, &dtot, &exch_fit, fm, ledger,
             )?)
         }
     };

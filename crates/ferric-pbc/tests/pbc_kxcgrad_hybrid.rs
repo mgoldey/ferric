@@ -106,8 +106,15 @@ fn kgdf_cfg() -> KRsGdfConfig {
     kgdf_cfg_of(Jk::Gdf)
 }
 
+thread_local! {
+    /// (radial, angular) of the XC grid on THIS test thread (default (20, 50);
+    /// only the ignored production-class test changes it).
+    static GRID: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((20, 50)) };
+}
+
 fn grid_cfg() -> PeriodicGridConfig {
-    let mut g = PeriodicGridConfig::with_size(20, 50);
+    let (nr, na) = GRID.with(|g| g.get());
+    let mut g = PeriodicGridConfig::with_size(nr, na);
     g.neighbour_cutoff = Some(CUTOFF);
     g
 }
@@ -158,13 +165,7 @@ struct Fx {
     functional: String,
 }
 
-fn fixture(
-    pos: &[[f64; 3]],
-    mesh_n: [usize; 3],
-    functional: &str,
-    jk: Jk,
-    exxdiv: ExxDiv,
-) -> Fx {
+fn fixture(pos: &[[f64; 3]], mesh_n: [usize; 3], functional: &str, jk: Jk, exxdiv: ExxDiv) -> Fx {
     let cell = cell_of(pos);
     let prep = prep_for(&cell, &pyscf_sto3g_h());
     let mesh = KPointMesh::gamma_centred(&cell, mesh_n).unwrap();
@@ -185,7 +186,11 @@ fn fixture(
     }
 }
 
-fn gcfg(exxdiv: Option<ExxDiv>, xm: Option<KXcMutation>, gm: Option<KGradMutation>) -> KRksGradConfig {
+fn gcfg(
+    exxdiv: Option<ExxDiv>,
+    xm: Option<KXcMutation>,
+    gm: Option<KGradMutation>,
+) -> KRksGradConfig {
     KRksGradConfig {
         grad: KGradConfig {
             budget_bytes: Some(AMPLE),
@@ -385,8 +390,9 @@ fn zero_xc(pos: &[[f64; 3]], mesh_n: [usize; 3], jk: Jk, exxdiv: ExxDiv, a: f64)
 fn with_jk<R>(z: &Zx, f: impl FnOnce(KGradJk<'_>) -> R) -> R {
     match z.jk {
         Jk::Dense => {
-            let eri = KDenseAftEri::build(&z.cell, &z.prep, &z.mesh, &z.hk.s, z.exxdiv, &dense_cfg())
-                .unwrap();
+            let eri =
+                KDenseAftEri::build(&z.cell, &z.prep, &z.mesh, &z.hk.s, z.exxdiv, &dense_cfg())
+                    .unwrap();
             f(KGradJk::Dense(&eri))
         }
         Jk::Gdf | Jk::GdfSplit => {
@@ -411,15 +417,27 @@ fn jk_mats(z: &Zx) -> (Vec<Array2<Complex64>>, Vec<Array2<Complex64>>) {
     let mut k = j.clone();
     match z.jk {
         Jk::Dense => {
-            let eri = KDenseAftEri::build(&z.cell, &z.prep, &z.mesh, &z.hk.s, z.exxdiv, &dense_cfg())
+            let eri =
+                KDenseAftEri::build(&z.cell, &z.prep, &z.mesh, &z.hk.s, z.exxdiv, &dense_cfg())
+                    .unwrap();
+            eri.jk_builder()
+                .build(&z.scf.densities, &mut j, &mut k)
                 .unwrap();
-            eri.jk_builder().build(&z.scf.densities, &mut j, &mut k).unwrap();
         }
         Jk::Gdf | Jk::GdfSplit => {
-            let gdf = KRsGdf::build(&z.cell, &z.prep, &z.aux, &z.mesh, &z.hk.s, &kgdf_cfg_of(z.jk))
-                .unwrap()
-                .with_exxdiv(z.exxdiv);
-            gdf.jk_builder().build(&z.scf.densities, &mut j, &mut k).unwrap();
+            let gdf = KRsGdf::build(
+                &z.cell,
+                &z.prep,
+                &z.aux,
+                &z.mesh,
+                &z.hk.s,
+                &kgdf_cfg_of(z.jk),
+            )
+            .unwrap()
+            .with_exxdiv(z.exxdiv);
+            gdf.jk_builder()
+                .build(&z.scf.densities, &mut j, &mut k)
+                .unwrap();
         }
     }
     (j, k)
@@ -460,7 +478,15 @@ fn a_equal_one_with_zero_xc_is_the_hf_force_per_part() {
             });
             let hf = with_jk(&z, |j| {
                 kpoint_rhf_gradient(
-                    &z.cell, &z.prep, &z.mesh, &hcfg, &z.hk, j, &z.scf, exxdiv, &kcfg(),
+                    &z.cell,
+                    &z.prep,
+                    &z.mesh,
+                    &hcfg,
+                    &z.hk,
+                    j,
+                    &z.scf,
+                    exxdiv,
+                    &kcfg(),
                 )
                 .unwrap()
             });
@@ -473,7 +499,10 @@ fn a_equal_one_with_zero_xc_is_the_hf_force_per_part() {
                 ("exchange", parts_diff(&p.exchange, &q.exchange)),
                 ("fit_orb_sr", parts_diff(&p.fit_orb_sr, &q.fit_orb_sr)),
                 ("fit_aux_lr", parts_diff(&p.fit_aux_lr, &q.fit_aux_lr)),
-                ("fit_metric_sr", parts_diff(&p.fit_metric_sr, &q.fit_metric_sr)),
+                (
+                    "fit_metric_sr",
+                    parts_diff(&p.fit_metric_sr, &q.fit_metric_sr),
+                ),
                 ("fit_g0", parts_diff(&p.fit_g0, &q.fit_g0)),
                 ("total", parts_diff(&ks.grad, &hf.grad)),
             ];
@@ -535,15 +564,30 @@ fn force_is_affine_in_the_exchange_fraction_at_fixed_density() {
             ("total a=.25", aff(&g0.grad, &g1.grad, &gq.grad, 0.25)),
             (
                 "overlap a=.5",
-                aff(&g0.hf.parts.overlap, &g1.hf.parts.overlap, &gh.hf.parts.overlap, 0.5),
+                aff(
+                    &g0.hf.parts.overlap,
+                    &g1.hf.parts.overlap,
+                    &gh.hf.parts.overlap,
+                    0.5,
+                ),
             ),
             (
                 "exchange a=.5",
-                aff(&g0.hf.parts.exchange, &g1.hf.parts.exchange, &gh.hf.parts.exchange, 0.5),
+                aff(
+                    &g0.hf.parts.exchange,
+                    &g1.hf.parts.exchange,
+                    &gh.hf.parts.exchange,
+                    0.5,
+                ),
             ),
             (
                 "fit_orb_sr a=.5",
-                aff(&g0.hf.parts.fit_orb_sr, &g1.hf.parts.fit_orb_sr, &gh.hf.parts.fit_orb_sr, 0.5),
+                aff(
+                    &g0.hf.parts.fit_orb_sr,
+                    &g1.hf.parts.fit_orb_sr,
+                    &gh.hf.parts.fit_orb_sr,
+                    0.5,
+                ),
             ),
             (
                 "fit_metric_lr a=.25",
@@ -675,8 +719,14 @@ fn k_mesh_hybrid_force_is_the_gamma_supercell_force_per_part() {
     let kp = &k.hf.parts;
     let rows = [
         ("xc_ao", parts_diff(&k.xc_ao, &first(&gam.parts.xc_ao))),
-        ("overlap", parts_diff(&kp.overlap, &first(&gam.parts.overlap))),
-        ("eri=J+K", parts_diff(&(&kp.coulomb + &kp.exchange), &first(&gam.parts.eri))),
+        (
+            "overlap",
+            parts_diff(&kp.overlap, &first(&gam.parts.overlap)),
+        ),
+        (
+            "eri=J+K",
+            parts_diff(&(&kp.coulomb + &kp.exchange), &first(&gam.parts.eri)),
+        ),
         ("total", parts_diff(&k.grad, &first(&gam.grad))),
     ];
     for (n, d) in rows {
@@ -729,7 +779,16 @@ fn b3lyp_force_matches_fd() {
     let g = force(&fx);
     let mut worst = 0.0_f64;
     for (a, x) in [(0, 2), (1, 1)] {
-        let d = fd(&H2, a, x, 1e-4, [1, 1, 3], "B3LYP", Jk::Dense, ExxDiv::Ewald);
+        let d = fd(
+            &H2,
+            a,
+            x,
+            1e-4,
+            [1, 1, 3],
+            "B3LYP",
+            Jk::Dense,
+            ExxDiv::Ewald,
+        );
         worst = worst.max((g.grad[(a, x)] - d).abs());
     }
     eprintln!("B3LYP analytic vs FD worst {worst:.2e}");
@@ -742,10 +801,22 @@ fn b3lyp_force_matches_fd() {
     let h2 = 5e-5;
     let d2 = fd(&H2, 0, 2, h2, [1, 1, 3], "B3LYP", Jk::Dense, ExxDiv::Ewald);
     let e1 = (g.grad[(0, 2)]
-        - fd(&H2, 0, 2, 1e-4, [1, 1, 3], "B3LYP", Jk::Dense, ExxDiv::Ewald))
+        - fd(
+            &H2,
+            0,
+            2,
+            1e-4,
+            [1, 1, 3],
+            "B3LYP",
+            Jk::Dense,
+            ExxDiv::Ewald,
+        ))
     .abs();
     let e2 = (g.grad[(0, 2)] - d2).abs();
-    eprintln!("B3LYP FD residual h=1e-4 {e1:.2e}, h=5e-5 {e2:.2e}, ratio {:.2}", e1 / e2);
+    eprintln!(
+        "B3LYP FD residual h=1e-4 {e1:.2e}, h=5e-5 {e2:.2e}, ratio {:.2}",
+        e1 / e2
+    );
     assert!(e1 / e2 > 3.0, "ratio {}", e1 / e2); // measured 12: >= h^2 (4x), the residual is not a force error
 }
 
@@ -758,7 +829,16 @@ fn pbe0_force_with_the_range_split_fit_matches_fd() {
     let g = force(&fx);
     let mut worst = 0.0_f64;
     for (a, x) in [(0, 2), (1, 1)] {
-        let d = fd(&H2, a, x, 1e-4, [1, 1, 3], "PBE0", Jk::GdfSplit, ExxDiv::Ewald);
+        let d = fd(
+            &H2,
+            a,
+            x,
+            1e-4,
+            [1, 1, 3],
+            "PBE0",
+            Jk::GdfSplit,
+            ExxDiv::Ewald,
+        );
         worst = worst.max((g.grad[(a, x)] - d).abs());
     }
     eprintln!("split RS-GDF PBE0 analytic vs FD worst {worst:.2e}");
@@ -819,13 +899,22 @@ fn refusals_and_the_hybrid_fock_guard() {
     // of a hybrid SCF and vice versa; a tamper.
     let pbe = fixture(&H2, [1, 1, 3], "PBE", Jk::Dense, ExxDiv::Ewald);
     let cases: Vec<(&str, Result<KRksGradient, ferric_core::FerricError>)> = vec![
-        ("exxdiv None on an Ewald SCF", run("PBE0", &fx.res.scf, &gcfg(Some(ExxDiv::None), None, None))),
+        (
+            "exxdiv None on an Ewald SCF",
+            run("PBE0", &fx.res.scf, &gcfg(Some(ExxDiv::None), None, None)),
+        ),
         ("B3LYP on a PBE0 SCF", run("B3LYP", &fx.res.scf, &ok_cfg)),
         ("PBE force on a PBE0 SCF", run("PBE", &fx.res.scf, &ok_cfg)),
-        ("PBE0 force on a PBE SCF", run("PBE0", &pbe.res.scf, &ok_cfg)),
+        (
+            "PBE0 force on a PBE SCF",
+            run("PBE0", &pbe.res.scf, &ok_cfg),
+        ),
     ];
     for (n, r) in cases {
-        let e = r.err().unwrap_or_else(|| panic!("{n} accepted")).to_string();
+        let e = r
+            .err()
+            .unwrap_or_else(|| panic!("{n} accepted"))
+            .to_string();
         eprintln!("{n}: {e}");
         assert!(e.contains("differs"), "{n}: {e}");
     }
@@ -843,10 +932,19 @@ fn refusals_and_the_hybrid_fock_guard() {
     assert!(e.contains("differs"));
     let mut t = fx.res.scf.clone();
     t.fock[1][(0, 1)] += Complex64::new(1e-6, 0.0);
-    assert!(run("PBE0", &t, &ok_cfg).is_err(), "1e-6 tamper must be refused");
+    assert!(
+        run("PBE0", &t, &ok_cfg).is_err(),
+        "1e-6 tamper must be refused"
+    );
     // A pure functional ignores the exxdiv entirely.
     let a = force_with(&pbe, "PBE", &pbe.res.scf, &gcfg(None, None, None)).unwrap();
-    let b = force_with(&pbe, "PBE", &pbe.res.scf, &gcfg(Some(ExxDiv::None), None, None)).unwrap();
+    let b = force_with(
+        &pbe,
+        "PBE",
+        &pbe.res.scf,
+        &gcfg(Some(ExxDiv::None), None, None),
+    )
+    .unwrap();
     assert_eq!(a.grad, b.grad);
     assert_eq!(max_abs(&a.hf.parts.exchange), 0.0);
 }
@@ -874,7 +972,10 @@ fn budgets_either_reproduce_the_force_or_fail_typed() {
             }
             Err(e) => {
                 err += 1;
-                assert!(e.to_string().contains("budget") || e.to_string().contains("memory"), "{b}: {e}");
+                assert!(
+                    e.to_string().contains("budget") || e.to_string().contains("memory"),
+                    "{b}: {e}"
+                );
             }
         }
         b *= 3;
@@ -941,4 +1042,26 @@ fn smoke_mutants_are_caught() {
     let fn0 = fixture(&H2, [1, 1, 3], "PBE0", Jk::Dense, ExxDiv::None);
     let b0 = force(&fn0);
     assert_eq!(miss_g(&fn0, G::ExchMadelungUnscaled, &b0), 0.0);
+}
+
+// ------------------------------------------------------------------ ignored
+
+/// Production-class grid (40, 110) and a 2x2x2 mesh (TRIM-only: phases are
+/// real there; the 1x1x3 row carries them), dense AFT PBE0 with Ewald, FD of
+/// the energy.
+#[test]
+#[ignore = "production-class grid + 2x2x2 mesh FD, PBE0 dense; measured 34 s"]
+fn pbe0_force_matches_fd_on_the_production_grid_and_a_2x2x2_mesh() {
+    GRID.with(|g| g.set((40, 110)));
+    for mesh_n in [[1, 1, 3], [2, 2, 2]] {
+        let fx = fixture(&H2, mesh_n, "PBE0", Jk::Dense, ExxDiv::Ewald);
+        let g = force(&fx);
+        let mut worst = 0.0_f64;
+        for (a, x) in [(0, 2), (1, 1)] {
+            let d = fd(&H2, a, x, 1e-4, mesh_n, "PBE0", Jk::Dense, ExxDiv::Ewald);
+            worst = worst.max((g.grad[(a, x)] - d).abs());
+        }
+        eprintln!("(40,110) {mesh_n:?}: PBE0 analytic vs FD worst {worst:.2e}");
+        assert!(worst < FD_BAR, "{mesh_n:?}: {worst:e}");
+    }
 }
