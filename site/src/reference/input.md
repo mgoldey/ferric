@@ -201,7 +201,7 @@ scheme, `eps` and kept fraction. See
 | `aux_radius` | float | `10.0` | Bohr, > 0 | Integral-direct only (an error otherwise). Aux fit-domain radius. |
 | `virt_radius` | float | `12.0` | Bohr, > 0 | Integral-direct only. Virtual domain radius. |
 | `ao_tail` | float | `1e-3` | ≥ 0 | Integral-direct only. `0.0` keeps every shell. |
-| `schwarz_skip` | float | `1e-5` | ≥ 0 | Integral-direct only. Cauchy-Schwarz cut on the batch 3-index triples: a triple is skipped when `sqrt(max (P\|P)) * sqrt(max (ab\|ab)) < schwarz_skip`, both factors from the run's own operator (Coulomb, erfc or terfc). `0.0` evaluates every triple (bit-identical to a run without the cut). |
+| `schwarz_skip` | float | `1e-5` | ≥ 0 | Integral-direct only. Cauchy-Schwarz cut on the batch 3-index triples: a triple is skipped when `sqrt(max (P\|P)) * sqrt(max (ab\|ab)) < schwarz_skip`, both factors from the run's own operator (Coulomb, erfc or terfc; the terfc factors carry a 1e-5 relative table-error inflation each, so the product is scaled by (1 + 1e-5)²). For terfc it is available for orbital shells up to g, r0 in [0.3, 2.5] Å and r0·ω ≤ 8.9, and errors outside that (set `0.0` to run anyway). See [integral-direct local MP2](../methods/mp2.md). `0.0` evaluates every triple (bit-identical to a run without the cut). |
 | `batch_merge` | integer | `4` | ≥ 1 | Integral-direct only. |
 | `gate_cal` | float | none (gate off) | > 0 | Integral-direct only. Pair-gate calibration (~0.7 Coulomb, ~0.02 erfc ω = 1). |
 | `virt_schwarz_kappa` | float | none (off) | > 0 | Integral-direct only. ε-linked Schwarz virtual-candidate screen. |
