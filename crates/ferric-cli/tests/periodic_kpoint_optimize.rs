@@ -326,12 +326,10 @@ fn k_point_optimize_converges_and_the_final_force_is_the_library_force() {
 #[test]
 fn k_point_rohf_optimize_is_refused() {
     // (closed-shell k-point Kohn-Sham is wired: periodic_kpoint_ks_optimize.rs)
-    for (kind, message) in [("rohf", "not supported for periodic ROHF")] {
-        let o = run("refuse", &xyz(&H2_OFFAXIS), kind, 1, "[1, 1, 2]", LOOSE);
-        assert!(!o.status.success(), "{kind}");
-        let err = String::from_utf8_lossy(&o.stderr);
-        assert!(err.contains(message), "{kind}: {err}");
-    }
+    let o = run("refuse", &xyz(&H2_OFFAXIS), "rohf", 1, "[1, 1, 2]", LOOSE);
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("not supported for periodic ROHF"), "{err}");
 }
 
 /// Library RS-GDF RHF force with the configs the CLI builds for

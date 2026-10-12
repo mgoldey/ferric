@@ -343,9 +343,8 @@ fn printed_force_equals_the_library_force_for_a_global_hybrid_with_mutants() {
         ExxDiv::None,
     );
     assert!(max_diff(&g, &same) < BAR, "exxdiv identity violated");
-    let e = try_library_gradient(&at, lib, ExxDiv::None)
-        .err()
-        .expect("a wrong exxdiv must be refused");
+    let e =
+        try_library_gradient(&at, lib, ExxDiv::None).expect_err("a wrong exxdiv must be refused");
     assert!(e.contains("exxdiv"), "{e}");
 }
 

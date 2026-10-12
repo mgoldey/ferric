@@ -206,8 +206,7 @@ fn retained_bytes_are_charged_against_the_derivative_budget() {
     // A budget that only covers the retained objects leaves the derivative
     // ~1 byte (never 0, which would mean "unset"): a typed ledger error.
     let e = grad(kept.derivative_budget(Some(resident)))
-        .err()
-        .expect("a budget covering only the retained objects must fail")
+        .expect_err("a budget covering only the retained objects must fail")
         .to_string();
     eprintln!("budget-exhausted derivative: {e}");
     assert!(
