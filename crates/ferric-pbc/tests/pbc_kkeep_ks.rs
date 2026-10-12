@@ -30,8 +30,12 @@ use ferric_pbc::rsgdf::kpoint::KRsGdfConfig;
 use ferric_pbc::rsgdf::RsGdfConfig;
 
 const FD_H: f64 = 1e-4;
-const FD_BAR: f64 = 2e-6;
-const CUTOFF: f64 = 10.0;
+const FD_BAR: f64 = 2e-8;
+/// Explicit XC neighbour cutoff, NOT the default (10 Bohr in this 4 Bohr cell): at 10 a
+/// ~9e-11 Ha one-step energy discontinuity is crossed by the x displacement and fakes a
+/// 4e-7 FD miss; at 14 the h^2 residual is ~2e-9 (bar 2e-8), and a force that dropped
+/// the energy cutoff moves by ~3e-6.
+const CUTOFF: f64 = 14.0;
 const ATOMS: [[f64; 3]; 2] = [[0.3, 0.2, 0.1], [0.35, 0.12, 1.5]];
 
 fn grid() -> PeriodicGridConfig {
@@ -160,6 +164,34 @@ fn retained_force_matches_fd_and_a_stale_hcore_does_not() {
         worst = worst.max(d.abs());
     }
     assert!(worst <= FD_BAR, "FD miss {worst:e}");
+
+    // MUTANT: the energy's explicit cutoff dropped from the force's grid (the
+    // default is 10 Bohr here, the energy ran at 14). The force either moves
+    // by far more than the bar or the Fock guard refuses it.
+    let mut cfg_drop = grad_cfg(ExxDiv::Ewald, None);
+    cfg_drop.grid = KXcGrid::Atom(PeriodicGridConfig::with_size(40, 110));
+    let dropped = kpoint_rks_gradient(
+        &cell,
+        &prep,
+        &m,
+        &c.krhf.hcore,
+        &kept.hk,
+        kept.grad_jk(None, &c.krhf.rsgdf).unwrap(),
+        &r.scf,
+        "PBE0",
+        &cfg_drop,
+    );
+    match dropped {
+        Err(e) => eprintln!("dropped cutoff refused: {e}"),
+        Ok(b) => {
+            let miss = (0..2)
+                .flat_map(|a| (0..3).map(move |x| (a, x)))
+                .map(|ax| (b.grad[ax] - g.grad[ax]).abs())
+                .fold(0.0_f64, f64::max);
+            eprintln!("dropped cutoff moves the force by {miss:.2e}");
+            assert!(miss > 50.0 * FD_BAR, "cutoff mutant not detected: {miss:e}");
+        }
+    }
 
     // MUTANT: an hcore built at atoms moved by 0.05 Bohr (a stale retained
     // object) is refused or misses by orders of magnitude.
