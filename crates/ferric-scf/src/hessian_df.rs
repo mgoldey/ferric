@@ -137,7 +137,7 @@ use rayon::prelude::*;
 /// Largest number of auxiliary shells whose per-shell partials are alive at
 /// once in the first-derivative passes (the reduction is chunked and ordered,
 /// so the result does not depend on the thread count).
-const MAX_CHUNK: usize = 32;
+pub(crate) const MAX_CHUNK: usize = 32;
 /// Bytes one chunk of per-shell `3N × nbf²` partials may occupy.
 const CHUNK_BYTES: usize = 256 << 20;
 
@@ -268,21 +268,51 @@ pub const RIJ_METRIC_WARN: f64 = 1e-8;
 /// naming the count) and warn in the band below [`RIJ_METRIC_WARN`]. Zero
 /// refusals for every healthy fitting basis.
 fn check_metric_conditioning(v: &Array2<f64>) -> Result<(), FerricError> {
+    check_metric_conditioning_for(v, MetricUse::CoulombFit)
+}
+
+/// What the metric is the metric OF: decides the wording of the refusal (the
+/// threshold and the eigenvalue test are the same).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MetricUse {
+    /// RI-J: the full inverse the Coulomb energy uses.
+    CoulombFit,
+    /// RI-K: the truncated pseudo-inverse `DfK` applies.
+    ExchangeFit,
+}
+
+/// [`check_metric_conditioning`] for either fit.
+pub(crate) fn check_metric_conditioning_for(
+    v: &Array2<f64>,
+    what: MetricUse,
+) -> Result<(), FerricError> {
+    let label = match what {
+        MetricUse::CoulombFit => "RI-J",
+        MetricUse::ExchangeFit => "RI-K",
+    };
     let (lam, _) = v
         .eigh(UPLO::Upper)
-        .map_err(|e| FerricError::Lapack(format!("analytic RI-J Hessian: V eigh: {e}")))?;
+        .map_err(|e| FerricError::Lapack(format!("analytic {label} Hessian: V eigh: {e}")))?;
     let modes = lam.iter().filter(|&&l| l < DFK_LINDEP_THRESH).count();
     if modes > 0 {
-        return Err(FerricError::General(format!(
-            "analytic RI-J Hessian: the Coulomb metric of the fitting basis has {modes} \
-             eigenvalue(s) below {DFK_LINDEP_THRESH:.0e}; the full inverse the energy uses is \
-             numerically singular, so its second derivative is refused (use finite differences)"
-        )));
+        return Err(FerricError::General(match what {
+            MetricUse::CoulombFit => format!(
+                "analytic RI-J Hessian: the Coulomb metric of the fitting basis has {modes} \
+                 eigenvalue(s) below {DFK_LINDEP_THRESH:.0e}; the full inverse the energy uses is \
+                 numerically singular, so its second derivative is refused (use finite differences)"
+            ),
+            MetricUse::ExchangeFit => format!(
+                "analytic RI-K Hessian: the exchange metric of the fitting basis has {modes} \
+                 dropped mode(s) (eigenvalue below {DFK_LINDEP_THRESH:.0e}); DfK's truncated \
+                 pseudo-inverse is differentiated only when no mode is dropped, so the second \
+                 derivative of the truncated energy is refused (use finite differences)"
+            ),
+        }));
     }
     if lam[0] < RIJ_METRIC_WARN {
         eprintln!(
-            "[ferric] warning: analytic RI-J Hessian: the smallest eigenvalue of the Coulomb \
-             metric is {:.2e} (cond {:.1e}); the full inverse amplifies integral noise by \
+            "[ferric] warning: analytic {label} Hessian: the smallest eigenvalue of the Coulomb \
+             metric is {:.2e} (cond {:.1e}); the inverse amplifies integral noise by \
              1/lambda_min and the Hessian accuracy is unmeasured in this band",
             lam[0],
             lam[lam.len() - 1] / lam[0]
@@ -298,8 +328,15 @@ pub fn probe_metric(dfbs: &PreparedBasis, op: Operator) -> Result<(), FerricErro
     check_metric_conditioning(&coulomb_metric_2c(op, dfbs)?)
 }
 
+/// [`probe_metric`] for the exchange fit (refusal wording names the dropped
+/// modes of `DfK`'s truncated inverse).
+#[doc(hidden)]
+pub fn probe_exchange_metric(dfbs: &PreparedBasis, op: Operator) -> Result<(), FerricError> {
+    check_metric_conditioning_for(&coulomb_metric_2c(op, dfbs)?, MetricUse::ExchangeFit)
+}
+
 /// Chunk width for the per-aux-shell partial reductions.
-fn chunk_len(n3: usize, nbf: usize) -> usize {
+pub(crate) fn chunk_len(n3: usize, nbf: usize) -> usize {
     let per = 8 * n3 * nbf * nbf;
     (CHUNK_BYTES / per.max(1)).clamp(1, MAX_CHUNK)
 }

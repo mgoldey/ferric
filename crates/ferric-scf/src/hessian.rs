@@ -120,6 +120,7 @@ use crate::gradient::{
     screened_quartets_with, sum_equivalent_perms, QuartetBlock,
 };
 use crate::hessian_df::RijMutants;
+use crate::hessian_df_k::RikMutants;
 use crate::hessian_ecp::{
     ecp_first_derivative_matrices, ecp_inconsistent, ecp_skeleton_hessian, has_ecp,
     MAX_L as MAX_ECP_HESSIAN_L,
@@ -250,6 +251,7 @@ pub fn rhf_hessian_parts(
         rhf,
         config,
         &RijMutants::default(),
+        &RikMutants::default(),
     )
 }
 
@@ -265,6 +267,7 @@ fn rhf_hessian_parts_with(
     rhf: &ScfResult,
     config: &RhfConfig,
     mutants: &RijMutants,
+    rik_mutants: &RikMutants,
 ) -> Result<RhfHessianParts, FerricError> {
     check_supported(Reference::Rhf, mol, prep, op, bounds, rhf, config)?;
     let natoms = mol.atoms.len();
@@ -272,28 +275,53 @@ fn rhf_hessian_parts_with(
     let d = rhf.density_r();
     let w = build_energy_weighted_density(rhf, nocc);
     let route = crate::gradient::active_df_route(rhf);
+    let route_j = route.filter(|r| r.j_aux.is_some());
+    let route_k = route.filter(|r| r.k_aux.is_some());
 
     let extra = extra_charges(config);
     let nuclear = nuclear_term(mol, config);
     let one_electron =
         skeleton_hess_1e(prep, natoms, extra, d)? + extra_skeleton(mol, prep, config, d)?;
     let overlap = skeleton_hess_overlap(prep, natoms, &w)?;
-    let rij = route
+    let rij = route_j
         .map(|r| crate::hessian_df::rij_terms(mol, prep, r, d, mutants))
         .transpose()?;
-    // RI-J: the four-centre skeleton keeps only Gamma_K = -1/4 D_mula D_nusg.
-    let two_electron = if let Some(rij) = &rij {
-        let gam_k = |mu, nu, la, sg| -0.25 * d[(mu, la)] * d[(nu, sg)];
-        skeleton_hess_2e(prep, op, bounds, natoms, max_abs(d), &gam_k)? + &rij.skeleton
-    } else {
-        let gam = |mu, nu, la, sg| gamma(d, mu, nu, la, sg);
-        skeleton_hess_2e(prep, op, bounds, natoms, max_abs(d), &gam)?
+    let rik = route_k
+        .map(|r| {
+            // D = X Xᵀ with X = √2 C_occ (the RI-K fit is built from the factor).
+            let x = rhf.mos_r().slice(s![.., ..nocc]).to_owned() * std::f64::consts::SQRT_2;
+            crate::hessian_df_k::rik_terms(mol, prep, r, &x, rik_mutants)
+        })
+        .transpose()?;
+    // Four-centre skeleton: only the parts of Gamma that stayed exact. RI-J
+    // keeps Gamma_K = -1/4 D_mula D_nusg, RI-K keeps Gamma_J = 1/2 D_munu D_lasg;
+    // with both fitted there is no four-centre term at all.
+    let mut two_electron = match (&rij, &rik) {
+        (None, None) => {
+            let gam = |mu, nu, la, sg| gamma(d, mu, nu, la, sg);
+            skeleton_hess_2e(prep, op, bounds, natoms, max_abs(d), &gam)?
+        }
+        (Some(_), None) => {
+            let gam_k = |mu, nu, la, sg| -0.25 * d[(mu, la)] * d[(nu, sg)];
+            skeleton_hess_2e(prep, op, bounds, natoms, max_abs(d), &gam_k)?
+        }
+        (None, Some(_)) => {
+            let gam_j = |mu, nu, la, sg| 0.5 * d[(mu, nu)] * d[(la, sg)];
+            skeleton_hess_2e(prep, op, bounds, natoms, max_abs(d), &gam_j)?
+        }
+        (Some(_), Some(_)) => Array2::<f64>::zeros((3 * natoms, 3 * natoms)),
     };
+    if let Some(rij) = &rij {
+        two_electron += &rij.skeleton;
+    }
+    if let Some(rik) = &rik {
+        two_electron += &rik.skeleton;
+    }
 
-    let no_coulomb = Array2::<f64>::zeros(d.dim());
+    let no_density = Array2::<f64>::zeros(d.dim());
     let spec = FockSpec {
-        coulomb: if rij.is_some() { &no_coulomb } else { d },
-        exchange: d,
+        coulomb: if rij.is_some() { &no_density } else { d },
+        exchange: if rik.is_some() { &no_density } else { d },
         k_scale: 0.5,
     };
     let mut first = first_order_ao(prep, op, bounds, natoms, extra, &[spec])?;
@@ -302,9 +330,15 @@ fn rhf_hessian_parts_with(
             *f += j;
         }
     }
+    if let Some(rik) = &rik {
+        for (f, k) in first.f1[0].iter_mut().zip(&rik.first_order_fock) {
+            *f += k;
+        }
+    }
     add_extra_first_order(&mut first, mol, prep, config)?;
-    let df_j = route.map(|r| df_j_builder(mol, prep, r)).transpose()?;
-    let resp = cpks_response(ctx, prep, bounds, rhf, nocc, &first, df_j)?;
+    let df_j = route_j.map(|r| df_j_builder(mol, prep, r)).transpose()?;
+    let df_k = route_k.map(|r| df_k_builder(mol, prep, r)).transpose()?;
+    let resp = cpks_response(ctx, prep, bounds, rhf, nocc, &first, df_j, df_k)?;
     Ok(parts_from_terms(
         [nuclear, one_electron, overlap, two_electron],
         resp,
@@ -323,6 +357,21 @@ fn df_j_builder(
     })?;
     let dfbs = crate::df_gradient::aux_basis(mol, name)?;
     crate::df_j::DfJ::new(route.op, prep, &dfbs, route.budget_bytes)
+}
+
+/// The `DfK` the SCF used (same auxiliary basis, operator and budget), for the
+/// exchange part of the CPHF `G`. Its density path (`KBuilder::build`) takes any
+/// symmetric matrix, as the response densities are not positive semidefinite.
+fn df_k_builder(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    route: &crate::result::DfJkRoute,
+) -> Result<crate::df_k::DfK<'static>, FerricError> {
+    let name = route.k_aux.as_deref().ok_or_else(|| {
+        FerricError::General("analytic RI-K Hessian: the SCF route has no RI-K basis".into())
+    })?;
+    let dfbs = crate::df_gradient::aux_basis(mol, name)?;
+    crate::df_k::DfK::new(route.op, prep, &dfbs, route.budget_bytes)
 }
 
 /// Compute the full analytic UHF Hessian, (3N, 3N) in Hartree/Bohr².
@@ -503,7 +552,11 @@ pub mod rohf_support {
 pub mod rij_support {
     use super::*;
     pub use crate::hessian_df::{
-        probe_metric, rij_first, rij_terms, rij_terms_with_aux, RijFirst, RijMutants, RijTerms,
+        probe_exchange_metric, probe_metric, rij_first, rij_terms, rij_terms_with_aux, RijFirst,
+        RijMutants, RijTerms,
+    };
+    pub use crate::hessian_df_k::{
+        rik_first, rik_terms, rik_terms_with_aux, RikFirst, RikMutants, RikTerms,
     };
 
     /// Exact four-centre J skeleton `Σ ½ D_μν D_λσ ∂²(μν|λσ)` at fixed `d`
@@ -548,7 +601,71 @@ pub mod rij_support {
         config: &RhfConfig,
         mutants: &RijMutants,
     ) -> Result<RhfHessianParts, FerricError> {
-        rhf_hessian_parts_with(ctx, mol, prep, op, bounds, rhf, config, mutants)
+        rhf_hessian_parts_with(
+            ctx,
+            mol,
+            prep,
+            op,
+            bounds,
+            rhf,
+            config,
+            mutants,
+            &RikMutants::default(),
+        )
+    }
+
+    /// [`rhf_hessian_parts`] with one of the [`RikMutants`] applied.
+    #[allow(clippy::too_many_arguments)]
+    pub fn rhf_hessian_parts_rik_mutated(
+        ctx: &ParallelContext,
+        mol: &Molecule,
+        prep: &PreparedBasis,
+        op: Operator,
+        bounds: &SchwarzBounds,
+        rhf: &ScfResult,
+        config: &RhfConfig,
+        mutants: &RikMutants,
+    ) -> Result<RhfHessianParts, FerricError> {
+        rhf_hessian_parts_with(
+            ctx,
+            mol,
+            prep,
+            op,
+            bounds,
+            rhf,
+            config,
+            &RijMutants::default(),
+            mutants,
+        )
+    }
+
+    /// Exact four-centre K skeleton `-1/4 sum D_mula D_nusg d2(munu|lasg)` at fixed `d`.
+    pub fn exact_k_skeleton(
+        prep: &PreparedBasis,
+        op: Operator,
+        bounds: &SchwarzBounds,
+        natoms: usize,
+        d: &Array2<f64>,
+    ) -> Result<Array2<f64>, FerricError> {
+        let gam_k = |mu, nu, la, sg| -0.25 * d[(mu, la)] * d[(nu, sg)];
+        skeleton_hess_2e(prep, op, bounds, natoms, max_abs(d), &gam_k)
+    }
+
+    /// Exact four-centre `-1/2 K^x` (the exchange part of `F^x`, AO matrices).
+    pub fn exact_k_first_order(
+        prep: &PreparedBasis,
+        op: Operator,
+        bounds: &SchwarzBounds,
+        natoms: usize,
+        d: &Array2<f64>,
+    ) -> Result<Vec<Array2<f64>>, FerricError> {
+        let zero = Array2::<f64>::zeros(d.dim());
+        let spec = FockSpec {
+            coulomb: &zero,
+            exchange: d,
+            k_scale: 0.5,
+        };
+        Ok(deriv1_g_matrices(prep, op, bounds, natoms, &[spec])?.remove(0))
     }
 }
 
@@ -734,10 +851,8 @@ fn df_route_refusal(
     if reference != Reference::Rhf {
         return Some("a density-fitted SCF (RI J/K) for an open-shell reference".into());
     }
-    if route.k_aux.is_some() || route.rsh_k.is_some() {
-        return Some(
-            "a density-fitted exchange SCF (RI-K; only RI-J with exact K is analytic)".into(),
-        );
+    if route.rsh_k.is_some() {
+        return Some("a range-separated density-fitted exchange SCF".into());
     }
     if route.op != Operator::coulomb() {
         return Some("a density-fitted SCF with a non-Coulomb operator".into());
@@ -748,8 +863,14 @@ fn df_route_refusal(
             route.j_aux, config.df_j_aux
         ));
     }
+    if clean(&config.df_k_aux) != route.k_aux {
+        return Some(format!(
+            "an SCF result whose RI-K basis ({:?}) differs from the configuration's ({:?})",
+            route.k_aux, config.df_k_aux
+        ));
+    }
     has_ecp(mol, prep.basis_set())
-        .then(|| "density-fitted J (RI-J) combined with an effective core potential".into())
+        .then(|| "density-fitted J/K (RI) combined with an effective core potential".into())
 }
 
 /// Why the RHF/UHF entry points refuse an ROHF result.
@@ -896,10 +1017,22 @@ fn available(
     if let Some(what) = system_refusal(reference, mol, prep) {
         return Err(refusal(reference, what));
     }
-    ri_j_engine_check(reference, mol, prep, op, config)?;
+    ri_engine_check(reference, mol, prep, op, config)?;
+    // With both J and K fitted no four-centre integral is differentiated twice
+    // (the skeleton is the DF stencil, the first-order Fock matrices the DF
+    // builders), so the four-centre second-derivative engine is not required.
+    let fully_fitted = reference == Reference::Rhf
+        && config.df_j_aux.as_deref().is_some_and(|n| !n.is_empty())
+        && config.df_k_aux.as_deref().is_some_and(|n| !n.is_empty());
     let engines = Engine::new_1e_deriv2(ffi::OP_NUCLEAR, prep, 1e-14)
         .and_then(|_| Engine::new_1e_deriv2(ffi::OP_OVERLAP, prep, 1e-14))
-        .and_then(|_| Engine::new_2e_deriv2(op, prep, 1e-14));
+        .and_then(|_| {
+            if fully_fitted {
+                Ok(())
+            } else {
+                Engine::new_2e_deriv2(op, prep, 1e-14).map(|_| ())
+            }
+        });
     engines.map(|_| ()).map_err(|e| {
         FerricError::General(format!(
             "analytic {} Hessian: libint2 cannot build second-derivative engines for \
@@ -910,41 +1043,53 @@ fn available(
     })
 }
 
-/// RI-J (RHF only; the other references were refused by the preflight): the
-/// pre-SCF checks that need the molecule and the fitting basis, so that `Auto`
-/// falls back to finite differences instead of failing after the SCF. The
-/// first-derivative three- and two-centre engines for the named fitting basis
-/// must exist (the second derivatives are a stencil of their blocks); an ECP
-/// system is refused (untested); and the Coulomb metric must have no
+/// RI-J and/or RI-K (RHF only; the other references were refused by the
+/// preflight): the pre-SCF checks that need the molecule and the fitting basis,
+/// so that `Auto` falls back to finite differences instead of failing after the
+/// SCF. The first-derivative three- and two-centre engines for each named
+/// fitting basis must exist (the second derivatives are a stencil of their
+/// blocks); an ECP system is refused (untested); and the metric must have no
 /// eigenvalue below the DF-K cut (it depends on the geometry and the fitting
-/// basis only).
-fn ri_j_engine_check(
+/// basis only): for RI-J the full inverse is numerically singular there, for
+/// RI-K those are the modes `DfK` drops and the truncated energy's second
+/// derivative is not implemented.
+fn ri_engine_check(
     reference: Reference,
     mol: &Molecule,
     prep: &PreparedBasis,
     op: Operator,
     config: &RhfConfig,
 ) -> Result<(), FerricError> {
-    let Some(name) = config.df_j_aux.as_deref().filter(|n| !n.is_empty()) else {
+    let named = |n: &Option<String>| n.clone().filter(|v| !v.is_empty());
+    let (j_name, k_name) = (named(&config.df_j_aux), named(&config.df_k_aux));
+    if j_name.is_none() && k_name.is_none() {
         return Ok(());
-    };
+    }
     if has_ecp(mol, prep.basis_set()) {
         return Err(refusal(
             reference,
-            "density-fitted J (RI-J) combined with an effective core potential",
+            "density-fitted J/K (RI) combined with an effective core potential",
         ));
     }
-    let fail = |e: FerricError| {
-        FerricError::General(format!(
-            "analytic {} Hessian: the RI-J fitting basis {name:?} or its first-derivative \
-             three-/two-centre engines are unavailable: {e}",
-            reference.label()
-        ))
-    };
-    let dfbs = crate::df_gradient::aux_basis(mol, name).map_err(fail)?;
-    Engine::new_3center_deriv(op, prep, &dfbs, 1e-14).map_err(fail)?;
-    Engine::new_2center_deriv(op, &dfbs, 1e-14).map_err(fail)?;
-    crate::hessian_df::probe_metric(&dfbs, op)
+    for (name, label, exchange) in [(j_name, "RI-J", false), (k_name, "RI-K", true)] {
+        let Some(name) = name else { continue };
+        let fail = |e: FerricError| {
+            FerricError::General(format!(
+                "analytic {} Hessian: the {label} fitting basis {name:?} or its first-derivative \
+                 three-/two-centre engines are unavailable: {e}",
+                reference.label()
+            ))
+        };
+        let dfbs = crate::df_gradient::aux_basis(mol, &name).map_err(fail)?;
+        Engine::new_3center_deriv(op, prep, &dfbs, 1e-14).map_err(fail)?;
+        Engine::new_2center_deriv(op, &dfbs, 1e-14).map_err(fail)?;
+        if exchange {
+            crate::hessian_df::probe_exchange_metric(&dfbs, op)?;
+        } else {
+            crate::hessian_df::probe_metric(&dfbs, op)?;
+        }
+    }
+    Ok(())
 }
 
 fn operator_refusal(op: Operator) -> Option<String> {
@@ -964,17 +1109,13 @@ fn config_refusal(
             "COSX seminumerical exchange",
         ),
         (
-            named(&config.df_k_aux),
-            "density-fitted exchange (RI-K; only RI-J with exact K is analytic)",
+            (named(&config.df_j_aux) || named(&config.df_k_aux)) && reference != Reference::Rhf,
+            "density-fitted J/K (RI) for an open-shell reference (only closed-shell RHF \
+             RI-J/RI-K is analytic)",
         ),
         (
-            named(&config.df_j_aux) && reference != Reference::Rhf,
-            "density-fitted J (RI-J) for an open-shell reference (only closed-shell RHF \
-             RI-J is analytic)",
-        ),
-        (
-            named(&config.df_j_aux) && ext_or_field_present(config),
-            "density-fitted J (RI-J) combined with an external potential (untested)",
+            (named(&config.df_j_aux) || named(&config.df_k_aux)) && ext_or_field_present(config),
+            "density-fitted J/K (RI) combined with an external potential (untested)",
         ),
         (
             config.cosmo.is_some() || config.pcm.is_some(),
@@ -1849,6 +1990,9 @@ struct TwoElectronBuilder<'a> {
     /// RI-J: the SCF's `DfJ` replaces the exact Coulomb matrix (exchange stays
     /// the exact four-centre `K`).
     df_j: Option<std::cell::RefCell<crate::df_j::DfJ<'static>>>,
+    /// RI-K: the SCF's `DfK` replaces the exact exchange matrix (its density
+    /// path takes the indefinite response densities).
+    df_k: Option<std::cell::RefCell<crate::df_k::DfK<'static>>>,
 }
 
 impl<'a> TwoElectronBuilder<'a> {
@@ -1857,6 +2001,7 @@ impl<'a> TwoElectronBuilder<'a> {
         prep: &'a PreparedBasis,
         bounds: &'a SchwarzBounds,
         df_j: Option<crate::df_j::DfJ<'static>>,
+        df_k: Option<crate::df_k::DfK<'static>>,
     ) -> Result<Self, FerricError> {
         let pool = EnginePool::new(
             bounds.op,
@@ -1869,6 +2014,7 @@ impl<'a> TwoElectronBuilder<'a> {
             bounds,
             pool,
             df_j: df_j.map(std::cell::RefCell::new),
+            df_k: df_k.map(std::cell::RefCell::new),
         })
     }
 
@@ -1898,17 +2044,26 @@ impl<'a> TwoElectronBuilder<'a> {
         Ok(j)
     }
 
-    /// [`TwoElectronBuilder::g`] with the SCF's fitted Coulomb matrix under
-    /// RI-J (the exact `J` that `jk` also forms is discarded: the shared quartet
-    /// loop builds both, so this costs nothing extra); the exact `g` otherwise.
+    /// [`TwoElectronBuilder::g`] with the SCF's fitted matrices where the SCF
+    /// fitted them: RI-J replaces the exact Coulomb matrix, RI-K the exact
+    /// exchange matrix (the shared quartet loop builds both exact matrices, so
+    /// discarding one costs nothing extra; it is skipped when both are fitted).
     fn g_rhf(&self, d: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
-        let Some(df) = &self.df_j else {
+        use crate::fock::{JBuilder, KBuilder};
+        if self.df_j.is_none() && self.df_k.is_none() {
             return self.g(d);
+        }
+        let (mut j, mut k) = if self.df_j.is_some() && self.df_k.is_some() {
+            (Array2::<f64>::zeros(d.dim()), Array2::<f64>::zeros(d.dim()))
+        } else {
+            self.jk(d)?
         };
-        use crate::fock::JBuilder;
-        let (_, k) = self.jk(d)?;
-        let mut j = Array2::<f64>::zeros(d.dim());
-        df.borrow_mut().build(d, &mut j)?;
+        if let Some(df) = &self.df_j {
+            df.borrow_mut().build(d, &mut j)?;
+        }
+        if let Some(df) = &self.df_k {
+            df.borrow_mut().build(d, &mut k)?;
+        }
         j.scaled_add(-0.5, &k);
         Ok(j)
     }
@@ -1939,12 +2094,13 @@ fn cpks_response(
     nocc: usize,
     first: &FirstOrderAo,
     df_j: Option<crate::df_j::DfJ<'static>>,
+    df_k: Option<crate::df_k::DfK<'static>>,
 ) -> Result<ResponseTerm, FerricError> {
     let frame = MoFrame::new(rhf.mos_r(), rhf.eps_r(), nocc, 2.0);
     let h1_mo = frame.to_mo_all(&first.f1[0]);
     let s1_mo = frame.to_mo_all(&first.s1);
 
-    let g = TwoElectronBuilder::new(ctx, prep, bounds, df_j)?;
+    let g = TwoElectronBuilder::new(ctx, prep, bounds, df_j, df_k)?;
     let mut sols = Vec::with_capacity(h1_mo.len());
     for (x, (h1, s1)) in h1_mo.iter().zip(&s1_mo).enumerate() {
         sols.push(solve_cphf_one(&g, &frame, h1, s1).map_err(|e| at_coordinate(x, e))?);
@@ -1976,7 +2132,7 @@ fn ucphf_response(
         frames[1].to_mo_all(&first.s1),
     ];
 
-    let g = TwoElectronBuilder::new(ctx, prep, bounds, None)?;
+    let g = TwoElectronBuilder::new(ctx, prep, bounds, None, None)?;
     let mut sols: [Vec<CphfSolution>; 2] = [Vec::new(), Vec::new()];
     for x in 0..first.s1.len() {
         let [sa, sb] = solve_ucphf_one(

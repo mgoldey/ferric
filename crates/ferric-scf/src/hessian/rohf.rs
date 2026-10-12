@@ -683,7 +683,7 @@ pub fn rohf_hessian_parts_mutated(
         rohf
     };
     let mut skel = rohf_skeleton_parts(mol, prep, op, bounds, rohf, config)?;
-    let g = TwoElectronBuilder::new(ctx, prep, bounds, None)?;
+    let g = TwoElectronBuilder::new(ctx, prep, bounds, None, None)?;
     let dens = &skel.densities;
     let focks = trusted_focks(&g, prep, rohf, dens, mutation)?;
     if mutation != RohfMutation::UseStoredFocks {

@@ -190,6 +190,9 @@ pub mod hessian;
 /// Analytic RHF Hessian for RI-J with exact exchange (derivation in the module doc).
 #[doc(hidden)]
 pub mod hessian_df;
+/// Analytic RHF Hessian pieces for RI-K exchange (derivation in the module doc).
+#[doc(hidden)]
+pub mod hessian_df_k;
 /// Fourth-order stencil of the first-derivative DF integral blocks: the
 /// `(P|μν)` and `(P|Q)` second derivatives of the RI Hessian.
 #[doc(hidden)]
