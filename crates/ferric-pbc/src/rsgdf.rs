@@ -163,8 +163,8 @@
 //! identity; counter `rsgdf SR3 rotated columns` = 0). The Gamma builds
 //! ([`RsGdf::build`], [`RsGdf::build_for_gradient`]) and the k-point ENERGY
 //! build ([`kpoint`], module doc "Column rotation at k") rotate; the frozen
-//! s1 oracle runs unrotated under `Auto` and refuses an explicit `On`, and
-//! so do the k-point force builds.
+//! s1 oracle runs unrotated under `Auto` and refuses an explicit `On`; the
+//! k-point force and stress builds differentiate the rotated walk.
 //!
 //! The Gamma FORCES and STRESS differentiate the walk the energy ran: a
 //! build that rotated ([`RsGdf::build_for_gradient`] IS the energy build of a

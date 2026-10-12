@@ -132,8 +132,9 @@
 //! [`KRsGdfStats::n_sr3_triplets`] counts the rotated walk's calls and
 //! [`KRsGdfStats::sr_rotated_columns`] the rotated columns (0 = nothing
 //! rotates, the identity: today's build bit for bit). The frozen s1 oracle
-//! runs unrotated under `Auto`; the k-point FORCE builds (`kderiv`)
-//! differentiate the unrotated walk and refuse an explicit `On`.
+//! runs unrotated under `Auto`; the k-point force and stress builds
+//! (`kderiv`) differentiate the rotated walk (module doc there, "Column
+//! rotation").
 //!
 //! # Memory
 //!
@@ -354,21 +355,6 @@ pub fn record_stats(t: &mut crate::timing::PbcTimings, st: &KRsGdfStats) {
     }
 }
 
-/// The k-point builds that do NOT implement [`RsGdfConfig::sr_column_rotation`]
-/// (the derivative builds of [`kderiv`]: they differentiate the unrotated
-/// walk): the default `Auto` runs unrotated, an explicit `On` is a typed
-/// refusal instead of being silently ignored.
-pub(in crate::rsgdf) fn refuse_column_rotation(
-    g: &RsGdfConfig,
-    who: &str,
-) -> Result<(), FerricError> {
-    g.sr_column_rotation.refuse_explicit(
-        who,
-        "the k-point forces differentiate the unrotated SR walk; the column rotation is \
-         implemented in the k-point ENERGY build only",
-    )
-}
-
 /// The column rotation of a k-point energy build ([`KRsGdf::build`]) and the
 /// rotated SR walk's stage and plan (module doc "Column rotation at k"):
 /// `None` when it is off or nothing in the basis rotates (the caller then
@@ -418,7 +404,7 @@ fn late_back_transform(
 /// [`KRsGdfMutation::RotationLate`] mutant moves that to the finished
 /// `J3`); the metric bins are the parent's. `(st, plan, rotation, mutation)`
 /// are the build's stage, split plan, rotation and test mutation.
-fn sr_bins_rotated(
+pub(in crate::rsgdf) fn sr_bins_rotated(
     (st, plan, rotation, mutation): (
         &Stage<'_>,
         Option<&SplitPlan>,

@@ -66,9 +66,9 @@
 //! SR attraction `V_SR(k)` are back-transformed (a general pass,
 //! `RotatedBasis::back_transform_rows`: the two orientations of a pair sit
 //! in different bins, so the input is not symmetric under `μ ↔ ν`) before
-//! the phase contraction, the LR and the G = 0 terms. The k-point FORCE
-//! builds differentiate the unrotated walk (a k-resolved `Tᵀ W T` weight per
-//! residue is the open extension).
+//! the phase contraction, the LR and the G = 0 terms. The k-point force and
+//! stress builds differentiate the rotated walk (module section "Forces and
+//! stress": `Tᵀ W[r] T` per residue bin, `rsgdf::kpoint::kderiv`).
 //!
 //! # Forces and stress
 //!
@@ -93,8 +93,10 @@
 //! off to the screening precision (`tests/pbc_sr_rotation.rs`).
 //!
 //! It is ON BY DEFAULT ([`SrColumnRotation::Auto`]) in the Gamma builds
-//! (energy and gradient) and the k-point energy builds, and silently off in
-//! every build that does not implement it (k-point force builds, the frozen
+//! (energy, force and stress) and the k-point energy, force and stress builds
+//! (at k the derivative walks contract the rotated shells with `Tᵀ W[r] T`
+//! per-residue weights, `rsgdf::kpoint::kderiv`), and silently off in
+//! every build that does not implement it (the frozen
 //! s1 oracles); an explicit
 //! [`SrColumnRotation::On`] is refused by name there. Measured (FINDINGS, "Full
 //! timing series on libint 2.13.1", Γ RHF cc-pVDZ / cc-pvdz-ri, range
@@ -186,20 +188,23 @@ impl ColumnRotation {
 /// [`crate::hcore::PeriodicHcoreConfig::sr_column_rotation`]).
 ///
 /// * [`SrColumnRotation::Auto`] (the default): ON in the builds that
-///   implement it — the k-point energy builds and the Gamma builds [`crate::rsgdf::RsGdf::build`]
+///   implement it — the k-point energy, force and stress builds and the Gamma
+///   builds [`crate::rsgdf::RsGdf::build`]
 ///   (and `build_with_fit_parts`, [`crate::rsgdf::sr_walk_counts`],
 ///   [`crate::rsgdf::RsGdf::build_for_gradient`]) and
 ///   [`crate::hcore::periodic_hcore`] — and silently OFF in every build that
-///   does not: the k-point FORCE builds and the frozen s1 oracles. A basis with
+///   does not: the frozen s1 oracles. A basis with
 ///   nothing to rotate runs the unrotated walk bit for bit either way.
 /// * [`SrColumnRotation::Off`]: the unrotated walk everywhere, bit for bit.
 /// * [`SrColumnRotation::On`]: an explicit request; the builds that cannot
 ///   honour it refuse it by name instead of ignoring it.
 ///
-/// The Gamma force and stress builders differentiate the walk the energy ran
-/// (module doc, "Forces and stress"): the hcore's
-/// [`crate::hcore::PeriodicHcore::sr_rotated_columns`] and the
-/// [`crate::rsgdf::RsGdf`]'s rotation say which.
+/// The Gamma and k-point force and stress builders differentiate the walk the
+/// energy ran (module doc, "Forces and stress"): the hcore's
+/// [`crate::hcore::PeriodicHcore::sr_rotated_columns`] /
+/// [`crate::hcore::kpoint::PeriodicHcoreK::sr_rotated_columns`] and the
+/// [`crate::rsgdf::RsGdf`]'s / [`crate::rsgdf::kpoint::KRsGdf`]'s rotation say
+/// which; the config must agree with the build (typed error otherwise).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SrColumnRotation {
     /// On where implemented, off elsewhere (see the type doc).
@@ -513,6 +518,30 @@ impl AoTranspose {
             }
         }
         acc
+    }
+
+    /// `W'[mn, p] = Σ_{μν} T_μm T_νn W[μν, p]` of a PAIR-MAJOR real weight
+    /// `(n², w)` (row `μ n + ν`; the k-point SR residue bins `Zbin`): the
+    /// forward transform of every column. `swap` (TEST mutant) reads the
+    /// pair transposed, `W[νμ, p]`. Elementwise independent, so bitwise
+    /// reproducible at any thread count.
+    pub(crate) fn pair_rows(&self, z: &Array2<f64>, n: usize, swap: bool) -> Array2<f64> {
+        let w = z.ncols();
+        let mut out = Array2::<f64>::zeros((n * n, w));
+        for m in 0..n {
+            for k in 0..n {
+                for p in 0..w {
+                    out[(m * n + k, p)] = self.pair(m, k, |a, b| {
+                        if swap {
+                            z[(b * n + a, p)]
+                        } else {
+                            z[(a * n + b, p)]
+                        }
+                    });
+                }
+            }
+        }
+        out
     }
 
     /// `Tᵀ D T` of an `(n, n)` matrix (the hcore SR derivative's density).

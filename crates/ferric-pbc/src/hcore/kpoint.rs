@@ -67,7 +67,8 @@
 //! matches the unrotated build to the screening precision (not bitwise);
 //! `PeriodicHcoreK::sr_rotated_columns` counts the rotated columns (0 =
 //! unrotated, bit for bit). The frozen s1 oracle runs unrotated under
-//! `Auto`; the k-point forces (`kgrad`) differentiate the unrotated walk.
+//! `Auto`; the k-point forces and stress (`kgrad`, `kstress`) differentiate
+//! the rotated walk with `Tᵀ W[r] T` image weights.
 
 use super::{
     gvector_list_bytes, max_pair_exponent, nonzero_nuclei, nucleus_radius_m, pair_bound,

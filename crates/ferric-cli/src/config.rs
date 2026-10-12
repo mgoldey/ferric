@@ -4824,7 +4824,7 @@ fn gdf_omega_dense_message(key: GdfOmegaKey) -> String {
 
 /// `gdf_omega = "auto"` is calibrated for the Gamma-point energy build only:
 /// the k-point builds (full G sphere, different walk) and the optimizer's
-/// derivative builds (unrotated walk, no range split) were not measured, so
+/// derivative builds (no range split) were not measured, so
 /// it is refused there by name rather than half-applied.
 fn resolve_gdf_omega_auto(
     key: Option<GdfOmegaKey>,
