@@ -186,14 +186,26 @@ struct Fx {
     jk: Jk,
     grid: KXcGrid,
     functional: String,
+    exxdiv: ExxDiv,
 }
 
 fn fixture_cell(cell: Cell, mesh_n: [usize; 3], functional: &str, jk: Jk, grid: KXcGrid) -> Fx {
+    fixture_exx(cell, mesh_n, functional, jk, grid, ExxDiv::None)
+}
+
+fn fixture_exx(
+    cell: Cell,
+    mesh_n: [usize; 3],
+    functional: &str,
+    jk: Jk,
+    grid: KXcGrid,
+    exxdiv: ExxDiv,
+) -> Fx {
     let bs = pyscf_sto3g_h();
     let prep = prep_for(&cell, &bs);
     let mesh = KPointMesh::gamma_centred(&cell, mesh_n).unwrap();
-    let res = scf_on(&cell, mesh_n, functional, jk, &grid, ExxDiv::None);
-    let cfg = krks_cfg(&cell, functional, jk, &grid, ExxDiv::None);
+    let res = scf_on(&cell, mesh_n, functional, jk, &grid, exxdiv);
+    let cfg = krks_cfg(&cell, functional, jk, &grid, exxdiv);
     let hk = periodic_hcore_kpts(&cell, &prep, &mesh, &cfg.krhf.hcore).unwrap();
     let aux = prep_for(&cell, &et_sp_aux());
     Fx {
@@ -206,6 +218,7 @@ fn fixture_cell(cell: Cell, mesh_n: [usize; 3], functional: &str, jk: Jk, grid: 
         jk,
         grid,
         functional: functional.to_string(),
+        exxdiv,
     }
 }
 
@@ -234,7 +247,7 @@ fn stress_cfg(fx: &Fx, cfg: &KRksStressConfig) -> KRksStress {
                 &fx.prep,
                 &fx.mesh,
                 &fx.hk.s,
-                ExxDiv::None,
+                fx.exxdiv,
                 &Default::default(),
             )
             .unwrap();
@@ -255,7 +268,7 @@ fn stress_cfg(fx: &Fx, cfg: &KRksStressConfig) -> KRksStress {
             let kc = kgdf_cfg();
             let gdf = KRsGdf::build(&fx.cell, &fx.prep, &fx.aux, &fx.mesh, &fx.hk.s, &kc)
                 .unwrap()
-                .with_exxdiv(ExxDiv::None);
+                .with_exxdiv(fx.exxdiv);
             kpoint_rks_stress(
                 &fx.cell,
                 &fx.prep,
@@ -795,3 +808,526 @@ fn fd_anchor(jk: Jk, f: &str, bar: f64) {
 /// Floor: measured on the uniform grid, central FD h = 1e-4 (see the test log).
 const FD_H: f64 = 1e-4;
 const FD_BAR: f64 = 5e-8;
+
+// ------------------------------------------------- FD smoothness under strain
+
+/// PROBE (not a pass/fail anchor): is the energy smooth under CELL STRAIN on
+/// the atom grid? For three components, the central FD at h = 1e-5..4e-4
+/// against the analytic value, for the default neighbour cutoff and two
+/// explicit ones. A smooth energy shows the h^2 truncation trend; the hard
+/// neighbour mask shows an isolated jump (a miss that is not monotone in h).
+#[test]
+#[ignore = "probe: 3 cutoffs x 3 components x 6 steps x 2 SCFs"]
+fn fd_smoothness_probe_under_strain() {
+    for cutoff in [None, Some(10.0), Some(14.0)] {
+        let grid = atom_grid(20, 50, cutoff);
+        let fx = fixture(&H2, [1, 1, 3], "PBE", Jk::Dense, grid.clone());
+        let s = stress(&fx, None);
+        for (i, j) in [(2, 2), (0, 2), (1, 0)] {
+            let mut row = String::new();
+            for h in [1e-5, 2.5e-5, 5e-5, 1e-4, 2e-4, 4e-4] {
+                let ep = energy_on(
+                    &strained(&fx.cell, i, j, h),
+                    [1, 1, 3],
+                    "PBE",
+                    Jk::Dense,
+                    &grid,
+                );
+                let em = energy_on(
+                    &strained(&fx.cell, i, j, -h),
+                    [1, 1, 3],
+                    "PBE",
+                    Jk::Dense,
+                    &grid,
+                );
+                let d = (ep - em) / (2.0 * h);
+                row += &format!(" h={h:.1e}:{:.2e}", (d - s.de_deps[i][j]).abs());
+            }
+            eprintln!("cutoff {cutoff:?} eps({i},{j}) |FD-analytic|:{row}");
+        }
+    }
+}
+
+// ------------------------------------------------------------- atom-grid FD
+
+/// Central-FD step of the atom-grid anchors. From the smoothness probe above:
+/// at h = 2.5e-5 the three probed components miss by 3e-12..2e-10 (cutoff 10
+/// and 14); h = 1e-5 is noise limited (1.5e-9: energy roundoff / 2h), and from
+/// h = 1e-4 up the h^2 truncation (8e-9 .. 1.6e-7) and, at cutoff 10, the hard
+/// neighbour-mask jump (5e-8 at h = 2e-4 on eps_02) dominate.
+const FD_H_ATOM: f64 = 2.5e-5;
+/// Atom-grid FD bar: the measured floor over all nine components is in the
+/// test log; the smallest production-wired mutant misses by far more (see the
+/// mutant tests).
+const FD_BAR_ATOM: f64 = 3e-8;
+
+/// (e) FD of the energy on the ATOM-CENTRED grid, PBE (20,50), explicit shared
+/// cutoff, all nine components, dense AFT. The analytic stress is the stress of
+/// the energy as computed: the FD reproduces it component by component, the
+/// antisymmetric part (the lab-fixed Lebedev grid is not rotation invariant)
+/// included. Artifact hypothesis: if the stress were symmetrised or the point
+/// motion mis-anchored, the FD antisymmetric part would disagree at the
+/// antisymmetry's size, not at the floor.
+#[test]
+fn atom_grid_pbe_stress_matches_fd_all_nine_antisymmetric_part_included() {
+    let grid = atom_grid(20, 50, Some(CUTOFF));
+    let fx = fixture(&H2, [1, 1, 3], "PBE", Jk::Dense, grid.clone());
+    let s = stress(&fx, None);
+    let fd = fd_all9(&fx.cell, [1, 1, 3], "PBE", Jk::Dense, &grid, FD_H_ATOM);
+    let miss = mdiff(&s.de_deps, &fd);
+    let mut fd_anti = 0.0_f64;
+    let mut an_anti = 0.0_f64;
+    for i in 0..3 {
+        for j in 0..3 {
+            fd_anti = fd_anti.max((fd[i][j] - fd[j][i]).abs());
+            an_anti = an_anti.max((s.de_deps[i][j] - s.de_deps[j][i]).abs());
+        }
+    }
+    eprintln!(
+        "atom (20,50) PBE: |analytic - FD| {miss:.2e}; dE/de antisymmetry analytic {an_anti:.3e} FD {fd_anti:.3e}; sigma antisymmetry {:.3e}",
+        s.antisymmetry()
+    );
+    assert!(miss < FD_BAR_ATOM, "{miss:e}");
+    assert!(an_anti > 1e-3, "the antisymmetric part is real");
+    assert!((an_anti - fd_anti).abs() < FD_BAR_ATOM);
+}
+
+/// Pressure from isotropic scaling (a homogeneous-scaling identity valid on
+/// every grid): `Σ_a dE/dε_aa` equals the FD of E(1 + s) at fixed fractional
+/// coordinates; uniform grid, dense AFT.
+#[test]
+fn trace_matches_isotropic_scaling_fd_on_the_uniform_grid() {
+    let grid = KXcGrid::Uniform([24, 24, 24]);
+    let fx = fixture(&H2, [1, 1, 3], "PBE", Jk::Dense, grid.clone());
+    let s = stress(&fx, None);
+    let h = 1e-4;
+    let e = |t: f64| {
+        let eps = [[t, 0.0, 0.0], [0.0, t, 0.0], [0.0, 0.0, t]];
+        energy_on(
+            &fx.cell.strained(&eps).unwrap(),
+            [1, 1, 3],
+            "PBE",
+            Jk::Dense,
+            &grid,
+        )
+    };
+    let d = (e(h) - e(-h)) / (2.0 * h);
+    let tr = s.de_deps[0][0] + s.de_deps[1][1] + s.de_deps[2][2];
+    let p_fd = -d / (3.0 * s.volume);
+    eprintln!(
+        "isotropic: trace {tr:.10e} vs FD {d:.10e} (diff {:.2e}); P {:.6e} vs FD {p_fd:.6e}",
+        (tr - d).abs(),
+        s.pressure()
+    );
+    assert!((tr - d).abs() < 3.0 * FD_BAR, "{:e}", (tr - d).abs());
+}
+
+// -------------------------------------------------- translation and rotation
+
+/// Rigid translation of every atom leaves the atom-grid stress unchanged
+/// (the grid is atom-centred, Bloch phases depend on lattice vectors only).
+/// Artifact hypothesis: an anchor error (point not moving with its home atom)
+/// would make the XC stress depend on absolute positions.
+#[test]
+fn stress_is_translation_invariant_on_the_atom_grid() {
+    let grid = atom_grid(20, 50, Some(CUTOFF));
+    let a = stress(
+        &fixture(&H2, [1, 1, 3], "PBE", Jk::Dense, grid.clone()),
+        None,
+    );
+    let t = [0.37, -0.21, 0.53];
+    let moved: Vec<[f64; 3]> = H2
+        .iter()
+        .map(|p| [p[0] + t[0], p[1] + t[1], p[2] + t[2]])
+        .collect();
+    let b = stress(&fixture(&moved, [1, 1, 3], "PBE", Jk::Dense, grid), None);
+    let d = mdiff(&a.de_deps, &b.de_deps);
+    eprintln!("translation: |dE/de - dE/de'| {d:.2e}");
+    assert!(d < 2e-9, "{d:e}");
+}
+
+/// A rigid rotation of cell + atoms: on the UNIFORM grid (points at fixed
+/// fractional coordinates) the energy is rotation invariant and
+/// `dE/dε' = R dE/dε Rᵀ` to roundoff; on the ATOM grid (lab-fixed Lebedev
+/// offsets) it is violated at the grid-error scale, reported. Artifact
+/// hypothesis: a wrong strain-moment index would break the uniform identity;
+/// the atom-grid violation is the antisymmetric-part physics, not a bug.
+#[test]
+fn rotation_covariance_holds_on_the_uniform_grid() {
+    rotation_case("uniform 24^3", KXcGrid::Uniform([24, 24, 24]), 1e-8);
+}
+
+/// The atom-grid half of the rotation test: the violation is grid sized
+/// (reported, bounded by the antisymmetry scale, not asserted to vanish).
+#[test]
+#[ignore = "atom-grid rotation violation report (2 fixtures, ~15 s)"]
+fn rotation_violation_on_the_atom_grid_is_grid_sized() {
+    rotation_case("atom (20,50)", atom_grid(20, 50, Some(CUTOFF)), 5e-2);
+}
+
+fn rotation_case(name: &str, grid: KXcGrid, bar: f64) {
+    let th = 0.5_f64;
+    let (c, sn) = (th.cos(), th.sin());
+    let rot = [[c, -sn, 0.0], [sn, c, 0.0], [0.0, 0.0, 1.0]];
+    let apply = |v: [f64; 3]| -> [f64; 3] {
+        let mut o = [0.0; 3];
+        for i in 0..3 {
+            o[i] = rot[i][0] * v[0] + rot[i][1] * v[1] + rot[i][2] * v[2];
+        }
+        o
+    };
+    let lat0 = cubic(4.0);
+    let lat = [apply(lat0[0]), apply(lat0[1]), apply(lat0[2])];
+    let pos: Vec<[f64; 3]> = H2.iter().map(|p| apply(*p)).collect();
+    let cell_r = Cell::new(hydrogens(&pos), lat).unwrap();
+    let rsr = |m: &Mat3| -> Mat3 {
+        let mut o = [[0.0; 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                for a in 0..3 {
+                    for b in 0..3 {
+                        o[i][j] += rot[i][a] * m[a][b] * rot[j][b];
+                    }
+                }
+            }
+        }
+        o
+    };
+    let s0 = stress(
+        &fixture(&H2, [1, 1, 3], "PBE", Jk::Dense, grid.clone()),
+        None,
+    );
+    let s1 = stress(
+        &fixture_cell(cell_r, [1, 1, 3], "PBE", Jk::Dense, grid),
+        None,
+    );
+    let d = mdiff(&s1.de_deps, &rsr(&s0.de_deps));
+    eprintln!("rotation {name}: |dE/de' - R dE/de R^T| {d:.2e}");
+    assert!(d < bar, "{name}: {d:e}");
+}
+
+// ---------------------------------------------------------------- exxdiv
+
+/// A pure functional has no exchange, so the exxdiv choice of the SCF is
+/// irrelevant: energy and stress under `ewald` equal those under `none`
+/// (artifact hypothesis: a Madelung leak into the KS path shows as a
+/// v_M-sized difference, ~0.1 Ha; physics predicts equality to SCF noise).
+#[test]
+fn ewald_and_none_exxdiv_agree_for_a_pure_functional() {
+    let grid = KXcGrid::Uniform([24, 24, 24]);
+    let a = fixture_exx(
+        cell_of(&H2),
+        [1, 1, 3],
+        "PBE",
+        Jk::Dense,
+        grid.clone(),
+        ExxDiv::None,
+    );
+    let b = fixture_exx(
+        cell_of(&H2),
+        [1, 1, 3],
+        "PBE",
+        Jk::Dense,
+        grid,
+        ExxDiv::Ewald,
+    );
+    let (sa, sb) = (stress(&a, None), stress(&b, None));
+    let de = (a.res.scf.energy - b.res.scf.energy).abs();
+    let ds = mdiff(&sa.de_deps, &sb.de_deps);
+    eprintln!("exxdiv none vs ewald: energy {de:.2e}, dE/de {ds:.2e}");
+    assert!(de < 1e-11, "{de:e}");
+    assert!(ds < 1e-9, "{ds:e}");
+}
+
+// ---------------------------------------------------------------- bitwise
+
+/// The result does not depend on the thread count or on how many chunks run
+/// concurrently (chunk-order reduction): bit-identical.
+#[test]
+fn stress_is_bit_identical_across_threads_and_live_chunks() {
+    let fx = fixture(
+        &H2,
+        [1, 1, 3],
+        "PBE",
+        Jk::Dense,
+        atom_grid(20, 50, Some(CUTOFF)),
+    );
+    let run = |threads: usize, cap: Option<usize>| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap()
+            .install(|| {
+                let mut cfg = scfg(&fx.grid, None);
+                cfg.max_live_chunks = cap;
+                stress_cfg(&fx, &cfg)
+            })
+    };
+    let a = run(1, None);
+    let b = run(4, None);
+    let c = run(4, Some(1));
+    assert_eq!(a.de_deps, b.de_deps);
+    assert_eq!(a.e_xc, b.e_xc);
+    assert_eq!(a.de_deps, c.de_deps);
+    assert_eq!(c.live_chunks, 1);
+    eprintln!(
+        "bit-identical across 1/4 threads and live-chunk cap; live {} / {} / {}",
+        a.live_chunks, b.live_chunks, c.live_chunks
+    );
+}
+
+// ------------------------------------------------------------------- memory
+
+/// The strain pass is pre-flighted on the ledger: a budget that holds the fixed
+/// HF arrays but not one AO-moment chunk is a typed error naming the quantity;
+/// a one-chunk cap gives the bit-identical stress of the unconstrained run.
+#[test]
+fn xc_chunks_are_budgeted() {
+    let fx = fixture(
+        &H2,
+        [1, 1, 3],
+        "PBE",
+        Jk::Dense,
+        atom_grid(20, 50, Some(CUTOFF)),
+    );
+    let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
+    let eri = KDenseAftEri::build(
+        &fx.cell,
+        &fx.prep,
+        &fx.mesh,
+        &fx.hk.s,
+        ExxDiv::None,
+        &Default::default(),
+    )
+    .unwrap();
+    let at = |budget: usize| {
+        let mut cfg = scfg(&fx.grid, None);
+        cfg.stress.budget_bytes = Some(budget);
+        kpoint_rks_stress(
+            &fx.cell,
+            &fx.prep,
+            &fx.mesh,
+            &hcfg,
+            &fx.hk,
+            KStressJk::Dense(&eri),
+            &fx.res.scf,
+            "PBE",
+            &cfg,
+        )
+    };
+    let full = at(AMPLE).unwrap();
+    let mut saw = false;
+    let mut b = 20_000usize;
+    while b < 2_000_000 {
+        if let Err(e) = at(b) {
+            saw |= e.to_string().contains("k-point XC stress AO moment chunk");
+        }
+        b += b / 8;
+    }
+    assert!(saw, "some budget must fail on the XC chunk gate");
+    let mut cfg = scfg(&fx.grid, None);
+    cfg.max_live_chunks = Some(1);
+    let one = stress_cfg(&fx, &cfg);
+    assert_eq!(one.live_chunks, 1);
+    assert_eq!(one.de_deps, full.de_deps);
+    eprintln!(
+        "chunk {} points, live {} -> 1, bit-identical",
+        one.chunk_points, full.live_chunks
+    );
+}
+
+// ------------------------------------------------- refusals and Fock guard
+
+#[test]
+fn refusals_and_the_fock_guard() {
+    let fx = fixture(
+        &H2,
+        [1, 1, 3],
+        "PBE",
+        Jk::Dense,
+        atom_grid(20, 50, Some(CUTOFF)),
+    );
+    let eri = KDenseAftEri::build(
+        &fx.cell,
+        &fx.prep,
+        &fx.mesh,
+        &fx.hk.s,
+        ExxDiv::None,
+        &Default::default(),
+    )
+    .unwrap();
+    let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
+    let cfg = scfg(&fx.grid, None);
+    let run = |f: &str, scf: &KScfResult| {
+        kpoint_rks_stress(
+            &fx.cell,
+            &fx.prep,
+            &fx.mesh,
+            &hcfg,
+            &fx.hk,
+            KStressJk::Dense(&eri),
+            scf,
+            f,
+            &cfg,
+        )
+    };
+    for (name, key) in [
+        ("PBE0", "global hybrid"),
+        ("HSE06", "range-separated"),
+        ("SCAN", "meta-GGA"),
+        ("wB97X-V", "VV10"),
+    ] {
+        let e = run(name, &fx.res.scf)
+            .err()
+            .unwrap_or_else(|| panic!("{name} accepted"))
+            .to_string();
+        eprintln!("{name}: {e}");
+        assert!(e.contains(key), "{name}: {e}");
+    }
+    // The HF entry still refuses a KS result.
+    let hf = ferric_pbc::kstress::kpoint_rhf_stress(
+        &fx.cell,
+        &fx.prep,
+        &fx.mesh,
+        &hcfg,
+        &fx.hk,
+        KStressJk::Dense(&eri),
+        &fx.res.scf,
+        ExxDiv::None,
+        &kcfg(),
+    );
+    assert!(hf.is_err());
+    // Guard, both sides.
+    let ok = run("PBE", &fx.res.scf).unwrap();
+    assert!(ok.hf.fock_mismatch < 1e-12, "{:e}", ok.hf.fock_mismatch);
+    let wrong = run("LDA", &fx.res.scf)
+        .err()
+        .expect("wrong functional")
+        .to_string();
+    eprintln!("wrong functional: {wrong}");
+    assert!(wrong.contains("differs"));
+    let mut t = fx.res.scf.clone();
+    t.fock[1][(0, 1)] += Complex64::new(1e-6, 0.0);
+    assert!(run("PBE", &t).is_err(), "1e-6 tamper must be refused");
+    let mut t = fx.res.scf.clone();
+    t.fock[1][(0, 1)] += Complex64::new(1e-10, 0.0);
+    let tamp = run("PBE", &t).expect("1e-10 tamper is below the bar");
+    eprintln!(
+        "guard: matching {:.1e}, 1e-10 tamper {:.1e} passes, 1e-6 refused",
+        ok.hf.fock_mismatch, tamp.hf.fock_mismatch
+    );
+    // Unconverged SCF.
+    let mut t = fx.res.scf.clone();
+    t.converged = false;
+    assert!(run("PBE", &t).is_err());
+}
+
+// ------------------------------------------------------------------ mutants
+
+const MUTANT_BAR: f64 = 1e-5;
+
+fn miss(fx: &Fx, m: KXcStressMutation, base: &KRksStress) -> f64 {
+    mdiff(&stress(fx, Some(m)).de_deps, &base.de_deps)
+}
+
+/// Smoke mutants on the non-TRIM 1x1x3 mesh (production-wired seams in
+/// `KRksStressConfig::mutation`): each must miss the unmutated (FD-,
+/// Gamma- and supercell-anchored) stress by far more than the bar.
+#[test]
+fn smoke_mutants_are_caught() {
+    let fx = fixture(
+        &H2,
+        [1, 1, 3],
+        "PBE",
+        Jk::Dense,
+        atom_grid(20, 50, Some(CUTOFF)),
+    );
+    let base = stress(&fx, None);
+    for m in [
+        KXcStressMutation::NoPointMotion,
+        KXcStressMutation::NoWeightDeriv,
+        KXcStressMutation::NoHessian,
+        KXcStressMutation::ConjPhase,
+    ] {
+        let d = miss(&fx, m, &base);
+        eprintln!("{m:?}: miss {d:.2e}");
+        assert!(d > MUTANT_BAR, "{m:?} survives: {d:e}");
+    }
+}
+
+/// PROBE: the all-nine FD miss against the step on the atom grid (chooses the
+/// window of `FD_H_ATOM`).
+#[test]
+#[ignore = "probe: 3 steps x 18 SCFs"]
+fn fd_window_probe_all_nine_atom_grid() {
+    let grid = atom_grid(20, 50, Some(CUTOFF));
+    let fx = fixture(&H2, [1, 1, 3], "PBE", Jk::Dense, grid.clone());
+    let s = stress(&fx, None);
+    for h in [1e-5, 2.5e-5, 5e-5, 1e-4] {
+        let fd = fd_all9(&fx.cell, [1, 1, 3], "PBE", Jk::Dense, &grid, h);
+        let mut row = String::new();
+        for (i, j) in ALL9 {
+            row += &format!(" {:.1e}", (fd[i][j] - s.de_deps[i][j]).abs());
+        }
+        eprintln!(
+            "h={h:.1e} worst {:.2e}; per component (00 01 02 10 11 12 20 21 22):{row}",
+            mdiff(&fd, &s.de_deps)
+        );
+    }
+}
+
+// ------------------------------------------------------------- PySCF anchor
+
+/// PySCF 2.13.1 `pbc.grad.krks_stress` (FFTDF on `UniformGrids(61^3)`,
+/// exxdiv ewald, conv_tol 1e-12, STO-3G H2 in the a = 4 cube, atoms
+/// (0.3, 0.2, 0.1) and (0.3, 0.2, 1.5), 1x1x2 gamma-centred mesh): the stress
+/// `σ = (1/Ω) dE/dε` (Hartree/Bohr^3), which PySCF itself verifies against the
+/// central FD of its own energy to 2.3e-10. Its FFTDF and AFTDF energies agree
+/// to 6.5e-13 at this mesh, and ferric's dense-AFT energy on the same uniform
+/// grid matches PySCF's (`pbc_krks.rs` pins), so this is the stress of the
+/// same energy. Diagonal values; the off-diagonals are symmetric zeros
+/// (|.| < 1e-13). Reference: `scripts/gen_pyscf_kks_stress_refs.py`.
+const PYSCF_STRESS: [(&str, f64, f64); 2] = [
+    ("LDA", 6.102756319e-3, -5.161318677e-3),
+    ("PBE", 5.824134026e-3, -5.078720384e-3),
+];
+const PYSCF_STRESS_BAR: f64 = 1e-9;
+
+/// Independent EXTERNAL anchor: ferric's k RKS stress on the 61^3 uniform grid
+/// vs PySCF's analytic FFTDF stress, LDA and PBE. Artifact hypothesis: a
+/// self-consistent construction error (the supercell, 1x1x1 and FD anchors all
+/// share ferric's energy) cannot show here; a missing XC term would miss by
+/// its size (6e-3 sigma units is the whole XC+HF stress here).
+#[test]
+fn uniform_grid_stress_matches_pyscf_fftdf_krks_stress_pbe() {
+    pyscf_case(1);
+}
+
+/// The LDA row of the PySCF anchor (a second 61^3 SCF).
+#[test]
+#[ignore = "second 61^3 PySCF-anchor row (~25 s)"]
+fn uniform_grid_stress_matches_pyscf_fftdf_krks_stress_lda() {
+    pyscf_case(0);
+}
+
+fn pyscf_case(row: usize) {
+    let (f, xx, zz) = PYSCF_STRESS[row];
+    {
+        let fx = fixture_exx(
+            cell_of(&H2_ATOMS),
+            [1, 1, 2],
+            f,
+            Jk::Dense,
+            KXcGrid::Uniform([61, 61, 61]),
+            ExxDiv::Ewald,
+        );
+        let s = stress(&fx, None);
+        let want = [[xx, 0.0, 0.0], [0.0, xx, 0.0], [0.0, 0.0, zz]];
+        let d = mdiff(&s.sigma, &want);
+        eprintln!(
+            "{f} 61^3 1x1x2 vs PySCF: |sigma - sigma_pyscf| {d:.2e} (xx {:.9e} vs {xx:.9e}, zz {:.9e} vs {zz:.9e}); antisymmetry {:.1e}",
+            s.sigma[0][0], s.sigma[2][2], s.antisymmetry()
+        );
+        assert!(d < PYSCF_STRESS_BAR, "{f}: {d:e}");
+    }
+}
