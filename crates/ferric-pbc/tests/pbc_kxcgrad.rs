@@ -1344,7 +1344,7 @@ fn triclinic_spd_k_mesh_matches_the_gamma_supercell() {
 /// All six force components of the rotated cc-pVDZ fixture at h = 1e-4, made
 /// possible by the 14 Bohr neighbour cutoff (smooth energy, see the probe).
 #[test]
-#[ignore = "cc-pVDZ rotated RS-GDF, 13 SCFs; measured below in the report"]
+#[ignore = "cc-pVDZ rotated RS-GDF, 13 SCFs; measured <= 61 s (run with two other ignored tests)"]
 fn rotated_force_all_components_at_larger_cutoff() {
     use ferric_pbc::sr_rotation::SrColumnRotation::Auto;
     let pos = [[0.3, 0.2, 0.1], [0.35, 0.12, 1.5]];
