@@ -557,7 +557,7 @@ fn exchange_channels<'a>(dens: TwoElectronDensity<'a>, scale: f64) -> Vec<DfKCha
     }
 }
 
-fn aux_basis(mol: &Molecule, name: &str) -> Result<PreparedBasis, FerricError> {
+pub(crate) fn aux_basis(mol: &Molecule, name: &str) -> Result<PreparedBasis, FerricError> {
     let bs = ferric_core::basis::bundled(name)?;
     PreparedBasis::new(mol, &bs)
 }

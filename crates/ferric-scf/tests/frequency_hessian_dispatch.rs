@@ -108,7 +108,7 @@ fn auto_falls_back_for_unsupported_configurations() {
         cosmo: Some(ferric_scf::cosmo::CosmoConfig::default()),
         ..Default::default()
     };
-    for (what, scf) in [("RI J/K", ri), ("implicit solvation", solvated)] {
+    for (what, scf) in [("RI J/K (RI-K)", ri), ("implicit solvation", solvated)] {
         let r = run(&scf, &FrequencyConfig::default());
         assert_eq!(r.hessian_source, HessianSource::FiniteDifference, "{what}");
         assert_eq!(r.n_gradient_evaluations, 18, "{what}");
@@ -128,6 +128,67 @@ fn auto_falls_back_for_unsupported_configurations() {
             "{what}: Analytic must refuse, not fall back"
         );
     }
+}
+
+#[test]
+fn ri_j_with_exact_k_is_analytic_where_the_engines_exist_and_falls_back_otherwise() {
+    // RI-J with exact K: analytic wherever the four-centre second-derivative
+    // engines exist (the DF second derivatives are a stencil of first-derivative
+    // blocks, available everywhere); a first-derivative libint (the wheel)
+    // makes the probe refuse and Auto fall back to finite differences of the
+    // DF gradient, with no error. Either branch checks the frequencies agree.
+    let scf = RhfConfig {
+        df_j_aux: Some("def2-universal-jkfit".into()),
+        df_k_aux: Some(String::new()),
+        ..Default::default()
+    };
+    let bs = basis::bundled("sto-3g").unwrap();
+    let prep = PreparedBasis::new(&water(), &bs).unwrap();
+    let probe = analytic_hessian_available(&water(), &prep, Operator::coulomb(), &scf);
+    let auto = run(&scf, &FrequencyConfig::default());
+    let fd = run(
+        &scf,
+        &FrequencyConfig {
+            hessian: HessianMethod::FiniteDifference,
+            ..Default::default()
+        },
+    );
+    assert_eq!(fd.hessian_source, HessianSource::FiniteDifference);
+    match &probe {
+        Ok(()) => {
+            assert_eq!(auto.hessian_source, HessianSource::Analytic);
+            assert_eq!(auto.n_gradient_evaluations, 0);
+        }
+        Err(e) => {
+            eprintln!("RI-J probe refused on this libint: {e}");
+            assert_eq!(auto.hessian_source, HessianSource::FiniteDifference);
+            assert_eq!(auto.n_gradient_evaluations, 18);
+        }
+    }
+    let dev = auto
+        .frequencies
+        .iter()
+        .zip(&fd.frequencies)
+        .fold(0.0f64, |m, (a, b)| m.max((a - b).abs()));
+    eprintln!("water/STO-3G RI-J: Auto vs FD frequencies max |d| {dev:.3e} cm^-1");
+    assert!(dev < 1.0, "frequencies differ by {dev} cm^-1");
+    // The unsupported neighbour, RI-K, is still refused by Analytic.
+    let ri_k = RhfConfig {
+        df_k_aux: Some("def2-universal-jkfit".into()),
+        ..scf
+    };
+    let refused = harmonic_frequencies(
+        &ParallelContext::default(),
+        &water(),
+        "sto-3g",
+        Operator::coulomb(),
+        &ri_k,
+        &FrequencyConfig {
+            hessian: HessianMethod::Analytic,
+            ..Default::default()
+        },
+    );
+    assert!(refused.is_err(), "RI-K must be refused by Analytic");
 }
 
 #[test]
