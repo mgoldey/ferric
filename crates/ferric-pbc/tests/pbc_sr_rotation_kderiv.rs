@@ -50,11 +50,15 @@ use ferric_pbc::grad::{gamma_rhf_gradient_rsgdf, GammaGradConfig, GammaGradient,
 use ferric_pbc::hcore::kpoint::{periodic_hcore_kpts, PeriodicHcoreK};
 use ferric_pbc::hcore::{periodic_hcore, PeriodicHcoreConfig};
 use ferric_pbc::kgrad::{
-    kpoint_rhf_gradient, KGradConfig, KGradJk, KGradMutation, KGradient, KRsGdfGradSource,
+    kpoint_rhf_gradient, kpoint_uhf_gradient, KGradConfig, KGradJk, KGradMutation, KGradient,
+    KRsGdfGradSource,
 };
 use ferric_pbc::kpts::KPointMesh;
 use ferric_pbc::kscf::{solve_krhf_injected, KPointInjection, KScfConfig, KScfResult};
-use ferric_pbc::kstress::{kpoint_rhf_stress, KStress, KStressConfig, KStressJk, KStressMutation};
+use ferric_pbc::kstress::{
+    kpoint_rhf_stress, kpoint_uhf_stress, KStress, KStressConfig, KStressJk, KStressMutation,
+};
+use ferric_pbc::kuscf::solve_kuhf_injected;
 use ferric_pbc::lattice::Cell;
 use ferric_pbc::rsgdf::kpoint::{KRsGdf, KRsGdfConfig};
 use ferric_pbc::rsgdf::{RangeSplit, RsGdf, RsGdfConfig};
@@ -886,4 +890,57 @@ fn loose_screen_refuses_the_unrotated_rebuild_and_the_rotated_force_matches_fd()
     eprintln!("loose screen {prec:?}: FD miss of the rotated force {worst_on:.2e} (h = {h})");
     // O(h^2) floor 8.7e-10 at h = 1e-4 scales to ~1e-7 at h = 1e-3; measured 2.3e-7.
     assert!(worst_on < 2e-6, "{worst_on:e}");
+}
+
+/// UHF shares the rotated walks: a closed-shell k-UHF at `(D/2, D/2)` gives
+/// the k-RHF rotated force and stress (the spin sums and the per-spin
+/// exchange `Z` collapse to the restricted ones), rotation on, range split.
+#[test]
+fn closed_shell_kuhf_rotated_force_and_stress_are_the_krhf_ones() {
+    let split = Some(RangeSplit::default());
+    let r = run(cell_h2(&H2_ATOMS), [1, 1, 2], split, on(), DEFAULT_PREC);
+    r.assert_rotates("1x1x2");
+    let exx = ExxDiv::None;
+    let rs = r.scf(exx);
+    let inj = KPointInjection {
+        s: r.hk.s.clone(),
+        h: r.hk.h.clone(),
+        vnn: r.hk.enn,
+        jk: Box::new(r.gdf.jk_builder_with_madelung(r.vm(exx))),
+    };
+    let mut us = solve_kuhf_injected(&r.cell, &r.mesh, &kscf_cfg(), inj, 1, 1).expect("k-UHF");
+    assert!(us.converged);
+    let half: Vec<Array2<Complex64>> = rs.densities.iter().map(|d| d.mapv(|z| z * 0.5)).collect();
+    us.density_alpha = half.clone();
+    us.density_beta = half;
+    let fr = r.force(&rs, exx, None);
+    let sr = r.stress(&rs, exx, None);
+    let fu = kpoint_uhf_gradient(
+        &r.cell,
+        &r.prep,
+        &r.mesh,
+        &r.hcfg,
+        &r.hk,
+        KGradJk::RsGdf(r.src(&r.gcfg)),
+        &us,
+        exx,
+        &KGradConfig::default(),
+    )
+    .expect("k-UHF force");
+    let su = kpoint_uhf_stress(
+        &r.cell,
+        &r.prep,
+        &r.mesh,
+        &r.hcfg,
+        &r.hk,
+        KStressJk::RsGdf(r.src(&r.gcfg)),
+        &us,
+        exx,
+        &KStressConfig::default(),
+    )
+    .expect("k-UHF stress");
+    let df = max_abs_diff(&fr.grad, &fu.grad);
+    let ds = mdiff(&sr.de_deps, &su.de_deps);
+    eprintln!("closed-shell kUHF vs kRHF (rotated, split): force {df:.2e}, stress {ds:.2e}");
+    assert!(df < 1e-9 && ds < 1e-9, "{df:e} {ds:e}");
 }
