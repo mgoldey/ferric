@@ -35,7 +35,7 @@ const CUTOFF: f64 = 10.0;
 const ATOMS: [[f64; 3]; 2] = [[0.3, 0.2, 0.1], [0.35, 0.12, 1.5]];
 
 fn grid() -> PeriodicGridConfig {
-    let mut g = PeriodicGridConfig::with_size(30, 110);
+    let mut g = PeriodicGridConfig::with_size(40, 110);
     g.neighbour_cutoff = Some(CUTOFF);
     g
 }
