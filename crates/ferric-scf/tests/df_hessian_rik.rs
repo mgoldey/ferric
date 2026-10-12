@@ -1130,3 +1130,114 @@ fn the_memory_charge_scales_as_documented() {
     assert!(small < 50 << 20);
     assert!(big > 5usize << 30, "the 30-atom example must exceed 5 GB");
 }
+
+// ---------------------------------------------------------------------------
+// Accuracy as a function of the conditioning of the exchange metric
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore = "slow: accuracy-vs-cond(V) scan for the RI-K path, own-gradient FD per aux basis"]
+fn accuracy_versus_metric_conditioning() {
+    // Hypothesis: like RI-J, the RI-K Hessian does not degrade with cond(V) up
+    // to the dropped-mode refusal. The reference (FD of ferric's own DF-K
+    // gradient) is valid only when no metric mode lies in [1e-10, 1e-7), where
+    // the gradient's Daleckii-Krein noise floor treats a kept mode as dropped;
+    // a basis with such a mode is reported with its band count and NOT used as
+    // an accuracy datum. A basis with a mode below 1e-10 is refused by the
+    // Hessian (typed error), reported as such.
+    if !has_deriv2() {
+        return;
+    }
+    for aux in [
+        "cc-pvdz-ri",
+        "def2-universal-jkfit",
+        "aug-cc-pvdz-rifit",
+        "aug-cc-pvtz-rifit",
+        "aug-cc-pvqz-rifit",
+        "def2-qzvpp-rifit",
+    ] {
+        let t0 = std::time::Instant::now();
+        let mol = water();
+        let v = coulomb_metric_2c(Operator::coulomb(), &aux_at(&mol, aux)).unwrap();
+        let (lam, _) = v.eigh(UPLO::Upper).unwrap();
+        let (lmin, lmax) = (lam[0], lam[lam.len() - 1]);
+        let band = lam.iter().filter(|&&l| (1e-10..1e-7).contains(&l)).count();
+        let below = lam.iter().filter(|&&l| l < 1e-10).count();
+        if below > 0 {
+            eprintln!(
+                "COND {aux}: lambda_min {lmin:.2e} cond {:.2e}: REFUSED ({below} dropped modes)",
+                lmax / lmin
+            );
+            continue;
+        }
+        let s = setup(&mol, "6-31g", "", aux);
+        let total = parts(&s).total();
+        if band > 0 {
+            eprintln!(
+                "COND {aux}: lambda_min {lmin:.2e} cond {:.2e}: {band} mode(s) in the gradient's \
+                 noise band; own-gradient reference INVALID, no accuracy datum",
+                lmax / lmin
+            );
+            continue;
+        }
+        let fd = fd_hessian_richardson(&s.mol, 2e-3, |m| df_gradient_at(m, "6-31g", "", aux));
+        eprintln!(
+            "COND {aux}: lambda_min {lmin:.2e} lambda_max {lmax:.2e} cond {:.2e} miss vs own FD \
+             {:.3e} ({:.1}s)",
+            lmax / lmin,
+            max_abs_diff(&total, &fd),
+            t0.elapsed().as_secs_f64()
+        );
+    }
+}
+
+/// `max|skeleton(explicit inverse) - skeleton(V^{-1/2} V^{-1/2})|` and the
+/// same for `K^x`, for the RI-K pieces at the converged density of `s`.
+fn explicit_inverse_difference(s: &Setup) -> (f64, f64) {
+    let route = s.rhf.df_jk.as_ref().unwrap();
+    let x = occ_factor(s);
+    let good = rik_terms(&s.mol, &s.prep, route, &x, &RikMutants::default()).unwrap();
+    let bad = rik_terms(
+        &s.mol,
+        &s.prep,
+        route,
+        &x,
+        &RikMutants {
+            explicit_inverse: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let kx = good
+        .first_order_k
+        .iter()
+        .zip(&bad.first_order_k)
+        .fold(0.0f64, |m, (a, b)| m.max(max_abs_diff(a, b)));
+    (max_abs_diff(&good.skeleton, &bad.skeleton), kx)
+}
+
+#[test]
+#[ignore = "slow: benzene STO-3G/def2-universal-jkfit RI-K pieces"]
+fn explicit_inverse_mutant_on_an_ill_conditioned_metric() {
+    // Hypothesis: physics predicts no difference (same algebra); a numerical
+    // artifact predicts a difference that grows with cond(V). The assertion is
+    // RELATIVE to the water difference measured in the same run.
+    if !has_deriv1() {
+        return;
+    }
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../testdata/molecules/benzene.xyz"
+    );
+    let benzene = Molecule::load_xyz(path).unwrap();
+    let (sk, kx) =
+        explicit_inverse_difference(&setup(&benzene, "sto-3g", "", "def2-universal-jkfit"));
+    let (sk_w, kx_w) = explicit_inverse_difference(&setup(&water(), "6-31g", "", "cc-pvdz-ri"));
+    eprintln!(
+        "explicit inverse: benzene skeleton {sk:.3e} K^x {kx:.3e}; water skeleton {sk_w:.3e} K^x {kx_w:.3e}"
+    );
+    assert!(
+        sk > 100.0 * sk_w.max(1e-14),
+        "skeleton {sk:.3e} vs water {sk_w:.3e}"
+    );
+}

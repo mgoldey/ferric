@@ -309,7 +309,17 @@ pub(crate) fn check_metric_conditioning_for(
             ),
         }));
     }
-    if lam[0] < RIJ_METRIC_WARN {
+    let cond = lam[lam.len() - 1] / lam[0];
+    if what == MetricUse::ExchangeFit && cond > crate::hessian_df_k::RIK_COND_WARN {
+        eprintln!(
+            "[ferric] warning: analytic RI-K Hessian: the exchange metric has cond {cond:.1e} \
+             (smallest eigenvalue {:.2e}); the measured Hessian error against the finite \
+             difference of the DF-K gradient grows with cond(V) from about 1e8 (6.7e-9 at \
+             2e8, against 1e-10 at 2e5 .. 2e7), so the result is less accurate than usual",
+            lam[0]
+        );
+    }
+    if what == MetricUse::CoulombFit && lam[0] < RIJ_METRIC_WARN {
         eprintln!(
             "[ferric] warning: analytic {label} Hessian: the smallest eigenvalue of the Coulomb \
              metric is {:.2e} (cond {:.1e}); the inverse amplifies integral noise by \

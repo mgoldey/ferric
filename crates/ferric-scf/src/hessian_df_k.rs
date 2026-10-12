@@ -88,10 +88,29 @@
 //! `∂_xΓ` (`2·3N·A·m²`), the dense `V_x` (`3N·A²`), plus the `K^x` matrices
 //! (`3·3N·n²`) and `chunk` per-aux-shell partials of one `3N·n²` matrix. All of
 //! it is charged to the global pool up front ([`rik_peak_bytes`]); a typed error
-//! when it does not fit. The `3N·A·m²` terms are the ones that grow
-//! (`3N A m²` doubles: 9 atoms/A=113/m=5 is 0.2 MB, 12 atoms/A=500/m=21 is
-//! 63 MB, 30 atoms/A=1500/m=60 is 3.9 GB). Everything is built once per
-//! Hessian, not per CPHF iteration.
+//! when it does not fit. Peak: 3.4 MB for water cc-pVDZ / def2-universal-jkfit
+//! (3 atoms, `A = 113`, `m = 5`); 10.5 GB for 30 atoms with 300 basis
+//! functions, `m = 60`, `A = 1500` (of which `L_x` and `∂_xΓ` are 3.9 GB each
+//! and `V_x` 1.6 GB). Everything is built once per Hessian, not per CPHF
+//! iteration; the integral work is one streamed `(P|μν)` pass, one
+//! first-derivative 3c pass (`L_x` and `K1` together), one 2c pass, and the two
+//! stencil contractions (about 30 times the engine calls of a gradient pass).
+//! The `K^x` metric term costs `3N · (A²·n·m + A·m·n²)` flops (the sparsity of
+//! `V_x` in the moved atom is not exploited).
+//!
+//! ## Conditioning
+//!
+//! The Cholesky-free `M` amplifies integral noise by `cond(V)`. Measured (water
+//! 6-31G, Hessian vs the Richardson finite difference of ferric's own DF-K
+//! gradient, fitting bases with no metric mode in the gradient's noise band):
+//! cond 2.5e5 (cc-pVDZ-RI) 1.4e-10, 2.4e6 (aug-cc-pVDZ-RIFIT) 1.6e-10, 9.1e6
+//! (aug-cc-pVTZ-RIFIT) 2.5e-10, 2.5e7 (def2-universal-jkfit) 1.3e-10, 2.4e7
+//! (def2-QZVPP-RIFIT) 4.4e-10, **2.0e8 (aug-cc-pVQZ-RIFIT) 6.7e-9**: the error
+//! begins to grow near cond 1e8, hence the warning above [`RIK_COND_WARN`]. A
+//! metric with a mode below the DF-K cut is refused (see Scope). The
+//! reference gradient itself treats kept modes in `[1e-10, 1e-7)` as dropped
+//! (its noise floor), so a basis with such a mode has no valid finite-difference
+//! reference and yields no accuracy datum.
 
 use crate::df_gradient::aux_basis;
 use crate::hessian_df::{check_metric_conditioning_for, chunk_len, MetricUse};
@@ -109,6 +128,11 @@ use ferric_integrals::threeindex::coulomb_metric_2c;
 use ndarray::{s, Array1, Array2, Array3, Axis};
 use ndarray_linalg::{Eigh, Inverse, UPLO};
 use rayon::prelude::*;
+
+/// Condition number of the exchange metric above which the Hessian warns: the
+/// error against the finite difference of the DF-K gradient (water 6-31G) is
+/// 1.3e-10 .. 4.4e-10 for cond 2.5e5 .. 2.5e7 and 6.7e-9 at cond 2e8.
+pub const RIK_COND_WARN: f64 = 1e8;
 
 /// Closed-shell exchange weight `α` of `E_K = α Σ_ij L_ij · M L_ij`.
 pub const RIK_ALPHA: f64 = -0.25;
