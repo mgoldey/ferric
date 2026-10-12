@@ -845,3 +845,45 @@ fn inconsistent_rotation_requests_are_refused() {
         .try_force_cfg(&h_off, &g_off, &scf_u, ExxDiv::None, None)
         .expect("unrotated consistent");
 }
+
+/// (f) `RotOff` (derivative walks unrotated although the energy rotated) is
+/// blind at the default screen BY CONSTRUCTION (rotated and unrotated walks
+/// are the same function up to the screening). At a LOOSE screen the two
+/// walks drop different triplets: the unrotated rebuild of the fit then no
+/// longer reproduces the energy's `B` and the existing `‖B‖` consistency
+/// guard refuses it, while the rotated derivative stays the derivative of the
+/// rotated (screened) energy. ARTIFACT hypothesis: if rotation were
+/// irrelevant to the derivative, `RotOff` would run and FD would not tell ON
+/// from OFF; if ON is the exact derivative of the rotated screened energy,
+/// ON-vs-FD stays near the FD floor at the loose screen and OFF is refused.
+#[test]
+fn loose_screen_refuses_the_unrotated_rebuild_and_the_rotated_force_matches_fd() {
+    let n = [1, 1, 2];
+    let prec = (1e-5, 1e-5);
+    let h = 1e-3;
+    let r = run(cell_h2(&H2_ATOMS), n, None, on(), prec);
+    r.assert_rotates("loose");
+    let scf = r.scf(ExxDiv::None);
+    let f_on = r.force(&scf, ExxDiv::None, None);
+    let off = r.try_force(&scf, ExxDiv::None, Some(KGradMutation::RotOff));
+    let msg = off.err().expect("unrotated rebuild accepted").to_string();
+    eprintln!("loose screen {prec:?}: RotOff refused: {msg}");
+    assert!(msg.contains("rebuilt fit differs"), "{msg}");
+    let mut worst_on = 0.0_f64;
+    for (a, x) in [(0usize, 0usize), (0, 2), (1, 1)] {
+        let mut p = H2_ATOMS;
+        p[a][x] += h;
+        let ep = run(cell_h2(&p), n, None, on(), prec)
+            .scf(ExxDiv::None)
+            .energy;
+        p[a][x] -= 2.0 * h;
+        let em = run(cell_h2(&p), n, None, on(), prec)
+            .scf(ExxDiv::None)
+            .energy;
+        let fd = (ep - em) / (2.0 * h);
+        worst_on = worst_on.max((f_on.grad[(a, x)] - fd).abs());
+    }
+    eprintln!("loose screen {prec:?}: FD miss of the rotated force {worst_on:.2e} (h = {h})");
+    // O(h^2) floor 8.7e-10 at h = 1e-4 scales to ~1e-7 at h = 1e-3; measured 2.3e-7.
+    assert!(worst_on < 2e-6, "{worst_on:e}");
+}
