@@ -26,7 +26,7 @@
 //!
 //! The callback MAY be analytic: `harmonic_frequencies` with
 //! `HessianMethod::Analytic` (or `Auto`) runs [`crate::hessian::rhf_hessian`]
-//! (closed-shell RHF with exact J/K only, one SCF + CPHF, zero displaced
+//! (closed-shell RHF with exact J/K or RI-J with exact K, one SCF + CPHF, zero displaced
 //! gradients) and returns `cartesian_hessian` in the same convention, so it
 //! drops straight into the callback. `Analytic` refuses unsupported systems
 //! with a typed error, `Auto` falls back to FD; the callback can read

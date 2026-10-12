@@ -184,9 +184,12 @@ pub mod zvector_ks;
 pub use ks_gradient::ks_gradient_closed;
 /// Harmonic vibrational frequencies from finite-difference Hessian.
 pub mod frequencies;
-/// Analytic RHF second derivatives (Hessian) — nuclear term implemented,
-/// electronic terms stubbed pending LIBINT2_MAX_DERIV_ORDER >= 2.
+/// Analytic RHF, UHF and ROHF second derivatives (Hessian); needs libint2 with
+/// second derivatives (`LIBINT2_MAX_DERIV_ORDER >= 2`) for the four-centre terms.
 pub mod hessian;
+/// Analytic RHF Hessian for RI-J with exact exchange (derivation in the module doc).
+#[doc(hidden)]
+pub mod hessian_df;
 /// Fourth-order stencil of the first-derivative DF integral blocks: the
 /// `(P|μν)` and `(P|Q)` second derivatives of the RI Hessian.
 #[doc(hidden)]

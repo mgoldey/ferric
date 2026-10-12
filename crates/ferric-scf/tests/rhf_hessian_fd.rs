@@ -137,7 +137,7 @@ fn scf_config() -> RhfConfig {
         max_iter: 200,
         energy_conv: 1e-12,
         density_conv: 1e-10,
-        // Explicit exact J/K: the analytic Hessian refuses RI.
+        // Explicit exact J/K (RI-J with exact K has its own tests: df_hessian_rij.rs).
         df_j_aux: Some(String::new()),
         df_k_aux: Some(String::new()),
         ..Default::default()
@@ -489,7 +489,12 @@ fn unsupported_configurations_are_refused() {
     let mut ri = s.rhf.clone();
     ri.df_jk = DfJkRoute::from_scf(Some("cc-pvdz-ri"), None, None, op, 0);
     assert!(ri.df_jk.is_some());
-    refused(&ri, &scf_config(), op, "RI SCF");
+    refused(
+        &ri,
+        &scf_config(),
+        op,
+        "RI route that disagrees with the (exact) configuration",
+    );
 
     let ks = RhfConfig {
         xc: Some("PBE".into()),

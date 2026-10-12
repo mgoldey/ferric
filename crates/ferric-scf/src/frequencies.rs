@@ -574,10 +574,14 @@ fn analytic_available(
 ///
 /// One SCF at the input geometry, then [`crate::hessian::analytic_frequencies`]
 /// (same mass-weighting, projection and diagonalization as
-/// [`harmonic_frequencies`]). Supported only for closed-shell RHF with exact
-/// four-centre Coulomb J/K; any other configuration is refused by
-/// [`crate::hessian::rhf_hessian_preflight`] BEFORE the SCF runs, and a caller
-/// wanting a general method should use [`harmonic_frequencies`].
+/// [`harmonic_frequencies`]). Supported for closed-shell RHF with exact
+/// four-centre Coulomb J/K, or with RI-J and exact K; a configuration the
+/// preflight can decide ([`crate::hessian::rhf_hessian_preflight`]) is refused
+/// BEFORE the SCF runs, while the checks that need the molecule or the SCF
+/// result (an ECP with RI-J, the conditioning of the fitting metric, the SCF
+/// route) fire in [`crate::hessian::analytic_hessian_available`] (which
+/// [`harmonic_frequencies`] consults first) or after the SCF. A caller wanting
+/// a general method should use [`harmonic_frequencies`].
 /// `n_gradient_evaluations` is 0 and `asymmetry` is the analytic response
 /// term's pre-symmetrization asymmetry.
 pub fn harmonic_frequencies_analytic(
