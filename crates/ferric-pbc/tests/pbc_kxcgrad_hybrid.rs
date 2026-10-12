@@ -58,6 +58,8 @@ const ANCHOR_PRECISION: f64 = 1e-12;
 enum Jk {
     Dense,
     Gdf,
+    /// RS-GDF with the range split (lambda = 1).
+    GdfSplit,
 }
 
 fn et_sp_aux() -> BasisSet {
@@ -87,16 +89,21 @@ fn et_sp_aux() -> BasisSet {
     }
 }
 
-fn kgdf_cfg() -> KRsGdfConfig {
+fn kgdf_cfg_of(jk: Jk) -> KRsGdfConfig {
     KRsGdfConfig {
         gdf: RsGdfConfig {
             omega: 1.0,
             exxdiv: ExxDiv::None,
             budget_bytes: Some(AMPLE),
+            range_split: (jk == Jk::GdfSplit).then(|| ferric_pbc::rsgdf::RangeSplit::new(1.0)),
             ..Default::default()
         },
         mutation: None,
     }
+}
+
+fn kgdf_cfg() -> KRsGdfConfig {
+    kgdf_cfg_of(Jk::Gdf)
 }
 
 fn grid_cfg() -> PeriodicGridConfig {
@@ -115,9 +122,9 @@ fn krks_cfg(cell: &Cell, functional: &str, jk: Jk, exxdiv: ExxDiv) -> KRksConfig
     cfg.krhf.scf.energy_conv = 1e-13;
     cfg.krhf.scf.grad_conv = 1e-10;
     cfg.krhf.scf.max_iter = 200;
-    if jk == Jk::Gdf {
+    if jk != Jk::Dense {
         cfg.krhf.jk = KJkKind::RsGdf;
-        cfg.krhf.rsgdf = kgdf_cfg();
+        cfg.krhf.rsgdf = kgdf_cfg_of(jk);
     }
     cfg.grid = grid_cfg();
     cfg
@@ -134,7 +141,7 @@ fn scf(
     let prep = prep_for(&cell, &pyscf_sto3g_h());
     let mesh = KPointMesh::gamma_centred(&cell, mesh_n).unwrap();
     let cfg = krks_cfg(&cell, functional, jk, exxdiv);
-    let aux = (jk == Jk::Gdf).then(|| prep_for(&cell, &et_sp_aux()));
+    let aux = (jk != Jk::Dense).then(|| prep_for(&cell, &et_sp_aux()));
     solve_krks(&cell, &prep, aux.as_ref(), &mesh, &cfg)
         .unwrap_or_else(|e| panic!("solve_krks {functional}: {e}"))
 }
@@ -223,8 +230,8 @@ fn force_with(
                 cfg,
             )
         }
-        Jk::Gdf => {
-            let kc = kgdf_cfg();
+        Jk::Gdf | Jk::GdfSplit => {
+            let kc = kgdf_cfg_of(fx.jk);
             let gdf = KRsGdf::build(&fx.cell, &fx.prep, &fx.aux, &fx.mesh, &fx.hk.s, &kc)
                 .unwrap()
                 .with_exxdiv(fx.exxdiv);
@@ -347,8 +354,8 @@ fn zero_xc(pos: &[[f64; 3]], mesh_n: [usize; 3], jk: Jk, exxdiv: ExxDiv, a: f64)
             eri = KDenseAftEri::build(&cell, &prep, &mesh, &hk.s, exxdiv, &dense_cfg()).unwrap();
             Box::new(eri.jk_builder())
         }
-        Jk::Gdf => {
-            gdf = KRsGdf::build(&cell, &prep, &aux, &mesh, &hk.s, &kgdf_cfg())
+        Jk::Gdf | Jk::GdfSplit => {
+            gdf = KRsGdf::build(&cell, &prep, &aux, &mesh, &hk.s, &kgdf_cfg_of(jk))
                 .unwrap()
                 .with_exxdiv(exxdiv);
             Box::new(gdf.jk_builder())
@@ -382,8 +389,8 @@ fn with_jk<R>(z: &Zx, f: impl FnOnce(KGradJk<'_>) -> R) -> R {
                 .unwrap();
             f(KGradJk::Dense(&eri))
         }
-        Jk::Gdf => {
-            let kc = kgdf_cfg();
+        Jk::Gdf | Jk::GdfSplit => {
+            let kc = kgdf_cfg_of(z.jk);
             let gdf = KRsGdf::build(&z.cell, &z.prep, &z.aux, &z.mesh, &z.hk.s, &kc)
                 .unwrap()
                 .with_exxdiv(z.exxdiv);
@@ -408,8 +415,8 @@ fn jk_mats(z: &Zx) -> (Vec<Array2<Complex64>>, Vec<Array2<Complex64>>) {
                 .unwrap();
             eri.jk_builder().build(&z.scf.densities, &mut j, &mut k).unwrap();
         }
-        Jk::Gdf => {
-            let gdf = KRsGdf::build(&z.cell, &z.prep, &z.aux, &z.mesh, &z.hk.s, &kgdf_cfg())
+        Jk::Gdf | Jk::GdfSplit => {
+            let gdf = KRsGdf::build(&z.cell, &z.prep, &z.aux, &z.mesh, &z.hk.s, &kgdf_cfg_of(z.jk))
                 .unwrap()
                 .with_exxdiv(z.exxdiv);
             gdf.jk_builder().build(&z.scf.densities, &mut j, &mut k).unwrap();
@@ -478,7 +485,7 @@ fn a_equal_one_with_zero_xc_is_the_hf_force_per_part() {
             assert!(max_abs(&hf.grad) > 1e-3);
             match jk {
                 Jk::Dense => assert!(max_abs(&hf.parts.exchange) > 1e-4),
-                Jk::Gdf => assert!(max_abs(&hf.parts.fit_orb_sr) > 1e-4),
+                Jk::Gdf | Jk::GdfSplit => assert!(max_abs(&hf.parts.fit_orb_sr) > 1e-4),
             }
         }
     }
@@ -726,6 +733,35 @@ fn b3lyp_force_matches_fd() {
         worst = worst.max((g.grad[(a, x)] - d).abs());
     }
     eprintln!("B3LYP analytic vs FD worst {worst:.2e}");
+    assert!(worst < FD_BAR, "{worst:e}");
+    // FLOOR IS TRUNCATION, NOT A FORCE ERROR. The residual (2.3e-9 at h = 1e-4)
+    // is the same for PBE0 and B3LYP, dense and RS-GDF, exxdiv none and ewald:
+    // a functional-independent h^2 term. Artifact hypothesis: a force error
+    // would not shrink with h; truncation shrinks >= 4x per halving (measured 12x: h^2 plus
+    // higher orders).
+    let h2 = 5e-5;
+    let d2 = fd(&H2, 0, 2, h2, [1, 1, 3], "B3LYP", Jk::Dense, ExxDiv::Ewald);
+    let e1 = (g.grad[(0, 2)]
+        - fd(&H2, 0, 2, 1e-4, [1, 1, 3], "B3LYP", Jk::Dense, ExxDiv::Ewald))
+    .abs();
+    let e2 = (g.grad[(0, 2)] - d2).abs();
+    eprintln!("B3LYP FD residual h=1e-4 {e1:.2e}, h=5e-5 {e2:.2e}, ratio {:.2}", e1 / e2);
+    assert!(e1 / e2 > 3.0, "ratio {}", e1 / e2); // measured 12: >= h^2 (4x), the residual is not a force error
+}
+
+/// Range-split RS-GDF (lambda = 1) with a hybrid: the exchange coefficients go
+/// through the same fit-gradient plumbing as the unsplit fit; FD of the
+/// hybrid energy on the split build decides.
+#[test]
+fn pbe0_force_with_the_range_split_fit_matches_fd() {
+    let fx = fixture(&H2, [1, 1, 3], "PBE0", Jk::GdfSplit, ExxDiv::Ewald);
+    let g = force(&fx);
+    let mut worst = 0.0_f64;
+    for (a, x) in [(0, 2), (1, 1)] {
+        let d = fd(&H2, a, x, 1e-4, [1, 1, 3], "PBE0", Jk::GdfSplit, ExxDiv::Ewald);
+        worst = worst.max((g.grad[(a, x)] - d).abs());
+    }
+    eprintln!("split RS-GDF PBE0 analytic vs FD worst {worst:.2e}");
     assert!(worst < FD_BAR, "{worst:e}");
 }
 
