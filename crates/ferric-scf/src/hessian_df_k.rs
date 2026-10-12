@@ -172,6 +172,20 @@
 //! The `K^x` metric term costs `3N · (A²·n·m + A·m·n²)` flops (the sparsity of
 //! `V_x` in the moved atom is not exploited).
 //!
+//! UHF: the channels run one after the other over the shared `M` and `V_x`
+//! (`V_x` is built first, before any channel), so the estimate
+//! (`rik_peak_bytes_channels`) is the largest phase of any channel plus what the
+//! finished channels leave resident (`Γ_σ`, `K^x_σ` and its Fock-scaled copy), and
+//! the CPHF phase scales with the number of channels. For channels of similar
+//! size the peak is that of the larger channel (30 atoms, `n = 300`, `m = 60 + 59`,
+//! `A = 1500`: 9.8 GB, the same as `m = 60` alone), and it is raised by a later
+//! channel only when that channel's phases with the first channel's outputs
+//! resident are the widest. Checked against the process's own allocator
+//! (`tests/df_hessian_uhf_memory.rs`, a counting global allocator): the measured
+//! peak live allocation of the call is 0.92 to 0.98 of charge + raw three-index
+//! tensor over butane/jkfit shapes with one, two and unequal channels, i.e. the
+//! charge bounds the allocation with no gap at the percent level.
+//!
 //! ## Conditioning
 //!
 //! The Cholesky-free `M` amplifies integral noise by `cond(V)`. Measured (water

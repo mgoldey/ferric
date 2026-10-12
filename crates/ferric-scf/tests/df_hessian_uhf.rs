@@ -50,8 +50,8 @@ use ferric_scf::df_k::DfK;
 use ferric_scf::fock::KBuilder;
 use ferric_scf::gradient::uhf_gradient;
 use ferric_scf::hessian::rij_support::{
-    rik_channel_terms, rik_first, uhf_hessian_parts_mutated, RijMutants, RikChannel, RikMutants,
-    UhfDfMutants, RIK_ALPHA_SPIN,
+    rik_channel_terms, rik_channel_terms_with_aux, rik_first, uhf_hessian_parts_mutated,
+    RijMutants, RikChannel, RikMutants, UhfDfMutants, RIK_ALPHA_SPIN,
 };
 use ferric_scf::hessian::{rhf_hessian_parts, uhf_hessian_parts, UhfHessianParts};
 use ferric_scf::result::{ScfResult, Spin};
@@ -1371,6 +1371,66 @@ fn the_pre_scf_probe_refuses_an_ill_conditioned_exchange_metric_for_uhf() {
     let j_cfg = scf_config("aug-cc-pvqz-rifit", "");
     ferric_scf::hessian::analytic_uhf_hessian_available(&mol, &prep, op, &j_cfg)
         .expect("RI-J on the same fit is accepted");
+}
+
+/// An NH2 fitting basis (`base` on every atom) with a near-duplicate s function
+/// (exponent x (1 + eps)) added on each hydrogen.
+fn twin_aux(mol: &Molecule, base: &str, eps: f64) -> PreparedBasis {
+    use ferric_core::basis::Shell;
+    let mut aux = basis::bundled(base).unwrap();
+    let h = aux.shells.get_mut(&1).unwrap();
+    let first = h.iter().find(|s| s.l == 0).unwrap().clone();
+    let a = first.exponents[0];
+    h.push(Shell {
+        exponents: vec![a * (1.0 + eps)],
+        coefficients: vec![(2.0 * a / std::f64::consts::PI).powf(0.75)],
+        ..first
+    });
+    PreparedBasis::new(mol, &aux).unwrap()
+}
+
+#[test]
+fn dropped_metric_modes_are_refused_for_every_spin_channel_set() {
+    // A twin s function (eps 1e-5) gives metric modes below the DF-K cut: the
+    // truncated energy is not differentiated, with a typed error naming the
+    // dropped-mode count, from the Hessian itself (two channels) and from the
+    // probe `Auto` consults.
+    use ferric_scf::hessian::rij_support::probe_exchange_metric;
+    if !has_deriv1() {
+        return;
+    }
+    let mol = nh2();
+    let prep = prep_at(&mol, "sto-3g");
+    let n = prep.nbasis();
+    let xa = Array2::from_shape_fn((n, 3), |(i, c)| 0.3 + 0.1 * ((i + c) % 5) as f64);
+    let xb = Array2::from_shape_fn((n, 2), |(i, c)| 0.2 + 0.1 * ((i + 2 * c) % 7) as f64);
+    let channels = [
+        RikChannel {
+            x: &xa,
+            alpha: RIK_ALPHA_SPIN,
+        },
+        RikChannel {
+            x: &xb,
+            alpha: RIK_ALPHA_SPIN,
+        },
+    ];
+    let e = rik_channel_terms_with_aux(
+        3,
+        &prep,
+        twin_aux(&mol, "cc-pvdz-ri", 1e-5),
+        Operator::coulomb(),
+        usize::MAX,
+        &channels,
+        &RikMutants::default(),
+    )
+    .unwrap_err()
+    .to_string();
+    eprintln!("two-channel Hessian, dropped modes: {e}");
+    assert!(e.contains("dropped mode"), "{e}");
+    let e = probe_exchange_metric(&twin_aux(&mol, "cc-pvdz-ri", 1e-5), Operator::coulomb())
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("dropped mode"), "{e}");
 }
 
 #[test]
