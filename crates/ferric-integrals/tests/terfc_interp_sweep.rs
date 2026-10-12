@@ -98,10 +98,16 @@ fn sweep_interp_vs_series_sharp_seams() {
         return;
     };
     let cdir = std::ffi::CString::new(dir.to_str().unwrap()).unwrap();
-    let s_vals = [0.5_f64, 1.0, 2.0, 4.0, 8.0, 12.0, 16.0, 30.0, 50.0, 79.0];
+    // Mix of table nodes and values BETWEEN nodes: at a node the
+    // interpolant reproduces the tabulated value, so nodes alone understate
+    // the error in s.
+    let s_vals = [
+        0.03_f64, 0.11, 0.23, 0.37, 0.49, 0.5, 0.53, 1.0, 1.07, 2.0, 2.31, 3.3, 4.0, 5.7, 6.9, 8.0,
+        11.3, 12.0, 16.0, 17.7, 23.0, 30.0, 37.0, 50.0, 61.0, 79.0,
+    ];
     let mut overall_abs = 0.0f64;
     for &(lo, hi) in &[(0.01_f64, 4.0_f64), (4.0, 10.0), (10.0, 20.0)] {
-        for &m in &[0_i32, 1, 2, 4, 7, 10] {
+        for &m in &[0_i32, 1, 2, 4, 7, 10, 12] {
             let (mut worst_rel, mut worst_abs) = (0.0f64, 0.0f64);
             let mut at = (0.0f64, 0.0f64);
             for i in 0..=200 {
@@ -131,4 +137,8 @@ fn sweep_interp_vs_series_sharp_seams() {
         }
     }
     eprintln!("OVERALL worst ABSOLUTE interpolation error in G: {overall_abs:.3e}");
+    assert!(
+        overall_abs < 1e-9,
+        "interpolation error budget exceeded: {overall_abs:.3e}"
+    );
 }

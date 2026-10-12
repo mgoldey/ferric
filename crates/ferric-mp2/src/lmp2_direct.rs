@@ -587,20 +587,9 @@ pub fn assemble_ragged_direct_local(
                 dcfg.schwarz_skip, op.kind
             ))
         })?;
-        let mut eng2 = Engine::new_2center(op, dfbs, 1e-14)?;
-        let infl = ferric_integrals::schwarz::bound_inflation(op);
-        let dims_df = dfbs.shell_dims();
-        let qp_shell: Vec<f64> = (0..dfbs.nshells())
-            .map(|sp| {
-                let np = dims_df[sp];
-                let vals = eng2.compute_eri2(dfbs, sp, sp);
-                let mut m = 0.0f64;
-                for p in 0..np {
-                    m = m.max(vals[p * np + p].abs());
-                }
-                m.sqrt() * infl
-            })
-            .collect();
+        // The aux factor is the library's validated per-shell table (floored,
+        // terfc-inflated), not a private copy.
+        let qp_shell = ferric_integrals::schwarz::schwarz3_aux(op, dfbs)?;
         Some((sb.q, qp_shell))
     } else {
         None

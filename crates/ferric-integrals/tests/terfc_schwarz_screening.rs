@@ -31,7 +31,7 @@ use ferric_integrals::schwarz::{bound_inflation, schwarz, schwarz3_aux};
 use ndarray::Array2;
 use std::sync::Once;
 
-const ANG: f64 = 1.0 / 0.529_177_210_903;
+const ANG: f64 = ferric_core::units::ANGSTROM_TO_BOHR;
 
 fn ensure_tables() -> bool {
     static INIT: Once = Once::new();
@@ -332,11 +332,11 @@ fn bound_is_attained_to_rounding_on_diagonal_blocks() {
     }
 }
 
-/// The validity BUDGET: r0 in {0.5, 1.0, 1.5} A x r0*omega in {0.35, 0.7071,
-/// 1.354, 2, 4, 8.9} (8.9 is the edge of the shipped tables, s <= 80).
+/// The validity BUDGET: r0 in {0.3, 0.4, 0.5, 1.0, 1.5, 2.5} A x r0*omega in
+/// {0.35, 0.7071, 1.354, 2, 4, 8.9} (8.9 is the edge of the shipped tables, s <= 80).
 fn budget_operators() -> Vec<(String, Operator)> {
     let mut v = Vec::new();
-    for r0 in [0.5, 1.0, 1.5] {
+    for r0 in [0.3, 0.4, 0.5, 1.0, 1.5, 2.5] {
         for s in [0.35, std::f64::consts::FRAC_1_SQRT_2, 1.354, 2.0, 4.0, 8.9] {
             v.push((format!("r0={r0} s={s:.3}"), terfc_ang(r0, s / r0)));
         }
@@ -373,10 +373,9 @@ fn terfc_schwarz_budget_across_r0_and_seam_sharpness() {
     check_budget("methane/cc-pVDZ", &obs, &dfbs);
 }
 
-/// Budget on diffuse and high-L sets. Times (release, loaded box) are in the
-/// eprintln of the first run recorded next to the measurement notes.
+/// Budget on diffuse and high-L sets (up to g orbital shells).
 #[test]
-#[ignore = "water aug-cc-pVDZ, aug-cc-pVTZ (f), def2-TZVP+jkfit (high-L aux): minutes"]
+#[ignore = "water aug-cc-pVDZ, aug-cc-pVTZ (f), def2-TZVP, def2-QZVP (g): 80 s release"]
 fn terfc_schwarz_budget_diffuse_and_high_l() {
     if !ensure_tables() {
         return;
@@ -385,9 +384,37 @@ fn terfc_schwarz_budget_diffuse_and_high_l() {
         ("aug-cc-pvdz", "cc-pvdz-ri"),
         ("aug-cc-pvtz", "cc-pvdz-ri"),
         ("def2-tzvp", "def2-universal-jkfit"),
+        ("def2-qzvp", "def2-universal-jkfit"),
     ] {
         let obs = prep("water.xyz", orb);
         let dfbs = prep("water.xyz", aux);
+        if orb == "def2-qzvp" {
+            assert_eq!(obs.max_l(), 4, "the g-shell arm must contain g shells");
+        }
         check_budget(&format!("water/{orb}+{aux}"), &obs, &dfbs);
+    }
+}
+
+/// The grid that was validated IS the box the library accepts: if either
+/// moves without the other, this fails.
+#[test]
+fn budget_grid_spans_exactly_the_accepted_box() {
+    use ferric_integrals::schwarz::{
+        check_terfc_parameters_validated, TERFC_SCHWARZ_MAX_R0_OMEGA, TERFC_SCHWARZ_R0_ANG,
+    };
+    let mut r0s: Vec<f64> = budget_operators()
+        .iter()
+        .map(|(_, o)| o.distance / ANG)
+        .collect();
+    r0s.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    assert!((r0s[0] - TERFC_SCHWARZ_R0_ANG.0).abs() < 1e-9);
+    assert!((r0s[r0s.len() - 1] - TERFC_SCHWARZ_R0_ANG.1).abs() < 1e-9);
+    let smax = budget_operators()
+        .iter()
+        .map(|(_, o)| o.distance * o.omega)
+        .fold(0.0f64, f64::max);
+    assert!((smax - TERFC_SCHWARZ_MAX_R0_OMEGA).abs() < 1e-9);
+    for (name, op) in budget_operators() {
+        check_terfc_parameters_validated(op).unwrap_or_else(|e| panic!("{name}: {e:?}"));
     }
 }

@@ -359,7 +359,9 @@ impl Engine {
         Ok(())
     }
 
-    /// Compute a shell quartet of 4-center ERIs. Returns `None` if screened to zero.
+    /// Compute a shell quartet of 4-center ERIs. Returns `None` if screened to
+    /// zero (and, for the terf/terfc table engines, if the engine REFUSED the
+    /// quartet; use [`Engine::compute_quartet_checked`] to tell the two apart).
     pub fn compute_quartet(
         &mut self,
         prep: &PreparedBasis,
@@ -368,6 +370,28 @@ impl Engine {
         sh3: usize,
         sh4: usize,
     ) -> Option<&[f64]> {
+        self.compute_quartet_checked(prep, sh1, sh2, sh3, sh4)
+            .ok()
+            .flatten()
+    }
+
+    /// True for the terf/terfc table engines, whose 4-center path can REFUSE a
+    /// quartet (negative status) as distinct from screening it to zero.
+    pub fn is_table_engine(&self) -> bool {
+        self.is_terf || self.is_terfc
+    }
+
+    /// Like [`Engine::compute_quartet`], but a table-engine refusal (total L
+    /// beyond the table depth, null tables, a caught C++ exception) is
+    /// `Err(status)` instead of `None`. `Ok(None)` still means screened to zero.
+    pub fn compute_quartet_checked(
+        &mut self,
+        prep: &PreparedBasis,
+        sh1: usize,
+        sh2: usize,
+        sh3: usize,
+        sh4: usize,
+    ) -> Result<Option<&[f64]>, i32> {
         let n = prep.shell_dims()[sh1]
             * prep.shell_dims()[sh2]
             * prep.shell_dims()[sh3]
@@ -423,11 +447,12 @@ impl Engine {
             // The terf/terfc 4-center path REFUSES a quartet whose total angular
             // momentum exceeds the table m-depth (SCF_EINVAL). That is a real
             // refusal, not a libint2 bug, and it must not abort the process --
-            // callers see `None`, the same as a fully screened quartet. A
-            // Schwarz table built from this must therefore treat `None` as
-            // "cannot bound" rather than "zero"; schwarz.rs already floors it.
+            // it is reported as `Err(status)` (`compute_quartet` folds it into
+            // `None`). A Schwarz table must treat it as "cannot bound", never
+            // as the zero of a screened block: schwarz_pair turns it into an
+            // error.
             if written < 0 && (self.is_terf || self.is_terfc) {
-                return None;
+                return Err(written);
             }
             assert!(
                 written >= 0,
@@ -443,9 +468,9 @@ impl Engine {
         }
 
         if max_written == 0 {
-            None
+            Ok(None)
         } else {
-            Some(&self.buf[..max_written])
+            Ok(Some(&self.buf[..max_written]))
         }
     }
 

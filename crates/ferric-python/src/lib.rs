@@ -5245,7 +5245,10 @@ fn att_keys_on_exact_error() -> PyErr {
 /// Correlation operator of a local `run_rimp2`: Coulomb unless an attenuator
 /// was selected (the SCF is always full Coulomb). Strict, shared with the
 /// CLI's `Mp2Cfg::att_rimp2_operator`.
-fn local_correlation_operator(att_keys: Option<&ferric_cli::Mp2Cfg>) -> PyResult<Operator> {
+fn local_correlation_operator(
+    att_keys: Option<&ferric_cli::Mp2Cfg>,
+    model: &ferric_cli::LocalModel,
+) -> PyResult<Operator> {
     let value_err = pyo3::exceptions::PyValueError::new_err;
     let Some(k) = att_keys else {
         return Ok(Operator::coulomb());
@@ -5261,6 +5264,12 @@ fn local_correlation_operator(att_keys: Option<&ferric_cli::Mp2Cfg>) -> PyResult
     let op = k
         .att_rimp2_operator()
         .map_err(|e| value_err(format!("run_rimp2: {e}")))?;
+    if matches!(op.kind, ferric_integrals::operator::OperatorKind::Terfc)
+        && model.direct.as_ref().is_some_and(|d| d.schwarz_skip > 0.0)
+    {
+        ferric_integrals::schwarz::check_terfc_parameters_validated(op)
+            .map_err(|e| value_err(format!("run_rimp2: integral_direct: {e}")))?;
+    }
     Ok(op)
 }
 
@@ -5477,7 +5486,7 @@ fn run_rimp2_local(
              kappa-regularized MP2 exists for the exact rimp2 only. Omit kappa or local=."
         )));
     }
-    let op = local_correlation_operator(att_keys)?;
+    let op = local_correlation_operator(att_keys, model)?;
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let rhf = local_rhf_reference(&mol.inner, &prep, k_builder, memory_budget_gb)?;

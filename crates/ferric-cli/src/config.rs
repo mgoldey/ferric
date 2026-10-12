@@ -3377,8 +3377,10 @@ impl Config {
         }
     }
 
-    /// The integral-direct-specific `[local]` rule: the kind.
-    fn validate_local_direct(&self, kind: &str) -> Result<(), String> {
+    /// The integral-direct-specific `[local]` rules: the kind, and the
+    /// validated terfc parameter box of the Schwarz cut (the angular-momentum
+    /// limit needs the molecule's basis and is reported when the run starts).
+    fn validate_local_direct(&self, kind: &str, model: &LocalModel) -> Result<(), String> {
         if self
             .local
             .as_ref()
@@ -3391,6 +3393,15 @@ impl Config {
                 "[local] integral_direct is the integral-direct local MP2 and applies to \
                  method.kind = \"rimp2\" or \"att-rimp2\" only (got \"{kind}\")"
             ));
+        }
+        if kind == "att-rimp2"
+            && model.direct.as_ref().is_some_and(|d| d.schwarz_skip > 0.0)
+            && self.mp2.att_rimp2_op()? == AttRimp2Op::Terfc
+        {
+            ferric_integrals::schwarz::check_terfc_parameters_validated(
+                self.mp2.att_rimp2_operator()?,
+            )
+            .map_err(|e| format!("[local] integral_direct: {e}"))?;
         }
         Ok(())
     }
@@ -3642,7 +3653,7 @@ impl Config {
                  \"{kind}\"); use a single eps"
             ));
         }
-        self.validate_local_direct(kind)?;
+        self.validate_local_direct(kind, &model)?;
         if task != "energy" {
             return Err(format!(
                 "[local] scheme = \"amplitude-threshold\" supports task = \"energy\" only (got \
