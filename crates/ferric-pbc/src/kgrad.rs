@@ -115,6 +115,7 @@ use crate::rsgdf::kpoint::kderiv::{
     kpoint_fit_gradient, rotate_hcore_weights, KFitGrad, KFitMutation, KRotKind,
 };
 use crate::rsgdf::kpoint::{KRsGdf, KRsGdfConfig};
+use crate::sr_rotation::RotatedBasis;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::engine::Engine;
@@ -205,6 +206,33 @@ pub enum KGradMutation {
     /// instead of the residue moduli (aliases images that differ by half a
     /// supercell on a shifted mesh; identity on a Gamma-centred mesh).
     EcpMeshCountModuli,
+}
+
+/// The hcore SR derivative walk's rotation and forward-transformed image
+/// weights (`None` weights = walk the parent shells).
+fn hcore_sr_walk(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hcore_cfg: &PeriodicHcoreConfig,
+    hk: &PeriodicHcoreK,
+    mutation: Option<KGradMutation>,
+    w_d: &[Array2<f64>],
+) -> Result<(Option<RotatedBasis>, Option<Vec<Array2<f64>>>), FerricError> {
+    let rot = hcore_rotation_built("k gradient", cell, prep, hcore_cfg, hk.sr_rotated_columns)?;
+    let w_rot = rotate_hcore_weights(
+        rot.as_ref(),
+        KRotKind::defect(rot_kind(mutation)),
+        mutation == Some(KGradMutation::RotHcoreWrongResidue),
+        w_d,
+    );
+    // The rotation is walked only together with its transformed weights.
+    let rot = rot.filter(|_| w_rot.is_some());
+    Ok((rot, w_rot))
+}
+
+/// Rotated columns of the walk actually run (0 without a rotation).
+pub(crate) fn walked_columns(r: Option<&RotatedBasis>) -> usize {
+    r.map_or(0, |r| r.n_rotated_columns)
 }
 
 /// The column-rotation test defect a mutation requests.
@@ -999,15 +1027,9 @@ fn assemble(
     let serial = mutation == Some(KGradMutation::SerialDerivWalks);
     // The energy's SR walk: rotated shells (weights `Tᵀ w T`) when `hk` ran
     // rotated.
-    let rot = hcore_rotation_built("k gradient", cell, prep, hcore_cfg, hk.sr_rotated_columns)?;
-    let w_rot = rotate_hcore_weights(
-        rot.as_ref(),
-        KRotKind::defect(rot_kind(mutation)),
-        mutation == Some(KGradMutation::RotHcoreWrongResidue),
-        &w_d,
-    );
+    let (rot, w_rot) = hcore_sr_walk(cell, prep, hcore_cfg, hk, mutation, &w_d)?;
     let w_sr = w_rot.as_deref().unwrap_or(&w_d);
-    let rot_walk = rot.as_ref().filter(|_| w_rot.is_some());
+    let rot_walk = rot.as_ref();
     let n_sr_triplets =
         sr_attraction_deriv_visit(cell, prep, rot_walk, &sr_cfg, ledger, serial, |t| {
             let wd = &w_sr[residue_index(lattice_coords(&b, &t.l), moduli)];
@@ -1202,7 +1224,7 @@ fn assemble(
         net_force,
         n_images: images.len(),
         n_sr_triplets,
-        hcore_rotated_columns: rot_walk.map_or(0, |r| r.n_rotated_columns),
+        hcore_rotated_columns: walked_columns(rot_walk),
         n_ecp_triples,
         n_g_lr: gv_lr.len(),
         n_k_eri,
