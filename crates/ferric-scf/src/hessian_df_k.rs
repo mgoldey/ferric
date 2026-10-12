@@ -160,8 +160,8 @@
 //! The pre-SCF probe `Auto` consults applies the same estimate (sizes alone), so
 //! an over-budget job runs finite differences instead of failing after the SCF;
 //! with no pool installed (library use) there is no budget and nothing is
-//! checked. Peak: 2.7 MB for water cc-pVDZ / def2-universal-jkfit (3 atoms,
-//! `A = 113`, `m = 5`); 9.8 GB for 30 atoms with 300 basis functions, `m = 60`,
+//! checked. Peak: 2.9 MB for water cc-pVDZ / def2-universal-jkfit (3 atoms,
+//! `A = 113`, `m = 5`); 9.9 GB for 30 atoms with 300 basis functions, `m = 60`,
 //! `A = 1500` (`L_x` and `∂_xΓ` 3.9 GB each, `V_x` 1.6 GB). It grows like
 //! **N⁴** (the `3N·A·m²` terms; fitted exponent 3.85 between 30 and 71 atoms at
 //! 50 auxiliary functions, 10 basis functions and 2 occupied orbitals per
@@ -178,13 +178,25 @@
 //! finished channels leave resident (`Γ_σ`, `K^x_σ` and its Fock-scaled copy), and
 //! the CPHF phase scales with the number of channels. For channels of similar
 //! size the peak is that of the larger channel (30 atoms, `n = 300`, `m = 60 + 59`,
-//! `A = 1500`: 9.8 GB, the same as `m = 60` alone), and it is raised by a later
+//! `A = 1500`: 9.9 GB, the same as `m = 60` alone), and it is raised by a later
 //! channel only when that channel's phases with the first channel's outputs
-//! resident are the widest. Checked against the process's own allocator
-//! (`tests/df_hessian_uhf_memory.rs`, a counting global allocator): the measured
-//! peak live allocation of the call is 0.92 to 0.98 of charge + raw three-index
-//! tensor over butane/jkfit shapes with one, two and unequal channels, i.e. the
-//! charge bounds the allocation with no gap at the percent level.
+//! resident are the widest. `V_x` is built before the first channel, so the
+//! `pre` phase of every channel already holds `n3·A²` for it. The CPHF phase is
+//! charged separately once the RI-K terms return (`reserve_cphf_phase`): the
+//! RI-K outputs, `J^x`, the first-order Fock sets, the MO-basis matrices and the
+//! rebuilt `DfJ` / `DfK` (whose general-density `build` peaks at three `A·n²`).
+//!
+//! Checked against the process's own allocator (`tests/df_hessian_uhf_memory.rs`,
+//! a counting global allocator, ignored tests): the RI-K terms alone peak at 0.92
+//! to 0.98 of charge + raw three-index tensor over butane/jkfit shapes with one,
+//! two and unequal channels (no allowance for threads is needed: 1 and 6 threads
+//! differ by under 1 MB); the whole UHF Hessian, CPHF included, peaks at 0.99 of
+//! estimate + raw for allyl 6-31G/jkfit (`A/n = 8.5`) and 0.86 for allyl
+//! def2-TZVP/cc-pVDZ-RI (`A/n = 1.9`, where the `n²` terms and `DfK` dominate;
+//! 1.008 of the estimate alone). The margin is therefore a few percent to a
+//! few tens of percent, never negative on the shapes measured; the raw tensor of
+//! the three-index passes is the one allocation the estimate leaves to the
+//! caller.
 //!
 //! ## Conditioning
 //!
@@ -464,8 +476,13 @@ pub fn rik_peak_bytes_channels(natoms: usize, nbf: usize, noccs: &[usize], naux:
     // The metric factorization (V, eigenvectors, scaled copy, W, M, check),
     // before anything else is alive.
     let mut peak = 6 * a * a;
-    // What the finished channels leave resident: Γ_s and the two K^x copies.
-    let mut prev = 0usize;
+    // What is resident from outside the channel loop (the RI-J `J^x`, one
+    // `n3·n²` matrix computed before the RI-K terms; charged whether or not
+    // RI-J is active) plus what the finished channels leave: Γ_s and the two
+    // K^x copies. Plus a fixed allowance of 32 `n²` matrices for the densities,
+    // the energy-weighted density and the Fock-sized work arrays of the exact
+    // one-electron path (measured excess without it: 0.07 % of the peak).
+    let mut prev = n3 * n * n + 32 * n * n;
     for &m in noccs {
         let m2 = m * m;
         // M, V_x, Γ and Ĉ in (A, m, n) layout alive from the end of the
@@ -484,12 +501,57 @@ pub fn rik_peak_bytes_channels(natoms: usize, nbf: usize, noccs: &[usize], naux:
         peak = peak.max(pre).max(pass2).max(cross).max(kx);
         prev += a * m2 + 2 * n3 * n * n;
     }
-    // The CPHF that follows: per channel the first-order Fock matrices of its
-    // spin, K^x and its Fock-scaled copy (3 per channel), the F^x / G^x
-    // accumulators, and the SCF's DfJ and DfK rebuilt with the full budget
-    // (dressed A n² each).
-    let cphf = 3 * noccs.len() * n3 * n * n + 2 * a * n * n;
-    8usize.saturating_mul(peak.max(cphf))
+    8usize.saturating_mul(peak.max(rik_cphf_phase_words(natoms, nbf, noccs, naux)))
+}
+
+/// Words alive in the part of the Hessian that follows the RI-K terms (the
+/// first-order Fock matrices and the CPHF), whose largest phase is charged
+/// separately by `reserve_cphf_phase` once the RI-K terms have returned and
+/// released their own reservation. With `C` channels (= spin Fock sets `S`),
+/// `M = Σ m_σ`, in units of `n3·n²` matrices:
+///
+/// * first-order phase: the RI-K outputs (`K^x`, Fock-scaled copy: `2C`), the
+///   RI-J `J^x` (1), `∂S/∂x` (1), the one-electron derivative `h1` (1), the
+///   per-spin `G^x` accumulators (`S`) and the Fock sets they become (`S`);
+/// * CPHF phase: the RI-K outputs (`2C`), `J^x` (1), the Fock sets (`S`),
+///   `∂S/∂x` (1), the MO-basis `F^x` and `S^x` per spin (`2·n3·n·M`), the
+///   per-perturbation solutions `U` and `ε^x` (`n3·(n·M + M²)`), and the SCF's
+///   `DfJ` and `DfK` rebuilt with the full budget: each keeps one dressed
+///   `A·n²` tensor resident, and `DfK` needs three `A·n²` at its peak, both
+///   while it is constructed and in every general-density `build` of the CPHF
+///   kernel (measured: construction peak 3.0 and `build` extra peak 2.93 times
+///   `8·A·n²` bytes), hence `5·A·n²` (two resident + one `DfK` transient of
+///   three).
+///
+/// Measured against the process allocator in `tests/df_hessian_uhf_memory.rs`.
+#[doc(hidden)]
+pub fn rik_cphf_phase_words(natoms: usize, nbf: usize, noccs: &[usize], naux: usize) -> usize {
+    let (n3, n, a) = (3 * natoms, nbf, naux);
+    let c = noccs.len();
+    let mtot: usize = noccs.iter().sum();
+    let unit = n3 * n * n;
+    let first_order = unit * (2 * c + 3 + 2 * c);
+    let cphf =
+        unit * (2 * c + 2 + c) + 2 * n3 * n * mtot + n3 * (n * mtot + mtot * mtot) + 5 * a * n * n;
+    first_order.max(cphf)
+}
+
+/// Charge the first-order-Fock / CPHF phase of an RI-K Hessian to the global
+/// pool (a typed error when it does not fit). The RI-K terms release their own
+/// reservation when they return, but their outputs stay alive through this
+/// phase, so the phase is charged in full here; the pre-SCF probe uses the
+/// larger of the two phases (`rik_peak_bytes_channels`).
+#[doc(hidden)]
+pub fn reserve_cphf_phase(
+    natoms: usize,
+    nbf: usize,
+    noccs: &[usize],
+    naux: usize,
+) -> Result<ferric_core::memory::pool::Reservation, FerricError> {
+    ferric_core::memory::pool::reserve_global(
+        "RI-K Hessian first-order Fock matrices and CPHF",
+        8usize.saturating_mul(rik_cphf_phase_words(natoms, nbf, noccs, naux)),
+    )
 }
 
 /// The RI-K Hessian pieces at the occupied factor `x` (`D = X Xᵀ`).

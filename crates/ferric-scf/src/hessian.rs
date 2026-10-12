@@ -312,6 +312,20 @@ fn rhf_hessian_parts_with(
             crate::hessian_df_k::rik_terms(mol, prep, r, &x, rik_mutants)
         })
         .transpose()?;
+    // Charge the first-order Fock / CPHF phase that follows the RI-K terms.
+    let _cphf_charge = match route_k {
+        Some(r) => {
+            let name = r.k_aux.as_deref().unwrap_or_default();
+            let naux = crate::df_gradient::aux_basis(mol, name)?.nbasis();
+            Some(crate::hessian_df_k::reserve_cphf_phase(
+                natoms,
+                prep.nbasis(),
+                &[nocc],
+                naux,
+            )?)
+        }
+        None => None,
+    };
     // Four-centre skeleton: only the parts of Gamma that stayed exact. RI-J
     // keeps Gamma_K = -1/4 D_mula D_nusg, RI-K keeps Gamma_J = 1/2 D_munu D_lasg;
     // with both fitted there is no four-centre term at all.

@@ -78,6 +78,23 @@ pub(super) fn uhf_hessian_parts_with(
         }
         _ => None,
     };
+    // The RI-K terms released their reservation on return but their outputs
+    // stay alive through the first-order Fock matrices and the CPHF: charge
+    // that phase (a typed error when it does not fit the pool).
+    let _cphf_charge = match route_k {
+        Some(r) => {
+            let name = r.k_aux.as_deref().unwrap_or_default();
+            let naux = crate::df_gradient::aux_basis(mol, name)?.nbasis();
+            let noccs: Vec<usize> = nocc.iter().copied().filter(|&m| m > 0).collect();
+            Some(crate::hessian_df_k::reserve_cphf_phase(
+                natoms,
+                prep.nbasis(),
+                &noccs,
+                naux,
+            )?)
+        }
+        None => None,
+    };
     // A spin with no electrons has no channel; its K^x is zero.
     let channel_of_spin = |sp: usize| -> Option<usize> {
         if sp == 1 && uhf_mutants.drop_beta_channel {

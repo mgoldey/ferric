@@ -48,11 +48,11 @@ fn assert_documented(label: &str, got: usize, documented: f64) {
 #[test]
 fn the_two_channel_charge_gates_the_run_and_the_probe() {
     // --- the documented numbers and the scaling (no pool involved) ----------
-    // One channel is the closed-shell estimate, bit for bit.
-    assert_eq!(
-        rik_peak_bytes_channels(30, 300, &[60], 1500),
-        rik_peak_bytes(30, 300, 60, 1500)
-    );
+    // The closed-shell estimate is pinned against an explicit number (9.9122
+    // GB; the same value is documented in df_hessian_rik_memory.rs), and the
+    // one-channel call of the general function must reproduce it.
+    assert_eq!(rik_peak_bytes(30, 300, 60, 1500), 9_912_240_000);
+    assert_eq!(rik_peak_bytes_channels(30, 300, &[60], 1500), 9_912_240_000);
     // UHF doublet NH2 cc-pVDZ / def2-universal-jkfit shape (3 atoms, 24 basis
     // functions, 4 + 3 occupied, 113 auxiliary functions): two channels cost
     // more than the larger one alone.
@@ -67,13 +67,13 @@ fn the_two_channel_charge_gates_the_run_and_the_probe() {
     assert!(
         rik_peak_bytes_channels(5, 200, &[2, 8], 100) > rik_peak_bytes_channels(5, 200, &[2], 100)
     );
-    assert_documented("NH2 two channels (4 + 3)", two, 2.6340e6);
+    assert_documented("NH2 two channels (4 + 3)", two, 2.9751e6);
     // 30-atom shape of the closed-shell documentation with an unrestricted
     // pair of channels (60 + 59 occupied).
     assert_documented(
         "30 atoms, 300 bf, m = 60 + 59, A = 1500",
         rik_peak_bytes_channels(30, 300, &[60, 59], 1500),
-        9.8244e9,
+        9.9122e9,
     );
     // N^4 growth with the per-atom shape A = 50 N, n = 10 N, m = 2 N (+/- 1).
     let at = |n: usize| rik_peak_bytes_channels(n, 10 * n, &[2 * n, 2 * n - 1], 50 * n) as f64;
@@ -308,14 +308,12 @@ fn bound_check(
 #[test]
 #[ignore = "measurement: peak allocation of the RI-K terms against the charge (counting allocator); measured 31 s (box load ~8)"]
 fn the_charge_bounds_the_measured_peak_allocation() {
-    // Hypothesis (right): the peak live allocation of the call stays below
-    // charge + raw three-index tensor + a small allowance for per-thread
-    // engine buffers, i.e. the documented peak is an upper bound of what the
-    // call allocates. Artifact (estimate too small): the measured peak exceeds
-    // it; the ratio is reported either way. The allowance is the
-    // thread count times a per-thread engine/partial buffer, measured as the
-    // difference between the 1- and N-thread runs when this test is run with
-    // RAYON_NUM_THREADS=1 and without.
+    // Hypothesis (right): the peak live allocation of the RI-K terms stays below
+    // charge + raw three-index tensor (slack 0: the estimate carries its own
+    // allowance, and no per-thread allowance is needed, 1 and 6 threads differ
+    // by under 1 MB), i.e. the documented peak bounds what the call allocates.
+    // Artifact (estimate too small): the measured peak exceeds it; the ratio is
+    // reported either way. The whole-Hessian (CPHF) measurement is the next test.
     if ferric_integrals::engine::libint_max_deriv_order() < 1 {
         eprintln!("SKIP: libint2 without first derivatives");
         return;
@@ -354,4 +352,61 @@ fn the_charge_bounds_the_measured_peak_allocation() {
         &[3, 30],
         0,
     );
+}
+
+fn whole_hessian_peak(label: &str, basis_name: &str, aux: &str) {
+    use ferric_scf::hessian::uhf_hessian_parts;
+    use ferric_scf::screening::SchwarzBounds;
+    use ferric_scf::uhf::solve_uhf;
+    let xyz = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../testdata/molecules/validation/allyl.xyz"
+    ))
+    .expect("allyl.xyz");
+    let mol = Molecule::parse_xyz(&xyz, 0, 2).unwrap();
+    let prep = PreparedBasis::new(&mol, &basis::bundled(basis_name).unwrap()).unwrap();
+    let auxbs = PreparedBasis::new(&mol, &basis::bundled(aux).unwrap()).unwrap();
+    let (n, naux, natoms) = (prep.nbasis(), auxbs.nbasis(), mol.atoms.len());
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    let cfg = RhfConfig {
+        max_iter: 300,
+        df_j_aux: Some(aux.into()),
+        df_k_aux: Some(aux.into()),
+        ..Default::default()
+    };
+    let ctx = ParallelContext::default();
+    let uhf = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
+    let nelec = mol.nelec() as usize;
+    let occ = [nelec.div_ceil(2), nelec / 2];
+    let est = rik_peak_bytes_channels(natoms, n, &occ, naux);
+    let raw = 8 * naux * n * n;
+    let t = std::time::Instant::now();
+    let (res, peak) =
+        peak_allocation_of(|| uhf_hessian_parts(&ctx, &mol, &prep, op, &bounds, &uhf, &cfg));
+    drop(res.unwrap());
+    eprintln!(
+        "{label}: {natoms} atoms, n = {n}, A = {naux} (A/n = {:.1}), m = {occ:?}: estimate {est} B + raw {raw} B, \
+         measured whole-Hessian peak {peak} B = {:.2}x (estimate + raw), {:.1} s",
+        naux as f64 / n as f64,
+        peak as f64 / (est + raw) as f64,
+        t.elapsed().as_secs_f64()
+    );
+    assert!(
+        peak <= est + raw,
+        "{label}: whole-Hessian peak {peak} B exceeds estimate {est} + raw {raw}"
+    );
+}
+
+#[test]
+#[ignore = "measurement: peak allocation of the WHOLE UHF Hessian (RI-JK, CPHF included) against the estimate (counting allocator)"]
+fn the_estimate_bounds_the_measured_whole_hessian_allocation() {
+    if ferric_integrals::engine::libint_max_deriv_order() < 2 {
+        eprintln!("SKIP: libint2 without second derivatives");
+        return;
+    }
+    // A >> n (jkfit) and A ~ n (a small fit on a larger basis, where the n^2
+    // terms dominate).
+    whole_hessian_peak("allyl 6-31G / jkfit", "6-31g", "def2-universal-jkfit");
+    whole_hessian_peak("allyl def2-TZVP / cc-pVDZ-RI", "def2-tzvp", "cc-pvdz-ri");
 }
