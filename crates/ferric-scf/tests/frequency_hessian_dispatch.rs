@@ -189,15 +189,16 @@ fn ri_j_with_exact_k_is_analytic_where_the_engines_exist_and_falls_back_otherwis
 
 #[test]
 fn ri_k_is_analytic_alone_and_with_ri_j_and_matches_fd() {
-    // RI-K (exact J) needs the four-centre second-derivative engines for its
-    // exact Coulomb skeleton; RI-J + RI-K needs none (every two-electron
-    // term is a DF stencil or a DF builder). Either branch checks the
-    // frequencies against finite differences of the DF gradient.
+    // Both routes need a libint with second derivatives (one-electron and
+    // overlap skeletons; RI-K with exact J also the four-centre Coulomb
+    // skeleton). On a first-derivative libint the probe refuses and Auto runs
+    // finite differences; either branch checks the frequencies against finite
+    // differences of the DF gradient.
     let bs = basis::bundled("sto-3g").unwrap();
     let prep = PreparedBasis::new(&water(), &bs).unwrap();
-    for (what, j_aux, expect_wheel) in [
-        ("RI-K, exact J", String::new(), false),
-        ("RI-J + RI-K", "def2-universal-jkfit".to_string(), true),
+    for (what, j_aux) in [
+        ("RI-K, exact J", String::new()),
+        ("RI-J + RI-K", "def2-universal-jkfit".to_string()),
     ] {
         let scf = RhfConfig {
             df_j_aux: Some(j_aux),
@@ -220,7 +221,6 @@ fn ri_k_is_analytic_alone_and_with_ri_j_and_matches_fd() {
             }
             Err(e) => {
                 eprintln!("{what}: probe refused on this libint: {e}");
-                assert!(!expect_wheel, "{what}: must be available on any libint");
                 assert_eq!(auto.hessian_source, HessianSource::FiniteDifference);
             }
         }

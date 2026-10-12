@@ -99,8 +99,9 @@
 //! exchange skeletons, `J^x` and `K^x` replace the matching parts of `F^x`, and
 //! the CPHF uses the SCF's own `DfJ` / `DfK` for the matching parts of `G`;
 //! every other term and the solver are the exact-integral ones. With both
-//! fitted no four-centre integral is differentiated at all, so that case needs
-//! no four-centre second-derivative engine. Second derivatives of the three-
+//! fitted no four-centre integral is differentiated at all, but the one-electron
+//! and overlap second derivatives still need a libint2 with second derivatives
+//! (so the probe answer is the same as for the exact path). Second derivatives of the three-
 //! and two-index integrals come from a stencil of their first-derivative
 //! blocks, so no new libint2 derivative order is needed beyond the four-centre
 //! one the remaining exact skeleton already uses. A metric with an eigenvalue
@@ -1008,26 +1009,15 @@ pub fn analytic_uhf_hessian_available(
     available(Reference::Uhf, mol, prep, op, config)
 }
 
-/// With both J and K fitted no four-centre integral is differentiated twice
-/// (the skeleton is the DF stencil, the first-order Fock matrices the DF
-/// builders), so the four-centre second-derivative engine is not required.
-fn fully_fitted(reference: Reference, config: &RhfConfig) -> bool {
-    let named = |n: &Option<String>| n.as_deref().is_some_and(|v| !v.is_empty());
-    reference == Reference::Rhf && named(&config.df_j_aux) && named(&config.df_k_aux)
-}
-
-/// Build the one- and (when `four_centre`) two-electron second-derivative
-/// engines: the probe of `available`.
-fn second_derivative_engines(
-    prep: &PreparedBasis,
-    op: Operator,
-    four_centre: bool,
-) -> Result<(), FerricError> {
+/// Build the one-electron and four-centre second-derivative engines: the
+/// probe of `available`. The one-electron and overlap skeletons need them for
+/// every route; the four-centre engine is built even when J and K are both
+/// fitted (it shares its angular-momentum limit with the one-body engines in
+/// every shipped libint, so skipping it would never change the answer).
+fn second_derivative_engines(prep: &PreparedBasis, op: Operator) -> Result<(), FerricError> {
     Engine::new_1e_deriv2(ffi::OP_NUCLEAR, prep, 1e-14)?;
     Engine::new_1e_deriv2(ffi::OP_OVERLAP, prep, 1e-14)?;
-    if four_centre {
-        Engine::new_2e_deriv2(op, prep, 1e-14)?;
-    }
+    Engine::new_2e_deriv2(op, prep, 1e-14)?;
     Ok(())
 }
 
@@ -1049,7 +1039,7 @@ fn available(
         return Err(refusal(reference, what));
     }
     ri_engine_check(reference, mol, prep, op, config)?;
-    let engines = second_derivative_engines(prep, op, !fully_fitted(reference, config));
+    let engines = second_derivative_engines(prep, op);
     engines.map(|_| ()).map_err(|e| {
         FerricError::General(format!(
             "analytic {} Hessian: libint2 cannot build second-derivative engines for \

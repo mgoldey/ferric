@@ -503,7 +503,9 @@ fn full_hessian_matches_fd_of_df_gradient_631g() {
 
 #[test]
 fn full_hessian_with_ri_j_and_ri_k_matches_fd_631g() {
-    if !has_deriv1() {
+    // The Hessian needs the one-electron/overlap second derivatives, which the
+    // shipped first-derivative libint lacks (as for every analytic Hessian).
+    if !has_deriv2() {
         return;
     }
     check_full(&water(), "6-31g", "cc-pvdz-ri", "cc-pvdz-ri", BAR_OWN);
@@ -906,9 +908,8 @@ fn unsupported_exchange_fitting_configurations_are_refused() {
     if has_deriv2() {
         analytic_hessian_available(&s.mol, &s.prep, op, &s.cfg).expect("available");
     }
-    // With both J and K fitted no four-centre second derivative is needed, so
-    // the probe passes on ANY libint with first derivatives.
-    if has_deriv1() {
+    // Both fitted: same probe (the one-electron second derivatives are needed).
+    if has_deriv2() {
         analytic_hessian_available(
             &s.mol,
             &s.prep,
@@ -1086,7 +1087,7 @@ fn full_hessian_matches_fd_of_df_gradient_def2svp_jkfit() {
 #[test]
 #[ignore = "slow: water cc-pVDZ RI-J + RI-K (both jkfit) own-gradient FD; measured 16 s (box load ~8)"]
 fn full_hessian_matches_fd_of_df_gradient_ccpvdz_ri_jk() {
-    if !has_deriv1() {
+    if !has_deriv2() {
         return;
     }
     check_full(
