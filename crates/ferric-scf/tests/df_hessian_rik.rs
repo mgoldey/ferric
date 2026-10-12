@@ -1450,7 +1450,7 @@ fn scan_row(aux: &str) {
 }
 
 #[test]
-#[ignore = "slow: RI-K accuracy above cond 1e8 with the RI-J analogue; see the measured times in the module notes"]
+#[ignore = "slow: RI-K accuracy above cond 1e8 with the RI-J analogue and two FD references; measured 124 s (box load ~8)"]
 fn accuracy_above_the_warning_threshold() {
     // Hypothesis (physics): the Hessian is the derivative of the energy, so its
     // error is the FD reference's noise plus roundoff ~ eps*cond(V); the RI-J
@@ -1489,7 +1489,7 @@ fn dense_columns(n: usize, m: usize) -> Array2<f64> {
 }
 
 #[test]
-#[ignore = "slow: K and J skeleton accuracy on twin-augmented fitting bases above cond 1e8; fixed-density FD of the DF gradient"]
+#[ignore = "slow: K and J skeleton accuracy on twin-augmented fitting bases above cond 1e8; fixed-density FD of the DF gradient; measured 50 s (box load ~8)"]
 fn skeleton_accuracy_on_near_dependent_fitting_bases() {
     // Fixed density, no SCF: the K skeleton against the FD of df_jk_gradient
     // (RI-K channel) at two steps, and the RI-J skeleton against the FD of the
