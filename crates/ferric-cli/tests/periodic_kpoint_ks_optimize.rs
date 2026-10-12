@@ -31,7 +31,10 @@ use std::process::{Command, Output};
 
 const A_BOHR: f64 = 5.0;
 const OMEGA: f64 = 0.8;
-const CUTOFF_BOHR: f64 = 10.0;
+/// Explicit, NOT the default (max(10, covering bound) Bohr): a mutant below drops it and
+/// moves the force by ~3e-6 (>> BAR), and 10 Bohr would also cross a ~9e-11 Ha
+/// one-step energy discontinuity under a finite displacement.
+const CUTOFF_BOHR: f64 = 14.0;
 const N_RADIAL: usize = 40;
 const N_ANGULAR: usize = 110;
 
@@ -188,6 +191,8 @@ struct Lib<'a> {
     mesh: [usize; 3],
     exxdiv_scf: ExxDiv,
     rsgdf: bool,
+    /// Hand the explicit neighbour cutoff to the grid (false = the default).
+    cutoff: bool,
 }
 
 /// Library force at `atoms_bohr`, with `exxdiv_force` handed to the force (the
@@ -223,7 +228,7 @@ fn try_library_gradient(
         c.krhf.rsgdf.gdf.sr_column_rotation = SrColumnRotation::on();
     }
     let mut grid = PeriodicGridConfig::with_size(N_RADIAL, N_ANGULAR);
-    grid.neighbour_cutoff = Some(CUTOFF_BOHR);
+    grid.neighbour_cutoff = lib.cutoff.then_some(CUTOFF_BOHR);
     c.grid = grid.clone();
     let (r, kept) = solve_krks_keep(&cell, &prep, aux.as_ref(), &mesh, &c).expect("scf");
     assert!(r.scf.converged);
@@ -250,7 +255,7 @@ fn try_library_gradient(
 }
 
 /// Printed geometry has 8 Angstrom decimals; the force moves by ~k*1e-8 over it.
-const BAR: f64 = 5e-7;
+const BAR: f64 = 5e-8;
 const LOOSE: &str = "g_max_thresh = 1.0\ng_rms_thresh = 1.0\ne_conv = 1.0\nmax_steps = 3";
 const H2_OFFAXIS: [[f64; 3]; 2] = [[0.3, 0.2, 0.1], [0.35, 0.12, 1.5]];
 const DENSE: &str = "jk = \"dense\"";
@@ -300,6 +305,7 @@ fn printed_force_equals_the_library_force_for_a_global_hybrid_with_mutants() {
         mesh: [1, 1, 3],
         exxdiv_scf: ExxDiv::Ewald,
         rsgdf: false,
+        cutoff: true,
     };
     assert!(
         g.iter().fold(0.0_f64, |m, v| m.max(v.abs())) > 1e-3,
@@ -328,6 +334,19 @@ fn printed_force_equals_the_library_force_for_a_global_hybrid_with_mutants() {
         ExxDiv::Ewald,
     );
     assert!(max_diff(&g, &bad) > 1e-4, "functional mutant not detected");
+    // MUTANT: the explicit neighbour cutoff dropped (the default is not 14
+    // Bohr): ~3e-6, far above the bar that BAR sets.
+    let bad = library_gradient(
+        &at,
+        Lib {
+            cutoff: false,
+            ..lib
+        },
+        ExxDiv::Ewald,
+    );
+    let miss = max_diff(&g, &bad);
+    eprintln!("cutoff mutant miss: {miss:.2e}");
+    assert!(miss > 10.0 * BAR, "cutoff mutant not detected: {miss:e}");
     // ARTIFACT HYPOTHESIS: for a closed-shell system the exxdiv shift is uniform
     // on the occupied space, so it moves the energy by a constant and leaves
     // the density and the force unchanged: an SCF run with exxdiv = none gives
@@ -359,6 +378,7 @@ fn printed_force_equals_the_library_force_for_a_gga() {
         mesh: [1, 1, 3],
         exxdiv_scf: ExxDiv::Ewald,
         rsgdf: false,
+        cutoff: true,
     };
     assert!(
         g.iter().fold(0.0_f64, |m, v| m.max(v.abs())) > 1e-3,
@@ -381,6 +401,7 @@ fn printed_force_equals_the_library_force_with_rsgdf_jk() {
         mesh: [1, 1, 2],
         exxdiv_scf: ExxDiv::Ewald,
         rsgdf: true,
+        cutoff: true,
     };
     assert!(
         g.iter().fold(0.0_f64, |m, v| m.max(v.abs())) > 1e-3,
@@ -423,6 +444,7 @@ fn a_real_optimization_converges_and_the_final_force_is_the_library_force() {
         mesh: [1, 1, 3],
         exxdiv_scf: ExxDiv::Ewald,
         rsgdf: false,
+        cutoff: true,
     };
     let d = max_diff(&g, &library_gradient(&atoms, lib, ExxDiv::Ewald));
     assert!(d < BAR, "{d:e}");
@@ -478,6 +500,20 @@ fn unsupported_kohn_sham_routes_are_refused_with_exact_messages() {
             "[cell] gdf_omega = \"auto\" is calibrated for the Gamma-point build; with kmesh \
              set a number"
         ),
+        "{e}"
+    );
+}
+
+#[test]
+fn a_non_converging_scf_step_is_a_typed_error_not_a_force() {
+    // [scf] max_iter = 2 cannot converge the k-point KS SCF: the optimize step
+    // must stop with the library's convergence error, never differentiate an
+    // unconverged density. (`[scf]` is appended after `[optimize]`.)
+    let mut i = loose_input("noconv", "PBE0", "[1, 1, 2]", DENSE);
+    i.optimize = "max_steps = 3\n[scf]\nmax_iter = 2";
+    let e = refused(&run(&i), "noconv");
+    assert!(
+        e.contains("solve_krks: PBE0 SCF did not converge in 2 iterations"),
         "{e}"
     );
 }

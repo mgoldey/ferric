@@ -2544,7 +2544,12 @@ fn run_uhf_kpts(
 /// names what k-point KS-DFT does not support yet. Widen it together with
 /// the driver (open shell, meta-GGA, range-separated hybrids and stress are
 /// the known gaps). Called before any integral is built.
-fn check_kpoint_ks_support(fname: &str, functional: &str, with_stress: bool) -> PyResult<()> {
+fn check_kpoint_ks_support(
+    fname: &str,
+    functional: &str,
+    with_gradient: bool,
+    with_stress: bool,
+) -> PyResult<()> {
     if with_stress {
         return Err(val_err(format!(
             "{fname}: with_stress is not implemented for k-point Kohn-Sham (the analytic \
@@ -2559,7 +2564,13 @@ fn check_kpoint_ks_support(fname: &str, functional: &str, with_stress: bool) -> 
                 "{fname}: functional {functional:?}: {e}. k-point RKS supports LDA, GGA \
                  and global-hybrid functionals only"
             ))
-        })
+        })?;
+    // The force has its own allowlist, independent of the energy gate above.
+    if with_gradient {
+        ferric_pbc::kxcgrad::check_force_functional(functional)
+            .map_err(|e| val_err(format!("{fname}: with_gradient: {e}")))?;
+    }
+    Ok(())
 }
 
 /// Result of `run_rks_kpts`. Energies per cell, Hartree.
@@ -2719,7 +2730,7 @@ fn run_rks_kpts(
     gdf_omega: Option<f64>,
 ) -> PyResult<PyKpointRksResult> {
     let fname = "run_rks_kpts";
-    check_kpoint_ks_support(fname, functional, with_stress)?;
+    check_kpoint_ks_support(fname, functional, with_gradient, with_stress)?;
     let mut s = pbc_setup(&PbcArgs {
         fname,
         mol,

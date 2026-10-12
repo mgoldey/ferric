@@ -1426,11 +1426,13 @@ fn k_energy_and_gradient(
         }
         PeriodicRoute::Rks => {
             let c = krks_config(plan, s);
-            let (r, kept) = solve_krks_keep(&s.cell, &s.prep, s.aux.as_ref(), &mesh, &c)?;
-            if !r.scf.converged {
-                return Err(not_converged(r.scf.iterations, r.scf.energy));
-            }
             let functional = plan.functional.as_deref().unwrap_or("LDA");
+            // The force's own allowlist (LDA / GGA / global hybrid), independent
+            // of the energy gate in `check_kpoint_support`.
+            ferric_pbc::kxcgrad::check_force_functional(functional)?;
+            let (r, kept) = solve_krks_keep(&s.cell, &s.prep, s.aux.as_ref(), &mesh, &c)?;
+            // `solve_krks_keep` itself errors on a non-converged SCF, so no
+            // `converged` check is needed here (unlike the HF arms).
             // The force rebuilds the energy's own grid, AO truncation and
             // exxdiv (a hybrid's exact exchange feels the Madelung shift).
             let rcfg = KRksGradConfig {

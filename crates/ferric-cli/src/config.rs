@@ -5320,7 +5320,15 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
             // The other k-point routes (UKS, ROKS, ROHF, meta-GGA, range-separated
             // hybrids) are refused at the energy level (`check_kpoint_support`)
             // or are correlated (refused above), so k-point RHF, UHF and
-            // closed-shell RKS are what reach this point.
+            // closed-shell RKS are what reach this point. The force has its own
+            // functional allowlist, independent of the energy gate, so widening
+            // the k-point energy path cannot silently enable an optimize.
+            if kpoints && route == PeriodicRoute::Rks {
+                let f = functional.as_deref().unwrap_or("LDA");
+                ferric_pbc::kxcgrad::check_force_functional(f).map_err(|e| {
+                    format!("method.task = \"optimize\" with [cell] kmesh: {e}")
+                })?;
+            }
             if let Some(s) = cfg.optimize.coordinates.as_deref() {
                 if parse_coord_system(s)? != ferric_scf::optimize::CoordSystem::Cartesian {
                     return Err(
@@ -5734,6 +5742,23 @@ kind = "ccsd"
                 assert_eq!(p.route, PeriodicRoute::Rks, "{f} {cell}");
                 assert_eq!(p.functional.as_deref(), Some(f), "{f} {cell}");
             }
+        }
+    }
+
+    #[test]
+    fn k_point_force_allowlist_is_independent_of_the_energy_gate() {
+        // The force entry points (CLI optimize gate, Python with_gradient)
+        // consult `check_force_functional`, not the energy resolver: only LDA,
+        // GGA and global hybrids pass, so widening the energy gate cannot
+        // silently enable a meta-GGA / range-separated force.
+        for f in ["LDA", "PBE", "BLYP", "PBE0", "B3LYP"] {
+            ferric_pbc::kxcgrad::check_force_functional(f).unwrap_or_else(|e| panic!("{f}: {e}"));
+        }
+        for f in ["SCAN", "r2SCAN", "HSE06", "wB97X-V", "wB97X-L-V"] {
+            assert!(
+                ferric_pbc::kxcgrad::check_force_functional(f).is_err(),
+                "{f} must not pass the force allowlist"
+            );
         }
     }
 

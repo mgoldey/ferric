@@ -903,6 +903,30 @@ pub(crate) fn hermitize(m: &Array2<C64>) -> Array2<C64> {
     (m + &h).mapv(|z| z * 0.5)
 }
 
+/// The explicit force allowlist of the Python and CLI force entry points:
+/// LDA, GGA and GLOBAL hybrid functionals only (every component a `Lda`, `Gga`
+/// or `HybridGga` libxc family, no range separation, no VV10). Independent of
+/// what the ENERGY gate accepts, so widening the energy path (e.g. to k-point
+/// meta-GGA) cannot silently enable a force without widening this list.
+pub fn check_force_functional(functional: &str) -> Result<(), FerricError> {
+    let (xc, _exx, rsh) = resolve_periodic_functional_rsh(functional)?;
+    let covered = rsh.is_none()
+        && xc.funcs.iter().all(|f| {
+            matches!(
+                f.family(),
+                FunctionalFamily::Lda | FunctionalFamily::Gga | FunctionalFamily::HybridGga
+            )
+        });
+    if covered {
+        Ok(())
+    } else {
+        Err(FerricError::General(format!(
+            "{functional}: the k-point Kohn-Sham force covers LDA, GGA and global-hybrid \
+             functionals only"
+        )))
+    }
+}
+
 /// Resolve the functional and its global exact-exchange fraction `a`; refuse
 /// what the force does not cover (range-separated hybrids, meta-GGA, VV10 and
 /// double hybrids). Meta-GGA is refused here on purpose: the closed-shell
