@@ -177,7 +177,7 @@ fn water() -> Molecule {
     Molecule::parse_xyz(WATER_DISTORTED, 0, 1).unwrap()
 }
 
-/// Exact J/K, tight convergence. (The UHF Hessian refuses RI; RHF RI-J is in df_hessian_rij.rs.)
+/// Exact J/K, tight convergence. (UHF with RI-J/RI-K is in df_hessian_uhf.rs.)
 fn scf_config() -> RhfConfig {
     RhfConfig {
         max_iter: 300,

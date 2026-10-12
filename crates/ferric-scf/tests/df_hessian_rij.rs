@@ -89,8 +89,8 @@ fn water() -> Molecule {
 fn scf_config(aux: &str) -> RhfConfig {
     RhfConfig {
         max_iter: 200,
-        energy_conv: 1e-12,
-        density_conv: 1e-10,
+        energy_conv: 1e-14,
+        density_conv: 1e-12,
         df_j_aux: Some(aux.to_string()),
         df_k_aux: Some(String::new()),
         ..Default::default()
@@ -788,11 +788,14 @@ fn trivial_limit_exact_span_631g() {
 //
 // BAR_OWN is the agreement bar of the production Hessian against the central
 // FD (Richardson, h = 2e-3 / 1e-3) of ferric's own analytic DF gradient with
-// re-converged SCFs. Production floors measured 2026-10-11 (release): water
-// STO-3G/jkfit 4.4e-11, 6-31G/cc-pVDZ-RI 1.6e-10, cc-pVDZ/cc-pVDZ-RI 9.1e-11,
-// def2-SVP/jkfit 3.0e-9 (worst), NH3 cc-pVDZ/cc-pVDZ-RI 1.1e-9. The closest
-// mutant is the stencil step x10 at 4.0e-7, which must exceed 10 bars. The bar
-// 1e-8 is 3.3x above the worst production floor and 4x below that mutant / 10.
+// re-converged SCFs (energy_conv 1e-14 / density_conv 1e-12). Production
+// floors measured (release): water STO-3G/jkfit 9.2e-11, 6-31G/cc-pVDZ-RI
+// 1.2e-10, cc-pVDZ/cc-pVDZ-RI 3.3e-10, NH3 cc-pVDZ/cc-pVDZ-RI 1.2e-10,
+// def2-SVP/jkfit 4.2e-10 (worst). With displaced SCFs converged only to
+// 1e-12 / 1e-10 the def2-SVP and NH3 floors read 3.0e-9 and 1.1e-9: the FD
+// reference's own SCF noise. The closest mutant is the stencil step x10 at
+// 4.0e-7, which must exceed 10 bars. The bar 1e-8 is 24x above the worst
+// production floor and 4x below that mutant / 10.
 // Every mutant must miss the production Hessian by more than 10 bars.
 const BAR_OWN: f64 = 1e-8;
 
@@ -965,8 +968,8 @@ fn mutated_aux_jx_fails_the_dfj_finite_difference_test() {
 #[test]
 fn unsupported_density_fitted_configurations_are_refused() {
     use ferric_scf::hessian::{
-        analytic_hessian_available, analytic_uhf_hessian_available, rhf_hessian_preflight,
-        uhf_hessian_preflight,
+        analytic_hessian_available, analytic_rohf_hessian_available, rhf_hessian_preflight,
+        rohf_hessian_preflight, uhf_hessian_preflight,
     };
     let s = setup(&water(), "sto-3g", "def2-universal-jkfit");
     let ctx = ParallelContext::default();
@@ -975,14 +978,16 @@ fn unsupported_density_fitted_configurations_are_refused() {
         rhf_hessian(&ctx, &s.mol, &s.prep, op, &s.bounds, rhf, cfg)
     };
     // RI-K requested in the configuration is supported for closed-shell RHF
-    // (tests/df_hessian_rik.rs) and refused for open-shell references.
+    // (tests/df_hessian_rik.rs) and UHF (tests/df_hessian_uhf.rs) and refused
+    // for ROHF.
     let ri_k = RhfConfig {
         df_k_aux: Some("def2-universal-jkfit".into()),
         ..scf_config("def2-universal-jkfit")
     };
     rhf_hessian_preflight(op, &ri_k).expect("RHF RI-J + RI-K preflight");
-    let e = uhf_hessian_preflight(op, &ri_k).unwrap_err().to_string();
-    eprintln!("UHF RI-K config: {e}");
+    uhf_hessian_preflight(op, &ri_k).expect("UHF RI-J + RI-K preflight");
+    let e = rohf_hessian_preflight(op, &ri_k).unwrap_err().to_string();
+    eprintln!("ROHF RI-K config: {e}");
     assert!(e.contains("RI"), "{e}");
     // A route that fitted exchange although the configuration did not.
     let mut with_k = s.rhf.clone();
@@ -1001,10 +1006,12 @@ fn unsupported_density_fitted_configurations_are_refused() {
         .unwrap_err()
         .to_string()
         .contains("range-separated"));
-    // Open-shell reference with RI-J.
-    let e = uhf_hessian_preflight(op, &s.cfg).unwrap_err().to_string();
-    eprintln!("UHF RI-J config: {e}");
-    assert!(e.contains("RI-J"), "{e}");
+    // ROHF with RI-J is refused; UHF with RI-J is supported
+    // (tests/df_hessian_uhf.rs).
+    let e = rohf_hessian_preflight(op, &s.cfg).unwrap_err().to_string();
+    eprintln!("ROHF RI-J config: {e}");
+    assert!(e.contains("ROHF") && e.contains("RI"), "{e}");
+    uhf_hessian_preflight(op, &s.cfg).expect("UHF RI-J preflight");
     // A result whose aux differs from the configuration's.
     let other = scf_config("cc-pvdz-ri");
     let e = hess(&s.rhf, &other).unwrap_err().to_string();
@@ -1034,8 +1041,8 @@ fn unsupported_density_fitted_configurations_are_refused() {
         hess(&s.rhf, &s.cfg).expect("RI-J + exact K must be supported");
         analytic_hessian_available(&s.mol, &s.prep, op, &s.cfg).expect("available");
     }
-    // UHF probe still refuses the RI-J config.
-    assert!(analytic_uhf_hessian_available(&s.mol, &s.prep, op, &s.cfg).is_err());
+    // The ROHF probe still refuses the RI-J config.
+    assert!(analytic_rohf_hessian_available(&s.mol, &s.prep, op, &s.cfg).is_err());
 }
 
 #[test]

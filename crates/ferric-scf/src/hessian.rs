@@ -90,34 +90,42 @@
 //! not a UHF stationary point. [`analytic_rohf_hessian_available`](crate::hessian::analytic_rohf_hessian_available) is the
 //! pre-SCF probe.
 //!
-//! # Density-fitted J and K (RHF)
+//! # Density-fitted J and K (RHF and UHF)
 //!
-//! Closed-shell RHF with RI-J (`df_j_aux` named), RI-K (`df_k_aux` named) or
-//! both is analytic too, in `crate::hessian_df` (RI-J) and
+//! Closed-shell RHF and UHF with RI-J (`df_j_aux` named), RI-K (`df_k_aux`
+//! named) or both are analytic too, in `crate::hessian_df` (RI-J) and
 //! `crate::hessian_df_k` (RI-K; derivations in their module docs). The fitted
-//! energies `½ dᵀV⁻¹d` and `−¼ Σ_ij L_ij · V⁻¹ L_ij` replace the Coulomb and
-//! exchange skeletons, `J^x` and `K^x` replace the matching parts of `F^x`, and
-//! the CPHF uses the SCF's own `DfJ` / `DfK` for the matching parts of `G`;
-//! every other term and the solver are the exact-integral ones. With both
-//! fitted no four-centre integral is differentiated at all, but the one-electron
-//! and overlap second derivatives still need a libint2 with second derivatives
-//! (so the probe answer is the same as for the exact path). Second derivatives of the three-
-//! and two-index integrals come from a stencil of their first-derivative
-//! blocks, so no new libint2 derivative order is needed beyond the four-centre
-//! one the remaining exact skeleton already uses. A metric with an eigenvalue
-//! below the DF-K cut is refused with a typed error naming the count (RI-K:
-//! those are the modes `DfK` drops, whose truncated energy this does not
-//! differentiate).
+//! energies replace the Coulomb and exchange skeletons, `J^x` and `K^x` replace
+//! the matching parts of `F^x`, and the CPHF uses the SCF's own `DfJ` / `DfK`
+//! for the matching parts of `G`; every other term and the solver are the
+//! exact-integral ones. With both fitted no four-centre integral is
+//! differentiated at all, but the one-electron and overlap second derivatives
+//! still need a libint2 with second derivatives (so the probe answer is the
+//! same as for the exact path). Second derivatives of the three- and two-index
+//! integrals come from a stencil of their first-derivative blocks, so no new
+//! libint2 derivative order is needed beyond the four-centre one the remaining
+//! exact skeleton already uses. A metric with an eigenvalue below the DF-K cut
+//! is refused with a typed error naming the count (RI-K: those are the modes
+//! `DfK` drops, whose truncated energy this does not differentiate).
 //!
-//! Scope: closed-shell RHF (exact four-centre J/K, RI-J, RI-K or both fitted
-//! with the Coulomb operator and no ECP or external potential), UHF (any
-//! multiplicity) and ROHF with exact four-centre Coulomb J/K. Everything else
-//! — KS (ROKS included), range-separated RI-K, RI for UHF/ROHF or combined with
-//! an external potential or an ECP, COSX, ghost atoms, solvation, polarizable
-//! embedding, fractional occupations, cDFT, non-Coulomb operators, and for
-//! ROHF also external potentials and ECPs (validated for RHF/UHF only) — is
-//! refused with a typed error naming the feature (the FD Hessian in
-//! [`crate::frequencies::harmonic_frequencies`] covers those).
+//! UHF: the Coulomb energy `½ dᵀ M d` depends on the TOTAL density only, so the
+//! RI-J terms are the closed-shell ones with `D = D_α + D_β`; the exchange
+//! energy is a sum of one channel per spin, `Σ_σ −½ L^σ·M L^σ` with
+//! `X_σ = C_σ,occ`, over the shared metric inverse, with no cross-spin term; the
+//! coupled α/β CPHF replaces its Coulomb part by `DfJ` on the total response
+//! density and its exchange part by `DfK` on each spin's own response density
+//! (derivation and closed-shell limit in `crate::hessian_df_k`).
+//!
+//! Scope: closed-shell RHF and UHF (any multiplicity) with exact four-centre
+//! J/K, RI-J, RI-K or both fitted with the Coulomb operator, no ECP and no
+//! external potential for the fitted routes; ROHF with exact four-centre
+//! Coulomb J/K. Everything else — KS (ROKS included), range-separated RI-K, RI
+//! for ROHF, RI combined with an external potential or an ECP, COSX, ghost
+//! atoms, solvation, polarizable embedding, fractional occupations, cDFT,
+//! non-Coulomb operators, and for ROHF also external potentials and ECPs
+//! (validated for RHF/UHF only) — is refused with a typed error naming the
+//! feature (the FD Hessian in [`crate::frequencies::harmonic_frequencies`]
+//! covers those).
 //!
 //! Second-derivative integrals need libint2 generated with
 //! `LIBINT2_MAX_DERIV_ORDER >= 2` (conda-forge 2.13.1: AM ≤ 3, i.e. up to f
@@ -129,7 +137,7 @@ use crate::gradient::{
     screened_quartets_with, sum_equivalent_perms, QuartetBlock,
 };
 use crate::hessian_df::RijMutants;
-use crate::hessian_df_k::RikMutants;
+use crate::hessian_df_k::{RikMutants, UhfDfMutants};
 use crate::hessian_ecp::{
     ecp_first_derivative_matrices, ecp_inconsistent, ecp_skeleton_hessian, has_ecp,
     MAX_L as MAX_ECP_HESSIAN_L,
@@ -154,6 +162,8 @@ use ndarray::{s, Array1, Array2, ArrayView2};
 
 mod rohf;
 pub use rohf::{rohf_hessian, rohf_hessian_parts};
+mod uhf_df;
+use uhf_df::uhf_hessian_parts_with;
 
 /// Skeleton 2e screen: a canonical quartet is skipped when
 /// `Q12·Q34·max|D|² < HESS_2E_SCREEN`. Conservative on purpose: the Schwarz
@@ -302,6 +312,20 @@ fn rhf_hessian_parts_with(
             crate::hessian_df_k::rik_terms(mol, prep, r, &x, rik_mutants)
         })
         .transpose()?;
+    // Charge the first-order Fock / CPHF phase that follows the RI-K terms.
+    let _cphf_charge = match route_k {
+        Some(r) => {
+            let name = r.k_aux.as_deref().unwrap_or_default();
+            let naux = crate::df_gradient::aux_basis(mol, name)?.nbasis();
+            Some(crate::hessian_df_k::reserve_cphf_phase(
+                natoms,
+                prep.nbasis(),
+                &[nocc],
+                naux,
+            )?)
+        }
+        None => None,
+    };
     // Four-centre skeleton: only the parts of Gamma that stayed exact. RI-J
     // keeps Gamma_K = -1/4 D_mula D_nusg, RI-K keeps Gamma_J = 1/2 D_munu D_lasg;
     // with both fitted there is no four-centre term at all.
@@ -415,33 +439,18 @@ pub fn uhf_hessian_parts(
     uhf: &ScfResult,
     config: &RhfConfig,
 ) -> Result<UhfHessianParts, FerricError> {
-    check_supported(Reference::Uhf, mol, prep, op, bounds, uhf, config)?;
-    let natoms = mol.atoms.len();
-    let nocc = uhf_occupations(mol);
-    let (da, db) = uhf_spin_densities(uhf)?;
-    let d = da + db;
-    let w = build_energy_weighted_density_uhf(uhf, nocc[0], nocc[1]);
-
-    let extra = extra_charges(config);
-    let nuclear = nuclear_term(mol, config);
-    let one_electron =
-        skeleton_hess_1e(prep, natoms, extra, &d)? + extra_skeleton(mol, prep, config, &d)?;
-    let overlap = skeleton_hess_overlap(prep, natoms, &w)?;
-    let gam = |mu, nu, la, sg| gamma_uhf(&d, da, db, mu, nu, la, sg);
-    let two_electron = skeleton_hess_2e(prep, op, bounds, natoms, max_abs(&d), &gam)?;
-
-    let specs = [da, db].map(|ds| FockSpec {
-        coulomb: &d,
-        exchange: ds,
-        k_scale: 1.0,
-    });
-    let mut first = first_order_ao(prep, op, bounds, natoms, extra, &specs)?;
-    add_extra_first_order(&mut first, mol, prep, config)?;
-    let resp = ucphf_response(ctx, prep, bounds, uhf, nocc, &first)?;
-    Ok(parts_from_terms(
-        [nuclear, one_electron, overlap, two_electron],
-        resp,
-    ))
+    uhf_hessian_parts_with(
+        ctx,
+        mol,
+        prep,
+        op,
+        bounds,
+        uhf,
+        config,
+        &RijMutants::default(),
+        &RikMutants::default(),
+        &UhfDfMutants::default(),
+    )
 }
 
 /// Building blocks of the ROHF Hessian that the integration tests contract with
@@ -569,8 +578,39 @@ pub mod rij_support {
         RijMutants, RijTerms,
     };
     pub use crate::hessian_df_k::{
-        rik_first, rik_terms, rik_terms_with_aux, RikFirst, RikMutants, RikTerms,
+        rik_channel_terms, rik_channel_terms_with_aux, rik_first, rik_terms, rik_terms_with_aux,
+        RikChannel, RikChannelFock, RikChannelTerms, RikFirst, RikMutants, RikTerms, UhfDfMutants,
+        RIK_ALPHA_SPIN,
     };
+
+    /// [`uhf_hessian_parts`] with the density-fitting constructions of the
+    /// three mutant sets applied.
+    #[allow(clippy::too_many_arguments)]
+    pub fn uhf_hessian_parts_mutated(
+        ctx: &ParallelContext,
+        mol: &Molecule,
+        prep: &PreparedBasis,
+        op: Operator,
+        bounds: &SchwarzBounds,
+        uhf: &ScfResult,
+        config: &RhfConfig,
+        rij: &RijMutants,
+        rik: &RikMutants,
+        uhf_mutants: &UhfDfMutants,
+    ) -> Result<UhfHessianParts, FerricError> {
+        uhf_hessian_parts_with(
+            ctx,
+            mol,
+            prep,
+            op,
+            bounds,
+            uhf,
+            config,
+            rij,
+            rik,
+            uhf_mutants,
+        )
+    }
 
     /// Exact four-centre J skeleton `Σ ½ D_μν D_λσ ∂²(μν|λσ)` at fixed `d`
     /// (the term the RI-J skeleton replaces), for the exactness anchors.
@@ -746,7 +786,7 @@ impl Reference {
     fn scope(self) -> &'static str {
         match self {
             Reference::Rhf => "closed-shell RHF with exact four-centre J/K, RI-J and/or RI-K",
-            Reference::Uhf => "UHF of any multiplicity with exact four-centre Coulomb J/K only",
+            Reference::Uhf => "UHF of any multiplicity with exact J/K, RI-J and/or RI-K",
             Reference::Rohf => "ROHF with exact four-centre Coulomb J/K only",
         }
     }
@@ -850,7 +890,7 @@ fn check_supported(
 }
 
 /// Why `res`'s density-fitting route is refused (`None` = exact SCF, or the
-/// supported RI-J and/or RI-K for closed-shell RHF, consistent with the
+/// supported RI-J and/or RI-K for closed-shell RHF and UHF, consistent with the
 /// configuration and without an ECP).
 fn df_route_refusal(
     reference: Reference,
@@ -861,8 +901,8 @@ fn df_route_refusal(
 ) -> Option<String> {
     let route = crate::gradient::active_df_route(res)?;
     let clean = |s: &Option<String>| s.clone().filter(|v| !v.is_empty());
-    if reference != Reference::Rhf {
-        return Some("a density-fitted SCF (RI J/K) for an open-shell reference".into());
+    if reference == Reference::Rohf {
+        return Some("a density-fitted SCF (RI J/K) for an ROHF reference".into());
     }
     if route.rsh_k.is_some() {
         return Some("a range-separated density-fitted exchange SCF".into());
@@ -1054,7 +1094,7 @@ fn available(
     })
 }
 
-/// RI-J and/or RI-K (RHF only; the other references were refused by the
+/// RI-J and/or RI-K (RHF and UHF; ROHF was refused by the
 /// preflight): the pre-SCF checks that need the molecule and the fitting basis,
 /// so that `Auto` falls back to finite differences instead of failing after the
 /// SCF. The first-derivative three- and two-centre engines for each named
@@ -1117,15 +1157,24 @@ fn rik_memory_probe(
     prep: &PreparedBasis,
     naux: usize,
 ) -> Result<(), FerricError> {
-    let nocc = (mol.nelec() / 2) as usize;
-    let bytes = crate::hessian_df_k::rik_peak_bytes(mol.atoms.len(), prep.nbasis(), nocc, naux);
+    // One channel per spin for UHF (α and β occupied counts), one for RHF.
+    let noccs: Vec<usize> = match reference {
+        Reference::Uhf => uhf_occupations(mol)
+            .into_iter()
+            .filter(|&m| m > 0)
+            .collect(),
+        _ => vec![(mol.nelec() / 2) as usize],
+    };
+    let nocc = noccs.iter().sum::<usize>();
+    let bytes =
+        crate::hessian_df_k::rik_peak_bytes_channels(mol.atoms.len(), prep.nbasis(), &noccs, naux);
     match ferric_core::memory::pool::try_reserve_global("RI-K Hessian memory probe", bytes) {
         Some(_inert_or_released) => Ok(()),
         None => Err(refusal(
             reference,
             &format!(
                 "an RI-K Hessian whose resident tensors (about {:.2} GB for {} atoms, {} basis \
-                 functions, {} occupied orbitals, {} auxiliary functions) do not fit the memory \
+                 functions, {} occupied orbitals (n_alpha + n_beta for UHF), {} auxiliary functions) do not fit the memory \
                  pool",
                 bytes as f64 / 1e9,
                 mol.atoms.len(),
@@ -1172,9 +1221,9 @@ fn config_refusal(
             "COSX seminumerical exchange",
         ),
         (
-            (named(&config.df_j_aux) || named(&config.df_k_aux)) && reference != Reference::Rhf,
-            "density-fitted J/K (RI) for an open-shell reference (only closed-shell RHF \
-             RI-J/RI-K is analytic)",
+            (named(&config.df_j_aux) || named(&config.df_k_aux)) && reference == Reference::Rohf,
+            "density-fitted J/K (RI) for an ROHF reference (only RHF and UHF RI-J/RI-K are \
+             analytic)",
         ),
         (
             (named(&config.df_j_aux) || named(&config.df_k_aux)) && ext_or_field_present(config),
@@ -2043,6 +2092,9 @@ impl<'a> MoFrame<'a> {
     }
 }
 
+/// A Coulomb matrix and the per-spin exchange matrices.
+type UhfJk = (Array2<f64>, [Array2<f64>; 2]);
+
 /// Exact four-centre two-electron potentials for the CPHF, one engine pool
 /// reused across every iteration.
 struct TwoElectronBuilder<'a> {
@@ -2058,6 +2110,9 @@ struct TwoElectronBuilder<'a> {
     df_k: Option<std::cell::RefCell<crate::df_k::DfK<'static>>>,
     /// Mutation tests only: build `K − ½J` instead of `J − ½K`.
     swap_jk: bool,
+    /// Mutation tests only (UHF): the UHF channel defects of [`UhfDfMutants`]
+    /// that act inside the CPHF kernel.
+    uhf_mutants: UhfDfMutants,
 }
 
 impl<'a> TwoElectronBuilder<'a> {
@@ -2079,6 +2134,7 @@ impl<'a> TwoElectronBuilder<'a> {
             df_j: None,
             df_k: None,
             swap_jk: false,
+            uhf_mutants: UhfDfMutants::default(),
         })
     }
 
@@ -2093,6 +2149,11 @@ impl<'a> TwoElectronBuilder<'a> {
         self.df_j = df_j.map(std::cell::RefCell::new);
         self.df_k = df_k.map(std::cell::RefCell::new);
         self.swap_jk = swap_jk;
+        self
+    }
+
+    fn with_uhf_mutants(mut self, m: UhfDfMutants) -> Self {
+        self.uhf_mutants = m;
         self
     }
 
@@ -2152,10 +2213,73 @@ impl<'a> TwoElectronBuilder<'a> {
     /// UHF spin potentials `v_σ = J(D_α + D_β) − K(D_σ)` for spin densities
     /// `d = [D_α, D_β]` (PySCF `gen_response` of a UHF object, `hermi = 1`).
     fn g_uhf(&self, d: &[Array2<f64>; 2]) -> Result<[Array2<f64>; 2], FerricError> {
+        let (j, [ka, kb]) = self.uhf_jk(d)?;
+        Ok([&j - &ka, j - &kb])
+    }
+
+    /// The Coulomb matrix of the TOTAL response density and the exchange matrix
+    /// of each spin's response density. Where the SCF fitted a matrix its own
+    /// builder replaces the exact one: RI-J on the total density (one Coulomb
+    /// matrix for both spins), RI-K per spin density (the fitted exchange never
+    /// couples the spins; its density path takes the indefinite response
+    /// densities as they are).
+    fn uhf_jk(&self, d: &[Array2<f64>; 2]) -> Result<UhfJk, FerricError> {
+        let (mut j, mut k) = self.exact_spin_jk(d)?;
+        if let Some(df) = &self.df_j {
+            j = self.fitted_coulomb(df, d)?;
+        }
+        if let Some(df) = &self.df_k {
+            k = self.fitted_exchange(df, d)?;
+        }
+        if self.uhf_mutants.cphf_wrong_spin_k {
+            k.swap(0, 1);
+        }
+        Ok((j, k))
+    }
+
+    /// Exact `J(D_α + D_β)` and per-spin `K(D_σ)`; nothing is built (zeros)
+    /// when both are fitted, as the shared quartet loop builds J and K together
+    /// so a half-fitted case costs what the exact one does.
+    fn exact_spin_jk(&self, d: &[Array2<f64>; 2]) -> Result<UhfJk, FerricError> {
+        if self.df_j.is_some() && self.df_k.is_some() {
+            let zero = || Array2::<f64>::zeros(d[0].dim());
+            return Ok((zero(), [zero(), zero()]));
+        }
         let (ja, ka) = self.jk(&d[0])?;
         let (jb, kb) = self.jk(&d[1])?;
-        let j = ja + &jb;
-        Ok([&j - &ka, j - &kb])
+        Ok((ja + &jb, [ka, kb]))
+    }
+
+    fn fitted_coulomb(
+        &self,
+        df: &std::cell::RefCell<crate::df_j::DfJ<'static>>,
+        d: &[Array2<f64>; 2],
+    ) -> Result<Array2<f64>, FerricError> {
+        use crate::fock::JBuilder;
+        let total = if self.uhf_mutants.cphf_j_from_alpha {
+            d[0].clone()
+        } else {
+            &d[0] + &d[1]
+        };
+        let mut j = Array2::<f64>::zeros(total.dim());
+        df.borrow_mut().build(&total, &mut j)?;
+        Ok(j)
+    }
+
+    fn fitted_exchange(
+        &self,
+        df: &std::cell::RefCell<crate::df_k::DfK<'static>>,
+        d: &[Array2<f64>; 2],
+    ) -> Result<[Array2<f64>; 2], FerricError> {
+        use crate::fock::KBuilder;
+        let mut k = [
+            Array2::<f64>::zeros(d[0].dim()),
+            Array2::<f64>::zeros(d[1].dim()),
+        ];
+        for sp in 0..2 {
+            df.borrow_mut().build(&d[sp], &mut k[sp])?;
+        }
+        Ok(k)
     }
 }
 
@@ -2202,6 +2326,11 @@ fn ucphf_response(
     uhf: &ScfResult,
     nocc: [usize; 2],
     first: &FirstOrderAo,
+    fitted: (
+        Option<crate::df_j::DfJ<'static>>,
+        Option<crate::df_k::DfK<'static>>,
+    ),
+    mutants: &UhfDfMutants,
 ) -> Result<ResponseTerm, FerricError> {
     let frames = [
         MoFrame::new(uhf.mos_a(), uhf.eps_a(), nocc[0], 1.0),
@@ -2216,7 +2345,9 @@ fn ucphf_response(
         frames[1].to_mo_all(&first.s1),
     ];
 
-    let g = TwoElectronBuilder::new(ctx, prep, bounds)?;
+    let g = TwoElectronBuilder::new(ctx, prep, bounds)?
+        .fitted(fitted.0, fitted.1, false)
+        .with_uhf_mutants(*mutants);
     let mut sols: [Vec<CphfSolution>; 2] = [Vec::new(), Vec::new()];
     for x in 0..first.s1.len() {
         let [sa, sb] = solve_ucphf_one(

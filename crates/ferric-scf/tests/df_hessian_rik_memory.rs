@@ -48,12 +48,12 @@ fn the_charge_matches_the_documentation_scales_as_n4_and_gates_the_run_and_the_p
     assert_documented(
         "water cc-pVDZ/jkfit",
         rik_peak_bytes(3, 24, 5, 113),
-        2.7246e6,
+        2.9135e6,
     );
     assert_documented(
         "30 atoms, 300 bf, m = 60, A = 1500",
         rik_peak_bytes(30, 300, 60, 1500),
-        9.8244e9,
+        9.9122e9,
     );
     // Per-atom shape of the 30-atom example: A = 50 N, n = 10 N, m = 2 N.
     let at = |n: usize| rik_peak_bytes(n, 10 * n, 2 * n, 50 * n) as f64;
@@ -61,7 +61,7 @@ fn the_charge_matches_the_documentation_scales_as_n4_and_gates_the_run_and_the_p
     let slope_71 = (at(71) / at(30)).ln() / (71.0f64 / 30.0).ln();
     eprintln!("scaling exponent 30 -> 60 atoms {slope:.2}, 30 -> 71 atoms {slope_71:.2}");
     assert!((3.6..4.1).contains(&slope), "exponent {slope}");
-    assert_documented("71 atoms, same per-atom shape", at(71) as usize, 2.7097e11);
+    assert_documented("71 atoms, same per-atom shape", at(71) as usize, 2.7196e11);
 
     if ferric_integrals::engine::libint_max_deriv_order() < 1 {
         eprintln!("SKIP: libint2 without first derivatives");

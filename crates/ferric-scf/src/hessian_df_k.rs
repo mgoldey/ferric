@@ -77,6 +77,52 @@
 //! change (the occupied-orbital path `build_from_occ` is NOT used, it needs
 //! `D = C Cᵀ`).
 //!
+//! # UHF: one channel per spin
+//!
+//! The unrestricted energy is a sum of per-spin exchange channels over ONE
+//! shared fit, plus the Coulomb term of the TOTAL density:
+//!
+//! ```text
+//!   E = Tr[D h] + ½ dᵀ M d(D_α + D_β) + Σ_σ α_σ Σ_ij L^σ_ij · M L^σ_ij + V_nn
+//!   α_σ = −½ ,  D_σ = X_σ X_σᵀ ,  X_σ = C_σ,occ (unit occupations)
+//!   L^σ_{P,ij} = Σ_μν X_σ,μi (P|μν) X_σ,νj ,  M = V⁻¹ (RI-K: the SCF's truncated V^{-1/2}V^{-1/2})
+//! ```
+//!
+//! (`E_K = −½ Σ_σ tr(D_σ K[D_σ])`, `K[D]_μλ = Σ_νσ D_νσ (μν|λσ)_fit`; an αβ
+//! exchange term does not exist, so no cross-channel term appears anywhere.)
+//!
+//! * **RI-J.** `d_P = Σ (P|μν) (D_α + D_β)_μν`: the Coulomb energy sees the
+//!   spins only through the total density, so the merged RI-J terms
+//!   ([`crate::hessian_df`]: skeleton, `J^x`) are used unchanged with
+//!   `D = D_α + D_β`, and the one `J^x` is added to both spin Fock derivatives.
+//! * **RI-K skeleton.** Every piece above is linear in `α_σ` at fixed `X_σ`,
+//!   and `M`, `V_x`, `V_xy` are shared, so `Γ_σ = M L^σ`, `Z^σ_x = L^σ_x −
+//!   V_x Γ_σ` give
+//!   `E_xy = Σ_σ α_σ [2⟨L^σ_xy, Γ_σ⟩ − ⟨Γ_σ, V_xy Γ_σ⟩ + 2⟨Z^σ_x, M Z^σ_y⟩]`.
+//!   The second derivatives enter through two contractions with SUMMED weights
+//!   (`W_P = Σ_σ 2α_σ X_σ Γ_σ,P X_σᵀ` for the 3c stencil, `−Σ_σ α_σ Γ_σ Γ_σᵀ`
+//!   for the 2c stencil): one pass each however many channels there are. The
+//!   cross term is a sum of per-channel terms (`∂_y Γ_σ = M Z^σ_y` involves only
+//!   channel `σ`).
+//! * **`K^x`.** Per channel, with `X → X_σ` in the closed-shell expression;
+//!   the spin Fock derivative gets `2α_σ K^x[D_σ] = −K^x[D_σ]`.
+//! * **CPHF kernel.** `v_σ(D1_α, D1_β) = J_DF(D1_α + D1_β) − K_DF(D1_σ)`:
+//!   `DfJ` on the TOTAL response density (one Coulomb matrix, both spins), `DfK`
+//!   on each spin's own response density (its density path takes the indefinite
+//!   `C_v U C_oᵀ + h.c.` as it is). The α and β rotations stay ONE coupled
+//!   system through the Coulomb term.
+//! * **Closed-shell limit.** `D_α = D_β = D/2`: `X_σ = X/√2`, `L^σ = L/2`, so
+//!   `Σ_σ α_σ L^σ·M L^σ = 2(−½)(¼) L·M L = −¼ L·M L`, the closed-shell
+//!   energy; every piece above reduces to the closed-shell piece, which is the
+//!   exactness anchor of `tests/df_hessian_uhf.rs`.
+//!
+//! The channel code is `rik_channel_terms`; the closed-shell `rik_terms` is
+//! the one-channel case `(X = √2 C_occ, α = −¼)`. Channels are processed one
+//! after the other: `M` and `V_x` are built once, each channel's `L^σ`, `Γ_σ`,
+//! `L^σ_x`, `Z^σ_x` and `K^x_σ` are built and (but for `Γ_σ`, `K^x_σ`) released
+//! before the next, and what a finished channel leaves behind is charged by
+//! `rik_peak_bytes_channels`.
+//!
 //! ## Factorization
 //!
 //! `M` is built as `W·W` with `W = U Λ^{-1/2} Uᵀ` from the same `eigh` as
@@ -114,8 +160,8 @@
 //! The pre-SCF probe `Auto` consults applies the same estimate (sizes alone), so
 //! an over-budget job runs finite differences instead of failing after the SCF;
 //! with no pool installed (library use) there is no budget and nothing is
-//! checked. Peak: 2.7 MB for water cc-pVDZ / def2-universal-jkfit (3 atoms,
-//! `A = 113`, `m = 5`); 9.8 GB for 30 atoms with 300 basis functions, `m = 60`,
+//! checked. Peak: 2.9 MB for water cc-pVDZ / def2-universal-jkfit (3 atoms,
+//! `A = 113`, `m = 5`); 9.9 GB for 30 atoms with 300 basis functions, `m = 60`,
 //! `A = 1500` (`L_x` and `∂_xΓ` 3.9 GB each, `V_x` 1.6 GB). It grows like
 //! **N⁴** (the `3N·A·m²` terms; fitted exponent 3.85 between 30 and 71 atoms at
 //! 50 auxiliary functions, 10 basis functions and 2 occupied orbitals per
@@ -125,6 +171,32 @@
 //! stencil contractions (about 30 times the engine calls of a gradient pass).
 //! The `K^x` metric term costs `3N · (A²·n·m + A·m·n²)` flops (the sparsity of
 //! `V_x` in the moved atom is not exploited).
+//!
+//! UHF: the channels run one after the other over the shared `M` and `V_x`
+//! (`V_x` is built first, before any channel), so the estimate
+//! (`rik_peak_bytes_channels`) is the largest phase of any channel plus what the
+//! finished channels leave resident (`Γ_σ`, `K^x_σ` and its Fock-scaled copy), and
+//! the CPHF phase scales with the number of channels. For channels of similar
+//! size the peak is that of the larger channel (30 atoms, `n = 300`, `m = 60 + 59`,
+//! `A = 1500`: 9.9 GB, the same as `m = 60` alone), and it is raised by a later
+//! channel only when that channel's phases with the first channel's outputs
+//! resident are the widest. `V_x` is built before the first channel, so the
+//! `pre` phase of every channel already holds `n3·A²` for it. The CPHF phase is
+//! charged separately once the RI-K terms return (`reserve_cphf_phase`): the
+//! RI-K outputs, `J^x`, the first-order Fock sets, the MO-basis matrices and the
+//! rebuilt `DfJ` / `DfK` (whose general-density `build` peaks at three `A·n²`).
+//!
+//! Checked against the process's own allocator (`tests/df_hessian_uhf_memory.rs`,
+//! a counting global allocator, ignored tests): the RI-K terms alone peak at 0.91
+//! to 0.98 of charge + raw three-index tensor over butane/jkfit shapes with one,
+//! two and unequal channels (no allowance for threads is needed: 1 and 6 threads
+//! differ by under 1 MB); the whole UHF Hessian, CPHF included, peaks at 0.99 of
+//! estimate + raw for allyl 6-31G/jkfit (`A/n = 8.5`) and 0.86 for allyl
+//! def2-TZVP/cc-pVDZ-RI (`A/n = 1.9`, where the `n²` terms and `DfK` dominate;
+//! 1.008 of the estimate alone). The margin is therefore a few percent to a
+//! few tens of percent, never negative on the shapes measured; the raw tensor of
+//! the three-index passes is the one allocation the estimate leaves to the
+//! caller.
 //!
 //! ## Conditioning
 //!
@@ -216,6 +288,11 @@ pub struct RikMutants {
     pub stencil: StencilConfig,
     /// Skip the conditioning refusal (measurement only).
     pub allow_ill_conditioned: bool,
+    /// Channel mutant: `(channel, cut)` makes that channel use a metric
+    /// inverse with every mode below `cut` dropped, while the other channels
+    /// and `V_x` keep the shared one (a "shared M recomputed with a different
+    /// cut" defect).
+    pub channel_metric_cut: Option<(usize, f64)>,
 }
 
 impl Default for RikMutants {
@@ -234,9 +311,38 @@ impl Default for RikMutants {
             cphf_swap_jk: false,
             stencil: StencilConfig::default(),
             allow_ill_conditioned: false,
+            channel_metric_cut: None,
         }
     }
 }
+
+/// Deliberately broken constructions of the UHF channel wiring (mutation tests
+/// of `tests/df_hessian_uhf.rs`). `Default` is the production construction.
+/// NOT public API.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UhfDfMutants {
+    /// Build `J^x` and the RI-J skeleton from the α density alone.
+    pub j_from_alpha: bool,
+    /// Add the α channel's `K^x` to the β Fock derivative and vice versa.
+    pub swap_k_channels: bool,
+    /// Use the closed-shell channel (`α = −¼`, `X = √2 C_σ`) for each spin.
+    pub closed_shell_channel: bool,
+    /// Leave the β channel out of the skeleton and of `K^x`.
+    pub drop_beta_channel: bool,
+    /// The CPHF kernel applies the exchange of the OTHER spin's response
+    /// density: `v_α = J − K(D1_β)`, `v_β = J − K(D1_α)`.
+    pub cphf_wrong_spin_k: bool,
+    /// The CPHF kernel uses the exact four-centre `K` where the SCF fitted it.
+    pub cphf_exact_k: bool,
+    /// The CPHF kernel's Coulomb part is built from the α response density
+    /// only (not the total).
+    pub cphf_j_from_alpha: bool,
+}
+
+/// Exchange weight of one UHF spin channel: `E_K = −½ Σ_σ tr(D_σ K[D_σ])`,
+/// `X_σ = C_σ,occ`.
+pub const RIK_ALPHA_SPIN: f64 = -0.5;
 
 /// The RI-K pieces of the Hessian.
 #[doc(hidden)]
@@ -276,6 +382,9 @@ pub struct RikFirst {
 struct Fit {
     dfbs: PreparedBasis,
     m: Array2<f64>,
+    /// Mutation tests only: the metric inverse of the one channel whose
+    /// eigenvalue cut was raised (`RikMutants::channel_metric_cut`).
+    m_cut: Option<(usize, Array2<f64>)>,
     op: Operator,
     metric_op: Operator,
     budget: usize,
@@ -315,42 +424,134 @@ impl Fit {
             let w = us.dot(&u.t());
             w.dot(&w)
         };
+        let m_cut = mutants.channel_metric_cut.map(|(channel, cut)| {
+            let mut us = u.clone();
+            for k in 0..lam.len() {
+                let sc = if lam[k] >= cut {
+                    1.0 / lam[k].sqrt()
+                } else {
+                    0.0
+                };
+                us.column_mut(k).mapv_inplace(|x| x * sc);
+            }
+            let w = us.dot(&u.t());
+            (channel, w.dot(&w).as_standard_layout().to_owned())
+        });
         Ok(Fit {
             dfbs,
             m: m.as_standard_layout().to_owned(),
+            m_cut,
             op,
             metric_op,
             budget,
         })
     }
+
+    /// The metric inverse channel `channel` uses (the shared `M` in production).
+    fn m_for(&self, channel: usize) -> &Array2<f64> {
+        match &self.m_cut {
+            Some((c, m)) if *c == channel => m,
+            _ => &self.m,
+        }
+    }
 }
 
 /// Bytes the Hessian pieces keep resident beyond the budget-bounded raw
 /// tensor (see the module doc); charged to the pool before allocation.
+/// Closed shell: one channel.
 #[doc(hidden)]
 pub fn rik_peak_bytes(natoms: usize, nbf: usize, nocc: usize, naux: usize) -> usize {
-    let (n3, a, n, m) = (3 * natoms, naux, nbf, nocc);
-    let m2 = m * m;
-    // Alive from the end of the first-derivative passes to the outputs: M,
-    // V_x, Γ and Ĉ in (A, m, n) layout.
-    let base = a * a + n3 * a * a + a * m2 + a * n * m;
+    rik_peak_bytes_channels(natoms, nbf, &[nocc], naux)
+}
+
+/// [`rik_peak_bytes`] for one exchange channel per entry of `noccs` (UHF: the
+/// α and β occupied counts). The channels are processed one after the other;
+/// the metric `M` and `V_x` are shared, and what a finished channel leaves
+/// behind (`Γ_s`, `K^x_s` and its Fock-scaled copy) stays resident for the
+/// later channels and the CPHF.
+#[doc(hidden)]
+pub fn rik_peak_bytes_channels(natoms: usize, nbf: usize, noccs: &[usize], naux: usize) -> usize {
+    let (n3, a, n) = (3 * natoms, naux, nbf);
     let k1 = n3 * n * n;
-    // Phases, in order (the peak is the largest, they do not overlap):
-    // the metric factorization (V, eigenvectors, scaled copy, W, M, check),
-    let fit = 6 * a * a;
-    // B/Ĉ construction (B, B flat, Ĉ flat, permuted copy; L, Γ; M, W),
-    let pre = 4 * a * n * m + 4 * a * m2 + 2 * a * a;
-    // the first-derivative 3c pass (L_x, K1 and the per-chunk partials),
-    let pass2 = base + n3 * a * m2 + k1 + chunk_len(n3, nbf) * n3 * n * n;
-    // Z_x and ∂_xΓ (plus two (A, m²) temporaries),
-    let cross = base + 2 * n3 * a * m2 + 2 * a * m2 + k1;
-    // K^x: Ĉ, its flat and row copies, W and its standard-layout copy, and
-    // K1, K^x, the unscaled and the Fock-scaled output matrices,
-    let kx = base + k1 + 5 * a * n * m + 3 * n3 * n * n;
-    // and the CPHF that follows: F^x, K^x, G^x accumulators and the SCF's
-    // DfJ and DfK rebuilt with the full budget (dressed A n² each).
-    let cphf = 3 * n3 * n * n + 2 * a * n * n;
-    8usize.saturating_mul(fit.max(pre).max(pass2).max(cross).max(kx).max(cphf))
+    // The metric factorization (V, eigenvectors, scaled copy, W, M, check),
+    // before anything else is alive.
+    let mut peak = 6 * a * a;
+    // What is resident from outside the channel loop (the RI-J `J^x`, one
+    // `n3·n²` matrix computed before the RI-K terms; charged whether or not
+    // RI-J is active) plus what the finished channels leave: Γ_s and the two
+    // K^x copies. Plus a fixed allowance of 32 `n²` matrices for the densities,
+    // the energy-weighted density and the Fock-sized work arrays of the exact
+    // one-electron path (measured excess without it: 0.07 % of the peak).
+    let mut prev = n3 * n * n + 32 * n * n;
+    for &m in noccs {
+        let m2 = m * m;
+        // M, V_x, Γ and Ĉ in (A, m, n) layout alive from the end of the
+        // first-derivative passes to the outputs.
+        let base = a * a + n3 * a * a + a * m2 + a * n * m;
+        // B/Ĉ construction (B, B flat, Ĉ flat, permuted copy; L, Γ; M, W) with
+        // M and V_x already built,
+        let pre = 4 * a * n * m + 4 * a * m2 + 2 * a * a + n3 * a * a + prev;
+        // the first-derivative 3c pass (L_x, K1 and the per-chunk partials),
+        let pass2 = base + n3 * a * m2 + k1 + chunk_len(n3, nbf) * n3 * n * n + prev;
+        // Z_x and ∂_xΓ (plus two (A, m²) temporaries),
+        let cross = base + 2 * n3 * a * m2 + 2 * a * m2 + k1 + prev;
+        // K^x: Ĉ, its flat and row copies, W and its standard-layout copy, and
+        // K1, K^x, the unscaled and the Fock-scaled output matrices.
+        let kx = base + k1 + 5 * a * n * m + 3 * n3 * n * n + prev;
+        peak = peak.max(pre).max(pass2).max(cross).max(kx);
+        prev += a * m2 + 2 * n3 * n * n;
+    }
+    8usize.saturating_mul(peak.max(rik_cphf_phase_words(natoms, nbf, noccs, naux)))
+}
+
+/// Words alive in the part of the Hessian that follows the RI-K terms (the
+/// first-order Fock matrices and the CPHF), whose largest phase is charged
+/// separately by `reserve_cphf_phase` once the RI-K terms have returned and
+/// released their own reservation. With `C` channels (= spin Fock sets `S`),
+/// `M = Σ m_σ`, in units of `n3·n²` matrices:
+///
+/// * first-order phase: the RI-K outputs (`K^x`, Fock-scaled copy: `2C`), the
+///   RI-J `J^x` (1), `∂S/∂x` (1), the one-electron derivative `h1` (1), the
+///   per-spin `G^x` accumulators (`S`) and the Fock sets they become (`S`);
+/// * CPHF phase: the RI-K outputs (`2C`), `J^x` (1), the Fock sets (`S`),
+///   `∂S/∂x` (1), the MO-basis `F^x` and `S^x` per spin (`2·n3·n·M`), the
+///   per-perturbation solutions `U` and `ε^x` (`n3·(n·M + M²)`), and the SCF's
+///   `DfJ` and `DfK` rebuilt with the full budget: each keeps one dressed
+///   `A·n²` tensor resident, and `DfK` needs three `A·n²` at its peak, both
+///   while it is constructed and in every general-density `build` of the CPHF
+///   kernel (measured: construction peak 3.0 and `build` extra peak 2.93 times
+///   `8·A·n²` bytes), hence `5·A·n²` (two resident + one `DfK` transient of
+///   three).
+///
+/// Measured against the process allocator in `tests/df_hessian_uhf_memory.rs`.
+#[doc(hidden)]
+pub fn rik_cphf_phase_words(natoms: usize, nbf: usize, noccs: &[usize], naux: usize) -> usize {
+    let (n3, n, a) = (3 * natoms, nbf, naux);
+    let c = noccs.len();
+    let mtot: usize = noccs.iter().sum();
+    let unit = n3 * n * n;
+    let first_order = unit * (2 * c + 3 + 2 * c);
+    let cphf =
+        unit * (2 * c + 2 + c) + 2 * n3 * n * mtot + n3 * (n * mtot + mtot * mtot) + 5 * a * n * n;
+    first_order.max(cphf)
+}
+
+/// Charge the first-order-Fock / CPHF phase of an RI-K Hessian to the global
+/// pool (a typed error when it does not fit). The RI-K terms release their own
+/// reservation when they return, but their outputs stay alive through this
+/// phase, so the phase is charged in full here; the pre-SCF probe uses the
+/// larger of the two phases (`rik_peak_bytes_channels`).
+#[doc(hidden)]
+pub fn reserve_cphf_phase(
+    natoms: usize,
+    nbf: usize,
+    noccs: &[usize],
+    naux: usize,
+) -> Result<ferric_core::memory::pool::Reservation, FerricError> {
+    ferric_core::memory::pool::reserve_global(
+        "RI-K Hessian first-order Fock matrices and CPHF",
+        8usize.saturating_mul(rik_cphf_phase_words(natoms, nbf, noccs, naux)),
+    )
 }
 
 /// The RI-K Hessian pieces at the occupied factor `x` (`D = X Xᵀ`).
@@ -376,14 +577,41 @@ pub fn rik_terms(
     )
 }
 
-/// Quantities shared by the production terms and the piece tests.
+/// One exchange channel `E = α Σ_ij L_ij · M L_ij` with `L = Xᵀ(P|··)X`:
+/// closed shell `(√2 C_occ, −¼)`, one UHF spin `(C_σ,occ, −½)`.
+#[doc(hidden)]
+pub struct RikChannel<'a> {
+    pub x: &'a Array2<f64>,
+    pub alpha: f64,
+}
+
+/// The first-order exchange matrices of one channel.
+#[doc(hidden)]
+#[derive(Debug, Clone)]
+pub struct RikChannelFock {
+    /// `∂K[D_s]/∂x` (unscaled), one `n × n` AO matrix per coordinate.
+    pub first_order_k: Vec<Array2<f64>>,
+    /// `2α_s ∂K[D_s]/∂x`: what is ADDED to this channel's Fock derivative.
+    pub first_order_fock: Vec<Array2<f64>>,
+}
+
+/// The skeleton summed over channels and the per-channel first-order matrices.
+#[doc(hidden)]
+#[derive(Debug, Clone)]
+pub struct RikChannelTerms {
+    pub skeleton: Array2<f64>,
+    pub skeleton_asymmetry: f64,
+    pub three_centre: Array2<f64>,
+    pub metric_second: Array2<f64>,
+    pub cross: Array2<f64>,
+    pub channels: Vec<RikChannelFock>,
+}
+
+/// Quantities of one channel shared by the production terms and the piece tests.
 struct Core {
-    fit: Fit,
     gamma: Array2<f64>,
     /// `L_x`, `3N × (A·m²)`.
     lx: Array2<f64>,
-    /// `V_x`, `3N × A × A`.
-    vx: Array3<f64>,
     /// `Ĉ` as `(A, m, n)`, the layout `K^x`'s metric term contracts.
     chat: Array3<f64>,
     /// `K1_x = Σ ∂_x(P|μν) T_{P,νλ}`, `3N × n²` (not symmetrized).
@@ -394,7 +622,8 @@ struct Core {
 fn build_core(
     natoms: usize,
     obs: &PreparedBasis,
-    fit: Fit,
+    fit: &Fit,
+    m_metric: &Array2<f64>,
     x: &Array2<f64>,
     mutants: &RikMutants,
     with_k1: bool,
@@ -426,12 +655,12 @@ fn build_core(
     })?;
     drop(source);
 
-    let gamma = fit.m.dot(&l).as_standard_layout().to_owned();
+    let gamma = m_metric.dot(&l).as_standard_layout().to_owned();
     drop(l);
     let b_flat = b
         .into_shape_with_order((naux, n * m))
         .map_err(|e| FerricError::General(format!("B reshape: {e}")))?;
-    let chat_flat = fit.m.dot(&b_flat).as_standard_layout().to_owned();
+    let chat_flat = m_metric.dot(&b_flat).as_standard_layout().to_owned();
     drop(b_flat);
     let chat = chat_flat
         .into_shape_with_order((naux, n, m))
@@ -444,19 +673,16 @@ fn build_core(
         .to_owned();
 
     // Pass 2: first-derivative 3c blocks: L_x always, K1_x on request.
-    let (lx, k1) = first_derivative_3c(obs, &fit, natoms, x, &chat_p, mutants, with_k1)?;
-    let vx = first_derivative_2c(&fit, natoms)?;
+    let (lx, k1) = first_derivative_3c(obs, fit, natoms, x, &chat_p, mutants, with_k1)?;
     Ok(Core {
-        fit,
         gamma,
         lx,
-        vx,
         chat: chat_p,
         k1,
     })
 }
 
-/// [`rik_terms`] with an explicit auxiliary basis (the exactness anchors hand
+/// `rik_terms` with an explicit auxiliary basis (the exactness anchors hand
 /// it a basis that spans the pair densities exactly).
 #[doc(hidden)]
 pub fn rik_terms_with_aux(
@@ -468,61 +694,214 @@ pub fn rik_terms_with_aux(
     x: &Array2<f64>,
     mutants: &RikMutants,
 ) -> Result<RikTerms, FerricError> {
-    let (n, naux, m) = (obs.nbasis(), dfbs.nbasis(), x.ncols());
+    let channel = RikChannel {
+        x,
+        alpha: RIK_ALPHA,
+    };
+    let mut t = rik_channel_terms_with_aux(natoms, obs, dfbs, op, budget, &[channel], mutants)?;
+    let c = t.channels.remove(0);
+    Ok(RikTerms {
+        skeleton: t.skeleton,
+        skeleton_asymmetry: t.skeleton_asymmetry,
+        three_centre: t.three_centre,
+        metric_second: t.metric_second,
+        cross: t.cross,
+        first_order_k: c.first_order_k,
+        first_order_fock: c.first_order_fock,
+    })
+}
+
+/// [`rik_channel_terms_with_aux`] with the auxiliary basis the SCF route names.
+#[doc(hidden)]
+pub fn rik_channel_terms(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    route: &DfJkRoute,
+    channels: &[RikChannel<'_>],
+    mutants: &RikMutants,
+) -> Result<RikChannelTerms, FerricError> {
+    let name = route.k_aux.as_deref().ok_or_else(|| {
+        FerricError::General("analytic RI-K Hessian: the SCF route has no RI-K basis".into())
+    })?;
+    rik_channel_terms_with_aux(
+        mol.atoms.len(),
+        obs,
+        aux_basis(mol, name)?,
+        route.op,
+        route.budget_bytes,
+        channels,
+        mutants,
+    )
+}
+
+/// The RI-K Hessian pieces for a set of exchange channels sharing ONE metric:
+/// `E_K = Σ_s α_s Σ_ij L^s_ij · M L^s_ij` (cross-channel terms vanish for
+/// exchange). `M` and `V_x` are built once; each channel then has its own
+/// `L^s`, `Γ_s = M L^s`, `Z^s_x`, and `K^x_s`; the skeleton is the sum over
+/// channels (the stencil contractions take the summed weights, so there is one
+/// 3c and one 2c second-derivative pass however many channels).
+#[doc(hidden)]
+pub fn rik_channel_terms_with_aux(
+    natoms: usize,
+    obs: &PreparedBasis,
+    dfbs: PreparedBasis,
+    op: Operator,
+    budget: usize,
+    channels: &[RikChannel<'_>],
+    mutants: &RikMutants,
+) -> Result<RikChannelTerms, FerricError> {
+    let (n, naux) = (obs.nbasis(), dfbs.nbasis());
+    if channels.is_empty() {
+        let z = Array2::<f64>::zeros((3 * natoms, 3 * natoms));
+        return Ok(RikChannelTerms {
+            skeleton: z.clone(),
+            skeleton_asymmetry: 0.0,
+            three_centre: z.clone(),
+            metric_second: z.clone(),
+            cross: z,
+            channels: Vec::new(),
+        });
+    }
+    let noccs: Vec<usize> = channels.iter().map(|c| c.x.ncols()).collect();
     // Charged BEFORE the metric factorization allocates its (A, A) work arrays.
     let _charge = ferric_core::memory::pool::reserve_global(
         "RI-K Hessian fit tensors, L^x/Z^x, V^x and K^x matrices",
-        rik_peak_bytes(natoms, n, m, naux),
+        rik_peak_bytes_channels(natoms, n, &noccs, naux),
     )?;
     let fit = Fit::new(dfbs, op, budget, mutants)?;
     let n3 = 3 * natoms;
-    let m2 = m * m;
-    let alpha = RIK_ALPHA * mutants.alpha_factor;
+    let vx = first_derivative_2c(&fit, natoms)?;
 
-    let mut core = build_core(natoms, obs, fit, x, mutants, true)?;
-    let gamma = core.gamma.clone();
+    let mut gammas: Vec<Array2<f64>> = Vec::with_capacity(channels.len());
+    let mut cross: Option<Array2<f64>> = None;
+    let mut fock_out = Vec::with_capacity(channels.len());
+    for (ci, ch) in channels.iter().enumerate() {
+        let (x, m) = (ch.x, ch.x.ncols());
+        let m2 = m * m;
+        let alpha = ch.alpha * mutants.alpha_factor;
+        let m_metric = fit.m_for(ci);
+        let mut core = build_core(natoms, obs, &fit, m_metric, x, mutants, true)?;
+        let gamma = core.gamma.clone();
 
-    // Z_x = L_x - V_x Γ (in place), then ∂_xΓ = M Z_x.
-    if !mutants.drop_cross {
-        for xi in 0..n3 {
-            let vg = core.vx.index_axis(Axis(0), xi).dot(&gamma.view());
-            let mut row = core.lx.row_mut(xi);
-            let flat = row.as_slice_mut().expect("contiguous");
-            for (dst, src) in flat.iter_mut().zip(vg.iter()) {
-                *dst -= *src;
+        // Z_x = L_x - V_x Γ (in place), then ∂_xΓ = M Z_x.
+        if !mutants.drop_cross {
+            for xi in 0..n3 {
+                let vg = vx.index_axis(Axis(0), xi).dot(&gamma.view());
+                let mut row = core.lx.row_mut(xi);
+                let flat = row.as_slice_mut().expect("contiguous");
+                for (dst, src) in flat.iter_mut().zip(vg.iter()) {
+                    *dst -= *src;
+                }
             }
         }
-    }
-    let z = core.lx;
-    let mut gamma_x = Array2::<f64>::zeros((n3, naux * m2));
-    for xi in 0..n3 {
-        let zx = z
-            .row(xi)
-            .to_owned()
-            .into_shape_with_order((naux, m2))
-            .map_err(|e| FerricError::General(format!("Z reshape: {e}")))?;
-        let gx = core.fit.m.dot(&zx);
-        for (dst, src) in gamma_x.row_mut(xi).iter_mut().zip(gx.iter()) {
-            *dst = *src;
+        let z = core.lx;
+        let mut gamma_x = Array2::<f64>::zeros((n3, naux * m2));
+        for xi in 0..n3 {
+            let zx = z
+                .row(xi)
+                .to_owned()
+                .into_shape_with_order((naux, m2))
+                .map_err(|e| FerricError::General(format!("Z reshape: {e}")))?;
+            let gx = m_metric.dot(&zx);
+            for (dst, src) in gamma_x.row_mut(xi).iter_mut().zip(gx.iter()) {
+                *dst = *src;
+            }
         }
-    }
-    let cross = (z.dot(&gamma_x.t())) * (2.0 * alpha);
-    drop(gamma_x);
-    drop(z);
+        let cross_s = (z.dot(&gamma_x.t())) * (2.0 * alpha);
+        drop(gamma_x);
+        drop(z);
+        match cross.as_mut() {
+            None => cross = Some(cross_s),
+            Some(acc) => *acc += &cross_s,
+        }
 
-    // Skeleton second derivatives through the stencil.
+        // K^x = K1 + K1ᵀ - Σ_j Ĉ_jᵀ V_x Ĉ_j
+        let chat_flat = core
+            .chat
+            .view()
+            .into_shape_with_order((naux, m * n))
+            .map_err(|e| FerricError::General(format!("Chat flat: {e}")))?
+            .to_owned();
+        let chat_rows = core
+            .chat
+            .view()
+            .into_shape_with_order((naux * m, n))
+            .map_err(|e| FerricError::General(format!("Chat rows: {e}")))?
+            .to_owned();
+        let mut first_order_k = Vec::with_capacity(n3);
+        let mut first_order_fock = Vec::with_capacity(n3);
+        for xi in 0..n3 {
+            let k1 = core
+                .k1
+                .row(xi)
+                .to_owned()
+                .into_shape_with_order((n, n))
+                .map_err(|e| FerricError::General(format!("K1 reshape: {e}")))?;
+            let mut kx = &k1 + &k1.t();
+            if !mutants.drop_kx_metric {
+                let w = vx
+                    .index_axis(Axis(0), xi)
+                    .dot(&chat_flat)
+                    .as_standard_layout()
+                    .to_owned();
+                let w_rows = w
+                    .into_shape_with_order((naux * m, n))
+                    .map_err(|e| FerricError::General(format!("W reshape: {e}")))?;
+                kx -= &chat_rows.t().dot(&w_rows);
+            }
+            let scale = if mutants.drop_kx { 0.0 } else { 2.0 * alpha };
+            first_order_fock.push(&kx * scale);
+            first_order_k.push(kx);
+        }
+        fock_out.push(RikChannelFock {
+            first_order_k,
+            first_order_fock,
+        });
+        gammas.push(gamma);
+    }
+    drop(vx);
+    let cross = cross.unwrap_or_else(|| Array2::zeros((n3, n3)));
+
+    // Skeleton second derivatives through the stencil: the weights of all
+    // channels are summed, one pass each for the 3c and the 2c integrals.
     let cfg = &mutants.stencil;
-    let fit = &core.fit;
-    let gam_ref = &gamma;
-    let three_centre = eri3_deriv2_contract(obs, &fit.dfbs, fit.op, cfg, |sp, s1, s2, w| {
-        weight_gamma(obs, &fit.dfbs, gam_ref, x, 2.0 * alpha, (sp, s1, s2), w)
+    let dfbs = &fit.dfbs;
+    let alphas: Vec<f64> = channels
+        .iter()
+        .map(|c| c.alpha * mutants.alpha_factor)
+        .collect();
+    let three_centre = eri3_deriv2_contract(obs, dfbs, fit.op, cfg, |sp, s1, s2, w| {
+        for (ci, ch) in channels.iter().enumerate() {
+            let scale = 2.0 * alphas[ci];
+            if ci == 0 {
+                weight_gamma(obs, dfbs, &gammas[ci], ch.x, scale, (sp, s1, s2), w);
+            } else {
+                let mut extra = Vec::new();
+                weight_gamma(
+                    obs,
+                    dfbs,
+                    &gammas[ci],
+                    ch.x,
+                    scale,
+                    (sp, s1, s2),
+                    &mut extra,
+                );
+                for (a, b) in w.iter_mut().zip(&extra) {
+                    *a += *b;
+                }
+            }
+        }
+        true
     })?;
     let metric_second = if mutants.drop_metric_second {
         Array2::zeros((n3, n3))
     } else {
-        let m2w = gamma.dot(&gamma.t()) * (-alpha);
-        eri2_deriv2_contract(&fit.dfbs, fit.metric_op, cfg, |sp, sq, w| {
-            weight_matrix(&fit.dfbs, &m2w, (sp, sq), w)
+        let mut m2w = gammas[0].dot(&gammas[0].t()) * (-alphas[0]);
+        for ci in 1..gammas.len() {
+            m2w += &(gammas[ci].dot(&gammas[ci].t()) * (-alphas[ci]));
+        }
+        eri2_deriv2_contract(dfbs, fit.metric_op, cfg, |sp, sq, w| {
+            weight_matrix(dfbs, &m2w, (sp, sq), w)
         })?
     };
     let raw = &three_centre + &metric_second + &cross;
@@ -531,54 +910,13 @@ pub fn rik_terms_with_aux(
         .zip(raw.t().iter())
         .fold(0.0f64, |mx, (a, b)| mx.max((a - b).abs()));
     let skeleton = (&raw + &raw.t()) * 0.5;
-
-    // K^x = K1 + K1ᵀ - Σ_j Ĉ_jᵀ V_x Ĉ_j
-    let chat_flat = core
-        .chat
-        .view()
-        .into_shape_with_order((naux, m * n))
-        .map_err(|e| FerricError::General(format!("Chat flat: {e}")))?
-        .to_owned();
-    let chat_rows = core
-        .chat
-        .view()
-        .into_shape_with_order((naux * m, n))
-        .map_err(|e| FerricError::General(format!("Chat rows: {e}")))?
-        .to_owned();
-    let mut first_order_k = Vec::with_capacity(n3);
-    let mut first_order_fock = Vec::with_capacity(n3);
-    for xi in 0..n3 {
-        let k1 = core
-            .k1
-            .row(xi)
-            .to_owned()
-            .into_shape_with_order((n, n))
-            .map_err(|e| FerricError::General(format!("K1 reshape: {e}")))?;
-        let mut kx = &k1 + &k1.t();
-        if !mutants.drop_kx_metric {
-            let w = core
-                .vx
-                .index_axis(Axis(0), xi)
-                .dot(&chat_flat)
-                .as_standard_layout()
-                .to_owned();
-            let w_rows = w
-                .into_shape_with_order((naux * m, n))
-                .map_err(|e| FerricError::General(format!("W reshape: {e}")))?;
-            kx -= &chat_rows.t().dot(&w_rows);
-        }
-        let scale = if mutants.drop_kx { 0.0 } else { 2.0 * alpha };
-        first_order_fock.push(&kx * scale);
-        first_order_k.push(kx);
-    }
-    Ok(RikTerms {
+    Ok(RikChannelTerms {
         skeleton,
         skeleton_asymmetry,
         three_centre,
         metric_second,
         cross,
-        first_order_k,
-        first_order_fock,
+        channels: fock_out,
     })
 }
 
@@ -604,9 +942,9 @@ pub fn rik_first(
         route.budget_bytes,
         &mutants,
     )?;
-    let (naux, m) = (fit.dfbs.nbasis(), x.ncols());
     let n3 = 3 * natoms;
-    let core = build_core(natoms, obs, fit, x, &mutants, false)?;
+    let vx = first_derivative_2c(&fit, natoms)?;
+    let core = build_core(natoms, obs, &fit, &fit.m, x, &mutants, false)?;
     let g_star = gamma_fixed.unwrap_or(&core.gamma);
     let mut lg = Array1::<f64>::zeros(n3);
     let mut gvg = Array1::<f64>::zeros(n3);
@@ -619,14 +957,13 @@ pub fn rik_first(
             .zip(g_star.iter())
             .map(|(a, b)| a * b)
             .sum();
-        let vg_star = core.vx.index_axis(Axis(0), xi).dot(g_star);
+        let vg_star = vx.index_axis(Axis(0), xi).dot(g_star);
         gvg[xi] = vg_star.iter().zip(g_star.iter()).map(|(a, b)| a * b).sum();
-        let vg_own = core.vx.index_axis(Axis(0), xi).dot(&core.gamma);
+        let vg_own = vx.index_axis(Axis(0), xi).dot(&core.gamma);
         for (dst, src) in z.row_mut(xi).iter_mut().zip(vg_own.iter()) {
             *dst -= *src;
         }
     }
-    let _ = (naux, m);
     Ok(RikFirst {
         gamma: core.gamma,
         lg,

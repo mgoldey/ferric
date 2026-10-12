@@ -8,6 +8,12 @@
 //!   E_K    = −¼ Σ D_μλ D_νσ (μν|λσ)                (exact four-centre)
 //! ```
 //!
+//! UHF: `E_J^DF` depends on the spins only through the TOTAL density
+//! `D = D_α + D_β` (`d_P = Σ (P|μν) D_μν`), so the functions below are used for
+//! UHF unchanged with `d = D_α + D_β`, and the one `J^x` is added to both spin
+//! Fock derivatives. The skeleton here is the same expression with `D = D_α + D_β`
+//! in place of the closed-shell `D = 2 C_o C_oᵀ`.
+//!
 //! This module derives the RI-J part only; the "exact K" below describes the
 //! configuration THIS module handles alone. The RI-K part (and the combined
 //! RI-J + RI-K case, where the four-centre skeleton disappears entirely) is
