@@ -53,11 +53,21 @@ SCF = dict(energy_conv=1e-13, grad_conv=1e-10, max_iter=400)
 
 def _krks(atoms, basis, functional="PBE", mesh=(1, 1, 3), **kw):
     return ferric.run_rks_kpts(
-        _mol(atoms), _lat(H2_A), basis, functional, mesh, omega=OMEGA, **GRID, **SCF, **kw
+        _mol(atoms),
+        _lat(H2_A),
+        basis,
+        functional,
+        mesh,
+        omega=OMEGA,
+        **GRID,
+        **SCF,
+        **kw,
     )
 
 
-def _assert_force_matches_fd(g, atoms, energy, tag, comps=((0, 0), (0, 2), (1, 1), (1, 2))):
+def _assert_force_matches_fd(
+    g, atoms, energy, tag, comps=((0, 0), (0, 2), (1, 1), (1, 2))
+):
     assert g.shape == (2, 3) and np.isfinite(g).all()
     assert np.abs(g).max() > 1e-3, f"{tag}: trivial gradient, FD check is vacuous"
     assert np.abs(g.sum(axis=0)).max() < 1e-6, f"{tag}: net force on the cell"
@@ -76,7 +86,13 @@ def test_gradient_is_none_unless_requested_and_does_not_move_the_energy(basis):
 
 @pytest.mark.parametrize(
     "functional, exx",
-    [("LDA", "ewald"), ("PBE", "ewald"), ("PBE", "none"), ("PBE0", "ewald"), ("PBE0", "none")],
+    [
+        ("LDA", "ewald"),
+        ("PBE", "ewald"),
+        ("PBE", "none"),
+        ("PBE0", "ewald"),
+        ("PBE0", "none"),
+    ],
 )
 def test_force_matches_fd_of_own_k_energy(basis, functional, exx):
     r = _krks(H2_ATOMS, basis, functional, exxdiv=exx, with_gradient=True)
