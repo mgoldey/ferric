@@ -1,0 +1,179 @@
+//! THROWAWAY probe (not committed): k-point energy under strain vs the
+//! supercell Gamma energy/stress.
+mod common;
+use common::*;
+use ferric_core::basis::BasisSet;
+use ferric_core::mol::Molecule;
+use ferric_pbc::dense_aft::{DenseAftEri, ExxDiv, DEFAULT_DENSE_AFT_MAX_BYTES};
+use ferric_pbc::hcore::kpoint::periodic_hcore_kpts;
+use ferric_pbc::hcore::{periodic_hcore, PeriodicHcoreConfig};
+use ferric_pbc::kdense_aft::{KDenseAftConfig, KDenseAftEri};
+use ferric_pbc::kpts::KPointMesh;
+use ferric_pbc::kscf::{solve_krhf_injected, KPointInjection, KScfConfig};
+use ferric_pbc::lattice::Cell;
+use ferric_pbc::stress::{gamma_rhf_stress, GammaStressConfig};
+
+const PREC: f64 = 1e-12;
+const ATOMS: [[f64; 3]; 2] = [[0.3, 0.2, 0.1], [0.35, 0.12, 1.5]];
+fn hc() -> PeriodicHcoreConfig {
+    PeriodicHcoreConfig {
+        precision: 1e-14,
+        ..PeriodicHcoreConfig::with_omega(0.8)
+    }
+}
+fn cell_at(pos: &[[f64; 3]], lat: [[f64; 3]; 3]) -> Cell {
+    let mol: Molecule = hydrogens(pos);
+    Cell::new(mol, lat).unwrap()
+}
+fn supercell(cell: &Cell, n: [usize; 3]) -> Cell {
+    let a = *cell.lattice();
+    let mut atoms = Vec::new();
+    for m0 in 0..n[0] {
+        for m1 in 0..n[1] {
+            for m2 in 0..n[2] {
+                let t: Vec<f64> = (0..3)
+                    .map(|d| m0 as f64 * a[0][d] + m1 as f64 * a[1][d] + m2 as f64 * a[2][d])
+                    .collect();
+                for p in cell.positions() {
+                    atoms.push([p[0] + t[0], p[1] + t[1], p[2] + t[2]]);
+                }
+            }
+        }
+    }
+    let mut lat = a;
+    for (i, row) in lat.iter_mut().enumerate() {
+        for v in row.iter_mut() {
+            *v *= n[i] as f64;
+        }
+    }
+    cell_at(&atoms, lat)
+}
+fn eps_at(i: usize, j: usize, h: f64) -> [[f64; 3]; 3] {
+    let mut e = [[0.0; 3]; 3];
+    e[i][j] = h;
+    e
+}
+
+/// k energy per cell [none, ewald] on a (possibly strained) cell.
+fn ek(cell: &Cell, bs: &BasisSet, n: [usize; 3]) -> [f64; 2] {
+    let prep = prep_for(cell, bs);
+    let mesh = KPointMesh::gamma_centred(cell, n).unwrap();
+    let hk = periodic_hcore_kpts(cell, &prep, &mesh, &hc()).unwrap();
+    let eri = KDenseAftEri::build(
+        cell,
+        &prep,
+        &mesh,
+        &hk.s,
+        ExxDiv::None,
+        &KDenseAftConfig {
+            precision: PREC,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let vm = mesh.madelung(cell).unwrap();
+    let cfg = KScfConfig {
+        energy_conv: 1e-13,
+        grad_conv: 1e-10,
+        max_iter: 400,
+        ..Default::default()
+    };
+    let mut out = [0.0; 2];
+    for (i, m) in [0.0, vm].into_iter().enumerate() {
+        let inj = KPointInjection {
+            s: hk.s.clone(),
+            h: hk.h.clone(),
+            vnn: hk.enn,
+            jk: Box::new(eri.jk_builder_with_madelung(m)),
+        };
+        let r = solve_krhf_injected(cell, &mesh, &cfg, inj).unwrap();
+        assert!(r.converged);
+        out[i] = r.energy;
+    }
+    out
+}
+/// Gamma energy [none, ewald] of a cell, plus (optionally) its stress de/deps.
+fn eg(cell: &Cell, bs: &BasisSet, stress: bool) -> ([f64; 2], [[[f64; 3]; 3]; 2]) {
+    let prep = prep_for(cell, bs);
+    let h = periodic_hcore(cell, &prep, &hc()).unwrap();
+    let eri0 = DenseAftEri::build(
+        cell,
+        &prep,
+        &h.s,
+        ExxDiv::None,
+        PREC,
+        DEFAULT_DENSE_AFT_MAX_BYTES,
+    )
+    .unwrap();
+    let mut e = [0.0; 2];
+    let mut st = [[[0.0; 3]; 3]; 2];
+    for (i, x) in [ExxDiv::None, ExxDiv::Ewald].into_iter().enumerate() {
+        let eri = eri0.clone().with_exxdiv(cell, x).unwrap();
+        let scf = gamma_rhf(cell, &prep, &h, &eri);
+        e[i] = scf.energy;
+        if stress {
+            let s = gamma_rhf_stress(
+                cell,
+                &prep,
+                &hc(),
+                &h,
+                &eri0,
+                &scf,
+                x,
+                &GammaStressConfig::default(),
+            )
+            .unwrap();
+            st[i] = s.de_deps;
+        }
+    }
+    (e, st)
+}
+
+#[test]
+fn probe() {
+    let bs = pyscf_sto3g_h();
+    let n = [1, 1, 3];
+    let base = cell_at(&ATOMS, cubic(4.0));
+    let sc = supercell(&base, n);
+    let (esc0, st) = eg(&sc, &bs, true);
+    let ek0 = ek(&base, &bs, n);
+    eprintln!(
+        "E0 k {:?} sc/3 {:?} diff {:e} {:e}",
+        ek0,
+        [esc0[0] / 3.0, esc0[1] / 3.0],
+        ek0[0] - esc0[0] / 3.0,
+        ek0[1] - esc0[1] / 3.0
+    );
+    for &(i, j) in &[(2usize, 2usize), (0, 2), (2, 0), (0, 0)] {
+        let mut fd = [[0.0; 2]; 2]; // [h index][exx]
+        let mut fdsc = [0.0; 2];
+        for (hi, h) in [1e-4, 2e-4].into_iter().enumerate() {
+            let cp = base.strained(&eps_at(i, j, h)).unwrap();
+            let cm = base.strained(&eps_at(i, j, -h)).unwrap();
+            let (ep, em) = (ek(&cp, &bs, n), ek(&cm, &bs, n));
+            for x in 0..2 {
+                fd[hi][x] = (ep[x] - em[x]) / (2.0 * h);
+            }
+            if hi == 0 {
+                let (sp, _) = eg(&sc.strained(&eps_at(i, j, h)).unwrap(), &bs, false);
+                let (sm, _) = eg(&sc.strained(&eps_at(i, j, -h)).unwrap(), &bs, false);
+                for x in 0..2 {
+                    fdsc[x] = (sp[x] - sm[x]) / (2.0 * h) / 3.0;
+                }
+                eprintln!(
+                    "  pointwise E_k - E_sc/3 at +h: {:e} {:e}",
+                    ep[0] - sp[0] / 3.0,
+                    ep[1] - sp[1] / 3.0
+                );
+            }
+        }
+        for x in 0..2 {
+            let rich = (4.0 * fd[0][x] - fd[1][x]) / 3.0;
+            eprintln!(
+                "eps({i},{j}) exx{x}: FD_k(h) {:+.10e} FD_k(2h) {:+.10e} Rich {:+.10e} | FD_sc/3 {:+.10e} | analytic Gamma-sc/3 {:+.10e} | FDk-an {:+.2e} Rich-an {:+.2e}",
+                fd[0][x], fd[1][x], rich, fdsc[x], st[x][i][j] / 3.0,
+                fd[0][x] - st[x][i][j] / 3.0, rich - st[x][i][j] / 3.0
+            );
+        }
+    }
+}
