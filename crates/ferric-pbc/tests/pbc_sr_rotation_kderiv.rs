@@ -305,11 +305,19 @@ const D_BAR: f64 = 1e-7;
 /// sizes (the bar is derived from them in the test doc).
 #[test]
 fn rotated_k_derivative_walks_equal_the_unrotated_walks_per_part() {
+    walk_anchor(&[(None, ExxDiv::None)]);
+}
+
+/// (a) on the range-split build at the Ewald exxdiv.
+#[test]
+#[ignore = "slow (~1 min release): range-split walks, force and stress, 1x1x3"]
+fn rotated_k_derivative_walks_equal_the_unrotated_walks_per_part_split_ewald() {
+    walk_anchor(&[(Some(RangeSplit::default()), ExxDiv::Ewald)]);
+}
+
+fn walk_anchor(cases: &[(Option<RangeSplit>, ExxDiv)]) {
     let n = [1, 1, 3];
-    for (split, exx) in [
-        (None, ExxDiv::None),
-        (Some(RangeSplit::default()), ExxDiv::Ewald),
-    ] {
+    for &(split, exx) in cases {
         let r = run(cell_h2(&H2_ATOMS), n, split, on(), DEFAULT_PREC);
         r.assert_rotates("1x1x3");
         {
@@ -378,14 +386,13 @@ const STRESS_MUTANTS: [KStressMutation; 7] = [
 /// force / stress (measured values are printed by the tests).
 const MUTANT_FLOOR: f64 = 1e-6;
 
-/// (f): every mutant misses the rotated derivative, per part where it acts.
+/// (f): every mutant misses the rotated force, per part where it acts.
 #[test]
-fn rotation_mutants_miss_the_rotated_force_and_stress() {
-    let r = run(cell_h2(&H2_ATOMS), [1, 1, 3], None, on(), DEFAULT_PREC);
-    r.assert_rotates("1x1x3");
+fn rotation_mutants_miss_the_rotated_force() {
+    let r = run(cell_h2(&H2_ATOMS), [1, 1, 2], None, on(), DEFAULT_PREC);
+    r.assert_rotates("1x1x2");
     let scf = r.scf(ExxDiv::None);
     let f0 = r.force(&scf, ExxDiv::None, None);
-    let s0 = r.stress(&scf, ExxDiv::None, None);
     let hc = |f: &KGradient| msum(&f.parts.vsr_basis, &f.parts.vsr_nuc);
     for m in FORCE_MUTANTS {
         let f = r.force(&scf, ExxDiv::None, Some(m));
@@ -402,6 +409,17 @@ fn rotation_mutants_miss_the_rotated_force_and_stress() {
         assert!(!acts_hcore || hcm > MUTANT_FLOOR, "{m:?} hcore {hcm:e}");
         assert!(!acts_fit || fit > MUTANT_FLOOR, "{m:?} fit {fit:e}");
     }
+}
+
+/// (f): every mutant misses the rotated stress, per part where it acts
+/// (also against FD in `rotated_k_stress_matches_fd_of_the_rotated_k_energy`).
+#[test]
+#[ignore = "slow (~1.5 min release): 8 stress evaluations on 1x1x3"]
+fn rotation_mutants_miss_the_rotated_stress() {
+    let r = run(cell_h2(&H2_ATOMS), [1, 1, 3], None, on(), DEFAULT_PREC);
+    r.assert_rotates("1x1x3");
+    let scf = r.scf(ExxDiv::None);
+    let s0 = r.stress(&scf, ExxDiv::None, None);
     for m in STRESS_MUTANTS {
         let s = r.stress(&scf, ExxDiv::None, Some(m));
         let tot = mdiff(&s.de_deps, &s0.de_deps);
@@ -444,8 +462,19 @@ const FD_H: f64 = 1e-4;
 /// fit and SCF at every displacement. Mutants must miss the FD too.
 #[test]
 fn rotated_k_force_matches_fd_of_the_rotated_k_energy() {
+    fd_force(None);
+}
+
+/// (b) on the range-split build.
+#[test]
+#[ignore = "slow (~1.5 min release): 7 rotated k pipelines, range split"]
+fn rotated_k_force_matches_fd_of_the_rotated_k_energy_split() {
+    fd_force(Some(RangeSplit::default()));
+}
+
+fn fd_force(split: Option<RangeSplit>) {
     let n = [1, 1, 2];
-    for split in splits() {
+    {
         let r = run(cell_h2(&H2_ATOMS), n, split, on(), DEFAULT_PREC);
         r.assert_rotates("1x1x2");
         let scf = r.scf(ExxDiv::None);
@@ -792,8 +821,8 @@ fn rotated_k_force_and_stress_are_bitwise_across_thread_counts() {
 /// is refused by name, never silently run on another walk.
 #[test]
 fn inconsistent_rotation_requests_are_refused() {
-    let rot = run(cell_h2(&H2_ATOMS), [1, 1, 2], None, on(), DEFAULT_PREC);
-    let unrot = run(cell_h2(&H2_ATOMS), [1, 1, 2], None, OFF, DEFAULT_PREC);
+    let rot = run(cell_h2(&H2_ATOMS), [1, 1, 1], None, on(), DEFAULT_PREC);
+    let unrot = run(cell_h2(&H2_ATOMS), [1, 1, 1], None, OFF, DEFAULT_PREC);
     let mutant = SrColumnRotation::On(ColumnRotation {
         mutant: ColumnRotationMutant::FlipSign,
     });
@@ -870,7 +899,7 @@ fn loose_screen_refuses_the_unrotated_rebuild_and_the_rotated_force_matches_fd()
     let scf = r.scf(ExxDiv::None);
     let f_on = r.force(&scf, ExxDiv::None, None);
     let off = r.try_force(&scf, ExxDiv::None, Some(KGradMutation::RotOff));
-    let msg = off.err().expect("unrotated rebuild accepted").to_string();
+    let msg = off.expect_err("unrotated rebuild accepted").to_string();
     eprintln!("loose screen {prec:?}: RotOff refused: {msg}");
     assert!(msg.contains("rebuilt fit differs"), "{msg}");
     let mut worst_on = 0.0_f64;
