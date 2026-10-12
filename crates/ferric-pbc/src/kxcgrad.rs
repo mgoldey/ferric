@@ -105,8 +105,8 @@ use crate::grad::ao_atoms;
 use crate::hcore::kpoint::PeriodicHcoreK;
 use crate::hcore::PeriodicHcoreConfig;
 use crate::kgrad::{
-    assemble, check_fock, check_inputs, jk_build, open_ledger, KGradConfig, KGradJk,
-    KGradient, KSpins,
+    assemble, check_fock, check_inputs, jk_build, open_ledger, KGradConfig, KGradJk, KGradient,
+    KSpins,
 };
 use crate::kpts::KPointMesh;
 use crate::kscf::KScfResult;
@@ -353,7 +353,10 @@ impl KXcResponse for GridXc<'_> {
                 let rg = build_response_grid(self.cell, cfg, &mut led)?;
                 (rg.points, Some(rg.dweight))
             }
-            KXcGrid::Uniform(n) => (PeriodicGrid::uniform(self.cell, *n)?.points().to_vec(), None),
+            KXcGrid::Uniform(n) => (
+                PeriodicGrid::uniform(self.cell, *n)?.points().to_vec(),
+                None,
+            ),
         };
         let ev = LatticeAoHess::new(
             self.cell,
@@ -629,7 +632,9 @@ fn resolve_pure(functional: &str) -> Result<XcDef, FerricError> {
     {
         return Err(PeriodicDftError::Unsupported {
             feature: "meta-GGA force at k",
-            reason: format!("{functional}: the tau derivative (AO Hessian terms) is not implemented"),
+            reason: format!(
+                "{functional}: the tau derivative (AO Hessian terms) is not implemented"
+            ),
         }
         .into());
     }

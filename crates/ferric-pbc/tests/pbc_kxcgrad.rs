@@ -8,32 +8,32 @@ mod common;
 use common::*;
 use ferric_core::basis::{BasisSet, Shell};
 use ferric_pbc::dense_aft::ExxDiv;
+use ferric_pbc::dense_aft::{DenseAftEri, DEFAULT_DENSE_AFT_MAX_BYTES};
 use ferric_pbc::dft::PeriodicGridConfig;
+use ferric_pbc::dft::{gamma_rks, GammaRksConfig};
+use ferric_pbc::grad::{gamma_rks_gradient_with, GammaGradConfig};
 use ferric_pbc::hcore::kpoint::{periodic_hcore_kpts, PeriodicHcoreK};
+use ferric_pbc::hcore::periodic_hcore;
 use ferric_pbc::hcore::PeriodicHcoreConfig;
+use ferric_pbc::kdense_aft::KDenseAftConfig;
 use ferric_pbc::kdense_aft::KDenseAftEri;
 use ferric_pbc::kdft::{solve_krks, solve_krks_on_grid, KRksConfig, KRksResult};
 use ferric_pbc::kgrad::{KGradConfig, KGradJk, KRsGdfGradSource};
 use ferric_pbc::kpts::KPointMesh;
-use ferric_pbc::dense_aft::{DenseAftEri, DEFAULT_DENSE_AFT_MAX_BYTES};
-use ferric_pbc::dft::{gamma_rks, GammaRksConfig};
-use ferric_pbc::grad::{gamma_rks_gradient_with, GammaGradConfig};
-use ferric_pbc::hcore::periodic_hcore;
-use ferric_pbc::kdense_aft::KDenseAftConfig;
 use ferric_pbc::kscf::{
     solve_krks_injected, KJkKind, KPointInjection, KPointJk, KPointXc, KScfResult,
 };
 use ferric_pbc::kxcgrad::{kpoint_hartree_gradient, kpoint_null_xc_gradient};
-use ferric_pbc::uhf::GammaUhfIntegrals;
-use num_complex::Complex64;
 use ferric_pbc::kxcgrad::{
     kpoint_rks_gradient, KRksGradConfig, KRksGradient, KXcGrid, KXcMutation,
 };
 use ferric_pbc::lattice::Cell;
 use ferric_pbc::rsgdf::kpoint::{KRsGdf, KRsGdfConfig};
 use ferric_pbc::rsgdf::RsGdfConfig;
+use ferric_pbc::uhf::GammaUhfIntegrals;
 use ferric_pbc::PeriodicGrid;
 use ndarray::Array2;
+use num_complex::Complex64;
 use std::collections::HashMap;
 
 const OMEGA: f64 = 0.8;
@@ -275,7 +275,10 @@ impl KPointXc for ZeroXc {
         &mut self,
         dm: &[Array2<Complex64>],
     ) -> Result<(f64, Vec<Array2<Complex64>>), ferric_core::FerricError> {
-        Ok((0.0, dm.iter().map(|d| Array2::zeros((self.0, self.0))).collect()))
+        Ok((
+            0.0,
+            dm.iter().map(|d| Array2::zeros((self.0, self.0))).collect(),
+        ))
     }
 }
 
@@ -337,8 +340,15 @@ fn hartree(pos: &[[f64; 3]], mesh_n: [usize; 3], jk: Jk) -> Hartree {
 fn with_jk<R>(h: &Hartree, f: impl FnOnce(KGradJk<'_>) -> R) -> R {
     match h.jk {
         Jk::Dense => {
-            let eri = KDenseAftEri::build(&h.cell, &h.prep, &h.mesh, &h.hk.s, ExxDiv::None, &dense_cfg())
-                .unwrap();
+            let eri = KDenseAftEri::build(
+                &h.cell,
+                &h.prep,
+                &h.mesh,
+                &h.hk.s,
+                ExxDiv::None,
+                &dense_cfg(),
+            )
+            .unwrap();
             f(KGradJk::Dense(&eri))
         }
         Jk::Gdf => {
@@ -374,7 +384,14 @@ fn null_xc_equals_the_exchange_free_machinery_exactly() {
         let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
         let (a, b) = with_jk(&h, |j| {
             let a = kpoint_null_xc_gradient(
-                &h.cell, &h.prep, &h.mesh, &hcfg, &h.hk, j, &h.scf, &gcfg(&KXcGrid::default(), None),
+                &h.cell,
+                &h.prep,
+                &h.mesh,
+                &hcfg,
+                &h.hk,
+                j,
+                &h.scf,
+                &gcfg(&KXcGrid::default(), None),
             )
             .unwrap();
             (a, ())
@@ -384,11 +401,16 @@ fn null_xc_equals_the_exchange_free_machinery_exactly() {
                 .unwrap()
         });
         let _ = b;
-        let d = (&a.grad - &g.grad).iter().fold(0.0_f64, |m, x| m.max(x.abs()));
+        let d = (&a.grad - &g.grad)
+            .iter()
+            .fold(0.0_f64, |m, x| m.max(x.abs()));
         let dp = (&a.hf.parts.coulomb - &g.parts.coulomb)
             .iter()
             .fold(0.0_f64, |m, x| m.max(x.abs()));
-        eprintln!("{jk:?}: null-XC vs Hartree machinery: total {d:.1e}, coulomb {dp:.1e}; |F| {:.3e}", max_abs(&g.grad));
+        eprintln!(
+            "{jk:?}: null-XC vs Hartree machinery: total {d:.1e}, coulomb {dp:.1e}; |F| {:.3e}",
+            max_abs(&g.grad)
+        );
         assert_eq!(d, 0.0);
         assert_eq!(dp, 0.0);
         assert!(max_abs(&g.parts.exchange) == 0.0, "no exchange part");
@@ -559,8 +581,14 @@ fn k_mesh_force_is_the_gamma_supercell_force_per_part() {
     let first = |a: &Array2<f64>| a.slice(ndarray::s![0..2, ..]).to_owned();
     let rows = [
         ("xc_ao", parts_diff(&k.xc_ao, &first(&gam.parts.xc_ao))),
-        ("xc_point", parts_diff(&k.xc_point, &first(&gam.parts.xc_point))),
-        ("xc_weight", parts_diff(&k.xc_weight, &first(&gam.parts.xc_weight))),
+        (
+            "xc_point",
+            parts_diff(&k.xc_point, &first(&gam.parts.xc_point)),
+        ),
+        (
+            "xc_weight",
+            parts_diff(&k.xc_weight, &first(&gam.parts.xc_weight)),
+        ),
         ("total", parts_diff(&k.grad, &first(&gam.grad))),
     ];
     for (n, d) in rows {
@@ -640,7 +668,10 @@ fn force_is_bit_identical_across_threads_and_live_chunks() {
     let b = run(4);
     assert_eq!(a.grad, b.grad);
     assert_eq!(a.e_xc, b.e_xc);
-    eprintln!("1 vs 4 threads: bit-identical; live chunks {} / {}", a.live_chunks, b.live_chunks);
+    eprintln!(
+        "1 vs 4 threads: bit-identical; live chunks {} / {}",
+        a.live_chunks, b.live_chunks
+    );
 }
 
 // ------------------------------------------------------------------- memory
@@ -652,14 +683,29 @@ fn force_is_bit_identical_across_threads_and_live_chunks() {
 #[test]
 fn xc_chunks_are_budgeted_and_the_result_is_budget_independent() {
     let fx = fixture(&H2, [1, 1, 3], "PBE", Jk::Dense, atom_grid(20, 50));
-    let eri = KDenseAftEri::build(&fx.cell, &fx.prep, &fx.mesh, &fx.hk.s, ExxDiv::None, &Default::default())
-        .unwrap();
+    let eri = KDenseAftEri::build(
+        &fx.cell,
+        &fx.prep,
+        &fx.mesh,
+        &fx.hk.s,
+        ExxDiv::None,
+        &Default::default(),
+    )
+    .unwrap();
     let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
     let at = |budget: usize| {
         let mut cfg = gcfg(&fx.grid, None);
         cfg.grad.budget_bytes = Some(budget);
         kpoint_rks_gradient(
-            &fx.cell, &fx.prep, &fx.mesh, &hcfg, &fx.hk, KGradJk::Dense(&eri), &fx.res.scf, "PBE", &cfg,
+            &fx.cell,
+            &fx.prep,
+            &fx.mesh,
+            &hcfg,
+            &fx.hk,
+            KGradJk::Dense(&eri),
+            &fx.res.scf,
+            "PBE",
+            &cfg,
         )
     };
     let full = at(AMPLE).unwrap();
@@ -668,7 +714,9 @@ fn xc_chunks_are_budgeted_and_the_result_is_budget_independent() {
     let mut b = 300_000usize;
     while b < 500_000 {
         if let Err(err) = at(b) {
-            saw_err |= err.to_string().contains("k-point XC force AO/Hessian chunk");
+            saw_err |= err
+                .to_string()
+                .contains("k-point XC force AO/Hessian chunk");
         }
         b += b / 8;
     }
@@ -677,11 +725,22 @@ fn xc_chunks_are_budgeted_and_the_result_is_budget_independent() {
     let mut cfg = gcfg(&fx.grid, None);
     cfg.max_live_chunks = Some(1);
     let one = kpoint_rks_gradient(
-        &fx.cell, &fx.prep, &fx.mesh, &hcfg, &fx.hk, KGradJk::Dense(&eri), &fx.res.scf, "PBE", &cfg,
+        &fx.cell,
+        &fx.prep,
+        &fx.mesh,
+        &hcfg,
+        &fx.hk,
+        KGradJk::Dense(&eri),
+        &fx.res.scf,
+        "PBE",
+        &cfg,
     )
     .unwrap();
     assert_eq!(one.live_chunks, 1);
-    eprintln!("live chunks {} -> 1, chunk {} points", full.live_chunks, one.chunk_points);
+    eprintln!(
+        "live chunks {} -> 1, chunk {} points",
+        full.live_chunks, one.chunk_points
+    );
     assert_eq!(one.grad, full.grad);
 }
 
@@ -690,13 +749,28 @@ fn xc_chunks_are_budgeted_and_the_result_is_budget_independent() {
 #[test]
 fn refusals_and_the_fock_guard() {
     let fx = fixture(&H2, [1, 1, 3], "PBE", Jk::Dense, atom_grid(20, 50));
-    let eri = KDenseAftEri::build(&fx.cell, &fx.prep, &fx.mesh, &fx.hk.s, ExxDiv::None, &Default::default())
-        .unwrap();
+    let eri = KDenseAftEri::build(
+        &fx.cell,
+        &fx.prep,
+        &fx.mesh,
+        &fx.hk.s,
+        ExxDiv::None,
+        &Default::default(),
+    )
+    .unwrap();
     let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
     let cfg = gcfg(&fx.grid, None);
     let run = |f: &str, scf: &KScfResult| {
         kpoint_rks_gradient(
-            &fx.cell, &fx.prep, &fx.mesh, &hcfg, &fx.hk, KGradJk::Dense(&eri), scf, f, &cfg,
+            &fx.cell,
+            &fx.prep,
+            &fx.mesh,
+            &hcfg,
+            &fx.hk,
+            KGradJk::Dense(&eri),
+            scf,
+            f,
+            &cfg,
         )
     };
     for (name, key) in [
@@ -705,13 +779,24 @@ fn refusals_and_the_fock_guard() {
         ("SCAN", "meta-GGA"),
         ("wB97X-V", "VV10"),
     ] {
-        let e = run(name, &fx.res.scf).err().unwrap_or_else(|| panic!("{name} accepted")).to_string();
+        let e = run(name, &fx.res.scf)
+            .err()
+            .unwrap_or_else(|| panic!("{name} accepted"))
+            .to_string();
         eprintln!("{name}: {e}");
         assert!(e.contains(key), "{name}: {e}");
     }
     // The HF entry still refuses a KS result (and says what covers it).
     let hf = ferric_pbc::kgrad::kpoint_rhf_gradient(
-        &fx.cell, &fx.prep, &fx.mesh, &hcfg, &fx.hk, KGradJk::Dense(&eri), &fx.res.scf, ExxDiv::None, &kcfg(),
+        &fx.cell,
+        &fx.prep,
+        &fx.mesh,
+        &hcfg,
+        &fx.hk,
+        KGradJk::Dense(&eri),
+        &fx.res.scf,
+        ExxDiv::None,
+        &kcfg(),
     );
     assert!(hf.is_err());
     // Guard, both sides: the matching Fock passes at roundoff; a wrong
@@ -719,7 +804,10 @@ fn refusals_and_the_fock_guard() {
     // a 1e-10 tamper (below the 1e-8 bar) passes.
     let ok = run("PBE", &fx.res.scf).unwrap();
     assert!(ok.hf.fock_mismatch < 1e-12, "{:e}", ok.hf.fock_mismatch);
-    let wrong = run("LDA", &fx.res.scf).err().expect("wrong functional").to_string();
+    let wrong = run("LDA", &fx.res.scf)
+        .err()
+        .expect("wrong functional")
+        .to_string();
     eprintln!("wrong functional: {wrong}");
     assert!(wrong.contains("differs"));
     let mut t = fx.res.scf.clone();
@@ -728,7 +816,10 @@ fn refusals_and_the_fock_guard() {
     let mut t = fx.res.scf.clone();
     t.fock[1][(0, 1)] += Complex64::new(1e-10, 0.0);
     let tamp = run("PBE", &t).expect("1e-10 tamper is below the bar");
-    eprintln!("guard: matching {:.1e}, 1e-10 tamper {:.1e} passes, 1e-6 refused", ok.hf.fock_mismatch, tamp.hf.fock_mismatch);
+    eprintln!(
+        "guard: matching {:.1e}, 1e-10 tamper {:.1e} passes, 1e-6 refused",
+        ok.hf.fock_mismatch, tamp.hf.fock_mismatch
+    );
 }
 
 // ------------------------------------------------------------------ mutants
@@ -797,7 +888,13 @@ fn full_mutant_sweep() {
     eprintln!("PBE 1x1x2 ConjPhase: miss {d:.2e} (TRIM identity)");
     assert!(d < 1e-12);
     // Uniform grid: the grid-term mutants are identities.
-    let uni = fixture(&H2, [1, 1, 3], "PBE", Jk::Dense, KXcGrid::Uniform([24, 24, 24]));
+    let uni = fixture(
+        &H2,
+        [1, 1, 3],
+        "PBE",
+        Jk::Dense,
+        KXcGrid::Uniform([24, 24, 24]),
+    );
     let ub = force(&uni, None);
     for m in [KXcMutation::NoPointMotion, KXcMutation::NoWeightDeriv] {
         assert_eq!(miss(&uni, m, &ub), 0.0);
