@@ -90,34 +90,42 @@
 //! not a UHF stationary point. [`analytic_rohf_hessian_available`](crate::hessian::analytic_rohf_hessian_available) is the
 //! pre-SCF probe.
 //!
-//! # Density-fitted J and K (RHF)
+//! # Density-fitted J and K (RHF and UHF)
 //!
-//! Closed-shell RHF with RI-J (`df_j_aux` named), RI-K (`df_k_aux` named) or
-//! both is analytic too, in `crate::hessian_df` (RI-J) and
+//! Closed-shell RHF and UHF with RI-J (`df_j_aux` named), RI-K (`df_k_aux`
+//! named) or both are analytic too, in `crate::hessian_df` (RI-J) and
 //! `crate::hessian_df_k` (RI-K; derivations in their module docs). The fitted
-//! energies `½ dᵀV⁻¹d` and `−¼ Σ_ij L_ij · V⁻¹ L_ij` replace the Coulomb and
-//! exchange skeletons, `J^x` and `K^x` replace the matching parts of `F^x`, and
-//! the CPHF uses the SCF's own `DfJ` / `DfK` for the matching parts of `G`;
-//! every other term and the solver are the exact-integral ones. With both
-//! fitted no four-centre integral is differentiated at all, but the one-electron
-//! and overlap second derivatives still need a libint2 with second derivatives
-//! (so the probe answer is the same as for the exact path). Second derivatives of the three-
-//! and two-index integrals come from a stencil of their first-derivative
-//! blocks, so no new libint2 derivative order is needed beyond the four-centre
-//! one the remaining exact skeleton already uses. A metric with an eigenvalue
-//! below the DF-K cut is refused with a typed error naming the count (RI-K:
-//! those are the modes `DfK` drops, whose truncated energy this does not
-//! differentiate).
+//! energies replace the Coulomb and exchange skeletons, `J^x` and `K^x` replace
+//! the matching parts of `F^x`, and the CPHF uses the SCF's own `DfJ` / `DfK`
+//! for the matching parts of `G`; every other term and the solver are the
+//! exact-integral ones. With both fitted no four-centre integral is
+//! differentiated at all, but the one-electron and overlap second derivatives
+//! still need a libint2 with second derivatives (so the probe answer is the
+//! same as for the exact path). Second derivatives of the three- and two-index
+//! integrals come from a stencil of their first-derivative blocks, so no new
+//! libint2 derivative order is needed beyond the four-centre one the remaining
+//! exact skeleton already uses. A metric with an eigenvalue below the DF-K cut
+//! is refused with a typed error naming the count (RI-K: those are the modes
+//! `DfK` drops, whose truncated energy this does not differentiate).
 //!
-//! Scope: closed-shell RHF (exact four-centre J/K, RI-J, RI-K or both fitted
-//! with the Coulomb operator and no ECP or external potential), UHF (any
-//! multiplicity) and ROHF with exact four-centre Coulomb J/K. Everything else
-//! — KS (ROKS included), range-separated RI-K, RI for UHF/ROHF or combined with
-//! an external potential or an ECP, COSX, ghost atoms, solvation, polarizable
-//! embedding, fractional occupations, cDFT, non-Coulomb operators, and for
-//! ROHF also external potentials and ECPs (validated for RHF/UHF only) — is
-//! refused with a typed error naming the feature (the FD Hessian in
-//! [`crate::frequencies::harmonic_frequencies`] covers those).
+//! UHF: the Coulomb energy `½ dᵀ M d` depends on the TOTAL density only, so the
+//! RI-J terms are the closed-shell ones with `D = D_α + D_β`; the exchange
+//! energy is a sum of one channel per spin, `Σ_σ −½ L^σ·M L^σ` with
+//! `X_σ = C_σ,occ`, over the shared metric inverse, with no cross-spin term; the
+//! coupled α/β CPHF replaces its Coulomb part by `DfJ` on the total response
+//! density and its exchange part by `DfK` on each spin's own response density
+//! (derivation and closed-shell limit in `crate::hessian_df_k`).
+//!
+//! Scope: closed-shell RHF and UHF (any multiplicity) with exact four-centre
+//! J/K, RI-J, RI-K or both fitted with the Coulomb operator, no ECP and no
+//! external potential for the fitted routes; ROHF with exact four-centre
+//! Coulomb J/K. Everything else — KS (ROKS included), range-separated RI-K, RI
+//! for ROHF, RI combined with an external potential or an ECP, COSX, ghost
+//! atoms, solvation, polarizable embedding, fractional occupations, cDFT,
+//! non-Coulomb operators, and for ROHF also external potentials and ECPs
+//! (validated for RHF/UHF only) — is refused with a typed error naming the
+//! feature (the FD Hessian in [`crate::frequencies::harmonic_frequencies`]
+//! covers those).
 //!
 //! Second-derivative integrals need libint2 generated with
 //! `LIBINT2_MAX_DERIV_ORDER >= 2` (conda-forge 2.13.1: AM ≤ 3, i.e. up to f

@@ -1036,8 +1036,8 @@ fn the_exact_k_and_ri_j_only_hessians_miss_the_ri_k_reference() {
 #[test]
 fn unsupported_exchange_fitting_configurations_are_refused() {
     use ferric_scf::hessian::{
-        analytic_hessian_available, analytic_uhf_hessian_available, rhf_hessian_preflight,
-        uhf_hessian_preflight,
+        analytic_hessian_available, analytic_rohf_hessian_available, rhf_hessian_preflight,
+        rohf_hessian_preflight, uhf_hessian_preflight,
     };
     let s = setup(&water(), "sto-3g", "", "def2-universal-jkfit");
     let op = Operator::coulomb();
@@ -1056,11 +1056,12 @@ fn unsupported_exchange_fitting_configurations_are_refused() {
         )
         .expect("RI-J + RI-K available");
     }
-    // Open-shell references are refused.
-    let e = uhf_hessian_preflight(op, &s.cfg).unwrap_err().to_string();
-    eprintln!("UHF RI-K: {e}");
-    assert!(e.contains("RI"), "{e}");
-    assert!(analytic_uhf_hessian_available(&s.mol, &s.prep, op, &s.cfg).is_err());
+    // ROHF with RI is refused; UHF RI-K is supported (tests/df_hessian_uhf.rs).
+    let e = rohf_hessian_preflight(op, &s.cfg).unwrap_err().to_string();
+    eprintln!("ROHF RI-K: {e}");
+    assert!(e.contains("ROHF") && e.contains("RI"), "{e}");
+    assert!(analytic_rohf_hessian_available(&s.mol, &s.prep, op, &s.cfg).is_err());
+    uhf_hessian_preflight(op, &s.cfg).expect("UHF RI-K preflight");
     // External potential next to RI-K.
     let with_field = RhfConfig {
         external_potential: Some(ferric_core::external_potential::ExternalPotential {

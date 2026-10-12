@@ -77,6 +77,52 @@
 //! change (the occupied-orbital path `build_from_occ` is NOT used, it needs
 //! `D = C Cᵀ`).
 //!
+//! # UHF: one channel per spin
+//!
+//! The unrestricted energy is a sum of per-spin exchange channels over ONE
+//! shared fit, plus the Coulomb term of the TOTAL density:
+//!
+//! ```text
+//!   E = Tr[D h] + ½ dᵀ M d(D_α + D_β) + Σ_σ α_σ Σ_ij L^σ_ij · M L^σ_ij + V_nn
+//!   α_σ = −½ ,  D_σ = X_σ X_σᵀ ,  X_σ = C_σ,occ (unit occupations)
+//!   L^σ_{P,ij} = Σ_μν X_σ,μi (P|μν) X_σ,νj ,  M = V⁻¹ (RI-K: the SCF's truncated V^{-1/2}V^{-1/2})
+//! ```
+//!
+//! (`E_K = −½ Σ_σ tr(D_σ K[D_σ])`, `K[D]_μλ = Σ_νσ D_νσ (μν|λσ)_fit`; an αβ
+//! exchange term does not exist, so no cross-channel term appears anywhere.)
+//!
+//! * **RI-J.** `d_P = Σ (P|μν) (D_α + D_β)_μν`: the Coulomb energy sees the
+//!   spins only through the total density, so the merged RI-J terms
+//!   ([`crate::hessian_df`]: skeleton, `J^x`) are used unchanged with
+//!   `D = D_α + D_β`, and the one `J^x` is added to both spin Fock derivatives.
+//! * **RI-K skeleton.** Every piece above is linear in `α_σ` at fixed `X_σ`,
+//!   and `M`, `V_x`, `V_xy` are shared, so `Γ_σ = M L^σ`, `Z^σ_x = L^σ_x −
+//!   V_x Γ_σ` give
+//!   `E_xy = Σ_σ α_σ [2⟨L^σ_xy, Γ_σ⟩ − ⟨Γ_σ, V_xy Γ_σ⟩ + 2⟨Z^σ_x, M Z^σ_y⟩]`.
+//!   The second derivatives enter through two contractions with SUMMED weights
+//!   (`W_P = Σ_σ 2α_σ X_σ Γ_σ,P X_σᵀ` for the 3c stencil, `−Σ_σ α_σ Γ_σ Γ_σᵀ`
+//!   for the 2c stencil): one pass each however many channels there are. The
+//!   cross term is a sum of per-channel terms (`∂_y Γ_σ = M Z^σ_y` involves only
+//!   channel `σ`).
+//! * **`K^x`.** Per channel, with `X → X_σ` in the closed-shell expression;
+//!   the spin Fock derivative gets `2α_σ K^x[D_σ] = −K^x[D_σ]`.
+//! * **CPHF kernel.** `v_σ(D1_α, D1_β) = J_DF(D1_α + D1_β) − K_DF(D1_σ)`:
+//!   `DfJ` on the TOTAL response density (one Coulomb matrix, both spins), `DfK`
+//!   on each spin's own response density (its density path takes the indefinite
+//!   `C_v U C_oᵀ + h.c.` as it is). The α and β rotations stay ONE coupled
+//!   system through the Coulomb term.
+//! * **Closed-shell limit.** `D_α = D_β = D/2`: `X_σ = X/√2`, `L^σ = L/2`, so
+//!   `Σ_σ α_σ L^σ·M L^σ = 2(−½)(¼) L·M L = −¼ L·M L`, the closed-shell
+//!   energy; every piece above reduces to the closed-shell piece, which is the
+//!   exactness anchor of `tests/df_hessian_uhf.rs`.
+//!
+//! The channel code is [`rik_channel_terms`]; the closed-shell [`rik_terms`] is
+//! the one-channel case `(X = √2 C_occ, α = −¼)`. Channels are processed one
+//! after the other: `M` and `V_x` are built once, each channel's `L^σ`, `Γ_σ`,
+//! `L^σ_x`, `Z^σ_x` and `K^x_σ` are built and (but for `Γ_σ`, `K^x_σ`) released
+//! before the next, and what a finished channel leaves behind is charged by
+//! [`rik_peak_bytes_channels`].
+//!
 //! ## Factorization
 //!
 //! `M` is built as `W·W` with `W = U Λ^{-1/2} Uᵀ` from the same `eigh` as
@@ -630,6 +676,17 @@ pub fn rik_channel_terms_with_aux(
     mutants: &RikMutants,
 ) -> Result<RikChannelTerms, FerricError> {
     let (n, naux) = (obs.nbasis(), dfbs.nbasis());
+    if channels.is_empty() {
+        let z = Array2::<f64>::zeros((3 * natoms, 3 * natoms));
+        return Ok(RikChannelTerms {
+            skeleton: z.clone(),
+            skeleton_asymmetry: 0.0,
+            three_centre: z.clone(),
+            metric_second: z.clone(),
+            cross: z,
+            channels: Vec::new(),
+        });
+    }
     let noccs: Vec<usize> = channels.iter().map(|c| c.x.ncols()).collect();
     // Charged BEFORE the metric factorization allocates its (A, A) work arrays.
     let _charge = ferric_core::memory::pool::reserve_global(
