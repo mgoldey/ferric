@@ -617,7 +617,7 @@ fn terfc_direct_probe() {
         aux_radius_bohr: 10.0,
         virt_radius_bohr: Some(12.0),
         ao_tail: 1e-3,
-        schwarz_skip: 0.0, // SchwarzBounds under the terfc table engine unverified — keep off here
+        schwarz_skip: 0.0, // pinned off: this test isolates the locality maps (the cut has its own test file)
         ..Default::default()
     };
     let (pr, st) = amplitude_lmp2_direct(

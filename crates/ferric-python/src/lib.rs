@@ -5245,10 +5245,7 @@ fn att_keys_on_exact_error() -> PyErr {
 /// Correlation operator of a local `run_rimp2`: Coulomb unless an attenuator
 /// was selected (the SCF is always full Coulomb). Strict, shared with the
 /// CLI's `Mp2Cfg::att_rimp2_operator`.
-fn local_correlation_operator(
-    att_keys: Option<&ferric_cli::Mp2Cfg>,
-    model: &ferric_cli::LocalModel,
-) -> PyResult<Operator> {
+fn local_correlation_operator(att_keys: Option<&ferric_cli::Mp2Cfg>) -> PyResult<Operator> {
     let value_err = pyo3::exceptions::PyValueError::new_err;
     let Some(k) = att_keys else {
         return Ok(Operator::coulomb());
@@ -5264,15 +5261,6 @@ fn local_correlation_operator(
     let op = k
         .att_rimp2_operator()
         .map_err(|e| value_err(format!("run_rimp2: {e}")))?;
-    let direct_schwarz = model.direct.as_ref().is_some_and(|d| d.schwarz_skip > 0.0);
-    if matches!(op.kind, ferric_integrals::operator::OperatorKind::Terfc) && direct_schwarz {
-        return Err(value_err(
-            "run_rimp2: integral_direct with att_operator=\"terfc\" needs schwarz_skip=0.0 \
-             (the table-engine terfc has no Schwarz bound; the default 1e-5 cannot be \
-             built). Pass schwarz_skip=0.0 explicitly."
-                .to_string(),
-        ));
-    }
     Ok(op)
 }
 
@@ -5289,8 +5277,7 @@ fn local_correlation_operator(
 /// `result.local["e_corr_canonical_ri"]`. `integral_direct=True` selects the
 /// integral-direct local MP2, which never forms the global 3-index tensor;
 /// its locality maps are `aux_radius` (Bohr, default 10.0), `virt_radius`
-/// (Bohr, 12.0), `ao_tail` (1e-3), `schwarz_skip` (1e-5; must be 0 for
-/// terfc), `batch_merge` (4), `gate_cal` (pair gate, off) and
+/// (Bohr, 12.0), `ao_tail` (1e-3), `schwarz_skip` (1e-5; 0 disables the cut), `batch_merge` (4), `gate_cal` (pair gate, off) and
 /// `virt_schwarz_kappa` (off), the same names and defaults as the CLI's
 /// `[local]` keys. The rules are the CLI's: every local kwarg is a
 /// `ValueError` on the exact method, and `kappa` is a `ValueError` on the
@@ -5302,8 +5289,10 @@ fn local_correlation_operator(
 /// `att_r0` (A, terfc, default 1.05) and `att_omega` (A^-1, terfc only: the
 /// decoupled seam sharpness, `Operator::terfc_with_omega`; omitted = the
 /// linked 1/(r0*sqrt2)). Omitted `att_operator` is the Coulomb operator.
-/// terfc needs `FERRIC_TERF_TABLE_DIR` and `schwarz_skip=0.0` with
-/// `integral_direct=True` (no Schwarz bound exists for it). These four are a
+/// terfc needs `FERRIC_TERF_TABLE_DIR`; with `integral_direct=True` it takes
+/// the same `schwarz_skip` cut as the other operators (Schwarz factors from
+/// the terfc engine's own diagonals; `schwarz_skip=0.0` evaluates every
+/// triple). These four are a
 /// `ValueError` on the exact method (use `run_terfc_rimp2` /
 /// `run_attenuated_rimp2` there).
 ///
@@ -5488,7 +5477,7 @@ fn run_rimp2_local(
              kappa-regularized MP2 exists for the exact rimp2 only. Omit kappa or local=."
         )));
     }
-    let op = local_correlation_operator(att_keys, model)?;
+    let op = local_correlation_operator(att_keys)?;
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let rhf = local_rhf_reference(&mol.inner, &prep, k_builder, memory_budget_gb)?;

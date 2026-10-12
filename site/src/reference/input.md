@@ -161,7 +161,7 @@ read nothing else from it (plus `linlccd_variant` for `linlccd`); any other
 | `terf_omega` | float | linked, ω = 1/(r0√2) | Å⁻¹, > 0 | `rs-mp2-rpa` with `attenuator = "terf"` only (an error elsewhere). Sets the terf/terfc sharpness independently of `r0`. Same as Python `run_rs_mp2_rpa(terf_omega=)`. |
 | `att_operator` | string | `"erfc"` | `erfc` `terfc` (case-insensitive) | `att-rimp2` only (an error on any other kind). The short-range operator on the MP2 correlation; the SCF stays Coulomb. `terfc` is the Python `run_terfc_rimp2` and needs `FERRIC_TERF_TABLE_DIR`. |
 | `att_r0` | float | `1.05` | Å, > 0 | `att-rimp2` with `att_operator = "terfc"` only; an error with `erfc`. |
-| `att_omega` | float | linked, ω = 1/(r0√2) | Å⁻¹, > 0 | `att-rimp2` with `att_operator = "terfc"` only; an error with `erfc` (use `omega`) and on any other kind. Sets the terfc seam sharpness independently of `att_r0`, via `Operator::terfc_with_omega`; r0·ω = `att_r0` × `att_omega`. Needs `FERRIC_TERF_TABLE_DIR`. With `[local]` integral-direct, `schwarz_skip = 0.0` is required. |
+| `att_omega` | float | linked, ω = 1/(r0√2) | Å⁻¹, > 0 | `att-rimp2` with `att_operator = "terfc"` only; an error with `erfc` (use `omega`) and on any other kind. Sets the terfc seam sharpness independently of `att_r0`, via `Operator::terfc_with_omega`; r0·ω = `att_r0` × `att_omega`. Needs `FERRIC_TERF_TABLE_DIR`. With `[local]` integral-direct it takes the same `schwarz_skip` cut as the other operators. |
 | `r0_sweep` | array of floats | none | Å, > 0 | `rs-mp2-rpa` with `terf` only. Reuses one SCF for several r0 values. `r0` is then ignored with a warning. |
 | `r0_bonded` | float | `0.75` | Å | `scs-mp2-2terfc`. |
 | `r0_nonbonded` | float | `1.05` | Å, > `r0_bonded` | `scs-mp2-2terfc`. |
@@ -201,7 +201,7 @@ scheme, `eps` and kept fraction. See
 | `aux_radius` | float | `10.0` | Bohr, > 0 | Integral-direct only (an error otherwise). Aux fit-domain radius. |
 | `virt_radius` | float | `12.0` | Bohr, > 0 | Integral-direct only. Virtual domain radius. |
 | `ao_tail` | float | `1e-3` | ≥ 0 | Integral-direct only. `0.0` keeps every shell. |
-| `schwarz_skip` | float | `1e-5` | ≥ 0 | Integral-direct only. Must be `0.0` for terfc operators, or the run errors. |
+| `schwarz_skip` | float | `1e-5` | ≥ 0 | Integral-direct only. Cauchy-Schwarz cut on the batch 3-index triples: a triple is skipped when `sqrt(max (P\|P)) * sqrt(max (ab\|ab)) < schwarz_skip`, both factors from the run's own operator (Coulomb, erfc or terfc). `0.0` evaluates every triple (bit-identical to a run without the cut). |
 | `batch_merge` | integer | `4` | ≥ 1 | Integral-direct only. |
 | `gate_cal` | float | none (gate off) | > 0 | Integral-direct only. Pair-gate calibration (~0.7 Coulomb, ~0.02 erfc ω = 1). |
 | `virt_schwarz_kappa` | float | none (off) | > 0 | Integral-direct only. ε-linked Schwarz virtual-candidate screen. |

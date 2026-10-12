@@ -2677,8 +2677,9 @@ def run_rimp2(
     keys of the same names: `omega` (1/Angstrom, erfc, default 0.420),
     `att_r0` (Angstrom, terfc, default 1.05) and `att_omega` (1/Angstrom,
     terfc only: the decoupled seam sharpness; omitted = the linked
-    1/(r0*sqrt(2))). terfc needs `FERRIC_TERF_TABLE_DIR` and `schwarz_skip=0.0`
-    with `integral_direct=True`. These four are a ValueError on the exact
+    1/(r0*sqrt(2))). terfc needs `FERRIC_TERF_TABLE_DIR`; with
+    `integral_direct=True` it takes the same `schwarz_skip` cut as the other
+    operators (`schwarz_skip=0.0` evaluates every triple). These four are a ValueError on the exact
     method (use `run_terfc_rimp2` / `run_attenuated_rimp2` there).
     """
     ...

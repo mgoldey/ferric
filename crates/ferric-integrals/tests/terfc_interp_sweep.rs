@@ -85,3 +85,50 @@ fn sweep_interp_vs_series_full_domain() {
         }
     }
 }
+
+/// Same sweep for the DECOUPLED seams (`Operator::terfc_with_omega`), where
+/// s = phi^2 r0^2 reaches (r0*omega)^2 = 0.5..79 for r0*omega = 0.7..8.9. The
+/// error found here sets the relative inflation of the terfc Schwarz factors
+/// (`schwarz::TERFC_TABLE_Q_INFLATION`).
+#[test]
+#[ignore = "benchmark: terfc interpolation sweep on sharp seams; --release --ignored --nocapture"]
+fn sweep_interp_vs_series_sharp_seams() {
+    let Some(dir) = table_dir() else {
+        eprintln!("skip: no tables");
+        return;
+    };
+    let cdir = std::ffi::CString::new(dir.to_str().unwrap()).unwrap();
+    let s_vals = [0.5_f64, 1.0, 2.0, 4.0, 8.0, 12.0, 16.0, 30.0, 50.0, 79.0];
+    let mut overall_abs = 0.0f64;
+    for &(lo, hi) in &[(0.01_f64, 4.0_f64), (4.0, 10.0), (10.0, 20.0)] {
+        for &m in &[0_i32, 1, 2, 4, 7, 10] {
+            let (mut worst_rel, mut worst_abs) = (0.0f64, 0.0f64);
+            let mut at = (0.0f64, 0.0f64);
+            for i in 0..=200 {
+                let s_big = lo + (hi - lo) * (i as f64) / 200.0;
+                for &s_small in &s_vals {
+                    let gi =
+                        unsafe { scf_terfc_debug_interp_G(cdir.as_ptr(), s_big, s_small, m, 0) };
+                    let gs = unsafe { scf_terfc_debug_series_G(s_big, s_small, m) };
+                    if !gi.is_finite() || !gs.is_finite() || gs == 0.0 {
+                        continue;
+                    }
+                    let abs = (gi - gs).abs();
+                    worst_abs = worst_abs.max(abs);
+                    let rel = abs / gs.abs();
+                    if rel > worst_rel {
+                        worst_rel = rel;
+                        at = (s_big, s_small);
+                    }
+                }
+            }
+            overall_abs = overall_abs.max(worst_abs);
+            eprintln!(
+                "S in ({lo},{hi}] m={m:2}: worst rel {worst_rel:.3e} (worst abs {worst_abs:.3e}) \
+                 at S={:.3} s={:.2}",
+                at.0, at.1
+            );
+        }
+    }
+    eprintln!("OVERALL worst ABSOLUTE interpolation error in G: {overall_abs:.3e}");
+}

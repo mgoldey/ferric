@@ -11,7 +11,7 @@
 //! |----------|-------------------------------------------|-----|-----------|
 //! | erf      | e^(-k²/4ω²) / (2π²k²)                     | yes | Schwarz/CSB/CSAM |
 //! | erfc     | (1 - e^(-k²/4ω²)) / (2π²k²)               | yes | CSB (rigorous) |
-//! | terfc    | (1 - cos(k·r₀)e^(-k²/4ω²)) / (2π²k²)      | yes | CSB-eligible; blocked, no 4-center engine |
+//! | terfc    | (1 - cos(k·r₀)e^(-k²/4ω²)) / (2π²k²)      | yes | Schwarz (table-error inflated); CSB not built |
 //! | terf     | cos(k·r₀)e^(-k²/4ω²) / (2π²k²)            | NO  | none valid, permanently |
 //!
 //! terf's `cos(k·r₀)` is negative at `k·r₀ = π`. The cause is the FINITE SHELL
@@ -192,19 +192,20 @@ fn schwarz_and_csb_refuse_terf_as_invalid_not_unimplemented() {
     );
 }
 
-/// terfc's refusal must read as an ENGINE gap, not a validity failure — the
-/// opposite of terf. Someone who reads terfc as "invalid" will not build the
-/// 4-center kernel that would unblock it.
+/// terfc Schwarz is enabled (positive-definite kernel, 4-center table engine);
+/// CSB stays refused because its `M` table is not built for terfc, and terf
+/// stays refused as INVALID. The bound itself is validated against true
+/// integrals in `terfc_schwarz_screening.rs`.
 #[test]
-fn terfc_refusal_reads_as_an_engine_gap_not_invalidity() {
+fn terfc_schwarz_is_enabled_and_csb_is_not() {
+    if !have_tables() {
+        eprintln!("SKIP: FERRIC_TERF_TABLE_DIR unset");
+        return;
+    }
     let dfbs = water();
     let terfc = Operator::terfc(2.0);
-    let e = ferric_integrals::schwarz::schwarz(terfc, &dfbs)
-        .expect_err("Schwarz has no terfc path yet");
-    let msg = format!("{e:?}").to_lowercase();
-    assert!(
-        msg.contains("valid") && !msg.contains("invalid"),
-        "terfc's refusal must state the kernel IS valid and the gap is the missing 4-center \
-         engine. Got: {e:?}"
-    );
+    let q = ferric_integrals::schwarz::schwarz(terfc, &dfbs).expect("terfc Schwarz is enabled");
+    assert!(q.iter().all(|&v| v.is_finite() && v > 0.0));
+    let e = ferric_integrals::csb::csb_m_table(terfc, &dfbs).expect_err("CSB stays refused");
+    assert!(format!("{e:?}").to_lowercase().contains("not yet enabled"));
 }
