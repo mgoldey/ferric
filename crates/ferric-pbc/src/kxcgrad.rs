@@ -46,7 +46,7 @@
 //! It is the Gamma term of [`crate::grad`] with the Bloch AOs complex, `Re`
 //! taken after the contraction and a `1/N_k`; GGA needs the AO Hessian
 //! (`∂_i∂_jφ`), which is NOT cached (the energy cache holds `φ, ∇φ`), so it is
-//! recomputed chunk by chunk ([`crate::dft::LatticeAoHess::eval_bloch`]) with
+//! recomputed chunk by chunk (`LatticeAoHess::eval_bloch`) with
 //! all k inside the chunk. The kernel gates (`ρ > DENSITY_FLOOR`) are the
 //! energy's.
 //!
@@ -84,7 +84,7 @@
 //! chunk, `13·nbf·N_k·chunk` complex values (`φ`, `∇φ`, `∇∇φ` for every k) plus
 //! one `D·conj(φ)` GEMM buffer and a partial `V_xc` (`2 N_k nbf²`); the chunk
 //! shrinks with `N_k·nbf`, the number of concurrent chunks shrinks with the
-//! remaining budget, and the pass is pre-flighted on a [`crate::budget::Ledger`]
+//! remaining budget, and the pass is pre-flighted on a `crate::budget::Ledger`
 //! (a typed error when not even one chunk fits). The `ResponseGrid` weight
 //! derivatives (`npts·natoms·24 B`) are reserved too; the transient of the XC
 //! pass is released before the HF assembly reserves its own arrays.
