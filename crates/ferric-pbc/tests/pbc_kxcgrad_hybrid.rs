@@ -21,7 +21,9 @@ use ferric_pbc::dense_aft::ExxDiv;
 use ferric_pbc::dense_aft::{DenseAftEri, DEFAULT_DENSE_AFT_MAX_BYTES};
 use ferric_pbc::dft::PeriodicGridConfig;
 use ferric_pbc::dft::{gamma_rks, GammaRksConfig};
-use ferric_pbc::grad::{gamma_rks_gradient_with, GammaGradConfig};
+use ferric_pbc::grad::{
+    gamma_rks_gradient_rsgdf, gamma_rks_gradient_with, GammaGradConfig, RsGdfGradSource,
+};
 use ferric_pbc::hcore::kpoint::{periodic_hcore_kpts, PeriodicHcoreK};
 use ferric_pbc::hcore::periodic_hcore;
 use ferric_pbc::hcore::PeriodicHcoreConfig;
@@ -38,7 +40,7 @@ use ferric_pbc::kxcgrad::{kpoint_null_xc_gradient, kpoint_rks_gradient};
 use ferric_pbc::kxcgrad::{KRksGradConfig, KRksGradient, KXcGrid, KXcMutation};
 use ferric_pbc::lattice::Cell;
 use ferric_pbc::rsgdf::kpoint::{KRsGdf, KRsGdfConfig};
-use ferric_pbc::rsgdf::RsGdfConfig;
+use ferric_pbc::rsgdf::{RsGdf, RsGdfConfig};
 use ferric_pbc::uhf::GammaUhfIntegrals;
 use ndarray::Array2;
 use num_complex::Complex64;
@@ -516,14 +518,16 @@ fn a_equal_one_with_zero_xc_is_the_hf_force_per_part() {
     }
 }
 
-/// (b) LINEARITY. At a FIXED density the energy's two-electron part is
-/// J-terms + a (K-terms) and F = h + J - (a/2) K: every term of the force (the
-/// K walks, the RS-GDF fit's exchange pieces, the M-term, the energy-weighted
-/// Pulay term through F) is affine in a. Artifact hypothesis: a scale applied
-/// twice (a^2), to J as well, or only to part of the exchange pieces breaks
-/// affinity (and, for the fit, the K-only ones, at a different size).
-/// Density: the PBE0 SCF's; the stored Fock is replaced by the rebuilt
-/// F(a) so the guard passes (the formula, not self-consistency, is under test).
+/// (b) AFFINITY IN a at a FIXED density. The energy's two-electron part is
+/// J-terms + a (K-terms) and F = h + J - (a/2) K, so the force is affine in
+/// a. WHAT THIS CATCHES: only a-NONLINEAR defects (a applied twice, a^2).
+/// WHAT IT DOES NOT: `a` applied to J, an unscaled piece, a 2a spin factor, an
+/// unscaled Madelung are all still affine in a; they are pinned by the Gamma
+/// anchors, the supercell identity, FD and the mutant tests below. (The a = 1
+/// HF anchor is likewise blind to every scaling defect except the spin
+/// factor.) Density: the PBE0 SCF's; the stored Fock is replaced by the
+/// rebuilt F(a) so the guard passes (the formula, not self-consistency, is
+/// under test).
 #[test]
 fn force_is_affine_in_the_exchange_fraction_at_fixed_density() {
     for jk in [Jk::Dense, Jk::Gdf] {
@@ -1010,13 +1014,20 @@ fn smoke_mutants_are_caught() {
     }
     // The fit-only defect is an IDENTITY on the dense route.
     assert_eq!(miss_g(&fx, G::ExchFitUnscaled, &base), 0.0);
-    // The remainder at full strength (pure PBE instead of the PBE0 remainder).
+    // A wrong remainder ALONE (X1/X3/X4 and the Pulay V_xc with PBE instead
+    // of the PBE0 remainder; only the guard skipped), and the guard-skip alone
+    // as the control (must be exactly 0, so the miss is the remainder's).
     let d = parts_diff(
-        &force_mut(&fx, Some(KXcMutation::FullStrengthXc), None).grad,
+        &force_mut(&fx, Some(KXcMutation::WrongRemainder), None).grad,
         &base.grad,
     );
-    eprintln!("FullStrengthXc: miss {d:.2e}");
+    eprintln!("WrongRemainder (PBE for PBE0), remainder ALONE: miss {d:.2e}");
     assert!(d > MUTANT_BAR);
+    let d0 = parts_diff(
+        &force_mut(&fx, Some(KXcMutation::GuardSkippedOnly), None).grad,
+        &base.grad,
+    );
+    assert_eq!(d0, 0.0, "the guard-skip control must not change the force");
     // RS-GDF + Ewald.
     let fg = fixture(&H2, [1, 1, 3], "PBE0", Jk::Gdf, ExxDiv::Ewald);
     let gb = force(&fg);
@@ -1025,12 +1036,13 @@ fn smoke_mutants_are_caught() {
         G::ExchMadelungUnscaled,
         G::ExchScaledTwice,
         G::ExchSpinFactor,
+        G::ExchJScaled,
     ] {
         let d = miss_g(&fg, m, &gb);
         eprintln!("gdf ewald {m:?}: miss {d:.2e}");
         assert!(d > MUTANT_BAR, "gdf {m:?} survives: {d:e}");
     }
-    // The dense-only defects are identities on RS-GDF (no dense K walk exists).
+    // The dense-only defect is an identity on RS-GDF (no dense K walk exists).
     assert_eq!(miss_g(&fg, G::ExchDenseUnscaled, &gb), 0.0);
     // exxdiv None: the Madelung defect is an identity (v_M = 0): BLIND by
     // construction, asserted so it cannot be mistaken for coverage.
@@ -1058,5 +1070,189 @@ fn pbe0_force_matches_fd_on_the_production_grid_and_a_2x2x2_mesh() {
         }
         eprintln!("(40,110) {mesh_n:?}: PBE0 analytic vs FD worst {worst:.2e}");
         assert!(worst < FD_BAR, "{mesh_n:?}: {worst:e}");
+    }
+}
+
+// -------------------------------------------- RS-GDF Gamma anchor (1x1x1)
+
+/// The Gamma RS-GDF hybrid gradient: separate fit-gradient code
+/// (`gamma_rks_gradient_rsgdf`), the same aux basis and RS-GDF config.
+fn gamma_rsgdf_hybrid(cell: &Cell, f: &str, exxdiv: ExxDiv) -> ferric_pbc::grad::GammaGradient {
+    let prep = prep_for(cell, &pyscf_sto3g_h());
+    let auxp = prep_for(cell, &et_sp_aux());
+    let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
+    let hc = periodic_hcore(cell, &prep, &hcfg).unwrap();
+    let gdf = RsGdf::build_for_gradient(cell, &prep, &auxp, &hc.s, &kgdf_cfg_of(Jk::Gdf).gdf).unwrap();
+    let mut gc = GammaRksConfig::new(f);
+    gc.grid = grid_cfg();
+    gc.exxdiv = exxdiv;
+    gc.scf.energy_conv = 1e-13;
+    gc.scf.density_conv = 1e-10;
+    gc.scf.max_iter = 200;
+    let r = gamma_rks(cell, &prep, &hc, GammaUhfIntegrals::RsGdf(&gdf), &gc).unwrap();
+    gamma_rks_gradient_rsgdf(
+        cell,
+        &prep,
+        &hcfg,
+        &hc,
+        &RsGdfGradSource {
+            gdf: &gdf,
+            aux: &auxp,
+            aux_jac: None,
+        },
+        &r.scf,
+        &gc,
+        &GammaGradConfig {
+            budget_bytes: Some(AMPLE),
+            ..Default::default()
+        },
+    )
+    .unwrap()
+}
+
+fn fit_rows(k: &KRksGradient, g: &ferric_pbc::grad::GammaGradient) -> Vec<(&'static str, f64)> {
+    let (kp, gp) = (&k.hf.parts, &g.parts);
+    vec![
+        ("xc_ao", parts_diff(&k.xc_ao, &gp.xc_ao)),
+        ("overlap", parts_diff(&kp.overlap, &gp.overlap)),
+        ("fit_orb_sr", parts_diff(&kp.fit_orb_sr, &gp.fit_orb_sr)),
+        ("fit_orb_lr", parts_diff(&kp.fit_orb_lr, &gp.fit_orb_lr)),
+        ("fit_aux_sr", parts_diff(&kp.fit_aux_sr, &gp.fit_aux_sr)),
+        ("fit_aux_lr", parts_diff(&kp.fit_aux_lr, &gp.fit_aux_lr)),
+        ("fit_metric_sr", parts_diff(&kp.fit_metric_sr, &gp.fit_metric_sr)),
+        ("fit_metric_lr", parts_diff(&kp.fit_metric_lr, &gp.fit_metric_lr)),
+        ("fit_g0", parts_diff(&kp.fit_g0, &gp.fit_g0)),
+        ("total", parts_diff(&k.grad, &gp_total(g))),
+    ]
+}
+
+fn gp_total(g: &ferric_pbc::grad::GammaGradient) -> Array2<f64> {
+    g.grad.clone()
+}
+
+/// (c') RS-GDF 1x1x1 k force == the Gamma RS-GDF hybrid gradient, per part
+/// (fit_*, overlap, total), exxdiv None and Ewald, PBE0 and B3LYP. The Gamma
+/// fit gradient is separate code, and scales J and K independently, so unlike
+/// the a = 1 anchor this one pins the fit's a-scaling. Floor: SCFs converge to
+/// ~1e-10 in the density.
+#[test]
+fn one_point_rsgdf_hybrid_force_matches_the_gamma_rsgdf_gradient_per_part() {
+    for f in ["PBE0", "B3LYP"] {
+        for exxdiv in [ExxDiv::None, ExxDiv::Ewald] {
+            let gam = gamma_rsgdf_hybrid(&cell_of(&H2), f, exxdiv);
+            let fx = fixture(&H2, [1, 1, 1], f, Jk::Gdf, exxdiv);
+            let k = force(&fx);
+            for (n, d) in fit_rows(&k, &gam) {
+                eprintln!("{f} {exxdiv:?} RS-GDF 1x1x1 vs Gamma: {n:<14} {d:.2e}");
+                assert!(d < 1e-9, "{f} {exxdiv:?} {n}: {d:e}");
+            }
+            assert!(max_abs(&k.hf.parts.fit_orb_sr) > 1e-4, "fit exercised");
+        }
+    }
+}
+
+/// The fit-side defects are caught by the Gamma anchor itself, not only by FD:
+/// `a` applied to the fit's Coulomb pieces and the fit exchange left unscaled
+/// both miss the Gamma gradient by far more than the anchor's floor.
+#[test]
+fn gamma_rsgdf_anchor_catches_the_fit_scale_mutants() {
+    use KGradMutation as G;
+    let gam = gamma_rsgdf_hybrid(&cell_of(&H2), "PBE0", ExxDiv::Ewald);
+    let fx = fixture(&H2, [1, 1, 1], "PBE0", Jk::Gdf, ExxDiv::Ewald);
+    let base = parts_diff(&force(&fx).grad, &gam.grad);
+    for m in [G::ExchJScaled, G::ExchFitUnscaled, G::ExchScaledTwice, G::ExchSpinFactor] {
+        let d = parts_diff(&force_mut(&fx, None, Some(m)).grad, &gam.grad);
+        eprintln!("{m:?}: miss vs the Gamma RS-GDF gradient {d:.2e} (unmutated {base:.1e})");
+        assert!(d > MUTANT_BAR, "{m:?} survives the Gamma anchor: {d:e}");
+    }
+}
+
+// ----------------------------------------------- net force, rsh, validation
+
+/// Translation invariance: sum over atoms ~ 0 for the hybrid, dense and
+/// RS-GDF. It covers the components FD never probes, and is BLIND to a
+/// dropped XC term on this cell (X1, X3, X4 each sum to zero over the atoms,
+/// PR A) and to a-scaling defects (all still translation invariant).
+#[test]
+fn hybrid_net_force_vanishes() {
+    for jk in [Jk::Dense, Jk::Gdf] {
+        let fx = fixture(&H2, [1, 1, 3], "PBE0", jk, ExxDiv::Ewald);
+        let g = force(&fx);
+        let net = (0..3)
+            .map(|c| g.grad.column(c).sum().abs())
+            .fold(0.0_f64, f64::max);
+        eprintln!("{jk:?}: hybrid net force {net:.2e}, max |F| {:.3e}", max_abs(&g.grad));
+        assert!(net < 1e-10, "{jk:?}: {net:e}");
+        assert!(max_abs(&g.grad) > 1e-2);
+    }
+}
+
+/// An injected SCF built from dense kernels that carry an attenuated exchange
+/// (rsh) passes the Fock guard (same kernels) but would get the bare 4pi/k^2
+/// K derivative: refused with a typed error naming rsh, for the HF entry and
+/// the KS entry alike.
+#[test]
+fn dense_kernels_with_rsh_are_refused() {
+    let fx = fixture(&H2, [1, 1, 3], "PBE0", Jk::Dense, ExxDiv::Ewald);
+    let mut dc = KDenseAftConfig::default();
+    dc.rsh = Some(ferric_pbc::rsh::RshParams::from_cam(
+        &ferric_dft::libxc::xc_def_from_name("HSE06").unwrap().cam.unwrap(),
+    ));
+    let eri =
+        KDenseAftEri::build(&fx.cell, &fx.prep, &fx.mesh, &fx.hk.s, fx.exxdiv, &dc).unwrap();
+    assert!(eri.rsh().is_some());
+    let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
+    let e = kpoint_rks_gradient(
+        &fx.cell,
+        &fx.prep,
+        &fx.mesh,
+        &hcfg,
+        &fx.hk,
+        KGradJk::Dense(&eri),
+        &fx.res.scf,
+        "PBE0",
+        &gcfg(Some(ExxDiv::Ewald), None, None),
+    )
+    .expect_err("rsh kernels accepted")
+    .to_string();
+    eprintln!("rsh dense kernels (KS entry): {e}");
+    assert!(e.contains("rsh"));
+    let e = kpoint_rhf_gradient(
+        &fx.cell,
+        &fx.prep,
+        &fx.mesh,
+        &hcfg,
+        &fx.hk,
+        KGradJk::Dense(&eri),
+        &fx.res.scf,
+        ExxDiv::Ewald,
+        &kcfg(),
+    )
+    .expect_err("rsh kernels accepted by HF")
+    .to_string();
+    assert!(e.contains("rsh"));
+}
+
+/// The exact-exchange fraction is validated (typed error, NaN included).
+#[test]
+fn exchange_fraction_is_validated() {
+    let z = zero_xc(&H2, [1, 1, 3], Jk::Dense, ExxDiv::None, 1.0);
+    let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
+    for bad in [-0.1, 1.5, f64::NAN] {
+        let r = with_jk(&z, |j| {
+            kpoint_null_xc_gradient(
+                &z.cell,
+                &z.prep,
+                &z.mesh,
+                &hcfg,
+                &z.hk,
+                j,
+                &z.scf,
+                bad,
+                &gcfg(Some(ExxDiv::None), None, None),
+            )
+        });
+        let e = r.expect_err("bad fraction accepted").to_string();
+        assert!(e.contains("outside [0, 1]"), "{bad}: {e}");
     }
 }

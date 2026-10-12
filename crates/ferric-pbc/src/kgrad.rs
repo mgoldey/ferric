@@ -694,6 +694,13 @@ pub(crate) fn check_inputs(
     }
     match jk {
         KGradJk::Dense(e) => {
+            if e.rsh().is_some() {
+                return Err(FerricError::General(format!(
+                    "{who}: the dense kernels carry an attenuated (range-separated) exchange \
+                     (rsh); the K derivative walks use the bare 4π/k² kernel, so the force \
+                     would be wrong. Range-separated hybrids have no k-point force."
+                )));
+            }
             if e.nk() != nk {
                 return Err(FerricError::General(format!(
                     "{who}: dense kernels have {} k-points, the mesh {nk}",
@@ -1069,6 +1076,7 @@ pub(crate) fn assemble(
                 lr_wrong_q: false,
                 no_loewner_kd: false,
                 cross_spin: false,
+                coulomb_scale: (sc.coulomb != 1.0).then_some(sc.coulomb),
             };
             Some(kpoint_fit_gradient(
                 src.gdf, src.cfg, cell, prep, src.aux, mesh, s_k, &dtot, &exch_fit, fm, ledger,
