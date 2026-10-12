@@ -89,8 +89,8 @@ fn water() -> Molecule {
 fn scf_config(aux: &str) -> RhfConfig {
     RhfConfig {
         max_iter: 200,
-        energy_conv: 1e-12,
-        density_conv: 1e-10,
+        energy_conv: 1e-14,
+        density_conv: 1e-12,
         df_j_aux: Some(aux.to_string()),
         df_k_aux: Some(String::new()),
         ..Default::default()
@@ -788,11 +788,14 @@ fn trivial_limit_exact_span_631g() {
 //
 // BAR_OWN is the agreement bar of the production Hessian against the central
 // FD (Richardson, h = 2e-3 / 1e-3) of ferric's own analytic DF gradient with
-// re-converged SCFs. Production floors measured 2026-10-11 (release): water
-// STO-3G/jkfit 4.4e-11, 6-31G/cc-pVDZ-RI 1.6e-10, cc-pVDZ/cc-pVDZ-RI 9.1e-11,
-// def2-SVP/jkfit 3.0e-9 (worst), NH3 cc-pVDZ/cc-pVDZ-RI 1.1e-9. The closest
-// mutant is the stencil step x10 at 4.0e-7, which must exceed 10 bars. The bar
-// 1e-8 is 3.3x above the worst production floor and 4x below that mutant / 10.
+// re-converged SCFs (energy_conv 1e-14 / density_conv 1e-12). Production
+// floors measured (release): water STO-3G/jkfit 9.2e-11, 6-31G/cc-pVDZ-RI
+// 1.2e-10, cc-pVDZ/cc-pVDZ-RI 3.3e-10, NH3 cc-pVDZ/cc-pVDZ-RI 1.2e-10,
+// def2-SVP/jkfit 4.2e-10 (worst). With displaced SCFs converged only to
+// 1e-12 / 1e-10 the def2-SVP and NH3 floors read 3.0e-9 and 1.1e-9: the FD
+// reference's own SCF noise. The closest mutant is the stencil step x10 at
+// 4.0e-7, which must exceed 10 bars. The bar 1e-8 is 24x above the worst
+// production floor and 4x below that mutant / 10.
 // Every mutant must miss the production Hessian by more than 10 bars.
 const BAR_OWN: f64 = 1e-8;
 

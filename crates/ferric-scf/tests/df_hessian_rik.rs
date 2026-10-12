@@ -82,8 +82,8 @@ fn water() -> Molecule {
 fn scf_config(j_aux: &str, k_aux: &str) -> RhfConfig {
     RhfConfig {
         max_iter: 200,
-        energy_conv: 1e-12,
-        density_conv: 1e-10,
+        energy_conv: 1e-14,
+        density_conv: 1e-12,
         df_j_aux: Some(j_aux.to_string()),
         df_k_aux: Some(k_aux.to_string()),
         ..Default::default()
@@ -478,11 +478,13 @@ fn check_full(mol: &Molecule, basis_name: &str, j_aux: &str, k_aux: &str, tol: f
 
 /// Agreement bar of the production Hessian with the central FD (Richardson,
 /// h = 2e-3 / 1e-3) of ferric's own analytic DF gradient, SCF re-converged at
-/// every displaced geometry. Production floors measured 2026-10-11 (release,
-/// RI-K only): water STO-3G/jkfit 5.8e-11, 6-31G/cc-pVDZ-RI 1.4e-10,
-/// cc-pVDZ/jkfit 3.2e-10, NH3 cc-pVDZ/jkfit 1.0e-9, def2-SVP/jkfit 3.0e-9
-/// (worst; the same value as the RI-J Hessian on this basis, i.e. the FD
-/// reference's own floor); RI-J + RI-K cc-pVDZ/jkfit 4.4e-10.
+/// every displaced geometry, converged to energy_conv 1e-14 / density_conv
+/// 1e-12. Production floors measured (release, RI-K only): water STO-3G/jkfit
+/// 1.1e-10, 6-31G/cc-pVDZ-RI 1.3e-10, cc-pVDZ/jkfit 3.4e-10, NH3 cc-pVDZ/jkfit
+/// 5.7e-10, def2-SVP/jkfit 4.8e-10 (worst); RI-J + RI-K 6-31G 1.2e-10,
+/// cc-pVDZ/jkfit 3.8e-10. With the displaced SCFs converged only to 1e-12 /
+/// 1e-10 the same tests reported up to 3.0e-9 (def2-SVP, identical for RI-J and
+/// RI-K): that was the FD reference's SCF noise, not the Hessian.
 const BAR_OWN: f64 = 1e-8;
 /// Bar of the mutation suite, which runs on water 6-31G/cc-pVDZ-RI. Derived
 /// from both sides: the production agreement with the differenced own gradient
