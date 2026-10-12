@@ -128,6 +128,7 @@ use crate::ewald::{
     default_ewald_omega, ewald_nuclear_strain, madelung_constant, madelung_strain,
     DEFAULT_EWALD_PRECISION,
 };
+use crate::grad::hcore_rotation_built;
 use crate::grad::GRAD_NUCLEUS_EXPONENT;
 use crate::hcore::kpoint::PeriodicHcoreK;
 use crate::hcore::{
@@ -146,7 +147,9 @@ use crate::kuscf::KUScfResult;
 use crate::lattice::Cell;
 use crate::pair_ft::residues::{pair_ft_strain_residues_chunked, residue_coords, residue_index};
 use crate::pair_ft::PairFtStrainTerms;
-use crate::rsgdf::kpoint::kderiv::{kpoint_fit_strain, KFitMutation, KFitStrain, KFitStrainTerms};
+use crate::rsgdf::kpoint::kderiv::{
+    kpoint_fit_strain, rotate_hcore_weights, KFitMutation, KFitStrain, KFitStrainTerms, KRotKind,
+};
 use crate::stress::{add_into, add_pair_virial, diag, scaled, Mat3, ZERO3};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -251,6 +254,24 @@ pub enum KStressMutation {
     SplitNoSmoothVolume,
     /// ECP: drop the ECP strain term altogether.
     NoEcp,
+    /// Column rotation: no `T` in the forward transform of the SR weights
+    /// (rotated walks, unrotated weights; hcore and fit).
+    RotDropT,
+    /// Column rotation: `T` where `Tᵀ` belongs.
+    RotUseT,
+    /// Column rotation: only the first AO index transformed.
+    RotOneSided,
+    /// Column rotation: off-diagonal `T_ks` with the wrong sign.
+    RotFlipSign,
+    /// Column rotation (fit): the weight's AO pair read transposed.
+    RotSwapPair,
+    /// Column rotation (fit): transformed residue bins in reversed order.
+    RotFitWrongResidue,
+    /// Column rotation (hcore): transformed residue weights in reversed order.
+    RotHcoreWrongResidue,
+    /// Column rotation: the strain walks unrotated although the energy ran
+    /// rotated (the behaviour before the k rotation derivative existed).
+    RotOff,
     /// ECP: drop the ECP-centre virial `Σ ∂_C X_C`.
     EcpNoCentre,
     /// ECP: the centre virial with the wrong sign.
@@ -530,52 +551,64 @@ pub(crate) fn one_electron_pass(
         ..*hcore_cfg
     };
     let mut vsr = ZERO3;
-    out.n_sr_triplets = sr_attraction_deriv_visit(cell, prep, &sr_cfg, ledger, false, |t| {
-        let wd = &w_d[residue_index(lattice_coords(&b, &t.l), moduli)];
-        let (bb, xx) = if drop_images {
-            (
-                [
-                    t.b_image[0] - t.l[0],
-                    t.b_image[1] - t.l[1],
-                    t.b_image[2] - t.l[2],
-                ],
-                [
-                    t.nucleus[0] - t.m[0],
-                    t.nucleus[1] - t.m[1],
-                    t.nucleus[2] - t.m[2],
-                ],
-            )
-        } else {
-            (t.b_image, t.nucleus)
-        };
-        let ra = [
-            t.a_center[0] - xx[0],
-            t.a_center[1] - xx[1],
-            t.a_center[2] - xx[2],
-        ];
-        let rb = [bb[0] - xx[0], bb[1] - xx[1], bb[2] - xx[2]];
-        let mut ga = [0.0_f64; 3];
-        let mut gb = [0.0_f64; 3];
-        for i in 0..t.dim1 {
-            for j in 0..t.dim2 {
-                let coeff = t.f * wd[(t.off1 + i, t.off2 + j)];
-                if coeff == 0.0 {
-                    continue;
-                }
-                let idx = i * t.dim2 + j;
-                let idx_swapped = j * t.dim1 + i;
-                for c in 0..3 {
-                    ga[c] += coeff * t.ket_a[c * t.bs + idx_swapped];
-                    gb[c] += coeff * t.ket_b[c * t.bs + idx];
+    // The energy's SR walk: rotated shells (weights `Tᵀ w T`) when `hk` ran
+    // rotated.
+    let rot = hcore_rotation_built("k stress", cell, prep, hcore_cfg, hk.sr_rotated_columns)?;
+    let w_rot = rotate_hcore_weights(
+        rot.as_ref(),
+        KRotKind::defect(rot_kind(mutation)),
+        is(KStressMutation::RotHcoreWrongResidue),
+        &w_d,
+    );
+    let w_sr = w_rot.as_deref().unwrap_or(&w_d);
+    let rot_walk = rot.as_ref().filter(|_| w_rot.is_some());
+    out.n_sr_triplets =
+        sr_attraction_deriv_visit(cell, prep, rot_walk, &sr_cfg, ledger, false, |t| {
+            let wd = &w_sr[residue_index(lattice_coords(&b, &t.l), moduli)];
+            let (bb, xx) = if drop_images {
+                (
+                    [
+                        t.b_image[0] - t.l[0],
+                        t.b_image[1] - t.l[1],
+                        t.b_image[2] - t.l[2],
+                    ],
+                    [
+                        t.nucleus[0] - t.m[0],
+                        t.nucleus[1] - t.m[1],
+                        t.nucleus[2] - t.m[2],
+                    ],
+                )
+            } else {
+                (t.b_image, t.nucleus)
+            };
+            let ra = [
+                t.a_center[0] - xx[0],
+                t.a_center[1] - xx[1],
+                t.a_center[2] - xx[2],
+            ];
+            let rb = [bb[0] - xx[0], bb[1] - xx[1], bb[2] - xx[2]];
+            let mut ga = [0.0_f64; 3];
+            let mut gb = [0.0_f64; 3];
+            for i in 0..t.dim1 {
+                for j in 0..t.dim2 {
+                    let coeff = t.f * wd[(t.off1 + i, t.off2 + j)];
+                    if coeff == 0.0 {
+                        continue;
+                    }
+                    let idx = i * t.dim2 + j;
+                    let idx_swapped = j * t.dim1 + i;
+                    for c in 0..3 {
+                        ga[c] += coeff * t.ket_a[c * t.bs + idx_swapped];
+                        gb[c] += coeff * t.ket_b[c * t.bs + idx];
+                    }
                 }
             }
-        }
-        for a in 0..3 {
-            for bq in 0..3 {
-                vsr[a][bq] += ga[a] * ra[bq] + gb[a] * rb[bq];
+            for a in 0..3 {
+                for bq in 0..3 {
+                    vsr[a][bq] += ga[a] * ra[bq] + gb[a] * rb[bq];
+                }
             }
-        }
-    })?;
+        })?;
     out.vsr = vsr;
 
     // --- V_ECP: the Gamma ECP strain walk with the SR walk's image weight.
@@ -697,6 +730,21 @@ impl KOneElectronStress {
     }
 }
 
+/// The column-rotation test defect a mutation requests.
+fn rot_kind(m: Option<KStressMutation>) -> Option<KRotKind> {
+    match m {
+        Some(KStressMutation::RotDropT) => Some(KRotKind::DropT),
+        Some(KStressMutation::RotUseT) => Some(KRotKind::UseT),
+        Some(KStressMutation::RotOneSided) => Some(KRotKind::OneSided),
+        Some(KStressMutation::RotFlipSign) => Some(KRotKind::FlipSign),
+        Some(KStressMutation::RotSwapPair) => Some(KRotKind::SwapPair),
+        Some(KStressMutation::RotFitWrongResidue) => Some(KRotKind::FitWrongResidue),
+        Some(KStressMutation::RotHcoreWrongResidue) => Some(KRotKind::HcoreWrongResidue),
+        Some(KStressMutation::RotOff) => Some(KRotKind::Off),
+        _ => None,
+    }
+}
+
 /// TEST/DIAGNOSTIC: the one-electron + `E_nn` strain of the k-point energy at
 /// a FIXED total density `D(k)` (`dtot`, one `n × n` matrix per mesh point),
 /// i.e. `dE/dε` of `(1/N_k) Σ_k tr[D(k) h(k)] + E_nn` with `D` held fixed.
@@ -721,11 +769,6 @@ pub fn kpoint_hcore_stress_fixed_d(
             hk.omega, hcore_cfg.omega
         )));
     }
-    hcore_cfg.sr_column_rotation.refuse_explicit(
-        who,
-        "the k stress walks the unrotated shells (the column rotation is implemented in the \
-         k-point energy builds only)",
-    )?;
     if hk.s.len() != nk
         || hk.h.len() != nk
         || dtot.len() != nk
@@ -1416,6 +1459,7 @@ fn fit_pass(
     let is = |m: KStressMutation| cfg.mutation == Some(m);
     let exch = spins.exch_terms();
     let fm = KFitMutation {
+        rot: KRotKind::defect(rot_kind(cfg.mutation)),
         aux_phase: is(KStressMutation::FitAuxPhase),
         no_metric: is(KStressMutation::NoMetric),
         lr_wrong_q: is(KStressMutation::FitLrWrongQ),

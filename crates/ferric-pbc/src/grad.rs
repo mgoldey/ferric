@@ -1713,7 +1713,18 @@ pub(crate) fn hcore_rotation(
     hcore_cfg: &PeriodicHcoreConfig,
     hc: &PeriodicHcore,
 ) -> Result<Option<RotatedBasis>, FerricError> {
-    let built = hc.sr_rotated_columns;
+    hcore_rotation_built(who, cell, prep, hcore_cfg, hc.sr_rotated_columns)
+}
+
+/// [`hcore_rotation`] for an hcore that ran `built` rotated columns (the
+/// Gamma [`PeriodicHcore`] or the k-point `PeriodicHcoreK`).
+pub(crate) fn hcore_rotation_built(
+    who: &str,
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hcore_cfg: &PeriodicHcoreConfig,
+    built: usize,
+) -> Result<Option<RotatedBasis>, FerricError> {
     let want = hcore_cfg.sr_column_rotation.resolve_supported();
     if let Some(r) = want {
         if r.mutant != ColumnRotationMutant::Production {

@@ -515,6 +515,30 @@ impl AoTranspose {
         acc
     }
 
+    /// `W'[mn, p] = Σ_{μν} T_μm T_νn W[μν, p]` of a PAIR-MAJOR real weight
+    /// `(n², w)` (row `μ n + ν`; the k-point SR residue bins `Zbin`): the
+    /// forward transform of every column. `swap` (TEST mutant) reads the
+    /// pair transposed, `W[νμ, p]`. Elementwise independent, so bitwise
+    /// reproducible at any thread count.
+    pub(crate) fn pair_rows(&self, z: &Array2<f64>, n: usize, swap: bool) -> Array2<f64> {
+        let w = z.ncols();
+        let mut out = Array2::<f64>::zeros((n * n, w));
+        for m in 0..n {
+            for k in 0..n {
+                for p in 0..w {
+                    out[(m * n + k, p)] = self.pair(m, k, |a, b| {
+                        if swap {
+                            z[(b * n + a, p)]
+                        } else {
+                            z[(a * n + b, p)]
+                        }
+                    });
+                }
+            }
+        }
+        out
+    }
+
     /// `Tᵀ D T` of an `(n, n)` matrix (the hcore SR derivative's density).
     pub(crate) fn matrix(&self, d: &Array2<f64>) -> Array2<f64> {
         let n = d.nrows();

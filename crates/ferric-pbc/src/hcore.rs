@@ -2097,10 +2097,13 @@ where
 /// the Bloch-phase-folded density `(1/N_k) Σ_k e^{ik·L} D(k)`. Same pair
 /// images, nucleus candidates and screen as [`periodic_hcore`] at `cfg`;
 /// ordered-parallel, `visit` serial in walk order (`serial`: the frozen
-/// oracle loop).
+/// oracle loop). With `rot` (the column rotation the energy's walk ran) the
+/// blocks are evaluated on the rotated shells and the caller's weights must
+/// be the forward-transformed `Tᵀ W(L) T`.
 pub(crate) fn sr_attraction_deriv_visit<F>(
     cell: &Cell,
     prep: &PreparedBasis,
+    rot: Option<&RotatedBasis>,
     cfg: &PeriodicHcoreConfig,
     ledger: &mut Ledger,
     serial: bool,
@@ -2109,7 +2112,7 @@ pub(crate) fn sr_attraction_deriv_visit<F>(
 where
     F: FnMut(&SrDerivTriplet<'_>),
 {
-    sr_attraction_deriv_walk(cell, prep, None, cfg, ledger, serial, visit)
+    sr_attraction_deriv_walk(cell, prep, rot, cfg, ledger, serial, visit)
 }
 
 /// Largest orbital-image distance (Bohr) at which a pair can still exceed `pair_thresh`,

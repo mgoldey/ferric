@@ -90,9 +90,8 @@
 //! a force for a different build is refused, not returned.
 
 use super::{
-    aux_charges, g0_inputs, hermitize_pairs, lr_accumulate_q_any, lr_kvectors,
-    refuse_column_rotation, sr_bins_of, subtract_g0_three_index, KPairWalk, KRsGdf, KRsGdfConfig,
-    KRsGdfMutation,
+    aux_charges, g0_inputs, hermitize_pairs, lr_accumulate_q_any, lr_kvectors, sr_bins_rotated,
+    subtract_g0_three_index, KPairWalk, KRsGdf, KRsGdfConfig, KRsGdfMutation,
 };
 use crate::budget::{bytes_of, Ledger};
 use crate::hcore::{gvector_list_bytes, G_CHUNK_BYTES};
@@ -109,20 +108,100 @@ use crate::rsgdf::split::SplitPlan;
 use crate::rsgdf::strain::{aux_ft_strain_shells, sr2_strain_with, sr3_strain_with};
 use crate::rsgdf::{
     aux_ft_shells, check_obs_on_cell, dot3, gshells, pair_image_radius, require_pure_aux,
-    subtract_g0, G0Handling, LatticeWalker, RsGdfConfig, SplitG0, Stage, ENGINE_PRECISION,
+    sr3_rotation, subtract_g0, G0Handling, LatticeWalker, RsGdfConfig, SplitG0, Sr3Rotation, Stage,
+    ENGINE_PRECISION,
 };
+use crate::sr_rotation::{ColumnRotationMutant, DerivRotMutant, RotatedBasis};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::engine::Engine;
 use ferric_integrals::operator::Operator;
 use ndarray::{Array1, Array2, Array3};
 use num_complex::Complex64 as C64;
+use rayon::prelude::*;
 use std::f64::consts::PI;
+
+/// TEST-ONLY defects of the column-rotated derivative walks at k (module doc,
+/// "Column rotation"); all off in production.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct KRotDefect {
+    /// A defect of the forward transform `Tᵀ W T` (fit bins and, through
+    /// the callers, the hcore weights).
+    pub(crate) deriv: DerivRotMutant,
+    /// Fit: the weight's AO pair read transposed (`W[νμ]`).
+    pub(crate) swap_pair: bool,
+    /// Fit: the transformed bins assigned to the reversed residue order.
+    pub(crate) fit_wrong_residue: bool,
+    /// The derivative walks run UNROTATED although the energy ran rotated
+    /// (the pre-rotation behaviour; fit and, through the callers, hcore).
+    pub(crate) off: bool,
+}
+
+/// The column-rotation test defects a k-point force / stress mutation enum
+/// can request (mapped to a [`KRotDefect`] by [`KRotKind::defect`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KRotKind {
+    /// No `T` in the forward transform (rotated walk, unrotated weights).
+    DropT,
+    /// `T` where `Tᵀ` belongs.
+    UseT,
+    /// Only the first AO index transformed.
+    OneSided,
+    /// Off-diagonal `T_ks` with the wrong sign.
+    FlipSign,
+    /// Fit weights read with the AO pair transposed.
+    SwapPair,
+    /// Fit bins assigned to the reversed residue order.
+    FitWrongResidue,
+    /// hcore weights assigned to the reversed residue order.
+    HcoreWrongResidue,
+    /// Derivative walks unrotated although the energy rotated.
+    Off,
+}
+
+impl KRotKind {
+    /// The [`KRotDefect`] of an optional kind (all off for `None`).
+    pub(crate) fn defect(k: Option<Self>) -> KRotDefect {
+        let mut d = KRotDefect::default();
+        match k {
+            Some(Self::DropT) => d.deriv = DerivRotMutant::DropT,
+            Some(Self::UseT) => d.deriv = DerivRotMutant::UseT,
+            Some(Self::OneSided) => d.deriv = DerivRotMutant::OneSided,
+            Some(Self::FlipSign) => d.deriv = DerivRotMutant::FlipSign,
+            Some(Self::SwapPair) => d.swap_pair = true,
+            Some(Self::FitWrongResidue) => d.fit_wrong_residue = true,
+            Some(Self::Off) => d.off = true,
+            Some(Self::HcoreWrongResidue) | None => {}
+        }
+        d
+    }
+}
+
+/// The hcore SR walk's per-residue weights `w[r]` forward-transformed onto
+/// the rotated shells, `Tᵀ w[r] T` (`None` without a rotation, or under the
+/// [`KRotDefect::off`] defect, when the caller walks the parent shells).
+/// `wrong_residue` is the `HcoreWrongResidue` defect.
+pub(crate) fn rotate_hcore_weights(
+    rot: Option<&RotatedBasis>,
+    defect: KRotDefect,
+    wrong_residue: bool,
+    w: &[Array2<f64>],
+) -> Option<Vec<Array2<f64>>> {
+    let r = rot.filter(|_| !defect.off)?;
+    let tr = r.ao_transpose(defect.deriv);
+    let mut out: Vec<Array2<f64>> = w.par_iter().map(|m| tr.matrix(m)).collect();
+    if wrong_residue {
+        out.reverse();
+    }
+    Some(out)
+}
 
 /// TEST-ONLY defects of the fitted derivative (set by
 /// [`crate::kgrad::KGradMutation`]).
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct KFitMutation {
+    /// Column-rotation defects.
+    pub(crate) rot: KRotDefect,
     /// `e^{+iq·T}` on the SR aux images of `dJ3` (the energy has `e^{−iq·T}`).
     pub(crate) aux_phase: bool,
     /// Drop `Σ Wm dJ2` (SR and LR).
@@ -493,15 +572,13 @@ fn kpoint_fit_core(
 
     // --- The energy's SR bins (same walk, same order; the kept calls of a
     // range split) and G = 0 inputs.
-    let ((j2res, j3res, _, _), _) = sr_bins_of(
-        &st,
-        plan.as_ref(),
+    let rotation = fit_rotation(gdf, g, (cell, obs, aux), mutation.rot.off, who)?;
+    let ((j2res, j3res, _, _), _) = sr_bins_rotated(
+        (&st, plan.as_ref(), rotation.as_ref(), cfg.mutation),
         &images,
         (mod_l, mod_t),
         ledger,
-        who,
         KPairWalk::S2(None),
-        None,
     )?;
     let (qv, s_kept) = g0_inputs(&st, plan.as_ref(), &images, mesh, s_k)?;
     // M_g0's charges: the build's (q_c with a split), or every aux charge
@@ -558,6 +635,29 @@ fn kpoint_fit_core(
     // the SR metric derivative walk against Re Σ_q e^{iq·t_r} Wm(q)ᵀ:
     // ordered-parallel, BIT-IDENTICAL to the frozen serial walks.
     let natoms = cell.positions().len();
+    // Column rotation: the SR 3-centre derivative walk runs on the rotated
+    // shells (and the plan's rotated pieces) against `Tᵀ Zbin T`; the metric,
+    // LR and G = 0 pieces stay on the parent basis.
+    let rot_stage = match &rotation {
+        None => None,
+        Some(r) => {
+            let st_rot = st.with_bases(&r.obs.prep, r.aux_prep(st.aux))?;
+            let plan_rot = plan.as_ref().map(|p| p.sr3_plan_on(&st_rot)).transpose()?;
+            let tr = r.obs.ao_transpose(mutation.rot.deriv);
+            let swap = mutation.rot.swap_pair;
+            acc.zbin
+                .par_iter_mut()
+                .for_each(|b| *b = tr.pair_rows(b, n, swap));
+            if mutation.rot.fit_wrong_residue {
+                acc.zbin.reverse();
+            }
+            Some((st_rot, plan_rot))
+        }
+    };
+    let sr3 = match &rot_stage {
+        Some((s, p)) => (s, p.as_ref()),
+        None => (&st, plan.as_ref()),
+    };
     let bins = KSrBins {
         recip: cell.reciprocal(),
         mod_l,
@@ -567,7 +667,7 @@ fn kpoint_fit_core(
     };
     let budget = window_budget(ledger.remaining());
     if let Some(terms) = strain {
-        let fs = finish_strain(&ctx, &acc, &bins, &images, terms, budget)?;
+        let fs = finish_strain(&ctx, &acc, &bins, sr3, &images, terms, budget)?;
         let zeros = || Array2::<f64>::zeros((natoms, 3));
         let zaux = || Array2::<f64>::zeros((naux, 3));
         return Ok(KFitGrad {
@@ -588,8 +688,15 @@ fn kpoint_fit_core(
             strain: Some(fs.0),
         });
     }
-    let ((orb_sr, aux_sr, n_sr3), (metric_sr, n_sr2)) =
-        k_sr_force_parts(&st, plan.as_ref(), &images, &bins, natoms, budget, mutation)?;
+    let ((orb_sr, aux_sr, n_sr3), (metric_sr, n_sr2)) = k_sr_force_parts(
+        (&st, plan.as_ref()),
+        sr3,
+        &images,
+        &bins,
+        natoms,
+        budget,
+        mutation,
+    )?;
 
     let aoat = crate::grad::ao_atoms(obs);
     let mut orb_lr = Array2::<f64>::zeros((natoms, 3));
@@ -629,6 +736,57 @@ fn kpoint_fit_core(
     })
 }
 
+/// The column rotation the fit derivative differentiates (module doc,
+/// "Column rotation"): the one `gdf`'s energy walk ran
+/// (`stats().sr_rotated_columns`). `Ok(None)` for an unrotated build. Typed
+/// refusals: a rotated build whose config asks for no rotation, a rotation
+/// mutant (a deliberately wrong energy has no derivative), a basis that
+/// rotates another number of columns than the build, and an explicit `On`
+/// over an unrotated build of a basis that does rotate. `off` is the TEST
+/// defect [`KRotDefect::off`].
+fn fit_rotation(
+    gdf: &KRsGdf,
+    g: &RsGdfConfig,
+    (cell, obs, aux): (&Cell, &PreparedBasis, &PreparedBasis),
+    off: bool,
+    who: &str,
+) -> Result<Option<Sr3Rotation>, FerricError> {
+    let built = gdf.stats().sr_rotated_columns;
+    let want = g.sr_column_rotation.resolve_supported();
+    if let Some(r) = want {
+        if r.mutant != ColumnRotationMutant::Production {
+            return Err(FerricError::General(format!(
+                "{who}: the RS-GDF config carries the column-rotation mutant {:?}; forces/stress \
+                 exist only for ColumnRotationMutant::Production",
+                r.mutant
+            )));
+        }
+    }
+    if built == 0 {
+        if g.sr_column_rotation.is_explicit_on() && sr3_rotation(cell, obs, aux, g)?.is_some() {
+            return Err(FerricError::General(format!(
+                "{who}: sr_column_rotation was requested explicitly, but the build's SR walk \
+                 ran unrotated (rebuild it with the same config)"
+            )));
+        }
+        return Ok(None);
+    }
+    if want.is_none() {
+        return Err(FerricError::General(format!(
+            "{who}: the build's SR walk rotated {built} columns but the config's \
+             sr_column_rotation is Off; pass the config the build used"
+        )));
+    }
+    match sr3_rotation(cell, obs, aux, g)? {
+        Some(r) if r.obs.n_rotated_columns == built => Ok(if off { None } else { Some(r) }),
+        other => Err(FerricError::General(format!(
+            "{who}: the build's SR walk rotated {built} columns but this basis rotates {} \
+             (another basis or cell than the build's)",
+            other.map_or(0, |r| r.obs.n_rotated_columns)
+        ))),
+    }
+}
+
 /// The input checks of [`kpoint_fit_gradient`].
 #[allow(clippy::too_many_arguments)]
 fn check_fit_inputs(
@@ -645,7 +803,6 @@ fn check_fit_inputs(
     let who = "k-point RS-GDF fit";
     let g = &cfg.gdf;
     g.validate()?;
-    refuse_column_rotation(g, who)?;
     match cfg.mutation {
         None | Some(KRsGdfMutation::NoTimeReversal) => {}
         Some(m) => {
@@ -1285,15 +1442,16 @@ fn finish_strain(
     ctx: &FitCtx<'_>,
     acc: &FitAcc,
     bins: &KSrBins<'_>,
+    (st3, plan3): (&Stage<'_>, Option<&SplitPlan>),
     images: &[[f64; 3]],
     terms: KFitStrainTerms,
     budget: usize,
 ) -> Result<(KFitStrain, usize, usize), FerricError> {
     let imgs = if terms.images { 1.0 } else { 0.0 };
     let z = |l: [f64; 3], t: [f64; 3]| Y3::PairMajor(bins.z(l, t));
-    let (j3_sr, n_sr3) = match ctx.plan {
-        Some(p) => p.sr3_strain_with(ctx.st, images, imgs, budget, z)?,
-        None => sr3_strain_with(ctx.st, images, imgs, budget, z)?,
+    let (j3_sr, n_sr3) = match plan3 {
+        Some(p) => p.sr3_strain_with(st3, images, imgs, budget, z)?,
+        None => sr3_strain_with(st3, images, imgs, budget, z)?,
     };
     let (j2_sr, n_sr2) = match (ctx.mutation.no_metric, ctx.plan) {
         (true, _) => ([[0.0; 3]; 3], 0),
@@ -1453,8 +1611,8 @@ fn k_lr_strain_unsplit(
 /// (`serial_sr`) their frozen serial oracles.
 #[allow(clippy::type_complexity)]
 fn k_sr_force_parts(
-    st: &Stage<'_>,
-    plan: Option<&SplitPlan>,
+    (st, plan): (&Stage<'_>, Option<&SplitPlan>),
+    (st3, plan3): (&Stage<'_>, Option<&SplitPlan>),
     images: &[[f64; 3]],
     bins: &KSrBins<'_>,
     natoms: usize,
@@ -1463,10 +1621,10 @@ fn k_sr_force_parts(
 ) -> Result<((Array2<f64>, Array2<f64>, usize), (Array2<f64>, usize)), FerricError> {
     let naux = st.aux.nbasis();
     let z = |l: [f64; 3], t: [f64; 3]| Y3::PairMajor(bins.z(l, t));
-    let sr3 = match (plan, mutation.serial_sr) {
-        (Some(p), _) => p.sr3_force_with(st, images, natoms, budget, z)?,
-        (None, true) => k_sr3_force_serial(st, images, bins, natoms)?,
-        (None, false) => sr3_force(st, images, natoms, budget, z)?,
+    let sr3 = match (plan3, mutation.serial_sr) {
+        (Some(p), _) => p.sr3_force_with(st3, images, natoms, budget, z)?,
+        (None, true) => k_sr3_force_serial(st3, images, bins, natoms)?,
+        (None, false) => sr3_force(st3, images, natoms, budget, z)?,
     };
     let sr2 = match (plan, mutation.no_metric, mutation.serial_sr) {
         (_, true, _) => (Array2::<f64>::zeros((naux, 3)), 0),

@@ -89,6 +89,7 @@ use crate::ecp::{periodic_ecp_gradient_weighted, EcpGradMutation, EcpWeights};
 use crate::ewald::{
     default_ewald_omega, ewald_nuclear_gradient_parts, madelung_constant, DEFAULT_EWALD_PRECISION,
 };
+use crate::grad::hcore_rotation_built;
 use crate::grad::{ao_atoms, GRAD_NUCLEUS_EXPONENT};
 use crate::hcore::kpoint::PeriodicHcoreK;
 use crate::hcore::{
@@ -102,7 +103,9 @@ use crate::kuscf::KUScfResult;
 use crate::lattice::Cell;
 use crate::pair_ft::residues::{pair_ft_deriv_residues_chunked, residue_coords, residue_index};
 use crate::rsgdf::deriv::{check_aux_map, fold_aux};
-use crate::rsgdf::kpoint::kderiv::{kpoint_fit_gradient, KFitGrad, KFitMutation};
+use crate::rsgdf::kpoint::kderiv::{
+    kpoint_fit_gradient, rotate_hcore_weights, KFitGrad, KFitMutation, KRotKind,
+};
 use crate::rsgdf::kpoint::{KRsGdf, KRsGdfConfig};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -155,6 +158,24 @@ pub enum KGradMutation {
     /// RS-GDF range split: the unsplit G = 0 term in the derivative (every
     /// aux charge `q` and `dS`, not `(q_c, d(S − S_ss))`).
     SplitFullG0,
+    /// Column rotation: no `T` in the forward transform of the SR weights
+    /// (rotated walks, unrotated weights; hcore and fit).
+    RotDropT,
+    /// Column rotation: `T` where `Tᵀ` belongs.
+    RotUseT,
+    /// Column rotation: only the first AO index transformed.
+    RotOneSided,
+    /// Column rotation: off-diagonal `T_ks` with the wrong sign.
+    RotFlipSign,
+    /// Column rotation (fit): the weight's AO pair read transposed.
+    RotSwapPair,
+    /// Column rotation (fit): transformed residue bins in reversed order.
+    RotFitWrongResidue,
+    /// Column rotation (hcore): transformed residue weights in reversed order.
+    RotHcoreWrongResidue,
+    /// Column rotation: the derivative walks unrotated although the energy
+    /// ran rotated (the behaviour before the k rotation derivative existed).
+    RotOff,
     /// ECP: drop the ECP force term altogether.
     NoEcp,
     /// ECP: the centre derivative `∂_C` dropped.
@@ -174,6 +195,21 @@ pub enum KGradMutation {
     /// instead of the residue moduli (aliases images that differ by half a
     /// supercell on a shifted mesh; identity on a Gamma-centred mesh).
     EcpMeshCountModuli,
+}
+
+/// The column-rotation test defect a mutation requests.
+fn rot_kind(m: Option<KGradMutation>) -> Option<KRotKind> {
+    match m {
+        Some(KGradMutation::RotDropT) => Some(KRotKind::DropT),
+        Some(KGradMutation::RotUseT) => Some(KRotKind::UseT),
+        Some(KGradMutation::RotOneSided) => Some(KRotKind::OneSided),
+        Some(KGradMutation::RotFlipSign) => Some(KRotKind::FlipSign),
+        Some(KGradMutation::RotSwapPair) => Some(KRotKind::SwapPair),
+        Some(KGradMutation::RotFitWrongResidue) => Some(KRotKind::FitWrongResidue),
+        Some(KGradMutation::RotHcoreWrongResidue) => Some(KRotKind::HcoreWrongResidue),
+        Some(KGradMutation::RotOff) => Some(KRotKind::Off),
+        _ => None,
+    }
 }
 
 /// Settings for [`kpoint_rhf_gradient`] / [`kpoint_uhf_gradient`].
@@ -566,14 +602,6 @@ pub(crate) fn check_inputs(
             hk.omega, hcore_cfg.omega
         )));
     }
-    // The k-point force walks are unrotated (`Auto` resolves off here, the
-    // energy's rotation agrees to the screening precision); an explicit
-    // request is refused, never ignored.
-    hcore_cfg.sr_column_rotation.refuse_explicit(
-        who,
-        "the k-point forces walk the unrotated shells (the column rotation is implemented \
-         in the k-point energy builds only)",
-    )?;
     if hk.s.len() != nk
         || hk.h.len() != nk
         || hk.s.iter().chain(&hk.h).any(|x| x.dim() != (n, n))
@@ -614,13 +642,6 @@ pub(crate) fn check_inputs(
                 )));
             }
             check_aux_map(cell, s.aux, None)?;
-            // The fit the forces rebuild is unrotated too (refused here, before
-            // any derivative walk, as the hcore request above).
-            s.cfg.gdf.sr_column_rotation.refuse_explicit(
-                who,
-                "the k-point forces walk the unrotated shells (the column rotation is \
-                 implemented in the k-point energy builds only)",
-            )?;
         }
     }
     Ok(())
@@ -885,6 +906,7 @@ fn assemble(
         KGradJk::RsGdf(src) => {
             let exch = spins.exch_terms();
             let fm = KFitMutation {
+                rot: KRotKind::defect(rot_kind(mutation)),
                 aux_phase: mutation == Some(KGradMutation::FitAuxPhase),
                 no_metric: mutation == Some(KGradMutation::FitNoMetric),
                 no_g0: mutation == Some(KGradMutation::FitNoG0),
@@ -954,26 +976,38 @@ fn assemble(
     let mut g_vsr_basis = Array2::<f64>::zeros((natoms, 3));
     let mut g_vsr_nuc = Array2::<f64>::zeros((natoms, 3));
     let serial = mutation == Some(KGradMutation::SerialDerivWalks);
-    let n_sr_triplets = sr_attraction_deriv_visit(cell, prep, &sr_cfg, ledger, serial, |t| {
-        let wd = &w_d[residue_index(lattice_coords(&b, &t.l), moduli)];
-        for i in 0..t.dim1 {
-            for j in 0..t.dim2 {
-                let coeff = t.f * wd[(t.off1 + i, t.off2 + j)];
-                if coeff == 0.0 {
-                    continue;
-                }
-                let idx = i * t.dim2 + j;
-                let idx_swapped = j * t.dim1 + i;
-                for c in 0..3 {
-                    let d1 = coeff * t.ket_a[c * t.bs + idx_swapped];
-                    let d2 = coeff * t.ket_b[c * t.bs + idx];
-                    g_vsr_basis[(t.at1, c)] += d1;
-                    g_vsr_basis[(t.at2, c)] += d2;
-                    g_vsr_nuc[(t.atc, c)] -= d1 + d2;
+    // The energy's SR walk: rotated shells (weights `Tᵀ w T`) when `hk` ran
+    // rotated.
+    let rot = hcore_rotation_built("k gradient", cell, prep, hcore_cfg, hk.sr_rotated_columns)?;
+    let w_rot = rotate_hcore_weights(
+        rot.as_ref(),
+        KRotKind::defect(rot_kind(mutation)),
+        mutation == Some(KGradMutation::RotHcoreWrongResidue),
+        &w_d,
+    );
+    let w_sr = w_rot.as_deref().unwrap_or(&w_d);
+    let rot_walk = rot.as_ref().filter(|_| w_rot.is_some());
+    let n_sr_triplets =
+        sr_attraction_deriv_visit(cell, prep, rot_walk, &sr_cfg, ledger, serial, |t| {
+            let wd = &w_sr[residue_index(lattice_coords(&b, &t.l), moduli)];
+            for i in 0..t.dim1 {
+                for j in 0..t.dim2 {
+                    let coeff = t.f * wd[(t.off1 + i, t.off2 + j)];
+                    if coeff == 0.0 {
+                        continue;
+                    }
+                    let idx = i * t.dim2 + j;
+                    let idx_swapped = j * t.dim1 + i;
+                    for c in 0..3 {
+                        let d1 = coeff * t.ket_a[c * t.bs + idx_swapped];
+                        let d2 = coeff * t.ket_b[c * t.bs + idx];
+                        g_vsr_basis[(t.at1, c)] += d1;
+                        g_vsr_basis[(t.at2, c)] += d2;
+                        g_vsr_nuc[(t.atc, c)] -= d1 + d2;
+                    }
                 }
             }
-        }
-    })?;
+        })?;
 
     // --- V_ECP: the Gamma ECP walk with the SR walk's image weight W_L = w_d[r(L)].
     let (g_ecp, n_ecp_triples) =
