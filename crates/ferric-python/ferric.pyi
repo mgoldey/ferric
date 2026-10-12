@@ -1822,6 +1822,16 @@ class KpointRksResult:
 class KpointScfResult:
     """Result of run_rhf_kpts / run_uhf_kpts (energies per cell)."""
 
+    def gradient(self) -> NDArray[np.float64] | None:
+        """Analytic nuclear gradient dE/dR (natoms x 3, Hartree/Bohr per cell,
+        rows in the Molecule's atom order; the force on ONE copy of each atom
+        in the supercell of the mesh) if with_gradient=True, else None."""
+        ...
+    def stress(self) -> NDArray[np.float64] | None:
+        """Analytic stress sigma = (1/Omega) dE/d(strain) (3 x 3, Hartree/Bohr^3,
+        not symmetrised; pressure = -tr(sigma)/3) if with_stress=True, else None."""
+        ...
+
     @property
     def timings(self) -> dict[str, Any]:
         """Stage timings and counters (observation only; energies are unaffected):
@@ -2184,9 +2194,14 @@ def run_rhf_kpts(
     memory_budget_gb: float | None = None,
     range_split: float | bool | None = None,
     gdf_omega: float | None = None,
+    with_gradient: bool = False,
+    with_stress: bool = False,
 ) -> KpointScfResult:
     """Closed-shell k-point RHF. centring "gamma" | "mp" (strict).
-    range_split: the Gamma bindings' opt-in RS-GDF range split (jk="rsgdf")."""
+    range_split: the Gamma bindings' opt-in RS-GDF range split (jk="rsgdf").
+    with_gradient / with_stress (default False) add the analytic forces and
+    stress of the converged SCF (result.gradient() / result.stress(), units as
+    the Gamma bindings); range_split with either is a ValueError."""
     ...
 
 def run_uhf_kpts(
@@ -2207,9 +2222,12 @@ def run_uhf_kpts(
     memory_budget_gb: float | None = None,
     range_split: float | bool | None = None,
     gdf_omega: float | None = None,
+    with_gradient: bool = False,
+    with_stress: bool = False,
 ) -> KpointScfResult:
     """k-point UHF; s2 is the giant (supercell) determinant's <S^2>.
-    range_split as run_rhf_kpts."""
+    range_split, with_gradient and with_stress as run_rhf_kpts (the forces and
+    stress differentiate the final, Ewald, stage)."""
     ...
 
 def run_rks_kpts(

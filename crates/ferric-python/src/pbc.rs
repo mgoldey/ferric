@@ -25,17 +25,18 @@ use ferric_core::FerricError;
 use ferric_pbc::dense_aft::{DEFAULT_DENSE_AFT_MAX_BYTES, DEFAULT_DENSE_AFT_PRECISION};
 use ferric_pbc::drpa::DEFAULT_GAMMA_DRPA_QUAD_POINTS;
 use ferric_pbc::kcorr::DEFAULT_KDRPA_QUAD_POINTS;
+use ferric_pbc::kstress::{kpoint_rhf_stress, kpoint_uhf_stress, KStressConfig};
 use ferric_pbc::rsgdf::auto_omega::auto_rsgdf_omega;
 use ferric_pbc::rsgdf::{DEFAULT_RANGE_SPLIT_LAMBDA, DEFAULT_RSGDF_OMEGA};
 use ferric_pbc::SrColumnRotation;
 use ferric_pbc::{
     gamma_drpa, gamma_mp2, gamma_rks, gamma_rohf, gamma_roks, gamma_uhf, gamma_uks, kpoint_drpa,
-    kpoint_mp2, periodic_hcore, periodic_hcore_kpts, solve_krhf, solve_krhf_injected, solve_kuhf,
-    Cell, DenseAftEri, EwaldStart, ExxDiv, GammaDrpaConfig, GammaDrpaIntegrals, GammaMp2Config,
-    GammaMp2Integrals, GammaRksConfig, GammaRohfConfig, GammaRoksConfig, GammaUhfConfig,
-    GammaUhfIntegrals, GammaUksConfig, GammaUksGridInfo, KCorrIntegrals, KDenseAftConfig,
-    KDenseAftEri, KDenseAftPairs, KDrpaConfig, KDrpaEnergy, KJkKind, KMp2Config, KPointInjection,
-    KPointMesh, KRhfConfig, KRsGdf, KRsGdfConfig, KScfConfig, KScfResult, KUhfConfig, LindepReport,
+    kpoint_mp2, periodic_hcore, periodic_hcore_kpts, solve_krhf_injected, Cell, DenseAftEri,
+    EwaldStart, ExxDiv, GammaDrpaConfig, GammaDrpaIntegrals, GammaMp2Config, GammaMp2Integrals,
+    GammaRksConfig, GammaRohfConfig, GammaRoksConfig, GammaUhfConfig, GammaUhfIntegrals,
+    GammaUksConfig, GammaUksGridInfo, KCorrIntegrals, KDenseAftConfig, KDenseAftEri,
+    KDenseAftPairs, KDrpaConfig, KDrpaEnergy, KJkKind, KMp2Config, KPointInjection, KPointMesh,
+    KRhfConfig, KRsGdf, KRsGdfConfig, KScfConfig, KScfResult, KUhfConfig, LindepReport,
     MeshCentring, Mp2Denominators, PbcTimings, PeriodicGridConfig, PeriodicHcore,
     PeriodicHcoreConfig, RangeSplit, RsGdf, RsGdfConfig, SpinGapReport, StageClock,
 };
@@ -47,6 +48,10 @@ use ferric_pbc::{
     gamma_uhf_gradient_rsgdf, gamma_uhf_gradient_with, gamma_uhf_stress, gamma_uhf_stress_rsgdf,
     gamma_uks_gradient_rsgdf, gamma_uks_gradient_with, gamma_uks_stress, gamma_uks_stress_rsgdf,
     GammaGradConfig, GammaStressConfig, RsGdfGradSource,
+};
+use ferric_pbc::{
+    kpoint_rhf_gradient, kpoint_uhf_gradient, solve_krhf_keep, solve_kuhf_keep, KGradConfig,
+    KRetained, KUScfResult,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 
@@ -2076,10 +2081,26 @@ struct PyKpointScfResult {
     #[pyo3(get)]
     auxbasis: Option<String>,
     timings_data: PbcTimings,
+    gradient_data: Option<Array2<f64>>,
+    stress_data: Option<Array2<f64>>,
 }
 
 #[pymethods]
 impl PyKpointScfResult {
+    /// Analytic nuclear gradient `dE/dR` (natoms x 3, Hartree/Bohr per cell,
+    /// rows in the Molecule's atom order; the force on ONE copy of each atom
+    /// in the supercell of the mesh) of the converged SCF (UHF: the final
+    /// stage); `None` unless `with_gradient=True`.
+    fn gradient<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
+        opt_array(py, &self.gradient_data)
+    }
+    /// Analytic stress `σ_ab = (1/Ω) dE/dε_ab` (3 x 3, Hartree/Bohr³; strain
+    /// of the lattice rows AND the atoms, fixed fractional coordinates;
+    /// pressure = -tr(σ)/3), as the Gamma bindings. Not symmetrised. `None`
+    /// unless `with_stress=True`.
+    fn stress<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
+        opt_array(py, &self.stress_data)
+    }
     /// Coarse stage timings (`"k hcore"`, `"k J/K build"`, `"k SCF"`) and
     /// the RS-GDF counters (see `timings_dict`).
     #[getter]
@@ -2197,7 +2218,65 @@ fn kpoint_result_base(
         jk: s.jk_name(),
         auxbasis: s.aux_name.clone(),
         timings_data: PbcTimings::default(),
+        gradient_data: None,
+        stress_data: None,
     }
+}
+
+/// The converged k-point SCF a derivative differentiates.
+enum KScfRef<'a> {
+    Rhf(&'a KScfResult),
+    Uhf(&'a KUScfResult),
+}
+
+/// Analytic k-point forces / stress (`ferric_pbc::kgrad`, `::kstress`) of a
+/// converged RHF / UHF SCF through the hcore output and J/K object the SCF ran
+/// on ([`KRetained`]), with the SCF's own hcore and RS-GDF configs. The Rust
+/// side refuses a non-converged SCF and a config that disagrees with the
+/// build.
+fn k_derivatives(
+    s: &PbcSetup,
+    mesh: &KPointMesh,
+    kept: &KRetained,
+    hcfg: &PeriodicHcoreConfig,
+    rcfg: &KRsGdfConfig,
+    scf: KScfRef<'_>,
+) -> Result<Derivs, FerricError> {
+    let mut out = Derivs::default();
+    let aux = s.aux.as_ref();
+    let gcfg = KGradConfig {
+        budget_bytes: s.budget_bytes,
+        ..Default::default()
+    };
+    let scfg = KStressConfig {
+        budget_bytes: s.budget_bytes,
+        ..Default::default()
+    };
+    if s.derivs.gradient {
+        let jk = kept.grad_jk(aux, rcfg)?;
+        let g = match scf {
+            KScfRef::Rhf(r) => {
+                kpoint_rhf_gradient(&s.cell, &s.prep, mesh, hcfg, &kept.hk, jk, r, s.exx, &gcfg)?
+            }
+            KScfRef::Uhf(r) => {
+                kpoint_uhf_gradient(&s.cell, &s.prep, mesh, hcfg, &kept.hk, jk, r, s.exx, &gcfg)?
+            }
+        };
+        out.gradient = Some(g.grad);
+    }
+    if s.derivs.stress {
+        let jk = kept.stress_jk(aux, rcfg)?;
+        let st = match scf {
+            KScfRef::Rhf(r) => {
+                kpoint_rhf_stress(&s.cell, &s.prep, mesh, hcfg, &kept.hk, jk, r, s.exx, &scfg)?
+            }
+            KScfRef::Uhf(r) => {
+                kpoint_uhf_stress(&s.cell, &s.prep, mesh, hcfg, &kept.hk, jk, r, s.exx, &scfg)?
+            }
+        };
+        out.stress = Some(Array2::from_shape_fn((3, 3), |(a, b)| st.sigma[a][b]));
+    }
+    Ok(out)
 }
 
 /// The fields KRHF and KUHF results share (KScfResult / KUScfResult have
@@ -2216,14 +2295,19 @@ fn krhf_driver(
     s: &PbcSetup,
     mesh: &KPointMesh,
     scf: KScfConfig,
-) -> Result<(KScfResult, f64), FerricError> {
+) -> Result<(KScfResult, f64, Derivs), FerricError> {
     let mut cfg = KRhfConfig::for_cell(&s.cell, s.exx);
     cfg.scf = scf;
     cfg.hcore = khcore_config(s);
     (cfg.jk, cfg.dense, cfg.rsgdf) = (kjk_kind(s), kdense_config(s), krsgdf_config(s));
-    let r = solve_krhf(&s.cell, &s.prep, s.aux.as_ref(), mesh, &cfg)?;
+    let (r, kept) = solve_krhf_keep(&s.cell, &s.prep, s.aux.as_ref(), mesh, &cfg)?;
     let madelung = mesh.madelung(&s.cell)?;
-    Ok((r, madelung))
+    let derivs = if s.derivs.any() {
+        k_derivatives(s, mesh, &kept, &cfg.hcore, &cfg.rsgdf, KScfRef::Rhf(&r))?
+    } else {
+        Derivs::default()
+    };
+    Ok((r, madelung, derivs))
 }
 
 /// Closed-shell **k-point RHF** on a `mesh = (n1, n2, n3)` k-mesh.
@@ -2248,7 +2332,7 @@ fn krhf_driver(
     mol, lattice, basis_set, mesh, exxdiv="ewald", centring="gamma", omega=None,
     max_eri_gb=None, max_iter=200, energy_conv=1e-12, grad_conv=1e-9,
     jk="dense", auxbasis=None, memory_budget_gb=None, range_split=None,
-    gdf_omega=None,
+    gdf_omega=None, with_gradient=false, with_stress=false,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_rhf_kpts(
@@ -2269,6 +2353,8 @@ fn run_rhf_kpts(
     memory_budget_gb: Option<f64>,
     range_split: Option<&Bound<'_, PyAny>>,
     gdf_omega: Option<f64>,
+    with_gradient: bool,
+    with_stress: bool,
 ) -> PyResult<PyKpointScfResult> {
     let fname = "run_rhf_kpts";
     let mut s = pbc_setup(&PbcArgs {
@@ -2285,10 +2371,14 @@ fn run_rhf_kpts(
         memory_budget_gb,
         closed_shell: true,
     })?;
+    s.derivs = DerivRequest {
+        gradient: with_gradient,
+        stress: with_stress,
+    };
     s.range_split = parse_range_split(fname, range_split, s.aux.is_some(), s.derivs)?;
     let m = k_mesh(&s, mesh, centring)?;
     let scf = kscf_config(fname, max_iter, energy_conv, grad_conv)?;
-    let (r, madelung) = py
+    let (r, madelung, derivs) = py
         .allow_threads(|| krhf_driver(&s, &m, scf))
         .map_err(pbc_err(fname))?;
     let like = KScfLike {
@@ -2304,6 +2394,7 @@ fn run_rhf_kpts(
     out.timings_data = r.timings;
     out.mo_energy = r.eps;
     (out.homo, out.lumo) = (Some(r.homo), Some(r.lumo));
+    (out.gradient_data, out.stress_data) = (derivs.gradient, derivs.stress);
     Ok(out)
 }
 
@@ -2312,13 +2403,19 @@ fn kuhf_driver(
     mesh: &KPointMesh,
     scf: KScfConfig,
     start: EwaldStart,
-) -> Result<ferric_pbc::KUhfResult, FerricError> {
+) -> Result<(ferric_pbc::KUhfResult, Derivs), FerricError> {
     let mut cfg = KUhfConfig::for_cell(&s.cell, s.exx);
     (cfg.scf, cfg.ewald_start) = (scf, start);
     cfg.hcore = khcore_config(s);
     (cfg.jk, cfg.dense, cfg.rsgdf) = (kjk_kind(s), kdense_config(s), krsgdf_config(s));
     cfg.budget_bytes = s.budget_bytes;
-    solve_kuhf(&s.cell, &s.prep, s.aux.as_ref(), mesh, &cfg)
+    let (r, kept) = solve_kuhf_keep(&s.cell, &s.prep, s.aux.as_ref(), mesh, &cfg)?;
+    let derivs = if s.derivs.any() {
+        k_derivatives(s, mesh, &kept, &cfg.hcore, &cfg.rsgdf, KScfRef::Uhf(&r.scf))?
+    } else {
+        Derivs::default()
+    };
+    Ok((r, derivs))
 }
 
 /// **k-point UHF** (spin state from the Molecule's multiplicity; electrons
@@ -2337,7 +2434,7 @@ fn kuhf_driver(
     ewald_start=None, omega=None, max_eri_gb=None, max_iter=200,
     energy_conv=1e-12, grad_conv=1e-9, jk="dense", auxbasis=None,
     memory_budget_gb=None, range_split=None,
-    gdf_omega=None,
+    gdf_omega=None, with_gradient=false, with_stress=false,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_uhf_kpts(
@@ -2359,6 +2456,8 @@ fn run_uhf_kpts(
     memory_budget_gb: Option<f64>,
     range_split: Option<&Bound<'_, PyAny>>,
     gdf_omega: Option<f64>,
+    with_gradient: bool,
+    with_stress: bool,
 ) -> PyResult<PyKpointScfResult> {
     let fname = "run_uhf_kpts";
     let mut s = pbc_setup(&PbcArgs {
@@ -2375,11 +2474,15 @@ fn run_uhf_kpts(
         memory_budget_gb,
         closed_shell: false,
     })?;
+    s.derivs = DerivRequest {
+        gradient: with_gradient,
+        stress: with_stress,
+    };
     s.range_split = parse_range_split(fname, range_split, s.aux.is_some(), s.derivs)?;
     let m = k_mesh(&s, mesh, centring)?;
     let (start, start_name) = parse_ewald_start(fname, s.exx, ewald_start)?;
     let scf = kscf_config(fname, max_iter, energy_conv, grad_conv)?;
-    let r = py
+    let (r, derivs) = py
         .allow_threads(|| kuhf_driver(&s, &m, scf, start))
         .map_err(pbc_err(fname))?;
     let u = &r.scf;
@@ -2399,6 +2502,7 @@ fn run_uhf_kpts(
     (out.mo_energy, out.mo_energy_beta) = (u.eps_alpha.clone(), Some(u.eps_beta.clone()));
     (out.nalpha, out.nbeta, out.s2) = (Some(r.nocc.0), Some(r.nocc.1), Some(u.s2));
     (out.gap_alpha, out.gap_beta) = (r.gaps.gap_alpha, r.gaps.gap_beta);
+    (out.gradient_data, out.stress_data) = (derivs.gradient, derivs.stress);
     Ok(out)
 }
 
