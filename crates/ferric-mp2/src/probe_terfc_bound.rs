@@ -80,7 +80,10 @@ impl Kern {
             KKind::Erfc => (1.0, self.w * self.w),
             KKind::Terfc => {
                 let w2 = self.w * self.w;
-                ((w2 * self.r0 * self.r0 * (1.0 / eps - 1.0)).exp(), w2 * (1.0 - eps))
+                (
+                    (w2 * self.r0 * self.r0 * (1.0 / eps - 1.0)).exp(),
+                    w2 * (1.0 - eps),
+                )
             }
         }
     }
@@ -123,7 +126,8 @@ pub fn shell_maj(sh: &LocatedShell, f: f64) -> ShellMaj {
         .iter()
         .zip(sh.coefficients)
         .map(|(&a, &c)| {
-            let n = (2.0 * a / PI).powf(0.75) * (4.0 * a).powi(l).sqrt() / dfact_odd(2 * l - 1).sqrt();
+            let n =
+                (2.0 * a / PI).powf(0.75) * (4.0 * a).powi(l).sqrt() / dfact_odd(2 * l - 1).sqrt();
             c * n
         })
         .collect();
@@ -148,8 +152,18 @@ pub fn shell_maj(sh: &LocatedShell, f: f64) -> ShellMaj {
         d.push(ang * nrad * cn[i].abs() * m);
         beta.push(ff * a);
     }
-    let nfn = if sh.pure { 2 * l as usize + 1 } else { ((l + 1) * (l + 2) / 2) as usize };
-    ShellMaj { center: sh.center, d, beta, nprim: sh.exponents.len(), nfn }
+    let nfn = if sh.pure {
+        2 * l as usize + 1
+    } else {
+        ((l + 1) * (l + 2) / 2) as usize
+    };
+    ShellMaj {
+        center: sh.center,
+        d,
+        beta,
+        nprim: sh.exponents.len(),
+        nfn,
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -190,7 +204,13 @@ fn finish(prims: Vec<Prim>, nprim: usize, nfn: usize) -> PairMaj {
         .into_iter()
         .filter(|q| q.w * (PI / q.p).powf(1.5) >= 1e-14 * mass)
         .collect();
-    PairMaj { prims, mass, cen, nprim, nfn }
+    PairMaj {
+        prims,
+        mass,
+        cen,
+        nprim,
+        nfn,
+    }
 }
 
 pub fn pair_maj(a: &ShellMaj, b: &ShellMaj) -> PairMaj {
@@ -276,7 +296,11 @@ pub fn gd_ssss(p: f64, q: f64, r2: f64, kappa: f64) -> f64 {
         let den = p * q + (p + q) * tau;
         PI.powi(3) / den.powf(1.5) * (-p * q * tau * r2 / den).exp()
     };
-    let width = if r2 > 0.0 { (a + kappa).sqrt() / (a * r2.sqrt()) } else { t0 };
+    let width = if r2 > 0.0 {
+        (a + kappa).sqrt() / (a * r2.sqrt())
+    } else {
+        t0
+    };
     let tmin = 1e-3 * t0.min(width.max(1e-12));
     let tmax = 40.0 * t0;
     let mut total = 0.0;
@@ -306,7 +330,11 @@ pub const EPS_GRID: [f64; 12] = [0.02, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 
 /// B2: rigorous Gaussian-majorant bound, minimised over the eps grid.
 pub fn b2(p1: &PairMaj, p2: &PairMaj, k: &Kern) -> f64 {
     let mut best = f64::INFINITY;
-    let grid: &[f64] = if k.kind == KKind::Terfc { &EPS_GRID } else { &[1.0] };
+    let grid: &[f64] = if k.kind == KKind::Terfc {
+        &EPS_GRID
+    } else {
+        &[1.0]
+    };
     for &eps in grid {
         let (c, kappa) = k.gmaj(eps);
         if !c.is_finite() || c > 1e300 {
@@ -417,17 +445,21 @@ pub fn probe_skip(sp: usize, ua: usize, ub: usize) -> bool {
     p.no_eval
         || p.apply
             && match p.rule {
-            0 => s,
-            1 => bb,
-            _ => s || bb,
-        }
+                0 => s,
+                1 => bb,
+                _ => s || bb,
+            }
 }
 
 /// (ss|ss)-type Coulomb integral of two unnormalised Gaussians e^{-p|r-P|^2}, e^{-q|r-Q|^2}.
 pub fn coul_ssss(p: f64, q: f64, r2: f64) -> f64 {
     let a = p * q / (p + q);
     let x = a * r2;
-    let f0 = if x < 1e-10 { 1.0 - x / 3.0 } else { 0.5 * PI.sqrt() / x.sqrt() * (1.0 - erfc(x.sqrt())) };
+    let f0 = if x < 1e-10 {
+        1.0 - x / 3.0
+    } else {
+        0.5 * PI.sqrt() / x.sqrt() * (1.0 - erfc(x.sqrt()))
+    };
     2.0 * PI.powf(2.5) / (p * q * (p + q).sqrt()) * f0
 }
 
@@ -453,7 +485,13 @@ pub fn new_bitset(nbits: usize) -> Vec<AtomicU64> {
 /// (unique seen, unique S-skippable, unique S|B1-skippable)
 pub fn uniq_counts() -> (u64, u64, u64) {
     let g = PROBE.read().unwrap();
-    let Some(p) = g.as_ref() else { return (0, 0, 0) };
-    let pc = |v: &Vec<AtomicU64>| v.iter().map(|x| x.load(Ordering::Relaxed).count_ones() as u64).sum();
+    let Some(p) = g.as_ref() else {
+        return (0, 0, 0);
+    };
+    let pc = |v: &Vec<AtomicU64>| {
+        v.iter()
+            .map(|x| x.load(Ordering::Relaxed).count_ones() as u64)
+            .sum()
+    };
     (pc(&p.seen), pc(&p.sk_s), pc(&p.sk_cmb))
 }
