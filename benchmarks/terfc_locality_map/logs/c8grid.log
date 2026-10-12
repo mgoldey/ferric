@@ -1,0 +1,207 @@
+
+running 1 test
+SETUP alkane_8.xyz nbas=108 naux=700 no=25 fc=8 maps=trivial
+ROWOP alkane_8.xyz coul e0 -0.7350538762 ecoul -0.7350538762 ratio 1.00000 t_ri 0.0 t_eri3 0.26 t_eri3_coul 0.26 cost_ratio 1.00
+ANCHOR alkane_8.xyz coul direct_eps0 -0.7350538762 ri -0.7350538762 |d| 1.443e-13 wall 12.3
+ROW alkane_8.xyz coul eps 1e-2 e_corr -0.5461933604 relerr 2.5693e-1 keep 0.062 pairs 157.0 dom_mean 13.00 dom_max 15 wall 1.6
+ROW alkane_8.xyz coul eps 3e-3 e_corr -0.6537531146 relerr 1.1061e-1 keep 0.296 pairs 331.0 dom_mean 30.52 dom_max 41 wall 1.7
+ROW alkane_8.xyz coul eps 1e-3 e_corr -0.7075196850 relerr 3.7459e-2 keep 1.329 pairs 413.0 dom_mean 44.76 dom_max 65 wall 2.0
+ROW alkane_8.xyz coul eps 3e-4 e_corr -0.7274811712 relerr 1.0302e-2 keep 4.731 pairs 571.0 dom_mean 62.24 dom_max 75 wall 2.2
+ROW alkane_8.xyz coul eps 1e-4 e_corr -0.7331420072 relerr 2.6010e-3 keep 11.217 pairs 613.0 dom_mean 70.32 dom_max 75 wall 3.6
+ROW alkane_8.xyz coul eps 3e-5 e_corr -0.7346700704 relerr 5.2215e-4 keep 23.381 pairs 625.0 dom_mean 74.76 dom_max 75 wall 6.6
+test terfc_locality_map has been running for over 60 seconds
+ROW alkane_8.xyz coul eps 1e-5 e_corr -0.7349675233 relerr 1.1748e-4 keep 39.026 pairs 625.0 dom_mean 75.00 dom_max 75 wall 9.3
+ROW alkane_8.xyz coul eps 3e-6 e_corr -0.7350353704 relerr 2.5176e-5 keep 58.662 pairs 625.0 dom_mean 75.00 dom_max 75 wall 10.4
+ROW alkane_8.xyz coul eps 1e-6 e_corr -0.7350517398 relerr 2.9065e-6 keep 74.580 pairs 625.0 dom_mean 75.00 dom_max 75 wall 9.1
+ROWOP alkane_8.xyz erfc:0.42 e0 -0.6818987044 ecoul -0.7350538762 ratio 0.92769 t_ri 0.6 t_eri3 0.27 t_eri3_coul 0.26 cost_ratio 1.05
+ANCHOR alkane_8.xyz erfc:0.42 direct_eps0 -0.6818987044 ri -0.6818987044 |d| 2.154e-14 wall 12.9
+ROW alkane_8.xyz erfc:0.42 eps 1e-2 e_corr -0.5147167250 relerr 2.4517e-1 keep 0.057 pairs 121.0 dom_mean 10.92 dom_max 15 wall 1.3
+ROW alkane_8.xyz erfc:0.42 eps 3e-3 e_corr -0.6129078317 relerr 1.0117e-1 keep 0.270 pairs 331.0 dom_mean 30.32 dom_max 41 wall 1.6
+ROW alkane_8.xyz erfc:0.42 eps 1e-3 e_corr -0.6592318261 relerr 3.3241e-2 keep 1.188 pairs 405.0 dom_mean 43.96 dom_max 63 wall 2.3
+ROW alkane_8.xyz erfc:0.42 eps 3e-4 e_corr -0.6757975969 relerr 8.9472e-3 keep 4.117 pairs 493.0 dom_mean 56.08 dom_max 75 wall 4.5
+ROW alkane_8.xyz erfc:0.42 eps 1e-4 e_corr -0.6803978664 relerr 2.2010e-3 keep 9.717 pairs 535.0 dom_mean 66.60 dom_max 75 wall 4.4
+ROW alkane_8.xyz erfc:0.42 eps 3e-5 e_corr -0.6816053407 relerr 4.3022e-4 keep 19.776 pairs 601.0 dom_mean 72.36 dom_max 75 wall 5.9
+ROW alkane_8.xyz erfc:0.42 eps 1e-5 e_corr -0.6818282262 relerr 1.0336e-4 keep 32.371 pairs 617.0 dom_mean 74.84 dom_max 75 wall 8.2
+ROW alkane_8.xyz erfc:0.42 eps 3e-6 e_corr -0.6818867032 relerr 1.7600e-5 keep 49.320 pairs 625.0 dom_mean 75.00 dom_max 75 wall 13.8
+ROW alkane_8.xyz erfc:0.42 eps 1e-6 e_corr -0.6818962950 relerr 3.5333e-6 keep 64.922 pairs 625.0 dom_mean 75.00 dom_max 75 wall 11.4
+ROWOP alkane_8.xyz erfc:1.0 e0 -0.3999481174 ecoul -0.7350538762 ratio 0.54411 t_ri 0.4 t_eri3 0.22 t_eri3_coul 0.26 cost_ratio 0.88
+ANCHOR alkane_8.xyz erfc:1.0 direct_eps0 -0.3999481174 ri -0.3999481174 |d| 2.021e-14 wall 9.5
+ROW alkane_8.xyz erfc:1.0 eps 1e-2 e_corr -0.3243030070 relerr 1.8914e-1 keep 0.045 pairs 121.0 dom_mean 10.68 dom_max 15 wall 0.4
+ROW alkane_8.xyz erfc:1.0 eps 3e-3 e_corr -0.3656162987 relerr 8.5841e-2 keep 0.174 pairs 245.0 dom_mean 24.00 dom_max 32 wall 0.6
+ROW alkane_8.xyz erfc:1.0 eps 1e-3 e_corr -0.3869241046 relerr 3.2564e-2 keep 0.611 pairs 367.0 dom_mean 38.32 dom_max 52 wall 0.8
+ROW alkane_8.xyz erfc:1.0 eps 3e-4 e_corr -0.3962601223 relerr 9.2212e-3 keep 2.341 pairs 465.0 dom_mean 51.20 dom_max 71 wall 0.9
+ROW alkane_8.xyz erfc:1.0 eps 1e-4 e_corr -0.3990535623 relerr 2.2367e-3 keep 5.853 pairs 515.0 dom_mean 64.12 dom_max 75 wall 1.8
+ROW alkane_8.xyz erfc:1.0 eps 3e-5 e_corr -0.3997653253 relerr 4.5704e-4 keep 12.940 pairs 597.0 dom_mean 71.80 dom_max 75 wall 2.7
+ROW alkane_8.xyz erfc:1.0 eps 1e-5 e_corr -0.3999056460 relerr 1.0619e-4 keep 22.445 pairs 609.0 dom_mean 74.20 dom_max 75 wall 3.8
+ROW alkane_8.xyz erfc:1.0 eps 3e-6 e_corr -0.3999397859 relerr 2.0831e-5 keep 36.111 pairs 617.0 dom_mean 75.00 dom_max 75 wall 11.3
+ROW alkane_8.xyz erfc:1.0 eps 1e-6 e_corr -0.3999457386 relerr 5.9477e-6 keep 50.759 pairs 625.0 dom_mean 75.00 dom_max 75 wall 11.3
+ROWOP alkane_8.xyz erfc:1.4286 e0 -0.2285747984 ecoul -0.7350538762 ratio 0.31096 t_ri 0.4 t_eri3 1.96 t_eri3_coul 0.26 cost_ratio 7.66
+ANCHOR alkane_8.xyz erfc:1.4286 direct_eps0 -0.2285747984 ri -0.2285747984 |d| 2.279e-14 wall 12.1
+ROW alkane_8.xyz erfc:1.4286 eps 1e-2 e_corr -0.1830235670 relerr 1.9928e-1 keep 0.029 pairs 121.0 dom_mean 10.40 dom_max 15 wall 1.0
+ROW alkane_8.xyz erfc:1.4286 eps 3e-3 e_corr -0.2076259231 relerr 9.1650e-2 keep 0.114 pairs 121.0 dom_mean 14.72 dom_max 17 wall 1.0
+ROW alkane_8.xyz erfc:1.4286 eps 1e-3 e_corr -0.2204441054 relerr 3.5571e-2 keep 0.427 pairs 331.0 dom_mean 35.88 dom_max 49 wall 1.9
+ROW alkane_8.xyz erfc:1.4286 eps 3e-4 e_corr -0.2265885335 relerr 8.6898e-3 keep 1.574 pairs 425.0 dom_mean 48.68 dom_max 67 wall 1.6
+ROW alkane_8.xyz erfc:1.4286 eps 1e-4 e_corr -0.2279735912 relerr 2.6302e-3 keep 4.075 pairs 515.0 dom_mean 62.08 dom_max 75 wall 1.9
+ROW alkane_8.xyz erfc:1.4286 eps 3e-5 e_corr -0.2284310308 relerr 6.2897e-4 keep 9.566 pairs 567.0 dom_mean 70.28 dom_max 75 wall 3.7
+ROW alkane_8.xyz erfc:1.4286 eps 1e-5 e_corr -0.2285358139 relerr 1.7055e-4 keep 17.776 pairs 609.0 dom_mean 74.04 dom_max 75 wall 6.9
+ROW alkane_8.xyz erfc:1.4286 eps 3e-6 e_corr -0.2285670761 relerr 3.3784e-5 keep 29.839 pairs 617.0 dom_mean 75.00 dom_max 75 wall 8.1
+ROW alkane_8.xyz erfc:1.4286 eps 1e-6 e_corr -0.2285736430 relerr 5.0549e-6 keep 43.610 pairs 625.0 dom_mean 75.00 dom_max 75 wall 11.9
+ROWOP alkane_8.xyz erfc:0.7407 e0 -0.5347987445 ecoul -0.7350538762 ratio 0.72756 t_ri 10.8 t_eri3 1.20 t_eri3_coul 0.26 cost_ratio 4.71
+ANCHOR alkane_8.xyz erfc:0.7407 direct_eps0 -0.5347987445 ri -0.5347987445 |d| 2.820e-14 wall 74.7
+ROW alkane_8.xyz erfc:0.7407 eps 1e-2 e_corr -0.4255510469 relerr 2.0428e-1 keep 0.052 pairs 121.0 dom_mean 10.68 dom_max 15 wall 0.6
+ROW alkane_8.xyz erfc:0.7407 eps 3e-3 e_corr -0.4888348967 relerr 8.5946e-2 keep 0.218 pairs 247.0 dom_mean 26.96 dom_max 35 wall 0.9
+ROW alkane_8.xyz erfc:0.7407 eps 1e-3 e_corr -0.5155919531 relerr 3.5914e-2 keep 0.808 pairs 405.0 dom_mean 41.76 dom_max 55 wall 2.7
+ROW alkane_8.xyz erfc:0.7407 eps 3e-4 e_corr -0.5302582698 relerr 8.4901e-3 keep 3.026 pairs 485.0 dom_mean 52.88 dom_max 71 wall 1.7
+ROW alkane_8.xyz erfc:0.7407 eps 1e-4 e_corr -0.5337116200 relerr 2.0328e-3 keep 7.339 pairs 535.0 dom_mean 65.88 dom_max 75 wall 1.8
+ROW alkane_8.xyz erfc:0.7407 eps 3e-5 e_corr -0.5345877493 relerr 3.9453e-4 keep 15.553 pairs 601.0 dom_mean 71.88 dom_max 75 wall 2.6
+ROW alkane_8.xyz erfc:0.7407 eps 1e-5 e_corr -0.5347522217 relerr 8.6991e-5 keep 26.186 pairs 617.0 dom_mean 74.84 dom_max 75 wall 6.4
+ROW alkane_8.xyz erfc:0.7407 eps 3e-6 e_corr -0.5347880413 relerr 2.0013e-5 keep 41.089 pairs 625.0 dom_mean 75.00 dom_max 75 wall 7.6
+ROW alkane_8.xyz erfc:0.7407 eps 1e-6 e_corr -0.5347953703 relerr 6.3092e-6 keep 55.938 pairs 625.0 dom_mean 75.00 dom_max 75 wall 11.7
+ROWOP alkane_8.xyz terfc:1.0:0.70710678 e0 -0.7031164436 ecoul -0.7350538762 ratio 0.95655 t_ri 16.1 t_eri3 8.21 t_eri3_coul 0.26 cost_ratio 32.12
+ANCHOR alkane_8.xyz terfc:1.0:0.70710678 direct_eps0 -0.7031164436 ri -0.7031164436 |d| 1.276e-13 wall 21.0
+ROW alkane_8.xyz terfc:1.0:0.70710678 eps 1e-2 e_corr -0.5376185257 relerr 2.3538e-1 keep 0.059 pairs 121.0 dom_mean 11.56 dom_max 15 wall 29.5
+ROW alkane_8.xyz terfc:1.0:0.70710678 eps 3e-3 e_corr -0.6348248312 relerr 9.7127e-2 keep 0.279 pairs 331.0 dom_mean 30.76 dom_max 41 wall 35.4
+ROW alkane_8.xyz terfc:1.0:0.70710678 eps 1e-3 e_corr -0.6804751837 relerr 3.2201e-2 keep 1.196 pairs 405.0 dom_mean 43.96 dom_max 63 wall 7.2
+ROW alkane_8.xyz terfc:1.0:0.70710678 eps 3e-4 e_corr -0.6972209047 relerr 8.3849e-3 keep 4.115 pairs 497.0 dom_mean 55.64 dom_max 71 wall 42.1
+ROW alkane_8.xyz terfc:1.0:0.70710678 eps 1e-4 e_corr -0.7016696632 relerr 2.0577e-3 keep 9.563 pairs 535.0 dom_mean 66.60 dom_max 75 wall 16.3
+ROW alkane_8.xyz terfc:1.0:0.70710678 eps 3e-5 e_corr -0.7027916302 relerr 4.6196e-4 keep 19.291 pairs 601.0 dom_mean 72.36 dom_max 75 wall 9.7
+ROW alkane_8.xyz terfc:1.0:0.70710678 eps 1e-5 e_corr -0.7030168123 relerr 1.4170e-4 keep 31.334 pairs 617.0 dom_mean 74.84 dom_max 75 wall 39.6
+ROW alkane_8.xyz terfc:1.0:0.70710678 eps 3e-6 e_corr -0.7031010745 relerr 2.1859e-5 keep 47.567 pairs 625.0 dom_mean 75.00 dom_max 75 wall 50.8
+ROW alkane_8.xyz terfc:1.0:0.70710678 eps 1e-6 e_corr -0.7031123970 relerr 5.7553e-6 keep 62.674 pairs 625.0 dom_mean 75.00 dom_max 75 wall 56.7
+ROWOP alkane_8.xyz terfc:1.0:2 e0 -1.1632222013 ecoul -0.7350538762 ratio 1.58250 t_ri 10.2 t_eri3 16.40 t_eri3_coul 0.26 cost_ratio 64.15
+ANCHOR alkane_8.xyz terfc:1.0:2 direct_eps0 -1.1632222013 ri -1.1632222013 |d| 5.995e-14 wall 19.1
+ROW alkane_8.xyz terfc:1.0:2 eps 1e-2 e_corr -0.9819123839 relerr 1.5587e-1 keep 0.091 pairs 121.0 dom_mean 13.88 dom_max 20 wall 9.4
+ROW alkane_8.xyz terfc:1.0:2 eps 3e-3 e_corr -1.0846387202 relerr 6.7557e-2 keep 0.348 pairs 307.0 dom_mean 31.56 dom_max 42 wall 10.2
+ROW alkane_8.xyz terfc:1.0:2 eps 1e-3 e_corr -1.1393604748 relerr 2.0513e-2 keep 1.394 pairs 405.0 dom_mean 46.24 dom_max 63 wall 7.4
+ROW alkane_8.xyz terfc:1.0:2 eps 3e-4 e_corr -1.1573399142 relerr 5.0569e-3 keep 4.396 pairs 515.0 dom_mean 58.00 dom_max 71 wall 7.4
+ROW alkane_8.xyz terfc:1.0:2 eps 1e-4 e_corr -1.1616744760 relerr 1.3306e-3 keep 9.729 pairs 567.0 dom_mean 67.56 dom_max 75 wall 10.7
+ROW alkane_8.xyz terfc:1.0:2 eps 3e-5 e_corr -1.1629518486 relerr 2.3242e-4 keep 19.074 pairs 601.0 dom_mean 72.84 dom_max 75 wall 12.8
+ROW alkane_8.xyz terfc:1.0:2 eps 1e-5 e_corr -1.1631614529 relerr 5.2224e-5 keep 30.570 pairs 617.0 dom_mean 74.84 dom_max 75 wall 11.4
+ROW alkane_8.xyz terfc:1.0:2 eps 3e-6 e_corr -1.1632119724 relerr 8.7936e-6 keep 46.085 pairs 625.0 dom_mean 75.00 dom_max 75 wall 19.8
+ROW alkane_8.xyz terfc:1.0:2 eps 1e-6 e_corr -1.1632199188 relerr 1.9622e-6 keep 60.756 pairs 625.0 dom_mean 75.00 dom_max 75 wall 22.6
+ROWOP alkane_8.xyz terfc:1.0:4 e0 -1.4603114159 ecoul -0.7350538762 ratio 1.98667 t_ri 7.2 t_eri3 9.97 t_eri3_coul 0.26 cost_ratio 39.00
+ANCHOR alkane_8.xyz terfc:1.0:4 direct_eps0 -1.4603114159 ri -1.4603114159 |d| 9.570e-14 wall 80.2
+ROW alkane_8.xyz terfc:1.0:4 eps 1e-2 e_corr -1.2539352560 relerr 1.4132e-1 keep 0.098 pairs 121.0 dom_mean 14.56 dom_max 22 wall 22.4
+ROW alkane_8.xyz terfc:1.0:4 eps 3e-3 e_corr -1.3778743746 relerr 5.6452e-2 keep 0.391 pairs 307.0 dom_mean 31.96 dom_max 43 wall 15.7
+ROW alkane_8.xyz terfc:1.0:4 eps 1e-3 e_corr -1.4313977598 relerr 1.9800e-2 keep 1.508 pairs 405.0 dom_mean 46.88 dom_max 65 wall 25.2
+ROW alkane_8.xyz terfc:1.0:4 eps 3e-4 e_corr -1.4518898723 relerr 5.7670e-3 keep 4.563 pairs 515.0 dom_mean 59.12 dom_max 71 wall 11.0
+ROW alkane_8.xyz terfc:1.0:4 eps 1e-4 e_corr -1.4573811281 relerr 2.0066e-3 keep 9.915 pairs 567.0 dom_mean 68.40 dom_max 75 wall 11.4
+ROW alkane_8.xyz terfc:1.0:4 eps 3e-5 e_corr -1.4595299065 relerr 5.3517e-4 keep 19.268 pairs 601.0 dom_mean 73.24 dom_max 75 wall 15.0
+ROW alkane_8.xyz terfc:1.0:4 eps 1e-5 e_corr -1.4600408591 relerr 1.8527e-4 keep 30.782 pairs 617.0 dom_mean 74.84 dom_max 75 wall 14.2
+ROW alkane_8.xyz terfc:1.0:4 eps 3e-6 e_corr -1.4600973981 relerr 1.4656e-4 keep 46.098 pairs 625.0 dom_mean 75.00 dom_max 75 wall 15.8
+ROW alkane_8.xyz terfc:1.0:4 eps 1e-6 e_corr -1.4603077672 relerr 2.4986e-6 keep 60.770 pairs 625.0 dom_mean 75.00 dom_max 75 wall 21.5
+ROWOP alkane_8.xyz terfc:0.7:0.70710678 e0 -0.6179113510 ecoul -0.7350538762 ratio 0.84063 t_ri 7.3 t_eri3 7.37 t_eri3_coul 0.26 cost_ratio 28.83
+ANCHOR alkane_8.xyz terfc:0.7:0.70710678 direct_eps0 -0.6179113510 ri -0.6179113510 |d| 6.295e-14 wall 21.9
+ROW alkane_8.xyz terfc:0.7:0.70710678 eps 1e-2 e_corr -0.4908102751 relerr 2.0569e-1 keep 0.057 pairs 121.0 dom_mean 10.68 dom_max 15 wall 7.1
+ROW alkane_8.xyz terfc:0.7:0.70710678 eps 3e-3 e_corr -0.5656091684 relerr 8.4644e-2 keep 0.242 pairs 259.0 dom_mean 29.80 dom_max 37 wall 8.0
+ROW alkane_8.xyz terfc:0.7:0.70710678 eps 1e-3 e_corr -0.5983263008 relerr 3.1696e-2 keep 0.936 pairs 405.0 dom_mean 42.28 dom_max 56 wall 8.4
+ROW alkane_8.xyz terfc:0.7:0.70710678 eps 3e-4 e_corr -0.6130600094 relerr 7.8512e-3 keep 3.364 pairs 485.0 dom_mean 54.16 dom_max 71 wall 8.6
+ROW alkane_8.xyz terfc:0.7:0.70710678 eps 1e-4 e_corr -0.6167190821 relerr 1.9295e-3 keep 7.897 pairs 535.0 dom_mean 66.36 dom_max 75 wall 9.8
+ROW alkane_8.xyz terfc:0.7:0.70710678 eps 3e-5 e_corr -0.6176630324 relerr 4.0187e-4 keep 16.450 pairs 601.0 dom_mean 71.96 dom_max 75 wall 12.4
+ROW alkane_8.xyz terfc:0.7:0.70710678 eps 1e-5 e_corr -0.6178565727 relerr 8.8651e-5 keep 27.282 pairs 617.0 dom_mean 74.84 dom_max 75 wall 15.7
+ROW alkane_8.xyz terfc:0.7:0.70710678 eps 3e-6 e_corr -0.6179009737 relerr 1.6794e-5 keep 42.373 pairs 625.0 dom_mean 75.00 dom_max 75 wall 17.9
+ROW alkane_8.xyz terfc:0.7:0.70710678 eps 1e-6 e_corr -0.6179082536 relerr 5.0126e-6 keep 57.217 pairs 625.0 dom_mean 75.00 dom_max 75 wall 19.8
+ROWOP alkane_8.xyz terfc:0.7:2 e0 -0.8707549133 ecoul -0.7350538762 ratio 1.18461 t_ri 9.6 t_eri3 7.60 t_eri3_coul 0.26 cost_ratio 29.72
+ANCHOR alkane_8.xyz terfc:0.7:2 direct_eps0 -0.8707549133 ri -0.8707549133 |d| 1.039e-13 wall 17.7
+ROW alkane_8.xyz terfc:0.7:2 eps 1e-2 e_corr -0.7550184362 relerr 1.3292e-1 keep 0.078 pairs 121.0 dom_mean 10.68 dom_max 15 wall 13.0
+ROW alkane_8.xyz terfc:0.7:2 eps 3e-3 e_corr -0.8196238881 relerr 5.8720e-2 keep 0.281 pairs 291.0 dom_mean 31.16 dom_max 39 wall 15.4
+ROW alkane_8.xyz terfc:0.7:2 eps 1e-3 e_corr -0.8552631621 relerr 1.7791e-2 keep 0.939 pairs 405.0 dom_mean 45.20 dom_max 63 wall 18.3
+ROW alkane_8.xyz terfc:0.7:2 eps 3e-4 e_corr -0.8666655792 relerr 4.6963e-3 keep 3.101 pairs 485.0 dom_mean 56.84 dom_max 71 wall 7.0
+ROW alkane_8.xyz terfc:0.7:2 eps 1e-4 e_corr -0.8696940356 relerr 1.2183e-3 keep 7.206 pairs 535.0 dom_mean 67.04 dom_max 75 wall 7.5
+ROW alkane_8.xyz terfc:0.7:2 eps 3e-5 e_corr -0.8705253948 relerr 2.6359e-4 keep 15.049 pairs 601.0 dom_mean 72.44 dom_max 75 wall 8.6
+ROW alkane_8.xyz terfc:0.7:2 eps 1e-5 e_corr -0.8707031204 relerr 5.9481e-5 keep 25.012 pairs 617.0 dom_mean 74.84 dom_max 75 wall 10.3
+ROW alkane_8.xyz terfc:0.7:2 eps 3e-6 e_corr -0.8707450846 relerr 1.1288e-5 keep 39.291 pairs 625.0 dom_mean 75.00 dom_max 75 wall 11.0
+ROW alkane_8.xyz terfc:0.7:2 eps 1e-6 e_corr -0.8707521884 relerr 3.1293e-6 keep 54.052 pairs 625.0 dom_mean 75.00 dom_max 75 wall 10.5
+ROWOP alkane_8.xyz terfc:0.7:4 e0 -1.0087709420 ecoul -0.7350538762 ratio 1.37238 t_ri 4.0 t_eri3 3.08 t_eri3_coul 0.26 cost_ratio 12.05
+ANCHOR alkane_8.xyz terfc:0.7:4 direct_eps0 -1.0087709420 ri -1.0087709420 |d| 4.752e-14 wall 14.5
+ROW alkane_8.xyz terfc:0.7:4 eps 1e-2 e_corr -0.8861884502 relerr 1.2152e-1 keep 0.083 pairs 121.0 dom_mean 10.68 dom_max 15 wall 3.3
+ROW alkane_8.xyz terfc:0.7:4 eps 3e-3 e_corr -0.9585103041 relerr 4.9824e-2 keep 0.304 pairs 307.0 dom_mean 31.88 dom_max 42 wall 3.2
+ROW alkane_8.xyz terfc:0.7:4 eps 1e-3 e_corr -0.9940241311 relerr 1.4619e-2 keep 1.016 pairs 405.0 dom_mean 45.84 dom_max 65 wall 3.6
+ROW alkane_8.xyz terfc:0.7:4 eps 3e-4 e_corr -1.0048722501 relerr 3.8648e-3 keep 3.139 pairs 485.0 dom_mean 58.20 dom_max 73 wall 3.4
+ROW alkane_8.xyz terfc:0.7:4 eps 1e-4 e_corr -1.0077075724 relerr 1.0541e-3 keep 7.132 pairs 535.0 dom_mean 67.24 dom_max 75 wall 3.7
+ROW alkane_8.xyz terfc:0.7:4 eps 3e-5 e_corr -1.0085566927 relerr 2.1239e-4 keep 14.913 pairs 601.0 dom_mean 72.92 dom_max 75 wall 6.5
+ROW alkane_8.xyz terfc:0.7:4 eps 1e-5 e_corr -1.0087156870 relerr 5.4775e-5 keep 24.785 pairs 617.0 dom_mean 74.68 dom_max 75 wall 9.7
+ROW alkane_8.xyz terfc:0.7:4 eps 3e-6 e_corr -1.0087606316 relerr 1.0221e-5 keep 38.935 pairs 625.0 dom_mean 75.00 dom_max 75 wall 10.7
+ROW alkane_8.xyz terfc:0.7:4 eps 1e-6 e_corr -1.0087697211 relerr 1.2103e-6 keep 53.699 pairs 625.0 dom_mean 75.00 dom_max 75 wall 7.2
+ROWOP alkane_8.xyz terfc:0.5:0.70710678 e0 -0.4604936174 ecoul -0.7350538762 ratio 0.62648 t_ri 4.6 t_eri3 4.29 t_eri3_coul 0.26 cost_ratio 16.80
+ANCHOR alkane_8.xyz terfc:0.5:0.70710678 direct_eps0 -0.4604936174 ri -0.4604936174 |d| 8.316e-14 wall 12.6
+ROW alkane_8.xyz terfc:0.5:0.70710678 eps 1e-2 e_corr -0.3768316199 relerr 1.8168e-1 keep 0.048 pairs 121.0 dom_mean 10.68 dom_max 15 wall 5.0
+ROW alkane_8.xyz terfc:0.5:0.70710678 eps 3e-3 e_corr -0.4242306105 relerr 7.8748e-2 keep 0.191 pairs 247.0 dom_mean 24.68 dom_max 35 wall 7.4
+ROW alkane_8.xyz terfc:0.5:0.70710678 eps 1e-3 e_corr -0.4467916232 relerr 2.9755e-2 keep 0.657 pairs 381.0 dom_mean 40.64 dom_max 55 wall 7.8
+ROW alkane_8.xyz terfc:0.5:0.70710678 eps 3e-4 e_corr -0.4571265552 relerr 7.3119e-3 keep 2.462 pairs 465.0 dom_mean 51.68 dom_max 71 wall 8.7
+ROW alkane_8.xyz terfc:0.5:0.70710678 eps 1e-4 e_corr -0.4595724631 relerr 2.0004e-3 keep 6.101 pairs 535.0 dom_mean 65.32 dom_max 75 wall 10.5
+ROW alkane_8.xyz terfc:0.5:0.70710678 eps 3e-5 e_corr -0.4603159728 relerr 3.8577e-4 keep 13.348 pairs 601.0 dom_mean 71.96 dom_max 75 wall 9.9
+ROW alkane_8.xyz terfc:0.5:0.70710678 eps 1e-5 e_corr -0.4604423444 relerr 1.1134e-4 keep 22.933 pairs 609.0 dom_mean 74.52 dom_max 75 wall 12.4
+ROW alkane_8.xyz terfc:0.5:0.70710678 eps 3e-6 e_corr -0.4604817690 relerr 2.5730e-5 keep 36.701 pairs 625.0 dom_mean 75.00 dom_max 75 wall 8.3
+ROW alkane_8.xyz terfc:0.5:0.70710678 eps 1e-6 e_corr -0.4604913419 relerr 4.9415e-6 keep 51.325 pairs 625.0 dom_mean 75.00 dom_max 75 wall 26.2
+ROWOP alkane_8.xyz terfc:0.5:2 e0 -0.4706580384 ecoul -0.7350538762 ratio 0.64030 t_ri 7.1 t_eri3 6.39 t_eri3_coul 0.26 cost_ratio 25.00
+ANCHOR alkane_8.xyz terfc:0.5:2 direct_eps0 -0.4706580384 ri -0.4706580384 |d| 1.165e-13 wall 21.8
+ROW alkane_8.xyz terfc:0.5:2 eps 1e-2 e_corr -0.4000635760 relerr 1.4999e-1 keep 0.048 pairs 121.0 dom_mean 10.68 dom_max 15 wall 8.9
+ROW alkane_8.xyz terfc:0.5:2 eps 3e-3 e_corr -0.4416193431 relerr 6.1698e-2 keep 0.176 pairs 153.0 dom_mean 21.08 dom_max 26 wall 14.5
+ROW alkane_8.xyz terfc:0.5:2 eps 1e-3 e_corr -0.4615153543 relerr 1.9425e-2 keep 0.609 pairs 331.0 dom_mean 39.04 dom_max 50 wall 8.7
+ROW alkane_8.xyz terfc:0.5:2 eps 3e-4 e_corr -0.4680818732 relerr 5.4735e-3 keep 2.075 pairs 441.0 dom_mean 52.52 dom_max 71 wall 7.5
+ROW alkane_8.xyz terfc:0.5:2 eps 1e-4 e_corr -0.4699247978 relerr 1.5579e-3 keep 5.018 pairs 515.0 dom_mean 64.84 dom_max 75 wall 9.0
+ROW alkane_8.xyz terfc:0.5:2 eps 3e-5 e_corr -0.4704955613 relerr 3.4521e-4 keep 11.224 pairs 597.0 dom_mean 72.44 dom_max 75 wall 8.0
+ROW alkane_8.xyz terfc:0.5:2 eps 1e-5 e_corr -0.4706068728 relerr 1.0871e-4 keep 19.928 pairs 609.0 dom_mean 74.20 dom_max 75 wall 9.3
+ROW alkane_8.xyz terfc:0.5:2 eps 3e-6 e_corr -0.4706479225 relerr 2.1493e-5 keep 32.633 pairs 625.0 dom_mean 75.00 dom_max 75 wall 12.4
+ROW alkane_8.xyz terfc:0.5:2 eps 1e-6 e_corr -0.4706560996 relerr 4.1193e-6 keep 46.793 pairs 625.0 dom_mean 75.00 dom_max 75 wall 12.5
+ROWOP alkane_8.xyz terfc:0.5:4 e0 -0.4966606337 ecoul -0.7350538762 ratio 0.67568 t_ri 6.7 t_eri3 6.46 t_eri3_coul 0.26 cost_ratio 25.25
+ANCHOR alkane_8.xyz terfc:0.5:4 direct_eps0 -0.4966606337 ri -0.4966606337 |d| 6.867e-14 wall 19.1
+ROW alkane_8.xyz terfc:0.5:4 eps 1e-2 e_corr -0.4247323033 relerr 1.4482e-1 keep 0.047 pairs 121.0 dom_mean 10.68 dom_max 15 wall 7.5
+ROW alkane_8.xyz terfc:0.5:4 eps 3e-3 e_corr -0.4692168055 relerr 5.5257e-2 keep 0.188 pairs 153.0 dom_mean 22.24 dom_max 27 wall 7.0
+ROW alkane_8.xyz terfc:0.5:4 eps 1e-3 e_corr -0.4880301057 relerr 1.7377e-2 keep 0.615 pairs 331.0 dom_mean 39.36 dom_max 53 wall 6.0
+ROW alkane_8.xyz terfc:0.5:4 eps 3e-4 e_corr -0.4941742386 relerr 5.0062e-3 keep 2.059 pairs 429.0 dom_mean 52.84 dom_max 71 wall 5.1
+ROW alkane_8.xyz terfc:0.5:4 eps 1e-4 e_corr -0.4959272639 relerr 1.4766e-3 keep 4.929 pairs 515.0 dom_mean 64.84 dom_max 75 wall 5.3
+ROW alkane_8.xyz terfc:0.5:4 eps 3e-5 e_corr -0.4965059076 relerr 3.1153e-4 keep 10.985 pairs 589.0 dom_mean 72.52 dom_max 75 wall 5.5
+ROW alkane_8.xyz terfc:0.5:4 eps 1e-5 e_corr -0.4966260778 relerr 6.9576e-5 keep 19.587 pairs 609.0 dom_mean 74.20 dom_max 75 wall 7.3
+ROW alkane_8.xyz terfc:0.5:4 eps 3e-6 e_corr -0.4966536138 relerr 1.4134e-5 keep 32.194 pairs 625.0 dom_mean 75.00 dom_max 75 wall 9.6
+ROW alkane_8.xyz terfc:0.5:4 eps 1e-6 e_corr -0.4966583467 relerr 4.6047e-6 keep 46.275 pairs 625.0 dom_mean 75.00 dom_max 75 wall 11.6
+ROWOP alkane_8.xyz terfc:1.35:0.70710678 e0 -0.7279839594 ecoul -0.7350538762 ratio 0.99038 t_ri 10.3 t_eri3 4.16 t_eri3_coul 0.26 cost_ratio 16.29
+ANCHOR alkane_8.xyz terfc:1.35:0.70710678 direct_eps0 -0.7279839594 ri -0.7279839594 |d| 5.773e-14 wall 18.9
+ROW alkane_8.xyz terfc:1.35:0.70710678 eps 1e-2 e_corr -0.5496499875 relerr 2.4497e-1 keep 0.062 pairs 121.0 dom_mean 12.20 dom_max 18 wall 7.2
+ROW alkane_8.xyz terfc:1.35:0.70710678 eps 3e-3 e_corr -0.6519017750 relerr 1.0451e-1 keep 0.289 pairs 331.0 dom_mean 30.80 dom_max 41 wall 7.2
+ROW alkane_8.xyz terfc:1.35:0.70710678 eps 1e-3 e_corr -0.7028709603 relerr 3.4497e-2 keep 1.293 pairs 405.0 dom_mean 44.64 dom_max 65 wall 7.5
+ROW alkane_8.xyz terfc:1.35:0.70710678 eps 3e-4 e_corr -0.7212129570 relerr 9.3010e-3 keep 4.485 pairs 515.0 dom_mean 58.68 dom_max 75 wall 11.6
+ROW alkane_8.xyz terfc:1.35:0.70710678 eps 1e-4 e_corr -0.7263317948 relerr 2.2695e-3 keep 10.491 pairs 567.0 dom_mean 66.76 dom_max 75 wall 9.6
+ROW alkane_8.xyz terfc:1.35:0.70710678 eps 3e-5 e_corr -0.7276166023 relerr 5.0462e-4 keep 21.141 pairs 601.0 dom_mean 72.60 dom_max 75 wall 11.0
+ROW alkane_8.xyz terfc:1.35:0.70710678 eps 1e-5 e_corr -0.7278785682 relerr 1.4477e-4 keep 34.460 pairs 617.0 dom_mean 74.84 dom_max 75 wall 13.0
+ROW alkane_8.xyz terfc:1.35:0.70710678 eps 3e-6 e_corr -0.7279693021 relerr 2.0134e-5 keep 51.703 pairs 625.0 dom_mean 75.00 dom_max 75 wall 14.4
+ROW alkane_8.xyz terfc:1.35:0.70710678 eps 1e-6 e_corr -0.7279818199 relerr 2.9388e-6 keep 67.214 pairs 625.0 dom_mean 75.00 dom_max 75 wall 15.5
+ROWOP alkane_8.xyz terfc:1.35:2 e0 -1.1262232404 ecoul -0.7350538762 ratio 1.53216 t_ri 6.4 t_eri3 5.78 t_eri3_coul 0.26 cost_ratio 22.60
+ANCHOR alkane_8.xyz terfc:1.35:2 direct_eps0 -1.1262232404 ri -1.1262232404 |d| 7.994e-15 wall 28.7
+ROW alkane_8.xyz terfc:1.35:2 eps 1e-2 e_corr -0.8989508619 relerr 2.0180e-1 keep 0.098 pairs 237.0 dom_mean 20.24 dom_max 27 wall 8.3
+ROW alkane_8.xyz terfc:1.35:2 eps 3e-3 e_corr -1.0219154693 relerr 9.2617e-2 keep 0.375 pairs 331.0 dom_mean 31.88 dom_max 42 wall 8.2
+ROW alkane_8.xyz terfc:1.35:2 eps 1e-3 e_corr -1.0966227525 relerr 2.6283e-2 keep 1.700 pairs 405.0 dom_mean 45.68 dom_max 65 wall 7.8
+ROW alkane_8.xyz terfc:1.35:2 eps 3e-4 e_corr -1.1191776195 relerr 6.2560e-3 keep 5.343 pairs 515.0 dom_mean 59.84 dom_max 75 wall 9.8
+ROW alkane_8.xyz terfc:1.35:2 eps 1e-4 e_corr -1.1245177476 relerr 1.5143e-3 keep 11.617 pairs 567.0 dom_mean 68.68 dom_max 75 wall 11.9
+ROW alkane_8.xyz terfc:1.35:2 eps 3e-5 e_corr -1.1258614590 relerr 3.2123e-4 keep 21.946 pairs 601.0 dom_mean 73.08 dom_max 75 wall 14.5
+ROW alkane_8.xyz terfc:1.35:2 eps 1e-5 e_corr -1.1261426905 relerr 7.1522e-5 keep 34.474 pairs 617.0 dom_mean 74.84 dom_max 75 wall 16.2
+ROW alkane_8.xyz terfc:1.35:2 eps 3e-6 e_corr -1.1262030087 relerr 1.7964e-5 keep 50.663 pairs 625.0 dom_mean 75.00 dom_max 75 wall 15.2
+ROW alkane_8.xyz terfc:1.35:2 eps 1e-6 e_corr -1.1262183733 relerr 4.3217e-6 keep 65.208 pairs 625.0 dom_mean 75.00 dom_max 75 wall 16.8
+ROWOP alkane_8.xyz terfc:1.35:4 e0 -1.3501359734 ecoul -0.7350538762 ratio 1.83679 t_ri 5.6 t_eri3 5.60 t_eri3_coul 0.26 cost_ratio 21.91
+ANCHOR alkane_8.xyz terfc:1.35:4 direct_eps0 -1.3501359734 ri -1.3501359734 |d| 1.577e-13 wall 15.9
+ROW alkane_8.xyz terfc:1.35:4 eps 1e-2 e_corr -1.0790186210 relerr 2.0081e-1 keep 0.105 pairs 205.0 dom_mean 21.40 dom_max 29 wall 6.6
+ROW alkane_8.xyz terfc:1.35:4 eps 3e-3 e_corr -1.2339220284 relerr 8.6076e-2 keep 0.427 pairs 331.0 dom_mean 32.12 dom_max 44 wall 6.9
+ROW alkane_8.xyz terfc:1.35:4 eps 1e-3 e_corr -1.3170168080 relerr 2.4530e-2 keep 1.889 pairs 405.0 dom_mean 46.60 dom_max 65 wall 6.6
+ROW alkane_8.xyz terfc:1.35:4 eps 3e-4 e_corr -1.3421882911 relerr 5.8866e-3 keep 5.751 pairs 515.0 dom_mean 59.96 dom_max 75 wall 7.8
+ROW alkane_8.xyz terfc:1.35:4 eps 1e-4 e_corr -1.3483177226 relerr 1.3467e-3 keep 12.213 pairs 575.0 dom_mean 69.64 dom_max 75 wall 7.7
+ROW alkane_8.xyz terfc:1.35:4 eps 3e-5 e_corr -1.3497939881 relerr 2.5330e-4 keep 22.745 pairs 601.0 dom_mean 73.72 dom_max 75 wall 9.6
+ROW alkane_8.xyz terfc:1.35:4 eps 1e-5 e_corr -1.3500524553 relerr 6.1859e-5 keep 35.244 pairs 617.0 dom_mean 74.84 dom_max 75 wall 15.6
+ROW alkane_8.xyz terfc:1.35:4 eps 3e-6 e_corr -1.3501195020 relerr 1.2200e-5 keep 51.315 pairs 625.0 dom_mean 75.00 dom_max 75 wall 15.7
+ROW alkane_8.xyz terfc:1.35:4 eps 1e-6 e_corr -1.3501335706 relerr 1.7797e-6 keep 65.736 pairs 625.0 dom_mean 75.00 dom_max 75 wall 18.5
+ROWOP alkane_8.xyz terfc:10:4 e0 -0.7349632193 ecoul -0.7350538762 ratio 0.99988 t_ri 6.1 t_eri3 5.94 t_eri3_coul 0.26 cost_ratio 23.22
+ANCHOR alkane_8.xyz terfc:10:4 direct_eps0 -0.7349632193 ri -0.7349632193 |d| 1.887e-13 wall 14.4
+ROW alkane_8.xyz terfc:10:4 eps 1e-2 e_corr -0.5461915167 relerr 2.5685e-1 keep 0.062 pairs 157.0 dom_mean 13.00 dom_max 15 wall 5.8
+ROW alkane_8.xyz terfc:10:4 eps 3e-3 e_corr -0.6537435751 relerr 1.1051e-1 keep 0.296 pairs 331.0 dom_mean 30.52 dom_max 41 wall 6.1
+ROW alkane_8.xyz terfc:10:4 eps 1e-3 e_corr -0.7074924442 relerr 3.7377e-2 keep 1.329 pairs 421.0 dom_mean 45.08 dom_max 65 wall 6.7
+ROW alkane_8.xyz terfc:10:4 eps 3e-4 e_corr -0.7274285369 relerr 1.0252e-2 keep 4.725 pairs 569.0 dom_mean 62.00 dom_max 75 wall 7.3
+ROW alkane_8.xyz terfc:10:4 eps 1e-4 e_corr -0.7330690432 relerr 2.5772e-3 keep 11.182 pairs 625.0 dom_mean 72.08 dom_max 75 wall 8.7
+ROW alkane_8.xyz terfc:10:4 eps 3e-5 e_corr -0.7345829827 relerr 5.1735e-4 keep 23.177 pairs 625.0 dom_mean 75.00 dom_max 75 wall 10.9
+ROW alkane_8.xyz terfc:10:4 eps 1e-5 e_corr -0.7348769352 relerr 1.1740e-4 keep 38.468 pairs 625.0 dom_mean 75.00 dom_max 75 wall 13.8
+ROW alkane_8.xyz terfc:10:4 eps 3e-6 e_corr -0.7349445621 relerr 2.5385e-5 keep 57.787 pairs 625.0 dom_mean 75.00 dom_max 75 wall 15.0
+ROW alkane_8.xyz terfc:10:4 eps 1e-6 e_corr -0.7349608405 relerr 3.2366e-6 keep 73.851 pairs 625.0 dom_mean 75.00 dom_max 75 wall 15.6
+test terfc_locality_map ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2320.94s
+
+done

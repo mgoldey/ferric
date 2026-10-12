@@ -51,11 +51,23 @@ def main(dump: str) -> int:
     lobs = g.ferric_l_list("cc-pvdz", symbols)
     laux = g.ferric_l_list("cc-pvdz-ri", symbols)
     c3, c2 = g.pyscf_3c2c(mol, auxmol)
-    r0 = g.r0_bohr(1.0)
-    print(f"nao={nao} naux={naux} r0={r0:.6f} Bohr")
+    cases_file = Path(dump) / "cases.txt"
+    if cases_file.exists():
+        cases = [
+            (t, float(a), float(w))
+            for t, a, w in (ln.split() for ln in cases_file.read_text().splitlines())
+        ]
+    else:
+        cases = [
+            (t, 1.0, w)
+            for t, w in (("0.7071", 0.5**0.5), ("4", 4.0), ("8", 8.0), ("16", 16.0))
+        ]
+    print(f"nao={nao} naux={naux}")
     worst_all = 0.0
-    for tag, r0w in [("0.7071", 0.5**0.5), ("4", 4.0), ("8", 8.0), ("16", 16.0)]:
+    for tag, r0a, r0w in cases:
+        r0 = g.r0_bohr(r0a)
         w = r0w / r0
+        print(f"case {tag}: r0={r0a} A ({r0:.6f} Bohr) r0*omega={r0w}")
         f3 = np.fromfile(f"{dump}/e3_{tag}.bin", dtype="<f8").reshape(naux, nao, nao)
         f2 = np.fromfile(f"{dump}/e2_{tag}.bin", dtype="<f8").reshape(naux, naux)
         e3, e2 = g.pyscf_3c2c(mol, auxmol, omega=w)

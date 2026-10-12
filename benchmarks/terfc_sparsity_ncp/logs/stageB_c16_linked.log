@@ -1,0 +1,14 @@
+
+running 1 test
+SETUP alkane_16.xyz nbas=212 naux=1372 no=49 fc=16 maps=prod
+test terfc_locality_map has been running for over 60 seconds
+ROWOP alkane_16.xyz terfc:1.0:0.70710678 e0 -1.3973565462 ecoul -1.4649941551 ratio 0.95383 t_ri 24.3 t_eri3 22.37 t_eri3_coul 0.69 cost_ratio 32.21
+ROW alkane_16.xyz terfc:1.0:0.70710678 eps 6e-4 e_corr -1.3672147710 relerr 2.1571e-2 keep 0.305 pairs 893.0 dom_mean 54.18 dom_max 69 wall 234.8
+ROW alkane_16.xyz terfc:1.0:0.70710678 eps 2.5e-4 e_corr -1.3860320448 relerr 8.1042e-3 keep 0.728 pairs 1227.0 dom_mean 69.16 dom_max 89 wall 236.5
+ROW alkane_16.xyz terfc:1.0:0.70710678 eps 1e-4 e_corr -1.3938162204 relerr 2.5336e-3 keep 1.521 pairs 1247.0 dom_mean 78.67 dom_max 103 wall 225.2
+ROW alkane_16.xyz terfc:1.0:0.70710678 eps 4e-5 e_corr -1.3962350612 relerr 8.0258e-4 keep 2.753 pairs 1525.0 dom_mean 89.08 dom_max 119 wall 231.2
+ROW alkane_16.xyz terfc:1.0:0.70710678 eps 1.6e-5 e_corr -1.3969431969 relerr 2.9581e-4 keep 4.440 pairs 1641.0 dom_mean 95.73 dom_max 135 wall 237.8
+test terfc_locality_map ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1255.90s
+

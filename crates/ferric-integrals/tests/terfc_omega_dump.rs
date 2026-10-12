@@ -29,13 +29,35 @@ fn dump_terfc_omega_tensors() {
     let mol = Molecule::load_xyz(&xyz).unwrap();
     let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
-    let r0 = 1.0 * ferric_core::units::ANGSTROM_TO_BOHR;
-    for (tag, r0w) in [
-        ("0.7071", 0.5f64.sqrt()),
-        ("4", 4.0),
-        ("8", 8.0),
-        ("16", 16.0),
-    ] {
+    // Default: r0 = 1 A x r0*omega {0.7071, 4, 8, 16}. Override with
+    // FERRIC_DUMP_CASES="tag:r0_ang:r0w,..."; cases.txt is written for the
+    // python check, which then uses each case's own r0.
+    let cases: Vec<(String, f64, f64)> = match std::env::var("FERRIC_DUMP_CASES") {
+        Ok(v) => v
+            .split(',')
+            .map(|c| {
+                let p: Vec<&str> = c.split(':').collect();
+                (
+                    p[0].to_string(),
+                    p[1].parse().unwrap(),
+                    p[2].parse().unwrap(),
+                )
+            })
+            .collect(),
+        Err(_) => vec![
+            ("0.7071".into(), 1.0, 0.5f64.sqrt()),
+            ("4".into(), 1.0, 4.0),
+            ("8".into(), 1.0, 8.0),
+            ("16".into(), 1.0, 16.0),
+        ],
+    };
+    let mut ct = String::new();
+    for (tag, r0a, r0w) in &cases {
+        ct += &format!("{tag} {r0a} {r0w}\n");
+    }
+    std::fs::write(format!("{dir}/cases.txt"), ct).unwrap();
+    for (tag, r0a, r0w) in cases.iter().map(|(t, a, w)| (t.as_str(), *a, *w)) {
+        let r0 = r0a * ferric_core::units::ANGSTROM_TO_BOHR;
         let op = Operator::terfc_with_omega(r0, r0w / r0);
         let t0 = std::time::Instant::now();
         let e3 = eri3_tensor(op, &obs, &dfbs).unwrap();

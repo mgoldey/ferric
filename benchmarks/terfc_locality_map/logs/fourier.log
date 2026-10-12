@@ -1,0 +1,74 @@
+nao=24 naux=84
+case a: r0=1.0 A (1.889726 Bohr) r0*omega=0.35
+r0w=     a grid=(60,1202) erf-anchor 3c 3.9e-14 2c 3.9e-13 | self-change(3c terf) - | ferric-vs-kspace 3c max 1.52e-13 (rel to max|I| 3.7e-14) 2c max 4.78e-13
+r0w=     a grid=(80,2030) erf-anchor 3c 2.3e-14 2c 1.7e-13 | self-change(3c terf) 4.6e-14 | ferric-vs-kspace 3c max 1.68e-13 (rel to max|I| 4.0e-14) 2c max 3.94e-13
+r0w=     a grid=(120,3470) erf-anchor 3c 9.3e-15 2c 8.9e-14 | self-change(3c terf) 1.6e-14 | ferric-vs-kspace 3c max 1.63e-13 (rel to max|I| 3.9e-14) 2c max 3.82e-13
+   worst 3c classes: sdd:1.6e-13, spp:1.3e-13, sss:9.5e-14, pdd:5.5e-14
+   min eig of ferric V_terfc(2c) = 5.331e-04   (kspace 5.331e-04)
+case b: r0=1.0 A (1.889726 Bohr) r0*omega=0.5
+r0w=     b grid=(60,1202) erf-anchor 3c 5.6e-14 2c 4.1e-13 | self-change(3c terf) - | ferric-vs-kspace 3c max 1.48e-13 (rel to max|I| 3.9e-14) 2c max 5.15e-13
+r0w=     b grid=(80,2030) erf-anchor 3c 4.7e-14 2c 4.4e-13 | self-change(3c terf) 7.0e-14 | ferric-vs-kspace 3c max 1.71e-13 (rel to max|I| 4.5e-14) 2c max 4.65e-13
+r0w=     b grid=(120,3470) erf-anchor 3c 2.5e-14 2c 2.1e-13 | self-change(3c terf) 2.4e-14 | ferric-vs-kspace 3c max 1.64e-13 (rel to max|I| 4.3e-14) 2c max 3.77e-13
+   worst 3c classes: sdd:1.6e-13, spp:1.4e-13, sss:9.6e-14, pdd:5.5e-14
+   min eig of ferric V_terfc(2c) = 5.273e-04   (kspace 5.273e-04)
+case c: r0=1.0 A (1.889726 Bohr) r0*omega=0.7071
+r0w=     c grid=(60,1202) erf-anchor 3c 8.1e-14 2c 6.0e-13 | self-change(3c terf) - | ferric-vs-kspace 3c max 1.41e-13 (rel to max|I| 3.9e-14) 2c max 6.15e-13
+r0w=     c grid=(80,2030) erf-anchor 3c 6.0e-14 2c 4.3e-13 | self-change(3c terf) 1.0e-13 | ferric-vs-kspace 3c max 1.77e-13 (rel to max|I| 4.9e-14) 2c max 6.18e-13
+r0w=     c grid=(120,3470) erf-anchor 3c 3.0e-14 2c 1.2e-13 | self-change(3c terf) 3.6e-14 | ferric-vs-kspace 3c max 1.65e-13 (rel to max|I| 4.6e-14) 2c max 3.67e-13
+   worst 3c classes: sdd:1.7e-13, spp:1.4e-13, sss:9.9e-14, pdd:5.5e-14
+   min eig of ferric V_terfc(2c) = 5.230e-04   (kspace 5.230e-04)
+case d: r0=1.0 A (1.889726 Bohr) r0*omega=2.0
+r0w=     d grid=(60,1202) erf-anchor 3c 3.1e-13 2c 2.5e-12 | self-change(3c terf) - | ferric-vs-kspace 3c max 2.84e-13 (rel to max|I| 7.2e-14) 2c max 2.11e-12
+r0w=     d grid=(80,2030) erf-anchor 3c 1.9e-13 2c 1.3e-12 | self-change(3c terf) 3.7e-13 | ferric-vs-kspace 3c max 2.79e-13 (rel to max|I| 7.1e-14) 2c max 1.69e-12
+r0w=     d grid=(120,3470) erf-anchor 3c 8.1e-14 2c 3.6e-13 | self-change(3c terf) 1.3e-13 | ferric-vs-kspace 3c max 1.70e-13 (rel to max|I| 4.3e-14) 2c max 3.98e-13
+   worst 3c classes: sdd:1.7e-13, spp:1.5e-13, sss:1.1e-13, pdd:5.4e-14
+   min eig of ferric V_terfc(2c) = 5.322e-04   (kspace 5.322e-04)
+case e: r0=0.5 A (0.944863 Bohr) r0*omega=0.35
+r0w=     e grid=(60,1202) erf-anchor 3c 8.4e-14 2c 6.1e-13 | self-change(3c terf) - | ferric-vs-kspace 3c max 1.42e-13 (rel to max|I| 4.7e-14) 2c max 5.86e-13
+r0w=     e grid=(80,2030) erf-anchor 3c 6.2e-14 2c 3.7e-13 | self-change(3c terf) 1.0e-13 | ferric-vs-kspace 3c max 1.75e-13 (rel to max|I| 5.8e-14) 2c max 5.97e-13
+r0w=     e grid=(120,3470) erf-anchor 3c 3.2e-14 2c 1.4e-13 | self-change(3c terf) 3.3e-14 | ferric-vs-kspace 3c max 1.65e-13 (rel to max|I| 5.5e-14) 2c max 3.69e-13
+   worst 3c classes: sdd:1.7e-13, spp:1.4e-13, sss:9.7e-14, pdd:5.5e-14
+   min eig of ferric V_terfc(2c) = 5.089e-04   (kspace 5.089e-04)
+case f: r0=0.5 A (0.944863 Bohr) r0*omega=0.7071
+r0w=     f grid=(60,1202) erf-anchor 3c 1.8e-13 2c 1.3e-12 | self-change(3c terf) - | ferric-vs-kspace 3c max 2.01e-13 (rel to max|I| 8.1e-14) 2c max 1.31e-12
+r0w=     f grid=(80,2030) erf-anchor 3c 1.6e-13 2c 9.7e-13 | self-change(3c terf) 2.3e-13 | ferric-vs-kspace 3c max 2.23e-13 (rel to max|I| 9.0e-14) 2c max 1.13e-12
+r0w=     f grid=(120,3470) erf-anchor 3c 8.7e-14 2c 3.0e-13 | self-change(3c terf) 7.8e-14 | ferric-vs-kspace 3c max 1.67e-13 (rel to max|I| 6.7e-14) 2c max 3.55e-13
+   worst 3c classes: sdd:1.7e-13, spp:1.5e-13, sss:1.1e-13, pdd:5.5e-14
+   min eig of ferric V_terfc(2c) = 4.829e-04   (kspace 4.829e-04)
+case g: r0=0.5 A (0.944863 Bohr) r0*omega=4.0
+r0w=     g grid=(60,1202) erf-anchor 3c 1.3e-06 2c 7.7e-06 | self-change(3c terf) - | ferric-vs-kspace 3c max 6.27e-06 (rel to max|I| 2.2e-06) 2c max 2.42e-05
+r0w=     g grid=(80,2030) erf-anchor 3c 9.1e-11 2c 3.0e-09 | self-change(3c terf) 6.3e-06 | ferric-vs-kspace 3c max 1.90e-09 (rel to max|I| 6.6e-10) 2c max 3.11e-09
+r0w=     g grid=(120,3470) erf-anchor 3c 1.6e-13 2c 6.3e-13 | self-change(3c terf) 1.9e-09 | ferric-vs-kspace 3c max 4.61e-13 (rel to max|I| 1.6e-13) 2c max 1.27e-12
+   worst 3c classes: sss:4.6e-13, sdd:1.9e-13, spp:1.7e-13, sps:1.3e-13
+   min eig of ferric V_terfc(2c) = 4.819e-04   (kspace 4.819e-04)
+case h: r0=1.35 A (2.551130 Bohr) r0*omega=0.35
+r0w=     h grid=(60,1202) erf-anchor 3c 2.1e-14 2c 2.0e-13 | self-change(3c terf) - | ferric-vs-kspace 3c max 1.55e-13 (rel to max|I| 3.5e-14) 2c max 4.51e-13
+r0w=     h grid=(80,2030) erf-anchor 3c 1.4e-14 2c 1.3e-13 | self-change(3c terf) 3.4e-14 | ferric-vs-kspace 3c max 1.67e-13 (rel to max|I| 3.7e-14) 2c max 3.48e-13
+r0w=     h grid=(120,3470) erf-anchor 3c 3.3e-15 2c 3.2e-14 | self-change(3c terf) 1.2e-14 | ferric-vs-kspace 3c max 1.63e-13 (rel to max|I| 3.6e-14) 2c max 3.84e-13
+   worst 3c classes: sdd:1.6e-13, spp:1.3e-13, sss:9.4e-14, pdd:5.5e-14
+   min eig of ferric V_terfc(2c) = 5.378e-04   (kspace 5.378e-04)
+case i: r0=1.35 A (2.551130 Bohr) r0*omega=0.7071
+r0w=     i grid=(60,1202) erf-anchor 3c 7.6e-14 2c 4.2e-13 | self-change(3c terf) - | ferric-vs-kspace 3c max 1.46e-13 (rel to max|I| 3.6e-14) 2c max 5.26e-13
+r0w=     i grid=(80,2030) erf-anchor 3c 4.1e-14 2c 3.3e-13 | self-change(3c terf) 7.5e-14 | ferric-vs-kspace 3c max 1.72e-13 (rel to max|I| 4.2e-14) 2c max 5.04e-13
+r0w=     i grid=(120,3470) erf-anchor 3c 2.8e-14 2c 1.1e-13 | self-change(3c terf) 2.5e-14 | ferric-vs-kspace 3c max 1.64e-13 (rel to max|I| 4.0e-14) 2c max 3.71e-13
+   worst 3c classes: sdd:1.6e-13, spp:1.4e-13, sss:9.8e-14, pdd:5.5e-14
+   min eig of ferric V_terfc(2c) = 5.318e-04   (kspace 5.318e-04)
+case j: r0=1.35 A (2.551130 Bohr) r0*omega=4.0
+r0w=     j grid=(60,1202) erf-anchor 3c 4.2e-13 2c 3.1e-12 | self-change(3c terf) - | ferric-vs-kspace 3c max 8.34e-12 (rel to max|I| 1.7e-12) 2c max 7.10e-11
+r0w=     j grid=(80,2030) erf-anchor 3c 2.5e-13 2c 2.8e-12 | self-change(3c terf) 8.1e-12 | ferric-vs-kspace 3c max 1.80e-12 (rel to max|I| 3.6e-13) 2c max 7.17e-12
+r0w=     j grid=(120,3470) erf-anchor 3c 9.5e-14 2c 8.3e-13 | self-change(3c terf) 2.2e-13 | ferric-vs-kspace 3c max 1.80e-12 (rel to max|I| 3.6e-13) 2c max 7.17e-12
+   worst 3c classes: dss:1.8e-12, sss:1.6e-12, sps:1.6e-12, sdp:9.0e-13
+   min eig of ferric V_terfc(2c) = 5.123e-04   (kspace 5.123e-04)
+case k: r0=0.7 A (1.322808 Bohr) r0*omega=0.35
+r0w=     k grid=(60,1202) erf-anchor 3c 5.6e-14 2c 4.1e-13 | self-change(3c terf) - | ferric-vs-kspace 3c max 1.48e-13 (rel to max|I| 4.1e-14) 2c max 5.08e-13
+r0w=     k grid=(80,2030) erf-anchor 3c 4.7e-14 2c 4.4e-13 | self-change(3c terf) 6.9e-14 | ferric-vs-kspace 3c max 1.71e-13 (rel to max|I| 4.7e-14) 2c max 4.69e-13
+r0w=     k grid=(120,3470) erf-anchor 3c 2.5e-14 2c 2.1e-13 | self-change(3c terf) 2.3e-14 | ferric-vs-kspace 3c max 1.64e-13 (rel to max|I| 4.5e-14) 2c max 3.73e-13
+   worst 3c classes: sdd:1.6e-13, spp:1.4e-13, sss:9.6e-14, pdd:5.5e-14
+   min eig of ferric V_terfc(2c) = 5.235e-04   (kspace 5.235e-04)
+case l: r0=0.7 A (1.322808 Bohr) r0*omega=2.0
+r0w=     l grid=(60,1202) erf-anchor 3c 4.1e-13 2c 3.0e-12 | self-change(3c terf) - | ferric-vs-kspace 3c max 5.30e-13 (rel to max|I| 1.6e-13) 2c max 3.94e-12
+r0w=     l grid=(80,2030) erf-anchor 3c 2.3e-13 2c 2.7e-12 | self-change(3c terf) 7.6e-13 | ferric-vs-kspace 3c max 3.51e-13 (rel to max|I| 1.1e-13) 2c max 2.38e-12
+r0w=     l grid=(120,3470) erf-anchor 3c 7.2e-14 2c 7.9e-13 | self-change(3c terf) 1.9e-13 | ferric-vs-kspace 3c max 1.72e-13 (rel to max|I| 5.2e-14) 2c max 4.69e-13
+   worst 3c classes: sdd:1.7e-13, spp:1.6e-13, sss:1.2e-13, pdd:5.4e-14
+   min eig of ferric V_terfc(2c) = 5.198e-04   (kspace 5.198e-04)
+OVERALL worst |ferric - kspace| = 7.17e-12

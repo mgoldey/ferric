@@ -1,0 +1,49 @@
+=== relerr 0.001
+op N eps* keep% kept_amp pairs dom wall_mean
+Coulomb        16 3.80e-05  3.540    1836687   2139  115.5    18.7
+Coulomb        20 3.71e-05  1.959    2441631   2954  125.7    66.3
+Coulomb        24 3.63e-05  1.198    3061860   3783  132.8   163.6
+Coulomb        28 3.60e-05  0.781    3671239   4610  137.9   261.7
+erfc 0.42      16 4.70e-05  2.590    1343866   1453   87.2    17.1
+erfc 0.42      20 4.64e-05  1.409    1755879   1893   91.2    80.1
+erfc 0.42      24 4.57e-05  0.851    2174879   2337   94.0   152.0
+erfc 0.42      28 4.55e-05  0.551    2587658   2778   96.0   170.0
+terfc linked   16 4.77e-05  2.517    1306059   1472   87.1   233.1
+terfc linked   20 4.71e-05  1.367    1703802   1926   91.2   831.7
+terfc linked   24 4.66e-05  0.825    2107459   2383   94.1  1214.4
+terfc linked   28 4.64e-05  0.533    2505532   2837   96.1  1396.6
+terfc NCP      16 6.20e-05  2.125    1102294   1394   83.2   215.9
+terfc NCP      20 6.13e-05  1.153    1436557   1811   86.6   774.0
+terfc NCP      24 6.02e-05  0.698    1783357   2234   89.0  1179.4
+terfc NCP      28 6.02e-05  0.451    2116508   2650   90.6  1388.1
+-- tail exponents (log-log vs N)
+Coulomb       | kept-amp: all4=1.24 last3=1.21 last2=1.18 | pairs: all4=1.37 last3=1.32 last2=1.28 | wall: all4=4.79 last3=4.11 last2=3.05
+erfc 0.42     | kept-amp: all4=1.17 last3=1.15 last2=1.13 | pairs: all4=1.16 last3=1.14 last2=1.12 | wall: all4=4.16 last3=2.28 last2=0.73
+terfc linked  | kept-amp: all4=1.17 last3=1.15 last2=1.12 | pairs: all4=1.17 last3=1.15 last2=1.13 | wall: all4=3.18 last3=1.56 last2=0.91
+terfc NCP     | kept-amp: all4=1.17 last3=1.15 last2=1.11 | pairs: all4=1.15 last3=1.13 last2=1.11 | wall: all4=3.32 last3=1.75 last2=1.06
+-- NCP / linked ratios
+N=16: keep 0.844 pairs 0.947 dom 0.955
+N=20: keep 0.843 pairs 0.940 dom 0.949
+N=24: keep 0.846 pairs 0.938 dom 0.947
+N=28: keep 0.845 pairs 0.934 dom 0.943
+=== relerr 0.01
+op N eps* keep% kept_amp pairs dom wall_mean
+Coulomb        16 2.50e-04  0.862     447162   1426   77.6    18.7
+Coulomb        20 2.43e-04  0.476     592633   1867   81.0    66.3
+Coulomb        24 not bracketed
+Coulomb        28 not bracketed
+erfc 0.42      16 2.88e-04  0.666     345607   1173   67.9    17.1
+erfc 0.42      20 2.80e-04  0.361     449767   1525   70.5    80.1
+erfc 0.42      24 not bracketed
+erfc 0.42      28 not bracketed
+terfc linked   16 3.02e-04  0.637     330586   1155   65.9   233.1
+terfc linked   20 not bracketed
+terfc linked   24 not bracketed
+terfc linked   28 not bracketed
+terfc NCP      16 3.87e-04  0.541     280688   1087   62.1   215.9
+terfc NCP      20 not bracketed
+terfc NCP      24 not bracketed
+terfc NCP      28 not bracketed
+-- tail exponents (log-log vs N)
+-- NCP / linked ratios
+N=16: keep 0.849 pairs 0.941 dom 0.941
