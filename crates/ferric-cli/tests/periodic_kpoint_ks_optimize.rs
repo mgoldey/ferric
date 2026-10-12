@@ -193,6 +193,14 @@ struct Lib<'a> {
 /// Library force at `atoms_bohr`, with `exxdiv_force` handed to the force (the
 /// SCF runs with `lib.exxdiv_scf`): equal to the SCF's for a faithful call.
 fn library_gradient(atoms_bohr: &[[f64; 3]], lib: Lib, exxdiv_force: ExxDiv) -> Vec<f64> {
+    try_library_gradient(atoms_bohr, lib, exxdiv_force).expect("gradient")
+}
+
+fn try_library_gradient(
+    atoms_bohr: &[[f64; 3]],
+    lib: Lib,
+    exxdiv_force: ExxDiv,
+) -> Result<Vec<f64>, String> {
     let dir = scratch("lib");
     let p = dir.join("l.xyz");
     std::fs::write(&p, xyz(atoms_bohr)).unwrap();
@@ -237,11 +245,8 @@ fn library_gradient(atoms_bohr: &[[f64; 3]], lib: Lib, exxdiv_force: ExxDiv) -> 
         lib.functional,
         &rcfg,
     )
-    .expect("gradient")
-    .grad
-    .iter()
-    .copied()
-    .collect()
+    .map_err(|e| e.to_string())
+    .map(|g| g.grad.iter().copied().collect())
 }
 
 /// Printed geometry has 8 Angstrom decimals; the force moves by ~k*1e-8 over it.
@@ -323,9 +328,13 @@ fn printed_force_equals_the_library_force_for_a_global_hybrid_with_mutants() {
         ExxDiv::Ewald,
     );
     assert!(max_diff(&g, &bad) > 1e-4, "functional mutant not detected");
-    // MUTANT: a different exxdiv in the SCF (the library energy changes, so
-    // does its force); the CLI's exxdiv = ewald must be what the force saw.
-    let bad = library_gradient(
+    // ARTIFACT HYPOTHESIS: for a closed-shell system the exxdiv shift is uniform
+    // on the occupied space, so it moves the energy by a constant and leaves
+    // the density and the force unchanged: an SCF run with exxdiv = none gives
+    // the SAME force (an identity, asserted), and the force cannot tell the
+    // two apart. What guards the wiring is the library's Fock-consistency
+    // check: a force handed an exxdiv the SCF did not run is refused.
+    let same = library_gradient(
         &at,
         Lib {
             exxdiv_scf: ExxDiv::None,
@@ -333,7 +342,11 @@ fn printed_force_equals_the_library_force_for_a_global_hybrid_with_mutants() {
         },
         ExxDiv::None,
     );
-    assert!(max_diff(&g, &bad) > 1e-5, "exxdiv mutant not detected");
+    assert!(max_diff(&g, &same) < BAR, "exxdiv identity violated");
+    let e = try_library_gradient(&at, lib, ExxDiv::None)
+        .err()
+        .expect("a wrong exxdiv must be refused");
+    assert!(e.contains("exxdiv"), "{e}");
 }
 
 #[test]
@@ -461,5 +474,11 @@ fn unsupported_kohn_sham_routes_are_refused_with_exact_messages() {
     );
     let auto = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"\ngdf_omega = \"auto\"";
     let e = refused(&run(&loose_input("auto", "PBE", "[1, 1, 2]", auto)), "auto");
-    assert!(e.contains("gdf_omega") && e.contains("optimize"), "{e}");
+    assert!(
+        e.contains(
+            "[cell] gdf_omega = \"auto\" is calibrated for the Gamma-point build; with kmesh \
+             set a number"
+        ),
+        "{e}"
+    );
 }
