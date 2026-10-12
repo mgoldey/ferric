@@ -876,7 +876,7 @@ fn check_supported(
 }
 
 /// Why `res`'s density-fitting route is refused (`None` = exact SCF, or the
-/// supported RI-J and/or RI-K for closed-shell RHF, consistent with the
+/// supported RI-J and/or RI-K for closed-shell RHF and UHF, consistent with the
 /// configuration and without an ECP).
 fn df_route_refusal(
     reference: Reference,
@@ -1080,7 +1080,7 @@ fn available(
     })
 }
 
-/// RI-J and/or RI-K (RHF only; the other references were refused by the
+/// RI-J and/or RI-K (RHF and UHF; ROHF was refused by the
 /// preflight): the pre-SCF checks that need the molecule and the fitting basis,
 /// so that `Auto` falls back to finite differences instead of failing after the
 /// SCF. The first-derivative three- and two-centre engines for each named
@@ -1160,7 +1160,7 @@ fn rik_memory_probe(
             reference,
             &format!(
                 "an RI-K Hessian whose resident tensors (about {:.2} GB for {} atoms, {} basis \
-                 functions, {} occupied orbitals, {} auxiliary functions) do not fit the memory \
+                 functions, {} occupied orbitals (n_alpha + n_beta for UHF), {} auxiliary functions) do not fit the memory \
                  pool",
                 bytes as f64 / 1e9,
                 mol.atoms.len(),

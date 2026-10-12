@@ -42,7 +42,7 @@ ungraded kind print nothing. The warning text is the
 Symbols: ✓ = supported. — = not supported (the CLI refuses it with an error).
 **FD** = finite differences of the *analytic* gradient (6N gradient
 evaluations). The analytic Hessian covers closed-shell RHF and UHF of any multiplicity (both also
-with RI-J and/or RI-K, without an ECP) and, with exact J/K, UHF with or without ECPs, and ROHF with exact J/K and
+with RI-J and/or RI-K, without an ECP or external potential; with exact J/K, RHF and UHF also with ECPs), and ROHF with exact J/K and
 no ECP or external potential, with a basis up to f functions; `rhf`, `uhf` and
 `rohf` frequencies use it there by default.
 
@@ -458,7 +458,10 @@ Reported rather than omitted:
 
 - **Analytic Hessians**: closed-shell RHF, UHF and ROHF only (exact J/K, basis
   up to f functions, no solvent, no polarizable embedding; ECPs and external
-  potentials for RHF and UHF but not ROHF). PySCF has no ROHF Hessian, so the
+  potentials for RHF and UHF but not ROHF; RI-J and/or RI-K for RHF and UHF
+  without an ECP or external potential). UHF states are not checked for internal
+  stability or for being the lowest state: an unstable or excited UHF solution
+  gets the Hessian of that solution. PySCF has no ROHF Hessian, so the
   ROHF reference is a finite difference of PySCF's analytic gradient. ROKS and
   every other method's frequencies take central finite differences of the
   analytic gradient.

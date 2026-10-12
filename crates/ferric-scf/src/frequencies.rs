@@ -22,9 +22,14 @@
 //! [`harmonic_frequencies_analytic_rohf`](crate::frequencies::harmonic_frequencies_analytic_rohf) do the
 //! same with [`crate::hessian::uhf_hessian`] and [`crate::hessian::rohf_hessian`].
 //! They cover closed-shell RHF, UHF (any multiplicity) and ROHF with exact
-//! four-centre J/K and refuse everything else (ROKS and every other KS
-//! reference included) with a typed error before the SCF, so the
-//! finite-difference path stays the general one.
+//! four-centre J/K (RHF and UHF also with RI-J and/or RI-K) and refuse
+//! everything else (ROKS and every other KS reference included) with a typed
+//! error, so the finite-difference path stays the general one. The refusals
+//! that need only the configuration fire before the SCF (`*_hessian_preflight`);
+//! those that need the molecule or the fitting basis (an ECP with RI, metric
+//! conditioning, RI-K memory) fire in the matching `analytic_*_hessian_available`
+//! probe, which [`harmonic_frequencies`] consults first, and otherwise after the
+//! SCF.
 //!
 //! [`harmonic_frequencies_with_scf_correction`](crate::frequencies::harmonic_frequencies_with_scf_correction)
 //! is the finite-difference path on the surface `E_SCF + E_corr` for a
@@ -608,9 +613,14 @@ pub fn harmonic_frequencies_analytic(
 
 /// Harmonic frequencies from the ANALYTIC UHF Hessian
 /// ([`crate::hessian::uhf_hessian`]): [`harmonic_frequencies_analytic`] with
-/// one [`solve_uhf`] (any multiplicity) in place of the RHF SCF. Any
-/// configuration the UHF Hessian does not support is refused by
-/// [`crate::hessian::uhf_hessian_preflight`] BEFORE the SCF runs.
+/// one [`solve_uhf`] (any multiplicity) in place of the RHF SCF. A
+/// configuration the preflight can decide
+/// ([`crate::hessian::uhf_hessian_preflight`]) is refused BEFORE the SCF runs;
+/// the checks that need the molecule or the fitting basis (an ECP with RI-J/RI-K,
+/// the conditioning of the fitting metric, RI-K memory) fire in
+/// [`crate::hessian::analytic_uhf_hessian_available`] (which
+/// [`harmonic_frequencies`] consults first) or after the SCF. UHF states are not
+/// checked for internal stability or for being the lowest state.
 pub fn harmonic_frequencies_analytic_uhf(
     ctx: &ParallelContext,
     mol: &Molecule,
