@@ -235,6 +235,27 @@ stage (assembly + solve) and exclude the canonical reference:
 has three points on one family of molecules in one basis. It is not shown
 to be linear, and it is not measured on 3-D or diffuse systems.
 
+**Schwarz triple cut (`schwarz_skip`, default `1e-5`)** applies to the Coulomb, erfc and
+terfc kernels alike. A shell triple is skipped when
+`sqrt(max (P|P)) * sqrt(max (ab|ab)) < schwarz_skip`, both factors from the run's own
+operator; `schwarz_skip = 0` evaluates every triple. For terfc the factors come from the
+table engine's own diagonals and carry a 1e-5 relative inflation for table error, and the
+cut is only available inside the checked box: orbital shells up to g, r0 between 0.3 and
+2.5 Å and r0·ω ≤ 8.9 (outside it the run errors and names `schwarz_skip = 0.0`). Measured
+for terfc (n-alkanes, 6-31G with cc-pVDZ-RI, `eps = 5e-5`, default maps, plain Schwarz,
+2026-10-11, a loaded machine so ratios only, order alternated, two repeats):
+
+| System | operator | wall vs `schwarz_skip = 0` at `1e-6` | at `1e-5` | energy change at `1e-5` |
+|---|---|---|---|---|
+| C12 | linked (r0 = 1.0 Å, r0·ω = 0.707) | 2.3–2.5× faster | 2.7× | 1.5e-7 relative |
+| C12 | NCP (r0 = 0.991 Å, ω = 1.3663 Å⁻¹) | 2.4–2.5× | 2.6–2.9× | 3.6e-8 |
+| C16 | linked | 3.3–3.5× | 3.5–3.8× | 1.7e-7 |
+| C16 | NCP | 3.1–3.9× | 3.3–4.1× | 3.6e-8 |
+
+At `1e-5` the cut skips 55% of the shell triples at C12 and 67% at C16 (51% and 63% at `1e-6`). The pair gate
+(`gate_cal = 0.7`) leaves the C12 result unchanged. At `1e-6` the energy changes by
+1e-10 (C12 linked) to 1.8e-9 (C16 NCP).
+
 **Local MP2 without `integral_direct` makes no scaling claim.** Its assembly
 is pair-local (no dense J is formed), but it still builds the global 3-index
 tensor. Use it as the reference implementation and for small systems.

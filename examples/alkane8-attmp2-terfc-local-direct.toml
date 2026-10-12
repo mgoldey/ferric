@@ -7,9 +7,9 @@
 # 0.707); att_omega = 4.0 with att_r0 = 1.0 is r0*omega = 4 (sharp).
 # Needs the terf tables:  FERRIC_TERF_TABLE_DIR=$PWD/terf-tables
 #
-# schwarz_skip = 0.0 is REQUIRED for terfc: the table-engine operator has no
-# Cauchy-Schwarz shell-pair bound, and the config refuses the default 1e-5 at
-# load time rather than after the SCF.
+# schwarz_skip is left at its default (1e-5): the Cauchy-Schwarz triple cut
+# uses the terfc engine's own (ab|ab) and (P|P) diagonals. schwarz_skip = 0.0
+# evaluates every triple.
 [molecule]
 xyz = "testdata/molecules/alkane_8.xyz"
 
@@ -30,5 +30,4 @@ att_omega = 4.0       # Angstrom^-1; omit for the linked 1/(r0*sqrt2)
 scheme = "amplitude-threshold"
 eps = 1e-3
 integral_direct = true
-schwarz_skip = 0.0
 # reference = true    # opt-in exact attenuated RI-MP2 reference (N^5)

@@ -575,8 +575,10 @@ pub fn assemble_ragged_direct_local(
                                                 // (√ of the max (P|P) diagonal over the shell — conservative at shell
                                                 // granularity); dropping it would make the cut non-conservative
                                                 // wherever √(P|P) > 1 (found in review before any merge).
-                                                // schwarz() supports Coulomb/erf/erfc only — name the knob in the error
-                                                // so a terfc/table-engine run knows the fix is schwarz_skip = 0.0.
+                                                // schwarz() supports Coulomb/erf/erfc/terfc only — name the knob in
+                                                // the error so an unsupported operator knows the fix is
+                                                // schwarz_skip = 0.0. terfc factors (this aux one and sb.q) carry
+                                                // the table-error inflation of schwarz::bound_inflation.
     let qpair: Option<(Array2<f64>, Vec<f64>)> = if dcfg.schwarz_skip > 0.0 {
         let sb = ferric_scf::screening::SchwarzBounds::compute(op, obs).map_err(|e| {
             FerricError::General(format!(
@@ -585,19 +587,9 @@ pub fn assemble_ragged_direct_local(
                 dcfg.schwarz_skip, op.kind
             ))
         })?;
-        let mut eng2 = Engine::new_2center(op, dfbs, 1e-14)?;
-        let dims_df = dfbs.shell_dims();
-        let qp_shell: Vec<f64> = (0..dfbs.nshells())
-            .map(|sp| {
-                let np = dims_df[sp];
-                let vals = eng2.compute_eri2(dfbs, sp, sp);
-                let mut m = 0.0f64;
-                for p in 0..np {
-                    m = m.max(vals[p * np + p].abs());
-                }
-                m.sqrt()
-            })
-            .collect();
+        // The aux factor is the library's validated per-shell table (floored,
+        // terfc-inflated), not a private copy.
+        let qp_shell = ferric_integrals::schwarz::schwarz3_aux(op, dfbs)?;
         Some((sb.q, qp_shell))
     } else {
         None

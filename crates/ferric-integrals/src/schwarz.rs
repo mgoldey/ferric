@@ -86,75 +86,134 @@ pub(crate) const SCHWARZ_TABLE_PRECISION: f64 = 0.0;
 /// every quartet touching the affected shell.
 pub(crate) const SCHWARZ_Q_FLOOR: f64 = 1e-100;
 
+/// Relative inflation applied to every terfc Schwarz factor `Q` (and to the
+/// aux `sqrt(P|P)` factor in the integral-direct triple cut).
+///
+/// EMPIRICAL, not derived. Schwarz is rigorous for the exact terfc kernel
+/// (positive definite), but the engine is table-interpolated and a diagonal
+/// element computed low by a relative delta lets a bound undershoot by about
+/// delta/2 per factor. The table error does not translate into a clean bound on
+/// that delta: the engine forms Coulomb - terf, so a diagonal's relative error
+/// is the table error times Coulomb/terfc (large for diffuse functions at small
+/// r0), and the per-element table error itself reaches 2.2e-5 relative at
+/// m = 10 (`tests/terfc_interp_sweep.rs`, both sweeps; between-node worst
+/// ABSOLUTE error in G 5.4e-10 at m = 12, 4.4e-12 for m <= 7). What supports
+/// 1e-5 is the end-to-end check, not that arithmetic: over the validated
+/// parameter box and bases (`TERFC_SCHWARZ_*`, `tests/terfc_schwarz_screening.rs`)
+/// the smallest bound/true over all significant triples is 1.00003 WITH the
+/// inflation, i.e. the bound would still hold without it. A bound that
+/// undershoots by a relative delta is equivalent to screening at
+/// threshold*(1 + delta), so a residual miss at this level changes which
+/// triples sit exactly at the threshold and nothing else.
+pub const TERFC_TABLE_Q_INFLATION: f64 = 1e-5;
+
+/// Total angular momentum at which the terfc 4-center table engine refuses a
+/// quartet (`TERFC_DIMM` in the shim; pinned by a unit test).
+const TERFC_QUARTET_L_LIMIT: i32 = 24;
+
+/// Largest orbital angular momentum for which the terfc bound is validated
+/// (g, `tests/terfc_schwarz_screening.rs`, water/def2-QZVP). The engine itself
+/// would accept up to 4*l < 24, i.e. h shells.
+pub const TERFC_SCHWARZ_MAX_L: i32 = 4;
+
+/// Validated terfc parameter box: r0 in [0.3, 2.5] Angstrom and
+/// r0*omega in (0, 8.9] (the shipped tables end at s = 80). Outside it the
+/// bound has not been checked against true integrals and is refused.
+pub const TERFC_SCHWARZ_R0_ANG: (f64, f64) = (0.3, 2.5);
+pub const TERFC_SCHWARZ_MAX_R0_OMEGA: f64 = 8.9;
+
+/// The operator-parameter half of the terfc validated box (no basis needed),
+/// so front ends can refuse at load time.
+pub fn check_terfc_parameters_validated(op: Operator) -> Result<(), FerricError> {
+    use ferric_core::units::ANGSTROM_TO_BOHR;
+    let (lo, hi) = TERFC_SCHWARZ_R0_ANG;
+    let r0_ang = op.distance / ANGSTROM_TO_BOHR;
+    let s = op.distance * op.omega;
+    // The 1e-9 slack absorbs the unit round trip of the edge values.
+    if !(r0_ang >= lo * (1.0 - 1e-9) && r0_ang <= hi * (1.0 + 1e-9))
+        || !(s > 0.0 && s <= TERFC_SCHWARZ_MAX_R0_OMEGA * (1.0 + 1e-9))
+    {
+        return Err(FerricError::Libint(format!(
+            "terfc Schwarz bound: r0 = {r0_ang:.4} A, r0*omega = {s:.4} is outside the validated \
+             range (r0 in [{lo}, {hi}] A, 0 < r0*omega <= {TERFC_SCHWARZ_MAX_R0_OMEGA}). \
+             Set schwarz_skip = 0.0"
+        )));
+    }
+    Ok(())
+}
+
+fn check_terfc_validated_range(op: Operator, prep: &PreparedBasis) -> Result<(), FerricError> {
+    if prep.max_l() > TERFC_SCHWARZ_MAX_L || 4 * prep.max_l() >= TERFC_QUARTET_L_LIMIT {
+        return Err(FerricError::Libint(format!(
+            "terfc Schwarz bound: orbital basis has max angular momentum {}; validated up to {} \
+             (the engine refuses quartets with total L >= {}). Set schwarz_skip = 0.0",
+            prep.max_l(),
+            TERFC_SCHWARZ_MAX_L,
+            TERFC_QUARTET_L_LIMIT
+        )));
+    }
+    check_terfc_parameters_validated(op)
+}
+
+/// Multiplier applied to Schwarz factors for `op`: exactly `1.0` for every
+/// operator without table error, `1 + TERFC_TABLE_Q_INFLATION` for terfc.
+pub fn bound_inflation(op: Operator) -> f64 {
+    match op.kind {
+        OperatorKind::Terfc => 1.0 + TERFC_TABLE_Q_INFLATION,
+        _ => 1.0,
+    }
+}
+
+/// max |(ab|ab)| over a shell-pair diagonal block: the magnitudes live on the
+/// generalized diagonal of the (n1*n2)x(n1*n2) block, index ((a*n2+b)*n1+a)*n2+b.
+fn diagonal_max(block: &[f64], n1: usize, n2: usize) -> f64 {
+    let mut m = 0.0f64;
+    for a in 0..n1 {
+        for b in 0..n2 {
+            m = m.max(block[((a * n2 + b) * n1 + a) * n2 + b].abs());
+        }
+    }
+    m
+}
+
 /// Q(i,j) = sqrt(max_{a,b} |(ab|ab)|) over the functions of shell pair (i,j),
 /// from one computed (ij|ij) quartet block, floored at [`SCHWARZ_Q_FLOOR`] so
 /// that the returned bound is never exactly zero.
 ///
-/// The `None` arm (engine returned no block at all) is retained for safety but
-/// is unreachable in normal use now that the table engines are built at
-/// [`SCHWARZ_TABLE_PRECISION`]; it too returns the floor rather than 0.0, so a
-/// bound that cannot be evaluated still does not silently underestimate.
-fn schwarz_pair(eng: &mut Engine, prep: &PreparedBasis, i: usize, j: usize) -> f64 {
+/// Two different "no block" outcomes, handled differently:
+///  * `Ok(None)`: the engine screened the block to zero (libint2 prescreening;
+///    for terfc, an exactly-zero block, since the table 4-center path has no
+///    numerical primitive cutoff). The stored value is the floor.
+///  * `Err(status)`: a table engine (terf/terfc) REFUSED the quartet (total L
+///    beyond the table depth, null tables, a caught C++ exception). Nothing is
+///    known about the block, so storing the floor would silently skip every
+///    triple on this pair; it is an error instead.
+fn schwarz_pair(
+    eng: &mut Engine,
+    prep: &PreparedBasis,
+    i: usize,
+    j: usize,
+    scale: f64,
+) -> Result<f64, FerricError> {
     let dims = prep.shell_dims();
     let (n1, n2) = (dims[i], dims[j]);
-    let maxv = match eng.compute_quartet(prep, i, j, i, j) {
-        Some(block) => {
-            // The (ab|ab) magnitudes live on the generalized diagonal of the
-            // (n1·n2)×(n1·n2) block: index ((a·n2+b)·n1+a)·n2+b.
-            let mut m = 0.0f64;
-            for a in 0..n1 {
-                for b in 0..n2 {
-                    let v = block[((a * n2 + b) * n1 + a) * n2 + b].abs();
-                    if v > m {
-                        m = v;
-                    }
-                }
-            }
-            m
+    let maxv = match eng.compute_quartet_checked(prep, i, j, i, j) {
+        Ok(Some(block)) => diagonal_max(block, n1, n2),
+        Ok(None) => 0.0,
+        Err(status) => {
+            return Err(FerricError::Libint(format!(
+                "Schwarz bound: the table engine refused shell quartet ({i}{j}|{i}{j}) \
+                 with status {status}; the pair cannot be bounded"
+            )))
         }
-        None => 0.0,
     };
-    maxv.sqrt().max(SCHWARZ_Q_FLOOR)
+    // `scale` is exactly 1.0 for every table-free operator (x * 1.0 is
+    // bit-identical); see `bound_inflation` for the terfc value.
+    Ok((maxv.sqrt() * scale).max(SCHWARZ_Q_FLOOR))
 }
 
-/// Compute the Schwarz screening matrix Q(i,j) = sqrt(|(ij|ij)|) for all shell pairs.
-///
-/// Q(i,j) * Q(k,l) provides an upper bound on |(ij|kl)|, enabling integral screening.
-///
-/// Parallelized over upper-triangle shell pairs once `nsh` clears
-/// `PAR_SCHWARZ_SHELL_THRESHOLD` — the historical `scf_compute_schwarz` FFI
-/// call ran the whole O(nsh²) diagonal-quartet loop serially on one engine,
-/// which dominated setup on large direct jobs. Each rayon worker builds its own
-/// [`Engine`] via `map_init` (construction is serialized behind a global ctor
-/// mutex — see the ROW_BLOCK note in the body for why granularity matters).
-/// Every pair is computed by the same
-/// `scf_compute_eri_quartet` kernel with unit coefficient as the serial loop,
-/// and each (i, j) is written exactly once, so the result is bit-identical to
-/// the serial loop regardless of thread count or block size.
-///
-/// # Why the operator set is `{Coulomb, ErfCoulomb, ErfcCoulomb}`
-///
-/// Two independent gates, and it is worth knowing which one a given operator
-/// fails, because they have different remedies:
-///
-/// 1. **Positive-definiteness.** Schwarz requires `G` to be a positive-definite
-///    function (Thompson & Ochsenfeld, JCP 147, 144101 (2017), Appendix B;
-///    Bochner's theorem on `F_G(k) > 0`). Their Table VI discharges this for
-///    all three accepted kinds, and also for `Yukawa`, `SlaterGeminal` and the
-///    Gaussian geminal. See [`crate::csb`]'s header, which extends the same
-///    recipe to ferric's own kernels and finds `Terfc` positive-definite (with
-///    a closed form, `F(k) = (1 - cos(k r0) e^{-k²/4ω²})/(2π²k²)`) but `Terf`
-///    NOT — `F_terf(k) = cos(k r0) e^{-k²/4ω²}/(2π²k²)` changes sign, so a
-///    "Schwarz bound" for `Terf` could be violated outright. No engine work
-///    would ever make `Terf` admissible here.
-/// 2. **An available 4-centre engine.** `Engine::new_2e` must be able to build
-///    the operator at all, and this pass needs `(ij|ij)` QUARTETS. `Terfc`
-///    fails only this second gate: the shim exposes `scf_compute_terfc_eri3` /
-///    `_eri2` but no quartet kernel (`shim.h:201,206`). If one is ever written,
-///    `Terfc` becomes admissible with no new theory — subject to bounding the
-///    interpolation-table error, since a `Q` computed slightly LOW by table
-///    error breaks the bound exactly as a precision-cliff zero would.
-pub fn schwarz(op: Operator, prep: &PreparedBasis) -> Result<Array2<f64>, FerricError> {
+/// Operator gate of [`schwarz`]; the reasoning for each arm is in the comments.
+fn check_operator_supported(op: Operator, prep: &PreparedBasis) -> Result<(), FerricError> {
     match op.kind {
         OperatorKind::Coulomb | OperatorKind::ErfCoulomb | OperatorKind::ErfcCoulomb => {}
         // INVALID BY CONSTRUCTION, not merely unimplemented. Schwarz screening
@@ -191,36 +250,32 @@ pub fn schwarz(op: Operator, prep: &PreparedBasis) -> Result<Array2<f64>, Ferric
         }
         // Positive-definite (proven: F_terfc(k) = (1 - cos(k*r0) exp(-k^2/4w^2))
         // / (2 pi^2 k^2) >= (1 - exp(-k^2/4w^2)) / (2 pi^2 k^2) > 0 for all
-        // (r0, omega); verified against quadrature to 5.67e-15, and r0 -> 0
-        // reproduces the published erfc transform). So Schwarz and CSB are both
-        // VALID here — this is an ENGINE gap, not a validity one: the shim
-        // exposes only `scf_compute_terfc_eri3`/`_eri2`, and a screening table
-        // needs 4-center (PQ|PQ) quartets.
+        // (r0, omega); checked against radial quadrature, and r0 -> 0
+        // reproduces the published erfc transform). The 4-center table engine
+        // (`scf_compute_terfc_eri4`) supplies the (ij|ij) diagonals, so plain
+        // Schwarz is rigorous for the exact kernel. The engine is INTERPOLATED:
+        // a diagonal computed slightly low would break the bound by that much,
+        // so every terfc Q is inflated by [`bound_inflation`] (an empirical
+        // margin, see [`TERFC_TABLE_Q_INFLATION`]). CSB stays refused (`csb.rs`): its M table is
+        // not built for terfc.
         //
-        // UPDATE: the 4-center engine now EXISTS (shim.cc compute_cart_eri4 /
-        // scf_compute_terfc_eri4, validated against libint2 in
-        // tests/eri4_vs_libint.rs). The caveat below has also been measured
-        // rather than assumed — see tests/eri4_terfc_schwarz_validity.rs:
-        // water/cc-pVDZ at r0=2 gives a min (PQ|PQ) diagonal of +8.40e-5 and a
-        // worst |(ab|cd)|/(Q_ab Q_cd) of 1 + 8.88e-16 (one ulp, at a
-        // diagonal-type quartet where Cauchy-Schwarz is an equality).
+        // VALIDATED RANGE (`check_terfc_validated_range`, tests/
+        // terfc_schwarz_screening.rs): the bound never undershot a true (P|ab)
+        // over r0 in {0.3, 0.4, 0.5, 1.0, 1.5, 2.5} A x r0*omega in {0.35,
+        // 0.7071, 1.354, 2, 4, 8.9} (8.9 = the table edge), on
+        // methane/cc-pVDZ, water/aug-cc-pVDZ, water/aug-cc-pVTZ (f),
+        // water/def2-TZVP and water/def2-QZVP (g) with the def2-universal-jkfit
+        // aux; no quartet bound undershot on water/cc-pVDZ. Smallest
+        // bound/true over the grids: 1.00003. Outside that box (h shells,
+        // r0 outside [0.3, 2.5] A, r0*omega > 8.9) the call is refused.
+        // The Coulomb diagonal is NOT a substitute: terfc <= Coulomb in r but
+        // not in Fourier space (1 - cos(k r0) e^{-k^2/4w^2} > 1 where cos < 0),
+        // and it undershoots by up to 26%.
         //
-        // It is still refused here, deliberately. What is measured is that the
-        // bound EXISTS on one molecule at one r0; what a production screen needs
-        // is an error budget across r0 and basis, since the proof is for the
-        // EXACT kernel while this engine is INTERPOLATED — a table entry
-        // computed slightly LOW breaks the bound by that much, so table error
-        // must be folded in as a relative inflation of Q/M, not merely floored.
-        // Flipping this gate is a separate, evidence-bearing change.
-        OperatorKind::Terfc => {
-            return Err(FerricError::Libint(
-                "Schwarz screening is valid for Terfc (the kernel is positive-definite) and the \
-                 4-center engine now exists, but it is not yet enabled: the bound has been \
-                 measured on one molecule at one r0 (see tests/eri4_terfc_schwarz_validity.rs), \
-                 not budgeted for interpolation error across r0 and basis."
-                    .to_string(),
-            ))
-        }
+        // Separately, the 4-center path refuses a quartet whose total angular
+        // momentum reaches the table depth (TERFC_DIMM = 24); schwarz_pair
+        // reports any such refusal as an error, never as a stored floor.
+        OperatorKind::Terfc => check_terfc_validated_range(op, prep)?,
         _ => {
             return Err(FerricError::Libint(format!(
                 "operator {:?} not implemented",
@@ -228,14 +283,55 @@ pub fn schwarz(op: Operator, prep: &PreparedBasis) -> Result<Array2<f64>, Ferric
             )))
         }
     }
+    Ok(())
+}
+
+/// Compute the Schwarz screening matrix Q(i,j) = sqrt(|(ij|ij)|) for all shell pairs.
+///
+/// Q(i,j) * Q(k,l) provides an upper bound on |(ij|kl)|, enabling integral screening.
+///
+/// Parallelized over upper-triangle shell pairs once `nsh` clears
+/// `PAR_SCHWARZ_SHELL_THRESHOLD` — the historical `scf_compute_schwarz` FFI
+/// call ran the whole O(nsh²) diagonal-quartet loop serially on one engine,
+/// which dominated setup on large direct jobs. Each rayon worker builds its own
+/// [`Engine`] via `map_init` (construction is serialized behind a global ctor
+/// mutex — see the ROW_BLOCK note in the body for why granularity matters).
+/// Every pair is computed by the same
+/// `scf_compute_eri_quartet` kernel with unit coefficient as the serial loop,
+/// and each (i, j) is written exactly once, so the result is bit-identical to
+/// the serial loop regardless of thread count or block size.
+///
+/// # Why the operator set is `{Coulomb, ErfCoulomb, ErfcCoulomb, Terfc}`
+///
+/// Two independent gates, and it is worth knowing which one a given operator
+/// fails, because they have different remedies:
+///
+/// 1. **Positive-definiteness.** Schwarz requires `G` to be a positive-definite
+///    function (Thompson & Ochsenfeld, JCP 147, 144101 (2017), Appendix B;
+///    Bochner's theorem on `F_G(k) > 0`). Their Table VI discharges this for
+///    all three accepted kinds, and also for `Yukawa`, `SlaterGeminal` and the
+///    Gaussian geminal. See [`crate::csb`]'s header, which extends the same
+///    recipe to ferric's own kernels and finds `Terfc` positive-definite (with
+///    a closed form, `F(k) = (1 - cos(k r0) e^{-k²/4ω²})/(2π²k²)`) but `Terf`
+///    NOT — `F_terf(k) = cos(k r0) e^{-k²/4ω²}/(2π²k²)` changes sign, so a
+///    "Schwarz bound" for `Terf` could be violated outright. No engine work
+///    would ever make `Terf` admissible here.
+/// 2. **An available 4-centre engine.** `Engine::new_2e` must be able to build
+///    the operator at all, and this pass needs `(ij|ij)` QUARTETS. `Terfc` is
+///    served by the table engine's `scf_compute_terfc_eri4`; because that
+///    engine is interpolated, its factors carry [`bound_inflation`] and a
+///    basis whose quartets exceed the table depth is refused up front.
+pub fn schwarz(op: Operator, prep: &PreparedBasis) -> Result<Array2<f64>, FerricError> {
+    check_operator_supported(op, prep)?;
     let nsh = prep.nshells();
+    let scale = bound_inflation(op);
     let mut qmat = Array2::zeros((nsh, nsh));
 
     if nsh < PAR_SCHWARZ_SHELL_THRESHOLD {
         let mut eng = Engine::new_2e(op, prep, SCHWARZ_TABLE_PRECISION)?;
         for i in 0..nsh {
             for j in 0..=i {
-                let q = schwarz_pair(&mut eng, prep, i, j);
+                let q = schwarz_pair(&mut eng, prep, i, j, scale)?;
                 qmat[(i, j)] = q;
                 qmat[(j, i)] = q;
             }
@@ -275,7 +371,7 @@ pub fn schwarz(op: Operator, prep: &PreparedBasis) -> Result<Array2<f64>, Ferric
         .collect();
     // Each block owns its rows exclusively, so the (i, j) writes never overlap;
     // collect per-block triangles and scatter serially to keep `qmat` unshared.
-    let blocks: Vec<Vec<(usize, usize, f64)>> = row_blocks
+    let blocks: Vec<Result<Vec<(usize, usize, f64)>, FerricError>> = row_blocks
         .par_iter()
         .map_init(
             || {
@@ -286,15 +382,15 @@ pub fn schwarz(op: Operator, prep: &PreparedBasis) -> Result<Array2<f64>, Ferric
                 let mut out = Vec::with_capacity((i1 - i0) * (i1 + 1));
                 for i in i0..i1 {
                     for j in 0..=i {
-                        out.push((i, j, schwarz_pair(eng, prep, i, j)));
+                        out.push((i, j, schwarz_pair(eng, prep, i, j, scale)?));
                     }
                 }
-                out
+                Ok(out)
             },
         )
         .collect();
-    for block in &blocks {
-        for &(i, j, q) in block {
+    for block in blocks {
+        for (i, j, q) in block? {
             qmat[(i, j)] = q;
             qmat[(j, i)] = q;
         }
@@ -340,6 +436,7 @@ const PAR_AUX_SHELL_THRESHOLD: usize = 64;
 pub fn schwarz3_aux(op: Operator, dfbs: &PreparedBasis) -> Result<Vec<f64>, FerricError> {
     let nsh = dfbs.nshells();
     let dims = dfbs.shell_dims();
+    let scale = bound_inflation(op);
 
     if nsh < PAR_AUX_SHELL_THRESHOLD {
         let mut eng = Engine::new_2center(op, dfbs, SCHWARZ_TABLE_PRECISION)?;
@@ -355,7 +452,7 @@ pub fn schwarz3_aux(op: Operator, dfbs: &PreparedBasis) -> Result<Vec<f64>, Ferr
                     maxv = v;
                 }
             }
-            q3[p] = maxv.sqrt().max(SCHWARZ_Q_FLOOR);
+            q3[p] = (maxv.sqrt() * scale).max(SCHWARZ_Q_FLOOR);
         }
         return Ok(q3);
     }
@@ -379,7 +476,7 @@ pub fn schwarz3_aux(op: Operator, dfbs: &PreparedBasis) -> Result<Vec<f64>, Ferr
                         maxv = v;
                     }
                 }
-                maxv.sqrt().max(SCHWARZ_Q_FLOOR)
+                (maxv.sqrt() * scale).max(SCHWARZ_Q_FLOOR)
             },
         )
         .collect();
@@ -465,7 +562,7 @@ mod tests {
         let mut qmat = Array2::zeros((nsh, nsh));
         for i in 0..nsh {
             for j in 0..=i {
-                let q = super::schwarz_pair(&mut eng, prep, i, j);
+                let q = super::schwarz_pair(&mut eng, prep, i, j, bound_inflation(op)).unwrap();
                 qmat[(i, j)] = q;
                 qmat[(j, i)] = q;
             }
@@ -606,5 +703,115 @@ mod tests {
                 "schwarz3_aux: {n_diff} elements differ bitwise (op={op:?})"
             );
         }
+    }
+
+    fn ensure_tables() -> bool {
+        static INIT: std::sync::Once = std::sync::Once::new();
+        INIT.call_once(|| {
+            if std::env::var("FERRIC_TERF_TABLE_DIR").is_err() {
+                let d = concat!(env!("CARGO_MANIFEST_DIR"), "/../../terf-tables");
+                if std::path::Path::new(d).is_dir() {
+                    std::env::set_var("FERRIC_TERF_TABLE_DIR", d);
+                }
+            }
+        });
+        std::env::var("FERRIC_TERF_TABLE_DIR").is_ok()
+    }
+
+    /// Hydrogen STO-3G plus one extra shell of angular momentum `l`.
+    fn h2_with_shell(l: i32) -> PreparedBasis {
+        let mol = Molecule::load_xyz("../../testdata/molecules/h2.xyz").unwrap();
+        let mut bs = basis::bundled("sto-3g").unwrap();
+        bs.shells.get_mut(&1).unwrap().push(basis::Shell {
+            l,
+            pure: true,
+            exponents: vec![1.0],
+            coefficients: vec![1.0],
+        });
+        PreparedBasis::new(&mol, &bs).unwrap()
+    }
+
+    #[test]
+    fn terfc_quartet_limit_equals_the_shim_table_depth() {
+        let shim = include_str!("../shim/shim.cc");
+        let line = shim
+            .lines()
+            .find(|l| l.contains("constexpr int TERFC_DIMM"))
+            .expect("TERFC_DIMM definition");
+        let val: i32 = line
+            .split('=')
+            .nth(1)
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_eq!(val, TERFC_QUARTET_L_LIMIT);
+        const { assert!(4 * TERFC_SCHWARZ_MAX_L < TERFC_QUARTET_L_LIMIT) };
+    }
+
+    #[test]
+    fn terfc_schwarz_refuses_outside_the_validated_range() {
+        // The range check precedes engine construction: no tables needed.
+        let prep = h2_with_shell(0);
+        let ang = ferric_core::units::ANGSTROM_TO_BOHR;
+        let w = |r0_ang: f64, s: f64| Operator::terfc_with_omega(r0_ang * ang, s / (r0_ang * ang));
+        // inside, including both r0 edges and the s edge
+        for (r0, s) in [(1.0, 0.75), (0.3, 1.0), (2.5, 8.9), (1.0, 8.9)] {
+            check_terfc_validated_range(w(r0, s), &prep)
+                .unwrap_or_else(|e| panic!("r0={r0} s={s} refused: {e:?}"));
+        }
+        // outside: small r0, large r0, too sharp
+        for (r0, s) in [(0.25, 1.0), (2.6, 1.0), (1.0, 9.5)] {
+            let e = check_terfc_validated_range(w(r0, s), &prep)
+                .expect_err(&format!("r0={r0} s={s} must be refused"));
+            assert!(
+                format!("{e:?}").contains("outside the validated range"),
+                "{e:?}"
+            );
+        }
+        // and through the public entry point
+        assert!(schwarz(w(2.6, 1.0), &prep).is_err());
+    }
+
+    #[test]
+    fn terfc_schwarz_refuses_unvalidated_angular_momentum() {
+        let op = Operator::terfc(2.0);
+        // g (l=4) is validated; h (l=5) is below the engine limit but not validated.
+        check_terfc_validated_range(op, &h2_with_shell(4)).unwrap();
+        let e = check_terfc_validated_range(op, &h2_with_shell(5)).expect_err("h refused");
+        assert!(format!("{e:?}").contains("validated up to 4"), "{e:?}");
+    }
+
+    /// MUTATION-style: a table-engine refusal must surface as an error, not
+    /// as the floor of a screened block (which would skip every triple on the
+    /// pair). l = 6 reaches the engine's table depth on the (ii|ii) diagonal.
+    #[test]
+    fn terfc_engine_refusal_is_an_error_not_a_floor() {
+        if !ensure_tables() {
+            eprintln!("SKIP: terf tables absent");
+            return;
+        }
+        let prep = h2_with_shell(6);
+        let op = Operator::terfc(2.0);
+        let shell = (0..prep.nshells())
+            .find(|&i| prep.shell_dims()[i] == 13)
+            .expect("the l=6 shell");
+        let mut eng = Engine::new_2e(op, &prep, SCHWARZ_TABLE_PRECISION).unwrap();
+        // the plain wrapper cannot tell refusal from screening ...
+        assert!(eng
+            .compute_quartet(&prep, shell, shell, shell, shell)
+            .is_none());
+        // ... the checked one and the Schwarz pair builder can
+        assert!(eng
+            .compute_quartet_checked(&prep, shell, shell, shell, shell)
+            .is_err());
+        let e = schwarz_pair(&mut eng, &prep, shell, shell, 1.0).expect_err("must not floor");
+        assert!(format!("{e:?}").contains("refused"), "{e:?}");
+        // a table-free Coulomb block that is genuinely fine is unaffected
+        let mut c = Engine::new_2e(Operator::coulomb(), &prep, SCHWARZ_TABLE_PRECISION).unwrap();
+        assert!(schwarz_pair(&mut c, &prep, 0, 0, 1.0).unwrap() > 0.0);
     }
 }

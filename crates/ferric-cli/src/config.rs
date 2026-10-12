@@ -3378,7 +3378,8 @@ impl Config {
     }
 
     /// The integral-direct-specific `[local]` rules: the kind, and the
-    /// explicit `schwarz_skip = 0.0` the Schwarz-less terfc operator needs.
+    /// validated terfc parameter box of the Schwarz cut (the angular-momentum
+    /// limit needs the molecule's basis and is reported when the run starts).
     fn validate_local_direct(&self, kind: &str, model: &LocalModel) -> Result<(), String> {
         if self
             .local
@@ -3393,21 +3394,14 @@ impl Config {
                  method.kind = \"rimp2\" or \"att-rimp2\" only (got \"{kind}\")"
             ));
         }
-        // The table-engine terfc has no shell-pair Schwarz bound
-        // (SchwarzBounds::compute refuses it), and the integral-direct default
-        // schwarz_skip = 1e-5 would only fail after the SCF. Require the
-        // explicit 0.0 at load time instead of a silent default flip.
         if kind == "att-rimp2"
             && model.direct.as_ref().is_some_and(|d| d.schwarz_skip > 0.0)
             && self.mp2.att_rimp2_op()? == AttRimp2Op::Terfc
         {
-            return Err(
-                "[local] integral_direct with [mp2] att_operator = \"terfc\" needs \
-                 schwarz_skip = 0.0: the table-engine terfc has no Cauchy-Schwarz shell-pair \
-                 bound, so the default 1e-5 cut cannot be built. Set schwarz_skip = 0.0 \
-                 explicitly (nothing is skipped; integral cost is the unscreened one)."
-                    .to_string(),
-            );
+            ferric_integrals::schwarz::check_terfc_parameters_validated(
+                self.mp2.att_rimp2_operator()?,
+            )
+            .map_err(|e| format!("[local] integral_direct: {e}"))?;
         }
         Ok(())
     }
@@ -9597,7 +9591,7 @@ mod cli_wired_keys_tests {
     }
 
     #[test]
-    fn att_rimp2_local_is_wired_and_terfc_direct_needs_explicit_no_schwarz() {
+    fn att_rimp2_local_is_wired_and_terfc_direct_takes_the_default_schwarz_skip() {
         let loc = "[local]\nscheme = \"amplitude-threshold\"\neps = 1e-3\nintegral_direct = true\n";
         // erfc + direct: the default Schwarz skip is fine (erfc has bounds).
         cfg(
@@ -9608,25 +9602,18 @@ mod cli_wired_keys_tests {
         )
         .validate_local()
         .unwrap();
-        // terfc + direct without schwarz_skip = 0 is refused AT LOAD, not
-        // after the SCF.
-        refused(
-            &cfg(
+        // terfc + direct takes the same default Schwarz skip, and schwarz_skip
+        // = 0.0 stays available as the explicit opt-out.
+        for extra in ["", "schwarz_skip = 0.0\n"] {
+            cfg(
                 "att-rimp2",
                 "energy",
                 1,
-                &format!("[mp2]\natt_operator = \"terfc\"\n{loc}"),
-            ),
-            "needs schwarz_skip = 0.0",
-        );
-        cfg(
-            "att-rimp2",
-            "energy",
-            1,
-            &format!("[mp2]\natt_operator = \"terfc\"\natt_omega = 4.0\n{loc}schwarz_skip = 0.0\n"),
-        )
-        .validate_local()
-        .unwrap();
+                &format!("[mp2]\natt_operator = \"terfc\"\natt_omega = 4.0\n{loc}{extra}"),
+            )
+            .validate_local()
+            .unwrap();
+        }
         // [mp2] keys the local path does not read are still hard errors.
         refused(
             &cfg(
