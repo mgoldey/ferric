@@ -63,8 +63,9 @@
 //!                         [`crate::dft::build_response_grid`], k-INDEPENDENT)
 //! ```
 //!
-//! The grid, its weights and `dw/dR` do not depend on `k` at all, so X3/X4 are
-//! the Gamma code verbatim (`ε_g = ρ_g ε_xc,g` from the k density). On a
+//! The grid, its weights and `dw/dR` do not depend on `k` at all, so X4 uses
+//! the Gamma `build_response_grid` verbatim (`ε_g = ρ_g ε_xc,g` from the k
+//! density) and X3 is the Gamma recipe re-implemented here on complex AOs. On a
 //! uniform grid ([`crate::dft::PeriodicGrid::uniform`]) the points are fixed in
 //! space and the weights are constants: X3 and X4 are absent by construction
 //! (and must be: an XC force that kept them would be wrong), only X1 remains.
@@ -82,7 +83,8 @@
 //! The Bloch AO cache of the energy is `npts·nbf·N_k·16 B` per plane and is
 //! never retained here. The derivative pass holds, per concurrently live
 //! chunk, `13·nbf·N_k·chunk` complex values (`φ`, `∇φ`, `∇∇φ` for every k) plus
-//! one `D·conj(φ)` GEMM buffer and a partial `V_xc` (`2 N_k nbf²`); the chunk
+//! six `nbf·chunk` complex work planes (`D·conj(φ)` and its gradient
+//! counterparts) and a partial `V_xc` (`2 N_k nbf²`); the chunk
 //! shrinks with `N_k·nbf`, the number of concurrent chunks shrinks with the
 //! remaining budget, and the pass is pre-flighted on a `crate::budget::Ledger`
 //! (a typed error when not even one chunk fits). The `ResponseGrid` weight
@@ -93,8 +95,20 @@
 //!
 //! Pure LDA/GGA only. Global hybrids (exchange fraction ≠ 0), range-separated
 //! hybrids, meta-GGA, VV10/double hybrids are refused with typed errors
-//! ([`PeriodicDftError::Unsupported`]); unrestricted/open-shell k-point KS has
-//! no entry point.
+//! ([`PeriodicDftError::Unsupported`]); unrestricted/open-shell k-point KS
+//! (`solve_kuks`) has no FORCE entry point.
+//!
+//! # Cost and budget notes
+//!
+//! * `jk_build` computes a full `K` and discards it for a pure functional (an
+//!   `O(N_k²)` waste on the dense AFT path); only `J` is used.
+//! * The weight derivatives take `npts·natoms·24 B` (about 2 GB for 64 atoms at
+//!   (75, 302)); they are reserved, so an oversize system is a typed error, not
+//!   an out-of-memory kill.
+//! * The resident J/K objects (dense kernels or `KRsGdf`) belong to the caller
+//!   and are not charged by the force's ledger; wiring KS into the retained-state
+//!   optimizer path will need a `solve_krks_keep` and charging them through the
+//!   retained-state derivative budget.
 
 use crate::budget::{bytes_of, Ledger};
 use crate::dft::{
@@ -121,6 +135,9 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ndarray::{Array1, Array2, Array3, Axis};
 use num_complex::Complex64 as C64;
 use rayon::prelude::*;
+
+/// Remedy text of the KS force's Fock guard.
+const KS_REMEDY: &str = "the functional, grid, AO threshold and J/K route must be the SCF's own (a different functional gives a different V_xc)";
 
 /// Upper bound on points per derivative chunk (the Gamma `XC_GRAD_CHUNK`).
 const MAX_CHUNK: usize = 128;
@@ -776,7 +793,7 @@ fn rks_gradient_with(
         })
         .collect();
     let mismatch = if with_vxc {
-        check_fock(who, "fock", &f, &scf.fock)?
+        check_fock(who, "fock", &f, &scf.fock, KS_REMEDY)?
     } else {
         0.0
     };
@@ -846,7 +863,7 @@ pub fn kpoint_hartree_gradient(
     let f: Vec<Array2<C64>> = (0..mesh.nk())
         .map(|q| hermitize(&(&hk.h[q] + &j[q])))
         .collect();
-    let mismatch = check_fock(who, "fock", &f, &scf.fock)?;
+    let mismatch = check_fock(who, "fock", &f, &scf.fock, KS_REMEDY)?;
     let mut out = assemble(
         cell,
         prep,

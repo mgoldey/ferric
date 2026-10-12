@@ -164,6 +164,10 @@ use ndarray::{Array2, Array3};
 use num_complex::Complex64 as C64;
 use std::f64::consts::PI;
 
+/// Remedy text of the stress Fock guard.
+const STRESS_REMEDY: &str =
+    "this stress is Hartree-Fock only: a KS result has no k-point stress entry point yet";
+
 /// Deliberate defects for the mutation tests (`tests/pbc_kstress.rs`; the
 /// Gamma [`crate::stress::StressMutation`] and [`crate::kgrad::KGradMutation`]
 /// seams, same names where the defect is the same). Never set in production.
@@ -1120,7 +1124,7 @@ pub fn kpoint_rhf_stress(
     let f: Vec<Array2<C64>> = (0..mesh.nk())
         .map(|q| &(&hk.h[q] + &j[q]) - &k[q].mapv(|z| z * 0.5))
         .collect();
-    let mismatch = check_fock(who, "fock", &f, &scf.fock)?;
+    let mismatch = check_fock(who, "fock", &f, &scf.fock, STRESS_REMEDY)?;
     let mut out = assemble(
         cell,
         prep,
@@ -1178,12 +1182,9 @@ pub fn kpoint_uhf_stress(
     let base: Vec<Array2<C64>> = (0..nk).map(|q| &(&hk.h[q] + &ja[q]) + &jb[q]).collect();
     let fa: Vec<Array2<C64>> = (0..nk).map(|q| &base[q] - &ka[q]).collect();
     let fb: Vec<Array2<C64>> = (0..nk).map(|q| &base[q] - &kb[q]).collect();
-    let mismatch = check_fock(who, "fock_alpha", &fa, &scf.fock_alpha)?.max(check_fock(
-        who,
-        "fock_beta",
-        &fb,
-        &scf.fock_beta,
-    )?);
+    let mismatch = check_fock(who, "fock_alpha", &fa, &scf.fock_alpha, STRESS_REMEDY)?.max(
+        check_fock(who, "fock_beta", &fb, &scf.fock_beta, STRESS_REMEDY)?,
+    );
     let mut out = assemble(
         cell,
         prep,

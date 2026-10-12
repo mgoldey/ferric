@@ -1269,20 +1269,27 @@ pub(crate) fn assemble(
 }
 
 /// Largest `|F_rebuilt − F_stored|` the entry points accept (Hartree). The
-/// forces and the stress rebuild `F = h + J − αK` from the density and the dense kernels;
-/// the SCF's stored (non-extrapolated) Fock must agree, which fails for a KS
-/// result (the XC potential is not in the rebuilt `F`) or a wrong `exxdiv`
-/// (`v_M S D S` shift) or an SCF run without the ECP that `hk.h` carries.
-/// Measured on H2 1x1x2: matching inputs 2e-16 (none) and 2e-16 (ewald); the
-/// wrong `exxdiv` 7.9e-1 either way; an LDA result 3.4e-1; HI 1x1x3 matching
-/// 5.7e-17, an ECP-free SCF 6.9.
+/// forces and the stress rebuild the Fock matrix from the density and the
+/// J/K source (`h + J − αK`, plus `V_xc` in the KS force entry); the SCF's
+/// stored (non-extrapolated) Fock must agree, which fails for a wrong `exxdiv`
+/// (`v_M S D S` shift), an SCF run without the ECP that `hk.h` carries, a
+/// different J/K source, and (for the HF entries, which rebuild no `V_xc`) a
+/// KS result. Measured on H2 1x1x2: matching inputs 2e-16 (none) and 2e-16
+/// (ewald); the wrong `exxdiv` 7.9e-1 either way; an LDA result given to an HF
+/// entry 3.4e-1; HI 1x1x3 matching 5.7e-17, an ECP-free SCF 6.9; the KS force
+/// entry with the wrong functional 5.9e-3.
 pub const FOCK_CONSISTENCY_BAR: f64 = 1e-8;
+
+/// Remedy text of the HF entries' Fock guard.
+pub(crate) const HF_REMEDY: &str =
+    "a KS result needs kpoint_rks_gradient (the HF entries rebuild no V_xc)";
 
 pub(crate) fn check_fock(
     who: &str,
     what: &str,
     rebuilt: &[Array2<C64>],
     stored: &[Array2<C64>],
+    remedy: &str,
 ) -> Result<f64, FerricError> {
     let mut worst = 0.0_f64;
     for (a, b) in rebuilt.iter().zip(stored) {
@@ -1299,9 +1306,8 @@ pub(crate) fn check_fock(
         return Err(FerricError::General(format!(
             "{who}: the Fock matrix rebuilt from the density and the J/K source differs from \
              the SCF's stored {what} by {worst:.2e} (bar {FOCK_CONSISTENCY_BAR:.0e}); the analytic \
-             derivative needs the SCF's own Fock: the same J/K kernels, hcore and exxdiv (not a \
-             different exxdiv, not an extrapolated state), and for a KS result the same \
-             functional and grid with the KS entry point (the HF entries do not add V_xc)"
+             derivative needs the SCF's own Fock (same J/K kernels, hcore and exxdiv, not an \
+             extrapolated state); {remedy}"
         )));
     }
     Ok(worst)
@@ -1353,9 +1359,9 @@ pub(crate) fn check_fock_mod_madelung(
         return Err(FerricError::General(format!(
             "{who}: the Fock matrix rebuilt from the density and the J/K source differs from \
              the SCF's stored Fock by {worst:.2e} beyond a Madelung (exxdiv) shift (bar \
-             {FOCK_CONSISTENCY_BAR:.0e}); the analytic derivative covers pure Hartree-Fock \
-             with the SAME J/K kernels and hcore the SCF used (not a KS-DFT result, not an SCF \
-             run without the ECP, not an extrapolated state)"
+             {FOCK_CONSISTENCY_BAR:.0e}); the analytic derivative covers Hartree-Fock with the \
+             SAME J/K kernels and hcore the SCF used (not an SCF run without the ECP, not an \
+             extrapolated state); a KS result needs `kpoint_rks_gradient`"
         )));
     }
     Ok(worst)
