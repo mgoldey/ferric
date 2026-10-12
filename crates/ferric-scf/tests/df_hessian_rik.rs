@@ -272,6 +272,67 @@ fn first_order_k_matches_dfk_fd_631g() {
     check_first_order_k("6-31g", "cc-pvdz-ri");
 }
 
+#[test]
+fn every_k_x_mutant_fails_the_dfk_finite_difference_test() {
+    // The rank-one anchor only sees the skeleton; K^x mutants are killed by the
+    // DfK finite-difference test (bar 5e-7). Each must move K^x by > 10 bars.
+    if !has_deriv1() {
+        return;
+    }
+    let s = setup(&water(), "6-31g", "", "cc-pvdz-ri");
+    let route = s.rhf.df_jk.as_ref().unwrap();
+    let x = occ_factor(&s);
+    let good = rik_terms(&s.mol, &s.prep, route, &x, &RikMutants::default()).unwrap();
+    let d = RikMutants::default();
+    for (name, m) in [
+        (
+            "drop K^x metric term",
+            RikMutants {
+                drop_kx_metric: true,
+                ..d
+            },
+        ),
+        ("drop K^x", RikMutants { drop_kx: true, ..d }),
+        (
+            "omit aux-centre",
+            RikMutants {
+                omit_aux_centre_kx: true,
+                ..d
+            },
+        ),
+        (
+            "transpose pair",
+            RikMutants {
+                transpose_pair_kx: true,
+                ..d
+            },
+        ),
+        (
+            "swap metric",
+            RikMutants {
+                swap_metric: true,
+                ..d
+            },
+        ),
+        (
+            "alpha x2",
+            RikMutants {
+                alpha_factor: 2.0,
+                ..d
+            },
+        ),
+    ] {
+        let bad = rik_terms(&s.mol, &s.prep, route, &x, &m).unwrap();
+        let w2 = good
+            .first_order_fock
+            .iter()
+            .zip(&bad.first_order_fock)
+            .fold(0.0f64, |mx, (g, b)| mx.max(max_abs_diff(g, b)));
+        eprintln!("K^x mutant {name}: max element change {w2:.3e} (FD bar 5e-7)");
+        assert!(w2 > 10.0 * 5e-7, "mutant {name}: {w2:.3e}");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Skeleton pieces vs fixed-density finite differences
 // ---------------------------------------------------------------------------
@@ -415,7 +476,18 @@ fn check_full(mol: &Molecule, basis_name: &str, j_aux: &str, k_aux: &str, tol: f
     (miss, max_abs(&fd))
 }
 
+/// Agreement bar of the production Hessian with the central FD (Richardson,
+/// h = 2e-3 / 1e-3) of ferric's own analytic DF gradient, SCF re-converged at
+/// every displaced geometry. Production floors measured 2026-10-11 (release,
+/// RI-K only): water STO-3G/jkfit 5.8e-11, 6-31G/cc-pVDZ-RI 1.4e-10,
+/// cc-pVDZ/jkfit 3.2e-10, NH3 cc-pVDZ/jkfit 1.0e-9, def2-SVP/jkfit 3.0e-9
+/// (worst; the same value as the RI-J Hessian on this basis, i.e. the FD
+/// reference's own floor); RI-J + RI-K cc-pVDZ/jkfit 4.4e-10.
 const BAR_OWN: f64 = 1e-8;
+/// Bar of the mutation suite, which runs on water 6-31G/cc-pVDZ-RI (floor
+/// 1.4e-10): 36x that floor. The closest mutant (stencil step x10) misses by
+/// 6.8e-8, 13.5 bars; every other mutant by >= 5.6e-2.
+const BAR_MUT: f64 = 5e-9;
 
 #[test]
 fn full_hessian_matches_fd_of_df_gradient_sto3g() {
@@ -493,7 +565,568 @@ fn translational_and_rotational_invariance() {
     assert!(worst_rot < 1e-7, "rotational {worst_rot:.3e}");
 }
 
-#[allow(dead_code)]
-fn unused(_: &Array1<f64>, _: &Setup) {
-    let _ = (rhf_hessian, ());
+// ---------------------------------------------------------------------------
+// Anchor: one occupied column reduces RI-K to RI-J (independent code path)
+// ---------------------------------------------------------------------------
+//
+// An exactly-spanning auxiliary basis (the RI-J anchor) does not exist for
+// exchange: E_K sums self-repulsions of PAIR densities rho_ij = phi_i phi_j,
+// and with i, j on different atoms rho_ij is a two-centre product, which no
+// finite set of atom-centred (rigidly moving) auxiliary functions spans; with
+// both on one atom every integral is one-centre and the Hessian is identically
+// zero (translational invariance), so that configuration is vacuous (measured
+// scale 3e-17). What does hold exactly: for ONE occupied column
+// (m = 1, D = x xᵀ) L_P = (P|rho_11) = d_P, so
+//
+//     E_K = alpha d^T M d = 2 alpha E_J^DF(D),   alpha = -1/4,
+//
+// and every skeleton piece must equal 2 alpha times the matching piece of the
+// merged RI-J Hessian (`rij_terms`, itself validated by an exact-span anchor,
+// own-gradient FD and PySCF), through a code path that shares nothing with
+// `rik_terms` except the stencil module and the metric. Any aux basis works,
+// so the test uses the production fits.
+//
+// Hypotheses. If right: the three pieces agree to the stencil/Cholesky floor
+// (~1e-9). If a RI-K term is dropped or mis-weighted the matching piece
+// misses by that term. BLIND to: everything that needs m > 1 (the pair index
+// ij, off-diagonal pairs, the transpose structure of K^x) -- covered by the
+// FD tests above and the PySCF comparison. K^x is not tested here (K[D] and
+// J[D] are different functionals of D even for rank one).
+
+/// A deterministic dense column over all basis functions.
+fn dense_column(n: usize) -> Array2<f64> {
+    Array2::from_shape_fn((n, 1), |(i, _)| {
+        let t = i as f64;
+        (0.9 + 0.6 * (1.3 * t).sin()) / (1.0 + 0.15 * t)
+    })
+}
+
+fn rank_one_pieces(basis_name: &str, aux: &str, mu: &RikMutants) -> (Vec<f64>, f64) {
+    use ferric_scf::hessian::rij_support::{rij_terms_with_aux, rik_terms_with_aux, RijMutants};
+    let mol = water();
+    let prep = prep_at(&mol, basis_name);
+    let x = dense_column(prep.nbasis());
+    let d = x.dot(&x.t());
+    let op = Operator::coulomb();
+    let natoms = mol.atoms.len();
+    let rij = rij_terms_with_aux(
+        natoms,
+        &prep,
+        aux_at(&mol, aux),
+        op,
+        usize::MAX,
+        &d,
+        &RijMutants::default(),
+    )
+    .unwrap();
+    let rik = rik_terms_with_aux(natoms, &prep, aux_at(&mol, aux), op, usize::MAX, &x, mu).unwrap();
+    let f = 2.0 * ferric_scf::hessian_df_k::RIK_ALPHA;
+    let misses = vec![
+        max_abs_diff(&rik.three_centre, &(&rij.three_centre * f)),
+        max_abs_diff(&rik.metric_second, &(&rij.metric_second * f)),
+        max_abs_diff(&rik.cross, &(&rij.cross * f)),
+        max_abs_diff(&rik.skeleton, &(&rij.skeleton * f)),
+    ];
+    (misses, max_abs(&(&rij.skeleton * f)))
+}
+
+fn check_rank_one(basis_name: &str, aux: &str) {
+    if !has_deriv1() {
+        return;
+    }
+    let bar = 1e-8;
+    let (m, scale) = rank_one_pieces(basis_name, aux, &RikMutants::default());
+    eprintln!(
+        "{basis_name}/{aux} rank-one RI-K vs 2*alpha*RI-J: 3c {:.2e}, 2c {:.2e}, cross {:.2e}, \
+         skeleton {:.2e} (scale {scale:.2e})",
+        m[0], m[1], m[2], m[3]
+    );
+    assert!(scale > 1e-2, "vacuous anchor");
+    assert!(m.iter().all(|&v| v < bar), "rank-one identity: {m:?}");
+    let d = RikMutants::default();
+    for (name, mu, piece) in [
+        (
+            "drop metric second",
+            RikMutants {
+                drop_metric_second: true,
+                ..d
+            },
+            3,
+        ),
+        (
+            "drop cross",
+            RikMutants {
+                drop_cross: true,
+                ..d
+            },
+            3,
+        ),
+        (
+            "alpha x2",
+            RikMutants {
+                alpha_factor: 2.0,
+                ..d
+            },
+            3,
+        ),
+        (
+            "alpha x1/2",
+            RikMutants {
+                alpha_factor: 0.5,
+                ..d
+            },
+            3,
+        ),
+    ] {
+        let (mm, _) = rank_one_pieces(basis_name, aux, &mu);
+        eprintln!("  mutant {name}: skeleton miss {:.3e}", mm[piece]);
+        assert!(mm[piece] > 10.0 * bar, "mutant {name} survives the anchor");
+    }
+}
+
+#[test]
+fn rank_one_exchange_equals_scaled_ri_j_sto3g() {
+    check_rank_one("sto-3g", "def2-universal-jkfit");
+}
+
+#[test]
+fn rank_one_exchange_equals_scaled_ri_j_631g() {
+    check_rank_one("6-31g", "cc-pvdz-ri");
+}
+
+// ---------------------------------------------------------------------------
+// Mutation suite (production-wired) and negative controls
+// ---------------------------------------------------------------------------
+//
+// BAR_OWN is the agreement bar of the production Hessian against the central
+// FD (Richardson, h = 2e-3 / 1e-3) of ferric's own analytic DF gradient with
+// re-converged SCFs. Every mutant must miss the production Hessian by more
+// than 10 bars; identities are reported as BLIND, never counted.
+
+fn mutant_total(s: &Setup, m: &RikMutants) -> Array2<f64> {
+    ferric_scf::hessian::rij_support::rhf_hessian_parts_rik_mutated(
+        &ParallelContext::default(),
+        &s.mol,
+        &s.prep,
+        Operator::coulomb(),
+        &s.bounds,
+        &s.rhf,
+        &s.cfg,
+        m,
+    )
+    .unwrap()
+    .total()
+}
+
+fn all_mutants() -> Vec<(&'static str, RikMutants)> {
+    use ferric_scf::hessian_df_stencil::{StencilConfig, Variant};
+    let d = RikMutants::default();
+    let st = |v| StencilConfig {
+        variant: v,
+        ..Default::default()
+    };
+    vec![
+        (
+            "drop -a<G,V_xy G> (2c second derivative)",
+            RikMutants {
+                drop_metric_second: true,
+                ..d
+            },
+        ),
+        (
+            "drop cross terms",
+            RikMutants {
+                drop_cross: true,
+                ..d
+            },
+        ),
+        (
+            "drop K^x metric term",
+            RikMutants {
+                drop_kx_metric: true,
+                ..d
+            },
+        ),
+        ("drop K^x altogether", RikMutants { drop_kx: true, ..d }),
+        (
+            "omit aux-centre part of K^x",
+            RikMutants {
+                omit_aux_centre_kx: true,
+                ..d
+            },
+        ),
+        (
+            "transpose of the pair in K^x",
+            RikMutants {
+                transpose_pair_kx: true,
+                ..d
+            },
+        ),
+        (
+            "metric swapped for erfc(0.4)",
+            RikMutants {
+                swap_metric: true,
+                ..d
+            },
+        ),
+        (
+            "exchange weight x2",
+            RikMutants {
+                alpha_factor: 2.0,
+                ..d
+            },
+        ),
+        (
+            "exchange weight x1/2",
+            RikMutants {
+                alpha_factor: 0.5,
+                ..d
+            },
+        ),
+        (
+            "stencil step x10",
+            RikMutants {
+                stencil: st(Variant::Step10),
+                ..d
+            },
+        ),
+        (
+            "one-shell displacement",
+            RikMutants {
+                stencil: st(Variant::SingleShell),
+                ..d
+            },
+        ),
+    ]
+}
+
+#[test]
+fn every_wired_mutant_misses_by_more_than_ten_bars() {
+    if !has_deriv2() {
+        return;
+    }
+    let s = setup(&water(), "6-31g", "", "cc-pvdz-ri");
+    let prod = parts(&s).total();
+    let again = mutant_total(&s, &RikMutants::default());
+    assert_eq!(
+        max_abs_diff(&prod, &again),
+        0.0,
+        "production is not reproducible"
+    );
+    for (name, m) in all_mutants() {
+        let miss = max_abs_diff(&mutant_total(&s, &m), &prod);
+        eprintln!(
+            "MUTANT {name}: miss {miss:.3e} ({:.1e} bars)",
+            miss / BAR_MUT
+        );
+        assert!(
+            miss > 10.0 * BAR_MUT,
+            "mutant {name} misses by only {miss:.3e}"
+        );
+    }
+}
+
+#[test]
+fn explicit_inverse_mutant_is_measured_not_claimed() {
+    // At the conditioning of a water cc-pVDZ-RI metric (cond ~ 2.5e5) the LU
+    // inverse equals the V^{-1/2} V^{-1/2} product to roundoff: BLIND here,
+    // not counted. The ignored benzene test measures it where it matters.
+    if !has_deriv2() {
+        return;
+    }
+    let s = setup(&water(), "6-31g", "", "cc-pvdz-ri");
+    let prod = parts(&s).total();
+    let miss = max_abs_diff(
+        &mutant_total(
+            &s,
+            &RikMutants {
+                explicit_inverse: true,
+                ..Default::default()
+            },
+        ),
+        &prod,
+    );
+    eprintln!("explicit-inverse mutant, water 6-31G/cc-pVDZ-RI: miss {miss:.3e}");
+    assert!(
+        miss < BAR_MUT,
+        "explicit inverse became detectable here: {miss:.3e}"
+    );
+}
+
+/// An SCF with explicit RI settings that may leave K (or J) exact.
+fn setup_mixed(basis_name: &str, j_aux: &str, k_aux: &str) -> Setup {
+    let mol = water();
+    let prep = prep_at(&mol, basis_name);
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    let cfg = scf_config(j_aux, k_aux);
+    let rhf = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
+    assert!(rhf.converged);
+    Setup {
+        mol,
+        prep,
+        bounds,
+        rhf,
+        cfg,
+        basis: basis_name.to_string(),
+        aux: k_aux.to_string(),
+    }
+}
+
+#[test]
+fn the_exact_k_and_ri_j_only_hessians_miss_the_ri_k_reference() {
+    // Negative controls: a Hessian that does not differentiate the RI-K
+    // energy is NOT the reference. (a) the all-exact Hessian, (b) RI-J with
+    // exact K. Hypothesis: the fitting error is visible at >= 10 bars.
+    if !has_deriv2() {
+        return;
+    }
+    let (basis_name, aux) = ("6-31g", "cc-pvdz-ri");
+    let reference = parts(&setup(&water(), basis_name, "", aux)).total();
+    let exact = parts(&setup_mixed(basis_name, "", "")).total();
+    let ri_j_only = parts(&setup_mixed(basis_name, aux, "")).total();
+    for (name, h) in [("all-exact", &exact), ("RI-J, exact K", &ri_j_only)] {
+        let miss = max_abs_diff(h, &reference);
+        eprintln!(
+            "NEGATIVE CONTROL {name}: miss {miss:.3e} ({:.1e} bars)",
+            miss / BAR_MUT
+        );
+        assert!(miss > 10.0 * BAR_MUT, "{name} misses by only {miss:.3e}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Refusals, availability, DF off
+// ---------------------------------------------------------------------------
+
+#[test]
+fn unsupported_exchange_fitting_configurations_are_refused() {
+    use ferric_scf::hessian::{
+        analytic_hessian_available, analytic_uhf_hessian_available, rhf_hessian_preflight,
+        uhf_hessian_preflight,
+    };
+    let s = setup(&water(), "sto-3g", "", "def2-universal-jkfit");
+    let op = Operator::coulomb();
+    // Supported: closed-shell RHF RI-K, alone and with RI-J.
+    rhf_hessian_preflight(op, &s.cfg).expect("RI-K preflight");
+    if has_deriv2() {
+        analytic_hessian_available(&s.mol, &s.prep, op, &s.cfg).expect("available");
+    }
+    // With both J and K fitted no four-centre second derivative is needed, so
+    // the probe passes on ANY libint with first derivatives.
+    if has_deriv1() {
+        analytic_hessian_available(
+            &s.mol,
+            &s.prep,
+            op,
+            &scf_config("def2-universal-jkfit", "def2-universal-jkfit"),
+        )
+        .expect("RI-J + RI-K available");
+    }
+    // Open-shell references are refused.
+    let e = uhf_hessian_preflight(op, &s.cfg).unwrap_err().to_string();
+    eprintln!("UHF RI-K: {e}");
+    assert!(e.contains("RI"), "{e}");
+    assert!(analytic_uhf_hessian_available(&s.mol, &s.prep, op, &s.cfg).is_err());
+    // External potential next to RI-K.
+    let with_field = RhfConfig {
+        external_potential: Some(ferric_core::external_potential::ExternalPotential {
+            point_charges: vec![ferric_core::external_potential::PointCharge {
+                q: 0.3,
+                x: 5.0,
+                y: 0.0,
+                z: 0.0,
+            }],
+            ..Default::default()
+        }),
+        ..s.cfg.clone()
+    };
+    let e = rhf_hessian_preflight(op, &with_field)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("external potential"), "{e}");
+    // A result whose RI-K basis differs from the configuration's.
+    let other = scf_config("", "cc-pvdz-ri");
+    let e = rhf_hessian(
+        &ParallelContext::default(),
+        &s.mol,
+        &s.prep,
+        op,
+        &s.bounds,
+        &s.rhf,
+        &other,
+    )
+    .unwrap_err()
+    .to_string();
+    eprintln!("route/config mismatch: {e}");
+    assert!(
+        e.contains("RI-K") && e.contains("differs from the configuration"),
+        "{e}"
+    );
+}
+
+#[test]
+fn df_off_configurations_are_unchanged_by_the_exchange_branch() {
+    // Exact SCFs (df_k_aux unset or "") carry no route, never enter the RI-K
+    // code, and give the same Hessian bit for bit; the hash of every part
+    // against origin/main is recorded in the PR description.
+    if !has_deriv2() {
+        return;
+    }
+    let mol = water();
+    let prep = prep_at(&mol, "sto-3g");
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    let hess = |df_k: Option<String>| {
+        let cfg = RhfConfig {
+            max_iter: 200,
+            energy_conv: 1e-12,
+            density_conv: 1e-10,
+            df_j_aux: Some(String::new()),
+            df_k_aux: df_k,
+            ..Default::default()
+        };
+        let rhf = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
+        assert!(rhf.df_jk.is_none());
+        rhf_hessian(
+            &ParallelContext::default(),
+            &mol,
+            &prep,
+            op,
+            &bounds,
+            &rhf,
+            &cfg,
+        )
+        .unwrap()
+    };
+    assert_eq!(max_abs_diff(&hess(None), &hess(Some(String::new()))), 0.0);
+}
+
+#[test]
+fn a_nearly_dependent_exchange_basis_is_refused_naming_the_dropped_mode_count() {
+    // Hypothesis: a fitting basis with a near-duplicate s function on each
+    // hydrogen has metric eigenvalues below the DF-K cut (1e-10); DfK DROPS
+    // those modes, so the energy is a spectral function of V and its second
+    // derivative (Daleckii-Krein to second order) is not implemented: refused
+    // with the count. The artifact hypothesis (the guard fires on every basis)
+    // is excluded by the accepted twin 1e-3 away.
+    use ferric_core::basis::Shell;
+    if !has_deriv1() {
+        return;
+    }
+    let mol = water();
+    let prep = prep_at(&mol, "sto-3g");
+    let x = dense_column(prep.nbasis());
+    let try_twin = |eps: f64| {
+        let mut aux = basis::bundled("cc-pvdz-ri").unwrap();
+        let h = aux.shells.get_mut(&1).unwrap();
+        let first = h.iter().find(|s| s.l == 0).unwrap().clone();
+        let a = first.exponents[0];
+        h.push(Shell {
+            exponents: vec![a * (1.0 + eps)],
+            coefficients: vec![(2.0 * a / std::f64::consts::PI).powf(0.75)],
+            ..first
+        });
+        ferric_scf::hessian::rij_support::rik_terms_with_aux(
+            mol.atoms.len(),
+            &prep,
+            PreparedBasis::new(&mol, &aux).unwrap(),
+            Operator::coulomb(),
+            usize::MAX,
+            &x,
+            &RikMutants::default(),
+        )
+    };
+    try_twin(1e-3).expect("a well-separated twin must be accepted");
+    for eps in [1e-5, 1e-7] {
+        let msg = try_twin(eps).expect_err("dropped modes").to_string();
+        eprintln!("twin {eps:.0e}: {msg}");
+        assert!(msg.contains("2 dropped mode(s)"), "{msg}");
+    }
+}
+
+#[test]
+fn the_pre_scf_probe_accepts_healthy_metrics_and_the_long_range_metric_has_dropped_modes() {
+    use ferric_scf::hessian::rij_support::probe_exchange_metric;
+    let mol = water();
+    let op = Operator::coulomb();
+    probe_exchange_metric(&aux_at(&mol, "def2-universal-jkfit"), op).expect("healthy metric");
+    // Control for the refusal: the erf(0.3) metric of this basis (used by the
+    // range-separated exchange of the SCF, not by this Hessian) has modes the
+    // DfK cut drops.
+    let lr = coulomb_metric_2c(Operator::erf(0.3), &aux_at(&mol, "def2-universal-jkfit")).unwrap();
+    let (lam, _) = lr.eigh(UPLO::Upper).unwrap();
+    let dropped = lam.iter().filter(|&&l| l < 1e-10).count();
+    eprintln!("erf(0.3) metric of def2-universal-jkfit: {dropped} dropped modes");
+    assert!(dropped > 0, "the control metric must have dropped modes");
+}
+
+// ---------------------------------------------------------------------------
+// Larger systems (ignored: measured wall times, release, one run each)
+// ---------------------------------------------------------------------------
+
+const NH3_DISTORTED: &str = "4\nNH3 distorted\n\
+N      0.010000     0.020000     0.100000\n\
+H      0.020000     0.940000    -0.300000\n\
+H      0.810000    -0.480000    -0.340000\n\
+H     -0.830000    -0.460000    -0.310000\n";
+
+#[test]
+#[ignore = "slow: water cc-pVDZ/def2-universal-jkfit RI-K own-gradient FD"]
+fn full_hessian_matches_fd_of_df_gradient_ccpvdz_jkfit() {
+    if !has_deriv2() {
+        return;
+    }
+    check_full(&water(), "cc-pvdz", "", "def2-universal-jkfit", BAR_OWN);
+}
+
+#[test]
+#[ignore = "slow: water def2-SVP/def2-universal-jkfit RI-K own-gradient FD"]
+fn full_hessian_matches_fd_of_df_gradient_def2svp_jkfit() {
+    if !has_deriv2() {
+        return;
+    }
+    check_full(&water(), "def2-svp", "", "def2-universal-jkfit", BAR_OWN);
+}
+
+#[test]
+#[ignore = "slow: water cc-pVDZ RI-J + RI-K (both jkfit) own-gradient FD"]
+fn full_hessian_matches_fd_of_df_gradient_ccpvdz_ri_jk() {
+    if !has_deriv1() {
+        return;
+    }
+    check_full(
+        &water(),
+        "cc-pvdz",
+        "def2-universal-jkfit",
+        "def2-universal-jkfit",
+        BAR_OWN,
+    );
+}
+
+#[test]
+#[ignore = "slow: NH3 cc-pVDZ/def2-universal-jkfit RI-K own-gradient FD"]
+fn full_hessian_matches_fd_of_df_gradient_nh3_ccpvdz_jkfit() {
+    if !has_deriv2() {
+        return;
+    }
+    let mol = Molecule::parse_xyz(NH3_DISTORTED, 0, 1).unwrap();
+    let (miss, scale) = check_full(&mol, "cc-pvdz", "", "def2-universal-jkfit", BAR_OWN);
+    eprintln!("NH3 cc-pVDZ/jkfit RI-K: miss {miss:.3e} of {scale:.3e}");
+}
+
+// ---------------------------------------------------------------------------
+// Memory pre-flight
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_memory_charge_scales_as_documented() {
+    use ferric_scf::hessian_df_k::rik_peak_bytes;
+    // 3N A m^2 (L^x, Z^x) + 3N A^2 (V^x) dominate; spot-check the arithmetic
+    // the reservation uses and the documented examples.
+    let small = rik_peak_bytes(3, 24, 5, 113);
+    let big = rik_peak_bytes(30, 300, 60, 1500);
+    eprintln!("peak bytes: water cc-pVDZ/jkfit {small}, 30 atoms/300 bf/m=60/A=1500 {big}");
+    assert!(small < 50 << 20);
+    assert!(big > 5usize << 30, "the 30-atom example must exceed 5 GB");
 }

@@ -125,6 +125,8 @@ pub struct RikMutants {
     pub drop_cross: bool,
     /// Drop the whole metric-response term of `K^x` (`−V_x Ĉ Ĉ`).
     pub drop_kx_metric: bool,
+    /// Drop `K^x` altogether (the fixed-density exchange Fock derivative).
+    pub drop_kx: bool,
     /// Omit the auxiliary-centre derivative of `(P|μν)` in `K^x`.
     pub omit_aux_centre_kx: bool,
     /// Use the transposed pair `T_{P,λν}` in `K^x` (the `(ij)` pair swapped).
@@ -147,6 +149,7 @@ impl Default for RikMutants {
             drop_metric_second: false,
             drop_cross: false,
             drop_kx_metric: false,
+            drop_kx: false,
             omit_aux_centre_kx: false,
             transpose_pair_kx: false,
             swap_metric: false,
@@ -472,7 +475,8 @@ pub fn rik_terms_with_aux(
                 .map_err(|e| FerricError::General(format!("W reshape: {e}")))?;
             kx -= &chat_rows.t().dot(&w_rows);
         }
-        first_order_fock.push(&kx * (2.0 * alpha));
+        let scale = if mutants.drop_kx { 0.0 } else { 2.0 * alpha };
+        first_order_fock.push(&kx * scale);
         first_order_k.push(kx);
     }
     Ok(RikTerms {
