@@ -113,11 +113,14 @@
 //!   AOs, with the tau term on the AO Hessian for a meta-GGA;
 //!   range-separated hybrids and VV10 are refused.
 //! * [`kxcstress`] — the stress of the same energy (`kpoint_rks_stress`): the
-//!   exchange-free k HF stress plus the XC strain terms on Bloch AOs (AO
-//!   strain with point motion, the partition-weight response on an atom grid
-//!   or the volume term on a uniform grid). Pure LDA/GGA only: global
-//!   hybrids, range-separated hybrids, meta-GGA, VV10 and open shell are
-//!   refused. The stress is returned unsymmetrised (the Gamma convention).
+//!   k HF stress with the exact-exchange fraction `a` (dense K walks, the
+//!   RS-GDF fit's exchange pieces and the Madelung term scaled by `a`) plus
+//!   the XC strain terms on Bloch AOs (AO strain with point motion, the
+//!   partition-weight response on an atom grid or the volume term on a
+//!   uniform grid). LDA, GGA and global hybrids (a hybrid needs
+//!   `KRksStressConfig::exxdiv`); range-separated hybrids, meta-GGA, VV10 and
+//!   open shell are refused. The stress is returned unsymmetrised (the Gamma
+//!   convention).
 //! * [`kuxcgrad`] — the open-shell twin (`kpoint_uks_gradient`, k-point UKS
 //!   from [`kuks`]; `kpoint_roks_gradient` / `kpoint_rohf_gradient` for the
 //!   restricted-open-shell energies of [`kroks`] with the ROHF orbital-gradient
