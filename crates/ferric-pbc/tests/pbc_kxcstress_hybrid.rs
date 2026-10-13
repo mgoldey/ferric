@@ -858,8 +858,11 @@ fn supercell_case(exxdiv: ExxDiv) {
 // ----------------------------------------------------------------------- FD
 
 /// FD step and bar of the atom-grid hybrid anchors. The step and the floor come
-/// from `fd_window_probe_pbe0` (shared cutoff 14, PBE0, 1x1x3, dense Ewald):
-/// see its doc for the measured numbers on both sides of the window.
+/// from `fd_window_probe_pbe0` (shared cutoff 14, PBE0, 1x1x3, dense Ewald,
+/// all nine components): worst |FD - analytic| 1.5e-9 at h = 1e-5 (energy
+/// roundoff / 2h), 1.0e-9 at 2.5e-5, 4.6e-9 at 5e-5, 2.0e-8 at 1e-4 (h^2
+/// truncation); no isolated jump at cutoff 14. The bar is 30x the floor at the
+/// chosen step; the smallest production-wired mutant misses by 1.1e-2.
 const FD_H: f64 = 2.5e-5;
 const FD_BAR: f64 = 3e-8;
 
