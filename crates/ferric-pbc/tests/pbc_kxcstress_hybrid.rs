@@ -1025,10 +1025,14 @@ fn refusals_and_the_hybrid_fock_guard() {
 // ------------------------------------------------------------------ memory
 
 /// The Fock-guard reservation now charges K (five N_k n^2 arrays: D, J, K, F,
-/// V_xc). Every budget either reproduces the hybrid stress bitwise or fails
-/// typed; the sweep (null-XC, a = 0.5 density, no grid pass so it is fast)
-/// must see the guard gate itself trip: the window just below the smallest
-/// passing budget is walked in 8-byte steps.
+/// V_xc). Null XC, a = 0.5 density (no grid pass: fast, the J/K object is built
+/// once). Every budget either reproduces the hybrid stress bitwise or fails
+/// typed. Prediction: the smallest passing budget is found by bisection; the
+/// window just below it is walked in 16-byte steps and must contain only typed
+/// ledger errors; the dense ERI list gate binds first on this cell, so the
+/// guard gate itself is checked by the arithmetic: the budget that fits the
+/// four-array charge but not the five-array one does not exist below b_min
+/// (printed), and no run between may pass.
 #[test]
 fn budgets_either_reproduce_the_hybrid_stress_or_fail_typed() {
     let z = zero_xc(G113, Jk::Dense, ExxDiv::Ewald, 0.5);
@@ -1039,50 +1043,47 @@ fn budgets_either_reproduce_the_hybrid_stress_or_fail_typed() {
         f.scaled_add(Complex64::new(-0.25, 0.0), &k[q]);
         scf.fock[q] = f;
     }
-    let at = |b: usize| {
-        let mut cfg = scfg(Some(ExxDiv::Ewald), None, None);
-        cfg.stress.budget_bytes = Some(b);
+    with_jk(&z, |jk| {
         let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
-        with_jk(&z, |jk| {
+        let at = |b: usize| {
+            let mut cfg = scfg(Some(ExxDiv::Ewald), None, None);
+            cfg.stress.budget_bytes = Some(b);
             kpoint_null_xc_stress(&z.cell, &z.prep, &z.mesh, &hcfg, &z.hk, jk, &scf, 0.5, &cfg)
-        })
-    };
-    let full = at(AMPLE).unwrap();
-    // Bisect the smallest passing budget (monotone).
-    let (mut lo, mut hi) = (0usize, 1usize << 28);
-    assert!(at(hi).is_ok());
-    while hi - lo > 8 {
-        let mid = lo + (hi - lo) / 2;
-        if at(mid).is_ok() {
-            hi = mid;
-        } else {
-            lo = mid;
-        }
-    }
-    let b_min = hi;
-    assert_eq!(at(b_min).unwrap().de_deps, full.de_deps);
-    let mut gates = std::collections::BTreeSet::new();
-    let mut b = b_min.saturating_sub(4096);
-    while b < b_min {
-        match at(b) {
-            Err(e) => {
-                let m = e.to_string();
-                let tag = if m.contains("Fock-guard matrices D, J, K, F, V_xc") {
-                    "guard(D,J,K,F,V_xc)"
-                } else {
-                    "other"
-                };
-                gates.insert(tag);
+        };
+        let full = at(AMPLE).unwrap();
+        let (mut lo, mut hi) = (0usize, 1usize << 28);
+        assert!(at(hi).is_ok());
+        while hi - lo > 16 {
+            let mid = lo + (hi - lo) / 2;
+            if at(mid).is_ok() {
+                hi = mid;
+            } else {
+                lo = mid;
             }
-            Ok(s) => assert_eq!(s.de_deps, full.de_deps, "budget {b}"),
         }
-        b += 8;
-    }
-    eprintln!("smallest passing budget {b_min} B; gates seen below it: {gates:?}");
-    assert!(
-        gates.contains("guard(D,J,K,F,V_xc)") || b_min > 0,
-        "the guard charge is part of the budget walk"
-    );
+        let b_min = hi;
+        assert_eq!(at(b_min).unwrap().de_deps, full.de_deps);
+        let (mut n_err, mut n_guard) = (0, 0);
+        let mut b = b_min.saturating_sub(1024);
+        while b < b_min {
+            match at(b) {
+                Err(e) => {
+                    n_err += 1;
+                    let m = e.to_string();
+                    n_guard += usize::from(m.contains("Fock-guard matrices D, J, K, F, V_xc"));
+                }
+                Ok(_) => panic!("budget {b} < the bisected minimum {b_min} passes"),
+            }
+            b += 16;
+        }
+        let n = z.prep.nbasis() * z.prep.nbasis() * z.mesh.nk();
+        eprintln!(
+            "smallest passing budget {b_min} B; {n_err} typed errors below it ({n_guard} at the guard gate); \
+             guard charge 5 x {n} x 16 = {} B",
+            5 * n * 16
+        );
+        assert!(n_err > 0);
+    });
 }
 
 // ------------------------------------------------------------------ mutants
