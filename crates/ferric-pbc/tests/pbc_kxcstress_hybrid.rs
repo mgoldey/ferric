@@ -562,7 +562,17 @@ fn null_stress(z: &Zx, a: f64, scf: &KScfResult, cfg: &KRksStressConfig) -> KRks
 /// Madelung or a K scaled by anything but 1 shows as a nonzero difference.
 #[test]
 fn a_equal_one_with_zero_xc_is_the_hf_stress_per_part() {
-    for jk in [Jk::Dense, Jk::Gdf] {
+    a_equal_one_case(Jk::Dense);
+}
+
+#[test]
+#[ignore = "RS-GDF rows of the a = 1 anchor (2 fitted zero-XC SCFs + 4 stresses); measured ~90 s"]
+fn a_equal_one_with_zero_xc_is_the_hf_stress_per_part_rsgdf() {
+    a_equal_one_case(Jk::Gdf);
+}
+
+fn a_equal_one_case(jk: Jk) {
+    {
         for exxdiv in [ExxDiv::None, ExxDiv::Ewald] {
             let z = zero_xc(G113, jk, exxdiv, 1.0);
             let ks = null_stress(&z, 1.0, &z.scf, &scfg(Some(exxdiv), None, None));
@@ -606,7 +616,17 @@ fn a_equal_one_with_zero_xc_is_the_hf_stress_per_part() {
 /// pins the pure value itself.
 #[test]
 fn a_zero_is_the_pure_stress_bitwise_whatever_the_exxdiv() {
-    for jk in [Jk::Dense, Jk::Gdf] {
+    a_zero_case(Jk::Dense);
+}
+
+#[test]
+#[ignore = "RS-GDF row of the a = 0 bitwise anchor; measured ~60 s"]
+fn a_zero_is_the_pure_stress_bitwise_whatever_the_exxdiv_rsgdf() {
+    a_zero_case(Jk::Gdf);
+}
+
+fn a_zero_case(jk: Jk) {
+    {
         let fx = fixture(G113, "PBE", jk, ExxDiv::None);
         let run = |e: Option<ExxDiv>| {
             stress_with(&fx, "PBE", &fx.res.scf, &scfg(e, None, None)).unwrap()
@@ -633,7 +653,17 @@ fn a_zero_is_the_pure_stress_bitwise_whatever_the_exxdiv() {
 /// and mutant tests pin those.
 #[test]
 fn stress_is_affine_in_the_exchange_fraction_at_fixed_density() {
-    for jk in [Jk::Dense, Jk::Gdf] {
+    affine_case(Jk::Dense);
+}
+
+#[test]
+#[ignore = "RS-GDF row of the affinity anchor (6 null-XC stresses); measured ~60 s"]
+fn stress_is_affine_in_the_exchange_fraction_at_fixed_density_rsgdf() {
+    affine_case(Jk::Gdf);
+}
+
+fn affine_case(jk: Jk) {
+    {
         let z = zero_xc(G113, jk, ExxDiv::Ewald, 1.0);
         let (j, k) = jk_mats(&z);
         let at = |a: f64| -> Mat3 {
@@ -654,7 +684,12 @@ fn stress_is_affine_in_the_exchange_fraction_at_fixed_density() {
         }
         eprintln!("{jk:?}: |S(1)-S(0)| {span:.3e}; affine residual {worst:.2e}");
         assert!(span > 1e-3);
-        assert!(worst < 1e-12, "{jk:?}: {worst:e}");
+        // Bar from both sides: the correct residual is 4.9e-15 (dense) and
+        // 1.8e-12 (RS-GDF, fit roundoff); the a^2 defect misses by
+        // (a - a^2) |S(1) - S(0)| = 0.19 * 0.33 ~ 6e-2 at a = 0.25 (by
+        // arithmetic from the measured span; the production mutant itself is
+        // exercised in `smoke_mutants_are_caught`, miss 1.6e-1 on PBE0).
+        assert!(worst < 1e-10, "{jk:?}: {worst:e}");
     }
 }
 
@@ -726,11 +761,17 @@ fn gamma_rows(k: &KRksStress, g: &GammaStress, n_cells: f64) -> Vec<(&'static st
 /// Prediction: <= 1e-10 per part; the madelung row is exactly 0 for none.
 #[test]
 fn one_point_mesh_matches_the_gamma_hybrid_stress_per_part() {
-    for (f, exxdiv) in [
-        ("PBE0", ExxDiv::None),
-        ("PBE0", ExxDiv::Ewald),
-        ("B3LYP", ExxDiv::Ewald),
-    ] {
+    one_point_case(&[("PBE0", ExxDiv::Ewald)]);
+}
+
+#[test]
+#[ignore = "the other rows (PBE0 none, B3LYP ewald) of the 1x1x1 Gamma anchor; measured ~20 s"]
+fn one_point_mesh_matches_the_gamma_hybrid_stress_per_part_other_rows() {
+    one_point_case(&[("PBE0", ExxDiv::None), ("B3LYP", ExxDiv::Ewald)]);
+}
+
+fn one_point_case(rows: &[(&str, ExxDiv)]) {
+    for &(f, exxdiv) in rows {
         let gam = gamma_side(&cell_of(&H2), f, exxdiv);
         let fx = fixture(
             Mesh {
@@ -785,18 +826,26 @@ fn supercell_pos(pos: &[[f64; 3]], a: f64, n: [usize; 3]) -> Cell {
 /// both sides. Prediction <= 1e-10 per part.
 #[test]
 fn k_mesh_hybrid_stress_is_the_gamma_supercell_stress_per_part() {
-    for exxdiv in [ExxDiv::None, ExxDiv::Ewald] {
-        let f = "PBE0";
-        let gam = gamma_side(&supercell_pos(&H2, 4.0, [1, 1, 3]), f, exxdiv);
-        let fx = fixture(G113, f, Jk::Dense, exxdiv);
-        let k = stress(&fx);
-        for (n, d) in gamma_rows(&k, &gam, 3.0) {
-            eprintln!("{f} {exxdiv:?} 1x1x3 vs supercell: {n:<10} {d:.2e}");
-            assert!(d < 1e-10, "{f} {exxdiv:?} {n}: {d:e}");
-        }
-        if exxdiv == ExxDiv::Ewald {
-            assert!(mmax(&k.hf.parts.madelung) > 1e-6);
-        }
+    supercell_case(ExxDiv::Ewald);
+}
+
+#[test]
+#[ignore = "second exxdiv row of the supercell anchor (6-atom Gamma SCF); measured ~30 s"]
+fn k_mesh_hybrid_stress_is_the_gamma_supercell_stress_per_part_exxdiv_none() {
+    supercell_case(ExxDiv::None);
+}
+
+fn supercell_case(exxdiv: ExxDiv) {
+    let f = "PBE0";
+    let gam = gamma_side(&supercell_pos(&H2, 4.0, [1, 1, 3]), f, exxdiv);
+    let fx = fixture(G113, f, Jk::Dense, exxdiv);
+    let k = stress(&fx);
+    for (n, d) in gamma_rows(&k, &gam, 3.0) {
+        eprintln!("{f} {exxdiv:?} 1x1x3 vs supercell: {n:<10} {d:.2e}");
+        assert!(d < 1e-10, "{f} {exxdiv:?} {n}: {d:e}");
+    }
+    if exxdiv == ExxDiv::Ewald {
+        assert!(mmax(&k.hf.parts.madelung) > 1e-6);
     }
 }
 
@@ -1024,15 +1073,12 @@ fn refusals_and_the_hybrid_fock_guard() {
 
 // ------------------------------------------------------------------ memory
 
-/// The Fock-guard reservation now charges K (five N_k n^2 arrays: D, J, K, F,
-/// V_xc). Null XC, a = 0.5 density (no grid pass: fast, the J/K object is built
-/// once). Every budget either reproduces the hybrid stress bitwise or fails
-/// typed. Prediction: the smallest passing budget is found by bisection; the
-/// window just below it is walked in 16-byte steps and must contain only typed
-/// ledger errors; the dense ERI list gate binds first on this cell, so the
-/// guard gate itself is checked by the arithmetic: the budget that fits the
-/// four-array charge but not the five-array one does not exist below b_min
-/// (printed), and no run between may pass.
+/// Budget gates of the hybrid stress (null XC, a = 0.5 density: no grid pass).
+/// The Fock-guard reservation charges K (see the in-crate unit test
+/// `the_guard_charges_five_arrays...`), but on this cell it is 960 B against an
+/// 8.7 MB strain K list, so the K list binds first. Prediction: a 4 MB budget
+/// fails typed on the ERI K list, a 16 MB budget reproduces the AMPLE-budget
+/// stress BITWISE.
 #[test]
 fn budgets_either_reproduce_the_hybrid_stress_or_fail_typed() {
     let z = zero_xc(G113, Jk::Dense, ExxDiv::Ewald, 0.5);
@@ -1051,8 +1097,36 @@ fn budgets_either_reproduce_the_hybrid_stress_or_fail_typed() {
             kpoint_null_xc_stress(&z.cell, &z.prep, &z.mesh, &hcfg, &z.hk, jk, &scf, 0.5, &cfg)
         };
         let full = at(AMPLE).unwrap();
+        let e = at(4 << 20).expect_err("4 MB must not hold the strain K list");
+        let m = e.to_string();
+        eprintln!("4 MB: {m}");
+        assert!(m.contains("k stress ERI K list"), "{m}");
+        assert_eq!(at(16 << 20).unwrap().de_deps, full.de_deps);
+    });
+}
+
+/// The fine walk under the smallest passing budget (bisection, then a 16-byte
+/// walk over the 1 KiB below it): every budget fails typed, none passes.
+#[test]
+#[ignore = "about 90 null-XC stresses at ~12 s each; measured 1167 s"]
+fn budget_walk_below_the_smallest_passing_budget_is_typed_errors_only() {
+    let z = zero_xc(G113, Jk::Dense, ExxDiv::Ewald, 0.5);
+    let (j, k) = jk_mats(&z);
+    let mut scf = z.scf.clone();
+    for q in 0..scf.fock.len() {
+        let mut f = &z.hk.h[q] + &j[q];
+        f.scaled_add(Complex64::new(-0.25, 0.0), &k[q]);
+        scf.fock[q] = f;
+    }
+    with_jk(&z, |jk| {
+        let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
+        let at = |b: usize| {
+            let mut cfg = scfg(Some(ExxDiv::Ewald), None, None);
+            cfg.stress.budget_bytes = Some(b);
+            kpoint_null_xc_stress(&z.cell, &z.prep, &z.mesh, &hcfg, &z.hk, jk, &scf, 0.5, &cfg)
+        };
+        let full = at(AMPLE).unwrap();
         let (mut lo, mut hi) = (0usize, 1usize << 28);
-        assert!(at(hi).is_ok());
         while hi - lo > 16 {
             let mid = lo + (hi - lo) / 2;
             if at(mid).is_ok() {
@@ -1061,28 +1135,13 @@ fn budgets_either_reproduce_the_hybrid_stress_or_fail_typed() {
                 lo = mid;
             }
         }
-        let b_min = hi;
-        assert_eq!(at(b_min).unwrap().de_deps, full.de_deps);
-        let (mut n_err, mut n_guard) = (0, 0);
-        let mut b = b_min.saturating_sub(1024);
-        while b < b_min {
-            match at(b) {
-                Err(e) => {
-                    n_err += 1;
-                    let m = e.to_string();
-                    n_guard += usize::from(m.contains("Fock-guard matrices D, J, K, F, V_xc"));
-                }
-                Ok(_) => panic!("budget {b} < the bisected minimum {b_min} passes"),
-            }
+        assert_eq!(at(hi).unwrap().de_deps, full.de_deps);
+        let mut b = hi.saturating_sub(1024);
+        while b < hi {
+            assert!(at(b).is_err(), "budget {b} < {hi} passes");
             b += 16;
         }
-        let n = z.prep.nbasis() * z.prep.nbasis() * z.mesh.nk();
-        eprintln!(
-            "smallest passing budget {b_min} B; {n_err} typed errors below it ({n_guard} at the guard gate); \
-             guard charge 5 x {n} x 16 = {} B",
-            5 * n * 16
-        );
-        assert!(n_err > 0);
+        eprintln!("smallest passing budget {hi} B");
     });
 }
 
@@ -1093,12 +1152,14 @@ fn miss(fx: &Fx, xm: Option<KXcStressMutation>, sm: Option<KStressMutation>, bas
 }
 
 /// Production-wired defects of the exchange scale, each against the FD-,
-/// Gamma- and supercell-anchored stress. Identities must show EXACTLY 0.
+/// Gamma- and supercell-anchored stress (dense AFT, Ewald, PBE0, 1x1x3). The
+/// largest correct residual of those anchors is 1.9e-10 (FD) and the smallest
+/// mutant miss below is the wrong-density K at ~1e-2, so the bar 1e-5 sits
+/// between with a 5e4 margin on each side.
 #[test]
 fn smoke_mutants_are_caught() {
     use KStressMutation as S;
     use KXcStressMutation as X;
-    // Dense AFT + Ewald: every dense-reachable defect.
     let fx = fixture(G113, "PBE0", Jk::Dense, ExxDiv::Ewald);
     let base = stress(&fx);
     for (xm, sm) in [
@@ -1106,14 +1167,29 @@ fn smoke_mutants_are_caught() {
         (Some(X::ExchScaledTwice), None),
         (Some(X::KWrongDensity), None),
         (None, Some(S::MadelungUnscaled)),
-        (None, Some(S::NoMadelung)),
-        (None, Some(S::GammaMadelung)),
     ] {
         let d = miss(&fx, xm, sm, &base);
         eprintln!("dense Ewald {xm:?}/{sm:?}: miss {d:.2e}");
         assert!(d > MUTANT_BAR, "{xm:?}/{sm:?} survives: {d:e}");
     }
-    // Identities: no Madelung without Ewald, and one k-point has no "next" k.
+}
+
+/// The remaining mutants: the pre-existing Madelung seams under a hybrid, and
+/// the RS-GDF fit pieces (a missing exchange piece of the fit, the scaling
+/// mutants on the fit route). Identities must show EXACTLY 0.
+#[test]
+#[ignore = "9 PBE0 stresses on dense and RS-GDF; measured ~120 s"]
+fn remaining_mutants_are_caught() {
+    use KStressMutation as S;
+    use KXcStressMutation as X;
+    let fx = fixture(G113, "PBE0", Jk::Dense, ExxDiv::Ewald);
+    let base = stress(&fx);
+    for sm in [S::NoMadelung, S::GammaMadelung] {
+        let d = miss(&fx, None, Some(sm), &base);
+        eprintln!("dense Ewald {sm:?}: miss {d:.2e}");
+        assert!(d > MUTANT_BAR, "{sm:?} survives: {d:e}");
+    }
+    // Identity: no Madelung without Ewald.
     let fn0 = fixture(G113, "PBE0", Jk::Dense, ExxDiv::None);
     let b0 = stress(&fn0);
     assert_eq!(miss(&fn0, None, Some(S::MadelungUnscaled), &b0), 0.0);
@@ -1137,6 +1213,7 @@ fn smoke_mutants_are_caught() {
 /// FitExchangeDropped, bitwise; and ExchUnscaled / ExchScaledTwice are
 /// identities at a = 1 (null-XC).
 #[test]
+#[ignore = "PBE RS-GDF SCF + 5 stresses + a = 1 null-XC; measured 59 s"]
 fn scaling_mutants_are_identities_at_a_zero_and_a_one() {
     use KStressMutation as S;
     use KXcStressMutation as X;

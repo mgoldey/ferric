@@ -812,7 +812,7 @@ fn rks_stress_with(
             "k KS stress Fock-guard matrices D, J, K, F, V_xc (n = {}, N_k = {nk})",
             prep.nbasis()
         ),
-        bytes_of((nk * prep.nbasis() * prep.nbasis()) as u64, 16 * 5),
+        guard_bytes(nk, prep.nbasis()),
     )?;
     // F = h + J - (a/2) K + V_xc; the stored Fock of the SCF must agree. K
     // carries the Madelung shift and is scaled as a whole (the energy's
@@ -866,6 +866,12 @@ fn rks_stress_with(
     )?;
     hf.fock_mismatch = mismatch;
     finish(hf, xo)
+}
+
+/// Bytes of the Fock-guard matrices: `D`, `J`, `K`, `F` and `V_xc`, each
+/// `N_k n²` complex (a pure functional also builds and drops `K`).
+fn guard_bytes(nk: usize, n: usize) -> usize {
+    bytes_of((nk * n * n) as u64, 16 * 5)
 }
 
 /// Sum the parts: `dE/dε = HF + xc_ao + xc_weight`, `σ = (1/Ω) dE/dε`.
@@ -946,4 +952,29 @@ pub fn kpoint_hartree_stress(
     )?;
     out.fock_mismatch = mismatch;
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The guard reservation charges FIVE `N_k n²` complex arrays (D, J, K, F,
+    /// V_xc; K is the hybrid's addition) and the ledger refuses a budget that
+    /// holds only four of them. (Whether the reservation, as opposed to the
+    /// larger strain buffers, is the binding gate on a given cell is a
+    /// separate matter: on the H2 fixtures it never is.)
+    #[test]
+    fn the_guard_charges_five_arrays_and_a_four_array_budget_is_refused() {
+        let (nk, n) = (3, 2);
+        let one = nk * n * n * 16;
+        assert_eq!(guard_bytes(nk, n), 5 * one);
+        let label = "k KS stress Fock-guard matrices D, J, K, F, V_xc";
+        let mut four = Ledger::new(4 * one);
+        let e = four
+            .reserve(label, guard_bytes(nk, n))
+            .expect_err("four arrays of budget must not hold five");
+        assert!(e.to_string().contains("Fock-guard matrices"), "{e}");
+        let mut five = Ledger::new(5 * one);
+        five.reserve(label, guard_bytes(nk, n)).expect("five fit");
+    }
 }
