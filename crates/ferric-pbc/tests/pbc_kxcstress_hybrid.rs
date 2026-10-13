@@ -297,11 +297,7 @@ fn stress(fx: &Fx) -> KRksStress {
     .expect("kpoint_rks_stress")
 }
 
-fn stress_mut(
-    fx: &Fx,
-    xm: Option<KXcStressMutation>,
-    sm: Option<KStressMutation>,
-) -> KRksStress {
+fn stress_mut(fx: &Fx, xm: Option<KXcStressMutation>, sm: Option<KStressMutation>) -> KRksStress {
     stress_with(
         fx,
         &fx.functional,
@@ -579,7 +575,15 @@ fn a_equal_one_case(jk: Jk) {
             let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
             let hf: KStress = with_jk(&z, |j| {
                 kpoint_rhf_stress(
-                    &z.cell, &z.prep, &z.mesh, &hcfg, &z.hk, j, &z.scf, exxdiv, &kcfg(),
+                    &z.cell,
+                    &z.prep,
+                    &z.mesh,
+                    &hcfg,
+                    &z.hk,
+                    j,
+                    &z.scf,
+                    exxdiv,
+                    &kcfg(),
                 )
                 .unwrap()
             });
@@ -628,13 +632,15 @@ fn a_zero_is_the_pure_stress_bitwise_whatever_the_exxdiv_rsgdf() {
 fn a_zero_case(jk: Jk) {
     {
         let fx = fixture(G113, "PBE", jk, ExxDiv::None);
-        let run = |e: Option<ExxDiv>| {
-            stress_with(&fx, "PBE", &fx.res.scf, &scfg(e, None, None)).unwrap()
-        };
+        let run =
+            |e: Option<ExxDiv>| stress_with(&fx, "PBE", &fx.res.scf, &scfg(e, None, None)).unwrap();
         let base = run(None);
         for e in [Some(ExxDiv::None), Some(ExxDiv::Ewald)] {
             let s = run(e);
-            for ((n, pa), (_, pb)) in hf_parts(&s.hf.parts).into_iter().zip(hf_parts(&base.hf.parts)) {
+            for ((n, pa), (_, pb)) in hf_parts(&s.hf.parts)
+                .into_iter()
+                .zip(hf_parts(&base.hf.parts))
+            {
                 assert_eq!(pa, pb, "{jk:?} {e:?} part {n}");
             }
             assert_eq!(s.de_deps, base.de_deps, "{jk:?} {e:?}");
@@ -869,11 +875,22 @@ fn pbe0_stress_matches_fd_dense_ewald_1x1x3() {
     let fx = fixture(G113, "PBE0", Jk::Dense, ExxDiv::Ewald);
     let s = stress(&fx);
     let comps = [(2, 2), (0, 2), (0, 0)];
-    let fd = fd_components(&fx.cell, G113, "PBE0", Jk::Dense, ExxDiv::Ewald, FD_H, &comps);
+    let fd = fd_components(
+        &fx.cell,
+        G113,
+        "PBE0",
+        Jk::Dense,
+        ExxDiv::Ewald,
+        FD_H,
+        &comps,
+    );
     let mut worst = 0.0_f64;
     for (&(i, j), d) in comps.iter().zip(&fd) {
         let miss = (s.de_deps[i][j] - d).abs();
-        eprintln!("PBE0 dense ewald eps({i},{j}): analytic {:.9e} FD {d:.9e} miss {miss:.2e}", s.de_deps[i][j]);
+        eprintln!(
+            "PBE0 dense ewald eps({i},{j}): analytic {:.9e} FD {d:.9e} miss {miss:.2e}",
+            s.de_deps[i][j]
+        );
         worst = worst.max(miss);
     }
     assert!(worst < FD_BAR, "{worst:e}");
@@ -892,7 +909,10 @@ fn trace_matches_isotropic_scaling_fd() {
         energy_on(&c, G113, "B3LYP", Jk::Dense, ExxDiv::Ewald)
     };
     let fd = (iso(FD_H) - iso(-FD_H)) / (2.0 * FD_H);
-    eprintln!("B3LYP trace: analytic {tr:.9e} FD(isotropic) {fd:.9e} miss {:.2e}", (tr - fd).abs());
+    eprintln!(
+        "B3LYP trace: analytic {tr:.9e} FD(isotropic) {fd:.9e} miss {:.2e}",
+        (tr - fd).abs()
+    );
     assert!((tr - fd).abs() < 3.0 * FD_BAR);
 }
 
@@ -1017,7 +1037,9 @@ fn refusals_and_the_hybrid_fock_guard() {
         assert!(e.contains(key), "{name}: {e}");
     }
     // A hybrid without the exxdiv.
-    let e = run("PBE0", None, &fx.res.scf).expect_err("needs exxdiv").to_string();
+    let e = run("PBE0", None, &fx.res.scf)
+        .expect_err("needs exxdiv")
+        .to_string();
     eprintln!("no exxdiv: {e}");
     assert!(e.contains("KRksStressConfig::exxdiv"), "{e}");
     // Matching: the exact guard passes.
@@ -1147,7 +1169,12 @@ fn budget_walk_below_the_smallest_passing_budget_is_typed_errors_only() {
 
 // ------------------------------------------------------------------ mutants
 
-fn miss(fx: &Fx, xm: Option<KXcStressMutation>, sm: Option<KStressMutation>, base: &KRksStress) -> f64 {
+fn miss(
+    fx: &Fx,
+    xm: Option<KXcStressMutation>,
+    sm: Option<KStressMutation>,
+    base: &KRksStress,
+) -> f64 {
     mdiff(&stress_mut(fx, xm, sm).de_deps, &base.de_deps)
 }
 
