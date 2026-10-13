@@ -1040,11 +1040,11 @@ fn refusals_and_the_per_spin_fock_guard() {
     for (name, key) in [
         (
             "HSE06",
-            "range-separated hybrid stress at k: HSE06: the k-point XC stress covers LDA, GGA and GLOBAL hybrid functionals; the screened-exchange strain is not implemented",
+            "range-separated hybrid stress at k is not supported: HSE06: the k-point XC stress covers LDA, GGA and GLOBAL hybrid functionals; the screened-exchange strain is not implemented",
         ),
         (
             "SCAN",
-            "meta-GGA stress at k: SCAN: the tau strain (Hessian-moment terms) is not implemented",
+            "meta-GGA stress at k is not supported: SCAN: the tau strain (Hessian-moment terms) is not implemented",
         ),
         ("wB97X-V", "VV10"),
         ("B2PLYP", "double hybrid"),
@@ -1165,7 +1165,7 @@ fn roks_and_rohf_stress_are_refused_typed() {
     .expect_err("ROKS stress accepted")
     .to_string();
     assert!(
-        e.contains("restricted-open-shell stress at k: kpoint_roks_stress: the ROKS stress is not implemented"),
+        e.contains("restricted-open-shell stress at k is not supported: kpoint_roks_stress: the ROKS stress is not implemented"),
         "{e}"
     );
     let e = kpoint_rohf_stress(
@@ -1328,6 +1328,7 @@ fn xc_chunk_charge_is_read_from_the_production_error() {
         match at(mid) {
             Err(e) => {
                 let m = e.to_string();
+                eprintln!("b={mid}: {}", &m[..m.len().min(120)]);
                 if m.contains("UKS XC stress AO moment chunk") {
                     found = Some(m);
                     break;
