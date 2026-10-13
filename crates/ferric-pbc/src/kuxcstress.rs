@@ -800,6 +800,40 @@ pub fn kpoint_rohf_stress(
     )
 }
 
+/// TEST/DIAGNOSTIC: the restricted-open-shell machinery with a zero XC and
+/// exact-exchange fraction `exch`, on an SCF run by `solve_kroks_injected` with
+/// no XC and the same `exch` (a hybrid, `exch != 0`, needs `cfg.base.exxdiv`).
+/// With `exch = 1` it is [`kpoint_rohf_stress`] reached through the ROKS
+/// route's own SCF driver.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn kpoint_null_xc_roks_stress(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    mesh: &KPointMesh,
+    hcore_cfg: &PeriodicHcoreConfig,
+    hk: &PeriodicHcoreK,
+    jk: KStressJk<'_>,
+    scf: &KRoScfResult,
+    exch: f64,
+    cfg: &KUksStressConfig,
+) -> Result<KUksStress, FerricError> {
+    refuse_rsgdf("kpoint_null_xc_roks_stress", &jk)?;
+    uks_stress_with(
+        "kpoint_null_xc_roks_stress",
+        cell,
+        prep,
+        mesh,
+        hcore_cfg,
+        hk,
+        jk,
+        &ro_input(scf),
+        &NullXcPol,
+        exch,
+        cfg,
+    )
+}
+
 /// The converged spin state a stress differentiates (from a [`KUScfResult`]
 /// or a [`KRoScfResult`]).
 struct SpinInput<'a> {
