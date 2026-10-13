@@ -802,11 +802,7 @@ fn refusals_and_the_fock_guard() {
             &cfg,
         )
     };
-    for (name, key) in [
-        ("HSE06", "range-separated"),
-        ("SCAN", "meta-GGA"),
-        ("wB97X-V", "VV10"),
-    ] {
+    for (name, key) in [("HSE06", "range-separated"), ("wB97X-V", "VV10")] {
         let e = run(name, &fx.res.scf)
             .err()
             .unwrap_or_else(|| panic!("{name} accepted"))

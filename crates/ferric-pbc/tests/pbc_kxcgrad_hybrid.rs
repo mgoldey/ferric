@@ -10,8 +10,8 @@
 //! from every side; typed refusals; production-wired mutants.
 //!
 //! NOT covered: p/d shells on the hybrid K walks (every fixture here is
-//! H2/STO-3G, s functions only), range-separated hybrids (refused), meta-GGA, VV10/double
-//! hybrids (refused), range-split RS-GDF with a hybrid, heavy atoms / ECP with a
+//! H2/STO-3G, s functions only), range-separated hybrids (refused), VV10/double
+//! hybrids (refused; meta-GGA has its own file, `pbc_kxcgrad_mgga.rs`), range-split RS-GDF with a hybrid, heavy atoms / ECP with a
 //! hybrid, shifted meshes, open shell, stress.
 
 mod common;
@@ -867,11 +867,7 @@ fn refusals_and_the_hybrid_fock_guard() {
     let ok_cfg = gcfg(Some(ExxDiv::Ewald), None, None);
     let run = |f: &str, s: &KScfResult, cfg: &KRksGradConfig| force_with(&fx, f, s, cfg);
     // Typed refusals.
-    for (name, key) in [
-        ("HSE06", "range-separated"),
-        ("wB97X-V", "VV10"),
-        ("SCAN", "meta-GGA"),
-    ] {
+    for (name, key) in [("HSE06", "range-separated"), ("wB97X-V", "VV10")] {
         let e = run(name, &fx.res.scf, &ok_cfg)
             .err()
             .unwrap_or_else(|| panic!("{name} accepted"))
