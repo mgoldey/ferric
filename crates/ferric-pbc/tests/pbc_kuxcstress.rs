@@ -20,7 +20,7 @@
 //! * (5) the trace against isotropic scaling.
 //!
 //! NOT covered: p/d shells and heavy atoms / ECP (every fixture is H/STO-3G),
-//! ROKS/ROHF (refused, typed), range-separated hybrids / meta-GGA / VV10 (refused),
+//! ROKS/ROHF (see `pbc_kuxcstress_ro.rs`), range-separated hybrids / meta-GGA / VV10 (refused),
 //! shifted meshes except one ignored FD row, the production (75, 302) grid,
 //! no external (PySCF) anchor (its k stress refuses open-shell hybrids).
 
@@ -45,7 +45,7 @@ use ferric_pbc::kstress::{
 use ferric_pbc::kuks::{solve_kuks, KUksConfig, KUksResult};
 use ferric_pbc::kuscf::{solve_kuks_injected, KPointXcPolarized, KUScfResult};
 use ferric_pbc::kuxcstress::{
-    kpoint_null_xc_uks_stress, kpoint_rohf_stress, kpoint_roks_stress, kpoint_uks_stress,
+    kpoint_null_xc_uks_stress, kpoint_uks_stress,
     KUStressMutation, KUksStress, KUksStressConfig, UKS_COMMUTATOR_TOL,
 };
 use ferric_pbc::kxcgrad::KXcGrid;
@@ -1043,8 +1043,7 @@ fn uks_stress_is_bit_identical_across_threads() {
     assert_eq!(a.e_xc, b.e_xc);
 }
 
-/// Typed refusals (exact wording), the per-spin Fock guard from every side, and
-/// the ROKS/ROHF refusal.
+/// Typed refusals (exact wording) and the per-spin Fock guard from every side.
 #[test]
 fn refusals_and_the_per_spin_fock_guard() {
     let fx = fixture(&H3, G111, "PBE0", Jk::Dense, ExxDiv::Ewald);
@@ -1138,66 +1137,6 @@ fn refusals_and_the_per_spin_fock_guard() {
             .to_string();
         assert!(e.contains("outside [0, 1]"), "{e}");
     }
-}
-
-/// ROKS/ROHF stress is refused with a typed, named error.
-#[test]
-fn roks_and_rohf_stress_are_refused_typed() {
-    use ferric_pbc::kroks::{solve_kroks, KRoksConfig};
-    let cell = cell_of(&H3);
-    let prep = prep_for(&cell, &pyscf_sto3g_h());
-    let mesh = KPointMesh::gamma_centred(&cell, [1, 1, 1]).unwrap();
-    let hk =
-        periodic_hcore_kpts(&cell, &prep, &mesh, &PeriodicHcoreConfig::with_omega(OMEGA)).unwrap();
-    let mut cfg = KRoksConfig::new(&cell, ExxDiv::Ewald, "PBE0");
-    cfg.rohf.hcore = PeriodicHcoreConfig::with_omega(OMEGA);
-    cfg.grid = grid_cfg();
-    let r = solve_kroks(&cell, &prep, None, &mesh, &cfg).unwrap();
-    let eri = KDenseAftEri::build(
-        &cell,
-        &prep,
-        &mesh,
-        &hk.s,
-        ExxDiv::Ewald,
-        &Default::default(),
-    )
-    .unwrap();
-    let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
-    let c = scfg(Some(ExxDiv::Ewald), None, None, None);
-    let e = kpoint_roks_stress(
-        &cell,
-        &prep,
-        &mesh,
-        &hcfg,
-        &hk,
-        KStressJk::Dense(&eri),
-        &r.scf,
-        "PBE0",
-        &c,
-    )
-    .expect_err("ROKS stress accepted")
-    .to_string();
-    assert!(
-        e.contains("restricted-open-shell stress at k is not supported: kpoint_roks_stress: k-point ROKS stress is not implemented here"),
-        "{e}"
-    );
-    let e = kpoint_rohf_stress(
-        &cell,
-        &prep,
-        &mesh,
-        &hcfg,
-        &hk,
-        KStressJk::Dense(&eri),
-        &r.scf,
-        ExxDiv::Ewald,
-        &c,
-    )
-    .expect_err("ROHF stress accepted")
-    .to_string();
-    assert!(
-        e.contains("kpoint_rohf_stress: k-point ROHF stress is not implemented here"),
-        "{e}"
-    );
 }
 
 /// A loosely converged UKS state is refused with the commutator message; the

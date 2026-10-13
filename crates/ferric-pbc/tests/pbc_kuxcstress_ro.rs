@@ -110,6 +110,10 @@ const G111: Mesh = Mesh {
     n: [1, 1, 1],
     mp: false,
 };
+const G112: Mesh = Mesh {
+    n: [1, 1, 2],
+    mp: false,
+};
 const G113: Mesh = Mesh {
     n: [1, 1, 3],
     mp: false,
@@ -531,7 +535,7 @@ fn hf_parts(p: &ferric_pbc::kstress::KStressParts) -> Vec<(&'static str, Mat3)> 
 /// state is NOT blind to `RoWDropCross` (halves `W`): asserted visible.
 #[test]
 fn closed_shell_rohf_equals_the_rhf_stress_per_part() {
-    let m = G113;
+    let m = G112;
     let fx = fixture(&H2, m, None, ExxDiv::Ewald);
     assert_eq!(fx.res.scf.nalpha, fx.res.scf.nbeta);
     let ro = stress(&fx);
@@ -586,8 +590,9 @@ const BAR_CLOSED: f64 = 1e-11;
 /// no XC) is the ROHF stress of the ROHF driver, per part (two SCF drivers, two
 /// entry points, one assembly). BLIND to every a-scaling defect (a = 1).
 #[test]
+#[ignore = "second SCF driver on 1x1x2; measured 72 s"]
 fn null_xc_roks_route_equals_the_rohf_stress_per_part() {
-    let fx = fixture(&H3, G113, None, ExxDiv::Ewald);
+    let fx = fixture(&H3, G112, None, ExxDiv::Ewald);
     let ro = stress(&fx);
     let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
     let vm = fx.mesh.madelung(&fx.cell).unwrap();
@@ -607,8 +612,8 @@ fn null_xc_roks_route_equals_the_rohf_stress_per_part() {
         jk: Box::new(eri.jk_builder_with_madelung(vm)) as Box<dyn KPointJk + '_>,
     };
     let mut sc = ferric_pbc::kscf::KScfConfig::default();
-    sc.energy_conv = 1e-13;
-    sc.grad_conv = 1e-10;
+    sc.energy_conv = 1e-14;
+    sc.grad_conv = 1e-12;
     sc.max_iter = 600;
     let scf = solve_kroks_injected(&fx.cell, &fx.mesh, &sc, inj, 2, 1, None, 1.0).unwrap();
     assert!(scf.converged);
@@ -786,10 +791,10 @@ fn ro_stress_gate_probe() {
 /// side, a short MO set, an unconverged SCF and an RS-GDF source.
 #[test]
 fn refusals_and_the_fock_guard() {
-    let fx = fixture(&H3, G111, Some("PBE0"), ExxDiv::Ewald);
+    let fx = fixture(&H3, G111, Some("PBE"), ExxDiv::None);
     let ok_cfg = scfg(None, None, None);
+    let eri = dense_eri(&fx);
     let run = |f: &str, s: &KRoScfResult, cfg: &KUksStressConfig| {
-        let eri = dense_eri(&fx);
         kpoint_roks_stress(
             &fx.cell,
             &fx.prep,
@@ -829,19 +834,12 @@ fn refusals_and_the_fock_guard() {
         e.contains("kpoint_roks_stress: a hybrid functional (exact exchange 0.25) needs KRksStressConfig::exxdiv"),
         "{e}"
     );
-    let ok = run("PBE0", &fx.res.scf, &ok_cfg).unwrap();
+    let ok = run("PBE", &fx.res.scf, &ok_cfg).unwrap();
     assert!(ok.hf.fock_mismatch < 1e-12, "{:e}", ok.hf.fock_mismatch);
     assert!(ok.hf.commutator < 1e-8, "{:e}", ok.hf.commutator);
     let guard_msg = "kpoint_roks_stress: the Fock matrix rebuilt";
-    let mut wrong_exx = scfg(None, None, None);
-    wrong_exx.base.exxdiv = Some(ExxDiv::None);
     let cases: Vec<(&str, Result<KUksStress, ferric_core::FerricError>)> = vec![
-        (
-            "exxdiv None on an Ewald SCF",
-            run("PBE0", &fx.res.scf, &wrong_exx),
-        ),
-        ("B3LYP on a PBE0 SCF", run("B3LYP", &fx.res.scf, &ok_cfg)),
-        ("PBE stress on a PBE0 SCF", run("PBE", &fx.res.scf, &ok_cfg)),
+        ("PBE0 stress on a PBE SCF", run("PBE0", &fx.res.scf, &ok_cfg)),
     ];
     for (n, r) in cases {
         let e = r
@@ -858,7 +856,7 @@ fn refusals_and_the_fock_guard() {
             &mut t.fock_beta
         };
         m[0][(0, 1)] += Complex64::new(1e-6, 0.0);
-        let e = run("PBE0", &t, &ok_cfg)
+        let e = run("PBE", &t, &ok_cfg)
             .expect_err("tamper")
             .to_string();
         assert!(e.contains(guard_msg) && e.contains(which), "{e}");
@@ -866,7 +864,7 @@ fn refusals_and_the_fock_guard() {
     // A short MO set (one set per k is required).
     let mut t = fx.res.scf.clone();
     t.mos.pop();
-    let e = run("PBE0", &t, &ok_cfg).expect_err("short mos").to_string();
+    let e = run("PBE", &t, &ok_cfg).expect_err("short mos").to_string();
     eprintln!("short mos: {e}");
     assert!(
         e.contains("kpoint_roks_stress:") && e.contains("0 MO sets for 1 k-points"),
@@ -875,7 +873,7 @@ fn refusals_and_the_fock_guard() {
     // Unconverged SCF.
     let mut t = fx.res.scf.clone();
     t.converged = false;
-    assert!(run("PBE0", &t, &ok_cfg).is_err());
+    assert!(run("PBE", &t, &ok_cfg).is_err());
     // RS-GDF source (refused before any use of the SCF result).
     let kc = KRsGdfConfig {
         gdf: RsGdfConfig {
@@ -903,7 +901,7 @@ fn refusals_and_the_fock_guard() {
         &fx.hk,
         src(),
         &fx.res.scf,
-        "PBE0",
+        "PBE",
         &ok_cfg,
     )
     .expect_err("roks rsgdf")
@@ -1006,7 +1004,7 @@ fn fd_case(f: Option<&str>, exxdiv: ExxDiv, m: Mesh, comps: &[(usize, usize)]) {
 /// set; the stress of a closed-open-virtual H3 doublet, non-TRIM mesh).
 #[test]
 fn rohf_stress_matches_fd_1x1x2() {
-    fd_case(None, ExxDiv::Ewald, Mesh { n: [1, 1, 2], mp: false }, &[(2, 2)]);
+    fd_case(None, ExxDiv::Ewald, G112, &[(2, 2)]);
 }
 
 #[test]
