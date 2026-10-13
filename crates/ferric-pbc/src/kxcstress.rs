@@ -123,8 +123,9 @@
 //! # Scope
 //!
 //! LDA, GGA and global hybrids; range-separated hybrids, meta-GGA,
-//! VV10/double hybrids and unrestricted KS keep typed errors (the dense
-//! kernels carrying an attenuated exchange are refused by the HF assembly).
+//! VV10/double hybrids keep typed errors (the dense kernels carrying an
+//! attenuated exchange are refused by the HF assembly). The open-shell (UKS)
+//! twin is [`crate::kuxcstress`].
 
 use crate::budget::{bytes_of, Ledger};
 use crate::dense_aft::ExxDiv;
@@ -155,17 +156,17 @@ use num_complex::Complex64 as C64;
 use rayon::prelude::*;
 
 /// Remedy text of the KS stress's Fock guard.
-const KS_REMEDY: &str = "the functional, grid, AO threshold and J/K route must be the SCF's own (a different functional gives a different V_xc), and for a hybrid KRksStressConfig::exxdiv must be the exxdiv the SCF ran";
+pub(crate) const KS_REMEDY: &str = "the functional, grid, AO threshold and J/K route must be the SCF's own (a different functional gives a different V_xc), and for a hybrid KRksStressConfig::exxdiv must be the exxdiv the SCF ran";
 
 /// Upper bound on points per strain chunk.
-const MAX_CHUNK: usize = 128;
+pub(crate) const MAX_CHUNK: usize = 128;
 /// Lower bound on points per strain chunk.
-const MIN_CHUNK: usize = 8;
+pub(crate) const MIN_CHUNK: usize = 8;
 /// Target bytes of AO planes per live chunk.
-const CHUNK_TARGET_BYTES: usize = 64 << 20;
+pub(crate) const CHUNK_TARGET_BYTES: usize = 64 << 20;
 /// Complex AO planes per k and point held by a chunk: `φ` (1), `∇φ` (3), `m1`
 /// (9), `m2` (27).
-const AO_PLANES: usize = 40;
+pub(crate) const AO_PLANES: usize = 40;
 
 /// Deliberate defects for the mutation tests (`tests/pbc_kxcstress.rs`). Never
 /// set in production.
@@ -370,47 +371,57 @@ struct Chunk {
 }
 
 /// Grid points, per-point strain derivative of the weight and anchors.
-struct StrainPoints {
-    points: Vec<GridPoint>,
+pub(crate) struct StrainPoints {
+    pub(crate) points: Vec<GridPoint>,
     /// `dw_g/dε_ab`.
-    dweight: Vec<Mat3>,
+    pub(crate) dweight: Vec<Mat3>,
     /// `O_g`.
-    anchors: Vec<[f64; 3]>,
+    pub(crate) anchors: Vec<[f64; 3]>,
 }
 
 impl GridXc<'_> {
     fn strain_points(&self, led: &mut Ledger) -> Result<StrainPoints, FerricError> {
-        match self.grid {
-            KXcGrid::Atom(cfg) => {
-                let sg = build_strain_grid(self.cell, cfg, led)?;
-                Ok(StrainPoints {
-                    points: sg.points,
-                    dweight: sg.dweight,
-                    anchors: sg.anchors,
+        strain_points_for(self.cell, self.grid, led)
+    }
+}
+
+/// The grid points, per-point weight strain derivative and anchors of `grid`
+/// (shared with the unrestricted stress).
+pub(crate) fn strain_points_for(
+    cell: &Cell,
+    grid: &KXcGrid,
+    led: &mut Ledger,
+) -> Result<StrainPoints, FerricError> {
+    match grid {
+        KXcGrid::Atom(cfg) => {
+            let sg = build_strain_grid(cell, cfg, led)?;
+            Ok(StrainPoints {
+                points: sg.points,
+                dweight: sg.dweight,
+                anchors: sg.anchors,
+            })
+        }
+        KXcGrid::Uniform(n) => {
+            let points = PeriodicGrid::uniform(cell, *n)?.points().to_vec();
+            // Points at fixed fractional coordinates: `r → (1 + ε) r`
+            // (the point is its own anchor) and `w = Ω/N` scales with the
+            // volume: `dw/dε_ab = w δ_ab`.
+            let dweight = points
+                .iter()
+                .map(|p| {
+                    let mut m = ZERO3;
+                    for (a, row) in m.iter_mut().enumerate() {
+                        row[a] = p.weight;
+                    }
+                    m
                 })
-            }
-            KXcGrid::Uniform(n) => {
-                let points = PeriodicGrid::uniform(self.cell, *n)?.points().to_vec();
-                // Points at fixed fractional coordinates: `r → (1 + ε) r`
-                // (the point is its own anchor) and `w = Ω/N` scales with the
-                // volume: `dw/dε_ab = w δ_ab`.
-                let dweight = points
-                    .iter()
-                    .map(|p| {
-                        let mut m = ZERO3;
-                        for (a, row) in m.iter_mut().enumerate() {
-                            row[a] = p.weight;
-                        }
-                        m
-                    })
-                    .collect();
-                let anchors = points.iter().map(|p| p.xyz).collect();
-                Ok(StrainPoints {
-                    points,
-                    dweight,
-                    anchors,
-                })
-            }
+                .collect();
+            let anchors = points.iter().map(|p| p.xyz).collect();
+            Ok(StrainPoints {
+                points,
+                dweight,
+                anchors,
+            })
         }
     }
 }
@@ -633,7 +644,7 @@ impl KXcStressResponse for GridXc<'_> {
 /// Resolve the functional and its global exact-exchange fraction `a`; refuse
 /// what the stress does not cover (range-separated hybrids, meta-GGA, VV10 and
 /// double hybrids).
-fn resolve_global(functional: &str) -> Result<(XcDef, f64), FerricError> {
+pub(crate) fn resolve_global(functional: &str) -> Result<(XcDef, f64), FerricError> {
     let (xc, exx, rsh) = resolve_periodic_functional_rsh(functional)?;
     if rsh.is_some() {
         return Err(PeriodicDftError::Unsupported {
@@ -882,13 +893,13 @@ fn guard_bytes(nk: usize, n: usize) -> usize {
 }
 
 /// Sum the parts: `dE/dε = HF + xc_ao + xc_weight`, `σ = (1/Ω) dE/dε`.
-fn finish(hf: KStress, xo: XcStressOut) -> Result<KRksStress, FerricError> {
+pub(crate) fn finish(hf: KStress, xo: XcStressOut) -> Result<KRksStress, FerricError> {
     let mut de = hf.de_deps;
     add_into(&mut de, &xo.ao, 1.0);
     add_into(&mut de, &xo.weight, 1.0);
     if de.iter().flatten().any(|v| !v.is_finite()) {
         return Err(FerricError::General(
-            "k-point RKS stress: non-finite strain derivative".into(),
+            "k-point KS stress: non-finite strain derivative".into(),
         ));
     }
     let vol = hf.volume;

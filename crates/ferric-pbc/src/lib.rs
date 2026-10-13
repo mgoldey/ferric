@@ -118,9 +118,14 @@
 //!   the XC strain terms on Bloch AOs (AO strain with point motion, the
 //!   partition-weight response on an atom grid or the volume term on a
 //!   uniform grid). LDA, GGA and global hybrids (a hybrid needs
-//!   `KRksStressConfig::exxdiv`); range-separated hybrids, meta-GGA, VV10 and
-//!   open shell are refused. The stress is returned unsymmetrised (the Gamma
-//!   convention).
+//!   `KRksStressConfig::exxdiv`); range-separated hybrids, meta-GGA and VV10
+//!   are refused (open shell: see [`kuxcstress`]). The stress is returned
+//!   unsymmetrised (the Gamma convention).
+//! * [`kuxcstress`] — the open-shell twin (`kpoint_uks_stress`, k-point UKS
+//!   from [`kuks`]): per-spin Pulay/exchange/Madelung assembly and the
+//!   spin-resolved XC strain terms; LDA, GGA and global hybrids, with the Fock
+//!   guard and the stationarity gate. `kpoint_roks_stress` /
+//!   `kpoint_rohf_stress` are typed refusals (not implemented here).
 //! * [`kuxcgrad`] — the open-shell twin (`kpoint_uks_gradient`, k-point UKS
 //!   from [`kuks`]; `kpoint_roks_gradient` / `kpoint_rohf_gradient` for the
 //!   restricted-open-shell energies of [`kroks`] with the ROHF orbital-gradient
@@ -195,6 +200,7 @@ pub mod kstress;
 pub mod kuks;
 pub mod kuscf;
 pub mod kuxcgrad;
+pub mod kuxcstress;
 pub mod kxcgrad;
 pub mod kxcstress;
 pub mod lattice;
@@ -265,6 +271,7 @@ pub use kuscf::{
 pub use kuxcgrad::{
     kpoint_rohf_gradient, kpoint_roks_gradient, kpoint_uks_gradient, KUksGradConfig, KUksGradient,
 };
+pub use kuxcstress::{kpoint_uks_stress, KUksStress, KUksStressConfig};
 pub use kxcgrad::{kpoint_rks_gradient, KRksGradConfig, KRksGradient, KXcGrid};
 pub use kxcstress::{kpoint_rks_stress, KRksStress, KRksStressConfig};
 pub use lattice::Cell;
