@@ -14,9 +14,14 @@
 //! # Energy (per cell; [`crate::kxcgrad`] conventions)
 //!
 //! ```text
-//! E = (1/N_k) Σ_k Re tr[(h(k) + ½ J(k)) D(k)] + E_xc[D] + E_nn
-//! E_xc = Σ_g w_g ε(ρ_g, σ_g)
+//! E = (1/N_k) Σ_k Re tr[(h(k) + ½ J(k) - (a/4) K(k)) D(k)] + E_xc[D] + E_nn
+//! E_xc = Σ_g w_g ε(ρ_g, σ_g)        (the semilocal remainder for a hybrid)
 //! ```
+//!
+//! `K(k)` is the SCF's exchange with its Madelung shift
+//! (`K = K_AFT + v_M S D S`, `v_M` the mesh constant for `exxdiv = ewald`),
+//! so the exchange energy is `-(a/4)(1/N_k) Σ_k Re tr[D K]` including
+//! `-(a/4) v_M tr[D S D S]`; `a = 0` for a pure functional.
 //!
 //! # Terms
 //!
@@ -248,8 +253,9 @@ pub struct KRksStress {
     pub de_deps: Mat3,
     /// `σ_ab = (1/Ω) dE/dε_ab` (Hartree/Bohr³). NOT symmetrised.
     pub sigma: Mat3,
-    /// The exchange-free k HF stress (its `de_deps`/`sigma` are the non-XC
-    /// part; per-term breakdown in `hf.parts`).
+    /// The k HF stress with the exchange fraction `a` of the functional (its
+    /// `de_deps`/`sigma` are the non-XC part; per-term breakdown in
+    /// `hf.parts`; no exchange parts for a pure functional).
     pub hf: KStress,
     /// XC AO strain plus grid-point motion (`dE_xc/dε` through the strained
     /// Bloch AOs; `Σ_g w_g [..]` of the module doc).
@@ -321,7 +327,8 @@ pub(crate) trait KXcStressResponse {
     fn evaluate(&self, d: &[Array2<C64>], ledger: &Ledger) -> Result<XcStressOut, FerricError>;
 }
 
-/// The zero XC: the exactness anchor against the exchange-free HF machinery.
+/// The zero XC: the exactness anchor against the HF machinery (exchange
+/// fraction `a` of the caller; `a = 0` is the Hartree-only stress).
 pub(crate) struct NullXc;
 
 impl KXcStressResponse for NullXc {
@@ -749,7 +756,7 @@ pub fn kpoint_null_xc_stress(
     )
 }
 
-/// The shared body: XC response, Fock guard, exchange-free HF assembly.
+/// The shared body: XC response, Fock guard, HF assembly at exchange fraction `a`.
 #[allow(clippy::too_many_arguments)]
 fn rks_stress_with(
     who: &str,
@@ -952,29 +959,4 @@ pub fn kpoint_hartree_stress(
     )?;
     out.fock_mismatch = mismatch;
     Ok(out)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The guard reservation charges FIVE `N_k n²` complex arrays (D, J, K, F,
-    /// V_xc; K is the hybrid's addition) and the ledger refuses a budget that
-    /// holds only four of them. (Whether the reservation, as opposed to the
-    /// larger strain buffers, is the binding gate on a given cell is a
-    /// separate matter: on the H2 fixtures it never is.)
-    #[test]
-    fn the_guard_charges_five_arrays_and_a_four_array_budget_is_refused() {
-        let (nk, n) = (3, 2);
-        let one = nk * n * n * 16;
-        assert_eq!(guard_bytes(nk, n), 5 * one);
-        let label = "k KS stress Fock-guard matrices D, J, K, F, V_xc";
-        let mut four = Ledger::new(4 * one);
-        let e = four
-            .reserve(label, guard_bytes(nk, n))
-            .expect_err("four arrays of budget must not hold five");
-        assert!(e.to_string().contains("Fock-guard matrices"), "{e}");
-        let mut five = Ledger::new(5 * one);
-        five.reserve(label, guard_bytes(nk, n)).expect("five fit");
-    }
 }

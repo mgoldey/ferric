@@ -1213,8 +1213,10 @@ pub fn kpoint_uhf_stress(
 /// Madelung shift of the energy and `exch_scale` the exact-exchange fraction
 /// `a` ([`crate::kgrad`]'s convention: `1` is Hartree-Fock, bitwise the
 /// unscaled terms; `0` is no exchange at all: the K strain walks (dense and
-/// fitted) are skipped and the Madelung M-term and its strain vanish; other
-/// values are not validated and not exposed).
+/// fitted) are skipped and the Madelung M-term and its strain vanish; `0 < a
+/// < 1` scales the dense K walks, the fit's exchange pieces and the Madelung
+/// M-term and strain by `a`, validated by the global-hybrid KS stress
+/// [`crate::kxcstress`]).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn assemble(
     cell: &Cell,
