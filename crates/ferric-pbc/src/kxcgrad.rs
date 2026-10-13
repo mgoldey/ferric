@@ -1,6 +1,7 @@
 //! Analytic nuclear forces of the k-point closed-shell KS-DFT energy
-//! ([`crate::kdft::solve_krks`]) for LDA, GGA and GLOBAL HYBRID functionals
-//! (exact-exchange fraction `a`, `0 ≤ a ≤ 1`), dense-AFT and RS-GDF J/K.
+//! ([`crate::kdft::solve_krks`]) for LDA, GGA, meta-GGA (SCAN, r2SCAN)
+//! and GLOBAL HYBRID functionals (exact-exchange fraction `a`,
+//! `0 ≤ a ≤ 1`), dense-AFT and RS-GDF J/K.
 //!
 //! # Energy (per cell; [`crate::kdft`] conventions)
 //!
@@ -112,6 +113,58 @@
 //! all k inside the chunk. The kernel gates (`ρ > DENSITY_FLOOR`) are the
 //! energy's.
 //!
+//! # Meta-GGA: the tau term
+//!
+//! The energy's kinetic-energy density ([`crate::kdft`]) is
+//!
+//! ```text
+//! τ_g = (1/N_k) Σ_k ½ Σ_i Re Σ_μν D(k)_μν ∂_iφ^k_μ (∂_iφ^k_ν)*,      E_xc = Σ_g w_g ε(ρ_g, σ_g, τ_g)
+//! V^τ(k)_μν = Σ_g ½ w_g v_τ(g) Σ_i (∂_iφ^k_μ)* ∂_iφ^k_ν              (added to V_xc(k))
+//! ```
+//!
+//! with `v_τ = ∂ε/∂τ` from libxc (gated like the other kernel pieces by
+//! `ρ > DENSITY_FLOOR`). The force reuses everything above unchanged
+//! (`ρ`/`σ` terms, X3, X4, the Fock guard with `V_xc` now including `V^τ`) and
+//! adds one AO-derivative term. An atom move shifts `φ_μ → φ_μ(r − R_A)` for
+//! `μ ∈ A`, hence `∂_iφ_μ` moves by `−∂_j∂_iφ_μ` (the AO Hessian, already
+//! evaluated for GGA; no third derivatives). With
+//! `m^{k,i}_μ = Σ_ν D(k)_μν (∂_iφ^k_ν)*` the `μ ∈ A` and `ν ∈ A` variations of
+//! the double sum are complex conjugates (Hermitian `D`), so
+//!
+//! ```text
+//! dτ/dR_{A,j} = (1/N_k) · ½ · 2 Re Σ_{μ∈A,i} (−∂_j∂_iφ^k_μ) m^{k,i}_μ
+//!             = −(1/N_k) Σ_k Re Σ_{μ∈A,i} ∂_j∂_iφ^k_μ m^{k,i}_μ        (the ½ cancels the doubling)
+//! a^τ_{g,A,j} = w_g v_τ(g) dτ/dR_{A,j}
+//! ```
+//!
+//! i.e. the density-like prefactor `−2` of the `ρ` term becomes `−1`
+//! (`TauDoubled` re-adds the `½` and doubles the term). `a^τ` joins `a` in
+//! X1; the point-motion term X3 subtracts `Σ_A a` over ALL parts of the
+//! integrand, tau included, which is the molecular `tau_spatial_grad`
+//! (grid-point response of τ) by translation invariance, so no separate
+//! `∂τ/∂r` evaluation exists here; X4 is `ε_g dw_g/dR` with `ε = ρ ε_xc`
+//! evaluated with τ, unchanged. The GGA `σ` contraction is independent of the
+//! tau term (both use `m^i`; the force keeps them as separate sums).
+//!
+//! The Gamma periodic path has no meta-GGA, so there is no `1×1×1 = Gamma`
+//! anchor; the anchors are the fixed-`D` central difference of the
+//! XC energy (no SCF noise), FD of the SCF energy, and the explicit
+//! supercell identity on a non-TRIM mesh (`tests/pbc_kxcgrad_mgga.rs`).
+//! SCAN and r2SCAN are validated end to end. TPSS resolves only as the raw
+//! single-component names `MGGA_X_TPSS` / `MGGA_C_TPSS` (no combined TPSS
+//! functional exists), so its tau kernels are checked by the fixed-`D`
+//! finite difference on those components alone. No hybrid
+//! meta-GGA resolves ([`ferric_dft::libxc::xc_def_from_name`] rejects
+//! `HYB_MGGA_*`), so there is nothing for the exchange fraction to compose
+//! with.
+//!
+//! Limits of the checks. The H2 fixtures have `α ≈ 0` (single-orbital
+//! regions) and never reach SCAN's `α ≈ 1` switching region. The null-tau hook
+//! multiplies every tau term by `v_τ = 0`, so it checks plumbing only. The k
+//! SCF has no virtual level shift (the molecular code applies 0.5 to
+//! meta-GGAs automatically), so SCAN on a real solid may not converge; the
+//! force then refuses the unconverged result with a typed error.
+//!
 //! # X3, X4: the atom-centred grid
 //!
 //! A grid point is rigidly attached to its home atom `H`: it moves with it.
@@ -152,13 +205,19 @@
 //! remaining budget, and the pass is pre-flighted on a `crate::budget::Ledger`
 //! (a typed error when not even one chunk fits). The `ResponseGrid` weight
 //! derivatives (`npts·natoms·24 B`) are reserved too; the transient of the XC
-//! pass is released before the HF assembly reserves its own arrays.
+//! pass is released before the HF assembly reserves its own arrays. A
+//! meta-GGA adds NOTHING to that per-chunk charge: its Hessian moments
+//! `m^{k,i}` are the GGA work planes already counted (the Hessian `∇∇φ` is
+//! among the 13 planes) and the tau part of `a` is accumulated into the same
+//! `a[g, A, j]` plane as the other terms. Only the `TauNoPoint` test mutant
+//! keeps a separate `np·natoms·3` real tau plane (and charges it).
 //!
 //! # Scope
 //!
-//! LDA, GGA and global hybrids (`0 ≤ a ≤ 1`: PBE0, B3LYP; dense AFT, unsplit
-//! and range-split RS-GDF). Range-separated hybrids (the erf-kernel K walks
-//! and their Madelung are not differentiated), meta-GGA, VV10 and double
+//! LDA, GGA, meta-GGA and global hybrids (`0 ≤ a ≤ 1`: PBE0, B3LYP; dense AFT,
+//! unsplit and range-split RS-GDF; the RS-GDF route is exercised for
+//! meta-GGA by one SCF finite-difference component only). Range-separated hybrids (the erf-kernel K
+//! walks and their Madelung are not differentiated), VV10 and double
 //! hybrids are refused with typed errors ([`PeriodicDftError::Unsupported`]);
 //! unrestricted/open-shell k-point KS (`solve_kuks`) has no FORCE entry
 //! point.
@@ -278,6 +337,26 @@ pub enum KXcMutation {
     /// The Fock guard skipped, nothing else changed (isolates the effect of
     /// the guard-skip used by `PulayNoVxc` / `WrongRemainder`; must be 0).
     GuardSkippedOnly,
+    /// Meta-GGA: drop the tau AO-derivative term (and with it the tau part of
+    /// the point-motion term X3, which is built from it).
+    TauNoAo,
+    /// Meta-GGA: the tau AO-derivative prefactor `−2` instead of `−1`
+    /// (the `½` of `τ`'s definition re-added against the `μ↔ν` doubling).
+    TauDoubled,
+    /// Meta-GGA: keep the tau AO term but leave it out of the point-motion
+    /// term X3 (the grid point moves with its home atom for every part of the
+    /// integrand, tau included).
+    TauNoPoint,
+    /// Meta-GGA: `V^τ` missing from the Fock of the Pulay term, the Fock
+    /// guard left ON (the guard must refuse it).
+    TauNoVxc,
+    /// Meta-GGA: as [`Self::TauNoVxc`] with the guard skipped, to measure what
+    /// the defect does to the force.
+    TauNoVxcUnguarded,
+    /// NULL-TAU HOOK: take the meta-GGA code path (tau, `V^τ`, the tau force
+    /// term) for a functional with no tau dependence (`v_τ ≡ 0`). Must
+    /// reproduce the GGA force exactly.
+    ForceTauPath,
 }
 
 /// Settings of [`kpoint_rks_gradient`].
@@ -391,6 +470,8 @@ struct GridXc<'a> {
     prep: &'a PreparedBasis,
     xc: XcDef,
     gga: bool,
+    /// Meta-GGA: tau, `V^τ` and the tau force term are evaluated.
+    mgga: bool,
     kpts: Vec<[f64; 3]>,
     aoat: Vec<usize>,
     grid: &'a KXcGrid,
@@ -476,6 +557,47 @@ pub(crate) fn chunk_vxc(
     v
 }
 
+/// Kinetic-energy density of one chunk (the arithmetic of
+/// `KPeriodicXc::chunk_tau`): `τ = (1/N_k) Σ_k ½ Σ_ax Re Σ_μν D(k)_μν ∂_axφ_μ (∂_axφ_ν)*`.
+fn chunk_tau(d: &[Array2<C64>], dchi: &[Array3<C64>]) -> Array1<f64> {
+    let nk = d.len();
+    let nbf = d[0].nrows();
+    let np = dchi[0].shape()[2];
+    let w = 0.5 / nk as f64;
+    let mut tau = Array1::<f64>::zeros(np);
+    for k in 0..nk {
+        for ax in 0..3 {
+            let d_ax = dchi[k].index_axis(Axis(0), ax).to_owned();
+            let p = d[k].dot(&conj(&d_ax));
+            for g in 0..np {
+                let mut t = C64::new(0.0, 0.0);
+                for mu in 0..nbf {
+                    t += d_ax[(mu, g)] * p[(mu, g)];
+                }
+                tau[g] += w * t.re;
+            }
+        }
+    }
+    tau
+}
+
+/// Adds `V^τ(k)_μν = Σ_g ½ w_g v_τ(g) Σ_ax (∂_axφ_μ)* ∂_axφ_ν` to `v(k)` (the
+/// arithmetic of `KPeriodicXc::build`; `vt` is the gated `v_τ`). Separate from
+/// [`chunk_vxc`], which the stress shares and which carries no tau.
+fn add_vtau(v: &mut [Array2<C64>], dchi: &[Array3<C64>], w: &[f64], vt: &[f64]) {
+    let np = w.len();
+    for (k, vk) in v.iter_mut().enumerate() {
+        for ax in 0..3 {
+            let d_ax = dchi[k].index_axis(Axis(0), ax).to_owned();
+            let mut m = conj(&d_ax);
+            for g in 0..np {
+                m.column_mut(g).mapv_inplace(|z| z * (0.5 * w[g] * vt[g]));
+            }
+            *vk += &m.dot(&d_ax.t());
+        }
+    }
+}
+
 pub(crate) fn conj(m: &Array2<C64>) -> Array2<C64> {
     m.mapv(|z| z.conj())
 }
@@ -522,10 +644,18 @@ impl KXcResponse for GridXc<'_> {
             )));
         }
         // --- Chunking and the memory pre-flight.
+        let tau_plane = self.mgga && mutation == Some(KXcMutation::TauNoPoint);
         let per_point = |np: usize| -> usize {
             bytes_of((nk * nbf * np) as u64, 16 * AO_PLANES)
                 .saturating_add(bytes_of((nbf * np) as u64, 16 * 6))
                 .saturating_add(bytes_of((np * natoms * 3) as u64, 8))
+                // The tau part of `a[g, A, j]`, kept apart ONLY for the
+                // `TauNoPoint` mutant; production meta-GGA charges nothing here.
+                .saturating_add(if tau_plane {
+                    bytes_of((np * natoms * 3) as u64, 8)
+                } else {
+                    0
+                })
         };
         let fixed = bytes_of((nk * nbf * nbf) as u64, 16 * 2);
         let mut chunk_points = MAX_CHUNK;
@@ -563,7 +693,8 @@ impl KXcResponse for GridXc<'_> {
             let np = pts.len();
             let bl: BlochAoHess = ev.eval_bloch(&xyz, &self.kpts, BlochPhase::True, self.gga)?;
             let dens = chunk_density(d, &bl.chi, &bl.dchi, self.gga);
-            let kern = closed_kernel(&dens, None, &self.xc);
+            let tau = self.mgga.then(|| chunk_tau(d, &bl.dchi));
+            let kern = closed_kernel(&dens, tau.as_ref(), &self.xc);
             let live = |g: usize| dens.rho[g] > DENSITY_FLOOR;
             let mut e = 0.0;
             let mut ne = 0.0;
@@ -582,9 +713,26 @@ impl KXcResponse for GridXc<'_> {
                     0.0
                 }
             });
+            // v_tau, gated like the energy's V^tau (ρ > DENSITY_FLOOR).
+            let vt: Vec<f64> = (0..np)
+                .map(|g| {
+                    if self.mgga && live(g) {
+                        kern.vtau[g]
+                    } else {
+                        0.0
+                    }
+                })
+                .collect();
+            let tau_in_vxc = !matches!(
+                mutation,
+                Some(KXcMutation::TauNoVxc) | Some(KXcMutation::TauNoVxcUnguarded)
+            );
             // --- V_xc(k) (the arithmetic of `KPeriodicXc::build`).
             let wts: Vec<f64> = pts.iter().map(|p| p.weight).collect();
-            let v = chunk_vxc(&bl.chi, &bl.dchi, &wts, &vr, &c, self.gga);
+            let mut v = chunk_vxc(&bl.chi, &bl.dchi, &wts, &vr, &c, self.gga);
+            if self.mgga && tau_in_vxc {
+                add_vtau(&mut v, &bl.dchi, &wts, &vt);
+            }
             // --- Force: a[g, A, j] (module doc, X1).
             let alt: Option<BlochAoHess> = alt_phase
                 .map(|ph| ev.eval_bloch(&xyz, &self.kpts, ph, self.gga))
@@ -601,23 +749,35 @@ impl KXcResponse for GridXc<'_> {
                 inv_nk
             };
             let mut a_pt = Array3::<f64>::zeros((np, natoms, 3));
+            // The tau part of `a`, kept apart only for the `TauNoPoint` mutant
+            // (empty, and uncharged, otherwise).
+            let mut a_tau = Array3::<f64>::zeros((if tau_plane { np } else { 0 }, natoms, 3));
+            let tau_term = self.mgga && !matches!(mutation, Some(KXcMutation::TauNoAo));
+            // dτ/dR_{A,j} = −(1/N_k) Re Σ_{μ∈A,i} ∂_i∂_jφ_μ m^i_μ: the ½ of
+            // τ cancels the μ↔ν doubling, so the prefactor is `pref/2`.
+            let tau_pref = if mutation == Some(KXcMutation::TauDoubled) {
+                pref
+            } else {
+                0.5 * pref
+            };
             if mutation != Some(KXcMutation::NoAo) {
                 for k in 0..nk {
                     let p = d[k].dot(&conj(&fb.chi[k]));
-                    let md: Option<[Array2<C64>; 3]> = use_gga.then(|| {
+                    let md: Option<[Array2<C64>; 3]> = (use_gga || tau_term).then(|| {
                         std::array::from_fn(|i| {
                             d[k].dot(&conj(&fb.dchi[k].index_axis(Axis(0), i).to_owned()))
                         })
                     });
                     for g in 0..np {
                         let wg = pref * pts[g].weight * kscale;
+                        let wt = tau_pref * pts[g].weight * kscale * vt[g];
                         for mu in 0..nbf {
                             let at = self.aoat[mu];
                             let pm = p[(mu, g)];
                             for j in 0..3 {
                                 let dj = fb.dchi[k][(j, mu, g)];
                                 let mut t = dj * pm * vr[g];
-                                if let Some(md) = md.as_ref() {
+                                if let (Some(md), true) = (md.as_ref(), use_gga) {
                                     for i in 0..3 {
                                         let mut inner = dj * md[i][(mu, g)];
                                         if mutation != Some(KXcMutation::NoHessian) {
@@ -627,6 +787,17 @@ impl KXcResponse for GridXc<'_> {
                                     }
                                 }
                                 a_pt[(g, at, j)] += wg * t.re;
+                                if let (Some(md), true) = (md.as_ref(), tau_term) {
+                                    let mut tt = C64::new(0.0, 0.0);
+                                    for i in 0..3 {
+                                        tt += fb.ddchi[k][(j, i, mu, g)] * md[i][(mu, g)];
+                                    }
+                                    let val = wt * tt.re;
+                                    a_pt[(g, at, j)] += val;
+                                    if tau_plane {
+                                        a_tau[(g, at, j)] += val;
+                                    }
+                                }
                             }
                         }
                     }
@@ -643,6 +814,9 @@ impl KXcResponse for GridXc<'_> {
                         let val = a_pt[(g, at, j)];
                         ao[(at, j)] += val;
                         tot[j] += val;
+                        if tau_plane {
+                            tot[j] -= a_tau[(g, at, j)];
+                        }
                         if let Some(dw) = dweight.as_ref() {
                             let eps = dens.rho[g] * kern.exc[g];
                             weight[(at, j)] += eps * dw[gi * natoms + at][j];
@@ -731,8 +905,31 @@ pub(crate) fn hermitize(m: &Array2<C64>) -> Array2<C64> {
 
 /// Resolve the functional and its global exact-exchange fraction `a`; refuse
 /// what the force does not cover (range-separated hybrids, meta-GGA, VV10 and
-/// double hybrids).
+/// double hybrids). Meta-GGA is refused here on purpose: the closed-shell
+/// entry point uses [`resolve_global_mgga`]; a caller without the tau terms
+/// (an unrestricted force) must keep this refusal.
+#[cfg_attr(not(test), allow(dead_code))]
 fn resolve_global(functional: &str) -> Result<(XcDef, f64), FerricError> {
+    let (xc, exx) = resolve_global_mgga(functional)?;
+    if xc
+        .funcs
+        .iter()
+        .any(|f| matches!(f.family(), FunctionalFamily::MetaGga))
+    {
+        return Err(PeriodicDftError::Unsupported {
+            feature: "meta-GGA force at k",
+            reason: format!(
+                "{functional}: the tau derivative (AO Hessian terms) is not implemented"
+            ),
+        }
+        .into());
+    }
+    Ok((xc, exx))
+}
+
+/// [`resolve_global`] that lets meta-GGA (SCAN, r2SCAN) through: the
+/// closed-shell force supplies the tau terms. Every other refusal is shared.
+fn resolve_global_mgga(functional: &str) -> Result<(XcDef, f64), FerricError> {
     let (xc, exx, rsh) = resolve_periodic_functional_rsh(functional)?;
     if rsh.is_some() {
         return Err(PeriodicDftError::Unsupported {
@@ -750,24 +947,11 @@ fn resolve_global(functional: &str) -> Result<(XcDef, f64), FerricError> {
             "{functional}: exact-exchange fraction {exx} outside [0, 1]"
         )));
     }
-    if xc
-        .funcs
-        .iter()
-        .any(|f| matches!(f.family(), FunctionalFamily::MetaGga))
-    {
-        return Err(PeriodicDftError::Unsupported {
-            feature: "meta-GGA force at k",
-            reason: format!(
-                "{functional}: the tau derivative (AO Hessian terms) is not implemented"
-            ),
-        }
-        .into());
-    }
     Ok((xc, exx))
 }
 
 /// k-point closed-shell RKS nuclear gradient (module doc) of a converged
-/// [`crate::kdft::solve_krks`] result for an LDA, GGA or global-hybrid
+/// [`crate::kdft::solve_krks`] result for an LDA, GGA, meta-GGA or global-hybrid
 /// `functional` (a hybrid also needs [`KRksGradConfig::exxdiv`]).
 ///
 /// * `hcore_cfg`, `hk`, `jk` — the config/output of the hcore and the J source
@@ -776,8 +960,7 @@ fn resolve_global(functional: &str) -> Result<(XcDef, f64), FerricError> {
 /// * `scf` — `KRksResult::scf`.
 /// * `cfg.grid`/`cfg.ao_threshold` — the grid and AO truncation of the energy.
 ///
-/// Refuses (typed errors) range-separated hybrids, meta-GGA, VV10/double
-/// hybrids, a hybrid without `cfg.exxdiv`, and an SCF whose Fock the rebuilt
+/// Refuses (typed errors) range-separated hybrids, VV10/double hybrids, a hybrid without `cfg.exxdiv`, and an SCF whose Fock the rebuilt
 /// `h + J − (a/2) K + V_xc` does not reproduce.
 #[allow(clippy::too_many_arguments)]
 pub fn kpoint_rks_gradient(
@@ -791,7 +974,7 @@ pub fn kpoint_rks_gradient(
     functional: &str,
     cfg: &KRksGradConfig,
 ) -> Result<KRksGradient, FerricError> {
-    let (mut xc, exch) = resolve_global(functional)?;
+    let (mut xc, exch) = resolve_global_mgga(functional)?;
     if cfg.mutation == Some(KXcMutation::WrongRemainder) {
         // TEST ONLY: the pure parent in place of the hybrid's remainder.
         let parent = match functional.to_ascii_uppercase().as_str() {
@@ -810,11 +993,23 @@ pub fn kpoint_rks_gradient(
         .funcs
         .iter()
         .any(|f| !matches!(f.family(), FunctionalFamily::Lda));
+    if cfg.mutation == Some(KXcMutation::ForceTauPath) && !gga {
+        return Err(FerricError::General(
+            "ForceTauPath mutant: needs a GGA functional (the AO Hessian is evaluated only for GGA)"
+                .into(),
+        ));
+    }
+    let mgga = cfg.mutation == Some(KXcMutation::ForceTauPath)
+        || xc
+            .funcs
+            .iter()
+            .any(|f| matches!(f.family(), FunctionalFamily::MetaGga));
     let resp = GridXc {
         cell,
         prep,
         xc,
         gga,
+        mgga,
         kpts: mesh.kpts().to_vec(),
         aoat: ao_atoms(prep),
         grid: &cfg.grid,
@@ -948,6 +1143,7 @@ fn rks_gradient_with(
     let (j, kmat) = jk_build(&jk, vm, &d)?;
     let with_vxc = cfg.mutation != Some(KXcMutation::PulayNoVxc);
     let guard = with_vxc
+        && cfg.mutation != Some(KXcMutation::TauNoVxcUnguarded)
         && cfg.mutation != Some(KXcMutation::WrongRemainder)
         && cfg.mutation != Some(KXcMutation::GuardSkippedOnly);
     let f: Vec<Array2<C64>> = (0..nk)
@@ -1052,4 +1248,34 @@ pub fn kpoint_hartree_gradient(
     )?;
     out.fock_mismatch = mismatch;
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `resolve_global` (shared with force entry points that carry no tau
+    /// terms) keeps refusing meta-GGA with its original feature and message,
+    /// while the closed-shell resolver accepts the same names.
+    #[test]
+    fn resolve_global_still_refuses_meta_gga() {
+        for name in ["SCAN", "R2SCAN"] {
+            let e = resolve_global(name).expect_err("meta-GGA must be refused");
+            let msg = e.to_string();
+            assert!(msg.contains("meta-GGA force at k"), "{msg}");
+            assert!(
+                msg.contains(&format!(
+                    "{name}: the tau derivative (AO Hessian terms) is not implemented"
+                )),
+                "{msg}"
+            );
+            let (xc, exx) = resolve_global_mgga(name).expect("closed-shell accepts");
+            assert_eq!(exx, 0.0);
+            assert!(xc
+                .funcs
+                .iter()
+                .any(|f| matches!(f.family(), FunctionalFamily::MetaGga)));
+        }
+        assert!(resolve_global("PBE").is_ok());
+    }
 }
