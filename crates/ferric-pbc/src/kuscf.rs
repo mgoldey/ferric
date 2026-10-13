@@ -399,6 +399,35 @@ pub fn solve_kuhf_injected(
     run_kuhf(cell, mesh, cfg, inj, nalpha, nbeta, None, None, None, None)
 }
 
+/// [`solve_kuhf_injected`] with an injected polarized XC builder and exact
+/// exchange fraction `a` (`F_σ = h + J − a K_σ + V_xc,σ`): the entry point
+/// the k-point UKS force tests use to run a zero-XC hybrid SCF. `a = 1` with a
+/// zero builder is k-point UHF.
+#[allow(clippy::too_many_arguments)]
+pub fn solve_kuks_injected(
+    cell: &Cell,
+    mesh: &KPointMesh,
+    cfg: &KScfConfig,
+    inj: KPointInjection<'_>,
+    nalpha: usize,
+    nbeta: usize,
+    xc: &mut dyn KPointXcPolarized,
+    a: f64,
+) -> Result<KUScfResult, FerricError> {
+    run_kuhf(
+        cell,
+        mesh,
+        cfg,
+        inj,
+        nalpha,
+        nbeta,
+        None,
+        None,
+        None,
+        Some((xc, a)),
+    )
+}
+
 /// [`solve_kuhf_injected`] from starting densities `(D_α(k), D_β(k))`
 /// (unit occupation, mesh order) — e.g. the none stage of a staged ewald
 /// run, or another J/K source's converged state. `None` = core guess.

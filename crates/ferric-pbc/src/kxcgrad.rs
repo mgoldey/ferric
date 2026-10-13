@@ -219,8 +219,8 @@
 //! meta-GGA by one SCF finite-difference component only). Range-separated hybrids (the erf-kernel K
 //! walks and their Madelung are not differentiated), VV10 and double
 //! hybrids are refused with typed errors ([`PeriodicDftError::Unsupported`]);
-//! unrestricted/open-shell k-point KS (`solve_kuks`) has no FORCE entry
-//! point.
+//! the open-shell k-point KS (`solve_kuks`, `solve_kroks`) forces are in
+//! [`crate::kuxcgrad`].
 //!
 //! # Cost and budget notes
 //!
@@ -274,16 +274,16 @@ use rayon::prelude::*;
 /// an exact match, so the exxdiv given must be the one the SCF ran (a wrong
 /// one is the commonest refusal of a hybrid force). A pure functional has no
 /// `K`, so the setting is irrelevant there.
-const KS_REMEDY: &str = "the functional, grid, AO threshold and J/K route must be the SCF's own (a different functional gives a different V_xc), and for a hybrid KRksGradConfig::exxdiv must be the exxdiv the SCF ran";
+pub(crate) const KS_REMEDY: &str = "the functional, grid, AO threshold and J/K route must be the SCF's own (a different functional gives a different V_xc), and for a hybrid KRksGradConfig::exxdiv must be the exxdiv the SCF ran";
 
 /// Upper bound on points per derivative chunk (the Gamma `XC_GRAD_CHUNK`).
-const MAX_CHUNK: usize = 128;
+pub(crate) const MAX_CHUNK: usize = 128;
 /// Lower bound on points per derivative chunk.
-const MIN_CHUNK: usize = 8;
+pub(crate) const MIN_CHUNK: usize = 8;
 /// Target bytes of AO planes per live chunk (shrinks the chunk with `N_k·nbf`).
-const CHUNK_TARGET_BYTES: usize = 64 << 20;
+pub(crate) const CHUNK_TARGET_BYTES: usize = 64 << 20;
 /// Complex AO planes per k and point held by a chunk: `φ`, `∇φ` (3), `∇∇φ` (9).
-const AO_PLANES: usize = 13;
+pub(crate) const AO_PLANES: usize = 13;
 
 /// The grid the energy integrated on, rebuilt for the derivative.
 #[derive(Debug, Clone)]
@@ -908,8 +908,7 @@ pub(crate) fn hermitize(m: &Array2<C64>) -> Array2<C64> {
 /// double hybrids). Meta-GGA is refused here on purpose: the closed-shell
 /// entry point uses [`resolve_global_mgga`]; a caller without the tau terms
 /// (an unrestricted force) must keep this refusal.
-#[cfg_attr(not(test), allow(dead_code))]
-fn resolve_global(functional: &str) -> Result<(XcDef, f64), FerricError> {
+pub(crate) fn resolve_global(functional: &str) -> Result<(XcDef, f64), FerricError> {
     let (xc, exx) = resolve_global_mgga(functional)?;
     if xc
         .funcs
