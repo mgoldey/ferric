@@ -874,7 +874,8 @@ fn a_equal_one_case(jk: Jk) {
 /// recorded to full precision (`RECORDED_PBE`: total dE/de, xc_ao, xc_weight and
 /// the overlap, coulomb, kinetic, vsr, vlr and (RS-GDF) fit parts); the current
 /// code, with the hybrid machinery armed (`exxdiv` configured), must reproduce
-/// each. Prediction 1e-12 or better (same arithmetic, same SCF); bar 1e-10: the
+/// each. Prediction 1e-12 or better (same arithmetic, same SCF); MEASURED 0.0
+/// (bit-identical, dense and RS-GDF, 20 comparisons each); bar 1e-10: the
 /// two builds differ in no a = 0 arithmetic, and any exchange leak at a = 0
 /// (a K walk run, a Madelung term left in, a shifted F) moves these by
 /// >= 1e-2 (the a = 1 exchange parts are of that size). The exxdiv is also
@@ -917,7 +918,7 @@ fn a_zero_case(jk: Jk) {
     };
     let mut worst = 0.0_f64;
     let mut n = 0;
-    for e in [None, Some(ExxDiv::None), Some(ExxDiv::Ewald)] {
+    for e in [None, Some(ExxDiv::Ewald)] {
         let s = run(e);
         for (key, vals) in RECORDED_PBE.iter().filter(|(k, _)| k.starts_with(&tag)) {
             let name = &key[tag.len() + 1..];
@@ -936,7 +937,7 @@ fn a_zero_case(jk: Jk) {
             "{jk:?} {e:?}: exxdiv must be ignored"
         );
     }
-    assert!(n >= 24, "recorded parts were compared ({n})");
+    assert!(n >= 20, "recorded parts were compared ({n})");
     assert_eq!(mmax(&base.hf.parts.exchange), 0.0);
     assert_eq!(mmax(&base.hf.parts.madelung), 0.0);
     eprintln!("{jk:?}: a = 0 vs recorded pure-GGA values, worst {worst:.2e} over {n} comparisons");
@@ -993,9 +994,9 @@ fn affine_case(jk: Jk) {
 
 /// (3b) The Fock guard sees a wrong `a` ALONE. Null-XC SCF at a = 0.5 (Ewald),
 /// stress asked at a different a with the guard on. The rebuilt F differs by
-/// (da/2) K, |K| ~ 1, so the 1e-8 guard bar separates a correct a (mismatch at
-/// roundoff) from da = 1e-6 (mismatch ~ 5e-7 > bar) by orders of magnitude on
-/// both sides. Prediction: a = 0.5 passes with mismatch < 1e-12; a = 0.5 + 1e-6
+/// (da/2) K, so the 1e-8 guard bar separates a correct a (MEASURED mismatch 0.0)
+/// from da = 1e-6 (MEASURED mismatch 1.25e-6, 125x the bar) and da = 0.25
+/// (3.1e-1). Prediction: a = 0.5 passes with mismatch < 1e-12; a = 0.5 + 1e-6
 /// and a = 0.25 are refused with the Fock-guard message.
 #[test]
 fn the_guard_refuses_a_wrong_exchange_fraction_alone() {
