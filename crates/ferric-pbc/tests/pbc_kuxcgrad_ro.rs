@@ -56,11 +56,18 @@ const AMPLE: usize = 1 << 31;
 // `RO_ORBITAL_GRADIENT_TOL` = 1e-5 (grad.rs) against the k-point entry points,
 // from `ro_gate_probe` (H3 doublet ROKS PBE 1x1x1; orbital gradient g of an SCF
 // stopped early -> force error with the gate off, against the tightly
-// converged force):
-//   g 3.5e-5 -> 3.2e-5     g 2.5e-7 -> 6.9e-7     g 2.0e-9 -> 4.9e-9
-// i.e. the error is of the order of g (0.9 g to 3 g), so 1e-5 caps it near
-// 1e-5 Ha/Bohr. Looser states (g >~ 1e-4) fail the MO occupation check
-// (the density is no longer a projector) before the gate.
+// converged force). g is the BASIS-INDEPENDENT form (density projectors,
+// spectral norm of the three blocks; `kuxcgrad::ro_orbital_gradient_k`); the
+// earlier form read the blocks in the eigenvectors of F_eff[D] and
+// under-reported g (toy model: 2x to 27x), so these numbers REPLACE the old
+// calibration (old: g 3.5e-5 -> 3.2e-5, g 2.5e-7 -> 6.9e-7, g 2.0e-9 -> 4.9e-9):
+//   g 6.9e-3 -> 4.4e-3 (0.64 g)   g 2.8e-4 -> 3.2e-5 (0.11 g)
+//   g 9.3e-7 -> 6.9e-7 (0.74 g)   g 7.5e-9 -> 4.9e-9 (0.65 g)
+// i.e. the force error is at most about 0.74 g and at least 0.11 g, first
+// order (the two small-g states differ in g by 125x and in error by 142x), so
+// 1e-5 caps the error near 7e-6 Ha/Bohr, still below geometry-optimizer
+// thresholds (~4.5e-4). The tolerance is unchanged; what changed is the g it
+// is applied to (a state that passed before may now be refused).
 const CUTOFF: f64 = 14.0;
 const FD_BAR: f64 = 1e-8;
 const FD_H: f64 = 5e-5;
@@ -433,6 +440,14 @@ fn the_orbital_gradient_gate_fires_and_matters() {
     assert!(
         miss > 10.0 * FD_BAR,
         "gate off is not wrong enough: {miss:e}"
+    );
+    // First order in g: the measured slope of this state is 0.113 (3.163e-5 /
+    // 2.791e-4); the band is a factor of two each way, inside the measured
+    // range 0.11 .. 0.74 of the probe.
+    let slope = miss / g;
+    assert!(
+        (0.057..=0.23).contains(&slope),
+        "slope {slope}: miss {miss:e} g {g:e}"
     );
 }
 

@@ -82,19 +82,40 @@
 //! (`crate::kgrad::KSpins::RestrictedOpen`). `W_RO` exists exactly when the
 //! three ROHF orbital-gradient blocks vanish at every k, `(f_β)_co`,
 //! `(f_α)_ov`, `(f_α + f_β)_cv`; the entry points compute the largest of them
-//! from the SCF's MOs and spin Focks and refuse a state above
+//! from the SCF's spin Focks and refuse a state above
 //! [`crate::grad::RO_ORBITAL_GRADIENT_TOL`] (the force is first order in it).
 //! At a converged state the unrestricted form `Σ_σ D_σ F_σ D_σ` differs from
-//! `W_RO` only by the closed-open β gradient, so using it
+//! `W_RO` only by ½ the closed-open β gradient (the identity above), so using it
 //! ([`KUSpinMutation::RoWUhfForm`]) is an identity there, not a defect. The
 //! Roothaan effective Fock must never be used for `W`.
 //!
-//! The gate is evaluated in the SCF's own MO basis as the largest ELEMENT of
-//! the three blocks over all k; a basis-independent (projector, norm) form
-//! would differ from it by a factor of order one, so the tolerance is a
-//! refusal threshold on a non-stationary state, not a force-error bound. The
-//! MOs must be one set per k-point (a short set is a typed error). ROHF/ROKS
-//! are anchored on the dense-AFT J/K only; an RS-GDF source is refused.
+//! ## The gate is basis-independent (and was not)
+//!
+//! The blocks are measured from the DENSITIES: with the SCF's MOs `C` used only
+//! as an `S`-orthonormal basis of the SCF's space, `D_σ^o = C† S D_σ S C`,
+//! `P_c = D_β^o`, `P_o = D_α^o − D_β^o`, `P_v = 1 − D_α^o` (each asserted to be
+//! a nested orthogonal projector, else a typed error), and the value is the
+//! largest SPECTRAL NORM over k of `P_c F_β P_o`, `P_o F_α P_v`,
+//! `P_c (F_α + F_β) P_v`; a rotation of `C` within its span changes nothing.
+//! An earlier form read the three blocks in the SCF's MOs, which are the
+//! eigenvectors of the Roothaan `F_eff[D]` of the FINAL density; in that basis
+//! `F_eff` (whose off-diagonal blocks are exactly these gradients) is diagonal
+//! by construction, so the measured gradient was partly rotated away. On a toy
+//! model (fixed Focks, `S = 1`, one Givens rotation `κ` of a stationary state,
+//! `κ = 1e-3 .. 1e-5`) it reported 1/2.2 of the closed-open, 1/5.4 of the
+//! open-virtual and 1/26.9 of the closed-virtual gradient (1/9.2 of the maximum
+//! when all three are rotated); the occupation check it relied on bounds `κ`
+//! only to about `1e-3`. The current form equals the true gradient to 1e-8
+//! relative and is proportional to `κ` (unit tests `gate_tests`). The spectral
+//! norm is at least the largest element in any orthonormal basis, so the
+//! tolerance remains an orbital-gradient refusal threshold. Calibration (force
+//! error against the reported `g`, H3 doublet ROKS PBE, gate off): `g` 6.9e-3 ->
+//! 4.4e-3, 2.8e-4 -> 3.2e-5, 9.3e-7 -> 6.9e-7, 7.5e-9 -> 4.9e-9, i.e. at most
+//! about 0.74 `g` (and at least 0.11 `g`), so the tolerance 1e-5 caps the force
+//! error near 7e-6 Ha/Bohr. The tolerance is unchanged but a state that passed
+//! the earlier gate may now be refused. The MOs must be one set per k-point (a
+//! short set is a typed error). ROHF/ROKS are anchored on the dense-AFT J/K
+//! only; an RS-GDF source is refused.
 //!
 //! # Stationarity of UKS
 //!
@@ -229,7 +250,7 @@ pub(crate) struct SpinInput<'a> {
 
 /// Deliberate defects of the ROHF orbital-gradient measurement (unit tests
 /// only; production passes `None`).
-#[cfg(test)]
+#[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum GateMutation {
     /// The closed-virtual block is not measured.
@@ -241,10 +262,6 @@ pub(crate) enum GateMutation {
     /// `D` is transformed without `S` (`C† D C`): the wrong metric.
     WrongS,
 }
-
-#[cfg(not(test))]
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum GateMutation {}
 
 /// Largest singular value of `g` (NaN if any element is not finite).
 fn spectral_norm(g: &Array2<C64>) -> f64 {

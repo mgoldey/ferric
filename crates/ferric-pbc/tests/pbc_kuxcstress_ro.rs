@@ -32,7 +32,7 @@
 //!   Monkhorst-Pack mesh; the trace).
 //! * (5) a = 1 null-XC through the ROKS SCF driver == the ROHF-driver stress.
 //! * the gate itself: a loose state is refused (exact message, default set) and
-//!   is wrong by 1.9e-4 with the gate OFF (ignored test, first-order slope
+//!   is wrong by 1.9e-4 (g 2.8e-4) with the gate OFF (ignored test, first-order slope
 //!   band); the unrestricted-form `W` is no better (2.5e-4).
 //!
 //! WHAT THE DEFAULT SET DOES NOT PROTECT: the XC strain terms of ROKS (every
@@ -782,17 +782,18 @@ fn the_gate_matters_off_stationarity_and_the_uhf_form_is_no_remedy() {
 }
 
 /// First-order band (miss / g) of the gate-off stress error. `ro_stress_gate_probe`
-/// (H3 doublet ROKS PBE 1x1x1, SCF stopped early; orbital gradient g -> max
-/// |dE/deps - tight| with the gate off): g 3.511e-5 -> 1.860e-4 (slope 5.30);
-/// g 2.463e-7 -> 3.658e-6 (14.9); g 2.008e-9 -> 2.635e-8 (13.1); looser SCFs
-/// fail the MO occupation check first. First order in g with slope 5 to 15, so
-/// at `RO_ORBITAL_GRADIENT_TOL` = 1e-5 the gate admits a dE/deps error of
-/// roughly 5e-5 to 1.5e-4 (about 2e3 to 5e3 times the FD bar; ~70 MPa on this
-/// 64 Bohr^3 cell): looser than the anchors, it refuses a plainly unconverged
-/// state and does not certify the stress to the anchors' accuracy. The band is
-/// a factor of two each way around the slope 5.30 of the tested state (g
-/// 3.511e-5, reproduced by two separate SCFs).
-const GATE_SLOPE: (f64, f64) = (2.65, 10.6);
+/// (H3 doublet ROKS PBE 1x1x1, SCF stopped early; basis-independent orbital
+/// gradient g -> max |dE/deps - tight| with the gate off): g 6.876e-3 ->
+/// 2.397e-2 (slope 3.49); g 2.791e-4 -> 1.860e-4 (0.666); g 9.345e-7 ->
+/// 3.658e-6 (3.91); g 7.495e-9 -> 2.635e-8 (3.52). The two small-g states differ
+/// by 125x in g and 139x in error: first order. Slope 0.67 .. 3.9, so at
+/// `RO_ORBITAL_GRADIENT_TOL` = 1e-5 the gate admits a dE/deps error of up to
+/// about 4e-5 (about 1.3e3 times the FD bar; ~18 MPa on this 64 Bohr^3 cell):
+/// looser than the anchors, it refuses a plainly unconverged state and does not
+/// certify the stress to the anchors' accuracy. The band is a factor of two each
+/// way around the slope 0.666 of the tested state (g 2.791e-4). (The superseded
+/// F_eff-eigenvector form reported g 3.5e-5 for this same state.)
+const GATE_SLOPE: (f64, f64) = (0.33, 1.33);
 
 /// Probe behind the gate calibration: the orbital gradient g of ROKS SCFs
 /// stopped early against the stress error with the gate off.

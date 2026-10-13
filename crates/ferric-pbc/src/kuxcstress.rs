@@ -122,16 +122,17 @@
 //!
 //! ## Calibration of the ROHF gate (stress side)
 //!
-//! The tolerance is that of the force, reused unchanged. Measured here
+//! The tolerance is that of the force, reused unchanged, applied to the
+//! basis-independent orbital gradient ([`crate::kuxcgrad`]). Measured here
 //! (`tests/pbc_kuxcstress_ro.rs`, `ro_stress_gate_probe`, H3 doublet ROKS PBE,
 //! 1x1x1, SCF stopped early, gate off, against the tight state): orbital
-//! gradient `g` 3.5e-5 -> `dE/dε` error 1.9e-4, `g` 2.5e-7 -> 3.7e-6, `g` 2.0e-9
-//! -> 2.6e-8, i.e. first order with a slope of about 5 to 15. At the tolerance
-//! 1e-5 the gate therefore admits an error of roughly 5e-5 to 1.5e-4 in
-//! `dE/dε` (about 2e3 to 5e3 times the 3e-8 FD bar of the anchors, about 70 MPa
-//! on the 64 Bohr³ test cell): it refuses a plainly unconverged state, it does
-//! not certify the stress to the anchors' accuracy. The unrestricted-form `W` is
-//! no remedy off stationarity (error 2.5e-4 at the same state).
+//! gradient `g` 6.9e-3 -> `dE/dε` error 2.4e-2, `g` 2.8e-4 -> 1.9e-4, `g` 9.3e-7
+//! -> 3.7e-6, `g` 7.5e-9 -> 2.6e-8: first order with a slope of 0.67 to 3.9. At
+//! the tolerance 1e-5 the gate therefore admits an error of up to about 4e-5 in
+//! `dE/dε` (about 1.3e3 times the 3e-8 FD bar of the anchors, about 18 MPa on
+//! the 64 Bohr³ test cell): it refuses a plainly unconverged state, it does not
+//! certify the stress to the anchors' accuracy. The unrestricted-form `W` is no
+//! remedy off stationarity (comparable error at the same state).
 //!
 //! The ROHF/ROKS stress is anchored on the dense-AFT J/K only: an RS-GDF source
 //! is refused (`RS-GDF J/K is not supported by the restricted-open-shell
