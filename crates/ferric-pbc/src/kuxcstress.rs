@@ -754,6 +754,14 @@ fn refuse_rsgdf(who: &str, jk: &KStressJk<'_>) -> Result<(), FerricError> {
 /// `f_β`, open-virtual `f_α` or closed-virtual `f_α + f_β` block, at any k,
 /// exceeds [`crate::grad::RO_ORBITAL_GRADIENT_TOL`] is refused), the MO set
 /// must be one per k-point, and an RS-GDF J/K source is refused.
+///
+/// GATE LOOSENESS (module doc "Calibration of the ROHF gate"): the orbital
+/// gradient is refused above [`crate::grad::RO_ORBITAL_GRADIENT_TOL`] = 1e-5,
+/// and the stress error is first order in it with a measured slope of 0.67 to
+/// 3.9, so a state at the tolerance can carry a `dE/dε` error of about 4e-5
+/// (~18 MPa on the 64 Bohr³ test cell, ~1e3 times the FD bar of the anchors).
+/// The gate refuses a plainly unconverged state; it does not certify the stress
+/// to the anchors' accuracy, so converge the SCF well below the tolerance.
 #[allow(clippy::too_many_arguments)]
 pub fn kpoint_roks_stress(
     cell: &Cell,
@@ -785,7 +793,8 @@ pub fn kpoint_roks_stress(
 
 /// k-point ROHF stress of a converged [`crate::kroks::solve_krohf`] result:
 /// [`kpoint_roks_stress`] with a zero XC and `a = 1` (`exxdiv` is the SCF's,
-/// replacing `cfg.base.exxdiv`).
+/// replacing `cfg.base.exxdiv`). The gate looseness of [`kpoint_roks_stress`]
+/// applies: a state at the tolerance can carry a `dE/dε` error of about 4e-5.
 #[allow(clippy::too_many_arguments)]
 pub fn kpoint_rohf_stress(
     cell: &Cell,

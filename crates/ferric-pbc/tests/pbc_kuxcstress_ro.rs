@@ -22,11 +22,16 @@
 //!   on the unrestricted assembly; asserted an identity).
 //! * the orbital-gradient gate: the defects that tamper with F (PulayFockSwap,
 //!   PulayKSwap, PulayJOneSpin, PulayNoVxcBeta, PulayNoVxc, KWrongDensity) skip
-//!   the Fock guard and are then REFUSED by the gate (g 7e-3 .. 4e-2), not
-//!   measured; the gate message is asserted.
-//! * (3) 1x1x3 vs the 3-copy Gamma supercell (ROHF, ROKS PBE0; floor 1.0e-11):
-//!   the Bloch phases / mesh Madelung; with the mesh-only mutants NoInvNk,
-//!   NoPhase, ConjPhase, GammaMadelung, CrossSpinK, RoWDropCross (>= 3.0e-1).
+//!   the Fock guard by construction and are REFUSED by the gate, not measured
+//!   (asserted: the gate's message with g > 1e-3 and not the Fock guard's;
+//!   g 7e-3 .. 4e-2 on the sweep state).
+//! * (3) 1x1x3 vs the 3-copy Gamma supercell (ROHF, ROKS PBE0; floor 1.0e-11)
+//!   anchors the correct value on the mesh. The MESH-ONLY mutants are NOT
+//!   compared to the supercell but to the unmutated 1x1x3 k stress (which the
+//!   supercell and the FD anchor): XC side NoInvNk, NoPhase, ConjPhase
+//!   (KXcStressMutation) and HF side NoInvNk, NoPhase, ConjD, WrongQ,
+//!   GammaMadelung, GammaMadelungStrain, CrossSpinK, plus RoWDropCross; the
+//!   defects are in `k_dependent_mutants_are_caught_on_the_mesh` (ignored).
 //! * (4) FD of the energy under symmetric strain: the stress of the energy as
 //!   computed (all nine components for ROHF, ROKS PBE0, ROKS PBE; a
 //!   Monkhorst-Pack mesh; the trace).
@@ -617,7 +622,10 @@ const BAR_CLOSED: f64 = 1e-11;
 
 // ------------------------------------------------------------------ (5)
 
-/// (5) a = 1 with a zero XC through the ROKS SCF driver (`solve_kroks_injected`,
+/// (5) HONEST SCOPE: this checks that two SCF drivers (ROHF vs ROKS-injected with
+/// no XC) agree through the SAME stress assembly; it cannot see an a-scaling
+/// defect (a = 1) nor any defect in the shared assembly.
+/// a = 1 with a zero XC through the ROKS SCF driver (`solve_kroks_injected`,
 /// no XC) is the ROHF stress of the ROHF driver, per part (two SCF drivers, two
 /// entry points, one assembly). BLIND to every a-scaling defect (a = 1).
 #[test]
@@ -711,6 +719,20 @@ fn gate_message_value(e: &str, who: &str) -> f64 {
         .and_then(|r| r.strip_suffix(tail))
         .unwrap_or_else(|| panic!("message differs: {e}"));
     mid.parse().unwrap_or_else(|_| panic!("number {mid}: {e}"))
+}
+
+/// A Fock-tampering defect skips the Fock guard (by construction of the
+/// mutant), so what fires is the ORBITAL-GRADIENT GATE: assert exactly that
+/// (the gate's message, not the Fock guard's), with g far above the tolerance.
+fn assert_gate_refusal(label: &str, r: Result<KUksStress, ferric_core::FerricError>) {
+    let m = r
+        .err()
+        .unwrap_or_else(|| panic!("{label}: a Fock-tampering defect was NOT refused"))
+        .to_string();
+    eprintln!("{label}: refused by the orbital-gradient gate: {m}");
+    let g = gate_message_value(&m, "kpoint_roks_stress");
+    assert!(g > 1e-3, "{label}: g = {g:e}");
+    assert!(!m.contains("Fock matrix rebuilt"), "{label}: {m}");
 }
 
 /// The orbital-gradient gate FIRES in the default set: a deliberately loose
@@ -924,7 +946,15 @@ fn refusals_and_the_fock_guard() {
     // Unconverged SCF.
     let mut t = fx.res.scf.clone();
     t.converged = false;
-    assert!(run("PBE", &t, &ok_cfg).is_err());
+    let e = run("PBE", &t, &ok_cfg)
+        .expect_err("unconverged")
+        .to_string();
+    assert!(
+        e.contains(
+            "kpoint_roks_stress: the SCF did not converge; a gradient needs a stationary density"
+        ),
+        "{e}"
+    );
     // RS-GDF source (refused before any use of the SCF result).
     let kc = KRsGdfConfig {
         gdf: RsGdfConfig {
@@ -980,6 +1010,39 @@ fn refusals_and_the_fock_guard() {
         e.contains(
             "kpoint_rohf_stress: RS-GDF J/K is not supported by the restricted-open-shell stress"
         ),
+        "{e}"
+    );
+}
+
+/// The ROHF entry takes the exxdiv of the SCF: a mismatched one (None on an
+/// Ewald SCF) is caught by the Fock guard with the exact message.
+#[test]
+fn rohf_with_a_mismatched_exxdiv_is_refused_by_the_fock_guard() {
+    let fx = fixture(&H3, G111, None, ExxDiv::Ewald);
+    let eri = KDenseAftEri::build(
+        &fx.cell,
+        &fx.prep,
+        &fx.mesh,
+        &fx.hk.s,
+        ExxDiv::None,
+        &Default::default(),
+    )
+    .unwrap();
+    let e = kpoint_rohf_stress(
+        &fx.cell,
+        &fx.prep,
+        &fx.mesh,
+        &PeriodicHcoreConfig::with_omega(OMEGA),
+        &fx.hk,
+        KStressJk::Dense(&eri),
+        &fx.res.scf,
+        ExxDiv::None,
+        &scfg(None, None, None),
+    )
+    .expect_err("mismatched exxdiv accepted")
+    .to_string();
+    assert!(
+        e.contains("kpoint_rohf_stress: the Fock matrix rebuilt"),
         "{e}"
     );
 }
@@ -1310,14 +1373,10 @@ fn mutants_are_caught_by_the_gamma_roks_anchor() {
         U::PulayJOneSpin,
         U::PulayNoVxcBeta,
     ] {
-        match stress_with(&fx, &fx.res.scf, &scfg(None, Some(sm), None)) {
-            Err(e) => {
-                let m = e.to_string();
-                eprintln!("1x1x1 vs Gamma ROKS under {sm:?}: refused: {m}");
-                assert!(m.contains("ROHF orbital gradient"), "{sm:?}: {m}");
-            }
-            Ok(s) => check(format!("{sm:?}"), s),
-        }
+        assert_gate_refusal(
+            &format!("{sm:?}"),
+            stress_with(&fx, &fx.res.scf, &scfg(None, Some(sm), None)),
+        );
     }
     for xm in [
         X::NoAo,
@@ -1332,14 +1391,10 @@ fn mutants_are_caught_by_the_gamma_roks_anchor() {
     ] {
         check(format!("{xm:?}"), stress_mut(&fx, Some(xm), None, None));
     }
-    match stress_with(&fx, &fx.res.scf, &scfg(Some(X::PulayNoVxc), None, None)) {
-        Err(e) => {
-            let m = e.to_string();
-            eprintln!("1x1x1 vs Gamma ROKS under PulayNoVxc: refused: {m}");
-            assert!(m.contains("ROHF orbital gradient"), "{m}");
-        }
-        Ok(s) => check("PulayNoVxc".to_string(), s),
-    }
+    assert_gate_refusal(
+        "PulayNoVxc",
+        stress_with(&fx, &fx.res.scf, &scfg(Some(X::PulayNoVxc), None, None)),
+    );
     for hm in [
         S::MadelungUnscaled,
         S::CrossSpinK,
@@ -1369,35 +1424,38 @@ fn mutants_are_caught_by_the_gamma_roks_anchor() {
 /// The k-dependent defects need nk > 1: against the unmutated 1x1x3 ROKS PBE0
 /// stress (itself anchored by the FD). Correct residuals are <= 1e-9.
 #[test]
-#[ignore = "6 ROKS PBE0 stresses on 1x1x3; measured 228 s (7 stresses, incl. the gate refusal)"]
+#[ignore = "11 ROKS PBE0 stresses on 1x1x3 (+1 gate refusal); measured 228 s for the first 7, ~330 s expected"]
 fn k_dependent_mutants_are_caught_on_the_mesh() {
+    use KStressMutation as S;
     use KXcStressMutation as X;
     let fx = fixture(&H3, G113, Some("PBE0"), ExxDiv::Ewald);
     let base = stress(&fx);
+    // Compared against the UNMUTATED 1x1x3 k stress (itself anchored by the
+    // supercell and the FD), not against the supercell. NoInvNk, NoPhase and
+    // ConjPhase here are the XC-side defects (KXcStressMutation); the HF-side
+    // ones (KStressMutation) follow.
     for (xm, sm, hm) in [
         (Some(X::NoInvNk), None, None),
         (Some(X::NoPhase), None, None),
         (Some(X::ConjPhase), None, None),
-        (Some(X::KWrongDensity), None, None),
-        (None, None, Some(KStressMutation::GammaMadelung)),
-        (None, None, Some(KStressMutation::CrossSpinK)),
+        (None, None, Some(S::NoInvNk)),
+        (None, None, Some(S::NoPhase)),
+        (None, None, Some(S::ConjD)),
+        (None, None, Some(S::WrongQ)),
+        (None, None, Some(S::GammaMadelung)),
+        (None, None, Some(S::GammaMadelungStrain)),
+        (None, None, Some(S::CrossSpinK)),
         (None, Some(KUStressMutation::RoWDropCross), None),
     ] {
-        // KWrongDensity tampers F (the Fock guard is skipped), so the orbital
-        // gradient gate refuses it: a refusal is a catch.
-        match stress_with(&fx, &fx.res.scf, &scfg(xm, sm, hm)) {
-            Err(e) => {
-                let m = e.to_string();
-                eprintln!("1x1x3 {xm:?}/{sm:?}/{hm:?}: refused: {m}");
-                assert!(m.contains("ROHF orbital gradient"), "{m}");
-            }
-            Ok(s) => {
-                let d = mdiff(&s.de_deps, &base.de_deps);
-                eprintln!("1x1x3 {xm:?}/{sm:?}/{hm:?}: miss {d:.2e}");
-                assert!(d > MUTANT_BAR, "{xm:?}/{sm:?}/{hm:?} survives: {d:e}");
-            }
-        }
+        let d = mdiff(&stress_mut(&fx, xm, sm, hm).de_deps, &base.de_deps);
+        eprintln!("1x1x3 {xm:?}/{sm:?}/{hm:?}: miss {d:.2e}");
+        assert!(d > MUTANT_BAR, "{xm:?}/{sm:?}/{hm:?} survives: {d:e}");
     }
+    // KWrongDensity tampers F (the Fock guard is skipped): the gate refuses it.
+    assert_gate_refusal(
+        "KWrongDensity",
+        stress_with(&fx, &fx.res.scf, &scfg(Some(X::KWrongDensity), None, None)),
+    );
 }
 
 #[test]

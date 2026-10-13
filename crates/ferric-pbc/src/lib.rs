@@ -129,7 +129,10 @@
 //!   the same assembly on the ROHF spin densities with the orthonormality
 //!   Lagrangian `W_RO` as the overlap weight and the ROHF orbital-gradient
 //!   gate in place of the commutator gate; dense-AFT J/K only (an RS-GDF
-//!   source is refused).
+//!   source is refused). The gate is loose: at its tolerance (1e-5) the stress
+//!   error can reach about 4e-5 Ha per cell (~18 MPa on the 64 Bohr³ test cell),
+//!   so it refuses an unconverged state without certifying the stress to the
+//!   anchors' accuracy.
 //! * [`kuxcgrad`] — the open-shell twin (`kpoint_uks_gradient`, k-point UKS
 //!   from [`kuks`]; `kpoint_roks_gradient` / `kpoint_rohf_gradient` for the
 //!   restricted-open-shell energies of [`kroks`] with the ROHF orbital-gradient
