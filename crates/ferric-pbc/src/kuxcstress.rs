@@ -204,6 +204,9 @@ pub enum KUStressMutation {
     RoWDropCross,
     /// ROHF/ROKS: the orbital-gradient gate skipped.
     RoGateOff,
+    /// ROHF/ROKS: [`Self::RoWUhfForm`] with the gate skipped (one mutation
+    /// slot): what the unrestricted form gives off stationarity.
+    RoWUhfFormGateOff,
 }
 
 /// Settings of [`kpoint_uks_stress`].
@@ -1096,7 +1099,10 @@ fn uks_stress_with(
                 ro_gate_scratch_bytes(prep.nbasis()),
             )?;
             let g = ro_orbital_gradient_k(who, mos, &hk.s, &da, &db, &fa, &fb)?;
-            let gate_on = cfg.spin_mutation != Some(KUStressMutation::RoGateOff);
+            let gate_on = !matches!(
+                cfg.spin_mutation,
+                Some(KUStressMutation::RoGateOff) | Some(KUStressMutation::RoWUhfFormGateOff)
+            );
             if gate_on && (g.is_nan() || g > RO_ORBITAL_GRADIENT_TOL) {
                 return Err(FerricError::General(format!(
                     "{who}: ROHF orbital gradient {g:.3e} exceeds {RO_ORBITAL_GRADIENT_TOL:.0e}: \
@@ -1115,7 +1121,12 @@ fn uks_stress_with(
         _ => exch,
     };
     let spmut = cfg.spin_mutation;
-    let spins = if !ro || spmut == Some(KUStressMutation::RoWUhfForm) {
+    let spins = if !ro
+        || matches!(
+            spmut,
+            Some(KUStressMutation::RoWUhfForm) | Some(KUStressMutation::RoWUhfFormGateOff)
+        )
+    {
         KSpins::Unrestricted { da, db, fa, fb }
     } else if spmut == Some(KUStressMutation::RoWDropCross) {
         let zb = fb.iter().map(|m| Array2::zeros(m.dim())).collect();
