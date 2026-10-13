@@ -195,6 +195,7 @@ pub mod kstress;
 pub mod kuks;
 pub mod kuscf;
 pub mod kuxcgrad;
+pub mod kuxcstress;
 pub mod kxcgrad;
 pub mod kxcstress;
 pub mod lattice;
