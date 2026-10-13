@@ -111,7 +111,7 @@ task = "optimize"
 functional = "PBE"
 
 [scf]
-max_iter = 400           # 173 iterations was needed; the default is 100
+max_iter = 400           # 173 iterations was needed; the default is 200
 energy_conv = 1e-7       # a loose, reachable bound; see below
 # density_conv defaults to 1e-6 and is the criterion that does the real work.
 # Tighten it if you need more than the energy; see below.

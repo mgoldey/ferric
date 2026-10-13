@@ -785,6 +785,7 @@ fn solve_uhf_impl(
     // constructors below (converged early-exit and MaxIter).
     let mut last_induced_dipoles: Option<Array2<f64>> = None;
     let mut mon = crate::driver::ScfMonitor::new();
+    let mut last_report: Option<crate::result::ConvergenceReport> = None;
     let mut total_quartets = 0usize;
 
     // Maximum-Overlap Method (MOM) references: the previously-accepted occupied
@@ -1219,6 +1220,15 @@ fn solve_uhf_impl(
         let err_max_a = err_a.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
         let err_max_b = err_b.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
         let err_max = err_max_a.max(err_max_b);
+        last_report = Some(crate::result::ConvergenceReport {
+            iteration: iter,
+            de,
+            dp_rms: mon.dp_rms,
+            dp_max: mon.dp_max,
+            err_max,
+            energy_conv: config.energy_conv,
+            density_conv: config.density_conv,
+        });
 
         if crate::rhf::scf_trace() {
             eprintln!(
@@ -1375,6 +1385,7 @@ fn solve_uhf_impl(
                 rohf_spin_focks: None,
                 cosx_final,
                 cosx_schedule: crate::cosx_schedule::record(&cosx_sched),
+                convergence: last_report,
             });
         }
         mon.note_energy(energy);
@@ -1841,6 +1852,7 @@ fn solve_uhf_impl(
         rohf_spin_focks: None,
         cosx_final: None,
         cosx_schedule: crate::cosx_schedule::record(&cosx_sched),
+        convergence: last_report,
     })
 }
 

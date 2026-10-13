@@ -144,6 +144,80 @@ pub struct ScfResult {
     /// COSX grid schedule (`CosxConfig::schedule`): the grid each iteration's
     /// K was built on and the switch iteration. `None` when no schedule ran.
     pub cosx_schedule: Option<crate::cosx_schedule::CosxScheduleRecord>,
+    /// The convergence signals the gate judged at the FINAL SCF iteration and the thresholds
+    /// they were judged against, so a failed (or barely passed) run is
+    /// diagnosable without re-running under `FERRIC_SCF_TRACE`. Set by
+    /// `solve_rhf` (converged and non-converged exits) and by `solve_uhf`'s
+    /// converged and max-iteration results; `None` for ROHF/ROKS and for
+    /// hand-built results. Purely a report: nothing reads it back, so
+    /// energies and iteration counts are bit-identical with or without it.
+    pub convergence: Option<ConvergenceReport>,
+}
+
+/// The convergence signals the gate judged at the final iteration, plus the thresholds in force
+/// (see [`ScfResult::convergence`]). Magnitudes, as gated by
+/// `rhf::scf_converged`: `dp_rms < density_conv`, `dp_max < 10*density_conv`,
+/// `de < energy_conv`. `err_max` (the DIIS commutator) is a diagnostic, never
+/// a gate.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ConvergenceReport {
+    /// Iteration whose gate decision these signals are (the values the gate judged).
+    pub iteration: usize,
+    /// |E - E_prev| the gate judged at that iteration.
+    pub de: f64,
+    /// RMS density change the gate judged (at MaxIter it lags the returned density by one step).
+    pub dp_rms: f64,
+    /// Max-element density change.
+    pub dp_max: f64,
+    /// Max |FDS - SDF| (diagnostic only).
+    pub err_max: f64,
+    /// `RhfConfig::energy_conv` in force.
+    pub energy_conv: f64,
+    /// `RhfConfig::density_conv` in force.
+    pub density_conv: f64,
+}
+
+impl ConvergenceReport {
+    /// Names of the gate criteria this report does NOT satisfy, in gate order
+    /// (`dp_rms`, `dp_max`, `dE`); empty when all are met. NaN signals count
+    /// as unmet.
+    pub fn unmet(&self) -> Vec<&'static str> {
+        let mut u = Vec::new();
+        if !(self.dp_rms < self.density_conv) {
+            u.push("dp_rms");
+        }
+        if !(self.dp_max < 10.0 * self.density_conv) {
+            u.push("dp_max");
+        }
+        if !(self.de < self.energy_conv) {
+            u.push("dE");
+        }
+        u
+    }
+
+    /// One-line human description: iteration, each signal against its
+    /// threshold, and the unmet criteria.
+    pub fn describe(&self) -> String {
+        let unmet = self.unmet();
+        let verdict = if unmet.is_empty() {
+            "all criteria met".to_string()
+        } else {
+            format!("unmet: {}", unmet.join(", "))
+        };
+        format!(
+            "iteration {}: dp_rms={:.3e} (need < {:.1e}), dp_max={:.3e} (need < {:.1e}), \
+             dE={:.3e} (need < {:.1e}), DIIS err_max={:.3e} (diagnostic); {}",
+            self.iteration,
+            self.dp_rms,
+            self.density_conv,
+            self.dp_max,
+            10.0 * self.density_conv,
+            self.de,
+            self.energy_conv,
+            self.err_max,
+            verdict
+        )
+    }
 }
 
 /// The density-fitted two-electron builders one SCF actually used.
@@ -282,5 +356,65 @@ mod tests {
         assert_ne!(ScfExit::Converged, ScfExit::Stalled);
         assert_ne!(ScfExit::Plateau, ScfExit::MaxIter);
         assert_ne!(ScfExit::Diverged, ScfExit::Converged);
+    }
+}
+
+#[cfg(test)]
+mod convergence_report_tests {
+    use super::ConvergenceReport;
+
+    fn rep(de: f64, dp_rms: f64, dp_max: f64) -> ConvergenceReport {
+        ConvergenceReport {
+            iteration: 7,
+            de,
+            dp_rms,
+            dp_max,
+            err_max: 1e-5,
+            energy_conv: 1e-10,
+            density_conv: 1e-8,
+        }
+    }
+
+    /// The criteria mirror `rhf::scf_converged` exactly: dp_rms < dc,
+    /// dp_max < 10 dc, dE < ec, each strict, reported in gate order.
+    #[test]
+    fn unmet_mirrors_the_gate_strictly_and_in_order() {
+        assert!(rep(1e-11, 1e-9, 1e-8).unmet().is_empty());
+        assert_eq!(rep(1e-11, 1e-8, 1e-8).unmet(), vec!["dp_rms"]); // equal is unmet
+        assert_eq!(rep(1e-11, 1e-9, 1e-7).unmet(), vec!["dp_max"]);
+        assert_eq!(rep(1e-10, 1e-9, 1e-8).unmet(), vec!["dE"]);
+        assert_eq!(
+            rep(1e-3, 1e-3, 1e-1).unmet(),
+            vec!["dp_rms", "dp_max", "dE"]
+        );
+        // Agreement with the real gate on the same signals.
+        let r = rep(1e-11, 4.7e-8, 3.8e-6);
+        let sig = crate::rhf::ConvergenceSignals {
+            de: r.de,
+            dp_rms: r.dp_rms,
+            dp_max: r.dp_max,
+        };
+        assert!(crate::rhf::scf_converged(sig, r.energy_conv, r.density_conv).is_none());
+        assert_eq!(r.unmet(), vec!["dp_rms", "dp_max"]);
+    }
+
+    #[test]
+    fn nan_signals_count_as_unmet() {
+        assert_eq!(
+            rep(f64::NAN, f64::NAN, f64::NAN).unmet(),
+            vec!["dp_rms", "dp_max", "dE"]
+        );
+    }
+
+    #[test]
+    fn describe_names_iteration_thresholds_and_unmet() {
+        let t = rep(7.3e-11, 4.7e-8, 3.8e-6).describe();
+        assert!(t.contains("iteration 7"), "{t}");
+        assert!(t.contains("dp_rms=4.700e-8 (need < 1.0e-8)"), "{t}");
+        assert!(t.contains("dE=7.300e-11 (need < 1.0e-10)"), "{t}");
+        assert!(t.contains("unmet: dp_rms, dp_max"), "{t}");
+        assert!(rep(1e-11, 1e-9, 1e-8)
+            .describe()
+            .contains("all criteria met"));
     }
 }

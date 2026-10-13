@@ -245,6 +245,7 @@ fn make_scf_view(
         rohf_spin_focks: None,
         cosx_final: None,
         cosx_schedule: None,
+        convergence: None,
     }
 }
 

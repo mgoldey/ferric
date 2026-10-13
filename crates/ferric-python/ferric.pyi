@@ -419,6 +419,50 @@ class RhfResult:
         """Number of unique two-electron integral quartets actually computed."""
         ...
 
+    @property
+    def exit_reason(self) -> str:
+        """ScfExit variant name: "Converged", "Stalled", "Diverged" or "MaxIter" (the
+        iteration cap was reached). ("Plateau" is reserved: not produced by run_rhf today.)"""
+        ...
+
+    @property
+    def final_de(self) -> float | None:
+        """|E - E_prev| (Hartree), the value the convergence gate judged at the final iteration
+        (it lags the returned density by one step at MaxIter); None if not recorded."""
+        ...
+
+    @property
+    def final_dp_rms(self) -> float | None:
+        """RMS density change the gate judged at the final iteration (gated at density_conv)."""
+        ...
+
+    @property
+    def final_dp_max(self) -> float | None:
+        """Max-element density change the gate judged at the final iteration (gated at 10 * density_conv)."""
+        ...
+
+    @property
+    def final_diis_err_max(self) -> float | None:
+        """Max |FDS - SDF| at the final iteration. Diagnostic only, never a gate."""
+        ...
+
+    @property
+    def conv_thresholds(self) -> tuple[float, float] | None:
+        """(energy_conv, density_conv) this SCF was judged against."""
+        ...
+
+    @property
+    def unmet_criteria(self) -> list[str] | None:
+        """Gate criteria the final judged iteration did not meet, a subset of
+        ["dp_rms", "dp_max", "dE"]; empty if all were met; None if not recorded."""
+        ...
+
+    @property
+    def convergence_summary(self) -> str:
+        """One-line exit summary (reason, iterations, residuals vs thresholds); the
+        text of the RuntimeWarning run_rhf emits when the SCF does not converge."""
+        ...
+
     def density(self) -> NDArray[np.float64]:
         """AO-basis density matrix (n_bf x n_bf)."""
         ...
@@ -2350,6 +2394,12 @@ def run_rhf(
 ) -> RhfResult:
     """Closed-shell Restricted Hartree-Fock.
 
+    SCF controls (defaults): max_iter 200 (the iteration cap, the Rust RhfConfig default; reaching it returns
+    converged=False and emits a RuntimeWarning naming the unmet criteria),
+    density_conv 1e-6 (RMS density change; the max element is gated at 10x this),
+    energy_conv 1e-3 (|dE| per iteration, a loose sanity bound), diis_size 8.
+    The result's exit_reason / final_dp_rms / final_dp_max / final_de /
+    unmet_criteria / convergence_summary say where the SCF stopped.
 
     cosx_grid / cosx_final_pass / cosx_final_grid / cosx_overlap_fit: COSX
     knobs, read only with ``k_builder="cosx"`` (any of them with another
@@ -2398,7 +2448,7 @@ def run_uhf(
     cosx_final_grid: tuple[int, int] | tuple[int, int, str] | None = None,
     cosx_overlap_fit: bool | None = None,
 ) -> UhfResult:
-    """Unrestricted Hartree-Fock (open-shell).
+    """Unrestricted Hartree-Fock (open-shell). Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today; non-convergence raises.
 
 
     cosx_grid / cosx_final_pass / cosx_final_grid / cosx_overlap_fit: COSX
@@ -2431,7 +2481,7 @@ def run_rohf(
     external_field: tuple[float, float, float] | None = None,
     memory_budget_gb: float | None = None,
 ) -> UhfResult:
-    """Restricted Open-Shell Hartree-Fock."""
+    """Restricted Open-Shell Hartree-Fock. Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today."""
     ...
 
 def run_cdft(
@@ -2917,7 +2967,8 @@ def run_dft(
     cosx_final_grid: tuple[int, int] | tuple[int, int, str] | None = None,
     cosx_overlap_fit: bool | None = None,
 ) -> DftResult:
-    """Kohn-Sham DFT (closed-shell).
+    """Kohn-Sham DFT (closed-shell). Note: the final_* residuals, unmet_criteria and the
+    non-convergence RuntimeWarning are RHF-only today (this result has exit_reason and iterations).
 
 
     cosx_grid / cosx_final_pass / cosx_final_grid / cosx_overlap_fit: COSX

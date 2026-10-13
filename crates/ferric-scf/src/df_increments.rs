@@ -459,6 +459,7 @@ pub fn solve_rhf_with_df_increments(
                 rohf_spin_focks: None,
                 cosx_final: None,
                 cosx_schedule: None,
+                convergence: None,
             };
             return Ok(DfIncrementsResult {
                 result,
@@ -499,6 +500,7 @@ pub fn solve_rhf_with_df_increments(
                 rohf_spin_focks: None,
                 cosx_final: None,
                 cosx_schedule: None,
+                convergence: None,
             };
             return Ok(DfIncrementsResult {
                 result,

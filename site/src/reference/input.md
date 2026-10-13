@@ -72,7 +72,7 @@ Read by every kind, because every kind runs an SCF first.
 
 | Key | Type | Default | Allowed values | Notes |
 |---|---|---|---|---|
-| `max_iter` | integer | `100` | | |
+| `max_iter` | integer | `200` | | Iteration cap; equals the library (`RhfConfig`) and Python default. |
 | `energy_conv` | float | `1e-3` | | **Sanity bound, not a target.** Convergence requires `ΔP_rms < density_conv`, `ΔP_max < 10·density_conv` **and** `ΔE < energy_conv`. `ΔE` floors on the RI noise, so tightening this can make a density-fitted run hit `max_iter`. |
 | `density_conv` | float | `1e-6` | | The real convergence signal. |
 | `diis_size` | integer | `8` | | |

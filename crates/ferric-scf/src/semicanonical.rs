@@ -408,6 +408,7 @@ impl SemicanonicalOrbitals {
             rohf_spin_focks: rohf.rohf_spin_focks.clone(),
             cosx_final: rohf.cosx_final,
             cosx_schedule: rohf.cosx_schedule.clone(),
+            convergence: rohf.convergence,
         }
     }
 }
