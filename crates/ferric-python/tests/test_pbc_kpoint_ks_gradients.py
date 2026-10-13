@@ -214,6 +214,13 @@ def test_refusals_have_exact_wording(basis):
         match=r'^run_rks_kpts: functional "SCAN": General error: periodic DFT: meta-GGA is not supported: SCAN: the tau path was not prototyped periodically\. k-point RKS supports LDA, GGA and global-hybrid functionals only$',
     ):
         _krks(H2_ATOMS, basis, "SCAN", with_gradient=True)
+    # r2SCAN too: the library has k-point meta-GGA forces, the binding does not
+    # expose them.
+    with pytest.raises(
+        ValueError,
+        match=r'^run_rks_kpts: functional "r2SCAN": .*meta-GGA.*\. k-point RKS supports LDA, GGA and global-hybrid functionals only$',
+    ):
+        _krks(H2_ATOMS, basis, "r2SCAN", with_gradient=True)
     with pytest.raises(
         ValueError,
         match=r'^run_rks_kpts: functional "HSE06": .*range-separated.*\. k-point RKS supports LDA, GGA and global-hybrid functionals only$',

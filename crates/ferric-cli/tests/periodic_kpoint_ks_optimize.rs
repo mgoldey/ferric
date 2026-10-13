@@ -469,6 +469,16 @@ fn unsupported_kohn_sham_routes_are_refused_with_exact_messages() {
         e.contains("k-point RKS supports LDA, GGA and global-hybrid functionals only"),
         "{e}"
     );
+    // r2SCAN as well (the library now has k-point meta-GGA forces; the
+    // bindings and the CLI do not expose them, so the optimize gate refuses).
+    let e = refused(
+        &run(&loose_input("r2scan", "r2SCAN", "[1, 1, 2]", DENSE)),
+        "r2scan",
+    );
+    assert!(
+        e.contains("[cell] kmesh with functional \"r2SCAN\"") && e.contains("meta-GGA"),
+        "{e}"
+    );
     let e = refused(
         &run(&loose_input("hse", "HSE06", "[1, 1, 2]", DENSE)),
         "hse",
