@@ -144,7 +144,7 @@ pub struct ScfResult {
     /// COSX grid schedule (`CosxConfig::schedule`): the grid each iteration's
     /// K was built on and the switch iteration. `None` when no schedule ran.
     pub cosx_schedule: Option<crate::cosx_schedule::CosxScheduleRecord>,
-    /// The convergence signals of the LAST SCF iteration and the thresholds
+    /// The convergence signals the gate judged at the FINAL SCF iteration and the thresholds
     /// they were judged against, so a failed (or barely passed) run is
     /// diagnosable without re-running under `FERRIC_SCF_TRACE`. Set by
     /// `solve_rhf` (converged and non-converged exits) and by `solve_uhf`'s
@@ -154,18 +154,18 @@ pub struct ScfResult {
     pub convergence: Option<ConvergenceReport>,
 }
 
-/// Final-iteration convergence signals plus the thresholds in force
+/// The convergence signals the gate judged at the final iteration, plus the thresholds in force
 /// (see [`ScfResult::convergence`]). Magnitudes, as gated by
 /// `rhf::scf_converged`: `dp_rms < density_conv`, `dp_max < 10*density_conv`,
 /// `de < energy_conv`. `err_max` (the DIIS commutator) is a diagnostic, never
 /// a gate.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ConvergenceReport {
-    /// Iteration the signals belong to.
+    /// Iteration whose gate decision these signals are (the values the gate judged).
     pub iteration: usize,
-    /// |E - E_prev| at that iteration.
+    /// |E - E_prev| the gate judged at that iteration.
     pub de: f64,
-    /// RMS density change.
+    /// RMS density change the gate judged (at MaxIter it lags the returned density by one step).
     pub dp_rms: f64,
     /// Max-element density change.
     pub dp_max: f64,

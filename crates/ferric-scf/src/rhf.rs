@@ -3571,11 +3571,33 @@ mod tests {
             text.contains("iteration 3") && text.contains("unmet: dp_rms"),
             "{text}"
         );
-        // The report is a pure observer: same energy and iteration count as an
-        // identical run (determinism anchor for the bit-identity claim).
-        let again = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
-        assert_eq!(r.energy, again.energy);
-        assert_eq!(r.iterations, again.iterations);
+    }
+
+    /// Bit-identity anchor for the convergence report (a pure observer). The
+    /// literals were recorded from the pre-change mainline build (ferric sha
+    /// cddfd1aa, via python `run_rhf` on testdata water.xyz, STO-3G, defaults
+    /// ec=1e-3 dc=1e-6, minao guess) and reproduced bit for bit by this branch
+    /// (`repr` of the f64 equal).
+    #[test]
+    fn convergence_report_leaves_water_sto3g_results_bit_identical_to_mainline() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let bs = ferric_core::basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+        let run = |config: &RhfConfig| solve_rhf(&ctx, &mol, &prep, op, &bounds, config).unwrap();
+        let full = run(&RhfConfig::default());
+        assert_eq!(full.iterations, 8);
+        assert_eq!(full.energy, -74.96314680003906);
+        let capped = run(&RhfConfig {
+            max_iter: 3,
+            density_conv: 1e-12,
+            ..Default::default()
+        });
+        assert_eq!(capped.iterations, 3);
+        assert_eq!(capped.energy, -74.96270491542582);
     }
 
     #[test]

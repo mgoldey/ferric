@@ -2556,7 +2556,7 @@ pub struct ScfCfg {
 impl Default for ScfCfg {
     fn default() -> Self {
         ScfCfg {
-            max_iter: 100,
+            max_iter: default_max_iter(),
             // Match the library convergence gate (rhf::scf_converged): density_conv
             // is the tight (reachable) ΔP signal, energy_conv a loose
             // "not-descending" bound. A tight energy_conv here would hang a large
@@ -2852,8 +2852,10 @@ impl ScfCfg {
 // distinction a bare `bool` cannot express. A serde default that materialised
 // `true` would erase it.
 
+/// The one SCF iteration cap: the library's `RhfConfig` default (200), so the
+/// CLI, the Python layer and the Rust API cannot drift apart again.
 fn default_max_iter() -> usize {
-    100
+    ferric_scf::rhf::RhfConfig::default().max_iter
 }
 // Match the library convergence gate (rhf::scf_converged): density_conv is the
 // tight (reachable) ΔP signal; energy_conv is a LOOSE "not-descending" bound. A

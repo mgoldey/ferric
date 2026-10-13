@@ -53,10 +53,35 @@ def test_iteration_capped_run_names_the_unmet_criterion_in_a_warning():
 
 
 def test_energy_gate_below_the_noise_floor_is_reported_as_the_unmet_one():
-    """A converged-density run that fails only on dE says so: unmet == ['dE'] is
-    reachable with an energy_conv no iteration can satisfy (0 < dE always)."""
+    """A run whose density converged but whose dE gate cannot be met says so:
+    unmet == ['dE']. energy_conv=0.0 is unreachable because the gate is the
+    STRICT test dE < energy_conv (final_de reaches exactly 0.0 here, which is
+    still not < 0.0)."""
     with pytest.warns(RuntimeWarning):
         r = ferric.run_rhf(_water(), _bs(), max_iter=40, energy_conv=0.0)
     assert not r.converged
     assert r.unmet_criteria == ["dE"]
     assert r.final_dp_rms < 1e-6
+
+
+def test_warning_never_changes_control_flow_even_under_error_filter():
+    """With warnings turned into errors the non-converged run_rhf still RETURNS
+    its result (the warn failure is ignored on purpose); a `?` on the warn call
+    would raise RuntimeWarning here and lose the result."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        r = ferric.run_rhf(_water(), _bs(), max_iter=3, density_conv=1e-12)
+    assert not r.converged
+    assert r.exit_reason == "MaxIter"
+
+
+def test_default_max_iter_is_200_for_run_rhf_run_uhf_run_rohf():
+    """The python default cap equals the Rust RhfConfig default (200); it was 100
+    until 2026-10-13. energy_conv=0.0 can never be met, so the unconstrained cap
+    is what stops the run."""
+    with pytest.warns(RuntimeWarning):
+        r = ferric.run_rhf(_water(), _bs(), energy_conv=0.0)
+    assert r.iterations == 200
+    for fn in (ferric.run_uhf, ferric.run_rohf):
+        with pytest.raises(Exception, match="after 200 iterations"):
+            fn(_water(), _bs(), energy_conv=0.0)

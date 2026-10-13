@@ -561,6 +561,13 @@ fn build_external_potential_with_smeared(
 
 // ── RHF ──
 
+/// Default SCF iteration cap of every Python `run_*` that takes `max_iter`:
+/// the Rust `RhfConfig` default itself, so the two cannot drift apart
+/// (they did: Python was 100, Rust 200, until 2026-10-13).
+fn default_scf_max_iter() -> usize {
+    RhfConfig::default().max_iter
+}
+
 /// Human-readable SCF exit line: exit reason, iterations, final residuals vs
 /// thresholds and the unmet gate criteria. Shared by `RhfResult.convergence_summary`
 /// and the non-convergence `RuntimeWarning` of `run_rhf`.
@@ -628,19 +635,20 @@ impl PyRhfResult {
     fn exit_reason(&self) -> String {
         format!("{:?}", self.scf_data.exit)
     }
-    /// |E - E_prev| at the last SCF iteration (Hartree), or `None` if this
+    /// |E - E_prev| (Hartree) as judged by the convergence gate at the final
+    /// iteration (lags the returned density by one step at MaxIter), or `None` if this
     /// result carries no convergence record.
     #[getter]
     fn final_de(&self) -> Option<f64> {
         self.scf_data.convergence.map(|c| c.de)
     }
-    /// RMS density change at the last SCF iteration (the primary gate,
+    /// RMS density change the gate judged at the final iteration (the primary gate,
     /// compared against `density_conv`), or `None`.
     #[getter]
     fn final_dp_rms(&self) -> Option<f64> {
         self.scf_data.convergence.map(|c| c.dp_rms)
     }
-    /// Max-element density change at the last SCF iteration (gated at
+    /// Max-element density change the gate judged at the final iteration (gated at
     /// `10 * density_conv`), or `None`.
     #[getter]
     fn final_dp_max(&self) -> Option<f64> {
@@ -693,9 +701,9 @@ impl PyRhfResult {
 /// for parity — same names, same defaults, same units.
 ///
 /// SCF controls and defaults (run_rhf / run_uhf / run_rohf):
-///   max_iter        iteration cap, default 100 (NOT the 200 of the Rust
-///                   `RhfConfig`). Reaching it returns `converged=False`
-///                   (RHF; a RuntimeWarning names the unmet criteria), so a
+///   max_iter        iteration cap, default 200 (the Rust `RhfConfig`
+///                   default, read from it; was 100 before 2026-10-13). Reaching it returns `converged=False`
+///                   (RHF; a RuntimeWarning names the unmet criteria and never raises, even under -W error), so a
 ///                   slow-but-draining SCF fails on the cap alone.
 ///   density_conv    RMS density change gate, default 1e-6. The max-element
 ///                   change is gated at 10x this. THE primary criterion.
@@ -821,7 +829,7 @@ fn run_rhf(
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
     // Defaults mirror the CLI `[scf]` section (config.rs) so CLI and Python agree.
     let config = RhfConfig {
-        max_iter: max_iter.unwrap_or(100),
+        max_iter: max_iter.unwrap_or_else(default_scf_max_iter),
         energy_conv: energy_conv.unwrap_or(1e-3),
         density_conv: density_conv.unwrap_or(1e-6),
         diis_size: diis_size.unwrap_or(8),
@@ -869,22 +877,25 @@ fn run_rhf(
         .allow_threads(|| solve_rhf(&ctx, &emol, &prep, op, &bounds, &config))
         .map_err(make_err)?;
     if !r.converged {
-        // No result field changes: the caller still gets the best-effort
-        // `RhfResult` with `converged=False`; the warning only names the exit,
-        // iteration count and the unmet criteria so the failure is diagnosable.
+        // No control-flow change: the caller still gets the best-effort
+        // `RhfResult` with `converged=False`. The warning only names the exit,
+        // iteration count and unmet criteria. If warnings are turned into errors
+        // (`-W error`) the warn call returns Err; that is IGNORED on purpose so
+        // the result is never lost.
         let msg = format!(
-            "run_rhf: SCF did not converge: {}. Raise max_iter (this call used {}; default 100), or \
+            "run_rhf: SCF did not converge: {}. Raise max_iter (this call used {}; default {}), or \
              pass level_shift / soscf / a different guess; see RhfResult.unmet_criteria.",
             scf_exit_summary(&r),
-            config.max_iter
+            config.max_iter,
+            default_scf_max_iter()
         );
         let msg = std::ffi::CString::new(msg.replace('\0', " ")).expect("NUL removed");
-        PyErr::warn(
+        let _ = PyErr::warn(
             py,
             &py.get_type::<pyo3::exceptions::PyRuntimeWarning>(),
             &msg,
             1,
-        )?;
+        );
     }
     Ok(PyRhfResult {
         energy: r.energy,
@@ -2229,7 +2240,7 @@ fn run_qmmm(
         })
     };
     let mut config = RhfConfig {
-        max_iter: max_iter.unwrap_or(100),
+        max_iter: max_iter.unwrap_or_else(default_scf_max_iter),
         energy_conv: energy_conv.unwrap_or(1e-3),
         density_conv: density_conv.unwrap_or(1e-6),
         level_shift: level_shift.unwrap_or(0.0),
@@ -2687,6 +2698,8 @@ impl PyUhfResult {
 ///                     minimum, exactly as PySCF's own default guess does) and
 ///                     N2+/6-31G. Before this kwarg the repair was unreachable
 ///                     from Python.
+///
+/// Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today; non-convergence raises.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set,
@@ -2736,7 +2749,7 @@ fn run_uhf(
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
     // Same defaults as run_rhf / the CLI [scf] section.
     let config = UhfConfig {
-        max_iter: max_iter.unwrap_or(100),
+        max_iter: max_iter.unwrap_or_else(default_scf_max_iter),
         energy_conv: energy_conv.unwrap_or(1e-3),
         density_conv: density_conv.unwrap_or(1e-6),
         diis_size: diis_size.unwrap_or(8),
@@ -2796,6 +2809,8 @@ fn run_uhf(
 /// spin-pure MOs, so `mos_alpha`/`mos_beta` coincide internally but the
 /// occupied-orbital semantics differ from UHF). Exposes the same SCF knob
 /// set as `run_rhf`/`run_uhf`.
+///
+/// Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set,
@@ -2830,7 +2845,7 @@ fn run_rohf(
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
     // Same defaults as run_rhf / run_uhf / the CLI [scf] section.
     let config: RohfConfig = RhfConfig {
-        max_iter: max_iter.unwrap_or(100),
+        max_iter: max_iter.unwrap_or_else(default_scf_max_iter),
         energy_conv: energy_conv.unwrap_or(1e-3),
         density_conv: density_conv.unwrap_or(1e-6),
         diis_size: diis_size.unwrap_or(8),
@@ -3201,7 +3216,7 @@ fn cdft_hamiltonian_key(emol: &Molecule, config: &RhfConfig) -> String {
 ///
 /// The SCF knobs (`max_iter` .. `guess`) mean what they do in `run_uhf`; unset
 /// ones take the Rust `RhfConfig` defaults the cDFT suite is validated with
-/// (so `max_iter` defaults to 200 here, not run_uhf's 100). `df_j_aux` /
+/// (so `max_iter` defaults to 200 here, as in `run_uhf`). `df_j_aux` /
 /// `df_k_aux` unset = exact J/K, as in `run_uhf`.
 #[pyfunction]
 #[pyo3(signature = (
@@ -7581,6 +7596,9 @@ fn run_double_hybrid(
 /// Kohn-Sham DFT (closed-shell). `functional` is an XC name (LDA/PBE/B3LYP/
 /// wB97X-V/…). Convergence aids match the CLI `[scf]` section: `level_shift`
 /// (Ha) and `mom_after_iter` help difficult DFT SCFs converge.
+///
+/// Note: the final_* residuals, unmet_criteria and non-convergence RuntimeWarning
+/// are RHF-only today (the result has `exit_reason` and `iterations`).
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set, functional=None, k_builder=None, with_gradient=false,
