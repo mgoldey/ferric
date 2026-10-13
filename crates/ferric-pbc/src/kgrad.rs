@@ -413,6 +413,15 @@ pub(crate) enum KSpins {
         fa: Vec<Array2<C64>>,
         fb: Vec<Array2<C64>>,
     },
+    /// Restricted-open-shell (ROHF / ROKS): the unrestricted bookkeeping on
+    /// the spin densities / spin Focks, with the orthonormality-Lagrangian
+    /// energy-weighted matrix `W = sym(D_α F_α D_α + D_α F_β D_β)`.
+    RestrictedOpen {
+        da: Vec<Array2<C64>>,
+        db: Vec<Array2<C64>>,
+        fa: Vec<Array2<C64>>,
+        fb: Vec<Array2<C64>>,
+    },
 }
 
 /// Conjugate transpose.
@@ -425,12 +434,42 @@ pub(crate) fn cr(x: f64) -> C64 {
     C64::new(x, 0.0)
 }
 
+/// Both-spin densities of an open-shell variant (`None` for restricted).
+fn spin_pair(spins: &KSpins) -> Option<(&[Array2<C64>], &[Array2<C64>])> {
+    match spins {
+        KSpins::Restricted { .. } => None,
+        KSpins::Unrestricted { da, db, .. } | KSpins::RestrictedOpen { da, db, .. } => {
+            Some((da, db))
+        }
+    }
+}
+
+/// `D_α(k) + D_β(k)` of an open-shell variant (zero for restricted).
+fn pair_total(spins: &KSpins, k: usize) -> Array2<C64> {
+    match spin_pair(spins) {
+        Some((da, db)) => &da[k] + &db[k],
+        None => Array2::zeros((0, 0)),
+    }
+}
+
+/// ROHF orthonormality Lagrangian `sym(D_α F_α D_α + D_α F_β D_β)` at k.
+fn w_ro(
+    da: &[Array2<C64>],
+    db: &[Array2<C64>],
+    fa: &[Array2<C64>],
+    fb: &[Array2<C64>],
+    k: usize,
+) -> Array2<C64> {
+    let w = da[k].dot(&fa[k]).dot(&da[k]) + da[k].dot(&fb[k]).dot(&db[k]);
+    (&w + &herm(&w)).mapv(|z| z * 0.5)
+}
+
 impl KSpins {
     /// Number of k-points.
     pub(crate) fn nk(&self) -> usize {
         match self {
             Self::Restricted { d, .. } => d.len(),
-            Self::Unrestricted { da, .. } => da.len(),
+            Self::Unrestricted { da, .. } | Self::RestrictedOpen { da, .. } => da.len(),
         }
     }
 
@@ -438,35 +477,37 @@ impl KSpins {
     pub(crate) fn total(&self, k: usize) -> Array2<C64> {
         match self {
             Self::Restricted { d, .. } => d[k].clone(),
-            Self::Unrestricted { da, db, .. } => &da[k] + &db[k],
+            open => pair_total(open, k),
         }
     }
 
     /// `Σ_s D_s X D_s` at k (restricted `½ D X D`).
     pub(crate) fn sandwich(&self, k: usize, x: &Array2<C64>) -> Array2<C64> {
-        match self {
-            Self::Restricted { d, .. } => d[k].dot(x).dot(&d[k]).mapv(|z| z * 0.5),
-            Self::Unrestricted { da, db, .. } => {
-                &da[k].dot(x).dot(&da[k]) + &db[k].dot(x).dot(&db[k])
-            }
+        match (spin_pair(self), self) {
+            (Some((da, db)), _) => &da[k].dot(x).dot(&da[k]) + &db[k].dot(x).dot(&db[k]),
+            (None, Self::Restricted { d, .. }) => d[k].dot(x).dot(&d[k]).mapv(|z| z * 0.5),
+            _ => unreachable!("spin_pair is Some for every open-shell variant"),
         }
     }
 
-    /// `W(k) = Σ_s D_s F_s D_s` (restricted `½ D F D`).
+    /// `W(k) = Σ_s D_s F_s D_s` (restricted `½ D F D`; restricted-open-shell:
+    /// the ROHF orthonormality Lagrangian).
     pub(crate) fn energy_weighted(&self, k: usize) -> Array2<C64> {
         match self {
             Self::Restricted { d, f } => d[k].dot(&f[k]).dot(&d[k]).mapv(|z| z * 0.5),
             Self::Unrestricted { da, db, fa, fb } => {
                 &da[k].dot(&fa[k]).dot(&da[k]) + &db[k].dot(&fb[k]).dot(&db[k])
             }
+            Self::RestrictedOpen { da, db, fa, fb } => w_ro(da, db, fa, fb, k),
         }
     }
 
     /// `Σ_s D_s X D_s = Σ (c, D) c·D X D` terms.
     pub(crate) fn exch_terms(&self) -> Vec<(f64, &[Array2<C64>])> {
-        match self {
-            Self::Restricted { d, .. } => vec![(0.5, &d[..])],
-            Self::Unrestricted { da, db, .. } => vec![(1.0, &da[..]), (1.0, &db[..])],
+        match (spin_pair(self), self) {
+            (Some((da, db)), _) => vec![(1.0, da), (1.0, db)],
+            (None, Self::Restricted { d, .. }) => vec![(0.5, &d[..])],
+            _ => unreachable!("spin_pair is Some for every open-shell variant"),
         }
     }
 
@@ -483,7 +524,7 @@ impl KSpins {
         for k in 0..self.nk() {
             match self {
                 Self::Restricted { d, f } => w = w.max(one(&f[k], &d[k], &s[k])),
-                Self::Unrestricted { da, db, fa, fb } => {
+                Self::Unrestricted { da, db, fa, fb } | Self::RestrictedOpen { da, db, fa, fb } => {
                     w = w
                         .max(one(&fa[k], &da[k], &s[k]))
                         .max(one(&fb[k], &db[k], &s[k]));
@@ -505,7 +546,7 @@ impl KSpins {
                 cj(d);
                 cj(f);
             }
-            Self::Unrestricted { da, db, fa, fb } => {
+            Self::Unrestricted { da, db, fa, fb } | Self::RestrictedOpen { da, db, fa, fb } => {
                 cj(da);
                 cj(db);
                 cj(fa);

@@ -111,13 +111,21 @@
 //!   force assembly with the exact-exchange fraction `a` plus the XC
 //!   AO-derivative, grid-point-motion and weight-response terms on Bloch
 //!   AOs, with the tau term on the AO Hessian for a meta-GGA;
-//!   range-separated hybrids, VV10 and open shell are refused.
+//!   range-separated hybrids and VV10 are refused.
 //! * [`kxcstress`] — the stress of the same energy (`kpoint_rks_stress`): the
 //!   exchange-free k HF stress plus the XC strain terms on Bloch AOs (AO
 //!   strain with point motion, the partition-weight response on an atom grid
 //!   or the volume term on a uniform grid). Pure LDA/GGA only: global
 //!   hybrids, range-separated hybrids, meta-GGA, VV10 and open shell are
 //!   refused. The stress is returned unsymmetrised (the Gamma convention).
+//! * [`kuxcgrad`] — the open-shell twin (`kpoint_uks_gradient`, k-point UKS
+//!   from [`kuks`]; `kpoint_roks_gradient` / `kpoint_rohf_gradient` for the
+//!   restricted-open-shell energies of [`kroks`] with the ROHF orbital-gradient
+//!   gate): the same assembly with two spin channels, spin-resolved
+//!   `v_xc` (`σ_αα`, `σ_αβ`, `σ_ββ` contractions), per-spin exchange and a
+//!   per-spin Fock guard; closed-shell densities reproduce [`kxcgrad`] per
+//!   part. Meta-GGA, range-separated hybrids and VV10 are refused here (the
+//!   tau terms exist for the closed-shell force only).
 //! * [`kstress`] — the k-point RHF / UHF stress tensor
 //!   (`kpoint_rhf_stress`, `kpoint_uhf_stress`) on the dense-AFT and the
 //!   unsplit RS-GDF J/K:
@@ -183,6 +191,7 @@ pub mod kscf;
 pub mod kstress;
 pub mod kuks;
 pub mod kuscf;
+pub mod kuxcgrad;
 pub mod kxcgrad;
 pub mod kxcstress;
 pub mod lattice;
@@ -249,6 +258,9 @@ pub use kuks::{solve_kuks, solve_kuks_on_grid, KUksConfig, KUksResult};
 pub use kuscf::{
     kuhf_gap_report, solve_kuhf, solve_kuhf_injected, solve_kuhf_injected_with_guess,
     solve_kuhf_keep, KUScfResult, KUhfConfig, KUhfResult,
+};
+pub use kuxcgrad::{
+    kpoint_rohf_gradient, kpoint_roks_gradient, kpoint_uks_gradient, KUksGradConfig, KUksGradient,
 };
 pub use kxcgrad::{kpoint_rks_gradient, KRksGradConfig, KRksGradient, KXcGrid};
 pub use kxcstress::{kpoint_rks_stress, KRksStress, KRksStressConfig};
