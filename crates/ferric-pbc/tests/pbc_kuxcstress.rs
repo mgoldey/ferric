@@ -720,6 +720,7 @@ const BAR_CLOSED: f64 = 1e-11;
 /// A dropped beta, J of one spin, and the other exact-exchange/Fock defects are
 /// NOT blind and must be visible there.
 #[test]
+#[ignore = "9 PBE0 stresses; measured 111 s"]
 fn closed_shell_limit_is_blind_to_spin_swaps_and_sees_dropped_spins() {
     use KUStressMutation as U;
     let fx = fixture(&H2, G113, "PBE0", Jk::Dense, ExxDiv::Ewald);
@@ -901,6 +902,7 @@ const FD_BAR: f64 = 3e-8;
 /// strained cell with the same integer numerators, shared cutoff 14). Three
 /// components (diagonal along the mesh axis, a shear, the transverse diagonal).
 #[test]
+#[ignore = "3 components x 2 SCFs; measured 36 s"]
 fn pbe0_uks_stress_matches_fd_dense_ewald_1x1x3() {
     fd_case(
         "PBE0",
@@ -1191,6 +1193,7 @@ fn roks_and_rohf_stress_are_refused_typed() {
 /// same state with the gate off returns a stress that is wrong by far more than
 /// the FD bar (so the gate matters), and a tight state passes the gate.
 #[test]
+#[ignore = "two UKS SCFs + 2 stresses; measured 45 s"]
 fn loose_uks_scf_is_refused_by_the_stationarity_gate() {
     let tight = fixture(&H3, G111, "PBE", Jk::Dense, ExxDiv::None);
     let st = stress(&tight);
@@ -1244,6 +1247,7 @@ fn charge_of(m: &str) -> usize {
 /// (D_a, D_b, J_a, J_b, K_a, K_b, F_a, F_b, V_a, V_b). A charge reverted to the
 /// closed-shell five fails the equality.
 #[test]
+#[ignore = "null-XC budget bisection; measured 38 s"]
 fn budgets_either_reproduce_the_uks_stress_or_fail_typed() {
     let z = zero_xc(&H3, G113, Jk::Dense, ExxDiv::Ewald, 0.5);
     let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
@@ -1314,6 +1318,7 @@ fn jk_mats(z: &Zx, d: &[Array2<Complex64>]) -> (Vec<Array2<Complex64>>, Vec<Arra
 /// count with the arithmetic of the module doc (40 AO planes per k and point,
 /// eight work planes, four N_k nbf^2 partial-V/accumulator arrays).
 #[test]
+#[ignore = "bisection never reached the XC chunk gate within 12-60 min (each probe is a full PBE0 stress); the ledger charge is recorded by arithmetic only, see not-covered"]
 fn xc_chunk_charge_is_read_from_the_production_error() {
     let fx = fixture(&H3, G113, "PBE0", Jk::Dense, ExxDiv::Ewald);
     let at = |b: usize| {
@@ -1379,6 +1384,7 @@ fn all_spin_mutants() -> [KUStressMutation; 9] {
 /// Each must miss the Gamma reference by far more than the Gamma bar (the
 /// correct residual is <= BAR_GAMMA = 1e-9; the mutant bar is 1e-5).
 #[test]
+#[ignore = "full mutant sweep against the Gamma UKS stress; measured 384 s"]
 fn mutants_are_caught_by_the_gamma_anchor() {
     use KStressMutation as S;
     use KXcStressMutation as X;
@@ -1510,4 +1516,29 @@ fn uniform_grid_stress_is_symmetric_and_matches_fd() {
     }
     eprintln!("uniform-grid UKS stress vs FD worst {worst:.2e}");
     assert!(worst < FD_BAR, "{worst:e}");
+}
+
+/// Default-set subset of the mutant sweep: the three defects that most need the
+/// open-shell Gamma anchor (a spin swap in the XC strain, the other spin's
+/// exchange in the Pulay Fock, the exchange fraction applied twice). Each must
+/// miss the Gamma reference by far more than the 1e-5 mutant bar (measured
+/// misses 1.6e-1 and 4.6e-1 in the full sweep).
+#[test]
+fn spin_and_scaling_mutants_are_caught_by_the_gamma_anchor() {
+    let f = "PBE0";
+    let gam = gamma_side(&cell_of(&H3), f);
+    let fx = fixture(&H3, G111, f, Jk::Dense, ExxDiv::Ewald);
+    for (label, xm, sm) in [
+        ("XcSpinSwap", None, Some(KUStressMutation::XcSpinSwap)),
+        ("PulayKSwap", None, Some(KUStressMutation::PulayKSwap)),
+        (
+            "ExchScaledTwice",
+            Some(KXcStressMutation::ExchScaledTwice),
+            None,
+        ),
+    ] {
+        let d = mdiff(&stress_mut(&fx, xm, sm, None).de_deps, &gam.de_deps);
+        eprintln!("1x1x1 vs Gamma under {label}: miss {d:.2e}");
+        assert!(d > MUTANT_BAR, "{label} survives the Gamma anchor: {d:e}");
+    }
 }
