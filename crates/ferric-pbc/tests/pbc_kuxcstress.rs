@@ -713,6 +713,8 @@ fn closed_shell_vs_rks(functionals: &[&str]) {
     }
 }
 
+/// Worst correct closed-shell residual 4.6e-15 (overlap_pulay); the smallest
+/// visible mutant miss is 1.8e-2 (XcCrossDropped). Bar 1e-11.
 const BAR_CLOSED: f64 = 1e-11;
 
 /// The closed-shell limit is BLIND to the alpha/beta-asymmetric defects (so
@@ -816,6 +818,9 @@ fn gamma_rows(k: &KUksStress, g: &GammaStress, n_cells: f64) -> Vec<(&'static st
     ]
 }
 
+/// Worst correct per-part residual against the Gamma anchors 9.8e-12 (J+K,
+/// 1x1x1 PBE), 2.1e-12 (1x1x3 supercell); mutants miss by >= 4.7e-3. Bar 1e-9:
+/// 100x above the floor, 5e6 below the smallest mutant.
 const BAR_GAMMA: f64 = 1e-9;
 
 /// (3a) 1x1x1 == the Gamma UKS stress, PER PART, on the open-shell H3 doublet
@@ -893,7 +898,13 @@ fn k_mesh_uks_stress_is_the_gamma_supercell_stress_per_part() {
 
 // ------------------------------------------------------------------ (4)(5)
 
-/// FD step and bar: see `fd_window_probe` (printout is the floor and window).
+/// FD step and bar, from `fd_window_probe` (H3 doublet, PBE0, dense Ewald,
+/// 1x1x3, shared cutoff 14, all nine components): worst |FD - analytic| 5.4e-9
+/// at h = 2.5e-5, 1.5e-8 at 5e-5, 5.4e-8 at 1e-4 (h^2 truncation; the h = 2.5e-5
+/// residual is the SCF-energy noise / 2h floor). All-nine at 2.5e-5: PBE0 Ewald
+/// 5.4e-9, PBE none 5.3e-9; RS-GDF 2.0e-9, Monkhorst-Pack 2.2e-10, uniform grid
+/// 2.0e-9. Bar 3e-8 = 5.6x the worst correct residual and ~1.6e5 below the
+/// smallest mutant miss (NoHessian, 4.7e-3 against the Gamma anchor).
 const FD_H: f64 = 2.5e-5;
 const FD_BAR: f64 = 3e-8;
 
