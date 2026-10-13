@@ -471,7 +471,8 @@ fn one_point_vs_gamma(pos: &[[f64; 3]], f: Option<&str>, w_mutant: bool) {
         eprintln!("{f:?} H{} 1x1x1 vs Gamma RO: {n:<10} {d:.2e}", pos.len());
         assert!(d < BAR_GAMMA, "{f:?} {n}: {d:e}");
     }
-    assert!(mmax(&k.hf.parts.exchange) > 1e-4);
+    assert!(f == Some("PBE") || mmax(&k.hf.parts.exchange) > 1e-4);
+    assert!(f.is_none() || (mmax(&k.xc_ao) > 1e-4 && mmax(&k.xc_weight) > 1e-4));
     // The reported gate value is the orbital gradient, tiny at convergence.
     assert!(k.hf.commutator < 1e-8, "{:e}", k.hf.commutator);
     if w_mutant {
@@ -739,9 +740,18 @@ fn the_gate_matters_off_stationarity_and_the_uhf_form_is_no_remedy() {
     assert!(e.contains("ROHF orbital gradient"), "{e}");
 }
 
-/// First-order band (miss / g) of the gate-off stress error, from
-/// `ro_stress_gate_probe` (set after measuring).
-const GATE_SLOPE: (f64, f64) = (0.0, 1e9);
+/// First-order band (miss / g) of the gate-off stress error. `ro_stress_gate_probe`
+/// (H3 doublet ROKS PBE 1x1x1, SCF stopped early; orbital gradient g -> max
+/// |dE/deps - tight| with the gate off): g 3.511e-5 -> 1.860e-4 (slope 5.30);
+/// g 2.463e-7 -> 3.658e-6 (14.9); g 2.008e-9 -> 2.635e-8 (13.1); looser SCFs
+/// fail the MO occupation check first. First order in g with slope 5 to 15, so
+/// at `RO_ORBITAL_GRADIENT_TOL` = 1e-5 the gate admits a dE/deps error of
+/// roughly 5e-5 to 1.5e-4 (about 2e3 to 5e3 times the FD bar; ~70 MPa on this
+/// 64 Bohr^3 cell): looser than the anchors, it refuses a plainly unconverged
+/// state and does not certify the stress to the anchors' accuracy. The band is
+/// a factor of two each way around the slope 5.30 of the tested state (g
+/// 3.511e-5, reproduced by two separate SCFs).
+const GATE_SLOPE: (f64, f64) = (2.65, 10.6);
 
 /// Probe behind the gate calibration: the orbital gradient g of ROKS SCFs
 /// stopped early against the stress error with the gate off.
