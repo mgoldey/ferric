@@ -1674,6 +1674,7 @@ fn dense_two_electron_strain(
                         let mut y = Array2::<C64>::zeros((n, n));
                         match spins {
                             KSpins::Unrestricted { da, db, .. }
+                            | KSpins::RestrictedOpen { da, db, .. }
                                 if mutation == Some(KStressMutation::CrossSpinK) =>
                             {
                                 y += &da[j].dot(&pjh).dot(&db[kof[j]]);
