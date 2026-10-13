@@ -528,6 +528,7 @@ fn null_xc_equals_the_exchange_free_machinery_exactly() {
                 &h.hk,
                 j,
                 &h.scf,
+                0.0,
                 &scfg(&KXcGrid::default(), None),
             )
             .unwrap()
@@ -1044,8 +1045,8 @@ fn rotation_case(name: &str, grid: KXcGrid, bar: f64) {
 // ---------------------------------------------------------------- exxdiv
 
 /// For a pure functional the SCF builds no `K`, so the exxdiv it ran under
-/// cannot matter, and `kpoint_rks_stress` takes no exxdiv (it passes `vm = 0`
-/// and exchange scale 0 to the HF assembly). This test checks that the SCF
+/// cannot matter, and `kpoint_rks_stress` ignores `KRksStressConfig::exxdiv`
+/// for it (`vm = 0` and exchange scale 0 go to the HF assembly). This test checks that the SCF
 /// energy and the stress computed from a `ewald` SCF (dense AFT and RS-GDF
 /// built with the Ewald shift) equal those from a `none` SCF; it is a
 /// wiring check (a Madelung leak into the KS SCF or into the stress Fock guard
@@ -1224,7 +1225,6 @@ fn refusals_and_the_fock_guard() {
         )
     };
     for (name, key) in [
-        ("PBE0", "global hybrid"),
         ("HSE06", "range-separated"),
         ("SCAN", "meta-GGA"),
         ("wB97X-V", "VV10"),

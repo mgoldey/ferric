@@ -261,6 +261,12 @@ pub enum KStressMutation {
     /// RS-GDF range split: the smooth-pair LR energy left out of the
     /// `−δ E_LR` volume term (diagonal only).
     SplitNoSmoothVolume,
+    /// Hybrid only (identity at `a = 1` and `a = 0`): the Madelung M-term
+    /// and its strain WITHOUT the exchange fraction.
+    MadelungUnscaled,
+    /// Hybrid RS-GDF only: the fit's exchange pieces dropped (a Coulomb-only
+    /// fit strain; identity for `a = 0`).
+    FitExchangeDropped,
     /// ECP: drop the ECP strain term altogether.
     NoEcp,
     /// Column rotation: no `T` in the forward transform of the SR weights
@@ -1207,8 +1213,10 @@ pub fn kpoint_uhf_stress(
 /// Madelung shift of the energy and `exch_scale` the exact-exchange fraction
 /// `a` ([`crate::kgrad`]'s convention: `1` is Hartree-Fock, bitwise the
 /// unscaled terms; `0` is no exchange at all: the K strain walks (dense and
-/// fitted) are skipped and the Madelung M-term and its strain vanish; other
-/// values are not validated and not exposed).
+/// fitted) are skipped and the Madelung M-term and its strain vanish; `0 < a
+/// < 1` scales the dense K walks, the fit's exchange pieces and the Madelung
+/// M-term and strain by `a`, validated by the global-hybrid KS stress
+/// [`crate::kxcstress`]).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn assemble(
     cell: &Cell,
@@ -1245,7 +1253,12 @@ pub(crate) fn assemble(
     let omega = hcore_cfg.omega;
     let vol = cell.volume();
     let c0 = PI / (omega * omega * vol);
-    let vm_m = exch_scale
+    let madelung_a = if is(KStressMutation::MadelungUnscaled) {
+        1.0
+    } else {
+        exch_scale
+    };
+    let vm_m = madelung_a
         * if is(KStressMutation::GammaMadelung) && vm != 0.0 {
             madelung_constant(cell)?
         } else {
@@ -1430,7 +1443,7 @@ pub(crate) fn assemble(
     }
     t_m *= inv_nk;
     if vm != 0.0 && exch_scale != 0.0 && !is(KStressMutation::NoMadelung) {
-        parts.madelung = scaled(&vm_strain, -0.5 * exch_scale * t_m);
+        parts.madelung = scaled(&vm_strain, -0.5 * madelung_a * t_m);
     }
     let e_madelung = -0.5 * exch_scale * vm * t_m;
 
@@ -1484,7 +1497,11 @@ fn fit_pass(
     ledger: &mut Ledger,
 ) -> Result<crate::rsgdf::kpoint::kderiv::KFitGrad, FerricError> {
     let is = |m: KStressMutation| cfg.mutation == Some(m);
-    let exch = scaled_exch_terms(spins, exch_scale);
+    let exch = if is(KStressMutation::FitExchangeDropped) {
+        Vec::new()
+    } else {
+        scaled_exch_terms(spins, exch_scale)
+    };
     let fm = KFitMutation {
         rot: KRotKind::defect(rot_kind(cfg.mutation)),
         aux_phase: is(KStressMutation::FitAuxPhase),

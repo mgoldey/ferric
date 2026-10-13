@@ -1,7 +1,8 @@
 //! Analytic stress tensor of the k-point closed-shell KS-DFT energy
-//! ([`crate::kdft::solve_krks`]) for LDA and GGA functionals (exact-exchange
-//! fraction 0), dense-AFT and RS-GDF J: the strain twin of [`crate::kxcgrad`]
-//! and the k-point twin of the Gamma XC stress (`crate::stress`).
+//! ([`crate::kdft::solve_krks`]) for LDA, GGA and GLOBAL hybrid functionals
+//! (exact-exchange fraction `a`), dense-AFT and RS-GDF J/K: the strain twin of
+//! [`crate::kxcgrad`] and the k-point twin of the Gamma XC stress
+//! (`crate::stress`).
 //!
 //! # Convention
 //!
@@ -13,17 +14,29 @@
 //! # Energy (per cell; [`crate::kxcgrad`] conventions)
 //!
 //! ```text
-//! E = (1/N_k) Σ_k Re tr[(h(k) + ½ J(k)) D(k)] + E_xc[D] + E_nn
-//! E_xc = Σ_g w_g ε(ρ_g, σ_g)
+//! E = (1/N_k) Σ_k Re tr[(h(k) + ½ J(k) - (a/4) K(k)) D(k)] + E_xc[D] + E_nn
+//! E_xc = Σ_g w_g ε(ρ_g, σ_g)        (the semilocal remainder for a hybrid)
 //! ```
+//!
+//! `K(k)` is the SCF's exchange with its Madelung shift
+//! (`K = K_AFT + v_M S D S`, `v_M` the mesh constant for `exxdiv = ewald`),
+//! so the exchange energy is `-(a/4)(1/N_k) Σ_k Re tr[D K]` including
+//! `-(a/4) v_M tr[D S D S]`; `a = 0` for a pure functional.
 //!
 //! # Terms
 //!
-//! 1. **Exchange-free HF part**: the whole k HF stress with exchange fraction
-//!    `a = 0` ([`crate::kstress`]'s `assemble(.., exch_scale = 0)`: the dense K
-//!    walks, the RS-GDF fitted-exchange weights and the Madelung M-term and
-//!    strain are absent; `exch_scale = 1` is bitwise the HF stress), with the
-//!    Pulay weight `W = D F D` built from `F = h + J + V_xc`.
+//! 1. **HF part with exchange fraction `a`**: the whole k HF stress
+//!    ([`crate::kstress`]'s `assemble(.., exch_scale = a)`): the dense K walks,
+//!    the RS-GDF fit's exchange pieces (one `exch_pair_term` scaling point: the
+//!    fit strain is exactly Coulomb + `a` exchange), and the Madelung M-term
+//!    `-(a/2) v_M ..` with its strain `dv_M/dε` all carry `a`; J, the fit's
+//!    Coulomb pieces and the nuclear terms do not. `a = 0` drops every
+//!    exchange piece, `a = 1` is bitwise the HF stress. The Pulay weight is
+//!    `W = D F D` with `F = h + J - (a/2) K + V_xc`, `K` carrying the SCF's
+//!    Madelung shift. At a FIXED density the stress does not depend on the
+//!    exxdiv except through this `K` and the `v_M` terms, which the energy
+//!    includes (`exxdiv = ewald`); the strain of `v_M` is that of the mesh
+//!    (supercell) lattice, `G` spheres, image lists and fractional `k` frozen.
 //! 2. **XC at fixed `D`**, `dE_xc/dε_ab` = AO strain + grid-point motion
 //!    (`xc_ao`) + weight response (`xc_weight`). Holding `D` fixed, a grid point
 //!    `r_g = O_g + δ_g` rigidly attached to an anchor `O_g` (offset `δ_g` not
@@ -84,13 +97,13 @@
 //!
 //! # Fock guard
 //!
-//! As [`crate::kxcgrad`]: `F = h + J + V_xc` is rebuilt and compared with the
-//! SCF's stored Fock at [`crate::kgrad::FOCK_CONSISTENCY_BAR`]. A result of
-//! another functional (tested for a wrong pure functional and for a PBE0 SCF
-//! handed in as PBE: the missing `K` is caught), grid, AO threshold or J route
-//! is refused. The entry takes no `exxdiv`: a pure functional builds no `K`, so
-//! the stress is independent of the exxdiv the SCF ran under by construction
-//! (`vm = 0`, exchange scale 0 are passed to the HF assembly).
+//! As [`crate::kxcgrad`]: `F = h + J - (a/2) K + V_xc` is rebuilt (with the
+//! Madelung shift of [`KRksStressConfig::exxdiv`], required for a hybrid and
+//! ignored for a pure functional) and compared with the SCF's stored Fock at
+//! [`crate::kgrad::FOCK_CONSISTENCY_BAR`], no Madelung allowance. A result of
+//! another functional (tested for a wrong pure functional, a PBE0 SCF handed
+//! in as PBE: the missing `K` is caught, and a wrong exxdiv), grid, AO
+//! threshold or J route is refused.
 //!
 //! `sigma` is returned UNSYMMETRISED; a Python/CLI export should use
 //! [`KRksStress::symmetric`].
@@ -109,11 +122,12 @@
 //!
 //! # Scope
 //!
-//! Pure LDA/GGA only; hybrids (exact-exchange fraction ≠ 0), range-separated
-//! hybrids, meta-GGA, VV10/double hybrids and unrestricted KS keep typed
-//! errors.
+//! LDA, GGA and global hybrids; range-separated hybrids, meta-GGA,
+//! VV10/double hybrids and unrestricted KS keep typed errors (the dense
+//! kernels carrying an attenuated exchange are refused by the HF assembly).
 
 use crate::budget::{bytes_of, Ledger};
+use crate::dense_aft::ExxDiv;
 use crate::dft::{
     build_strain_grid, BlochAoStrain, BlochPhase, LatticeAoHess, PeriodicDftError, PeriodicGrid,
     DEFAULT_AO_THRESHOLD,
@@ -141,7 +155,7 @@ use num_complex::Complex64 as C64;
 use rayon::prelude::*;
 
 /// Remedy text of the KS stress's Fock guard.
-const KS_REMEDY: &str = "the functional, grid, AO threshold and J/K route must be the SCF's own (a different functional gives a different V_xc)";
+const KS_REMEDY: &str = "the functional, grid, AO threshold and J/K route must be the SCF's own (a different functional gives a different V_xc), and for a hybrid KRksStressConfig::exxdiv must be the exxdiv the SCF ran";
 
 /// Upper bound on points per strain chunk.
 const MAX_CHUNK: usize = 128;
@@ -186,6 +200,16 @@ pub enum KXcStressMutation {
     /// The Pulay term built from a Fock matrix WITHOUT `V_xc` (the guard is
     /// skipped for this defect: it would refuse it).
     PulayNoVxc,
+    /// Hybrid: the exchange of the stress (K walks, fit exchange pieces,
+    /// Madelung) at fraction 1 instead of `a` (identity for `a = 1`).
+    ExchUnscaled,
+    /// Hybrid: the exchange fraction applied twice (`a²`; identity for
+    /// `a = 0, 1`).
+    ExchScaledTwice,
+    /// Hybrid: the K of the Pulay Fock built from the density of the NEXT
+    /// k-point (cyclic). The Fock guard is skipped for this defect. Identity
+    /// at one k-point.
+    KWrongDensity,
 }
 
 /// Settings of [`kpoint_rks_stress`].
@@ -200,6 +224,10 @@ pub struct KRksStressConfig {
     /// Cap on concurrently live strain chunks (`None` = the thread count,
     /// further limited by the remaining budget). The result does not depend on it.
     pub max_live_chunks: Option<usize>,
+    /// The exxdiv treatment the SCF ran (`krhf.exxdiv`). Needed only by a
+    /// global hybrid (the exact exchange feels the Madelung shift and the
+    /// Fock guard rebuilds `K` with it); a pure functional ignores it.
+    pub exxdiv: Option<ExxDiv>,
     /// TEST ONLY: a deliberate XC-stress defect.
     #[doc(hidden)]
     pub mutation: Option<KXcStressMutation>,
@@ -212,6 +240,7 @@ impl Default for KRksStressConfig {
             grid: KXcGrid::default(),
             ao_threshold: DEFAULT_AO_THRESHOLD,
             max_live_chunks: None,
+            exxdiv: None,
             mutation: None,
         }
     }
@@ -224,8 +253,9 @@ pub struct KRksStress {
     pub de_deps: Mat3,
     /// `σ_ab = (1/Ω) dE/dε_ab` (Hartree/Bohr³). NOT symmetrised.
     pub sigma: Mat3,
-    /// The exchange-free k HF stress (its `de_deps`/`sigma` are the non-XC
-    /// part; per-term breakdown in `hf.parts`).
+    /// The k HF stress with the exchange fraction `a` of the functional (its
+    /// `de_deps`/`sigma` are the non-XC part; per-term breakdown in
+    /// `hf.parts`; no exchange parts for a pure functional).
     pub hf: KStress,
     /// XC AO strain plus grid-point motion (`dE_xc/dε` through the strained
     /// Bloch AOs; `Σ_g w_g [..]` of the module doc).
@@ -297,7 +327,8 @@ pub(crate) trait KXcStressResponse {
     fn evaluate(&self, d: &[Array2<C64>], ledger: &Ledger) -> Result<XcStressOut, FerricError>;
 }
 
-/// The zero XC: the exactness anchor against the exchange-free HF machinery.
+/// The zero XC: the exactness anchor against the HF machinery (exchange
+/// fraction `a` of the caller; `a = 0` is the Hartree-only stress).
 pub(crate) struct NullXc;
 
 impl KXcStressResponse for NullXc {
@@ -599,30 +630,25 @@ impl KXcStressResponse for GridXc<'_> {
     }
 }
 
-/// Refuse what the pure-functional stress does not cover; returns the
-/// resolved functional.
-fn resolve_pure(functional: &str) -> Result<XcDef, FerricError> {
+/// Resolve the functional and its global exact-exchange fraction `a`; refuse
+/// what the stress does not cover (range-separated hybrids, meta-GGA, VV10 and
+/// double hybrids).
+fn resolve_global(functional: &str) -> Result<(XcDef, f64), FerricError> {
     let (xc, exx, rsh) = resolve_periodic_functional_rsh(functional)?;
     if rsh.is_some() {
         return Err(PeriodicDftError::Unsupported {
             feature: "range-separated hybrid stress at k",
             reason: format!(
-                "{functional}: the k-point XC stress covers LDA and GGA functionals with no exact \
-                 exchange; the screened-exchange strain is not implemented"
+                "{functional}: the k-point XC stress covers LDA, GGA and GLOBAL hybrid \
+                 functionals; the screened-exchange strain is not implemented"
             ),
         }
         .into());
     }
-    if exx != 0.0 {
-        return Err(PeriodicDftError::Unsupported {
-            feature: "global hybrid stress at k",
-            reason: format!(
-                "{functional} has exact-exchange fraction {exx}; the k-point XC stress covers \
-                 pure LDA/GGA functionals only (the exchange strain with a scaled K and its \
-                 Madelung strain is not validated)"
-            ),
-        }
-        .into());
+    if !(0.0..=1.0).contains(&exx) {
+        return Err(FerricError::General(format!(
+            "{functional}: exact-exchange fraction {exx} outside [0, 1]"
+        )));
     }
     if xc
         .funcs
@@ -637,11 +663,12 @@ fn resolve_pure(functional: &str) -> Result<XcDef, FerricError> {
         }
         .into());
     }
-    Ok(xc)
+    Ok((xc, exx))
 }
 
 /// k-point closed-shell RKS stress (module doc) of a converged
-/// [`crate::kdft::solve_krks`] result for a PURE LDA/GGA `functional`.
+/// [`crate::kdft::solve_krks`] result for an LDA, GGA or global-hybrid
+/// `functional` (a hybrid also needs [`KRksStressConfig::exxdiv`]).
 ///
 /// * `hcore_cfg`, `hk`, `jk` — the config/output of the hcore and the J source
 ///   the SCF used (dense AFT or RS-GDF), as for [`crate::kstress::kpoint_rhf_stress`]
@@ -649,9 +676,9 @@ fn resolve_pure(functional: &str) -> Result<XcDef, FerricError> {
 /// * `scf` — `KRksResult::scf`.
 /// * `cfg.grid`/`cfg.ao_threshold` — the grid and AO truncation of the energy.
 ///
-/// Refuses (typed errors) hybrids, range-separated hybrids, meta-GGA,
-/// VV10/double hybrids, and an SCF whose Fock the rebuilt `h + J + V_xc` does
-/// not reproduce.
+/// Refuses (typed errors) range-separated hybrids, meta-GGA, VV10/double
+/// hybrids, a hybrid without `cfg.exxdiv`, and an SCF whose Fock the rebuilt
+/// `h + J - (a/2) K + V_xc` does not reproduce.
 #[allow(clippy::too_many_arguments)]
 pub fn kpoint_rks_stress(
     cell: &Cell,
@@ -664,7 +691,7 @@ pub fn kpoint_rks_stress(
     functional: &str,
     cfg: &KRksStressConfig,
 ) -> Result<KRksStress, FerricError> {
-    let xc = resolve_pure(functional)?;
+    let (xc, exch) = resolve_global(functional)?;
     let gga = xc
         .funcs
         .iter()
@@ -690,13 +717,17 @@ pub fn kpoint_rks_stress(
         jk,
         scf,
         &resp,
+        exch,
         cfg,
     )
 }
 
-/// TEST/DIAGNOSTIC: the exchange-free machinery with a zero XC (`E_xc = 0`,
-/// `V_xc = 0`) on a Hartree-only SCF. The exactness anchor of the XC plumbing
-/// against [`kpoint_hartree_stress`].
+/// TEST/DIAGNOSTIC: the KS machinery with a zero XC (`E_xc = 0`, `V_xc = 0`)
+/// and exact-exchange fraction `exch` on an SCF run by `solve_krks_injected`
+/// with a zero XC builder and the same `exch`. With `exch = 0` it is the
+/// Hartree-only anchor against [`kpoint_hartree_stress`]; with `exch = 1` it
+/// is k-point HF ([`crate::kstress::kpoint_rhf_stress`]). A hybrid
+/// (`exch != 0`) needs `cfg.exxdiv`.
 #[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
 pub fn kpoint_null_xc_stress(
@@ -707,6 +738,7 @@ pub fn kpoint_null_xc_stress(
     hk: &PeriodicHcoreK,
     jk: KStressJk<'_>,
     scf: &KScfResult,
+    exch: f64,
     cfg: &KRksStressConfig,
 ) -> Result<KRksStress, FerricError> {
     rks_stress_with(
@@ -719,11 +751,12 @@ pub fn kpoint_null_xc_stress(
         jk,
         scf,
         &NullXc,
+        exch,
         cfg,
     )
 }
 
-/// The shared body: XC response, Fock guard, exchange-free HF assembly.
+/// The shared body: XC response, Fock guard, HF assembly at exchange fraction `a`.
 #[allow(clippy::too_many_arguments)]
 fn rks_stress_with(
     who: &str,
@@ -735,8 +768,14 @@ fn rks_stress_with(
     jk: KStressJk<'_>,
     scf: &KScfResult,
     xc: &dyn KXcStressResponse,
+    exch: f64,
     cfg: &KRksStressConfig,
 ) -> Result<KRksStress, FerricError> {
+    if !(0.0..=1.0).contains(&exch) {
+        return Err(FerricError::General(format!(
+            "{who}: exact-exchange fraction {exch} outside [0, 1]"
+        )));
+    }
     refuse_unsupported(who, &jk)?;
     let gj: KGradJk<'_> = grad_jk(&jk);
     check_inputs(
@@ -752,25 +791,55 @@ fn rks_stress_with(
         &scf.kpts,
     )?;
     let nk = mesh.nk();
+    // The Madelung shift of the SCF's K (0 for a pure functional: no K).
+    let vm = if exch == 0.0 {
+        0.0
+    } else {
+        let exxdiv = cfg.exxdiv.ok_or_else(|| {
+            FerricError::General(format!(
+                "{who}: a hybrid functional (exact exchange {exch}) needs \
+                 KRksStressConfig::exxdiv, the treatment the SCF ran (its K carries the \
+                 Madelung shift)"
+            ))
+        })?;
+        match exxdiv {
+            ExxDiv::None => 0.0,
+            ExxDiv::Ewald => mesh.madelung(cell)?,
+        }
+    };
     let mut ledger = open_ledger(prep, mesh, &cfg.stress, false)?;
     let d = scf.densities.clone();
     let xo = xc.evaluate(&d, &ledger)?;
     // Guard-stage peak beyond `open_ledger`'s arrays: D (kept by `KSpins`
-    // through `assemble`), J, F and V_xc, each N_k n² complex. The XC chunk
+    // through `assemble`), J, K, F and V_xc, each N_k n^2 complex (the wrong-
+    // density mutant adds a shifted D, uncharged: test only). The XC chunk
     // transient was released with its ledger clone.
     ledger.reserve(
         &format!(
-            "k KS stress Fock-guard matrices D, J, F, V_xc (n = {}, N_k = {nk})",
+            "k KS stress Fock-guard matrices D, J, K, F, V_xc (n = {}, N_k = {nk})",
             prep.nbasis()
         ),
-        bytes_of((nk * prep.nbasis() * prep.nbasis()) as u64, 16 * 4),
+        guard_bytes(nk, prep.nbasis()),
     )?;
-    // F = h + J + V_xc (no exchange); the stored Fock of the SCF must agree.
-    let (j, _k) = jk_build(&gj, 0.0, &d)?;
+    // F = h + J - (a/2) K + V_xc; the stored Fock of the SCF must agree. K
+    // carries the Madelung shift and is scaled as a whole (the energy's
+    // convention); a = 0 contributes exactly nothing.
+    let (j, kmat) = jk_build(&gj, vm, &d)?;
+    let kmat = if cfg.mutation == Some(KXcStressMutation::KWrongDensity) && nk > 1 {
+        let shifted: Vec<Array2<C64>> = (0..nk).map(|q| d[(q + 1) % nk].clone()).collect();
+        jk_build(&gj, vm, &shifted)?.1
+    } else {
+        kmat
+    };
     let with_vxc = cfg.mutation != Some(KXcStressMutation::PulayNoVxc);
+    let guard = with_vxc && cfg.mutation != Some(KXcStressMutation::KWrongDensity);
     let f: Vec<Array2<C64>> = (0..nk)
         .map(|q| {
-            let base = hermitize(&(&hk.h[q] + &j[q]));
+            let mut base = &hk.h[q] + &j[q];
+            if exch != 0.0 {
+                base.scaled_add(C64::new(-0.5 * exch, 0.0), &kmat[q]);
+            }
+            let base = hermitize(&base);
             if with_vxc {
                 hermitize(&(&base + &xo.v[q]))
             } else {
@@ -778,10 +847,16 @@ fn rks_stress_with(
             }
         })
         .collect();
-    let mismatch = if with_vxc {
+    let mismatch = if guard {
         check_fock(who, "fock", &f, &scf.fock, KS_REMEDY)?
     } else {
         0.0
+    };
+    // What the HF assembly is told (the defects change only this).
+    let a_asm = match cfg.mutation {
+        Some(KXcStressMutation::ExchUnscaled) if exch != 0.0 => 1.0,
+        Some(KXcStressMutation::ExchScaledTwice) => exch * exch,
+        _ => exch,
     };
     let mut hf = assemble(
         cell,
@@ -791,13 +866,19 @@ fn rks_stress_with(
         hk,
         &gj,
         KSpins::Restricted { d, f },
-        0.0,
-        0.0,
+        vm,
+        a_asm,
         &cfg.stress,
         &mut ledger,
     )?;
     hf.fock_mismatch = mismatch;
     finish(hf, xo)
+}
+
+/// Bytes of the Fock-guard matrices: `D`, `J`, `K`, `F` and `V_xc`, each
+/// `N_k n²` complex (a pure functional also builds and drops `K`).
+fn guard_bytes(nk: usize, n: usize) -> usize {
+    bytes_of((nk * n * n) as u64, 16 * 5)
 }
 
 /// Sum the parts: `dE/dε = HF + xc_ao + xc_weight`, `σ = (1/Ω) dE/dε`.
