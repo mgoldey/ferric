@@ -149,6 +149,7 @@ use crate::budget::{bytes_of, Ledger};
 use crate::dense_aft::ExxDiv;
 use crate::dft::{BlochAoStrain, BlochPhase, LatticeAoHess};
 use crate::grad::ao_atoms;
+use crate::grad::RO_ORBITAL_GRADIENT_TOL;
 use crate::hcore::kpoint::PeriodicHcoreK;
 use crate::hcore::PeriodicHcoreConfig;
 use crate::kgrad::{check_fock, check_inputs, jk_build, KGradJk, KSpins};
@@ -156,7 +157,6 @@ use crate::kpts::KPointMesh;
 use crate::kroks::KRoScfResult;
 use crate::kstress::{assemble, grad_jk, open_ledger, refuse_unsupported, KStressJk};
 use crate::kuscf::KUScfResult;
-use crate::grad::RO_ORBITAL_GRADIENT_TOL;
 use crate::kuxcgrad::ro_orbital_gradient_k;
 pub use crate::kuxcgrad::UKS_COMMUTATOR_TOL;
 use crate::kxcgrad::{chunk_density, chunk_vxc, conj, hermitize};
@@ -1137,8 +1137,7 @@ fn uks_stress_with(
         || matches!(
             spmut,
             Some(KUStressMutation::RoWUhfForm) | Some(KUStressMutation::RoWUhfFormGateOff)
-        )
-    {
+        ) {
         KSpins::Unrestricted { da, db, fa, fb }
     } else if spmut == Some(KUStressMutation::RoWDropCross) {
         let zb = fb.iter().map(|m| Array2::zeros(m.dim())).collect();

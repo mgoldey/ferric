@@ -4,31 +4,50 @@
 //! densities with the orthonormality Lagrangian `W_RO` as the overlap weight
 //! and a per-k ROHF orbital-gradient gate.
 //!
-//! WHICH ANCHOR COVERS WHICH DEFECT (measured, not assumed; the numbers are in
-//! the doc comment of each test):
+//! WHICH ANCHOR COVERS WHICH DEFECT (measured in the sweeps named below; the
+//! per-part residuals and bars are in the doc comment of each constant/test):
 //!
-//! * (1) closed-shell limit (no open orbital): ROHF == the RHF stress and ROKS
-//!   == the RKS stress, per part. Sees the W_RO factor (`RoWDropCross` halves
-//!   `W`), a wrong overall spin factor; BLIND to `RoWUhfForm` (identity),
-//!   to every alpha/beta asymmetry.
+//! * (1) closed-shell limit (no open orbital): ROHF == the RHF stress, ROKS ==
+//!   the RKS stress, per part (floor 6.7e-16). Sees `RoWDropCross` (4.3e-1) and
+//!   any overall spin factor; BLIND to `RoWUhfForm` (identity), to every
+//!   alpha/beta asymmetry and to the exchange-scale defects at a = 1.
 //! * (2) 1x1x1 vs the Gamma ROHF / ROKS stress per part (H3 doublet, H4
-//!   triplet): `RoWDropCross` (W_RO cross term), `XcSpinSwap`, exchange scaled
-//!   twice / unscaled, wrong factor, every spin defect at nk = 1. BLIND to
-//!   `RoWUhfForm` (identity at convergence).
-//! * (3) 1x1x3 vs the 3-copy Gamma supercell: the Bloch phases / mesh Madelung.
+//!   triplet, floor <= 1.1e-11): `RoWDropCross` (5.5e-1), the XC spin defects
+//!   (XcSpinSwap 1.6e-1, XcDropBeta, XcCrossDropped 1.6e-2, XcCrossOwn,
+//!   XcSpinAveraged), the XC strain terms (NoAo, NoPointMotion, NoWeightDeriv,
+//!   NoGga, NoHessian 4.6e-3 = smallest, NoStrainMoment), WrongFactor,
+//!   ExchUnscaled (1.2), ExchScaledTwice (3.0e-1), MadelungUnscaled, CrossSpinK,
+//!   NoPulay: all in `mutants_are_caught_by_the_gamma_roks_anchor` (ROKS PBE0).
+//!   BLIND to `RoWUhfForm` (identity, 5.8e-14) and to `SwapSpinFock` (acts only
+//!   on the unrestricted assembly; asserted an identity).
+//! * the orbital-gradient gate: the defects that tamper with F (PulayFockSwap,
+//!   PulayKSwap, PulayJOneSpin, PulayNoVxcBeta, PulayNoVxc, KWrongDensity) skip
+//!   the Fock guard and are then REFUSED by the gate (g 7e-3 .. 4e-2), not
+//!   measured; the gate message is asserted.
+//! * (3) 1x1x3 vs the 3-copy Gamma supercell (ROHF, ROKS PBE0; floor 1.0e-11):
+//!   the Bloch phases / mesh Madelung; with the mesh-only mutants NoInvNk,
+//!   NoPhase, ConjPhase, GammaMadelung, CrossSpinK, RoWDropCross (>= 3.0e-1).
 //! * (4) FD of the energy under symmetric strain: the stress of the energy as
-//!   computed (all nine components; Monkhorst-Pack mesh; the trace).
+//!   computed (all nine components for ROHF, ROKS PBE0, ROKS PBE; a
+//!   Monkhorst-Pack mesh; the trace).
 //! * (5) a = 1 null-XC through the ROKS SCF driver == the ROHF-driver stress.
-//! * the orbital-gradient gate: a loose state is refused (exact message) and
-//!   is wrong by far more than the FD bar with the gate OFF; with the gate off
-//!   the unrestricted-form `W` is NO better than `W_RO` (so the gate, not the
-//!   form of `W`, is what protects off stationarity).
+//! * the gate itself: a loose state is refused (exact message, default set) and
+//!   is wrong by 1.9e-4 with the gate OFF (ignored test, first-order slope
+//!   band); the unrestricted-form `W` is no better (2.5e-4).
+//!
+//! WHAT THE DEFAULT SET DOES NOT PROTECT: the XC strain terms of ROKS (every
+//! default test is ROHF or a refusal; ROKS is exercised in the default set only
+//! by the gate/guard refusals), the a-scaling defects (a = 1 for ROHF), a
+//! hybrid ROKS stress value, all FD components but one, every shear component,
+//! Monkhorst-Pack meshes, the triplet, the supercell identities, the mutant
+//! sweeps: all are ignored tests that must be run before trusting a change to
+//! the XC strain or the exchange scaling.
 //!
 //! NOT covered: RS-GDF (refused), p/d shells and heavy atoms / ECP (every
 //! fixture is H/STO-3G), range-separated hybrids / meta-GGA / VV10 (refused),
-//! the production (75, 302) grid, no external (PySCF) anchor.
+//! the production (75, 302) grid, degenerate open shells (the gate's occupation
+//! check rejects them), no external (PySCF) anchor.
 
-#![allow(unused_imports, dead_code)]
 mod common;
 
 use common::*;
@@ -47,9 +66,7 @@ use ferric_pbc::kroks::{
     solve_krohf, solve_kroks, solve_kroks_injected, KRoScfResult, KRohfConfig, KRoksConfig,
     KRoksResult,
 };
-use ferric_pbc::kscf::{
-    solve_krhf, KPointInjection, KPointJk, KRhfConfig,
-};
+use ferric_pbc::kscf::{solve_krhf, KPointInjection, KPointJk, KRhfConfig};
 use ferric_pbc::kstress::{kpoint_rhf_stress, KStressConfig, KStressJk, KStressMutation};
 use ferric_pbc::kuxcstress::{
     kpoint_null_xc_roks_stress, kpoint_rohf_stress, kpoint_roks_stress, KUStressMutation,
@@ -95,8 +112,14 @@ const ALL9: [(usize, usize); 9] = [
 /// one-step discontinuity in the energy; see `pbc_kuxcstress.rs`).
 const CUTOFF: f64 = 14.0;
 const ANCHOR_PRECISION: f64 = 1e-12;
-/// FD step and bar: those of the UKS stress (`pbc_kuxcstress.rs`,
-/// `fd_window_probe`); the RO measurements are recorded in `ro_fd_window_probe`.
+/// FD step and bar. `ro_fd_window_probe` (H3 doublet, ROKS PBE0, dense Ewald,
+/// 1x1x3, shared cutoff 14, all nine components): worst |FD - analytic| 5.4e-9
+/// at h = 2.5e-5, 1.5e-8 at 5e-5, 5.4e-8 at 1e-4 (h^2 truncation; the
+/// h = 2.5e-5 residual is the SCF-energy noise / 2h floor); all-nine at 2.5e-5:
+/// ROHF Ewald 3.0e-9, ROKS PBE0 Ewald 5.4e-9, ROKS PBE none 5.4e-9; Monkhorst-
+/// Pack (ROHF, PBE0) <= 7.6e-10; trace 8.2e-9. Bar 3e-8 = 5.6x the worst
+/// correct residual and ~1.5e5 below the smallest mutant miss (NoHessian,
+/// 4.6e-3 against the Gamma ROKS anchor).
 const FD_H: f64 = 2.5e-5;
 const FD_BAR: f64 = 3e-8;
 const MUTANT_BAR: f64 = 1e-5;
@@ -457,7 +480,10 @@ fn gamma_rows(k: &KUksStress, g: &GammaStress, n_cells: f64) -> Vec<(&'static st
     ]
 }
 
-/// Per-part bar against the Gamma anchors (derived in the test docs).
+/// Per-part bar against the Gamma anchors. Worst correct residual 1.1e-11
+/// (J+K, 1x1x1 ROKS PBE), 1.0e-11 (1x1x3 ROHF supercell), 2.1e-12 (1x1x3 ROKS
+/// PBE0 supercell), 4.9e-12 (H4 triplet ROHF); smallest mutant miss 4.6e-3
+/// (NoHessian). Bar 1e-9: 90x above the floor, 4.6e6 below the smallest mutant.
 const BAR_GAMMA: f64 = 1e-9;
 
 /// Per-part comparison with the Gamma stress; with `w_mutant`, the same
@@ -479,7 +505,10 @@ fn one_point_vs_gamma(pos: &[[f64; 3]], f: Option<&str>, w_mutant: bool) {
         let drop = stress_mut(&fx, None, Some(KUStressMutation::RoWDropCross), None);
         let d = mdiff(&drop.de_deps, &gam.de_deps);
         eprintln!("{f:?} vs Gamma RO under RoWDropCross: miss {d:.2e}");
-        assert!(d > MUTANT_BAR, "RoWDropCross survives the Gamma anchor: {d:e}");
+        assert!(
+            d > MUTANT_BAR,
+            "RoWDropCross survives the Gamma anchor: {d:e}"
+        );
         let uhf = stress_mut(&fx, None, Some(KUStressMutation::RoWUhfForm), None);
         let d = mdiff(&uhf.de_deps, &k.de_deps);
         eprintln!("{f:?} RoWUhfForm at convergence: {d:.2e}");
@@ -494,13 +523,13 @@ fn one_point_mesh_matches_the_gamma_rohf_stress_per_part() {
 }
 
 #[test]
-#[ignore = "H4 triplet ROHF vs Gamma ROHF; measured below"]
+#[ignore = "H4 triplet ROHF vs Gamma ROHF; measured 64 s"]
 fn one_point_mesh_matches_the_gamma_rohf_stress_per_part_triplet() {
     one_point_vs_gamma(&H4, None, true);
 }
 
 #[test]
-#[ignore = "Gamma ROKS 1x1x1 anchors (PBE, PBE0); measured below"]
+#[ignore = "Gamma ROKS 1x1x1 anchors (PBE, PBE0); measured 58 s"]
 fn one_point_mesh_matches_the_gamma_roks_stress_per_part() {
     one_point_vs_gamma(&H3, Some("PBE"), false);
     one_point_vs_gamma(&H3, Some("PBE0"), false);
@@ -581,8 +610,9 @@ fn closed_shell_rohf_equals_the_rhf_stress_per_part() {
     assert!(d < BAR_CLOSED, "{d:e}");
 }
 
-/// Closed-shell residual bar (measured worst below; smallest visible mutant
-/// miss is `RoWDropCross`).
+/// Closed-shell residual bar: worst correct residual 6.7e-16 (ROHF vs RHF,
+/// ROKS vs RKS); the smallest visible mutant miss is `RoWDropCross`, 4.3e-1.
+/// Bar 1e-11: 1.5e4 above the floor, 4e10 below the mutant.
 const BAR_CLOSED: f64 = 1e-11;
 
 // ------------------------------------------------------------------ (5)
@@ -591,7 +621,7 @@ const BAR_CLOSED: f64 = 1e-11;
 /// no XC) is the ROHF stress of the ROHF driver, per part (two SCF drivers, two
 /// entry points, one assembly). BLIND to every a-scaling defect (a = 1).
 #[test]
-#[ignore = "second SCF driver on 1x1x2; measured 72 s"]
+#[ignore = "second SCF driver on 1x1x2; measured 60 s"]
 fn null_xc_roks_route_equals_the_rohf_stress_per_part() {
     let fx = fixture(&H3, G112, None, ExxDiv::Ewald);
     let ro = stress(&fx);
@@ -632,7 +662,10 @@ fn null_xc_roks_route_equals_the_rohf_stress_per_part() {
     )
     .unwrap();
     let mut rows = vec![("de_deps", mdiff(&z.de_deps, &ro.de_deps))];
-    for ((n, a), (_, b)) in hf_parts(&z.hf.parts).into_iter().zip(hf_parts(&ro.hf.parts)) {
+    for ((n, a), (_, b)) in hf_parts(&z.hf.parts)
+        .into_iter()
+        .zip(hf_parts(&ro.hf.parts))
+    {
         rows.push((n, mdiff(&a, &b)));
     }
     for (n, d) in rows {
@@ -649,7 +682,10 @@ fn null_xc_roks_route_equals_the_rohf_stress_per_part() {
     }
 }
 
-const BAR_NULL: f64 = 1e-9;
+/// Worst correct residual 8.5e-13 (the two SCF drivers at 1e-14/1e-12; 2.2e-10
+/// when the injected SCF stops at 1e-13/1e-10, hence the tighter settings
+/// there); mutants miss by >= 4.6e-3. Bar 1e-10: 120x above the floor.
+const BAR_NULL: f64 = 1e-10;
 
 // ------------------------------------------------------- the orbital gradient
 
@@ -699,7 +735,7 @@ fn loose_roks_scf_fires_the_orbital_gradient_gate_with_the_exact_message() {
 /// from `ro_stress_gate_probe`), and the unrestricted-form `W` is no better:
 /// the gate, not the form of `W`, protects off stationarity.
 #[test]
-#[ignore = "two ROKS SCFs + 3 stresses; measured below"]
+#[ignore = "two ROKS SCFs + 3 stresses; measured 61 s"]
 fn the_gate_matters_off_stationarity_and_the_uhf_form_is_no_remedy() {
     let tight = fixture(&H3, G111, Some("PBE"), ExxDiv::None);
     let st = stress(&tight);
@@ -709,9 +745,14 @@ fn the_gate_matters_off_stationarity_and_the_uhf_form_is_no_remedy() {
     let g = off.hf.commutator;
     let miss = mdiff(&off.de_deps, &st.de_deps);
     let slope = miss / g;
-    eprintln!("loose ROKS: g = {g:.3e}, stress error with the gate off {miss:.3e}, slope {slope:.3}");
+    eprintln!(
+        "loose ROKS: g = {g:.3e}, stress error with the gate off {miss:.3e}, slope {slope:.3}"
+    );
     assert!(g > 1e-5, "state is not past the gate: g = {g:e}");
-    assert!(miss > 10.0 * FD_BAR, "gate off is not wrong enough: {miss:e}");
+    assert!(
+        miss > 10.0 * FD_BAR,
+        "gate off is not wrong enough: {miss:e}"
+    );
     assert!(
         (GATE_SLOPE.0..=GATE_SLOPE.1).contains(&slope),
         "miss {miss:e} is not first order in g {g:e} (slope {slope})"
@@ -756,7 +797,7 @@ const GATE_SLOPE: (f64, f64) = (2.65, 10.6);
 /// Probe behind the gate calibration: the orbital gradient g of ROKS SCFs
 /// stopped early against the stress error with the gate off.
 #[test]
-#[ignore = "probe: 7 open-shell SCFs"]
+#[ignore = "probe: 7 open-shell SCFs; measured 123 s"]
 fn ro_stress_gate_probe() {
     let tight = fixture(&H3, G111, Some("PBE"), ExxDiv::None);
     let st = stress(&tight);
@@ -848,9 +889,10 @@ fn refusals_and_the_fock_guard() {
     assert!(ok.hf.fock_mismatch < 1e-12, "{:e}", ok.hf.fock_mismatch);
     assert!(ok.hf.commutator < 1e-8, "{:e}", ok.hf.commutator);
     let guard_msg = "kpoint_roks_stress: the Fock matrix rebuilt";
-    let cases: Vec<(&str, Result<KUksStress, ferric_core::FerricError>)> = vec![
-        ("PBE0 stress on a PBE SCF", run("PBE0", &fx.res.scf, &ok_cfg)),
-    ];
+    let cases: Vec<(&str, Result<KUksStress, ferric_core::FerricError>)> = vec![(
+        "PBE0 stress on a PBE SCF",
+        run("PBE0", &fx.res.scf, &ok_cfg),
+    )];
     for (n, r) in cases {
         let e = r
             .err()
@@ -866,9 +908,7 @@ fn refusals_and_the_fock_guard() {
             &mut t.fock_beta
         };
         m[0][(0, 1)] += Complex64::new(1e-6, 0.0);
-        let e = run("PBE", &t, &ok_cfg)
-            .expect_err("tamper")
-            .to_string();
+        let e = run("PBE", &t, &ok_cfg).expect_err("tamper").to_string();
         assert!(e.contains(guard_msg) && e.contains(which), "{e}");
     }
     // A short MO set (one set per k is required).
@@ -917,7 +957,9 @@ fn refusals_and_the_fock_guard() {
     .expect_err("roks rsgdf")
     .to_string();
     assert!(
-        e.contains("kpoint_roks_stress: RS-GDF J/K is not supported by the restricted-open-shell stress"),
+        e.contains(
+            "kpoint_roks_stress: RS-GDF J/K is not supported by the restricted-open-shell stress"
+        ),
         "{e}"
     );
     let e = kpoint_rohf_stress(
@@ -934,7 +976,9 @@ fn refusals_and_the_fock_guard() {
     .expect_err("rohf rsgdf")
     .to_string();
     assert!(
-        e.contains("kpoint_rohf_stress: RS-GDF J/K is not supported by the restricted-open-shell stress"),
+        e.contains(
+            "kpoint_rohf_stress: RS-GDF J/K is not supported by the restricted-open-shell stress"
+        ),
         "{e}"
     );
 }
@@ -1018,25 +1062,25 @@ fn rohf_stress_matches_fd_1x1x2() {
 }
 
 #[test]
-#[ignore = "ROHF 1x1x3: 3 components x 2 SCFs; measured below"]
+#[ignore = "ROHF 1x1x3: 3 components x 2 SCFs; measured 31 s"]
 fn rohf_stress_matches_fd_1x1x3() {
     fd_case(None, ExxDiv::Ewald, G113, &[(2, 2), (0, 2), (0, 0)]);
 }
 
 #[test]
-#[ignore = "ROKS PBE row of the FD anchor (6 SCFs); measured below"]
+#[ignore = "ROKS PBE row of the FD anchor (6 SCFs); measured 27 s"]
 fn roks_pbe_stress_matches_fd_1x1x3() {
     fd_case(Some("PBE"), ExxDiv::None, G113, &[(2, 2), (0, 2), (1, 0)]);
 }
 
 #[test]
-#[ignore = "ROKS PBE0 row of the FD anchor (6 SCFs); measured below"]
+#[ignore = "ROKS PBE0 row of the FD anchor (6 SCFs); measured 37 s"]
 fn roks_pbe0_stress_matches_fd_1x1x3() {
     fd_case(Some("PBE0"), ExxDiv::Ewald, G113, &[(2, 2), (0, 2)]);
 }
 
 #[test]
-#[ignore = "8-point shifted mesh, ROHF + ROKS PBE0, 2 components x 2 SCFs; needs a quiet box"]
+#[ignore = "8-point shifted mesh, ROHF + ROKS PBE0, 2 components x 2 SCFs; measured 409 s on a loaded box"]
 fn ro_stress_matches_fd_on_the_monkhorst_pack_mesh() {
     let m = Mesh {
         n: [2, 2, 2],
@@ -1047,7 +1091,7 @@ fn ro_stress_matches_fd_on_the_monkhorst_pack_mesh() {
 }
 
 #[test]
-#[ignore = "all-nine FD for ROHF Ewald, ROKS PBE0 Ewald and ROKS PBE none (54 SCFs); needs a quiet box"]
+#[ignore = "all-nine FD for ROHF Ewald, ROKS PBE0 Ewald and ROKS PBE none (54 SCFs); measured 145 s"]
 fn ro_stress_matches_fd_all_nine() {
     for (f, exxdiv) in [
         (None, ExxDiv::Ewald),
@@ -1069,7 +1113,7 @@ fn ro_stress_matches_fd_all_nine() {
 /// PROBE: the FD step window. All nine components of ROKS PBE0 (dense, Ewald,
 /// 1x1x3 H3) at four steps; the printout is the floor and the window.
 #[test]
-#[ignore = "probe: 4 steps x 18 SCFs, needs a quiet box; run with --nocapture"]
+#[ignore = "probe: 4 steps x 18 SCFs, measured 140 s; run with --nocapture"]
 fn ro_fd_window_probe() {
     let fx = fixture(&H3, G113, Some("PBE0"), ExxDiv::Ewald);
     let s = stress(&fx);
@@ -1089,7 +1133,7 @@ fn ro_fd_window_probe() {
 /// Pressure from isotropic scaling: sum_a dE/de_aa equals the FD of E under
 /// eps = h*I (ROKS PBE, dense, none).
 #[test]
-#[ignore = "ROKS PBE trace vs isotropic FD (3 SCFs); measured below"]
+#[ignore = "ROKS PBE trace vs isotropic FD (3 SCFs); measured 21 s"]
 fn ro_trace_matches_isotropic_scaling_fd() {
     let fx = fixture(&H3, G113, Some("PBE"), ExxDiv::None);
     let s = stress(&fx);
@@ -1159,7 +1203,7 @@ fn k_mesh_rohf_stress_is_the_gamma_supercell_stress_per_part() {
 }
 
 #[test]
-#[ignore = "9-atom Gamma ROKS PBE0 supercell; precondition: the Gamma high-spin SCF converges"]
+#[ignore = "9-atom Gamma ROKS PBE0 supercell; precondition: the Gamma high-spin SCF converges; measured 84 s"]
 fn k_mesh_roks_stress_is_the_gamma_supercell_stress_per_part() {
     supercell_case(Some("PBE0"));
 }
@@ -1168,7 +1212,7 @@ fn k_mesh_roks_stress_is_the_gamma_supercell_stress_per_part() {
 
 /// (1b) ROKS closed-shell limit == the RKS stress (PBE, H2 1x1x3, per part).
 #[test]
-#[ignore = "closed-shell ROKS vs RKS (PBE); measured below"]
+#[ignore = "closed-shell ROKS vs RKS (PBE); measured 15 s"]
 fn closed_shell_roks_equals_the_rks_stress_per_part() {
     let f = "PBE";
     let fx = fixture(&H2, G113, Some(f), ExxDiv::None);
@@ -1207,7 +1251,10 @@ fn closed_shell_roks_equals_the_rks_stress_per_part() {
         ("de_deps", mdiff(&ro.de_deps, &rks.de_deps)),
         ("sigma", mdiff(&ro.sigma, &rks.sigma)),
     ];
-    for ((n, a), (_, b)) in hf_parts(&ro.hf.parts).into_iter().zip(hf_parts(&rks.hf.parts)) {
+    for ((n, a), (_, b)) in hf_parts(&ro.hf.parts)
+        .into_iter()
+        .zip(hf_parts(&rks.hf.parts))
+    {
         rows.push((n, mdiff(&a, &b)));
     }
     for (n, d) in rows {
@@ -1225,7 +1272,7 @@ fn closed_shell_roks_equals_the_rks_stress_per_part() {
 /// on) and the W_RO cross term. Each must miss the Gamma reference by far more
 /// than the Gamma bar (the correct residual is <= BAR_GAMMA).
 #[test]
-#[ignore = "mutant sweep against the Gamma ROKS stress; measured below"]
+#[ignore = "mutant sweep against the Gamma ROKS stress; measured 401 s"]
 fn mutants_are_caught_by_the_gamma_roks_anchor() {
     use KStressMutation as S;
     use KUStressMutation as U;
@@ -1284,11 +1331,7 @@ fn mutants_are_caught_by_the_gamma_roks_anchor() {
     ] {
         check(format!("{xm:?}"), stress_mut(&fx, Some(xm), None, None));
     }
-    match stress_with(
-        &fx,
-        &fx.res.scf,
-        &scfg(Some(X::PulayNoVxc), None, None),
-    ) {
+    match stress_with(&fx, &fx.res.scf, &scfg(Some(X::PulayNoVxc), None, None)) {
         Err(e) => {
             let m = e.to_string();
             eprintln!("1x1x1 vs Gamma ROKS under PulayNoVxc: refused: {m}");
@@ -1305,7 +1348,10 @@ fn mutants_are_caught_by_the_gamma_roks_anchor() {
         // SwapSpinFock acts only on the Unrestricted variant (an identity for
         // the restricted-open assembly): asserted, not counted.
         if hm == S::SwapSpinFock {
-            let d = mdiff(&stress_mut(&fx, None, None, Some(hm)).de_deps, &base.de_deps);
+            let d = mdiff(
+                &stress_mut(&fx, None, None, Some(hm)).de_deps,
+                &base.de_deps,
+            );
             eprintln!("SwapSpinFock on the RO assembly: {d:.2e} (identity)");
             assert!(d < 1e-14, "{d:e}");
             continue;
@@ -1322,7 +1368,7 @@ fn mutants_are_caught_by_the_gamma_roks_anchor() {
 /// The k-dependent defects need nk > 1: against the unmutated 1x1x3 ROKS PBE0
 /// stress (itself anchored by the FD). Correct residuals are <= 1e-9.
 #[test]
-#[ignore = "6 ROKS PBE0 stresses on 1x1x3; measured below"]
+#[ignore = "6 ROKS PBE0 stresses on 1x1x3; measured 228 s (7 stresses, incl. the gate refusal)"]
 fn k_dependent_mutants_are_caught_on_the_mesh() {
     use KXcStressMutation as X;
     let fx = fixture(&H3, G113, Some("PBE0"), ExxDiv::Ewald);
@@ -1336,14 +1382,25 @@ fn k_dependent_mutants_are_caught_on_the_mesh() {
         (None, None, Some(KStressMutation::CrossSpinK)),
         (None, Some(KUStressMutation::RoWDropCross), None),
     ] {
-        let d = mdiff(&stress_mut(&fx, xm, sm, hm).de_deps, &base.de_deps);
-        eprintln!("1x1x3 {xm:?}/{sm:?}/{hm:?}: miss {d:.2e}");
-        assert!(d > MUTANT_BAR, "{xm:?}/{sm:?}/{hm:?} survives: {d:e}");
+        // KWrongDensity tampers F (the Fock guard is skipped), so the orbital
+        // gradient gate refuses it: a refusal is a catch.
+        match stress_with(&fx, &fx.res.scf, &scfg(xm, sm, hm)) {
+            Err(e) => {
+                let m = e.to_string();
+                eprintln!("1x1x3 {xm:?}/{sm:?}/{hm:?}: refused: {m}");
+                assert!(m.contains("ROHF orbital gradient"), "{m}");
+            }
+            Ok(s) => {
+                let d = mdiff(&s.de_deps, &base.de_deps);
+                eprintln!("1x1x3 {xm:?}/{sm:?}/{hm:?}: miss {d:.2e}");
+                assert!(d > MUTANT_BAR, "{xm:?}/{sm:?}/{hm:?} survives: {d:e}");
+            }
+        }
     }
 }
 
 #[test]
-#[ignore = "two full ROKS PBE0 stresses at 1 and 4 threads; thread bit-identity of the shared assembly is also pinned by pbc_parallel_bitwise"]
+#[ignore = "two full ROKS PBE0 stresses at 1 and 4 threads; thread bit-identity of the shared assembly is also pinned by pbc_parallel_bitwise; measured 74 s"]
 fn ro_stress_is_bit_identical_across_threads() {
     let fx = fixture(&H3, G113, Some("PBE0"), ExxDiv::Ewald);
     let run = |threads: usize| {

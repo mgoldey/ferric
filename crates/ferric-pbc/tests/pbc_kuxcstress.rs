@@ -45,8 +45,8 @@ use ferric_pbc::kstress::{
 use ferric_pbc::kuks::{solve_kuks, KUksConfig, KUksResult};
 use ferric_pbc::kuscf::{solve_kuks_injected, KPointXcPolarized, KUScfResult};
 use ferric_pbc::kuxcstress::{
-    kpoint_null_xc_uks_stress, kpoint_uks_stress,
-    KUStressMutation, KUksStress, KUksStressConfig, UKS_COMMUTATOR_TOL,
+    kpoint_null_xc_uks_stress, kpoint_uks_stress, KUStressMutation, KUksStress, KUksStressConfig,
+    UKS_COMMUTATOR_TOL,
 };
 use ferric_pbc::kxcgrad::KXcGrid;
 use ferric_pbc::kxcstress::{kpoint_rks_stress, KRksStressConfig, KXcStressMutation};
