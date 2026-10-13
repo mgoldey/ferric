@@ -228,7 +228,7 @@ pub(crate) struct SpinInput<'a> {
 }
 
 /// The ROHF orbital gradient at k (max over k; module doc "ROHF / ROKS").
-fn ro_orbital_gradient_k(
+pub(crate) fn ro_orbital_gradient_k(
     who: &str,
     mos: &[Array2<C64>],
     s: &[Array2<C64>],

@@ -85,21 +85,57 @@
 //! (`4 N_k nbf²`), pre-flighted on the ledger. The Fock-guard stage holds
 //! `D_α, D_β, J_α, J_β, K_α, K_β, F_α, F_β, V_α, V_β` (`10 N_k n²` complex).
 //!
+//! # ROHF / ROKS ([`kpoint_roks_stress`], [`kpoint_rohf_stress`])
+//!
+//! The k-point ROHF/ROKS energy ([`crate::kroks`]) is the UHF/UKS functional
+//! `E_U[D_α, D_β]` restricted to ONE orthonormal complex orbital set per k,
+//! `C(k) = [C_c | C_o | C_v]` (`D_α = C_c C_c† + C_o C_o†`, `D_β = C_c C_c†`),
+//! and the strain of that energy at fixed `C†SC = 1` is the open-shell
+//! assembly of this module on the ROHF spin densities and the spin Focks
+//! rebuilt from them (ROKS: the polarized `V_σ` of the XC strain above; ROHF:
+//! zero XC, `a = 1`), with the orthonormality Lagrangian of the force
+//! ([`crate::kuxcgrad`]) as the Pulay/overlap weight in place of `Σ_σ D_σ F_σ D_σ`:
+//!
+//! ```text
+//! W_RO(k) = sym(D_α F_α D_α + D_α F_β D_β)        (sym = Hermitian part)
+//! ```
+//!
+//! (`crate::kgrad::KSpins::RestrictedOpen`; it multiplies `dS/dε` in the Pulay,
+//! `c0` and Madelung overlap virials exactly as it multiplies `dS/dR` in the
+//! force; nothing else of the assembly changes). The Roothaan effective Fock
+//! must never be used for `W`.
+//!
+//! `W_RO` exists exactly when the three ROHF orbital-gradient blocks vanish at
+//! every k (`(f_β)_co`, `(f_α)_ov`, `(f_α + f_β)_cv`, `f_σ = C† F_σ C`); the
+//! entry points form the largest of them from the SCF's MOs and the REBUILT
+//! spin Focks and refuse a state above [`crate::grad::RO_ORBITAL_GRADIENT_TOL`]
+//! (the stress is first order in it). At a converged state the unrestricted
+//! form `Σ_σ D_σ F_σ D_σ` differs from `W_RO` only by ½ the closed-open β
+//! gradient, so using it ([`KUStressMutation::RoWUhfForm`]) is an identity
+//! there, and this gate is the only protection off stationarity (it is what
+//! the Gamma entry points rely on too). The per-spin commutator gate of the
+//! UKS entry does not apply (the per-spin commutators do not vanish at a ROHF
+//! state); `hf.commutator` of the result holds the orbital gradient instead.
+//! The gate's per-k transients (eight `n²` complex arrays) are checked against
+//! the ledger. The MOs must be one set per k-point (a short set is a typed
+//! error). The gate is calibrated for the stress in `tests/pbc_kuxcstress_ro.rs`
+//! (`ro_stress_gate_probe`, recorded there).
+//!
+//! The ROHF/ROKS stress is anchored on the dense-AFT J/K only: an RS-GDF source
+//! is refused (`RS-GDF J/K is not supported by the restricted-open-shell
+//! stress`), as for the force.
+//!
 //! # Scope
 //!
 //! LDA, GGA and global hybrids. Range-separated hybrids, meta-GGA, VV10 and
-//! double hybrids are refused with the typed errors of [`crate::kxcstress`].
-//! ROKS/ROHF: k-point ROKS/ROHF stress is not implemented here; the Gamma entry
-//! points ([`crate::stress::gamma_roks_stress`],
-//! [`crate::stress::gamma_rohf_stress`]) exist. [`kpoint_roks_stress`] and
-//! [`kpoint_rohf_stress`] return a typed refusal; their [`KUksStressConfig`]
-//! argument is accepted for signature symmetry with [`kpoint_uks_stress`] and
-//! is not read. A ROKS state cannot be handed to [`kpoint_uks_stress`] (its SCF
-//! type is [`crate::kroks::KRoScfResult`], not [`KUScfResult`]).
+//! double hybrids are refused with the typed errors of [`crate::kxcstress`]
+//! (for ROKS the same; the ROHF entry has no functional). A ROKS state cannot
+//! be handed to [`kpoint_uks_stress`] (its SCF type is
+//! [`crate::kroks::KRoScfResult`], not [`KUScfResult`]).
 
 use crate::budget::{bytes_of, Ledger};
 use crate::dense_aft::ExxDiv;
-use crate::dft::{BlochAoStrain, BlochPhase, LatticeAoHess, PeriodicDftError};
+use crate::dft::{BlochAoStrain, BlochPhase, LatticeAoHess};
 use crate::grad::ao_atoms;
 use crate::hcore::kpoint::PeriodicHcoreK;
 use crate::hcore::PeriodicHcoreConfig;
@@ -108,6 +144,8 @@ use crate::kpts::KPointMesh;
 use crate::kroks::KRoScfResult;
 use crate::kstress::{assemble, grad_jk, open_ledger, refuse_unsupported, KStressJk};
 use crate::kuscf::KUScfResult;
+use crate::grad::RO_ORBITAL_GRADIENT_TOL;
+use crate::kuxcgrad::ro_orbital_gradient_k;
 pub use crate::kuxcgrad::UKS_COMMUTATOR_TOL;
 use crate::kxcgrad::{chunk_density, chunk_vxc, conj, hermitize};
 use crate::kxcstress::{
@@ -156,6 +194,16 @@ pub enum KUStressMutation {
     PulayNoVxcBeta,
     /// The stationarity gate skipped.
     StationarityGateOff,
+    /// ROHF/ROKS: the energy-weighted matrix in the UNRESTRICTED form
+    /// `Σ_σ D_σ F_σ D_σ`. An IDENTITY at a converged ROHF state (it differs
+    /// from `W_RO` by ½ the closed-open β orbital gradient): the tests assert
+    /// that, and that the orbital-gradient gate is what protects off
+    /// stationarity.
+    RoWUhfForm,
+    /// ROHF/ROKS: `W = D_α F_α D_α` (the `D_α F_β D_β` cross term dropped).
+    RoWDropCross,
+    /// ROHF/ROKS: the orbital-gradient gate skipped.
+    RoGateOff,
 }
 
 /// Settings of [`kpoint_uks_stress`].
@@ -663,57 +711,130 @@ pub fn kpoint_uks_stress(
         hcore_cfg,
         hk,
         jk,
-        scf,
+        &uks_input(scf),
         &resp,
         exch,
         cfg,
     )
 }
 
-fn ro_refusal(who: &str, what: &str) -> FerricError {
-    PeriodicDftError::Unsupported {
-        feature: "restricted-open-shell stress at k",
-        reason: format!(
-            "{who}: k-point {what} stress is not implemented here (the Gamma entry points \
-             gamma_roks_stress / gamma_rohf_stress exist); use the k-point force entry \
-             point or the unrestricted stress"
-        ),
+/// The restricted-open-shell stresses are anchored on the dense-AFT J/K only.
+fn refuse_rsgdf(who: &str, jk: &KStressJk<'_>) -> Result<(), FerricError> {
+    if matches!(jk, KStressJk::RsGdf(_)) {
+        return Err(FerricError::General(format!(
+            "{who}: RS-GDF J/K is not supported by the restricted-open-shell stress (no anchor \
+             against FD or Gamma exists for it); use the dense-AFT J/K"
+        )));
     }
-    .into()
+    Ok(())
 }
 
-/// k-point ROKS stress: refused (typed error), see the module "Scope". `_cfg`
-/// is unused (signature symmetry with [`kpoint_uks_stress`]).
+/// k-point ROKS stress of a converged [`crate::kroks::solve_kroks`] result
+/// (`KRoksResult::scf`): the open-shell assembly of [`kpoint_uks_stress`] on
+/// the ROHF spin densities and spin Focks with the orthonormality Lagrangian
+/// `W_RO = sym(D_α F_α D_α + D_α F_β D_β)` at each k (module doc "ROHF /
+/// ROKS"). Arguments and refusals as [`kpoint_uks_stress`], except that the
+/// stationarity gate is the ROHF orbital gradient (a state whose closed-open
+/// `f_β`, open-virtual `f_α` or closed-virtual `f_α + f_β` block, at any k,
+/// exceeds [`crate::grad::RO_ORBITAL_GRADIENT_TOL`] is refused), the MO set
+/// must be one per k-point, and an RS-GDF J/K source is refused.
 #[allow(clippy::too_many_arguments)]
 pub fn kpoint_roks_stress(
-    _cell: &Cell,
-    _prep: &PreparedBasis,
-    _mesh: &KPointMesh,
-    _hcore_cfg: &PeriodicHcoreConfig,
-    _hk: &PeriodicHcoreK,
-    _jk: KStressJk<'_>,
-    _scf: &KRoScfResult,
-    _functional: &str,
-    _cfg: &KUksStressConfig,
+    cell: &Cell,
+    prep: &PreparedBasis,
+    mesh: &KPointMesh,
+    hcore_cfg: &PeriodicHcoreConfig,
+    hk: &PeriodicHcoreK,
+    jk: KStressJk<'_>,
+    scf: &KRoScfResult,
+    functional: &str,
+    cfg: &KUksStressConfig,
 ) -> Result<KUksStress, FerricError> {
-    Err(ro_refusal("kpoint_roks_stress", "ROKS"))
+    refuse_rsgdf("kpoint_roks_stress", &jk)?;
+    let (resp, exch) = grid_response(cell, prep, mesh, functional, cfg)?;
+    uks_stress_with(
+        "kpoint_roks_stress",
+        cell,
+        prep,
+        mesh,
+        hcore_cfg,
+        hk,
+        jk,
+        &ro_input(scf),
+        &resp,
+        exch,
+        cfg,
+    )
 }
 
-/// k-point ROHF stress: refused (typed error), see the module "Scope". `_cfg`
-/// is unused (signature symmetry with [`kpoint_uks_stress`]).
+/// k-point ROHF stress of a converged [`crate::kroks::solve_krohf`] result:
+/// [`kpoint_roks_stress`] with a zero XC and `a = 1` (`exxdiv` is the SCF's,
+/// replacing `cfg.base.exxdiv`).
 #[allow(clippy::too_many_arguments)]
 pub fn kpoint_rohf_stress(
-    _cell: &Cell,
-    _prep: &PreparedBasis,
-    _mesh: &KPointMesh,
-    _hcore_cfg: &PeriodicHcoreConfig,
-    _hk: &PeriodicHcoreK,
-    _jk: KStressJk<'_>,
-    _scf: &KRoScfResult,
-    _exxdiv: ExxDiv,
-    _cfg: &KUksStressConfig,
+    cell: &Cell,
+    prep: &PreparedBasis,
+    mesh: &KPointMesh,
+    hcore_cfg: &PeriodicHcoreConfig,
+    hk: &PeriodicHcoreK,
+    jk: KStressJk<'_>,
+    scf: &KRoScfResult,
+    exxdiv: ExxDiv,
+    cfg: &KUksStressConfig,
 ) -> Result<KUksStress, FerricError> {
-    Err(ro_refusal("kpoint_rohf_stress", "ROHF"))
+    refuse_rsgdf("kpoint_rohf_stress", &jk)?;
+    let mut c = cfg.clone();
+    c.base.exxdiv = Some(exxdiv);
+    uks_stress_with(
+        "kpoint_rohf_stress",
+        cell,
+        prep,
+        mesh,
+        hcore_cfg,
+        hk,
+        jk,
+        &ro_input(scf),
+        &NullXcPol,
+        1.0,
+        &c,
+    )
+}
+
+/// The converged spin state a stress differentiates (from a [`KUScfResult`]
+/// or a [`KRoScfResult`]).
+struct SpinInput<'a> {
+    da: &'a [Array2<C64>],
+    db: &'a [Array2<C64>],
+    fa: &'a [Array2<C64>],
+    fb: &'a [Array2<C64>],
+    converged: bool,
+    kpts: &'a [[f64; 3]],
+    /// ROHF/ROKS: the one orthonormal MO set per k.
+    mos: Option<&'a [Array2<C64>]>,
+}
+
+fn uks_input(scf: &KUScfResult) -> SpinInput<'_> {
+    SpinInput {
+        da: &scf.density_alpha,
+        db: &scf.density_beta,
+        fa: &scf.fock_alpha,
+        fb: &scf.fock_beta,
+        converged: scf.converged,
+        kpts: &scf.kpts,
+        mos: None,
+    }
+}
+
+fn ro_input(scf: &KRoScfResult) -> SpinInput<'_> {
+    SpinInput {
+        da: &scf.density_alpha,
+        db: &scf.density_beta,
+        fa: &scf.fock_alpha,
+        fb: &scf.fock_beta,
+        converged: scf.converged,
+        kpts: &scf.kpts,
+        mos: Some(&scf.mos),
+    }
 }
 
 /// TEST/DIAGNOSTIC: the open-shell KS machinery with a zero XC and
@@ -742,7 +863,7 @@ pub fn kpoint_null_xc_uks_stress(
         hcore_cfg,
         hk,
         jk,
-        scf,
+        &uks_input(scf),
         &NullXcPol,
         exch,
         cfg,
@@ -753,6 +874,13 @@ pub fn kpoint_null_xc_uks_stress(
 /// V_α, V_β`, each `N_k n²` complex.
 fn guard_bytes(nk: usize, n: usize) -> usize {
     bytes_of((nk * n * n) as u64, 16 * 10)
+}
+
+/// Bytes of the ROHF orbital-gradient gate's per-k transients: `C†`, `S C`,
+/// `C† S`, the two MO-basis Focks and two products, each at most `n²` complex
+/// (eight counted, one spare), live for one k at a time.
+fn ro_gate_scratch_bytes(n: usize) -> usize {
+    bytes_of((n * n) as u64, 16 * 8)
 }
 
 /// The Madelung shift of the SCF's K (0 for a pure functional: no K).
@@ -857,7 +985,7 @@ fn uks_stress_with(
     hcore_cfg: &PeriodicHcoreConfig,
     hk: &PeriodicHcoreK,
     jk: KStressJk<'_>,
-    scf: &KUScfResult,
+    inp: &SpinInput<'_>,
     xc: &dyn KUXcStressResponse,
     exch: f64,
     cfg: &KUksStressConfig,
@@ -877,15 +1005,16 @@ fn uks_stress_with(
         hcore_cfg,
         hk,
         &gj,
-        &[&scf.density_alpha[..], &scf.density_beta[..]],
-        scf.converged,
-        &scf.kpts,
+        &[inp.da, inp.db],
+        inp.converged,
+        inp.kpts,
     )?;
+    let ro = inp.mos.is_some();
     let nk = mesh.nk();
     let vm = madelung_shift(who, cell, mesh, exch, cfg)?;
     let mut ledger = open_ledger(prep, mesh, &cfg.base.stress, true)?;
-    let da = scf.density_alpha.clone();
-    let db = scf.density_beta.clone();
+    let da = inp.da.to_vec();
+    let db = inp.db.to_vec();
     let xo = xc.evaluate(&da, &db, &ledger)?;
     ledger.reserve(
         &format!(
@@ -910,8 +1039,8 @@ fn uks_stress_with(
     drop(sj);
     let guard = guard_applies(cfg);
     let mismatch = if guard {
-        let ma = check_fock(who, "fock_alpha", &fa, &scf.fock_alpha, KS_REMEDY)?;
-        let mb = check_fock(who, "fock_beta", &fb, &scf.fock_beta, KS_REMEDY)?;
+        let ma = check_fock(who, "fock_alpha", &fa, inp.fa, KS_REMEDY)?;
+        let mb = check_fock(who, "fock_beta", &fb, inp.fb, KS_REMEDY)?;
         ma.max(mb)
     } else {
         0.0
@@ -921,11 +1050,44 @@ fn uks_stress_with(
     } else {
         (fa, fb)
     };
+    // ROHF/ROKS: the orbital-gradient gate on the REBUILT spin Focks (the
+    // stress is first order in it), before the expensive assembly.
+    let og = match inp.mos {
+        Some(mos) => {
+            ledger.check(
+                &format!(
+                    "k RO stress orbital-gradient gate scratch (n = {}, per-k transients)",
+                    prep.nbasis()
+                ),
+                ro_gate_scratch_bytes(prep.nbasis()),
+            )?;
+            let g = ro_orbital_gradient_k(who, mos, &hk.s, &da, &db, &fa, &fb)?;
+            let gate_on = cfg.spin_mutation != Some(KUStressMutation::RoGateOff);
+            if gate_on && (g.is_nan() || g > RO_ORBITAL_GRADIENT_TOL) {
+                return Err(FerricError::General(format!(
+                    "{who}: ROHF orbital gradient {g:.3e} exceeds {RO_ORBITAL_GRADIENT_TOL:.0e}: \
+                     not a stationary ROHF state (the stress is first order in it); converge the \
+                     SCF tighter"
+                )));
+            }
+            Some(g)
+        }
+        None => None,
+    };
     // What the HF assembly is told (the exchange-scale defects change only this).
     let a_asm = match cfg.base.mutation {
         Some(KXcStressMutation::ExchUnscaled) if exch != 0.0 => 1.0,
         Some(KXcStressMutation::ExchScaledTwice) => exch * exch,
         _ => exch,
+    };
+    let spmut = cfg.spin_mutation;
+    let spins = if !ro || spmut == Some(KUStressMutation::RoWUhfForm) {
+        KSpins::Unrestricted { da, db, fa, fb }
+    } else if spmut == Some(KUStressMutation::RoWDropCross) {
+        let zb = fb.iter().map(|m| Array2::zeros(m.dim())).collect();
+        KSpins::RestrictedOpen { da, db, fa, fb: zb }
+    } else {
+        KSpins::RestrictedOpen { da, db, fa, fb }
     };
     let mut hf = assemble(
         cell,
@@ -934,14 +1096,20 @@ fn uks_stress_with(
         hcore_cfg,
         hk,
         &gj,
-        KSpins::Unrestricted { da, db, fa, fb },
+        spins,
         vm,
         a_asm,
         &cfg.base.stress,
         &mut ledger,
     )?;
     hf.fock_mismatch = mismatch;
-    if guard
+    if let Some(g) = og {
+        // The per-spin commutators do not vanish at a ROHF state; report the
+        // gated quantity instead.
+        hf.commutator = g;
+    }
+    if !ro
+        && guard
         && cfg.spin_mutation != Some(KUStressMutation::StationarityGateOff)
         && (hf.commutator.is_nan() || hf.commutator > UKS_COMMUTATOR_TOL)
     {

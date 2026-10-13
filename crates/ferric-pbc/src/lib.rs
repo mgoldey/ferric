@@ -125,7 +125,11 @@
 //!   from [`kuks`]): per-spin Pulay/exchange/Madelung assembly and the
 //!   spin-resolved XC strain terms; LDA, GGA and global hybrids, with the Fock
 //!   guard and the stationarity gate. `kpoint_roks_stress` /
-//!   `kpoint_rohf_stress` are typed refusals (not implemented here).
+//!   `kpoint_rohf_stress` (the restricted-open-shell energies of [`kroks`]):
+//!   the same assembly on the ROHF spin densities with the orthonormality
+//!   Lagrangian `W_RO` as the overlap weight and the ROHF orbital-gradient
+//!   gate in place of the commutator gate; dense-AFT J/K only (an RS-GDF
+//!   source is refused).
 //! * [`kuxcgrad`] — the open-shell twin (`kpoint_uks_gradient`, k-point UKS
 //!   from [`kuks`]; `kpoint_roks_gradient` / `kpoint_rohf_gradient` for the
 //!   restricted-open-shell energies of [`kroks`] with the ROHF orbital-gradient
@@ -271,7 +275,9 @@ pub use kuscf::{
 pub use kuxcgrad::{
     kpoint_rohf_gradient, kpoint_roks_gradient, kpoint_uks_gradient, KUksGradConfig, KUksGradient,
 };
-pub use kuxcstress::{kpoint_uks_stress, KUksStress, KUksStressConfig};
+pub use kuxcstress::{
+    kpoint_rohf_stress, kpoint_roks_stress, kpoint_uks_stress, KUksStress, KUksStressConfig,
+};
 pub use kxcgrad::{kpoint_rks_gradient, KRksGradConfig, KRksGradient, KXcGrid};
 pub use kxcstress::{kpoint_rks_stress, KRksStress, KRksStressConfig};
 pub use lattice::Cell;
