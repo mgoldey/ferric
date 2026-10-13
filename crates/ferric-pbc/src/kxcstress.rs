@@ -123,8 +123,9 @@
 //! # Scope
 //!
 //! LDA, GGA and global hybrids; range-separated hybrids, meta-GGA,
-//! VV10/double hybrids and unrestricted KS keep typed errors (the dense
-//! kernels carrying an attenuated exchange are refused by the HF assembly).
+//! VV10/double hybrids keep typed errors (the dense kernels carrying an
+//! attenuated exchange are refused by the HF assembly). The open-shell (UKS)
+//! twin is [`crate::kuxcstress`].
 
 use crate::budget::{bytes_of, Ledger};
 use crate::dense_aft::ExxDiv;
@@ -898,7 +899,7 @@ pub(crate) fn finish(hf: KStress, xo: XcStressOut) -> Result<KRksStress, FerricE
     add_into(&mut de, &xo.weight, 1.0);
     if de.iter().flatten().any(|v| !v.is_finite()) {
         return Err(FerricError::General(
-            "k-point RKS stress: non-finite strain derivative".into(),
+            "k-point KS stress: non-finite strain derivative".into(),
         ));
     }
     let vol = hf.volume;

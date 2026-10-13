@@ -59,6 +59,24 @@
 //! departure from self-consistency; a state with
 //! `max_{σ,k} |F_σ D_σ S − S D_σ F_σ|` above [`UKS_COMMUTATOR_TOL`] is refused.
 //!
+//! ## Calibration of the gate (stress side)
+//!
+//! The tolerance is the one derived for the FORCE ([`crate::kuxcgrad`]) and is
+//! reused unchanged. Measured here (`tests/pbc_kuxcstress.rs`, H3 doublet, PBE,
+//! 1x1x1, loose SCF): commutator 1.57e-4 gives a `dE/dε` error of 6.6e-5 against
+//! the tight state, a slope of about 0.42 (one measured point; first order in the
+//! commutator). At the tolerance 1e-5 that admits roughly 4e-6 in `dE/dε`
+//! (about 140x the 3e-8 FD bar of the anchors, about 2 MPa on the 64 Bohr³ test
+//! cell). So the gate is looser than the precision of the anchors: it refuses a
+//! state that is plainly unconverged, it does not certify the stress to the
+//! anchors' accuracy.
+//!
+//! UNVERIFIED RISK: the commutator is formed in the AO basis, while
+//! [`crate::kuscf::solve_kuhf`] converges in the lindep-filtered orthogonal
+//! basis. Whether a state converged there can show a larger AO commutator (or
+//! the reverse) on a cell with discarded near-dependent functions has not been
+//! tested; every fixture here is well conditioned.
+//!
 //! # Memory
 //!
 //! As [`crate::kxcstress`]: the Bloch AO cache of the energy is never retained;
@@ -71,9 +89,13 @@
 //!
 //! LDA, GGA and global hybrids. Range-separated hybrids, meta-GGA, VV10 and
 //! double hybrids are refused with the typed errors of [`crate::kxcstress`].
-//! ROKS/ROHF: [`kpoint_roks_stress`] and [`kpoint_rohf_stress`] return a typed
-//! refusal (the orthonormality-Lagrangian overlap term `W_RO` is not anchored
-//! for the stress).
+//! ROKS/ROHF: k-point ROKS/ROHF stress is not implemented here; the Gamma entry
+//! points ([`crate::stress::gamma_roks_stress`],
+//! [`crate::stress::gamma_rohf_stress`]) exist. [`kpoint_roks_stress`] and
+//! [`kpoint_rohf_stress`] return a typed refusal; their [`KUksStressConfig`]
+//! argument is accepted for signature symmetry with [`kpoint_uks_stress`] and
+//! is not read. A ROKS state cannot be handed to [`kpoint_uks_stress`] (its SCF
+//! type is [`crate::kroks::KRoScfResult`], not [`KUScfResult`]).
 
 use crate::budget::{bytes_of, Ledger};
 use crate::dense_aft::ExxDiv;
@@ -652,15 +674,16 @@ fn ro_refusal(who: &str, what: &str) -> FerricError {
     PeriodicDftError::Unsupported {
         feature: "restricted-open-shell stress at k",
         reason: format!(
-            "{who}: the {what} stress is not implemented (the orthonormality-Lagrangian \
-             overlap term W_RO has no stress anchor); use the force entry point or the \
-             unrestricted stress"
+            "{who}: k-point {what} stress is not implemented here (the Gamma entry points \
+             gamma_roks_stress / gamma_rohf_stress exist); use the k-point force entry \
+             point or the unrestricted stress"
         ),
     }
     .into()
 }
 
-/// k-point ROKS stress: refused (typed error), see the module "Scope".
+/// k-point ROKS stress: refused (typed error), see the module "Scope". `_cfg`
+/// is unused (signature symmetry with [`kpoint_uks_stress`]).
 #[allow(clippy::too_many_arguments)]
 pub fn kpoint_roks_stress(
     _cell: &Cell,
@@ -676,7 +699,8 @@ pub fn kpoint_roks_stress(
     Err(ro_refusal("kpoint_roks_stress", "ROKS"))
 }
 
-/// k-point ROHF stress: refused (typed error), see the module "Scope".
+/// k-point ROHF stress: refused (typed error), see the module "Scope". `_cfg`
+/// is unused (signature symmetry with [`kpoint_uks_stress`]).
 #[allow(clippy::too_many_arguments)]
 pub fn kpoint_rohf_stress(
     _cell: &Cell,

@@ -1178,7 +1178,7 @@ fn roks_and_rohf_stress_are_refused_typed() {
     .expect_err("ROKS stress accepted")
     .to_string();
     assert!(
-        e.contains("restricted-open-shell stress at k is not supported: kpoint_roks_stress: the ROKS stress is not implemented"),
+        e.contains("restricted-open-shell stress at k is not supported: kpoint_roks_stress: k-point ROKS stress is not implemented here"),
         "{e}"
     );
     let e = kpoint_rohf_stress(
@@ -1195,7 +1195,7 @@ fn roks_and_rohf_stress_are_refused_typed() {
     .expect_err("ROHF stress accepted")
     .to_string();
     assert!(
-        e.contains("kpoint_rohf_stress: the ROHF stress is not implemented"),
+        e.contains("kpoint_rohf_stress: k-point ROHF stress is not implemented here"),
         "{e}"
     );
 }
@@ -1236,10 +1236,38 @@ fn loose_uks_scf_is_refused_by_the_stationarity_gate() {
         off.hf.commutator
     );
     assert!(off.hf.commutator > UKS_COMMUTATOR_TOL);
+    // First-order law miss ~ slope * commutator with the measured slope 0.42
+    // (6.6e-5 / 1.57e-4, one point); two-sided, a factor of 2 each way.
+    let slope = miss / off.hf.commutator;
+    eprintln!("loose UKS: slope miss/commutator = {slope:.3}");
     assert!(
-        miss > 10.0 * FD_BAR,
-        "gate off is not wrong enough: {miss:e}"
+        (0.21..=0.84).contains(&slope),
+        "gate-off miss {miss:e} is not first order in the commutator {:e} (slope {slope})",
+        off.hf.commutator
     );
+    assert!(miss > 10.0 * FD_BAR);
+}
+
+/// The stationarity gate fires in the DEFAULT set: a deliberately loose SCF
+/// (one SCF, one stress) is refused with the exact message. Deleting the gate
+/// in `uks_stress_with` makes this fail (the stress is returned).
+#[test]
+fn loose_uks_scf_fires_the_stationarity_gate_with_the_exact_message() {
+    SETTINGS.with(|s| s.set(LOOSE_UKS));
+    let loose = fixture(&H3, G111, "PBE", Jk::Dense, ExxDiv::None);
+    let e = stress_with(&loose, "PBE", &loose.res.scf, &scfg(None, None, None, None))
+        .expect_err("loose SCF accepted")
+        .to_string();
+    let head = "kpoint_uks_stress: the spin Fock/density commutator max|F D S - S D F| = ";
+    let tail = " exceeds 1e-5: not a stationary state (the stress is first order in it); \
+                converge the SCF tighter";
+    let body = e.strip_prefix("General error: ").unwrap_or(&e);
+    let mid = body
+        .strip_prefix(head)
+        .and_then(|r| r.strip_suffix(tail))
+        .unwrap_or_else(|| panic!("message differs: {e}"));
+    let c: f64 = mid.parse().unwrap_or_else(|_| panic!("number {mid}: {e}"));
+    assert!(c > UKS_COMMUTATOR_TOL, "{c:e}");
 }
 
 // ------------------------------------------------------------------ memory
@@ -1324,12 +1352,16 @@ fn jk_mats(z: &Zx, d: &[Array2<Complex64>]) -> (Vec<Array2<Complex64>>, Vec<Arra
     (j, k)
 }
 
-/// The XC chunk charge, read from the typed error of the PRODUCTION PBE0 path:
-/// bisect the budget until the AO-moment chunk check fails and compare its byte
-/// count with the arithmetic of the module doc (40 AO planes per k and point,
-/// eight work planes, four N_k nbf^2 partial-V/accumulator arrays).
+/// The XC chunk charge, read from the typed error of the PRODUCTION PBE0 path.
+/// Stage order in production: open_ledger, strain grid / AO list, XC chunk gate,
+/// Fock-guard reservation, then the HF assembly (strain K list, ...). A budget
+/// error is therefore "too small" iff it comes from a stage BEFORE the chunk gate
+/// (matched by marker), "too big" iff it comes from a later stage or the run
+/// succeeds. At most 16 probes over [0, 8 MB]. The charge is compared with the
+/// module-doc arithmetic (40 AO planes per k and point, eight work planes, four
+/// N_k nbf^2 arrays).
 #[test]
-#[ignore = "bisection never reached the XC chunk gate within 12-60 min (each probe is a full PBE0 stress); the ledger charge is recorded by arithmetic only, see not-covered"]
+#[ignore = "five-probe budget bisection plus the PBE0 SCF fixture; measured 73 s (over the 60 s default-set guideline); fails if the chunk charge term is removed (verified)"]
 fn xc_chunk_charge_is_read_from_the_production_error() {
     let fx = fixture(&H3, G113, "PBE0", Jk::Dense, ExxDiv::Ewald);
     let at = |b: usize| {
@@ -1337,21 +1369,35 @@ fn xc_chunk_charge_is_read_from_the_production_error() {
         cfg.base.stress.budget_bytes = Some(b);
         stress_with(&fx, &fx.functional, &fx.res.scf, &cfg)
     };
-    let (mut lo, mut hi) = (0usize, 64usize << 20);
+    let early = [
+        "per-k complex",
+        "residue-folded",
+        "grid",
+        "AO list",
+        "translation",
+    ];
+    let (mut lo, mut hi) = (0usize, 8usize << 20);
     let mut found = None;
-    for _ in 0..60 {
+    for _ in 0..16 {
         let mid = lo + (hi - lo) / 2;
         match at(mid) {
             Err(e) => {
                 let m = e.to_string();
-                eprintln!("b={mid}: {}", &m[..m.len().min(120)]);
+                eprintln!("b={mid}: {}", &m[..m.len().min(140)]);
                 if m.contains("UKS XC stress AO moment chunk") {
                     found = Some(m);
                     break;
                 }
-                lo = mid;
+                if early.iter().any(|k| m.contains(k)) {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
             }
-            Ok(_) => hi = mid,
+            Ok(_) => {
+                eprintln!("b={mid}: ok");
+                hi = mid;
+            }
         }
     }
     let m = found.expect("the bisection must land on the XC chunk gate");
@@ -1532,8 +1578,9 @@ fn uniform_grid_stress_is_symmetric_and_matches_fd() {
 /// Default-set subset of the mutant sweep: the three defects that most need the
 /// open-shell Gamma anchor (a spin swap in the XC strain, the other spin's
 /// exchange in the Pulay Fock, the exchange fraction applied twice). Each must
-/// miss the Gamma reference by far more than the 1e-5 mutant bar (measured
-/// misses 1.6e-1 and 4.6e-1 in the full sweep).
+/// miss the Gamma reference by far more than the 1e-5 mutant bar (misses
+/// measured in the full sweep: XcSpinSwap 1.6e-1, PulayKSwap 4.6e-1,
+/// ExchScaledTwice 3.0e-1).
 #[test]
 fn spin_and_scaling_mutants_are_caught_by_the_gamma_anchor() {
     let f = "PBE0";
