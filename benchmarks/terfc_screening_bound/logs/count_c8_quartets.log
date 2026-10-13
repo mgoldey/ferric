@@ -1,0 +1,143 @@
+warning: ferric-integrals@0.1.0: libint2 headers and library from /home/matt/.local/libint2-2.13.1
+warning: ferric-integrals@0.1.0: libint2 2.13.1 boys.h override applied (GmEval copy fix)
+warning: ferric-integrals@0.1.0: In file included from /home/matt/.local/libint2-2.13.1/include/libint2/./engine.impl.h:34,
+warning: ferric-integrals@0.1.0:                  from /home/matt/.local/libint2-2.13.1/include/libint2/engine.h:1113,
+warning: ferric-integrals@0.1.0:                  from /home/matt/.local/libint2-2.13.1/include/libint2/cxxapi.h:46,
+warning: ferric-integrals@0.1.0:                  from /home/matt/.local/libint2-2.13.1/include/libint2.hpp:24,
+warning: ferric-integrals@0.1.0:                  from shim/shim.cc:5:
+warning: ferric-integrals@0.1.0: /home/matt/qc/ferric/.claude/worktrees/agent-aff8a3d240a209043/crates/ferric-integrals/shim/libint2_overrides/2.13.1/libint2/boys.h: In constructor 'libint2::TennoGmEval<Real>::TennoGmEval(unsigned int, Real)':
+warning: ferric-integrals@0.1.0: /home/matt/qc/ferric/.claude/worktrees/agent-aff8a3d240a209043/crates/ferric-integrals/shim/libint2_overrides/2.13.1/libint2/boys.h:1025: note: '-Wmisleading-indentation' is disabled from this point onwards, since column-tracking was disabled due to the size of the code/headers
+warning: ferric-integrals@0.1.0:  1025 |     if (precision_ < maxabsprecision)
+warning: ferric-integrals@0.1.0:       |
+warning: ferric-integrals@0.1.0: /home/matt/qc/ferric/.claude/worktrees/agent-aff8a3d240a209043/crates/ferric-integrals/shim/libint2_overrides/2.13.1/libint2/boys.h:1025: note: adding '-flarge-source-files' will allow for more column-tracking support, at the expense of compilation time and memory
+warning: ferric-integrals@0.1.0: shim/shim.cc: In function 'void {anonymous}::tform_axis(int, int, const std::vector<double>&, std::vector<double>&)':
+warning: ferric-integrals@0.1.0: shim/shim.cc:3064: warning: comparison of integer expressions of different signedness: 'int' and 'const unsigned int' [-Wsign-compare]
+warning: ferric-integrals@0.1.0:  3064 |         for (int ic = 0; ic < nc; ++ic) {
+warning: ferric-integrals@0.1.0:       |
+warning: ferric-integrals@0.1.0: shim/shim.cc: In function 'void {anonymous}::transform_cart_to_pure3(const libint2::Shell&, const libint2::Shell&, const libint2::Shell&, const std::vector<double>&, std::vector<double>&)':
+warning: ferric-integrals@0.1.0: shim/shim.cc:3125: warning: comparison of integer expressions of different signedness: 'int' and 'const unsigned int' [-Wsign-compare]
+warning: ferric-integrals@0.1.0:  3125 |                 for (int ic = 0; ic < nc; ++ic) acc += cval[ic] * src[cidx[ic]];
+warning: ferric-integrals@0.1.0:       |
+warning: ferric-integrals@0.1.0: shim/shim.cc: In function 'void {anonymous}::transform_cart_to_pure2(const libint2::Shell&, const libint2::Shell&, const std::vector<double>&, std::vector<double>&)':
+warning: ferric-integrals@0.1.0: shim/shim.cc:3161: warning: comparison of integer expressions of different signedness: 'int' and 'const unsigned int' [-Wsign-compare]
+warning: ferric-integrals@0.1.0:  3161 |                 for (int ic = 0; ic < nc; ++ic) acc += cval[ic] * src[cidx[ic]];
+warning: ferric-integrals@0.1.0:       |
+warning: ferric-integrals@0.1.0: shim/shim.cc: In function 'void {anonymous}::transform_cart_to_pure4(const libint2::Shell&, const libint2::Shell&, const libint2::Shell&, const libint2::Shell&, const std::vector<double>&, std::vector<double>&)':
+warning: ferric-integrals@0.1.0: shim/shim.cc:3243: warning: comparison of integer expressions of different signedness: 'int' and 'const unsigned int' [-Wsign-compare]
+warning: ferric-integrals@0.1.0:  3243 |                 for (int ic = 0; ic < nc; ++ic) acc += cval[ic] * src[cidx[ic]];
+warning: ferric-integrals@0.1.0:       |
+warning: ferric-integrals@0.1.0: In file included from /usr/include/c++/12/cassert:44,
+warning: ferric-integrals@0.1.0:                  from /home/matt/.local/libint2-2.13.1/include/libint2/shell.h:34,
+warning: ferric-integrals@0.1.0:                  from /home/matt/.local/libint2-2.13.1/include/libint2/basis.h:53,
+warning: ferric-integrals@0.1.0:                  from /home/matt/.local/libint2-2.13.1/include/libint2/cxxapi.h:44:
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/shell.h: In instantiation of 'constexpr Real libint2::math::df_Kminus1_real(Int) [with Real = double; Int = int; <template-parameter-1-3> = void]':
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/shell.h:925:54:   required from here
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/shell.h:655:12: warning: comparison of integer expressions of different signedness: 'int' and 'std::array<long int, 35>::size_type' {aka 'long unsigned int'} [-Wsign-compare]
+warning: ferric-integrals@0.1.0:   655 |   assert(k < df_Kminus1.size() || k < df_Kminus1_ld.size());
+warning: ferric-integrals@0.1.0:       |          ~~^~~~~~~~~~~~~~~~~~~
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/shell.h:655:37: warning: comparison of integer expressions of different signedness: 'int' and 'std::array<long double, 302>::size_type' {aka 'long unsigned int'} [-Wsign-compare]
+warning: ferric-integrals@0.1.0:   655 |   assert(k < df_Kminus1.size() || k < df_Kminus1_ld.size());
+warning: ferric-integrals@0.1.0:       |                                   ~~^~~~~~~~~~~~~~~~~~~~~~
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/shell.h:657:12: warning: comparison of integer expressions of different signedness: 'int' and 'std::array<long int, 35>::size_type' {aka 'long unsigned int'} [-Wsign-compare]
+warning: ferric-integrals@0.1.0:   657 |   assert(k < df_Kminus1.size() || (std::is_same<Real, double>::value ||
+warning: ferric-integrals@0.1.0:       |          ~~^~~~~~~~~~~~~~~~~~~
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/shell.h:661:13: warning: comparison of integer expressions of different signedness: 'int' and 'std::array<long int, 35>::size_type' {aka 'long unsigned int'} [-Wsign-compare]
+warning: ferric-integrals@0.1.0:   661 |   return (k < df_Kminus1.size()) ? static_cast<Real>(df_Kminus1[k])
+warning: ferric-integrals@0.1.0:       |          ~~~^~~~~~~~~~~~~~~~~~~~
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/shell.h: In instantiation of 'constexpr Real libint2::math::fac_real(Int) [with Real = double; Int = int; <template-parameter-1-3> = void]':
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/shell.h:1218:35:   required from 'void libint2::ShellPair::init(const libint2::Shell&, const libint2::Shell&, Real, libint2::ScreeningMethod) [with Real = double]'
+warning: ferric-integrals@0.1.0: shim/shim.cc:196:0:   required from here
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/shell.h:271:12: warning: comparison of integer expressions of different signedness: 'int' and 'std::array<long int, 21>::size_type' {aka 'long unsigned int'} [-Wsign-compare]
+warning: ferric-integrals@0.1.0:   271 |   assert(k < fac.size() || k < fac_ld.size());
+warning: ferric-integrals@0.1.0:       |          ~~^~~~~~~~~~~~
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/shell.h:271:30: warning: comparison of integer expressions of different signedness: 'int' and 'std::array<long double, 171>::size_type' {aka 'long unsigned int'} [-Wsign-compare]
+warning: ferric-integrals@0.1.0:   271 |   assert(k < fac.size() || k < fac_ld.size());
+warning: ferric-integrals@0.1.0:       |                            ~~^~~~~~~~~~~~~~~
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/shell.h:273:12: warning: comparison of integer expressions of different signedness: 'int' and 'std::array<long int, 21>::size_type' {aka 'long unsigned int'} [-Wsign-compare]
+warning: ferric-integrals@0.1.0:   273 |   assert(k < fac.size() || (std::is_same<Real, double>::value ||
+warning: ferric-integrals@0.1.0:       |          ~~^~~~~~~~~~~~
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/shell.h:278:13: warning: comparison of integer expressions of different signedness: 'int' and 'std::array<long int, 21>::size_type' {aka 'long unsigned int'} [-Wsign-compare]
+warning: ferric-integrals@0.1.0:   278 |   return (k < fac.size()) ? static_cast<Real>(fac[k])
+warning: ferric-integrals@0.1.0:       |          ~~~^~~~~~~~~~~~~
+warning: ferric-integrals@0.1.0: In file included from /home/matt/.local/libint2-2.13.1/include/libint2/engine.h:41:
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/solidharmonics.h: In instantiation of 'void libint2::solidharmonics::SolidHarmonicsCoefficients<Real>::init() [with Real = double]':
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/solidharmonics.h:66:9:   required from 'libint2::solidharmonics::SolidHarmonicsCoefficients<Real>::SolidHarmonicsCoefficients(unsigned char) [with Real = double]'
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/solidharmonics.h:271:43:   required from 'libint2::solidharmonics::SolidHarmonicsCoefficients<Real>::CtorHelperIter::value_type libint2::solidharmonics::SolidHarmonicsCoefficients<Real>::CtorHelperIter::operator*() const [with Real = double; value_type = libint2::solidharmonics::SolidHarmonicsCoefficients<double>]'
+warning: ferric-integrals@0.1.0: /usr/include/c++/12/bits/stl_vector.h:1670:21:   required from 'void std::vector<_Tp, _Alloc>::_M_range_initialize(_InputIterator, _InputIterator, std::input_iterator_tag) [with _InputIterator = libint2::solidharmonics::SolidHarmonicsCoefficients<double>::CtorHelperIter; _Tp = libint2::solidharmonics::SolidHarmonicsCoefficients<double>; _Alloc = std::allocator<libint2::solidharmonics::SolidHarmonicsCoefficients<double> >]'
+warning: ferric-integrals@0.1.0: /usr/include/c++/12/bits/stl_vector.h:708:23:   required from 'std::vector<_Tp, _Alloc>::vector(_InputIterator, _InputIterator, const allocator_type&) [with _InputIterator = libint2::solidharmonics::SolidHarmonicsCoefficients<double>::CtorHelperIter; <template-parameter-2-2> = void; _Tp = libint2::solidharmonics::SolidHarmonicsCoefficients<double>; _Alloc = std::allocator<libint2::solidharmonics::SolidHarmonicsCoefficients<double> >; allocator_type = std::allocator<libint2::solidharmonics::SolidHarmonicsCoefficients<double> >]'
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/solidharmonics.h:84:52:   required from 'static const libint2::solidharmonics::SolidHarmonicsCoefficients<Real>& libint2::solidharmonics::SolidHarmonicsCoefficients<Real>::instance(unsigned int) [with Real = double]'
+warning: ferric-integrals@0.1.0: shim/shim.cc:3059:0:   required from here
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/solidharmonics.h:191:55: warning: comparison of integer expressions of different signedness: 'int' and 'const unsigned int' [-Wsign-compare]
+warning: ferric-integrals@0.1.0:   191 |       for (signed int pure_idx = 0, m = -l_; pure_idx != npure; ++pure_idx, ++m)
+warning: ferric-integrals@0.1.0:       |                                              ~~~~~~~~~^~~~~~~~
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/solidharmonics.h:195:53: warning: comparison of integer expressions of different signedness: 'int' and 'const unsigned int' [-Wsign-compare]
+warning: ferric-integrals@0.1.0:   195 |       for (signed int pure_idx = 0, m = 0; pure_idx != npure;
+warning: ferric-integrals@0.1.0:       |                                            ~~~~~~~~~^~~~~~~~
+warning: ferric-integrals@0.1.0: /home/matt/.local/libint2-2.13.1/include/libint2/solidharmonics.h:203:44: warning: comparison of integer expressions of different signedness: 'int' and 'const unsigned int' [-Wsign-compare]
+warning: ferric-integrals@0.1.0:   203 |     for (signed int pure_idx = 0; pure_idx != npure; ++pure_idx) {
+warning: ferric-integrals@0.1.0:       |                                   ~~~~~~~~~^~~~~~~~
+warning: function `PI_` should have a snake case name
+   --> crates/ferric-mp2/tests/terfc_screen_probe.rs:252:4
+    |
+252 | fn PI_() -> f64 {
+    |    ^^^ help: convert the identifier to snake case: `pi`
+    |
+    = note: `#[warn(non_snake_case)]` (part of `#[warn(nonstandard_style)]`) on by default
+
+warning: `ferric-mp2` (test "terfc_screen_probe") generated 1 warning
+    Finished `release` profile [optimized] target(s) in 0.24s
+     Running tests/terfc_screen_probe.rs (target/release/deps/terfc_screen_probe-2df9602a907fa43f)
+
+running 1 test
+SETUP alkane_8.xyz nsh_obs=76 nbf=108 nsh_aux=252 naux=700 pairs=2926 f=0.9
+COUNT3 terfc:1.0:0.70710678 delta=1e-4 tau=1e-4 total=737352 frac[oracle,schwarz,B1,min(S,B1)]=[0.3125,0.5903,0.7714,0.5386] wfrac=[0.2607,0.5088,0.7289,0.4665] miss[S,B1,cmb]=[0, 0, 0] falsepos[S,B1,cmb]=[204860, 338416, 166772]
+COUNT3 terfc:1.0:0.70710678 delta=1e-4 tau=1e-6 total=737352 frac[oracle,schwarz,B1,min(S,B1)]=[0.4821,0.7031,0.8314,0.6667] wfrac=[0.4129,0.6162,0.7859,0.5844] miss[S,B1,cmb]=[0, 0, 0] falsepos[S,B1,cmb]=[163026, 257598, 136154]
+COUNT3 terfc:1.0:0.70710678 delta=1e-4 tau=1e-8 total=737352 frac[oracle,schwarz,B1,min(S,B1)]=[0.6104,0.7726,0.8712,0.7485] wfrac=[0.5280,0.6859,0.8260,0.6641] miss[S,B1,cmb]=[0, 0, 0] falsepos[S,B1,cmb]=[119620, 192328, 101842]
+COUNT3B2 terfc:1.0:0.70710678 tau=1e-4 sample=3010 frac[oracle,schwarz,B2,min(S,B2)]=[0.3083,0.5857,0.4900,0.4734] wfrac=[0.2539,0.5129,0.4789,0.4488] B2miss=0
+COUNT3B2 terfc:1.0:0.70710678 tau=1e-6 sample=3010 frac[oracle,schwarz,B2,min(S,B2)]=[0.4900,0.7123,0.6558,0.6485] wfrac=[0.4236,0.6300,0.5998,0.5886] B2miss=0
+COUNT3B2 terfc:1.0:0.70710678 tau=1e-8 sample=3010 frac[oracle,schwarz,B2,min(S,B2)]=[0.6236,0.7767,0.7458,0.7439] wfrac=[0.5411,0.6900,0.6704,0.6686] B2miss=0
+PRIM3 terfc:1.0:0.70710678 tau=1e-4 sample=500 work(prim triples x nfn) surviving: coul-prim-bound=0.4135 kernel-prim-bound=0.3419 | after shell-Schwarz: shell-frac=0.5392 +coul-prim=0.4052 +kernel-prim=0.3371 (fractions of ALL triples' primitive work)
+PRIM3 terfc:1.0:0.70710678 tau=1e-6 sample=500 work(prim triples x nfn) surviving: coul-prim-bound=0.4895 kernel-prim-bound=0.4473 | after shell-Schwarz: shell-frac=0.5866 +coul-prim=0.4751 +kernel-prim=0.4383 (fractions of ALL triples' primitive work)
+PRIM3 terfc:1.0:0.70710678 tau=1e-8 sample=500 work(prim triples x nfn) surviving: coul-prim-bound=0.5561 kernel-prim-bound=0.5208 | after shell-Schwarz: shell-frac=0.6826 +coul-prim=0.5422 +kernel-prim=0.5121 (fractions of ALL triples' primitive work)
+COUNT2 terfc:1.0:0.70710678 delta=1e-4 tau=1e-4 total=31878 frac[oracle,schwarz,B1,cmb]=[0.6917,1.0000,0.9364,0.9364]
+COUNT2 terfc:1.0:0.70710678 delta=1e-4 tau=1e-6 total=31878 frac[oracle,schwarz,B1,cmb]=[0.8020,1.0000,0.9684,0.9684]
+COUNT2 terfc:1.0:0.70710678 delta=1e-4 tau=1e-8 total=31878 frac[oracle,schwarz,B1,cmb]=[0.8713,1.0000,0.9855,0.9855]
+test terfc_screen_probe has been running for over 60 seconds
+COUNT4 terfc:1.0:0.70710678 delta=1e-4 tau=1e-4 total=4282201 frac[oracle,S,B1,cmb]=[0.0978,0.2347,0.7438,0.2122] wfrac=[0.0760,0.1865,0.6520,0.1626] miss=[0, 0, 0]
+COUNT4 terfc:1.0:0.70710678 delta=1e-4 tau=1e-6 total=4282201 frac[oracle,S,B1,cmb]=[0.2158,0.3717,0.7838,0.3495] wfrac=[0.1635,0.2908,0.6920,0.2662] miss=[0, 0, 0]
+COUNT4 terfc:1.0:0.70710678 delta=1e-4 tau=1e-8 total=4282201 frac[oracle,S,B1,cmb]=[0.3407,0.4789,0.8191,0.4612] wfrac=[0.2578,0.3771,0.7298,0.3551] miss=[0, 0, 0]
+COUNT3 terfc:0.991:1.354 delta=1e-4 tau=1e-4 total=737352 frac[oracle,schwarz,B1,min(S,B1)]=[0.2582,0.5913,0.7288,0.4970] wfrac=[0.2187,0.5112,0.6837,0.4241] miss[S,B1,cmb]=[0, 0, 0] falsepos[S,B1,cmb]=[245550, 346992, 176028]
+COUNT3 terfc:0.991:1.354 delta=1e-4 tau=1e-6 total=737352 frac[oracle,schwarz,B1,min(S,B1)]=[0.3928,0.7030,0.7800,0.6152] wfrac=[0.3337,0.6167,0.7318,0.5312] miss[S,B1,cmb]=[0, 0, 0] falsepos[S,B1,cmb]=[228764, 285510, 164022]
+COUNT3 terfc:0.991:1.354 delta=1e-4 tau=1e-8 total=737352 frac[oracle,schwarz,B1,min(S,B1)]=[0.5032,0.7736,0.8191,0.6972] wfrac=[0.4329,0.6870,0.7706,0.6098] miss[S,B1,cmb]=[0, 0, 0] falsepos[S,B1,cmb]=[199376, 232924, 143030]
+COUNT3B2 terfc:0.991:1.354 tau=1e-4 sample=3010 frac[oracle,schwarz,B2,min(S,B2)]=[0.2508,0.5870,0.4432,0.4302] wfrac=[0.2138,0.5149,0.4433,0.4177] B2miss=0
+COUNT3B2 terfc:0.991:1.354 tau=1e-6 sample=3010 frac[oracle,schwarz,B2,min(S,B2)]=[0.4020,0.7120,0.6286,0.6226] wfrac=[0.3332,0.6320,0.5801,0.5713] B2miss=0
+COUNT3B2 terfc:0.991:1.354 tau=1e-8 sample=3010 frac[oracle,schwarz,B2,min(S,B2)]=[0.5176,0.7764,0.7326,0.7309] wfrac=[0.4408,0.6907,0.6605,0.6594] B2miss=0
+PRIM3 terfc:0.991:1.354 tau=1e-4 sample=500 work(prim triples x nfn) surviving: coul-prim-bound=0.4135 kernel-prim-bound=0.3178 | after shell-Schwarz: shell-frac=0.5392 +coul-prim=0.4052 +kernel-prim=0.3154 (fractions of ALL triples' primitive work)
+PRIM3 terfc:0.991:1.354 tau=1e-6 sample=500 work(prim triples x nfn) surviving: coul-prim-bound=0.4895 kernel-prim-bound=0.4286 | after shell-Schwarz: shell-frac=0.5866 +coul-prim=0.4751 +kernel-prim=0.4216 (fractions of ALL triples' primitive work)
+PRIM3 terfc:0.991:1.354 tau=1e-8 sample=500 work(prim triples x nfn) surviving: coul-prim-bound=0.5561 kernel-prim-bound=0.5071 | after shell-Schwarz: shell-frac=0.6857 +coul-prim=0.5433 +kernel-prim=0.5030 (fractions of ALL triples' primitive work)
+COUNT2 terfc:0.991:1.354 delta=1e-4 tau=1e-4 total=31878 frac[oracle,schwarz,B1,cmb]=[0.5520,1.0000,0.8278,0.8278]
+COUNT2 terfc:0.991:1.354 delta=1e-4 tau=1e-6 total=31878 frac[oracle,schwarz,B1,cmb]=[0.6358,1.0000,0.8610,0.8610]
+COUNT2 terfc:0.991:1.354 delta=1e-4 tau=1e-8 total=31878 frac[oracle,schwarz,B1,cmb]=[0.7091,1.0000,0.8880,0.8880]
+COUNT4 terfc:0.991:1.354 delta=1e-4 tau=1e-4 total=4282201 frac[oracle,S,B1,cmb]=[0.0806,0.2348,0.7341,0.2024] wfrac=[0.0633,0.1878,0.6413,0.1528] miss=[0, 0, 0]
+COUNT4 terfc:0.991:1.354 delta=1e-4 tau=1e-6 total=4282201 frac[oracle,S,B1,cmb]=[0.1778,0.3719,0.7672,0.3327] wfrac=[0.1321,0.2924,0.6729,0.2478] miss=[0, 0, 0]
+COUNT4 terfc:0.991:1.354 delta=1e-4 tau=1e-8 total=4282201 frac[oracle,S,B1,cmb]=[0.2823,0.4787,0.7989,0.4407] wfrac=[0.2083,0.3775,0.7061,0.3316] miss=[0, 0, 0]
+COUNT3 terfc:1.0:2 delta=1e-4 tau=1e-4 total=737352 frac[oracle,schwarz,B1,min(S,B1)]=[0.2422,0.5924,0.7094,0.4781] wfrac=[0.2071,0.5128,0.6629,0.4044] miss[S,B1,cmb]=[0, 0, 0] falsepos[S,B1,cmb]=[258238, 344486, 173948]
+COUNT3 terfc:1.0:2 delta=1e-4 tau=1e-6 total=737352 frac[oracle,schwarz,B1,min(S,B1)]=[0.3675,0.7037,0.7518,0.5874] wfrac=[0.3102,0.6172,0.7026,0.5022] miss[S,B1,cmb]=[0, 0, 0] falsepos[S,B1,cmb]=[247906, 283384, 162152]
+COUNT3 terfc:1.0:2 delta=1e-4 tau=1e-8 total=737352 frac[oracle,schwarz,B1,min(S,B1)]=[0.4653,0.7744,0.7853,0.6639] wfrac=[0.3968,0.6879,0.7353,0.5752] miss[S,B1,cmb]=[0, 0, 0] falsepos[S,B1,cmb]=[227920, 235926, 146414]
+COUNT3B2 terfc:1.0:2 tau=1e-4 sample=3010 frac[oracle,schwarz,B2,min(S,B2)]=[0.2365,0.5887,0.4306,0.4189] wfrac=[0.2049,0.5174,0.4313,0.4100] B2miss=0
+COUNT3B2 terfc:1.0:2 tau=1e-6 sample=3010 frac[oracle,schwarz,B2,min(S,B2)]=[0.3704,0.7130,0.6193,0.6143] wfrac=[0.3091,0.6326,0.5715,0.5664] B2miss=0
+COUNT3B2 terfc:1.0:2 tau=1e-8 sample=3010 frac[oracle,schwarz,B2,min(S,B2)]=[0.4824,0.7767,0.7279,0.7262] wfrac=[0.3991,0.6907,0.6573,0.6562] B2miss=0
+PRIM3 terfc:1.0:2 tau=1e-4 sample=500 work(prim triples x nfn) surviving: coul-prim-bound=0.4135 kernel-prim-bound=0.3087 | after shell-Schwarz: shell-frac=0.5392 +coul-prim=0.4052 +kernel-prim=0.3070 (fractions of ALL triples' primitive work)
+PRIM3 terfc:1.0:2 tau=1e-6 sample=500 work(prim triples x nfn) surviving: coul-prim-bound=0.4895 kernel-prim-bound=0.4204 | after shell-Schwarz: shell-frac=0.5885 +coul-prim=0.4754 +kernel-prim=0.4135 (fractions of ALL triples' primitive work)
+PRIM3 terfc:1.0:2 tau=1e-8 sample=500 work(prim triples x nfn) surviving: coul-prim-bound=0.5561 kernel-prim-bound=0.5025 | after shell-Schwarz: shell-frac=0.6900 +coul-prim=0.5447 +kernel-prim=0.4984 (fractions of ALL triples' primitive work)
+COUNT2 terfc:1.0:2 delta=1e-4 tau=1e-4 total=31878 frac[oracle,schwarz,B1,cmb]=[0.5063,1.0000,0.7729,0.7729]
+COUNT2 terfc:1.0:2 delta=1e-4 tau=1e-6 total=31878 frac[oracle,schwarz,B1,cmb]=[0.5825,1.0000,0.8002,0.8002]
+COUNT2 terfc:1.0:2 delta=1e-4 tau=1e-8 total=31878 frac[oracle,schwarz,B1,cmb]=[0.6401,1.0000,0.8254,0.8254]
+COUNT4 terfc:1.0:2 delta=1e-4 tau=1e-4 total=4282201 frac[oracle,S,B1,cmb]=[0.0759,0.2366,0.7298,0.1991] wfrac=[0.0591,0.1899,0.6361,0.1490] miss=[0, 0, 0]
+COUNT4 terfc:1.0:2 delta=1e-4 tau=1e-6 total=4282201 frac[oracle,S,B1,cmb]=[0.1673,0.3730,0.7586,0.3249] wfrac=[0.1227,0.2931,0.6641,0.2394] miss=[0, 0, 0]
+COUNT4 terfc:1.0:2 delta=1e-4 tau=1e-8 total=4282201 frac[oracle,S,B1,cmb]=[0.2648,0.4803,0.7861,0.4292] wfrac=[0.1927,0.3796,0.6920,0.3191] miss=[0, 0, 0]
+test terfc_screen_probe ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 202.98s
+
+WALL 203 s
