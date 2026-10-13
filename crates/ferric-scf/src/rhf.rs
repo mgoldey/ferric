@@ -1842,6 +1842,7 @@ fn solve_rhf_impl(
     // Shared constructor for every non-converged exit path (MaxIter / Stalled /
     // Diverged). The Converged path re-diagonalizes fresh and is NOT built from
     // this closure.
+    let mut last_report: Option<crate::result::ConvergenceReport> = None;
     let build_nonconverged = |exit: ScfExit,
                               d: &Array2<f64>,
                               c: &Array2<f64>,
@@ -1851,7 +1852,8 @@ fn solve_rhf_impl(
                               iter: usize,
                               cq: usize,
                               induced_dipoles: Option<Array2<f64>>,
-                              cosx_schedule: Option<crate::cosx_schedule::CosxScheduleRecord>|
+                              cosx_schedule: Option<crate::cosx_schedule::CosxScheduleRecord>,
+                              convergence: Option<crate::result::ConvergenceReport>|
      -> ScfResult {
         ScfResult {
             spin: Spin::Restricted,
@@ -1879,6 +1881,7 @@ fn solve_rhf_impl(
             rohf_spin_focks: None,
             cosx_final: None,
             cosx_schedule,
+            convergence,
         }
     };
 
@@ -2227,6 +2230,16 @@ fn solve_rhf_impl(
             (err.iter().map(|v| v * v).sum::<f64>() / n).sqrt()
         };
 
+        last_report = Some(crate::result::ConvergenceReport {
+            iteration: iter,
+            de,
+            dp_rms: mon.dp_rms,
+            dp_max: mon.dp_max,
+            err_max,
+            energy_conv: config.energy_conv,
+            density_conv: config.density_conv,
+        });
+
         if scf_trace() {
             eprintln!(
                 "SCF iter={iter:4}  E={energy:.12}  dE={de:.3e}  \
@@ -2311,6 +2324,7 @@ fn solve_rhf_impl(
                 total_quartets,
                 last_induced_dipoles.clone(),
                 crate::cosx_schedule::record(&cosx_sched),
+                last_report,
             ));
         }
 
@@ -2333,6 +2347,7 @@ fn solve_rhf_impl(
                 total_quartets,
                 last_induced_dipoles.clone(),
                 crate::cosx_schedule::record(&cosx_sched),
+                last_report,
             ));
         }
 
@@ -2423,6 +2438,7 @@ fn solve_rhf_impl(
                     rohf_spin_focks: None,
                     cosx_final,
                     cosx_schedule: crate::cosx_schedule::record(&cosx_sched),
+                    convergence: last_report,
                 });
             }
         }
@@ -2937,6 +2953,7 @@ fn solve_rhf_impl(
         total_quartets,
         last_induced_dipoles,
         crate::cosx_schedule::record(&cosx_sched),
+        last_report,
     ))
 }
 
@@ -3499,6 +3516,63 @@ mod tests {
         assert_eq!(quiet.energy, loud.energy);
         assert_eq!(quiet.iterations, loud.iterations);
         assert_eq!(quiet.converged, loud.converged);
+    }
+
+    /// The convergence record on a converged run carries the signals the gate
+    /// accepted, at the iteration the solver reports, with the config's
+    /// thresholds, and nothing unmet.
+    #[test]
+    fn convergence_report_on_converged_run_matches_the_gate() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let bs = ferric_core::basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+        let config = RhfConfig::default();
+        let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
+        assert!(r.converged);
+        let c = r.convergence.expect("converged RHF carries a report");
+        assert_eq!(c.iteration, r.iterations);
+        assert_eq!(c.energy_conv, config.energy_conv);
+        assert_eq!(c.density_conv, config.density_conv);
+        assert!(c.dp_rms < c.density_conv && c.dp_max < 10.0 * c.density_conv);
+        assert!(c.unmet().is_empty(), "{}", c.describe());
+    }
+
+    /// An iteration-capped run reports WHICH criterion it missed: with a 3
+    /// iteration cap and a 1e-12 density gate the density criteria are unmet,
+    /// the report is the cap iteration's, and the text names them.
+    #[test]
+    fn convergence_report_on_maxiter_names_the_unmet_criterion() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let bs = ferric_core::basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+        let config = RhfConfig {
+            max_iter: 3,
+            density_conv: 1e-12,
+            ..Default::default()
+        };
+        let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
+        assert!(!r.converged);
+        assert_eq!(r.exit, ScfExit::MaxIter);
+        let c = r.convergence.expect("MaxIter exit carries a report");
+        assert_eq!(c.iteration, 3);
+        assert_eq!(c.density_conv, 1e-12);
+        let unmet = c.unmet();
+        assert!(unmet.contains(&"dp_rms"), "{}", c.describe());
+        let text = c.describe();
+        assert!(text.contains("iteration 3") && text.contains("unmet: dp_rms"), "{text}");
+        // The report is a pure observer: same energy and iteration count as an
+        // identical run (determinism anchor for the bit-identity claim).
+        let again = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
+        assert_eq!(r.energy, again.energy);
+        assert_eq!(r.iterations, again.iterations);
     }
 
     #[test]

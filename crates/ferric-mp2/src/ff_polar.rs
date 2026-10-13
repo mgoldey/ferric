@@ -208,6 +208,7 @@ pub(crate) fn solve_rhf_with_external(
                 rohf_spin_focks: None,
                 cosx_final: None,
                 cosx_schedule: None,
+                convergence: None,
             });
         }
         prev_e = energy;

@@ -561,6 +561,17 @@ fn build_external_potential_with_smeared(
 
 // ── RHF ──
 
+/// Human-readable SCF exit line: exit reason, iterations, final residuals vs
+/// thresholds and the unmet gate criteria. Shared by `RhfResult.convergence_summary`
+/// and the non-convergence `RuntimeWarning` of `run_rhf`.
+fn scf_exit_summary(r: &ScfResult) -> String {
+    let head = format!("SCF exit {:?} after {} iterations", r.exit, r.iterations);
+    match r.convergence {
+        Some(c) => format!("{head}; last {}", c.describe()),
+        None => format!("{head}; no per-iteration convergence record"),
+    }
+}
+
 /// Result of a closed-shell RHF (or `run_ksdft` KS-DFT) calculation.
 #[pyclass]
 #[pyo3(name = "RhfResult")]
@@ -609,6 +620,60 @@ impl PyRhfResult {
     fn cosx_final_pass(&self, py: Python<'_>) -> PyResult<Option<Py<pyo3::types::PyDict>>> {
         cosx_final_dict(py, self.scf_data.cosx_final)
     }
+    /// SCF exit reason: the `ScfExit` variant name (`"Converged"`, `"Plateau"`,
+    /// `"Stalled"`, `"Diverged"`, `"MaxIter"`). `converged=False` with
+    /// `"MaxIter"` means the iteration cap (`max_iter`) was reached; the final
+    /// residuals below say how far from the thresholds the run was.
+    #[getter]
+    fn exit_reason(&self) -> String {
+        format!("{:?}", self.scf_data.exit)
+    }
+    /// |E - E_prev| at the last SCF iteration (Hartree), or `None` if this
+    /// result carries no convergence record.
+    #[getter]
+    fn final_de(&self) -> Option<f64> {
+        self.scf_data.convergence.map(|c| c.de)
+    }
+    /// RMS density change at the last SCF iteration (the primary gate,
+    /// compared against `density_conv`), or `None`.
+    #[getter]
+    fn final_dp_rms(&self) -> Option<f64> {
+        self.scf_data.convergence.map(|c| c.dp_rms)
+    }
+    /// Max-element density change at the last SCF iteration (gated at
+    /// `10 * density_conv`), or `None`.
+    #[getter]
+    fn final_dp_max(&self) -> Option<f64> {
+        self.scf_data.convergence.map(|c| c.dp_max)
+    }
+    /// Max |FDS - SDF| (DIIS commutator) at the last iteration. Diagnostic
+    /// only: it is never a convergence gate. `None` if not recorded.
+    #[getter]
+    fn final_diis_err_max(&self) -> Option<f64> {
+        self.scf_data.convergence.map(|c| c.err_max)
+    }
+    /// `(energy_conv, density_conv)` this SCF was judged against, or `None`.
+    #[getter]
+    fn conv_thresholds(&self) -> Option<(f64, f64)> {
+        self.scf_data
+            .convergence
+            .map(|c| (c.energy_conv, c.density_conv))
+    }
+    /// Names of the gate criteria the final iteration did NOT meet, a subset of
+    /// `["dp_rms", "dp_max", "dE"]` (empty when all were met), or `None` if no
+    /// convergence record. A run can have `converged=False` with an empty list
+    /// only when it stopped for another reason (`exit_reason`).
+    #[getter]
+    fn unmet_criteria(&self) -> Option<Vec<&'static str>> {
+        self.scf_data.convergence.map(|c| c.unmet())
+    }
+    /// One-line human summary of the SCF exit: reason, iteration count and the
+    /// final residuals against their thresholds. This is the text of the
+    /// `RuntimeWarning` `run_rhf` emits when the SCF does not converge.
+    #[getter]
+    fn convergence_summary(&self) -> String {
+        scf_exit_summary(&self.scf_data)
+    }
     fn __repr__(&self) -> String {
         format!(
             "RhfResult(energy={:.10}, converged={})",
@@ -626,6 +691,22 @@ impl PyRhfResult {
 /// Closed-shell RHF (also UHF/ROHF convergence aids apply to the open-shell
 /// drivers). Exposes the full SCF knob set, matching the CLI `[scf]` TOML section
 /// for parity — same names, same defaults, same units.
+///
+/// SCF controls and defaults (run_rhf / run_uhf / run_rohf):
+///   max_iter        iteration cap, default 100 (NOT the 200 of the Rust
+///                   `RhfConfig`). Reaching it returns `converged=False`
+///                   (RHF; a RuntimeWarning names the unmet criteria), so a
+///                   slow-but-draining SCF fails on the cap alone.
+///   density_conv    RMS density change gate, default 1e-6. The max-element
+///                   change is gated at 10x this. THE primary criterion.
+///   energy_conv     |dE| per iteration, default 1e-3: a loose "not still
+///                   descending" sanity bound, not a target. Values far below
+///                   what RI/field noise allows (1e-10) are legal but make the
+///                   run depend on the energy ever dipping that low.
+///   diis_size       DIIS subspace size, default 8.
+/// After an RHF run, `exit_reason`, `final_dp_rms`, `final_dp_max`, `final_de`,
+/// `final_diis_err_max`, `conv_thresholds`, `unmet_criteria` and
+/// `convergence_summary` report where the SCF stopped.
 ///
 /// Convergence aids:
 ///   level_shift     virtual-virtual block shift in Hartree (open-shell; 0.2 is a
@@ -787,6 +868,24 @@ fn run_rhf(
     let r = py
         .allow_threads(|| solve_rhf(&ctx, &emol, &prep, op, &bounds, &config))
         .map_err(make_err)?;
+    if !r.converged {
+        // No result field changes: the caller still gets the best-effort
+        // `RhfResult` with `converged=False`; the warning only names the exit,
+        // iteration count and the unmet criteria so the failure is diagnosable.
+        let msg = format!(
+            "run_rhf: SCF did not converge: {}. Raise max_iter (this call used {}; default 100), or \
+             pass level_shift / soscf / a different guess; see RhfResult.unmet_criteria.",
+            scf_exit_summary(&r),
+            config.max_iter
+        );
+        let msg = std::ffi::CString::new(msg.replace('\0', " ")).expect("NUL removed");
+        PyErr::warn(
+            py,
+            &py.get_type::<pyo3::exceptions::PyRuntimeWarning>(),
+            &msg,
+            1,
+        )?;
+    }
     Ok(PyRhfResult {
         energy: r.energy,
         converged: r.converged,

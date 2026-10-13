@@ -1184,6 +1184,7 @@ fn solve_rohf_impl(
                 rohf_spin_focks: spin_focks_last.clone(),
                 cosx_final: None,
                 cosx_schedule: None,
+                convergence: None,
             };
             // Swap witness (F6): returned now, or held while its best
             // single-swap neighbours are evaluated on the next passes.
@@ -1425,6 +1426,7 @@ fn solve_rohf_impl(
         rohf_spin_focks: spin_focks_last,
         cosx_final: None,
         cosx_schedule: None,
+        convergence: None,
     })
 }
 

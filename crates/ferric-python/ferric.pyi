@@ -419,6 +419,49 @@ class RhfResult:
         """Number of unique two-electron integral quartets actually computed."""
         ...
 
+    @property
+    def exit_reason(self) -> str:
+        """ScfExit variant name: "Converged", "Plateau", "Stalled", "Diverged" or
+        "MaxIter" (the iteration cap was reached)."""
+        ...
+
+    @property
+    def final_de(self) -> float | None:
+        """|E - E_prev| (Hartree) at the last SCF iteration; None if not recorded."""
+        ...
+
+    @property
+    def final_dp_rms(self) -> float | None:
+        """RMS density change at the last iteration (gated at density_conv)."""
+        ...
+
+    @property
+    def final_dp_max(self) -> float | None:
+        """Max-element density change at the last iteration (gated at 10 * density_conv)."""
+        ...
+
+    @property
+    def final_diis_err_max(self) -> float | None:
+        """Max |FDS - SDF| at the last iteration. Diagnostic only, never a gate."""
+        ...
+
+    @property
+    def conv_thresholds(self) -> tuple[float, float] | None:
+        """(energy_conv, density_conv) this SCF was judged against."""
+        ...
+
+    @property
+    def unmet_criteria(self) -> list[str] | None:
+        """Gate criteria the final iteration did not meet, a subset of
+        ["dp_rms", "dp_max", "dE"]; empty if all were met; None if not recorded."""
+        ...
+
+    @property
+    def convergence_summary(self) -> str:
+        """One-line exit summary (reason, iterations, residuals vs thresholds); the
+        text of the RuntimeWarning run_rhf emits when the SCF does not converge."""
+        ...
+
     def density(self) -> NDArray[np.float64]:
         """AO-basis density matrix (n_bf x n_bf)."""
         ...
