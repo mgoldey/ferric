@@ -191,9 +191,10 @@ def test_memory_budget_smaller_than_the_retained_objects_is_a_typed_error(basis)
 def test_refusals_have_exact_wording(basis):
     with pytest.raises(
         ValueError,
-        match=r"run_rks_kpts: with_stress is not implemented for k-point Kohn-Sham "
-        r"\(the analytic k-point stress exists for run_rhf_kpts / run_uhf_kpts and, "
-        r"at the Gamma point, run_rks_gamma\); with_gradient=True is supported",
+        match=r"run_rks_kpts: with_stress is not wired for k-point Kohn-Sham "
+        r"\(the library has kpoint_rks_stress, the bindings do not call it yet; the "
+        r"stress is available through run_rhf_kpts / run_uhf_kpts and, at the Gamma "
+        r"point, run_rks_gamma\); with_gradient=True is supported",
     ):
         _krks(H2_ATOMS, basis, "PBE", with_stress=True)
     with pytest.raises(ValueError, match="range_split"):

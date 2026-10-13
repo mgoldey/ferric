@@ -2310,7 +2310,7 @@ fn k_derivatives(
             }
             KScfRef::Rks { .. } => {
                 return Err(FerricError::General(
-                    "internal: k-point RKS stress is not implemented".into(),
+                    "internal: k-point RKS stress is not wired".into(),
                 ))
             }
         };
@@ -2552,9 +2552,10 @@ fn check_kpoint_ks_support(
 ) -> PyResult<()> {
     if with_stress {
         return Err(val_err(format!(
-            "{fname}: with_stress is not implemented for k-point Kohn-Sham (the analytic \
-             k-point stress exists for run_rhf_kpts / run_uhf_kpts and, at the Gamma point, \
-             run_rks_gamma); with_gradient=True is supported"
+            "{fname}: with_stress is not wired for k-point Kohn-Sham (the library has \
+             kpoint_rks_stress, the bindings do not call it yet; the stress is available \
+             through run_rhf_kpts / run_uhf_kpts and, at the Gamma point, run_rks_gamma); \
+             with_gradient=True is supported"
         )));
     }
     ferric_pbc::dft::resolve_periodic_functional(functional)
@@ -2686,8 +2687,8 @@ fn krks_driver(
 /// `run_rhf_kpts`; functional and grid (`n_radial`, `n_angular`,
 /// `neighbour_cutoff` in Å) as `run_rks_gamma`. Refused with a ValueError
 /// naming the gap: open shell (k-point UKS/ROKS not implemented),
-/// meta-GGA, range-separated hybrids, VV10 and `with_stress` (the k-point KS
-/// stress is not implemented). `with_gradient=True` computes the analytic
+/// meta-GGA, range-separated hybrids, VV10 and `with_stress` (the library has
+/// the k-point KS stress, the binding does not call it yet). `with_gradient=True` computes the analytic
 /// nuclear gradient (`result.gradient()`, natoms x 3, dE/dR in Hartree/Bohr
 /// per cell, the force on ONE copy of each atom of the mesh's supercell; XC on
 /// the energy's own grid; a hybrid uses the SCF's exxdiv) on the J/K the SCF

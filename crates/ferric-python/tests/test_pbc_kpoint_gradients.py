@@ -263,7 +263,7 @@ def test_refusals(basis):
             range_split=True,
             with_gradient=True,
         )
-    with pytest.raises(ValueError, match="with_stress is not implemented for k-point"):
+    with pytest.raises(ValueError, match="with_stress is not wired for k-point"):
         ferric.run_rks_kpts(
             _mol(H2_ATOMS), _lat(H2_A), basis, "LDA", (1, 1, 2), with_stress=True
         )

@@ -55,12 +55,12 @@ def test_unsupported_combinations_are_refused_by_name(h2, h_atom, basis):
         ferric.run_rks_kpts(h2, lat, basis, "HSE06", (1, 1, 2))
     with pytest.raises(
         ValueError,
-        match=r"run_rks_kpts: with_stress is not implemented for k-point Kohn-Sham",
+        match=r"run_rks_kpts: with_stress is not wired for k-point Kohn-Sham",
     ):
         ferric.run_rks_kpts(h2, lat, basis, "LDA", (1, 1, 2), with_stress=True)
     # The gradient is wired (k-point KS forces: test_pbc_kpoint_ks_gradients.py);
     # the stress refusal does not depend on the functional.
-    with pytest.raises(ValueError, match="with_stress is not implemented"):
+    with pytest.raises(ValueError, match="with_stress is not wired"):
         ferric.run_rks_kpts(
             h2, lat, basis, "PBE0", (1, 1, 2), with_gradient=True, with_stress=True
         )
