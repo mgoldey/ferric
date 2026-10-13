@@ -1818,6 +1818,12 @@ class KpointRksResult:
     def jk(self) -> str: ...
     @property
     def auxbasis(self) -> str | None: ...
+    def gradient(self) -> NDArray[np.float64] | None:
+        """Analytic nuclear gradient dE/dR (natoms x 3, Hartree/Bohr per cell,
+        rows in the Molecule's atom order; the force on ONE copy of each atom
+        in the supercell of the mesh; XC on the energy's own grid) if
+        with_gradient=True, else None."""
+        ...
 
 class KpointScfResult:
     """Result of run_rhf_kpts / run_uhf_kpts (energies per cell)."""
@@ -2258,8 +2264,12 @@ def run_rks_kpts(
     gdf_omega: float | None = None,
 ) -> KpointRksResult:
     """Closed-shell k-point RKS (LDA / GGA / global hybrids). Open shell,
-    meta-GGA, range-separated hybrids and with_gradient/with_stress raise
-    ValueError naming the unsupported feature."""
+    meta-GGA, range-separated hybrids and with_stress raise ValueError naming
+    the unsupported feature. with_gradient=True gives result.gradient() (the
+    analytic force, Hartree/Bohr per cell); range_split with it is a
+    ValueError, as is an ECP cell. Set neighbour_cutoff (Angstrom) explicitly
+    with with_gradient or finite differences: the default depends on the atom
+    positions in a large sparse cell and the force omits that."""
     ...
 
 def run_mp2_kpts(

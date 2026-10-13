@@ -5312,21 +5312,21 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
             if route.correlated() {
                 return Err(format!(
                     "method.task = \"optimize\" with [cell] is implemented for the SCF routes \
-                     (rhf, uhf, rohf, ksdft at the Gamma point; rhf, uhf at a k-point mesh) \
-                     only: periodic {} has no analytic gradient",
+                     (rhf, uhf, rohf, ksdft at the Gamma point; rhf, uhf, ksdft (closed-shell \
+                     RKS) at a k-point mesh) only: periodic {} has no analytic gradient",
                     route.label()
                 ));
             }
-            // The other k-point routes are refused at the energy level
-            // (`check_kpoint_support`) or are correlated (refused above), so
-            // closed-shell Kohn-Sham is the one that reaches this point.
+            // The other k-point routes (UKS, ROKS, ROHF, meta-GGA, range-separated
+            // hybrids) are refused at the energy level (`check_kpoint_support`)
+            // or are correlated (refused above), so k-point RHF, UHF and
+            // closed-shell RKS are what reach this point. The force has its own
+            // functional allowlist, independent of the energy gate, so widening
+            // the k-point energy path cannot silently enable an optimize.
             if kpoints && route == PeriodicRoute::Rks {
-                return Err(
-                    "method.task = \"optimize\" with [cell] kmesh is implemented for the k-point \
-                     HF routes (rhf, uhf) only: k-point Kohn-Sham (RKS) has no analytic force. \
-                     Remove kmesh to optimize at the Gamma point"
-                        .into(),
-                );
+                let f = functional.as_deref().unwrap_or("LDA");
+                ferric_pbc::kxcgrad::check_force_functional(f)
+                    .map_err(|e| format!("method.task = \"optimize\" with [cell] kmesh: {e}"))?;
             }
             if let Some(s) = cfg.optimize.coordinates.as_deref() {
                 if parse_coord_system(s)? != ferric_scf::optimize::CoordSystem::Cartesian {
@@ -5721,21 +5721,68 @@ kind = "ccsd"
     }
 
     #[test]
-    fn k_point_optimize_resolves_for_hf_routes() {
-        for (kind, route) in [("rhf", PeriodicRoute::Rhf), ("uhf", PeriodicRoute::Uhf)] {
+    fn k_point_optimize_resolves_for_hf_and_closed_shell_ks_routes() {
+        for (kind, route) in [
+            ("rhf", PeriodicRoute::Rhf),
+            ("uhf", PeriodicRoute::Uhf),
+            ("ksdft", PeriodicRoute::Rks),
+        ] {
             let p = ok(&opt(kind, "kmesh = [1, 1, 2]", ""));
             assert!(p.optimize && p.kmesh.is_some(), "{kind}");
             assert_eq!(p.route, route, "{kind}");
+        }
+        // Global hybrids and GGAs, dense or RS-GDF J/K.
+        let rsgdf = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"\nkmesh = [1, 1, 2]";
+        for f in ["PBE", "PBE0", "B3LYP"] {
+            let dft = format!("[dft]\nfunctional = \"{f}\"");
+            for cell in ["kmesh = [1, 1, 2]", rsgdf] {
+                let p = ok(&opt("ksdft", cell, &dft));
+                assert!(p.optimize && p.kmesh.is_some(), "{f} {cell}");
+                assert_eq!(p.route, PeriodicRoute::Rks, "{f} {cell}");
+                assert_eq!(p.functional.as_deref(), Some(f), "{f} {cell}");
+            }
+        }
+    }
+
+    #[test]
+    fn k_point_force_allowlist_is_independent_of_the_energy_gate() {
+        // The force entry points (CLI optimize gate, Python with_gradient)
+        // consult `check_force_functional`, not the energy resolver: only LDA,
+        // GGA and global hybrids pass, so widening the energy gate cannot
+        // silently enable a meta-GGA / range-separated force.
+        for f in ["LDA", "PBE", "BLYP", "PBE0", "B3LYP"] {
+            ferric_pbc::kxcgrad::check_force_functional(f).unwrap_or_else(|e| panic!("{f}: {e}"));
+        }
+        for f in ["SCAN", "r2SCAN", "HSE06", "wB97X-V", "wB97X-L-V", "B2PLYP"] {
+            assert!(
+                ferric_pbc::kxcgrad::check_force_functional(f).is_err(),
+                "{f} must not pass the force allowlist"
+            );
         }
     }
 
     #[test]
     fn k_point_optimize_refusals_stay() {
-        let e = err(&opt("ksdft", "kmesh = [1, 1, 2]", ""));
-        assert!(
-            e.contains("k-point Kohn-Sham (RKS) has no analytic force"),
-            "{e}"
-        );
+        // Meta-GGA and range-separated hybrids at a mesh keep their energy-level
+        // refusals under task = "optimize" (named by the library resolver).
+        let e = err(&opt(
+            "ksdft",
+            "kmesh = [1, 1, 2]",
+            "[dft]\nfunctional = \"SCAN\"",
+        ));
+        assert!(e.contains("meta-GGA") && e.contains("kmesh"), "{e}");
+        let e = err(&opt(
+            "ksdft",
+            "kmesh = [1, 1, 2]",
+            "[dft]\nfunctional = \"HSE06\"",
+        ));
+        assert!(e.contains("range-separated") && e.contains("kmesh"), "{e}");
+        let e = err(&opt(
+            "rohf",
+            "kmesh = [1, 1, 2]",
+            "[dft]\nfunctional = \"PBE\"",
+        ));
+        assert!(e.contains("ROKS") && e.contains("not implemented"), "{e}");
         // ROHF and open-shell KS at a mesh are refused at the energy level.
         let e = err(&opt("rohf", "kmesh = [1, 1, 2]", ""));
         assert!(e.contains("not supported for periodic ROHF"), "{e}");
@@ -5783,6 +5830,20 @@ kind = "ccsd"
         let p = shipped_plan(name);
         assert_eq!(p.route, PeriodicRoute::Rhf, "{name}");
         assert!(p.optimize && p.kmesh.is_some(), "{name}");
+    }
+
+    #[test]
+    fn shipped_k_point_ks_optimize_example_resolves() {
+        let name = "h2-cell-kpts-rks-opt.toml";
+        let p = shipped_plan(name);
+        assert_eq!(p.route, PeriodicRoute::Rks, "{name}");
+        assert!(p.optimize && p.kmesh.is_some(), "{name}");
+        assert_eq!(p.functional.as_deref(), Some("PBE0"), "{name}");
+        let cutoff = p.neighbour_cutoff_bohr.expect("explicit neighbour_cutoff");
+        assert!(
+            (cutoff - 7.5 * ferric_core::units::ANGSTROM_TO_BOHR).abs() < 1e-12,
+            "{name}"
+        );
     }
 
     /// The resolved RS-GDF range-split λ (`None` = off); panics on dense.

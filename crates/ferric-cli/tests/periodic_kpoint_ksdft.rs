@@ -3,8 +3,8 @@
 //! Anchor: the CLI energy (read at full precision from the JSON run log's
 //! `run_end` record, not the 10-decimal stdout line) equals the library
 //! `ferric_pbc::solve_krks` energy bit for bit on the same input. The
-//! unsupported combinations (open shell, meta-GGA, range-separated hybrids,
-//! k-point forces) are refused by name before any integral is built.
+//! unsupported combinations (open shell, meta-GGA, range-separated hybrids)
+//! are refused by name before any integral is built.
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -161,16 +161,27 @@ fn unsupported_kpoint_ks_combinations_are_refused_by_name() {
     assert!(e.contains("meta-GGA"), "{e}");
     let e = refusal("rsh", "ksdft", 1, "[dft]\nfunctional = \"HSE06\"", "");
     assert!(e.contains("range-separated"), "{e}");
-    let toml = input("force", "ksdft", 1, "", "");
-    let src = std::fs::read_to_string(&toml)
-        .unwrap()
-        .replace("kind = \"ksdft\"", "task = \"optimize\"\nkind = \"ksdft\"");
-    std::fs::write(&toml, src).unwrap();
-    let out = run(&toml);
-    assert!(!out.status.success());
-    let e = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        e.contains("optimize") && e.contains("has no analytic force"),
-        "{e}"
-    );
+    // task = "optimize" keeps these refusals (the forces cover closed-shell
+    // LDA / GGA / global hybrids; periodic_kpoint_ks_optimize.rs).
+    for (tag, dft, key) in [
+        ("opt-scan", "[dft]\nfunctional = \"SCAN\"", "meta-GGA"),
+        (
+            "opt-hse",
+            "[dft]\nfunctional = \"HSE06\"",
+            "range-separated",
+        ),
+    ] {
+        let toml = input(tag, "ksdft", 1, dft, "");
+        let src = std::fs::read_to_string(&toml)
+            .unwrap()
+            .replace("kind = \"ksdft\"", "task = \"optimize\"\nkind = \"ksdft\"");
+        std::fs::write(&toml, src).unwrap();
+        let out = run(&toml);
+        assert!(!out.status.success(), "{tag}");
+        let e = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            e.contains("[cell] kmesh with functional") && e.contains(key),
+            "{tag}: {e}"
+        );
+    }
 }

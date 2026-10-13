@@ -416,10 +416,14 @@ RKS/UKS/ROKS. Any other kind is an error. `task = "optimize"` works at the
 Gamma point for the SCF routes (RHF, UHF, ROHF, RKS, UKS, ROKS) with either
 `jk`: it moves the atoms at a fixed lattice using the analytic periodic
 force, and prints the final gradient (Hartree/Bohr per cell). With `kmesh` it
-works for `rhf` and `uhf` (no functional) using the analytic k-point force,
-with either `jk`; it is an error for k-point Kohn-Sham and `rohf`, and for
+works for `rhf` and `uhf` (no functional) and for closed-shell Kohn-Sham (`ksdft`
+or `rhf` with `[dft] functional`: LDA, GGA and global hybrids such as PBE0 and
+B3LYP) using the analytic k-point force, with either `jk`; the Kohn-Sham force
+differentiates the energy's own XC grid (`n_radial`/`n_angular`/`neighbour_cutoff`)
+and, for a hybrid, its `exxdiv`. It is an error for `rohf`, for open-shell
+Kohn-Sham, for meta-GGA, range-separated and VV10 functionals, and for
 `rimp2`/`pdep-rpa`. The lattice is fixed and no stress is printed (the Python
-`run_rhf_kpts`/`run_uhf_kpts` return both). Each optimizer step runs a fresh SCF from the core guess; at a k-point mesh with `uhf` it can land in a different spin solution between steps, which shows as a visible jump in the step energies (nothing is hidden). The force is taken through the hcore and J/K objects the SCF built, which stay in memory for the force: their bytes are charged against the same memory budget (`[memory] budget_gb` with `jk = "rsgdf"`), and with `jk = "dense"` the kernels count against `max_eri_gb` while they exist. `task = "frequencies"` is an error.
+`run_rhf_kpts`/`run_uhf_kpts` return both; `run_rks_kpts` returns the force only: the library has the k-point Kohn-Sham stress, which the Python binding and the CLI do not call yet). The k-point force is available for LDA, GGA and global-hybrid functionals only, through an explicit allowlist that is separate from the energy gate (the library also has k-point meta-GGA forces; the Python binding and the CLI do not expose them yet). `solve_krks` (every k-point Kohn-Sham energy run, `run_rks_kpts` and the CLI included) clones `S(k)` and `h(k)` transiently during the SCF (`2 N_k n² × 16` bytes, not charged to the budget); the periodic XC Bloch AO cache of the SCF does not follow `[memory] budget_gb`. Each optimizer step runs a fresh SCF from the core guess; at a k-point mesh with `uhf` it can land in a different spin solution between steps, which shows as a visible jump in the step energies (nothing is hidden). The force is taken through the hcore and J/K objects the SCF built, which stay in memory for the force: their bytes are charged against the same memory budget (`[memory] budget_gb` with `jk = "rsgdf"`), and with `jk = "dense"` the kernels count against `max_eri_gb` while they exist. `task = "frequencies"` is an error.
 
 The periodic run reads only `[cell]`, `[scf]` `max_iter`, `[scf]`
 `density_conv` (Gamma point) or `energy_conv` (k-point mesh), `[dft]`
@@ -430,7 +434,7 @@ or key is an error. A charged cell is an error.
 |---|---|---|---|---|
 | `lattice` | 3×3 float array | **required** | rows are the lattice vectors | In `unit`. |
 | `unit` | string | `"angstrom"` | `angstrom` `bohr` | Applies to `lattice`, `omega` and `gdf_omega` (as their inverse) and `neighbour_cutoff`. |
-| `kmesh` | `[n1, n2, n3]` | none (Gamma point) | each ≥ 1 | Selects the k-point drivers: `rhf`, `uhf` (no functional), closed-shell Kohn-Sham (`ksdft`, or `rhf` with `[dft] functional`: LDA, GGA and global-hybrid functionals), `rimp2` and `pdep-rpa`. Not yet supported with `kmesh`, each an error naming the gap: open-shell Kohn-Sham (UKS/ROKS, including `ksdft` with multiplicity > 1), `rohf`, meta-GGA, range-separated hybrids and VV10 functionals, and `task = "optimize"` for every k-point route except `rhf` and `uhf` (no k-point forces; see `task`). Closed-shell k-point KS-DFT uses the `n_radial`/`n_angular`/`neighbour_cutoff` grid and, with a 1×1×1 mesh, equals the Gamma-point RKS run. |
+| `kmesh` | `[n1, n2, n3]` | none (Gamma point) | each ≥ 1 | Selects the k-point drivers: `rhf`, `uhf` (no functional), closed-shell Kohn-Sham (`ksdft`, or `rhf` with `[dft] functional`: LDA, GGA and global-hybrid functionals), `rimp2` and `pdep-rpa`. Not yet supported with `kmesh`, each an error naming the gap: open-shell Kohn-Sham (UKS/ROKS, including `ksdft` with multiplicity > 1), `rohf`, meta-GGA, range-separated hybrids and VV10 functionals, and `task = "optimize"` for every k-point route except `rhf`, `uhf` and closed-shell Kohn-Sham (no k-point forces for the rest; see `task`). Closed-shell k-point KS-DFT uses the `n_radial`/`n_angular`/`neighbour_cutoff` grid and, with a 1×1×1 mesh, equals the Gamma-point RKS run. |
 | `centring` | string | `"gamma"` | `gamma` `mp` | Requires `kmesh`. |
 | `exxdiv` | string | `"ewald"` | `ewald` `none` | Exchange G = 0 treatment. |
 | `jk` | string | `"dense"` | `dense` `rsgdf` | `dense` is a toy-scale dense AFT tensor. |
@@ -448,7 +452,7 @@ or key is an error. A charged cell is an error.
 | `grad_conv` | float | `1e-9` | > 0 | k-point SCF orbital-gradient threshold. Requires `kmesh`. |
 | `n_radial` | integer | `75` | | Periodic XC grid. Kohn-Sham only. |
 | `n_angular` | integer | `302` | Lebedev order | Periodic XC grid. Kohn-Sham only. |
-| `neighbour_cutoff` | float | max(10 Bohr, covering-radius bound) | > 0, in `unit` | Periodic XC grid image cutoff. Kohn-Sham only. |
+| `neighbour_cutoff` | float | max(10 Bohr, covering-radius bound) | > 0, in `unit` | Periodic XC grid image cutoff. Kohn-Sham only. The XC energy has a hard cutoff: the default depends on the atom positions in a large sparse cell, and the analytic force omits that dependence, so set it explicitly for `task = "optimize"` and for finite-difference checks (a value above the default also avoids one-step energy discontinuities of ~1e-10 Ha under a displacement). |
 
 Periodic `[scf]` defaults are `max_iter = 200`, `density_conv = 1e-10` and
 `energy_conv = 1e-12`, not the molecular ones.

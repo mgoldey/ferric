@@ -46,7 +46,8 @@ use crate::hcore::kpoint::periodic_hcore_kpts;
 use crate::kdense_aft::KDenseAftEri;
 use crate::kpts::KPointMesh;
 use crate::kscf::{
-    solve_krks_injected, KJkKind, KPointInjection, KPointXc, KRhfConfig, KScfResult,
+    solve_krks_injected, KJkKind, KPointInjection, KPointXc, KRetained, KRetainedJk, KRhfConfig,
+    KScfResult,
 };
 use crate::lattice::Cell;
 use crate::rsgdf::kpoint::KRsGdf;
@@ -584,6 +585,34 @@ pub fn solve_krks_on_grid(
     grid: &PeriodicGrid,
     cfg: &KRksConfig,
 ) -> Result<KRksResult, FerricError> {
+    Ok(solve_krks_keep_on_grid(cell, prep, aux, mesh, grid, cfg)?.0)
+}
+
+/// [`solve_krks`] that also returns the hcore output and J/K object the SCF
+/// ran on ([`KRetained`]), for [`crate::kxcgrad::kpoint_rks_gradient`]. The SCF
+/// is the same code path as [`solve_krks`] (which delegates here), so the
+/// energy is bit-identical.
+pub fn solve_krks_keep(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    aux: Option<&PreparedBasis>,
+    mesh: &KPointMesh,
+    cfg: &KRksConfig,
+) -> Result<(KRksResult, KRetained), FerricError> {
+    resolve_periodic_functional_rsh(&cfg.functional)?;
+    let grid = PeriodicGrid::build(cell, &cfg.grid)?;
+    solve_krks_keep_on_grid(cell, prep, aux, mesh, &grid, cfg)
+}
+
+/// [`solve_krks_keep`] on a caller-supplied grid.
+pub fn solve_krks_keep_on_grid(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    aux: Option<&PreparedBasis>,
+    mesh: &KPointMesh,
+    grid: &PeriodicGrid,
+    cfg: &KRksConfig,
+) -> Result<(KRksResult, KRetained), FerricError> {
     let mol = cell.mol();
     if mol.nelec() % 2 != 0 || mol.multiplicity != 1 {
         return Err(PeriodicDftError::Unsupported {
@@ -630,22 +659,24 @@ pub fn solve_krks_on_grid(
     let hk = periodic_hcore_kpts(cell, prep, mesh, &kc.hcore)?;
     let mut timings = PbcTimings::default();
     hk.record_stats(&mut timings);
-    let gdf;
-    let eri;
-    let jk: Box<dyn crate::kscf::KPointJk + '_> = match aux {
-        None => {
-            eri = KDenseAftEri::build(cell, prep, mesh, &hk.s, kc.exxdiv, &kc.dense)?;
-            Box::new(eri.jk_builder())
-        }
+    let retained_jk = match aux {
+        None => KRetainedJk::Dense(KDenseAftEri::build(
+            cell, prep, mesh, &hk.s, kc.exxdiv, &kc.dense,
+        )?),
         Some(aux) => {
-            gdf = KRsGdf::build(cell, prep, aux, mesh, &hk.s, &kc.rsgdf)?.with_exxdiv(kc.exxdiv);
+            let gdf =
+                KRsGdf::build(cell, prep, aux, mesh, &hk.s, &kc.rsgdf)?.with_exxdiv(kc.exxdiv);
             crate::rsgdf::kpoint::record_stats(&mut timings, gdf.stats());
-            Box::new(gdf.jk_builder())
+            KRetainedJk::RsGdf(gdf)
         }
     };
+    let jk: Box<dyn crate::kscf::KPointJk + '_> = match &retained_jk {
+        KRetainedJk::Dense(e) => Box::new(e.jk_builder()),
+        KRetainedJk::RsGdf(g) => Box::new(g.jk_builder()),
+    };
     let inj = KPointInjection {
-        s: hk.s,
-        h: hk.h,
+        s: hk.s.clone(),
+        h: hk.h.clone(),
         vnn: hk.enn,
         jk,
     };
@@ -661,11 +692,18 @@ pub fn solve_krks_on_grid(
     }
     let electrons_on_grid = pxc.integrate_density(&scf.densities)?;
     let (e_xc, _) = KPointXc::build(&mut pxc, &scf.densities)?;
-    Ok(KRksResult {
+    let result = KRksResult {
         e_xc,
         exact_exchange_fraction: pxc.rsh().map_or(a, |r| r.c_sr),
         n_grid_points: grid.len(),
         electrons_on_grid,
         scf,
-    })
+    };
+    Ok((
+        result,
+        KRetained {
+            hk,
+            jk: retained_jk,
+        },
+    ))
 }
