@@ -1249,13 +1249,27 @@ fn mutants_are_caught_by_the_gamma_roks_anchor() {
         U::XcCrossDropped,
         U::XcCrossOwn,
         U::XcSpinAveraged,
+        U::RoWDropCross,
+    ] {
+        check(format!("{sm:?}"), stress_mut(&fx, None, Some(sm), None));
+    }
+    // The Fock-tampering defects skip the Fock guard; on the restricted-open
+    // assembly the orbital-gradient gate then sees the tampered Focks. A defect
+    // is caught if the gate refuses it OR it misses the Gamma reference.
+    for sm in [
         U::PulayFockSwap,
         U::PulayKSwap,
         U::PulayJOneSpin,
         U::PulayNoVxcBeta,
-        U::RoWDropCross,
     ] {
-        check(format!("{sm:?}"), stress_mut(&fx, None, Some(sm), None));
+        match stress_with(&fx, &fx.res.scf, &scfg(None, Some(sm), None)) {
+            Err(e) => {
+                let m = e.to_string();
+                eprintln!("1x1x1 vs Gamma ROKS under {sm:?}: refused: {m}");
+                assert!(m.contains("ROHF orbital gradient"), "{sm:?}: {m}");
+            }
+            Ok(s) => check(format!("{sm:?}"), s),
+        }
     }
     for xm in [
         X::NoAo,
@@ -1265,11 +1279,22 @@ fn mutants_are_caught_by_the_gamma_roks_anchor() {
         X::NoHessian,
         X::NoStrainMoment,
         X::WrongFactor,
-        X::PulayNoVxc,
         X::ExchUnscaled,
         X::ExchScaledTwice,
     ] {
         check(format!("{xm:?}"), stress_mut(&fx, Some(xm), None, None));
+    }
+    match stress_with(
+        &fx,
+        &fx.res.scf,
+        &scfg(Some(X::PulayNoVxc), None, None),
+    ) {
+        Err(e) => {
+            let m = e.to_string();
+            eprintln!("1x1x1 vs Gamma ROKS under PulayNoVxc: refused: {m}");
+            assert!(m.contains("ROHF orbital gradient"), "{m}");
+        }
+        Ok(s) => check("PulayNoVxc".to_string(), s),
     }
     for hm in [
         S::MadelungUnscaled,
