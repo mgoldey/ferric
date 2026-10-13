@@ -65,8 +65,6 @@ pub mod orbital_rotation;
 pub mod pair_domains;
 /// Energy-based pair screening for local correlation methods.
 pub mod pair_energy_screen;
-/// THROWAWAY probe (research/terfc-screening-bound): distance-aware screening bounds.
-pub mod probe_terfc_bound;
 /// Ragged per-pair domain-block storage for local correlation.
 pub mod ragged;
 /// Resolution-of-identity MP2 (density-fitted) using 3-center integrals.

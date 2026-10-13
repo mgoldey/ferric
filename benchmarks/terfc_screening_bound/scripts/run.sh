@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Needs the probe test, which is archived at the git tag archive/terfc-screening-probe (check it out first).
 # usage: MODE=... MOL=... OPS=... bash run.sh LOGNAME   (run from the repo root)
 set -u
 export OPENBLAS_NUM_THREADS=1
