@@ -2393,6 +2393,12 @@ def run_rhf(
 ) -> RhfResult:
     """Closed-shell Restricted Hartree-Fock.
 
+    SCF controls (defaults): max_iter 100 (the iteration cap; reaching it returns
+    converged=False and emits a RuntimeWarning naming the unmet criteria),
+    density_conv 1e-6 (RMS density change; the max element is gated at 10x this),
+    energy_conv 1e-3 (|dE| per iteration, a loose sanity bound), diis_size 8.
+    The result's exit_reason / final_dp_rms / final_dp_max / final_de /
+    unmet_criteria / convergence_summary say where the SCF stopped.
 
     cosx_grid / cosx_final_pass / cosx_final_grid / cosx_overlap_fit: COSX
     knobs, read only with ``k_builder="cosx"`` (any of them with another
