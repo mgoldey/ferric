@@ -1141,17 +1141,27 @@ fn supercell_pos(pos: &[[f64; 3]], a: f64, n: [usize; 3], mult: usize) -> Cell {
 /// supercell Gamma Madelung constant IS the mesh constant. The k-ROHF state is
 /// the `RoWDropCross`-sensitive high-spin state; the Gamma ROHF supercell SCF
 /// converging is a precondition (the force test could not converge it).
-#[test]
-#[ignore = "9-atom Gamma ROHF supercell; precondition: the Gamma high-spin SCF converges"]
-fn k_mesh_rohf_stress_is_the_gamma_supercell_stress_per_part() {
-    let gam = gamma_side(&supercell_pos(&H3, 4.0, [1, 1, 3], 4), None);
-    let fx = fixture(&H3, G113, None, ExxDiv::Ewald);
+fn supercell_case(f: Option<&str>) {
+    let gam = gamma_side(&supercell_pos(&H3, 4.0, [1, 1, 3], 4), f);
+    let fx = fixture(&H3, G113, f, ExxDiv::Ewald);
     let k = stress(&fx);
     for (n, d) in gamma_rows(&k, &gam, 3.0) {
-        eprintln!("ROHF H3 1x1x3 vs supercell: {n:<10} {d:.2e}");
-        assert!(d < BAR_GAMMA, "{n}: {d:e}");
+        eprintln!("{f:?} H3 1x1x3 vs supercell: {n:<10} {d:.2e}");
+        assert!(d < BAR_GAMMA, "{f:?} {n}: {d:e}");
     }
     assert!(mmax(&k.hf.parts.madelung) > 1e-6);
+}
+
+#[test]
+#[ignore = "9-atom Gamma ROHF supercell; precondition: the Gamma high-spin SCF converges; measured 54 s"]
+fn k_mesh_rohf_stress_is_the_gamma_supercell_stress_per_part() {
+    supercell_case(None);
+}
+
+#[test]
+#[ignore = "9-atom Gamma ROKS PBE0 supercell; precondition: the Gamma high-spin SCF converges"]
+fn k_mesh_roks_stress_is_the_gamma_supercell_stress_per_part() {
+    supercell_case(Some("PBE0"));
 }
 
 // ------------------------------------------------------- ROKS closed shell
