@@ -918,35 +918,6 @@ fn force_covers(xc: &XcDef, has_rsh: bool) -> bool {
         })
 }
 
-#[cfg(test)]
-mod force_allowlist_tests {
-    use super::force_covers;
-    use ferric_dft::libxc::xc_def_from_name;
-
-    /// The resolver already refuses most unsupported names before the
-    /// predicate runs, so each clause is pinned directly on a hand-built
-    /// definition: removing the `weights` or `vv10` clause fails here.
-    #[test]
-    fn each_clause_of_the_force_allowlist_rejects_its_own_case() {
-        let pbe0 = xc_def_from_name("PBE0").unwrap();
-        assert!(force_covers(&pbe0, false));
-        assert!(!force_covers(&pbe0, true), "range separation");
-        let mut weighted = xc_def_from_name("PBE0").unwrap();
-        let n = weighted.funcs.len();
-        weighted.weights = Some(vec![1.0; n]);
-        assert!(!force_covers(&weighted, false), "mixing weights");
-        let vv10 = xc_def_from_name("wB97X-V").unwrap();
-        assert!(vv10.vv10.is_some());
-        assert!(
-            !force_covers(&vv10, false),
-            "VV10 (and its meta/RSH family)"
-        );
-        let mut nlc = xc_def_from_name("PBE").unwrap();
-        nlc.vv10 = xc_def_from_name("wB97X-V").unwrap().vv10;
-        assert!(!force_covers(&nlc, false), "VV10 alone");
-    }
-}
-
 /// The explicit force allowlist of the Python and CLI force entry points:
 /// LDA, GGA and GLOBAL hybrid functionals only (every component a `Lda`, `Gga`
 /// or `HybridGga` libxc family, no range separation, no VV10, no mixing weights
@@ -1340,5 +1311,34 @@ mod tests {
                 .any(|f| matches!(f.family(), FunctionalFamily::MetaGga)));
         }
         assert!(resolve_global("PBE").is_ok());
+    }
+}
+
+#[cfg(test)]
+mod force_allowlist_tests {
+    use super::force_covers;
+    use ferric_dft::libxc::xc_def_from_name;
+
+    /// The resolver already refuses most unsupported names before the
+    /// predicate runs, so each clause is pinned directly on a hand-built
+    /// definition: removing the `weights` or `vv10` clause fails here.
+    #[test]
+    fn each_clause_of_the_force_allowlist_rejects_its_own_case() {
+        let pbe0 = xc_def_from_name("PBE0").unwrap();
+        assert!(force_covers(&pbe0, false));
+        assert!(!force_covers(&pbe0, true), "range separation");
+        let mut weighted = xc_def_from_name("PBE0").unwrap();
+        let n = weighted.funcs.len();
+        weighted.weights = Some(vec![1.0; n]);
+        assert!(!force_covers(&weighted, false), "mixing weights");
+        let vv10 = xc_def_from_name("wB97X-V").unwrap();
+        assert!(vv10.vv10.is_some());
+        assert!(
+            !force_covers(&vv10, false),
+            "VV10 (and its meta/RSH family)"
+        );
+        let mut nlc = xc_def_from_name("PBE").unwrap();
+        nlc.vv10 = xc_def_from_name("wB97X-V").unwrap().vv10;
+        assert!(!force_covers(&nlc, false), "VV10 alone");
     }
 }
