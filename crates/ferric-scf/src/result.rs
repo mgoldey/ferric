@@ -413,6 +413,8 @@ mod convergence_report_tests {
         assert!(t.contains("dp_rms=4.700e-8 (need < 1.0e-8)"), "{t}");
         assert!(t.contains("dE=7.300e-11 (need < 1.0e-10)"), "{t}");
         assert!(t.contains("unmet: dp_rms, dp_max"), "{t}");
-        assert!(rep(1e-11, 1e-9, 1e-8).describe().contains("all criteria met"));
+        assert!(rep(1e-11, 1e-9, 1e-8)
+            .describe()
+            .contains("all criteria met"));
     }
 }

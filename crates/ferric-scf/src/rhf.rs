@@ -3567,7 +3567,10 @@ mod tests {
         let unmet = c.unmet();
         assert!(unmet.contains(&"dp_rms"), "{}", c.describe());
         let text = c.describe();
-        assert!(text.contains("iteration 3") && text.contains("unmet: dp_rms"), "{text}");
+        assert!(
+            text.contains("iteration 3") && text.contains("unmet: dp_rms"),
+            "{text}"
+        );
         // The report is a pure observer: same energy and iteration count as an
         // identical run (determinism anchor for the bit-identity claim).
         let again = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
