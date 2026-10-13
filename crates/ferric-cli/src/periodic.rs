@@ -1891,6 +1891,16 @@ fn run_periodic_optimize(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcom
         // Cartesian only; `periodic_plan` refused anything else.
         coord_system: CoordSystem::Cartesian,
     };
+    if plan.kmesh.is_some()
+        && plan.route == PeriodicRoute::Rks
+        && s.cell.mol().atoms.iter().any(|a| a.n_core_ecp > 0)
+    {
+        die(
+            "method.task = \"optimize\" with [cell] kmesh: k-point KS forces with ECPs are \
+             not validated (the basis carries an ECP); use rhf/uhf at a kmesh, or no ECP"
+                .to_string(),
+        );
+    }
     let base = s.cell.mol().clone();
     let x0: Vec<f64> = base.atoms.iter().flat_map(|a| [a.x, a.y, a.zpos]).collect();
     let at = |x: &[f64]| -> Molecule {

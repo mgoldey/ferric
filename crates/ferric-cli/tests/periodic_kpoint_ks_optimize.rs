@@ -5,7 +5,7 @@
 //!   run stops after a few steps; the printed final gradient is the force at
 //!   the printed final geometry, which must equal `kpoint_rks_gradient` called
 //!   directly on the same cell, mesh, grid and configs (evaluated at the
-//!   printed 8-decimal geometry, bar 5e-7). Mutants: a wrong mesh, a wrong
+//!   printed 8-decimal geometry, bar 5e-8). Mutants: a wrong mesh, a wrong
 //!   functional and a wrong exxdiv each move the library force by far more
 //!   than the bar (asserted).
 //! * A real optimization (stretched H2, PBE0, 1x1x3) converges to the
@@ -69,6 +69,7 @@ struct Input<'a> {
     tag: &'a str,
     xyz: String,
     mult: usize,
+    basis: &'a str,
     functional: &'a str,
     kmesh: &'a str,
     jk: &'a str,
@@ -87,7 +88,7 @@ fn run(i: &Input) -> Output {
 xyz = "{xyz}"
 multiplicity = {mult}
 [basis]
-name = "sto-3g"
+name = "{basis}"
 [method]
 kind = "ksdft"
 task = "optimize"
@@ -108,6 +109,7 @@ neighbour_cutoff = {CUTOFF_BOHR}
 "#,
             xyz = xyz_path.display(),
             mult = i.mult,
+            basis = i.basis,
             functional = i.functional,
             kmesh = i.kmesh,
             jk = i.jk,
@@ -286,6 +288,7 @@ fn loose_input<'a>(tag: &'a str, functional: &'a str, kmesh: &'a str, jk: &'a st
         tag,
         xyz: xyz(&H2_OFFAXIS),
         mult: 1,
+        basis: "sto-3g",
         functional,
         kmesh,
         jk,
@@ -420,6 +423,7 @@ fn a_real_optimization_converges_and_the_final_force_is_the_library_force() {
         tag: "opt",
         xyz: xyz(&start),
         mult: 1,
+        basis: "sto-3g",
         functional: "PBE0",
         kmesh: "[1, 1, 3]",
         jk: DENSE,
@@ -514,6 +518,23 @@ fn a_non_converging_scf_step_is_a_typed_error_not_a_force() {
     let e = refused(&run(&i), "noconv");
     assert!(
         e.contains("solve_krks: PBE0 SCF did not converge in 2 iterations"),
+        "{e}"
+    );
+}
+
+#[test]
+fn an_ecp_cell_is_refused_for_the_k_point_kohn_sham_force() {
+    // Xe carries an ECP in aug-cc-pvdz-pp: the energy path accepts ECPs at k,
+    // the Kohn-Sham force has no ECP validation and is refused before any SCF.
+    let mut i = loose_input("ecp", "PBE", "[1, 1, 2]", DENSE);
+    i.xyz = "1\nXe\nXe 0.0 0.0 0.0\n".to_string();
+    i.basis = "aug-cc-pvdz-pp";
+    let e = refused(&run(&i), "ecp");
+    assert!(
+        e.contains(
+            "method.task = \"optimize\" with [cell] kmesh: k-point KS forces with ECPs are \
+             not validated (the basis carries an ECP); use rhf/uhf at a kmesh, or no ECP"
+        ),
         "{e}"
     );
 }

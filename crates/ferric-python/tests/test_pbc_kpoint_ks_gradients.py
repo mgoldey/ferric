@@ -4,7 +4,7 @@
 kpoint_rks_gradient` (LDA, GGA and global hybrids) on the hcore output and J/K
 object the SCF itself ran on (`solve_krks_keep`), with the XC term on the
 energy's own grid. The Rust suites (pbc_kxcgrad.rs, pbc_kxcgrad_hybrid.rs,
-pbc_kkeep.rs) hold the per-term anchors and mutants and the Fock guard (a
+pbc_kkeep_ks.rs) hold the per-term anchors and mutants and the Fock guard (a
 wrong functional or exxdiv cannot be passed through the binding: it takes both
 from the energy call); this file checks the BINDING, with the units of the
 Gamma bindings (Hartree/Bohr per cell, atoms and lattice in Angstrom in).
@@ -42,6 +42,8 @@ from test_pbc_kpoint_gradients import (  # noqa: E402,F401  (fixtures re-exporte
     _mol,
     basis,
 )
+
+from test_pbc_bindings import _hi_lattice, _hi_xyz, hi_basis  # noqa: E402,F401
 
 FD_H = 1e-4
 FD_BAR = 2e-8
@@ -217,3 +219,16 @@ def test_refusals_have_exact_wording(basis):
         match=r'^run_rks_kpts: functional "HSE06": .*range-separated.*\. k-point RKS supports LDA, GGA and global-hybrid functionals only$',
     ):
         _krks(H2_ATOMS, basis, "HSE06", with_gradient=True)
+
+
+def test_ecp_cell_force_is_refused(hi_basis):
+    cell = ferric.Molecule.from_xyz_string(_hi_xyz(1))
+    with pytest.raises(
+        ValueError,
+        match=r"^run_rks_kpts: k-point KS forces with ECPs are not validated "
+        r"\(with_gradient=True on a cell whose basis carries an ECP; the energy "
+        r"without with_gradient runs\)$",
+    ):
+        ferric.run_rks_kpts(
+            cell, _hi_lattice(1), hi_basis, "PBE", (1, 1, 2), with_gradient=True
+        )

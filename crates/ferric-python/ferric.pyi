@@ -2267,7 +2267,9 @@ def run_rks_kpts(
     meta-GGA, range-separated hybrids and with_stress raise ValueError naming
     the unsupported feature. with_gradient=True gives result.gradient() (the
     analytic force, Hartree/Bohr per cell); range_split with it is a
-    ValueError."""
+    ValueError, as is an ECP cell. Set neighbour_cutoff (Angstrom) explicitly
+    with with_gradient or finite differences: the default depends on the atom
+    positions in a large sparse cell and the force omits that."""
     ...
 
 def run_mp2_kpts(

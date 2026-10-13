@@ -38,6 +38,10 @@ jk = "dense"
 # fast; the force is the exact derivative of the energy on this grid.
 n_radial = 50
 n_angular = 110
+# Set explicitly for an optimization (the default max(10 Bohr, covering bound)
+# depends on the atom positions in a large sparse cell and the force omits that
+# dependence): 7.5 Angstrom = 14.17 Bohr.
+neighbour_cutoff = 7.5
 
 [optimize]
 max_steps = 30

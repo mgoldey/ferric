@@ -5753,7 +5753,7 @@ kind = "ccsd"
         for f in ["LDA", "PBE", "BLYP", "PBE0", "B3LYP"] {
             ferric_pbc::kxcgrad::check_force_functional(f).unwrap_or_else(|e| panic!("{f}: {e}"));
         }
-        for f in ["SCAN", "r2SCAN", "HSE06", "wB97X-V", "wB97X-L-V"] {
+        for f in ["SCAN", "r2SCAN", "HSE06", "wB97X-V", "wB97X-L-V", "B2PLYP"] {
             assert!(
                 ferric_pbc::kxcgrad::check_force_functional(f).is_err(),
                 "{f} must not pass the force allowlist"
@@ -5830,6 +5830,16 @@ kind = "ccsd"
         let p = shipped_plan(name);
         assert_eq!(p.route, PeriodicRoute::Rhf, "{name}");
         assert!(p.optimize && p.kmesh.is_some(), "{name}");
+        let name = "h2-cell-kpts-rks-opt.toml";
+        let p = shipped_plan(name);
+        assert_eq!(p.route, PeriodicRoute::Rks, "{name}");
+        assert!(p.optimize && p.kmesh.is_some(), "{name}");
+        assert_eq!(p.functional.as_deref(), Some("PBE0"), "{name}");
+        let cutoff = p.neighbour_cutoff_bohr.expect("explicit neighbour_cutoff");
+        assert!(
+            (cutoff - 7.5 * ferric_core::units::ANGSTROM_TO_BOHR).abs() < 1e-12,
+            "{name}"
+        );
     }
 
     /// The resolved RS-GDF range-split λ (`None` = off); panics on dense.

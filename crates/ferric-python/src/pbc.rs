@@ -2692,7 +2692,10 @@ fn krks_driver(
 /// nuclear gradient (`result.gradient()`, natoms x 3, dE/dR in Hartree/Bohr
 /// per cell, the force on ONE copy of each atom of the mesh's supercell; XC on
 /// the energy's own grid; a hybrid uses the SCF's exxdiv) on the J/K the SCF
-/// ran on; `range_split` with it is a ValueError. A 1x1x1 Gamma mesh equals
+/// ran on; `range_split` with it is a ValueError. With `with_gradient` (and
+/// for finite-difference checks) set `neighbour_cutoff` (Å) explicitly: the
+/// default depends on the atom positions in a large sparse cell and the force
+/// omits that dependence. ECP cells with `with_gradient` are refused. A 1x1x1 Gamma mesh equals
 /// `run_rks_gamma` and an N-point mesh equals the N-fold supercell / N.
 ///
 /// Validated vs crates/ferric-pbc/tests/pbc_krks.rs (PySCF 2.13 KRKS).
@@ -2750,6 +2753,12 @@ fn run_rks_kpts(
         gradient: with_gradient,
         stress: false,
     };
+    if with_gradient && s.cell.mol().atoms.iter().any(|a| a.n_core_ecp > 0) {
+        return Err(val_err(format!(
+            "{fname}: k-point KS forces with ECPs are not validated (with_gradient=True on a \
+             cell whose basis carries an ECP; the energy without with_gradient runs)"
+        )));
+    }
     s.range_split = parse_range_split(fname, range_split, s.aux.is_some(), s.derivs)?;
     let m = k_mesh(&s, mesh, centring)?;
     let grid = periodic_grid(fname, n_radial, n_angular, neighbour_cutoff)?;
