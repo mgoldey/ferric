@@ -28,7 +28,10 @@ def test_converged_run_reports_met_criteria_and_does_not_warn():
     assert r.converged
     assert r.exit_reason == "Converged"
     assert r.unmet_criteria == []
-    assert r.conv_thresholds == (1e-3, 1e-6)  # run_rhf defaults: energy_conv, density_conv
+    assert r.conv_thresholds == (
+        1e-3,
+        1e-6,
+    )  # run_rhf defaults: energy_conv, density_conv
     assert r.final_dp_rms < 1e-6
     assert r.final_dp_max < 1e-5
     assert r.final_de < 1e-3
