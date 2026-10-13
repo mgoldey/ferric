@@ -5830,6 +5830,10 @@ kind = "ccsd"
         let p = shipped_plan(name);
         assert_eq!(p.route, PeriodicRoute::Rhf, "{name}");
         assert!(p.optimize && p.kmesh.is_some(), "{name}");
+    }
+
+    #[test]
+    fn shipped_k_point_ks_optimize_example_resolves() {
         let name = "h2-cell-kpts-rks-opt.toml";
         let p = shipped_plan(name);
         assert_eq!(p.route, PeriodicRoute::Rks, "{name}");
