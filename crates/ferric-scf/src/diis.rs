@@ -620,6 +620,18 @@ impl EnergyDiis {
     }
 }
 
+/// Whether `d` is a closed-shell idempotent density in the `s` metric, i.e.
+/// `max|D S D - 2 D| <= tol * max(1, max|D|)`. Densities built from occupied MOs
+/// by diagonalization satisfy this to ~1e-14; a MINAO/SAD guess does not.
+pub(crate) fn is_idempotent_closed_shell(d: &Array2<f64>, s: &Array2<f64>, tol: f64) -> bool {
+    let dsd = d.dot(s).dot(d);
+    let scale = d.iter().fold(1.0f64, |m, v| m.max(v.abs()));
+    let dev = (&dsd - &(2.0 * d))
+        .iter()
+        .fold(0.0f64, |m, v| m.max(v.abs()));
+    dev <= tol * scale
+}
+
 /// Combined DIIS driver implementing the mature-code recipe: run an energy-based
 /// variant (ADIIS or EDIIS) while the DIIS error is large, then switch to plain
 /// Pulay DIIS once the commutator error drops below `switch_thresh`.
@@ -675,6 +687,11 @@ impl DiisDriver {
         }
     }
 
+    /// Whether an ADIIS/EDIIS history is live (`false` for pure Pulay).
+    pub fn uses_energy_history(&self) -> bool {
+        self.switch_thresh > 0.0
+    }
+
     /// Clear both histories (Pulay and energy-DIIS).
     pub fn reset(&mut self) {
         self.pulay.reset();
@@ -701,12 +718,55 @@ impl DiisDriver {
         energy: f64,
         err_max: f64,
     ) -> Array2<f64> {
+        self.step_checked(f, err, d, energy, err_max, true)
+    }
+
+    /// [`Self::step`] with a validity flag for the energy-based history.
+    ///
+    /// `d_variational = false` keeps this iterate's `(F, D, E)` OUT of the
+    /// ADIIS/EDIIS history (Pulay still receives its commutator). ADIIS and
+    /// EDIIS minimize a functional built from the energies/Fock matrices of the
+    /// stored densities, and that functional is only meaningful when every
+    /// stored `D` is a genuine N-electron idempotent density (`D S D = 2 D`):
+    /// then `E(D) >= E_gs` and the points lie on the variational manifold. A
+    /// non-idempotent starting density (the MINAO/SAD guess, or a user-supplied
+    /// `init_guess_density`) can have an "energy" far BELOW the ground state
+    /// (-1938.78 Ha against a true -1936.03 Ha on the #411 case), so the energy
+    /// functional puts all of its weight on that one entry (`c = [1, 1e-17]`),
+    /// the extrapolated Fock is `F_1` again, and the next density repeats the
+    /// last one exactly -- a false `dp_rms = 0` convergence at iteration 3.
+    ///
+    /// Scope: this removes the non-idempotent-entry trigger only. A history of
+    /// valid densities can still extrapolate to a repeated Fock while the
+    /// commutator error is large (the convergence gate does not read it); that
+    /// is a separate defect, tracked outside this fix.
+    pub fn step_checked(
+        &mut self,
+        f: &Array2<f64>,
+        err: &Array2<f64>,
+        d: &Array2<f64>,
+        energy: f64,
+        err_max: f64,
+        d_variational: bool,
+    ) -> Array2<f64> {
         // Always feed Pulay so its Gram history is current at the crossover.
         let f_pulay = self.pulay.step(f, err);
 
         if self.switch_thresh <= 0.0 {
             // Pure Pulay: don't even touch the energy history (keeps it cheap).
             return f_pulay;
+        }
+
+        if !d_variational {
+            // Not a point the energy functional may trust: no energy-history
+            // entry. With an empty history the energy variant has nothing to
+            // extrapolate from, so take the plain (un-extrapolated) Fock this
+            // iteration -- or the Pulay one if it is already past the switch.
+            return if !self.switch_thresh.is_infinite() && err_max < self.switch_thresh {
+                f_pulay
+            } else {
+                f.clone()
+            };
         }
 
         let (f_energy, _c) = self.energy.step(f, d, energy);
@@ -1379,6 +1439,44 @@ mod tests {
                 assert!(ci >= -1e-12, "ADIIS coeff ≥ 0: {c:?}");
             }
         }
+    }
+
+    /// #411 at the mixing step: EDIIS handed a history whose OLDEST entry has an
+    /// absurdly low energy (a non-idempotent guess) puts all its weight there, so
+    /// the extrapolated Fock is the OLD Fock and the next density repeats.
+    /// `step_checked(.., false)` keeps that entry out, so the driver returns the
+    /// newest Fock instead. The unchecked path is the defect witness.
+    #[test]
+    fn a_vetoed_entry_never_reaches_the_energy_history() {
+        let n = 2;
+        let f0 = Array2::from_shape_fn((n, n), |(i, j)| (i + j) as f64 * 0.1);
+        let f1 = &f0 + &Array2::from_elem((n, n), 0.05);
+        let d0 = Array2::eye(n);
+        let d1 = &d0 * 0.9;
+        let err = Array2::from_elem((n, n), 0.5); // large: stay in the energy regime
+                                                  // Witness: trusted guess entry at E=-100 vs a later E=-5 => c = [1, 0].
+        let mut bad = DiisDriver::new(DiisFlavor::Ediis, 8, 1e-1);
+        bad.step_checked(&f0, &err, &d0, -100.0, 0.5, true);
+        let out_bad = bad.step_checked(&f1, &err, &d1, -5.0, 0.5, true);
+        assert!(
+            (&out_bad - &f0).iter().all(|v| v.abs() < 1e-6),
+            "witness: the low-energy guess captured the extrapolation"
+        );
+        // Vetoed: the guess is not in the history, so the step is the newest Fock.
+        let mut ok = DiisDriver::new(DiisFlavor::Ediis, 8, 1e-1);
+        ok.step_checked(&f0, &err, &d0, -100.0, 0.5, false);
+        let out_ok = ok.step_checked(&f1, &err, &d1, -5.0, 0.5, true);
+        assert_eq!(out_ok, f1);
+    }
+
+    /// The idempotency vet: a projector in the S metric passes, a scaled one does not.
+    #[test]
+    fn idempotency_check_separates_projectors_from_scaled_densities() {
+        let s = Array2::eye(3);
+        let mut d = Array2::zeros((3, 3));
+        d[(0, 0)] = 2.0; // D = 2 c c^T with c = e0, S = I: D S D = 2 D
+        assert!(is_idempotent_closed_shell(&d, &s, 1e-6));
+        assert!(!is_idempotent_closed_shell(&(&d * 1.25), &s, 1e-6));
     }
 
     /// The extrapolated Fock returned by EnergyDiis::step must equal Σ c_i F_i.
