@@ -747,7 +747,7 @@ impl PyRhfResult {
 ///   energy_conv     |dE| per iteration, default 1e-3: a loose "not still
 ///                   descending" sanity bound, not a target. A value below
 ///                   the estimated noise floor of dE for the system (about
-///                   0.02*integral_thresh*nbf^2 Ha for closed-shell exact J/K,
+///                   0.0125*integral_thresh*nbf^2.25 Ha for closed-shell exact J/K,
 ///                   a few eps*|E| otherwise) is legal but is met only by chance;
 ///                   run_rhf / run_uhf / run_rohf then emit one RuntimeWarning
 ///                   before the SCF starts (never raised, nothing is clamped).

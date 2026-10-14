@@ -71,23 +71,41 @@ an SCF run tens of iterations past a settled density, or never converge.
 **Why:** convergence is driven by the density criterion (`density_conv`). The
 energy change between iterations has a noise floor, and a tight energy bound can
 sit below it, so it is met only by chance. For a closed-shell run with exact J
-and K the floor is set by the incremental Fock update and its integral screening
-(`integral_thresh`): about `0.02 * integral_thresh * nbf^2` Ha, e.g. 4e-12 for
-water/cc-pVDZ, 1e-10 for benzene/cc-pVDZ and 2e-9 for a 239-function, 71-atom
-molecule. With density-fitted J, in the open-shell solvers, or with
-`FERRIC_SCF_INCREMENTAL=0` it is only rounding, about `0.5 * eps * |E| *
-sqrt(nbf)` (3e-13 for benzene/cc-pVDZ). Kohn-Sham runs additionally carry grid
-noise that is not estimated. The CLI default is deliberately loose (`1e-3`).
+and K the floor comes from the incremental Fock update and its integral
+screening (`integral_thresh`). ferric estimates it as
+`0.0125 * integral_thresh * nbf^2.25 + 0.5 * eps * |E| * sqrt(nbf)` Ha. The
+estimate against the measured RMS of the energy change once the density has
+settled:
 
-**What ferric tells you:** when a user-set `energy_conv` is below 0.3 times the
+| system | nbf | estimated floor | measured RMS |
+|---|---|---|---|
+| water / cc-pVDZ | 24 | 1.6e-11 | 4.5e-12 |
+| benzene / cc-pVDZ | 114 | 5.3e-10 | 1.4e-10 |
+| alkane C48 / STO-3G | 338 | 6.1e-9 | 2.2e-9 |
+| 71-atom drug-like molecule / STO-3G | 239 | 2.8e-9 | 1.9e-9 to 2.7e-9 |
+
+The estimate is good to a factor of a few and errs high for large systems; it
+was fitted on systems up to about 340 basis functions, and beyond that it is an
+extrapolation. With density-fitted J (and in the open-shell solvers, which
+rebuild J and K every iteration) only rounding remains, about
+`0.5 * eps * |E| * sqrt(nbf)`: measured 3e-13 for benzene/cc-pVDZ with RI-JK and
+1.3e-12 for alkane C20/6-31G with RI-JK. The CLI default is deliberately loose
+(`1e-3`).
+
+**What ferric tells you:** when you set `energy_conv` below 0.3 times the
 estimated floor, the CLI prints `warning: [scf] energy_conv ... is below the
 estimated noise floor of dE ...` to stderr and the Python `run_rhf`, `run_uhf`
-and `run_rohf` emit a `RuntimeWarning`, once, before the SCF starts. Nothing else
-changes: the threshold is not clamped and the SCF stops exactly where it
-otherwise would. A run that ends without converging on the `dE` criterion repeats
-the statement in `RhfResult.convergence_summary`. The estimate is good to a
-factor of a few, not a bound; it is not made for functionals or the LinK / COSX
-exchange builders.
+and `run_rohf` emit a `RuntimeWarning`, once, before the SCF starts. A default
+`energy_conv` is never warned about. Nothing else changes: the threshold is not
+clamped and the SCF stops exactly where it otherwise would. A run that ends
+without converging on the `dE` criterion alone repeats the statement in
+`RhfResult.convergence_summary`. No estimate is made for functionals (grid
+noise), the LinK and COSX exchange builders, PCM / COSMO, polarizable embedding
+or non-default `screening`: those runs get no warning, which is not a statement
+that the tolerance is reachable. The `|E|` in the rounding term is estimated
+from the nuclear charges (ECP cores removed, about 5 % for all-electron
+molecules, 3.7x high for an iodine ECP case); the point-charge or field energy
+of an embedding is not included.
 
 **Do:** tighten `density_conv`, not `energy_conv`.
 
