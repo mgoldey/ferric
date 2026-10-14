@@ -52,22 +52,28 @@ def run(args, trace=False):
     env = dict(os.environ, OPENBLAS_NUM_THREADS="1")
     if trace:
         env["FERRIC_SCF_TRACE"] = "1"
-    p = subprocess.run([BIN, *args], env=env, capture_output=True, text=True, check=True)
+    p = subprocess.run(
+        [BIN, *args], env=env, capture_output=True, text=True, check=True
+    )
     line = next(ln for ln in p.stdout.splitlines() if ln.startswith("RESULT"))
     return dict(RESULT.findall(line)), p.stderr
 
 
 def cost():
-    print(f"{'case':24} {'nbf':>4} {'it on/off':>9} {'quartets on/off':>15} "
-          f"{'wall on (s)':>11} {'wall off (s)':>12} {'off/on wall':>11} {'|E_on-E_off|':>12}")
+    print(
+        f"{'case':24} {'nbf':>4} {'it on/off':>9} {'quartets on/off':>15} "
+        f"{'wall on (s)':>11} {'wall off (s)':>12} {'off/on wall':>11} {'|E_on-E_off|':>12}"
+    )
     for mol, basis in COST_CASES:
         on, _ = run([f"{MOL}/{mol}", basis, "on"])
         off, _ = run([f"{MOL}/{mol}", basis, "off"])
         q = int(on["quartets"]) / int(off["quartets"])
         w_on, w_off = float(on["wall"]), float(off["wall"])
         de = abs(float(on["E"]) - float(off["E"]))
-        print(f"{mol[:-4] + '/' + basis:24} {on['nbf']:>4} {on['iters'] + '/' + off['iters']:>9} "
-              f"{q:>15.4f} {w_on:>11.2f} {w_off:>12.2f} {w_off / w_on:>11.3f} {de:>12.1e}")
+        print(
+            f"{mol[:-4] + '/' + basis:24} {on['nbf']:>4} {on['iters'] + '/' + off['iters']:>9} "
+            f"{q:>15.4f} {w_on:>11.2f} {w_off:>12.2f} {w_off / w_on:>11.3f} {de:>12.1e}"
+        )
         sys.stdout.flush()
 
 
@@ -84,8 +90,10 @@ def noise():
         _, err_on = run([*args, "on", thresh, "1e-14", "40"], trace=True)
         _, err_off = run([*args, "off", thresh, "1e-14", "40"], trace=True)
         (n_on, k_on), (n_off, k_off) = noise_of(err_on), noise_of(err_off)
-        print(f"{mol[:-4] + '/' + basis:24} {thresh:>6} {n_on:>9.1e} {n_off:>9.1e} "
-              f"{n_on / n_off:>8.0f}   (tail iters {k_on}/{k_off})")
+        print(
+            f"{mol[:-4] + '/' + basis:24} {thresh:>6} {n_on:>9.1e} {n_off:>9.1e} "
+            f"{n_on / n_off:>8.0f}   (tail iters {k_on}/{k_off})"
+        )
         sys.stdout.flush()
 
 
