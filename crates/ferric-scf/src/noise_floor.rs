@@ -86,34 +86,75 @@ pub fn estimate_total_energy_abs(mol: &Molecule) -> f64 {
         .sum()
 }
 
+/// Whether the floor model covers this configuration. Functional (grid) and
+/// COSX (seminumerical K) runs add noise sources that were not measured, so no
+/// claim is made for them.
+pub fn is_characterised(config: &crate::rhf::RhfConfig) -> bool {
+    config.xc.is_none() && config.k_builder.as_deref() != Some("cosx")
+}
+
+/// True when a Coulomb aux request means "fit J" (`None` and the empty
+/// opt-out sentinel do not).
+pub fn j_aux_is_fitted(aux: Option<&str>) -> bool {
+    aux.is_some_and(|s| !s.is_empty())
+}
+
+/// The floor for a configuration, or `None` outside the measured scope
+/// ([`is_characterised`]). `j_fitted` is the EFFECTIVE Coulomb treatment (the
+/// solver's resolved aux name, not the raw request).
+pub fn floor_for_config(
+    config: &crate::rhf::RhfConfig,
+    e_abs: f64,
+    nbf: usize,
+    j_fitted: bool,
+) -> Option<f64> {
+    is_characterised(config).then(|| {
+        de_noise_floor(&NoiseFloorInputs {
+            e_abs,
+            nbf,
+            integral_thresh: config.integral_thresh,
+            j_fitted,
+        })
+    })
+}
+
 /// The advisory text for a user-supplied `energy_conv`, or `None` when the
-/// setting is above the estimated floor (or the floor is not estimable).
+/// setting is above the estimated floor or the configuration is outside the
+/// measured scope.
 ///
-/// `j_fitted`: the Coulomb matrix is density-fitted. `nbf` and the molecule are
-/// known before the SCF starts, so this is called once, before the first iteration.
+/// Called ONCE, before the first SCF iteration, by the Python and CLI front
+/// ends: `nbf` and the molecule are known by then, and the one input that is
+/// not (`|E|`) enters only the rounding term, where the nuclear-charge
+/// estimate ([`estimate_total_energy_abs`]) is accurate enough. (Waiting for
+/// the first iteration's energy would warn only after the first Fock build,
+/// and would need a side channel out of the solver for no gain in accuracy.)
 pub fn energy_conv_warning(
     mol: &Molecule,
     nbf: usize,
-    integral_thresh: f64,
-    j_fitted: bool,
-    energy_conv: f64,
+    config: &crate::rhf::RhfConfig,
 ) -> Option<String> {
-    let floor = de_noise_floor(&NoiseFloorInputs {
-        e_abs: estimate_total_energy_abs(mol),
-        nbf,
-        integral_thresh,
-        j_fitted,
-    });
-    energy_conv_below_floor(energy_conv, floor).then(|| floor_message(energy_conv, floor, nbf))
+    let j_fitted = j_aux_is_fitted(config.df_j_aux.as_deref());
+    let floor = floor_for_config(config, estimate_total_energy_abs(mol), nbf, j_fitted)?;
+    energy_conv_below_floor(config.energy_conv, floor)
+        .then(|| floor_message(config.energy_conv, floor, nbf))
 }
 
-/// One sentence shared by the pre-SCF warning and the exit report.
+/// The clause shared by the pre-SCF warning and the exit report.
+pub fn floor_sentence(energy_conv: f64, floor: f64) -> String {
+    format!(
+        "energy_conv {energy_conv:.1e} is below the estimated noise floor of dE (~{floor:.1e} Ha \
+         for this system), so the dE criterion can be met only by chance"
+    )
+}
+
+/// The full advisory.
 pub fn floor_message(energy_conv: f64, floor: f64, nbf: usize) -> String {
     format!(
-        "energy_conv {:.1e} is below the estimated floating-point noise floor of the energy \
-         change (~{:.1e} Ha for this system, {} basis functions), so the dE criterion can be met \
-         only by chance; the SCF is judged on the density change (density_conv) and a tighter \
-         energy_conv only adds iterations",
-        energy_conv, floor, nbf
+        "{} ({nbf} basis functions). The SCF is judged on the density change (density_conv); \
+         dE is only a loose not-still-descending bound, so a tighter energy_conv adds \
+         iterations without improving the result. Use an energy_conv above ~{:.0e}, or the \
+         default.",
+        floor_sentence(energy_conv, floor),
+        floor
     )
 }

@@ -175,6 +175,11 @@ pub struct ConvergenceReport {
     pub energy_conv: f64,
     /// `RhfConfig::density_conv` in force.
     pub density_conv: f64,
+    /// Estimated noise floor of `de` for this system
+    /// ([`crate::noise_floor::de_noise_floor`]), or `None` when it is not
+    /// estimable (functional / COSX runs, whose grid noise is not characterised).
+    /// Report only: nothing reads it back.
+    pub de_noise_floor: Option<f64>,
 }
 
 impl ConvergenceReport {
@@ -204,9 +209,18 @@ impl ConvergenceReport {
         } else {
             format!("unmet: {}", unmet.join(", "))
         };
+        let floor_note = match self.de_noise_floor {
+            Some(f) if unmet.contains(&"dE") && crate::noise_floor::energy_conv_below_floor(self.energy_conv, f) => {
+                format!(
+                    "; {}",
+                    crate::noise_floor::floor_sentence(self.energy_conv, f)
+                )
+            }
+            _ => String::new(),
+        };
         format!(
             "iteration {}: dp_rms={:.3e} (need < {:.1e}), dp_max={:.3e} (need < {:.1e}), \
-             dE={:.3e} (need < {:.1e}), DIIS err_max={:.3e} (diagnostic); {}",
+             dE={:.3e} (need < {:.1e}), DIIS err_max={:.3e} (diagnostic); {}{}",
             self.iteration,
             self.dp_rms,
             self.density_conv,
@@ -215,7 +229,8 @@ impl ConvergenceReport {
             self.de,
             self.energy_conv,
             self.err_max,
-            verdict
+            verdict,
+            floor_note
         )
     }
 }
@@ -372,6 +387,7 @@ mod convergence_report_tests {
             err_max: 1e-5,
             energy_conv: 1e-10,
             density_conv: 1e-8,
+            de_noise_floor: None,
         }
     }
 

@@ -2238,6 +2238,12 @@ fn solve_rhf_impl(
             err_max,
             energy_conv: config.energy_conv,
             density_conv: config.density_conv,
+            de_noise_floor: crate::noise_floor::floor_for_config(
+                config,
+                energy.abs(),
+                prep.nbasis(),
+                df_j_aux_eff.is_some(),
+            ),
         });
 
         if scf_trace() {

@@ -1228,6 +1228,12 @@ fn solve_uhf_impl(
             err_max,
             energy_conv: config.energy_conv,
             density_conv: config.density_conv,
+            de_noise_floor: crate::noise_floor::floor_for_config(
+                config,
+                energy.abs(),
+                prep.nbasis(),
+                crate::noise_floor::j_aux_is_fitted(j_aux_eff),
+            ),
         });
 
         if crate::rhf::scf_trace() {
