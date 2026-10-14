@@ -248,18 +248,24 @@ mod tests {
         ] {
             let f = de_noise_floor(&inputs(e, nbf, 1e-12, true));
             let r = f / rms;
-            assert!((0.2..5.0).contains(&r), "nbf {nbf}: floor/measured = {r:.2}");
+            assert!(
+                (0.2..5.0).contains(&r),
+                "nbf {nbf}: floor/measured = {r:.2}"
+            );
         }
         // Rounding-only anchors: FERRIC_SCF_INCREMENTAL=0 and RI-J runs.
         for (e, nbf, rms) in [
-            (76.0, 24, 4.4e-14),  // water / cc-pVDZ, full rebuild
-            (387.0, 72, 3.7e-13), // alkane C10 / STO-3G, full rebuild
+            (76.0, 24, 4.4e-14),   // water / cc-pVDZ, full rebuild
+            (387.0, 72, 3.7e-13),  // alkane C10 / STO-3G, full rebuild
             (231.0, 114, 3.3e-13), // benzene / cc-pVDZ, full rebuild
             (781.0, 264, 1.3e-12), // alkane C20 / 6-31G, RI-JK
         ] {
             let f = de_noise_floor(&inputs(e, nbf, 1e-12, false));
             let r = f / rms;
-            assert!((0.65..1.5).contains(&r), "nbf {nbf}: floor/measured = {r:.2}");
+            assert!(
+                (0.65..1.5).contains(&r),
+                "nbf {nbf}: floor/measured = {r:.2}"
+            );
         }
     }
 

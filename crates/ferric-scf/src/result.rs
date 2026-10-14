@@ -210,7 +210,10 @@ impl ConvergenceReport {
             format!("unmet: {}", unmet.join(", "))
         };
         let floor_note = match self.de_noise_floor {
-            Some(f) if unmet.contains(&"dE") && crate::noise_floor::energy_conv_below_floor(self.energy_conv, f) => {
+            Some(f)
+                if unmet.contains(&"dE")
+                    && crate::noise_floor::energy_conv_below_floor(self.energy_conv, f) =>
+            {
                 format!(
                     "; {}",
                     crate::noise_floor::floor_sentence(self.energy_conv, f)
