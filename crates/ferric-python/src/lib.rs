@@ -568,6 +568,41 @@ fn default_scf_max_iter() -> usize {
     RhfConfig::default().max_iter
 }
 
+/// Emit a `RuntimeWarning`. If warnings are turned into errors (`-W error`)
+/// the warn call returns Err; that is IGNORED on purpose so a diagnostic can
+/// never change control flow (the result is never lost, the SCF still runs).
+fn emit_runtime_warning(py: Python<'_>, msg: String) {
+    let msg = std::ffi::CString::new(msg.replace('\0', " ")).expect("NUL removed");
+    let _ = PyErr::warn(
+        py,
+        &py.get_type::<pyo3::exceptions::PyRuntimeWarning>(),
+        &msg,
+        1,
+    );
+}
+
+/// Warn, once and before the SCF starts, when a USER-SUPPLIED `energy_conv` is
+/// below the estimated noise floor of `dE` for this system (issue #410). Purely
+/// advisory: the threshold is not clamped and the SCF is unchanged. The default
+/// (`energy_conv=None`) never warns.
+fn warn_energy_conv_noise_floor(
+    py: Python<'_>,
+    fname: &str,
+    user_set: bool,
+    mol: &ferric_core::mol::Molecule,
+    prep: &PreparedBasis,
+    config: &RhfConfig,
+) {
+    if !user_set {
+        return;
+    }
+    if let Some(text) =
+        ferric_scf::noise_floor::energy_conv_warning(mol, prep.nbasis(), config)
+    {
+        emit_runtime_warning(py, format!("{fname}: {text}"));
+    }
+}
+
 /// Human-readable SCF exit line: exit reason, iterations, final residuals vs
 /// thresholds and the unmet gate criteria. Shared by `RhfResult.convergence_summary`
 /// and the non-convergence `RuntimeWarning` of `run_rhf`.
@@ -873,6 +908,7 @@ fn run_rhf(
     // until the first call returns, so independent jobs submitted from a
     // ThreadPoolExecutor serialize at the FFI boundary no matter how many
     // cores rayon could use. The compute itself never touches the interpreter.
+    warn_energy_conv_noise_floor(py, "run_rhf", energy_conv.is_some(), &emol, &prep, &config);
     let r = py
         .allow_threads(|| solve_rhf(&ctx, &emol, &prep, op, &bounds, &config))
         .map_err(make_err)?;
@@ -889,13 +925,7 @@ fn run_rhf(
             config.max_iter,
             default_scf_max_iter()
         );
-        let msg = std::ffi::CString::new(msg.replace('\0', " ")).expect("NUL removed");
-        let _ = PyErr::warn(
-            py,
-            &py.get_type::<pyo3::exceptions::PyRuntimeWarning>(),
-            &msg,
-            1,
-        );
+        emit_runtime_warning(py, msg);
     }
     Ok(PyRhfResult {
         energy: r.energy,
@@ -2780,6 +2810,7 @@ fn run_uhf(
     // Release the GIL for the duration of the SCF. Every argument below is an
     // owned Rust value (`emol` is a clone; `prep`/`bounds`/`config` are built
     // above), so nothing Python-borrowed crosses the closure boundary.
+    warn_energy_conv_noise_floor(py, "run_uhf", energy_conv.is_some(), &emol, &prep, &config);
     let r = py
         .allow_threads(|| solve_uhf(&ctx, &emol, &prep, &bounds, &config))
         .map_err(make_err)?;
@@ -2866,6 +2897,7 @@ fn run_rohf(
     // Release the GIL for the duration of the SCF. Every argument below is an
     // owned Rust value (`emol` is a clone; `prep`/`bounds`/`config` are built
     // above), so nothing Python-borrowed crosses the closure boundary.
+    warn_energy_conv_noise_floor(py, "run_rohf", energy_conv.is_some(), &emol, &prep, &config);
     let r = py
         .allow_threads(|| solve_rohf(&ctx, &emol, &prep, op, &bounds, &config))
         .map_err(make_err)?;

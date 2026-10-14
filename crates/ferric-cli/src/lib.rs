@@ -775,6 +775,16 @@ pub fn run(args: Vec<String>) {
         screening: screening_kind,
     };
 
+    // Advisory only (issue #410): an `[scf] energy_conv` below the estimated
+    // noise floor of dE is met only by chance, so the run just iterates longer.
+    // Printed once, before the SCF, to stderr like the other `warning:` lines;
+    // the threshold is not changed. The 1e-3 default never fires.
+    if let Some(text) =
+        ferric_scf::noise_floor::energy_conv_warning(&mol, prep.nbasis(), &rhf_config)
+    {
+        eprintln!("warning: [scf] {text}");
+    }
+
     // Header record for the JSON run log: everything needed to reproduce this
     // run, written before any expensive work so it survives even a job killed
     // in the first SCF iteration. No-op when no log is installed.
