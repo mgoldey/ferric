@@ -2254,6 +2254,11 @@ pub struct ScfCfg {
     pub max_iter: usize,
     #[serde(default = "default_energy_conv")]
     pub energy_conv: f64,
+    /// `[scf] energy_conv` was written in the TOML (set by [`load_config`]; false
+    /// for a default and for hand-built configs). Gates the noise-floor advisory,
+    /// which is about a USER-chosen tolerance.
+    #[serde(skip)]
+    pub energy_conv_set: bool,
     #[serde(default = "default_density_conv")]
     pub density_conv: f64,
     #[serde(default = "default_diis_size")]
@@ -2562,6 +2567,7 @@ impl Default for ScfCfg {
             // "not-descending" bound. A tight energy_conv here would hang a large
             // DF molecule at MaxIter, since dE floors on the RI noise level.
             energy_conv: 1e-3,
+            energy_conv_set: false,
             density_conv: 1e-6,
             diis_size: 8,
             diis: None,
@@ -4379,6 +4385,9 @@ pub fn load_config(path: &str) -> Result<Config, String> {
 /// needs the raw TOML to see which keys were actually written).
 fn validate_loaded(cfg: &mut Config, text: &str) -> Result<(), String> {
     cfg.validate_loaded_values()?;
+    cfg.scf.energy_conv_set = toml::from_str::<toml::Value>(text)
+        .ok()
+        .is_some_and(|raw| raw_keys(&raw, "scf").contains(&"energy_conv"));
     if cfg.cell.is_some() {
         let raw: toml::Value = toml::from_str(text).map_err(|e| e.to_string())?;
         cfg.periodic = periodic_plan(cfg, &raw)?;
