@@ -733,6 +733,46 @@ impl PyRhfResult {
     }
 }
 
+/// `trah_trigger` must be a positive finite DIIS-error threshold.
+fn check_trah_trigger(t: Option<f64>) -> PyResult<Option<f64>> {
+    match t {
+        Some(v) if !(v.is_finite() && v > 0.0) => Err(pyo3::exceptions::PyValueError::new_err(
+            format!("trah_trigger must be a positive number, got {v}"),
+        )),
+        other => Ok(other),
+    }
+}
+
+/// Apply the opt-in `aurora=` / `trah_trigger=` kwargs (both off when omitted).
+fn apply_accelerators(
+    config: &mut RhfConfig,
+    aurora: Option<bool>,
+    trah_trigger: Option<f64>,
+) -> PyResult<()> {
+    config.aurora.enabled = aurora.unwrap_or(false);
+    config.trah_trigger = check_trah_trigger(trah_trigger)?;
+    Ok(())
+}
+
+/// The non-convergence RuntimeWarning of `run_rhf` (no control-flow change).
+fn warn_rhf_not_converged(py: Python<'_>, r: &ferric_scf::result::ScfResult, config: &RhfConfig) {
+    if !r.converged {
+        // No control-flow change: the caller still gets the best-effort
+        // `RhfResult` with `converged=False`. The warning only names the exit,
+        // iteration count and unmet criteria. If warnings are turned into errors
+        // (`-W error`) the warn call returns Err; that is IGNORED on purpose so
+        // the result is never lost.
+        let msg = format!(
+            "run_rhf: SCF did not converge: {}. Raise max_iter (this call used {}; default {}), or \
+             pass level_shift / soscf / a different guess; see RhfResult.unmet_criteria.",
+            scf_exit_summary(r),
+            config.max_iter,
+            default_scf_max_iter()
+        );
+        emit_runtime_warning(py, msg);
+    }
+}
+
 /// Closed-shell RHF (also UHF/ROHF convergence aids apply to the open-shell
 /// drivers). Exposes the full SCF knob set, matching the CLI `[scf]` TOML section
 /// for parity — same names, same defaults, same units.
@@ -762,6 +802,15 @@ impl PyRhfResult {
 ///   mom_after_iter  Maximum-Overlap Method: pin the occupied set by AO-overlap
 ///                   after this many DIIS iters. 0 = aufbau throughout. Fixes
 ///                   occupied-set flip-flop non-convergence.
+///   aurora          False (default). True turns on the AURORA auxiliary-curvature
+///                   accelerator (closed-shell, RHF only): same fixed point as
+///                   DIIS, measured as a speed-up (fewer J/K builds), not a
+///                   convergence rescue. Same as the CLI `[scf] aurora`.
+///   trah_trigger    None (default) = off. A positive DIIS-error threshold turns
+///                   on the trust-region augmented-Hessian (TRAH) solver once the
+///                   DIIS error drops below it (e.g. 1e-2). A convergence RESCUE:
+///                   it wins iterations but costs wall time. Same as the CLI
+///                   `[scf] trah_trigger`.
 /// Fock builders:
 ///   k_builder       "direct" (default), "link" (LinK exchange) or "cosx"
 ///                   (seminumerical exchange, Coulomb operator only; CLI
@@ -824,6 +873,7 @@ impl PyRhfResult {
     memory_budget_gb=None, solvent=None, pcm_lebedev_order=None,
     stability_descent=None,
     cosx_grid=None, cosx_final_pass=None, cosx_final_grid=None, cosx_overlap_fit=None,
+    aurora=None, trah_trigger=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_rhf(
@@ -855,6 +905,8 @@ fn run_rhf(
     cosx_final_pass: Option<bool>,
     cosx_final_grid: Option<&Bound<'_, PyAny>>,
     cosx_overlap_fit: Option<bool>,
+    aurora: Option<bool>,
+    trah_trigger: Option<f64>,
 ) -> PyResult<PyRhfResult> {
     // The descent needs a stability verdict to act on, so the kwarg turns on
     // both halves (as run_uhf does).
@@ -868,7 +920,7 @@ fn run_rhf(
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
     // Defaults mirror the CLI `[scf]` section (config.rs) so CLI and Python agree.
-    let config = RhfConfig {
+    let mut config = RhfConfig {
         max_iter: max_iter.unwrap_or_else(default_scf_max_iter),
         energy_conv: energy_conv.unwrap_or(1e-3),
         density_conv: density_conv.unwrap_or(1e-6),
@@ -904,6 +956,7 @@ fn run_rhf(
         scf_stability_descent: descent,
         ..Default::default()
     };
+    apply_accelerators(&mut config, aurora, trah_trigger)?;
     let ctx = ParallelContext::default();
     // Release the GIL for the duration of the SCF. Every argument below is an
     // owned Rust value (`emol` is a clone; `prep`/`bounds`/`config` are built
@@ -925,21 +978,7 @@ fn run_rhf(
     let r = py
         .allow_threads(|| solve_rhf(&ctx, &emol, &prep, op, &bounds, &config))
         .map_err(make_err)?;
-    if !r.converged {
-        // No control-flow change: the caller still gets the best-effort
-        // `RhfResult` with `converged=False`. The warning only names the exit,
-        // iteration count and unmet criteria. If warnings are turned into errors
-        // (`-W error`) the warn call returns Err; that is IGNORED on purpose so
-        // the result is never lost.
-        let msg = format!(
-            "run_rhf: SCF did not converge: {}. Raise max_iter (this call used {}; default {}), or \
-             pass level_shift / soscf / a different guess; see RhfResult.unmet_criteria.",
-            scf_exit_summary(&r),
-            config.max_iter,
-            default_scf_max_iter()
-        );
-        emit_runtime_warning(py, msg);
-    }
+    warn_rhf_not_converged(py, &r, &config);
     Ok(PyRhfResult {
         energy: r.energy,
         converged: r.converged,
@@ -2741,6 +2780,11 @@ impl PyUhfResult {
 ///                     minimum, exactly as PySCF's own default guess does) and
 ///                     N2+/6-31G. Before this kwarg the repair was unreachable
 ///                     from Python.
+///   trah_trigger    None (default) = off. A positive DIIS-error threshold turns
+///                   on the trust-region augmented-Hessian (TRAH) solver once the
+///                   DIIS error drops below it. A convergence RESCUE: it wins
+///                   iterations but costs wall time. Same as the CLI
+///                   `[scf] trah_trigger`.
 ///
 /// Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today; non-convergence raises.
 /// A user-set energy_conv below the estimated (rounding-level) noise floor of dE emits one RuntimeWarning before the SCF starts.
@@ -2753,6 +2797,7 @@ impl PyUhfResult {
     point_charges=None, external_field=None, memory_budget_gb=None,
     guess=None, stability_descent=None,
     cosx_grid=None, cosx_final_pass=None, cosx_final_grid=None, cosx_overlap_fit=None,
+    trah_trigger=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_uhf(
@@ -2778,7 +2823,9 @@ fn run_uhf(
     cosx_final_pass: Option<bool>,
     cosx_final_grid: Option<&Bound<'_, PyAny>>,
     cosx_overlap_fit: Option<bool>,
+    trah_trigger: Option<f64>,
 ) -> PyResult<PyUhfResult> {
+    let trah_trigger = check_trah_trigger(trah_trigger)?;
     // The shared strict parser (same as run_rhf and the CLI): a typo must not
     // silently select a different SCF state (on O2/STO-3G the two guesses
     // land on states 0.255 Ha apart).
@@ -2816,6 +2863,7 @@ fn run_uhf(
         // omitted kwarg preserves the previous auto-detect behaviour.
         three_index_budget_bytes: budget_bytes_from_gb(memory_budget_gb).unwrap_or(0),
         use_sad_guess,
+        trah_trigger,
         check_stability: descent,
         scf_stability_descent: descent,
         ..Default::default()
