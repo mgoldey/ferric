@@ -4383,13 +4383,19 @@ pub fn load_config(path: &str) -> Result<Config, String> {
     Ok(cfg)
 }
 
+/// Whether the raw TOML text writes `[scf] energy_conv` (an unparsable text
+/// counts as not written; the typed parse has already accepted it).
+fn scf_energy_conv_written(text: &str) -> bool {
+    toml::from_str::<toml::Value>(text)
+        .ok()
+        .is_some_and(|raw| raw_keys(&raw, "scf").contains(&"energy_conv"))
+}
+
 /// The post-parse checks of [`load_config`], and the `[cell]` plan (which
 /// needs the raw TOML to see which keys were actually written).
 fn validate_loaded(cfg: &mut Config, text: &str) -> Result<(), String> {
     cfg.validate_loaded_values()?;
-    cfg.scf.energy_conv_set = toml::from_str::<toml::Value>(text)
-        .ok()
-        .is_some_and(|raw| raw_keys(&raw, "scf").contains(&"energy_conv"));
+    cfg.scf.energy_conv_set = scf_energy_conv_written(text);
     if cfg.cell.is_some() {
         let raw: toml::Value = toml::from_str(text).map_err(|e| e.to_string())?;
         cfg.periodic = periodic_plan(cfg, &raw)?;
