@@ -626,7 +626,9 @@ impl EnergyDiis {
 pub(crate) fn is_idempotent_closed_shell(d: &Array2<f64>, s: &Array2<f64>, tol: f64) -> bool {
     let dsd = d.dot(s).dot(d);
     let scale = d.iter().fold(1.0f64, |m, v| m.max(v.abs()));
-    let dev = (&dsd - &(2.0 * d)).iter().fold(0.0f64, |m, v| m.max(v.abs()));
+    let dev = (&dsd - &(2.0 * d))
+        .iter()
+        .fold(0.0f64, |m, v| m.max(v.abs()));
     dev <= tol * scale
 }
 
@@ -1432,6 +1434,44 @@ mod tests {
                 assert!(ci >= -1e-12, "ADIIS coeff ≥ 0: {c:?}");
             }
         }
+    }
+
+    /// #411 at the mixing step: EDIIS handed a history whose OLDEST entry has an
+    /// absurdly low energy (a non-idempotent guess) puts all its weight there, so
+    /// the extrapolated Fock is the OLD Fock and the next density repeats.
+    /// `step_checked(.., false)` keeps that entry out, so the driver returns the
+    /// newest Fock instead. The unchecked path is the defect witness.
+    #[test]
+    fn a_vetoed_entry_never_reaches_the_energy_history() {
+        let n = 2;
+        let f0 = Array2::from_shape_fn((n, n), |(i, j)| (i + j) as f64 * 0.1);
+        let f1 = &f0 + &Array2::from_elem((n, n), 0.05);
+        let d0 = Array2::eye(n);
+        let d1 = &d0 * 0.9;
+        let err = Array2::from_elem((n, n), 0.5); // large: stay in the energy regime
+                                                  // Witness: trusted guess entry at E=-100 vs a later E=-5 => c = [1, 0].
+        let mut bad = DiisDriver::new(DiisFlavor::Ediis, 8, 1e-1);
+        bad.step_checked(&f0, &err, &d0, -100.0, 0.5, true);
+        let out_bad = bad.step_checked(&f1, &err, &d1, -5.0, 0.5, true);
+        assert!(
+            (&out_bad - &f0).iter().all(|v| v.abs() < 1e-6),
+            "witness: the low-energy guess captured the extrapolation"
+        );
+        // Vetoed: the guess is not in the history, so the step is the newest Fock.
+        let mut ok = DiisDriver::new(DiisFlavor::Ediis, 8, 1e-1);
+        ok.step_checked(&f0, &err, &d0, -100.0, 0.5, false);
+        let out_ok = ok.step_checked(&f1, &err, &d1, -5.0, 0.5, true);
+        assert_eq!(out_ok, f1);
+    }
+
+    /// The idempotency vet: a projector in the S metric passes, a scaled one does not.
+    #[test]
+    fn idempotency_check_separates_projectors_from_scaled_densities() {
+        let s = Array2::eye(3);
+        let mut d = Array2::zeros((3, 3));
+        d[(0, 0)] = 2.0; // D = 2 c c^T with c = e0, S = I: D S D = 2 D
+        assert!(is_idempotent_closed_shell(&d, &s, 1e-6));
+        assert!(!is_idempotent_closed_shell(&(&d * 1.25), &s, 1e-6));
     }
 
     /// The extrapolated Fock returned by EnergyDiis::step must equal Σ c_i F_i.
