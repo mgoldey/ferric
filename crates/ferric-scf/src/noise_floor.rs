@@ -91,14 +91,21 @@ pub fn energy_conv_below_floor(energy_conv: f64, floor: f64) -> bool {
     floor.is_finite() && !(energy_conv >= WARN_FACTOR * floor)
 }
 
-/// Crude `|E_total|` from the nuclear charges alone (Thomas-Fermi atom,
-/// `0.7687 Z^(7/3)` Hartree), good to ~15 % for Z <= 54. Only the rounding
-/// term reads it, and that term is a few eps*|E|, so the accuracy is immaterial.
+/// Crude `|E_total|` from the nuclear charges alone: a Thomas-Fermi atom,
+/// `0.6 * Zeff^(7/3)` Hartree per atom, with `Zeff = z - n_core_ecp` (0 for a
+/// ghost). The prefactor is the TF value (0.7687) scaled by 0.78 so that the
+/// all-electron errors are centred. MEASURED against the SCF energy (def2-SVP
+/// unless noted): water +3 %, methane +4 %, benzene +4 %, HBr -6 %, SiH4 -2 %,
+/// alkane C10/STO-3G +5 %. An ECP atom is NOT well described (HI/def2-SVP, I with
+/// a 28-electron core: estimate 3.7x too high, vs 21x without the core
+/// subtraction). Only the rounding term reads this, and that term is
+/// `~1e-12 Ha`, three orders below any `energy_conv` anyone sets, so even the
+/// ECP overestimate cannot move a verdict on the incremental-direct path, where
+/// the screening term (independent of `|E|`) dominates.
 pub fn estimate_total_energy_abs(mol: &Molecule) -> f64 {
     mol.atoms
         .iter()
-        .filter(|a| !a.ghost)
-        .map(|a| 0.7687 * f64::from(a.z.max(0)).powf(7.0 / 3.0))
+        .map(|a| 0.6 * f64::from(a.effective_z().max(0)).powf(7.0 / 3.0))
         .sum()
 }
 
@@ -314,12 +321,29 @@ mod tests {
         assert!(energy_conv_below_floor(f64::NAN, f));
     }
 
+    /// Measured error table (see `estimate_total_energy_abs`): water real 75.96.
     #[test]
     fn the_energy_estimate_tracks_the_nuclear_charges() {
         let e = estimate_total_energy_abs(&water());
-        // Real E(water) = 76; Thomas-Fermi is ~15 % off, which is immaterial for
-        // a term that is a few eps*|E|.
-        assert!((65.0..100.0).contains(&e), "{e}");
+        assert!((0.9 * 75.96..1.1 * 75.96).contains(&e), "{e}");
+        // Ghost centres carry no charge.
+        let mut g = water();
+        g.atoms[1].ghost = true;
+        assert!(estimate_total_energy_abs(&g) < e);
+    }
+
+    #[test]
+    fn ecp_core_electrons_are_removed_from_the_estimate() {
+        let mut hi = Molecule::parse_xyz("2\nHI\nH 0 0 0\nI 0 0 3.0\n", 0, 1).unwrap();
+        let all_electron = estimate_total_energy_abs(&hi);
+        hi.atoms[1].n_core_ecp = 28;
+        let with_ecp = estimate_total_energy_abs(&hi);
+        // Real E(HI/def2-SVP) = -297.2; without the subtraction the estimate is ~21x.
+        assert!(
+            with_ecp < all_electron / 4.0,
+            "{with_ecp} vs {all_electron}"
+        );
+        assert!((200.0..1500.0).contains(&with_ecp), "{with_ecp}");
     }
 
     #[test]
