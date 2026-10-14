@@ -2324,7 +2324,7 @@ fn k_gradient(
     // The XC settings: the energy's own grid and AO truncation, and the SCF's
     // exxdiv (a hybrid's exact exchange feels it).
     let xc_cfg = |x: &KXcRef<'_>| KRksGradConfig {
-        grad: gcfg.clone(),
+        grad: gcfg,
         grid: KXcGrid::Atom(x.grid.clone()),
         ao_threshold: x.ao_threshold,
         exxdiv: Some(s.exx),
@@ -2357,7 +2357,7 @@ fn k_gradient(
         KScfRef::Ro { scf, xc: None } => {
             let c = KUksGradConfig {
                 base: KRksGradConfig {
-                    grad: gcfg.clone(),
+                    grad: gcfg,
                     ..Default::default()
                 },
                 ..Default::default()
@@ -2382,7 +2382,7 @@ fn k_stress(
         ..Default::default()
     };
     let xc_cfg = |x: &KXcRef<'_>| KRksStressConfig {
-        stress: scfg.clone(),
+        stress: scfg,
         grid: KXcGrid::Atom(x.grid.clone()),
         ao_threshold: x.ao_threshold,
         exxdiv: Some(s.exx),
@@ -2415,7 +2415,7 @@ fn k_stress(
         KScfRef::Ro { scf, xc: None } => {
             let c = KUksStressConfig {
                 base: KRksStressConfig {
-                    stress: scfg.clone(),
+                    stress: scfg,
                     ..Default::default()
                 },
                 ..Default::default()
