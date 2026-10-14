@@ -456,29 +456,7 @@ fn a_real_optimization_converges_and_the_final_force_is_the_library_force() {
 
 #[test]
 fn unsupported_kohn_sham_routes_are_refused_with_exact_messages() {
-    // meta-GGA and range-separated hybrids: named by the library resolver.
-    let e = refused(
-        &run(&loose_input("scan", "SCAN", "[1, 1, 2]", DENSE)),
-        "scan",
-    );
-    assert!(
-        e.contains("[cell] kmesh with functional \"SCAN\"") && e.contains("meta-GGA"),
-        "{e}"
-    );
-    assert!(
-        e.contains("k-point RKS supports LDA, GGA and global-hybrid functionals only"),
-        "{e}"
-    );
-    // r2SCAN as well (the library now has k-point meta-GGA forces; the
-    // bindings and the CLI do not expose them, so the optimize gate refuses).
-    let e = refused(
-        &run(&loose_input("r2scan", "r2SCAN", "[1, 1, 2]", DENSE)),
-        "r2scan",
-    );
-    assert!(
-        e.contains("[cell] kmesh with functional \"r2SCAN\"") && e.contains("meta-GGA"),
-        "{e}"
-    );
+    // Range-separated hybrids: named by the library resolver.
     let e = refused(
         &run(&loose_input("hse", "HSE06", "[1, 1, 2]", DENSE)),
         "hse",
@@ -487,14 +465,23 @@ fn unsupported_kohn_sham_routes_are_refused_with_exact_messages() {
         e.contains("[cell] kmesh with functional \"HSE06\"") && e.contains("range-separated"),
         "{e}"
     );
-    // Open-shell Kohn-Sham (ksdft with multiplicity > 1 is UKS).
-    let mut i = loose_input("uks", "PBE", "[1, 1, 2]", DENSE);
+    // Hybrid meta-GGA and the unvalidated TPSS-family names stay refused: only
+    // the pure SCAN / r2SCAN meta-GGAs pass the energy and force gates.
+    for f in ["TPSSh", "MGGA_X_TPSS", "wB97X-V"] {
+        let e = refused(&run(&loose_input("mgga-ref", f, "[1, 1, 2]", DENSE)), f);
+        assert!(e.contains("[cell] kmesh with functional"), "{f}: {e}");
+    }
+    // Open-shell Kohn-Sham with a meta-GGA (ksdft with multiplicity > 1 is
+    // UKS): the spin-resolved XC has no tau term.
+    let mut i = loose_input("uks-scan", "SCAN", "[1, 1, 2]", DENSE);
     i.xyz = xyz(&[[0.0, 0.0, 0.0]]);
     i.mult = 2;
-    let e = refused(&run(&i), "uks");
+    let e = refused(&run(&i), "uks-scan");
     assert!(
-        e.contains("[cell] kmesh is not supported for the open-shell Kohn-Sham route")
-            && e.contains("k-point UKS/ROKS is not implemented yet"),
+        e.contains("[cell] kmesh with functional \"SCAN\"")
+            && e.contains(
+                "k-point UKS supports LDA, GGA and global-hybrid functionals only (no meta-GGA)"
+            ),
         "{e}"
     );
     // The range split and the automatic RS-GDF omega are energy-only.
@@ -547,4 +534,47 @@ fn an_ecp_cell_is_refused_for_the_k_point_kohn_sham_force() {
         ),
         "{e}"
     );
+}
+
+/// Pure meta-GGAs (SCAN, r2SCAN) pass the energy and force gates: the printed
+/// final force equals `kpoint_rks_gradient` on the same cell, dense and RS-GDF.
+#[test]
+fn printed_force_equals_the_library_force_for_meta_gga() {
+    for (tag, f, kmesh, jk, rsgdf) in [
+        ("scan", "SCAN", "[1, 1, 3]", DENSE, false),
+        ("r2scan", "r2SCAN", "[1, 1, 2]", RSGDF, true),
+    ] {
+        let o = run(&loose_input(tag, f, kmesh, jk));
+        let out = ok(&o, tag);
+        assert!(out.contains("analytic k-point RKS gradient"), "{out}");
+        let g = printed_gradient(&out, 2);
+        let at = printed_atoms(&out, 2);
+        let lib = Lib {
+            functional: f,
+            mesh: if rsgdf { [1, 1, 2] } else { [1, 1, 3] },
+            exxdiv_scf: ExxDiv::Ewald,
+            rsgdf,
+            cutoff: true,
+        };
+        assert!(
+            g.iter().fold(0.0_f64, |m, v| m.max(v.abs())) > 1e-3,
+            "trivial"
+        );
+        let d = max_diff(&g, &library_gradient(&at, lib, ExxDiv::Ewald));
+        eprintln!("{f} CLI vs library force: {d:.2e}");
+        assert!(d < BAR, "{f}: {d:e}");
+        // MUTANT: the GGA parent is a different functional.
+        let bad = library_gradient(
+            &at,
+            Lib {
+                functional: "PBE",
+                ..lib
+            },
+            ExxDiv::Ewald,
+        );
+        assert!(
+            max_diff(&g, &bad) > 1e-4,
+            "{f}: functional mutant not detected"
+        );
+    }
 }
