@@ -30,9 +30,9 @@
 //!   is bit-identical across 1, 2 and 4 threads.
 //!
 //! It is an ESTIMATE good to a factor of a few (the windowed RMS of one run
-//! varies by ~3x between windows; see [`WARN_FACTOR`]), not a bound. Functional
+//! varies by ~3x between windows; see [`crate::noise_floor::WARN_FACTOR`]), not a bound. Functional
 //! (grid) and non-default K-builder (LinK, COSX) runs are outside what was
-//! measured; [`floor_for_config`] returns `None` for them rather than guess.
+//! measured; [`crate::noise_floor::floor_for_config`] returns `None` for them rather than guess.
 //!
 //! The functions here are pure and nothing in the solvers reads them back, so
 //! energies and iteration counts are unchanged.

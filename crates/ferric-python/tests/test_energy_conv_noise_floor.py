@@ -120,14 +120,10 @@ def test_integral_thresh_enters_the_estimate():
 @pytest.mark.parametrize("fn_name,mult", [("run_uhf", 2), ("run_rohf", 2)])
 def test_open_shell_solvers_warn_when_below_their_rounding_floor(fn_name, mult):
     fn = getattr(ferric, fn_name)
-    _, w = _floor_warnings(
-        fn, _mol("oh", mult), _bs(), energy_conv=1e-16, max_iter=3
-    )
+    _, w = _floor_warnings(fn, _mol("oh", mult), _bs(), energy_conv=1e-16, max_iter=3)
     assert len(w) == 1 and fn_name in w[0], w
     # ... and an ordinary tight value is fine for them.
-    _, w = _floor_warnings(
-        fn, _mol("oh", mult), _bs(), energy_conv=1e-10, max_iter=3
-    )
+    _, w = _floor_warnings(fn, _mol("oh", mult), _bs(), energy_conv=1e-10, max_iter=3)
     assert w == []
 
 

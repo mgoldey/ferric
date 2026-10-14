@@ -425,6 +425,34 @@ mod convergence_report_tests {
         );
     }
 
+    /// The exit report blames the noise floor only when the dE criterion is
+    /// the unmet one AND energy_conv is below the estimated floor.
+    #[test]
+    fn describe_explains_an_unreachable_energy_gate_only_when_it_is_the_cause() {
+        let with_floor = |de: f64, dp: f64, ec: f64, floor: Option<f64>| {
+            ConvergenceReport {
+                energy_conv: ec,
+                de_noise_floor: floor,
+                ..rep(de, dp, dp * 10.0)
+            }
+            .describe()
+        };
+        // dE unmet, energy_conv (1e-10) below the floor (3e-9): says so.
+        let t = with_floor(2e-9, 1e-9, 1e-10, Some(3e-9));
+        assert!(t.contains("unmet: dE"), "{t}");
+        assert!(
+            t.contains("energy_conv 1.0e-10 is below the estimated noise floor"),
+            "{t}"
+        );
+        assert!(t.contains("3.0e-9"), "{t}");
+        // dE unmet but energy_conv is comfortably above the floor: no blame.
+        assert!(!with_floor(2e-3, 1e-9, 1e-6, Some(3e-9)).contains("noise floor"));
+        // Density is the unmet criterion (dE satisfied): no blame.
+        assert!(!with_floor(1e-12, 1e-6, 1e-10, Some(3e-9)).contains("noise floor"));
+        // Floor not estimable (functional / COSX runs): no claim.
+        assert!(!with_floor(2e-9, 1e-9, 1e-10, None).contains("noise floor"));
+    }
+
     #[test]
     fn describe_names_iteration_thresholds_and_unmet() {
         let t = rep(7.3e-11, 4.7e-8, 3.8e-6).describe();
