@@ -160,22 +160,16 @@ fn unsupported_kpoint_ks_combinations_are_refused_by_name() {
     assert!(e.contains("range-separated"), "{e}");
     // task = "optimize" keeps the range-separated refusal (closed-shell LDA /
     // GGA / global hybrid / SCAN forces are wired; periodic_kpoint_ks_optimize.rs).
-    for (tag, dft, key) in [(
-        "opt-hse",
-        "[dft]\nfunctional = \"HSE06\"",
-        "range-separated",
-    )] {
-        let toml = input(tag, "ksdft", 1, dft, "");
-        let src = std::fs::read_to_string(&toml)
-            .unwrap()
-            .replace("kind = \"ksdft\"", "task = \"optimize\"\nkind = \"ksdft\"");
-        std::fs::write(&toml, src).unwrap();
-        let out = run(&toml);
-        assert!(!out.status.success(), "{tag}");
-        let e = String::from_utf8_lossy(&out.stderr);
-        assert!(
-            e.contains("[cell] kmesh with functional") && e.contains(key),
-            "{tag}: {e}"
-        );
-    }
+    let toml = input("opt-hse", "ksdft", 1, "[dft]\nfunctional = \"HSE06\"", "");
+    let src = std::fs::read_to_string(&toml)
+        .unwrap()
+        .replace("kind = \"ksdft\"", "task = \"optimize\"\nkind = \"ksdft\"");
+    std::fs::write(&toml, src).unwrap();
+    let out = run(&toml);
+    assert!(!out.status.success(), "opt-hse");
+    let e = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        e.contains("[cell] kmesh with functional") && e.contains("range-separated"),
+        "opt-hse: {e}"
+    );
 }
