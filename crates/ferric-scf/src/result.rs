@@ -210,8 +210,10 @@ impl ConvergenceReport {
             format!("unmet: {}", unmet.join(", "))
         };
         let floor_note = match self.de_noise_floor {
+            // Only when dE is the SOLE unmet criterion: if a density criterion is
+            // also unmet, the energy gate is not what stopped the run.
             Some(f)
-                if unmet.contains(&"dE")
+                if unmet == ["dE"]
                     && crate::noise_floor::energy_conv_below_floor(self.energy_conv, f) =>
             {
                 format!(
@@ -428,7 +430,7 @@ mod convergence_report_tests {
     /// The exit report blames the noise floor only when the dE criterion is
     /// the unmet one AND energy_conv is below the estimated floor.
     #[test]
-    fn describe_explains_an_unreachable_energy_gate_only_when_it_is_the_cause() {
+    fn describe_explains_an_unreachable_energy_gate_only_when_it_is_the_sole_unmet_criterion() {
         let with_floor = |de: f64, dp: f64, ec: f64, floor: Option<f64>| {
             ConvergenceReport {
                 energy_conv: ec,
@@ -447,6 +449,10 @@ mod convergence_report_tests {
         assert!(t.contains("3.0e-9"), "{t}");
         // dE unmet but energy_conv is comfortably above the floor: no blame.
         assert!(!with_floor(2e-3, 1e-9, 1e-6, Some(3e-9)).contains("noise floor"));
+        // dE AND a density criterion unmet: the energy gate is not the cause.
+        assert!(!with_floor(2e-9, 1e-6, 1e-10, Some(3e-9)).contains("noise floor"));
+        // A non-finite floor makes no claim.
+        assert!(!with_floor(2e-9, 1e-9, 1e-10, Some(f64::NAN)).contains("noise floor"));
         // Density is the unmet criterion (dE satisfied): no blame.
         assert!(!with_floor(1e-12, 1e-6, 1e-10, Some(3e-9)).contains("noise floor"));
         // Floor not estimable (functional / COSX runs): no claim.

@@ -85,9 +85,10 @@ pub fn de_noise_floor(i: &NoiseFloorInputs) -> f64 {
 
 /// True when `energy_conv` is low enough that the `dE` criterion is met only
 /// by chance: `energy_conv < WARN_FACTOR * floor`. A non-positive or NaN
-/// `energy_conv` is below any positive floor and also unreachable, so it counts.
+/// `energy_conv` is below any finite floor and also unreachable, so it counts.
+/// A non-finite floor (NaN / infinite `|E|`) is no evidence of anything: `false`.
 pub fn energy_conv_below_floor(energy_conv: f64, floor: f64) -> bool {
-    !(energy_conv >= WARN_FACTOR * floor)
+    floor.is_finite() && !(energy_conv >= WARN_FACTOR * floor)
 }
 
 /// Crude `|E_total|` from the nuclear charges alone (Thomas-Fermi atom,
@@ -135,7 +136,7 @@ pub fn floor_for_config(
     nbf: usize,
     incremental_direct: bool,
 ) -> Option<f64> {
-    is_characterised(config).then(|| {
+    (is_characterised(config) && e_abs.is_finite()).then(|| {
         de_noise_floor(&NoiseFloorInputs {
             e_abs,
             nbf,
@@ -289,6 +290,20 @@ mod tests {
         // Water / STO-3G: even 1e-10 is far above the floor.
         let w = de_noise_floor(&inputs(75.0, 7, 1e-12, true));
         assert!(!energy_conv_below_floor(1e-10, w), "floor {w:e}");
+    }
+
+    /// A NaN / infinite energy (a diverged SCF) must not produce a floor or a claim.
+    #[test]
+    fn non_finite_energy_gives_no_floor_and_no_claim() {
+        let c = RhfConfig::default();
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(floor_for_config(&c, bad, 100, true).is_none(), "{bad}");
+        }
+        assert!(floor_for_config(&c, 100.0, 100, true).is_some());
+        for bad in [f64::NAN, f64::INFINITY] {
+            assert!(!energy_conv_below_floor(1e-12, bad));
+            assert!(!energy_conv_below_floor(0.0, bad));
+        }
     }
 
     #[test]
