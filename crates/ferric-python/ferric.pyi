@@ -1892,7 +1892,6 @@ class KpointScfResult:
     def n_grid_points(self) -> int | None: ...
     @property
     def electrons_on_grid(self) -> float | None: ...
-
     def gradient(self) -> NDArray[np.float64] | None:
         """Analytic nuclear gradient dE/dR (natoms x 3, Hartree/Bohr per cell,
         rows in the Molecule's atom order; the force on ONE copy of each atom
