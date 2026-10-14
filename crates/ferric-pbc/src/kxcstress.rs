@@ -1,5 +1,6 @@
 //! Analytic stress tensor of the k-point closed-shell KS-DFT energy
-//! ([`crate::kdft::solve_krks`]) for LDA, GGA and GLOBAL hybrid functionals
+//! ([`crate::kdft::solve_krks`]) for LDA, GGA, meta-GGA (SCAN, r2SCAN, TPSS
+//! components) and GLOBAL hybrid functionals
 //! (exact-exchange fraction `a`), dense-AFT and RS-GDF J/K: the strain twin of
 //! [`crate::kxcgrad`] and the k-point twin of the Gamma XC stress
 //! (`crate::stress`).
@@ -63,6 +64,19 @@
 //!    `Re` after the contraction and a `1/N_k`; the weight response is
 //!    k-independent.
 //!
+//! 3. **Meta-GGA tau**: `τ = (1/2N_k) Σ_k Σ_i Σ_μν D(k)_μν ∂_iφ_μ (∂_iφ_ν)*`
+//!    needs only first AO derivatives, whose strain moment is the `m2` already
+//!    used by the GGA `∇ρ` term:
+//!
+//!    ```text
+//!    dτ/dε_ab = (1/N_k) Σ_k Re Σ_{μ,i} m2^k[3i+a,b]_μ md^{k,i}_μ
+//!    xc_ao   += Σ_g w_g v_τ dτ/dε_ab        (v_τ gated like the energy: ρ > floor)
+//!    ```
+//!
+//!    (the `½` of `τ` cancels the `μ↔ν` doubling, so the prefactor is half the
+//!    GGA one). The weight response needs no change (`ε_g` already contains
+//!    `τ`), and `V^τ` enters the Pulay Fock and the Fock guard.
+//!
 //! # Which grid, which anchor, which weight response
 //!
 //! * **Uniform grid** ([`crate::dft::PeriodicGrid::uniform`], points at fixed
@@ -122,10 +136,11 @@
 //!
 //! # Scope
 //!
-//! LDA, GGA and global hybrids; range-separated hybrids, meta-GGA,
-//! VV10/double hybrids keep typed errors (the dense kernels carrying an
-//! attenuated exchange are refused by the HF assembly). The open-shell (UKS)
-//! twin is [`crate::kuxcstress`].
+//! LDA, GGA, meta-GGA (SCAN, r2SCAN; TPSS through its raw component names) and
+//! global hybrids; range-separated hybrids and VV10/double hybrids keep typed
+//! errors (the dense kernels carrying an attenuated exchange are refused by the
+//! HF assembly). The open-shell (UKS) twin is [`crate::kuxcstress`], which
+//! still refuses meta-GGA.
 
 use crate::budget::{bytes_of, Ledger};
 use crate::dense_aft::ExxDiv;
@@ -753,7 +768,7 @@ pub(crate) fn resolve_global_mgga_stress(functional: &str) -> Result<(XcDef, f64
 /// * `scf` — `KRksResult::scf`.
 /// * `cfg.grid`/`cfg.ao_threshold` — the grid and AO truncation of the energy.
 ///
-/// Refuses (typed errors) range-separated hybrids, meta-GGA, VV10/double
+/// Refuses (typed errors) range-separated hybrids, VV10/double
 /// hybrids, a hybrid without `cfg.exxdiv`, and an SCF whose Fock the rebuilt
 /// `h + J - (a/2) K + V_xc` does not reproduce.
 #[allow(clippy::too_many_arguments)]

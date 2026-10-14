@@ -44,9 +44,7 @@ use ferric_pbc::kscf::{KJkKind, KPointXc, KScfResult};
 use ferric_pbc::kstress::KStressConfig;
 use ferric_pbc::kstress::KStressJk;
 use ferric_pbc::kxcgrad::KXcGrid;
-use ferric_pbc::kxcstress::{
-    kpoint_rks_stress, KRksStress, KRksStressConfig, KXcStressMutation,
-};
+use ferric_pbc::kxcstress::{kpoint_rks_stress, KRksStress, KRksStressConfig, KXcStressMutation};
 use ferric_pbc::lattice::Cell;
 use ferric_pbc::rsgdf::kpoint::{KRsGdf, KRsGdfConfig};
 use ferric_pbc::rsgdf::RsGdfConfig;
@@ -351,18 +349,6 @@ fn strained(cell: &Cell, i: usize, j: usize, h: f64) -> Cell {
     cell.strained(&eps_at(i, j, h)).expect("strained cell")
 }
 
-/// Central FD of the SCF energy: all nine `dE/dε_ij` at step `h`.
-fn fd_all9(cell: &Cell, mesh_n: [usize; 3], f: &str, jk: Jk, grid: &KXcGrid, h: f64) -> Mat3 {
-    let mut out = [[0.0; 3]; 3];
-    for (i, j) in ALL9 {
-        let ep = energy_on(&strained(cell, i, j, h), mesh_n, f, jk, grid);
-        let em = energy_on(&strained(cell, i, j, -h), mesh_n, f, jk, grid);
-        out[i][j] = (ep - em) / (2.0 * h);
-    }
-    out
-}
-
-
 // ----------------------------------------------------------- fixed-D XC FD
 
 /// `E_xc[D]` at FIXED Bloch densities `d` on `cell` (a strained cell keeps the
@@ -450,7 +436,10 @@ fn fixed_density_xc_stress_matches_fd_of_exc() {
         let d0 = fx.res.scf.densities.clone();
         let fd = fd_xc_all9(&fx.cell, [1, 1, 3], f, &grid, &d0, FD_H_XC);
         let miss = mdiff(&xc_part(&s), &fd);
-        eprintln!("{f} atom (20,50): |xc - FD| {miss:.2e}; |xc| max {:.3e}", mmax(&xc_part(&s)));
+        eprintln!(
+            "{f} atom (20,50): |xc - FD| {miss:.2e}; |xc| max {:.3e}",
+            mmax(&xc_part(&s))
+        );
         assert!(miss < FD_BAR_XC, "{f}: {miss:e}");
         for m in [
             KXcStressMutation::NoTauStrain,
@@ -500,7 +489,10 @@ fn tpss_components_xc_stress_matches_fd_of_exc() {
         let s = stress(&fx2, Some(KXcStressMutation::GuardSkippedOnly));
         let fd = fd_xc_all9(&fx.cell, [1, 1, 3], f, &grid, &d0, FD_H_XC);
         let miss = mdiff(&xc_part(&s), &fd);
-        eprintln!("{f}: |xc - FD| {miss:.2e}; |xc| max {:.3e}", mmax(&xc_part(&s)));
+        eprintln!(
+            "{f}: |xc - FD| {miss:.2e}; |xc| max {:.3e}",
+            mmax(&xc_part(&s))
+        );
         assert!(miss < FD_BAR_XC, "{f}: {miss:e}");
     }
 }
@@ -518,7 +510,13 @@ fn meta_gga_stress_matches_fd_of_the_scf_energy() {
     let mut worst = 0.0_f64;
     for (i, j) in [(0, 0), (2, 2), (0, 2)] {
         let ep = energy_on(&strained(&fx.cell, i, j, h), [1, 1, 3], f, Jk::Dense, &grid);
-        let em = energy_on(&strained(&fx.cell, i, j, -h), [1, 1, 3], f, Jk::Dense, &grid);
+        let em = energy_on(
+            &strained(&fx.cell, i, j, -h),
+            [1, 1, 3],
+            f,
+            Jk::Dense,
+            &grid,
+        );
         let fd = (ep - em) / (2.0 * h);
         worst = worst.max((s.de_deps[i][j] - fd).abs());
     }
@@ -561,7 +559,10 @@ fn supercell_identity_per_part() {
     let f = "SCAN";
     let k = stress(&fixture(&H2, [1, 1, 3], f, Jk::Dense, grid.clone()), None);
     let sc = supercell_pos(&H2, 4.0, [1, 1, 3]);
-    let g = stress(&fixture_cell(sc, [1, 1, 1], f, Jk::Dense, grid.clone()), None);
+    let g = stress(
+        &fixture_cell(sc, [1, 1, 1], f, Jk::Dense, grid.clone()),
+        None,
+    );
     let d_ao = mdiff(&mscale(&k.xc_ao, 3.0), &g.xc_ao);
     let d_w = mdiff(&mscale(&k.xc_weight, 3.0), &g.xc_weight);
     let d_t = mdiff(&mscale(&k.de_deps, 3.0), &g.de_deps);
