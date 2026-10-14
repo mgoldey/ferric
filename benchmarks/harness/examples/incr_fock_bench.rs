@@ -1,6 +1,19 @@
-//! TEMPORARY benchmark: incremental vs full-rebuild DirectJK Fock on the direct
-//! (non-DF) RHF path. Not committed. Run:
-//!   OPENBLAS_NUM_THREADS=1 cargo run --release -p ferric-harness --example incr_fock_bench
+//! Incremental (ΔD) vs full-rebuild DirectJK Fock on the direct (non-DF) RHF
+//! path: one SCF per process, so wall time, quartet count and iteration count
+//! of the two modes are measured in identical, fresh processes (#415).
+//!
+//! ```text
+//! OPENBLAS_NUM_THREADS=1 cargo run --release -p ferric-benchmarks \
+//!     --example incr_fock_bench -- <xyz> <basis> <on|off> \
+//!     [integral_thresh] [density_conv] [max_iter]
+//! ```
+//!
+//! Prints one `RESULT ...` line. The mode is selected with
+//! `FERRIC_SCF_INCREMENTAL` (`1` = incremental, `0` = full rebuild), set before
+//! the solve. To measure the energy-change noise, run with a `density_conv`
+//! the SCF cannot reach (e.g. 1e-14) and a fixed `max_iter`, and set
+//! `FERRIC_SCF_TRACE=1`: the tail of the per-iteration `dE` column is the
+//! noise. `scripts/incr_fock_ab.py` drives both measurements.
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
@@ -10,50 +23,55 @@ use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use std::time::Instant;
 
-fn run(label: &str, path: &str, bs_name: &str) {
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() < 4 {
+        eprintln!(
+            "usage: incr_fock_bench <xyz> <basis> <on|off> \
+             [integral_thresh] [density_conv] [max_iter]"
+        );
+        std::process::exit(2);
+    }
+    let (path, bs_name, mode) = (&args[1], &args[2], args[3].as_str());
+    let incremental = match mode {
+        "on" => "1",
+        "off" => "0",
+        _ => panic!("mode must be on or off, got {mode}"),
+    };
+    std::env::set_var("FERRIC_SCF_INCREMENTAL", incremental);
+
+    let mut cfg = RhfConfig::default();
+    if let Some(t) = args.get(4) {
+        cfg.integral_thresh = t.parse().expect("integral_thresh");
+    }
+    if let Some(d) = args.get(5) {
+        cfg.density_conv = d.parse().expect("density_conv");
+        // Run to the density gate alone; dE is then recorded, not judged.
+        cfg.energy_conv = 0.0;
+    }
+    if let Some(m) = args.get(6) {
+        cfg.max_iter = m.parse().expect("max_iter");
+    }
+
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
     let bs = basis::bundled(bs_name).unwrap();
     let mol = Molecule::load_xyz(path).unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig::default();
 
-    // Full-rebuild-every-iteration.
-    std::env::set_var("FERRIC_SCF_INCREMENTAL", "0");
     let t = Instant::now();
-    let full = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
-    let t_full = t.elapsed().as_secs_f64();
-    std::env::remove_var("FERRIC_SCF_INCREMENTAL");
-
-    // Incremental.
-    let t = Instant::now();
-    let incr = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
-    let t_incr = t.elapsed().as_secs_f64();
+    let res = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
+    let wall = t.elapsed().as_secs_f64();
 
     println!(
-        "{label:14} nbf={:3}  FULL: {:.3}s ({} it, {} quartets, E={:.9})  \
-         INCR: {:.3}s ({} it, {} quartets, E={:.9})  \
-         speedup={:.2}x  quartet-ratio={:.2}  dE={:.2e}",
+        "RESULT mol={path} basis={bs_name} mode={mode} nbf={} thresh={:e} \
+         converged={} iters={} quartets={} wall={wall:.3} E={:.12}",
         prep.nbasis(),
-        t_full,
-        full.iterations,
-        full.computed_quartets,
-        full.energy,
-        t_incr,
-        incr.iterations,
-        incr.computed_quartets,
-        incr.energy,
-        t_full / t_incr,
-        incr.computed_quartets as f64 / full.computed_quartets.max(1) as f64,
-        (incr.energy - full.energy).abs(),
+        cfg.integral_thresh,
+        res.converged,
+        res.iterations,
+        res.computed_quartets,
+        res.energy,
     );
-}
-
-fn main() {
-    // Extended linear chains: the quartet-ratio (incr/full) is the key,
-    // basis-robust metric for whether ΔD-weighted screening prunes at scale.
-    run("C8/631g", "testdata/molecules/alkane_8.xyz", "6-31g");
-    run("C12/sto3g", "testdata/molecules/alkane_12.xyz", "sto-3g");
-    run("C20/sto3g", "testdata/molecules/alkane_20.xyz", "sto-3g");
 }

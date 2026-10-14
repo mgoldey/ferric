@@ -836,18 +836,6 @@ pub(crate) fn scf_converged(
     }
 }
 
-/// Whether the closed-shell direct path may update J/K incrementally from the
-/// density change (default yes). `FERRIC_SCF_INCREMENTAL=0` (or `off` /
-/// `false`) forces the historical full rebuild every iteration. One reader for
-/// the solver and for the `energy_conv` noise-floor advisory
-/// ([`crate::noise_floor`]), so they cannot disagree.
-pub fn closed_shell_incremental_enabled() -> bool {
-    !matches!(
-        std::env::var("FERRIC_SCF_INCREMENTAL").ok().as_deref(),
-        Some("0") | Some("off") | Some("false") | Some("OFF") | Some("FALSE")
-    )
-}
-
 /// Spellings of `df_j_aux` / `df_k_aux` that mean "do not density-fit"
 /// (conventional four-centre J/K). Compared case-insensitively after
 /// trimming. `""` is the canonical form the SCF layer reads (see
@@ -1950,21 +1938,26 @@ fn solve_rhf_impl(
     // J and K are LINEAR in the density, so instead of rebuilding J(D)/K(D) from
     // the FULL current density every iteration, we can keep the previous J/K in
     // `j_buf`/`k_buf` and add only ΔJ=J(ΔD)/ΔK=K(ΔD) built from the density change
-    // ΔD = D_new - D_last. This is mathematically EXACT (not an approximation),
-    // and a large speed win because the Häser-Ahlrichs density screen tightens as
-    // ΔD → 0 — late iterations screen out nearly every quartet. This is exactly
-    // the PySCF (`pyscf/scf/hf.py:1077-1083,2100-2111`) and Psi4
-    // (`CompositeJK.cc:229-294`, `INCFOCK_FULL_FOCK_EVERY`) incremental-Fock
-    // scheme. STRICTLY scoped to the DirectJK path (`direct_jk.is_some()`, i.e.
+    // ΔD = D_new - D_last. This is exact in exact arithmetic without screening.
+    // The speed win is that the Häser-Ahlrichs density screen tightens as ΔD → 0,
+    // so late iterations screen out more quartets (measured, #415: 14-27% fewer
+    // on alkane chains, ~0% on compact molecules). This is exactly the PySCF
+    // (`pyscf/scf/hf.py:1077-1083,2100-2111`) and Psi4 (`CompositeJK.cc:229-294`,
+    // `INCFOCK_FULL_FOCK_EVERY`) incremental-Fock scheme. STRICTLY scoped to the DirectJK path (`direct_jk.is_some()`, i.e.
     // `!df_any && k_builder.is_none()`): the DF/RI and LinkK paths keep the
     // unconditional full rebuild (RI's fitted Fock carries a naux-dependent noise
     // floor; layering ΔD accumulation on top risks the DIIS-destabilization class
     // seen in the reverted DF-K occ-path change — see df-jk-noise-floor memory).
-    // Escape hatch (test + debugging): `FERRIC_SCF_INCREMENTAL=0` (or `off`/
-    // `false`) forces the historical full-rebuild-every-iteration behavior on the
-    // DirectJK path, so an A/B correctness/perf comparison can be run without a
-    // rebuild. Any other value (or unset) keeps the incremental default.
-    let incremental_direct = direct_jk.is_some() && closed_shell_incremental_enabled();
+    // Default on, but off when energy_conv/density_conv ask for less than the
+    // noise the quartets dropped by the ΔD screen put into dE and ΔP (#415):
+    // see `direct_jk::closed_shell_incremental_enabled` for the gate, the
+    // measurements and the `FERRIC_SCF_INCREMENTAL=0`/`1` overrides.
+    let incremental_direct = direct_jk.is_some()
+        && crate::direct_jk::closed_shell_incremental_enabled(
+            config.energy_conv,
+            config.density_conv,
+            config.integral_thresh,
+        );
     // `d_last_fock` = the density that produced the CURRENT contents of
     // `j_buf`/`k_buf`. `None` until the first (full) build; reset to force a full
     // rebuild on the next iteration.
@@ -4442,9 +4435,9 @@ mod tests {
     /// ENV_LOCK for the `FERRIC_SCF_INCREMENTAL` mutation. Returns
     /// `(energy_incremental, iters_incremental, energy_full, iters_full)`.
     ///
-    /// `FERRIC_SCF_INCREMENTAL=0` forces the historical full-rebuild-every-
-    /// iteration behavior, so this is a true A/B of the incremental scheme
-    /// against the from-scratch build it replaces on the exact same code path.
+    /// `FERRIC_SCF_INCREMENTAL=0`/`1` force each mode (the default depends on
+    /// the convergence thresholds since #415), so this is a true A/B of the
+    /// incremental scheme against the from-scratch build on the same code path.
     fn incremental_vs_full(mol_path: &str, basis: &str) -> (f64, usize, f64, usize) {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mol = Molecule::load_xyz(mol_path).unwrap();
@@ -4458,10 +4451,11 @@ mod tests {
         // Full-rebuild-every-iteration reference.
         std::env::set_var("FERRIC_SCF_INCREMENTAL", "0");
         let full = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
-        std::env::remove_var("FERRIC_SCF_INCREMENTAL");
 
-        // Incremental (default).
+        // Incremental.
+        std::env::set_var("FERRIC_SCF_INCREMENTAL", "1");
         let incr = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
+        std::env::remove_var("FERRIC_SCF_INCREMENTAL");
 
         assert!(
             full.converged,
@@ -4518,6 +4512,93 @@ mod tests {
             it_incr <= it_full,
             "incremental Fock SLOWED convergence: {it_incr} iters vs {it_full} full-rebuild"
         );
+    }
+
+    /// The default of the closed-shell incremental switch (#415): on at the
+    /// default thresholds, off once `energy_conv` or `density_conv` drops below
+    /// its factor times `integral_thresh`, and `FERRIC_SCF_INCREMENTAL=0`/`1`
+    /// win over both.
+    #[test]
+    fn incremental_default_follows_convergence_thresholds() {
+        use crate::direct_jk::{
+            closed_shell_incremental_enabled as enabled, INCREMENTAL_DENSITY_CONV_FACTOR,
+            INCREMENTAL_ENERGY_CONV_FACTOR,
+        };
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let d = RhfConfig::default();
+        let t = d.integral_thresh;
+        let e_edge = INCREMENTAL_ENERGY_CONV_FACTOR * t;
+        let p_edge = INCREMENTAL_DENSITY_CONV_FACTOR * t;
+
+        std::env::remove_var("FERRIC_SCF_INCREMENTAL");
+        assert!(enabled(d.energy_conv, d.density_conv, t), "default config");
+        assert!(enabled(e_edge, p_edge, t), "both at their edge");
+        assert!(
+            !enabled(e_edge * 0.99, d.density_conv, t),
+            "tight energy_conv"
+        );
+        assert!(
+            !enabled(d.energy_conv, p_edge * 0.99, t),
+            "tight density_conv"
+        );
+        assert!(
+            enabled(1e-10, 1e-8, 1e-14),
+            "tight conv with a tighter thresh"
+        );
+
+        std::env::set_var("FERRIC_SCF_INCREMENTAL", "1");
+        assert!(enabled(0.0, 0.0, t), "=1 forces on");
+        std::env::set_var("FERRIC_SCF_INCREMENTAL", "0");
+        assert!(!enabled(d.energy_conv, d.density_conv, t), "=0 forces off");
+        std::env::remove_var("FERRIC_SCF_INCREMENTAL");
+    }
+
+    /// `solve_rhf` takes the path the gate above picks: the default config runs
+    /// the incremental build and a tight `energy_conv` runs the full rebuild,
+    /// each bit-identical (energy and quartet count) to the forced mode.
+    /// alkane_3/STO-3G is small enough for a debug build and its two modes
+    /// differ in quartet count (85728 vs 86873 at the default config), so the
+    /// count shows which path ran.
+    #[test]
+    fn solve_rhf_incremental_default_tracks_energy_conv() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mol = Molecule::load_xyz("../../testdata/molecules/alkane_3.xyz").unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+        let solve = |cfg: &RhfConfig, mode: Option<&str>| {
+            match mode {
+                Some(m) => std::env::set_var("FERRIC_SCF_INCREMENTAL", m),
+                None => std::env::remove_var("FERRIC_SCF_INCREMENTAL"),
+            }
+            let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, cfg).unwrap();
+            std::env::remove_var("FERRIC_SCF_INCREMENTAL");
+            assert!(r.converged);
+            (r.energy.to_bits(), r.computed_quartets, r.iterations)
+        };
+
+        let loose = RhfConfig::default();
+        let (dflt, on, off) = (
+            solve(&loose, None),
+            solve(&loose, Some("1")),
+            solve(&loose, Some("0")),
+        );
+        assert_ne!(on.1, off.1, "the two modes must differ in quartets here");
+        assert_eq!(dflt, on, "default config must run the incremental build");
+
+        let tight = RhfConfig {
+            energy_conv: 1e-10,
+            ..RhfConfig::default()
+        };
+        let (dflt, on, off) = (
+            solve(&tight, None),
+            solve(&tight, Some("1")),
+            solve(&tight, Some("0")),
+        );
+        assert_ne!(on.1, off.1, "the two modes must differ in quartets here");
+        assert_eq!(dflt, off, "energy_conv 1e-10 must run the full rebuild");
     }
 
     /// SCF-energy-invariance anchor for the shim's per-engine ShellPair

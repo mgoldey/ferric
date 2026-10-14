@@ -47,10 +47,12 @@ def _floor_warnings(fn, *args, **kwargs):
 
 
 @pytest.fixture(autouse=True)
-def _default_incremental_fock(monkeypatch):
-    """The advisory models the closed-shell incremental Fock path, which
-    FERRIC_SCF_INCREMENTAL=0 (the A/B switch) turns off; pin the default."""
-    monkeypatch.delenv("FERRIC_SCF_INCREMENTAL", raising=False)
+def _incremental_fock_on(monkeypatch):
+    """The advisory models the closed-shell incremental Fock path. By default a
+    tight energy_conv turns that path off (issue #415: below 1e4 * integral_thresh),
+    which removes the noise the advisory is about, so these tests force it on.
+    The default gate is pinned by test_a_tight_energy_conv_that_turns_the_incremental_fock_off_is_silent."""
+    monkeypatch.setenv("FERRIC_SCF_INCREMENTAL", "1")
 
 
 def test_default_energy_conv_is_never_advised_on_even_when_below_the_floor():
@@ -180,3 +182,14 @@ def test_summary_does_not_blame_the_floor_when_the_density_is_the_problem():
         )
     assert "dp_rms" in r.unmet_criteria
     assert FLOOR_TEXT not in r.convergence_summary
+
+
+def test_a_tight_energy_conv_that_turns_the_incremental_fock_off_is_silent(monkeypatch):
+    """The reporter-class setting with the default gate: energy_conv=1e-10 is below
+    1e4 * integral_thresh, so the incremental Fock is off, only the rounding floor
+    (~1e-12 Ha) is left and 1e-10 is reachable."""
+    monkeypatch.delenv("FERRIC_SCF_INCREMENTAL", raising=False)
+    _, w = _floor_warnings(
+        ferric.run_rhf, _mol("alkane_20"), _bs(), energy_conv=1e-10, max_iter=1
+    )
+    assert w == []
