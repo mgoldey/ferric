@@ -361,6 +361,13 @@ pub(crate) fn ro_orbital_gradient_with(
     let mut worst = 0.0_f64;
     for k in 0..nk {
         let c = &mos[k];
+        let n = s[k].nrows();
+        if c.nrows() != n || c.ncols() > n {
+            return Err(FerricError::General(format!(
+                "{who}: MO set at k-point {k} has shape {:?}, expected ({n}, m <= {n})",
+                c.dim()
+            )));
+        }
         let ch = herm(c);
         let sc = s[k].dot(c);
         let sch = herm(&sc);
@@ -1486,6 +1493,22 @@ mod gate_tests {
             std::slice::from_ref(&t.fa),
             std::slice::from_ref(&t.fb),
         )
+    }
+
+    /// An MO set of the wrong shape is a typed error, not an ndarray panic.
+    #[test]
+    fn wrong_shaped_mo_set_is_a_typed_error() {
+        let mut t = toy(&[]);
+        let n = t.s.nrows();
+        let full = t.mos.clone();
+        t.mos = full.slice(ndarray::s![..n - 1, ..]).to_owned();
+        let e = new_gate(&t, None).unwrap_err().to_string();
+        assert!(e.contains("MO set at k-point 0"), "{e}");
+        t.mos = ndarray::concatenate![ndarray::Axis(1), full, full.slice(ndarray::s![.., ..1])];
+        let e = new_gate(&t, None).unwrap_err().to_string();
+        assert!(e.contains("MO set at k-point 0"), "{e}");
+        t.mos = full;
+        assert!(new_gate(&t, None).unwrap() < 1e-12);
     }
 
     /// The stationary state: both forms report ~0.
