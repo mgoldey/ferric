@@ -70,6 +70,9 @@ const _: () = assert!(
 pub mod result;
 pub use result::{DfJkRoute, ScfResult, Spin};
 
+/// Estimated noise floor of the SCF energy change and the advisory `energy_conv` warning (#410).
+pub mod noise_floor;
+
 /// Post-SCF one-electron property evaluation (dipole, charges, ESP).
 pub mod properties;
 
