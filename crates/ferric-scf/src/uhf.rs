@@ -1228,12 +1228,14 @@ fn solve_uhf_impl(
             err_max,
             energy_conv: config.energy_conv,
             density_conv: config.density_conv,
-            de_noise_floor: crate::noise_floor::floor_for_config(
-                config,
-                energy.abs(),
-                prep.nbasis(),
-                crate::noise_floor::j_aux_is_fitted(j_aux_eff),
-            ),
+            // The open-shell solvers rebuild J/K from the full density every
+            // iteration by default (measured: rounding-level dE). The opt-in
+            // incremental path (`FERRIC_SCF_UHF_INCREMENTAL`) is not characterised.
+            de_noise_floor: (!crate::direct_jk::open_shell_incremental_enabled())
+                .then(|| {
+                    crate::noise_floor::floor_for_config(config, energy.abs(), prep.nbasis(), false)
+                })
+                .flatten(),
         });
 
         if crate::rhf::scf_trace() {

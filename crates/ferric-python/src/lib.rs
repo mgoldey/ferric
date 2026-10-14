@@ -35,6 +35,7 @@ use ferric_mp2::scs::{scs_mp2, scs_mp2_2terfc, ScsMp2Config, ScsMp2TerfcConfig};
 use ferric_scf::ks_gradient::ks_gradient_closed;
 use ferric_scf::optimize::{optimize_geometry, optimize_geometry_uhf, OptimizeConfig};
 use ferric_scf::result::ScfResult;
+use ferric_scf::noise_floor::SolverFamily;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::rohf::{solve_rohf, RohfConfig};
 use ferric_scf::screening::SchwarzBounds;
@@ -588,6 +589,7 @@ fn emit_runtime_warning(py: Python<'_>, msg: String) {
 fn warn_energy_conv_noise_floor(
     py: Python<'_>,
     fname: &str,
+    family: ferric_scf::noise_floor::SolverFamily,
     user_set: bool,
     mol: &ferric_core::mol::Molecule,
     prep: &PreparedBasis,
@@ -597,7 +599,7 @@ fn warn_energy_conv_noise_floor(
         return;
     }
     if let Some(text) =
-        ferric_scf::noise_floor::energy_conv_warning(mol, prep.nbasis(), config)
+        ferric_scf::noise_floor::energy_conv_warning(mol, prep.nbasis(), config, family)
     {
         emit_runtime_warning(py, format!("{fname}: {text}"));
     }
@@ -908,7 +910,15 @@ fn run_rhf(
     // until the first call returns, so independent jobs submitted from a
     // ThreadPoolExecutor serialize at the FFI boundary no matter how many
     // cores rayon could use. The compute itself never touches the interpreter.
-    warn_energy_conv_noise_floor(py, "run_rhf", energy_conv.is_some(), &emol, &prep, &config);
+    warn_energy_conv_noise_floor(
+        py,
+        "run_rhf",
+        SolverFamily::ClosedShell,
+        energy_conv.is_some(),
+        &emol,
+        &prep,
+        &config,
+    );
     let r = py
         .allow_threads(|| solve_rhf(&ctx, &emol, &prep, op, &bounds, &config))
         .map_err(make_err)?;
@@ -2810,7 +2820,15 @@ fn run_uhf(
     // Release the GIL for the duration of the SCF. Every argument below is an
     // owned Rust value (`emol` is a clone; `prep`/`bounds`/`config` are built
     // above), so nothing Python-borrowed crosses the closure boundary.
-    warn_energy_conv_noise_floor(py, "run_uhf", energy_conv.is_some(), &emol, &prep, &config);
+    warn_energy_conv_noise_floor(
+        py,
+        "run_uhf",
+        SolverFamily::OpenShell,
+        energy_conv.is_some(),
+        &emol,
+        &prep,
+        &config,
+    );
     let r = py
         .allow_threads(|| solve_uhf(&ctx, &emol, &prep, &bounds, &config))
         .map_err(make_err)?;
@@ -2897,7 +2915,15 @@ fn run_rohf(
     // Release the GIL for the duration of the SCF. Every argument below is an
     // owned Rust value (`emol` is a clone; `prep`/`bounds`/`config` are built
     // above), so nothing Python-borrowed crosses the closure boundary.
-    warn_energy_conv_noise_floor(py, "run_rohf", energy_conv.is_some(), &emol, &prep, &config);
+    warn_energy_conv_noise_floor(
+        py,
+        "run_rohf",
+        SolverFamily::OpenShell,
+        energy_conv.is_some(),
+        &emol,
+        &prep,
+        &config,
+    );
     let r = py
         .allow_threads(|| solve_rohf(&ctx, &emol, &prep, op, &bounds, &config))
         .map_err(make_err)?;

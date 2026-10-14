@@ -779,8 +779,13 @@ pub fn run(args: Vec<String>) {
     // noise floor of dE is met only by chance, so the run just iterates longer.
     // Printed once, before the SCF, to stderr like the other `warning:` lines;
     // the threshold is not changed. The 1e-3 default never fires.
+    let scf_family = if mol.multiplicity != 1 || matches!(method, "uhf" | "rohf") {
+        ferric_scf::noise_floor::SolverFamily::OpenShell
+    } else {
+        ferric_scf::noise_floor::SolverFamily::ClosedShell
+    };
     if let Some(text) =
-        ferric_scf::noise_floor::energy_conv_warning(&mol, prep.nbasis(), &rhf_config)
+        ferric_scf::noise_floor::energy_conv_warning(&mol, prep.nbasis(), &rhf_config, scf_family)
     {
         eprintln!("warning: [scf] {text}");
     }
