@@ -190,3 +190,181 @@ pub fn floor_message(energy_conv: f64, floor: f64, nbf: usize) -> String {
         floor
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rhf::RhfConfig;
+
+    fn inputs(e_abs: f64, nbf: usize, thresh: f64, incr: bool) -> NoiseFloorInputs {
+        NoiseFloorInputs {
+            e_abs,
+            nbf,
+            integral_thresh: thresh,
+            incremental_direct: incr,
+        }
+    }
+
+    /// The reporter's 71-atom case (#410): E = -1936, 239 STO-3G functions,
+    /// conventional closed-shell SCF at the default `integral_thresh`.
+    fn reporter() -> NoiseFloorInputs {
+        inputs(1936.0, 239, 1e-12, true)
+    }
+
+    fn water() -> Molecule {
+        Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1).unwrap()
+    }
+
+    #[test]
+    fn floor_is_monotone_in_every_input() {
+        let base = de_noise_floor(&inputs(300.0, 100, 1e-12, true));
+        assert!(de_noise_floor(&inputs(600.0, 100, 1e-12, true)) > base);
+        assert!(de_noise_floor(&inputs(300.0, 200, 1e-12, true)) > base);
+        assert!(de_noise_floor(&inputs(300.0, 100, 1e-10, true)) > base);
+        // The same system on a path without the incremental screening term is
+        // quieter, and still positive (rounding).
+        let quiet = de_noise_floor(&inputs(300.0, 100, 1e-12, false));
+        assert!(quiet > 0.0 && quiet < base);
+        // With no incremental path the threshold is irrelevant.
+        assert_eq!(
+            quiet,
+            de_noise_floor(&inputs(300.0, 100, 1e-8, false)),
+            "integral_thresh must not enter the rounding-only floor"
+        );
+    }
+
+    /// The floor reproduces the measured RMS of dE (windowed over the
+    /// iterations after the density settled) to within a factor of ~5 on the
+    /// incremental direct path, and the full-rebuild / density-fitted rounding
+    /// floor to within ~50 %. Measured values: the table in the PR description.
+    #[test]
+    fn floor_matches_the_measured_rms_anchors() {
+        // (|E|, nbf, measured RMS of dE) on the incremental direct path.
+        for (e, nbf, rms) in [
+            (76.0, 24, 4.5e-12),   // water / cc-pVDZ
+            (231.0, 114, 1.4e-10), // benzene / cc-pVDZ
+            (773.0, 142, 5.9e-10), // alkane C20 / STO-3G
+            (1936.0, 239, 2.3e-9), // the #410 case (field and vacuum runs: 1.9e-9, 2.7e-9)
+        ] {
+            let f = de_noise_floor(&inputs(e, nbf, 1e-12, true));
+            let r = f / rms;
+            assert!((0.2..5.0).contains(&r), "nbf {nbf}: floor/measured = {r:.2}");
+        }
+        // Rounding-only anchors: FERRIC_SCF_INCREMENTAL=0 and RI-J runs.
+        for (e, nbf, rms) in [
+            (76.0, 24, 4.4e-14),  // water / cc-pVDZ, full rebuild
+            (387.0, 72, 3.7e-13), // alkane C10 / STO-3G, full rebuild
+            (231.0, 114, 3.3e-13), // benzene / cc-pVDZ, full rebuild
+            (781.0, 264, 1.3e-12), // alkane C20 / 6-31G, RI-JK
+        ] {
+            let f = de_noise_floor(&inputs(e, nbf, 1e-12, false));
+            let r = f / rms;
+            assert!((0.65..1.5).contains(&r), "nbf {nbf}: floor/measured = {r:.2}");
+        }
+    }
+
+    /// The warning condition is two-sided: it fires for the reporter's
+    /// `energy_conv = 1e-10` and not for the default or the common loose values.
+    #[test]
+    fn fires_for_the_reporters_setting_and_not_for_ordinary_ones() {
+        let f = de_noise_floor(&reporter());
+        assert!(energy_conv_below_floor(1e-10, f), "floor {f:e}");
+        assert!(energy_conv_below_floor(3e-10, f));
+        for ec in [1e-3, 1e-6, 1e-8, 1e-9] {
+            assert!(
+                !energy_conv_below_floor(ec, f),
+                "energy_conv {ec:e} must not warn (floor {f:e})"
+            );
+        }
+        // Medium system (benzene / cc-pVDZ, nbf 114): 1e-9 and above are fine.
+        let m = de_noise_floor(&inputs(231.0, 114, 1e-12, true));
+        assert!(!energy_conv_below_floor(1e-9, m));
+        assert!(energy_conv_below_floor(3e-11, m));
+        // Water / STO-3G: even 1e-10 is far above the floor.
+        let w = de_noise_floor(&inputs(75.0, 7, 1e-12, true));
+        assert!(!energy_conv_below_floor(1e-10, w), "floor {w:e}");
+    }
+
+    #[test]
+    fn unreachable_energy_conv_counts_as_below_the_floor() {
+        let f = de_noise_floor(&inputs(76.0, 24, 1e-12, true));
+        assert!(energy_conv_below_floor(0.0, f));
+        assert!(energy_conv_below_floor(-1.0, f));
+        assert!(energy_conv_below_floor(f64::NAN, f));
+    }
+
+    #[test]
+    fn the_energy_estimate_tracks_the_nuclear_charges() {
+        let e = estimate_total_energy_abs(&water());
+        // Real E(water) = 76; Thomas-Fermi is ~15 % off, which is immaterial for
+        // a term that is a few eps*|E|.
+        assert!((65.0..100.0).contains(&e), "{e}");
+    }
+
+    #[test]
+    fn characterised_scope_excludes_functionals_and_pluggable_k() {
+        let mut c = RhfConfig::default();
+        assert!(is_characterised(&c));
+        c.k_builder = Some("direct".into());
+        assert!(is_characterised(&c));
+        c.k_builder = Some("link".into());
+        assert!(!is_characterised(&c));
+        assert!(floor_for_config(&c, 100.0, 50, true).is_none());
+        c.k_builder = None;
+        c.xc = Some("pbe".into());
+        assert!(!is_characterised(&c));
+    }
+
+    #[test]
+    fn incremental_direct_needs_closed_shell_and_no_density_fitting() {
+        let mut c = RhfConfig::default();
+        // (assumes FERRIC_SCF_INCREMENTAL is not set to an "off" spelling in the test env)
+        assert!(incremental_direct_expected(&c, SolverFamily::ClosedShell));
+        assert!(!incremental_direct_expected(&c, SolverFamily::OpenShell));
+        c.df_j_aux = Some("def2-universal-jkfit".into());
+        assert!(!incremental_direct_expected(&c, SolverFamily::ClosedShell));
+        c.df_j_aux = Some(String::new()); // "exact" sentinel: not fitted
+        assert!(incremental_direct_expected(&c, SolverFamily::ClosedShell));
+        c.df_k_aux = Some("def2-universal-jkfit".into());
+        assert!(!incremental_direct_expected(&c, SolverFamily::ClosedShell));
+    }
+
+    /// 71 atoms (C31 N5 O4 F2 + 29 H): enough nuclear charge for a realistic
+    /// `|E|` estimate; the geometry is irrelevant to the estimator.
+    fn big_xyz() -> String {
+        let mut s = String::from("71\nbig\n");
+        let mut k = 0.0;
+        for (sym, n) in [("C", 31), ("N", 5), ("O", 4), ("F", 2), ("H", 29)] {
+            for _ in 0..n {
+                s.push_str(&format!("{sym} {:.3} 0.0 0.0\n", 1.5 * k));
+                k += 1.0;
+            }
+        }
+        s
+    }
+
+    /// The pre-SCF entry point end to end on real molecules.
+    #[test]
+    fn warning_text_names_the_setting_and_the_floor() {
+        let mut c = RhfConfig {
+            energy_conv: 1e-16,
+            ..RhfConfig::default()
+        };
+        let text = energy_conv_warning(&water(), 7, &c, SolverFamily::ClosedShell).expect("fires");
+        assert!(text.contains("energy_conv 1.0e-16"), "{text}");
+        assert!(text.contains("noise floor"), "{text}");
+        assert!(text.contains("7 basis functions"), "{text}");
+        c.energy_conv = 1e-3;
+        assert!(energy_conv_warning(&water(), 7, &c, SolverFamily::ClosedShell).is_none());
+        // Reporter class: 239 functions, `|E|` from the estimate.
+        c.energy_conv = 1e-10;
+        let big = Molecule::parse_xyz(&big_xyz(), 0, 1).unwrap();
+        assert!(energy_conv_warning(&big, 239, &c, SolverFamily::ClosedShell).is_some());
+        assert!(
+            energy_conv_warning(&big, 239, &c, SolverFamily::OpenShell).is_none(),
+            "open-shell solvers rebuild J/K every iteration: rounding-level floor"
+        );
+        c.df_j_aux = Some("def2-universal-jkfit".into());
+        assert!(energy_conv_warning(&big, 239, &c, SolverFamily::ClosedShell).is_none());
+    }
+}
