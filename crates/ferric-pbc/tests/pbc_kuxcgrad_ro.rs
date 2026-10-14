@@ -33,6 +33,7 @@ use ferric_pbc::kdense_aft::KDenseAftEri;
 use ferric_pbc::kgrad::{KGradConfig, KGradJk, KRsGdfGradSource};
 use ferric_pbc::kpts::KPointMesh;
 use ferric_pbc::kroks::{solve_krohf, solve_kroks, KRohfConfig, KRoksConfig, KRoksResult};
+use ferric_pbc::kuxcgrad::RO_GATE_N2_ARRAYS;
 use ferric_pbc::kuxcgrad::{
     kpoint_rohf_gradient, kpoint_roks_gradient, KUSpinMutation, KUksGradConfig, KUksGradient,
 };
@@ -56,11 +57,23 @@ const AMPLE: usize = 1 << 31;
 // `RO_ORBITAL_GRADIENT_TOL` = 1e-5 (grad.rs) against the k-point entry points,
 // from `ro_gate_probe` (H3 doublet ROKS PBE 1x1x1; orbital gradient g of an SCF
 // stopped early -> force error with the gate off, against the tightly
-// converged force):
-//   g 3.5e-5 -> 3.2e-5     g 2.5e-7 -> 6.9e-7     g 2.0e-9 -> 4.9e-9
-// i.e. the error is of the order of g (0.9 g to 3 g), so 1e-5 caps it near
-// 1e-5 Ha/Bohr. Looser states (g >~ 1e-4) fail the MO occupation check
-// (the density is no longer a projector) before the gate.
+// converged force). g is the BASIS-INDEPENDENT form (density projectors,
+// spectral norm of the three blocks; `kuxcgrad::ro_orbital_gradient_k`); the
+// earlier form read the blocks in the eigenvectors of F_eff[D] and
+// under-reported g (toy model: 2x to 27x), so these numbers REPLACE the old
+// calibration (old: g 3.5e-5 -> 3.2e-5, g 2.5e-7 -> 6.9e-7, g 2.0e-9 -> 4.9e-9):
+//   g 6.9e-3 -> 4.4e-3 (0.64 g)   g 2.8e-4 -> 3.2e-5 (0.11 g)
+//   g 9.3e-7 -> 6.9e-7 (0.74 g)   g 7.5e-9 -> 4.9e-9 (0.65 g)
+// i.e. the force error is at most about 0.74 g and at least 0.11 g, first
+// order (the two small-g states differ in g by 125x and in error by 142x), so
+// 1e-5 caps the error near 7e-6 Ha/Bohr, still below geometry-optimizer
+// thresholds (~4.5e-4). The tolerance is unchanged; what changed is the g it
+// is applied to (a state that passed before may now be refused).
+// MEASURED ON H3/STO-3G AT 1x1x1 (ROKS PBE) ONLY, where every block has rank 1
+// (spectral norm = vector norm); for larger cells the per-k maximum is not the
+// sum over orbitals/atoms and for rank > 1 blocks the spectral norm is below the
+// Frobenius norm by up to sqrt(rank): not a general bound, and the force was not
+// measured on a rank > 1 system.
 const CUTOFF: f64 = 14.0;
 const FD_BAR: f64 = 1e-8;
 const FD_H: f64 = 5e-5;
@@ -415,10 +428,9 @@ fn the_orbital_gradient_gate_fires_and_matters() {
         .expect_err("loose ROKS accepted")
         .to_string();
     eprintln!("loose ROKS: {e}");
-    assert!(
-        e.contains("kpoint_roks_gradient: ROHF orbital gradient") && e.contains("exceeds 1e-5"),
-        "{e}"
-    );
+    // The exact gate message (not the Fock guard's), with g far above the tolerance.
+    let g_msg = gate_message_value(&e, "kpoint_roks_gradient");
+    assert!(g_msg > 1e-4, "g = {g_msg:e}");
     assert!(!e.contains("Fock matrix rebuilt"), "{e}");
     let off = force_scf(
         &loose,
@@ -434,6 +446,103 @@ fn the_orbital_gradient_gate_fires_and_matters() {
         miss > 10.0 * FD_BAR,
         "gate off is not wrong enough: {miss:e}"
     );
+    // REGRESSION PIN (one deterministic state, not a first-order test: see
+    // `gate_error_is_first_order_in_g_between_two_states`): the measured slope
+    // is 0.113 (3.163e-5 / 2.791e-4); the band is a factor of two each way.
+    // Measured on the H3 doublet, STO-3G, 1x1x1, ROKS PBE only.
+    let slope = miss / g;
+    assert!(
+        (0.057..=0.23).contains(&slope),
+        "slope {slope}: miss {miss:e} g {g:e}"
+    );
+}
+
+/// Parse the gate's exact message; returns the reported orbital gradient.
+fn gate_message_value(e: &str, who: &str) -> f64 {
+    let head = format!("{who}: ROHF orbital gradient ");
+    let tail = " exceeds 1e-5: not a stationary ROHF state (the force is first order in it); \
+                converge the SCF tighter";
+    let body = e.strip_prefix("General error: ").unwrap_or(e);
+    let mid = body
+        .strip_prefix(head.as_str())
+        .and_then(|r| r.strip_suffix(tail))
+        .unwrap_or_else(|| panic!("message differs: {e}"));
+    mid.parse().unwrap_or_else(|_| panic!("number {mid}: {e}"))
+}
+
+/// FIRST-ORDER check from two independent states (ROKS PBE H3 1x1x1): g 9.345e-7
+/// and g 7.495e-9 differ by 125x in g and 142x in the gate-off force error;
+/// the ratio of the errors over the ratio of the g's must be within a factor of
+/// two of 1 (measured 1.14).
+#[test]
+#[ignore = "three ROKS SCFs; measured 56 s"]
+fn gate_error_is_first_order_in_g_between_two_states() {
+    let gt = force(&fixture(&H3, [1, 1, 1], Some("PBE"), ExxDiv::None));
+    let at = |ec: f64, gc: f64| {
+        let mut fx = fixture(&H3, [1, 1, 1], Some("PBE"), ExxDiv::None);
+        fx.res = run_scf_conv(&H3, [1, 1, 1], Some("PBE"), ExxDiv::None, ec, gc);
+        let off = force_scf(
+            &fx,
+            &fx.res.scf,
+            &gcfg(None, Some(KUSpinMutation::RoGateOff)),
+        )
+        .unwrap();
+        (off.hf.commutator, parts_diff(&off.grad, &gt.grad))
+    };
+    let (g1, e1) = at(1e-6, 1e-3);
+    let (g2, e2) = at(1e-8, 1e-4);
+    let r = (e1 / e2) / (g1 / g2);
+    eprintln!("g {g1:.3e} -> {e1:.3e}; g {g2:.3e} -> {e2:.3e}; ratio of ratios {r:.3}");
+    assert!(
+        g1 / g2 > 50.0,
+        "the two states are not far apart: {}",
+        g1 / g2
+    );
+    assert!((0.5..=2.0).contains(&r), "not first order in g: {r}");
+}
+
+/// The gate's scratch charge is read from the typed error of the PRODUCTION
+/// ROHF force path (zero XC, so no chunk gate precedes it): the charge must be
+/// `RO_GATE_N2_ARRAYS` `n^2` complex arrays and at least the 22 the gate's code
+/// holds; the old eight fails both.
+#[test]
+fn the_force_gate_scratch_charge_is_read_from_the_production_error() {
+    let fx = fixture(&H3, [1, 1, 1], None, ExxDiv::Ewald);
+    let at = |b: usize| {
+        let mut cfg = gcfg(None, None);
+        cfg.base.grad.budget_bytes = Some(b);
+        force_scf(&fx, &fx.res.scf, &cfg)
+    };
+    let (mut lo, mut hi) = (0usize, 1usize << 22);
+    let mut found = None;
+    for _ in 0..40 {
+        let mid = lo + (hi - lo) / 2;
+        match at(mid) {
+            Err(e) => {
+                let m = e.to_string();
+                if m.contains("orbital-gradient gate scratch") {
+                    found = Some(m);
+                    break;
+                } else if m.contains("k gradient per-k complex")
+                    || m.contains("residue-folded")
+                    || m.contains("per-term arrays")
+                    || m.contains("Fock-guard matrices")
+                {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            Ok(_) => hi = mid,
+        }
+    }
+    let m = found.expect("the bisection must land in the gate-scratch band");
+    eprintln!("force gate scratch: {m}");
+    let head = &m[..m.find(" bytes;").unwrap()];
+    let charge: usize = head[head.rfind('(').unwrap() + 1..].parse().unwrap();
+    let n = fx.prep.nbasis();
+    assert_eq!(charge, RO_GATE_N2_ARRAYS * n * n * 16, "{m}");
+    assert!(charge >= 22 * n * n * 16, "{m}");
 }
 
 /// Probe behind `RO_ORBITAL_GRADIENT_TOL` and `LOOSE_RO`: the orbital gradient

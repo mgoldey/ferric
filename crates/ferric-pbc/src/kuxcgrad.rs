@@ -82,19 +82,47 @@
 //! (`crate::kgrad::KSpins::RestrictedOpen`). `W_RO` exists exactly when the
 //! three ROHF orbital-gradient blocks vanish at every k, `(f_β)_co`,
 //! `(f_α)_ov`, `(f_α + f_β)_cv`; the entry points compute the largest of them
-//! from the SCF's MOs and spin Focks and refuse a state above
+//! from the SCF's spin Focks and refuse a state above
 //! [`crate::grad::RO_ORBITAL_GRADIENT_TOL`] (the force is first order in it).
 //! At a converged state the unrestricted form `Σ_σ D_σ F_σ D_σ` differs from
-//! `W_RO` only by the closed-open β gradient, so using it
+//! `W_RO` only by ½ the closed-open β gradient (the identity above), so using it
 //! ([`KUSpinMutation::RoWUhfForm`]) is an identity there, not a defect. The
 //! Roothaan effective Fock must never be used for `W`.
 //!
-//! The gate is evaluated in the SCF's own MO basis as the largest ELEMENT of
-//! the three blocks over all k; a basis-independent (projector, norm) form
-//! would differ from it by a factor of order one, so the tolerance is a
-//! refusal threshold on a non-stationary state, not a force-error bound. The
-//! MOs must be one set per k-point (a short set is a typed error). ROHF/ROKS
-//! are anchored on the dense-AFT J/K only; an RS-GDF source is refused.
+//! ## The gate is basis-independent (and was not)
+//!
+//! The blocks are measured from the DENSITIES: with the SCF's MOs `C` used only
+//! as an `S`-orthonormal basis of the SCF's space, `D_σ^o = C† S D_σ S C`,
+//! `P_c = D_β^o`, `P_o = D_α^o − D_β^o`, `P_v = 1 − D_α^o` (each asserted to be
+//! a nested orthogonal projector, else a typed error), and the value is the
+//! largest SPECTRAL NORM over k of `P_c F_β P_o`, `P_o F_α P_v`,
+//! `P_c (F_α + F_β) P_v`; a rotation of `C` within its span changes nothing.
+//! An earlier form read the three blocks in the SCF's MOs, which are the
+//! eigenvectors of the Roothaan `F_eff[D]` of the FINAL density; in that basis
+//! `F_eff` (whose off-diagonal blocks are exactly these gradients) is diagonal
+//! by construction, so the measured gradient was partly rotated away. On a toy
+//! model (fixed Focks, `S = 1`, one Givens rotation `κ` of a stationary state,
+//! `κ = 1e-3 .. 1e-5`) it reported 1/2.2 of the closed-open, 1/5.4 of the
+//! open-virtual and 1/26.9 of the closed-virtual gradient (1/9.2 of the maximum
+//! when all three are rotated); the occupation check it relied on bounds `κ`
+//! only to about `1e-3`. The current form equals the true gradient to 1e-8
+//! relative and is proportional to `κ` (unit tests `gate_tests`). The spectral
+//! norm is at least the largest element in any orthonormal basis, so the
+//! tolerance remains an orbital-gradient refusal threshold (and the same
+//! constant that bounds the Gamma largest-element measure applies here to a
+//! larger number: the k gate can refuse a state the Gamma gate accepts).
+//! Calibration (force error against the reported `g`, gate off; MEASURED ON
+//! H3/STO-3G AT 1x1x1, ROKS PBE ONLY, where every block has rank 1 so the
+//! spectral norm equals the vector norm; for larger cells the per-k maximum is
+//! not the sum over orbitals or atoms, and for blocks of rank > 1 the spectral
+//! norm is below the Frobenius norm by up to `sqrt(rank)`, so this is not a
+//! general bound; the force was not measured on a rank > 1 system): `g` 6.9e-3
+//! -> 4.4e-3, 2.8e-4 -> 3.2e-5, 9.3e-7 -> 6.9e-7, 7.5e-9 -> 4.9e-9, i.e. at most
+//! about 0.74 `g` (and at least 0.11 `g`) there, so the tolerance 1e-5 caps the
+//! force error near 7e-6 Ha/Bohr on that system. The tolerance is unchanged but a state that passed
+//! the earlier gate may now be refused. The MOs must be one set per k-point (a
+//! short set is a typed error). ROHF/ROKS are anchored on the dense-AFT J/K
+//! only; an RS-GDF source is refused.
 //!
 //! # Stationarity of UKS
 //!
@@ -227,8 +255,76 @@ pub(crate) struct SpinInput<'a> {
     mos: Option<&'a [Array2<C64>]>,
 }
 
+/// Number of `n²` complex arrays the orbital-gradient gate holds at its peak
+/// (one k at a time, `m <= n` MOs), counted from `ro_orbital_gradient_with`:
+/// 15 named arrays live at once (`C†`, `S C`, `(S C)†`, `D_α^o`, `D_β^o`,
+/// `1`, `P_c`, `P_o`, `P_v`, `F_α^o`, `F_β^o`, `F^o_α + F^o_β`, `P_c F_β P_o`,
+/// `P_o F_α P_v`, `P_c F P_v`), one product temporary, and the spectral-norm
+/// stage on top (`gᴴ`, `gᴴ g`, its Hermitian part, the column-major copy, the
+/// eigenvectors, about two for the LAPACK workspace): 22, charged as 24.
+#[doc(hidden)]
+pub const RO_GATE_N2_ARRAYS: usize = 24;
+
+/// Bytes the gate's per-k transients are charged on the ledger.
+pub(crate) fn ro_gate_scratch_bytes(n: usize) -> usize {
+    bytes_of((n * n) as u64, 16 * RO_GATE_N2_ARRAYS)
+}
+
+/// Deliberate defects of the ROHF orbital-gradient measurement (unit tests
+/// only; production passes `None`).
+#[allow(dead_code)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum GateMutation {
+    /// The closed-virtual block is not measured.
+    DropClosedVirtual,
+    /// The open-virtual block is not measured.
+    DropOpenVirtual,
+    /// The closed-open block is not measured.
+    DropClosedOpen,
+    /// `D` is transformed without `S` (`C† D C`): the wrong metric.
+    WrongS,
+    /// The Focks are transformed with `S C` (`(S C)† F (S C)`) instead of `C`:
+    /// `S` wrongly placed on the covariant side.
+    WrongFockS,
+}
+
+/// Largest singular value of `g` (NaN if any element is not finite).
+fn spectral_norm(g: &Array2<C64>) -> f64 {
+    if g.iter().any(|z| !z.re.is_finite() || !z.im.is_finite()) {
+        return f64::NAN;
+    }
+    if g.iter().all(|z| z.norm() == 0.0) {
+        return 0.0;
+    }
+    let m = hermitize(&g.t().mapv(|z| z.conj()).dot(g));
+    match crate::kscf::eigh_herm(&m) {
+        Ok((w, _)) => w.iter().cloned().fold(0.0_f64, f64::max).max(0.0).sqrt(),
+        Err(_) => f64::NAN,
+    }
+}
+
+/// `NaN`-propagating maximum (`f64::max` swallows NaN).
+fn max_nan(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else {
+        a.max(b)
+    }
+}
+
 /// The ROHF orbital gradient at k (max over k; module doc "ROHF / ROKS").
-fn ro_orbital_gradient_k(
+///
+/// BASIS-INDEPENDENT form: `mos` serve only as an `S`-orthonormal basis of
+/// the SCF's variational space (any rotation within it gives the same value);
+/// the closed / open / virtual subspaces come from the DENSITIES, not from the
+/// MOs' occupations. With `D_σ^o = C† S D_σ S C`, `F_σ^o = C† F_σ C`,
+/// `P_c = D_β^o`, `P_o = D_α^o − D_β^o`, `P_v = 1 − D_α^o`, the value is the
+/// largest spectral norm over k and over the three blocks `P_c F_β P_o`,
+/// `P_o F_α P_v`, `P_c (F_α + F_β) P_v`. (An earlier form read the blocks in
+/// the eigenvectors of the Roothaan `F_eff[D]` of the final density, in which
+/// those blocks are rotated away: it under-reported the gradient by up to two
+/// orders of magnitude.)
+pub(crate) fn ro_orbital_gradient_k(
     who: &str,
     mos: &[Array2<C64>],
     s: &[Array2<C64>],
@@ -237,7 +333,23 @@ fn ro_orbital_gradient_k(
     fa: &[Array2<C64>],
     fb: &[Array2<C64>],
 ) -> Result<f64, FerricError> {
-    const OCC_TOL: f64 = 1e-6;
+    ro_orbital_gradient_with(who, mos, s, da, db, fa, fb, None)
+}
+
+/// Tolerance on the idempotency / nesting of the density projectors.
+const PROJECTOR_TOL: f64 = 1e-6;
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn ro_orbital_gradient_with(
+    who: &str,
+    mos: &[Array2<C64>],
+    s: &[Array2<C64>],
+    da: &[Array2<C64>],
+    db: &[Array2<C64>],
+    fa: &[Array2<C64>],
+    fb: &[Array2<C64>],
+    mutation: Option<GateMutation>,
+) -> Result<f64, FerricError> {
     let nk = s.len();
     if mos.len() != nk || da.len() != nk || db.len() != nk || fa.len() != nk || fb.len() != nk {
         return Err(FerricError::General(format!(
@@ -245,61 +357,69 @@ fn ro_orbital_gradient_k(
             mos.len()
         )));
     }
+    let herm = |m: &Array2<C64>| m.t().mapv(|z| z.conj());
     let mut worst = 0.0_f64;
-    for k in 0..mos.len() {
+    for k in 0..nk {
         let c = &mos[k];
-        let ch = c.t().mapv(|z| z.conj());
-        let sc = s[k].dot(c);
-        let sch = sc.t().mapv(|z| z.conj());
-        let occ = |d: &Array2<C64>| -> Vec<f64> {
-            let m = sch.dot(d).dot(&sc);
-            (0..c.ncols()).map(|i| m[(i, i)].re).collect()
-        };
-        let (oa, ob) = (occ(&da[k]), occ(&db[k]));
-        let (mut closed, mut open, mut virt) = (vec![], vec![], vec![]);
-        for i in 0..c.ncols() {
-            let (ra, rb) = (oa[i].round(), ob[i].round());
-            if (oa[i] - ra).abs() > OCC_TOL
-                || (ob[i] - rb).abs() > OCC_TOL
-                || !(ra == 0.0 || ra == 1.0)
-                || !(rb == 0.0 || rb == 1.0)
-            {
-                return Err(FerricError::General(format!(
-                    "{who}: MO {i} at k-point {k} has occupations (alpha {:.3e}, beta {:.3e}), not 0/1: \
-                     the MOs are not the orbital set of (D_alpha, D_beta)",
-                    oa[i], ob[i]
-                )));
-            }
-            match (ra == 1.0, rb == 1.0) {
-                (true, true) => closed.push(i),
-                (true, false) => open.push(i),
-                (false, false) => virt.push(i),
-                (false, true) => {
-                    return Err(FerricError::General(format!(
-                        "{who}: MO {i} at k-point {k} is beta-occupied but alpha-empty (not a \
-                         ROHF state)"
-                    )))
-                }
-            }
+        let n = s[k].nrows();
+        if c.nrows() != n || c.ncols() > n {
+            return Err(FerricError::General(format!(
+                "{who}: MO set at k-point {k} has shape {:?}, expected ({n}, m <= {n})",
+                c.dim()
+            )));
         }
-        let fam = ch.dot(&fa[k]).dot(c);
-        let fbm = ch.dot(&fb[k]).dot(c);
-        let block = |rows: &[usize], cols: &[usize], f: &dyn Fn(usize, usize) -> C64| {
-            let mut m = 0.0_f64;
-            for &p in rows {
-                for &q in cols {
-                    let a = f(p, q).norm();
-                    if a.is_nan() || a > m {
-                        m = a;
-                    }
-                }
+        let ch = herm(c);
+        let sc = s[k].dot(c);
+        let sch = herm(&sc);
+        let to_mo = |d: &Array2<C64>| -> Array2<C64> {
+            if mutation == Some(GateMutation::WrongS) {
+                ch.dot(d).dot(c)
+            } else {
+                sch.dot(d).dot(&sc)
             }
-            m
         };
-        worst = worst
-            .max(block(&closed, &open, &|p, q| fbm[(p, q)]))
-            .max(block(&open, &virt, &|p, q| fam[(p, q)]))
-            .max(block(&closed, &virt, &|p, q| fam[(p, q)] + fbm[(p, q)]));
+        let (dao, dbo) = (to_mo(&da[k]), to_mo(&db[k]));
+        let m = c.ncols();
+        let eye = Array2::<C64>::eye(m);
+        let pc = dbo.clone();
+        let po = &dao - &dbo;
+        let pv = &eye - &dao;
+        // The densities must be nested orthogonal projectors in the MO space.
+        let dev = |a: &Array2<C64>, b: &Array2<C64>| {
+            a.iter()
+                .zip(b)
+                .fold(0.0_f64, |w, (x, y)| max_nan(w, (x - y).norm()))
+        };
+        let bad = max_nan(
+            max_nan(dev(&dao.dot(&dao), &dao), dev(&dbo.dot(&dbo), &dbo)),
+            dev(&dbo.dot(&dao), &dbo),
+        );
+        if bad.is_nan() || bad > PROJECTOR_TOL {
+            return Err(FerricError::General(format!(
+                "{who}: at k-point {k} (D_alpha, D_beta) are not nested projectors in the SCF's MO \
+                 space (deviation {bad:.3e}): not a ROHF state of these MOs"
+            )));
+        }
+        let (fam, fbm) = if mutation == Some(GateMutation::WrongFockS) {
+            (sch.dot(&fa[k]).dot(&sc), sch.dot(&fb[k]).dot(&sc))
+        } else {
+            (ch.dot(&fa[k]).dot(c), ch.dot(&fb[k]).dot(c))
+        };
+        let fcv = &fam + &fbm;
+        let g_co = pc.dot(&fbm).dot(&po);
+        let g_ov = po.dot(&fam).dot(&pv);
+        let g_cv = pc.dot(&fcv).dot(&pv);
+        let mut w = worst;
+        if mutation != Some(GateMutation::DropClosedOpen) {
+            w = max_nan(w, spectral_norm(&g_co));
+        }
+        if mutation != Some(GateMutation::DropOpenVirtual) {
+            w = max_nan(w, spectral_norm(&g_ov));
+        }
+        if mutation != Some(GateMutation::DropClosedVirtual) {
+            w = max_nan(w, spectral_norm(&g_cv));
+        }
+        worst = w;
     }
     Ok(worst)
 }
@@ -1076,6 +1196,13 @@ fn uks_gradient_with(
     };
     let og = match inp.mos {
         Some(mos) => {
+            ledger.check(
+                &format!(
+                    "k RO force orbital-gradient gate scratch (n = {}, per-k transients)",
+                    prep.nbasis()
+                ),
+                ro_gate_scratch_bytes(prep.nbasis()),
+            )?;
             let g = ro_orbital_gradient_k(who, mos, &hk.s, &da, &db, &fa, &fb)?;
             let gate_on = smut != Some(KUSpinMutation::RoGateOff);
             if gate_on && (g.is_nan() || g > RO_ORBITAL_GRADIENT_TOL) {
@@ -1145,4 +1272,451 @@ fn uks_gradient_with(
         chunk_points: xo.chunk_points,
         live_chunks: xo.live_chunks,
     })
+}
+
+/// The pre-fix measurement (blocks read in the SCF's MOs), kept as a mutant.
+#[cfg(test)]
+#[allow(clippy::needless_range_loop)]
+fn old_ro_orbital_gradient_k(
+    who: &str,
+    mos: &[Array2<C64>],
+    s: &[Array2<C64>],
+    da: &[Array2<C64>],
+    db: &[Array2<C64>],
+    fa: &[Array2<C64>],
+    fb: &[Array2<C64>],
+) -> Result<f64, FerricError> {
+    const OCC_TOL: f64 = 1e-6;
+    let nk = s.len();
+    if mos.len() != nk || da.len() != nk || db.len() != nk || fa.len() != nk || fb.len() != nk {
+        return Err(FerricError::General(format!(
+            "{who}: {} MO sets for {nk} k-points (the SCF's MOs must be the mesh's, one set per k)",
+            mos.len()
+        )));
+    }
+    let mut worst = 0.0_f64;
+    for k in 0..mos.len() {
+        let c = &mos[k];
+        let ch = c.t().mapv(|z| z.conj());
+        let sc = s[k].dot(c);
+        let sch = sc.t().mapv(|z| z.conj());
+        let occ = |d: &Array2<C64>| -> Vec<f64> {
+            let m = sch.dot(d).dot(&sc);
+            (0..c.ncols()).map(|i| m[(i, i)].re).collect()
+        };
+        let (oa, ob) = (occ(&da[k]), occ(&db[k]));
+        let (mut closed, mut open, mut virt) = (vec![], vec![], vec![]);
+        for i in 0..c.ncols() {
+            let (ra, rb) = (oa[i].round(), ob[i].round());
+            if (oa[i] - ra).abs() > OCC_TOL
+                || (ob[i] - rb).abs() > OCC_TOL
+                || !(ra == 0.0 || ra == 1.0)
+                || !(rb == 0.0 || rb == 1.0)
+            {
+                return Err(FerricError::General(format!(
+                    "{who}: MO {i} at k-point {k} has occupations (alpha {:.3e}, beta {:.3e}), not 0/1: \
+                     the MOs are not the orbital set of (D_alpha, D_beta)",
+                    oa[i], ob[i]
+                )));
+            }
+            match (ra == 1.0, rb == 1.0) {
+                (true, true) => closed.push(i),
+                (true, false) => open.push(i),
+                (false, false) => virt.push(i),
+                (false, true) => {
+                    return Err(FerricError::General(format!(
+                        "{who}: MO {i} at k-point {k} is beta-occupied but alpha-empty (not a \
+                         ROHF state)"
+                    )))
+                }
+            }
+        }
+        let fam = ch.dot(&fa[k]).dot(c);
+        let fbm = ch.dot(&fb[k]).dot(c);
+        let block = |rows: &[usize], cols: &[usize], f: &dyn Fn(usize, usize) -> C64| {
+            let mut m = 0.0_f64;
+            for &p in rows {
+                for &q in cols {
+                    let a = f(p, q).norm();
+                    if a.is_nan() || a > m {
+                        m = a;
+                    }
+                }
+            }
+            m
+        };
+        worst = worst
+            .max(block(&closed, &open, &|p, q| fbm[(p, q)]))
+            .max(block(&open, &virt, &|p, q| fam[(p, q)]))
+            .max(block(&closed, &virt, &|p, q| fam[(p, q)] + fbm[(p, q)]));
+    }
+    Ok(worst)
+}
+
+/// Unit tests of the ROHF orbital-gradient measurement on a toy model: fixed
+/// spin Focks with S = 1 (so the only moving part is the density), a
+/// stationary ROHF state (closed {0}, open {1}, virtual {2..5}) rotated by
+/// Givens angles `kappa`, and the MOs built as the SCF's `finish()` builds
+/// them: the eigenvectors of the Roothaan `F_eff[D]` of the final density.
+#[cfg(test)]
+mod gate_tests {
+    use super::*;
+    use crate::kroks::roothaan_fock_k;
+
+    const N: usize = 6;
+
+    fn lcg(state: &mut u64) -> f64 {
+        *state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((*state >> 33) as f64) / ((1u64 << 31) as f64) - 0.5
+    }
+
+    fn sym(state: &mut u64) -> Array2<f64> {
+        let mut a = Array2::<f64>::zeros((N, N));
+        for i in 0..N {
+            for j in 0..=i {
+                let v = lcg(state);
+                a[(i, j)] = v;
+                a[(j, i)] = v;
+            }
+            a[(i, i)] += (i as f64) * 0.7;
+        }
+        a
+    }
+
+    /// Spin Focks whose three gradient blocks vanish for closed {0}, open {1},
+    /// virtual {2..N}: `(f_b)_01 = 0`, `(f_a)_{1v} = 0`, `(f_a + f_b)_{0v} = 0`.
+    fn stationary_focks() -> (Array2<f64>, Array2<f64>) {
+        let mut st = 12345u64;
+        let mut fa = sym(&mut st);
+        let mut fb = sym(&mut st);
+        fb[(0, 1)] = 0.0;
+        fb[(1, 0)] = 0.0;
+        for v in 2..N {
+            fa[(1, v)] = 0.0;
+            fa[(v, 1)] = 0.0;
+            fb[(0, v)] = -fa[(0, v)];
+            fb[(v, 0)] = -fa[(v, 0)];
+        }
+        (fa, fb)
+    }
+
+    fn givens(p: usize, q: usize, kappa: f64) -> Array2<f64> {
+        let mut g = Array2::<f64>::eye(N);
+        g[(p, p)] = kappa.cos();
+        g[(q, q)] = kappa.cos();
+        g[(p, q)] = -kappa.sin();
+        g[(q, p)] = kappa.sin();
+        g
+    }
+
+    fn cplx(a: &Array2<f64>) -> Array2<C64> {
+        a.mapv(|x| C64::new(x, 0.0))
+    }
+
+    struct Toy {
+        da: Array2<C64>,
+        db: Array2<C64>,
+        fa: Array2<C64>,
+        fb: Array2<C64>,
+        s: Array2<C64>,
+        /// Closed-open, open-virtual and closed-virtual gradient norms read
+        /// directly in the rotated orbitals (the independent reference).
+        truth: [f64; 3],
+        /// The SCF's MOs: eigenvectors of F_eff[D].
+        mos: Array2<C64>,
+    }
+
+    /// Rotations `[(p, q, kappa)]` applied to the stationary orbital set.
+    fn toy(rots: &[(usize, usize, f64)]) -> Toy {
+        let (fa, fb) = stationary_focks();
+        let mut c = Array2::<f64>::eye(N);
+        for &(p, q, k) in rots {
+            c = c.dot(&givens(p, q, k));
+        }
+        let col = |i: usize| c.column(i).to_owned();
+        let outer = |u: &ndarray::Array1<f64>| {
+            let mut m = Array2::<f64>::zeros((N, N));
+            for i in 0..N {
+                for j in 0..N {
+                    m[(i, j)] = u[i] * u[j];
+                }
+            }
+            m
+        };
+        let db = outer(&col(0));
+        let da = &db + &outer(&col(1));
+        let fam = c.t().dot(&fa).dot(&c);
+        let fbm = c.t().dot(&fb).dot(&c);
+        let nrm = |v: Vec<f64>| v.iter().map(|x| x * x).sum::<f64>().sqrt();
+        let truth = [
+            fbm[(0, 1)].abs(),
+            nrm((2..N).map(|v| fam[(1, v)]).collect()),
+            nrm((2..N).map(|v| fam[(0, v)] + fbm[(0, v)]).collect()),
+        ];
+        let s = Array2::<C64>::eye(N);
+        let (dac, dbc) = (cplx(&da), cplx(&db));
+        let feff = roothaan_fock_k(&cplx(&fa), &cplx(&fb), &dac, &dbc, &s);
+        let (_, mos) = crate::kscf::eigh_herm(&feff).unwrap();
+        Toy {
+            da: dac,
+            db: dbc,
+            fa: cplx(&fa),
+            fb: cplx(&fb),
+            s,
+            truth,
+            mos,
+        }
+    }
+
+    fn new_gate(t: &Toy, m: Option<GateMutation>) -> Result<f64, FerricError> {
+        ro_orbital_gradient_with(
+            "toy",
+            std::slice::from_ref(&t.mos),
+            std::slice::from_ref(&t.s),
+            std::slice::from_ref(&t.da),
+            std::slice::from_ref(&t.db),
+            std::slice::from_ref(&t.fa),
+            std::slice::from_ref(&t.fb),
+            m,
+        )
+    }
+
+    fn old_gate(t: &Toy) -> Result<f64, FerricError> {
+        old_ro_orbital_gradient_k(
+            "toy",
+            std::slice::from_ref(&t.mos),
+            std::slice::from_ref(&t.s),
+            std::slice::from_ref(&t.da),
+            std::slice::from_ref(&t.db),
+            std::slice::from_ref(&t.fa),
+            std::slice::from_ref(&t.fb),
+        )
+    }
+
+    /// An MO set of the wrong shape is a typed error, not an ndarray panic.
+    #[test]
+    fn wrong_shaped_mo_set_is_a_typed_error() {
+        let mut t = toy(&[]);
+        let n = t.s.nrows();
+        let full = t.mos.clone();
+        t.mos = full.slice(ndarray::s![..n - 1, ..]).to_owned();
+        let e = new_gate(&t, None).unwrap_err().to_string();
+        assert!(e.contains("MO set at k-point 0"), "{e}");
+        t.mos = ndarray::concatenate![ndarray::Axis(1), full, full.slice(ndarray::s![.., ..1])];
+        let e = new_gate(&t, None).unwrap_err().to_string();
+        assert!(e.contains("MO set at k-point 0"), "{e}");
+        t.mos = full;
+        assert!(new_gate(&t, None).unwrap() < 1e-12);
+    }
+
+    /// The stationary state: both forms report ~0.
+    #[test]
+    fn stationary_state_has_zero_gradient() {
+        let t = toy(&[]);
+        let g = new_gate(&t, None).unwrap();
+        assert!(g < 1e-12, "{g:e}");
+        assert!(old_gate(&t).unwrap() < 1e-12);
+    }
+
+    /// Old vs new vs the reference, one rotation per block and all three
+    /// together, kappa 1e-2 .. 1e-5.
+    #[test]
+    fn gate_equals_the_true_gradient_where_the_old_gate_under_reported() {
+        let cases: [(&str, Vec<(usize, usize)>); 4] = [
+            ("closed-open", vec![(0, 1)]),
+            ("open-virtual", vec![(1, 2)]),
+            ("closed-virtual", vec![(0, 2)]),
+            ("all three", vec![(0, 1), (1, 2), (0, 2)]),
+        ];
+        let mut worst_old_ratio = 1.0_f64;
+        for (name, pq) in &cases {
+            let mut prev: Option<f64> = None;
+            for kappa in [1e-2, 1e-3, 1e-4, 1e-5] {
+                let rots: Vec<_> = pq.iter().map(|&(p, q)| (p, q, kappa)).collect();
+                let t = toy(&rots);
+                let truth = t.truth.iter().cloned().fold(0.0_f64, f64::max);
+                let g = new_gate(&t, None).unwrap();
+                let old = old_gate(&t);
+                eprintln!(
+                    "{name:<15} kappa {kappa:.0e}: true {truth:.4e}  new {g:.4e}  old {}",
+                    match &old {
+                        Ok(v) => format!("{v:.4e} (true/old {:.1})", truth / v.max(1e-300)),
+                        Err(e) => format!(
+                            "refused ({})",
+                            e.to_string().chars().take(60).collect::<String>()
+                        ),
+                    }
+                );
+                // The new form IS the true gradient (independent reference in
+                // the rotated orbitals) ...
+                assert!(
+                    ((g - truth) / truth).abs() < 1e-8,
+                    "{name} {kappa}: {g:e} vs {truth:e}"
+                );
+                // ... and is proportional to kappa with a fixed coefficient.
+                if let Some(p) = prev {
+                    let r = (g / kappa) / p;
+                    assert!((r - 1.0).abs() < 10.0 * kappa * 10.0, "{name} {kappa}: {r}");
+                }
+                prev = Some(g / kappa);
+                if let Ok(v) = old {
+                    worst_old_ratio = worst_old_ratio.max(truth / v.max(1e-300));
+                }
+            }
+        }
+        eprintln!("worst true/old ratio {worst_old_ratio:.1}");
+    }
+
+    /// Mutants: a dropped block, the wrong metric, and the OLD measurement
+    /// (blocks read in the eigenvectors of F_eff of the final density) are
+    /// each visible against the reference.
+    #[test]
+    fn gate_mutants_are_visible() {
+        for (name, pq, m) in [
+            ("co", (0, 1), GateMutation::DropClosedOpen),
+            ("ov", (1, 2), GateMutation::DropOpenVirtual),
+            ("cv", (0, 2), GateMutation::DropClosedVirtual),
+        ] {
+            let t = toy(&[(pq.0, pq.1, 1e-4)]);
+            let g = new_gate(&t, None).unwrap();
+            let gm = new_gate(&t, Some(m)).unwrap();
+            eprintln!("drop {name}: {gm:.4e} vs {g:.4e}");
+            assert!(gm < 0.9 * g, "{m:?}: {gm:e} vs {g:e}");
+        }
+        let t = toy(&[(0, 1, 1e-4), (1, 2, 1e-4), (0, 2, 1e-4)]);
+        // A non-orthonormal AO overlap makes the wrong metric visible: the
+        // orbitals are S-orthonormal, S = diag(1 + 0.4 i / N), mos = S^(-1/2).
+        {
+            let (fa, fb) = stationary_focks();
+            let sd: Vec<f64> = (0..N).map(|i| 1.0 + 0.4 * i as f64 / N as f64).collect();
+            let sinv12 = Array2::from_diag(&ndarray::Array1::from_vec(
+                sd.iter().map(|x| 1.0 / x.sqrt()).collect(),
+            ));
+            let g = givens(0, 1, 1e-4)
+                .dot(&givens(1, 2, 1e-4))
+                .dot(&givens(0, 2, 1e-4));
+            let c = sinv12.dot(&g);
+            let outer = |i: usize| {
+                let u = c.column(i).to_owned();
+                Array2::from_shape_fn((N, N), |(a, b)| u[a] * u[b])
+            };
+            let db = outer(0);
+            let da = &db + &outer(1);
+            let t2 = Toy {
+                da: cplx(&da),
+                db: cplx(&db),
+                fa: cplx(&fa),
+                fb: cplx(&fb),
+                s: cplx(&Array2::from_diag(&ndarray::Array1::from_vec(sd))),
+                truth: [0.0; 3],
+                mos: cplx(&sinv12),
+            };
+            let good = new_gate(&t2, None).unwrap();
+            let bad = new_gate(&t2, Some(GateMutation::WrongS));
+            eprintln!("wrong S: correct {good:.4e}, mutant {bad:?}");
+            assert!(good > 1e-6);
+            assert!(bad.is_err() || (bad.unwrap() - good).abs() > 0.05 * good);
+        }
+        // The old measurement under-reports on the same state.
+        let old = old_gate(&t).unwrap();
+        let truth = t.truth.iter().cloned().fold(0.0_f64, f64::max);
+        eprintln!("old gate {old:.4e} vs true {truth:.4e}");
+        assert!(
+            old < 0.5 * truth,
+            "the old gate no longer under-reports: {old:e} vs {truth:e}"
+        );
+    }
+
+    /// Non-orthogonal AO basis with a COMPLEX Hermitian overlap and an
+    /// INDEPENDENT reference: the orbitals are built as `c = S^(-1/2) G` (G the
+    /// real rotated orthonormal set of the toy), the AO Focks as
+    /// `F = S^(1/2) F_o S^(1/2)` and the densities as `c c†`, so the true blocks
+    /// are those of the toy in `G` (no use of the gate's formulas); the gate is
+    /// handed a DIFFERENT S-orthonormal basis `mos = S^(-1/2) V` (V a unitary
+    /// with phases). The gate must reproduce the reference; a wrong metric on
+    /// the density side (`WrongS`) and `S` wrongly placed on the Fock side
+    /// (`(S C)† F (S C)`, `WrongFockS`) must each be caught.
+    #[test]
+    fn complex_overlap_gate_matches_an_independent_reference() {
+        let rots = [(0, 1, 1e-4), (1, 2, 2e-4), (0, 2, 3e-4)];
+        let t = toy(&rots);
+        let truth = t.truth.iter().cloned().fold(0.0_f64, f64::max);
+        let mut s = Array2::<C64>::eye(N);
+        for i in 0..N {
+            for j in i + 1..N {
+                let ph = 0.3 * ((i + 1) * (j + 1)) as f64;
+                let v = C64::from_polar(0.12 / (1.0 + (j - i) as f64), ph);
+                s[(i, j)] = v;
+                s[(j, i)] = v.conj();
+            }
+        }
+        let (w, u) = crate::kscf::eigh_herm(&s).unwrap();
+        assert!(w.iter().all(|&x| x > 0.3), "{w:?}");
+        let fun = |f: &dyn Fn(f64) -> f64| -> Array2<C64> {
+            let mut d = Array2::<C64>::zeros((N, N));
+            for i in 0..N {
+                d[(i, i)] = C64::new(f(w[i]), 0.0);
+            }
+            u.dot(&d).dot(&u.t().mapv(|z| z.conj()))
+        };
+        let sh = fun(&|x| x.sqrt());
+        let sih = fun(&|x| 1.0 / x.sqrt());
+        let da = sih.dot(&t.da).dot(&sih);
+        let db = sih.dot(&t.db).dot(&sih);
+        let fa = sh.dot(&t.fa).dot(&sh);
+        let fb = sh.dot(&t.fb).dot(&sh);
+        let mut v = cplx(&givens(0, 3, 0.7).dot(&givens(2, 5, 1.1)));
+        for j in 0..N {
+            let ph = C64::from_polar(1.0, 0.4 * j as f64);
+            for i in 0..N {
+                v[(i, j)] *= ph;
+            }
+        }
+        let mos = sih.dot(&v);
+        let t2 = Toy {
+            da,
+            db,
+            fa,
+            fb,
+            s,
+            truth: t.truth,
+            mos,
+        };
+        let g = new_gate(&t2, None).unwrap();
+        eprintln!("complex S: gate {g:.6e}, independent reference {truth:.6e}");
+        assert!(((g - truth) / truth).abs() < 1e-8, "{g:e} vs {truth:e}");
+        for m in [GateMutation::WrongS, GateMutation::WrongFockS] {
+            let r = new_gate(&t2, Some(m));
+            eprintln!("complex S, {m:?}: {r:?}");
+            assert!(
+                r.is_err() || (r.unwrap() - truth).abs() > 0.05 * truth,
+                "{m:?} survives a non-orthogonal complex S"
+            );
+        }
+    }
+
+    /// A NaN Fock element is reported as NaN (not swallowed by `f64::max`).
+    #[test]
+    fn nan_fock_element_propagates() {
+        let mut t = toy(&[(0, 1, 1e-4)]);
+        t.fb[(0, 1)] = C64::new(f64::NAN, 0.0);
+        let g = new_gate(&t, None).unwrap();
+        assert!(g.is_nan(), "{g}");
+    }
+
+    /// The gate does not depend on which orthonormal basis of the space the
+    /// MOs form (a unitary rotation of `mos` leaves it unchanged).
+    #[test]
+    fn gate_is_basis_independent() {
+        let mut t = toy(&[(0, 1, 1e-4), (1, 2, 1e-4), (0, 2, 1e-4)]);
+        let g0 = new_gate(&t, None).unwrap();
+        let u = givens(0, 3, 0.7)
+            .dot(&givens(1, 4, 0.4))
+            .dot(&givens(2, 5, 1.1));
+        t.mos = t.mos.dot(&cplx(&u));
+        let g1 = new_gate(&t, None).unwrap();
+        assert!(((g0 - g1) / g0).abs() < 1e-10, "{g0:e} vs {g1:e}");
+    }
 }

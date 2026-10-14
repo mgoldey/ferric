@@ -1188,6 +1188,13 @@ fn uks_gradient(
 /// of `crate::rohf` sits at `|g|` ≫ 1e-5). It is a refusal of a
 /// non-stationary state, NOT a precision guarantee: for FD-grade forces
 /// converge tightly (the tests run at `density_conv = 1e-10`).
+///
+/// ONE CONSTANT, TWO NORMS: here `g` is the largest ELEMENT of the three blocks
+/// in the MO basis; the k-point entry points (`crate::kuxcgrad`) apply the same
+/// number to the largest SPECTRAL NORM of the blocks (basis-independent), which
+/// is at least the largest element and larger by up to `sqrt(n_virtual)` for a
+/// rank-1 row. The k-point gate can therefore refuse a state that the Gamma
+/// entry point accepts; the constant is deliberately not changed.
 pub const RO_ORBITAL_GRADIENT_TOL: f64 = 1e-5;
 
 /// Occupation tolerance for classifying the ROHF MOs from `(D_α, D_β)`.

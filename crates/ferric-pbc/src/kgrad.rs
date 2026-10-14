@@ -351,6 +351,10 @@ pub struct KGradient {
     pub parts: KGradParts,
     /// `max_{σ,k} max |F_σ D_σ S − S D_σ F_σ|` of the Focks rebuilt from the
     /// SCF densities (a gradient is only meaningful at a stationary state).
+    /// For the restricted-open-shell force path (`kpoint_roks_gradient`,
+    /// `kpoint_rohf_gradient`) the per-spin commutators do not vanish at a ROHF
+    /// state, so this field holds the ROHF ORBITAL GRADIENT `g` the gate
+    /// measured instead (largest spectral norm of the three blocks).
     pub commutator: f64,
     /// `v_M` used in K and M (0 for `exxdiv = none`).
     pub madelung: f64,

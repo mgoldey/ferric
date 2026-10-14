@@ -952,7 +952,12 @@ pub struct KStress {
     pub parts: KStressParts,
     /// Cell volume Ω (Bohr³).
     pub volume: f64,
-    /// `max_{σ,k} max |F_σ D_σ S − S D_σ F_σ|` of the rebuilt Focks.
+    /// `max_{σ,k} max |F_σ D_σ S − S D_σ F_σ|` of the rebuilt Focks. For the
+    /// restricted-open-shell entry points ([`crate::kuxcstress::kpoint_roks_stress`],
+    /// `kpoint_rohf_stress`) the per-spin commutators do not vanish at a ROHF
+    /// state, so this field instead holds the ROHF ORBITAL GRADIENT the gate
+    /// measured (the largest spectral norm of the closed-open, open-virtual and
+    /// closed-virtual blocks).
     pub commutator: f64,
     /// `v_M` used in `K` and `M` (0 for exxdiv = none).
     pub madelung: f64,
@@ -1674,6 +1679,7 @@ fn dense_two_electron_strain(
                         let mut y = Array2::<C64>::zeros((n, n));
                         match spins {
                             KSpins::Unrestricted { da, db, .. }
+                            | KSpins::RestrictedOpen { da, db, .. }
                                 if mutation == Some(KStressMutation::CrossSpinK) =>
                             {
                                 y += &da[j].dot(&pjh).dot(&db[kof[j]]);
