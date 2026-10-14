@@ -22,6 +22,7 @@ use ferric_integrals::operator::Operator;
 use ferric_pbc::dense_aft::DEFAULT_DENSE_AFT_PRECISION;
 use ferric_pbc::drpa::DEFAULT_GAMMA_DRPA_QUAD_POINTS;
 use ferric_pbc::kcorr::DEFAULT_KDRPA_QUAD_POINTS;
+use ferric_pbc::kroks::{KRohfConfig, KRoksConfig};
 use ferric_pbc::kxcgrad::{kpoint_rks_gradient, KRksGradConfig, KXcGrid};
 use ferric_pbc::rsgdf::auto_omega::auto_rsgdf_omega;
 use ferric_pbc::rsgdf::DEFAULT_RSGDF_OMEGA;
@@ -45,8 +46,10 @@ use ferric_pbc::{
     RsGdfGradSource,
 };
 use ferric_pbc::{
-    kpoint_rhf_gradient, kpoint_uhf_gradient, solve_krhf_keep, solve_krks_keep, solve_kuhf_keep,
-    KGradConfig, KRetained,
+    kpoint_rhf_gradient, kpoint_rohf_gradient, kpoint_roks_gradient, kpoint_uhf_gradient,
+    kpoint_uks_gradient, solve_krhf_keep, solve_krks_keep, solve_krohf, solve_krohf_keep,
+    solve_kroks, solve_kroks_keep, solve_kuhf_keep, solve_kuks, solve_kuks_keep, KGradConfig,
+    KRetained, KUksConfig, KUksGradConfig,
 };
 use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::RhfConfig;
@@ -72,7 +75,8 @@ struct Outcome {
 /// (600 for hybrids) and every other route the plan's.
 fn effective_max_iter(plan: &PeriodicPlan) -> usize {
     match (plan.route, plan.max_iter_explicit) {
-        (PeriodicRoute::Roks, false) => {
+        // The k-point ROKS keeps the k-point SCF cap (`kscf_config`).
+        (PeriodicRoute::Roks, false) if plan.kmesh.is_none() => {
             GammaRoksConfig::new(plan.functional.as_deref().unwrap_or(""))
                 .scf
                 .max_iter
@@ -126,12 +130,9 @@ pub fn run_periodic(cfg: &Config) {
             PeriodicRoute::Rhf => run_krhf(cfg, plan, &s),
             PeriodicRoute::Rks => run_krks(cfg, plan, &s),
             PeriodicRoute::Uhf => run_kuhf(cfg, plan, &s),
+            PeriodicRoute::Uks => run_kuks(cfg, plan, &s),
+            PeriodicRoute::Roks | PeriodicRoute::Rohf => run_kro(cfg, plan, &s),
             PeriodicRoute::Mp2 | PeriodicRoute::Drpa => run_kcorr(cfg, plan, &s),
-            // Refused by `periodic_plan` (`PeriodicRoute::check_kpoint_support`).
-            other => die(format!(
-                "internal: k-point {} reached the periodic dispatcher",
-                other.label()
-            )),
         }
     } else {
         match plan.route {
@@ -1359,10 +1360,191 @@ fn kuhf_driver(
     )
 }
 
-/// k-point energy and analytic force (`kpoint_rhf_gradient` /
-/// `kpoint_uhf_gradient` / `kpoint_rks_gradient`) of one geometry, through the hcore output and J/K
-/// object the SCF ran on (`solve_k*_keep`). The SCF must converge: a force at
-/// a non-stationary density is meaningless.
+/// The k-point mesh and derivative budget of one force evaluation.
+struct KForceCtx<'a> {
+    plan: &'a PeriodicPlan,
+    s: &'a Setup,
+    mesh: KPointMesh,
+}
+
+impl KForceCtx<'_> {
+    /// The retained hcore and J/K are charged against the same budget.
+    fn gcfg(&self, kept: &KRetained) -> KGradConfig {
+        KGradConfig {
+            budget_bytes: Some(kept.derivative_budget(budget_bytes(self.plan))),
+            ..Default::default()
+        }
+    }
+
+    /// The XC force settings: the energy's own grid and AO truncation, and
+    /// the SCF's exxdiv (a hybrid's exact exchange feels the Madelung shift).
+    fn xc_cfg(&self, kept: &KRetained, grid: &PeriodicGridConfig, ao: f64) -> KRksGradConfig {
+        KRksGradConfig {
+            grad: self.gcfg(kept),
+            grid: KXcGrid::Atom(grid.clone()),
+            ao_threshold: ao,
+            exxdiv: Some(self.plan.exxdiv),
+            ..Default::default()
+        }
+    }
+
+    fn not_converged(&self, it: usize, e: f64) -> FerricError {
+        FerricError::Convergence(format!(
+            "the k-point {} SCF did not converge in {it} iterations during the optimization \
+             (last E = {e}); a gradient at a non-stationary density is meaningless",
+            self.plan.route.label()
+        ))
+    }
+
+    fn functional(&self) -> &str {
+        self.plan.functional.as_deref().unwrap_or("LDA")
+    }
+}
+
+fn k_force_rhf(x: &KForceCtx<'_>) -> Result<(f64, ndarray::Array2<f64>), FerricError> {
+    let (plan, s) = (x.plan, x.s);
+    let c = krhf_config(plan, s);
+    let (r, kept) = solve_krhf_keep(&s.cell, &s.prep, s.aux.as_ref(), &x.mesh, &c)?;
+    if !r.converged {
+        return Err(x.not_converged(r.iterations, r.energy));
+    }
+    let g = kpoint_rhf_gradient(
+        &s.cell,
+        &s.prep,
+        &x.mesh,
+        &c.hcore,
+        &kept.hk,
+        kept.grad_jk(s.aux.as_ref(), &c.rsgdf)?,
+        &r,
+        plan.exxdiv,
+        &x.gcfg(&kept),
+    )?;
+    Ok((r.energy, g.grad))
+}
+
+fn k_force_uhf(x: &KForceCtx<'_>) -> Result<(f64, ndarray::Array2<f64>), FerricError> {
+    let (plan, s) = (x.plan, x.s);
+    let c = kuhf_config(plan, s);
+    let (r, kept) = solve_kuhf_keep(&s.cell, &s.prep, s.aux.as_ref(), &x.mesh, &c)?;
+    if !r.scf.converged {
+        return Err(x.not_converged(r.scf.iterations, r.scf.energy));
+    }
+    let g = kpoint_uhf_gradient(
+        &s.cell,
+        &s.prep,
+        &x.mesh,
+        &c.hcore,
+        &kept.hk,
+        kept.grad_jk(s.aux.as_ref(), &c.rsgdf)?,
+        &r.scf,
+        plan.exxdiv,
+        &x.gcfg(&kept),
+    )?;
+    Ok((r.scf.energy, g.grad))
+}
+
+fn k_force_rks(x: &KForceCtx<'_>) -> Result<(f64, ndarray::Array2<f64>), FerricError> {
+    let (plan, s) = (x.plan, x.s);
+    let c = krks_config(plan, s);
+    // The force's own allowlist (LDA / GGA / global hybrid / SCAN, r2SCAN),
+    // independent of the energy gate in `check_kpoint_support`.
+    ferric_pbc::kxcgrad::check_force_functional(x.functional())?;
+    let (r, kept) = solve_krks_keep(&s.cell, &s.prep, s.aux.as_ref(), &x.mesh, &c)?;
+    // `solve_krks_keep` itself errors on a non-converged SCF.
+    let rcfg = x.xc_cfg(&kept, &c.grid, c.xc.ao_threshold);
+    let g = kpoint_rks_gradient(
+        &s.cell,
+        &s.prep,
+        &x.mesh,
+        &c.krhf.hcore,
+        &kept.hk,
+        kept.grad_jk(s.aux.as_ref(), &c.krhf.rsgdf)?,
+        &r.scf,
+        x.functional(),
+        &rcfg,
+    )?;
+    Ok((r.scf.energy, g.grad))
+}
+
+fn k_force_uks(x: &KForceCtx<'_>) -> Result<(f64, ndarray::Array2<f64>), FerricError> {
+    let (plan, s) = (x.plan, x.s);
+    let c = kuks_config(plan, s);
+    ferric_pbc::kxcgrad::check_open_shell_force_functional(x.functional())?;
+    let (r, kept) = solve_kuks_keep(&s.cell, &s.prep, s.aux.as_ref(), &x.mesh, &c)?;
+    // `solve_kuks_keep` itself errors on a non-converged SCF.
+    let gc = KUksGradConfig {
+        base: x.xc_cfg(&kept, &c.grid, c.xc.ao_threshold),
+        ..Default::default()
+    };
+    let g = kpoint_uks_gradient(
+        &s.cell,
+        &s.prep,
+        &x.mesh,
+        &c.kuhf.hcore,
+        &kept.hk,
+        kept.grad_jk(s.aux.as_ref(), &c.kuhf.rsgdf)?,
+        &r.scf,
+        x.functional(),
+        &gc,
+    )?;
+    Ok((r.scf.energy, g.grad))
+}
+
+/// ROKS (`plan.functional` set) and ROHF forces (dense-AFT J/K).
+fn k_force_ro(x: &KForceCtx<'_>) -> Result<(f64, ndarray::Array2<f64>), FerricError> {
+    let (plan, s) = (x.plan, x.s);
+    let aux = s.aux.as_ref();
+    let (energy, grad) = if plan.route == PeriodicRoute::Roks {
+        ferric_pbc::kxcgrad::check_open_shell_force_functional(x.functional())?;
+        let c = kroks_config(plan, s);
+        let (r, kept) = solve_kroks_keep(&s.cell, &s.prep, aux, &x.mesh, &c)?;
+        let gc = KUksGradConfig {
+            base: x.xc_cfg(&kept, &c.grid, c.xc.ao_threshold),
+            ..Default::default()
+        };
+        let jk = kept.grad_jk(aux, &c.rohf.rsgdf)?;
+        let g = kpoint_roks_gradient(
+            &s.cell,
+            &s.prep,
+            &x.mesh,
+            &c.rohf.hcore,
+            &kept.hk,
+            jk,
+            &r.scf,
+            x.functional(),
+            &gc,
+        )?;
+        (r.scf.energy, g.grad)
+    } else {
+        let c = krohf_config(plan, s);
+        let (r, kept) = solve_krohf_keep(&s.cell, &s.prep, aux, &x.mesh, &c)?;
+        let gc = KUksGradConfig {
+            base: KRksGradConfig {
+                grad: x.gcfg(&kept),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let jk = kept.grad_jk(aux, &c.rsgdf)?;
+        let g = kpoint_rohf_gradient(
+            &s.cell,
+            &s.prep,
+            &x.mesh,
+            &c.hcore,
+            &kept.hk,
+            jk,
+            &r.scf,
+            plan.exxdiv,
+            &gc,
+        )?;
+        (r.scf.energy, g.grad)
+    };
+    Ok((energy, grad))
+}
+
+/// k-point energy and analytic force of one geometry, through the hcore
+/// output and J/K object the SCF ran on (`solve_k*_keep`). The SCF must
+/// converge: a force at a non-stationary density is meaningless.
 fn k_energy_and_gradient(
     plan: &PeriodicPlan,
     s: &Setup,
@@ -1372,94 +1554,196 @@ fn k_energy_and_gradient(
             "internal: k-point gradient without kmesh".into(),
         ));
     };
-    let mesh = KPointMesh::new(&s.cell, n, c)?;
-    // The retained hcore and J/K are charged against the same budget.
-    let gcfg_for = |kept: &KRetained| KGradConfig {
-        budget_bytes: Some(kept.derivative_budget(budget_bytes(plan))),
-        ..Default::default()
-    };
-    let not_converged = |it: usize, e: f64| {
-        FerricError::Convergence(format!(
-            "the k-point {} SCF did not converge in {it} iterations during the optimization \
-             (last E = {e}); a gradient at a non-stationary density is meaningless",
-            plan.route.label()
-        ))
+    let x = KForceCtx {
+        plan,
+        s,
+        mesh: KPointMesh::new(&s.cell, n, c)?,
     };
     match plan.route {
-        PeriodicRoute::Rhf => {
-            let c = krhf_config(plan, s);
-            let (r, kept) = solve_krhf_keep(&s.cell, &s.prep, s.aux.as_ref(), &mesh, &c)?;
-            if !r.converged {
-                return Err(not_converged(r.iterations, r.energy));
-            }
-            let g = kpoint_rhf_gradient(
-                &s.cell,
-                &s.prep,
-                &mesh,
-                &c.hcore,
-                &kept.hk,
-                kept.grad_jk(s.aux.as_ref(), &c.rsgdf)?,
-                &r,
-                plan.exxdiv,
-                &gcfg_for(&kept),
-            )?;
-            Ok((r.energy, g.grad))
-        }
-        PeriodicRoute::Uhf => {
-            let c = kuhf_config(plan, s);
-            let (r, kept) = solve_kuhf_keep(&s.cell, &s.prep, s.aux.as_ref(), &mesh, &c)?;
-            if !r.scf.converged {
-                return Err(not_converged(r.scf.iterations, r.scf.energy));
-            }
-            let g = kpoint_uhf_gradient(
-                &s.cell,
-                &s.prep,
-                &mesh,
-                &c.hcore,
-                &kept.hk,
-                kept.grad_jk(s.aux.as_ref(), &c.rsgdf)?,
-                &r.scf,
-                plan.exxdiv,
-                &gcfg_for(&kept),
-            )?;
-            Ok((r.scf.energy, g.grad))
-        }
-        PeriodicRoute::Rks => {
-            let c = krks_config(plan, s);
-            let functional = plan.functional.as_deref().unwrap_or("LDA");
-            // The force's own allowlist (LDA / GGA / global hybrid), independent
-            // of the energy gate in `check_kpoint_support`.
-            ferric_pbc::kxcgrad::check_force_functional(functional)?;
-            let (r, kept) = solve_krks_keep(&s.cell, &s.prep, s.aux.as_ref(), &mesh, &c)?;
-            // `solve_krks_keep` itself errors on a non-converged SCF, so no
-            // `converged` check is needed here (unlike the HF arms).
-            // The force rebuilds the energy's own grid, AO truncation and
-            // exxdiv (a hybrid's exact exchange feels the Madelung shift).
-            let rcfg = KRksGradConfig {
-                grad: gcfg_for(&kept),
-                grid: KXcGrid::Atom(c.grid.clone()),
-                ao_threshold: c.xc.ao_threshold,
-                exxdiv: Some(plan.exxdiv),
-                ..Default::default()
-            };
-            let g = kpoint_rks_gradient(
-                &s.cell,
-                &s.prep,
-                &mesh,
-                &c.krhf.hcore,
-                &kept.hk,
-                kept.grad_jk(s.aux.as_ref(), &c.krhf.rsgdf)?,
-                &r.scf,
-                functional,
-                &rcfg,
-            )?;
-            Ok((r.scf.energy, g.grad))
-        }
+        PeriodicRoute::Rhf => k_force_rhf(&x),
+        PeriodicRoute::Uhf => k_force_uhf(&x),
+        PeriodicRoute::Rks => k_force_rks(&x),
+        PeriodicRoute::Uks => k_force_uks(&x),
+        PeriodicRoute::Roks | PeriodicRoute::Rohf => k_force_ro(&x),
         other => Err(FerricError::General(format!(
             "internal: k-point {} has no analytic force",
             other.label()
         ))),
     }
+}
+
+// ───────────────────────────────────── k-point open-shell KS / ROHF ──
+
+fn kuks_config(plan: &PeriodicPlan, s: &Setup) -> KUksConfig {
+    let mut c = KUksConfig::new(
+        &s.cell,
+        plan.exxdiv,
+        plan.functional.as_deref().unwrap_or("LDA"),
+    );
+    (c.kuhf, c.grid) = (kuhf_config(plan, s), periodic_grid(plan));
+    c
+}
+
+fn krohf_config(plan: &PeriodicPlan, s: &Setup) -> KRohfConfig {
+    let mut c = KRohfConfig::for_cell(&s.cell, plan.exxdiv);
+    (c.scf, c.ewald_start) = (kscf_config(plan), plan.ewald_start);
+    c.hcore = khcore_config(plan, s);
+    (c.jk, c.dense, c.rsgdf) = (kjk_kind(s), kdense_config(plan), krsgdf_config(plan));
+    c.budget_bytes = budget_bytes(plan);
+    c
+}
+
+fn kroks_config(plan: &PeriodicPlan, s: &Setup) -> KRoksConfig {
+    let mut c = KRoksConfig::new(
+        &s.cell,
+        plan.exxdiv,
+        plan.functional.as_deref().unwrap_or("LDA"),
+    );
+    (c.rohf, c.grid) = (krohf_config(plan, s), periodic_grid(plan));
+    c
+}
+
+/// What the open-shell k-point printouts share.
+struct KOpenReport<'a> {
+    label: &'static str,
+    nocc: (usize, usize),
+    lindep: &'a ferric_pbc::LindepReport,
+    timings: &'a PbcTimings,
+    none_stage: Option<(f64, usize)>,
+    iterations: usize,
+    converged: bool,
+    e_nuc: f64,
+    madelung: f64,
+    energy: f64,
+    s2: f64,
+    gaps: &'a ferric_pbc::SpinGapReport,
+    /// `(E_xc, a_x, grid points, electrons on the grid)`; `None` for ROHF.
+    xc: Option<(f64, f64, usize, f64)>,
+}
+
+fn print_kopen(cfg: &Config, plan: &PeriodicPlan, s: &Setup, r: &KOpenReport<'_>) -> Outcome {
+    print_header(cfg, plan, s);
+    println!(
+        "  mult       = {} (nalpha={}, nbeta={} per cell)",
+        cfg.molecule.multiplicity, r.nocc.0, r.nocc.1
+    );
+    println!("  ewald_start= {}", ewald_start_name(plan));
+    print_aux_counts(r.timings);
+    print_lindep(r.lindep);
+    if let Some((e, it)) = r.none_stage {
+        println!("  none stage = {e:.10} Hartree/cell ({it} iterations, exxdiv = none)");
+    }
+    if let Some((_, _, n, ne)) = r.xc {
+        println!(
+            "  grid       = {n} points ({}x{}), {ne:.8} electrons",
+            plan.n_radial, plan.n_angular
+        );
+    }
+    println!("  iterations = {}", r.iterations);
+    println!("  converged  = {}", r.converged);
+    println!("  e_nuc      = {:.10} Hartree/cell (Ewald)", r.e_nuc);
+    print_madelung(plan, r.madelung);
+    if let Some((e_xc, a, _, _)) = r.xc {
+        println!("  E_xc       = {e_xc:.10} Hartree/cell (exact exchange a_x = {a})");
+    }
+    println!("  energy     = {:.10} Hartree/cell", r.energy);
+    println!(
+        "  <S^2>      = {:.6} (of the giant supercell determinant, not per cell)",
+        r.s2
+    );
+    println!(
+        "  gaps       = alpha {} / beta {} Hartree",
+        fmt_gap(r.gaps.gap_alpha),
+        fmt_gap(r.gaps.gap_beta)
+    );
+    report_timings(r.timings);
+    if !r.converged {
+        warn_unconverged(r.label, r.iterations);
+    }
+    Outcome {
+        energy: r.energy,
+        converged: r.converged,
+        energy_is: "total",
+    }
+}
+
+fn run_kuks(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
+    let mesh = k_mesh(plan, s);
+    let c = kuks_config(plan, s);
+    let r = solve_kuks(&s.cell, &s.prep, s.aux.as_ref(), &mesh, &c).unwrap_or_else(|e| die(e));
+    let u = &r.scf;
+    print_kopen(
+        cfg,
+        plan,
+        s,
+        &KOpenReport {
+            label: "k-point UKS",
+            nocc: r.nocc,
+            lindep: &u.lindep,
+            timings: &r.timings,
+            none_stage: r.none_stage.as_ref().map(|n| (n.energy, n.iterations)),
+            iterations: u.iterations,
+            converged: u.converged,
+            e_nuc: u.e_nuc,
+            madelung: r.madelung,
+            energy: u.energy,
+            s2: u.s2,
+            gaps: &r.gaps,
+            xc: Some((
+                r.e_xc,
+                r.exact_exchange_fraction,
+                r.n_grid_points,
+                r.electrons_on_grid,
+            )),
+        },
+    )
+}
+
+/// k-point ROKS (`plan.route == Roks`) and ROHF.
+fn run_kro(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
+    let mesh = k_mesh(plan, s);
+    let aux = s.aux.as_ref();
+    let (r, label) = if plan.route == PeriodicRoute::Roks {
+        let c = kroks_config(plan, s);
+        (
+            solve_kroks(&s.cell, &s.prep, aux, &mesh, &c),
+            "k-point ROKS",
+        )
+    } else {
+        let c = krohf_config(plan, s);
+        (
+            solve_krohf(&s.cell, &s.prep, aux, &mesh, &c),
+            "k-point ROHF",
+        )
+    };
+    let r = r.unwrap_or_else(|e| die(e));
+    let u = &r.scf;
+    let ks = plan.route == PeriodicRoute::Roks;
+    print_kopen(
+        cfg,
+        plan,
+        s,
+        &KOpenReport {
+            label,
+            nocc: r.nocc,
+            lindep: &u.lindep,
+            timings: &r.timings,
+            none_stage: r.none_stage.as_ref().map(|n| (n.energy, n.iterations)),
+            iterations: u.iterations,
+            converged: u.converged,
+            e_nuc: u.e_nuc,
+            madelung: r.madelung,
+            energy: u.energy,
+            s2: u.s2,
+            gaps: &r.gaps,
+            xc: ks.then_some((
+                r.e_xc,
+                r.exact_exchange_fraction,
+                r.n_grid_points,
+                r.electrons_on_grid,
+            )),
+        },
+    )
 }
 
 fn run_kuhf(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
@@ -1892,14 +2176,21 @@ fn run_periodic_optimize(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcom
         coord_system: CoordSystem::Cartesian,
     };
     if plan.kmesh.is_some()
-        && plan.route == PeriodicRoute::Rks
+        && matches!(
+            plan.route,
+            PeriodicRoute::Rks | PeriodicRoute::Uks | PeriodicRoute::Roks | PeriodicRoute::Rohf
+        )
         && s.cell.mol().atoms.iter().any(|a| a.n_core_ecp > 0)
     {
-        die(
-            "method.task = \"optimize\" with [cell] kmesh: k-point KS forces with ECPs are \
-             not validated (the basis carries an ECP); use rhf/uhf at a kmesh, or no ECP"
-                .to_string(),
-        );
+        die(format!(
+            "method.task = \"optimize\" with [cell] kmesh: k-point {} forces with ECPs are \
+             not validated (the basis carries an ECP); use rhf/uhf at a kmesh, or no ECP",
+            if plan.route == PeriodicRoute::Rohf {
+                "ROHF"
+            } else {
+                "KS"
+            }
+        ));
     }
     let base = s.cell.mol().clone();
     let x0: Vec<f64> = base.atoms.iter().flat_map(|a| [a.x, a.y, a.zpos]).collect();

@@ -4669,39 +4669,39 @@ impl PeriodicRoute {
     /// Single k-point capability check: `Ok(())` when a `[cell] kmesh` run
     /// of this route (with `functional` on a Kohn-Sham route) has a driver,
     /// else a typed refusal naming what is not yet supported. This is the
-    /// one place to widen when a k-point driver lands (open-shell KS, ROHF,
-    /// range-separated hybrids, meta-GGA, ...); the dispatcher in
+    /// one place to widen when a k-point driver lands (range-separated
+    /// hybrids, hybrid and open-shell meta-GGA, ...); the dispatcher in
     /// `periodic.rs` must gain the matching arm.
+    ///
+    /// Energy gate: LDA, GGA and global hybrids on every Kohn-Sham route, and
+    /// the pure meta-GGAs SCAN / r2SCAN on the closed-shell route only (the
+    /// spin-resolved XC has no tau term).
     pub fn check_kpoint_support(self, functional: Option<&str>) -> Result<(), String> {
         match self {
-            PeriodicRoute::Rhf | PeriodicRoute::Uhf | PeriodicRoute::Mp2 | PeriodicRoute::Drpa => {
-                Ok(())
-            }
-            PeriodicRoute::Rks => {
-                // LDA / GGA / global hybrids only: the library resolver names
-                // the unsupported feature (RSH, meta-GGA, VV10, composites).
+            PeriodicRoute::Rhf
+            | PeriodicRoute::Uhf
+            | PeriodicRoute::Rohf
+            | PeriodicRoute::Mp2
+            | PeriodicRoute::Drpa => Ok(()),
+            PeriodicRoute::Rks | PeriodicRoute::Uks | PeriodicRoute::Roks => {
                 let f = functional.unwrap_or("LDA");
-                ferric_pbc::dft::resolve_periodic_functional(f)
+                let mgga_ok =
+                    self == PeriodicRoute::Rks && ferric_pbc::kxcgrad::is_validated_mgga(f);
+                ferric_pbc::dft::resolve_periodic_functional_mgga(f, mgga_ok)
                     .map(|_| ())
                     .map_err(|e| {
                         format!(
-                            "[cell] kmesh with functional {f:?}: {e}. k-point RKS supports \
-                             LDA, GGA and global-hybrid functionals only"
+                            "[cell] kmesh with functional {f:?}: {e}. k-point {} supports \
+                             LDA, GGA and global-hybrid functionals{}",
+                            self.label(),
+                            if self == PeriodicRoute::Rks {
+                                " and the SCAN / r2SCAN meta-GGAs only"
+                            } else {
+                                " only (no meta-GGA)"
+                            }
                         )
                     })
             }
-            PeriodicRoute::Uks | PeriodicRoute::Roks => Err(format!(
-                "[cell] kmesh is not supported for the open-shell Kohn-Sham route {}: \
-                 k-point UKS/ROKS is not implemented yet (k-point KS-DFT is closed-shell \
-                 RKS only). Remove kmesh for a Gamma-point run.",
-                self.label()
-            )),
-            PeriodicRoute::Rohf => Err(
-                "[cell] kmesh is not supported for periodic ROHF: k-point ROHF is not \
-                 implemented yet (k-point drivers: rhf, uhf, closed-shell ksdft/rhf+[dft] \
-                 functional, rimp2, pdep-rpa). Remove kmesh for a Gamma-point run."
-                    .to_string(),
-            ),
         }
     }
 }
@@ -5369,21 +5369,34 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
             if route.correlated() {
                 return Err(format!(
                     "method.task = \"optimize\" with [cell] is implemented for the SCF routes \
-                     (rhf, uhf, rohf, ksdft at the Gamma point; rhf, uhf, ksdft (closed-shell \
-                     RKS) at a k-point mesh) only: periodic {} has no analytic gradient",
+                     (rhf, uhf, rohf, ksdft at the Gamma point; rhf, uhf, rohf, ksdft at a \
+                     k-point mesh) only: periodic {} has no analytic gradient",
                     route.label()
                 ));
             }
-            // The other k-point routes (UKS, ROKS, ROHF, meta-GGA, range-separated
-            // hybrids) are refused at the energy level (`check_kpoint_support`)
-            // or are correlated (refused above), so k-point RHF, UHF and
-            // closed-shell RKS are what reach this point. The force has its own
-            // functional allowlist, independent of the energy gate, so widening
-            // the k-point energy path cannot silently enable an optimize.
-            if kpoints && route == PeriodicRoute::Rks {
+            // Range-separated hybrids, hybrid / open-shell meta-GGA are refused at
+            // the energy level (`check_kpoint_support`); correlated routes are
+            // refused above. The force has its own functional allowlist,
+            // independent of the energy gate, so widening the k-point energy path
+            // cannot silently enable an optimize: the closed-shell route takes
+            // `check_force_functional` (LDA / GGA / global hybrid / SCAN, r2SCAN),
+            // the open-shell ones `check_open_shell_force_functional`.
+            if kpoints && route.kohn_sham() {
                 let f = functional.as_deref().unwrap_or("LDA");
-                ferric_pbc::kxcgrad::check_force_functional(f)
-                    .map_err(|e| format!("method.task = \"optimize\" with [cell] kmesh: {e}"))?;
+                let allow = if route == PeriodicRoute::Rks {
+                    ferric_pbc::kxcgrad::check_force_functional(f)
+                } else {
+                    ferric_pbc::kxcgrad::check_open_shell_force_functional(f)
+                };
+                allow.map_err(|e| format!("method.task = \"optimize\" with [cell] kmesh: {e}"))?;
+            }
+            // The restricted-open-shell k-point forces are anchored on the dense-AFT J/K.
+            if kpoints && rsgdf && matches!(route, PeriodicRoute::Roks | PeriodicRoute::Rohf) {
+                return Err(format!(
+                    "method.task = \"optimize\" with [cell] kmesh: the k-point {} force is \
+                     anchored on the dense-AFT J/K only; use jk = \"dense\"",
+                    route.label()
+                ));
             }
             if let Some(s) = cfg.optimize.coordinates.as_deref() {
                 if parse_coord_system(s)? != ferric_scf::optimize::CoordSystem::Cartesian {
