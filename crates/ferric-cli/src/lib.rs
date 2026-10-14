@@ -6359,7 +6359,7 @@ mod energy_conv_advisory_tests {
     use super::{energy_conv_advisory, load_config, Config, Molecule, RhfConfig};
 
     /// The advisory reads `FERRIC_SCF_INCREMENTAL` (the closed-shell incremental
-    /// Fock switch); pin it to its default for the duration of a test.
+    /// Fock switch); pin it for the duration of a test.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     const ALKANE20: &str = concat!(
@@ -6383,12 +6383,34 @@ mod energy_conv_advisory_tests {
         load_config(path.to_str().unwrap()).expect("config parses")
     }
 
+    /// With `FERRIC_SCF_INCREMENTAL` unset (the default gate).
     fn advise(kind: &str, scf: &str, rhf: RhfConfig) -> Option<String> {
+        advise_with(kind, scf, rhf, None)
+    }
+
+    /// With the incremental Fock forced on: by default a tight `energy_conv`
+    /// (below `1e4 * integral_thresh`, issue #415) turns it off, which removes
+    /// the screening noise the advisory is about.
+    fn advise_incremental(kind: &str, scf: &str, rhf: RhfConfig) -> Option<String> {
+        advise_with(kind, scf, rhf, Some("1"))
+    }
+
+    fn advise_with(
+        kind: &str,
+        scf: &str,
+        rhf: RhfConfig,
+        incremental: Option<&str>,
+    ) -> Option<String> {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        std::env::remove_var("FERRIC_SCF_INCREMENTAL");
+        match incremental {
+            Some(v) => std::env::set_var("FERRIC_SCF_INCREMENTAL", v),
+            None => std::env::remove_var("FERRIC_SCF_INCREMENTAL"),
+        }
         let cfg = load(kind, scf);
         let mol = Molecule::load_xyz(ALKANE20).unwrap();
-        energy_conv_advisory(&cfg, kind, &mol, 142, &rhf)
+        let out = energy_conv_advisory(&cfg, kind, &mol, 142, &rhf);
+        std::env::remove_var("FERRIC_SCF_INCREMENTAL");
+        out
     }
 
     fn rhf(ec: f64, thresh: f64) -> RhfConfig {
@@ -6402,9 +6424,12 @@ mod energy_conv_advisory_tests {
     /// Reporter class: a written 1e-10 on alkane C20/STO-3G (142 functions, exact J/K).
     #[test]
     fn a_written_tight_energy_conv_warns() {
-        let t = advise("rhf", "energy_conv = 1e-10", rhf(1e-10, 1e-12)).expect("fires");
+        let t = advise_incremental("rhf", "energy_conv = 1e-10", rhf(1e-10, 1e-12)).expect("fires");
         assert!(t.contains("energy_conv 1.0e-10"), "{t}");
         assert!(t.contains("142 basis functions"), "{t}");
+        // With the default gate 1e-10 turns the incremental Fock off, leaving only
+        // the rounding floor (~1e-12 Ha): reachable, so no advice.
+        assert!(advise("rhf", "energy_conv = 1e-10", rhf(1e-10, 1e-12)).is_none());
     }
 
     /// The same effective tolerance, NOT written: no advice (the CLI default is
@@ -6413,10 +6438,13 @@ mod energy_conv_advisory_tests {
     #[test]
     fn the_default_energy_conv_never_warns_even_with_a_loosened_integral_thresh() {
         let loose = rhf(1e-3, 1e-3); // floor ~ 0.022 * 1e-3 * 142^2 ~ 0.4, far above 1e-3
-        assert!(advise("rhf", "integral_thresh = 1e-3", loose.clone()).is_none());
+        assert!(advise_incremental("rhf", "integral_thresh = 1e-3", loose.clone()).is_none());
         // ... and the same configuration with energy_conv WRITTEN does warn,
         // so the gate (not the model) is what stayed quiet above.
-        assert!(advise("rhf", "integral_thresh = 1e-3\nenergy_conv = 1e-3", loose).is_some());
+        assert!(
+            advise_incremental("rhf", "integral_thresh = 1e-3\nenergy_conv = 1e-3", loose)
+                .is_some()
+        );
     }
 
     #[test]
