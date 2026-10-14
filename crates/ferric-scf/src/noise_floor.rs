@@ -150,7 +150,7 @@ pub fn aux_is_fitted(aux: Option<&str>) -> bool {
 /// Whether the closed-shell solver will take the incremental direct J/K path
 /// for this configuration, mirroring `solve_rhf`'s own condition (no density
 /// fitting of either matrix, default K builder) and `incremental_enabled` (the
-/// solver's `FERRIC_SCF_INCREMENTAL` switch, [`crate::rhf::closed_shell_incremental_enabled`]).
+/// solver's `FERRIC_SCF_INCREMENTAL` switch, [`crate::direct_jk::closed_shell_incremental_enabled`]).
 /// Always false for the open-shell solvers.
 pub fn incremental_direct_expected(
     config: &crate::rhf::RhfConfig,
@@ -204,7 +204,11 @@ pub fn energy_conv_warning(
         nbf,
         config,
         family,
-        crate::rhf::closed_shell_incremental_enabled(),
+        crate::direct_jk::closed_shell_incremental_enabled(
+            config.energy_conv,
+            config.density_conv,
+            config.integral_thresh,
+        ),
     )
 }
 

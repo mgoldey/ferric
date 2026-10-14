@@ -6,8 +6,9 @@
 //! `j`/`k` buffers (`*j += &total_j`) — they do not zero them. The incremental
 //! Fock path exploits that: `DirectJK::build_incremental` passes `ΔD` into a
 //! buffer that already holds the previous iteration's `J(D_last)`, and linearity
-//! lands it on `J(D_new)`. `solve_rhf`/`solve_uhf` take that path by default
-//! (`FERRIC_SCF_INCREMENTAL` unset) on every iteration except a periodic full
+//! lands it on `J(D_new)`. `solve_rhf` takes that path by default (unless the
+//! convergence thresholds are tighter than its noise, #415) and `solve_uhf` when
+//! `FERRIC_SCF_UHF_INCREMENTAL=1`, on every iteration except a periodic full
 //! rebuild.
 //!
 //! The MPI reduction was applied to the OUTPUT buffer, after the accumulate:
@@ -35,9 +36,9 @@
 //! elsewhere in this repo has been measured converging to a self-consistent but
 //! badly wrong energy, which a `converged` assert passes. It also covered only
 //! closed-shell `solve_rhf`, and only implicitly: nothing in it named the
-//! incremental path, so a future change defaulting `FERRIC_SCF_INCREMENTAL=0`
-//! would have silently removed all coverage of this bug while the file kept
-//! passing.
+//! incremental path, so a change to its default (#415 made it depend on the
+//! convergence thresholds) could silently remove all coverage of this bug
+//! while the file kept passing.
 //!
 //! This file asserts ENERGIES against a serial anchor, on BOTH spin paths, and
 //! pins the incremental and from-scratch routes SEPARATELY and by name.
@@ -196,7 +197,7 @@ fn run_rhf(ctx: &ParallelContext, incremental: bool) -> f64 {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     with_env(
         RHF_INCREMENTAL_KEY,
-        if incremental { None } else { Some("0") },
+        Some(if incremental { "1" } else { "0" }),
         || {
             solve_rhf(ctx, &mol, &prep, op, &bounds, &direct_config())
                 .unwrap()
@@ -236,8 +237,10 @@ fn run_uhf(ctx: &ParallelContext, incremental: bool) -> f64 {
     })
 }
 
-/// Closed-shell incremental-Fock escape hatch. DEFAULT ON; `0` forces the
-/// historical full-rebuild-every-iteration behaviour.
+/// Closed-shell incremental-Fock switch. `1` forces it on, `0` forces the full
+/// rebuild every iteration; unset, it is on unless the convergence thresholds
+/// are tighter than its noise (#415). Both routes below set it explicitly, so
+/// neither depends on that default.
 const RHF_INCREMENTAL_KEY: &str = "FERRIC_SCF_INCREMENTAL";
 
 /// Open-shell incremental-Fock opt-in. DEFAULT **OFF** — the polarity is the

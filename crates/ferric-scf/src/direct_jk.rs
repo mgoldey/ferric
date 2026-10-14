@@ -6,10 +6,84 @@ use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ndarray::Array2;
 
+/// `energy_conv` below this multiple of `integral_thresh` turns the
+/// closed-shell incremental Fock build off by default (#415). The measured dE
+/// noise of the incremental path is up to ~250x `integral_thresh` (table on
+/// [`closed_shell_incremental_enabled`]), so this leaves a ~40x margin.
+pub const INCREMENTAL_ENERGY_CONV_FACTOR: f64 = 1e4;
+
+/// `density_conv` below this multiple of `integral_thresh` turns the
+/// closed-shell incremental Fock build off by default (#415). The lowest
+/// dp_rms the incremental path reached was 0.07-12x `integral_thresh`
+/// (benzene/cc-pVDZ: 1.2e-11 at 1e-12), so this leaves a ~80x margin.
+pub const INCREMENTAL_DENSITY_CONV_FACTOR: f64 = 1e3;
+
+/// Is the closed-shell INCREMENTAL (ΔD) Fock build in `solve_rhf` enabled?
+///
+/// `FERRIC_SCF_INCREMENTAL=1` (or `on`/`true`) forces it on, `0` (or
+/// `off`/`false`) forces the full rebuild every iteration. Unset (or any
+/// other value), it is on unless the requested convergence is tighter than its
+/// noise allows: `energy_conv < INCREMENTAL_ENERGY_CONV_FACTOR *
+/// integral_thresh` or `density_conv < INCREMENTAL_DENSITY_CONV_FACTOR *
+/// integral_thresh`. The defaults (1e-3, 1e-6, 1e-12) keep it on.
+///
+/// # Why, with the measurements (#415)
+///
+/// Each incremental iteration adds `J(ΔD)`/`K(ΔD)` built under the
+/// Häser-Ahlrichs density screen, so the quartets the screen drops (at
+/// `integral_thresh` scaled by `max|ΔD|`) are missing from the running J/K
+/// until the next periodic full rebuild. That shows up as noise in the
+/// iteration-to-iteration `dE` and density change, roughly linear in
+/// `integral_thresh`, and makes a very tight `energy_conv` reachable only by
+/// chance (#410):
+///
+/// ```text
+/// (scripts/incr_fock_ab.py noise: median |dE| once dp_rms < 1e-9)
+///                     thresh   incremental   full rebuild
+///   water/cc-pVDZ      1e-12     3.3e-12       3.6e-14
+///   benzene/cc-pVDZ    1e-12     8.0e-11       1.7e-13
+///   HBr/def2-SVP       1e-12     1.4e-11       9.1e-13
+///   SiH4/cc-pVDZ       1e-12     2.6e-11       2.3e-13
+///   C10H22/STO-3G      1e-10     1.9e-8        2.3e-13
+///   C10H22/STO-3G      1e-12     2.5e-10       2.3e-13
+///   C10H22/STO-3G      1e-14     4.5e-13       2.3e-13
+/// ```
+///
+/// It is not turned off outright because it does pay on extended systems,
+/// where the ΔD screen prunes. Default settings, one SCF per fresh process
+/// (scripts/incr_fock_ab.py cost; wall times from a shared 4-core box):
+///
+/// ```text
+///                     nbf  iters   quartets incr/full   wall full/incr
+///   water/cc-pVDZ      24  10/10        1.000               ~1.0
+///   benzene/cc-pVDZ   114   9/9         0.990               1.01
+///   HBr/def2-SVP       37  11/11        0.999               ~1.0
+///   C10H22/STO-3G      72   8/8         0.783               1.11
+///   C20H42/STO-3G     142   8/8         0.744               1.23
+///   C32H66/STO-3G     226   8/8         0.733               1.21
+///   C48H98/STO-3G     338   8/8         0.727               1.18
+///   C10H22/6-31G      134   9/9         0.857               1.09
+/// ```
+pub fn closed_shell_incremental_enabled(
+    energy_conv: f64,
+    density_conv: f64,
+    integral_thresh: f64,
+) -> bool {
+    match std::env::var("FERRIC_SCF_INCREMENTAL").ok().as_deref() {
+        Some("1") | Some("on") | Some("true") | Some("ON") | Some("TRUE") => true,
+        Some("0") | Some("off") | Some("false") | Some("OFF") | Some("FALSE") => false,
+        _ => {
+            energy_conv >= INCREMENTAL_ENERGY_CONV_FACTOR * integral_thresh
+                && density_conv >= INCREMENTAL_DENSITY_CONV_FACTOR * integral_thresh
+        }
+    }
+}
+
 /// Is the open-shell INCREMENTAL (ΔD) Fock build enabled?
 ///
-/// **Default OFF**, unlike the closed-shell `solve_rhf` path (which defaults
-/// ON via `FERRIC_SCF_INCREMENTAL`). Opt in with `FERRIC_SCF_UHF_INCREMENTAL=1`.
+/// **Default OFF**, unlike the closed-shell `solve_rhf` path (see
+/// [`closed_shell_incremental_enabled`]). Opt in with
+/// `FERRIC_SCF_UHF_INCREMENTAL=1`.
 ///
 /// # Why it is off, with the measurement
 ///
@@ -38,12 +112,11 @@ use ndarray::Array2;
 /// contention, not signal. A 4.6% work reduction cannot produce a 74% wall
 /// reduction; the large figures were artifacts and are not claimed.
 ///
-/// The same measurement applies to the long-shipped CLOSED-shell incremental
-/// path, which was found to give 1.000x on water/cc-pVDZ and methane/cc-pVDZ
-/// and 1.016x on alkane_4/cc-pVDZ — so this is a property of the screen's
-/// threshold scale, NOT of the open-shell port. That closed-shell default is
-/// left exactly as it was (changing it is out of scope for this work), but it
-/// is worth an independent look.
+/// The CLOSED-shell incremental path was found to give 1.000x on
+/// water/cc-pVDZ and methane/cc-pVDZ and 1.016x on alkane_4/cc-pVDZ, but #415
+/// measured 0.73-0.86x quartets on alkane chains at STO-3G/6-31G (table on
+/// [`closed_shell_incremental_enabled`]), so the closed-shell default stays
+/// on there. These open-shell figures predate that and were not re-measured.
 ///
 /// Keeping the code, tested and switchable, rather than deleting it: the
 /// mechanism is sound and becomes profitable if `integral_thresh` is ever
