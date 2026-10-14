@@ -73,7 +73,7 @@ Read by every kind, because every kind runs an SCF first.
 | Key | Type | Default | Allowed values | Notes |
 |---|---|---|---|---|
 | `max_iter` | integer | `200` | | Iteration cap; equals the library (`RhfConfig`) and Python default. |
-| `energy_conv` | float | `1e-3` | | **Sanity bound, not a target.** Convergence requires `ΔP_rms < density_conv`, `ΔP_max < 10·density_conv` **and** `ΔE < energy_conv`. `ΔE` floors on the RI noise, so tightening this can make a density-fitted run hit `max_iter`. |
+| `energy_conv` | float | `1e-3` | | **Sanity bound, not a target.** Convergence requires `ΔP_rms < density_conv`, `ΔP_max < 10·density_conv` **and** `ΔE < energy_conv`. `ΔE` has a noise floor that grows with system size, so a tight value is met only by chance and costs iterations; ferric prints a `warning: [scf] energy_conv ...` line when the value is below 0.3 times the estimated floor (see [sharp bits](../using/sharp-bits.md)). |
 | `density_conv` | float | `1e-6` | | The real convergence signal. |
 | `diis_size` | integer | `8` | | |
 | `diis` | string | `"pulay"` | `pulay` `adiis` `ediis` (case-insensitive) | An unknown value is an error when the file is loaded. |

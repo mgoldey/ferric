@@ -24,7 +24,8 @@ multiplicity)`), not on the solver call.
 **Defaults.** Exact four-index J and K (no density fitting) unless
 `[scf] df_j_aux` / `df_k_aux` are set. Convergence gates on the density:
 `density_conv = 1e-6` by default; `energy_conv` (default 1e-3) is a sanity
-bound, not the convergence target.
+bound, not the convergence target; a value below the estimated noise floor of the
+energy change draws a warning (see [sharp bits](../using/sharp-bits.md)).
 
 **Accuracy.** Proven (`rhf`, `uhf`, `rohf`).
 

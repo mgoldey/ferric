@@ -460,7 +460,9 @@ class RhfResult:
     @property
     def convergence_summary(self) -> str:
         """One-line exit summary (reason, iterations, residuals vs thresholds); the
-        text of the RuntimeWarning run_rhf emits when the SCF does not converge."""
+        text of the RuntimeWarning run_rhf emits when the SCF does not converge. When the
+        dE criterion is unmet and energy_conv is below the estimated noise floor of dE for
+        the system, it says so."""
         ...
 
     def density(self) -> NDArray[np.float64]:
@@ -2397,7 +2399,9 @@ def run_rhf(
     SCF controls (defaults): max_iter 200 (the iteration cap, the Rust RhfConfig default; reaching it returns
     converged=False and emits a RuntimeWarning naming the unmet criteria),
     density_conv 1e-6 (RMS density change; the max element is gated at 10x this),
-    energy_conv 1e-3 (|dE| per iteration, a loose sanity bound), diis_size 8.
+    energy_conv 1e-3 (|dE| per iteration, a loose sanity bound; a user-set value
+    below the estimated noise floor of dE for the system emits one RuntimeWarning
+    before the SCF starts and changes nothing else), diis_size 8.
     The result's exit_reason / final_dp_rms / final_dp_max / final_de /
     unmet_criteria / convergence_summary say where the SCF stopped.
 
@@ -2448,7 +2452,7 @@ def run_uhf(
     cosx_final_grid: tuple[int, int] | tuple[int, int, str] | None = None,
     cosx_overlap_fit: bool | None = None,
 ) -> UhfResult:
-    """Unrestricted Hartree-Fock (open-shell). Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today; non-convergence raises.
+    """Unrestricted Hartree-Fock (open-shell). Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today; non-convergence raises. A user-set energy_conv below the estimated (rounding-level) noise floor of dE emits one RuntimeWarning before the SCF starts.
 
 
     cosx_grid / cosx_final_pass / cosx_final_grid / cosx_overlap_fit: COSX
@@ -2481,7 +2485,7 @@ def run_rohf(
     external_field: tuple[float, float, float] | None = None,
     memory_budget_gb: float | None = None,
 ) -> UhfResult:
-    """Restricted Open-Shell Hartree-Fock. Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today."""
+    """Restricted Open-Shell Hartree-Fock. Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today. A user-set energy_conv below the estimated (rounding-level) noise floor of dE emits one RuntimeWarning before the SCF starts."""
     ...
 
 def run_cdft(

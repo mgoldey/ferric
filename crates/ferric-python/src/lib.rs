@@ -745,9 +745,12 @@ impl PyRhfResult {
 ///   density_conv    RMS density change gate, default 1e-6. The max-element
 ///                   change is gated at 10x this. THE primary criterion.
 ///   energy_conv     |dE| per iteration, default 1e-3: a loose "not still
-///                   descending" sanity bound, not a target. Values far below
-///                   what RI/field noise allows (1e-10) are legal but make the
-///                   run depend on the energy ever dipping that low.
+///                   descending" sanity bound, not a target. A value below
+///                   the estimated noise floor of dE for the system (about
+///                   0.02*integral_thresh*nbf^2 Ha for closed-shell exact J/K,
+///                   a few eps*|E| otherwise) is legal but is met only by chance;
+///                   run_rhf / run_uhf / run_rohf then emit one RuntimeWarning
+///                   before the SCF starts (never raised, nothing is clamped).
 ///   diis_size       DIIS subspace size, default 8.
 /// After an RHF run, `exit_reason`, `final_dp_rms`, `final_dp_max`, `final_de`,
 /// `final_diis_err_max`, `conv_thresholds`, `unmet_criteria` and
@@ -2740,6 +2743,7 @@ impl PyUhfResult {
 ///                     from Python.
 ///
 /// Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today; non-convergence raises.
+/// A user-set energy_conv below the estimated (rounding-level) noise floor of dE emits one RuntimeWarning before the SCF starts.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set,
@@ -2860,6 +2864,7 @@ fn run_uhf(
 /// set as `run_rhf`/`run_uhf`.
 ///
 /// Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today.
+/// A user-set energy_conv below the estimated (rounding-level) noise floor of dE emits one RuntimeWarning before the SCF starts.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set,

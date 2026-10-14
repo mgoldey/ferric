@@ -66,12 +66,28 @@ a different starting guess, is a cheap check. See
 ## `energy_conv` is a sanity bound, not a target
 
 **What happens:** setting `[scf] energy_conv` very tight (say `1e-10`) can make
-a KS-DFT calculation never converge.
+an SCF run tens of iterations past a settled density, or never converge.
 
 **Why:** convergence is driven by the density criterion (`density_conv`). The
-energy change between iterations has a noise floor set by the integration grid
-and density fitting, and a tight energy bound can sit below it. The CLI default
-is deliberately loose (`1e-3`).
+energy change between iterations has a noise floor, and a tight energy bound can
+sit below it, so it is met only by chance. For a closed-shell run with exact J
+and K the floor is set by the incremental Fock update and its integral screening
+(`integral_thresh`): about `0.02 * integral_thresh * nbf^2` Ha, e.g. 4e-12 for
+water/cc-pVDZ, 1e-10 for benzene/cc-pVDZ and 2e-9 for a 239-function, 71-atom
+molecule. With density-fitted J, in the open-shell solvers, or with
+`FERRIC_SCF_INCREMENTAL=0` it is only rounding, about `0.5 * eps * |E| *
+sqrt(nbf)` (3e-13 for benzene/cc-pVDZ). Kohn-Sham runs additionally carry grid
+noise that is not estimated. The CLI default is deliberately loose (`1e-3`).
+
+**What ferric tells you:** when a user-set `energy_conv` is below 0.3 times the
+estimated floor, the CLI prints `warning: [scf] energy_conv ... is below the
+estimated noise floor of dE ...` to stderr and the Python `run_rhf`, `run_uhf`
+and `run_rohf` emit a `RuntimeWarning`, once, before the SCF starts. Nothing else
+changes: the threshold is not clamped and the SCF stops exactly where it
+otherwise would. A run that ends without converging on the `dE` criterion repeats
+the statement in `RhfResult.convergence_summary`. The estimate is good to a
+factor of a few, not a bound; it is not made for functionals or the LinK / COSX
+exchange builders.
 
 **Do:** tighten `density_conv`, not `energy_conv`.
 
