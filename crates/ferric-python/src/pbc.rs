@@ -2719,9 +2719,11 @@ fn check_kpoint_ks_derivs(
         return Ok(());
     }
     if s.cell.mol().atoms.iter().any(|a| a.n_core_ecp > 0) {
+        let what = if functional.is_some() { "KS" } else { "ROHF" };
         return Err(val_err(format!(
-            "{fname}: k-point KS forces and stress with ECPs are not validated (with_gradient / \
-             with_stress on a cell whose basis carries an ECP; the energy without them runs)"
+            "{fname}: k-point {what} forces and stress with ECPs are not validated \
+             (with_gradient / with_stress on a cell whose basis carries an ECP; the energy \
+             without them runs)"
         )));
     }
     if s.aux.is_some() && restricted_open {
