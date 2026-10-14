@@ -92,7 +92,7 @@ def noise():
         (n_on, k_on), (n_off, k_off) = noise_of(err_on), noise_of(err_off)
         print(
             f"{mol[:-4] + '/' + basis:24} {thresh:>6} {n_on:>9.1e} {n_off:>9.1e} "
-            f"{n_on / n_off:>8.0f}   (tail iters {k_on}/{k_off})"
+            f"{(n_on / n_off if n_off else float('nan')):>8.0f}   (tail iters {k_on}/{k_off})"
         )
         sys.stdout.flush()
 
