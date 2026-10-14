@@ -836,6 +836,18 @@ pub(crate) fn scf_converged(
     }
 }
 
+/// Whether the closed-shell direct path may update J/K incrementally from the
+/// density change (default yes). `FERRIC_SCF_INCREMENTAL=0` (or `off` /
+/// `false`) forces the historical full rebuild every iteration. One reader for
+/// the solver and for the `energy_conv` noise-floor advisory
+/// ([`crate::noise_floor`]), so they cannot disagree.
+pub fn closed_shell_incremental_enabled() -> bool {
+    !matches!(
+        std::env::var("FERRIC_SCF_INCREMENTAL").ok().as_deref(),
+        Some("0") | Some("off") | Some("false") | Some("OFF") | Some("FALSE")
+    )
+}
+
 /// Spellings of `df_j_aux` / `df_k_aux` that mean "do not density-fit"
 /// (conventional four-centre J/K). Compared case-insensitively after
 /// trimming. `""` is the canonical form the SCF layer reads (see
@@ -1952,11 +1964,7 @@ fn solve_rhf_impl(
     // `false`) forces the historical full-rebuild-every-iteration behavior on the
     // DirectJK path, so an A/B correctness/perf comparison can be run without a
     // rebuild. Any other value (or unset) keeps the incremental default.
-    let incremental_enabled = !matches!(
-        std::env::var("FERRIC_SCF_INCREMENTAL").ok().as_deref(),
-        Some("0") | Some("off") | Some("false") | Some("OFF") | Some("FALSE")
-    );
-    let incremental_direct = direct_jk.is_some() && incremental_enabled;
+    let incremental_direct = direct_jk.is_some() && closed_shell_incremental_enabled();
     // `d_last_fock` = the density that produced the CURRENT contents of
     // `j_buf`/`k_buf`. `None` until the first (full) build; reset to force a full
     // rebuild on the next iteration.
@@ -2238,6 +2246,12 @@ fn solve_rhf_impl(
             err_max,
             energy_conv: config.energy_conv,
             density_conv: config.density_conv,
+            de_noise_floor: crate::noise_floor::floor_for_config(
+                config,
+                energy.abs(),
+                prep.nbasis(),
+                incremental_direct,
+            ),
         });
 
         if scf_trace() {

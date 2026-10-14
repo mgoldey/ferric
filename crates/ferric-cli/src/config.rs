@@ -2254,6 +2254,11 @@ pub struct ScfCfg {
     pub max_iter: usize,
     #[serde(default = "default_energy_conv")]
     pub energy_conv: f64,
+    /// `[scf] energy_conv` was written in the TOML (set by [`load_config`]; false
+    /// for a default and for hand-built configs). Gates the noise-floor advisory,
+    /// which is about a USER-chosen tolerance.
+    #[serde(skip)]
+    pub energy_conv_set: bool,
     #[serde(default = "default_density_conv")]
     pub density_conv: f64,
     #[serde(default = "default_diis_size")]
@@ -2559,9 +2564,11 @@ impl Default for ScfCfg {
             max_iter: default_max_iter(),
             // Match the library convergence gate (rhf::scf_converged): density_conv
             // is the tight (reachable) ΔP signal, energy_conv a loose
-            // "not-descending" bound. A tight energy_conv here would hang a large
-            // DF molecule at MaxIter, since dE floors on the RI noise level.
+            // "not-descending" bound. A tight energy_conv is met only by chance once
+            // dE reaches its noise floor (measured: ~1e-9 Ha at 240 functions for
+            // exact J/K, ~1e-12 Ha with RI-JK at 264 functions), so it costs iterations.
             energy_conv: 1e-3,
+            energy_conv_set: false,
             density_conv: 1e-6,
             diis_size: 8,
             diis: None,
@@ -2859,7 +2866,8 @@ fn default_max_iter() -> usize {
 }
 // Match the library convergence gate (rhf::scf_converged): density_conv is the
 // tight (reachable) ΔP signal; energy_conv is a LOOSE "not-descending" bound. A
-// tight energy_conv hangs a large DF molecule (dE floors on the RI noise level).
+// tight energy_conv is met only by chance once dE reaches its noise floor
+// (see `ferric_scf::noise_floor`), so it costs iterations.
 fn default_energy_conv() -> f64 {
     1e-3
 }
@@ -4375,10 +4383,19 @@ pub fn load_config(path: &str) -> Result<Config, String> {
     Ok(cfg)
 }
 
+/// Whether the raw TOML text writes `[scf] energy_conv` (an unparsable text
+/// counts as not written; the typed parse has already accepted it).
+fn scf_energy_conv_written(text: &str) -> bool {
+    toml::from_str::<toml::Value>(text)
+        .ok()
+        .is_some_and(|raw| raw_keys(&raw, "scf").contains(&"energy_conv"))
+}
+
 /// The post-parse checks of [`load_config`], and the `[cell]` plan (which
 /// needs the raw TOML to see which keys were actually written).
 fn validate_loaded(cfg: &mut Config, text: &str) -> Result<(), String> {
     cfg.validate_loaded_values()?;
+    cfg.scf.energy_conv_set = scf_energy_conv_written(text);
     if cfg.cell.is_some() {
         let raw: toml::Value = toml::from_str(text).map_err(|e| e.to_string())?;
         cfg.periodic = periodic_plan(cfg, &raw)?;

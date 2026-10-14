@@ -33,6 +33,7 @@ use ferric_mp2::oo_rimp2::{oo_ri_mp2, OoRiMp2Config};
 use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
 use ferric_mp2::scs::{scs_mp2, scs_mp2_2terfc, ScsMp2Config, ScsMp2TerfcConfig};
 use ferric_scf::ks_gradient::ks_gradient_closed;
+use ferric_scf::noise_floor::SolverFamily;
 use ferric_scf::optimize::{optimize_geometry, optimize_geometry_uhf, OptimizeConfig};
 use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
@@ -568,6 +569,42 @@ fn default_scf_max_iter() -> usize {
     RhfConfig::default().max_iter
 }
 
+/// Emit a `RuntimeWarning`. If warnings are turned into errors (`-W error`)
+/// the warn call returns Err; that is IGNORED on purpose so a diagnostic can
+/// never change control flow (the result is never lost, the SCF still runs).
+fn emit_runtime_warning(py: Python<'_>, msg: String) {
+    let msg = std::ffi::CString::new(msg.replace('\0', " ")).expect("NUL removed");
+    let _ = PyErr::warn(
+        py,
+        &py.get_type::<pyo3::exceptions::PyRuntimeWarning>(),
+        &msg,
+        1,
+    );
+}
+
+/// Warn, once and before the SCF starts, when a USER-SUPPLIED `energy_conv` is
+/// below the estimated noise floor of `dE` for this system (issue #410). Purely
+/// advisory: the threshold is not clamped and the SCF is unchanged. The default
+/// (`energy_conv=None`) never warns.
+fn warn_energy_conv_noise_floor(
+    py: Python<'_>,
+    fname: &str,
+    family: ferric_scf::noise_floor::SolverFamily,
+    user_set: bool,
+    mol: &ferric_core::mol::Molecule,
+    prep: &PreparedBasis,
+    config: &RhfConfig,
+) {
+    if !user_set {
+        return;
+    }
+    if let Some(text) =
+        ferric_scf::noise_floor::energy_conv_warning(mol, prep.nbasis(), config, family)
+    {
+        emit_runtime_warning(py, format!("{fname}: {text}"));
+    }
+}
+
 /// Human-readable SCF exit line: exit reason, iterations, final residuals vs
 /// thresholds and the unmet gate criteria. Shared by `RhfResult.convergence_summary`
 /// and the non-convergence `RuntimeWarning` of `run_rhf`.
@@ -708,9 +745,12 @@ impl PyRhfResult {
 ///   density_conv    RMS density change gate, default 1e-6. The max-element
 ///                   change is gated at 10x this. THE primary criterion.
 ///   energy_conv     |dE| per iteration, default 1e-3: a loose "not still
-///                   descending" sanity bound, not a target. Values far below
-///                   what RI/field noise allows (1e-10) are legal but make the
-///                   run depend on the energy ever dipping that low.
+///                   descending" sanity bound, not a target. A value below
+///                   the estimated noise floor of dE for the system (about
+///                   0.0125*integral_thresh*nbf^2.25 Ha for closed-shell exact J/K,
+///                   a few eps*|E| otherwise) is legal but is met only by chance;
+///                   run_rhf / run_uhf / run_rohf then emit one RuntimeWarning
+///                   before the SCF starts (never raised, nothing is clamped).
 ///   diis_size       DIIS subspace size, default 8.
 /// After an RHF run, `exit_reason`, `final_dp_rms`, `final_dp_max`, `final_de`,
 /// `final_diis_err_max`, `conv_thresholds`, `unmet_criteria` and
@@ -873,6 +913,15 @@ fn run_rhf(
     // until the first call returns, so independent jobs submitted from a
     // ThreadPoolExecutor serialize at the FFI boundary no matter how many
     // cores rayon could use. The compute itself never touches the interpreter.
+    warn_energy_conv_noise_floor(
+        py,
+        "run_rhf",
+        SolverFamily::ClosedShell,
+        energy_conv.is_some(),
+        &emol,
+        &prep,
+        &config,
+    );
     let r = py
         .allow_threads(|| solve_rhf(&ctx, &emol, &prep, op, &bounds, &config))
         .map_err(make_err)?;
@@ -889,13 +938,7 @@ fn run_rhf(
             config.max_iter,
             default_scf_max_iter()
         );
-        let msg = std::ffi::CString::new(msg.replace('\0', " ")).expect("NUL removed");
-        let _ = PyErr::warn(
-            py,
-            &py.get_type::<pyo3::exceptions::PyRuntimeWarning>(),
-            &msg,
-            1,
-        );
+        emit_runtime_warning(py, msg);
     }
     Ok(PyRhfResult {
         energy: r.energy,
@@ -2700,6 +2743,7 @@ impl PyUhfResult {
 ///                     from Python.
 ///
 /// Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today; non-convergence raises.
+/// A user-set energy_conv below the estimated (rounding-level) noise floor of dE emits one RuntimeWarning before the SCF starts.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set,
@@ -2780,6 +2824,15 @@ fn run_uhf(
     // Release the GIL for the duration of the SCF. Every argument below is an
     // owned Rust value (`emol` is a clone; `prep`/`bounds`/`config` are built
     // above), so nothing Python-borrowed crosses the closure boundary.
+    warn_energy_conv_noise_floor(
+        py,
+        "run_uhf",
+        SolverFamily::OpenShell,
+        energy_conv.is_some(),
+        &emol,
+        &prep,
+        &config,
+    );
     let r = py
         .allow_threads(|| solve_uhf(&ctx, &emol, &prep, &bounds, &config))
         .map_err(make_err)?;
@@ -2811,6 +2864,7 @@ fn run_uhf(
 /// set as `run_rhf`/`run_uhf`.
 ///
 /// Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today.
+/// A user-set energy_conv below the estimated (rounding-level) noise floor of dE emits one RuntimeWarning before the SCF starts.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set,
@@ -2866,6 +2920,15 @@ fn run_rohf(
     // Release the GIL for the duration of the SCF. Every argument below is an
     // owned Rust value (`emol` is a clone; `prep`/`bounds`/`config` are built
     // above), so nothing Python-borrowed crosses the closure boundary.
+    warn_energy_conv_noise_floor(
+        py,
+        "run_rohf",
+        SolverFamily::OpenShell,
+        energy_conv.is_some(),
+        &emol,
+        &prep,
+        &config,
+    );
     let r = py
         .allow_threads(|| solve_rohf(&ctx, &emol, &prep, op, &bounds, &config))
         .map_err(make_err)?;

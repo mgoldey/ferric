@@ -175,6 +175,13 @@ pub struct ConvergenceReport {
     pub energy_conv: f64,
     /// `RhfConfig::density_conv` in force.
     pub density_conv: f64,
+    /// Estimated noise floor of `de` for this system
+    /// ([`crate::noise_floor::de_noise_floor`]), or `None` when it is not
+    /// estimable: functionals, the LinK / COSX exchange builders, PCM / COSMO,
+    /// polarizable embedding, non-default screening, or a non-finite energy
+    /// (none of those noise sources was measured).
+    /// Report only: nothing reads it back.
+    pub de_noise_floor: Option<f64>,
 }
 
 impl ConvergenceReport {
@@ -204,9 +211,23 @@ impl ConvergenceReport {
         } else {
             format!("unmet: {}", unmet.join(", "))
         };
+        let floor_note = match self.de_noise_floor {
+            // Only when dE is the SOLE unmet criterion: if a density criterion is
+            // also unmet, the energy gate is not what stopped the run.
+            Some(f)
+                if unmet == ["dE"]
+                    && crate::noise_floor::energy_conv_below_floor(self.energy_conv, f) =>
+            {
+                format!(
+                    "; {}",
+                    crate::noise_floor::floor_sentence(self.energy_conv, f)
+                )
+            }
+            _ => String::new(),
+        };
         format!(
             "iteration {}: dp_rms={:.3e} (need < {:.1e}), dp_max={:.3e} (need < {:.1e}), \
-             dE={:.3e} (need < {:.1e}), DIIS err_max={:.3e} (diagnostic); {}",
+             dE={:.3e} (need < {:.1e}), DIIS err_max={:.3e} (diagnostic); {}{}",
             self.iteration,
             self.dp_rms,
             self.density_conv,
@@ -215,7 +236,8 @@ impl ConvergenceReport {
             self.de,
             self.energy_conv,
             self.err_max,
-            verdict
+            verdict,
+            floor_note
         )
     }
 }
@@ -372,6 +394,7 @@ mod convergence_report_tests {
             err_max: 1e-5,
             energy_conv: 1e-10,
             density_conv: 1e-8,
+            de_noise_floor: None,
         }
     }
 
@@ -404,6 +427,38 @@ mod convergence_report_tests {
             rep(f64::NAN, f64::NAN, f64::NAN).unmet(),
             vec!["dp_rms", "dp_max", "dE"]
         );
+    }
+
+    /// The exit report blames the noise floor only when the dE criterion is
+    /// the unmet one AND energy_conv is below the estimated floor.
+    #[test]
+    fn describe_explains_an_unreachable_energy_gate_only_when_it_is_the_sole_unmet_criterion() {
+        let with_floor = |de: f64, dp: f64, ec: f64, floor: Option<f64>| {
+            ConvergenceReport {
+                energy_conv: ec,
+                de_noise_floor: floor,
+                ..rep(de, dp, dp * 10.0)
+            }
+            .describe()
+        };
+        // dE unmet, energy_conv (1e-10) below the floor (3e-9): says so.
+        let t = with_floor(2e-9, 1e-9, 1e-10, Some(3e-9));
+        assert!(t.contains("unmet: dE"), "{t}");
+        assert!(
+            t.contains("energy_conv 1.0e-10 is below the estimated noise floor"),
+            "{t}"
+        );
+        assert!(t.contains("3.0e-9"), "{t}");
+        // dE unmet but energy_conv is comfortably above the floor: no blame.
+        assert!(!with_floor(2e-3, 1e-9, 1e-6, Some(3e-9)).contains("noise floor"));
+        // dE AND a density criterion unmet: the energy gate is not the cause.
+        assert!(!with_floor(2e-9, 1e-6, 1e-10, Some(3e-9)).contains("noise floor"));
+        // A non-finite floor makes no claim.
+        assert!(!with_floor(2e-9, 1e-9, 1e-10, Some(f64::NAN)).contains("noise floor"));
+        // Density is the unmet criterion (dE satisfied): no blame.
+        assert!(!with_floor(1e-12, 1e-6, 1e-10, Some(3e-9)).contains("noise floor"));
+        // Floor not estimable (functional / COSX runs): no claim.
+        assert!(!with_floor(2e-9, 1e-9, 1e-10, None).contains("noise floor"));
     }
 
     #[test]

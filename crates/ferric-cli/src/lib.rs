@@ -775,6 +775,14 @@ pub fn run(args: Vec<String>) {
         screening: screening_kind,
     };
 
+    // Advisory only (issue #410): a USER-SET `[scf] energy_conv` below the
+    // estimated noise floor of dE is met only by chance, so the run just
+    // iterates longer. Printed once, before the SCF, to stderr like the other
+    // `warning:` lines; the threshold is not changed.
+    if let Some(text) = energy_conv_advisory(&cfg, method, &mol, prep.nbasis(), &rhf_config) {
+        eprintln!("warning: [scf] {text}");
+    }
+
     // Header record for the JSON run log: everything needed to reproduce this
     // run, written before any expensive work so it survives even a job killed
     // in the first SCF iteration. No-op when no log is installed.
@@ -1326,6 +1334,33 @@ fn molecular_formula(mol: &Molecule) -> String {
 
 /// `method.kind = "rhf"`. Extracted verbatim from the former `main()`
 /// `"rhf" => { ... }` match arm.
+/// The `energy_conv` noise-floor advisory for the SCF this run will perform, or
+/// `None`. Only a tolerance the user WROTE can be advised on (the 1e-3 default
+/// can also fall below a floor once `integral_thresh` is loosened, but it is not
+/// the user's choice). The double-hybrid kinds are skipped: their arms force a
+/// functional plus RI-JK, which `rhf_config` (built before the arm) does not
+/// describe, and functionals are outside the measured scope anyway.
+fn energy_conv_advisory(
+    cfg: &Config,
+    method: &str,
+    mol: &Molecule,
+    nbf: usize,
+    rhf_config: &RhfConfig,
+) -> Option<String> {
+    if !cfg.scf.energy_conv_set
+        || cfg.ks_functional().is_some()
+        || matches!(method, "wb97x-l-v" | "b2plyp" | "dsd-pbep86")
+    {
+        return None;
+    }
+    let family = if mol.multiplicity != 1 || matches!(method, "uhf" | "rohf") {
+        ferric_scf::noise_floor::SolverFamily::OpenShell
+    } else {
+        ferric_scf::noise_floor::SolverFamily::ClosedShell
+    };
+    ferric_scf::noise_floor::energy_conv_warning(mol, nbf, rhf_config, family)
+}
+
 fn run_rhf(
     cfg: &Config,
     bs: &BasisSet,
@@ -6316,5 +6351,91 @@ mod local_printout_tests {
         assert_eq!(j["eps"], 1e-4);
         assert_eq!(j["keep_fraction"], 0.023);
         assert_eq!(j["integral_direct"], true);
+    }
+}
+
+#[cfg(test)]
+mod energy_conv_advisory_tests {
+    use super::{energy_conv_advisory, load_config, Config, Molecule, RhfConfig};
+
+    /// The advisory reads `FERRIC_SCF_INCREMENTAL` (the closed-shell incremental
+    /// Fock switch); pin it to its default for the duration of a test.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    const ALKANE20: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../testdata/molecules/alkane_20.xyz"
+    );
+
+    fn load(kind: &str, scf: &str) -> Config {
+        let dir = std::env::temp_dir().join(format!(
+            "ferric_advisory_{}_{}",
+            std::process::id(),
+            kind.replace('-', "_")
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{}.toml", scf.len()));
+        let toml = format!(
+            "[molecule]\nxyz = \"{ALKANE20}\"\n[basis]\nname = \"sto-3g\"\n\
+             [method]\nkind = \"{kind}\"\n[scf]\n{scf}\n"
+        );
+        std::fs::write(&path, toml).unwrap();
+        load_config(path.to_str().unwrap()).expect("config parses")
+    }
+
+    fn advise(kind: &str, scf: &str, rhf: RhfConfig) -> Option<String> {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var("FERRIC_SCF_INCREMENTAL");
+        let cfg = load(kind, scf);
+        let mol = Molecule::load_xyz(ALKANE20).unwrap();
+        energy_conv_advisory(&cfg, kind, &mol, 142, &rhf)
+    }
+
+    fn rhf(ec: f64, thresh: f64) -> RhfConfig {
+        RhfConfig {
+            energy_conv: ec,
+            integral_thresh: thresh,
+            ..RhfConfig::default()
+        }
+    }
+
+    /// Reporter class: a written 1e-10 on alkane C20/STO-3G (142 functions, exact J/K).
+    #[test]
+    fn a_written_tight_energy_conv_warns() {
+        let t = advise("rhf", "energy_conv = 1e-10", rhf(1e-10, 1e-12)).expect("fires");
+        assert!(t.contains("energy_conv 1.0e-10"), "{t}");
+        assert!(t.contains("142 basis functions"), "{t}");
+    }
+
+    /// The same effective tolerance, NOT written: no advice (the CLI default is
+    /// not the user's choice), even with a loosened integral_thresh that puts the
+    /// 1e-3 default below the floor.
+    #[test]
+    fn the_default_energy_conv_never_warns_even_with_a_loosened_integral_thresh() {
+        let loose = rhf(1e-3, 1e-3); // floor ~ 0.022 * 1e-3 * 142^2 ~ 0.4, far above 1e-3
+        assert!(advise("rhf", "integral_thresh = 1e-3", loose.clone()).is_none());
+        // ... and the same configuration with energy_conv WRITTEN does warn,
+        // so the gate (not the model) is what stayed quiet above.
+        assert!(advise("rhf", "integral_thresh = 1e-3\nenergy_conv = 1e-3", loose).is_some());
+    }
+
+    #[test]
+    fn written_ordinary_values_do_not_warn() {
+        for ec in ["1e-6", "1e-8"] {
+            let v: f64 = ec.parse().unwrap();
+            assert!(advise("rhf", &format!("energy_conv = {ec}"), rhf(v, 1e-12)).is_none());
+        }
+    }
+
+    /// The double-hybrid arms force a functional plus RI-JK; `rhf_config` is built
+    /// before the arm and describes plain HF, so the advisory must stay silent.
+    #[test]
+    fn double_hybrid_kinds_are_skipped() {
+        for kind in ["wb97x-l-v", "b2plyp", "dsd-pbep86"] {
+            assert!(
+                advise(kind, "energy_conv = 1e-10", rhf(1e-10, 1e-12)).is_none(),
+                "{kind}"
+            );
+        }
     }
 }
