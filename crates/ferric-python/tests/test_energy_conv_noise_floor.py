@@ -46,11 +46,32 @@ def _floor_warnings(fn, *args, **kwargs):
     ]
 
 
-def test_default_energy_conv_never_warns_even_under_error_filter():
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        r = ferric.run_rhf(_mol("alkane_10"), _bs())
-    assert r.converged
+@pytest.fixture(autouse=True)
+def _default_incremental_fock(monkeypatch):
+    """The advisory models the closed-shell incremental Fock path, which
+    FERRIC_SCF_INCREMENTAL=0 (the A/B switch) turns off; pin the default."""
+    monkeypatch.delenv("FERRIC_SCF_INCREMENTAL", raising=False)
+
+
+def test_default_energy_conv_is_never_advised_on_even_when_below_the_floor():
+    """integral_thresh=1e-5 puts the floor of alkane C20 / STO-3G (~9e-3 Ha) far
+    above the 1e-3 default, so the MODEL would flag it; only the user-set gate
+    keeps this silent. (Dropping the gate makes this test fail.)"""
+    _, w = _floor_warnings(
+        ferric.run_rhf, _mol("alkane_20"), _bs(), integral_thresh=1e-5, max_iter=1
+    )
+    assert w == []
+    # The same setting written explicitly IS advised on: the gate, not the
+    # model, was what stayed quiet above.
+    _, w = _floor_warnings(
+        ferric.run_rhf,
+        _mol("alkane_20"),
+        _bs(),
+        integral_thresh=1e-5,
+        energy_conv=1e-3,
+        max_iter=1,
+    )
+    assert len(w) == 1, w
 
 
 @pytest.mark.parametrize("ec", [1e-6, 1e-8, 1e-10])
@@ -61,7 +82,7 @@ def test_common_values_on_a_small_system_do_not_warn(ec):
 
 def test_reporter_class_setting_warns_once_before_the_scf():
     # alkane C20 / STO-3G: 142 functions, conventional closed-shell J/K. Its dE
-    # floor is ~4e-10 Ha, so 1e-10 is met only by chance. max_iter=1 keeps the run
+    # floor is ~8e-10 Ha (advisory below ~2.5e-10), so 1e-10 is met only by chance. max_iter=1 keeps the run
     # short: the warning is issued BEFORE the SCF, not after.
     r, w = _floor_warnings(
         ferric.run_rhf,
@@ -142,11 +163,14 @@ def test_warning_changes_neither_the_energy_nor_the_iteration_count():
 
 
 def test_unmet_energy_gate_below_the_floor_is_explained_in_the_summary():
+    # energy_conv=0.0 is deterministic: the gate is the STRICT dE < energy_conv, so
+    # it is unmet however small dE gets (a tiny positive value could be met by a
+    # lucky dip on another platform).
     with pytest.warns(RuntimeWarning):
-        r = ferric.run_rhf(_mol("benzene"), _bs(), max_iter=40, energy_conv=1e-13)
+        r = ferric.run_rhf(_mol("benzene"), _bs(), max_iter=40, energy_conv=0.0)
     assert r.unmet_criteria == ["dE"]
     assert FLOOR_TEXT in r.convergence_summary
-    assert "energy_conv 1.0e-13" in r.convergence_summary
+    assert "energy_conv 0.0e0" in r.convergence_summary
 
 
 def test_summary_does_not_blame_the_floor_when_the_density_is_the_problem():
