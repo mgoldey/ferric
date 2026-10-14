@@ -57,7 +57,7 @@ use crate::kdft::{conj, KPeriodicXc};
 use crate::kpts::KPointMesh;
 use crate::kscf::{
     diagonalize_all, herm_t, occupied_projector, orthogonalizers_with_report, KDiis, KJkKind,
-    KPointInjection, KPointJk, KScfConfig,
+    KPointInjection, KPointJk, KRetained, KRetainedJk, KScfConfig,
 };
 use crate::lattice::Cell;
 use crate::rsgdf::kpoint::{KRsGdf, KRsGdfConfig};
@@ -471,6 +471,19 @@ pub fn solve_krohf(
     mesh: &KPointMesh,
     cfg: &KRohfConfig,
 ) -> Result<KRoksResult, FerricError> {
+    Ok(solve_krohf_keep(cell, prep, aux, mesh, cfg)?.0)
+}
+
+/// [`solve_krohf`] that also returns the hcore output and J/K object the SCF
+/// ran on ([`KRetained`]) for the analytic forces and stress (bit-identical
+/// energy: `solve_krohf` delegates here).
+pub fn solve_krohf_keep(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    aux: Option<&PreparedBasis>,
+    mesh: &KPointMesh,
+    cfg: &KRohfConfig,
+) -> Result<(KRoksResult, KRetained), FerricError> {
     drive("solve_krohf", cell, prep, aux, mesh, cfg, None)
 }
 
@@ -482,9 +495,20 @@ pub fn solve_kroks(
     mesh: &KPointMesh,
     cfg: &KRoksConfig,
 ) -> Result<KRoksResult, FerricError> {
+    Ok(solve_kroks_keep(cell, prep, aux, mesh, cfg)?.0)
+}
+
+/// [`solve_kroks`] that also returns the retained hcore and J/K.
+pub fn solve_kroks_keep(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    aux: Option<&PreparedBasis>,
+    mesh: &KPointMesh,
+    cfg: &KRoksConfig,
+) -> Result<(KRoksResult, KRetained), FerricError> {
     resolve_periodic_functional(&cfg.functional)?;
     let grid = PeriodicGrid::build(cell, &cfg.grid)?;
-    solve_kroks_on_grid(cell, prep, aux, mesh, &grid, cfg)
+    solve_kroks_on_grid_keep(cell, prep, aux, mesh, &grid, cfg)
 }
 
 /// [`solve_kroks`] on a caller-supplied grid (`cfg.grid` is ignored).
@@ -496,13 +520,25 @@ pub fn solve_kroks_on_grid(
     grid: &PeriodicGrid,
     cfg: &KRoksConfig,
 ) -> Result<KRoksResult, FerricError> {
+    Ok(solve_kroks_on_grid_keep(cell, prep, aux, mesh, grid, cfg)?.0)
+}
+
+/// [`solve_kroks_on_grid`] that also returns the retained hcore and J/K.
+pub fn solve_kroks_on_grid_keep(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    aux: Option<&PreparedBasis>,
+    mesh: &KPointMesh,
+    grid: &PeriodicGrid,
+    cfg: &KRoksConfig,
+) -> Result<(KRoksResult, KRetained), FerricError> {
     // KPeriodicXc accepts meta-GGA for the closed-shell solver, but the
     // spin-resolved XC here has no tau term: refuse it on this entry point
     // too, not only in `solve_kroks`.
     resolve_periodic_functional(&cfg.functional)?;
     let mut pxc = KPeriodicXc::new(cell, prep.basis_set(), &cfg.functional, grid, mesh, &cfg.xc)?;
     let a = pxc.exact_exchange_fraction();
-    let mut r = drive(
+    let (mut r, kept) = drive(
         "solve_kroks",
         cell,
         prep,
@@ -519,7 +555,7 @@ pub fn solve_kroks_on_grid(
         .collect();
     r.electrons_on_grid = pxc.integrate_density(&tot)?;
     r.n_grid_points = grid.len();
-    Ok(r)
+    Ok((r, kept))
 }
 
 fn drive(
@@ -530,7 +566,7 @@ fn drive(
     mesh: &KPointMesh,
     cfg: &KRohfConfig,
     mut xc: Option<(&mut KPeriodicXc, f64)>,
-) -> Result<KRoksResult, FerricError> {
+) -> Result<(KRoksResult, KRetained), FerricError> {
     match (cfg.jk, aux) {
         (KJkKind::Dense, Some(_)) => {
             return Err(FerricError::General(format!(
@@ -638,7 +674,14 @@ fn drive(
         );
     }
     timings.finish(&total);
-    Ok(KRoksResult {
+    let kept = KRetained {
+        hk,
+        jk: match ints {
+            KInts::Dense(e) => KRetainedJk::Dense(e),
+            KInts::RsGdf(g) => KRetainedJk::RsGdf(g),
+        },
+    };
+    let res = KRoksResult {
         e_xc: scf.e_xc,
         scf,
         none_stage,
@@ -649,7 +692,8 @@ fn drive(
         n_grid_points: 0,
         electrons_on_grid: 0.0,
         timings,
-    })
+    };
+    Ok((res, kept))
 }
 
 /// k-point ROKS on injected `S(k)`, `h(k)`, `E_nn`, J/K and spin-resolved

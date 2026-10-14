@@ -34,7 +34,7 @@ use crate::hcore::kpoint::periodic_hcore_kpts;
 use crate::kdense_aft::KDenseAftEri;
 use crate::kdft::{conj, KAoChunk, KPeriodicXc};
 use crate::kpts::KPointMesh;
-use crate::kscf::{KJkKind, KPointInjection, KPointJk};
+use crate::kscf::{KJkKind, KPointInjection, KPointJk, KRetained, KRetainedJk};
 use crate::kuscf::{
     kuhf_gap_report, run_kuhf, KPointXcPolarized, KUScfResult, KUhfConfig, KUhfMutation,
 };
@@ -363,9 +363,24 @@ pub fn solve_kuks(
     mesh: &KPointMesh,
     cfg: &KUksConfig,
 ) -> Result<KUksResult, FerricError> {
+    Ok(solve_kuks_keep(cell, prep, aux, mesh, cfg)?.0)
+}
+
+/// [`solve_kuks`] that also returns the hcore output and J/K object the SCF ran
+/// on ([`KRetained`]) for the analytic forces and stress. `solve_kuks`
+/// delegates here, so the energy is bit-identical. The dense object is built
+/// with `ExxDiv::None` (the Madelung term is applied per stage by the builder,
+/// and by the force/stress entry points from their `exxdiv` argument).
+pub fn solve_kuks_keep(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    aux: Option<&PreparedBasis>,
+    mesh: &KPointMesh,
+    cfg: &KUksConfig,
+) -> Result<(KUksResult, KRetained), FerricError> {
     resolve_periodic_functional(&cfg.functional)?;
     let grid = PeriodicGrid::build(cell, &cfg.grid)?;
-    solve_kuks_on_grid(cell, prep, aux, mesh, &grid, cfg)
+    solve_kuks_on_grid_keep(cell, prep, aux, mesh, &grid, cfg)
 }
 
 enum KInts {
@@ -389,6 +404,18 @@ pub fn solve_kuks_on_grid(
     grid: &PeriodicGrid,
     cfg: &KUksConfig,
 ) -> Result<KUksResult, FerricError> {
+    Ok(solve_kuks_on_grid_keep(cell, prep, aux, mesh, grid, cfg)?.0)
+}
+
+/// [`solve_kuks_on_grid`] that also returns the retained hcore and J/K.
+pub fn solve_kuks_on_grid_keep(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    aux: Option<&PreparedBasis>,
+    mesh: &KPointMesh,
+    grid: &PeriodicGrid,
+    cfg: &KUksConfig,
+) -> Result<(KUksResult, KRetained), FerricError> {
     let kc = &cfg.kuhf;
     match (kc.jk, aux) {
         (KJkKind::Dense, Some(_)) => {
@@ -501,7 +528,14 @@ pub fn solve_kuks_on_grid(
     let electrons_on_grid = pxc.integrate_density(&scf.density_alpha, &scf.density_beta)?;
     let (e_xc, _, _) = pxc.build_polarized(&scf.density_alpha, &scf.density_beta)?;
     timings.finish(&total);
-    Ok(KUksResult {
+    let kept = KRetained {
+        hk,
+        jk: match ints {
+            KInts::Dense(e) => KRetainedJk::Dense(e),
+            KInts::RsGdf(g) => KRetainedJk::RsGdf(g),
+        },
+    };
+    let res = KUksResult {
         e_xc,
         exact_exchange_fraction: a,
         n_grid_points: grid.len(),
@@ -512,5 +546,6 @@ pub fn solve_kuks_on_grid(
         none_stage,
         scf,
         timings,
-    })
+    };
+    Ok((res, kept))
 }
