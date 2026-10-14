@@ -1562,6 +1562,8 @@ fn solve_rhf_impl(
         config.diis_flavor != crate::diis::DiisFlavor::Pulay && config.diis_switch_thresh > 0.0,
         ooc_budget,
     );
+    // True until the first ADIIS/EDIIS history entry has been vetted.
+    let mut energy_diis_unchecked = true;
     // MOM reference: last accepted occupied MO block (None until armed).
     let mut mom_ref: Option<Array2<f64>> = None;
     // Convergence bookkeeping (prev energy, carried ΔP signals, divergence
@@ -2865,7 +2867,18 @@ fn solve_rhf_impl(
 
         // `d`/`energy`/`err_max` feed the energy-based branch (ADIIS/EDIIS);
         // ignored when the driver is pure Pulay (default).
-        let mut f_new = diis.step(&f, &err, &d, energy, err_max);
+        // ADIIS/EDIIS only: the FIRST density handed to the energy history may
+        // be a non-idempotent guess (MINAO/SAD, user `init_guess_density`) whose
+        // energy lies below the ground state; see `DiisDriver::step_checked`.
+        // Checked once, and only when an energy flavor is live, so the default
+        // (Pulay) path does no extra work and is untouched.
+        let d_variational = if energy_diis_unchecked && diis.uses_energy_history() {
+            energy_diis_unchecked = false;
+            crate::diis::is_idempotent_closed_shell(&d, &s, 1e-6)
+        } else {
+            true
+        };
+        let mut f_new = diis.step_checked(&f, &err, &d, energy, err_max, d_variational);
 
         // Virtual-block level shift (config.level_shift > 0): add `shift` to the
         // diagonal of the virtual block in MO basis, i.e. F += shift · S·C_v·C_vᵀ·S

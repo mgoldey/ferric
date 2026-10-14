@@ -620,6 +620,16 @@ impl EnergyDiis {
     }
 }
 
+/// Whether `d` is a closed-shell idempotent density in the `s` metric, i.e.
+/// `max|D S D - 2 D| <= tol * max(1, max|D|)`. Densities built from occupied MOs
+/// by diagonalization satisfy this to ~1e-14; a MINAO/SAD guess does not.
+pub(crate) fn is_idempotent_closed_shell(d: &Array2<f64>, s: &Array2<f64>, tol: f64) -> bool {
+    let dsd = d.dot(s).dot(d);
+    let scale = d.iter().fold(1.0f64, |m, v| m.max(v.abs()));
+    let dev = (&dsd - &(2.0 * d)).iter().fold(0.0f64, |m, v| m.max(v.abs()));
+    dev <= tol * scale
+}
+
 /// Combined DIIS driver implementing the mature-code recipe: run an energy-based
 /// variant (ADIIS or EDIIS) while the DIIS error is large, then switch to plain
 /// Pulay DIIS once the commutator error drops below `switch_thresh`.
@@ -675,6 +685,11 @@ impl DiisDriver {
         }
     }
 
+    /// Whether an ADIIS/EDIIS history is live (`false` for pure Pulay).
+    pub fn uses_energy_history(&self) -> bool {
+        self.switch_thresh > 0.0
+    }
+
     /// Clear both histories (Pulay and energy-DIIS).
     pub fn reset(&mut self) {
         self.pulay.reset();
@@ -701,12 +716,50 @@ impl DiisDriver {
         energy: f64,
         err_max: f64,
     ) -> Array2<f64> {
+        self.step_checked(f, err, d, energy, err_max, true)
+    }
+
+    /// [`Self::step`] with a validity flag for the energy-based history.
+    ///
+    /// `d_variational = false` keeps this iterate's `(F, D, E)` OUT of the
+    /// ADIIS/EDIIS history (Pulay still receives its commutator). ADIIS and
+    /// EDIIS minimize a functional built from the energies/Fock matrices of the
+    /// stored densities, and that functional is only meaningful when every
+    /// stored `D` is a genuine N-electron idempotent density (`D S D = 2 D`):
+    /// then `E(D) >= E_gs` and the points lie on the variational manifold. A
+    /// non-idempotent starting density (the MINAO/SAD guess, or a user-supplied
+    /// `init_guess_density`) can have an "energy" far BELOW the ground state
+    /// (-1938.78 Ha against a true -1936.03 Ha on the #411 case), so the energy
+    /// functional puts all of its weight on that one entry (`c = [1, 1e-17]`),
+    /// the extrapolated Fock is `F_1` again, and the next density repeats the
+    /// last one exactly -- a false `dp_rms = 0` convergence at iteration 3.
+    pub fn step_checked(
+        &mut self,
+        f: &Array2<f64>,
+        err: &Array2<f64>,
+        d: &Array2<f64>,
+        energy: f64,
+        err_max: f64,
+        d_variational: bool,
+    ) -> Array2<f64> {
         // Always feed Pulay so its Gram history is current at the crossover.
         let f_pulay = self.pulay.step(f, err);
 
         if self.switch_thresh <= 0.0 {
             // Pure Pulay: don't even touch the energy history (keeps it cheap).
             return f_pulay;
+        }
+
+        if !d_variational {
+            // Not a point the energy functional may trust: no energy-history
+            // entry. With an empty history the energy variant has nothing to
+            // extrapolate from, so take the plain (un-extrapolated) Fock this
+            // iteration -- or the Pulay one if it is already past the switch.
+            return if !self.switch_thresh.is_infinite() && err_max < self.switch_thresh {
+                f_pulay
+            } else {
+                f.clone()
+            };
         }
 
         let (f_energy, _c) = self.energy.step(f, d, energy);
