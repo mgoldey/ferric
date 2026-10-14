@@ -3573,13 +3573,19 @@ mod tests {
         );
     }
 
-    /// Bit-identity anchor for the convergence report (a pure observer). The
-    /// literals were recorded from the pre-change mainline build (ferric sha
-    /// cddfd1aa, via python `run_rhf` on testdata water.xyz, STO-3G, defaults
-    /// ec=1e-3 dc=1e-6, minao guess) and reproduced bit for bit by this branch
-    /// (`repr` of the f64 equal).
+    /// Anchor for the convergence report (a pure observer): iteration counts
+    /// are exact and energies agree with the pre-change mainline build (ferric
+    /// sha cddfd1aa, via python `run_rhf` on testdata water.xyz, STO-3G,
+    /// defaults ec=1e-3 dc=1e-6, minao guess) to `ENERGY_TOL`. The energy is
+    /// NOT compared with `==`: the last bit moves between machines (CI differs
+    /// from the recording box by 1 ulp, 1e-14 Ha) through the BLAS kernel and
+    /// summation order, so exact equality tests the machine, not the report. A
+    /// report that perturbed the SCF would move the energy by far more than
+    /// 1e-12 Ha or change the iteration count.
+    const ENERGY_TOL: f64 = 1e-12;
+
     #[test]
-    fn convergence_report_leaves_water_sto3g_results_bit_identical_to_mainline() {
+    fn convergence_report_leaves_water_sto3g_results_matching_mainline() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
         let bs = ferric_core::basis::bundled("sto-3g").unwrap();
@@ -3590,14 +3596,22 @@ mod tests {
         let run = |config: &RhfConfig| solve_rhf(&ctx, &mol, &prep, op, &bounds, config).unwrap();
         let full = run(&RhfConfig::default());
         assert_eq!(full.iterations, 8);
-        assert_eq!(full.energy, -74.96314680003906);
+        assert!(
+            (full.energy - (-74.96314680003906)).abs() < ENERGY_TOL,
+            "{:.15}",
+            full.energy
+        );
         let capped = run(&RhfConfig {
             max_iter: 3,
             density_conv: 1e-12,
             ..Default::default()
         });
         assert_eq!(capped.iterations, 3);
-        assert_eq!(capped.energy, -74.96270491542582);
+        assert!(
+            (capped.energy - (-74.96270491542582)).abs() < ENERGY_TOL,
+            "{:.15}",
+            capped.energy
+        );
     }
 
     #[test]
