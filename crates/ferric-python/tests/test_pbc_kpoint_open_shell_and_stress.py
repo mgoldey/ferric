@@ -50,6 +50,13 @@ FORCE_BAR = 2e-8
 # 2e-6 is ~10x the measured residuals below.
 STRESS_BAR = 2e-6
 CUTOFF = 14.0 * BOHR_IN_ANGSTROM
+# 1x1x1 mesh vs the Gamma binding: measured 1e-16 .. 6e-13 (force and stress,
+# RKS / UKS / ROKS / ROHF); 1e-10 leaves ~150x headroom over the worst, while a
+# permuted or mis-scaled tensor misses by >1e-3.
+GAMMA_BAR = 1e-10
+# Monkhorst-Pack full-tensor stress vs FD: measured <= 8.8e-8 (diagonal) and
+# 5.3e-9 (off-diagonal); 2e-7 is ~2x the worst.
+FULL_STRESS_BAR = 2e-7
 GRID = dict(n_radial=20, n_angular=50, neighbour_cutoff=CUTOFF)
 SCF = dict(energy_conv=1e-13, grad_conv=1e-10, max_iter=600)
 
@@ -68,10 +75,10 @@ def _rks(atoms, basis, functional="PBE", mesh=(1, 1, 3), **kw):
     )
 
 
-def _uks(atoms, basis, functional="PBE", mesh=(1, 1, 2), mult=2, **kw):
+def _uks(atoms, basis, functional="PBE", mesh=(1, 1, 2), mult=2, lat=None, **kw):
     return ferric.run_uks_kpts(
         _mol(atoms, mult),
-        _lat(H3_A),
+        lat if lat is not None else _lat(H3_A),
         basis,
         functional,
         mesh,
@@ -82,10 +89,10 @@ def _uks(atoms, basis, functional="PBE", mesh=(1, 1, 2), mult=2, **kw):
     )
 
 
-def _roks(atoms, basis, functional="PBE", mesh=(1, 1, 2), **kw):
+def _roks(atoms, basis, functional="PBE", mesh=(1, 1, 2), lat=None, **kw):
     return ferric.run_roks_kpts(
         _mol(atoms, 2),
-        _lat(H3_A),
+        lat if lat is not None else _lat(H3_A),
         basis,
         functional,
         mesh,
@@ -96,9 +103,15 @@ def _roks(atoms, basis, functional="PBE", mesh=(1, 1, 2), **kw):
     )
 
 
-def _rohf(atoms, basis, mesh=(1, 1, 2), **kw):
+def _rohf(atoms, basis, mesh=(1, 1, 2), lat=None, **kw):
     return ferric.run_rohf_kpts(
-        _mol(atoms, 2), _lat(H3_A), basis, mesh, omega=OMEGA, **SCF, **kw
+        _mol(atoms, 2),
+        lat if lat is not None else _lat(H3_A),
+        basis,
+        mesh,
+        omega=OMEGA,
+        **SCF,
+        **kw,
     )
 
 
@@ -118,6 +131,45 @@ def _trace_vs_fd(sigma, vol, energy_scaled, tag):
     assert abs(analytic) > 1e-3, f"{tag}: trivial stress trace, the check is vacuous"
     miss = abs(analytic - de)
     assert miss < STRESS_BAR, f"{tag}: Omega tr(sigma) {analytic!r} vs FD {de!r}"
+    return miss
+
+
+_STRESS_COMPS = ((0, 0), (1, 1), (2, 2), (0, 1), (0, 2), (1, 2))
+
+
+def _strained(atoms, a, eps):
+    """Atoms (Bohr) and lattice rows (Angstrom) under r -> (1 + eps) r."""
+    f = np.eye(3) + eps
+    at = [tuple(f @ np.array(p)) for p in atoms]
+    lat = (a * np.eye(3)) @ f.T * BOHR_IN_ANGSTROM
+    return at, lat.tolist()
+
+
+def _full_stress_vs_fd(sigma, vol, energy, atoms, a, tag):
+    """All six independent components of Omega sigma against central FD of the
+    energy under the symmetric strain eps_ab = eps_ba = h (which gives
+    Omega (sigma_ab + sigma_ba) off the diagonal). Also checks that a cyclic
+    permutation of the axes of sigma would NOT pass (the trace is blind to it)."""
+    fd = {}
+    for i, j in _STRESS_COMPS:
+        e = np.zeros((3, 3))
+        e[i, j] = e[j, i] = FD_H
+        ep, em = (energy(*_strained(atoms, a, s * e)) for s in (1.0, -1.0))
+        fd[i, j] = (ep - em) / (2.0 * FD_H)
+
+    def analytic(sg, i, j):
+        return vol * (sg[i, j] if i == j else sg[i, j] + sg[j, i])
+
+    def worst(sg):
+        return max(abs(analytic(sg, i, j) - v) for (i, j), v in fd.items())
+
+    assert max(abs(v) for (i, j), v in fd.items() if i != j) > 1e-4, tag
+    miss = worst(sigma)
+    assert miss < FULL_STRESS_BAR, f"{tag}: full-tensor stress vs FD {miss:.3e}"
+    cyc = [1, 2, 0]
+    assert worst(sigma[np.ix_(cyc, cyc)]) > 100 * FULL_STRESS_BAR, (
+        f"{tag}: a cyclic axis permutation of sigma is not detected"
+    )
     return miss
 
 
@@ -182,7 +234,7 @@ def test_rks_one_point_mesh_equals_the_gamma_binding_force_and_stress(
     dg = np.abs(k.gradient() - g.gradient()).max()
     ds = np.abs(k.stress() - g.stress()).max()
     print(f"{functional} 1x1x1 vs Gamma: force {dg:.2e} stress {ds:.2e}")
-    assert dg < 1e-6 and ds < 1e-6
+    assert dg < GAMMA_BAR and ds < GAMMA_BAR
 
 
 @pytest.mark.parametrize("functional", ["SCAN", "r2SCAN"])
@@ -202,7 +254,15 @@ def test_meta_gga_force_matches_fd_of_own_energy(basis, functional):
 def test_meta_gga_rsgdf_force_is_available_and_stress_is_refused(basis):
     kw = dict(mesh=(1, 1, 2), jk="rsgdf", auxbasis="cc-pvdz-ri")
     r = _rks(H2_ATOMS, basis, "SCAN", with_gradient=True, **kw)
-    assert r.jk == "rsgdf" and np.abs(r.gradient()).max() > 1e-3
+    assert r.jk == "rsgdf"
+    worst = _force_vs_fd(
+        r.gradient(),
+        H2_ATOMS,
+        lambda at: _rks(at, basis, "SCAN", **kw).energy,
+        "SCAN rsgdf",
+        comps=((0, 0), (1, 2)),
+    )
+    print(f"SCAN RS-GDF force vs FD: {worst:.2e}")
     with pytest.raises(
         ValueError,
         match=r"^run_rks_kpts: the k-point meta-GGA stress is anchored on the dense-AFT J "
@@ -309,7 +369,7 @@ def test_uks_one_point_mesh_equals_the_gamma_binding(basis):
     dg = np.abs(k.gradient() - g.gradient()).max()
     ds = np.abs(k.stress() - g.stress()).max()
     print(f"UKS 1x1x1 vs Gamma: force {dg:.2e} stress {ds:.2e}")
-    assert dg < 1e-6 and ds < 1e-6
+    assert dg < GAMMA_BAR and ds < GAMMA_BAR
 
 
 def test_uks_rsgdf_force_matches_fd(basis):
@@ -323,6 +383,13 @@ def test_uks_rsgdf_force_matches_fd(basis):
         "UKS rsgdf",
         comps=((0, 0), (2, 1)),
     )
+
+    def e_scaled(s):
+        atoms, a = _scaled(H3_ATOMS, H3_A, s)
+        return _uks(atoms, basis, "PBE", lat=_lat(a), **kw).energy
+
+    miss = _trace_vs_fd(r.stress(), H3_A**3, e_scaled, "UKS rsgdf")
+    print(f"UKS RS-GDF stress trace vs FD: {miss:.2e}")
 
 
 # ──────────────────────────────────────────────────── ROKS and ROHF ──
@@ -390,7 +457,7 @@ def test_roks_and_rohf_one_point_mesh_equal_the_gamma_bindings(basis):
         dg = np.abs(k.gradient() - g.gradient()).max()
         ds = np.abs(k.stress() - g.stress()).max()
         print(f"{tag} 1x1x1 vs Gamma: force {dg:.2e} stress {ds:.2e}")
-        assert dg < 1e-6 and ds < 1e-6, tag
+        assert dg < GAMMA_BAR and ds < GAMMA_BAR, tag
 
 
 def test_roks_is_not_uks(basis):
@@ -405,6 +472,42 @@ def test_roks_is_not_uks(basis):
     assert de > 1e-5
     assert dg > 1e-6
     assert u.method == "uks" and r.method == "roks"
+
+
+# ──────────────────────────────────────── Monkhorst-Pack 1x1x2 meshes ──
+
+MP = dict(mesh=(1, 1, 2), centring="mp")
+
+
+@pytest.mark.parametrize("route", ["uks", "roks", "rohf", "scan"])
+def test_monkhorst_pack_force_matches_fd(basis, route):
+    run, atoms = {
+        "uks": (lambda at, **kw: _uks(at, basis, **MP, **kw), H3_ATOMS),
+        "roks": (lambda at, **kw: _roks(at, basis, **MP, **kw), H3_ATOMS),
+        "rohf": (lambda at, **kw: _rohf(at, basis, **MP, **kw), H3_ATOMS),
+        "scan": (lambda at, **kw: _rks(at, basis, "SCAN", **MP, **kw), H2_ATOMS),
+    }[route]
+    r = run(atoms, with_gradient=True)
+    assert r.centring == "mp"
+    comps = ((0, 0), (1, 2), (2, 1)) if route != "scan" else ((0, 0), (0, 2), (1, 2))
+    worst = _force_vs_fd(
+        r.gradient(), atoms, lambda at: run(at).energy, f"MP {route}", comps=comps
+    )
+    print(f"MP {route} force vs FD: {worst:.2e}")
+
+
+@pytest.mark.parametrize("route", ["uks", "roks"])
+def test_monkhorst_pack_full_stress_tensor_matches_fd(basis, route):
+    fn = _uks if route == "uks" else _roks
+
+    def energy(at, lat):
+        return fn(at, basis, lat=lat, **MP).energy
+
+    r = fn(H3_ATOMS, basis, with_stress=True, **MP)
+    miss = _full_stress_vs_fd(
+        r.stress(), H3_A**3, energy, H3_ATOMS, H3_A, f"MP {route}"
+    )
+    print(f"MP {route} full stress vs FD: {miss:.2e}")
 
 
 # ─────────────────────────────────────────────────────────── refusals ──
@@ -460,6 +563,24 @@ def test_range_split_with_derivatives_is_refused(basis):
             auxbasis="cc-pvdz-ri",
             range_split=True,
             with_stress=True,
+        )
+
+
+def test_rohf_ecp_cell_derivatives_are_refused_with_rohf_wording(hi_basis):
+    # HI plus one extra H atom: a neutral odd-electron cell (a charged periodic
+    # cell is refused earlier) whose basis carries the iodine ECP.
+    lines = _hi_xyz(1).splitlines()
+    lines[0] = str(int(lines[0]) + 1)
+    lines.append("H 0.5 1.5 2.5")
+    cell = ferric.Molecule.from_xyz_string("\n".join(lines) + "\n", multiplicity=2)
+    with pytest.raises(
+        ValueError,
+        match=r"^run_rohf_kpts: k-point ROHF forces and stress with ECPs are not "
+        r"validated \(with_gradient / with_stress on a cell whose basis carries an "
+        r"ECP; the energy without them runs\)$",
+    ):
+        ferric.run_rohf_kpts(
+            cell, _hi_lattice(1), hi_basis, (1, 1, 2), with_gradient=True
         )
 
 
