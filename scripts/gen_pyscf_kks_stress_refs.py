@@ -8,9 +8,14 @@ The printed tensor is sigma = (1/Omega) dE/d(strain) in Hartree/Bohr^3; with
 --fd the analytic value is also checked against the central finite difference
 of PySCF's own energy under cell strain (atoms strained with the lattice).
 
+The meta-GGA rows (SCAN, r2SCAN; pbc_kxcstress_mgga.rs) are also written, in
+full (3x3 sigma, E_tot), to testdata/reference/pbc_h2_sto3g_kks_stress_mgga.json.
+
 Run:  python scripts/gen_pyscf_kks_stress_refs.py [--fd]
 """
 
+import json
+import os
 import sys
 
 import numpy as np
@@ -53,6 +58,14 @@ PYSCF_VERSION = "2.13.1"  # the version cited by tests/pbc_kxcstress.rs
 # ferric's "LDA" functional is SVWN (LDA_X + LDA_C_VWN) = PySCF "LDA,VWN"
 # (PySCF's bare "LDA" is exchange only).
 ROWS = (("LDA", "LDA,VWN"), ("PBE", "PBE"))
+MGGA_ROWS = (("SCAN", "SCAN"), ("R2SCAN", "R2SCAN"))
+MGGA_JSON = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "..",
+    "testdata",
+    "reference",
+    "pbc_h2_sto3g_kks_stress_mgga.json",
+)
 
 
 def main(check_fd):
@@ -61,13 +74,17 @@ def main(check_fd):
     assert pyscf.__version__ == PYSCF_VERSION, (pyscf.__version__, PYSCF_VERSION)
     print(f"// PySCF {pyscf.__version__}; paste into PYSCF_STRESS (name, xx, zz)")
     rows = []
-    for name, xc in ROWS:
+    mgga = {}
+    for name, xc in ROWS + MGGA_ROWS:
         c = make_cell()
         mf = run(c, xc)
         s = krks_stress.kernel(kg.Gradients(mf))
         print(xc, "E", mf.e_tot)
         print(np.array2string(s, precision=9))
-        rows.append(f'    ("{name}", {s[0, 0]:.9e}, {s[2, 2]:.9e}),')
+        if (name, xc) in MGGA_ROWS:
+            mgga[name] = {"e_tot": float(mf.e_tot), "sigma": s.tolist()}
+        else:
+            rows.append(f'    ("{name}", {s[0, 0]:.9e}, {s[2, 2]:.9e}),')
         if check_fd:
             h = 1e-4
             fd = np.zeros((3, 3))
@@ -82,6 +99,16 @@ def main(check_fd):
     print("const PYSCF_STRESS: [(&str, f64, f64); 2] = [")
     print("\n".join(rows))
     print("];")
+    meta = {
+        "pyscf_version": PYSCF_VERSION,
+        "cell": "H2 in the a = 4 Bohr cube, atoms (0.3,0.2,0.1),(0.3,0.2,1.5), STO-3G H",
+        "mesh": "FFTDF UniformGrids 61^3, kmesh 1x1x2 gamma-centred, exxdiv ewald, conv_tol 1e-12",
+        "unit": "sigma = (1/Omega) dE/d(strain), Hartree/Bohr^3",
+        "rows": mgga,
+    }
+    with open(MGGA_JSON, "w") as fh:
+        json.dump(meta, fh, indent=2)
+        fh.write("\n")
 
 
 if __name__ == "__main__":

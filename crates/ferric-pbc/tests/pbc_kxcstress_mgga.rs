@@ -15,8 +15,15 @@
 //!   path (`v_tau = 0`) is the PBE stress;
 //! * `fixed_density_xc_stress_matches_fd_of_exc` -- `xc_ao + xc_weight` against
 //!   the central FD of `E_xc[D]` at FIXED `D` under cell strain (no SCF, the
-//!   independent construction), SCAN and r2SCAN, atom and uniform grids, all
-//!   nine components; the same comparison with each tau defect injected must fail;
+//!   independent construction), SCAN and r2SCAN, atom grid, all nine
+//!   components; the same comparison with each XC strain defect injected must
+//!   fail; `fixed_density_xc_stress_matches_fd_on_the_uniform_grid` repeats it
+//!   on the uniform grid with the same defects;
+//! * `p_shell_triclinic_fixed_density_xc_stress_matches_fd` -- s+p basis on the
+//!   triclinic cell, all nine components, and the `TauTranspose` defect (the
+//!   (a,b)-transposed tau strain term) that the cubic s-only fixtures cannot see;
+//! * `uniform_grid_stress_matches_pyscf_fftdf_krks_stress_scan` -- PySCF 2.13.1
+//!   analytic k-point SCAN stress (JSON under testdata/reference);
 //! * `meta_gga_stress_matches_fd_of_the_scf_energy` -- total dE/d eps against FD
 //!   of the converged SCF energy (uniform grid, three components);
 //! * `supercell_identity_per_part` -- the 1x1x3 stress equals the explicit
@@ -26,7 +33,9 @@
 //! NOT covered: the 1x1x1 = Gamma anchor (the Gamma periodic path has no
 //! meta-GGA), hybrid meta-GGAs (none resolve), range-separated / VV10 / double
 //! hybrid meta-GGAs (refused), open-shell meta-GGA stress (UKS/ROKS keep their
-//! typed refusal), RS-GDF J, p/d shells, ECPs, heavy atoms, metals.
+//! typed refusal), RS-GDF J (typed refusal, tested), d shells, ECPs, heavy atoms,
+//! metals. TPSS is anchored only as its raw X/C components on a PBE density with
+//! the Fock guard skipped (no TPSS SCF).
 
 mod common;
 
@@ -355,18 +364,18 @@ fn strained(cell: &Cell, i: usize, j: usize, h: f64) -> Cell {
 /// fractional k mesh and the AO coefficients; the grid is rebuilt on the cell).
 fn exc_fixed_d_on(
     cell: &Cell,
+    bs: &BasisSet,
     mesh_n: [usize; 3],
     f: &str,
     grid: &KXcGrid,
     d: &[Array2<Complex64>],
 ) -> f64 {
-    let bs = pyscf_sto3g_h();
     let mesh = KPointMesh::gamma_centred(cell, mesh_n).unwrap();
     let pg = match grid {
         KXcGrid::Atom(cfg) => PeriodicGrid::build(cell, cfg).unwrap(),
         KXcGrid::Uniform(n) => PeriodicGrid::uniform(cell, *n).unwrap(),
     };
-    let mut xc = KPeriodicXc::new(cell, &bs, f, &pg, &mesh, &PeriodicXcConfig::default()).unwrap();
+    let mut xc = KPeriodicXc::new(cell, bs, f, &pg, &mesh, &PeriodicXcConfig::default()).unwrap();
     xc.build(d).unwrap().0
 }
 
@@ -379,10 +388,22 @@ fn fd_xc_all9(
     d: &[Array2<Complex64>],
     h: f64,
 ) -> Mat3 {
+    fd_xc_all9_bs(cell, &pyscf_sto3g_h(), mesh_n, f, grid, d, h)
+}
+
+fn fd_xc_all9_bs(
+    cell: &Cell,
+    bs: &BasisSet,
+    mesh_n: [usize; 3],
+    f: &str,
+    grid: &KXcGrid,
+    d: &[Array2<Complex64>],
+    h: f64,
+) -> Mat3 {
     let mut out = [[0.0; 3]; 3];
     for (i, j) in ALL9 {
-        let ep = exc_fixed_d_on(&strained(cell, i, j, h), mesh_n, f, grid, d);
-        let em = exc_fixed_d_on(&strained(cell, i, j, -h), mesh_n, f, grid, d);
+        let ep = exc_fixed_d_on(&strained(cell, i, j, h), bs, mesh_n, f, grid, d);
+        let em = exc_fixed_d_on(&strained(cell, i, j, -h), bs, mesh_n, f, grid, d);
         out[i][j] = (ep - em) / (2.0 * h);
     }
     out
@@ -402,6 +423,17 @@ fn xc_part(s: &KRksStress) -> Mat3 {
 const FD_H_XC: f64 = 2.5e-5;
 const FD_BAR_XC: f64 = 3e-8;
 const MUTANT_BAR: f64 = 1e-5;
+/// The defects of the XC strain part (the Pulay-only `TauNoVxc` is not in the
+/// fixed-density XC FD).
+const XC_MUTANTS: [KXcStressMutation; 7] = [
+    KXcStressMutation::NoTauStrain,
+    KXcStressMutation::TauDoubled,
+    KXcStressMutation::WrongFactor,
+    KXcStressMutation::NoWeightDeriv,
+    KXcStressMutation::NoPointMotion,
+    KXcStressMutation::NoHessian,
+    KXcStressMutation::NoStrainMoment,
+];
 
 /// Null-tau limit. Artifact hypothesis: a tau path that perturbed the non-tau
 /// terms (mis-sized plane, stray accumulation) would shift the PBE stress;
@@ -441,15 +473,7 @@ fn fixed_density_xc_stress_matches_fd_of_exc() {
             mmax(&xc_part(&s))
         );
         assert!(miss < FD_BAR_XC, "{f}: {miss:e}");
-        for m in [
-            KXcStressMutation::NoTauStrain,
-            KXcStressMutation::TauDoubled,
-            KXcStressMutation::WrongFactor,
-            KXcStressMutation::NoWeightDeriv,
-            KXcStressMutation::NoPointMotion,
-            KXcStressMutation::NoHessian,
-            KXcStressMutation::NoStrainMoment,
-        ] {
+        for m in XC_MUTANTS {
             let ms = stress(&fx, Some(m));
             let mm = mdiff(&xc_part(&ms), &fd);
             eprintln!("  {f} {m:?}: |xc - FD| {mm:.2e}");
@@ -470,8 +494,15 @@ fn fixed_density_xc_stress_matches_fd_on_the_uniform_grid() {
         let miss = mdiff(&xc_part(&s), &fd);
         eprintln!("{f} uniform 24^3: |xc - FD| {miss:.2e}");
         assert!(miss < FD_BAR_XC, "{f}: {miss:e}");
-        let t = stress(&fx, Some(KXcStressMutation::NoTauStrain));
-        assert!(mdiff(&xc_part(&t), &fd) > MUTANT_BAR);
+        for m in XC_MUTANTS {
+            let t = stress(&fx, Some(m));
+            let mm = mdiff(&xc_part(&t), &fd);
+            eprintln!("  {f} uniform {m:?}: |xc - FD| {mm:.2e}");
+            // A uniform grid has no partition/home atom: `NoPointMotion` is
+            // still a real defect there (points move with the lattice), and
+            // `PointSelf` is not in the list (an identity on this grid).
+            assert!(mm > MUTANT_BAR, "{f} uniform {m:?} survives: {mm:e}");
+        }
     }
 }
 
@@ -653,4 +684,130 @@ fn mutants_are_caught() {
         eprintln!("{m:?}: miss {d:.2e}");
         assert!(d > MUTANT_BAR, "{m:?} survives: {d:e}");
     }
+}
+
+// ------------------------------------------------------------- p shells
+
+/// Fixed-density XC stress FD with s+p shells on the TRICLINIC cell (uniform
+/// grid, SCAN, all nine components). Physics hypothesis: residual at the FD
+/// floor (measured below). Artifact hypothesis: an (a,b)-transposed tau strain
+/// term is an identity when the moments are symmetric in (a,b) (cubic cell,
+/// s shells) and misses here; the cubic s-only tests above do not see it.
+/// The atom grid needs `neighbour_cutoff >= 14` for a smooth FD (cutoff 10
+/// puts a 3.6e-5 mask jump in the energy), so this is a uniform-grid test.
+#[test]
+#[ignore = "16-function s+p SCAN SCF on the 4-atom triclinic cell, a fixed-D XC FD (18 strained builds) and three stresses; measured 217 s alone on a shared box, run serially on a quiet box"]
+fn p_shell_triclinic_fixed_density_xc_stress_matches_fd() {
+    let bs = sp_basis_h();
+    let grid = KXcGrid::Uniform([24; 3]);
+    let fx = fixture_bs(
+        triclinic_cell(),
+        [1, 1, 2],
+        "SCAN",
+        Jk::Dense,
+        grid.clone(),
+        ExxDiv::None,
+        &bs,
+    );
+    let s = stress(&fx, None);
+    let d0 = fx.res.scf.densities.clone();
+    let fd = fd_xc_all9_bs(&fx.cell, &bs, [1, 1, 2], "SCAN", &grid, &d0, 1e-4);
+    let miss = mdiff(&xc_part(&s), &fd);
+    eprintln!(
+        "triclinic s+p SCAN uniform 24^3: |xc - FD| {miss:.2e}; |xc| max {:.3e}",
+        mmax(&xc_part(&s))
+    );
+    assert!(miss < P_SHELL_BAR, "{miss:e}");
+    for m in [
+        KXcStressMutation::TauTranspose,
+        KXcStressMutation::NoTauStrain,
+        KXcStressMutation::NoHessian,
+    ] {
+        let mm = mdiff(&xc_part(&stress(&fx, Some(m))), &fd);
+        eprintln!("  triclinic s+p {m:?}: |xc - FD| {mm:.2e}");
+        assert!(mm > MUTANT_BAR, "{m:?} survives: {mm:e}");
+    }
+}
+
+/// Both sides, measured (1x1x2, uniform 24^3, h = 1e-4): correct 3.4e-8;
+/// `TauTranspose` 6.0e-4, `NoHessian` 6.6e-2, `NoTauStrain` 1.4e-1. The bar is
+/// 3x above the floor and 6000x below the smallest defect.
+const P_SHELL_BAR: f64 = 1e-7;
+
+// ----------------------------------------------------------- PySCF anchor
+
+/// PySCF 2.13.1 `pbc.grad.krks_stress` for SCAN / r2SCAN (FFTDF on
+/// `UniformGrids(61^3)`, exxdiv ewald, conv_tol 1e-12, H2/STO-3G in the a = 4
+/// cube, 1x1x2 gamma-centred mesh; the settings of the GGA anchor in
+/// `pbc_kxcstress.rs`), written by `scripts/gen_pyscf_kks_stress_refs.py` to
+/// `testdata/reference/pbc_h2_sto3g_kks_stress_mgga.json`: the full 3x3
+/// `sigma = (1/Omega) dE/d eps` (Hartree/Bohr^3). PySCF's off-diagonals are
+/// zero to 2.6e-11 (its own noise). Bar 1e-9: the GGA anchor's PySCF
+/// analytic-vs-FD agreement is 2.3e-10 and the observed ferric agreement is
+/// 7e-11 (printed); the mutant side is asserted against the same reference.
+const PYSCF_MGGA_BAR: f64 = 1e-9;
+
+fn pyscf_mgga_case(f: &str, key: &str) {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../testdata/reference/pbc_h2_sto3g_kks_stress_mgga.json"
+    );
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).expect("reference json")).unwrap();
+    assert_eq!(doc["pyscf_version"], "2.13.1");
+    let rows = &doc["rows"][key]["sigma"];
+    let mut want = [[0.0; 3]; 3];
+    for (i, row) in want.iter_mut().enumerate() {
+        for (j, x) in row.iter_mut().enumerate() {
+            *x = rows[i][j].as_f64().expect("sigma entry");
+        }
+    }
+    let fx = fixture_exx(
+        cell_of(&H2_ATOMS),
+        [1, 1, 2],
+        f,
+        Jk::Dense,
+        KXcGrid::Uniform([61, 61, 61]),
+        ExxDiv::Ewald,
+    );
+    let s = stress(&fx, None);
+    let d = mdiff(&s.sigma, &want);
+    eprintln!(
+        "{f} 61^3 1x1x2 vs PySCF: |sigma - sigma_pyscf| {d:.2e} (xx {:.9e} vs {:.9e}, zz {:.9e} vs {:.9e})",
+        s.sigma[0][0], want[0][0], s.sigma[2][2], want[2][2]
+    );
+    assert!(d < PYSCF_MGGA_BAR, "{f}: {d:e}");
+    // Both sides: the tau defect misses the same reference.
+    let m = stress(&fx, Some(KXcStressMutation::NoTauStrain));
+    let dm = mdiff(&m.sigma, &want);
+    eprintln!("{f} NoTauStrain vs PySCF: {dm:.2e}");
+    assert!(dm > 1e4 * PYSCF_MGGA_BAR, "{f}: mutant {dm:e}");
+}
+
+#[test]
+fn uniform_grid_stress_matches_pyscf_fftdf_krks_stress_scan() {
+    pyscf_mgga_case("SCAN", "SCAN");
+}
+
+#[test]
+#[ignore = "second 61^3 PySCF-anchor row (r2SCAN); one SCF plus two stresses on a 61^3 grid, measured about the SCAN row's time"]
+fn uniform_grid_stress_matches_pyscf_fftdf_krks_stress_r2scan() {
+    pyscf_mgga_case("R2SCAN", "R2SCAN");
+}
+
+// ------------------------------------------------------ RS-GDF refusal
+
+/// Meta-GGA on the RS-GDF J route is refused with a typed error (no anchor
+/// exists for it); the refusal precedes the Fock guard, so a PBE RS-GDF SCF
+/// handed in as SCAN exercises it. The same SCF is accepted as PBE.
+#[test]
+fn meta_gga_on_rs_gdf_is_refused() {
+    let mut fx = fixture(&H2, [1, 1, 3], "PBE", Jk::Gdf, KXcGrid::Uniform([24; 3]));
+    stress(&fx, None);
+    fx.functional = "SCAN".to_string();
+    let e = try_stress_cfg(&fx, &scfg(&fx.grid, None))
+        .expect_err("must refuse")
+        .to_string();
+    eprintln!("SCAN on RS-GDF: {e}");
+    assert!(e.contains("RS-GDF"), "{e}");
 }

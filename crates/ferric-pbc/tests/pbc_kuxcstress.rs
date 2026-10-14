@@ -1056,7 +1056,7 @@ fn refusals_and_the_per_spin_fock_guard() {
         ),
         (
             "SCAN",
-            "meta-GGA stress at k is not supported: SCAN: the tau strain (Hessian-moment terms) is not implemented",
+            "meta-GGA stress at k is not supported: SCAN: the tau strain term is implemented for the closed-shell stress only (open-shell meta-GGA stress is not implemented)",
         ),
         ("wB97X-V", "VV10"),
         ("B2PLYP", "double hybrid"),

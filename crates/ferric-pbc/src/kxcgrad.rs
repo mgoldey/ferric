@@ -583,7 +583,8 @@ pub(crate) fn chunk_tau(d: &[Array2<C64>], dchi: &[Array3<C64>]) -> Array1<f64> 
 
 /// Adds `V^τ(k)_μν = Σ_g ½ w_g v_τ(g) Σ_ax (∂_axφ_μ)* ∂_axφ_ν` to `v(k)` (the
 /// arithmetic of `KPeriodicXc::build`; `vt` is the gated `v_τ`). Separate from
-/// [`chunk_vxc`], which the stress shares and which carries no tau.
+/// [`chunk_vxc`], which carries no tau; the closed-shell stress shares both
+/// this and [`chunk_tau`].
 pub(crate) fn add_vtau(v: &mut [Array2<C64>], dchi: &[Array3<C64>], w: &[f64], vt: &[f64]) {
     let np = w.len();
     for (k, vk) in v.iter_mut().enumerate() {
@@ -961,7 +962,8 @@ pub(crate) fn resolve_global(functional: &str) -> Result<(XcDef, f64), FerricErr
 }
 
 /// [`resolve_global`] that lets meta-GGA (SCAN, r2SCAN) through: the
-/// closed-shell force supplies the tau terms. Every other refusal is shared.
+/// closed-shell force and stress supply the tau terms. Every other refusal is
+/// shared.
 pub(crate) fn resolve_global_mgga(functional: &str) -> Result<(XcDef, f64), FerricError> {
     let (xc, exx, rsh) = resolve_periodic_functional_rsh(functional)?;
     if rsh.is_some() {

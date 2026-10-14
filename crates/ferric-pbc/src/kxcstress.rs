@@ -16,7 +16,7 @@
 //!
 //! ```text
 //! E = (1/N_k) Σ_k Re tr[(h(k) + ½ J(k) - (a/4) K(k)) D(k)] + E_xc[D] + E_nn
-//! E_xc = Σ_g w_g ε(ρ_g, σ_g)        (the semilocal remainder for a hybrid)
+//! E_xc = Σ_g w_g ε(ρ_g, σ_g, τ_g)   (the semilocal remainder for a hybrid; no τ for LDA/GGA)
 //! ```
 //!
 //! `K(k)` is the SCF's exchange with its Madelung shift
@@ -66,7 +66,7 @@
 //!
 //! 3. **Meta-GGA tau**: `τ = (1/2N_k) Σ_k Σ_i Σ_μν D(k)_μν ∂_iφ_μ (∂_iφ_ν)*`
 //!    needs only first AO derivatives, whose strain moment is the `m2` already
-//!    used by the GGA `∇ρ` term:
+//!    evaluated for the GGA `∇ρ` term (there contracted with `p`, here with `md`):
 //!
 //!    ```text
 //!    dτ/dε_ab = (1/N_k) Σ_k Re Σ_{μ,i} m2^k[3i+a,b]_μ md^{k,i}_μ
@@ -94,7 +94,9 @@
 //!   invariant under a rigid rotation of the cell and the stress carries an
 //!   antisymmetric part `σ_ab − σ_ba` that vanishes only as the grid is
 //!   refined. It is the stress of the energy as computed (FD of `E(ε)` for each
-//!   of the nine components reproduces it, the antisymmetric part included);
+//!   of the nine components reproduces it, the antisymmetric part included; for
+//!   meta-GGA the nine-component FD anchor is of the fixed-`D` XC part, and the
+//!   total is FD-checked on three components);
 //!   [`KRksStress::sigma`] is returned UNSYMMETRISED and
 //!   [`KRksStress::symmetric`] / [`KRksStress::antisymmetry`] are the
 //!   diagnostics (the Gamma convention). Measured `max|σ_ab − σ_ba|` for H2 in
@@ -136,8 +138,10 @@
 //!
 //! # Scope
 //!
-//! LDA, GGA, meta-GGA (SCAN, r2SCAN; TPSS through its raw component names) and
-//! global hybrids; range-separated hybrids and VV10/double hybrids keep typed
+//! LDA, GGA, meta-GGA (SCAN, r2SCAN on the dense-AFT J route; TPSS only as its
+//! raw X and C component names, FD-anchored on a fixed density with the Fock
+//! guard skipped, there being no TPSS SCF) and global hybrids; range-separated
+//! hybrids, VV10/double hybrids and meta-GGA on the RS-GDF J route keep typed
 //! errors (the dense kernels carrying an attenuated exchange are refused by the
 //! HF assembly). The open-shell (UKS) twin is [`crate::kuxcstress`], which
 //! still refuses meta-GGA.
@@ -185,7 +189,8 @@ pub(crate) const CHUNK_TARGET_BYTES: usize = 64 << 20;
 /// (9), `m2` (27).
 pub(crate) const AO_PLANES: usize = 40;
 
-/// Deliberate defects for the mutation tests (`tests/pbc_kxcstress.rs`). Never
+/// Deliberate defects for the mutation tests (`tests/pbc_kxcstress.rs`,
+/// `tests/pbc_kxcstress_hybrid.rs`, `tests/pbc_kxcstress_mgga.rs`). Never
 /// set in production.
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -235,6 +240,10 @@ pub enum KXcStressMutation {
     /// Meta-GGA: the Pulay Fock built WITHOUT `V^τ` (the guard is skipped for
     /// this defect: it would refuse it).
     TauNoVxc,
+    /// Meta-GGA: the tau strain term with the strain indices transposed
+    /// (`m2[3i+b, a]` for `[a, b]`): invisible on a cubic cell with s shells
+    /// only, visible with p shells on a triclinic cell.
+    TauTranspose,
     /// NULL-TAU HOOK: take the meta-GGA code path (tau, `V^τ`, the tau strain
     /// term) for a GGA functional (`v_τ ≡ 0`). Must reproduce the GGA stress
     /// exactly.
@@ -631,7 +640,13 @@ impl KXcStressResponse for GridXc<'_> {
                                     let mut tt = C64::new(0.0, 0.0);
                                     for i in 0..3 {
                                         for mu in 0..nbf {
-                                            tt += fb.m2[k][(3 * i + a, b, mu, g)] * md[i][(mu, g)];
+                                            tt += if mutation
+                                                == Some(KXcStressMutation::TauTranspose)
+                                            {
+                                                fb.m2[k][(3 * i + b, a, mu, g)]
+                                            } else {
+                                                fb.m2[k][(3 * i + a, b, mu, g)]
+                                            } * md[i][(mu, g)];
                                         }
                                     }
                                     ao[a][b] += tau_pref * pts[g].weight * kscale * vt[g] * tt.re;
@@ -707,8 +722,9 @@ impl KXcStressResponse for GridXc<'_> {
 }
 
 /// Resolve the functional and its global exact-exchange fraction `a`; refuse
-/// what the stress does not cover (range-separated hybrids, meta-GGA, VV10 and
-/// double hybrids).
+/// what the OPEN-SHELL stress does not cover (range-separated hybrids,
+/// meta-GGA, VV10 and double hybrids). The closed-shell entry point uses
+/// [`resolve_global_mgga_stress`].
 pub(crate) fn resolve_global(functional: &str) -> Result<(XcDef, f64), FerricError> {
     let (xc, exx, rsh) = resolve_periodic_functional_rsh(functional)?;
     if rsh.is_some() {
@@ -734,7 +750,8 @@ pub(crate) fn resolve_global(functional: &str) -> Result<(XcDef, f64), FerricErr
         return Err(PeriodicDftError::Unsupported {
             feature: "meta-GGA stress at k",
             reason: format!(
-                "{functional}: the tau strain (Hessian-moment terms) is not implemented"
+                "{functional}: the tau strain term is implemented for the closed-shell \
+                 stress only (open-shell meta-GGA stress is not implemented)"
             ),
         }
         .into());
@@ -744,8 +761,7 @@ pub(crate) fn resolve_global(functional: &str) -> Result<(XcDef, f64), FerricErr
 
 /// [`resolve_global`] that lets meta-GGA through: the closed-shell stress
 /// supplies the tau strain term. VV10 and mixing weights (double hybrids) are
-/// refused; a caller without the tau terms (the unrestricted stress) keeps
-/// [`resolve_global`]'s refusal.
+/// refused; the open-shell stress keeps [`resolve_global`]'s refusal.
 pub(crate) fn resolve_global_mgga_stress(functional: &str) -> Result<(XcDef, f64), FerricError> {
     let (xc, exch) = resolve_global_mgga(functional)?;
     if xc.vv10.is_some() || xc.weights.is_some() {
@@ -759,7 +775,7 @@ pub(crate) fn resolve_global_mgga_stress(functional: &str) -> Result<(XcDef, f64
 }
 
 /// k-point closed-shell RKS stress (module doc) of a converged
-/// [`crate::kdft::solve_krks`] result for an LDA, GGA or global-hybrid
+/// [`crate::kdft::solve_krks`] result for an LDA, GGA, meta-GGA or global-hybrid
 /// `functional` (a hybrid also needs [`KRksStressConfig::exxdiv`]).
 ///
 /// * `hcore_cfg`, `hk`, `jk` — the config/output of the hcore and the J source
@@ -768,8 +784,10 @@ pub(crate) fn resolve_global_mgga_stress(functional: &str) -> Result<(XcDef, f64
 /// * `scf` — `KRksResult::scf`.
 /// * `cfg.grid`/`cfg.ao_threshold` — the grid and AO truncation of the energy.
 ///
+/// Also meta-GGA (SCAN, r2SCAN) on the dense-AFT J route.
+///
 /// Refuses (typed errors) range-separated hybrids, VV10/double
-/// hybrids, a hybrid without `cfg.exxdiv`, and an SCF whose Fock the rebuilt
+/// hybrids, meta-GGA with RS-GDF J, a hybrid without `cfg.exxdiv`, and an SCF whose Fock the rebuilt
 /// `h + J - (a/2) K + V_xc` does not reproduce.
 #[allow(clippy::too_many_arguments)]
 pub fn kpoint_rks_stress(
@@ -800,6 +818,15 @@ pub fn kpoint_rks_stress(
             .funcs
             .iter()
             .any(|f| matches!(f.family(), FunctionalFamily::MetaGga));
+    if mgga && matches!(jk, KStressJk::RsGdf(_)) {
+        return Err(PeriodicDftError::Unsupported {
+            feature: "meta-GGA stress at k with RS-GDF J",
+            reason: format!(
+                "{functional}: the meta-GGA stress is anchored on the dense-AFT J route only"
+            ),
+        }
+        .into());
+    }
     let resp = GridXc {
         cell,
         prep,
