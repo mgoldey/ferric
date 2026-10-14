@@ -1870,9 +1870,28 @@ class KpointRksResult:
         in the supercell of the mesh; XC on the energy's own grid) if
         with_gradient=True, else None."""
         ...
+    def stress(self) -> NDArray[np.float64] | None:
+        """Analytic stress sigma = (1/Omega) dE/d(strain) (3 x 3, Hartree/Bohr^3,
+        not symmetrised; pressure = -tr(sigma)/3; XC on the energy's own grid)
+        if with_stress=True, else None."""
+        ...
 
 class KpointScfResult:
-    """Result of run_rhf_kpts / run_uhf_kpts (energies per cell)."""
+    """Result of run_rhf_kpts / run_uhf_kpts / run_uks_kpts / run_roks_kpts /
+    run_rohf_kpts (energies per cell). method is "rhf", "uhf", "uks", "roks"
+    or "rohf"; functional, e_xc, exact_exchange_fraction, n_grid_points and
+    electrons_on_grid are set for the Kohn-Sham methods (uks, roks) only."""
+
+    @property
+    def functional(self) -> str | None: ...
+    @property
+    def e_xc(self) -> float | None: ...
+    @property
+    def exact_exchange_fraction(self) -> float | None: ...
+    @property
+    def n_grid_points(self) -> int | None: ...
+    @property
+    def electrons_on_grid(self) -> float | None: ...
 
     def gradient(self) -> NDArray[np.float64] | None:
         """Analytic nuclear gradient dE/dR (natoms x 3, Hartree/Bohr per cell,
@@ -2309,13 +2328,104 @@ def run_rks_kpts(
     range_split: float | bool | None = None,
     gdf_omega: float | None = None,
 ) -> KpointRksResult:
-    """Closed-shell k-point RKS (LDA / GGA / global hybrids). Open shell,
-    meta-GGA, range-separated hybrids and with_stress raise ValueError naming
-    the unsupported feature. with_gradient=True gives result.gradient() (the
-    analytic force, Hartree/Bohr per cell); range_split with it is a
-    ValueError, as is an ECP cell. Set neighbour_cutoff (Angstrom) explicitly
-    with with_gradient or finite differences: the default depends on the atom
-    positions in a large sparse cell and the force omits that."""
+    """Closed-shell k-point RKS (LDA / GGA / global hybrids and the pure
+    meta-GGAs SCAN / r2SCAN). Range-separated hybrids, VV10, hybrid
+    meta-GGAs and (for derivatives) ECP cells raise ValueError naming the
+    unsupported feature. with_gradient=True gives result.gradient() (the
+    analytic force, Hartree/Bohr per cell) and with_stress=True result.stress()
+    (Hartree/Bohr^3); range_split with either is a ValueError, and the
+    meta-GGA stress needs jk="dense". Set neighbour_cutoff (Angstrom)
+    explicitly with with_gradient / with_stress or finite differences: the
+    default depends on the atom positions in a large sparse cell and the
+    derivative omits that."""
+    ...
+
+def run_uks_kpts(
+    mol: Molecule,
+    lattice: Sequence[Sequence[float]],
+    basis_set: BasisSet,
+    functional: str,
+    mesh: tuple[int, int, int],
+    exxdiv: str = "ewald",
+    centring: str = "gamma",
+    ewald_start: str | None = None,
+    omega: float | None = None,
+    max_eri_gb: float | None = None,
+    max_iter: int = 200,
+    energy_conv: float = 1e-12,
+    grad_conv: float = 1e-9,
+    jk: str = "dense",
+    auxbasis: BasisSet | str | None = None,
+    memory_budget_gb: float | None = None,
+    n_radial: int = 75,
+    n_angular: int = 302,
+    neighbour_cutoff: float | None = None,
+    with_gradient: bool = False,
+    with_stress: bool = False,
+    range_split: float | bool | None = None,
+    gdf_omega: float | None = None,
+) -> KpointScfResult:
+    """k-point UKS (LDA / GGA / global hybrids; spin state from the Molecule's
+    multiplicity, electrons per cell). Mesh, ewald_start and jk as
+    run_uhf_kpts, functional and grid as run_rks_kpts. Meta-GGA,
+    range-separated hybrids and VV10 raise ValueError. with_gradient /
+    with_stress as run_rks_kpts (dense or RS-GDF J/K)."""
+    ...
+
+def run_roks_kpts(
+    mol: Molecule,
+    lattice: Sequence[Sequence[float]],
+    basis_set: BasisSet,
+    functional: str,
+    mesh: tuple[int, int, int],
+    exxdiv: str = "ewald",
+    centring: str = "gamma",
+    ewald_start: str | None = None,
+    omega: float | None = None,
+    max_eri_gb: float | None = None,
+    max_iter: int = 200,
+    energy_conv: float = 1e-12,
+    grad_conv: float = 1e-9,
+    jk: str = "dense",
+    auxbasis: BasisSet | str | None = None,
+    memory_budget_gb: float | None = None,
+    n_radial: int = 75,
+    n_angular: int = 302,
+    neighbour_cutoff: float | None = None,
+    with_gradient: bool = False,
+    with_stress: bool = False,
+    range_split: float | bool | None = None,
+    gdf_omega: float | None = None,
+) -> KpointScfResult:
+    """k-point ROKS (restricted open-shell Kohn-Sham, Roothaan effective Fock)
+    with the arguments of run_uks_kpts. with_gradient / with_stress need
+    jk="dense" (ValueError with RS-GDF); converge grad_conv well below 1e-5
+    for the stress (the ROHF orbital-gradient gate)."""
+    ...
+
+def run_rohf_kpts(
+    mol: Molecule,
+    lattice: Sequence[Sequence[float]],
+    basis_set: BasisSet,
+    mesh: tuple[int, int, int],
+    exxdiv: str = "ewald",
+    centring: str = "gamma",
+    ewald_start: str | None = None,
+    omega: float | None = None,
+    max_eri_gb: float | None = None,
+    max_iter: int = 200,
+    energy_conv: float = 1e-12,
+    grad_conv: float = 1e-9,
+    jk: str = "dense",
+    auxbasis: BasisSet | str | None = None,
+    memory_budget_gb: float | None = None,
+    with_gradient: bool = False,
+    with_stress: bool = False,
+    range_split: float | bool | None = None,
+    gdf_omega: float | None = None,
+) -> KpointScfResult:
+    """k-point ROHF: run_roks_kpts without a functional (no XC result fields).
+    Derivatives need jk="dense"."""
     ...
 
 def run_mp2_kpts(

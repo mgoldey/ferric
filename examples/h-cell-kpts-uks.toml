@@ -1,0 +1,35 @@
+# Periodic k-point open-shell Kohn-Sham: an H atom doublet / STO-3G in a 4 Bohr
+# simple-cubic cell on a 1x1x2 Gamma-centred k-mesh, PBE (UKS). The open-shell
+# k-point drivers are UKS (`uhf` or `ksdft` with multiplicity > 1, plus
+# `[dft] functional`), ROKS (`rohf` + `[dft] functional`) and ROHF (`rohf`);
+# LDA, GGA and global hybrids are supported, meta-GGA and range-separated
+# hybrids are errors that name the gap. The energy is
+# ferric_pbc::solve_kuks. Energies are Hartree PER CELL.
+#
+# task = "optimize" with kmesh works for these routes too (analytic k-point
+# force at a fixed lattice); the restricted-open-shell force needs jk = "dense".
+#
+#   OPENBLAS_NUM_THREADS=1 cargo run --release --bin ferric -- examples/h-cell-kpts-uks.toml
+
+[molecule]
+xyz = "testdata/molecules/h_atom.xyz"
+multiplicity = 2
+
+[basis]
+name = "sto-3g"
+
+[method]
+kind = "uhf"
+
+[dft]
+functional = "PBE"
+
+[cell]
+unit = "bohr"
+lattice = [[4.0, 0.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 4.0]]
+kmesh = [1, 1, 2]
+centring = "gamma"
+exxdiv = "ewald"
+jk = "dense"
+n_radial = 40
+n_angular = 110

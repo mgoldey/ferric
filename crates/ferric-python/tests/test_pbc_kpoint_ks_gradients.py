@@ -22,7 +22,8 @@ the energy jump by one step under a displacement).
     the explicit 3x supercell.
 * Monkhorst-Pack mesh, a hybrid, RS-GDF J/K against FD.
 * Flags off: gradient() is None and the energy is bit-identical with the flag.
-* Refusals with exact wording: stress, range_split with a force.
+* Refusals with exact wording: range_split with a force, unvalidated meta-GGA,
+  range-separated hybrids, ECP cells.
 """
 
 from __future__ import annotations
@@ -191,14 +192,8 @@ def test_memory_budget_smaller_than_the_retained_objects_is_a_typed_error(basis)
 
 
 def test_refusals_have_exact_wording(basis):
-    with pytest.raises(
-        ValueError,
-        match=r"run_rks_kpts: with_stress is not wired for k-point Kohn-Sham "
-        r"\(the library has kpoint_rks_stress, the bindings do not call it yet; the "
-        r"stress is available through run_rhf_kpts / run_uhf_kpts and, at the Gamma "
-        r"point, run_rks_gamma\); with_gradient=True is supported",
-    ):
-        _krks(H2_ATOMS, basis, "PBE", with_stress=True)
+    # Stress is wired for the closed-shell KS route (test_pbc_kpoint_open_shell_and_stress.py).
+    assert _krks(H2_ATOMS, basis, "PBE", with_stress=True).stress().shape == (3, 3)
     with pytest.raises(ValueError, match="range_split"):
         _krks(
             H2_ATOMS,
@@ -209,21 +204,18 @@ def test_refusals_have_exact_wording(basis):
             range_split=True,
             with_gradient=True,
         )
+    # Meta-GGAs other than the pure SCAN / r2SCAN keep the library's refusal
+    # (the raw TPSS component name is not a validated k-point SCF).
     with pytest.raises(
         ValueError,
-        match=r'^run_rks_kpts: functional "SCAN": General error: periodic DFT: meta-GGA is not supported: SCAN: the tau path was not prototyped periodically\. k-point RKS supports LDA, GGA and global-hybrid functionals only$',
+        match=r'^run_rks_kpts: functional "MGGA_X_TPSS": .*meta-GGA.*\. k-point RKS supports '
+        r"LDA, GGA, global-hybrid and SCAN / r2SCAN meta-GGA functionals only$",
     ):
-        _krks(H2_ATOMS, basis, "SCAN", with_gradient=True)
-    # r2SCAN too: the library has k-point meta-GGA forces, the binding does not
-    # expose them.
+        _krks(H2_ATOMS, basis, "MGGA_X_TPSS", with_gradient=True)
     with pytest.raises(
         ValueError,
-        match=r'^run_rks_kpts: functional "r2SCAN": .*meta-GGA.*\. k-point RKS supports LDA, GGA and global-hybrid functionals only$',
-    ):
-        _krks(H2_ATOMS, basis, "r2SCAN", with_gradient=True)
-    with pytest.raises(
-        ValueError,
-        match=r'^run_rks_kpts: functional "HSE06": .*range-separated.*\. k-point RKS supports LDA, GGA and global-hybrid functionals only$',
+        match=r'^run_rks_kpts: functional "HSE06": .*range-separated.*\. k-point RKS supports '
+        r"LDA, GGA, global-hybrid and SCAN / r2SCAN meta-GGA functionals only$",
     ):
         _krks(H2_ATOMS, basis, "HSE06", with_gradient=True)
 
@@ -232,9 +224,9 @@ def test_ecp_cell_force_is_refused(hi_basis):
     cell = ferric.Molecule.from_xyz_string(_hi_xyz(1))
     with pytest.raises(
         ValueError,
-        match=r"^run_rks_kpts: k-point KS forces with ECPs are not validated "
-        r"\(with_gradient=True on a cell whose basis carries an ECP; the energy "
-        r"without with_gradient runs\)$",
+        match=r"^run_rks_kpts: k-point KS forces and stress with ECPs are not validated "
+        r"\(with_gradient / with_stress on a cell whose basis carries an ECP; the "
+        r"energy without them runs\)$",
     ):
         ferric.run_rks_kpts(
             cell, _hi_lattice(1), hi_basis, "PBE", (1, 1, 2), with_gradient=True

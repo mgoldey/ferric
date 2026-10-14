@@ -10,8 +10,10 @@
 # differentiates the energy on the [cell] n_radial x n_angular grid with its
 # neighbour cutoff, and for a hybrid the SCF's own exxdiv. The run prints the
 # final geometry and the final gradient dE/dR (Hartree/Bohr per cell).
-# Open-shell Kohn-Sham, meta-GGA, range-separated hybrids and VV10 functionals
-# have no k-point force and are refused; there is no lattice relaxation.
+# The pure meta-GGAs SCAN and r2SCAN also have the closed-shell force; UKS/ROKS
+# and ROHF have it too (see h-cell-kpts-uks.toml). Range-separated hybrids and
+# VV10 functionals have no k-point force and are refused; there is no lattice
+# relaxation.
 #
 # Seconds to minutes to run:
 #   OPENBLAS_NUM_THREADS=1 cargo run --release --bin ferric -- examples/h2-cell-kpts-rks-opt.toml
