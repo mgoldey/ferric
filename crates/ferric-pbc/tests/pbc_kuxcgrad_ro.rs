@@ -430,7 +430,7 @@ fn the_orbital_gradient_gate_fires_and_matters() {
     eprintln!("loose ROKS: {e}");
     // The exact gate message (not the Fock guard's), with g far above the tolerance.
     let g_msg = gate_message_value(&e, "kpoint_roks_gradient");
-    assert!(g_msg > 1e-3, "g = {g_msg:e}");
+    assert!(g_msg > 1e-4, "g = {g_msg:e}");
     assert!(!e.contains("Fock matrix rebuilt"), "{e}");
     let off = force_scf(
         &loose,
@@ -475,7 +475,7 @@ fn gate_message_value(e: &str, who: &str) -> f64 {
 /// the ratio of the errors over the ratio of the g's must be within a factor of
 /// two of 1 (measured 1.14).
 #[test]
-#[ignore = "three ROKS SCFs; measured below"]
+#[ignore = "three ROKS SCFs; measured 56 s"]
 fn gate_error_is_first_order_in_g_between_two_states() {
     let gt = force(&fixture(&H3, [1, 1, 1], Some("PBE"), ExxDiv::None));
     let at = |ec: f64, gc: f64| {

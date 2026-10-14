@@ -810,7 +810,7 @@ fn the_gate_matters_off_stationarity_and_the_uhf_form_is_no_remedy() {
 /// g and 139x in the gate-off stress error. The ratio of the errors over the
 /// ratio of the g's must be within a factor of two of 1 (measured 1.11).
 #[test]
-#[ignore = "three ROKS SCFs + 2 stresses; measured below"]
+#[ignore = "three ROKS SCFs + 2 stresses; measured ~60 s"]
 fn gate_error_is_first_order_in_g_between_two_states() {
     let st = stress(&fixture(&H3, G111, Some("PBE"), ExxDiv::None));
     let at = |ec: f64, gc: f64| {
@@ -903,7 +903,7 @@ const H5: [[f64; 3]; 5] = [
 /// PROBE: the same gate-off calibration as `ro_stress_gate_probe` on a system with
 /// a rank > 1 block (H5 doublet, ROKS PBE, 1x1x1).
 #[test]
-#[ignore = "probe: 4 ROKS SCFs on H5; run with --nocapture"]
+#[ignore = "probe: 4 ROKS SCFs on H5; measured 415 s; run with --nocapture"]
 fn ro_stress_gate_probe_rank2() {
     let st = stress(&fixture(&H5, G111, Some("PBE"), ExxDiv::None));
     for (ec, gc) in [(1e-4, 1e-2), (1e-6, 1e-3), (1e-8, 1e-4)] {
