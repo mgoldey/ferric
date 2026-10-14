@@ -1226,7 +1226,6 @@ fn refusals_and_the_fock_guard() {
     };
     for (name, key) in [
         ("HSE06", "range-separated"),
-        ("SCAN", "meta-GGA"),
         ("wB97X-V", "VV10"),
     ] {
         let e = run(name, &fx.res.scf)

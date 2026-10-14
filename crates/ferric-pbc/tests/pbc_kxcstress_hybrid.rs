@@ -16,7 +16,7 @@
 //! gate, and production-wired mutants.
 //!
 //! NOT covered: p/d shells on the hybrid K walks (every fixture is H2/STO-3G),
-//! range-separated hybrids / meta-GGA / VV10 (refused), heavy atoms / ECP with a
+//! range-separated hybrids / VV10 (refused; meta-GGA is covered by pbc_kxcstress_mgga.rs), heavy atoms / ECP with a
 //! hybrid, open shell, range-split RS-GDF above lambda = 1, no external (PySCF)
 //! anchor (its k stress refuses hybrids).
 
@@ -1369,7 +1369,6 @@ fn refusals_and_the_hybrid_fock_guard() {
     };
     for (name, key) in [
         ("HSE06", "range-separated"),
-        ("SCAN", "meta-GGA"),
         ("wB97X-V", "VV10"),
         ("B2PLYP", "double hybrid"),
     ] {
