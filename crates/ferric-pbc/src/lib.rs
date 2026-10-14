@@ -130,13 +130,18 @@
 //!   Lagrangian `W_RO` as the overlap weight and the ROHF orbital-gradient
 //!   gate in place of the commutator gate; dense-AFT J/K only (an RS-GDF
 //!   source is refused). The gate is loose: at its tolerance (1e-5) the stress
-//!   error can reach about 4e-5 Ha per cell (~18 MPa on the 64 Bohr³ test cell),
+//!   error can reach about 4e-5 to 5e-5 Ha per cell (~18 MPa on the 64 Bohr³
+//!   test cell; measured on H3 and H5 STO-3G at 1x1x1, not a general bound),
 //!   so it refuses an unconverged state without certifying the stress to the
-//!   anchors' accuracy.
+//!   anchors' accuracy. The k gate applies the tolerance to the spectral norm of
+//!   the blocks, which is at least the largest element the Gamma entry points
+//!   use: it can refuse a state the Gamma entry point accepts.
 //! * [`kuxcgrad`] — the open-shell twin (`kpoint_uks_gradient`, k-point UKS
 //!   from [`kuks`]; `kpoint_roks_gradient` / `kpoint_rohf_gradient` for the
 //!   restricted-open-shell energies of [`kroks`] with the ROHF orbital-gradient
-//!   gate): the same assembly with two spin channels, spin-resolved
+//!   gate, a spectral-norm measure that can refuse a state the Gamma entry
+//!   points accept; force error about 0.1 to 0.74 times the reported g on
+//!   H3/STO-3G at 1x1x1, not a general bound): the same assembly with two spin channels, spin-resolved
 //!   `v_xc` (`σ_αα`, `σ_αβ`, `σ_ββ` contractions), per-spin exchange and a
 //!   per-spin Fock guard; closed-shell densities reproduce [`kxcgrad`] per
 //!   part. Meta-GGA, range-separated hybrids and VV10 are refused here (the

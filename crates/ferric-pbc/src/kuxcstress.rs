@@ -130,9 +130,16 @@
 //! (`tests/pbc_kuxcstress_ro.rs`, `ro_stress_gate_probe`, H3 doublet ROKS PBE,
 //! 1x1x1, SCF stopped early, gate off, against the tight state): orbital
 //! gradient `g` 6.9e-3 -> `dE/dε` error 2.4e-2, `g` 2.8e-4 -> 1.9e-4, `g` 9.3e-7
-//! -> 3.7e-6, `g` 7.5e-9 -> 2.6e-8: first order with a slope of 0.67 to 3.9. At
-//! the tolerance 1e-5 the gate therefore admits an error of up to about 4e-5 in
-//! `dE/dε` (about 1.3e3 times the 3e-8 FD bar of the anchors, about 18 MPa on
+//! -> 3.7e-6, `g` 7.5e-9 -> 2.6e-8: first order (the last two states are 125x
+//! apart in `g` and 139x in error) with a slope of 0.67 to 3.9. A second system
+//! with a rank-2 closed-virtual block (H5 doublet, STO-3G, 1x1x1, ROKS PBE,
+//! `ro_stress_gate_probe_rank2`) gives `g` 4.9e-4 -> 1.2e-3, 7.8e-5 -> 3.8e-4,
+//! 2.7e-6 -> 6.5e-6 (slopes 2.4, 4.8, 2.4). MEASURED ON THESE TWO TINY CELLS
+//! ONLY: for larger cells the per-k maximum is not the sum over orbitals or
+//! atoms, and for blocks of rank > 1 the spectral norm is below the Frobenius
+//! norm by up to `sqrt(rank)`; these numbers are not general bounds. On them,
+//! at the tolerance 1e-5 the gate admits an error of up to about 4e-5 to 5e-5 in
+//! `dE/dε` (about 1.5e3 times the 3e-8 FD bar of the anchors, about 18 MPa on
 //! the 64 Bohr³ test cell): it refuses a plainly unconverged state, it does not
 //! certify the stress to the anchors' accuracy. The unrestricted-form `W` is no
 //! remedy off stationarity (comparable error at the same state).
@@ -161,8 +168,8 @@ use crate::kpts::KPointMesh;
 use crate::kroks::KRoScfResult;
 use crate::kstress::{assemble, grad_jk, open_ledger, refuse_unsupported, KStressJk};
 use crate::kuscf::KUScfResult;
-use crate::kuxcgrad::{ro_gate_scratch_bytes, ro_orbital_gradient_k};
 pub use crate::kuxcgrad::UKS_COMMUTATOR_TOL;
+use crate::kuxcgrad::{ro_gate_scratch_bytes, ro_orbital_gradient_k};
 use crate::kxcgrad::{chunk_density, chunk_vxc, conj, hermitize};
 use crate::kxcstress::{
     finish, resolve_global, strain_points_for, KRksStress, KRksStressConfig, KXcStressMutation,
@@ -762,7 +769,8 @@ fn refuse_rsgdf(who: &str, jk: &KStressJk<'_>) -> Result<(), FerricError> {
 /// gradient is refused above [`crate::grad::RO_ORBITAL_GRADIENT_TOL`] = 1e-5,
 /// and the stress error is first order in it with a measured slope of 0.67 to
 /// 3.9, so a state at the tolerance can carry a `dE/dε` error of about 4e-5
-/// (~18 MPa on the 64 Bohr³ test cell, ~1e3 times the FD bar of the anchors).
+/// (~18 MPa on the 64 Bohr³ test cell, ~1e3 times the FD bar of the anchors;
+/// measured on H3 and H5 STO-3G at 1x1x1 only, not a general bound).
 /// The gate refuses a plainly unconverged state; it does not certify the stress
 /// to the anchors' accuracy, so converge the SCF well below the tolerance.
 #[allow(clippy::too_many_arguments)]

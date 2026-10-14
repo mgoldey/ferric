@@ -108,11 +108,18 @@
 //! only to about `1e-3`. The current form equals the true gradient to 1e-8
 //! relative and is proportional to `κ` (unit tests `gate_tests`). The spectral
 //! norm is at least the largest element in any orthonormal basis, so the
-//! tolerance remains an orbital-gradient refusal threshold. Calibration (force
-//! error against the reported `g`, H3 doublet ROKS PBE, gate off): `g` 6.9e-3 ->
-//! 4.4e-3, 2.8e-4 -> 3.2e-5, 9.3e-7 -> 6.9e-7, 7.5e-9 -> 4.9e-9, i.e. at most
-//! about 0.74 `g` (and at least 0.11 `g`), so the tolerance 1e-5 caps the force
-//! error near 7e-6 Ha/Bohr. The tolerance is unchanged but a state that passed
+//! tolerance remains an orbital-gradient refusal threshold (and the same
+//! constant that bounds the Gamma largest-element measure applies here to a
+//! larger number: the k gate can refuse a state the Gamma gate accepts).
+//! Calibration (force error against the reported `g`, gate off; MEASURED ON
+//! H3/STO-3G AT 1x1x1, ROKS PBE ONLY, where every block has rank 1 so the
+//! spectral norm equals the vector norm; for larger cells the per-k maximum is
+//! not the sum over orbitals or atoms, and for blocks of rank > 1 the spectral
+//! norm is below the Frobenius norm by up to `sqrt(rank)`, so this is not a
+//! general bound; the force was not measured on a rank > 1 system): `g` 6.9e-3
+//! -> 4.4e-3, 2.8e-4 -> 3.2e-5, 9.3e-7 -> 6.9e-7, 7.5e-9 -> 4.9e-9, i.e. at most
+//! about 0.74 `g` (and at least 0.11 `g`) there, so the tolerance 1e-5 caps the
+//! force error near 7e-6 Ha/Bohr on that system. The tolerance is unchanged but a state that passed
 //! the earlier gate may now be refused. The MOs must be one set per k-point (a
 //! short set is a typed error). ROHF/ROKS are anchored on the dense-AFT J/K
 //! only; an RS-GDF source is refused.

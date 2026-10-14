@@ -73,6 +73,7 @@ use ferric_pbc::kroks::{
 };
 use ferric_pbc::kscf::{solve_krhf, KPointInjection, KPointJk, KRhfConfig};
 use ferric_pbc::kstress::{kpoint_rhf_stress, KStressConfig, KStressJk, KStressMutation};
+use ferric_pbc::kuxcgrad::RO_GATE_N2_ARRAYS;
 use ferric_pbc::kuxcstress::{
     kpoint_null_xc_roks_stress, kpoint_rohf_stress, kpoint_roks_stress, KUStressMutation,
     KUksStress, KUksStressConfig,
@@ -169,7 +170,7 @@ fn grid_cfg() -> PeriodicGridConfig {
 fn cell_of(pos: &[[f64; 3]]) -> Cell {
     let mut mol = hydrogens(pos);
     mol.multiplicity = match pos.len() {
-        3 => 2,
+        3 | 5 => 2,
         4 => 3,
         _ => 1,
     };
@@ -753,7 +754,8 @@ fn loose_roks_scf_fires_the_orbital_gradient_gate_with_the_exact_message() {
 }
 
 /// The same state with the gate off is wrong by far more than the FD bar, the
-/// miss is first order in the reported orbital gradient (two-sided slope band
+/// miss stays at its recorded slope (a REGRESSION PIN on one deterministic state, not a
+/// first-order test: that is `gate_error_is_first_order_in_g_between_two_states`; two-sided slope band
 /// from `ro_stress_gate_probe`), and the unrestricted-form `W` is no better:
 /// the gate, not the form of `W`, protects off stationarity.
 #[test]
@@ -776,8 +778,8 @@ fn the_gate_matters_off_stationarity_and_the_uhf_form_is_no_remedy() {
         "gate off is not wrong enough: {miss:e}"
     );
     assert!(
-        (GATE_SLOPE.0..=GATE_SLOPE.1).contains(&slope),
-        "miss {miss:e} is not first order in g {g:e} (slope {slope})"
+        (GATE_SLOPE_PIN.0..=GATE_SLOPE_PIN.1).contains(&slope),
+        "the pinned slope of this deterministic state moved: miss {miss:e}, g {g:e}, slope {slope}"
     );
     // The UHF-form W is NOT a remedy: with the gate off it is wrong by a
     // comparable amount (and with the gate on it is refused like W_RO).
@@ -803,7 +805,35 @@ fn the_gate_matters_off_stationarity_and_the_uhf_form_is_no_remedy() {
     assert!(e.contains("ROHF orbital gradient"), "{e}");
 }
 
-/// First-order band (miss / g) of the gate-off stress error. `ro_stress_gate_probe`
+/// FIRST-ORDER check from two independent states (measured, ROKS PBE H3 1x1x1):
+/// g 9.345e-7 (SCF 1e-6/1e-3) and g 7.495e-9 (SCF 1e-8/1e-4) differ by 125x in
+/// g and 139x in the gate-off stress error. The ratio of the errors over the
+/// ratio of the g's must be within a factor of two of 1 (measured 1.11).
+#[test]
+#[ignore = "three ROKS SCFs + 2 stresses; measured below"]
+fn gate_error_is_first_order_in_g_between_two_states() {
+    let st = stress(&fixture(&H3, G111, Some("PBE"), ExxDiv::None));
+    let at = |ec: f64, gc: f64| {
+        SETTINGS.with(|s| s.set((ec, gc)));
+        let fx = fixture(&H3, G111, Some("PBE"), ExxDiv::None);
+        SETTINGS.with(|s| s.set((1e-13, 1e-10)));
+        let off = stress_mut(&fx, None, Some(KUStressMutation::RoGateOff), None);
+        (off.hf.commutator, mdiff(&off.de_deps, &st.de_deps))
+    };
+    let (g1, e1) = at(1e-6, 1e-3);
+    let (g2, e2) = at(1e-8, 1e-4);
+    let r = (e1 / e2) / (g1 / g2);
+    eprintln!("g {g1:.3e} -> {e1:.3e}; g {g2:.3e} -> {e2:.3e}; ratio of ratios {r:.3}");
+    assert!(
+        g1 / g2 > 50.0,
+        "the two states are not far apart: {}",
+        g1 / g2
+    );
+    assert!((0.5..=2.0).contains(&r), "not first order in g: {r}");
+}
+
+/// REGRESSION PIN (miss / g) of the gate-off stress error at one deterministic
+/// state (the low outlier of the slopes below). `ro_stress_gate_probe`
 /// (H3 doublet ROKS PBE 1x1x1, SCF stopped early; basis-independent orbital
 /// gradient g -> max |dE/deps - tight| with the gate off): g 6.876e-3 ->
 /// 2.397e-2 (slope 3.49); g 2.791e-4 -> 1.860e-4 (0.666); g 9.345e-7 ->
@@ -813,9 +843,10 @@ fn the_gate_matters_off_stationarity_and_the_uhf_form_is_no_remedy() {
 /// about 4e-5 (about 1.3e3 times the FD bar; ~18 MPa on this 64 Bohr^3 cell):
 /// looser than the anchors, it refuses a plainly unconverged state and does not
 /// certify the stress to the anchors' accuracy. The band is a factor of two each
-/// way around the slope 0.666 of the tested state (g 2.791e-4). (The superseded
+/// way around the slope 0.666 of the tested state (g 2.791e-4). Measured on the
+/// H3 doublet, STO-3G, 1x1x1, ROKS PBE only (every block rank 1). (The superseded
 /// F_eff-eigenvector form reported g 3.5e-5 for this same state.)
-const GATE_SLOPE: (f64, f64) = (0.33, 1.33);
+const GATE_SLOPE_PIN: (f64, f64) = (0.33, 1.33);
 
 /// Probe behind the gate calibration: the orbital gradient g of ROKS SCFs
 /// stopped early against the stress error with the gate off.
@@ -854,6 +885,47 @@ fn ro_stress_gate_probe() {
                 mdiff(&off.de_deps, &st.de_deps)
             ),
             Err(e) => eprintln!("conv ({ec:.0e},{gc:.0e}): refused: {e}"),
+        }
+    }
+}
+
+/// H5 doublet (na = 3, nb = 2): closed 2, open 1, virtual 2, so the
+/// closed-virtual block is 2 x 2 (rank up to 2) and the spectral norm is below
+/// the Frobenius norm by up to sqrt(2).
+const H5: [[f64; 3]; 5] = [
+    [0.3, 0.2, 0.1],
+    [0.35, 0.12, 1.5],
+    [0.3, 1.9, 0.4],
+    [1.8, 0.5, 2.2],
+    [2.2, 3.0, 3.0],
+];
+
+/// PROBE: the same gate-off calibration as `ro_stress_gate_probe` on a system with
+/// a rank > 1 block (H5 doublet, ROKS PBE, 1x1x1).
+#[test]
+#[ignore = "probe: 4 ROKS SCFs on H5; run with --nocapture"]
+fn ro_stress_gate_probe_rank2() {
+    let st = stress(&fixture(&H5, G111, Some("PBE"), ExxDiv::None));
+    for (ec, gc) in [(1e-4, 1e-2), (1e-6, 1e-3), (1e-8, 1e-4)] {
+        SETTINGS.with(|s| s.set((ec, gc)));
+        let res = std::panic::catch_unwind(|| fixture(&H5, G111, Some("PBE"), ExxDiv::None));
+        SETTINGS.with(|s| s.set((1e-13, 1e-10)));
+        let Ok(loose) = res else {
+            eprintln!("RANK2 conv ({ec:.0e},{gc:.0e}): SCF did not converge");
+            continue;
+        };
+        match stress_with(
+            &loose,
+            &loose.res.scf,
+            &scfg(None, Some(KUStressMutation::RoGateOff), None),
+        ) {
+            Ok(off) => eprintln!(
+                "RANK2 conv ({ec:.0e},{gc:.0e}): g {:.3e}, stress error (gate off) {:.3e}, slope {:.3}",
+                off.hf.commutator,
+                mdiff(&off.de_deps, &st.de_deps),
+                mdiff(&off.de_deps, &st.de_deps) / off.hf.commutator
+            ),
+            Err(e) => eprintln!("RANK2 conv ({ec:.0e},{gc:.0e}): refused: {e}"),
         }
     }
 }
@@ -1061,7 +1133,11 @@ fn charge_of(m: &str) -> usize {
 /// stands in the way). Stage order: open_ledger, Fock-guard reservation, gate
 /// scratch check, assembly. A probe error is "too small" iff it comes from
 /// open_ledger or the guard, "too big" iff the run passes the gate. The charge
-/// must be eight `n^2` complex arrays; a charge of seven (or none) fails.
+/// must be `RO_GATE_N2_ARRAYS` `n^2` complex arrays (the constant shared with
+/// the allocator's documentation), and that count must cover the arrays
+/// enumerable from the gate's code: 15 named arrays live at once plus one
+/// product temporary plus the six of the spectral-norm stage = 22. A charge of
+/// the old eight (or none) fails both checks.
 #[test]
 fn the_gate_scratch_charge_is_read_from_the_production_error() {
     let fx = fixture(&H3, G111, None, ExxDiv::Ewald);
@@ -1095,7 +1171,11 @@ fn the_gate_scratch_charge_is_read_from_the_production_error() {
     let m = found.expect("the bisection must land in the gate-scratch band");
     eprintln!("gate scratch: {m}");
     let n = fx.prep.nbasis();
-    assert_eq!(charge_of(&m), 8 * n * n * 16, "{m}");
+    assert_eq!(charge_of(&m), RO_GATE_N2_ARRAYS * n * n * 16, "{m}");
+    assert!(
+        charge_of(&m) >= 22 * n * n * 16,
+        "the charge covers fewer arrays than the gate holds: {m}"
+    );
 }
 
 // ------------------------------------------------------------------ (4)
