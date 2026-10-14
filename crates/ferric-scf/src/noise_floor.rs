@@ -109,11 +109,19 @@ pub fn estimate_total_energy_abs(mol: &Molecule) -> f64 {
         .sum()
 }
 
-/// Whether the floor model covers this configuration. Functional (grid) runs
-/// and the LinK / COSX exchange builders add noise sources that were not
-/// measured, so no claim is made for them.
+/// Whether the floor model covers this configuration. Measured: plain HF with
+/// the default Schwarz screening and the default (direct) K builder, with or
+/// without density-fitted J/K and with or without a point-charge / field
+/// embedding. NOT measured, so no claim is made: functionals (grid noise),
+/// the LinK / COSX exchange builders, PCM / COSMO solvation, polarizable
+/// embedding, and non-default `screening` (CSB, CSAM).
 pub fn is_characterised(config: &crate::rhf::RhfConfig) -> bool {
-    config.xc.is_none() && matches!(config.k_builder.as_deref(), None | Some("direct"))
+    config.xc.is_none()
+        && matches!(config.k_builder.as_deref(), None | Some("direct"))
+        && config.pcm.is_none()
+        && config.cosmo.is_none()
+        && config.polarizable.is_none()
+        && config.screening == crate::screening::ScreeningKind::default()
 }
 
 /// True when a density-fitting aux request means "fit" (`None` and the empty
@@ -357,6 +365,13 @@ mod tests {
         assert!(floor_for_config(&c, 100.0, 50, true).is_none());
         c.k_builder = None;
         c.xc = Some("pbe".into());
+        assert!(!is_characterised(&c));
+        c.xc = None;
+        assert!(is_characterised(&c));
+        c.screening = crate::screening::ScreeningKind::Csam;
+        assert!(!is_characterised(&c));
+        c.screening = crate::screening::ScreeningKind::default();
+        c.cosmo = Some(crate::cosmo::CosmoConfig::default());
         assert!(!is_characterised(&c));
     }
 

@@ -177,7 +177,9 @@ pub struct ConvergenceReport {
     pub density_conv: f64,
     /// Estimated noise floor of `de` for this system
     /// ([`crate::noise_floor::de_noise_floor`]), or `None` when it is not
-    /// estimable (functional / COSX runs, whose grid noise is not characterised).
+    /// estimable: functionals, the LinK / COSX exchange builders, PCM / COSMO,
+    /// polarizable embedding, non-default screening, or a non-finite energy
+    /// (none of those noise sources was measured).
     /// Report only: nothing reads it back.
     pub de_noise_floor: Option<f64>,
 }
