@@ -2393,6 +2393,8 @@ def run_rhf(
     cosx_final_pass: bool | None = None,
     cosx_final_grid: tuple[int, int] | tuple[int, int, str] | None = None,
     cosx_overlap_fit: bool | None = None,
+    aurora: bool | None = None,
+    trah_trigger: float | None = None,
 ) -> RhfResult:
     """Closed-shell Restricted Hartree-Fock.
 
@@ -2451,6 +2453,7 @@ def run_uhf(
     cosx_final_pass: bool | None = None,
     cosx_final_grid: tuple[int, int] | tuple[int, int, str] | None = None,
     cosx_overlap_fit: bool | None = None,
+    trah_trigger: float | None = None,
 ) -> UhfResult:
     """Unrestricted Hartree-Fock (open-shell). Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today; non-convergence raises. A user-set energy_conv below the estimated (rounding-level) noise floor of dE emits one RuntimeWarning before the SCF starts.
 
