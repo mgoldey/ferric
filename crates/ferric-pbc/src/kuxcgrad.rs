@@ -248,6 +248,21 @@ pub(crate) struct SpinInput<'a> {
     mos: Option<&'a [Array2<C64>]>,
 }
 
+/// Number of `n²` complex arrays the orbital-gradient gate holds at its peak
+/// (one k at a time, `m <= n` MOs), counted from `ro_orbital_gradient_with`:
+/// 15 named arrays live at once (`C†`, `S C`, `(S C)†`, `D_α^o`, `D_β^o`,
+/// `1`, `P_c`, `P_o`, `P_v`, `F_α^o`, `F_β^o`, `F^o_α + F^o_β`, `P_c F_β P_o`,
+/// `P_o F_α P_v`, `P_c F P_v`), one product temporary, and the spectral-norm
+/// stage on top (`gᴴ`, `gᴴ g`, its Hermitian part, the column-major copy, the
+/// eigenvectors, about two for the LAPACK workspace): 22, charged as 24.
+#[doc(hidden)]
+pub const RO_GATE_N2_ARRAYS: usize = 24;
+
+/// Bytes the gate's per-k transients are charged on the ledger.
+pub(crate) fn ro_gate_scratch_bytes(n: usize) -> usize {
+    bytes_of((n * n) as u64, 16 * RO_GATE_N2_ARRAYS)
+}
+
 /// Deliberate defects of the ROHF orbital-gradient measurement (unit tests
 /// only; production passes `None`).
 #[allow(dead_code)]
@@ -261,6 +276,9 @@ pub(crate) enum GateMutation {
     DropClosedOpen,
     /// `D` is transformed without `S` (`C† D C`): the wrong metric.
     WrongS,
+    /// The Focks are transformed with `S C` (`(S C)† F (S C)`) instead of `C`:
+    /// `S` wrongly placed on the covariant side.
+    WrongFockS,
 }
 
 /// Largest singular value of `g` (NaN if any element is not finite).
@@ -368,8 +386,11 @@ pub(crate) fn ro_orbital_gradient_with(
                  space (deviation {bad:.3e}): not a ROHF state of these MOs"
             )));
         }
-        let fam = ch.dot(&fa[k]).dot(c);
-        let fbm = ch.dot(&fb[k]).dot(c);
+        let (fam, fbm) = if mutation == Some(GateMutation::WrongFockS) {
+            (sch.dot(&fa[k]).dot(&sc), sch.dot(&fb[k]).dot(&sc))
+        } else {
+            (ch.dot(&fa[k]).dot(c), ch.dot(&fb[k]).dot(c))
+        };
         let fcv = &fam + &fbm;
         let g_co = pc.dot(&fbm).dot(&po);
         let g_ov = po.dot(&fam).dot(&pv);
@@ -1161,6 +1182,13 @@ fn uks_gradient_with(
     };
     let og = match inp.mos {
         Some(mos) => {
+            ledger.check(
+                &format!(
+                    "k RO force orbital-gradient gate scratch (n = {}, per-k transients)",
+                    prep.nbasis()
+                ),
+                ro_gate_scratch_bytes(prep.nbasis()),
+            )?;
             let g = ro_orbital_gradient_k(who, mos, &hk.s, &da, &db, &fa, &fb)?;
             let gate_on = smut != Some(KUSpinMutation::RoGateOff);
             if gate_on && (g.is_nan() || g > RO_ORBITAL_GRADIENT_TOL) {
@@ -1569,6 +1597,74 @@ mod gate_tests {
             old < 0.5 * truth,
             "the old gate no longer under-reports: {old:e} vs {truth:e}"
         );
+    }
+
+    /// Non-orthogonal AO basis with a COMPLEX Hermitian overlap and an
+    /// INDEPENDENT reference: the orbitals are built as `c = S^(-1/2) G` (G the
+    /// real rotated orthonormal set of the toy), the AO Focks as
+    /// `F = S^(1/2) F_o S^(1/2)` and the densities as `c c†`, so the true blocks
+    /// are those of the toy in `G` (no use of the gate's formulas); the gate is
+    /// handed a DIFFERENT S-orthonormal basis `mos = S^(-1/2) V` (V a unitary
+    /// with phases). The gate must reproduce the reference; a wrong metric on
+    /// the density side (`WrongS`) and `S` wrongly placed on the Fock side
+    /// (`(S C)† F (S C)`, `WrongFockS`) must each be caught.
+    #[test]
+    fn complex_overlap_gate_matches_an_independent_reference() {
+        let rots = [(0, 1, 1e-4), (1, 2, 2e-4), (0, 2, 3e-4)];
+        let t = toy(&rots);
+        let truth = t.truth.iter().cloned().fold(0.0_f64, f64::max);
+        let mut s = Array2::<C64>::eye(N);
+        for i in 0..N {
+            for j in i + 1..N {
+                let ph = 0.3 * ((i + 1) * (j + 1)) as f64;
+                let v = C64::from_polar(0.12 / (1.0 + (j - i) as f64), ph);
+                s[(i, j)] = v;
+                s[(j, i)] = v.conj();
+            }
+        }
+        let (w, u) = crate::kscf::eigh_herm(&s).unwrap();
+        assert!(w.iter().all(|&x| x > 0.3), "{w:?}");
+        let fun = |f: &dyn Fn(f64) -> f64| -> Array2<C64> {
+            let mut d = Array2::<C64>::zeros((N, N));
+            for i in 0..N {
+                d[(i, i)] = C64::new(f(w[i]), 0.0);
+            }
+            u.dot(&d).dot(&u.t().mapv(|z| z.conj()))
+        };
+        let sh = fun(&|x| x.sqrt());
+        let sih = fun(&|x| 1.0 / x.sqrt());
+        let da = sih.dot(&t.da).dot(&sih);
+        let db = sih.dot(&t.db).dot(&sih);
+        let fa = sh.dot(&t.fa).dot(&sh);
+        let fb = sh.dot(&t.fb).dot(&sh);
+        let mut v = cplx(&givens(0, 3, 0.7).dot(&givens(2, 5, 1.1)));
+        for j in 0..N {
+            let ph = C64::from_polar(1.0, 0.4 * j as f64);
+            for i in 0..N {
+                v[(i, j)] *= ph;
+            }
+        }
+        let mos = sih.dot(&v);
+        let t2 = Toy {
+            da,
+            db,
+            fa,
+            fb,
+            s,
+            truth: t.truth,
+            mos,
+        };
+        let g = new_gate(&t2, None).unwrap();
+        eprintln!("complex S: gate {g:.6e}, independent reference {truth:.6e}");
+        assert!(((g - truth) / truth).abs() < 1e-8, "{g:e} vs {truth:e}");
+        for m in [GateMutation::WrongS, GateMutation::WrongFockS] {
+            let r = new_gate(&t2, Some(m));
+            eprintln!("complex S, {m:?}: {r:?}");
+            assert!(
+                r.is_err() || (r.unwrap() - truth).abs() > 0.05 * truth,
+                "{m:?} survives a non-orthogonal complex S"
+            );
+        }
     }
 
     /// A NaN Fock element is reported as NaN (not swallowed by `f64::max`).

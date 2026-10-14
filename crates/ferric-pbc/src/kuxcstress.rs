@@ -106,19 +106,22 @@
 //! must never be used for `W`.
 //!
 //! `W_RO` exists exactly when the three ROHF orbital-gradient blocks vanish at
-//! every k (`(f_β)_co`, `(f_α)_ov`, `(f_α + f_β)_cv`, `f_σ = C† F_σ C`); the
-//! entry points form the largest of them from the SCF's MOs and the REBUILT
-//! spin Focks and refuse a state above [`crate::grad::RO_ORBITAL_GRADIENT_TOL`]
-//! (the stress is first order in it). At a converged state the unrestricted
+//! every k (closed-open of `F_β`, open-virtual of `F_α`, closed-virtual of
+//! `F_α + F_β`). The entry points measure them from the DENSITIES (projectors
+//! `P_c = D_β`, `P_o = D_α − D_β`, `P_v = 1 − D_α` in the `S`-orthonormal MO
+//! basis; the largest spectral norm over k; see [`crate::kuxcgrad`] "The gate
+//! is basis-independent") on the REBUILT spin Focks and refuse a state above
+//! [`crate::grad::RO_ORBITAL_GRADIENT_TOL`] (the stress is first order in it).
+//! At a converged state the unrestricted
 //! form `Σ_σ D_σ F_σ D_σ` differs from `W_RO` only by ½ the closed-open β
 //! gradient, so using it ([`KUStressMutation::RoWUhfForm`]) is an identity
 //! there, and this gate is the only protection off stationarity (it is what
 //! the Gamma entry points rely on too). The per-spin commutator gate of the
 //! UKS entry does not apply (the per-spin commutators do not vanish at a ROHF
 //! state); `hf.commutator` of the result holds the orbital gradient instead.
-//! The gate's per-k transients (eight `n²` complex arrays) are checked against
-//! the ledger. The MOs must be one set per k-point (a short set is a typed
-//! error).
+//! The gate's per-k transients ([`crate::kuxcgrad::RO_GATE_N2_ARRAYS`] `n²`
+//! complex arrays, counted from the gate's code) are checked against the
+//! ledger. The MOs must be one set per k-point (a short set is a typed error).
 //!
 //! ## Calibration of the ROHF gate (stress side)
 //!
@@ -158,7 +161,7 @@ use crate::kpts::KPointMesh;
 use crate::kroks::KRoScfResult;
 use crate::kstress::{assemble, grad_jk, open_ledger, refuse_unsupported, KStressJk};
 use crate::kuscf::KUScfResult;
-use crate::kuxcgrad::ro_orbital_gradient_k;
+use crate::kuxcgrad::{ro_gate_scratch_bytes, ro_orbital_gradient_k};
 pub use crate::kuxcgrad::UKS_COMMUTATOR_TOL;
 use crate::kxcgrad::{chunk_density, chunk_vxc, conj, hermitize};
 use crate::kxcstress::{
@@ -933,13 +936,6 @@ pub fn kpoint_null_xc_uks_stress(
 /// V_α, V_β`, each `N_k n²` complex.
 fn guard_bytes(nk: usize, n: usize) -> usize {
     bytes_of((nk * n * n) as u64, 16 * 10)
-}
-
-/// Bytes of the ROHF orbital-gradient gate's per-k transients: `C†`, `S C`,
-/// `C† S`, the two MO-basis Focks and two products, each at most `n²` complex
-/// (eight counted, one spare), live for one k at a time.
-fn ro_gate_scratch_bytes(n: usize) -> usize {
-    bytes_of((n * n) as u64, 16 * 8)
 }
 
 /// The Madelung shift of the SCF's K (0 for a pure functional: no K).
