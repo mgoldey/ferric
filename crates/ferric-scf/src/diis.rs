@@ -735,6 +735,11 @@ impl DiisDriver {
     /// functional puts all of its weight on that one entry (`c = [1, 1e-17]`),
     /// the extrapolated Fock is `F_1` again, and the next density repeats the
     /// last one exactly -- a false `dp_rms = 0` convergence at iteration 3.
+    ///
+    /// Scope: this removes the non-idempotent-entry trigger only. A history of
+    /// valid densities can still extrapolate to a repeated Fock while the
+    /// commutator error is large (the convergence gate does not read it); that
+    /// is a separate defect, tracked outside this fix.
     pub fn step_checked(
         &mut self,
         f: &Array2<f64>,

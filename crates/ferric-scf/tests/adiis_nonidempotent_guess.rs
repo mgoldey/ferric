@@ -146,3 +146,44 @@ fn adiis_and_ediis_match_plain_diis_from_the_default_guess() {
         assert!((r.energy - plain.energy).abs() < 1e-7);
     }
 }
+
+/// The DEFAULT MINAO guess is the real #411 trigger: its density has the right
+/// trace but occupations above 1, and its energy lies ~1.5 Ha below the ground
+/// state on this molecule, so before the veto ADIIS and EDIIS both stopped at
+/// iteration 3 with `converged = true` 0.42 Ha too high.
+#[test]
+fn adiis_and_ediis_do_not_falsely_converge_from_the_default_minao_guess() {
+    let mol = Molecule::load_xyz("../../testdata/molecules/sulfamethoxazole.xyz").unwrap();
+    let bs = basis::bundled("sto-3g").unwrap();
+    let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    let solve = |flavor| {
+        let cfg = RhfConfig {
+            energy_conv: 1e-8,
+            density_conv: 1e-6,
+            max_iter: 100,
+            diis_flavor: flavor,
+            diis_switch_thresh: 1e-1,
+            ..Default::default()
+        };
+        solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap()
+    };
+    let plain = solve(DiisFlavor::Pulay);
+    assert!(plain.converged);
+    for flavor in [DiisFlavor::Adiis, DiisFlavor::Ediis] {
+        let r = solve(flavor);
+        assert!(
+            r.iterations > 3,
+            "{flavor:?} stopped at iteration {} (false convergence)",
+            r.iterations
+        );
+        assert!(r.converged, "{flavor:?} did not converge");
+        assert!(
+            (r.energy - plain.energy).abs() < 1e-6,
+            "{flavor:?} E={} vs Pulay {}",
+            r.energy,
+            plain.energy
+        );
+    }
+}
