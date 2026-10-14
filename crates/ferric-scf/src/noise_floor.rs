@@ -17,30 +17,47 @@
 //!   floor of the energy sum. It is what remains with density-fitted J and
 //!   in the open-shell solvers (RI-J alkanes C10/C20 and benzene: 3e-13 to
 //!   1.3e-12 Ha, within 25 % of this formula).
-//! * `screening = SCREEN_COEFF * integral_thresh * nbf^2` is added ONLY for the
-//!   closed-shell DIRECT path (conventional J and K, default K builder). That
-//!   path updates the Fock matrix incrementally from the density change
+//! * `screening = SCREEN_COEFF * integral_thresh * nbf^SCREEN_EXP` is added ONLY
+//!   for the closed-shell DIRECT path (conventional J and K, default K builder).
+//!   That path updates the Fock matrix incrementally from the density change
 //!   (`rhf.rs`, full rebuild every 8th iteration); each update drops quartets
 //!   whose bound falls below `integral_thresh` for the SMALL density change, and
 //!   the dropped pieces accumulate until the next full rebuild. The result is
 //!   100-1000x above the rounding floor, grows linearly with `integral_thresh`
 //!   (alkane C10/STO-3G: 4.8e-7, 2.4e-8, 9.1e-11, 1.1e-12 Ha at 1e-8, 1e-10,
-//!   1e-12, 1e-14) and with the quartet count (`~sqrt(nbf^4)`), does NOT grow with
-//!   `|E|` (HBr, E = -2573, is quieter than SiH4, E = -291, at equal `nbf`), and
-//!   is bit-identical across 1, 2 and 4 threads.
+//!   1e-12, 1e-14), grows with system size, does NOT grow with `|E|` (HBr,
+//!   E = -2573, is quieter than SiH4, E = -291, at equal `nbf`), and is
+//!   bit-identical across 1, 2 and 4 threads.
 //!
-//! It is an ESTIMATE good to a factor of a few (the windowed RMS of one run
-//! varies by ~3x between windows; see [`crate::noise_floor::WARN_FACTOR`]), not a bound. Functional
-//! (grid) and non-default K-builder (LinK, COSX) runs are outside what was
-//! measured; [`crate::noise_floor::floor_for_config`] returns `None` for them rather than guess.
+//! # Fit range
+//!
+//! The size dependence was fitted on 48 windowed-RMS points, nbf 24 to 338
+//! (water to C48H98, plus the 239-function 71-atom case of #410). The free
+//! pooled fit has exponent 2.0, but the points with nbf >= 100 alone give 2.25,
+//! and compact 3-D systems are ~2x noisier than chains of equal nbf, so the
+//! shipped model uses the steeper exponent with a coefficient set so that the
+//! floor is NOT below the measured RMS for any measured system with nbf >= 100
+//! (a false alarm at large nbf costs a line of text; a miss costs the user
+//! tens of iterations). Small systems are over-predicted by up to ~5x.
+//! MEASURED up to nbf ~340; beyond that it is an extrapolation.
+//!
+//! The estimate is good to a factor of a few (the windowed RMS of one run varies
+//! by ~3x between windows; see [`crate::noise_floor::WARN_FACTOR`]), not a
+//! bound. Functional (grid) runs, the LinK / COSX exchange builders, PCM /
+//! COSMO, polarizable embedding and non-default screening are outside what was
+//! measured; [`crate::noise_floor::floor_for_config`] returns `None` for them
+//! rather than guess. The point-charge / field energy of an embedding is not in
+//! the `|E|` estimate (it enters only the rounding term).
 //!
 //! The functions here are pure and nothing in the solvers reads them back, so
 //! energies and iteration counts are unchanged.
 
 use ferric_core::mol::Molecule;
 
-/// Coefficient of the screening term `SCREEN_COEFF * integral_thresh * nbf^2`.
-pub const SCREEN_COEFF: f64 = 0.022;
+/// Coefficient of the screening term `SCREEN_COEFF * integral_thresh * nbf^SCREEN_EXP`.
+pub const SCREEN_COEFF: f64 = 0.0125;
+/// Exponent of `nbf` in the screening term (see the module docs, "Fit range").
+pub const SCREEN_EXP: f64 = 2.25;
 /// Coefficient of the rounding term `ROUND_COEFF * eps * |E| * sqrt(nbf)`.
 pub const ROUND_COEFF: f64 = 0.5;
 /// `energy_conv` is reported as below the floor when `energy_conv < WARN_FACTOR * floor`.
@@ -76,7 +93,7 @@ pub fn de_noise_floor(i: &NoiseFloorInputs) -> f64 {
     let nbf = i.nbf.max(1) as f64;
     let rounding = ROUND_COEFF * f64::EPSILON * i.e_abs.abs() * nbf.sqrt();
     let screening = if i.incremental_direct {
-        SCREEN_COEFF * i.integral_thresh.max(0.0) * nbf * nbf
+        SCREEN_COEFF * i.integral_thresh.max(0.0) * nbf.powf(SCREEN_EXP)
     } else {
         0.0
     };
@@ -132,14 +149,19 @@ pub fn aux_is_fitted(aux: Option<&str>) -> bool {
 
 /// Whether the closed-shell solver will take the incremental direct J/K path
 /// for this configuration, mirroring `solve_rhf`'s own condition (no density
-/// fitting of either matrix, default K builder, incremental Fock not disabled
-/// by `FERRIC_SCF_INCREMENTAL`). Always false for the open-shell solvers.
-pub fn incremental_direct_expected(config: &crate::rhf::RhfConfig, family: SolverFamily) -> bool {
+/// fitting of either matrix, default K builder) and `incremental_enabled` (the
+/// solver's `FERRIC_SCF_INCREMENTAL` switch, [`crate::rhf::closed_shell_incremental_enabled`]).
+/// Always false for the open-shell solvers.
+pub fn incremental_direct_expected(
+    config: &crate::rhf::RhfConfig,
+    family: SolverFamily,
+    incremental_enabled: bool,
+) -> bool {
     family == SolverFamily::ClosedShell
+        && incremental_enabled
         && is_characterised(config)
         && !aux_is_fitted(config.df_j_aux.as_deref())
         && !aux_is_fitted(config.df_k_aux.as_deref())
-        && crate::rhf::closed_shell_incremental_enabled()
 }
 
 /// The floor for a configuration, or `None` outside the measured scope
@@ -177,11 +199,29 @@ pub fn energy_conv_warning(
     config: &crate::rhf::RhfConfig,
     family: SolverFamily,
 ) -> Option<String> {
+    energy_conv_warning_with(
+        mol,
+        nbf,
+        config,
+        family,
+        crate::rhf::closed_shell_incremental_enabled(),
+    )
+}
+
+/// [`energy_conv_warning`] with the incremental-Fock switch given explicitly
+/// instead of read from the environment (so tests do not depend on it).
+pub fn energy_conv_warning_with(
+    mol: &Molecule,
+    nbf: usize,
+    config: &crate::rhf::RhfConfig,
+    family: SolverFamily,
+    incremental_enabled: bool,
+) -> Option<String> {
     let floor = floor_for_config(
         config,
         estimate_total_energy_abs(mol),
         nbf,
-        incremental_direct_expected(config, family),
+        incremental_direct_expected(config, family, incremental_enabled),
     )?;
     energy_conv_below_floor(config.energy_conv, floor)
         .then(|| floor_message(config.energy_conv, floor, nbf))
@@ -249,25 +289,36 @@ mod tests {
         );
     }
 
-    /// The floor reproduces the measured RMS of dE (windowed over the
-    /// iterations after the density settled) to within a factor of ~5 on the
-    /// incremental direct path, and the full-rebuild / density-fitted rounding
-    /// floor to within ~50 %. Measured values: the table in the PR description.
+    /// The floor against the measured RMS of dE (windowed over the iterations
+    /// after the density settled; the table in the PR description): within a
+    /// factor 5 everywhere, and NOT below the measurement for any system with
+    /// nbf >= 100 (the conservative side at large size).
     #[test]
     fn floor_matches_the_measured_rms_anchors() {
         // (|E|, nbf, measured RMS of dE) on the incremental direct path.
         for (e, nbf, rms) in [
             (76.0, 24, 4.5e-12),   // water / cc-pVDZ
+            (231.0, 66, 8.3e-11),  // benzene / 6-31G
             (231.0, 114, 1.4e-10), // benzene / cc-pVDZ
+            (387.0, 72, 5.0e-10),  // alkane C10 / STO-3G (the noisy window)
+            (391.0, 134, 6.9e-10), // alkane C10 / 6-31G
             (773.0, 142, 5.9e-10), // alkane C20 / STO-3G
-            (1936.0, 239, 2.3e-9), // the #410 case (field and vacuum runs: 1.9e-9, 2.7e-9)
+            (1875.0, 86, 6.3e-10), // CCl4 / def2-SVP (noisy window)
+            (1235.0, 226, 1.1e-9), // alkane C32 / STO-3G
+            (781.0, 264, 1.5e-9),  // alkane C20 / 6-31G
+            (1853.0, 338, 2.2e-9), // alkane C48 / STO-3G
+            (1936.0, 239, 1.9e-9), // the #410 case, 6458-charge field
+            (1936.0, 239, 2.7e-9), // the #410 case, vacuum
         ] {
             let f = de_noise_floor(&inputs(e, nbf, 1e-12, true));
             let r = f / rms;
             assert!(
-                (0.2..5.0).contains(&r),
+                (0.3..5.0).contains(&r),
                 "nbf {nbf}: floor/measured = {r:.2}"
             );
+            if nbf >= 100 {
+                assert!(r >= 1.0, "nbf {nbf}: floor below measured ({r:.2})");
+            }
         }
         // Rounding-only anchors: FERRIC_SCF_INCREMENTAL=0 and RI-J runs.
         for (e, nbf, rms) in [
@@ -319,6 +370,15 @@ mod tests {
             assert!(!energy_conv_below_floor(1e-12, bad));
             assert!(!energy_conv_below_floor(0.0, bad));
         }
+    }
+
+    /// Beyond the measured range (nbf > ~340) the model is an extrapolation of
+    /// the large-system exponent; at 1000 functions 1e-8 is flagged and 1e-6 is not.
+    #[test]
+    fn extrapolation_beyond_the_fit_range_errs_towards_warning() {
+        let f = de_noise_floor(&inputs(5000.0, 1000, 1e-12, true));
+        assert!(energy_conv_below_floor(1e-8, f), "floor {f:e}");
+        assert!(!energy_conv_below_floor(1e-6, f), "floor {f:e}");
     }
 
     #[test]
@@ -378,15 +438,40 @@ mod tests {
     #[test]
     fn incremental_direct_needs_closed_shell_and_no_density_fitting() {
         let mut c = RhfConfig::default();
-        // (assumes FERRIC_SCF_INCREMENTAL is not set to an "off" spelling in the test env)
-        assert!(incremental_direct_expected(&c, SolverFamily::ClosedShell));
-        assert!(!incremental_direct_expected(&c, SolverFamily::OpenShell));
+        // the solver's FERRIC_SCF_INCREMENTAL=0 switch turns the incremental path off
+        assert!(!incremental_direct_expected(
+            &c,
+            SolverFamily::ClosedShell,
+            false
+        ));
+        assert!(incremental_direct_expected(
+            &c,
+            SolverFamily::ClosedShell,
+            true
+        ));
+        assert!(!incremental_direct_expected(
+            &c,
+            SolverFamily::OpenShell,
+            true
+        ));
         c.df_j_aux = Some("def2-universal-jkfit".into());
-        assert!(!incremental_direct_expected(&c, SolverFamily::ClosedShell));
+        assert!(!incremental_direct_expected(
+            &c,
+            SolverFamily::ClosedShell,
+            true
+        ));
         c.df_j_aux = Some(String::new()); // "exact" sentinel: not fitted
-        assert!(incremental_direct_expected(&c, SolverFamily::ClosedShell));
+        assert!(incremental_direct_expected(
+            &c,
+            SolverFamily::ClosedShell,
+            true
+        ));
         c.df_k_aux = Some("def2-universal-jkfit".into());
-        assert!(!incremental_direct_expected(&c, SolverFamily::ClosedShell));
+        assert!(!incremental_direct_expected(
+            &c,
+            SolverFamily::ClosedShell,
+            true
+        ));
     }
 
     /// 71 atoms (C31 N5 O4 F2 + 29 H): enough nuclear charge for a realistic
@@ -410,21 +495,24 @@ mod tests {
             energy_conv: 1e-16,
             ..RhfConfig::default()
         };
-        let text = energy_conv_warning(&water(), 7, &c, SolverFamily::ClosedShell).expect("fires");
+        let text = energy_conv_warning_with(&water(), 7, &c, SolverFamily::ClosedShell, true)
+            .expect("fires");
         assert!(text.contains("energy_conv 1.0e-16"), "{text}");
         assert!(text.contains("noise floor"), "{text}");
         assert!(text.contains("7 basis functions"), "{text}");
         c.energy_conv = 1e-3;
-        assert!(energy_conv_warning(&water(), 7, &c, SolverFamily::ClosedShell).is_none());
+        assert!(
+            energy_conv_warning_with(&water(), 7, &c, SolverFamily::ClosedShell, true).is_none()
+        );
         // Reporter class: 239 functions, `|E|` from the estimate.
         c.energy_conv = 1e-10;
         let big = Molecule::parse_xyz(&big_xyz(), 0, 1).unwrap();
-        assert!(energy_conv_warning(&big, 239, &c, SolverFamily::ClosedShell).is_some());
+        assert!(energy_conv_warning_with(&big, 239, &c, SolverFamily::ClosedShell, true).is_some());
         assert!(
-            energy_conv_warning(&big, 239, &c, SolverFamily::OpenShell).is_none(),
+            energy_conv_warning_with(&big, 239, &c, SolverFamily::OpenShell, true).is_none(),
             "open-shell solvers rebuild J/K every iteration: rounding-level floor"
         );
         c.df_j_aux = Some("def2-universal-jkfit".into());
-        assert!(energy_conv_warning(&big, 239, &c, SolverFamily::ClosedShell).is_none());
+        assert!(energy_conv_warning_with(&big, 239, &c, SolverFamily::ClosedShell, true).is_none());
     }
 }
