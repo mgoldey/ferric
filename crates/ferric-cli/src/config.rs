@@ -2281,6 +2281,15 @@ pub struct ScfCfg {
     /// (sets newton_trigger). Default false.
     #[serde(default)]
     pub soscf: bool,
+    /// Opt-in AURORA auxiliary-curvature accelerator (closed-shell RHF only;
+    /// default false). Same fixed point as DIIS, measured as a speed-up (fewer
+    /// J/K builds), not a convergence rescue.
+    #[serde(default)]
+    pub aurora: bool,
+    /// Opt-in trust-region augmented-Hessian (TRAH) solver, engaged once the
+    /// DIIS error drops below this value (RHF and UHF). Absent = off. A
+    /// convergence rescue: it wins iterations but costs wall time.
+    pub trah_trigger: Option<f64>,
     #[serde(default = "default_integral_thresh")]
     pub integral_thresh: f64,
     /// libint primitive-screening precision for the SCF J/K two-electron
@@ -2576,6 +2585,8 @@ impl Default for ScfCfg {
             smearing_sigma: None,
             guess: None,
             soscf: false,
+            aurora: false,
+            trah_trigger: None,
             integral_thresh: 1e-12,
             eri_precision: None,
             jk_storage: None,
@@ -2625,6 +2636,31 @@ impl CosxGridCfg {
 }
 
 impl ScfCfg {
+    /// `aurora` / `trah_trigger` scoping: AURORA is closed-shell RHF only, TRAH
+    /// is wired for RHF and UHF; anything else would silently ignore the key.
+    pub fn validate_accelerators(&self, kind: &str, mult: usize) -> Result<(), String> {
+        if self.aurora && !(kind == "rhf" && mult == 1) {
+            return Err(format!(
+                "[scf] aurora = true is closed-shell RHF only (method.kind = \"rhf\", \
+                 multiplicity 1); got kind = \"{kind}\", multiplicity {mult}. Remove it."
+            ));
+        }
+        if let Some(t) = self.trah_trigger {
+            if !(t.is_finite() && t > 0.0) {
+                return Err(format!(
+                    "[scf] trah_trigger must be a positive number, got {t}"
+                ));
+            }
+            if kind != "rhf" && kind != "uhf" {
+                return Err(format!(
+                    "[scf] trah_trigger is wired for method.kind = \"rhf\" and \"uhf\" only; \
+                     got \"{kind}\". Remove it."
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// `[scf] df_j_aux` through the shared spelling parser
     /// (`ferric_scf::rhf::normalize_df_aux`): the opt-out spellings become
     /// the `""` "do not density-fit" sentinel, anything else a trimmed basis
@@ -3465,6 +3501,8 @@ impl Config {
                 );
             }
         }
+
+        self.scf.validate_accelerators(kind, mult)?;
 
         if self.scf.stability_descent {
             if task != "energy" {
@@ -9473,6 +9511,45 @@ mod cli_wired_keys_tests {
         refused(&cfg("rhf", "optimize", 1, sd), "task = \"energy\" only");
         // Default off.
         assert!(!cfg("uhf", "energy", 3, "").scf.stability_descent);
+    }
+
+    // ---- [scf] aurora / trah_trigger ----
+
+    #[test]
+    fn accelerator_keys_are_scoped_and_default_off() {
+        let c = cfg(
+            "rhf",
+            "energy",
+            1,
+            "[scf]\naurora = true\ntrah_trigger = 0.01\n",
+        );
+        c.validate_cli_wired_keys().unwrap();
+        assert!(c.scf.aurora && c.scf.trah_trigger == Some(0.01));
+        let d = cfg("rhf", "energy", 1, "");
+        assert!(!d.scf.aurora && d.scf.trah_trigger.is_none());
+        cfg("uhf", "energy", 3, "[scf]\ntrah_trigger = 0.01\n")
+            .validate_cli_wired_keys()
+            .unwrap();
+        refused(
+            &cfg("uhf", "energy", 3, "[scf]\naurora = true\n"),
+            "closed-shell RHF only",
+        );
+        refused(
+            &cfg("rhf", "energy", 3, "[scf]\naurora = true\n"),
+            "closed-shell RHF only",
+        );
+        refused(
+            &cfg("ksdft", "energy", 1, "[scf]\naurora = true\n"),
+            "closed-shell RHF only",
+        );
+        refused(
+            &cfg("rohf", "energy", 3, "[scf]\ntrah_trigger = 0.01\n"),
+            "\"rhf\" and \"uhf\" only",
+        );
+        refused(
+            &cfg("rhf", "energy", 1, "[scf]\ntrah_trigger = 0.0\n"),
+            "positive",
+        );
     }
 
     // ---- [dft] grid_radial / grid_angular ----
