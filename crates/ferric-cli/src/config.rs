@@ -5010,6 +5010,42 @@ fn jk_with_sr_knobs(jk: PeriodicJk, range_split: Option<f64>, auto: bool) -> Per
     }
 }
 
+/// The k-point `task = "optimize"` gates beyond the energy gate
+/// (`check_kpoint_support`; correlated routes are refused earlier). The force
+/// has its own functional allowlist, independent of the energy gate, so
+/// widening the k-point energy path cannot silently enable an optimize: the
+/// closed-shell route takes `check_force_functional` (LDA / GGA / global hybrid
+/// / SCAN, r2SCAN), the open-shell ones `check_open_shell_force_functional`;
+/// the restricted-open-shell force (ROKS, ROHF) is anchored on the dense-AFT
+/// J/K only.
+fn check_kpoint_optimize_gate(
+    route: PeriodicRoute,
+    functional: Option<&str>,
+    kpoints: bool,
+    rsgdf: bool,
+) -> Result<(), String> {
+    if !kpoints {
+        return Ok(());
+    }
+    let prefix = |e: String| format!("method.task = \"optimize\" with [cell] kmesh: {e}");
+    if route.kohn_sham() {
+        let f = functional.unwrap_or("LDA");
+        let allow = if route == PeriodicRoute::Rks {
+            ferric_pbc::kxcgrad::check_force_functional(f)
+        } else {
+            ferric_pbc::kxcgrad::check_open_shell_force_functional(f)
+        };
+        allow.map_err(|e| prefix(e.to_string()))?;
+    }
+    if rsgdf && matches!(route, PeriodicRoute::Roks | PeriodicRoute::Rohf) {
+        return Err(prefix(format!(
+            "the k-point {} force is anchored on the dense-AFT J/K only; use jk = \"dense\"",
+            route.label()
+        )));
+    }
+    Ok(())
+}
+
 /// Refuse every section and key the periodic path would not read. The
 /// periodic drivers take only the `[cell]` knobs, `[scf]` max_iter /
 /// density_conv (Gamma) / energy_conv (k-point), `[dft] functional` (Kohn-Sham
@@ -5374,30 +5410,7 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
                     route.label()
                 ));
             }
-            // Range-separated hybrids, hybrid / open-shell meta-GGA are refused at
-            // the energy level (`check_kpoint_support`); correlated routes are
-            // refused above. The force has its own functional allowlist,
-            // independent of the energy gate, so widening the k-point energy path
-            // cannot silently enable an optimize: the closed-shell route takes
-            // `check_force_functional` (LDA / GGA / global hybrid / SCAN, r2SCAN),
-            // the open-shell ones `check_open_shell_force_functional`.
-            if kpoints && route.kohn_sham() {
-                let f = functional.as_deref().unwrap_or("LDA");
-                let allow = if route == PeriodicRoute::Rks {
-                    ferric_pbc::kxcgrad::check_force_functional(f)
-                } else {
-                    ferric_pbc::kxcgrad::check_open_shell_force_functional(f)
-                };
-                allow.map_err(|e| format!("method.task = \"optimize\" with [cell] kmesh: {e}"))?;
-            }
-            // The restricted-open-shell k-point forces are anchored on the dense-AFT J/K.
-            if kpoints && rsgdf && matches!(route, PeriodicRoute::Roks | PeriodicRoute::Rohf) {
-                return Err(format!(
-                    "method.task = \"optimize\" with [cell] kmesh: the k-point {} force is \
-                     anchored on the dense-AFT J/K only; use jk = \"dense\"",
-                    route.label()
-                ));
-            }
+            check_kpoint_optimize_gate(route, functional.as_deref(), kpoints, rsgdf)?;
             if let Some(s) = cfg.optimize.coordinates.as_deref() {
                 if parse_coord_system(s)? != ferric_scf::optimize::CoordSystem::Cartesian {
                     return Err(

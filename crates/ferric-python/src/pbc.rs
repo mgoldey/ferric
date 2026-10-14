@@ -3915,6 +3915,19 @@ pub(crate) fn register_omega_chooser(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(auto_gdf_omega, m)?)
 }
 
+/// Register the k-point bindings.
+fn register_kpoints(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(run_rhf_kpts, m)?)?;
+    m.add_function(wrap_pyfunction!(run_uhf_kpts, m)?)?;
+    m.add_function(wrap_pyfunction!(run_rks_kpts, m)?)?;
+    m.add_function(wrap_pyfunction!(run_uks_kpts, m)?)?;
+    m.add_function(wrap_pyfunction!(run_roks_kpts, m)?)?;
+    m.add_function(wrap_pyfunction!(run_rohf_kpts, m)?)?;
+    m.add_function(wrap_pyfunction!(run_mp2_kpts, m)?)?;
+    m.add_function(wrap_pyfunction!(run_drpa_kpts, m)?)?;
+    Ok(())
+}
+
 /// Register the periodic bindings on the `ferric` module.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_uhf_gamma, m)?)?;
@@ -3924,14 +3937,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_rks_gamma, m)?)?;
     m.add_function(wrap_pyfunction!(run_mp2_gamma, m)?)?;
     m.add_function(wrap_pyfunction!(run_drpa_gamma, m)?)?;
-    m.add_function(wrap_pyfunction!(run_rhf_kpts, m)?)?;
-    m.add_function(wrap_pyfunction!(run_uhf_kpts, m)?)?;
-    m.add_function(wrap_pyfunction!(run_rks_kpts, m)?)?;
-    m.add_function(wrap_pyfunction!(run_uks_kpts, m)?)?;
-    m.add_function(wrap_pyfunction!(run_roks_kpts, m)?)?;
-    m.add_function(wrap_pyfunction!(run_rohf_kpts, m)?)?;
-    m.add_function(wrap_pyfunction!(run_mp2_kpts, m)?)?;
-    m.add_function(wrap_pyfunction!(run_drpa_kpts, m)?)?;
+    register_kpoints(m)?;
     m.add_class::<PyGammaOpenShellResult>()?;
     m.add_class::<PyGammaRksResult>()?;
     m.add_class::<PyGammaCorrelationResult>()?;
