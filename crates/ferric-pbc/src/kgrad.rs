@@ -754,6 +754,13 @@ pub(crate) fn check_inputs(
             }
         }
         KGradJk::RsGdf(s) => {
+            if s.gdf.rsh().is_some() {
+                return Err(FerricError::General(format!(
+                    "{who}: the RS-GDF tensors carry an attenuated (range-separated) exchange \
+                     (KRsGdf::build_rsh); the K derivative walks use the bare 4π/k² kernel, so \
+                     the force would be wrong. Range-separated hybrids have no k-point force."
+                )));
+            }
             if s.gdf.nk() != nk {
                 return Err(FerricError::General(format!(
                     "{who}: KRsGdf has {} k-points, the mesh {nk}",

@@ -168,6 +168,8 @@ use std::sync::Mutex;
 
 /// k-point RS-GDF force pieces ([`crate::kgrad`]; FINDINGS "Iteration 21").
 pub(crate) mod kderiv;
+mod klr;
+pub use klr::KRshMutant;
 
 /// Default hard cap for [`KRsGdf::fitted_kernels`] (test/diagnostic
 /// `2 N_k² nao⁴` complex).
@@ -201,6 +203,9 @@ pub enum KRsGdfMutation {
     /// instead of to the SR bins before the phase contraction: `T` hits
     /// parts that were never rotated. Only visible where something rotates.
     RotationLate,
+    /// A defect of the range-separated exchange build (`klr` module doc;
+    /// `tests/pbc_krsh_rsgdf.rs`).
+    Rsh(KRshMutant),
 }
 
 /// TEST-ONLY defects of the k-point s2 SR 3-centre walk (module doc
@@ -466,6 +471,8 @@ pub struct KRsGdf {
     s: Vec<Array2<C64>>,
     madelung: f64,
     madelung_ewald: f64,
+    /// Attenuated exchange companion ([`KRsGdf::build_rsh`]); `None` = plain Coulomb.
+    rsh: Option<Box<klr::RshAttached>>,
     stats: KRsGdfStats,
 }
 
@@ -1309,7 +1316,12 @@ impl KRsGdf {
             .flat_map(|q| q.b.iter())
             .map(|m| m.len() * c)
             .sum();
-        b + self.s.iter().map(|m| m.len() * c).sum::<usize>()
+        let lr = self
+            .rsh
+            .as_ref()
+            .and_then(|r| r.lr.as_ref())
+            .map_or(0, KRsGdf::resident_bytes);
+        b + self.s.iter().map(|m| m.len() * c).sum::<usize>() + lr
     }
 
     /// Build the per-q fitted tensors for `mesh` on `cell`: orbital basis
@@ -1689,6 +1701,7 @@ impl KRsGdf {
             s: s_k.to_vec(),
             madelung,
             madelung_ewald,
+            rsh: None,
             stats,
         })
     }
@@ -1758,11 +1771,24 @@ impl KRsGdf {
                 let bk = &b0.b[k];
                 let bkp = b0.b[kp].mapv(|z| z.conj());
                 jk.push(bk.t().dot(&bkp));
-                let b = self.block(k, kp);
-                kk.push(b.t().dot(&b.mapv(|z| z.conj())));
+                let mut kern = self.plain_k_kernel(k, kp);
+                if let Some(rsh) = &self.rsh {
+                    let (c_full, c_lr) = rsh.coefficients();
+                    kern.mapv_inplace(|z| z * c_full);
+                    if let Some(lr) = &rsh.lr {
+                        kern.scaled_add(C64::new(c_lr, 0.0), &lr.plain_k_kernel(k, kp));
+                    }
+                }
+                kk.push(kern);
             }
         }
         Ok((jk, kk))
+    }
+
+    /// The bare fitted exchange kernel `Σ_a B_a(k,k') ⊗ conj B_a(k,k')`.
+    fn plain_k_kernel(&self, k: usize, kp: usize) -> Array2<C64> {
+        let b = self.block(k, kp);
+        b.t().dot(&b.mapv(|z| z.conj()))
     }
 
     /// J/K builder with this tensor's `v_M`.
@@ -1815,6 +1841,26 @@ impl KRsGdf {
             ),
             exchange_group_scratch_bytes(naux, n, 4, 16),
         )
+    }
+
+    /// Accumulate the bare fitted exchange `(1/N_k) Σ_k' Σ_a B_a D B_a^H` of
+    /// this tensor into `k` (no Madelung term, no range-separation mixing).
+    fn add_k_blocks(&self, dm: &[Array2<C64>], k: &mut [Array2<C64>]) -> Result<(), FerricError> {
+        let n = self.nao;
+        let inv = 1.0 / self.nk as f64;
+        for blk in &self.blocks {
+            for (jj, &kk) in blk.kof.iter().enumerate() {
+                if blk.b[jj].nrows() == 0 {
+                    continue;
+                }
+                add_exchange(&blk.b[jj], &dm[jj], false, n, inv, &mut k[kk])?;
+                if blk.mirror {
+                    let (km, jm) = (self.minus[kk], self.minus[jj]);
+                    add_exchange(&blk.b[jj], &dm[jm], true, n, inv, &mut k[km])?;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// `J(k)`, `K(k)` (K including `v_M S D S`) for densities `dm` (one per
@@ -1871,12 +1917,19 @@ impl KRsGdf {
             kx.fill(zero);
         }
         self.check_exchange_scratch()?;
-        for blk in &self.blocks {
-            for (jj, &kk) in blk.kof.iter().enumerate() {
-                add_exchange(&blk.b[jj], &dm[jj], false, n, inv, &mut k[kk])?;
-                if blk.mirror {
-                    let (km, jm) = (self.minus[kk], self.minus[jj]);
-                    add_exchange(&blk.b[jj], &dm[jm], true, n, inv, &mut k[km])?;
+        self.add_k_blocks(dm, k)?;
+        if let Some(rsh) = &self.rsh {
+            // K = c_full K[1/r] + c_lr K[erf(ωr)/r] (module `klr` doc).
+            let (c_full, c_lr) = rsh.coefficients();
+            for kx in k.iter_mut() {
+                kx.mapv_inplace(|z| z * c_full);
+            }
+            if let Some(lr) = rsh.lr.as_ref().filter(|_| c_lr != 0.0) {
+                let mut kl = vec![Array2::<C64>::zeros((n, n)); nk];
+                lr.check_exchange_scratch()?;
+                lr.add_k_blocks(dm, &mut kl)?;
+                for (kx, kb) in k.iter_mut().zip(&kl) {
+                    kx.scaled_add(C64::new(c_lr, 0.0), kb);
                 }
             }
         }
