@@ -49,18 +49,61 @@ def test_unsupported_combinations_are_refused_by_name(h2, h_atom, basis):
     lat = _cubic()
     with pytest.raises(ValueError, match="multiplicity 2"):
         ferric.run_rks_kpts(h_atom, lat, basis, "LDA", (1, 1, 2))
+    # Open-shell meta-GGA stays refused (SCAN itself is a validated closed-shell
+    # functional since the k-point meta-GGA forces landed).
     with pytest.raises(ValueError, match="meta-GGA"):
-        ferric.run_rks_kpts(h2, lat, basis, "SCAN", (1, 1, 2))
+        ferric.run_uks_kpts(h_atom, lat, basis, "SCAN", (1, 1, 2))
     with pytest.raises(ValueError, match="range-separated"):
         ferric.run_rks_kpts(h2, lat, basis, "HSE06", (1, 1, 2))
-    with pytest.raises(
-        ValueError,
-        match=r"run_rks_kpts: with_stress is not wired for k-point Kohn-Sham",
-    ):
-        ferric.run_rks_kpts(h2, lat, basis, "LDA", (1, 1, 2), with_stress=True)
-    # The gradient is wired (k-point KS forces: test_pbc_kpoint_ks_gradients.py);
-    # the stress refusal does not depend on the functional.
-    with pytest.raises(ValueError, match="with_stress is not wired"):
-        ferric.run_rks_kpts(
-            h2, lat, basis, "PBE0", (1, 1, 2), with_gradient=True, with_stress=True
+    # The k-point KS stress is wired (test_pbc_kpoint_open_shell_and_stress.py).
+    r = ferric.run_rks_kpts(
+        h2, lat, basis, "LDA", (1, 1, 2), omega=OMEGA, with_stress=True, **GRID
+    )
+    assert r.stress().shape == (3, 3)
+    r = ferric.run_rks_kpts(
+        h2,
+        lat,
+        basis,
+        "PBE0",
+        (1, 1, 2),
+        omega=OMEGA,
+        with_gradient=True,
+        with_stress=True,
+        **GRID,
+    )
+    assert r.stress().shape == (3, 3) and r.gradient().shape == (2, 3)
+
+
+# Library cross-surface pin of the same input (H2/STO-3G, a = 4 Bohr, 1x1x2, omega 0.8,
+# grid 40x110, cc-pVDZ-RI aux); the library anchors are in
+# crates/ferric-pbc/tests/pbc_krsh_rsgdf.rs.
+RSGDF = {"jk": "rsgdf", "auxbasis": "cc-pvdz-ri"}
+HSE06_RSGDF_112 = -1.3484931727
+
+
+def test_range_separated_hybrid_runs_on_rsgdf_energy_only(h2, h_atom, basis):
+    lat = _cubic()
+    r = ferric.run_rks_kpts(
+        h2, lat, basis, "HSE06", (1, 1, 2), omega=OMEGA, **RSGDF, **GRID
+    )
+    assert r.converged
+    assert abs(r.energy - HSE06_RSGDF_112) < 1e-7, f"{r.energy!r}"
+    # The reported constant is the MIXED one that was applied, not the
+    # full-Coulomb mesh constant of a global hybrid on the same mesh.
+    p = ferric.run_rks_kpts(
+        h2, lat, basis, "PBE0", (1, 1, 2), omega=OMEGA, **RSGDF, **GRID
+    )
+    assert abs(r.energy - p.energy) > 1e-4
+    assert abs(r.madelung - p.madelung) > 1e-2
+    # Dense J/K, derivatives and the open-shell routes stay refused by name.
+    with pytest.raises(ValueError, match="range-separated"):
+        ferric.run_rks_kpts(h2, lat, basis, "HSE06", (1, 1, 2), omega=OMEGA, **GRID)
+    for kw in ({"with_gradient": True}, {"with_stress": True}):
+        with pytest.raises(ValueError, match="range-separated"):
+            ferric.run_rks_kpts(
+                h2, lat, basis, "HSE06", (1, 1, 2), omega=OMEGA, **RSGDF, **GRID, **kw
+            )
+    with pytest.raises(ValueError, match="range-separated"):
+        ferric.run_uks_kpts(
+            h_atom, lat, basis, "HSE06", (1, 1, 2), omega=OMEGA, **RSGDF, **GRID
         )

@@ -1034,15 +1034,14 @@ fn gamma_rohf_and_roks_refuse_unsupported_features_by_name() {
             .to_string();
         assert!(e.contains(word), "{word}: {e}");
     }
-    let roks_cases: [(&str, &dyn Fn(&mut GammaRoksConfig)); 5] = [
+    let roks_cases: [(&str, &dyn Fn(&mut GammaRoksConfig)); 6] = [
         ("RhfConfig.ah_trigger", &|c| c.scf.ah_trigger = 1e-2),
         ("scf.xc_omega", &|c| c.scf.xc_omega = Some(0.3)),
         ("scf.dft_grid", &|c| {
             c.scf.dft_grid = Some(ferric_dft::grid::AtomicGridConfig::default())
         }),
-        ("range-separated hybrid", &|c| {
-            c.functional = "wB97X-V".into()
-        }),
+        ("VV10", &|c| c.functional = "wB97X-V".into()),
+        ("range-separated hybrid", &|c| c.functional = "HSE06".into()),
         ("meta-GGA", &|c| c.functional = "SCAN".into()),
     ];
     for (word, edit) in roks_cases {

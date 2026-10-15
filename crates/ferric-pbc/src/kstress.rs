@@ -1057,6 +1057,12 @@ pub(crate) fn refuse_unsupported(who: &str, jk: &KStressJk<'_>) -> Result<(), Fe
         }
     }
     if let KStressJk::RsGdf(src) = jk {
+        if src.gdf.rsh().is_some() {
+            return Err(FerricError::General(format!(
+                "{who}: the RS-GDF source carries a range-separated exchange \
+                 (KRsGdf::build_rsh); its strain is not implemented"
+            )));
+        }
         refuse_split_mismatch(who, src)?;
     }
     Ok(())

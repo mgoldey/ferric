@@ -31,7 +31,9 @@
 //! periodic path has no meta-GGA; the molecular `semilocal_vxc` is mirrored).
 //!
 //! Range-separated hybrids (HSE06, CAM-B3LYP, wB97X, ...) are supported with
-//! the dense-AFT J/K ([`crate::rsh`]; no Gamma RSH exists to mirror). Open
+//! the dense-AFT J/K ([`crate::rsh`]; no Gamma RSH exists to mirror) and the
+//! RS-GDF J/K (`KRsGdf::build_rsh`: full-Coulomb fit plus a G-space fit of the
+//! erf-attenuated kernel), energy only: forces and stress refuse them. Open
 //! shell (KUKS), range-separated meta-GGAs, VV10 and double hybrids are
 //! refused/absent, exactly as at Gamma. Time reversal is NOT used
 //! to halve the XC work (every k gets its own Bloch AO cache).
@@ -638,21 +640,13 @@ pub fn solve_krks_keep_on_grid(
     let mut pxc = KPeriodicXc::new(cell, prep.basis_set(), &cfg.functional, grid, mesh, &cfg.xc)?;
     let mut a = pxc.exact_exchange_fraction();
     // Range-separated hybrid: the fractions live inside the K kernel (dense
-    // AFT only), so the SCF scales K by 1.
+    // AFT: the attenuated kernel weights; RS-GDF: the full-Coulomb plus the
+    // erf-attenuated fit, `rsgdf::kpoint::klr`), so the SCF scales K by 1.
     let mut kc = *kc;
     if let Some(r) = pxc.rsh() {
-        if kc.jk != KJkKind::Dense {
-            return Err(PeriodicDftError::Unsupported {
-                feature: "range-separated hybrid with RS-GDF",
-                reason: format!(
-                    "{}: the attenuated exchange is implemented in the dense-AFT k-point J/K \
-                     only (jk = dense); RS-GDF with an erf-attenuated K is not built",
-                    cfg.functional
-                ),
-            }
-            .into());
+        if kc.jk == KJkKind::Dense {
+            kc.dense.rsh = Some(r);
         }
-        kc.dense.rsh = Some(r);
         a = 1.0;
     }
     let kc = &kc;
@@ -664,8 +658,11 @@ pub fn solve_krks_keep_on_grid(
             cell, prep, mesh, &hk.s, kc.exxdiv, &kc.dense,
         )?),
         Some(aux) => {
-            let gdf =
-                KRsGdf::build(cell, prep, aux, mesh, &hk.s, &kc.rsgdf)?.with_exxdiv(kc.exxdiv);
+            let gdf = match pxc.rsh() {
+                Some(r) => KRsGdf::build_rsh(cell, prep, aux, mesh, &hk.s, &kc.rsgdf, r)?,
+                None => KRsGdf::build(cell, prep, aux, mesh, &hk.s, &kc.rsgdf)?,
+            }
+            .with_exxdiv(kc.exxdiv);
             crate::rsgdf::kpoint::record_stats(&mut timings, gdf.stats());
             KRetainedJk::RsGdf(gdf)
         }

@@ -4673,10 +4673,12 @@ impl PeriodicRoute {
     /// hybrids, hybrid and open-shell meta-GGA, ...); the dispatcher in
     /// `periodic.rs` must gain the matching arm.
     ///
-    /// Energy gate: LDA, GGA and global hybrids on every Kohn-Sham route, and
-    /// the pure meta-GGAs SCAN / r2SCAN on the closed-shell route only (the
-    /// spin-resolved XC has no tau term).
-    pub fn check_kpoint_support(self, functional: Option<&str>) -> Result<(), String> {
+    /// Energy gate: LDA, GGA and global hybrids on every Kohn-Sham route, the
+    /// pure meta-GGAs SCAN / r2SCAN on the closed-shell route only (the
+    /// spin-resolved XC has no tau term), and range-separated hybrids (HSE06,
+    /// CAM-B3LYP, wB97X) on the closed-shell route with `jk = "rsgdf"` only
+    /// (`rsgdf`; the force and optimize gates still refuse them by name).
+    pub fn check_kpoint_support(self, functional: Option<&str>, rsgdf: bool) -> Result<(), String> {
         match self {
             PeriodicRoute::Rhf
             | PeriodicRoute::Uhf
@@ -4685,6 +4687,9 @@ impl PeriodicRoute {
             | PeriodicRoute::Drpa => Ok(()),
             PeriodicRoute::Rks | PeriodicRoute::Uks | PeriodicRoute::Roks => {
                 let f = functional.unwrap_or("LDA");
+                if self == PeriodicRoute::Rks && rsgdf && ferric_pbc::rsh::is_range_separated(f) {
+                    return Ok(());
+                }
                 let mgga_ok =
                     self == PeriodicRoute::Rks && ferric_pbc::kxcgrad::is_validated_mgga(f);
                 ferric_pbc::dft::resolve_periodic_functional_mgga(f, mgga_ok)
@@ -4692,12 +4697,17 @@ impl PeriodicRoute {
                     .map_err(|e| {
                         format!(
                             "[cell] kmesh with functional {f:?}: {e}. k-point {} supports \
-                             LDA, GGA and global-hybrid functionals{}",
+                             LDA, GGA and global-hybrid functionals{}{}",
                             self.label(),
                             if self == PeriodicRoute::Rks {
-                                " and the SCAN / r2SCAN meta-GGAs only"
+                                " and the SCAN / r2SCAN meta-GGAs"
                             } else {
                                 " only (no meta-GGA)"
+                            },
+                            if self == PeriodicRoute::Rks {
+                                ", plus range-separated hybrids with jk = \"rsgdf\""
+                            } else {
+                                ""
                             }
                         )
                     })
@@ -5255,7 +5265,7 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
             if n.contains(&0) {
                 return Err(format!("[cell] kmesh = {n:?}: every entry must be >= 1"));
             }
-            route.check_kpoint_support(functional.as_deref())?;
+            route.check_kpoint_support(functional.as_deref(), rsgdf)?;
             let centring = match c
                 .centring
                 .as_deref()

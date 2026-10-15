@@ -2661,35 +2661,43 @@ enum KKsKind {
 /// driver (range-separated hybrids, hybrid and open-shell meta-GGA, ECP cells
 /// are the known gaps). Called before any integral is built.
 ///
-/// Energy gate: LDA, GGA, global hybrids, and (closed shell only) the pure
-/// meta-GGAs SCAN / r2SCAN. The force and stress gate is the library
+/// Energy gate: LDA, GGA, global hybrids, (closed shell only) the pure
+/// meta-GGAs SCAN / r2SCAN, and (closed shell with `rsgdf`, the RS-GDF J/K)
+/// range-separated hybrids. The force and stress gate is the library
 /// allowlist of the same name, independent of the energy gate, so widening
-/// the energy path cannot silently enable a derivative.
+/// the energy path cannot silently enable a derivative (it refuses
+/// range-separated hybrids).
 fn check_kpoint_ks_support(
     fname: &str,
     functional: &str,
     kind: KKsKind,
-    with_gradient: bool,
-    with_stress: bool,
+    (with_gradient, with_stress): (bool, bool),
+    rsgdf: bool,
 ) -> PyResult<()> {
+    let rsh_ok =
+        kind == KKsKind::Closed && rsgdf && ferric_pbc::rsh::is_range_separated(functional);
     let mgga_ok = kind == KKsKind::Closed && ferric_pbc::kxcgrad::is_validated_mgga(functional);
-    ferric_pbc::dft::resolve_periodic_functional_mgga(functional, mgga_ok)
-        .map(|_| ())
-        .map_err(|e| {
-            let what = if kind == KKsKind::Closed {
-                "LDA, GGA, global-hybrid and SCAN / r2SCAN meta-GGA functionals only"
+    let energy = if rsh_ok {
+        Ok(())
+    } else {
+        ferric_pbc::dft::resolve_periodic_functional_mgga(functional, mgga_ok).map(|_| ())
+    };
+    energy.map_err(|e| {
+        let what = if kind == KKsKind::Closed {
+            "LDA, GGA, global-hybrid and SCAN / r2SCAN meta-GGA functionals (plus \
+                 range-separated hybrids with jk=\"rsgdf\") only"
+        } else {
+            "LDA, GGA and global-hybrid functionals only (no meta-GGA)"
+        };
+        val_err(format!(
+            "{fname}: functional {functional:?}: {e}. k-point {} supports {what}",
+            if kind == KKsKind::Closed {
+                "RKS"
             } else {
-                "LDA, GGA and global-hybrid functionals only (no meta-GGA)"
-            };
-            val_err(format!(
-                "{fname}: functional {functional:?}: {e}. k-point {} supports {what}",
-                if kind == KKsKind::Closed {
-                    "RKS"
-                } else {
-                    "open-shell KS"
-                }
-            ))
-        })?;
+                "open-shell KS"
+            }
+        ))
+    })?;
     if with_gradient || with_stress {
         let allow = match kind {
             KKsKind::Closed => ferric_pbc::kxcgrad::check_force_functional(functional),
@@ -2757,7 +2765,9 @@ struct PyKpointRksResult {
     iterations: usize,
     #[pyo3(get)]
     e_nuc: f64,
-    /// Mesh (supercell) Madelung constant (applied iff exxdiv="ewald").
+    /// Mesh (supercell) Madelung constant (applied iff exxdiv="ewald"); for a
+    /// range-separated hybrid the mixed constant c_sr v_M + (c_lr - c_sr)
+    /// v_M^LR(omega) that is actually applied.
     #[pyo3(get)]
     madelung: f64,
     #[pyo3(get)]
@@ -2842,7 +2852,7 @@ fn krks_driver(
         (kjk_kind(s), kdense_config(s), krsgdf_config(s));
     cfg.grid = grid;
     let (r, kept) = ferric_pbc::solve_krks_keep(&s.cell, &s.prep, s.aux.as_ref(), mesh, &cfg)?;
-    let madelung = mesh.madelung(&s.cell)?;
+    let madelung = ferric_pbc::rsh::kpoint_madelung(functional, &s.cell, mesh)?;
     let derivs = k_derivatives(
         s,
         mesh,
@@ -2866,8 +2876,12 @@ fn krks_driver(
 /// `run_rhf_kpts`; functional and grid (`n_radial`, `n_angular`,
 /// `neighbour_cutoff` in Å) as `run_rks_gamma`. Refused with a ValueError
 /// naming the gap: open shell (k-point UKS/ROKS not implemented),
-/// meta-GGA, range-separated hybrids, VV10 and `with_stress` (the library has
-/// the k-point KS stress, the binding does not call it yet). `with_gradient=True` computes the analytic
+/// meta-GGA, VV10 and `with_stress` (the library has
+/// the k-point KS stress, the binding does not call it yet). Range-separated
+/// hybrids (HSE06, CAM-B3LYP, wB97X; `ferric_pbc::rsh`) run as an energy with
+/// `jk="rsgdf"` only (the attenuated K is fitted in G-space on the RS-GDF
+/// aux; `jk="dense"`, `with_gradient` and `with_stress` refuse them).
+/// `with_gradient=True` computes the analytic
 /// nuclear gradient (`result.gradient()`, natoms x 3, dE/dR in Hartree/Bohr
 /// per cell, the force on ONE copy of each atom of the mesh's supercell; XC on
 /// the energy's own grid; a hybrid uses the SCF's exxdiv) on the J/K the SCF
@@ -2917,8 +2931,8 @@ fn run_rks_kpts(
         fname,
         functional,
         KKsKind::Closed,
-        with_gradient,
-        with_stress,
+        (with_gradient, with_stress),
+        jk.trim().eq_ignore_ascii_case("rsgdf"),
     )?;
     let mut s = pbc_setup(&PbcArgs {
         fname,
@@ -3145,7 +3159,13 @@ fn run_uks_kpts(
     gdf_omega: Option<f64>,
 ) -> PyResult<PyKpointScfResult> {
     let fname = "run_uks_kpts";
-    check_kpoint_ks_support(fname, functional, KKsKind::Open, with_gradient, with_stress)?;
+    check_kpoint_ks_support(
+        fname,
+        functional,
+        KKsKind::Open,
+        (with_gradient, with_stress),
+        false,
+    )?;
     let mut s = pbc_setup(&PbcArgs {
         fname,
         mol,
@@ -3223,7 +3243,7 @@ fn run_ro_kpts(
 ) -> PyResult<PyKpointScfResult> {
     let kind = KKsKind::Open;
     if let Some(f) = functional {
-        check_kpoint_ks_support(fname, f, kind, derivs.gradient, derivs.stress)?;
+        check_kpoint_ks_support(fname, f, kind, (derivs.gradient, derivs.stress), false)?;
     }
     let mut s = pbc_setup(a)?;
     s.derivs = derivs;

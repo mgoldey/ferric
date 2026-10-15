@@ -276,21 +276,6 @@ fn rsh_krks_matches_pinned_pyscf() {
     }
 }
 
-#[test]
-fn rsh_with_rsgdf_is_refused_not_silently_wrong() {
-    use ferric_pbc::kscf::KJkKind;
-    let cell = h2_cell(4.0);
-    let bs = pyscf_sto3g_h();
-    let prep = prep_for(&cell, &bs);
-    let mesh = KPointMesh::gamma_centred(&cell, [1, 1, 1]).unwrap();
-    let grid = PeriodicGrid::uniform(&cell, [24; 3]).unwrap();
-    let mut cfg = krks_cfg(&cell, "HSE06");
-    cfg.krhf.jk = KJkKind::RsGdf;
-    let err = solve_krks_on_grid(&cell, &prep, Some(&prep), &mesh, &grid, &cfg)
-        .expect_err("RSH + RS-GDF must be refused");
-    assert!(err.to_string().contains("range-separated"), "{err}");
-}
-
 /// `KPeriodicXc` accepts range-separated hybrids for the closed-shell solver,
 /// but the spin-resolved k-point solvers have no range-separated exchange:
 /// they must refuse HSE06 on every entry point, not run it as a global hybrid.

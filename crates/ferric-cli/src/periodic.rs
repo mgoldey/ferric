@@ -1302,7 +1302,7 @@ fn krks_driver(
 ) -> Result<(KRksResult, f64), FerricError> {
     let c = krks_config(plan, s);
     let r = solve_krks(&s.cell, &s.prep, s.aux.as_ref(), mesh, &c)?;
-    let v_m = mesh.madelung(&s.cell)?;
+    let v_m = ferric_pbc::rsh::kpoint_madelung(&c.functional, &s.cell, mesh)?;
     Ok((r, v_m))
 }
 
