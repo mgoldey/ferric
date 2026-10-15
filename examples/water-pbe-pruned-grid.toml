@@ -11,9 +11,7 @@
 # references the flat-grid suites gate on, at those suites' own tolerances --
 # see crates/ferric-dft/tests/grid_prune_live_scf.rs.
 #
-# Two restrictions, both enforced rather than documented-and-hoped:
-#   * energy only -- optimize/frequencies reject a pruned grid, because the XC
-#     gradient's grid-response term is built on the unpruned grid.
+# Restriction, enforced rather than documented-and-hoped:
 #   * the VV10/NLC grid is never pruned (it is 50x50, where pruning has no
 #     valid table), so VV10 functionals such as wB97X-V still work.
 

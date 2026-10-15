@@ -718,12 +718,39 @@ pub fn restricted_scf_gradient(
     let ext = config.external_potential.as_ref();
     let cosx = crate::cosx_gradient::scf_exchange_is_cosx(config, false)?.then_some(&config.cosx);
     match (config.xc.as_deref(), cosx) {
-        (Some(xc), cosx) => crate::ks_gradient::ks_gradient_closed_with_exchange(
-            mol, prep, bs, op, bounds, xc, result, ext, cosx,
-        ),
+        (Some(xc), cosx) => {
+            closed_ks_gradient_on_scf_grid(mol, prep, bs, op, bounds, xc, result, config, cosx)
+        }
         (None, Some(c)) => rhf_gradient_cosx(mol, prep, op, bounds, result, ext, c),
         (None, None) => rhf_gradient(mol, prep, op, bounds, result, ext),
     }
+}
+
+/// The closed-shell KS gradient on the XC grids `config`'s SCF ran on.
+#[allow(clippy::too_many_arguments)]
+fn closed_ks_gradient_on_scf_grid(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bs: &ferric_core::basis::BasisSet,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    xc: &str,
+    result: &ScfResult,
+    config: &crate::rhf::RhfConfig,
+    cosx: Option<&crate::cosx_k::CosxConfig>,
+) -> Result<Array2<f64>, FerricError> {
+    crate::ks_gradient::ks_gradient_closed_with_exchange_on_grids(
+        mol,
+        prep,
+        bs,
+        op,
+        bounds,
+        xc,
+        result,
+        config.external_potential.as_ref(),
+        cosx,
+        &crate::ks_gradient::KsGradGrids::from_config(config),
+    )
 }
 
 /// Open-shell counterpart of [`restricted_scf_gradient`] for a UHF / UKS SCF.
@@ -746,7 +773,7 @@ pub fn unrestricted_scf_gradient(
     let cosx = crate::cosx_gradient::scf_exchange_is_cosx(config, true)?;
     match config.xc.as_deref() {
         // `None` exchange config is exactly `ks_gradient_uks`.
-        Some(xc) => crate::ks_gradient::ks_gradient_uks_with_exchange(
+        Some(xc) => crate::ks_gradient::ks_gradient_uks_with_exchange_on_grids(
             mol,
             prep,
             bs,
@@ -756,6 +783,7 @@ pub fn unrestricted_scf_gradient(
             result,
             ext,
             cosx.then_some(&config.cosx),
+            &crate::ks_gradient::KsGradGrids::from_config(config),
         ),
         None if cosx => uhf_gradient_cosx(mol, prep, op, bounds, result, ext, &config.cosx),
         None => uhf_gradient(mol, prep, op, bounds, result, ext),
@@ -932,7 +960,7 @@ pub fn restricted_open_scf_gradient(
     }
     match config.xc.as_deref() {
         // `None` exchange config is exactly `ks_gradient_roks`.
-        Some(xc) => crate::ks_gradient::ks_gradient_roks_with_exchange(
+        Some(xc) => crate::ks_gradient::ks_gradient_roks_with_exchange_on_grids(
             mol,
             prep,
             bs,
@@ -942,6 +970,7 @@ pub fn restricted_open_scf_gradient(
             result,
             ext,
             cosx.then_some(&config.cosx),
+            &crate::ks_gradient::KsGradGrids::from_config(config),
         ),
         None if cosx => rohf_gradient_cosx(mol, prep, op, bounds, result, ext, &config.cosx),
         None => rohf_gradient(mol, prep, op, bounds, result, ext),

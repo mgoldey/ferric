@@ -32,7 +32,7 @@ use ferric_mp2::mp3::mp3_energy;
 use ferric_mp2::oo_rimp2::{oo_ri_mp2, OoRiMp2Config};
 use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
 use ferric_mp2::scs::{scs_mp2, scs_mp2_2terfc, ScsMp2Config, ScsMp2TerfcConfig};
-use ferric_scf::ks_gradient::ks_gradient_closed;
+use ferric_scf::ks_gradient::{ks_gradient_closed_with_exchange_on_grids, KsGradGrids};
 use ferric_scf::noise_floor::SolverFamily;
 use ferric_scf::optimize::{optimize_geometry, optimize_geometry_uhf, OptimizeConfig};
 use ferric_scf::result::ScfResult;
@@ -2280,7 +2280,8 @@ fn run_qmmm(
         rhf_gradient, rhf_gradient_with_polarizable, uhf_gradient, uhf_gradient_with_polarizable,
     };
     use ferric_scf::ks_gradient::{
-        ks_gradient_closed_with_polarizable, ks_gradient_uks, ks_gradient_uks_with_polarizable,
+        ks_gradient_closed_with_polarizable_on_grids, ks_gradient_uks_with_exchange_on_grids,
+        ks_gradient_uks_with_polarizable_on_grids,
     };
     use ferric_scf::polarizable::{induce, PolarizableSites, DEFAULT_THOLE_A};
     use ferric_scf::qmmm::{full_gradient_with_mm, mm_forces, qmmm_mm_terms};
@@ -2384,7 +2385,7 @@ fn run_qmmm(
         "rks" => {
             let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).map_err(make_err)?;
             let g = if config.polarizable.is_some() {
-                ks_gradient_closed_with_polarizable(
+                ks_gradient_closed_with_polarizable_on_grids(
                     &mol,
                     &prep,
                     &bs,
@@ -2395,18 +2396,30 @@ fn run_qmmm(
                     ext,
                     config.polarizable.as_ref(),
                     r.induced_dipoles.as_ref(),
+                    &KsGradGrids::from_config(&config),
                 )
                 .map_err(make_err)?
             } else {
-                ks_gradient_closed(&mol, &prep, &bs, op, &bounds, xc.unwrap(), &r, ext)
-                    .map_err(make_err)?
+                ks_gradient_closed_with_exchange_on_grids(
+                    &mol,
+                    &prep,
+                    &bs,
+                    op,
+                    &bounds,
+                    xc.unwrap(),
+                    &r,
+                    ext,
+                    None,
+                    &KsGradGrids::from_config(&config),
+                )
+                .map_err(make_err)?
             };
             (r, g)
         }
         "uks" => {
             let r = solve_uhf(&ctx, &mol, &prep, &bounds, &config).map_err(make_err)?;
             let g = if config.polarizable.is_some() {
-                ks_gradient_uks_with_polarizable(
+                ks_gradient_uks_with_polarizable_on_grids(
                     &mol,
                     &prep,
                     &bs,
@@ -2417,11 +2430,23 @@ fn run_qmmm(
                     ext,
                     config.polarizable.as_ref(),
                     r.induced_dipoles.as_ref(),
+                    &KsGradGrids::from_config(&config),
                 )
                 .map_err(make_err)?
             } else {
-                ks_gradient_uks(&mol, &prep, &bs, op, &bounds, xc.unwrap(), &r, ext)
-                    .map_err(make_err)?
+                ks_gradient_uks_with_exchange_on_grids(
+                    &mol,
+                    &prep,
+                    &bs,
+                    op,
+                    &bounds,
+                    xc.unwrap(),
+                    &r,
+                    ext,
+                    None,
+                    &KsGradGrids::from_config(&config),
+                )
+                .map_err(make_err)?
             };
             (r, g)
         }
@@ -7809,11 +7834,8 @@ fn run_dft(
     // Main KS grid. `None` (no grid kwarg) keeps the historical 75x110 flat
     // grid byte-for-byte; `ksdft_ladder` clones `cfg`, so every rung uses it.
     cfg.dft_grid = resolve_dft_grid(grid_radial, grid_angular, grid_prune)?;
-    // `ks_gradient_closed` builds its OWN default grid (it takes no grid
-    // config), so a gradient after a non-default-grid SCF would be the
-    // gradient of a different energy -- and on a pruned grid the XC
-    // grid-response term does not exist at all. Refuse the pair up front, the
-    // same rule the CLI applies to `[dft] grid_prune` with task != "energy".
+    // The gradient below goes through `restricted_scf_gradient`, which
+    // differentiates `cfg.dft_grid` (pruned or not), the grid the SCF runs on.
     // COSX exchange (RIJCOSX by default here): the gradient below goes
     // through `restricted_scf_gradient`, which differentiates the COSX (and
     // RI-J) energy the SCF built; setups it cannot differentiate (overlap fit
@@ -7834,13 +7856,6 @@ fn run_dft(
                  is not available: {r}"
             )));
         }
-    }
-    if with_gradient && cfg.dft_grid.is_some() {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "with_gradient=True cannot be combined with grid_radial / grid_angular / \
-             grid_prune: the analytic KS gradient is built on the default 75x110 \
-             unpruned grid, so it would not be the gradient of this energy",
-        ));
     }
     // Run through the level-shift ladder (KS-DFT = solve_rhf with cfg.xc set),
     // so a hybrid on a hard system that DIIS-limit-cycles at level_shift=0
@@ -10537,7 +10552,7 @@ fn run_saddle(
         // KS-DFT energy with a Hartree-Fock gradient -- two different surfaces,
         // and the search would converge to a stationary point of neither.
         let g = if let Some(xc_name) = scf_g.xc.as_deref() {
-            ks_gradient_closed(
+            ks_gradient_closed_with_exchange_on_grids(
                 mm,
                 &prep,
                 &bs,
@@ -10546,6 +10561,8 @@ fn run_saddle(
                 xc_name,
                 &res,
                 scf_g.external_potential.as_ref(),
+                None,
+                &KsGradGrids::from_config(&scf_g),
             )?
         } else {
             rhf_gradient(
@@ -10728,7 +10745,7 @@ fn run_irc(
         // KS energy needs the KS gradient. Pairing `solve_rhf`'s XC energy
         // with `rhf_gradient` would walk one surface while reporting another.
         let g = if let Some(xc_name) = scf_cfg.xc.as_deref() {
-            ks_gradient_closed(
+            ks_gradient_closed_with_exchange_on_grids(
                 mm,
                 &prep,
                 &bs,
@@ -10737,6 +10754,8 @@ fn run_irc(
                 xc_name,
                 &res,
                 scf_cfg.external_potential.as_ref(),
+                None,
+                &KsGradGrids::from_config(&scf_cfg),
             )?
         } else {
             rhf_gradient(

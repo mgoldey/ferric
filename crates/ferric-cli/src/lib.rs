@@ -473,11 +473,9 @@ pub fn run(args: Vec<String>) {
         std::process::exit(1);
     }
     // [dft] grid_prune — main-DFT-grid angular pruning. Strict parse (unknown
-    // values are a hard error, never a silent default), then a task guard:
-    // the XC gradient's grid-response term is only built for the unpruned
-    // grid, so optimize/frequencies must refuse a pruned grid up front rather
-    // than returning a gradient that is not the gradient of the energy the
-    // SCF converged.
+    // values are a hard error, never a silent default). The XC gradient
+    // differentiates the same pruned grid the SCF converged on (it is built
+    // from `rhf_config.dft_grid`), so no task guard is needed.
     let grid_prune: Option<ferric_dft::prune::PruneScheme> = match cfg.dft.grid_prune.as_deref() {
         None => None,
         Some(s) => match ferric_dft::prune::PruneScheme::parse_config_str(s) {
@@ -492,14 +490,6 @@ pub fn run(args: Vec<String>) {
         eprintln!(
             "error: [dft] grid_prune = \"sgx\" is the COSX exchange grid's scheme \
              ([scf] cosx_grid); the XC grid is validated with \"nwchem\" or \"none\" only."
-        );
-        std::process::exit(1);
-    }
-    if grid_prune.is_some() && task != "energy" {
-        eprintln!(
-            "error: [dft] grid_prune is supported for method.task = \"energy\" only \
-             (got \"{task}\"). The XC gradient's grid-response term is built on the \
-             unpruned grid, so a pruned energy and its gradient would be inconsistent."
         );
         std::process::exit(1);
     }

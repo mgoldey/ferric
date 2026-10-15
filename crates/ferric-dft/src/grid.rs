@@ -130,10 +130,10 @@ pub struct AtomicGridConfig {
     /// flipping that `Default` is NOT a safe way to turn pruning on globally —
     /// it would poison every 50x50 NLC grid in the workspace at once.
     ///
-    /// CAUTION 2 — gradients: [`build_atomic_grid_with_response`] hard-errors
-    /// on a pruned config, because its weight-response term is only built for
-    /// the flat grid. Energy runs may prune; gradient / optimize / frequency
-    /// runs may not.
+    /// Gradients: [`build_atomic_grid_with_response`] honours a pruned config
+    /// (it takes [`build_atomic_grid_with_response_pruned`]), so the analytic KS
+    /// gradient differentiates the pruned energy when the caller passes the
+    /// SCF's grid (`ferric_scf::ks_gradient::KsGradGrids::from_config`).
     pub prune: Option<crate::prune::PruneScheme>,
 }
 
@@ -147,6 +147,19 @@ impl Default for AtomicGridConfig {
             // Flat grid: byte-identical to the historical behavior. See the
             // field doc for why pruning is opt-in until it is validated
             // through a live KS SCF against the reference suites.
+            prune: None,
+        }
+    }
+}
+
+impl AtomicGridConfig {
+    /// The default VV10 nonlocal grid (50 x 50, unpruned): the one every SCF
+    /// driver and the KS gradient use when `nlc_grid` is `None`.
+    #[must_use]
+    pub fn default_nlc() -> Self {
+        Self {
+            n_radial: 50,
+            n_angular: 50,
             prune: None,
         }
     }
@@ -365,29 +378,10 @@ pub fn build_atomic_grid_with_response(
     mol: &Molecule,
     cfg: &AtomicGridConfig,
 ) -> Result<(Vec<GridPoint>, Vec<Vec<[f64; 3]>>), FerricError> {
-    // Pruning is NOT validated on the XC grid-response path, and silently
-    // ignoring `cfg.prune` here would be worse than not supporting it: the
-    // energy would be evaluated on a pruned grid while its gradient was
-    // evaluated on a flat one, so the returned vector would not be the
-    // gradient of the energy the SCF actually converged. That inconsistency
-    // is invisible in the output — it shows up only as a finite-difference
-    // mismatch — so it is a hard error rather than a silent fallback.
-    //
-    // The weight-response ALGEBRA is order-agnostic (each point's derivative
-    // depends only on its own position and home atom), and
-    // [`build_atomic_grid_with_response_pruned`] honours `cfg.prune`; the COSX
-    // exchange gradient uses it and is FD-validated on the pruned `sgx` grid.
-    // Lifting this refusal for XC means re-validating the XC gradient against
-    // finite difference of the *pruned* XC energy.
-    if cfg.prune.is_some() {
-        return Err(FerricError::General(
-            "DFT grid pruning is not supported on the gradient (grid-response) path: \
-             the XC gradient's weight-response term is built on the unpruned grid, so a \
-             pruned energy and this gradient would be inconsistent. Set the grid's \
-             prune = None for gradient / optimize / frequency runs."
-                .to_string(),
-        ));
-    }
+    // The weight-response algebra is order-agnostic (each point's derivative
+    // depends only on its own position and home atom), so a pruned config is
+    // differentiated like a flat one: the gradient is that of the pruned energy
+    // the SCF converged. `prune = None` is the flat grid exactly.
     build_atomic_grid_with_response_pruned(mol, cfg)
 }
 
@@ -557,8 +551,9 @@ mod tests {
             atomic_grid_point_count(&mol, &sgx, sgx.prune).unwrap(),
         );
         assert!(ns < nf, "sgx {ns} vs flat {nf}");
-        // The XC-path wrapper still refuses a pruned config.
-        assert!(build_atomic_grid_with_response(&mol, &sgx).is_err());
+        // The XC-path wrapper (#428) honours a pruned config: same count.
+        let (xg, _) = build_atomic_grid_with_response(&mol, &sgx).unwrap();
+        assert_eq!(xg.len(), ns);
     }
 
     fn h2() -> Molecule {

@@ -61,6 +61,46 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ndarray::Array2;
 
+/// The XC grids a KS gradient is differentiated on.
+///
+/// The gradient is the derivative of the energy the SCF converged, which is a
+/// functional of the SCF's `dft_grid` (and, for VV10 functionals, its
+/// `nlc_grid`), including any angular pruning. `Default` is the SCF's own
+/// default pair (75x110 main, 50x50 nonlocal, both unpruned), so a caller that
+/// ran its SCF with no grid override gets identical bits from either entry
+/// point. A caller that set `dft_grid` / `nlc_grid` must pass
+/// [`KsGradGrids::from_config`]; the plain `ks_gradient_*` entry points always
+/// differentiate the default grids.
+#[derive(Debug, Clone)]
+pub struct KsGradGrids {
+    /// Main XC grid (`RhfConfig::dft_grid`).
+    pub main: AtomicGridConfig,
+    /// VV10 nonlocal grid (`RhfConfig::nlc_grid`).
+    pub nlc: AtomicGridConfig,
+}
+
+impl Default for KsGradGrids {
+    fn default() -> Self {
+        Self {
+            main: AtomicGridConfig::default(),
+            nlc: AtomicGridConfig::default_nlc(),
+        }
+    }
+}
+
+impl KsGradGrids {
+    /// The grids `config`'s SCF used (same defaulting as `solve_rhf` /
+    /// `solve_uhf` / `solve_rohf`).
+    #[must_use]
+    pub fn from_config(config: &crate::rhf::RhfConfig) -> Self {
+        let d = Self::default();
+        Self {
+            main: config.dft_grid.clone().unwrap_or(d.main),
+            nlc: config.nlc_grid.clone().unwrap_or(d.nlc),
+        }
+    }
+}
+
 /// Compute the closed-shell KS nuclear gradient.
 ///
 /// Returns a `(natoms, 3)` array of dE/dR in atomic units.
@@ -115,11 +155,41 @@ pub fn ks_gradient_closed_with_exchange(
     ext: Option<&ferric_core::external_potential::ExternalPotential>,
     cosx: Option<&crate::cosx_k::CosxConfig>,
 ) -> Result<Array2<f64>, FerricError> {
+    ks_gradient_closed_with_exchange_on_grids(
+        mol,
+        prep,
+        bs,
+        op,
+        bounds,
+        xc_name,
+        result,
+        ext,
+        cosx,
+        &KsGradGrids::default(),
+    )
+}
+
+/// [`ks_gradient_closed_with_exchange`] on the XC grids the SCF ran on: `grids` is
+/// normally [`KsGradGrids::from_config`] of the SCF's config. The plain entry
+/// point differentiates the default grids.
+#[allow(clippy::too_many_arguments)]
+pub fn ks_gradient_closed_with_exchange_on_grids(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bs: &ferric_core::basis::BasisSet,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    xc_name: &str,
+    result: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+    cosx: Option<&crate::cosx_k::CosxConfig>,
+    grids: &KsGradGrids,
+) -> Result<Array2<f64>, FerricError> {
     let nocc = (mol.nelec() / 2) as usize;
     let w = build_energy_weighted_density(result, nocc);
     let d = result.density_r().clone();
     ks_gradient_closed_for_density(
-        mol, prep, bs, op, bounds, xc_name, result, ext, cosx, &d, &w,
+        mol, prep, bs, op, bounds, xc_name, result, ext, cosx, &d, &w, grids,
     )
 }
 
@@ -148,6 +218,7 @@ pub fn ks_gradient_closed_for_density(
     cosx: Option<&crate::cosx_k::CosxConfig>,
     d: &Array2<f64>,
     w: &Array2<f64>,
+    grids: &KsGradGrids,
 ) -> Result<Array2<f64>, FerricError> {
     if let Some(cfg) = cosx {
         crate::cosx_gradient::check_gradient_supported(cfg)?;
@@ -260,14 +331,14 @@ pub fn ks_gradient_closed_for_density(
     }
 
     // XC gradient: dispatch on functional family (LDA fast path, GGA needs Hessians).
-    let grid_cfg = AtomicGridConfig::default();
+    let grid_cfg = &grids.main;
     let xc_grad = if needs_mgga {
         xc_gradient_closed_mgga_from_density(
             mol,
             bs,
             &d,
             xc_name,
-            &grid_cfg,
+            grid_cfg,
             prep.shell_to_atom(),
             prep.shell_offsets(),
             prep.shell_dims(),
@@ -278,7 +349,7 @@ pub fn ks_gradient_closed_for_density(
             bs,
             &d,
             xc_name,
-            &grid_cfg,
+            grid_cfg,
             prep.shell_to_atom(),
             prep.shell_offsets(),
             prep.shell_dims(),
@@ -289,7 +360,7 @@ pub fn ks_gradient_closed_for_density(
             bs,
             &d,
             xc_name,
-            &grid_cfg,
+            grid_cfg,
             prep.shell_to_atom(),
             prep.shell_offsets(),
             prep.shell_dims(),
@@ -300,17 +371,13 @@ pub fn ks_gradient_closed_for_density(
 
     // VV10 nonlocal-correlation gradient (only if the functional advertises it).
     if let Some(vv10_params) = xc.vv10 {
-        let nlc_cfg = ferric_dft::grid::AtomicGridConfig {
-            n_radial: 50,
-            n_angular: 50,
-            ..Default::default()
-        };
+        let nlc_cfg = &grids.nlc;
         let vv10_grad = ferric_dft::gradient::vv10_gradient_from_density(
             mol,
             bs,
             &d,
             &vv10_params,
-            &nlc_cfg,
+            nlc_cfg,
             prep.shell_to_atom(),
             prep.shell_offsets(),
             prep.shell_dims(),
@@ -350,7 +417,39 @@ pub fn ks_gradient_closed_with_polarizable(
     sites: Option<&crate::polarizable::PolarizableSites>,
     dipoles: Option<&Array2<f64>>,
 ) -> Result<Array2<f64>, FerricError> {
-    let mut grad = ks_gradient_closed(mol, prep, bs, op, bounds, xc_name, result, ext)?;
+    ks_gradient_closed_with_polarizable_on_grids(
+        mol,
+        prep,
+        bs,
+        op,
+        bounds,
+        xc_name,
+        result,
+        ext,
+        sites,
+        dipoles,
+        &KsGradGrids::default(),
+    )
+}
+
+/// [`ks_gradient_closed_with_polarizable`] on the XC grids the SCF ran on.
+#[allow(clippy::too_many_arguments)]
+pub fn ks_gradient_closed_with_polarizable_on_grids(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bs: &ferric_core::basis::BasisSet,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    xc_name: &str,
+    result: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+    sites: Option<&crate::polarizable::PolarizableSites>,
+    dipoles: Option<&Array2<f64>>,
+    grids: &KsGradGrids,
+) -> Result<Array2<f64>, FerricError> {
+    let mut grad = ks_gradient_closed_with_exchange_on_grids(
+        mol, prep, bs, op, bounds, xc_name, result, ext, None, grids,
+    )?;
     if let (Some(sites), Some(dipoles)) = (sites, dipoles) {
         grad += &crate::polarizable::polarizable_gradient_term(
             mol,
@@ -448,6 +547,36 @@ pub fn ks_gradient_uks_with_exchange(
     ext: Option<&ferric_core::external_potential::ExternalPotential>,
     cosx: Option<&crate::cosx_k::CosxConfig>,
 ) -> Result<Array2<f64>, FerricError> {
+    ks_gradient_uks_with_exchange_on_grids(
+        mol,
+        prep,
+        bs,
+        op,
+        bounds,
+        xc_name,
+        result,
+        ext,
+        cosx,
+        &KsGradGrids::default(),
+    )
+}
+
+/// [`ks_gradient_uks_with_exchange`] on the XC grids the SCF ran on: `grids` is
+/// normally [`KsGradGrids::from_config`] of the SCF's config. The plain entry
+/// point differentiates the default grids.
+#[allow(clippy::too_many_arguments)]
+pub fn ks_gradient_uks_with_exchange_on_grids(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bs: &ferric_core::basis::BasisSet,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    xc_name: &str,
+    result: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+    cosx: Option<&crate::cosx_k::CosxConfig>,
+    grids: &KsGradGrids,
+) -> Result<Array2<f64>, FerricError> {
     assert!(
         matches!(result.spin, Spin::Unrestricted),
         "ks_gradient_uks: ScfResult.spin must be Unrestricted"
@@ -465,7 +594,7 @@ pub fn ks_gradient_uks_with_exchange(
         .expect("ks_gradient_uks: missing density_beta");
     let w = build_energy_weighted_density_uhf(result, nocc_a, nocc_b);
     ks_gradient_uks_for_density(
-        mol, prep, bs, op, bounds, xc_name, result, ext, cosx, d_a, d_b, &w,
+        mol, prep, bs, op, bounds, xc_name, result, ext, cosx, d_a, d_b, &w, grids,
     )
 }
 
@@ -497,6 +626,7 @@ pub fn ks_gradient_uks_for_density(
     d_a: &Array2<f64>,
     d_b: &Array2<f64>,
     w: &Array2<f64>,
+    grids: &KsGradGrids,
 ) -> Result<Array2<f64>, FerricError> {
     assert!(
         matches!(result.spin, Spin::Unrestricted),
@@ -568,7 +698,7 @@ pub fn ks_gradient_uks_for_density(
     }
 
     // XC gradient (polarized).
-    let grid_cfg = AtomicGridConfig::default();
+    let grid_cfg = &grids.main;
     let xc_grad = if needs_mgga {
         xc_gradient_uks_mgga_from_density(
             mol,
@@ -576,7 +706,7 @@ pub fn ks_gradient_uks_for_density(
             d_a,
             d_b,
             xc_name,
-            &grid_cfg,
+            grid_cfg,
             prep.shell_to_atom(),
             prep.shell_offsets(),
             prep.shell_dims(),
@@ -588,7 +718,7 @@ pub fn ks_gradient_uks_for_density(
             d_a,
             d_b,
             xc_name,
-            &grid_cfg,
+            grid_cfg,
             prep.shell_to_atom(),
             prep.shell_offsets(),
             prep.shell_dims(),
@@ -599,17 +729,13 @@ pub fn ks_gradient_uks_for_density(
 
     // VV10: function of ρ_tot, identical to the closed-shell formula.
     if let Some(vv10_params) = xc.vv10 {
-        let nlc_cfg = ferric_dft::grid::AtomicGridConfig {
-            n_radial: 50,
-            n_angular: 50,
-            ..Default::default()
-        };
+        let nlc_cfg = &grids.nlc;
         let vv10_grad = ferric_dft::gradient::vv10_gradient_from_density(
             mol,
             bs,
             &d_total,
             &vv10_params,
-            &nlc_cfg,
+            nlc_cfg,
             prep.shell_to_atom(),
             prep.shell_offsets(),
             prep.shell_dims(),
@@ -640,7 +766,39 @@ pub fn ks_gradient_uks_with_polarizable(
     sites: Option<&crate::polarizable::PolarizableSites>,
     dipoles: Option<&Array2<f64>>,
 ) -> Result<Array2<f64>, FerricError> {
-    let mut grad = ks_gradient_uks(mol, prep, bs, op, bounds, xc_name, result, ext)?;
+    ks_gradient_uks_with_polarizable_on_grids(
+        mol,
+        prep,
+        bs,
+        op,
+        bounds,
+        xc_name,
+        result,
+        ext,
+        sites,
+        dipoles,
+        &KsGradGrids::default(),
+    )
+}
+
+/// [`ks_gradient_uks_with_polarizable`] on the XC grids the SCF ran on.
+#[allow(clippy::too_many_arguments)]
+pub fn ks_gradient_uks_with_polarizable_on_grids(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bs: &ferric_core::basis::BasisSet,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    xc_name: &str,
+    result: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+    sites: Option<&crate::polarizable::PolarizableSites>,
+    dipoles: Option<&Array2<f64>>,
+    grids: &KsGradGrids,
+) -> Result<Array2<f64>, FerricError> {
+    let mut grad = ks_gradient_uks_with_exchange_on_grids(
+        mol, prep, bs, op, bounds, xc_name, result, ext, None, grids,
+    )?;
     if let (Some(sites), Some(dipoles)) = (sites, dipoles) {
         grad += &crate::polarizable::polarizable_gradient_term(
             mol,
@@ -719,6 +877,36 @@ pub fn ks_gradient_roks_with_exchange(
     ext: Option<&ferric_core::external_potential::ExternalPotential>,
     cosx: Option<&crate::cosx_k::CosxConfig>,
 ) -> Result<Array2<f64>, FerricError> {
+    ks_gradient_roks_with_exchange_on_grids(
+        mol,
+        prep,
+        bs,
+        op,
+        bounds,
+        xc_name,
+        result,
+        ext,
+        cosx,
+        &KsGradGrids::default(),
+    )
+}
+
+/// [`ks_gradient_roks_with_exchange`] on the XC grids the SCF ran on: `grids` is
+/// normally [`KsGradGrids::from_config`] of the SCF's config. The plain entry
+/// point differentiates the default grids.
+#[allow(clippy::too_many_arguments)]
+pub fn ks_gradient_roks_with_exchange_on_grids(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bs: &ferric_core::basis::BasisSet,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    xc_name: &str,
+    result: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+    cosx: Option<&crate::cosx_k::CosxConfig>,
+    grids: &KsGradGrids,
+) -> Result<Array2<f64>, FerricError> {
     assert!(
         matches!(result.spin, Spin::RestrictedOpen),
         "ks_gradient_roks: ScfResult.spin must be RestrictedOpen"
@@ -730,7 +918,7 @@ pub fn ks_gradient_roks_with_exchange(
         .expect("ks_gradient_roks: missing density_beta");
     let w = crate::gradient::rohf_energy_weighted_density(result)?;
     ks_gradient_roks_for_density(
-        mol, prep, bs, op, bounds, xc_name, result, ext, cosx, d_a, d_b, &w,
+        mol, prep, bs, op, bounds, xc_name, result, ext, cosx, d_a, d_b, &w, grids,
     )
 }
 
@@ -760,6 +948,7 @@ pub fn ks_gradient_roks_for_density(
     d_a: &Array2<f64>,
     d_b: &Array2<f64>,
     w: &Array2<f64>,
+    grids: &KsGradGrids,
 ) -> Result<Array2<f64>, FerricError> {
     assert!(
         matches!(result.spin, Spin::RestrictedOpen),
@@ -830,7 +1019,7 @@ pub fn ks_gradient_roks_for_density(
 
     // XC piece via the polarized driver (ROKS densities already satisfy the
     // structure; UKS XC machinery applies as-is).
-    let grid_cfg = AtomicGridConfig::default();
+    let grid_cfg = &grids.main;
     let xc_grad = if needs_mgga {
         xc_gradient_uks_mgga_from_density(
             mol,
@@ -838,7 +1027,7 @@ pub fn ks_gradient_roks_for_density(
             d_a,
             d_b,
             xc_name,
-            &grid_cfg,
+            grid_cfg,
             prep.shell_to_atom(),
             prep.shell_offsets(),
             prep.shell_dims(),
@@ -850,7 +1039,7 @@ pub fn ks_gradient_roks_for_density(
             d_a,
             d_b,
             xc_name,
-            &grid_cfg,
+            grid_cfg,
             prep.shell_to_atom(),
             prep.shell_offsets(),
             prep.shell_dims(),
@@ -861,17 +1050,13 @@ pub fn ks_gradient_roks_for_density(
 
     // VV10 (closed-shell-friendly, on total ρ).
     if let Some(vv10_params) = xc.vv10 {
-        let nlc_cfg = ferric_dft::grid::AtomicGridConfig {
-            n_radial: 50,
-            n_angular: 50,
-            ..Default::default()
-        };
+        let nlc_cfg = &grids.nlc;
         let vv10_grad = ferric_dft::gradient::vv10_gradient_from_density(
             mol,
             bs,
             &d_total,
             &vv10_params,
-            &nlc_cfg,
+            nlc_cfg,
             prep.shell_to_atom(),
             prep.shell_offsets(),
             prep.shell_dims(),

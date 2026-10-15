@@ -3113,8 +3113,8 @@ def run_dft(
     `grid_prune="nwchem"` applies NWChem-style radial-region angular pruning
     (~23% fewer points at 75x110, ~1e-10 Ha); `"none"` is the flat grid, and
     any other value raises ValueError. Pruning has no table at
-    `grid_angular=50`. Any grid kwarg with `with_gradient=True` raises
-    ValueError: the analytic gradient is built on the default grid.
+    `grid_angular=50`. With `with_gradient=True` the analytic gradient
+    differentiates the grid the SCF ran on (including a pruned one).
     With `k_builder="cosx"` and `with_gradient=True` the gradient
     differentiates the COSX energy; the overlap fit with a functional is not
     differentiable (its response needs the XC Fock nuclear derivative), so

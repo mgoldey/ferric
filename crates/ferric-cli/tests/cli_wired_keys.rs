@@ -470,18 +470,6 @@ fn dft_grid_keys_are_refused_where_they_cannot_apply() {
         ),
         &["grid_angular", "Lebedev"],
     );
-    assert_refused(
-        "grid_opt",
-        &body(
-            "water.xyz",
-            1,
-            "sto-3g",
-            "ksdft",
-            "[dft]\ngrid_radial = 99\n",
-        )
-        .replace("task = \"energy\"", "task = \"optimize\""),
-        &["grid_radial", "energy"],
-    );
 }
 
 // ─── smeared [external_potential] charges ───────────────────────────────────

@@ -564,10 +564,11 @@ fn production_wired_mutants_each_fail_the_hessian_anchor() {
 /// far above the fixed-grid agreement bar: the fixed-grid Hessian is a
 /// different (and, for frequencies, not the production) surface.
 ///
-/// Runs on the DEFAULT grid on purpose: `ks_gradient_closed` ignores
-/// `RhfConfig::dft_grid` and always uses `AtomicGridConfig::default()` (issue
-/// #428), so a smaller SCF grid would make the production SCF and its gradient
-/// disagree about the grid. The gap includes the default grid's own quadrature
+/// Runs on the DEFAULT grid on purpose: the plain `ks_gradient_closed` entry
+/// point differentiates `AtomicGridConfig::default()` by design (the
+/// `_on_grids` variants and the `*_scf_gradient` wrappers take the SCF's grid,
+/// #428), so a smaller SCF grid here would pair the SCF and this call on
+/// different grids. The gap includes the default grid's own quadrature
 /// error, which closes with grid refinement along with the weight response.
 #[test]
 fn production_gradient_difference_differs_by_the_weight_response_scale() {
