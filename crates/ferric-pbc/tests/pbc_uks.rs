@@ -848,9 +848,7 @@ fn gamma_uks_refuses_unsupported_features_by_name() {
         ("scf.dft_grid", &|c| {
             c.scf.dft_grid = Some(AtomicGridConfig::default())
         }),
-        ("range-separated hybrid", &|c| {
-            c.functional = "wB97X-V".into()
-        }),
+        ("VV10", &|c| c.functional = "wB97X-V".into()),
     ];
     for (word, edit) in cases {
         let e = run(edit);

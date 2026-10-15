@@ -88,6 +88,13 @@ pub(super) struct RshAttached {
     pub(super) swapped: bool,
 }
 
+/// Budget the attenuated fit may use: what is left of the resolved budget
+/// after the full-Coulomb fit's resident B and `S(k)` (floored at 1 byte; 0
+/// would mean "unset" to the ledger).
+pub(super) fn attenuated_budget(total: usize, resident: usize) -> usize {
+    total.saturating_sub(resident).max(1)
+}
+
 impl RshAttached {
     /// `(coefficient of K[1/r], coefficient of K[erf(ωr)/r])`.
     pub(super) fn coefficients(&self) -> (f64, f64) {
@@ -122,13 +129,18 @@ impl KRsGdf {
             _ => None,
         };
         let mut full = Self::build(cell, obs, aux, mesh, s_k, cfg)?;
+        // The full-Coulomb B stays resident while the attenuated fit is built.
+        let budget = attenuated_budget(
+            crate::budget::resolve(cfg.gdf.budget_bytes),
+            full.resident_bytes(),
+        );
         let needs_lr = rsh.c_lr != rsh.c_sr || mutant == Some(KRshMutant::SwappedRoles);
         let lr = if needs_lr {
             let w = match mutant {
                 Some(KRshMutant::OmegaUnits) => rsh.omega * 1.889_726_124_565_062,
                 _ => rsh.omega,
             };
-            Self::build_attenuated(cell, obs, aux, mesh, s_k, cfg, w, mutant)?
+            Self::build_attenuated(cell, obs, aux, mesh, s_k, cfg, (w, budget), mutant)?
         } else {
             None
         };
@@ -210,7 +222,7 @@ impl KRsGdf {
         mesh: &KPointMesh,
         s_k: &[Array2<C64>],
         cfg: &KRsGdfConfig,
-        omega: f64,
+        (omega, budget): (f64, usize),
         mutant: Option<KRshMutant>,
     ) -> Result<Option<Self>, FerricError> {
         let g = &cfg.gdf;
@@ -263,7 +275,7 @@ impl KRsGdf {
             return Ok(None);
         }
 
-        let mut ledger = Ledger::new(crate::budget::resolve(g.budget_bytes));
+        let mut ledger = Ledger::new(budget);
         ledger.reserve(
             &format!("KRsGdf attenuated S(k) copies (nao = {n}, N_k = {nk})"),
             bytes_of(sat_prod(&[nk + 2, n2]), 16),
@@ -319,7 +331,21 @@ impl KRsGdf {
                 n_lr_chunks +=
                     lr_accumulate_q(&st, kv, *half, mod_l, &mut j2, &mut acc, chunk_budget)?;
             }
-            let (bq, kept, evals) = fit_block(&j2, &acc, &phk, g.lindep, mq == [0, 0, 0], n, iq)?;
+            // Σ_K weight: bounds every element of the erf exchange this class
+            // carries (|a_ml(K)| <= ~1 for normalised orbitals), see `fit_block`.
+            let wfac = if *half { 2.0 } else { 1.0 } / cell.volume() * 4.0 * std::f64::consts::PI;
+            let wsum: f64 = kv
+                .iter()
+                .map(|k| {
+                    let k2 = dot3(k, k);
+                    wfac / k2 * (-k2 / (4.0 * w_eval * w_eval)).exp()
+                })
+                .sum();
+            let (bq, kept, evals) = fit_block(
+                (&j2, &acc, &phk),
+                (g.lindep, wsum),
+                (mq == [0, 0, 0], n, iq),
+            )?;
             drop(acc);
             b_elements += nk * kept * n2;
             let kof: Vec<usize> = (0..nk).map(|j| mesh.k_minus_q(j, mq)).collect();
@@ -415,13 +441,9 @@ impl KRsGdf {
 /// returns `(B per k', kept count, metric eigenvalues)`. An empty K set gives
 /// zero-row `B` blocks.
 fn fit_block(
-    j2: &Array2<C64>,
-    acc: &[Array2<C64>],
-    phk: &[Vec<C64>],
-    lindep: f64,
-    q_is_zero: bool,
-    n: usize,
-    iq: usize,
+    (j2, acc, phk): (&Array2<C64>, &[Array2<C64>], &[Vec<C64>]),
+    (lindep, wsum): (f64, f64),
+    (q_is_zero, n, iq): (bool, usize, usize),
 ) -> Result<(Vec<Array2<C64>>, usize, Vec<f64>), FerricError> {
     let (n2, naux) = (n * n, j2.nrows());
     if j2.iter().all(|z| z.norm() == 0.0) {
@@ -439,9 +461,21 @@ fn fit_block(
     })?;
     let keep: Vec<usize> = (0..naux).filter(|&k| evals[k] > lindep).collect();
     if keep.is_empty() {
+        // Every eigenvalue is under the absolute cut. If the kernel weights
+        // themselves are negligible (`wsum < lindep`; the K vectors sit in the
+        // far Gaussian tail) the class contributes below the build precision:
+        // every element of `K_erf` is bounded by `wsum·max|a|²` with
+        // `|a_ml(K)| <~ 1`, the same size as the directions the cut drops
+        // elsewhere. Zero-row B, as for an empty K set. With non-negligible
+        // weights the smallness is the aux basis's (it does not span the K
+        // set): a genuinely singular metric, which stays a typed error.
+        if wsum < lindep {
+            let zero = Array2::<C64>::zeros((0, n2));
+            return Ok((vec![zero; phk.len()], 0, evals.to_vec()));
+        }
         return Err(FerricError::General(format!(
             "KRsGdf attenuated exchange: every metric eigenvalue at q class {iq} is <= lindep \
-             {lindep:e} (max {:e})",
+             {lindep:e} (max {:e}) although the kernel weights are not negligible (sum {wsum:e})",
             evals[naux - 1]
         )));
     }
@@ -464,4 +498,19 @@ fn fit_block(
         bq.push(j3.dot(&w).t().as_standard_layout().into_owned());
     }
     Ok((bq, keep.len(), evals.to_vec()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::attenuated_budget;
+
+    #[test]
+    fn attenuated_budget_is_the_remainder_floored_at_one() {
+        assert_eq!(attenuated_budget(1000, 400), 600);
+        assert_eq!(attenuated_budget(1000, 1000), 1);
+        assert_eq!(attenuated_budget(1000, 5000), 1);
+        assert_eq!(attenuated_budget(0, 0), 1);
+        // The resident bytes are charged: a mutant ignoring them returns the total.
+        assert_ne!(attenuated_budget(1000, 400), 1000);
+    }
 }

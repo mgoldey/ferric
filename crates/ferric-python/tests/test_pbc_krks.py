@@ -49,21 +49,29 @@ def test_unsupported_combinations_are_refused_by_name(h2, h_atom, basis):
     lat = _cubic()
     with pytest.raises(ValueError, match="multiplicity 2"):
         ferric.run_rks_kpts(h_atom, lat, basis, "LDA", (1, 1, 2))
+    # Open-shell meta-GGA stays refused (SCAN itself is a validated closed-shell
+    # functional since the k-point meta-GGA forces landed).
     with pytest.raises(ValueError, match="meta-GGA"):
-        ferric.run_rks_kpts(h2, lat, basis, "SCAN", (1, 1, 2))
+        ferric.run_uks_kpts(h_atom, lat, basis, "SCAN", (1, 1, 2))
     with pytest.raises(ValueError, match="range-separated"):
         ferric.run_rks_kpts(h2, lat, basis, "HSE06", (1, 1, 2))
-    with pytest.raises(
-        ValueError,
-        match=r"run_rks_kpts: with_stress is not wired for k-point Kohn-Sham",
-    ):
-        ferric.run_rks_kpts(h2, lat, basis, "LDA", (1, 1, 2), with_stress=True)
-    # The gradient is wired (k-point KS forces: test_pbc_kpoint_ks_gradients.py);
-    # the stress refusal does not depend on the functional.
-    with pytest.raises(ValueError, match="with_stress is not wired"):
-        ferric.run_rks_kpts(
-            h2, lat, basis, "PBE0", (1, 1, 2), with_gradient=True, with_stress=True
-        )
+    # The k-point KS stress is wired (test_pbc_kpoint_open_shell_and_stress.py).
+    r = ferric.run_rks_kpts(
+        h2, lat, basis, "LDA", (1, 1, 2), omega=OMEGA, with_stress=True, **GRID
+    )
+    assert r.stress().shape == (3, 3)
+    r = ferric.run_rks_kpts(
+        h2,
+        lat,
+        basis,
+        "PBE0",
+        (1, 1, 2),
+        omega=OMEGA,
+        with_gradient=True,
+        with_stress=True,
+        **GRID,
+    )
+    assert r.stress().shape == (3, 3) and r.gradient().shape == (2, 3)
 
 
 # Library cross-surface pin of the same input (H2/STO-3G, a = 4 Bohr, 1x1x2, omega 0.8,
