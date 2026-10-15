@@ -379,6 +379,15 @@ fn auto_is_analytic_for_a_uhf_doublet_and_matches_fd() {
 
 #[test]
 fn uhf_density_fitting_is_analytic_and_matches_fd() {
+    density_fitting_is_analytic_and_matches_fd(FrequencyReference::Uhf);
+}
+
+#[test]
+fn rohf_density_fitting_is_analytic_and_matches_fd() {
+    density_fitting_is_analytic_and_matches_fd(FrequencyReference::Rohf);
+}
+
+fn density_fitting_is_analytic_and_matches_fd(reference: FrequencyReference) {
     // UHF with RI-J, RI-K or both: analytic where the second-derivative
     // engines exist (one-electron/overlap skeletons), 0 gradients; on a
     // first-derivative libint the probe refuses and Auto runs finite
@@ -408,14 +417,19 @@ fn uhf_density_fitting_is_analytic_and_matches_fd() {
                 Operator::coulomb(),
                 &scf,
                 &FrequencyConfig {
-                    reference: FrequencyReference::Uhf,
+                    reference,
                     hessian,
                     ..Default::default()
                 },
             )
             .expect(what)
         };
-        let probe = analytic_uhf_hessian_available(&nh2(), &prep, Operator::coulomb(), &scf);
+        let probe = match reference {
+            FrequencyReference::Rohf => {
+                analytic_rohf_hessian_available(&nh2(), &prep, Operator::coulomb(), &scf)
+            }
+            _ => analytic_uhf_hessian_available(&nh2(), &prep, Operator::coulomb(), &scf),
+        };
         let auto = run(HessianMethod::Auto);
         let fd = run(HessianMethod::FiniteDifference);
         assert_eq!(fd.hessian_source, HessianSource::FiniteDifference, "{what}");
@@ -434,7 +448,9 @@ fn uhf_density_fitting_is_analytic_and_matches_fd() {
             .iter()
             .zip(&fd.frequencies)
             .fold(0.0f64, |m, (a, b)| m.max((a - b).abs()));
-        eprintln!("NH2/STO-3G UHF {what}: Auto vs FD frequencies max |d| {dev:.3e} cm^-1");
+        eprintln!(
+            "NH2/STO-3G {reference:?} {what}: Auto vs FD frequencies max |d| {dev:.3e} cm^-1"
+        );
         // Measured 8.6e-2 cm^-1 for every route (the same as the exact-integral
         // UHF test above): the truncation of the central difference at the
         // default step, not an analytic error. Bar 2x the measured level.
@@ -443,10 +459,9 @@ fn uhf_density_fitting_is_analytic_and_matches_fd() {
 }
 
 #[test]
-fn uhf_density_fitting_falls_back_before_the_scf_for_rohf_and_ecp() {
-    // ROHF with RI is refused by the pre-SCF probe and the strict path; UHF
-    // RI combined with an ECP is refused by the UHF probe (needs only the
-    // molecule and the basis).
+fn uhf_density_fitting_falls_back_before_the_scf_for_ecp() {
+    // UHF/ROHF RI combined with an ECP is refused by the probe (needs only
+    // the molecule and the basis).
     if !has_deriv2() {
         return;
     }
@@ -455,16 +470,6 @@ fn uhf_density_fitting_falls_back_before_the_scf_for_rohf_and_ecp() {
         df_k_aux: Some("def2-universal-jkfit".into()),
         ..Default::default()
     };
-    let bs = basis::bundled("sto-3g").unwrap();
-    let prep = PreparedBasis::new(&nh2(), &bs).unwrap();
-    let e = analytic_rohf_hessian_available(&nh2(), &prep, Operator::coulomb(), &scf)
-        .expect_err("ROHF + RI must be refused by the probe")
-        .to_string();
-    eprintln!("ROHF + RI probe: {e}");
-    assert!(e.contains("ROHF") && e.contains("RI"), "{e}");
-    let strict = open_shell_with(&scf, FrequencyReference::Rohf, HessianMethod::Analytic);
-    assert!(strict.is_err(), "Analytic ROHF + RI must stay an error");
-
     let svp = basis::bundled("def2-svp").unwrap();
     let mut hi = Molecule::parse_xyz("2\nHI\nH 0 0 0\nI 0 0 1.75\n", 0, 1).unwrap();
     hi.apply_ecp(&svp);
@@ -474,11 +479,13 @@ fn uhf_density_fitting_falls_back_before_the_scf_for_rohf_and_ecp() {
         .to_string();
     assert!(e.contains("effective core potential"), "{e}");
 
+    let e = analytic_rohf_hessian_available(&hi, &hi_prep, Operator::coulomb(), &scf)
+        .expect_err("ROHF RI + ECP must be refused by the probe")
+        .to_string();
+    assert!(e.contains("effective core potential"), "{e}");
+
     // Auto runs the probe BEFORE the SCF and falls back to finite differences
     // of the DF gradient (no error); Analytic stays an error.
-    let auto = open_shell_with(&scf, FrequencyReference::Rohf, HessianMethod::Auto)
-        .expect("Auto must fall back for ROHF + RI");
-    assert_eq!(auto.hessian_source, HessianSource::FiniteDifference);
     let run_hi = |hessian| {
         harmonic_frequencies(
             &ParallelContext::default(),
@@ -497,25 +504,6 @@ fn uhf_density_fitting_falls_back_before_the_scf_for_rohf_and_ecp() {
     assert_eq!(auto.hessian_source, HessianSource::FiniteDifference);
     assert_eq!(auto.n_gradient_evaluations, 12);
     assert!(run_hi(HessianMethod::Analytic).is_err());
-}
-
-fn open_shell_with(
-    scf: &RhfConfig,
-    reference: FrequencyReference,
-    hessian: HessianMethod,
-) -> Result<ferric_scf::frequencies::FrequencyResult, ferric_core::FerricError> {
-    harmonic_frequencies(
-        &ParallelContext::default(),
-        &nh2(),
-        "sto-3g",
-        Operator::coulomb(),
-        scf,
-        &FrequencyConfig {
-            reference,
-            hessian,
-            ..Default::default()
-        },
-    )
 }
 
 #[test]

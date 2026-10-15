@@ -802,7 +802,8 @@ pub fn parse_coord_system(s: &str) -> Result<ferric_scf::optimize::CoordSystem, 
 #[serde(deny_unknown_fields)]
 pub struct FrequenciesCfg {
     /// `"auto"` (default): analytic Hessian for RHF (closed shell), UHF (any
-    /// multiplicity) or ROHF with exact J/K and a basis up to f functions (RHF
+    /// multiplicity) or ROHF with exact J/K (RHF, UHF and ROHF also with RI-J
+    /// and/or RI-K) and a basis up to f functions (RHF
     /// and UHF also with an optional ECP, external charges or field; ROHF with
     /// none of those), finite differences otherwise (always for ROKS and the
     /// other KS references). An error raised by the analytic path after the SCF

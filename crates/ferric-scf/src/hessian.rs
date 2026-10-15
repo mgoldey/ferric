@@ -108,6 +108,14 @@
 //! is refused with a typed error naming the count (RI-K: those are the modes
 //! `DfK` drops, whose truncated energy this does not differentiate).
 //!
+//! ROHF with RI: the ROHF energy is the UHF functional of the constrained
+//! `(D_α, D_β)` with `X_α = C[:, ..n_α]`, `X_β = C[:, ..n_β]` of its single
+//! orbital set, so the skeleton, `J^x` and the per-spin `K^x` are the UHF ones
+//! with those factors; the commutator-form response of `hessian::rohf` then
+//! applies the SCF's own `DfJ` (total response density) and `DfK` (per spin
+//! response density) in place of the exact `G`, and the Focks and `W` it uses
+//! are rebuilt with the same fitted builders.
+//!
 //! UHF: the Coulomb energy `½ dᵀ M d` depends on the TOTAL density only, so the
 //! RI-J terms are the closed-shell ones with `D = D_α + D_β`; the exchange
 //! energy is a sum of one channel per spin, `Σ_σ −½ L^σ·M L^σ` with
@@ -119,8 +127,9 @@
 //! Scope: closed-shell RHF and UHF (any multiplicity) with exact four-centre
 //! J/K, RI-J, RI-K or both fitted with the Coulomb operator, no ECP and no
 //! external potential for the fitted routes; ROHF with exact four-centre
-//! Coulomb J/K. Everything else — KS (ROKS included), range-separated RI-K, RI
-//! for ROHF, RI combined with an external potential or an ECP, COSX, ghost
+//! Coulomb J/K, or RI-J / RI-K / both (same fitting restrictions, and no
+//! external potential or ECP at all). Everything else — KS (ROKS included),
+//! range-separated RI-K, RI combined with an external potential or an ECP, COSX, ghost
 //! atoms, solvation, polarizable embedding, fractional occupations, cDFT,
 //! non-Coulomb operators, and for ROHF also external potentials and ECPs
 //! (validated for RHF/UHF only) — is refused with a typed error naming the
@@ -163,7 +172,9 @@ use ndarray::{s, Array1, Array2, ArrayView2};
 mod rohf;
 pub use rohf::{rohf_hessian, rohf_hessian_parts};
 mod uhf_df;
-use uhf_df::uhf_hessian_parts_with;
+use uhf_df::{
+    open_shell_two_electron, rohf_occupied_factors, uhf_hessian_parts_with, OpenShellDensities,
+};
 
 /// Skeleton 2e screen: a canonical quartet is skipped when
 /// `Q12·Q34·max|D|² < HESS_2E_SCREEN`. Conservative on purpose: the Schwarz
@@ -461,7 +472,9 @@ pub fn uhf_hessian_parts(
 pub mod rohf_support {
     use super::*;
 
-    pub use super::rohf::{rohf_hessian_parts_mutated, RohfMutation};
+    pub use super::rohf::{
+        rohf_hessian_parts_df_mutated, rohf_hessian_parts_mutated, RohfMutation,
+    };
 
     /// The fixed-density inputs of the ROHF skeleton (terms 1-4): the total and
     /// per-spin densities and the energy-weighted density. Public (hidden) so the
@@ -537,6 +550,29 @@ pub mod rohf_support {
         rohf_skeleton_from_densities(mol, prep, op, bounds, config, densities)
     }
 
+    /// [`rohf_skeleton_parts`] for a density-fitted SCF: the four-centre
+    /// two-electron skeleton is NOT built (it is replaced by the fitted terms of
+    /// `hessian::rohf`, so the term is returned as zeros).
+    pub(in crate::hessian) fn rohf_skeleton_without_two_electron(
+        mol: &Molecule,
+        prep: &PreparedBasis,
+        op: Operator,
+        bounds: &SchwarzBounds,
+        rohf: &ScfResult,
+        config: &RhfConfig,
+    ) -> Result<RohfSkeletonParts, FerricError> {
+        check_supported(Reference::Rohf, mol, prep, op, bounds, rohf, config)?;
+        let (da, db) = uhf_spin_densities_for(Reference::Rohf, rohf)?;
+        let w = crate::gradient::rohf_energy_weighted_density(rohf)?;
+        let densities = RohfSkeletonDensities {
+            d_total: da + db,
+            d_alpha: da.clone(),
+            d_beta: db.clone(),
+            w,
+        };
+        rohf_skeleton_from_densities_with(mol, prep, op, bounds, config, densities, false)
+    }
+
     /// `rohf_skeleton_parts` with caller-supplied densities and `W` (the
     /// support checks are the caller's). Exists so that tests can contract the
     /// same machinery with deliberately wrong inputs.
@@ -548,6 +584,18 @@ pub mod rohf_support {
         config: &RhfConfig,
         densities: RohfSkeletonDensities,
     ) -> Result<RohfSkeletonParts, FerricError> {
+        rohf_skeleton_from_densities_with(mol, prep, op, bounds, config, densities, true)
+    }
+
+    fn rohf_skeleton_from_densities_with(
+        mol: &Molecule,
+        prep: &PreparedBasis,
+        op: Operator,
+        bounds: &SchwarzBounds,
+        config: &RhfConfig,
+        densities: RohfSkeletonDensities,
+        with_two_electron: bool,
+    ) -> Result<RohfSkeletonParts, FerricError> {
         let natoms = mol.atoms.len();
         let extra = extra_charges(config);
         let d = &densities.d_total;
@@ -557,7 +605,11 @@ pub mod rohf_support {
         let overlap = skeleton_hess_overlap(prep, natoms, &densities.w)?;
         let (da, db) = (&densities.d_alpha, &densities.d_beta);
         let gam = |mu, nu, la, sg| gamma_uhf(d, da, db, mu, nu, la, sg);
-        let two_electron = skeleton_hess_2e(prep, op, bounds, natoms, max_abs(d), &gam)?;
+        let two_electron = if with_two_electron {
+            skeleton_hess_2e(prep, op, bounds, natoms, max_abs(d), &gam)?
+        } else {
+            Array2::zeros((3 * natoms, 3 * natoms))
+        };
         Ok(RohfSkeletonParts {
             nuclear,
             one_electron,
@@ -787,7 +839,7 @@ impl Reference {
         match self {
             Reference::Rhf => "closed-shell RHF with exact four-centre J/K, RI-J and/or RI-K",
             Reference::Uhf => "UHF of any multiplicity with exact J/K, RI-J and/or RI-K",
-            Reference::Rohf => "ROHF with exact four-centre Coulomb J/K only",
+            Reference::Rohf => "ROHF with exact J/K, RI-J and/or RI-K",
         }
     }
 }
@@ -826,7 +878,7 @@ fn preflight_problem(
     if let Some(what) = operator_refusal(op) {
         return Ok(Some(what));
     }
-    if let Some(what) = config_refusal(reference, config)? {
+    if let Some(what) = config_refusal(config)? {
         return Ok(Some(what.to_string()));
     }
     Ok(reference_config_refusal(reference, config).map(str::to_string))
@@ -880,7 +932,7 @@ fn check_supported(
     if let Some(what) = system_refusal(reference, mol, prep) {
         return Err(refusal(reference, what));
     }
-    if let Some(what) = df_route_refusal(reference, mol, prep, res, config) {
+    if let Some(what) = df_route_refusal(mol, prep, res, config) {
         return Err(refusal(reference, &what));
     }
     match state_refusal(reference, mol, res) {
@@ -890,10 +942,9 @@ fn check_supported(
 }
 
 /// Why `res`'s density-fitting route is refused (`None` = exact SCF, or the
-/// supported RI-J and/or RI-K for closed-shell RHF and UHF, consistent with the
+/// supported RI-J and/or RI-K for closed-shell RHF, UHF and ROHF, consistent with the
 /// configuration and without an ECP).
 fn df_route_refusal(
-    reference: Reference,
     mol: &Molecule,
     prep: &PreparedBasis,
     res: &ScfResult,
@@ -901,9 +952,6 @@ fn df_route_refusal(
 ) -> Option<String> {
     let route = crate::gradient::active_df_route(res)?;
     let clean = |s: &Option<String>| s.clone().filter(|v| !v.is_empty());
-    if reference == Reference::Rohf {
-        return Some("a density-fitted SCF (RI J/K) for an ROHF reference".into());
-    }
     if route.rsh_k.is_some() {
         return Some("a range-separated density-fitted exchange SCF".into());
     }
@@ -1094,8 +1142,7 @@ fn available(
     })
 }
 
-/// RI-J and/or RI-K (RHF and UHF; ROHF was refused by the
-/// preflight): the pre-SCF checks that need the molecule and the fitting basis,
+/// RI-J and/or RI-K (RHF, UHF and ROHF): the pre-SCF checks that need the molecule and the fitting basis,
 /// so that `Auto` falls back to finite differences instead of failing after the
 /// SCF. The first-derivative three- and two-centre engines for each named
 /// fitting basis must exist (the second derivatives are a stencil of their
@@ -1159,7 +1206,7 @@ fn rik_memory_probe(
 ) -> Result<(), FerricError> {
     // One channel per spin for UHF (α and β occupied counts), one for RHF.
     let noccs: Vec<usize> = match reference {
-        Reference::Uhf => uhf_occupations(mol)
+        Reference::Uhf | Reference::Rohf => uhf_occupations(mol)
             .into_iter()
             .filter(|&m| m > 0)
             .collect(),
@@ -1209,21 +1256,13 @@ fn operator_refusal(op: Operator) -> Option<String> {
         .then(|| format!("the {:?} two-electron operator", op.kind))
 }
 
-fn config_refusal(
-    reference: Reference,
-    config: &RhfConfig,
-) -> Result<Option<&'static str>, FerricError> {
+fn config_refusal(config: &RhfConfig) -> Result<Option<&'static str>, FerricError> {
     let named = |s: &Option<String>| s.as_deref().is_some_and(|v| !v.is_empty());
     let checks = [
         (config.xc.is_some(), "Kohn-Sham DFT (xc)"),
         (
             crate::cosx_gradient::scf_exchange_is_cosx(config, false)?,
             "COSX seminumerical exchange",
-        ),
-        (
-            (named(&config.df_j_aux) || named(&config.df_k_aux)) && reference == Reference::Rohf,
-            "density-fitted J/K (RI) for an ROHF reference (only RHF and UHF RI-J/RI-K are \
-             analytic)",
         ),
         (
             (named(&config.df_j_aux) || named(&config.df_k_aux)) && ext_or_field_present(config),
@@ -2153,6 +2192,10 @@ impl<'a> TwoElectronBuilder<'a> {
     }
 
     fn with_uhf_mutants(mut self, m: UhfDfMutants) -> Self {
+        if m.cphf_exact_k {
+            // Mutant: the exact four-centre K where the SCF fitted it.
+            self.df_k = None;
+        }
         self.uhf_mutants = m;
         self
     }
@@ -2276,8 +2319,14 @@ impl<'a> TwoElectronBuilder<'a> {
             Array2::<f64>::zeros(d[0].dim()),
             Array2::<f64>::zeros(d[1].dim()),
         ];
+        let total = &d[0] + &d[1];
         for sp in 0..2 {
-            df.borrow_mut().build(&d[sp], &mut k[sp])?;
+            let dens = if self.uhf_mutants.cphf_k_from_total {
+                &total
+            } else {
+                &d[sp]
+            };
+            df.borrow_mut().build(dens, &mut k[sp])?;
         }
         Ok(k)
     }

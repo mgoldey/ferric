@@ -1382,7 +1382,7 @@ fn negative_controls_miss_the_ri_jk_reference() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn rohf_with_ri_and_other_unsupported_configurations_are_refused() {
+fn rohf_ri_is_accepted_and_other_unsupported_configurations_are_refused() {
     use ferric_scf::hessian::{
         analytic_rohf_hessian_available, analytic_uhf_hessian_available, rohf_hessian_preflight,
         uhf_hessian_preflight,
@@ -1402,13 +1402,11 @@ fn rohf_with_ri_and_other_unsupported_configurations_are_refused() {
         if has_deriv2() {
             analytic_uhf_hessian_available(&mol, &prep, op, &ri(j, k)).expect("UHF RI probe");
         }
-        // ROHF with RI is refused by both.
-        let e = rohf_hessian_preflight(op, &ri(j, k))
-            .unwrap_err()
-            .to_string();
-        eprintln!("ROHF RI config: {e}");
-        assert!(e.contains("ROHF") && e.contains("RI"), "{e}");
-        assert!(analytic_rohf_hessian_available(&mol, &prep, op, &ri(j, k)).is_err());
+        // ROHF with RI is supported too (tests/df_hessian_rohf.rs).
+        rohf_hessian_preflight(op, &ri(j, k)).expect("ROHF RI preflight");
+        if has_deriv2() {
+            analytic_rohf_hessian_available(&mol, &prep, op, &ri(j, k)).expect("ROHF RI probe");
+        }
     }
     // Other refusals stay for UHF with RI.
     let mut with_ext = ri("def2-universal-jkfit", "def2-universal-jkfit");

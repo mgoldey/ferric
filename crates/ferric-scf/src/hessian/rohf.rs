@@ -99,10 +99,24 @@
 //! Hessian of that stationary state with no warning. Use the ROHF stability
 //! analysis, not this function, to establish that the state is a minimum.
 //!
+//! # Density fitting (RI-J / RI-K)
+//!
+//! The ROHF energy is the UHF functional of the constrained `(D_α, D_β)`, so
+//! with a fitted SCF the skeleton, `J^x` and the per-spin `K^x` are the UHF
+//! ones (`super::uhf_df::open_shell_two_electron`: RI-J on `D_α + D_β`, one
+//! RI-K channel per spin with `X_α = C[:, ..n_α]`, `X_β = C[:, ..n_β]`, weight
+//! `−½` each, shared metric). The CPHF kernel `G_σ(D^y) = J(D^y_α + D^y_β) −
+//! K(D^y_σ)` uses the SCF's own `DfJ` on the total response density and `DfK`
+//! on each spin's response density (indefinite densities taken as they are);
+//! the rebuilt spin Focks and `W` go through the same fitted builders. The
+//! rotation algebra above is unchanged: it never used the four-centre
+//! structure of `G`. Closed-shell limit: no open shell, equal to the RHF RI
+//! Hessian (`tests/df_hessian_rohf.rs`).
+//!
 //! # Trust in the Focks
 //!
 //! The response uses the spin Focks REBUILT from the final densities
-//! (`h + G_σ(D)`), and `W` is rebuilt from them too, so the Hessian is a
+//! (`h + G_σ(D)`, with the fitted builders where the SCF fitted), and `W` is rebuilt from them too, so the Hessian is a
 //! function of the final densities alone; the stored `rohf_spin_focks` (from
 //! the last SCF iteration's density) are only compared with them and refused
 //! if they differ by more than `FOCK_TRUST_TOL` (a ROKS, COSX or otherwise
@@ -119,10 +133,14 @@
 //! tolerance; the unsymmetrised asymmetry is reported as in RHF/UHF.
 
 use super::{
-    add_extra_first_order, extra_charges, first_order_ao, max_abs, parts_from_terms, pcg,
-    rohf_support::rohf_skeleton_parts, uhf_occupations, uhf_spin_densities_for, FirstOrderAo,
-    FockSpec, Reference, ResponseTerm, RhfHessianParts, TwoElectronBuilder, OCC_CONSISTENCY_TOL,
+    add_extra_first_order, extra_charges, first_order_ao, max_abs, open_shell_two_electron,
+    parts_from_terms, pcg, rohf_occupied_factors,
+    rohf_support::{rohf_skeleton_parts, rohf_skeleton_without_two_electron},
+    uhf_occupations, uhf_spin_densities_for, FirstOrderAo, FockSpec, OpenShellDensities, Reference,
+    ResponseTerm, RhfHessianParts, TwoElectronBuilder, OCC_CONSISTENCY_TOL,
 };
+use crate::hessian_df::RijMutants;
+use crate::hessian_df_k::{RikMutants, UhfDfMutants};
 use crate::result::{ScfResult, Spin};
 use crate::rhf::RhfConfig;
 use crate::screening::SchwarzBounds;
@@ -618,7 +636,7 @@ fn trusted_focks(
         return Err(FerricError::General(format!(
             "analytic ROHF Hessian: the stored spin Focks differ from h + G(D) of the final \
              densities by {dev:.3e} (> {FOCK_TRUST_TOL:.0e}); the result was not converged with \
-             the exact-exchange Hamiltonian this Hessian differentiates"
+             the Hamiltonian (exact or density-fitted J/K) this Hessian differentiates"
         )));
     }
     Ok(if mutation == RohfMutation::UseStoredFocks {
@@ -633,8 +651,8 @@ fn trusted_focks(
 ///
 /// `bounds` is the Schwarz table for `op` on `prep`; `config` is the
 /// configuration the SCF was converged with, read to refuse what the Hessian
-/// does not implement: Kohn-Sham, RI, COSX, solvation, an external potential,
-/// an ECP, non-Coulomb operators. See `hessian::rohf` (module doc) for the
+/// does not implement: Kohn-Sham, COSX, solvation, an external potential,
+/// an ECP, range-separated RI-K, non-Coulomb operators. See `hessian::rohf` (module doc) for the
 /// equations and [`analytic_rohf_hessian_available`](super::analytic_rohf_hessian_available)
 /// for the pre-SCF probe.
 pub fn rohf_hessian(
@@ -675,6 +693,38 @@ pub fn rohf_hessian_parts_mutated(
     config: &RhfConfig,
     mutation: RohfMutation,
 ) -> Result<RhfHessianParts, FerricError> {
+    rohf_hessian_parts_df_mutated(
+        ctx,
+        mol,
+        prep,
+        op,
+        bounds,
+        rohf,
+        config,
+        mutation,
+        (
+            &RijMutants::default(),
+            &RikMutants::default(),
+            &UhfDfMutants::default(),
+        ),
+    )
+}
+
+/// [`rohf_hessian_parts_mutated`] that also applies the density-fitting
+/// defects (mutation tests only; the `Default`s are the production path).
+#[allow(clippy::too_many_arguments)]
+pub fn rohf_hessian_parts_df_mutated(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    rohf: &ScfResult,
+    config: &RhfConfig,
+    mutation: RohfMutation,
+    df_mutants: (&RijMutants, &RikMutants, &UhfDfMutants),
+) -> Result<RhfHessianParts, FerricError> {
+    let (rij_mutants, rik_mutants, uhf_mutants) = df_mutants;
     let mapped;
     let rohf = if is_semicanonicalized(rohf) {
         mapped = rohf_from_semicanonical(mol, prep, rohf)?;
@@ -682,25 +732,74 @@ pub fn rohf_hessian_parts_mutated(
     } else {
         rohf
     };
-    let mut skel = rohf_skeleton_parts(mol, prep, op, bounds, rohf, config)?;
-    let g = TwoElectronBuilder::new(ctx, prep, bounds)?;
+    let route = crate::gradient::active_df_route(rohf);
+    let mut skel = if route.is_some() {
+        rohf_skeleton_without_two_electron(mol, prep, op, bounds, rohf, config)?
+    } else {
+        rohf_skeleton_parts(mol, prep, op, bounds, rohf, config)?
+    };
+    let natoms = mol.atoms.len();
+    // RI-J / RI-K: the fitted two-electron skeleton and first-order Focks, and
+    // the SCF's own builders for the response kernel `G`.
+    let fitted = match route {
+        Some(_) => {
+            let [na, nb] = uhf_occupations(mol);
+            let dens = &skel.densities;
+            Some(open_shell_two_electron(
+                mol,
+                prep,
+                op,
+                bounds,
+                rohf,
+                OpenShellDensities {
+                    alpha: &dens.d_alpha,
+                    beta: &dens.d_beta,
+                    total: &dens.d_total,
+                    nocc: [na, nb],
+                },
+                config,
+                || rohf_occupied_factors(rohf, [na, nb], [&dens.d_alpha, &dens.d_beta]),
+                rij_mutants,
+                rik_mutants,
+                uhf_mutants,
+            )?)
+        }
+        None => None,
+    };
+    let mut g = TwoElectronBuilder::new(ctx, prep, bounds)?;
+    let mut fitted_first = None;
+    if let Some(f) = fitted {
+        skel.two_electron = f.two_electron;
+        // The Focks below are rebuilt with the production kernel; the CPHF
+        // mutants are applied to the response only (set after the rebuild).
+        g = g.fitted(f.df_j, f.df_k, false);
+        fitted_first = Some((f.first, f._cphf_charge));
+    }
     let dens = &skel.densities;
     let focks = trusted_focks(&g, prep, rohf, dens, mutation)?;
     if mutation != RohfMutation::UseStoredFocks {
         // W of the rebuilt Focks, so the whole Hessian is a function of the
         // final densities alone.
         let w = fock_energy_weighted_density(&dens.d_alpha, &dens.d_beta, &focks);
-        skel.overlap = super::skeleton_hess_overlap(prep, mol.atoms.len(), &w)?;
+        skel.overlap = super::skeleton_hess_overlap(prep, natoms, &w)?;
     }
     let frame = Frame::new(mol, rohf, focks)?;
-    let natoms = mol.atoms.len();
+    let g = g.with_uhf_mutants(*uhf_mutants);
     let dens = &skel.densities;
-    let specs = [&dens.d_alpha, &dens.d_beta].map(|ds| FockSpec {
-        coulomb: &dens.d_total,
-        exchange: ds,
-        k_scale: 1.0,
-    });
-    let mut first = first_order_ao(prep, op, bounds, natoms, extra_charges(config), &specs)?;
+    let (mut first, _cphf_charge) = match fitted_first {
+        Some((first, charge)) => (first, charge),
+        None => {
+            let specs = [&dens.d_alpha, &dens.d_beta].map(|ds| FockSpec {
+                coulomb: &dens.d_total,
+                exchange: ds,
+                k_scale: 1.0,
+            });
+            (
+                first_order_ao(prep, op, bounds, natoms, extra_charges(config), &specs)?,
+                None,
+            )
+        }
+    };
     add_extra_first_order(&mut first, mol, prep, config)?;
 
     let resp = Response {

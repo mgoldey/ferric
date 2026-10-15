@@ -978,17 +978,15 @@ fn unsupported_density_fitted_configurations_are_refused() {
         rhf_hessian(&ctx, &s.mol, &s.prep, op, &s.bounds, rhf, cfg)
     };
     // RI-K requested in the configuration is supported for closed-shell RHF
-    // (tests/df_hessian_rik.rs) and UHF (tests/df_hessian_uhf.rs) and refused
-    // for ROHF.
+    // (tests/df_hessian_rik.rs), UHF (tests/df_hessian_uhf.rs) and ROHF
+    // (tests/df_hessian_rohf.rs).
     let ri_k = RhfConfig {
         df_k_aux: Some("def2-universal-jkfit".into()),
         ..scf_config("def2-universal-jkfit")
     };
     rhf_hessian_preflight(op, &ri_k).expect("RHF RI-J + RI-K preflight");
     uhf_hessian_preflight(op, &ri_k).expect("UHF RI-J + RI-K preflight");
-    let e = rohf_hessian_preflight(op, &ri_k).unwrap_err().to_string();
-    eprintln!("ROHF RI-K config: {e}");
-    assert!(e.contains("RI"), "{e}");
+    rohf_hessian_preflight(op, &ri_k).expect("ROHF RI-J + RI-K preflight");
     // A route that fitted exchange although the configuration did not.
     let mut with_k = s.rhf.clone();
     let route = with_k.df_jk.as_mut().unwrap();
@@ -1006,11 +1004,9 @@ fn unsupported_density_fitted_configurations_are_refused() {
         .unwrap_err()
         .to_string()
         .contains("range-separated"));
-    // ROHF with RI-J is refused; UHF with RI-J is supported
-    // (tests/df_hessian_uhf.rs).
-    let e = rohf_hessian_preflight(op, &s.cfg).unwrap_err().to_string();
-    eprintln!("ROHF RI-J config: {e}");
-    assert!(e.contains("ROHF") && e.contains("RI"), "{e}");
+    // ROHF and UHF with RI-J are supported (tests/df_hessian_rohf.rs,
+    // tests/df_hessian_uhf.rs).
+    rohf_hessian_preflight(op, &s.cfg).expect("ROHF RI-J preflight");
     uhf_hessian_preflight(op, &s.cfg).expect("UHF RI-J preflight");
     // A result whose aux differs from the configuration's.
     let other = scf_config("cc-pvdz-ri");
@@ -1040,9 +1036,9 @@ fn unsupported_density_fitted_configurations_are_refused() {
     if has_deriv2() {
         hess(&s.rhf, &s.cfg).expect("RI-J + exact K must be supported");
         analytic_hessian_available(&s.mol, &s.prep, op, &s.cfg).expect("available");
+        // The ROHF probe accepts the RI-J config.
+        analytic_rohf_hessian_available(&s.mol, &s.prep, op, &s.cfg).expect("ROHF RI-J probe");
     }
-    // The ROHF probe still refuses the RI-J config.
-    assert!(analytic_rohf_hessian_available(&s.mol, &s.prep, op, &s.cfg).is_err());
 }
 
 #[test]
