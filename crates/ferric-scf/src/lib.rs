@@ -179,6 +179,9 @@ pub use stability::{
     rhf_external_stability, rhf_internal_stability, uhf_internal_stability, StabilityConfig,
     StabilityKind, StabilityResult, StabilitySkip, StabilityVerdict,
 };
+/// Closed-shell LDA XC on a grid fixed in space, with its nuclear gradient and
+/// Hessian pieces (the opt-in fixed-grid KS Hessian of issue #407).
+pub mod ks_fixed_grid;
 /// Analytical nuclear gradients for Kohn-Sham DFT (XC + grid response).
 pub mod ks_gradient;
 /// Closed-shell KS Z-vector: orbital-relaxation term of a post-SCF quantity's
