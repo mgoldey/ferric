@@ -692,6 +692,26 @@ impl XcFunctional {
         }
     }
 
+    /// LDA second derivative, unpolarized (nspin=1): `v2rho2[g] = ∂²(ρ ε_xc)/∂ρ²`
+    /// of the total density at point `g`.
+    pub fn eval_lda_fxc_unpolarized(&self, rho: &[f64], v2rho2: &mut [f64]) {
+        debug_assert!(self.nspin == 1, "eval_lda_fxc_unpolarized requires nspin=1");
+        assert_eq!(
+            rho.len(),
+            v2rho2.len(),
+            "v2rho2 buffer must match rho.len()"
+        );
+        // SAFETY: handle is non-null + fully initialised; lengths verified.
+        unsafe {
+            ffi::xc_lda_fxc(
+                self.ptr as *const _,
+                rho.len(),
+                rho.as_ptr(),
+                v2rho2.as_mut_ptr(),
+            );
+        }
+    }
+
     /// GGA second derivatives, polarized (nspin=2). Inputs interleaved as in
     /// `eval_gga_polarized`:
     ///   `rho[2g+0]   = ρ_α`,  `rho[2g+1]   = ρ_β`
