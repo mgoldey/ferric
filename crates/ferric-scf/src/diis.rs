@@ -698,17 +698,30 @@ impl DiisDriver {
 
     /// The commutator bound above which a repeated density is NOT a converged
     /// one while the energy-based variant (ADIIS/EDIIS) is steering, or `None`
-    /// for pure Pulay (where the SCF's own gate is unchanged).
+    /// for pure Pulay (where the SCF's own gate is unchanged) and after the
+    /// one-shot fallback ([`Self::fall_back_to_pulay`]).
     ///
     /// ADIIS/EDIIS minimize an energy functional, not the commutator. Their
     /// weights can freeze on a few old history entries (#422: EDIIS in a charged
-    /// field, `c ~ [0.41, 0.41, 0.19]` for 30+ iterations) so the extrapolated
+    /// field, `c ~ [0.41, 0.41, 0.19]` for 30+ iterations), so the extrapolated
     /// Fock stops changing, `dp_rms` falls to zero and the density-based gate
-    /// reports convergence while `err_max` is O(1). That regime is exactly
-    /// `err_max >= switch_thresh` (where the energy variant is in control); an
-    /// infinite `switch_thresh` (energy variant throughout) has no such
-    /// crossover, so a fixed loose bound stands in. The RI commutator floor
-    /// (~1e-6) is far below both.
+    /// reports convergence while `err_max` is O(1). That regime is where
+    /// `err_max >= switch_thresh` (the energy variant is in control), so the
+    /// crossover is the bound.
+    ///
+    /// An infinite `switch_thresh` (energy variant throughout) has no crossover;
+    /// `INFINITE_SWITCH_VETO_BOUND` (1e-2) stands in. That value is chosen, not
+    /// derived. Measured on a 240-run seed scan over benzene, water, methane and
+    /// sulfamethoxazole in point-charge fields: the weakest stall caught had
+    /// `err_max` 0.064 (6x the bound), and every legitimate exit under an
+    /// infinite switch ended at `err_max <= 2.2e-5`. A stall that settles
+    /// between ~1e-4 and 1e-2 would still be accepted; none was observed.
+    ///
+    /// Caveat on a finite switch: the RI commutator floor (~1e-6) is below the
+    /// default switch (1e-1) but NOT below a user switch at or under it
+    /// (`diis_switch_thresh <= ~1e-6`). There the veto can fire on a genuinely
+    /// converged run, costing a few extra Pulay iterations (measured +3 at
+    /// 1e-6 and 1e-8); the energy is unaffected.
     pub fn commutator_veto_bound(&self) -> Option<f64> {
         if self.switch_thresh <= 0.0 {
             None
@@ -779,7 +792,8 @@ impl DiisDriver {
     /// Scope: this removes the non-idempotent-entry trigger only. A history of
     /// valid densities can still extrapolate to a repeated Fock while the
     /// commutator error is large (the convergence gate does not read it); that
-    /// is a separate defect, tracked outside this fix.
+    /// is handled at the gate's call site: see
+    /// [`DiisDriver::commutator_veto_bound`] (#422).
     pub fn step_checked(
         &mut self,
         f: &Array2<f64>,

@@ -158,7 +158,9 @@ pub struct ScfResult {
 /// (see [`ScfResult::convergence`]). Magnitudes, as gated by
 /// `rhf::scf_converged`: `dp_rms < density_conv`, `dp_max < 10*density_conv`,
 /// `de < energy_conv`. `err_max` (the DIIS commutator) is a diagnostic, never
-/// a gate.
+/// a gate, EXCEPT under ADIIS/EDIIS: there a density-settled exit is refused
+/// while `err_max` is above the energy-to-Pulay crossover and the run restarts
+/// on plain Pulay DIIS (see [`DiisFallback`] and `rhf::veto_stalled_energy_diis`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ConvergenceReport {
     /// Iteration whose gate decision these signals are (the values the gate judged).
@@ -169,7 +171,8 @@ pub struct ConvergenceReport {
     pub dp_rms: f64,
     /// Max-element density change.
     pub dp_max: f64,
-    /// Max |FDS - SDF| (diagnostic only).
+    /// Max |FDS - SDF| (a diagnostic, except that under ADIIS/EDIIS it vetoes a
+    /// density-settled exit above the crossover; see [`Self::diis_fallback`]).
     pub err_max: f64,
     /// `RhfConfig::energy_conv` in force.
     pub energy_conv: f64,
@@ -182,12 +185,33 @@ pub struct ConvergenceReport {
     /// (none of those noise sources was measured).
     /// Report only: nothing reads it back.
     pub de_noise_floor: Option<f64>,
+    /// Set once the energy-based DIIS (ADIIS/EDIIS) was abandoned for plain
+    /// Pulay DIIS because it stalled (#422); `None` otherwise (always `None`
+    /// for Pulay, UHF and ROHF).
+    pub diis_fallback: Option<DiisFallback>,
+}
+
+/// A record that ADIIS/EDIIS stalled and the run restarted on plain Pulay DIIS:
+/// the density stopped moving while the commutator was still above the
+/// energy-to-Pulay crossover, so the density-based gate was refused.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DiisFallback {
+    /// Iteration whose density-settled exit was refused.
+    pub iteration: usize,
+    /// Commutator max-norm at that iteration.
+    pub err_max: f64,
+    /// The bound it exceeded (`diis_switch_thresh`, or the fixed bound used
+    /// for an infinite switch).
+    pub bound: f64,
+    /// `"ADIIS"` or `"EDIIS"`.
+    pub flavor: &'static str,
 }
 
 impl ConvergenceReport {
     /// Names of the gate criteria this report does NOT satisfy, in gate order
-    /// (`dp_rms`, `dp_max`, `dE`); empty when all are met. NaN signals count
-    /// as unmet.
+    /// (`dp_rms`, `dp_max`, `dE`, then `err_max` when the ADIIS/EDIIS commutator
+    /// veto refused THIS iteration's exit); empty when all are met. NaN signals
+    /// count as unmet.
     pub fn unmet(&self) -> Vec<&'static str> {
         let mut u = Vec::new();
         if !(self.dp_rms < self.density_conv) {
@@ -198,6 +222,12 @@ impl ConvergenceReport {
         }
         if !(self.de < self.energy_conv) {
             u.push("dE");
+        }
+        if self
+            .diis_fallback
+            .is_some_and(|f| f.iteration == self.iteration)
+        {
+            u.push("err_max");
         }
         u
     }
@@ -210,6 +240,14 @@ impl ConvergenceReport {
             "all criteria met".to_string()
         } else {
             format!("unmet: {}", unmet.join(", "))
+        };
+        let fallback_note = match self.diis_fallback {
+            Some(f) => format!(
+                "; {} stalled (density settled at iteration {} with err_max={:.3e} >= {:.1e}), \
+                 restarted on Pulay DIIS",
+                f.flavor, f.iteration, f.err_max, f.bound
+            ),
+            None => String::new(),
         };
         let floor_note = match self.de_noise_floor {
             // Only when dE is the SOLE unmet criterion: if a density criterion is
@@ -227,7 +265,7 @@ impl ConvergenceReport {
         };
         format!(
             "iteration {}: dp_rms={:.3e} (need < {:.1e}), dp_max={:.3e} (need < {:.1e}), \
-             dE={:.3e} (need < {:.1e}), DIIS err_max={:.3e} (diagnostic); {}{}",
+             dE={:.3e} (need < {:.1e}), DIIS err_max={:.3e}; {}{}{}",
             self.iteration,
             self.dp_rms,
             self.density_conv,
@@ -237,7 +275,8 @@ impl ConvergenceReport {
             self.energy_conv,
             self.err_max,
             verdict,
-            floor_note
+            floor_note,
+            fallback_note
         )
     }
 }
@@ -383,7 +422,7 @@ mod tests {
 
 #[cfg(test)]
 mod convergence_report_tests {
-    use super::ConvergenceReport;
+    use super::{ConvergenceReport, DiisFallback};
 
     fn rep(de: f64, dp_rms: f64, dp_max: f64) -> ConvergenceReport {
         ConvergenceReport {
@@ -395,6 +434,7 @@ mod convergence_report_tests {
             energy_conv: 1e-10,
             density_conv: 1e-8,
             de_noise_floor: None,
+            diis_fallback: None,
         }
     }
 
@@ -437,6 +477,7 @@ mod convergence_report_tests {
             ConvergenceReport {
                 energy_conv: ec,
                 de_noise_floor: floor,
+                diis_fallback: None,
                 ..rep(de, dp, dp * 10.0)
             }
             .describe()
@@ -471,5 +512,30 @@ mod convergence_report_tests {
         assert!(rep(1e-11, 1e-9, 1e-8)
             .describe()
             .contains("all criteria met"));
+    }
+
+    #[test]
+    fn unmet_and_describe_name_the_commutator_when_the_veto_refused_this_exit() {
+        let mut r = rep(1e-12, 1e-10, 1e-10);
+        assert!(r.unmet().is_empty());
+        r.diis_fallback = Some(DiisFallback {
+            iteration: r.iteration,
+            err_max: 0.5,
+            bound: 0.1,
+            flavor: "EDIIS",
+        });
+        assert_eq!(r.unmet(), vec!["err_max"]);
+        let d = r.describe();
+        assert!(
+            d.contains("unmet: err_max") && d.contains("EDIIS stalled"),
+            "{d}"
+        );
+        // A fallback at an EARLIER iteration is a note, not an unmet criterion.
+        r.diis_fallback = Some(DiisFallback {
+            iteration: r.iteration - 1,
+            ..r.diis_fallback.unwrap()
+        });
+        assert!(r.unmet().is_empty());
+        assert!(r.describe().contains("restarted on Pulay DIIS"));
     }
 }

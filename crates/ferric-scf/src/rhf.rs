@@ -843,27 +843,78 @@ pub(crate) fn scf_converged(
 /// ADIIS/EDIIS only (#422): a density that has stopped moving while the
 /// commutator is still above the energy-to-Pulay crossover is a stalled energy
 /// extrapolation, not a converged SCF. Refuse the exit and restart on plain
-/// Pulay DIIS from a clean history. Pure Pulay has no veto bound, so the default
-/// path is untouched.
+/// Pulay DIIS from a clean history (once: afterwards the driver is pure Pulay
+/// and has no veto bound). Pure Pulay has no bound, so the default path is
+/// untouched. Returns the exit to take and, when the veto fired, a record of it
+/// for the report; the caller prints the one-time notice.
 fn veto_stalled_energy_diis(
     conv_exit: Option<ScfExit>,
     diis: &mut DiisDriver,
     err_max: f64,
     iter: usize,
     flavor: crate::diis::DiisFlavor,
-) -> Option<ScfExit> {
+) -> (Option<ScfExit>, Option<crate::result::DiisFallback>) {
     match (conv_exit, diis.commutator_veto_bound()) {
         (Some(ScfExit::Converged), Some(bound)) if err_max >= bound => {
-            if scf_trace() {
-                eprintln!(
-                    "SCF iter={iter}: dp settled with err_max={err_max:.3e} >= {bound:.1e} \
-                     under {flavor:?}; falling back to Pulay DIIS (#422)"
-                );
-            }
             diis.fall_back_to_pulay();
-            None
+            let fb = crate::result::DiisFallback {
+                iteration: iter,
+                err_max,
+                bound,
+                flavor: match flavor {
+                    crate::diis::DiisFlavor::Adiis => "ADIIS",
+                    _ => "EDIIS",
+                },
+            };
+            (None, Some(fb))
         }
-        (exit, _) => exit,
+        (exit, _) => (exit, None),
+    }
+}
+
+/// Record a fired veto: the visible notice, the trace line, the once-set
+/// fallback state and the already-built report for this iteration.
+fn note_diis_fallback(
+    fallback: Option<crate::result::DiisFallback>,
+    iter: usize,
+    is_root: bool,
+    state: &mut Option<crate::result::DiisFallback>,
+    last_report: &mut Option<crate::result::ConvergenceReport>,
+) {
+    let Some(fb) = fallback else { return };
+    if scf_trace() {
+        eprintln!("SCF iter={iter}: energy-DIIS veto (#422): {fb:?}");
+    }
+    announce_diis_fallback(&fb, is_root);
+    *state = Some(fb);
+    if let Some(rep) = last_report.as_mut() {
+        rep.diis_fallback = *state;
+    }
+}
+
+/// The one-time visible notice (stderr, and a run-log record) that the energy
+/// variant of DIIS was abandoned. Rank 0 only.
+fn announce_diis_fallback(fb: &crate::result::DiisFallback, is_root: bool) {
+    if !is_root {
+        return;
+    }
+    eprintln!(
+        "warning: [scf] {} stalled: the density stopped changing at iteration {} while the \
+         DIIS error was {:.2e} (>= {:.1e}); not accepted as converged, restarting on plain \
+         Pulay DIIS",
+        fb.flavor, fb.iteration, fb.err_max, fb.bound
+    );
+    if let Some(rl) = crate::runlog::log() {
+        rl.note(
+            "diis_fallback",
+            serde_json::json!({
+                "flavor": fb.flavor,
+                "iteration": fb.iteration,
+                "err_max": fb.err_max,
+                "bound": fb.bound,
+                "to": "pulay",
+            }),
+        );
     }
 }
 
@@ -1576,6 +1627,8 @@ fn solve_rhf_impl(
     // Combined DIIS driver. With the default `diis_flavor = Pulay` this is a
     // pure-Pulay driver whose `step` is byte-identical to `Diis::step`;
     // ADIIS/EDIIS activate only when a caller opts in.
+    // Set once, when ADIIS/EDIIS stalled and was replaced by Pulay (#422).
+    let mut diis_fallback: Option<crate::result::DiisFallback> = None;
     let mut diis = DiisDriver::new(
         config.diis_flavor,
         config.diis_size,
@@ -2278,6 +2331,7 @@ fn solve_rhf_impl(
                 prep.nbasis(),
                 incremental_direct,
             ),
+            diis_fallback,
         });
 
         if scf_trace() {
@@ -2344,8 +2398,15 @@ fn solve_rhf_impl(
             sig.dp_max,
             scf_converged(sig, config.energy_conv, config.density_conv),
         );
-        let conv_exit =
+        let (conv_exit, fallback) =
             veto_stalled_energy_diis(conv_exit, &mut diis, err_max, iter, config.diis_flavor);
+        note_diis_fallback(
+            fallback,
+            iter,
+            ctx.is_root(),
+            &mut diis_fallback,
+            &mut last_report,
+        );
 
         // Divergence: energy climbing for consecutive iters (see ScfMonitor).
         if mon.diverging(energy, config.divergence_tol) {

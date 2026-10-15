@@ -2269,7 +2269,11 @@ pub struct ScfCfg {
     /// convergence) — a convergence aid for hard transition-metal cases.
     pub diis: Option<String>,
     /// Crossover `err_max` below which ADIIS/EDIIS revert to plain Pulay
-    /// (ignored for "pulay"). Default 1e-1.
+    /// (ignored for "pulay"). Default 1e-1. If the density stops changing while
+    /// the error is still above this level (an energy-DIIS stall), the exit is
+    /// refused and the run restarts ONCE on plain Pulay DIIS from a clean
+    /// history; a switch at or below the commutator floor (~1e-6) can trigger
+    /// that restart on a genuinely converged run, costing a few iterations.
     pub diis_switch_thresh: Option<f64>,
     /// Finite-temperature Fermi-Dirac occupation smearing width σ = k_B·T in
     /// Hartree. Absent/None = integer occupation (default). A convergence aid

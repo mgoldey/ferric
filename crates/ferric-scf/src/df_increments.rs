@@ -358,6 +358,13 @@ pub fn solve_rhf_with_df_increments(
         let err_max = err.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
         let de = (energy - prev_energy).abs();
 
+        // KNOWN GAP (#422, deliberately not widened here): this inner loop
+        // steps the user's ADIIS/EDIIS flavour through the unchecked
+        // `DiisDriver::step` and its loose gate below has no commutator veto, so
+        // an energy-DIIS stall can set `inner_converged = true` falsely. The
+        // final result is protected by the exact Roothaan stages 4-5 that always
+        // follow. The veto used by `solve_rhf` (`rhf::veto_stalled_energy_diis`)
+        // would apply here unchanged if a measured case needs it.
         let f_new = diis.step(&f, &err, &d, energy, err_max);
         let (_eps, c) = diagonalize_rect(&f_new, &x)?;
         let c_occ = c.slice(ndarray::s![.., ..nocc]);

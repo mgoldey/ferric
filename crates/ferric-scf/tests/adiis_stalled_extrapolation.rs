@@ -118,6 +118,35 @@ fn ediis_does_not_report_a_stalled_extrapolation_as_converged() {
     }
 }
 
+/// When the veto refuses the exit on the LAST allowed iteration the result is
+/// an honest MaxIter: not converged, and the report names the commutator as the
+/// unmet criterion instead of "all criteria met" (benzene, 600 charges, seed 11:
+/// the stall is at iteration 5).
+#[test]
+fn a_vetoed_exit_on_the_last_iteration_is_reported_as_unmet() {
+    let mol = Molecule::load_xyz("../../testdata/molecules/benzene.xyz").unwrap();
+    let ext = field(&mol, 600, 11, -3.0);
+    let r = solve(&mol, &ext, DiisFlavor::Ediis, 5);
+    assert!(!r.converged, "a vetoed exit must not be converged");
+    assert_eq!(r.exit, ferric_scf::result::ScfExit::MaxIter);
+    let rep = r.convergence.expect("RHF carries a convergence report");
+    let fb = rep.diis_fallback.expect("the fallback is recorded");
+    assert_eq!((fb.iteration, fb.flavor), (5, "EDIIS"));
+    assert!(fb.err_max >= fb.bound);
+    assert_eq!(rep.unmet(), vec!["err_max"]);
+    let d = rep.describe();
+    assert!(
+        d.contains("unmet: err_max") && d.contains("restarted on Pulay"),
+        "{d}"
+    );
+    // A run that restarted and then genuinely converged carries the record as
+    // a note, with nothing unmet.
+    let done = solve(&mol, &ext, DiisFlavor::Ediis, 200);
+    assert!(done.converged);
+    let rep = done.convergence.unwrap();
+    assert!(rep.diis_fallback.is_some() && rep.unmet().is_empty());
+}
+
 /// The original #422 case (sulfamethoxazole/STO-3G, 2000 charges, net -3 e;
 /// every history entry idempotent): without the fix EDIIS stopped at
 /// iteration 36, err_max 0.84, E = -1103.651 Ha. Pulay gives -1159.3076324072

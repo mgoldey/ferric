@@ -454,7 +454,10 @@ class RhfResult:
     @property
     def unmet_criteria(self) -> list[str] | None:
         """Gate criteria the final judged iteration did not meet, a subset of
-        ["dp_rms", "dp_max", "dE"]; empty if all were met; None if not recorded."""
+        ["dp_rms", "dp_max", "dE", "err_max"]; empty if all were met; None if not
+        recorded. "err_max" appears only when ADIIS/EDIIS stalled: the density
+        settled while the DIIS error was above diis_switch_thresh, the exit was
+        refused and the run restarted on Pulay DIIS."""
         ...
 
     @property
