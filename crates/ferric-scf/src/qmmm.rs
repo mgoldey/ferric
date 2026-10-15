@@ -2127,7 +2127,7 @@ pub fn optimize_qmmm(
                     scf_cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
                     scf_cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
                     let r = crate::rhf::solve_rhf(ctx, &mol, &prep, op, &bounds, &scf_cfg)?;
-                    let g = crate::ks_gradient::ks_gradient_closed(
+                    let g = crate::ks_gradient::ks_gradient_closed_with_exchange_on_grids(
                         &mol,
                         &prep,
                         &bs,
@@ -2136,6 +2136,8 @@ pub fn optimize_qmmm(
                         xc,
                         &r,
                         ext.as_ref(),
+                        None,
+                        &crate::ks_gradient::KsGradGrids::from_config(&scf_cfg),
                     )?;
                     (r.energy, g, r.density_total().clone())
                 }
@@ -2144,7 +2146,7 @@ pub fn optimize_qmmm(
                     scf_cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
                     scf_cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
                     let r = crate::uhf::solve_uhf(ctx, &mol, &prep, &bounds, &scf_cfg)?;
-                    let g = crate::ks_gradient::ks_gradient_uks(
+                    let g = crate::ks_gradient::ks_gradient_uks_with_exchange_on_grids(
                         &mol,
                         &prep,
                         &bs,
@@ -2153,6 +2155,8 @@ pub fn optimize_qmmm(
                         xc,
                         &r,
                         ext.as_ref(),
+                        None,
+                        &crate::ks_gradient::KsGradGrids::from_config(&scf_cfg),
                     )?;
                     (r.energy, g, r.density_total().clone())
                 }

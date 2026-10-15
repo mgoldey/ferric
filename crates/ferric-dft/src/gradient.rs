@@ -27,7 +27,8 @@ use rayon::prelude::*;
 
 use crate::density_on_grid::{eval_density_closed, eval_density_uks, eval_tau_closed};
 use crate::grid::{
-    build_atomic_grid, build_atomic_grid_with_response, grid_response_bytes, AtomicGridConfig,
+    build_atomic_grid_pruned, build_atomic_grid_with_response, grid_response_bytes,
+    AtomicGridConfig,
 };
 use crate::libxc::{xc_def_from_name, xc_def_from_name_nspin, FunctionalFamily, LibxcError, XcDef};
 
@@ -953,7 +954,9 @@ pub fn vv10_gradient_from_density(
     shell_dims: &[usize],
 ) -> Result<Array2<f64>, KsGradError> {
     let nbf = d_total.nrows();
-    let grid = build_atomic_grid(mol, nlc_grid_cfg);
+    // `prune = None` is `build_atomic_grid` exactly; a pruned NLC grid is the
+    // one the SCF's VV10 energy used.
+    let grid = build_atomic_grid_pruned(mol, nlc_grid_cfg, nlc_grid_cfg.prune)?;
     // No grid response on this path (`build_atomic_grid`, not
     // `_with_response`), so no `weight1` term — but the AO Hessian and the
     // `m`/`mdchi` planes inside `gga_gradient_from_potentials` are the same.

@@ -937,6 +937,7 @@ pub fn relaxation_gradient_closed(
         let w0 = crate::gradient::build_energy_weighted_density(result, nocc_w);
         let t = T_SCALE / max_abs(&dd);
         let ext = config.external_potential.as_ref();
+        let grids = crate::ks_gradient::KsGradGrids::from_config(config);
         let cosx =
             crate::cosx_gradient::scf_exchange_is_cosx(config, false)?.then_some(&config.cosx);
         // D(t) from the occupied orbitals rotated by t·Z and re-orthonormalized:
@@ -954,7 +955,7 @@ pub fn relaxation_gradient_closed(
             let dt = rotated_density(sgn * t)?;
             let wt = &w0 + &(sgn * t * &w_dot);
             crate::ks_gradient::ks_gradient_closed_for_density(
-                mol, prep, bs, op, bounds, xc, result, ext, cosx, &dt, &wt,
+                mol, prep, bs, op, bounds, xc, result, ext, cosx, &dt, &wt, &grids,
             )
         };
         let gp = g_at(1.0)?;
@@ -1334,6 +1335,7 @@ pub fn relaxation_gradient_unrestricted(
         let w0 = crate::gradient::build_energy_weighted_density_uhf(result, nocc_a, nocc_b);
         let t = T_SCALE / max_abs(&dd_a).max(max_abs(&dd_b));
         let ext = config.external_potential.as_ref();
+        let grids = crate::ks_gradient::KsGradGrids::from_config(config);
         let cosx =
             crate::cosx_gradient::scf_exchange_is_cosx(config, true)?.then_some(&config.cosx);
         let g_at = |sgn: f64| -> Result<Array2<f64>, FerricError> {
@@ -1341,7 +1343,7 @@ pub fn relaxation_gradient_unrestricted(
             let db = rotated_projector(&sb.co, &sb.cv, &z[1], sgn * t, 1.0)?;
             let wt = &w0 + &(sgn * t * &w_dot);
             crate::ks_gradient::ks_gradient_uks_for_density(
-                mol, prep, bs, op, bounds, xc, result, ext, cosx, &da, &db, &wt,
+                mol, prep, bs, op, bounds, xc, result, ext, cosx, &da, &db, &wt, &grids,
             )
         };
         let gp = g_at(1.0)?;
@@ -1731,6 +1733,7 @@ pub fn relaxation_gradient_roks(
         let t = T_SCALE / max_abs(&dd_a).max(max_abs(&dd_b));
         let ext = config.external_potential.as_ref();
         let kappa = roks_kappa(&z, nc, no, nmo);
+        let grids = crate::ks_gradient::KsGradGrids::from_config(config);
         let cosx =
             crate::cosx_gradient::scf_exchange_is_cosx(config, true)?.then_some(&config.cosx);
         let g_at = |sgn: f64| -> Result<Array2<f64>, FerricError> {
@@ -1741,7 +1744,7 @@ pub fn relaxation_gradient_roks(
             let db = cct.dot(&cct.t());
             let wt = &w0 + &(sgn * t * &w_dot);
             crate::ks_gradient::ks_gradient_roks_for_density(
-                mol, prep, bs, op, bounds, xc, result, ext, cosx, &da, &db, &wt,
+                mol, prep, bs, op, bounds, xc, result, ext, cosx, &da, &db, &wt, &grids,
             )
         };
         let gp = g_at(1.0)?;
