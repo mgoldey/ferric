@@ -108,7 +108,9 @@ def test_grid_kwargs_gradient_is_that_of_the_grid(water, sto3g, tmp_path):
     import numpy as np
 
     kw = dict(grid_radial=30, grid_angular=194, **SCF)
-    g = np.asarray(ferric.run_dft(water, sto3g, "PBE", with_gradient=True, **kw).gradient())
+    g = np.asarray(
+        ferric.run_dft(water, sto3g, "PBE", with_gradient=True, **kw).gradient()
+    )
     assert np.all(np.isfinite(g))
 
     bohr = 0.529177210903  # Angstrom per Bohr
