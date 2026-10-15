@@ -98,8 +98,14 @@ def test_bad_grid_kwargs_raise_value_error(water, sto3g, kwargs):
         ferric.dft_grid_point_count(water, **kwargs)
 
 
-def test_grid_kwargs_refuse_a_gradient(water, sto3g):
-    """The analytic KS gradient is built on the default grid; pairing it with a
-    different-grid energy would describe two surfaces."""
-    with pytest.raises(ValueError, match="with_gradient"):
-        ferric.run_dft(water, sto3g, "PBE", with_gradient=True, grid_prune="nwchem")
+def test_grid_kwargs_gradient_is_that_of_the_grid(water, sto3g):
+    """The analytic KS gradient differentiates the grid the SCF ran on (#428):
+    a grid kwarg no longer refuses ``with_gradient``, and the gradient of a
+    pruned grid differs from the default-grid one by the (small) grid effect
+    only, while staying finite and translationally invariant."""
+    import numpy as np
+
+    r = ferric.run_dft(water, sto3g, "PBE", with_gradient=True, grid_prune="nwchem")
+    g = np.asarray(r.gradient())
+    assert np.all(np.isfinite(g))
+    assert abs(g.sum(axis=0)).max() < 1e-5

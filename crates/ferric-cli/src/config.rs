@@ -431,23 +431,20 @@ pub struct DftCfg {
     /// Applies to the main grid ONLY — the VV10/NLC grid stays unpruned,
     /// because pruning has no valid table at its 50x50 angular order.
     ///
-    /// Energy runs only: `method.task = "optimize"` / `"frequencies"` go
-    /// through the XC gradient's grid-response path, which is built for the
-    /// unpruned grid and hard-errors on a pruned one.
+    /// Optimize / frequency runs differentiate the pruned energy they
+    /// converged (the XC grid-response term is built on the pruned grid).
     pub grid_prune: Option<String>,
     /// Radial points per atom on the MAIN DFT grid. Omitted = the library
     /// default (`AtomicGridConfig::default()`, 75). Must be > 0. Same meaning
     /// as the Python `grid_radial=` kwarg.
     ///
-    /// Energy runs only, for the same reason as `grid_prune`: the analytic
-    /// XC gradient (`ks_gradient`) is built on the default grid, so a custom
-    /// grid's energy and that gradient would describe different surfaces.
+    /// Optimize / frequency runs use the same grid for the analytic XC
+    /// gradient as for the energy.
     pub grid_radial: Option<usize>,
     /// Lebedev order (angular points per radial shell) on the MAIN DFT grid.
     /// Omitted = the library default (110). Must be a supported Lebedev order
     /// (`ferric_dft::prune::SUPPORTED_LEBEDEV_ORDERS`); anything else is an
-    /// error here rather than a panic inside the grid build. Energy runs only
-    /// (see `grid_radial`).
+    /// error here rather than a panic inside the grid build.
     pub grid_angular: Option<usize>,
     /// Empirical dispersion correction to ADD to the SCF energy.
     ///
@@ -3526,14 +3523,6 @@ impl Config {
                      \"ksdft\" only: {why}."
                 ));
             }
-        }
-
-        if self.dft.sets_grid_size() && task != "energy" {
-            return Err(format!(
-                "[dft] grid_radial / grid_angular are supported for method.task = \"energy\" \
-                 only (got \"{task}\"): the analytic XC gradient is built on the default \
-                 grid, so it would not be the derivative of this grid's energy."
-            ));
         }
 
         if self.mp2.sets_oo_keys() {
@@ -9670,10 +9659,10 @@ mod cli_wired_keys_tests {
             .validate_dft_section()
             .unwrap_err()
             .contains("no Kohn-Sham grid"));
-        refused(
-            &cfg("ksdft", "optimize", 1, "[dft]\ngrid_radial = 99\n"),
-            "task = \"energy\"",
-        );
+        // A custom grid is differentiated on that grid, so optimize is allowed.
+        cfg("ksdft", "optimize", 1, "[dft]\ngrid_radial = 99\n")
+            .validate_cli_wired_keys()
+            .unwrap();
         let gw = cfg(
             "gw",
             "energy",

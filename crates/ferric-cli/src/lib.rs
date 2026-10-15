@@ -495,14 +495,6 @@ pub fn run(args: Vec<String>) {
         );
         std::process::exit(1);
     }
-    if grid_prune.is_some() && task != "energy" {
-        eprintln!(
-            "error: [dft] grid_prune is supported for method.task = \"energy\" only \
-             (got \"{task}\"). The XC gradient's grid-response term is built on the \
-             unpruned grid, so a pruned energy and its gradient would be inconsistent."
-        );
-        std::process::exit(1);
-    }
     // Any other `[dft]` key the selected kind never reads (a functional on
     // uhf/rhf/rimp2..., lambda/omega off wb97x-l-v, a grid_prune with no KS
     // grid) is refused rather than silently dropped. See

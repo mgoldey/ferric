@@ -26,6 +26,7 @@ use ferric_scf::gradient::{
     restricted_open_scf_gradient, restricted_scf_gradient, unrestricted_scf_gradient,
 };
 use ferric_scf::ks_gradient::{ks_gradient_closed, ks_gradient_roks, ks_gradient_uks};
+use ferric_scf::optimize::{optimize_geometry, OptimizeConfig};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::rohf::solve_rohf;
 use ferric_scf::screening::SchwarzBounds;
@@ -120,8 +121,11 @@ fn residuals(
     xc: &str,
     grid: Option<AtomicGridConfig>,
 ) -> (f64, f64) {
+    residuals_cfg(kind, xyz, mult, xc, config(xc, grid))
+}
+
+fn residuals_cfg(kind: Kind, xyz: &str, mult: usize, xc: &str, cfg: RhfConfig) -> (f64, f64) {
     let mol = Molecule::parse_xyz(xyz, 0, mult).unwrap();
-    let cfg = config(xc, grid);
     let (g, g_plain) = gradients(kind, &mol, xc, &cfg);
     let mut worst = 0.0f64;
     let mut worst_plain = 0.0f64;
@@ -301,4 +305,54 @@ fn rks_pbe_pruned_nwchem_grid() {
         "PBE",
         pruned_nwchem(),
     );
+}
+
+// NOT covered here: the VV10 nonlocal gradient takes `nlc_grid` (threaded the
+// same way) but carries no Becke weight-response term by design, so on a
+// coarse NLC grid it misses FD of its own energy by ~1e-5 Ha/Bohr whatever
+// grid it is given (measured 9e-6 on water / wB97X-V at 30x50): FD cannot
+// discriminate a hard-coded 50x50 from the configured grid at that floor.
+
+/// End to end: an optimization on a non-default grid stops at a stationary
+/// point of THAT grid's energy. Pre-fix it converged on the default-grid
+/// gradient, leaving a true residual gradient of the size of the miss
+/// (~3e-4 Ha/Bohr on this system, see `rks_lda_non_default_grid`).
+#[test]
+fn optimize_stops_at_a_stationary_point_of_the_scf_grid() {
+    let mol = Molecule::parse_xyz(WATER, 0, 1).unwrap();
+    let cfg = config("LDA", flat());
+    let opt = OptimizeConfig {
+        g_max_thresh: 2e-6,
+        g_rms_thresh: 1e-6,
+        e_conv: 1e-10,
+        ..Default::default()
+    };
+    let r = optimize_geometry(
+        &ParallelContext::default(),
+        &mol,
+        BASIS,
+        Operator::coulomb(),
+        &cfg,
+        &opt,
+    )
+    .unwrap();
+    assert!(r.converged, "optimization did not converge");
+    let mut worst = 0.0f64;
+    for a in 0..r.mol.atoms.len() {
+        for c in 0..3 {
+            let mut e = [0.0f64; 2];
+            for (i, sgn) in [1.0, -1.0].into_iter().enumerate() {
+                let mut m = r.mol.clone();
+                match c {
+                    0 => m.atoms[a].x += sgn * STEP,
+                    1 => m.atoms[a].y += sgn * STEP,
+                    _ => m.atoms[a].zpos += sgn * STEP,
+                }
+                e[i] = energy(Kind::Rks, &m, &cfg);
+            }
+            worst = worst.max(((e[0] - e[1]) / (2.0 * STEP)).abs());
+        }
+    }
+    eprintln!("max |FD gradient of the SCF-grid energy| at the optimum: {worst:.3e}");
+    assert!(worst < 2e-5, "not stationary on the SCF grid: {worst:.3e}");
 }

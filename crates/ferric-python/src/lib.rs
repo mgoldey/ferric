@@ -7835,11 +7835,8 @@ fn run_dft(
     // Main KS grid. `None` (no grid kwarg) keeps the historical 75x110 flat
     // grid byte-for-byte; `ksdft_ladder` clones `cfg`, so every rung uses it.
     cfg.dft_grid = resolve_dft_grid(grid_radial, grid_angular, grid_prune)?;
-    // `ks_gradient_closed` builds its OWN default grid (it takes no grid
-    // config), so a gradient after a non-default-grid SCF would be the
-    // gradient of a different energy -- and on a pruned grid the XC
-    // grid-response term does not exist at all. Refuse the pair up front, the
-    // same rule the CLI applies to `[dft] grid_prune` with task != "energy".
+    // The gradient below goes through `restricted_scf_gradient`, which
+    // differentiates `cfg.dft_grid` (pruned or not), the grid the SCF runs on.
     // COSX exchange (RIJCOSX by default here): the gradient below goes
     // through `restricted_scf_gradient`, which differentiates the COSX (and
     // RI-J) energy the SCF built; setups it cannot differentiate (overlap fit
@@ -7860,13 +7857,6 @@ fn run_dft(
                  is not available: {r}"
             )));
         }
-    }
-    if with_gradient && cfg.dft_grid.is_some() {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "with_gradient=True cannot be combined with grid_radial / grid_angular / \
-             grid_prune: the analytic KS gradient is built on the default 75x110 \
-             unpruned grid, so it would not be the gradient of this energy",
-        ));
     }
     // Run through the level-shift ladder (KS-DFT = solve_rhf with cfg.xc set),
     // so a hybrid on a hard system that DIIS-limit-cycles at level_shift=0

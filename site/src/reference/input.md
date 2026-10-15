@@ -131,8 +131,8 @@ as elsewhere.
 | Key | Type | Default | Allowed values | Notes |
 |---|---|---|---|---|
 | `functional` | string | `"LDA"` (for `ksdft`) | an XC name (`LDA`, `PBE`, `B3LYP`, `wB97X-V`, `SCAN`, `r2SCAN`, …) or a libxc name | Read by `ksdft`. `wb97x-l-v` ignores it with a warning. RPA/GW use `[rpa] xc` and TDDFT uses `[tddft] xc` instead. |
-| `grid_prune` | string | `"none"` | `none` `off` `flat`; `nwchem` `nwchem-like` `nwchem_like` | Prunes the main grid only. Accepted only with `task = "energy"`. |
-| `grid_radial` | integer | `75` | > 0 | Radial points per atom on the main grid. Only on a run with a Kohn–Sham grid, only with `task = "energy"` (the XC gradient uses the default grid), and not with `kind = "gw"`. Same as Python `grid_radial=`. |
+| `grid_prune` | string | `"none"` | `none` `off` `flat`; `nwchem` `nwchem-like` `nwchem_like` | Prunes the main grid only. Optimize and frequency runs differentiate the pruned energy. |
+| `grid_radial` | integer | `75` | > 0 | Radial points per atom on the main grid. Only on a run with a Kohn–Sham grid, and not with `kind = "gw"`. Optimize and frequency runs differentiate this grid. Same as Python `grid_radial=`. |
 | `grid_angular` | integer | `110` | `6` `14` `26` `50` `110` `302` `434` `590` | Lebedev order on the main grid. Same scope as `grid_radial`. An unsupported order is an error. Same as Python `grid_angular=`. |
 | `dispersion` | string | absent | `d3bj`, `d3(bj)`, `d3bj(<functional>)`, `mbd`, `mbd(<functional>)` (case-insensitive) | Only on a Kohn–Sham SCF (`kind = "ksdft"`, or `rhf`/`uhf`/`rohf` with `functional`). `task = "optimize"` and `task = "frequencies"` run on RKS, UKS and ROKS references; `frequencies` uses finite differences of the KS + dispersion gradient, so `[frequencies] hessian = "analytic"` is an error. There is no "off" value; omit the key instead. A functional with no published D3(BJ) fit or MBD@rsSCS β (PBE, PBE0, HSE06) is an error. |
 | `lambda` | float | `0.6` | | Only for `wb97x-l-v`. |

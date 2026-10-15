@@ -53,9 +53,8 @@ multiplicity > 1), and in Python through
   Lebedev angular grids, **75 × 110** points per atom, **unpruned**.
 - Pruning is **opt-in**: `[dft] grid_prune = "nwchem"`
   (`examples/water-pbe-pruned-grid.toml`) removes about 23% of points at
-  75 × 110. It is accepted for `task = "energy"` only; optimization and
-  frequency runs refuse a pruned grid because the gradient's grid-response
-  term is built on the unpruned grid.
+  75 × 110. Optimization and frequency runs differentiate the grid the SCF
+  ran on (pruned or not, including `grid_radial` / `grid_angular`).
 - Density fitting: **RI-J and RI-K are on by default** for `ksdft` and
   `run_dft` (`def2-universal-jkfit`), while `rhf` is exact by default. In
   Python, `df_j_aux=""` selects exact Coulomb. The fitting error grows with
