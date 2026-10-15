@@ -1058,11 +1058,11 @@ fn unsupported_exchange_fitting_configurations_are_refused() {
         )
         .expect("RI-J + RI-K available");
     }
-    // ROHF with RI is refused; UHF RI-K is supported (tests/df_hessian_uhf.rs).
-    let e = rohf_hessian_preflight(op, &s.cfg).unwrap_err().to_string();
-    eprintln!("ROHF RI-K: {e}");
-    assert!(e.contains("ROHF") && e.contains("RI"), "{e}");
-    assert!(analytic_rohf_hessian_available(&s.mol, &s.prep, op, &s.cfg).is_err());
+    // ROHF and UHF RI-K are supported (tests/df_hessian_rohf.rs, df_hessian_uhf.rs).
+    rohf_hessian_preflight(op, &s.cfg).expect("ROHF RI-K preflight");
+    if has_deriv2() {
+        analytic_rohf_hessian_available(&s.mol, &s.prep, op, &s.cfg).expect("ROHF RI-K probe");
+    }
     uhf_hessian_preflight(op, &s.cfg).expect("UHF RI-K preflight");
     // External potential next to RI-K.
     let with_field = RhfConfig {

@@ -756,9 +756,9 @@ pub fn rohf_hessian_parts_df_mutated(
     let mut fitted_first = None;
     if let Some(f) = fitted {
         skel.two_electron = f.two_electron;
-        g = g
-            .fitted(f.df_j, f.df_k, false)
-            .with_uhf_mutants(*uhf_mutants);
+        // The Focks below are rebuilt with the production kernel; the CPHF
+        // mutants are applied to the response only (set after the rebuild).
+        g = g.fitted(f.df_j, f.df_k, false);
         fitted_first = Some((f.first, f._cphf_charge));
     }
     let dens = &skel.densities;
@@ -770,6 +770,7 @@ pub fn rohf_hessian_parts_df_mutated(
         skel.overlap = super::skeleton_hess_overlap(prep, natoms, &w)?;
     }
     let frame = Frame::new(mol, rohf, focks)?;
+    let g = g.with_uhf_mutants(*uhf_mutants);
     let dens = &skel.densities;
     let (mut first, _cphf_charge) = match fitted_first {
         Some((first, charge)) => (first, charge),

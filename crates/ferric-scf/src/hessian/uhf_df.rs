@@ -253,10 +253,7 @@ pub(super) fn open_shell_two_electron(
         }
     }
     let df_j = route_j.map(|r| df_j_builder(mol, prep, r)).transpose()?;
-    let df_k = route_k
-        .filter(|_| !uhf_mutants.cphf_exact_k)
-        .map(|r| df_k_builder(mol, prep, r))
-        .transpose()?;
+    let df_k = route_k.map(|r| df_k_builder(mol, prep, r)).transpose()?;
     Ok(OpenShellTwoElectron {
         two_electron,
         first,

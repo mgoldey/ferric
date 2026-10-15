@@ -676,14 +676,18 @@ fn every_wired_mutant_misses_by_more_than_ten_bars() {
                 );
             }
             Err(e) => {
-                // A kernel made indefinite is caught by the solver's typed error.
+                // Only a mutant that makes the orbital Hessian indefinite may
+                // be caught by the solver's typed error; any other error is a
+                // harness failure, not a detection.
                 let msg = e.to_string();
                 eprintln!("MUTANT {}: typed error {msg}", m.0);
                 assert!(
-                    msg.contains("curvature")
-                        || msg.contains("positive definite")
-                        || msg.contains("converge")
-                        || msg.contains("rotation"),
+                    [
+                        "CPHF: Coulomb from the alpha response density only",
+                        "CPHF: exchange of the TOTAL response density per spin"
+                    ]
+                    .contains(&m.0)
+                        && msg.contains("not positive definite"),
                     "mutant {} failed with an unexpected error: {msg}",
                     m.0
                 );

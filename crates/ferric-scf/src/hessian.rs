@@ -2195,6 +2195,10 @@ impl<'a> TwoElectronBuilder<'a> {
     }
 
     fn with_uhf_mutants(mut self, m: UhfDfMutants) -> Self {
+        if m.cphf_exact_k {
+            // Mutant: the exact four-centre K where the SCF fitted it.
+            self.df_k = None;
+        }
         self.uhf_mutants = m;
         self
     }
