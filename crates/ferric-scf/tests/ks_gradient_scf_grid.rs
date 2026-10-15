@@ -176,8 +176,9 @@ fn pruned_nwchem() -> Option<AtomicGridConfig> {
 }
 
 /// max |g(pruned) - g(same grid, prune = None)|: what a gradient that dropped
-/// `prune` would be off by. Must exceed 10x the bar or the pruned rows cannot
-/// tell "honours prune" from "ignores prune".
+/// `prune` would be off by. `check` requires >= 5x the bar (the best reachable
+/// here is ~8.8x; see `pruned()`), or the pruned rows cannot tell "honours
+/// prune" from "ignores prune".
 fn prune_sensitivity(kind: Kind, xyz: &str, mult: usize, xc: &str, grid: AtomicGridConfig) -> f64 {
     let mol = Molecule::parse_xyz(xyz, 0, mult).unwrap();
     let mut flat_twin = grid.clone();
