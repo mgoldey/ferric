@@ -840,6 +840,33 @@ pub(crate) fn scf_converged(
     }
 }
 
+/// ADIIS/EDIIS only (#422): a density that has stopped moving while the
+/// commutator is still above the energy-to-Pulay crossover is a stalled energy
+/// extrapolation, not a converged SCF. Refuse the exit and restart on plain
+/// Pulay DIIS from a clean history. Pure Pulay has no veto bound, so the default
+/// path is untouched.
+fn veto_stalled_energy_diis(
+    conv_exit: Option<ScfExit>,
+    diis: &mut DiisDriver,
+    err_max: f64,
+    iter: usize,
+    flavor: crate::diis::DiisFlavor,
+) -> Option<ScfExit> {
+    match (conv_exit, diis.commutator_veto_bound()) {
+        (Some(ScfExit::Converged), Some(bound)) if err_max >= bound => {
+            if scf_trace() {
+                eprintln!(
+                    "SCF iter={iter}: dp settled with err_max={err_max:.3e} >= {bound:.1e} \
+                     under {flavor:?}; falling back to Pulay DIIS (#422)"
+                );
+            }
+            diis.fall_back_to_pulay();
+            None
+        }
+        (exit, _) => exit,
+    }
+}
+
 /// Spellings of `df_j_aux` / `df_k_aux` that mean "do not density-fit"
 /// (conventional four-centre J/K). Compared case-insensitively after
 /// trimming. `""` is the canonical form the SCF layer reads (see
@@ -2317,25 +2344,8 @@ fn solve_rhf_impl(
             sig.dp_max,
             scf_converged(sig, config.energy_conv, config.density_conv),
         );
-        // ADIIS/EDIIS only (#422): a density that has stopped moving while the
-        // commutator is still above the energy-to-Pulay crossover is a stalled
-        // energy extrapolation, not a converged SCF. Refuse the exit and finish
-        // the run on plain Pulay DIIS (its history is current). Pure Pulay has
-        // no bound, so the default path is untouched.
-        let conv_exit = match (conv_exit, diis.commutator_veto_bound()) {
-            (Some(ScfExit::Converged), Some(bound)) if err_max >= bound => {
-                if scf_trace() {
-                    eprintln!(
-                        "SCF iter={iter}: dp settled with err_max={err_max:.3e} >= {bound:.1e} \
-                         under {:?}; falling back to Pulay DIIS (#422)",
-                        config.diis_flavor
-                    );
-                }
-                diis.fall_back_to_pulay();
-                None
-            }
-            (exit, _) => exit,
-        };
+        let conv_exit =
+            veto_stalled_energy_diis(conv_exit, &mut diis, err_max, iter, config.diis_flavor);
 
         // Divergence: energy climbing for consecutive iters (see ScfMonitor).
         if mon.diverging(energy, config.divergence_tol) {
