@@ -83,11 +83,7 @@ impl Default for KsGradGrids {
     fn default() -> Self {
         Self {
             main: AtomicGridConfig::default(),
-            nlc: AtomicGridConfig {
-                n_radial: 50,
-                n_angular: 50,
-                ..Default::default()
-            },
+            nlc: AtomicGridConfig::default_nlc(),
         }
     }
 }

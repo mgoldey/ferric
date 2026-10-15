@@ -34,8 +34,6 @@ use ferric_scf::uhf::solve_uhf;
 use ndarray::Array2;
 
 const BAR: f64 = 3e-7;
-/// Measured FD floor of this harness on the default grid (largest of the rows).
-const FD_FLOOR: f64 = 1.5e-7;
 const STEP: f64 = 1e-3;
 const BASIS: &str = "6-31g";
 
@@ -160,7 +158,7 @@ fn flat() -> Option<AtomicGridConfig> {
 /// Aggressive pruning (ORCA GridX / PySCF `sgx_prune` regions) on a coarse
 /// radial grid, chosen so that the pruned and flat energies differ enough for
 /// a gradient that ignored `prune` to be visible above the FD floor (see
-/// `prune_sensitivity`, required >= 10x the FD floor).
+/// `prune_sensitivity`, required >= 5x BAR: pruning moves this gradient by at most ~2.6e-6 (8.8x BAR) over the grids tried, so the discrimination is real but under 10x).
 fn pruned() -> Option<AtomicGridConfig> {
     Some(AtomicGridConfig {
         n_radial: 20,
@@ -211,7 +209,7 @@ fn check(
         eprintln!("{label}: prune sensitivity {sens:.3e}");
         if discriminates {
             assert!(
-                sens >= 10.0 * FD_FLOOR,
+                sens >= 5.0 * BAR,
                 "{label}: prune sensitivity {sens:.3e} too small"
             );
         }
@@ -355,4 +353,46 @@ fn optimize_stops_at_a_stationary_point_of_the_scf_grid() {
     }
     eprintln!("max |FD gradient of the SCF-grid energy| at the optimum: {worst:.3e}");
     assert!(worst < 2e-5, "not stationary on the SCF grid: {worst:.3e}");
+}
+
+/// Non-FD guard that `nlc_grid` reaches the VV10 gradient. FD cannot
+/// discriminate (the VV10 term has no Becke weight response, so it sits on a
+/// ~1e-5 plateau), so compare two evaluations of the SAME converged SCF result
+/// with a 30x50 and a 50x50 nonlocal grid: they must differ.
+#[test]
+fn nlc_grid_reaches_the_vv10_gradient() {
+    use ferric_scf::ks_gradient::{ks_gradient_closed_with_exchange_on_grids, KsGradGrids};
+    let mol = Molecule::parse_xyz(WATER, 0, 1).unwrap();
+    let bs = basis::bundled(BASIS).unwrap();
+    let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    let cfg = config("wB97X-V", None);
+    let r = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
+    let grad = |nlc: AtomicGridConfig| {
+        let grids = KsGradGrids {
+            nlc,
+            ..KsGradGrids::default()
+        };
+        ks_gradient_closed_with_exchange_on_grids(
+            &mol, &prep, &bs, op, &bounds, "wB97X-V", &r, None, None, &grids,
+        )
+        .unwrap()
+    };
+    let coarse = grad(AtomicGridConfig {
+        n_radial: 30,
+        n_angular: 50,
+        prune: None,
+    });
+    let default = grad(AtomicGridConfig::default_nlc());
+    let diff = coarse
+        .iter()
+        .zip(default.iter())
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0, f64::max);
+    eprintln!("VV10 gradient, nlc 30x50 vs 50x50: max diff {diff:.3e}");
+    assert!(
+        diff > 1e-7,
+        "nlc_grid did not change the VV10 gradient: {diff:.3e}"
+    );
 }

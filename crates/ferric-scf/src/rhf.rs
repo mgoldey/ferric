@@ -1401,11 +1401,7 @@ fn solve_rhf_impl(
         let nlc = config
             .nlc_grid
             .clone()
-            .unwrap_or(ferric_dft::grid::AtomicGridConfig {
-                n_radial: 50,
-                n_angular: 50,
-                ..Default::default()
-            });
+            .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::default_nlc);
         // Thread the caller's `[memory] budget_gb` into the grid AO cache --
         // the largest single allocation in a DFT job. This used to call the
         // UNbudgeted `new_with_omega`, which resolves from env/auto-detect

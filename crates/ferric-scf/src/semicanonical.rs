@@ -76,11 +76,7 @@ impl<'a> XcSpec<'a> {
         let nlc = self
             .nlc_grid
             .clone()
-            .unwrap_or(ferric_dft::grid::AtomicGridConfig {
-                n_radial: 50,
-                n_angular: 50,
-                ..Default::default()
-            });
+            .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::default_nlc);
         let ks = ferric_dft::ks::KsXcUks::new(mol, prep.basis_set(), self.name, &main, &nlc)
             .map_err(|e| FerricError::General(format!("KsXcUks init for {}: {e:?}", self.name)))?;
         Ok(Box::new(ks) as Box<dyn ferric_dft::xc_trait::UksXcContribution>)

@@ -98,14 +98,32 @@ def test_bad_grid_kwargs_raise_value_error(water, sto3g, kwargs):
         ferric.dft_grid_point_count(water, **kwargs)
 
 
-def test_grid_kwargs_gradient_is_that_of_the_grid(water, sto3g):
-    """The analytic KS gradient differentiates the grid the SCF ran on (#428):
-    a grid kwarg no longer refuses ``with_gradient``, and the gradient of a
-    pruned grid differs from the default-grid one by the (small) grid effect
-    only, while staying finite and translationally invariant."""
+def test_grid_kwargs_gradient_is_that_of_the_grid(water, sto3g, tmp_path):
+    """The analytic KS gradient differentiates the grid the SCF ran on (#428).
+
+    On a non-default grid (30x194) the analytic gradient must equal the central
+    finite difference of the energy on that SAME grid. Measured: 1.5e-7 Ha/Bohr
+    with the fix, 3.3e-4 for the default-grid gradient paired with this SCF, so
+    the 1e-6 bar separates them by more than 300x."""
     import numpy as np
 
-    r = ferric.run_dft(water, sto3g, "PBE", with_gradient=True, grid_prune="nwchem")
-    g = np.asarray(r.gradient())
+    kw = dict(grid_radial=30, grid_angular=194, **SCF)
+    g = np.asarray(ferric.run_dft(water, sto3g, "PBE", with_gradient=True, **kw).gradient())
     assert np.all(np.isfinite(g))
-    assert abs(g.sum(axis=0)).max() < 1e-5
+
+    bohr = 0.529177210903  # Angstrom per Bohr
+    h = 1e-3  # Bohr
+    lines = WATER.read_text().splitlines()
+    for atom in (0, 1):
+        energies = []
+        for sign in (+1.0, -1.0):
+            parts = lines[2 + atom].split()
+            parts[3] = repr(float(parts[3]) + sign * h * bohr)
+            new = list(lines)
+            new[2 + atom] = " ".join(parts)
+            f = tmp_path / f"w_{atom}_{int(sign)}.xyz"
+            f.write_text("\n".join(new) + "\n")
+            mol = ferric.Molecule.from_xyz(str(f))
+            energies.append(ferric.run_dft(mol, sto3g, "PBE", **kw).total_energy)
+        fd = (energies[0] - energies[1]) / (2 * h)
+        assert abs(g[atom, 2] - fd) < 1e-6, (atom, g[atom, 2], fd)

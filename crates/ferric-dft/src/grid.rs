@@ -152,6 +152,19 @@ impl Default for AtomicGridConfig {
     }
 }
 
+impl AtomicGridConfig {
+    /// The default VV10 nonlocal grid (50 x 50, unpruned): the one every SCF
+    /// driver and the KS gradient use when `nlc_grid` is `None`.
+    #[must_use]
+    pub fn default_nlc() -> Self {
+        Self {
+            n_radial: 50,
+            n_angular: 50,
+            prune: None,
+        }
+    }
+}
+
 /// Build the full molecular grid for `mol`. Returns a flat Vec of GridPoints
 /// summed across all atoms.
 ///
@@ -538,8 +551,9 @@ mod tests {
             atomic_grid_point_count(&mol, &sgx, sgx.prune).unwrap(),
         );
         assert!(ns < nf, "sgx {ns} vs flat {nf}");
-        // The XC-path wrapper still refuses a pruned config.
-        assert!(build_atomic_grid_with_response(&mol, &sgx).is_err());
+        // The XC-path wrapper (#428) honours a pruned config: same count.
+        let (xg, _) = build_atomic_grid_with_response(&mol, &sgx).unwrap();
+        assert_eq!(xg.len(), ns);
     }
 
     fn h2() -> Molecule {
