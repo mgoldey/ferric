@@ -632,6 +632,10 @@ pub(crate) fn is_idempotent_closed_shell(d: &Array2<f64>, s: &Array2<f64>, tol: 
     dev <= tol * scale
 }
 
+/// Commutator bound used by [`DiisDriver::commutator_veto_bound`] when
+/// `switch_thresh` is infinite (energy-based DIIS throughout).
+pub(crate) const INFINITE_SWITCH_VETO_BOUND: f64 = 1e-2;
+
 /// Combined DIIS driver implementing the mature-code recipe: run an energy-based
 /// variant (ADIIS or EDIIS) while the DIIS error is large, then switch to plain
 /// Pulay DIIS once the commutator error drops below `switch_thresh`.
@@ -690,6 +694,42 @@ impl DiisDriver {
     /// Whether an ADIIS/EDIIS history is live (`false` for pure Pulay).
     pub fn uses_energy_history(&self) -> bool {
         self.switch_thresh > 0.0
+    }
+
+    /// The commutator bound above which a repeated density is NOT a converged
+    /// one while the energy-based variant (ADIIS/EDIIS) is steering, or `None`
+    /// for pure Pulay (where the SCF's own gate is unchanged).
+    ///
+    /// ADIIS/EDIIS minimize an energy functional, not the commutator. Their
+    /// weights can freeze on a few old history entries (#422: EDIIS in a charged
+    /// field, `c ~ [0.41, 0.41, 0.19]` for 30+ iterations) so the extrapolated
+    /// Fock stops changing, `dp_rms` falls to zero and the density-based gate
+    /// reports convergence while `err_max` is O(1). That regime is exactly
+    /// `err_max >= switch_thresh` (where the energy variant is in control); an
+    /// infinite `switch_thresh` (energy variant throughout) has no such
+    /// crossover, so a fixed loose bound stands in. The RI commutator floor
+    /// (~1e-6) is far below both.
+    pub fn commutator_veto_bound(&self) -> Option<f64> {
+        if self.switch_thresh <= 0.0 {
+            None
+        } else if self.switch_thresh.is_infinite() {
+            Some(INFINITE_SWITCH_VETO_BOUND)
+        } else {
+            Some(self.switch_thresh)
+        }
+    }
+
+    /// Abandon the energy-based phase for the rest of the run and restart plain
+    /// Pulay DIIS from a CLEAN history. The Pulay history is cleared too: it was
+    /// fed the whole stalled trajectory (large, near-parallel error vectors from
+    /// the chaotic early phase), and extrapolating from that diverged to
+    /// E = -936 Ha on the #422 case, while a fresh history converges. Used when
+    /// the energy variant has demonstrably stalled (see
+    /// [`Self::commutator_veto_bound`]).
+    pub fn fall_back_to_pulay(&mut self) {
+        self.switch_thresh = 0.0;
+        self.pulay.reset();
+        self.energy.reset();
     }
 
     /// Clear both histories (Pulay and energy-DIIS).
@@ -1470,6 +1510,34 @@ mod tests {
     }
 
     /// The idempotency vet: a projector in the S metric passes, a scaled one does not.
+    #[test]
+    fn veto_bound_and_pulay_fallback() {
+        let pulay = DiisDriver::new(DiisFlavor::Pulay, 8, 1e-1);
+        assert_eq!(pulay.commutator_veto_bound(), None);
+        let mut e = DiisDriver::new(DiisFlavor::Ediis, 8, 1e-1);
+        assert_eq!(e.commutator_veto_bound(), Some(1e-1));
+        let inf = DiisDriver::new(DiisFlavor::Adiis, 8, f64::INFINITY);
+        assert_eq!(
+            inf.commutator_veto_bound(),
+            Some(INFINITE_SWITCH_VETO_BOUND)
+        );
+        // After the fallback the driver is pure Pulay: no energy history is
+        // consulted, no veto bound, and the step equals a FRESH Pulay driver's.
+        let n = 2;
+        let f0 = Array2::from_shape_fn((n, n), |(i, j)| (i + j) as f64 * 0.1);
+        let err = Array2::from_elem((n, n), 0.5);
+        let d = Array2::eye(n);
+        e.step(&f0, &err, &d, -100.0, 0.5);
+        e.fall_back_to_pulay();
+        assert!(!e.uses_energy_history());
+        assert_eq!(e.commutator_veto_bound(), None);
+        let mut ref_p = DiisDriver::new(DiisFlavor::Pulay, 8, 1e-1);
+        let f1 = &f0 + &Array2::from_elem((n, n), 0.05);
+        let a = e.step(&f1, &err, &d, -5.0, 0.5);
+        let b = ref_p.step(&f1, &err, &d, -5.0, 0.5);
+        assert_eq!(a, b);
+    }
+
     #[test]
     fn idempotency_check_separates_projectors_from_scaled_densities() {
         let s = Array2::eye(3);

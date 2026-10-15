@@ -817,7 +817,11 @@ pub(crate) struct ConvergenceSignals {
 ///   above the ~2e-5 DF energy floor, so it excludes a descending run without
 ///   demanding an unreachable tight ΔE)
 ///
-/// The commutator (FDS−SDF) is *not* consulted — diagnostic only.
+/// The commutator (FDS−SDF) is *not* consulted by this function — diagnostic
+/// only. The one exception lives at its call site: under ADIIS/EDIIS, while the
+/// commutator is still above `diis_switch_thresh`, a density-settled exit is
+/// refused and the run restarts on plain Pulay DIIS (a stalled energy
+/// extrapolation, not a converged SCF; #422).
 ///
 /// Returns `Some(ScfExit::Converged)` when met, else `None` (keep iterating).
 /// The caller still owns divergence/stall/max-iter exits.
@@ -2313,6 +2317,25 @@ fn solve_rhf_impl(
             sig.dp_max,
             scf_converged(sig, config.energy_conv, config.density_conv),
         );
+        // ADIIS/EDIIS only (#422): a density that has stopped moving while the
+        // commutator is still above the energy-to-Pulay crossover is a stalled
+        // energy extrapolation, not a converged SCF. Refuse the exit and finish
+        // the run on plain Pulay DIIS (its history is current). Pure Pulay has
+        // no bound, so the default path is untouched.
+        let conv_exit = match (conv_exit, diis.commutator_veto_bound()) {
+            (Some(ScfExit::Converged), Some(bound)) if err_max >= bound => {
+                if scf_trace() {
+                    eprintln!(
+                        "SCF iter={iter}: dp settled with err_max={err_max:.3e} >= {bound:.1e} \
+                         under {:?}; falling back to Pulay DIIS (#422)",
+                        config.diis_flavor
+                    );
+                }
+                diis.fall_back_to_pulay();
+                None
+            }
+            (exit, _) => exit,
+        };
 
         // Divergence: energy climbing for consecutive iters (see ScfMonitor).
         if mon.diverging(energy, config.divergence_tol) {

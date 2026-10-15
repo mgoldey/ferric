@@ -77,7 +77,7 @@ Read by every kind, because every kind runs an SCF first.
 | `density_conv` | float | `1e-6` | | The real convergence signal. |
 | `diis_size` | integer | `8` | | |
 | `diis` | string | `"pulay"` | `pulay` `adiis` `ediis` (case-insensitive) | An unknown value is an error when the file is loaded. |
-| `diis_switch_thresh` | float | `1e-1` | | Error level at which ADIIS/EDIIS hand over to Pulay. Ignored for `pulay`. |
+| `diis_switch_thresh` | float | `1e-1` | | Error level at which ADIIS/EDIIS hand over to Pulay. Ignored for `pulay`. If the density stops moving while the error is still above this level, the run is not reported converged: it restarts on plain Pulay DIIS (with `inf`, the level is `1e-2`). |
 | `smearing_sigma` | float | none | Hartree | Fermi–Dirac smearing width. Absent means integer occupations. |
 | `guess` | string | `"minao"` | `minao` `sad` `hcore` (case-insensitive) | `"sad"` is an alias of `"minao"` (the MINAO projection guess); the free-atom-SCF SAD guess is not selectable from config. Any other value is an error. |
 | `soscf` | bool | `false` | | Enables the second-order (Newton) step in the SCF tail. |
