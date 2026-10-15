@@ -537,7 +537,8 @@ fn too_small_neighbour_cutoff_is_refused() {
 #[test]
 fn unsupported_functionals_and_grid_knobs_are_refused_by_name() {
     for (name, word) in [
-        ("wB97X-V", "range-separated hybrid"),
+        ("wB97X-V", "VV10"),
+        ("HSE06", "range-separated hybrid"),
         ("SCAN", "meta-GGA"),
         ("B2PLYP", "double hybrid"),
     ] {
@@ -577,7 +578,7 @@ fn unsupported_scf_features_are_refused_by_name() {
         .unwrap_err()
         .to_string()
     };
-    let cases: [(&str, &dyn Fn(&mut GammaRksConfig)); 7] = [
+    let cases: [(&str, &dyn Fn(&mut GammaRksConfig)); 8] = [
         ("RhfConfig.newton_trigger", &|c| c.scf.newton_trigger = 1e-2),
         ("RhfConfig.trah_trigger", &|c| {
             c.scf.trah_trigger = Some(1e-2)
@@ -590,9 +591,8 @@ fn unsupported_scf_features_are_refused_by_name() {
         ("scf.dft_grid", &|c| {
             c.scf.dft_grid = Some(AtomicGridConfig::default())
         }),
-        ("range-separated hybrid", &|c| {
-            c.functional = "wB97X-V".into()
-        }),
+        ("VV10", &|c| c.functional = "wB97X-V".into()),
+        ("range-separated hybrid", &|c| c.functional = "HSE06".into()),
     ];
     for (word, edit) in cases {
         let e = run(edit);
