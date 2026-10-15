@@ -270,12 +270,13 @@ pub use kgrad::{
     KRsGdfGradSource,
 };
 pub use kpts::{KPointMesh, MeshCentring};
+pub use kroks::{solve_krohf, solve_krohf_keep, solve_kroks, solve_kroks_keep, KRoksResult};
 pub use kscf::{
     complex_canonical_orthogonalizer, complex_canonical_orthogonalizer_with_stats, solve_krhf,
     solve_krhf_injected, solve_krhf_keep, solve_krks_injected, KJkKind, KPointInjection, KPointJk,
     KPointXc, KRetained, KRetainedJk, KRhfConfig, KScfConfig, KScfResult,
 };
-pub use kuks::{solve_kuks, solve_kuks_on_grid, KUksConfig, KUksResult};
+pub use kuks::{solve_kuks, solve_kuks_keep, solve_kuks_on_grid, KUksConfig, KUksResult};
 pub use kuscf::{
     kuhf_gap_report, solve_kuhf, solve_kuhf_injected, solve_kuhf_injected_with_guess,
     solve_kuhf_keep, KUScfResult, KUhfConfig, KUhfResult,

@@ -153,35 +153,23 @@ fn refusal(tag: &str, kind: &str, mult: usize, dft: &str, cell: &str) -> String 
 
 #[test]
 fn unsupported_kpoint_ks_combinations_are_refused_by_name() {
-    let e = refusal("uks", "ksdft", 3, "", "");
-    assert!(e.contains("UKS") && e.contains("not implemented"), "{e}");
-    let e = refusal("roks", "rohf", 3, "[dft]\nfunctional = \"PBE\"", "");
-    assert!(e.contains("ROKS") && e.contains("not implemented"), "{e}");
-    let e = refusal("meta", "ksdft", 1, "[dft]\nfunctional = \"SCAN\"", "");
+    // Open-shell meta-GGA stays refused (UKS/ROKS meta-GGA has no tau term).
+    let e = refusal("uks-meta", "ksdft", 3, "[dft]\nfunctional = \"SCAN\"", "");
     assert!(e.contains("meta-GGA"), "{e}");
     let e = refusal("rsh", "ksdft", 1, "[dft]\nfunctional = \"HSE06\"", "");
     assert!(e.contains("range-separated"), "{e}");
-    // task = "optimize" keeps these refusals (the forces cover closed-shell
-    // LDA / GGA / global hybrids; periodic_kpoint_ks_optimize.rs).
-    for (tag, dft, key) in [
-        ("opt-scan", "[dft]\nfunctional = \"SCAN\"", "meta-GGA"),
-        (
-            "opt-hse",
-            "[dft]\nfunctional = \"HSE06\"",
-            "range-separated",
-        ),
-    ] {
-        let toml = input(tag, "ksdft", 1, dft, "");
-        let src = std::fs::read_to_string(&toml)
-            .unwrap()
-            .replace("kind = \"ksdft\"", "task = \"optimize\"\nkind = \"ksdft\"");
-        std::fs::write(&toml, src).unwrap();
-        let out = run(&toml);
-        assert!(!out.status.success(), "{tag}");
-        let e = String::from_utf8_lossy(&out.stderr);
-        assert!(
-            e.contains("[cell] kmesh with functional") && e.contains(key),
-            "{tag}: {e}"
-        );
-    }
+    // task = "optimize" keeps the range-separated refusal (closed-shell LDA /
+    // GGA / global hybrid / SCAN forces are wired; periodic_kpoint_ks_optimize.rs).
+    let toml = input("opt-hse", "ksdft", 1, "[dft]\nfunctional = \"HSE06\"", "");
+    let src = std::fs::read_to_string(&toml)
+        .unwrap()
+        .replace("kind = \"ksdft\"", "task = \"optimize\"\nkind = \"ksdft\"");
+    std::fs::write(&toml, src).unwrap();
+    let out = run(&toml);
+    assert!(!out.status.success(), "opt-hse");
+    let e = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        e.contains("[cell] kmesh with functional") && e.contains("range-separated"),
+        "opt-hse: {e}"
+    );
 }

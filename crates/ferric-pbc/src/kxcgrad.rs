@@ -919,21 +919,56 @@ fn force_covers(xc: &XcDef, has_rsh: bool) -> bool {
         })
 }
 
-/// The explicit force allowlist of the Python and CLI force entry points:
-/// LDA, GGA and GLOBAL hybrid functionals only (every component a `Lda`, `Gga`
-/// or `HybridGga` libxc family, no range separation, no VV10, no mixing weights
-/// such as a double hybrid's). Independent of
-/// what the ENERGY gate accepts, so widening the energy path (e.g. to k-point
-/// meta-GGA) cannot silently enable a force without widening this list.
+/// The explicit closed-shell force and stress allowlist of the Python and CLI
+/// entry points: LDA, GGA and GLOBAL hybrid functionals (every component a
+/// `Lda`, `Gga` or `HybridGga` libxc family, no range separation, no VV10, no
+/// mixing weights such as a double hybrid's) plus the PURE meta-GGAs SCAN and
+/// r2SCAN (no exact exchange: a hybrid meta-GGA is refused). Independent of
+/// what the ENERGY gate accepts, so widening the energy path cannot silently
+/// enable a force. The open-shell twin is
+/// [`check_open_shell_force_functional`] (no meta-GGA).
 pub fn check_force_functional(functional: &str) -> Result<(), FerricError> {
-    let (xc, _exx, rsh) = resolve_periodic_functional_rsh(functional)?;
-    let covered = force_covers(&xc, rsh.is_some());
-    if covered {
+    if !is_validated_mgga(functional) {
+        return check_open_shell_force_functional(functional);
+    }
+    let (xc, exx, rsh) = resolve_periodic_functional_rsh(functional)?;
+    let pure_mgga = rsh.is_none()
+        && exx == 0.0
+        && xc.vv10.is_none()
+        && xc.weights.is_none()
+        && xc
+            .funcs
+            .iter()
+            .all(|f| matches!(f.family(), FunctionalFamily::MetaGga));
+    if pure_mgga {
         Ok(())
     } else {
         Err(FerricError::General(format!(
-            "{functional}: the k-point Kohn-Sham force covers LDA, GGA and global-hybrid \
-             functionals only"
+            "{functional}: the k-point meta-GGA force and stress cover the pure SCAN and \
+             r2SCAN functionals only"
+        )))
+    }
+}
+
+/// SCAN and r2SCAN: the meta-GGAs whose k-point SCF, force and stress are
+/// validated end to end (TPSS resolves only as raw component names, with no
+/// SCF).
+pub fn is_validated_mgga(functional: &str) -> bool {
+    functional.eq_ignore_ascii_case("SCAN") || functional.eq_ignore_ascii_case("r2SCAN")
+}
+
+/// The open-shell (UKS, ROKS, ROHF) force and stress allowlist: LDA, GGA and
+/// GLOBAL hybrid functionals only. Meta-GGA, range-separated hybrids, VV10 and
+/// double hybrids are refused (the spin-resolved XC has no tau term).
+pub fn check_open_shell_force_functional(functional: &str) -> Result<(), FerricError> {
+    let (xc, _exx, rsh) = resolve_periodic_functional_rsh(functional)?;
+    if force_covers(&xc, rsh.is_some()) {
+        Ok(())
+    } else {
+        Err(FerricError::General(format!(
+            "{functional}: the k-point Kohn-Sham force and stress cover LDA, GGA and \
+             global-hybrid functionals only (no meta-GGA, range-separated hybrid, VV10 or \
+             double hybrid for this method)"
         )))
     }
 }

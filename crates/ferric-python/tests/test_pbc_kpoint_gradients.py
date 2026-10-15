@@ -22,8 +22,9 @@ stress Hartree/Bohr^3, atoms and lattice in Angstrom in, Bohr derivatives out).
   against FD of the binding's own energies, both exxdiv.
 * RS-GDF with a ROTATING basis (cc-pVDZ: the rotated-column counters are > 0),
   RS-GDF UHF, and a 1x1x3 mesh, against FD.
-* Refusals: range_split with forces/stress (as Gamma), k-point KS stress (the
-  k-point KS forces are in test_pbc_kpoint_ks_gradients.py).
+* Refusals: range_split with forces/stress (as Gamma), (k-point KS forces
+  and stress are in test_pbc_kpoint_ks_gradients.py and
+  test_pbc_kpoint_open_shell_and_stress.py).
 """
 
 from __future__ import annotations
@@ -263,10 +264,11 @@ def test_refusals(basis):
             range_split=True,
             with_gradient=True,
         )
-    with pytest.raises(ValueError, match="with_stress is not wired for k-point"):
-        ferric.run_rks_kpts(
-            _mol(H2_ATOMS), _lat(H2_A), basis, "LDA", (1, 1, 2), with_stress=True
-        )
+    # k-point KS stress is wired (test_pbc_kpoint_open_shell_and_stress.py).
+    r = ferric.run_rks_kpts(
+        _mol(H2_ATOMS), _lat(H2_A), basis, "LDA", (1, 1, 2), with_stress=True
+    )
+    assert r.stress().shape == (3, 3)
 
 
 @pytest.mark.parametrize("mesh", [(1, 1, 2), (2, 2, 2)])
