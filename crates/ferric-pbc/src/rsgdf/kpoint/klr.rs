@@ -137,7 +137,7 @@ impl KRsGdf {
         let needs_lr = rsh.c_lr != rsh.c_sr || mutant == Some(KRshMutant::SwappedRoles);
         let lr = if needs_lr {
             let w = match mutant {
-                Some(KRshMutant::OmegaUnits) => rsh.omega * 1.889_726_124_565_062,
+                Some(KRshMutant::OmegaUnits) => rsh.omega * ferric_core::units::ANGSTROM_TO_BOHR,
                 _ => rsh.omega,
             };
             Self::build_attenuated(cell, obs, aux, mesh, s_k, cfg, (w, budget), mutant)?
