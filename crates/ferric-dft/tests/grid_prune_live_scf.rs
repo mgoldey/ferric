@@ -491,16 +491,15 @@ fn vv10_nlc_grid_survives_a_pruned_main_grid() {
     assert!(lr.result.energy.is_finite());
 }
 
-/// The GRADIENT restriction, pinned.
-///
-/// `build_atomic_grid_with_response` builds the Becke weight-derivative term
-/// on the unpruned grid only. Silently ignoring `prune` there would return a
-/// vector that is not the gradient of the pruned energy the SCF converged —
-/// an inconsistency visible only under finite difference. It must be a hard
-/// error instead.
+/// The GRADIENT grid honours `prune` (#428): `build_atomic_grid_with_response`
+/// returns exactly the points and weights of the pruned energy grid
+/// (`build_atomic_grid_pruned`), in the same order, plus one weight-derivative
+/// row per point. It used to hard-error on a pruned config, which left no
+/// analytic gradient for a pruned SCF. The FD anchor on the gradient itself is
+/// `ferric-scf/tests/ks_gradient_scf_grid.rs`.
 #[test]
-fn gradient_grid_rejects_a_pruned_config_instead_of_ignoring_it() {
-    use ferric_dft::grid::build_atomic_grid_with_response;
+fn gradient_grid_is_the_pruned_energy_grid() {
+    use ferric_dft::grid::{build_atomic_grid_pruned, build_atomic_grid_with_response};
 
     let mol = Molecule::parse_xyz(H2, 0, 1).unwrap();
     let pruned = AtomicGridConfig {
@@ -508,20 +507,25 @@ fn gradient_grid_rejects_a_pruned_config_instead_of_ignoring_it() {
         n_angular: 110,
         prune: Some(PruneScheme::NwchemLike),
     };
-    let err = build_atomic_grid_with_response(&mol, &pruned)
-        .expect_err("a pruned config must be rejected on the grid-response path");
-    let msg = format!("{err}");
-    assert!(
-        msg.contains("prun"),
-        "the rejection must say pruning is the reason; got: {msg}"
-    );
-
-    // ...and the unpruned config still works, so this is a targeted rejection
-    // rather than a broken path.
+    let (grid, weight1) = build_atomic_grid_with_response(&mol, &pruned).unwrap();
+    let energy_grid = build_atomic_grid_pruned(&mol, &pruned, pruned.prune).unwrap();
+    assert_eq!(grid.len(), energy_grid.len());
+    assert_eq!(weight1.len(), grid.len());
     let flat = AtomicGridConfig {
-        n_radial: 75,
-        n_angular: 110,
         prune: None,
+        ..pruned.clone()
     };
-    assert!(build_atomic_grid_with_response(&mol, &flat).is_ok());
+    let (flat_grid, _) = build_atomic_grid_with_response(&mol, &flat).unwrap();
+    assert!(
+        grid.len() < flat_grid.len(),
+        "pruning must remove points ({} vs {})",
+        grid.len(),
+        flat_grid.len()
+    );
+    for (a, b) in grid.iter().zip(energy_grid.iter()) {
+        assert_eq!(a.xyz, b.xyz);
+        // Same construction; the response builder may sum the Becke weights in
+        // a different order, so compare to rounding, not bits.
+        assert!((a.weight - b.weight).abs() <= 1e-12 * b.weight.abs().max(1e-300));
+    }
 }

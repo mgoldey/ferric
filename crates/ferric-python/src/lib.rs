@@ -32,7 +32,7 @@ use ferric_mp2::mp3::mp3_energy;
 use ferric_mp2::oo_rimp2::{oo_ri_mp2, OoRiMp2Config};
 use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
 use ferric_mp2::scs::{scs_mp2, scs_mp2_2terfc, ScsMp2Config, ScsMp2TerfcConfig};
-use ferric_scf::ks_gradient::ks_gradient_closed;
+use ferric_scf::ks_gradient::{ks_gradient_closed_with_exchange_on_grids, KsGradGrids};
 use ferric_scf::noise_floor::SolverFamily;
 use ferric_scf::optimize::{optimize_geometry, optimize_geometry_uhf, OptimizeConfig};
 use ferric_scf::result::ScfResult;
@@ -2280,9 +2280,8 @@ fn run_qmmm(
         rhf_gradient, rhf_gradient_with_polarizable, uhf_gradient, uhf_gradient_with_polarizable,
     };
     use ferric_scf::ks_gradient::{
-        ks_gradient_closed_with_exchange_on_grids, ks_gradient_closed_with_polarizable_on_grids,
-        ks_gradient_uks_with_exchange_on_grids, ks_gradient_uks_with_polarizable_on_grids,
-        KsGradGrids,
+        ks_gradient_closed_with_polarizable_on_grids, ks_gradient_uks_with_exchange_on_grids,
+        ks_gradient_uks_with_polarizable_on_grids,
     };
     use ferric_scf::polarizable::{induce, PolarizableSites, DEFAULT_THOLE_A};
     use ferric_scf::qmmm::{full_gradient_with_mm, mm_forces, qmmm_mm_terms};
