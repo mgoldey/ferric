@@ -590,3 +590,23 @@ fn open_shell_rsgdf_solvers_refuse_rsh() {
     uks.kuhf.jk = KJkKind::RsGdf;
     assert!(solve_kuks_on_grid(&cell, &prep, Some(&aux), &mesh, &grid, &uks).is_err());
 }
+
+/// Cross-surface pin shared with `test_pbc_krks.py::
+/// test_range_separated_hybrid_runs_on_rsgdf_energy_only` (the Python binding
+/// produced the number; the library reproduces it on the same input): H2 a = 4
+/// Bohr, 1x1x2 Gamma mesh, cc-pVDZ-RI aux, hcore omega 0.8, atom-centred grid
+/// (40, 110), HSE06.
+const HSE06_RSGDF_112_ATOM_GRID: f64 = -1.3484931727;
+
+#[test]
+fn rsgdf_hse06_matches_the_python_binding_pin() {
+    let cell = h2_cell(4.0);
+    let bs = pyscf_sto3g_h();
+    let grid = PeriodicGrid::build(&cell, &PeriodicGridConfig::with_size(40, 110)).unwrap();
+    let mesh = KPointMesh::gamma_centred(&cell, [1, 1, 2]).unwrap();
+    let e = run(&cell, &bs, Some("cc-pvdz-ri"), &mesh, &grid, "HSE06", None)
+        .scf
+        .energy;
+    eprintln!("HSE06 RS-GDF 1x1x2 atom grid: {e:.10} (pin {HSE06_RSGDF_112_ATOM_GRID})");
+    assert!((e - HSE06_RSGDF_112_ATOM_GRID).abs() < 1e-7, "{e:.10}");
+}
