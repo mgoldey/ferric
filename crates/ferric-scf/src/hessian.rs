@@ -128,7 +128,8 @@
 //! J/K, RI-J, RI-K or both fitted with the Coulomb operator, no ECP and no
 //! external potential for the fitted routes; ROHF with exact four-centre
 //! Coulomb J/K, or RI-J / RI-K / both (same fitting restrictions, and no
-//! external potential or ECP at all). Everything else — KS (ROKS included),
+//! external potential or ECP at all). Everything else — Kohn-Sham (ROKS
+//! included; the one exception is the opt-in entry point described below),
 //! range-separated RI-K, RI combined with an external potential or an ECP, COSX, ghost
 //! atoms, solvation, polarizable embedding, fractional occupations, cDFT,
 //! non-Coulomb operators, and for ROHF also external potentials and ECPs
@@ -136,8 +137,9 @@
 //! feature (the FD Hessian in [`crate::frequencies::harmonic_frequencies`]
 //! covers those).
 //!
-//! Kohn-Sham is not reached by [`crate::hessian::rhf_hessian`], `Auto` or `Analytic`. The one
-//! analytic KS Hessian is an explicit library entry point,
+//! The refusal of Kohn-Sham above applies to [`crate::hessian::rhf_hessian`],
+//! `Auto` and `Analytic`. The only analytic KS Hessian is an explicit library
+//! entry point,
 //! [`crate::hessian::rks_lda_fixed_grid_hessian`]: closed-shell pure LDA, exact J, on a grid
 //! frozen in space (no Becke weight response, so it is not the surface the
 //! production KS gradient differentiates; see the `ks` module).
@@ -178,9 +180,11 @@ use ndarray::{s, Array1, Array2, ArrayView2};
 mod rohf;
 pub use rohf::{rohf_hessian, rohf_hessian_parts};
 mod ks;
-pub use ks::{rks_lda_fixed_grid_hessian, rks_lda_fixed_grid_hessian_parts};
 #[doc(hidden)]
-pub use ks::{rks_lda_fixed_grid_hessian_parts_with, KsFixedGridMutants};
+pub use ks::{
+    rks_lda_fixed_grid_fock_residual, rks_lda_fixed_grid_hessian_parts_with, KsFixedGridMutants,
+};
+pub use ks::{rks_lda_fixed_grid_hessian, rks_lda_fixed_grid_hessian_parts};
 mod uhf_df;
 use uhf_df::{
     open_shell_two_electron, rohf_occupied_factors, uhf_hessian_parts_with, OpenShellDensities,

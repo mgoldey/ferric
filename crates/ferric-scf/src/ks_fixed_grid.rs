@@ -189,6 +189,14 @@ impl FixedGridLda {
     /// Build the grid of `mol` (the reference geometry) with `cfg`. A
     /// functional that is not pure LDA is a typed error.
     pub fn new(mol: &Molecule, xc_name: &str, cfg: &AtomicGridConfig) -> Result<Self, FerricError> {
+        if cfg.prune.is_some() {
+            return Err(FerricError::General(
+                "fixed-grid XC: an angular-pruned grid (AtomicGridConfig::prune) is not \
+                 supported; the production SCF builds the pruned grid but this unit freezes \
+                 the flat grid, so the two would silently differ (use prune = None)"
+                    .into(),
+            ));
+        }
         let grid = build_atomic_grid(mol, cfg);
         Self::from_points(
             xc_name,

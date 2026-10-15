@@ -158,6 +158,62 @@ fn functional_refusal(name: &str, xc: &ferric_dft::libxc::XcDef) -> Result<(), F
     Ok(())
 }
 
+/// Largest `|F_rebuilt − F_scf|` (Hartree) for which `rks` is accepted as a
+/// converged SCF of the energy this Hessian differentiates. The SCF stores the
+/// Fock matrix built from its FINAL density, so for the right energy the
+/// rebuilt matrix agrees to rounding whatever the density convergence:
+/// measured 0 to 3.6e-15 Ha (injected SCF at density_conv 1e-11, production
+/// SCF at 1e-11 and at the library default 1e-6). The bar is 1e-8, seven
+/// orders above that; the wrong-reference scenarios sit at 0.14 (a point charge
+/// of 0.5 the configuration lacks), 0.17 (a PBE result) and 2.0 (an HF result).
+const FOCK_CONSISTENCY_TOL: f64 = 1e-8;
+
+/// The Fock matrix rebuilt from `rks.density_r()` with the exact-J, fixed-grid
+/// LDA energy this Hessian differentiates must reproduce `rks.fock_r()`. The
+/// configuration only names the functional, so an HF result, a result of
+/// another functional, or one converged with an external potential or field
+/// that `config` does not carry would otherwise return a silently wrong Hessian.
+fn fock_consistency(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    rks: &ScfResult,
+    grid: &FixedGridLda,
+) -> Result<(), FerricError> {
+    let diff = rks_lda_fixed_grid_fock_residual(ctx, mol, prep, bounds, rks, grid)?;
+    if diff > FOCK_CONSISTENCY_TOL {
+        return Err(FerricError::General(format!(
+            "the SCF result is not a converged closed-shell exact-J LDA Kohn-Sham solution \
+             of the molecule, basis and functional passed (the Fock matrix rebuilt at its \
+             density differs from the stored one by {diff:.2e} Ha > {FOCK_CONSISTENCY_TOL:.0e}): \
+             a Hartree-Fock or other-functional result, a missing external potential, or an \
+             unconverged SCF"
+        )));
+    }
+    Ok(())
+}
+
+/// `max |F_rebuilt(D) − F_scf|` of [`fock_consistency`], Hartree.
+#[doc(hidden)]
+pub fn rks_lda_fixed_grid_fock_residual(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    rks: &ScfResult,
+    grid: &FixedGridLda,
+) -> Result<f64, FerricError> {
+    let d = rks.density_r();
+    let mut j = Array2::<f64>::zeros(d.dim());
+    let mut k = Array2::<f64>::zeros(d.dim());
+    crate::rhf::build_jk(ctx, prep, bounds, 1e-14, d, &mut j, &mut k)?;
+    let h =
+        ferric_integrals::oneelectron::hcore_ecp_with_external(prep, mol, prep.basis_set(), None)?;
+    let (_exc, v) = grid.energy_vxc(&XcGeometry::new(mol, prep)?, d)?;
+    Ok(max_abs(&(h + j + v - rks.fock_r())))
+}
+
 /// The analytic Hessian of the fixed-grid closed-shell LDA energy, (3N, 3N).
 /// See the module doc for what it is and is not the Hessian of.
 pub fn rks_lda_fixed_grid_hessian(
@@ -222,6 +278,7 @@ pub fn rks_lda_fixed_grid_hessian_parts_with(
         ..config.clone()
     };
     check_supported(Reference::Rhf, mol, prep, op, bounds, rks, &hf_config)?;
+    fock_consistency(ctx, mol, prep, bounds, rks, grid)?;
 
     let natoms = mol.atoms.len();
     let nocc = (mol.nelec() / 2) as usize;

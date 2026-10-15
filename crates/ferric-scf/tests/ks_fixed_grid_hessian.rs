@@ -757,3 +757,154 @@ fn hessian_with_d_functions_matches_the_fixed_grid_gradient_difference() {
     );
     assert!(diff < TOL_HESS_FD, "{diff:.3e}");
 }
+
+// ---------------------------------------------------------------------------
+// Wrong-reference guards, pruned grids, ECP and point charges
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_pruned_grid_is_refused_not_silently_flattened() {
+    let mol = water();
+    let cfg = AtomicGridConfig {
+        prune: Some(ferric_dft::prune::PruneScheme::NwchemLike),
+        ..grid_cfg()
+    };
+    let msg = FixedGridLda::new(&mol, "LDA", &cfg)
+        .err()
+        .expect("a pruned grid must be refused")
+        .to_string();
+    eprintln!("{msg}");
+    assert!(
+        msg.contains("pruned") && msg.contains("prune = None"),
+        "{msg}"
+    );
+}
+
+/// The configuration only NAMES the functional; the result must really be the
+/// exact-J fixed-grid LDA solution. Three wrong-reference scenarios that used to
+/// run and return a silently wrong Hessian are refused by the Fock rebuild,
+/// while every legitimate result sits at the SCF-noise level, far below it.
+#[test]
+fn a_result_of_another_energy_is_refused_by_the_fock_consistency_guard() {
+    use ferric_core::external_potential::{ExternalPotential, PointCharge};
+    use ferric_scf::hessian::rks_lda_fixed_grid_fock_residual;
+    let r = reference("sto-3g");
+    let ctx = ParallelContext::default();
+    let op = Operator::coulomb();
+    let exact = |xc: Option<&str>, ext: Option<ExternalPotential>| RhfConfig {
+        xc: xc.map(str::to_string),
+        external_potential: ext,
+        ..production_config(Some(grid_cfg()))
+    };
+    let solve = |cfg: &RhfConfig| solve_rhf(&ctx, &r.mol, &r.prep, op, &r.bounds, cfg).unwrap();
+    let charges = ExternalPotential {
+        point_charges: vec![PointCharge {
+            q: 0.5,
+            x: 0.0,
+            y: 0.3,
+            z: 4.0,
+        }],
+        ..Default::default()
+    };
+    let legit_inj =
+        rks_lda_fixed_grid_fock_residual(&ctx, &r.mol, &r.prep, &r.bounds, &r.fixed.res, &r.grid)
+            .unwrap();
+    let legit_prod = rks_lda_fixed_grid_fock_residual(
+        &ctx,
+        &r.mol,
+        &r.prep,
+        &r.bounds,
+        &solve(&exact(Some("LDA"), None)),
+        &r.grid,
+    )
+    .unwrap();
+    eprintln!("legitimate residuals: injected {legit_inj:.2e}, production {legit_prod:.2e}");
+    assert!(legit_inj < 1e-8 && legit_prod < 1e-8);
+    // A loosely converged but legitimate SCF (the library default,
+    // density_conv = 1e-6) must stay well below the guard.
+    let loose = solve(&RhfConfig {
+        density_conv: RhfConfig::default().density_conv,
+        energy_conv: RhfConfig::default().energy_conv,
+        ..exact(Some("LDA"), None)
+    });
+    let legit_loose =
+        rks_lda_fixed_grid_fock_residual(&ctx, &r.mol, &r.prep, &r.bounds, &loose, &r.grid)
+            .unwrap();
+    eprintln!("legitimate residual at the default (loose) convergence: {legit_loose:.2e}");
+    assert!(legit_loose < 1e-10, "{legit_loose:.2e}");
+    for (label, res) in [
+        ("HF result under an LDA label", solve(&exact(None, None))),
+        (
+            "PBE result under an LDA label",
+            solve(&exact(Some("PBE"), None)),
+        ),
+        (
+            "LDA result converged with point charges the config lacks",
+            solve(&exact(Some("LDA"), Some(charges.clone()))),
+        ),
+    ] {
+        let resid =
+            rks_lda_fixed_grid_fock_residual(&ctx, &r.mol, &r.prep, &r.bounds, &res, &r.grid)
+                .unwrap();
+        let msg = refusal_with(&hessian_config(), &r, &res);
+        eprintln!("{label}: residual {resid:.2e}");
+        assert!(
+            msg.contains("not a converged closed-shell exact-J LDA"),
+            "{label}: {msg}"
+        );
+        assert!(resid > 100.0 * legit_prod.max(legit_inj), "{label}");
+    }
+}
+
+#[test]
+fn an_ecp_system_is_refused() {
+    let r = reference("sto-3g");
+    let bs = basis::bundled("def2-svp").unwrap();
+    let mut mol = Molecule::parse_xyz(
+        "3\nHOI tilted\nH 0.30 -0.40 0.20\nO 0.00 0.10 0.95\nI 0.45 0.20 2.80\n",
+        0,
+        1,
+    )
+    .unwrap();
+    mol.apply_ecp(&bs);
+    let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+    let err = rks_lda_fixed_grid_hessian(
+        &ParallelContext::default(),
+        &mol,
+        &prep,
+        Operator::coulomb(),
+        &bounds,
+        &r.fixed.res,
+        &hessian_config(),
+    )
+    .expect_err("an ECP system must be refused");
+    let msg = err.to_string();
+    assert!(msg.contains("ECP") && msg.contains("issue #407"), "{msg}");
+}
+
+#[test]
+fn point_charges_in_the_configuration_are_refused() {
+    use ferric_core::external_potential::{ExternalPotential, PointCharge};
+    let r = reference("sto-3g");
+    let msg = refusal_with(
+        &RhfConfig {
+            external_potential: Some(ExternalPotential {
+                point_charges: vec![PointCharge {
+                    q: 0.5,
+                    x: 0.0,
+                    y: 0.3,
+                    z: 4.0,
+                }],
+                ..Default::default()
+            }),
+            ..hessian_config()
+        },
+        &r,
+        &r.fixed.res,
+    );
+    assert!(
+        msg.contains("external potential") && msg.contains("issue #407"),
+        "{msg}"
+    );
+}
