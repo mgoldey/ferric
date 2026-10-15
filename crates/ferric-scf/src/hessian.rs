@@ -942,7 +942,7 @@ fn check_supported(
 }
 
 /// Why `res`'s density-fitting route is refused (`None` = exact SCF, or the
-/// supported RI-J and/or RI-K for closed-shell RHF and UHF, consistent with the
+/// supported RI-J and/or RI-K for closed-shell RHF, UHF and ROHF, consistent with the
 /// configuration and without an ECP).
 fn df_route_refusal(
     mol: &Molecule,
@@ -1142,8 +1142,7 @@ fn available(
     })
 }
 
-/// RI-J and/or RI-K (RHF and UHF; ROHF was refused by the
-/// preflight): the pre-SCF checks that need the molecule and the fitting basis,
+/// RI-J and/or RI-K (RHF, UHF and ROHF): the pre-SCF checks that need the molecule and the fitting basis,
 /// so that `Auto` falls back to finite differences instead of failing after the
 /// SCF. The first-derivative three- and two-centre engines for each named
 /// fitting basis must exist (the second derivatives are a stencil of their

@@ -248,7 +248,7 @@ translations and rotations projected out. The Hessian is:
   routes, a well-conditioned fitting metric), no solvent or polarizable
   embedding, and a basis up to f functions (with exact J/K, RHF and UHF also
   with an ECP, fixed external point or smeared charges, or a uniform field),
-  and for ROHF with exact four-centre J/K, no
+  and for ROHF with exact four-centre J/K or RI-J / RI-K, no
   ECP, no external potential and a basis up to f functions:
   one SCF plus a coupled-perturbed HF solve per nuclear coordinate (for UHF,
   one solve coupling the α and β orbital rotations; for ROHF, one solve over
@@ -256,7 +256,7 @@ translations and rotations projected out. The Hessian is:
   needs a libint2 with second derivatives (the build
   `scripts/install-libint.sh` installs).
 - **Central finite differences of the analytic gradient** everywhere else
-  (ROKS and every other KS-DFT reference, RI J/K for ROHF or with an ECP or
+  (ROKS and every other KS-DFT reference, RI J/K with an ECP or
   external potential or an ill-conditioned fitting metric, solvent, polarizable
   embedding, g functions, ROHF with an ECP or external potential): 6N gradient
   evaluations. The displacement `[frequencies] delta` (default 5e-3 Bohr) is a

@@ -22,7 +22,7 @@
 //! [`harmonic_frequencies_analytic_rohf`](crate::frequencies::harmonic_frequencies_analytic_rohf) do the
 //! same with [`crate::hessian::uhf_hessian`] and [`crate::hessian::rohf_hessian`].
 //! They cover closed-shell RHF, UHF (any multiplicity) and ROHF with exact
-//! four-centre J/K (RHF and UHF also with RI-J and/or RI-K) and refuse
+//! four-centre J/K or with RI-J and/or RI-K and refuse
 //! everything else (ROKS and every other KS reference included) with a typed
 //! error, so the finite-difference path stays the general one. The refusals
 //! that need only the configuration fire before the SCF (`*_hessian_preflight`);

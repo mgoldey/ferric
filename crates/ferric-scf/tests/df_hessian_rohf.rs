@@ -676,9 +676,10 @@ fn every_wired_mutant_misses_by_more_than_ten_bars() {
                 );
             }
             Err(e) => {
-                // Only a mutant that makes the orbital Hessian indefinite may
-                // be caught by the solver's typed error; any other error is a
-                // harness failure, not a detection.
+                // These two mutants are caught ONLY by the solver's typed
+                // "not positive definite" error (the broken kernel makes the
+                // orbital Hessian indefinite), not by a numerical miss. Any
+                // other error is a harness failure, not a detection.
                 let msg = e.to_string();
                 eprintln!("MUTANT {}: typed error {msg}", m.0);
                 assert!(
@@ -790,4 +791,100 @@ fn ri_is_accepted_and_the_remaining_refusals_are_typed() {
     .unwrap_err()
     .to_string();
     assert!(e.contains("differs from the configuration"), "{e}");
+}
+
+// ---------------------------------------------------------------------------
+// The DF ROHF gradient against the DF ENERGY (no shared gradient code)
+// ---------------------------------------------------------------------------
+
+/// Bar for the DF ROHF gradient vs a Richardson central difference of the DF
+/// ROHF energy (SCF to 1e-14). Derived from both sides: measured agreement
+/// 6.2e-11 (NH2 RI-J) and 1.8e-9 (CH2 triplet RI-K) here (an independent review
+/// saw up to 5.5e-9 for RI-JK), while the fitting moves the gradient by 1.2e-5
+/// (RI-J) and 5.3e-6 (RI-K), asserted below: 1e-7 is 56x above the worst
+/// measured agreement and 53x below the smallest effect the test must see.
+const BAR_GRAD_ENERGY: f64 = 1e-7;
+
+fn gradient_vs_energy_fd(xyz: &str, mult: usize, j: &str, k: &str) {
+    let s = setup(xyz, mult, "sto-3g", j, k);
+    let op = Operator::coulomb();
+    let g = rohf_gradient(&s.mol, &s.prep, op, &s.bounds, &s.rohf, None).unwrap();
+    let energy = |m: &Molecule| {
+        let (prep, bounds) = prep_for(m, "sto-3g");
+        let r = solve_rohf(&ParallelContext::default(), m, &prep, op, &bounds, &s.cfg).unwrap();
+        assert!(r.converged);
+        r.energy
+    };
+    let exact = {
+        let e = setup(xyz, mult, "sto-3g", "", "");
+        rohf_gradient(&e.mol, &e.prep, op, &e.bounds, &e.rohf, None).unwrap()
+    };
+    let (mut worst, mut exact_gap) = (0.0f64, 0.0f64);
+    for a in 0..s.mol.atoms.len() {
+        for c in 0..3 {
+            let d = |h: f64| {
+                (energy(&displaced(&s.mol, a, c, h)) - energy(&displaced(&s.mol, a, c, -h)))
+                    / (2.0 * h)
+            };
+            let fd = (4.0 * d(1e-3) - d(2e-3)) / 3.0;
+            worst = worst.max((fd - g[(a, c)]).abs());
+            exact_gap = exact_gap.max((exact[(a, c)] - g[(a, c)]).abs());
+        }
+    }
+    eprintln!(
+        "gradient vs energy FD J={j:?} K={k:?}: {worst:.3e} (RI vs exact gradient {exact_gap:.3e})"
+    );
+    assert!(worst < BAR_GRAD_ENERGY, "{worst:.3e}");
+    assert!(
+        exact_gap > 10.0 * BAR_GRAD_ENERGY,
+        "the fit is invisible to the bar"
+    );
+}
+
+#[test]
+fn df_rohf_gradient_matches_energy_fd_ri_j_only() {
+    gradient_vs_energy_fd(NH2_DISTORTED, 2, "def2-universal-jkfit", "");
+}
+
+#[test]
+fn df_rohf_gradient_matches_energy_fd_ri_k_only() {
+    gradient_vs_energy_fd(CH2_DISTORTED, 3, "", "def2-universal-jkfit");
+}
+
+// ---------------------------------------------------------------------------
+// Semicanonicalized input
+// ---------------------------------------------------------------------------
+
+#[test]
+fn semicanonicalized_input_gives_the_plain_rohf_hessian_with_ri() {
+    if !has_deriv2() {
+        return;
+    }
+    for (j, k) in [
+        ("def2-universal-jkfit", ""),
+        ("", "def2-universal-jkfit"),
+        ("def2-universal-jkfit", "def2-universal-jkfit"),
+    ] {
+        let s = setup(NH2_DISTORTED, 2, "sto-3g", j, k);
+        let plain = parts(&s).total();
+        let semi = ferric_scf::semicanonical::unrestricted_reference(&s.mol, &s.rohf).unwrap();
+        assert!(semi.rohf_spin_focks.is_some() && semi.df_jk.is_some());
+        let via = rohf_hessian_parts(
+            &ParallelContext::default(),
+            &s.mol,
+            &s.prep,
+            Operator::coulomb(),
+            &s.bounds,
+            &semi,
+            &s.cfg,
+        )
+        .unwrap()
+        .total();
+        assert_close(
+            &format!("semicanonical J={j:?} K={k:?}"),
+            &via,
+            &plain,
+            1e-9,
+        );
+    }
 }
