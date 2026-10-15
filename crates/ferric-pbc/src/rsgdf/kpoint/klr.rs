@@ -110,7 +110,7 @@ impl RshAttached {
 impl KRsGdf {
     /// RS-GDF k-point tensors for a range-separated hybrid: the full-Coulomb
     /// fit of [`KRsGdf::build`] plus the attenuated fit
-    /// ([`KRsGdf::build_attenuated`]), with the mixed Madelung constant. The
+    /// (`KRsGdf::build_attenuated`), with the mixed Madelung constant. The
     /// J/K builders then return
     /// `K = c_sr K[1/r] + (c_lr − c_sr) K[erf] + v_M S D S` (module doc).
     /// `cfg.gdf.exxdiv` picks `v_M^{mix}` or 0.
