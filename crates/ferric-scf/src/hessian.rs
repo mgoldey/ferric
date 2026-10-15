@@ -839,9 +839,7 @@ impl Reference {
         match self {
             Reference::Rhf => "closed-shell RHF with exact four-centre J/K, RI-J and/or RI-K",
             Reference::Uhf => "UHF of any multiplicity with exact J/K, RI-J and/or RI-K",
-            Reference::Rohf => {
-                "ROHF with the Coulomb operator (exact four-centre J/K, or RI-J / RI-K)"
-            }
+            Reference::Rohf => "ROHF with exact J/K, RI-J and/or RI-K",
         }
     }
 }

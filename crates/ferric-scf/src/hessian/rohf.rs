@@ -99,10 +99,24 @@
 //! Hessian of that stationary state with no warning. Use the ROHF stability
 //! analysis, not this function, to establish that the state is a minimum.
 //!
+//! # Density fitting (RI-J / RI-K)
+//!
+//! The ROHF energy is the UHF functional of the constrained `(D_α, D_β)`, so
+//! with a fitted SCF the skeleton, `J^x` and the per-spin `K^x` are the UHF
+//! ones (`super::uhf_df::open_shell_two_electron`: RI-J on `D_α + D_β`, one
+//! RI-K channel per spin with `X_α = C[:, ..n_α]`, `X_β = C[:, ..n_β]`, weight
+//! `−½` each, shared metric). The CPHF kernel `G_σ(D^y) = J(D^y_α + D^y_β) −
+//! K(D^y_σ)` uses the SCF's own `DfJ` on the total response density and `DfK`
+//! on each spin's response density (indefinite densities taken as they are);
+//! the rebuilt spin Focks and `W` go through the same fitted builders. The
+//! rotation algebra above is unchanged: it never used the four-centre
+//! structure of `G`. Closed-shell limit: no open shell, equal to the RHF RI
+//! Hessian (`tests/df_hessian_rohf.rs`).
+//!
 //! # Trust in the Focks
 //!
 //! The response uses the spin Focks REBUILT from the final densities
-//! (`h + G_σ(D)`), and `W` is rebuilt from them too, so the Hessian is a
+//! (`h + G_σ(D)`, with the fitted builders where the SCF fitted), and `W` is rebuilt from them too, so the Hessian is a
 //! function of the final densities alone; the stored `rohf_spin_focks` (from
 //! the last SCF iteration's density) are only compared with them and refused
 //! if they differ by more than `FOCK_TRUST_TOL` (a ROKS, COSX or otherwise
@@ -622,7 +636,7 @@ fn trusted_focks(
         return Err(FerricError::General(format!(
             "analytic ROHF Hessian: the stored spin Focks differ from h + G(D) of the final \
              densities by {dev:.3e} (> {FOCK_TRUST_TOL:.0e}); the result was not converged with \
-             the exact-exchange Hamiltonian this Hessian differentiates"
+             the Hamiltonian (exact or density-fitted J/K) this Hessian differentiates"
         )));
     }
     Ok(if mutation == RohfMutation::UseStoredFocks {
@@ -637,8 +651,8 @@ fn trusted_focks(
 ///
 /// `bounds` is the Schwarz table for `op` on `prep`; `config` is the
 /// configuration the SCF was converged with, read to refuse what the Hessian
-/// does not implement: Kohn-Sham, RI, COSX, solvation, an external potential,
-/// an ECP, non-Coulomb operators. See `hessian::rohf` (module doc) for the
+/// does not implement: Kohn-Sham, COSX, solvation, an external potential,
+/// an ECP, range-separated RI-K, non-Coulomb operators. See `hessian::rohf` (module doc) for the
 /// equations and [`analytic_rohf_hessian_available`](super::analytic_rohf_hessian_available)
 /// for the pre-SCF probe.
 pub fn rohf_hessian(
