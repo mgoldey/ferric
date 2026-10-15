@@ -725,7 +725,10 @@ impl DiisDriver {
     pub fn commutator_veto_bound(&self) -> Option<f64> {
         if self.switch_thresh <= 0.0 {
             None
-        } else if self.switch_thresh.is_infinite() {
+        } else if self.switch_thresh.is_infinite() || self.switch_thresh.is_nan() {
+            // NaN never compares below any error, so the driver already treats
+            // it as "never switch" (the same regime as +inf): give it the same
+            // bound rather than a NaN bound that no err_max is ever >= to.
             Some(INFINITE_SWITCH_VETO_BOUND)
         } else {
             Some(self.switch_thresh)
@@ -1524,6 +1527,15 @@ mod tests {
     }
 
     /// The idempotency vet: a projector in the S metric passes, a scaled one does not.
+    /// A NaN switch is the never-switch regime (NaN compares below nothing), so
+    /// it gets the infinite-switch bound, not a NaN bound that would disable
+    /// the veto.
+    #[test]
+    fn a_nan_switch_gets_the_infinite_switch_bound() {
+        let d = DiisDriver::new(DiisFlavor::Ediis, 8, f64::NAN);
+        assert_eq!(d.commutator_veto_bound(), Some(INFINITE_SWITCH_VETO_BOUND));
+    }
+
     #[test]
     fn veto_bound_and_pulay_fallback() {
         let pulay = DiisDriver::new(DiisFlavor::Pulay, 8, 1e-1);

@@ -2827,6 +2827,9 @@ impl ScfCfg {
     /// computed.
     pub fn validate(&self) -> Result<(), String> {
         self.diis_flavor()?;
+        if self.diis_switch_thresh.is_some_and(f64::is_nan) {
+            return Err("[scf] diis_switch_thresh must not be NaN".into());
+        }
         self.use_density_guess()?;
         if let Some(p) = self.eri_precision {
             (ferric_integrals::engine_pool::ERI_PRECISION_VAR.validate)(&p)
@@ -6993,6 +6996,19 @@ json = [1, 2]
                 "{bad:?}: validate() must reject it too"
             );
         }
+    }
+
+    /// A NaN `[scf] diis_switch_thresh` is refused: it would compare below no
+    /// error and disable the ADIIS/EDIIS commutator veto; +inf stays supported.
+    #[test]
+    fn scf_diis_switch_thresh_nan_is_refused_and_inf_is_not() {
+        let e = scf_cfg("diis = \"ediis\"\ndiis_switch_thresh = nan")
+            .validate()
+            .unwrap_err();
+        assert!(e.contains("diis_switch_thresh") && e.contains("NaN"), "{e}");
+        scf_cfg("diis = \"ediis\"\ndiis_switch_thresh = inf")
+            .validate()
+            .unwrap();
     }
 
     /// A bad `[scf] diis` used to PANIC (a `panic!` in `diis_flavor`), aborting
