@@ -3,7 +3,7 @@
 Consumer: crates/ferric-scf/tests/validation_ks_fixed_grid_hessian.rs
 Output:   testdata/reference/validation/ks_fixed_grid_hessian/<system>_<basis>.json
 Input:    testdata/reference/validation/ks_fixed_grid_hessian/<system>_grid.f64
-          (written by the ferric test `write_reference_grid`: rows of
+          (written by the ferric test `reference_grid_matches_the_grid_ferric_builds` run with FERRIC_WRITE_REFERENCE_GRID=1: rows of
           `x y z w`, little-endian f64, Bohr; ferric's 30 x 50 Becke-Lebedev
           grid for the reference geometry)
 

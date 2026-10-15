@@ -20,7 +20,7 @@
 //! geometry and masses, and **ferric's grid**: the 30 radial x 50 angular
 //! Becke-Lebedev points and weights ferric builds for the reference geometry
 //! are written to `h2o_distorted_grid.f64` (rows of `x y z w`, little-endian
-//! f64, Bohr) by [`write_reference_grid`] and installed as `mf.grids.coords` /
+//! f64, Bohr) by the test `reference_grid_matches_the_grid_ferric_builds` (run with `FERRIC_WRITE_REFERENCE_GRID=1`) and installed as `mf.grids.coords` /
 //! `weights`, so both codes integrate on the same points with the same weights
 //! and neither differentiates them (`Hessian.grid_response = False`, the
 //! default). The like-for-like conditions are: same points and weights, same
