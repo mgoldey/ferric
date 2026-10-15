@@ -136,6 +136,12 @@
 //! feature (the FD Hessian in [`crate::frequencies::harmonic_frequencies`]
 //! covers those).
 //!
+//! Kohn-Sham is not reached by [`crate::hessian::rhf_hessian`], `Auto` or `Analytic`. The one
+//! analytic KS Hessian is an explicit library entry point,
+//! [`crate::hessian::rks_lda_fixed_grid_hessian`]: closed-shell pure LDA, exact J, on a grid
+//! frozen in space (no Becke weight response, so it is not the surface the
+//! production KS gradient differentiates; see the `ks` module).
+//!
 //! Second-derivative integrals need libint2 generated with
 //! `LIBINT2_MAX_DERIV_ORDER >= 2` (conda-forge 2.13.1: AM ≤ 3, i.e. up to f
 //! functions). Against a first-derivative libint2 the engine constructors
@@ -390,17 +396,7 @@ fn rhf_hessian_parts_with(
         .map(|r| df_k_builder(mol, prep, r))
         .transpose()?;
     let swap_jk = rik_mutants.cphf_swap_jk;
-    let resp = cpks_response(
-        ctx,
-        prep,
-        bounds,
-        rhf,
-        nocc,
-        &first,
-        (df_j, df_k),
-        swap_jk,
-        None,
-    )?;
+    let resp = cpks_response(ctx, prep, bounds, rhf, nocc, &first, (df_j, df_k), swap_jk)?;
     Ok(parts_from_terms(
         [nuclear, one_electron, overlap, two_electron],
         resp,
@@ -2161,14 +2157,21 @@ struct TwoElectronBuilder<'a> {
     /// RI-K: the SCF's `DfK` replaces the exact exchange matrix (its density
     /// path takes the indefinite response densities).
     df_k: Option<std::cell::RefCell<crate::df_k::DfK<'static>>>,
-    /// Mutation tests only: build `K − ½J` instead of `J − ½K`.
-    swap_jk: bool,
+    /// RHF-only options of `G`.
+    rhf_g: RhfG<'a>,
     /// Mutation tests only (UHF): the UHF channel defects of [`UhfDfMutants`]
     /// that act inside the CPHF kernel.
     uhf_mutants: UhfDfMutants,
+}
+
+/// RHF-only options of the CPHF `G`.
+#[derive(Default)]
+struct RhfG<'a> {
+    /// Mutation tests only: build `K − ½J` instead of `J − ½K`.
+    swap_jk: bool,
     /// Kohn-Sham: the exchange-correlation kernel response `V1_xc[D1]` added to
     /// the RHF `G(D1)`; `None` for every Hartree-Fock path.
-    xc_response: Option<&'a XcResponseFn<'a>>,
+    xc: Option<&'a XcResponseFn<'a>>,
 }
 
 /// The XC potential response to a symmetric AO density change.
@@ -2192,16 +2195,15 @@ impl<'a> TwoElectronBuilder<'a> {
             pool,
             df_j: None,
             df_k: None,
-            swap_jk: false,
+            rhf_g: RhfG::default(),
             uhf_mutants: UhfDfMutants::default(),
-            xc_response: None,
         })
     }
 
     /// Add the Kohn-Sham XC kernel response to the RHF `G`, which is then pure
     /// Coulomb plus that response (a pure functional has no exchange).
     fn with_xc_response(mut self, xc: Option<&'a XcResponseFn<'a>>) -> Self {
-        self.xc_response = xc;
+        self.rhf_g.xc = xc;
         self
     }
 
@@ -2215,7 +2217,7 @@ impl<'a> TwoElectronBuilder<'a> {
     ) -> Self {
         self.df_j = df_j.map(std::cell::RefCell::new);
         self.df_k = df_k.map(std::cell::RefCell::new);
-        self.swap_jk = swap_jk;
+        self.rhf_g.swap_jk = swap_jk;
         self
     }
 
@@ -2260,12 +2262,12 @@ impl<'a> TwoElectronBuilder<'a> {
     /// discarding one costs nothing extra; it is skipped when both are fitted).
     fn g_rhf(&self, d: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
         use crate::fock::{JBuilder, KBuilder};
-        if let Some(xc) = self.xc_response {
+        if let Some(xc) = self.rhf_g.xc {
             let (mut j, _k) = self.jk(d)?;
             j += &xc(d);
             return Ok(j);
         }
-        if self.df_j.is_none() && self.df_k.is_none() && !self.swap_jk {
+        if self.df_j.is_none() && self.df_k.is_none() && !self.rhf_g.swap_jk {
             return self.g(d);
         }
         let (mut j, mut k) = if self.df_j.is_some() && self.df_k.is_some() {
@@ -2279,7 +2281,7 @@ impl<'a> TwoElectronBuilder<'a> {
         if let Some(df) = &self.df_k {
             df.borrow_mut().build(d, &mut k)?;
         }
-        if self.swap_jk {
+        if self.rhf_g.swap_jk {
             std::mem::swap(&mut j, &mut k);
         }
         j.scaled_add(-0.5, &k);
@@ -2385,18 +2387,25 @@ fn cpks_response(
         Option<crate::df_k::DfK<'static>>,
     ),
     swap_jk: bool,
-    xc: Option<&XcResponseFn<'_>>,
+) -> Result<ResponseTerm, FerricError> {
+    let g = TwoElectronBuilder::new(ctx, prep, bounds)?.fitted(fitted.0, fitted.1, swap_jk);
+    cpks_response_with(&g, rhf, nocc, first)
+}
+
+/// [`cpks_response`] with the caller's `G` builder (the Kohn-Sham path adds the
+/// XC kernel response to it).
+fn cpks_response_with(
+    g: &TwoElectronBuilder<'_>,
+    rhf: &ScfResult,
+    nocc: usize,
+    first: &FirstOrderAo,
 ) -> Result<ResponseTerm, FerricError> {
     let frame = MoFrame::new(rhf.mos_r(), rhf.eps_r(), nocc, 2.0);
     let h1_mo = frame.to_mo_all(&first.f1[0]);
     let s1_mo = frame.to_mo_all(&first.s1);
-
-    let g = TwoElectronBuilder::new(ctx, prep, bounds)?
-        .fitted(fitted.0, fitted.1, swap_jk)
-        .with_xc_response(xc);
     let mut sols = Vec::with_capacity(h1_mo.len());
     for (x, (h1, s1)) in h1_mo.iter().zip(&s1_mo).enumerate() {
-        sols.push(solve_cphf_one(&g, &frame, h1, s1).map_err(|e| at_coordinate(x, e))?);
+        sols.push(solve_cphf_one(g, &frame, h1, s1).map_err(|e| at_coordinate(x, e))?);
     }
     let raw = assemble_response(&h1_mo, &s1_mo, &sols, &frame);
     Ok(ResponseTerm::new(raw, &sols))

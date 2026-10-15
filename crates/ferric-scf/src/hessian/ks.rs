@@ -33,9 +33,9 @@
 //! [`HessianMethod::Analytic`]: crate::frequencies::HessianMethod::Analytic
 
 use super::{
-    check_supported, cpks_response, first_order_ao, has_ecp, max_abs, nuclear_term,
+    check_supported, cpks_response_with, first_order_ao, has_ecp, max_abs, nuclear_term,
     parts_from_terms, skeleton_hess_1e, skeleton_hess_2e, skeleton_hess_overlap, FockSpec,
-    Reference, RhfHessianParts,
+    Reference, RhfHessianParts, TwoElectronBuilder,
 };
 use crate::gradient::build_energy_weighted_density;
 use crate::ks_fixed_grid::{FixedGridLda, XcGeometry, XcMutants};
@@ -250,17 +250,8 @@ pub fn rks_lda_fixed_grid_hessian_parts_with(
     }
     let kernel = grid.response(&geo, d, mutants.response_fxc)?;
     let kernel_fn = |d1: &Array2<f64>| kernel.apply(d1);
-    let resp = cpks_response(
-        ctx,
-        prep,
-        bounds,
-        rks,
-        nocc,
-        &first,
-        (None, None),
-        false,
-        Some(&kernel_fn),
-    )?;
+    let g = TwoElectronBuilder::new(ctx, prep, bounds)?.with_xc_response(Some(&kernel_fn));
+    let resp = cpks_response_with(&g, rks, nocc, &first)?;
     Ok(parts_from_terms(
         [nuclear, one_electron, overlap, two_electron],
         resp,

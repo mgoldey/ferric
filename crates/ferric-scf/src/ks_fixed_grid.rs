@@ -3,7 +3,7 @@
 //!
 //! The energy is `E_xc = Σ_g w_g f(ρ(r_g))`, `f = ρ ε_xc`, with the points
 //! `r_g` and weights `w_g` built once (at the reference geometry, by
-//! [`build_atomic_grid`]) and then held constant while the nuclei move. Only
+//! `ferric_dft::grid::build_atomic_grid`) and then held constant while the nuclei move. Only
 //! the atom-centred AOs depend on the geometry, so every nuclear derivative is
 //! an AO derivative and no Becke-weight or grid-point response appears:
 //!
@@ -86,7 +86,7 @@ impl<'a> XcGeometry<'a> {
         let offsets = prep.shell_offsets();
         let mut ao_atom = Vec::with_capacity(prep.nbasis());
         for (sh, &atom) in prep.shell_to_atom().iter().enumerate() {
-            ao_atom.extend(std::iter::repeat(atom).take(offsets[sh + 1] - offsets[sh]));
+            ao_atom.resize(ao_atom.len() + offsets[sh + 1] - offsets[sh], atom);
         }
         let mut ranges = vec![(usize::MAX, 0usize); mol.atoms.len()];
         for (mu, &a) in ao_atom.iter().enumerate() {
@@ -189,6 +189,33 @@ impl FixedGridLda {
     /// Build the grid of `mol` (the reference geometry) with `cfg`. A
     /// functional that is not pure LDA is a typed error.
     pub fn new(mol: &Molecule, xc_name: &str, cfg: &AtomicGridConfig) -> Result<Self, FerricError> {
+        let grid = build_atomic_grid(mol, cfg);
+        Self::from_points(
+            xc_name,
+            grid.iter().map(|g| g.xyz).collect(),
+            grid.iter().map(|g| g.weight).collect(),
+        )
+    }
+
+    /// The grid points (Bohr) and weights.
+    pub fn points_and_weights(&self) -> (&[[f64; 3]], &[f64]) {
+        (&self.pts, &self.w)
+    }
+
+    /// A frozen grid from explicit points (Bohr) and weights, e.g. another
+    /// code's grid for a like-for-like comparison.
+    pub fn from_points(
+        xc_name: &str,
+        pts: Vec<[f64; 3]>,
+        w: Vec<f64>,
+    ) -> Result<Self, FerricError> {
+        if pts.len() != w.len() {
+            return Err(FerricError::General(format!(
+                "fixed-grid XC: {} points but {} weights",
+                pts.len(),
+                w.len()
+            )));
+        }
         let xc = xc_def_from_name(xc_name)
             .map_err(|e| FerricError::General(format!("fixed-grid XC: libxc: {e:?}")))?;
         let mix = k_mix_from_xc_def(&xc);
@@ -201,12 +228,7 @@ impl FixedGridLda {
                 "fixed-grid XC: '{xc_name}' is not a pure LDA functional"
             )));
         }
-        let grid = build_atomic_grid(mol, cfg);
-        Ok(FixedGridLda {
-            xc,
-            pts: grid.iter().map(|g| g.xyz).collect(),
-            w: grid.iter().map(|g| g.weight).collect(),
-        })
+        Ok(FixedGridLda { xc, pts, w })
     }
 
     /// Number of grid points.
@@ -490,4 +512,51 @@ pub fn rks_lda_fixed_grid_gradient(
     grad += &crate::ks_gradient::twoelectron_gradient_scaled_k(prep, op, bounds, d, 0.0)?;
     grad += &grid.gradient(&XcGeometry::new(mol, prep)?, d)?;
     Ok(grad)
+}
+
+/// Converge the closed-shell LDA SCF of `mol` with the XC on the frozen `grid`
+/// and exact four-centre J (the SCF at a displaced geometry whose energy
+/// surface the fixed-grid gradient and Hessian differentiate).
+///
+/// `config` is the injected-path configuration (see
+/// [`crate::rhf::validate_injected`]: no `xc`, no density fitting, no SAD
+/// guess); the functional comes from `grid`.
+pub fn solve_rks_fixed_grid(
+    ctx: &ferric_core::parallel::ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: ferric_integrals::operator::Operator,
+    bounds: &crate::screening::SchwarzBounds,
+    grid: &FixedGridLda,
+    config: &crate::rhf::RhfConfig,
+) -> Result<crate::result::ScfResult, FerricError> {
+    use crate::rhf::{resolve_three_index_budget, solve_rhf_injected, PeriodicInjection};
+    let budget = resolve_three_index_budget(config.three_index_budget_bytes);
+    let geo = XcGeometry::new(mol, prep)?;
+    let inj = PeriodicInjection {
+        s: ferric_integrals::oneelectron::overlap(prep),
+        h: ferric_integrals::oneelectron::hcore_ecp_with_external(
+            prep,
+            mol,
+            prep.basis_set(),
+            None,
+        )?,
+        vnn: mol.nuclear_repulsion(),
+        j: Box::new(crate::direct_j::DirectJ::new(
+            ctx,
+            prep,
+            bounds,
+            config.integral_thresh,
+            budget,
+        )),
+        k: Box::new(crate::direct_k::DirectK::new(
+            ctx,
+            prep,
+            bounds,
+            config.integral_thresh,
+            budget,
+        )),
+        xc: Some(Box::new(FixedGridXc { grid, geo: &geo })),
+    };
+    solve_rhf_injected(ctx, mol, prep, op, bounds, config, inj)
 }

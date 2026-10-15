@@ -48,20 +48,15 @@ use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_dft::grid::AtomicGridConfig;
 use ferric_integrals::basis_bridge::PreparedBasis;
-use ferric_integrals::oneelectron;
 use ferric_integrals::operator::Operator;
-use ferric_scf::direct_j::DirectJ;
-use ferric_scf::direct_k::DirectK;
 use ferric_scf::hessian::{
     rks_lda_fixed_grid_hessian, rks_lda_fixed_grid_hessian_parts_with, KsFixedGridMutants,
 };
 use ferric_scf::ks_fixed_grid::{
-    rks_lda_fixed_grid_gradient, FixedGridLda, FixedGridXc, XcGeometry, XcMutants,
+    rks_lda_fixed_grid_gradient, solve_rks_fixed_grid, FixedGridLda, XcGeometry, XcMutants,
 };
 use ferric_scf::result::ScfResult;
-use ferric_scf::rhf::{
-    resolve_three_index_budget, solve_rhf, solve_rhf_injected, PeriodicInjection, RhfConfig,
-};
+use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::Array2;
 
@@ -136,34 +131,11 @@ fn fixed_grid_scf(grid: &FixedGridLda, mol: &Molecule, basis_name: &str) -> Pt {
         density_conv: 1e-11,
         ..Default::default()
     };
-    let budget = resolve_three_index_budget(cfg.three_index_budget_bytes);
-    let geo = XcGeometry::new(mol, &prep).unwrap();
-    let inj = PeriodicInjection {
-        s: oneelectron::overlap(&prep),
-        h: oneelectron::hcore_ecp_with_external(&prep, mol, prep.basis_set(), None).unwrap(),
-        vnn: mol.nuclear_repulsion(),
-        j: Box::new(DirectJ::new(
-            &ctx,
-            &prep,
-            &bounds,
-            cfg.integral_thresh,
-            budget,
-        )),
-        k: Box::new(DirectK::new(
-            &ctx,
-            &prep,
-            &bounds,
-            cfg.integral_thresh,
-            budget,
-        )),
-        xc: Some(Box::new(FixedGridXc { grid, geo: &geo })),
-    };
-    let res = solve_rhf_injected(&ctx, mol, &prep, op, &bounds, &cfg, inj).unwrap();
+    let res = solve_rks_fixed_grid(&ctx, mol, &prep, op, &bounds, grid, &cfg).unwrap();
     assert!(
         res.converged,
         "{basis_name}: fixed-grid SCF did not converge"
     );
-    drop(geo);
     Pt {
         mol: mol.clone(),
         prep,
