@@ -503,3 +503,90 @@ fn rsgdf_rsh_matches_pinned_pyscf_to_the_fit_error() {
         );
     }
 }
+
+/// Forces and stress of a range-separated RS-GDF SCF are refused (typed), on
+/// the retained J/K and by functional name; energies only.
+#[test]
+fn rsh_rsgdf_forces_and_stress_are_refused_not_silently_wrong() {
+    use ferric_pbc::kdft::solve_krks_keep_on_grid;
+    use ferric_pbc::kgrad::{kpoint_rhf_gradient, KGradConfig};
+    use ferric_pbc::kstress::{kpoint_rhf_stress, KStressConfig};
+    let cell = h2_cell(4.0);
+    let bs = pyscf_sto3g_h();
+    let prep = prep_for(&cell, &bs);
+    let aux = PreparedBasis::new(cell.mol(), &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+    let mesh = KPointMesh::gamma_centred(&cell, [1, 1, 2]).unwrap();
+    let grid = PeriodicGrid::uniform(&cell, [24; 3]).unwrap();
+    let cfg = krks_cfg(&cell, "HSE06", true, None);
+    let (r, kept) =
+        solve_krks_keep_on_grid(&cell, &prep, Some(&aux), &mesh, &grid, &cfg).expect("hse keep");
+    let g = kpoint_rhf_gradient(
+        &cell,
+        &prep,
+        &mesh,
+        &cfg.krhf.hcore,
+        &kept.hk,
+        kept.grad_jk(Some(&aux), &cfg.krhf.rsgdf).unwrap(),
+        &r.scf,
+        ExxDiv::Ewald,
+        &KGradConfig::default(),
+    );
+    let e = g.expect_err("force on an RSH RS-GDF SCF must be refused");
+    assert!(e.to_string().contains("range-separated"), "{e}");
+    let s = kpoint_rhf_stress(
+        &cell,
+        &prep,
+        &mesh,
+        &cfg.krhf.hcore,
+        &kept.hk,
+        kept.stress_jk(Some(&aux), &cfg.krhf.rsgdf).unwrap(),
+        &r.scf,
+        ExxDiv::Ewald,
+        &KStressConfig::default(),
+    );
+    let e = s.expect_err("stress on an RSH RS-GDF SCF must be refused");
+    assert!(e.to_string().contains("range-separated"), "{e}");
+    // The KS entry with a NON-range-separated name (so the functional guard
+    // does not fire) must still be refused on the RSH-carrying J/K.
+    let kgrad = ferric_pbc::kxcgrad::kpoint_rks_gradient(
+        &cell,
+        &prep,
+        &mesh,
+        &cfg.krhf.hcore,
+        &kept.hk,
+        kept.grad_jk(Some(&aux), &cfg.krhf.rsgdf).unwrap(),
+        &r.scf,
+        "PBE0",
+        &ferric_pbc::kxcgrad::KRksGradConfig {
+            exxdiv: Some(ExxDiv::Ewald),
+            ..Default::default()
+        },
+    );
+    let e = kgrad.expect_err("KS force on an RSH RS-GDF SCF must be refused");
+    assert!(e.to_string().contains("range-separated"), "{e}");
+    // By name: the force allowlist refuses the functional itself.
+    assert!(ferric_pbc::kxcgrad::check_force_functional("HSE06").is_err());
+    assert!(
+        ferric_pbc::kxcgrad::check_open_shell_force_functional("HYB_GGA_XC_CAM_B3LYP").is_err()
+    );
+}
+
+/// The spin-resolved k-point solvers refuse a range-separated functional on
+/// the RS-GDF J/K as well (they have no attenuated K on either J/K).
+#[test]
+fn open_shell_rsgdf_solvers_refuse_rsh() {
+    use ferric_pbc::kroks::{solve_kroks_on_grid, KRoksConfig};
+    use ferric_pbc::kuks::{solve_kuks_on_grid, KUksConfig};
+    let cell = h2_cell(4.0);
+    let bs = pyscf_sto3g_h();
+    let prep = prep_for(&cell, &bs);
+    let aux = PreparedBasis::new(cell.mol(), &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+    let mesh = KPointMesh::gamma_centred(&cell, [1, 1, 1]).unwrap();
+    let grid = PeriodicGrid::uniform(&cell, [24; 3]).unwrap();
+    let mut roks = KRoksConfig::new(&cell, ExxDiv::Ewald, "HSE06");
+    roks.rohf.jk = KJkKind::RsGdf;
+    assert!(solve_kroks_on_grid(&cell, &prep, Some(&aux), &mesh, &grid, &roks).is_err());
+    let mut uks = KUksConfig::new(&cell, ExxDiv::Ewald, "HSE06");
+    uks.kuhf.jk = KJkKind::RsGdf;
+    assert!(solve_kuks_on_grid(&cell, &prep, Some(&aux), &mesh, &grid, &uks).is_err());
+}

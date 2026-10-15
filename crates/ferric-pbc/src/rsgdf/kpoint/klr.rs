@@ -153,6 +153,46 @@ impl KRsGdf {
         Ok(full)
     }
 
+    /// The exchange kernel `Σ_a B_a ⊗ conj B_a` of `(k, k')` with the
+    /// range-separation mix applied (the bare kernel without a companion).
+    pub(super) fn mixed_k_kernel(&self, k: usize, kp: usize) -> Array2<C64> {
+        let mut kern = self.plain_k_kernel(k, kp);
+        if let Some(rsh) = &self.rsh {
+            let (c_full, c_lr) = rsh.coefficients();
+            kern.mapv_inplace(|z| z * c_full);
+            if let Some(lr) = &rsh.lr {
+                kern.scaled_add(C64::new(c_lr, 0.0), &lr.plain_k_kernel(k, kp));
+            }
+        }
+        kern
+    }
+
+    /// Turn the accumulated bare full-Coulomb exchange `k` into the
+    /// range-separated one: `K = c_full K[1/r] + c_lr K[erf(ωr)/r]` (module
+    /// doc); a no-op without a companion.
+    pub(super) fn mix_rsh_exchange(
+        &self,
+        dm: &[Array2<C64>],
+        k: &mut [Array2<C64>],
+    ) -> Result<(), FerricError> {
+        let Some(rsh) = &self.rsh else {
+            return Ok(());
+        };
+        let (c_full, c_lr) = rsh.coefficients();
+        for kx in k.iter_mut() {
+            kx.mapv_inplace(|z| z * c_full);
+        }
+        if let Some(lr) = rsh.lr.as_ref().filter(|_| c_lr != 0.0) {
+            let mut kl = vec![Array2::<C64>::zeros((self.nao, self.nao)); self.nk];
+            lr.check_exchange_scratch()?;
+            lr.add_k_blocks(dm, &mut kl)?;
+            for (kx, kb) in k.iter_mut().zip(&kl) {
+                kx.scaled_add(C64::new(c_lr, 0.0), kb);
+            }
+        }
+        Ok(())
+    }
+
     /// The range-separation parameters of an attached attenuated exchange.
     pub fn rsh(&self) -> Option<RshParams> {
         self.rsh.as_ref().map(|r| r.params)

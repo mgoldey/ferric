@@ -108,6 +108,27 @@ pub fn madelung_lr(cell: &Cell, omega: f64) -> Result<f64, FerricError> {
     Ok(2.0 * omega / PI.sqrt() - 4.0 * PI / vol * s)
 }
 
+/// The exchange-divergence constant a k-point KS-DFT run with `functional`
+/// APPLIES under `exxdiv = ewald`: the mesh (supercell) Madelung constant for
+/// every functional but a range-separated hybrid, whose constant is the mixed
+/// `c_sr v_M^{full} + (c_lr − c_sr) v_M^{LR}(ω)` ([`RshParams::madelung`]).
+pub fn kpoint_madelung(
+    functional: &str,
+    cell: &Cell,
+    mesh: &crate::kpts::KPointMesh,
+) -> Result<f64, FerricError> {
+    match resolve_periodic_functional_rsh(functional)?.2 {
+        Some(r) => r.madelung(&Cell::new(cell.mol().clone(), mesh.supercell_lattice())?),
+        None => mesh.madelung(cell),
+    }
+}
+
+/// `true` iff `name` resolves to a range-separated (CAM) hybrid that the
+/// k-point path accepts (no VV10, no meta-GGA, no double hybrid).
+pub fn is_range_separated(name: &str) -> bool {
+    matches!(resolve_periodic_functional_rsh(name), Ok((_, _, Some(_))))
+}
+
 /// [`crate::dft::resolve_periodic_functional`] that ACCEPTS range-separated
 /// hybrids: `(XcDef, global exact-exchange fraction, Some(RshParams) for a
 /// CAM functional)`. For a CAM functional the global fraction is `0.0` (the

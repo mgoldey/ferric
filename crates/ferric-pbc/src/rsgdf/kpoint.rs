@@ -1771,14 +1771,7 @@ impl KRsGdf {
                 let bk = &b0.b[k];
                 let bkp = b0.b[kp].mapv(|z| z.conj());
                 jk.push(bk.t().dot(&bkp));
-                let mut kern = self.plain_k_kernel(k, kp);
-                if let Some(rsh) = &self.rsh {
-                    let (c_full, c_lr) = rsh.coefficients();
-                    kern.mapv_inplace(|z| z * c_full);
-                    if let Some(lr) = &rsh.lr {
-                        kern.scaled_add(C64::new(c_lr, 0.0), &lr.plain_k_kernel(k, kp));
-                    }
-                }
+                let kern = self.mixed_k_kernel(k, kp);
                 kk.push(kern);
             }
         }
@@ -1918,21 +1911,7 @@ impl KRsGdf {
         }
         self.check_exchange_scratch()?;
         self.add_k_blocks(dm, k)?;
-        if let Some(rsh) = &self.rsh {
-            // K = c_full K[1/r] + c_lr K[erf(ωr)/r] (module `klr` doc).
-            let (c_full, c_lr) = rsh.coefficients();
-            for kx in k.iter_mut() {
-                kx.mapv_inplace(|z| z * c_full);
-            }
-            if let Some(lr) = rsh.lr.as_ref().filter(|_| c_lr != 0.0) {
-                let mut kl = vec![Array2::<C64>::zeros((n, n)); nk];
-                lr.check_exchange_scratch()?;
-                lr.add_k_blocks(dm, &mut kl)?;
-                for (kx, kb) in k.iter_mut().zip(&kl) {
-                    kx.scaled_add(C64::new(c_lr, 0.0), kb);
-                }
-            }
-        }
+        self.mix_rsh_exchange(dm, k)?;
         if madelung != 0.0 {
             for (kk, kx) in k.iter_mut().enumerate() {
                 let s = &self.s[kk];

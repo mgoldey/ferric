@@ -173,3 +173,98 @@ fn unsupported_kpoint_ks_combinations_are_refused_by_name() {
         "opt-hse: {e}"
     );
 }
+
+/// Library energy of `functional` on the RS-GDF J/K (cc-pVDZ-RI aux), the
+/// same cell, mesh, grid and hcore as [`library_energy`].
+fn library_energy_rsgdf(functional: &str) -> f64 {
+    use ferric_pbc::KJkKind;
+    let xyz = workspace_root().join("testdata/molecules/h2.xyz");
+    let mol = Molecule::load_xyz_with_charge(xyz.to_str().unwrap(), 0, 1).unwrap();
+    let bs = basis::bundled("sto-3g").unwrap();
+    let a = A_BOHR;
+    let cell = Cell::new(mol, [[a, 0.0, 0.0], [0.0, a, 0.0], [0.0, 0.0, a]]).unwrap();
+    let prep = PreparedBasis::new(cell.mol(), &bs).unwrap();
+    let aux = PreparedBasis::new(cell.mol(), &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+    let mesh = KPointMesh::gamma_centred(&cell, [1, 1, 2]).unwrap();
+    let mut c = KRksConfig::new(&cell, ExxDiv::Ewald, functional);
+    c.krhf.jk = KJkKind::RsGdf;
+    c.krhf.scf.max_iter = 200;
+    c.krhf.scf.energy_conv = 1e-12;
+    c.krhf.scf.grad_conv = 1e-9;
+    c.krhf.hcore = PeriodicHcoreConfig::with_omega(OMEGA);
+    c.grid = PeriodicGridConfig::with_size(40, 110);
+    solve_krks(&cell, &prep, Some(&aux), &mesh, &c)
+        .unwrap()
+        .scf
+        .energy
+}
+
+const RSGDF_CELL: &str = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"";
+
+/// The CLI range-separated hybrid on `jk = "rsgdf"` is the library
+/// `solve_krks` on the same J/K (the SR column rotation of the CLI's
+/// hcore/fit matches the library's default to the screening precision, so the
+/// bar is 1e-8, not bits); the mixed Madelung constant is what the log reports.
+#[test]
+fn cli_kpoint_rsh_rsgdf_equals_library_solve_krks() {
+    for (tag, name) in [("hse", "HSE06"), ("cam", "HYB_GGA_XC_CAM_B3LYP")] {
+        let dft = format!("[dft]\nfunctional = \"{name}\"");
+        let toml = input(&format!("rsgdf-{tag}"), "ksdft", 1, &dft, RSGDF_CELL);
+        let out = run(&toml);
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(
+            out.status.success(),
+            "{tag}:\n{stdout}\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let cli = logged_energy(&toml);
+        let lib = library_energy_rsgdf(name);
+        assert!(
+            (cli - lib).abs() < 1e-8,
+            "{tag}: CLI {cli:.12} vs library {lib:.12}"
+        );
+        // The Madelung line carries the MIXED constant, not the full-Coulomb one.
+        let plain = library_energy_rsgdf("PBE0");
+        assert!((cli - plain).abs() > 1e-4, "{tag}: RSH equals PBE0?");
+        let line = stdout
+            .lines()
+            .find(|l| l.trim_start().starts_with("madelung"))
+            .unwrap_or_else(|| panic!("{tag}: no madelung line:\n{stdout}"));
+        let full = 0.451_460_452_613; // PySCF madelung(cell, 1x1x2 kpts), H2 a = 4 (pbc_krsh.rs)
+        let printed: f64 = line
+            .split('=')
+            .nth(1)
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(
+            (printed - full).abs() > 1e-3,
+            "{tag}: printed madelung {printed} is the full-Coulomb constant"
+        );
+    }
+}
+
+/// With `jk = "rsgdf"` the range-separated energy is accepted, but the rest of
+/// the surface stays refused by name: dense J/K (above), open-shell routes and
+/// `task = "optimize"` (forces/stress are not implemented).
+#[test]
+fn cli_kpoint_rsh_rsgdf_keeps_forces_and_open_shell_refused() {
+    let hse = "[dft]\nfunctional = \"HSE06\"";
+    let e = refusal("rsgdf-uks", "ksdft", 3, hse, RSGDF_CELL);
+    assert!(e.contains("range-separated"), "{e}");
+    let toml = input("rsgdf-opt", "ksdft", 1, hse, RSGDF_CELL);
+    let src = std::fs::read_to_string(&toml)
+        .unwrap()
+        .replace("kind = \"ksdft\"", "task = \"optimize\"\nkind = \"ksdft\"");
+    std::fs::write(&toml, src).unwrap();
+    let out = run(&toml);
+    assert!(!out.status.success(), "rsgdf-opt must be refused");
+    let e = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        e.contains("method.task = \"optimize\"") && e.contains("range-separated"),
+        "rsgdf-opt: {e}"
+    );
+}

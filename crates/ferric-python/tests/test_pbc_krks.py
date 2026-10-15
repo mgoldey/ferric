@@ -64,3 +64,38 @@ def test_unsupported_combinations_are_refused_by_name(h2, h_atom, basis):
         ferric.run_rks_kpts(
             h2, lat, basis, "PBE0", (1, 1, 2), with_gradient=True, with_stress=True
         )
+
+
+# CLI/library pin of the same input (H2/STO-3G, a = 4 Bohr, 1x1x2, omega 0.8,
+# grid 40x110, cc-pVDZ-RI aux); the library anchors are in
+# crates/ferric-pbc/tests/pbc_krsh_rsgdf.rs.
+RSGDF = {"jk": "rsgdf", "auxbasis": "cc-pvdz-ri"}
+HSE06_RSGDF_112 = -1.3484826395
+
+
+def test_range_separated_hybrid_runs_on_rsgdf_energy_only(h2, h_atom, basis):
+    lat = _cubic()
+    r = ferric.run_rks_kpts(
+        h2, lat, basis, "HSE06", (1, 1, 2), omega=OMEGA, **RSGDF, **GRID
+    )
+    assert r.converged
+    assert abs(r.energy - HSE06_RSGDF_112) < 1e-8, f"{r.energy!r}"
+    # The reported constant is the MIXED one that was applied, not the
+    # full-Coulomb mesh constant of a global hybrid on the same mesh.
+    p = ferric.run_rks_kpts(
+        h2, lat, basis, "PBE0", (1, 1, 2), omega=OMEGA, **RSGDF, **GRID
+    )
+    assert abs(r.energy - p.energy) > 1e-4
+    assert abs(r.madelung - p.madelung) > 1e-2
+    # Dense J/K, derivatives and the open-shell routes stay refused by name.
+    with pytest.raises(ValueError, match="range-separated"):
+        ferric.run_rks_kpts(h2, lat, basis, "HSE06", (1, 1, 2), omega=OMEGA, **GRID)
+    for kw in ({"with_gradient": True}, {"with_stress": True}):
+        with pytest.raises(ValueError, match="range-separated"):
+            ferric.run_rks_kpts(
+                h2, lat, basis, "HSE06", (1, 1, 2), omega=OMEGA, **RSGDF, **GRID, **kw
+            )
+    with pytest.raises(ValueError, match="range-separated"):
+        ferric.run_uks_kpts(
+            h_atom, lat, basis, "HSE06", (1, 1, 2), omega=OMEGA, **RSGDF, **GRID
+        )
