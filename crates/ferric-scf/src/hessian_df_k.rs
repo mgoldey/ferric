@@ -338,6 +338,12 @@ pub struct UhfDfMutants {
     /// The CPHF kernel's Coulomb part is built from the α response density
     /// only (not the total).
     pub cphf_j_from_alpha: bool,
+    /// The β exchange channel (skeleton and `K^x`) uses the α occupied factor
+    /// (for ROHF: the open orbitals counted in the β channel).
+    pub beta_factor_is_alpha: bool,
+    /// The CPHF kernel applies each spin's exchange to the TOTAL response
+    /// density `D1_α + D1_β` instead of that spin's own.
+    pub cphf_k_from_total: bool,
 }
 
 /// Exchange weight of one UHF spin channel: `E_K = −½ Σ_σ tr(D_σ K[D_σ])`,
