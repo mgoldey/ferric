@@ -705,8 +705,15 @@ const STRESS_FD_BAR: f64 = 2e-7;
 /// Smallest movement a production-wired rotation mutant must make.
 const MUTANT_FLOOR: f64 = 1e-6;
 /// Rotated vs unrotated derivative of the SAME energy and density (the walks
-/// are the same function up to the screening, 1e-14 here).
-const ROT_VS_OFF_BAR: f64 = 1e-8;
+/// are the same function up to the screening). Dense AFT source, hcore screen
+/// 1e-14: MEASURED force 9.6e-15, stress 4.8e-13 (bar 20x above). RS-GDF
+/// source at the default fit screen: MEASURED force 3.3e-10, stress 1.2e-7,
+/// the screen-sized floor documented in `pbc_sr_rotation_kderiv.rs` (its
+/// `D_BAR` 1e-7); the bar is 4x above, and this comparison is informational
+/// there (a rotation defect moves the total by >= 5e-2, and the FD anchor
+/// next to it is the discriminating one).
+const ROT_VS_OFF_BAR: f64 = 1e-11;
+const ROT_VS_OFF_FIT_BAR: f64 = 5e-7;
 
 struct Run {
     ks: KSys,
@@ -833,7 +840,7 @@ fn sc_miss(gk: &Array2<f64>, gsc: &Array2<f64>) -> f64 {
 /// on 3x the columns). A rotated-walk weight that mixed images, or an ECP
 /// weight that picked up T, would not reproduce it on the NON-TRIM mesh.
 #[test]
-#[ignore = "slow (~2 min release): rotated HI 1x1x3 k SCF + 3-cell Gamma supercell force/stress"]
+#[ignore = "slow (~29 min release at load 10): rotated HI 1x1x3 k SCF + 3-cell Gamma supercell hcore/dense AFT/force/stress"]
 fn rotated_ecp_1x1x3_force_and_stress_are_the_supercell_ones_per_cell() {
     let bs = rot_basis();
     let r = run(hi_cell(&MOVED, &bs), &bs, [1, 1, 3], on());
@@ -931,7 +938,7 @@ fn eps_cell(cell: &Cell, i: usize, j: usize, h: f64) -> Cell {
 /// fit pair, so with the dense source they cannot move anything: they are
 /// asserted to leave the dense total UNCHANGED (a no-op by construction).
 #[test]
-#[ignore = "slow (~4 min release): 1 + 10 rotated k pipelines (hcore + dense AFT + SCF), 14 mutant evaluations"]
+#[ignore = "slow (~90 min release on a box at load 10; each ECP stress evaluation is minutes): 1 + 10 rotated k pipelines, 2 analytic pipelines, 12 mutant evaluations"]
 fn rotated_ecp_force_and_stress_match_fd_of_the_rotated_k_energy() {
     let bs = rot_basis();
     let n = [1, 1, 3];
@@ -984,7 +991,7 @@ fn rotated_ecp_force_and_stress_match_fd_of_the_rotated_k_energy() {
         max_mat(&s.parts.ecp, &so.parts.ecp),
     );
     eprintln!("ECP part rotated vs unrotated run: force {e_f:.2e}, stress {e_s:.2e}");
-    assert!(e_f < 1e-8 && e_s < 1e-8);
+    assert!(e_f < 1e-12 && e_s < 1e-12);
     for m in FORCE_MUTANTS {
         let g = r.force(Some(m), zeta);
         let moved_total = grad_miss(&g.grad, &f.grad);
@@ -1003,21 +1010,20 @@ fn rotated_ecp_force_and_stress_match_fd_of_the_rotated_k_energy() {
         }
     }
     for m in STRESS_MUTANTS {
+        // The fit-only stress mutants are no-ops with a dense source (measured
+        // 0.00e0 for both the force and the stress; the force loop above
+        // asserts it, and the RS-GDF test below exercises them where they
+        // act); an ECP stress evaluation costs minutes, so they are skipped.
+        if matches!(
+            m,
+            KStressMutation::RotFitWrongResidue | KStressMutation::RotSwapPair
+        ) {
+            continue;
+        }
         let g = r.stress(Some(m), zeta);
         let moved_total = max_mat(&g.de_deps, &s.de_deps);
         eprintln!("  stress mutant {m:?}: total moves {moved_total:.2e}");
-        let fit_only = matches!(
-            m,
-            KStressMutation::RotFitWrongResidue | KStressMutation::RotSwapPair
-        );
-        if fit_only {
-            assert!(
-                moved_total < 1e-12,
-                "{m:?} moved a dense total {moved_total:e}"
-            );
-        } else {
-            assert!(moved_total > MUTANT_FLOOR, "{m:?} escaped: {moved_total:e}");
-        }
+        assert!(moved_total > MUTANT_FLOOR, "{m:?} escaped: {moved_total:e}");
     }
 }
 
@@ -1124,7 +1130,7 @@ fn k_fit_energy(cell: &Cell, bs: &BasisSet, n: [usize; 3], rot: SrColumnRotation
 /// of BOTH walks equal the energy's, and the rotated analytic equals the
 /// unrotated RS-GDF analytic of the same energy to the screen.
 #[test]
-#[ignore = "slow (~6 min release): 1 + 8 rotated RS-GDF k pipelines, HI 1x1x3, + one unrotated pipeline"]
+#[ignore = "slow (~3 min release, 6 threads, quiet box): 1 + 8 rotated RS-GDF k pipelines, HI 1x1x3, + one unrotated pipeline"]
 fn rotated_ecp_rsgdf_force_and_stress_match_fd_of_the_rotated_fitted_energy() {
     let bs = rot_basis();
     let n = [1, 1, 3];
@@ -1205,7 +1211,7 @@ fn rotated_ecp_rsgdf_force_and_stress_match_fd_of_the_rotated_fitted_energy() {
          unrotated analytic: force {d_f:.2e}, stress {d_s:.2e}; fit columns {fit_cols}"
     );
     assert!(worst_f < FORCE_FD_BAR && worst_s < STRESS_FD_BAR);
-    assert!(d_f < ROT_VS_OFF_BAR && d_s < ROT_VS_OFF_BAR);
+    assert!(d_f < ROT_VS_OFF_FIT_BAR && d_s < ROT_VS_OFF_FIT_BAR);
     // Mutants through the fit: RotFitWrongResidue and RotSwapPair act here.
     for m in [
         KStressMutation::RotFitWrongResidue,

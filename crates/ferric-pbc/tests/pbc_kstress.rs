@@ -3924,7 +3924,7 @@ fn ks_uhf_zeta(
 /// k-specific mutants and the Gamma-style term mutants all miss it. S1 only
 /// (the supercell has 24 AOs).
 #[test]
-#[ignore = "slow (~4 min release): 6-atom s+p supercell Gamma UHF stress x2 + k stress mutants"]
+#[ignore = "slow (~12 min release at load 10): 6-atom s+p supercell Gamma UHF stress x2 + 26 k stress mutant evaluations"]
 fn open_shell_p_1x1x3_uhf_stress_is_the_supercell_stress_per_cell() {
     let bs = sp_basis_h();
     let sys = s1_h2_triplet();
@@ -4012,7 +4012,7 @@ fn open_shell_p_1x1x3_uhf_stress_is_the_supercell_stress_per_cell() {
 /// doublet's own measured floor, same h^2 truncation); the s+p AO-derivative
 /// floor of libint2 is invisible under it (cf. K_FD_BAR_P).
 #[test]
-#[ignore = "slow (~3 min release): 36 strained dense-AFT builds + 72 k-UHF SCFs (h and 2h), s+p H2 triplet"]
+#[ignore = "slow (~5.5 min release at load 10): 36 strained dense-AFT builds + 72 k-UHF SCFs (h and 2h), s+p H2 triplet"]
 fn open_shell_p_h2_triplet_1x1x3_uhf_stress_matches_fd_all_nine() {
     let bs = sp_basis_h();
     let sys = s1_h2_triplet();
@@ -4058,7 +4058,7 @@ fn open_shell_p_h2_triplet_1x1x3_uhf_stress_matches_fd_all_nine() {
 /// k-UHF stress vs central FD at h = 1e-4 on the 1x1x3 mesh, exxdiv none and
 /// ewald.
 #[test]
-#[ignore = "slow (~5 min release): 6 strained dense-AFT builds + 12 k-UHF SCFs on H4 s+p"]
+#[ignore = "slow (~20 min release at load 10): 6 strained dense-AFT builds + 12 k-UHF SCFs on H4 s+p"]
 fn open_shell_p_h4_triplet_1x1x3_uhf_stress_matches_fd_zz_xz_xx() {
     let bs = sp_basis_h();
     let sys = s2_h4_triplet();

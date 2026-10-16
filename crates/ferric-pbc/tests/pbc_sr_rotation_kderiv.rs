@@ -1171,7 +1171,7 @@ fn triclinic_one_point_mesh_rotated_force_and_stress_are_the_gamma_ones() {
 /// (d) on the triclinic cell, non-TRIM 1x1x3 mesh == supercell / N with the
 /// rotation on both sides, both exxdiv.
 #[test]
-#[ignore = "slow: Gamma RS-GDF force + stress on the 6-atom triclinic supercell, two exxdiv"]
+#[ignore = "slow (the three tests total 650 s release at load 10): Gamma RS-GDF force + stress on the 6-atom triclinic supercell, two exxdiv"]
 fn triclinic_rotated_1x1x3_mesh_force_and_stress_are_the_gamma_supercell() {
     let (hp, gp) = (1e-9, 1e-10);
     let n = [1, 1, 3];
@@ -1190,7 +1190,7 @@ fn triclinic_rotated_1x1x3_mesh_force_and_stress_are_the_gamma_supercell() {
 /// (d) on a 2x2x1 mesh (triclinic and cubic cells): k mesh == the explicit
 /// 2x2x1 supercell / N, rotation on both sides, exxdiv none.
 #[test]
-#[ignore = "slow: Gamma RS-GDF force + stress on the 8-atom supercell, triclinic and cubic"]
+#[ignore = "slow (the three tests total 650 s release at load 10): Gamma RS-GDF force + stress on the 8-atom supercell, triclinic and cubic"]
 fn rotated_2x2x1_mesh_force_and_stress_are_the_gamma_supercell() {
     let (hp, gp) = (1e-9, 1e-10);
     let n = [2, 2, 1];
@@ -1229,7 +1229,7 @@ fn displaced(cell: &Cell, a: usize, x: usize, h: f64) -> Cell {
 /// TRIM-mesh blind spot (`RotSwapPair`, `RotFitWrongResidue` act through the
 /// fit pair/bin order) asserted at its measured size, not hidden.
 #[test]
-#[ignore = "slow (~10 min release): 1 + 16 rotated 2x2x1 triclinic k pipelines, 14 mutant evaluations"]
+#[ignore = "slow (the three tests total 650 s release at load 10): 1 + 16 rotated 2x2x1 triclinic k pipelines, 14 mutant evaluations"]
 fn rotated_k_force_and_stress_match_fd_on_2x2x1_triclinic() {
     let n = [2, 2, 1];
     let cell = cell_tri();
