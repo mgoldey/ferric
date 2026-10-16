@@ -42,7 +42,7 @@ fn field(n: usize) -> Vec<PointCharge> {
 }
 
 #[test]
-fn converged_energy_is_independent_of_the_charge_order() {
+fn converged_energy_is_independent_of_the_charge_order_at_tight_thresholds() {
     let mol = Molecule::parse_xyz(
         "3\nwater\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n",
         0,
@@ -98,5 +98,85 @@ fn converged_energy_is_independent_of_the_charge_order() {
     assert!(
         dropped > 1e-6,
         "a dropped charge ({dropped:e}) must be visible against the 1e-9 bar"
+    );
+}
+
+/// The path that produced #444: REAL default thresholds (`energy_conv` 1e-3, `density_conv` 1e-6),
+/// where the closed-shell incremental Fock update is ON (`direct_jk::closed_shell_incremental_enabled`
+/// is asserted, so the test cannot silently run the gated-off path). The tight-threshold test above
+/// uses 1e-10 / 1e-8, which #417 switches the update OFF for. Iteration counts are still not asserted.
+#[test]
+fn converged_energy_is_independent_of_the_charge_order_at_default_thresholds() {
+    let mol = Molecule::parse_xyz(
+        "3\nwater\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n",
+        0,
+        1,
+    )
+    .unwrap();
+    let bs = basis::bundled("6-31g").unwrap();
+    let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    let run = |charges: Vec<PointCharge>| {
+        let cfg = RhfConfig {
+            external_potential: Some(ExternalPotential {
+                point_charges: charges,
+                smeared_charges: Vec::new(),
+                field: None,
+            }),
+            ..Default::default()
+        };
+        assert!(
+            ferric_scf::direct_jk::closed_shell_incremental_enabled(
+                cfg.energy_conv,
+                cfg.density_conv,
+                cfg.integral_thresh
+            ),
+            "the default thresholds must leave the incremental Fock update on (is FERRIC_SCF_INCREMENTAL set?)"
+        );
+        solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap()
+    };
+    let base_charges = field(300);
+    let base = run(base_charges.clone());
+    assert!(base.converged);
+    let mut worst = 0.0_f64;
+    let mut orders = Vec::new();
+    let mut rev = base_charges.clone();
+    rev.reverse();
+    orders.push(("reversed", rev));
+    let mut rot = base_charges.clone();
+    rot.rotate_left(97);
+    orders.push(("rotated", rot));
+    let mut shuf = base_charges.clone();
+    let mut s = 987654321_u64;
+    for i in (1..shuf.len()).rev() {
+        s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        shuf.swap(i, (s >> 33) as usize % (i + 1));
+    }
+    orders.push(("shuffled", shuf));
+    for (name, p) in orders {
+        let r = run(p);
+        let d = (r.energy - base.energy).abs();
+        eprintln!(
+            "default thresholds, {name}: converged {} iters {} (base {}) dE {d:.2e}",
+            r.converged, r.iterations, base.iterations
+        );
+        assert!(r.converged, "{name} order did not converge");
+        worst = worst.max(d);
+    }
+    assert!(
+        worst < 1e-10,
+        "order moved the default-threshold energy by {worst:e}"
+    );
+    // Opposite control: dropping one charge moves the energy far above that bar.
+    let mut fewer = base_charges;
+    fewer.pop();
+    let dropped = (run(fewer).energy - base.energy).abs();
+    eprintln!("default thresholds, one charge dropped: dE {dropped:.2e}");
+    assert!(
+        dropped > 1e3 * worst,
+        "a dropped charge ({dropped:e}) is not separated from the order effect ({worst:e})"
     );
 }

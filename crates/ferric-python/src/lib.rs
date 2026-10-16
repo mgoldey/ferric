@@ -830,14 +830,21 @@ fn warn_rhf_not_converged(py: Python<'_>, r: &ferric_scf::result::ScfResult, con
 ///   point_charges   list of (q, x, y, z) classical point charges (Hartree
 ///                   atomic units; coordinates in Bohr) added to the one-electron
 ///                   Hamiltonian and nuclear repulsion. None/empty = no charges.
-///                   The ORDER of the list does not change the answer beyond
-///                   roundoff: reordering 6458 charges moved the potential
-///                   matrix by 3e-15..1e-14 relative and the converged energy
-///                   by ~1e-12 Ha. On a hard field it can change how many
-///                   iterations the SCF needs when the closed-shell incremental
-///                   Fock update is on (it is off for a tight energy_conv or
-///                   density_conv, where the count was order-independent);
-///                   ferric does not reorder the list.
+///                   The ORDER of the list changes the one-electron potential
+///                   only by summation roundoff (3e-15..1e-14 relative on 6458
+///                   charges), and ferric does not reorder it. The converged
+///                   energy moves by <= ~6e-12 Ha. A different SCF iteration
+///                   count (64 vs 111) was seen on rc7 for a 6458-charge field
+///                   at energy_conv=1e-10; on main it appears only when the
+///                   closed-shell incremental Fock update is forced on
+///                   (FERRIC_SCF_INCREMENTAL=1) below its noise floor, where
+///                   the order also moves the energy by a few 1e-9 Ha (up to
+///                   8e-9 measured). Main turns
+///                   that update off when energy_conv < 1e4*integral_thresh or
+///                   density_conv < 1e3*integral_thresh (1e-8 / 1e-9 at the
+///                   default integral_thresh), and the energy_conv warning
+///                   names the floor. Applies to run_uhf, run_rohf and run_dft
+///                   as well.
 ///   smeared_charges list of (q, x, y, z, width) Gaussian-smeared classical
 ///                   charges (Hartree atomic units; coordinates and width in
 ///                   Bohr; width = 0 is a point charge, but use

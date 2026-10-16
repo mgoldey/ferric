@@ -107,6 +107,8 @@ from the nuclear charges (ECP cores removed, about 5 % for all-electron
 molecules, 3.7x high for an iodine ECP case); the point-charge or field energy
 of an embedding is not included.
 
+**A symptom of the same floor:** with a large point-charge field (`point_charges=`, also `run_uhf`, `run_rohf`, `run_dft`) the number of SCF iterations can differ between two orderings of the same charges, because a change of a few ulps in the one-electron potential decides which iteration the `dE` test happens to pass. On rc7 a 6458-charge field took 64 iterations nearest-first and 111 in file order at `energy_conv=1e-10`. The potential itself changes only by roundoff (3e-15 to 1e-14 relative) and the converged energy by about 1e-12 Ha. Main turns the incremental update off when `energy_conv < 1e4 * integral_thresh` or `density_conv < 1e3 * integral_thresh` (1e-8 and 1e-9 at the default `integral_thresh`), where all orders took 20 iterations; at the default `energy_conv` and `density_conv` every order takes the same number. ferric does not reorder the charges.
+
 **Do:** tighten `density_conv`, not `energy_conv`.
 
 ## Density fitting is on in `run_dft` but off in `run_rhf`
