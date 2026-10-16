@@ -127,9 +127,16 @@ fn block(
     let prep = prep_of(shell.clone());
     let site = site();
     let mut eng = Engine::new_3center(op, &prep, &site.prep, precision).expect("engine");
-    eng.compute_eri3_shifted(&prep, &site.prep, site.site_shell[0], 0, 0, [m, [0.0; 3], l])
-        .expect("compute")
-        .map(<[f64]>::to_vec)
+    eng.compute_eri3_shifted(
+        &prep,
+        &site.prep,
+        site.site_shell[0],
+        0,
+        0,
+        [m, [0.0; 3], l],
+    )
+    .expect("compute")
+    .map(<[f64]>::to_vec)
 }
 
 /// Closed form of `(P | mu nu)` for a contracted s shell and a Gaussian site:
@@ -152,8 +159,8 @@ fn closed_form(shell: &Shell, erfc_omega: Option<f64>, m: [f64; 3], l: [f64; 3])
             let g = ap + bq;
             let k = (-(ap * bq / g) * ab2).exp();
             let q: Vec<f64> = (0..3).map(|i| (ap * a[i] + bq * b[i]) / g).collect();
-            let r = ((pc[0] - q[0]).powi(2) + (pc[1] - q[1]).powi(2) + (pc[2] - q[2]).powi(2))
-                .sqrt();
+            let r =
+                ((pc[0] - q[0]).powi(2) + (pc[1] - q[1]).powi(2) + (pc[2] - q[2]).powi(2)).sqrt();
             // Two Gaussian charges: effective exponent g z / (g + z).
             let ge = g * SITE_ZETA / (g + SITE_ZETA);
             let v = match erfc_omega {
@@ -187,7 +194,10 @@ fn closed_form_matches_the_engine_at_a_generic_geometry() {
         let got = block(&shell, op, 1e-20, m, l).expect("not screened")[0];
         let want = closed_form(&shell, om, m, l);
         let rel = (got - want).abs() / want.abs();
-        assert!(rel < 1e-10, "{om:?}: engine {got:e} vs closed form {want:e}");
+        assert!(
+            rel < 1e-10,
+            "{om:?}: engine {got:e} vs closed form {want:e}"
+        );
     }
 }
 
@@ -196,12 +206,14 @@ fn closed_form_matches_the_engine_at_a_generic_geometry() {
 #[test]
 fn t_crit_hit_matches_the_closed_form() {
     let shell = contracted_i_s();
-    // Long-range kernels keep the value well above rounding noise.
+    // Long-range kernels keep the value above rounding noise. The whole block
+    // is ~1e-17 (the site integrates to ~1e-12), so use the hcore engine
+    // precision: at 1e-20 primitive screening would drop ~3e-7 of it.
     for (op, om) in [
         (Operator::coulomb(), None),
         (Operator::erfc(0.1), Some(0.1)),
     ] {
-        let got = block(&shell, op, 1e-20, M_SHIFT, L_SHIFT).expect("not screened")[0];
+        let got = block(&shell, op, f64::MIN_POSITIVE, M_SHIFT, L_SHIFT).expect("not screened")[0];
         let want = closed_form(&shell, om, M_SHIFT, L_SHIFT);
         let rel = (got - want).abs() / want.abs();
         assert!(
