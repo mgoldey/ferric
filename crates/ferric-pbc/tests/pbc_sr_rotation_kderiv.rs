@@ -32,7 +32,9 @@
 //!     an unrotated build, a rotation mutant in the config.
 //!
 //! Artifact hypothesis, stated before measuring. Correct: (a) at the
-//! screening precision (~1e-13..1e-11) and shrinking with it; (b) at the
+//! screening precision (measured at the default screen 1e-9/1e-10: force
+//! 1.5e-10, stress 6.7e-9; ~1e-13..1e-11 at the 1e-14 screens) and shrinking
+//! with it; (b) at the
 //! FD floor. Forward-transform mutants: O(|T_ks|) = O(0.1..1) on the rotated
 //! columns, independent of the precision. `RotOff` is NOT O(1): rotated and
 //! unrotated walks differ only at the screening precision, so at the default
@@ -331,6 +333,18 @@ fn splits() -> [Option<RangeSplit>; 2] {
 }
 
 /// (a): rotated vs unrotated derivative walks (same energy and density).
+///
+/// MEASURED on the fixed build (H2, cc-pVDZ / cc-pVDZ-ri, `DEFAULT_PREC`
+/// hcore 1e-9 / fit 1e-10, RS-GDF): force total 1.5e-10 (1x1x3) / 1.6e-10
+/// (split 1x1x2), stress total 6.5e-9 / 6.7e-9, dominated by the hcore part.
+/// This IS the screening floor of these fixtures (it scales with the screen),
+/// not an artifact of the libint2 Boys table-edge read (#433, fixed in #437):
+/// the survey in `libint2_overrides/README.md` found the #421 ECP k-point test
+/// to be the only existing test that evaluates a Boys argument of exactly
+/// 117.0 (this file was not among them; not re-instrumented here). The bar is
+/// 15x above the largest measured value (stress 6.7e-9) and a rotation
+/// defect moves these terms by O(0.1..1) (>= 1e6 x the bar), so it is
+/// derived from the screen, not from a defective run.
 const D_BAR: f64 = 1e-7;
 
 /// (a) EXACTNESS ANCHOR, forces and stress, per part. Prints the measured
