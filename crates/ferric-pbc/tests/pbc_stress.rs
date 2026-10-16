@@ -87,9 +87,10 @@ const FD_BAR: f64 = 1e-7;
 const FD_BAR_OPEN: f64 = 2e-7;
 const MUTANT_BAR: f64 = 1e-3;
 const ANTISYM_BAR: f64 = 1e-10;
-/// Triclinic s+p: the measured libint2 p-shell floor is 5.4e-8 at the
-/// default nucleus exponent (see the triclinic test).
-const TRI_ANTISYM_BAR: f64 = 5e-7;
+/// Triclinic s+p antisymmetric part of the stress at the default nucleus
+/// exponent. MEASURED 2.26e-11 / 2.43e-11 (none / ewald); 5.4e-8 before #434,
+/// when the SR derivative's rounding noise set it. Bar 4x the measurement.
+const TRI_ANTISYM_BAR: f64 = 1e-10;
 /// `dE/dε(ewald) − dE/dε(none)` vs the Madelung part: two independent SCFs
 /// (density_conv 1e-10), so SCF-convergence limited, not roundoff.
 const MADELUNG_ID_BAR: f64 = 1e-9;
@@ -780,20 +781,25 @@ fn triclinic_sp_rhf_stress_matches_fd_with_richardson() {
         let err_h = max_err(&st.de_deps, &fd_h[k]);
         let err_r = max_err(&st.de_deps, &rich);
         eprintln!("tri s+p RHF {exx:?}: FD(h) {err_h:.2e}, Richardson {err_r:.2e}");
-        // Prototype: FD(h = 1e-4) 3.5e-8, Richardson ≤ 1.3e-10. The Rust SR
-        // attraction derivative carries libint2's p-shell / tight-nucleus
-        // floor (forces: 1.85e-7 Ha/Bohr on this cell, bar 5e-7), contracted
-        // here with pair vectors of a few Bohr: PREDICTED ≤ ~1e-6, not yet
-        // measured. Bar 5e-6 sits ≥ 4 decades under every mutant.
-        assert!(err_r < 5e-6, "{exx:?}: Richardson {err_r:e}");
-        assert!(err_h < 5e-6, "{exx:?}: FD(h) {err_h:e}");
-        // HF stress is symmetric exactly; what is left here is libint2's
-        // p-shell SR-derivative floor against the tight Gaussian nucleus, not
-        // a missing term (FD agreement above is unaffected). Measured
-        // 2026-09-25 on this cell (exxdiv none) vs the gradient-only nucleus
-        // exponent: 9.3e-10 (1e8), 9.7e-9 (1e9), 5.4e-8 (1e10, the default),
-        // 1.8e-7 (1e11), 5.7e-6 (1e12). The s-only H2/H3 cells reach 1e-16.
+        // Prototype: FD(h = 1e-4) 3.5e-8, Richardson <= 1.3e-10. MEASURED
+        // 2026-10-16 (default nucleus exponent 1e9): FD(h) 3.55e-8 / 3.21e-8
+        // (none / ewald, the h^2 truncation, as in the prototype), Richardson
+        // 1.57e-9 / 1.58e-9 (the model-nucleus error against the energy's 1e16
+        // nucleus; 7.4e-10 with the derivative at 1e16 too). Before #434 the
+        // SR derivative's coordinate-dependent rounding made these bars 5e-6
+        // (predicted, never measured). Bars: 3x the measurement, 4+ decades
+        // under every mutant.
+        assert!(err_r < 5e-9, "{exx:?}: Richardson {err_r:e}");
+        assert!(err_h < 1e-7, "{exx:?}: FD(h) {err_h:e}");
+        // HF stress is symmetric exactly; what is left here is the SR
+        // derivative's rounding, not a missing term (FD agreement above is
+        // unaffected). Measured (this cell, exxdiv none) vs the gradient-only
+        // nucleus exponent: before #434 9.3e-10 (1e8), 9.7e-9 (1e9), 5.4e-8
+        // (1e10), 1.8e-7 (1e11), 5.7e-6 (1e12); after, 2.3e-11 at 1e9 (the
+        // remaining model-nucleus asymmetry) and 1.4e-13 with the derivative
+        // at 1e16 (independent review). The s-only H2/H3 cells reach 1e-16.
         let a = antisym(&st.de_deps);
+        eprintln!("tri s+p RHF {exx:?}: antisymmetric part {a:.2e}");
         assert!(a < TRI_ANTISYM_BAR, "{exx:?}: antisymmetric part {a:e}");
     }
 }

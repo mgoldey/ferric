@@ -7,8 +7,18 @@
 //! DIAGNOSTIC (`#[ignore]`, prints a table; asserts only harness validity):
 //! is the ~4e-7 big-box ECP force scatter (FINDINGS "ECP periodic force
 //! big-box limit (measured 2026-09-28)") the gradient-only Gaussian-nucleus
-//! exponent floor ([`GRAD_NUCLEUS_EXPONENT`] = 1e9, libint2's p/d-shell
-//! precision on the SR attraction DERIVATIVE; the energy keeps 1e16)?
+//! exponent floor ([`GRAD_NUCLEUS_EXPONENT`] = 1e9, then believed to be
+//! libint2's p/d-shell precision on the SR attraction DERIVATIVE; the energy
+//! keeps 1e16)?
+//!
+//! STATUS (2026-10-16, #434): the hypothesis was right about WHERE (the V_SR
+//! term, rising with the exponent) and wrong about WHY. The rise was
+//! coordinate-dependent rounding in the SR derivative (absolute coordinates
+//! times the zeta-sized exponents), not a libint2 precision limit; each
+//! triplet is now evaluated in the frame of its nucleus and the HI/LANL2DZ
+//! a = 24 scan collapsed from 8.5e-8 to 9.9e-11 (independent review). What
+//! the scan shows now is the model-nucleus error (falls as 1/zeta). The text
+//! below is the original design and predictions, kept as written.
 //!
 //! Run (release, serially, one BLAS thread):
 //!

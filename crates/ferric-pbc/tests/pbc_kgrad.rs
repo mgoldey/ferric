@@ -18,14 +18,16 @@
 //!     prototyped at k — this anchor is what pins its derivative, since the
 //!     supercell side runs the Gamma `h` derivative of `crate::grad`.
 //!     Meshes: H2 1×1×3 and 2×2×2 RHF, H3 1×1×3 UHF (2,1), triclinic s+p
-//!     tri2 1×1×3 RHF (`#[ignore]`d, cost unmeasured). tri2 runs at a
-//!     gradient nucleus exponent of 1e8 on both sides and the looser
-//!     `SC_BAR_P` (p-shell SR-derivative precision floor, see there).
+//!     tri2 1×1×3 RHF (`#[ignore]`d, 135 s release). tri2 runs at the default
+//!     gradient nucleus exponent like the s-only cells and the same `SC_BAR`:
+//!     measured miss 1.3e-14 (before the nucleus-frame SR derivative of #434
+//!     it was 1.06e-9 at 1e8 and 2.5e-8 at the default, which is why this
+//!     case used to be pinned at 1e8 with a looser bar).
 //! (3) Analytic vs central FD (h = 1e-4) of ferric's OWN k energy, H2 1×1×3,
 //!     both exxdiv (dense and RS-GDF). The prototype's floor is the h²
 //!     truncation (−2.99e-9 on (0,z), Richardson 3e-12) with a pure-AFT h;
 //!     the Rust Ewald-split h adds the smeared-nucleus derivative
-//!     (`GRAD_NUCLEUS_EXPONENT` 1e10 vs the energy's 1e16), so the bar is
+//!     (`GRAD_NUCLEUS_EXPONENT` 1e9 vs the energy's 1e16), so the bar is
 //!     the Rust Gamma FD bar 1e-7 (`pbc_grad.rs`), residuals printed.
 //! (4) ΣF ≤ 1e-10; F(ewald) ≡ F(none) on one density ≤ 1e-11; closed-shell
 //!     kUHF(D/2, D/2) ≡ kRHF(D) ≤ 1e-12.
@@ -94,21 +96,6 @@ const FD_BAR: f64 = 1e-7;
 const GAMMA_BAR: f64 = 1e-12;
 const GAMMA_BAR_GDF: f64 = 1e-12;
 const SC_BAR: f64 = 1e-12;
-/// Supercell-anchor bar for the p-shell triclinic tri2 1×1×3 case, run at
-/// `SC_P_NUCLEUS_EXPONENT` on BOTH sides (k `KGradConfig` and Gamma
-/// `GammaGradConfig`). With p shells the miss is libint2's SR
-/// attraction-derivative precision floor, not a formula error: the k-mesh
-/// and the supercell evaluate that derivative at different image offsets,
-/// so the integral-precision error does not cancel as it does for s-only
-/// cells (≤ 1e-14). Measured miss vs the gradient nucleus exponent
-/// (2026-09-27, tri2 1×1×3): 1.06e-9 at 1e8, 2.50e-8 at 1e9 (the default
-/// `GRAD_NUCLEUS_EXPONENT`), 1.97e-7 at 1e10 — it tracks the exponent. The
-/// bar sits between the 1e8 floor (1.06e-9) and the smallest mutant miss
-/// (≥ `MUTANT_BAR` = 1e-4).
-const SC_BAR_P: f64 = 5e-9;
-/// Gradient-only Gaussian nucleus exponent for the p-shell supercell anchor
-/// (the smallest measured exponent, hence the lowest measured floor).
-const SC_P_NUCLEUS_EXPONENT: f64 = 1e8;
 const SC_BAR_GDF: f64 = 1e-11;
 const NET_FORCE_BAR: f64 = 1e-10;
 const EWALD_NONE_BAR: f64 = 1e-11;
@@ -718,7 +705,7 @@ fn one_point_mesh_rsgdf_is_the_gamma_rsgdf_force() {
 /// exxdiv, at the unfolded k density; ΣF; ewald ≡ none. Returns the setup,
 /// SCF and the supercell reference forces `[none, ewald]` for the mutants.
 /// `nuc` is the gradient nucleus exponent used on BOTH sides (`None` =
-/// default); `bar` is the supercell-miss bar (`SC_BAR`, or `SC_BAR_P` for
+/// default); `bar` is the supercell-miss bar (`SC_BAR`; was a looser one for
 /// the p-shell case). Pass the same `nuc`/`bar` to `assert_rhf_mutants_fail`.
 fn rhf_supercell_anchor(
     name: &str,
@@ -855,19 +842,16 @@ fn h2_2x2x2_force_is_the_supercell_force_and_trim_mesh_is_blind_to_phase_mutants
 #[test]
 #[ignore = "slow (unmeasured): 6-atom s+p supercell SR sum at 1e-14; run with --ignored"]
 fn triclinic_sp_1x1x3_force_is_the_supercell_force_on_one_copy() {
-    // p shells: SR-derivative precision floor tracks the gradient nucleus
-    // exponent (see SC_BAR_P), so both sides run at 1e8 and the mutants are
-    // compared against references computed at that same exponent.
-    let nuc = Some(SC_P_NUCLEUS_EXPONENT);
+    let nuc = None;
     let (ks, eri, scf, refs) = rhf_supercell_anchor(
         "tri2 s+p",
         tri2_cell(),
         &sp_basis_h(),
         [1, 1, 3],
         nuc,
-        SC_BAR_P,
+        SC_BAR,
     );
-    assert_rhf_mutants_fail("tri2 1x1x3", &ks, &eri, &scf, &refs, nuc, SC_BAR_P);
+    assert_rhf_mutants_fail("tri2 1x1x3", &ks, &eri, &scf, &refs, nuc, SC_BAR);
 }
 
 #[test]

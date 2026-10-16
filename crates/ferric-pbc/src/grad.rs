@@ -365,10 +365,37 @@ pub struct GammaGradConfig {
     pub mutation: Option<GradMutation>,
     /// Gaussian-nucleus exponent used ONLY for the short-range attraction
     /// DERIVATIVE (`None` = [`GRAD_NUCLEUS_EXPONENT`], never tighter than the
-    /// energy's `hcore_cfg.nucleus_exponent`). libint2's 3-centre derivative
-    /// loses precision for very tight Gaussians (the error grows ~10-30x per
-    /// decade above ~1e9), while below ~1e8 the mismatch with the energy's
-    /// nucleus takes over. Measured max|analytic − FD| (Ha/Bohr, 2026-09-25):
+    /// energy's `hcore_cfg.nucleus_exponent`).
+    ///
+    /// Since #434 the derivative is accurate at every exponent from 1e5 to
+    /// 1e16: each triplet is evaluated in the frame of its nucleus
+    /// (`hcore::nucleus_frame_shifts`), which keeps the absolute coordinates
+    /// libint2 combines with the zeta-sized exponents O(pair distance) instead
+    /// of O(cell size). Before that, libint2's 3-centre derivative of the SR
+    /// attraction carried coordinate-dependent rounding that grew like
+    /// zeta·|x| (roughly 10-30x per decade above 1e8, and not translation
+    /// invariant), which the earlier revisions of this note read as a
+    /// "libint2 precision floor" and traded against the model error below.
+    /// H2 triplet s+p, Gamma 3-cell SR stress vs central FD of the SR energy
+    /// at the same exponent: miss 1.6e-11 at 1e5-1e9 and 7.5e-12 at 1e11
+    /// (before: 4e-9 at 1e8, 4.9e-8 at 1e9, 3e-7 at 1e10, 2.9e-6 at 1e11),
+    /// invariant under rigid translation, and the k-point and supercell
+    /// anchors agree to roundoff at every exponent.
+    ///
+    /// What remains is the MODEL error of the Gaussian nucleus against the
+    /// point nucleus the energy's 1e16 exponent approximates, which falls as
+    /// 1/zeta. Independent review on the Z = 9 F/H cell, force
+    /// |F(zeta) − F(1e16)|: 2.45e-6 / 2.45e-7 / 2.45e-8 / 2.45e-9 / 2.45e-10
+    /// at 1e7 / 1e8 / 1e9 / 1e10 / 1e11 (stress at 1e9: 4.2e-8); with the
+    /// energy's own 1e16 the triclinic stress Richardson miss goes 1.6e-9 ->
+    /// 7.4e-10 and its antisymmetry 2.3e-11 -> 1.4e-13. Whether the default
+    /// should move up from 1e9 is a maintainer decision, not made here.
+    ///
+    /// The tables below are PRE-#434 measurements (max|analytic − FD|,
+    /// Ha/Bohr, 2026-09-25 and later): they mix the rounding noise with the
+    /// model error, they have NOT been re-measured, and the conclusions drawn
+    /// from them in earlier revisions (a best exponent near 1e8-1e9 that
+    /// differs per element) were conclusions about that noise.
     ///
     /// | exponent | H tri s+p RHF | LiH 6-31G RS-GDF | CO cc-pVDZ/jkfit |
     /// |---|---|---|---|
@@ -388,19 +415,15 @@ pub struct GammaGradConfig {
     /// | 1e8  | 2.3e-9 | 5.5e-8 | 2.2e-7 | 2.1e-8 | 6.9e-9 | 1.4e-9 |
     /// | 1e9  | 9.3e-9 | 1.4e-8 | 2.1e-7 | 3.9e-7 | 8.5e-8 | 3.7e-8 |
     /// | 1e10 | 8.5e-8 | 1.1e-7 | 1.5e-6 | 1.3e-6 | 3.6e-7 | 1.0e-6 |
-    ///
-    /// The minimum sits at 1e8 for LiH and the iodine cells and at 1e9 for
-    /// the O/C cells (CO and OH, whose tight cores make 1e7-1e8 the steeper
-    /// side: 1.4e-6 at 1e7 on CO). No single exponent is best everywhere:
-    /// 1e9 is within 1.13x of the best on H and CO forces and 3.8x better
-    /// than 1e8 on OH, but 4-19x worse than 1e8 on the LiH 6-31G and cc-pVDZ cells, 12x worse
-    /// on HI and 27x worse on the no-ECP control.
     pub nucleus_exponent: Option<f64>,
 }
 
 /// Default exponent for the SR attraction derivative (see
-/// [`GammaGradConfig::nucleus_exponent`]): the best single value for H and
-/// within 2x of the best for Li, C and O in the scan above.
+/// [`GammaGradConfig::nucleus_exponent`]). Chosen in 2026-09 from scans that
+/// were dominated by rounding noise the derivative no longer has (#434); the
+/// remaining Gaussian-nucleus model error falls as 1/zeta, so the value is
+/// open to revision (maintainer decision) and is NOT justified by the tables
+/// there.
 pub const GRAD_NUCLEUS_EXPONENT: f64 = 1e9;
 
 /// Points per chunk of the XC gradient (13 AO planes + per-spin

@@ -107,8 +107,17 @@ const ALL9: [(usize, usize); 9] = [
     (2, 2),
 ];
 const FD_H: f64 = 1e-4;
-/// Gaussian-nucleus exponent of the SR derivative (see `pbc_kpoint_ecp.rs`).
+/// Gaussian-nucleus exponent of the SR derivative in the FD anchors (see
+/// `pbc_kpoint_ecp.rs`: against the energy's 1e16 nucleus the remaining
+/// difference is the model-nucleus error, which falls as 1/zeta).
 const FD_NUCLEUS_EXPONENT: f64 = 1e8;
+/// Exponent of the supercell anchor. STILL PINNED at the pre-#434 value 1e7:
+/// that test takes ~29 min in release, so it was not re-run without the pin.
+/// The pin's reason (coordinate-dependent rounding in the SR derivative that
+/// did not cancel between the mesh and the supercell) is fixed, and the same
+/// anchor in `pbc_kpoint_ecp.rs` (same walks, unrotated) is at roundoff at the
+/// default exponent, so the pin and the loose `SC_BAR_TOTAL` / `SC_BAR_SR`
+/// below can be dropped once a 29 min run at the default confirms it.
 const SC_NUCLEUS_EXPONENT: f64 = 1e7;
 
 // ------------------------------------------------------------ fixtures
@@ -580,8 +589,10 @@ fn gsys(cell: Cell, bs: &BasisSet, rot: SrColumnRotation) -> GSys {
 /// Bar of the fixed-density hcore FD gate (central FD, h = 1e-4, all nine
 /// components). MEASURED 8.5e-8 on a strain of max |component| 4.9 (relative
 /// 1.7e-8: the h^2 truncation of the central difference). The Richardson
-/// residual rises to 2.8e-8 / 3.7e-8 at nucleus exponent 1e7 / 1e9
-/// (nucleus-width model error), so the floor is not purely h^2. The test runs
+/// residual rises to 2.8e-8 / 3.7e-8 at nucleus exponent 1e7 / 1e9 (measured
+/// before #434, not re-measured; the 1e9 value included SR-derivative
+/// rounding noise, the 1e7 one is nucleus-width model error), so the floor is
+/// not purely h^2. The test runs
 /// the rotation mutants at fixed density: measured totals move by RotDropT
 /// 1.03e-1, RotUseT 5.05e-1, RotOneSided 9.06e-2, RotFlipSign 2.15e-1,
 /// RotHcoreWrongResidue 1.07, each > 10x this bar; RotSwapPair and
@@ -744,10 +755,10 @@ fn rotated_hcore_with_ecp_at_fixed_density_matches_fd_and_keeps_the_ecp_part() {
 
 // ============================================================ (2) SCF level
 
-/// Bars of the 1x1x1 and 1x1x3 anchors, copied from the unrotated ECP file
-/// (`pbc_kpoint_ecp.rs`, same system class; derived there from the
-/// nucleus-exponent scan): totals 2e-9 / SR parts 5e-9 at zeta = 1e7, every
-/// other part 3e-12; 1x1x1 totals 1e-9, ECP parts 1e-12.
+/// Bars of the 1x1x1 and 1x1x3 anchors, copied from the unrotated ECP file as
+/// it stood before #434 (there the totals are now 3e-12; here they are
+/// unchanged, see `SC_NUCLEUS_EXPONENT`): totals 2e-9 / SR parts 5e-9 at zeta
+/// = 1e7, every other part 3e-12; 1x1x1 totals 1e-9, ECP parts 1e-12.
 const SC_BAR_TOTAL: f64 = 2e-9;
 const SC_BAR_SR: f64 = 5e-9;
 const SC_BAR_PART: f64 = 3e-12;

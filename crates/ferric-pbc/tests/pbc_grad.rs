@@ -614,13 +614,17 @@ fn triclinic_sp_force_matches_fd_of_own_energy() {
             rr.commutator,
             rr.grad
         );
-        // p shells: libint2's 3-centre derivative loses precision for tight
-        // Gaussian nuclei. Measured FD error vs the gradient-only nucleus
-        // exponent: 8.3e-2 (1e16), 4.3e-6 (1e12), 1.85e-7 (1e10; the default
-        // GRAD_NUCLEUS_EXPONENT). The same 1.85e-7 with the energy at 1e10 too,
-        // so this is libint precision, not an energy/gradient mismatch. The bar
-        // is set from that floor (H2, s only, reaches 2.4e-9 under FD_BAR).
-        assert!(err < 5e-7, "exxdiv {k}: {err:e}");
+        // p shells at the default gradient nucleus exponent (1e9). MEASURED
+        // 2026-10-16: 2.46e-9 (none) / 2.45e-9 (ewald); by exponent 1.05e-7
+        // (1e7), 7.9e-9 (1e8), 2.46e-9 (1e9), 3.4e-9 (1e10): the 1e7 value is
+        // the model-nucleus error against the energy's 1e16 nucleus (falls as
+        // 1/zeta), the rest is the h = 1e-4 FD truncation. Before #434 the
+        // same numbers were 1.85e-7 at 1e10 and 4.3e-6 at 1e12, which an
+        // earlier revision of this comment attributed to "libint precision";
+        // it was coordinate-dependent rounding in the SR derivative, now
+        // removed (nucleus-frame evaluation). Bar 1e-8 = 4x the measurement,
+        // 5 orders below the smallest mutant (> 1e-3).
+        assert!(err < 1e-8, "exxdiv {k}: {err:e}");
         assert!(rr.net_force < 1e-10, "ΣF {:e}", rr.net_force);
     }
     // Gradient-only nucleus-exponent scan (printed, not asserted); override

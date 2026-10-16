@@ -38,9 +38,11 @@
 //!   1e-4) of ferric's OWN Gamma energy, both exxdiv, every displaced SCF
 //!   seeded from the reference density. Prototype (Python, frozen image
 //!   sets, pure AFT): 1.49e-9 none / 1.50e-9 ewald. The Rust SR attraction
-//!   derivative carries libint2's p-shell floor at the 1e9 gradient nucleus
-//!   exponent (6.4e-9 on the H s+p cell; Z = 7 here) and the ECP term
-//!   libecpint's jitter. MEASURED 2026-09-27 (compact HI): 2.52e-7 for both
+//!   derivative carried coordinate-dependent rounding at the 1e9 gradient
+//!   nucleus exponent (6.4e-9 on the H s+p cell; Z = 7 here; removed by #434,
+//!   after which the H s+p cell reaches 2.5e-9) and the ECP term
+//!   libecpint's jitter. MEASURED 2026-09-27 (compact HI, pre-#434, not
+//!   re-measured since): 2.52e-7 for both
 //!   exxdiv → bar 5e-7; ΣF 1.9e-11 (all of it the dense-AFT `eri` part at
 //!   precision 1e-10; ECP part 3e-16) → bar 1e-9. Mutants, measured (compact;
 //!   prototype full-LANL2DZ values in brackets): `EcpNoCentre` 0.495 [3.1e-1]

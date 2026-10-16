@@ -682,7 +682,7 @@ fn ecp_term_at_fixed_density_is_the_supercell_term_per_cell() {
 }
 
 /// Smallest miss a mutant must make (the repo's `MUTANT_BAR`); the clean
-/// anchors sit at <= 5e-8 (SR floor) and the ECP parts at ~1e-14.
+/// supercell anchors sit at <= 6.3e-13 and the ECP parts at ~1e-14.
 const MUTANT_BAR: f64 = 1e-4;
 
 fn grad_miss(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
@@ -758,21 +758,18 @@ fn shifted_mesh_ecp_terms_are_a_gamma_mesh_combination_at_fixed_density() {
 
 const ANCHOR_PRECISION: f64 = 1e-12;
 const EXX: [ExxDiv; 2] = [ExxDiv::None, ExxDiv::Ewald];
-/// Bars of the 1x1x3-vs-supercell anchors at `SC_NUCLEUS_EXPONENT` = 1e7.
-/// MEASURED (HI, `hi_and_control_sr_floor_scan_over_the_nucleus_exponent`,
-/// 2026-10-11) at zeta = 1e7 / 1e8 / 1e9: force total 4.1e-10 / 1.5e-8 /
-/// 7.7e-8, force `vsr_nuc` 1.05e-9 / 1.5e-8 / 2.3e-7, stress total 2.6e-10 /
-/// 7.4e-9 / 1.1e-7, while the ECP part is FLAT at 1.4e-15 (force) and 2.0e-15
-/// (stress) at every zeta. The no-ECP Z = 7 control (same shells, same
-/// nuclear charges) shows 2.9e-10 / 9.8e-9 / 4.9e-8 (force total) and
-/// 2.5e-10 / 5.5e-9 / 7.9e-8 (stress): the miss is the libint2 SR-attraction-
-/// derivative floor at the gradient-nucleus exponent (it grows ~10-30x per
-/// decade and is present without any ECP code); the ECP-shaped density plus
-/// Z_eff = 7 make it ~1.5x the control's. Every non-SR part is at <= 5.6e-13.
-/// Bars: SR parts 5e-9 and totals 2e-9 (5-8x above the 1e7 measurement,
-/// >= 5 orders below the smallest ECP mutant), other parts 3e-12.
-const SC_BAR_P: f64 = 2e-9;
-const SC_BAR_SR_PART: f64 = 5e-9;
+/// Bars of the 1x1x3-vs-supercell anchors at the default gradient nucleus
+/// exponent. MEASURED 2026-10-16 (HI and the no-ECP Z = 7 control, zeta =
+/// 1e7 / 1e8 / 1e9, `hi_and_control_sr_floor_scan_over_the_nucleus_exponent`):
+/// force total 1.3e-13 / 2.1e-13, stress total 6.3e-13 / 2.5e-13, every part
+/// <= 5.6e-13 (SR parts <= 4.9e-14), and the same at all three exponents. The
+/// bar is 5x the worst clean total, and 8 orders below the smallest ECP
+/// mutant (`MUTANT_BAR` = 1e-4). Before #434 (SR derivative evaluated at
+/// absolute coordinates, so its libint2 rounding scaled with the exponent
+/// and did not cancel between the mesh and the supercell) the same totals
+/// were 4.1e-10 / 1.5e-8 / 7.7e-8 (force, HI, 1e7 / 1e8 / 1e9) and the anchor
+/// was pinned at 1e7 with a 2e-9 bar.
+const SC_BAR_P: f64 = 3e-12;
 /// Bar of every part other than the SR attraction and the totals.
 const SC_BAR_PART: f64 = 3e-12;
 
@@ -832,15 +829,20 @@ fn scf_pair(ks: &KSys, eri: &KDenseAftEri) -> [KScfResult; 2] {
 }
 
 /// Gaussian-nucleus exponent of the SR attraction DERIVATIVE on both sides of
-/// the supercell anchors. The k mesh and the supercell evaluate that
-/// derivative at different image offsets, so libint2's integral precision
-/// floor does not cancel; it grows with the exponent (see `SC_BAR_P`). The
-/// ECP part does not depend on it.
-const SC_NUCLEUS_EXPONENT: f64 = 1e7;
-/// Exponent of the FD anchors and of the default configs: against FD of the
-/// energy (nucleus exponent 1e16) 1e8 is the better compromise (force FD
-/// miss 2.3e-9 at 1e8 vs 2.1e-8 at 1e7, where the mismatch with the energy's
-/// nucleus takes over), the opposite of the k-vs-supercell comparison.
+/// the supercell anchors: the default. (Until #434 this was pinned at 1e7,
+/// because the k mesh and the supercell evaluated the derivative at different
+/// absolute coordinates and the coordinate-dependent rounding, which grows
+/// with the exponent, did not cancel. The derivative is now evaluated in the
+/// frame of its nucleus and the miss is exponent-independent.) The ECP part
+/// does not depend on it.
+const SC_NUCLEUS_EXPONENT: f64 = ferric_pbc::grad::GRAD_NUCLEUS_EXPONENT;
+/// Exponent of the FD anchors and of the default configs. Against FD of the
+/// energy (nucleus exponent 1e16) the remaining difference is the model-
+/// nucleus error of the derivative's Gaussian nucleus, which falls as 1/zeta
+/// (force FD miss 2.3e-9 at 1e8 vs 2.1e-8 at 1e7, measured before #434 and
+/// not re-measured: the derivative itself is now accurate at every zeta, so
+/// a larger exponent would lower this, and the 1e8 pin is no longer needed
+/// for the k-vs-supercell comparison).
 const FD_NUCLEUS_EXPONENT: f64 = 1e8;
 
 fn gcfg(m: Option<KGradMutation>) -> KGradConfig {
@@ -1237,7 +1239,7 @@ fn assert_anchor(a: &Anchor, i: usize, zeta: f64, sr_bar: f64) -> (Parts, Parts)
             let bar = if *name == "TOTAL" {
                 sr_bar
             } else if name.starts_with("vsr") {
-                sr_bar.max(SC_BAR_SR_PART)
+                sr_bar.max(SC_BAR_PART)
             } else {
                 SC_BAR_PART
             };
@@ -1266,10 +1268,9 @@ fn part_of(p: &Parts, name: &str) -> f64 {
 /// `dE/dε = dE/dε_sc / 3`, part by part (force: overlap, kinetic, ECP, SR
 /// basis/nucleus, LR, ERI, Ewald real/reciprocal; stress: every part).
 /// ARTIFACT: a wrong phase / conjugate / residue would not reproduce the
-/// explicit supercell (non-TRIM mesh). The SR attraction derivative carries
-/// libint2's gradient-nucleus-exponent floor (see
-/// `hi_and_control_sr_floor_scan_over_the_nucleus_exponent`); everything else
-/// is at roundoff.
+/// explicit supercell (non-TRIM mesh). Every part, the SR attraction
+/// derivative included, is at roundoff at any gradient nucleus exponent (see
+/// `hi_and_control_sr_floor_scan_over_the_nucleus_exponent`).
 #[test]
 fn hi_1x1x3_force_and_stress_are_the_supercell_ones_per_cell() {
     let bs = hi_basis();
@@ -1291,21 +1292,21 @@ fn hi_1x1x3_supercell_anchor_both_exxdiv() {
     }
 }
 
-/// DIAGNOSTIC + ASSERTION: where does the 1.5e-8 SR-part miss come from?
-/// Hypotheses: (ECP) it is ECP related; (LIBINT) it is libint2's gradient-
-/// nucleus-exponent floor of the SR attraction derivative, in which case the
-/// `vsr_*` parts show a U shape in zeta (rising ~10-30x per decade above
-/// ~1e9, rising again at 1e7 from the mismatch with the energy's nucleus)
-/// while the ECP part stays flat at roundoff. The Z = 7 no-ECP control
-/// (identical AO shells and nuclear charges) separates "ECP-shaped density"
-/// from "Z_eff = 7": the control floor is printed next to HI's.
+/// DIAGNOSTIC + ASSERTION: the k-vs-supercell SR miss is independent of the
+/// gradient nucleus exponent. History: this scan found a miss of 1.5e-8 that
+/// rose ~10-30x per decade above 1e8, present without any ECP (the Z = 7
+/// no-ECP control, identical AO shells and nuclear charges, showed the same);
+/// it was coordinate-dependent rounding in libint2's SR derivative (#434), not
+/// an ECP defect. With the nucleus-frame evaluation all parts of both HI and
+/// the control are at roundoff at every exponent, so the assertion is the
+/// flat `SC_BAR_P`.
 #[test]
 #[ignore = "slow (261 s release, loaded box): HI and control 1x1x3 supercell anchors at zeta 1e7, 1e8, 1e9"]
 fn hi_and_control_sr_floor_scan_over_the_nucleus_exponent() {
     for (name, bs) in [("HI+ECP", hi_basis()), ("control Z=7", control_basis())] {
         let a = anchor_setup(&bs, &[ExxDiv::None], ANCHOR_PRECISION);
         for zeta in [1e7, 1e8, 1e9] {
-            let (f, s) = assert_anchor(&a, 0, zeta, 1e-6);
+            let (f, s) = assert_anchor(&a, 0, zeta, SC_BAR_P);
             assert!(part_of(&f, "ecp") < 1e-12 && part_of(&s, "ecp") < 1e-12);
             eprintln!(
                 "SCAN {name} zeta {zeta:.0e}: force vsr_basis {:.2e} vsr_nuc {:.2e} ecp {:.2e} \
@@ -1592,9 +1593,11 @@ fn k_energies(cell: &Cell, bs: &BasisSet, n: [usize; 3]) -> [f64; 2] {
 /// Bars of the SCF-level FD anchors (central FD, h = 1e-4). The floor of
 /// these is the h^2 truncation of the central difference (FD(h) vs FD(2h)
 /// differ at that order, as in the Gamma and k-stress anchors) plus, for the
-/// force, the Gaussian-nucleus floor of the SR derivative at `zeta = 1e8`;
-/// the ECP value kernel itself is exact to ~1e-13 (the 2.5e-7 of the Gamma
-/// force anchor at zeta = 1e9 is V_SR, not V_ECP). MEASURED here: force
+/// force, the model-nucleus error of the SR derivative at `zeta = 1e8` (the
+/// derivative is exact for that Gaussian nucleus, the FD energy's nucleus is
+/// 1e16; the difference falls as 1/zeta); the ECP value kernel itself is
+/// exact to ~1e-13 (the 2.5e-7 of the Gamma force anchor at zeta = 1e9
+/// before #434 was V_SR rounding noise, not V_ECP). MEASURED here: force
 /// 2.3e-9 / 1.1e-9 (dense), 1.1e-9 / 2.3e-9 (RS-GDF); stress 3.1e-8 / 5.4e-8
 /// (dense, all nine), 2.3e-8 / 4.2e-9 / 2.6e-8 (RS-GDF). The smallest ECP
 /// mutant misses the same anchors by >= 2e-3 (force) and >= 5e-2 (stress).

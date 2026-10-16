@@ -1044,7 +1044,8 @@ fn triclinic_split_forces_match_fd_and_catch_the_split_mutants() {
     let g = rhf_grad(&sp, &scf, ExxDiv::None, None);
     let err = max_fd_err(&g.grad, &fdv, 0);
     report("tri s+p split RHF", &g, err);
-    // Prototype +4.8e-10 / −2.72e-9; p-shell libint floor → the unsplit bar.
+    // Prototype +4.8e-10 / −2.72e-9; the unsplit p-shell bar (set from the
+    // pre-#434 SR-derivative rounding noise, so loose now).
     assert!(err < TRI_FD_BAR, "{err:e}");
     assert!(g.net_force < NET_FORCE_BAR, "ΣF {:e}", g.net_force);
     for m in SPLIT_MUTANTS {
