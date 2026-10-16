@@ -125,18 +125,24 @@ impl Operator {
     /// Yukawa / screened Coulomb: exp(-zeta * r12) / r12.
     ///
     /// Evaluated by libint2's native `Operator::stg_x_coulomb` kernel (aliased
-    /// `yukawa` in libint2, TennoGmEval core) -- the EXACT screened Coulomb, not
-    /// a Gaussian fit. `zeta` is the decay constant (Bohr⁻¹), analogous to
-    /// erf/erfc's `omega`.
+    /// `yukawa` in libint2, TennoGmEval core) -- the exact screened Coulomb,
+    /// not a Gaussian fit, WHERE THE KERNEL'S OWN TABLE APPLIES. Outside that
+    /// domain the result depends on the libint2 version and the evaluation path:
+    /// libint 2.13.1 falls back to a Gaussian fit (of limited accuracy, see the
+    /// `U` and `T == 0` notes below), libint 2.7.2 does not. `zeta` is the decay
+    /// constant (Bohr⁻¹), analogous to erf/erfc's `omega`.
     ///
     /// Limit: zeta -> 0 gives exp(0)/r = 1/r = Coulomb (approached from below).
     ///
     /// SUPPORTED RANGE: `zeta > 0`. libint2's TennoGmEval interpolates only for
     /// `U = zeta²/(4ρ) ∈ [1e-7, 1e3]` (ρ = reduced bra/ket exponent); outside it
-    /// falls back to an upward recursion that is undefined (and, in a
-    /// debug/`assert`-enabled libint2 build, ABORTS the process) on the
-    /// same-center `T = 0` shell blocks that RI/3-center paths always contain.
-    /// In practice a physically meaningful `zeta` (≈ 0.1 – a few Bohr⁻¹) stays in
+    /// (Yukawa, `U < 1e-7`) it uses an upward recursion that is unstable at small
+    /// `T` (see below). On the same-center `T == 0` shell blocks that
+    /// RI/3-center paths always contain, the behaviour depends on the libint2
+    /// version: libint 2.13.1 takes a Gaussian fit there (3e-7 absolute error at
+    /// `U = 1e-14`, 2e-12 at `U = 1e-8`; no assert fires), while libint 2.7.2's
+    /// recursion is undefined and ABORTS the process in an `assert`-enabled
+    /// build such as ferric's shim (garbage otherwise). In practice a physically meaningful `zeta` (≈ 0.1 – a few Bohr⁻¹) stays in
     /// domain for ordinary Gaussian exponents. Do NOT pass a near-zero `zeta`
     /// (e.g. 1e-6) expecting a clean Coulomb limit on RI paths -- that regime is
     /// out of the kernel's table domain.
