@@ -26,28 +26,27 @@
 //! supercell with rotation on both sides); the unrotated pipeline is an
 //! independent walk of the same function.
 //!
-//! KNOWN DEFECT met while building the fixture (so the I s exponents are not
-//! the "natural" diffuse ones): the erfc 3-centre block of a CONTRACTED s
-//! pair at a far-field shift reads uninitialised memory when the engine
-//! precision is <= 1e-20 (the hcore SR walk uses `f64::MIN_POSITIVE`).
-//! Reproducer: `far_field_contracted_s_blocks_do_not_read_uninitialised_memory`
-//! (section 5; 0.02 s, ignored as a known failure). Effect: a derivative
-//! engine created and destroyed earlier in the process moved k-RHF energies
-//! of HI with an I s contraction (1.2, 0.45, 0.16) by 1.2e-5 Ha, and any
-//! FD anchor computed after an analytic call by up to 2e-8 per energy. The
-//! fixtures here use s exponents (3.0, 1.0, 0.35) / p (2.0, 0.7). The DENSE
-//! AFT anchors (and the Gamma ones) are bit-identical under `MALLOC_PERTURB_`
-//! 1 and 170. The RS-GDF anchor is NOT: a SECOND uninitialised read sits in
-//! the UNROTATED `KRsGdf` fit for this I s/p basis (perturb 1: LAPACK failure;
-//! perturb 170: "k-RHF not converged (400 it)"; rotation ON is bit-identical),
-//! tracked in #433. Until #433 lands, the RS-GDF test's rotated-vs-unrotated
-//! comparison (`ROT_VS_OFF_FIT_BAR`) is against a run that reads uninitialised
-//! memory; its FD and mutant parts use only the rotated fit.
+//! HISTORY (fixed in #437, issue #433): while this fixture was built, the
+//! erfc 3-centre block of a CONTRACTED s pair at a far-field shift read
+//! uninitialised memory when the engine precision is <= 1e-20 (the hcore SR
+//! walk uses `f64::MIN_POSITIVE`): libint2's Boys Chebyshev table was read one
+//! row past its end at x == 117.0. A derivative engine created and destroyed
+//! earlier in the process moved k-RHF energies of HI with an I s contraction
+//! (1.2, 0.45, 0.16) by 1.2e-5 Ha, and any FD anchor computed after an
+//! analytic call by up to 2e-8 per energy; the UNROTATED `KRsGdf` fit for this
+//! basis hit the same read (perturb 1: LAPACK failure; 170: "k-RHF not
+//! converged (400 it)"). The fixtures were therefore pinned to I s exponents
+//! (3.0, 1.0, 0.35) / p (2.0, 0.7), which are kept (see `rot_basis`).
+//! Reproducer, now a normal 0.03 s test:
+//! `far_field_contracted_s_blocks_do_not_read_uninitialised_memory` (section
+//! 5), which re-executes a finiteness check under `MALLOC_PERTURB_` 1, 170,
+//! 255. After #437 the DENSE AFT anchors, the Gamma ones and the RS-GDF anchor
+//! (including its unrotated comparison run) are run under `MALLOC_PERTURB_`
+//! unset / 1 / 170 / 255 (verified on 59114c8e plus this change).
 //!
 //! NOT tested: range-split source with an ECP, several ECP atoms, triclinic
 //! cells with an ECP (see `pbc_sr_rotation_kderiv.rs` for triclinic rotation
-//! without one), the unrotated RS-GDF fit path for this basis (uninitialised
-//! read, #433), the fit-acting FORCE mutants (`RotFitWrongResidue`,
+//! without one), the fit-acting FORCE mutants (`RotFitWrongResidue`,
 //! `RotSwapPair`) with an ECP (the dense force loop only asserts that they
 //! are no-ops; the RS-GDF loop is stress-only; their stress versions are run
 //! there: 6.97e-1 and 1.12e-1).
@@ -191,9 +190,9 @@ fn rot_basis() -> BasisSet {
     let mut shells = HashMap::new();
     let h = basis::bundled("cc-pvdz").expect("cc-pvdz");
     shells.insert(1, h.shells.get(&1).expect("H cc-pvdz").clone());
-    // Exponents chosen clear of the libint2 far-field defect documented in
-    // the module doc (the contracted s sets (1.2, 0.45[, 0.16]) read
-    // uninitialised memory in an erfc 3-centre walk; these do not).
+    // Exponents pinned while the libint2 Boys table-edge defect (#433, fixed
+    // in #437; see the module doc) was open; kept to leave the anchors'
+    // numbers unchanged.
     let s_exps = [3.0, 1.0, 0.35];
     let p_exps = [2.0, 0.7];
     shells.insert(
@@ -757,7 +756,7 @@ const MUTANT_FLOOR: f64 = 1e-6;
 /// `D_BAR` 1e-7); the bar is 4x above, and this comparison is asserted
 /// LAST in the RS-GDF test (a rotation defect moves the total by >= 5e-2, and the
 /// FD anchor next to it is the discriminating one; the unrotated run is only
-/// reproducible in every allocator state once #433 is fixed).
+/// reproducible in every allocator state since #437 fixed #433).
 const ROT_VS_OFF_BAR: f64 = 1e-11;
 const ROT_VS_OFF_FIT_BAR: f64 = 5e-7;
 
@@ -1186,11 +1185,12 @@ fn k_fit_energy(cell: &Cell, bs: &BasisSet, n: [usize; 3], rot: SrColumnRotation
 /// of BOTH walks equal the energy's, and the rotated analytic equals the
 /// unrotated RS-GDF analytic of the same energy to the screen.
 ///
-/// CAVEAT (#433): the UNROTATED fit for this basis reads uninitialised memory
-/// (under `MALLOC_PERTURB_=1`: LAPACK failure; 170: "k-RHF not converged (400
-/// it)"; rotation ON is bit-identical). The `ROT_VS_OFF_FIT_BAR` comparison is
-/// therefore against a run that is not reproducible until #433 lands; the FD
-/// and mutant parts use only the rotated fit.
+/// HISTORY (#433, fixed in #437): before the Boys table-edge fix the UNROTATED
+/// fit for this basis read uninitialised memory (under `MALLOC_PERTURB_=1`:
+/// LAPACK failure; 170: "k-RHF not converged (400 it)"), so the
+/// `ROT_VS_OFF_FIT_BAR` comparison was against a non-reproducible run. It is
+/// allocator-independent now (see the module doc). The FD and mutant parts use
+/// only the rotated fit.
 #[test]
 #[ignore = "slow (~3 min release, 6 threads, quiet box): 1 + 8 rotated RS-GDF k pipelines, HI 1x1x3, + one unrotated pipeline"]
 fn rotated_ecp_rsgdf_force_and_stress_match_fd_of_the_rotated_fitted_energy() {
@@ -1298,10 +1298,9 @@ fn rotated_ecp_rsgdf_force_and_stress_match_fd_of_the_rotated_fitted_energy() {
         eprintln!("  RS-GDF stress mutant {m:?}: total moves {moved_total:.2e}");
         assert!(moved_total > MUTANT_FLOOR, "{m:?} escaped: {moved_total:e}");
     }
-    // The unrotated run LAST: its KRsGdf fit read uninitialised memory until the
-    // Boys table-edge fix (#433), so a failure inside it (LAPACK error, or "k-RHF
-    // not converged") must not hide the rotated FD and mutant checks above, which
-    // do not depend on it.
+    // The unrotated run LAST (kept from the time its KRsGdf fit read
+    // uninitialised memory, #433/#437): a failure inside it must not hide the
+    // rotated FD and mutant checks above, which do not depend on it.
     let off = fit_run(cell, &bs, n, SrColumnRotation::Off);
     assert_eq!(off.gdf.stats().sr_rotated_columns, 0);
     let (fo, so) = (force(&off), stress(&off));
@@ -1379,7 +1378,7 @@ fn ecp_derivative_with_a_mismatched_rotation_config_is_refused() {
     assert!(f.fock_mismatch < 1e-8 && s.fock_mismatch < 1e-8);
 }
 
-// ============================================================ (5) known defect
+// ====================================== (5) regression: Boys table edge (#433)
 
 /// The call pattern of the SR attraction walk on one I s,s pair at the walker's
 /// image shifts, with a contracted I s shell (exponents 1.2, 0.45: min < 0.5).
@@ -1440,37 +1439,32 @@ fn far_field_s_blocks_are_clean() -> Result<(), String> {
 }
 
 /// Helper of the reproducer below, not a protection by itself: in the default
-/// allocator the garbage is usually zero, and the check only catches blocks
-/// that are non-finite or larger than 1e-3, so it passes on the known
+/// allocator uninitialised memory is usually zero, and the check only catches
+/// blocks that are non-finite or larger than 1e-3, so it would pass on an
 /// uninitialised read unless the allocator fills memory. Run it only through
 /// the perturbed re-exec.
 #[test]
-#[ignore = "helper of far_field_contracted_s_blocks_do_not_read_uninitialised_memory; only meaningful under MALLOC_PERTURB_ (known uninitialised read, #433)"]
+#[ignore = "helper of far_field_contracted_s_blocks_do_not_read_uninitialised_memory; only meaningful under MALLOC_PERTURB_ (regression guard for #433)"]
 fn far_field_contracted_s_blocks_are_finite_in_the_default_allocator() {
     far_field_s_blocks_are_clean().expect("block check");
 }
 
-/// KNOWN DEFECT (found while building this file; see the module doc and the
-/// issue text in the PR): with `MALLOC_PERTURB_` set (glibc fills freshly
-/// allocated memory with a pattern) the erfc 3-centre block of a CONTRACTED s
-/// pair at a far-field shift returns ~1e288-1e301, i.e. libint2 (or the shim)
-/// reads uninitialised heap memory there. In the default allocator the
-/// memory is usually zero and the block is ~1e-17, so energies are right most
-/// of the time but an allocator-state change (a derivative engine created and
-/// destroyed earlier in the process) shifted k-RHF energies by 1.2e-5 Ha on
-/// the HI system with the s exponents (1.2, 0.45, 0.16). MEASURED boundary:
-/// the engine precision matters (garbage at 2.2e-308 [the hcore walk's
-/// `ERI3_ENGINE_PRECISION`], 1e-100, 1e-20; clean at 1e-14 and 1e-10), the
-/// p-only and the single-primitive s sets and the 3-primitive STO-3G H s are
-/// clean, `FERRIC_LIBINT2_STOCK_BOYS=1` (stock boys.h) does not change it,
-/// and a shim-side copy of the shifted shells instead of the reusable slots
-/// does not either. The test re-executes this binary with MALLOC_PERTURB_
-/// and is ignored until the defect is fixed.
+/// Regression test for #433 (fixed in #437: the libint2 Boys Chebyshev table
+/// was read one row past its end at x == 117.0). Before the fix, with
+/// `MALLOC_PERTURB_` set (glibc fills freshly allocated memory with a
+/// pattern) the erfc 3-centre block of a CONTRACTED s pair at a far-field
+/// shift returned ~1e288-1e301; in the default allocator the memory was
+/// usually zero and the block ~1e-17, so energies were right most of the time
+/// but an allocator-state change (a derivative engine created and destroyed
+/// earlier in the process) shifted k-RHF energies by 1.2e-5 Ha on the HI
+/// system with the s exponents (1.2, 0.45, 0.16). Measured boundary then: the
+/// engine precision mattered (garbage at 2.2e-308 [the hcore walk's
+/// `ERI3_ENGINE_PRECISION`], 1e-100, 1e-20; clean at 1e-14 and 1e-10).
+/// The test re-executes this binary with `MALLOC_PERTURB_` 1, 170 and 255.
 #[test]
-#[ignore = "KNOWN DEFECT: libint2/shim reads uninitialised memory in far-field erfc 3-centre blocks of the contracted s set (1.2, 0.45) (not cc-pVDZ H, STO-3G H, or s (3.0, 1.0, 0.35))"]
 fn far_field_contracted_s_blocks_do_not_read_uninitialised_memory() {
     let exe = std::env::current_exe().expect("current exe");
-    for perturb in ["1", "170"] {
+    for perturb in ["1", "170", "255"] {
         let out = std::process::Command::new(&exe)
             .args([
                 "far_field_contracted_s_blocks_are_finite_in_the_default_allocator",
