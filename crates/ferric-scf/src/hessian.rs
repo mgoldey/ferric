@@ -71,8 +71,12 @@
 //!
 //! Effective core potentials are supported (see `crate::hessian_ecp`): the
 //! skeleton `Σ D ∂²V_ECP` is a fourth-order stencil of the first-derivative
-//! ECP blocks and `∂V_ECP/∂x` joins `F^x`, on whichever ECP backend the
-//! gradient uses.
+//! ECP blocks and `∂V_ECP/∂x` joins `F^x`. The availability probe accepts the
+//! default quadrature backend only: on `FERRIC_ECP_BACKEND=libecpint` the
+//! stencil divides that backend's first-derivative noise by the step (2.8e-6
+//! Ha/Bohr² on Ag2/aug-cc-pVDZ-PP), so `Auto` frequencies fall back to finite
+//! differences and `Analytic` is an error; calling the Hessian functions
+//! directly still runs the stencil on the active backend.
 //!
 //! # ROHF
 //!
@@ -1337,6 +1341,14 @@ fn system_refusal(
         (
             ecp_inconsistent(mol, bs),
             "an ECP not applied consistently to the molecule (Molecule::apply_ecp)",
+        ),
+        (
+            has_ecp(mol, bs)
+                && ferric_integrals::ecp::ecp_backend()
+                    .is_ok_and(|b| b == ferric_integrals::ecp::EcpBackend::Libecpint),
+            "an ECP on the libecpint backend (FERRIC_ECP_BACKEND=libecpint: the skeleton \
+             stencil divides libecpint's first-derivative noise by the step, 2.8e-6 \
+             Ha/Bohr^2 on Ag2/aug-cc-pVDZ-PP against 3e-10 on the default quadrature backend)",
         ),
         (
             reference == Reference::Rhf && mol.nelec() % 2 != 0,

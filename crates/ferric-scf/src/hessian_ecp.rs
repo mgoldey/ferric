@@ -23,6 +23,14 @@
 //! ([`ecp_block_deriv_spherical`], the backend selected by
 //! `FERRIC_ECP_BACKEND`, i.e. whichever the gradient uses), step [`STEP`].
 //!
+//! Only the default quadrature backend passes the availability probe. The
+//! stencil error is the backend's first-derivative noise divided by the step:
+//! libecpint on Ag2/aug-cc-pVDZ-PP gives 4.2e-6, 2.2e-6, 8.9e-7 at h = 1e-3,
+//! 2e-3, 4e-3 (error proportional to 1/h) and a 2.8e-8 floor from 8e-3 up,
+//! against 3.4e-10 for the quadrature at 2e-3 (PySCF's fixed-density FD of its
+//! ECP gradient term as reference). HI, CH3I and CH2I on libecpint stay within
+//! the bars.
+//!
 //! The displacement is RIGID PER ATOM: displacing atom `b` moves every shell
 //! and the ECP centre sitting on `b`. A triple `(bra shell, ket shell, ECP)`
 //! whose three centres do not include `b` is untouched, and one with all three
