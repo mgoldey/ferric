@@ -30,10 +30,9 @@
 //!   not the integrals: the skeleton stencil and the gradient share the
 //!   first-derivative kernel. The independent anchor is PySCF's analytic ECP
 //!   Hessian (`validation_ecp_hessian.rs`). Negative control: dropping the
-//!   skeleton term must miss by `MUST_MISS` × bar. Dropping `∂V_ECP/∂x` from
-//!   `F^x` has no in-test hook (the response is internal to
-//!   `rhf_hessian_parts`); it is covered by the MUTATION list below, which
-//!   turns these FD tests red.
+//!   skeleton term must miss by `MUST_MISS` × bar, and so must dropping
+//!   `∂V_ECP/∂x` from `F^x` (negative control 2, through
+//!   `rij_support::with_ecp_first_order_dropped`; #406).
 //! * `all_electron_system_is_bit_identical_with_or_without_basis_ecps`.
 //! * `ecp_g_shell_is_a_typed_error`. (An ECP not applied to the molecule is
 //!   still refused, and `Auto` frequencies route ECP systems to the analytic
@@ -291,6 +290,18 @@ fn check_against_fd(open_shell: bool, xyz: &str, charge: i32, mult: usize, cols:
         miss_skel > MUST_MISS * TOL_FD,
         "skeleton too small: {miss_skel:.3e}"
     );
+
+    // Negative control 2: `∂V_ECP/∂x` left out of the CPHF `F^x` (the
+    // skeleton stays). Same density, so the miss is the response term alone.
+    let dropped =
+        ferric_scf::hessian::rij_support::with_ecp_first_order_dropped(|| hessian(&s, open_shell))
+            .total();
+    let miss_fx = max_diff_cols(&dropped, &fd, cols);
+    eprintln!("  without dV_ECP/dx in F^x the Hessian misses FD by {miss_fx:.3e}");
+    assert!(
+        miss_fx > MUST_MISS * TOL_FD,
+        "dV_ECP/dx in F^x too small to be guarded: {miss_fx:.3e}"
+    );
 }
 
 #[test]
@@ -334,6 +345,36 @@ fn availability_probe_refuses_an_ecp_g_shell_without_an_scf() {
     )
     .expect_err("UHF probe likewise");
     assert!(err.to_string().contains("ECP"), "{err}");
+}
+
+/// The probe's last gate is the libint second-derivative engines (one-body
+/// and four-centre, `l <= 3`): the ECP Hessian itself needs only those plus
+/// the FIRST-derivative ECP kernel, no three-/two-centre second derivatives.
+/// So an ECP system is analytic on every libint that has 4c/1e second
+/// derivatives to f (the wheel's trimmed 2.7.2 export, conda-forge 2.13.1)
+/// and is refused by the probe, before any SCF, on a first-derivative-only
+/// libint (the stock mpqc4 export), so `Auto` frequencies fall back to FD.
+/// Either branch runs on whichever libint is linked; the other is not
+/// reachable in one build.
+#[test]
+fn probe_outcome_for_an_ecp_system_tracks_the_linked_libint() {
+    let bs = basis::bundled("def2-svp").unwrap();
+    let mol = ecp_mol(HOI, 0, 1, &bs);
+    let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    assert!(prep.max_l() <= 3, "def2-SVP iodine must stay within f");
+    let probe = ferric_scf::hessian::analytic_hessian_available(
+        &mol,
+        &prep,
+        Operator::coulomb(),
+        &RhfConfig::default(),
+    );
+    if has_deriv2() {
+        probe.expect("an f-bounded ECP system is analytic where libint has second derivatives");
+    } else {
+        let err = probe.expect_err("first-derivative libint must be refused by the probe");
+        eprintln!("probe: {err}");
+        assert!(err.to_string().contains("second-derivative"), "{err}");
+    }
 }
 
 #[test]

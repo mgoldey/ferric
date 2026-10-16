@@ -71,8 +71,14 @@
 //!
 //! Effective core potentials are supported (see `crate::hessian_ecp`): the
 //! skeleton `Σ D ∂²V_ECP` is a fourth-order stencil of the first-derivative
-//! ECP blocks and `∂V_ECP/∂x` joins `F^x`, on whichever ECP backend the
-//! gradient uses.
+//! ECP blocks and `∂V_ECP/∂x` joins `F^x`. The availability probe accepts the
+//! default quadrature backend only: on `FERRIC_ECP_BACKEND=libecpint` the
+//! ECP skeleton is noise-dominated and carries a bias (2.76e-6 Ha/Bohr² on
+//! Ag2/aug-cc-pVDZ-PP against a 5e-7 bar), so `Auto` frequencies fall back to
+//! finite differences and `Analytic` is an error. `system_refusal` also runs
+//! inside the Hessian entry points (`check_supported`), so
+//! `rhf_hessian_parts` and `uhf_hessian_parts` refuse libecpint too; only
+//! `ecp_skeleton_hessian` still runs on the active backend.
 //!
 //! # ROHF
 //!
@@ -648,6 +654,17 @@ pub mod rij_support {
         RikChannel, RikChannelFock, RikChannelTerms, RikFirst, RikMutants, RikTerms, UhfDfMutants,
         RIK_ALPHA_SPIN,
     };
+
+    /// Run `f` with `∂V_ECP/∂x` left out of the first-order Fock matrices
+    /// `F^x` of the CPHF response (the ECP skeleton term stays): the
+    /// dropped-term negative control of the ECP Hessian suite. Thread-local,
+    /// and restored on return.
+    pub fn with_ecp_first_order_dropped<R>(f: impl FnOnce() -> R) -> R {
+        let prev = ECP_FIRST_ORDER_DROPPED.with(|c| c.replace(true));
+        let out = f();
+        ECP_FIRST_ORDER_DROPPED.with(|c| c.set(prev));
+        out
+    }
 
     /// [`uhf_hessian_parts`] with the density-fitting constructions of the
     /// three mutant sets applied.
@@ -1310,14 +1327,22 @@ fn ext_or_field_present(config: &RhfConfig) -> bool {
     })
 }
 
-fn system_refusal(
-    reference: Reference,
-    mol: &Molecule,
-    prep: &PreparedBasis,
-) -> Option<&'static str> {
+/// Why an ECP on the libecpint backend is refused (see `crate::hessian_ecp`).
+const ECP_LIBECPINT_REFUSAL: &str = "an ECP on the libecpint backend \
+     (FERRIC_ECP_BACKEND=libecpint: the ECP skeleton is noise-dominated and biased, \
+     2.76e-6 Ha/Bohr^2 on Ag2/aug-cc-pVDZ-PP against 3e-10 on the default quadrature backend)";
+
+/// An ECP system with `FERRIC_ECP_BACKEND=libecpint` selected.
+fn ecp_on_libecpint(mol: &Molecule, bs: &ferric_core::basis::BasisSet) -> bool {
+    has_ecp(mol, bs)
+        && ferric_integrals::ecp::ecp_backend()
+            .is_ok_and(|b| b == ferric_integrals::ecp::EcpBackend::Libecpint)
+}
+
+/// The ECP-specific reasons the analytic Hessian does not apply.
+fn ecp_refusal(mol: &Molecule, prep: &PreparedBasis) -> Option<&'static str> {
     let bs = prep.basis_set();
     let checks = [
-        (mol.atoms.iter().any(|a| a.ghost), "ghost atoms"),
         (
             has_ecp(mol, bs) && prep.max_l() > MAX_ECP_HESSIAN_L,
             "an ECP system with shells above f (the ECP skeleton is a stencil of \
@@ -1327,12 +1352,29 @@ fn system_refusal(
             ecp_inconsistent(mol, bs),
             "an ECP not applied consistently to the molecule (Molecule::apply_ecp)",
         ),
+        (ecp_on_libecpint(mol, bs), ECP_LIBECPINT_REFUSAL),
+    ];
+    checks.iter().find(|(bad, _)| *bad).map(|(_, what)| *what)
+}
+
+fn system_refusal(
+    reference: Reference,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+) -> Option<&'static str> {
+    if mol.atoms.iter().any(|a| a.ghost) {
+        return Some("ghost atoms");
+    }
+    if let Some(what) = ecp_refusal(mol, prep) {
+        return Some(what);
+    }
+    let checks = [
         (
             reference == Reference::Rhf && mol.nelec() % 2 != 0,
             "an odd electron count",
         ),
         (
-            reference == Reference::Rohf && has_ecp(mol, bs),
+            reference == Reference::Rohf && has_ecp(mol, prep.basis_set()),
             "an effective core potential (the ROHF Hessian is validated without one)",
         ),
         (
@@ -1475,11 +1517,17 @@ fn add_extra_first_order(
             add_to_every_spin(first, &dm);
         }
     }
-    if has_ecp(mol, prep.basis_set()) {
+    if has_ecp(mol, prep.basis_set()) && !ECP_FIRST_ORDER_DROPPED.with(std::cell::Cell::get) {
         let dm = ecp_first_derivative_matrices(mol, prep.basis_set())?;
         add_to_every_spin(first, &dm);
     }
     Ok(())
+}
+
+thread_local! {
+    /// Negative-control switch of [`rij_support::with_ecp_first_order_dropped`]
+    /// (always `false` outside it).
+    static ECP_FIRST_ORDER_DROPPED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// `F^x += dm[x]` for every spin.
