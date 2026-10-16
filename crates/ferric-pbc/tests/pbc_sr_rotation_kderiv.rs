@@ -526,15 +526,11 @@ fn energy_at(
         .energy
 }
 
-/// FD bars. MEASURED 2026-10-16 (H2 1x1x2, rotated, h = 1e-4, split and
-/// unsplit alike): force |analytic - FD| 1.41e-9, stress 7.8e-9; the
-/// smallest mutant misses are 2.5e-5 (force) and 1.0e-3 (stress), so the
-/// bars (1e-8 / 5e-8, 7x / 6x the measurement) sit 3+ decades under every
-/// mutant. The force residual GREW from 8.7e-10 (before #434) to 1.4e-9: the
-/// old SR-derivative rounding noise happened to partly cancel the remaining
-/// model-nucleus error (the derivative differentiates a 1e9 Gaussian nucleus,
-/// the FD energy's is 1e16; the difference falls as 1/zeta), which the
-/// nucleus-frame evaluation exposes. Within the bar.
+/// FD bars. MEASURED (H2 1x1x2, rotated, h = 1e-4, derivative at the energy's
+/// 1e16 nucleus): force |analytic - FD| 2.1e-9 (split omega 1.0; RotOff
+/// 2.2e-9), stress 8.7e-9 (split and unsplit); the smallest mutant misses are
+/// 2.5e-5 (force) and 1.0e-3 (stress), so the bars (1e-8 / 5e-8, 4.8x / 5.8x
+/// the measurement) sit 3+ decades under every mutant.
 const FD_F_BAR: f64 = 1e-8;
 const FD_S_BAR: f64 = 5e-8;
 const FD_H: f64 = 1e-4;
@@ -1099,9 +1095,9 @@ fn hcore_only_unrotated_walk_is_caught_by_the_walked_column_counters() {
 /// hcore derivative walk vs the hcore-only unrotated one (`RotHcoreOff`; the
 /// fit stays rotated, so the `‖B‖` guard does not refuse it) vs FD of the
 /// rotated energy. The SR derivative walk uses the nucleus exponent
-/// `min(1e9, cfg)`, not the energy walk's nuclear model, so NEITHER walk is
-/// the exact derivative of the screened energy; the FD miss of each is the
-/// nucleus-model floor plus the screen, and what separates the two walks is
+/// `min(GRAD_NUCLEUS_EXPONENT, cfg)` (the energy's 1e16 by default), so
+/// NEITHER walk is the exact derivative of the screened energy; the FD miss of
+/// each is the screen, and what separates the two walks is
 /// printed, not asserted beyond a sanity bound.
 #[test]
 fn loose_screen_hcore_side_gap_rotated_vs_unrotated_vs_fd() {

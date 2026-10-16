@@ -759,16 +759,13 @@ fn shifted_mesh_ecp_terms_are_a_gamma_mesh_combination_at_fixed_density() {
 const ANCHOR_PRECISION: f64 = 1e-12;
 const EXX: [ExxDiv; 2] = [ExxDiv::None, ExxDiv::Ewald];
 /// Bars of the 1x1x3-vs-supercell anchors at the default gradient nucleus
-/// exponent. MEASURED 2026-10-16 (HI and the no-ECP Z = 7 control, zeta =
-/// 1e7 / 1e8 / 1e9, `hi_and_control_sr_floor_scan_over_the_nucleus_exponent`):
-/// force total 1.3e-13 / 2.1e-13, stress total 6.3e-13 / 2.5e-13, every part
-/// <= 5.6e-13 (SR parts <= 4.9e-14), and the same at all three exponents. The
-/// bar is 5x the worst clean total, and 8 orders below the smallest ECP
-/// mutant (`MUTANT_BAR` = 1e-4). Before #434 (SR derivative evaluated at
-/// absolute coordinates, so its libint2 rounding scaled with the exponent
-/// and did not cancel between the mesh and the supercell) the same totals
-/// were 4.1e-10 / 1.5e-8 / 7.7e-8 (force, HI, 1e7 / 1e8 / 1e9) and the anchor
-/// was pinned at 1e7 with a 2e-9 bar.
+/// exponent (the energy's 1e16). MEASURED (HI and the no-ECP Z = 7 control,
+/// default and zeta = 1e7 / 1e8 / 1e9,
+/// `hi_and_control_sr_floor_scan_over_the_nucleus_exponent`): force total
+/// 1.3e-13 / 2.1e-13, stress total 6.3e-13 / 2.5e-13, every part <= 5.6e-13
+/// (SR parts <= 4.9e-14), and the same at all four exponents. The bar is 5x
+/// the worst clean total, and 8 orders below the smallest ECP mutant
+/// (`MUTANT_BAR` = 1e-4).
 const SC_BAR_P: f64 = 3e-12;
 /// Bar of every part other than the SR attraction and the totals.
 const SC_BAR_PART: f64 = 3e-12;
@@ -829,21 +826,14 @@ fn scf_pair(ks: &KSys, eri: &KDenseAftEri) -> [KScfResult; 2] {
 }
 
 /// Gaussian-nucleus exponent of the SR attraction DERIVATIVE on both sides of
-/// the supercell anchors: the default. (Until #434 this was pinned at 1e7,
-/// because the k mesh and the supercell evaluated the derivative at different
-/// absolute coordinates and the coordinate-dependent rounding, which grows
-/// with the exponent, did not cancel. The derivative is now evaluated in the
-/// frame of its nucleus and the miss is exponent-independent.) The ECP part
-/// does not depend on it.
+/// the supercell anchors: the default. The derivative is evaluated in the
+/// frame of its nucleus, so the k-mesh-vs-supercell miss is
+/// exponent-independent. The ECP part does not depend on it.
 const SC_NUCLEUS_EXPONENT: f64 = ferric_pbc::grad::GRAD_NUCLEUS_EXPONENT;
-/// Exponent of the FD anchors and of the default configs. Against FD of the
-/// energy (nucleus exponent 1e16) the remaining difference is the model-
-/// nucleus error of the derivative's Gaussian nucleus, which falls as 1/zeta
-/// (force FD miss 2.3e-9 at 1e8 vs 2.1e-8 at 1e7, measured before #434 and
-/// not re-measured: the derivative itself is now accurate at every zeta, so
-/// a larger exponent would lower this, and the 1e8 pin is no longer needed
-/// for the k-vs-supercell comparison).
-const FD_NUCLEUS_EXPONENT: f64 = 1e8;
+/// Exponent of the FD anchors and of the default configs: the default, the
+/// energy's own nucleus, so the FD of the energy and the derivative see the
+/// same nucleus.
+const FD_NUCLEUS_EXPONENT: f64 = ferric_pbc::grad::GRAD_NUCLEUS_EXPONENT;
 
 fn gcfg(m: Option<KGradMutation>) -> KGradConfig {
     gcfg_z(m, FD_NUCLEUS_EXPONENT)
@@ -1592,15 +1582,14 @@ fn k_energies(cell: &Cell, bs: &BasisSet, n: [usize; 3]) -> [f64; 2] {
 
 /// Bars of the SCF-level FD anchors (central FD, h = 1e-4). The floor of
 /// these is the h^2 truncation of the central difference (FD(h) vs FD(2h)
-/// differ at that order, as in the Gamma and k-stress anchors) plus, for the
-/// force, the model-nucleus error of the SR derivative at `zeta = 1e8` (the
-/// derivative is exact for that Gaussian nucleus, the FD energy's nucleus is
-/// 1e16; the difference falls as 1/zeta); the ECP value kernel itself is
-/// exact to ~1e-13 (the 2.5e-7 of the Gamma force anchor at zeta = 1e9
-/// before #434 was V_SR rounding noise, not V_ECP). MEASURED here: force
-/// 2.3e-9 / 1.1e-9 (dense), 1.1e-9 / 2.3e-9 (RS-GDF); stress 3.1e-8 / 5.4e-8
-/// (dense, all nine), 2.3e-8 / 4.2e-9 / 2.6e-8 (RS-GDF). The smallest ECP
-/// mutant misses the same anchors by >= 2e-3 (force) and >= 5e-2 (stress).
+/// differ at that order, as in the Gamma and k-stress anchors); the SR
+/// derivative differentiates the energy's own 1e16 nucleus, so no
+/// model-nucleus error enters; the ECP value kernel itself is exact to ~1e-13.
+/// MEASURED at the default: H2I k-UHF force 1.2e-10, strain 6.5e-9; HI 1x1x3
+/// stress (all nine) 3.2e-8 / 5.4e-8 (none / ewald); with the derivative's
+/// nucleus at 1e8 the H2I force miss was 5.4e-10 and the HI force 2.3e-9 /
+/// 1.1e-9 (dense), 1.1e-9 / 2.3e-9 (RS-GDF). The smallest ECP mutant misses
+/// the same anchors by >= 2e-3 (force) and >= 5e-2 (stress).
 const FORCE_FD_BAR: f64 = 2e-8;
 const STRESS_FD_BAR: f64 = 2e-7;
 const FD_H: f64 = 1e-4;

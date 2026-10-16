@@ -5,20 +5,20 @@
     clippy::float_cmp
 )]
 //! DIAGNOSTIC (`#[ignore]`, prints a table; asserts only harness validity):
-//! is the ~4e-7 big-box ECP force scatter (FINDINGS "ECP periodic force
-//! big-box limit (measured 2026-09-28)") the gradient-only Gaussian-nucleus
-//! exponent floor ([`GRAD_NUCLEUS_EXPONENT`] = 1e9, then believed to be
-//! libint2's p/d-shell precision on the SR attraction DERIVATIVE; the energy
-//! keeps 1e16)?
+//! the residual of the big-box ECP force (analytic minus Richardson FD of the
+//! Gamma energy) against the gradient-only Gaussian-nucleus exponent
+//! ([`GRAD_NUCLEUS_EXPONENT`], the energy's own 1e16 by default; the energy
+//! keeps 1e16).
 //!
-//! STATUS (2026-10-16, #434): the hypothesis was right about WHERE (the V_SR
-//! term, rising with the exponent) and wrong about WHY. The rise was
-//! coordinate-dependent rounding in the SR derivative (absolute coordinates
-//! times the zeta-sized exponents), not a libint2 precision limit; each
-//! triplet is now evaluated in the frame of its nucleus and the HI/LANL2DZ
-//! a = 24 scan collapsed from 8.5e-8 to 9.9e-11 (independent review). What
-//! the scan shows now is the model-nucleus error (falls as 1/zeta). The text
-//! below is the original design and predictions, kept as written.
+//! What the scan shows (HI/LANL2DZ a = 24 box, iodine x/y/z): the V_SR term
+//! carries the exponent dependence, falling as 1/zeta from 6.3e-9 at 1e7 to
+//! 5.5e-13 at 1e11 (it is the model-nucleus error of the derivative against
+//! the energy's point nucleus); the total residual is then set by the V_LR
+//! finite-difference floor (6.3e-11). At the default 1e16 the V_SR model error
+//! is absent. The no-ECP Z = 7 control behaves the same (V_SR 3.2e-8 at 1e7,
+//! 5.1e-12 at 1e11; floor 3.5e-10). Each triplet of the SR derivative is
+//! evaluated in the frame of its nucleus, so the derivative's own rounding does
+//! not grow with the exponent.
 //!
 //! Run (release, serially, one BLAS thread):
 //!
@@ -40,7 +40,7 @@
 //!
 //! What is measured, per scanned exponent ζ (energy and density fixed, only
 //! the gradient's `GammaGradConfig::nucleus_exponent` changes — the existing
-//! test-facing override; no production default is touched):
+//! test-facing override):
 //! * TOTAL: analytic force − Richardson central FD (h = 2e-3, 1e-3) of
 //!   ferric's OWN Gamma energy (every displaced SCF seeded from the
 //!   reference density), iodine x/y/z (ΣF ≈ 0, so H mirrors it).
@@ -59,22 +59,6 @@
 //! override enters only `sr_attraction_gradient`); every other part is
 //! checked (and asserted) ζ-independent to 1e-13, and ζ = default is
 //! asserted bit-identical to `nucleus_exponent: None`.
-//!
-//! PREDICTIONS (write-down before measuring):
-//! * IF the floor is the nucleus exponent: the V_SR term residual carries
-//!   the TOTAL residual, has the scan's U shape (rising ~10-30x per decade
-//!   above ~1e9, rising again at 1e7 from the 1e16-energy mismatch), and the
-//!   box−molecular difference moves across ζ by about the scatter (~4e-7);
-//!   the ECP term residual is flat and small; the no-ECP control shows the
-//!   same V_SR behaviour.
-//! * IF it is something else (ECP quadrature, lattice-sum/image cutoff, SCF
-//!   convergence, 2e side): the V_SR residual at 1e8-1e9 is ≪ 4e-7, and the
-//!   TOTAL residual / box−molecular difference is FLAT across ζ; the
-//!   non-flat piece sits in the ECP term (ECP quadrature — then the control
-//!   lacks it), in the remainder (2e/SCF side), or nowhere in the own-energy
-//!   FD at all (then the energies themselves disagree box vs molecular, a
-//!   truncation of the ENERGY that an own-FD check is blind to by
-//!   construction; the ζ-independence of box−molecular then says the same).
 //!
 //! Harness-validity asserts (not physics bars): SCFs converge; the
 //! ζ-independent kinetic and E_nn term residuals are < 1e-8 (a failure there

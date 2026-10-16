@@ -20,14 +20,12 @@
 //!     Meshes: H2 1×1×3 and 2×2×2 RHF, H3 1×1×3 UHF (2,1), triclinic s+p
 //!     tri2 1×1×3 RHF (`#[ignore]`d, 135 s release). tri2 runs at the default
 //!     gradient nucleus exponent like the s-only cells and the same `SC_BAR`:
-//!     measured miss 1.3e-14 (before the nucleus-frame SR derivative of #434
-//!     it was 1.06e-9 at 1e8 and 2.5e-8 at the default, which is why this
-//!     case used to be pinned at 1e8 with a looser bar).
+//!     measured miss 1.3e-14 at the default.
 //! (3) Analytic vs central FD (h = 1e-4) of ferric's OWN k energy, H2 1×1×3,
 //!     both exxdiv (dense and RS-GDF). The prototype's floor is the h²
 //!     truncation (−2.99e-9 on (0,z), Richardson 3e-12) with a pure-AFT h;
-//!     the Rust Ewald-split h adds the smeared-nucleus derivative
-//!     (`GRAD_NUCLEUS_EXPONENT` 1e9 vs the energy's 1e16), so the bar is
+//!     the Rust Ewald-split h adds the smeared-nucleus derivative (the
+//!     default `GRAD_NUCLEUS_EXPONENT` is the energy's 1e16), so the bar is
 //!     the Rust Gamma FD bar 1e-7 (`pbc_grad.rs`), residuals printed.
 //! (4) ΣF ≤ 1e-10; F(ewald) ≡ F(none) on one density ≤ 1e-11; closed-shell
 //!     kUHF(D/2, D/2) ≡ kRHF(D) ≤ 1e-12.
