@@ -1137,9 +1137,15 @@ fn loose_screen_hcore_side_gap_rotated_vs_unrotated_vs_fd() {
 // derivative: explicit supercell (rotation on both sides) and FD of the
 // ROTATED energy. If correct: the same bars as the 1-D anchors.
 //
-// BLIND SPOT, asserted with its measured size: every n_i <= 2 mesh is TRIM,
-// so `RotSwapPair` (a transposed bin) is nearly the same bin; the
-// non-TRIM triclinic 1x1x3 anchor carries it.
+// WEAK SPOT, asserted with its measured size: every n_i <= 2 mesh is TRIM, so
+// `RotSwapPair` (a transposed bin) is nearly the same bin. Measured on the
+// triclinic cell: 2x2x1 force 4.72e-4 / stress 4.70e-3 (RotFitWrongResidue
+// 9.2e-2 / 2.5e-1); non-TRIM 1x1x3 force 7.33e-3 / stress 2.01e-2. It is
+// asserted (> 1e-4 on 2x2x1, > 1e-3 on the triclinic 1x1x3 supercell test).
+// Also caught by `rotation_mutants_miss_the_rotated_force` (cubic 1x1x2,
+// default), `..._stress` (cubic 1x1x3, ignored) and the ECP RS-GDF stress
+// loop (1.12e-1). NOT covered: the triclinic 1x1x1 anchor runs only RotDropT;
+// fit-acting FORCE mutants with an ECP are never run.
 
 fn cell_tri() -> Cell {
     Cell::new(hydrogens(&H2_ATOMS), TRI_A).expect("triclinic cell")
@@ -1147,13 +1153,21 @@ fn cell_tri() -> Cell {
 
 /// Bar of the 1x1x1-vs-Gamma anchors of this section. MEASURED (triclinic,
 /// both exxdiv): force total 3.0e-12, hcore 0 (bitwise), fit 1.2e-14; stress
-/// total 3.9e-14, fit 4.2e-14; 25x above, and the smallest rotation mutant
-/// moves the same quantities by >= 1e-3.
+/// total 3.9e-14, fit 4.2e-14; 25x above. The test also runs `RotDropT`
+/// (force and stress) and asserts it moves the total by more than
+/// `ONE_POINT_MUTANT_FLOOR`.
 const ONE_POINT_BAR: f64 = 1e-10;
+/// `RotDropT` at triclinic 1x1x1 must move the total by at least this (the
+/// 2x2x1 triclinic value is 4.9e-1 force / 2.2e-1 stress).
+const ONE_POINT_MUTANT_FLOOR: f64 = 1e-3;
+/// `RotSwapPair` floors (derived from the measured values in the header).
+const SWAP_PAIR_FLOOR_2X2X1: f64 = 1e-4;
+const SWAP_PAIR_FLOOR_1X1X3: f64 = 1e-3;
 
 /// (c) on the triclinic cell: 1x1x1 mesh == the Gamma rotated force and
 /// stress, both exxdiv (hcore, fit and total, per part).
 #[test]
+#[ignore = "slow (~130 s release at load 10; 46 s before the RotDropT mutant was added): triclinic rotated 1x1x1 RS-GDF, two exxdiv anchors + one mutant"]
 fn triclinic_one_point_mesh_rotated_force_and_stress_are_the_gamma_ones() {
     let (hp, gp) = (1e-11, 1e-12);
     let r = run(cell_tri(), [1, 1, 1], None, on(), (hp, gp));
@@ -1166,6 +1180,17 @@ fn triclinic_one_point_mesh_rotated_force_and_stress_are_the_gamma_ones() {
         );
         assert!(d.iter().all(|x| *x < ONE_POINT_BAR), "{d:?}");
     }
+    let scf = r.scf(ExxDiv::None);
+    let f0 = r.force(&scf, ExxDiv::None, None);
+    let s0 = r.stress(&scf, ExxDiv::None, None);
+    let fm = r.force(&scf, ExxDiv::None, Some(KGradMutation::RotDropT));
+    let sm = r.stress(&scf, ExxDiv::None, Some(KStressMutation::RotDropT));
+    let (mf, ms) = (
+        max_abs_diff(&fm.grad, &f0.grad),
+        mdiff(&sm.de_deps, &s0.de_deps),
+    );
+    eprintln!("triclinic 1x1x1 RotDropT: force moves {mf:.2e}, stress moves {ms:.2e}");
+    assert!(mf > ONE_POINT_MUTANT_FLOOR && ms > ONE_POINT_MUTANT_FLOOR);
 }
 
 /// (d) on the triclinic cell, non-TRIM 1x1x3 mesh == supercell / N with the
@@ -1185,6 +1210,18 @@ fn triclinic_rotated_1x1x3_mesh_force_and_stress_are_the_gamma_supercell() {
         );
         assert!(d.iter().all(|x| *x < SC_BAR), "{d:?}");
     }
+    // The weakest mutant on the non-TRIM triclinic mesh.
+    let scf = r.scf(ExxDiv::None);
+    let f0 = r.force(&scf, ExxDiv::None, None);
+    let s0 = r.stress(&scf, ExxDiv::None, None);
+    let fm = r.force(&scf, ExxDiv::None, Some(KGradMutation::RotSwapPair));
+    let sm = r.stress(&scf, ExxDiv::None, Some(KStressMutation::RotSwapPair));
+    let (mf, ms) = (
+        max_abs_diff(&fm.grad, &f0.grad),
+        mdiff(&sm.de_deps, &s0.de_deps),
+    );
+    eprintln!("triclinic 1x1x3 RotSwapPair: force moves {mf:.2e}, stress moves {ms:.2e}");
+    assert!(mf > SWAP_PAIR_FLOOR_1X1X3 && ms > SWAP_PAIR_FLOOR_1X1X3);
 }
 
 /// (d) on a 2x2x1 mesh (triclinic and cubic cells): k mesh == the explicit
@@ -1225,9 +1262,10 @@ fn displaced(cell: &Cell, a: usize, x: usize, h: f64) -> Cell {
 /// (b) on a 2x2x1 mesh of the triclinic cell: rotated analytic force (H x, H
 /// z, the second atom's y) and stress (xx, zz, xy, yz, xz) vs central FD of
 /// the ROTATED k energy, every displaced / strained build rotated; the
-/// production-wired stress and force mutants must move the total, with the
-/// TRIM-mesh blind spot (`RotSwapPair`, `RotFitWrongResidue` act through the
-/// fit pair/bin order) asserted at its measured size, not hidden.
+/// production-wired stress and force mutants must move the total; on this
+/// TRIM mesh `RotSwapPair` is weak (4.72e-4 force, 4.70e-3 stress) and is
+/// asserted against `SWAP_PAIR_FLOOR_2X2X1`, the others against
+/// `MUTANT_FLOOR`.
 #[test]
 #[ignore = "slow (the three tests total 650 s release at load 10): 1 + 16 rotated 2x2x1 triclinic k pipelines, 14 mutant evaluations"]
 fn rotated_k_force_and_stress_match_fd_on_2x2x1_triclinic() {
@@ -1271,7 +1309,12 @@ fn rotated_k_force_and_stress_match_fd_on_2x2x1_triclinic() {
         let moved = max_abs_diff(&g.grad, &f.grad);
         eprintln!("  force mutant {m:?}: total moves {moved:.2e}");
         assert!(
-            moved > MUTANT_FLOOR || matches!(m, KGradMutation::RotSwapPair),
+            moved
+                > if m == KGradMutation::RotSwapPair {
+                    SWAP_PAIR_FLOOR_2X2X1
+                } else {
+                    MUTANT_FLOOR
+                },
             "{m:?} escaped: {moved:e}"
         );
     }
@@ -1280,7 +1323,12 @@ fn rotated_k_force_and_stress_match_fd_on_2x2x1_triclinic() {
         let moved = mdiff(&g.de_deps, &s.de_deps);
         eprintln!("  stress mutant {m:?}: total moves {moved:.2e}");
         assert!(
-            moved > MUTANT_FLOOR || matches!(m, KStressMutation::RotSwapPair),
+            moved
+                > if m == KStressMutation::RotSwapPair {
+                    SWAP_PAIR_FLOOR_2X2X1
+                } else {
+                    MUTANT_FLOOR
+                },
             "{m:?} escaped: {moved:e}"
         );
     }

@@ -35,12 +35,22 @@
 //! engine created and destroyed earlier in the process moved k-RHF energies
 //! of HI with an I s contraction (1.2, 0.45, 0.16) by 1.2e-5 Ha, and any
 //! FD anchor computed after an analytic call by up to 2e-8 per energy. The
-//! fixtures here use s exponents (3.0, 1.0, 0.35) / p (2.0, 0.7), verified
-//! clean under `MALLOC_PERTURB_=1` and 170.
+//! fixtures here use s exponents (3.0, 1.0, 0.35) / p (2.0, 0.7). The DENSE
+//! AFT anchors (and the Gamma ones) are bit-identical under `MALLOC_PERTURB_`
+//! 1 and 170. The RS-GDF anchor is NOT: a SECOND uninitialised read sits in
+//! the UNROTATED `KRsGdf` fit for this I s/p basis (perturb 1: LAPACK failure;
+//! perturb 170: "k-RHF not converged (400 it)"; rotation ON is bit-identical),
+//! tracked in #433. Until #433 lands, the RS-GDF test's rotated-vs-unrotated
+//! comparison (`ROT_VS_OFF_FIT_BAR`) is against a run that reads uninitialised
+//! memory; its FD and mutant parts use only the rotated fit.
 //!
 //! NOT tested: range-split source with an ECP, several ECP atoms, triclinic
 //! cells with an ECP (see `pbc_sr_rotation_kderiv.rs` for triclinic rotation
-//! without one).
+//! without one), the unrotated RS-GDF fit path for this basis (uninitialised
+//! read, #433), the fit-acting FORCE mutants (`RotFitWrongResidue`,
+//! `RotSwapPair`) with an ECP (the dense force loop only asserts that they
+//! are no-ops; the RS-GDF loop is stress-only; their stress versions are run
+//! there: 6.97e-1 and 1.12e-1).
 
 mod common;
 
@@ -560,9 +570,13 @@ fn gsys(cell: Cell, bs: &BasisSet, rot: SrColumnRotation) -> GSys {
 
 /// Bar of the fixed-density hcore FD gate (central FD, h = 1e-4, all nine
 /// components). MEASURED 8.5e-8 on a strain of max |component| 4.9 (relative
-/// 1.7e-8: the h^2 truncation of the central difference); the smallest
-/// rotation mutant misses the same quantities by >= 1e-6 at SCF level, so
-/// 3e-7 is 3.5x above the floor.
+/// 1.7e-8: the h^2 truncation of the central difference). The Richardson
+/// residual rises to 2.8e-8 / 3.7e-8 at nucleus exponent 1e7 / 1e9
+/// (nucleus-width model error), so the floor is not purely h^2. The test runs
+/// the rotation mutants at fixed density: measured totals move by RotDropT
+/// 1.03e-1, RotUseT 5.05e-1, RotOneSided 9.06e-2, RotFlipSign 2.15e-1,
+/// RotHcoreWrongResidue 1.07, each > 10x this bar; RotSwapPair and
+/// RotFitWrongResidue act on the fit only and move nothing (0).
 const HCORE_FD_BAR: f64 = 3e-7;
 /// The rotated energy's hcore (screen 1e-14) vs the unrotated one.
 const ROT_VS_OFF_H_BAR: f64 = 1e-10;
@@ -686,6 +700,37 @@ fn rotated_hcore_with_ecp_at_fixed_density_matches_fd_and_keeps_the_ecp_part() {
         );
     }
     assert!(miss < HCORE_FD_BAR, "{miss:e}");
+    // Production-wired rotation mutants at fixed density.
+    for m in [
+        KStressMutation::RotDropT,
+        KStressMutation::RotUseT,
+        KStressMutation::RotOneSided,
+        KStressMutation::RotFlipSign,
+        KStressMutation::RotHcoreWrongResidue,
+        KStressMutation::RotSwapPair,
+        KStressMutation::RotFitWrongResidue,
+    ] {
+        let sm = kpoint_hcore_stress_fixed_d(
+            &ks.cell,
+            &ks.prep,
+            &ks.mesh,
+            &ks.hcfg,
+            &ks.hk,
+            &dk,
+            &scfg(Some(m), FD_NUCLEUS_EXPONENT),
+        )
+        .unwrap();
+        let moved = max_mat(&sm.hcore_total(), &tot);
+        eprintln!("  fixed-D hcore mutant {m:?}: total moves {moved:.2e}");
+        if matches!(
+            m,
+            KStressMutation::RotSwapPair | KStressMutation::RotFitWrongResidue
+        ) {
+            assert!(moved < 1e-12, "{m:?} moved an hcore-only total {moved:e}");
+        } else {
+            assert!(moved > 10.0 * HCORE_FD_BAR, "{m:?} escaped: {moved:e}");
+        }
+    }
 }
 
 // ============================================================ (2) SCF level
@@ -1129,6 +1174,12 @@ fn k_fit_energy(cell: &Cell, bs: &BasisSet, n: [usize; 3], rot: SrColumnRotation
 /// anchors (the dense J/K does not rotate). Also: the walked-column counters
 /// of BOTH walks equal the energy's, and the rotated analytic equals the
 /// unrotated RS-GDF analytic of the same energy to the screen.
+///
+/// CAVEAT (#433): the UNROTATED fit for this basis reads uninitialised memory
+/// (under `MALLOC_PERTURB_=1`: LAPACK failure; 170: "k-RHF not converged (400
+/// it)"; rotation ON is bit-identical). The `ROT_VS_OFF_FIT_BAR` comparison is
+/// therefore against a run that is not reproducible until #433 lands; the FD
+/// and mutant parts use only the rotated fit.
 #[test]
 #[ignore = "slow (~3 min release, 6 threads, quiet box): 1 + 8 rotated RS-GDF k pipelines, HI 1x1x3, + one unrotated pipeline"]
 fn rotated_ecp_rsgdf_force_and_stress_match_fd_of_the_rotated_fitted_energy() {
@@ -1363,7 +1414,13 @@ fn far_field_s_blocks_are_clean() -> Result<(), String> {
     Ok(())
 }
 
+/// Helper of the reproducer below, not a protection by itself: in the default
+/// allocator the garbage is usually zero, and the check only catches blocks
+/// that are non-finite or larger than 1e-3, so it passes on the known
+/// uninitialised read unless the allocator fills memory. Run it only through
+/// the perturbed re-exec.
 #[test]
+#[ignore = "helper of far_field_contracted_s_blocks_do_not_read_uninitialised_memory; only meaningful under MALLOC_PERTURB_ (known uninitialised read, #433)"]
 fn far_field_contracted_s_blocks_are_finite_in_the_default_allocator() {
     far_field_s_blocks_are_clean().expect("block check");
 }
@@ -1388,18 +1445,22 @@ fn far_field_contracted_s_blocks_are_finite_in_the_default_allocator() {
 #[ignore = "KNOWN DEFECT: libint2/shim reads uninitialised memory in far-field erfc 3-centre blocks of the contracted s set (1.2, 0.45) (not cc-pVDZ H, STO-3G H, or s (3.0, 1.0, 0.35))"]
 fn far_field_contracted_s_blocks_do_not_read_uninitialised_memory() {
     let exe = std::env::current_exe().expect("current exe");
-    let out = std::process::Command::new(exe)
-        .args([
-            "far_field_contracted_s_blocks_are_finite_in_the_default_allocator",
-            "--exact",
-            "--test-threads=1",
-        ])
-        .env("MALLOC_PERTURB_", "1")
-        .output()
-        .expect("spawn");
-    assert!(
-        out.status.success(),
-        "perturbed run failed:\n{}",
-        String::from_utf8_lossy(&out.stdout)
-    );
+    for perturb in ["1", "170"] {
+        let out = std::process::Command::new(&exe)
+            .args([
+                "far_field_contracted_s_blocks_are_finite_in_the_default_allocator",
+                "--exact",
+                "--include-ignored",
+                "--test-threads=1",
+            ])
+            .env("MALLOC_PERTURB_", perturb)
+            .output()
+            .expect("spawn");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        // A filter that matches nothing exits 0 too (a rename would pass).
+        assert!(
+            out.status.success() && stdout.contains("1 passed"),
+            "MALLOC_PERTURB_={perturb} run failed:\n{stdout}"
+        );
+    }
 }

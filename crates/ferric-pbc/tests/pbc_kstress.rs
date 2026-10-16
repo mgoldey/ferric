@@ -3880,13 +3880,16 @@ fn open_shell_p_h4_triplet_one_point_mesh_uhf_stress_is_the_gamma_stress() {
 }
 
 /// Gaussian-nucleus exponent of the SR-attraction DERIVATIVE on both sides of
-/// the p-shell supercell anchor. The k mesh and the supercell evaluate that
-/// derivative at different image offsets, so libint2's gradient-nucleus
-/// precision floor does not cancel and grows ~10-30x per decade of the
-/// exponent (`pbc_kpoint_ecp.rs` `SC_BAR_P` and the scan there: 2.6e-10 at
-/// 1e7, 7.4e-9 at 1e8, 1.1e-7 at 1e9). MEASURED here at the DEFAULT exponent:
-/// 5.9e-8 (S1 triplet, none), the same floor, not a defect; s-only cells
-/// (the H3 anchor) do not see it.
+/// the p-shell supercell anchor. MEASURED at the DEFAULT exponent (1e9): the
+/// k-vs-supercell/N miss is 5.87e-8 (S1 triplet, none), entirely in `vsr`.
+/// Scan of `vsr` (reviewer, deterministic under MALLOC_PERTURB_): default/1e9
+/// k -0.230185627083 vs Gamma/3 -0.230185685740; 1e8 miss 2.9e-9; 1e7 miss
+/// 1.7e-10. The k side is stable (8.7e-10 change 1e8 -> 1e9); the GAMMA
+/// supercell side jumps by 6.1e-8, so the error is in the Gamma
+/// `gamma_uhf_stress` SR walk at that exponent, not a k defect (tracked in
+/// #434: Gamma p-shell SR stress error at the default exponent). Pinning both
+/// sides at 1e7 is therefore a workaround for that Gamma-side error, not a
+/// shared libint floor; s-only cells (the H3 anchor) do not see it.
 const OS_SC_ZETA: f64 = 1e7;
 /// Bar of the p-shell supercell anchor at `OS_SC_ZETA` (the unrotated ECP
 /// file's bar for the same floor). MEASURED 1.7e-10 here (S1, both exxdiv; 2.6e-10 for the
