@@ -1,6 +1,6 @@
 --- a/include/libint2/boys.h
 +++ b/include/libint2/boys.h
-@@ -18,6 +18,20 @@
+@@ -18,6 +18,24 @@
   *
   */
  
@@ -13,7 +13,11 @@
 + *  copy-constructs the erf/erfc evaluator per primitive quartet (heap alloc +
 + *  atomic shared_ptr refcount on the process-wide FmEval_Chebyshev7 singleton);
 + *  erfc_coulomb_gm_eval::operator() is const with its Fm scratch on the stack.
-+ *  Arithmetic is unchanged. crates/ferric-integrals/build.rs puts this
++ *  Arithmetic is unchanged. A second change (issue #433):
++ *  FmEval_Chebyshev7::eval takes the asymptotic branch for x >= T_crit
++ *  (stock: x > T_crit), because x == 117.0 exactly read one table row past
++ *  the end; it alters the result only at that single point.
++ *  crates/ferric-integrals/build.rs puts this
 + *  directory first on the shim's include path ONLY when the libint2 prefix's
 + *  own boys.h is byte-identical to the stock 2.7.2 file above.
 + */
@@ -21,7 +25,22 @@
  #ifndef _libint2_src_lib_libint_boys_h_
  #define _libint2_src_lib_libint_boys_h_
  
-@@ -1572,6 +1586,21 @@
+@@ -324,7 +342,13 @@
+ 
+         // large T => use upward recursion
+         // cost = 1 div + 1 sqrt + (1 + 2*(m-1)) muls
+-        if (x > T_crit) {
++        // ferric patch (issue #433): `>=`, not the stock `>`. The table has
++        // cheb_table_tmax * 7 = 819 intervals (rows 0..=818); at x == T_crit
++        // exactly, iv = int(x * one_over_delta) = 819 indexes one row PAST the
++        // table (uninitialised heap). Only the single point x == 117.0
++        // changes (to the asymptotic value, whose truncation error is far
++        // below double precision there).
++        if (x >= T_crit) {
+           const double one_over_x = 1/x;
+           Fm[0] = 0.88622692545275801365 * sqrt(one_over_x); // see Eq. (9.8.9) in Helgaker-Jorgensen-Olsen
+           if (m_max == 0)
+@@ -1572,6 +1596,21 @@
        ExpensiveNumbers<Real> numbers_;
    };
  
@@ -43,7 +62,7 @@
    template <typename GmEvalFunction>
    struct GenericGmEval : private GmEvalFunction {
  
-@@ -1587,7 +1616,17 @@
+@@ -1587,7 +1626,17 @@
        template <typename Real, typename... ExtraArgs>
        void eval(Real* Gm, Real rho, Real T, int mmax, ExtraArgs... args) const {
          assert(mmax <= mmax_);
@@ -62,7 +81,7 @@
        }
  
        /// @return the maximum value of m for which the \f$ G_m(\rho, T) \f$ can be computed with this object
-@@ -1598,6 +1637,20 @@
+@@ -1598,6 +1647,20 @@
      private:
        int mmax_;
        Real precision_;
@@ -83,7 +102,7 @@
    };
  
    // these Gm engines need extra scratch data
-@@ -1725,10 +1778,12 @@
+@@ -1725,10 +1788,12 @@
    /// core integral evaluator for \f$ \mathrm{erfc}(\omega r) / r \f$ kernel
    /// @note need extra scratch for Boys function values,
    ///       since need to call Boys engine twice
@@ -99,7 +118,7 @@
      typedef Real value_type;
  
      #ifndef LIBINT_USER_DEFINED_REAL
-@@ -1737,17 +1792,27 @@
+@@ -1737,17 +1802,27 @@
      using FmEvalType = libint2::FmEval_Reference<scalar_type>;
  #endif
  
@@ -133,7 +152,7 @@
                         mmax);
  
          using std::sqrt;
-@@ -1755,7 +1820,7 @@
+@@ -1755,7 +1830,7 @@
              sqrt(omega2_over_omega2_plus_rho);
          for (auto m = 0; m <= mmax;
               ++m, ooversqrto2prho_exp_2mplus1 *= omega2_over_omega2_plus_rho) {

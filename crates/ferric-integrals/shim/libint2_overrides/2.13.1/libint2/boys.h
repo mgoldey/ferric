@@ -28,7 +28,11 @@
  *  copy-constructs the erf/erfx evaluator per primitive quartet (atomic
  *  shared_ptr refcount on the process-wide FmEval_Chebyshev7 singleton, plus
  *  a heap alloc for erfx's scratch vector); erfx_coulomb_gm_eval::operator()
- *  is const with its Fm scratch on the stack. Arithmetic is unchanged.
+ *  is const with its Fm scratch on the stack. Arithmetic is unchanged. A
+ *  second change (issue #433): FmEval_Chebyshev7::eval takes the asymptotic
+ *  branch for x >= T_crit (stock: x > T_crit), because x == 117.0 exactly
+ *  read one table row past the end; it alters the result only at that single
+ *  point.
  *  crates/ferric-integrals/build.rs puts this directory first on the shim's
  *  include path ONLY when the libint2 prefix's own boys.h is byte-identical
  *  to the stock 2.13.1 file above.
@@ -363,7 +367,15 @@ class FmEval_Chebyshev7 {
   inline void eval(Real* Fm, Real x, int m_max) const {
     // large T => use upward recursion
     // cost = 1 div + 1 sqrt + (1 + 2*(m-1)) muls
-    if (x > T_crit) {
+    //
+    // ferric patch (issue #433): `>=`, not the stock `>`. The table has
+    // cheb_table_tmax * 7 = 819 intervals (rows 0..=818); at x == T_crit
+    // exactly, iv = int(x * one_over_delta) = 819 indexes one row PAST the
+    // table (uninitialised heap). Any x > T_crit already takes this branch,
+    // and its truncation error (e^-x / 2x, x >= 117) is far below double
+    // precision, so only the single point x == 117.0 changes: from a read of
+    // uninitialised memory to the asymptotic value.
+    if (x >= T_crit) {
       const double one_over_x = 1 / x;
       Fm[0] = 0.88622692545275801365 *
               sqrt(one_over_x);  // see Eq. (9.8.9) in Helgaker-Jorgensen-Olsen

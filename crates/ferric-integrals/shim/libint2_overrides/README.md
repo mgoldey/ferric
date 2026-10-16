@@ -53,6 +53,22 @@ therefore race-free even if one `GenericGmEval` were shared by several engines. 
 Plain `Operator::coulomb` never goes through `GenericGmEval`: `FmEval_Chebyshev7::eval` is called through a const
 pointer. It is untouched.
 
+## Second change: `FmEval_Chebyshev7::eval` table edge (issue #433)
+
+`eval` took the asymptotic branch only for `x > T_crit` (`T_crit = cheb_table_tmax = 117`) and interpolated
+otherwise with `iv = int(x * 7)` into a table of `819 = 117 * 7` intervals (rows 0..=818). At `x == 117.0` exactly,
+`iv == 819` reads the coefficients one row past the end of the `posix_memalign`'d table, i.e. uninitialised heap.
+The override uses `x >= T_crit`. Every `x != 117.0` takes the same branch as before (bit-identical results); at
+`x == 117.0` the asymptotic value (truncation error `e^-117/(2*117)`, far below double precision) replaces garbage.
+
+Who hits it: any Boys argument that is exactly 117.0 in floating point (`rho * |PQ|^2` for Coulomb, and for erf/erfc
+both `T` and `T * omega^2/(omega^2+rho)` are evaluated). It needs a coincidence of exponents and geometry, which
+lattice-integer shifts with round exponents (for example `0.9 * 130`) produce. The engine precision only decides
+whether the one primitive quartet that hits it survives primitive screening, so the symptom appears at 1e-20 and below
+and vanishes at 1e-14. This is a libint2 defect (upstream `boys.h`, all versions that ship `boys_cheb7_v2.h`), also
+present in a prefix whose `boys.h` is not one of the stock files above; build.rs then warns that the fix is NOT applied.
+Test: `crates/ferric-integrals/tests/boys_chebyshev_table_edge.rs`.
+
 ## Only header code is affected
 
 `Engine`, `GenericGmEval` and the evaluators are header-only (`__libint2_engine_inline`). They are instantiated in
