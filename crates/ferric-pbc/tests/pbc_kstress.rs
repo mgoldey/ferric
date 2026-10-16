@@ -3790,7 +3790,13 @@ fn s2_h4_triplet() -> OpenShell {
 }
 
 /// k-UHF energies `[none, ewald]` of `(na, nb)` on a (strained) cell.
-fn k_energies_uhf_nanb(cell: &Cell, bs: &BasisSet, n: [usize; 3], na: usize, nb: usize) -> [f64; 2] {
+fn k_energies_uhf_nanb(
+    cell: &Cell,
+    bs: &BasisSet,
+    n: [usize; 3],
+    na: usize,
+    nb: usize,
+) -> [f64; 2] {
     let ks = ksys(cell.clone(), bs, n);
     let eri = kdense(&ks, ANCHOR_PRECISION);
     let vm = ks.mesh.madelung(&ks.cell).unwrap();
@@ -3859,10 +3865,48 @@ fn open_shell_p_h4_triplet_one_point_mesh_uhf_stress_is_the_gamma_stress() {
     open_shell_p_one_point(s2_h4_triplet());
 }
 
+/// Gaussian-nucleus exponent of the SR-attraction DERIVATIVE on both sides of
+/// the p-shell supercell anchor. The k mesh and the supercell evaluate that
+/// derivative at different image offsets, so libint2's gradient-nucleus
+/// precision floor does not cancel and grows ~10-30x per decade of the
+/// exponent (`pbc_kpoint_ecp.rs` `SC_BAR_P` and the scan there: 2.6e-10 at
+/// 1e7, 7.4e-9 at 1e8, 1.1e-7 at 1e9). MEASURED here at the DEFAULT exponent:
+/// 5.9e-8 (S1 triplet, none), the same floor, not a defect; s-only cells
+/// (the H3 anchor) do not see it.
+const OS_SC_ZETA: f64 = 1e7;
+/// Bar of the p-shell supercell anchor at `OS_SC_ZETA` (the unrotated ECP
+/// file's bar for the same floor, measured there at 2.6e-10 for stress).
+const OS_SC_BAR: f64 = 2e-9;
+
+fn ks_uhf_zeta(
+    ks: &KSys,
+    eri: &KDenseAftEri,
+    scf: &KUScfResult,
+    exx: ExxDiv,
+    zeta: f64,
+) -> KStress {
+    kpoint_uhf_stress(
+        &ks.cell,
+        &ks.prep,
+        &ks.mesh,
+        &hcore_cfg(),
+        &ks.hk,
+        KStressJk::Dense(eri),
+        scf,
+        exx,
+        &KStressConfig {
+            nucleus_exponent: Some(zeta),
+            ..scfg(None)
+        },
+    )
+    .expect("kpoint_uhf_stress")
+}
+
 /// PHYSICS: the 1x1x3 (non-TRIM) k-UHF stress per cell is the explicit
-/// 3-cell supercell's Gamma-UHF stress / 3, both exxdiv; the k-specific
-/// mutants and the Gamma-style term mutants all miss it. S1 only (the
-/// supercell has 24 AOs).
+/// 3-cell supercell's Gamma-UHF stress / 3, both exxdiv, with the p-shell
+/// derivative floor pinned by evaluating both sides at `OS_SC_ZETA`; the
+/// k-specific mutants and the Gamma-style term mutants all miss it. S1 only
+/// (the supercell has 24 AOs).
 #[test]
 #[ignore = "slow (~4 min release): 6-atom s+p supercell Gamma UHF stress x2 + k stress mutants"]
 fn open_shell_p_1x1x3_uhf_stress_is_the_supercell_stress_per_cell() {
@@ -3881,21 +3925,53 @@ fn open_shell_p_1x1x3_uhf_stress_is_the_supercell_stress_per_cell() {
             unfold(&ks.mesh, &scfs[i].density_alpha),
             unfold(&ks.mesh, &scfs[i].density_beta),
         );
-        let k = ks_uhf(&ks, &eri, &scfs[i], exx, None);
-        let gs = gamma_stress(&g, &gscf, exx);
+        let k = ks_uhf_zeta(&ks, &eri, &scfs[i], exx, OS_SC_ZETA);
+        let gs = gamma_uhf_stress(
+            &g.cell,
+            &g.prep,
+            &hcore_cfg(),
+            &g.hc,
+            &g.eri,
+            &gscf,
+            exx,
+            &GammaStressConfig {
+                budget_bytes: Some(AMPLE),
+                nucleus_exponent: Some(OS_SC_ZETA),
+                ..Default::default()
+            },
+        )
+        .expect("gamma uhf stress");
         let r = scale3(&gs.de_deps, 1.0 / 3.0);
         let miss = max_mat(&k.de_deps, &r);
         report(&format!("{} {n:?} {exx:?}", sys.name), &k);
         eprintln!(
-            "  {} {n:?} {exx:?}: |dE/dε_k − dE/dε_sc/N| {miss:.2e}",
+            "  {} {n:?} {exx:?}: |dE/dε_k − dE/dε_sc/N| {miss:.2e} (bar {OS_SC_BAR:.0e})",
             sys.name
         );
-        assert!(miss <= SC_BAR, "{exx:?}: {miss:e}");
+        assert!(miss <= OS_SC_BAR, "{exx:?}: {miss:e}");
         assert!(k.antisymmetry() <= P_ANTISYM_BAR);
         de[i] = r;
     }
     let refs = ScRef { de };
-    let run = |exx, m| ks_uhf(&ks, &eri, &scfs[exx_idx(exx)], exx, m);
+    // Mutated runs at the same exponent as the reference, so the diagonal-only
+    // mutants' off-diagonal check sees the pinned floor, not the default one.
+    let run = |exx: ExxDiv, m: Option<KStressMutation>| {
+        kpoint_uhf_stress(
+            &ks.cell,
+            &ks.prep,
+            &ks.mesh,
+            &hcore_cfg(),
+            &ks.hk,
+            KStressJk::Dense(&eri),
+            &scfs[exx_idx(exx)],
+            exx,
+            &KStressConfig {
+                nucleus_exponent: Some(OS_SC_ZETA),
+                ..scfg(m)
+            },
+        )
+        .expect("kpoint_uhf_stress")
+    };
     assert_mutants_fail(sys.name, &run, &refs, &K_MUTANTS, &K_EWALD_MUTANTS);
     assert_mutants_fail(sys.name, &run, &refs, &TERM_MUTANTS, &TERM_EWALD_MUTANTS);
 }
@@ -3984,8 +4060,10 @@ fn open_shell_p_h4_triplet_1x1x3_uhf_stress_matches_fd_zz_xz_xx() {
             }
         }
     }
-    eprintln!("  {} spin mutants worst miss vs FD [none, ewald]: CrossSpinK {:?}, SwapSpinFock {:?}",
-        sys.name, worst_mut[0], worst_mut[1]);
+    eprintln!(
+        "  {} spin mutants worst miss vs FD [none, ewald]: CrossSpinK {:?}, SwapSpinFock {:?}",
+        sys.name, worst_mut[0], worst_mut[1]
+    );
     for w in worst_mut.iter().flatten() {
         assert!(*w > MUTANT_BAR, "a spin mutant escaped the FD ({w:e})");
     }

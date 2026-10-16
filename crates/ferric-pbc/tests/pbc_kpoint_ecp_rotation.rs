@@ -26,8 +26,21 @@
 //! supercell with rotation on both sides); the unrotated pipeline is an
 //! independent walk of the same function.
 //!
+//! KNOWN DEFECT met while building the fixture (so the I s exponents are not
+//! the "natural" diffuse ones): the erfc 3-centre block of a CONTRACTED s
+//! pair at a far-field shift reads uninitialised memory when the engine
+//! precision is <= 1e-20 (the hcore SR walk uses `f64::MIN_POSITIVE`).
+//! Reproducer: `far_field_contracted_s_blocks_do_not_read_uninitialised_memory`
+//! (section 5; 0.02 s, ignored as a known failure). Effect: a derivative
+//! engine created and destroyed earlier in the process moved k-RHF energies
+//! of HI with an I s contraction (1.2, 0.45, 0.16) by 1.2e-5 Ha, and any
+//! FD anchor computed after an analytic call by up to 2e-8 per energy. The
+//! fixtures here use s exponents (3.0, 1.0, 0.35) / p (2.0, 0.7), verified
+//! clean under `MALLOC_PERTURB_=1` and 170.
+//!
 //! NOT tested: range-split source with an ECP, several ECP atoms, triclinic
-//! cells (see `pbc_sr_rotation_kderiv.rs` for triclinic rotation).
+//! cells with an ECP (see `pbc_sr_rotation_kderiv.rs` for triclinic rotation
+//! without one).
 
 mod common;
 
@@ -37,7 +50,6 @@ use ferric_core::ecp::{EcpDef, EcpShell, EcpTerm};
 use ferric_core::mol::{Atom, Molecule};
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_pbc::dense_aft::{DenseAftEri, ExxDiv, DEFAULT_DENSE_AFT_MAX_BYTES};
-use ferric_pbc::ecp::{periodic_ecp_gradient, periodic_ecp_strain, PeriodicEcpConfig};
 use ferric_pbc::grad::{gamma_rhf_gradient_with, GammaGradConfig};
 use ferric_pbc::hcore::kpoint::{periodic_hcore_kpts, PeriodicHcoreK};
 use ferric_pbc::hcore::{periodic_hcore, PeriodicHcoreConfig};
@@ -161,7 +173,6 @@ fn lanl2dz_i_ecp() -> EcpDef {
     }
 }
 
-
 /// H cc-pVDZ (s column over 4 primitives + the single-primitive 0.122 column,
 /// so one rotating column per H) and an I s/p set with the same structure
 /// (s: 3 primitives, columns {contraction, last primitive}; p: 2 primitives,
@@ -171,8 +182,8 @@ fn rot_basis() -> BasisSet {
     let h = basis::bundled("cc-pvdz").expect("cc-pvdz");
     shells.insert(1, h.shells.get(&1).expect("H cc-pvdz").clone());
     // Exponents chosen clear of the libint2 far-field defect documented in
-    // the module doc (contracted s shells with min exponent < ~0.5 on an
-    // erfc 3-centre walk read uninitialised memory).
+    // the module doc (the contracted s sets (1.2, 0.45[, 0.16]) read
+    // uninitialised memory in an erfc 3-centre walk; these do not).
     let s_exps = [3.0, 1.0, 0.35];
     let p_exps = [2.0, 0.7];
     shells.insert(
@@ -256,10 +267,6 @@ fn hcore_cfg(rot: SrColumnRotation) -> PeriodicHcoreConfig {
         ..PeriodicHcoreConfig::with_omega(OMEGA)
     }
     .with_sr_column_rotation(rot)
-}
-
-fn ecp_cfg() -> PeriodicEcpConfig {
-    PeriodicEcpConfig::with_precision(HCORE_PRECISION)
 }
 
 fn eps_at(i: usize, j: usize, h: f64) -> Mat3 {
@@ -847,7 +854,11 @@ fn rotated_ecp_1x1x3_force_and_stress_are_the_supercell_ones_per_cell() {
         ("kinetic", sc_miss(&kp.kinetic, &gp.kinetic), SC_BAR_PART),
         ("overlap", sc_miss(&kp.overlap, &gp.overlap), SC_BAR_PART),
         ("ecp", sc_miss(&kp.ecp, &gp.ecp), SC_BAR_PART),
-        ("vsr_basis", sc_miss(&kp.vsr_basis, &gp.vsr_basis), SC_BAR_SR),
+        (
+            "vsr_basis",
+            sc_miss(&kp.vsr_basis, &gp.vsr_basis),
+            SC_BAR_SR,
+        ),
         ("vsr_nuc", sc_miss(&kp.vsr_nuc, &gp.vsr_nuc), SC_BAR_SR),
         (
             "vlr_basis",
@@ -879,7 +890,10 @@ fn rotated_ecp_1x1x3_force_and_stress_are_the_supercell_ones_per_cell() {
             assert!(miss < bar, "{kind} {name} {miss:e} >= {bar:e}");
         }
     }
-    assert!(amax(&kp.ecp) > 1e-3 && mat_max(&sk.ecp) > 1e-3, "vacuous ECP");
+    assert!(
+        amax(&kp.ecp) > 1e-3 && mat_max(&sk.ecp) > 1e-3,
+        "vacuous ECP"
+    );
 }
 
 const FORCE_MUTANTS: [KGradMutation; 7] = [
@@ -980,7 +994,10 @@ fn rotated_ecp_force_and_stress_match_fd_of_the_rotated_k_energy() {
             KGradMutation::RotFitWrongResidue | KGradMutation::RotSwapPair
         );
         if fit_only {
-            assert!(moved_total < 1e-12, "{m:?} moved a dense total {moved_total:e}");
+            assert!(
+                moved_total < 1e-12,
+                "{m:?} moved a dense total {moved_total:e}"
+            );
         } else {
             assert!(moved_total > MUTANT_FLOOR, "{m:?} escaped: {moved_total:e}");
         }
@@ -994,9 +1011,389 @@ fn rotated_ecp_force_and_stress_match_fd_of_the_rotated_k_energy() {
             KStressMutation::RotFitWrongResidue | KStressMutation::RotSwapPair
         );
         if fit_only {
-            assert!(moved_total < 1e-12, "{m:?} moved a dense total {moved_total:e}");
+            assert!(
+                moved_total < 1e-12,
+                "{m:?} moved a dense total {moved_total:e}"
+            );
         } else {
             assert!(moved_total > MUTANT_FLOOR, "{m:?} escaped: {moved_total:e}");
         }
     }
+}
+
+// ============================================================ (3) RS-GDF
+
+/// Even-tempered s/p aux on H and I (one unit-normalised primitive per
+/// shell; the fit quality is irrelevant: forces and stress are the exact
+/// derivatives of the FITTED energy, whatever the aux).
+fn hi_aux() -> BasisSet {
+    let sh = |l: i32, a: f64| Shell {
+        l,
+        pure: false,
+        exponents: vec![a],
+        coefficients: vec![1.0],
+    };
+    let mut m = HashMap::new();
+    m.insert(
+        1,
+        vec![
+            sh(0, 4.7),
+            sh(0, 1.9),
+            sh(0, 0.75),
+            sh(0, 0.3),
+            sh(1, 1.25),
+            sh(1, 0.5),
+        ],
+    );
+    m.insert(
+        53,
+        vec![
+            sh(0, 2.0),
+            sh(0, 0.8),
+            sh(0, 0.3),
+            sh(1, 1.2),
+            sh(1, 0.5),
+            sh(1, 0.2),
+        ],
+    );
+    BasisSet {
+        name: "hi-aux".into(),
+        shells: m,
+        ecps: HashMap::new(),
+    }
+}
+
+fn krgdf_cfg(rot: SrColumnRotation) -> KRsGdfConfig {
+    KRsGdfConfig {
+        gdf: RsGdfConfig {
+            omega: 1.0,
+            exxdiv: ExxDiv::None,
+            budget_bytes: Some(AMPLE),
+            sr_column_rotation: rot,
+            ..Default::default()
+        },
+        mutation: None,
+    }
+}
+
+struct FitRun {
+    ks: KSys,
+    cfg: KRsGdfConfig,
+    aux: PreparedBasis,
+    gdf: KRsGdf,
+    scf: KScfResult,
+}
+
+fn fit_run(cell: Cell, bs: &BasisSet, n: [usize; 3], rot: SrColumnRotation) -> FitRun {
+    let ks = ksys(cell, bs, n, rot);
+    let cfg = krgdf_cfg(rot);
+    let aux = PreparedBasis::new(ks.cell.mol(), &hi_aux()).expect("aux prep");
+    let gdf = KRsGdf::build(&ks.cell, &ks.prep, &aux, &ks.mesh, &ks.hk.s, &cfg).expect("KRsGdf");
+    let scf = krhf(&ks, Box::new(gdf.jk_builder_with_madelung(0.0)));
+    FitRun {
+        ks,
+        cfg,
+        aux,
+        gdf,
+        scf,
+    }
+}
+
+impl FitRun {
+    fn src(&self) -> KRsGdfGradSource<'_> {
+        KRsGdfGradSource {
+            gdf: &self.gdf,
+            cfg: &self.cfg,
+            aux: &self.aux,
+        }
+    }
+}
+
+fn k_fit_energy(cell: &Cell, bs: &BasisSet, n: [usize; 3], rot: SrColumnRotation) -> f64 {
+    fit_run(cell.clone(), bs, n, rot).scf.energy
+}
+
+/// RS-GDF (unsplit) k force and stress with an ECP AND a rotating basis: the
+/// fit rotates the SR 3-centre columns of H and of I, the hcore rotates the
+/// SR attraction, the ECP stays unrotated. PHYSICS: analytic force (I x, H z)
+/// and stress (zz, xz) vs central FD of the fitted ROTATED energy (fresh
+/// hcore, fit, SCF per point). ARTIFACT: a fit-side rotated walk that
+/// double-transformed the ECP centre's columns, or a hcore-side slip that
+/// only appears once the fit is also rotated, is invisible to the dense
+/// anchors (the dense J/K does not rotate). Also: the walked-column counters
+/// of BOTH walks equal the energy's, and the rotated analytic equals the
+/// unrotated RS-GDF analytic of the same energy to the screen.
+#[test]
+#[ignore = "slow (~6 min release): 1 + 8 rotated RS-GDF k pipelines, HI 1x1x3, + one unrotated pipeline"]
+fn rotated_ecp_rsgdf_force_and_stress_match_fd_of_the_rotated_fitted_energy() {
+    let bs = rot_basis();
+    let n = [1, 1, 3];
+    let cell = hi_cell(&MOVED, &bs);
+    let forces = [(1usize, 0usize), (0, 2)];
+    let strains = [(2usize, 2usize), (0, 2)];
+    let mut fd_f = Vec::new();
+    for &(a, x) in &forces {
+        let ep = k_fit_energy(&hi_cell(&moved(&MOVED, a, x, FD_H), &bs), &bs, n, on());
+        let em = k_fit_energy(&hi_cell(&moved(&MOVED, a, x, -FD_H), &bs), &bs, n, on());
+        fd_f.push((ep - em) / (2.0 * FD_H));
+    }
+    let mut fd_s = Vec::new();
+    for &(i, j) in &strains {
+        let ep = k_fit_energy(&eps_cell(&cell, i, j, FD_H), &bs, n, on());
+        let em = k_fit_energy(&eps_cell(&cell, i, j, -FD_H), &bs, n, on());
+        fd_s.push((ep - em) / (2.0 * FD_H));
+    }
+    let r = fit_run(cell.clone(), &bs, n, on());
+    let off = fit_run(cell, &bs, n, SrColumnRotation::Off);
+    assert_eq!(r.ks.hk.sr_rotated_columns, 3);
+    assert!(
+        r.gdf.stats().sr_rotated_columns > 0,
+        "the fit did not rotate"
+    );
+    assert_eq!(off.gdf.stats().sr_rotated_columns, 0);
+    let zeta = FD_NUCLEUS_EXPONENT;
+    let force = |fr: &FitRun| {
+        kpoint_rhf_gradient(
+            &fr.ks.cell,
+            &fr.ks.prep,
+            &fr.ks.mesh,
+            &fr.ks.hcfg,
+            &fr.ks.hk,
+            KGradJk::RsGdf(fr.src()),
+            &fr.scf,
+            ExxDiv::None,
+            &gcfg(None, zeta),
+        )
+        .expect("fit force")
+    };
+    let stress = |fr: &FitRun| {
+        kpoint_rhf_stress(
+            &fr.ks.cell,
+            &fr.ks.prep,
+            &fr.ks.mesh,
+            &fr.ks.hcfg,
+            &fr.ks.hk,
+            KStressJk::RsGdf(fr.src()),
+            &fr.scf,
+            ExxDiv::None,
+            &scfg(None, zeta),
+        )
+        .expect("fit stress")
+    };
+    let (f, s) = (force(&r), stress(&r));
+    let (fo, so) = (force(&off), stress(&off));
+    // Both walks ran the energy's columns.
+    assert_eq!(f.hcore_rotated_columns, 3);
+    assert_eq!(s.hcore_rotated_columns, 3);
+    let fit_cols = r.gdf.stats().sr_rotated_columns;
+    assert_eq!(f.fit_checks.map(|c| c.rotated_columns), Some(fit_cols));
+    assert_eq!(s.fit_checks.map(|c| c.rotated_columns), Some(fit_cols));
+    let mut worst_f = 0.0_f64;
+    for (k, &(a, x)) in forces.iter().enumerate() {
+        worst_f = worst_f.max((f.grad[(a, x)] - fd_f[k]).abs());
+    }
+    let mut worst_s = 0.0_f64;
+    for (k, &(i, j)) in strains.iter().enumerate() {
+        worst_s = worst_s.max((s.de_deps[i][j] - fd_s[k]).abs());
+    }
+    let (d_f, d_s) = (
+        grad_miss(&f.grad, &fo.grad),
+        max_mat(&s.de_deps, &so.de_deps),
+    );
+    eprintln!(
+        "rotated+ECP RS-GDF vs FD: force {worst_f:.2e}, stress {worst_s:.2e}; rotated vs \
+         unrotated analytic: force {d_f:.2e}, stress {d_s:.2e}; fit columns {fit_cols}"
+    );
+    assert!(worst_f < FORCE_FD_BAR && worst_s < STRESS_FD_BAR);
+    assert!(d_f < ROT_VS_OFF_BAR && d_s < ROT_VS_OFF_BAR);
+    // Mutants through the fit: RotFitWrongResidue and RotSwapPair act here.
+    for m in [
+        KStressMutation::RotFitWrongResidue,
+        KStressMutation::RotSwapPair,
+        KStressMutation::RotDropT,
+        KStressMutation::RotUseT,
+    ] {
+        let g = kpoint_rhf_stress(
+            &r.ks.cell,
+            &r.ks.prep,
+            &r.ks.mesh,
+            &r.ks.hcfg,
+            &r.ks.hk,
+            KStressJk::RsGdf(r.src()),
+            &r.scf,
+            ExxDiv::None,
+            &scfg(Some(m), zeta),
+        )
+        .expect("fit stress mutant");
+        let moved_total = max_mat(&g.de_deps, &s.de_deps);
+        eprintln!("  RS-GDF stress mutant {m:?}: total moves {moved_total:.2e}");
+        assert!(moved_total > MUTANT_FLOOR, "{m:?} escaped: {moved_total:e}");
+    }
+}
+
+// ============================================================ (4) guards
+
+/// A derivative call whose hcore config disagrees with the (rotated) energy
+/// build is refused BY NAME also when an ECP is present, never silently run
+/// on the unrotated walk (whose ECP part would be right and whose SR part
+/// the screen-sized wrong one: invisible numerically at the default
+/// screen). Both directions, force and stress; the consistent request runs
+/// and keeps the Fock consistency guard (mismatch < 1e-8) with `V_ECP` in
+/// the rebuilt `F`.
+#[test]
+#[ignore = "slow (~2 min release, 3 threads): two HI 1x1x1 k SCFs (rotated and unrotated) + 6 derivative calls"]
+fn ecp_derivative_with_a_mismatched_rotation_config_is_refused() {
+    let bs = rot_basis();
+    let cell = hi_cell(&MOVED, &bs);
+    let rot = run(cell.clone(), &bs, [1, 1, 1], on());
+    let unrot = run(cell, &bs, [1, 1, 1], SrColumnRotation::Off);
+    assert_eq!(rot.ks.hk.sr_rotated_columns, 3);
+    let call = |r: &Run, hcfg: &PeriodicHcoreConfig| {
+        let f = kpoint_rhf_gradient(
+            &r.ks.cell,
+            &r.ks.prep,
+            &r.ks.mesh,
+            hcfg,
+            &r.ks.hk,
+            KGradJk::Dense(&r.eri),
+            &r.scf,
+            ExxDiv::None,
+            &gcfg(None, FD_NUCLEUS_EXPONENT),
+        );
+        let s = kpoint_rhf_stress(
+            &r.ks.cell,
+            &r.ks.prep,
+            &r.ks.mesh,
+            hcfg,
+            &r.ks.hk,
+            KStressJk::Dense(&r.eri),
+            &r.scf,
+            ExxDiv::None,
+            &scfg(None, FD_NUCLEUS_EXPONENT),
+        );
+        (f, s)
+    };
+    let off = hcore_cfg(SrColumnRotation::Off);
+    let (f, s) = call(&rot, &off);
+    for (what, e) in [("force", f.err()), ("stress", s.err())] {
+        let msg = e
+            .unwrap_or_else(|| panic!("rotated build, config Off: {what} not refused"))
+            .to_string();
+        assert!(msg.contains("rotat"), "{what}: {msg}");
+    }
+    let (f, s) = call(&unrot, &hcore_cfg(on()));
+    for (what, e) in [("force", f.err()), ("stress", s.err())] {
+        let msg = e
+            .unwrap_or_else(|| panic!("unrotated build, config On: {what} not refused"))
+            .to_string();
+        assert!(msg.contains("rotat"), "{what}: {msg}");
+    }
+    let (f, s) = call(&rot, &rot.ks.hcfg);
+    let (f, s) = (f.expect("consistent force"), s.expect("consistent stress"));
+    eprintln!(
+        "consistent rotated ECP request: Fock mismatch force {:.1e}, stress {:.1e}",
+        f.fock_mismatch, s.fock_mismatch
+    );
+    assert!(f.fock_mismatch < 1e-8 && s.fock_mismatch < 1e-8);
+}
+
+// ============================================================ (5) known defect
+
+/// The call pattern of the SR attraction walk on one I s,s pair at the walker's
+/// image shifts, with a contracted I s shell (exponents 1.2, 0.45: min < 0.5).
+/// Every block must be finite and tiny (true values <= 1e-12 for a Gaussian
+/// nucleus of exponent 1e16 six or more Bohr away).
+fn far_field_s_blocks_are_clean() -> Result<(), String> {
+    use ferric_integrals::engine::Engine;
+    use ferric_integrals::operator::Operator;
+    use ferric_integrals::site_basis::SiteBasis;
+    let mut bs = rot_basis();
+    bs.shells
+        .insert(53, vec![shell(0, &[1.2, 0.45], &[0.25, 0.55])]);
+    let cell = hi_cell(&MOVED, &bs);
+    let prep = prep_for(&cell, &bs);
+    let ish = prep.nshells() - 1;
+    let site = SiteBasis::new(
+        &[
+            [MOVED[0][0], MOVED[0][1], MOVED[0][2], 1e16],
+            [MOVED[1][0], MOVED[1][1], MOVED[1][2], 1e16],
+        ],
+        0,
+    )
+    .map_err(|e| e.to_string())?;
+    let mut eng = Engine::new_3center(
+        ferric_integrals::operator::Operator::erfc(0.8),
+        &prep,
+        &site.prep,
+        f64::MIN_POSITIVE,
+    )
+    .map_err(|e| e.to_string())?;
+    let _ = Operator::coulomb;
+    for k in 0..2 {
+        for l in -1i32..=1 {
+            for m in -1i32..=1 {
+                for lz in -1i32..=1 {
+                    let lv = [6.0 * l as f64, 0.0, 7.0 * lz as f64];
+                    let mv = [6.0 * m as f64, 0.0, 7.0 * (lz - m) as f64];
+                    let blk = eng
+                        .compute_eri3_shifted(
+                            &prep,
+                            &site.prep,
+                            site.site_shell[k],
+                            ish,
+                            ish,
+                            [mv, [0.0; 3], lv],
+                        )
+                        .map_err(|e| e.to_string())?;
+                    if let Some(b) = blk {
+                        if b.iter().any(|x| !x.is_finite() || x.abs() > 1e-3) {
+                            return Err(format!("k {k} l {lv:?} m {mv:?}: {:?}", b));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn far_field_contracted_s_blocks_are_finite_in_the_default_allocator() {
+    far_field_s_blocks_are_clean().expect("block check");
+}
+
+/// KNOWN DEFECT (found while building this file; see the module doc and the
+/// issue text in the PR): with `MALLOC_PERTURB_` set (glibc fills freshly
+/// allocated memory with a pattern) the erfc 3-centre block of a CONTRACTED s
+/// pair at a far-field shift returns ~1e288-1e301, i.e. libint2 (or the shim)
+/// reads uninitialised heap memory there. In the default allocator the
+/// memory is usually zero and the block is ~1e-17, so energies are right most
+/// of the time but an allocator-state change (a derivative engine created and
+/// destroyed earlier in the process) shifted k-RHF energies by 1.2e-5 Ha on
+/// the HI system with the s exponents (1.2, 0.45, 0.16). MEASURED boundary:
+/// the engine precision matters (garbage at 2.2e-308 [the hcore walk's
+/// `ERI3_ENGINE_PRECISION`], 1e-100, 1e-20; clean at 1e-14 and 1e-10), the
+/// p-only and the single-primitive s sets and the 3-primitive STO-3G H s are
+/// clean, `FERRIC_LIBINT2_STOCK_BOYS=1` (stock boys.h) does not change it,
+/// and a shim-side copy of the shifted shells instead of the reusable slots
+/// does not either. The test re-executes this binary with MALLOC_PERTURB_
+/// and is ignored until the defect is fixed.
+#[test]
+#[ignore = "KNOWN DEFECT: libint2/shim reads uninitialised memory in far-field erfc 3-centre blocks of the contracted s set (1.2, 0.45) (not cc-pVDZ H, STO-3G H, or s (3.0, 1.0, 0.35))"]
+fn far_field_contracted_s_blocks_do_not_read_uninitialised_memory() {
+    let exe = std::env::current_exe().expect("current exe");
+    let out = std::process::Command::new(exe)
+        .args([
+            "far_field_contracted_s_blocks_are_finite_in_the_default_allocator",
+            "--exact",
+            "--test-threads=1",
+        ])
+        .env("MALLOC_PERTURB_", "1")
+        .output()
+        .expect("spawn");
+    assert!(
+        out.status.success(),
+        "perturbed run failed:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
 }

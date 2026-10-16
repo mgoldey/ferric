@@ -1213,7 +1213,11 @@ fn energy_at_cell(cell: &Cell, n: [usize; 3]) -> f64 {
 }
 
 fn displaced(cell: &Cell, a: usize, x: usize, h: f64) -> Cell {
-    let mut p: Vec<[f64; 3]> = cell.positions().iter().map(|q| [q[0], q[1], q[2]]).collect();
+    let mut p: Vec<[f64; 3]> = cell
+        .positions()
+        .iter()
+        .map(|q| [q[0], q[1], q[2]])
+        .collect();
     p[a][x] += h;
     Cell::new(hydrogens(&p), *cell.lattice()).expect("displaced cell")
 }
