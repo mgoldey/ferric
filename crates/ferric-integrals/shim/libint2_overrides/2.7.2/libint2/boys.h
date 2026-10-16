@@ -36,8 +36,8 @@
  *  (T == Tmax == 1024 and U == Umax == 1000 gave index 10 of 0..9);
  *  Gm[0] (and G_{-1}) no longer overflow to NaN for U + 2 sqrt(U T) > ~705
  *  (scaled erfc, asymptotic series; the stock expression is kept while
- *  erfc(x) is a normal number); U > Umax, and U < Umin for T <= Tmax in
- *  eval_slater, throw std::invalid_argument instead of reading out of the
+ *  erfc(x) is a normal number); U > Umax with T <= Tmax, and U < Umin for
+ *  T <= Tmax in eval_slater, throw std::invalid_argument instead of reading out of the
  *  table. All other arguments give bit-identical results.
  *  crates/ferric-integrals/build.rs puts this
  *  directory first on the shim's include path ONLY when the libint2 prefix's
@@ -957,7 +957,7 @@ namespace libint2 {
         assert(T >= 0);
         const auto U = 0.25 * zeta * zeta * one_over_rho;
         assert(U >= 0);
-        check_U_not_above_Umax(U);
+        check_U_not_above_Umax(T, U);
         if (T > Tmax || U < Umin) {
           eval_urr<false>(Gm, T, U, /* zeta_over_two_rho = */ 0, mmax);
         } else {
@@ -980,7 +980,7 @@ namespace libint2 {
         assert(T >= 0);
         const auto U = 0.25 * zeta * zeta * one_over_rho;
         assert(U > 0);  // integral factorizes into 2 overlaps for U = 0
-        check_U_not_above_Umax(U);
+        check_U_not_above_Umax(T, U);
         const auto zeta_over_two_rho = 0.5 * zeta * one_over_rho;
         // ferric patch (issue #436): stock sent T <= Tmax with U < Umin to
         // interpolate_Gm, whose Uint = floor(log10(U / Umin)) is then negative:
@@ -1009,12 +1009,17 @@ namespace libint2 {
       /// 2.13.1 documents `@throw std::invalid_argument` for this, then falls back
       /// to a Gaussian fit of the kernel, which 2.7.2 does not have). Callers of the
       /// ferric shim see the exception as SCF_EINTERNAL.
-      static inline void check_U_not_above_Umax(Real U) {
+      static inline void check_U_not_above_Umax(Real T, Real U) {
+        // Above BOTH limits (T > Tmax) the upward recursion is used, where the
+        // true value is exactly 0 in double precision (e^-T, T > 1024, times
+        // e^{-2 sqrt(U T)}), and eval_urr returns that 0 (with the scaled erfc
+        // below), so only T <= Tmax needs the table and the throw.
+        if (T > Tmax && U > Umax) return;
         if (!(U <= Umax))
           throw std::invalid_argument(
               "TennoGmEval::eval_{yukawa,slater}() : zeta*zeta*one_over_rho/4=" +
               u_to_string(U) + " must be a number not exceeding Umax=" +
-              u_to_string(Umax));
+              u_to_string(Umax) + " (T <= Tmax)");
       }
 
       static inline std::string u_to_string(Real U) {
@@ -1057,7 +1062,12 @@ namespace libint2 {
 
       /// sum_{n=0}^{8} (-1)^n (2n-1)!! y^n, y = 1 / (2 x^2) (see exp_x2_erfc)
       static inline Real erfcx_series(Real y) {
-        return 1 - y * (1 - 3 * y * (1 - 5 * y * (1 - 7 * y * (1 - 9 * y * (1 - 11 * y * (1 - 13 * y * (1 - 15 * y)))))));
+        return 1 - y * erfcx_series_tail(y);
+      }
+
+      /// (1 - S) / y, i.e. 1 - 3y(1 - 5y(...)): 1 - S without the cancellation of S near 1
+      static inline Real erfcx_series_tail(Real y) {
+        return 1 - 3 * y * (1 - 5 * y * (1 - 7 * y * (1 - 9 * y * (1 - 11 * y * (1 - 13 * y * (1 - 15 * y))))));
       }
 
       /// Computes G_0 and (optionally) G_{-1}
@@ -1103,13 +1113,17 @@ namespace libint2 {
           const Real exp_U = exp(U);
           const Real sqrt_U = sqrt(U);
           if (erfc(sqrt_U) < std::numeric_limits<Real>::min()) {
-            // ferric patch (issue #436): erfc(sqrt(U)) is subnormal or zero and exp(U)
-            // overflows (U > ~705), so the stock products below are inf * 0 = NaN.
+            // ferric patch (issue #436): taken exactly when erfc(sqrt(U)) is below
+            // DBL_MIN (sqrt(U) > ~26.5, i.e. U > ~702); there exp(U) is near or past
+            // overflow (inf at U > 709.78) and the stock products below are
+            // inf * 0 = NaN or subnormal-precision.
             // exp(U) erfc(sqrt U) = erfcx(sqrt U) = S / (sqrt(U) sqrt(pi)) with the
             // asymptotic sum S (see exp_x2_erfc); G_{-1} = S / (2 U), G_0 = 1 - S.
-            const Real S = erfcx_series(0.5 / U);
+            const Real y = 0.5 / U;
+            const Real tail = erfcx_series_tail(y);
+            const Real S = 1 - y * tail;
             G_m1 = compute_Gm1 ? S / (2 * U) : 0.0;
-            G_0 = 1 - S;
+            G_0 = y * tail;  // = 1 - S, without cancelling S near 1
             return std::make_tuple(G_0, G_m1);
           }
           if (compute_Gm1) {

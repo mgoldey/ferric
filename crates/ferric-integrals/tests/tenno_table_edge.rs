@@ -44,8 +44,11 @@
 //!   (independent of libint2's `Gm`).
 //! * `engine_t_edge_is_continuous_and_matches_the_erfc_closed_form`: `(P|AA)`
 //!   with `T == 1024.0` exactly.
-//! * `u_above_umax_is_never_nan`: on 2.7.2 the override throws (an `Err`); on
-//!   a libint that falls back to a Gaussian fit the value must be finite.
+//! * `u_above_umax_is_rejected_only_below_tmax`: on the 2.7.2 override
+//!   `U > Umax` with `T <= Tmax` is an `Err`, with `T > Tmax` a finite 0.
+//! * `large_u_plus_large_t_is_finite_on_the_override`: `T = 2000, U = 100` (an
+//!   upward-recursion overflow, `U + 2 sqrt(U T) > 709`) is 0 on the override;
+//!   libint 2.13.1 returns NaN there (issue #439).
 //! * `sweep_is_independent_of_allocator_fill`: a hashed sweep of everything
 //!   above in a child process under `MALLOC_PERTURB_` 1, 170 and 2 (255 and 0
 //!   do not exercise uninitialised reads).
@@ -522,28 +525,55 @@ fn engine_t_edge_is_continuous_and_matches_the_erfc_closed_form() {
     assert!(sg.is_finite());
 }
 
-/// Above Umax: 2.7.2's override throws (-> Err); libints with the Gaussian
-/// fallback return finite values. NaN is never acceptable.
+/// `U > Umax`. On the 2.7.2 override: with `T <= Tmax` it is rejected (`Err`); with
+/// `T > Tmax` (above both limits) the true value is exactly 0 and the upward
+/// recursion returns it, finite. Other libint2 builds are only exercised (their
+/// results are not asserted: 2.13.1 falls back to a Gaussian fit for
+/// `T <= Tmax` and returns NaN above `Tmax`, issue #439).
 #[test]
-fn u_above_umax_is_never_nan() {
+fn u_above_umax_is_rejected_only_below_tmax() {
     if skip_unpatched_272() {
         return;
     }
+    // U = 0.25 * 400 * 400 * 0.1 = 4000 > Umax
     for kind in [TennoKind::Yukawa, TennoKind::Slater] {
-        for &t in &[0.5, 30.0, 1024.0, 3000.0] {
-            // U = 0.25 * 400 * 400 * 1 / 10 = 4000 > Umax
+        for &t in &[0.5, 30.0, 1024.0] {
             let r = tenno_gm(kind, 0.1, t, 3, 400.0);
-            if let (Ok(v), Some("2.7.2")) = (&r, BOYS_OVERRIDE) {
-                panic!("{kind:?} T={t}: the override must reject U > Umax, got {v:?}");
+            if BOYS_OVERRIDE == Some("2.7.2") {
+                assert!(
+                    r.is_err(),
+                    "{kind:?} T={t}: U > Umax must be rejected, got {r:?}"
+                );
             }
-            // other builds: whatever they return, they must not crash
+        }
+        for &t in &[ulp_up(T_EDGE), 3000.0] {
+            let r = tenno_gm(kind, 0.1, t, 3, 400.0);
+            if BOYS_OVERRIDE == Some("2.7.2") {
+                let v = r.unwrap_or_else(|e| panic!("{kind:?} T={t}: {e}"));
+                assert!(v.iter().all(|x| *x == 0.0), "{kind:?} T={t}: {v:?}");
+            }
         }
     }
     if BOYS_OVERRIDE == Some("2.7.2") {
-        assert!(tenno_gm(TennoKind::Yukawa, 0.1, 1.0, 3, 400.0).is_err());
-        assert!(tenno_gm(TennoKind::Slater, 0.1, 1.0, 3, 400.0).is_err());
         // Slater below Umin with T <= Tmax: formerly a negative table index
         assert!(tenno_gm(TennoKind::Slater, 1.0, 1.0, 3, 1e-4).is_err());
+        // ... but T > Tmax keeps its working upward recursion
+        let v = tenno_gm(TennoKind::Slater, 1.0, 2000.0, 3, 1e-4).expect("T > Tmax");
+        assert!(v.iter().all(|x| x.is_finite()), "{v:?}");
+    }
+}
+
+/// `T = 2000, U = 100`: `U + 2 sqrt(U T) = 994 > 709`, the `exp(x*x - T) * erfc(x)`
+/// overflow of the upward recursion. The true values are < 1e-400, so 0.
+#[test]
+fn large_u_plus_large_t_is_finite_on_the_override() {
+    if BOYS_OVERRIDE != Some("2.7.2") {
+        eprintln!("SKIP: 2.13.1 returns NaN here (issue #439); only the 2.7.2 override is fixed");
+        return;
+    }
+    for kind in [TennoKind::Yukawa, TennoKind::Slater] {
+        let v = tenno_gm(kind, 1.0, 2000.0, 4, 20.0).expect("evaluates");
+        assert!(v.iter().all(|x| *x == 0.0), "{kind:?}: {v:?}");
     }
 }
 
