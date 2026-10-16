@@ -667,6 +667,21 @@ impl std::fmt::Debug for DiisDriver {
     }
 }
 
+/// The crossover a driver actually uses: 0 for Pulay (no energy phase), +inf
+/// for NaN, else as given. NaN compares below no error, so every
+/// `err_max < thresh` / `err_max >= thresh` test would misfire on it
+/// (`step_checked` would hand the step to Pulay and the veto bound would be
+/// NaN); it is the never-switch regime, so it is normalised to +inf once, here.
+fn effective_switch_thresh(flavor: DiisFlavor, switch_thresh: f64) -> f64 {
+    if flavor == DiisFlavor::Pulay {
+        0.0
+    } else if switch_thresh.is_nan() {
+        f64::INFINITY
+    } else {
+        switch_thresh
+    }
+}
+
 impl DiisDriver {
     /// Build a combined driver. `flavor` selects the early-regime variant
     /// (ADIIS or EDIIS); `switch_thresh` is the err_max crossover to Pulay.
@@ -683,17 +698,7 @@ impl DiisDriver {
         DiisDriver {
             pulay: Diis::new(max_subspace),
             energy: EnergyDiis::new(energy_flavor, max_subspace),
-            switch_thresh: if flavor == DiisFlavor::Pulay {
-                0.0
-            } else if switch_thresh.is_nan() {
-                // NaN compares below no error, so every `err_max < thresh` /
-                // `err_max >= thresh` test below would misfire (step_checked
-                // would hand the step to Pulay, the veto bound would be NaN).
-                // It is the never-switch regime: normalise it to +inf here, once.
-                f64::INFINITY
-            } else {
-                switch_thresh
-            },
+            switch_thresh: effective_switch_thresh(flavor, switch_thresh),
         }
     }
 
