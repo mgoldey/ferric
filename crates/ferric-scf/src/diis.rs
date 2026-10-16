@@ -632,6 +632,10 @@ pub(crate) fn is_idempotent_closed_shell(d: &Array2<f64>, s: &Array2<f64>, tol: 
     dev <= tol * scale
 }
 
+/// Commutator bound used by [`DiisDriver::commutator_veto_bound`] when
+/// `switch_thresh` is infinite (energy-based DIIS throughout).
+pub(crate) const INFINITE_SWITCH_VETO_BOUND: f64 = 1e-2;
+
 /// Combined DIIS driver implementing the mature-code recipe: run an energy-based
 /// variant (ADIIS or EDIIS) while the DIIS error is large, then switch to plain
 /// Pulay DIIS once the commutator error drops below `switch_thresh`.
@@ -663,6 +667,21 @@ impl std::fmt::Debug for DiisDriver {
     }
 }
 
+/// The crossover a driver actually uses: 0 for Pulay (no energy phase), +inf
+/// for NaN, else as given. NaN compares below no error, so every
+/// `err_max < thresh` / `err_max >= thresh` test would misfire on it
+/// (`step_checked` would hand the step to Pulay and the veto bound would be
+/// NaN); it is the never-switch regime, so it is normalised to +inf once, here.
+fn effective_switch_thresh(flavor: DiisFlavor, switch_thresh: f64) -> f64 {
+    if flavor == DiisFlavor::Pulay {
+        0.0
+    } else if switch_thresh.is_nan() {
+        f64::INFINITY
+    } else {
+        switch_thresh
+    }
+}
+
 impl DiisDriver {
     /// Build a combined driver. `flavor` selects the early-regime variant
     /// (ADIIS or EDIIS); `switch_thresh` is the err_max crossover to Pulay.
@@ -679,17 +698,62 @@ impl DiisDriver {
         DiisDriver {
             pulay: Diis::new(max_subspace),
             energy: EnergyDiis::new(energy_flavor, max_subspace),
-            switch_thresh: if flavor == DiisFlavor::Pulay {
-                0.0
-            } else {
-                switch_thresh
-            },
+            switch_thresh: effective_switch_thresh(flavor, switch_thresh),
         }
     }
 
     /// Whether an ADIIS/EDIIS history is live (`false` for pure Pulay).
     pub fn uses_energy_history(&self) -> bool {
         self.switch_thresh > 0.0
+    }
+
+    /// The commutator bound above which a repeated density is NOT a converged
+    /// one while the energy-based variant (ADIIS/EDIIS) is steering, or `None`
+    /// for pure Pulay (where the SCF's own gate is unchanged) and after the
+    /// one-shot fallback ([`Self::fall_back_to_pulay`]).
+    ///
+    /// ADIIS/EDIIS minimize an energy functional, not the commutator. Their
+    /// weights can freeze on a few old history entries (#422: EDIIS in a charged
+    /// field, `c ~ [0.41, 0.41, 0.19]` for 30+ iterations), so the extrapolated
+    /// Fock stops changing, `dp_rms` falls to zero and the density-based gate
+    /// reports convergence while `err_max` is O(1). That regime is where
+    /// `err_max >= switch_thresh` (the energy variant is in control), so the
+    /// crossover is the bound.
+    ///
+    /// An infinite `switch_thresh` (energy variant throughout) has no crossover;
+    /// `INFINITE_SWITCH_VETO_BOUND` (1e-2) stands in. That value is chosen, not
+    /// derived. Measured on a 240-run seed scan over benzene, water, methane and
+    /// sulfamethoxazole in point-charge fields: the weakest stall caught had
+    /// `err_max` 0.064 (6x the bound), and every legitimate exit under an
+    /// infinite switch ended at `err_max <= 2.2e-5`. A stall that settles
+    /// between ~1e-4 and 1e-2 would still be accepted; none was observed.
+    ///
+    /// Caveat on a finite switch: the RI commutator floor (~1e-6) is below the
+    /// default switch (1e-1) but NOT below a user switch at or under it
+    /// (`diis_switch_thresh <= ~1e-6`). There the veto can fire on a genuinely
+    /// converged run, costing a few extra Pulay iterations (measured +3 at
+    /// 1e-6 and 1e-8); the energy is unaffected.
+    pub fn commutator_veto_bound(&self) -> Option<f64> {
+        if self.switch_thresh <= 0.0 {
+            None
+        } else if self.switch_thresh.is_infinite() {
+            Some(INFINITE_SWITCH_VETO_BOUND)
+        } else {
+            Some(self.switch_thresh)
+        }
+    }
+
+    /// Abandon the energy-based phase for the rest of the run and restart plain
+    /// Pulay DIIS from a CLEAN history. The Pulay history is cleared too: it was
+    /// fed the whole stalled trajectory (large, near-parallel error vectors from
+    /// the chaotic early phase), and extrapolating from that diverged to
+    /// E = -936 Ha on the #422 case, while a fresh history converges. Used when
+    /// the energy variant has demonstrably stalled (see
+    /// [`Self::commutator_veto_bound`]).
+    pub fn fall_back_to_pulay(&mut self) {
+        self.switch_thresh = 0.0;
+        self.pulay.reset();
+        self.energy.reset();
     }
 
     /// Clear both histories (Pulay and energy-DIIS).
@@ -739,7 +803,8 @@ impl DiisDriver {
     /// Scope: this removes the non-idempotent-entry trigger only. A history of
     /// valid densities can still extrapolate to a repeated Fock while the
     /// commutator error is large (the convergence gate does not read it); that
-    /// is a separate defect, tracked outside this fix.
+    /// is handled at the gate's call site: see
+    /// [`DiisDriver::commutator_veto_bound`] (#422).
     pub fn step_checked(
         &mut self,
         f: &Array2<f64>,
@@ -1470,6 +1535,61 @@ mod tests {
     }
 
     /// The idempotency vet: a projector in the S metric passes, a scaled one does not.
+    /// A NaN switch is the never-switch regime (NaN compares below nothing), so
+    /// it gets the infinite-switch bound, not a NaN bound that would disable
+    /// the veto.
+    #[test]
+    fn a_nan_switch_is_normalised_to_the_never_switch_regime() {
+        let nan = DiisDriver::new(DiisFlavor::Ediis, 8, f64::NAN);
+        let inf = DiisDriver::new(DiisFlavor::Ediis, 8, f64::INFINITY);
+        assert_eq!(
+            nan.commutator_veto_bound(),
+            Some(INFINITE_SWITCH_VETO_BOUND)
+        );
+        assert_eq!(nan.commutator_veto_bound(), inf.commutator_veto_bound());
+        // The step itself must follow the +inf driver bit for bit (the energy
+        // variant steers), not drop to Pulay on `err_max >= NaN` being false.
+        let n = 2;
+        let f0 = Array2::from_shape_fn((n, n), |(i, j)| (i + j) as f64 * 0.1);
+        let f1 = &f0 + &Array2::from_elem((n, n), 0.05);
+        let err = Array2::from_elem((n, n), 0.5);
+        let (mut a, mut b) = (nan, inf);
+        let (d0, d1) = (Array2::eye(n), Array2::eye(n) * 0.9);
+        for (f, d, e) in [(&f0, &d0, -100.0), (&f1, &d1, -5.0)] {
+            let x = a.step_checked(f, &err, d, e, 0.5, true);
+            let y = b.step_checked(f, &err, d, e, 0.5, true);
+            assert_eq!(x, y);
+        }
+    }
+
+    #[test]
+    fn veto_bound_and_pulay_fallback() {
+        let pulay = DiisDriver::new(DiisFlavor::Pulay, 8, 1e-1);
+        assert_eq!(pulay.commutator_veto_bound(), None);
+        let mut e = DiisDriver::new(DiisFlavor::Ediis, 8, 1e-1);
+        assert_eq!(e.commutator_veto_bound(), Some(1e-1));
+        let inf = DiisDriver::new(DiisFlavor::Adiis, 8, f64::INFINITY);
+        assert_eq!(
+            inf.commutator_veto_bound(),
+            Some(INFINITE_SWITCH_VETO_BOUND)
+        );
+        // After the fallback the driver is pure Pulay: no energy history is
+        // consulted, no veto bound, and the step equals a FRESH Pulay driver's.
+        let n = 2;
+        let f0 = Array2::from_shape_fn((n, n), |(i, j)| (i + j) as f64 * 0.1);
+        let err = Array2::from_elem((n, n), 0.5);
+        let d = Array2::eye(n);
+        e.step(&f0, &err, &d, -100.0, 0.5);
+        e.fall_back_to_pulay();
+        assert!(!e.uses_energy_history());
+        assert_eq!(e.commutator_veto_bound(), None);
+        let mut ref_p = DiisDriver::new(DiisFlavor::Pulay, 8, 1e-1);
+        let f1 = &f0 + &Array2::from_elem((n, n), 0.05);
+        let a = e.step(&f1, &err, &d, -5.0, 0.5);
+        let b = ref_p.step(&f1, &err, &d, -5.0, 0.5);
+        assert_eq!(a, b);
+    }
+
     #[test]
     fn idempotency_check_separates_projectors_from_scaled_densities() {
         let s = Array2::eye(3);

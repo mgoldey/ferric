@@ -1232,6 +1232,8 @@ fn solve_uhf_impl(
                     crate::noise_floor::floor_for_config(config, energy.abs(), prep.nbasis(), false)
                 })
                 .flatten(),
+            // UHF reads no `diis_flavor`: it always runs Pulay.
+            diis_fallback: None,
         });
 
         if crate::rhf::scf_trace() {

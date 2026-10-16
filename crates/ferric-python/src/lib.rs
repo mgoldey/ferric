@@ -705,9 +705,13 @@ impl PyRhfResult {
             .map(|c| (c.energy_conv, c.density_conv))
     }
     /// Names of the gate criteria the final iteration did NOT meet, a subset of
-    /// `["dp_rms", "dp_max", "dE"]` (empty when all were met), or `None` if no
-    /// convergence record. A run can have `converged=False` with an empty list
-    /// only when it stopped for another reason (`exit_reason`).
+    /// `["dp_rms", "dp_max", "dE", "err_max"]` (empty when all were met), or
+    /// `None` if no convergence record. `"err_max"` appears only when
+    /// ADIIS/EDIIS stalled: the density settled while the DIIS error was still
+    /// above `diis_switch_thresh`, the exit was refused and the run restarted on
+    /// Pulay DIIS (that restart is also named in `convergence_summary`). A run
+    /// can have `converged=False` with an empty list only when it stopped for
+    /// another reason (`exit_reason`).
     #[getter]
     fn unmet_criteria(&self) -> Option<Vec<&'static str>> {
         self.scf_data.convergence.map(|c| c.unmet())
