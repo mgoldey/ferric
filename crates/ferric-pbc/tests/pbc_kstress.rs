@@ -879,10 +879,13 @@ fn assert_one_point(name: &str, ksres: &KStress, gs: &GammaStress, exx: ExxDiv, 
     assert!(ksres.antisymmetry() <= antisym_bar);
 }
 
-/// p-shell antisymmetry floor (libint2's SR-derivative precision): measured
-/// 1.1e-10 (k) on the triclinic s+p cell at 1x1x1, 10x below this bar; s-only
-/// cells sit at 1e-18.
-const P_ANTISYM_BAR: f64 = 1e-9;
+/// p-shell antisymmetry of the stress at 1x1x1. MEASURED 2026-10-16: 2.0e-13 /
+/// 2.4e-13 (triclinic s+p, none / ewald), 7.8e-13 / 8.8e-13 (H2 triplet), 7.6e-13
+/// / 1.3e-13 (H4 triplet); s-only cells sit at 1e-18. Before #434 this was
+/// 1.1e-10 (k, triclinic) and set by the SR derivative's coordinate-dependent
+/// rounding, which an earlier revision of this comment called libint2's
+/// precision. Bar 5e-12 = 6x the worst measurement.
+const P_ANTISYM_BAR: f64 = 5e-12;
 
 /// PHYSICS: at 1×1×1 the k stress is the Gamma stress. ARTIFACT: independent
 /// constructions (half-sphere real Gamma kernel vs full-sphere complex
@@ -1077,8 +1080,9 @@ fn assert_mutants_fail(
 }
 
 /// [`assert_mutants_fail`] with an explicit anchor floor `sc_bar` for the
-/// blind / diagonal-only checks (p-shell supercell anchors sit at 1.7e-10 at
-/// the pinned nucleus exponent, above the s-only `SC_BAR`).
+/// blind / diagonal-only checks (the p-shell supercell anchor sits at 4.6e-13,
+/// above the s-only `SC_BAR` by a small factor; before #434 it sat at 1.7e-10
+/// with the exponent pinned at 1e7).
 fn assert_mutants_fail_floor(
     name: &str,
     run: &dyn Fn(ExxDiv, Option<KStressMutation>) -> KStress,
@@ -1643,8 +1647,9 @@ fn h2_mp_1x1x2_stress_matches_fd_of_own_k_energy_all_nine() {
 
 /// l > 0 at N_k > 1: H2 with an s+p basis (nao 8), Gamma-centred 1x1x3
 /// (non-TRIM), FD of the own k energy, analytic at the default gradient
-/// nucleus exponent and at 1e8 (libint2's SR-derivative floor for p shells
-/// tracks that exponent, see `pbc_kgrad.rs` `SC_BAR_P`).
+/// nucleus exponent and at 1e8 (both agree with the FD at the FD-truncation
+/// level; the former exponent-dependent p-shell SR-derivative noise is gone,
+/// #434).
 #[test]
 #[ignore = "slow: s+p H2 1x1x3, 18 strained dense-AFT builds + 36 k-SCFs"]
 fn h2_sp_1x1x3_stress_matches_fd_of_own_k_energy_all_nine() {
@@ -1698,9 +1703,9 @@ fn h2_sp_1x1x3_stress_matches_fd_of_own_k_energy_all_nine() {
 }
 
 /// Measured s+p floor: 9.8e-9 at the default nucleus exponent, 9.4e-9 / 3.5e-9
-/// at 1e8 (the p-shell libint floor is invisible under the h = 1e-4 central-FD
-/// truncation, which dominates exactly as for s shells); smallest mutant miss
-/// 4.6e-2. Bar 5e-8 = the s-shell bar.
+/// at 1e8 (pre-#434 numbers; the h = 1e-4 central-FD truncation dominates
+/// exactly as for s shells); smallest mutant miss 4.6e-2. Bar 5e-8 = the
+/// s-shell bar.
 const K_FD_BAR_P: f64 = 5e-8;
 
 // ============================================================ RS-GDF (unsplit)
@@ -1914,7 +1919,7 @@ fn gamma_fit_stress(g: &GFit, scf: &ScfResult, exx: ExxDiv) -> GammaStress {
 }
 
 /// Bar of the fitted 1x1x1 = Gamma anchor (the same energy functional built
-/// two ways; both sides at libint2's SR-derivative precision). Measured floor:
+/// two ways). Measured floor:
 /// total 6.5e-14, worst single part 1.1e-12 (H2 RHF), 2.6e-13 (H3 UHF); the
 /// smallest mutant miss at 1x1x1 is printed by the test (>= 3e-2), so the bar
 /// sits 10x above the floor and >= 9 orders below the mutants.
@@ -3847,8 +3852,8 @@ fn assert_spin_polarised(sys: &OpenShell, scf: &KUScfResult) {
 /// part, both exxdiv. ARTIFACT: blind to phases, carried by the supercell
 /// anchor below; what is new is the spin-unbalanced s+p density. MEASURED
 /// (S1 / S2): |k - Gamma| 3.1e-14 / 2.2e-14 (none), 9.8e-15 / 5.3e-14
-/// (ewald) vs the 1e-12 bar; antisym(sigma) 3.7e-11 / 9.0e-11 (p-shell floor,
-/// bar P_ANTISYM_BAR).
+/// (ewald) vs the 1e-12 bar; antisym(sigma) 7.8e-13 / 7.6e-13 (none),
+/// 8.8e-13 / 1.3e-13 (ewald) vs P_ANTISYM_BAR (3.7e-11 / 9.0e-11 before #434).
 fn open_shell_p_one_point(sys: OpenShell) {
     let bs = sp_basis_h();
     let ks = ksys(sys.cell.clone(), &bs, [1, 1, 1]);
@@ -3883,9 +3888,10 @@ fn open_shell_p_h4_triplet_one_point_mesh_uhf_stress_is_the_gamma_stress() {
 /// (the unrotated ECP file's bar for the same floor). Before #434 was fixed
 /// the SR derivative's translation noise put the miss at 5.9e-8 at the default
 /// exponent (pinned at 1e7 as a workaround, 1.7e-10); with the nucleus-frame
-/// evaluation it is at the 1e-10 level at the default (re-measured below).
+/// evaluation it is 4.6e-13 at the default (both exxdiv), the smallest mutant
+/// misses by > 1e-4 (`MUTANT_BAR`), and the bar is 11x the measurement.
 /// Also the blind / diagonal-only floor of the mutant sweep.
-const OS_SC_BAR: f64 = 2e-9;
+const OS_SC_BAR: f64 = 5e-12;
 
 /// PHYSICS: the 1x1x3 (non-TRIM) k-UHF stress per cell is the explicit
 /// 3-cell supercell's Gamma-UHF stress / 3, both exxdiv, at the default
@@ -3972,8 +3978,7 @@ fn open_shell_p_1x1x3_uhf_stress_is_the_supercell_stress_per_cell() {
 /// PHYSICS: all nine components of the k-UHF stress of S1 vs central FD (h =
 /// 1e-4, 2h) of its own k energy, a fresh UHF SCF per point, both exxdiv,
 /// plus the UHF-specific and k-specific mutants. Bar K_FD_BAR_UHF (the H3
-/// doublet's own measured floor, same h^2 truncation); the s+p AO-derivative
-/// floor of libint2 is invisible under it (cf. K_FD_BAR_P).
+/// doublet's own measured floor, same h^2 truncation); cf. K_FD_BAR_P.
 #[test]
 #[ignore = "slow (~5.5 min release at load 10): 36 strained dense-AFT builds + 72 k-UHF SCFs (h and 2h), s+p H2 triplet"]
 fn open_shell_p_h2_triplet_1x1x3_uhf_stress_matches_fd_all_nine() {

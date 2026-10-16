@@ -1980,11 +1980,18 @@ impl SrDerivSetup {
 /// and [`sr_attraction_strain`]: exactly [`periodic_hcore`]'s pair images,
 /// nucleus candidates and per-triplet screen at `cfg`, with libint2's two
 /// directly computed ket blocks per triplet (the bra block of a 3-centre
-/// derivative is built from translation invariance, `−(site + sh2)`, and its
-/// site derivative is wrong for the ~1e16 Gaussian nucleus; the ket block of
-/// `(i1 | i2)` gives `d/dB`, and the ket block of the swapped call
-/// `(i2 shifted by L | i1)` gives `d/dA`. Measured: the sh1 block cost
-/// −0.041 Ha/Bohr on H2, FINDINGS "Iteration 16" Rust note). Returns the
+/// derivative is built from translation invariance, `−(site + sh2)`; the ket
+/// block of `(i1 | i2)` gives `d/dB`, and the ket block of the swapped call
+/// `(i2 shifted by L | i1)` gives `d/dA`). Every call is made in the frame of
+/// its nucleus ([`nucleus_frame_shifts`]). Historical note: in the lab frame
+/// the site and bra blocks were observed to be wrong for the ~1e16 Gaussian
+/// nucleus (the sh1 block cost −0.041 Ha/Bohr on H2, FINDINGS "Iteration 16"),
+/// which led to this two-call construction. That was the same
+/// coordinate-dependent rounding as #434, not a property of the site block:
+/// `tests/pbc_sr_deriv_frame.rs` finds the site, sh1 and sh2 blocks all
+/// within 1e-8 of the block of a central FD at 1e9, 1e12 and 1e16 in the
+/// nucleus frame (and the lab-frame site and sh1 blocks 100% wrong at 1e16).
+/// The two-call construction is kept unchanged for bit-identity. Returns the
 /// triplet count.
 ///
 /// ORDERED-PARALLEL ([`crate::ordered`]): the screen and the two derivative

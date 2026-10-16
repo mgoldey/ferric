@@ -2263,6 +2263,10 @@ Lindep: the eigen-cut kept count must not change between displaced geometries (F
   noise), F_ewald ≡ F_none, the four mutants, and the a⁻³ box limit with the σ² prediction.
 
 ## Iteration 16 (Rust) — Gamma RHF forces, bug found (2026-09-29)
+SUPERSEDED (2026-10-16, #434): the "libint precision" attribution below is wrong. The error was coordinate-dependent
+rounding in the SR derivative (absolute coordinates times the zeta-sized exponents; it moved under a rigid translation of the
+cell), removed by evaluating each triplet in the frame of its nucleus. After that the derivative is accurate at every
+exponent (1e5..1e16) and the triclinic s+p force FD is 2.5e-9 at the 1e9 default. The measurements below are historical.
 First Rust port missed FD by 4.1e-2 Ha/Bohr on H2. Piece-by-piece vs the prototype at ω=0.8: T, ERI, nn, V_LR and the
 c0 term matched exactly; V_SR basis −0.2049 vs −0.1718 and V_SR nucleus −0.1360 vs −0.1277. Root cause: libint2 2.7.2's
 3-centre derivative BUILDS the bra (sh1) block as −(site + sh2), and the site derivative is wrong for the 1e16 Gaussian
@@ -3795,6 +3799,9 @@ pure-AFT h; RS-GDF with one small aux set and no eigenvalue dropped)
   supercell RS-GDF gradient ≤ 1e-11, FD ≤ 5e-9, mutants aux_phase (≥ 5e-4), no_metric, no_g0.
 
 ## Gradient nucleus exponent scan (measured 2026-09-25, Rust, release)
+SUPERSEDED (2026-10-16, #434): this table measured SR-derivative rounding noise (coordinate-dependent, grew with the exponent), not a libint2
+precision limit; the interpretation below is retracted. After the nucleus-frame evaluation the derivative is accurate at every exponent and only the
+model-nucleus error (falls as 1/zeta) remains. Table kept as the historical record.
 max|analytic − FD| of forces (and stress) vs the gradient-only Gaussian-nucleus exponent (energy keeps 1e16):
 | exponent | H tri s+p RHF force | LiH 6-31G RS-GDF force | CO cc-pVDZ/jkfit force | CO stress (Richardson) | CO stress antisym |
 |---|---|---|---|---|---|

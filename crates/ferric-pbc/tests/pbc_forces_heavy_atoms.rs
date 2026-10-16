@@ -28,21 +28,26 @@
 //!
 //! Bars (START from the known floors, FINDINGS Iterations 16-20):
 //! * s-only H cells reach ≤ 1e-8 (bar 1e-7). With p shells the SR attraction
-//!   derivative carries libint2's tight-Gaussian-nucleus floor, 1.85e-7
-//!   Ha/Bohr on the triclinic 4H s+p cell at the default gradient nucleus
-//!   exponent 1e10 (bar 5e-7). [`P_BAR`] reuses 5e-7 for the Li p-shell
-//!   cases; that floor was measured with Z = 1 and may scale with Z — if a
-//!   p-only case lands between 5e-7 and a few e-6, read the printed nucleus-
-//!   exponent scan before calling it a defect.
+//!   derivative used to carry coordinate-dependent rounding (1.85e-7
+//!   Ha/Bohr on the triclinic 4H s+p cell at a gradient nucleus exponent of
+//!   1e10; bar 5e-7), which an earlier revision of this note called
+//!   libint2's tight-Gaussian-nucleus floor. #434 removed it (each SR
+//!   derivative triplet is evaluated in the frame of its nucleus): that cell
+//!   now reaches 2.5e-9 at the default 1e9. The bars below ([`P_BAR`] and
+//!   the stress bars) were set from the OLD floor and have NOT been
+//!   re-measured on the heavy-atom cells (the tests are slow); they are
+//!   loose, not wrong. The printed nucleus-exponent scan separates the
+//!   remaining model-nucleus error (falls as 1/zeta) from a missing term.
 //! * d shells: UNKNOWN. [`D_BAR`] = 1e-5 is PROVISIONAL UNTIL MEASURED;
 //!   tighten after the first run (every test prints its residual, and the
 //!   HF force tests print the residual at gradient nucleus exponents
-//!   1e8/1e9/1e11 too, which separates the libint floor — it moves with the
-//!   exponent — from a missing term, which does not).
+//!   1e8/1e9/1e11 too, which separates the model-nucleus error — it moves
+//!   with the exponent — from a missing term, which does not).
 //! * KS on the atom grid: FD h = 5e-5 (the hard neighbour mask; Iteration 17).
 //! * Stress: all nine components, Richardson `(4 FD(h/2) − FD(h))/3` (the
 //!   p-shell rule of Iteration 19); the antisymmetric part of an HF stress is
-//!   the libint floor (5.4e-8 on the triclinic s+p cell) and is reported.
+//!   reported (5.4e-8 on the triclinic s+p cell before #434, 2.3e-11 after:
+//!   it was SR-derivative rounding).
 //!
 //! Mutants (the anchor CAN fail on heavy atoms): `GradMutation::FitNoMetric`
 //! and `WSign` on CO/cc-pVDZ + jkfit, `WSign` on dense-AFT LiH, `XcNoAo` on
@@ -105,8 +110,8 @@ const FD_H: f64 = 1e-4;
 /// Atom-grid KS step (Iteration 17: the hard neighbour mask needs ≤ 5e-5).
 const FD_H_KS: f64 = 5e-5;
 
-/// Li p shells (STO-3G / 6-31G): the H-derived p-shell floor bar (module
-/// doc); PROVISIONAL for Z = 3.
+/// Li p shells (STO-3G / 6-31G): the H-derived p-shell bar of the pre-#434
+/// floor (module doc); loose now, not re-measured for Z = 3.
 const P_BAR: f64 = 5e-7;
 /// d shells in the orbital basis. Provisional until measured; tighten after
 /// the first run.
@@ -116,15 +121,17 @@ const D_BAR: f64 = 1e-5;
 const KS_D_BAR: f64 = 1e-5;
 /// Stress, p shells: the triclinic s+p bar (Richardson), Iteration 19.
 const STRESS_P_BAR: f64 = 5e-6;
-/// Stress antisymmetric part, p shells: the triclinic s+p bar (measured
-/// 5.4e-8 there at Z = 1). Provisional for Z = 3.
+/// Stress antisymmetric part, p shells: the pre-#434 triclinic s+p bar
+/// (5.4e-8 measured there at Z = 1, 2.3e-11 since #434). Loose, not
+/// re-measured for Z = 3.
 const STRESS_P_ANTISYM_BAR: f64 = 5e-7;
 /// Stress with d shells (FD and antisymmetric part). Provisional until
 /// measured; tighten after the first run.
 const STRESS_D_BAR: f64 = 1e-5;
 const STRESS_D_ANTISYM_BAR: f64 = 1e-5;
-/// ΣF: H cells reach 1e-13 (bar 1e-10). Provisional for heavy atoms (the
-/// SR-derivative floor is not translation-invariant term by term).
+/// ΣF: H cells reach 1e-13 (bar 1e-10). Loose for heavy atoms: set when the
+/// SR derivative's rounding noise was not translation-invariant term by term
+/// (#434 removed that); not re-measured.
 const NET_FORCE_BAR: f64 = 1e-8;
 /// F(ewald) vs F(none) from two independent SCFs (H cells 6.6e-12, bar
 /// 1e-10); SCF-convergence limited, so looser with core orbitals.
@@ -137,7 +144,8 @@ const ORBITAL_LINDEP: f64 = 1e-6;
 /// across it.
 const S_MARGIN: f64 = 1e-5;
 /// Gradient-only nucleus exponents printed (not asserted) next to the
-/// default: the libint floor moves with it, a missing term does not.
+/// default: the model-nucleus error moves with it (1/zeta), a missing term
+/// does not.
 /// `FERRIC_NUC_EXP_SCAN="1e7,1e8,1e9"` overrides the list.
 fn nuc_scan() -> Vec<f64> {
     match std::env::var("FERRIC_NUC_EXP_SCAN") {

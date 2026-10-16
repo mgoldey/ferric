@@ -526,7 +526,15 @@ fn energy_at(
         .energy
 }
 
-/// Measured O(h^2) FD floor (printed); bars derived in the assertions' doc.
+/// FD bars. MEASURED 2026-10-16 (H2 1x1x2, rotated, h = 1e-4, split and
+/// unsplit alike): force |analytic - FD| 1.41e-9, stress 7.8e-9; the
+/// smallest mutant misses are 2.5e-5 (force) and 1.0e-3 (stress), so the
+/// bars (1e-8 / 5e-8, 7x / 6x the measurement) sit 3+ decades under every
+/// mutant. The force residual GREW from 8.7e-10 (before #434) to 1.4e-9: the
+/// old SR-derivative rounding noise happened to partly cancel the remaining
+/// model-nucleus error (the derivative differentiates a 1e9 Gaussian nucleus,
+/// the FD energy's is 1e16; the difference falls as 1/zeta), which the
+/// nucleus-frame evaluation exposes. Within the bar.
 const FD_F_BAR: f64 = 1e-8;
 const FD_S_BAR: f64 = 5e-8;
 const FD_H: f64 = 1e-4;
