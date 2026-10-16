@@ -53,6 +53,55 @@ therefore race-free even if one `GenericGmEval` were shared by several engines. 
 Plain `Operator::coulomb` never goes through `GenericGmEval`: `FmEval_Chebyshev7::eval` is called through a const
 pointer. It is untouched.
 
+## Second change: `FmEval_Chebyshev7::eval` table edge (issue #433)
+
+`eval` took the asymptotic branch only for `x > T_crit` (`T_crit = cheb_table_tmax = 117`) and interpolated
+otherwise with `iv = int(x * 7)` into a table of `819 = 117 * 7` intervals (rows 0..=818). At `x == 117.0` exactly,
+`iv == 819` reads the coefficients one row past the end of the `posix_memalign`'d table, i.e. uninitialised heap.
+The override uses `x >= T_crit`. Every `x != 117.0` takes the same branch as before (bit-identical results); at
+`x == 117.0` the asymptotic value replaces garbage. That value is what any `x > T_crit` already gets: its omitted
+`e^-x/(2x)` term is about 1e-16 relative at m = 0 and 9e-17 at m = 40, below the roughly 4e-15 rounding of the
+upward recursion.
+
+### Exposure (who can hit it)
+
+ANY integral family at ANY precision, conditional only on a Boys argument that is exactly `117.0` in floating point.
+That is `rho * |PQ|^2` for the Coulomb kernel, and for erf/erfc both `T` and `T * omega^2/(omega^2 + rho)` are
+evaluated. Generic geometries essentially never produce it; integer or round coordinates and exponents do, and so do
+lattice shifts. A plain-libint counter-example with no ferric code involved: Coulomb 3-centre `(P|AA)`, `P` an s shell of
+exponent 2 at the origin, `A` an s shell of exponent 1 at (9, 6, 0) Bohr. Then `rho` is exactly 1 and `|PQ|^2` exactly
+117, so at precision 1e-14 and 1e-10 stock libint returns 4.6e-310 (default allocator) or -1.4e304 (`MALLOC_PERTURB_=1`)
+where the patched header returns 0.218157161196848, the closed form. In the default allocator the excess memory is
+usually zero, so the stock result is a silently wrong, plausible-looking number rather than an obvious failure.
+
+The precision dependence seen on the original reproducer (garbage at 1e-20 and below, clean at 1e-14) is NOT a
+property of the defect. It only says whether the one primitive quartet that hits 117.0 survives primitive screening:
+that quartet's contribution was about 1e-17, so a coarse precision screened it away. Do not read "clean at 1e-14" as
+"safe at 1e-14".
+
+This is a libint2 defect (upstream `boys.h`, every version that ships `boys_cheb7_v2.h`: both 2.7.2 and 2.13.1 are
+confirmed). A prefix whose `boys.h` is not one of the stock files above gets no override and MAY still read
+uninitialised memory; build.rs warns that the fix is NOT applied.
+
+### Evidence and its limits
+
+- Tests: `crates/ferric-integrals/tests/boys_chebyshev_table_edge.rs` (direct evaluator pin via `scf_boys_fm`,
+  exact-integer-geometry reproducer, point-site reproducer, allocator-fill sweep). `tests/boys_chebyshev_manifest.rs`
+  is a PRINT-ONLY helper for before/after bit comparisons by hand, not a guard.
+- Survey of existing tests (an instrumented STOCK 2.13.1 build counting evaluations at exactly 117.0, default
+  allocator, 400 s timeout per binary): 256 test binaries of ferric-integrals, ferric-pbc, ferric-mp2, ferric-rpa;
+  218 passed, 26 failed with 0 hits (environmental: 25 re-run serially all pass, 0 hits), 12 timed out. Of those 12,
+  only 3 were measured afterwards (per test: 39 tests, 0 hits); **9 timed-out binaries remain unmeasured**. The one
+  known real hit is the #421 ECP k-point test (80 evaluations at 117.0 per run; failing under `MALLOC_PERTURB_` 1 and
+  170 before the fix, passing after).
+- Not checked: aarch64 and FMA-contracting builds (whether a given geometry lands on exactly 117.0 depends on
+  rounding, which is why the integer-geometry test exists).
+
+### Sibling defect, not fixed here
+
+libint 2.7.2's `TennoGmEval` reads out of range at `T == Tmax` and `U == Umax` (Yukawa/SlaterGeminal on the wheel):
+issue #436. Same class, different table, different file; this override does not touch it.
+
 ## Only header code is affected
 
 `Engine`, `GenericGmEval` and the evaluators are header-only (`__libint2_engine_inline`). They are instantiated in

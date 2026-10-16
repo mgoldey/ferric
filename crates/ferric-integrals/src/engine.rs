@@ -1897,6 +1897,28 @@ impl Engine {
     }
 }
 
+/// Boys function `F_0(x)..F_mmax(x)` (`mmax <= 40`) through libint2's
+/// `FmEval_Chebyshev7`, the evaluator behind every Coulomb/erf/erfc core
+/// integral. A test hook that pins the evaluator independent of any integral
+/// geometry (the `x == 117.0` table edge, issue #433); not used by production
+/// code.
+///
+/// # Errors
+/// `x` negative or non-finite, `mmax > 40`, or a libint2 exception.
+pub fn boys_fm_chebyshev7(x: f64, mmax: usize) -> Result<Vec<f64>, FerricError> {
+    let m =
+        c_int::try_from(mmax).map_err(|_| FerricError::Libint("boys: mmax too large".into()))?;
+    let mut out = vec![0.0; mmax + 1];
+    // SAFETY: `out` holds mmax + 1 doubles, as the shim requires.
+    let status = unsafe { ffi::scf_boys_fm(x, m, out.as_mut_ptr()) };
+    if status < 0 {
+        return Err(FerricError::Libint(format!(
+            "scf_boys_fm(x = {x}, mmax = {mmax}) failed: status {status}"
+        )));
+    }
+    Ok(out)
+}
+
 /// `LIBINT2_MAX_DERIV_ORDER` of the linked libint2.
 pub fn libint_max_deriv_order() -> i32 {
     // SAFETY: pure query of a compile-time constant, no arguments.

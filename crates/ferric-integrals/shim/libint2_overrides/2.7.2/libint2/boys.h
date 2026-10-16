@@ -27,7 +27,11 @@
  *  copy-constructs the erf/erfc evaluator per primitive quartet (heap alloc +
  *  atomic shared_ptr refcount on the process-wide FmEval_Chebyshev7 singleton);
  *  erfc_coulomb_gm_eval::operator() is const with its Fm scratch on the stack.
- *  Arithmetic is unchanged. crates/ferric-integrals/build.rs puts this
+ *  Arithmetic is unchanged. A second change (issue #433):
+ *  FmEval_Chebyshev7::eval takes the asymptotic branch for x >= T_crit
+ *  (stock: x > T_crit), because x == 117.0 exactly read one table row past
+ *  the end; it alters the result only at that single point.
+ *  crates/ferric-integrals/build.rs puts this
  *  directory first on the shim's include path ONLY when the libint2 prefix's
  *  own boys.h is byte-identical to the stock 2.7.2 file above.
  */
@@ -338,7 +342,14 @@ namespace libint2 {
 
         // large T => use upward recursion
         // cost = 1 div + 1 sqrt + (1 + 2*(m-1)) muls
-        if (x > T_crit) {
+        // ferric patch (issue #433): `>=`, not the stock `>`. The table has
+        // cheb_table_tmax * 7 = 819 intervals (rows 0..=818); at x == T_crit
+        // exactly, iv = int(x * one_over_delta) = 819 indexes one row PAST the
+        // table (uninitialised heap). Only the single point x == 117.0
+        // changes, to the asymptotic value that any x > T_crit already gets
+        // (omitted e^-x/(2x) term ~1e-16 relative at m = 0, ~9e-17 at m = 40,
+        // below the ~4e-15 rounding of the upward recursion).
+        if (x >= T_crit) {
           const double one_over_x = 1/x;
           Fm[0] = 0.88622692545275801365 * sqrt(one_over_x); // see Eq. (9.8.9) in Helgaker-Jorgensen-Olsen
           if (m_max == 0)
