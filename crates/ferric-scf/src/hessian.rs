@@ -649,6 +649,17 @@ pub mod rij_support {
         RIK_ALPHA_SPIN,
     };
 
+    /// Run `f` with `∂V_ECP/∂x` left out of the first-order Fock matrices
+    /// `F^x` of the CPHF response (the ECP skeleton term stays): the
+    /// dropped-term negative control of the ECP Hessian suite. Thread-local,
+    /// and restored on return.
+    pub fn with_ecp_first_order_dropped<R>(f: impl FnOnce() -> R) -> R {
+        let prev = ECP_FIRST_ORDER_DROPPED.with(|c| c.replace(true));
+        let out = f();
+        ECP_FIRST_ORDER_DROPPED.with(|c| c.set(prev));
+        out
+    }
+
     /// [`uhf_hessian_parts`] with the density-fitting constructions of the
     /// three mutant sets applied.
     #[allow(clippy::too_many_arguments)]
@@ -1475,11 +1486,17 @@ fn add_extra_first_order(
             add_to_every_spin(first, &dm);
         }
     }
-    if has_ecp(mol, prep.basis_set()) {
+    if has_ecp(mol, prep.basis_set()) && !ECP_FIRST_ORDER_DROPPED.with(std::cell::Cell::get) {
         let dm = ecp_first_derivative_matrices(mol, prep.basis_set())?;
         add_to_every_spin(first, &dm);
     }
     Ok(())
+}
+
+thread_local! {
+    /// Negative-control switch of [`rij_support::with_ecp_first_order_dropped`]
+    /// (always `false` outside it).
+    static ECP_FIRST_ORDER_DROPPED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// `F^x += dm[x]` for every spin.
