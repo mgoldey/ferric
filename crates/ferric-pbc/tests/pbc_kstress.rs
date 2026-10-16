@@ -1073,6 +1073,20 @@ fn assert_mutants_fail(
     always: &[KStressMutation],
     ewald_only: &[KStressMutation],
 ) {
+    assert_mutants_fail_floor(name, run, refs, always, ewald_only, SC_BAR);
+}
+
+/// [`assert_mutants_fail`] with an explicit anchor floor `sc_bar` for the
+/// blind / diagonal-only checks (p-shell supercell anchors sit at 1.7e-10 at
+/// the pinned nucleus exponent, above the s-only `SC_BAR`).
+fn assert_mutants_fail_floor(
+    name: &str,
+    run: &dyn Fn(ExxDiv, Option<KStressMutation>) -> KStress,
+    refs: &ScRef,
+    always: &[KStressMutation],
+    ewald_only: &[KStressMutation],
+    sc_bar: f64,
+) {
     for &m in always {
         for (i, exx) in EXX.into_iter().enumerate() {
             let s = run(exx, Some(m));
@@ -1085,7 +1099,7 @@ fn assert_mutants_fail(
             );
             if DIAGONAL_ONLY.contains(&m) {
                 assert!(
-                    off <= SC_BAR,
+                    off <= sc_bar,
                     "{name}: {m:?} must be diagonal-only ({off:e})"
                 );
             }
@@ -1101,7 +1115,7 @@ fn assert_mutants_fail(
         eprintln!("  {name} mutant {m:?}: ewald miss {me:.2e}, none miss {mn:.2e} (blind)");
         assert!(me > MUTANT_BAR, "{name}: {m:?} (ewald) not caught ({me:e})");
         assert!(
-            mn <= SC_BAR,
+            mn <= sc_bar,
             "{name}: {m:?} must be blind under none ({mn:e})"
         );
     }
@@ -3875,7 +3889,9 @@ fn open_shell_p_h4_triplet_one_point_mesh_uhf_stress_is_the_gamma_stress() {
 /// (the H3 anchor) do not see it.
 const OS_SC_ZETA: f64 = 1e7;
 /// Bar of the p-shell supercell anchor at `OS_SC_ZETA` (the unrotated ECP
-/// file's bar for the same floor, measured there at 2.6e-10 for stress).
+/// file's bar for the same floor). MEASURED 1.7e-10 here (S1, both exxdiv; 2.6e-10 for the
+/// HI stress there), 12x below the bar, 5 orders below the smallest mutant.
+/// Also the blind / diagonal-only floor of the mutant sweep.
 const OS_SC_BAR: f64 = 2e-9;
 
 fn ks_uhf_zeta(
@@ -3972,8 +3988,22 @@ fn open_shell_p_1x1x3_uhf_stress_is_the_supercell_stress_per_cell() {
         )
         .expect("kpoint_uhf_stress")
     };
-    assert_mutants_fail(sys.name, &run, &refs, &K_MUTANTS, &K_EWALD_MUTANTS);
-    assert_mutants_fail(sys.name, &run, &refs, &TERM_MUTANTS, &TERM_EWALD_MUTANTS);
+    assert_mutants_fail_floor(
+        sys.name,
+        &run,
+        &refs,
+        &K_MUTANTS,
+        &K_EWALD_MUTANTS,
+        OS_SC_BAR,
+    );
+    assert_mutants_fail_floor(
+        sys.name,
+        &run,
+        &refs,
+        &TERM_MUTANTS,
+        &TERM_EWALD_MUTANTS,
+        OS_SC_BAR,
+    );
 }
 
 /// PHYSICS: all nine components of the k-UHF stress of S1 vs central FD (h =
