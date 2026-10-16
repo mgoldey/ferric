@@ -685,6 +685,12 @@ impl DiisDriver {
             energy: EnergyDiis::new(energy_flavor, max_subspace),
             switch_thresh: if flavor == DiisFlavor::Pulay {
                 0.0
+            } else if switch_thresh.is_nan() {
+                // NaN compares below no error, so every `err_max < thresh` /
+                // `err_max >= thresh` test below would misfire (step_checked
+                // would hand the step to Pulay, the veto bound would be NaN).
+                // It is the never-switch regime: normalise it to +inf here, once.
+                f64::INFINITY
             } else {
                 switch_thresh
             },
@@ -725,10 +731,7 @@ impl DiisDriver {
     pub fn commutator_veto_bound(&self) -> Option<f64> {
         if self.switch_thresh <= 0.0 {
             None
-        } else if self.switch_thresh.is_infinite() || self.switch_thresh.is_nan() {
-            // NaN never compares below any error, so the driver already treats
-            // it as "never switch" (the same regime as +inf): give it the same
-            // bound rather than a NaN bound that no err_max is ever >= to.
+        } else if self.switch_thresh.is_infinite() {
             Some(INFINITE_SWITCH_VETO_BOUND)
         } else {
             Some(self.switch_thresh)
@@ -1531,9 +1534,27 @@ mod tests {
     /// it gets the infinite-switch bound, not a NaN bound that would disable
     /// the veto.
     #[test]
-    fn a_nan_switch_gets_the_infinite_switch_bound() {
-        let d = DiisDriver::new(DiisFlavor::Ediis, 8, f64::NAN);
-        assert_eq!(d.commutator_veto_bound(), Some(INFINITE_SWITCH_VETO_BOUND));
+    fn a_nan_switch_is_normalised_to_the_never_switch_regime() {
+        let nan = DiisDriver::new(DiisFlavor::Ediis, 8, f64::NAN);
+        let inf = DiisDriver::new(DiisFlavor::Ediis, 8, f64::INFINITY);
+        assert_eq!(
+            nan.commutator_veto_bound(),
+            Some(INFINITE_SWITCH_VETO_BOUND)
+        );
+        assert_eq!(nan.commutator_veto_bound(), inf.commutator_veto_bound());
+        // The step itself must follow the +inf driver bit for bit (the energy
+        // variant steers), not drop to Pulay on `err_max >= NaN` being false.
+        let n = 2;
+        let f0 = Array2::from_shape_fn((n, n), |(i, j)| (i + j) as f64 * 0.1);
+        let f1 = &f0 + &Array2::from_elem((n, n), 0.05);
+        let err = Array2::from_elem((n, n), 0.5);
+        let (mut a, mut b) = (nan, inf);
+        let (d0, d1) = (Array2::eye(n), Array2::eye(n) * 0.9);
+        for (f, d, e) in [(&f0, &d0, -100.0), (&f1, &d1, -5.0)] {
+            let x = a.step_checked(f, &err, d, e, 0.5, true);
+            let y = b.step_checked(f, &err, d, e, 0.5, true);
+            assert_eq!(x, y);
+        }
     }
 
     #[test]
