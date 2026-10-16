@@ -70,10 +70,11 @@
 //! fit) the strain walks run on the rotated shells with `Tᵀ W T` residue
 //! weights, so the stress follows the walk the SCF's energy ran (the config
 //! must agree with the build, [`crate::kgrad`]'s refusals apply). The SR
-//! derivative walks use the Gaussian-nucleus exponent `min(1e9, cfg)` rather
-//! than the energy walk's nuclear model, so neither the rotated nor the
-//! unrotated derivative is the exact derivative of the SCREENED energy: both
-//! sit within the screening-and-nucleus-model floor of it (stress rotated vs
+//! derivative walks use the Gaussian-nucleus exponent
+//! `min(GRAD_NUCLEUS_EXPONENT, cfg)`, the energy walk's own 1e16 by default,
+//! so neither the rotated nor the unrotated derivative is the exact
+//! derivative of the SCREENED energy: both sit within the screening floor of
+//! it (stress rotated vs
 //! unrotated 6.5e-9 Ha at hcore precision 1e-9, shrinking with the screen).
 //!
 //! ECP ([`KStressParts::ecp`]): the Gamma ECP strain walk
