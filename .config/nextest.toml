@@ -104,16 +104,20 @@ filter = 'test(/scf|dft|rimp2|ccsd|rpa|cosx|link_k/)'
 test-group = 'numerics'
 
 # ferric-pbc tests get twice the default slow-timeout (120 s x 8 = 960 s, not
-# 120 s x 4 = 480 s). MEASURED on CI runners (the last three green main runs):
+# 120 s x 4 = 480 s). MEASURED on CI main runs (38868592090, 38880228177,
+# 38904232627, 38942986914): the FIRST try of
 # `pbc_kgrad h2_2x2x2_force_is_the_supercell_force_and_trim_mesh_is_blind_to_phase_mutants`
-# passes in 406-443 s on the second try, i.e. within 8-15% of the 480 s limit,
-# and it timed out twice in a row on a slower runner (main run 38942986914) with no
-# code change involved; `pbc_kstress h2_1x1x3_stress_is_the_supercell_stress_per_cell`
-# (374 s), `pbc_kpair_symmetry` (343 s) and `pbc_parallel_bitwise` / `pbc_rohf` (305 s)
-# are next. A timeout of that kind says nothing about correctness and costs a full CI
+# was terminated at >480 s in three of the four runs, and the retry then passed in
+# 406-411 s once the shard was quieter (the fourth run passed first try at 443 s). Its
+# loaded first-try duration has therefore never been measured, only that it exceeds
+# 480 s; 960 s is very likely enough but is a 2x margin on the quiet time. Other PBC
+# tests that reached 240+ s in those runs (all covered by this filter): `pbc_kstress`
+# 374 s, `pbc_rohf` 365 s, `pbc_parallel_bitwise` 362 s, `pbc_kpair_symmetry` 343 s,
+# `pbc_sr_rotation` 332 s. A timeout says nothing about correctness and costs a full CI
 # round trip. This is a SEPARATE setting from the `test-group` overrides above, so
-# nextest evaluates it independently of them. A genuinely hung test is now caught after
-# 16 minutes instead of 8.
+# nextest evaluates it independently of them (first match per setting). With
+# `retries = 1` a genuinely hung PBC test now costs 2 x 960 s on one runner thread
+# (was 2 x 480 s); the shard step's timeout-minutes is 100.
 [[profile.ci.overrides]]
 filter = 'binary_id(/^ferric-pbc::pbc_/)'
 slow-timeout = { period = "120s", terminate-after = 8 }
