@@ -1116,3 +1116,168 @@ fn loose_screen_hcore_side_gap_rotated_vs_unrotated_vs_fd() {
     );
     assert!(gap_tot < 1e-3 && m_on < 2e-6, "{gap_tot:e} {m_on:e}");
 }
+
+// ----------------------------------------- (#421 c) triclinic and 2x2x1 meshes
+//
+// The anchors above are orthorhombic (cubic 5 Bohr) and one-dimensional
+// (1x1x2, 1x1x3). Untested combination: a rotating basis on a TRICLINIC cell
+// (the residue bins and `Tᵀ W[r] T` weights are indexed in lattice
+// coordinates, the strain acts through the full non-orthogonal lattice) and a
+// 2x2x1 mesh (two mesh directions: the residue bucket of a pair image is a
+// 2-D index, so a flattening or axis-order slip that a 1-D mesh cannot see).
+//
+// ARTIFACT hypothesis (before measuring): a defect confined to the combination
+// would be (i) the residue index of the forward-transformed weights computed
+// from Cartesian rather than lattice coordinates (invisible on a cubic cell:
+// the two agree), (ii) the T-transform applied per residue in a different
+// bucket order than the energy's back-transform on a mesh with n_1 > 1 (a 1-D
+// mesh has one bucket axis), (iii) `unfold`/supercell mismatch from an
+// axis-order slip. Each would be an O(0.1..1) miss against the supercell and
+// FD anchors. All of those are independent constructions of the rotated
+// derivative: explicit supercell (rotation on both sides) and FD of the
+// ROTATED energy. If correct: the same bars as the 1-D anchors.
+//
+// BLIND SPOT, asserted with its measured size: every n_i <= 2 mesh is TRIM,
+// so `RotSwapPair` (a transposed bin) is nearly the same bin; the
+// non-TRIM triclinic 1x1x3 anchor carries it.
+
+fn cell_tri() -> Cell {
+    Cell::new(hydrogens(&H2_ATOMS), TRI_A).expect("triclinic cell")
+}
+
+/// Bar of the 1x1x1-vs-Gamma anchors of this section. MEASURED (triclinic,
+/// both exxdiv): force total 3.0e-12, hcore 0 (bitwise), fit 1.2e-14; stress
+/// total 3.9e-14, fit 4.2e-14; 25x above, and the smallest rotation mutant
+/// moves the same quantities by >= 1e-3.
+const ONE_POINT_BAR: f64 = 1e-10;
+
+/// (c) on the triclinic cell: 1x1x1 mesh == the Gamma rotated force and
+/// stress, both exxdiv (hcore, fit and total, per part).
+#[test]
+fn triclinic_one_point_mesh_rotated_force_and_stress_are_the_gamma_ones() {
+    let (hp, gp) = (1e-11, 1e-12);
+    let r = run(cell_tri(), [1, 1, 1], None, on(), (hp, gp));
+    r.assert_rotates("triclinic 1x1x1");
+    for exx in [ExxDiv::None, ExxDiv::Ewald] {
+        let d = gamma_anchor(&r, [1, 1, 1], exx, hp, gp);
+        eprintln!(
+            "triclinic 1x1x1 {exx:?}: force/stress vs Gamma (tot, hcore, fit) {:?}",
+            d.map(|x| format!("{x:.2e}"))
+        );
+        assert!(d.iter().all(|x| *x < ONE_POINT_BAR), "{d:?}");
+    }
+}
+
+/// (d) on the triclinic cell, non-TRIM 1x1x3 mesh == supercell / N with the
+/// rotation on both sides, both exxdiv.
+#[test]
+#[ignore = "slow: Gamma RS-GDF force + stress on the 6-atom triclinic supercell, two exxdiv"]
+fn triclinic_rotated_1x1x3_mesh_force_and_stress_are_the_gamma_supercell() {
+    let (hp, gp) = (1e-9, 1e-10);
+    let n = [1, 1, 3];
+    let r = run(cell_tri(), n, None, on(), (hp, gp));
+    r.assert_rotates("triclinic 1x1x3");
+    for exx in [ExxDiv::None, ExxDiv::Ewald] {
+        let d = gamma_anchor(&r, n, exx, hp, gp);
+        eprintln!(
+            "triclinic 1x1x3 {exx:?}: vs supercell/N (tot, hcore, fit) {:?}",
+            d.map(|x| format!("{x:.2e}"))
+        );
+        assert!(d.iter().all(|x| *x < SC_BAR), "{d:?}");
+    }
+}
+
+/// (d) on a 2x2x1 mesh (triclinic and cubic cells): k mesh == the explicit
+/// 2x2x1 supercell / N, rotation on both sides, exxdiv none.
+#[test]
+#[ignore = "slow: Gamma RS-GDF force + stress on the 8-atom supercell, triclinic and cubic"]
+fn rotated_2x2x1_mesh_force_and_stress_are_the_gamma_supercell() {
+    let (hp, gp) = (1e-9, 1e-10);
+    let n = [2, 2, 1];
+    for (name, cell) in [("triclinic", cell_tri()), ("cubic", cell_h2(&H2_ATOMS))] {
+        let r = run(cell, n, None, on(), (hp, gp));
+        r.assert_rotates(name);
+        let d = gamma_anchor(&r, n, ExxDiv::None, hp, gp);
+        eprintln!(
+            "{name} 2x2x1: vs supercell/N (tot, hcore, fit) {:?}",
+            d.map(|x| format!("{x:.2e}"))
+        );
+        assert!(d.iter().all(|x| *x < SC_BAR), "{name}: {d:?}");
+    }
+}
+
+fn energy_at_cell(cell: &Cell, n: [usize; 3]) -> f64 {
+    run(cell.clone(), n, None, on(), DEFAULT_PREC)
+        .scf(ExxDiv::None)
+        .energy
+}
+
+fn displaced(cell: &Cell, a: usize, x: usize, h: f64) -> Cell {
+    let mut p: Vec<[f64; 3]> = cell.positions().iter().map(|q| [q[0], q[1], q[2]]).collect();
+    p[a][x] += h;
+    Cell::new(hydrogens(&p), *cell.lattice()).expect("displaced cell")
+}
+
+/// (b) on a 2x2x1 mesh of the triclinic cell: rotated analytic force (H x, H
+/// z, the second atom's y) and stress (xx, zz, xy, yz, xz) vs central FD of
+/// the ROTATED k energy, every displaced / strained build rotated; the
+/// production-wired stress and force mutants must move the total, with the
+/// TRIM-mesh blind spot (`RotSwapPair`, `RotFitWrongResidue` act through the
+/// fit pair/bin order) asserted at its measured size, not hidden.
+#[test]
+#[ignore = "slow (~10 min release): 1 + 16 rotated 2x2x1 triclinic k pipelines, 14 mutant evaluations"]
+fn rotated_k_force_and_stress_match_fd_on_2x2x1_triclinic() {
+    let n = [2, 2, 1];
+    let cell = cell_tri();
+    let comps_f = [(0usize, 0usize), (0, 2), (1, 1)];
+    let comps_s = [(0usize, 0usize), (2, 2), (0, 1), (1, 2), (0, 2)];
+    let mut fd_f = Vec::new();
+    for &(a, x) in &comps_f {
+        let ep = energy_at_cell(&displaced(&cell, a, x, FD_H), n);
+        let em = energy_at_cell(&displaced(&cell, a, x, -FD_H), n);
+        fd_f.push((ep - em) / (2.0 * FD_H));
+    }
+    let mut fd_s = Vec::new();
+    for &(i, j) in &comps_s {
+        let mut e = [[0.0; 3]; 3];
+        e[i][j] = FD_H;
+        let ep = energy_at_cell(&cell.strained(&e).unwrap(), n);
+        e[i][j] = -FD_H;
+        let em = energy_at_cell(&cell.strained(&e).unwrap(), n);
+        fd_s.push((ep - em) / (2.0 * FD_H));
+    }
+    let r = run(cell, n, None, on(), DEFAULT_PREC);
+    r.assert_rotates("triclinic 2x2x1");
+    let scf = r.scf(ExxDiv::None);
+    let f = r.force(&scf, ExxDiv::None, None);
+    let s = r.stress(&scf, ExxDiv::None, None);
+    let mut worst_f = 0.0_f64;
+    for (k, &(a, x)) in comps_f.iter().enumerate() {
+        worst_f = worst_f.max((f.grad[(a, x)] - fd_f[k]).abs());
+    }
+    let mut worst_s = 0.0_f64;
+    for (k, &(i, j)) in comps_s.iter().enumerate() {
+        worst_s = worst_s.max((s.de_deps[i][j] - fd_s[k]).abs());
+    }
+    eprintln!("triclinic 2x2x1: |analytic - FD| force {worst_f:.2e}, stress {worst_s:.2e}");
+    assert!(worst_f < FD_F_BAR, "force FD {worst_f:e}");
+    assert!(worst_s < FD_S_BAR, "stress FD {worst_s:e}");
+    for m in FORCE_MUTANTS {
+        let g = r.force(&scf, ExxDiv::None, Some(m));
+        let moved = max_abs_diff(&g.grad, &f.grad);
+        eprintln!("  force mutant {m:?}: total moves {moved:.2e}");
+        assert!(
+            moved > MUTANT_FLOOR || matches!(m, KGradMutation::RotSwapPair),
+            "{m:?} escaped: {moved:e}"
+        );
+    }
+    for m in STRESS_MUTANTS {
+        let g = r.stress(&scf, ExxDiv::None, Some(m));
+        let moved = mdiff(&g.de_deps, &s.de_deps);
+        eprintln!("  stress mutant {m:?}: total moves {moved:.2e}");
+        assert!(
+            moved > MUTANT_FLOOR || matches!(m, KStressMutation::RotSwapPair),
+            "{m:?} escaped: {moved:e}"
+        );
+    }
+}
