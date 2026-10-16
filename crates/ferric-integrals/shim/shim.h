@@ -43,6 +43,12 @@ void scf_libint_finalize(void);
    storage; never NULL; cannot fail. */
 const char *scf_libint_version(void);
 
+/* Boys function F_0..F_mmax(x) via libint2's FmEval_Chebyshev7 (test hook for
+   the T_crit table edge, issue #433). out holds mmax+1 doubles. Returns
+   mmax+1, SCF_EINVAL on a null pointer / x < 0 or non-finite / mmax outside
+   [0, 40], SCF_EINTERNAL on a libint2 exception. */
+int scf_boys_fm(double x, int mmax, double *out);
+
 /* Build a basis set from caller-owned arrays. Returns NULL on error. */
 scf_basis *scf_basis_create(const scf_shell *shells, int nshells,
                                 const scf_atom *atoms, int natoms);

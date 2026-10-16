@@ -7,12 +7,19 @@
 //! sends the call to interpolation with `iv == 819`: the 8 coefficients per
 //! `m` are read from the 64-byte-aligned heap block just past the table, i.e.
 //! uninitialised memory. Any other `x` is fine (just below 117 gives
-//! `iv == 818`, above gives the asymptotic branch). The engine precision only
-//! decides whether the one primitive quartet with `T == 117` survives primitive
-//! screening: at 1e-14 and 1e-10 it is screened out, at 1e-20 and below it is
-//! kept (so "garbage at 2.2e-308, 1e-100, 1e-20; clean at 1e-14"). The exact
-//! hit needs `rho * |PQ|^2 == 117` in floating point, which lattice-integer
-//! shifts with "nice" exponents produce (here `0.9 * 130`).
+//! `iv == 818`, above gives the asymptotic branch).
+//!
+//! EXPOSURE. ANY integral family at ANY precision, conditional only on a Boys
+//! argument that is exactly `117.0` in floating point (`rho * |PQ|^2` for the
+//! Coulomb kernel; erf/erfc evaluate both `T` and `T * w^2/(w^2 + rho)`).
+//! Generic geometries essentially never hit it; integer or round coordinates
+//! and exponents, and lattice shifts, do. In the default allocator the excess
+//! memory is usually zero, so the stock result is a silently wrong,
+//! plausible-looking number. The precision dependence of the first reproducer
+//! (garbage at 1e-20 and below, clean at 1e-14) is NOT a property of the
+//! defect: it only says whether the one primitive quartet at `T == 117`
+//! survives primitive screening (its contribution there is ~1e-17). The
+//! integer-geometry test below is wrong on stock libint2 at every precision.
 //!
 //! ARTIFACT vs PHYSICS hypothesis (written before the root cause was known).
 //! Physics: a far-field erfc integral is ~1e-22, so a 1e288 value cannot be
@@ -22,16 +29,30 @@
 //! that one) as the garbage carrier.
 //!
 //! Tests here:
-//! * `t_crit_hit_matches_the_closed_form`: the exact-hit geometry against an
-//!   independent closed form (Gaussian product theorem + erf/erfc potential of
-//!   a Gaussian charge), relative 1e-12, for Coulomb and a long-range erfc, and
-//!   absolutely (< 1e-15) for the issue's omega = 0.8, where the true value is
-//!   ~1e-23 and the engine's cancellation noise is ~5e-17. The closed form is
-//!   first checked at a generic geometry (anchor: a wrong formula would fail
-//!   there, where no table edge is involved).
+//! * `evaluator_at_t_crit_is_the_asymptotic_value`: calls the Boys evaluator
+//!   directly (`boys_fm_chebyshev7`) at `x == 117.0` and its two neighbours
+//!   and compares with the independent closed form
+//!   `F_m(x) = (2m-1)!! / (2x)^m * sqrt(pi / x) / 2`. Independent of any
+//!   integral geometry; pins the patched comparison itself.
+//! * `integer_geometry_hits_t_crit_under_any_rounding`: Coulomb `(P|AA)`,
+//!   `P` s exponent 2 at the origin, `A` s exponent 1 at (9, 6, 0): `rho` is 1
+//!   and `|PQ|^2` is 117 in EXACT arithmetic (every intermediate a small
+//!   integer or half-integer), so `T == 117.0` under any FMA/libm. The test
+//!   asserts that exactness on the inputs it feeds and compares with the
+//!   closed form 0.218157161196848 at 1e-14, 1e-10 and `f64::MIN_POSITIVE`.
+//! * `t_crit_hit_matches_the_closed_form`: the issue's point-site geometry
+//!   (hits 117.0 through rounding on the compilers tried; a different
+//!   FMA/libm could make it pass vacuously, which is why the two tests above
+//!   exist) against a Gaussian-product-theorem closed form, relative 1e-12,
+//!   and absolutely (< 1e-15) for omega = 0.8, where the true value is ~1e-23
+//!   and the engine's cancellation noise ~5e-17. The closed form is first
+//!   checked at a generic geometry (anchor: a wrong formula would fail there).
 //! * `sweep_is_independent_of_allocator_fill`: a shells x geometries x
-//!   operators x precisions sweep, hashed bit-for-bit in a child process under
+//!   operators x precisions sweep (including the integer geometry and the
+//!   direct evaluator at 117.0), hashed bit-for-bit in a child process under
 //!   several `MALLOC_PERTURB_` values; every hash must agree.
+//!
+//! NOT checked: aarch64 and FMA-contracting builds.
 
 use ferric_core::basis::{BasisSet, Shell};
 use ferric_core::mol::{Atom, Molecule};
@@ -236,6 +257,109 @@ fn t_crit_hit_matches_the_closed_form() {
     assert!(got.abs() < 1e-15, "engine {got:e}");
 }
 
+// ------------------------------------------------- direct evaluator, integer
+
+/// Boys function by its closed form, independent of the table:
+/// `F_m(x) = Gamma(m + 1/2) / (2 x^(m + 1/2))`, built by the stable upward
+/// recursion `F_m = F_{m-1} (2m - 1) / (2x)`, valid (and accurate to a few ulp)
+/// for the large `x` used here.
+fn boys_asymptotic(x: f64, mmax: usize) -> Vec<f64> {
+    let mut f = vec![0.5 * (PI / x).sqrt()];
+    for m in 1..=mmax {
+        f.push(f[m - 1] * (2 * m - 1) as f64 / (2.0 * x));
+    }
+    f
+}
+
+/// Pins the patched comparison independent of any integral geometry.
+#[test]
+fn evaluator_at_t_crit_is_the_asymptotic_value() {
+    use ferric_integrals::engine::boys_fm_chebyshev7;
+    let mmax = 40;
+    let want = boys_asymptotic(117.0, mmax);
+    let at = boys_fm_chebyshev7(117.0, mmax).expect("eval at 117.0");
+    let below =
+        boys_fm_chebyshev7(f64::from_bits(117.0_f64.to_bits() - 1), mmax).expect("eval below");
+    let above =
+        boys_fm_chebyshev7(f64::from_bits(117.0_f64.to_bits() + 1), mmax).expect("eval above");
+    for m in 0..=mmax {
+        let rel = |a: f64, b: f64| (a - b).abs() / b.abs();
+        assert!(
+            rel(at[m], want[m]) < 1e-13,
+            "m = {m}: F(117.0) = {:e}, closed form {:e}",
+            at[m],
+            want[m]
+        );
+        // Continuity across the branch edge (table below, asymptotic above).
+        assert!(
+            rel(at[m], below[m]) < 1e-12,
+            "m = {m}: below {:e}",
+            below[m]
+        );
+        assert!(
+            rel(at[m], above[m]) < 1e-12,
+            "m = {m}: above {:e}",
+            above[m]
+        );
+    }
+}
+
+/// `(P|AA)`: `P` an s shell of exponent 2 at the origin, `A` an s shell of
+/// exponent 1 at (9, 6, 0). Everything is exact in binary floating point.
+fn integer_block(op: Operator, precision: f64) -> Option<f64> {
+    let a = [9.0, 6.0, 0.0];
+    let mol_at = |pos: [f64; 3]| Molecule {
+        atoms: vec![Atom {
+            symbol: "I".into(),
+            z: 53,
+            x: pos[0],
+            y: pos[1],
+            zpos: pos[2],
+            ghost: false,
+            n_core_ecp: 0,
+        }],
+        charge: 0,
+        multiplicity: 1,
+    };
+    let prep_at = |pos: [f64; 3], exp: f64| {
+        let mut shells = HashMap::new();
+        shells.insert(53, vec![s_shell(&[exp], &[1.0])]);
+        let bs = BasisSet {
+            name: "int".into(),
+            shells,
+            ecps: HashMap::new(),
+        };
+        PreparedBasis::new(&mol_at(pos), &bs).expect("prep")
+    };
+    let obs = prep_at(a, 1.0);
+    let aux = prep_at([0.0; 3], 2.0);
+    let mut eng = Engine::new_3center(op, &obs, &aux, precision).expect("engine");
+    eng.compute_eri3(&obs, &aux, 0, 0, 0).map(|b| b[0])
+}
+
+#[test]
+fn integer_geometry_hits_t_crit_under_any_rounding() {
+    // The Boys argument libint forms: gammap = 0 + 2, gammaq = 1 + 1,
+    // rho = gammap gammaq / (gammap + gammaq), T = rho |P - Q|^2, with
+    // P = (0 a + 2 O)/2 = O and Q = (1 A + 1 A)/2 = A. All exact.
+    let (gp, gq) = (2.0_f64, 2.0_f64);
+    let rho = gp * gq / (gp + gq);
+    let pq2 = 9.0_f64 * 9.0 + 6.0 * 6.0 + 0.0;
+    assert_eq!(rho, 1.0);
+    assert_eq!(rho * pq2, 117.0, "the geometry must hit T_crit exactly");
+    // Closed form: aux weight N_P (pi/2)^(3/2) = pi^(3/4), the AA density is
+    // a unit charge, and two Gaussian charges of exponents 2 and 2 interact
+    // as erf(sqrt(2 2 / 4) R) / R with R = sqrt(117).
+    let r = pq2.sqrt();
+    let want = PI.powf(0.75) * (unsafe { erf(r) }) / r;
+    assert!((want - 0.218_157_161_196_848).abs() < 1e-14, "{want}");
+    for prec in [1e-10, 1e-14, f64::MIN_POSITIVE] {
+        let got = integer_block(Operator::coulomb(), prec).expect("not screened");
+        let rel = (got - want).abs() / want;
+        assert!(rel < 1e-13, "precision {prec:e}: {got:e} vs {want:e}");
+    }
+}
+
 // ----------------------------------------------------------------- sweep
 
 fn fnv(h: &mut u64, x: f64) {
@@ -297,6 +421,24 @@ fn sweep() -> (u64, u64, usize) {
                 n += 1;
             }
         }
+    }
+    // The integer geometry (T == 117.0 exactly) through the plain engine, and
+    // the evaluator itself at 117.0 and its neighbours.
+    for (op, prec) in ops {
+        match integer_block(op, prec) {
+            Some(x) => fnv(&mut h117, x),
+            None => fnv(&mut h117, f64::NAN),
+        }
+        n += 1;
+    }
+    for x in [
+        f64::from_bits(117.0_f64.to_bits() - 1),
+        117.0,
+        f64::from_bits(117.0_f64.to_bits() + 1),
+    ] {
+        let f = ferric_integrals::engine::boys_fm_chebyshev7(x, 40).expect("boys");
+        f.iter().for_each(|&v| fnv(&mut h117, v));
+        n += 1;
     }
     (h117, hgen, n)
 }

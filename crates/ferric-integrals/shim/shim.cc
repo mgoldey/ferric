@@ -274,6 +274,24 @@ static std::mutex libint_ctor_mutex;
 // nothing measurable.
 static std::mutex libint_init_mutex;
 
+/* Boys function F_0..F_mmax at x through libint2's FmEval_Chebyshev7 (the
+ * evaluator behind every Coulomb/erf/erfc core integral), so a test can pin
+ * its behaviour independent of any integral geometry (issue #433: x == 117.0
+ * exactly read one table row past the end). out must hold mmax+1 doubles.
+ * Returns mmax+1, or SCF_EINVAL (bad pointer / x not finite or negative /
+ * mmax outside [0, 40]) or SCF_EINTERNAL on a libint2 exception. */
+int scf_boys_fm(double x, int mmax, double *out) {
+    if (!out || !std::isfinite(x) || x < 0.0 || mmax < 0 || mmax > 40)
+        return SCF_EINVAL;
+    try {
+        auto fm = libint2::FmEval_Chebyshev7<double>::instance(mmax);
+        fm->eval(out, x, mmax);
+        return mmax + 1;
+    } catch (...) {
+        return SCF_EINTERNAL;
+    }
+}
+
 const char *scf_libint_version(void) {
 #ifdef LIBINT_VERSION
     return LIBINT_VERSION;

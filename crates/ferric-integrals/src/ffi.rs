@@ -47,6 +47,9 @@ extern "C" {
     /// Static, NUL-terminated `LIBINT_VERSION` of the compiled-against
     /// headers, or `"unknown"`. Never NULL.
     pub fn scf_libint_version() -> *const c_char;
+    /// Boys function `F_0..F_mmax(x)` through libint2's `FmEval_Chebyshev7`;
+    /// `out` holds `mmax + 1` doubles. Returns `mmax + 1` or a negative status.
+    pub fn scf_boys_fm(x: f64, mmax: c_int, out: *mut f64) -> c_int;
     pub fn scf_basis_create(
         shells: *const CShell,
         nshells: c_int,
