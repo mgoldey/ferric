@@ -167,7 +167,8 @@ Not changed: `eval_yukawa` with `U < Umin` or `T > Tmax` still uses the upward r
   s/p/d shells x 7 centres (same-centre, 9-6-0 integer, 5.5 along x ...) x zeta in {0.3, 1, 3, 10}, 28592 blocks:
   FNV-1a hash `25864f7f62d9114b` for stock, for the pre-#436 override and for this one, 0 non-finite values.
   Rust-side, `tenno_table_edge::sweep_child_prints_hashes` prints `SWEEP_HASH edge=bbf3ce42b1378db6
-  engine=de36c9077af007c0 n=296` on 2.7.2+override and `edge=2acf9250b8e24a57 engine=0ed77033630946fd` on 2.13.1.
+  engine=de36c9077af007c0 n=296` on 2.7.2+override and, on stock 2.13.1 (before #439), `edge=2acf9250b8e24a57
+  engine=0ed77033630946fd`; with the 2.13.1 override of #439 the `edge` hash is `b445e0973c928c4d` (its T = ulp(1024) points at U = 100..1000 were NaN on stock 2.13.1 and are now 0) and `engine` is unchanged (see the Fourth change).
 * Accuracy of what changed. Points where stock was non-finite (184 of the 12640 grid points) are now finite and
   accurate: of the 210 changed grid points checked against a 500-digit mpmath evaluation, the largest absolute error
   is 4e-19 on the swept grid. That is NOT true of every changed point in general. `G_0 = pfac (erfc_k - erfc_l) /
