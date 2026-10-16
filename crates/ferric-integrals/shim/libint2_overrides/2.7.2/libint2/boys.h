@@ -346,8 +346,9 @@ namespace libint2 {
         // cheb_table_tmax * 7 = 819 intervals (rows 0..=818); at x == T_crit
         // exactly, iv = int(x * one_over_delta) = 819 indexes one row PAST the
         // table (uninitialised heap). Only the single point x == 117.0
-        // changes (to the asymptotic value, whose truncation error is far
-        // below double precision there).
+        // changes, to the asymptotic value that any x > T_crit already gets
+        // (omitted e^-x/(2x) term ~1e-16 relative at m = 0, ~9e-17 at m = 40,
+        // below the ~4e-15 rounding of the upward recursion).
         if (x >= T_crit) {
           const double one_over_x = 1/x;
           Fm[0] = 0.88622692545275801365 * sqrt(one_over_x); // see Eq. (9.8.9) in Helgaker-Jorgensen-Olsen

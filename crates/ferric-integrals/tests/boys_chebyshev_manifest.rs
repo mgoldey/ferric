@@ -1,4 +1,4 @@
-//! Bit-identity manifest for the Boys table-edge fix (issue #433).
+//! PRINT-ONLY helper for the Boys table-edge fix (issue #433): NOT a regression guard.
 //!
 //! Prints bit-pattern hashes of integral families that must NOT change when
 //! `FmEval_Chebyshev7::eval` is changed from `x > T_crit` to `x >= T_crit`
@@ -6,9 +6,12 @@
 //! and Coulomb 3-centre tensors (the attenuated RI-MP2 path), 2-centre
 //! metrics, and hcore-style lattice-shifted erfc blocks of a point-site basis
 //! at the hcore engine precision. The hashes are compared across builds by
-//! hand (`cargo test ... -- --nocapture | grep MANIFEST`); they are not pinned
-//! here, because bit patterns are not portable across machines. The test only
-//! asserts that every block is finite.
+//! hand (`cargo test ... -- --nocapture | grep MANIFEST`). No golden values are
+//! asserted: bit patterns are valid only for one libint2 version, thread count
+//! and machine (a golden `==` on energies failed by 1 ulp across machines
+//! before). To use it, run it on the pre-fix and post-fix builds and diff the
+//! `MANIFEST` lines (the 10 lines were identical, 2.13.1, this machine). The
+//! only assertion is that every block is finite.
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;

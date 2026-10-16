@@ -371,10 +371,11 @@ class FmEval_Chebyshev7 {
     // ferric patch (issue #433): `>=`, not the stock `>`. The table has
     // cheb_table_tmax * 7 = 819 intervals (rows 0..=818); at x == T_crit
     // exactly, iv = int(x * one_over_delta) = 819 indexes one row PAST the
-    // table (uninitialised heap). Any x > T_crit already takes this branch,
-    // and its truncation error (e^-x / 2x, x >= 117) is far below double
-    // precision, so only the single point x == 117.0 changes: from a read of
-    // uninitialised memory to the asymptotic value.
+    // table (uninitialised heap). Any x > T_crit already takes this branch
+    // (its omitted e^-x/(2x) term is ~1e-16 relative at m = 0 and ~9e-17 at
+    // m = 40, below the ~4e-15 rounding of the upward recursion), so only the
+    // single point x == 117.0 changes: from a read of uninitialised memory to
+    // the asymptotic value.
     if (x >= T_crit) {
       const double one_over_x = 1 / x;
       Fm[0] = 0.88622692545275801365 *

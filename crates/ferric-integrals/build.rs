@@ -202,7 +202,7 @@ fn libint2_boys_override(libint_root: &str) -> Option<PathBuf> {
     let hash = fnv1a64(&bytes);
     let Some((version, _)) = STOCK_BOYS_H_FNV1A64.iter().find(|(_, h)| *h == hash) else {
         println!(
-            "cargo:warning={} (FNV-1a 64 {hash:#018x}) is not a stock libint2 boys.h ferric has an override for ({}); libint2 GmEval copy fix and Boys T_crit table-edge fix (#433) NOT applied (erf/erfc integrals scale poorly across threads, and a Boys argument of exactly 117.0 reads uninitialised memory)",
+            "cargo:warning={} (FNV-1a 64 {hash:#018x}) is not a stock libint2 boys.h ferric has an override for ({}); libint2 GmEval copy fix and Boys T_crit table-edge fix (#433) NOT applied (erf/erfc integrals scale poorly across threads, and a Boys argument of exactly 117.0 MAY read uninitialised memory if this libint2 still has the stock table-edge defect, issue #433)",
             found.display(),
             STOCK_BOYS_H_FNV1A64
                 .iter()
