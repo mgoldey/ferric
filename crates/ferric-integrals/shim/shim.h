@@ -53,8 +53,8 @@ int scf_boys_fm(double x, int mmax, double *out);
    TennoGmEval::eval_yukawa / eval_slater (test hook for the T == 1024 and
    U == 1000 table edges, issue #436). U = 0.25 * zeta * zeta * one_over_rho.
    out holds mmax+1 doubles. Returns mmax+1, SCF_EINVAL on a bad pointer / kind /
-   non-finite or non-positive argument / mmax outside [0, 20], SCF_EINTERNAL on a
-   libint2 exception. */
+   non-finite argument / one_over_rho or zeta not positive / T negative (T == 0
+   is accepted) / mmax outside [0, 20], SCF_EINTERNAL on a libint2 exception. */
 int scf_tenno_gm(int kind, double one_over_rho, double T, int mmax, double zeta,
                  double *out);
 
