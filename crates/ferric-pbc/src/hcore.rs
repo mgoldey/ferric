@@ -1752,6 +1752,20 @@ fn nuclear_atom_indices(cell: &Cell) -> Vec<usize> {
     (0..z.len()).filter(|&i| z[i] != 0.0).collect()
 }
 
+/// Shell translations `[s_site, s_1, s_2]` of one SR derivative triplet in the
+/// frame whose origin is the nucleus `x = R_C + M`: the site shell (stored at
+/// `R_C`) is shifted by `M - x`, the two orbital shells by `s_1 - x`,
+/// `s_2 - x`. Every 3-centre integral and its derivative is invariant under a
+/// common translation, so this changes nothing in exact arithmetic; in
+/// floating point it keeps the absolute coordinates libint2 combines with the
+/// zeta-sized composite exponents of the model nucleus O(pair distance)
+/// instead of O(cell size), whose rounding it otherwise amplifies by zeta
+/// (issue #434).
+fn nucleus_frame_shifts(m: &[f64; 3], x: &[f64; 3], s1: [f64; 3], s2: [f64; 3]) -> [[f64; 3]; 3] {
+    let sub = |v: [f64; 3]| [v[0] - x[0], v[1] - x[1], v[2] - x[2]];
+    [sub(*m), sub(s1), sub(s2)]
+}
+
 /// The Gaussian-nucleus sites `[x, y, z, exponent]` of `nuc`.
 fn nucleus_sites(nuc: &[(f64, [f64; 3])], exponent: f64) -> Vec<[f64; 4]> {
     nuc.iter()
@@ -1873,7 +1887,7 @@ impl SrDerivSetup {
                 site.site_shell[*k],
                 i1,
                 i2,
-                [*m, [0.0; 3], *l],
+                nucleus_frame_shifts(m, x, [0.0; 3], *l),
             )? {
                 Some(blk) => unit.data.extend_from_slice(&blk[6 * bs..9 * bs]),
                 None => continue,
@@ -1884,7 +1898,7 @@ impl SrDerivSetup {
                 site.site_shell[*k],
                 i2,
                 i1,
-                [*m, *l, [0.0; 3]],
+                nucleus_frame_shifts(m, x, *l, [0.0; 3]),
             )? {
                 Some(blk2) => unit.data.extend_from_slice(&blk2[6 * bs..9 * bs]),
                 None => {
@@ -2047,7 +2061,7 @@ where
                         site.site_shell[*k],
                         i1,
                         i2,
-                        [*m, [0.0; 3], *l],
+                        nucleus_frame_shifts(m, x, [0.0; 3], *l),
                     )?
                     else {
                         continue;
@@ -2060,7 +2074,7 @@ where
                         site.site_shell[*k],
                         i2,
                         i1,
-                        [*m, *l, [0.0; 3]],
+                        nucleus_frame_shifts(m, x, *l, [0.0; 3]),
                     )?
                     else {
                         continue;

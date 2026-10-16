@@ -370,6 +370,17 @@ pub struct GammaGradConfig {
     /// decade above ~1e9), while below ~1e8 the mismatch with the energy's
     /// nucleus takes over. Measured max|analytic − FD| (Ha/Bohr, 2026-09-25):
     ///
+    /// NOTE (#434): the growth above ~1e8 in these tables was mostly
+    /// translation noise, not a libint2 limit. Each triplet is now evaluated in
+    /// the frame of its nucleus (`hcore::nucleus_frame_shifts`), which keeps
+    /// libint2's absolute coordinates O(pair distance) so the rounding is no
+    /// longer amplified by the exponent. H2 triplet s+p, Gamma 3-cell SR stress
+    /// vs central FD of the SR energy at the same exponent: miss 1.6e-11 at
+    /// 1e5-1e9 and 7.5e-12 at 1e11 (before: 4e-9 at 1e8, 4.9e-8 at 1e9, 3e-7 at
+    /// 1e10, 2.9e-6 at 1e11), and invariant under rigid translation. The
+    /// tables below pre-date the change and have NOT been re-measured; the
+    /// default and the 1e8-1e9 trade-off they describe are due a re-scan.
+    ///
     /// | exponent | H tri s+p RHF | LiH 6-31G RS-GDF | CO cc-pVDZ/jkfit |
     /// |---|---|---|---|
     /// | 1e7  | 1.05e-7 | —      | —       |

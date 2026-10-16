@@ -3879,51 +3879,17 @@ fn open_shell_p_h4_triplet_one_point_mesh_uhf_stress_is_the_gamma_stress() {
     open_shell_p_one_point(s2_h4_triplet());
 }
 
-/// Gaussian-nucleus exponent of the SR-attraction DERIVATIVE on both sides of
-/// the p-shell supercell anchor. MEASURED at the DEFAULT exponent (1e9): the
-/// k-vs-supercell/N miss is 5.87e-8 (S1 triplet, none), entirely in `vsr`.
-/// Scan of `vsr` (reviewer, deterministic under MALLOC_PERTURB_): default/1e9
-/// k -0.230185627083 vs Gamma/3 -0.230185685740; 1e8 miss 2.9e-9; 1e7 miss
-/// 1.7e-10. The k side is stable (8.7e-10 change 1e8 -> 1e9); the GAMMA
-/// supercell side jumps by 6.1e-8, so the error is in the Gamma
-/// `gamma_uhf_stress` SR walk at that exponent, not a k defect (tracked in
-/// #434: Gamma p-shell SR stress error at the default exponent). Pinning both
-/// sides at 1e7 is therefore a workaround for that Gamma-side error, not a
-/// shared libint floor; s-only cells (the H3 anchor) do not see it.
-const OS_SC_ZETA: f64 = 1e7;
-/// Bar of the p-shell supercell anchor at `OS_SC_ZETA` (the unrotated ECP
-/// file's bar for the same floor). MEASURED 1.7e-10 here (S1, both exxdiv; 2.6e-10 for the
-/// HI stress there), 12x below the bar, 5 orders below the smallest mutant.
+/// Bar of the p-shell supercell anchor at the DEFAULT model-nucleus exponent
+/// (the unrotated ECP file's bar for the same floor). Before #434 was fixed
+/// the SR derivative's translation noise put the miss at 5.9e-8 at the default
+/// exponent (pinned at 1e7 as a workaround, 1.7e-10); with the nucleus-frame
+/// evaluation it is at the 1e-10 level at the default (re-measured below).
 /// Also the blind / diagonal-only floor of the mutant sweep.
 const OS_SC_BAR: f64 = 2e-9;
 
-fn ks_uhf_zeta(
-    ks: &KSys,
-    eri: &KDenseAftEri,
-    scf: &KUScfResult,
-    exx: ExxDiv,
-    zeta: f64,
-) -> KStress {
-    kpoint_uhf_stress(
-        &ks.cell,
-        &ks.prep,
-        &ks.mesh,
-        &hcore_cfg(),
-        &ks.hk,
-        KStressJk::Dense(eri),
-        scf,
-        exx,
-        &KStressConfig {
-            nucleus_exponent: Some(zeta),
-            ..scfg(None)
-        },
-    )
-    .expect("kpoint_uhf_stress")
-}
-
 /// PHYSICS: the 1x1x3 (non-TRIM) k-UHF stress per cell is the explicit
-/// 3-cell supercell's Gamma-UHF stress / 3, both exxdiv, with the p-shell
-/// derivative floor pinned by evaluating both sides at `OS_SC_ZETA`; the
+/// 3-cell supercell's Gamma-UHF stress / 3, both exxdiv, at the default
+/// model-nucleus exponent; the
 /// k-specific mutants and the Gamma-style term mutants all miss it. S1 only
 /// (the supercell has 24 AOs).
 #[test]
@@ -3944,7 +3910,7 @@ fn open_shell_p_1x1x3_uhf_stress_is_the_supercell_stress_per_cell() {
             unfold(&ks.mesh, &scfs[i].density_alpha),
             unfold(&ks.mesh, &scfs[i].density_beta),
         );
-        let k = ks_uhf_zeta(&ks, &eri, &scfs[i], exx, OS_SC_ZETA);
+        let k = ks_uhf(&ks, &eri, &scfs[i], exx, None);
         let gs = gamma_uhf_stress(
             &g.cell,
             &g.prep,
@@ -3955,7 +3921,6 @@ fn open_shell_p_1x1x3_uhf_stress_is_the_supercell_stress_per_cell() {
             exx,
             &GammaStressConfig {
                 budget_bytes: Some(AMPLE),
-                nucleus_exponent: Some(OS_SC_ZETA),
                 ..Default::default()
             },
         )
@@ -3972,8 +3937,6 @@ fn open_shell_p_1x1x3_uhf_stress_is_the_supercell_stress_per_cell() {
         de[i] = r;
     }
     let refs = ScRef { de };
-    // Mutated runs at the same exponent as the reference, so the diagonal-only
-    // mutants' off-diagonal check sees the pinned floor, not the default one.
     let run = |exx: ExxDiv, m: Option<KStressMutation>| {
         kpoint_uhf_stress(
             &ks.cell,
@@ -3984,10 +3947,7 @@ fn open_shell_p_1x1x3_uhf_stress_is_the_supercell_stress_per_cell() {
             KStressJk::Dense(&eri),
             &scfs[exx_idx(exx)],
             exx,
-            &KStressConfig {
-                nucleus_exponent: Some(OS_SC_ZETA),
-                ..scfg(m)
-            },
+            &scfg(m),
         )
         .expect("kpoint_uhf_stress")
     };
@@ -4100,4 +4060,86 @@ fn open_shell_p_h4_triplet_1x1x3_uhf_stress_matches_fd_zz_xz_xx() {
     for w in worst_mut.iter().flatten() {
         assert!(*w > MUTANT_BAR, "a spin mutant escaped the FD ({w:e})");
     }
+}
+
+/// PHYSICS (#434): the Gamma stress's SR-attraction term of a cell is
+/// invariant under a rigid translation of every atom (the cell is periodic,
+/// the stress is a derivative of a translation-invariant energy). Before the
+/// SR derivative walk evaluated each triplet in the frame of its nucleus,
+/// libint2 combined O(cell-size) absolute coordinates with the 1e9-sized
+/// model-nucleus exponent and the p-shell `vsr_zz` of this 3-cell H2 triplet
+/// supercell moved by 8.5e-8 (per cell) between translations (and sat 5.9e-8
+/// off the k-point value at the default exponent). ARTIFACT vs PHYSICS: a
+/// physical effect would survive a rigid translation, a numerical-noise
+/// artifact does not; after the fix the translated values agree to 1e-14.
+/// Density: the unfolded s+p k-UHF triplet density (`parts.vsr` is a
+/// fixed-density quantity, so nothing needs to be SCF-converged Gamma-side).
+#[test]
+#[ignore = "slow (~1 min release): k-UHF SCF + 3 Gamma supercell hcore/ERI builds"]
+fn gamma_sr_stress_is_translation_invariant_for_p_shells_at_the_default_exponent() {
+    let bs = sp_basis_h();
+    let sys = s1_h2_triplet();
+    let n = [1, 1, 3];
+    let ks = ksys(sys.cell.clone(), &bs, n);
+    let eri = kdense(&ks, ANCHOR_PRECISION);
+    let scfs = uscf_pair(&ks, &eri, sys.na, sys.nb);
+    let sc = supercell(&sys.cell, n, 7);
+    let gscf = gamma_unrestricted(
+        unfold(&ks.mesh, &scfs[0].density_alpha),
+        unfold(&ks.mesh, &scfs[0].density_beta),
+    );
+    let vsr_zz = |shift: [f64; 3]| {
+        let pos: Vec<[f64; 3]> = sc
+            .positions()
+            .iter()
+            .map(|p| [p[0] + shift[0], p[1] + shift[1], p[2] + shift[2]])
+            .collect();
+        let g = gsys(cell_at(&pos, *sc.lattice(), 7), &bs);
+        gamma_uhf_stress(
+            &g.cell,
+            &g.prep,
+            &hcore_cfg(),
+            &g.hc,
+            &g.eri,
+            &gscf,
+            ExxDiv::None,
+            &GammaStressConfig {
+                budget_bytes: Some(AMPLE),
+                ..Default::default()
+            },
+        )
+        .expect("gamma uhf stress")
+        .parts
+        .vsr[2][2]
+            / 3.0
+    };
+    let dk: Vec<Array2<Complex64>> = scfs[0]
+        .density_alpha
+        .iter()
+        .zip(&scfs[0].density_beta)
+        .map(|(a, b)| a + b)
+        .collect();
+    let k = kpoint_hcore_stress_fixed_d(
+        &ks.cell,
+        &ks.prep,
+        &ks.mesh,
+        &hcore_cfg(),
+        &ks.hk,
+        &dk,
+        &scfg(None),
+    )
+    .expect("k hcore stress")
+    .vsr[2][2];
+    let v0 = vsr_zz([0.0; 3]);
+    let mut worst = (v0 - k).abs();
+    eprintln!("  vsr_zz/3 unshifted {v0:.12}, k {k:.12}: {worst:.2e}");
+    for shift in [[0.37, -0.21, 1.3], [0.0, 0.0, -3.0]] {
+        let v = vsr_zz(shift);
+        eprintln!("  shifted {shift:?}: {v:.12}");
+        worst = worst.max((v - v0).abs()).max((v - k).abs());
+    }
+    assert!(
+        worst <= 1e-10,
+        "translation/k mismatch {worst:e} (was 8.5e-8)"
+    );
 }
