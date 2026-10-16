@@ -11,25 +11,39 @@
 //!
 //! # Finding, and why the Hessian is REFUSED on this backend
 //!
-//! Measured 2026-10-15 (one-time):
+//! Measured 2026-10-15 (one-time), BEFORE the refusal existed, so these
+//! full-Hessian numbers cannot be re-run at this commit (the entry points
+//! refuse libecpint; only `ecp_skeleton_hessian` still runs on it):
 //!
 //! * HOI/def2-SVP, full analytic Hessian vs central FD of the libecpint
 //!   analytic gradient: 2.33e-7 (quadrature 2.33e-7); libecpint vs quadrature
 //!   Hessians 1.4e-8; PySCF's analytic ECP Hessian (`validation_ecp_hessian.rs`
-//!   with `FERRIC_ECP_BACKEND=libecpint`): HI, CH3I and CH2I pass every bar.
-//! * Ag2/aug-cc-pVDZ-PP FAILS the same validation: the ECP skeleton misses
+//!   with `FERRIC_ECP_BACKEND=libecpint`): HI, CH3I and CH2I passed every bar.
+//! * Ag2/aug-cc-pVDZ-PP FAILED the same validation: the ECP skeleton misses
 //!   PySCF's fixed-density FD of its ECP gradient term by 2.76e-6 (bar 5e-7;
 //!   quadrature 3.4e-10). Step sweep of the skeleton, libecpint: 4.2e-6,
-//!   2.2e-6, 8.9e-7 at h = 1e-3, 2e-3, 4e-3 (error proportional to 1/h:
-//!   libecpint's first-derivative noise ~4e-9 divided by the step), floor
-//!   2.8e-8 from h = 8e-3 up.
+//!   2.2e-6, 8.9e-7 at h = 1e-3, 2e-3, 4e-3 (the stencil error changes sign
+//!   between steps; noise-dominated, roughly 1/h at small h, not strictly
+//!   proportional: 4e-3 to 8e-3 falls 31x), floor 2.8e-8 from h >= 8e-3. The
+//!   floor is a REAL second-derivative bias of libecpint (independent review:
+//!   xx component noise-free with scatter 8.7e-12, steady bias of about
+//!   -1.5e-8 Ha/Bohr² at every h), ~18x under the bar; the noise part
+//!   (scatter 3.4e-9 about a cubic fit in zz) is what fails it.
+//! * libecpint's Ag2 GRADIENT misses PySCF by 8.0e-8 Ha/Bohr (quadrature
+//!   5.3e-10), inside the existing libecpint gradient floor (1.3e-7,
+//!   `validation_ecp_gradient.rs`). NO committed gradient anchor covers
+//!   libecpint for Ag or any aug-cc-pVDZ-PP element (only I and Sn on def2),
+//!   and the finite-difference fallback under `FERRIC_ECP_BACKEND=libecpint`
+//!   is NOT validated on Ag2 (estimated ~5e-7, at the bar; unmeasured).
 //!
 //! The artifact hypothesis (stencil truncation) predicts an error that FALLS
-//! with h as h^4; the 1/h scaling is first-derivative integral noise, which
-//! the FD-of-the-gradient anchor cannot see (it differences the same noisy
-//! gradient). Rather than loosen the bar, the availability probe refuses an
-//! ECP system on this backend, so `Auto` frequencies use finite differences
-//! there and `Analytic` is an error.
+//! with h as h^4; a sign-changing, roughly 1/h error is first-derivative
+//! integral noise, which the FD-of-the-gradient anchor cannot see (it
+//! differences the same noisy gradient). Rather than loosen the bar, the
+//! availability probe refuses an ECP system on this backend, so `Auto`
+//! frequencies use finite differences there and `Analytic` is an error.
+//! Running analytic-Hessian tests with `FERRIC_ECP_BACKEND=libecpint` set
+//! globally therefore fails by design.
 //!
 //! ONE test function: the backend is a process-wide environment variable read
 //! on every ECP call, so a second concurrent test would race on it.

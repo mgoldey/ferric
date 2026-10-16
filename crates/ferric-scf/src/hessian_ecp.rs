@@ -23,13 +23,16 @@
 //! ([`ecp_block_deriv_spherical`], the backend selected by
 //! `FERRIC_ECP_BACKEND`, i.e. whichever the gradient uses), step [`STEP`].
 //!
-//! Only the default quadrature backend passes the availability probe. The
-//! stencil error is the backend's first-derivative noise divided by the step:
-//! libecpint on Ag2/aug-cc-pVDZ-PP gives 4.2e-6, 2.2e-6, 8.9e-7 at h = 1e-3,
-//! 2e-3, 4e-3 (error proportional to 1/h) and a 2.8e-8 floor from 8e-3 up,
-//! against 3.4e-10 for the quadrature at 2e-3 (PySCF's fixed-density FD of its
-//! ECP gradient term as reference). HI, CH3I and CH2I on libecpint stay within
-//! the bars.
+//! Only the default quadrature backend passes the availability probe. On
+//! libecpint, Ag2/aug-cc-pVDZ-PP gives a skeleton error against PySCF's
+//! fixed-density FD of its ECP gradient term of 4.2e-6, 2.2e-6, 8.9e-7 at
+//! h = 1e-3, 2e-3, 4e-3 (noise-dominated, roughly 1/h at small h; the sign
+//! changes between steps), against 3.4e-10 for the quadrature at 2e-3. A
+//! 2.8e-8 floor from h >= 8e-3 up is a real second-derivative bias of
+//! libecpint (about 1.5e-8 Ha/Bohr² on Ag2, steady at every h and noise-free in
+//! the xx component), ~18x under the 5e-7 bar. Measured before the refusal
+//! existed (skeleton only; the full-Hessian numbers cannot be re-run at this
+//! commit): HI, CH3I and CH2I on libecpint stayed within the bars.
 //!
 //! The displacement is RIGID PER ATOM: displacing atom `b` moves every shell
 //! and the ECP centre sitting on `b`. A triple `(bra shell, ket shell, ECP)`

@@ -27,9 +27,16 @@
 //!   carries the interaction. Negative controls: the same system's ECP-only
 //!   Hessian (no environment) and the environment-only terms removed must each
 //!   miss FD by `MUST_MISS` × bar.
+//! * `charge_nuclear_hessian_uses_the_screened_nuclear_charge`: screened vs
+//!   bare-Z charge-nucleus Hessian differ by >= 10x the bar (the unscreened-Z
+//!   mutant's full-Hessian miss, 1.3e-1 to 1.4e-1, is a one-time measurement).
 //! * `empty_environment_is_bit_identical_*` / `zero_charge_limit_*`: the
 //!   no-charge limit of the ECP+environment route.
 //! * `ecp_with_ri_and_environment_is_refused_by_the_probe`: typed refusal.
+//!
+//! NOT covered: the synthetic Br table is iodine's scaled (same shells and
+//! `n_core` = 28; the real H-Ag-I also has `n_core` 28 on both), so
+//! table-structure defects and per-element `n_core` mix-ups are untested.
 //!
 //! Artifact hypothesis, written before measuring: if the combination is
 //! broken (a) the ECP+environment FD residual is O(q·Z/R³) ~ 1e-2 (an
@@ -459,6 +466,36 @@ fn ecp_with_uniform_field_rhf_matches_fd() {
     let d = max_diff_cols(&an, &fd, &cols);
     eprintln!("HOI + field: max|analytic - FD| = {d:.3e} (bar {TOL_FD:.0e})");
     assert!(d < TOL_FD, "max|analytic - FD| = {d:.3e}");
+    // Negative control: the field terms removed (same SCF, no environment).
+    let miss = max_diff_cols(&hessian(&s, false, None), &fd, &cols);
+    eprintln!("  HOI + field: field terms removed misses FD by {miss:.3e}");
+    assert!(
+        miss > MUST_MISS * TOL_FD,
+        "field barely matters: {miss:.3e}"
+    );
+}
+
+/// The screened nuclear charge `Z - n_core` is what the charge-nucleus
+/// Hessian must use: with the ECP core removed it differs from the bare-Z
+/// Hessian by far more than the bar, so an unscreened-Z mutant is visible
+/// (the FD tests above carry the same defect through the full Hessian).
+#[test]
+fn charge_nuclear_hessian_uses_the_screened_nuclear_charge() {
+    let bs = basis::bundled("def2-svp").unwrap();
+    let mol = ecp_mol(HOI, 0, 1, &bs);
+    let mut bare = mol.clone();
+    bare.atoms.iter_mut().for_each(|a| a.n_core_ecp = 0);
+    for (label, ext) in [
+        ("point", point_environment()),
+        ("smeared", smeared_environment()),
+    ] {
+        let d = max_diff(
+            &ext.charge_nuclear_hessian(&mol),
+            &ext.charge_nuclear_hessian(&bare),
+        );
+        eprintln!("{label}: screened vs bare-Z charge-nucleus Hessian differ by {d:.3e}");
+        assert!(d > MUST_MISS * TOL_FD, "{label}: {d:.3e}");
+    }
 }
 
 #[test]
@@ -535,7 +572,22 @@ fn ecp_with_ri_and_environment_is_refused_by_the_probe() {
             .expect_err("RI + environment + ECP must be refused");
     eprintln!("probe: {err}");
     assert!(
-        err.to_string().contains("external potential") || err.to_string().contains("ECP"),
+        err.to_string()
+            .contains("combined with an external potential"),
+        "{err}"
+    );
+
+    // RI + ECP alone (RHF): the ECP reason itself.
+    let cfg = RhfConfig {
+        external_potential: None,
+        ..cfg
+    };
+    let err =
+        ferric_scf::hessian::analytic_hessian_available(&mol, &prep, Operator::coulomb(), &cfg)
+            .expect_err("RHF RI + ECP must be refused");
+    eprintln!("probe: {err}");
+    assert!(
+        err.to_string().contains("effective core potential"),
         "{err}"
     );
 }
