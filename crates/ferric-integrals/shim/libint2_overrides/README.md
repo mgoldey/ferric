@@ -11,10 +11,11 @@ inside an install prefix of that version reproduces the file byte for byte.
 
 Override sha256 (what `patch -p1` of the committed `.patch` onto the stock file reproduces): 2.7.2
 `208657a3560c2f3110ef45e3092cf9504144e92930bd7262bf83622c5bedce93`, 2.13.1
-`658cffae31ce33b4ecc5ce6846f7feeac1ab63dfe8271286b654f1dad79fa868`.
+`870833b0ff2ca7a5f05ee2d32cf6180525b9d93956ca7c113f4bedf97342a64e`.
 
-The #433 fix is the same in both. The sections below describe it with the 2.7.2 names. The `TennoGmEval` changes
-(issue #436, section "Third change") exist ONLY in the 2.7.2 override; 2.13.1 already has them in stock form. In 2.13.1, one evaluator,
+The #433 fix is the same in both. The sections below describe it with the 2.7.2 names. The `TennoGmEval` table-edge
+changes (issue #436, section "Third change") exist ONLY in the 2.7.2 override; 2.13.1 already has them in stock form.
+The `eval_urr` overflow fix exists in both (#436 for 2.7.2, #439 for 2.13.1, section "Fourth change"). In 2.13.1, one evaluator,
 `erfx_coulomb_gm_eval`, replaces `erfc_coulomb_gm_eval`. It serves `erfc_coulomb` (with lambda=0, sigma=1),
 `erfx_coulomb`, and the 1-body `erfc_nuclear`/`erfx_nuclear`. `erf_coulomb_gm_eval` serves `erf_coulomb` and
 `erf_nuclear`. The patch applies to both evaluators.
@@ -179,14 +180,9 @@ Not changed: `eval_yukawa` with `U < Umin` or `T > Tmax` still uses the upward r
   switched points was deliberately NOT enlarged to chase these (the bit-identity set stays exactly "erfc subnormal").
   In the `T == 0` branch `G_0 = 1 - S` is evaluated as `y * tail(y)`, avoiding the 1.7e-14 to 6.8e-14 relative loss
   of `1 - S`; that code only runs where stock was non-finite or subnormal-precision, so it does not move the set.
-* libint 2.13.1 (stock, and this repo's 2.13.1 override) is NOT fixed for the overflow (issue #439): `eval_yukawa` and
-  `eval_slater` return NaN, silently, in the `T > Tmax` upward recursion whenever `U + 2 sqrt(U T)` exceeds about
-  709. Since `U T = zeta^2 R^2 / 4` for a pair at distance `R` (independent of `rho`), that is `U + zeta R > ~709`:
-  e.g. `zeta` = 1.5 at about 250 Angstrom, `zeta` = 10 at about 37 Angstrom, or `T = 2000, U = 100` (measured: NaN on
-  2.13.1, exactly 0 with the 2.7.2 override; 84 of 12640 grid points, T > 1024 with U >= 100, both kernels). The
-  true values are below 1e-270, but ferric has no primitive screening for these operators (`schwarz.rs` rejects them),
-  so nothing stops such a primitive from being evaluated and a NaN stays a NaN in the result. Recorded, not patched.
-  Its table indices are clean at T == 1024 and U == 1000 (ASan/UBSan probe, both edges and one ulp each side).
+* libint 2.13.1 has the same `T > Tmax` overflow in `eval_urr`; it is fixed in the 2.13.1 override (issue #439, section
+  "Fourth change" below). Its table indices are clean at T == 1024 and U == 1000 (ASan/UBSan probe, both edges and one
+  ulp each side).
 * CI coverage gap: CI runs only the 2.13.1 build, so the 2.7.2-specific assertions of `tenno_table_edge` (guarded by
   `FERRIC_LIBINT2_BOYS_OVERRIDE`) are protected only by a manual run (`LIBINT2_PREFIX=$HOME/.local CARGO_TARGET_DIR=...
   cargo test -p ferric-integrals --test tenno_table_edge`). The cheap protection is a `wheels.yml` step inside the
@@ -197,6 +193,69 @@ Not changed: `eval_yukawa` with `U < Umin` or `T > Tmax` still uses the upward r
 * A standalone ASan/UBSan probe of the patched header over the edge set (`T` and `U` on, one ulp each side of, and away
   from the edges, both kernels, m <= 6) and the full safe grid is clean; the same probe against stock 2.7.2 aborts or
   reports the overflow at the first edge point.
+
+## Fourth change (2.13.1 only): `TennoGmEval::eval_urr` overflow (issue #439)
+
+libint 2.13.1 already guards the table indices (no #436 items 1, 2, 4: `U > Umax` falls back to a Gaussian fit of the
+kernel, `T == 1024` / `U == 1000` are clean under ASan/UBSan) and `eval_G0_and_maybe_Gm1` (the `T <= Tmax`
+path) returns `nullopt` and falls back to the Gaussian fit when `lambda^2 - T > 709`. What it does NOT guard is
+`eval_urr`, the `T > Tmax` upward recursion (and `eval_yukawa` with `U < Umin`): it forms
+`erfc_k = exp(kappa*kappa - T) * erfc(kappa)` and `erfc_l = exp(lambda*lambda - T) * erfc(lambda)`,
+`kappa, lambda = sqrt(U) -+ sqrt(T)`, which is `inf * 0 = NaN` once `lambda*lambda - T = U + 2 sqrt(U T)` exceeds about
+709.78 (`exp` overflows while `erfc(lambda)` is already 0). Both kernels, every `m` (the recursion propagates the NaN).
+
+### The change
+
+The same `exp_x2_erfc(x, x*x - T, -T)` helper as the 2.7.2 override (copied verbatim, with `erfcx_asymptotic`,
+`erfcx_series`, `erfcx_series_tail`), used for `erfc_k` and `erfc_l` in `eval_urr` only: the stock product while
+`erfc(x)` is a normal number (bit-identical), `exp(-T) * erfcx(x)` from the 8-term asymptotic series otherwise.
+`eval_G0_and_maybe_Gm1` is untouched (its `lambda^2 - T > 709` check already routes to the Gaussian fit). Unlike the 2.7.2
+override there are no new `throw`s (2.13.1 has its own fallback) and no index clamps.
+
+### Evidence and its limits
+
+* Reproduction, stock 2.13.1 headers (`~/.local/libint2-2.13.1`, `scripts/install-libint.sh`), standalone C++ probe,
+  `-O2` and a non-NDEBUG `-O1` ASan/UBSan build, `TennoGmEval::eval_yukawa` / `eval_slater` over
+  `T` in {0, 1e-6 ... 5000, 1e4, 1e5, every 2^k (k <= 17) and its two ulp neighbours} x `U` in {1e-7 ... 1e3 every
+  quarter decade, every 10^k and neighbours, 50 ... 900} x `m <= 6`, both kernels, `zeta = 1`: 11680 points, 1390 with a
+  non-finite slot. With `U > Umax` (1001 ... 1e8) and `T` up to 1e12 added: 12948 points, 2020 non-finite. Every one has
+  `T > 1024`; no point with `T <= 1024` is non-finite. On this grid every point with `T > 1024` and
+  `U + 2 sqrt(U T) >= 725` is NaN and every one below 690 is finite (no grid point lies between). The
+  region is NOT only `U >= 100`: 568 of the 2020 points have `U < 100` (e.g. `U = 1`, `T = 131072`), since only
+  `U + zeta R` matters (`U T = zeta^2 R^2 / 4`).
+* Bit-identity, C++ evaluator sweep (above): of 12948 points, exactly the 2020 formerly non-finite points change
+  (all now finite, 0 non-finite); 0 formerly finite points change. Whole `Engine` blocks (2-, 3-, 4-centre Yukawa and
+  Slater, s/p/d shells x 7 centres x zeta in {0.3, 1, 3, 10}, 28592 blocks, FNV-1a over the values):
+  `55f65bd5925d35ff` for stock 2.13.1, for the previous 2.13.1 override and for this one. With three far centres added
+  ((90,10,0), (-120,0,30), (0,200,0) Bohr) and zeta in {1, 10, 30} (31260 blocks): stock and the previous override have
+  51528 non-finite values (`f9c2cf2d9697d90a`), this override 0 (`c21f9e3c033cbad8`).
+* Accuracy of the 2020 changed points against a 400-digit mpmath reference (closed form
+  `sqrt(pi)/4 (e^{k^2-T} erfc k +- e^{l^2-T} erfc l)` + upward recursion at 400 digits, anchored on `mpmath.quad` for
+  `T < 1e-3`): maximum absolute error 6.9e-247 (all true values are below 1e-230; the largest the override returns is
+  3.7e-234, from `exp(U - 2 sqrt(U T))`, because `e^-T` underflows to 0 for `T > 745`). Largest relative error where
+  both values exceed 1e-300: 1.3e-12 (300 slots; the Slater difference `G_{m-1} - G_m` cancels).
+* ASan/UBSan (`-O1`, asserts on) over the patched header on the whole grid: clean.
+* NOT addressed (recorded): `eval_yukawa` with `U < Umin` (1e-7) uses `eval_urr` at ANY `T` and the upward recursion is
+  unstable at small `T`. Measured on 2.13.1 against the same reference (`zeta = 1`, `U` from 1e-14 to 1e-7):
+  absolute error 1e-14 or better for `T >= 1`, up to 2e-12 at `T = 0.5`, 6e-8 at 0.1, 0.2 at 0.01, 5e5 at 1e-3, 2e25 at 1e-6
+  and 9e63 at 1e-12. `T == 0` exactly returns `false` from `eval_urr` and takes the Gaussian fit (3e-7 absolute error
+  at `U = 1e-14`, 2e-12 at `U = 1e-8`); no assert fires at `T == 0` (non-NDEBUG, ASan) on 2.13.1. The Slater kernel
+  with `U < Umin` is routed to the Gaussian fit (accurate to 5e-14 there). Fixing the Yukawa case would need the
+  Gaussian fit (or a small-`T` series) for `U < Umin` and `T < ~1`; it was left alone to keep this change a pure
+  NaN fix.
+* Tests (`tenno_table_edge`): `nan_region_grid_is_finite_and_vanishingly_small`, `engine_far_pair_is_finite_on_the_override`,
+  `large_u_plus_large_t_is_finite_on_the_override` (now on both overrides), `u_above_umax_is_rejected_only_below_tmax`
+  (2.13.1 branch: Gaussian-fit fallback finite for `T <= Tmax`, exactly 0 for `T > Tmax`), and the allocator-fill sweep
+  prints an extra `nanreg=` hash.
+* How each path picks it up: build.rs hashes `<libint_root>/include/libint2/boys.h` (FNV-1a 64) and, for the stock
+  2.13.1 file (the conda-forge `libint-2.13.1-h83f5b4b_0` header that `scripts/install-libint.sh` installs, which is what
+  every `ci.yml` job uses), puts `shim/libint2_overrides/2.13.1` first on the shim include path. This change leaves the
+  stock hash and the selection untouched, so every build that already got the #433 fix gets this one when the shim
+  is recompiled (cargo reruns build.rs because `rerun-if-changed` covers the override `boys.h`). The PyPI wheels
+  (`wheels.yml`, libint 2.7.2) are unaffected by this change. A conda-forge package build of ferric is not in this
+  checkout (no `conda/` directory), so its path was not checked; if it compiles the shim against the same stock
+  2.13.1 `boys.h` the override is selected the same way. A prefix whose `boys.h` is not byte-identical to a pinned stock file
+  (distro libint, terf-patched build) gets no override and keeps the NaN; build.rs prints a warning.
 
 ## Only header code is affected
 
