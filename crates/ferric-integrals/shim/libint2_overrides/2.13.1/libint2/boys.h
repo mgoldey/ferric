@@ -1377,8 +1377,11 @@ struct TennoGmEval {
         0.44311346272637900682454187083528629569938736403060);
     const Real pfac = sqrtPi_over_4;
     // ferric patch (issue #439): stock forms exp(x*x - T) * erfc(x), which is
-    // inf * 0 = NaN once U + 2 sqrt(U T) exceeds ~709 (T > Tmax here, so e^-T
-    // underflows and the true values are 0 or below 1e-300)
+    // inf * 0 = NaN once U + 2 sqrt(U T) exceeds ~709. This is reached with
+    // T > Tmax (e^-T underflows, true values 0 or below 1e-200), and also
+    // from eval_yukawa for U < Umin at ANY T; for T about 705-745 e^-T has not
+    // underflowed there, but the results are bit-identical (erfc_k ~ 2
+    // absorbs the intermediate)
     const Real erfc_k = exp_x2_erfc(kappa, kappa * kappa - T, -T);
     const Real erfc_l = exp_x2_erfc(lambda, lambda * lambda - T, -T);
 

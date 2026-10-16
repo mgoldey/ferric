@@ -97,21 +97,24 @@
    /// Computes G_0 and (optionally) G_{-1}
    /// @tparam compute_Gm1, if true, compute G_0 and G_{-1}, otherwise G_0 only
    /// @param[in] T the value of \f$ T \f$
-@@ -1302,8 +1376,11 @@
+@@ -1302,8 +1376,14 @@
      const Real sqrtPi_over_4(
          0.44311346272637900682454187083528629569938736403060);
      const Real pfac = sqrtPi_over_4;
 -    const Real erfc_k = exp(kappa * kappa - T) * erfc(kappa);
 -    const Real erfc_l = exp(lambda * lambda - T) * erfc(lambda);
 +    // ferric patch (issue #439): stock forms exp(x*x - T) * erfc(x), which is
-+    // inf * 0 = NaN once U + 2 sqrt(U T) exceeds ~709 (T > Tmax here, so e^-T
-+    // underflows and the true values are 0 or below 1e-300)
++    // inf * 0 = NaN once U + 2 sqrt(U T) exceeds ~709. This is reached with
++    // T > Tmax (e^-T underflows, true values 0 or below 1e-200), and also
++    // from eval_yukawa for U < Umin at ANY T; for T about 705-745 e^-T has not
++    // underflowed there, but the results are bit-identical (erfc_k ~ 2
++    // absorbs the intermediate)
 +    const Real erfc_k = exp_x2_erfc(kappa, kappa * kappa - T, -T);
 +    const Real erfc_l = exp_x2_erfc(lambda, lambda * lambda - T, -T);
  
      Real Gmm1;                                    // will contain G[m-1]
      Real Gm;                                      // will contain G[m]
-@@ -1948,6 +2025,23 @@
+@@ -1948,6 +2028,23 @@
    ExpensiveNumbers<Real> numbers_;
  };
  
@@ -135,7 +138,7 @@
  template <typename GmEvalFunction>
  struct GenericGmEval : private GmEvalFunction {
    typedef typename GmEvalFunction::value_type Real;
-@@ -1963,7 +2057,17 @@
+@@ -1963,7 +2060,17 @@
    template <typename Real, typename... ExtraArgs>
    void eval(Real* Gm, Real rho, Real T, int mmax, ExtraArgs... args) const {
      assert(mmax <= mmax_);
@@ -154,7 +157,7 @@
    }
  
    /// @return the maximum value of m for which the \f$ G_m(\rho, T) \f$ can be
-@@ -1976,6 +2080,20 @@
+@@ -1976,6 +2083,20 @@
   private:
    int mmax_;
    Real precision_;
@@ -175,7 +178,7 @@
  };
  
  // these Gm engines need extra scratch data
-@@ -2102,10 +2220,12 @@
+@@ -2102,10 +2223,12 @@
  /// \mathrm{erfc}(\omega r) ) / r \f$ kernel
  /// @note need extra scratch for Boys function values,
  ///       since need to call Boys engine twice
@@ -191,7 +194,7 @@
    typedef Real value_type;
  
  #ifndef LIBINT_USER_DEFINED_REAL
-@@ -2114,16 +2234,29 @@
+@@ -2114,16 +2237,29 @@
    using FmEvalType = libint2::FmEval_Reference<scalar_type>;
  #endif
  
@@ -225,7 +228,7 @@
      } else {
        std::fill(Gm, Gm + mmax + 1, Real{0});
      }
-@@ -2131,14 +2264,14 @@
+@@ -2131,14 +2267,14 @@
      if (omega > 0 && sigma_minus_lambda != 0) {
        auto omega2 = omega * omega;
        auto omega2_over_omega2_plus_rho = omega2 / (omega2 + rho);

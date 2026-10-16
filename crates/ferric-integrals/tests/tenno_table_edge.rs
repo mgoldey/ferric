@@ -595,8 +595,8 @@ fn large_u_plus_large_t_is_finite_on_the_override() {
 
 /// `T > Tmax` and `U + 2 sqrt(U T) > 725`: the region where stock `eval_urr`'s
 /// explicit `exp(x*x - T) * erfc(x)` overflows (NaN on every measured point
-/// with `U + 2 sqrt(U T) > 725`). The true values are below 1e-230 (the largest
-/// value the override returns anywhere on the swept grid is 3.7e-234, from
+/// with `U + 2 sqrt(U T) > 725`). The true values are tiny (the largest value the
+/// override returns on the grids swept while developing this was 1.7e-228, from
 /// `exp(U - 2 sqrt(U T))`; the `e^-T` part underflows). Finite and < 1e-200 for
 /// both kernels, every `m`, `T` up to 1e12 and `U` from 1 to 1e8 (`U > Umax` is
 /// above both limits here, where the upward recursion is used).

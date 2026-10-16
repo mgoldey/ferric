@@ -223,7 +223,14 @@ fn libint2_boys_override(libint_root: &str) -> Option<PathBuf> {
             dir.join("libint2/boys.h").display()
         );
     }
-    println!("cargo:warning=libint2 {version} boys.h override applied (GmEval copy fix + Boys T_crit table-edge fix #433 + Yukawa/Slater table-edge fix #436 + eval_urr overflow fix #436/#439)");
+    println!(
+        "cargo:warning=libint2 {version} boys.h override applied ({})",
+        if *version == "2.7.2" {
+            "GmEval copy fix + Boys T_crit table-edge fix #433 + Yukawa/Slater table-edge and eval_urr overflow fixes #436"
+        } else {
+            "GmEval copy fix + Boys T_crit table-edge fix #433 + eval_urr overflow fix #439"
+        }
+    );
     // Lets the integration tests tell a patched header from a stock one (the
     // table-edge tests can only be asserted when the fix is compiled in).
     println!("cargo:rustc-env=FERRIC_LIBINT2_BOYS_OVERRIDE={version}");

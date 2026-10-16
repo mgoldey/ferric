@@ -11,7 +11,7 @@ inside an install prefix of that version reproduces the file byte for byte.
 
 Override sha256 (what `patch -p1` of the committed `.patch` onto the stock file reproduces): 2.7.2
 `208657a3560c2f3110ef45e3092cf9504144e92930bd7262bf83622c5bedce93`, 2.13.1
-`870833b0ff2ca7a5f05ee2d32cf6180525b9d93956ca7c113f4bedf97342a64e`.
+`e77fa34821774104d3ea02629fdaefae6fd43423bc161ac27c11f2435a7847a7`.
 
 The #433 fix is the same in both. The sections below describe it with the 2.7.2 names. The `TennoGmEval` table-edge
 changes (issue #436, section "Third change") exist ONLY in the 2.7.2 override; 2.13.1 already has them in stock form.
@@ -232,18 +232,27 @@ override there are no new `throw`s (2.13.1 has its own fallback) and no index cl
   51528 non-finite values (`f9c2cf2d9697d90a`), this override 0 (`c21f9e3c033cbad8`).
 * Accuracy of the 2020 changed points against a 400-digit mpmath reference (closed form
   `sqrt(pi)/4 (e^{k^2-T} erfc k +- e^{l^2-T} erfc l)` + upward recursion at 400 digits, anchored on `mpmath.quad` for
-  `T < 1e-3`): maximum absolute error 6.9e-247 (all true values are below 1e-230; the largest the override returns is
-  3.7e-234, from `exp(U - 2 sqrt(U T))`, because `e^-T` underflows to 0 for `T > 745`). Largest relative error where
+  `T < 1e-3`): maximum absolute error 6.9e-247 (on this grid all true values are below 1e-230 and the largest the override returns is
+  3.7e-234, from `exp(U - 2 sqrt(U T))`, because `e^-T` underflows to 0 for `T > 745`; an independent denser sweep
+  reached 7.7e-230 (Yukawa) and 1.7e-228 (Slater, rho = 1), so the grid-independent statement is "below 1e-200", which
+  is what the tests assert; the analytic ceiling is about e^-524, times zeta/(2 rho) for Slater). Largest relative error where
   both values exceed 1e-300: 1.3e-12 (300 slots; the Slater difference `G_{m-1} - G_m` cancels).
 * ASan/UBSan (`-O1`, asserts on) over the patched header on the whole grid: clean.
 * NOT addressed (recorded): `eval_yukawa` with `U < Umin` (1e-7) uses `eval_urr` at ANY `T` and the upward recursion is
   unstable at small `T`. Measured on 2.13.1 against the same reference (`zeta = 1`, `U` from 1e-14 to 1e-7):
-  absolute error 1e-14 or better for `T >= 1`, up to 2e-12 at `T = 0.5`, 6e-8 at 0.1, 0.2 at 0.01, 5e5 at 1e-3, 2e25 at 1e-6
+  absolute error 1e-14 or better for `T >= 1` (FOR `m <= 6` ONLY), up to 2e-12 at `T = 0.5`, 6e-8 at 0.1, 0.2 at 0.01, 5e5 at 1e-3, 2e25 at 1e-6
   and 9e63 at 1e-12. `T == 0` exactly returns `false` from `eval_urr` and takes the Gaussian fit (3e-7 absolute error
   at `U = 1e-14`, 2e-12 at `U = 1e-8`); no assert fires at `T == 0` (non-NDEBUG, ASan) on 2.13.1. The Slater kernel
   with `U < Umin` is routed to the Gaussian fit (accurate to 5e-14 there). Fixing the Yukawa case would need the
   Gaussian fit (or a small-`T` series) for `U < Umin` and `T < ~1`; it was left alone to keep this change a pure
-  NaN fix.
+  NaN fix. The error grows steeply with `m` (independent 600-digit check, `U` about 1e-14..1e-8, `T = 1`: 1e-15 for
+  `m <= 6`, 6e-10 for `m <= 12`, 2.3 for `m <= 20`, 2e23 for `m <= 36`; `T = 3`: 1e-14 for `m <= 12`, 8e-9 for `m <= 20`;
+  `T = 5`: 3e-13 for `m <= 20`, 0.3 for `m <= 36`; outputs violate `0 <= G_m <= 1/(2m+1)` up to `T` about 5.6 at high
+  `m` and are inf/NaN at `T` about 1e-8, `m = 36`). d/f/g 4-centre derivative integrals reach `m` of 9 to 18, reachable
+  from the library with `zeta` below about 0.01 to 0.1 and tight core primitives or collinear pairs. Tracked in issue #443.
+* Not repaired in 2.13.1 (the 2.7.2 override does): the `T == 0` branch of `eval_G0_and_maybe_Gm1` loses precision
+  for `U` in [704.6, 709], where `erfc(sqrt(U))` is subnormal: Slater `m = 0` abs 1.5e-12, rel 6e-8 at `U = 707.25`;
+  Yukawa `m = 0` 5.7e-14 at `U = 692`. Documented only.
 * Tests (`tenno_table_edge`): `nan_region_grid_is_finite_and_vanishingly_small`, `engine_far_pair_is_finite_on_the_override`,
   `large_u_plus_large_t_is_finite_on_the_override` (now on both overrides), `u_above_umax_is_rejected_only_below_tmax`
   (2.13.1 branch: Gaussian-fit fallback finite for `T <= Tmax`, exactly 0 for `T > Tmax`), and the allocator-fill sweep

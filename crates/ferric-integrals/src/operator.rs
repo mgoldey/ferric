@@ -153,7 +153,7 @@ impl Operator {
     /// LARGE DISTANCE (`T > 1024`): stock libint (2.7.2 and 2.13.1 alike) returns NaN
     /// SILENTLY from its upward recursion whenever `U + 2 sqrt(U T) = U + zeta R`
     /// exceeds about 709 (e.g. `zeta = 10` at about 37 Angstrom); the true value is
-    /// below 1e-230. Ferric has no screening for these operators, so on a stock
+    /// below 1e-200. Ferric has no screening for these operators, so on a stock
     /// header that NaN would reach the result. The `boys.h` overrides (2.7.2: #436,
     /// 2.13.1: #439) return the underflowed true value instead (finite, below
     /// 1e-200); a libint2 build that gets neither override (see build.rs warning)
@@ -161,10 +161,15 @@ impl Operator {
     ///
     /// SMALL `T` WITH `U < 1e-7` (Yukawa only): evaluated by the upward recursion,
     /// which is unstable at small `T`. Measured error against a 400-digit reference
-    /// on libint 2.13.1, `zeta = 1`: 2e-14 for `T >= 1`, up to 2e-12 at `T = 0.5`, 6e-8
-    /// at `T = 0.1`, 0.2 at `T = 0.01`, 5e5 at `T = 1e-3`, and up to 9e63 at
-    /// `T = 1e-12`; not addressed by the overrides (`T == 0` exactly takes the
-    /// Gaussian fit instead, 3e-7 abs. error at `U = 1e-14`).
+    /// on libint 2.13.1, `zeta = 1`, for output orders `m <= 6` ONLY: 2e-14 for
+    /// `T >= 1`, up to 2e-12 at `T = 0.5`, 6e-8 at `T = 0.1`, 0.2 at `T = 0.01`, 5e5
+    /// at `T = 1e-3`, and up to 9e63 at `T = 1e-12`. It is much worse at higher `m`
+    /// (independent 600-digit check, `U` about 1e-14..1e-8, `T = 1`: 1e-15 for
+    /// `m <= 6`, 6e-10 for `m <= 12`, 2.3 for `m <= 20`, 2e23 for `m <= 36`; bound
+    /// violations up to `T` about 5.6 and inf/NaN at `T` about 1e-8, `m = 36`), and
+    /// derivative integrals of d/f/g shells reach `m` of 9 to 18. Not addressed by the
+    /// overrides; tracked in issue #443. (`T == 0` exactly takes the Gaussian fit
+    /// instead, 3e-7 abs. error at `U = 1e-14`.)
     pub fn yukawa(zeta: f64) -> Self {
         debug_assert!(
             zeta > 0.0,
