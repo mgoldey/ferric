@@ -3729,3 +3729,264 @@ fn one_point_part_floor(aux_bs: &BasisSet, gdf: &RsGdfConfig) -> (f64, f64, usiz
         q.metric_eig_min,
     )
 }
+
+// ============================================================ open-shell UHF beyond H3 (#421 a)
+//
+// The H3 doublet anchors above are s-only with N_alpha - N_beta = 1. The
+// systems here add p functions and different spin polarisation:
+//   S1: H2 TRIPLET (2 alpha, 0 beta), s+p basis (nao 8): the beta density is
+//       identically zero, a one-sector edge of every spin sum, with p shells
+//       whose SR-derivative floor is separate from the s-only one;
+//   S2: H4 TRIPLET (3 alpha, 1 beta), s+p basis (nao 16): both sectors
+//       populated, unequal, with p functions.
+//
+// ARTIFACT hypothesis (stated before measuring). A defect that only shows
+// for p shells or only for a spin-unbalanced density would be (i) a spin sum
+// that is symmetric in alpha/beta by accident of N_alpha - N_beta = 1 (H3:
+// the alpha and beta densities differ by a rank-1 piece), e.g. the exchange
+// of the minority spin using the majority density: an O(1) miss when
+// D_beta = 0 (S1: exchange of beta is exactly 0, any use of D_alpha there is
+// visible), (ii) a p-shell AO-derivative or strain pair vector error that the
+// closed-shell s+p H2 test sees only at N_k = 1x1x3 and RHF: the UHF Pulay
+// weight W = sum_sigma D_s F_s D_s must reproduce it with F_alpha != F_beta.
+// If correct: 1x1x1 == Gamma UHF <= 1e-12, k mesh == supercell/N <= 1e-10,
+// FD at the h^2 floor. Independent constructions: Gamma UHF stress (real
+// half-sphere kernel), the explicit supercell, central FD of the k energy.
+
+const OS_A: f64 = 4.0;
+const H4_ATOMS: [[f64; 3]; 4] = [
+    [0.3, 0.2, 0.1],
+    [0.35, 0.12, 1.5],
+    [1.6, 0.9, 0.7],
+    [1.2, 2.1, 2.3],
+];
+const H4_A: f64 = 4.5;
+
+/// An open-shell test system: cell (carrying the multiplicity), the spin
+/// counts and a short name.
+struct OpenShell {
+    name: &'static str,
+    cell: Cell,
+    na: usize,
+    nb: usize,
+}
+
+fn s1_h2_triplet() -> OpenShell {
+    OpenShell {
+        name: "H2 triplet s+p",
+        cell: cell_at(&H2_ATOMS, cubic(OS_A), 3),
+        na: 2,
+        nb: 0,
+    }
+}
+
+fn s2_h4_triplet() -> OpenShell {
+    OpenShell {
+        name: "H4 triplet s+p",
+        cell: cell_at(&H4_ATOMS, cubic(H4_A), 3),
+        na: 3,
+        nb: 1,
+    }
+}
+
+/// k-UHF energies `[none, ewald]` of `(na, nb)` on a (strained) cell.
+fn k_energies_uhf_nanb(cell: &Cell, bs: &BasisSet, n: [usize; 3], na: usize, nb: usize) -> [f64; 2] {
+    let ks = ksys(cell.clone(), bs, n);
+    let eri = kdense(&ks, ANCHOR_PRECISION);
+    let vm = ks.mesh.madelung(&ks.cell).unwrap();
+    [
+        kuhf(&ks, Box::new(eri.jk_builder_with_madelung(0.0)), na, nb).energy,
+        kuhf(&ks, Box::new(eri.jk_builder_with_madelung(vm)), na, nb).energy,
+    ]
+}
+
+/// Both spin sectors really are populated unequally (and S1's beta is empty):
+/// asserted on the SCF so a spin-restricted-looking solution cannot make the
+/// anchors vacuous.
+fn assert_spin_polarised(sys: &OpenShell, scf: &KUScfResult) {
+    let mag: f64 = scf
+        .density_alpha
+        .iter()
+        .zip(&scf.density_beta)
+        .map(|(a, b)| (a - b).iter().map(|z| z.norm()).sum::<f64>())
+        .sum();
+    let beta: f64 = scf
+        .density_beta
+        .iter()
+        .map(|b| b.iter().map(|z| z.norm()).sum::<f64>())
+        .sum();
+    eprintln!(
+        "  {}: spin ({}, {}), sum|D_a - D_b| {mag:.3}, sum|D_b| {beta:.3e}, E {:.10}",
+        sys.name, scf.nalpha, scf.nbeta, scf.energy
+    );
+    assert!(mag > 0.5, "{}: not spin polarised", sys.name);
+    assert_eq!(beta < 1e-12, sys.nb == 0, "{}: beta sector", sys.name);
+}
+
+/// PHYSICS: at 1x1x1 the k-UHF stress is the Gamma-UHF stress, total and per
+/// part, both exxdiv. ARTIFACT: blind to phases, carried by the supercell
+/// anchor below; what is new is the spin-unbalanced s+p density. MEASURED
+/// (S1 / S2): |k - Gamma| 3.1e-14 / 2.2e-14 (none), 9.8e-15 / 5.3e-14
+/// (ewald) vs the 1e-12 bar; antisym(sigma) 3.7e-11 / 9.0e-11 (p-shell floor,
+/// bar P_ANTISYM_BAR).
+fn open_shell_p_one_point(sys: OpenShell) {
+    let bs = sp_basis_h();
+    let ks = ksys(sys.cell.clone(), &bs, [1, 1, 1]);
+    let eri = kdense(&ks, ANCHOR_PRECISION);
+    let scfs = uscf_pair(&ks, &eri, sys.na, sys.nb);
+    assert_spin_polarised(&sys, &scfs[0]);
+    let g = gsys(sys.cell.clone(), &bs);
+    for exx in EXX {
+        let scf = &scfs[exx_idx(exx)];
+        let gscf = gamma_unrestricted(
+            real_of(&scf.density_alpha[0]),
+            real_of(&scf.density_beta[0]),
+        );
+        let k = ks_uhf(&ks, &eri, scf, exx, None);
+        let gs = gamma_stress(&g, &gscf, exx);
+        assert_one_point(sys.name, &k, &gs, exx, P_ANTISYM_BAR);
+    }
+}
+
+#[test]
+fn open_shell_p_h2_triplet_one_point_mesh_uhf_stress_is_the_gamma_stress() {
+    open_shell_p_one_point(s1_h2_triplet());
+}
+
+#[test]
+#[ignore = "slow (~2 min release): H4 s+p, 2.8M SR triplets, k and Gamma, both exxdiv"]
+fn open_shell_p_h4_triplet_one_point_mesh_uhf_stress_is_the_gamma_stress() {
+    open_shell_p_one_point(s2_h4_triplet());
+}
+
+/// PHYSICS: the 1x1x3 (non-TRIM) k-UHF stress per cell is the explicit
+/// 3-cell supercell's Gamma-UHF stress / 3, both exxdiv; the k-specific
+/// mutants and the Gamma-style term mutants all miss it. S1 only (the
+/// supercell has 24 AOs).
+#[test]
+#[ignore = "slow (~4 min release): 6-atom s+p supercell Gamma UHF stress x2 + k stress mutants"]
+fn open_shell_p_1x1x3_uhf_stress_is_the_supercell_stress_per_cell() {
+    let bs = sp_basis_h();
+    let sys = s1_h2_triplet();
+    let n = [1, 1, 3];
+    let ks = ksys(sys.cell.clone(), &bs, n);
+    let eri = kdense(&ks, ANCHOR_PRECISION);
+    let scfs = uscf_pair(&ks, &eri, sys.na, sys.nb);
+    assert_spin_polarised(&sys, &scfs[0]);
+    // 3 cells x 2 unpaired electrons: multiplicity 7.
+    let g = gsys(supercell(&sys.cell, n, 7), &bs);
+    let mut de = [ZERO; 2];
+    for (i, exx) in EXX.into_iter().enumerate() {
+        let gscf = gamma_unrestricted(
+            unfold(&ks.mesh, &scfs[i].density_alpha),
+            unfold(&ks.mesh, &scfs[i].density_beta),
+        );
+        let k = ks_uhf(&ks, &eri, &scfs[i], exx, None);
+        let gs = gamma_stress(&g, &gscf, exx);
+        let r = scale3(&gs.de_deps, 1.0 / 3.0);
+        let miss = max_mat(&k.de_deps, &r);
+        report(&format!("{} {n:?} {exx:?}", sys.name), &k);
+        eprintln!(
+            "  {} {n:?} {exx:?}: |dE/dε_k − dE/dε_sc/N| {miss:.2e}",
+            sys.name
+        );
+        assert!(miss <= SC_BAR, "{exx:?}: {miss:e}");
+        assert!(k.antisymmetry() <= P_ANTISYM_BAR);
+        de[i] = r;
+    }
+    let refs = ScRef { de };
+    let run = |exx, m| ks_uhf(&ks, &eri, &scfs[exx_idx(exx)], exx, m);
+    assert_mutants_fail(sys.name, &run, &refs, &K_MUTANTS, &K_EWALD_MUTANTS);
+    assert_mutants_fail(sys.name, &run, &refs, &TERM_MUTANTS, &TERM_EWALD_MUTANTS);
+}
+
+/// PHYSICS: all nine components of the k-UHF stress of S1 vs central FD (h =
+/// 1e-4, 2h) of its own k energy, a fresh UHF SCF per point, both exxdiv,
+/// plus the UHF-specific and k-specific mutants. Bar K_FD_BAR_UHF (the H3
+/// doublet's own measured floor, same h^2 truncation); the s+p AO-derivative
+/// floor of libint2 is invisible under it (cf. K_FD_BAR_P).
+#[test]
+#[ignore = "slow (~3 min release): 36 strained dense-AFT builds + 72 k-UHF SCFs (h and 2h), s+p H2 triplet"]
+fn open_shell_p_h2_triplet_1x1x3_uhf_stress_matches_fd_all_nine() {
+    let bs = sp_basis_h();
+    let sys = s1_h2_triplet();
+    let n = [1, 1, 3];
+    let e = |c: &Cell| k_energies_uhf_nanb(c, &bs, n, sys.na, sys.nb);
+    let fd1 = fd_all9(&sys.cell, FD_H, &e);
+    let fd2 = fd_all9(&sys.cell, 2.0 * FD_H, &e);
+    let ks = ksys(sys.cell.clone(), &bs, n);
+    let eri = kdense(&ks, ANCHOR_PRECISION);
+    let scfs = uscf_pair(&ks, &eri, sys.na, sys.nb);
+    assert_spin_polarised(&sys, &scfs[0]);
+    for (x, exx) in EXX.into_iter().enumerate() {
+        let s = ks_uhf(&ks, &eri, &scfs[x], exx, None);
+        let miss = max_mat(&s.de_deps, &fd1[x]);
+        let miss2 = max_mat(&s.de_deps, &fd2[x]);
+        eprintln!(
+            "  {} 1x1x3 {exx:?}: |analytic − FD| h {miss:.2e}, 2h {miss2:.2e} (ratio {:.2})",
+            sys.name,
+            miss2 / miss
+        );
+        assert!(miss <= K_FD_BAR_UHF, "{exx:?}: FD miss {miss:e}");
+        assert!(
+            (3.0..5.0).contains(&(miss2 / miss)),
+            "not h²: {}",
+            miss2 / miss
+        );
+        for m in [
+            KStressMutation::CrossSpinK,
+            KStressMutation::SwapSpinFock,
+            KStressMutation::NoPhase,
+            KStressMutation::WrongQ,
+            KStressMutation::ConjD,
+        ] {
+            let sm = ks_uhf(&ks, &eri, &scfs[x], exx, Some(m));
+            let mm = max_mat(&sm.de_deps, &fd1[x]);
+            eprintln!("  {} {exx:?} mutant {m:?}: miss vs FD {mm:.2e}", sys.name);
+            assert!(mm > MUTANT_BAR, "{m:?} {exx:?} not caught ({mm:e})");
+        }
+    }
+}
+
+/// S2 (3 alpha, 1 beta, 16 AOs, both sectors populated): zz, xz and xx of the
+/// k-UHF stress vs central FD at h = 1e-4 on the 1x1x3 mesh, exxdiv none and
+/// ewald.
+#[test]
+#[ignore = "slow (~5 min release): 6 strained dense-AFT builds + 12 k-UHF SCFs on H4 s+p"]
+fn open_shell_p_h4_triplet_1x1x3_uhf_stress_matches_fd_zz_xz_xx() {
+    let bs = sp_basis_h();
+    let sys = s2_h4_triplet();
+    let n = [1, 1, 3];
+    let ks = ksys(sys.cell.clone(), &bs, n);
+    let eri = kdense(&ks, ANCHOR_PRECISION);
+    let scfs = uscf_pair(&ks, &eri, sys.na, sys.nb);
+    assert_spin_polarised(&sys, &scfs[0]);
+    let mut worst_mut = [[0.0_f64; 2]; 2];
+    for (i, j) in [(2usize, 2usize), (0, 2), (0, 0)] {
+        let ep = k_energies_uhf_nanb(&strained(&sys.cell, i, j, FD_H), &bs, n, sys.na, sys.nb);
+        let em = k_energies_uhf_nanb(&strained(&sys.cell, i, j, -FD_H), &bs, n, sys.na, sys.nb);
+        for (x, exx) in EXX.into_iter().enumerate() {
+            let fd = (ep[x] - em[x]) / (2.0 * FD_H);
+            let s = ks_uhf(&ks, &eri, &scfs[x], exx, None);
+            let miss = (s.de_deps[i][j] - fd).abs();
+            eprintln!(
+                "  {} 1x1x3 ({i},{j}) {exx:?}: analytic {:.8e} FD {fd:.8e} miss {miss:.2e}",
+                sys.name, s.de_deps[i][j]
+            );
+            assert!(miss <= K_FD_BAR_UHF, "({i},{j}) {exx:?}: {miss:e}");
+            for (mi, m) in [KStressMutation::CrossSpinK, KStressMutation::SwapSpinFock]
+                .into_iter()
+                .enumerate()
+            {
+                let sm = ks_uhf(&ks, &eri, &scfs[x], exx, Some(m));
+                let mm = (sm.de_deps[i][j] - fd).abs();
+                worst_mut[mi][x] = worst_mut[mi][x].max(mm);
+            }
+        }
+    }
+    eprintln!("  {} spin mutants worst miss vs FD [none, ewald]: CrossSpinK {:?}, SwapSpinFock {:?}",
+        sys.name, worst_mut[0], worst_mut[1]);
+    for w in worst_mut.iter().flatten() {
+        assert!(*w > MUTANT_BAR, "a spin mutant escaped the FD ({w:e})");
+    }
+}
