@@ -1919,6 +1919,50 @@ pub fn boys_fm_chebyshev7(x: f64, mmax: usize) -> Result<Vec<f64>, FerricError> 
     Ok(out)
 }
 
+/// Which libint2 `TennoGmEval` entry point [`tenno_gm`] calls.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TennoKind {
+    /// `eval_yukawa`: `out[m] = G_m(T, U)`.
+    Yukawa,
+    /// `eval_slater`: `out[m] = (G_{m-1} - G_m) * zeta / (2 rho)`.
+    Slater,
+}
+
+/// Yukawa / Slater-geminal core integrals `G_0(T, U)..G_mmax(T, U)`
+/// (`mmax <= 20`, `U = 0.25 * zeta^2 * one_over_rho`) through libint2's
+/// `TennoGmEval`, the evaluator behind `Operator::yukawa` and
+/// `Operator::slater_geminal`. A test hook that pins the evaluator independent
+/// of any integral geometry (the `T == 1024` / `U == 1000` table edges, issue
+/// #436); not used by production code.
+///
+/// # Errors
+/// A non-finite or non-positive argument, `mmax > 20`, or a libint2 exception
+/// (the 2.7.2 override throws for `U > Umax`).
+pub fn tenno_gm(
+    kind: TennoKind,
+    one_over_rho: f64,
+    t: f64,
+    mmax: usize,
+    zeta: f64,
+) -> Result<Vec<f64>, FerricError> {
+    let m =
+        c_int::try_from(mmax).map_err(|_| FerricError::Libint("tenno: mmax too large".into()))?;
+    let k = match kind {
+        TennoKind::Yukawa => 0,
+        TennoKind::Slater => 1,
+    };
+    let mut out = vec![0.0; mmax + 1];
+    // SAFETY: `out` holds mmax + 1 doubles, as the shim requires.
+    let status = unsafe { ffi::scf_tenno_gm(k, one_over_rho, t, m, zeta, out.as_mut_ptr()) };
+    if status < 0 {
+        return Err(FerricError::Libint(format!(
+            "scf_tenno_gm({kind:?}, one_over_rho = {one_over_rho}, T = {t}, mmax = {mmax}, \
+             zeta = {zeta}) failed: status {status}"
+        )));
+    }
+    Ok(out)
+}
+
 /// `LIBINT2_MAX_DERIV_ORDER` of the linked libint2.
 pub fn libint_max_deriv_order() -> i32 {
     // SAFETY: pure query of a compile-time constant, no arguments.

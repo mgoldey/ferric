@@ -49,6 +49,15 @@ const char *scf_libint_version(void);
    [0, 40], SCF_EINTERNAL on a libint2 exception. */
 int scf_boys_fm(double x, int mmax, double *out);
 
+/* Yukawa (kind 0) / Slater-geminal (kind 1) core integrals via libint2's
+   TennoGmEval::eval_yukawa / eval_slater (test hook for the T == 1024 and
+   U == 1000 table edges, issue #436). U = 0.25 * zeta * zeta * one_over_rho.
+   out holds mmax+1 doubles. Returns mmax+1, SCF_EINVAL on a bad pointer / kind /
+   non-finite or non-positive argument / mmax outside [0, 20], SCF_EINTERNAL on a
+   libint2 exception. */
+int scf_tenno_gm(int kind, double one_over_rho, double T, int mmax, double zeta,
+                 double *out);
+
 /* Build a basis set from caller-owned arrays. Returns NULL on error. */
 scf_basis *scf_basis_create(const scf_shell *shells, int nshells,
                                 const scf_atom *atoms, int natoms);
