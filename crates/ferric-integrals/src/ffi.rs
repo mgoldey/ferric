@@ -50,6 +50,17 @@ extern "C" {
     /// Boys function `F_0..F_mmax(x)` through libint2's `FmEval_Chebyshev7`;
     /// `out` holds `mmax + 1` doubles. Returns `mmax + 1` or a negative status.
     pub fn scf_boys_fm(x: f64, mmax: c_int, out: *mut f64) -> c_int;
+    /// Yukawa (`kind` 0) / Slater-geminal (`kind` 1) core integrals through
+    /// libint2's `TennoGmEval`; `out` holds `mmax + 1` doubles. Returns
+    /// `mmax + 1` or a negative status.
+    pub fn scf_tenno_gm(
+        kind: c_int,
+        one_over_rho: f64,
+        t: f64,
+        mmax: c_int,
+        zeta: f64,
+        out: *mut f64,
+    ) -> c_int;
     pub fn scf_basis_create(
         shells: *const CShell,
         nshells: c_int,

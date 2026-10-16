@@ -292,6 +292,34 @@ int scf_boys_fm(double x, int mmax, double *out) {
     }
 }
 
+/* Yukawa / Slater-geminal core integrals G_m(T, U) through libint2's
+ * TennoGmEval (the evaluator behind Operator::yukawa and Operator::slater_geminal),
+ * so a test can pin its table edges independent of any integral geometry
+ * (issue #436: T == Tmax == 1024 and U == Umax == 1000 indexed one entry past
+ * the table). kind 0: eval_yukawa (out[m] = G_m), kind 1: eval_slater
+ * (out[m] = (G_{m-1} - G_m) zeta / (2 rho)); U = zeta^2 / (4 rho) is formed by
+ * libint2 as 0.25 * zeta * zeta * one_over_rho. out must hold mmax+1 doubles.
+ * Returns mmax+1, SCF_EINVAL (bad pointer / kind / non-finite or negative
+ * argument / mmax outside [0, 20]) or SCF_EINTERNAL on a libint2 exception
+ * (including the invalid_argument the 2.7.2 override throws for U > Umax). */
+int scf_tenno_gm(int kind, double one_over_rho, double T, int mmax, double zeta,
+                 double *out) {
+    if (!out || (kind != 0 && kind != 1) || !std::isfinite(one_over_rho) ||
+        one_over_rho <= 0.0 || !std::isfinite(T) || T < 0.0 ||
+        !std::isfinite(zeta) || zeta <= 0.0 || mmax < 0 || mmax > 20)
+        return SCF_EINVAL;
+    try {
+        auto ev = libint2::TennoGmEval<double>::instance(mmax);
+        if (kind == 0)
+            ev->eval_yukawa(out, one_over_rho, T, static_cast<size_t>(mmax), zeta);
+        else
+            ev->eval_slater(out, one_over_rho, T, static_cast<size_t>(mmax), zeta);
+        return mmax + 1;
+    } catch (...) {
+        return SCF_EINTERNAL;
+    }
+}
+
 const char *scf_libint_version(void) {
 #ifdef LIBINT_VERSION
     return LIBINT_VERSION;
@@ -529,6 +557,9 @@ int scf_compute_1e_block(scf_engine *eng, const scf_basis *bs,
         for (int i = 0; i < n; ++i) out[i] = result[0][i];
     }
     return n;
+  } catch (const std::exception &ex) {
+    std::fprintf(stderr, "%s: %s\n", __func__, ex.what());
+    return SCF_EINTERNAL;
   } catch (...) {
     return SCF_EINTERNAL;
   }
@@ -664,6 +695,9 @@ int scf_compute_eri_quartet(scf_engine *eng, const scf_basis *bs,
     int n = bs->nfunc[sh1] * bs->nfunc[sh2] * bs->nfunc[sh3] * bs->nfunc[sh4];
     for (int i = 0; i < n; ++i) out[i] = result[0][i];
     return n;
+  } catch (const std::exception &ex) {
+    std::fprintf(stderr, "%s: %s\n", __func__, ex.what());
+    return SCF_EINTERNAL;
   } catch (...) {
     return SCF_EINTERNAL;
   }
@@ -718,6 +752,9 @@ int scf_compute_schwarz(scf_engine *eng, const scf_basis *bs, double *qmat) {
         }
     }
     return SCF_OK;
+  } catch (const std::exception &ex) {
+    std::fprintf(stderr, "%s: %s\n", __func__, ex.what());
+    return SCF_EINTERNAL;
   } catch (...) {
     return SCF_EINTERNAL;
   }
@@ -748,6 +785,9 @@ int scf_compute_1e_deriv_block(scf_engine *eng, const scf_basis *bs,
         }
     }
     return nderiv * n;
+  } catch (const std::exception &ex) {
+    std::fprintf(stderr, "%s: %s\n", __func__, ex.what());
+    return SCF_EINTERNAL;
   } catch (...) {
     return SCF_EINTERNAL;
   }
@@ -840,6 +880,9 @@ int scf_compute_eri_deriv_quartet(scf_engine *eng, const scf_basis *bs,
         }
     }
     return nderiv * n;
+  } catch (const std::exception &ex) {
+    std::fprintf(stderr, "%s: %s\n", __func__, ex.what());
+    return SCF_EINTERNAL;
   } catch (...) {
     return SCF_EINTERNAL;
   }
@@ -925,6 +968,9 @@ int scf_compute_1e_deriv2_block(scf_engine *eng, const scf_basis *bs,
         }
     }
     return static_cast<int>(nderiv * n);
+  } catch (const std::exception &ex) {
+    std::fprintf(stderr, "%s: %s\n", __func__, ex.what());
+    return SCF_EINTERNAL;
   } catch (...) {
     return SCF_EINTERNAL;
   }
@@ -962,6 +1008,9 @@ int scf_compute_eri_deriv2_quartet(scf_engine *eng, const scf_basis *bs,
         }
     }
     return static_cast<int>(nderiv * n);
+  } catch (const std::exception &ex) {
+    std::fprintf(stderr, "%s: %s\n", __func__, ex.what());
+    return SCF_EINTERNAL;
   } catch (...) {
     return SCF_EINTERNAL;
   }
@@ -1129,6 +1178,9 @@ int scf_compute_eri3(scf_engine *eng, const scf_basis *obs,
     int n = nP * n1 * n2;
     for (int i = 0; i < n; ++i) out[i] = result[0][i];
     return n;
+  } catch (const std::exception &ex) {
+    std::fprintf(stderr, "%s: %s\n", __func__, ex.what());
+    return SCF_EINTERNAL;
   } catch (...) {
     return SCF_EINTERNAL;
   }
@@ -1208,6 +1260,9 @@ int scf_compute_eri2(scf_engine *eng, const scf_basis *dfbs,
         for (int i = 0; i < n; ++i) out[i] = result[0][i];
     }
     return n;
+  } catch (const std::exception &ex) {
+    std::fprintf(stderr, "%s: %s\n", __func__, ex.what());
+    return SCF_EINTERNAL;
   } catch (...) {
     return SCF_EINTERNAL;
   }
@@ -1329,6 +1384,9 @@ int scf_compute_eri3_deriv(scf_engine *eng, const scf_basis *obs,
         }
     }
     return nderiv * n;
+  } catch (const std::exception &ex) {
+    std::fprintf(stderr, "%s: %s\n", __func__, ex.what());
+    return SCF_EINTERNAL;
   } catch (...) {
     return SCF_EINTERNAL;
   }
@@ -1420,6 +1478,9 @@ int scf_compute_eri2_deriv(scf_engine *eng, const scf_basis *dfbs,
         }
     }
     return nderiv * n;
+  } catch (const std::exception &ex) {
+    std::fprintf(stderr, "%s: %s\n", __func__, ex.what());
+    return SCF_EINTERNAL;
   } catch (...) {
     return SCF_EINTERNAL;
   }
