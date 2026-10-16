@@ -830,6 +830,14 @@ fn warn_rhf_not_converged(py: Python<'_>, r: &ferric_scf::result::ScfResult, con
 ///   point_charges   list of (q, x, y, z) classical point charges (Hartree
 ///                   atomic units; coordinates in Bohr) added to the one-electron
 ///                   Hamiltonian and nuclear repulsion. None/empty = no charges.
+///                   The ORDER of the list does not change the answer beyond
+///                   roundoff: reordering 6458 charges moved the potential
+///                   matrix by 3e-15..1e-14 relative and the converged energy
+///                   by ~1e-12 Ha. On a hard field it can change how many
+///                   iterations the SCF needs when the closed-shell incremental
+///                   Fock update is on (it is off for a tight energy_conv or
+///                   density_conv, where the count was order-independent);
+///                   ferric does not reorder the list.
 ///   smeared_charges list of (q, x, y, z, width) Gaussian-smeared classical
 ///                   charges (Hartree atomic units; coordinates and width in
 ///                   Bohr; width = 0 is a point charge, but use

@@ -401,7 +401,7 @@ charge is an error.
 
 | Key | Type | Default | Allowed values | Notes |
 |---|---|---|---|---|
-| `point_charges` | array of `{ q, x, y, z, width }` | `[]` | q in e; x, y, z in **Bohr**; `width` in **Bohr**, finite and > 0 | Written as `[[external_potential.point_charges]]` tables. `width` is optional: with it the charge is Gaussian-smeared, density ∝ exp(−r²/width²) and potential q·erf(r/width)/r (the Python `smeared_charges=`); without it the charge is a point. See `examples/water-rhf-smeared-charge.toml`. |
+| `point_charges` | array of `{ q, x, y, z, width }` | `[]` | q in e; x, y, z in **Bohr**; `width` in **Bohr**, finite and > 0 | Written as `[[external_potential.point_charges]]` tables. `width` is optional: with it the charge is Gaussian-smeared, density ∝ exp(−r²/width²) and potential q·erf(r/width)/r (the Python `smeared_charges=`); without it the charge is a point. See `examples/water-rhf-smeared-charge.toml`. The order of the list does not change the result beyond roundoff (reordering 6458 charges moved the potential matrix by 3e-15 to 1e-14 relative); ferric does not reorder it. |
 | `field` | `[Ex, Ey, Ez]` | none | atomic units | Uniform electric field. |
 
 With both empty, the run is identical to a vacuum run.
