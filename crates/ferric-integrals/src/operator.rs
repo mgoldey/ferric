@@ -141,15 +141,17 @@ impl Operator {
     /// (e.g. 1e-6) expecting a clean Coulomb limit on RI paths -- that regime is
     /// out of the kernel's table domain.
     ///
-    /// UPPER EDGE: `U > 1e3` (`zeta²` more than 4000 times `rho`) is outside the
-    /// table as well. On a libint 2.7.2 build with ferric's `boys.h` override
+    /// UPPER EDGE: `U > 1e3` (`zeta²` more than 4000 times `rho`) with `T <= 1024` is
+    /// outside the table. On a libint 2.7.2 build with ferric's `boys.h` override
     /// (the PyPI wheel, `~/.local`) it is rejected (the shim returns
-    /// `SCF_EINTERNAL`, which the compute wrappers turn into a panic) instead of
-    /// the stock NaN or out-of-range read; `T == 1024` and
-    /// `U == 1e3` exactly are valid (issue #436, fixed in the override; see
-    /// `shim/libint2_overrides/README.md`). libint 2.13.1 falls back to a Gaussian
-    /// fit above `1e3`, but still returns NaN in its upward recursion for
-    /// `T > 1024` once `U + 2 sqrt(U T)` exceeds ~709 (not patched here).
+    /// `SCF_EINTERNAL`, which the compute wrappers turn into a panic whose message
+    /// is also printed to stderr) instead of the stock NaN or out-of-range read;
+    /// `T == 1024` and `U == 1e3` exactly are valid (issue #436, fixed in the
+    /// override; see `shim/libint2_overrides/README.md`). libint 2.13.1 falls back to
+    /// a Gaussian fit there, but returns NaN SILENTLY in its upward recursion for
+    /// `T > 1024` whenever `U + 2 sqrt(U T) = U + zeta R` exceeds about 709 (e.g.
+    /// `zeta = 10` at about 37 Angstrom); ferric has no screening for these operators,
+    /// so that NaN reaches the result (issue #439, not patched).
     pub fn yukawa(zeta: f64) -> Self {
         debug_assert!(
             zeta > 0.0,

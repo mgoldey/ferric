@@ -10,7 +10,7 @@ inside an install prefix of that version reproduces the file byte for byte.
 | `2.13.1/` | conda-forge `libint-2.13.1-h83f5b4b_0.conda` (`scripts/install-libint.sh`) | `890ab0261a2be2517d3d4cedfd7d07e2a1c6be7b6f057dc7ea2ea418e17067c1` | `0x0f6f0c23194e18ad` |
 
 Override sha256 (what `patch -p1` of the committed `.patch` onto the stock file reproduces): 2.7.2
-`6817d7ab53d801f868778cd14a446fcc5cb2ea8252e16e42a02815f6743e29b5`, 2.13.1
+`208657a3560c2f3110ef45e3092cf9504144e92930bd7262bf83622c5bedce93`, 2.13.1
 `658cffae31ce33b4ecc5ce6846f7feeac1ab63dfe8271286b654f1dad79fa868`.
 
 The #433 fix is the same in both. The sections below describe it with the 2.7.2 names. The `TennoGmEval` changes
@@ -139,7 +139,8 @@ reproduced here with a standalone probe under AddressSanitizer (`probe.cc`-style
   Where the stock expression was a subnormal-precision value (erfc between 5e-324 and 2.2e-308) it is replaced by the
   accurate one, so those few points DO change: of the 12640 swept grid points, 211 differ from stock, all of them
   points where stock returned NaN/inf or such a degraded value (accuracy of the new values: see Evidence).
-* `eval_yukawa` / `eval_slater` throw `std::invalid_argument` for `U > Umax` (or NaN), and `eval_slater` for
+* `eval_yukawa` / `eval_slater` throw `std::invalid_argument` for `U > Umax` (or NaN) with `T <= Tmax` (above both
+  limits the true value is exactly 0 and the upward recursion returns it), and `eval_slater` for
   `U < Umin` with `T <= Tmax`; stock either aborted (assert) or read out of range or returned NaN there. A throw inside
   an `Engine` compute is caught by the shim (`SCF_EINTERNAL`) and becomes a Rust panic carrying the status, the same
   path as every other libint exception. libint 2.13.1 instead falls back to a Gaussian fit of the kernel for these;
@@ -166,15 +167,33 @@ Not changed: `eval_yukawa` with `U < Umin` or `T > Tmax` still uses the upward r
   FNV-1a hash `25864f7f62d9114b` for stock, for the pre-#436 override and for this one, 0 non-finite values.
   Rust-side, `tenno_table_edge::sweep_child_prints_hashes` prints `SWEEP_HASH edge=bbf3ce42b1378db6
   engine=de36c9077af007c0 n=296` on 2.7.2+override and `edge=2acf9250b8e24a57 engine=0ed77033630946fd` on 2.13.1.
-* Accuracy of what changed: at every one of the 210 changed points checked against a 500-digit mpmath evaluation of the
-  closed form, abs error <= 4e-19, rel <= 3e-11. At tiny `T` and large `U` the stock-form branch (erfc normal) keeps its
-  inherent `x^2 eps` amplification of the `exp(x*x)` rounding: worst measured relative error of `Gm[0]` 4e-10 (T = 1e-6,
-  U = 570), unchanged by this patch.
-* libint 2.13.1 (stock, and this repo's 2.13.1 override) is NOT fixed for the overflow: `eval_yukawa` and `eval_slater`
-  return NaN in the `T > Tmax` upward recursion once `U + 2 sqrt(U T)` exceeds ~709 (measured: 84 of 12640 grid points,
-  T > 1024 with U >= 100, both kernels). The true values there are < 1e-270, so no physical integral is affected unless a
-  primitive that large is not screened; recorded, not patched. Its table indices are clean at T == 1024 and U == 1000
-  (ASan/UBSan probe, both edges and one ulp each side).
+* Accuracy of what changed. Points where stock was non-finite (184 of the 12640 grid points) are now finite and
+  accurate: of the 210 changed grid points checked against a 500-digit mpmath evaluation, the largest absolute error
+  is 4e-19 on the swept grid. That is NOT true of every changed point in general. `G_0 = pfac (erfc_k - erfc_l) /
+  sqrt(T)` cancels at small `T`, and where stock was FINITE but `erfc_l` alone crossed to the series (`U` about
+  700 to 720), the new value carries that cancellation: an independent dense scan (T in 1e-8..5, U in 690..720, 488
+  points) found the largest absolute error on a changed point 3.9e-13 for `G_0` at T = 1e-6, U = 704.5 (stock there
+  2.3e-13), and 12 points where the new value is worse than stock although stock was finite, by up to 9.7x (e.g.
+  T = 1e-3, U = 703.5: new 1.87e-14, stock 7.1e-15). The same `exp(x*x)` rounding amplification (about `x^2 eps`)
+  limits the unchanged stock-form branch: worst relative error of `Gm[0]` 4e-10 (T = 1e-6, U = 570). The set of
+  switched points was deliberately NOT enlarged to chase these (the bit-identity set stays exactly "erfc subnormal").
+  In the `T == 0` branch `G_0 = 1 - S` is evaluated as `y * tail(y)`, avoiding the 1.7e-14 to 6.8e-14 relative loss
+  of `1 - S`; that code only runs where stock was non-finite or subnormal-precision, so it does not move the set.
+* libint 2.13.1 (stock, and this repo's 2.13.1 override) is NOT fixed for the overflow (issue #439): `eval_yukawa` and
+  `eval_slater` return NaN, silently, in the `T > Tmax` upward recursion whenever `U + 2 sqrt(U T)` exceeds about
+  709. Since `U T = zeta^2 R^2 / 4` for a pair at distance `R` (independent of `rho`), that is `U + zeta R > ~709`:
+  e.g. `zeta` = 1.5 at about 250 Angstrom, `zeta` = 10 at about 37 Angstrom, or `T = 2000, U = 100` (measured: NaN on
+  2.13.1, exactly 0 with the 2.7.2 override; 84 of 12640 grid points, T > 1024 with U >= 100, both kernels). The
+  true values are below 1e-270, but ferric has no primitive screening for these operators (`schwarz.rs` rejects them),
+  so nothing stops such a primitive from being evaluated and a NaN stays a NaN in the result. Recorded, not patched.
+  Its table indices are clean at T == 1024 and U == 1000 (ASan/UBSan probe, both edges and one ulp each side).
+* CI coverage gap: CI runs only the 2.13.1 build, so the 2.7.2-specific assertions of `tenno_table_edge` (guarded by
+  `FERRIC_LIBINT2_BOYS_OVERRIDE`) are protected only by a manual run (`LIBINT2_PREFIX=$HOME/.local CARGO_TARGET_DIR=...
+  cargo test -p ferric-integrals --test tenno_table_edge`). The cheap protection is a `wheels.yml` step inside the
+  manylinux image (which has the 2.7.2 libint) running that same test.
+* Follow-up, not in this change: the engine constructors could return a typed `Err` up front instead of the shim's
+  `SCF_EINTERNAL` panic: compute `rho_min` from the smallest primitive exponents and return `Err` when
+  `zeta^2 / (4 rho_min) > 1e3` on 2.7.2 builds.
 * A standalone ASan/UBSan probe of the patched header over the edge set (`T` and `U` on, one ulp each side of, and away
   from the edges, both kernels, m <= 6) and the full safe grid is clean; the same probe against stock 2.7.2 aborts or
   reports the overflow at the first edge point.
