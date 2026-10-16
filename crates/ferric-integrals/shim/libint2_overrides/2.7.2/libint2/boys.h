@@ -31,6 +31,14 @@
  *  FmEval_Chebyshev7::eval takes the asymptotic branch for x >= T_crit
  *  (stock: x > T_crit), because x == 117.0 exactly read one table row past
  *  the end; it alters the result only at that single point.
+ *  A third change (issue #436), TennoGmEval (Yukawa / Slater geminal): the
+ *  T-octave and U-decade table indices are clamped to the last table entry
+ *  (T == Tmax == 1024 and U == Umax == 1000 gave index 10 of 0..9);
+ *  Gm[0] (and G_{-1}) no longer overflow to NaN for U + 2 sqrt(U T) > ~705
+ *  (scaled erfc, asymptotic series; the stock expression is kept while
+ *  erfc(x) is a normal number); U > Umax, and U < Umin for T <= Tmax in
+ *  eval_slater, throw std::invalid_argument instead of reading out of the
+ *  table. All other arguments give bit-identical results.
  *  crates/ferric-integrals/build.rs puts this
  *  directory first on the shim's include path ONLY when the libint2 prefix's
  *  own boys.h is byte-identical to the stock 2.7.2 file above.
@@ -45,6 +53,8 @@
 #include <cstdlib>
 #include <cmath>
 #include <stdexcept>
+#include <sstream>
+#include <string>
 #include <libint2/util/vector.h>
 #include <cassert>
 #include <vector>
@@ -947,6 +957,7 @@ namespace libint2 {
         assert(T >= 0);
         const auto U = 0.25 * zeta * zeta * one_over_rho;
         assert(U >= 0);
+        check_U_not_above_Umax(U);
         if (T > Tmax || U < Umin) {
           eval_urr<false>(Gm, T, U, /* zeta_over_two_rho = */ 0, mmax);
         } else {
@@ -969,15 +980,85 @@ namespace libint2 {
         assert(T >= 0);
         const auto U = 0.25 * zeta * zeta * one_over_rho;
         assert(U > 0);  // integral factorizes into 2 overlaps for U = 0
+        check_U_not_above_Umax(U);
         const auto zeta_over_two_rho = 0.5 * zeta * one_over_rho;
+        // ferric patch (issue #436): stock sent T <= Tmax with U < Umin to
+        // interpolate_Gm, whose Uint = floor(log10(U / Umin)) is then negative:
+        // one_over_10K[Uint] and the coefficient block both read BEFORE their
+        // arrays (and its assert aborts a non-NDEBUG build). eval_yukawa routes
+        // U < Umin to the upward recursion, but that recursion is unstable at
+        // small T, so rather than return silent garbage there, throw (T > Tmax
+        // keeps its working upward recursion).
         if (T > Tmax) {
           eval_urr<true>(Gm, T, U, zeta_over_two_rho, mmax);
         } else {
+          if (U < Umin)
+            throw std::invalid_argument(
+                "TennoGmEval::eval_slater() : zeta*zeta*one_over_rho/4=" +
+                u_to_string(U) + " is below Umin=" + u_to_string(Umin) +
+                " (the interpolation table's lower edge) and T <= Tmax");
           interpolate_Gm<true>(Gm, T, U, zeta_over_two_rho, mmax);
         }
       }
 
   private:
+
+      /// ferric patch (issue #436): stock 2.7.2 has only `assert(U <= Umax)` (inside
+      /// interpolate_Gm), so with NDEBUG a U above the table read past it, and the
+      /// T > Tmax upward recursion has no U check at all. Throw instead (libint
+      /// 2.13.1 documents `@throw std::invalid_argument` for this, then falls back
+      /// to a Gaussian fit of the kernel, which 2.7.2 does not have). Callers of the
+      /// ferric shim see the exception as SCF_EINTERNAL.
+      static inline void check_U_not_above_Umax(Real U) {
+        if (!(U <= Umax))
+          throw std::invalid_argument(
+              "TennoGmEval::eval_{yukawa,slater}() : zeta*zeta*one_over_rho/4=" +
+              u_to_string(U) + " must be a number not exceeding Umax=" +
+              u_to_string(Umax));
+      }
+
+      static inline std::string u_to_string(Real U) {
+        std::ostringstream os;
+        os.precision(17);
+        os << U;
+        return os.str();
+      }
+
+      /// ferric patch (issue #436): \f$ e^{x^2 - T} \mathrm{erfc}(x) \f$ for \f$ x \f$ possibly
+      /// large, without the overflow of the stock expression.
+      /// The stock code forms `exp(x*x - T) * erfc(x)`. For x > ~26.5 erfc(x) is
+      /// subnormal (then zero) while exp(x*x - T) overflows once x*x - T > 709.78
+      /// (always, for the kappa/lambda of U > ~710), so the product is inf * 0 = NaN
+      /// (or a subnormal-precision value just before that). That is the whole upper
+      /// part of the table domain: Yukawa/Slater Gm[0] is NaN for U + 2 sqrt(U T)
+      /// > ~710, e.g. U = 1000 = Umax at any T.
+      /// While erfc(x) is a normal number the stock product is returned unchanged
+      /// (bit-identical); beyond it the product is e^{-T} times the scaled
+      /// complementary error function erfcx(x) = e^{x^2} erfc(x), which for
+      /// x >= 26 has the asymptotic expansion
+      /// erfcx(x) = 1/(x sqrt(pi)) sum_n (-1)^n (2n-1)!! / (2 x^2)^n,
+      /// whose terms are below 7.4e-4^n (first omitted term, n = 9, ~4e-21).
+      /// @param[in] x the argument of erfc
+      /// @param[in] x2_minus_T the exponent exactly as the stock code forms it (x*x - T)
+      /// @param[in] minus_T \f$ -T \f$
+      static inline Real exp_x2_erfc(Real x, Real x2_minus_T, Real minus_T) {
+        const Real erfc_x = erfc(x);
+        if (erfc_x >= std::numeric_limits<Real>::min())
+          return exp(x2_minus_T) * erfc_x;
+        return exp(minus_T) * erfcx_asymptotic(x);
+      }
+
+      /// erfcx(x) = e^{x^2} erfc(x) by its asymptotic series; accurate to ~1e-20
+      /// relative for x >= 26 (see exp_x2_erfc)
+      static inline Real erfcx_asymptotic(Real x) {
+        const Real sqrtPi(1.7724538509055160272981674833411451827975494561224);
+        return erfcx_series(0.5 / (x * x)) / (x * sqrtPi);
+      }
+
+      /// sum_{n=0}^{8} (-1)^n (2n-1)!! y^n, y = 1 / (2 x^2) (see exp_x2_erfc)
+      static inline Real erfcx_series(Real y) {
+        return 1 - y * (1 - 3 * y * (1 - 5 * y * (1 - 7 * y * (1 - 9 * y * (1 - 11 * y * (1 - 13 * y * (1 - 15 * y)))))));
+      }
 
       /// Computes G_0 and (optionally) G_{-1}
       /// @tparam compute_Gm1, if true, compute G_0 and G_{-1}, otherwise G_0 only
@@ -1012,8 +1093,8 @@ namespace libint2 {
           const Real lambda = sqrt_U + sqrt_T;
           const Real sqrtPi_over_4 = sqrtPi * 0.25;
           const Real pfac = sqrtPi_over_4;
-          const Real erfc_k = exp(kappa * kappa - T) * erfc(kappa);
-          const Real erfc_l = exp(lambda * lambda - T) * erfc(lambda);
+          const Real erfc_k = exp_x2_erfc(kappa, kappa * kappa - T, -T);
+          const Real erfc_l = exp_x2_erfc(lambda, lambda * lambda - T, -T);
 
           G_m1 = compute_Gm1 ? pfac * (erfc_k + erfc_l) * oo_sqrt_U : 0.0;
           G_0 = pfac * (erfc_k - erfc_l) * oo_sqrt_T;
@@ -1021,6 +1102,16 @@ namespace libint2 {
         else {  // T = 0, U > 0
           const Real exp_U = exp(U);
           const Real sqrt_U = sqrt(U);
+          if (erfc(sqrt_U) < std::numeric_limits<Real>::min()) {
+            // ferric patch (issue #436): erfc(sqrt(U)) is subnormal or zero and exp(U)
+            // overflows (U > ~705), so the stock products below are inf * 0 = NaN.
+            // exp(U) erfc(sqrt U) = erfcx(sqrt U) = S / (sqrt(U) sqrt(pi)) with the
+            // asymptotic sum S (see exp_x2_erfc); G_{-1} = S / (2 U), G_0 = 1 - S.
+            const Real S = erfcx_series(0.5 / U);
+            G_m1 = compute_Gm1 ? S / (2 * U) : 0.0;
+            G_0 = 1 - S;
+            return std::make_tuple(G_0, G_m1);
+          }
           if (compute_Gm1) {
             const Real sqrtPi_over_2 = sqrtPi * 0.5;
             const Real oo_sqrt_U = compute_Gm1 ? (1 / sqrt_U) : 0;
@@ -1056,8 +1147,8 @@ namespace libint2 {
         const Real lambda = sqrt_U + sqrt_T;
         const Real sqrtPi_over_4(0.44311346272637900682454187083528629569938736403060);
         const Real pfac = sqrtPi_over_4;
-        const Real erfc_k = exp(kappa*kappa - T) * erfc(kappa);
-        const Real erfc_l = exp(lambda*lambda - T) * erfc(lambda);
+        const Real erfc_k = exp_x2_erfc(kappa, kappa*kappa - T, -T);
+        const Real erfc_l = exp_x2_erfc(lambda, lambda*lambda - T, -T);
 
         Real Gmm1; // will contain G[m-1]
         Real Gm; // will contain G[m]
@@ -1128,11 +1219,25 @@ namespace libint2 {
         };
 
         // which interval does this T fall into?
-        const int Tint = T < 2 ? 0 : int(std::floor(std::log2(T)));  assert(Tint >= 0 && Tint < 10);
+        // ferric patch (issue #436): the table has 10 T-octaves (0..9, the last
+        // one [512, 1024]) and eval_yukawa/eval_slater interpolate for T <= Tmax,
+        // so T == Tmax == 1024 exactly (and the doubles just below it whose log2
+        // rounds to 10) gave Tint == 10, one octave PAST the table:
+        // one_over_2K[10] and the coefficient block `interval` selects both read
+        // out of bounds. Those T belong in the last octave, at its upper end
+        // (t = +0.5). min() leaves every other T, hence every other result,
+        // bit-identical; libint 2.13.1 fixes the same defect by scaling the
+        // log by (1 - eps), which would also move T = 2^k and its ulp-neighbours
+        // to the next-lower octave.
+        const int Tint = std::min(T < 2 ? 0 : int(std::floor(std::log2(T))), 9);  assert(Tint >= 0 && Tint < 10);
         // precomputed 1 / 2^K
         constexpr Real one_over_2K[] = {1, 0.5, 0.25, 0.125, 0.0625, 0.03125, 0.015625, 0.0078125, 0.00390625, .001953125};
         // which interval does this U fall into?
-        const int Uint = int(std::floor(std::log10(U / Umin))); assert(Uint >= 0 && Uint < 10);
+        // ferric patch (issue #436): likewise U == Umax == 1000 (and the doubles
+        // just below it whose log10(U / Umin) rounds to 10) gave Uint == 10, one
+        // decade past the table. Such U belong in the last decade at u = +0.5.
+        // U > Umax is rejected before the dispatch (eval_yukawa/eval_slater).
+        const int Uint = std::min(int(std::floor(std::log10(U / Umin))), 9); assert(Uint >= 0 && Uint < 10);
         // precomputed 1 / 10^(cheb_table_uminlog10 + K)
         constexpr Real one_over_10K[] = {1. / detail::pow10(cheb_table_uminlog10),
                                                1. / detail::pow10(cheb_table_uminlog10+1),

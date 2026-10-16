@@ -140,6 +140,16 @@ impl Operator {
     /// domain for ordinary Gaussian exponents. Do NOT pass a near-zero `zeta`
     /// (e.g. 1e-6) expecting a clean Coulomb limit on RI paths -- that regime is
     /// out of the kernel's table domain.
+    ///
+    /// UPPER EDGE: `U > 1e3` (`zeta²` more than 4000 times `rho`) is outside the
+    /// table as well. On a libint 2.7.2 build with ferric's `boys.h` override
+    /// (the PyPI wheel, `~/.local`) it is rejected (the shim returns
+    /// `SCF_EINTERNAL`, which the compute wrappers turn into a panic) instead of
+    /// the stock NaN or out-of-range read; `T == 1024` and
+    /// `U == 1e3` exactly are valid (issue #436, fixed in the override; see
+    /// `shim/libint2_overrides/README.md`). libint 2.13.1 falls back to a Gaussian
+    /// fit above `1e3`, but still returns NaN in its upward recursion for
+    /// `T > 1024` once `U + 2 sqrt(U T)` exceeds ~709 (not patched here).
     pub fn yukawa(zeta: f64) -> Self {
         debug_assert!(
             zeta > 0.0,
@@ -163,7 +173,9 @@ impl Operator {
     ///
     /// SUPPORTED RANGE: `zeta > 0` (strictly). libint2's `eval_slater` requires
     /// `U = zeta²/(4ρ) > 0` (the integral factorizes into two overlaps at U = 0);
-    /// the same TennoGmEval table-domain caveat as [`Operator::yukawa`] applies.
+    /// the same TennoGmEval table-domain caveat as [`Operator::yukawa`] applies,
+    /// including the 2.7.2 rejection of `U > 1e3` and (for the Slater kernel
+    /// only) of `U < 1e-7` with `T <= 1024`.
     pub fn slater_geminal(zeta: f64) -> Self {
         debug_assert!(zeta > 0.0, "Slater geminal zeta must be > 0 (got {zeta})");
         Self::primitive(OperatorKind::SlaterGeminal, zeta, 0.0)

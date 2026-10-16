@@ -547,6 +547,23 @@ fn u_above_umax_is_never_nan() {
     }
 }
 
+/// Through the engine, the 2.7.2 override's `U > Umax` rejection surfaces as the
+/// shim's `SCF_EINTERNAL` status, which the compute wrapper turns into a panic
+/// (never a silent NaN integral). rho = 10, zeta = 300: U = 2250.
+#[test]
+fn engine_u_above_umax_panics_instead_of_returning_nan() {
+    if BOYS_OVERRIDE != Some("2.7.2") {
+        eprintln!("SKIP: only the 2.7.2 override rejects U > Umax");
+        return;
+    }
+    let outcome =
+        std::panic::catch_unwind(|| p_aa(20.0, 10.0, [1.0, 0.0, 0.0], Operator::yukawa(300.0)));
+    assert!(
+        outcome.is_err(),
+        "U = 2250 must be rejected, got {outcome:?}"
+    );
+}
+
 // ----------------------------------------------------------------- sweep
 
 fn fnv(h: &mut u64, x: f64) {
