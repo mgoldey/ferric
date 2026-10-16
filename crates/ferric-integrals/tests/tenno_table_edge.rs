@@ -47,15 +47,25 @@
 //! * `u_above_umax_is_rejected_only_below_tmax`: on the 2.7.2 override
 //!   `U > Umax` with `T <= Tmax` is an `Err`, with `T > Tmax` a finite 0.
 //! * `large_u_plus_large_t_is_finite_on_the_override`: `T = 2000, U = 100` (an
-//!   upward-recursion overflow, `U + 2 sqrt(U T) > 709`) is 0 on the override;
-//!   libint 2.13.1 returns NaN there (issue #439).
+//!   upward-recursion overflow, `U + 2 sqrt(U T) > 709`) is 0 on both overrides
+//!   (stock libint 2.13.1 returns NaN there, issue #439).
+//! * `nan_region_grid_is_finite_and_vanishingly_small`: every `T > Tmax` grid
+//!   point with `U + 2 sqrt(U T) > 725` (the stock-NaN region of `eval_urr`,
+//!   2.7.2 and 2.13.1 alike) is finite and below 1e-200, both kernels.
+//! * `engine_far_pair_is_finite_on_the_override`: exact-integer engine
+//!   geometries whose `U + zeta R` exceeds 709 (R = 70 Bohr at zeta = 10,
+//!   R = 40 at zeta = 20): finite and vanishingly small, not NaN.
 //! * `sweep_is_independent_of_allocator_fill`: a hashed sweep of everything
 //!   above in a child process under `MALLOC_PERTURB_` 1, 170 and 2 (255 and 0
 //!   do not exercise uninitialised reads).
 //!
 //! WHICH LIBINT. The edge defects are 2.7.2-specific (2.13.1 guards the
 //! indices and falls back to a Gaussian fit above `Umax`), so on 2.13.1 these
-//! tests are version-independent regressions that must also pass; the 2.7.2
+//! tests are version-independent regressions that must also pass. The
+//! `exp(x*x - T) * erfc(x)` overflow of `eval_urr` (`T > Tmax`) is in BOTH
+//! stock versions; both ferric overrides fix it (#436 for 2.7.2, #439 for
+//! 2.13.1), and a libint2 build with neither override (stock 2.13.1, distro
+//! builds) skips or excuses the NaN slots. The 2.7.2
 //! build is exercised with `LIBINT2_PREFIX=$HOME/.local` and a private
 //! `CARGO_TARGET_DIR` (see `libint2_overrides/README.md`).
 
@@ -328,16 +338,16 @@ fn evaluator_matches_the_defining_integral_at_the_table_edges() {
     if nan_on_other_build > 0 {
         eprintln!(
             "NOTE: {nan_on_other_build} slots are NaN on this libint2 (T > Tmax with U + 2 sqrt(U T) > 700: \
-             the same exp * erfc overflow in its upward recursion; only the 2.7.2 override fixes it)"
+             the same exp * erfc overflow in its upward recursion; the ferric boys.h overrides fix it)"
         );
     }
 }
 
-/// libint2 2.13.1 (no override change here) has the same `exp(x*x - T) * erfc(x)`
-/// overflow in `eval_urr`, i.e. for `T > Tmax` once `U + 2 sqrt(U T)` exceeds
-/// ~709. Only the 2.7.2 override removes it, so other builds are excused there.
+/// Stock libint2 (2.13.1 and 2.7.2) has the `exp(x*x - T) * erfc(x)` overflow
+/// in `eval_urr`, i.e. for `T > Tmax` once `U + 2 sqrt(U T)` exceeds ~709. Both
+/// ferric overrides remove it (#436, #439); a build with no override is excused.
 fn other_build_overflows(t: f64, u: f64) -> bool {
-    BOYS_OVERRIDE != Some("2.7.2") && t > T_EDGE && u + 2.0 * (u * t).sqrt() > 700.0
+    BOYS_OVERRIDE.is_none() && t > T_EDGE && u + 2.0 * (u * t).sqrt() > 700.0
 }
 
 /// The input that hits the U edge must really be U == Umax under libint's own
@@ -527,9 +537,10 @@ fn engine_t_edge_is_continuous_and_matches_the_erfc_closed_form() {
 
 /// `U > Umax`. On the 2.7.2 override: with `T <= Tmax` it is rejected (`Err`); with
 /// `T > Tmax` (above both limits) the true value is exactly 0 and the upward
-/// recursion returns it, finite. Other libint2 builds are only exercised (their
-/// results are not asserted: 2.13.1 falls back to a Gaussian fit for
-/// `T <= Tmax` and returns NaN above `Tmax`, issue #439).
+/// recursion returns it, finite (on 2.13.1 with the override too, issue #439;
+/// stock 2.13.1 returns NaN there). For `T <= Tmax` 2.13.1 falls back to a
+/// Gaussian fit, which is asserted finite only. Builds with no override are
+/// only exercised.
 #[test]
 fn u_above_umax_is_rejected_only_below_tmax() {
     if skip_unpatched_272() {
@@ -544,11 +555,15 @@ fn u_above_umax_is_rejected_only_below_tmax() {
                     r.is_err(),
                     "{kind:?} T={t}: U > Umax must be rejected, got {r:?}"
                 );
+            } else if BOYS_OVERRIDE == Some("2.13.1") {
+                // 2.13.1 falls back to a Gaussian fit: finite, not rejected
+                let v = r.unwrap_or_else(|e| panic!("{kind:?} T={t}: {e}"));
+                assert!(v.iter().all(|x| x.is_finite()), "{kind:?} T={t}: {v:?}");
             }
         }
         for &t in &[ulp_up(T_EDGE), 3000.0] {
             let r = tenno_gm(kind, 0.1, t, 3, 400.0);
-            if BOYS_OVERRIDE == Some("2.7.2") {
+            if BOYS_OVERRIDE.is_some() {
                 let v = r.unwrap_or_else(|e| panic!("{kind:?} T={t}: {e}"));
                 assert!(v.iter().all(|x| *x == 0.0), "{kind:?} T={t}: {v:?}");
             }
@@ -564,16 +579,107 @@ fn u_above_umax_is_rejected_only_below_tmax() {
 }
 
 /// `T = 2000, U = 100`: `U + 2 sqrt(U T) = 994 > 709`, the `exp(x*x - T) * erfc(x)`
-/// overflow of the upward recursion. The true values are < 1e-400, so 0.
+/// overflow of the upward recursion. The true values are < 1e-400, so 0. Fixed by
+/// the 2.7.2 override (#436) and the 2.13.1 override (#439).
 #[test]
 fn large_u_plus_large_t_is_finite_on_the_override() {
-    if BOYS_OVERRIDE != Some("2.7.2") {
-        eprintln!("SKIP: 2.13.1 returns NaN here (issue #439); only the 2.7.2 override is fixed");
+    if BOYS_OVERRIDE.is_none() {
+        eprintln!("SKIP: no ferric boys.h override in this build; stock libint2 returns NaN here");
         return;
     }
     for kind in [TennoKind::Yukawa, TennoKind::Slater] {
         let v = tenno_gm(kind, 1.0, 2000.0, 4, 20.0).expect("evaluates");
         assert!(v.iter().all(|x| *x == 0.0), "{kind:?}: {v:?}");
+    }
+}
+
+/// `T > Tmax` and `U + 2 sqrt(U T) > 725`: the region where stock `eval_urr`'s
+/// explicit `exp(x*x - T) * erfc(x)` overflows (NaN on every measured point
+/// with `U + 2 sqrt(U T) > 725`). The true values are tiny (the largest value the
+/// override returns on the grids swept while developing this was 1.7e-228, from
+/// `exp(U - 2 sqrt(U T))`; the `e^-T` part underflows). Finite and < 1e-200 for
+/// both kernels, every `m`, `T` up to 1e12 and `U` from 1 to 1e8 (`U > Umax` is
+/// above both limits here, where the upward recursion is used).
+#[test]
+fn nan_region_grid_is_finite_and_vanishingly_small() {
+    if BOYS_OVERRIDE.is_none() {
+        eprintln!("SKIP: no ferric boys.h override in this build; stock libint2 returns NaN here");
+        return;
+    }
+    let mut checked = 0;
+    for &(t, u) in &nan_region_points() {
+        let (zeta, oor) = (2.0 * u.sqrt(), 1.0);
+        let u_eff = 0.25 * zeta * zeta * oor;
+        for kind in [TennoKind::Yukawa, TennoKind::Slater] {
+            let v = tenno_gm(kind, oor, t, 6, zeta)
+                .unwrap_or_else(|e| panic!("{kind:?} T={t:e} U={u_eff:e}: {e}"));
+            for (m, &g) in v.iter().enumerate() {
+                assert!(
+                    g.is_finite() && g.abs() < 1e-200,
+                    "{kind:?} m={m} T={t:e} U={u_eff:e}: {g:e}"
+                );
+            }
+            checked += 1;
+        }
+    }
+    assert!(checked > 100, "{checked}");
+}
+
+/// `(T, U)` in the NaN region of stock `eval_urr`: `T > Tmax = 1024` and
+/// `U + 2 sqrt(U T) > 725`.
+fn nan_region_points() -> Vec<(f64, f64)> {
+    let ts = [
+        ulp_up(T_EDGE),
+        1025.0,
+        1100.0,
+        1500.0,
+        2000.0,
+        5000.0,
+        1e4,
+        1e5,
+        1e8,
+        1e12,
+    ];
+    let us = [
+        1.0, 25.0, 99.0, 100.0, 150.0, 500.0, 1000.0, 4000.0, 1e5, 1e8,
+    ];
+    let mut v = Vec::new();
+    for &t in &ts {
+        for &u in &us {
+            if u + 2.0 * (u * t).sqrt() > 725.0 {
+                v.push((t, u));
+            }
+        }
+    }
+    v
+}
+
+/// Exact-integer far pairs through the real engine: P exponent 2 at the
+/// origin and AA two s of exponent 1 at `(R, 0, 0)` give `rho = 1`,
+/// `T = R^2`, `U = zeta^2 / 4`, all exact in binary floating point.
+/// * zeta = 10, R = 70: T = 4900, U = 25, `U + zeta R` = 725 (U < 100).
+/// * zeta = 20, R = 40: T = 1600, U = 100, `U + zeta R` = 900 (U >= 100).
+///
+/// Stock libint 2.13.1 and 2.7.2 return NaN on both; the true value is below
+/// 1e-200 (two Gaussian charges 40+ Bohr apart under exp(-zeta r)/r with
+/// zeta >= 10 is e^-400 or smaller).
+#[test]
+fn engine_far_pair_is_finite_on_the_override() {
+    if BOYS_OVERRIDE.is_none() {
+        eprintln!("SKIP: no ferric boys.h override in this build; stock libint2 returns NaN here");
+        return;
+    }
+    for (zeta, r) in [(10.0_f64, 70.0_f64), (20.0, 40.0)] {
+        let u = 0.25 * zeta * zeta;
+        assert!(u + zeta * r > 709.0, "geometry must be in the NaN region");
+        assert!(r * r > T_EDGE, "T must exceed Tmax");
+        for op in [Operator::yukawa(zeta), Operator::slater_geminal(zeta)] {
+            let got = p_aa(2.0, 1.0, [r, 0.0, 0.0], op).expect("not screened");
+            assert!(
+                got.is_finite() && got.abs() < 1e-200,
+                "zeta={zeta} R={r}: {got:e}"
+            );
+        }
     }
 }
 
@@ -644,7 +750,32 @@ fn sweep_child_prints_hashes() {
         return;
     }
     let (h_edge, h_engine, n) = sweep();
-    println!("SWEEP_HASH edge={h_edge:016x} engine={h_engine:016x} n={n}");
+    let h_nan = nan_region_hash();
+    println!("SWEEP_HASH edge={h_edge:016x} engine={h_engine:016x} n={n} nanreg={h_nan:016x}");
+}
+
+/// Hash of the `T > Tmax` NaN-region evaluator grid plus the exact-integer far
+/// pairs (kept out of `sweep()` so its `edge`/`engine`/`n` stay comparable with
+/// the values recorded before #439).
+fn nan_region_hash() -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325_u64;
+    for &(t, u) in &nan_region_points() {
+        for kind in [TennoKind::Yukawa, TennoKind::Slater] {
+            match tenno_gm(kind, 1.0, t, 6, 2.0 * u.sqrt()) {
+                Ok(v) => v.iter().for_each(|&x| fnv(&mut h, x)),
+                Err(_) => fnv(&mut h, f64::NAN),
+            }
+        }
+    }
+    for (zeta, r) in [(10.0_f64, 70.0_f64), (20.0, 40.0)] {
+        for op in [Operator::yukawa(zeta), Operator::slater_geminal(zeta)] {
+            fnv(
+                &mut h,
+                p_aa(2.0, 1.0, [r, 0.0, 0.0], op).unwrap_or(f64::NAN),
+            );
+        }
+    }
+    h
 }
 
 #[test]

@@ -1,6 +1,6 @@
 --- a/include/libint2/boys.h
 +++ b/include/libint2/boys.h
-@@ -18,6 +18,26 @@
+@@ -18,6 +18,30 @@
   *
   */
  
@@ -18,7 +18,11 @@
 + *  second change (issue #433): FmEval_Chebyshev7::eval takes the asymptotic
 + *  branch for x >= T_crit (stock: x > T_crit), because x == 117.0 exactly
 + *  read one table row past the end; it alters the result only at that single
-+ *  point.
++ *  point. A third change (issue #439), TennoGmEval::eval_urr (Yukawa / Slater
++ *  geminal for T > Tmax): exp(x*x - T) * erfc(x) overflowed to inf * 0 = NaN
++ *  once U + 2 sqrt(U T) > ~709; it is now evaluated through the scaled erfc
++ *  (asymptotic series) when erfc(x) is no longer a normal number. All other
++ *  arguments give bit-identical results.
 + *  crates/ferric-integrals/build.rs puts this directory first on the shim's
 + *  include path ONLY when the libint2 prefix's own boys.h is byte-identical
 + *  to the stock 2.13.1 file above.
@@ -27,7 +31,7 @@
  #ifndef _libint2_src_lib_libint_boys_h_
  #define _libint2_src_lib_libint_boys_h_
  
-@@ -347,7 +367,16 @@
+@@ -347,7 +371,16 @@
    inline void eval(Real* Fm, Real x, int m_max) const {
      // large T => use upward recursion
      // cost = 1 div + 1 sqrt + (1 + 2*(m-1)) muls
@@ -45,7 +49,72 @@
        const double one_over_x = 1 / x;
        Fm[0] = 0.88622692545275801365 *
                sqrt(one_over_x);  // see Eq. (9.8.9) in Helgaker-Jorgensen-Olsen
-@@ -1948,6 +1977,23 @@
+@@ -1179,6 +1212,47 @@
+   }
+ 
+  private:
++  /// ferric patch (issue #439): \f$ e^{x^2 - T} \mathrm{erfc}(x) \f$ for \f$ x
++  /// \f$ possibly large, without the overflow of the stock expression.
++  /// The stock code forms `exp(x*x - T) * erfc(x)`. For x > ~26.5 erfc(x) is
++  /// subnormal (then zero) while exp(x*x - T) overflows once x*x - T > 709.78,
++  /// so the product is inf * 0 = NaN (or a subnormal-precision value just
++  /// before that). While erfc(x) is a normal number the stock product is
++  /// returned unchanged (bit-identical); beyond it the product is e^{-T} times
++  /// the scaled complementary error function erfcx(x) = e^{x^2} erfc(x), which
++  /// for x >= 26 has the asymptotic expansion
++  /// erfcx(x) = 1/(x sqrt(pi)) sum_n (-1)^n (2n-1)!! / (2 x^2)^n,
++  /// whose terms are below 7.4e-4^n (first omitted term, n = 9, ~4e-21).
++  /// Same implementation as the libint 2.7.2 override (issue #436).
++  /// @param[in] x the argument of erfc
++  /// @param[in] x2_minus_T the exponent exactly as the stock code forms it
++  /// (x*x - T)
++  /// @param[in] minus_T \f$ -T \f$
++  static inline Real exp_x2_erfc(Real x, Real x2_minus_T, Real minus_T) {
++    const Real erfc_x = erfc(x);
++    if (erfc_x >= std::numeric_limits<Real>::min())
++      return exp(x2_minus_T) * erfc_x;
++    return exp(minus_T) * erfcx_asymptotic(x);
++  }
++
++  /// erfcx(x) = e^{x^2} erfc(x) by its asymptotic series; accurate to ~1e-20
++  /// relative for x >= 26 (see exp_x2_erfc)
++  static inline Real erfcx_asymptotic(Real x) {
++    const Real sqrtPi(1.7724538509055160272981674833411451827975494561224);
++    return erfcx_series(0.5 / (x * x)) / (x * sqrtPi);
++  }
++
++  /// sum_{n=0}^{8} (-1)^n (2n-1)!! y^n, y = 1 / (2 x^2) (see exp_x2_erfc)
++  static inline Real erfcx_series(Real y) {
++    return 1 - y * erfcx_series_tail(y);
++  }
++
++  /// (1 - S) / y, i.e. 1 - 3y(1 - 5y(...)): 1 - S without the cancellation of
++  /// S near 1
++  static inline Real erfcx_series_tail(Real y) {
++    return 1 - 3 * y * (1 - 5 * y * (1 - 7 * y * (1 - 9 * y * (1 - 11 * y * (1 - 13 * y * (1 - 15 * y))))));
++  }
++
+   /// Computes G_0 and (optionally) G_{-1}
+   /// @tparam compute_Gm1, if true, compute G_0 and G_{-1}, otherwise G_0 only
+   /// @param[in] T the value of \f$ T \f$
+@@ -1302,8 +1376,14 @@
+     const Real sqrtPi_over_4(
+         0.44311346272637900682454187083528629569938736403060);
+     const Real pfac = sqrtPi_over_4;
+-    const Real erfc_k = exp(kappa * kappa - T) * erfc(kappa);
+-    const Real erfc_l = exp(lambda * lambda - T) * erfc(lambda);
++    // ferric patch (issue #439): stock forms exp(x*x - T) * erfc(x), which is
++    // inf * 0 = NaN once U + 2 sqrt(U T) exceeds ~709. This is reached with
++    // T > Tmax (e^-T underflows, true values 0 or below 1e-200), and also
++    // from eval_yukawa for U < Umin at ANY T; for T about 705-745 e^-T has not
++    // underflowed there, but the results are bit-identical (erfc_k ~ 2
++    // absorbs the intermediate)
++    const Real erfc_k = exp_x2_erfc(kappa, kappa * kappa - T, -T);
++    const Real erfc_l = exp_x2_erfc(lambda, lambda * lambda - T, -T);
+ 
+     Real Gmm1;                                    // will contain G[m-1]
+     Real Gm;                                      // will contain G[m]
+@@ -1948,6 +2028,23 @@
    ExpensiveNumbers<Real> numbers_;
  };
  
@@ -69,7 +138,7 @@
  template <typename GmEvalFunction>
  struct GenericGmEval : private GmEvalFunction {
    typedef typename GmEvalFunction::value_type Real;
-@@ -1963,7 +2009,17 @@
+@@ -1963,7 +2060,17 @@
    template <typename Real, typename... ExtraArgs>
    void eval(Real* Gm, Real rho, Real T, int mmax, ExtraArgs... args) const {
      assert(mmax <= mmax_);
@@ -88,7 +157,7 @@
    }
  
    /// @return the maximum value of m for which the \f$ G_m(\rho, T) \f$ can be
-@@ -1976,6 +2032,20 @@
+@@ -1976,6 +2083,20 @@
   private:
    int mmax_;
    Real precision_;
@@ -109,7 +178,7 @@
  };
  
  // these Gm engines need extra scratch data
-@@ -2102,10 +2172,12 @@
+@@ -2102,10 +2223,12 @@
  /// \mathrm{erfc}(\omega r) ) / r \f$ kernel
  /// @note need extra scratch for Boys function values,
  ///       since need to call Boys engine twice
@@ -125,7 +194,7 @@
    typedef Real value_type;
  
  #ifndef LIBINT_USER_DEFINED_REAL
-@@ -2114,16 +2186,29 @@
+@@ -2114,16 +2237,29 @@
    using FmEvalType = libint2::FmEval_Reference<scalar_type>;
  #endif
  
@@ -159,7 +228,7 @@
      } else {
        std::fill(Gm, Gm + mmax + 1, Real{0});
      }
-@@ -2131,14 +2216,14 @@
+@@ -2131,14 +2267,14 @@
      if (omega > 0 && sigma_minus_lambda != 0) {
        auto omega2 = omega * omega;
        auto omega2_over_omega2_plus_rho = omega2 / (omega2 + rho);

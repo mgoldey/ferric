@@ -125,18 +125,24 @@ impl Operator {
     /// Yukawa / screened Coulomb: exp(-zeta * r12) / r12.
     ///
     /// Evaluated by libint2's native `Operator::stg_x_coulomb` kernel (aliased
-    /// `yukawa` in libint2, TennoGmEval core) -- the EXACT screened Coulomb, not
-    /// a Gaussian fit. `zeta` is the decay constant (Bohr⁻¹), analogous to
-    /// erf/erfc's `omega`.
+    /// `yukawa` in libint2, TennoGmEval core) -- the exact screened Coulomb,
+    /// not a Gaussian fit, WHERE THE KERNEL'S OWN TABLE APPLIES. Outside that
+    /// domain the result depends on the libint2 version and the evaluation path:
+    /// libint 2.13.1 falls back to a Gaussian fit (of limited accuracy, see the
+    /// `U` and `T == 0` notes below), libint 2.7.2 does not. `zeta` is the decay
+    /// constant (Bohr⁻¹), analogous to erf/erfc's `omega`.
     ///
     /// Limit: zeta -> 0 gives exp(0)/r = 1/r = Coulomb (approached from below).
     ///
     /// SUPPORTED RANGE: `zeta > 0`. libint2's TennoGmEval interpolates only for
     /// `U = zeta²/(4ρ) ∈ [1e-7, 1e3]` (ρ = reduced bra/ket exponent); outside it
-    /// falls back to an upward recursion that is undefined (and, in a
-    /// debug/`assert`-enabled libint2 build, ABORTS the process) on the
-    /// same-center `T = 0` shell blocks that RI/3-center paths always contain.
-    /// In practice a physically meaningful `zeta` (≈ 0.1 – a few Bohr⁻¹) stays in
+    /// (Yukawa, `U < 1e-7`) it uses an upward recursion that is unstable at small
+    /// `T` (see below). On the same-center `T == 0` shell blocks that
+    /// RI/3-center paths always contain, the behaviour depends on the libint2
+    /// version: libint 2.13.1 takes a Gaussian fit there (3e-7 absolute error at
+    /// `U = 1e-14`, 2e-12 at `U = 1e-8`; no assert fires), while libint 2.7.2's
+    /// recursion is undefined and ABORTS the process in an `assert`-enabled
+    /// build such as ferric's shim (garbage otherwise). In practice a physically meaningful `zeta` (≈ 0.1 – a few Bohr⁻¹) stays in
     /// domain for ordinary Gaussian exponents. Do NOT pass a near-zero `zeta`
     /// (e.g. 1e-6) expecting a clean Coulomb limit on RI paths -- that regime is
     /// out of the kernel's table domain.
@@ -148,10 +154,28 @@ impl Operator {
     /// is also printed to stderr) instead of the stock NaN or out-of-range read;
     /// `T == 1024` and `U == 1e3` exactly are valid (issue #436, fixed in the
     /// override; see `shim/libint2_overrides/README.md`). libint 2.13.1 falls back to
-    /// a Gaussian fit there, but returns NaN SILENTLY in its upward recursion for
-    /// `T > 1024` whenever `U + 2 sqrt(U T) = U + zeta R` exceeds about 709 (e.g.
-    /// `zeta = 10` at about 37 Angstrom); ferric has no screening for these operators,
-    /// so that NaN reaches the result (issue #439, not patched).
+    /// a Gaussian fit there.
+    ///
+    /// LARGE DISTANCE (`T > 1024`): stock libint (2.7.2 and 2.13.1 alike) returns NaN
+    /// SILENTLY from its upward recursion whenever `U + 2 sqrt(U T) = U + zeta R`
+    /// exceeds about 709 (e.g. `zeta = 10` at about 37 Angstrom); the true value is
+    /// below 1e-200. Ferric has no screening for these operators, so on a stock
+    /// header that NaN would reach the result. The `boys.h` overrides (2.7.2: #436,
+    /// 2.13.1: #439) return the underflowed true value instead (finite, below
+    /// 1e-200); a libint2 build that gets neither override (see build.rs warning)
+    /// still returns NaN there.
+    ///
+    /// SMALL `T` WITH `U < 1e-7` (Yukawa only): evaluated by the upward recursion,
+    /// which is unstable at small `T`. Measured error against a 400-digit reference
+    /// on libint 2.13.1, `zeta = 1`, for output orders `m <= 6` ONLY: 2e-14 for
+    /// `T >= 1`, up to 2e-12 at `T = 0.5`, 6e-8 at `T = 0.1`, 0.2 at `T = 0.01`, 5e5
+    /// at `T = 1e-3`, and up to 9e63 at `T = 1e-12`. It is much worse at higher `m`
+    /// (independent 600-digit check, `U` about 1e-14..1e-8, `T = 1`: 1e-15 for
+    /// `m <= 6`, 6e-10 for `m <= 12`, 2.3 for `m <= 20`, 2e23 for `m <= 36`; bound
+    /// violations up to `T` about 5.6 and inf/NaN at `T` about 1e-8, `m = 36`), and
+    /// derivative integrals of d/f/g shells reach `m` of 9 to 18. Not addressed by the
+    /// overrides; tracked in issue #443. (`T == 0` exactly takes the Gaussian fit
+    /// instead, 3e-7 abs. error at `U = 1e-14`.)
     pub fn yukawa(zeta: f64) -> Self {
         debug_assert!(
             zeta > 0.0,
@@ -177,7 +201,8 @@ impl Operator {
     /// `U = zeta²/(4ρ) > 0` (the integral factorizes into two overlaps at U = 0);
     /// the same TennoGmEval table-domain caveat as [`Operator::yukawa`] applies,
     /// including the 2.7.2 rejection of `U > 1e3` and (for the Slater kernel
-    /// only) of `U < 1e-7` with `T <= 1024`.
+    /// only) of `U < 1e-7` with `T <= 1024`, and the large-distance `T > 1024`
+    /// NaN of stock libint that the `boys.h` overrides remove (#436, #439).
     pub fn slater_geminal(zeta: f64) -> Self {
         debug_assert!(zeta > 0.0, "Slater geminal zeta must be > 0 (got {zeta})");
         Self::primitive(OperatorKind::SlaterGeminal, zeta, 0.0)

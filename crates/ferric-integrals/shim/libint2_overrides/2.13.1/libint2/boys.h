@@ -32,7 +32,11 @@
  *  second change (issue #433): FmEval_Chebyshev7::eval takes the asymptotic
  *  branch for x >= T_crit (stock: x > T_crit), because x == 117.0 exactly
  *  read one table row past the end; it alters the result only at that single
- *  point.
+ *  point. A third change (issue #439), TennoGmEval::eval_urr (Yukawa / Slater
+ *  geminal for T > Tmax): exp(x*x - T) * erfc(x) overflowed to inf * 0 = NaN
+ *  once U + 2 sqrt(U T) > ~709; it is now evaluated through the scaled erfc
+ *  (asymptotic series) when erfc(x) is no longer a normal number. All other
+ *  arguments give bit-identical results.
  *  crates/ferric-integrals/build.rs puts this directory first on the shim's
  *  include path ONLY when the libint2 prefix's own boys.h is byte-identical
  *  to the stock 2.13.1 file above.
@@ -1208,6 +1212,47 @@ struct TennoGmEval {
   }
 
  private:
+  /// ferric patch (issue #439): \f$ e^{x^2 - T} \mathrm{erfc}(x) \f$ for \f$ x
+  /// \f$ possibly large, without the overflow of the stock expression.
+  /// The stock code forms `exp(x*x - T) * erfc(x)`. For x > ~26.5 erfc(x) is
+  /// subnormal (then zero) while exp(x*x - T) overflows once x*x - T > 709.78,
+  /// so the product is inf * 0 = NaN (or a subnormal-precision value just
+  /// before that). While erfc(x) is a normal number the stock product is
+  /// returned unchanged (bit-identical); beyond it the product is e^{-T} times
+  /// the scaled complementary error function erfcx(x) = e^{x^2} erfc(x), which
+  /// for x >= 26 has the asymptotic expansion
+  /// erfcx(x) = 1/(x sqrt(pi)) sum_n (-1)^n (2n-1)!! / (2 x^2)^n,
+  /// whose terms are below 7.4e-4^n (first omitted term, n = 9, ~4e-21).
+  /// Same implementation as the libint 2.7.2 override (issue #436).
+  /// @param[in] x the argument of erfc
+  /// @param[in] x2_minus_T the exponent exactly as the stock code forms it
+  /// (x*x - T)
+  /// @param[in] minus_T \f$ -T \f$
+  static inline Real exp_x2_erfc(Real x, Real x2_minus_T, Real minus_T) {
+    const Real erfc_x = erfc(x);
+    if (erfc_x >= std::numeric_limits<Real>::min())
+      return exp(x2_minus_T) * erfc_x;
+    return exp(minus_T) * erfcx_asymptotic(x);
+  }
+
+  /// erfcx(x) = e^{x^2} erfc(x) by its asymptotic series; accurate to ~1e-20
+  /// relative for x >= 26 (see exp_x2_erfc)
+  static inline Real erfcx_asymptotic(Real x) {
+    const Real sqrtPi(1.7724538509055160272981674833411451827975494561224);
+    return erfcx_series(0.5 / (x * x)) / (x * sqrtPi);
+  }
+
+  /// sum_{n=0}^{8} (-1)^n (2n-1)!! y^n, y = 1 / (2 x^2) (see exp_x2_erfc)
+  static inline Real erfcx_series(Real y) {
+    return 1 - y * erfcx_series_tail(y);
+  }
+
+  /// (1 - S) / y, i.e. 1 - 3y(1 - 5y(...)): 1 - S without the cancellation of
+  /// S near 1
+  static inline Real erfcx_series_tail(Real y) {
+    return 1 - 3 * y * (1 - 5 * y * (1 - 7 * y * (1 - 9 * y * (1 - 11 * y * (1 - 13 * y * (1 - 15 * y))))));
+  }
+
   /// Computes G_0 and (optionally) G_{-1}
   /// @tparam compute_Gm1, if true, compute G_0 and G_{-1}, otherwise G_0 only
   /// @param[in] T the value of \f$ T \f$
@@ -1331,8 +1376,14 @@ struct TennoGmEval {
     const Real sqrtPi_over_4(
         0.44311346272637900682454187083528629569938736403060);
     const Real pfac = sqrtPi_over_4;
-    const Real erfc_k = exp(kappa * kappa - T) * erfc(kappa);
-    const Real erfc_l = exp(lambda * lambda - T) * erfc(lambda);
+    // ferric patch (issue #439): stock forms exp(x*x - T) * erfc(x), which is
+    // inf * 0 = NaN once U + 2 sqrt(U T) exceeds ~709. This is reached with
+    // T > Tmax (e^-T underflows, true values 0 or below 1e-200), and also
+    // from eval_yukawa for U < Umin at ANY T; for T about 705-745 e^-T has not
+    // underflowed there, but the results are bit-identical (erfc_k ~ 2
+    // absorbs the intermediate)
+    const Real erfc_k = exp_x2_erfc(kappa, kappa * kappa - T, -T);
+    const Real erfc_l = exp_x2_erfc(lambda, lambda * lambda - T, -T);
 
     Real Gmm1;                                    // will contain G[m-1]
     Real Gm;                                      // will contain G[m]
