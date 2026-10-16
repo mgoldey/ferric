@@ -557,6 +557,9 @@ int scf_compute_1e_block(scf_engine *eng, const scf_basis *bs,
         for (int i = 0; i < n; ++i) out[i] = result[0][i];
     }
     return n;
+  } catch (const std::exception &ex) {
+    std::fprintf(stderr, "%s: %s\n", __func__, ex.what());
+    return SCF_EINTERNAL;
   } catch (...) {
     return SCF_EINTERNAL;
   }
@@ -692,6 +695,9 @@ int scf_compute_eri_quartet(scf_engine *eng, const scf_basis *bs,
     int n = bs->nfunc[sh1] * bs->nfunc[sh2] * bs->nfunc[sh3] * bs->nfunc[sh4];
     for (int i = 0; i < n; ++i) out[i] = result[0][i];
     return n;
+  } catch (const std::exception &ex) {
+    std::fprintf(stderr, "%s: %s\n", __func__, ex.what());
+    return SCF_EINTERNAL;
   } catch (...) {
     return SCF_EINTERNAL;
   }
@@ -746,6 +752,9 @@ int scf_compute_schwarz(scf_engine *eng, const scf_basis *bs, double *qmat) {
         }
     }
     return SCF_OK;
+  } catch (const std::exception &ex) {
+    std::fprintf(stderr, "%s: %s\n", __func__, ex.what());
+    return SCF_EINTERNAL;
   } catch (...) {
     return SCF_EINTERNAL;
   }
@@ -776,6 +785,9 @@ int scf_compute_1e_deriv_block(scf_engine *eng, const scf_basis *bs,
         }
     }
     return nderiv * n;
+  } catch (const std::exception &ex) {
+    std::fprintf(stderr, "%s: %s\n", __func__, ex.what());
+    return SCF_EINTERNAL;
   } catch (...) {
     return SCF_EINTERNAL;
   }
@@ -868,6 +880,9 @@ int scf_compute_eri_deriv_quartet(scf_engine *eng, const scf_basis *bs,
         }
     }
     return nderiv * n;
+  } catch (const std::exception &ex) {
+    std::fprintf(stderr, "%s: %s\n", __func__, ex.what());
+    return SCF_EINTERNAL;
   } catch (...) {
     return SCF_EINTERNAL;
   }
@@ -953,6 +968,9 @@ int scf_compute_1e_deriv2_block(scf_engine *eng, const scf_basis *bs,
         }
     }
     return static_cast<int>(nderiv * n);
+  } catch (const std::exception &ex) {
+    std::fprintf(stderr, "%s: %s\n", __func__, ex.what());
+    return SCF_EINTERNAL;
   } catch (...) {
     return SCF_EINTERNAL;
   }
@@ -990,6 +1008,9 @@ int scf_compute_eri_deriv2_quartet(scf_engine *eng, const scf_basis *bs,
         }
     }
     return static_cast<int>(nderiv * n);
+  } catch (const std::exception &ex) {
+    std::fprintf(stderr, "%s: %s\n", __func__, ex.what());
+    return SCF_EINTERNAL;
   } catch (...) {
     return SCF_EINTERNAL;
   }
@@ -1157,6 +1178,9 @@ int scf_compute_eri3(scf_engine *eng, const scf_basis *obs,
     int n = nP * n1 * n2;
     for (int i = 0; i < n; ++i) out[i] = result[0][i];
     return n;
+  } catch (const std::exception &ex) {
+    std::fprintf(stderr, "%s: %s\n", __func__, ex.what());
+    return SCF_EINTERNAL;
   } catch (...) {
     return SCF_EINTERNAL;
   }
@@ -1236,6 +1260,9 @@ int scf_compute_eri2(scf_engine *eng, const scf_basis *dfbs,
         for (int i = 0; i < n; ++i) out[i] = result[0][i];
     }
     return n;
+  } catch (const std::exception &ex) {
+    std::fprintf(stderr, "%s: %s\n", __func__, ex.what());
+    return SCF_EINTERNAL;
   } catch (...) {
     return SCF_EINTERNAL;
   }
@@ -1357,6 +1384,9 @@ int scf_compute_eri3_deriv(scf_engine *eng, const scf_basis *obs,
         }
     }
     return nderiv * n;
+  } catch (const std::exception &ex) {
+    std::fprintf(stderr, "%s: %s\n", __func__, ex.what());
+    return SCF_EINTERNAL;
   } catch (...) {
     return SCF_EINTERNAL;
   }
@@ -1448,6 +1478,9 @@ int scf_compute_eri2_deriv(scf_engine *eng, const scf_basis *dfbs,
         }
     }
     return nderiv * n;
+  } catch (const std::exception &ex) {
+    std::fprintf(stderr, "%s: %s\n", __func__, ex.what());
+    return SCF_EINTERNAL;
   } catch (...) {
     return SCF_EINTERNAL;
   }
