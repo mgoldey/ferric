@@ -192,7 +192,11 @@ fn rot_basis() -> BasisSet {
     shells.insert(1, h.shells.get(&1).expect("H cc-pvdz").clone());
     // Exponents pinned while the libint2 Boys table-edge defect (#433, fixed
     // in #437; see the module doc) was open; kept to leave the anchors'
-    // numbers unchanged.
+    // numbers unchanged. Measured after #437: the original diffuse s set
+    // (1.2, 0.45, 0.16) also passes the fixed-D hcore, 1x1x1 and RS-GDF
+    // anchors under MALLOC_PERTURB_ unset/1/170/255 with the same bars, but
+    // costs ~30% more wall time and was not run through the two multi-hour
+    // anchors, so the pinned set stays.
     let s_exps = [3.0, 1.0, 0.35];
     let p_exps = [2.0, 0.7];
     shells.insert(
