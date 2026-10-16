@@ -1295,11 +1295,21 @@ fn rotated_k_force_and_stress_match_fd_on_2x2x1_triclinic() {
     let s = r.stress(&scf, ExxDiv::None, None);
     let mut worst_f = 0.0_f64;
     for (k, &(a, x)) in comps_f.iter().enumerate() {
-        worst_f = worst_f.max((f.grad[(a, x)] - fd_f[k]).abs());
+        let d = (f.grad[(a, x)] - fd_f[k]).abs();
+        assert!(
+            d.is_finite(),
+            "force component ({a},{x}): non-finite difference"
+        );
+        worst_f = worst_f.max(d);
     }
     let mut worst_s = 0.0_f64;
     for (k, &(i, j)) in comps_s.iter().enumerate() {
-        worst_s = worst_s.max((s.de_deps[i][j] - fd_s[k]).abs());
+        let d = (s.de_deps[i][j] - fd_s[k]).abs();
+        assert!(
+            d.is_finite(),
+            "stress component ({i},{j}): non-finite difference"
+        );
+        worst_s = worst_s.max(d);
     }
     eprintln!("triclinic 2x2x1: |analytic - FD| force {worst_f:.2e}, stress {worst_s:.2e}");
     assert!(worst_f < FD_F_BAR, "force FD {worst_f:e}");

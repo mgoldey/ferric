@@ -754,9 +754,10 @@ const MUTANT_FLOOR: f64 = 1e-6;
 /// 1e-14: MEASURED force 9.6e-15, stress 4.8e-13 (bar 20x above). RS-GDF
 /// source at the default fit screen: MEASURED force 3.3e-10, stress 1.2e-7,
 /// the screen-sized floor documented in `pbc_sr_rotation_kderiv.rs` (its
-/// `D_BAR` 1e-7); the bar is 4x above, and this comparison is informational
-/// there (a rotation defect moves the total by >= 5e-2, and the FD anchor
-/// next to it is the discriminating one).
+/// `D_BAR` 1e-7); the bar is 4x above, and this comparison is asserted
+/// LAST in the RS-GDF test (a rotation defect moves the total by >= 5e-2, and the
+/// FD anchor next to it is the discriminating one; the unrotated run is only
+/// reproducible in every allocator state once #433 is fixed).
 const ROT_VS_OFF_BAR: f64 = 1e-11;
 const ROT_VS_OFF_FIT_BAR: f64 = 5e-7;
 
@@ -1015,11 +1016,21 @@ fn rotated_ecp_force_and_stress_match_fd_of_the_rotated_k_energy() {
     assert_eq!((fo.hcore_rotated_columns, so.hcore_rotated_columns), (0, 0));
     let mut worst_f = 0.0_f64;
     for (k, &(a, x)) in forces.iter().enumerate() {
-        worst_f = worst_f.max((f.grad[(a, x)] - fd_f[k]).abs());
+        let d = (f.grad[(a, x)] - fd_f[k]).abs();
+        assert!(
+            d.is_finite(),
+            "force component ({a},{x}): non-finite difference"
+        );
+        worst_f = worst_f.max(d);
     }
     let mut worst_s = 0.0_f64;
     for (k, &(i, j)) in strains.iter().enumerate() {
-        worst_s = worst_s.max((s.de_deps[i][j] - fd_s[k]).abs());
+        let d = (s.de_deps[i][j] - fd_s[k]).abs();
+        assert!(
+            d.is_finite(),
+            "stress component ({i},{j}): non-finite difference"
+        );
+        worst_s = worst_s.max(d);
     }
     let (d_f, d_s) = (
         grad_miss(&f.grad, &fo.grad),
@@ -1201,13 +1212,11 @@ fn rotated_ecp_rsgdf_force_and_stress_match_fd_of_the_rotated_fitted_energy() {
         fd_s.push((ep - em) / (2.0 * FD_H));
     }
     let r = fit_run(cell.clone(), &bs, n, on());
-    let off = fit_run(cell, &bs, n, SrColumnRotation::Off);
     assert_eq!(r.ks.hk.sr_rotated_columns, 3);
     assert!(
         r.gdf.stats().sr_rotated_columns > 0,
         "the fit did not rotate"
     );
-    assert_eq!(off.gdf.stats().sr_rotated_columns, 0);
     let zeta = FD_NUCLEUS_EXPONENT;
     let force = |fr: &FitRun| {
         kpoint_rhf_gradient(
@@ -1238,7 +1247,6 @@ fn rotated_ecp_rsgdf_force_and_stress_match_fd_of_the_rotated_fitted_energy() {
         .expect("fit stress")
     };
     let (f, s) = (force(&r), stress(&r));
-    let (fo, so) = (force(&off), stress(&off));
     // Both walks ran the energy's columns.
     assert_eq!(f.hcore_rotated_columns, 3);
     assert_eq!(s.hcore_rotated_columns, 3);
@@ -1247,22 +1255,26 @@ fn rotated_ecp_rsgdf_force_and_stress_match_fd_of_the_rotated_fitted_energy() {
     assert_eq!(s.fit_checks.map(|c| c.rotated_columns), Some(fit_cols));
     let mut worst_f = 0.0_f64;
     for (k, &(a, x)) in forces.iter().enumerate() {
-        worst_f = worst_f.max((f.grad[(a, x)] - fd_f[k]).abs());
+        let d = (f.grad[(a, x)] - fd_f[k]).abs();
+        assert!(
+            d.is_finite(),
+            "force component ({a},{x}): non-finite difference"
+        );
+        worst_f = worst_f.max(d);
     }
     let mut worst_s = 0.0_f64;
     for (k, &(i, j)) in strains.iter().enumerate() {
-        worst_s = worst_s.max((s.de_deps[i][j] - fd_s[k]).abs());
+        let d = (s.de_deps[i][j] - fd_s[k]).abs();
+        assert!(
+            d.is_finite(),
+            "stress component ({i},{j}): non-finite difference"
+        );
+        worst_s = worst_s.max(d);
     }
-    let (d_f, d_s) = (
-        grad_miss(&f.grad, &fo.grad),
-        max_mat(&s.de_deps, &so.de_deps),
-    );
     eprintln!(
-        "rotated+ECP RS-GDF vs FD: force {worst_f:.2e}, stress {worst_s:.2e}; rotated vs \
-         unrotated analytic: force {d_f:.2e}, stress {d_s:.2e}; fit columns {fit_cols}"
+        "rotated+ECP RS-GDF vs FD: force {worst_f:.2e}, stress {worst_s:.2e}; fit columns {fit_cols}"
     );
     assert!(worst_f < FORCE_FD_BAR && worst_s < STRESS_FD_BAR);
-    assert!(d_f < ROT_VS_OFF_FIT_BAR && d_s < ROT_VS_OFF_FIT_BAR);
     // Mutants through the fit: RotFitWrongResidue and RotSwapPair act here.
     for m in [
         KStressMutation::RotFitWrongResidue,
@@ -1286,6 +1298,19 @@ fn rotated_ecp_rsgdf_force_and_stress_match_fd_of_the_rotated_fitted_energy() {
         eprintln!("  RS-GDF stress mutant {m:?}: total moves {moved_total:.2e}");
         assert!(moved_total > MUTANT_FLOOR, "{m:?} escaped: {moved_total:e}");
     }
+    // The unrotated run LAST: its KRsGdf fit read uninitialised memory until the
+    // Boys table-edge fix (#433), so a failure inside it (LAPACK error, or "k-RHF
+    // not converged") must not hide the rotated FD and mutant checks above, which
+    // do not depend on it.
+    let off = fit_run(cell, &bs, n, SrColumnRotation::Off);
+    assert_eq!(off.gdf.stats().sr_rotated_columns, 0);
+    let (fo, so) = (force(&off), stress(&off));
+    let (d_f, d_s) = (
+        grad_miss(&f.grad, &fo.grad),
+        max_mat(&s.de_deps, &so.de_deps),
+    );
+    eprintln!("rotated vs unrotated analytic: force {d_f:.2e}, stress {d_s:.2e}");
+    assert!(d_f < ROT_VS_OFF_FIT_BAR && d_s < ROT_VS_OFF_FIT_BAR);
 }
 
 // ============================================================ (4) guards
