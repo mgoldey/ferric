@@ -843,8 +843,13 @@ fn warn_rhf_not_converged(py: Python<'_>, r: &ferric_scf::result::ScfResult, con
 ///                   that update off when energy_conv < 1e4*integral_thresh or
 ///                   density_conv < 1e3*integral_thresh (1e-8 / 1e-9 at the
 ///                   default integral_thresh), and the energy_conv warning
-///                   names the floor. Applies to run_uhf, run_rohf and run_dft
-///                   as well.
+///                   names the floor. The iteration-count dependence was
+///                   observed and explained only for this function's closed-shell
+///                   direct-J/K path; run_uhf and run_rohf use a separate
+///                   open-shell incremental path and run_dft's default RI-J does
+///                   not use the direct incremental path, so for those the
+///                   order changes the potential by roundoff (same as above) and
+///                   iteration counts were not measured.
 ///   smeared_charges list of (q, x, y, z, width) Gaussian-smeared classical
 ///                   charges (Hartree atomic units; coordinates and width in
 ///                   Bohr; width = 0 is a point charge, but use

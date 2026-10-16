@@ -41,8 +41,24 @@ fn field(n: usize) -> Vec<PointCharge> {
         .collect()
 }
 
+/// The tests below pin the DEFAULT behaviour of the closed-shell incremental
+/// Fock gate; an explicit `FERRIC_SCF_INCREMENTAL` override replaces the gate
+/// they assert on, so they skip (loudly) when it is set.
+fn incremental_env_override_set() -> bool {
+    match std::env::var_os("FERRIC_SCF_INCREMENTAL") {
+        Some(v) => {
+            eprintln!("skipped: FERRIC_SCF_INCREMENTAL={v:?} overrides the default gate");
+            true
+        }
+        None => false,
+    }
+}
+
 #[test]
 fn converged_energy_is_independent_of_the_charge_order_at_tight_thresholds() {
+    if incremental_env_override_set() {
+        return;
+    }
     let mol = Molecule::parse_xyz(
         "3\nwater\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n",
         0,
@@ -53,6 +69,14 @@ fn converged_energy_is_independent_of_the_charge_order_at_tight_thresholds() {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    assert!(
+        !ferric_scf::direct_jk::closed_shell_incremental_enabled(
+            1e-10,
+            1e-8,
+            RhfConfig::default().integral_thresh
+        ),
+        "the tight thresholds must switch the incremental Fock update off (the property this test pins)"
+    );
     let run = |charges: Vec<PointCharge>| {
         let cfg = RhfConfig {
             energy_conv: 1e-10,
@@ -107,6 +131,9 @@ fn converged_energy_is_independent_of_the_charge_order_at_tight_thresholds() {
 /// uses 1e-10 / 1e-8, which #417 switches the update OFF for. Iteration counts are still not asserted.
 #[test]
 fn converged_energy_is_independent_of_the_charge_order_at_default_thresholds() {
+    if incremental_env_override_set() {
+        return;
+    }
     let mol = Molecule::parse_xyz(
         "3\nwater\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n",
         0,
