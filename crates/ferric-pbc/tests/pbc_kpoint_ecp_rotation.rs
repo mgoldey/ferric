@@ -39,10 +39,16 @@
 //! (3.0, 1.0, 0.35) / p (2.0, 0.7), which are kept (see `rot_basis`).
 //! Reproducer, now a normal 0.03 s test:
 //! `far_field_contracted_s_blocks_do_not_read_uninitialised_memory` (section
-//! 5), which re-executes a finiteness check under `MALLOC_PERTURB_` 1, 170,
-//! 255. After #437 the DENSE AFT anchors, the Gamma ones and the RS-GDF anchor
-//! (including its unrotated comparison run) are run under `MALLOC_PERTURB_`
-//! unset / 1 / 170 / 255 (verified on 59114c8e plus this change).
+//! 5), which re-executes a finiteness check under `MALLOC_PERTURB_` 1, 170 and
+//! 2. (glibc fills fresh memory with `n ^ 0xff`, so 255 fills with 0x00 and is
+//! the default state: it tests nothing extra, and neither do 0, 85 or 254.)
+//! Verified on the fixed build (59114c8e + #437): the RS-GDF anchor
+//! (including its unrotated comparison run), the fixed-density hcore FD anchor
+//! and the 1x1x1-vs-Gamma anchor were each run under `MALLOC_PERTURB_` unset,
+//! 1, 170 and 255 with identical printed residuals (255 equals unset by
+//! construction). The other slow anchors in this file (1x1x3 supercell, SCF
+//! FD force/stress, refusal guard) were NOT rerun after #437. The 2.7.2
+//! override hunk of #437 was never compiled by the independent reviewer.
 //!
 //! NOT tested: range-split source with an ECP, several ECP atoms, triclinic
 //! cells with an ECP (see `pbc_sr_rotation_kderiv.rs` for triclinic rotation
@@ -194,7 +200,7 @@ fn rot_basis() -> BasisSet {
     // in #437; see the module doc) was open; kept to leave the anchors'
     // numbers unchanged. Measured after #437: the original diffuse s set
     // (1.2, 0.45, 0.16) also passes the fixed-D hcore, 1x1x1 and RS-GDF
-    // anchors under MALLOC_PERTURB_ unset/1/170/255 with the same bars, but
+    // anchors under MALLOC_PERTURB_ unset/1/170 (and 255, = unset) with the same bars, but
     // costs ~30% more wall time and was not run through the two multi-hour
     // anchors, so the pinned set stays.
     let s_exps = [3.0, 1.0, 0.35];
@@ -754,15 +760,28 @@ const STRESS_FD_BAR: f64 = 2e-7;
 const MUTANT_FLOOR: f64 = 1e-6;
 /// Rotated vs unrotated derivative of the SAME energy and density (the walks
 /// are the same function up to the screening). Dense AFT source, hcore screen
-/// 1e-14: MEASURED force 9.6e-15, stress 4.8e-13 (bar 20x above). RS-GDF
-/// source at the default fit screen: MEASURED force 3.3e-10, stress 1.2e-7,
-/// the screen-sized floor documented in `pbc_sr_rotation_kderiv.rs` (its
-/// `D_BAR` 1e-7); the bar is 4x above, and this comparison is asserted
-/// LAST in the RS-GDF test (a rotation defect moves the total by >= 5e-2, and the
-/// FD anchor next to it is the discriminating one; the unrotated run is only
-/// reproducible in every allocator state since #437 fixed #433).
+/// 1e-14: MEASURED force 9.6e-15, stress 4.8e-13 (bar 20x above).
+///
+/// RS-GDF source (`ROT_VS_OFF_FIT_BAR`), the same anchor on two builds
+/// (default allocator):
+///
+/// | build                      | force   | stress  |
+/// |----------------------------|---------|---------|
+/// | fixed (#437)               | 7.02e-14 | 2.59e-12 |
+/// | pre-#437 (defect present)  | 3.28e-10 | 1.19e-7  |
+///
+/// The pre-#437 row is NOT a screening floor: it is the footprint of the #433
+/// Boys table-edge read in the UNROTATED fit (the rotated one is clean), and
+/// it is why this bar used to be 5e-7, which sat above the defective run and
+/// could not have caught it. Measured on the fixed build the two walks agree
+/// to the screen (<= 2.6e-12). The bar 5e-11 separates the rows with margin on
+/// both sides: 19x above the fixed stress (2.59e-12), 712x above the fixed
+/// force (7.02e-14); 6.5x below the defective force (3.28e-10), 2380x below the
+/// defective stress (1.19e-7). A rotation defect moves the total by >= 5e-2.
+/// This comparison is asserted LAST in the RS-GDF test (the FD anchor next to
+/// it is the discriminating one for rotation defects).
 const ROT_VS_OFF_BAR: f64 = 1e-11;
-const ROT_VS_OFF_FIT_BAR: f64 = 5e-7;
+const ROT_VS_OFF_FIT_BAR: f64 = 5e-11;
 
 struct Run {
     ks: KSys,
@@ -1464,11 +1483,12 @@ fn far_field_contracted_s_blocks_are_finite_in_the_default_allocator() {
 /// system with the s exponents (1.2, 0.45, 0.16). Measured boundary then: the
 /// engine precision mattered (garbage at 2.2e-308 [the hcore walk's
 /// `ERI3_ENGINE_PRECISION`], 1e-100, 1e-20; clean at 1e-14 and 1e-10).
-/// The test re-executes this binary with `MALLOC_PERTURB_` 1, 170 and 255.
+/// The test re-executes this binary with `MALLOC_PERTURB_` 1, 170 and 2 (not
+/// 255: glibc fills with `n ^ 0xff`, so 255 gives the default zero fill).
 #[test]
 fn far_field_contracted_s_blocks_do_not_read_uninitialised_memory() {
     let exe = std::env::current_exe().expect("current exe");
-    for perturb in ["1", "170", "255"] {
+    for perturb in ["1", "170", "2"] {
         let out = std::process::Command::new(&exe)
             .args([
                 "far_field_contracted_s_blocks_are_finite_in_the_default_allocator",
