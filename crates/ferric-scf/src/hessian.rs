@@ -1104,8 +1104,8 @@ pub fn analytic_hessian_available(
 }
 
 /// [`analytic_hessian_available`] for [`rohf_hessian`]: the same checks, any
-/// multiplicity and electron count, and additionally no external potential and
-/// no ECP.
+/// multiplicity and electron count, and additionally no external potential (an
+/// ECP is supported).
 pub fn analytic_rohf_hessian_available(
     mol: &Molecule,
     prep: &PreparedBasis,
