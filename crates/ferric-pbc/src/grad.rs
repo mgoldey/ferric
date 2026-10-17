@@ -373,9 +373,11 @@ pub struct GammaGradConfig {
     /// nucleus the energy evaluates (and PySCF's all-electron `eta = 1e16`
     /// convention). A smaller override differentiates a different, softer
     /// Gaussian nucleus; its model error against the point nucleus falls as
-    /// 1/zeta (Z = 9 force |F(zeta) − F(1e16)| = 2.45e-6 / 2.45e-7 / 2.45e-8 /
-    /// 2.45e-9 / 2.45e-10 at 1e7 / 1e8 / 1e9 / 1e10 / 1e11; stress 4.2e-8 at
-    /// 1e9).
+    /// 1/zeta. Measured on one triclinic F/H cell (Z = 9, independent review)
+    /// the force |F(zeta) − F(1e16)| is 2.45e-6 / 2.45e-7 / 2.45e-8 / 2.45e-9 /
+    /// 2.45e-10 at 1e7 / 1e8 / 1e9 / 1e10 / 1e11 and the stress 4.2e-8 at 1e9;
+    /// the prefactor is cell specific (8.2e-9 at 1e9 on another F/H triclinic
+    /// cell), the 1/zeta scaling is not.
     ///
     /// The derivative is accurate at every exponent from 1e5 to 1e16: each
     /// triplet is evaluated in the frame of its nucleus

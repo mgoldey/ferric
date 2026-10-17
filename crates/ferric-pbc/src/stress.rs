@@ -259,7 +259,7 @@ pub struct GammaStressConfig {
     pub mutation: Option<StressMutation>,
     /// Gaussian-nucleus exponent used ONLY for the SR attraction derivative
     /// (`None` = [`GRAD_NUCLEUS_EXPONENT`], never tighter than the energy's);
-    /// see `GammaGradConfig::nucleus_exponent` (libint2 precision).
+    /// see `GammaGradConfig::nucleus_exponent`.
     pub nucleus_exponent: Option<f64>,
 }
 

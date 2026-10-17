@@ -1095,10 +1095,10 @@ fn hcore_only_unrotated_walk_is_caught_by_the_walked_column_counters() {
 /// hcore derivative walk vs the hcore-only unrotated one (`RotHcoreOff`; the
 /// fit stays rotated, so the `‖B‖` guard does not refuse it) vs FD of the
 /// rotated energy. The SR derivative walk uses the nucleus exponent
-/// `min(GRAD_NUCLEUS_EXPONENT, cfg)` (the energy's 1e16 by default), so
-/// NEITHER walk is the exact derivative of the screened energy; the FD miss of
-/// each is the screen, and what separates the two walks is
-/// printed, not asserted beyond a sanity bound.
+/// `min(GRAD_NUCLEUS_EXPONENT, cfg)` (the energy's 1e16 by default), so the
+/// only gap between either walk and the derivative of the screened energy is
+/// the screen; the FD miss of each is that gap, and what separates the two
+/// walks is printed, not asserted beyond a sanity bound.
 #[test]
 fn loose_screen_hcore_side_gap_rotated_vs_unrotated_vs_fd() {
     let n = [1, 1, 2];

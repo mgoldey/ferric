@@ -241,6 +241,56 @@ fn max_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
         .fold(0.0_f64, f64::max)
 }
 
+/// The gradient's nucleus exponent is clamped to never exceed the energy's
+/// (`hcore_cfg.nucleus_exponent`): with the energy at 1e10, the default
+/// (`None`, i.e. 1e16), `Some(1e10)` and `Some(1e12)` all differentiate the
+/// energy's own 1e10 nucleus and are bit-identical. Without the clamp the
+/// 1e12 and default runs differ from the 1e10 one by the 1/zeta model error
+/// (3.3e-11 here for the default, measured by deleting the clamp; the test asserts 0).
+#[test]
+fn gradient_nucleus_exponent_is_clamped_to_the_energys() {
+    let cell = cell_at(&GRAD_H2_ATOMS, cubic(4.0));
+    let bs = pyscf_sto3g_h();
+    let prep = prep_for(&cell, &bs);
+    let cfg_e = PeriodicHcoreConfig {
+        nucleus_exponent: 1e10,
+        ..hcore_cfg()
+    };
+    let hc = periodic_hcore(&cell, &prep, &cfg_e).expect("hcore");
+    let eri = DenseAftEri::build(
+        &cell,
+        &prep,
+        &hc.s,
+        ExxDiv::None,
+        DEFAULT_DENSE_AFT_PRECISION,
+        DEFAULT_DENSE_AFT_MAX_BYTES,
+    )
+    .expect("dense AFT");
+    let scf = gamma_rhf(&cell, &prep, &hc, &eri);
+    let grad = |z: Option<f64>| {
+        let cfg = GammaGradConfig {
+            nucleus_exponent: z,
+            ..Default::default()
+        };
+        gamma_rhf_gradient_with(&cell, &prep, &cfg_e, &hc, &eri, &scf, ExxDiv::None, &cfg)
+            .expect("gamma gradient")
+            .grad
+    };
+    let g_default = grad(None);
+    let g_same = grad(Some(1e10));
+    let g_above = grad(Some(1e12));
+    assert!(g_default.iter().any(|v| v.abs() > 1e-3), "vacuous gradient");
+    assert_eq!(max_diff(&g_default, &g_same), 0.0, "default vs 1e10");
+    assert_eq!(max_diff(&g_above, &g_same), 0.0, "1e12 vs 1e10");
+    // A softer derivative nucleus (1e8 < the energy's 1e10) is NOT clamped
+    // and must move the result, so the equalities above are not vacuous.
+    let g_below = grad(Some(1e8));
+    assert!(
+        max_diff(&g_below, &g_same) > 0.0,
+        "1e8 must differ from 1e10"
+    );
+}
+
 // ------------------------------------------------------------ integral level
 
 #[test]
@@ -620,9 +670,9 @@ fn triclinic_sp_force_matches_fd_of_own_energy() {
         // (1e8), 2.46e-9 (1e9), 3.4e-9 (1e10); the 1e7 value is the model-nucleus
         // error against the energy's 1e16 nucleus (falls as 1/zeta), and the
         // 1e9 value sits below the FD truncation because the two partly cancel.
-        // Bar 1e-8 = 2.8x the measurement, 5 orders below the smallest mutant
-        // (> 1e-3).
-        assert!(err < 1e-8, "exxdiv {k}: {err:e}");
+        // Bar 1.5e-8 = 4.2x the measurement, 5+ orders below the smallest
+        // mutant (> 1e-3, `pbc_grad_open`/H2 anchors: 9.5e-3).
+        assert!(err < 1.5e-8, "exxdiv {k}: {err:e}");
         assert!(rr.net_force < 1e-10, "ΣF {:e}", rr.net_force);
     }
     // Gradient-only nucleus-exponent scan (printed, not asserted); override
