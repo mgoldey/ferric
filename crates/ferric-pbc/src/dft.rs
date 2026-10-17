@@ -72,7 +72,7 @@
 //! ROHF has no injected path).
 //!
 //! Refused by name: range-separated hybrids (need an attenuated periodic K),
-//! meta-GGA (not prototyped), VV10 / double hybrids, grid pruning, Newton /
+//! meta-GGA on every path except closed-shell [`gamma_rks`] (tau from D and ∇χ^Γ, anchored to the 1x1x1 k-mesh; forces, stress, UKS, ROKS still refuse it by name), VV10 / double hybrids, grid pruning, Newton /
 //! TRAH / stability (they rebuild molecular J/K and the f_xc kernel on the
 //! molecular grid — rejected by `validate_injected`), the molecular grid knobs
 //! `RhfConfig.{xc, xc_omega, dft_grid, nlc_grid}`. Nuclear gradients (with
@@ -96,7 +96,7 @@ use ferric_core::FerricError;
 use ferric_dft::becke::{
     partition_weight_over, partition_weight_over_and_grad, NeighbourAtom, PartitionScheme,
 };
-use ferric_dft::density_on_grid::{eval_density_closed, eval_density_uks};
+use ferric_dft::density_on_grid::{eval_density_closed, eval_density_uks, eval_tau_closed};
 use ferric_dft::grid::GridPoint;
 use ferric_dft::lebedev::lebedev;
 use ferric_dft::libxc::{xc_def_from_name, xc_def_from_name_nspin, FunctionalFamily, XcDef};
@@ -1630,6 +1630,9 @@ pub struct PeriodicXc {
     /// Accumulated [`PeriodicXc::eval`] / [`PeriodicXc::eval_polarized`]
     /// calls ([`crate::timing`]).
     clock: CallClock,
+    /// The functional is a meta-GGA: [`PeriodicXc::eval`] builds tau from the
+    /// cached `∇χ^Γ` (closed shell only; the spin-resolved path refuses).
+    mgga: bool,
 }
 
 impl std::fmt::Debug for PeriodicXc {
@@ -1653,7 +1656,35 @@ impl PeriodicXc {
         grid: &PeriodicGrid,
         cfg: &PeriodicXcConfig,
     ) -> Result<Self, FerricError> {
-        let (xc, exx) = resolve_periodic_functional(functional)?;
+        Self::build_xc(cell, bs, functional, grid, cfg, false)
+    }
+
+    /// [`PeriodicXc::new`] with the meta-GGA refusal lifted for the CLOSED-shell
+    /// [`PeriodicXc::eval`] (tau from `D` and `∇χ^Γ`, as the k-point path does).
+    /// [`PeriodicXc::eval_polarized`] errors on a meta-GGA built this way.
+    pub fn new_closed_mgga(
+        cell: &Cell,
+        bs: &BasisSet,
+        functional: &str,
+        grid: &PeriodicGrid,
+        cfg: &PeriodicXcConfig,
+    ) -> Result<Self, FerricError> {
+        Self::build_xc(cell, bs, functional, grid, cfg, true)
+    }
+
+    fn build_xc(
+        cell: &Cell,
+        bs: &BasisSet,
+        functional: &str,
+        grid: &PeriodicGrid,
+        cfg: &PeriodicXcConfig,
+        allow_mgga: bool,
+    ) -> Result<Self, FerricError> {
+        let (xc, exx) = resolve_periodic_functional_mgga(functional, allow_mgga)?;
+        let mgga = xc
+            .funcs
+            .iter()
+            .any(|f| matches!(f.family(), FunctionalFamily::MetaGga));
         let xc_pol = xc_def_from_name_nspin(functional, 2).map_err(|e| {
             FerricError::General(format!(
                 "periodic DFT: functional {functional:?} (spin-polarized): {e:?}"
@@ -1670,6 +1701,7 @@ impl PeriodicXc {
             nbf,
             scratch: VxcScratch::new(),
             clock: CallClock::default(),
+            mgga,
         })
     }
 
@@ -1761,12 +1793,13 @@ impl PeriodicXc {
         let mut v = Array2::<f64>::zeros((self.nbf, self.nbf));
         for c in &self.chunks {
             let dens = eval_density_closed(d, &c.chi, &c.dchi);
+            let tau = self.mgga.then(|| eval_tau_closed(d, &c.dchi));
             let (ec, vc) = semilocal_vxc_closed_scratch(
                 &c.points,
                 &c.chi,
                 &c.dchi,
                 &dens,
-                None,
+                tau.as_ref(),
                 &self.xc,
                 &mut self.scratch,
             );
@@ -1810,6 +1843,13 @@ impl PeriodicXc {
     ) -> Result<(f64, Array2<f64>, Array2<f64>), FerricError> {
         self.check_d(d_a)?;
         self.check_d(d_b)?;
+        if self.mgga {
+            return Err(PeriodicDftError::Unsupported {
+                feature: "meta-GGA",
+                reason: format!("{}: the spin-resolved periodic XC has no tau term", self.name),
+            }
+            .into());
+        }
         let mut e = 0.0;
         let mut v_a = Array2::<f64>::zeros((self.nbf, self.nbf));
         let mut v_b = Array2::<f64>::zeros((self.nbf, self.nbf));
@@ -2023,10 +2063,10 @@ pub fn gamma_rks(
         )?;
     }
     // Cheap name checks before the grid is built.
-    resolve_periodic_functional(&cfg.functional)?;
+    resolve_periodic_functional_mgga(&cfg.functional, true)?;
     let total = StageClock::start();
     let (grid, mut pxc, mut timings) =
-        ks_grid_and_xc(cell, prep, &cfg.functional, &cfg.grid, &cfg.xc)?;
+        ks_grid_and_xc(cell, prep, &cfg.functional, &cfg.grid, &cfg.xc, true)?;
     let v_m = madelung_constant(cell)?;
     let applied = match cfg.exxdiv {
         ExxDiv::None => 0.0,
@@ -2163,13 +2203,18 @@ pub(crate) fn ks_grid_and_xc(
     functional: &str,
     grid_cfg: &PeriodicGridConfig,
     xc_cfg: &PeriodicXcConfig,
+    allow_mgga: bool,
 ) -> Result<(PeriodicGrid, PeriodicXc, PbcTimings), FerricError> {
     let mut timings = PbcTimings::default();
     let clock = StageClock::start();
     let grid = PeriodicGrid::build(cell, grid_cfg)?;
     timings.stop("xc grid build", &clock);
     let clock = StageClock::start();
-    let pxc = PeriodicXc::new(cell, prep.basis_set(), functional, &grid, xc_cfg)?;
+    let pxc = if allow_mgga {
+        PeriodicXc::new_closed_mgga(cell, prep.basis_set(), functional, &grid, xc_cfg)?
+    } else {
+        PeriodicXc::new(cell, prep.basis_set(), functional, &grid, xc_cfg)?
+    };
     timings.stop("xc AO cache", &clock);
     timings.set_counter("xc grid points", grid.len() as u64);
     Ok((grid, pxc, timings))
@@ -2228,7 +2273,7 @@ pub fn gamma_uks(
     resolve_periodic_functional(&cfg.functional)?;
     let total = StageClock::start();
     let (grid, mut pxc, mut timings) =
-        ks_grid_and_xc(cell, prep, &cfg.functional, &cfg.grid, &cfg.xc)?;
+        ks_grid_and_xc(cell, prep, &cfg.functional, &cfg.grid, &cfg.xc, false)?;
     let mut out = gamma_uks_with_xc(cell, prep, hc, ints, &mut pxc, cfg)?;
     let electrons_on_grid = pxc.integrate_density(&out.scf.density_total)?;
     out.grid = Some(GammaUksGridInfo {

@@ -558,7 +558,7 @@ pub fn gamma_roks(
     resolve_periodic_functional(&cfg.functional)?;
     let total = crate::timing::StageClock::start();
     let (grid, mut pxc, mut timings) =
-        crate::dft::ks_grid_and_xc(cell, prep, &cfg.functional, &cfg.grid, &cfg.xc)?;
+        crate::dft::ks_grid_and_xc(cell, prep, &cfg.functional, &cfg.grid, &cfg.xc, false)?;
     let mut out = gamma_roks_with_xc(cell, prep, hc, ints, &mut pxc, cfg)?;
     let electrons_on_grid = pxc.integrate_density(&out.scf.density_total)?;
     out.grid = Some(GammaUksGridInfo {
