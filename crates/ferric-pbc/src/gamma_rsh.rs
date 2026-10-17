@@ -246,3 +246,27 @@ impl GammaRshExchange {
         }
     }
 }
+
+/// Closed-shell Gamma RKS for ANY supported functional: a range-separated
+/// hybrid takes the attenuated K of [`GammaRshExchange::build_for_binding`]
+/// (built on `aux`, or dense AFT when `None`), everything else [`gamma_rks`].
+/// The one entry the Python and CLI bindings share.
+pub fn gamma_rks_any(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hc: &crate::hcore::PeriodicHcore,
+    ints: crate::uhf::GammaUhfIntegrals<'_>,
+    aux: Option<&PreparedBasis>,
+    sizing: GammaRshSizing,
+    cfg: &crate::dft::GammaRksConfig,
+) -> Result<crate::dft::GammaRksResult, FerricError> {
+    match crate::rsh::resolve_periodic_functional_rsh(&cfg.functional)?.2 {
+        Some(rsh) => {
+            let ex = GammaRshExchange::build_for_binding(
+                cell, prep, aux, &hc.s, cfg.exxdiv, sizing, rsh,
+            )?;
+            crate::dft::gamma_rks_rsh(cell, prep, hc, ints, &ex, cfg)
+        }
+        None => crate::dft::gamma_rks(cell, prep, hc, ints, cfg),
+    }
+}

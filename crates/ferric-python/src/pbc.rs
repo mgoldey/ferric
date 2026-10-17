@@ -33,15 +33,15 @@ use ferric_pbc::rsgdf::auto_omega::auto_rsgdf_omega;
 use ferric_pbc::rsgdf::{DEFAULT_RANGE_SPLIT_LAMBDA, DEFAULT_RSGDF_OMEGA};
 use ferric_pbc::SrColumnRotation;
 use ferric_pbc::{
-    gamma_drpa, gamma_mp2, gamma_rks, gamma_rohf, gamma_roks, gamma_uhf, gamma_uks, kpoint_drpa,
-    kpoint_mp2, periodic_hcore, periodic_hcore_kpts, solve_krhf_injected, Cell, DenseAftEri,
-    EwaldStart, ExxDiv, GammaDrpaConfig, GammaDrpaIntegrals, GammaMp2Config, GammaMp2Integrals,
-    GammaRksConfig, GammaRohfConfig, GammaRoksConfig, GammaUhfConfig, GammaUhfIntegrals,
-    GammaUksConfig, GammaUksGridInfo, KCorrIntegrals, KDenseAftConfig, KDenseAftEri,
-    KDenseAftPairs, KDrpaConfig, KDrpaEnergy, KJkKind, KMp2Config, KPointInjection, KPointMesh,
-    KRhfConfig, KRsGdf, KRsGdfConfig, KScfConfig, KScfResult, KUhfConfig, LindepReport,
-    MeshCentring, Mp2Denominators, PbcTimings, PeriodicGridConfig, PeriodicHcore,
-    PeriodicHcoreConfig, RangeSplit, RsGdf, RsGdfConfig, SpinGapReport, StageClock,
+    gamma_drpa, gamma_mp2, gamma_rohf, gamma_roks, gamma_uhf, gamma_uks, kpoint_drpa, kpoint_mp2,
+    periodic_hcore, periodic_hcore_kpts, solve_krhf_injected, Cell, DenseAftEri, EwaldStart,
+    ExxDiv, GammaDrpaConfig, GammaDrpaIntegrals, GammaMp2Config, GammaMp2Integrals, GammaRksConfig,
+    GammaRohfConfig, GammaRoksConfig, GammaUhfConfig, GammaUhfIntegrals, GammaUksConfig,
+    GammaUksGridInfo, KCorrIntegrals, KDenseAftConfig, KDenseAftEri, KDenseAftPairs, KDrpaConfig,
+    KDrpaEnergy, KJkKind, KMp2Config, KPointInjection, KPointMesh, KRhfConfig, KRsGdf,
+    KRsGdfConfig, KScfConfig, KScfResult, KUhfConfig, LindepReport, MeshCentring, Mp2Denominators,
+    PbcTimings, PeriodicGridConfig, PeriodicHcore, PeriodicHcoreConfig, RangeSplit, RsGdf,
+    RsGdfConfig, SpinGapReport, StageClock,
 };
 use ferric_pbc::{
     gamma_rhf_gradient_rsgdf, gamma_rhf_gradient_with, gamma_rhf_stress, gamma_rhf_stress_rsgdf,
@@ -305,6 +305,15 @@ struct PbcSetup {
 impl PbcSetup {
     fn jk_name(&self) -> String {
         if self.aux.is_some() { "rsgdf" } else { "dense" }.into()
+    }
+
+    /// Sizing of the Gamma range-separated exchange: this call's own knobs.
+    fn rsh_sizing(&self) -> ferric_pbc::gamma_rsh::GammaRshSizing {
+        ferric_pbc::gamma_rsh::GammaRshSizing {
+            rsgdf_omega: self.rsgdf_omega(),
+            budget_bytes: self.budget_bytes,
+            max_eri_bytes: self.max_eri_bytes,
+        }
     }
 
     /// The RS-GDF Ewald split every build of this call uses (Bohr⁻¹).
@@ -1538,6 +1547,25 @@ impl PyGammaRksResult {
     }
 }
 
+/// Gamma RKS on `sys`: a range-separated hybrid takes the attenuated K of the
+/// k = 0 exchange (its forces / stress were refused up front), any other
+/// functional the plain Gamma K.
+fn gamma_rks_for(
+    s: &PbcSetup,
+    sys: &GammaSystem,
+    cfg: &GammaRksConfig,
+) -> Result<ferric_pbc::GammaRksResult, FerricError> {
+    ferric_pbc::gamma_rsh::gamma_rks_any(
+        &s.cell,
+        &s.prep,
+        &sys.hc,
+        sys.ints.scf(),
+        s.aux.as_ref(),
+        s.rsh_sizing(),
+        cfg,
+    )
+}
+
 fn rks_driver(
     s: &PbcSetup,
     functional: &str,
@@ -1548,28 +1576,7 @@ fn rks_driver(
     let sys = gamma_system(s)?;
     let mut cfg = GammaRksConfig::new(functional);
     (cfg.grid, cfg.exxdiv, cfg.scf) = (grid, s.exx, scf);
-    let r = match ferric_pbc::rsh::resolve_periodic_functional_rsh(functional)?.2 {
-        // Range-separated hybrid: J from the Gamma ints, the attenuated K
-        // from the k = 0 exchange (forces / stress were refused up front).
-        Some(rsh) => {
-            let sizing = ferric_pbc::gamma_rsh::GammaRshSizing {
-                rsgdf_omega: s.rsgdf_omega(),
-                budget_bytes: s.budget_bytes,
-                max_eri_bytes: s.max_eri_bytes,
-            };
-            let ex = ferric_pbc::gamma_rsh::GammaRshExchange::build_for_binding(
-                &s.cell,
-                &s.prep,
-                s.aux.as_ref(),
-                &sys.hc.s,
-                s.exx,
-                sizing,
-                rsh,
-            )?;
-            ferric_pbc::dft::gamma_rks_rsh(&s.cell, &s.prep, &sys.hc, sys.ints.scf(), &ex, &cfg)?
-        }
-        None => gamma_rks(&s.cell, &s.prep, &sys.hc, sys.ints.scf(), &cfg)?,
-    };
+    let r = gamma_rks_for(s, &sys, &cfg)?;
     let derivs = system_derivatives(s, &sys, &r.scf, DerivMethod::Rks(&cfg))?;
     let t = sys.timings(&[&r.timings], &total);
     Ok((r, derivs, sys.hc.enn, t))
