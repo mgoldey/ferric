@@ -205,8 +205,9 @@ def test_rks_stress_trace_matches_isotropic_strain(basis, functional):
     print(f"RKS {functional} stress trace vs FD: {miss:.2e}")
 
 
-# No Gamma meta-GGA binding exists, so SCAN has no 1x1x1 comparator here (its
-# anchors are the FD tests and the Rust suites).
+# Gamma meta-GGA (run_rks_gamma) is energy-only (forces and stress refuse it), so
+# SCAN has no 1x1x1 force/stress comparator here (its anchors are the FD tests
+# and the Rust suites).
 @pytest.mark.parametrize("functional", ["PBE", "PBE0"])
 def test_rks_one_point_mesh_equals_the_gamma_binding_force_and_stress(
     basis, functional

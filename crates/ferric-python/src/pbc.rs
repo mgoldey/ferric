@@ -1567,6 +1567,9 @@ fn rks_driver(
 /// built with its gradient pieces). Each is `None` when not requested. The
 /// SCF must converge (a derivative at a non-stationary density is refused).
 ///
+/// Meta-GGA: only the pure SCAN / r2SCAN (energy; with_gradient / with_stress
+/// with a meta-GGA is a ValueError, use `run_rks_kpts` on a [1,1,1] mesh).
+///
 /// Validated vs crates/ferric-pbc/tests/pbc_rks.rs: H2 / STO-3G (PySCF
 /// digits), a = 4 Bohr, SSF 75x302 D = 10 Bohr, ewald: LDA -1.521871150768,
 /// 36234 grid points.
@@ -1604,6 +1607,24 @@ fn run_rks_gamma(
     sr_column_rotation: Option<bool>,
 ) -> PyResult<PyGammaRksResult> {
     let fname = "run_rks_gamma";
+    // Before any integral is built: only SCAN / r2SCAN are meta-GGAs here, and
+    // their Gamma energy has no force or stress.
+    if ferric_pbc::dft::is_meta_gga_name(functional) {
+        ferric_pbc::dft::resolve_gamma_rks_functional(functional)
+            .map_err(|e| val_err(format!("{fname}: functional {functional:?}: {e}")))?;
+    }
+    if with_gradient || with_stress {
+        ferric_pbc::dft::check_gamma_derivs_functional(functional).map_err(|e| {
+            val_err(format!(
+                "{fname}: {}: {e}",
+                if with_gradient {
+                    "with_gradient"
+                } else {
+                    "with_stress"
+                }
+            ))
+        })?;
+    }
     let mut s = pbc_setup(&PbcArgs {
         fname,
         mol,

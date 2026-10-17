@@ -2201,7 +2201,8 @@ def run_rks_gamma(
     gdf_omega: float | None = None,
     sr_column_rotation: bool | None = None,
 ) -> GammaRksResult:
-    """Closed-shell Gamma-point periodic RKS; open shells raise ValueError."""
+    """Closed-shell Gamma-point periodic RKS; open shells raise ValueError.
+    Meta-GGA: only SCAN / r2SCAN, energy only (with_gradient / with_stress raise)."""
     ...
 
 def run_mp2_gamma(

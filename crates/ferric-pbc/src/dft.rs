@@ -72,7 +72,7 @@
 //! ROHF has no injected path).
 //!
 //! Refused by name: range-separated hybrids (need an attenuated periodic K),
-//! meta-GGA on every path except closed-shell [`gamma_rks`] (tau from D and ∇χ^Γ, anchored to the 1x1x1 k-mesh; forces, stress, UKS, ROKS still refuse it by name), VV10 / double hybrids, grid pruning, Newton /
+//! meta-GGA except the validated SCAN / r2SCAN in closed-shell [`gamma_rks`] ENERGY (tau from D and ∇χ^Γ, anchored to the 1x1x1 k-mesh and PySCF; Gamma forces, stress, UKS, ROKS refuse it), VV10 / double hybrids, grid pruning, Newton /
 //! TRAH / stability (they rebuild molecular J/K and the f_xc kernel on the
 //! molecular grid — rejected by `validate_injected`), the molecular grid knobs
 //! `RhfConfig.{xc, xc_omega, dft_grid, nlc_grid}`. Nuclear gradients (with
@@ -1545,9 +1545,56 @@ pub fn resolve_periodic_functional(name: &str) -> Result<(XcDef, f64), FerricErr
     resolve_periodic_functional_mgga(name, false)
 }
 
+/// Whether `name` resolves to a functional with a meta-GGA component (raw
+/// libxc names included). Unresolvable names are `false`.
+pub fn is_meta_gga_name(name: &str) -> bool {
+    xc_def_from_name(name).is_ok_and(|d| {
+        d.funcs
+            .iter()
+            .any(|f| matches!(f.family(), FunctionalFamily::MetaGga))
+    })
+}
+
+/// The functional gate of the closed-shell Gamma [`gamma_rks`]: everything
+/// [`resolve_periodic_functional`] accepts, plus ONLY the validated pure
+/// meta-GGAs SCAN / r2SCAN ([`crate::kxcgrad::is_validated_mgga`]); any other
+/// meta-GGA (raw `MGGA_*` names, TPSS) is refused by name. Shared by
+/// [`gamma_rks`] and the Python / CLI bindings so they cannot drift.
+pub fn resolve_gamma_rks_functional(name: &str) -> Result<(XcDef, f64), FerricError> {
+    let validated = crate::kxcgrad::is_validated_mgga(name);
+    if is_meta_gga_name(name) && !validated {
+        return Err(PeriodicDftError::Unsupported {
+            feature: "meta-GGA",
+            reason: format!(
+                "{name}: Gamma-point RKS supports only the validated SCAN / r2SCAN meta-GGAs"
+            ),
+        }
+        .into());
+    }
+    resolve_periodic_functional_mgga(name, validated)
+}
+
+/// The refusal for a Gamma-point nuclear gradient, stress or geometry
+/// optimization with a meta-GGA (the Gamma XC derivatives have no tau term;
+/// the k-point path does). Checked before any SCF.
+pub fn check_gamma_derivs_functional(name: &str) -> Result<(), FerricError> {
+    if is_meta_gga_name(name) {
+        return Err(PeriodicDftError::Unsupported {
+            feature: "meta-GGA gradient / stress",
+            reason: format!(
+                "{name}: the Gamma-point XC gradient and stress have no tau term; use a \
+                 k-point mesh (kmesh [1,1,1] is the Gamma point) for SCAN / r2SCAN forces"
+            ),
+        }
+        .into());
+    }
+    Ok(())
+}
+
 /// [`resolve_periodic_functional`] with the meta-GGA refusal optional
-/// (`allow_mgga = true` lets SCAN / r2SCAN / TPSS through; the k-point path
-/// supplies tau, [`crate::kdft`]). Every other refusal is unchanged.
+/// (`allow_mgga = true` lets ANY meta-GGA through, so callers apply their own
+/// allowlist: the k-point path supplies tau, [`crate::kdft`], and the Gamma
+/// entry is [`resolve_gamma_rks_functional`]). Every other refusal is unchanged.
 pub fn resolve_periodic_functional_mgga(
     name: &str,
     allow_mgga: bool,
@@ -1846,7 +1893,10 @@ impl PeriodicXc {
         if self.mgga {
             return Err(PeriodicDftError::Unsupported {
                 feature: "meta-GGA",
-                reason: format!("{}: the spin-resolved periodic XC has no tau term", self.name),
+                reason: format!(
+                    "{}: the spin-resolved periodic XC has no tau term",
+                    self.name
+                ),
             }
             .into());
         }
@@ -1960,7 +2010,9 @@ impl XcBuilder for DynXcRef<'_, '_> {
 #[derive(Debug, Clone)]
 pub struct GammaRksConfig {
     /// LDA / GGA / global-hybrid name (ferric-dft friendly names or libxc
-    /// identifiers), e.g. `"LDA"` (= PySCF `"LDA,VWN"`), `"PBE"`, `"PBE0"`.
+    /// identifiers), e.g. `"LDA"` (= PySCF `"LDA,VWN"`), `"PBE"`, `"PBE0"`, or
+    /// the pure meta-GGAs `"SCAN"` / `"r2SCAN"` (energy only: Gamma forces and
+    /// stress refuse meta-GGA; other meta-GGAs are refused by name).
     pub functional: String,
     /// The periodic grid.
     pub grid: PeriodicGridConfig,
@@ -2063,7 +2115,7 @@ pub fn gamma_rks(
         )?;
     }
     // Cheap name checks before the grid is built.
-    resolve_periodic_functional_mgga(&cfg.functional, true)?;
+    resolve_gamma_rks_functional(&cfg.functional)?;
     let total = StageClock::start();
     let (grid, mut pxc, mut timings) =
         ks_grid_and_xc(cell, prep, &cfg.functional, &cfg.grid, &cfg.xc, true)?;

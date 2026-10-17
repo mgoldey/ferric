@@ -205,7 +205,8 @@ fn gamma_rks_on_grid(sc: &Cell, bs: &BasisSet, grid: &PeriodicGrid, functional: 
         DEFAULT_DENSE_AFT_MAX_BYTES,
     )
     .unwrap();
-    let pxc = PeriodicXc::new(sc, bs, functional, grid, &PeriodicXcConfig::default()).unwrap();
+    let pxc = PeriodicXc::new_closed_mgga(sc, bs, functional, grid, &PeriodicXcConfig::default())
+        .unwrap();
     let vm = madelung_constant(sc).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
@@ -310,7 +311,7 @@ fn mgga_uniform_grid_krks_matches_pinned_pyscf() {
             r.scf.energy - e_ref
         );
         assert!(
-            (r.scf.energy - e_ref).abs() < 1e-7,
+            (r.scf.energy - e_ref).abs() < 1e-9,
             "{functional} {n:?}: {} vs {e_ref}",
             r.scf.energy
         );
@@ -328,6 +329,11 @@ const PYSCF_MGGA_TRI: [(&str, [usize; 3], f64); 4] = [
     ("SCAN", [1, 1, 2], -2.337536896331),
     ("R2SCAN", [1, 1, 2], -2.335205637508),
 ];
+
+// Tolerance 1e-9: measured worst miss 2.7e-12 (H2) / 5.8e-13 (H4) = >300x
+// headroom for platform rounding; the other side is the SCAN - r2SCAN gap
+// (2.2e-3, 2e6x the tolerance) and the 5e-4 H2 1x1x2 separation, so no
+// functional mix-up or tau-term defect above 1e-9 can pass.
 
 /// SCAN and r2SCAN pinned separately on a cell where PySCF's own SCAN - r2SCAN
 /// gap is 2.2e-3 Ha (2e4 x the 1e-7 pin). Swapping the two functional
@@ -347,7 +353,7 @@ fn mgga_scan_and_r2scan_are_distinguished_by_the_pins() {
             r.scf.energy - e_ref
         );
         assert!(
-            (r.scf.energy - e_ref).abs() < 1e-7,
+            (r.scf.energy - e_ref).abs() < 1e-9,
             "{functional} {n:?}: {} vs {e_ref}",
             r.scf.energy
         );
@@ -356,6 +362,30 @@ fn mgga_scan_and_r2scan_are_distinguished_by_the_pins() {
     for n in [[1, 1, 1], [1, 1, 2]] {
         let gap = e[&("SCAN", n)] - e[&("R2SCAN", n)];
         assert!(gap.abs() > 2e-3, "{n:?}: SCAN - r2SCAN = {gap:.3e}");
+    }
+}
+
+// PySCF 2.13.1 pbc.dft.RKS at the single Gamma point (NOT KRKS), same cell,
+// basis, UniformGrids 61^3, AFTDF, ewald, conv_tol 1e-12; run_gamma() in
+// `scripts/gen_pyscf_pbc_mgga_refs.py` (equals the KRKS 1x1x1 entries above).
+const PYSCF_MGGA_TRI_GAMMA: [(&str, f64); 2] =
+    [("SCAN", -2.248625389935), ("R2SCAN", -2.246390226285)];
+
+/// The Gamma entry's XC (`PeriodicXc::new_closed_mgga`, real lattice-summed
+/// AOs, the object `gamma_rks` injects) against PySCF's DIRECT Gamma-point RKS
+/// on the same uniform grid: a pin that does not pass through the k-point code.
+#[test]
+fn gamma_mgga_matches_pinned_pyscf_gamma_rks() {
+    let cell = triclinic_cell();
+    let bs = pyscf_sto3g_h();
+    let grid = PeriodicGrid::uniform(&cell, [61; 3]).unwrap();
+    for &(functional, e_ref) in &PYSCF_MGGA_TRI_GAMMA {
+        let e = gamma_rks_on_grid(&cell, &bs, &grid, functional);
+        eprintln!(
+            "H4 tri Gamma {functional}: {e:.12} PySCF {e_ref:.12} dE {:.2e}",
+            e - e_ref
+        );
+        assert!((e - e_ref).abs() < 1e-9, "{functional}: {e} vs {e_ref}");
     }
 }
 
@@ -399,8 +429,8 @@ fn mgga_one_point_mesh_is_gamma_rks() {
 }
 
 /// Meta-GGA k-mesh == supercell / N: the supercell is solved by the same
-/// k-point code at a 1x1x1 mesh on the replicated grid (the Gamma periodic
-/// path has no meta-GGA).
+/// k-point code at a 1x1x1 mesh on the replicated grid (the Gamma meta-GGA
+/// is closed-shell energy only; see `mgga_one_point_mesh_is_gamma_rks`).
 #[test]
 fn mgga_k_mesh_is_the_supercell() {
     let cell = h2_cell(4.0);

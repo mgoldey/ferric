@@ -30,8 +30,7 @@
 //!   3-cell supercell at 1x1x1 (same code; checks the k sum and phases);
 //! * refusals, the Fock guard, production-wired mutants.
 //!
-//! NOT covered: the 1x1x1 = Gamma anchor (the Gamma periodic path has no
-//! meta-GGA), hybrid meta-GGAs (none resolve), range-separated / VV10 / double
+//! NOT covered: a Gamma tau stress (Gamma meta-GGA is energy-only; the energy anchor is in pbc_krks.rs), hybrid meta-GGAs (none resolve), range-separated / VV10 / double
 //! hybrid meta-GGAs (refused), open-shell meta-GGA stress (UKS/ROKS keep their
 //! typed refusal), RS-GDF J (typed refusal, tested), d shells, ECPs, heavy atoms,
 //! metals. TPSS is anchored only as its raw X/C components on a PBE density with

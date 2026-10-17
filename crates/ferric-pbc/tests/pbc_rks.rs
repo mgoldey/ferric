@@ -667,3 +667,94 @@ fn uhf_injected_refuses_a_closed_shell_only_xc_builder() {
         "{e}"
     );
 }
+
+/// Gamma meta-GGA is closed-shell ENERGY only (issue #355): SCAN / r2SCAN run;
+/// forces, stress, UKS, other meta-GGAs and the spin-resolved XC refuse by name.
+#[test]
+fn gamma_meta_gga_is_closed_shell_energy_only() {
+    use ferric_pbc::{gamma_rks_gradient_with, GammaGradConfig};
+    use ferric_pbc::{gamma_rks_stress, GammaStressConfig};
+    use ferric_pbc::{gamma_uks, GammaUksConfig};
+    let su = h2_setup(4.0);
+    let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
+    let mut cfg = GammaRksConfig::new("SCAN");
+    cfg.grid = ssf_grid(30, 50, 10.0);
+    let r = rks(&su, "SCAN", cfg.grid.clone());
+    assert!(r.scf.converged);
+
+    let e = gamma_rks_gradient_with(
+        &su.cell,
+        &su.prep,
+        &hcfg,
+        &su.hc,
+        &su.eri,
+        &r.scf,
+        &cfg,
+        &GammaGradConfig::default(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(e.contains("meta-GGA"), "gradient: {e}");
+    let e = gamma_rks_stress(
+        &su.cell,
+        &su.prep,
+        &hcfg,
+        &su.hc,
+        &su.eri,
+        &r.scf,
+        &cfg,
+        &GammaStressConfig::default(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(e.contains("meta-GGA"), "stress: {e}");
+
+    // Other meta-GGAs: refused by gamma_rks itself, before any grid is built.
+    let mut tpss = GammaRksConfig::new("MGGA_X_TPSS");
+    tpss.grid = cfg.grid.clone();
+    let e = gamma_rks(
+        &su.cell,
+        &su.prep,
+        &su.hc,
+        GammaUhfIntegrals::DenseAft(&su.eri),
+        &tpss,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(e.contains("only the validated SCAN / r2SCAN"), "{e}");
+
+    // UKS keeps the by-name refusal.
+    let e = gamma_uks(
+        &su.cell,
+        &su.prep,
+        &su.hc,
+        GammaUhfIntegrals::DenseAft(&su.eri),
+        &GammaUksConfig::new("SCAN"),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(e.contains("meta-GGA"), "uks: {e}");
+
+    // The spin-resolved XC of a meta-GGA PeriodicXc errors (no tau term).
+    let grid = PeriodicGrid::build(&su.cell, &cfg.grid).unwrap();
+    let mut xc = PeriodicXc::new_closed_mgga(
+        &su.cell,
+        &su.bs,
+        "SCAN",
+        &grid,
+        &PeriodicXcConfig::default(),
+    )
+    .unwrap();
+    let d = probe_density(&su);
+    let e = xc.eval_polarized(&d, &d).unwrap_err().to_string();
+    assert!(e.contains("no tau term"), "{e}");
+    // ... and the plain constructor still refuses a meta-GGA.
+    assert!(PeriodicXc::new(
+        &su.cell,
+        &su.bs,
+        "SCAN",
+        &grid,
+        &PeriodicXcConfig::default()
+    )
+    .is_err());
+}
