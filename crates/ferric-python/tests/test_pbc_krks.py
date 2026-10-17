@@ -205,3 +205,11 @@ def test_gamma_range_separated_hybrid_refusals(h2, h_atom, basis):
         ferric.run_uks_gamma(h_atom, lat, basis, "HSE06", omega=OMEGA, **GRID)
     with pytest.raises(ValueError, match="VV10"):
         ferric.run_rks_gamma(h2, lat, basis, "wB97X-V", omega=OMEGA, **GRID)
+
+
+def test_gamma_range_separated_hybrid_refuses_range_split(h2, basis):
+    # range_split would shape only the Gamma J, never the attenuated K.
+    with pytest.raises(ValueError, match=r"range_split.*attenuated K"):
+        ferric.run_rks_gamma(
+            h2, _cubic(), basis, "HSE06", omega=OMEGA, range_split=True, **RSGDF, **GRID
+        )

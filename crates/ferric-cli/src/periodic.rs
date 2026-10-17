@@ -814,6 +814,7 @@ fn rsh_sizing(plan: &PeriodicPlan) -> ferric_pbc::gamma_rsh::GammaRshSizing {
         rsgdf_omega: rsgdf_config(plan).omega,
         budget_bytes: budget_bytes(plan),
         max_eri_bytes: max_eri_bytes(plan),
+        range_split: range_split_lambda(plan).is_some(),
     }
 }
 

@@ -16,6 +16,16 @@
 //! SCF; the INDEPENDENT oracle for the attenuated exchange is PySCF's Gamma
 //! `pbc.dft.RKS` + AFTDF (`tests/pbc_grsh.rs`).
 //!
+//! # Cost
+//!
+//! With `jk = rsgdf` the full-Coulomb fit is built TWICE: once for the Gamma
+//! J (`RsGdf`) and once inside the k = 0 exchange (`KRsGdf::build_rsh`, plus
+//! its attenuated G-space fit). The two objects have different layouts, so
+//! they are not shared. Measured (H2/STO-3G, a = 4 Bohr, cc-pVDZ-RI, release-
+//! like test profile, 6-core box, 2 runs): Gamma J fit 0.91 / 1.01 s, k = 0 K
+//! fit (full + attenuated) 0.85 / 0.91 s, i.e. the RSH build is about 1.9x the
+//! plain Gamma build; the SCF itself is unchanged.
+//!
 //! The exchange fractions and the mixed Madelung constant are INSIDE the K
 //! this builder returns, so the SCF scales it by 1 ([`crate::dft`]).
 
@@ -208,6 +218,10 @@ pub struct GammaRshSizing {
     pub budget_bytes: Option<usize>,
     /// Dense-AFT hard cap in bytes.
     pub max_eri_bytes: usize,
+    /// The caller asked for the opt-in RS-GDF `range_split` on the Gamma J.
+    /// The attenuated K is never split, so [`gamma_rks_any`] REFUSES this
+    /// together with a range-separated functional instead of half-applying it.
+    pub range_split: bool,
 }
 
 impl GammaRshExchange {
@@ -261,6 +275,15 @@ pub fn gamma_rks_any(
     cfg: &crate::dft::GammaRksConfig,
 ) -> Result<crate::dft::GammaRksResult, FerricError> {
     match crate::rsh::resolve_periodic_functional_rsh(&cfg.functional)?.2 {
+        Some(_) if sizing.range_split => Err(crate::dft::PeriodicDftError::Unsupported {
+            feature: "range_split with a range-separated hybrid",
+            reason: format!(
+                "{}: range_split would shape only the Gamma J, never the attenuated K; \
+                 drop range_split for a range-separated functional",
+                cfg.functional
+            ),
+        }
+        .into()),
         Some(rsh) => {
             let ex = GammaRshExchange::build_for_binding(
                 cell, prep, aux, &hc.s, cfg.exxdiv, sizing, rsh,

@@ -365,4 +365,23 @@ fn cli_gamma_rsh_equals_the_one_point_mesh_and_keeps_derivatives_refused() {
     assert!(!out.status.success(), "gam-uks must be refused");
     let e = String::from_utf8_lossy(&out.stderr);
     assert!(e.contains("range-separated"), "gam-uks: {e}");
+    // range_split would shape only the Gamma J, never the attenuated K.
+    let toml = input(
+        "gam-split",
+        "ksdft",
+        1,
+        hse,
+        &format!("{RSGDF_CELL}\nrange_split = true"),
+    );
+    let src = std::fs::read_to_string(&toml)
+        .unwrap()
+        .replace("kmesh = [1, 1, 2]\n", "");
+    std::fs::write(&toml, src).unwrap();
+    let out = run(&toml);
+    assert!(!out.status.success(), "gam-split must be refused");
+    let e = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        e.contains("range_split") && e.contains("attenuated K"),
+        "gam-split: {e}"
+    );
 }

@@ -421,3 +421,44 @@ fn gamma_rsh_refusals_are_typed() {
     assert!(go("HYB_GGA_XC_CAM_B3LYP", &build(ExxDiv::Ewald), ExxDiv::Ewald).is_err());
     assert!(go("HSE06", &build(ExxDiv::None), ExxDiv::Ewald).is_err());
 }
+
+/// `range_split` would shape only the Gamma J, so with an RSH functional it is
+/// a typed refusal (not a silent partial behaviour); a global hybrid is fine.
+#[test]
+fn gamma_rsh_refuses_range_split() {
+    use ferric_pbc::gamma_rsh::{gamma_rks_any, GammaRshSizing};
+    let cell = cell_of(Lat::Triclinic);
+    let bs = pyscf_sto3g_h();
+    let prep = prep_for(&cell, &bs);
+    let hc = periodic_hcore(&cell, &prep, &PeriodicHcoreConfig::with_omega(OMEGA)).unwrap();
+    let eri = DenseAftEri::build(
+        &cell,
+        &prep,
+        &hc.s,
+        ExxDiv::Ewald,
+        DEFAULT_DENSE_AFT_PRECISION,
+        DEFAULT_DENSE_AFT_MAX_BYTES,
+    )
+    .unwrap();
+    let sizing = GammaRshSizing {
+        rsgdf_omega: OMEGA,
+        budget_bytes: None,
+        max_eri_bytes: DEFAULT_DENSE_AFT_MAX_BYTES,
+        range_split: true,
+    };
+    let go = |f: &str| {
+        let cfg = GammaRksConfig::new(f);
+        gamma_rks_any(
+            &cell,
+            &prep,
+            &hc,
+            GammaUhfIntegrals::DenseAft(&eri),
+            None,
+            sizing,
+            &cfg,
+        )
+        .map(|_| ())
+    };
+    let e = go("HSE06").unwrap_err();
+    assert!(format!("{e}").contains("range_split"), "{e}");
+}

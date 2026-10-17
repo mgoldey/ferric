@@ -313,6 +313,7 @@ impl PbcSetup {
             rsgdf_omega: self.rsgdf_omega(),
             budget_bytes: self.budget_bytes,
             max_eri_bytes: self.max_eri_bytes,
+            range_split: self.range_split.is_some(),
         }
     }
 
@@ -1601,7 +1602,7 @@ fn rks_driver(
 /// Range-separated hybrids (HSE06, CAM-B3LYP, wB97X; energy only): J from
 /// the Gamma J/K, the attenuated K from the k = 0 point of the k-point
 /// range-separated exchange (dense AFT or an RS-GDF fit on `auxbasis`);
-/// `with_gradient` / `with_stress` are ValueErrors (`range_split` shapes the Gamma J only, never the attenuated K), and the
+/// `with_gradient` / `with_stress` are ValueErrors (`range_split` with an RSH functional is a ValueError: it would shape the Gamma J only), and the
 /// result's `exact_exchange_fraction` is the short-range `c_sr`, `madelung`
 /// the mixed `c_sr v_M + (c_lr - c_sr) v_M^LR(omega)` constant. wB97X-V stays
 /// refused (VV10).
