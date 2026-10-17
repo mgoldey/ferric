@@ -854,6 +854,74 @@ jobs:
         if: matrix.partition == 1
         run: cargo test --workspace --doc --locked
 
+  # Allocator-perturbation canary (#433 item 4). The Boys/Tenno table-edge
+  # defects (#437, #440, #445) were out-of-bounds READS of libint2 tables:
+  # the stale bytes past the table were benign under the default allocator and
+  # surfaced only as LAPACK failures / non-convergence under MALLOC_PERTURB_.
+  # The fast tier never sets it, so a reintroduced edge read would pass CI
+  # silently. This job reruns a deliberately SMALL integral-sensitive set from
+  # the build-tests archive under glibc's MALLOC_PERTURB_ (fresh allocations
+  # are filled with the byte ~value):
+  #   1   (0xFE) and 170 (0x55): the two values that exposed #433
+  #   2   (0xFD): a third pattern
+  # 255 is deliberately NOT used: it fills new allocations with 0x00, which is
+  # what fresh pages already look like, so it tests nothing.
+  # The set: the two table-edge binaries plus the k-point RS-GDF+ECP+rotation
+  # test that first failed under perturbation. It is a canary, not the survey
+  # (9 timed-out binaries remain unmeasured under #433).
+  malloc-perturb:
+    needs: build-tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch @ 2026-09-16
+
+      - name: Restore cargo cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-v3-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-v3-${{ runner.os }}-
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2.87.13
+        with:
+          tool: cargo-nextest
+
+      - name: Download the archive
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: nextest-archive
+          path: /tmp
+
+      - name: Run the canary set under MALLOC_PERTURB_ 1, 170, 2
+        run: |
+          set -euo pipefail
+          if [ ! -f /tmp/nextest-archive.tar.zst ] || ! zstd -tq /tmp/nextest-archive.tar.zst; then
+            echo "::error::the nextest archive is missing or corrupt -- an ARTIFACT DOWNLOAD failure, not a test failure. Re-run this job."
+            exit 1
+          fi
+          for v in 1 170 2; do
+            echo "::group::MALLOC_PERTURB_=$v"
+            EXTRACT=$(mktemp -d)
+            # --retries 0: a pass-on-retry would hide an allocator-dependent
+            # failure, the exact thing under test. Profile ci (not default) so
+            # the ferric-pbc 960 s slow-timeout override applies.
+            # --no-tests=fail: a renamed binary must not leave an empty pass.
+            MALLOC_PERTURB_=$v cargo nextest run \
+              --profile ci --retries 0 --no-tests=fail \
+              --archive-file /tmp/nextest-archive.tar.zst \
+              --extract-to "$EXTRACT" \
+              --workspace-remap . \
+              -E 'binary(boys_chebyshev_table_edge) + binary(tenno_table_edge) + binary(pbc_kpoint_ecp_rotation)'
+            echo "::endgroup::"
+          done
+
   slow-tests:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-22.04
