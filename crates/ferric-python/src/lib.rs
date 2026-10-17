@@ -980,26 +980,12 @@ fn run_rhf(
         three_index_budget_bytes: budget_bytes_from_gb(memory_budget_gb).unwrap_or(0),
         check_stability: descent,
         scf_stability_descent: descent,
+        symmetry,
+        irrep_nelec: irrep_nelec.map(|m| m.into_iter().collect()),
         ..Default::default()
     };
     apply_accelerators(&mut config, aurora, trah_trigger)?;
     let ctx = ParallelContext::default();
-    if irrep_nelec.is_some() && !symmetry {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "run_rhf: irrep_nelec requires symmetry=True",
-        ));
-    }
-    if symmetry {
-        config.symmetry = true;
-        config.irrep_nelec = irrep_nelec.map(|m| m.into_iter().collect());
-        let sym = py
-            .allow_threads(|| {
-                ferric_scf::symmetric::solve_rhf_symmetric(&ctx, &emol, &prep, op, &bounds, &config)
-            })
-            .map_err(make_err)?;
-        warn_rhf_not_converged(py, sym.scf_in_frame(), &config);
-        return Ok(Py::new(py, PySymmetricRhfResult::from_solution(sym))?.into_any());
-    }
     // Release the GIL for the duration of the SCF. Every argument below is an
     // owned Rust value (`emol` is a clone; `prep`/`bounds`/`config` are built
     // above), so nothing Python-borrowed crosses the closure boundary.
@@ -1017,24 +1003,68 @@ fn run_rhf(
         &prep,
         &config,
     );
+    solve_rhf_outcome(py, &ctx, &emol, &prep, op, &bounds, config)
+}
+
+/// A library refusal or validation error about symmetry/irrep settings is a
+/// bad argument combination (`ValueError` naming `symmetry=True`); anything
+/// else is a solver failure (`RuntimeError`).
+fn symmetry_err(e: impl std::fmt::Display) -> PyErr {
+    let msg = e.to_string();
+    if msg.contains("symmetry") || msg.contains("irrep") {
+        pyo3::exceptions::PyValueError::new_err(format!("run_rhf(symmetry=True): {msg}"))
+    } else {
+        make_err(msg)
+    }
+}
+
+/// Solve and wrap: the plain `RhfResult` path (unchanged), or with
+/// `config.symmetry` the blocked solve returned as the distinct frame-aware
+/// `SymmetricRhfResult`.
+fn solve_rhf_outcome(
+    py: Python<'_>,
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    config: RhfConfig,
+) -> PyResult<PyObject> {
+    if config.irrep_nelec.is_some() && !config.symmetry {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "run_rhf: irrep_nelec requires symmetry=True",
+        ));
+    }
+    if config.symmetry {
+        let sym = py
+            .allow_threads(|| {
+                ferric_scf::symmetric::solve_rhf_symmetric(ctx, mol, prep, op, bounds, &config)
+            })
+            .map_err(symmetry_err)?;
+        warn_rhf_not_converged(py, sym.scf_in_frame(), &config);
+        return Ok(Py::new(py, PySymmetricRhfResult::from_solution(sym))?.into_any());
+    }
     let r = py
-        .allow_threads(|| solve_rhf(&ctx, &emol, &prep, op, &bounds, &config))
+        .allow_threads(|| solve_rhf(ctx, mol, prep, op, bounds, &config))
         .map_err(make_err)?;
     warn_rhf_not_converged(py, &r, &config);
-    Ok(Py::new(
-        py,
-        PyRhfResult {
-            energy: r.energy,
-            converged: r.converged,
-            iterations: r.iterations,
-            computed_quartets: r.computed_quartets,
-            density_data: r.density_total.clone(),
-            orbital_energies_data: r.eps_alpha.clone(),
-            scf_data: r,
-            scf_config: config,
-        },
-    )?
-    .into_any())
+    let result = PyRhfResult {
+        energy: r.energy,
+        converged: r.converged,
+        iterations: r.iterations,
+        computed_quartets: r.computed_quartets,
+        density_data: r.density_total.clone(),
+        orbital_energies_data: r.eps_alpha.clone(),
+        scf_data: r,
+        scf_config: config,
+    };
+    Ok(Py::new(py, result)?.into_any())
+}
+
+/// Register the two `run_rhf` result types.
+fn add_rhf_result_classes(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyRhfResult>()?;
+    m.add_class::<PySymmetricRhfResult>()
 }
 
 /// Result of `run_rhf(..., symmetry=True)`: point-group-blocked closed-shell RHF.
@@ -11016,8 +11046,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     m.add_class::<PyMolecule>()?;
     m.add_class::<PyBasisSet>()?;
-    m.add_class::<PyRhfResult>()?;
-    m.add_class::<PySymmetricRhfResult>()?;
+    add_rhf_result_classes(m)?;
     m.add_class::<PyUhfResult>()?;
     m.add_class::<PyCdftConstraint>()?;
     m.add_class::<PyCdftResult>()?;

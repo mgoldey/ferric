@@ -97,19 +97,22 @@ def test_frame_dependent_outputs_raise_instead_of_returning_rotated_data():
         ferric.hirshfeld_charges(r, _mol("nh3"), ferric.BasisSet.bundled("sto-3g"))
 
 
-def test_refusals_are_typed():
+def test_refusals_are_valueerrors_naming_symmetry_true():
     mol, bs = _mol("h2o"), ferric.BasisSet.bundled("sto-3g")
     with pytest.raises(ValueError, match="requires symmetry=True"):
         ferric.run_rhf(mol, bs, irrep_nelec={"A1": 4})
-    # Wrong irrep label / odd count / unsupported combinations are errors, not
-    # silently ignored.
-    with pytest.raises(Exception, match="(?i)irrep"):
-        ferric.run_rhf(mol, bs, symmetry=True, irrep_nelec={"Z9": 2})
-    with pytest.raises(Exception, match="(?i)even|irrep"):
-        ferric.run_rhf(mol, bs, symmetry=True, irrep_nelec={"A1": 3})
-    with pytest.raises(Exception, match="(?i)symmetry"):
-        ferric.run_rhf(mol, bs, symmetry=True, solvent="water")
-    with pytest.raises(Exception, match="(?i)symmetry"):
-        ferric.run_rhf(mol, bs, symmetry=True, point_charges=[(0.1, 5.0, 0.0, 0.0)])
-    with pytest.raises(Exception, match="(?i)symmetry"):
-        ferric.run_rhf(mol, bs, symmetry=True, stability_descent=True)
+    # Bad irrep requests and unsupported combinations are ValueErrors that
+    # name symmetry=True, never silently ignored and never a bare RuntimeError.
+    for kwargs in (
+        {"irrep_nelec": {"Z9": 2}},
+        {"irrep_nelec": {"A1": 3}},
+        {"solvent": "water"},
+        {"point_charges": [(0.1, 5.0, 0.0, 0.0)]},
+        {"external_field": (0.0, 0.0, 0.01)},
+        {"stability_descent": True},
+        {"soscf": True},
+        {"level_shift": 0.0, "mom_after_iter": 3},
+    ):
+        with pytest.raises(ValueError, match=r"symmetry=True") as exc:
+            ferric.run_rhf(mol, bs, symmetry=True, **kwargs)
+        assert not isinstance(exc.value, RuntimeError), kwargs
