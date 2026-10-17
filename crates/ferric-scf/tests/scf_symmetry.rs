@@ -8,8 +8,8 @@
 //!     operation;
 //! (c) `irrep_nelec` reaches an excited occupation that aufbau does not;
 //! (d) negative control: H2 at long range misses sigma_g^2 without symmetry.
-//! The PySCF comparison is `#[ignore]`d ("validation: SCF symmetry"); its
-//! references come from `scripts/validation/gen_scf_symmetry.py`.
+//! The PySCF comparison is `validation_scf_symmetry.rs` (ignored per-commit);
+//! its references come from `scripts/validation/gen_scf_symmetry.py`.
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -482,67 +482,6 @@ fn stretched_h2_needs_symmetry_to_reach_sigma_g_squared() {
             );
         }
     }
-}
-
-// ------------------------------------------------------- PySCF comparison
-
-#[test]
-#[ignore = "validation: SCF symmetry"]
-fn matches_pyscf_symmetry_references() {
-    let mut worst = 0.0f64;
-    for (sys, xyz) in [
-        ("h2o", "water.xyz"),
-        ("nh3", "nh3.xyz"),
-        ("c2h4", "c2h4.xyz"),
-        ("benzene", "benzene.xyz"),
-    ] {
-        for bas in ["sto-3g", "6-31g"] {
-            let want = reference(&format!("{sys}_{bas}.json"));
-            let mol = load(xyz);
-            let r = run_sym(&mol, bas, &cfg(true)).unwrap();
-            let e = want["ground"]["energy"].as_f64().unwrap();
-            worst = worst.max((r.energy() - e).abs());
-            assert!(
-                (r.energy() - e).abs() < 1e-8,
-                "{sys}/{bas}: {} vs {e}",
-                r.energy()
-            );
-            // Per-irrep occupations: labels for C2v/Cs, multiset for D2h.
-            let ours = occupation(&r, nocc(&mol));
-            let theirs: BTreeMap<String, usize> = want["ground"]["docc_per_irrep"]
-                .as_object()
-                .unwrap()
-                .iter()
-                .map(|(k, v)| (k.replace('"', "''"), v.as_u64().unwrap() as usize))
-                .collect();
-            if r.group() == "D2h" {
-                let mut a: Vec<_> = ours.values().copied().collect();
-                let mut b: Vec<_> = theirs.values().copied().filter(|&n| n > 0).collect();
-                a.sort();
-                b.sort();
-                assert_eq!(a, b, "{sys}/{bas}");
-            } else {
-                let theirs: BTreeMap<_, _> = theirs.into_iter().filter(|(_, n)| *n > 0).collect();
-                assert_eq!(ours, theirs, "{sys}/{bas}");
-            }
-        }
-        if sys == "h2o" {
-            for bas in ["sto-3g", "6-31g"] {
-                let want = reference(&format!("h2o_{bas}.json"));
-                let mut c = cfg(true);
-                c.irrep_nelec = Some(water_excited_nelec());
-                let r = run_sym(&load("water.xyz"), bas, &c).unwrap();
-                let e = want["excited"]["energy"].as_f64().unwrap();
-                worst = worst.max((r.energy() - e).abs());
-                assert!(
-                    (r.energy() - e).abs() < 1e-8,
-                    "excited {bas}: {} vs {e}",
-                    r.energy()
-                );
-            }
-        }
-    }
-    eprintln!("max |E_ferric - E_pyscf| = {worst:e}");
 }
 
 /// A free-atom solve that reuses a symmetry config must not refuse (and so
