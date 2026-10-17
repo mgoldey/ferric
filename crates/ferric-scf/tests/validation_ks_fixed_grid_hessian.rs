@@ -11,8 +11,8 @@
 //! # What ferric computes
 //!
 //! `rks_fixed_grid_hessian_parts_with` on an SCF whose XC lives on a grid
-//! frozen in space (`ferric_scf::ks_fixed_grid`): exact four-centre J/K,
-//! LDA, hybrid LDA, GGA or hybrid GGA (see `CASES`), no weight response.
+//! frozen in space (`ferric_scf::ks_fixed_grid`): exact four-centre J/K or
+//! RI-J (`_rij` cases, pure functionals; exact K), LDA, hybrid LDA, GGA or hybrid GGA (see `CASES`), no weight response.
 //!
 //! # Reference (`scripts/validation/gen_ks_fixed_grid_hessian.py`)
 //!
@@ -24,7 +24,8 @@
 //! `weights`, so both codes integrate on the same points with the same weights
 //! and neither differentiates them (`Hessian.grid_response = False`, the
 //! default). The like-for-like conditions are: same points and weights, same
-//! basis functions, same functional (libxc), exact J, no density fitting, SCF
+//! basis functions, same functional (libxc), exact J (no density fitting; the `_rij` cases fit
+//! J with `density_fit(only_dfj=True)` over the same auxiliary basis), SCF
 //! converged to 1e-12 in energy on both sides.
 //!
 //! Stored per system: PySCF's total energy, analytic Hessian, central FD of
@@ -226,9 +227,12 @@ const CASES: [Case; 8] = [
         xc: "PBE",
         suffix: "_pbe_rij",
         tol_energy: 1e-10,
-        // PySCF's own analytic PBE DF-J Hessian is 4.3e-6 from the FD of its own
-        // gradient and 9e-7 asymmetric: the bar is set by the reference.
-        tol_hessian: 8e-6,
+        // Measured 7.6e-7. PySCF's stored raw analytic PBE DF-J Hessian is itself
+        // 9.1e-7 asymmetric (`hessian_analytic_asymmetry`), so agreement much below
+        // 1e-6 is not attainable; the bar is ~2x that resolution. The
+        // discriminating test is the per-PR FD anchor (ks_rij_fixed_grid_hessian.rs,
+        // 2e-7); this PySCF comparison is corroboration.
+        tol_hessian: 2e-6,
         tol_freq: 1e-2,
         aux: Some("def2-universal-jkfit"),
     },

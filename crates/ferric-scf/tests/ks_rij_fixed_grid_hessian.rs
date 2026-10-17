@@ -26,9 +26,10 @@
 //! # Hypotheses
 //!
 //! Physics (RI-J Hessian is right): Hessian == FD of the DF-J gradient at the
-//! FD floor (~1e-7..1e-6); `|H_DF - H_exact|` is a small multiple of
-//! `|E_DF - E_exact|` (measured ratio ~3.7 for water/6-31G/PBE in PySCF) and
-//! falls with a richer auxiliary basis. Artifact (the DF terms are silently
+//! FD floor (~1e-7..1e-6); `H_DF - H_exact` is a real, fit-sized difference
+//! (measured 1.45e-4 against an energy difference of 3.9e-5 Ha for water/6-31G/PBE;
+//! the ratio is mixed-unit and corroboration only) that falls with a richer
+//! auxiliary basis. Artifact (the DF terms are silently
 //! exact): `H_DF == H_exact` exactly, and the FD of the DF gradient is missed
 //! by the fitting error. These differ by more than 10x the bar, so the test
 //! distinguishes them.
@@ -246,7 +247,7 @@ fn analytic(r: &Ref, m: &KsFixedGridMutants) -> Array2<f64> {
 /// Step of the finite differences, Bohr.
 const H_FD: f64 = 5e-4;
 /// Gradient vs FD of the energy, Ha/Bohr.
-const TOL_GRAD_FD: f64 = 1e-7;
+const TOL_GRAD_FD: f64 = 3e-9;
 /// Hessian vs FD of the DF-J gradient, Ha/Bohr^2 (re-converged SCFs, stencil
 /// second derivatives of the 3c integrals).
 const TOL_HESS_FD: f64 = 2e-7;
@@ -255,7 +256,12 @@ const MUTANT_FACTOR: f64 = 10.0;
 
 #[test]
 fn rij_gradient_matches_central_difference_of_the_fixed_grid_energy() {
-    for (basis_name, xc) in [("sto-3g", "PBE"), ("6-31g", "PBE0")] {
+    for (basis_name, xc) in [
+        ("sto-3g", "PBE"),
+        ("6-31g", "PBE0"),
+        ("6-31g", "LDA"),
+        ("6-31g", "PBE"),
+    ] {
         let r = reference(basis_name, xc, Some(AUX));
         let an = gradient_at(&r, &r.pt);
         let fd = fd_gradient_of_energy(&r, H_FD);
@@ -443,7 +449,10 @@ fn production_ri_j_scf_result_gives_the_same_hessian() {
     )
     .unwrap_err()
     .to_string();
-    assert!(err.contains("RI-J basis"), "{err}");
+    assert!(
+        err.contains("fitted J over") && err.contains("df_j_aux"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -503,4 +512,47 @@ fn ri_k_and_inconsistent_fits_are_refused() {
     let exact = reference("sto-3g", "PBE0", None);
     let msg = run(&hessian_config("PBE0", Some(AUX)), &exact.pt.res);
     assert!(msg.contains("not a converged"), "{msg}");
+}
+
+/// The SAME `RhfConfig` (`df_j_aux` unset, so the SCF fits J over the default
+/// basis) drives `solve_rhf` and the Hessian.
+#[test]
+fn the_same_default_config_serves_the_scf_and_the_hessian() {
+    if !has_deriv2() {
+        return;
+    }
+    let r = reference("sto-3g", "PBE", Some("def2-universal-jkfit"));
+    let ctx = ParallelContext::default();
+    let cfg = RhfConfig {
+        xc: Some("PBE".into()),
+        dft_grid: Some(grid_cfg()),
+        max_iter: 200,
+        energy_conv: 1e-13,
+        density_conv: 1e-11,
+        ..Default::default()
+    };
+    assert!(cfg.df_j_aux.is_none());
+    let prod = solve_rhf(
+        &ctx,
+        &r.mol,
+        &r.pt.prep,
+        Operator::coulomb(),
+        &r.pt.bounds,
+        &cfg,
+    )
+    .unwrap();
+    assert!(prod.df_jk.is_some(), "the KS SCF should have fitted J");
+    let h = rks_fixed_grid_hessian(
+        &ctx,
+        &r.mol,
+        &r.pt.prep,
+        Operator::coulomb(),
+        &r.pt.bounds,
+        &prod,
+        &cfg,
+    )
+    .unwrap();
+    let diff = max_abs_diff(&h, &analytic(&r, &KsFixedGridMutants::default()));
+    eprintln!("default-config Hessian vs injected DF-J: {diff:.3e}");
+    assert!(diff < 5e-10, "{diff:.3e}");
 }

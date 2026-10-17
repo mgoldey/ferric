@@ -121,7 +121,8 @@ fn unsupported(what: &str, next: &str) -> FerricError {
     ))
 }
 
-/// Typed refusals for everything outside closed-shell exact-J/K LDA/GGA (pure or global hybrid).
+/// Typed refusals for everything outside closed-shell LDA/GGA (pure or global hybrid)
+/// with exact or RI-J Coulomb and exact K.
 fn ks_refusal(
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -202,6 +203,39 @@ fn functional_refusal(name: &str, xc: &ferric_dft::libxc::XcDef) -> Result<(), F
         ));
     }
     Ok(())
+}
+
+/// `config` as the closed-shell checklist sees it: no functional, and an unset
+/// `df_j_aux` resolved the way `solve_rhf` resolves it (a Kohn-Sham SCF fits J
+/// over the default basis), so the SAME `RhfConfig` serves the SCF and the
+/// Hessian. A stated basis that differs from the recorded route is refused here
+/// with a Kohn-Sham message.
+fn checklist_config(rks: &ScfResult, config: &RhfConfig) -> Result<RhfConfig, FerricError> {
+    let mut hf = RhfConfig {
+        xc: None,
+        ..config.clone()
+    };
+    let Some(route) = crate::gradient::active_df_route(rks) else {
+        return Ok(hf);
+    };
+    if hf.df_j_aux.is_none() && route.j_aux.as_deref() == Some(crate::fock_assembly::DEFAULT_JK_AUX)
+    {
+        hf.df_j_aux = route.j_aux.clone();
+    }
+    let stated = hf.df_j_aux.clone().filter(|v| !v.is_empty());
+    if stated != route.j_aux {
+        return Err(FerricError::General(format!(
+            "the fixed-grid Kohn-Sham Hessian: the SCF fitted J over {:?} but the configuration \
+             states df_j_aux = {:?}. Pass the RhfConfig the SCF ran with (df_j_aux = None means \
+             the default {:?}, as in solve_rhf; Some(\"\") means exact J). Do not fall back to \
+             harmonic_frequencies for a KS result: it differentiates the moving-grid surface \
+             (with the Becke weight response), a different one.",
+            route.j_aux,
+            config.df_j_aux,
+            crate::fock_assembly::DEFAULT_JK_AUX
+        )));
+    }
+    Ok(hf)
 }
 
 /// The RI-J fit of the SCF being differentiated: a factory for its auxiliary
@@ -356,10 +390,7 @@ pub fn rks_fixed_grid_hessian_parts_with(
     // Everything but the functional is the closed-shell checklist; a stated or
     // recorded RI-J basis goes through the same engine and metric probes as RHF.
     let j_fit = resolve_j_fit(rks, config);
-    let hf_config = RhfConfig {
-        xc: None,
-        ..config.clone()
-    };
+    let hf_config = checklist_config(rks, config)?;
     check_supported(Reference::Rhf, mol, prep, op, bounds, rks, &hf_config)?;
     let aux = |name: String| move || crate::df_gradient::aux_basis(mol, &name);
     match j_fit {
