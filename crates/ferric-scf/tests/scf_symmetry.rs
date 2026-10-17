@@ -463,14 +463,14 @@ fn stretched_h2_needs_symmetry_to_reach_sigma_g_squared() {
         on.irrep_nelec = Some(vec![("Ag".into(), 2)]);
         let blocked = run_sym(&mol, "cc-pvdz", &on).unwrap();
         assert!(
-            (blocked.energy() - want).abs() < 1e-7,
+            (blocked.energy() - want).abs() < 1e-9,
             "R={r}: {} vs {want}",
             blocked.energy()
         );
         let plain = run_mol(&mol, "cc-pvdz", &cfg(false));
         eprintln!(
-            "H2 R={r}: blocked {:.10} (ref {want:.10}); unblocked {:?}",
-            blocked.energy(),
+            "H2 R={r}: blocked-ref = {:.2e}; unblocked {:?}",
+            blocked.energy() - want,
             plain.as_ref().map(|p| (p.energy, p.converged))
         );
         // A failed (non-converged) unblocked run is also a miss.
@@ -520,4 +520,31 @@ fn ecp_molecule_blocked_matches_unblocked() {
         sym.energy(),
         off.energy
     );
+}
+
+/// CSB and CSAM screening requested by the caller must reach the blocked
+/// solve. Screening only drops quartets below the threshold, so the energy
+/// agrees with the unblocked solve under the same screen to within the
+/// screening error either way; this guards against plain Schwarz being
+/// substituted silently (see `symmetric::tests::frame_bounds_*` for the
+/// flavour itself).
+#[test]
+fn csb_and_csam_screens_run_through_the_blocked_solve() {
+    use ferric_scf::screening::ScreeningKind;
+    let mol = load("water.xyz");
+    let bs = basis::bundled("sto-3g").unwrap();
+    let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    let op = Operator::coulomb();
+    let ctx = ParallelContext::default();
+    for kind in [ScreeningKind::Csb, ScreeningKind::Csam] {
+        let bounds = SchwarzBounds::compute_for_screening(op, &prep, kind).unwrap();
+        let sym = solve_rhf_symmetric(&ctx, &mol, &prep, op, &bounds, &cfg(true)).unwrap();
+        let off = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg(false)).unwrap();
+        assert!(
+            (sym.energy() - off.energy).abs() < 1e-8,
+            "{kind:?}: {} vs {}",
+            sym.energy(),
+            off.energy
+        );
+    }
 }

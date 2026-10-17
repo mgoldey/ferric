@@ -97,7 +97,7 @@
 
 use crate::result::ScfResult;
 use crate::rhf::{canonical_orthogonalizer, RhfConfig};
-use crate::screening::SchwarzBounds;
+use crate::screening::{SchwarzBounds, ScreeningKind};
 use ferric_core::parallel::ParallelContext;
 use ferric_core::symmetry::{
     self, irreps, require_no_external_potential, AbelianGroup, AoRepresentation, Irrep,
@@ -547,7 +547,7 @@ pub fn solve_rhf_symmetric(
     }
     let sym_mol = det.molecule.clone();
     let prep_sym = PreparedBasis::new(&sym_mol, prep.basis_set())?;
-    let bounds_sym = SchwarzBounds::compute(op, &prep_sym)?;
+    let bounds_sym = frame_bounds(op, &prep_sym, bounds)?;
     let rep = AoRepresentation::new(&det, &sym_mol, prep.basis_set())?;
     let spec = SymmetrySpec::new(
         rep,
@@ -566,6 +566,30 @@ pub fn solve_rhf_symmetric(
         origin: det.origin,
         max_symmetrization_shift: det.max_symmetrization_shift,
     })
+}
+
+/// The screening flavour the caller's bounds carry (the two tables are
+/// mutually exclusive, see [`SchwarzBounds::compute_for_screening`]).
+pub(crate) fn screening_kind_of(bounds: &SchwarzBounds) -> ScreeningKind {
+    if bounds.csb_m.is_some() {
+        ScreeningKind::Csb
+    } else if bounds.csam_x.is_some() {
+        ScreeningKind::Csam
+    } else {
+        ScreeningKind::Schwarz
+    }
+}
+
+/// Bounds for the symmetry-frame basis with the SAME screening flavour as the
+/// caller's. Rebuilding plain Schwarz would not change the energy (screening
+/// only drops quartets below the threshold) but would silently discard a
+/// requested CSB/CSAM screen.
+pub(crate) fn frame_bounds(
+    op: Operator,
+    prep_sym: &PreparedBasis,
+    input: &SchwarzBounds,
+) -> Result<SchwarzBounds, FerricError> {
+    SchwarzBounds::compute_for_screening(op, prep_sym, screening_kind_of(input))
 }
 
 /// C1: the unmodified solver on the unmodified inputs.
@@ -591,6 +615,29 @@ fn solve_c1(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frame_bounds_keep_the_callers_screening_kind() {
+        let mol = ferric_core::mol::Molecule::parse_xyz(
+            "3\nw\nO 0 0 0.1\nH 0 0.75 -0.47\nH 0 -0.75 -0.47\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let bs = ferric_core::basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        for kind in [
+            ScreeningKind::Schwarz,
+            ScreeningKind::Csb,
+            ScreeningKind::Csam,
+        ] {
+            let input = SchwarzBounds::compute_for_screening(op, &prep, kind).unwrap();
+            assert_eq!(screening_kind_of(&input), kind);
+            let out = frame_bounds(op, &prep, &input).unwrap();
+            assert_eq!(screening_kind_of(&out), kind, "{kind:?} was dropped");
+        }
+    }
 
     #[test]
     fn plain_aufbau_is_a_global_energy_sort() {
