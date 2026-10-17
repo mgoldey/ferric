@@ -1,0 +1,96 @@
+{
+  "provenance": {
+    "code": "pyscf",
+    "version": "2.13.1",
+    "keywords": {
+      "method": "RHF",
+      "symmetry": true,
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-08,
+      "max_cycle": 200
+    },
+    "grid": "none",
+    "aux_basis": "none",
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-08,
+      "max_cycle": 200
+    },
+    "stability": null,
+    "basis": "sto-3g",
+    "basis_json": "crates/ferric-core/src/basis/bundled/sto-3g.json",
+    "basis_sha256": "138c7b6b356329ea6167660296b231f1c80e5ec84ce7097900146b57ec8a4f39",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/c2h4.xyz",
+    "geometry_xyz_sha256": "15a0488270608177990a36740a5aa467102ec75addc587271cb57057c5231c21",
+    "geometry_bohr": [
+      [
+        "C",
+        0.0,
+        0.0,
+        1.265171640396309
+      ],
+      [
+        "C",
+        0.0,
+        0.0,
+        -1.265171640396309
+      ],
+      [
+        "H",
+        0.0,
+        1.7438997389846251,
+        2.338904575743554
+      ],
+      [
+        "H",
+        0.0,
+        -1.7438997389846251,
+        2.338904575743554
+      ],
+      [
+        "H",
+        0.0,
+        1.7438997389846251,
+        -2.338904575743554
+      ],
+      [
+        "H",
+        0.0,
+        -1.7438997389846251,
+        -2.338904575743554
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_scf_symmetry.py",
+    "git_head": "cec6f3b2b9da379fa73f615a756c54ce8cd30b16",
+    "generated_utc": "2026-10-17T15:11:36+00:00"
+  },
+  "unblocked": {
+    "energy": -77.07224933578028
+  },
+  "ground": {
+    "energy": -77.07224933578037,
+    "group": "D2h",
+    "irreps": [
+      "Ag",
+      "B2g",
+      "B3g",
+      "B1u",
+      "B2u",
+      "B3u"
+    ],
+    "docc_per_irrep": {
+      "Ag": 3,
+      "B2g": 0,
+      "B3g": 1,
+      "B1u": 2,
+      "B2u": 1,
+      "B3u": 1
+    },
+    "nuclear_repulsion": 33.284389278701624,
+    "energy_unblocked": -77.07224933578028
+  }
+}

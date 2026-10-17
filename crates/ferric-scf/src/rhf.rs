@@ -376,6 +376,19 @@ pub struct RhfConfig {
     /// are likewise skipped with a reason (see
     /// [`crate::stability::ks_reference_is_analysable`]).
     pub check_stability: bool,
+    /// Opt-in point-group symmetry blocking (closed-shell RHF only). `false`
+    /// (default) is bit-identical to a build without symmetry support. `true`
+    /// detects the highest Abelian subgroup, runs the SCF in its symmetry
+    /// frame, diagonalizes the Fock matrix per irrep and fills orbitals by
+    /// aufbau across irreps (or per [`irrep_nelec`](Self::irrep_nelec)). A C1
+    /// molecule runs untouched. Use [`crate::symmetric::solve_rhf_symmetric`] (`solve_rhf` refuses it); see [`crate::symmetric`] for the contract
+    /// (entry point, frame, refused features).
+    pub symmetry: bool,
+    /// Electrons per irrep, e.g. `[("A1", 8), ("B2", 2), ("B1", 0)]`, used only
+    /// with [`symmetry`](Self::symmetry). Each count must be even. Listed irreps
+    /// hold exactly that many electrons (lowest orbitals of the irrep); unlisted
+    /// irreps share the remaining electrons by aufbau. `None` = plain aufbau.
+    pub irrep_nelec: Option<Vec<(String, usize)>>,
     /// Which screening bound to build for the LinK-specific pair list when
     /// `k_builder == Some("link")`. Default
     /// [`crate::screening::ScreeningKind::Schwarz`] — byte-identical to every
@@ -483,6 +496,8 @@ impl Default for RhfConfig {
             polarizable: None,
             verbose: false,
             check_stability: false,
+            symmetry: false,
+            irrep_nelec: None,
             screening: crate::screening::ScreeningKind::default(),
         }
     }
@@ -1010,6 +1025,7 @@ pub fn solve_rhf(
     bounds: &SchwarzBounds,
     config: &RhfConfig,
 ) -> Result<ScfResult, FerricError> {
+    crate::symmetric::require_symmetry_off(config, "solve_rhf")?;
     let first = solve_rhf_once(ctx, mol, prep, op, bounds, config)?;
     if !config.scf_stability_descent {
         // Knob off (the default): the single solve, returned untouched.
@@ -1157,6 +1173,12 @@ pub fn validate_injected(config: &RhfConfig) -> Result<(), InjectedConfigError> 
     let reject = |field: &'static str, reason: &'static str| -> Result<(), InjectedConfigError> {
         Err(InjectedConfigError { field, reason })
     };
+    if config.symmetry || config.irrep_nelec.is_some() {
+        return reject(
+            "symmetry",
+            "point-group blocking detects molecular symmetry; a periodic cell has none here",
+        );
+    }
     if config.k_builder.is_some() {
         return reject(
             "k_builder",
@@ -1250,7 +1272,7 @@ pub fn solve_rhf_injected<'a>(
 ) -> Result<ScfResult, FerricError> {
     validate_injected(config)?;
     check_injection_shapes("solve_rhf_injected", &inj, prep.nbasis())?;
-    solve_rhf_impl(ctx, mol, prep, op, bounds, config, Some(inj))
+    solve_rhf_impl(ctx, mol, prep, op, bounds, config, Some(inj), None)
 }
 
 /// Shape/finiteness checks shared by [`solve_rhf_injected`] and
@@ -1431,7 +1453,7 @@ fn rhf_stability_descent(
 
 /// One closed-shell SCF solve, no state selection. [`solve_rhf`] is this plus
 /// the opt-in [`rhf_stability_descent`].
-fn solve_rhf_once(
+pub(crate) fn solve_rhf_once(
     ctx: &ParallelContext,
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -1439,7 +1461,21 @@ fn solve_rhf_once(
     bounds: &SchwarzBounds,
     config: &RhfConfig,
 ) -> Result<ScfResult, FerricError> {
-    solve_rhf_impl(ctx, mol, prep, op, bounds, config, None)
+    solve_rhf_impl(ctx, mol, prep, op, bounds, config, None, None)
+}
+
+/// The point-group-blocked solve (see [`crate::symmetric`]); `mol`/`prep`/
+/// `bounds` are already in the symmetry frame.
+pub(crate) fn solve_rhf_blocked(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    config: &RhfConfig,
+    spec: &crate::symmetric::SymmetrySpec,
+) -> Result<ScfResult, FerricError> {
+    solve_rhf_impl(ctx, mol, prep, op, bounds, config, None, Some(spec))
 }
 
 /// Shared body of [`solve_rhf`] (`inj = None`, byte-identical to the
@@ -1453,6 +1489,7 @@ fn solve_rhf_impl(
     bounds: &SchwarzBounds,
     config: &RhfConfig,
     inj: Option<PeriodicInjection<'_>>,
+    sym: Option<&crate::symmetric::SymmetrySpec>,
 ) -> Result<ScfResult, FerricError> {
     // Refuse an open-shell molecule BEFORE any work. See `require_closed_shell`.
     // (Moved here from solve_rhf on rebase so the injected path keeps it too.)
@@ -1880,6 +1917,8 @@ fn solve_rhf_impl(
     // For well-conditioned S, m == n and X reproduces existing energies; see
     // canonical_orthogonalizer / diagonalize for the padding-back-to-n convention.
     let x = canonical_orthogonalizer(&s)?;
+    // Fock diagonalizer: global by default, per-irrep under point-group blocking.
+    let diag = crate::symmetric::FockDiag::new(sym, &s, &x, nocc)?;
 
     // Previous-iteration MO coefficients, needed to build the virtual-block level
     // shift (a projector onto the prior virtuals). None before the first solve.
@@ -2473,7 +2512,7 @@ fn solve_rhf_impl(
                         );
                     }
                 }
-                let (orb_e, c) = diagonalize(&f, &x)?;
+                let (orb_e, c) = diag.run(&f)?;
                 let density_alpha = 0.5 * &d;
                 crate::driver::warn_if_rss_over_at_stage("RHF", "converged", ooc_budget);
 
@@ -3005,7 +3044,7 @@ fn solve_rhf_impl(
             }
         }
 
-        let (eps, mut c) = diagonalize(&f_new, &x)?;
+        let (eps, mut c) = diag.run(&f_new)?;
         last_eps = eps;
         // Only retain C across iterations when the level shift needs it; the
         // default (shift = 0) path skips the clone entirely.
@@ -3317,7 +3356,7 @@ fn lindep_thresh() -> f64 {
 /// For a well-conditioned S, m == n and no mode is dropped (regression-safe).
 ///
 /// X is NOT symmetric (even when m == n) — callers must use the rectangular
-/// transform Fʹ = Xᵀ F X, C = X Vʹ (see [`diagonalize`]).
+/// transform Fʹ = Xᵀ F X, C = X Vʹ (see `crate::driver::diagonalize_rect`).
 pub(crate) fn canonical_orthogonalizer(s: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
     let n = s.nrows();
     // Runs once at SCF setup, serially (called before the iteration loop, no
@@ -3342,17 +3381,6 @@ pub(crate) fn canonical_orthogonalizer(s: &Array2<f64>) -> Result<Array2<f64>, F
         }
     }
     Ok(x)
-}
-
-/// Diagonalize the Fock matrix in the canonical-orthogonal basis.
-///
-/// With X (n × m) rectangular: Fʹ = Xᵀ F X is (m × m), its eigenvectors Vʹ are
-/// (m × m), and C_kept = X Vʹ is (n × m). The result is PADDED back to (n × n)
-/// by appending (n − m) zero MO columns with sentinel energy 1e6, so every
-/// downstream consumer (GW, RPA, density build) sees the historical (n × n) /
-/// length-n shapes while the near-singular directions are inert virtuals.
-fn diagonalize(f: &Array2<f64>, x: &Array2<f64>) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
-    crate::driver::diagonalize_rect(f, x)
 }
 
 #[cfg(test)]

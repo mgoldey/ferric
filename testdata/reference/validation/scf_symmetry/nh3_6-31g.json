@@ -1,0 +1,76 @@
+{
+  "provenance": {
+    "code": "pyscf",
+    "version": "2.13.1",
+    "keywords": {
+      "method": "RHF",
+      "symmetry": true,
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-08,
+      "max_cycle": 200
+    },
+    "grid": "none",
+    "aux_basis": "none",
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-08,
+      "max_cycle": 200
+    },
+    "stability": null,
+    "basis": "6-31g",
+    "basis_json": "crates/ferric-core/src/basis/bundled/6-31g.json",
+    "basis_sha256": "1ae9712168e449cee8ee656810f9dc2619083fc9a78f0b8e8dac77c5dbcfa7ef",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/nh3.xyz",
+    "geometry_xyz_sha256": "f7efd4cb3fe499b3eddacef18634350763f5cb5898799a44448f143372b0e3c8",
+    "geometry_bohr": [
+      [
+        "N",
+        0.0,
+        0.0,
+        0.22013230652445948
+      ],
+      [
+        "H",
+        0.0,
+        1.7758342207636502,
+        -0.5136426784657803
+      ],
+      [
+        "H",
+        1.5379177016809087,
+        -0.8879161655187627,
+        -0.5136426784657803
+      ],
+      [
+        "H",
+        -1.5379177016809087,
+        -0.8879161655187627,
+        -0.5136426784657803
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_scf_symmetry.py",
+    "git_head": "cec6f3b2b9da379fa73f615a756c54ce8cd30b16",
+    "generated_utc": "2026-10-17T15:11:35+00:00"
+  },
+  "unblocked": {
+    "energy": -56.16048793031839
+  },
+  "ground": {
+    "energy": -56.16048793031846,
+    "group": "Cs",
+    "irreps": [
+      "A'",
+      "A\""
+    ],
+    "docc_per_irrep": {
+      "A'": 4,
+      "A\"": 1
+    },
+    "nuclear_repulsion": 11.904528974062835,
+    "energy_unblocked": -56.16048793031839
+  }
+}

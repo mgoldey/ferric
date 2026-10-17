@@ -293,6 +293,7 @@ pub fn rhf_hessian_parts(
     rhf: &ScfResult,
     config: &RhfConfig,
 ) -> Result<RhfHessianParts, FerricError> {
+    crate::symmetric::require_symmetry_off(config, "rhf_hessian")?;
     rhf_hessian_parts_with(
         ctx,
         mol,

@@ -1086,6 +1086,9 @@ pub fn scf_proatom_provider<'a>(
         acfg.pcm = None;
         acfg.polarizable = None;
         acfg.constraints.clear();
+        // A free atom is solved in the input frame, never point-group blocked.
+        acfg.symmetry = false;
+        acfg.irrep_nelec = None;
         if mult != 1 {
             acfg.mom_after_iter = 5;
             // Pure HF free atoms do not need this (K is orbital-invariant in

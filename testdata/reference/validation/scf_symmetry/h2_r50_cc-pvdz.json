@@ -1,0 +1,93 @@
+{
+  "provenance": {
+    "code": "pyscf",
+    "version": "2.13.1",
+    "keywords": {
+      "method": "RHF",
+      "symmetry": true,
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-08,
+      "max_cycle": 200
+    },
+    "grid": "none",
+    "aux_basis": "none",
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-08,
+      "max_cycle": 200
+    },
+    "stability": null,
+    "basis": "cc-pvdz",
+    "basis_json": "crates/ferric-core/src/basis/bundled/cc-pvdz.json",
+    "basis_sha256": "ae48fcca0d533addd60dbd48490153130e697121767ba607e1d70f3b341eeef7",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/h2_r50.xyz",
+    "geometry_xyz_sha256": "707dea052fefde86242887c63e798570846f6e51df7cab6e83dfbe7ad2a66ed8",
+    "geometry_bohr": [
+      [
+        "H",
+        0.0,
+        0.0,
+        47.24315311412654
+      ],
+      [
+        "H",
+        0.0,
+        0.0,
+        -47.24315311412654
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_scf_symmetry.py",
+    "git_head": "cec6f3b2b9da379fa73f615a756c54ce8cd30b16",
+    "generated_utc": "2026-10-17T15:11:45+00:00"
+  },
+  "unblocked": {
+    "energy": -0.4271827812477025,
+    "converged": false
+  },
+  "sigma_g2": {
+    "energy": -0.7126669026994246,
+    "group": "Dooh",
+    "irreps": [
+      "A1g",
+      "E1gx",
+      "E1gy",
+      "A1u",
+      "E1uy",
+      "E1ux"
+    ],
+    "docc_per_irrep": {
+      "A1g": 1,
+      "E1gx": 0,
+      "E1gy": 0,
+      "A1u": 0,
+      "E1uy": 0,
+      "E1ux": 0
+    },
+    "nuclear_repulsion": 0.010583544218400001
+  },
+  "sigma_u2": {
+    "energy": -0.7126669026994249,
+    "group": "Dooh",
+    "irreps": [
+      "A1g",
+      "E1gx",
+      "E1gy",
+      "A1u",
+      "E1uy",
+      "E1ux"
+    ],
+    "docc_per_irrep": {
+      "A1g": 0,
+      "E1gx": 0,
+      "E1gy": 0,
+      "A1u": 1,
+      "E1uy": 0,
+      "E1ux": 0
+    },
+    "nuclear_repulsion": 0.010583544218400001
+  }
+}

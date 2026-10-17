@@ -1,0 +1,136 @@
+{
+  "provenance": {
+    "code": "pyscf",
+    "version": "2.13.1",
+    "keywords": {
+      "method": "RHF",
+      "symmetry": true,
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-08,
+      "max_cycle": 200
+    },
+    "grid": "none",
+    "aux_basis": "none",
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-08,
+      "max_cycle": 200
+    },
+    "stability": null,
+    "basis": "6-31g",
+    "basis_json": "crates/ferric-core/src/basis/bundled/6-31g.json",
+    "basis_sha256": "1ae9712168e449cee8ee656810f9dc2619083fc9a78f0b8e8dac77c5dbcfa7ef",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/benzene.xyz",
+    "geometry_xyz_sha256": "2b21ff37bca03f55fc023d5d0528e9efe3fee3e30b549657fe7e95432e558e1b",
+    "geometry_bohr": [
+      [
+        "C",
+        0.0,
+        2.638057669892826,
+        0.0
+      ],
+      [
+        "C",
+        2.2846788845991597,
+        1.319028834946413,
+        0.0
+      ],
+      [
+        "C",
+        2.2846788845991597,
+        -1.319028834946413,
+        0.0
+      ],
+      [
+        "C",
+        0.0,
+        -2.638057669892826,
+        0.0
+      ],
+      [
+        "C",
+        -2.2846788845991597,
+        -1.319028834946413,
+        0.0
+      ],
+      [
+        "C",
+        -2.2846788845991597,
+        1.319028834946413,
+        0.0
+      ],
+      [
+        "H",
+        0.0,
+        4.684631062796789,
+        0.0
+      ],
+      [
+        "H",
+        4.057241989441187,
+        2.3432603944606765,
+        0.0
+      ],
+      [
+        "H",
+        4.057241989441187,
+        -2.3432603944606765,
+        0.0
+      ],
+      [
+        "H",
+        0.0,
+        -4.684631062796789,
+        0.0
+      ],
+      [
+        "H",
+        -4.057241989441187,
+        -2.3432603944606765,
+        0.0
+      ],
+      [
+        "H",
+        -4.057241989441187,
+        2.3432603944606765,
+        0.0
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_scf_symmetry.py",
+    "git_head": "cec6f3b2b9da379fa73f615a756c54ce8cd30b16",
+    "generated_utc": "2026-10-17T15:11:38+00:00"
+  },
+  "unblocked": {
+    "energy": -230.62367617292372
+  },
+  "ground": {
+    "energy": -230.62367617292338,
+    "group": "D2h",
+    "irreps": [
+      "Ag",
+      "B1g",
+      "B2g",
+      "B3g",
+      "Au",
+      "B1u",
+      "B2u",
+      "B3u"
+    ],
+    "docc_per_irrep": {
+      "Ag": 6,
+      "B1g": 1,
+      "B2g": 1,
+      "B3g": 3,
+      "Au": 0,
+      "B1u": 5,
+      "B2u": 4,
+      "B3u": 1
+    },
+    "nuclear_repulsion": 203.3679509305172,
+    "energy_unblocked": -230.62367617292372
+  }
+}

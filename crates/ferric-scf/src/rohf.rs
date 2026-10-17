@@ -352,6 +352,7 @@ fn solve_rohf_impl(
     initial_mos: Option<&Array2<f64>>,
     inj: Option<PeriodicInjection<'_>>,
 ) -> Result<ScfResult, FerricError> {
+    crate::symmetric::require_symmetry_off(config, "solve_rohf")?;
     use ferric_dft::ks::KsXcUks;
     use ferric_dft::xc_trait::{KMix, UksXcContribution};
 
