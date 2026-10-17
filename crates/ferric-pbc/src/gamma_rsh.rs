@@ -272,7 +272,7 @@ impl GammaRshExchange {
 
 /// Closed-shell Gamma RKS for ANY supported functional: a range-separated
 /// hybrid takes the attenuated K of [`GammaRshExchange::build_for_binding`]
-/// (built on `aux`, or dense AFT when `None`), everything else [`gamma_rks`].
+/// (built on `aux`, or dense AFT when `None`), everything else [`crate::dft::gamma_rks`].
 /// The one entry the Python and CLI bindings share.
 pub fn gamma_rks_any(
     cell: &Cell,
