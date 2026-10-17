@@ -31,6 +31,7 @@ use ferric_integrals::engine::{boys_fm_chebyshev7, tenno_gm, Engine, TennoKind};
 use ferric_integrals::operator::Operator;
 
 #[path = "data/yukawa_urr_ref.rs"]
+#[allow(clippy::approx_constant)] // generated mpmath values
 mod reference;
 
 /// Libint's stock evaluation stays unchanged from this `T` (see the override).
