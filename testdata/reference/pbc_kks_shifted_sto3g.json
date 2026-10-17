@@ -1,0 +1,175 @@
+{
+ "pyscf": "2.13.1",
+ "setup": "KRKS, AFTDF, UniformGrids, exxdiv=ewald, conv_tol=1e-12, make_kpts(n, with_gamma_point=False), STO-3G H, units Bohr/Hartree",
+ "cells": {
+  "h2_cubic_a4": {
+   "a": [
+    [
+     4.0,
+     0.0,
+     0.0
+    ],
+    [
+     0.0,
+     4.0,
+     0.0
+    ],
+    [
+     0.0,
+     0.0,
+     4.0
+    ]
+   ],
+   "atoms": [
+    [
+     0.3,
+     0.2,
+     0.1
+    ],
+    [
+     0.3,
+     0.2,
+     1.5
+    ]
+   ],
+   "mesh": 61
+  },
+  "h4_triclinic": {
+   "a": [
+    [
+     4.6,
+     0.0,
+     0.0
+    ],
+    [
+     0.9,
+     4.3,
+     0.0
+    ],
+    [
+     0.5,
+     0.7,
+     4.8
+    ]
+   ],
+   "atoms": [
+    [
+     0.1,
+     0.2,
+     0.3
+    ],
+    [
+     0.1,
+     0.2,
+     1.7
+    ],
+    [
+     2.4,
+     2.5,
+     2.2
+    ],
+    [
+     3.6,
+     2.9,
+     2.6
+    ]
+   ],
+   "mesh": 45
+  }
+ },
+ "script": "scripts/gen_pyscf_kks_shifted_refs.py",
+ "rows": [
+  {
+   "cell": "h4_triclinic",
+   "mesh": [
+    1,
+    1,
+    2
+   ],
+   "xc": "PBE",
+   "energy": -2.303582460312,
+   "nk": 2
+  },
+  {
+   "cell": "h4_triclinic",
+   "mesh": [
+    1,
+    1,
+    2
+   ],
+   "xc": "PBE0",
+   "energy": -2.330828591827365,
+   "nk": 2
+  },
+  {
+   "cell": "h4_triclinic",
+   "mesh": [
+    1,
+    1,
+    4
+   ],
+   "xc": "PBE",
+   "energy": -2.312831259527208,
+   "nk": 4
+  },
+  {
+   "cell": "h4_triclinic",
+   "mesh": [
+    1,
+    1,
+    4
+   ],
+   "xc": "PBE0",
+   "energy": -2.324770859921939,
+   "nk": 4
+  },
+  {
+   "cell": "h2_cubic_a4",
+   "mesh": [
+    1,
+    1,
+    2
+   ],
+   "xc": "PBE",
+   "energy": -1.3931883206757238,
+   "nk": 2
+  },
+  {
+   "cell": "h2_cubic_a4",
+   "mesh": [
+    1,
+    1,
+    2
+   ],
+   "xc": "PBE0",
+   "energy": -1.4172691805976538,
+   "nk": 2
+  },
+  {
+   "cell": "h2_cubic_a4",
+   "mesh": [
+    1,
+    1,
+    4
+   ],
+   "xc": "PBE",
+   "energy": -1.3653088686005193,
+   "nk": 4
+  },
+  {
+   "cell": "h2_cubic_a4",
+   "mesh": [
+    1,
+    1,
+    4
+   ],
+   "xc": "PBE0",
+   "energy": -1.3717307485111725,
+   "nk": 4
+  }
+ ],
+ "numpy": "1.26.4",
+ "date": "2026-10-17",
+ "libxc": "not recorded (the libxc bundled with pyscf 2.13.1)",
+ "generator_git_sha": "none: generated from the uncommitted working-tree version of scripts/gen_pyscf_kks_shifted_refs.py that was first committed with this file, before the provenance fields existed; per-row runtime not recorded"
+}
