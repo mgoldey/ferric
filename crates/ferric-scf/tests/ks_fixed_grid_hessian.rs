@@ -712,16 +712,24 @@ fn unsupported_configurations_are_refused_naming_the_next_unit() {
     assert!(msg.contains("Kohn-Sham configuration"), "{msg}");
     let msg = refusal_with(
         &RhfConfig {
+            df_k_aux: Some("def2-universal-jkfit".into()),
+            ..hessian_config()
+        },
+        &r,
+        res,
+    );
+    assert!(msg.contains("RI-K") && msg.contains("issue #407"), "{msg}");
+    // An exact-J SCF presented as an RI-J one: the rebuilt Fock matrix differs
+    // by the fitting error (RI-J itself is supported: ks_rij_fixed_grid_hessian.rs).
+    let msg = refusal_with(
+        &RhfConfig {
             df_j_aux: Some("def2-universal-jkfit".into()),
             ..hessian_config()
         },
         &r,
         res,
     );
-    assert!(
-        msg.contains("density-fitted") && msg.contains("RI-J/RI-K"),
-        "{msg}"
-    );
+    assert!(msg.contains("not a converged"), "{msg}");
     let msg = refusal_with(
         &RhfConfig {
             external_potential: Some(ferric_core::external_potential::ExternalPotential {
@@ -862,9 +870,16 @@ fn a_result_of_another_energy_is_refused_by_the_fock_consistency_guard() {
         }],
         ..Default::default()
     };
-    let legit_inj =
-        rks_fixed_grid_fock_residual(&ctx, &r.mol, &r.prep, &r.bounds, &r.fixed.res, &r.grid)
-            .unwrap();
+    let legit_inj = rks_fixed_grid_fock_residual(
+        &ctx,
+        &r.mol,
+        &r.prep,
+        &r.bounds,
+        &r.fixed.res,
+        &r.grid,
+        None,
+    )
+    .unwrap();
     let legit_prod = rks_fixed_grid_fock_residual(
         &ctx,
         &r.mol,
@@ -872,6 +887,7 @@ fn a_result_of_another_energy_is_refused_by_the_fock_consistency_guard() {
         &r.bounds,
         &solve(&exact(Some("LDA"), None)),
         &r.grid,
+        None,
     )
     .unwrap();
     eprintln!("legitimate residuals: injected {legit_inj:.2e}, production {legit_prod:.2e}");
@@ -884,7 +900,8 @@ fn a_result_of_another_energy_is_refused_by_the_fock_consistency_guard() {
         ..exact(Some("LDA"), None)
     });
     let legit_loose =
-        rks_fixed_grid_fock_residual(&ctx, &r.mol, &r.prep, &r.bounds, &loose, &r.grid).unwrap();
+        rks_fixed_grid_fock_residual(&ctx, &r.mol, &r.prep, &r.bounds, &loose, &r.grid, None)
+            .unwrap();
     eprintln!("legitimate residual at the default (loose) convergence: {legit_loose:.2e}");
     assert!(legit_loose < 1e-10, "{legit_loose:.2e}");
     for (label, res) in [
@@ -899,11 +916,12 @@ fn a_result_of_another_energy_is_refused_by_the_fock_consistency_guard() {
         ),
     ] {
         let resid =
-            rks_fixed_grid_fock_residual(&ctx, &r.mol, &r.prep, &r.bounds, &res, &r.grid).unwrap();
+            rks_fixed_grid_fock_residual(&ctx, &r.mol, &r.prep, &r.bounds, &res, &r.grid, None)
+                .unwrap();
         let msg = refusal_with(&hessian_config(), &r, &res);
         eprintln!("{label}: residual {resid:.2e}");
         assert!(
-            msg.contains("not a converged closed-shell exact-J/K Kohn-Sham"),
+            msg.contains("not a converged closed-shell Kohn-Sham"),
             "{label}: {msg}"
         );
         assert!(resid > 100.0 * legit_prod.max(legit_inj), "{label}");

@@ -146,8 +146,8 @@
 //! The refusal of Kohn-Sham above applies to [`crate::hessian::rhf_hessian`],
 //! `Auto` and `Analytic`. The only analytic KS Hessian is an explicit library
 //! entry point,
-//! [`crate::hessian::rks_fixed_grid_hessian`]: closed-shell LDA or GGA (pure or global hybrid), exact J/K, on a grid
-//! frozen in space (no Becke weight response, so it is not the surface the
+//! [`crate::hessian::rks_fixed_grid_hessian`]: closed-shell LDA or GGA (pure or global hybrid), exact J/K or RI-J (with exact
+//! K; RI-K is refused), on a grid frozen in space (no Becke weight response, so it is not the surface the
 //! production KS gradient differentiates; see the `ks` module).
 //!
 //! Second-derivative integrals need libint2 generated with
@@ -187,7 +187,10 @@ mod rohf;
 pub use rohf::{rohf_hessian, rohf_hessian_parts};
 mod ks;
 #[doc(hidden)]
-pub use ks::{rks_fixed_grid_fock_residual, rks_fixed_grid_hessian_parts_with, KsFixedGridMutants};
+pub use ks::{
+    rks_fixed_grid_fock_residual, rks_fixed_grid_hessian_parts_with,
+    rks_fixed_grid_hessian_parts_with_aux, KsFixedGridMutants, KsJFit,
+};
 pub use ks::{rks_fixed_grid_hessian, rks_fixed_grid_hessian_parts};
 mod uhf_df;
 use uhf_df::{
@@ -2317,7 +2320,20 @@ impl<'a> TwoElectronBuilder<'a> {
     fn g_rhf(&self, d: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
         use crate::fock::{JBuilder, KBuilder};
         if let Some(xc) = self.rhf_g.xc {
-            let (mut j, k) = self.jk(d)?;
+            let (mut j, k) = if let Some(df) = &self.df_j {
+                // RI-J SCF: the Coulomb part is the SCF's own fit; the exact
+                // quartet loop is only run for the exchange of a hybrid.
+                let mut j = Array2::<f64>::zeros(d.dim());
+                df.borrow_mut().build(d, &mut j)?;
+                let k = if self.rhf_g.exx != 0.0 {
+                    self.jk(d)?.1
+                } else {
+                    Array2::<f64>::zeros(d.dim())
+                };
+                (j, k)
+            } else {
+                self.jk(d)?
+            };
             if self.rhf_g.exx != 0.0 {
                 j.scaled_add(-0.5 * self.rhf_g.exx, &k);
             }

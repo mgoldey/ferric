@@ -931,17 +931,56 @@ pub fn rks_fixed_grid_gradient(
     grid: &FixedGridKs,
     rks: &crate::result::ScfResult,
 ) -> Result<Array2<f64>, FerricError> {
+    rks_fixed_grid_gradient_df(mol, prep, op, bounds, grid, rks, None)
+}
+
+/// [`rks_fixed_grid_gradient`] for an SCF whose Coulomb matrix is the RI-J
+/// (`DfJ`) one over the auxiliary basis `dfbs` (at THIS geometry): the Coulomb
+/// term is the fitted `dE_J^DF/dR` ([`crate::df_gradient::df_jk_gradient`]),
+/// the exchange stays the exact `a`-scaled four-centre one. `None` is exactly
+/// [`rks_fixed_grid_gradient`].
+pub fn rks_fixed_grid_gradient_df(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: ferric_integrals::operator::Operator,
+    bounds: &crate::screening::SchwarzBounds,
+    grid: &FixedGridKs,
+    rks: &crate::result::ScfResult,
+    dfbs: Option<&PreparedBasis>,
+) -> Result<Array2<f64>, FerricError> {
     let nocc = (mol.nelec() / 2) as usize;
     let d = rks.density_r();
     let w = crate::gradient::build_energy_weighted_density(rks, nocc);
     let mut grad = crate::gradient::oneelectron_gradient(mol, prep, d, &w, None)?;
-    grad += &crate::ks_gradient::twoelectron_gradient_scaled_k(
-        prep,
-        op,
-        bounds,
-        d,
-        grid.exact_exchange(),
-    )?;
+    match dfbs {
+        None => {
+            grad += &crate::ks_gradient::twoelectron_gradient_scaled_k(
+                prep,
+                op,
+                bounds,
+                d,
+                grid.exact_exchange(),
+            )?;
+        }
+        Some(aux) => {
+            grad += &crate::df_gradient::df_jk_gradient(
+                mol.atoms.len(),
+                prep,
+                aux,
+                op,
+                Some(d),
+                &[],
+                usize::MAX,
+            )?;
+            grad += &crate::ks_gradient::twoelectron_k_gradient(
+                prep,
+                op,
+                bounds,
+                d,
+                grid.exact_exchange(),
+            )?;
+        }
+    }
     grad += &grid.gradient(&XcGeometry::new(mol, prep)?, d)?;
     Ok(grad)
 }
@@ -962,6 +1001,24 @@ pub fn solve_rks_fixed_grid(
     grid: &FixedGridKs,
     config: &crate::rhf::RhfConfig,
 ) -> Result<crate::result::ScfResult, FerricError> {
+    solve_rks_fixed_grid_df(ctx, mol, prep, op, bounds, grid, None, config)
+}
+
+/// [`solve_rks_fixed_grid`] with the Coulomb matrix fitted over `dfbs` (the
+/// SCF's own `DfJ`; the exchange of a hybrid stays exact four-centre). `None`
+/// is exactly [`solve_rks_fixed_grid`]. The result carries no `df_jk` route
+/// (injected path); the Hessian takes the auxiliary basis from its caller.
+#[allow(clippy::too_many_arguments)]
+pub fn solve_rks_fixed_grid_df(
+    ctx: &ferric_core::parallel::ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: ferric_integrals::operator::Operator,
+    bounds: &crate::screening::SchwarzBounds,
+    grid: &FixedGridKs,
+    dfbs: Option<&PreparedBasis>,
+    config: &crate::rhf::RhfConfig,
+) -> Result<crate::result::ScfResult, FerricError> {
     use crate::rhf::{resolve_three_index_budget, solve_rhf_injected, PeriodicInjection};
     let budget = resolve_three_index_budget(config.three_index_budget_bytes);
     let geo = XcGeometry::new(mol, prep)?;
@@ -974,13 +1031,16 @@ pub fn solve_rks_fixed_grid(
             None,
         )?,
         vnn: mol.nuclear_repulsion(),
-        j: Box::new(crate::direct_j::DirectJ::new(
-            ctx,
-            prep,
-            bounds,
-            config.integral_thresh,
-            budget,
-        )),
+        j: match dfbs {
+            Some(aux) => Box::new(crate::df_j::DfJ::new(op, prep, aux, budget)?),
+            None => Box::new(crate::direct_j::DirectJ::new(
+                ctx,
+                prep,
+                bounds,
+                config.integral_thresh,
+                budget,
+            )),
+        },
         k: Box::new(crate::direct_k::DirectK::new(
             ctx,
             prep,
