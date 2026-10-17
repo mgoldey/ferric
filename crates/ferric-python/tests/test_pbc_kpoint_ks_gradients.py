@@ -209,15 +209,34 @@ def test_refusals_have_exact_wording(basis):
     with pytest.raises(
         ValueError,
         match=r'^run_rks_kpts: functional "MGGA_X_TPSS": .*meta-GGA.*\. k-point RKS supports '
-        r"LDA, GGA, global-hybrid and SCAN / r2SCAN meta-GGA functionals only$",
+        r"LDA, GGA, global-hybrid and SCAN / r2SCAN meta-GGA functionals "
+        r"\(plus range-separated hybrids with jk=\"rsgdf\"\) only$",
     ):
         _krks(H2_ATOMS, basis, "MGGA_X_TPSS", with_gradient=True)
     with pytest.raises(
         ValueError,
         match=r'^run_rks_kpts: functional "HSE06": .*range-separated.*\. k-point RKS supports '
-        r"LDA, GGA, global-hybrid and SCAN / r2SCAN meta-GGA functionals only$",
+        r"LDA, GGA, global-hybrid and SCAN / r2SCAN meta-GGA functionals "
+        r"\(plus range-separated hybrids with jk=\"rsgdf\"\) only$",
     ):
         _krks(H2_ATOMS, basis, "HSE06", with_gradient=True)
+    # The energy gate now admits range-separated hybrids on jk="rsgdf"; the
+    # force/stress allowlist is independent and must still refuse them.
+    with pytest.raises(
+        ValueError,
+        match=r"^run_rks_kpts: with_gradient: General error: HSE06: the k-point "
+        r"Kohn-Sham force and stress cover LDA, GGA and global-hybrid functionals "
+        r"only \(no meta-GGA, range-separated hybrid, VV10 or double hybrid for "
+        r"this method\)$",
+    ):
+        _krks(
+            H2_ATOMS,
+            basis,
+            "HSE06",
+            jk="rsgdf",
+            auxbasis="cc-pvdz-ri",
+            with_gradient=True,
+        )
 
 
 def test_ecp_cell_force_is_refused(hi_basis):
