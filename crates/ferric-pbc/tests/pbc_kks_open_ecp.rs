@@ -20,8 +20,8 @@
 //! moves the open-shell RS-GDF energy by >= `MUTANT_MIN`; `NoTimeReversal`
 //! (build every q class explicitly) is NOT a defect and must be a no-op.
 //! Core electrons: a bare-Z (no `apply_ecp`) cell is refused; a PySCF pin
-//! cannot be tighter than PySCF's own ECP integral (3.8e-6 in hcore, see
-//! `pbc_ecp.rs`), so the ECP bar is `ECP_BAR`.
+//! at PySCF's converged ECP precision (cell.precision 1e-12) differs from
+//! ferric by ~1.1e-6 Ha (reason not separated), so the ECP bar is `ECP_BAR`.
 //!
 //! LIMIT: the shifted-mesh Madelung/ewald constant is validated only against
 //! PySCF's convention (no independent twisted-boundary anchor exists).
@@ -218,18 +218,28 @@ fn hi_cell(bs: &BasisSet) -> Cell {
 
 const GRID_N: usize = 31;
 /// Dense-AFT energies reproduce the PySCF pin to 2.3e-10 (measured, all 10
-/// open-shell rows: a constant offset, not noise).
+/// open-shell rows). The offset (-2.23e-10..-2.25e-10 on the triclinic cell,
+/// +3.1e-11 on the cubic H3 pins) is identical for UKS, ROKS, ROHF (no XC) and
+/// every functional, so it is an energy-independent per-cell constant (nuclear
+/// / Madelung bookkeeping), not an XC or SCF effect. It is NOT PySCF's
+/// cell.precision (regenerating at 1e-12 left it unchanged); its source on the
+/// ferric or PySCF side is not separated.
 const PIN_BAR: f64 = 1e-8;
-/// PySCF's own periodic ECP integral is ~3.8e-6 off ferric's libecpint-derived
-/// one in hcore (pbc_ecp.rs). Measured energy gap: 7.5e-7 (PBE), 7.8e-7
-/// (PBE0). Bar derivation: below, it must exceed the measured gap with margin
-/// (6.4x); above, it is capped by PySCF's own ECP error (~4e-6 in hcore), the
-/// largest discrepancy that is NOT a ferric defect. LIMIT: this pin cannot
-/// catch an ECP defect smaller than ~5e-6 Ha. No ECP mutant is expressible
-/// through the production config (image caps / `EcpMutation` sit below
-/// `PeriodicHcoreConfig`), so none was run here; ECP-internal mutants live in
-/// `pbc_ecp.rs`, and only the bare-Z refusal is exercised in this file.
-const ECP_BAR: f64 = 5e-6;
+/// ECP oracle: PySCF `cell.precision = 1e-12`. At its default 1e-8 the PySCF
+/// ECP integral is 2.25e-6 off (max matrix element) and the KRKS PBE energy
+/// 1.9e-6 off; 1e-12 vs 1e-14 agree to 3.0e-9 (PBE energy), so 1e-12 is
+/// converged. Measured ferric - PySCF: -1.151e-6 (PBE), -1.096e-6 (PBE0): a
+/// real, reproducible ECP-integral difference, NOT ferric's truncation (see
+/// `ecp_gap_is_not_ferric_truncation`) nor PySCF's (converged). The remaining
+/// candidates are ferric's ECP quadrature vs PySCF's, or the ECP basis/Z_eff
+/// bookkeeping; not separated here. Bar derivation: below, 1.7x the larger
+/// measured gap; above, ~2e-6 is the smallest defect size this file claims
+/// to see. LIMIT: this pin cannot catch an ECP defect smaller than ~2e-6 Ha.
+/// No ECP mutant is expressible through the production config (image caps /
+/// `EcpMutation` sit below `PeriodicHcoreConfig`), so none was run here;
+/// ECP-internal mutants live in `pbc_ecp.rs`, and only the bare-Z refusal is
+/// exercised in this file.
+const ECP_BAR: f64 = 2e-6;
 /// RS-GDF-vs-dense gap (the cc-pVDZ-RI fit error) bar, and the smallest
 /// movement a q-phase / G = 0 mutant must make (measured values in the
 /// per-test comments).
@@ -276,7 +286,10 @@ fn kuks(cell: &Cell, mesh: &KPointMesh, f: &str, rs: Rs) -> (f64, bool, usize) {
     });
     let r = solve_kuks_on_grid(cell, &prep, aux.as_ref(), mesh, &grid, &cfg)
         .unwrap_or_else(|e| panic!("solve_kuks {f}: {e}"));
-    (r.scf.energy, r.scf.converged, r.scf.iterations)
+    // Total iterations: the staged exxdiv = none start plus the final ewald
+    // stage (which alone can read "1 it" when the start already converged it).
+    let it = r.scf.iterations + r.none_stage.as_ref().map_or(0, |s| s.iterations);
+    (r.scf.energy, r.scf.converged, it)
 }
 
 fn kroks(
@@ -479,10 +492,10 @@ fn original_kroks_hybrid_pins_converge_without_shift_or_long_cap() {
     }
 }
 
-/// PySCF `KROHF` rows: pinned only where PySCF's own occupation rule
-/// converged.
+/// PySCF `KROHF` rows (shifted 1x1x2 and 1x1x4): both converged in PySCF, so
+/// both are pinned.
 #[test]
-fn krohf_matches_pyscf_where_pyscf_converges() {
+fn krohf_matches_pyscf_on_both_shifted_meshes() {
     let cell = h3_triclinic();
     let (_, rows) = load_rows("h3_triclinic");
     let prep = prep_for(&cell, &pyscf_sto3g_h());
@@ -506,21 +519,23 @@ fn krohf_matches_pyscf_where_pyscf_converges() {
             r.scf.energy - e_ref
         );
         assert!(r.scf.converged);
-        if row["converged"].as_bool().unwrap() {
-            assert!((r.scf.energy - e_ref).abs() < PIN_BAR, "KROHF {n:?}");
-            pinned += 1;
-        }
+        assert!(row["converged"].as_bool().unwrap(), "PySCF KROHF {n:?}");
+        assert!((r.scf.energy - e_ref).abs() < PIN_BAR, "KROHF {n:?}");
+        pinned += 1;
     }
-    assert!(pinned >= 1, "no PySCF KROHF row converged");
+    assert_eq!(pinned, 2, "KROHF reference rows");
 }
 
 // ------------------------------------------------------------------- ECP
 
-fn hi_energy(cell: &Cell, bs: &BasisSet, mesh: &KPointMesh, f: &str) -> f64 {
+fn hi_energy(cell: &Cell, bs: &BasisSet, mesh: &KPointMesh, f: &str, prec: Option<f64>) -> f64 {
     let grid = PeriodicGrid::uniform(cell, [45; 3]).unwrap();
     let prep = PreparedBasis::new(cell.mol(), bs).unwrap();
     let mut cfg = KRksConfig::new(cell, ExxDiv::Ewald, f);
     cfg.krhf.hcore.omega = OMEGA;
+    if let Some(p) = prec {
+        cfg.krhf.hcore.precision = p;
+    }
     cfg.krhf.scf.energy_conv = 1e-12;
     cfg.krhf.scf.grad_conv = 1e-9;
     let r = solve_krks_on_grid(cell, &prep, None, mesh, &grid, &cfg)
@@ -530,19 +545,19 @@ fn hi_energy(cell: &Cell, bs: &BasisSet, mesh: &KPointMesh, f: &str) -> f64 {
 }
 
 /// HI with the I LANL2DZ ECP (46 core electrons): shifted 1x1x2 k-RKS PBE and
-/// PBE0 against PySCF `KRKS` (own ECP integral, hence `ECP_BAR`).
+/// PBE0 against PySCF `KRKS` (own ECP integral at cell.precision 1e-12, hence `ECP_BAR`).
 #[test]
 fn ecp_cell_krks_matches_pinned_pyscf() {
     let bs = hi_basis(true);
     let cell = hi_cell(&bs);
     let (j, rows) = load_rows("hi_ecp");
-    assert_eq!(j["cells"]["hi_ecp"]["mesh"].as_u64().unwrap(), 45);
+    check_cell(&j, "hi_ecp", &cell, 45);
     let mut seen = 0;
     for row in rows {
         let f = row["xc"].as_str().unwrap();
         let n = row_mesh(&row);
         let mesh = KPointMesh::monkhorst_pack(&cell, n).unwrap();
-        let e = hi_energy(&cell, &bs, &mesh, f);
+        let e = hi_energy(&cell, &bs, &mesh, f, None);
         let e_ref = row["energy"].as_f64().unwrap();
         eprintln!(
             "HI {n:?} {f}: {e:.12} PySCF {e_ref:.12} dE {:.2e}",
@@ -568,4 +583,21 @@ fn ecp_cell_without_apply_ecp_is_refused() {
     let e = solve_krks_on_grid(&cell, &prep, None, &mesh, &grid, &cfg)
         .expect_err("bare-Z cell must be refused");
     assert!(format!("{e}").to_lowercase().contains("ecp"), "{e}");
+}
+
+/// Source of the ~1.1e-6 ferric-PySCF ECP gap: NOT ferric's lattice-sum
+/// truncation. Tightening ferric's hcore precision (which sets the ECP image
+/// and orbital-pair truncation) to 1e-12 leaves the energy where it was.
+#[test]
+fn ecp_gap_is_not_ferric_truncation() {
+    let bs = hi_basis(true);
+    let cell = hi_cell(&bs);
+    let mesh = KPointMesh::monkhorst_pack(&cell, [1, 1, 2]).unwrap();
+    let e0 = hi_energy(&cell, &bs, &mesh, "PBE", None);
+    let e1 = hi_energy(&cell, &bs, &mesh, "PBE", Some(1e-12));
+    eprintln!(
+        "HI PBE: default {e0:.12} precision 1e-12 {e1:.12} d {:.2e}",
+        e1 - e0
+    );
+    assert!((e1 - e0).abs() < 2e-8, "{:e}", e1 - e0);
 }
