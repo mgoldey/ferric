@@ -816,7 +816,28 @@ fn gamma_rks_driver(
     let total = StageClock::start();
     let sys = gamma_system(plan, s, false)?;
     let c = rks_config(plan);
-    let r = gamma_rks(&s.cell, &s.prep, &sys.hc, sys.ints.scf(), &c)?;
+    let r = match ferric_pbc::rsh::resolve_periodic_functional_rsh(&c.functional)?.2 {
+        // Range-separated hybrid: attenuated K from the k = 0 exchange
+        // (energy only; `task = "optimize"` was refused at plan time).
+        Some(rsh) => {
+            let sizing = ferric_pbc::gamma_rsh::GammaRshSizing {
+                rsgdf_omega: rsgdf_config(plan).omega,
+                budget_bytes: budget_bytes(plan),
+                max_eri_bytes: max_eri_bytes(plan),
+            };
+            let ex = ferric_pbc::gamma_rsh::GammaRshExchange::build_for_binding(
+                &s.cell,
+                &s.prep,
+                s.aux.as_ref(),
+                &sys.hc.s,
+                plan.exxdiv,
+                sizing,
+                rsh,
+            )?;
+            ferric_pbc::dft::gamma_rks_rsh(&s.cell, &s.prep, &sys.hc, sys.ints.scf(), &ex, &c)?
+        }
+        None => gamma_rks(&s.cell, &s.prep, &sys.hc, sys.ints.scf(), &c)?,
+    };
     let t = sys.timings(&[&r.timings], &total);
     Ok((r, sys.hc.enn, t))
 }

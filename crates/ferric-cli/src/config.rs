@@ -5428,6 +5428,15 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
                 ));
             }
             check_kpoint_optimize_gate(route, functional.as_deref(), kpoints)?;
+            if !kpoints && route == PeriodicRoute::Rks {
+                if let Some(f) = functional
+                    .as_deref()
+                    .filter(|f| ferric_pbc::rsh::is_range_separated(f))
+                {
+                    ferric_pbc::dft::check_gamma_rks_request(f, true)
+                        .map_err(|e| format!("method.task = \"optimize\" with [cell]: {e}"))?;
+                }
+            }
             if let Some(s) = cfg.optimize.coordinates.as_deref() {
                 if parse_coord_system(s)? != ferric_scf::optimize::CoordSystem::Cartesian {
                     return Err(

@@ -1,0 +1,134 @@
+{
+  "pyscf_version": "2.13.1",
+  "numpy_version": "1.26.4",
+  "date": "2026-10-17",
+  "generator": "scripts/gen_pyscf_pbc_grsh_refs.py",
+  "repo_sha_at_generation": "29d5e1a87a53f877f528f3d65d13dbdccfc08c55",
+  "repo_sha_note": "HEAD of the worktree when the script ran: the PARENT of the commit that adds/changes this script, not the commit containing it",
+  "libxc_version": "7.0.0",
+  "xc_names": {
+    "HSE06": {
+      "pyscf": "HSE06",
+      "ferric": "HSE06",
+      "omega_bohr_inv": 0.11,
+      "c_lr": 0.0,
+      "c_sr": 0.25
+    },
+    "CAM_B3LYP": {
+      "pyscf": "CAMB3LYP",
+      "ferric": "HYB_GGA_XC_CAM_B3LYP",
+      "omega_bohr_inv": 0.33,
+      "c_lr": 0.65,
+      "c_sr": 0.19
+    }
+  },
+  "grids": "XC grid (NumInt UniformGrids) and AFTDF mesh are both 41^3; cell.precision 1e-11",
+  "cell": "H2 STO-3G (PySCF digits), atoms H2_ATOMS, Bohr; cubic a=4 and triclinic TRI_A",
+  "lattices": {
+    "cubic4": [
+      [
+        4.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        4.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        4.0
+      ]
+    ],
+    "triclinic": [
+      [
+        4.6,
+        0.0,
+        0.0
+      ],
+      [
+        0.9,
+        4.3,
+        0.0
+      ],
+      [
+        0.5,
+        0.7,
+        4.8
+      ]
+    ]
+  },
+  "atoms": [
+    [
+      0.3,
+      0.2,
+      0.1
+    ],
+    [
+      0.3,
+      0.2,
+      1.5
+    ]
+  ],
+  "setup": "pbc.dft.RKS (Gamma), AFTDF, UniformGrids 41^3, conv_tol 1e-12",
+  "rows": [
+    {
+      "cell": "cubic4",
+      "functional": "HSE06",
+      "exxdiv": "ewald",
+      "e_tot": -1.5754283436553687,
+      "runtime_s": 53.5
+    },
+    {
+      "cell": "cubic4",
+      "functional": "HSE06",
+      "exxdiv": "none",
+      "e_tot": -1.4291276782829718,
+      "runtime_s": 57.6
+    },
+    {
+      "cell": "cubic4",
+      "functional": "CAM_B3LYP",
+      "exxdiv": "ewald",
+      "e_tot": -1.5918298632333046,
+      "runtime_s": 42.2
+    },
+    {
+      "cell": "cubic4",
+      "functional": "CAM_B3LYP",
+      "exxdiv": "none",
+      "e_tot": -1.2865344605710791,
+      "runtime_s": 44.9
+    },
+    {
+      "cell": "triclinic",
+      "functional": "HSE06",
+      "exxdiv": "ewald",
+      "e_tot": -1.4252964832002344,
+      "runtime_s": 13.1
+    },
+    {
+      "cell": "triclinic",
+      "functional": "HSE06",
+      "exxdiv": "none",
+      "e_tot": -1.300717690548791,
+      "runtime_s": 13.1
+    },
+    {
+      "cell": "triclinic",
+      "functional": "CAM_B3LYP",
+      "exxdiv": "ewald",
+      "e_tot": -1.4471449677955597,
+      "runtime_s": 13.0
+    },
+    {
+      "cell": "triclinic",
+      "functional": "CAM_B3LYP",
+      "exxdiv": "none",
+      "e_tot": -1.1601093658526862,
+      "runtime_s": 12.9
+    }
+  ]
+}

@@ -1548,7 +1548,28 @@ fn rks_driver(
     let sys = gamma_system(s)?;
     let mut cfg = GammaRksConfig::new(functional);
     (cfg.grid, cfg.exxdiv, cfg.scf) = (grid, s.exx, scf);
-    let r = gamma_rks(&s.cell, &s.prep, &sys.hc, sys.ints.scf(), &cfg)?;
+    let r = match ferric_pbc::rsh::resolve_periodic_functional_rsh(functional)?.2 {
+        // Range-separated hybrid: J from the Gamma ints, the attenuated K
+        // from the k = 0 exchange (forces / stress were refused up front).
+        Some(rsh) => {
+            let sizing = ferric_pbc::gamma_rsh::GammaRshSizing {
+                rsgdf_omega: s.rsgdf_omega(),
+                budget_bytes: s.budget_bytes,
+                max_eri_bytes: s.max_eri_bytes,
+            };
+            let ex = ferric_pbc::gamma_rsh::GammaRshExchange::build_for_binding(
+                &s.cell,
+                &s.prep,
+                s.aux.as_ref(),
+                &sys.hc.s,
+                s.exx,
+                sizing,
+                rsh,
+            )?;
+            ferric_pbc::dft::gamma_rks_rsh(&s.cell, &s.prep, &sys.hc, sys.ints.scf(), &ex, &cfg)?
+        }
+        None => gamma_rks(&s.cell, &s.prep, &sys.hc, sys.ints.scf(), &cfg)?,
+    };
     let derivs = system_derivatives(s, &sys, &r.scf, DerivMethod::Rks(&cfg))?;
     let t = sys.timings(&[&r.timings], &total);
     Ok((r, derivs, sys.hc.enn, t))
@@ -1569,6 +1590,14 @@ fn rks_driver(
 ///
 /// Meta-GGA: only the pure SCAN / r2SCAN (energy; with_gradient / with_stress
 /// with a meta-GGA is a ValueError, use `run_rks_kpts` on a [1,1,1] mesh).
+///
+/// Range-separated hybrids (HSE06, CAM-B3LYP, wB97X; energy only): J from
+/// the Gamma J/K, the attenuated K from the k = 0 point of the k-point
+/// range-separated exchange (dense AFT or an RS-GDF fit on `auxbasis`);
+/// `with_gradient` / `with_stress` are ValueErrors (`range_split` shapes the Gamma J only, never the attenuated K), and the
+/// result's `exact_exchange_fraction` is the short-range `c_sr`, `madelung`
+/// the mixed `c_sr v_M + (c_lr - c_sr) v_M^LR(omega)` constant. wB97X-V stays
+/// refused (VV10).
 ///
 /// Validated vs crates/ferric-pbc/tests/pbc_rks.rs: H2 / STO-3G (PySCF
 /// digits), a = 4 Bohr, SSF 75x302 D = 10 Bohr, ewald: LDA -1.521871150768,

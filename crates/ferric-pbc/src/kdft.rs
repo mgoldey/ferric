@@ -31,11 +31,11 @@
 //! periodic path has no meta-GGA; the molecular `semilocal_vxc` is mirrored).
 //!
 //! Range-separated hybrids (HSE06, CAM-B3LYP, wB97X, ...) are supported with
-//! the dense-AFT J/K ([`crate::rsh`]; no Gamma RSH exists to mirror) and the
+//! the dense-AFT J/K ([`crate::rsh`]; the Gamma [`crate::gamma_rsh`] reuses this kernel at k = 0) and the
 //! RS-GDF J/K (`KRsGdf::build_rsh`: full-Coulomb fit plus a G-space fit of the
 //! erf-attenuated kernel), energy only: forces and stress refuse them. Open
 //! shell (KUKS), range-separated meta-GGAs, VV10 and double hybrids are
-//! refused/absent, exactly as at Gamma. Time reversal is NOT used
+//! refused/absent (open shell, range-separated meta-GGA, VV10, double hybrids), as at Gamma. Time reversal is NOT used
 //! to halve the XC work (every k gets its own Bloch AO cache).
 
 use crate::budget::{bytes_of, Ledger};
