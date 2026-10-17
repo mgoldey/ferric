@@ -26,7 +26,7 @@
 //! everything else (ROKS and every other KS reference included) with a typed
 //! error, so the finite-difference path stays the general one. The refusals
 //! that need only the configuration fire before the SCF (`*_hessian_preflight`);
-//! those that need the molecule or the fitting basis (an ECP with RI, metric
+//! those that need the molecule or the fitting basis (ECP shells above f, metric
 //! conditioning, RI-K memory) fire in the matching `analytic_*_hessian_available`
 //! probe, which [`harmonic_frequencies`] consults first, and otherwise after the
 //! SCF.
@@ -583,7 +583,7 @@ fn analytic_available(
 /// four-centre Coulomb J/K, or with RI-J and/or RI-K; a configuration the
 /// preflight can decide ([`crate::hessian::rhf_hessian_preflight`]) is refused
 /// BEFORE the SCF runs, while the checks that need the molecule or the SCF
-/// result (an ECP with RI-J/RI-K, the conditioning of the fitting metric, the SCF
+/// result (ECP shells above f, the conditioning of the fitting metric, the SCF
 /// route) fire in [`crate::hessian::analytic_hessian_available`] (which
 /// [`harmonic_frequencies`] consults first) or after the SCF. A caller wanting
 /// a general method should use [`harmonic_frequencies`].
@@ -616,7 +616,7 @@ pub fn harmonic_frequencies_analytic(
 /// one [`solve_uhf`] (any multiplicity) in place of the RHF SCF. A
 /// configuration the preflight can decide
 /// ([`crate::hessian::uhf_hessian_preflight`]) is refused BEFORE the SCF runs;
-/// the checks that need the molecule or the fitting basis (an ECP with RI-J/RI-K,
+/// the checks that need the molecule or the fitting basis (ECP shells above f,
 /// the conditioning of the fitting metric, RI-K memory) fire in
 /// [`crate::hessian::analytic_uhf_hessian_available`] (which
 /// [`harmonic_frequencies`] consults first) or after the SCF. UHF states are not
