@@ -226,6 +226,7 @@ struct Lib<'a> {
     method: Method,
     functional: &'a str,
     mesh: [usize; 3],
+    centring: MeshCentring,
 }
 
 fn grid() -> PeriodicGridConfig {
@@ -253,7 +254,7 @@ fn library(atoms_bohr: &[[f64; 3]], lib: Lib, exxdiv_force: ExxDiv) -> (f64, Vec
     let lat = [[A_BOHR, 0.0, 0.0], [0.0, A_BOHR, 0.0], [0.0, 0.0, A_BOHR]];
     let cell = Cell::new(mol, lat).expect("cell");
     let prep = PreparedBasis::new(cell.mol(), &bs).unwrap();
-    let mesh = KPointMesh::new(&cell, lib.mesh, MeshCentring::Gamma).unwrap();
+    let mesh = KPointMesh::new(&cell, lib.mesh, lib.centring).unwrap();
     let hcfg = PeriodicHcoreConfig::with_omega(OMEGA);
     let xc = |ao: f64| KUksGradConfig {
         base: KRksGradConfig {
@@ -358,6 +359,7 @@ fn force_anchor(
         method,
         functional,
         mesh: [1, 1, 2],
+        centring: MeshCentring::Gamma,
     };
     let (_, gl) = library(&at, lib, ExxDiv::Ewald);
     let d = max_diff(&g, &gl);
@@ -373,6 +375,7 @@ fn printed_force_equals_the_library_force_for_uks_with_mutants() {
         method: Method::Uks,
         functional: "PBE",
         mesh: [1, 1, 2],
+        centring: MeshCentring::Gamma,
     };
     // MUTANT: a different method (the ROKS force of the same functional) is
     // not the UKS force; the anchor must be able to tell them apart.
@@ -437,6 +440,7 @@ fn printed_energy_equals_the_library_energy_for_every_open_shell_route() {
                 method,
                 functional: f,
                 mesh: [1, 1, 2],
+                centring: MeshCentring::Gamma,
             },
             ExxDiv::Ewald,
         );
@@ -452,6 +456,36 @@ fn printed_energy_equals_the_library_energy_for_every_open_shell_route() {
             out.contains("<S^2>") && out.contains("gaps"),
             "{tag}: {out}"
         );
+    }
+}
+
+/// A Monkhorst-Pack mesh (half-shifted at an even size, so no Gamma point)
+/// reaches every open-shell driver: the CLI energy is the library energy on
+/// the same mesh, and differs from the Gamma-centred mesh of the same size.
+#[test]
+fn printed_energy_equals_the_library_energy_on_a_monkhorst_pack_mesh() {
+    for (tag, method, f) in [
+        ("mp-uks", Method::Uks, "PBE"),
+        ("mp-roks", Method::Roks, "PBE"),
+        ("mp-rohf", Method::Rohf, ""),
+    ] {
+        let mut i = input(tag, method, f, "energy");
+        i.kmesh = "[1, 1, 2]\ncentring = \"mp\"";
+        let out = ok(&run(&i), tag);
+        assert_eq!(value(&out, "converged"), "true", "{out}");
+        let e: f64 = value(&out, "energy").parse().unwrap();
+        let lib = |centring| Lib {
+            method,
+            functional: f,
+            mesh: [1, 1, 2],
+            centring,
+        };
+        let (el, _) = library(&H3, lib(MeshCentring::MonkhorstPack), ExxDiv::Ewald);
+        assert!((e - el).abs() < E_BAR, "{tag}: {e} vs {el}");
+        // MUTANT: the Gamma-centred mesh of the same size is a different
+        // calculation; the anchor must tell the two apart.
+        let (eg, _) = library(&H3, lib(MeshCentring::Gamma), ExxDiv::Ewald);
+        assert!((e - eg).abs() > 1e-6, "{tag}: centring mutant not detected");
     }
 }
 

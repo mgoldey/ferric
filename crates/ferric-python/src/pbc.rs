@@ -2662,7 +2662,7 @@ enum KKsKind {
 /// are the known gaps). Called before any integral is built.
 ///
 /// Energy gate: LDA, GGA, global hybrids, (closed shell only) the pure
-/// meta-GGAs SCAN / r2SCAN, and (closed shell with `rsgdf`, the RS-GDF J/K)
+/// meta-GGAs SCAN / r2SCAN, and (closed shell, either J/K)
 /// range-separated hybrids. The force and stress gate is the library
 /// allowlist of the same name, independent of the energy gate, so widening
 /// the energy path cannot silently enable a derivative (it refuses
@@ -2672,10 +2672,8 @@ fn check_kpoint_ks_support(
     functional: &str,
     kind: KKsKind,
     (with_gradient, with_stress): (bool, bool),
-    rsgdf: bool,
 ) -> PyResult<()> {
-    let rsh_ok =
-        kind == KKsKind::Closed && rsgdf && ferric_pbc::rsh::is_range_separated(functional);
+    let rsh_ok = kind == KKsKind::Closed && ferric_pbc::rsh::is_range_separated(functional);
     let mgga_ok = kind == KKsKind::Closed && ferric_pbc::kxcgrad::is_validated_mgga(functional);
     let energy = if rsh_ok {
         Ok(())
@@ -2685,7 +2683,7 @@ fn check_kpoint_ks_support(
     energy.map_err(|e| {
         let what = if kind == KKsKind::Closed {
             "LDA, GGA, global-hybrid and SCAN / r2SCAN meta-GGA functionals (plus \
-                 range-separated hybrids with jk=\"rsgdf\") only"
+                 range-separated hybrids) only"
         } else {
             "LDA, GGA and global-hybrid functionals only (no meta-GGA)"
         };
@@ -2932,7 +2930,6 @@ fn run_rks_kpts(
         functional,
         KKsKind::Closed,
         (with_gradient, with_stress),
-        jk.trim().eq_ignore_ascii_case("rsgdf"),
     )?;
     let mut s = pbc_setup(&PbcArgs {
         fname,
@@ -3164,7 +3161,6 @@ fn run_uks_kpts(
         functional,
         KKsKind::Open,
         (with_gradient, with_stress),
-        false,
     )?;
     let mut s = pbc_setup(&PbcArgs {
         fname,
@@ -3243,7 +3239,7 @@ fn run_ro_kpts(
 ) -> PyResult<PyKpointScfResult> {
     let kind = KKsKind::Open;
     if let Some(f) = functional {
-        check_kpoint_ks_support(fname, f, kind, (derivs.gradient, derivs.stress), false)?;
+        check_kpoint_ks_support(fname, f, kind, (derivs.gradient, derivs.stress))?;
     }
     let mut s = pbc_setup(a)?;
     s.derivs = derivs;

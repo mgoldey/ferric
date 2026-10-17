@@ -209,15 +209,12 @@ def test_refusals_have_exact_wording(basis):
     with pytest.raises(
         ValueError,
         match=r'^run_rks_kpts: functional "MGGA_X_TPSS": .*meta-GGA.*\. k-point RKS supports '
-        r"LDA, GGA, global-hybrid and SCAN / r2SCAN meta-GGA functionals "
-        r"\(plus range-separated hybrids with jk=\"rsgdf\"\) only$",
+        r"LDA, GGA, global-hybrid and SCAN / r2SCAN meta-GGA functionals \(plus range-separated hybrids\) only$",
     ):
         _krks(H2_ATOMS, basis, "MGGA_X_TPSS", with_gradient=True)
     with pytest.raises(
         ValueError,
-        match=r'^run_rks_kpts: functional "HSE06": .*range-separated.*\. k-point RKS supports '
-        r"LDA, GGA, global-hybrid and SCAN / r2SCAN meta-GGA functionals "
-        r"\(plus range-separated hybrids with jk=\"rsgdf\"\) only$",
+        match=r"^run_rks_kpts: with_gradient: .*HSE06.*range-separated",
     ):
         _krks(H2_ATOMS, basis, "HSE06", with_gradient=True)
     # The energy gate now admits range-separated hybrids on jk="rsgdf"; the

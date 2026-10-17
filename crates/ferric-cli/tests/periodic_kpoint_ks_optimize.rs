@@ -456,13 +456,15 @@ fn a_real_optimization_converges_and_the_final_force_is_the_library_force() {
 
 #[test]
 fn unsupported_kohn_sham_routes_are_refused_with_exact_messages() {
-    // Range-separated hybrids: named by the library resolver.
+    // Range-separated hybrids pass the dense energy gate; the force allowlist
+    // names them.
     let e = refused(
         &run(&loose_input("hse", "HSE06", "[1, 1, 2]", DENSE)),
         "hse",
     );
     assert!(
-        e.contains("[cell] kmesh with functional \"HSE06\"") && e.contains("range-separated"),
+        e.contains("HSE06: the k-point Kohn-Sham force and stress cover LDA, GGA and global-hybrid functionals only")
+            && e.contains("range-separated"),
         "{e}"
     );
     // Hybrid meta-GGA and the unvalidated TPSS-family names stay refused: only
