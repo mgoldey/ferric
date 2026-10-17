@@ -37,9 +37,24 @@
 //! * `u_att_mp2_vv10` on a UHF singlet that collapsed onto RHF reproduces the
 //!   same references (a construction anchor, not a parameter validation).
 //!
-//! NOT compared: the terfc-attenuated E_c. Its independent reference is the
-//! row-119 terfc generator, which this row reuses instead of building a
-//! second one; until it lands the terfc MP2 half has no external number.
+//! * The terfc-attenuated MP2 half (`mp2_v_terfc_atz`
+//!   with the paper's frozen core) vs the row-119 reference, read directly from
+//!   `testdata/reference/validation/scs_mp2_2terfc/` (r₀ = 1.00 Å): numpy RI-MP2
+//!   on Fourier-space terfc integrals (PySCF `ft_ao` + k-space quadrature,
+//!   `gen_terfc_integrals.py`), which shares nothing with ferric's
+//!   McMurchie-Davidson/table path. E_c, E_OS and E_SS on H2O (cc-pVDZ,
+//!   aug-cc-pVDZ) and NH3 (cc-pVDZ), and the UHF-singlet path for E_c. The
+//!   water dimer is not in that reference, so its terfc half is not compared.
+//!   NEW coverage versus `validation_scs_mp2_2terfc.rs` (which already asserts
+//!   `Operator::terfc` E_OS/E_SS at r₀ = 1.00 Å, frozen core 1 against these
+//!   same JSONs): the wiring `AttVv10Config::mp2_v_terfc_atz` → `mp2_operator`
+//!   → Å→Bohr, the frozen-core and metric threading, and the unrestricted
+//!   terfc path. It adds NO new operator reference. LIMITATION shared with
+//!   that row: the reference's terfc definition is copied from ferric's
+//!   `shim.cc` (`gen_terfc_integrals.py` header, same Å→Bohr factor), so a
+//!   misreading of the paper's ω = 1/(r₀√2) is not caught; only the r₀ → 0
+//!   and r₀ → ∞ limits constrain it.
+//!   (The `mp2_terfc` key in the `mp2_v` JSONs is only a pointer, not a number.)
 //!
 //! # Exactness anchors (run first in each system)
 //!
@@ -90,6 +105,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_mp2::att_vv10::{
     att_mp2_vv10, u_att_mp2_vv10, vv10_energy_on_density, AttVv10Config, AttVv10Result,
+    AttVv10SpinComponents,
 };
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
@@ -128,12 +144,19 @@ const TOL_UHF: f64 = 1e-10;
 /// set against (TOL_CORR) and 2e6× TOL_VV10. Smallest measured miss: the
 /// (75, 110) grid control, 6.8e-7 (water dimer, b = 11).
 const MUST_MISS: f64 = 1e-8;
+/// terfc E_c, E_OS, E_SS (RHF path) vs the Fourier-space numpy RI-MP2. Measured max
+/// 2.5e-12 (E_c, H2O/aug-cc-pVDZ) over 3 systems; ~12x margin. The k-space
+/// quadrature floor (integrals 1e-13..4e-12 at the production rung) propagates
+/// to ~1e-12; a wrong operator moves E_c by >= 1e-3 (Coulomb) / 2e-2 (erfc).
+const TOL_TERFC: f64 = 3e-11;
 
 struct Case {
     system: &'static str,
     xyz: &'static str,
     basis: &'static str,
     aux: &'static str,
+    /// The row-119 terfc reference covers this system (the water dimer is not in it).
+    terfc_ref: bool,
 }
 
 const CASES: [Case; 4] = [
@@ -142,24 +165,28 @@ const CASES: [Case; 4] = [
         xyz: "testdata/molecules/validation/h2o.xyz",
         basis: "cc-pvdz",
         aux: "cc-pvdz-ri",
+        terfc_ref: true,
     },
     Case {
         system: "h2o",
         xyz: "testdata/molecules/validation/h2o.xyz",
         basis: "aug-cc-pvdz",
         aux: "aug-cc-pvdz-rifit",
+        terfc_ref: true,
     },
     Case {
         system: "nh3",
         xyz: "testdata/molecules/validation/nh3.xyz",
         basis: "cc-pvdz",
         aux: "cc-pvdz-ri",
+        terfc_ref: true,
     },
     Case {
         system: "water_dimer",
         xyz: "testdata/molecules/s22/water_dimer.xyz",
         basis: "aug-cc-pvdz",
         aux: "aug-cc-pvdz-rifit",
+        terfc_ref: false,
     },
 ];
 
@@ -471,6 +498,97 @@ fn check_result(ctx: &str, r: &Value, res: &AttVv10Result, tol_corr: f64, tol_nl
     );
 }
 
+const TERFC_DIR: &str = "testdata/reference/validation/scs_mp2_2terfc";
+
+static TABLES: std::sync::Once = std::sync::Once::new();
+
+/// The terfc table engine reads `FERRIC_TERF_TABLE_DIR` only. Point it at the
+/// committed `terf-tables/` when unset and FAIL (never skip) when absent.
+fn ensure_tables() {
+    TABLES.call_once(|| {
+        let probe = "16_4_2.bin";
+        if let Ok(d) = std::env::var("FERRIC_TERF_TABLE_DIR") {
+            assert!(
+                Path::new(&d).join(probe).is_file(),
+                "FERRIC_TERF_TABLE_DIR={d} has no {probe}; a validation row never skips"
+            );
+            return;
+        }
+        let repo = workspace_root().join("terf-tables");
+        assert!(
+            repo.join(probe).is_file(),
+            "terfc tables not found: FERRIC_TERF_TABLE_DIR is unset and {} has no {probe}",
+            repo.display()
+        );
+        std::env::set_var("FERRIC_TERF_TABLE_DIR", &repo);
+    });
+}
+
+/// The row-119 reference (E_OS, E_SS) for terfc at r0 = 1.00 Angstrom and
+/// `frozen_core`: numpy RI-MP2 on Fourier-space terfc integrals
+/// (`gen_terfc_integrals.py`, PySCF `ft_ao` + k-space quadrature; it shares
+/// nothing with ferric's McMurchie-Davidson/table path). The MP2-V row reuses
+/// it rather than building a second one; the RHF energy is cross-checked.
+fn terfc_reference(c: &Case, frozen_core: usize, rhf_energy: f64) -> (f64, f64) {
+    let ctx = format!("{}/{}", c.system, c.basis);
+    let path = workspace_root()
+        .join(TERFC_DIR)
+        .join(format!("{}_{}.json", c.system, c.basis));
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "missing terfc reference {} ({e}); regenerate with \
+             scripts/validation/gen_terfc_integrals.py",
+            path.display()
+        )
+    });
+    let v: Value = serde_json::from_str(&text).unwrap();
+    check_close(
+        &ctx,
+        "E_RHF (terfc ref)",
+        rhf_energy,
+        num(&v, "/rhf_energy", &ctx),
+        TOL_RHF,
+    );
+    let block = v["energies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["frozen_core"].as_u64() == Some(frozen_core as u64))
+        .unwrap_or_else(|| panic!("{ctx}: no terfc block for frozen_core {frozen_core}"));
+    let p = block["per_r0"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| (p["r0_angstrom"].as_f64().unwrap() - 1.0).abs() < 1e-12)
+        .unwrap_or_else(|| panic!("{ctx}: no r0 = 1.00 A terfc entry"));
+    (p["e_os"].as_f64().unwrap(), p["e_ss"].as_f64().unwrap())
+}
+
+/// The terfc-attenuated MP2 half through the published config, with the
+/// wrong-operator controls.
+fn check_terfc(ctx: &str, res: &AttVv10Result, (os, ss): (f64, f64), r: &Value) {
+    let want = os + ss;
+    check_close(ctx, "E_c(terfc)", res.e_c_att_mp2, want, TOL_TERFC);
+    if let AttVv10SpinComponents::Restricted(sc) = &res.spin_components {
+        check_close(ctx, "E_OS(terfc)", sc.e_os, os, TOL_TERFC);
+        check_close(ctx, "E_SS(terfc)", sc.e_ss, ss, TOL_TERFC);
+    } else {
+        panic!("{ctx}: restricted reference must give restricted spin components");
+    }
+    check_misses(
+        ctx,
+        "terfc ref vs erfc control",
+        want,
+        num(r, "/mp2_erfc_control/e_corr", ctx),
+    );
+    check_misses(
+        ctx,
+        "terfc ref vs Coulomb",
+        want,
+        num(r, "/mp2_erfc_control/coulomb_e_corr", ctx),
+    );
+}
+
 fn check_chain(c: &Case, with_uhf: bool) {
     let l = load(c);
     let ctx = l.ctx.clone();
@@ -513,6 +631,22 @@ fn check_chain(c: &Case, with_uhf: bool) {
     );
     check_result(&ctx, r, &res, TOL_CORR, TOL_VV10_CHAIN);
 
+    // terfc half (the published operator).
+    let terfc_ref = c.terfc_ref.then(|| {
+        ensure_tables();
+        terfc_reference(c, cfg.frozen_core, rhf.energy)
+    });
+    let tcfg = AttVv10Config {
+        frozen_core: cfg.frozen_core,
+        ..AttVv10Config::mp2_v_terfc_atz()
+    };
+    let tres = terfc_ref.map(|t| {
+        let tres = att_mp2_vv10(&l.mol, &l.obs, &l.bs, &dfbs, &rhf, &tcfg)
+            .unwrap_or_else(|e| panic!("{ctx}: att_mp2_vv10 (terfc): {e:?}"));
+        check_terfc(&format!("{ctx}/terfc"), &tres, t, r);
+        tres
+    });
+
     if !with_uhf {
         return;
     }
@@ -538,6 +672,18 @@ fn check_chain(c: &Case, with_uhf: bool) {
         .unwrap_or_else(|e| panic!("{uctx}: u_att_mp2_vv10: {e:?}"));
     assert!(ures.is_open_shell_extrapolation(), "{uctx}: flag");
     check_result(&uctx, r, &ures, TOL_UHF, TOL_UHF);
+    if let (Some(t), Some(tr)) = (terfc_ref, tres.as_ref()) {
+        let utres = u_att_mp2_vv10(&l.mol, &l.obs, &l.bs, &dfbs, &uhf, &tcfg)
+            .unwrap_or_else(|e| panic!("{uctx}: u_att_mp2_vv10 (terfc): {e:?}"));
+        check_close(&uctx, "E_c(terfc)", utres.e_c_att_mp2, t.0 + t.1, TOL_UHF);
+        check_close(
+            &uctx,
+            "E_c(terfc) vs RHF",
+            utres.e_c_att_mp2,
+            tr.e_c_att_mp2,
+            TOL_UHF,
+        );
+    }
 }
 
 #[test]
@@ -581,7 +727,16 @@ fn mp2_v_chain_water_dimer_aug_ccpvdz() {
 // | damping disabled in `assemble` | `assemble` | chain `E_nl damped (own density)` | 4.7e-4 |
 // | Table 1 b at 0.85 Å (8.0 → 9.0) | `TABLE1_R0_B_PAIRS` | `E_nl undamped` (b = 8 block) | 4.4e-3 |
 //
+// terfc MP2 half (2026-10-17), run against `mp2_v_chain_h2o_ccpvdz`:
+//
+// | mutant | where | first failing assertion | miss |
+// |---|---|---|---|
+// | terfc attenuator uses the erfc operator | `mp2_operator` | `E_c(terfc)` | 2.2e-2 |
+// | terfc r₀ given in Å (Bohr/1.8897) | `mp2_operator` | `E_c(terfc)` | 2.6e-2 |
+//
+// | Coulomb fitting metric for terfc (`metric_op` forced, terfc only) | `ri_mp2_config` | `E_c(terfc)` | 3.0e-4 |
+//
 // Of the 8 mutations seeded for the earlier Smoke grade, 7 are reached here
 // (drop VV10, Å→Bohr, disable damping, drop weights, invert the factor, wrong
 // b, desync damping r₀). "Hold b fixed across the valley" is the Table 1 row
-// above. Not reached: the terfc MP2 operator (no reference for it here).
+// above. The terfc MP2 operator is reached by the two terfc mutants.

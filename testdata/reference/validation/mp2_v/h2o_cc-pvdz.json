@@ -1326,7 +1326,7 @@
     "coulomb_e_corr": -0.20169626055903617,
     "numpy_vs_pyscf_dfmp2_coulomb_abs": 2.7755575615628914e-17
   },
-  "mp2_terfc": "not computed here: the independent terfc reference is the row-119 generator (#275), not on main when this file was written",
+  "mp2_terfc": "not stored here: the terfc E_c reference is the row-119 file scs_mp2_2terfc/<system>_<basis>.json (gen_terfc_integrals.py), read by validation_mp2_v.rs",
   "provenance": {
     "code": "PySCF (RHF, AO values, _vv10nlc, integrals, DFMP2 anchor) + numpy (VV10 from Vydrov & Van Voorhis 2010, damped per MP2-V Eq. 11; RI-MP2 assembly)",
     "version": "2.13.1",

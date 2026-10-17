@@ -97,6 +97,7 @@ pub const PROVEN_METHOD_KINDS: &[&str] = &[
     "rimp2",
     "mp3",
     "att-rimp2",
+    "mp2-v",
     "scs-mp2",
     "scs-mp2-2terfc",
     "laplace-mp2",
@@ -161,18 +162,6 @@ pub const EPISTEMIC_WARNINGS: &[(&str, &str)] = &[
          ACONF ties RI-MP2 at omega<=0.3 1/A, and the aug-cc-pVTZ benchmark criterion was met \
          only marginally on one small subset -- treat mid-range-omega numbers as unproven on \
          new systems.",
-    ),
-    (
-        "mp2-v",
-        "method.kind = \"mp2-v\" is Smoke-grade (see site/src/reference/validation.md): the damped VV10 \
-         half and the erfc-attenuator control match PySCF/numpy references, but the published \
-         terfc-attenuated MP2 half has no independent reference, and there \
-         is NO comparison to any published MP2-V number (the paper reports only S66/G2 statistics, \
-         never a total energy). The defaults (r0 = 1.00 A, b = 11.0, C = 0.0089, terfc, post-HF) \
-         are fitted for aug-cc-pVTZ, no counterpoise, frozen core -- running another basis, or \
-         with [mp2] frozen_core = 0 (the default here), is unparameterized extrapolation. \
-         Open-shell (multiplicity > 1) is DOUBLY unvalidated: S66 is entirely closed-shell, so no \
-         open-shell parameterization exists at all.",
     ),
     (
         "b2plyp",
@@ -3073,6 +3062,42 @@ fn run_scs_mp2_2terfc(
 ///    `solve_rhf` ignores multiplicity and fails outright on an odd-electron
 ///    molecule). So `result` is already UHF here for `multiplicity > 1`; this
 ///    function never re-solves.
+/// Run-time notices that the MP2-V PARAMETERS (r0, b, C) are being used outside
+/// the setting they were fitted in. The implementation is Proven (narrow); the
+/// parameterization is not benchmarked (see `site/src/reference/validation.md`),
+/// so these survive the grade. Not keyed into `EPISTEMIC_WARNINGS`, which is
+/// reserved for kinds that are not Proven.
+fn mp2v_parameterization_notices(
+    frozen_core: usize,
+    basis: Option<&str>,
+    terfc: bool,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    if frozen_core == 0 {
+        out.push(
+            "MP2-V with frozen_core = 0: (r0, b, C) were fitted with the frozen-core \
+             approximation; an all-electron run is unparameterized extrapolation."
+                .to_string(),
+        );
+    }
+    let atz_class = basis.is_some_and(|b| b.to_ascii_lowercase().starts_with("aug-cc-pvtz"));
+    if !atz_class {
+        out.push(format!(
+            "MP2-V in basis {}: (r0, b, C) were fitted for aug-cc-pVTZ, no counterpoise; \
+             another basis is unparameterized extrapolation.",
+            basis.unwrap_or("<custom path>")
+        ));
+    }
+    if !terfc {
+        out.push(
+            "MP2-V with the erfc attenuator: the fitted (r0, b, C) belong to terfc and do \
+             not transfer to erfc."
+                .to_string(),
+        );
+    }
+    out
+}
+
 fn run_mp2_v(
     cfg: &Config,
     mol: &Molecule,
@@ -3132,6 +3157,14 @@ fn run_mp2_v(
              entirely CLOSED-SHELL dimers. There is no published open-shell MP2-V \
              parameterization -- this is unparameterized extrapolation."
         );
+    }
+
+    for line in mp2v_parameterization_notices(
+        att_cfg.frozen_core,
+        cfg.basis.name.as_deref(),
+        att_cfg.attenuator == AttVv10Attenuator::Terfc,
+    ) {
+        eprintln!("[warning] {line}");
     }
 
     let attenuator = match att_cfg.attenuator {
@@ -6343,6 +6376,31 @@ mod local_printout_tests {
         assert_eq!(j["eps"], 1e-4);
         assert_eq!(j["keep_fraction"], 0.023);
         assert_eq!(j["integral_direct"], true);
+    }
+}
+
+#[cfg(test)]
+mod mp2v_notice_tests {
+    use super::mp2v_parameterization_notices as notices;
+
+    #[test]
+    fn published_setting_is_silent() {
+        assert!(notices(1, Some("aug-cc-pVTZ"), true).is_empty());
+    }
+
+    #[test]
+    fn all_electron_warns() {
+        let n = notices(0, Some("aug-cc-pvtz"), true);
+        assert_eq!(n.len(), 1);
+        assert!(n[0].contains("frozen_core = 0"));
+    }
+
+    #[test]
+    fn other_basis_and_erfc_warn() {
+        let n = notices(1, Some("cc-pvdz"), false);
+        assert_eq!(n.len(), 2);
+        assert!(n[0].contains("cc-pvdz") && n[1].contains("erfc"));
+        assert!(notices(1, None, true)[0].contains("<custom path>"));
     }
 }
 

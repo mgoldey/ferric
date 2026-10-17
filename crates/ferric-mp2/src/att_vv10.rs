@@ -158,8 +158,10 @@
 //!
 //! Note also that the paper reports only aggregate S66/G2 statistics (RMSD/MSE
 //! in kcal/mol), never a single total energy, so there is **no external
-//! reference total energy to match** for any spin case, closed or open. Both
-//! paths are graded *Smoke* in `docs/VALIDATION.md` for exactly that reason.
+//! reference total energy to match** for any spin case, closed or open. The
+//! implementation of both halves is *Proven (narrow)* against independent
+//! references, and the parameterization is unbenchmarked for exactly that
+//! reason (grade and anchors: `site/src/reference/validation.md`).
 //!
 //! The paper's own recommendation is worth carrying: MP2-V "cannot be
 //! recommended for evaluation of bonded interactions" (§4, G2/97 RMSD 9.69

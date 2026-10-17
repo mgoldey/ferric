@@ -20,8 +20,10 @@ Dated 2026-10-05. Written before any reference number was generated.
 * The erfc-attenuator control reuses `gen_attenuated_mp2.py`'s numpy RI-MP2 on
   PySCF `with_range_coulomb(-omega)` integrals; independent of ferric's
   integrals.
-* The terfc MP2 half depends on the row-119 reference (#275), which does not
-  exist on main at the time of writing. It is NOT built here.
+* The terfc MP2 half is compared against the row-119 reference
+  (`scs_mp2_2terfc/*.json`, k-space terfc integrals), reused, not rebuilt. Its
+  terfc definition is copied from ferric's `shim.cc`, so it does not test the
+  paper's omega = 1/(r0 sqrt 2); only the r0 -> 0 / infinity limits do.
 
 ## Hypotheses
 
@@ -47,3 +49,23 @@ H6 UHF singlet collapsed onto RHF through `u_att_mp2_vv10` reproduces H1, H3, H4
 H7 grid-mismatch negative control: ferric on a (75, 110) grid with the same
   density misses the (50, 50) reference by >= 1e-7 Ha, i.e. far above the H1 bar.
   If instead it agrees, the H1 bar is not measuring the grid match.
+
+## Terfc MP2 half (H8): written ALONGSIDE the measurement, not before it
+
+The first measurement (max |d| 2.5e-12 Ha) and the mutants below were run before
+this section was written; it records the reasoning honestly, it is not a
+pre-registration.
+
+H8 terfc E_c (and E_OS, E_SS) through `att_mp2_vv10` with `mp2_v_terfc_atz` and
+  frozen core 1 vs the row-119 numpy reference at r0 = 1.00 A.
+  Physics/wiring right: |d| at the integral-quadrature floor (<= ~1e-11 Ha;
+  measured 2.5e-12). Artifact/wiring broken, each expected to miss by far more:
+  * terfc replaced by erfc in `mp2_operator`: ~2e-2 Ha (measured 2.2e-2).
+  * r0 passed in Angstrom instead of Bohr (omega from the wrong r0): ~2e-2
+    (measured 2.6e-2).
+  * Coulomb instead of terfc fitting metric: ~3e-4 (measured 3.0e-4).
+  * frozen core dropped: ~1e-3 (the E_c(erfc) mutant already shows 2.3e-3; the
+    reference block is selected by frozen_core so a drop misses it).
+  Not distinguished: a misreading of omega = 1/(r0 sqrt 2) that ferric and the
+  reference share (both take the definition from `shim.cc`); a common
+  misreading is invisible to this comparison.
