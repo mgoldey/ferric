@@ -10,12 +10,13 @@ inside an install prefix of that version reproduces the file byte for byte.
 | `2.13.1/` | conda-forge `libint-2.13.1-h83f5b4b_0.conda` (`scripts/install-libint.sh`) | `890ab0261a2be2517d3d4cedfd7d07e2a1c6be7b6f057dc7ea2ea418e17067c1` | `0x0f6f0c23194e18ad` |
 
 Override sha256 (what `patch -p1` of the committed `.patch` onto the stock file reproduces): 2.7.2
-`208657a3560c2f3110ef45e3092cf9504144e92930bd7262bf83622c5bedce93`, 2.13.1
-`e77fa34821774104d3ea02629fdaefae6fd43423bc161ac27c11f2435a7847a7`.
+`8f5140d5b4e4132e0f90cfe3fee03bdae7971aee4b14dffc7292e09463854dc5`, 2.13.1
+`14c8bdfd4d8fb41e0c4e5091de1c45e84fe5f5840c6cdcfb1c40419a368f343e`.
 
 The #433 fix is the same in both. The sections below describe it with the 2.7.2 names. The `TennoGmEval` table-edge
 changes (issue #436, section "Third change") exist ONLY in the 2.7.2 override; 2.13.1 already has them in stock form.
-The `eval_urr` overflow fix exists in both (#436 for 2.7.2, #439 for 2.13.1, section "Fourth change"). In 2.13.1, one evaluator,
+The `eval_urr` overflow fix exists in both (#436 for 2.7.2, #439 for 2.13.1, section "Fourth change"). The small-`T`
+Yukawa fix (#443, section "Fifth change") also exists in both. In 2.13.1, one evaluator,
 `erfx_coulomb_gm_eval`, replaces `erfc_coulomb_gm_eval`. It serves `erfc_coulomb` (with lambda=0, sigma=1),
 `erfx_coulomb`, and the 1-body `erfc_nuclear`/`erfx_nuclear`. `erf_coulomb_gm_eval` serves `erf_coulomb` and
 `erf_nuclear`. The patch applies to both evaluators.
@@ -243,13 +244,11 @@ override there are no new `throw`s (2.13.1 has its own fallback) and no index cl
   absolute error 1e-14 or better for `T >= 1` (FOR `m <= 6` ONLY), up to 2e-12 at `T = 0.5`, 6e-8 at 0.1, 0.2 at 0.01, 5e5 at 1e-3, 2e25 at 1e-6
   and 9e63 at 1e-12. `T == 0` exactly returns `false` from `eval_urr` and takes the Gaussian fit (3e-7 absolute error
   at `U = 1e-14`, 2e-12 at `U = 1e-8`); no assert fires at `T == 0` (non-NDEBUG, ASan) on 2.13.1. The Slater kernel
-  with `U < Umin` is routed to the Gaussian fit (accurate to 5e-14 there). Fixing the Yukawa case would need the
-  Gaussian fit (or a small-`T` series) for `U < Umin` and `T < ~1`; it was left alone to keep this change a pure
-  NaN fix. The error grows steeply with `m` (independent 600-digit check, `U` about 1e-14..1e-8, `T = 1`: 1e-15 for
+  with `U < Umin` is routed to the Gaussian fit (accurate to 5e-14 there). It was left alone in the #439 change; the Fifth change below (issue #443) fixes it. The error grows steeply with `m` (independent 600-digit check, `U` about 1e-14..1e-8, `T = 1`: 1e-15 for
   `m <= 6`, 6e-10 for `m <= 12`, 2.3 for `m <= 20`, 2e23 for `m <= 36`; `T = 3`: 1e-14 for `m <= 12`, 8e-9 for `m <= 20`;
   `T = 5`: 3e-13 for `m <= 20`, 0.3 for `m <= 36`; outputs violate `0 <= G_m <= 1/(2m+1)` up to `T` about 5.6 at high
   `m` and are inf/NaN at `T` about 1e-8, `m = 36`). d/f/g 4-centre derivative integrals reach `m` of 9 to 18, reachable
-  from the library with `zeta` below about 0.01 to 0.1 and tight core primitives or collinear pairs. Tracked in issue #443.
+  from the library with `zeta` below about 0.01 to 0.1 and tight core primitives or collinear pairs. Fixed by the Fifth change.
 * Not repaired in 2.13.1 (the 2.7.2 override does): the `T == 0` branch of `eval_G0_and_maybe_Gm1` loses precision
   for `U` in [704.6, 709], where `erfc(sqrt(U))` is subnormal: Slater `m = 0` abs 1.5e-12, rel 6e-8 at `U = 707.25`;
   Yukawa `m = 0` 5.7e-14 at `U = 692`. Documented only.
@@ -288,3 +287,32 @@ The terf patch adds `terf_gm_eval`, which also goes through `GenericGmEval` with
 same per-call copy, and this override does not fix it.
 
 License: libint is LGPL-3.0-or-later. This file keeps the upstream notice and adds a modification notice.
+
+## Fifth change (both versions): Yukawa `U < Umin` at small `T` (issue #443)
+
+`eval_yukawa` sends `U = zeta^2 / (4 rho) < Umin = 1e-7` to `eval_urr` at any `T`. That is the upward recursion
+`G_{m+1} = [(2m+1) G_m + 2U G_{m-1} - e^-T] / (2T)`, which multiplies the rounding error of `G_0` by about
+`prod (2m+1)/(2T)` (independent of `U`): O(1) at `m = 20`, `T = 1`, inf/NaN at `m = 36`, `T = 1e-8`, and
+`G_m > 1/(2m+1)` up to `T` about 5.6 at high `m`. At `T == 0` 2.7.2 divides by zero and 2.13.1 takes a Gaussian fit
+(3e-7 error at `U = 1e-14`). At `mmax == 0` there is no recursion, but the closed form `G_0 = pfac (erfc_k - erfc_l) /
+sqrt(T)` loses digits like `1e-16 / sqrt(T)`: for coincident bra and ket centres, where rounding leaves `T` near 1e-32, it is
+O(1) noise. Measured on libint 2.13.1: H2/STO-3G `(10|10)` at `zeta = 1e-8` differed from Coulomb by 4e-3 (expected 1e-8).
+
+The override adds `yukawa_urr_unusable(T, U, mmax)` (`U < Umin` and `T < 0.5 mmax + 6`, or `T < 1e-2` at `mmax == 0`) and
+`eval_yukawa_quadrature`, which evaluates `G_m = int_0^1 t^{2m} exp(U(1-t^-2) - T t^2) dt` by 24-point Gauss-Legendre
+on graded panels (a ratio-4 ladder from `max(0.01 sqrt(U), 1e-20)` to 1e-3 for the `exp(-U/t^2)` boundary layer at
+`t ~ sqrt(U)`, then 12 panels up to 1). Every term is positive, so there is no cancellation. Everywhere else
+`eval_yukawa` is unchanged: `crates/ferric-integrals/tests/yukawa_urr_small_t.rs` compares the library with an in-binary port of the stock
+recursion to 2e-15 relative on `U < Umin`, `T >= 0.5 mmax + 6` (or `T >= 1e-2` at `mmax == 0`), and checks the `U >= Umin` table region against
+50-digit values and the bounds `0 <= G_m <= 1/(2m+1)`. Those gate CI. A bit-level golden (FNV-1a of the same grid: `84f833f18f8c180e`, n=168859 on
+2.13.1; `da400bb5bddb82a4`, n=55579 on 2.7.2, whose Tenno table stops at `mmax` 20) is `#[ignore]`d because libm and compiler
+contraction change low bits on other machines; it was identical with the fallback disabled and enabled on the dev box. `eval_slater` is untouched (2.7.2 still throws for
+`U < Umin`, `T <= Tmax`; 2.13.1 goes to its Gaussian fit).
+
+Accuracy against 50-digit mpmath values (`U = 1e-14` and `1e-9`, `T` in 1e-8..20, `m <= 36`): at most 1e-15 absolute,
+and `0 <= G_m <= 1/(2m+1)` holds. The test also checks the `U -> 0` limit `G_m -> F_m(T)` (Boys function), and
+water/cc-pVDZ four-centre ERIs at `zeta = 1e-6` against Coulomb.
+
+Cost of the quadrature path (2.13.1, per `eval_yukawa` call): about 8 to 13 microseconds, against about 90 ns for the old
+recursion and 1 to 3.6 microseconds for the table. A small `zeta` (below about 0.07 for first-row cc-pVDZ) routes every
+quartet through it, roughly 3 to 4 times slower than the table path. No production caller uses the Yukawa operator today.

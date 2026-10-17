@@ -39,6 +39,10 @@
  *  erfc(x) is a normal number); U > Umax with T <= Tmax, and U < Umin for
  *  T <= Tmax in eval_slater, throw std::invalid_argument instead of reading out of the
  *  table. All other arguments give bit-identical results.
+ *  A fifth change (issue #443), TennoGmEval::eval_yukawa: for U < Umin and
+ *  T < 0.5 mmax + 6 (T < 1e-2 at mmax == 0) the unstable upward recursion
+ *  eval_urr is replaced by a graded Gauss-Legendre quadrature of the defining
+ *  integral; all other arguments give bit-identical results.
  *  crates/ferric-integrals/build.rs puts this
  *  directory first on the shim's include path ONLY when the libint2 prefix's
  *  own boys.h is byte-identical to the stock 2.7.2 file above.
@@ -958,7 +962,10 @@ namespace libint2 {
         const auto U = 0.25 * zeta * zeta * one_over_rho;
         assert(U >= 0);
         check_U_not_above_Umax(T, U);
-        if (T > Tmax || U < Umin) {
+        // ferric patch (issue #443): eval_urr is unusable for U < Umin at small T
+        if (yukawa_urr_unusable(T, U, mmax)) {
+          eval_yukawa_quadrature(Gm, T, U, mmax);
+        } else if (T > Tmax || U < Umin) {
           eval_urr<false>(Gm, T, U, /* zeta_over_two_rho = */ 0, mmax);
         } else {
           interpolate_Gm<false>(Gm, T, U, /* zeta_over_two_rho = */ 0, mmax);
@@ -1136,6 +1143,106 @@ namespace libint2 {
         }
 
         return std::make_tuple(G_0, G_m1);
+      }
+
+      /// ferric patch (issue #443): is the upward recursion `eval_urr` numerically
+      /// unusable for this Yukawa argument? `eval_yukawa` sends `U < Umin` to
+      /// `eval_urr` at ANY T. The recursion `G_{m+1} = [(2m+1) G_m + 2U G_{m-1} -
+      /// e^-T] / (2T)` multiplies the rounding error of `G_0` by about
+      /// `prod (2m+1)/(2T)`, independent of U: O(1) error at m = 20, T = 1,
+      /// inf/NaN at m = 36, T = 1e-8, and `G_m > 1/(2m+1)` up to T ~ 5.6 at high
+      /// m. It is accurate (and left bit-identical) from `T >= 0.5 mmax + 6`
+      /// (<= 1e-15 absolute at m <= 36 on the tested grid, against 50-digit values).
+      /// For `mmax == 0` there is no recursion step, but the closed form
+      /// `G_0 = pfac (erfc_k - erfc_l) / sqrt(T)` subtracts two nearly equal
+      /// numbers: its error is about 1e-16 / sqrt(T), O(1) once T ~ 1e-32 (the T
+      /// that rounding leaves for coincident bra and ket centres) and a division
+      /// by zero at T == 0. It is kept from `T >= 1e-2` (error <= 1e-15).
+      static inline bool yukawa_urr_unusable(Real T, Real U, size_t mmax) {
+        return U < Umin &&
+               T < (mmax == 0 ? Real(1e-2) : Real(0.5) * Real(mmax) + Real(6));
+      }
+
+      /// ferric patch (issue #443): Yukawa core integrals
+      /// \f$ G_m(T,U) = \int_0^1 t^{2m} \exp(U(1-t^{-2}) - T t^2)\,dt,\ m=0..mmax \f$
+      /// by composite 24-point Gauss-Legendre quadrature of the defining integral,
+      /// for the arguments where `eval_urr` is unstable (see
+      /// `yukawa_urr_unusable`). Every term of the integrand is positive, so there
+      /// is no cancellation and `0 <= G_m <= 1/(2m+1)` holds to rounding. The
+      /// panels are graded: a ratio-4 ladder from `max(0.01 sqrt(U), 1e-20)` up to
+      /// 1e-3 resolves the boundary layer of `exp(-U/t^2)` at `t ~ sqrt(U)`, then
+      /// 12 panels with ratio 10^(1/4) up to 1. Below `1e-20` the integrand is
+      /// at most 1e-20 wide in t. Measured against 50-digit mpmath values:
+      /// <= 1e-15 absolute for m <= 36, U = 1e-14 and 1e-9, T in [1e-8, 20].
+      static void eval_yukawa_quadrature(Real* Gm_vec, Real T, Real U,
+                                         size_t mmax) {
+        const GaussLegendre24& gl = gauss_legendre_24();
+        for (size_t m = 0; m <= mmax; ++m) Gm_vec[m] = 0;
+        Real edges[128];
+        int n = 0;
+        edges[n++] = 0;
+        Real lo = Real(0.01) * std::sqrt(U);
+        if (!(lo > Real(1e-20))) lo = Real(1e-20);
+        for (Real e = lo; e < Real(1e-3) && n < 100; e *= 4) edges[n++] = e;
+        edges[n++] = Real(1e-3);
+        for (int k = 1; k <= 12; ++k)
+          edges[n++] = Real(1e-3) * std::pow(Real(10), Real(k) / Real(4));
+        edges[n - 1] = 1;
+        for (int p = 0; p + 1 < n; ++p) {
+          const Real a = edges[p], b = edges[p + 1];
+          const Real half = Real(0.5) * (b - a), mid = Real(0.5) * (b + a);
+          for (int i = 0; i < 24; ++i) {
+            const Real t = mid + half * gl.x[i];
+            const Real t2 = t * t;
+            const Real w = half * gl.w[i] * std::exp(U - U / t2 - T * t2);
+            Real tpow = 1;  // t^{2m}
+            for (size_t m = 0; m <= mmax; ++m) {
+              Gm_vec[m] += w * tpow;
+              tpow *= t2;
+            }
+          }
+        }
+      }
+
+      /// nodes and weights of the 24-point Gauss-Legendre rule on [-1, 1]
+      struct GaussLegendre24 {
+        Real x[24];
+        Real w[24];
+        GaussLegendre24() {
+          const int n = 24;
+          for (int i = 0; i < n / 2; ++i) {
+            Real z = std::cos(Real(3.14159265358979323846264338327950288) *
+                              (Real(i) + Real(0.75)) / (Real(n) + Real(0.5)));
+            Real dp = 1;
+            for (int it = 0; it < 100; ++it) {
+              Real p0 = 1, p1 = z;
+              for (int k = 2; k <= n; ++k) {
+                const Real p2 = (Real(2 * k - 1) * z * p1 - Real(k - 1) * p0) / Real(k);
+                p0 = p1;
+                p1 = p2;
+              }
+              dp = Real(n) * (z * p1 - p0) / (z * z - 1);
+              const Real dz = p1 / dp;
+              z -= dz;
+              if (std::abs(dz) < Real(1e-16)) break;
+            }
+            // one more evaluation of dp at the converged root for the weight
+            Real p0 = 1, p1 = z;
+            for (int k = 2; k <= n; ++k) {
+              const Real p2 = (Real(2 * k - 1) * z * p1 - Real(k - 1) * p0) / Real(k);
+              p0 = p1;
+              p1 = p2;
+            }
+            dp = Real(n) * (z * p1 - p0) / (z * z - 1);
+            x[i] = -z;
+            x[n - 1 - i] = z;
+            w[i] = w[n - 1 - i] = 2 / ((1 - z * z) * dp * dp);
+          }
+        }
+      };
+      static const GaussLegendre24& gauss_legendre_24() {
+        static const GaussLegendre24 rule;  // thread-safe (C++11 magic static)
+        return rule;
       }
 
       /// Computes core integrals by upward recursion from \f$ G_{-1} (T,U) \f$ and \f$ G_0 (T,U) \f$

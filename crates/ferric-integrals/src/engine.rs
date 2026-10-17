@@ -1929,14 +1929,14 @@ pub enum TennoKind {
 }
 
 /// Yukawa / Slater-geminal core integrals `G_0(T, U)..G_mmax(T, U)`
-/// (`mmax <= 20`, `U = 0.25 * zeta^2 * one_over_rho`) through libint2's
+/// (`mmax <= 40`, `U = 0.25 * zeta^2 * one_over_rho`) through libint2's
 /// `TennoGmEval`, the evaluator behind `Operator::yukawa` and
 /// `Operator::slater_geminal`. A test hook that pins the evaluator independent
 /// of any integral geometry (the `T == 1024` / `U == 1000` table edges, issue
 /// #436); not used by production code.
 ///
 /// # Errors
-/// A non-finite or non-positive argument, `mmax > 20`, or a libint2 exception
+/// A non-finite or non-positive argument, `mmax > 40`, or a libint2 exception
 /// (the 2.7.2 override throws for `U > Umax`).
 pub fn tenno_gm(
     kind: TennoKind,
@@ -2351,10 +2351,9 @@ mod tests {
         // Anchor: as zeta shrinks (staying within libint2's TennoGmEval
         // interpolation domain U = zeta^2/(4 rho) >= 1e-7), the Yukawa ERI
         // monotonically approaches the Coulomb value from below. We do NOT probe
-        // zeta so small it exits the table domain (U < Umin) -- there libint2
-        // falls back to an unstable upward recursion that assert-aborts on the
-        // T=0 (same-center) blocks the RI paths always contain. This test proves
-        // the correct limiting TREND without leaving the supported regime.
+        // zeta so small it exits the table domain (U < Umin) -- that regime is
+        // covered by tests/yukawa_urr_small_t.rs. This test proves the limiting
+        // TREND inside the interpolation table.
         let (_, prep) = h2_sto3g();
         let v_coul = Engine::new_2e(Operator::coulomb(), &prep, 1e-14)
             .unwrap()
@@ -2418,9 +2417,9 @@ mod tests {
         // This is a regression guard for the libint2 TennoGmEval abort: at a
         // realistic zeta (U = zeta^2/(4 rho) stays within the [1e-7, 1e3]
         // interpolation domain), the T=0 blocks route through interpolate_Gm
-        // (which permits T>=0), NOT the unstable eval_urr (which assert-aborts on
-        // T=0). A pathologically tiny zeta (U < Umin) would force eval_urr and
-        // SIGABRT -- see Operator::yukawa's doc on the supported zeta range.
+        // (which permits T>=0), NOT eval_urr (which assert-aborts on T=0 in stock
+        // libint 2.7.2). A tiny zeta (U < Umin) is handled by the boys.h override
+        // (issue #443); see Operator::yukawa's doc and tests/yukawa_urr_small_t.rs.
         let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
         let bs = basis::bundled("sto-3g").unwrap();
         let obs = PreparedBasis::new(&mol, &bs).unwrap();

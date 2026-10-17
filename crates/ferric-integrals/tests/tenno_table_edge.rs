@@ -310,8 +310,8 @@ fn evaluator_matches_the_defining_integral_at_the_table_edges() {
     let mut checked = 0;
     let mut nan_on_other_build = 0;
     for &(t, u) in &edge_points() {
-        // T == 0 with a tiny U needs the unstable upward recursion (stock
-        // restriction, see Operator::yukawa); the grid keeps U >= 1e-6 there.
+        // U < Umin is covered by yukawa_urr_small_t.rs (issue #443); this grid
+        // keeps U >= 1e-6 (inside the table or at the edges under test).
         let (zeta, oor) = zeta_for(u);
         let u_eff = 0.25 * zeta * zeta * oor;
         let z2r = 0.5 * zeta * oor;

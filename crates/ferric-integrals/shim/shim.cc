@@ -300,13 +300,13 @@ int scf_boys_fm(double x, int mmax, double *out) {
  * (out[m] = (G_{m-1} - G_m) zeta / (2 rho)); U = zeta^2 / (4 rho) is formed by
  * libint2 as 0.25 * zeta * zeta * one_over_rho. out must hold mmax+1 doubles.
  * Returns mmax+1, SCF_EINVAL (bad pointer / kind / non-finite or negative
- * argument / mmax outside [0, 20]) or SCF_EINTERNAL on a libint2 exception
+ * argument / mmax outside [0, 40]) or SCF_EINTERNAL on a libint2 exception
  * (including the invalid_argument the 2.7.2 override throws for U > Umax). */
 int scf_tenno_gm(int kind, double one_over_rho, double T, int mmax, double zeta,
                  double *out) {
     if (!out || (kind != 0 && kind != 1) || !std::isfinite(one_over_rho) ||
         one_over_rho <= 0.0 || !std::isfinite(T) || T < 0.0 ||
-        !std::isfinite(zeta) || zeta <= 0.0 || mmax < 0 || mmax > 20)
+        !std::isfinite(zeta) || zeta <= 0.0 || mmax < 0 || mmax > 40)
         return SCF_EINVAL;
     try {
         auto ev = libint2::TennoGmEval<double>::instance(mmax);
