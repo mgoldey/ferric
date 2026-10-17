@@ -5032,6 +5032,12 @@ fn check_kpoint_optimize_gate(
     rsgdf: bool,
 ) -> Result<(), String> {
     if !kpoints {
+        if route == PeriodicRoute::Rks {
+            if let Some(f) = functional {
+                ferric_pbc::dft::check_gamma_derivs_functional(f)
+                    .map_err(|e| format!("method.task = \"optimize\" with [cell]: {e}"))?;
+            }
+        }
         return Ok(());
     }
     let prefix = |e: String| format!("method.task = \"optimize\" with [cell] kmesh: {e}");
@@ -5120,6 +5126,18 @@ fn periodic_raw_key_check(
         }
     }
     Ok(())
+}
+
+/// Gamma-point meta-GGA: closed-shell RKS, SCAN / r2SCAN only (plan time).
+fn check_gamma_meta_gga(route: PeriodicRoute, functional: Option<&str>) -> Result<(), String> {
+    match functional {
+        Some(f) if route == PeriodicRoute::Rks && ferric_pbc::dft::is_meta_gga_name(f) => {
+            ferric_pbc::dft::resolve_gamma_rks_functional(f)
+                .map(|_| ())
+                .map_err(|e| format!("[dft] functional {f:?} at the Gamma point: {e}"))
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Validate `[cell]` against the rest of the config and resolve it into a
@@ -5256,6 +5274,7 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
                      would ignore it"
                 ));
             }
+            check_gamma_meta_gga(route, functional.as_deref())?;
             None
         }
         Some(n) => {
@@ -5805,6 +5824,31 @@ kind = "ccsd"
     /// `h2` with `task = "optimize"`.
     fn opt(kind: &str, cell: &str, extra: &str) -> String {
         h2(kind, cell, extra).replace("kind = ", "task = \"optimize\"\nkind = ")
+    }
+
+    /// Gamma-point meta-GGA (issue #355): SCAN / r2SCAN energies resolve, any
+    /// other meta-GGA is refused at plan time, and optimize with a meta-GGA is
+    /// refused before any SCF (the Gamma XC gradient has no tau term).
+    #[test]
+    fn gamma_meta_gga_gates() {
+        for f in ["SCAN", "r2SCAN"] {
+            let dft = format!("[dft]\nfunctional = \"{f}\"");
+            assert_eq!(ok(&h2("ksdft", "", &dft)).route, PeriodicRoute::Rks, "{f}");
+            let e = err(&opt("ksdft", "", &dft));
+            assert!(
+                e.contains("method.task = \"optimize\" with [cell]: ")
+                    && e.contains("no tau term")
+                    && e.contains(f),
+                "{f}: {e}"
+            );
+        }
+        let e = err(&h2("ksdft", "", "[dft]\nfunctional = \"MGGA_X_TPSS\""));
+        assert!(
+            e.contains("Gamma point") && e.contains("only the validated SCAN / r2SCAN"),
+            "{e}"
+        );
+        // GGA optimize is untouched.
+        assert!(ok(&opt("ksdft", "", "[dft]\nfunctional = \"PBE\"")).optimize);
     }
 
     #[test]

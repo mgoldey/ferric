@@ -72,7 +72,7 @@
 //! ROHF has no injected path).
 //!
 //! Refused by name: range-separated hybrids (need an attenuated periodic K),
-//! meta-GGA (not prototyped), VV10 / double hybrids, grid pruning, Newton /
+//! meta-GGA except the validated SCAN / r2SCAN in closed-shell [`gamma_rks`] ENERGY (tau from D and ∇χ^Γ, anchored to the 1x1x1 k-mesh and PySCF; Gamma forces, stress, UKS, ROKS refuse it), VV10 / double hybrids, grid pruning, Newton /
 //! TRAH / stability (they rebuild molecular J/K and the f_xc kernel on the
 //! molecular grid — rejected by `validate_injected`), the molecular grid knobs
 //! `RhfConfig.{xc, xc_omega, dft_grid, nlc_grid}`. Nuclear gradients (with
@@ -96,7 +96,7 @@ use ferric_core::FerricError;
 use ferric_dft::becke::{
     partition_weight_over, partition_weight_over_and_grad, NeighbourAtom, PartitionScheme,
 };
-use ferric_dft::density_on_grid::{eval_density_closed, eval_density_uks};
+use ferric_dft::density_on_grid::{eval_density_closed, eval_density_uks, eval_tau_closed};
 use ferric_dft::grid::GridPoint;
 use ferric_dft::lebedev::lebedev;
 use ferric_dft::libxc::{xc_def_from_name, xc_def_from_name_nspin, FunctionalFamily, XcDef};
@@ -1545,9 +1545,71 @@ pub fn resolve_periodic_functional(name: &str) -> Result<(XcDef, f64), FerricErr
     resolve_periodic_functional_mgga(name, false)
 }
 
+/// Whether `name` resolves to a functional with a meta-GGA component (raw
+/// libxc names included). Unresolvable names are `false`.
+pub fn is_meta_gga_name(name: &str) -> bool {
+    xc_def_from_name(name).is_ok_and(|d| {
+        d.funcs
+            .iter()
+            .any(|f| matches!(f.family(), FunctionalFamily::MetaGga))
+    })
+}
+
+/// The functional gate of the closed-shell Gamma [`gamma_rks`]: everything
+/// [`resolve_periodic_functional`] accepts, plus ONLY the validated pure
+/// meta-GGAs SCAN / r2SCAN ([`crate::kxcgrad::is_validated_mgga`]); any other
+/// meta-GGA (raw `MGGA_*` names, TPSS) is refused by name. Shared by
+/// [`gamma_rks`] and the Python / CLI bindings so they cannot drift.
+pub fn resolve_gamma_rks_functional(name: &str) -> Result<(XcDef, f64), FerricError> {
+    let validated = crate::kxcgrad::is_validated_mgga(name);
+    if is_meta_gga_name(name) && !validated {
+        return Err(PeriodicDftError::Unsupported {
+            feature: "meta-GGA",
+            reason: format!(
+                "{name}: Gamma-point RKS supports only the validated SCAN / r2SCAN meta-GGAs"
+            ),
+        }
+        .into());
+    }
+    resolve_periodic_functional_mgga(name, validated)
+}
+
+/// The whole Gamma RKS request gate, one call for the bindings: the
+/// [`resolve_gamma_rks_functional`] allowlist for a meta-GGA, plus
+/// [`check_gamma_derivs_functional`] when a gradient, stress or optimization
+/// is requested. Plain (non-meta-GGA) names pass untouched.
+pub fn check_gamma_rks_request(name: &str, derivs: bool) -> Result<(), FerricError> {
+    if !is_meta_gga_name(name) {
+        return Ok(());
+    }
+    resolve_gamma_rks_functional(name)?;
+    if derivs {
+        check_gamma_derivs_functional(name)?;
+    }
+    Ok(())
+}
+
+/// The refusal for a Gamma-point nuclear gradient, stress or geometry
+/// optimization with a meta-GGA (the Gamma XC derivatives have no tau term;
+/// the k-point path does). Checked before any SCF.
+pub fn check_gamma_derivs_functional(name: &str) -> Result<(), FerricError> {
+    if is_meta_gga_name(name) {
+        return Err(PeriodicDftError::Unsupported {
+            feature: "meta-GGA gradient / stress",
+            reason: format!(
+                "{name}: the Gamma-point XC gradient and stress have no tau term; use a \
+                 k-point mesh (kmesh [1,1,1] is the Gamma point) for SCAN / r2SCAN forces"
+            ),
+        }
+        .into());
+    }
+    Ok(())
+}
+
 /// [`resolve_periodic_functional`] with the meta-GGA refusal optional
-/// (`allow_mgga = true` lets SCAN / r2SCAN / TPSS through; the k-point path
-/// supplies tau, [`crate::kdft`]). Every other refusal is unchanged.
+/// (`allow_mgga = true` lets ANY meta-GGA through, so callers apply their own
+/// allowlist: the k-point path supplies tau, [`crate::kdft`], and the Gamma
+/// entry is [`resolve_gamma_rks_functional`]). Every other refusal is unchanged.
 pub fn resolve_periodic_functional_mgga(
     name: &str,
     allow_mgga: bool,
@@ -1630,6 +1692,9 @@ pub struct PeriodicXc {
     /// Accumulated [`PeriodicXc::eval`] / [`PeriodicXc::eval_polarized`]
     /// calls ([`crate::timing`]).
     clock: CallClock,
+    /// The functional is a meta-GGA: [`PeriodicXc::eval`] builds tau from the
+    /// cached `∇χ^Γ` (closed shell only; the spin-resolved path refuses).
+    mgga: bool,
 }
 
 impl std::fmt::Debug for PeriodicXc {
@@ -1653,7 +1718,35 @@ impl PeriodicXc {
         grid: &PeriodicGrid,
         cfg: &PeriodicXcConfig,
     ) -> Result<Self, FerricError> {
-        let (xc, exx) = resolve_periodic_functional(functional)?;
+        Self::build_xc(cell, bs, functional, grid, cfg, false)
+    }
+
+    /// [`PeriodicXc::new`] with the meta-GGA refusal lifted for the CLOSED-shell
+    /// [`PeriodicXc::eval`] (tau from `D` and `∇χ^Γ`, as the k-point path does).
+    /// [`PeriodicXc::eval_polarized`] errors on a meta-GGA built this way.
+    pub fn new_closed_mgga(
+        cell: &Cell,
+        bs: &BasisSet,
+        functional: &str,
+        grid: &PeriodicGrid,
+        cfg: &PeriodicXcConfig,
+    ) -> Result<Self, FerricError> {
+        Self::build_xc(cell, bs, functional, grid, cfg, true)
+    }
+
+    pub(crate) fn build_xc(
+        cell: &Cell,
+        bs: &BasisSet,
+        functional: &str,
+        grid: &PeriodicGrid,
+        cfg: &PeriodicXcConfig,
+        allow_mgga: bool,
+    ) -> Result<Self, FerricError> {
+        let (xc, exx) = resolve_periodic_functional_mgga(functional, allow_mgga)?;
+        let mgga = xc
+            .funcs
+            .iter()
+            .any(|f| matches!(f.family(), FunctionalFamily::MetaGga));
         let xc_pol = xc_def_from_name_nspin(functional, 2).map_err(|e| {
             FerricError::General(format!(
                 "periodic DFT: functional {functional:?} (spin-polarized): {e:?}"
@@ -1670,6 +1763,7 @@ impl PeriodicXc {
             nbf,
             scratch: VxcScratch::new(),
             clock: CallClock::default(),
+            mgga,
         })
     }
 
@@ -1761,12 +1855,13 @@ impl PeriodicXc {
         let mut v = Array2::<f64>::zeros((self.nbf, self.nbf));
         for c in &self.chunks {
             let dens = eval_density_closed(d, &c.chi, &c.dchi);
+            let tau = self.mgga.then(|| eval_tau_closed(d, &c.dchi));
             let (ec, vc) = semilocal_vxc_closed_scratch(
                 &c.points,
                 &c.chi,
                 &c.dchi,
                 &dens,
-                None,
+                tau.as_ref(),
                 &self.xc,
                 &mut self.scratch,
             );
@@ -1800,6 +1895,21 @@ impl PeriodicXc {
         out
     }
 
+    /// The spin-resolved path has no tau term: error on a meta-GGA.
+    fn refuse_if_mgga(&self) -> Result<(), FerricError> {
+        if self.mgga {
+            return Err(PeriodicDftError::Unsupported {
+                feature: "meta-GGA",
+                reason: format!(
+                    "{}: the spin-resolved periodic XC has no tau term",
+                    self.name
+                ),
+            }
+            .into());
+        }
+        Ok(())
+    }
+
     /// Spin-polarized `(E_xc, V_α, V_β)` for `(d_a, d_b)`, summed over the grid
     /// chunks, with no clock. Errors on a wrong-shaped density or a non-finite
     /// energy / potential element.
@@ -1810,6 +1920,7 @@ impl PeriodicXc {
     ) -> Result<(f64, Array2<f64>, Array2<f64>), FerricError> {
         self.check_d(d_a)?;
         self.check_d(d_b)?;
+        self.refuse_if_mgga()?;
         let mut e = 0.0;
         let mut v_a = Array2::<f64>::zeros((self.nbf, self.nbf));
         let mut v_b = Array2::<f64>::zeros((self.nbf, self.nbf));
@@ -1920,7 +2031,9 @@ impl XcBuilder for DynXcRef<'_, '_> {
 #[derive(Debug, Clone)]
 pub struct GammaRksConfig {
     /// LDA / GGA / global-hybrid name (ferric-dft friendly names or libxc
-    /// identifiers), e.g. `"LDA"` (= PySCF `"LDA,VWN"`), `"PBE"`, `"PBE0"`.
+    /// identifiers), e.g. `"LDA"` (= PySCF `"LDA,VWN"`), `"PBE"`, `"PBE0"`, or
+    /// the pure meta-GGAs `"SCAN"` / `"r2SCAN"` (energy only: Gamma forces and
+    /// stress refuse meta-GGA; other meta-GGAs are refused by name).
     pub functional: String,
     /// The periodic grid.
     pub grid: PeriodicGridConfig,
@@ -2023,10 +2136,10 @@ pub fn gamma_rks(
         )?;
     }
     // Cheap name checks before the grid is built.
-    resolve_periodic_functional(&cfg.functional)?;
+    resolve_gamma_rks_functional(&cfg.functional)?;
     let total = StageClock::start();
     let (grid, mut pxc, mut timings) =
-        ks_grid_and_xc(cell, prep, &cfg.functional, &cfg.grid, &cfg.xc)?;
+        gated_grid_and_xc(cell, prep, &cfg.functional, &cfg.grid, &cfg.xc, true)?;
     let v_m = madelung_constant(cell)?;
     let applied = match cfg.exxdiv {
         ExxDiv::None => 0.0,
@@ -2164,12 +2277,32 @@ pub(crate) fn ks_grid_and_xc(
     grid_cfg: &PeriodicGridConfig,
     xc_cfg: &PeriodicXcConfig,
 ) -> Result<(PeriodicGrid, PeriodicXc, PbcTimings), FerricError> {
+    gated_grid_and_xc(cell, prep, functional, grid_cfg, xc_cfg, false)
+}
+
+/// [`ks_grid_and_xc`] with the meta-GGA refusal optional (closed-shell
+/// [`gamma_rks`] only, after its own allowlist).
+pub(crate) fn gated_grid_and_xc(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    functional: &str,
+    grid_cfg: &PeriodicGridConfig,
+    xc_cfg: &PeriodicXcConfig,
+    allow_mgga: bool,
+) -> Result<(PeriodicGrid, PeriodicXc, PbcTimings), FerricError> {
     let mut timings = PbcTimings::default();
     let clock = StageClock::start();
     let grid = PeriodicGrid::build(cell, grid_cfg)?;
     timings.stop("xc grid build", &clock);
     let clock = StageClock::start();
-    let pxc = PeriodicXc::new(cell, prep.basis_set(), functional, &grid, xc_cfg)?;
+    let pxc = PeriodicXc::build_xc(
+        cell,
+        prep.basis_set(),
+        functional,
+        &grid,
+        xc_cfg,
+        allow_mgga,
+    )?;
     timings.stop("xc AO cache", &clock);
     timings.set_counter("xc grid points", grid.len() as u64);
     Ok((grid, pxc, timings))

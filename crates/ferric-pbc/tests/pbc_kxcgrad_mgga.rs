@@ -2,8 +2,8 @@
 //! functionals (SCAN, r2SCAN; `ferric_pbc::kxcgrad`, section "Meta-GGA: the
 //! tau term").
 //!
-//! The Gamma periodic path has no meta-GGA, so there is no 1x1x1 = Gamma
-//! anchor. The anchors are:
+//! The Gamma periodic path has meta-GGA for the closed-shell energy only (no
+//! Gamma tau force), so the force anchors are:
 //! * `null_tau_path_reproduces_the_gga_force_exactly` — the meta-GGA code path
 //!   (tau, V^tau, the tau force term) taken for PBE (`v_tau = 0`) is the PBE
 //!   force bit for bit;

@@ -146,8 +146,9 @@
 //! evaluated with τ, unchanged. The GGA `σ` contraction is independent of the
 //! tau term (both use `m^i`; the force keeps them as separate sums).
 //!
-//! The Gamma periodic path has no meta-GGA, so there is no `1×1×1 = Gamma`
-//! anchor; the anchors are the fixed-`D` central difference of the
+//! The Gamma periodic path has meta-GGA only for the closed-shell energy
+//! (`gamma_rks`; no Gamma tau force or stress), so the force anchors are the
+//! fixed-`D` central difference of the
 //! XC energy (no SCF noise), FD of the SCF energy, and the explicit
 //! supercell identity on a non-TRIM mesh (`tests/pbc_kxcgrad_mgga.rs`).
 //! SCAN and r2SCAN are validated end to end. TPSS resolves only as the raw
