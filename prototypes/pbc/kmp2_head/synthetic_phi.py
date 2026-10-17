@@ -55,17 +55,39 @@ def mesh_sum(n, d, kappa, c2, phi_w):
     return (g.sum() + phi_w) / n**3, g.sum() / n**3
 
 
-def run(name, d, kappa=2, c2=0.3):
+KAPPA, C2 = 2, 0.3
+NS = np.arange(5, 11)
+
+
+def reference(d, phi):
+    """BZ integral of the model: corrected trapezoid at n = 120, 160, extrapolated in n^-5."""
+    ref = [mesh_sum(n, d, KAPPA, C2, phi)[0] for n in (120, 160)]
+    return (ref[1] * 160**5 - ref[0] * 120**5) / (160**5 - 120**5)
+
+
+def detector(d, i_ref, phi_used):
+    """(A, p): A = n^-3 coefficient from a fit  err*n^3 = A + B n^-2  on n = 5..10; p = tail-3 log-log exponent of
+    |err| (n = 8, 9, 10).  A is LINEAR in the weight (A shifts by exactly dPhi * w(0), w(0) = 1) and is the sound
+    detector; p is non-monotone in dPhi (the error crosses zero) and is reported only as a cross-check."""
+    err = np.array([mesh_sum(n, d, KAPPA, C2, phi_used)[0] - i_ref for n in NS])
+    y = err * NS**3
+    a = np.linalg.lstsq(np.array([np.ones(len(NS)), NS**-2.0]).T, y, rcond=None)[0][0]
+    p = np.polyfit(np.log(NS[-3:]), np.log(np.abs(err[-3:])), 1)[0]
+    return a, p
+
+
+A_PASS = 0.03  # |A| below this = "weight verified"; resolution of the n = 5..10 window is ~0.02 (pre-asymptotic bias)
+D_MUT = 0.05  # +-0.05 weight mutant (30% of |Phi_z|, 11-17% of Phi_[110]/[111]) must flip the verdict
+
+
+def run(name, d):
     phi = phi_dir(d)
-    ref = {}
-    for n in (120, 160):
-        ref[n] = mesh_sum(n, d, kappa, c2, phi)[0]
-    i_ref = (ref[160] * 160**5 - ref[120] * 120**5) / (160**5 - 120**5)
+    i_ref = reference(d, phi)
     rows = []
     for n in range(3, 11):
-        corr = mesh_sum(n, d, kappa, c2, phi)[0] - i_ref
-        raw = mesh_sum(n, d, kappa, c2, 0.0)[1] - i_ref
-        ang = mesh_sum(n, d, kappa, c2, 0.2)[0] - i_ref
+        corr = mesh_sum(n, d, KAPPA, C2, phi)[0] - i_ref
+        raw = mesh_sum(n, d, KAPPA, C2, 0.0)[1] - i_ref
+        ang = mesh_sum(n, d, KAPPA, C2, 0.2)[0] - i_ref
         rows.append((n, raw * n**3, ang * n**3, corr * n**3, corr * n**5))
     print(
         f"\n[{name}] Phi_exact = {phi:.6f} (angular average 0.2, cubic head 1/9 = 0.1111)"
@@ -73,19 +95,23 @@ def run(name, d, kappa=2, c2=0.3):
     print("  n   raw*n^3   angavg*n^3   corrected*n^3   corrected*n^5")
     for r in rows:
         print(f"  {r[0]:2d} {r[1]:9.5f} {r[2]:11.5f} {r[3]:14.6f} {r[4]:14.5f}")
-    # tail exponent of corrected error (last 3 points)
-    n3 = np.array([r[0] for r in rows[-3:]], float)
-    e3 = np.abs([r[3] / r[0] ** 3 for r in rows[-3:]])
-    p = np.polyfit(np.log(n3), np.log(e3), 1)[0]
+    a0, p0 = detector(d, i_ref, phi)
+    aw, pw = detector(d, i_ref, 0.2)
+    print(f"  exact Phi : A = {a0:+.4f}, tail-3 exponent {p0:.2f}  (n^-5 expected)")
+    print(f"  wrong 0.2 : A = {aw:+.4f}, tail-3 exponent {pw:.2f}  (n^-3 expected)")
+    scan = [(dp, *detector(d, i_ref, phi + dp)) for dp in (0.005, 0.01, 0.02, 0.05)]
     print(
-        f"  tail-3 exponent of |corrected error| = {p:.2f} (n^-5 expected if Phi exact)"
+        "  dPhi scan (A, exponent): "
+        + "; ".join(f"{dp:+.3f}: {a:+.4f}, {p:.2f}" for dp, a, p in scan)
     )
-    # mutation/anchor: the wrong weight (angular average 0.2) must leave an n^-3 tail of exactly (0.2 - Phi) w(0)
-    mut = rows[-1][2] - rows[-1][3]
-    assert abs(mut - (0.2 - phi)) < 5e-3, mut
-    # the exact weight must leave NO n^-3 tail: |corrected*n^3| shrinks like n^-2
-    assert abs(rows[-1][3]) < 0.5 * abs(rows[-6][3]) + 1e-3
-    assert -5.8 < p < -4.3, p
+    assert abs(a0) < A_PASS, a0
+    assert -5.8 < p0 < -4.3, p0
+    # real detector test: the wrong weight is seen (A = 0.2 - Phi, exponent ~ -3), the +-D_MUT mutants flip
+    assert abs(aw - (0.2 - phi)) < A_PASS, aw
+    assert -3.3 < pw < -2.7, pw
+    for sgn in (+1, -1):
+        am, _ = detector(d, i_ref, phi + sgn * D_MUT)
+        assert abs(am) > A_PASS, (sgn, am)
     return rows
 
 

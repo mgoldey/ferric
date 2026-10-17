@@ -5948,6 +5948,55 @@ kz = 0 plane and at TRIM points by symmetry. So an n = 2 mesh (all TRIM points) 
 - Not measured: n >= 5 for the corrected estimators; relaxation at n = 4 (first-order linearity makes it n^-3 by
   construction); a = 10 (older npz has no C); non-cubic cells; more than one occupied/virtual band; dRPA budget.
 
+### Addendum 2026-10-17 (provisional): synthetic test of the lattice weight Phi, issue #230
+
+Verdict, worded narrowly: **Phi constant verified; head-coefficient structure NOT tested.** The residual stays unexplained.
+
+**Measured** (`prototypes/pbc/kmp2_head/synthetic_phi.py`, runs in ~18 s, asserts its own anchors):
+- Model: g(q) = (u.d)^4 w(q) (1 + 0.3 q^2), q = 2 pi m / n on a Gamma-centred simple-cubic mesh, w = prod_i ((1 + cos q_i)/2)^2
+  (periodic, singular only at q = 0). Mesh estimate = (1/N)[sum_{m != 0} g + Phi w(0)]; reference integral = n = 120, 160
+  extrapolated in n^-5. Phi = -Z (Gaussian-regularised lattice sum, Richardson in eps).
+- Phi: z -0.171599, [110] +0.292900, [111] +0.447733 (three orientations; [110] is new). The cubic tensor
+  (Phi_aaaa, Phi_aabb = (1 - 3 Phi_aaaa)/6) reproduces the direct Phi for [110], [111], [120], [123] to 1e-6.
+- Corrected error x n^3 (z / [110] / [111]): n = 3: -0.329 / -0.015 / +0.090; n = 4: -0.076 / +0.044 / +0.083;
+  n = 6: -0.035 / +0.014 / +0.031; n = 10: -0.012 / +0.004 / +0.009. Tail-3 exponent of |error| (n = 8-10):
+  -5.07 / -5.49 / -5.30. Uncorrected error x n^3 tends to -Phi; the wrong weight 0.2 gives exponent -2.91 / -2.85 / -2.88.
+- Detector: A = n^-3 coefficient from err x n^3 = A + B n^-2 on n = 5..10. A shifts exactly by dPhi (w(0) = 1). Exact
+  Phi: A = +0.011 / +0.002 / -0.001 (this is the pre-asymptotic bias). Wrong weight: A = +0.382 / -0.091 / -0.249
+  (= 0.2 - Phi to the bias). So the window resolves dPhi of about 0.02 (12% of |Phi_z|, 7% of Phi_[110], 4% of Phi_[111]).
+  The +-0.05 weight mutants flip the verdict in all three orientations (asserted).
+- The tail exponent is a poor detector on its own: it is non-monotone in dPhi because the error crosses zero. z at
+  dPhi = +0.005 reads -6.13, +0.010 reads -9.9, +0.020 reads +6.2; [111] at +0.005 still reads -4.62 and at +0.010 -4.26.
+  Do not threshold on the exponent alone. (An earlier version of the script "mutation-tested" the wrong weight by subtracting two
+  mesh sums that differ only by the added Phi term. That equals 0.2 - Phi by algebra and could not fail; it is replaced.)
+
+**Scope.** This verifies only that Phi is the right MESH constant for f0(q^) w(q) with f0 = (u.d)^4, and only
+asymptotically (n >= ~8). At n = 3, 4 the n^-5 term is as large as the n^-3 term (z: -0.33, -0.076 x n^3). It does NOT test
+the real head's degree-0 coefficient, Bloch pairing, the k-varying head vectors (g_true differs from g_fixed by 20-50% per k),
+or the tensor contraction. Feeding the real per-k head vectors from `bloch_head.py` into the model was not done.
+What it does show: a Phi-type error would appear as an n^-3 tail with coefficient dPhi; the real residual is stable in
+x n^3 between n = 3 and 4 (-5.55e-5 / -5.54e-5), whereas a pre-asymptotic n^-5 piece of the Phi term would change by
+(3/4)^2 over that step. So "Phi inexact at n = 3-4" is not the n^-3 mechanism in this model.
+
+**Extrapolation-artifact alternative** (from the 2026-10-17 review; figures quoted from `fits.py` output, not re-run here).
+The statement above that the work "rules out n^-5 terms and the fit form" is stronger than the data.
+
+| item | value | note |
+|---|---|---|
+| E_inf spread across fit forms (S series) | 5.9e-7 (-1.3356925 ... -1.3357530) | moves the n = 4 residual between -3.0e-5 and -6.8e-5 (1.4-3.1% of R) |
+| E3d(3) - E3d(4) | -1.19e-6 | independent of E_inf; read as pure n^-3 it gives r = -5.56e-5 |
+| E_inf needed for a pure n^-5 reading | -1.3357636 | 1.1e-7 beyond the most extreme S fit; 6.8e-7 below the E1 plateau (-1.335696 +- 7e-8) |
+| E1 plateau | -1.335696 +- 7e-8 | disfavours the n^-5 reading |
+
+So an extrapolation artifact is unlikely but the residual is better stated as 1.4-3.1% (z) than 2.5%.
+Decisive, not yet run: E3d at n = 5 for z. n^-3 predicts (E3d - E_inf) x n^3 = -5.5e-5; n^-5 predicts about -3.5e-5.
+(Needs the full n = 5 mesh SCF + ERI pipeline of `prototypes/pbc/kmp2_head`; beyond a 30 min budget here.)
+
+**Unexplained anomalies, recorded as such.**
+1. E1 (bare cubic-average head) is flat in n (c3 = 0 +- 2e-5) while the fuller E3 is not.
+2. The ERI head removes ~100% of the 1/N_k coefficient against a molecular prediction of 78%. The residual may be the
+   Fock-head share over-correcting, not a missing degree-0 term. Not distinguished by anything measured so far.
+
 ## Full timing series on libint 2.13.1: MWE, baseline, ω sweep, column rotation (measured 2026-09-30 16:25-16:55, head 24c53e63)
 
 The box had desktop load (Chrome), so the gate was relaxed to a 1-minute load below 2.5. Start loads were 1.6-2.5.
