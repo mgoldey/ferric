@@ -1607,24 +1607,9 @@ fn run_rks_gamma(
     sr_column_rotation: Option<bool>,
 ) -> PyResult<PyGammaRksResult> {
     let fname = "run_rks_gamma";
-    // Before any integral is built: only SCAN / r2SCAN are meta-GGAs here, and
-    // their Gamma energy has no force or stress.
-    if ferric_pbc::dft::is_meta_gga_name(functional) {
-        ferric_pbc::dft::resolve_gamma_rks_functional(functional)
-            .map_err(|e| val_err(format!("{fname}: functional {functional:?}: {e}")))?;
-    }
-    if with_gradient || with_stress {
-        ferric_pbc::dft::check_gamma_derivs_functional(functional).map_err(|e| {
-            val_err(format!(
-                "{fname}: {}: {e}",
-                if with_gradient {
-                    "with_gradient"
-                } else {
-                    "with_stress"
-                }
-            ))
-        })?;
-    }
+    // Before any integral is built (SCAN / r2SCAN only; no force or stress).
+    ferric_pbc::dft::check_gamma_rks_request(functional, with_gradient || with_stress)
+        .map_err(|e| val_err(format!("{fname}: functional {functional:?}: {e}")))?;
     let mut s = pbc_setup(&PbcArgs {
         fname,
         mol,

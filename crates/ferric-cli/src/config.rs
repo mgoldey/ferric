@@ -5128,6 +5128,18 @@ fn periodic_raw_key_check(
     Ok(())
 }
 
+/// Gamma-point meta-GGA: closed-shell RKS, SCAN / r2SCAN only (plan time).
+fn check_gamma_meta_gga(route: PeriodicRoute, functional: Option<&str>) -> Result<(), String> {
+    match functional {
+        Some(f) if route == PeriodicRoute::Rks && ferric_pbc::dft::is_meta_gga_name(f) => {
+            ferric_pbc::dft::resolve_gamma_rks_functional(f)
+                .map(|_| ())
+                .map_err(|e| format!("[dft] functional {f:?} at the Gamma point: {e}"))
+        }
+        _ => Ok(()),
+    }
+}
+
 /// Validate `[cell]` against the rest of the config and resolve it into a
 /// [`PeriodicPlan`]. `Ok(None)` when there is no `[cell]`. `raw` is the same
 /// file as a plain TOML value: which `[scf]` keys were WRITTEN decides between
@@ -5262,16 +5274,7 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
                      would ignore it"
                 ));
             }
-            // Gamma-point meta-GGA: closed-shell RKS, SCAN / r2SCAN only.
-            if route == PeriodicRoute::Rks {
-                if let Some(f) = functional.as_deref() {
-                    if ferric_pbc::dft::is_meta_gga_name(f) {
-                        ferric_pbc::dft::resolve_gamma_rks_functional(f).map_err(|e| {
-                            format!("[dft] functional {f:?} at the Gamma point: {e}")
-                        })?;
-                    }
-                }
-            }
+            check_gamma_meta_gga(route, functional.as_deref())?;
             None
         }
         Some(n) => {

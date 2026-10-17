@@ -1574,6 +1574,21 @@ pub fn resolve_gamma_rks_functional(name: &str) -> Result<(XcDef, f64), FerricEr
     resolve_periodic_functional_mgga(name, validated)
 }
 
+/// The whole Gamma RKS request gate, one call for the bindings: the
+/// [`resolve_gamma_rks_functional`] allowlist for a meta-GGA, plus
+/// [`check_gamma_derivs_functional`] when a gradient, stress or optimization
+/// is requested. Plain (non-meta-GGA) names pass untouched.
+pub fn check_gamma_rks_request(name: &str, derivs: bool) -> Result<(), FerricError> {
+    if !is_meta_gga_name(name) {
+        return Ok(());
+    }
+    resolve_gamma_rks_functional(name)?;
+    if derivs {
+        check_gamma_derivs_functional(name)?;
+    }
+    Ok(())
+}
+
 /// The refusal for a Gamma-point nuclear gradient, stress or geometry
 /// optimization with a meta-GGA (the Gamma XC derivatives have no tau term;
 /// the k-point path does). Checked before any SCF.
@@ -1719,7 +1734,7 @@ impl PeriodicXc {
         Self::build_xc(cell, bs, functional, grid, cfg, true)
     }
 
-    fn build_xc(
+    pub(crate) fn build_xc(
         cell: &Cell,
         bs: &BasisSet,
         functional: &str,
@@ -1880,16 +1895,8 @@ impl PeriodicXc {
         out
     }
 
-    /// Spin-polarized `(E_xc, V_α, V_β)` for `(d_a, d_b)`, summed over the grid
-    /// chunks, with no clock. Errors on a wrong-shaped density or a non-finite
-    /// energy / potential element.
-    fn eval_polarized_untimed(
-        &mut self,
-        d_a: &Array2<f64>,
-        d_b: &Array2<f64>,
-    ) -> Result<(f64, Array2<f64>, Array2<f64>), FerricError> {
-        self.check_d(d_a)?;
-        self.check_d(d_b)?;
+    /// The spin-resolved path has no tau term: error on a meta-GGA.
+    fn refuse_if_mgga(&self) -> Result<(), FerricError> {
         if self.mgga {
             return Err(PeriodicDftError::Unsupported {
                 feature: "meta-GGA",
@@ -1900,6 +1907,20 @@ impl PeriodicXc {
             }
             .into());
         }
+        Ok(())
+    }
+
+    /// Spin-polarized `(E_xc, V_α, V_β)` for `(d_a, d_b)`, summed over the grid
+    /// chunks, with no clock. Errors on a wrong-shaped density or a non-finite
+    /// energy / potential element.
+    fn eval_polarized_untimed(
+        &mut self,
+        d_a: &Array2<f64>,
+        d_b: &Array2<f64>,
+    ) -> Result<(f64, Array2<f64>, Array2<f64>), FerricError> {
+        self.check_d(d_a)?;
+        self.check_d(d_b)?;
+        self.refuse_if_mgga()?;
         let mut e = 0.0;
         let mut v_a = Array2::<f64>::zeros((self.nbf, self.nbf));
         let mut v_b = Array2::<f64>::zeros((self.nbf, self.nbf));
@@ -2118,7 +2139,7 @@ pub fn gamma_rks(
     resolve_gamma_rks_functional(&cfg.functional)?;
     let total = StageClock::start();
     let (grid, mut pxc, mut timings) =
-        ks_grid_and_xc(cell, prep, &cfg.functional, &cfg.grid, &cfg.xc, true)?;
+        gated_grid_and_xc(cell, prep, &cfg.functional, &cfg.grid, &cfg.xc, true)?;
     let v_m = madelung_constant(cell)?;
     let applied = match cfg.exxdiv {
         ExxDiv::None => 0.0,
@@ -2255,6 +2276,18 @@ pub(crate) fn ks_grid_and_xc(
     functional: &str,
     grid_cfg: &PeriodicGridConfig,
     xc_cfg: &PeriodicXcConfig,
+) -> Result<(PeriodicGrid, PeriodicXc, PbcTimings), FerricError> {
+    gated_grid_and_xc(cell, prep, functional, grid_cfg, xc_cfg, false)
+}
+
+/// [`ks_grid_and_xc`] with the meta-GGA refusal optional (closed-shell
+/// [`gamma_rks`] only, after its own allowlist).
+pub(crate) fn gated_grid_and_xc(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    functional: &str,
+    grid_cfg: &PeriodicGridConfig,
+    xc_cfg: &PeriodicXcConfig,
     allow_mgga: bool,
 ) -> Result<(PeriodicGrid, PeriodicXc, PbcTimings), FerricError> {
     let mut timings = PbcTimings::default();
@@ -2262,11 +2295,14 @@ pub(crate) fn ks_grid_and_xc(
     let grid = PeriodicGrid::build(cell, grid_cfg)?;
     timings.stop("xc grid build", &clock);
     let clock = StageClock::start();
-    let pxc = if allow_mgga {
-        PeriodicXc::new_closed_mgga(cell, prep.basis_set(), functional, &grid, xc_cfg)?
-    } else {
-        PeriodicXc::new(cell, prep.basis_set(), functional, &grid, xc_cfg)?
-    };
+    let pxc = PeriodicXc::build_xc(
+        cell,
+        prep.basis_set(),
+        functional,
+        &grid,
+        xc_cfg,
+        allow_mgga,
+    )?;
     timings.stop("xc AO cache", &clock);
     timings.set_counter("xc grid points", grid.len() as u64);
     Ok((grid, pxc, timings))
@@ -2325,7 +2361,7 @@ pub fn gamma_uks(
     resolve_periodic_functional(&cfg.functional)?;
     let total = StageClock::start();
     let (grid, mut pxc, mut timings) =
-        ks_grid_and_xc(cell, prep, &cfg.functional, &cfg.grid, &cfg.xc, false)?;
+        ks_grid_and_xc(cell, prep, &cfg.functional, &cfg.grid, &cfg.xc)?;
     let mut out = gamma_uks_with_xc(cell, prep, hc, ints, &mut pxc, cfg)?;
     let electrons_on_grid = pxc.integrate_density(&out.scf.density_total)?;
     out.grid = Some(GammaUksGridInfo {
