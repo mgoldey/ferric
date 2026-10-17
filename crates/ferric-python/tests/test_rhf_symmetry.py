@@ -93,8 +93,17 @@ def test_frame_dependent_outputs_raise_instead_of_returning_rotated_data():
     rot, origin = r.frame_transform()
     assert len(rot) == 3 and len(origin) == 3
     assert len(r.symmetrized_coords()) == len(r.symbols()) == 4
-    with pytest.raises(TypeError):
-        ferric.hirshfeld_charges(r, _mol("nh3"), ferric.BasisSet.bundled("sto-3g"))
+    # The result slot of the RhfResult consumers rejects it by type. The
+    # control: the same call with the plain RhfResult succeeds, so the
+    # TypeError below comes from the `result` argument and nothing else.
+    mol, bs = _mol("nh3"), ferric.BasisSet.bundled("sto-3g")
+    plain = ferric.run_rhf(mol, bs)
+    assert len(ferric.esp_at_atoms(mol, bs, plain)) == 4
+    for consumer in (ferric.hirshfeld_charges, ferric.esp_at_atoms):
+        with pytest.raises(
+            TypeError, match=r"result.*expected an RhfResult or DftResult"
+        ):
+            consumer(mol, bs, r)
 
 
 def _rot(axis, angle):
